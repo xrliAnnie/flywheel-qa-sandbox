@@ -59,3 +59,9 @@ Lead 的 content LIKE 源id计数：raya.mailbox各0，flywheel.mailbox各2；�
 
 ### Lead 更正回执 f8bc878e-2327-4196-b0e6-d60ec01c149e
 Lead确认之前flywheel.mailbox各2和lead_events 1是本次问答/报告引用产生的自污染；排除后两源id在raya.mailbox、flywheel.mailbox和lead_events真实入站计数均为0。登记行不变。已接受该更正，不把这些引用当作跨Lead投递。mailbox_log无content列只说明该查询不适用；精确mailbox_identity/terminal_archive结果仍以问题22c03203的后续答复为准。
+
+
+### 最终精确收件核对（Lead提供，问题22c03203-c166-475d-9f94-ccf720a63c36已答）
+以完整 `chat:raya:1549573491060244602` / `chat:raya:1549573499914297409` 的delivery_id/source_ref核对：raya与flywheel的mailbox、mailbox_identity、mailbox_terminal_archive两条各0；flywheel.mailbox_archive亦0。此结果替代先前substring及mailbox_log失败查询。结论限定在已核查的raya/flywheel标准收件库：两条输入均无live、identity或archive收件记录，尚未恢复；结合真实源消息和线程无对应回答，支持本事故入站缺口。
+
+邻近主频道对照为 `chat:raya:1549573168706879539` (00:10:33Z)、`chat:raya:1549573538451562527` (00:12:01Z)、`chat:raya:1549574793370533941` (00:17:00Z)，均为discord_chat/to_agent=raya/state=ACKED。这是运输收件对照，不单凭ACK证明模型消费。上述Lead-provided证据满足设计选型；T4仍须上线前重读最新状态，避免并行恢复重复回答。
