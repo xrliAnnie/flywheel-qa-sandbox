@@ -22,3 +22,18 @@ R2要求复核阻塞项及以上设计增补。所有生产修改和验收仍由
 ## R2 评审基础设施状态
 questionId 85f2ac75-73dc-4ca4-b1d1-04ecad287be4；requestId c38233ab-b61e-49d8-8037-7f2708d4f9e5。
 首次执行在2026-09-16 03:52:26Z记录failed/no_verdict，gate仍pending；未将原始转义输出当作有效结论。03:55:37Z以相同requestId重试并获accepted/duplicate=true，权威job恢复running。继续等待有效结构化verdict；不另造请求抢占结果。
+
+
+## R2有效结论与R3处置
+同一request在两次no_verdict之后，以新reviewer会话136ff608-f8d2-4b00-a193-a7a75a97da5a产出有效CHANGES_REQUESTED（round2）；此前原始无效文本不构成批准。
+
+| findingKey | 级别 | R3前处置 |
+|---|---|---|
+| rollout-marker-path-ignores-state-dir | HIGH | 与既有cursor一样用getStateDir；marker绑定实际state/DB/comm根路径及owner；初次15分钟新鲜度；hash绑定一次采纳回执区分正常重启；QA/生产隔离及互拷拒绝用例 |
+| global-activation-scope-unflagged | MEDIUM | 新覆盖与replyChannelId变更限本单raya/raya；其余Lead扩面列为独立后续，不改变Raya验收 |
+| t1b-guild-id-source-unspecified | MEDIUM | 明确config.discordGuildId+lead.botToken；缺失禁止声称归档场景验收通过；本单每轮一次guild读取 |
+| scan-budget-latency-unbudgeted | MEDIUM | 新Raya/既有session分组测量；既有同负载基线增加不超过一轮，超限不可通过 |
+| ship-judgment-scan-cursor-shared | LOW | 明示游标双重用途并加有限轮数完整覆盖测试 |
+| nudge-lead-inbox-arg-order | LOW | 改为leadId,projectName，闭包依赖及spy检查实际顺序 |
+
+R3只复核这些具体修订及原Raya目标，没有新增生产动作。

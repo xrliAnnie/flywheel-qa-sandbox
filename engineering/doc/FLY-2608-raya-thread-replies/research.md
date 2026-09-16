@@ -72,3 +72,9 @@ Lead确认之前flywheel.mailbox各2和lead_events 1是本次问答/报告引用
 - `CodexLeadInboxSocket.listCodexLeadSubscriptions`已有owner认证请求，新增扫描用来排除已订阅thread；失败不能伪装成空集，父频道互斥是并发期间的准入约束。
 - `DiscordLaneVerdict`包含inserted/active/external/archived等状态（mailbox-queue.ts:234）；此前忽略返回值的扫描必须显式处置。
 - R1 reviewer提供生产盘点：72活跃候选、32无cursor，其中30属其他Lead，最老2026-04-12。此为reviewer-provided数据，充分说明全量历史回放风险；部署时仍须重新dry-run。方案改成固定上线边界，旧事故按两个原始id恢复。
+
+
+## R2正式结论后的R3修订核对
+R2有效CHANGES_REQUESTED；HIGH为rollout-marker-path-ignores-state-dir。已实读`path-helpers.ts:getStateDir`，默认为~/.flywheel/state且接受FLYWHEEL_STATE_DIR覆盖；`plugin.ts:10038`的founderReplyCursor采用同一解析器。计划改用join(getStateDir(), markerName)，绑定当前realpath stateDir/teamleadDbPath/commRoot及owner集合；初次15分钟内采纳，独立hash绑定采纳回执允许正常重启继续原边界。QA/生产分别冻结，不互拷。
+
+本单范围收紧回原始Raya修复：生产新增owner只raya/raya，其他Lead的通信行为不变；这不是减少Raya的任何验收场景。T1b仍覆盖Raya归档后再问，guildId明确来自Bridge config.discordGuildId，owner token独立；每轮只有一次新增guild请求。nudge实参顺序改为leadId在前，projectName在后，并显式注入可选闭包依赖。旧scan桶的延迟回归与ship-judgment共享游标加入测试。

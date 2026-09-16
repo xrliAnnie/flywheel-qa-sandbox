@@ -3,7 +3,7 @@ Issue: FLY-2608 (https://linear.app/geoforge3d/issue/FLY-2608/raya工程修复-d
 日期: 2026-09-15
 基于: research.md
 
-状态: R1 CHANGES_REQUESTED 已修订，待 R2。设计节点不实现、不部署、不恢复线上消息。
+状态: R2 CHANGES_REQUESTED 已修订，待 R3。设计节点不实现、不部署、不恢复线上消息。
 
 ## 给 founder 的说明
 让已登记的 Raya 讨论线程进入现有 Bridge 收件扫描，并把回答的目的地固定为问题所在的线程。无需 @，也不用重述问题。修复复用标准收件队列；完成与否以真实提问、收件凭证和同线程回答三段证据判断。
@@ -22,10 +22,10 @@ flowchart LR
 
 ## 1. 范围及固定决策
 - 复用 `GatePoller.founderReplyDeliverPass`、`emitFounderReplyDeliveryForThread`、现有 cursorStore 和 mailbox；不新加收件服务/数据库/依赖/feature flag。
-- 补 `chat_threads` 与 `phase_chat_threads` 中活跃、可解析唯一 owner 的普通 issue thread。现有 session/审批历史/pending-question 路径保留，先形成完整 byThread，再按 threadId 合并一次扫描。
+- 本单新增覆盖的生产owner集合固定为 `{projectName:raya, leadId:raya}`，父频道必须匹配当前Raya配置（本事故为1542079099928059987）。同一标准组件按冻结迁移数据的owner集合筛选，不在共享源码中硬编码Raya收件实现。其他Lead的新增覆盖不在本单，留待独立验收；不添加全舰放量开关。补该owner在 `chat_threads` 与 `phase_chat_threads` 中活跃、可解析唯一 owner 的普通 issue thread。现有 session/审批历史/pending-question 路径保留，先形成完整 byThread，再按 threadId 合并一次扫描。
 - Owner 用注册行的 `lead_id` 与父频道 `channel_id` 对应的当前项目 Lead 配置确定。issue 的项目、标题、显示名称均不能改变收件人。Raya 例子为 `raya / raya / 1542079099928059987`。
 - 仅新增覆盖使用 `ingestOnly`（只收原文）路径，成功入队后跳过全部 `processFounderMessage`。空 questions 不是隔离措施。旧有已授权 gate 路径按原规则执行。
-- 所有现有 Bridge issue-thread ingest 明确写 `replyChannelId=ctx.threadId`；沿既有 v2 mailbox 路由回原线程。保留 `replyTo` 引用，但不以它替代目的地。不伪装成 roundtable。
+- 仅已冻结owner集合内的 Bridge issue-thread ingest（含该owner既有扫描路径）明确写 `replyChannelId=ctx.threadId`；沿既有 v2 mailbox 路由回原线程。保留 `replyTo` 引用，但不以它替代目的地。不伪装成 roundtable。
 - 本单不改 issue parent、不承担 summary 业务、不过问 roundtable 主动参与预算；不因注册表项目展示不一致重命名或迁移收件身份。
 
 ## 2. 数据与不变量
@@ -46,21 +46,29 @@ Owner 决议：在所有 project.leads 中先找 `chatChannel===row.channel_id`�
 ## 3. 实施任务（TDD：先失败用例，再最小实现）
 
 ### T1 注册表补覆盖
-修改 `packages/teamlead/src/bridge/gate-poller.ts`，直接组合 StateStore 已有 `getUnarchivedIssueChatThreads()` 与 `getUnarchivedPhaseChatThreads()`。不修改现有其他消费者的查询语义。
+修改 `packages/teamlead/src/bridge/gate-poller.ts`，直接组合 StateStore 已有 `getUnarchivedIssueChatThreads()` 与 `getUnarchivedPhaseChatThreads()`，先按本单冻结owner集合过滤，再纳入扫描。不修改现有其他消费者的查询语义。
 
-建立去重/owner 校验后，先完成session、historical、pending-question三源byThread，再把原来不在这个完整byThread中的登记线程加到同一 tasks，`questions=[]`、`ingestOnly=true`。使用 owner 项目的标准 comm 路径及 owner 自身 token，不借用另一个 Lead 或全局凭据。缺 owner token 时跳过且记录 owner_token_missing + project/lead/threadId，不得静默跳过。保留 questioned 优先与现有 scanBudget、轮转游标；不能为每个线程新开 timer。
+建立去重/owner 校验后，先完成session、historical、pending-question三源byThread，再把原来不在这个完整byThread中的登记线程加到同一 tasks，`questions=[]`、`ingestOnly=true`。使用 owner 项目的标准 comm 路径及 owner 自身 token，不借用另一个 Lead 或全局凭据。缺 owner token 时跳过且记录 owner_token_missing + project/lead/threadId，不得静默跳过。保留 questioned 优先与现有 scanBudget、轮转游标；不能为每个线程新开 timer。`founderReplyScanCursor`还被`listShipJudgmentReplyThreads(after)`用作分页起点，测试必须覆盖新增Raya线程进入后、有限轮数内历史集合仍完整扫描，不能把它改成只属于新集合的游标。
 
 测试：`bridge/__tests__/gate-poller-founder-reply.test.ts` 增加 raya thread + flywheel session 的反例，以及无 session、phase 表、空 lead_id 唯一父频道、冲突 owner、archived/missing、相同 thread 重复出现，特别是仅pending-question分支引入的线程+同id登记行：只产生一个非ingestOnly task，其pin/waterline不被覆盖。断言只调用一次 scanner 且目标 raya/raya。主频道 Codex polling 不改。
 
 ### T1b 已归档线程重新提问
-复用现有 `bridge/discord-guild-active-threads.ts:listGuildActiveThreads`，在同一已有扫描周期内按owner bot/guild读取活动线程（不另起timer，不使用resolveInfraDiscordIdentity借infra凭据）。过滤真实parent_id等于该owner.chatChannel；对每个id调用`StateStore.getChatThreadByThreadId`，该既有参数化查询刻意不滤archived_at，且同时覆盖main/phase表。与登记owner交叉校验后并入上述byThread补覆盖集合。这样Discord因founder发言自动解档、而本地仍archived时也会收件。
+复用现有 `bridge/discord-guild-active-threads.ts:listGuildActiveThreads`，在同一已有扫描周期内按冻结owner读取活动线程：`botToken=lead.botToken`，`guildId=config.discordGuildId`（Bridge已有DISCORD_GUILD_ID解析，不读owner.guild或语音huddle配置）（不另起timer，不使用resolveInfraDiscordIdentity借infra凭据）。本单只对Raya去重后每轮一次guild请求；其他owner不调用。过滤真实parent_id等于该owner.chatChannel；对每个id调用`StateStore.getChatThreadByThreadId`，该既有参数化查询刻意不滤archived_at，且同时覆盖main/phase表。与登记owner交叉校验后并入上述byThread补覆盖集合。这样Discord因founder发言自动解档、而本地仍archived时也会收件。
 
-不清空本地archived_at、不发unarchive PATCH、不修改done-thread-reconcile或bot-send-rearchive；纯发现即可恢复通信，归档治理仍由原owner负责。活动线程响应失败/缺guild/token按类型留诊断并重试；不得将失败当空集合或删除既有候选。新增发现线程与普通注册线程用同一固定rolloutAfter和cursor规则。测试包含本地archived+Discord active+新founder提问，无登记/错parent/missing线程均不纳入；生产受控验收必须先归档，再由founder发言自动解档，再证明同线程闭环。
+不清空本地archived_at、不发unarchive PATCH、不修改done-thread-reconcile或bot-send-rearchive；纯发现即可恢复通信，归档治理仍由原owner负责。活动线程响应失败/缺guild/token按类型留诊断并重试；guild解析缺失时关闭T1b子能力，记录guild_unavailable，QA不得以普通新线程通过代替归档恢复验收；不得将失败当空集合或删除既有候选。新增发现线程与普通注册线程用同一固定rolloutAfter和cursor规则。测试包含本地archived+Discord active+新founder提问，无登记/错parent/missing线程均不纳入；生产受控验收必须先归档，再由founder发言自动解档，再证明同线程闭环。
 
 ### T2 首次扫描与失败行为
 修改 `bridge/founder-reply-deliverer.ts` 的上下文增加可选 `ingestOnly`。只对此模式，使用固定上线边界，禁止从创建时刻全量回放旧线程：`after=max(threadId, rolloutAfter, savedCursor if any)`（按BigInt比较），直接读取第一页面，不取 HEAD 后返回。rolloutAfter 是本修复在该Bridge首次启用前一次性冻结的雪花下界，不是每次发现/每次启动的now。新线程创建于上线之后，因此首次发现前的提问仍全部位于下界之后；存量线程仅处理上线之后输入。两条已报告的旧问题仅走T4定点恢复。
 
-上线步骤先只读dry-run，再在部署授权窗口以Node标准库独占创建`~/.flywheel/state/founder-thread-ingress-rollout.json`，内容`{v:1, rolloutAfter:<decimal snowflake>, createdAt:<UTC ISO>}`，mode0600、O_EXCL、写入完成后才开启新增扫描。它是固定迁移元数据，不是开关/队列，不提供业务写接口；重启复用，回滚保留，不自动覆盖。扫描器只读并验证v/id/timestamp；缺失、损坏或不匹配时仅拒绝新增覆盖并记录rollout_boundary_unavailable，绝不以now重新生成。首次初始化与运行时读取明确分开，初始化失败不得启动新增扫描。现有GatePoller配置注入该值，测试传固定值。既有非ingestOnly路径和已有审批游标不改。
+上线边界路径必须由`plugin.ts`在当前Bridge环境中解析为`join(getStateDir(), "founder-thread-ingress-rollout.json")`，与founder-reply-cursor.json共用同一`FLYWHEEL_STATE_DIR`解析，禁止硬编码homedir或默认生产目录。slot QA与生产分别在各自state dir独立初始化，不复制marker/receipt。
+
+部署授权窗口内，用Node标准库O_EXCL、0600冻结marker：`{v:1, environment:{stateDir, teamleadDbPath, commRoot}, owners:[{projectName,leadId,chatChannelId}], rolloutAfter, createdAt}`。三个environment路径取该Bridge实际已解析绝对路径的realpath；QA解析缺失不得回退生产默认。生产owners仅raya/raya，QA使用其隔离配置的对应测试owner并逐一记录映射，不加入真实生产owner。本文任何「固定上线边界」都指此环境绑定后的值。
+
+marker只读且不可自动覆盖；启动逐项校验schema、雪花/时间一致性、当前真实environment及owner配置。初次启用必须距createdAt不超过15分钟且不在未来（允许30秒时钟误差），否则rollout_boundary_unavailable，保留文件并要求重新走部署决策与dry-run，绝不把旧值或now静默沿用。
+
+为区分「初次启用」和「正常重启」，在同一getStateDir下使用最小采纳回执`founder-thread-ingress-activation.json`，内容为`{v:1, markerSha256, environment, activatedAt}`。回执不存在时，校验新鲜度并完成固定边界dry-run后，以O_EXCL、0600创建；只有回执完整落盘且重读校验成功才启用新增扫描。回执已存在时必须匹配marker字节SHA256与当前environment，正常重启不再次套15分钟门槛、不改原rolloutAfter。marker/回执损坏、错环境、hash不匹配，或并发O_EXCL失败且重读不匹配，均关闭新增覆盖并诊断，不覆盖、不重新生成。两文件使用标准库写入/fsync/关闭；不引入新数据库或业务写API。它们是迁移数据与一次采纳凭证，不是消息队列或feature flag。
+
+T5部署顺序为只读盘点→本环境冻结marker→对固定边界最终dry-run→15分钟内创建采纳回执→启用；任一步失败不启动新增覆盖。现有GatePoller配置注入该值，测试传固定值。既有非ingestOnly路径和已有审批游标不改。
 
 复用该marker的部署配置/读取接线落在`bridge/plugin.ts`及`gate-poller.ts`，不修改全局InboundCursorStore语义。每个新增线程实际保存的游标从不低于此固定下界；旧marker/现有cursor均不得删除来触发重放。
 
@@ -72,7 +80,7 @@ Owner 决议：在所有 project.leads 中先找 `chatChannel===row.channel_id`�
 
 ### T2b 收件返回值与游标处置
 必须读取 `DiscordLaneVerdict`，禁止以“不抛异常”作为入队成功：
-- inserted_inbox且无deadLettered：标准新收件，保存deliveryId/seq后可推进；以既有nudgeLeadInbox(project,lead)唤醒，失败不撤销持久化收件，正常loop仍可补拉。
+- inserted_inbox且无deadLettered：标准新收件，保存deliveryId/seq后可推进；通过可选`FounderReplyDeliverDeps.nudgeLeadInbox?: () => void`唤醒；GatePoller以闭包注入`runtimeRegistry.nudgeLeadInbox(leadId, projectName)`，测试spy断言真实agentId在前、projectName在后，失败不撤销持久化收件，正常loop仍可补拉。
 - active_inbox：已有同id标准收件，可推进但记deduplicated，不宣称本次新恢复；另查其批次/消费/回帖。
 - inserted_external / legacy_external：属于既有外部carrier，记其真实lane并交现有carrier证据核查；未确认可消费状态则pin并报告，绝不改键强制转inbox。
 - archived：记录already_archived，可按去重终态推进扫描，但绝不记本次恢复成功；T4进入归档处置分支。
@@ -82,7 +90,7 @@ Owner 决议：在所有 project.leads 中先找 `chatChannel===row.channel_id`�
 T4定点恢复只有新增非deadletter标准carrier、实际batch_id/送达凭证、模型消费与真实回帖齐全后才标成功；active/archived等返回先查最终状态，不能误报成功。为每一lane和重复恢复增加测试。
 
 ### T3 保留返回地址
-同一 `founder-reply-deliverer.ts` 的 thread ingress 均设置 `replyChannelId: ctx.threadId`，包括既有路径，避免该 producer 先写入无目的地载荷。保持 msgKind=guild。
+同一 `founder-reply-deliverer.ts` 仅对本单冻结owner集合内的 thread ingress 设置 `replyChannelId: ctx.threadId`，包括Raya既有路径，避免该 producer 先写入无目的地载荷。其他owner的既有入站/回帖目的地不改。保持 msgKind=guild。
 
 验证既有 `packages/flywheel-comm/src/discord-chat-ingest.ts` 的 immutable first writer、route partition 和 `parseDiscordChatRoute`；`bridge/lead-inbox-loop.ts`、`bridge/lead-delivery-adapter.ts`、`lead-backends/codex/CodexLeadInboxSocket.ts`、`LeadInputRouter.ts` 的 v2 batch/journal/sender 全链。通常只需新增跨模块测试，无需重写这些消费者。不同线程不能合批，重投不会二次唤醒/回答，发送失败按现有 journal/outbox retry 原目的地，不能 fallback 主频道。
 
@@ -104,7 +112,7 @@ T4定点恢复只有新增非deadletter标准carrier、实际batch_id/送达凭�
 不回退全局 cursor，不扫全部历史后自动重放，不要求 Annie 复制问题。新覆盖自动扫描不读rolloutAfter之前的历史；T4定点恢复前，先完成这两条审计，确认它们仍未被处理；若历史由旧系统处理而无标准记录，须先由 Lead 对这两条源消息做处置，不可盲目制造重复回答。恢复窗口与逐条状态留在 evidence。
 
 ### T5 验证和交接
-上线前dry-run硬前置：逐线程输出owner、创建时刻、已有cursor、固定rolloutAfter、effective after、将纳入的founder消息数及排除原因；汇总每Lead/全局数量。rolloutAfter之前自动回放数必须=0（两条旧事故单列T4，不混入自动回放）。当前Reviewer测得72活跃候选、32无cursor且30非Raya，须以部署时新结果替代；dry-run异常或边界文件未冻结即禁止新增扫描。先冻结边界，再对固定同一边界做最终dry-run与启动，禁止检查后换成新的now。
+上线前dry-run硬前置：逐线程输出owner、创建时刻、已有cursor、固定rolloutAfter、effective after、将纳入的founder消息数及排除原因；汇总每Lead/全局数量。rolloutAfter之前自动回放数必须=0（两条旧事故单列T4，不混入自动回放）。R1全舰盘点72活跃候选证明扩面风险；R3已限定Raya，部署dry-run必须同时列出其他owner被排除数及各owner实际扫描/入队增量=0（Raya之外），不采用旧全舰数量作为本单候选数；dry-run异常或边界文件未冻结即禁止新增扫描。先冻结边界，再对固定同一边界做最终dry-run与启动，禁止检查后换成新的now；硬断言marker/activation的environment与当前stateDir/DB/commRoot一致，QA产物不能被生产采用。测试：QA先创建marker→生产独立冻结仍成功；互拷marker/receipt均拒绝；初次采纳过期拒绝；同环境正常重启保留原值；损坏/缺失/哈希不匹配拒绝。
 
 相关命令（在安装好锁文件依赖的 checkout 中）：
 ```
@@ -126,14 +134,14 @@ pnpm --filter flywheel-teamlead typecheck
 | 历史两线程 | 两张逐条源消息与最终处置表；所有待恢复输入有标准恢复及实际答复，或有明确不可恢复证据与Lead处置 |
 | 错误与隔离 | 429/权限故障不跨过输入；新增 ingestOnly 内容不触发任何批准/旧卡指导/门状态变化 |
 
-记录扫描周期、当前候选数/预算和实测端到端延迟；采用既有25线程/轮、约60秒周期，明确接受有限延迟：本次验收负载至多75条无question候选，source→mailbox≤240秒、source→同线程回答≤360秒；同时记录模型执行耗时。超过此负载或故障导致越界时不能报告验收通过，保留队列并向Lead报告容量问题；不承诺即时响应，也不在本单扩充调度机制。受控测试需真实 founder 输入或明确授权验证身份，bot合成输入只作集成证据。设计/实现无预授权生产重启、终止、merge，独立 updater 部署窗口与 ship 权限另行办理。
+记录扫描周期、当前候选数/预算和实测端到端延迟；分组记录(a)新增Raya线程、(b)一条既有活跃session线程上线前后的延迟；旧线程transport延迟不得比同负载基线增加超过一个实际扫描周期（约60秒），超出不报通过并交Lead处置。生产扩面限定Raya，仍要测试75个总候选的边界与既有历史游标公平性。采用既有25线程/轮、约60秒周期，明确接受有限延迟：本次验收负载至多75条无question候选，source→mailbox≤240秒、source→同线程回答≤360秒；同时记录模型执行耗时。超过此负载或故障导致越界时不能报告验收通过，保留队列并向Lead报告容量问题；不承诺即时响应，也不在本单扩充调度机制。受控测试需真实 founder 输入或明确授权验证身份，bot合成输入只作集成证据。设计/实现无预授权生产重启、终止、merge，独立 updater 部署窗口与 ship 权限另行办理。
 
 ## 5. 迁移、回滚与风险
-零 schema migration；无需改身份/credential/注册项目。新增一份固定上线边界元数据；存量 cursor 不重置，新覆盖仅处理固定上线边界之后输入，旧事故输入按T4逐条恢复。正常追加轮询持续拾取新注册线程，无需为每个线程重启 Raya。
+零 schema migration；无需改身份/credential/注册项目。新增环境绑定的固定上线边界元数据与采纳回执；存量 cursor 不重置，新覆盖仅处理固定上线边界之后输入，旧事故输入按T4逐条恢复。正常追加轮询持续拾取新注册线程，无需为每个线程重启 Raya。
 
-回滚代码停止新增覆盖；保留已入队载荷、游标、去重身份及回帖记录，不删除证据。继续处理已入队数据，不能假称撤回已发消息。owner变更时暂停并由Lead检查旧队列（deliveryId含leadId，换owner会改变去重空间），不自动迁移/重放。
+回滚代码停止新增覆盖；保留本环境marker/采纳回执、已入队载荷、游标、去重身份及回帖记录，不删除证据。继续处理已入队数据，不能假称撤回已发消息。owner变更时暂停并由Lead检查旧队列（deliveryId含leadId，换owner会改变去重空间），不自动迁移/重放。
 
-限制：本修复覆盖已登记活跃 issue thread及Discord已经自动解档的已登记线程，不扩到DM/任意未登记频道。T1b显式验收本地archived标记落后，不以它排除founder重新发言的线程。本阶段源消息下落仍未验证，后续不能免掉T4。
+限制：本修复覆盖已登记活跃 issue thread及Discord已经自动解档的已登记线程，不扩到DM/任意未登记频道。归档恢复依赖本环境配置有效guildId；缺失时不能声称完整修复。T1b显式验收本地archived标记落后，不以它排除founder重新发言的线程。本阶段已依据Lead提供的精确证据定位两条未入队输入；后续恢复前仍必须执行T4最新状态复查。
 
 ## 6. 设计交付
 探索/调研/计划、review有效APPROVED、diagram-first HTML、每节自动保存评论与汇总复制、提交并推送、静默发布和托管CSP验证、向工程Lead报告、exact `complete --route phase_design_complete`，随后 park。不创建实现或QA successor。
