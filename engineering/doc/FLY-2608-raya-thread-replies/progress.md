@@ -1,13 +1,13 @@
 ---
 issue: FLY-2608
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-16T07:42:20.638Z
-nextStep: Re-run exact-head code review and CI after founder_ask merge repair
+phaseCursor: 1/4
+updated: 2026-09-16T09:00:07.142Z
+nextStep: Add failing tests for Discord archived guard and discovery reason logs
 chunks: []
 pointers: {}
 ---
 
 # FLY-2608 progress
-**phase**: implement (5/6)
-**next**: Re-run exact-head code review and CI after founder_ask merge repair
+**phase**: implement (1/4)
+**next**: Add failing tests for Discord archived guard and discovery reason logs
