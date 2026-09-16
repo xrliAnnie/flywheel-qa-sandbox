@@ -1,14 +1,14 @@
 ---
 issue: FLY-2608
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-16T04:55:37.212Z
-nextStep: Audit exact requirements, add any missing negative/regression
-  coverage, then run full project gates
+phaseCursor: 5/6
+updated: 2026-09-16T05:03:07.850Z
+nextStep: Run lint, full workspace build, aggregate package tests, then record
+  exact evidence
 chunks: []
 pointers: {}
 ---
 
 # FLY-2608 progress
-**phase**: implement (4/6)
-**next**: Audit exact requirements, add any missing negative/regression coverage, then run full project gates
+**phase**: implement (5/6)
+**next**: Run lint, full workspace build, aggregate package tests, then record exact evidence
