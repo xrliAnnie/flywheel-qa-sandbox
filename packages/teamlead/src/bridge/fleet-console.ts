@@ -238,6 +238,10 @@ export class FleetConsole {
 			for (const l of evidence.leads) byKey.set(l.key, l.presentation);
 		for (const lead of snap.leads) {
 			lead.online = onlineFromPresentation(byKey.get(lead.key));
+			if (lead.currentBackend === "codex-app-server")
+				lead.tuning = evidence?.leads.find(
+					(row) => row.key === lead.key,
+				)?.tuning;
 		}
 		return snap;
 	}

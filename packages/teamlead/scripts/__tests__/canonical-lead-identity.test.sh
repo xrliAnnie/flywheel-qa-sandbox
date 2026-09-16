@@ -86,6 +86,41 @@ else
   fail "post-resolve conflict did not invoke failure marker writer"
 fi
 
+# Mutable tuning comes from the verified registry even when launchd still has
+# old values loaded. Immutable identity/context-window assertions stay strict.
+hot_env() {
+  env -i PATH="$TMP/bin:$PATH" SUT="$SUT" \
+    FLYWHEEL_COMM_CLI="$TMP/flywheel-comm.js" \
+    FLYWHEEL_PROJECTS_FILE="$TMP/projects.json" PRODUCT_TOKEN="secret-token" \
+    RESOLVE_CALLS="$RESOLVE_CALLS" RESOLVED_IDENTITY_JSON="$1" \
+    FLYWHEEL_LEAD_MODEL="old-model" FLYWHEEL_LEAD_EFFORT="low" \
+    "${@:2}" bash -c '
+      . "$SUT"
+      canonical_lead_identity_resolve flywheel product-lead || exit 1
+      printf "%s/%s\n" "${FLYWHEEL_LEAD_MODEL-unset}" "${FLYWHEEL_LEAD_EFFORT-unset}"
+    '
+}
+HOT_IDENTITY="$(jq '. + {model:"gpt-6-astra", effort:"high"}' <<<"$RESOLVED_IDENTITY_JSON")"
+if [ "$(hot_env "$HOT_IDENTITY" 2>"$TMP/hot.err")" = "gpt-6-astra/high" ]; then
+  pass "verified registry replaces stale launch model and effort"
+else
+  fail "stale tuning blocked registry projection"
+fi
+if [ "$(hot_env "$RESOLVED_IDENTITY_JSON" 2>"$TMP/absent.err")" = "unset/unset" ]; then
+  pass "absent registry tuning clears stale launch values"
+else
+  fail "absent tuning retained stale launch values"
+fi
+for conflict in 'FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=999' 'FLYWHEEL_LEAD_BACKEND=claude' 'LEAD_ID=wrong-lead'; do
+  if hot_env "$HOT_IDENTITY" "$conflict" >"$TMP/guard.out" 2>"$TMP/guard.err"; then
+    fail "immutable conflict accepted: $conflict"
+  elif grep -q identity_env_conflict "$TMP/guard.err"; then
+    pass "immutable conflict remains fail closed: $conflict"
+  else
+    fail "missing immutable conflict diagnostic: $conflict"
+  fi
+done
+
 # v2 is a separate capability projection; it must survive the launcher boundary.
 if (
   unset LEAD_ID FLYWHEEL_LEAD_ID PROJECT_NAME FLYWHEEL_PROJECT_NAME \

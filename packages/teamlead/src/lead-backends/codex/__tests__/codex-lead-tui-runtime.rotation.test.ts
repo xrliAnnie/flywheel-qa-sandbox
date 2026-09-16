@@ -192,11 +192,16 @@ function harness(
 	};
 	let emit: (method: string, params: unknown) => void = () => {};
 	const rebuild = vi.fn(() => true);
+	const readTuning = vi.fn(() => ({
+		model: "gpt-6-astra",
+		reasoningEffort: "high" as const,
+	}));
 	const make = buildTuiGeneration(
 		config,
 		{ info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 		{
 			requestRebuild: rebuild,
+			readTuning,
 			createSender: () => ({
 				enqueue: async () => "outbox",
 				deliver: async () => {},
@@ -256,6 +261,7 @@ function harness(
 		path,
 		requests,
 		rebuild,
+		readTuning,
 		emit: (method: string, params: unknown) => emit(method, params),
 		respond: (fn: typeof respond) => {
 			respond = fn;
@@ -885,4 +891,51 @@ describe("rotation fence handoff cuts", () => {
 			}),
 		);
 	});
+});
+
+it("reads fresh tuning at resume after generation construction", async () => {
+	const h = harness();
+	const gen = h.make();
+	h.readTuning.mockReturnValue({
+		model: "gpt-5.6-sol",
+		reasoningEffort: "high",
+	});
+	await gen.start();
+	expect(h.readTuning).toHaveBeenCalled();
+	const request = h.requests.find((r) => r.method === "thread/resume");
+	expect(request?.params.model).toBe("gpt-5.6-sol");
+	expect(request?.params.config.model_reasoning_effort).toBe("high");
+});
+it("reads fresh tuning after the asynchronous rotation gate", async () => {
+	const h = harness({ pending: true });
+	h.respond((method) => {
+		if (method === "thread/turns/list") {
+			h.readTuning.mockReturnValue({
+				model: "gpt-5.6-sol",
+				reasoningEffort: "high",
+			});
+			return { data: [{ status: "completed" }] };
+		}
+		if (method === "thread/start") return { thread: { id: NEW } };
+		return {};
+	});
+	await h.make().start();
+	expect(
+		h.requests.find((r) => r.method === "thread/start")?.params.model,
+	).toBe("gpt-5.6-sol");
+});
+
+it("sends no thread request when fresh source validation fails", async () => {
+	const h = harness();
+	h.readTuning.mockImplementation(() => {
+		throw new Error("lead_runtime_identity_changed");
+	});
+	await expect(h.make().start()).rejects.toThrow(
+		"lead_runtime_identity_changed",
+	);
+	expect(
+		h.requests.some(
+			(r) => r.method === "thread/start" || r.method === "thread/resume",
+		),
+	).toBe(false);
 });

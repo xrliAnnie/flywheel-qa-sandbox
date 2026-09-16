@@ -348,3 +348,29 @@ describe("management topology source", () => {
 		).toThrow(/duplicate project root/i);
 	});
 });
+
+it("shows next-turn Codex authority only when the managed hot service is available", () => {
+	const projects = [
+		project("test", [
+			{
+				...lead("codex"),
+				backend: "codex-app-server",
+				model: "gpt-6-astra",
+				effort: "high",
+			},
+		]),
+	];
+	const base = {
+		projects,
+		configs: new Map(),
+		projectsRevision: "file:revision",
+	};
+	expect(
+		buildTopologyView(base).projects[0].leads[0].dispatch.writeCapability
+			.writable,
+	).toBe(false);
+	expect(
+		buildTopologyView({ ...base, codexHotConfigAvailable: true }).projects[0]
+			.leads[0].dispatch.writeCapability,
+	).toMatchObject({ writable: true, consequence: "next-turn" });
+});

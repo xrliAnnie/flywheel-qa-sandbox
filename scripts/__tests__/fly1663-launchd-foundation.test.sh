@@ -9,6 +9,7 @@ pass() { PASSED=$((PASSED + 1)); echo "[TEST] ✓ $1"; }
 fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export FLYWHEEL_COMM_CLI="$REPO_ROOT/packages/flywheel-comm/dist/index.js"
 SANDBOX="$(mktemp -d /tmp/f1663-f.XXXXXX)"
 SHORT_STATE="$SANDBOX/s"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -122,10 +123,15 @@ for writable_path in \
   assert_sandbox_write_path "$writable_path"
 done
 
+# Canonical identity resolution requires a selected summary granularity.
+mkdir -p "$HOME/.flywheel"
+printf '{"granularity":"per-lead","setBy":"founder","setAt":"2026-09-16T00:00:00Z"}\n' > "$HOME/.flywheel/summary-config.json"
+
 manifest="$MANIFEST_DIR/flywheel-eng-lead.json"
 mkdir -p "$(dirname "$manifest")"
 jq -n '{leadId:"eng-lead",projectDir:"/tmp/flywheel",projectName:"flywheel"}' > "$manifest"
 
+printf '[{"projectName":"flywheel","leads":[{"agentId":"eng-lead","summaryRole":"producer","backend":"claude-code"}]}]\n' > "$PROJECTS_JSON"
 v2_plist="$SANDBOX/v2.plist"
 generate_plist_to "flywheel-eng-lead" "$manifest" "$manifest" "$v2_plist"
 if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$v2_plist"; then
@@ -136,7 +142,7 @@ fi
 
 # The routine daemon install path must remain v2 when projects.json omits the
 # retired carrier selector.
-jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead"}]}' \
+jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead",summaryRole:"producer"}]}' \
   | jq -s '.' > "$FLYWHEEL_STATE_DIR/projects.json"
 generate_plist "flywheel-eng-lead" "$manifest" >/dev/null
 installed_plist="$(plist_path "flywheel-eng-lead")"
@@ -264,7 +270,7 @@ fi
 # shellcheck source=../lib/lead-restart-lifecycle.sh
 source "$REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh"
 projects="$SANDBOX/projects.json"
-jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead"}]}' \
+jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead",summaryRole:"producer"}]}' \
   | jq -s '.' > "$projects"
 if lead_restart_validate_authority \
     "$manifest" "$v2_plist" "$projects" "com.flywheel.lead.flywheel-eng-lead" \

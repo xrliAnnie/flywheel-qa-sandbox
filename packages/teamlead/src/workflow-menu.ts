@@ -212,10 +212,11 @@ function menuFromGraph(
 }
 
 export function loadWorkflowMenuLibrary(
-	input: { registryPath?: string } = {},
+	input: { registryPath?: string; modelSnapshot?: ModelConfigSnapshot } = {},
 ): WorkflowMenuShape[] {
 	const registry = loadBundledRegistry(
 		input.registryPath ?? BUNDLED_REGISTRY_PATH,
+		input.modelSnapshot ?? getModelConfigSnapshot(),
 	);
 	return Object.keys(registry.graphs).map((shape) =>
 		menuFromGraph(registry, shape),
@@ -274,10 +275,14 @@ function menuReviewPairs(menu: WorkflowMenuShape): Array<{
 
 export function compileWorkflowMenuSeed(
 	menu: WorkflowMenuShape,
+	modelSnapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
 ): LoadedWorkflowSeed {
 	for (const { qa, producer } of menuReviewPairs(menu)) {
-		const qaVendor = resolveAlias(qa.defaultModel!).vendor;
-		const producerVendor = resolveAlias(producer.defaultModel!).vendor;
+		const qaVendor = resolveAlias(qa.defaultModel!, modelSnapshot).vendor;
+		const producerVendor = resolveAlias(
+			producer.defaultModel!,
+			modelSnapshot,
+		).vendor;
 		if (qaVendor === producerVendor) {
 			throw new Error(
 				`menu ${menu.shape} QA node ${qa.id} uses the same vendor as producer ${producer.id}`,
@@ -294,82 +299,85 @@ export function compileWorkflowMenuSeed(
 	while (menu.nodes.some((node) => node.id === terminalNode)) {
 		terminalNode = `${terminalNode}_`;
 	}
-	const manifest = validateWorkflowManifest({
-		schema_version: 3,
-		nodes: [
-			...menu.nodes.map((node) => {
-				const type = node.type;
-				if (type === "gate") return { id: node.id, label: node.label, type };
-				const defaultPolicy = node.models!.find(
-					(model) => model.model === node.defaultModel,
-				)!;
-				const resolved = resolveAlias(defaultPolicy.model);
-				return {
-					id: node.id,
-					label: node.label,
-					type,
-					handbook_ref: node.id,
-					...(menu.founderReview === true ? { founder_review: true } : {}),
-					vendor: resolved.vendor,
-					model: resolved.model,
-					effort: defaultPolicy.defaultEffort,
-				};
-			}),
-			...(hasPrProducer
-				? [
-						{
-							id: terminalNode,
-							label: menu.landLabel,
-							type: "land",
-							execution: "engine",
-						},
-					]
-				: []),
-		],
-		edges: [
-			...menu.edges,
-			...(hasPrProducer
-				? [
-						{
-							id: `${approvalGate.id}_approved`,
-							from: approvalGate.id,
-							to: terminalNode,
-							condition: "founder_approved",
-						},
-					]
-				: []),
-		],
-		loops: menu.loops.map((loop) => ({
-			id: loop.id,
-			from: loop.from,
-			to: loop.to,
-			loop_when: loop.loopWhen,
-			exit_when: loop.exitWhen,
-			...(loop.maxIterations !== undefined
-				? {
-						max_iterations: loop.maxIterations,
-						on_limit: loop.onLimit!,
-					}
-				: {}),
-		})),
-		...(hasPrProducer
-			? {
-					approval_gate: {
-						node: approvalGate.id,
-						predicate: "founder_approved",
-					},
-					terminal_node: { node: terminalNode },
-				}
-			: {
-					terminal_gate: {
-						node: approvalGate.id,
-						predicate: "founder_approved",
-					},
+	const manifest = validateWorkflowManifest(
+		{
+			schema_version: 3,
+			nodes: [
+				...menu.nodes.map((node) => {
+					const type = node.type;
+					if (type === "gate") return { id: node.id, label: node.label, type };
+					const defaultPolicy = node.models!.find(
+						(model) => model.model === node.defaultModel,
+					)!;
+					const resolved = resolveAlias(defaultPolicy.model, modelSnapshot);
+					return {
+						id: node.id,
+						label: node.label,
+						type,
+						handbook_ref: node.id,
+						...(menu.founderReview === true ? { founder_review: true } : {}),
+						vendor: resolved.vendor,
+						model: resolved.model,
+						effort: defaultPolicy.defaultEffort,
+					};
 				}),
-		ship_claims: menu.nodes.some((node) => node.type === "qa")
-			? ["qa_passed", "founder_approved"]
-			: ["founder_approved"],
-	});
+				...(hasPrProducer
+					? [
+							{
+								id: terminalNode,
+								label: menu.landLabel,
+								type: "land",
+								execution: "engine",
+							},
+						]
+					: []),
+			],
+			edges: [
+				...menu.edges,
+				...(hasPrProducer
+					? [
+							{
+								id: `${approvalGate.id}_approved`,
+								from: approvalGate.id,
+								to: terminalNode,
+								condition: "founder_approved",
+							},
+						]
+					: []),
+			],
+			loops: menu.loops.map((loop) => ({
+				id: loop.id,
+				from: loop.from,
+				to: loop.to,
+				loop_when: loop.loopWhen,
+				exit_when: loop.exitWhen,
+				...(loop.maxIterations !== undefined
+					? {
+							max_iterations: loop.maxIterations,
+							on_limit: loop.onLimit!,
+						}
+					: {}),
+			})),
+			...(hasPrProducer
+				? {
+						approval_gate: {
+							node: approvalGate.id,
+							predicate: "founder_approved",
+						},
+						terminal_node: { node: terminalNode },
+					}
+				: {
+						terminal_gate: {
+							node: approvalGate.id,
+							predicate: "founder_approved",
+						},
+					}),
+			ship_claims: menu.nodes.some((node) => node.type === "qa")
+				? ["qa_passed", "founder_approved"]
+				: ["founder_approved"],
+		},
+		{ modelSnapshot },
+	);
 	const seed = {
 		templateId: menu.templateId,
 		name: menu.label,
@@ -379,8 +387,12 @@ export function compileWorkflowMenuSeed(
 	return { ...seed, contentHash: workflowSeedContentHash(seed) };
 }
 
-export function loadWorkflowMenuSeeds(): LoadedWorkflowSeed[] {
-	return loadWorkflowMenuLibrary().map(compileWorkflowMenuSeed);
+export function loadWorkflowMenuSeeds(
+	modelSnapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
+): LoadedWorkflowSeed[] {
+	return loadWorkflowMenuLibrary({ modelSnapshot }).map((menu) =>
+		compileWorkflowMenuSeed(menu, modelSnapshot),
+	);
 }
 
 export function importWorkflowMenuSeeds(

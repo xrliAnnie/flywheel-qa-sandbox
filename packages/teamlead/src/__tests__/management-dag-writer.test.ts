@@ -28,6 +28,70 @@ async function setup() {
 }
 
 describe("management DAG writer", () => {
+	it("shares managed publication guards and durable audit receipts", async () => {
+		const { store, dag } = await setup();
+		try {
+			const node = dag.nodes.find(
+				(candidate) => candidate.nodeId === "implement",
+			)!;
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				"INSERT INTO workflow_run (run_id, issue_id, project_name, template_id, status, snapshot) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					"held-unpinned",
+					"FLY-2606",
+					"flywheel",
+					"tpl_eng_heavy",
+					"held",
+					"{}",
+				],
+			);
+			const input = {
+				store,
+				targetId: node.dispatch.targetId,
+				expectedRevision: dag.revision,
+				expectedDigest: dag.digest,
+				desired: {
+					provider: "openai" as const,
+					model: "gpt-6-astra",
+					effort: "high",
+				},
+				actor: "management-console",
+			};
+			const before =
+				store.listWorkflowTemplateRevisions("tpl_eng_heavy").length;
+			expect(applyManagementDagEdit(input)).toMatchObject({
+				status: "invalid",
+				reason: expect.stringContaining("active_run_not_pinned"),
+			});
+			expect(store.listWorkflowTemplateRevisions("tpl_eng_heavy")).toHaveLength(
+				before,
+			);
+			db.run(
+				"UPDATE workflow_run SET status = 'completed' WHERE run_id = 'held-unpinned'",
+			);
+			expect(applyManagementDagEdit(input)).toMatchObject({
+				status: "published",
+			});
+			const audit = store.listWorkflowTemplateAudit("tpl_eng_heavy").at(-1)!;
+			const detail = JSON.parse(audit.detail);
+			expect(
+				store.getWorkflowTemplatePublishReceipt(detail.operationId),
+			).toMatchObject({
+				actor: "management-console",
+				source_kind: "management",
+				before_digest: dag.digest,
+				published_revision: before + 1,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("publishes the shape-supported max effort for code QA", async () => {
 		const store = await StateStore.create(":memory:");
 		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");

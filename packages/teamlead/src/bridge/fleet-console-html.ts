@@ -365,9 +365,18 @@ const MANAGEMENT_CONSOLE_APP = `
     var body=roles.length?roles.map(icCard).join(""):'<div class="empty">这个项目没有角色卡</div>';
     return '<div class="side-box"><div class="side-h">花名册 · '+roles.length+' 人</div><div class="ic-col">'+body+'</div></div>';
   }
+  function leadTuningEvidence(lead){
+    if(lead.backend!=="codex-app-server")return "";
+    var view=lead.tuning;
+    if(!view)return '<p class="help">运行参数：暂无受管应用证据</p>';
+    var labels={prepared:"准备中",registry_committed:"配置已保存",pending_runtime:"等待进程应用",applied:"进程已应用",observed:"已观察到实际轮次",drifted:"会话参数已变化",unavailable:"当前无法验证",superseded:"已被新配置替代",conflict:"配置冲突"};
+    function pair(v){return v?esc(v.model)+" / "+esc(v.effort):"暂无";}
+    var desired=lead.dispatch&&lead.dispatch.current;
+    return '<div class="help" data-lead-tuning><div>当前状态：'+esc(labels[view.effectiveStatus]||view.effectiveStatus)+' · '+esc(view.checkedAt)+'</div><div>期望：'+pair(desired)+'</div><div>当前会话：'+pair(view.actual)+'</div><div>历史已应用：'+pair(view.applied)+(view.applied?' · '+esc(view.applied.appliedAt):'')+'</div><div>已验证轮次：'+pair(view.observed)+(view.observed?' · '+esc(view.observed.turnId)+' · '+esc(view.observed.observedAt):'')+'</div></div>';
+  }
   function renderLeadRows(leads,emptyMessage){
     if(!leads.length){return '<div class="empty">'+esc(emptyMessage||"未发现 Lead")+'</div>';}
-    return '<p class="help">当前显示配置值；实际生效以进程验收为准。跨厂商切换请按<a href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md" target="_blank" rel="noopener noreferrer">受控迁移指引</a>操作。</p><div class="lead-list"><div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+'</article>';}).join("")+'</div>';
+    return '<p class="help">当前显示配置值；实际生效以进程验收为准。跨厂商切换请按<a href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md" target="_blank" rel="noopener noreferrer">受控迁移指引</a>操作。</p><div class="lead-list"><div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+'<div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+leadTuningEvidence(lead)+'</div></article>';}).join("")+'</div>';
   }
   function renderModelPanel(project){
     var leads=visibleProjectLeads(project);var labels=derivedGroupLabels(project);var groupedCount=project.leads.length-leads.length;
@@ -688,7 +697,7 @@ const MANAGEMENT_CONSOLE_APP = `
 
   function post(path,body){return requestJson(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
   function canonicalKey(batch){return stableUiValue(batch.changes.map(function(change){return {targetId:change.targetId,oldValue:change.oldValue,newValue:change.newValue,consequence:change.consequence};}));}
-  function consequenceCopy(consequence){return consequence==="new-run"?"仅影响新 run；已物化 run 不变。载体错误需重启或重新物化。":consequence;}
+  function consequenceCopy(consequence){if(consequence==="next-turn")return "下一轮生效；正在运行的轮次继续使用原参数。";return consequence==="new-run"?"仅影响新 run；已物化 run 不变。载体错误需重启或重新物化。":consequence;}
   function showCanonical(result,message,forceAcknowledgement){
     staged=forceAcknowledgement?Object.assign({},result,{confirmationRequired:true,confirmToken:null}):result;result=staged;var batch=result.batch;var html='<h2>提交确认</h2><div class="help">以下内容来自 server canonical 预检；页面草稿不是落盘权威。</div>';
     if(message){html+='<div class="ack">'+esc(message)+'</div>';}

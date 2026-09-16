@@ -74,6 +74,10 @@ describe("model registry invariants", () => {
 			aliases: ["codex"],
 		});
 		expect(codex?.surfaces).toContain("workflow");
+		expect(codex?.surfaces).toContain("lead");
+		expect(codex?.effortsBySurface.lead).toEqual(
+			codex?.effortsBySurface.workflow,
+		);
 		expect(codex?.effortsBySurface.workflow).toEqual([
 			"low",
 			"medium",
@@ -97,7 +101,7 @@ describe("model registry invariants", () => {
 			label: "GPT-6 Astra",
 			aliases: ["astra"],
 		});
-		expect(astra?.surfaces).toEqual(["runner", "workflow"]);
+		expect(astra?.surfaces).toEqual(["lead", "runner", "workflow"]);
 		expect(astra?.effortsBySurface.runner).toEqual(["xhigh"]);
 		expect(astra?.effortsBySurface.workflow).toEqual([
 			"low",
@@ -106,13 +110,13 @@ describe("model registry invariants", () => {
 			"xhigh",
 			"max",
 		]);
-		for (const surface of ["runner", "workflow"] as const) {
+		for (const surface of ["lead", "runner", "workflow"] as const) {
 			expect(isModelSelectable({ surface, model: "astra" })).toBe(true);
 			expect(
 				isModelSelectionSupported({ surface, model: "astra", effort: "xhigh" }),
 			).toBe(true);
 		}
-		for (const surface of ["lead", "cron", "dispatch"] as const) {
+		for (const surface of ["cron", "dispatch"] as const) {
 			expect(isModelSelectable({ surface, model: "astra" })).toBe(false);
 		}
 	});

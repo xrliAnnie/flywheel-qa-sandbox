@@ -222,6 +222,11 @@
 			"disposition": "one_shot_cli: bounded stopped-owner probe and registry validator under updater window"
 		},
 		{
+			"file": "packages/teamlead/src/bin/write-build-identity.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_build: bounded git rev-parse records the exact compiled Lead source identity"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
 			"sync_child": 2,
 			"disposition": "guard_worker_forensic"

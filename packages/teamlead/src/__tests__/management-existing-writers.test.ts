@@ -575,3 +575,92 @@ describe("existing management writer adapters", () => {
 		expect(fleetBatches[0]).toMatchObject({ changes: [{}, {}] });
 	});
 });
+
+it("routes Codex tuning through managed hot configuration without spawning the Fleet engine", async () => {
+	const rows = projects();
+	rows[0].leads[0] = {
+		...rows[0].leads[0],
+		backend: "codex-app-server",
+		model: "gpt-6-astra",
+		effort: "low",
+	};
+	let stages = 0,
+		applies = 0,
+		restarts = 0,
+		stale = false;
+	const writers = createExistingManagementWriters({
+		projects: () => rows,
+		projectsRevision: () => PROJECTS_REVISION,
+		projectConfigs: configs,
+		readProjectConfig: () => CONFIG,
+		readEnvFile: () => "",
+		envPath: "/unused",
+		env: {},
+		applyLeadCanonical: () => {
+			restarts++;
+			return { status: "applied" };
+		},
+		leadConfig: {
+			stage: async (input) => {
+				stages++;
+				expect(input).toMatchObject({
+					projectName: "flywheel",
+					leadId: "flywheel-eng-lead",
+					model: "gpt-6-astra",
+					effort: "high",
+				});
+				return {
+					canonical: {
+						intent: { preProjectsSha: stale ? "other" : "projects-v1" },
+					},
+				} as never;
+			},
+			apply: async () => {
+				applies++;
+				return {
+					operation: { input: { operationId: "op" } },
+					effectiveStatus: "pending_runtime",
+				} as never;
+			},
+		},
+	});
+	const id = buildTargetId("lead", [
+		"flywheel",
+		"flywheel-eng-lead",
+		"dispatch",
+	]);
+	const target = (await writers.lead.resolve(id))!;
+	expect(target.writeCapability).toMatchObject({
+		writable: true,
+		consequence: "next-turn",
+	});
+	const checked = await writers.lead.preflight(
+		target,
+		{ provider: "openai", model: "gpt-6-astra", effort: "high" },
+		PROJECTS_REVISION,
+	);
+	expect(checked.ok).toBe(true);
+	if (!checked.ok) throw new Error(checked.reason);
+	expect(await writers.lead.apply(checked.change)).toMatchObject({
+		status: "accepted",
+		details: { operationId: "op", effectiveStatus: "pending_runtime" },
+	});
+	stale = true;
+	expect(await writers.lead.apply(checked.change)).toMatchObject({
+		status: "rejected",
+	});
+	expect({ stages, applies, restarts }).toEqual({
+		stages: 2,
+		applies: 1,
+		restarts: 0,
+	});
+	for (const desired of [
+		null,
+		{ provider: "openai", model: "gpt-6-astra", effort: null },
+		{ provider: "anthropic", model: "claude-fable-5", effort: "high" },
+	]) {
+		expect(
+			(await writers.lead.preflight(target, desired, PROJECTS_REVISION)).ok,
+		).toBe(false);
+	}
+});

@@ -35,6 +35,7 @@ import { founderTime } from "./commands/founder-time.js";
 import { gate } from "./commands/gate.js";
 import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
+import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { runLeadNote } from "./commands/lead-note.js";
@@ -91,6 +92,7 @@ import {
 import { runVoiceSessionCommand } from "./commands/voice-session.js";
 import { currentWorkflowCompletionActivationFromEnv } from "./commands/workflow-activation.js";
 import { workflowOutput } from "./commands/workflow-output.js";
+import { runWorkflowTemplate } from "./commands/workflow-template.js";
 import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
@@ -201,6 +203,13 @@ Commands:
             envelope to stdout.
 	  ship-judgment      Read judgment audits (show) or statistics (report --project --from --to).
 	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
+	  lead-config    Set Lead model/effort for subsequent turns without restart:
+	            set --project P --lead ID [--model ID] [--effort VALUE] --reason TEXT
+	            rollback --operation-id OLD --reason TEXT | status --operation-id UUID
+	  workflow-template  Publish or roll back a catalog revision without restart:
+	            publish --template ID --from seed|file [--file PATH] --reason TEXT
+	            rollback --template ID --revision N --reason TEXT
+	            status --operation-id UUID
 	  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
 	            report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
@@ -448,6 +457,12 @@ async function main(): Promise<void> {
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
+			break;
+		case "lead-config":
+			process.exitCode = await runLeadConfig(commandArgs);
+			break;
+		case "workflow-template":
+			process.exitCode = await runWorkflowTemplate(commandArgs);
 			break;
 		case "epic-page":
 			process.exitCode = await runEpicPage(commandArgs);

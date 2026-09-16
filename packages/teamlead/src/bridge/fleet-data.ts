@@ -1,3 +1,4 @@
+import type { LeadConfigView } from "./lead-config-service.js";
 /**
  * FLY-247 WI-4: Fleet evidence collection + Dashboard payload.
  *
@@ -59,6 +60,7 @@ export type FleetPresentation =
 	| "CONFLICT-CARRIER";
 
 export interface FleetLeadState {
+	tuning?: LeadConfigView;
 	project: string;
 	leadId: string;
 	/** Exact key: `${project}-${leadId}` — the launchd/manifest identity. */
@@ -167,6 +169,7 @@ export function deriveDecision(
 // ── Probe dependencies (injected; real impls in plugin wiring) ──────────
 
 export interface FleetProbeDeps {
+	leadConfigStatus?: (leadKey: string) => Promise<LeadConfigView | undefined>;
 	/** Read a file; throw on error (treated as probe failure → indeterminate). */
 	readFile(path: string): string;
 	fileExists(path: string): boolean;
@@ -544,7 +547,16 @@ export async function collectFleetSnapshot(
 				};
 			}
 
+			let tuning: LeadConfigView | undefined;
+			if (eff.backend === "codex-app-server" && deps.leadConfigStatus) {
+				try {
+					tuning = await deps.leadConfigStatus(key);
+				} catch {
+					reasons.push("lead-tuning-unavailable");
+				}
+			}
 			leads.push({
+				...(tuning ? { tuning } : {}),
 				project: project.projectName,
 				leadId: lead.agentId,
 				key,

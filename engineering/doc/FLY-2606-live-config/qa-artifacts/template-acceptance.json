@@ -1,0 +1,63 @@
+{
+  "head": "ea790d24cd8780dc90a59876ee0c80c7ce5211e9",
+  "artifact": "isolated flywheel-comm + loopback routes + StateStore across child-process restarts",
+  "dir": "/tmp/fly2606-acceptance-E08mmG",
+  "modelRegistry": "/tmp/fly2606-acceptance-E08mmG/models.json",
+  "startedAt": "2026-09-16T11:04:24.168Z",
+  "native": "UNVERIFIED - Lead owns isolated host execution",
+  "visual": "UNVERIFIED",
+  "steps": [
+    {
+      "phase": "publish",
+      "pid": 36369,
+      "revision": 2,
+      "oldSnapshotSha": "66f354876bb2954c8fe875fdb7fc01e5b9c42b2f63670826b5331e90e084d21c",
+      "newSnapshotSha": "a86fb03ba0a82f2b4b5932d51b7d6a8ec41575308fcd1d92bfd1a2beb8556c66",
+      "receipt": {
+        "operation_id": "24ea4328-c4f4-4ee9-9202-70bce68daf15",
+        "request_digest": "c6957596c1abdc632db8918d6ccd2e66922b4859c80745ad52d521acaa49aed0",
+        "actor": "bridge-local-operator",
+        "reason": "isolated acceptance publish",
+        "source_kind": "file",
+        "source_digest": "e562daad3309ea9046af16b80b43627f145064a13521073893d1ed699cbbfde3",
+        "registry_revision": "/tmp/fly2606-acceptance-E08mmG/models.json:16777231:774110640:1789556664156.8413:13",
+        "runtime_build_sha": "ea790d24cd8780dc90a59876ee0c80c7ce5211e9",
+        "expected_revision": 1,
+        "before_digest": "84c019400f5417d184d047ef3ea4a9b93650600491824ccd11a8d39f3e5fbc03",
+        "template_id": "tpl_simple_code",
+        "published_revision": 2,
+        "after_digest": "e562daad3309ea9046af16b80b43627f145064a13521073893d1ed699cbbfde3",
+        "committed_at": "2026-09-16 11:04:24"
+      }
+    },
+    {
+      "phase": "rollback",
+      "pid": 36745,
+      "receipt": {
+        "operation_id": "7a3fa22f-ab0e-4d0d-89a1-c6c1a7364371",
+        "request_digest": "65a0680dcdd3e9a6d3f4309cbdf073add52fe5019303eda4100f5fb991fd7344",
+        "actor": "bridge-local-operator",
+        "reason": "isolated acceptance rollback",
+        "source_kind": "rollback",
+        "source_digest": "84c019400f5417d184d047ef3ea4a9b93650600491824ccd11a8d39f3e5fbc03",
+        "registry_revision": "/tmp/fly2606-acceptance-E08mmG/models.json:16777231:774110640:1789556664156.8413:13",
+        "runtime_build_sha": "ea790d24cd8780dc90a59876ee0c80c7ce5211e9",
+        "expected_revision": 2,
+        "before_digest": "e562daad3309ea9046af16b80b43627f145064a13521073893d1ed699cbbfde3",
+        "template_id": "tpl_simple_code",
+        "published_revision": 3,
+        "after_digest": "84c019400f5417d184d047ef3ea4a9b93650600491824ccd11a8d39f3e5fbc03",
+        "committed_at": "2026-09-16 11:04:24"
+      }
+    },
+    {
+      "phase": "reopen",
+      "pid": 36890,
+      "revision": 3,
+      "manualPublicationPreserved": true,
+      "auditRows": 6
+    }
+  ],
+  "templateServicePassed": true,
+  "finishedAt": "2026-09-16T11:04:25.271Z"
+}

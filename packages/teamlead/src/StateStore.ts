@@ -8254,6 +8254,7 @@ export class StateStore {
 		// pointer and category selection. This only materializes the catalog;
 		// execution remains default-off until a run is explicitly admitted.
 		this.migrateWorkflowTemplates();
+		this.migrateLeadConfigOperations();
 		// FLY-1135 PR-1: workflow claims ledger substrate (default-off, no
 		// production path reads or writes these tables yet).
 		this.migrateWorkflowClaimsLedger();
@@ -10677,6 +10678,217 @@ export class StateStore {
 		}
 	}
 
+	private migrateLeadConfigOperations(): void {
+		this.db.run(`CREATE TABLE IF NOT EXISTS lead_config_operation (
+			operation_id TEXT PRIMARY KEY,
+			request_digest TEXT NOT NULL,
+			lead_key TEXT NOT NULL,
+			config_generation INTEGER NOT NULL CHECK (config_generation > 0),
+			status TEXT NOT NULL CHECK (status IN ('prepared','registry_committed','pending_runtime','applied','observed','superseded','conflict')),
+			input_json TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE (lead_key, config_generation)
+		)`);
+		this.db.run(`CREATE TABLE IF NOT EXISTS lead_config_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			operation_id TEXT NOT NULL REFERENCES lead_config_operation(operation_id),
+			from_status TEXT,
+			to_status TEXT NOT NULL,
+			detail TEXT NOT NULL,
+			at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_lead_config_audit_operation ON lead_config_audit(operation_id, id)",
+		);
+		for (const action of ["UPDATE", "DELETE"] as const) {
+			this.db.run(`CREATE TRIGGER IF NOT EXISTS lead_config_audit_no_${action.toLowerCase()}
+				BEFORE ${action} ON lead_config_audit BEGIN SELECT RAISE(ABORT, 'lead_config_audit is append-only'); END`);
+		}
+		this.db.run(`CREATE TRIGGER IF NOT EXISTS lead_config_audit_no_replace BEFORE INSERT ON lead_config_audit
+			WHEN EXISTS (SELECT 1 FROM lead_config_audit WHERE id = NEW.id)
+			BEGIN SELECT RAISE(ABORT, 'lead_config_audit is append-only'); END`);
+		this.db.run(`CREATE TRIGGER IF NOT EXISTS lead_config_operation_immutable BEFORE UPDATE ON lead_config_operation
+			WHEN NEW.operation_id IS NOT OLD.operation_id OR NEW.request_digest IS NOT OLD.request_digest
+			 OR NEW.lead_key IS NOT OLD.lead_key OR NEW.config_generation IS NOT OLD.config_generation
+			 OR NEW.input_json IS NOT OLD.input_json OR NEW.created_at IS NOT OLD.created_at
+			BEGIN SELECT RAISE(ABORT, 'lead_config_operation input is immutable'); END`);
+		this.db.run(`CREATE TRIGGER IF NOT EXISTS lead_config_operation_no_delete BEFORE DELETE ON lead_config_operation
+			BEGIN SELECT RAISE(ABORT, 'lead_config_operation cannot be deleted'); END`);
+		this.db.run(`CREATE TRIGGER IF NOT EXISTS lead_config_operation_no_replace BEFORE INSERT ON lead_config_operation
+			WHEN EXISTS (SELECT 1 FROM lead_config_operation WHERE operation_id = NEW.operation_id)
+			BEGIN SELECT RAISE(ABORT, 'lead_config_operation cannot be replaced'); END`);
+	}
+
+	getLeadConfigOperation(operationId: string): LeadConfigOperation | null {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM lead_config_operation WHERE operation_id = ?",
+			[operationId],
+		)[0];
+		if (!row) return null;
+		return {
+			input: JSON.parse(String(row.input_json)) as LeadConfigOperationInput,
+			configGeneration: Number(row.config_generation),
+			status: String(row.status) as LeadConfigOperationStatus,
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
+		};
+	}
+
+	listLeadConfigAudit(
+		operationId: string,
+	): Array<{
+		id: number;
+		operation_id: string;
+		from_status: string | null;
+		to_status: string;
+		detail: string;
+		at: string;
+	}> {
+		return this.workflowSelectAll(
+			"SELECT * FROM lead_config_audit WHERE operation_id = ? ORDER BY id",
+			[operationId],
+		) as unknown as Array<{
+			id: number;
+			operation_id: string;
+			from_status: string | null;
+			to_status: string;
+			detail: string;
+			at: string;
+		}>;
+	}
+
+	/** Keep failure diagnostics durable without duplicating an unchanged reconciliation failure. */
+	recordLeadConfigDiagnostic(operationId: string, diagnostic: string): void {
+		this.db.transaction(() => {
+			const operation = this.getLeadConfigOperation(operationId);
+			if (!operation) throw new Error("lead_config_operation_not_found");
+			const detail = JSON.stringify({ diagnostic });
+			const prior = this.workflowSelectAll(
+				"SELECT to_status, detail FROM lead_config_audit WHERE operation_id = ? ORDER BY id DESC LIMIT 1",
+				[operationId],
+			)[0];
+			if (prior?.to_status === operation.status && prior.detail === detail)
+				return;
+			this.db.run(
+				"INSERT INTO lead_config_audit (operation_id, from_status, to_status, detail) VALUES (?, ?, ?, ?)",
+				[operationId, operation.status, operation.status, detail],
+			);
+		});
+		this.save();
+	}
+	listLeadConfigOperations(leadKey: string): LeadConfigOperation[] {
+		return this.workflowSelectAll(
+			"SELECT operation_id FROM lead_config_operation WHERE lead_key = ? ORDER BY config_generation",
+			[leadKey],
+		).map((row) => this.getLeadConfigOperation(String(row.operation_id))!);
+	}
+
+	listAppliedLeadConfigOperations(): LeadConfigOperation[] {
+		return this.workflowSelectAll(
+			"SELECT operation_id FROM lead_config_operation WHERE status IN ('applied','observed') ORDER BY lead_key, config_generation",
+			[],
+		).map((row) => this.getLeadConfigOperation(String(row.operation_id))!);
+	}
+
+	listPendingLeadConfigOperations(): LeadConfigOperation[] {
+		return this.workflowSelectAll(
+			"SELECT operation_id FROM lead_config_operation WHERE status IN ('prepared','registry_committed','pending_runtime') ORDER BY lead_key, config_generation",
+			[],
+		).map((row) => this.getLeadConfigOperation(String(row.operation_id))!);
+	}
+
+	prepareLeadConfigOperation(
+		input: LeadConfigOperationInput,
+	): LeadConfigOperation {
+		this.db.transaction(() => {
+			const prior = this.getLeadConfigOperation(input.operationId);
+			if (prior) {
+				if (
+					canonicalSubmissionDigest(prior.input) !==
+					canonicalSubmissionDigest(input)
+				)
+					throw new Error("operation_id_conflict");
+				return;
+			}
+			if (
+				this.workflowSelectAll(
+					"SELECT operation_id FROM lead_config_operation WHERE lead_key = ? AND status = 'prepared' LIMIT 1",
+					[input.leadKey],
+				).length
+			)
+				throw new Error("lead_config_recovery_required");
+			const row = this.workflowSelectAll(
+				"SELECT COALESCE(MAX(config_generation), 0) AS generation FROM lead_config_operation WHERE lead_key = ?",
+				[input.leadKey],
+			)[0];
+			const generation = Number(row?.generation ?? 0) + 1;
+			this.db.run(
+				"INSERT INTO lead_config_operation (operation_id, request_digest, lead_key, config_generation, status, input_json) VALUES (?, ?, ?, ?, 'prepared', ?)",
+				[
+					input.operationId,
+					input.requestDigest,
+					input.leadKey,
+					generation,
+					JSON.stringify(input),
+				],
+			);
+			this.db.run(
+				"INSERT INTO lead_config_audit (operation_id, from_status, to_status, detail) VALUES (?, NULL, 'prepared', ?)",
+				[
+					input.operationId,
+					JSON.stringify({
+						actor: input.actor,
+						reason: input.reason,
+						preProjectsSha: input.preProjectsSha,
+						postProjectsSha: input.postProjectsSha,
+					}),
+				],
+			);
+		});
+		this.save();
+		return this.getLeadConfigOperation(input.operationId)!;
+	}
+
+	transitionLeadConfigOperation(
+		operationId: string,
+		expected: LeadConfigOperationStatus,
+		next: LeadConfigOperationStatus,
+		detail: unknown,
+	): LeadConfigOperation {
+		const transitions: Record<
+			LeadConfigOperationStatus,
+			readonly LeadConfigOperationStatus[]
+		> = {
+			prepared: ["registry_committed", "conflict"],
+			registry_committed: ["pending_runtime", "applied", "superseded"],
+			pending_runtime: ["applied", "superseded"],
+			applied: ["observed", "superseded", "pending_runtime"],
+			observed: ["superseded", "pending_runtime"],
+			superseded: [],
+			conflict: [],
+		};
+		this.db.transaction(() => {
+			const prior = this.getLeadConfigOperation(operationId);
+			if (!prior) throw new Error("lead_config_operation_not_found");
+			if (prior.status !== expected)
+				throw new Error("lead_config_status_conflict");
+			if (!transitions[expected].includes(next))
+				throw new Error("invalid_lead_config_transition");
+			this.db.run(
+				"UPDATE lead_config_operation SET status = ?, updated_at = datetime('now') WHERE operation_id = ? AND status = ?",
+				[next, operationId, expected],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new Error("lead_config_status_conflict");
+			this.db.run(
+				"INSERT INTO lead_config_audit (operation_id, from_status, to_status, detail) VALUES (?, ?, ?, ?)",
+				[operationId, expected, next, JSON.stringify(detail)],
+			);
+		});
+		this.save();
+		return this.getLeadConfigOperation(operationId)!;
+	}
 	private migrateWorkflowTemplates(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_template (
@@ -10725,6 +10937,36 @@ export class StateStore {
 					REFERENCES workflow_template_revision(template_id, revision)
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_template_publish_receipt (
+				operation_id TEXT PRIMARY KEY,
+				request_digest TEXT NOT NULL,
+				actor TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				source_kind TEXT NOT NULL CHECK (source_kind IN ('seed','file','rollback','management')),
+				source_digest TEXT NOT NULL,
+				registry_revision TEXT NOT NULL,
+				runtime_build_sha TEXT NOT NULL,
+				expected_revision INTEGER,
+				before_digest TEXT,
+				template_id TEXT NOT NULL,
+				published_revision INTEGER NOT NULL,
+				after_digest TEXT NOT NULL,
+				committed_at TEXT NOT NULL DEFAULT (datetime('now')),
+				FOREIGN KEY (template_id, published_revision)
+					REFERENCES workflow_template_revision(template_id, revision)
+			)
+		`);
+		for (const action of ["UPDATE", "DELETE"] as const) {
+			this.db.run(`CREATE TRIGGER IF NOT EXISTS workflow_template_publish_receipt_no_${action.toLowerCase()}
+				BEFORE ${action} ON workflow_template_publish_receipt
+				BEGIN SELECT RAISE(ABORT, 'workflow_template_publish_receipt is append-only'); END`);
+		}
+		this.db.run(`CREATE TRIGGER IF NOT EXISTS workflow_template_publish_receipt_no_replace
+			BEFORE INSERT ON workflow_template_publish_receipt
+			WHEN EXISTS (SELECT 1 FROM workflow_template_publish_receipt WHERE operation_id = NEW.operation_id)
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_publish_receipt is append-only'); END`);
+
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_category_binding (
 				project TEXT NOT NULL,
@@ -29584,6 +29826,14 @@ export class StateStore {
 		) as unknown as WorkflowCatalogMigrationAuditRow[];
 	}
 
+	/** Durable managed intent protects historical-profile rollbacks from old startup migrations. */
+	hasManagedWorkflowTemplatePublication(templateId: string): boolean {
+		return this.workflowSelectAll(
+			"SELECT 1 AS present FROM workflow_template_publish_receipt WHERE template_id = ? LIMIT 1",
+			[templateId],
+		).length > 0;
+	}
+
 	/** FLY-2602: couple an immutable publication with its one-time migration receipt. */
 	applyFly2602EffortPublication(input: {
 		templateId: string;
@@ -29598,6 +29848,8 @@ export class StateStore {
 				[input.templateId],
 			);
 			if (prior.length) throw new Error("fly2602_already_applied");
+			if (this.hasManagedWorkflowTemplatePublication(input.templateId))
+				throw new Error("fly2602_managed_publication_preserved");
 			result = this.createAndPublishWorkflowTemplateRevision({
 				...input, createdBy: "system", allowUnsupportedModels: true,
 			});
@@ -29729,6 +29981,17 @@ export class StateStore {
 	 * transaction. A stale editor rolls the entire transaction back, so it can
 	 * never leave an orphan revision behind.
 	 */
+	getWorkflowTemplatePublishReceipt(
+		operationId: string,
+	): WorkflowTemplatePublishReceipt | null {
+		return (
+			(this.workflowSelectAll(
+				"SELECT * FROM workflow_template_publish_receipt WHERE operation_id = ?",
+				[operationId],
+			)[0] as unknown as WorkflowTemplatePublishReceipt) ?? null
+		);
+	}
+
 	createAndPublishWorkflowTemplateRevision(input: {
 		templateId: string;
 		manifest: unknown;
@@ -29738,7 +30001,20 @@ export class StateStore {
 		allowUnsupportedModels?: boolean;
 		/** Preserve one immutable hot-config generation for the whole authoring transaction. */
 		modelSnapshot?: ModelConfigSnapshot;
+		publication?: WorkflowTemplatePublicationMetadata;
 	}): WorkflowTemplatePublishResult {
+		const publication = input.publication;
+		const replay =
+			publication &&
+			this.getWorkflowTemplatePublishReceipt(publication.operationId);
+		if (replay) {
+			if (
+				replay.request_digest !== publication.requestDigest ||
+				replay.template_id !== input.templateId
+			)
+				throw new Error("operation_id_conflict");
+			return { status: "published", revision: replay.published_revision };
+		}
 		const manifest = validateWorkflowManifest(input.manifest, {
 			allowUnsupportedModels: input.allowUnsupportedModels === true,
 			modelSnapshot: input.modelSnapshot,
@@ -29752,7 +30028,7 @@ export class StateStore {
 		try {
 			this.db.transaction(() => {
 				const template = this.workflowSelectAll(
-					`SELECT current_published_revision AS current
+					`SELECT current_published_revision AS current, retired_at
 					 FROM workflow_template WHERE template_id = ?`,
 					[input.templateId],
 				)[0];
@@ -29761,6 +30037,39 @@ export class StateStore {
 						? null
 						: Number(template.current);
 				if (current !== input.expectedRevision) throw conflict;
+				if (publication) {
+					if (template?.retired_at) throw new Error("template_retired");
+					const before =
+						current === null
+							? null
+							: this.getWorkflowTemplateRevision(input.templateId, current);
+					if ((before?.manifest_digest ?? null) !== publication.expectedDigest)
+						throw conflict;
+					const unsafeRuns: string[] = [];
+					for (const run of this.workflowSelectAll(
+						"SELECT run_id, snapshot FROM workflow_run WHERE template_id = ? AND status IN ('active','held')",
+						[input.templateId],
+					)) {
+						try {
+							const snapshot = parseWorkflowRunSnapshot(String(run.snapshot));
+							if (
+								snapshot.template.id !== input.templateId ||
+								snapshot.resolved.nodes.some(
+									(node) =>
+										node.type !== "gate" &&
+										node.type !== "land" &&
+										node.dispatchPinned !== true,
+								)
+							)
+								unsafeRuns.push(String(run.run_id));
+						} catch {
+							unsafeRuns.push(String(run.run_id));
+						}
+						if (unsafeRuns.length >= 10) break;
+					}
+					if (unsafeRuns.length)
+						throw new Error(`active_run_not_pinned:${unsafeRuns.join(",")}`);
+				}
 
 				const max = this.workflowSelectAll(
 					`SELECT COALESCE(MAX(revision), 0) AS revision
@@ -29822,9 +30131,45 @@ export class StateStore {
 						input.createdBy,
 						input.templateId,
 						revision,
-						JSON.stringify({ expected_revision: input.expectedRevision }),
+						JSON.stringify({
+							expected_revision: input.expectedRevision,
+							...(publication
+								? {
+										operationId: publication.operationId,
+										reason: publication.reason,
+										source: publication.sourceKind,
+										beforeDigest: publication.expectedDigest,
+										afterDigest: digest,
+										revision,
+									}
+								: {}),
+						}),
 					],
 				);
+				if (publication) {
+					this.db.run(
+						`INSERT INTO workflow_template_publish_receipt
+						(operation_id, request_digest, actor, reason, source_kind, source_digest,
+						 registry_revision, runtime_build_sha, expected_revision, before_digest,
+						 template_id, published_revision, after_digest)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						[
+							publication.operationId,
+							publication.requestDigest,
+							input.createdBy,
+							publication.reason,
+							publication.sourceKind,
+							publication.sourceDigest,
+							publication.registryRevision,
+							publication.runtimeBuildSha,
+							input.expectedRevision,
+							publication.expectedDigest,
+							input.templateId,
+							revision,
+							digest,
+						],
+					);
+				}
 			});
 		} catch (error) {
 			if (error !== conflict) throw error;
@@ -75779,6 +76124,67 @@ export interface WorkflowCatalogMigrationAuditRow {
 	item_id: string;
 	reason: "founder_owned" | "not_retired" | "referenced" | "published" | "failed";
 	detail: string;
+}
+
+export type LeadConfigOperationStatus =
+	| "prepared"
+	| "registry_committed"
+	| "pending_runtime"
+	| "applied"
+	| "observed"
+	| "superseded"
+	| "conflict";
+export interface LeadConfigOperationInput {
+	operationId: string;
+	requestDigest: string;
+	projectName: string;
+	leadId: string;
+	leadKey: string;
+	identityDigest: string;
+	summaryAssignmentDigest: string;
+	actor: string;
+	reason: string;
+	preProjectsSha: string;
+	postProjectsSha: string;
+	preimage: { model?: string; effort?: string };
+	postimage: { model?: string; effort?: string };
+	configDigest: string;
+	modelRegistryRevision: string;
+}
+export interface LeadConfigOperation {
+	input: LeadConfigOperationInput;
+	configGeneration: number;
+	status: LeadConfigOperationStatus;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface WorkflowTemplatePublicationMetadata {
+	operationId: string;
+	requestDigest: string;
+	reason: string;
+	sourceKind: "seed" | "file" | "rollback" | "management";
+	sourceDigest: string;
+	registryRevision: string;
+	runtimeBuildSha: string;
+	expectedDigest: string | null;
+}
+
+export interface WorkflowTemplatePublishReceipt {
+	operation_id: string;
+	request_digest: string;
+	actor: string;
+	reason: string;
+	source_kind: WorkflowTemplatePublicationMetadata["sourceKind"];
+	source_digest: string;
+	registry_revision: string;
+	runtime_build_sha: string;
+	expected_revision: number | null;
+	before_digest: string | null;
+	template_id: string;
+	published_revision: number;
+	after_digest: string;
+	committed_at: string;
 }
 
 export type WorkflowTemplatePublishResult =

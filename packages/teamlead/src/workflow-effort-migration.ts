@@ -6,6 +6,60 @@ import {
 import { preflightWorkflowCatalogMigration } from "./workflow-catalog-migration.js";
 
 const TARGETS = ["tpl_code", "tpl_simple_code"] as const;
+/** A skipped profile is safe to publish; a durable managed receipt then prevents future retries. */
+export function isFly2602WorkflowEffortPending(
+	store: StateStore,
+	templateId: string,
+): boolean {
+	if (!TARGETS.some((id) => id === templateId)) return false;
+	if (store.hasManagedWorkflowTemplatePublication(templateId)) return false;
+	if (
+		store
+			.listWorkflowCatalogMigrationAudit()
+			.some(
+				(row) =>
+					row.migration_id === "FLY-2602" &&
+					row.item_id === templateId &&
+					row.reason === "published",
+			)
+	)
+		return false;
+	const template = store.getWorkflowTemplate(templateId);
+	if (!template || template.retired_at || !template.current_published_revision)
+		return false;
+	const revision = store.getWorkflowTemplateRevision(
+		templateId,
+		template.current_published_revision,
+	);
+	if (!revision) return true;
+	try {
+		return sourceImplement(JSON.parse(revision.manifest)) !== undefined;
+	} catch {
+		return true;
+	}
+}
+
+function sourceImplement(manifest: {
+	nodes: Array<{
+		id: string;
+		type: string;
+		vendor?: string;
+		model?: string;
+		effort?: string;
+	}>;
+}) {
+	const nodes = manifest.nodes.filter((node) => node.id === "implement");
+	const node = nodes[0];
+	return nodes.length === 1 &&
+		node !== undefined &&
+		node.type === "implement" &&
+		node.vendor === "codex" &&
+		["astra", "gpt-6-astra"].includes(node.model ?? "") &&
+		node.effort === "medium"
+		? node
+		: undefined;
+}
+
 interface Result {
 	templateId: string;
 	status: "published" | "skipped" | "failed";
@@ -47,6 +101,14 @@ export async function migrateFly2602WorkflowEffort(
 				});
 				continue;
 			}
+			if (store.hasManagedWorkflowTemplatePublication(templateId)) {
+				results.push({
+					templateId,
+					status: "skipped",
+					reason: "managed_publication_preserved",
+				});
+				continue;
+			}
 			const template = store.getWorkflowTemplate(templateId);
 			const applied = store
 				.listWorkflowCatalogMigrationAudit()
@@ -75,16 +137,8 @@ export async function migrateFly2602WorkflowEffort(
 			);
 			if (!row) throw new Error("fly2602_published_revision_missing");
 			const manifest = JSON.parse(row.manifest);
-			const nodes = manifest.nodes.filter(
-				(node: { id: string }) => node.id === "implement",
-			);
-			if (
-				nodes.length !== 1 ||
-				nodes[0].type !== "implement" ||
-				nodes[0].vendor !== "codex" ||
-				!["astra", "gpt-6-astra"].includes(nodes[0].model) ||
-				nodes[0].effort !== "medium"
-			) {
+			const node = sourceImplement(manifest);
+			if (!node) {
 				results.push({
 					templateId,
 					status: "skipped",
@@ -102,7 +156,7 @@ export async function migrateFly2602WorkflowEffort(
 				})
 			)
 				throw new Error("fly2602_target_model_unsupported");
-			Object.assign(nodes[0], { model: "gpt-5.6-sol", effort: "xhigh" });
+			Object.assign(node, { model: "gpt-5.6-sol", effort: "xhigh" });
 			if (!backupReady) {
 				try {
 					if (!options.backupPath)

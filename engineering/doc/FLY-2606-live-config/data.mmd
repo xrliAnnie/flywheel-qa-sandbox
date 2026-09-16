@@ -1,0 +1,32 @@
+classDiagram
+  class Template {
+    templateId 稳定编号
+    currentRevision 当前发布
+    owner 人工版保护
+  }
+  class Revision {
+    revision 版本号
+    digest 内容指纹
+    manifest 工作步骤
+  }
+  class Run {
+    runId 派工编号
+    snapshot 固定版本与参数
+  }
+  class LeadConfig {
+    leadKey 稳定身份
+    generation 配置代次
+    model 模型
+    effort 思考力度
+  }
+  class Receipt {
+    operationId 操作编号
+    beforeAfter 前后内容
+    reason 修改原因
+    applied 会话应用回执
+    observed 下一轮证据
+  }
+  Template "1" --> "多" Revision : 留存历史
+  Run --> Revision : 固定选择
+  Receipt --> Revision : 证明发布
+  Receipt --> LeadConfig : 证明应用

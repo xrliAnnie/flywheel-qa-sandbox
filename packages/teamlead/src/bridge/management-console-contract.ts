@@ -8,6 +8,7 @@ import type {
 import { BETA_SOURCE_ORIGINS, type BetaSourceOrigin } from "flywheel-config";
 import type { WorkflowMenuNodePolicy } from "../workflow-menu-policy.js";
 import type { WorkflowNodeType } from "../workflow-template.js";
+import type { LeadConfigView } from "./lead-config-service.js";
 
 export const MANAGEMENT_SCHEMA_VERSION = 2 as const;
 
@@ -34,6 +35,7 @@ export type ManagementConsequence =
 	| "new-run"
 	| "restart-bridge"
 	| "restart-lead"
+	| "next-turn"
 	| "reload-launchd"
 	| "governance-readonly";
 
@@ -156,6 +158,7 @@ export interface ModelSelection {
 }
 
 export interface ManagementLeadView {
+	tuning?: LeadConfigView;
 	id: string;
 	leadId: string;
 	displayName: string;

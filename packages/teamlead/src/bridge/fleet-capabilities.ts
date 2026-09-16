@@ -1,3 +1,4 @@
+import type { WriteCapability } from "./management-console-contract.js";
 /**
  * FLY-247 inc2a (§2.4 / §2.6): server-derived capability bits for the Fleet
  * console. The UI renders these verbatim and hardcodes NO eligibility rules, so
@@ -214,5 +215,30 @@ export function computeLeadCapabilities(
 		allowedModelTargets: computeAllowedModelTargets(backend),
 		effortOptions: computeEffortOptions(backend),
 		allowedEffortTargets: computeAllowedEffortTargets(backend),
+	};
+}
+
+/** Service availability selects the writer; its stage still verifies the live runtime before mutation. */
+export function leadTuningWriteCapability(
+	backend: LeadBackendId,
+	codexHotConfigAvailable = false,
+): WriteCapability {
+	if (backend === "codex-app-server")
+		return codexHotConfigAvailable
+			? {
+					writable: true,
+					consequence: "next-turn",
+					requiresAcknowledgement: true,
+				}
+			: {
+					writable: false,
+					reason: "Codex 热配置服务不可用",
+					consequence: "governance-readonly",
+					requiresAcknowledgement: false,
+				};
+	return {
+		writable: true,
+		consequence: "restart-lead",
+		requiresAcknowledgement: true,
 	};
 }

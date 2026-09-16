@@ -2,7 +2,10 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkflowTemplateRouter } from "../bridge/workflow-template-routes.js";
+import {
+	createWorkflowTemplateAliasRouter,
+	createWorkflowTemplateRouter,
+} from "../bridge/workflow-template-routes.js";
 import { StateStore } from "../StateStore.js";
 import {
 	importLegacyWorkflowSeeds,
@@ -18,6 +21,7 @@ async function serve(store: StateStore): Promise<string> {
 	const app = express();
 	app.use(express.json());
 	app.use("/api/workflow", createWorkflowTemplateRouter(store));
+	app.use("/api/workflow-templates", createWorkflowTemplateAliasRouter(store));
 	const server = createServer(app);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	close.push(
@@ -55,10 +59,18 @@ describe("workflow template read model", () => {
 			`${base}/api/workflow/templates/tpl_eng_heavy`,
 		).then((res) => res.json());
 		expect(detail.current_revision.manifest.nodes).toHaveLength(4);
+		const alias = await fetch(`${base}/api/workflow-templates/tpl_eng_heavy`);
+		expect(alias.redirected).toBe(false);
+		expect(await alias.json()).toEqual(detail);
 		const revisions = await fetch(
 			`${base}/api/workflow/templates/tpl_eng_heavy/revisions`,
 		).then((res) => res.json());
 		expect(revisions.revisions).toHaveLength(1);
+		expect(
+			await (
+				await fetch(`${base}/api/workflow-templates/tpl_eng_heavy/revisions`)
+			).json(),
+		).toEqual(revisions);
 		const binding = await fetch(
 			`${base}/api/workflow/template-binding?project=flywheel&category=bug`,
 		).then((res) => res.json());

@@ -25,6 +25,7 @@ describe("management console HTML", () => {
 		});
 		const render = runInNewContext(`(${source})`, {
 			esc: (value: unknown) => String(value),
+			leadTuningEvidence: () => "",
 			modelControl: () => "<span>model control</span>",
 			fetch,
 			open,

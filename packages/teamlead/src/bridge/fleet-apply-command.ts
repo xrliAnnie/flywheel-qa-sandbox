@@ -55,6 +55,9 @@ function cliValue(v: string | null): string {
 }
 
 export interface LeadApplyChange {
+	backend?: "codex-app-server" | "claude-code";
+	projectName?: string;
+	leadId?: string;
 	/** Exact {project}-{lead} key (fleet engine --lead grammar). */
 	key: string;
 	/** undefined = dimension untouched; null = back to account default. */
@@ -67,6 +70,7 @@ export interface LeadApplyChange {
 export function buildLeadApplyCommands(
 	fleetScriptPath: string,
 	changes: LeadApplyChange[],
+	commCliPath?: string,
 ): string {
 	const lines: string[] = [];
 	for (const change of changes) {
@@ -74,6 +78,36 @@ export function buildLeadApplyCommands(
 			lines.push(
 				`# ${change.key}: backend ${change.backendNote.from} → ${change.backendNote.to} 需人工 cutover（受管切换 = FLY-264 未做，见 FLY-350/398 runbook）`,
 			);
+		}
+		if ((change.backend ?? change.backendNote?.from) === "codex-app-server") {
+			if (change.backendNote) continue;
+			if (change.toModel === undefined && change.toEffort === undefined)
+				continue;
+			if (!commCliPath || !change.projectName || !change.leadId) {
+				lines.push("# Codex 热配置需要明确的项目、Lead 和 CLI 路径。");
+				continue;
+			}
+			if (change.toModel === null || change.toEffort === null) {
+				lines.push("# Codex 热配置需要明确的 model/effort，不支持默认值重置。");
+				continue;
+			}
+			const argv = [
+				"node",
+				shellQuote(commCliPath),
+				"lead-config",
+				"set",
+				"--project",
+				shellQuote(change.projectName),
+				"--lead",
+				shellQuote(change.leadId),
+			];
+			if (change.toModel !== undefined)
+				argv.push("--model", shellQuote(change.toModel));
+			if (change.toEffort !== undefined)
+				argv.push("--effort", shellQuote(change.toEffort));
+			argv.push("--reason", shellQuote("phone-report"));
+			lines.push(argv.join(" "));
+			continue;
 		}
 		const dims: string[] = [];
 		if (change.toModel !== undefined) {
@@ -150,12 +184,23 @@ export const APPLY_COMMAND_JS: string = [
 	'    if (input.op === "set") { argv = argv.concat(["--to", shq(input.to)]); }',
 	'    return argv.concat(["--project", shq(input.scope), "--reason", shq(input.reason)]).join(" ");',
 	"  }",
-	"  function leadCommands(fleetScriptPath, changes){",
+	"  function leadCommands(fleetScriptPath, changes, commCliPath){",
 	"    var lines = [];",
 	"    for (var i = 0; i < changes.length; i++) {",
 	"      var c = changes[i];",
 	"      if (c.backendNote) {",
 	'        lines.push("# " + c.key + ": backend " + c.backendNote.from + " \\u2192 " + c.backendNote.to + " \\u9700\\u4eba\\u5de5 cutover\\uff08\\u53d7\\u7ba1\\u5207\\u6362 = FLY-264 \\u672a\\u505a\\uff0c\\u89c1 FLY-350/398 runbook\\uff09");',
+	"      }",
+	'      if ((c.backend || (c.backendNote && c.backendNote.from)) === "codex-app-server") {',
+	"        if (c.backendNote) continue;",
+	"        if (c.toModel === undefined && c.toEffort === undefined) continue;",
+	'        if (!commCliPath || !c.projectName || !c.leadId) { lines.push("# Codex 热配置需要明确的项目、Lead 和 CLI 路径。"); continue; }',
+	'        if (c.toModel === null || c.toEffort === null) { lines.push("# Codex 热配置需要明确的 model/effort，不支持默认值重置。"); continue; }',
+	'        var hot = ["node", shq(commCliPath), "lead-config", "set", "--project", shq(c.projectName), "--lead", shq(c.leadId)];',
+	'        if (c.toModel !== undefined) hot.push("--model", shq(c.toModel));',
+	'        if (c.toEffort !== undefined) hot.push("--effort", shq(c.toEffort));',
+	'        hot.push("--reason", shq("phone-report"));',
+	'        lines.push(hot.join(" ")); continue;',
 	"      }",
 	"      var dims = [];",
 	'      if (c.toModel !== undefined) { dims.push("--model", shq(cliVal(c.toModel))); }',

@@ -413,6 +413,70 @@ export class CodexLeadProcess {
 		return { id, result: res.result };
 	}
 
+	/** Queue a settings update. RPC success is NOT an application receipt. */
+	async updateThreadSettings(args: {
+		threadId: string;
+		model: string;
+		effort: string;
+	}): Promise<void> {
+		const res = await this.request("thread/settings/update", {
+			threadId: args.threadId,
+			model: args.model,
+			effort: args.effort,
+		});
+		this.throwOnError(res, "thread/settings/update");
+	}
+
+	/** Current settings only; this is not evidence of a turn's executed parameters. */
+	async readThreadSettings(
+		threadId: string,
+	): Promise<{ model: string; effort: string }> {
+		const res = await this.request("thread/read", {
+			threadId,
+			includeTurns: false,
+		});
+		this.throwOnError(res, "thread/read");
+		const thread = (
+			res.result as
+				| {
+						thread?: {
+							id?: unknown;
+							model?: unknown;
+							reasoningEffort?: unknown;
+						};
+				  }
+				| undefined
+		)?.thread;
+		if (
+			thread?.id !== threadId ||
+			typeof thread.model !== "string" ||
+			!thread.model ||
+			typeof thread.reasoningEffort !== "string" ||
+			!thread.reasoningEffort
+		)
+			throw new Error("thread_settings_unavailable");
+		return { model: thread.model, effort: thread.reasoningEffort };
+	}
+
+	/** Location only; callers must inspect exact turn_context records, not thread settings. */
+	async readThreadRolloutPath(threadId: string): Promise<string> {
+		const res = await this.request("thread/read", {
+			threadId,
+			includeTurns: false,
+		});
+		this.throwOnError(res, "thread/read");
+		const thread = (
+			res.result as { thread?: { id?: unknown; path?: unknown } } | undefined
+		)?.thread;
+		if (
+			thread?.id !== threadId ||
+			typeof thread.path !== "string" ||
+			!isAbsolute(thread.path)
+		)
+			throw new Error("thread_rollout_unavailable");
+		return thread.path;
+	}
+
 	private assertPermissionRequest(params?: Record<string, unknown>): void {
 		if (params?.permissions === undefined) return;
 		const overrides = params.config;
@@ -461,6 +525,8 @@ export class CodexLeadProcess {
 		threadId: string;
 		input: unknown[];
 		clientUserMessageId?: string;
+		model?: string;
+		effort?: string;
 	}): Promise<string | undefined> {
 		const res = await this.request("turn/start", args);
 		this.throwOnError(res, "turn/start");

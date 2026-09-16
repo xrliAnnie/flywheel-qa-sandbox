@@ -289,8 +289,9 @@ export function buildModelRegistry(
 			runtimeVendor: "codex",
 			label: "GPT-5.6",
 			aliases: ["codex"],
-			surfaces: ["runner", "workflow", "cron"],
+			surfaces: ["lead", "runner", "workflow", "cron"],
 			effortsBySurface: {
+				lead: ROLE_EFFORT_LEVELS,
 				runner: ["xhigh"],
 				workflow: ROLE_EFFORT_LEVELS,
 				cron: [],
@@ -302,8 +303,9 @@ export function buildModelRegistry(
 			runtimeVendor: "codex",
 			label: "GPT-6 Astra",
 			aliases: [MODEL_ALIASES.ASTRA],
-			surfaces: ["runner", "workflow"],
+			surfaces: ["lead", "runner", "workflow"],
 			effortsBySurface: {
+				lead: ROLE_EFFORT_LEVELS,
 				runner: ["xhigh"],
 				workflow: ROLE_EFFORT_LEVELS,
 			},

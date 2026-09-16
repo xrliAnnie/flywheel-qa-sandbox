@@ -46,6 +46,7 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "ERROR: node required"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export FLYWHEEL_COMM_CLI="$REPO_ROOT/packages/flywheel-comm/dist/index.js"
 FLEET="${REPO_ROOT}/scripts/flywheel-fleet.sh"
 
 # Keep HOME short enough to exercise the real macOS tmux socket budget.
@@ -225,6 +226,10 @@ export FLYWHEEL_DAEMON_VERIFY_TIMEOUT=2
 export FLYWHEEL_DAEMON_POLL_INTERVAL=1
 export FLYWHEEL_DAEMON_SKIP_PS_SELF_PROBE=1
 
+# Canonical identity resolution requires a selected summary granularity.
+mkdir -p "$SANDBOX/.flywheel"
+printf '{"granularity":"per-lead","setBy":"founder","setAt":"2026-09-16T00:00:00Z"}\n' > "$SANDBOX/.flywheel/summary-config.json"
+
 PROJECTS="$SANDBOX/.flywheel/projects.json"
 KEY="geo-product-lead"
 MANIFEST="$SANDBOX/.flywheel/manifests/${KEY}.json"
@@ -236,7 +241,7 @@ write_projects() {
   local model="$1" backend="${2:-null}"
   jq -n --argjson model "$model" --argjson backend "$backend" \
     '[{projectName: "geo", projectRoot: "'"$SANDBOX"'/proj/geo",
-       leads: [({agentId: "product-lead", chatChannel: "1", match: {labels: ["Product"]}}
+       leads: [({agentId: "product-lead",summaryRole:"producer", chatChannel: "1", match: {labels: ["Product"]}}
                + (if $model != null then {model: $model} else {} end)
                + (if $backend != null then {backend: $backend, companion: true, canSpawnRunners: false} else {} end))]}]' \
     > "$PROJECTS"
@@ -374,8 +379,8 @@ fi
 
 # ── T8: --lead ambiguity across projects ──────────────────────────────────
 reset_world
-jq -n '[{projectName:"geo",projectRoot:"'"$SANDBOX"'/proj/geo",leads:[{agentId:"product-lead",chatChannel:"1",match:{labels:["P"]}}]},
-        {projectName:"joy",projectRoot:"'"$SANDBOX"'/proj/joy",leads:[{agentId:"product-lead",chatChannel:"2",match:{labels:["P"]}}]}]' > "$PROJECTS"
+jq -n '[{projectName:"geo",projectRoot:"'"$SANDBOX"'/proj/geo",leads:[{agentId:"product-lead",summaryRole:"producer",chatChannel:"1",match:{labels:["P"]}}]},
+        {projectName:"joy",projectRoot:"'"$SANDBOX"'/proj/joy",leads:[{agentId:"product-lead",summaryRole:"producer",chatChannel:"2",match:{labels:["P"]}}]}]' > "$PROJECTS"
 OUT=$(bash "$FLEET" plan --lead product-lead 2>&1); RC=$?
 if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q "matches 2 leads"; then
   pass "T8: short --lead matching two projects → hard error"
@@ -681,8 +686,8 @@ KEY2="geo-ops-lead"
 MANIFEST2="$SANDBOX/.flywheel/manifests/${KEY2}.json"
 PLIST2="$SANDBOX/Library/LaunchAgents/com.flywheel.lead.${KEY2}.plist"
 jq -n '[{projectName: "geo", projectRoot: "'"$SANDBOX"'/proj/geo",
-   leads: [{agentId: "product-lead", chatChannel: "1", match: {labels: ["P"]}, model: "claude-fable-5"},
-           {agentId: "ops-lead", chatChannel: "2", match: {labels: ["O"]}, model: "claude-opus-5"}]}]' > "$PROJECTS"
+   leads: [{agentId: "product-lead",summaryRole:"producer", chatChannel: "1", match: {labels: ["P"]}, model: "claude-fable-5"},
+           {agentId: "ops-lead",summaryRole:"producer", chatChannel: "2", match: {labels: ["O"]}, model: "claude-opus-5"}]}]' > "$PROJECTS"
 # Keyed-state launchctl stub: per-label loaded/pid files — two leads can be
 # simultaneously loaded with DIFFERENT pids (single-state stubs cannot model
 # this; lead B's evidence re-run would misread lead A's state).

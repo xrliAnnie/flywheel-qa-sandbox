@@ -67,6 +67,7 @@ import {
 import {
 	type CommBackend,
 	FEATURE_FLAGS,
+	getModelConfigSnapshot,
 	readEnvFileSource,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
@@ -178,6 +179,10 @@ import {
 	isWorkflowManifestLand,
 	retireLegacyWorkflowTemplates,
 } from "../workflow-template.js";
+import {
+	WorkflowPublicationError,
+	WorkflowTemplatePublicationService,
+} from "../workflow-template-publication.js";
 import {
 	AlertChannelHub,
 	correlationKeyFor,
@@ -562,6 +567,12 @@ import {
 import { createLeadReportVerifyRouter } from "./lead-capability-report-verify.js";
 import { mountLeadRunnerProvider } from "./lead-capability-runners.js";
 import {
+	createProductionLeadConfigService,
+	startLeadConfigReconciler,
+} from "./lead-config-production.js";
+import { createLeadConfigRouter } from "./lead-config-routes.js";
+import type { LeadConfigService } from "./lead-config-service.js";
+import {
 	LeadDualActiveMonitor,
 	type LeadIdentityFinding,
 	type LeadScanTarget,
@@ -907,7 +918,10 @@ import {
 	createWorkflowShipReadyArm,
 	enrichPrHeadViaGh,
 } from "./workflow-ship-ready-arm.js";
-import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
+import {
+	createWorkflowTemplateAliasRouter,
+	createWorkflowTemplateRouter,
+} from "./workflow-template-routes.js";
 import { reconcileWorkflowTurnLedgers } from "./workflow-turn-ledger-validator.js";
 import { assertWorkflowWorktreeReady } from "./workflow-worktree-readiness.js";
 import {
@@ -1508,6 +1522,7 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	leadConfigService?: LeadConfigService;
 	processResources?: { snapshot(): FdHealth };
 	codexQuota?: {
 		runtime?: CodexQuotaRuntime;
@@ -2326,7 +2341,26 @@ export function createBridgeApp(
 			apiToken: config.apiToken,
 		}),
 	);
-	app.use("/api/workflow", createWorkflowTemplateRouter(store));
+	const leadConfigService =
+		opts?.leadConfigService ??
+		createProductionLeadConfigService(store, buildIdentity.buildSha ?? "");
+	app.locals.leadConfigService = leadConfigService;
+	app.use("/api/lead-config", createLeadConfigRouter(leadConfigService));
+	const workflowPublication = new WorkflowTemplatePublicationService({
+		store,
+		tokens: new ConfirmTokenStore(),
+		modelSnapshot: getModelConfigSnapshot,
+		runtimeBuildSha: buildIdentity.buildSha ?? "",
+		assertMigrationReady: () => {
+			if (!buildIdentity.buildSha)
+				throw new WorkflowPublicationError("runtime_build_unknown", 503);
+		},
+	});
+	app.use(
+		"/api/workflow",
+		createWorkflowTemplateRouter(store, workflowPublication),
+	);
+	app.use("/api/workflow-templates", createWorkflowTemplateAliasRouter(store));
 	app.use("/api/workflow", createWorkflowMenuRouter(projects));
 	const flywheelProjectRoot = projects.find(
 		(project) => project.projectName === "flywheel",
@@ -5707,6 +5741,10 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	const leadConfigService = createProductionLeadConfigService(
+		store,
+		resolveBridgeBuildIdentity().buildSha ?? "",
+	);
 	store.syncDiscordConfig(config.discordGuildId);
 	const capacityDeps = makeCapacitySnapshotDeps(store, config);
 	// FLY-2121: schema first, then a pure registry compile + DB-aware preflight,
@@ -6123,7 +6161,10 @@ export async function startBridge(
 	const fleetPoller = new FleetPoller({
 		provider: fleetConfigProvider,
 		legacyBackendOf: fleetLegacyBackendOf,
-		deps: buildDefaultFleetProbeDeps(),
+		deps: {
+			...buildDefaultFleetProbeDeps(),
+			leadConfigStatus: (key) => leadConfigService.viewForLead(key),
+		},
 		logger: (msg) => console.log(msg),
 		carrierEnv: process.env,
 	});
@@ -6310,6 +6351,13 @@ export async function startBridge(
 						}),
 						managementProjectSource.healthProvider(),
 						...createManagementSsotProviders({
+							codexHotConfigAvailable: true,
+							tuningByLead: () =>
+								new Map(
+									(fleetPoller.snapshot()?.leads ?? []).map(
+										(lead) => [lead.key, lead.tuning] as const,
+									),
+								),
 							projects: () => managementProjects,
 							projectsRevision: () => managementProjectsRevision,
 							projectConfigs: () => ffConfigCache.current(),
@@ -6384,6 +6432,7 @@ export async function startBridge(
 				targets: () => scanCurrentCrons().targets,
 			});
 			const existingWriters = createExistingManagementWriters({
+				leadConfig: leadConfigService,
 				projects: () => managementProjects,
 				projectsRevision: () => managementProjectsRevision,
 				projectConfigs: () => ffConfigCache.current(),
@@ -8643,6 +8692,7 @@ export async function startBridge(
 		standupService,
 		standupProjectName,
 		{
+			leadConfigService,
 			leadEventDelivery,
 			leadGithub: leadGithubProvider.get,
 			leadPatrol: createLeadPatrolConfiguration(
@@ -8939,6 +8989,11 @@ export async function startBridge(
 	const addr = server.address();
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
+	const stopLeadConfigReconcile = startLeadConfigReconciler(
+		app.locals.leadConfigService as LeadConfigService,
+		() => console.warn("[lead-config] reconcile unavailable"),
+	);
+
 	const alertSenderTokenEnv =
 		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
 	const alertSenderToken = alertSenderTokenEnv
@@ -14673,6 +14728,7 @@ export async function startBridge(
 		// FLY-247 (Codex R3 MEDIUM-1): stop the fleet reconcile tick + close the
 		// console's audit handle on shutdown.
 		if (fleetReconcileTimer) clearInterval(fleetReconcileTimer);
+		await stopLeadConfigReconcile();
 		fleetConsole?.close();
 		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
 		// the in-flight pass) BEFORE store.close() below — a pass writing

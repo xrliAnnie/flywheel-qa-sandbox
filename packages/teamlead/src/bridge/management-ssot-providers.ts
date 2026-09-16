@@ -5,6 +5,7 @@ import {
 	type ModelSurface,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import type { LeadConfigView } from "./lead-config-service.js";
 import { registrySourceRevision } from "./management-console-contract.js";
 import type { ManagementSnapshotProvider } from "./management-console-snapshot.js";
 import {
@@ -21,6 +22,8 @@ const MODEL_SURFACES: readonly ModelSurface[] = [
 ];
 
 export interface ManagementSsotSources {
+	tuningByLead?(): ReadonlyMap<string, LeadConfigView | undefined>;
+	codexHotConfigAvailable?: boolean;
 	projects(): ProjectEntry[];
 	projectsRevision(): string;
 	projectConfigs(): ReadonlyMap<string, LoadedProjectConfig>;
@@ -60,10 +63,12 @@ export function createManagementSsotProviders(
 			read: () => {
 				const revision = input.projectsRevision();
 				const topology = buildTopologyView({
+					codexHotConfigAvailable: input.codexHotConfigAvailable,
 					projects: input.projects(),
 					configs: input.projectConfigs(),
 					projectsRevision: revision,
 					onlineByLead: input.onlineByLead?.(),
+					tuningByLead: input.tuningByLead?.(),
 				});
 				return {
 					revision,

@@ -292,6 +292,27 @@ read_plist_environment_json() {
     | normalize_launch_environment_json
 }
 
+# Plist generation only needs the exact Lead's backend. Full canonical identity
+# resolution additionally depends on summary assignment state, so retain a
+# narrow registry-only fallback for bootstrap/restart recovery.
+resolve_registry_backend() {
+  local project="$1" lead_id="$2"
+  [ -f "$PROJECTS_JSON" ] || return 1
+  jq -er --arg project "$project" --arg lead "$lead_id" '
+    [
+      .[] |
+      select(.projectName == $project) |
+      (.leads // [])[] |
+      select(.agentId == $lead)
+    ] |
+    if length == 1
+    then (.[0].backend // "claude-code")
+    else error("project lead identity is missing or ambiguous")
+    end |
+    select(. == "codex-app-server" or . == "claude-code")
+  ' "$PROJECTS_JSON" 2>/dev/null
+}
+
 # FLY-247 R5#4: plist generation takes TWO manifest paths —
 #   manifest_source_path:  where to READ the model from (staged manifest in
 #                          staged mode; canonical manifest in legacy mode)
@@ -316,6 +337,31 @@ generate_plist_to() {
   wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh"
   local logfile
   logfile=$(log_path "$daemon_key")
+
+  # FLY-2606: manifests and old launchd environments are historical carriers,
+  # not backend authority. Resolve the exact registry identity before deciding
+  # whether mutable tuning may be projected into launchd.
+  local project lead_id identity backend comm_cli node_bin
+  project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest_source_path")" || return 1
+  lead_id="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest_source_path")" || return 1
+  comm_cli="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js}"
+  node_bin="${FLYWHEEL_NODE_BIN:-node}"
+  identity=""
+  backend=""
+  if command -v "$node_bin" >/dev/null 2>&1 && [ -f "$comm_cli" ]; then
+    identity="$("$node_bin" "$comm_cli" lead-identity resolve --projects-file "$PROJECTS_JSON" \
+      --project "$project" --lead "$lead_id" --format json 2>/dev/null)" || identity=""
+    if [ -n "$identity" ]; then
+      backend="$(jq -er '.backend | select(. == "codex-app-server" or . == "claude-code")' <<<"$identity" 2>/dev/null)" || backend=""
+    fi
+  fi
+  if [ -z "$backend" ]; then
+    backend="$(resolve_registry_backend "$project" "$lead_id")" || {
+      log "ERROR: projects config has no unique canonical backend for ${project}/${lead_id}; refusing to generate plist"
+      return 1
+    }
+    log "WARNING: canonical identity resolver unavailable for ${project}/${lead_id}; using projects registry backend"
+  fi
 
   # Per-Lead model from the manifest carrier (absent/empty → no env block,
   # output byte-identical to the pre-FLY-247 format).
@@ -346,7 +392,8 @@ generate_plist_to() {
 
   # The fleet transaction captures the current plist EnvironmentVariables in
   # the staged manifest. Preserve that entire explicit launch contract while
-  # model/effort remain projections of their canonical top-level fields.
+  # Claude model/effort retain their existing manifest projection. Codex reads
+  # tuning from the registry at bootstrap and through the managed hot path.
   local launch_environment
   launch_environment="$(jq -c '.launchEnvironment // {}' "$manifest_source_path" 2>/dev/null \
     | normalize_launch_environment_json)" || {
@@ -354,6 +401,10 @@ generate_plist_to() {
       return 1
     }
   local updated_launch_environment
+  if [ "$backend" = codex-app-server ]; then
+    model=""
+    effort=""
+  fi
   updated_launch_environment="$(jq -c --arg model "$model" --arg effort "$effort" '
     (if $model != "" then .FLYWHEEL_LEAD_MODEL = $model else del(.FLYWHEEL_LEAD_MODEL) end)
     | (if $effort != "" then .FLYWHEEL_LEAD_EFFORT = $effort else del(.FLYWHEEL_LEAD_EFFORT) end)' \

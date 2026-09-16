@@ -770,6 +770,51 @@ describe("management console browser interactions", () => {
 		});
 	});
 
+	it("separates unavailable runtime status from historical application evidence and escapes values", async () => {
+		const current = snapshot();
+		Object.assign(current.projects[0]!.leads[0]!, {
+			backend: "codex-app-server",
+			tuning: {
+				operationId: "op",
+				configGeneration: 1,
+				effectiveStatus: "unavailable",
+				checkedAt: "2026-09-16T04:00:00Z",
+				requested: { model: "gpt-6-astra", effort: "high" },
+				applied: {
+					model: '<img id="unsafe-proof">',
+					effort: "high",
+					appliedAt: "2026-09-16T03:00:00Z",
+					threadId: "thread",
+				},
+				observed: {
+					model: "gpt-6-astra",
+					effort: "high",
+					turnId: "turn",
+					observedAt: "2026-09-16T03:01:00Z",
+					source: "registry_hot",
+				},
+			},
+		});
+		vi.mocked(fetch).mockImplementationOnce(
+			async () =>
+				new Response(JSON.stringify(current), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		(document.getElementById("discard") as HTMLButtonElement).click();
+		await vi.waitFor(() =>
+			expect(
+				document.querySelector("[data-lead-tuning]")?.textContent,
+			).toContain("当前无法验证"),
+		);
+		const text = document.querySelector("[data-lead-tuning]")!.textContent;
+		expect(text).toContain("当前会话：暂无");
+		expect(text).toContain("历史已应用：");
+		expect(text).toContain("已验证轮次：gpt-6-astra / high");
+		expect(document.querySelector("#unsafe-proof")).toBeNull();
+	});
+
 	it("labels every template-bound model row with its persisted binding", () => {
 		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
 		(

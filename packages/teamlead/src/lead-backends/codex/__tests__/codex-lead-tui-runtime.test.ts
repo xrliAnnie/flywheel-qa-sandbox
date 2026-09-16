@@ -694,6 +694,66 @@ describe("parseCodexLeadTuiRuntimeConfig", () => {
 		expect(c.codexHome).toBe("/home/.codex-x");
 	});
 });
+it("awaits configuration admission before dispatch and carries only the admitted pair", async () => {
+	const f = fakeProc();
+	const start = vi.spyOn(f.proc, "startTurn");
+	let release!: (value: { model: string; effort: string }) => void;
+	const beforeTurn = vi.fn(
+		() =>
+			new Promise<{ model: string; effort: string }>((resolve) => {
+				release = resolve;
+			}),
+	);
+	const { facade } = wireDemuxedProcess({
+		proc: f.proc,
+		onFounderTurnCompleted: () => {},
+		beforeTurn,
+	});
+	const pending = facade.startTurn({ threadId: "th", input: [] });
+	expect(start).not.toHaveBeenCalled();
+	release({ model: "gpt-6-astra", effort: "high" });
+	await pending;
+	expect(start).toHaveBeenCalledWith({
+		threadId: "th",
+		input: [],
+		model: "gpt-6-astra",
+		effort: "high",
+	});
+	beforeTurn.mockRejectedValueOnce(new Error("runtime_config_source_changed"));
+	await expect(facade.startTurn({ threadId: "th", input: [] })).rejects.toThrow(
+		"runtime_config_source_changed",
+	);
+	expect(start).toHaveBeenCalledTimes(1);
+});
+
+it("drops stale overrides after drift and rejects an admission invalidated before send", async () => {
+	const f = fakeProc();
+	const start = vi.spyOn(f.proc, "startTurn");
+	const beforeTurn = vi.fn(
+		async () => ({}) as { assertCurrent?: () => boolean | undefined },
+	);
+	const { facade } = wireDemuxedProcess({
+		proc: f.proc,
+		onFounderTurnCompleted: () => {},
+		beforeTurn,
+	});
+	await facade.startTurn({
+		threadId: "th",
+		input: [],
+		model: "old",
+		effort: "low",
+	});
+	expect(start).toHaveBeenCalledWith({ threadId: "th", input: [] });
+	beforeTurn.mockResolvedValueOnce({
+		assertCurrent: () => {
+			throw new Error("runtime_config_admission_changed");
+		},
+	});
+	await expect(facade.startTurn({ threadId: "th", input: [] })).rejects.toThrow(
+		"runtime_config_admission_changed",
+	);
+	expect(start).toHaveBeenCalledTimes(1);
+});
 
 describe("v2 TUI generation readiness", () => {
 	it("refuses an unassembled parent before connecting to a daemon", async () => {

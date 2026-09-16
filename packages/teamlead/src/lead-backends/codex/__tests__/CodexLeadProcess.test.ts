@@ -325,6 +325,72 @@ describe("CodexLeadProcess — robustness", () => {
 });
 
 describe("CodexLeadProcess — thread/turn", () => {
+	it("obtains rollout location only from the exact native thread response", async () => {
+		const { child, proc } = await started();
+		const pending = proc.readThreadRolloutPath("th_1");
+		expect(child.lastFrame()).toMatchObject({
+			method: "thread/read",
+			params: { threadId: "th_1", includeTurns: false },
+		});
+		child.respond(child.lastFrame().id as number, {
+			thread: { id: "th_1", path: "/tmp/session.jsonl" },
+		});
+		await expect(pending).resolves.toBe("/tmp/session.jsonl");
+		for (const thread of [
+			{ id: "other", path: "/tmp/session.jsonl" },
+			{ id: "th_1", path: null },
+			{ id: "th_1", path: "relative" },
+		]) {
+			const p = proc.readThreadRolloutPath("th_1");
+			child.respond(child.lastFrame().id as number, { thread });
+			await expect(p).rejects.toThrow("thread_rollout_unavailable");
+		}
+	});
+
+	it("sends only the typed model and effort pair to settings update", async () => {
+		const { child, proc } = await started();
+		const promise = proc.updateThreadSettings({
+			threadId: "th_1",
+			model: "gpt-6-astra",
+			effort: "high",
+		});
+		expect(child.lastFrame()).toMatchObject({
+			method: "thread/settings/update",
+			params: { threadId: "th_1", model: "gpt-6-astra", effort: "high" },
+		});
+		child.respond(child.lastFrame().id as number, {});
+		await expect(promise).resolves.toBeUndefined();
+	});
+	it("surfaces settings update RPC errors instead of reporting applied", async () => {
+		const { child, proc } = await started();
+		const promise = proc.updateThreadSettings({
+			threadId: "th_1",
+			model: "gpt-6-astra",
+			effort: "high",
+		});
+		child.respondError(
+			child.lastFrame().id as number,
+			JSONRPC_METHOD_NOT_FOUND,
+			"unsupported",
+		);
+		await expect(promise).rejects.toMatchObject({ kind: "protocol" });
+	});
+	it("reads current thread settings and refuses missing or wrong-thread evidence", async () => {
+		const { child, proc } = await started();
+		const first = proc.readThreadSettings("th_1");
+		child.respond(child.lastFrame().id as number, {
+			thread: { id: "th_1", model: "gpt-6-astra", reasoningEffort: "high" },
+		});
+		await expect(first).resolves.toEqual({
+			model: "gpt-6-astra",
+			effort: "high",
+		});
+		const second = proc.readThreadSettings("th_1");
+		child.respond(child.lastFrame().id as number, {
+			thread: { id: "th_other", model: "gpt-6-astra", reasoningEffort: "high" },
+		});
+		await expect(second).rejects.toThrow("thread_settings_unavailable");
+	});
 	it.each([
 		[
 			"read-only without persona",

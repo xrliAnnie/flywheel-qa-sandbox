@@ -137,8 +137,10 @@ canonical_lead_identity_resolve() {
   canonical_lead_identity_assert_existing FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS "$canonical_runner_actions" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION "$canonical_bundle_version" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_BACKEND "$canonical_backend" || return 1
-  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_MODEL "$canonical_model" || return 1
-  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_EFFORT "$canonical_effort" || return 1
+  # Model/effort are mutable registry tuning, not carrier identity. A loaded
+  # launchd environment may retain a pre-update pair; the verified registry
+  # below always replaces it (or unsets it when absent). All identity and
+  # context-window assertions remain unchanged.
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW "$canonical_model_context_window" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_ROLE "$canonical_role" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_SUMMARY_ROLE "$canonical_summary_role" || return 1

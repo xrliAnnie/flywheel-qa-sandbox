@@ -415,8 +415,7 @@ describe("RegistryHeartbeatNotifier", () => {
 	it("hot toggles monitoring re-entry on the same notifier", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
-		let now = 1_000;
-		const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now++);
+		const now = vi.spyOn(Date, "now");
 		try {
 			const notifier = new RegistryHeartbeatNotifier(
 				registry,
@@ -431,6 +430,9 @@ describe("RegistryHeartbeatNotifier", () => {
 				issue_identifier: "GEO-2567",
 			};
 			for (const [index, enabled] of [true, false, true].entries()) {
+				// Heartbeat event ids include Date.now(). Keep each toggle in a distinct
+				// millisecond so this hot-read regression does not exercise event dedup.
+				now.mockReturnValue(1_700_000_000_000 + index);
 				expect(
 					hbStore.applyScopedFlagValueChange({
 						name: "lead_token_savings",
@@ -457,7 +459,7 @@ describe("RegistryHeartbeatNotifier", () => {
 				hbStore.getLeadEventBySeq(1)?.payload,
 			);
 		} finally {
-			dateNow.mockRestore();
+			now.mockRestore();
 			hbStore.close();
 		}
 	});

@@ -1,3 +1,7 @@
+import {
+	type LeadRuntimeReadback,
+	validLeadTurnObservation,
+} from "./lead-turn-evidence.js";
 /**
  * FLY-1373 — authenticated, process-local ingress for Bridge mailbox batches.
  *
@@ -25,6 +29,11 @@ import {
 } from "../../voice-self-filter-contract.js";
 import type { LeadInputBatch, LeadInputRouter } from "./LeadInputRouter.js";
 import type { BatchAcceptStatus } from "./LeadJournal.js";
+import type {
+	LeadRuntimeConfigIdentity,
+	LeadRuntimeConfigResult,
+	LeadRuntimeConfigTarget,
+} from "./LeadRuntimeConfigCoordinator.js";
 import type { SubscriptionEntry } from "./RoundtableThreadRegistry.js";
 
 interface VoiceSelfFilterRequest {
@@ -89,7 +98,36 @@ interface EngageProactiveTopicRequest extends ProactiveTopicReceipt {
 	auth: string;
 }
 
+interface RuntimeConfigRequest extends LeadRuntimeConfigTarget {
+	version: 2;
+	method: "applyRuntimeConfig" | "readRuntimeConfig";
+	leadId: string;
+	socketOwnerId: string;
+	auth: string;
+}
+
+function runtimeConfigTarget(
+	value: LeadRuntimeConfigTarget,
+): LeadRuntimeConfigTarget {
+	return {
+		projectName: value.projectName,
+		leadKey: value.leadKey,
+		identityDigest: value.identityDigest,
+		carrierId: value.carrierId,
+		ownerEpoch: value.ownerEpoch,
+		runtimeGeneration: value.runtimeGeneration,
+		threadId: value.threadId,
+		operationId: value.operationId,
+		configGeneration: value.configGeneration,
+		configDigest: value.configDigest,
+		modelRegistryRevision: value.modelRegistryRevision,
+		model: value.model,
+		effort: value.effort,
+	};
+}
+
 type InboxRequest =
+	| RuntimeConfigRequest
 	| VoiceSelfFilterRequest
 	| EngageProactiveTopicRequest
 	| SubmitBatchRequest
@@ -113,9 +151,12 @@ export interface CodexLeadInboxCapabilities {
 	features: (
 		| "discord_route_v2"
 		| "roundtable_proactive_engage_v1"
+		| "lead_runtime_config_v1"
+		| "registry_tuning_v1"
 		| "voice_self_filter_v1"
 	)[];
 	socketOwnerId: string;
+	runtimeIdentity?: LeadRuntimeConfigIdentity;
 	voiceMirrorIgnoredAuthorIds?: readonly string[];
 }
 
@@ -147,6 +188,21 @@ export interface CodexLeadInboxServerOptions {
 			assertCurrentOwner: () => void,
 		): Promise<"pending" | "ready">;
 	};
+	runtimeConfig?: {
+		/** True only after the runtime has verified native protocol and bootstrap artifact compatibility. */
+		isSupported(): boolean;
+		identity(): LeadRuntimeConfigIdentity;
+		assertCurrent(target: LeadRuntimeConfigTarget): void;
+		apply(
+			target: LeadRuntimeConfigTarget,
+			assertCurrentOwner: () => void,
+		): Promise<LeadRuntimeConfigResult>;
+		read(
+			target: LeadRuntimeConfigTarget,
+			assertCurrentOwner: () => void,
+		): Promise<LeadRuntimeReadback>;
+	};
+
 	/** Crash seam: throw after journal commit to simulate response loss. */
 	afterCommit?: () => void | Promise<void>;
 }
@@ -302,6 +358,61 @@ export class CodexLeadInboxServer {
 		}
 	}
 
+	private runtimeConfigSocketIdentity(): LeadRuntimeConfigIdentity | undefined {
+		try {
+			if (!this.accepting || !this.boundIdentity || !this.opts.runtimeConfig)
+				return undefined;
+			const source = this.opts.runtimeConfig.identity();
+			const fields = [
+				"projectName",
+				"leadKey",
+				"identityDigest",
+				"carrierId",
+				"ownerEpoch",
+				"runtimeGeneration",
+				"threadId",
+				"artifactBuildSha",
+				"bootstrapBuildSha",
+			] as const;
+			if (
+				fields.some(
+					(key) =>
+						typeof source[key] !== "string" ||
+						!source[key] ||
+						source[key].length > 512,
+				) ||
+				source.carrierId !== this.socketOwnerId ||
+				!/^[a-f0-9]{40}$/i.test(source.artifactBuildSha) ||
+				source.artifactBuildSha !== source.bootstrapBuildSha
+			)
+				return undefined;
+			const stat = lstatSync(this.opts.socketPath);
+			if (
+				!stat.isSocket() ||
+				stat.dev !== this.boundIdentity.dev ||
+				stat.ino !== this.boundIdentity.ino
+			)
+				return undefined;
+			return Object.fromEntries(
+				fields.map((key) => [key, source[key]]),
+			) as unknown as LeadRuntimeConfigIdentity;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private runtimeConfigIdentity(): LeadRuntimeConfigIdentity | undefined {
+		try {
+			if (!this.opts.runtimeConfig?.isSupported()) return undefined;
+			return this.runtimeConfigSocketIdentity();
+		} catch {
+			return undefined;
+		}
+	}
+	runtimeConfigOwnerCurrent(): boolean {
+		return this.runtimeConfigSocketIdentity() !== undefined;
+	}
+
 	private async process(socket: Socket, raw: string): Promise<void> {
 		try {
 			const request = parseRequest(raw);
@@ -331,10 +442,17 @@ export class CodexLeadInboxServer {
 				return;
 			}
 			if (request.method === "capabilities") {
+				const runtimeIdentity = this.runtimeConfigIdentity();
 				const capabilities: CodexLeadInboxCapabilities = {
 					protocolVersions: [1, 2],
 					features: [
 						"discord_route_v2",
+						...(runtimeIdentity
+							? [
+									"lead_runtime_config_v1" as const,
+									"registry_tuning_v1" as const,
+								]
+							: []),
 						...(this.opts.voiceSelfFilter
 							? ["voice_self_filter_v1" as const]
 							: []),
@@ -343,6 +461,7 @@ export class CodexLeadInboxServer {
 							: []),
 					],
 					socketOwnerId: this.socketOwnerId,
+					...(runtimeIdentity ? { runtimeIdentity } : {}),
 					...(this.opts.ignoredAuthorIds === undefined
 						? {}
 						: {
@@ -352,6 +471,36 @@ export class CodexLeadInboxServer {
 				socket.end(`${JSON.stringify({ ok: true, capabilities })}\n`);
 				return;
 			}
+			if (
+				request.method === "applyRuntimeConfig" ||
+				request.method === "readRuntimeConfig"
+			) {
+				const hook = this.opts.runtimeConfig;
+				// Coordinator may wait up to 10s for application; keep transport alive
+				// long enough to return its pending receipt instead of racing that bound.
+				socket.setTimeout(12_000, () => socket.destroy());
+				if (!hook || !this.runtimeConfigIdentity())
+					throw new Error("runtime_hot_config_unsupported");
+				const target = runtimeConfigTarget(request);
+				const assertCurrentOwner = () => {
+					if (
+						request.socketOwnerId !== this.socketOwnerId ||
+						target.carrierId !== this.socketOwnerId ||
+						!this.runtimeConfigIdentity()
+					)
+						throw new Error("runtime_config_owner_mismatch");
+					hook.assertCurrent(target);
+				};
+				assertCurrentOwner();
+				const result =
+					request.method === "applyRuntimeConfig"
+						? await hook.apply(target, assertCurrentOwner)
+						: await hook.read(target, assertCurrentOwner);
+				assertCurrentOwner();
+				socket.end(`${JSON.stringify({ ok: true, result })}\n`);
+				return;
+			}
+
 			if (request.method === "engageProactiveTopic") {
 				const hook = this.opts.proactiveTopic;
 				if (!hook) throw new Error("proactive topic unavailable");
@@ -400,6 +549,8 @@ export class CodexLeadInboxServer {
 				socket.end(`${JSON.stringify({ ok: true, ...result })}\n`);
 				return;
 			}
+			if (request.method !== "submitBatch")
+				throw new Error("unsupported inbox method");
 			const result = this.opts.router.submitBatch(request.batch);
 			try {
 				await this.opts.afterCommit?.();
@@ -547,6 +698,90 @@ export async function engageCodexLeadProactiveTopic(
 	return { engagement: response.engagement, threadId: args.messageId };
 }
 
+export async function applyCodexLeadRuntimeConfig(
+	args: SubscriptionClientArgs & { target: LeadRuntimeConfigTarget },
+): Promise<LeadRuntimeConfigResult> {
+	const response = await runtimeConfigRequest(args, "applyRuntimeConfig");
+	if (
+		!response ||
+		typeof response !== "object" ||
+		!["applied", "pending_runtime", "drifted"].includes(
+			String((response as { status?: unknown }).status),
+		)
+	)
+		throw new Error("invalid runtime configuration response");
+	const result = response as LeadRuntimeConfigResult;
+	if (
+		result.operationId !== args.target.operationId ||
+		(result.status === "applied" &&
+			(JSON.stringify(runtimeConfigTarget(result)) !==
+				JSON.stringify(runtimeConfigTarget(args.target)) ||
+				!Number.isFinite(Date.parse(result.appliedAt))))
+	)
+		throw new Error("runtime configuration receipt binding mismatch");
+	return result;
+}
+export async function readCodexLeadRuntimeConfig(
+	args: SubscriptionClientArgs & { target: LeadRuntimeConfigTarget },
+): Promise<LeadRuntimeReadback> {
+	const response = (await runtimeConfigRequest(args, "readRuntimeConfig")) as {
+		drifted?: unknown;
+		observation?: unknown;
+		model?: unknown;
+		effort?: unknown;
+	};
+	if (
+		!response ||
+		typeof response.model !== "string" ||
+		!response.model ||
+		typeof response.effort !== "string" ||
+		!response.effort ||
+		(response.drifted !== undefined && typeof response.drifted !== "boolean")
+	)
+		throw new Error("invalid runtime settings response");
+	if (
+		response.observation !== undefined &&
+		!validLeadTurnObservation(response.observation, args.target)
+	)
+		throw new Error("invalid runtime observation response");
+	return {
+		...(response.observation
+			? {
+					observation:
+						response.observation as LeadRuntimeReadback["observation"],
+				}
+			: {}),
+		model: response.model,
+		effort: response.effort,
+		...(response.drifted === undefined ? {} : { drifted: response.drifted }),
+	};
+}
+async function runtimeConfigRequest(
+	args: SubscriptionClientArgs & { target: LeadRuntimeConfigTarget },
+	method: RuntimeConfigRequest["method"],
+): Promise<unknown> {
+	const request: Omit<RuntimeConfigRequest, "auth"> = {
+		version: 2,
+		method,
+		leadId: args.leadId,
+		socketOwnerId: args.target.carrierId,
+		...runtimeConfigTarget(args.target),
+	};
+	const signed = { ...request, auth: signRequest(request, args.authSecret) };
+	const body = JSON.stringify(signed);
+	if (Buffer.byteLength(body) > 16 * 1024)
+		throw new Error("runtime configuration request too large");
+	const response = JSON.parse(
+		await requestResponse(
+			args.socketPath,
+			`${body}\n`,
+			args.timeoutMs ?? 15_000,
+		),
+	);
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
+	return response.result;
+}
+
 async function subscriptionRequest(
 	args: SubscriptionClientArgs,
 	request:
@@ -568,6 +803,48 @@ async function subscriptionRequest(
 
 function parseRequest(raw: string): InboxRequest {
 	const value = JSON.parse(raw.trim()) as Partial<InboxRequest>;
+	if (
+		value?.method === "applyRuntimeConfig" ||
+		value?.method === "readRuntimeConfig"
+	) {
+		const fields = [
+			"projectName",
+			"leadKey",
+			"identityDigest",
+			"carrierId",
+			"ownerEpoch",
+			"runtimeGeneration",
+			"threadId",
+			"operationId",
+			"configDigest",
+			"modelRegistryRevision",
+			"model",
+			"effort",
+		] as const;
+		const allowed = [
+			"version",
+			"method",
+			"leadId",
+			"socketOwnerId",
+			"auth",
+			"configGeneration",
+			...fields,
+		];
+		if (
+			Buffer.byteLength(raw) > 16 * 1024 ||
+			value.version !== 2 ||
+			["leadId", "socketOwnerId", "auth", ...fields].some((field) => {
+				const item = (value as Record<string, unknown>)[field];
+				return typeof item !== "string" || !item.trim() || item.length > 512;
+			}) ||
+			!Number.isSafeInteger(value.configGeneration) ||
+			Number(value.configGeneration) < 1 ||
+			Object.keys(value).some((field) => !allowed.includes(field))
+		)
+			throw new Error("malformed runtime configuration request");
+		return value as RuntimeConfigRequest;
+	}
+
 	if (value?.method === "probeVoiceSelfFilter") {
 		const { contractVersion, ...request } = value;
 		if (
@@ -668,6 +945,7 @@ function parseRequest(raw: string): InboxRequest {
 }
 
 type UnsignedInboxRequest =
+	| Omit<RuntimeConfigRequest, "auth">
 	| Omit<VoiceSelfFilterRequest, "auth">
 	| Omit<SubmitBatchRequest, "auth">
 	| Omit<CapabilitiesRequest, "auth">
@@ -676,6 +954,19 @@ type UnsignedInboxRequest =
 	| Omit<EngageProactiveTopicRequest, "auth">;
 
 function canonicalRequest(request: UnsignedInboxRequest): string {
+	if (
+		request.method === "applyRuntimeConfig" ||
+		request.method === "readRuntimeConfig"
+	) {
+		return JSON.stringify({
+			version: request.version,
+			method: request.method,
+			leadId: request.leadId,
+			socketOwnerId: request.socketOwnerId,
+			...runtimeConfigTarget(request),
+		});
+	}
+
 	if (request.method === "probeVoiceSelfFilter")
 		return canonicalVoiceSelfFilterRequest(request);
 	if (request.method === "engageProactiveTopic")
@@ -697,20 +988,24 @@ function canonicalRequest(request: UnsignedInboxRequest): string {
 			threadId: request.threadId,
 			reason: request.reason,
 		});
-	return request.method === "capabilities" ||
+	if (
+		request.method === "capabilities" ||
 		request.method === "listSubscriptions"
-		? JSON.stringify({
-				version: request.version,
-				method: request.method,
-				leadId: request.leadId,
-			})
-		: JSON.stringify({
-				version: request.version,
-				method: request.method,
-				leadId: request.leadId,
-				ownerEpoch: request.ownerEpoch,
-				batch: request.batch,
-			});
+	)
+		return JSON.stringify({
+			version: request.version,
+			method: request.method,
+			leadId: request.leadId,
+		});
+	if (request.method !== "submitBatch")
+		throw new Error("unsupported inbox method");
+	return JSON.stringify({
+		version: request.version,
+		method: request.method,
+		leadId: request.leadId,
+		ownerEpoch: request.ownerEpoch,
+		batch: request.batch,
+	});
 }
 
 function signRequest(

@@ -10,7 +10,10 @@ import {
 } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { parse } from "yaml";
-import { getModelRegistryEntry } from "./model-registry.js";
+import {
+	getModelConfigSnapshot,
+	type ModelConfigSnapshot,
+} from "./model-config.js";
 import {
 	type PercentageModelSplitPolicy,
 	parsePercentageModelSplit,
@@ -235,11 +238,15 @@ function safeRelativeFile(value: unknown, path: string): string {
 	return file;
 }
 
-function parseModel(value: unknown, path: string): RegistryModelPolicy {
+function parseModel(
+	value: unknown,
+	path: string,
+	modelSnapshot: ModelConfigSnapshot,
+): RegistryModelPolicy {
 	const raw = record(value, path);
 	exactKeys(raw, ["model", "allowedEfforts", "defaultEffort"], path);
 	const model = nonempty(raw.model, `${path}.model`);
-	const registry = getModelRegistryEntry(model);
+	const registry = modelSnapshot.getModelRegistryEntry(model);
 	if (
 		!registry ||
 		!registry.aliases.some(
@@ -324,7 +331,11 @@ function parseModelSplit(
 	};
 }
 
-function parsePolicy(value: unknown, path: string): RegistryNodePolicy {
+function parsePolicy(
+	value: unknown,
+	path: string,
+	modelSnapshot: ModelConfigSnapshot,
+): RegistryNodePolicy {
 	const raw = record(value, path);
 	exactKeys(raw, ["defaultModel", "models", "modelSplit"], path);
 	const defaultModel = nonempty(raw.defaultModel, `${path}.defaultModel`);
@@ -332,7 +343,7 @@ function parsePolicy(value: unknown, path: string): RegistryNodePolicy {
 		throw new Error(`${path}.models must be a non-empty array`);
 	}
 	const models = raw.models.map((model, index) =>
-		parseModel(model, `${path}.models[${index}]`),
+		parseModel(model, `${path}.models[${index}]`, modelSnapshot),
 	);
 	if (new Set(models.map((model) => model.model)).size !== models.length) {
 		throw new Error(`${path}.models contains duplicate aliases`);
@@ -541,7 +552,10 @@ function assertGraphSemantics(
 	}
 }
 
-export function loadBundledRegistry(registryPath: string): BundledRegistry {
+export function loadBundledRegistry(
+	registryPath: string,
+	modelSnapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
+): BundledRegistry {
 	const root = record(
 		parse(readFileSync(registryPath, "utf8")),
 		"bundled registry",
@@ -642,7 +656,11 @@ export function loadBundledRegistry(registryPath: string): BundledRegistry {
 					`${path}.policies.${nodeName} must target an executable node`,
 				);
 			}
-			policies[nodeName] = parsePolicy(policy, `${path}.policies.${nodeName}`);
+			policies[nodeName] = parsePolicy(
+				policy,
+				`${path}.policies.${nodeName}`,
+				modelSnapshot,
+			);
 		}
 		for (const nodeName of graphNodes.filter((candidate) => nodes[candidate])) {
 			if (!policies[nodeName]) {

@@ -31,6 +31,7 @@
 		"./lead-lease": "./dist/lead-lease.js",
 		"./canonical-lead": "./dist/canonical-lead.js",
 		"./lead-identity": "./dist/lead-identity.js",
+		"./lead-registry-file-io": "./dist/lead-registry-file-io.js",
 		"./lead-operation-client": "./dist/lead-operation-client.js",
 		"./lead-identity-migration": "./dist/lead-identity-migration.js",
 		"./summary-config": "./dist/summary-config.js",

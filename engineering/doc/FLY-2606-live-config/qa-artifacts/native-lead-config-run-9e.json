@@ -1,0 +1,379 @@
+{
+  "probe": "native-lead-config",
+  "slot": "/tmp/fly2606-slot-9e",
+  "slotEnv": {
+    "TMPDIR": "/tmp/fly2606-slot-9e/tmp",
+    "CODEX_COMPANION_SESSION_ID": "1bc4d0c6-c805-42ef-be7b-00094f37585a",
+    "TMUX_TMPDIR": "/tmp/fly2606-slot-9e/tmux",
+    "FLYWHEEL_STATE_DIR": "/tmp/fly2606-slot-9e/state",
+    "FLYWHEEL_RUNNER_STATE_DIR": "/tmp/fly2606-slot-9e/runner-state",
+    "FLYWHEEL_COMM_DB": "/tmp/fly2606-slot-9e/state/comm.db",
+    "FLYWHEEL_CODEX_HOMES_ROOT": "/tmp/fly2606-slot-9e/state/codex-homes",
+    "FLYWHEEL_CODEX_SESSION_DIR": "/tmp/fly2606-slot-9e/state/codex-sessions",
+    "FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT": "/tmp/fly2606-slot-9e/state/cdx-sock"
+  },
+  "head": null,
+  "steps": [
+    {
+      "step": "native_boot",
+      "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+      "nativePid": null,
+      "codexVersion": "codex-cli 0.153.2"
+    },
+    {
+      "step": "native_bootstrap",
+      "supported": true,
+      "identity": {
+        "projectName": "raya",
+        "leadKey": "raya-raya",
+        "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+        "carrierId": "8225a4a9-b0f2-4f5b-8a65-2f51e1346c12",
+        "ownerEpoch": "dfc713a3-6c41-407a-a143-47bad2b8bc90",
+        "runtimeGeneration": "629d2db5-c21b-4823-b22a-7912e48dca39",
+        "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+        "artifactBuildSha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "bootstrapBuildSha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+      }
+    },
+    {
+      "step": "cli_set_noop",
+      "exit": 2,
+      "receipt": {
+        "operation": {
+          "input": {
+            "operationId": "abe0e038-e4eb-4a9b-ad40-c916ca0e7d14",
+            "projectName": "raya",
+            "leadId": "raya",
+            "leadKey": "raya-raya",
+            "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+            "summaryAssignmentDigest": "d8d8b741853099323ece5d64c4f528487a07c34f280cd07a176e81ea686025ca",
+            "actor": "bridge-local-operator",
+            "reason": "QA isolated no-op",
+            "preProjectsSha": "ead61ab21d22c24280de819ee2cb6b4fe97199602f727a74b188a675eb8d42f4",
+            "postProjectsSha": "71ae1ee03cdbad96c54f02530de39a38b26c8625bdaf29ef8663417e2885ee90",
+            "preimage": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "postimage": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "resolved": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "sourceReceiptSha": "3ad17f547879bda19c475997cdafcfc3ad2fde396d12260cf7e8dd0e7d56d222",
+            "configDigest": "b703357efa5b52d4ca0fab448a5b15cbb33e05e7d492a77e33cc79e340cfd1ab",
+            "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+            "requestDigest": "6557b8a397aeb613b585fd417991bcbf681fa8f1ea61d68e4caacd33a7d45096"
+          },
+          "configGeneration": 1,
+          "status": "pending_runtime",
+          "createdAt": "2026-09-16 11:14:19",
+          "updatedAt": "2026-09-16 11:14:20"
+        },
+        "effectiveStatus": "pending_runtime"
+      },
+      "stderr": []
+    },
+    {
+      "step": "cli_set_effort_high",
+      "exit": 0,
+      "receipt": {
+        "operation": {
+          "input": {
+            "operationId": "46c157bf-1903-4e8c-b801-17798693cc71",
+            "projectName": "raya",
+            "leadId": "raya",
+            "leadKey": "raya-raya",
+            "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+            "summaryAssignmentDigest": "d8d8b741853099323ece5d64c4f528487a07c34f280cd07a176e81ea686025ca",
+            "actor": "bridge-local-operator",
+            "reason": "QA isolated effort change",
+            "preProjectsSha": "71ae1ee03cdbad96c54f02530de39a38b26c8625bdaf29ef8663417e2885ee90",
+            "postProjectsSha": "8215ba1d9c19310c4d6607bba3c3de7c556eda623f81c88cb28ae0869caa4550",
+            "preimage": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "postimage": {
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            "resolved": {
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            "sourceReceiptSha": "3ad17f547879bda19c475997cdafcfc3ad2fde396d12260cf7e8dd0e7d56d222",
+            "configDigest": "20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0",
+            "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+            "requestDigest": "4229ea0cc419fd4cd46cac85a93419c39eedf89e882e72c125cf9f9509f9d298"
+          },
+          "configGeneration": 2,
+          "status": "applied",
+          "createdAt": "2026-09-16 11:14:30",
+          "updatedAt": "2026-09-16 11:14:30"
+        },
+        "effectiveStatus": "applied",
+        "actual": {
+          "model": "gpt-6-astra",
+          "effort": "high"
+        }
+      },
+      "stderr": []
+    },
+    {
+      "step": "native_readback_after_change",
+      "settings": {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    },
+    {
+      "step": "native_log",
+      "message": "runtime turn observed: {\"target\":{\"projectName\":\"raya\",\"leadKey\":\"raya-raya\",\"identityDigest\":\"c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372\",\"carrierId\":\"8225a4a9-b0f2-4f5b-8a65-2f51e1346c12\",\"ownerEpoch\":\"dfc713a3-6c41-407a-a143-47bad2b8bc90\",\"runtimeGeneration\":\"629d2db5-c21b-4823-b22a-7912e48dca39\",\"threadId\":\"01a0a9ec-b4fd-7090-9321-698f80cda645\",\"operationId\":\"46c157bf-1903-4e8c-b801-17798693cc71\",\"configGeneration\":2,\"configDigest\":\"20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0\",\"modelRegistryRevision\":\"/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13\",\"model\":\"gpt-6-astra\",\"effort\":\"high\"},\"evidence\":{\"threadId\":\"01a0a9ec-b4fd-7090-9321-698f80cda645\",\"turnId\":\"01a0a9ec-e72e-7271-a717-c45e633313b7\",\"model\":\"gpt-6-astra\",\"effort\":\"high\",\"source\":\"rollout_turn_context\",\"recordedAt\":\"2026-09-16T11:14:30.406Z\",\"recordDigest\":\"a97fd49e7b7c90b2e48b2b49258fd22a2909d853eb952bb2deb9ad42c73833a6\"},\"source\":\"registry_hot\",\"observedAt\":\"2026-09-16T11:14:44.480Z\"}"
+    },
+    {
+      "step": "native_turn_notifications",
+      "methods": [
+        "thread/status/changed",
+        "turn/started",
+        "item/started",
+        "item/completed",
+        "error",
+        "warning",
+        "turn/completed"
+      ],
+      "sawCompleted": true
+    },
+    {
+      "step": "native_turn",
+      "turnId": "01a0a9ec-e72e-7271-a717-c45e633313b7",
+      "rollout": "/private/tmp/fly2606-slot-9e/codex-home/sessions/2026/09/16/rollout-2026-09-16T04-14-17-01a0a9ec-b4fd-7090-9321-698f80cda645.jsonl",
+      "turnContexts": [
+        {
+          "turn_id": "01a0a9ec-e72e-7271-a717-c45e633313b7",
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "ts": "2026-09-16T11:14:30.406Z"
+        }
+      ]
+    },
+    {
+      "step": "cli_status_after_turn",
+      "exit": 0,
+      "receipt": {
+        "operation": {
+          "input": {
+            "operationId": "46c157bf-1903-4e8c-b801-17798693cc71",
+            "projectName": "raya",
+            "leadId": "raya",
+            "leadKey": "raya-raya",
+            "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+            "summaryAssignmentDigest": "d8d8b741853099323ece5d64c4f528487a07c34f280cd07a176e81ea686025ca",
+            "actor": "bridge-local-operator",
+            "reason": "QA isolated effort change",
+            "preProjectsSha": "71ae1ee03cdbad96c54f02530de39a38b26c8625bdaf29ef8663417e2885ee90",
+            "postProjectsSha": "8215ba1d9c19310c4d6607bba3c3de7c556eda623f81c88cb28ae0869caa4550",
+            "preimage": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "postimage": {
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            "resolved": {
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            "sourceReceiptSha": "3ad17f547879bda19c475997cdafcfc3ad2fde396d12260cf7e8dd0e7d56d222",
+            "configDigest": "20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0",
+            "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+            "requestDigest": "4229ea0cc419fd4cd46cac85a93419c39eedf89e882e72c125cf9f9509f9d298"
+          },
+          "configGeneration": 2,
+          "status": "observed",
+          "createdAt": "2026-09-16 11:14:30",
+          "updatedAt": "2026-09-16 11:14:49"
+        },
+        "effectiveStatus": "observed",
+        "actual": {
+          "observation": {
+            "target": {
+              "projectName": "raya",
+              "leadKey": "raya-raya",
+              "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+              "carrierId": "8225a4a9-b0f2-4f5b-8a65-2f51e1346c12",
+              "ownerEpoch": "dfc713a3-6c41-407a-a143-47bad2b8bc90",
+              "runtimeGeneration": "629d2db5-c21b-4823-b22a-7912e48dca39",
+              "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+              "operationId": "46c157bf-1903-4e8c-b801-17798693cc71",
+              "configGeneration": 2,
+              "configDigest": "20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0",
+              "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            "evidence": {
+              "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+              "turnId": "01a0a9ec-e72e-7271-a717-c45e633313b7",
+              "model": "gpt-6-astra",
+              "effort": "high",
+              "source": "rollout_turn_context",
+              "recordedAt": "2026-09-16T11:14:30.406Z",
+              "recordDigest": "a97fd49e7b7c90b2e48b2b49258fd22a2909d853eb952bb2deb9ad42c73833a6"
+            },
+            "source": "registry_hot",
+            "observedAt": "2026-09-16T11:14:44.480Z"
+          },
+          "model": "gpt-6-astra",
+          "effort": "high"
+        }
+      }
+    },
+    {
+      "step": "runtime_config_state",
+      "state": {
+        "version": 1,
+        "target": {
+          "projectName": "raya",
+          "leadKey": "raya-raya",
+          "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+          "carrierId": "8225a4a9-b0f2-4f5b-8a65-2f51e1346c12",
+          "ownerEpoch": "dfc713a3-6c41-407a-a143-47bad2b8bc90",
+          "runtimeGeneration": "629d2db5-c21b-4823-b22a-7912e48dca39",
+          "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+          "operationId": "46c157bf-1903-4e8c-b801-17798693cc71",
+          "configGeneration": 2,
+          "configDigest": "20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0",
+          "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+          "model": "gpt-6-astra",
+          "effort": "high"
+        },
+        "receipt": {
+          "projectName": "raya",
+          "leadKey": "raya-raya",
+          "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+          "carrierId": "8225a4a9-b0f2-4f5b-8a65-2f51e1346c12",
+          "ownerEpoch": "dfc713a3-6c41-407a-a143-47bad2b8bc90",
+          "runtimeGeneration": "629d2db5-c21b-4823-b22a-7912e48dca39",
+          "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+          "operationId": "46c157bf-1903-4e8c-b801-17798693cc71",
+          "configGeneration": 2,
+          "configDigest": "20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0",
+          "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "status": "applied",
+          "appliedAt": "2026-09-16T11:14:30.297Z"
+        },
+        "observation": {
+          "target": {
+            "projectName": "raya",
+            "leadKey": "raya-raya",
+            "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+            "carrierId": "8225a4a9-b0f2-4f5b-8a65-2f51e1346c12",
+            "ownerEpoch": "dfc713a3-6c41-407a-a143-47bad2b8bc90",
+            "runtimeGeneration": "629d2db5-c21b-4823-b22a-7912e48dca39",
+            "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+            "operationId": "46c157bf-1903-4e8c-b801-17798693cc71",
+            "configGeneration": 2,
+            "configDigest": "20ced6fbf37e419ec61fab31c52b06b18f1d3d9aa728a779fdab02842f784ed0",
+            "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+            "model": "gpt-6-astra",
+            "effort": "high"
+          },
+          "evidence": {
+            "threadId": "01a0a9ec-b4fd-7090-9321-698f80cda645",
+            "turnId": "01a0a9ec-e72e-7271-a717-c45e633313b7",
+            "model": "gpt-6-astra",
+            "effort": "high",
+            "source": "rollout_turn_context",
+            "recordedAt": "2026-09-16T11:14:30.406Z",
+            "recordDigest": "a97fd49e7b7c90b2e48b2b49258fd22a2909d853eb952bb2deb9ad42c73833a6"
+          },
+          "source": "registry_hot",
+          "observedAt": "2026-09-16T11:14:44.480Z"
+        }
+      }
+    },
+    {
+      "step": "cli_rollback",
+      "exit": 0,
+      "receipt": {
+        "operation": {
+          "input": {
+            "operationId": "1199a709-7a96-4cec-845c-c991acedd234",
+            "projectName": "raya",
+            "leadId": "raya",
+            "leadKey": "raya-raya",
+            "identityDigest": "c8226696636147867c7223968f06bc03e662f05f10af3d38406e33f5c93d9372",
+            "summaryAssignmentDigest": "d8d8b741853099323ece5d64c4f528487a07c34f280cd07a176e81ea686025ca",
+            "actor": "bridge-local-operator",
+            "reason": "QA isolated rollback",
+            "preProjectsSha": "8215ba1d9c19310c4d6607bba3c3de7c556eda623f81c88cb28ae0869caa4550",
+            "postProjectsSha": "71ae1ee03cdbad96c54f02530de39a38b26c8625bdaf29ef8663417e2885ee90",
+            "preimage": {
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            "postimage": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "resolved": {
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "sourceReceiptSha": "3ad17f547879bda19c475997cdafcfc3ad2fde396d12260cf7e8dd0e7d56d222",
+            "configDigest": "b703357efa5b52d4ca0fab448a5b15cbb33e05e7d492a77e33cc79e340cfd1ab",
+            "modelRegistryRevision": "/tmp/fly2606-slot-9e/home/.flywheel/models.json:16777231:774152486:1789557257018.0505:13",
+            "requestDigest": "e8537ed0d52d486763fa46dab8cefb415cc6d86b08afc47b9b076eaa321eece0"
+          },
+          "configGeneration": 3,
+          "status": "applied",
+          "createdAt": "2026-09-16 11:14:49",
+          "updatedAt": "2026-09-16 11:14:49"
+        },
+        "effectiveStatus": "applied",
+        "actual": {
+          "model": "gpt-6-astra",
+          "effort": "low"
+        }
+      },
+      "stderr": []
+    },
+    {
+      "step": "native_readback_after_rollback",
+      "settings": {
+        "model": "gpt-6-astra",
+        "effort": "low"
+      }
+    },
+    {
+      "step": "registry_final",
+      "projects": {
+        "agentId": "raya",
+        "summaryRole": "producer",
+        "backend": "codex-app-server",
+        "botTokenEnv": "RAYA_BOT_TOKEN",
+        "botUserId": "12345678901234567",
+        "chatChannel": "12345678901234568",
+        "match": {
+          "labels": [
+            "Engineering"
+          ]
+        },
+        "codexProfile": "full-access",
+        "canSpawnRunners": true,
+        "codexRunnerActions": true,
+        "model": "gpt-6-astra",
+        "effort": "low"
+      }
+    }
+  ],
+  "ok": true,
+  "stderr": "\u001b[2m2026-09-16T11:14:17.875759Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n\u001b[2m2026-09-16T11:14:30.552165Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n\u001b[2m2026-09-16T11:14:30.910531Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n\u001b[2m2026-09-16T11:14:31.487436Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n\u001b[2m2026-09-16T11:14:32.362130Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n\u001b[2m2026-09-16T11:14:33.952771Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n\u001b[2m2026-09-16T11:14:37.020612Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_api::endpoint::responses_websocket\u001b[0m\u001b[2m:\u001b[0m failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n"
+}

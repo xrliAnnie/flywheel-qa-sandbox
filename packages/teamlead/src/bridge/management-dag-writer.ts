@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import {
+	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
 	type ModelConfigSnapshot,
 } from "flywheel-config";
@@ -6,11 +8,13 @@ import type {
 	StateStore,
 	WorkflowTemplatePublishResult,
 } from "../StateStore.js";
+import { isFly2602WorkflowEffortPending } from "../workflow-effort-migration.js";
 import {
 	validateWorkflowManifest,
 	type WorkflowEffort,
 	type WorkflowManifest,
 } from "../workflow-template.js";
+import { resolveBridgeBuildIdentity } from "./build-identity.js";
 import {
 	buildTargetId,
 	type ModelSelection,
@@ -139,6 +143,8 @@ export function applyManagementDagEdit(
 	}
 
 	try {
+		if (isFly2602WorkflowEffortPending(input.store, target.templateId))
+			throw new Error("catalog_migration_pending");
 		const next = structuredClone(target.manifest);
 		const node = next.nodes.find((candidate) => candidate.id === target.nodeId);
 		if (!node || node.type === "gate") {
@@ -156,11 +162,29 @@ export function applyManagementDagEdit(
 			allowUnsupportedModels: true,
 			modelSnapshot,
 		});
+		const publication = {
+			operationId: randomUUID(),
+			reason: `Management console edit: ${target.nodeId}`,
+			sourceKind: "management" as const,
+			sourceDigest: canonicalSubmissionDigest(validated),
+			registryRevision: modelSnapshot.revision,
+			runtimeBuildSha: resolveBridgeBuildIdentity().buildSha ?? "unknown",
+			expectedDigest: input.expectedDigest,
+		};
 		return input.store.createAndPublishWorkflowTemplateRevision({
 			templateId: target.templateId,
 			manifest: validated,
 			expectedRevision: input.expectedRevision,
 			createdBy: input.actor,
+			publication: {
+				...publication,
+				requestDigest: canonicalSubmissionDigest({
+					...publication,
+					templateId: target.templateId,
+					expectedRevision: input.expectedRevision,
+					actor: input.actor,
+				}),
+			},
 			allowUnsupportedModels: true,
 			modelSnapshot,
 		});

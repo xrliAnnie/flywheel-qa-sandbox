@@ -265,3 +265,41 @@ describe("APPLY_COMMAND_JS parity", () => {
 		}
 	});
 });
+
+it("renders Codex tuning through exact project/Lead hot command with browser parity", () => {
+	const changes = [
+		{
+			key: "project-name-lead-name",
+			backend: "codex-app-server" as const,
+			projectName: "project-name",
+			leadId: "lead-name",
+			toModel: "gpt-6-astra",
+			toEffort: "high",
+		},
+	];
+	const out = buildLeadApplyCommands(SCRIPT, changes, COMM);
+	expect(out).toBe(
+		"node '/repo/packages/flywheel-comm/dist/index.js' lead-config set --project 'project-name' --lead 'lead-name' --model 'gpt-6-astra' --effort 'high' --reason 'phone-report'",
+	);
+	const js = new Function(`${APPLY_COMMAND_JS};return FleetCmd;`)();
+	for (const input of [
+		changes,
+		[{ ...changes[0], projectName: "founder's-project", leadId: "lead's-id" }],
+		[{ ...changes[0], toEffort: null }],
+		[{ ...changes[0], leadId: undefined }],
+		[
+			{
+				...changes[0],
+				backendNote: { from: "codex-app-server", to: "claude-code" },
+			},
+		],
+	]) {
+		expect(js.leadCommands(SCRIPT, input, COMM)).toBe(
+			buildLeadApplyCommands(SCRIPT, input, COMM),
+		);
+	}
+	expect(
+		buildLeadApplyCommands(SCRIPT, [{ ...changes[0], toEffort: null }], COMM),
+	).not.toContain("lead-config set");
+	expect(buildLeadApplyCommands(SCRIPT, changes)).not.toContain("bash");
+});

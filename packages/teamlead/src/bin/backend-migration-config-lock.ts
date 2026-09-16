@@ -6,12 +6,20 @@ import { isAbsolute, join } from "node:path";
  * only while the parent performs synchronous file CAS. Never run lifecycle work here.
  */
 export async function withMigrationConfigLock(
-	input: { home: string; root: string; assertWindow(): void },
+	input: {
+		home: string;
+		root: string;
+		lockPath?: string;
+		assertWindow(): void;
+	},
 	transaction: (assertHeld: () => void) => void,
 ): Promise<void> {
 	input.assertWindow();
 	if (!isAbsolute(input.home) || !isAbsolute(input.root))
 		throw Error("invalid migration lock path");
+	const lockPath =
+		input.lockPath ?? join(input.home, ".flywheel/projects.json.cfglock");
+	if (!isAbsolute(lockPath)) throw Error("invalid migration lock path");
 	const helper = join(input.root, "scripts/flywheel-config-lock.py");
 	const stat = lstatSync(helper);
 	if (!stat.isFile() || stat.isSymbolicLink())
@@ -22,7 +30,7 @@ export async function withMigrationConfigLock(
 		const child = spawn("python3", [helper, process.execPath, "-e", latch], {
 			env: {
 				...process.env,
-				CONFIG_LOCK_FILE: join(input.home, ".flywheel/projects.json.cfglock"),
+				CONFIG_LOCK_FILE: lockPath,
 				CONFIG_LOCK_DEADLINE: "5",
 			},
 			stdio: ["pipe", "pipe", "ignore"],

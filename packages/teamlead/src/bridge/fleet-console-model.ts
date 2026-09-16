@@ -1,3 +1,4 @@
+import type { LeadConfigView } from "./lead-config-service.js";
 /**
  * FLY-247 inc2a (§2.4, R5 #1): the console READ MODEL.
  *
@@ -28,6 +29,7 @@ export type ConsoleLeadOnline = "online" | "offline" | "degraded" | "unknown";
 
 /** A single Lead card's data — allowlisted, secret-free. */
 export interface ConsoleLeadView {
+	tuning?: LeadConfigView;
 	/** Stable identity: the Lead's agentId. */
 	leadId: string;
 	/** Exact launchd/manifest/txn key: `${projectName}-${agentId}` (engine key). */

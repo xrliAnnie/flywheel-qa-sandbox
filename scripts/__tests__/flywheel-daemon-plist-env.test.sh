@@ -24,6 +24,7 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DAEMON_SH="${REPO_ROOT}/scripts/flywheel-daemon.sh"
+export FLYWHEEL_COMM_CLI="$REPO_ROOT/packages/flywheel-comm/dist/index.js"
 
 SANDBOX="$(mktemp -d -t fly247-plist-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -49,6 +50,10 @@ export FLYWHEEL_DAEMON_PLUTIL="$PLUTIL_STUB"
 # shellcheck disable=SC1090
 source "$DAEMON_SH"
 
+# Canonical identity resolution requires a selected summary granularity.
+mkdir -p "$SANDBOX/.flywheel"
+printf '{"granularity":"per-lead","setBy":"founder","setAt":"2026-09-16T00:00:00Z"}\n' > "$SANDBOX/.flywheel/summary-config.json"
+
 KEY="geo-product-lead"
 MANIFEST="$MANIFEST_DIR/${KEY}.json"
 PLIST="$(plist_path "$KEY")"
@@ -61,6 +66,8 @@ write_manifest() {
       mcpExclude: "", chromeEnabled: false, pid: 1234}
      | (if $model != null then . + {model: $model} else . end)' > "$MANIFEST"
 }
+
+printf '[{"projectName":"geo","leads":[{"agentId":"product-lead","summaryRole":"producer","backend":"claude-code"}]}]\n' > "$PROJECTS_JSON"
 
 # ── A) no model → no env dict + stable v2 format ─────────────────────────
 write_manifest null
@@ -179,6 +186,66 @@ if grep -q "<string>staged-model</string>" "$STAGED_PLIST" \
   pass "F1: staged plist reads model from SOURCE but embeds RUNTIME/canonical manifest path"
 else
   fail "F1: staged plist must embed the canonical manifest path, never the staged path"
+fi
+
+# FLY-2606: the registry backend owns mutable tuning, regardless of stale manifest claims.
+printf '[{"projectName":"geo","leads":[{"agentId":"product-lead","summaryRole":"producer","backend":"codex-app-server"}]}]\n' > "$PROJECTS_JSON"
+jq -n '{leadId:"product-lead",projectName:"geo",model:"old-model",effort:"low",
+ leadBackend:{backendId:"claude-code"},
+ launchEnvironment:{FLYWHEEL_LEAD_MODEL:"older-model",FLYWHEEL_LEAD_EFFORT:"medium",KEEP_ME:"preserved",FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW:"12345"}}' > "$MANIFEST"
+if generate_plist_to "$KEY" "$MANIFEST" "$MANIFEST" "$PLIST" >/dev/null \
+ && ! grep -q '<key>FLYWHEEL_LEAD_MODEL</key>\|<key>FLYWHEEL_LEAD_EFFORT</key>' "$PLIST" \
+ && grep -q '<key>KEEP_ME</key><string>preserved</string>' "$PLIST" \
+ && grep -q '<key>FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW</key><string>12345</string>' "$PLIST"; then
+ pass "G1: canonical Codex drops both old tuning keys and preserves other environment"
+else
+ fail "G1: canonical Codex must omit old tuning keys"
+fi
+printf '[{"projectName":"geo","leads":[{"agentId":"product-lead","summaryRole":"producer","backend":"claude-code"}]}]\n' > "$PROJECTS_JSON"
+jq '.leadBackend.backendId="codex-app-server"' "$MANIFEST" > "$SANDBOX/claude.json"
+if generate_plist_to "$KEY" "$SANDBOX/claude.json" "$MANIFEST" "$PLIST" >/dev/null \
+ && grep -q '<key>FLYWHEEL_LEAD_MODEL</key><string>old-model</string>' "$PLIST" \
+ && grep -q '<key>FLYWHEEL_LEAD_EFFORT</key><string>low</string>' "$PLIST"; then
+ pass "G2: canonical Claude retains tuning despite stale manifest backend"
+else
+ fail "G2: canonical Claude projection changed"
+fi
+BEFORE_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
+printf '[]\n' > "$PROJECTS_JSON"
+if ! generate_plist_to "$KEY" "$MANIFEST" "$MANIFEST" "$PLIST" >/dev/null 2>&1 \
+ && [ "$BEFORE_SHA" = "$(shasum -a 256 "$PLIST" | awk '{print $1}')" ]; then
+ pass "G3: unresolved identity refuses generation without changing prior plist"
+else
+ fail "G3: unresolved identity must not infer a backend"
+fi
+
+# Canonical identity compilation also validates summary assignments, but plist
+# generation only needs the unique registry backend. A missing runtime Node,
+# built comm CLI, summaryRole, or summary selection must not strand the fleet.
+rm -f "$SANDBOX/.flywheel/summary-config.json"
+printf '[{"projectName":"geo","leads":[{"agentId":"product-lead","backend":"codex-app-server"}]}]\n' > "$PROJECTS_JSON"
+jq -n '{leadId:"product-lead",projectName:"geo",model:"stale-model",effort:"low"}' > "$MANIFEST"
+if ( export FLYWHEEL_NODE_BIN="$SANDBOX/missing-node"
+     export FLYWHEEL_COMM_CLI="$SANDBOX/missing-flywheel-comm.js"
+     generate_plist_to "$KEY" "$MANIFEST" "$MANIFEST" "$PLIST" >/dev/null ) \
+ && ! grep -q '<key>FLYWHEEL_LEAD_MODEL</key>\|<key>FLYWHEEL_LEAD_EFFORT</key>' "$PLIST"; then
+ pass "G4: registry backend fallback survives missing Node/dist/summary metadata"
+else
+ fail "G4: missing Node/dist/summary metadata must not block plist generation"
+fi
+if generate_plist_to "$KEY" "$MANIFEST" "$MANIFEST" "$PLIST" >/dev/null \
+ && ! grep -q '<key>FLYWHEEL_LEAD_MODEL</key>\|<key>FLYWHEEL_LEAD_EFFORT</key>' "$PLIST"; then
+ pass "G5: summary validation failure falls back to the exact Codex registry backend"
+else
+ fail "G5: missing summary metadata must not block canonical backend projection"
+fi
+printf '[{"projectName":"geo","leads":[{"agentId":"product-lead","backend":"claude-code"}]}]\n' > "$PROJECTS_JSON"
+if generate_plist_to "$KEY" "$MANIFEST" "$MANIFEST" "$PLIST" >/dev/null \
+ && grep -q '<key>FLYWHEEL_LEAD_MODEL</key><string>stale-model</string>' "$PLIST" \
+ && grep -q '<key>FLYWHEEL_LEAD_EFFORT</key><string>low</string>' "$PLIST"; then
+ pass "G6: summary validation failure preserves the exact Claude registry backend"
+else
+ fail "G6: registry fallback must preserve Claude launch tuning"
 fi
 
 echo ""

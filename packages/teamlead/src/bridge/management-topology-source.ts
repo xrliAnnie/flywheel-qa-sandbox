@@ -10,7 +10,9 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	computeLeadCapabilities,
 	DISABLED_BACKEND_SWITCH,
+	leadTuningWriteCapability,
 } from "./fleet-capabilities.js";
+import type { LeadConfigView } from "./lead-config-service.js";
 import {
 	buildTargetId,
 	type ManagementLeadView,
@@ -39,6 +41,8 @@ export interface TopologyView {
 }
 
 export interface BuildTopologyInput {
+	tuningByLead?: ReadonlyMap<string, LeadConfigView | undefined>;
+	codexHotConfigAvailable?: boolean;
 	projects: ProjectEntry[];
 	configs: ReadonlyMap<string, LoadedProjectConfig>;
 	projectsRevision: string;
@@ -104,13 +108,16 @@ function buildLead(
 	lead: ProjectEntry["leads"][number],
 	projectsRevision: string,
 	onlineByLead?: BuildTopologyInput["onlineByLead"],
+	codexHotConfigAvailable = false,
+	tuning?: LeadConfigView,
 ): ManagementLeadView {
 	const capabilities = computeLeadCapabilities(lead);
 	const presentationGroup =
 		lead.department === "infra" ? "infra" : project.projectName;
-	const writable = capabilities.currentBackend === "claude-code";
+
 	return {
 		id: `${project.projectName}/${lead.agentId}`,
+		...(tuning ? { tuning } : {}),
 		leadId: lead.agentId,
 		displayName: lead.agentId,
 		department: lead.department,
@@ -132,12 +139,10 @@ function buildLead(
 				revision: projectsRevision,
 				hint: "projects.json",
 			},
-			writeCapability: {
-				writable,
-				reason: writable ? undefined : "当前 Lead backend 不支持受管模型写回",
-				consequence: writable ? "restart-lead" : "governance-readonly",
-				requiresAcknowledgement: writable,
-			},
+			writeCapability: leadTuningWriteCapability(
+				capabilities.currentBackend,
+				codexHotConfigAvailable,
+			),
 		},
 	};
 }
@@ -225,7 +230,14 @@ export function buildTopologyView(input: BuildTopologyInput): TopologyView {
 			leads: [...project.leads]
 				.sort((a, b) => a.agentId.localeCompare(b.agentId))
 				.map((lead) =>
-					buildLead(project, lead, input.projectsRevision, input.onlineByLead),
+					buildLead(
+						project,
+						lead,
+						input.projectsRevision,
+						input.onlineByLead,
+						input.codexHotConfigAvailable,
+						input.tuningByLead?.get(`${project.projectName}-${lead.agentId}`),
+					),
 				),
 			roles,
 			handbookRegistryActive,

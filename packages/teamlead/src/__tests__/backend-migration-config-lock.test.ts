@@ -61,31 +61,41 @@ it("does not enter the transaction with a revoked window", async () => {
 	).rejects.toThrow("revoked");
 	expect(called).toBe(false);
 });
-it("excludes another existing-helper writer throughout the transaction", async () => {
-	const { spawnSync } = await import("node:child_process");
-	const f = fixture();
-	await withMigrationConfigLock(f, (assertHeld) => {
-		assertHeld();
-		const competitor = spawnSync(
-			"python3",
-			[
-				join(f.root, "scripts/flywheel-config-lock.py"),
-				process.execPath,
-				"-e",
-				"process.exit(0)",
-			],
-			{
-				env: {
-					...process.env,
-					CONFIG_LOCK_FILE: join(f.home, ".flywheel/projects.json.cfglock"),
-					CONFIG_LOCK_DEADLINE: "0",
-				},
-				encoding: "utf8",
-				timeout: 3000,
+it.each(["default", "slot"])(
+	"excludes another existing-helper writer on the %s lock throughout the transaction",
+	async (location) => {
+		const { spawnSync } = await import("node:child_process");
+		const f = fixture();
+		const lockPath =
+			location === "slot"
+				? join(f.home, "isolated-projects.json.cfglock")
+				: join(f.home, ".flywheel/projects.json.cfglock");
+		await withMigrationConfigLock(
+			{ ...f, ...(location === "slot" ? { lockPath } : {}) },
+			(assertHeld) => {
+				assertHeld();
+				const competitor = spawnSync(
+					"python3",
+					[
+						join(f.root, "scripts/flywheel-config-lock.py"),
+						process.execPath,
+						"-e",
+						"process.exit(0)",
+					],
+					{
+						env: {
+							...process.env,
+							CONFIG_LOCK_FILE: lockPath,
+							CONFIG_LOCK_DEADLINE: "0",
+						},
+						encoding: "utf8",
+						timeout: 3000,
+					},
+				);
+				expect(competitor.error).toBeUndefined();
+				expect(competitor.status).toBe(75);
+				assertHeld();
 			},
 		);
-		expect(competitor.error).toBeUndefined();
-		expect(competitor.status).toBe(75);
-		assertHeld();
-	});
-});
+	},
+);

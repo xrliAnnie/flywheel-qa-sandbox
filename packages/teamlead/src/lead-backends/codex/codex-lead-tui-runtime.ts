@@ -3,9 +3,16 @@ import {
 	type LeadModelEnvPins,
 } from "../../lead-capabilities/model-env.js";
 import type { LeadCapabilityParent } from "../../lead-capabilities/runtime-parent.js";
+import { captureLeadRuntimeBuild } from "../../lead-runtime-build.js";
+import { readLeadRuntimeTuning } from "../../lead-runtime-tuning.js";
 import { verifyLeadCapabilityReadiness } from "./capability-readiness.js";
 import { createCapabilityTuiRuntime } from "./capability-tui-runtime.js";
+import {
+	admitLeadTurn,
+	type LeadTurnConfigAdmission,
+} from "./LeadRuntimeConfigHost.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
+import { NativeLeadRuntimeConfig } from "./NativeLeadRuntimeConfig.js";
 import { resolveRunnerActionMcpContext } from "./runner-action-mcp.js";
 /**
  * FLY-259 PR-D — codex-lead-tui-runtime: the ③ (real interactive terminal)
@@ -130,6 +137,8 @@ const execFileP = promisify(execFile);
 const TUI_LIVENESS_INTERVAL_MS = 20_000;
 
 // ── config ─────────────────────────────────────────────────────────────────
+
+const runtimeBuildIdentity = captureLeadRuntimeBuild();
 
 export interface CodexLeadTuiRuntimeConfig extends CodexLeadRuntimeConfig {
 	/** Working directory for the founder's TUI (`-C`). */
@@ -328,6 +337,7 @@ export interface DemuxedWiring {
  * Completed sidecar turns are released (bounded registry + tombstones).
  */
 export function wireDemuxedProcess(args: {
+	beforeTurn?: () => Promise<LeadTurnConfigAdmission>;
 	proc: CodexLeadProcess;
 	onFounderTurnStarted?: (turnId: string) => void;
 	onFounderTurnCompleted: (turnId: string) => void;
@@ -397,10 +407,15 @@ export function wireDemuxedProcess(args: {
 			else args.proc.on("exit", cb);
 		},
 		startTurn: async (a) => {
+			let admitted = a;
+			if (args.beforeTurn) {
+				const admission = await args.beforeTurn();
+				admitted = admitLeadTurn(a, admission);
+			}
 			demux.beginDispatch();
 			let turnId: string | undefined;
 			try {
-				turnId = await args.proc.startTurn(a);
+				turnId = await args.proc.startTurn(admitted);
 			} catch (err) {
 				demux.abortDispatch();
 				throw err;
@@ -525,6 +540,7 @@ export function requirePersona(
 // ── generation assembly (glue — validated by real bring-up) ────────────────
 
 export interface TuiGenerationDeps {
+	readTuning?: typeof readLeadRuntimeTuning;
 	/** Process-owned resources outlive a transient WS generation. Main owns shutdown. */
 	capabilitySession?: {
 		parent: LeadCapabilityParent;
@@ -582,6 +598,7 @@ export function buildTuiGeneration(
 		let threadRotationEnabled = false;
 		let runtime: CodexLeadRuntime | null = null;
 		let proc: CodexLeadProcess | null = null;
+		let nativeConfig: NativeLeadRuntimeConfig | undefined;
 		let residencyLifecycle: ResidentCodexLeadLifecycleObserver | null = null;
 		let lostCb: (() => void) | undefined;
 		// Generation-owned TUI lifecycle (review HIGH-1): the window is no longer
@@ -848,6 +865,7 @@ export function buildTuiGeneration(
 			if (closing) return closing;
 			closing = (async () => {
 				stopped = true;
+				nativeConfig?.close();
 				if (rotationTimer) clearInterval(rotationTimer);
 				rotationTimer = null;
 				if (livenessTimer) clearInterval(livenessTimer);
@@ -950,8 +968,16 @@ export function buildTuiGeneration(
 				const transport = new WsTransport(ws);
 				proc = new CodexLeadProcess({
 					spawnChild: () => transport,
-					experimentalApi: capabilityV2,
+					experimentalApi: capabilityV2 || runtimeBuildIdentity !== undefined,
 				});
+				nativeConfig = runtimeBuildIdentity
+					? new NativeLeadRuntimeConfig({
+							config,
+							process: proc,
+							build: runtimeBuildIdentity,
+							log: (message) => logger.warn(message),
+						})
+					: undefined;
 				if (lostCb) proc.on("exit", () => lostCb?.());
 				const inventory = capabilityV2 ? new McpInventoryWatcher() : undefined;
 				if (inventory)
@@ -968,7 +994,11 @@ export function buildTuiGeneration(
 				// tore Mufasa down. codex can only spawn what the (gated) config declares.
 
 				let activeThreadId: string | null = null;
+				let bootstrapAdmission = true;
 				const { facade, awaitTurnCompletion } = wireDemuxedProcess({
+					beforeTurn: nativeConfig
+						? () => nativeConfig!.beforeTurn(bootstrapAdmission)
+						: undefined,
 					proc,
 					onFounderTurnStarted: (turnId) => {
 						founderTurnActive = true;
@@ -1027,7 +1057,21 @@ export function buildTuiGeneration(
 							}));
 				sender = builtSender; // closure-tracked so stop() can close its DB handle
 
-				const threadParams = buildThreadParams(config, baseInstructions);
+				let bootstrapTuning: ReturnType<typeof readLeadRuntimeTuning> = {};
+				const threadParams = () => {
+					bootstrapTuning = capabilityV2
+						? {
+								...(config.model ? { model: config.model } : {}),
+								...(config.reasoningEffort
+									? { reasoningEffort: config.reasoningEffort }
+									: {}),
+							}
+						: (deps.readTuning ?? readLeadRuntimeTuning)(config);
+					return buildThreadParams(
+						{ ...config, ...bootstrapTuning },
+						baseInstructions,
+					);
+				};
 				const p = proc;
 				runtime = new CodexLeadRuntime({
 					startProcess: async () => {
@@ -1139,7 +1183,7 @@ export function buildTuiGeneration(
 									let id: string | undefined;
 									try {
 										id = await p.startThread({
-											...threadParams,
+											...threadParams(),
 											developerInstructions: note,
 										});
 									} catch {
@@ -1191,7 +1235,7 @@ export function buildTuiGeneration(
 						}
 						if (saved) {
 							try {
-								await p.resumeThread(saved, threadParams);
+								await p.resumeThread(saved, threadParams());
 								activeThreadId = saved;
 								return saved;
 							} catch (err) {
@@ -1202,7 +1246,7 @@ export function buildTuiGeneration(
 								);
 							}
 						}
-						const id = await p.startThread(threadParams);
+						const id = await p.startThread(threadParams());
 						if (!THREAD_ID_RE.test(id) || !SAFE_ID.test(id))
 							throw new Error("thread-id: invalid new thread id");
 						writeThreadId(config.threadIdPath, id);
@@ -1230,6 +1274,7 @@ export function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
+						await nativeConfig?.bootstrap(threadId, bootstrapTuning);
 						residencyLifecycle = createResidentCodexLeadLifecycleForGeneration({
 							config,
 							projects: residentCodexLeadProjects,
@@ -1316,6 +1361,12 @@ export function buildTuiGeneration(
 								: {}),
 						});
 						const inboxServer = new CodexLeadInboxServer({
+							...(nativeConfig
+								? {
+										socketOwnerId: nativeConfig.socketOwnerId,
+										runtimeConfig: nativeConfig.hooks,
+									}
+								: {}),
 							voiceSelfFilter:
 								(): import("../../voice-self-filter-contract.js").VoiceSelfFilterObservation =>
 									gateway.probeVoiceSelfFilter(),
@@ -1418,6 +1469,11 @@ export function buildTuiGeneration(
 							},
 							logger,
 						});
+						nativeConfig?.bindOwner(
+							() =>
+								inboxServer.runtimeConfigOwnerCurrent() &&
+								ownership.mailboxReady(),
+						);
 						// FIRST-BOOT/TURNLESS bootstrap turn (real-machine finding): the daemon
 						// persists a thread's rollout only at its FIRST TURN — a turnless
 						// thread has no rollout and the TUI's resume bootstrap fails with
@@ -1478,6 +1534,7 @@ export function buildTuiGeneration(
 						// resumes the SAME machine-owned thread). Fail-open. Pass the
 						// VALIDATED codex binary (review HIGH-4) — a bare `codex` under a
 						// sparse launchd PATH could miss or hit the wrong (npm) build.
+						bootstrapAdmission = false;
 						tuiSpec = {
 							projectName: config.projectName,
 							leadId: config.leadId,
@@ -1574,7 +1631,10 @@ export function buildTuiGeneration(
 							},
 						};
 					},
-					shutdownProcess: () => p.stop(),
+					shutdownProcess: async () => {
+						nativeConfig?.close();
+						await p.stop();
+					},
 					logger,
 				});
 				await runtime.start();

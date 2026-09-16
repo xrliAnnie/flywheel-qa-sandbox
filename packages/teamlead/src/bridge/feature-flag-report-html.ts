@@ -144,13 +144,13 @@ function copyPasteSurface(): string {
 		'      var key=leadRows[i].getAttribute("data-lead-row");',
 		"      var d=selDiffs(key);",
 		"      if(!d) continue;",
-		"      var ch={key:key};",
+		'      var ch={key:key,backend:leadRows[i].getAttribute("data-lead-backend"),projectName:leadRows[i].getAttribute("data-lead-project"),leadId:leadRows[i].getAttribute("data-lead-id")};',
 		"      if (d.model!==undefined) ch.toModel=d.model;",
 		"      if (d.effort!==undefined) ch.toEffort=d.effort;",
 		'      if (d.backend!==undefined) ch.backendNote={from:leadRows[i].getAttribute("data-lead-backend"), to:d.backend===null?"claude-code":d.backend};',
 		"      leadChanges.push(ch);",
 		"    }",
-		'    if (leadChanges.length){ var lt=FleetCmd.leadCommands(fleetScript, leadChanges); if(lt) lines=lines.concat(lt.split("\\n")); }',
+		'    if (leadChanges.length){ var lt=FleetCmd.leadCommands(fleetScript, leadChanges, commCli); if(lt) lines=lines.concat(lt.split("\\n")); }',
 		"    // Runner defaults + cron rows → runner-config apply lines.",
 		'    var rrRows=document.querySelectorAll("[data-runner-row]");',
 		"    for (var i=0;i<rrRows.length;i++){",
@@ -252,7 +252,7 @@ function leadConfigSection(leads: ConsoleSnapshot["leads"]): string {
 				label: LEAD_BACKEND_LABELS[b.backend] ?? b.backend,
 			}));
 			return [
-				`<div class="cfg-row" data-lead-row="${esc(l.key)}" data-lead-backend="${esc(l.currentBackend)}">`,
+				`<div class="cfg-row" data-lead-row="${esc(l.key)}" data-lead-project="${esc(l.projectName)}" data-lead-id="${esc(l.leadId)}" data-lead-backend="${esc(l.currentBackend)}">`,
 				`<span class="cfg-name">${esc(l.displayName)}<br><span class="cfg-dim">${esc(l.projectName)}</span></span>`,
 				cfgSelect(l.key, "backend", l.currentBackend, backendOpts, "(当前)"),
 				cfgSelect(l.key, "model", l.currentModelId, tierOpts, "Account 默认"),
@@ -265,7 +265,7 @@ function leadConfigSection(leads: ConsoleSnapshot["leads"]): string {
 		'<div class="card">',
 		'<h2 class="ff-sec">👥 Lead 模型 / Effort / 后端</h2>',
 		rows,
-		'<p class="cfg-note">改动会生成 fleet apply 命令进下面的复制框。后端切换不能自动 apply —— 会生成「需人工 cutover」说明（受管切换 = FLY-264 未做）。Antigravity / Kimi 仅存在于 runner 层（见下方 Runner 默认区）。</p>',
+		'<p class="cfg-note">Codex 调参生成下一轮生效的 lead-config 命令；Claude 调参生成 fleet apply 命令。后端切换不能自动 apply —— 会生成「需人工 cutover」说明（受管切换 = FLY-264 未做）。Antigravity / Kimi 仅存在于 runner 层（见下方 Runner 默认区）。</p>',
 		"</div>",
 	].join("\n");
 }

@@ -6,9 +6,12 @@ import {
 import { LEAD_PERMISSION_PROFILE } from "../../lead-capabilities/permission-profile.js";
 import { createLeadCapabilityContext } from "../../lead-capabilities/runtime-context.js";
 import type { LeadCapabilityParent } from "../../lead-capabilities/runtime-parent.js";
+import { captureLeadRuntimeBuild } from "../../lead-runtime-build.js";
+import { readLeadRuntimeTuning } from "../../lead-runtime-tuning.js";
 import { verifyLeadCapabilityReadiness } from "./capability-readiness.js";
 import { writeAtomicFile } from "./codex-lead-thread-rotation.js";
 import { buildFullAccessLeadActionsMcpServerConfig } from "./lead-actions/mcp-config.js";
+import { NativeLeadRuntimeConfig } from "./NativeLeadRuntimeConfig.js";
 import {
 	type RunnerActionMcpContext,
 	resolveRunnerActionMcpContext,
@@ -59,7 +62,10 @@ import {
 import { type ChildTransport, CodexLeadProcess } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
-import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
+import {
+	type CodexProcessLike,
+	CodexTurnExecutor,
+} from "./CodexTurnExecutor.js";
 import { assertConfinement, extractThreadDescriptor } from "./confinement.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
@@ -69,6 +75,7 @@ import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import { admitLeadTurn } from "./LeadRuntimeConfigHost.js";
 import { parseExplicitAliases } from "./lead-actions/alias-allowlist.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
@@ -80,6 +87,8 @@ import {
 } from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
+
+const runtimeBuildIdentity = captureLeadRuntimeBuild();
 
 export interface CodexLeadRuntimeConfig {
 	projectsFile?: string;
@@ -1646,7 +1655,7 @@ export function buildCodexLeadRuntime(
 		return carrierInstanceId;
 	};
 	const proc = new CodexLeadProcess({
-		experimentalApi: capabilityV2,
+		experimentalApi: capabilityV2 || runtimeBuildIdentity !== undefined,
 		spawnChild: () => {
 			const carrierInstanceId = capabilityV2
 				? capabilityCarrierInstanceId
@@ -1688,6 +1697,15 @@ export function buildCodexLeadRuntime(
 			return transport;
 		},
 	});
+
+	const nativeConfig = runtimeBuildIdentity
+		? new NativeLeadRuntimeConfig({
+				config,
+				process: proc,
+				build: runtimeBuildIdentity,
+				log: (message) => logger.warn(message),
+			})
+		: undefined;
 
 	// ④ runtime half: collect MCP startup notifications; ensureThread blocks on
 	// "exactly the gateway, ready" before any thread starts (fail-closed).
@@ -1759,12 +1777,28 @@ export function buildCodexLeadRuntime(
 	// still cannot self-authorize: confinement (③) blocks its shell's
 	// network/socket actions, the gateway (④) is its only action channel, and
 	// every reserved action there passes founder preflight/consent (C2/D).
-	let threadParams = buildThreadParams(config, baseInstructions);
+	let bootstrapTuning: ReturnType<typeof readLeadRuntimeTuning> = {};
+	let threadBaseInstructions = baseInstructions;
+	const threadParams = () => {
+		bootstrapTuning = capabilityV2
+			? {
+					...(config.model ? { model: config.model } : {}),
+					...(config.reasoningEffort
+						? { reasoningEffort: config.reasoningEffort }
+						: {}),
+				}
+			: readLeadRuntimeTuning(config);
+		return buildThreadParams(
+			{ ...config, ...bootstrapTuning },
+			threadBaseInstructions,
+		);
+	};
 
 	let resourcesClosed = false;
 	const shutdownProcess = async () => {
 		if (resourcesClosed) return;
 		resourcesClosed = true;
+		nativeConfig?.close();
 		try {
 			await proc.stop();
 		} finally {
@@ -1809,10 +1843,7 @@ export function buildCodexLeadRuntime(
 						});
 					if (!capabilityParent.baseInstructions?.trim())
 						throw new Error("capability_rules_unverified");
-					threadParams = buildThreadParams(
-						config,
-						capabilityParent.baseInstructions,
-					);
+					threadBaseInstructions = capabilityParent.baseInstructions;
 					mcp = capabilityParent.mcp;
 				}
 				if (broker) await broker.listen();
@@ -1865,12 +1896,12 @@ export function buildCodexLeadRuntime(
 				if (saved) {
 					const { id, result } = await proc.resumeThreadWithResult(
 						saved,
-						threadParams,
+						threadParams(),
 					);
 					assertConfinement(extractThreadDescriptor(result), expectation);
 					return id;
 				}
-				const { id, result } = await proc.startThreadWithResult(threadParams);
+				const { id, result } = await proc.startThreadWithResult(threadParams());
 				assertConfinement(extractThreadDescriptor(result), expectation);
 				writeThreadId(config.threadIdPath, id);
 				return id;
@@ -1878,21 +1909,35 @@ export function buildCodexLeadRuntime(
 			if (saved) {
 				// Re-pass baseInstructions on resume so a persona edit takes effect on
 				// restart (thread/resume accepts baseInstructions).
-				await proc.resumeThread(saved, threadParams);
+				await proc.resumeThread(saved, threadParams());
 				return saved;
 			}
-			const id = await proc.startThread(threadParams);
+			const id = await proc.startThread(threadParams());
 			writeThreadId(config.threadIdPath, id);
 			return id;
 		},
 		wire: async (threadId: string): Promise<RuntimeWiring> => {
+			await nativeConfig?.bootstrap(threadId, bootstrapTuning);
 			const externalReceiptQueue = new MailboxQueue(config.commDbPath);
 			const externalReceiptSaga = new ExternalReceiptSaga({
 				leadId: config.leadId,
 				queue: externalReceiptQueue,
 				journal,
 			});
-			const executor = new CodexTurnExecutor({ process: proc, threadId });
+			const turnProcess: CodexProcessLike = nativeConfig
+				? {
+						on: proc.on.bind(proc),
+						request: proc.request.bind(proc),
+						startTurn: async (args) => {
+							const admission = await nativeConfig!.beforeTurn();
+							return proc.startTurn(admitLeadTurn(args, admission));
+						},
+					}
+				: proc;
+			const executor = new CodexTurnExecutor({
+				process: turnProcess,
+				threadId,
+			});
 			// FLY-1806: Discord typing is fixed on. Posts with the Lead's own bot token
 			// in the reply channel while a founder message is processed; closed on
 			// stopGateway.
@@ -1949,6 +1994,12 @@ export function buildCodexLeadRuntime(
 					: {}),
 			});
 			const inboxServer = new CodexLeadInboxServer({
+				...(nativeConfig
+					? {
+							socketOwnerId: nativeConfig.socketOwnerId,
+							runtimeConfig: nativeConfig.hooks,
+						}
+					: {}),
 				voiceSelfFilter:
 					(): import("../../voice-self-filter-contract.js").VoiceSelfFilterObservation =>
 						gateway.probeVoiceSelfFilter(),
@@ -2057,6 +2108,10 @@ export function buildCodexLeadRuntime(
 				},
 				logger,
 			});
+			nativeConfig?.bindOwner(
+				() =>
+					inboxServer.runtimeConfigOwnerCurrent() && ownership.mailboxReady(),
+			);
 			return {
 				recover: () => router.recover(),
 				startGateway: async () => {

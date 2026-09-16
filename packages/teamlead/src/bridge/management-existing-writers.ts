@@ -20,7 +20,11 @@ import {
 	type CanonicalRequest,
 	newBatchId,
 } from "./fleet-admin.js";
-import { computeLeadCapabilities } from "./fleet-capabilities.js";
+import {
+	computeLeadCapabilities,
+	leadTuningWriteCapability,
+} from "./fleet-capabilities.js";
+import type { LeadConfigService } from "./lead-config-service.js";
 import {
 	buildTargetId,
 	fileSourceRevision,
@@ -47,6 +51,7 @@ import {
 type MaybePromise<T> = T | Promise<T>;
 
 export interface ExistingManagementWriterDeps {
+	leadConfig?: Pick<LeadConfigService, "stage" | "apply">;
 	projects(): ProjectEntry[];
 	projectsRevision(): string;
 	projectConfigs(): ReadonlyMap<string, LoadedProjectConfig>;
@@ -375,7 +380,7 @@ function resolveLeadTarget(
 				continue;
 			}
 			const capability = computeLeadCapabilities(lead);
-			const writable = capability.currentBackend === "claude-code";
+
 			return {
 				targetId,
 				kind: "lead",
@@ -383,12 +388,10 @@ function resolveLeadTarget(
 				leadId: lead.agentId,
 				currentValue: selectionFromLead(lead),
 				sourceRevision: deps.projectsRevision(),
-				writeCapability: {
-					writable,
-					reason: writable ? undefined : "当前 Lead backend 不支持受管模型写回",
-					consequence: writable ? "restart-lead" : "governance-readonly",
-					requiresAcknowledgement: writable,
-				},
+				writeCapability: leadTuningWriteCapability(
+					capability.currentBackend,
+					!!deps.leadConfig,
+				),
 			};
 		}
 	}
@@ -522,7 +525,8 @@ function createLeadWriter(
 					"backend/provider authority cannot be changed in v1",
 				);
 			}
-			if (record && record.provider !== "anthropic") {
+			const hot = target.writeCapability.consequence === "next-turn";
+			if (record && record.provider !== (hot ? "openai" : "anthropic")) {
 				return rejectedPreflight(
 					"readonly_cross_provider",
 					"readonly_cross_provider: Lead provider/backend changes require manual cutover",
@@ -531,6 +535,14 @@ function createLeadWriter(
 			const desired = parseSelection(desiredValue, "lead");
 			if (desired && "error" in desired) {
 				return rejectedPreflight("invalid_desired_value", desired.error);
+			}
+			if (hot) {
+				if (!desired || !desired.model || !desired.effort)
+					return rejectedPreflight(
+						"invalid_desired_value",
+						"Codex 热配置要求明确的 model 和 effort",
+					);
+				return preparedChange({ writer, target, newValue: desired });
 			}
 			try {
 				leadCanonical(deps, target.targetId, desired);
@@ -557,11 +569,59 @@ function createLeadWriter(
 			if (desired && "error" in desired) {
 				return { status: "rejected", reason: desired.error };
 			}
+			if (target.writeCapability.consequence === "next-turn") {
+				const resolved = resolveLeadTarget(deps, change.targetId);
+				if (!resolved || !desired || !deps.leadConfig)
+					return {
+						status: "rejected",
+						reason: "hot configuration target unavailable",
+					};
+				try {
+					const staged = await deps.leadConfig.stage({
+						projectName: resolved.projectName,
+						leadId: resolved.leadId,
+						model: desired.model,
+						effort: desired.effort,
+						reason: "management-console Lead tuning",
+					});
+					if (
+						staged.canonical.intent.preProjectsSha !==
+						rawSha(change.sourceRevision)
+					)
+						return {
+							status: "rejected",
+							reason: "projects.json changed since confirmation",
+						};
+					const result = await deps.leadConfig.apply(staged);
+					return {
+						status: ["applied", "observed"].includes(result.effectiveStatus)
+							? "applied"
+							: "accepted",
+						details: {
+							operationId: result.operation.input.operationId,
+							effectiveStatus: result.effectiveStatus,
+						},
+					};
+				} catch (error) {
+					return {
+						status: "rejected",
+						reason: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
 			return deps.applyLeadCanonical(
 				leadCanonical(deps, change.targetId, desired),
 			);
 		},
 		applyGroup: async (changes) => {
+			if (
+				changes.some(
+					(change) =>
+						resolveLeadTarget(deps, change.targetId)?.writeCapability
+							.consequence === "next-turn",
+				)
+			)
+				return applySequentiallyAgainstCurrentAuthority(writer, changes);
 			try {
 				const result = await deps.applyLeadCanonical(
 					leadCanonicalGroup(deps, changes),

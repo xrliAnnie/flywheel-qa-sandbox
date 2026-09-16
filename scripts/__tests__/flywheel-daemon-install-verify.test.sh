@@ -30,6 +30,7 @@ fail() { FAILED=$((FAILED + 1)); log_test "✗ $1"; }
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export FLYWHEEL_COMM_CLI="$REPO_ROOT/packages/flywheel-comm/dist/index.js"
 DAEMON_SH="${REPO_ROOT}/scripts/flywheel-daemon.sh"
 
 SANDBOX="$(mktemp -d /tmp/fly247-staged.XXXXXX)"
@@ -133,6 +134,10 @@ source "$REPO_ROOT/scripts/lib/lead-address.sh"
 # to be observable, not fatal.
 set +e
 
+# Canonical identity resolution requires a selected summary granularity.
+mkdir -p "$SANDBOX/.flywheel"
+printf '{"granularity":"per-lead","setBy":"founder","setAt":"2026-09-16T00:00:00Z"}\n' > "$SANDBOX/.flywheel/summary-config.json"
+
 KEY="geo-product-lead"
 LABEL="com.flywheel.lead.${KEY}"
 CANON_MANIFEST="$MANIFEST_DIR/${KEY}.json"
@@ -155,7 +160,7 @@ reset_txn() {
   touch "$CTL/loaded"
   echo "$RESET_OLD_PID" > "$CTL/kill_on_bootout"
   printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
-  echo '[{"projectName":"geo","leads":[{"agentId":"product-lead"}]}]' > "$HOME/.flywheel/projects.json"
+  echo '[{"projectName":"geo","leads":[{"agentId":"product-lead","summaryRole":"producer"}]}]' > "$HOME/.flywheel/projects.json"
   jq -n --argjson pid "$RESET_OLD_PID" --arg socket "$(derive_lead_socket "geo/product-lead" "$FLYWHEEL_STATE_DIR")" \
     '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",pid:$pid,socketPath:$socket}' > "$CANON_MANIFEST"
   generate_plist "$KEY" "$CANON_MANIFEST" >/dev/null
@@ -347,7 +352,7 @@ CODEX_PLIST="$(plist_path "$CODEX_KEY")"
 # Production Mufasa shape: the wrapper-owned manifest predates leadBackend;
 # projects.json remains the only backend authority.
 jq -n '{leadId:"mufasa-lead",projectDir:"/tmp/growth",projectName:"growth"}' > "$CODEX_MANIFEST"
-echo '[{"projectName":"growth","leads":[{"agentId":"mufasa-lead","backend":"codex-app-server"}]}]' > "$PROJECTS_JSON"
+echo '[{"projectName":"growth","leads":[{"agentId":"mufasa-lead","summaryRole":"producer","backend":"codex-app-server"}]}]' > "$PROJECTS_JSON"
 printf '<plist><string>/opt/flywheel-codex-lead-wrapper-mufasa.sh</string></plist>\n' > "$CODEX_PLIST"
 CODEX_PLIST_BEFORE="$(file_sha "$CODEX_PLIST")"
 rm -f "$CTL/calls.log"
@@ -386,7 +391,7 @@ roles:
     backend: codex-tmux
 EOF
 jq -n --arg root "$LEGACY_ROOT" \
-  '[{projectName:"legacy",projectRoot:$root,leads:[{agentId:"lead"}]}]' > "$PROJECTS_JSON"
+  '[{projectName:"legacy",projectRoot:$root,leads:[{agentId:"lead",summaryRole:"producer"}]}]' > "$PROJECTS_JSON"
 LEGACY_CONFIG_BACKEND="$(lead_restart_project_backend "$PROJECTS_JSON" legacy lead)"
 rm "$LEGACY_ROOT/.flywheel/config.yaml"
 LEGACY_ENV_BACKEND="$(FLYWHEEL_LEAD_BACKEND=codex-tmux lead_restart_project_backend "$PROJECTS_JSON" legacy lead)"

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "lead_config_operation",
+	"classification": "protectedCurrentOrReference"
+}

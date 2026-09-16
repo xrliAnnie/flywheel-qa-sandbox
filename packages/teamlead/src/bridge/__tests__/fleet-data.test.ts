@@ -711,3 +711,37 @@ describe("DashboardPayload fleet gate", () => {
 		expect(withFleet.fleet).toBeDefined();
 	});
 });
+
+it("collects Codex tuning separately from launch manifests and fails closed on unavailable tuning evidence", async () => {
+	const view = {
+		operationId: "op",
+		configGeneration: 1,
+		effectiveStatus: "pending_runtime",
+		checkedAt: "2026-09-16T04:00:00Z",
+		requested: { model: "gpt-6-astra", effort: "high" },
+	};
+	const deps = makeDeps();
+	deps.leadConfigStatus = async (key) => {
+		expect(key).toBe(KEY);
+		return view;
+	};
+	const rows = [
+		project({
+			backend: "codex-app-server",
+			model: "gpt-6-astra",
+			effort: "high",
+		}),
+	];
+	const good = await collectFleetSnapshot(rows, () => undefined, deps);
+	expect(good.leads[0].tuning).toEqual(view);
+	expect(good.leads[0].tuning?.applied).toBeUndefined();
+	expect(good.leads[0].drift).toBeNull();
+	deps.leadConfigStatus = async () => {
+		throw new Error("offline");
+	};
+	const unavailable = await collectFleetSnapshot(rows, () => undefined, deps);
+	expect(unavailable.leads[0].tuning).toBeUndefined();
+	expect(unavailable.leads[0].observed.degradationReasons).toContain(
+		"lead-tuning-unavailable",
+	);
+});

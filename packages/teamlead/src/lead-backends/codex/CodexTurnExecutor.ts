@@ -45,6 +45,8 @@ export interface CodexProcessLike {
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
 	): void;
 	startTurn(args: {
+		model?: string;
+		effort?: string;
 		threadId: string;
 		input: unknown[];
 		clientUserMessageId?: string;
