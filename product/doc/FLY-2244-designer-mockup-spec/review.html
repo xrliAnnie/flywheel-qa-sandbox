@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>designer 高保真 mockup 规范:请你过一遍措辞 — FLY-2244</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.55;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:32px 18px 90px}
+h1{font-size:27px;line-height:1.28;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 24px}
+.card{background:var(--card);border-radius:12px;padding:17px 20px;margin:0 0 13px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18.5px;margin:0 0 5px;letter-spacing:-.2px}
+.kicker{font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--dim);
+font-weight:600;margin:0 0 9px}
+p{margin:0 0 11px}
+ul{margin:0 0 11px;padding-left:20px}
+li{margin:0 0 6px}
+.lead{font-size:19px;line-height:1.5;font-weight:600;letter-spacing:-.2px}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 13px;color:#4a4a4f;margin:0 0 12px;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:4px 0 13px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.no{color:var(--red);font-weight:700}
+.yes{color:var(--green);font-weight:700}
+.warn{color:var(--amber);font-weight:700}
+.note{background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+font-size:13.5px;color:#4a4a4f;margin:0 0 11px}
+.opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 10px;background:#fcfcfe}
+.opt h3{font-size:15.5px;margin:0 0 6px}
+.opt .cost{font-size:13.5px;color:#8a4a00;background:#fff6e8;border-radius:7px;padding:8px 10px;margin:8px 0 0}
+.rec{font-size:14px;background:#eef6ff;border-radius:8px;padding:10px 12px;margin:2px 0 8px;color:#0a3f8a}
+.unsure{font-size:13.5px;background:#fbf0ff;border-radius:8px;padding:9px 12px;margin:0 0 4px;color:#5d1f77}
+.tree{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.65;
+background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+white-space:pre;overflow-x:auto;margin:0 0 11px}
+.big{font-size:31px;font-weight:700;letter-spacing:-1px;line-height:1.1}
+.stat{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 13px}
+.stat > div{min-width:96px}
+.stat .lbl{font-size:12px;color:var(--dim);margin-top:2px}
+.cmt{margin:15px 0 0;padding-top:13px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -84px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+@media (max-width:560px){.wrap{padding:22px 13px 84px}h1{font-size:23px}.lead{font-size:17px}
+.bar{margin:20px -13px -84px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+
+<h1>designer 高保真 mockup 规范:请你过一遍措辞</h1>
+<p class="sub">FLY-2244 · 2026-09-11 · 第 3 版 · 改的文件只有一个:<code>.flywheel/agents/nodes/product_design.md</code></p>
+
+<div class="note" style="border-color:#ff9500;background:#fff6e8;color:#8a4a00">
+<b>如果这张卡你觉得眼熟 —— 是的,你见过。</b>正文和上两轮<b>一个字都没改</b>,不用重看。<br>
+这一版只动了最下面【批准怎么打】那一格:之前那格教你回「措辞 OK」,<b>而系统根本不认这个词</b> —— 你就算回了,也会被静静丢掉,看起来跟没回一样。前两轮都是这么空等到期的。<b>那是我们这边的 bug,不是你的。</b>正确怎么打,见最下面那格(<b>最省事:直接在 Discord 卡上点 ✅</b>)。
+</div>
+
+<div class="card blue">
+<p class="kicker">这一页要你做什么</p>
+<p class="lead">只有一件事:<b>看措辞对不对。</b></p>
+<p>规范正文已经写完了。你要判断的不是"要不要改",是<b>"这么写,下一个 designer 照着做,做出来的会不会还是你退回的那种东西"</b>。</p>
+<p>每一格下面都有批注框。看完最下面点「一键汇总复制」,贴回 issue —— <b>这一页的批注不会自己传给我。</b></p>
+<p class="note"><b>这一版之前的卡请忽略,以这一张为准。</b>发出第 1 版之后,我拿一句话把自己刚交的东西重扫了一遍:「一个体只读我改后的规范、不听我解释,它还能不能理直气壮地交一张跟真产品无关的托管 HTML?」<b>答案是能,还有三个口子,其中一个是我自己刚开的。</b>与其让你去读一份我自己都知道有洞的规范,不如换掉。<br><br>下面 04 / 05 / 06 三格就是那三个口子,<b>三个都已经补好了</b>。06 那格本来准备做成一道选择题问你,推导下来发现<b>它不是二选一</b>,所以直接写进规范了 —— 那一格里如实交代了<b>哪一句是你定的、哪一步是我们推的</b>,推错了你一句话能推翻。</p>
+<div class="cmt"><label>01 整体感觉 — 有话直接写</label><textarea data-s="01 整体感觉"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">为什么会有这张单</p>
+<h2>同一个纠正,你说了两遍</h2>
+<p>2026-08-27 一次,2026-09-01 一次,内容一样:mockup 交上来是<b>脱离实际的假 HTML</b>。</p>
+<p>查下来原因不在那个 runner 身上 —— <b>规范本身就是这么教它的</b>:</p>
+<ul>
+<li>Step 0 把「一次性静态高保真 HTML」列成一个可以随便选的类型,<b>一句"什么时候不该选"都没有</b></li>
+<li>Step 4 对"要落到真产品上"的那一类,只要求交「mockup + 一张说明落在哪里的纸条」,<b>从没说过要是真代码</b></li>
+<li>技能表把「发一张托管卡片给 founder 看」写成通用做法,<b>没有任何限定</b></li>
+</ul>
+<p>⇒ 每次纠正的是<b>人</b>,没纠正<b>规范</b>,所以下一个 runner 又会犯一遍。这次改的是规范。</p>
+<div class="cmt"><label>02 问题定性 — 我说的原因对不对</label><textarea data-s="02 问题定性"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">改后的规范 · 核心四条</p>
+<h2>下面每一条都能指回你的原话</h2>
+
+<div class="opt">
+<h3>① 静态 HTML 没错 —— 它是【选方向】那一步的正确形态</h3>
+<p class="quote">「Step 0 做一个静态高保真 HTML 是可以的。比如你用 Codex 或者 Gemini 做了几个 mockup image,然后放在 HTML 里给我展示 Option 1、Option 2、Option 3,这完全没问题。<b>最初的 mockup 阶段用 HTML 是 OK 的。</b>」</p>
+<p>所以规范<b>没有</b>把静态 HTML 一棍子打死。它被明确定位成:概念图拼成 Option 1/2/3,给你挑方向用。</p>
+</div>
+
+<div class="opt">
+<h3>② 高保真 = 真代码,挂在 localhost,你能直接打开</h3>
+<p class="quote">「到了要落实到真正产品改动、做高保真 mockup 的时候,我希望它能用<b>代码(JavaScript / TypeScript 这些)写出来</b>,方便我直接看。」</p>
+<p>规范里写死:交付物是<b>跑着的东西</b>,不是它的照片。数据可以是假的、代码可以糙,<b>长得像</b>才是重点。服务挂了 runner 自己重启,不许让你去弄。</p>
+</div>
+
+<div class="opt">
+<h3>③ 界面已经存在时,从现有代码改起 —— 是【强默认】,不是铁律</h3>
+<p class="quote">「它<b>不一定非要</b>真的跑在产品自己的前端上。我之前提到跑在前端,主要是因为这个东西大概率不需要完全重写:我们是在现有的 dashboard 上做 polish,现有的 code 已经定义了它现在的样子,<b>直接在现有代码的基础上去改会简单很多</b>。这才是我的初衷。」</p>
+<p>规范把这条的<b>理由(省事)</b>写在了规则旁边,并明说:<b>确有理由要独立写,是允许的,但要说明理由。</b></p>
+<p class="cost">⚠️ 这里我上一轮翻过车:你给的是<b>理由</b>,我把它硬化成了<b>教条</b>("必须跑在产品自己的前端上"),被你当场纠正。第二次提交改回来了。这一版我全程按"强默认 + 可给理由破例"写,<b>请重点看这条有没有又写硬</b>。</p>
+</div>
+
+<div class="opt">
+<h3>④ 顺序不许跳,两个方向都不许</h3>
+<div class="tree">概念图(便宜,给你挑方向)
+      ↓  你确认方向
+真代码 + 假数据,挂 localhost</div>
+<p>不许为了"省一轮"跳过概念图 —— 跳过你那一步<b>只会多花轮次</b>。也不许停在概念图就交差:方向定了,还欠你真代码那一版。</p>
+</div>
+
+<div class="cmt"><label>03 核心四条 — 哪条写得不对 / 不是你的意思</label><textarea data-s="03 核心四条"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">本轮新查出来的 · 这条必须你拍</p>
+<h2>规范和机器合同打架了,照字面执行会卡死</h2>
+
+<p>上一版规范加了这么一条(意思是对的):</p>
+<p class="quote">⛔ 不要把高保真 mockup 当成"托管快照"交上来 —— 不发托管页、不发截图当交付物。她看的是<b>跑着的东西</b>,不是它的照片。</p>
+
+<p>但是,给你发评审卡的那道门(<code>founder_review</code>)在<b>代码层面强制要一个 https 网址</b>,而且<b>明确拒绝 localhost</b>:</p>
+<div class="tree">founder-review.ts:285
+  if (!/^https:\/\//.test(hostedUrl))
+    throw new Error("founder_review requires an HTTPS hosted review URL")
+
+gate-noblock.test.ts:194  用例名就叫 "non-HTTPS delivery"
+  hostedUrl: "http://localhost/review"   → 断言必须被拒</div>
+
+<p><b class="no">⇒ 照上一版字面执行,designer 卡死:</b>规范说"不许发托管页",门说"没有 https 网址就开不了轮次"。<b>高保真那一轮的评审卡根本发不出来。</b></p>
+
+<p style="margin-top:16px"><b>已经这么改了 —— 把「一轮到底绑了什么」逐个点名:</b></p>
+
+<div class="scroll"><table>
+<tr><th>绑什么</th><th>是什么</th><th>作用</th></tr>
+<tr><td><b>那个 commit</b></td><td>被评审的确切版本</td><td>你点"通过",批的就是它</td></tr>
+<tr><td><b>托管卡</b>(https)</td><td>让这一轮<b>能开出来</b>的信封</td><td>门的硬性要求;卡里装 localhost 网址 + 前后截图 + 批注框</td></tr>
+<tr><td><b class="no">localhost 网址</b></td><td>🔴 <b>交付物</b> —— 跑着的真代码</td><td>你真正打开、真正判断的那个东西。写在卡里,<b>不能当绑定网址</b></td></tr>
+</table></div>
+
+<p><b>为什么 localhost 网址不能直接当绑定网址:</b>不是我不想,是<b>机器不收</b>。上面那两行代码就是。所以规范里明写了一句:「别试,轮次开不出来。」</p>
+
+<p>并且写死了两个要防的翻车法:</p>
+<ul>
+<li><b>卡很漂亮,服务是死的。</b>—— 那就是你已经退回两次的"假 HTML"换了个壳。规范写死:<b>你点进去时服务是死的,这一轮就不算交付</b>,重启是 runner 的活。<b>发卡片不许是最后一步。</b></li>
+<li><b>轮次根本没开。</b>—— 把 ⛔ 读成"什么都不许发",结果这个阶段静默卡死,你连看都看不到。</li>
+</ul>
+
+<p class="rec">✅ 这个拆法不是我新发明的:隔壁 prototype 角色(<code>proto.md</code>)早就是"截图 / 托管卡 配同一道门"。所以是跟系统里已有的做法对齐。</p>
+
+<p><b>另外加了一条,防止这张卡变成新的挡箭牌:</b>规范里明写「<b>我自己检查过了</b>」不算检查 —— 凡是靠体自己打包票的条款等于没有条款。所以改成可核的:</p>
+<p class="quote">卡里<b>必须带对着那个 localhost 网址现拍的证据</b>(截图 / proofshot),而且必须是<b>跑起来的界面本身</b> —— 不是终端里一行 server started、不是 build log、不是源文件。<b>没有这个证据的轮次,Lead 直接退回,不等你看。</b></p>
+
+<div class="cmt"><label>04 这个拆法认不认 / 那张托管卡烦不烦</label><textarea data-s="04 托管卡冲突怎么解"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">第二遍扫描查出来的 · 这条最重</p>
+<h2>同一个洞,从另一扇门原样走了回来</h2>
+
+<p>把假 HTML 从 Step 4 赶出去之后,我把全文的<b>每一条禁令</b>重新过了一遍,问同一个问题:<b>这条禁令,是不是把规范自己要求的下一步唯一的路堵死了?</b>查到这个:</p>
+
+<div class="scroll"><table>
+<tr><th>规则</th><th>说的什么</th></tr>
+<tr><td>CRITICAL rules</td><td>「不许写 production code」—— <b>无条件,没有任何限定</b></td></tr>
+<tr><td>Type (b) 契约</td><td>界面已存在时<b>从现有代码改起</b>(你给的理由:省事)</td></tr>
+<tr><td>Docs &amp; branch</td><td>设计产物放 <code>doc/</code> 文件夹</td></tr>
+</table></div>
+
+<p class="no">⇒ 三条同时满足的动作,只剩下一个:<b>在 doc 文件夹里手搭一个独立仿制页。</b></p>
+
+<p><b>那就是你退回两次的那个东西。</b>我们把它从 Step 4 赶出去,它从 CRITICAL rules 那扇门原样走了回来。(文件里本来有一条豁免,但它只覆盖 implement / QA 阶段,够不到 design 阶段。)</p>
+
+<div class="opt">
+<h3>今晚先把危险出口焊死(这条不需要你拍,已经加进去了)</h3>
+<p class="quote">⛔ <b>手搭一个跟产品源码毫无关系的独立仿制页,在这份文件的任何读法下,都不是合法的 Type (b) 交付物。</b>如果你把 Step 4 和 CRITICAL rules 一起读完,结论是「我唯一能做的就是搭一个」——<b>那你找到的是这份规范的一个矛盾,不是一个任务。</b>停手,报给你的 Lead,不要搭。</p>
+<p class="rec">✅ 这条<b>不预设下面那道选择题谁赢</b> —— 无论你选甲还是乙,「手搭仿制页」都是错的。所以它今晚就能上,不用等你。</p>
+</div>
+
+<p>顺手修掉一个坏范例:规范里当范例引的那个 <code>prototype/server.mjs</code>,<b>仓里根本没有</b>,下一个体照着找会扑空。查了历史 —— 它提交过、后来被特意删掉,理由是它 import 了一个<b>永远不会进 main 的文件</b>,到了 main 上就指向一条不存在的路径:死的、不报错、只有下一个想跑它的人才会发现。规范里已标明它没了,并留下当年那条判据:<b>「这东西到了 main 上还立得住吗?」</b></p>
+
+<div class="cmt"><label>05 这个守卫写得对不对</label><textarea data-s="05 停手守卫"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">本来要问你一道选择题 · 推导下来它自己解开了</p>
+<h2>两条路,各有各的归宿 —— 不用你二选一</h2>
+
+<p>Type (b) 的真代码住哪儿、能不能进 main,本来是我准备让你二选一的题。<b>后来发现它不是二选一 —— 是两条路,各走各的。</b></p>
+
+<div class="tree">默认:从现有代码改起(= 改了产品的真源码)
+   → 这一半碰了产品前端代码,【不进 main】
+     留在自己的 PR 里刻意不合,下一个人能读到
+     确切改了什么、能把分支 checkout 出来跑
+   → 粗代码 + 假数据在这条路上是【预期的】
+     ——正因如此,它更不能待在能合并的路上
+   → 这条 PR 合进 main = 违规,不是抄近道
+
+例外:独立写(要说明理由)
+   → 它【没碰】产品前端代码,所以不受上面那条约束
+   → 它要过另一条测试:【这东西到了 main 上还立得住吗?】
+     立得住就能合 —— 所以能拷就拷,别 import 一个
+     永远不进 main 的路径(FLY-2071 就是这么烂掉的)</div>
+
+<p><b class="yes">⇒ 两条路的归宿都明确了:</b>能进 main、能活得久的是<b>例外</b>那条;<b>默认</b>那条用「贴着真源码、最省事」换来的代价,就是它的产物<b>活在一个永远不会合的分支上</b>。</p>
+
+<div class="opt">
+<h3>顺带交代一个我自己犯的错,免得你以为这段一直是对的</h3>
+<p>我第一次写这条约束时,<b>把它挂错了地方</b> —— 挂在了「例外(独立写)」那条路上。可那条路<b>根本不碰产品前端代码</b>,约束挂在那儿等于没挂;而真正会去改产品源码的<b>默认</b>那条,反而一条合并限制都没有。</p>
+<p class="cost">⚠️ 照那一版执行,一个体会:默认去改产品源码 → 然后把它合进 main。<b>正是你 FLY-2071 里明确否掉的事。</b>我们花一晚上堵洞,那一版会亲手开一个。已经改到正确的那条路上了。</p>
+</div>
+
+<p class="unsure">⚠️ <b>归属说清楚,免得我们替你说话 ——</b> 你实际定过的只有一句(记在 commit <code>fb3ca7b</code>):<b>文档和 mockup 材料可以进 main,碰了产品前端代码的那一半不许进。</b><br><br>
+<b class="no">而且那一句也不是你当面对我说的原话</b>,是我们从那条 commit message 里<b>读来的转述</b>。<br>
+至于「两条路各自的归宿」这个结论,<b>是我们从那一句推导出来的,不是你定的</b>。我们按推导结果写进规范了,<b>没有再问你一遍</b>。<br>
+<b>如果哪一步读错或推错了 —— 你一句话就能推翻。</b></p>
+
+<div class="cmt"><label>06 这个推导对不对 / 要不要推翻</label><textarea data-s="06 两条路归宿"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">顺手改的一处小措辞</p>
+<h2>Step 0 现在读起来像"二选一的菜单"</h2>
+<p>原文把两种 mockup 并排列出来,像点菜:选 (a) 静态,或者选 (b) 落到真产品。</p>
+<p>但按上面第 ① 条,对一张"要落到真产品"的单子来说,静态那一版<b>不是另一个选项,是它必经的第一步</b>。照旧措辞,runner 很容易理解成"我选了 (a),就不用做 (b) 了"。</p>
+<p>所以 Step 0 真正在问的只有一句:<b class="yes">这次改动落不落到真产品上?</b>规范里补了一句明说:这两个不是"挑一个然后就完事"的菜单。</p>
+<p><b>并且补了一句硬话 —— 原来最缺的就是它:</b></p>
+<p class="quote">如果答案是 <b>(b)</b>,那么<b>独立的托管静态页在这张单的任何阶段都不构成合法的终态交付</b>。它只在 Step 2 当选项卡、只用来挑方向;<b>方向一旦定了,它就再也交不了差。</b>拿它当 (b) 类单子的答复,是<b class="no">交付失败,不是"部分完成"</b> —— 那张页正是你 2026-08-27 和 2026-09-01 两次退回的东西。<br><br><b>只有</b>在你确认「这是纯探索、不会落到产品上」时,静态页才是合法的终态形式。没拿到这个确认,就默认走 (b) 这条路。</p>
+<p class="rec">✅ 「交付失败,不是部分完成」这个区分是 Lead 特意要留的 —— 「部分完成」是这类活最常见的自我安慰。</p>
+<div class="cmt"><label>07 Step 0 措辞 — 这么收紧行不行</label><textarea data-s="07 Step 0 措辞"></textarea></div>
+</div>
+
+<div class="card">
+<p class="kicker">我特意没做的事</p>
+<h2>免得你以为我漏了</h2>
+<ul>
+<li><b>没改 <code>product_designer.md</code></b>(另一个名字很像的文件)。它也提到 mockup,但它自己就写着"视觉 mockup 是 designer 的活,交出去",不是你指的那个 bug。你点名的是 <code>product_design.md</code>,我就只动这一个。<b>如果你觉得那个也该看,说一声。</b></li>
+<li><b>没合 PR。</b>合入永远是你的门。</li>
+<li><b>没给规范加新的门 / 新的阶段。</b>这张单只改措辞。</li>
+</ul>
+<div class="cmt"><label>08 有没有该做没做的</label><textarea data-s="08 我没做的事"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="kicker">接下来</p>
+<h2>批准怎么打 —— 最省事的是点一下</h2>
+<p class="lead"><b>推荐:在 Discord 那张卡上点 ✅。</b>一下就行,不用打字,打不错。</p>
+<p class="note">也可以打字:<b>回复那张卡,单独一条,只打【通过】或【approve】。</b></p>
+<p class="cost">⚠️ 走打字这条路的话,<b>必须是单独一条、而且只有这两个词之一</b>(结尾一个句号可以)。多一个字、或者夹在一句话里,系统都<b>收不到</b> —— 而且<b>不报错</b>,看起来就跟你没回一样。<b>这是我们这边的毛病,不是你的。</b><br>
+(老实交代:这张卡前两版写的是「措辞 OK」,那个词系统根本不认;而且一直没告诉你可以直接点 ✅。<b>前两轮空等到期,这一条有我的责任。</b>)</p>
+<ul>
+<li><b>要打回</b> → 回复那张卡打【打回】,或者用 <code>设计:</code> / <code>实现:</code> / <code>测试:</code> 开头说要改什么。</li>
+<li><b>有具体意见</b> → 上面每一格的批注框写完,点「一键汇总复制」贴回 issue —— 那条不构成批准,只是让我看到细节。</li>
+</ul>
+<p class="note" style="margin-top:14px"><b>提醒:</b>这一页的批注只存在你自己的浏览器里。写完<b>一定要点「一键汇总复制」再贴回 issue</b>,我才收得到。</p>
+<div class="cmt"><label>09 结论 / 其他</label><textarea data-s="09 结论"></textarea></div>
+</div>
+<div class="note" style="margin-top:18px">
+<b>怎么把意见给我:</b>上面每一格都能写。写完点下面的<b>「一键汇总复制」</b>,然后<b>贴回 issue 里</b> —— 我才收得到。
+<b>这一页的批注只存在你自己的浏览器里,不会自己传给我。</b>如果内容多,会自动分成几段,<b>每一段都要贴</b>。
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空我的批注</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-2244";
+var LIMIT = 1800;
+var KEY = "fly2244-designer-mockup-spec-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写,没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制(共 " + cs.length + " 段,每段都要贴)"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制(共 " + cs.length + " 段,都要贴回 issue)"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    }).catch(function(){ showManual(text, manualMsg); });
+  } else {
+    showManual(text, manualMsg);
+  }
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>

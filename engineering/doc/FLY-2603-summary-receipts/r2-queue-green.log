@@ -1,0 +1,11 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/flywheel-comm
+
+ ✓ src/__tests__/mailbox-queue.test.ts (26 tests) 3068ms
+   ✓ FLY-1572 MailboxQueue > skips oversized families until the explicit maintenance path raises the cap  349ms
+   ✓ FLY-1572 MailboxQueue > archives ten near-cap families in a bounded explicit batch  1415ms
+
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+   Start at  18:33:21
+   Duration  8.67s (transform 2.96s, setup 71ms, collect 4.57s, tests 3.07s, environment 0ms, prepare 251ms)

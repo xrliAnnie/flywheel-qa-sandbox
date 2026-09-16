@@ -36,6 +36,8 @@ import {
 	resolveLeadWorkspace,
 	writeThreadId,
 } from "../codex-lead-runtime.js";
+import { buildTuiDaemonEnv } from "../codex-lead-tui-runtime.js";
+import { fullAccessLeadActionsConfigFromEnv } from "../lead-actions/mcp-config.js";
 import { McpInventoryWatcher } from "../mcp-inventory.js";
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
@@ -743,8 +745,12 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 		);
 		const report = dryRunReport(config).join("\n");
 		expect(report).toMatch(/MCP injected\s*:.*lead_actions/);
-		expect(report).toContain('env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN"]');
-		expect(report).not.toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+		expect(report).toContain(
+			'env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN","FLYWHEEL_LEAD_SUMMARY_ROLE","FLYWHEEL_LEAD_HAS_SUMMARY_DUTY","FLYWHEEL_SUMMARY_GRANULARITY"]',
+		);
+		expect(report).not.toContain(
+			'env_vars=["DISCORD_BOT_TOKEN","FLYWHEEL_LEAD_SUMMARY_ROLE","FLYWHEEL_LEAD_HAS_SUMMARY_DUTY","FLYWHEEL_SUMMARY_GRANULARITY"]',
+		);
 		// the raw token VALUE must never appear (redacted bot-token line shows ≤4 chars).
 		expect(report).not.toContain("topsecrettoken1234567890");
 		// literal env carries non-secret coords only.
@@ -762,9 +768,11 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 			}),
 		);
 		const report = dryRunReport(config).join("\n");
-		expect(report).toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+		expect(report).toContain(
+			'env_vars=["DISCORD_BOT_TOKEN","FLYWHEEL_LEAD_SUMMARY_ROLE","FLYWHEEL_LEAD_HAS_SUMMARY_DUTY","FLYWHEEL_SUMMARY_GRANULARITY"]',
+		);
 		expect(report).not.toContain(
-			'env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN"]',
+			'env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN","FLYWHEEL_LEAD_SUMMARY_ROLE","FLYWHEEL_LEAD_HAS_SUMMARY_DUTY","FLYWHEEL_SUMMARY_GRANULARITY"]',
 		);
 		expect(report).toContain(
 			'mcp_servers.lead_actions.env.FLYWHEEL_CODEX_LEAD_OUTBOUND="direct"',
@@ -972,6 +980,53 @@ describe("buildFullAccessArgv (= Claude-equal: net ON, project writable, NO env 
 });
 
 describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane)", () => {
+	it("preserves summary identity through both child boundaries", () => {
+		const projection = {
+			FLYWHEEL_LEAD_SUMMARY_ROLE: "recipient",
+			FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: "0",
+			FLYWHEEL_SUMMARY_GRANULARITY: "per-lead",
+		};
+		const env = {
+			...projection,
+			FLYWHEEL_LEAD_ID: "raya",
+			FLYWHEEL_PROJECT_NAME: "raya",
+			FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "333",
+			FLYWHEEL_LEAD_ACTIONS_MAIN_JS: "/trusted/lead-actions-main.js",
+			FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/state",
+			FLYWHEEL_COMM_DB: "/comm.db",
+			UNRELATED_SECRET: "must-not-inherit",
+		};
+		const appServer = buildFullAccessAppServerEnv(env, {
+			botToken: "bot",
+			bridgeUrl: "",
+			apiToken: "",
+		});
+		const daemon = buildTuiDaemonEnv({
+			env,
+			profile: "full-access",
+			codexHome: "/codex",
+			botToken: "bot",
+		});
+		for (const child of [appServer, daemon]) {
+			expect(child).toMatchObject(projection);
+			expect(child.UNRELATED_SECRET).toBeUndefined();
+		}
+		// The home script renders channel literals from the launcher environment;
+		// summary identity reaches the MCP child by name from the daemon.
+		const mcp = fullAccessLeadActionsConfigFromEnv({
+			...env,
+			...daemon,
+			FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "111,222",
+			FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES: "roundtable:111",
+		});
+		const inherited = Object.fromEntries(
+			mcp.envVarNames.map((key) => [key, daemon[key]]),
+		);
+		expect({ ...inherited, ...mcp.env }).toMatchObject(projection);
+		expect(mcp.env).not.toHaveProperty("UNRELATED_SECRET");
+		expect(mcp.envVarNames).not.toContain("UNRELATED_SECRET");
+	});
+
 	it("keeps the allowlisted Claude-pane vars + gh auth, drops everything else", () => {
 		const out = buildFullAccessEnv({
 			HOME: "/Users/x",

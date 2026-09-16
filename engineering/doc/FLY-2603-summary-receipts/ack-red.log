@@ -1,0 +1,67 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/protocol-ingress.test.ts (11 tests | 2 failed) 1735ms
+   ✓ ProtocolIngress mailbox ACK > verifies and applies the canonical ACK row without a mirror 187ms
+   ✓ ProtocolIngress mailbox ACK > accepts a late receipt as an idempotent retirement no-op 151ms
+   ✓ ProtocolIngress mailbox ACK > rejects a receipt from a non-owner Lead 155ms
+   ✓ ProtocolIngress mailbox ACK > applies a recipient-authorized batch ACK protocol row 149ms
+   × ProtocolIngress mailbox ACK > writes a processed absorption round receipt and replays after a cross-store failure 161ms
+     → expected undefined to be truthy
+   × ProtocolIngress mailbox ACK > writes the journal only after the recipient batch ACK 154ms
+     → expected undefined to be truthy
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"fromAgent":"runner-1"} 143ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"sourceKind":"question"} 147ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"sourceRef":"1e0"} 148ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"type":"ordinary"} 178ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"leadId":"other-lead"} 160ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/protocol-ingress.test.ts > ProtocolIngress mailbox ACK > writes a processed absorption round receipt and replays after a cross-store failure
+AssertionError: expected undefined to be truthy
+
+- Expected: 
+true
+
++ Received: 
+undefined
+
+ ❯ src/bridge/__tests__/protocol-ingress.test.ts:234:19
+    232|   await ingress.handle(receipt);
+    233|   const ackedAt = store.getLeadEventBySeq(seq)?.acked_at;
+    234|   expect(ackedAt).toBeTruthy();
+       |                   ^
+    235|   await ingress.handle(receipt);
+    236|   expect(store.getLeadEventBySeq(seq)?.acked_at).toBe(ackedAt);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/bridge/__tests__/protocol-ingress.test.ts > ProtocolIngress mailbox ACK > writes the journal only after the recipient batch ACK
+AssertionError: expected undefined to be truthy
+
+- Expected: 
+true
+
++ Received: 
+undefined
+
+ ❯ src/bridge/__tests__/protocol-ingress.test.ts:245:50
+    243|   expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
+    244|   expect(await ingress.handle(receipt)).toEqual({ disposition: "batch_…
+    245|   expect(store.getLeadEventBySeq(seq)?.acked_at).toBeTruthy();
+       |                                                  ^
+    246|  });
+    247| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 9 passed (11)
+   Start at  18:01:43
+   Duration  8.66s (transform 3.89s, setup 47ms, collect 5.87s, tests 1.74s, environment 0ms, prepare 338ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/protocol-ingress.test.ts

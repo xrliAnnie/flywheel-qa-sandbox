@@ -196,10 +196,12 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		command: opts.nodeBin,
 		args: [opts.mainJsPath],
 		env,
-		envVarNames: leadActionCredentialNames(
-			opts.outboundMode,
-			!!opts.runnerContext,
-		),
+		envVarNames: [
+			...leadActionCredentialNames(opts.outboundMode, !!opts.runnerContext),
+			"FLYWHEEL_LEAD_SUMMARY_ROLE",
+			"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
+			"FLYWHEEL_SUMMARY_GRANULARITY",
+		],
 		...(opts.runnerContext
 			? { enabledTools: [...LEAD_ACTIONS_TOOLS, ...RUNNER_ACTION_TOOL_NAMES] }
 			: {}),

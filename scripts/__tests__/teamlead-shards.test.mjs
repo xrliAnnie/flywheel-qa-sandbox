@@ -216,6 +216,7 @@ test("CI runs serial then parallel projects with bounded isolated forks, preserv
 				"test:run",
 				"--project=serial",
 				"--shard=2/4",
+				"--exclude=src/ship-judgment/__tests__/observation-performance.test.ts",
 			],
 			[
 				"--filter",
@@ -223,6 +224,7 @@ test("CI runs serial then parallel projects with bounded isolated forks, preserv
 				"test:run",
 				"--project=parallel",
 				"--shard=2/4",
+				"--exclude=src/ship-judgment/__tests__/observation-performance.test.ts",
 			],
 		],
 	);
@@ -234,18 +236,18 @@ test("CI runs serial then parallel projects with bounded isolated forks, preserv
 	await assert.rejects(() => runShard("--shard=0/4", () => 0));
 });
 
-test("actual Vitest projects partition all discovered files exactly once", () => {
+test("CI projects discover every test except the dedicated performance test", async () => {
 	const root = fileURLToPath(
 		new URL("../../packages/teamlead", import.meta.url),
 	);
-	const discover = (project) => {
+	const discover = (args = []) => {
 		const run = spawnSync(
 			process.execPath,
 			[
 				requireVitest.resolve("vitest/vitest.mjs"),
 				"list",
 				"--filesOnly",
-				...(project ? [`--project=${project}`] : []),
+				...args,
 			],
 			{ cwd: root, encoding: "utf8" },
 		);
@@ -258,12 +260,33 @@ test("actual Vitest projects partition all discovered files exactly once", () =>
 			.map((p) => p.replace(/^\[[^\]]+\]\s*/, ""));
 	};
 	const all = discover();
-	const serial = discover("serial");
-	const parallel = discover("parallel");
+	const projects = [];
+	const { runShard } = await import("../teamlead-ci-shard.mjs");
+	await runShard("--shard=2/4", async (args) => {
+		projects.push(discover(args.slice(3)));
+		return 0;
+	});
+	const [serial, parallel] = projects;
+	const performance =
+		"src/ship-judgment/__tests__/observation-performance.test.ts";
+	assert.ok(all.includes(performance));
+	const expected = all.filter((path) => path !== performance);
+	const workflow = requireVitest("yaml").parse(
+		readFileSync(
+			new URL("../../.github/workflows/ci.yml", import.meta.url),
+			"utf8",
+		),
+	);
+	assert.equal(
+		workflow.jobs["unit-tests"].strategy.matrix.include.find(
+			(job) => job.name === "observation performance",
+		).cmd,
+		`pnpm --filter flywheel-teamlead exec vitest run ${performance}`,
+	);
 	assert.ok(serial.length > 100);
 	assert.ok(parallel.length > 500);
-	assert.equal(new Set([...serial, ...parallel]).size, all.length);
-	assert.deepEqual([...serial, ...parallel].sort(), all.sort());
+	assert.equal(new Set([...serial, ...parallel]).size, expected.length);
+	assert.deepEqual([...serial, ...parallel].sort(), expected.sort());
 	assert.ok(
 		serial.some((p) => p.endsWith("automated-message-inventory.test.ts")),
 	);

@@ -1,0 +1,14 @@
+Teamlead --shard=2/4: serial, maxForks=1
+Teamlead --shard=2/4: parallel, maxForks=2
+Teamlead --shard=2/4: serial, maxForks=1
+Teamlead --shard=2/4: parallel, maxForks=2
+✔ CI runs serial then parallel projects with bounded isolated forks, preserving failures (5.759125ms)
+✔ CI projects discover every test except the dedicated performance test (5145.254ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6585.404291
