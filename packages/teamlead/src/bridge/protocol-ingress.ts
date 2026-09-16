@@ -58,6 +58,41 @@ export class ProtocolIngress {
 				fromAgent: row.from_agent,
 				now: new Date().toISOString(),
 			});
+			// Replay duplicates too: a crash may have committed the mailbox ACK
+			// before the StateStore mirror. The original receipt timestamp is stable.
+			if (ack === "applied" || ack === "duplicate") {
+				for (const member of this.opts.queue.listAckedBatchLeadEvents(
+					batchId,
+				)) {
+					if (
+						member.to_agent !== row.from_agent ||
+						member.type !== "summary_absorption_round" ||
+						!member.acked_at
+					)
+						continue;
+					const seq = Number(member.source_ref);
+					if (
+						!Number.isSafeInteger(seq) ||
+						seq <= 0 ||
+						String(seq) !== member.source_ref
+					)
+						continue;
+					const event = this.opts.store.getLeadEventBySeq(seq);
+					if (
+						!event ||
+						event.lead_id !== row.from_agent ||
+						member.delivery_id !==
+							`lead_event:${event.lead_id}:${event.event_id}`
+					)
+						continue;
+					this.opts.store.markSummaryAbsorptionAcked(
+						seq,
+						row.from_agent,
+						member.acked_at,
+					);
+				}
+			}
+
 			return {
 				disposition:
 					ack === "applied"

@@ -21933,6 +21933,16 @@ export class StateStore {
 		return finalized;
 	}
 
+	/** Mirror the canonical mailbox receipt, without reviving the legacy token protocol. */
+	markSummaryAbsorptionAcked(seq: number, leadId: string, ackedAt: string): void {
+		this.db.run(
+			`UPDATE lead_events SET acked_at = ?
+			 WHERE seq = ? AND lead_id = ? AND event_type = 'summary_absorption_round'
+			 AND ack_required = 0 AND acked_at IS NULL AND ack_retired_at IS NULL`,
+			[ackedAt, seq, leadId],
+		);
+	}
+
 	markLeadEventAcked(seq: number, nowIso: string): boolean {
 		let acked = false;
 		this.db.transaction(() => {

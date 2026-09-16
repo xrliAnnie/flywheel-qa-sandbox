@@ -1792,6 +1792,16 @@ export class MailboxQueue {
 		return this.recordBatchDelivered({ ...input, recipientKind: "runner" });
 	}
 
+	listAckedBatchLeadEvents(batchId: string): MailboxRow[] {
+		return this.db
+			.prepare(
+				`SELECT * FROM mailbox WHERE batch_id = ? AND state = 'ACKED'
+			 AND from_agent = 'bridge' AND recipient_kind = 'lead'
+			 AND source_kind = 'lead_event'`,
+			)
+			.all(batchId) as MailboxRow[];
+	}
+
 	ackBatchByRecipient(input: {
 		batchId: string;
 		fromAgent: string;
@@ -2120,8 +2130,8 @@ export class MailboxQueue {
 							now: input.now,
 						});
 						if (ack === "applied" || ack === "duplicate") {
-							if (!this.ack(pendingAck.id, input.now))
-								throw new Error("batch ACK settlement lost");
+							// Keep the protocol receipt claimable: ingress must apply its
+							// cross-store effects before the protocol row is finalized.
 							continue;
 						}
 					}

@@ -30,6 +30,8 @@ export async function runShard(shard, run = execute) {
 				"test:run",
 				`--project=${project}`,
 				shard,
+				// The dedicated CI job owns this wall-clock performance gate.
+				"--exclude=src/ship-judgment/__tests__/observation-performance.test.ts",
 			],
 			{
 				VITEST_MAX_FORKS: forks,

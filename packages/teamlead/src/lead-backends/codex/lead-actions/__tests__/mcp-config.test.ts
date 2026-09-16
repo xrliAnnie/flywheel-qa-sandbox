@@ -35,7 +35,13 @@ describe("FLY-398 full-access lead_actions", () => {
 			);
 			// Active sends use the canonical Bridge coordinates by name; the Discord
 			// token is deliberately unavailable to this MCP child.
-			expect(cfg.envVarNames).toEqual(["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]);
+			expect(cfg.envVarNames).toEqual([
+				"BRIDGE_URL",
+				"TEAMLEAD_API_TOKEN",
+				"FLYWHEEL_LEAD_SUMMARY_ROLE",
+				"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
+				"FLYWHEEL_SUMMARY_GRANULARITY",
+			]);
 			expect(cfg.defaultToolsApprovalMode).toBe("approve");
 			// no secret-shaped LITERAL env key (the token travels by name, never literal).
 			for (const k of Object.keys(cfg.env)) {
@@ -49,7 +55,12 @@ describe("FLY-398 full-access lead_actions", () => {
 				outboundMode: "direct",
 			});
 			expect(cfg.env.FLYWHEEL_CODEX_LEAD_OUTBOUND).toBe("direct");
-			expect(cfg.envVarNames).toEqual(["DISCORD_BOT_TOKEN"]);
+			expect(cfg.envVarNames).toEqual([
+				"DISCORD_BOT_TOKEN",
+				"FLYWHEEL_LEAD_SUMMARY_ROLE",
+				"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
+				"FLYWHEEL_SUMMARY_GRANULARITY",
+			]);
 		});
 
 		it("FLY-676: forwards FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE only when on (TUI full-access guard)", () => {
@@ -77,11 +88,13 @@ describe("FLY-398 full-access lead_actions", () => {
 		].join("\n");
 
 	describe("toFullAccessMcpServerToml", () => {
-		it("emits approve mode with Bridge-only env_vars", () => {
+		it("emits approve mode with Bridge credentials and summary identity", () => {
 			const toml = toFullAccessMcpServerToml("lead_actions", expectedFA());
 			expect(toml).toContain("[mcp_servers.lead_actions]");
 			expect(toml).toContain('default_tools_approval_mode = "approve"');
-			expect(toml).toContain('env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]');
+			expect(toml).toContain(
+				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN", "FLYWHEEL_LEAD_SUMMARY_ROLE", "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY", "FLYWHEEL_SUMMARY_GRANULARITY"]',
+			);
 			expect(toml).not.toContain("DISCORD_BOT_TOKEN");
 			expect(toml).toContain('FLYWHEEL_LEAD_ID = "mufasa-lead"');
 			// the token NAME may appear (env_vars) but never a literal token VALUE.
@@ -116,10 +129,10 @@ describe("FLY-398 full-access lead_actions", () => {
 			).toThrow(/approve/);
 		});
 
-		it("rejects env_vars other than the exact Bridge-only pair", () => {
+		it("rejects credentials beyond the exact Bridge and summary projection", () => {
 			const toml = goodFAToml().replace(
-				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]',
-				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN", "DISCORD_BOT_TOKEN"]',
+				"env_vars = [",
+				'env_vars = ["DISCORD_BOT_TOKEN", ',
 			);
 			expect(() =>
 				assertFullAccessLeadActionsConfigGate(toml, expectedFA()),

@@ -1,0 +1,45 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/protocol-ingress.test.ts (12 tests | 1 failed) 1824ms
+   ✓ ProtocolIngress mailbox ACK > verifies and applies the canonical ACK row without a mirror 280ms
+   ✓ ProtocolIngress mailbox ACK > accepts a late receipt as an idempotent retirement no-op 140ms
+   ✓ ProtocolIngress mailbox ACK > rejects a receipt from a non-owner Lead 126ms
+   ✓ ProtocolIngress mailbox ACK > applies a recipient-authorized batch ACK protocol row 151ms
+   ✓ ProtocolIngress mailbox ACK > writes a processed absorption round receipt and replays after a cross-store failure 153ms
+   × ProtocolIngress mailbox ACK > keeps an expiry-settled receipt claimable for the journal mirror after restart 128ms
+     → expected 'ACKED' to be 'QUEUED' // Object.is equality
+   ✓ ProtocolIngress mailbox ACK > writes the journal only after the recipient batch ACK 146ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"fromAgent":"runner-1"} 145ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"sourceKind":"question"} 140ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"sourceRef":"1e0"} 111ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"type":"ordinary"} 133ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"leadId":"other-lead"} 170ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/protocol-ingress.test.ts > ProtocolIngress mailbox ACK > keeps an expiry-settled receipt claimable for the journal mirror after restart
+AssertionError: expected 'ACKED' to be 'QUEUED' // Object.is equality
+
+Expected: "QUEUED"
+Received: "ACKED"
+
+ ❯ src/bridge/__tests__/protocol-ingress.test.ts:288:44
+    286|   });
+    287|   expect(queue.getById(deliveryId)?.state).toBe("ACKED");
+    288|   expect(queue.getById(receipt.id)?.state).toBe("QUEUED");
+       |                                            ^
+    289|   expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
+    290|   queue.close();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 passed (12)
+   Start at  18:31:20
+   Duration  6.30s (transform 2.58s, setup 28ms, collect 3.97s, tests 1.82s, environment 0ms, prepare 90ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/protocol-ingress.test.ts

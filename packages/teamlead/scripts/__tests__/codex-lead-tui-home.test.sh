@@ -396,7 +396,7 @@ python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sww=c.ge
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('default_permissions') is None else 1)" "$H/config.toml" \
   && pass "full-access: no default permission profile" || fail "full-access: must not carry a default permission profile"
 command grep -q 'default_tools_approval_mode = "approve"' "$H/config.toml" && pass "full-access: lead_actions approve mode written" || fail "full-access: approve mode missing"
-command grep -q 'env_vars = \["BRIDGE_URL", "TEAMLEAD_API_TOKEN"\]' "$H/config.toml" && pass "full-access: Bridge credentials forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
+command grep -q 'env_vars = \["BRIDGE_URL", "TEAMLEAD_API_TOKEN", "FLYWHEEL_LEAD_SUMMARY_ROLE", "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY", "FLYWHEEL_SUMMARY_GRANULARITY"\]' "$H/config.toml" && pass "full-access: Bridge credentials forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
 ! command grep -q "BROKER_SOCKET" "$H/config.toml" && pass "full-access: NO broker socket in config (token by name)" || fail "full-access: broker socket must not appear"
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('notice',{}).get('hide_rate_limit_model_nudge') is True else 1)" "$H/config.toml" \
   && pass "FLY-2296: full-access home hides the rate-limit model nudge" \
@@ -428,7 +428,7 @@ if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H_DIRECT" F
   FLYWHEEL_CODEX_LEAD_OUTBOUND="direct" \
   FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/claw" FLYWHEEL_COMM_DB="/state/comm.db" \
   /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
-  && command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H_DIRECT/config.toml" \
+  && command grep -q 'env_vars = \["DISCORD_BOT_TOKEN", "FLYWHEEL_LEAD_SUMMARY_ROLE", "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY", "FLYWHEEL_SUMMARY_GRANULARITY"\]' "$H_DIRECT/config.toml" \
   && command grep -q 'FLYWHEEL_CODEX_LEAD_OUTBOUND = "direct"' "$H_DIRECT/config.toml" \
   && ! command grep -q 'TEAMLEAD_API_TOKEN' "$H_DIRECT/config.toml"; then
   pass "FLY-2445 review: direct full-access home preserves Discord delivery without Bridge credentials"

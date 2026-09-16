@@ -1,0 +1,20 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/protocol-ingress.test.ts (12 tests) 4255ms
+   ✓ ProtocolIngress mailbox ACK > verifies and applies the canonical ACK row without a mirror  462ms
+   ✓ ProtocolIngress mailbox ACK > accepts a late receipt as an idempotent retirement no-op  360ms
+   ✓ ProtocolIngress mailbox ACK > rejects a receipt from a non-owner Lead  365ms
+   ✓ ProtocolIngress mailbox ACK > applies a recipient-authorized batch ACK protocol row  332ms
+   ✓ ProtocolIngress mailbox ACK > writes a processed absorption round receipt and replays after a cross-store failure  393ms
+   ✓ ProtocolIngress mailbox ACK > keeps an expiry-settled receipt claimable for the journal mirror after restart  419ms
+   ✓ ProtocolIngress mailbox ACK > writes the journal only after the recipient batch ACK  391ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"sourceKind":"question"}  301ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"sourceRef":"1e0"}  412ms
+   ✓ ProtocolIngress mailbox ACK > does not ACK an event via an unrelated or forged source row: {"leadId":"other-lead"}  326ms
+ ✓ |parallel| src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts (129 tests) 1242ms
+
+ Test Files  2 passed (2)
+      Tests  141 passed (141)
+   Start at  18:33:22
+   Duration  30.02s (transform 12.46s, setup 55ms, collect 21.85s, tests 5.50s, environment 0ms, prepare 601ms)

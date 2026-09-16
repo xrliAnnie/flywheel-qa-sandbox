@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts (129 tests) 519ms
+
+ Test Files  1 passed (1)
+      Tests  129 passed (129)
+   Start at  18:04:21
+   Duration  5.25s (transform 2.67s, setup 23ms, collect 4.21s, tests 519ms, environment 0ms, prepare 81ms)
+

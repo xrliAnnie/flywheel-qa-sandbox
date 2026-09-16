@@ -44,6 +44,9 @@ describe("runner-enabled full-access static MCP config", () => {
 			"BRIDGE_URL",
 			"TEAMLEAD_API_TOKEN",
 			"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID",
+			"FLYWHEEL_LEAD_SUMMARY_ROLE",
+			"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
+			"FLYWHEEL_SUMMARY_GRANULARITY",
 		]);
 		expect(cfg.env.FLYWHEEL_LEAD_KEY).toBe("demo-product-lead");
 		expect(() =>

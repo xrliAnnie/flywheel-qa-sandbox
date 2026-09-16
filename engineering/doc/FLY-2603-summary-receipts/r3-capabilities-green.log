@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/flywheel-comm
+
+ ✓ src/__tests__/mailbox-queue-capabilities.test.ts (52 tests) 1064ms
+   ✓ FLY-1573 mailbox queue capabilities > covers the second recipient page when more than 100 runners are dead  327ms
+
+ Test Files  1 passed (1)
+      Tests  52 passed (52)
+   Start at  18:44:46
+   Duration  3.00s (transform 820ms, setup 109ms, collect 1.29s, tests 1.06s, environment 0ms, prepare 155ms)

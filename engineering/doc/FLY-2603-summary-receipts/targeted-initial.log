@@ -1,0 +1,298 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/protocol-ingress.test.ts (11 tests) 1467ms
+ ❯ |parallel| src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts (129 tests | 2 failed) 596ms
+   ✓ parseCodexLeadRuntimeConfig > parses a full env and derives the state paths 4ms
+   ✓ parseCodexLeadRuntimeConfig > starts canonical Raya without the retired RAYA_METRICS_DIR special case 1ms
+   ✓ parseCodexLeadRuntimeConfig > parses exact registry-projected author ids for the voice mirror guard 1ms
+   ✓ parseCodexLeadRuntimeConfig > keeps model, effort, and context window absent without materializing empty config 1ms
+   ✓ parseCodexLeadRuntimeConfig > maps configured model, effort, and 1M window into the Codex thread schema 1ms
+   ✓ parseCodexLeadRuntimeConfig > fails loudly on invalid model runtime parameters: {"FLYWHEEL_LEAD_MODEL":"gpt\n5"} 2ms
+   ✓ parseCodexLeadRuntimeConfig > fails loudly on invalid model runtime parameters: {"FLYWHEEL_LEAD_EFFORT":"ultra"} 1ms
+   ✓ parseCodexLeadRuntimeConfig > fails loudly on invalid model runtime parameters: {"FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW":"0"} 1ms
+   ✓ parseCodexLeadRuntimeConfig > fails loudly on invalid model runtime parameters: {"FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW":"1.5"} 1ms
+   ✓ parseCodexLeadRuntimeConfig > fails loudly on invalid model runtime parameters: {"FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW":"10000001"} 1ms
+   ✓ parseCodexLeadRuntimeConfig > defaults codexProfile to companion when unset 0ms
+   ✓ parseCodexLeadRuntimeConfig > FAIL-LOUD on an unknown codexProfile value (R2-4: never silently default) 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-350 (Z): write-capable profile is valid WITH a workspace-write sandbox 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-350 (Z): write-capable profile REQUIRES workspace-write (read-only → fail-loud) 0ms
+   ✓ parseCodexLeadRuntimeConfig > rejects workspace-write under the default companion profile (SSOT, fail-loud) 1ms
+   ✓ parseCodexLeadRuntimeConfig > includes the core channel while Chrome integration stays disabled 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-267: byte-compat — no cross-dept env leaves channelIds + crossDeptChannelIds untouched 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-267: merges cross-dept channels into channelIds + exposes crossDeptChannelIds 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-267: dedups cross-dept ids and excludes any that overlap chat/core 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-2442: bridge mode accepts cross-dept channels and exposes startup probes 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-267: cross-dept channels ARE allowed in direct mode (default) 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-267: parses mention patterns (comma-separated, trimmed) 1ms
+   ✓ parseCodexLeadRuntimeConfig > FLY-1806: typingEnabled is fixed on (parity with Claude Lead) 0ms
+   ✓ parseCodexLeadRuntimeConfig > fail-loud: lists ALL missing always-required env in one error 1ms
+   ✓ parseCodexLeadRuntimeConfig > rejects a non-canonical lead key projection 1ms
+   ✓ parseCodexLeadRuntimeConfig > rejects a non-canonical backend projection 0ms
+   ✓ parseCodexLeadRuntimeConfig > rejects a non-canonical identity digest projection 0ms
+   ✓ parseCodexLeadRuntimeConfig > DEFAULT direct mode needs NO Bridge env (low-risk first test) 1ms
+   ✓ parseCodexLeadRuntimeConfig > bridge mode REQUIRES the Bridge env (fail-loud) 1ms
+   ✓ buildCodexLeadRuntime — outbound preflight lifecycle > stops the started process and never reaches thread setup after a deterministic refusal 18ms
+   ✓ dryRunReport > describes direct mode + redacts the token + confirms zero prod intrusion 1ms
+   ✓ dryRunReport > bridge mode shows the Bridge connection 1ms
+   ✓ dryRunReport > surfaces the fixed-on typing state in the dry-run 1ms
+   ✓ dryRunReport > write-capable dry-run surfaces the (Z) gateway/net-off/PR-scope fields, GH token redacted 3ms
+   ✓ dryRunReport > persona line: none by default, injected when systemPromptFiles read 2ms
+   ✓ parseCodexLeadRuntimeConfig — systemPromptFiles > defaults to [] and splits/trims/filters a comma list 1ms
+   ✓ sandbox policy (review HIGH-1: pin approvalPolicy + sandbox) > defaults sandboxMode to read-only 1ms
+   ✓ sandbox policy (review HIGH-1: pin approvalPolicy + sandbox) > accepts the valid sandbox modes + rejects an unknown one (fail-loud) 2ms
+   ✓ sandbox policy (review HIGH-1: pin approvalPolicy + sandbox) > buildThreadParams pins approvalPolicy=never + sandbox, adds persona when present 1ms
+   ✓ sandbox policy (review HIGH-1: pin approvalPolicy + sandbox) > buildCodexLeadRuntime still FAIL-CLOSES a write-capable sandbox missing the release conditions 5ms
+   ✓ sandbox policy (review HIGH-1: pin approvalPolicy + sandbox) > read-only sandbox surfaces in the dry-run report 1ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > parses full-access WITH a workspace-write sandbox + resolves the project root 3ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > full-access REQUIRES workspace-write (read-only → fail-loud) 2ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > workspace-write now accepts full-access too (not only write-capable) 2ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > full-access REQUIRES FLYWHEEL_CODEX_LEAD_PROJECT_DIR (missing → fail-loud) 2ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > honors FLYWHEEL_CODEX_LEAD_SUBDIR under the project root 2ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > buildThreadParams pins cwd=projectRoot + workspace-write for full-access 3ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > buildCodexLeadRuntime BUILDS a full-access Lead (no release gate, no gateway/broker) 16ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > full-access wires proactive discord_send + surfaces roundtable AVAILABLE 6ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > full-access logs roundtable UNAVAILABLE when no cross-dept channel 6ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > full-access FAIL-CLOSES when the lead-actions entry is not deployed (item 2) 5ms
+   × FLY-350 full-access profile (= Claude-equal, opt-in) > dry-run reflects Bridge-only lead_actions injection, never secret values 22ms
+     → expected '=== CODEX LEAD DRY RUN (nothing start…' to contain 'env_vars=["BRIDGE_URL","TEAMLEAD_API_…'
+   × FLY-350 full-access profile (= Claude-equal, opt-in) > dry-run preserves the direct lead_actions credential path 9ms
+     → expected '=== CODEX LEAD DRY RUN (nothing start…' to contain 'env_vars=["DISCORD_BOT_TOKEN"]'
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > forwards FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES to the lead_actions child 3ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > pins the wrapper-selected registry in the lead-actions child 2ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > boot log reports the PINNED roundtable target for multi cross-dept (R2#1) 6ms
+   ✓ FLY-350 full-access profile (= Claude-equal, opt-in) > dry-run surfaces full-access: network ON, project root, NO gateway, merge founder-gated 3ms
+   ✓ resolveFullAccessProjectRoot > resolves + realpath-canonicalizes an absolute project dir (no subdir) 3ms
+   ✓ resolveFullAccessProjectRoot > joins + validates a subdir 3ms
+   ✓ resolveFullAccessProjectRoot > rejects a non-absolute path 2ms
+   ✓ resolveFullAccessProjectRoot > rejects a non-existent path (fail-loud) 3ms
+   ✓ resolveFullAccessProjectRoot > rejects overlap with the Lead state dir (model must not write runtime state) 2ms
+   ✓ resolveFullAccessProjectRoot > rejects overlap with CODEX_HOME 4ms
+   ✓ resolveFullAccessProjectRoot > rejects $HOME itself 4ms
+   ✓ resolveFullAccessProjectRoot > ALLOWS a normal descendant of $HOME (e.g. ~/Dev/project) 3ms
+   ✓ resolveFullAccessProjectRoot > rejects a symlink that realpath-resolves INTO CODEX_HOME (symlink bypass) 4ms
+   ✓ resolveFullAccessProjectRoot > rejects a subdir symlink that resolves into the state dir 3ms
+   ✓ buildFullAccessArgv (= Claude-equal: net ON, project writable, NO env wash) > sets network ON + the project root as the single writable root 1ms
+   ✓ buildFullAccessArgv (= Claude-equal: net ON, project writable, NO env wash) > does NOT emit a shell_environment_policy.exclude (full-access keeps its gh/git env) 1ms
+   ✓ buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane) > preserves summary identity and channel projection through both child boundaries 2ms
+   ✓ buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane) > keeps the allowlisted Claude-pane vars + gh auth, drops everything else 1ms
+   ✓ buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane) > env-diff: NO *TOKEN*/*SECRET*/*KEY* key outside the allowlist 1ms
+   ✓ buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane) > omits allowlisted vars that are absent from the source env (no empty injection) 1ms
+   ✓ buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane) > preserves ambient Bridge aliases when direct mode has no parsed Bridge pins 1ms
+   ✓ buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane) > every secret-shaped allowlist entry IS injected by a Claude pane (or is sanctioned gh-auth) 2ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > pathsOverlap > detects equal / ancestor / descendant; rejects siblings 2ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > accepts a valid dedicated scratch (canonicalized) 4ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > rejects a non-absolute path 4ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > rejects a path that does not exist 4ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > rejects $HOME itself and any ancestor of $HOME 4ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > rejects overlap with ~/.flywheel, state dir, CODEX_HOME 6ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > rejects a symlink that resolves into a sensitive dir (realpath defeats smuggling) 3ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > resolveLeadWorkspace > rejects overlap with an explicit trusted control-plane path 5ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > buildConfinementArgv > pins network OFF + single writable root + secret-scrubbing env policy 3ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > parseCodexLeadRuntimeConfig — workspace wiring > read-only: workspace ignored even if env is set (byte-compat) 3ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > parseCodexLeadRuntimeConfig — workspace wiring > write-capable + valid workspace → canonical workspace on config 4ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > parseCodexLeadRuntimeConfig — workspace wiring > write-capable + workspace overlapping CODEX_HOME → throws at parse 6ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > parseCodexLeadRuntimeConfig — workspace wiring > write-capable + no workspace env → undefined (fail-close at release gate still governs) 2ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > parseCodexLeadRuntimeConfig — workspace wiring > write-capable + workspace overlapping the gateway deploy dir → throws at parse (HIGH-2) 6ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > parseCodexLeadRuntimeConfig — workspace wiring > write-capable + workspace overlapping the teamlead checkout (deps closure) → throws at parse (HIGH-2) 3ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > buildThreadParams — cwd pin > write-capable with workspace → cwd pinned 2ms
+   ✓ FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) > buildThreadParams — cwd pin > read-only (no workspace) → NO cwd (byte-compat) 3ms
+   ✓ buildCodexLeadRuntime — persona fail-closed (review MEDIUM) > throws when systemPromptFiles is configured but nothing is readable 4ms
+   ✓ buildCodexLeadRuntime — persona fail-closed (review MEDIUM) > does NOT throw when no persona files are configured (byte-compat) 4ms
+   ✓ readBaseInstructions (persona → baseInstructions) > concatenates files and strips YAML frontmatter (model:opus must not leak) 5ms
+   ✓ readBaseInstructions (persona → baseInstructions) > skips missing/unreadable files (never throws) 1ms
+   ✓ readBaseInstructions (persona → baseInstructions) > returns undefined when nothing readable/non-empty (byte-compat) 2ms
+   ✓ thread-id store > absent → undefined; write then read round-trips 2ms
+   ✓ thread-id store > blank file → undefined 3ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > UNLOCKS: all release conditions present → buildCodexLeadRuntime succeeds 6ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > danger-full-access is PERMANENTLY refused by the release gate (everything else present) 5ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > ② missing workspace → fail-closed 5ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > ⑤ missing founder id → fail-closed 8ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > ⑤ missing cliVersion allowlist → fail-closed (a new Codex must re-pass the threat matrix) 8ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > ⑥ gateway entry not deployed → fail-closed 14ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > ⑥ gateway entry INSIDE the model-writable workspace → fail-closed (tamper risk) 4ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > ⑦ missing FLYWHEEL_API_TOKEN → fail-closed (gateway broker incomplete) 16ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > (Z) missing FLYWHEEL_GATEWAY_GITHUB_TOKEN → fail-closed (PR-capable Lead needs the broker GH token) 7ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > (Z) missing FLYWHEEL_GATEWAY_PROJECT_REPO → fail-closed 7ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > (Z) malformed FLYWHEEL_GATEWAY_PROJECT_REPO slug → fail-closed 4ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > a refusal lists EVERY failed condition at once (operator-debuggable) 2ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > read-only companions never touch the release gate (byte-compat path) 3ms
+   ✓ FLY-245 F-b: write-capable release gate (plan §7) > buildActionSurfaceDisableArgv pins the verified non-MCP disable keys (⑧ static) 1ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > resolves once exactly the allowlist is ready 2ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > an EXTRA observed server fail-closes (injected Chrome / unknown connector) 1ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > a FAILED required server fail-closes 1ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > never-ready → timeout fail-closes (an unconfirmed gateway can't unlock) 207ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > alternate notification shapes (server.{name,status}) are parsed 2ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > unrelated notifications are ignored 1ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > collects tool names from a `tools: [...]` advertisement 1ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > collects a tool name from string-array and single-tool shapes 1ms
+   ✓ FLY-245 F-b: McpInventoryWatcher (release ④ runtime half) > a non-tool notification contributes no tools (empty → ⑧ fails closed) 0ms
+   ✓ FLY-898 core-room mention gate (Codex) > parse: byte-compat — coreMentionGated false by default 1ms
+   ✓ FLY-898 core-room mention gate (Codex) > parse: FLYWHEEL_LEAD_CORE_MENTION_GATED=1 → coreMentionGated true 1ms
+   ✓ FLY-898 core-room mention gate (Codex) > resolveCoreStrictChannelIds: ON + core subscribed → [core] 0ms
+   ✓ FLY-898 core-room mention gate (Codex) > resolveCoreStrictChannelIds: OFF → [] (byte-compat) 0ms
+   ✓ FLY-898 core-room mention gate (Codex) > resolveCoreStrictChannelIds: ON but no coreChannelId → [] (nothing to gate) 1ms
+   ✓ FLY-898 core-room mention gate (Codex) > resolveCoreStrictChannelIds: ON but core NOT in subscribed channels → [] (guardrail #1) 1ms
+   ✓ FLY-898 core-room mention gate (Codex) > dryRunReport: 'core mention gate: on' ONLY when gate is effective 1ms
+stderr | src/lead-backends/codex/__tests__/codex-lead-tui-runtime.test.ts > buildTuiGeneration — outbound preflight lifecycle (FLY-2442) > closes the started WS before rejecting and closes the sender on generation stop
+[loadProjects] "geoforge3d" lead "product-lead": botTokenEnv="PETER_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "geoforge3d" lead "ops-lead": botTokenEnv="OLIVER_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "geoforge3d" lead "cos-lead": botTokenEnv="SIMBA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "joycon-typeless" lead "joycon-lead": botTokenEnv="HIRO_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "personal-assistant" lead "belle-lead": botTokenEnv="BELLE_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "growth" lead "mufasa-lead": botTokenEnv="MUFASA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "growth" lead "rafiki-lead": botTokenEnv="RAFIKI_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "growth" lead "reflection-lead": botTokenEnv="REFLECTION_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "flywheel-cos-lead": botTokenEnv="CASS_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "flywheel-eng-lead": botTokenEnv="TADASHI_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "flywheel-product-lead": botTokenEnv="HONEY_LEMON_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "codex-infra-bot-lead": botTokenEnv="CODEX_INFRA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "claude-infra-bot-lead": botTokenEnv="CLAUDE_INFRA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "tidal-echo" lead "tidal-echo-cos-lead": botTokenEnv="TRITON_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "tidal-echo" lead "tidal-echo-content-lead": botTokenEnv="ARIEL_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "tidal-echo" lead "sub-lead": botTokenEnv="ASHA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "raya" lead "raya": botTokenEnv="RAYA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+
+stderr | src/lead-backends/codex/__tests__/codex-lead-tui-runtime.test.ts > buildTuiGeneration — outbound preflight lifecycle (FLY-2442) > lets supervisor.stop close the sender after initial preflight rejection
+[loadProjects] "geoforge3d" lead "product-lead": botTokenEnv="PETER_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "geoforge3d" lead "ops-lead": botTokenEnv="OLIVER_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "geoforge3d" lead "cos-lead": botTokenEnv="SIMBA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "joycon-typeless" lead "joycon-lead": botTokenEnv="HIRO_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "personal-assistant" lead "belle-lead": botTokenEnv="BELLE_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "growth" lead "mufasa-lead": botTokenEnv="MUFASA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "growth" lead "rafiki-lead": botTokenEnv="RAFIKI_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "growth" lead "reflection-lead": botTokenEnv="REFLECTION_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "flywheel-cos-lead": botTokenEnv="CASS_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "flywheel-eng-lead": botTokenEnv="TADASHI_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "flywheel-product-lead": botTokenEnv="HONEY_LEMON_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "codex-infra-bot-lead": botTokenEnv="CODEX_INFRA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "flywheel" lead "claude-infra-bot-lead": botTokenEnv="CLAUDE_INFRA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "tidal-echo" lead "tidal-echo-cos-lead": botTokenEnv="TRITON_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "tidal-echo" lead "tidal-echo-content-lead": botTokenEnv="ARIEL_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "tidal-echo" lead "sub-lead": botTokenEnv="ASHA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+[loadProjects] "raya" lead "raya": botTokenEnv="RAYA_BOT_TOKEN" not found in env — will fall back to DISCORD_BOT_TOKEN
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/codex-lead-tui-runtime.test.ts (30 tests) 89ms
+ ✓ |parallel| src/lead-backends/codex/lead-actions/__tests__/mcp-config.test.ts (16 tests) 50ms
+[lead-actions] mufasa-lead@growth ready (chat=1500600400238084307, crossDept=1, outbound=bridge, discordCredential=absent, mailboxAck=enabled)
+[lead-actions] mufasa-lead@growth ready (chat=1500600400238084307, crossDept=1, outbound=direct, discordCredential=present, mailboxAck=enabled)
+[lead-actions] mufasa-lead@growth ready (chat=1500600400238084307, crossDept=1, outbound=bridge, discordCredential=absent, mailboxAck=enabled)
+[lead-actions] mufasa-lead@growth ready (chat=1500600400238084307, crossDept=1, outbound=bridge, discordCredential=absent, mailboxAck=enabled)
+[lead-actions] mufasa-lead@growth ready (chat=1500600400238084307, crossDept=1, outbound=bridge, discordCredential=absent, mailboxAck=enabled)
+[lead-actions] fatal: lead-actions: TEAMLEAD_API_TOKEN is absent from the MCP child env (fail-closed)
+[lead-actions] fatal: lead-actions: TEAMLEAD_API_TOKEN is absent from the MCP child env (fail-closed)
+[lead-actions] mufasa-lead@growth ready (chat=1500600400238084307, crossDept=1, outbound=bridge, discordCredential=absent, mailboxAck=enabled)
+ ✓ |serial| src/lead-backends/codex/lead-actions/__tests__/lead-actions-integration.test.ts (6 tests) 4225ms
+   ✓ lead-actions MCP real-spawn integration > reads the Bridge API token, registers the exact tools, and reads the directory  722ms
+   ✓ lead-actions MCP real-spawn integration > starts direct mode with only the Discord credential  456ms
+   ✓ lead-actions MCP real-spawn integration > registers the same exact inventory across repeated ephemeral spawns  1606ms
+   ✓ lead-actions MCP real-spawn integration > fails closed when TEAMLEAD_API_TOKEN is missing  352ms
+   ✓ lead-actions MCP real-spawn integration > fails closed when TEAMLEAD_API_TOKEN is empty  410ms
+   ✓ lead-actions MCP real-spawn integration > returns structured pending and ready roundtable receipts through a real MCP child  677ms
+ ✓ |parallel| src/lead-backends/codex/lead-actions/__tests__/runner-mcp-config.test.ts (5 tests) 44ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts > FLY-350 full-access profile (= Claude-equal, opt-in) > dry-run reflects Bridge-only lead_actions injection, never secret values
+AssertionError: expected '=== CODEX LEAD DRY RUN (nothing start…' to contain 'env_vars=["BRIDGE_URL","TEAMLEAD_API_…'
+
+- Expected
++ Received
+
+- env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN"]
++ === CODEX LEAD DRY RUN (nothing started) ===
++ ROLE          : lead / companion-style (project mufasa-project)
++ leadId        : mufasa
++ bot user id   : 1499895683287748679 (reused Discord bot — identity unchanged)
++ bot token     : tops…(24 chars) (redacted)
++ chat channel  : chan-chat
++ cross-dept    : 1512578695468941333 (mention-gated + reply-routed)
++ mention policy: bot-id mention only
++ core mention gate: off (core always handled — CoS / core-less / core-no-CoS / gate flag unset)
++ inbound       : REST poll (own bot token) — no Bridge
++ outbound mode : bridge → Bridge http://127.0.0.1:9876
++ typing        : ON (Discord typing… while processing — parity with Claude Lead)
++ bridge env    : url=http://127.0.0.1:9876 apiToken=****
++ prod Bridge   : WILL CONNECT (bridge mode)
++ persona       : (none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
++ policy        : approvalPolicy=never sandbox=workspace-write ⚠️ FULL-ACCESS (= Claude-equal; merge/ship founder-gated by rule bundle + branch protection)
++ full-access   : ⚠️ = Claude-equal Lead (workspace-write + local gh/git; NO gateway/broker/release-gate)
++ network       : ON (sandbox_workspace_write.network_access=true — local gh/git/curl like a Claude pane)
++ writable      : /private/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly350-fa-proj-SAXfOa (cwd + ONLY writable root = the project checkout)
++ env (H-1)     : positive allowlist (Claude-pane mirror + gh auth) — NO extra *TOKEN*/*SECRET*/*KEY*
++ merge         : founder-gated by the founder-only-authority rule bundle + main branch protection (NOT structurally impossible — honest, = Claude Leads)
++ CODEX_HOME    : /Users/x/.codex-mufasa (isolated per-Lead — not the host ~/.codex)
++ codex bin     : /usr/local/bin/codex
++ state dir     : /var/state/mufasa
++   journal     : /var/state/mufasa/journal.db
++   thread-id   : /var/state/mufasa/thread-id
++ MCP injected  : lead_actions
++ spawn cmd     : CODEX_HOME=/Users/x/.codex-mufasa /usr/local/bin/codex app-server --strict-config -c mcp_servers.lead_actions.command="/opt/homebrew/Cellar/node/25.6.1/bin/node" -c mcp_servers.lead_actions.args=["/private/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly350-fa-proj-SAXfOa/lead-actions-main.js"] -c mcp_servers.lead_actions.default_tools_approval_mode="approve" -c mcp_servers.lead_actions.env.FLYWHEEL_CODEX_LEAD_OUTBOUND="bridge" -c mcp_servers.lead_actions.env.FLYWHEEL_COMM_DB="/var/state/flywheel/comm.db" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/var/state/mufasa" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID="chan-chat" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="1512578695468941333" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ID="mufasa" -c mcp_servers.lead_actions.env.FLYWHEEL_PROJECT_NAME="mufasa-project" -c mcp_servers.lead_actions.env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN","FLYWHEEL_LEAD_SUMMARY_ROLE","FLYWHEEL_LEAD_HAS_SUMMARY_DUTY","FLYWHEEL_SUMMARY_GRANULARITY"]
++ === END DRY RUN — no process spawned, no Discord/Bridge contacted ===
+
+ ❯ src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts:748:18
+    746|   const report = dryRunReport(config).join("\n");
+    747|   expect(report).toMatch(/MCP injected\s*:.*lead_actions/);
+    748|   expect(report).toContain('env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN…
+       |                  ^
+    749|   expect(report).not.toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+    750|   // the raw token VALUE must never appear (redacted bot-token line sh…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts > FLY-350 full-access profile (= Claude-equal, opt-in) > dry-run preserves the direct lead_actions credential path
+AssertionError: expected '=== CODEX LEAD DRY RUN (nothing start…' to contain 'env_vars=["DISCORD_BOT_TOKEN"]'
+
+- Expected
++ Received
+
+- env_vars=["DISCORD_BOT_TOKEN"]
++ === CODEX LEAD DRY RUN (nothing started) ===
++ ROLE          : lead / companion-style (project mufasa-project)
++ leadId        : mufasa
++ bot user id   : 1499895683287748679 (reused Discord bot — identity unchanged)
++ bot token     : **** (redacted)
++ chat channel  : chan-chat
++ cross-dept    : (none — single-channel byte-compat)
++ mention policy: n/a (no shared channels)
++ core mention gate: off (core always handled — CoS / core-less / core-no-CoS / gate flag unset)
++ inbound       : REST poll (own bot token) — no Bridge
++ outbound mode : direct → DIRECT post to Discord (own bot token), NO Bridge
++ typing        : ON (Discord typing… while processing — parity with Claude Lead)
++ bridge env    : url=(unset — not needed in direct) apiToken=(unset — not needed in direct)
++ prod Bridge   : NOT CONNECTED (zero prod intrusion)
++ persona       : (none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
++ policy        : approvalPolicy=never sandbox=workspace-write ⚠️ FULL-ACCESS (= Claude-equal; merge/ship founder-gated by rule bundle + branch protection)
++ full-access   : ⚠️ = Claude-equal Lead (workspace-write + local gh/git; NO gateway/broker/release-gate)
++ network       : ON (sandbox_workspace_write.network_access=true — local gh/git/curl like a Claude pane)
++ writable      : /private/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly350-fa-proj-0O4waQ (cwd + ONLY writable root = the project checkout)
++ env (H-1)     : positive allowlist (Claude-pane mirror + gh auth) — NO extra *TOKEN*/*SECRET*/*KEY*
++ merge         : founder-gated by the founder-only-authority rule bundle + main branch protection (NOT structurally impossible — honest, = Claude Leads)
++ CODEX_HOME    : /Users/x/.codex-mufasa (isolated per-Lead — not the host ~/.codex)
++ codex bin     : /usr/local/bin/codex
++ state dir     : /var/state/mufasa
++   journal     : /var/state/mufasa/journal.db
++   thread-id   : /var/state/mufasa/thread-id
++ MCP injected  : lead_actions
++ spawn cmd     : CODEX_HOME=/Users/x/.codex-mufasa /usr/local/bin/codex app-server --strict-config -c mcp_servers.lead_actions.command="/opt/homebrew/Cellar/node/25.6.1/bin/node" -c mcp_servers.lead_actions.args=["/private/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly350-fa-proj-0O4waQ/lead-actions-main.js"] -c mcp_servers.lead_actions.default_tools_approval_mode="approve" -c mcp_servers.lead_actions.env.FLYWHEEL_CODEX_LEAD_OUTBOUND="direct" -c mcp_servers.lead_actions.env.FLYWHEEL_COMM_DB="/var/state/flywheel/comm.db" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/var/state/mufasa" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID="chan-chat" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="" -c mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ID="mufasa" -c mcp_servers.lead_actions.env.FLYWHEEL_PROJECT_NAME="mufasa-project" -c mcp_servers.lead_actions.env_vars=["DISCORD_BOT_TOKEN","FLYWHEEL_LEAD_SUMMARY_ROLE","FLYWHEEL_LEAD_HAS_SUMMARY_DUTY","FLYWHEEL_SUMMARY_GRANULARITY"]
++ === END DRY RUN — no process spawned, no Discord/Bridge contacted ===
+
+ ❯ src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts:767:18
+    765|   );
+    766|   const report = dryRunReport(config).join("\n");
+    767|   expect(report).toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+       |                  ^
+    768|   expect(report).not.toContain(
+    769|    'env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN"]',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 5 passed (6)
+      Tests  2 failed | 195 passed (197)
+   Start at  18:03:40
+   Duration  19.40s (transform 5.71s, setup 141ms, collect 10.07s, tests 6.47s, environment 1ms, prepare 603ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2603/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-backends/codex/__tests__/codex-lead-runtime.test.ts src/lead-backends/codex/__tests__/codex-lead-tui-runtime.test.ts src/lead-backends/codex/lead-actions/__tests__/mcp-config.test.ts src/lead-backends/codex/lead-actions/__tests__/runner-mcp-config.test.ts src/lead-backends/codex/lead-actions/__tests__/lead-actions-integration.test.ts src/bridge/__tests__/protocol-ingress.test.ts

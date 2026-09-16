@@ -127,7 +127,7 @@ describe("FLY-1572 MailboxQueue", () => {
 					const db = new Database(path);
 					try {
 						db.exec(
-							"CREATE TRIGGER fail_ack_consume BEFORE UPDATE OF state ON mailbox WHEN NEW.id = 'durable-ack' AND NEW.state = 'ACKED' BEGIN SELECT RAISE(ABORT, 'injected_ack_failure'); END",
+							"CREATE TRIGGER fail_ack_consume BEFORE UPDATE OF state ON mailbox WHEN NEW.id = 'member' AND NEW.state = 'ACKED' BEGIN SELECT RAISE(ABORT, 'injected_ack_failure'); END",
 						);
 						expect(expire).toThrow("injected_ack_failure");
 						expect(queue.getById("member")).toMatchObject({
@@ -147,7 +147,7 @@ describe("FLY-1572 MailboxQueue", () => {
 					batch_id: "exact-batch",
 					lease_retry_count: 0,
 				});
-				expect(queue.getById("durable-ack")?.state).toBe("ACKED");
+				expect(queue.getById("durable-ack")?.state).toBe("QUEUED");
 				expect(
 					queue.ackBatchByRecipient({
 						batchId: "exact-batch",

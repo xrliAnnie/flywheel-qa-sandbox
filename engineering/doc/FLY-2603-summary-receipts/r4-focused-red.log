@@ -1,0 +1,48 @@
+Teamlead --shard=2/4: serial, maxForks=1
+Teamlead --shard=2/4: parallel, maxForks=2
+✖ CI runs serial then parallel projects with bounded isolated forks, preserving failures (9.866584ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 615.756084
+
+✖ failing tests:
+
+test at scripts/__tests__/teamlead-shards.test.mjs:201:1
+✖ CI runs serial then parallel projects with bounded isolated forks, preserving failures (9.866584ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      [
+        '--filter',
+        'flywheel-teamlead',
+        'test:run',
+        '--project=serial',
+        '--shard=2/4',
+  -     '--exclude=src/ship-judgment/__tests__/observation-performance.test.ts'
+      ],
+      [
+        '--filter',
+        'flywheel-teamlead',
+        'test:run',
+        '--project=parallel',
+        '--shard=2/4',
+  -     '--exclude=src/ship-judgment/__tests__/observation-performance.test.ts'
+      ]
+    ]
+  
+      at TestContext.<anonymous> (file:///Users/xiaorongli/Dev/flywheel-FLY-2603/scripts/__tests__/teamlead-shards.test.mjs:210:9)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ [ '--filter', 'flywheel-teamlead', 'test:run', '--project=serial', '--shard=2/4' ], [ '--filter', 'flywheel-teamlead', 'test:run', '--project=parallel', '--shard=2/4' ] ],
+    expected: [ [ '--filter', 'flywheel-teamlead', 'test:run', '--project=serial', '--shard=2/4', '--exclude=src/ship-judgment/__tests__/observation-performance.test.ts' ], [ '--filter', 'flywheel-teamlead', 'test:run', '--project=parallel', '--shard=2/4', '--exclude=src/ship-judgment/__tests__/observation-performance.test.ts' ] ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

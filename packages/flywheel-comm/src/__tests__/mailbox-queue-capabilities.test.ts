@@ -137,7 +137,24 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 					state: "LEASED",
 					claimed_by: "other-owner",
 				});
-			else if (valid) expect(queue.getById("queued-ack")?.state).toBe("ACKED");
+			else if (valid) {
+				// Ingress finalizes the receipt after applying its cross-store effects.
+				expect(queue.getById("queued-ack")?.state).toBe(
+					scenario === "queued" ? "QUEUED" : "LEASED",
+				);
+				expect(
+					queue.claimBridgeProtocol({
+						fromAgent: "lead-a",
+						ownerEpoch: OWNER,
+						now: at(2),
+						claimTtlMs: 30_000,
+					}),
+				).toMatchObject({
+					id: "queued-ack",
+					state: "LEASED",
+					claimed_by: OWNER,
+				});
+			}
 		} finally {
 			queue.close();
 			db.close();

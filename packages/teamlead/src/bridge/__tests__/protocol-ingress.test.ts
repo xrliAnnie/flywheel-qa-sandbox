@@ -10,6 +10,11 @@ import {
 	type DeliverySecret,
 	deriveLeadEventAckToken,
 } from "../lead-event-delivery.js";
+import {
+	canonicalLeadEventDeliveryId,
+	enqueueLeadEvent,
+} from "../lead-event-queue.js";
+import { leadEventEnvelopeFromJournalRow } from "../legacy-lead-event-reconciler.js";
 import { ProtocolIngress } from "../protocol-ingress.js";
 
 describe("ProtocolIngress mailbox ACK", () => {
@@ -187,4 +192,160 @@ describe("ProtocolIngress mailbox ACK", () => {
 		});
 		expect(queue.getById("model-1")?.state).toBe("ACKED");
 	});
+	function summaryBatch(
+		overrides: {
+			fromAgent?: string;
+			sourceKind?: string;
+			sourceRef?: string;
+			type?: string;
+			leadId?: string;
+		} = {},
+	) {
+		const seq = store.appendLeadEvent(
+			overrides.leadId ?? "lead-1",
+			"round-1",
+			"summary_absorption_round",
+			JSON.stringify({
+				event_type: "summary_absorption_round",
+				project_name: "flywheel",
+			}),
+		);
+		const event = store.getLeadEventBySeq(seq)!;
+		const envelope = {
+			...leadEventEnvelopeFromJournalRow(event),
+			timestamp: now,
+		};
+		const deliveryId = canonicalLeadEventDeliveryId(envelope);
+		if (!Object.keys(overrides).length)
+			enqueueLeadEvent({
+				queue,
+				envelope,
+				content: "review summary",
+			});
+		if (Object.keys(overrides).length) {
+			// Separate malformed source row, claimed by the real recipient.
+			queue.enqueue({
+				id: deliveryId,
+				fromAgent: overrides.fromAgent ?? "bridge",
+				toAgent: "lead-1",
+				recipientKind: "lead",
+				type: overrides.type ?? "summary_absorption_round",
+				sourceKind: overrides.sourceKind ?? "lead_event",
+				sourceRef: overrides.sourceRef ?? String(seq),
+				content: "not authoritative",
+				createdAt: now,
+				senderRef: encodeSenderRef(),
+			});
+		}
+		queue.claimLeadBatchQueue({
+			toAgent: "lead-1",
+			msgClass: "model",
+			ownerEpoch: "epoch-1",
+			batchId: "summary-batch",
+			now,
+			transportClaimTtlMs: 10_000,
+			batchWindowMs: 60_000,
+			batchMaxSize: 5,
+			inflightMaxBatches: 3,
+		});
+		const db = new CommDB(dbPath);
+		const receiptId = db.insertBatchAckReceipt("lead-1", "summary-batch");
+		db.close();
+		return { seq, deliveryId, receipt: queue.getById(receiptId)! };
+	}
+
+	it("writes a processed absorption round receipt and replays after a cross-store failure", async () => {
+		const { seq, deliveryId, receipt } = summaryBatch();
+		const ingress = new ProtocolIngress({
+			store,
+			queue,
+			secretProvider: { getActive: () => secret },
+		});
+		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
+		// A restart between the two stores must repair the journal on receipt replay.
+		queue.ackBatchByRecipient({
+			batchId: "summary-batch",
+			fromAgent: "lead-1",
+			now,
+		});
+		expect(queue.getById(deliveryId)?.state).toBe("ACKED");
+		await ingress.handle(receipt);
+		const ackedAt = store.getLeadEventBySeq(seq)?.acked_at;
+		expect(ackedAt).toBeTruthy();
+		await ingress.handle(receipt);
+		expect(store.getLeadEventBySeq(seq)?.acked_at).toBe(ackedAt);
+	});
+
+	it("keeps an expiry-settled receipt claimable for the journal mirror after restart", async () => {
+		const { seq, deliveryId, receipt } = summaryBatch();
+		const later = "2026-08-05T20:00:11.000Z";
+		queue.reconcileExpiredLeases({
+			ownerEpoch: "epoch-1",
+			now: later,
+			recipientKind: "lead",
+			toAgent: "lead-1",
+			leaseRetryMax: 3,
+			recipientState: () => "alive",
+			maxBatches: 10,
+			maxTerminalRows: 0,
+		});
+		expect(queue.getById(deliveryId)?.state).toBe("ACKED");
+		expect(queue.getById(receipt.id)?.state).toBe("QUEUED");
+		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
+		queue.close();
+		queue = new MailboxQueue(dbPath);
+		const pending = queue.claimBridgeProtocol({
+			fromAgent: "lead-1",
+			ownerEpoch: "epoch-1",
+			now: later,
+			claimTtlMs: 60_000,
+		});
+		expect(pending?.id).toBe(receipt.id);
+		const ingress = new ProtocolIngress({
+			store,
+			queue,
+			secretProvider: { getActive: () => secret },
+		});
+		await ingress.handle(pending!);
+		expect(store.getLeadEventBySeq(seq)?.acked_at).toBe(later);
+		expect(queue.ack(receipt.id, later)).toBe(true);
+		expect(queue.getById(receipt.id)?.state).toBe("ACKED");
+	});
+
+	it("writes the journal only after the recipient batch ACK", async () => {
+		const { seq, receipt } = summaryBatch();
+		const ingress = new ProtocolIngress({
+			store,
+			queue,
+			secretProvider: { getActive: () => secret },
+		});
+		await expect(
+			ingress.handle({ ...receipt, from_agent: "other-lead" }),
+		).rejects.toThrow("recipient mismatch");
+		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
+		expect(await ingress.handle(receipt)).toEqual({
+			disposition: "batch_ack_applied",
+		});
+		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeTruthy();
+	});
+
+	it.each([
+		{ fromAgent: "runner-1" },
+		{ sourceKind: "question" },
+		{ sourceRef: "1e0" },
+		{ type: "ordinary" },
+		{ leadId: "other-lead" },
+	])(
+		"does not ACK an event via an unrelated or forged source row: %j",
+		async (override) => {
+			const { seq, receipt } = summaryBatch(override);
+			const ingress = new ProtocolIngress({
+				store,
+				queue,
+				secretProvider: { getActive: () => secret },
+			});
+			await ingress.handle(receipt);
+			expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
+		},
+	);
 });

@@ -1,0 +1,66 @@
+  ✓ ensure-home succeeds on a provisioned home
+  ✓ sandbox pin written
+  ✓ approval pin written
+  ✓ cwd trusted
+  ✓ FLY-2296: read-only home hides the rate-limit model nudge
+  ✓ FLY-2357: read-only home pins memory master switch and dedicated tools in separate tables
+  ✓ idempotent re-run (config unchanged)
+  ✓ FLY-2357: read-only memory drift fails before either table is appended
+  ✓ drifted sandbox config fails closed (HIGH-1 transplant)
+  ✓ missing auth.json fails loud (never copies credentials)
+  ✓ missing standalone fails loud with install instructions
+  ✓ ensure-daemon starts and verifies the control socket (explicit bin override)
+  ✓ daemon started via remote-control start
+  ✓ HIGH-3: comment-bypass config fails closed (TOML-parsed effective values)
+  ✓ HIGH-3: unparseable config fails closed
+  ✓ MED-6: ensure-daemon runs with no FLYWHEEL_CODEX_BIN (standalone default)
+  ✓ MED-6: the STANDALONE binary was invoked (not PATH codex)
+  ✓ R2 MED-4: explicit untrusted entry fails loud (effective TOML state)
+  ✓ R2 MED-4: comment mention doesn't fool the trust check — entry appended
+  ✓ R3 MED-2: empty existing project table fails loud
+  ✓ R4 MED-1: scalar projects fails closed
+  ✓ FLY-2296: explicit false notice pin fails loud with repair guidance
+  ✓ FLY-2296: existing true notice pin is accepted unchanged
+  ✓ FLY-2296: existing unpinned notice table fails loud
+  ✓ FLY-2296: inline notice table fails loud instead of appending
+  ✓ FLY-2296: invalid notice schema fails loud with parse and repair guidance
+  ✓ flag-off ensure-daemon: NO stop (byte-compat)
+  ✓ FLY-1942: legacy flag + cross-dept without explicit parent → no marker
+  ✓ FLY-1942: cross-dept without explicit parent → no marker
+  ✓ FLY-1942: no parent → no marker
+  ✓ FLY-1942: explicit parent → marker present
+  ✓ FLY-1942: empty-leading cross list without explicit parent → no marker
+  ✓ FLY-1942: chat-only cross-dept without explicit parent → no marker
+  ✓ FLY-1942: chat + cross-dept without explicit parent → no marker
+  ✓ FLY-1942: whitespace-only explicit parent → no marker
+  ✓ FLY-1942: trimmed explicit parent → marker present
+  ✓ full-access ensure-home succeeds
+  ✓ full-access: sandbox_mode=workspace-write
+  ✓ full-access: network ON + writable_roots=[cwd]
+  ✓ full-access: no default permission profile
+  ✓ full-access: lead_actions approve mode written
+  ✓ full-access: Bridge credentials forwarded by NAME (env_vars)
+  ✓ full-access: NO broker socket in config (token by name)
+  ✓ FLY-2296: full-access home hides the rate-limit model nudge
+  ✓ FLY-2357: full-access home pins memory master switch and dedicated tools in separate tables
+  ✓ FLY-2357: fresh full-access config is byte-identical after a second ensure
+  ✓ FLY-2445 review: direct full-access home preserves Discord delivery without Bridge credentials
+  ✓ FLY-2357: full-access memory drift fails closed before rewrite
+  ✓ FLY-2357: full-access dedicated-tools drift fails closed before rewrite
+  ✓ FLY-2357: misplaced memory master switch fails closed before rewrite
+  ✓ FLY-2357: misplaced dedicated memory tools fail closed before rewrite
+  ✓ FLY-2357: full-access rewrite preserves feature/memory tables verbatim
+  ✓ FLY-2357: sentinel full-access config is byte-identical after a second ensure
+  ✓ FLY-2357: unsafe table shape fails closed and cleans staging files
+  ✓ full-access ensure-daemon: stop invoked (no stale read-only daemon)
+  ✓ full-access ensure-daemon: start invoked after stop
+  ✓ shell→gate FA (one-crossdept): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)
+  ✓ shell→gate FA (with-aliases): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)
+  ✓ shell→gate FA (chat-only): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)
+  ✓ shell→gate FA (chat-overlap): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)
+  ✓ shell→gate FA (empty-leading): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)
+  ✓ FLY-694: bash-3.2 re-exec guard present in the script
+  ✓ FLY-694: full-access ensure-home under /bin/bash defines all functions (no 'command not found')
+  ✓ FLY-694: full-access ensure-home under /bin/bash exits 0 (was 127 pre-fix)
+────────────────────────────
+Results: 64 passed, 0 failed
