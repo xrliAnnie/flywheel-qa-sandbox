@@ -18,3 +18,7 @@ questionId b7c7776e-59e3-429e-901a-99c43bba0dbf；requestId c96e6098-91ed-4370-b
 | get-limit-is-50-not-100 | LOW | T2跨页测试改为>2×GET_LIMIT，保留真实API分页核对 |
 
 R2要求复核阻塞项及以上设计增补。所有生产修改和验收仍由实施/QA承担，作者未实施这些机制。
+
+## R2 评审基础设施状态
+questionId 85f2ac75-73dc-4ca4-b1d1-04ecad287be4；requestId c38233ab-b61e-49d8-8037-7f2708d4f9e5。
+首次执行在2026-09-16 03:52:26Z记录failed/no_verdict，gate仍pending；未将原始转义输出当作有效结论。03:55:37Z以相同requestId重试并获accepted/duplicate=true，权威job恢复running。继续等待有效结构化verdict；不另造请求抢占结果。
