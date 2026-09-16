@@ -2550,21 +2550,41 @@ export class GatePoller {
 				FounderReplyDeliverDeps["deliverAmbiguousToLead"]
 			>;
 		};
-		const tasksByThread = new Map<string, FounderReplyTask>();
+		const tasks: FounderReplyTask[] = [];
 		const conflictedThreads = new Set<string>();
+		const isRolloutOwner = (task: FounderReplyTask): boolean =>
+			activeRollout?.owners.some(
+				(owner) =>
+					owner.projectName === task.ctx.projectName &&
+					owner.leadId === task.ctx.leadId,
+			) ?? false;
 		const addTask = (task: FounderReplyTask): void => {
 			const threadId = task.ctx.threadId;
 			if (conflictedThreads.has(threadId)) return;
-			const existing = tasksByThread.get(threadId);
-			if (!existing) {
-				tasksByThread.set(threadId, task);
+			const matchingIndexes = tasks.flatMap((existing, index) =>
+				existing.ctx.threadId === threadId ? [index] : [],
+			);
+			if (matchingIndexes.length === 0) {
+				tasks.push(task);
 				return;
 			}
+			const matchingTasks = matchingIndexes.map((index) => tasks[index]!);
 			if (
-				existing.ctx.projectName !== task.ctx.projectName ||
-				existing.ctx.leadId !== task.ctx.leadId
+				!isRolloutOwner(task) &&
+				!matchingTasks.some((existing) => isRolloutOwner(existing))
 			) {
-				tasksByThread.delete(threadId);
+				tasks.push(task);
+				return;
+			}
+			const existing = matchingTasks[0]!;
+			if (
+				matchingTasks.some(
+					(candidate) =>
+						candidate.ctx.projectName !== task.ctx.projectName ||
+						candidate.ctx.leadId !== task.ctx.leadId,
+				)
+			) {
+				for (const index of matchingIndexes.reverse()) tasks.splice(index, 1);
 				conflictedThreads.add(threadId);
 				console.warn(
 					`[founder-thread-ingress] owner_conflict thread=${threadId}`,
@@ -2791,7 +2811,6 @@ export class GatePoller {
 				}
 			}
 
-			const tasks = [...tasksByThread.values()];
 			if (tasks.length === 0 && historical.nextCursor)
 				this.founderReplyScanCursor = historical.nextCursor;
 			tasks.sort((left, right) =>

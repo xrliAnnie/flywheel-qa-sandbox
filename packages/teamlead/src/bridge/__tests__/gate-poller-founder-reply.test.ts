@@ -289,6 +289,62 @@ describe("FLY-2608 registered Raya thread ingress", () => {
 		emitSpy.mockClear();
 	});
 
+	it("leaves same-thread tasks for unrelated Leads unchanged while Raya rollout is active", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2608-unrelated-leads-"));
+		roots.push(root);
+		process.env.FLYWHEEL_COMM_DIR = root;
+		for (const project of ["alpha", "beta"])
+			new CommDB(join(root, project, "comm.db")).close();
+		const threadId = "1549573426547658793";
+		const sessions = ["alpha", "beta"].map((projectName) => ({
+			execution_id: `exec-${projectName}`,
+			issue_id: `${projectName.toUpperCase()}-1`,
+			project_name: projectName,
+			issue_labels: "[]",
+		}));
+		const store = {
+			listNonTerminalSessions: vi.fn(() => sessions),
+			getChatThreadByIssue: vi.fn(() => ({ thread_id: threadId })),
+			getUnarchivedIssueChatThreads: vi.fn(() => []),
+			getUnarchivedPhaseChatThreads: vi.fn(() => []),
+		} as unknown as GatePollerConfig["store"];
+		const poller = makePoller({
+			projects: ["alpha", "beta"].map((projectName, index) => ({
+				projectName,
+				leads: [
+					{
+						agentId: projectName,
+						botToken: `${projectName}-token`,
+						chatChannel: `15420790999280599${index}`,
+						match: { labels: [] },
+					},
+				],
+			})) as GatePollerConfig["projects"],
+			store,
+			founderThreadIngressRollout: {
+				kind: "active",
+				rolloutAfter: "1549500000000000000",
+				markerSha256: "a".repeat(64),
+				owners: [
+					{
+						projectName: "raya",
+						leadId: "raya",
+						chatChannelId: "1542079099928059987",
+					},
+				],
+			},
+		});
+
+		await (poller as unknown as Priv).founderReplyDeliverPass();
+
+		expect(emitSpy).toHaveBeenCalledTimes(2);
+		expect(
+			emitSpy.mock.calls
+				.map((call) => call[0])
+				.map(({ projectName }) => projectName),
+		).toEqual(["alpha", "beta"]);
+	});
+
 	it("uses registered lead and parent ownership instead of the issue session project", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2608-poller-"));
 		roots.push(root);

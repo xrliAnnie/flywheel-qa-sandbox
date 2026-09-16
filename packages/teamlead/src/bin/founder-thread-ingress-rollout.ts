@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { getStateDir } from "flywheel-agent-team-transport";
 import { commDbRootDir } from "../bridge/commdb-path.js";
+import { isDiscordSnowflake } from "../bridge/founder-notify-utils.js";
 import {
 	activateFounderThreadIngressRollout,
 	type FounderThreadIngressOwner,
@@ -36,11 +37,17 @@ export function runFounderThreadIngressRollout(argv: string[]): number {
 		commRoot: commDbRootDir(),
 	});
 	const currentOwners = projects.flatMap((project) =>
-		project.leads.map((lead) => ({
-			projectName: project.projectName,
-			leadId: lead.agentId,
-			chatChannelId: lead.chatChannel,
-		})),
+		project.leads.flatMap((lead) =>
+			isDiscordSnowflake(lead.chatChannel)
+				? [
+						{
+							projectName: project.projectName,
+							leadId: lead.agentId,
+							chatChannelId: lead.chatChannel,
+						},
+					]
+				: [],
+		),
 	);
 	if (command === "status") {
 		console.log(
