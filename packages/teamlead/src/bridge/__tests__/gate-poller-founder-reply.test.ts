@@ -356,6 +356,14 @@ describe("FLY-2608 registered Raya thread ingress", () => {
 		const threadId = "1549573426547658793";
 		const channelId = "1542079099928059987";
 		const nudgeLeadInbox = vi.fn(() => true);
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				name: "FLY-2131",
+				thread_metadata: { archived: false },
+			}),
+		})) as unknown as typeof fetch;
 		const store = {
 			listNonTerminalSessions: vi.fn(() => [
 				{
@@ -415,6 +423,7 @@ describe("FLY-2608 registered Raya thread ingress", () => {
 				},
 			] as GatePollerConfig["projects"],
 			store,
+			fetchImpl,
 			runtimeRegistry: {
 				nudgeLeadInbox,
 			} as unknown as GatePollerConfig["runtimeRegistry"],
@@ -456,16 +465,26 @@ describe("FLY-2608 registered Raya thread ingress", () => {
 		new CommDB(join(root, "raya", "comm.db")).close();
 		const threadId = "1549573438937767977";
 		const channelId = "1542079099928059987";
-		const fetchImpl = vi.fn(async () => ({
+		const fetchImpl = vi.fn(async (url: string | URL | Request) => ({
 			ok: true,
 			status: 200,
-			json: async () => ({
-				threads: [
-					{ id: threadId, parent_id: channelId },
-					{ id: "1549573438937767999", parent_id: "1542079099928059999" },
-				],
-			}),
+			json: async () =>
+				String(url).includes("/threads/active")
+					? {
+							threads: [
+								{ id: threadId, parent_id: channelId },
+								{
+									id: "1549573438937767999",
+									parent_id: "1542079099928059999",
+								},
+							],
+						}
+					: {
+							name: "FLY-2382",
+							thread_metadata: { archived: false },
+						},
 		})) as unknown as typeof fetch;
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const store = {
 			listNonTerminalSessions: vi.fn(() => []),
 			listFounderAskMaintenance: vi.fn(() => []),
@@ -514,7 +533,7 @@ describe("FLY-2608 registered Raya thread ingress", () => {
 
 		await (poller as unknown as Priv).founderReplyDeliverPass();
 
-		expect(fetchImpl).toHaveBeenCalledOnce();
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
 		expect(store.getChatThreadByThreadId).toHaveBeenCalledOnce();
 		expect(emitSpy).toHaveBeenCalledOnce();
 		expect(emitSpy.mock.calls[0]?.[0]).toMatchObject({
@@ -523,6 +542,106 @@ describe("FLY-2608 registered Raya thread ingress", () => {
 			ingestOnly: true,
 			replyChannelId: threadId,
 		});
+		expect(info).toHaveBeenCalledWith(
+			expect.stringContaining(`rediscovered thread=${threadId}`),
+		);
+	});
+
+	it("logs and skips unregistered, non-owner, and Discord-archived threads", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2608-discovery-skips-"));
+		roots.push(root);
+		process.env.FLYWHEEL_COMM_DIR = root;
+		new CommDB(join(root, "raya", "comm.db")).close();
+		const channelId = "1542079099928059987";
+		const archivedThreadId = "1549573438937767990";
+		const unregisteredThreadId = "1549573438937767991";
+		const nonOwnerThreadId = "1549573438937767992";
+		const otherChannelId = "1542079099928059999";
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const fetchImpl = vi.fn(async (url: string | URL | Request) => ({
+			ok: true,
+			status: 200,
+			json: async () =>
+				String(url).includes("/threads/active")
+					? {
+							threads: [
+								{ id: unregisteredThreadId, parent_id: channelId },
+								{ id: nonOwnerThreadId, parent_id: otherChannelId },
+							],
+						}
+					: {
+							name: "FLY-ARCHIVED",
+							thread_metadata: { archived: true },
+						},
+		})) as unknown as typeof fetch;
+		const store = {
+			listNonTerminalSessions: vi.fn(() => []),
+			listFounderAskMaintenance: vi.fn(() => []),
+			listFounderAskScanTargets: vi.fn(() => []),
+			getUnarchivedIssueChatThreads: vi.fn(() => [
+				{
+					thread_id: archivedThreadId,
+					channel_id: channelId,
+					issue_id: "FLY-ARCHIVED",
+					lead_id: "raya",
+				},
+				{
+					thread_id: nonOwnerThreadId,
+					channel_id: otherChannelId,
+					issue_id: "FLY-OTHER",
+					lead_id: "other",
+				},
+			]),
+			getUnarchivedPhaseChatThreads: vi.fn(() => []),
+			getChatThreadByThreadId: vi.fn(() => undefined),
+		} as unknown as GatePollerConfig["store"];
+		const poller = makePoller({
+			projects: [
+				{
+					projectName: "raya",
+					leads: [
+						{
+							agentId: "raya",
+							botToken: "raya-token",
+							chatChannel: channelId,
+							match: { labels: [] },
+						},
+					],
+				},
+			] as GatePollerConfig["projects"],
+			store,
+			fetchImpl,
+			discordGuildId: "1542000000000000000",
+			founderThreadIngressRollout: {
+				kind: "active",
+				rolloutAfter: "1549500000000000000",
+				markerSha256: "a".repeat(64),
+				owners: [
+					{ projectName: "raya", leadId: "raya", chatChannelId: channelId },
+				],
+			},
+			listLeadSubscriptions: vi.fn(async () => []),
+		});
+
+		await (poller as unknown as Priv).founderReplyDeliverPass();
+
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		expect(emitSpy).not.toHaveBeenCalled();
+		expect(info).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`skip reason=unregistered thread=${unregisteredThreadId}`,
+			),
+		);
+		expect(info).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`skip reason=non_owner thread=${nonOwnerThreadId}`,
+			),
+		);
+		expect(info).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`skip reason=discord_archived thread=${archivedThreadId}`,
+			),
+		);
 	});
 
 	it("keeps a pending-question thread on the existing non-ingest-only path", async () => {

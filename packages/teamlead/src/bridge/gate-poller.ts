@@ -53,7 +53,7 @@ import {
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { getChannelName, resolveChatThreadId } from "./chat-thread-utils.js";
 import { listGuildActiveThreads } from "./discord-guild-active-threads.js";
 import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
 import { drainFounderActionLedger } from "./founder-action-drain.js";
@@ -2400,6 +2400,9 @@ export class GatePoller {
 				...this.config.store.getUnarchivedIssueChatThreads(),
 				...this.config.store.getUnarchivedPhaseChatThreads(),
 			];
+			const unarchivedThreadIds = new Set(
+				rows.map(({ thread_id }) => thread_id),
+			);
 			for (const owner of activeRollout.owners) {
 				const project = this.config.projects.find(
 					(candidate) => candidate.projectName === owner.projectName,
@@ -2426,9 +2429,41 @@ export class GatePoller {
 					continue;
 				}
 				for (const thread of active.threads) {
-					if (thread.parent_id !== owner.chatChannelId) continue;
+					if (thread.parent_id !== owner.chatChannelId) {
+						if (unarchivedThreadIds.has(thread.id)) {
+							console.info(
+								`[founder-thread-ingress] skip reason=non_owner thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+							);
+						}
+						continue;
+					}
 					const row = this.config.store.getChatThreadByThreadId(thread.id);
-					if (!row) continue;
+					if (!row) {
+						console.info(
+							`[founder-thread-ingress] skip reason=unregistered thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+						continue;
+					}
+					if (
+						row.channel_id !== owner.chatChannelId ||
+						(row.lead_id && row.lead_id !== owner.leadId)
+					) {
+						console.info(
+							`[founder-thread-ingress] skip reason=non_owner thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+						continue;
+					}
+					if (thread.thread_metadata?.archived === true) {
+						console.info(
+							`[founder-thread-ingress] skip reason=discord_archived thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+						continue;
+					}
+					if (!unarchivedThreadIds.has(thread.id)) {
+						console.info(
+							`[founder-thread-ingress] rediscovered thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+					}
 					rows.push({
 						thread_id: row.thread_id,
 						channel_id: row.channel_id,
@@ -2924,6 +2959,21 @@ export class GatePoller {
 			]) {
 				const { ctx, questions, deliverAmbiguousToLead } = task.value;
 				try {
+					if (ctx.ingestOnly) {
+						const thread = await getChannelName(ctx.threadId, ctx.botToken, {
+							fetchImpl: this.config.fetchImpl,
+						});
+						if (!thread.ok || thread.archived !== false) {
+							const reason =
+								thread.ok && thread.archived === true
+									? "discord_archived"
+									: "discord_state_unavailable";
+							const message = `[founder-thread-ingress] skip reason=${reason} thread=${ctx.threadId} project=${ctx.projectName} lead=${ctx.leadId}`;
+							if (reason === "discord_archived") console.info(message);
+							else console.warn(message);
+							continue;
+						}
+					}
 					await emitFounderReplyDeliveryForThread(ctx, questions, {
 						store: this.config.store,
 						onFounderThreadMessage: (input) => {
