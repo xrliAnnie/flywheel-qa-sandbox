@@ -526,6 +526,9 @@ describe("FLY-2533 paired effective phase prompts", () => {
 			type: "design" | "implement" | "qa" | "generic";
 			baseline: string;
 			platformMigration: Array<{ before: string; after: string }>;
+			/** Set when this node's baseline was re-pinned from a later commit. */
+			baselineRevision?: string;
+			rebaseNote?: string;
 		}>;
 	};
 	const roots: string[] = [];
@@ -542,7 +545,15 @@ describe("FLY-2533 paired effective phase prompts", () => {
 			const { type, baseline, platformMigration } = fixture.nodes.find(
 				(entry) => entry.name === name,
 			)!;
+			// Fixture-level `revision` is the capture point for every entry that still
+			// carries its 26ebc4931 baseline. A node re-pinned from a later commit
+			// records that commit in its own `baselineRevision`, so the assertion below
+			// stays true for the rest instead of being re-pointed and made false for them.
 			expect(fixture.revision).toBe("26ebc4931");
+			const entry = fixture.nodes.find((e) => e.name === name)!;
+			expect(entry.baselineRevision ?? fixture.revision).toMatch(
+				/^[0-9a-f]{7,40}$/,
+			);
 			const source = readFileSync(
 				new URL(
 					`../../../../.flywheel/agents/nodes/${name}.md`,
