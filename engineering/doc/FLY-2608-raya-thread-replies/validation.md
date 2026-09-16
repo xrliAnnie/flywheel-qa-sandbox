@@ -17,3 +17,12 @@ Issue: FLY-2608 (https://linear.app/geoforge3d/issue/FLY-2608/raya工程修复-d
 mmdc -i engineering/doc/FLY-2608-raya-thread-replies/flow.mmd -o engineering/doc/FLY-2608-raya-thread-replies/flow.svg -w 1000 -b white --svgId FLY-2608-d1
 ```
 两次关键错误均为 Chromium `MachPortRendezvousServer` / `bootstrap_check_in ... Permission denied (1100)`。无SVG产物；保留flow.mmd，HTML明确显示 `DIAGRAM PENDING LOCAL RENDER`。没有远程渲染或伪造图形。此为任务明确允许的本地渲染失败交付降级。
+
+## 已完成的托管交付验证（2026-09-16 UTC）
+- R3有效 `reviewVerdict=APPROVED`；最终设计提交 `5d1aef85f`，推送后静默发布；未发送频道消息。
+- URL: https://fw-reports-e8af2b.vercel.app/r/b69057303a8a84c780ec90bf62e55c49/
+- `verify-report --expect FLY-2608` 返回 ok=true / HTTP 200，noncePlaceholder、scriptCsp、scriptNonce、expect全部通过。
+- 独立fetch确认：去除发布器注入的CSP、noindex、nonce替换与新增空白后，托管HTML与提交源文件完全一致；零外部资源；渲染失败提示可见。详见 hosted-verification.json。
+- 发布原始CLI输出在上下文切换时被截断；从发布registry定位唯一对应文件并核对托管内容恢复reportId，没有重复发布。
+- Lead必需的 `DESIGN-HTML ready` 报告回执 `bef84d59-5f22-425c-a954-e8de0f46ea58`。非阻塞建议报告回执 `f06f48aa-737a-40f6-b574-e02597a0e538`。
+- 本轮没有浏览器视觉QA、受控线程提问、生产补投或真实回帖验证；没有把静态/托管验证当作业务验收。
