@@ -151,6 +151,62 @@ export class MemoryBucket {
 		return this._meta(rec);
 	}
 
+	async list({ prefix, delimiter, limit = 1000, cursor } = {}) {
+		if (
+			typeof prefix !== "string" ||
+			!prefix.endsWith("/") ||
+			prefix.startsWith("/") ||
+			prefix.includes("\\") ||
+			prefix
+				.slice(0, -1)
+				.split("/")
+				.some((part) => !part || part === "." || part === "..") ||
+			delimiter !== "/" ||
+			!Number.isInteger(limit) ||
+			limit < 1 ||
+			limit > 1000
+		)
+			throw new Error("invalid listing");
+		if (
+			cursor !== undefined &&
+			(typeof cursor !== "string" ||
+				!cursor.startsWith(prefix) ||
+				cursor.length <= prefix.length ||
+				cursor.slice(prefix.length).replace(/\/$/, "").includes("/"))
+		)
+			throw new Error("invalid cursor");
+		const items = new Set();
+		for (const key of this.objects.keys()) {
+			if (!key.startsWith(prefix)) continue;
+			const tail = key.slice(prefix.length),
+				slash = tail.indexOf("/");
+			items.add(slash < 0 ? key : prefix + tail.slice(0, slash + 1));
+		}
+		const sorted = [...items]
+			.filter((key) => cursor === undefined || key > cursor)
+			.sort();
+		const selected = sorted.slice(0, limit),
+			truncated = sorted.length > limit;
+		return {
+			objects: selected
+				.filter((key) => !key.endsWith("/"))
+				.map((key) => {
+					const obj = this._meta(this.objects.get(key));
+					return {
+						key,
+						size: obj.size,
+						etag: obj.etag,
+						uploaded: obj.uploaded,
+					};
+				}),
+			delimitedPrefixes: selected
+				.filter((key) => key.endsWith("/"))
+				.map((key) => key.slice(0, -1)),
+			truncated,
+			...(truncated ? { cursor: selected.at(-1) } : {}),
+		};
+	}
+
 	async delete(key) {
 		this.objects.delete(key);
 	}

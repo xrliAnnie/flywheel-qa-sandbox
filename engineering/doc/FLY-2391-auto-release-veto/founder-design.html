@@ -1,0 +1,101 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2391 · 默认发布，你保留否决权</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:1040px;margin:auto;padding:48px 24px 80px}h1{font-size:clamp(30px,5vw,48px);line-height:1.25;letter-spacing:-1px;margin:14px 0 26px}h2{font-size:25px;line-height:1.4;margin:0 0 18px}p{margin:12px 0}.eyebrow{font-size:13px;color:#66666f;letter-spacing:1px}.card{background:#fff;border:1px solid #e3e3e8;border-radius:18px;padding:30px;margin:24px 0}.lead{font-size:23px;line-height:1.6}.small{font-size:14px;color:#64646d}.tag{font-size:13px;color:#175899;background:#edf5ff;padding:6px 13px;border-radius:20px;display:inline-block}.pending{border:1px dashed #bd8a36;background:#fff9ee;padding:18px;border-radius:10px;margin:20px 0;color:#795218}.pending strong{font-size:14px}.pending p{font-size:14px}details{margin:12px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:15px}th,td{padding:13px 10px;border-bottom:1px solid #e8e8ed;text-align:left;vertical-align:top}th{background:#fafafa;font-weight:600}td:first-child{font-weight:500}.comment{border-top:1px solid #eee;margin-top:24px;padding-top:16px}label{display:block;font-size:13px;color:#65656d;margin-bottom:7px}label span{margin-left:8px;color:#175899}textarea{width:100%;min-height:80px;padding:12px;font:inherit;font-size:15px;border:1px solid #c9c9d0;border-radius:9px;background:#fdfdff;resize:vertical}textarea:focus{outline:2px solid #0071e366;border-color:#0071e3}button{font:inherit;font-size:14px;padding:10px 16px;border:0;border-radius:8px;background:#0071e3;color:#fff;cursor:pointer;margin:10px 8px 0 0}.secondary{background:#e9f2ff;color:#075da7}.chunk{padding:16px;background:#f5f5f7;border-radius:10px;margin-top:15px}.chunk pre{font:14px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;margin:0}#copy-status{font-size:14px;color:#62626a}svg{max-width:100%;height:auto}a{color:#0071e3}@media(max-width:600px){main{padding:24px 12px 48px}.card{padding:21px 16px;border-radius:13px}h2{font-size:22px}.lead{font-size:20px}th,td{padding:10px 6px;font-size:13px}}</style></head><body><main><div class="eyebrow">FLY-2391 · ENGINEERING DESIGN · 2026-09-14</div><h1>默认发布，<br>你保留否决权。</h1><span class="tag">设计评审通过 · 开关默认关闭</span><section class="card" id="summary"><h2>01 / 健康时默认发布，你想拦时点一次</h2><p class="lead">每周只为一个确定版本开一次否决窗口；你不操作且检查通过，系统到点把它发给客户。</p><p>beta 是先给内部使用的测试版。系统先用同一份代码准备好正式安装包，确认通知送达，再给你一上午拦截。新出的 beta 留到下个周期。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>两次本地渲染均被系统的浏览器启动权限阻止。图源已保留，以下文字说明设计含义。</p></div><details><summary>查看 Mermaid 图源（用文字定义图形的源文件）</summary><pre>flowchart TD
+  A[每周到期：冻结同一候选] --&gt; B{判据 c 是否健康}
+  B --&gt;|hold 或 unknown| X[本周期不自动发布并记账]
+  B --&gt;|green| C[构建正式包：上传并回读验指纹]
+  C --&gt; D[发一次否决卡并确认送达]
+  D --&gt; E[一个上午的否决窗口]
+  E --&gt;|别发、故障或负面信号| X
+  E --&gt;|到截止后仍健康| F[执行器就绪后原子领取发布授权]
+  F --&gt; G[零构建：原子切客户清单]
+  G --&gt; H{清单证据}
+  H --&gt;|确已提交| I[发布成功并补齐三本账]
+  H --&gt;|结果不明| J[核对同一尝试，禁止盲目重发]
+</pre></details><p>一句话流程：到期选定版本，预先验好正式包，发一次否决卡；你点「别发」或系统发现问题就取消，否则截止后才领取发布授权。</p><div class="comment"><label for="comment-summary">这一节的意见 <span data-saved="summary" aria-live="polite"></span></label><textarea id="comment-summary" data-comment="summary" data-title="01 / 健康时默认发布，你想拦时点一次" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="states"><h2>02 / 不知道，就不自动发</h2><div class="table-wrap"><table><thead><tr><th>检查结果</th><th>系统怎么做</th><th>你需要做什么</th></tr></thead><tbody><tr><td>green：客观信号新鲜且正常</td><td>才有资格进入本周期的自动发布流程</td><td>通常无需操作</td></tr><tr><td>hold：已知有问题，或你标了坏</td><td>本周期停止自动发布并记原因</td><td>仍坚持发布时，明确手动点发</td></tr><tr><td>unknown：缺信息、信号过期或系统故障</td><td>本周期停止；修复后也不重开这一轮窗口</td><td>等下周期，或在技术安全门仍通过时手动点发</td></tr></tbody></table></div><p>短暂故障也要当时留下记录，不能被下一次“恢复正常”冲掉。日常日报只展示健康，不每天向你提发布问题。</p><div class="comment"><label for="comment-states">这一节的意见 <span data-saved="states" aria-live="polite"></span></label><textarea id="comment-states" data-comment="states" data-title="02 / 不知道，就不自动发" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="model"><h2>03 / 你看到的包，就是最后发出去的包</h2><p>hash 是文件内容的指纹，改一个字节就会变化。正式包在窗口前已上传到不能覆盖的位置，并从下载路径重新读一遍验证指纹。窗口后不重新构建。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>两次本地渲染均被系统的浏览器启动权限阻止。图源已保留，以下文字说明设计含义。</p></div><details><summary>查看 Mermaid 图源（用文字定义图形的源文件）</summary><pre>erDiagram
+  RELEASE_CYCLE ||--o| RELEASE_NOTICE : has_once
+  RELEASE_CYCLE ||--o{ RELEASE_ACTION : records
+  RELEASE_CYCLE ||--o{ RELEASE_DECISION : authorizes
+  RELEASE_DECISION ||--|| RELEASE_ATTEMPT : binds
+  RELEASE_CYCLE ||--o{ RELEASE_EVENT : audits
+  RELEASE_EVENT ||--o{ RELEASE_PROJECTION : delivers
+</pre></details><div class="table-wrap"><table><thead><tr><th>保留什么</th><th>为什么</th></tr></thead><tbody><tr><td>本周周期、时区、截止时间</td><td>改配置或重启不能多开一轮窗口</td></tr><tr><td>内部版、正式版、源码指纹、两份包的指纹</td><td>知道你允许的是哪个最终安装包</td></tr><tr><td>实际消息、送达时间、谁点了哪个按钮</td><td>发送尝试不能被当成通知送达</td></tr><tr><td>授权、执行尝试、客户清单结果</td><td>丢响应时核对原尝试，不盲目再发</td></tr><tr><td>Bridge、Linear、GitHub 同一事件编号</td><td>Bridge 是协调任务的服务；三处记录能相互核对</td></tr></tbody></table></div><div class="comment"><label for="comment-model">这一节的意见 <span data-saved="model" aria-live="polite"></span></label><textarea id="comment-model" data-comment="model" data-title="03 / 你看到的包，就是最后发出去的包" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="veto"><h2>04 / 一次「别发」，收到明确回执</h2><p>只认你的真实账号在本周期卡片上的动作。系统先把否决落到耐久账本，再回复「已拦下，本周期不自动发布」。别人代点、聊天里引用一句话、机器给出意见，都不会代替你。</p><p>通知必须到你有权限打开的位置，并能读回同一张卡片；这证明送达，不代表你已经阅读。通知不确定、送晚到不足一上午、按钮失效或消息被删，本周期都停止。</p><p>如果后来改变主意，可以准备一张绑定同一份安装包的新手动发布卡，再由你明确点发。它不会重新开启第二轮“沉默就发”。</p><div class="comment"><label for="comment-veto">这一节的意见 <span data-saved="veto" aria-live="polite"></span></label><textarea id="comment-veto" data-comment="veto" data-title="04 / 一次「别发」，收到明确回执" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="cutoff"><h2>05 / 截止前的否决，与已经提交的处置</h2><p>授权领取是系统最后一次检查后，耐久记录“这次可以开始提交”的时点；它一定在否决窗口截止之后。客户清单实际切换成功，才叫发布。</p><div class="table-wrap"><table><thead><tr><th>当时状态</th><th>系统的真实答复</th></tr></thead><tbody><tr><td>窗口内已受理「别发」</td><td>已拦下；没有发布授权</td></tr><tr><td>截止已到但尚未领取授权</td><td>仍保守接受否决</td></tr><tr><td>授权已领取、远端正在提交</td><td>提交中；先核对结果，不能谎称已拦下</td></tr><tr><td>网络断了、结果不知道</td><td>核对同一次提交；不能凭超时再发一次</td></tr><tr><td>已经发出，后来发现问题</td><td>走撤版止血；它会阻止后续客户继续升坏版</td></tr></tbody></table></div><p class="small">提交许可最多允许在 30 秒内发起请求，但已发出的请求可能更晚返回。这不是“30 秒后一定没发布”的保证。窗口里的否决和发布后的撤版分别记账。</p><div class="comment"><label for="comment-cutoff">这一节的意见 <span data-saved="cutoff" aria-live="polite"></span></label><textarea id="comment-cutoff" data-comment="cutoff" data-title="05 / 截止前的否决，与已经提交的处置" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="tradeoffs"><h2>06 / 选择与舍弃</h2><div class="table-wrap"><table><thead><tr><th>选择</th><th>得到什么 / 付出什么</th></tr></thead><tbody><tr><td>采用：独立发布账本＋最后一刻领取授权</td><td>减少每天要你点头的次数；需要耐久回执和明确恢复步骤</td></tr><tr><td>保留：现成的构建、文件验证、原子发布清单</td><td>沿用已确定的安装包合同；自动与手动都不能跳过安全检查</td></tr><tr><td>舍弃：计时器一到直接跑发布脚本</td><td>无法可靠证明通知送达、否决生效和版本没有被换</td></tr><tr><td>舍弃：借用代码合并的批准记录</td><td>代码合入主分支和给客户发版本各有自己的授权</td></tr><tr><td>舍弃：恢复正常就重开窗口</td><td>一周只开一次；不会反复催你</td></tr></tbody></table></div><div class="comment"><label for="comment-tradeoffs">这一节的意见 <span data-saved="tradeoffs" aria-live="polite"></span></label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="06 / 选择与舍弃" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="rollout"><h2>07 / 默认关，最后一步才灰度</h2><p>灰度是先在有限范围启用、观察真实结果。开关默认关闭；设计通过、代码合入都不会自动把它打开。</p><div class="table-wrap"><table><thead><tr><th>顺序</th><th>要拿到的证据</th></tr></thead><tbody><tr><td>先把基础链路走通</td><td>同一发布端的上传、回读、下载、原子清单切换</td></tr><tr><td>健康信号对上真实版本</td><td>实际运行代码、内部包、健康检查对象一致</td></tr><tr><td>客户能更新，也能止血</td><td>真实安装、升级、回滚；坏版能撤回或暂停更新</td></tr><tr><td>只观察，再真手动发布</td><td>先只记录会怎么判；再把新授权链完整手动跑通</td></tr><tr><td>你授权，最后开启</td><td>你确认时间与证据后，才开首个有限周期</td></tr></tbody></table></div><p>后续验收必须包括：一次按钮真的拦下并留账；另一周期健康且无动作才自动发；信号缺失或故障时自动发布次数为零。</p><div class="comment"><label for="comment-rollout">这一节的意见 <span data-saved="rollout" aria-live="polite"></span></label><textarea id="comment-rollout" data-comment="rollout" data-title="07 / 默认关，最后一步才灰度" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="timing"><h2>08 / 三个时间决定，仍待你拍板</h2><p>Lead 已确认目前没有已批准的时刻。下面只是建议，尚未写成生产值；少任何必要配置，系统都不会自动启用。</p><div class="table-wrap"><table><thead><tr><th>待决定</th><th>建议值（未批准）</th></tr></thead><tbody><tr><td>发布日</td><td>周二</td></tr><tr><td>早报出候选</td><td>08:00 PT</td></tr><tr><td>下午否决截止</td><td>15:00 PT</td></tr></tbody></table></div><p>PT 指美国太平洋当地时间；配置将用 America/Los_Angeles 自动处理夏令时。实际送达后必须还留有完整否决时长；迟送不挤掉你的考虑时间。</p><div class="comment"><label for="comment-timing">这一节的意见 <span data-saved="timing" aria-live="polite"></span></label><textarea id="comment-timing" data-comment="timing" data-title="08 / 三个时间决定，仍待你拍板" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="boundary"><h2>09 / 当前交付到哪里</h2><p>正式设计评审已通过，没有阻塞项。11 项非阻塞建议已随设计交给组长，尚未修复；涉及失败重试、手动重发、周期和时间边界、凭据保护及测试接线。完整记录保留在工程交接中。</p><p>本页交付工程设计和可执行的实施计划，包括 20 条状态转移、并发失败测试、迁移回退、独立记账和最后灰度的证据要求。</p><p>尚未实现自动发布、启用生产开关或验证真实客户机。已有代码和模拟测试不能代替上线证明；后续由实现与独立 QA 完成。QA 是另一个角色按验收条件检查实际行为。</p><p class="small">两张图保留 Mermaid 源码；本机渲染被系统权限阻止，当前不能宣称浏览器视觉验收通过。页面留言与复制会做隔离逻辑测试，发布后还会检查真实托管页。</p><div class="comment"><label for="comment-boundary">这一节的意见 <span data-saved="boundary" aria-live="polite"></span></label><textarea id="comment-boundary" data-comment="boundary" data-title="09 / 当前交付到哪里" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div></section><section class="card" id="feedback"><h2>10 / 意见汇总</h2><p>留言只保存在这个浏览器，按下复制后发回，组长才会收到。长意见自动拆段，每段都有同一标题。这里的反馈标记表示修改意见，不是批准。</p><div class="comment"><label for="comment-feedback">这一节的意见 <span data-saved="feedback" aria-live="polite"></span></label><textarea id="comment-feedback" data-comment="feedback" data-title="10 / 意见汇总" placeholder="自动保存到本浏览器，复制发回才会送出"></textarea></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status"></span><div id="comment-chunks"></div></section><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2391';
+  const prefix = 'flywheel:design-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const chunksBox = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function splitText(text) {
+    const chars = Array.from(text);
+    const room = 1800 - Array.from(marker).length - 1;
+    if (!chars.length) return [marker + '\n（暂无意见）'];
+    const result = [];
+    let part = '';
+    for (const char of chars) {
+      if (part.length + char.length > room) {
+        result.push(marker + '\n' + part);
+        part = '';
+      }
+      part += char;
+    }
+    if (part) result.push(marker + '\n' + part);
+    return result;
+  }
+  function fallbackCopy(text) {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '复制意见');
+    helper.style.position = 'fixed';
+    helper.style.left = '-10000px';
+    document.body.appendChild(helper);
+    helper.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    helper.remove();
+    return ok;
+  }
+  async function copyText(text) {
+    let ok = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { await navigator.clipboard.writeText(text); ok = true; }
+      catch (_) { ok = fallbackCopy(text); }
+    } else { ok = fallbackCopy(text); }
+    status.textContent = ok ? '已复制' : '复制失败，请选中下方文字手动复制';
+  }
+  function updateSummary() {
+    const entries = inputs.filter(input => input.value.trim()).map(input =>
+      input.dataset.title + '\n' + input.value.trim());
+    chunks = splitText(entries.join('\n\n'));
+    chunksBox.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const block = document.createElement('div');
+      block.className = 'chunk';
+      const text = document.createElement('pre');
+      text.textContent = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      block.appendChild(text);
+      block.appendChild(button);
+      chunksBox.appendChild(block);
+    });
+  }
+  inputs.forEach(input => {
+    const saved = document.querySelector('[data-saved="' + input.dataset.comment + '"]');
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+    catch (_) { if (saved) saved.textContent = '无法读取本机保存'; }
+    input.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + input.dataset.comment, input.value);
+        if (saved) saved.textContent = '已保存';
+      } catch (_) { if (saved) saved.textContent = '未保存；仍可复制'; }
+      updateSummary();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copyText(chunks.join('\n\n')));
+  updateSummary();
+})();
+</script></main></body></html>

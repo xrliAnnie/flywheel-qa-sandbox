@@ -20,6 +20,14 @@
 //       veto authority binds the candidate tuple's sha256 before dispatch;
 //       nothing is rebuilt after that gate.
 //
+//   commit --cycle-id <id> --binding-digest <64hex> [--attempt-id <uuid>]
+//     keeps --release-id and --expected-sha256 required, uses only
+//     FW_AUTO_RELEASE_EXECUTOR_TOKEN, and requires a durable founder decision.
+//
+//   rebind-prepared-artifact --source-release-id <old> --release-id <new>
+//     --source-binding-digest <64hex> (FW_BETA_PUBLISH_TOKEN)
+//     reuses verified bytes from an abandoned op under a new manual identity.
+//
 //   withdraw (same environment-gated workflow and capability as commit)
 //     node payload-promote.mjs withdraw --withdraw <ver> [--fallback <ver> | --allow-pause]
 //     • quarantine + pointer to available previous-good (or explicit pause), ONE CAS; the
@@ -30,6 +38,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { applyPreparedReleaseCommit } from "../../packages/payload-endpoint/src/release-commit.mjs";
 import {
 	deriveVetoBinding,
 	ENTITLEMENT_POINTER,
@@ -45,7 +54,9 @@ import {
 	testAbortPoint,
 	tupleMatches,
 } from "./lib/endpoint-client.mjs";
+import { rebindPreparedArtifact } from "./lib/rebind-prepared-artifact.mjs";
 import { isReleaseId } from "./lib/release-id.mjs";
+import { runAutoReleaseCommand } from "./payload-auto-release.mjs";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CUSTOMER_POINTER = ENTITLEMENT_POINTER.customer;
@@ -192,6 +203,25 @@ export function proveEquivalence(betaTarball, cleanTarball, workDir) {
 		if (!ba.equals(bb)) diffs.push(`bytes-differ: ${f}`);
 	}
 	return diffs;
+}
+
+async function cmdRebindPreparedArtifact() {
+	const args = parseCommandArgs({
+		valueFlags: ["source-release-id", "release-id", "source-binding-digest"],
+	});
+	const result = await rebindPreparedArtifact(
+		clientFor("FW_BETA_PUBLISH_TOKEN"),
+		{
+			sourceReleaseId: args["source-release-id"],
+			releaseId: args["release-id"],
+			sourceBindingDigest: args["source-binding-digest"],
+		},
+	);
+	emitResult({
+		action: "rebind-prepared-artifact",
+		sourceReleaseId: args["source-release-id"],
+		...result,
+	});
 }
 
 // ── prepare ──────────────────────────────────────────────────────────────────
@@ -363,7 +393,18 @@ async function cmdPrepare() {
 
 async function cmdCommit() {
 	const args = parseCommandArgs({
-		valueFlags: ["release-id", "expected-sha256"],
+		valueFlags: [
+			"release-id",
+			"expected-sha256",
+			"cycle-id",
+			"binding-digest",
+			"attempt-id",
+		],
+		requires: {
+			"cycle-id": ["binding-digest"],
+			"binding-digest": ["cycle-id"],
+			"attempt-id": ["cycle-id", "binding-digest"],
+		},
 	});
 	const releaseId = args["release-id"] ?? "";
 	if (!releaseId) die("commit: --release-id required");
@@ -381,6 +422,21 @@ async function cmdCommit() {
 		die(
 			`commit: --expected-sha256 must be a 64-char lowercase hex sha256 (got ${expectedSha})`,
 		);
+	if (args["cycle-id"]) {
+		const result = await runAutoReleaseCommand(
+			{
+				cycleId: args["cycle-id"],
+				releaseId,
+				bindingDigest: args["binding-digest"],
+				expectedSha256: expectedSha,
+				...(args["attempt-id"] ? { attemptId: args["attempt-id"] } : {}),
+			},
+			{ requireManualDecision: true },
+		);
+		emitResult({ action: "commit", ...result });
+		process.exitCode = result.kind === "published" ? 0 : 2;
+		return;
+	}
 	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
 
 	const { manifest } = await client.readManifest();
@@ -464,32 +520,12 @@ async function cmdCommit() {
 					`binding now has ${binding.releasePayloadSha256}. Refusing fail-closed.`,
 			);
 		}
-		m.versions[cur.ver] = {
-			sha256: cur.sha256,
-			key: cur.objectKey,
+		committedVer = applyPreparedReleaseCommit(
+			m,
+			binding,
 			size,
-			publishedAt: new Date().toISOString(), // server re-stamps
-			channel: "release",
-			status: "active",
-			sourceCommit: cur.sourceCommit,
-			releaseId,
-			derivedFromBeta: cur.betaVersion,
-			retentionSince: null,
-			quarantinedAt: null,
-		};
-		m.channels[CUSTOMER_POINTER].latest = cur.ver;
-		for (const [otherId, other] of Object.entries(m.releaseOps)) {
-			if (
-				otherId !== releaseId &&
-				other.kind === "release" &&
-				(other.state === "reserved" || other.state === "prepared") &&
-				other.ver === cur.ver
-			) {
-				other.state = "abandoned";
-			}
-		}
-		committedVer = cur.ver;
-		cur.state = "committed";
+			new Date().toISOString(),
+		);
 		return true;
 	}, "commit-release");
 	// Report what was ACTUALLY written, not what we read before the write. The old
@@ -705,12 +741,13 @@ async function cmdValidateSnapshot() {
 async function main() {
 	const mode = process.argv[2];
 	if (mode === "prepare") return cmdPrepare();
+	if (mode === "rebind-prepared-artifact") return cmdRebindPreparedArtifact();
 	if (mode === "commit") return cmdCommit();
 	if (mode === "abandon") return cmdAbandon();
 	if (mode === "withdraw") return cmdWithdraw();
 	if (mode === "validate-snapshot") return cmdValidateSnapshot();
 	die(
-		"usage: payload-promote.mjs prepare|commit|abandon|withdraw|validate-snapshot (see file header)",
+		"usage: payload-promote.mjs prepare|rebind-prepared-artifact|commit|abandon|withdraw|validate-snapshot (see file header)",
 	);
 }
 

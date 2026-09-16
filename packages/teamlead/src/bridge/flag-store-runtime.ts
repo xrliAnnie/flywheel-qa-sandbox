@@ -640,3 +640,14 @@ export function enrichFlagViewsWithStore(
 		}
 	});
 }
+
+export function storeAutoReleaseOnSilenceEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(
+		runtime,
+		"auto_release_on_silence_enabled",
+		projectName,
+	);
+}

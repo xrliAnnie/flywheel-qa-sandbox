@@ -1,0 +1,54 @@
+{
+  "issue": "FLY-2391",
+  "scope": "land-conflict rework; no business behavior changes",
+  "instruction": "edb871d1-f3f7-4ce4-b233-eaf304375ab5",
+  "turnEpoch": 23,
+  "base": "6556b07518eec4323cef2067b73b5a27081329d0",
+  "merge": "adb038597",
+  "resolution": "Preserve main fragment registry and removed shared fixture; carry all ten B4 protectedAuthority tables into individual fragments and preserve B4 table assertions. Main independent schema gates retained.",
+  "checks": {
+    "recursiveBuild": "PASS",
+    "lint": "PASS, 22 warnings",
+    "retentionVitest": 65,
+    "releaseReadinessVitest": 459,
+    "killInventoryVitest": 5,
+    "retentionNode": 12,
+    "ciStructure": "PASS"
+  },
+  "logs": {
+    "build": {
+      "path": "/tmp/fly2391-land-build.log",
+      "sha256": "9b363b022b5b1c858031413fb00375e3bf0f99dc8d05071d5555846d541c2464"
+    },
+    "lint": {
+      "path": "/tmp/fly2391-land-lint.log",
+      "sha256": "72a16f8522775c3f9118c0b8351a9154d91c992f1f8f805831a67fd043eb79a8"
+    },
+    "retention": {
+      "path": "/tmp/fly2391-land-tests.log",
+      "sha256": "493bdf90cf9ea48e594de53c3e2a404f4127170bd5de42c04be14d4acc9e54fb"
+    },
+    "releaseReadiness": {
+      "path": "/tmp/fly2391-land-release-tests.log",
+      "sha256": "3411709759766d22b745e00cbf45ec3610139a2f3fca1bca7fdb78a3229bd23f"
+    },
+    "killInventory": {
+      "path": "/tmp/fly2391-land-kill.log",
+      "sha256": "89153a6d03e4b79e1073f2ae836ec3cdc916fe3763218203c16deb28120d13a6"
+    },
+    "retentionNode": {
+      "path": "/tmp/fly2391-land-retention-node.log",
+      "sha256": "3d035dade0b161d0c12e1bd0b4c9f86ca6db71ff8bed710bf4a7561af02ffc8e"
+    },
+    "ciStructure": {
+      "path": "/tmp/fly2391-land-ci-structure.log",
+      "sha256": "dda6b3601b49c5eec7f086ac8836a72c6c1d3e6ab5c174e43e999a45e1dacfd6"
+    }
+  },
+  "pending": [
+    "exact-head review",
+    "exact-head CI",
+    "QA re-admission"
+  ],
+  "activation": "off; no production mutation"
+}

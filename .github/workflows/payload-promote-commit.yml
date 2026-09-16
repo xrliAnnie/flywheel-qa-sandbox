@@ -26,6 +26,18 @@ on:
         description: "commit-only approved payload sha256"
         required: false
         type: string
+      cycle-id:
+        description: "commit-only Bridge cycle; empty uses legacy gated mode"
+        required: false
+        type: string
+      binding-digest:
+        description: "commit-only full manual candidate binding digest; required with cycle-id"
+        required: false
+        type: string
+      attempt-id:
+        description: "commit-only saved decision attempt for recovery"
+        required: false
+        type: string
       withdraw-version:
         description: "withdraw-only current clean version"
         required: false
@@ -66,6 +78,9 @@ jobs:
           WITHDRAW_VERSION_INPUT: ${{ inputs.withdraw-version }}
           FALLBACK_VERSION_INPUT: ${{ inputs.fallback-version }}
           ALLOW_PAUSE_INPUT: ${{ inputs.allow-pause }}
+          CYCLE_ID_INPUT: ${{ inputs.cycle-id }}
+          BINDING_DIGEST_INPUT: ${{ inputs.binding-digest }}
+          ATTEMPT_ID_INPUT: ${{ inputs.attempt-id }}
         run: |
           set -euo pipefail
           RELEASE_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$'
@@ -81,6 +96,18 @@ jobs:
           if [ "$ACTION_INPUT" != "withdraw" ] && [ "$ALLOW_PAUSE_INPUT" = "true" ]; then
             echo "::error::allow-pause is withdraw-only"
             exit 1
+          fi
+          if [ "$ACTION_INPUT" != "commit" ] && [ -n "$CYCLE_ID_INPUT$BINDING_DIGEST_INPUT$ATTEMPT_ID_INPUT" ]; then
+            echo "::error::decision inputs are commit-only"; exit 1
+          fi
+          if [ -n "$CYCLE_ID_INPUT$BINDING_DIGEST_INPUT$ATTEMPT_ID_INPUT" ]; then
+            [[ "$CYCLE_ID_INPUT" =~ ^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$ ]] \
+              && [[ "$BINDING_DIGEST_INPUT" =~ ^[a-f0-9]{64}$ ]] \
+              || { echo "::error::complete decision identity required"; exit 1; }
+            if [ -n "$ATTEMPT_ID_INPUT" ]; then
+              [[ "$ATTEMPT_ID_INPUT" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] \
+                || { echo "::error::invalid recovery attempt"; exit 1; }
+            fi
           fi
           case "$ACTION_INPUT" in
             commit)
@@ -119,6 +146,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate production manifest snapshot
+        if: inputs.cycle-id == ''
         env:
           FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
           FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
@@ -129,13 +157,21 @@ jobs:
         if: inputs.action == 'commit'
         env:
           FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
-          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ inputs.cycle-id == '' && secrets.FW_CUSTOMER_RELEASE_TOKEN || '' }}
+          FW_AUTO_RELEASE_EXECUTOR_TOKEN: ${{ inputs.cycle-id != '' && secrets.FW_AUTO_RELEASE_EXECUTOR_TOKEN || '' }}
+          FW_AUTO_RELEASE_RECEIPT_FILE: ${{ runner.temp }}/manual-release-attempt.jsonl
           RELEASE_ID_INPUT: ${{ inputs.release-id }}
           EXPECTED_SHA256_INPUT: ${{ inputs.expected-sha256 }}
+          CYCLE_ID_INPUT: ${{ inputs.cycle-id }}
+          BINDING_DIGEST_INPUT: ${{ inputs.binding-digest }}
+          ATTEMPT_ID_INPUT: ${{ inputs.attempt-id }}
         run: |
-          node scripts/release/payload-promote.mjs commit \
-            --release-id "$RELEASE_ID_INPUT" \
-            --expected-sha256 "$EXPECTED_SHA256_INPUT"
+          args=(commit --release-id "$RELEASE_ID_INPUT" --expected-sha256 "$EXPECTED_SHA256_INPUT")
+          if [ -n "$CYCLE_ID_INPUT" ]; then
+            args+=(--cycle-id "$CYCLE_ID_INPUT" --binding-digest "$BINDING_DIGEST_INPUT")
+          fi
+          if [ -n "$ATTEMPT_ID_INPUT" ]; then args+=(--attempt-id "$ATTEMPT_ID_INPUT"); fi
+          node scripts/release/payload-promote.mjs "${args[@]}"
 
       - name: Run abandon
         id: abandon_result
@@ -185,3 +221,12 @@ jobs:
           console.log(`PROMOTE_RESULT ${JSON.stringify(result)}`);
           console.log("Recovery query: re-run validate-snapshot, then retry the same action inputs.");
           JS
+
+      - name: Preserve manual attempt recovery receipt
+        if: always() && inputs.cycle-id != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: manual-release-attempt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/manual-release-attempt.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

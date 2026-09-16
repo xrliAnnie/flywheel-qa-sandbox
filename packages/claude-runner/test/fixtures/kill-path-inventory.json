@@ -870,6 +870,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/payload-endpoint/__tests__/serve-node.test.mjs:child.kill();#3",
+		"path": "packages/payload-endpoint/__tests__/serve-node.test.mjs",
+		"code": "child.kill();",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/payload-endpoint/__tests__/serve-node.test.mjs:for (const c of children) c.kill();#1",
 		"path": "packages/payload-endpoint/__tests__/serve-node.test.mjs",
 		"code": "for (const c of children) c.kill();",
@@ -1731,6 +1737,12 @@
 		"key": "scripts/__tests__/customer-e2e-acceptance.test.sh:kill -0 \"$SERVER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/customer-e2e-acceptance.test.sh",
 		"code": "kill -0 \"$SERVER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/customer-release-reservation.test.mjs:child.kill();#1",
+		"path": "scripts/__tests__/customer-release-reservation.test.mjs",
+		"code": "child.kill();",
 		"classification": "qa-only"
 	},
 	{

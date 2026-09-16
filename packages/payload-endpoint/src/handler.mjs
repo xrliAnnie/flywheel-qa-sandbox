@@ -17,6 +17,7 @@
 
 import { normalizeEtag } from "./etag.mjs";
 import {
+	deriveVetoBinding,
 	ENTITLEMENT_POINTER,
 	isPayloadSemver,
 	keyObjectKey,
@@ -26,6 +27,7 @@ import {
 	payloadObjectKey,
 	RETENTION_WINDOW_MS,
 } from "./manifest.mjs";
+import { handleReleaseAttempt } from "./release-attempts.mjs";
 import { applyTransition, capabilityAllows } from "./transitions.mjs";
 import { isEmptyInitialManifest, validateManifest } from "./validator.mjs";
 import { manifestView, visibleEntries } from "./views.mjs";
@@ -75,17 +77,33 @@ async function readManifest(bucket) {
 	return { manifest: await obj.json(), etag: obj.etag, httpEtag: obj.httpEtag };
 }
 
-// capability <request, secrets> → "beta-publish" | "customer-release" |
-// "ops-admin" | null. Worker secrets hold sha256(token) per capability.
+// Capability hashes remain disjoint. The two release-control hashes must be
+// configured together; both absent leaves the new roles disabled.
 async function capabilityOf(request, secrets) {
 	const token = bearer(request);
 	if (!token) return null;
 	const presented = await sha256Hex(token);
+	const narrowHashes = [
+		secrets.autoReleaseExecutorTokenSha256,
+		secrets.releaseDecisionTokenSha256,
+	];
+	if (
+		narrowHashes.some(
+			(hash) => hash !== undefined && hash !== null && hash !== "",
+		) &&
+		narrowHashes.some(
+			(hash) => typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash),
+		)
+	) {
+		return "invalid-configuration";
+	}
 	const table = [
 		[BETA_CAPABILITY, secrets.betaPublishTokenSha256],
 		[RELEASE_CAPABILITY, secrets.customerReleaseTokenSha256],
 		["ops-admin", secrets.opsAdminTokenSha256],
 		["cleanup", secrets.cleanupTokenSha256],
+		["release-auto-executor", secrets.autoReleaseExecutorTokenSha256],
+		["release-decision-writer", secrets.releaseDecisionTokenSha256],
 	];
 	const hashes = table
 		.map(([, hash]) => (typeof hash === "string" ? hash.toLowerCase() : ""))
@@ -264,6 +282,31 @@ export async function handleRequest(request, deps) {
 			if (!cap)
 				return respond("/admin/*", json(401, { error: "unauthorized" }));
 
+			const narrow =
+				cap === "release-auto-executor" || cap === "release-decision-writer";
+			if (
+				narrow &&
+				!(
+					(method === "GET" && path === "/admin/manifest") ||
+					(cap === "release-auto-executor" &&
+						method === "GET" &&
+						path.startsWith("/admin/payload/")) ||
+					path === "/admin/release-attempts" ||
+					path.startsWith("/admin/release-attempts/")
+				)
+			)
+				return respond("/admin/*", json(403, { error: "forbidden" }));
+
+			if (
+				path === "/admin/release-attempts" ||
+				path.startsWith("/admin/release-attempts/")
+			) {
+				return respond(
+					"/admin/release-attempts/:id/:action",
+					await handleReleaseAttempt(request, deps, cap),
+				);
+			}
+
 			if (method === "GET" && path === "/admin/manifest") {
 				const cur = await readManifest(bucket);
 				if (!cur)
@@ -354,6 +397,19 @@ export async function handleRequest(request, deps) {
 						json(422, { error: "illegal transition", violations: errs }),
 					);
 				}
+				if (
+					deps.releaseDecisionRequired !== undefined &&
+					deps.releaseDecisionRequired !== false &&
+					ops.some(
+						(op) =>
+							(op.type === "addVersion" && op.channel === "release") ||
+							(op.type === "commitOp" && op.kind === "release"),
+					)
+				)
+					return respond(
+						route,
+						json(403, { error: "release_decision_required" }),
+					);
 				const refused = ops.filter((op) => !capabilityAllows(cap, op));
 				if (refused.length) {
 					return respond(
@@ -410,7 +466,23 @@ export async function handleRequest(request, deps) {
 				const objectKey = payloadObjectKey(ver, sha);
 
 				if (method === "GET") {
-					if (cap !== BETA_CAPABILITY && cap !== RELEASE_CAPABILITY) {
+					if (cap === "release-auto-executor") {
+						const current = await readManifest(bucket);
+						if (
+							!current ||
+							validateManifest(current.manifest).length ||
+							!Object.entries(current.manifest.releaseOps).some(([id, op]) => {
+								if (op?.objectKey !== objectKey) return false;
+								try {
+									deriveVetoBinding(current.manifest, id);
+									return true;
+								} catch {
+									return false;
+								}
+							})
+						)
+							return respond(route, json(403, { error: "forbidden" }));
+					} else if (cap !== BETA_CAPABILITY && cap !== RELEASE_CAPABILITY) {
 						return respond(route, json(403, { error: "forbidden" }));
 					}
 					const obj = await bucket.get(objectKey);

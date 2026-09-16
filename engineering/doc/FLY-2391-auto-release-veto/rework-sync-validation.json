@@ -1,0 +1,53 @@
+{
+  "issue": "FLY-2391",
+  "date": "2026-09-15",
+  "base": "84a65da2e56d895adc5ddf3ac88f8a79a17d2ab8",
+  "priorHead": "eceb689b68edfb91755785df44b682a5f27eaca4",
+  "scope": [
+    "one main sync after PR1199 merged",
+    "preserve both flag and kill-path inventory changes",
+    "retention union243, excluding retired240",
+    "automatic_advance_failed invalidation scoped to automatic cycles"
+  ],
+  "red": {
+    "failed": 1,
+    "passed": 22,
+    "failure": "manual_ready unexpectedly cancelled"
+  },
+  "validation": {
+    "build": "passed",
+    "lint": {
+      "exit": 0,
+      "warnings": 22
+    },
+    "config": 850,
+    "teamlead": 646,
+    "killPathInventory": 5,
+    "endpoint": 217,
+    "nodeScripts": 82,
+    "ciStructure": "passed",
+    "promoteArgv": 19,
+    "releasePipeline": 44,
+    "contractVectors": 22,
+    "renderFixture": "generated"
+  },
+  "exception": {
+    "ruling": "40bad27b-15b8-4a7b-b106-aaf0b86115df",
+    "suite": "scripts/__tests__/release-workflows-structure.test.sh",
+    "local": "excluded after local exit2 at scratch546-547 and copied main525",
+    "leadVerification": "host Bash and PR1199 CI pass",
+    "aggregate": "exact-head CI required"
+  },
+  "notProven": [
+    "fresh effective review",
+    "exact-head CI",
+    "QA retest",
+    "production activation"
+  ],
+  "logs": {
+    "/tmp/fly2391-sync-build.log": "7eb769725ed75c0a13f979f0968ae1b1fb3c8b9840971829e1a8c74db61c8ceb",
+    "/tmp/fly2391-sync-lint.log": "9f9cc26ab2e8a1ebc358e009a403852112551dbbbf20d26fe92aca6b7ef0a49e",
+    "/tmp/fly2391-sync-focused.log": "9be3ebf6994c34c848fc653844a02a003809a8549c17c4f63f9aad64290bbecb",
+    "/tmp/fly2391-advance-red.log": "71dd9a8cd94db07796044dccb99b91552add74ce405991beee2810a598041258"
+  }
+}

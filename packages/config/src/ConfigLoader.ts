@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import type { ResolvedProjectRegistry } from "./agent-registry.js";
 import { parseBetaReleaseConfig } from "./beta-release-config.js";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
+import { parseCustomerReleaseConfig } from "./customer-release-config.js";
 import { RETIRED_CONFIG_PATHS } from "./feature-flags/truth.js";
 import { getModelConfigSnapshot } from "./model-config.js";
 import type {
@@ -164,6 +165,9 @@ export class ConfigLoader {
 		}
 
 		const c = config as Record<string, unknown>;
+		if (Object.hasOwn(c, "customer_release")) {
+			c.customer_release = parseCustomerReleaseConfig(c.customer_release);
+		}
 		if (Object.hasOwn(c, "beta_release")) {
 			c.beta_release = parseBetaReleaseConfig(c.beta_release);
 		}

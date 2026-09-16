@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "customer_release_manual_requests",
+	"classification": "protectedAuthority"
+}

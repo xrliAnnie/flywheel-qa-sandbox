@@ -18,6 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { handleRequest } from "../src/handler.mjs";
+import { releaseControlFromEnv } from "../src/release-control-config.mjs";
 import { MemoryBucket } from "./memory-bucket.mjs";
 
 const sha256Hex = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -30,6 +31,17 @@ const now = () => (fakeNowMs === null ? new Date() : new Date(fakeNowMs));
 
 // ── capability secrets (admin mode) ──────────────────────────────────────────
 const secrets = {};
+if (process.env.FW_TEST_AUTO_RELEASE_EXECUTOR_TOKEN) {
+	secrets.autoReleaseExecutorTokenSha256 = sha256Hex(
+		process.env.FW_TEST_AUTO_RELEASE_EXECUTOR_TOKEN,
+	);
+}
+if (process.env.FW_TEST_RELEASE_DECISION_TOKEN) {
+	secrets.releaseDecisionTokenSha256 = sha256Hex(
+		process.env.FW_TEST_RELEASE_DECISION_TOKEN,
+	);
+}
+
 if (process.env.FW_TEST_CLEANUP_TOKEN) {
 	secrets.cleanupTokenSha256 = sha256Hex(process.env.FW_TEST_CLEANUP_TOKEN);
 }
@@ -250,6 +262,7 @@ const server = http.createServer(async (req, res) => {
 				: {}),
 		});
 		const response = await handleRequest(request, {
+			...releaseControlFromEnv(process.env),
 			bucket,
 			secrets,
 			now,

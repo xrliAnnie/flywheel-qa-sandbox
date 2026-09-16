@@ -14,6 +14,8 @@ import { ShipJudgmentOutcomes } from "./ship-judgment/outcomes.js";
 import { installObservationStorage, ObservationSchemaDrift, enqueueRestoredObservation, type ObservationReplayReceipt, type ObservationStorageState } from "./ship-judgment/observation-cursor.js";
 import { ShipJudgmentClarifications, type ReplySource } from "./ship-judgment/clarifications.js";
 import { LearningDelivery } from "./ship-judgment/learning-delivery.js";
+import { isReadinessHeartbeatHealthy, READINESS_WINDOW_MS as RELEASE_EVIDENCE_WINDOW_MS } from "./bridge/release-readiness/evaluate.js";
+import { readReadinessPolicy } from "./bridge/release-readiness/policy.js";
 import type { ReleaseSignalEvent, ReleasePublication, ReadinessInput, ReleaseHeartbeat, ReleaseSignalGap, ReleaseReadinessRecord } from "./bridge/release-readiness/evaluate.js";
 import {
 	PRE_ADAPTER_FAILURE_KINDS,
@@ -30,6 +32,7 @@ import {
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
@@ -2678,6 +2681,14 @@ export type AttentionThreadBinding =
 	  };
 
 export class StateStore {
+	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
+	get customerReleases(): CustomerReleaseStore {
+		const db = this.db.raw;
+		if (this.customerReleaseStoreCache?.db !== db) {
+			this.customerReleaseStoreCache = { db, store: new CustomerReleaseStore(db) };
+		}
+		return this.customerReleaseStoreCache.store;
+	}
 	private observationStorage: ObservationStorageState = { status: "unavailable", reason: "not_initialized" };
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
@@ -4620,12 +4631,15 @@ export class StateStore {
 	}
 
 	appendReleaseReadinessVerdict(input: Omit<ReleaseReadinessRecord, "verdictId">): ReleaseReadinessRecord {
-		const record = {...input, verdictId: `rr-${randomUUID()}`};
-		this.db.raw.prepare(`INSERT INTO release_readiness_verdicts
-			(verdict_id, subject_commit, base_version, local_deployed_sha, state, reasons_json, evidence_json, policy_json, evaluated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.verdictId, record.subject.sourceCommit, record.subject.baseVersion,
-			input.evidence.localDeployedSha, input.state, JSON.stringify(input.reasons), JSON.stringify(input.evidence), JSON.stringify(input.evidence.policy), input.evaluatedAt);
-		return record;
+		return this.db.raw.transaction(() => {
+			const record = {...input, verdictId: `rr-${randomUUID()}`};
+			this.db.raw.prepare(`INSERT INTO release_readiness_verdicts
+				(verdict_id, subject_commit, base_version, local_deployed_sha, state, reasons_json, evidence_json, policy_json, evaluated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.verdictId, record.subject.sourceCommit, record.subject.baseVersion,
+				input.evidence.localDeployedSha, input.state, JSON.stringify(input.reasons), JSON.stringify(input.evidence), JSON.stringify(input.evidence.policy), input.evaluatedAt);
+			if (input.state !== "green") this.customerReleases.invalidateSource(input.subject.sourceCommit, input.state === "hold" ? "readiness_hold" : "readiness_unknown", Date.parse(input.evaluatedAt));
+			return record;
+		}).immediate();
 	}
 
 	getReleaseReadinessVerdicts(sourceCommit: string, limit = 20): ReleaseReadinessRecord[] {
@@ -4648,6 +4662,7 @@ export class StateStore {
 			if (!publication) throw new Error("published report not found");
 			if (!input.ok) {
 				this.db.raw.prepare("UPDATE release_report_publications SET last_scan_at=?, last_scan_error=? WHERE publication_id=?").run(input.at, input.error, publicationId);
+				this.customerReleases.invalidateSource(publication.subject_commit, "founder_scan_failed", Date.parse(input.at));
 				return;
 			}
 			this.db.raw.prepare(`UPDATE release_report_publications SET first_scan_ok_at=COALESCE(first_scan_ok_at, ?),
@@ -4656,15 +4671,19 @@ export class StateStore {
 				VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(day) DO UPDATE SET sentiment=excluded.sentiment, observed_at=excluded.observed_at
 				WHERE release_founder_verdicts.sentiment='up' AND excluded.sentiment='down'`)
 				.run(publication.day, publication.message_id, input.sentiment, input.founderUserId, publication.subject_commit, input.at);
+			if (input.sentiment === "down") this.customerReleases.invalidateSource(publication.subject_commit, "founder_down", Date.parse(input.at));
 		}).immediate();
 	}
 
 	appendReleaseHeartbeat(h: ReleaseHeartbeat): void {
-		this.db.raw.prepare(`INSERT INTO release_signal_heartbeat
-			(tick_at, source_commit, base_version, w1_freshness, alert_delivery_enabled, claims_db_ok, ingest_ok, gaps_dir_ok,
-			 bridge_capture_failures, rejected_rows, backlog_age_s, outbox_pending, outbox_invalid)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(h.tickAt, h.sourceCommit, h.baseVersion, h.w1Freshness,
-			Number(h.alertDeliveryEnabled), Number(h.claimsDbOk), Number(h.ingestOk), Number(h.gapsDirOk), h.bridgeCaptureFailures, h.rejectedRows, h.backlogAgeS, h.outboxPending, h.outboxInvalid);
+		this.db.raw.transaction(() => {
+			this.db.raw.prepare(`INSERT INTO release_signal_heartbeat
+				(tick_at, source_commit, base_version, w1_freshness, alert_delivery_enabled, claims_db_ok, ingest_ok, gaps_dir_ok,
+				 bridge_capture_failures, rejected_rows, backlog_age_s, outbox_pending, outbox_invalid)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(h.tickAt, h.sourceCommit, h.baseVersion, h.w1Freshness,
+				Number(h.alertDeliveryEnabled), Number(h.claimsDbOk), Number(h.ingestOk), Number(h.gapsDirOk), h.bridgeCaptureFailures, h.rejectedRows, h.backlogAgeS, h.outboxPending, h.outboxInvalid);
+			if (!h.sourceCommit || !h.baseVersion || !isReadinessHeartbeatHealthy(h, readReadinessPolicy().backlogAgeMaxS)) this.customerReleases.invalidateSource(h.sourceCommit, "heartbeat_unhealthy", Date.parse(h.tickAt));
+		}).immediate();
 	}
 
 	insertReleaseSignalGap(g: ReleaseSignalGap & {baseVersion: string | null; kind: string; severity: ReleaseSignalEvent["severity"]; ingestedAt: string}): void {
@@ -4674,12 +4693,16 @@ export class StateStore {
 			.run(g.gapId, g.eventId, g.reason, g.severity, g.projectName, g.kind, g.sourceCommit, g.baseVersion, g.observedAt, g.ingestedAt);
 	}
 
-	recordReleaseBugSourceHealth(input: {label: string; ok: boolean; error?: string; at: string}): void {
-		this.db.raw.prepare(`INSERT INTO release_bug_source_health(key, label, last_success_at, last_failure_at, last_error)
-			VALUES ('bug_label', ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label=excluded.label,
-			last_success_at=COALESCE(excluded.last_success_at, last_success_at),
-			last_failure_at=COALESCE(excluded.last_failure_at, last_failure_at), last_error=excluded.last_error`)
-			.run(input.label, input.ok ? input.at : null, input.ok ? null : input.at, input.ok ? null : input.error ?? "label lookup failed");
+	recordReleaseBugSourceHealth(input: {activationEpoch?: number; label: string; ok: boolean; error?: string; at: string}): void {
+		this.db.raw.transaction(() => {
+			if (input.activationEpoch !== undefined && this.customerReleases.activation.get()?.epoch !== input.activationEpoch) return;
+			this.db.raw.prepare(`INSERT INTO release_bug_source_health(key, label, last_success_at, last_failure_at, last_error)
+				VALUES ('bug_label', ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label=excluded.label,
+				last_success_at=COALESCE(excluded.last_success_at, last_success_at),
+				last_failure_at=COALESCE(excluded.last_failure_at, last_failure_at), last_error=excluded.last_error`)
+				.run(input.label, input.ok ? input.at : null, input.ok ? null : input.at, input.ok ? null : input.error ?? "label lookup failed");
+			if (!input.ok) this.customerReleases.invalidateSource(null, "bug_source_failed", Date.parse(input.at));
+		}).immediate();
 	}
 
 	getReleaseReadinessEvidence(sourceCommit: string, from: string, to: string): Pick<ReadinessInput, "events" | "gaps" | "heartbeats" | "bugs" | "bugSourceHealth" | "publications" | "founderVerdicts"> {
@@ -4731,11 +4754,26 @@ export class StateStore {
 		) SELECT * FROM episodes WHERE sourceCommit=? ORDER BY episodeFrom`).all(sourceCommit) as NonNullable<ReadinessInput["anchor"]>[];
 	}
 
+	private latestReleaseDeploymentSource(): string | null | undefined {
+		const row = this.db.raw.prepare(`SELECT source FROM (
+			SELECT id, deployed_sha AS source, deployed_at AS at FROM deployment_events WHERE project_name='flywheel' AND environment='production'
+			UNION ALL SELECT 0, source_commit, episode_from FROM release_deployment_anchors
+			UNION ALL SELECT -1, NULL, episode_to FROM release_deployment_anchors WHERE episode_to IS NOT NULL
+		) ORDER BY julianday(at) DESC,id DESC LIMIT 1`).get() as {source: string | null} | undefined;
+		if (!row) return undefined;
+		return typeof row.source === "string" && /^[a-f0-9]{40}$/.test(row.source) ? row.source : null;
+	}
+
 	upsertReleaseDeploymentAnchor(input: NonNullable<ReadinessInput["anchor"]>, firstSeenAt: string): void {
-		this.db.raw.prepare(`INSERT INTO release_deployment_anchors(anchor_id, source_commit, episode_from, episode_to, first_seen_at)
-			VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_commit, episode_from) DO UPDATE SET
-			episode_to=COALESCE(release_deployment_anchors.episode_to, excluded.episode_to)`)
-			.run(`${input.sourceCommit}:${input.episodeFrom}`, input.sourceCommit, input.episodeFrom, input.episodeTo, firstSeenAt);
+		this.db.raw.transaction(() => {
+			const previousSource = this.latestReleaseDeploymentSource();
+			this.db.raw.prepare(`INSERT INTO release_deployment_anchors(anchor_id, source_commit, episode_from, episode_to, first_seen_at)
+				VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_commit, episode_from) DO UPDATE SET
+				episode_to=COALESCE(release_deployment_anchors.episode_to, excluded.episode_to)`)
+				.run(`${input.sourceCommit}:${input.episodeFrom}`, input.sourceCommit, input.episodeFrom, input.episodeTo, firstSeenAt);
+			const currentSource = this.latestReleaseDeploymentSource();
+			if (currentSource !== previousSource) this.customerReleases.invalidateDeployment(currentSource ?? null, Date.parse(firstSeenAt));
+		}).immediate();
 	}
 
 	getReleaseDeploymentAnchor(sourceCommit: string): ReadinessInput["anchor"] {
@@ -4801,9 +4839,15 @@ export class StateStore {
 		intentId: string; sourceCommit: string | null; baseVersion: string | null;
 		reporter: string | null; createdAt: string;
 	}): void {
-		this.db.raw.prepare(`INSERT INTO release_bug_reports
-			(intent_id, status, source_commit, base_version, reporter, created_at)
-			VALUES (?, 'pending', ?, ?, ?, ?)`).run(input.intentId, input.sourceCommit, input.baseVersion, input.reporter, input.createdAt);
+		this.db.raw.transaction(() => {
+			const receivedAt = Date.now();
+			const createdAt = Date.parse(input.createdAt);
+			if (!Number.isFinite(createdAt)) throw new Error("invalid release bug timestamp");
+			this.db.raw.prepare(`INSERT INTO release_bug_reports
+				(intent_id, status, source_commit, base_version, reporter, created_at)
+				VALUES (?, 'pending', ?, ?, ?, ?)`).run(input.intentId, input.sourceCommit, input.baseVersion, input.reporter, input.createdAt);
+			if (receivedAt - createdAt <= RELEASE_EVIDENCE_WINDOW_MS) this.customerReleases.invalidateSource(input.sourceCommit, "bug_intent_unresolved", receivedAt);
+		}).immediate();
 	}
 
 	recordReleaseBugReport(input: {issueIdentifier: string; sourceCommit: string | null; baseVersion: string | null; reporter: string | null; at: string}) {
@@ -6129,6 +6173,7 @@ export class StateStore {
 
 	migrate(): void {
 		this.betaSchedules.migrate();
+		this.customerReleases.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS discord_config (
 				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),
@@ -10954,100 +10999,108 @@ export class StateStore {
 	 * (self-ship updater re-runs, spool drains) but keeps genuinely distinct deploys.
 	 */
 	insertDeploymentEvent(input: DeploymentEventInput): { inserted: boolean } {
-		const norm = (s: string | undefined) => (s ? s.trim() : undefined);
-		const issue = norm(input.issueIdentifier)?.toUpperCase();
-		const mergeSha = norm(input.mergeSha)?.toLowerCase();
-		const deployedSha = norm(input.deployedSha)?.toLowerCase();
-		const batchId = norm(input.deployBatchId);
-		const sourceEventId = norm(input.sourceEventId);
-		const environment = norm(input.environment) ?? "production";
-		const deployedAt =
-			norm(input.deployedAt) ??
-			new Date()
-				.toISOString()
-				.replace("T", " ")
-				.replace(/\.\d+Z$/, "");
-		// Event identity — must be non-null (Bridge route rejects if all absent).
-		const eventIdentity =
-			mergeSha ?? sourceEventId ?? batchId ?? deployedSha ?? "";
-		// Codex code-review R6 (HIGH): a squash-merge commit is 1:1 with a single
-		// PR/issue, so when `merge_sha` is the identity it ALONE identifies the deploy
-		// — issue/pr are enrichment and must NOT be part of the dedup key. Otherwise a
-		// fallback-git-log row whose commit subject yielded a PR but no issue (key
-		// `proj||pr|sha|env`) fails to collide with the authoritative marker report
-		// (key `proj|issue|pr|sha|env`), leaving two rows the digest double-counts.
-		// A merge-less identity (batch / deployed-sha) CAN span multiple issues, so
-		// there issue+pr stay in the key to keep genuinely-distinct deploys distinct.
-		const dedupKey = mergeSha
-			? [input.projectName, "", "", eventIdentity, environment].join("|")
-			: [
-					input.projectName,
-					issue ?? "",
-					input.prNumber ?? "",
-					eventIdentity,
-					environment,
-				].join("|");
+		return this.db.raw.transaction(() => {
+			const norm = (s: string | undefined) => (s ? s.trim() : undefined);
+			const issue = norm(input.issueIdentifier)?.toUpperCase();
+			const mergeSha = norm(input.mergeSha)?.toLowerCase();
+			const deployedSha = norm(input.deployedSha)?.toLowerCase();
+			const batchId = norm(input.deployBatchId);
+			const sourceEventId = norm(input.sourceEventId);
+			const environment = norm(input.environment) ?? "production";
+			const tracksRelease = input.projectName === "flywheel" && environment === "production";
+			const previousSource = tracksRelease ? this.latestReleaseDeploymentSource() : undefined;
+			const deployedAt =
+				norm(input.deployedAt) ??
+				new Date()
+					.toISOString()
+					.replace("T", " ")
+					.replace(/\.\d+Z$/, "");
+			// Event identity — must be non-null (Bridge route rejects if all absent).
+			const eventIdentity =
+				mergeSha ?? sourceEventId ?? batchId ?? deployedSha ?? "";
+			// Codex code-review R6 (HIGH): a squash-merge commit is 1:1 with a single
+			// PR/issue, so when `merge_sha` is the identity it ALONE identifies the deploy
+			// — issue/pr are enrichment and must NOT be part of the dedup key. Otherwise a
+			// fallback-git-log row whose commit subject yielded a PR but no issue (key
+			// `proj||pr|sha|env`) fails to collide with the authoritative marker report
+			// (key `proj|issue|pr|sha|env`), leaving two rows the digest double-counts.
+			// A merge-less identity (batch / deployed-sha) CAN span multiple issues, so
+			// there issue+pr stay in the key to keep genuinely-distinct deploys distinct.
+			const dedupKey = mergeSha
+				? [input.projectName, "", "", eventIdentity, environment].join("|")
+				: [
+						input.projectName,
+						issue ?? "",
+						input.prNumber ?? "",
+						eventIdentity,
+						environment,
+					].join("|");
 
-		// Correctness of dedup is guaranteed by the UNIQUE(dedup_key) index +
-		// INSERT OR IGNORE regardless; the `inserted` bool is informational for the
-		// CLI response, so a per-key existence probe (not a racy full-table count) is
-		// enough to say "recorded" vs "already recorded".
-		const existed =
-			(this.db.exec(
-				"SELECT 1 FROM deployment_events WHERE dedup_key = ? LIMIT 1",
-				[dedupKey],
-			)[0]?.values.length ?? 0) > 0;
-		this.db.run(
-			`INSERT OR IGNORE INTO deployment_events
-			 (project_name, issue_identifier, pr_number, merge_sha, deployed_sha,
-			  deploy_batch_id, environment, source, source_event_id, deployed_at,
-			  metadata_json, dedup_key)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				input.projectName,
-				issue ?? null,
-				input.prNumber ?? null,
-				mergeSha ?? null,
-				deployedSha ?? null,
-				batchId ?? null,
-				environment,
-				input.source,
-				sourceEventId ?? null,
-				deployedAt,
-				norm(input.metadataJson) ?? null,
-				dedupKey,
-			],
-		);
-		// Codex code-review R5 #2: a marker-driven markerless FALLBACK row
-		// (source='fallback-git-log') is written at deployed-sha advance BEFORE the
-		// authoritative marker-backed self-ship report for the same commit identity;
-		// plain INSERT OR IGNORE would leave the deploy stuck as `inferred`. When an
-		// AUTHORITATIVE (non-fallback) source reports the same dedup_key, UPGRADE the
-		// existing fallback row to it (source + enrich fields). Only fallback rows are
-		// touched (WHERE source='fallback-git-log'), so authoritative rows never regress.
-		if (input.source !== "fallback-git-log") {
+			// Correctness of dedup is guaranteed by the UNIQUE(dedup_key) index +
+			// INSERT OR IGNORE regardless; the `inserted` bool is informational for the
+			// CLI response, so a per-key existence probe (not a racy full-table count) is
+			// enough to say "recorded" vs "already recorded".
+			const existed =
+				(this.db.exec(
+					"SELECT 1 FROM deployment_events WHERE dedup_key = ? LIMIT 1",
+					[dedupKey],
+				)[0]?.values.length ?? 0) > 0;
 			this.db.run(
-				`UPDATE deployment_events
-				   SET source = ?,
-				       issue_identifier = COALESCE(?, issue_identifier),
-				       pr_number = COALESCE(?, pr_number),
-				       merge_sha = COALESCE(?, merge_sha),
-				       deployed_sha = COALESCE(?, deployed_sha),
-				       source_event_id = COALESCE(?, source_event_id)
-				 WHERE dedup_key = ? AND source = 'fallback-git-log'`,
+				`INSERT OR IGNORE INTO deployment_events
+				 (project_name, issue_identifier, pr_number, merge_sha, deployed_sha,
+				  deploy_batch_id, environment, source, source_event_id, deployed_at,
+				  metadata_json, dedup_key)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
-					input.source,
+					input.projectName,
 					issue ?? null,
 					input.prNumber ?? null,
 					mergeSha ?? null,
 					deployedSha ?? null,
+					batchId ?? null,
+					environment,
+					input.source,
 					sourceEventId ?? null,
+					deployedAt,
+					norm(input.metadataJson) ?? null,
 					dedupKey,
 				],
 			);
-		}
-		this.save();
-		return { inserted: !existed };
+			// Codex code-review R5 #2: a marker-driven markerless FALLBACK row
+			// (source='fallback-git-log') is written at deployed-sha advance BEFORE the
+			// authoritative marker-backed self-ship report for the same commit identity;
+			// plain INSERT OR IGNORE would leave the deploy stuck as `inferred`. When an
+			// AUTHORITATIVE (non-fallback) source reports the same dedup_key, UPGRADE the
+			// existing fallback row to it (source + enrich fields). Only fallback rows are
+			// touched (WHERE source='fallback-git-log'), so authoritative rows never regress.
+			if (input.source !== "fallback-git-log") {
+				this.db.run(
+					`UPDATE deployment_events
+					   SET source = ?,
+					       issue_identifier = COALESCE(?, issue_identifier),
+					       pr_number = COALESCE(?, pr_number),
+					       merge_sha = COALESCE(?, merge_sha),
+					       deployed_sha = COALESCE(?, deployed_sha),
+					       source_event_id = COALESCE(?, source_event_id)
+					 WHERE dedup_key = ? AND source = 'fallback-git-log'`,
+					[
+						input.source,
+						issue ?? null,
+						input.prNumber ?? null,
+						mergeSha ?? null,
+						deployedSha ?? null,
+						sourceEventId ?? null,
+						dedupKey,
+					],
+				);
+			}
+			if (tracksRelease) {
+				const currentSource = this.latestReleaseDeploymentSource();
+				if (currentSource !== previousSource) this.customerReleases.invalidateDeployment(currentSource ?? null, Date.now());
+			}
+			this.save();
+			return { inserted: !existed };
+		}).immediate();
 	}
 
 	/**

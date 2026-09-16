@@ -1010,4 +1010,25 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// isolation override with it) and not tombstoned (production still reads it).
 	// ─── FLY-1282: zombie-session liveness + folded family defects ───
 	// ─── FLY-1718: re-dispatch inventory reconciliation ───
+	{
+		name: "auto_release_on_silence_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "customer_release.auto_release_on_silence_enabled",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: false,
+		description: "客户默认发布开关；另需有效 founder enable 收据与全部发布条件",
+		whenOn: "满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/customer-release/runtime.ts",
+				"customerReleaseAutoEnabled",
+				"storeAutoReleaseOnSilenceEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
 ];

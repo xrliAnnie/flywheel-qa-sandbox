@@ -113,6 +113,30 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      # B4 is opt-in at deployment. Missing inputs preserve remote secrets;
+      # explicit disable retains strict policy. The raw decision key stays in Bridge.
+      - name: Validate B4 deployment inputs
+        if: inputs.mode == 'infra'
+        env:
+          FW_RELEASE_CONTROL_JSON: ${{ vars.FW_RELEASE_CONTROL_JSON }}
+          FW_RELEASE_DECISION_REQUIRED: ${{ vars.FW_RELEASE_DECISION_REQUIRED }}
+          FW_RELEASE_DECISION_TOKEN_SHA256: ${{ vars.FW_RELEASE_DECISION_TOKEN_SHA256 }}
+          FW_AUTO_RELEASE_EXECUTOR_TOKEN: ${{ secrets.FW_AUTO_RELEASE_EXECUTOR_TOKEN }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+          FW_CLEANUP_TOKEN: ${{ secrets.FW_CLEANUP_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          import { releaseDeploymentSecrets } from './packages/payload-endpoint/src/release-deployment.mjs';
+          try {
+            releaseDeploymentSecrets(process.env);
+            console.log('B4 deployment inputs valid (absent configuration preserves remote state)');
+          } catch {
+            console.error('::error::Invalid B4 deployment configuration');
+            process.exit(1);
+          }
+          JS
+
       # ── mode: infra ────────────────────────────────────────────────────────
       # workers.dev subdomain is ACCOUNT-wide and appears in customer URLs —
       # if none is registered, `wrangler deploy` cannot prompt in CI. Verify
@@ -246,6 +270,34 @@ jobs:
             console.log('B2 Worker secrets staged');
           } catch {
             console.error('::error::B2 Worker secret staging failed');
+            process.exit(1);
+          }
+          JS
+
+      - name: Stage B4 Worker secrets
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FW_RELEASE_CONTROL_JSON: ${{ vars.FW_RELEASE_CONTROL_JSON }}
+          FW_RELEASE_DECISION_REQUIRED: ${{ vars.FW_RELEASE_DECISION_REQUIRED }}
+          FW_RELEASE_DECISION_TOKEN_SHA256: ${{ vars.FW_RELEASE_DECISION_TOKEN_SHA256 }}
+          FW_AUTO_RELEASE_EXECUTOR_TOKEN: ${{ secrets.FW_AUTO_RELEASE_EXECUTOR_TOKEN }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+          FW_CLEANUP_TOKEN: ${{ secrets.FW_CLEANUP_TOKEN }}
+        run: |
+          set +x
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { releaseDeploymentSecrets } from './packages/payload-endpoint/src/release-deployment.mjs';
+          try {
+            const values = releaseDeploymentSecrets(process.env);
+            for (const [name, input] of Object.entries(values)) {
+              execFileSync('pnpm', ['exec', 'wrangler', 'secret', 'put', name, '--config', 'packages/payload-endpoint/wrangler.toml'], { input, stdio: ['pipe', 'pipe', 'pipe'] });
+            }
+            console.log('B4 Worker secret staging complete');
+          } catch {
+            console.error('::error::B4 Worker secret staging failed');
             process.exit(1);
           }
           JS

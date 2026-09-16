@@ -60,6 +60,11 @@ export {
 	MIN_GATE_TIMEOUT_MS,
 } from "./constants.js";
 export { normalizeOptionalBearer } from "./credentials.js";
+export type {
+	CustomerReleaseConfig,
+	CustomerReleaseSettings,
+} from "./customer-release-config.js";
+export { parseCustomerReleaseConfig } from "./customer-release-config.js";
 export type { DecisionMode, DecisionModeEnv } from "./decision-mode.js";
 export { resolveDecisionMode } from "./decision-mode.js";
 export {

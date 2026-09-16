@@ -10,10 +10,12 @@
 // Deployment uses the existing main + release-environment activation workflow.
 import { handleRequest } from "./handler.mjs";
 import { createSignGet } from "./presign.mjs";
+import { releaseControlFromEnv } from "./release-control-config.mjs";
 
 export default {
 	async fetch(request, env) {
 		return handleRequest(request, {
+			...releaseControlFromEnv(env),
 			delivery: {
 				mode: "presigned",
 				signGet: (input) => createSignGet(env)(input),
@@ -24,6 +26,9 @@ export default {
 				customerReleaseTokenSha256: env.FW_CUSTOMER_RELEASE_TOKEN_SHA256,
 				opsAdminTokenSha256: env.FW_OPS_ADMIN_TOKEN_SHA256,
 				cleanupTokenSha256: env.FW_CLEANUP_TOKEN_SHA256,
+				autoReleaseExecutorTokenSha256:
+					env.FW_AUTO_RELEASE_EXECUTOR_TOKEN_SHA256,
+				releaseDecisionTokenSha256: env.FW_RELEASE_DECISION_TOKEN_SHA256,
 			},
 			now: () => new Date(),
 			// no logger wired on purpose: production emits ZERO log lines, so a

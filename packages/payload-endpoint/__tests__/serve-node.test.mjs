@@ -161,3 +161,133 @@ test("serve-node: refuses to boot without FW_SERVE_DATA_DIR", async () => {
 	const code = await new Promise((resolve) => child.on("exit", resolve));
 	assert.equal(code, 1);
 });
+
+test("serve-node wires the executor and decision-writer hashes as read-only manifest roles", async () => {
+	const dataDir = fs.mkdtempSync(
+		path.join(os.tmpdir(), "fw-serve-node-release-role-"),
+	);
+	await seed(dataDir);
+	const executor = "node-auto-executor-fixture",
+		decision = "node-decision-fixture";
+	const { child, port } = await startServer(dataDir, {
+		FW_AUTO_RELEASE_EXECUTOR_TOKEN_SHA256: sha256Hex(executor),
+		FW_RELEASE_DECISION_TOKEN_SHA256: sha256Hex(decision),
+	});
+	children.push(child);
+	for (const token of [executor, decision]) {
+		const headers = { authorization: `Bearer ${token}` };
+		assert.equal(
+			(await fetch(`http://127.0.0.1:${port}/admin/manifest`, { headers }))
+				.status,
+			200,
+		);
+		assert.equal(
+			(
+				await fetch(`http://127.0.0.1:${port}/admin/manifest`, {
+					method: "POST",
+					headers,
+					body: "{}",
+				})
+			).status,
+			403,
+		);
+	}
+});
+
+test("serve-node binds strict release policy and durable attempt identity over real HTTP", async () => {
+	const { deriveVetoBinding } = await import("../src/manifest.mjs");
+	const { applyPreparedReleaseCommit } = await import(
+		"../src/release-commit.mjs"
+	);
+	const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "fw-release-control-"));
+	const bucket = new FsBucket(dataDir);
+	const m = fixtureManifest({ withRelease: false });
+	const payload = Buffer.from("prepared bytes");
+	const digest = sha256Hex(payload);
+	m.releaseOps.candidate = {
+		kind: "release",
+		state: "prepared",
+		ver: VER,
+		betaVersion: "1.55.0-beta.1",
+		sourceCommit: "c".repeat(40),
+		sha256: digest,
+		objectKey: payloadObjectKey(VER, digest),
+		createdAt: "2026-07-01T00:00:00.000Z",
+	};
+	await bucket.put("manifest.json", JSON.stringify(m));
+	await bucket.put(m.releaseOps.candidate.objectKey, payload, {
+		customMetadata: { sha256: digest, ver: VER },
+	});
+	const executor = "http-executor",
+		writer = "http-writer",
+		manual = "http-manual";
+	const { child, port } = await startServer(dataDir, {
+		FW_RELEASE_CONTROL_JSON: JSON.stringify({
+			schemaVersion: 1,
+			projectId: "flywheel",
+			audience: "test-node",
+			activationEpoch: 9,
+			mode: "canary",
+			enabled: true,
+		}),
+		FW_RELEASE_DECISION_REQUIRED: "true",
+		FW_AUTO_RELEASE_EXECUTOR_TOKEN_SHA256: sha256Hex(executor),
+		FW_RELEASE_DECISION_TOKEN_SHA256: sha256Hex(writer),
+		FW_CUSTOMER_RELEASE_TOKEN_SHA256: sha256Hex(manual),
+	});
+	children.push(child);
+	try {
+		const base = `http://127.0.0.1:${port}`;
+		const binding = deriveVetoBinding(m, "candidate");
+		const etag = (await bucket.get("manifest.json")).etag;
+		const created = await fetch(`${base}/admin/release-attempts`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${executor}` },
+			body: JSON.stringify({
+				cycleId: "cycle-http",
+				baseEtag: etag,
+				fullBinding: binding,
+				readbackSha256: digest,
+			}),
+		});
+		assert.equal(created.status, 201, await created.clone().text());
+		const a = await created.json();
+		assert.equal(a.activationEpoch, 9);
+		assert.equal(a.audience, "test-node");
+		assert.deepEqual(
+			(
+				await (
+					await bucket.get(
+						`control/customer-release/flywheel/${a.attemptId}/attempt.json`,
+					)
+				).json()
+			).attempt,
+			a,
+		);
+		const listed = await fetch(
+			`${base}/admin/release-attempts/pending?limit=1`,
+			{ headers: { authorization: `Bearer ${writer}` } },
+		);
+		assert.equal(listed.status, 200);
+		assert.deepEqual((await listed.json()).attempts, [a]);
+		const next = structuredClone(m);
+		applyPreparedReleaseCommit(
+			next,
+			binding,
+			payload.length,
+			new Date().toISOString(),
+		);
+		const bypass = await fetch(`${base}/admin/manifest`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${manual}` },
+			body: JSON.stringify({ baseEtag: etag, manifest: next }),
+		});
+		assert.equal(bypass.status, 403);
+		assert.equal((await bypass.json()).error, "release_decision_required");
+	} finally {
+		const exited = new Promise((resolve) => child.once("exit", resolve));
+		child.kill();
+		await exited;
+		fs.rmSync(dataDir, { recursive: true, force: true });
+	}
+});

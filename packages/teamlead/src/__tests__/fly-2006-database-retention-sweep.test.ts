@@ -445,6 +445,23 @@ describe("FLY-2006 retention registry", () => {
 		});
 	});
 
+	it("protects all ten B4 customer-release authority tables", () => {
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toEqual(
+			expect.arrayContaining([
+				"customer_release_activation",
+				"customer_release_activation_events",
+				"customer_release_attempt_results",
+				"customer_release_cycles",
+				"customer_release_events",
+				"customer_release_manual_requests",
+				"customer_release_notices",
+				"customer_release_projections",
+				"customer_release_actions",
+				"customer_release_decisions",
+			]),
+		);
+	});
+
 	it("uses a strict 14-day boundary for text and epoch timestamps", () => {
 		expect(RETENTION_MS).toBe(14 * 24 * 60 * 60 * 1_000);
 		expect(new Set(FLY2006_LIVE_SESSION_STATUSES)).toEqual(

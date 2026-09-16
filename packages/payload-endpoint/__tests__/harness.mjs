@@ -17,6 +17,14 @@ export function secretsFor(tokens = TOKENS) {
 		betaPublishTokenSha256: sha256Hex(tokens.beta),
 		customerReleaseTokenSha256: sha256Hex(tokens.release),
 		opsAdminTokenSha256: sha256Hex(tokens.ops),
+		...(tokens.autoReleaseExecutor
+			? {
+					autoReleaseExecutorTokenSha256: sha256Hex(tokens.autoReleaseExecutor),
+				}
+			: {}),
+		...(tokens.releaseDecision
+			? { releaseDecisionTokenSha256: sha256Hex(tokens.releaseDecision) }
+			: {}),
 	};
 }
 

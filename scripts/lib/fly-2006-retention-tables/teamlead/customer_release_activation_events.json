@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "customer_release_activation_events",
+	"classification": "protectedAuthority"
+}

@@ -23,6 +23,7 @@ import process from "node:process";
 import { Readable } from "node:stream";
 import { FsBucket } from "./fs-bucket.mjs";
 import { handleRequest } from "./handler.mjs";
+import { releaseControlFromEnv } from "./release-control-config.mjs";
 
 const dataDir = process.env.FW_SERVE_DATA_DIR;
 if (!dataDir) {
@@ -38,6 +39,9 @@ const secrets = {
 	customerReleaseTokenSha256: process.env.FW_CUSTOMER_RELEASE_TOKEN_SHA256,
 	opsAdminTokenSha256: process.env.FW_OPS_ADMIN_TOKEN_SHA256,
 	cleanupTokenSha256: process.env.FW_CLEANUP_TOKEN_SHA256,
+	autoReleaseExecutorTokenSha256:
+		process.env.FW_AUTO_RELEASE_EXECUTOR_TOKEN_SHA256,
+	releaseDecisionTokenSha256: process.env.FW_RELEASE_DECISION_TOKEN_SHA256,
 };
 
 const server = http.createServer(async (req, res) => {
@@ -53,6 +57,7 @@ const server = http.createServer(async (req, res) => {
 			...(hasBody ? { body: Readable.toWeb(req), duplex: "half" } : {}),
 		});
 		const response = await handleRequest(request, {
+			...releaseControlFromEnv(process.env),
 			delivery: { mode: "stream" },
 			bucket,
 			secrets,

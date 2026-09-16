@@ -237,6 +237,7 @@ test("S4e rejects arbitrary additional secrets in beta while allowing its scoped
 			PROMOTE: "payload-promote",
 			COMMIT: "payload-promote-commit",
 			ACTIVATION: "payload-activation",
+			AUTO: "payload-auto-release",
 		})) {
 			vars[key] = join(root, `${name}.yml`);
 			fs.copyFileSync(

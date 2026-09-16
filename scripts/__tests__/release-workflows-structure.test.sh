@@ -24,8 +24,9 @@ BETA="$WF/payload-beta-release.yml"
 PROMOTE="$WF/payload-promote.yml"
 COMMIT="$WF/payload-promote-commit.yml"
 ACTIVATION="$WF/payload-activation.yml"
+AUTO="$WF/payload-auto-release.yml"
 
-for f in "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION"; do
+for f in "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION" "$AUTO"; do
   [ -f "$f" ] || { echo "ERROR: missing $f"; exit 1; }
 done
 
@@ -53,10 +54,10 @@ fi
 
 # ── S2 · single-flight concurrency group ─────────────────────────────────────
 ok=1
-for f in "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION"; do
+for f in "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION" "$AUTO"; do
   grep -q "group: payload-release" "$f" || ok=0
 done
-[ "$ok" -eq 1 ] && pass "S2 concurrency group payload-release present in all four release workflows" \
+[ "$ok" -eq 1 ] && pass "S2 concurrency group payload-release present in all five release workflows" \
                 || fail "S2 concurrency group missing"
 
 # S3: parsed job boundaries plus mutation guards replace the former step-count heuristic.
@@ -64,6 +65,18 @@ if node --test "$ROOT/scripts/__tests__/beta-workflow-structure.test.mjs" "$ROOT
   pass "S3 beta preflight/publication/receipt jobs enforce admission and activation"
 else
   fail "S3 parsed beta workflow contract or mutation guard failed"
+fi
+
+if node --test "$ROOT/scripts/__tests__/payload-auto-release-workflow.test.mjs"; then
+  pass "S3b auto executor immutable pin, sole capability and recovery artifact guards"
+else
+  fail "S3b auto executor workflow contract failed"
+fi
+
+if node --test "$ROOT/scripts/__tests__/payload-manual-decision-workflow.test.mjs"; then
+  pass "S3c manual decision input and conditional capability isolation guards"
+else
+  fail "S3c manual decision workflow contract failed"
 fi
 
 # ── S4 · credential scoping over ALL workflows (the FLY-1323 rewrite) ────────
@@ -152,12 +165,15 @@ for f in "$BETA" "$PROMOTE"; do
     [ "$name" = "FW_BETA_PUBLISH_TOKEN" ] || bad_secret="$bad_secret $f:$name"
   done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$f" | sed 's/^secrets\.//' | sort -u)
 done
+auto_secrets="$(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$AUTO" | sed 's/^secrets\.//' | sort -u | tr '\n' ' ')"
+[ "$auto_secrets" = "FW_AUTO_RELEASE_EXECUTOR_TOKEN " ] \
+  || bad_secret="$bad_secret $AUTO:{${auto_secrets}}"
 commit_secrets="$(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$COMMIT" | sed 's/^secrets\.//' | sort -u | tr '\n' ' ')"
-[ "$commit_secrets" = "FW_CUSTOMER_RELEASE_TOKEN " ] \
+[ "$commit_secrets" = "FW_AUTO_RELEASE_EXECUTOR_TOKEN FW_CUSTOMER_RELEASE_TOKEN " ] \
   || bad_secret="$bad_secret $COMMIT:{${commit_secrets}}"
 while IFS= read -r name; do
   case "$name" in
-    CLOUDFLARE_API_TOKEN|FW_BETA_PUBLISH_TOKEN|FW_CUSTOMER_RELEASE_TOKEN|FW_CLEANUP_TOKEN|FW_R2_ACCESS_KEY_ID|FW_R2_SECRET_ACCESS_KEY) : ;;
+    CLOUDFLARE_API_TOKEN|FW_AUTO_RELEASE_EXECUTOR_TOKEN|FW_BETA_PUBLISH_TOKEN|FW_CUSTOMER_RELEASE_TOKEN|FW_CLEANUP_TOKEN|FW_R2_ACCESS_KEY_ID|FW_R2_SECRET_ACCESS_KEY) : ;;
     *) bad_secret="$bad_secret $ACTIVATION:$name" ;;
   esac
 done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$ACTIVATION" | sed 's/^secrets\.//' | sort -u)
@@ -227,7 +243,8 @@ grep -q "refs/heads/main" "$BETA" || ok=0
 grep -q "Guards (main-only" "$COMMIT" || ok=0
 grep -q 'refs/heads/main' "$COMMIT" || ok=0
 grep -q 'refs/heads/main' "$ACTIVATION" || ok=0
-[ "$ok" -eq 1 ] && pass "S7 main-only guard present in all four release workflows" \
+grep -q 'refs/heads/main' "$AUTO" || ok=0
+[ "$ok" -eq 1 ] && pass "S7 main-only guard present in all five release workflows" \
                 || fail "S7 dispatch-ref guard missing"
 
 # S8: inspect executable strings, allowing inputs only in structured env/if/ref/run-name fields.
@@ -236,7 +253,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 const root=process.argv[2];const require=createRequire(path.join(root,'packages/teamlead/package.json'));const {parse}=require('yaml');
-for(const name of ['payload-beta-release','payload-promote','payload-promote-commit','payload-activation']){
+for(const name of ['payload-beta-release','payload-promote','payload-promote-commit','payload-activation','payload-auto-release']){
  const workflow=parse(fs.readFileSync(path.join(root,'.github/workflows',name+'.yml'),'utf8'));
  for(const job of Object.values(workflow.jobs))for(const step of job.steps??[]){
   for(const text of [step.run,step.with?.script])if(typeof text==='string'&&/\$\{\{\s*(?:github\.event\.)?inputs[.\[]/.test(text))throw new Error('input interpolation in executable text');
@@ -331,7 +348,7 @@ if "confirm" not in commit_inputs:
     failures.append("S13:commit-confirm-input-missing")
 expected_commit_inputs = {
     "confirm", "action", "release-id", "expected-sha256",
-    "withdraw-version", "fallback-version", "allow-pause",
+    "withdraw-version", "fallback-version", "allow-pause", "cycle-id", "binding-digest", "attempt-id",
 }
 if set(commit_inputs) != expected_commit_inputs:
     failures.append(f"S13:commit-inputs={sorted(commit_inputs)}")
@@ -373,6 +390,8 @@ STEP_CONDITIONS = {
     "Create R2 bucket": "inputs.mode == 'infra'",
     "Validate B2 deployment inputs": "inputs.mode == 'infra'",
     "Verify private R2": "inputs.mode == 'infra'",
+    "Validate B4 deployment inputs": "inputs.mode == 'infra'",
+    "Stage B4 Worker secrets": "inputs.mode == 'infra'",
     "Stage B2 Worker secrets": "inputs.mode == 'infra'",
     "Deploy Worker": "inputs.mode == 'infra'",
     "Stamp beta capability": "inputs.mode == 'infra'",
@@ -405,7 +424,7 @@ for step in steps:
     if any(name in json.dumps(step.get('env') or {}) for name in secret_names) and norm(step.get('if')) != "inputs.mode == 'infra'":
         failures.append('B2:secret-outside-infra')
 ordered_names = ['Validate B2 deployment inputs', 'Create R2 bucket (tolerates already-exists = resume)',
-                 'Verify private R2 and apply reviewed lifecycle', 'Stage B2 Worker secrets', 'Deploy Worker + capture endpoint URL']
+                 'Verify private R2 and apply reviewed lifecycle', 'Stage B2 Worker secrets', 'Stage B4 Worker secrets', 'Deploy Worker + capture endpoint URL']
 positions = [next((i for i, step in enumerate(steps) if step.get('name') == name), -1) for name in ordered_names]
 if -1 in positions or positions != sorted(positions):
     failures.append('B2:predeploy-order')
@@ -453,7 +472,10 @@ for step in commit_steps:
     ]):
         failures.append(f"S14:build-step={step.get('name') or uses}")
     if uses:
-        if not uses.startswith("actions/checkout@"):
+        if uses.startswith("actions/upload-artifact@"):
+            if uses != "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" or norm(step.get("if")) != "always() && inputs.cycle-id != ''" or (step.get("with") or {}).get("path") != "${{ runner.temp }}/manual-release-attempt.jsonl":
+                failures.append("S14:recovery-artifact-contract")
+        elif not uses.startswith("actions/checkout@"):
             failures.append(f"S14:uses-not-allowlisted={uses}")
         else:
             ref = uses.split("@", 1)[1]
@@ -474,7 +496,7 @@ if not guard or release_id_source not in str(guard.get("run") or "") or "COMMIT"
 commit_secret_names = sorted(set(__import__("re").findall(
     r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", json.dumps(commit_job)
 )))
-if commit_secret_names != ["FW_CUSTOMER_RELEASE_TOKEN"]:
+if commit_secret_names != ["FW_AUTO_RELEASE_EXECUTOR_TOKEN", "FW_CUSTOMER_RELEASE_TOKEN"]:
     failures.append(f"S14:secrets={commit_secret_names}")
 action_steps = {
     "Run commit": ("commit_result", "inputs.action == 'commit'"),
@@ -610,7 +632,7 @@ PYEOF
 if [ "$PY_RC" -eq 0 ] && [ "$CONTRACT_OUT" = "OK" ]; then
   pass "S10 activation shape (parsed): dispatch-only triggers + single job + release env + job gate + contents-read/OIDC permissions + ACTIVATE confirm"
   pass "S11 (parsed, per-job): every job referencing a vendor secret declares environment: release + the main/dispatch job gate"
-  pass "S12 (parsed, per-step): every side-effect step carries its exact condition (infra ×10, publish ×8)"
+  pass "S12 (parsed, per-step): every side-effect step carries its exact condition (infra ×12, publish ×8)"
   pass "S13 (parsed): release trigger sets are exact and activation retains confirm (release is never a merge side effect)"
   pass "S14 (parsed): commit workflow is one release-env, dispatch-only, read-only, pinned-checkout, zero-build job"
   pass "S15 (parsed): OIDC publish binds exact tarball + sha + dist-tag through pack/reg outputs"

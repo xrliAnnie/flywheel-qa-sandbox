@@ -194,6 +194,61 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 	}
 
 	// --- Team resolution ---
+	it.each([
+		["GEO", "missing"],
+		["GEO", "unavailable"],
+		["FLY", "missing"],
+		["FLY", "unavailable"],
+	])(
+		"team %s with %s Bug label cannot cancel a flywheel release through scoped create-issue",
+		async (team, failure) => {
+			mockMultiTeam();
+			if (failure === "missing")
+				mockIssueLabels.mockResolvedValue({ nodes: [] });
+			else mockIssueLabels.mockRejectedValue(new Error("label unavailable"));
+			mockIssueCreated();
+			const now = Date.now();
+			const cycle = store.customerReleases.reserve({
+				projectId: "flywheel",
+				slotDate: "2026-09-15",
+				releaseId: "candidate",
+				activationEpoch: 1,
+				policyRevision: "c".repeat(64),
+				betaVersion: "1.2.3-beta.1",
+				manifest: {
+					versions: {
+						"1.2.3-beta.1": {
+							channel: "beta",
+							status: "active",
+							sourceCommit: "a".repeat(40),
+							sha256: "b".repeat(64),
+						},
+					},
+				},
+				now,
+			});
+			store.recordReleaseBugSourceHealth({
+				label: "Bug",
+				ok: true,
+				at: new Date(now).toISOString(),
+			});
+			const response = await post(
+				{ title: "ordinary issue", team },
+				"scoped-token",
+			);
+			expect(response.status).toBe(200);
+			expect(store.customerReleases.get(cycle.cycleId)?.state).toBe(
+				"evaluating",
+			);
+			expect(
+				store.getReleaseReadinessEvidence(
+					"a".repeat(40),
+					"2000-01-01T00:00:00Z",
+					"2099-01-01T00:00:00Z",
+				).bugSourceHealth?.lastFailureAt,
+			).toBeNull();
+		},
+	);
 	it("recognizes Bug UUID labels and never creates externally if the intent cannot be stored", async () => {
 		mockSingleTeam();
 		mockIssueLabels.mockResolvedValue({ nodes: [{ id: CALLER_LABEL_UUID }] });
@@ -220,7 +275,7 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 			}),
 		);
 	});
-	it("keeps failed creates pending and records Bug label lookup failures", async () => {
+	it("keeps failed bug creates pending while label lookups remain health-neutral", async () => {
 		mockSingleTeam();
 		mockIssueLabels.mockRejectedValue(new Error("label unavailable"));
 		mockCreateIssue.mockRejectedValue(new Error("create unavailable"));
@@ -233,12 +288,10 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 			"2099-01-01T00:00:00.000Z",
 		);
 		expect(evidence.bugs[0]?.status).toBe("pending");
-		expect(evidence.bugSourceHealth?.lastError).toContain("label unavailable");
+		expect(evidence.bugSourceHealth).toBeNull();
 		const health = vi.spyOn(store, "recordReleaseBugSourceHealth");
 		await post({ title: "named bug", labels: ["Bug"] });
-		expect(health).toHaveBeenCalledWith(
-			expect.objectContaining({ ok: false, label: "Bug" }),
-		);
+		expect(health).not.toHaveBeenCalled();
 	});
 	it("rejects nonboolean bug and records a pending versioned intent before creating a bug", async () => {
 		mockSingleTeam();

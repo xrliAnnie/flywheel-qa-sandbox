@@ -1,3 +1,7 @@
+import {
+	type customerReleaseReport,
+	renderCustomerReleaseSummary,
+} from "./customer-release/report.js";
 /**
  * FLY-727: Daily fleet-wide completion digest — deployment-events model.
  *
@@ -229,6 +233,7 @@ function renderItemRow(item: DigestItem, linearBaseUrl?: string): string {
 }
 
 export interface RenderOptions {
+	customerRelease?: ReturnType<typeof customerReleaseReport>;
 	linearBaseUrl?: string;
 }
 
@@ -314,6 +319,7 @@ function buildHtml(
   <div class="overview"><span class="stat">🚀 今日上线 ${report.shippedCount}</span></div>
   ${body}
   ${note}
+  ${opts.customerRelease ? renderCustomerReleaseSummary(opts.customerRelease) : ""}
   ${footer}
 </div></body></html>`;
 }
@@ -328,6 +334,7 @@ export function shiftDay(day: string, delta: number): string {
 }
 
 export interface DigestServiceOptions {
+	customerRelease?: (now: number) => ReturnType<typeof customerReleaseReport>;
 	tz: string | (() => string);
 	linearBaseUrl?: string;
 }
@@ -401,6 +408,7 @@ export class DigestService {
 		const renderDay = day ?? this.defaultDay(now, timezone);
 		return renderDigestHtml(this.aggregate(renderDay, timezone), {
 			linearBaseUrl: this.opts.linearBaseUrl,
+			customerRelease: this.opts.customerRelease?.(now.getTime()),
 		});
 	}
 

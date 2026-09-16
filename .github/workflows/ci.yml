@@ -132,6 +132,13 @@ jobs:
         run: |
           node --test scripts/__tests__/beta-schedule-receipt.test.mjs
           node --test scripts/__tests__/beta-workflow-structure.test.mjs
+          node --test scripts/__tests__/customer-release-reservation.test.mjs
+          node --test scripts/__tests__/payload-promote-commit-shared.test.mjs
+          node --test scripts/__tests__/payload-auto-release.test.mjs
+          node --test scripts/__tests__/payload-auto-release-workflow.test.mjs
+          node --test scripts/__tests__/payload-manual-decision-workflow.test.mjs
+          node --test scripts/__tests__/payload-rebind-workflow.test.mjs
+          node --test scripts/__tests__/payload-rebind-prepared.test.mjs
           node --test scripts/__tests__/fly-2395-ship-relevance-retro.test.mjs
           node --test scripts/__tests__/fly-2397-strength-two-acceptance.test.mjs
           node --test scripts/__tests__/fly-2398-shadow-table.test.mjs

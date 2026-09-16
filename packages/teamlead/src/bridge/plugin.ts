@@ -297,6 +297,8 @@ import {
 	reconcileCompleteFailedMarkers,
 } from "./complete-marker-reconciler.js";
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
+import { createCustomerReleaseHost } from "./customer-release/host.js";
+import { customerReleaseAutoEnabled } from "./customer-release/runtime.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { LegacyDeadMailboxHoldReconcileScheduler } from "./dead-mail-hold-reconciler.js";
@@ -4140,31 +4142,13 @@ export function createBridgeApp(
 					| { ok: true; id: string }
 					| { ok: false; status: number; error: string }
 				> => {
-					const matches = await client
-						.issueLabels({
-							first: 2,
-							filter: {
-								name: { eq: name },
-								team: { id: { eq: targetTeam.id } },
-							},
-						})
-						.catch((error) => {
-							if (name === bugLabel)
-								store.recordReleaseBugSourceHealth({
-									label: bugLabel,
-									ok: false,
-									error: String(error),
-									at: new Date().toISOString(),
-								});
-							throw error;
-						});
-					if (name === bugLabel && matches.nodes.length !== 1)
-						store.recordReleaseBugSourceHealth({
-							label: bugLabel,
-							ok: false,
-							error: `Bug label resolution returned ${matches.nodes.length} matches`,
-							at: new Date().toISOString(),
-						});
+					const matches = await client.issueLabels({
+						first: 2,
+						filter: {
+							name: { eq: name },
+							team: { id: { eq: targetTeam.id } },
+						},
+					});
 					if (matches.nodes.length === 0) {
 						return {
 							ok: false,
@@ -4214,20 +4198,13 @@ export function createBridgeApp(
 				}
 
 				let bugLabelId: string | undefined;
-				let bugLabelError: string | undefined;
 				try {
 					const resolved = await resolveTeamScopedLabel(bugLabel, "Label");
 					if (resolved.ok) bugLabelId = resolved.id;
-					else bugLabelError = resolved.error;
-				} catch (error) {
-					bugLabelError = String(error);
+				} catch {
+					// This caller-scoped label lookup is not the canonical release
+					// health probe. It must never mutate release source health.
 				}
-				store.recordReleaseBugSourceHealth({
-					label: bugLabel,
-					ok: bugLabelId !== undefined,
-					error: bugLabelError,
-					at: new Date().toISOString(),
-				});
 				const isBug =
 					req.body?.bug === true ||
 					(bugLabelId !== undefined && labelIds?.includes(bugLabelId));
@@ -5138,6 +5115,7 @@ export function createBridgeApp(
 	if (process.env.FLYWHEEL_DIGEST_CHANNEL) {
 		const digestSlug = process.env.LINEAR_WORKSPACE_SLUG;
 		const digestService = new DigestService(store, {
+			customerRelease: (now) => store.customerReleases.report(now),
 			tz: process.env.FLYWHEEL_DIGEST_TZ ?? resolveFounderTimezone,
 			linearBaseUrl: digestSlug
 				? `https://linear.app/${digestSlug}/issue`
@@ -5790,6 +5768,37 @@ export async function startBridge(
 		onError: (code) => console.error(`[Bridge beta] ${code}`),
 	});
 	betaReleaseRuntime.start();
+	const customerReleaseBuildIdentity = resolveBridgeBuildIdentity();
+	const customerReadinessService = new ReleaseReadinessService(store, {
+		outboxRoot: join(
+			process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+			"state",
+			"release-readiness",
+		),
+		deployedShaPath:
+			process.env.FLYWHEEL_DEPLOYED_SHA_FILE ??
+			join(homedir(), ".flywheel", "deployed-sha"),
+		policy: readReadinessPolicy(),
+	});
+	const customerReleaseHost = createCustomerReleaseHost({
+		bugLabel: () => readReadinessPolicy().bugLabel,
+		recordBugSourceHealth: (input) => store.recordReleaseBugSourceHealth(input),
+		store: () => store.customerReleases,
+		projects: () => loadProjects(),
+		founderId: () =>
+			deriveCanonicalFounderId(
+				config.discordOwnerUserId,
+				config.founderConsent?.founderUserId,
+			),
+		env: process.env,
+		codeSha: () => customerReleaseBuildIdentity.buildSha,
+		flag: () =>
+			flagStore ? customerReleaseAutoEnabled(flagStore, "flywheel") : false,
+		evaluate: (subject, at) => customerReadinessService.evaluate(subject, at),
+		onError: (code) => console.error(`[Bridge customer release] ${code}`),
+	});
+	customerReleaseHost.start();
+
 	const fleetConfigProvider = new ConfigSnapshotProvider(projects, {
 		loadProjects: () => loadProjects(),
 		envPinned: Boolean(process.env.FLYWHEEL_PROJECTS),
@@ -14211,6 +14220,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await customerReleaseHost.stop();
 		await observationStorageAlert?.stop();
 		await processResources.stop();
 		await betaReleaseRuntime.stop();

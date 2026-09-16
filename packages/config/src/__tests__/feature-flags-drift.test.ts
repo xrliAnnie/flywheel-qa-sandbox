@@ -576,6 +576,12 @@ describe("feature-flag drift guard", () => {
 					"gatePoller",
 					"storeWorkflowTurnDivergenceAlertsEnabled",
 				],
+				[
+					"auto_release_on_silence_enabled",
+					"packages/teamlead/src/bridge/customer-release/runtime.ts",
+					"customerReleaseAutoEnabled",
+					"storeAutoReleaseOnSilenceEnabled",
+				],
 			].map(([name, file, symbol, resolverSymbol]) => ({
 				name,
 				site: {

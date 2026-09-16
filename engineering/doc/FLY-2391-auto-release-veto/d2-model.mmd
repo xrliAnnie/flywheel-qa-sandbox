@@ -1,0 +1,7 @@
+erDiagram
+  RELEASE_CYCLE ||--o| RELEASE_NOTICE : has_once
+  RELEASE_CYCLE ||--o{ RELEASE_ACTION : records
+  RELEASE_CYCLE ||--o{ RELEASE_DECISION : authorizes
+  RELEASE_DECISION ||--|| RELEASE_ATTEMPT : binds
+  RELEASE_CYCLE ||--o{ RELEASE_EVENT : audits
+  RELEASE_EVENT ||--o{ RELEASE_PROJECTION : delivers

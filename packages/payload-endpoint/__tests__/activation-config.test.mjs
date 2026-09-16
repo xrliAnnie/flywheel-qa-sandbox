@@ -20,6 +20,9 @@ const workflow = JSON.parse(
 		{ encoding: "utf8" },
 	),
 );
+
+import { releaseDeploymentSecrets } from "../src/release-deployment.mjs";
+
 const steps = workflow.jobs.activate.steps;
 const env = {
 	CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
@@ -43,6 +46,7 @@ async function run(name, overrides = {}) {
 		JSON,
 		assert,
 		createHash,
+		releaseDeploymentSecrets,
 		readFileSync,
 		isDeepStrictEqual,
 		URL,
@@ -224,4 +228,99 @@ test("scheduled preflight distinguishes not activated from cleanup success and r
 				assert.match(output.summary, /no cleanup success evidence/);
 		}
 	}
+});
+
+const releaseEnv = {
+	...env,
+	FW_RELEASE_CONTROL_JSON: JSON.stringify({
+		schemaVersion: 1,
+		projectId: "flywheel",
+		audience: "payload",
+		activationEpoch: 1,
+		mode: "off",
+		enabled: false,
+	}),
+	FW_RELEASE_DECISION_REQUIRED: "true",
+	FW_AUTO_RELEASE_EXECUTOR_TOKEN: "e".repeat(64),
+	FW_RELEASE_DECISION_TOKEN_SHA256: "f".repeat(64),
+};
+test("B4 validates before infrastructure mutations and stages strict policy first without a raw decision credential", async () => {
+	const position = (name) => steps.findIndex((s) => s.name === name);
+	assert.ok(position("Validate B4 deployment inputs") >= 0);
+	assert.ok(
+		position("Validate B4 deployment inputs") <
+			position(
+				"workers.dev subdomain (verify; register only a founder-chosen name)",
+			),
+	);
+	assert.ok(
+		position("Stage B4 Worker secrets") <
+			position("Deploy Worker + capture endpoint URL"),
+	);
+	assert.ok(
+		!JSON.stringify(workflow).includes("secrets.FW_RELEASE_DECISION_TOKEN"),
+	);
+	const calls = [];
+	await run("Stage B4 Worker secrets", {
+		process: {
+			env: releaseEnv,
+			exit: () => {
+				throw new Error("refused");
+			},
+		},
+		execFileSync: (command, args, options) =>
+			calls.push({ command, args, options }),
+	});
+	assert.deepEqual(
+		calls.map((c) => c.args[4]),
+		Object.keys(releaseDeploymentSecrets(releaseEnv)),
+	);
+	for (const call of calls) {
+		assert.equal(call.command, "pnpm");
+		assert.deepEqual(Array.from(call.args), [
+			"exec",
+			"wrangler",
+			"secret",
+			"put",
+			call.args[4],
+			"--config",
+			"packages/payload-endpoint/wrangler.toml",
+		]);
+		assert.equal(
+			call.options.input,
+			releaseDeploymentSecrets(releaseEnv)[call.args[4]],
+		);
+		assert.deepEqual(Array.from(call.options.stdio), ["pipe", "pipe", "pipe"]);
+	}
+});
+test("B4 absent configuration performs no staging; staging error stops before granting control", async () => {
+	await run("Stage B4 Worker secrets");
+	const calls = [];
+	await assert.rejects(
+		run("Stage B4 Worker secrets", {
+			process: {
+				env: releaseEnv,
+				exit: () => {
+					throw new Error("refused");
+				},
+			},
+			execFileSync: (_command, args) => {
+				calls.push(args[4]);
+				throw new Error("secret failure");
+			},
+		}),
+		/refused/,
+	);
+	assert.deepEqual(calls, ["FW_RELEASE_DECISION_REQUIRED"]);
+	await assert.rejects(
+		run("Validate B4 deployment inputs", {
+			process: {
+				env: { ...releaseEnv, FW_RELEASE_DECISION_REQUIRED: "false" },
+				exit: () => {
+					throw new Error("refused");
+				},
+			},
+		}),
+		/refused/,
+	);
 });

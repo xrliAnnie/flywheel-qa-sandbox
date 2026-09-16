@@ -1,0 +1,113 @@
+# B4: dispatch identifies one frozen artifact; only an endpoint permit authorizes it.
+name: Payload customer release executor
+run-name: "customer-release:${{ inputs.dispatch-id || github.run_id }}:${{ inputs.operation }}:${{ inputs.release-id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      dispatch-id:
+        description: Bridge durable dispatch identity for recovery; empty for manual dispatch
+        required: false
+        type: string
+      operation:
+        description: execute a permitted candidate or fence an existing attempt
+        required: true
+        default: execute
+        type: choice
+        options:
+          - execute
+          - fence
+      cycle-id:
+        description: Frozen Bridge cycle identity
+        required: true
+        type: string
+      release-id:
+        description: Prepared artifact releaseId
+        required: true
+        type: string
+      binding-digest:
+        description: SHA256 of the complete frozen VetoBinding
+        required: true
+        type: string
+      attempt-id:
+        description: Saved attempt for recovery; empty creates one ready attempt
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: payload-release
+  queue: max
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: release-auto
+    steps:
+      - name: Validate immutable workflow and inputs
+        env:
+          REVIEWED_CODE_SHA: ${{ vars.FW_AUTO_RELEASE_CODE_SHA }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          CYCLE_ID: ${{ inputs.cycle-id }}
+          RELEASE_ID: ${{ inputs.release-id }}
+          BINDING_DIGEST: ${{ inputs.binding-digest }}
+          ATTEMPT_ID: ${{ inputs.attempt-id }}
+          OPERATION: ${{ inputs.operation || 'execute' }}
+          DISPATCH_ID: ${{ inputs.dispatch-id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_ID:-}" ] && [[ ! "$DISPATCH_ID" =~ ^[a-f0-9]{64}$ ]]; then
+            echo '::error::invalid dispatch identity'; exit 1
+          fi
+          [[ "$REVIEWED_CODE_SHA" =~ ^[a-f0-9]{40}$ ]] && [ "$WORKFLOW_SHA" = "$REVIEWED_CODE_SHA" ] \
+            || { echo '::error::reviewed workflow SHA mismatch'; exit 1; }
+          [[ "$CYCLE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$ ]] \
+            || { echo '::error::invalid cycle identity'; exit 1; }
+          [[ "$RELEASE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$ ]] \
+            || { echo '::error::invalid release identity'; exit 1; }
+          [[ "$BINDING_DIGEST" =~ ^[a-f0-9]{64}$ ]] \
+            || { echo '::error::invalid binding digest'; exit 1; }
+          if [ "$OPERATION" != "execute" ] && [ "$OPERATION" != "fence" ]; then
+            echo '::error::invalid operation'; exit 1
+          fi
+          if [ "$OPERATION" = "fence" ] && [ -z "$ATTEMPT_ID" ]; then
+            echo '::error::fence requires an existing attempt'; exit 1
+          fi
+          if [ -n "$ATTEMPT_ID" ]; then
+            [[ "$ATTEMPT_ID" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] \
+              || { echo '::error::invalid recovery attempt'; exit 1; }
+          fi
+      - name: Check out fixed executor code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ vars.FW_AUTO_RELEASE_CODE_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Execute or reconcile the frozen attempt
+        id: attempt
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_AUTO_RELEASE_EXECUTOR_TOKEN: ${{ secrets.FW_AUTO_RELEASE_EXECUTOR_TOKEN }}
+          FW_AUTO_RELEASE_RECEIPT_FILE: ${{ runner.temp }}/customer-release-attempt.jsonl
+          CYCLE_ID: ${{ inputs.cycle-id }}
+          RELEASE_ID: ${{ inputs.release-id }}
+          BINDING_DIGEST: ${{ inputs.binding-digest }}
+          ATTEMPT_ID: ${{ inputs.attempt-id }}
+          OPERATION: ${{ inputs.operation || 'execute' }}
+        run: |
+          set -euo pipefail
+          args=(--operation "$OPERATION" --cycle-id "$CYCLE_ID" --release-id "$RELEASE_ID" --binding-digest "$BINDING_DIGEST")
+          if [ -n "$ATTEMPT_ID" ]; then args+=(--attempt-id "$ATTEMPT_ID"); fi
+          node scripts/release/payload-auto-release.mjs "${args[@]}"
+      - name: Preserve attempt recovery receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: customer-release-attempt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/customer-release-attempt.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

@@ -196,6 +196,72 @@ export class FsBucket {
 		}
 	}
 
+	// R2 delimiter-list subset used by the private control mailbox. The cursor
+	// is the last full key, so earlier deletion does not shift a numeric offset.
+	async list({ prefix, delimiter, limit = 1000, cursor } = {}) {
+		if (
+			typeof prefix !== "string" ||
+			!prefix.endsWith("/") ||
+			delimiter !== "/" ||
+			!Number.isInteger(limit) ||
+			limit < 1 ||
+			limit > 1000
+		)
+			throw new Error("FsBucket: invalid listing");
+		assertSafeKey(prefix.slice(0, -1));
+		if (
+			cursor !== undefined &&
+			(typeof cursor !== "string" ||
+				!cursor.startsWith(prefix) ||
+				cursor.length <= prefix.length ||
+				cursor.slice(prefix.length).replace(/\/$/, "").includes("/"))
+		)
+			throw new Error("FsBucket: invalid cursor");
+		const directory = path.join(this.objectsDir, prefix);
+		let entries;
+		try {
+			entries = await fs.promises.readdir(directory, { withFileTypes: true });
+		} catch (error) {
+			if (error.code === "ENOENT")
+				return { objects: [], delimitedPrefixes: [], truncated: false };
+			throw error;
+		}
+		const names = entries
+			.map((entry) => {
+				if (entry.isSymbolicLink())
+					throw new Error("FsBucket: symbolic listing entry refused");
+				return {
+					key: prefix + entry.name + (entry.isDirectory() ? "/" : ""),
+					directory: entry.isDirectory(),
+				};
+			})
+			.filter((entry) => cursor === undefined || entry.key > cursor)
+			.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+		const selected = names.slice(0, limit),
+			objects = [],
+			delimitedPrefixes = [];
+		for (const entry of selected) {
+			if (entry.directory) delimitedPrefixes.push(entry.key.slice(0, -1));
+			else {
+				const object = await this.head(entry.key);
+				if (object)
+					objects.push({
+						key: entry.key,
+						size: object.size,
+						etag: object.etag,
+						uploaded: object.uploaded,
+					});
+			}
+		}
+		const truncated = names.length > limit;
+		return {
+			objects,
+			delimitedPrefixes,
+			truncated,
+			...(truncated ? { cursor: selected.at(-1).key } : {}),
+		};
+	}
+
 	async delete(key) {
 		const { obj, meta } = this._paths(key);
 		await this._locked(async () => {
