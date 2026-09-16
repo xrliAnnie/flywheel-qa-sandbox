@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	evaluateMeetingEvidence,
+	recordVoice,
 	runTwoLead,
 	validateTopology,
 	waveStats,
@@ -41,7 +42,6 @@ const topology = () => ({
 		{ tokenEnv: "TEST_BOT_TOKEN_3", botUserId: "100000000000000014" },
 		{ tokenEnv: "TEST_BOT_TOKEN_4", botUserId: "100000000000000015" },
 	],
-	voiceBot: { tokenEnv: "TEST_BOT_TOKEN_5", botUserId: "100000000000000016" },
 	slots: [
 		{
 			tokenEnvVar: "TEST_BOT_TOKEN_1",
@@ -103,13 +103,13 @@ for (const [name, modify] of [
 	[
 		"bot identity drift",
 		(t) => {
-			t.voiceBot.botUserId = "100000000000000099";
+			t.leads[0].botUserId = "100000000000000099";
 		},
 	],
 	[
 		"same recorder/voice bot",
 		(t) => {
-			t.recorders[0] = t.voiceBot;
+			t.recorders[0] = t.leads[0];
 		},
 	],
 	[
@@ -173,6 +173,7 @@ const proof = () => ({
 		state: "ended",
 		meeting_id: "meeting",
 		lead_id: "lead",
+		voice_bot_user_id: "bot",
 	},
 	liveObserved: true,
 	mailbox: [
@@ -204,4 +205,49 @@ test("rejects untrusted selector, missing live observation or unconfirmed TTS", 
 	const c = proof();
 	c.outbound[0].phase = "ambiguous";
 	assert.throws(() => evaluateMeetingEvidence(c));
+});
+
+test("rejects evidence from a session pinned to another bot", () => {
+	const p = proof();
+	p.session.voice_bot_user_id = "another";
+	assert.throws(
+		() => evaluateMeetingEvidence(p),
+		/session_bot_identity_mismatch/,
+	);
+});
+
+test("recorder subscribes to each selected Lead bot", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const { EventEmitter } = await import("node:events");
+	const { PassThrough } = await import("node:stream");
+	const subscribed = [];
+	for (const lead of topology().leads) {
+		const identity = topology().recorders[0];
+		const client = new EventEmitter();
+		client.user = { id: identity.botUserId };
+		client.login = async () => {
+			client.emit("clientReady");
+		};
+		client.destroy = () => {};
+		const recording = await recordVoice(
+			{
+				createClient: () => client,
+				joinVoice: async () => ({ destroy() {} }),
+				subscribeManual: () => (id) => {
+					subscribed.push(id);
+					return new PassThrough();
+				},
+				createDecoder: () => new PassThrough(),
+			},
+			topology(),
+			identity,
+			"fixture",
+			lead.botUserId,
+		);
+		recording.stop();
+	}
+	assert.deepEqual(
+		subscribed,
+		topology().leads.map((l) => l.botUserId),
+	);
 });

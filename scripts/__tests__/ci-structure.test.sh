@@ -857,6 +857,9 @@ expected_shard_tests = {
         "Test — FLY-1663 launchd-native Lead lifecycle",
         "Test — FLY-2146 Lead memory remote sync",
         "Test — FLY-2134 artifact freshness monitor",
+        "Test — FLY-2598 voice host configuration",
+        "Test — FLY-2598 readonly voice preflight",
+        "Test — FLY-2598 voice client coexistence",
     ],
 }
 script_shards = {
@@ -1199,6 +1202,7 @@ fly1814_commands = [
 ]
 expected_fly1814_commands = [
     "bash scripts/__tests__/flywheel-voice-wrapper.test.sh",
+    "bash scripts/__tests__/install-voice-launchd.test.sh",
     "bash scripts/__tests__/launchd-units-manifest.test.sh",
     "bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh",
     "bash scripts/__tests__/launchd-census.test.sh",
@@ -1454,6 +1458,19 @@ require(len(voice_driver_steps) == 1, "FLY-2446 driver must run exactly once in 
 voice_driver_step = voice_driver_steps[0]
 require(voice_driver_step.get("run") == "node --test scripts/__tests__/fly2446-two-lead-run.test.mjs", "FLY-2446 driver command drifted")
 require("if" not in voice_driver_step and "continue-on-error" not in voice_driver_step, "FLY-2446 driver must be a mandatory hermetic gate")
+voice_preflight_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 readonly voice preflight"]
+require(len(voice_preflight_steps) == 1, "FLY-2598 readonly preflight missing from script-tests-5")
+require(voice_preflight_steps[0].get("run") == "node --test scripts/__tests__/fly2598-voice-preflight.test.mjs", "FLY-2598 preflight command drifted")
+require(not voice_preflight_steps[0].get("if") and not voice_preflight_steps[0].get("continue-on-error"), "FLY-2598 preflight must be mandatory")
+voice_coexist_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice client coexistence"]
+require(len(voice_coexist_steps) == 1, "FLY-2598 voice coexistence missing from script-tests-5")
+require(voice_coexist_steps[0].get("run") == "pnpm --filter flywheel-voice-codex... build\nnode --test scripts/__tests__/fly2598-voice-coexistence.test.mjs\n", "FLY-2598 coexistence command drifted")
+require(not voice_coexist_steps[0].get("if") and not voice_coexist_steps[0].get("continue-on-error"), "FLY-2598 coexistence must be mandatory")
+voice_config_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice host configuration"]
+require(len(voice_config_steps) == 1, "FLY-2598 voice config test must run exactly once in script-tests-5")
+voice_config_step = voice_config_steps[0]
+require(str(voice_config_step.get("run", "")).strip().splitlines() == ["pnpm --filter flywheel-teamlead... build", "pnpm --filter flywheel-comm... build", "node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs"], "FLY-2598 voice config gate commands drifted")
+require("if" not in voice_config_step and "continue-on-error" not in voice_config_step, "FLY-2598 voice config gate must be mandatory")
 
 print("PASS: FLY-1338 CI structure contract")
 PY

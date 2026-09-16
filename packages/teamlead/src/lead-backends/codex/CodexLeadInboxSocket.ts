@@ -16,9 +16,26 @@ import {
 	type Socket,
 } from "node:net";
 import { join } from "node:path";
+import {
+	canonicalVoiceSelfFilterRequest,
+	signVoiceSelfFilterResponse,
+	VOICE_SELF_FILTER_MAX_BYTES,
+	type VoiceSelfFilterObservation,
+	validVoiceSelfFilterRequestFields,
+} from "../../voice-self-filter-contract.js";
 import type { LeadInputBatch, LeadInputRouter } from "./LeadInputRouter.js";
 import type { BatchAcceptStatus } from "./LeadJournal.js";
 import type { SubscriptionEntry } from "./RoundtableThreadRegistry.js";
+
+interface VoiceSelfFilterRequest {
+	version: 2;
+	contractVersion: 1;
+	method: "probeVoiceSelfFilter";
+	leadId: string;
+	expectedBotUserId: string;
+	nonce: string;
+	auth: string;
+}
 
 const PROTOCOL_VERSION = 2;
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
@@ -73,6 +90,7 @@ interface EngageProactiveTopicRequest extends ProactiveTopicReceipt {
 }
 
 type InboxRequest =
+	| VoiceSelfFilterRequest
 	| EngageProactiveTopicRequest
 	| SubmitBatchRequest
 	| CapabilitiesRequest
@@ -92,7 +110,11 @@ interface ErrorResponse {
 
 export interface CodexLeadInboxCapabilities {
 	protocolVersions: [1, 2];
-	features: ("discord_route_v2" | "roundtable_proactive_engage_v1")[];
+	features: (
+		| "discord_route_v2"
+		| "roundtable_proactive_engage_v1"
+		| "voice_self_filter_v1"
+	)[];
 	socketOwnerId: string;
 	voiceMirrorIgnoredAuthorIds?: readonly string[];
 }
@@ -110,6 +132,7 @@ export interface CodexLeadInboxServerOptions {
 	socketOwnerId?: string;
 	/** Must be the same startup projection passed to this process's gateway. */
 	ignoredAuthorIds?: readonly string[];
+	voiceSelfFilter?: () => VoiceSelfFilterObservation;
 	subscriptions?: {
 		list(): SubscriptionEntry[];
 		remove(threadId: string, reason: string, actor: string): Promise<boolean>;
@@ -211,6 +234,11 @@ export class CodexLeadInboxServer {
 
 	private handle(socket: Socket): void {
 		const chunks: Buffer[] = [];
+		const connectedAt = Date.now();
+		let probePrefix = Buffer.alloc(0);
+		let probeFrame = false;
+		let probeDeadline: ReturnType<typeof setTimeout> | undefined;
+		socket.once("close", () => clearTimeout(probeDeadline));
 		let size = 0;
 		let rejected = false;
 		socket.on("error", () => {
@@ -227,6 +255,27 @@ export class CodexLeadInboxServer {
 				return;
 			}
 			chunks.push(chunk);
+			if (!probeFrame && probePrefix.length < VOICE_SELF_FILTER_MAX_BYTES) {
+				probePrefix = Buffer.concat([
+					probePrefix,
+					chunk.subarray(0, VOICE_SELF_FILTER_MAX_BYTES - probePrefix.length),
+				]);
+				probeFrame = probePrefix.includes('"probeVoiceSelfFilter"');
+			}
+			if (probeFrame) {
+				if (
+					size > VOICE_SELF_FILTER_MAX_BYTES ||
+					Date.now() - connectedAt >= 2000
+				) {
+					rejected = true;
+					socket.destroy();
+					return;
+				}
+				probeDeadline ??= setTimeout(
+					() => socket.destroy(),
+					2000 - (Date.now() - connectedAt),
+				);
+			}
 		});
 		socket.once("end", () => {
 			if (rejected) return;
@@ -262,11 +311,33 @@ export class CodexLeadInboxServer {
 			if (!authenticateRequest(request, this.opts.authSecret)) {
 				throw new Error("authentication rejected");
 			}
+			if (request.method === "probeVoiceSelfFilter") {
+				if (
+					Buffer.byteLength(raw) > VOICE_SELF_FILTER_MAX_BYTES ||
+					!this.opts.voiceSelfFilter
+				)
+					throw new Error("self_filter_unavailable");
+				const response = signVoiceSelfFilterResponse(
+					{
+						version: 1,
+						leadId: this.opts.leadId,
+						runtimeId: this.socketOwnerId,
+						nonce: request.nonce,
+						...this.opts.voiceSelfFilter(),
+					},
+					this.opts.authSecret,
+				);
+				socket.end(`${JSON.stringify(response)}\n`);
+				return;
+			}
 			if (request.method === "capabilities") {
 				const capabilities: CodexLeadInboxCapabilities = {
 					protocolVersions: [1, 2],
 					features: [
 						"discord_route_v2",
+						...(this.opts.voiceSelfFilter
+							? ["voice_self_filter_v1" as const]
+							: []),
 						...(this.proactiveOwnerCurrent()
 							? ["roundtable_proactive_engage_v1" as const]
 							: []),
@@ -497,6 +568,17 @@ async function subscriptionRequest(
 
 function parseRequest(raw: string): InboxRequest {
 	const value = JSON.parse(raw.trim()) as Partial<InboxRequest>;
+	if (value?.method === "probeVoiceSelfFilter") {
+		const { contractVersion, ...request } = value;
+		if (
+			Buffer.byteLength(raw) > VOICE_SELF_FILTER_MAX_BYTES ||
+			value.version !== 2 ||
+			contractVersion !== 1 ||
+			!validVoiceSelfFilterRequestFields({ ...request, version: 1 })
+		)
+			throw new Error("self_filter_invalid_request");
+		return value as VoiceSelfFilterRequest;
+	}
 	if (value?.method === "engageProactiveTopic") {
 		const keys = [
 			"version",
@@ -586,6 +668,7 @@ function parseRequest(raw: string): InboxRequest {
 }
 
 type UnsignedInboxRequest =
+	| Omit<VoiceSelfFilterRequest, "auth">
 	| Omit<SubmitBatchRequest, "auth">
 	| Omit<CapabilitiesRequest, "auth">
 	| Omit<ListSubscriptionsRequest, "auth">
@@ -593,6 +676,8 @@ type UnsignedInboxRequest =
 	| Omit<EngageProactiveTopicRequest, "auth">;
 
 function canonicalRequest(request: UnsignedInboxRequest): string {
+	if (request.method === "probeVoiceSelfFilter")
+		return canonicalVoiceSelfFilterRequest(request);
 	if (request.method === "engageProactiveTopic")
 		return JSON.stringify({
 			version: request.version,

@@ -78,6 +78,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly ended = deferred<VoiceEnd>();
 	private readonly now: () => Date;
 	private live = false;
+	private admitted = false;
 	private stopping = false;
 	private pendingSpeech?: {
 		normalized: string;
@@ -123,6 +124,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			await this.room.stop();
 			throw new Error("voice_session_stopped");
 		}
+		this.options.assertLease?.();
+		this.admitted = true;
 		if (result.founderPresent) this.founder.resolve(true);
 		await this.options.lifecycle("ready");
 		return result;
@@ -210,7 +213,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		role: "user" | "assistant";
 		text: string;
 	}): void {
-		if (this.stopping) return;
+		if (this.stopping || !this.admitted) return;
 		if (input.role === "assistant") {
 			this.room.finishOutputAudio();
 			const safeText = Array.from(scrubTranscript(input.text).trim())
@@ -293,6 +296,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	private status(text: string): void {
+		if (this.stopping || !this.admitted) return;
 		void (this.options.postStatus ?? ((value) => this.room.status(value)))(
 			text,
 		).catch((error) =>
@@ -309,7 +313,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	private guarded(effect: () => void): void {
-		if (this.stopping) return;
+		if (this.stopping || !this.admitted) return;
 		try {
 			this.options.assertLease?.();
 			effect();

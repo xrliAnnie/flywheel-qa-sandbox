@@ -30,6 +30,7 @@ export interface VoiceSessionRouterDeps {
 		count: number,
 	) => void | Promise<void>;
 	projectSession: (session: VoiceSessionRow) => Record<string, unknown>;
+	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
 }
 
 const DAEMON_ONLY = "daemon_credential_required";
@@ -63,6 +64,9 @@ function sessionBody(session: VoiceSessionRow): Record<string, unknown> {
 		mode: session.mode,
 		projectName: session.projectName,
 		leadId: session.leadId,
+		guildId: session.guildId,
+		voiceChannelId: session.voiceChannelId,
+		voiceBotUserId: session.voiceBotUserId,
 		state: session.state,
 		reason: session.reason,
 		meetingId: session.meetingId,
@@ -170,13 +174,29 @@ export function createVoiceSessionRouter(
 		res.json({ state });
 	});
 
-	router.post("/:sessionId/claim", masterOnly(), (req, res) => {
+	router.post("/:sessionId/claim", masterOnly(), async (req, res) => {
 		const daemonBootId =
 			typeof req.body?.daemonBootId === "string"
 				? req.body.daemonBootId.trim()
 				: "";
 		if (!daemonBootId) {
 			res.status(400).json({ error: "daemon_boot_id_required" });
+			return;
+		}
+		const candidate = deps.store.getVoiceSession(param(req.params.sessionId));
+		if (!candidate || candidate.state !== "desired") {
+			res.status(409).json({ error: "voice_claim_conflict" });
+			return;
+		}
+		let projection: Record<string, unknown>;
+		try {
+			await deps.validateSession?.(candidate);
+			projection = deps.projectSession(candidate);
+		} catch {
+			res.status(503).json({
+				error: "voice_unavailable",
+				reason: "voice_session_admission_failed",
+			});
 			return;
 		}
 		const claimed = deps.store.claimVoiceSession({
@@ -194,11 +214,29 @@ export function createVoiceSessionRouter(
 			leaseToken: claimed.leaseToken,
 			leaseTtlMs: deps.leaseTtlMs,
 			leaseExpiresAt: claimed.leaseExpiresAt,
-			projection: deps.projectSession(claimed.session),
+			projection,
 		});
 	});
 
-	router.post("/:sessionId/renew", masterOnly(), (req, res) => {
+	router.post("/:sessionId/renew", masterOnly(), async (req, res) => {
+		const candidate = deps.store.getActiveVoiceLease(
+			param(req.params.sessionId),
+			lease(req),
+			now(),
+		);
+		if (!candidate) {
+			res.status(409).json(LEASE_CONFLICT);
+			return;
+		}
+		try {
+			await deps.validateSession?.(candidate);
+		} catch {
+			res.status(503).json({
+				error: "voice_unavailable",
+				reason: "voice_session_admission_failed",
+			});
+			return;
+		}
 		const renewed = deps.store.renewVoiceSession({
 			sessionId: param(req.params.sessionId),
 			leaseToken: lease(req),

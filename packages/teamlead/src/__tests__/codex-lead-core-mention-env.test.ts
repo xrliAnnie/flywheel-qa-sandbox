@@ -62,7 +62,7 @@ exit 0
 		inherited: string,
 		computed: boolean | "fail",
 		voiceBotUserId?: string,
-		inheritedIgnored = "stale-bot",
+		inheritedIgnored?: string,
 	): { core: string; ignored: string } {
 		writeFileSync(
 			join(home, ".flywheel", "projects.json"),
@@ -77,6 +77,7 @@ exit 0
 		);
 		const env = { ...process.env };
 		for (const name of [
+			"FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS",
 			"FLYWHEEL_LEAD_ID",
 			"LEAD_ID",
 			"FLYWHEEL_PROJECT_NAME",
@@ -115,7 +116,9 @@ exit 0
 				),
 				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "core-room",
 				FLYWHEEL_LEAD_CORE_MENTION_GATED: inherited,
-				FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS: inheritedIgnored,
+				...(inheritedIgnored === undefined
+					? {}
+					: { FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS: inheritedIgnored }),
 				GROWTH_BOT_TOKEN: "token",
 				CANONICAL_JSON: JSON.stringify({
 					codexCapabilities: { runnerActionsEnabled: false },
@@ -154,10 +157,15 @@ exit 0
 		expect(launch("1", "fail").core).toBe("unset");
 	});
 
-	it("projects the current project's voice bot id and clears inherited drift", () => {
-		expect(launch("0", false, "123456789012345678").ignored).toBe(
-			"123456789012345678",
-		);
+	it("does not derive ignored authors from legacy huddle", () => {
+		expect(launch("0", false, "123456789012345678").ignored).toBe("unset");
 		expect(launch("0", false).ignored).toBe("unset");
+	});
+	it("preserves the optional explicit author filter independently of legacy huddle", () => {
+		const explicit = "223456789012345678";
+		expect(launch("0", false, "123456789012345678", explicit).ignored).toBe(
+			explicit,
+		);
+		expect(launch("0", false, undefined, explicit).ignored).toBe(explicit);
 	});
 });

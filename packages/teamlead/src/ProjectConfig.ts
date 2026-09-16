@@ -301,6 +301,11 @@ export interface HuddleConfig {
 	moveMembers?: boolean;
 }
 
+export interface VoiceRoomConfig {
+	guildId: string;
+	voiceChannelId: string;
+}
+
 export interface ProjectEntry {
 	epicPage?: { leadNoteFadeDays?: number };
 	projectName: string;
@@ -329,6 +334,8 @@ export interface ProjectEntry {
 	 * the `linear` field's deployed-roster null tolerance (FLY-371 lesson).
 	 */
 	huddle?: HuddleConfig | null;
+	/** Generic voice room; credentials come only from the session's Lead. */
+	voiceRoom?: VoiceRoomConfig | null;
 	/**
 	 * FLY-371: optional Linear binding, resolved from `projectName` by the
 	 * create-issue / issues / triage endpoints. NOT normalized (FLY-231 pattern):
@@ -1131,6 +1138,36 @@ export function parseAndValidateProjects(
 				if (typeof u !== "string" || u.length === 0) {
 					throw new Error(
 						`Project "${entry.projectName}" memoryAllowedUsers: each user must be a non-empty string`,
+					);
+				}
+			}
+		}
+
+		// Room conflicts are voice admission errors, not ordinary Lead startup errors.
+		const voiceRoom = (entry as Record<string, unknown>).voiceRoom;
+		if (voiceRoom != null) {
+			if (typeof voiceRoom !== "object" || Array.isArray(voiceRoom)) {
+				throw new Error(
+					`Project "${entry.projectName}" voiceRoom: must be an object`,
+				);
+			}
+			const room = voiceRoom as Record<string, unknown>;
+			if (
+				Object.keys(room).some(
+					(key) => !["guildId", "voiceChannelId"].includes(key),
+				)
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" voiceRoom: unknown field`,
+				);
+			}
+			for (const field of ["guildId", "voiceChannelId"]) {
+				if (
+					typeof room[field] !== "string" ||
+					!/^\d{17,20}$/.test(room[field])
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" voiceRoom.${field}: must be a Discord snowflake`,
 					);
 				}
 			}

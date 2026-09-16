@@ -2,8 +2,11 @@ import type {
 	VoiceOutboundItem,
 	VoiceSessionProjection,
 } from "./bridge-client.js";
-import { BridgeVoiceHttpError, VoiceLease } from "./bridge-client.js";
-import type { SavedVoiceSession } from "./session-state.js";
+import { BridgeVoiceHttpError, type VoiceLease } from "./bridge-client.js";
+import type {
+	SavedVoiceSession,
+	VoiceRecoveryRecord,
+} from "./session-state.js";
 import { chunkForSpeech } from "./speech.js";
 
 export type VoiceEnd =
@@ -78,7 +81,8 @@ interface VoiceDaemonBridge {
 
 interface VoiceSessionStore {
 	save(session: SavedVoiceSession): void;
-	list(): SavedVoiceSession[];
+	list(): VoiceRecoveryRecord[];
+	quarantine(sessionId: string): void;
 	remove(sessionId: string): void;
 }
 
@@ -93,9 +97,11 @@ export interface VoiceDaemonOptions {
 	bridge: VoiceDaemonBridge;
 	stateStore: VoiceSessionStore;
 	bootId: string;
-	createSession(context: VoiceSessionContext): ActiveVoiceSession;
+	createSession(
+		context: VoiceSessionContext,
+	): ActiveVoiceSession | Promise<ActiveVoiceSession>;
 	recoverSession(
-		saved: SavedVoiceSession,
+		saved: VoiceRecoveryRecord,
 		authority?: VoiceLease,
 	): Promise<number>;
 	sleep(ms: number, signal?: AbortSignal): Promise<void>;
@@ -261,32 +267,39 @@ export class VoiceDaemon {
 			} catch {
 				// A rejected stale lease carries no delivery authority.
 			}
-			const abandonedCount = await this.options.recoverSession(
-				saved,
-				authority,
-			);
+			let abandonedCount: number | undefined;
+			let reason = "daemon_restart";
 			try {
-				await this.options.bridge.setState(
-					saved.sessionId,
-					saved.leaseToken,
-					authority ?? new VoiceLease(() => Number.POSITIVE_INFINITY),
-					"failed",
-					"daemon_restart",
-					abandonedCount,
+				abandonedCount = await this.options.recoverSession(saved, authority);
+			} catch {
+				reason = "voice_recovery_failed";
+				console.error(
+					"[voice] local recovery failed; retaining quarantined evidence",
 				);
-			} catch (error) {
-				// A final rejection (including an already-swept lease) cannot be
-				// retried with this saved authority. Preserve it only for retries.
-				if (
-					!(error instanceof BridgeVoiceHttpError) ||
-					error.status < 400 ||
-					error.status >= 500 ||
-					error.status === 408 ||
-					error.status === 429
-				)
-					throw error;
 			}
-			this.options.stateStore.remove(saved.sessionId);
+			if (authority) {
+				try {
+					authority.assert();
+					await this.options.bridge.setState(
+						saved.sessionId,
+						saved.leaseToken,
+						authority,
+						"failed",
+						reason,
+						abandonedCount,
+					);
+				} catch {
+					// No delivery retries on restart. The exact Bridge row expires normally.
+					console.error(
+						"[voice] recovery terminal receipt unavailable; awaiting lease expiry",
+					);
+				}
+			}
+			try {
+				this.options.stateStore.quarantine(saved.sessionId);
+			} catch {
+				console.error("[voice] recovery quarantine failed; evidence retained");
+			}
 		}
 	}
 
@@ -306,14 +319,18 @@ export class VoiceDaemon {
 			lease: claimed.lease,
 			projection: claimed.projection,
 		};
-		this.options.stateStore.save({
-			sessionId: context.sessionId,
-			leaseToken: context.leaseToken,
-			projection: context.projection,
-		});
 		let session: ActiveVoiceSession;
 		try {
-			session = this.options.createSession(context);
+			this.options.stateStore.save({
+				sessionId: context.sessionId,
+				leaseToken: context.leaseToken,
+				projection: context.projection,
+			});
+			session = await this.options.createSession(context);
+			if (this.stopping) {
+				await session.stop();
+				throw new Error("daemon_shutdown");
+			}
 		} catch (error) {
 			const reason = (error as Error).message || "session_create_failed";
 			await this.options.bridge.setState(

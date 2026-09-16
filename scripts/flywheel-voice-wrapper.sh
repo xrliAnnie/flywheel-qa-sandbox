@@ -50,6 +50,12 @@ if ! source "$ENV_FILE"; then
 fi
 set +a
 
+if [[ -z "${OPENAI_API_KEY:-}" || -z "${OPENAI_API_KEY//[[:space:]]/}" ]]; then
+  fail_loud voice_api_key_unset "Voice API authentication unavailable" \
+    "OPENAI_API_KEY is missing; voice requires platform API credit."
+  exit 0
+fi
+
 export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 VOICE_ENTRY="${FLYWHEEL_DIR}/packages/voice-codex/dist/cli.js"
 if [[ -z "${TEAMLEAD_API_TOKEN:-}" || ! -f "$VOICE_ENTRY" ]] || ! command -v node >/dev/null 2>&1; then

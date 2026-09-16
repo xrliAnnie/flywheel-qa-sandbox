@@ -6,6 +6,7 @@ import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import type { BridgeConfig } from "./types.js";
+import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
 import {
@@ -17,7 +18,10 @@ import {
 	VoiceSessionHttpError,
 } from "./voice-session-routes.js";
 import { VoiceSessionRuntime } from "./voice-session-runtime.js";
-import { createVoiceStartResolver } from "./voice-session-start.js";
+import {
+	createVoiceStartResolver,
+	resolveLeadVoiceBinding,
+} from "./voice-session-start.js";
 
 export function createVoiceSessionServices(input: {
 	store: StateStore;
@@ -27,6 +31,7 @@ export function createVoiceSessionServices(input: {
 	homeDir?: string;
 	cwd?: string;
 	fetchImpl?: typeof fetch;
+	probeSelfFilter?: typeof probeVoiceSelfFilter;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	runtime: VoiceSessionRuntime;
@@ -50,21 +55,72 @@ export function createVoiceSessionServices(input: {
 	const fetchImpl = input.fetchImpl ?? fetch;
 	const discordDeps = createDiscordVoiceProvisionerDeps(fetchImpl);
 	const resolve = (session: VoiceSessionRow) => {
-		const project = input.projects.find(
+		if (!session.voiceBotUserId) throw new Error("identity_binding_missing");
+		const projects = input.projects.filter(
 			(candidate) => candidate.projectName === session.projectName,
 		);
-		const lead = project?.leads.find(
-			(candidate) => candidate.agentId === session.leadId,
-		);
-		if (!project?.huddle || !lead?.botToken || !lead.botUserId) {
+		const project = projects[0];
+		const leads =
+			project?.leads.filter(
+				(candidate) => candidate.agentId === session.leadId,
+			) ?? [];
+		const lead = leads[0];
+		if (
+			projects.length !== 1 ||
+			leads.length !== 1 ||
+			!lead ||
+			!project?.voiceRoom ||
+			project.huddle != null ||
+			lead.botUserId !== session.voiceBotUserId ||
+			project.voiceRoom.guildId !== session.guildId ||
+			project.voiceRoom.voiceChannelId !== session.voiceChannelId ||
+			input.projects.some(
+				(candidate) =>
+					candidate.voiceRoom &&
+					(candidate.voiceRoom.guildId !== session.guildId ||
+						candidate.voiceRoom.voiceChannelId !== session.voiceChannelId),
+			)
+		)
+			throw new Error("voice_session_registry_drift");
+		try {
+			return {
+				project,
+				lead,
+				token: resolveLeadVoiceBinding(project, lead, env).voiceBotToken,
+			};
+		} catch {
 			throw new Error("voice_session_registry_drift");
 		}
-		return { project, lead };
 	};
+	const validateSession = async (session: VoiceSessionRow) => {
+		const { project, lead, token } = resolve(session);
+		try {
+			const proof = await (input.probeSelfFilter ?? probeVoiceSelfFilter)({
+				projectName: project.projectName,
+				lead,
+				token,
+			});
+			if (
+				proof.version !== 1 ||
+				proof.leadId !== session.leadId ||
+				proof.botUserId !== session.voiceBotUserId ||
+				!proof.ready ||
+				!proof.selfDropped ||
+				!proof.unknownDropped ||
+				!proof.otherPassed
+			)
+				throw new Error("invalid proof");
+		} catch {
+			throw new Error("self_filter_unverified");
+		}
+	};
+
 	const provision = async (sessionId: string, signal?: AbortSignal) => {
 		const session = input.store.getVoiceSession(sessionId);
 		if (!session) return;
-		const { lead } = resolve(session);
+		await validateSession(session);
+		signal?.throwIfAborted();
+		const { lead, token } = resolve(session);
 		const founderUserId = input.config.discordOwnerUserId;
 		if (!founderUserId) {
 			throw new Error("voice_session_founder_id_unset");
@@ -77,7 +133,7 @@ export function createVoiceSessionServices(input: {
 			staleMs: timing.provisioningStaleMs,
 			context: {
 				chatChannelId: lead.chatChannel,
-				leadBotToken: lead.botToken!,
+				leadBotToken: token,
 				founderUserId,
 			},
 			deps: signal
@@ -111,18 +167,23 @@ export function createVoiceSessionServices(input: {
 					"founder_id_unset",
 				);
 			}
-			await preflightVoiceSession(request, { fetchImpl });
+			await preflightVoiceSession(request, {
+				fetchImpl,
+				probeSelfFilter: input.probeSelfFilter,
+			});
 		},
 	});
 	const projectSession = (session: VoiceSessionRow) => {
-		const { project, lead } = resolve(session);
+		const { lead } = resolve(session);
 		return {
+			sessionId: session.sessionId,
 			mode: session.mode,
 			projectName: session.projectName,
 			leadId: session.leadId,
 			displayName: lead.agentId,
 			realtimeVoice: lead.realtimeVoice ?? "marin",
-			guildId: project.huddle!.guildId,
+			guildId: session.guildId,
+			voiceBotUserId: session.voiceBotUserId,
 			voiceChannelId: session.voiceChannelId,
 			threadId: session.threadId,
 			boundChannelIds: session.boundChannelIds,
@@ -133,11 +194,12 @@ export function createVoiceSessionServices(input: {
 		};
 	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
-		const { lead } = resolve(session);
+		await validateSession(session);
+		const { lead, token } = resolve(session);
 		const result = await postDiscordMessageToChannel(
 			session.threadId ?? lead.chatChannel,
 			text,
-			lead.botToken!,
+			token,
 			{ origin: "automation" },
 			fetchImpl,
 		);
@@ -146,9 +208,11 @@ export function createVoiceSessionServices(input: {
 	const runtime = new VoiceSessionRuntime({
 		store: input.store,
 		timing,
+		validateSession,
 		provision,
 		poll: async (session) => {
-			const { lead } = resolve(session);
+			await validateSession(session);
+			const { token } = resolve(session);
 			if (!session.leaseToken || !session.rootMessageId) return;
 			await pollVoiceSessionOnce({
 				store: input.store,
@@ -156,8 +220,8 @@ export function createVoiceSessionServices(input: {
 				leaseToken: session.leaseToken,
 				boundChannelIds: session.boundChannelIds,
 				outboundCursor: session.outboundCursor,
-				leadBotUserId: lead.botUserId!,
-				leadBotToken: lead.botToken!,
+				leadBotUserId: session.voiceBotUserId!,
+				leadBotToken: token,
 				rootMessageId: session.rootMessageId,
 				fetchImpl,
 			});
@@ -173,6 +237,7 @@ export function createVoiceSessionServices(input: {
 			reportAbandoned: (session, count) =>
 				postStatus(session, `📻 有 ${count} 条语音没有送达`),
 			projectSession,
+			validateSession,
 		}),
 		runtime,
 	};

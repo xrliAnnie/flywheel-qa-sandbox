@@ -1,0 +1,47 @@
+{
+  "observedAt": "2026-09-16T00:24:44.778697+00:00",
+  "scope": "Pre-change read-only HTTP guards only. No valid start, room join, DB copy or service change.",
+  "platformKeyPresent": true,
+  "cases": [
+    {
+      "case": "no_auth",
+      "httpStatus": 401,
+      "body": {
+        "error": "unauthorized"
+      }
+    },
+    {
+      "case": "invalid_auth",
+      "httpStatus": 401,
+      "body": {
+        "error": "unauthorized"
+      }
+    },
+    {
+      "case": "master_unknown_session",
+      "httpStatus": 404,
+      "body": {
+        "error": "voice_session_not_found"
+      }
+    },
+    {
+      "case": "ingest_daemon_only",
+      "status": "unexecuted_token_absent"
+    },
+    {
+      "case": "master_bad_shape",
+      "httpStatus": 400,
+      "body": {
+        "error": "voice_request_invalid"
+      }
+    },
+    {
+      "case": "master_unknown_lead",
+      "httpStatus": 404,
+      "body": {
+        "error": "lead_not_found"
+      }
+    }
+  ],
+  "masterUnset503": "unexecuted: production master remains configured"
+}

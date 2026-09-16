@@ -8,6 +8,8 @@ import { type ActiveVoiceSession, VoiceDaemon } from "../daemon.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const projection: VoiceSessionProjection = {
+	sessionId: SESSION_ID,
+	voiceBotUserId: "323456789012345678",
 	mode: "meeting",
 	projectName: "raya",
 	leadId: "raya",
@@ -63,6 +65,7 @@ describe("VoiceDaemon", () => {
 			save: vi.fn(() => calls.push("store.save")),
 			list: vi.fn(() => []),
 			remove: vi.fn(),
+			quarantine: vi.fn(),
 		};
 		const bridge = {
 			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
@@ -186,6 +189,7 @@ describe("VoiceDaemon", () => {
 			save: vi.fn(),
 			list: vi.fn(() => [saved]),
 			remove: vi.fn(),
+			quarantine: vi.fn(),
 		};
 		const daemon = new VoiceDaemon({
 			bridge,
@@ -204,15 +208,77 @@ describe("VoiceDaemon", () => {
 		});
 		await daemon.recover();
 		expect(recoverSession).toHaveBeenCalledAfter(bridge.renewRecovered);
+		expect(bridge.setState).not.toHaveBeenCalled();
+		expect(stateStore.quarantine).toHaveBeenCalledWith(SESSION_ID);
+	});
+
+	it("continues to the next saved record and idle after a local recovery failure", async () => {
+		const secondId = "33333333-3333-4333-8333-333333333333";
+		const saved = [SESSION_ID, secondId].map((sessionId) => ({
+			sessionId,
+			leaseToken: "lease",
+			projection: { ...projection, sessionId },
+		}));
+		const stateStore = {
+			save: vi.fn(),
+			list: () => saved,
+			remove: vi.fn(),
+			quarantine: vi.fn(),
+		};
+		const bridge = {
+			desired: vi.fn(async () => null),
+			claim: vi.fn(),
+			renew: vi.fn(),
+			renewRecovered: vi.fn(async () => ({
+				state: "live",
+				lease: lease(),
+				leaseExpiresAt: "later",
+			})),
+			setState: vi.fn(async () => {}),
+			outbound: vi.fn(),
+			claimOutbound: vi.fn(),
+			receipt: vi.fn(),
+		};
+		const recoverSession = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("private diagnostic"))
+			.mockResolvedValueOnce(1);
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore,
+			bootId: "boot",
+			createSession: vi.fn(),
+			recoverSession,
+			sleep: vi.fn(async () => {}),
+			timing: {
+				idlePollMs: 1,
+				leaseRenewMs: 1,
+				leaseMissMax: 2,
+				presenceGraceMs: 1,
+				speechChunkTokens: 600,
+			},
+		});
+		await daemon.recover();
+		expect(recoverSession).toHaveBeenCalledTimes(2);
+		expect(stateStore.quarantine).toHaveBeenCalledWith(SESSION_ID);
+		expect(stateStore.quarantine).toHaveBeenCalledWith(secondId);
 		expect(bridge.setState).toHaveBeenCalledWith(
 			SESSION_ID,
-			"stale",
+			"lease",
+			expect.any(VoiceLease),
+			"failed",
+			"voice_recovery_failed",
+			undefined,
+		);
+		expect(bridge.setState).toHaveBeenCalledWith(
+			secondId,
+			"lease",
 			expect.any(VoiceLease),
 			"failed",
 			"daemon_restart",
-			2,
+			1,
 		);
-		expect(stateStore.remove).toHaveBeenCalledWith(SESSION_ID);
+		expect(await daemon.runOnce()).toBe("idle");
 	});
 
 	it("does not grant recovery authority for an ending session", async () => {
@@ -242,6 +308,7 @@ describe("VoiceDaemon", () => {
 				save: vi.fn(),
 				list: vi.fn(() => [saved]),
 				remove: vi.fn(),
+				quarantine: vi.fn(),
 			},
 			bootId: "22222222-2222-4222-8222-222222222222",
 			createSession: vi.fn(),
@@ -432,12 +499,8 @@ describe("VoiceDaemon", () => {
 		expect(bridge.receipt.mock.calls[0]).toEqual(bridge.receipt.mock.calls[1]);
 	});
 
-	it("fails and clears a claimed session when local session construction rejects it", async () => {
-		const stateStore = {
-			save: vi.fn(),
-			list: vi.fn(() => []),
-			remove: vi.fn(),
-		};
+	it("does not start a session if shutdown arrives during identity verification", async () => {
+		const runtime = active();
 		const bridge = {
 			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
 			claim: vi.fn(async () => ({
@@ -455,31 +518,86 @@ describe("VoiceDaemon", () => {
 		};
 		const daemon = new VoiceDaemon({
 			bridge,
-			stateStore,
-			bootId: "22222222-2222-4222-8222-222222222222",
-			createSession: () => {
-				throw new Error("voice_session_registry_drift");
+			stateStore: {
+				save: vi.fn(),
+				list: () => [],
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: async () => {
+				daemon.shutdown();
+				return runtime;
 			},
 			recoverSession: vi.fn(),
 			sleep: vi.fn(async () => {}),
 			timing: {
-				idlePollMs: 5_000,
-				leaseRenewMs: 1,
+				idlePollMs: 1,
+				leaseRenewMs: 1000,
 				leaseMissMax: 2,
-				presenceGraceMs: 10,
+				presenceGraceMs: 1,
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("voice_session_registry_drift");
-		expect(bridge.setState).toHaveBeenCalledWith(
-			SESSION_ID,
-			"lease",
-			expect.any(VoiceLease),
-			"failed",
-			"voice_session_registry_drift",
-		);
-		expect(stateStore.remove).toHaveBeenCalledWith(SESSION_ID);
+		expect(await daemon.runOnce()).toBe("daemon_shutdown");
+		expect(runtime.start).not.toHaveBeenCalled();
+		expect(runtime.stop).toHaveBeenCalledOnce();
 	});
+
+	it.each([false, true])(
+		"fails and clears a claimed session when construction rejects (async=%s)",
+		async (asynchronous) => {
+			const stateStore = {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			};
+			const bridge = {
+				desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+				claim: vi.fn(async () => ({
+					lease: lease(),
+					leaseToken: "lease",
+					leaseExpiresAt: "later",
+					projection,
+				})),
+				renew: vi.fn(),
+				renewRecovered: vi.fn(),
+				setState: vi.fn(async () => {}),
+				outbound: vi.fn(),
+				claimOutbound: vi.fn(),
+				receipt: vi.fn(),
+			};
+			const daemon = new VoiceDaemon({
+				bridge,
+				stateStore,
+				bootId: "22222222-2222-4222-8222-222222222222",
+				createSession: () => {
+					if (asynchronous)
+						return Promise.reject(new Error("voice_session_registry_drift"));
+					throw new Error("voice_session_registry_drift");
+				},
+				recoverSession: vi.fn(),
+				sleep: vi.fn(async () => {}),
+				timing: {
+					idlePollMs: 5_000,
+					leaseRenewMs: 1,
+					leaseMissMax: 2,
+					presenceGraceMs: 10,
+					speechChunkTokens: 600,
+				},
+			});
+			expect(await daemon.runOnce()).toBe("voice_session_registry_drift");
+			expect(bridge.setState).toHaveBeenCalledWith(
+				SESSION_ID,
+				"lease",
+				expect.any(VoiceLease),
+				"failed",
+				"voice_session_registry_drift",
+			);
+			expect(stateStore.remove).toHaveBeenCalledWith(SESSION_ID);
+		},
+	);
 
 	it.each([
 		[new Error("network"), false],
@@ -490,13 +608,14 @@ describe("VoiceDaemon", () => {
 		[new BridgeVoiceHttpError(404, "missing"), true],
 		[new BridgeVoiceHttpError(403, "forbidden"), true],
 	])(
-		"recovery receipt %s removes saved authority only when final: %s",
-		async (error, final) => {
+		"recovery receipt %s cannot prevent isolation or idle (formerly final=%s)",
+		async (error) => {
 			const saved = { sessionId: SESSION_ID, leaseToken: "lease", projection };
 			const stateStore = {
 				save: vi.fn(),
 				list: vi.fn(() => [saved]),
 				remove: vi.fn(),
+				quarantine: vi.fn(),
 			};
 			const bridge = {
 				desired: vi.fn(),
@@ -529,13 +648,9 @@ describe("VoiceDaemon", () => {
 					speechChunkTokens: 600,
 				},
 			});
-			if (final) {
-				await expect(daemon.recover()).resolves.toBeUndefined();
-				expect(stateStore.remove).toHaveBeenCalledWith(SESSION_ID);
-			} else {
-				await expect(daemon.recover()).rejects.toThrow(error);
-				expect(stateStore.remove).not.toHaveBeenCalled();
-			}
+			await expect(daemon.recover()).resolves.toBeUndefined();
+			expect(stateStore.quarantine).toHaveBeenCalledWith(SESSION_ID);
+			expect(stateStore.remove).not.toHaveBeenCalled();
 		},
 	);
 });

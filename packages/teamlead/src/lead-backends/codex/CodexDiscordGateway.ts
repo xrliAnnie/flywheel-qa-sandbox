@@ -1,3 +1,8 @@
+import {
+	observeVoiceSelfFilter,
+	selfAuthorAllowed,
+	type VoiceSelfFilterObservation,
+} from "../../voice-self-filter-contract.js";
 /**
  * FLY-224 Phase 4b(3/3) — CodexDiscordGateway: the INBOUND Discord listener for a
  * Codex Lead (plan §6.4/§6.7a). The Codex Lead reads Discord through its OWN
@@ -185,8 +190,21 @@ export class CodexDiscordGateway {
 		if (this.started) return;
 		await this.source.assertAuthenticatedBotUser(this.botUserId);
 		this.started = true;
-		this.source.onMessage((msg) => this.handle(msg));
-		await this.source.start();
+		this.source.onMessage((msg) => (this.started ? this.handle(msg) : true));
+		try {
+			await this.source.start();
+		} catch (error) {
+			this.started = false;
+			throw error;
+		}
+	}
+
+	probeVoiceSelfFilter(): VoiceSelfFilterObservation {
+		return observeVoiceSelfFilter(
+			this.botUserId,
+			this.started,
+			selfAuthorAllowed,
+		);
 	}
 
 	async stop(): Promise<void> {
@@ -274,7 +292,7 @@ export class CodexDiscordGateway {
 	private passesFilters(msg: DiscordInboundMessage): boolean {
 		// ECHO IMMUNITY — never react to our own posts (FLY-220). Not overridable.
 		if (
-			msg.authorId === this.botUserId ||
+			!selfAuthorAllowed(this.botUserId, true, msg.authorId) ||
 			this.ignoredAuthorIds.has(msg.authorId)
 		) {
 			return false;

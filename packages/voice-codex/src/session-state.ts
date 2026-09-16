@@ -15,8 +15,18 @@ import {
 import { dirname, join } from "node:path";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 
-const UUID =
-	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+import { SessionJournal } from "./journal.js";
+import {
+	parseVoiceProjection,
+	VOICE_SESSION_UUID as UUID,
+} from "./projection.js";
+import { abandonVoiceJournal } from "./recovery.js";
+
+export interface VoiceRecoveryRecord {
+	sessionId: string;
+	leaseToken: string;
+	projection: unknown;
+}
 
 export interface SavedVoiceSession {
 	sessionId: string;
@@ -33,6 +43,8 @@ export class SessionStateStore {
 	}
 
 	save(session: SavedVoiceSession): void {
+		parseVoiceProjection(session.projection, session.sessionId);
+		if (!session.leaseToken) throw new Error("voice_lease_token_invalid");
 		this.writePrivateJson(this.path(session.sessionId), session);
 	}
 
@@ -60,7 +72,7 @@ export class SessionStateStore {
 		chmodSync(path, 0o600);
 	}
 
-	list(): SavedVoiceSession[] {
+	list(): VoiceRecoveryRecord[] {
 		let ids: string[];
 		try {
 			ids = readdirSync(join(this.root, "sessions"));
@@ -72,17 +84,40 @@ export class SessionStateStore {
 			try {
 				const value = JSON.parse(
 					readFileSync(this.path(sessionId), "utf8"),
-				) as SavedVoiceSession;
-				return value.sessionId === sessionId &&
-					typeof value.leaseToken === "string" &&
-					value.projection &&
-					typeof value.projection === "object"
-					? [value]
-					: [];
-			} catch {
+				) as VoiceRecoveryRecord | null;
+				if (
+					!value ||
+					value.sessionId !== sessionId ||
+					typeof value.leaseToken !== "string" ||
+					!value.leaseToken
+				)
+					throw new Error("voice_saved_authority_invalid");
+				// The old lease can be checked, but projection remains untrusted until recovery admission.
+				return [value];
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+				abandonVoiceJournal(
+					new SessionJournal(
+						join(this.root, "sessions", sessionId, "journal.jsonl"),
+					),
+					"voice_saved_authority_invalid",
+				);
+				this.quarantine(sessionId);
 				return [];
 			}
 		});
+	}
+
+	quarantine(sessionId: string): void {
+		const path = this.path(sessionId);
+		try {
+			renameSync(
+				path,
+				join(dirname(path), `session.quarantined-${randomUUID()}.json`),
+			);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
 	}
 
 	remove(sessionId: string): void {

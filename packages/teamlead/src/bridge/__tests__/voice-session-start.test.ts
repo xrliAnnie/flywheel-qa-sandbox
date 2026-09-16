@@ -41,12 +41,9 @@ function project(
 	return {
 		projectName,
 		projectRoot: `/repo/${projectName}`,
-		huddle: {
+		voiceRoom: {
 			guildId: "100000000000000001",
 			voiceChannelId: "100000000000000002",
-			orchestratorBotTokenEnv: "VOICE_BOT_TOKEN",
-			orchestratorBotUserId: "100000000000000003",
-			earsBotTokenEnv: "EARS_BOT_TOKEN",
 		},
 		leads: [
 			{
@@ -55,6 +52,7 @@ function project(
 				chatChannel: "100000000000000004",
 				botUserId: "100000000000000005",
 				botToken: "lead-token",
+				botTokenEnv: "LEAD_BOT_TOKEN",
 				voiceModes,
 				realtimeVoice: "marin",
 				match: { labels: [projectName] },
@@ -112,8 +110,7 @@ function resolver(input: {
 			voiceHost: files.host,
 			meetingConfigPath: files.configPath,
 			env: {
-				VOICE_BOT_TOKEN: "voice-token",
-				EARS_BOT_TOKEN: "ears-token",
+				LEAD_BOT_TOKEN: "lead-token",
 			},
 			preflight: input.preflight ?? (() => {}),
 			newSessionId: () => SESSION_ID,
@@ -123,6 +120,42 @@ function resolver(input: {
 }
 
 describe("voice session start resolver", () => {
+	it.each(["legacy_voice_conflict", "voice_room_conflict"])(
+		"rejects %s before preflight or session reservation",
+		async (reason) => {
+			const entry = project("raya", "raya", { rg: true });
+			const other = project("other", "other");
+			if (reason === "legacy_voice_conflict") {
+				entry.huddle = {
+					guildId: entry.voiceRoom!.guildId,
+					voiceChannelId: entry.voiceRoom!.voiceChannelId,
+					orchestratorBotTokenEnv: "OLD",
+					earsBotTokenEnv: "OLD_EARS",
+				};
+			} else {
+				other.voiceRoom!.voiceChannelId = "100000000000000099";
+			}
+			const preflight = vi.fn();
+			const { resolve } = resolver({ projects: [entry, other], preflight });
+			await expect(
+				resolve({ mode: "rg", projectName: "raya", leadId: "raya" }, "master"),
+			).rejects.toMatchObject({ status: 503, reason });
+			expect(preflight).not.toHaveBeenCalled();
+		},
+	);
+	it("does not let callers supply a bot identity or fall back to a resolved token", async () => {
+		const entry = project("raya", "raya", { rg: true });
+		delete entry.leads[0].botTokenEnv;
+		const { resolve } = resolver({ projects: [entry] });
+		const body = { mode: "rg", projectName: "raya", leadId: "raya" };
+		await expect(
+			resolve({ ...body, voiceBotUserId: "100000000000000099" }, "master"),
+		).rejects.toMatchObject({ status: 400 });
+		await expect(resolve(body, "master")).rejects.toMatchObject({
+			status: 503,
+			reason: "bot_env_unset",
+		});
+	});
 	it("derives the canonical meeting intent and preflights before reservation", async () => {
 		const preflight = vi.fn();
 		const { resolve, files } = resolver({ preflight });
@@ -134,6 +167,7 @@ describe("voice session start resolver", () => {
 				leadId: "raya",
 				guildId: "100000000000000001",
 				voiceChannelId: "100000000000000002",
+				voiceBotUserId: "100000000000000005",
 				meetingId: MEETING_ID,
 				evidenceDir: files.stateDir,
 				topic: "Voice meeting",
@@ -145,8 +179,7 @@ describe("voice session start resolver", () => {
 		expect(preflight).toHaveBeenCalledWith(
 			expect.objectContaining({
 				mode: "meeting",
-				voiceBotToken: "voice-token",
-				earsBotToken: "ears-token",
+				voiceBotToken: "lead-token",
 			}),
 		);
 	});
@@ -187,13 +220,13 @@ describe("voice session start resolver", () => {
 			resolve({ meetingId: MEETING_ID, projectName: "raya" }, "master"),
 		).rejects.toMatchObject({ status: 400, code: "voice_request_invalid" });
 		const noHuddle = project("raya", "raya", { rg: true });
-		noHuddle.huddle = null;
+		noHuddle.voiceRoom = null;
 		await expect(
 			resolver({ projects: [noHuddle] }).resolve(
 				{ mode: "rg", projectName: "raya", leadId: "raya" },
 				"master",
 			),
-		).rejects.toMatchObject({ status: 503, reason: "huddle_missing" });
+		).rejects.toMatchObject({ status: 503, reason: "voice_room_missing" });
 		await expect(
 			resolve(
 				{
@@ -297,12 +330,12 @@ it("rejects disabled mode before an escaped ops evidence directory", async () =>
 	expect(preflight).not.toHaveBeenCalled();
 });
 
-it.each(["huddle_missing", "bot_env_unset"])(
+it.each(["voice_room_missing", "bot_env_unset"])(
 	"rejects %s before an escaped ops evidence directory",
 	async (reason) => {
 		const entry = project("raya", "raya");
-		if (reason === "huddle_missing") entry.huddle = null;
-		else entry.huddle!.orchestratorBotTokenEnv = "MISSING_TEST_TOKEN";
+		if (reason === "voice_room_missing") entry.voiceRoom = null;
+		else entry.leads[0].botTokenEnv = "MISSING_TEST_TOKEN";
 		const preflight = vi.fn();
 		const { resolve, files } = resolver({ projects: [entry], preflight });
 		await expect(

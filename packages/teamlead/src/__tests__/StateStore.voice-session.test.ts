@@ -30,6 +30,7 @@ function reservation(overrides: Record<string, unknown> = {}) {
 		projectName: "flywheel",
 		leadId: "lead-a",
 		guildId: "100000000000000001",
+		voiceBotUserId: "100000000000000005",
 		voiceChannelId: "100000000000000002",
 		meetingId: "20000000-0000-4000-8000-000000000001",
 		evidenceDir: "/evidence/meeting-a",
@@ -63,16 +64,18 @@ describe("StateStore voice sessions", () => {
 			sessionId,
 			leaseToken: claim!.leaseToken,
 			projection: {
+				sessionId,
 				mode: "meeting",
 				projectName: "flywheel",
 				leadId: "lead-a",
 				displayName: "Lead A",
 				realtimeVoice: "marin",
-				guildId: "guild",
-				voiceChannelId: "voice",
-				threadId: "thread",
-				boundChannelIds: ["thread"],
-				founderUserId: "founder",
+				guildId: reservation().guildId,
+				voiceBotUserId: "100000000000000005",
+				voiceChannelId: reservation().voiceChannelId,
+				threadId: "100000000000000003",
+				boundChannelIds: ["100000000000000003"],
+				founderUserId: "100000000000000004",
 				qaAllowUserIds: [],
 			},
 		});
@@ -154,10 +157,10 @@ describe("StateStore voice sessions", () => {
 		});
 		await expect(daemon.run()).resolves.toBeUndefined();
 		expect(idlePolls).toBe(1);
-		expect(terminalReceipts).toBe(1);
+		expect(terminalReceipts).toBe(0);
 		expect(saved.list()).toEqual([]);
 		await daemon.recover();
-		expect(terminalReceipts).toBe(1);
+		expect(terminalReceipts).toBe(0);
 		expect(store.getVoiceSession(sessionId)?.state).toBe("failed");
 	});
 

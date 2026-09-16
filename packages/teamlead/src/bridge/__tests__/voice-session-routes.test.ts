@@ -37,6 +37,13 @@ afterEach(
 );
 
 async function start() {
+	const validateSession = vi.fn(async () => {});
+	const projectSession = vi.fn((session) => ({
+		mode: session.mode,
+		projectName: session.projectName,
+		leadId: session.leadId,
+		threadId: session.threadId,
+	}));
 	const reportAbandoned = vi.fn(async () => {});
 	const provisionSession = vi.fn((sessionId: string) => {
 		store.updateVoiceProvisioning({
@@ -64,6 +71,7 @@ async function start() {
 				leadId: "lead-a",
 				guildId: "100000000000000001",
 				voiceChannelId: "100000000000000002",
+				voiceBotUserId: "100000000000000005",
 				meetingId: "20000000-0000-4000-8000-000000000001",
 				evidenceDir: "/evidence/a",
 				requestedBy: credentialTier,
@@ -72,12 +80,8 @@ async function start() {
 			}),
 			provisionSession,
 			reportAbandoned,
-			projectSession: (session) => ({
-				mode: session.mode,
-				projectName: session.projectName,
-				leadId: session.leadId,
-				threadId: session.threadId,
-			}),
+			projectSession,
+			validateSession,
 		}),
 	);
 	server = createServer(app);
@@ -86,6 +90,8 @@ async function start() {
 		base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/voice/sessions`,
 		provisionSession,
 		reportAbandoned,
+		projectSession,
+		validateSession,
 	};
 }
 
@@ -288,4 +294,74 @@ it("preserves 503 when provisioning throws before a durable transition", async (
 		body: { error: "voice_unavailable" },
 	});
 	expect(store.getVoiceSession(SESSION_ID)?.state).toBe("provisioning");
+});
+
+it.each(["validation", "projection"])(
+	"rejects %s failure before claim mutates ownership",
+	async (failure) => {
+		const { base, validateSession, projectSession } = await start();
+		await call(base, "", { method: "POST", token: MASTER, body: {} });
+		if (failure === "validation")
+			validateSession.mockRejectedValue(
+				new Error("voice_session_registry_drift"),
+			);
+		else
+			projectSession.mockImplementation(() => {
+				throw new Error("voice_session_registry_drift");
+			});
+		const response = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot" },
+		});
+		expect(response.status).toBe(503);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "desired",
+			leaseToken: null,
+			daemonBootId: null,
+		});
+	},
+);
+
+it("requires live validation on renew without extending a rejected lease", async () => {
+	const { base, validateSession } = await start();
+	await call(base, "", { method: "POST", token: MASTER, body: {} });
+	const claimed = await call(base, `/${SESSION_ID}/claim`, {
+		method: "POST",
+		token: MASTER,
+		body: { daemonBootId: "boot" },
+	});
+	const before = store.getVoiceSession(SESSION_ID);
+	validateSession.mockRejectedValue(new Error("self_filter_unverified"));
+	expect(
+		(
+			await call(base, `/${SESSION_ID}/renew`, {
+				method: "POST",
+				token: MASTER,
+				lease: claimed.body.leaseToken,
+			})
+		).status,
+	).toBe(503);
+	expect(store.getVoiceSession(SESSION_ID)).toEqual(before);
+});
+
+it("returns pinned status without projecting a terminal session against registry", async () => {
+	const { base, projectSession, validateSession } = await start();
+	await call(base, "", { method: "POST", token: MASTER, body: {} });
+	store.stopVoiceSession(SESSION_ID, NOW);
+	projectSession.mockImplementation(() => {
+		throw new Error("registry missing");
+	});
+	validateSession.mockRejectedValue(new Error("registry missing"));
+	expect(await call(base, `/${SESSION_ID}`, { token: INGEST })).toMatchObject({
+		status: 200,
+		body: {
+			state: "cancelled",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000002",
+			voiceBotUserId: "100000000000000005",
+		},
+	});
+	expect(projectSession).not.toHaveBeenCalled();
+	expect(validateSession).not.toHaveBeenCalled();
 });

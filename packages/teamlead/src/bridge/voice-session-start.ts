@@ -24,7 +24,6 @@ export interface VoiceStartPreflightInput {
 	lead: LeadConfig;
 	voiceHost: VoiceHostConfig;
 	voiceBotToken: string;
-	earsBotToken: string;
 	evidenceDir?: string;
 	topic?: string;
 }
@@ -104,21 +103,36 @@ function modeEnabled(lead: LeadConfig, mode: VoiceSessionMode): void {
 	}
 }
 
-function huddleCredentials(
+export function resolveLeadVoiceBinding(
 	project: ProjectEntry,
 	lead: LeadConfig,
 	env: Readonly<Record<string, string | undefined>>,
-): { voiceBotToken: string; earsBotToken: string } {
-	const huddle = project.huddle;
-	if (!huddle?.orchestratorBotUserId) {
-		throw new VoiceSessionHttpError(503, "voice_unavailable", "huddle_missing");
+): { voiceBotToken: string } {
+	if (project.huddle != null) {
+		throw new VoiceSessionHttpError(
+			503,
+			"voice_unavailable",
+			"legacy_voice_conflict",
+		);
 	}
-	const voiceBotToken = env[huddle.orchestratorBotTokenEnv]?.trim();
-	const earsBotToken = env[huddle.earsBotTokenEnv]?.trim();
-	if (!voiceBotToken || !earsBotToken || !lead.botToken || !lead.botUserId) {
+	if (!project.voiceRoom) {
+		throw new VoiceSessionHttpError(
+			503,
+			"voice_unavailable",
+			"voice_room_missing",
+		);
+	}
+	const voiceBotToken = lead.botTokenEnv
+		? env[lead.botTokenEnv]?.trim()
+		: undefined;
+	if (
+		!voiceBotToken ||
+		!lead.botUserId ||
+		!/^\d{17,20}$/.test(lead.botUserId)
+	) {
 		throw new VoiceSessionHttpError(503, "voice_unavailable", "bot_env_unset");
 	}
-	return { voiceBotToken, earsBotToken };
+	return { voiceBotToken };
 }
 
 export function createVoiceStartResolver(
@@ -198,7 +212,22 @@ export function createVoiceStartResolver(
 		}
 
 		modeEnabled(lead, mode);
-		const credentials = huddleCredentials(project, lead, env);
+		const credentials = resolveLeadVoiceBinding(project, lead, env);
+		if (
+			deps.projects.some(
+				(candidate) =>
+					candidate.voiceRoom &&
+					(candidate.voiceRoom.guildId !== project.voiceRoom!.guildId ||
+						candidate.voiceRoom.voiceChannelId !==
+							project.voiceRoom!.voiceChannelId),
+			)
+		) {
+			throw new VoiceSessionHttpError(
+				503,
+				"voice_unavailable",
+				"voice_room_conflict",
+			);
+		}
 		if (mode === "meeting" && !evidenceDir) {
 			throw new VoiceSessionHttpError(400, "evidence_dir_rejected");
 		}
@@ -222,8 +251,9 @@ export function createVoiceStartResolver(
 			mode,
 			projectName: project.projectName,
 			leadId: lead.agentId,
-			guildId: project.huddle!.guildId,
-			voiceChannelId: project.huddle!.voiceChannelId,
+			guildId: project.voiceRoom!.guildId,
+			voiceChannelId: project.voiceRoom!.voiceChannelId,
+			voiceBotUserId: lead.botUserId!,
 			...(meetingId ? { meetingId } : {}),
 			...(evidenceDir ? { evidenceDir } : {}),
 			...(topic ? { topic } : {}),

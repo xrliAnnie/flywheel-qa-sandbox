@@ -22,6 +22,7 @@ beforeEach(async () => {
 		projectName: "flywheel",
 		leadId: "lead-a",
 		guildId: "100000000000000001",
+		voiceBotUserId: "100000000000000005",
 		voiceChannelId: "100000000000000002",
 		requestedBy: "master",
 		credentialTier: "master",
@@ -123,4 +124,37 @@ describe("voice outbound Discord poller", () => {
 			"Use [redacted]",
 		);
 	});
+});
+
+it("filters own voice mirrors and status from a mixed page while queuing a normal reply once", () => {
+	const leaseToken = claim().leaseToken;
+	const messages = [
+		"🗣️ founder speech",
+		"📻 status",
+		"🤖 status",
+		"normal Lead reply",
+	].map((content, index) => ({
+		id: `10000000000000002${index}`,
+		author: { id: LEAD_BOT },
+		content,
+		timestamp: T0,
+	}));
+	const page = {
+		store,
+		sessionId: SESSION_ID,
+		leaseToken,
+		channelId: CHANNEL,
+		leadBotUserId: LEAD_BOT,
+		rootMessageId: ROOT,
+		now: T0,
+		messages,
+	};
+	expect(recordVoiceOutboundDiscordPage(page)).toBe(true);
+	expect(recordVoiceOutboundDiscordPage(page)).toBe(true);
+	expect(
+		store.listVoiceOutbound(SESSION_ID, leaseToken, T0).map(({ text }) => text),
+	).toEqual(["normal Lead reply"]);
+	expect(store.getVoiceSession(SESSION_ID)?.outboundCursor[CHANNEL]).toBe(
+		"100000000000000023",
+	);
 });

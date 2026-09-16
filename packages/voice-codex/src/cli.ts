@@ -10,14 +10,16 @@ import {
 import { acquireProcessLifetimeFileLock } from "flywheel-teamlead/process-lock";
 import { createDiscordDeps } from "flywheel-voice-bridge";
 import { DiscordMirrorClient, FlywheelCommDelivery } from "./adapters.js";
+import { verifyLeadVoiceTokenIdentity } from "./bot-identity.js";
 import {
 	BridgeVoiceClient,
 	type VoiceSessionProjection,
 } from "./bridge-client.js";
+import { assertVoiceCodexHome } from "./codex-home.js";
 import {
 	loadVoiceDaemonConfig,
 	loadVoiceProjects,
-	resolveVoiceBotToken,
+	resolveLeadVoiceToken,
 	voiceCodexEnv,
 } from "./config.js";
 import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
@@ -26,7 +28,9 @@ import { DiscordVoiceRoom } from "./discord-room.js";
 import { EvidenceLog } from "./evidence.js";
 import { SessionJournal } from "./journal.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
+import { parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
+import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
 import { reportStartupRefusal } from "./startup-alert.js";
@@ -62,6 +66,7 @@ function evidencePath(
 export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
 	const projects = loadVoiceProjects(config);
+	assertVoiceCodexHome(config.codexHome);
 	if (process.argv.length === 3 && process.argv[2] === "--check-config") {
 		console.log(`[voice] config ok: ${projects.length} project(s)`);
 		return;
@@ -99,20 +104,15 @@ export async function main(): Promise<void> {
 	const daemonBootId = randomUUID();
 	stateStore.saveBoot(daemonBootId);
 	const tokenFor = (projection: VoiceSessionProjection) =>
-		resolveVoiceBotToken(
-			projection.projectName,
-			projection.guildId,
-			projection.voiceChannelId,
-			projects,
-			process.env,
-		);
+		resolveLeadVoiceToken(projection, projects, process.env);
 	const buildDelivery = (
 		saved: SavedVoiceSession,
+		token: string,
 		assertLease: () => void,
 		status: (text: string) => Promise<void>,
 	) => {
 		const mirror = new DiscordMirrorClient({
-			token: tokenFor(saved.projection),
+			token,
 			timeoutMs: config.discordTimeoutMs,
 		});
 		const comm = new FlywheelCommDelivery({
@@ -152,7 +152,15 @@ export async function main(): Promise<void> {
 		});
 	};
 
-	const createSession = (context: VoiceSessionContext) => {
+	const createSession = async (context: VoiceSessionContext) => {
+		context.lease.assert();
+		parseVoiceProjection(context.projection, context.sessionId);
+		const token = tokenFor(context.projection);
+		await verifyLeadVoiceTokenIdentity(
+			token,
+			context.projection.voiceBotUserId,
+		);
+		context.lease.assert();
 		const scratch = join(config.voiceRoot, "scratch", context.sessionId);
 		mkdirSync(scratch, { recursive: true, mode: 0o700 });
 		const evidence = new EvidenceLog(
@@ -165,11 +173,12 @@ export async function main(): Promise<void> {
 			projection: context.projection,
 		};
 		const mirror = new DiscordMirrorClient({
-			token: tokenFor(context.projection),
+			token,
 			timeoutMs: config.discordTimeoutMs,
 		});
 		const delivery = buildDelivery(
 			saved,
+			token,
 			() => context.lease.assert(),
 			async (text) => {
 				if (room) await room.status(text);
@@ -183,18 +192,26 @@ export async function main(): Promise<void> {
 			createFrontend: (handlers) => {
 				const codexProcess = new CodexLeadProcess({
 					experimentalApi: true,
-					spawnChild: () =>
-						spawnCodexAppServer({
+					maxStderrBytes: 0,
+					logger: {
+						warn: () => console.warn("[voice] app-server protocol warning"),
+						error: () => console.error("[voice] app-server protocol error"),
+					},
+					spawnChild: () => {
+						assertVoiceCodexHome(config.codexHome);
+						return spawnCodexAppServer({
 							codexBin: config.codexBin,
 							mcpArgv: [],
 							featureArgv: ["--enable", "realtime_conversation"],
 							codexHome: config.codexHome,
 							baseEnv: voiceCodexEnv(process.env),
-						}),
+						});
+					},
 					clientInfo: { name: "flywheel-voice", version: "0.1.0" },
 				});
 				codexProcess.on("exit", () => handlers.onClosed("codex_process_exit"));
 				return new RealtimeFrontend({
+					apiKey: config.realtimeApiKey,
 					process: codexProcess,
 					cwd: scratch,
 					voice: context.projection.realtimeVoice,
@@ -207,7 +224,8 @@ export async function main(): Promise<void> {
 					onDiagnostic: (record) =>
 						evidence.append({ ts: new Date().toISOString(), ...record }),
 					deps: discordDeps,
-					token: tokenFor(context.projection),
+					token,
+					expectedBotUserId: context.projection.voiceBotUserId,
 					guildId: context.projection.guildId,
 					voiceChannelId: context.projection.voiceChannelId,
 					threadId: context.projection.threadId,
@@ -261,21 +279,39 @@ export async function main(): Promise<void> {
 		bootId: daemonBootId,
 		createSession,
 		recoverSession: async (saved, authority) => {
-			const mirror = new DiscordMirrorClient({
-				token: tokenFor(saved.projection),
-				timeoutMs: config.discordTimeoutMs,
-			});
 			try {
-				return await buildDelivery(
+				return await recoverPinnedVoiceSession({
 					saved,
-					() => {
-						if (!authority) throw new Error("voice_lease_fenced");
-						authority.assert();
+					authority,
+					projects,
+					env: process.env,
+					journal: new SessionJournal(
+						join(
+							config.voiceRoot,
+							"sessions",
+							saved.sessionId,
+							"journal.jsonl",
+						),
+					),
+					replay: async (validated, token, lease) => {
+						const mirror = new DiscordMirrorClient({
+							token,
+							timeoutMs: config.discordTimeoutMs,
+						});
+						return buildDelivery(
+							validated,
+							token,
+							() => lease.assert(),
+							async (text) => {
+								await mirror.post(
+									validated.projection.threadId,
+									text,
+									discordNonce(),
+								);
+							},
+						).recover();
 					},
-					async (text) => {
-						await mirror.post(saved.projection.threadId, text, discordNonce());
-					},
-				).recover();
+				});
 			} finally {
 				rmSync(join(config.voiceRoot, "scratch", saved.sessionId), {
 					recursive: true,

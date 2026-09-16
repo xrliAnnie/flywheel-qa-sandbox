@@ -24,6 +24,7 @@ beforeEach(async () => {
 		projectName: "flywheel",
 		leadId: "lead-a",
 		guildId: "100000000000000001",
+		voiceBotUserId: "100000000000000005",
 		voiceChannelId: "100000000000000002",
 		meetingId: "20000000-0000-4000-8000-000000000001",
 		evidenceDir: "/evidence/a",

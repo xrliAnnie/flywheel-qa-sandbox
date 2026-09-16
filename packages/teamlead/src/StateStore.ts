@@ -2602,6 +2602,7 @@ export interface VoiceSessionRow {
 	leadId: string;
 	guildId: string;
 	voiceChannelId: string;
+	voiceBotUserId: string | null;
 	provisioningStep: VoiceProvisioningStep;
 	provisionerEpoch: string | null;
 	provisioningNonce: string | null;
@@ -2650,6 +2651,7 @@ export interface VoiceSessionReservation {
 	leadId: string;
 	guildId: string;
 	voiceChannelId: string;
+	voiceBotUserId: string;
 	meetingId?: string;
 	evidenceDir?: string;
 	topic?: string;
@@ -3172,6 +3174,7 @@ export class StateStore {
 			leadId: String(row.lead_id),
 			guildId: String(row.guild_id),
 			voiceChannelId: String(row.voice_channel_id),
+			voiceBotUserId: (row.voice_bot_user_id as string | null) ?? null,
 			provisioningStep: row.provisioning_step as VoiceProvisioningStep,
 			provisionerEpoch: (row.provisioner_epoch as string | null) ?? null,
 			provisioningNonce: (row.provisioning_nonce as string | null) ?? null,
@@ -3259,6 +3262,9 @@ export class StateStore {
 	):
 		| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
 		| { status: "meeting_intent_conflict" | "session_active" } {
+		if (typeof input.voiceBotUserId !== "string" || !/^\d{17,20}$/.test(input.voiceBotUserId)) {
+			throw new Error("voice_bot_identity_required");
+		}
 		let result:
 			| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
 			| { status: "meeting_intent_conflict" | "session_active" } = {
@@ -3277,7 +3283,10 @@ export class StateStore {
 					result =
 						existing.mode === input.mode &&
 						existing.projectName === input.projectName &&
-						existing.leadId === input.leadId
+						existing.leadId === input.leadId &&
+						existing.guildId === input.guildId &&
+						existing.voiceChannelId === input.voiceChannelId &&
+						existing.voiceBotUserId === input.voiceBotUserId
 							? { status: "already_exists", session: existing }
 							: { status: "meeting_intent_conflict" };
 					return;
@@ -3291,10 +3300,10 @@ export class StateStore {
 			if (activeRoom) return;
 			this.db.run(
 				`INSERT INTO voice_sessions
-				 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id,
+				 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id, voice_bot_user_id,
 				  meeting_id, evidence_dir, topic, requested_by, credential_tier, state,
 				  created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
 				[
 					input.sessionId,
 					input.mode,
@@ -3302,6 +3311,7 @@ export class StateStore {
 					input.leadId,
 					input.guildId,
 					input.voiceChannelId,
+					input.voiceBotUserId,
 					input.meetingId ?? null,
 					input.evidenceDir ?? null,
 					input.topic ?? null,
@@ -3808,6 +3818,22 @@ export class StateStore {
 		)
 			.map((row) => this.voiceSessionFromRow(row))
 			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	/** Bridge admission failure: preserve evidence and fence all further lease effects. */
+	failVoiceSessionAdmission(sessionId: string, reason: string, now: string): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE voice_sessions SET state = 'failed', reason = ?, updated_at = ?, ended_at = ?
+				 WHERE session_id = ? AND state NOT IN ('ended','cancelled','failed')`,
+				[reason, now, now, sessionId],
+			);
+			changed = this.db.getRowsModified() === 1;
+			if (changed) this.settleVoiceOutboundTx(sessionId, now);
+		});
+		if (changed) this.save();
+		return changed;
 	}
 
 	sweepVoiceSessions(input: {
@@ -6971,6 +6997,7 @@ export class StateStore {
 				lead_id TEXT NOT NULL,
 				guild_id TEXT NOT NULL,
 				voice_channel_id TEXT NOT NULL,
+				voice_bot_user_id TEXT,
 				provisioning_step TEXT NOT NULL DEFAULT 'reserved'
 					CHECK(provisioning_step IN ('reserved','root_requested','thread_requested','member_requested','thread_cursor','finalize','done')),
 				provisioner_epoch TEXT,
@@ -6998,6 +7025,7 @@ export class StateStore {
 			)
 		`);
 		this.addColumnIfMissing("voice_sessions", "topic", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "voice_bot_user_id", "TEXT");
 		// Additive migration: ending age must not be rejuvenated by lease/poller writes.
 		this.addColumnIfMissing("voice_sessions", "ending_started_at", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "root_requested_at", "TEXT");

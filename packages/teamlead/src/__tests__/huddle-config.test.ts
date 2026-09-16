@@ -142,6 +142,52 @@ describe("generic realtime voice registry fields", () => {
 	});
 });
 
+describe("ProjectEntry.voiceRoom", () => {
+	const room = {
+		guildId: "1485787271192907816",
+		voiceChannelId: "1485787273193853170",
+	};
+	it("preserves absent/null rooms and accepts room-only configuration", () => {
+		expect(parseAndValidateProjects([entry()])[0]).not.toHaveProperty(
+			"voiceRoom",
+		);
+		expect(
+			parseAndValidateProjects([entry({ voiceRoom: null })])[0]!.voiceRoom,
+		).toBeNull();
+		expect(
+			parseAndValidateProjects([entry({ voiceRoom: room })])[0]!.voiceRoom,
+		).toEqual(room);
+	});
+	it.each([
+		true,
+		[],
+		"room",
+		{},
+		{ ...room, guildId: Number("1485787271192907816") },
+		{ ...room, guildId: "1234567890123456" },
+		{ ...room, voiceChannelId: "123456789012345678901" },
+		{ ...room, guildId: " 1485787271192907816" },
+		{ ...room, orchestratorBotTokenEnv: "OLD_TOKEN" },
+	])("rejects malformed or extra room fields: %j", (voiceRoom) => {
+		expect(() => parseAndValidateProjects([entry({ voiceRoom })])).toThrow(
+			/voiceRoom/,
+		);
+	});
+	it("leaves cross-project and legacy conflicts to voice admission", () => {
+		expect(() =>
+			parseAndValidateProjects([
+				entry({ voiceRoom: room, huddle: validHuddle }),
+				entry({
+					projectName: "other",
+					projectRoot: "/tmp/other",
+					leads: [lead({ agentId: "other-lead" })],
+					voiceRoom: { ...room, voiceChannelId: "123456789012345678" },
+				}),
+			]),
+		).not.toThrow();
+	});
+});
+
 describe("ProjectEntry.huddle", () => {
 	it("accepts an absent huddle block (byte-compat) without normalizing one in", () => {
 		const projects = parseAndValidateProjects([entry()]);

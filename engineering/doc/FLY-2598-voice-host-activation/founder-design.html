@@ -1,0 +1,107 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2598 · 每个 Lead 自己进房</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:36px 20px 64px}h1{font-size:clamp(29px,5vw,43px);line-height:1.2;letter-spacing:-1px;margin:12px 0 18px}h2{font-size:22px;line-height:1.35;margin:0 0 18px}p{margin:12px 0}.eyebrow{font-size:13px;color:#1a365d;font-weight:700;letter-spacing:1px}.subtitle{font-size:20px;color:#515154}.badge{display:inline-block;border-radius:20px;background:#fff0d8;color:#8e5400;padding:5px 12px;font-size:13px}.card{background:white;border-radius:12px;padding:26px;margin-top:22px;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.pending{border:1px dashed #ff9500;border-radius:8px;padding:20px;background:#fff9f0;color:#6b470f}.pending strong{font:13px 'SF Mono',monospace;letter-spacing:.4px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;vertical-align:top;padding:12px 10px;border-bottom:1px solid #e9e9ec}th{background:#f5f5f7;color:#515154}td:first-child{width:27%;font-weight:600}.muted{font-size:13px;color:#86868b}textarea{display:block;width:100%;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;background:#fafafa;padding:12px;font:15px/1.5 -apple-system,system-ui,sans-serif;color:#1d1d1f}.comment-label{display:block;font-size:13px;color:#68686d;margin:24px 0 8px}button{border:0;border-radius:8px;background:#007aff;color:white;font:600 14px -apple-system,system-ui,sans-serif;padding:11px 15px;cursor:pointer;margin:10px 10px 12px 0}button:focus-visible,textarea:focus-visible{outline:3px solid #80bcff;outline-offset:2px}#copy-status{font-size:14px}details{margin:14px 0}summary{cursor:pointer;color:#515154;font-size:14px}pre{overflow:auto;background:#f5f5f7;border-radius:8px;padding:15px;font:12px/1.5 'SF Mono',monospace}svg{max-width:100%;height:auto}.copy-fallback{position:fixed;left:-9999px;top:0}@media(max-width:600px){main{padding:24px 12px 45px}.card{padding:20px 16px}td:first-child{width:34%}th,td{padding:10px 6px}.subtitle{font-size:18px}}</style></head><body><main><header><div class="eyebrow">FLY-2598 · DESIGN · 2026-09-15</div><h1>让每个 Lead 用自己的身份<br>进 General 和你说话。</h1><p class="subtitle">保留已有语音流程，补齐身份、平台认证和安装入口，再用一场真实对话证明可用。</p><span class="badge" id="review-state">设计审阅已通过 · 主机尚未激活</span></header><section class="card" aria-labelledby="h-flow"><h2 id="h-flow">01 · 一句话怎样被听见和回答</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>开场先核身份，再把口述交给原 Lead，最后念回复。本机图形进程权限拒绝，已按标准参数重试一次，仍无法生成图。</p></div><details><summary>查看保留的 Mermaid 源码（图形描述文本）</summary><pre>sequenceDiagram
+    actor F as Founder · General
+    participant V as 当场 Lead 的 bot
+    participant B as 会话与交付服务
+    participant L as 原 Lead
+    B-&gt;&gt;B: 核身份和权限 · 同时只准一场
+    V-&gt;&gt;F: 以该 Lead 身份进房
+    F-&gt;&gt;V: 说一句
+    V-&gt;&gt;B: 留文字镜像 · 作者标为 founder
+    B-&gt;&gt;L: 交付同一句话
+    L-&gt;&gt;B: 正常文字回复
+    B-&gt;&gt;V: 排除镜像和状态 · 只交回复
+    V-&gt;&gt;F: 念出回复
+    F-&gt;&gt;V: 退出语音模式
+    V-&gt;&gt;B: 结束会话 · 离房
+</pre></details><p>同一个 Lead 的 bot（Discord 机器人账号）负责进房和留镜像。镜像就是口述的文字副本；它不会再次被当成回复朗读。Lead 仍通过原有文字入口接收任务。</p><label class="comment-label" for="c-flow">对「01 · 一句话怎样被听见和回答」的意见</label><textarea id="c-flow" data-comment="flow" data-title="01 · 一句话怎样被听见和回答" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-decisions"><h2 id="h-decisions">02 · 最新决定已替换旧方案</h2><div class="table-wrap"><table><thead><tr><th>项目</th><th>本次采用</th></tr></thead><tbody><tr><td>说话身份</td><td>每场使用对应 Lead 自己的 bot，取消专用编排 bot。</td></tr><tr><td>房间</td><td>General · 1485787273193853170；同一时间只有一个 Lead。</td></tr><tr><td>计费</td><td>OPENAI_API_KEY：访问 OpenAI 平台的凭据；费用走平台余额，不等 Codex 订阅额度。</td></tr><tr><td>模式</td><td>会议给全部已注册 Lead；RG（耳机随身对话模式）先给 Raya，单独验证。</td></tr></tbody></table></div><p class="muted">依据 founder 9 月 15 日 23:51Z / 9 月 16 日 00:11Z 的决定及 Lead 后续指示。旧 FLY-2446 原稿保留，更正附录说明哪些已作废。</p><label class="comment-label" for="c-decisions">对「02 · 最新决定已替换旧方案」的意见</label><textarea id="c-decisions" data-comment="decisions" data-title="02 · 最新决定已替换旧方案" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-model"><h2 id="h-model">03 · 什么信息固定，什么信息只放在主机</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>每场固定项目、Lead、房间和 bot ID。本机图形进程权限拒绝，已按标准参数重试一次，仍无法生成图。</p></div><details><summary>查看保留的 Mermaid 源码（图形描述文本）</summary><pre>classDiagram
+    class 项目房间 {
+        guildId 服务器
+        voiceChannelId General
+    }
+    class Lead身份 {
+        projectName 项目
+        leadId 稳定标识
+        botUserId 机器人标识
+        botTokenEnv 凭据名称
+        voiceModes 两种开关
+    }
+    class 固定会话 {
+        sessionId 会话标识
+        projectName
+        leadId
+        guildId
+        voiceChannelId
+        voiceBotUserId
+    }
+    class 主机设置 {
+        schemaVersion
+        QA允许清单
+        证据目录边界
+    }
+    项目房间 &quot;1&quot; --&gt; &quot;多&quot; Lead身份 : 同一房间轮流用
+    Lead身份 &quot;1&quot; --&gt; &quot;多&quot; 固定会话 : 开场核实后固定
+    主机设置 --&gt; 固定会话 : 只规定本机边界
+</pre></details><div class="table-wrap"><table><thead><tr><th>位置</th><th>只负责什么</th></tr></thead><tbody><tr><td>项目 voiceRoom</td><td>一处登记服务器与 General 房间；不登记另一个语音 bot。</td></tr><tr><td>Lead 配置</td><td>bot 的固定 ID、凭据名称、音色与会议/随身开关。</td></tr><tr><td>session（一次会话的记录）</td><td>开场核实后固定 Lead 与 bot ID。恢复时不根据新配置换成另一个人。</td></tr><tr><td>voice-host.json</td><td>本机测试名单和证据目录，权限只允许本人读写，不复制身份或密钥。</td></tr><tr><td>lease（有期限的唯一控制权）</td><td>同一场只准当前持有人发送；过期就停流、离房。</td></tr></tbody></table></div><label class="comment-label" for="c-model">对「03 · 什么信息固定，什么信息只放在主机」的意见</label><textarea id="c-model" data-comment="model" data-title="03 · 什么信息固定，什么信息只放在主机" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-work"><h2 id="h-work">04 · 实现要补齐的三个接缝</h2><div class="table-wrap"><table><thead><tr><th>工作</th><th>验收方式</th></tr></thead><tbody><tr><td>身份贯通</td><td>进房、镜像、朗读和重启恢复都核同一个 Lead bot；错身份时零发送。</td></tr><tr><td>平台认证</td><td>父进程从服务环境读取 key，只经私有输入通道交给语音前台登录；认证回执通过仍不代表余额足够。</td></tr><tr><td>受管首装</td><td>安装入口复用仓内服务定义和启动守卫；拒绝覆盖异版本文件，不把“安装命令成功”当作可用。</td></tr></tbody></table></div><p>同 bot 的镜像、状态与前台自言继续被过滤。开场前要向正在取信的进程核实“自己发出的消息会被丢弃”。Claude 插件需一个独立小补丁；没有证明就不开场，不额外修改 Lead 的 bot 白名单。</p><label class="comment-label" for="c-work">对「04 · 实现要补齐的三个接缝」的意见</label><textarea id="c-work" data-comment="work" data-title="04 · 实现要补齐的三个接缝" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-tradeoffs"><h2 id="h-tradeoffs">05 · 取舍与未采用的做法</h2><div class="table-wrap"><table><thead><tr><th>选择</th><th>理由与代价</th></tr></thead><tbody><tr><td>新 voiceRoom；旧 huddle 不配置</td><td>旧 huddle 会进入旧语音进程的部署路径。分开兼容，避免误启；通用语音只认新字段。</td></tr><tr><td>复用 Codex 语音前台</td><td>保留已有听写、播音和回执链；补平台认证，不重写整套语音。</td></tr><tr><td>显式安装；保留 hold</td><td>hold 表示收敛器不自动安装，也不检查文件漂移或拉回已停的服务。Lead 明确激活并负责巡检。</td></tr><tr><td>不复用 alerts bot，不常驻多个 Lead</td><td>符合 founder 已选的身份体验与一房一场边界。</td></tr><tr><td>不把未执行当成功</td><td>系统运行、收到文字和实际听到声音分开留证据。</td></tr></tbody></table></div><label class="comment-label" for="c-tradeoffs">对「05 · 取舍与未采用的做法」的意见</label><textarea id="c-tradeoffs" data-comment="tradeoffs" data-title="05 · 取舍与未采用的做法" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-evidence"><h2 id="h-evidence">06 · 目前证据与真正的完成标准</h2><div class="table-wrap"><table><thead><tr><th>检查</th><th>当前结果</th></tr></thead><tbody><tr><td>现网无/错凭据</td><td>已观察 401，未改生产配置。</td></tr><tr><td>现网坏请求/不存在目标</td><td>已观察 400 / 404，未开合法会话。</td></tr><tr><td>master（服务主凭据）未配置的 503</td><td>未执行：现网 master 已配置，不为测试清掉它。</td></tr><tr><td>ingest（语音入站凭据）的 403</td><td>未执行：当前检查环境未提供该凭据。</td></tr><tr><td>代码与 fixture（隔离测试样本）</td><td>待实现及后续 QA；本页不声称测试通过。</td></tr><tr><td>主机安装 / 首场 / RG</td><td>全部未执行。</td></tr></tbody></table></div><p><strong>首场要看同一条证据链：</strong>General 中对应 Lead bot → founder 原话镜像 → 唯一消息交付 → Lead 正常回复 → 房内实际听到 → 同一会话结束并离房。截图、消息 ID、会话行与声音要能对上。</p><label class="comment-label" for="c-evidence">对「06 · 目前证据与真正的完成标准」的意见</label><textarea id="c-evidence" data-comment="evidence" data-title="06 · 目前证据与真正的完成标准" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-boundary"><h2 id="h-boundary">07 · 本阶段交付到哪里</h2><p>交付更正附录、调研、实施计划、测试矩阵和精确主机操作清单。设计审阅通过后，由实现节点写代码和测试；合入与部署按既有流程分别完成，再由 Lead 激活。</p><p>founder 负责 General 里各 Lead bot 的 Connect / Speak（进房和发声）权限，并参与首场说一句。平台余额由 founder 查看。RG 要在 Raya 载体就绪后独立实测。</p><p>回滚先结束会话、确认离房，再停服务并核对配置前后版本；保留所有会话证据。不会自动切回已废除的编排 bot。</p><label class="comment-label" for="c-boundary">对「07 · 本阶段交付到哪里」的意见</label><textarea id="c-boundary" data-comment="boundary" data-title="07 · 本阶段交付到哪里" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><section class="card" aria-labelledby="h-summary"><h2 id="h-summary">页面意见汇总</h2><p>下面会实时汇总所有非空意见。复制后发给 Lead；意见标记仅表示修订反馈，不表示通过。</p><div id="comment-output" aria-live="polite"></div><button id="copy-all" type="button">复制全部意见</button><span id="copy-status" role="status"></span><label class="comment-label" for="c-summary">对「页面意见汇总」的意见</label><textarea id="c-summary" data-comment="summary" data-title="页面意见汇总" placeholder="写下意见，会自动保存在当前浏览器。" rows="2"></textarea></section><p class="muted">本页无外部脚本、字体或样式。意见只保存在当前浏览器；不会自动发送。图形保留本地源码，未使用远程渲染。</p></main><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2598';
+  const fields = Array.from(document.querySelectorAll('[data-comment]'));
+  const output = document.getElementById('comment-output');
+  const status = document.getElementById('copy-status');
+  const prefix = 'FLY-2598:' + location.pathname + ':';
+  let chunks = [];
+  function split(text) {
+    const max = 1800 - marker.length - 1;
+    const result = [];
+    while (text.length) {
+      let end = Math.min(max, text.length);
+      if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+      result.push(marker + '\n' + text.slice(0, end));
+      text = text.slice(end);
+    }
+    return result.length ? result : [marker];
+  }
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('no clipboard');
+      await navigator.clipboard.writeText(text);
+      status.textContent = '已复制';
+      return;
+    } catch (_) {
+      const temporary = document.createElement('textarea');
+      temporary.value = text;
+      temporary.className = 'copy-fallback';
+      document.body.appendChild(temporary);
+      temporary.focus(); temporary.select();
+      try {
+        if (!document.execCommand('copy')) throw new Error('copy rejected');
+        status.textContent = '已复制';
+      } catch (_) { status.textContent = '自动复制不可用，请选中汇总文字复制。'; }
+      finally { temporary.remove(); }
+    }
+  }
+  function render() {
+    const text = fields.filter(f => f.value.trim()).map(f => f.dataset.title + '\n' + f.value.trim()).join('\n\n');
+    chunks = split(text);
+    output.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const area = document.createElement('textarea');
+      area.readOnly = true; area.value = chunk; area.rows = Math.min(14, Math.max(3, chunk.split('\n').length));
+      area.setAttribute('aria-label', '意见汇总 ' + (index + 1));
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => { void copy(chunk); });
+      output.append(area, button);
+    });
+  }
+  for (const field of fields) {
+    try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; } catch (_) {}
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.dataset.comment, field.value); } catch (_) {}
+      status.textContent = ''; render();
+    });
+  }
+  document.getElementById('copy-all').addEventListener('click', () => { void copy(chunks.join('\n\n')); });
+  render();
+})();
+</script></body></html>

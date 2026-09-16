@@ -3,6 +3,8 @@ import type { VoiceSessionProjection } from "../bridge-client.js";
 import { GenericVoiceSession } from "../session.js";
 
 const projection: VoiceSessionProjection = {
+	sessionId: "11111111-1111-4111-8111-111111111111",
+	voiceBotUserId: "323456789012345678",
 	mode: "meeting",
 	projectName: "raya",
 	leadId: "raya",
@@ -17,6 +19,50 @@ const projection: VoiceSessionProjection = {
 };
 
 describe("GenericVoiceSession", () => {
+	it("drops frontend callbacks until the room has verified its ready identity", async () => {
+		let handlers!: Parameters<
+			ConstructorParameters<typeof GenericVoiceSession>[0]["createFrontend"]
+		>[0];
+		const capture = vi.fn(async () => true);
+		const postStatus = vi.fn(async () => {});
+		const feedOutputAudio = vi.fn();
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture },
+			postStatus,
+			createFrontend: (value) => {
+				handlers = value;
+				return {
+					start: vi.fn(async () => {}),
+					stop: vi.fn(async () => {}),
+					appendAudio: vi.fn(),
+					appendSpeech: vi.fn(async () => {}),
+				};
+			},
+			createRoom: () => ({
+				start: async () => {
+					handlers.onTranscript({ role: "user", text: "early user" });
+					handlers.onTranscript({ role: "assistant", text: "early assistant" });
+					handlers.onAudio(Buffer.alloc(960));
+					throw new Error("lead_bot_identity_mismatch");
+				},
+				speaker: () => ({ userId: "founder", name: "Annie" }),
+				feedOutputAudio,
+				finishOutputAudio: vi.fn(),
+				flushOutputAudio: vi.fn(),
+				status: postStatus,
+				stop: vi.fn(async () => {}),
+			}),
+			lifecycle: vi.fn(),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+		});
+		await expect(session.start()).rejects.toThrow("lead_bot_identity_mismatch");
+		expect(capture).not.toHaveBeenCalled();
+		expect(postStatus).not.toHaveBeenCalled();
+		expect(feedOutputAudio).not.toHaveBeenCalled();
+		await session.stop();
+	});
 	it("routes authorized transcripts, handles local commands, and confirms spoken replies", async () => {
 		let frontendHandlers:
 			| Parameters<

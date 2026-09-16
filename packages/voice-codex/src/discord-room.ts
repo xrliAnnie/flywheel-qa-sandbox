@@ -42,6 +42,7 @@ export interface DiscordVoiceRoomOptions {
 	onDiagnostic?(record: Record<string, unknown>): void;
 	deps: RoomDeps;
 	token: string;
+	expectedBotUserId: string;
 	guildId: string;
 	voiceChannelId: string;
 	threadId: string;
@@ -123,6 +124,13 @@ export class DiscordVoiceRoom {
 		await this.registry.start([{ id: "voice", token: this.options.token }]);
 		await this.checkActive();
 		const client = this.registry.client("voice");
+		if (
+			!this.options.expectedBotUserId ||
+			client.user?.id !== this.options.expectedBotUserId
+		) {
+			await this.stop();
+			throw new Error("lead_bot_identity_mismatch");
+		}
 		this.connection = await this.registry.join("voice", {
 			guildId: this.options.guildId,
 			channelId: this.options.voiceChannelId,

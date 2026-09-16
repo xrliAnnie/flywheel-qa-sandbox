@@ -1,0 +1,28 @@
+classDiagram
+    class 项目房间 {
+        guildId 服务器
+        voiceChannelId General
+    }
+    class Lead身份 {
+        projectName 项目
+        leadId 稳定标识
+        botUserId 机器人标识
+        botTokenEnv 凭据名称
+        voiceModes 两种开关
+    }
+    class 固定会话 {
+        sessionId 会话标识
+        projectName
+        leadId
+        guildId
+        voiceChannelId
+        voiceBotUserId
+    }
+    class 主机设置 {
+        schemaVersion
+        QA允许清单
+        证据目录边界
+    }
+    项目房间 "1" --> "多" Lead身份 : 同一房间轮流用
+    Lead身份 "1" --> "多" 固定会话 : 开场核实后固定
+    主机设置 --> 固定会话 : 只规定本机边界

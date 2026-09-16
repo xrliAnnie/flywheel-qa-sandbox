@@ -1,0 +1,66 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "f609c547-10e0-4bd8-868c-62a4d41c934f",
+  "round": 2,
+  "findings": [
+    {
+      "id": "self-filter-socket-stale-bind-has-no-recovery",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2598-voice-host-activation/self-filter-contract.md",
+      "line": 14,
+      "title": "Claude 侧新 probe socket 的非抢占 + 不清 stale 规则会让单个 Lead 静默永久 503，且 runbook 没有检测/清理步骤",
+      "detail": "契约 §2 规定 voice-self-filter.sock 「遇已有可连接 owner 不抢占，遇 symlink/无法证明 stale 不删除」，而插件本身不因 bind 失败而停机。参照既有实现 CodexLeadInboxSocket.ts:161-166 也只做 server.listen(path)、不清理残留 inode（EADDRINUSE 直接 reject），所以没有可继承的 stale 清理先例。后果：插件非正常退出留下 socket 文件，或重启期两个进程交叠，新载体起来但绑不上 → Bridge 探测 ECONNREFUSED/超时 → 该 Lead 永久 503 self_filter_unverified。方向上是 fail-closed（不危险），但它是自伤式的静默不可用：host-runbook §4 只说「旧载体缺能力：该 Lead 未就绪」，没有区分「插件没打补丁」和「socket 卡住」，也没有任何清理或告警动作。建议契约补上 stale 判定（bind 前尝试 connect，确认 refused 且 inode 属自己 STATE_DIR 的非 symlink socket 才 unlink）或明确由哪一步、按什么判据人工清理，并在 runbook §4 增加对应分支。",
+      "findingKey": "self-filter-socket-stale-bind-has-no-recovery"
+    },
+    {
+      "id": "fork-dependency-blast-radius-and-sequencing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2598-voice-host-activation/self-filter-contract.md",
+      "line": 26,
+      "title": "跨仓 fork 依赖的影响面没有量化：14/17 个 Lead（含首场目标）在补丁落地并受管载入前都开不了会",
+      "detail": "实测生产 projects.json：17 个 Lead 里只有 growth/mufasa-lead、flywheel/codex-infra-bot-lead、raya/raya 是 codex-app-server，其余 14 个走 Claude 载体，其中就包括 host-runbook §6 指定的首场目标 flywheel/flywheel-eng-lead。也就是说 §4 的权限矩阵、§6 的首场、issue 目标「所有注册 Lead 可开会议」全部卡在 xrliAnnie/claude-plugins-official 的 fork PR 以及一次受管插件载入窗口上。契约 §4 写了 PR 形态和收据字段，plan §10 提了一句依赖，但没有把它列成有顺序、有 owner、有「若 fork 不落地则本单可交付到哪一步」的独立交付项。建议在 §10 交付门里把 fork PR 作为显式前置节点写出（含 owner、载入窗口归属），并在 §9 验收里预先标明 fork 未落地时 Claude Lead 一律记「未执行：缺 self-filter 载体」，避免实现节点撞上才发现首场无法开始。",
+      "findingKey": "fork-dependency-blast-radius-and-sequencing"
+    },
+    {
+      "id": "self-filter-probe-not-bound-to-receiving-carrier-incarnation",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2598-voice-host-activation/self-filter-contract.md",
+      "line": 18,
+      "title": "probe 只证明「socket 背后某个进程」有 guard，没有把 runtimeId 绑到真正接收 messageCreate 的那个 carrier 实例",
+      "detail": "响应里的 runtimeId 是被探测进程启动时的随机 UUID，加上 §2 的非抢占规则，重启交叠时探测答的可能是仍持有 socket 的旧实例，而真正在收 messageCreate 的是新实例。版本歪斜方向上是安全的（没有 guard 的旧插件根本不会有这个 socket，探测直接失败），所以只是 LOW；但 §4 已经要求收据记录「目标 carrier incarnation」，却没有说明 Bridge 用什么把 runtimeId 与该 incarnation 对上。建议响应或收据里再带一个可独立核对的载体标识（例如插件进程 pid + 启动时间，或 carrier 侧已有的 gateway health/incarnation 标识），让「探到的进程就是在收消息的进程」可被事后复核，而不是靠 socket 路径推断。",
+      "findingKey": "self-filter-probe-not-bound-to-receiving-carrier-incarnation"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "self-filter-socket-stale-bind-has-no-recovery",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2598-voice-host-activation/self-filter-contract.md",
+      "line": 14,
+      "title": "Claude 侧新 probe socket 的非抢占 + 不清 stale 规则会让单个 Lead 静默永久 503，且 runbook 没有检测/清理步骤",
+      "detail": "契约 §2 规定 voice-self-filter.sock 「遇已有可连接 owner 不抢占，遇 symlink/无法证明 stale 不删除」，而插件本身不因 bind 失败而停机。参照既有实现 CodexLeadInboxSocket.ts:161-166 也只做 server.listen(path)、不清理残留 inode（EADDRINUSE 直接 reject），所以没有可继承的 stale 清理先例。后果：插件非正常退出留下 socket 文件，或重启期两个进程交叠，新载体起来但绑不上 → Bridge 探测 ECONNREFUSED/超时 → 该 Lead 永久 503 self_filter_unverified。方向上是 fail-closed（不危险），但它是自伤式的静默不可用：host-runbook §4 只说「旧载体缺能力：该 Lead 未就绪」，没有区分「插件没打补丁」和「socket 卡住」，也没有任何清理或告警动作。建议契约补上 stale 判定（bind 前尝试 connect，确认 refused 且 inode 属自己 STATE_DIR 的非 symlink socket 才 unlink）或明确由哪一步、按什么判据人工清理，并在 runbook §4 增加对应分支。",
+      "findingKey": "self-filter-socket-stale-bind-has-no-recovery"
+    },
+    {
+      "id": "fork-dependency-blast-radius-and-sequencing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2598-voice-host-activation/self-filter-contract.md",
+      "line": 26,
+      "title": "跨仓 fork 依赖的影响面没有量化：14/17 个 Lead（含首场目标）在补丁落地并受管载入前都开不了会",
+      "detail": "实测生产 projects.json：17 个 Lead 里只有 growth/mufasa-lead、flywheel/codex-infra-bot-lead、raya/raya 是 codex-app-server，其余 14 个走 Claude 载体，其中就包括 host-runbook §6 指定的首场目标 flywheel/flywheel-eng-lead。也就是说 §4 的权限矩阵、§6 的首场、issue 目标「所有注册 Lead 可开会议」全部卡在 xrliAnnie/claude-plugins-official 的 fork PR 以及一次受管插件载入窗口上。契约 §4 写了 PR 形态和收据字段，plan §10 提了一句依赖，但没有把它列成有顺序、有 owner、有「若 fork 不落地则本单可交付到哪一步」的独立交付项。建议在 §10 交付门里把 fork PR 作为显式前置节点写出（含 owner、载入窗口归属），并在 §9 验收里预先标明 fork 未落地时 Claude Lead 一律记「未执行：缺 self-filter 载体」，避免实现节点撞上才发现首场无法开始。",
+      "findingKey": "fork-dependency-blast-radius-and-sequencing"
+    },
+    {
+      "id": "self-filter-probe-not-bound-to-receiving-carrier-incarnation",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2598-voice-host-activation/self-filter-contract.md",
+      "line": 18,
+      "title": "probe 只证明「socket 背后某个进程」有 guard，没有把 runtimeId 绑到真正接收 messageCreate 的那个 carrier 实例",
+      "detail": "响应里的 runtimeId 是被探测进程启动时的随机 UUID，加上 §2 的非抢占规则，重启交叠时探测答的可能是仍持有 socket 的旧实例，而真正在收 messageCreate 的是新实例。版本歪斜方向上是安全的（没有 guard 的旧插件根本不会有这个 socket，探测直接失败），所以只是 LOW；但 §4 已经要求收据记录「目标 carrier incarnation」，却没有说明 Bridge 用什么把 runtimeId 与该 incarnation 对上。建议响应或收据里再带一个可独立核对的载体标识（例如插件进程 pid + 启动时间，或 carrier 侧已有的 gateway health/incarnation 标识），让「探到的进程就是在收消息的进程」可被事后复核，而不是靠 socket 路径推断。",
+      "findingKey": "self-filter-probe-not-bound-to-receiving-carrier-incarnation"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

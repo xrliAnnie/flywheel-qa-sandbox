@@ -40,7 +40,10 @@ describe("RealtimeFrontend", () => {
 					},
 				},
 			})),
-			request: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: {} })),
+			request: vi.fn(async (method: string) => ({
+				result:
+					method === "account/read" ? { account: { type: "apiKey" } } : {},
+			})),
 			notify: vi.fn(),
 			on: vi.fn(
 				(
@@ -55,17 +58,29 @@ describe("RealtimeFrontend", () => {
 		const transcript = vi.fn();
 		const audio = vi.fn();
 		const delegation = vi.fn();
+		const closed = vi.fn();
 		const frontend = new RealtimeFrontend({
+			apiKey: "test-api-key",
 			process,
 			cwd: "/scratch/session-a",
 			voice: "marin",
 			displayName: "Raya",
 			onTranscript: transcript,
 			onAudio: audio,
-			onClosed: vi.fn(),
+			onClosed: closed,
 			onFrontendDelegation: delegation,
 		});
 		await frontend.start();
+		expect(process.request).toHaveBeenNthCalledWith(1, "account/login/start", {
+			type: "apiKey",
+			apiKey: "test-api-key",
+		});
+		expect(process.request).toHaveBeenNthCalledWith(2, "account/read", {
+			refreshToken: false,
+		});
+		expect(
+			process.startThreadWithResult.mock.invocationCallOrder[0],
+		).toBeGreaterThan(process.request.mock.invocationCallOrder[1]!);
 		expect(process.startThreadWithResult).toHaveBeenCalledWith({
 			cwd: "/scratch/session-a",
 			sandbox: "read-only",
@@ -118,6 +133,109 @@ describe("RealtimeFrontend", () => {
 			"thread/realtime/appendAudio",
 			expect.objectContaining({ threadId: "thread-a" }),
 		);
+		process.request.mockResolvedValue({
+			error: { code: 401, message: "test-api-key private error" },
+		});
+		await expect(frontend.appendSpeech("hello")).rejects.toThrow(
+			/^realtime_append_speech$/,
+		);
+		emit("thread/realtime/closed", {
+			threadId: "thread-a",
+			reason: "test-api-key private reason",
+		});
+		expect(closed).toHaveBeenCalledWith("realtime_closed");
+	});
+
+	it.each([
+		"missing",
+		"login-error",
+		"login-throw",
+		"read-error",
+		"read-throw",
+		"subscription",
+		"no-account",
+	])(
+		"fails closed on API auth %s before creating any thread",
+		async (failure) => {
+			const process = {
+				start: vi.fn(async () => {}),
+				startThreadWithResult: vi.fn(),
+				notify: vi.fn(),
+				on: vi.fn(),
+				stop: vi.fn(async () => {}),
+				request: vi.fn(async (method: string) => {
+					if (
+						(failure === "login-throw" && method === "account/login/start") ||
+						(failure === "read-throw" && method === "account/read")
+					)
+						throw new Error("test-api-key private upstream error");
+					if (
+						(failure === "login-error" && method === "account/login/start") ||
+						(failure === "read-error" && method === "account/read")
+					)
+						return {
+							error: {
+								code: 401,
+								message: "test-api-key private upstream error",
+							},
+						};
+					return {
+						result:
+							method === "account/read"
+								? {
+										account:
+											failure === "no-account" ? null : { type: "chatgpt" },
+									}
+								: {},
+					};
+				}),
+			};
+			const frontend = new RealtimeFrontend({
+				process,
+				apiKey: failure === "missing" ? " " : "test-api-key",
+				cwd: "/scratch",
+				voice: "marin",
+				displayName: "Raya",
+				onAudio: vi.fn(),
+				onTranscript: vi.fn(),
+				onClosed: vi.fn(),
+				onFrontendDelegation: vi.fn(),
+			});
+			await expect(frontend.start()).rejects.toThrow(/^realtime_api_auth$/);
+			expect(process.startThreadWithResult).not.toHaveBeenCalled();
+			expect(process.request).not.toHaveBeenCalledWith(
+				"thread/realtime/start",
+				expect.anything(),
+			);
+		},
+	);
+
+	it("does not expose a server exception after API authentication", async () => {
+		const process = {
+			start: vi.fn(async () => {}),
+			startThreadWithResult: vi.fn(async () => {
+				throw new Error("test-api-key private error");
+			}),
+			request: vi.fn(async (method: string) => ({
+				result:
+					method === "account/read" ? { account: { type: "apiKey" } } : {},
+			})),
+			notify: vi.fn(),
+			on: vi.fn(),
+			stop: vi.fn(async () => {}),
+		};
+		const frontend = new RealtimeFrontend({
+			process,
+			apiKey: "test-api-key",
+			cwd: "/scratch",
+			voice: "marin",
+			displayName: "Raya",
+			onTranscript: vi.fn(),
+			onAudio: vi.fn(),
+			onClosed: vi.fn(),
+			onFrontendDelegation: vi.fn(),
+		});
+		await expect(frontend.start()).rejects.toThrow(/^realtime_thread_start$/);
 	});
 
 	it("rejects a thread receipt that drifts from the empty read-only sandbox", async () => {
@@ -127,12 +245,16 @@ describe("RealtimeFrontend", () => {
 				id: "thread-a",
 				result: { thread: { cwd: "/wrong", sandbox: "workspace-write" } },
 			})),
-			request: vi.fn(),
+			request: vi.fn(async (method: string) => ({
+				result:
+					method === "account/read" ? { account: { type: "apiKey" } } : {},
+			})),
 			notify: vi.fn(),
 			on: vi.fn(),
 			stop: vi.fn(async () => {}),
 		};
 		const frontend = new RealtimeFrontend({
+			apiKey: "test-api-key",
 			process,
 			cwd: "/scratch/session-a",
 			voice: "marin",
@@ -143,7 +265,10 @@ describe("RealtimeFrontend", () => {
 			onFrontendDelegation: vi.fn(),
 		});
 		await expect(frontend.start()).rejects.toThrow(/thread_receipt_drift/);
-		expect(process.request).not.toHaveBeenCalled();
+		expect(process.request).not.toHaveBeenCalledWith(
+			"thread/realtime/start",
+			expect.anything(),
+		);
 	});
 
 	it("accepts the app-server top-level readOnly policy echo", async () => {
@@ -158,12 +283,16 @@ describe("RealtimeFrontend", () => {
 					sandbox: { type: "readOnly", networkAccess: false },
 				},
 			})),
-			request: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: {} })),
+			request: vi.fn(async (method: string) => ({
+				result:
+					method === "account/read" ? { account: { type: "apiKey" } } : {},
+			})),
 			notify: vi.fn(),
 			on: vi.fn(),
 			stop: vi.fn(async () => {}),
 		};
 		const frontend = new RealtimeFrontend({
+			apiKey: "test-api-key",
 			process,
 			cwd: "/scratch/session-a",
 			voice: "marin",
@@ -182,7 +311,7 @@ describe("RealtimeFrontend", () => {
 });
 
 describe("RealtimeFrontend cancellation", () => {
-	it.each(["process", "thread"])(
+	it.each(["process", "login", "read", "thread"])(
 		"does not advance %s startup after stop",
 		async (stage) => {
 			let finish!: () => void;
@@ -202,12 +331,23 @@ describe("RealtimeFrontend cancellation", () => {
 						},
 					};
 				}),
-				request: vi.fn(async () => ({ result: {} })),
+				request: vi.fn(async (method: string) => {
+					if (
+						(stage === "login" && method === "account/login/start") ||
+						(stage === "read" && method === "account/read")
+					)
+						await pending;
+					return {
+						result:
+							method === "account/read" ? { account: { type: "apiKey" } } : {},
+					};
+				}),
 				notify: vi.fn(),
 				on: vi.fn(),
 				stop: vi.fn(async () => {}),
 			};
 			const frontend = new RealtimeFrontend({
+				apiKey: "test-api-key",
 				process,
 				cwd: "/scratch",
 				voice: "marin",
@@ -218,7 +358,16 @@ describe("RealtimeFrontend cancellation", () => {
 				onFrontendDelegation: vi.fn(),
 			});
 			const starting = frontend.start();
-			await Promise.resolve();
+			await vi.waitFor(() => {
+				if (stage === "process") expect(process.start).toHaveBeenCalled();
+				else if (stage === "thread")
+					expect(process.startThreadWithResult).toHaveBeenCalled();
+				else
+					expect(process.request).toHaveBeenCalledWith(
+						stage === "login" ? "account/login/start" : "account/read",
+						expect.anything(),
+					);
+			});
 			await frontend.stop();
 			finish();
 			await expect(starting).rejects.toThrow("realtime_stopped");
@@ -226,7 +375,7 @@ describe("RealtimeFrontend cancellation", () => {
 				"thread/realtime/start",
 				expect.anything(),
 			);
-			if (stage === "process")
+			if (stage !== "thread")
 				expect(process.startThreadWithResult).not.toHaveBeenCalled();
 		},
 	);
@@ -243,12 +392,15 @@ it("kills the frontend without waiting for a hung realtime stop receipt", async 
 				approvalPolicy: "never",
 			},
 		})),
-		request: vi.fn(async (_method: string) => ({ result: {} })),
+		request: vi.fn(async (method: string) => ({
+			result: method === "account/read" ? { account: { type: "apiKey" } } : {},
+		})),
 		notify: vi.fn(),
 		on: vi.fn(),
 		stop: vi.fn(async () => {}),
 	};
 	const frontend = new RealtimeFrontend({
+		apiKey: "test-api-key",
 		process,
 		cwd: "/scratch",
 		voice: "marin",

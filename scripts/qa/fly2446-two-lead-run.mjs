@@ -81,7 +81,7 @@ export function validateTopology(t) {
 		"two_distinct_harnesses_required",
 	);
 	check(t.recorders.length === 2, "two_recorder_env_names_required");
-	for (const identity of [...t.leads, ...t.recorders, t.voiceBot]) {
+	for (const identity of [...t.leads, ...t.recorders]) {
 		check(
 			/^TEST_BOT_TOKEN_[1-9][0-9]*$/.test(identity.tokenEnv),
 			"test_bot_token_env_required",
@@ -102,9 +102,8 @@ export function validateTopology(t) {
 			);
 	}
 	check(
-		new Set([...t.leads, ...t.recorders, t.voiceBot].map((i) => i.botUserId))
-			.size === 5,
-		"voice_lead_recorder_identities_must_be_distinct",
+		new Set([...t.leads, ...t.recorders].map((i) => i.botUserId)).size === 4,
+		"lead_recorder_identities_must_be_distinct",
 	);
 	return t;
 }
@@ -162,6 +161,10 @@ export function waveStats(pcm, recordedAtMs, fromMs, toMs) {
 
 export function evaluateMeetingEvidence(p) {
 	check(
+		p.session?.voice_bot_user_id === p.leadBotId,
+		"session_bot_identity_mismatch",
+	);
+	check(
 		p.liveObserved && p.session?.state === "ended",
 		"live_to_ended_unproven",
 	);
@@ -192,6 +195,7 @@ export function evaluateMeetingEvidence(p) {
 	return {
 		status: "EVIDENCE_COLLECTED",
 		sessionId: p.session.session_id,
+		voiceBotUserId: p.session.voice_bot_user_id,
 		meetingId: p.session.meeting_id,
 		mailbox: delivered,
 		outbound: confirmed,
@@ -269,9 +273,12 @@ async function loadTopology(args) {
 			tokenEnv: l.botTokenEnv,
 		};
 	});
-	const huddle = leads[0].project.huddle;
+	const voiceRoom = leads[0].project.voiceRoom;
 	check(
-		huddle && leads[1].project.huddle?.voiceChannelId === huddle.voiceChannelId,
+		voiceRoom &&
+			!leads.some((l) => l.project.huddle != null) &&
+			leads[1].project.voiceRoom?.voiceChannelId === voiceRoom.voiceChannelId &&
+			leads[1].project.voiceRoom?.guildId === voiceRoom.guildId,
 		"existing_shared_voice_topology_required",
 	);
 	const host = json(trusted(slotDir, env.FLYWHEEL_VOICE_HOST_CONFIG));
@@ -295,18 +302,14 @@ async function loadTopology(args) {
 		voiceBinarySha: sha(
 			readFileSync(join(repo, "packages/voice-codex/dist/cli.js")),
 		),
-		guildId: huddle.guildId,
-		voiceChannelId: huddle.voiceChannelId,
+		guildId: voiceRoom.guildId,
+		voiceChannelId: voiceRoom.voiceChannelId,
 		qaVoiceChannelIds: host.qaVoiceChannelIds,
 		commDbPath: env.FLYWHEEL_COMM_DB,
 		dbPath: room.dbPath,
 		meetingStateDir: config.canonicalizeMeetingStateDir(notes),
 		voiceRoot: env.FLYWHEEL_VOICE_STATE_DIR,
 		codexHome: env.FLYWHEEL_VOICE_CODEX_HOME,
-		voiceBot: {
-			tokenEnv: huddle.orchestratorBotTokenEnv,
-			botUserId: huddle.orchestratorBotUserId,
-		},
 		leads,
 		recorders: [
 			recorder(args["--claude-recorder-env"]),
@@ -337,7 +340,7 @@ function readSecret(slotDir, launch, name) {
 	return value;
 }
 
-async function recordVoice(deps, t, identity, token) {
+export async function recordVoice(deps, t, identity, token, leadBotId) {
 	const client = deps.createClient();
 	let connection;
 	let stream;
@@ -364,7 +367,7 @@ async function recordVoice(deps, t, identity, token) {
 			selfDeaf: false,
 		});
 		recordedAtMs = Date.now();
-		stream = deps.subscribeManual(connection)(t.voiceBot.botUserId);
+		stream = deps.subscribeManual(connection)(leadBotId);
 		decoder = deps.createDecoder();
 		stream.pipe(decoder);
 		decoder.on("data", (data) =>
@@ -525,6 +528,7 @@ async function createRuntime(context, runDir) {
 					t,
 					recorderIdentity,
 					readSecret(t.slotDir, launch, recorderIdentity.tokenEnv),
+					lead.botUserId,
 				);
 				await intent(meetingId, "start");
 				requested = true;
@@ -534,6 +538,10 @@ async function createRuntime(context, runDir) {
 							"SELECT * FROM voice_sessions WHERE meeting_id=? AND state='live'",
 						)
 						.get(meetingId),
+				);
+				check(
+					session.voice_bot_user_id === lead.botUserId,
+					"session_bot_identity_mismatch",
 				);
 				console.error(
 					`529 QA: speak to ${lead.agentId} in the configured test voice room; wait for its mailbox reply and spoken response.`,

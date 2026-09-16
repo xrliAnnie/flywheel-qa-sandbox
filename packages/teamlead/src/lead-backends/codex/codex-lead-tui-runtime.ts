@@ -1162,6 +1162,9 @@ export function buildTuiGeneration(
 								: {}),
 						});
 						const inboxServer = new CodexLeadInboxServer({
+							voiceSelfFilter:
+								(): import("../../voice-self-filter-contract.js").VoiceSelfFilterObservation =>
+									gateway.probeVoiceSelfFilter(),
 							ignoredAuthorIds: config.ignoredAuthorIds,
 							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
 							leadId: config.leadId,

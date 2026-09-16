@@ -18,6 +18,7 @@ export interface RealtimeProcess {
 }
 
 interface RealtimeFrontendOptions {
+	apiKey: string;
 	process: RealtimeProcess;
 	cwd: string;
 	voice: string;
@@ -53,22 +54,47 @@ export class RealtimeFrontend {
 
 	async start(): Promise<void> {
 		this.assertRunning();
+		if (!this.options.apiKey?.trim()) throw new Error("realtime_api_auth");
 		this.options.process.on("notification", (method, params) =>
 			this.notification(method, params),
 		);
 		await this.options.process.start();
 		this.assertRunning();
+		try {
+			const login = await this.options.process.request("account/login/start", {
+				type: "apiKey",
+				apiKey: this.options.apiKey,
+			});
+			this.assertRunning();
+			if (login.error) throw new Error("login");
+			const receipt = await this.options.process.request("account/read", {
+				refreshToken: false,
+			});
+			this.assertRunning();
+			if (
+				receipt.error ||
+				record(record(receipt.result)?.account)?.type !== "apiKey"
+			)
+				throw new Error("account");
+		} catch {
+			this.assertRunning();
+			throw new Error("realtime_api_auth");
+		}
 		const prompt = buildFrontendPrompt(this.options.displayName);
 		if (Math.ceil(Array.from(prompt).length / 2) > 8_192) {
 			throw new Error("frontend_prompt_too_large");
 		}
-		const started = await this.options.process.startThreadWithResult({
-			cwd: this.options.cwd,
-			sandbox: "read-only",
-			approvalPolicy: "never",
-			baseInstructions: prompt,
-			config: { sandbox_workspace_write: { network_access: false } },
-		});
+		const started = await this.options.process
+			.startThreadWithResult({
+				cwd: this.options.cwd,
+				sandbox: "read-only",
+				approvalPolicy: "never",
+				baseInstructions: prompt,
+				config: { sandbox_workspace_write: { network_access: false } },
+			})
+			.catch(() => {
+				throw new Error("realtime_thread_start");
+			});
 		this.assertRunning();
 		const result = record(started.result);
 		const thread = record(result?.thread);
@@ -82,7 +108,7 @@ export class RealtimeFrontend {
 			throw new Error("thread_receipt_drift");
 		}
 		this.threadId = started.id;
-		const response = await this.options.process.request(
+		await this.safeRequest(
 			"thread/realtime/start",
 			{
 				threadId: started.id,
@@ -95,10 +121,9 @@ export class RealtimeFrontend {
 				includeStartupContext: false,
 				delegationAckFiller: false,
 			},
+			"realtime_start",
 		);
 		this.assertRunning();
-		if (response.error)
-			throw new Error(`realtime_start:${response.error.message}`);
 	}
 
 	appendAudio(pcm24Mono: Buffer): void {
@@ -117,12 +142,11 @@ export class RealtimeFrontend {
 
 	async appendSpeech(text: string): Promise<void> {
 		if (!this.threadId) throw new Error("realtime_not_started");
-		const response = await this.options.process.request(
+		await this.safeRequest(
 			"thread/realtime/appendSpeech",
 			{ threadId: this.threadId, text },
+			"realtime_append_speech",
 		);
-		if (response.error)
-			throw new Error(`append_speech:${response.error.message}`);
 	}
 
 	async stop(): Promise<void> {
@@ -135,6 +159,19 @@ export class RealtimeFrontend {
 		}
 		await this.options.process.stop();
 		this.threadId = undefined;
+	}
+
+	private async safeRequest(
+		method: string,
+		params: unknown,
+		failure: string,
+	): Promise<void> {
+		try {
+			const response = await this.options.process.request(method, params);
+			if (response.error) throw new Error("rpc");
+		} catch {
+			throw new Error(failure);
+		}
 	}
 
 	private assertRunning(): void {
@@ -165,9 +202,7 @@ export class RealtimeFrontend {
 			return;
 		}
 		if (method === "thread/realtime/closed") {
-			this.options.onClosed(
-				typeof params.reason === "string" ? params.reason : "realtime_closed",
-			);
+			this.options.onClosed("realtime_closed");
 			return;
 		}
 		if (method === "thread/realtime/transcript/done") {

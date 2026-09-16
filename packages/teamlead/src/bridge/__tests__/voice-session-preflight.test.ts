@@ -1,225 +1,238 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
-import { DISCORD_PERMISSIONS } from "../channel-permissions.js";
+import { DISCORD_PERMISSIONS as P } from "../channel-permissions.js";
 import { preflightVoiceSession } from "../voice-session-preflight.js";
 import type { VoiceStartPreflightInput } from "../voice-session-start.js";
 
 const GUILD = "100000000000000001";
-const VOICE_CHANNEL = "100000000000000002";
-const VOICE_BOT = "100000000000000003";
-const CHAT_CHANNEL = "100000000000000004";
-const LEAD_BOT = "100000000000000005";
+const ROOM = "100000000000000002";
+const TEXT = "100000000000000004";
+const BOT = "100000000000000005";
 const ROLE = "100000000000000006";
-const cleanup: string[] = [];
-
-afterEach(() => {
-	for (const root of cleanup.splice(0)) rmSync(root, { recursive: true });
-});
-
-function bits(...values: bigint[]): string {
-	return values.reduce((all, value) => all | value, 0n).toString();
-}
-
-function input(backend: "claude-code" | "codex-app-server" = "claude-code") {
-	const stateDir = mkdtempSync(join(tmpdir(), "flywheel-voice-access-"));
-	cleanup.push(stateDir);
-	writeFileSync(
-		join(stateDir, "access.json"),
-		JSON.stringify({ allowBots: [] }),
-	);
+const ALL = Object.values(P).reduce(
+	(a, p) => (p === P.ADMINISTRATOR ? a : a | p),
+	0n,
+);
+afterEach(() => vi.useRealTimers());
+function input(bot = BOT, token = "lead-token"): VoiceStartPreflightInput {
 	const project: ProjectEntry = {
 		projectName: "flywheel",
-		projectRoot: "/repo/flywheel",
-		huddle: {
-			guildId: GUILD,
-			voiceChannelId: VOICE_CHANNEL,
-			orchestratorBotTokenEnv: "VOICE_TOKEN",
-			orchestratorBotUserId: VOICE_BOT,
-			earsBotTokenEnv: "EARS_TOKEN",
-		},
+		projectRoot: "/fixture",
+		voiceRoom: { guildId: GUILD, voiceChannelId: ROOM },
 		leads: [
 			{
-				agentId: "lead-a",
+				agentId: "lead",
 				summaryRole: "producer",
-				chatChannel: CHAT_CHANNEL,
-				botUserId: LEAD_BOT,
-				botToken: "lead-token",
-				discordStateDir: stateDir,
-				backend,
-				match: { labels: ["engineering"] },
+				botUserId: bot,
+				botTokenEnv: "LEAD_TOKEN",
+				botToken: "ignored-cached-token",
+				chatChannel: TEXT,
+				match: {},
 			},
 		],
 	};
 	return {
-		stateDir,
-		value: {
-			mode: "meeting",
-			project,
-			lead: project.leads[0]!,
-			voiceHost: {
-				schemaVersion: 1,
-				qaVoiceChannelIds: [],
-				qaAllowUserIds: [],
-				evidenceRoots: ["/repo"],
-			},
-			voiceBotToken: "voice-token",
-			earsBotToken: "ears-token",
-		} satisfies VoiceStartPreflightInput,
+		mode: "meeting",
+		project,
+		lead: project.leads[0],
+		voiceBotToken: token,
+		voiceHost: {
+			schemaVersion: 1,
+			qaVoiceChannelIds: [],
+			qaAllowUserIds: [],
+			evidenceRoots: [],
+		},
 	};
 }
-
-function discordFetch(
-	overrides: {
-		voiceBotId?: string;
-		leadBotId?: string;
-		voiceBits?: string;
-		textBits?: string;
+const probe = vi.fn(async () => ({
+	version: 1 as const,
+	leadId: "lead",
+	botUserId: BOT,
+	runtimeId: "12345678-1234-4123-8123-123456789012",
+	nonce: "0".repeat(64),
+	auth: "1".repeat(64),
+	ready: true,
+	selfDropped: true,
+	unknownDropped: true,
+	otherPassed: true,
+}));
+function discord(
+	over: {
+		bot?: string;
+		permission?: bigint;
+		channel403?: string;
+		remaining?: number;
+		modify?: (path: string, body: unknown) => unknown;
 	} = {},
 ) {
-	const voiceBits =
-		overrides.voiceBits ??
-		bits(
-			DISCORD_PERMISSIONS.VIEW_CHANNEL,
-			DISCORD_PERMISSIONS.CONNECT,
-			DISCORD_PERMISSIONS.SPEAK,
-		);
-	const textBits =
-		overrides.textBits ??
-		bits(
-			DISCORD_PERMISSIONS.VIEW_CHANNEL,
-			DISCORD_PERMISSIONS.READ_MESSAGE_HISTORY,
-			DISCORD_PERMISSIONS.SEND_MESSAGES,
-			DISCORD_PERMISSIONS.SEND_MESSAGES_IN_THREADS,
-			DISCORD_PERMISSIONS.CREATE_PUBLIC_THREADS,
-		);
-	return vi.fn<typeof fetch>(async (request, init) => {
-		const url = String(request);
-		const auth = new Headers(init?.headers).get("Authorization");
-		const botId =
-			auth === "Bot voice-token"
-				? (overrides.voiceBotId ?? VOICE_BOT)
-				: (overrides.leadBotId ?? LEAD_BOT);
+	return vi.fn<typeof fetch>(async (url, init) => {
+		const path = new URL(String(url)).pathname.replace("/api/v10", "");
+		expect(init?.method ?? "GET").toBe("GET");
+		if (path === `/channels/${over.channel403}`)
+			return new Response("private", { status: 403 });
 		let body: unknown;
-		if (url.endsWith("/users/@me")) body = { id: botId };
-		else if (url.includes(`/guilds/${GUILD}/members/`))
-			body = { roles: [ROLE] };
-		else if (url.endsWith(`/guilds/${GUILD}/roles`)) {
+		if (path === "/users/@me") body = { id: over.bot ?? BOT };
+		else if (path.includes("/members/")) body = { roles: [ROLE] };
+		else if (path.endsWith("/roles"))
 			body = [
 				{ id: GUILD, permissions: "0" },
-				{ id: ROLE, permissions: bits(BigInt(voiceBits), BigInt(textBits)) },
+				{ id: ROLE, permissions: (over.permission ?? ALL).toString() },
 			];
-		} else if (url.endsWith(`/channels/${VOICE_CHANNEL}`)) {
-			body = { id: VOICE_CHANNEL, permission_overwrites: [] };
-		} else if (url.endsWith(`/channels/${CHAT_CHANNEL}`)) {
-			body = { id: CHAT_CHANNEL, permission_overwrites: [] };
-		} else return new Response("not found", { status: 404 });
-		return new Response(JSON.stringify(body), {
-			status: 200,
-			headers: { "Content-Type": "application/json" },
-		});
+		else if (path.startsWith("/channels/"))
+			body = { id: path.split("/").at(-1), permission_overwrites: [] };
+		else if (path === "/gateway/bot")
+			body = { session_start_limit: { remaining: over.remaining ?? 10 } };
+		else throw new Error("unexpected fixture GET");
+		return new Response(
+			JSON.stringify(over.modify ? over.modify(path, body) : body),
+		);
 	});
 }
-
-describe("voice session preflight", () => {
-	it("proves both bot identities and the required voice/text permissions", async () => {
-		const { value } = input();
-		const fetchImpl = discordFetch();
+describe("per-Lead voice preflight", () => {
+	it.each([BOT, "100000000000000099"])(
+		"uses only exact Lead %s token for one identity, both permission sets and gateway quota",
+		async (bot) => {
+			const fetchImpl = discord({ bot });
+			const value = input(bot, `token-${bot}`);
+			const probeSelfFilter = vi.fn(async () => ({
+				...(await probe()),
+				botUserId: bot,
+			}));
+			const receipt = await preflightVoiceSession(value, {
+				fetchImpl,
+				probeSelfFilter,
+			});
+			expect(receipt).toMatchObject({
+				identityVerified: true,
+				voicePermissions: true,
+				textPermissions: true,
+				gatewayRemaining: 10,
+				selfFilter: { botUserId: bot },
+			});
+			expect(
+				fetchImpl.mock.calls.filter(([url]) =>
+					String(url).endsWith("/users/@me"),
+				),
+			).toHaveLength(1);
+			expect(fetchImpl).toHaveBeenCalledTimes(6);
+			for (const [, init] of fetchImpl.mock.calls)
+				expect(new Headers(init?.headers).get("Authorization")).toBe(
+					`Bot token-${bot}`,
+				);
+			expect(probeSelfFilter).toHaveBeenCalledWith({
+				projectName: "flywheel",
+				lead: value.lead,
+				token: `token-${bot}`,
+			});
+		},
+	);
+	it("rejects a different bot before any permission or socket work", async () => {
+		const fetchImpl = discord({ bot: "100000000000000099" });
+		const probeSelfFilter = vi.fn();
 		await expect(
-			preflightVoiceSession(value, { fetchImpl }),
-		).resolves.toBeUndefined();
-		expect(fetchImpl).toHaveBeenCalledTimes(7);
-	});
-
-	it("fails on bot identity mismatch before provisioning", async () => {
-		const { value } = input();
-		await expect(
-			preflightVoiceSession(value, {
-				fetchImpl: discordFetch({ voiceBotId: "100000000000000099" }),
-			}),
+			preflightVoiceSession(input(), { fetchImpl, probeSelfFilter }),
 		).rejects.toMatchObject({
 			status: 503,
-			reason: "voice_bot_identity_mismatch",
+			reason: "lead_bot_identity_mismatch",
 		});
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(probeSelfFilter).not.toHaveBeenCalled();
 	});
-
-	it("fails when the voice bot lacks SPEAK", async () => {
-		const { value } = input();
-		await expect(
-			preflightVoiceSession(value, {
-				fetchImpl: discordFetch({
-					voiceBits: bits(
-						DISCORD_PERMISSIONS.VIEW_CHANNEL,
-						DISCORD_PERMISSIONS.CONNECT,
-					),
+	it.each([P.VIEW_CHANNEL, P.CONNECT, P.SPEAK])(
+		"rejects missing voice permission %s",
+		async (permission) => {
+			await expect(
+				preflightVoiceSession(input(), {
+					fetchImpl: discord({ permission: ALL & ~permission }),
+					probeSelfFilter: probe,
 				}),
+			).rejects.toMatchObject({ reason: "voice_permissions" });
+		},
+	);
+	it.each([
+		P.READ_MESSAGE_HISTORY,
+		P.SEND_MESSAGES,
+		P.CREATE_PUBLIC_THREADS,
+		P.SEND_MESSAGES_IN_THREADS,
+	])("rejects missing text permission %s", async (permission) => {
+		await expect(
+			preflightVoiceSession(input(), {
+				fetchImpl: discord({ permission: ALL & ~permission }),
+				probeSelfFilter: probe,
 			}),
-		).rejects.toMatchObject({ status: 503, reason: "voice_permissions" });
+		).rejects.toMatchObject({ reason: "lead_text_permissions" });
 	});
-
-	it("rejects a Claude picker that would consume voice-bot mirrors", async () => {
-		const { value, stateDir } = input();
-		writeFileSync(
-			join(stateDir, "access.json"),
-			JSON.stringify({ allowBots: [VOICE_BOT] }),
-		);
-		await expect(
-			preflightVoiceSession(value, { fetchImpl: discordFetch() }),
-		).rejects.toMatchObject({ status: 503, reason: "native_pickup_mirror" });
-	});
-
-	it("rejects a Codex Lead whose live capabilities do not prove mirror exclusion", async () => {
-		const { value, stateDir } = input("codex-app-server");
-		writeFileSync(
-			join(stateDir, "access.json"),
-			JSON.stringify({ allowBots: [VOICE_BOT] }),
-		);
-		await expect(
-			preflightVoiceSession(value, {
-				fetchImpl: discordFetch(),
-				probeCapabilities: async () => ({
-					protocolVersions: [1, 2],
-					features: ["discord_route_v2"],
-					socketOwnerId: "old-process",
+	it.each([
+		[ROOM, "voice_permissions", "voice_channel"],
+		[TEXT, "lead_text_permissions", "text_channel"],
+	])(
+		"preserves unknown permission and HTTP stage for channel %s 403",
+		async (channel403, reason, stage) => {
+			await expect(
+				preflightVoiceSession(input(), {
+					fetchImpl: discord({ channel403 }),
+					probeSelfFilter: probe,
 				}),
-			}),
-		).rejects.toMatchObject({ status: 503, reason: "native_pickup_mirror" });
-	});
-
-	it("accepts only the active authenticated Codex process's mirror exclusion", async () => {
-		const { value } = input("codex-app-server");
-		const probeCapabilities = vi.fn(async () => ({
-			protocolVersions: [1, 2] as [1, 2],
-			features: ["discord_route_v2"] as ["discord_route_v2"],
-			socketOwnerId: "running-process",
-			voiceMirrorIgnoredAuthorIds: [VOICE_BOT],
-		}));
+			).rejects.toMatchObject({
+				reason,
+				stage,
+				httpStatus: 403,
+				evidence: {
+					[channel403 === ROOM ? "voicePermissions" : "textPermissions"]: null,
+				},
+			});
+		},
+	);
+	it("applies member overwrites after role denial", async () => {
+		const fetchImpl = discord({
+			modify: (path, body: any) =>
+				path === `/channels/${ROOM}`
+					? {
+							...body,
+							permission_overwrites: [
+								{ id: ROLE, type: 0, allow: "0", deny: P.SPEAK.toString() },
+								{ id: BOT, type: 1, allow: P.SPEAK.toString(), deny: "0" },
+							],
+						}
+					: body,
+		});
 		await expect(
-			preflightVoiceSession(value, {
-				fetchImpl: discordFetch(),
-				probeCapabilities,
-			}),
-		).resolves.toBeUndefined();
-		expect(probeCapabilities).toHaveBeenCalledWith(
-			expect.objectContaining({
-				leadId: "lead-a",
-				authSecret: "lead-token",
-				timeoutMs: 2_000,
-			}),
-		);
+			preflightVoiceSession(input(), { fetchImpl, probeSelfFilter: probe }),
+		).resolves.toMatchObject({ voicePermissions: true });
 	});
-
-	it("rejects an absent or unreachable Codex picker", async () => {
-		const { value } = input("codex-app-server");
+	it("fails closed on missing live self-filter and unavailable gateway budget", async () => {
 		await expect(
-			preflightVoiceSession(value, {
-				fetchImpl: discordFetch(),
-				probeCapabilities: async () => {
-					throw new Error("socket unavailable");
+			preflightVoiceSession(input(), {
+				fetchImpl: discord(),
+				probeSelfFilter: async () => {
+					throw new Error("missing socket");
 				},
 			}),
-		).rejects.toMatchObject({ status: 503, reason: "native_pickup_config" });
+		).rejects.toMatchObject({ reason: "self_filter_unverified" });
+		await expect(
+			preflightVoiceSession(input(), {
+				fetchImpl: discord({ remaining: 0 }),
+				probeSelfFilter: probe,
+			}),
+		).rejects.toMatchObject({ reason: "gateway_session_limit" });
+	});
+	it("rejects malformed Discord payloads and bounds stalled requests", async () => {
+		await expect(
+			preflightVoiceSession(input(), {
+				fetchImpl: discord({ modify: () => ({}) }),
+				probeSelfFilter: probe,
+			}),
+		).rejects.toMatchObject({ reason: "discord_payload_invalid" });
+		vi.useFakeTimers();
+		const pending = preflightVoiceSession(input(), {
+			fetchImpl: vi.fn(() => new Promise(() => {})),
+			probeSelfFilter: probe,
+		});
+		const assertion = expect(pending).rejects.toMatchObject({
+			reason: "discord_timeout",
+			stage: "identity",
+		});
+		await vi.advanceTimersByTimeAsync(2000);
+		await assertion;
 	});
 });

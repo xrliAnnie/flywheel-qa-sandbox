@@ -3,14 +3,21 @@ import { join } from "node:path";
 
 export interface VoiceProjectRow {
 	projectName: string;
-	huddle?: {
-		guildId: string;
-		voiceChannelId: string;
-		orchestratorBotTokenEnv: string;
-	} | null;
+	huddle?: unknown;
+	voiceRoom?: { guildId: string; voiceChannelId: string } | null;
+	leads?: { agentId: string; botUserId?: string; botTokenEnv?: string }[];
+}
+
+export interface VoiceBotBinding {
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	voiceBotUserId: string;
 }
 
 export interface VoiceDaemonConfig {
+	realtimeApiKey: string;
 	apiToken: string;
 	bridgeUrl: string;
 	voiceRoot: string;
@@ -74,6 +81,8 @@ export function loadVoiceDaemonConfig(
 ): VoiceDaemonConfig {
 	const apiToken = env.TEAMLEAD_API_TOKEN?.trim();
 	if (!apiToken) throw new Error("TEAMLEAD_API_TOKEN is required");
+	const realtimeApiKey = env.OPENAI_API_KEY?.trim();
+	if (!realtimeApiKey) throw new Error("OPENAI_API_KEY is required");
 	const flywheelDir = env.FLYWHEEL_DIR ?? join(homeDir, "Dev", "flywheel");
 	const stateDir = env.FLYWHEEL_STATE_DIR ?? join(homeDir, ".flywheel");
 	const voiceRoot = env.FLYWHEEL_VOICE_STATE_DIR ?? join(stateDir, "voice");
@@ -91,6 +100,7 @@ export function loadVoiceDaemonConfig(
 	}
 	return {
 		apiToken,
+		realtimeApiKey,
 		bridgeUrl: env.BRIDGE_URL ?? "http://127.0.0.1:9876",
 		voiceRoot,
 		codexHome: env.FLYWHEEL_VOICE_CODEX_HOME ?? join(voiceRoot, "codex-home"),
@@ -130,27 +140,47 @@ export function loadVoiceProjects(
 	return parsed as VoiceProjectRow[];
 }
 
-export function resolveVoiceBotToken(
-	projectName: string,
-	guildId: string,
-	voiceChannelId: string,
+export function resolveLeadVoiceToken(
+	projection: VoiceBotBinding,
 	projects: VoiceProjectRow[],
 	env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-	const matches = projects.filter(
-		(project) => project.projectName === projectName,
-	);
-	if (matches.length !== 1) throw new Error("voice_session_registry_drift");
-	const huddle = matches[0]?.huddle;
+	const drift = () => new Error("voice_session_registry_drift");
 	if (
-		!huddle ||
-		huddle.guildId !== guildId ||
-		huddle.voiceChannelId !== voiceChannelId ||
-		!/^[A-Z_][A-Z0-9_]*$/u.test(huddle.orchestratorBotTokenEnv)
-	) {
-		throw new Error("voice_session_registry_drift");
-	}
-	const token = env[huddle.orchestratorBotTokenEnv]?.trim();
+		!projection ||
+		!projection.projectName ||
+		!projection.leadId ||
+		![
+			projection.guildId,
+			projection.voiceChannelId,
+			projection.voiceBotUserId,
+		].every((id) => typeof id === "string" && /^\d{17,20}$/u.test(id))
+	)
+		throw drift();
+	const matches = projects.filter(
+		(project) => project?.projectName === projection.projectName,
+	);
+	if (matches.length !== 1) throw drift();
+	const project = matches[0]!;
+	if (
+		project.huddle != null ||
+		project.voiceRoom?.guildId !== projection.guildId ||
+		project.voiceRoom?.voiceChannelId !== projection.voiceChannelId ||
+		!Array.isArray(project.leads)
+	)
+		throw drift();
+	const leads = project.leads.filter(
+		(lead) => lead?.agentId === projection.leadId,
+	);
+	if (leads.length !== 1) throw drift();
+	const lead = leads[0]!;
+	if (
+		lead.botUserId !== projection.voiceBotUserId ||
+		typeof lead.botTokenEnv !== "string" ||
+		!/^[A-Z_][A-Z0-9_]*$/u.test(lead.botTokenEnv)
+	)
+		throw drift();
+	const token = env[lead.botTokenEnv]?.trim();
 	if (!token) throw new Error("voice_bot_token_unset");
 	return token;
 }

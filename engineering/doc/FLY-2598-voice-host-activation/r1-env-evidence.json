@@ -1,0 +1,17 @@
+{
+  "observedAt": "2026-09-16T00:58:59.678231+00:00",
+  "source": "~/.flywheel/.env",
+  "regularFile": true,
+  "mode": "0o600",
+  "modifiedAt": "2026-09-15T06:36:01.063477+00:00",
+  "assignmentUsesExport": true,
+  "cleanSourceEnvironment": [
+    "HOME",
+    "PATH"
+  ],
+  "cleanSourceShell": "/bin/bash --noprofile --norc",
+  "daemonSourceKeyPresent": true,
+  "exitCode": 0,
+  "keyValueRecorded": false,
+  "apiAuthenticationExecuted": false
+}

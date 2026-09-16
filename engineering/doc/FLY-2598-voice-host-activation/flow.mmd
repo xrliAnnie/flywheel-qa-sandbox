@@ -1,0 +1,15 @@
+sequenceDiagram
+    actor F as Founder · General
+    participant V as 当场 Lead 的 bot
+    participant B as 会话与交付服务
+    participant L as 原 Lead
+    B->>B: 核身份和权限 · 同时只准一场
+    V->>F: 以该 Lead 身份进房
+    F->>V: 说一句
+    V->>B: 留文字镜像 · 作者标为 founder
+    B->>L: 交付同一句话
+    L->>B: 正常文字回复
+    B->>V: 排除镜像和状态 · 只交回复
+    V->>F: 念出回复
+    F->>V: 退出语音模式
+    V->>B: 结束会话 · 离房

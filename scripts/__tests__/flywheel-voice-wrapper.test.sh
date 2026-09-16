@@ -82,7 +82,7 @@ EOF
 chmod +x "$ROOT/meta-alert" "$ROOT/repo/scripts/lib/bounded-run.sh"
 chmod +x "$ROOT/host-gate" "$ROOT/restart-gate" "$ROOT/home/.local/bin/node"
 : > "$ROOT/repo/packages/voice-codex/dist/cli.js"
-printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\nexport OPENAI_API_KEY=test-api-only\n' > "$ROOT/state/.env"
 
 # Adversarial inherited host settings must never reach a wrapper subprocess.
 # These are all fixtures: even the RED regression cannot touch production.
@@ -121,7 +121,7 @@ host_config_load() {
 }
 EOF
 : > "$ROOT/configured-repo/packages/voice-codex/dist/cli.js"
-printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/configured-state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\nexport OPENAI_API_KEY=test-api-only\n' > "$ROOT/configured-state/.env"
 : > "$ROOT/node-calls"
 if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
   FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
@@ -160,6 +160,22 @@ if [[ ! -e "$ROOT/inherited-variable-leaked" ]] \
   pass "wrapper subprocesses scrub inherited variables and record only the expected local alert"
 else
   fail "wrapper environment isolation or local alert receipt"
+fi
+
+: > "$ROOT/node-calls"
+: > "$ROOT/alert-calls"
+printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/state/.env"
+API_RC=0
+env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
+FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
+FLYWHEEL_DIR="$ROOT/repo" FLYWHEEL_STATE_DIR="$ROOT/state" \
+FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
+FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
+  bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 || API_RC=$?
+if [[ "$API_RC" -eq 0 && ! -s "$ROOT/node-calls" ]] && grep -qx voice_api_key_unset "$ROOT/alert-calls"; then
+  pass "missing platform key refuses startup with exit zero and a bounded alert"
+else
+  fail "missing platform key boundary"
 fi
 
 if [[ -f "$RESTART_LIB" ]]; then

@@ -9,6 +9,7 @@ export interface VoiceSessionRuntimeDeps {
 	now?: () => string;
 	provision: (sessionId: string, signal: AbortSignal) => Promise<void>;
 	poll: (session: VoiceSessionRow) => Promise<void>;
+	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
 	reportPollFailure?: (
 		session: VoiceSessionRow,
 		reason: string,
@@ -33,6 +34,35 @@ export class VoiceSessionRuntime {
 		this.ticking = true;
 		try {
 			const at = this.now();
+			if (this.deps.validateSession) {
+				for (const session of this.deps.store.listVoiceSessions([
+					"provisioning",
+					"desired",
+					"claimed",
+					"warming",
+					"live",
+					"ending",
+				])) {
+					try {
+						await this.deps.validateSession(session);
+					} catch (error) {
+						const reason =
+							error instanceof Error &&
+							new Set([
+								"identity_binding_missing",
+								"voice_session_registry_drift",
+								"self_filter_unverified",
+							]).has(error.message)
+								? error.message
+								: "voice_session_admission_failed";
+						this.deps.store.failVoiceSessionAdmission(
+							session.sessionId,
+							reason,
+							this.now(),
+						);
+					}
+				}
+			}
 			this.deps.store.sweepVoiceSessions({
 				now: at,
 				clockSkewGraceMs: this.deps.timing.clockSkewGraceMs,

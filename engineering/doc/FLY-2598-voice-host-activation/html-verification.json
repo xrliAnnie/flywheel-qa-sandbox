@@ -1,0 +1,20 @@
+{
+  "checkedAt": "2026-09-16T01:10:11.966Z",
+  "mode": "Static markup + happy-dom execution; not real browser/CSP enforcement or visual QA",
+  "checks": {
+    "singleNonceScript": true,
+    "noInlineHandlers": true,
+    "noOwnCsp": true,
+    "noExternalAssets": true,
+    "perSectionComments": 8,
+    "pathScopedStorage": true,
+    "storageDeniedSafe": true,
+    "summaryMarker": true,
+    "longCommentChunks": true,
+    "clipboardApi": true,
+    "clipboardRejectFallback": true,
+    "clipboardAbsentFallback": true,
+    "commentHtmlInert": true
+  },
+  "diagramStatus": "pending local render after two failures each"
+}

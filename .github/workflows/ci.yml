@@ -448,6 +448,7 @@ jobs:
       - name: Test — FLY-1814 launchd fleet contracts
         run: |
           bash scripts/__tests__/flywheel-voice-wrapper.test.sh
+          bash scripts/__tests__/install-voice-launchd.test.sh
           bash scripts/__tests__/launchd-units-manifest.test.sh
           bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh
           bash scripts/__tests__/launchd-census.test.sh
@@ -495,9 +496,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
-    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
-    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
-    # 605s (59.3%). Move only complete named steps; see the FLY-2245 research.
+    # FLY-2598 rebalanced its intact voice steps after this shard's exact-head
+    # runtime rose from the 923s main baseline to 1139s. Those steps now run in
+    # script-tests-5; keep the unchanged FLY-1870 1020s tripwire budget here.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -1312,10 +1313,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
-    # FLY-2562 uses this existing fifth shard for the intact FLY-2331/1663
-    # steps. Run 34889528445 measured 191s + 174s + 152s = projected 517s
-    # (50.7% of the unchanged 1020s tripwire budget). Keep whole steps;
-    # remeasure family headroom before any further rebalance (see the plan).
+    # FLY-2598 moves its intact voice steps onto this shard's measured 490s
+    # baseline. Their 216s source-shard delta projects about 706s total, below
+    # the unchanged FLY-1870 1020s tripwire budget. Keep whole steps together.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -1404,6 +1404,20 @@ jobs:
           bash scripts/__tests__/artifact-freshness-manifest.test.sh
           bash scripts/__tests__/artifact-freshness-check.test.sh
           bash scripts/__tests__/bridge-liveness-probe-w4.test.sh
+
+      - name: Test — FLY-2598 voice host configuration
+        run: |
+          pnpm --filter flywheel-teamlead... build
+          pnpm --filter flywheel-comm... build
+          node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs
+
+      - name: Test — FLY-2598 readonly voice preflight
+        run: node --test scripts/__tests__/fly2598-voice-preflight.test.mjs
+
+      - name: Test — FLY-2598 voice client coexistence
+        run: |
+          pnpm --filter flywheel-voice-codex... build
+          node --test scripts/__tests__/fly2598-voice-coexistence.test.mjs
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()

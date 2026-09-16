@@ -10,6 +10,58 @@ function pcm16(samples: number[]): Buffer {
 
 describe("DiscordVoiceRoom", () => {
 	afterEach(() => vi.useRealTimers());
+	it.each([undefined, "wrong-bot"])(
+		"destroys ready client with identity %s before join or delivery",
+		async (id) => {
+			const client = {
+				user: id ? { id } : undefined,
+				login: vi.fn(async () => {}),
+				isReady: () => true,
+				once: vi.fn(),
+				destroy: vi.fn(async () => {}),
+			};
+			const joinVoice = vi.fn(async () => ({}));
+			const sendMessage = vi.fn(async () => {});
+			const onAudio = vi.fn();
+			const close = vi.fn(async () => {});
+			const room = new DiscordVoiceRoom({
+				createVad: async () => ({
+					score: async (_samples, state) => ({ probability: 0, next: state }),
+					close,
+				}),
+				deps: {
+					createClient: () => client,
+					joinVoice,
+					sendMessage,
+					subscribeManual: vi.fn(),
+					createDecoder: vi.fn(),
+					createPlayer: vi.fn(),
+					createResource: vi.fn(),
+					speakingEvents: vi.fn(),
+					memberDisplayName: vi.fn(),
+					userVoiceChannelId: vi.fn(),
+					onVoiceStateUpdate: vi.fn(),
+					leaveVoice: vi.fn(),
+				},
+				token: "token",
+				expectedBotUserId: "voice-bot",
+				guildId: "guild",
+				voiceChannelId: "voice",
+				threadId: "thread",
+				founderUserId: "founder",
+				qaAllowUserIds: [],
+				onAudio,
+				onFounderPresence: vi.fn(),
+				onError: vi.fn(),
+			});
+			await expect(room.start()).rejects.toThrow("lead_bot_identity_mismatch");
+			expect(joinVoice).not.toHaveBeenCalled();
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(onAudio).not.toHaveBeenCalled();
+			expect(client.destroy).toHaveBeenCalledOnce();
+			expect(close).toHaveBeenCalledOnce();
+		},
+	);
 	it.each([0, 1])(
 		"admits projected speakers and clocks VAD probability %s as speech or silence",
 		async (probability) => {
@@ -60,6 +112,7 @@ describe("DiscordVoiceRoom", () => {
 					leaveVoice: vi.fn(),
 				},
 				token: "token",
+				expectedBotUserId: "voice-bot",
 				guildId: "guild",
 				voiceChannelId: "voice-channel",
 				threadId: "thread",

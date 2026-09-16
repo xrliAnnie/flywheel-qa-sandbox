@@ -1,4 +1,6 @@
 export interface VoiceSessionProjection {
+	sessionId: string;
+	voiceBotUserId: string;
 	mode: "meeting" | "rg";
 	projectName: string;
 	leadId: string;
