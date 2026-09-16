@@ -1,14 +1,14 @@
 ---
 issue: FLY-2608
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-16T04:34:38.622Z
-nextStep: Add failing ingest-only first-scan, mailbox-lane, and reply-route
-  tests on the synced head
+phaseCursor: 4/6
+updated: 2026-09-16T04:55:37.212Z
+nextStep: Audit exact requirements, add any missing negative/regression
+  coverage, then run full project gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-2608 progress
-**phase**: implement (1/6)
-**next**: Add failing ingest-only first-scan, mailbox-lane, and reply-route tests on the synced head
+**phase**: implement (4/6)
+**next**: Audit exact requirements, add any missing negative/regression coverage, then run full project gates
