@@ -1,5 +1,7 @@
+import type Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { describe, expect, it, vi } from "vitest";
+import { createAttentionGateStore } from "../../__tests__/fixtures/attention-gate-store.js";
 import {
 	readAttentionSources,
 	readChildThreads,
@@ -11,6 +13,13 @@ const now = new Date("2026-09-09T12:00:00Z");
 function setup() {
 	const close = vi.fn();
 	const stateStore = {
+		getSessionByIssue: () => undefined,
+		getActiveWorkflowRunForIssue: () => undefined,
+		getLatestPhaseSessionsForIssue: () => [],
+		hasFinalizationCompletedForIssue: () => false,
+		hasMergeConfirmedForIssue: () => false,
+		listOpenFounderAsks: () => [],
+		hasFounderAttentionReplyAfter: () => false,
 		readDiscordConfig: () => ({
 			guild_id: "123",
 			state: "configured",
@@ -98,6 +107,124 @@ function setup() {
 	return { deps, close };
 }
 describe("independent attention sources", () => {
+	it.each(["getSessionByIssue", "getLatestPhaseSessionsForIssue"] as const)(
+		"marks unavailable visibility from %s incomplete rather than empty",
+		async (method) => {
+			const { deps } = setup();
+			deps.stateStore[method] = () => {
+				throw new Error("PRIVATE_FAILURE");
+			};
+			const attention = await readAttentionSources(deps as never, {
+				projectName: "example",
+				binding: { team: "EPX" },
+				apiKey: "test",
+				channelIds: ["789"],
+				now,
+			});
+			expect(attention.reads.gates.value).toBeNull();
+			expect(attention.reads.gates.missing?.reason).toBe("source_unavailable");
+			const page = generateAttentionEpicPage({
+				snapshot: null,
+				scopeBinding: { team: "EPX" },
+				itemFacts: [],
+				attention,
+				projectName: "example",
+				trigger: "manual",
+				now,
+			});
+			const html = renderEpicPageHtml(page, now);
+			expect(html).toContain("清单不完整");
+			expect(html).not.toContain("现在没有等你的事");
+			expect(html).not.toContain("PRIVATE_FAILURE");
+		},
+	);
+
+	it("keeps the page renderable when an explicit ask cannot resolve Linear metadata", async () => {
+		const { deps } = setup();
+		deps.stateStore.listOpenFounderAsks = () =>
+			[
+				{
+					ask_id: "orphan",
+					project_name: "example",
+					issue_id: "missing",
+					channel_id: "789",
+					thread_id: "456",
+					lead_id: "lead",
+					message_id: "999",
+					question_id: null,
+					excerpt: "audit only",
+					asked_at: now.toISOString(),
+					settled_at: null,
+				},
+			] as never;
+		deps.fetchIssueMetadata.mockResolvedValue({
+			items: [],
+			rawCount: 0,
+			missing: { reason: "source_unavailable" },
+			fetchedAt: now.toISOString(),
+		});
+		const attention = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+		});
+		const page = generateAttentionEpicPage({
+			snapshot: null,
+			scopeBinding: { team: "EPX" },
+			itemFacts: [],
+			attention,
+			projectName: "example",
+			trigger: "manual",
+			now,
+		});
+		expect(
+			page.attention.find((item) => item.key === "ask:orphan")?.issue_id.value,
+		).toBeNull();
+		expect(renderEpicPageHtml(page, now)).not.toContain("audit only");
+	});
+
+	it("counts holder plus explicit ask as two StateStore facts and validates the rendered page", async () => {
+		const { deps } = setup();
+		deps.stateStore.listOpenFounderAsks = () =>
+			[
+				{
+					ask_id: "ask",
+					project_name: "example",
+					issue_id: "uuid-b",
+					channel_id: "789",
+					thread_id: "456",
+					lead_id: "lead",
+					message_id: "999",
+					question_id: null,
+					excerpt: "<script>pick</script>",
+					asked_at: now.toISOString(),
+					settled_at: null,
+				},
+			] as never;
+		const attention = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+		});
+		expect(attention.reads.gates.value).toEqual({ count: 2 });
+		const page = generateAttentionEpicPage({
+			snapshot: null,
+			scopeBinding: { team: "EPX" },
+			itemFacts: [],
+			attention,
+			projectName: "example",
+			trigger: "manual",
+			now,
+		});
+		const html = renderEpicPageHtml(page, now);
+		expect(html).toContain("要你答");
+		expect(html).not.toContain("<script>pick</script>");
+	});
+
 	it("marks failed SQL timestamp normalization invalid while label start remains unknown", async () => {
 		const { deps } = setup();
 		const gates = deps.stateStore.listAttentionGateFacts;
@@ -466,38 +593,39 @@ describe("independent attention sources", () => {
 });
 
 it("does not promote an intermediate review holder to a founder card", async () => {
-	const { deps } = setup();
-	deps.stateStore.listAttentionGateFacts = () => ({
-		facts: [
+	const store = await createAttentionGateStore();
+	try {
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		// Real authority filtering must reject this despite its current review row.
+		raw.exec(
+			"UPDATE workflow_run SET current_node_id='code_review'; UPDATE workflow_run_node SET node_id='code_review'; UPDATE workflow_gate_holder SET gate_node_id='code_review'",
+		);
+		expect(store.listAttentionGateFacts("flywheel")).toMatchObject({
+			rawCount: 1,
+			facts: [],
+		});
+		const { deps } = setup();
+		const result = await readAttentionSources(
+			{ ...deps, stateStore: store } as never,
 			{
-				holder_id: "review",
-				question_id: "review",
-				issue_id: "uuid-a",
-				execution_id: "exec-a",
-				run_id: "run-a",
-				node_id: "code_review",
-				attempt: 1,
-				state: "awaiting_review",
-				authority_mode: "engine_terminal",
-				kind: "founder_gate",
-				since: now.toISOString(),
+				projectName: "flywheel",
+				binding: { team: "EPX" },
+				apiKey: "test",
+				channelIds: ["789"],
+				now,
 			},
-		],
-		truncated: false,
-		rawCount: 1,
-	});
-	const result = await readAttentionSources(deps as never, {
-		projectName: "example",
-		binding: { team: "EPX" },
-		apiKey: "test",
-		channelIds: ["789"],
-		now,
-	});
-	expect(
-		result.candidates.some((c) =>
-			c.sources.some((source) => source.fact.value?.id === "review"),
-		),
-	).toBe(false);
+		);
+		expect(
+			result.candidates.some((c) =>
+				c.sources.some(
+					(source) => source.fact.value?.id === "full-question-123456789",
+				),
+			),
+		).toBe(false);
+		expect(result.reads.gates.value).toEqual({ count: 0 });
+	} finally {
+		store.close();
+	}
 });
 
 describe("child Discord links", () => {

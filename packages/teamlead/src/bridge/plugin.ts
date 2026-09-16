@@ -109,7 +109,10 @@ import {
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
-import { readAttentionSources } from "../epic-page/attention-sources.js";
+import {
+	readAttentionSources,
+	readChildThreads,
+} from "../epic-page/attention-sources.js";
 import { generateAttentionEpicPage } from "../epic-page/generate.js";
 import { materializeEpicPage } from "../epic-page/materialize.js";
 import { buildEpicPageRenderReceipt } from "../epic-page/receipt.js";
@@ -3116,6 +3119,13 @@ export function createBridgeApp(
 		"/api",
 		apiAuthWithRunnerTierDelegation(config.apiToken, config.geminiAgentToken),
 		createQueryRouter(store, projects, {
+			onFounderAttentionChange: (issueId, projectName) => {
+				opts?.issueDisplayRefresh?.current?.enqueue(issueId);
+				opts?.epicPageRefresher?.requestRefresh(
+					projectName,
+					"founder_attention",
+				);
+			},
 			retryDispatcher,
 			captureSessionFn,
 			statusQueryFn: captureSessionFn
@@ -6661,17 +6671,28 @@ export async function startBridge(
 									},
 								}),
 							readIntakes: (projectName) => store.listEpicIntakes(projectName),
-							readAttention: (request, generatedAt) =>
+							readAttention: (request, generatedAt, scopeSnapshot) =>
 								readAttentionSources(
 									{ stateStore: store },
 									{
 										...request,
+										scopeSnapshot,
 										now: generatedAt,
 										channelIds:
 											projects
 												.find((p) => p.projectName === request.projectName)
 												?.leads.map((l) => l.chatChannel) ?? [],
 									},
+								),
+							readChildThreads: (projectName, items, generatedAt) =>
+								readChildThreads(
+									store,
+									projectName,
+									items,
+									projects
+										.find((project) => project.projectName === projectName)
+										?.leads.map((lead) => lead.chatChannel) ?? [],
+									generatedAt,
 								),
 							readItemFacts: (projectName, item) =>
 								readEpicItemFacts(store, projectName, item),
@@ -11398,6 +11419,10 @@ export async function startBridge(
 			}),
 	});
 	const gatePoller = new GatePoller({
+		onFounderAttentionChange: (issueId, projectName) => {
+			enqueueIssueDisplayRefresh(issueId);
+			epicPageRefresher.requestRefresh(projectName, "founder_attention");
+		},
 		onEpicIntakeTick: () => epicIntakeScheduler.tick(),
 		pollIntervalMs: 3_000,
 		recordSpan: (name, startMs, endMs) =>

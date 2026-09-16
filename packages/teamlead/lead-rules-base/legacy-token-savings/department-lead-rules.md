@@ -275,6 +275,18 @@ If multiple department Leads are @-mentioned in the same message, behavior depen
 
 ---
 
+## Founder attention 由机器派生（FLY-2597）
+
+需要 founder 决定时，使用 `/api/chat-threads/send` 的 `founderAsk: {}`；转交 Runner
+问题时用 `founderAsk: {questionId: "<exact qid>"}`。自己能答的问题直接答，不标记。
+返回 `founderAskId` 是审计标识；误标用 `POST /api/chat-threads/founder-ask/withdraw`
+提交 `{askId, leadId, projectName}`，不要手改 Discord thread 名。
+机器显示「要你答」，「待批」优先；founder 任意回帖会熄灭此前提醒，但不代替 gate 回答。
+若旧 gate 仍待答且确需 founder 决定，Lead 可关联原 questionId 显式重新提问；不得周期性自动重亮。
+固定页「待你看」只来自同一机器状态。不得定时手写进展、维护第二份待办或手动 PATCH thread 名。
+纯记录类回帖（收件凭证、ACK 回执、已有机器持久记录的状态转述）不进 Discord thread；Epic 级状态只在固定页看。
+可选 lead-note 仅用于判断，不复述机器状态。Runner 生命周期报告及 summary-inflow 的现有职责保持原规则。
+
 ## Runner Question Handling (FLY-161, strictly enforced)
 
 When a Runner you own runs `flywheel-comm ask` (a non-blocking question — distinct from a hard `gate`), Bridge emits a `runner_question` event into your inbox (≤1 poll tick, ~3s after the Runner asks). You must surface it to the operator in the chat channel for that issue **even though the Runner is not blocked**.

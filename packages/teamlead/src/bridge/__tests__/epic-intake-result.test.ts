@@ -150,3 +150,29 @@ it("accepts superseded only with observed inactive scope and still requires owne
 		}),
 	).toThrow();
 });
+
+it("FLY-2597: accepts quiet durable records but requires a message for founder decisions", () => {
+	const { threadId: _thread, messageId: _message, ...quiet } = result();
+	expect(epicIntakeResultSchema.safeParse(quiet).success).toBe(true);
+	expect(
+		epicIntakeResultSchema.safeParse({
+			...quiet,
+			outcome: "needs_founder",
+			founderQuestion: "Decide",
+		}).success,
+	).toBe(false);
+	expect(
+		epicIntakeResultSchema.safeParse({
+			...quiet,
+			receipt: { kind: "bridge_record", leadId: "forged", verifiedAt: at },
+		}).success,
+	).toBe(false);
+	expect(() =>
+		validateEpicIntakeEvidence(quiet, {
+			...observation(),
+			canonicalThreadId: null,
+			message: null,
+			leadBotUserId: null,
+		}),
+	).not.toThrow();
+});

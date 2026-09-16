@@ -13,8 +13,14 @@ export const epicIntakeResultSchema = z
 		childIssueIds: ids,
 		firstBatchIssueIds: ids,
 		ledgerObservedAt: z.string().datetime(),
-		threadId: z.string().regex(/^\d{17,20}$/),
-		messageId: z.string().regex(/^\d{17,20}$/),
+		threadId: z
+			.string()
+			.regex(/^\d{17,20}$/)
+			.optional(),
+		messageId: z
+			.string()
+			.regex(/^\d{17,20}$/)
+			.optional(),
 		founderQuestion: z.string().trim().min(1).max(4000).nullable(),
 	})
 	.strict()
@@ -25,8 +31,13 @@ export const epicIntakeResultSchema = z
 	)
 	.refine(
 		(value) =>
-			value.outcome !== "needs_founder" || value.founderQuestion !== null,
-		"founder question required",
+			value.outcome !== "needs_founder" ||
+			(value.founderQuestion !== null && !!value.threadId && !!value.messageId),
+		"founder question and message required",
+	)
+	.refine(
+		(value) => !value.messageId || !!value.threadId,
+		"message requires thread",
 	);
 export type EpicIntakeResult = z.infer<typeof epicIntakeResultSchema>;
 
@@ -34,9 +45,9 @@ export type EpicIntakeResult = z.infer<typeof epicIntakeResultSchema>;
 export interface EpicIntakeEvidenceObservation {
 	active: boolean;
 	directChildIds: string[];
-	canonicalThreadId: string;
-	message: { id: string; channelId: string; authorId: string };
-	leadBotUserId: string;
+	canonicalThreadId: string | null;
+	message: { id: string; channelId: string; authorId: string } | null;
+	leadBotUserId: string | null;
 	now: string;
 	patrolIntervalMs: number;
 }
@@ -62,7 +73,13 @@ export function validateEpicIntakeEvidence(
 		value.childIssueIds.some((id) => !observation.directChildIds.includes(id))
 	)
 		throw new Error("intake_child_mismatch");
+	if (!value.messageId) {
+		if (value.threadId && value.threadId !== observation.canonicalThreadId)
+			throw new Error("intake_thread_evidence_invalid");
+		return;
+	}
 	if (
+		!observation.message ||
 		!observation.leadBotUserId ||
 		value.threadId !== observation.canonicalThreadId ||
 		observation.message.id !== value.messageId ||
@@ -70,4 +87,20 @@ export function validateEpicIntakeEvidence(
 		observation.message.authorId !== observation.leadBotUserId
 	)
 		throw new Error("intake_thread_evidence_invalid");
+}
+
+/** Stored receipts are server metadata, excluded only for request replay comparison. */
+export function sameEpicIntakeEvidence(
+	stored: unknown,
+	evidence: EpicIntakeResult,
+): boolean {
+	if (!stored || typeof stored !== "object" || Array.isArray(stored))
+		return false;
+	const { receipt: _receipt, ...request } = stored as Record<string, unknown>;
+	const parsed = epicIntakeResultSchema.safeParse(request);
+	return (
+		parsed.success &&
+		JSON.stringify(parsed.data) ===
+			JSON.stringify(epicIntakeResultSchema.parse(evidence))
+	);
 }

@@ -5,6 +5,7 @@ import {
 	type EpicIntakeEvidenceObservation,
 	type EpicIntakeResult,
 	epicIntakeResultSchema,
+	sameEpicIntakeEvidence,
 	validateEpicIntakeEvidence,
 } from "./epic-intake-result.js";
 import type { EpicIntakeRecord } from "./epic-intake-store.js";
@@ -91,7 +92,7 @@ export function createEpicIntakeRouter(
 			fail(403, "owner_mismatch");
 			return;
 		}
-		if (JSON.stringify(row.result) === JSON.stringify(evidence)) {
+		if (sameEpicIntakeEvidence(row.result, evidence)) {
 			res.json({ ok: true, intake: row });
 			return;
 		}

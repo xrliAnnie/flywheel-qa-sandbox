@@ -64,7 +64,7 @@ describe("project attention questions", () => {
 		expect(db.listAttentionQuestions({ limit: 50 }).questions).toHaveLength(2);
 	});
 
-	it("requires an explicit founder mention and keeps spilled body classification unknown", () => {
+	it("never infers founder attention from body mentions or spilled content", () => {
 		const founder = db.insertQuestion("exec", "lead", "@founder please decide");
 		const lead = db.insertQuestion("exec", "lead", "ask the Lead");
 		const notMention = db.insertQuestion(
@@ -77,12 +77,12 @@ describe("project attention questions", () => {
 			.prepare("UPDATE mailbox SET content_ref=? WHERE id=?")
 			.run("/must-not-read/body", spill);
 		const rows = db.listAttentionQuestions({ limit: 50 }).questions;
-		expect(rows.find((q) => q.id === founder)?.kind).toBe("question");
+		expect(rows.find((q) => q.id === founder)?.kind).toBe("lead_question");
 		for (const id of [lead, notMention])
 			expect(rows.find((q) => q.id === id)?.kind).toBe("lead_question");
 		expect(rows.find((q) => q.id === spill)).toMatchObject({
-			kind: "unknown",
-			classification_unknown: true,
+			kind: "lead_question",
+			classification_unknown: false,
 		});
 	});
 
@@ -239,7 +239,7 @@ describe("project attention questions", () => {
 			}),
 		).toThrow();
 	});
-	it("preserves uncertainty when spilled stop-like metadata lacks a classification", () => {
+	it("keeps spilled ordinary questions in the Lead audience without reading their body", () => {
 		const id = db.insertQuestion("exec", "lead", "opaque", {
 			id: `rstop-${"d".repeat(32)}`,
 		});
@@ -249,7 +249,11 @@ describe("project attention questions", () => {
 			)
 			.run(id);
 		const row = db.listAttentionQuestions({ limit: 50 }).questions[0];
-		expect(row).toMatchObject({ id, classification_unknown: true });
+		expect(row).toMatchObject({
+			id,
+			classification_unknown: false,
+			kind: "lead_question",
+		});
 		expect(JSON.stringify(row)).not.toContain("opaque");
 		expect(JSON.stringify(row)).not.toContain("private");
 	});

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -44,6 +45,7 @@ export type StatusQueryFn = (
 
 /** FLY-91 Round 3: Options object for createQueryRouter (replaces positional params). */
 export interface QueryRouterOptions {
+	onFounderAttentionChange?: (issueId: string, projectName: string) => void;
 	retryDispatcher?: IRetryDispatcher;
 	captureSessionFn?: CaptureSessionFn;
 	statusQueryFn?: StatusQueryFn;
@@ -734,6 +736,7 @@ export function createQueryRouter(
 			projectName,
 			text,
 			replyTo,
+			founderAsk,
 		} = (req.body ?? {}) as {
 			issueId?: string;
 			issueIdentifier?: string;
@@ -742,6 +745,7 @@ export function createQueryRouter(
 			projectName?: string;
 			text?: string;
 			replyTo?: string;
+			founderAsk?: unknown;
 		};
 
 		if (
@@ -757,6 +761,25 @@ export function createQueryRouter(
 					"channelId, leadId, projectName, text, and at least one of issueId/issueIdentifier are required",
 			});
 			return;
+		}
+
+		if (founderAsk !== undefined) {
+			if (
+				!founderAsk ||
+				typeof founderAsk !== "object" ||
+				Array.isArray(founderAsk) ||
+				Object.keys(founderAsk).some((k) => k !== "questionId") ||
+				("questionId" in founderAsk &&
+					(typeof founderAsk.questionId !== "string" ||
+						!/^[A-Za-z0-9:_-]{1,128}$/.test(founderAsk.questionId)))
+			) {
+				res.status(400).json({ error: "invalid_founder_ask" });
+				return;
+			}
+			if (!apiTokenConfigured) {
+				res.status(503).json({ error: "API token not configured" });
+				return;
+			}
 		}
 
 		// FLY-927 (Task 1.6): sender gating — see /chat-threads/create above.
@@ -926,6 +949,27 @@ export function createQueryRouter(
 			created = ensureResult.created;
 		}
 
+		const founderAskId = founderAsk !== undefined ? randomUUID() : undefined;
+		if (founderAskId)
+			store.insertFounderAsk({
+				ask_id: founderAskId,
+				project_name: projectName,
+				issue_id: resolvedIssueId,
+				channel_id: channelId,
+				thread_id: threadId,
+				lead_id: leadId,
+				question_id: (founderAsk as { questionId?: string }).questionId ?? null,
+				excerpt: text,
+				asked_at: new Date().toISOString(),
+			});
+		const finishFounderAsk = (messageId?: string) => {
+			if (!founderAskId) return;
+			if (messageId)
+				store.backfillFounderAskMessage(founderAskId, messageId, threadId);
+			else store.settleFounderAsk(founderAskId, "send_failed");
+			opts?.onFounderAttentionChange?.(resolvedIssueId, projectName);
+		};
+
 		// Sequential POST via helper (handles split + allowed_mentions)
 		const { postDiscordMessageToChannel } = await import("./discord-utils.js");
 		let postResult = await postDiscordMessageToChannel(
@@ -951,6 +995,7 @@ export function createQueryRouter(
 				recovery = await opts.chatThreadCreator.ensureChatThread(threadContext);
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
+				finishFounderAsk();
 				res.status(502).json({
 					error: `Thread recovery failed: ${msg}`,
 					errorCode: "canonical_thread_unavailable",
@@ -960,6 +1005,7 @@ export function createQueryRouter(
 				return;
 			}
 			if (recovery.error || !recovery.threadId) {
+				finishFounderAsk();
 				res.status(502).json({
 					error: recovery.error ?? "ChatThreadCreator returned no threadId",
 					...(recovery.errorCode
@@ -981,6 +1027,8 @@ export function createQueryRouter(
 			);
 		}
 
+		finishFounderAsk(postResult.messageIds[0]);
+
 		if (!postResult.ok) {
 			res.status(502).json({
 				error: postResult.error,
@@ -992,6 +1040,7 @@ export function createQueryRouter(
 					: {}),
 				threadId,
 				messageIds: postResult.messageIds,
+				...(founderAskId ? { founderAskId } : {}),
 				chunksSent: postResult.chunksSent,
 				chunksTotal: postResult.chunksTotal,
 				failedChunkIndex: postResult.failedChunkIndex,
@@ -1003,8 +1052,53 @@ export function createQueryRouter(
 		res.json({
 			threadId,
 			messageIds: postResult.messageIds,
+			...(founderAskId ? { founderAskId } : {}),
 			created,
 		});
+	});
+
+	router.post("/chat-threads/founder-ask/withdraw", (req, res) => {
+		if (!chatThreadsEnabled || !replyByIssueEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+		if (!apiTokenConfigured) {
+			res.status(503).json({ error: "API token not configured" });
+			return;
+		}
+		const { askId, leadId, projectName } = req.body ?? {};
+		if (
+			typeof askId !== "string" ||
+			!isLinearUuid(askId) ||
+			typeof leadId !== "string" ||
+			typeof projectName !== "string"
+		) {
+			res.status(400).json({ error: "invalid_founder_ask_withdraw" });
+			return;
+		}
+		const ask = store.getFounderAsk(askId);
+		if (!ask) {
+			res.status(404).json({ error: "founder_ask_not_found" });
+			return;
+		}
+		if (ask.project_name !== projectName || ask.lead_id !== leadId) {
+			res.status(403).json({ error: "founder_ask_owner_mismatch" });
+			return;
+		}
+		const validation = validateChatThreadParams(
+			{ channelId: ask.channel_id, leadId, projectName },
+			projects,
+		);
+		if (!validation.ok) {
+			res.status(validation.status).json({ error: validation.error });
+			return;
+		}
+		if (!store.settleFounderAsk(askId, "lead_withdrawn")) {
+			res.status(409).json({ error: "founder_ask_already_settled" });
+			return;
+		}
+		opts?.onFounderAttentionChange?.(ask.issue_id, projectName);
+		res.json({ askId, settled: true });
 	});
 
 	// --- FLY-162 P3: Lead reverse-lookup by Discord thread id ---

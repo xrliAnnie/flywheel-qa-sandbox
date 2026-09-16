@@ -1,0 +1,610 @@
+{
+  "schemaVersion": 1,
+  "directory": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16",
+  "root": "/Users/xiaorongli/Dev/flywheel-FLY-2597",
+  "head": "41f544f0fbb19bd2b3ec85c7305b3081e7ccfcff",
+  "startedAt": "2026-09-16T01:44:46.765Z",
+  "packages": [
+    {
+      "name": "flywheel-claude-runner",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-claude-runner",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/0-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:45:17.895Z",
+          "finishedAt": "2026-09-16T01:52:20.299Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/0-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 50,
+            "files": 50,
+            "passed": 1341,
+            "failed": 0,
+            "skipped": 2,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-comm",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-comm",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/1-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:52:20.300Z",
+          "finishedAt": "2026-09-16T01:55:36.504Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/1-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 192,
+            "files": 192,
+            "passed": 2601,
+            "failed": 0,
+            "skipped": 3,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-config",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-config",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/2-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:55:36.507Z",
+          "finishedAt": "2026-09-16T01:56:04.249Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/2-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 56,
+            "files": 56,
+            "passed": 843,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-core",
+      "script": "vitest run --passWithNoTests",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-core",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/3-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:56:04.249Z",
+          "finishedAt": "2026-09-16T01:56:11.917Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/3-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 22,
+            "files": 22,
+            "passed": 263,
+            "failed": 0,
+            "skipped": 2,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-edge-worker",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-edge-worker",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/4-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:56:11.920Z",
+          "finishedAt": "2026-09-16T01:58:05.873Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/4-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 117,
+            "files": 117,
+            "passed": 1347,
+            "failed": 0,
+            "skipped": 14,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-gemini-agent",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-gemini-agent",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/5-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:58:05.874Z",
+          "finishedAt": "2026-09-16T01:58:14.085Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/5-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 12,
+            "files": 12,
+            "passed": 158,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-github-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-github-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/6-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:58:14.085Z",
+          "finishedAt": "2026-09-16T01:58:17.065Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/6-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 4,
+            "files": 4,
+            "passed": 73,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-linear-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-linear-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/7-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:58:17.066Z",
+          "finishedAt": "2026-09-16T01:58:18.489Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/7-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 1,
+            "files": 1,
+            "passed": 18,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-qa-framework",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-qa-framework",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/8-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:58:18.489Z",
+          "finishedAt": "2026-09-16T01:58:21.965Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/8-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 6,
+            "files": 6,
+            "passed": 83,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-release-contract",
+      "script": "node --test __tests__/*.test.mjs",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-release-contract",
+            "test:run"
+          ],
+          "startedAt": "2026-09-16T01:58:21.965Z",
+          "finishedAt": "2026-09-16T01:58:22.580Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/9-1.log",
+          "receipt": null,
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-slack-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-slack-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/10-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:58:22.580Z",
+          "finishedAt": "2026-09-16T01:58:24.231Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/10-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 3,
+            "files": 3,
+            "passed": 56,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-teamlead",
+      "script": "vitest run",
+      "status": "failed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-teamlead",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/11-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T01:58:24.232Z",
+          "finishedAt": "2026-09-16T02:34:37.939Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/11-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "failed",
+            "expectedFiles": 1200,
+            "files": 1200,
+            "passed": 15114,
+            "failed": 41,
+            "skipped": 7,
+            "errors": [
+              {
+                "message": "this.config.store.listFounderAskMaintenance is not a function"
+              }
+            ]
+          },
+          "status": "failed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-token-usage",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-token-usage",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/12-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T02:34:37.940Z",
+          "finishedAt": "2026-09-16T02:34:42.485Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/12-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 11,
+            "files": 11,
+            "passed": 173,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-bridge",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-bridge",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/13-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T02:34:42.486Z",
+          "finishedAt": "2026-09-16T02:35:13.446Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/13-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 60,
+            "files": 60,
+            "passed": 649,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-codex",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-codex",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/14-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T02:35:13.446Z",
+          "finishedAt": "2026-09-16T02:35:27.313Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/14-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 19,
+            "files": 19,
+            "passed": 122,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-core",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-core",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/15-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T02:35:27.313Z",
+          "finishedAt": "2026-09-16T02:35:43.607Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/15-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 33,
+            "files": 33,
+            "passed": 320,
+            "failed": 0,
+            "skipped": 4,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-headphone",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-headphone",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/16-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2597/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-16T02:35:43.608Z",
+          "finishedAt": "2026-09-16T02:35:49.109Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/16-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 6,
+            "files": 6,
+            "passed": 54,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    }
+  ],
+  "build": {
+    "command": [
+      "pnpm",
+      "-r",
+      "build"
+    ],
+    "startedAt": "2026-09-16T01:44:46.774Z",
+    "finishedAt": "2026-09-16T01:45:17.886Z",
+    "exitCode": 0,
+    "signal": null,
+    "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-YOBs16/build.log"
+  },
+  "status": "failed",
+  "exitCode": 1,
+  "finishedAt": "2026-09-16T02:35:49.110Z"
+}

@@ -1,8 +1,29 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MaterializeEpicPageDeps } from "../../epic-page/materialize.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
 import type { BridgeConfig } from "../types.js";
+
+const pageWiringMocks = vi.hoisted(() => ({
+	materialize: vi.fn(async () => ({ page: {}, snapshot: null, receipt: {} })),
+	readAttention: vi.fn(async () => ({})),
+}));
+vi.mock("../../epic-page/materialize.js", async (load) => ({
+	...(await load<typeof import("../../epic-page/materialize.js")>()),
+	materializeEpicPage: pageWiringMocks.materialize,
+}));
+vi.mock("../../epic-page/attention-sources.js", async (load) => ({
+	...(await load<typeof import("../../epic-page/attention-sources.js")>()),
+	readAttentionSources: pageWiringMocks.readAttention,
+}));
+vi.mock("../epic-page-refresher.js", async (load) => ({
+	...(await load<typeof import("../epic-page-refresher.js")>()),
+	runEpicPageAttempt: async (
+		deps: { materialize: (input: unknown) => unknown },
+		input: unknown,
+	) => deps.materialize(input),
+}));
 
 const epicResidualMocks = vi.hoisted(() => ({
 	createEpicResidualScan: vi.fn(() => ({
@@ -90,6 +111,8 @@ describe("FLY-2141 production plugin wiring", () => {
 	beforeEach(() => {
 		vi.stubEnv("TEAMLEAD_DEFAULT_LEAD_AGENT", "default-lead");
 		vi.stubEnv("DISCORD_OWNER_USER_ID", "test-founder");
+		pageWiringMocks.materialize.mockClear();
+		pageWiringMocks.readAttention.mockClear();
 		epicResidualMocks.createEpicResidualScan.mockClear();
 		epicResidualMocks.epicResidualBootWarnings.mockClear();
 		patrolTickMocks.createLeadPatrolTickPass.mockClear();
@@ -152,6 +175,60 @@ describe("FLY-2141 production plugin wiring", () => {
 			expect.objectContaining({
 				epicResidual:
 					epicResidualMocks.createEpicResidualScan.mock.results[0]?.value,
+			}),
+		);
+	});
+
+	it("background refresh resolves child links and shares the active scope with attention", async () => {
+		const scopedProjects = projects.map((project) => ({
+			...project,
+			leads: project.leads.map((lead) => ({
+				...lead,
+				chatChannel: "1516209714097291335",
+			})),
+		}));
+		const bridge = await startBridge(
+			{ ...config(), discordGuildId: "1485787271192907816" },
+			scopedProjects,
+		);
+		closeBridge = bridge.close;
+		bridge.store.upsertChatThread(
+			"1549550796725690459",
+			"1516209714097291335",
+			"TEST-1",
+			"default-lead",
+		);
+		const scan = epicResidualMocks.createEpicResidualScan.mock.calls[0]?.[0];
+		const input = {
+			projectName: "test-project",
+			binding: { team: "TEST", project: "Test Project" },
+			apiKey: "fixture",
+			trigger: "manual",
+			version: 1,
+			reasons: [],
+		};
+		await scan.runAttempt(input);
+		const deps = pageWiringMocks.materialize.mock.calls.at(
+			-1,
+		)?.[0] as MaterializeEpicPageDeps;
+		const now = new Date("2026-09-16T05:00:00Z");
+		const items = [
+			{ id: "12345678-1234-4123-8123-123456789abc", identifier: "TEST-1" },
+		];
+		expect(
+			deps
+				.readChildThreads?.("test-project", items as never, now)
+				.get(items[0]!.id)?.value,
+		).toBe(
+			"https://discord.com/channels/1485787271192907816/1549550796725690459",
+		);
+		const snapshot = Promise.resolve(null);
+		await deps.readAttention(input as never, now, snapshot);
+		expect(pageWiringMocks.readAttention).toHaveBeenLastCalledWith(
+			{ stateStore: bridge.store },
+			expect.objectContaining({
+				scopeSnapshot: snapshot,
+				channelIds: ["1516209714097291335", "1516209714097291335"],
 			}),
 		);
 	});

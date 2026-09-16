@@ -180,6 +180,15 @@ function makeRefresher(store: StateStore, opts: HarnessOpts = {}) {
 	const log = makeLog();
 	const creator = makeCreatorStub(log, opts.results);
 	const refresher = new IssueDisplayRefresher({
+		openAttentionCommReadonly: () => ({
+			listAttentionQuestions: () => ({
+				questions: [],
+				rawCount: 0,
+				nextCursor: null,
+			}),
+			isQuestionPending: () => true,
+			close: () => {},
+		}),
 		store,
 		projects: makeProjects(),
 		config: { discordBotToken: "global" } as unknown as BridgeConfig,
@@ -370,6 +379,43 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 	afterEach(() => {
 		store.close();
 		vi.restoreAllMocks();
+	});
+
+	it("FLY-2597: a no-session ask lights and a failed clear remains retryable after settlement", async () => {
+		store.insertFounderAsk({
+			ask_id: "ask",
+			project_name: PROJECT,
+			issue_id: ISSUE,
+			channel_id: CH,
+			thread_id: THREAD,
+			lead_id: "lead-1",
+			question_id: null,
+			excerpt: "Decide",
+			asked_at: new Date().toISOString(),
+		});
+		store.backfillFounderAskMessage("ask", "message");
+		const lit = makeRefresher(store);
+		await lit.refresher.refresh(ISSUE);
+		expect(lit.log.title.at(-1)).toEqual({
+			via: "statusBadge",
+			badge: "🔔要你答",
+		});
+		expect(lit.log.titleMarkers.at(-1)).toBeUndefined();
+		store.settleFounderAsk("ask", "lead_withdrawn");
+		const failed = makeRefresher(store, { results: { title: "failed" } });
+		await failed.refresher.refresh(ISSUE);
+		expect(failed.log.title.at(-1)).toEqual({
+			via: "statusBadge",
+			badge: null,
+		});
+		expect(storedFingerprint(store)).toBeNull();
+		const restart = makeRefresher(store);
+		await restart.refresher.refresh(ISSUE);
+		expect(restart.log.title.at(-1)).toEqual({
+			via: "statusBadge",
+			badge: null,
+		});
+		expect(storedFingerprint(store)).not.toBeNull();
 	});
 
 	it("FLY-2561: materializing a founder card refreshes QA to approve without a sweep", async () => {

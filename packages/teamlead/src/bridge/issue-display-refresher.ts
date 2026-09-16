@@ -1,3 +1,9 @@
+import { founderAttentionLevel } from "./founder-attention.js";
+import {
+	attentionFactMatchesIssue,
+	type FounderAttentionFactsDeps,
+	readFounderAttentionFacts,
+} from "./founder-attention-facts.js";
 /**
  * FLY-907 Step 2/3/4: the unified issue-display refresher.
  *
@@ -19,10 +25,7 @@
  * keeps thin forwards), now with the Step-3 attach cross-wire guard.
  */
 
-import { existsSync } from "node:fs";
-import Database from "better-sqlite3";
 import {
-	installSqlTiming,
 	isWorkflowPhaseRole,
 	modelDisplayName,
 	PHASE_ROLE_SEQUENCE,
@@ -38,29 +41,25 @@ import {
 } from "../ProjectConfig.js";
 import type { Session, StateStore, WorkflowRunRow } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
-import { workflowApprovalGate } from "../workflow-template.js";
 import {
 	buildPipelineHeaderContent,
 	type ChatThreadContext,
 	type ChatThreadCreator,
 	type PhaseHeaderRow,
 } from "./ChatThreadCreator.js";
-import { commDbPathForProject } from "./commdb-path.js";
 import { deleteDiscordMessageInChannel } from "./discord-utils.js";
+import type { DisplayWriteResult, ParkProbe } from "./issue-display.js";
 import {
-	type DisplayWriteResult,
-	deriveFounderGateTitleState,
-	deriveIssueTitleBadge,
-	derivePhaseDisplayState,
-	type ParkProbe,
-	type PhaseDisplayState,
-} from "./issue-display.js";
-import { isQaHeld, isReviewHeld } from "./review-hold.js";
+	hasDurableIssueConclusion,
+	readIssueParkProbe,
+	readIssueTitleState,
+} from "./issue-title-state.js";
 import { sessionModelDisplay } from "./runner-model-display.js";
 import {
 	BLOCKED_EMOJI,
 	BLOCKED_WORD,
 	founderGateAttentionBadge,
+	needsAnswerBadge,
 	stageBadge,
 } from "./stage-utils.js";
 import {
@@ -152,20 +151,7 @@ export function issueStatusWordEnabled(): boolean {
 	return true;
 }
 
-/** Fail closed when a run cannot prove its snapshot-defined approval gate. */
-export function isWorkflowApprovalGateCurrent(
-	run: WorkflowRunRow | undefined,
-): boolean {
-	if (!run?.snapshot || run.status !== "active" || !run.current_node_id) {
-		return false;
-	}
-	try {
-		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-		return run.current_node_id === workflowApprovalGate(snapshot.manifest).node;
-	} catch {
-		return false;
-	}
-}
+export { isWorkflowApprovalGateCurrent } from "./issue-title-state.js";
 
 /**
  * FLY-907 (Step 3): does the resolved tmux window belong to this issue? The
@@ -438,26 +424,7 @@ const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
 	"design_done",
 ]);
 
-type IssueConclusionStore = Pick<
-	StateStore,
-	"hasFinalizationCompletedForIssue" | "hasMergeConfirmedForIssue"
->;
-
-/**
- * FLY-1709: `terminated` is concluded cleanup only when the issue has durable
- * ship evidence. A historical completed session is not sufficient: generalized
- * DAGs can leave several main-role rows on one issue, and a later abandoned node
- * must not inherit an earlier node's success.
- */
-export function hasDurableIssueConclusion(
-	store: IssueConclusionStore,
-	issueId: string,
-): boolean {
-	return (
-		store.hasFinalizationCompletedForIssue(issueId) ||
-		store.hasMergeConfirmedForIssue(issueId)
-	);
-}
+export { hasDurableIssueConclusion } from "./issue-title-state.js";
 
 /**
  * FLY-907 sweep layer-1 fast hash input: the sessions-table component of the
@@ -528,6 +495,7 @@ function parseFingerprint(raw: string | null): DisplayFingerprint | undefined {
 
 export interface IssueDisplayRefresherDeps {
 	store: StateStore;
+	openAttentionCommReadonly?: FounderAttentionFactsDeps["openCommReadonly"];
 	projects: ProjectEntry[];
 	config: BridgeConfig;
 	chatThreadCreator: ChatThreadCreator;
@@ -673,39 +641,14 @@ export class IssueDisplayRefresher {
 	// ── derivation + render ──
 
 	private readParkProbe(projectName: string, execId: string): ParkProbe {
-		if (this.deps.readParkProbe) {
+		if (this.deps.readParkProbe)
 			return this.deps.readParkProbe(projectName, execId);
-		}
-		// Keep-alive OFF → park markers are not part of this project's lifecycle
-		// → "unknown" (status-table-only derivation, plan 1a).
 		if (!this.deps.keepAliveEnabled()) return "unknown";
-		const dbPath = commDbPathForProject(projectName);
-		if (!existsSync(dbPath)) return "unknown";
-		let db: InstanceType<typeof Database> | undefined;
-		try {
-			db = installSqlTiming(
-				new Database(dbPath, { readonly: true, fileMustExist: true }),
-				"comm",
-			);
-			db.pragma("busy_timeout = 5000");
-			const row = db
-				.prepare(
-					"SELECT kind, expires_at FROM runner_declared_states WHERE execution_id = ?",
-				)
-				.get(execId) as
-				| { kind?: string; expires_at?: number | null }
-				| undefined;
-			if (!row || row.kind !== "parked") return "not_parked";
-			const now = this.deps.now?.() ?? Date.now();
-			if (row.expires_at != null && row.expires_at <= now) return "not_parked";
-			return "parked";
-		} catch {
-			// missing table / locked / corrupt — could NOT probe. NEVER read this
-			// as "was woken" (Codex R1 #2).
-			return "unknown";
-		} finally {
-			db?.close();
-		}
+		return readIssueParkProbe(
+			projectName,
+			execId,
+			this.deps.now?.() ?? Date.now(),
+		);
 	}
 
 	private async refreshOnce(issueId: string): Promise<void> {
@@ -716,18 +659,31 @@ export class IssueDisplayRefresher {
 
 		const { store, projects, config, chatThreadCreator, flags } = this.deps;
 		const anySession = store.getSessionByIssue(issueId);
-		if (!anySession) return;
+		const askContext = !anySession
+			? store.getLatestFounderAskForIssue(issueId)
+			: undefined;
+		if (!anySession && !askContext) return;
+		const projectName = anySession?.project_name ?? askContext!.project_name;
 		const activeWorkflowRun = store.getActiveWorkflowRunForIssue(issueId);
 
 		let chatChannel: string | undefined;
 		let botToken: string | undefined;
 		let leadId: string | undefined;
 		try {
-			const { lead } = resolveLeadForIssue(
-				projects,
-				anySession.project_name,
-				parseIssueLabels(anySession.issue_labels),
-			);
+			const lead = anySession
+				? resolveLeadForIssue(
+						projects,
+						projectName,
+						parseIssueLabels(anySession.issue_labels),
+					).lead
+				: projects
+						.find((p) => p.projectName === projectName)
+						?.leads.find(
+							(l) =>
+								l.agentId === askContext!.lead_id &&
+								l.chatChannel === askContext!.channel_id,
+						);
+			if (!lead) return;
 			chatChannel = lead.chatChannel;
 			botToken = lead.botToken ?? config.discordBotToken;
 			leadId = lead.agentId;
@@ -756,10 +712,23 @@ export class IssueDisplayRefresher {
 			return;
 		}
 
-		const latestPhase = store.getLatestPhaseSessionsForIssue(issueId);
-		const isWorkflowPhase = latestPhase.length > 0;
-		const founderGateActive = isWorkflowApprovalGateCurrent(activeWorkflowRun);
-		const issueConcluded = hasDurableIssueConclusion(store, issueId);
+		const attention = readFounderAttentionFacts(
+			{
+				stateStore: store,
+				openCommReadonly: this.deps.openAttentionCommReadonly,
+			},
+			{ projectName, now: new Date(this.deps.now?.() ?? Date.now()) },
+		);
+		// Unknown is not empty: retain the current title and leave reconciliation dirty.
+		if (!attention.available) return;
+		const aliases = [issueId, anySession?.issue_identifier].filter(
+			(x): x is string => !!x,
+		);
+		const founderAttention = founderAttentionLevel(
+			attention.pending
+				.filter((p) => attentionFactMatchesIssue(p, aliases))
+				.map((p) => p.source.fact.value?.kind ?? ""),
+		);
 
 		// Park probes — once per involved exec (the map dedupes).
 		const parkByExec = new Map<string, ParkProbe>();
@@ -771,54 +740,16 @@ export class IssueDisplayRefresher {
 			return probe;
 		};
 
-		// Unified per-phase states (face A aggregation + face B rows).
-		const phaseStates = new Map<WorkflowPhaseRole, PhaseDisplayState>();
-		const phaseStatuses = new Map<WorkflowPhaseRole, string>();
-		const phaseSessionByRole = new Map<WorkflowPhaseRole, Session>();
-		for (const s of latestPhase) {
-			const role = s.chat_thread_role as WorkflowPhaseRole;
-			phaseSessionByRole.set(role, s);
-			phaseStatuses.set(role, s.status);
-			phaseStates.set(
-				role,
-				derivePhaseDisplayState({
-					role,
-					status: s.status,
-					park: parkFor(s),
-					issueConcluded,
-				}),
-			);
-		}
-		const shipFinalizationClaimed =
-			isWorkflowPhase && store.hasFinalizationCompletedForIssue(issueId);
-
-		// ── Face A: title badge ──
-		const titleBadgeInput = {
-			phaseStates,
-			phaseStatuses,
-			shipFinalizationClaimed,
-			mainSessionStage: anySession.session_stage,
-			mainSessionStatus: anySession.status,
-			issueConcluded,
-		};
-		let { badge, founderGateAttention } = deriveFounderGateTitleState({
-			...titleBadgeInput,
-			founderGateActive,
-		});
-		// Founder attention starts only after the existing code/QA/merge hold has
-		// cleared. Those holds gate every founder surface, so the title must not
-		// imply that founder action can advance the issue while one is active.
-		// Preserve the pre-FLY-2408 independent auto-QA title for single-session
-		// issues; that QA runs on a separate QA·FLY-XX issue and is not derivable
-		// from this issue's session rows.
-		const qaHeld = !isWorkflowPhase && isQaHeld(store, anySession);
-		if (founderGateAttention && (qaHeld || isReviewHeld(store, anySession))) {
-			founderGateAttention = false;
-			badge = deriveIssueTitleBadge(titleBadgeInput);
-		}
-		if (badge.kind === "stage" && qaHeld) {
-			badge = { kind: "stage", stage: "test" };
-		}
+		const { isWorkflowPhase, phaseStates, phaseSessionByRole, titleState } =
+			readIssueTitleState({
+				store,
+				issueId,
+				anySession,
+				activeWorkflowRun,
+				parkFor,
+				founderAttention,
+			});
+		const { badge, founderGateAttention } = titleState;
 
 		const withWord = issueStatusWordEnabled();
 		const badgeSession =
@@ -828,17 +759,24 @@ export class IssueDisplayRefresher {
 		const titleCtx: ChatThreadContext = {
 			chatChannelId: chatChannel,
 			issueId,
-			issueIdentifier: anySession.issue_identifier,
-			issueTitle: anySession.issue_title,
+			issueIdentifier: anySession?.issue_identifier,
+			issueTitle: anySession?.issue_title,
 			botToken,
 			leadId,
-			modelMarker: sessionModelDisplay(badgeSession)?.threadMarker ?? null,
-			routeSummary: parseWorkflowRouteSummary(anySession.session_params),
+			modelMarker: badgeSession
+				? (sessionModelDisplay(badgeSession)?.threadMarker ?? null)
+				: undefined,
+			routeSummary: anySession
+				? parseWorkflowRouteSummary(anySession.session_params)
+				: undefined,
 		};
 
 		let resultA: DisplayWriteResult = "noop";
 		if (flags.issueStatusEmojiEnabled) {
-			if (this.deps.isReconnectTitleActive?.(badgeSession.execution_id)) {
+			if (
+				badgeSession &&
+				this.deps.isReconnectTitleActive?.(badgeSession.execution_id)
+			) {
 				// HeartbeatService owns the ⚠️重连中 title right now — defer (no
 				// fingerprint) so a later refresh reconciles after reconnect ends.
 				resultA = "deferred";
@@ -859,6 +797,13 @@ export class IssueDisplayRefresher {
 						founderGateAttentionBadge(primaryBadge),
 					);
 				}
+			} else if (badge.kind === "needs_answer") {
+				const answer = needsAnswerBadge(withWord);
+				resultA = await chatThreadCreator.stampStatusBadgeResult(
+					titleCtx,
+					threadId,
+					answer ?? null,
+				);
 			} else if (badge.kind === "completed") {
 				resultA = await chatThreadCreator.stampStageEmojiResult(
 					titleCtx,
@@ -874,14 +819,37 @@ export class IssueDisplayRefresher {
 					withWord,
 					PHASE_THREAD_BADGE[badge.phase],
 				);
-			} else if (badge.stage) {
+			} else if (badge.kind === "stage" && badge.stage) {
 				resultA = await chatThreadCreator.stampStageEmojiResult(
 					titleCtx,
 					threadId,
 					badge.stage,
 					withWord,
 				);
+			} else {
+				resultA = await chatThreadCreator.stampStatusBadgeResult(
+					titleCtx,
+					threadId,
+					null,
+				);
 			}
+		}
+		if (!anySession) {
+			if (resultA === "changed" || resultA === "noop")
+				store.setChatThreadDisplayFingerprint(
+					issueId,
+					chatChannel,
+					JSON.stringify({
+						s: computeSessionsFingerprint(
+							store,
+							issueId,
+							activeWorkflowRun ?? null,
+						),
+						c: JSON.stringify({ founderAttention }),
+					}),
+					new Date().toISOString(),
+				);
+			return;
 		}
 
 		// ── Face B: pinned pipeline header / single-runner attach pin ──

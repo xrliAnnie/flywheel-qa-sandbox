@@ -1,5 +1,10 @@
-import { CommDB } from "flywheel-comm/db";
-import { commDbPathForProject } from "../bridge/commdb-path.js";
+import { founderAttentionLevel } from "../bridge/founder-attention.js";
+import {
+	type FounderAttentionFactsDeps,
+	readEffectiveFounderAttention,
+	readFounderAttentionFacts,
+} from "../bridge/founder-attention-facts.js";
+import type { IssueTitleStateStore } from "../bridge/issue-title-state.js";
 import {
 	fetchLinearAttentionIssueMetadata,
 	fetchLinearFounderReviewAttention,
@@ -11,23 +16,23 @@ import type { StateStore } from "../StateStore.js";
 import {
 	type AttentionCandidate,
 	type AttentionInput,
-	type AttentionSource,
 	validDiscordId,
 } from "./attention.js";
 import type { Cell, MissingReason, Provenance } from "./model.js";
 
 export interface AttentionSourceDeps {
-	stateStore: Pick<
-		StateStore,
-		| "readDiscordConfig"
-		| "listAttentionGateFacts"
-		| "resolveAttentionQuestionIdentity"
-		| "resolveAttentionThreadBinding"
-		| "classifyAttentionMailboxGate"
-	>;
-	openCommReadonly?: (
-		path: string,
-	) => Pick<CommDB, "listAttentionQuestions" | "close">;
+	stateStore: IssueTitleStateStore &
+		Pick<
+			StateStore,
+			| "readDiscordConfig"
+			| "listAttentionGateFacts"
+			| "resolveAttentionQuestionIdentity"
+			| "resolveAttentionThreadBinding"
+			| "classifyAttentionMailboxGate"
+			| "listOpenFounderAsks"
+			| "hasFounderAttentionReplyAfter"
+		>;
+	openCommReadonly?: FounderAttentionFactsDeps["openCommReadonly"];
 	fetchFounderReview?: typeof fetchLinearFounderReviewAttention;
 	fetchIssueMetadata?: typeof fetchLinearAttentionIssueMetadata;
 }
@@ -92,22 +97,6 @@ export async function readAttentionSources(
 		statestore: cell({ available: true as const }, identityStateKey),
 		linear: cell({ available: true as const }, identityLinearKey),
 	};
-	const resolveIdentity = (questionId: string, executionId: string) => {
-		try {
-			return deps.stateStore.resolveAttentionQuestionIdentity(
-				input.projectName,
-				questionId,
-				executionId,
-			);
-		} catch {
-			identityReads.statestore = cell<never>(
-				null,
-				identityStateKey,
-				"source_unavailable",
-			);
-			return { status: "unknown" as const };
-		}
-	};
 	// Start the independent network read before local database work; settle failures now.
 	const namedPromise = (async (): Promise<LinearAttentionResult> => {
 		try {
@@ -145,144 +134,12 @@ export async function readAttentionSources(
 		questions: cell<never>(null, comm(), "source_unavailable"),
 		founder_review: cell<never>(null, labelKey, "source_unavailable"),
 	};
-	type Pending = {
-		key: string;
-		issue: string | null;
-		source: AttentionSource;
-		channel: string | null;
-	};
-	const pending: Pending[] = [];
-	try {
-		const result = deps.stateStore.listAttentionGateFacts(input.projectName);
-		reads.gates = cell(
-			result.truncated ? null : { count: result.facts.length },
-			readKey,
-			result.truncated ? "source_truncated" : undefined,
-		);
-		for (const fact of result.facts) {
-			if (fact.node_id !== "founder_gate") continue;
-			const identity = resolveIdentity(fact.question_id, fact.execution_id);
-			const provenance = state("workflow_gate_holder", {
-				question_id: fact.question_id,
-				run_id: fact.run_id,
-				node_id: fact.node_id,
-				attempt: String(fact.attempt),
-				execution_id: fact.execution_id ?? "unknown",
-			});
-			pending.push({
-				key: `holder:${fact.question_id}`,
-				issue: identity.status === "resolved" ? identity.issue_id : null,
-				channel: identity.status === "resolved" ? identity.channel_id : null,
-				source: {
-					fact: cell(
-						{
-							id: fact.question_id,
-							kind: fact.kind,
-							state: fact.state,
-							authority_mode: fact.authority_mode,
-						},
-						provenance,
-					),
-					since: cell(
-						fact.since,
-						provenance,
-						fact.since ? undefined : "invalid_since",
-					),
-				},
-			});
-		}
-	} catch {
-		reads.gates = cell<never>(null, readKey, "source_unavailable");
-	}
-	try {
-		const db = (deps.openCommReadonly ?? CommDB.openReadonly)(
-			commDbPathForProject(input.projectName),
-		);
-		try {
-			let cursor: { created_at: string; id: string } | undefined;
-			let rawCount = 0;
-			let count = 0;
-			let incomplete: MissingReason | undefined;
-			do {
-				const page = db.listAttentionQuestions({
-					limit: Math.min(50, 1000 - rawCount),
-					...(cursor ? { cursor } : {}),
-				});
-				rawCount += page.rawCount;
-				for (const q of page.questions) {
-					if (q.kind === "founder_gate" || q.kind === "ship") {
-						try {
-							if (
-								deps.stateStore.classifyAttentionMailboxGate(
-									input.projectName,
-									q.id,
-								) !== "legacy" ||
-								!["founder_review", "brainstorm"].includes(q.checkpoint ?? "")
-							)
-								continue;
-						} catch {
-							incomplete = "source_unavailable";
-							identityReads.statestore = cell<never>(
-								null,
-								identityStateKey,
-								"source_unavailable",
-							);
-							continue;
-						}
-						// Review/brainstorm rounds use their mailbox checkpoint rather
-						// than a gate holder. Current holders are already included above;
-						// unbound legacy ship asks do not establish a current ship card.
-					}
-					const provenance = comm(q.id);
-					const identity = resolveIdentity(q.id, q.execution_id);
-
-					const role = ["lead", "bridge", "runner"].includes(
-						q.recipient_role ?? "",
-					)
-						? (q.recipient_role as "lead" | "bridge" | "runner")
-						: null;
-					if (q.classification_unknown) incomplete = "source_unavailable";
-					pending.push({
-						key: `question:${q.id}`,
-						issue: identity.status === "resolved" ? identity.issue_id : null,
-						channel:
-							identity.status === "resolved" ? identity.channel_id : null,
-						source: {
-							fact: cell(
-								{
-									id: q.id,
-									kind: q.kind ?? "unknown",
-									state: q.state,
-								},
-								provenance,
-							),
-							since: cell(
-								q.since,
-								provenance,
-								q.since ? undefined : "invalid_since",
-							),
-							recipient_role: cell(
-								role,
-								provenance,
-								role ? undefined : "source_unavailable",
-							),
-						},
-					});
-					count++;
-				}
-				cursor = page.nextCursor ?? undefined;
-				if (cursor && rawCount >= 1000) {
-					incomplete = "source_truncated";
-					break;
-				}
-			} while (cursor);
-			reads.questions = cell(incomplete ? null : { count }, comm(), incomplete);
-		} finally {
-			db.close();
-		}
-	} catch {
-		/* Never turn a failed project read into a successful empty list. */
-	}
+	const facts = readFounderAttentionFacts(deps, input);
+	const pending = facts.pending;
+	type Pending = (typeof pending)[number];
+	reads.gates = facts.reads.gates;
+	reads.questions = facts.reads.questions;
+	identityReads.statestore = facts.identityRead;
 	const named = await namedPromise;
 	reads.founder_review = cell(
 		named.missing ? null : { count: named.items.length },
@@ -368,7 +225,47 @@ export async function readAttentionSources(
 		map.set(issue.id, channels);
 	}
 	const threads = new Map<string, AttentionCandidate["thread"]>();
-	const candidates: AttentionCandidate[] = pending.map((p) => {
+	const visible = pending.filter((p) => {
+		const kindLevel = founderAttentionLevel([p.source.fact.value?.kind ?? ""]);
+		if (!kindLevel) return true;
+		if (!p.issue) return true;
+		const issue = issueFor(p);
+		const aliases = issue ? [issue.id, issue.identifier] : [p.issue];
+		const markUnavailable = () => {
+			const bucket =
+				p.source.fact.provenance.kind === "commdb" ? "questions" : "gates";
+			reads[bucket] = cell<never>(
+				null,
+				reads[bucket].provenance,
+				"source_unavailable",
+			);
+			return false;
+		};
+		try {
+			// Prefer the source's bound issue key over a metadata-only UUID alias.
+			const canonical =
+				[p.issue, ...aliases].find((alias) =>
+					deps.stateStore.getSessionByIssue(alias),
+				) ?? p.issue;
+			const effective = readEffectiveFounderAttention(
+				deps.stateStore,
+				facts,
+				canonical,
+				aliases,
+			);
+			if (!effective.available) return markUnavailable();
+			return effective.level === kindLevel;
+		} catch {
+			return markUnavailable();
+		}
+	});
+	for (const p of pending) {
+		if (visible.includes(p)) continue;
+		const bucket =
+			p.source.fact.provenance.kind === "commdb" ? "questions" : "gates";
+		if (reads[bucket].value) reads[bucket].value!.count--;
+	}
+	const candidates: AttentionCandidate[] = visible.map((p) => {
 		const issue = issueFor(p);
 		const provenance = issue ? linear(issue.id) : p.source.fact.provenance;
 		let thread: AttentionCandidate["thread"];

@@ -63,6 +63,8 @@ describe("FLY-2008 founder-reply scan budget", () => {
 		emitSpy.mockClear();
 		sessions = Array.from({ length: 40 }, (_, index) => session(index));
 		store = {
+			listFounderAskMaintenance: vi.fn(() => []),
+			listFounderAskScanTargets: vi.fn(() => []),
 			listNonTerminalSessions: vi.fn(() => sessions),
 			getSession: vi.fn((executionId: string) =>
 				sessions.find((item) => item.execution_id === executionId),

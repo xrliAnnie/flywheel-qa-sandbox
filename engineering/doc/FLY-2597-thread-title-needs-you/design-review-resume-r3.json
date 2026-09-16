@@ -1,0 +1,113 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "aec0d147-ef68-464a-bcae-dd9291ee44cd",
+  "round": 3,
+  "findings": [
+    {
+      "id": "null-strip-branch-should-key-on-missing-badge-not-missing-session",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 213,
+      "title": "§13 的 null-strip 分支写成「无 session 分支」,但同一死角在「有 session 但 session_stage 为空」时也成立;条件应按「无可恢复徽章」而不是按「无 session」来判",
+      "detail": "§13 第一条把清除义务挂在「在无 session 分支明确区分『显示 needs_answer』与『清除 attention』」上,但同一句里的「当 shared attention 为 null 且无 stage 可恢复时」才是正确的判据。`sessions.session_stage` 是可空列(StateStore.ts:6349 由 ALTER TABLE 追加,无 NOT NULL;类型声明 StateStore.ts:1287/1400 均为 `session_stage?: string`),所以「有 session 行但 stage 为空」是可达状态:deriveIssueTitleBadge 走 phaseStates.size===0 分支,逐条落空后 `return { kind: 'stage', stage: args.mainSessionStage }`(issue-display.ts:181)得到 `{kind:'stage', stage: undefined}`;回到 issue-display-refresher.ts:843-884 的渲染阶梯,blocked / founderGateAttention / completed / phase 全部不命中,最后 `else if (badge.stage)` 因 undefined 为假 → 一次 writer 都不调 → resultA 停在 'noop' → allLanded 为真 → 指纹持久化(issue-display-refresher.ts:1055-1072)→ 🔔要你答 留在标题上,与 R2 报的无 session 死角完全同形。建议把 §13 第一条的触发条件从「无 session 分支」改写为「shared attention 为 null 且派生不出可写徽章(badge.kind==='stage' 且 stage 为空)」,无 session 只是它的一个实例;C5 的必测里相应加一条「有 session、stage 为空、ask settle → writer 收到 null」。",
+      "failure_scenario": "run-start 刚建好 session 行、runner 还没报出第一个 stage(session_stage 为 NULL)的窗口里,Lead 用 send+founderAsk 提了一个问题 → 标题亮 🔔要你答。founder 回帖 settle 后,badge={kind:'stage',stage:undefined},渲染阶梯全部落空,resultA='noop',指纹写入 → 该 thread 标题停在 🔔要你答,直到 runner 报出下一个 stage 才被顺带盖掉;若该 runner 再没报过 stage,徽章就一直留着。",
+      "findingKey": "null-strip-branch-should-key-on-missing-badge-not-missing-session"
+    },
+    {
+      "id": "shared-effective-module-must-absorb-refresher-hold-block",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 194,
+      "title": "「复用 deriveFounderGateTitleState 的优先级」拿不到 holds —— hold 抑制不在那个纯函数里,而在 refresher 里,且带 `!isWorkflowPhase` 守卫;不点名会让 DAG 车道重新分叉",
+      "detail": "§12.2 写「从同一 issue identity 读取当前 session/phase/issue-conclusion/holds,复用 deriveFounderGateTitleState 的优先级」,§13 又据此把页面收窄为服从 title 结果。但 hold 抑制并不在 deriveFounderGateTitleState 内部:该纯函数(issue-display.ts:239-266)只处理 blocked / shipApproved / founderGateActive / founderAttention / approve 五档,完全不知道 holds。真正的抑制在 refresher 里,是派生之后的一段后处理(issue-display-refresher.ts:814-819):`const qaHeld = !isWorkflowPhase && isQaHeld(store, anySession); if (founderGateAttention && (qaHeld || isReviewHeld(store, anySession))) { founderGateAttention = false; badge = deriveIssueTitleBadge(titleBadgeInput); }`,紧接着还有 `if (badge.kind === 'stage' && qaHeld) badge = {kind:'stage', stage:'test'}`。两条谓词的形状也不一样:isQaHeld(review-hold.ts:183-197)只对 session_role='main' 且 status='awaiting_review' 且有 pr_head_sha 的单 session 成立,并被 `!isWorkflowPhase` 再挡一层;isReviewHeld(review-hold.ts:74-81)没有 phase 守卫,走 reviewHoldReason 的 merge_block→codex→QA 链。若共享模块只吸收纯函数的优先级,DAG 车道(isWorkflowPhase 为真)上 title 不压 ship 而页面若照搬 isQaHeld 就会压,恰好在 §13 刚承诺统一的那一点上重新分叉。建议在 §12.2/§13 里点名:shared effective result 必须把 refresher 的这段 hold 后处理(含 `!isWorkflowPhase` 守卫与 badge 重算)一起下沉,两张脸调同一个出口;并把 §13 的 `qaHeld/reviewHeld + ship holder → title/page 同时无 founder attention` 测试拆成 DAG 与非 DAG 两条。",
+      "failure_scenario": "一个走 DAG 工作流(isWorkflowPhase 为真)的单处在 auto-QA hold 且 ship 门持有者存在。title 侧因 `!isWorkflowPhase` 守卫不压 ship,仍显示 🔔 ⏳待批;页面侧若实现时只看到「复用 deriveFounderGateTitleState + 读 holds」而直接调 isQaHeld(无 phase 守卫),就会把这张 ship 卡从「现在要你看」摘掉 —— 两张脸在 ship 档再次不一致,而 §13 的单条测试若只覆盖非 DAG 场景则测不出来。",
+      "findingKey": "shared-effective-module-must-absorb-refresher-hold-block"
+    },
+    {
+      "id": "no-session-title-has-no-extinguish-branch",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 213,
+      "title": "[R2 HIGH,已修复] §13 指定了 stampStatusBadgeResult(...,null) 清除路径、titleCtx 来源与 dirty-fingerprint 重试,逐条核对属实",
+      "detail": "复核通过,且 §13 对既有代码的引用经得起核对:①清除原语正确 —— stampStatusBadgeResult(ctx, threadId, null)(ChatThreadCreator.ts:682-688)走 enqueueTitleWriteResult → writeTitleOnce,badge=null 时 composeThreadTitle('', base, effectiveMarker)(ChatThreadCreator.ts:884-888)只剥受管前缀、保留 Discord 读回的 base。②「不能把未调用 writer 当作 noop 成功」正对 R2 报的漏洞(resultA 停 'noop' → allLanded 为真 → 指纹持久化,issue-display-refresher.ts:1055-1072),也避开了 stampStageEmojiResult 在 badge 为空时自己 `return 'noop'`(ChatThreadCreator.ts:673-675)的第二个假成功入口。③「modelMarker 保持 undefined 以保留既有 marker」与 ChatThreadCreator.ts:870-874 的三态语义完全一致(`ctx.modelMarker === undefined ? modelMarkerLabel(rawBase) /* preserve */ : (ctx.modelMarker ?? undefined)`),不会把 [F] 一起剥掉。④「issueTitle 不填写」安全:writeTitleOnce:877-882 优先采用读回的 bareBase,只有当前名是 placeholder 时才从 ctx 重建。⑤dirty-fingerprint 重试可行且不需改查询 —— listDisplayReconcileCandidates(StateStore.ts:18855-18872)本就是 chat_threads 驱动(sessions 只做 LEFT JOIN 算 `la` 排序键),无 session 的 thread 已在候选集合内(排在 la='' 的尾部,由 keyset 游标分页覆盖),把 display_fingerprint 置空即可让 parseFingerprint 返回 undefined 触发 `if (!stored || ...) enqueue`;「仅 writer 返回 changed/noop 才持久化成功 fingerprint」与既有 allLanded 闸一致。⑥绑定冲突/缺失/读失败 → deferred 不写指纹,覆盖了「issue_id 在多项目 founder_ask 行里撞名」的定位歧义。遗留的只有触发条件措辞(见 null-strip-branch-should-key-on-missing-badge-not-missing-session)。保留本条仅为跨轮 id 追溯,非阻塞。",
+      "failure_scenario": "已消解:无 session Epic 的 ask settle 后,shared attention 为 null 且无 stage 可恢复 → 调 stampStatusBadgeResult(...,null) → 前缀被剥、base title 与 model marker 原样保留;PATCH 失败或进程重启时 thread 仍留在待重算集合,下一轮从 settled ask 重试。",
+      "findingKey": "no-session-title-has-no-extinguish-branch"
+    },
+    {
+      "id": "legacy-gate-watermark-has-no-re-raise-contract",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 217,
+      "title": "[R2 MEDIUM,已修复] §13 把再提起责任写进 C9,禁止自动抹水位/周期性无条件重亮,并补了正对该缺口的测试",
+      "detail": "复核通过。§13 的处置回答了 R2 提的全部三点:①明确这是 founder 指定的语义(任意真实 founder 回帖熄灭该时刻之前的非 ship 提醒,不猜回复内容)—— 尊重 founder 的产品决定,不由评审推翻;②明确 gate 本身、runner 的 waiting_founder 状态与既有 dwell/patrol 都不变,即水位只静音提醒、不动 gate 授权(与落地稿一致:founder-attention-facts.ts:194-205 的水位判断只作用在 mailbox 分支的 `q.kind === 'founder_gate'` 上,holder 档的 ship 走 listAttentionGateFacts 那一段,不查水位,ship 卡不会被无关回帖抹掉);③把再提起的所有者写死在 C9(Lead 发现 gate 仍未答且确需 founder 决定时,用新的 send+founderAsk 关联原 questionId 重新提出),并禁止自动抹水位或周期性无条件重亮 —— 这正是我要的「有主」而不是「靠运气」;④测试「无关 founder 回复→旧提醒灭但 gate pending 与 waiting_founder 不变→Lead 新显式 ask→两张脸再亮」精确覆盖了 R2 指出的未测场景。保留本条仅为跨轮 id 追溯,非阻塞。",
+      "failure_scenario": "已消解:无关 founder 回帖静音旧提醒后,gate 与 waiting_founder 信号不变,Lead 按 C9 用新 ask 重新点亮两张脸,不依赖任何自动重亮。",
+      "findingKey": "legacy-gate-watermark-has-no-re-raise-contract"
+    },
+    {
+      "id": "effective-attention-silently-changes-ship-lane-on-page",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 219,
+      "title": "[R2 MEDIUM,已修复] 歧义已消除:明确选页面服从 title,§1 范围与 §6 迁移/回滚同步补述,并补了 hold 进出测试",
+      "detail": "复核通过。R2 指出的是 §12.2「QA/review hold 继续维持原 ship 行为」在页面侧两可、且与 §1『不做』第一条冲突、又没进 §6 迁移。§13 逐项处理:①明确二选一,选「页面服从现有 title 结果」,并定性为 user 指定「只列当前带状态的 thread」所要求的页面行为收窄,而非 ship 权限或 title 待批语义的改动;②§1 第 2 条同步改写(本轮 diff 可见),把「页面因此跟随既有标题的 QA/review hold 抑制,held ship 不再单独出现在此列表;ship 授权、title 待批语义及 Layer-2 节奏保持原样」写进范围,解除了与『不做』的表面冲突;③§6 前向迁移补述「原页面在 QA/review hold 期间单独列出的 ship 来源,现在从 founder 待你看块移除;解除 hold 后与 title 同时出现;回滚后恢复旧页面列出行为」,补齐了 R2 指出的迁移空白;④补 `qaHeld/reviewHeld + ship holder → title/page 同时无 founder attention;解除 hold → 同时待批` 测试,并声明不改 holder/gate/ship writer。遗留的只是共享模块该从哪儿取 holds(见 shared-effective-module-must-absorb-refresher-hold-block)。保留本条仅为跨轮 id 追溯,非阻塞。",
+      "failure_scenario": "已消解:hold 期间 ship 卡从两张脸同时消失、解除后同时回来,行为已在 §1/§6 声明并有测试与回滚说明。",
+      "findingKey": "effective-attention-silently-changes-ship-lane-on-page"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "null-strip-branch-should-key-on-missing-badge-not-missing-session",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 213,
+      "title": "§13 的 null-strip 分支写成「无 session 分支」,但同一死角在「有 session 但 session_stage 为空」时也成立;条件应按「无可恢复徽章」而不是按「无 session」来判",
+      "detail": "§13 第一条把清除义务挂在「在无 session 分支明确区分『显示 needs_answer』与『清除 attention』」上,但同一句里的「当 shared attention 为 null 且无 stage 可恢复时」才是正确的判据。`sessions.session_stage` 是可空列(StateStore.ts:6349 由 ALTER TABLE 追加,无 NOT NULL;类型声明 StateStore.ts:1287/1400 均为 `session_stage?: string`),所以「有 session 行但 stage 为空」是可达状态:deriveIssueTitleBadge 走 phaseStates.size===0 分支,逐条落空后 `return { kind: 'stage', stage: args.mainSessionStage }`(issue-display.ts:181)得到 `{kind:'stage', stage: undefined}`;回到 issue-display-refresher.ts:843-884 的渲染阶梯,blocked / founderGateAttention / completed / phase 全部不命中,最后 `else if (badge.stage)` 因 undefined 为假 → 一次 writer 都不调 → resultA 停在 'noop' → allLanded 为真 → 指纹持久化(issue-display-refresher.ts:1055-1072)→ 🔔要你答 留在标题上,与 R2 报的无 session 死角完全同形。建议把 §13 第一条的触发条件从「无 session 分支」改写为「shared attention 为 null 且派生不出可写徽章(badge.kind==='stage' 且 stage 为空)」,无 session 只是它的一个实例;C5 的必测里相应加一条「有 session、stage 为空、ask settle → writer 收到 null」。",
+      "failure_scenario": "run-start 刚建好 session 行、runner 还没报出第一个 stage(session_stage 为 NULL)的窗口里,Lead 用 send+founderAsk 提了一个问题 → 标题亮 🔔要你答。founder 回帖 settle 后,badge={kind:'stage',stage:undefined},渲染阶梯全部落空,resultA='noop',指纹写入 → 该 thread 标题停在 🔔要你答,直到 runner 报出下一个 stage 才被顺带盖掉;若该 runner 再没报过 stage,徽章就一直留着。",
+      "findingKey": "null-strip-branch-should-key-on-missing-badge-not-missing-session"
+    },
+    {
+      "id": "shared-effective-module-must-absorb-refresher-hold-block",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 194,
+      "title": "「复用 deriveFounderGateTitleState 的优先级」拿不到 holds —— hold 抑制不在那个纯函数里,而在 refresher 里,且带 `!isWorkflowPhase` 守卫;不点名会让 DAG 车道重新分叉",
+      "detail": "§12.2 写「从同一 issue identity 读取当前 session/phase/issue-conclusion/holds,复用 deriveFounderGateTitleState 的优先级」,§13 又据此把页面收窄为服从 title 结果。但 hold 抑制并不在 deriveFounderGateTitleState 内部:该纯函数(issue-display.ts:239-266)只处理 blocked / shipApproved / founderGateActive / founderAttention / approve 五档,完全不知道 holds。真正的抑制在 refresher 里,是派生之后的一段后处理(issue-display-refresher.ts:814-819):`const qaHeld = !isWorkflowPhase && isQaHeld(store, anySession); if (founderGateAttention && (qaHeld || isReviewHeld(store, anySession))) { founderGateAttention = false; badge = deriveIssueTitleBadge(titleBadgeInput); }`,紧接着还有 `if (badge.kind === 'stage' && qaHeld) badge = {kind:'stage', stage:'test'}`。两条谓词的形状也不一样:isQaHeld(review-hold.ts:183-197)只对 session_role='main' 且 status='awaiting_review' 且有 pr_head_sha 的单 session 成立,并被 `!isWorkflowPhase` 再挡一层;isReviewHeld(review-hold.ts:74-81)没有 phase 守卫,走 reviewHoldReason 的 merge_block→codex→QA 链。若共享模块只吸收纯函数的优先级,DAG 车道(isWorkflowPhase 为真)上 title 不压 ship 而页面若照搬 isQaHeld 就会压,恰好在 §13 刚承诺统一的那一点上重新分叉。建议在 §12.2/§13 里点名:shared effective result 必须把 refresher 的这段 hold 后处理(含 `!isWorkflowPhase` 守卫与 badge 重算)一起下沉,两张脸调同一个出口;并把 §13 的 `qaHeld/reviewHeld + ship holder → title/page 同时无 founder attention` 测试拆成 DAG 与非 DAG 两条。",
+      "failure_scenario": "一个走 DAG 工作流(isWorkflowPhase 为真)的单处在 auto-QA hold 且 ship 门持有者存在。title 侧因 `!isWorkflowPhase` 守卫不压 ship,仍显示 🔔 ⏳待批;页面侧若实现时只看到「复用 deriveFounderGateTitleState + 读 holds」而直接调 isQaHeld(无 phase 守卫),就会把这张 ship 卡从「现在要你看」摘掉 —— 两张脸在 ship 档再次不一致,而 §13 的单条测试若只覆盖非 DAG 场景则测不出来。",
+      "findingKey": "shared-effective-module-must-absorb-refresher-hold-block"
+    },
+    {
+      "id": "no-session-title-has-no-extinguish-branch",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 213,
+      "title": "[R2 HIGH,已修复] §13 指定了 stampStatusBadgeResult(...,null) 清除路径、titleCtx 来源与 dirty-fingerprint 重试,逐条核对属实",
+      "detail": "复核通过,且 §13 对既有代码的引用经得起核对:①清除原语正确 —— stampStatusBadgeResult(ctx, threadId, null)(ChatThreadCreator.ts:682-688)走 enqueueTitleWriteResult → writeTitleOnce,badge=null 时 composeThreadTitle('', base, effectiveMarker)(ChatThreadCreator.ts:884-888)只剥受管前缀、保留 Discord 读回的 base。②「不能把未调用 writer 当作 noop 成功」正对 R2 报的漏洞(resultA 停 'noop' → allLanded 为真 → 指纹持久化,issue-display-refresher.ts:1055-1072),也避开了 stampStageEmojiResult 在 badge 为空时自己 `return 'noop'`(ChatThreadCreator.ts:673-675)的第二个假成功入口。③「modelMarker 保持 undefined 以保留既有 marker」与 ChatThreadCreator.ts:870-874 的三态语义完全一致(`ctx.modelMarker === undefined ? modelMarkerLabel(rawBase) /* preserve */ : (ctx.modelMarker ?? undefined)`),不会把 [F] 一起剥掉。④「issueTitle 不填写」安全:writeTitleOnce:877-882 优先采用读回的 bareBase,只有当前名是 placeholder 时才从 ctx 重建。⑤dirty-fingerprint 重试可行且不需改查询 —— listDisplayReconcileCandidates(StateStore.ts:18855-18872)本就是 chat_threads 驱动(sessions 只做 LEFT JOIN 算 `la` 排序键),无 session 的 thread 已在候选集合内(排在 la='' 的尾部,由 keyset 游标分页覆盖),把 display_fingerprint 置空即可让 parseFingerprint 返回 undefined 触发 `if (!stored || ...) enqueue`;「仅 writer 返回 changed/noop 才持久化成功 fingerprint」与既有 allLanded 闸一致。⑥绑定冲突/缺失/读失败 → deferred 不写指纹,覆盖了「issue_id 在多项目 founder_ask 行里撞名」的定位歧义。遗留的只有触发条件措辞(见 null-strip-branch-should-key-on-missing-badge-not-missing-session)。保留本条仅为跨轮 id 追溯,非阻塞。",
+      "failure_scenario": "已消解:无 session Epic 的 ask settle 后,shared attention 为 null 且无 stage 可恢复 → 调 stampStatusBadgeResult(...,null) → 前缀被剥、base title 与 model marker 原样保留;PATCH 失败或进程重启时 thread 仍留在待重算集合,下一轮从 settled ask 重试。",
+      "findingKey": "no-session-title-has-no-extinguish-branch"
+    },
+    {
+      "id": "legacy-gate-watermark-has-no-re-raise-contract",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 217,
+      "title": "[R2 MEDIUM,已修复] §13 把再提起责任写进 C9,禁止自动抹水位/周期性无条件重亮,并补了正对该缺口的测试",
+      "detail": "复核通过。§13 的处置回答了 R2 提的全部三点:①明确这是 founder 指定的语义(任意真实 founder 回帖熄灭该时刻之前的非 ship 提醒,不猜回复内容)—— 尊重 founder 的产品决定,不由评审推翻;②明确 gate 本身、runner 的 waiting_founder 状态与既有 dwell/patrol 都不变,即水位只静音提醒、不动 gate 授权(与落地稿一致:founder-attention-facts.ts:194-205 的水位判断只作用在 mailbox 分支的 `q.kind === 'founder_gate'` 上,holder 档的 ship 走 listAttentionGateFacts 那一段,不查水位,ship 卡不会被无关回帖抹掉);③把再提起的所有者写死在 C9(Lead 发现 gate 仍未答且确需 founder 决定时,用新的 send+founderAsk 关联原 questionId 重新提出),并禁止自动抹水位或周期性无条件重亮 —— 这正是我要的「有主」而不是「靠运气」;④测试「无关 founder 回复→旧提醒灭但 gate pending 与 waiting_founder 不变→Lead 新显式 ask→两张脸再亮」精确覆盖了 R2 指出的未测场景。保留本条仅为跨轮 id 追溯,非阻塞。",
+      "failure_scenario": "已消解:无关 founder 回帖静音旧提醒后,gate 与 waiting_founder 信号不变,Lead 按 C9 用新 ask 重新点亮两张脸,不依赖任何自动重亮。",
+      "findingKey": "legacy-gate-watermark-has-no-re-raise-contract"
+    },
+    {
+      "id": "effective-attention-silently-changes-ship-lane-on-page",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "line": 219,
+      "title": "[R2 MEDIUM,已修复] 歧义已消除:明确选页面服从 title,§1 范围与 §6 迁移/回滚同步补述,并补了 hold 进出测试",
+      "detail": "复核通过。R2 指出的是 §12.2「QA/review hold 继续维持原 ship 行为」在页面侧两可、且与 §1『不做』第一条冲突、又没进 §6 迁移。§13 逐项处理:①明确二选一,选「页面服从现有 title 结果」,并定性为 user 指定「只列当前带状态的 thread」所要求的页面行为收窄,而非 ship 权限或 title 待批语义的改动;②§1 第 2 条同步改写(本轮 diff 可见),把「页面因此跟随既有标题的 QA/review hold 抑制,held ship 不再单独出现在此列表;ship 授权、title 待批语义及 Layer-2 节奏保持原样」写进范围,解除了与『不做』的表面冲突;③§6 前向迁移补述「原页面在 QA/review hold 期间单独列出的 ship 来源,现在从 founder 待你看块移除;解除 hold 后与 title 同时出现;回滚后恢复旧页面列出行为」,补齐了 R2 指出的迁移空白;④补 `qaHeld/reviewHeld + ship holder → title/page 同时无 founder attention;解除 hold → 同时待批` 测试,并声明不改 holder/gate/ship writer。遗留的只是共享模块该从哪儿取 holds(见 shared-effective-module-must-absorb-refresher-hold-block)。保留本条仅为跨轮 id 追溯,非阻塞。",
+      "failure_scenario": "已消解:hold 期间 ship 卡从两张脸同时消失、解除后同时回来,行为已在 §1/§6 声明并有测试与回滚说明。",
+      "findingKey": "effective-attention-silently-changes-ship-lane-on-page"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "5f781482-cf3e-44bd-b02d-66d29f2e63de"
+}

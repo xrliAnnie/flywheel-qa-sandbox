@@ -1,4 +1,4 @@
-import { epicIntakeResultSchema, type EpicIntakeResult } from "./bridge/epic-intake-result.js";
+import { epicIntakeResultSchema, sameEpicIntakeEvidence, type EpicIntakeResult } from "./bridge/epic-intake-result.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
@@ -605,6 +605,23 @@ export interface LeadNoteRecord {
 	role: string;
 	text: string;
 	written_at: string;
+}
+
+export type FounderAskSettlement = "founder_reply" | "question_answered" | "lead_withdrawn" | "send_failed";
+export interface FounderAskRecord {
+	ask_id: string;
+	project_name: string;
+	issue_id: string;
+	channel_id: string;
+	thread_id: string;
+	lead_id: string;
+	message_id: string | null;
+	question_id: string | null;
+	excerpt: string;
+	asked_at: string;
+	settled_at: string | null;
+	settled_by: FounderAskSettlement | null;
+	settled_message_id: string | null;
 }
 
 interface CompatExecResult {
@@ -8218,6 +8235,135 @@ export class StateStore {
 			PRIMARY KEY (project_name, issue_uuid, role)
 		)`);
 		installTerminalRowArchiveSchema(this.db.raw);
+		this.db.run(`CREATE TABLE IF NOT EXISTS founder_ask (
+			ask_id TEXT PRIMARY KEY, project_name TEXT NOT NULL, issue_id TEXT NOT NULL,
+			channel_id TEXT NOT NULL, thread_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+			message_id TEXT, question_id TEXT, excerpt TEXT NOT NULL, asked_at TEXT NOT NULL,
+			settled_at TEXT, settled_by TEXT CHECK (settled_by IS NULL OR settled_by IN
+			('founder_reply','question_answered','lead_withdrawn','send_failed')),
+			settled_message_id TEXT
+		)`);
+		this.db.run("CREATE INDEX IF NOT EXISTS founder_ask_open ON founder_ask(project_name, issue_id) WHERE settled_at IS NULL");
+		this.db.run(`CREATE TABLE IF NOT EXISTS founder_attention_reply (
+			project_name TEXT NOT NULL, issue_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+			message_id TEXT NOT NULL, replied_at_ms INTEGER NOT NULL,
+			PRIMARY KEY(project_name, issue_id)
+		)`);
+	}
+
+	/** Called only after authenticated founder ingress; acknowledgement is not gate approval. */
+	recordFounderAttentionReply(input: { projectName: string; issueId: string; threadId: string; messageId: string; beforeMs: number }): number {
+		if (!Number.isSafeInteger(input.beforeMs)) throw new Error("invalid_founder_reply_time");
+		let count = 0;
+		this.db.transaction(() => {
+			this.db.raw.prepare(`INSERT INTO founder_attention_reply
+				(project_name,issue_id,thread_id,message_id,replied_at_ms) VALUES(?,?,?,?,?)
+				ON CONFLICT(project_name,issue_id) DO UPDATE SET thread_id=excluded.thread_id,
+				message_id=excluded.message_id,replied_at_ms=excluded.replied_at_ms
+				WHERE excluded.replied_at_ms > founder_attention_reply.replied_at_ms`)
+				.run(input.projectName, input.issueId, input.threadId, input.messageId, input.beforeMs);
+			this.db.raw.prepare("UPDATE chat_threads SET display_fingerprint=NULL WHERE issue_id=? AND thread_id=?").run(input.issueId, input.threadId);
+   count = this.settleFounderAsksByThread(input);
+		});
+		this.save();
+		return count;
+	}
+
+	hasFounderAttentionReplyAfter(projectName: string, issueId: string, since: string): boolean {
+		const ms = Date.parse(since);
+		if (!Number.isFinite(ms)) return false;
+		return !!this.db.raw.prepare("SELECT 1 FROM founder_attention_reply WHERE project_name=? AND issue_id=? AND replied_at_ms>?")
+			.get(projectName, issueId, ms);
+	}
+
+	insertFounderAsk(input: Omit<FounderAskRecord, "message_id" | "settled_at" | "settled_by" | "settled_message_id">): void {
+		if (!Number.isFinite(Date.parse(input.asked_at))) throw new Error("invalid_founder_ask_time");
+		this.db.raw.prepare(`INSERT INTO founder_ask
+			(ask_id,project_name,issue_id,channel_id,thread_id,lead_id,question_id,excerpt,asked_at)
+			VALUES (?,?,?,?,?,?,?,?,?)`).run(input.ask_id, input.project_name, input.issue_id,
+			input.channel_id, input.thread_id, input.lead_id, input.question_id,
+			[...input.excerpt].slice(0, 120).join(""), new Date(input.asked_at).toISOString());
+		this.save();
+	}
+
+	getFounderAsk(askId: string): FounderAskRecord | undefined {
+		return this.db.raw.prepare("SELECT * FROM founder_ask WHERE ask_id=?").get(askId) as FounderAskRecord | undefined;
+	}
+
+ getLatestFounderAskForIssue(issueId: string): FounderAskRecord | undefined {
+  return this.db.raw.prepare("SELECT * FROM founder_ask WHERE issue_id=? ORDER BY asked_at DESC,ask_id DESC LIMIT 1").get(issueId) as FounderAskRecord | undefined;
+ }
+
+ private dirtyFounderAttentionDisplay(issueId: string, channelId: string): void {
+  this.db.raw.prepare("UPDATE chat_threads SET display_fingerprint=NULL WHERE issue_id=? AND channel_id=?").run(issueId,channelId);
+ }
+
+ listFounderAskScanTargets(project:string, afterThread:string | null, limit:number): Array<Pick<FounderAskRecord,"project_name" | "issue_id" | "channel_id" | "thread_id" | "lead_id" | "asked_at">> {
+  return this.db.raw.prepare(`SELECT project_name,issue_id,channel_id,thread_id,lead_id,MIN(asked_at) AS asked_at FROM founder_ask
+   WHERE project_name=? AND settled_at IS NULL AND message_id IS NOT NULL AND (? IS NULL OR thread_id>?)
+   GROUP BY project_name,issue_id,channel_id,thread_id,lead_id ORDER BY thread_id LIMIT ?`).all(project,afterThread,afterThread,Math.max(1,Math.min(limit,100))) as Array<Pick<FounderAskRecord,"project_name" | "issue_id" | "channel_id" | "thread_id" | "lead_id" | "asked_at">>;
+ }
+ listFounderAskMaintenance(project:string, afterAsk:string | null, limit:number): FounderAskRecord[] {
+  return this.db.raw.prepare(`SELECT * FROM founder_ask WHERE project_name=? AND settled_at IS NULL AND message_id IS NOT NULL
+   AND question_id IS NOT NULL AND (? IS NULL OR ask_id>?) ORDER BY ask_id LIMIT ?`).all(project,afterAsk,afterAsk,Math.max(1,Math.min(limit,100))) as FounderAskRecord[];
+ }
+
+	listOpenFounderAsks(project: string, issueId?: string): FounderAskRecord[] {
+		return this.db.raw.prepare(`SELECT * FROM founder_ask WHERE project_name=? AND settled_at IS NULL
+			${issueId === undefined ? "" : "AND issue_id=?"} ORDER BY asked_at,ask_id LIMIT 1001`)
+			.all(...(issueId === undefined ? [project] : [project, issueId])) as FounderAskRecord[];
+	}
+
+	private founderAskEvent(row: FounderAskRecord, type: "lit" | "settled", payload: Record<string, unknown>): void {
+		this.insertEvent({
+			event_id: `founder_ask_${type}:${row.ask_id}`,
+			execution_id: this.getSessionByIssue(row.issue_id)?.execution_id ?? `lead:${row.lead_id}`,
+			issue_id: row.issue_id, project_name: row.project_name,
+			event_type: `founder_ask_${type}`, source: "bridge.founder-ask", payload,
+		});
+	}
+
+	backfillFounderAskMessage(askId: string, messageId: string, threadId?: string): void {
+		this.db.transaction(() => {
+			const row = this.getFounderAsk(askId);
+			if (!row) throw new Error("founder_ask_not_found");
+			if (row.message_id === messageId && (!threadId || row.thread_id === threadId)) return;
+			if (row.message_id) throw new Error("founder_ask_message_conflict");
+			const actualThreadId = threadId ?? row.thread_id;
+   this.db.raw.prepare("UPDATE founder_ask SET message_id=?,thread_id=? WHERE ask_id=?").run(messageId, actualThreadId, askId);
+   this.dirtyFounderAttentionDisplay(row.issue_id, row.channel_id);
+			this.founderAskEvent(row, "lit", { askId, leadId: row.lead_id, issueId: row.issue_id,
+				threadId: actualThreadId, messageId, questionId: row.question_id, askedAt: row.asked_at });
+		});
+		this.save();
+	}
+
+	settleFounderAsk(askId: string, by: FounderAskSettlement, messageId?: string, settledAt = new Date().toISOString()): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			const row = this.getFounderAsk(askId);
+			if (!row || row.settled_at) return;
+			this.db.raw.prepare("UPDATE founder_ask SET settled_at=?,settled_by=?,settled_message_id=? WHERE ask_id=?")
+				.run(settledAt, by, messageId ?? null, askId);
+			this.dirtyFounderAttentionDisplay(row.issue_id, row.channel_id);
+			this.founderAskEvent(row, "settled", { askId, settledBy: by, settledMessageId: messageId ?? null, settledAt });
+			changed = true;
+		});
+		if (changed) this.save();
+		return changed;
+	}
+
+	settleFounderAsksByThread(input: { threadId: string; beforeMs: number; messageId: string }): number {
+		const at = new Date(input.beforeMs).toISOString();
+		let count = 0;
+		this.db.transaction(() => {
+			const rows = this.db.raw.prepare("SELECT * FROM founder_ask WHERE thread_id=? AND settled_at IS NULL AND asked_at<?")
+				.all(input.threadId, at) as FounderAskRecord[];
+			for (const row of rows) {
+				if (this.settleFounderAsk(row.ask_id, "founder_reply", input.messageId, at)) count++;
+			}
+		});
+		return count;
 	}
 
 	archiveTerminalRows(input: TerminalArchiveInput): TerminalArchiveResult {
@@ -18837,11 +18983,13 @@ export class StateStore {
 			`SELECT ct.issue_id, ct.channel_id
 			 FROM chat_threads ct
 			 WHERE ct.discord_missing_at IS NULL ${where}
-			   AND EXISTS (
-			     SELECT 1 FROM sessions s
-			     WHERE s.issue_id = ct.issue_id
-			       AND s.status NOT IN ('completed', 'terminated', 'shelved')
-			   )
+			   AND (EXISTS (
+                 SELECT 1 FROM sessions s WHERE s.issue_id = ct.issue_id
+                 AND s.status NOT IN ('completed', 'terminated', 'shelved')
+               ) OR EXISTS (
+                 SELECT 1 FROM founder_ask a WHERE a.issue_id=ct.issue_id
+                 AND a.channel_id=ct.channel_id AND a.settled_at IS NULL AND a.message_id IS NOT NULL
+               ))
 			 ORDER BY ct.issue_id ASC
 			 LIMIT ?`,
 		);
@@ -20510,12 +20658,12 @@ export class StateStore {
 		return this.db.raw.transaction(() => {
 			const current = readEpicIntake(this.db.raw, expected.eventUid);
 			if (!current || current.projectName !== expected.projectName || current.leadId !== expected.leadId) throw new Error("intake_owner_conflict");
-			if (JSON.stringify(current.result) === JSON.stringify(result)) return current;
+			if (sameEpicIntakeEvidence(current.result,result)) return current;
 			if (current.active !== expected.active || current.observedAt !== expected.observedAt || current.workState !== expected.workState ||
 				(current.workState !== "pending" && !(current.workState === "needs_founder" && result.outcome !== "needs_founder")) ||
 				(current.active === (result.outcome === "superseded"))) throw new Error("intake_resolution_conflict");
 			this.db.raw.prepare("UPDATE epic_intakes SET work_state=?,result_json=?,observed_at=?,page_dirty=1 WHERE event_uid=?")
-				.run(result.outcome, JSON.stringify(result), now, expected.eventUid);
+				.run(result.outcome, JSON.stringify({...result,receipt:{kind:result.messageId ? "discord_message" : "bridge_record",leadId:expected.leadId,verifiedAt:now,...(result.messageId ? {messageId:result.messageId} : {})}}), now, expected.eventUid);
 			return readEpicIntake(this.db.raw, expected.eventUid)!;
 		})();
 	}

@@ -1055,6 +1055,9 @@ tick 里「还剩什么」三行是 Bridge 在**这一轮**按 Linear 扫出的�
 - `status` 的 `publish_failures_since_last_published > 0` 时,先看失败 token,再看固定页;
   手动生成不会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
 
+Founder attention 由机器派生：固定页「待你看」与 thread 标题同源。不得定时手写进展或维护第二份待办；不得手改 thread 名。
+纯记录类回帖（收件凭证、ACK 回执、已有机器持久记录的状态转述）不进 Discord thread；Epic 级状态只在固定页看。
+
 ### 0.11 Epic 进入 started 的收件与拆解(FLY-2557)
 
 `epic_intake` 是本项目根 Epic 进入一次连续 started 区间的持久通知；相邻的
@@ -1068,18 +1071,18 @@ started 子状态仍是同一区间。先核 `projectName`、`leadId` 和精确 
 1. 读 Epic 全文和完整 children，核仍无 parent、仍属本项目/department 和这次
    started 区间。有子单的根可处理；零子单必须没有本项目 dispatch 记录。
    若根后来被派发或范围/区间失效，不再拆，核实后用 `superseded` 留收据。
-2. `backfill=true` 只核已有子单、依赖账本和 Lead 下一步决定，回一行 thread；
-   不因补收事件自动拆解。零子单如实回「待拆解」，不凭空制造 founder 问题。
-   核验和决定尚未回帖则保持 pending；backfill complete 不意味着已创建子单。
+2. `backfill=true` 只核已有子单、依赖账本和 Lead 下一步决定，在 resolve 留持久记录；
+   不因补收事件自动拆解。零子单如实记「待拆解」，不凭空制造 founder 问题。
+   核验和决定尚未持久记录则保持 pending；backfill complete 不意味着已创建子单。
 3. 正常 intake 已有任何子单时只补账、核已有拆解清单，不重复批量拆。
    无子单才由 Lead 判断创建，保持 parent/project/team/department labels。
    创建前持久化草案，逐张保存返回 UUID。重试先核 parent 下已有 UUID；
    create 响应丢失时先查 children，无法唯一辨认则停该张并说明，不盲重发。
 4. 每条先后关系用 `dependency add`，再 `dependency show` 核第一批可拉活。
    无依赖也必须核账；移除旧边遵守 §7。账本读数不得超过一个巡检周期。
-5. 在对应 `[EPIC-ID]` canonical thread 回「拆成 N 张，第一批 M 张，缺什么要
-   founder 拍」，附子单链接和精确 eventUid。重试先读同 UID 回帖及保存的
-   messageId，复用或编辑，不重复发结论。必须由本 Lead 的配置 bot 回帖。
+5. `complete` / `superseded` 不回帖；resolve 的 Bridge 持久凭证就是收据。
+   `needs_founder` 才在 canonical thread 用 `/api/chat-threads/send` +
+   `founderAsk: {}` 提出决定，保存返回 messageId。重试先读已存凭证，不重复发问。
 6. 将结果写入本地 JSON，再运行：
    `flywheel-comm epic-intake resolve --project "$PROJECT_NAME" --event-uid '<exact uid>' --evidence-file <local-json-file>`。
    CLI 默认读取 `FLYWHEEL_LEAD_ID`（或 `LEAD_ID`）；必要时显式 `--lead`。
@@ -1089,10 +1092,10 @@ started 子状态仍是同一区间。先核 `projectName`、`leadId` 和精确 
 证据文件最多 16KB，固定字段：`outcome`（`complete` / `needs_founder` /
 `superseded`）、`childIssueIds`、`firstBatchIssueIds`（均为去重 UUID 数组，最多
 500 项，首批是子单子集）、`ledgerObservedAt`（本次核账 ISO 时间，不得在未来）、
-`threadId`、`messageId`、`founderQuestion`（无问题为 null）。确实需要 founder
+`founderQuestion`（无问题为 null）；`threadId`、`messageId` 对纯记录可省略。确实需要 founder
 判断才用 `needs_founder`，必须带非空问题和已发消息；它仍留在巡检待办。
 收到回答后由原 owner 用新证据推进 complete。Bridge 会重新核当前范围、直接
-子单、canonical thread 和消息作者；读取失败或冲突时保留 pending，先 show
+子单；带消息时再核 canonical thread 和消息作者；读取失败或冲突时保留 pending，先 show
 再核实重试，不把 CLI 失败当完成，也不重复创建/回帖。`resolve` 本身不发送
 Discord、不写 Linear、不派 Runner。
 

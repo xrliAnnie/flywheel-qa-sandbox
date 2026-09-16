@@ -15,15 +15,25 @@ export const ATTENTION_V1 = {
 			action: "去 thread 里回一句「同意」或「打回」。",
 			priority: 1,
 		},
+		legacy_founder_gate: {
+			kind: "要你答",
+			action: "去 thread 里回答问题。",
+			priority: 2,
+		},
+		founder_ask: {
+			kind: "要你答",
+			action: "去 thread 里回一句。",
+			priority: 3,
+		},
 		question: {
 			kind: "体在问你一句话",
 			action: "去 thread 里回答它的问题。",
-			priority: 2,
+			priority: 4,
 		},
 		founder_named: {
 			kind: "你点过名要回来找你",
 			action: "去看一眼,决定继续还是停。",
-			priority: 3,
+			priority: 5,
 		},
 	},
 	unknownAction: "不确定,去看一眼",
@@ -121,7 +131,7 @@ function derived<T>(
 function registry(kind: string) {
 	return Object.hasOwn(ATTENTION_V1.kinds, kind)
 		? ATTENTION_V1.kinds[kind as keyof typeof ATTENTION_V1.kinds]
-		: { kind, action: ATTENTION_V1.unknownAction, priority: 4 };
+		: { kind, action: ATTENTION_V1.unknownAction, priority: 6 };
 }
 export function attentionActions(sources: AttentionSource[]): string[] {
 	return [
@@ -538,7 +548,7 @@ export function assertAttention(
 		if (
 			item.issue_id.value !== null
 				? item.key !== `issue:${item.issue_id.value}`
-				: !/^(question|holder):.+$/.test(item.key)
+				: !/^(question|holder|ask):.+$/.test(item.key)
 		)
 			fail(`${path}/key`);
 		if (

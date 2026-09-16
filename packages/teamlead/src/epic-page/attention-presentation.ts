@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { founderAttentionLevel } from "../bridge/founder-attention.js";
 import {
 	ATTENTION_V1,
 	type AttentionItem,
@@ -20,9 +21,14 @@ export function attentionSummary(
 	count = page.attention.length,
 ): string {
 	const sources = page.attention_sources;
+	const unlinked = page.attention.filter(
+		(item) =>
+			item.sources.some(isFounderAttention) && !attentionLink(page, item).url,
+	).length;
 	const identityIncomplete =
 		sources.identity.value === null || sources.identity.value.unresolved > 0;
 	if (
+		unlinked > 0 ||
 		identityIncomplete ||
 		[
 			sources.gates,
@@ -32,6 +38,8 @@ export function attentionSummary(
 		].some((cell) => cell.value === null)
 	) {
 		const reasons = [];
+		if (unlinked > 0)
+			reasons.push(label("attention.unlinked", { n: unlinked }));
 		if (identityIncomplete)
 			reasons.push(label("attention.identity_incomplete"));
 		if (page.attention_sources.budget.value === null)
@@ -174,12 +182,12 @@ export function attentionMissing(reason?: MissingReason): string {
 // Display projection only: the canonical attention.v1 sources and derived Cells
 // remain unchanged, including older questions needed for counts and audit.
 export function isFounderAttention(source: AttentionSource): boolean {
-	return ["ship", "founder_gate", "question"].includes(
-		source.fact.value?.kind ?? "",
-	);
+	return founderAttentionLevel([source.fact.value?.kind ?? ""]) !== null;
 }
 export function attentionAudience(page: EpicPageV2, founder: boolean) {
 	return page.attention.flatMap((item) => {
+		// Unresolved records remain in the audit document, but are not thread links.
+		if (founder && !attentionLink(page, item).url) return [];
 		const sources = item.sources.filter(
 			(source) => isFounderAttention(source) === founder,
 		);

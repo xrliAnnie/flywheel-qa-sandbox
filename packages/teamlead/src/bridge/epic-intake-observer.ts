@@ -31,7 +31,12 @@ export function createEpicIntakeObserver(deps: {
 			(l) => l.agentId === row.leadId && l.canSpawnRunners !== false,
 		);
 		const token = lead?.botToken ?? deps.fallbackBotToken;
-		if (!project?.linear || !lead?.botUserId || !token || !deps.apiKey)
+		if (
+			!project?.linear ||
+			!lead ||
+			!deps.apiKey ||
+			(evidence.messageId && (!lead.botUserId || !token))
+		)
 			throw new Error("intake_verification_unconfigured");
 		const now = deps.now ?? (() => new Date());
 		const scope = await (deps.collect ?? collectEpicScope)(
@@ -84,26 +89,28 @@ export function createEpicIntakeObserver(deps: {
 			.filter((t) => t !== undefined);
 		const thread = threads[0];
 		if (
-			!thread ||
+			(!!evidence.messageId && !thread) ||
 			threads.some(
 				(t) =>
-					t.thread_id !== thread.thread_id ||
+					t.thread_id !== thread?.thread_id ||
 					(t.lead_id !== null && t.lead_id !== row.leadId),
 			) ||
-			thread.thread_id !== evidence.threadId
+			(!!evidence.threadId && thread?.thread_id !== evidence.threadId)
 		)
 			throw new Error("intake_canonical_thread_missing");
-		const message = await (deps.readMessage ?? readEpicIntakeThreadMessage)(
-			thread.thread_id,
-			evidence.messageId,
-			token,
-		);
+		const message = evidence.messageId
+			? await (deps.readMessage ?? readEpicIntakeThreadMessage)(
+					thread!.thread_id,
+					evidence.messageId,
+					token!,
+				)
+			: null;
 		return {
 			active,
 			directChildIds,
-			canonicalThreadId: thread.thread_id,
+			canonicalThreadId: thread?.thread_id ?? null,
 			message,
-			leadBotUserId: lead.botUserId,
+			leadBotUserId: lead.botUserId ?? null,
 			now: now().toISOString(),
 			patrolIntervalMs:
 				deps.patrolIntervalMs?.(project) ??

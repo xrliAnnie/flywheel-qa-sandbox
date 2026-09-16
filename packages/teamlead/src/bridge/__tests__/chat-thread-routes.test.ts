@@ -545,6 +545,137 @@ describe("chat-thread routes (tools.ts)", () => {
 			mockFetch = vi.fn();
 		});
 
+		it("FLY-2597: persists the explicit ask before sending and audits materialization and withdrawal", async () => {
+			store.upsertChatThread("thread", "ch-100", "FLY-2597", "lead-alpha");
+			mockFetch.mockImplementation(async () => {
+				expect(
+					store.listOpenFounderAsks("TestProject")[0]?.message_id,
+				).toBeNull();
+				return { ok: true, status: 200, json: async () => ({ id: "message" }) };
+			});
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
+			const body = {
+				issueId: "FLY-2597",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "Decide",
+				founderAsk: {},
+			};
+			const sent = await request(
+				server,
+				"POST",
+				"/api/chat-threads/send",
+				body,
+			);
+			expect(sent.status).toBe(200);
+			const id = (sent.body as { founderAskId: string }).founderAskId;
+			expect(store.getFounderAsk(id)).toMatchObject({
+				issue_id: "FLY-2597",
+				message_id: "message",
+			});
+			const wrong = await request(
+				server,
+				"POST",
+				"/api/chat-threads/founder-ask/withdraw",
+				{ askId: id, projectName: "TestProject", leadId: "lead-gamma" },
+			);
+			expect(wrong.status).toBe(403);
+			const withdrawn = await request(
+				server,
+				"POST",
+				"/api/chat-threads/founder-ask/withdraw",
+				{ askId: id, projectName: "TestProject", leadId: "lead-alpha" },
+			);
+			expect(withdrawn.status).toBe(200);
+			expect(store.getFounderAsk(id)?.settled_by).toBe("lead_withdrawn");
+			expect(
+				(
+					await request(
+						server,
+						"POST",
+						"/api/chat-threads/founder-ask/withdraw",
+						{ askId: id, projectName: "TestProject", leadId: "lead-alpha" },
+					)
+				).status,
+			).toBe(409);
+		});
+
+		it.each([null, true, [], { extra: true }, { questionId: "bad id" }])(
+			"FLY-2597: rejects invalid founderAsk %j before Discord writes",
+			async (founderAsk) => {
+				createTestServer({
+					chatThreadsEnabled: true,
+					replyByIssueEnabled: true,
+					apiTokenConfigured: true,
+					discordFetch: mockFetch,
+				});
+				const response = await request(
+					server,
+					"POST",
+					"/api/chat-threads/send",
+					{
+						issueId: "FLY-2597",
+						channelId: "ch-100",
+						leadId: "lead-alpha",
+						projectName: "TestProject",
+						text: "Decide",
+						founderAsk,
+					},
+				);
+				expect(response.status).toBe(400);
+				expect(mockFetch).not.toHaveBeenCalled();
+			},
+		);
+
+		it.each([false, true])(
+			"FLY-2597: failed send retains attention only when a chunk reached Discord (partial=%s)",
+			async (partial) => {
+				store.upsertChatThread("thread", "ch-100", "FLY-2597", "lead-alpha");
+				if (partial)
+					mockFetch.mockResolvedValueOnce({
+						ok: true,
+						status: 200,
+						json: async () => ({ id: "first" }),
+					});
+				mockFetch.mockResolvedValue({
+					ok: false,
+					status: 403,
+					text: async () => "forbidden",
+				});
+				createTestServer({
+					chatThreadsEnabled: true,
+					replyByIssueEnabled: true,
+					apiTokenConfigured: true,
+					discordFetch: mockFetch,
+				});
+				const response = await request(
+					server,
+					"POST",
+					"/api/chat-threads/send",
+					{
+						issueId: "FLY-2597",
+						channelId: "ch-100",
+						leadId: "lead-alpha",
+						projectName: "TestProject",
+						text: "x".repeat(2500),
+						founderAsk: {},
+					},
+				);
+				expect(response.status).toBe(502);
+				const id = (response.body as { founderAskId: string }).founderAskId;
+				expect(store.getFounderAsk(id)).toMatchObject({
+					message_id: partial ? "first" : null,
+					settled_by: partial ? null : "send_failed",
+				});
+			},
+		);
+
 		it("returns 404 when replyByIssueEnabled is false", async () => {
 			createTestServer({
 				chatThreadsEnabled: true,

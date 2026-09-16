@@ -189,3 +189,39 @@ it("rejects current-state changes and oversized evidence without clearing pendin
 		await f.close();
 	}
 });
+
+it("FLY-2597: stores a service-issued quiet receipt and replays without re-observing", async () => {
+	const f = await fixture();
+	try {
+		const { threadId: _t, messageId: _m, ...quiet } = result;
+		const body = {
+			projectName: "test",
+			leadId: "lead",
+			eventUid: f.row.eventUid,
+			evidence: quiet,
+		};
+		expect(
+			(
+				await f.post({
+					...body,
+					evidence: {
+						...quiet,
+						receipt: {
+							kind: "bridge_record",
+							leadId: "forged",
+							verifiedAt: at,
+						},
+					},
+				})
+			).status,
+		).toBe(400);
+		expect((await f.post(body)).status).toBe(200);
+		expect(f.store.listEpicIntakes("test")[0]?.result).toMatchObject({
+			receipt: { kind: "bridge_record", leadId: "lead", verifiedAt: at },
+		});
+		expect((await f.post(body)).status).toBe(200);
+		expect(f.observe).toHaveBeenCalledTimes(1);
+	} finally {
+		await f.close();
+	}
+});

@@ -114,6 +114,7 @@ import {
 } from "./zombie-gate-hygiene.js";
 
 export interface GatePollerConfig {
+	onFounderAttentionChange?: (issueId: string, projectName: string) => void;
 	/** FLY-1995: wall-clock correlation only; never treated as CPU attribution. */
 	recordSpan?: (name: string, startMs: number, endMs: number) => void;
 	pollIntervalMs: number;
@@ -1785,6 +1786,15 @@ export class GatePoller {
 			);
 		}
 
+		if (
+			question.checkpoint === "founder_review" ||
+			question.checkpoint === "brainstorm"
+		)
+			this.config.onFounderAttentionChange?.(
+				session.issue_id,
+				session.project_name,
+			);
+
 		const seq = this.config.store.appendLeadEvent(
 			lead.agentId,
 			eventId,
@@ -1852,6 +1862,7 @@ export class GatePoller {
 	 */
 	private readonly defaultReplyCursor = new InMemoryInboundCursorStore();
 	private founderReplyScanCursor: string | null = null;
+	private founderAskMaintenanceCursor = new Map<string, string>();
 	private readonly founderNotifyDone = new Set<string>();
 	/** qid → transient-failure retry state (TIME budget, not a fast tick count). */
 	private readonly founderNotifyRetry = new Map<
@@ -2620,6 +2631,33 @@ export class GatePoller {
 				// deliverer owns fresh synchronous write scopes, never this snapshot.
 				const pendingByLead = new Map<string, PendingQuestion[]>();
 				try {
+					const batch = this.config.store.listFounderAskMaintenance(
+						project.projectName,
+						this.founderAskMaintenanceCursor.get(project.projectName) ?? null,
+						50,
+					);
+					for (const ask of batch) {
+						if (
+							ask.question_id &&
+							!readonlyDb.isQuestionPending(ask.question_id)
+						) {
+							this.config.store.settleFounderAsk(
+								ask.ask_id,
+								"question_answered",
+							);
+							this.config.onFounderAttentionChange?.(
+								ask.issue_id,
+								project.projectName,
+							);
+						}
+					}
+					if (batch.length < 50)
+						this.founderAskMaintenanceCursor.delete(project.projectName);
+					else
+						this.founderAskMaintenanceCursor.set(
+							project.projectName,
+							batch.at(-1)!.ask_id,
+						);
 					for (const lead of project.leads) {
 						try {
 							pendingByLead.set(
@@ -2639,6 +2677,18 @@ export class GatePoller {
 						readonlyDb.close();
 					}
 				}
+
+				let askTargets = this.config.store.listFounderAskScanTargets(
+					project.projectName,
+					this.founderReplyScanCursor,
+					50,
+				);
+				if (!askTargets.length && this.founderReplyScanCursor)
+					askTargets = this.config.store.listFounderAskScanTargets(
+						project.projectName,
+						null,
+						50,
+					);
 
 				for (const lead of project.leads) {
 					const botToken = lead.botToken ?? this.config.discordBotToken;
@@ -2698,6 +2748,38 @@ export class GatePoller {
 							questions: [],
 						});
 					}
+					for (const ask of askTargets) {
+						if (
+							ask.lead_id !== lead.agentId ||
+							ask.channel_id !== lead.chatChannel
+						)
+							continue;
+						const canonical = this.config.store.getChatThreadByIssue(
+							ask.issue_id,
+							ask.channel_id,
+						);
+						if (!canonical || canonical.thread_id !== ask.thread_id) continue;
+						const prior = byThread.get(ask.thread_id);
+						if (prior) {
+							prior.ctx.attentionSinceMs = Date.parse(ask.asked_at);
+							continue;
+						}
+						byThread.set(ask.thread_id, {
+							ctx: {
+								issueId: ask.issue_id,
+								projectName: project.projectName,
+								threadId: ask.thread_id,
+								botToken,
+								ownerUserId: ownerUserId as string,
+								graceMs,
+								commDbPath: dbPath,
+								leadId: lead.agentId,
+								attentionSinceMs: Date.parse(ask.asked_at),
+							},
+							questions: [],
+						});
+					}
+
 					for (const thread of historical.threads) {
 						if (
 							thread.projectName !== project.projectName ||
@@ -2843,6 +2925,13 @@ export class GatePoller {
 				try {
 					await emitFounderReplyDeliveryForThread(ctx, questions, {
 						store: this.config.store,
+						onFounderThreadMessage: (input) => {
+							this.config.store.recordFounderAttentionReply(input);
+							this.config.onFounderAttentionChange?.(
+								input.issueId,
+								input.projectName,
+							);
+						},
 						fetchImpl: this.config.fetchImpl,
 						cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
 						deliverAmbiguousToLead,

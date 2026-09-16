@@ -88,6 +88,7 @@ export type Provenance =
 	| { kind: "derived"; rule: RuleId; from: string[] };
 
 export const REFRESH_REASONS = [
+	"founder_attention",
 	"epic_intake",
 	"session_started",
 	"session_completed",

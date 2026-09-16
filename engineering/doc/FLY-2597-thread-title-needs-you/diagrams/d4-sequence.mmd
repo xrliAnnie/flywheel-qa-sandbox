@@ -1,0 +1,21 @@
+sequenceDiagram
+  autonumber
+  participant L as Lead
+  participant B as Bridge send 路由
+  participant DB as founder_ask 表
+  participant DC as Discord thread
+  participant R as 标题刷新器
+  participant D as founder 回帖扫描器
+  participant F as founder
+  L->>B: POST /api/chat-threads/send + founderAsk
+  B->>DB: 先写一行(message_id 空)
+  B->>DC: 发消息
+  DC-->>B: 消息 id
+  B->>DB: 回填 message_id,记事件 founder_ask_lit
+  B->>R: 触发刷新
+  R->>DC: 标题改为 🔔要你答
+  F->>DC: 在 thread 回一句
+  D->>DC: 读新消息,作者 = founder
+  D->>DB: settle(settled_by = founder_reply),记事件 founder_ask_settled
+  D->>R: 触发刷新
+  R->>DC: 标题回到原阶段词
