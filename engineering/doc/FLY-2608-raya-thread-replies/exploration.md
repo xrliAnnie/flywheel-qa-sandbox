@@ -19,7 +19,7 @@ Annie 在 Raya 创建的 issue thread（Discord 的独立讨论串）直接提�
 
 当前读取 Raya inbound-cursor.json 仅含主频道和 1512578695468941333；roundtable-subscriptions.json entries=[]。这说明持久化文件里没有两条 thread 的游标/订阅，不单凭文件宣称模型从未收到。
 
-已向 Lead 提交非阻塞问题 f65445d7-a479-4cd5-8a6c-5ae6c79a54ad，请其提供原始 thread 消息与标准投递/消费证据。当前两条原始 message id、mailbox 下落及实际回帖均未核实；不要求 Annie 重述问题。
+已向 Lead 提交非阻塞问题 f65445d7-a479-4cd5-8a6c-5ae6c79a54ad，请其提供原始 thread 消息与标准投递/消费证据。该问题已答并提供两条真实源 message id；见末尾证据补记。精确 live/archive 收件证明仍请求补充，不要求 Annie 重述问题。
 
 ## 候选方案与选择
 1. 要求额外 @ 或回主频道重问：不满足期望，排除。
@@ -40,3 +40,9 @@ Annie 在 Raya 创建的 issue thread（Discord 的独立讨论串）直接提�
 | 1549573438937767977 / FLY-2382 | 1549573499914297409 | 00:11:52 | 这是什么东西呀？ | Raya mailbox未见；后续机器人帖无对应回答 |
 
 Lead 的 by-thread 读取确认 issue session 项目为 flywheel；lead_events 没有引用这两个id的任一Lead记录。Raya mailbox该分钟只有主频道投递，正文检索也未命中。Lead将此判为入站未送达；本设计把它作为Lead提供的事故证据，精确live/archive计数与登记owner仍请求补充。原先“原消息id未知”仅是早期取证状态，现在已定位；实施必须用上述真实id核对、恢复并补实际同线程回答。不可把后续机器人普通消息当作回答。
+
+
+### 登记行补证与查询边界（Lead，约03:3xZ）
+问题 ee3d76ac-8f88-40d9-aaf7-858808009f2c 返回：两条 chat_threads 的 channel_id 都为1542079099928059987、lead_id=raya、archived_at=NULL、discord_missing_at=NULL；created_at 分别为2026-09-16 00:11:34/00:11:37。满足本方案按父频道与lead确定通信owner的前提。
+
+Lead 的 content LIKE 源id计数：raya.mailbox各0，flywheel.mailbox各2；但调查ask/report本身含源id，不能把substring命中当实际discord_chat投递。mailbox_log.content查询失败（no such column），不能判archive为空；实际表列表还含mailbox_terminal_archive、mailbox_identity，flywheel另有mailbox_archive。已请求问题22c03203-c166-475d-9f94-ccf720a63c36按精确deliveryId/source kind查询。上述失败与不确定性保留，不声称误送另一个Lead。

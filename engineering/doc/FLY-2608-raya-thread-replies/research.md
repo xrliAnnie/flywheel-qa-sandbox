@@ -4,7 +4,7 @@ Issue: FLY-2608 (https://linear.app/geoforge3d/issue/FLY-2608/raya工程修复-d
 基于: exploration.md
 
 ## 基线与证据分级
-源码基线 557d2b00e；2026-09-16T03:16Z /health buildSha 与之相同。以下源码事实已核验；事故两条原始消息的实际下落仍待 Lead 提供，不由源码推断替代。
+源码基线 557d2b00e；2026-09-16T03:16Z /health buildSha 与之相同。以下源码事实已核验；事故两条原消息已由 Lead 定位；精确 live/archive 收件证明仍请求补充，不由源码推断替代。
 
 | 判断 | 证据 | 处置 |
 |---|---|---|
@@ -50,3 +50,9 @@ Lead 的 by-thread 读取确认 issue session 项目为 flywheel；lead_events �
 
 ## 官方协议核对
 已于本轮阅读 [Discord Get Channel Messages](https://docs.discord.com/developers/resources/message#get-channel-messages)：返回数组按新到旧排序，after为指定id之后，limit为1–100，缺READ_MESSAGE_HISTORY权限可能返回空数组。因此200空数组不是“历史不存在”的证据；QA必须核对权限。文档未明确说明after多页选取最近还是最早的一批，保留T2受控>100条分页核验，不将源码注释当协议证明。
+
+
+### 登记行补证与查询边界（Lead，约03:3xZ）
+问题 ee3d76ac-8f88-40d9-aaf7-858808009f2c 返回：两条 chat_threads 的 channel_id 都为1542079099928059987、lead_id=raya、archived_at=NULL、discord_missing_at=NULL；created_at 分别为2026-09-16 00:11:34/00:11:37。满足本方案按父频道与lead确定通信owner的前提。
+
+Lead 的 content LIKE 源id计数：raya.mailbox各0，flywheel.mailbox各2；但调查ask/report本身含源id，不能把substring命中当实际discord_chat投递。mailbox_log.content查询失败（no such column），不能判archive为空；实际表列表还含mailbox_terminal_archive、mailbox_identity，flywheel另有mailbox_archive。已请求问题22c03203-c166-475d-9f94-ccf720a63c36按精确deliveryId/source kind查询。上述失败与不确定性保留，不声称误送另一个Lead。

@@ -8,7 +8,7 @@ Issue: FLY-2608 (https://linear.app/geoforge3d/issue/FLY-2608/raya工程修复-d
 ## 给 founder 的说明
 让已登记的 Raya 讨论线程进入现有 Bridge 收件扫描，并把回答的目的地固定为问题所在的线程。无需 @，也不用重述问题。修复复用标准收件队列；完成与否以真实提问、收件凭证和同线程回答三段证据判断。
 
-目前已确认代码覆盖缺口与缺少回帖字段；尚未拿到两条旧提问的原始 message id，因此不声称已经找回或确认丢失。完成设计不等于完成生产修复。
+目前已确认代码覆盖缺口与缺少回帖字段；两条旧提问的原始 message id 已由 Lead 定位（见证据补记）；精确归档收件仍待核对，因此不声称已恢复。完成设计不等于完成生产修复。
 
 ```mermaid
 flowchart LR
@@ -123,3 +123,9 @@ pnpm --filter flywheel-teamlead typecheck
 | 1549573438937767977 / FLY-2382 | 1549573499914297409 | 00:11:52 | 这是什么东西呀？ | Raya mailbox未见；后续机器人帖无对应回答 |
 
 Lead 的 by-thread 读取确认 issue session 项目为 flywheel；lead_events 没有引用这两个id的任一Lead记录。Raya mailbox该分钟只有主频道投递，正文检索也未命中。Lead将此判为入站未送达；本设计把它作为Lead提供的事故证据，精确live/archive计数与登记owner仍请求补充。原先“原消息id未知”仅是早期取证状态，现在已定位；实施必须用上述真实id核对、恢复并补实际同线程回答。不可把后续机器人普通消息当作回答。
+
+
+### 登记行补证与查询边界（Lead，约03:3xZ）
+问题 ee3d76ac-8f88-40d9-aaf7-858808009f2c 返回：两条 chat_threads 的 channel_id 都为1542079099928059987、lead_id=raya、archived_at=NULL、discord_missing_at=NULL；created_at 分别为2026-09-16 00:11:34/00:11:37。满足本方案按父频道与lead确定通信owner的前提。
+
+Lead 的 content LIKE 源id计数：raya.mailbox各0，flywheel.mailbox各2；但调查ask/report本身含源id，不能把substring命中当实际discord_chat投递。mailbox_log.content查询失败（no such column），不能判archive为空；实际表列表还含mailbox_terminal_archive、mailbox_identity，flywheel另有mailbox_archive。已请求问题22c03203-c166-475d-9f94-ccf720a63c36按精确deliveryId/source kind查询。上述失败与不确定性保留，不声称误送另一个Lead。
