@@ -1,15 +1,14 @@
 ---
 issue: FLY-2608
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-16T04:26:16.519Z
-nextStep: Design R3 APPROVED; HTML published, hosted source/CSP verified and
-  Lead report receipted. Run phase_design_complete then park; downstream owns
-  implementation and live acceptance.
+phase: implement
+phaseCursor: 0/6
+updated: 2026-09-16T04:29:41.284Z
+nextStep: Sync origin/main, re-audit approved plan against current code, then
+  add the first failing focused test
 chunks: []
 pointers: {}
 ---
 
 # FLY-2608 progress
-**phase**: design (5/5)
-**next**: Design R3 APPROVED; HTML published, hosted source/CSP verified and Lead report receipted. Run phase_design_complete then park; downstream owns implementation and live acceptance.
+**phase**: implement (0/6)
+**next**: Sync origin/main, re-audit approved plan against current code, then add the first failing focused test
