@@ -56,3 +56,6 @@ Lead 的 by-thread 读取确认 issue session 项目为 flywheel；lead_events �
 问题 ee3d76ac-8f88-40d9-aaf7-858808009f2c 返回：两条 chat_threads 的 channel_id 都为1542079099928059987、lead_id=raya、archived_at=NULL、discord_missing_at=NULL；created_at 分别为2026-09-16 00:11:34/00:11:37。满足本方案按父频道与lead确定通信owner的前提。
 
 Lead 的 content LIKE 源id计数：raya.mailbox各0，flywheel.mailbox各2；但调查ask/report本身含源id，不能把substring命中当实际discord_chat投递。mailbox_log.content查询失败（no such column），不能判archive为空；实际表列表还含mailbox_terminal_archive、mailbox_identity，flywheel另有mailbox_archive。已请求问题22c03203-c166-475d-9f94-ccf720a63c36按精确deliveryId/source kind查询。上述失败与不确定性保留，不声称误送另一个Lead。
+
+### Lead 更正回执 f8bc878e-2327-4196-b0e6-d60ec01c149e
+Lead确认之前flywheel.mailbox各2和lead_events 1是本次问答/报告引用产生的自污染；排除后两源id在raya.mailbox、flywheel.mailbox和lead_events真实入站计数均为0。登记行不变。已接受该更正，不把这些引用当作跨Lead投递。mailbox_log无content列只说明该查询不适用；精确mailbox_identity/terminal_archive结果仍以问题22c03203的后续答复为准。
