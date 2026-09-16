@@ -106,8 +106,10 @@ case "$1" in
   if [[ "$2" == gui/501 ]]; then echo 'gui/501 = {'; exit 0; fi
   label="\${2##*/}"
   if [[ "$label" != com.flywheel.voice || ! -e "$FIXTURE_ROOT/loaded" ]]; then echo "Could not find service \\\"$label\\\"" >&2; exit 113; fi
-  echo "$2 = {"; if [[ -e "$FIXTURE_ROOT/foreign" ]]; then echo 'path = /foreign.plist'; else echo 'path = ${dest}'; fi; echo 'program = /bin/bash'; echo 'arguments = {'; echo /bin/bash; echo '${wrapper}'; echo '}'
-  if [[ -e "$FIXTURE_ROOT/refused" ]]; then echo 'state = not running'; echo 'last exit code = 0'; else echo 'state = running'; echo 'pid = 777'; fi
+  echo "$2 = {"; if [[ -e "$FIXTURE_ROOT/foreign" ]]; then echo $'\\tpath = /foreign.plist'; else echo $'\\tpath = ${dest}'; fi; echo $'\\tprogram = /bin/bash'; echo $'\\targuments = {'; echo $'\\t\\t/bin/bash'; echo $'\\t\\t${wrapper}'; echo $'\\t}'
+  if [[ -e "$FIXTURE_ROOT/refused" ]]; then echo $'\\tstate = not running'; echo $'\\tlast exit code = 0'; elif [[ -e "$FIXTURE_ROOT/nested-running" ]]; then echo $'\\tstate = spawn scheduled'; echo $'\\tpid = 777'; else echo $'\\tstate = running'; echo $'\\tpid = 777'; fi
+  echo $'\\tresource coalition = {'; if [[ -e "$FIXTURE_ROOT/nested-running" ]]; then echo $'\\t\\tstate = running'; else echo $'\\t\\tstate = active'; fi; echo $'\\t}'
+  echo $'\\tevent triggers = {'; echo $'\\t\\tcom.apple.launchd = {'; echo $'\\t\\t\\tstate = active'; echo $'\\t\\t}'; echo $'\\t}'
   echo '}'; exit 0;;
  bootstrap)
   touch "$FIXTURE_ROOT/loaded"
@@ -223,6 +225,14 @@ test("retains an identical preexisting plist when this bootstrap is refused", ()
 	assert.notEqual(r.status, 0);
 	assert.match(f.calls(), /bootout/);
 	assert.equal(readFileSync(f.dest, "utf8"), readFileSync(f.source, "utf8"));
+});
+test("rejects nested running when the top-level state is not running", () => {
+	const f = fixture();
+	writeFileSync(join(f.root, "nested-running"), "1");
+	const r = f.run();
+	assert.notEqual(r.status, 0, r.stdout + r.stderr);
+	assert.match(f.calls(), /bootout/);
+	assert.equal(existsSync(f.dest), false);
 });
 test("does not boot out a preexisting service with unverified identity", () => {
 	const f = fixture();

@@ -24,9 +24,12 @@ s=sys.stdin.read(); path,wrapper,mode=sys.argv[1:]
 def field(name):
  m=re.findall(r"^\s*"+re.escape(name)+r" = (.+?)\s*$",s,re.M)
  return m[0] if len(m)==1 else None
+def top_field(name):
+ m=re.findall(r"^\t"+re.escape(name)+r" = ([^\r\n]+)$",s,re.M)
+ return m[0].strip() if len(m)==1 else None
 args=re.search(r"^\s*arguments = \{\s*\n(.*?)^\s*\}",s,re.M|re.S)
 valid=field("path")==path and field("program")=="/bin/bash" and args and [x.strip() for x in args[1].splitlines() if x.strip()]==["/bin/bash",wrapper]
-if mode=="running": valid=valid and field("state")=="running" and re.fullmatch(r"[1-9][0-9]*",field("pid") or "")
+if mode=="running": valid=valid and top_field("state")=="running" and re.fullmatch(r"[1-9][0-9]*",field("pid") or "")
 sys.exit(0 if valid else 1)
 ' "$1" "$2" "$3"
 }
