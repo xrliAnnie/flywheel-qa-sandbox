@@ -112,3 +112,14 @@ pnpm --filter flywheel-teamlead typecheck
 
 ## 6. 设计交付
 探索/调研/计划、review有效APPROVED、diagram-first HTML、每节自动保存评论与汇总复制、提交并推送、静默发布和托管CSP验证、向工程Lead报告、exact `complete --route phase_design_complete`，随后 park。不创建实现或QA successor。
+
+
+## 2026-09-15 20:22 PDT 证据补记（Lead 提供）
+问题 f65445d7-a479-4cd5-8a6c-5ae6c79a54ad 已回答。Lead 在约03:2xZ读取的证据如下；Runner无直接Lead读取权限，没有借用token。
+
+| 线程 | founder 原消息 | 时间（UTC 2026-09-16） | 正文 | Lead 查询结论 |
+|---|---|---|---|---|
+| 1549573426547658793 / FLY-2131 | 1549573491060244602 | 00:11:49 | 这是什么东西呀？ | Raya mailbox未见；后续机器人帖无对应回答 |
+| 1549573438937767977 / FLY-2382 | 1549573499914297409 | 00:11:52 | 这是什么东西呀？ | Raya mailbox未见；后续机器人帖无对应回答 |
+
+Lead 的 by-thread 读取确认 issue session 项目为 flywheel；lead_events 没有引用这两个id的任一Lead记录。Raya mailbox该分钟只有主频道投递，正文检索也未命中。Lead将此判为入站未送达；本设计把它作为Lead提供的事故证据，精确live/archive计数与登记owner仍请求补充。原先“原消息id未知”仅是早期取证状态，现在已定位；实施必须用上述真实id核对、恢复并补实际同线程回答。不可把后续机器人普通消息当作回答。

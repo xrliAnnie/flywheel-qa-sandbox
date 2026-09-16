@@ -36,3 +36,17 @@ StateStore.getUnarchivedIssueChatThreads() 和 getUnarchivedPhaseChatThreads() �
 FLY-2226 仅参考其注册表覆盖、游标初始化、首次载荷归属风险；当前分支没有其描述的独立对账器，不能把旧设计当成已部署能力。当前源码仍有审批解释路径，必须显式隔离。
 
 设计期取证限制：by-thread 两次401；受管 raya 快照拒绝 runner_snapshot_context_invalid。已报 Lead，问题 f65445d7-a479-4cd5-8a6c-5ae6c79a54ad。没有直接复制数据库、修改权限、修改身份、调用发消息/恢复接口。历史恢复及真实会话验收是后续交付的硬条件。
+
+
+## 2026-09-15 20:22 PDT 证据补记（Lead 提供）
+问题 f65445d7-a479-4cd5-8a6c-5ae6c79a54ad 已回答。Lead 在约03:2xZ读取的证据如下；Runner无直接Lead读取权限，没有借用token。
+
+| 线程 | founder 原消息 | 时间（UTC 2026-09-16） | 正文 | Lead 查询结论 |
+|---|---|---|---|---|
+| 1549573426547658793 / FLY-2131 | 1549573491060244602 | 00:11:49 | 这是什么东西呀？ | Raya mailbox未见；后续机器人帖无对应回答 |
+| 1549573438937767977 / FLY-2382 | 1549573499914297409 | 00:11:52 | 这是什么东西呀？ | Raya mailbox未见；后续机器人帖无对应回答 |
+
+Lead 的 by-thread 读取确认 issue session 项目为 flywheel；lead_events 没有引用这两个id的任一Lead记录。Raya mailbox该分钟只有主频道投递，正文检索也未命中。Lead将此判为入站未送达；本设计把它作为Lead提供的事故证据，精确live/archive计数与登记owner仍请求补充。原先“原消息id未知”仅是早期取证状态，现在已定位；实施必须用上述真实id核对、恢复并补实际同线程回答。不可把后续机器人普通消息当作回答。
+
+## 官方协议核对
+已于本轮阅读 [Discord Get Channel Messages](https://docs.discord.com/developers/resources/message#get-channel-messages)：返回数组按新到旧排序，after为指定id之后，limit为1–100，缺READ_MESSAGE_HISTORY权限可能返回空数组。因此200空数组不是“历史不存在”的证据；QA必须核对权限。文档未明确说明after多页选取最近还是最早的一批，保留T2受控>100条分页核验，不将源码注释当协议证明。
