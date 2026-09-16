@@ -1,14 +1,14 @@
 ---
 issue: FLY-2608
 phase: implement
-phaseCursor: 0/6
-updated: 2026-09-16T04:29:41.284Z
-nextStep: Sync origin/main, re-audit approved plan against current code, then
-  add the first failing focused test
+phaseCursor: 1/6
+updated: 2026-09-16T04:34:38.622Z
+nextStep: Add failing ingest-only first-scan, mailbox-lane, and reply-route
+  tests on the synced head
 chunks: []
 pointers: {}
 ---
 
 # FLY-2608 progress
-**phase**: implement (0/6)
-**next**: Sync origin/main, re-audit approved plan against current code, then add the first failing focused test
+**phase**: implement (1/6)
+**next**: Add failing ingest-only first-scan, mailbox-lane, and reply-route tests on the synced head
