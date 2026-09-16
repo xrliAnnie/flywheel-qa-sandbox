@@ -1,0 +1,48 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "ca2bcba3-2862-4279-9d91-a679ee1ddd5b",
+  "round": 3,
+  "findings": [
+    {
+      "id": "marker-one-shot-has-no-rotation-path",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2608-raya-thread-replies/plan.md",
+      "line": 67,
+      "title": "R3 新增的上线边界 marker 是一次性不可替换文件：每条失败路径都写「保留、不覆盖、不重新生成」，却没有任何退役/轮换步骤 ⇒ 过期、owner 变更、后续扩面三种现实情况都会把功能永久卡死",
+      "detail": "R2 的 HIGH（`rollout-marker-path-ignores-state-dir`）已正确关闭：L63 改成 `join(getStateDir(), \"founder-thread-ingress-rollout.json\")`，与 `plugin.ts:10038` 的 founder-reply-cursor 共用 `path-helpers.ts:61` 的 `getStateDir()`（`FLYWHEEL_STATE_DIR` 优先，默认 `~/.flywheel/state`），slot QA 与生产各自冻结、互拷拒绝，T5 (L115) 还补了对应用例。三个 environment 锚点也都在代码里可解析：`config.ts:201` (TEAMLEAD_DB_PATH)、`packages/config/src/commdb-path.ts:17` `commDbRootDir()`（正是 `defaultGetCommDbPath` → gate-poller.ts:2377 实际用的那个）。这一项已实。\n\n新出现的问题在**生命周期**。现在每条异常路径都只说保留不动：L67「否则rollout_boundary_unavailable，保留文件并要求重新走部署决策与dry-run，绝不把旧值或now静默沿用」；L69「marker/回执损坏、错环境、hash不匹配，或并发O_EXCL失败且重读不匹配，均关闭新增覆盖并诊断，不覆盖、不重新生成」；L73「旧marker/现有cursor均不得删除来触发重放」。而创建唯一的手段是 O_EXCL（L65/L69），文件已存在就必然失败。合起来 = **一旦落下一个无效 marker，本环境再也产不出有效 marker**，计划里没有任何一句授权删除或轮换。\n\n三个现实触发点：\n1. **首次采纳超时**。L67 的 15 分钟新鲜度 + L71 的顺序（只读盘点→冻结marker→最终dry-run→15分钟内创建采纳回执→启用）要跨一次 Bridge 启用。整机重启场景下 launchd 拉回 Bridge 本身就约 10 分钟，dry-run 再占几分钟，超窗很容易。超窗后 marker 永久作废且不可重建。\n2. **Raya owner 变更**。L25/L65 把 `{projectName:raya, leadId:raya, chatChannelId:1542079099928059987}` 冻进 marker，L67 又要求启动时校验「当前真实environment及owner配置」。Raya 正在做宿主割接（FLY-2496），chatChannel 或 state dir 一旦变更，marker 立刻 owner/environment 不匹配 → 新增覆盖静默关闭 → 且无法重新冻结。这会让本单修好的东西在割接当天悄悄失效。\n3. **L25 明确承诺的后续扩面**（「其他Lead的新增覆盖不在本单，留待独立验收」）需要一份 owners 不同的 marker，同样造不出来。\n\n另外 L69 坚持「它们是迁移数据与一次采纳凭证，不是消息队列或feature flag」，但 owners 列表事实上就是决定哪些 Lead 生效的准入名单 —— 既然承担了 flag 的职责，就得有 flag 该有的轮换语义。\n\n建议（不必推翻现有设计）：定义一条显式轮换规则，例如 marker 带 `supersedes`/序号（`founder-thread-ingress-rollout.<n>.json`），采纳回执按同一序号配对；并写清「无效/过期/owner 变更的 marker 由操作者在部署窗口内显式退役并重新走完整 T5 顺序」这一步，同时在 T5 用例里补「过期后成功轮换到新 marker」和「退役旧 marker 不触发任何历史回放（游标不动）」两条。",
+      "findingKey": "marker-one-shot-has-no-rotation-path"
+    },
+    {
+      "id": "t3-reply-gating-undefined-when-marker-unavailable",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2608-raya-thread-replies/plan.md",
+      "line": 93,
+      "title": "T3 的 replyChannelId 以「冻结 owner 集合」为闸，但没说 marker 不可用时该闸是开是关",
+      "detail": "R3 把 T3 从「所有现有 Bridge issue-thread ingest」收窄为 L28/L93 的「仅已冻结owner集合内的 thread ingress（含该owner既有扫描路径）」。冻结 owner 集合来自 marker（L65），而 L67 规定 marker 不可用时「仅拒绝新增覆盖」—— 只点名了 T1 的注册表新增覆盖，没说 T3 怎么办。于是 marker 缺失/过期时，「已冻结owner集合」是空集（⇒ 连 Raya 既有路径也不写 replyChannelId）还是「回退到按 live 配置判定 Raya」（⇒ 照写），实施者两种读法都说得通。\n\n实际影响很小：Raya 在 project `raya` 下没有 session（两条事故 issue 的 session 项目是 flywheel，见 L158，`matchesLead` 不会匹配到 raya），所以 raya 的「既有扫描路径」今天是空的，两种读法的可观察差异接近零。因此只记 LOW。\n\n但这是一句话能消除的歧义，且它决定 marker 异常时回帖目的地的行为，建议在 L67 或 L93 直接写死一种：例如「marker 不可用 ⇒ 冻结 owner 集合视为空集，T1 新增覆盖与 T3 的 replyChannelId 同时关闭，既有行为完全按上线前字节不变」，并在 T3 测试里加一条 marker-unavailable 的断言。",
+      "findingKey": "t3-reply-gating-undefined-when-marker-unavailable"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "marker-one-shot-has-no-rotation-path",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2608-raya-thread-replies/plan.md",
+      "line": 67,
+      "title": "R3 新增的上线边界 marker 是一次性不可替换文件：每条失败路径都写「保留、不覆盖、不重新生成」，却没有任何退役/轮换步骤 ⇒ 过期、owner 变更、后续扩面三种现实情况都会把功能永久卡死",
+      "detail": "R2 的 HIGH（`rollout-marker-path-ignores-state-dir`）已正确关闭：L63 改成 `join(getStateDir(), \"founder-thread-ingress-rollout.json\")`，与 `plugin.ts:10038` 的 founder-reply-cursor 共用 `path-helpers.ts:61` 的 `getStateDir()`（`FLYWHEEL_STATE_DIR` 优先，默认 `~/.flywheel/state`），slot QA 与生产各自冻结、互拷拒绝，T5 (L115) 还补了对应用例。三个 environment 锚点也都在代码里可解析：`config.ts:201` (TEAMLEAD_DB_PATH)、`packages/config/src/commdb-path.ts:17` `commDbRootDir()`（正是 `defaultGetCommDbPath` → gate-poller.ts:2377 实际用的那个）。这一项已实。\n\n新出现的问题在**生命周期**。现在每条异常路径都只说保留不动：L67「否则rollout_boundary_unavailable，保留文件并要求重新走部署决策与dry-run，绝不把旧值或now静默沿用」；L69「marker/回执损坏、错环境、hash不匹配，或并发O_EXCL失败且重读不匹配，均关闭新增覆盖并诊断，不覆盖、不重新生成」；L73「旧marker/现有cursor均不得删除来触发重放」。而创建唯一的手段是 O_EXCL（L65/L69），文件已存在就必然失败。合起来 = **一旦落下一个无效 marker，本环境再也产不出有效 marker**，计划里没有任何一句授权删除或轮换。\n\n三个现实触发点：\n1. **首次采纳超时**。L67 的 15 分钟新鲜度 + L71 的顺序（只读盘点→冻结marker→最终dry-run→15分钟内创建采纳回执→启用）要跨一次 Bridge 启用。整机重启场景下 launchd 拉回 Bridge 本身就约 10 分钟，dry-run 再占几分钟，超窗很容易。超窗后 marker 永久作废且不可重建。\n2. **Raya owner 变更**。L25/L65 把 `{projectName:raya, leadId:raya, chatChannelId:1542079099928059987}` 冻进 marker，L67 又要求启动时校验「当前真实environment及owner配置」。Raya 正在做宿主割接（FLY-2496），chatChannel 或 state dir 一旦变更，marker 立刻 owner/environment 不匹配 → 新增覆盖静默关闭 → 且无法重新冻结。这会让本单修好的东西在割接当天悄悄失效。\n3. **L25 明确承诺的后续扩面**（「其他Lead的新增覆盖不在本单，留待独立验收」）需要一份 owners 不同的 marker，同样造不出来。\n\n另外 L69 坚持「它们是迁移数据与一次采纳凭证，不是消息队列或feature flag」，但 owners 列表事实上就是决定哪些 Lead 生效的准入名单 —— 既然承担了 flag 的职责，就得有 flag 该有的轮换语义。\n\n建议（不必推翻现有设计）：定义一条显式轮换规则，例如 marker 带 `supersedes`/序号（`founder-thread-ingress-rollout.<n>.json`），采纳回执按同一序号配对；并写清「无效/过期/owner 变更的 marker 由操作者在部署窗口内显式退役并重新走完整 T5 顺序」这一步，同时在 T5 用例里补「过期后成功轮换到新 marker」和「退役旧 marker 不触发任何历史回放（游标不动）」两条。",
+      "findingKey": "marker-one-shot-has-no-rotation-path"
+    },
+    {
+      "id": "t3-reply-gating-undefined-when-marker-unavailable",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2608-raya-thread-replies/plan.md",
+      "line": 93,
+      "title": "T3 的 replyChannelId 以「冻结 owner 集合」为闸，但没说 marker 不可用时该闸是开是关",
+      "detail": "R3 把 T3 从「所有现有 Bridge issue-thread ingest」收窄为 L28/L93 的「仅已冻结owner集合内的 thread ingress（含该owner既有扫描路径）」。冻结 owner 集合来自 marker（L65），而 L67 规定 marker 不可用时「仅拒绝新增覆盖」—— 只点名了 T1 的注册表新增覆盖，没说 T3 怎么办。于是 marker 缺失/过期时，「已冻结owner集合」是空集（⇒ 连 Raya 既有路径也不写 replyChannelId）还是「回退到按 live 配置判定 Raya」（⇒ 照写），实施者两种读法都说得通。\n\n实际影响很小：Raya 在 project `raya` 下没有 session（两条事故 issue 的 session 项目是 flywheel，见 L158，`matchesLead` 不会匹配到 raya），所以 raya 的「既有扫描路径」今天是空的，两种读法的可观察差异接近零。因此只记 LOW。\n\n但这是一句话能消除的歧义，且它决定 marker 异常时回帖目的地的行为，建议在 L67 或 L93 直接写死一种：例如「marker 不可用 ⇒ 冻结 owner 集合视为空集，T1 新增覆盖与 T3 的 replyChannelId 同时关闭，既有行为完全按上线前字节不变」，并在 T3 测试里加一条 marker-unavailable 的断言。",
+      "findingKey": "t3-reply-gating-undefined-when-marker-unavailable"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

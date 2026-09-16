@@ -37,3 +37,9 @@ questionId 85f2ac75-73dc-4ca4-b1d1-04ecad287be4；requestId c38233ab-b61e-49d8-8
 | nudge-lead-inbox-arg-order | LOW | 改为leadId,projectName，闭包依赖及spy检查实际顺序 |
 
 R3只复核这些具体修订及原Raya目标，没有新增生产动作。
+
+
+## R3 有效批准
+questionId eaf4c6ad-14ef-4d8a-bffa-53acce8efd2b；requestId ca2bcba3-2862-4279-9d91-a679ee1ddd5b；round3；reviewVerdict=APPROVED，reviewerVerdict=APPROVED。无阻塞发现、无ruling替代。完整脱敏结构化回执为design-review.json。
+
+非阻塞Follow-ups：MEDIUM marker-one-shot-has-no-rotation-path；LOW t3-reply-gating-undefined-when-marker-unavailable。保留已批准方案，交Lead安排，未声称已解决。下一步为静默发布和设计完成，不再注册评审。

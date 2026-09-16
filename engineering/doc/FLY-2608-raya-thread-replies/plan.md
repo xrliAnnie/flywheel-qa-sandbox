@@ -3,7 +3,7 @@ Issue: FLY-2608 (https://linear.app/geoforge3d/issue/FLY-2608/raya工程修复-d
 日期: 2026-09-15
 基于: research.md
 
-状态: R2 CHANGES_REQUESTED 已修订，待 R3。设计节点不实现、不部署、不恢复线上消息。
+状态: APPROVED（R3；有效 reviewVerdict=APPROVED，requestId ca2bcba3-2862-4279-9d91-a679ee1ddd5b）。设计节点不实现、不部署、不恢复线上消息。
 
 ## 给 founder 的说明
 让已登记的 Raya 讨论线程进入现有 Bridge 收件扫描，并把回答的目的地固定为问题所在的线程。无需 @，也不用重述问题。修复复用标准收件队列；完成与否以真实提问、收件凭证和同线程回答三段证据判断。
@@ -168,3 +168,10 @@ Lead 的 content LIKE 源id计数：raya.mailbox各0，flywheel.mailbox各2；�
 以完整 `chat:raya:1549573491060244602` / `chat:raya:1549573499914297409` 的delivery_id/source_ref核对：raya与flywheel的mailbox、mailbox_identity、mailbox_terminal_archive两条各0；flywheel.mailbox_archive亦0。此结果替代先前substring及mailbox_log失败查询。结论限定在已核查的raya/flywheel标准收件库：两条输入均无live、identity或archive收件记录，尚未恢复；结合真实源消息和线程无对应回答，支持本事故入站缺口。
 
 邻近主频道对照为 `chat:raya:1549573168706879539` (00:10:33Z)、`chat:raya:1549573538451562527` (00:12:01Z)、`chat:raya:1549574793370533941` (00:17:00Z)，均为discord_chat/to_agent=raya/state=ACKED。这是运输收件对照，不单凭ACK证明模型消费。上述Lead-provided证据满足设计选型；T4仍须上线前重读最新状态，避免并行恢复重复回答。
+
+
+## R3 非阻塞 Follow-ups
+有效与原始verdict均APPROVED。已通过方案正文保留；以下不作为已实现能力，也不重开本设计：
+- MEDIUM `marker-one-shot-has-no-rotation-path`：过期/迁移/owner变更后的显式退役与轮换流程仍需Lead安排；当前规则会关闭新增覆盖并诊断，不能声称可自动恢复。
+- LOW `t3-reply-gating-undefined-when-marker-unavailable`：边界不可用时T3目的地变更的具体开关行为需实施前明确，并添加对应断言。
+完整有效回执见design-review.json；已通过ask --report交Lead决定后续。生产验证和旧输入恢复仍未执行。
