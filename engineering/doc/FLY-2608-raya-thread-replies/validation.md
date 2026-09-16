@@ -26,3 +26,37 @@ mmdc -i engineering/doc/FLY-2608-raya-thread-replies/flow.mmd -o engineering/doc
 - 发布原始CLI输出在上下文切换时被截断；从发布registry定位唯一对应文件并核对托管内容恢复reportId，没有重复发布。
 - Lead必需的 `DESIGN-HTML ready` 报告回执 `bef84d59-5f22-425c-a954-e8de0f46ea58`。非阻塞建议报告回执 `f06f48aa-737a-40f6-b574-e02597a0e538`。
 - 本轮没有浏览器视觉QA、受控线程提问、生产补投或真实回帖验证；没有把静态/托管验证当作业务验收。
+
+## 实施阶段验证（2026-09-16 UTC）
+
+### 已实现边界
+
+- 只扩展既有 `founder-reply-deliverer` / `GatePoller` / 标准 `CommDB.ingestDiscordChat` 链路；没有新建收件器或 Raya 私有传输。
+- owner 只按登记的 `lead_id + channel_id` 唯一匹配；`projectName` 只用于选择既有 CommDB，不参与 thread owner 判断。
+- mailbox envelope 显式携带 `replyChannelId=<源 thread id>`；持久化成功后只唤醒既有 Lead inbox，重复 message id 仍由标准 delivery id 去重。
+- rollout 默认关闭。启用必须同时具备环境绑定的 marker、其 SHA-256 绑定的 activation receipt、当前 owner 一致性、固定 snowflake 下界，以及 `automaticReplayBeforeBoundary=0` 的 dry-run 证明。
+- 未登记、已归档、owner 缺失/冲突、原生订阅重叠、guild/subscription 读取失败都 fail closed 并留下明确日志理由。
+- 两条历史输入 `1549573491060244602` / `1549573499914297409` 没有自动回放；恢复仍须在获授权后重新审计并通过标准 `chat-ingest` 路径执行。
+
+### TDD 与定向证据
+
+- 先增加“Raya rollout 开启时不得改变无关 Lead 同线程任务”的回归断言；初次失败为 owner conflict 导致无关任务被吞，最小修正后通过。
+- teamlead 8 个相关文件：147/147；flywheel-comm `discord-chat-ingest`：29/29；合计 176/176。
+- 覆盖：源 message id 到标准 inbox row、`delivery_id=chat:raya:<msgId>`、`source_kind=discord_chat`、`to_agent=raya`、原线程 `replyChannelId`、主频道回归、跨 Lead 隔离、重复去重、未登记/归档/非 Raya owner、原生订阅重叠和 rollout fail-closed。
+- `pnpm --dir packages/teamlead typecheck`：通过。
+- `pnpm lint`：退出 0；仅既有无关 warning。
+- `pnpm -r build`：退出 0。
+
+### 全仓 package gate（代码头 `b52fb471615f69447aaafd2ce98806ee9b582871`）
+
+- `pnpm test:packages:run` 完整跑完并产出 receipt；17 个包中 14 个通过。receipt 计数为 23678 passed、32 skipped、9 failed counters、1 error；日志归并后是 3 个唯一断言超时，均不在 FLY-2608 改动路径。
+- `flywheel-claude-runner`: `codex-memory-seed` 生产规模目录测试超过 5 秒；单测独跑仍约 6.5 秒，因此默认门限下失败；仅将运行时门限放宽到 30 秒后，同一断言 1/1 通过（约 5.15 秒）。整文件单线程复跑还触发其既有 4096 文件测试 60 秒超时。
+- `flywheel-config`: `fly1981-final-ledgers` 15 秒超时；`VITEST_MAX_FORKS=1` 整文件复跑 11/11 通过。
+- `flywheel-teamlead`: `StateStore.workflow-ledger` 5 秒超时并伴随 `onTaskUpdate` RPC error；`VITEST_MAX_FORKS=1` 整文件复跑 29/29 通过。
+- 因上述 3 个默认门限超时，本地 aggregate **不声明 green**。最终提交头是否可接受由 PR exact-head CI 独立判定。
+
+### 未执行／不得冒充的验收
+
+- 未写 rollout marker 或 activation receipt，未重启 Bridge，未部署，未改生产数据库，未读取/复制 live `teamlead.db` 或 `comm.db`。
+- 未在真实 `#raya` 或真实业务 thread 发消息，未恢复两条历史输入，未取得源 message id → 生产 mailbox receipt → Raya 同线程回帖的真环境链路。
+- 受控沙盒 thread 验收、QA 判决与 founder 在生产的亲测仍属于后续 QA/ship 阶段；源码测试和 CI 不能替代这些证明。
