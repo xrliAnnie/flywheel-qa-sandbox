@@ -37,6 +37,8 @@ fi
 
 # ── Mufasa identity: selectors in launcher, coordinates from registry ──
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
+# Apply the legacy default before canonical v2 selects its managed permissions.
+export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
 canonical_lead_identity_resolve "growth" "mufasa-lead"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
 # (same derivation claude-lead.sh:481 uses). These launchers predate that change —
@@ -51,7 +53,6 @@ export FLYWHEEL_CODEX_BIN="${FLYWHEEL_CODEX_BIN:-$(command -v codex)}"
 
 # ── (Z) write-capable tier ──
 export FLYWHEEL_CODEX_LEAD_PROFILE="write-capable"
-export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
 # Net-off + writableRoots=ONLY this scratch is enforced by the runtime's
 # buildConfinementArgv (network_access=false) + resolveLeadWorkspace (rejects any
 # overlap with ~/.flywheel / state / CODEX_HOME / the teamlead+gateway control

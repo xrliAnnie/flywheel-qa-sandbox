@@ -22,8 +22,8 @@ import {
 	type RunnerBridgeClient,
 	requestRunnerBridge,
 } from "./runner-action-http.js";
-
 import { RUNNER_ACTION_TOOL_NAMES } from "./runner-action-names.js";
+import { createRunnerActionSchemas } from "./runner-action-schemas.js";
 
 export { RUNNER_ACTION_TOOL_NAMES } from "./runner-action-names.js";
 
@@ -34,21 +34,6 @@ const RESERVED = new Set([
 	"founder_review",
 ]);
 const uuid = z.string().uuid();
-const key = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
-const text = z
-	.string()
-	.refine(
-		(value) =>
-			value.trim().length > 0 &&
-			!value.includes("\0") &&
-			Buffer.byteLength(value, "utf8") <= 8000,
-	);
-const issue = z
-	.string()
-	.refine(
-		(value) =>
-			/^[A-Z][A-Z0-9]*-[0-9]+$/.test(value) || uuid.safeParse(value).success,
-	);
 class RunnerActionRefused extends Error {
 	constructor(readonly code: string) {
 		super(code);
@@ -103,33 +88,7 @@ export function createRunnerActions(options: RunnerActionsOptions) {
 	const adopted = menus();
 	if (adopted.length === 0)
 		throw new Error("runner actions require at least one adopted menu");
-	const schemas: Record<string, z.ZodObject> = {
-		start_runner: z
-			.object({
-				issueId: issue,
-				taskCategory: z.enum(adopted as [string, ...string[]]),
-				idempotencyKey: key,
-			})
-			.strict(),
-		list_runners: z
-			.object({
-				mode: z
-					.enum(["active", "live", "recent_terminal", "recent", "stuck"])
-					.default("active"),
-			})
-			.strict(),
-		get_runner_status: z.object({ executionId: uuid }).strict(),
-		read_runner_tmux: z
-			.object({
-				executionId: uuid,
-				lines: z.number().int().min(1).max(200).default(80),
-			})
-			.strict(),
-		send_runner: z
-			.object({ executionId: uuid, text, idempotencyKey: key })
-			.strict(),
-		respond_runner: z.object({ questionId: uuid, answer: text }).strict(),
-	};
+	const schemas = createRunnerActionSchemas(adopted);
 	const inScope = (session: Session): boolean => {
 		const current = context.assertCurrent();
 		if (session.project_name !== current.identity.projectName) return false;
@@ -164,6 +123,82 @@ export function createRunnerActions(options: RunnerActionsOptions) {
 		)
 			return refuse("RUNNER_READ_UNVERIFIED");
 		return response.body;
+	};
+	const resolveScopedQuestion = (questionId: string) => {
+		const leadId = context.assertCurrent().identity.leadId;
+		const question = readOnly(
+			commDbPath,
+			(db) =>
+				db
+					.prepare("SELECT * FROM mailbox WHERE id = ? AND type = 'question'")
+					.get(questionId) as
+					| {
+							from_agent: string;
+							to_agent: string;
+							kind: string | null;
+							checkpoint: string | null;
+							expires_at: string | null;
+							resolved_at: string | null;
+							superseded_at: string | null;
+							relay_state: string;
+					  }
+					| undefined,
+		);
+		if (
+			!question ||
+			question.to_agent !== leadId ||
+			question.kind === "report" ||
+			RESERVED.has(question.checkpoint ?? "")
+		)
+			return refuse("RUNNER_QUESTION_NOT_ROUTABLE");
+		if (!uuid.safeParse(question.from_agent).success)
+			return refuse("RUNNER_OUT_OF_SCOPE");
+		resolveScopedRunner(question.from_agent);
+		const existingResponse = readOnly(commDbPath, (db) =>
+			db
+				.prepare(
+					"SELECT id FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response'",
+				)
+				.get(questionId),
+		);
+		if (
+			question.superseded_at ||
+			(!existingResponse &&
+				(question.resolved_at ||
+					question.relay_state === "terminal_disposed")) ||
+			(question.expires_at &&
+				(!Number.isFinite(Date.parse(question.expires_at)) ||
+					Date.parse(question.expires_at) <= Date.now()))
+		)
+			return refuse("RUNNER_QUESTION_CLOSED");
+		return question;
+	};
+	/** Trusted Bridge use only: scope checks never enqueue, respond or dispatch. */
+	const authorize = (name: string, raw: unknown): void => {
+		const current = context.assertCurrent();
+		const parsed = schemas[name]?.safeParse(raw);
+		if (!parsed?.success)
+			throw new RunnerActionRefused("RUNNER_ARGUMENTS_INVALID");
+		const args = parsed.data;
+		if (name === "start_runner") {
+			if (!menus().includes(args.taskCategory as string))
+				refuse("RUNNER_MENU_NOT_ADOPTED");
+			deriveRunnerStartKey({
+				projectName: current.identity.projectName,
+				leadId: current.identity.leadId,
+				issueId: args.issueId as string,
+				idempotencyKey: args.idempotencyKey as string,
+			});
+		} else if (name === "respond_runner")
+			resolveScopedQuestion(args.questionId as string);
+		else if (name !== "list_runners")
+			resolveScopedRunner(args.executionId as string);
+		if (["start_runner", "send_runner", "respond_runner"].includes(name))
+			authorizeLeadWrite({
+				claimedLeadId: current.identity.leadId,
+				env: context.env,
+			});
+		context.assertCurrent();
 	};
 	const execute = async (
 		name: string,
@@ -305,53 +340,7 @@ export function createRunnerActions(options: RunnerActionsOptions) {
 					};
 				}
 				case "respond_runner": {
-					const question = readOnly(
-						commDbPath,
-						(db) =>
-							db
-								.prepare(
-									"SELECT * FROM mailbox WHERE id = ? AND type = 'question'",
-								)
-								.get(args.questionId) as
-								| {
-										from_agent: string;
-										to_agent: string;
-										kind: string | null;
-										checkpoint: string | null;
-										expires_at: string | null;
-										resolved_at: string | null;
-										superseded_at: string | null;
-										relay_state: string;
-								  }
-								| undefined,
-					);
-					if (
-						!question ||
-						question.to_agent !== leadId ||
-						question.kind === "report" ||
-						RESERVED.has(question.checkpoint ?? "")
-					)
-						return refuse("RUNNER_QUESTION_NOT_ROUTABLE");
-					if (!uuid.safeParse(question.from_agent).success)
-						return refuse("RUNNER_OUT_OF_SCOPE");
-					resolveScopedRunner(question.from_agent);
-					const existingResponse = readOnly(commDbPath, (db) =>
-						db
-							.prepare(
-								"SELECT id FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response'",
-							)
-							.get(args.questionId),
-					);
-					if (
-						question.superseded_at ||
-						(!existingResponse &&
-							(question.resolved_at ||
-								question.relay_state === "terminal_disposed")) ||
-						(question.expires_at &&
-							(!Number.isFinite(Date.parse(question.expires_at)) ||
-								Date.parse(question.expires_at) <= Date.now()))
-					)
-						return refuse("RUNNER_QUESTION_CLOSED");
+					const question = resolveScopedQuestion(args.questionId);
 					await respond({
 						questionId: args.questionId,
 						fromAgent: leadId,
@@ -386,7 +375,7 @@ export function createRunnerActions(options: RunnerActionsOptions) {
 			};
 		}
 	};
-	return { schemas, execute };
+	return { schemas, execute, authorize };
 }
 export function registerRunnerActions(
 	server: McpServer,

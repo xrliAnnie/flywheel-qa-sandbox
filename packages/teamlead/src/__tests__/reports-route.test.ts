@@ -157,6 +157,79 @@ describe("reports-route", () => {
 		};
 	}
 
+	it("checks scoped publish authority before staging or external writes", async () => {
+		await startApp({
+			authorizePublish: async () => {
+				throw new Error("private authorization detail");
+			},
+		});
+		const result = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+		});
+		expect(result).toEqual({
+			status: 403,
+			json: { error: "report publish scope denied" },
+		});
+		expect(blobPutMock).not.toHaveBeenCalled();
+		expect(registry.list()).toHaveLength(0);
+	});
+
+	it("does not commit a report when scoped authority changes during upload", async () => {
+		let current = true;
+		blobPutMock.mockImplementation(async () => {
+			current = false;
+			return {};
+		});
+		await startApp({
+			authorizePublish: async () => () => {
+				if (!current) throw new Error("revoked");
+			},
+		});
+		const result = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+			capability: {
+				requestId: "123e4567-e89b-42d3-a456-426614174000",
+				leadId: "eng",
+				identityDigest: "a".repeat(64),
+				issueId: "FLY-1",
+			},
+		});
+		expect(result.status).toBe(502);
+		expect(registry.list()).toHaveLength(0);
+		expect(blobPutMock).toHaveBeenCalledOnce();
+		expect(blobDeleteMock).toHaveBeenCalledWith([
+			blobPutMock.mock.calls[0]![0],
+		]);
+	});
+	it("rejects an absent live check from a configured scope authorizer", async () => {
+		await startApp({ authorizePublish: (async () => undefined) as never });
+		const result = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+		});
+		expect(result.status).toBe(403);
+		expect(blobPutMock).not.toHaveBeenCalled();
+	});
+
+	it("returns the scoped request ID with the report receipt", async () => {
+		await startApp({ authorizePublish: async () => () => {} });
+		const requestId = "123e4567-e89b-42d3-a456-426614174000";
+		const result = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+			capability: {
+				requestId,
+				leadId: "eng",
+				identityDigest: "a".repeat(64),
+				issueId: "FLY-1",
+			},
+		});
+		expect(result.status).toBe(200);
+		expect(result.json.requestId).toBe(requestId);
+	});
+
 	// ── publish ─────────────────────────────────────────────────────────
 
 	it("FLY-2283: publish fails closed without private Blob storage", async () => {

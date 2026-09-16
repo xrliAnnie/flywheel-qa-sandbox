@@ -4,6 +4,10 @@
  * identity-echo liveness probe.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildTuiCommand,
@@ -227,5 +231,116 @@ describe("killTuiWindow (shutdown orphan teardown — review HIGH-1)", () => {
 				log: () => {},
 			}),
 		).not.toThrow();
+	});
+});
+
+describe("v2 visible process boundary", () => {
+	const pins = {
+		codexHome: SPEC.codexHome,
+		brokerSocket: "/tmp/cap/socket",
+		manifestPath: "/tmp/cap/manifest.json",
+		artifactRoot: "/tmp/cap/artifacts",
+		modelTempRoot: "/tmp/cap/model-tmp",
+		projectName: SPEC.projectName,
+		leadId: SPEC.leadId,
+		activationId: "activation-1",
+	};
+	it("uses the parent socket and named permissions for the founder client", () => {
+		const command = buildTuiCommand({
+			...SPEC,
+			capabilityModelEnv: { pins, env: {} },
+			capabilitySocketPath: "/tmp/owned/app.sock",
+		});
+		expect(command).toContain("unix:///tmp/owned/app.sock");
+		expect(command).not.toContain("app-server-control");
+		expect(command).toContain('default_permissions="flywheel-lead-v2"');
+		expect(() =>
+			buildTuiCommand({ ...SPEC, capabilitySocketPath: "/tmp/owned/app.sock" }),
+		).toThrow("invalid capability socket");
+	});
+	it("rejects parent pins for a different identity or home", () => {
+		for (const changed of [
+			{ leadId: "other" },
+			{ projectName: "other" },
+			{ codexHome: "/tmp/other" },
+			{ brokerSocket: "relative" },
+		]) {
+			expect(() =>
+				buildTuiCommand({
+					...SPEC,
+					capabilityModelEnv: { pins: { ...pins, ...changed }, env: {} },
+				}),
+			).toThrow();
+		}
+	});
+	it("omits carrier injection from v2 tmux window arguments", () => {
+		const calls: string[][] = [];
+		expect(
+			ensureTuiWindow(
+				{
+					...SPEC,
+					carrierInstanceId: "private-claim",
+					capabilityModelEnv: { pins, env: {} },
+				},
+				{
+					exec: (_cmd, args) => {
+						calls.push(args);
+						return { ok: true };
+					},
+				},
+			),
+		).toBe(true);
+		const args = calls.find((args) => args[0] === "new-window")!;
+		expect(args).not.toContain("-e");
+		expect(args.join(" ")).not.toContain("private-claim");
+	});
+	it("executes the final process with only washed env and no legacy sandbox override", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tui-boundary-"));
+		try {
+			const stub = join(dir, "codex");
+			writeFileSync(
+				stub,
+				`#!${process.execPath}\nprocess.stdout.write(JSON.stringify({env:process.env,args:process.argv.slice(2)}));`,
+				{ mode: 0o700 },
+			);
+			const command = buildTuiCommand({
+				...SPEC,
+				codexBin: stub,
+				fullAccess: true,
+				carrierInstanceId: "private-claim",
+				capabilityModelEnv: {
+					pins,
+					env: {
+						PATH: "/usr/bin:/bin",
+						SHELL: "literal'$(echo unsafe)`value",
+						GH_TOKEN: "private-token",
+					},
+				},
+			});
+			const result = JSON.parse(
+				execFileSync("/bin/sh", ["-c", command], {
+					encoding: "utf8",
+					env: {
+						PATH: "/usr/bin:/bin",
+						GH_TOKEN: "inherited-token",
+						FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "inherited-claim",
+					},
+				}),
+			);
+			expect(result.env.GH_TOKEN).toBeUndefined();
+			expect(result.env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID).toBeUndefined();
+			expect(result.env.SHELL).toBe("literal'$(echo unsafe)`value");
+			expect(result.env.FLYWHEEL_LEAD_CAPABILITY_SOCKET).toBe(
+				pins.brokerSocket,
+			);
+			expect(result.args).not.toContain("-s");
+			expect(result.args).toContain(
+				"unix://" +
+					SPEC.codexHome +
+					"/app-server-control/app-server-control.sock",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

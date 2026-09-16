@@ -15,6 +15,7 @@
  * out of scope) — a clean follow-up if we want the Discord-side guard too.
  */
 
+import { guardChatThreadFetch } from "../../bridge/chat-thread-write-guard.js";
 import { postDiscordMessageToChannel } from "../../bridge/discord-utils.js";
 import type { DiscordSendFn } from "./CodexLeadOutboundHandler.js";
 
@@ -29,7 +30,7 @@ export function buildLeadDiscordSend(
 	opts: BuildLeadDiscordSendOptions,
 ): DiscordSendFn {
 	const fetchImpl = opts.fetchImpl ?? fetch;
-	return async ({ projectName, leadId, channelId, text }) => {
+	return async ({ projectName, leadId, channelId, text, replyTo, guard }) => {
 		const token = opts.resolveBotToken(projectName, leadId);
 		if (!token) {
 			throw new Error(
@@ -40,8 +41,8 @@ export function buildLeadDiscordSend(
 			channelId,
 			text,
 			token,
-			{ origin: "lead_authored" },
-			fetchImpl,
+			{ origin: "lead_authored", ...(replyTo ? { replyTo } : {}) },
+			guard ? guardChatThreadFetch(guard, fetchImpl) : fetchImpl,
 		);
 		if (!res.ok) {
 			throw new Error(res.error ?? "discord post failed");

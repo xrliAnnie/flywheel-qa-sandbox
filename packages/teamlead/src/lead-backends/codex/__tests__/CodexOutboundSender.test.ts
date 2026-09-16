@@ -415,6 +415,43 @@ describe("CodexOutboundSender — deliver", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	it("authorizes message edits only from this Lead's durable confirmed sends", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "owned-message-"));
+		const dbPath = join(dir, "outbox.db");
+		let sender = make({ post: fakePost().post, dbPath });
+		try {
+			const id = await sender.enqueue({
+				leadId: "lead-1",
+				text: "owned",
+				idempotencyKey: "owned",
+			});
+			expect(sender.ownsSentMessage("chan-1", "message-1")).toBe(false);
+			await sender.deliverWithResult(id);
+			expect(sender.ownsSentMessage("chan-1", "message-1")).toBe(true);
+			expect(sender.ownsSentMessage("foreign", "message-1")).toBe(false);
+			expect(sender.ownsSentMessage("chan-1", "gate-card")).toBe(false);
+			sender.close();
+			sender = make({ post: fakePost().post, dbPath });
+			expect(sender.ownsSentMessage("chan-1", "message-1")).toBe(true);
+			const foreign = new CodexOutboundSender({
+				bridgeUrl: "http://fixture",
+				apiToken: "fixture",
+				projectName: "proj-1",
+				leadId: "foreign",
+				channelId: "chan-1",
+				dbPath,
+			});
+			try {
+				expect(foreign.ownsSentMessage("chan-1", "message-1")).toBe(false);
+			} finally {
+				foreign.close();
+			}
+		} finally {
+			sender.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("marks a Bridge ambiguity and never blindly re-posts it", async () => {
 		const calls: Posted[] = [];
 		const sender = make({
@@ -515,4 +552,65 @@ describe("CodexOutboundSender — durable across reopen", () => {
 		expect(JSON.parse(calls[0].body).nonce).toBe(deterministicNonce("e1:out"));
 		s2.close();
 	});
+});
+
+it("persists parent delivery context across outbox restart and refuses a changed binding", async () => {
+	const root = mkdtempSync(join(tmpdir(), "outbox-context-"));
+	const path = join(root, "outbox.db");
+	let sender = make({ dbPath: path });
+	const request = {
+		leadId: "lead-1",
+		text: "hello",
+		idempotencyKey: "entry-1:out",
+		deliveryContext: "entry-1",
+	};
+	try {
+		await sender.enqueue(request);
+		sender.close();
+		const post = vi.fn<HttpPost>(async () => ({
+			status: 200,
+			body: JSON.stringify({ status: "sent", messageId: "message" }),
+		}));
+		sender = make({ dbPath: path, post });
+		await sender.deliver("entry-1:out");
+		expect(post.mock.calls[0]?.[0]).toMatchObject({
+			deliveryContext: "entry-1",
+		});
+		expect(JSON.parse(post.mock.calls[0]![0].body)).not.toHaveProperty(
+			"deliveryContext",
+		);
+		expect(() =>
+			sender.getDeliveryStatus("entry-1:out", {
+				...request,
+				deliveryContext: "entry-2",
+			}),
+		).toThrow("outbound_evidence_conflict");
+		await expect(
+			sender.enqueue({ ...request, deliveryContext: "entry-2" }),
+		).rejects.toThrow(/conflict/);
+	} finally {
+		sender.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("refuses a context-bearing row on the legacy HTTP transport without a network call", async () => {
+	const fetcher = vi.fn();
+	vi.stubGlobal("fetch", fetcher);
+	const sender = make();
+	try {
+		const id = await sender.enqueue({
+			leadId: "lead-1",
+			text: "hello",
+			idempotencyKey: "entry:out",
+			deliveryContext: "entry",
+		});
+		await expect(sender.deliver(id)).rejects.toThrow(
+			"delivery_context_transport_required",
+		);
+		expect(fetcher).not.toHaveBeenCalled();
+	} finally {
+		sender.close();
+		vi.unstubAllGlobals();
+	}
 });

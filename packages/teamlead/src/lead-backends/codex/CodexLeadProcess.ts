@@ -1,3 +1,5 @@
+import { isAbsolute, normalize } from "node:path";
+import { LEAD_PERMISSION_PROFILE } from "../../lead-capabilities/permission-profile.js";
 /**
  * FLY-224 Phase 1 — CodexLeadProcess: the app-server stdio JSON-RPC client for a
  * Codex Lead.
@@ -108,7 +110,7 @@ export interface CodexLeadProcessOptions {
 	maxStderrBytes?: number;
 	/** clientInfo for initialize. */
 	clientInfo?: { name: string; version: string };
-	/** Advertise the experimental API capability required by realtime clients. */
+	/** Advertise experimental API fields for realtime or managed permission profiles. */
 	experimentalApi?: boolean;
 	/**
 	 * Optional handler for server-initiated requests. Only invoked for methods
@@ -372,16 +374,14 @@ export class CodexLeadProcess {
 	// ── thread / turn convenience (typed-lite wrappers) ──────────────────────
 
 	async startThread(params?: Record<string, unknown>): Promise<string> {
-		const res = await this.request("thread/start", params ?? {});
-		return this.extractThreadId(res);
+		return (await this.startThreadWithResult(params)).id;
 	}
 
 	async resumeThread(
 		threadId: string,
 		params?: Record<string, unknown>,
 	): Promise<string> {
-		const res = await this.request("thread/resume", { threadId, ...params });
-		return this.extractThreadId(res) || threadId;
+		return (await this.resumeThreadWithResult(threadId, params)).id;
 	}
 
 	/**
@@ -394,8 +394,10 @@ export class CodexLeadProcess {
 	async startThreadWithResult(
 		params?: Record<string, unknown>,
 	): Promise<{ id: string; result: unknown }> {
+		this.assertPermissionRequest(params);
 		const res = await this.request("thread/start", params ?? {});
 		const id = this.extractThreadId(res);
+		this.assertPermissionResult(params, res.result);
 		return { id, result: res.result };
 	}
 
@@ -403,10 +405,55 @@ export class CodexLeadProcess {
 		threadId: string,
 		params?: Record<string, unknown>,
 	): Promise<{ id: string; result: unknown }> {
+		this.assertPermissionRequest(params);
 		const res = await this.request("thread/resume", { threadId, ...params });
 		this.throwOnError(res, "thread/resume");
 		const id = this.extractThreadId(res) || threadId;
+		this.assertPermissionResult(params, res.result);
 		return { id, result: res.result };
+	}
+
+	private assertPermissionRequest(params?: Record<string, unknown>): void {
+		if (params?.permissions === undefined) return;
+		const overrides = params.config;
+		if (
+			!this.opts.experimentalApi ||
+			params.permissions !== LEAD_PERMISSION_PROFILE ||
+			Object.hasOwn(params, "sandbox") ||
+			params.approvalPolicy !== "never" ||
+			typeof params.cwd !== "string" ||
+			!isAbsolute(params.cwd) ||
+			normalize(params.cwd) !== params.cwd ||
+			(overrides &&
+				typeof overrides === "object" &&
+				[
+					"sandbox_mode",
+					"sandbox_workspace_write",
+					"default_permissions",
+					"permissions",
+				].some((key) => Object.hasOwn(overrides, key)))
+		)
+			throw new Error("permission_profile_request_invalid");
+	}
+	/** Provenance/cwd echo only; effective config and OS canaries are separate gates. */
+	private assertPermissionResult(
+		params: Record<string, unknown> | undefined,
+		raw: unknown,
+	): void {
+		if (params?.permissions === undefined) return;
+		const result = raw as {
+			activePermissionProfile?: { id?: unknown; extends?: unknown };
+			cwd?: unknown;
+			approvalPolicy?: unknown;
+		} | null;
+		if (
+			!result ||
+			result.activePermissionProfile?.id !== LEAD_PERMISSION_PROFILE ||
+			result.activePermissionProfile.extends !== ":workspace" ||
+			result.cwd !== params.cwd ||
+			result.approvalPolicy !== "never"
+		)
+			throw new Error("permission_profile_response_mismatch");
 	}
 
 	/** Start a turn. Returns the active turnId (for later turn/steer). */

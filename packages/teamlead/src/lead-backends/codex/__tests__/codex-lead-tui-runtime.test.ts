@@ -27,7 +27,16 @@ import {
 } from "../codex-lead-tui-runtime.js";
 import { DaemonConnectionSupervisor } from "../DaemonConnectionSupervisor.js";
 
-function outboundPreflightHarness() {
+function outboundPreflightHarness(
+	options: {
+		v2?: boolean;
+		capabilitySession?: {
+			parent: import("../../../lead-capabilities/runtime-parent.js").LeadCapabilityParent;
+			journal: import("../SqliteJournalStore.js").SqliteJournalStore;
+		};
+		response?: (method: string) => unknown;
+	} = {},
+) {
 	const stateDir = mkdtempSync(join(tmpdir(), "fly2442-tui-"));
 	const handlers = new Map<string, Array<(value?: unknown) => void>>();
 	const close = vi.fn(() => {
@@ -42,7 +51,12 @@ function outboundPreflightHarness() {
 			if (message.id !== undefined) {
 				queueMicrotask(() => {
 					for (const handler of handlers.get("message") ?? []) {
-						handler(JSON.stringify({ id: message.id, result: {} }));
+						handler(
+							JSON.stringify({
+								id: message.id,
+								result: options.response?.(message.method!) ?? {},
+							}),
+						);
 					}
 				});
 			}
@@ -80,20 +94,30 @@ function outboundPreflightHarness() {
 		FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
 		CODEX_HOME: "/tmp/fly2442-codex-home",
 		FLYWHEEL_COMM_DB: join(stateDir, "comm.db"),
+		TEAMLEAD_DB_PATH: join(stateDir, "flags.db"),
 		FLYWHEEL_CODEX_TUI_CWD: "/tmp",
 	});
-	const makeGeneration = buildTuiGeneration(
-		config,
-		{ info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-		{
-			connectDaemon: async () => ws as never,
-			createSender: () => sender,
-			preflight,
-		},
-	);
+	if (options.v2)
+		Object.assign(config, {
+			capabilityBundleVersion: 2,
+			codexProfile: "full-access",
+			fullAccessProjectRoot: "/tmp",
+		});
+	const connectDaemon = vi.fn(async () => ws as never);
+	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+	const makeGeneration = buildTuiGeneration(config, logger, {
+		connectDaemon,
+		...(options.capabilitySession
+			? { capabilitySession: options.capabilitySession }
+			: {}),
+		createSender: () => sender,
+		preflight,
+	});
 	return {
 		close,
+		logger,
 		makeGeneration,
+		connectDaemon,
 		methods,
 		preflight,
 		remove: () => rmSync(stateDir, { recursive: true, force: true }),
@@ -669,4 +693,100 @@ describe("parseCodexLeadTuiRuntimeConfig", () => {
 		expect(c.tuiCwd).toBe("/work");
 		expect(c.codexHome).toBe("/home/.codex-x");
 	});
+});
+
+describe("v2 TUI generation readiness", () => {
+	it("refuses an unassembled parent before connecting to a daemon", async () => {
+		const h = outboundPreflightHarness({ v2: true });
+		const generation = h.makeGeneration();
+		try {
+			await expect(generation.start()).rejects.toThrow(
+				"capability_parent_not_assembled",
+			);
+			expect(h.connectDaemon).not.toHaveBeenCalled();
+		} finally {
+			await generation.stop();
+			h.remove();
+		}
+	});
+
+	it.each(["preflight", "config", "skills"])(
+		"checks live readiness and cleans up rejected %s without closing process-owned resources",
+		async (failure) => {
+			const { SqliteJournalStore } = await import("../SqliteJournalStore.js");
+			const journal = new SqliteJournalStore(":memory:");
+			const journalClose = vi.spyOn(journal, "close");
+			const parent = {
+				pins: {
+					codexHome: "/tmp/fly2442-codex-home",
+					projectName: "growth",
+					leadId: "mufasa",
+				},
+				baseInstructions: "Verified v2 instructions",
+				assertCurrent: vi.fn(async () => {}),
+				verifyEffectiveConfig: vi.fn(async () => {}),
+				verifyEffectiveSkills: vi.fn(async () => {}),
+				close: vi.fn(async () => {}),
+			} as unknown as import("../../../lead-capabilities/runtime-parent.js").LeadCapabilityParent;
+			if (failure === "config")
+				vi.mocked(parent.verifyEffectiveConfig).mockRejectedValue(
+					new Error("foreign config"),
+				);
+			if (failure === "skills")
+				vi.mocked(parent.verifyEffectiveSkills!).mockRejectedValue(
+					new Error("foreign skills"),
+				);
+			const h = outboundPreflightHarness({
+				v2: true,
+				capabilitySession: { parent, journal },
+				response: (method) =>
+					method === "config/read"
+						? { config: { default_permissions: "fixture" } }
+						: { data: [] },
+			});
+			const { StateStore } = await import("../../../StateStore.js");
+			const openStore = vi
+				.spyOn(StateStore, "openForMaintenance")
+				.mockRejectedValue(new Error("v2 must not open StateStore"));
+			const generation = h.makeGeneration();
+			try {
+				await expect(generation.start()).rejects.toThrow(
+					failure === "preflight"
+						? "no fallback to direct"
+						: `foreign ${failure}`,
+				);
+				expect(h.methods).toEqual([
+					"initialize",
+					"initialized",
+					"config/read",
+					...(failure === "config" ? [] : ["skills/list"]),
+				]);
+				expect(openStore).not.toHaveBeenCalled();
+				expect(h.logger.warn).toHaveBeenCalledWith(
+					expect.stringContaining("FLY-2576"),
+				);
+				expect(parent.verifyEffectiveConfig).toHaveBeenCalledOnce();
+				if (failure === "config")
+					expect(parent.verifyEffectiveSkills).not.toHaveBeenCalled();
+				else
+					expect(parent.verifyEffectiveSkills).toHaveBeenCalledWith(
+						{ data: [] },
+						"/tmp",
+					);
+				if (failure !== "preflight") expect(h.preflight).not.toHaveBeenCalled();
+				expect(
+					h.close.mock.calls.length + h.terminate.mock.calls.length,
+				).toBeGreaterThan(0);
+				expect(h.sender.close).toHaveBeenCalledOnce();
+				await generation.stop();
+				expect(parent.close).not.toHaveBeenCalled();
+				expect(journalClose).not.toHaveBeenCalled();
+			} finally {
+				await generation.stop();
+				openStore.mockRestore();
+				journal.close();
+				h.remove();
+			}
+		},
+	);
 });

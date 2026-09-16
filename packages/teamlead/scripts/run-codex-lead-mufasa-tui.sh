@@ -56,6 +56,8 @@ fi
 # Mufasa selectors only. All identity coordinates + token selector come from the
 # canonical registry compiler exactly once.
 . "${WORKTREE}/packages/teamlead/scripts/lib/canonical-lead-identity.sh"
+# Apply the legacy default before canonical v2 selects its managed permissions.
+export FLYWHEEL_CODEX_LEAD_SANDBOX="read-only"
 canonical_lead_identity_resolve "growth" "mufasa-lead"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
 # (same derivation claude-lead.sh:481 uses). These launchers predate that change —
@@ -126,7 +128,6 @@ fi
 # This launcher is intentionally the read-only companion path. Pin both fields so
 # an ambient profile cannot silently select a different tier.
 export FLYWHEEL_CODEX_LEAD_PROFILE="companion"
-export FLYWHEEL_CODEX_LEAD_SANDBOX="read-only"
 
 # Persona injection (FLY-244): identity.md (Mufasa's warm persona) + a safety
 # contract → thread baseInstructions. The runtime SKIPS any file it can't read

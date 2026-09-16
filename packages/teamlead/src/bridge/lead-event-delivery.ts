@@ -1,4 +1,10 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { deriveLeadEventAckToken } from "./lead-event-ack-token.js";
+
+export {
+	deriveLeadEventAckToken,
+	tokenMatches,
+} from "./lead-event-ack-token.js";
+
 import type {
 	LeadEventDeliveryReason,
 	LeadEventRow,
@@ -9,6 +15,7 @@ import type {
 	LeadEventEnvelope,
 	LeadRuntime,
 } from "./lead-runtime.js";
+import { applyLeadEventAckReceipt } from "./protocol-ingress.js";
 
 export interface DeliverySecret {
 	secretId: string;
@@ -36,25 +43,6 @@ function positiveInt(value: number | undefined, fallback: number): number {
 		: fallback;
 }
 
-export function deriveLeadEventAckToken(
-	secret: DeliverySecret,
-	input: { eventSeq: number; ackOwnerLeadId: string; ownerEpoch: number },
-): string {
-	const canonical = JSON.stringify({
-		purpose: "lead-event-ack",
-		eventSeq: input.eventSeq,
-		ackOwnerLeadId: input.ackOwnerLeadId,
-		ownerEpoch: input.ownerEpoch,
-	});
-	return createHmac("sha256", secret.key).update(canonical).digest("base64url");
-}
-
-export function tokenMatches(actual: string, expected: string): boolean {
-	const a = Buffer.from(actual);
-	const b = Buffer.from(expected);
-	return a.length === b.length && timingSafeEqual(a, b);
-}
-
 export class LeadEventDeliveryCoordinator {
 	private readonly now: () => number;
 	private readonly ackTimeoutMs: number;
@@ -80,6 +68,62 @@ export class LeadEventDeliveryCoordinator {
 				: { delivered: false, error: "missing lead runtime" };
 		}
 		return this.deliverAttempt(row, "initial", envelope, runtime);
+	}
+
+	readOwnedEvent(input: {
+		eventHandle: string;
+		projectName: string;
+		leadId: string;
+	}): LeadEventRow {
+		const match = /^event_([1-9][0-9]{0,15})$/.exec(input.eventHandle);
+		const seq = match ? Number(match[1]) : NaN;
+		const row = Number.isSafeInteger(seq)
+			? this.options.store.getLeadEventBySeq(seq)
+			: undefined;
+		if (!row || (row.ack_owner_lead_id ?? row.lead_id) !== input.leadId)
+			throw new Error("inbox_event_scope_denied");
+		let project: unknown;
+		try {
+			project = (JSON.parse(row.payload) as { project_name?: unknown })
+				.project_name;
+		} catch {
+			throw new Error("inbox_event_scope_denied");
+		}
+		if (project !== input.projectName)
+			throw new Error("inbox_event_scope_denied");
+		return row;
+	}
+
+	/** Typed identifier only, never an authorization token. No legacy enablement or new ingress. */
+	acknowledgeOwnedEvent(input: {
+		eventHandle: string;
+		projectName: string;
+		leadId: string;
+	}): { status: "disabled" | "acknowledged"; eventId: string } {
+		const row = this.readOwnedEvent(input);
+		// Retired/exempt cohorts must not be turned into successful ACKs.
+		if (!this.enabled || row.ack_retired_at || !row.ack_required)
+			return { status: "disabled", eventId: row.event_id };
+		const token = deriveLeadEventAckToken(
+			this.options.secretProvider.getActive(),
+			{
+				eventSeq: row.seq,
+				ackOwnerLeadId: input.leadId,
+				ownerEpoch: row.ack_owner_epoch ?? 0,
+			},
+		);
+		const result = applyLeadEventAckReceipt(
+			this.options,
+			{ from_agent: input.leadId, to_agent: "bridge" },
+			{ event_seq: row.seq, ack_token: token },
+		);
+		if (
+			!["legacy_ack_applied", "legacy_ack_duplicate"].includes(
+				result.disposition,
+			)
+		)
+			return { status: "disabled", eventId: row.event_id };
+		return { status: "acknowledged", eventId: row.event_id };
 	}
 
 	private nowIso(): string {

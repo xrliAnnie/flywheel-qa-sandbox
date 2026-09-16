@@ -7,10 +7,10 @@ import {
 } from "flywheel-comm/mailbox-queue";
 import type { StateStore } from "../StateStore.js";
 import {
-	type DeliverySecretProvider,
 	deriveLeadEventAckToken,
 	tokenMatches,
-} from "./lead-event-delivery.js";
+} from "./lead-event-ack-token.js";
+import type { DeliverySecretProvider } from "./lead-event-delivery.js";
 
 interface AckReceiptPayload {
 	event_seq: number;
@@ -109,42 +109,46 @@ export class ProtocolIngress {
 		if (!payload) {
 			throw new Error("malformed ACK receipt protocol row");
 		}
-		const event = this.opts.store.getLeadEventBySeq(payload.event_seq);
-		if (!event) throw new Error("ACK receipt references a missing event");
-		const owner = event.ack_owner_lead_id ?? event.lead_id;
-		if (row.to_agent !== "bridge" || row.from_agent !== owner) {
-			throw new Error("ACK sender does not own the event");
-		}
-
-		if (event.ack_retired_at || event.acked_at) {
-			return {
-				disposition: event.ack_retired_at
-					? "legacy_ack_retired_noop"
-					: "legacy_ack_duplicate",
-			};
-		}
-		if (!event.ack_required) {
-			throw new Error("ACK receipt references a non-ACK event");
-		}
-		const expected = deriveLeadEventAckToken(
-			this.opts.secretProvider.getActive(),
-			{
-				eventSeq: event.seq,
-				ackOwnerLeadId: owner,
-				ownerEpoch: event.ack_owner_epoch ?? 0,
-			},
-		);
-		if (!tokenMatches(payload.ack_token, expected)) {
-			throw new Error("ACK token verification failed");
-		}
-		if (
-			!this.opts.store.markLeadEventAcked(event.seq, new Date().toISOString())
-		) {
-			const latest = this.opts.store.getLeadEventBySeq(event.seq);
-			if (!latest?.acked_at && !latest?.ack_retired_at) {
-				throw new Error("ACK effect lost its state fence");
-			}
-		}
-		return { disposition: "legacy_ack_applied" };
+		return applyLeadEventAckReceipt(this.opts, row, payload);
 	}
+}
+
+/** Shared recipient/token-bound ACK effect; callers must keep credentials in trusted memory. */
+export function applyLeadEventAckReceipt(
+	options: Pick<ProtocolIngressOptions, "store" | "secretProvider">,
+	row: Pick<MailboxRow, "from_agent" | "to_agent">,
+	payload: AckReceiptPayload,
+): { disposition: string } {
+	const event = options.store.getLeadEventBySeq(payload.event_seq);
+	if (!event) throw new Error("ACK receipt references a missing event");
+	const owner = event.ack_owner_lead_id ?? event.lead_id;
+	if (row.to_agent !== "bridge" || row.from_agent !== owner) {
+		throw new Error("ACK sender does not own the event");
+	}
+
+	if (event.ack_retired_at || event.acked_at) {
+		return {
+			disposition: event.ack_retired_at
+				? "legacy_ack_retired_noop"
+				: "legacy_ack_duplicate",
+		};
+	}
+	if (!event.ack_required) {
+		throw new Error("ACK receipt references a non-ACK event");
+	}
+	const expected = deriveLeadEventAckToken(options.secretProvider.getActive(), {
+		eventSeq: event.seq,
+		ackOwnerLeadId: owner,
+		ownerEpoch: event.ack_owner_epoch ?? 0,
+	});
+	if (!tokenMatches(payload.ack_token, expected)) {
+		throw new Error("ACK token verification failed");
+	}
+	if (!options.store.markLeadEventAcked(event.seq, new Date().toISOString())) {
+		const latest = options.store.getLeadEventBySeq(event.seq);
+		if (!latest?.acked_at && !latest?.ack_retired_at) {
+			throw new Error("ACK effect lost its state fence");
+		}
+	}
+	return { disposition: "legacy_ack_applied" };
 }

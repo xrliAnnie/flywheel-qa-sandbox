@@ -12,6 +12,7 @@ import {
 	fetchDiscordMessageFromChannel,
 	MAX_DISCORD_MESSAGE_LENGTH,
 	postDiscordMessageToChannel,
+	reactDiscordMessageInChannel,
 	sendTypingToChannel,
 	splitDiscordMessage,
 } from "../discord-utils.js";
@@ -469,4 +470,56 @@ describe("sendTypingToChannel (FLY-404)", () => {
 		expect(res.ok).toBe(false);
 		expect(res.error).toMatch(/ECONNREFUSED/);
 	});
+});
+
+it("adds one encoded reaction as the configured bot with a fixed PUT endpoint", async () => {
+	const fetch = vi
+		.fn<typeof globalThis.fetch>()
+		.mockResolvedValue(new Response(null, { status: 204 }));
+	const signal = new AbortController().signal;
+	expect(
+		await reactDiscordMessageInChannel(
+			"111111111111111111",
+			"222222222222222222",
+			"🔍",
+			"SYNTHETIC_TOKEN",
+			{ signal },
+			fetch,
+		),
+	).toEqual({ ok: true });
+	expect(fetch).toHaveBeenCalledExactlyOnceWith(
+		"https://discord.com/api/v10/channels/111111111111111111/messages/222222222222222222/reactions/%F0%9F%94%8D/@me",
+		{
+			method: "PUT",
+			headers: { Authorization: "Bot SYNTHETIC_TOKEN" },
+			signal,
+		},
+	);
+});
+
+it("rejects unsafe identifiers and unbounded/control emoji before a reaction request", async () => {
+	for (const [thread, message, emoji] of [
+		["../other", "222222222222222222", "ok"],
+		["111111111111111111", "other/messages", "ok"],
+		["111111111111111111", "222222222222222222", "x".repeat(129)],
+		["111111111111111111", "222222222222222222", "\n"],
+		["111111111111111111", "222222222222222222", ""],
+	]) {
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(new Response(null, { status: 204 }));
+		expect(
+			(
+				await reactDiscordMessageInChannel(
+					thread,
+					message,
+					emoji,
+					"SYNTHETIC_TOKEN",
+					{},
+					fetch,
+				)
+			).ok,
+		).toBe(false);
+		expect(fetch).not.toHaveBeenCalled();
+	}
 });

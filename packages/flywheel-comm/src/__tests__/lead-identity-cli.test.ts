@@ -123,8 +123,50 @@ describe("flywheel-comm lead-identity resolve", () => {
 		expect(resolve(["--include-capabilities", "--format", "env"])).toContain(
 			"FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=1",
 		);
+		raw[0].leads[0].codexCapabilityBundleVersion = 2;
+		writeFileSync(projectsPath, JSON.stringify(raw));
+		const bundled = JSON.parse(resolve(["--include-capabilities"])[0]!);
+		expect(bundled.identityDigest).toBe(before.identityDigest);
+		expect(bundled.codexCapabilities.capabilityBundleVersion).toBe(2);
+		expect(resolve(["--include-capabilities", "--format", "env"])).toContain(
+			"FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION=2",
+		);
 	});
 
+	it("rejects v2 on a CoS identity rather than projecting a department bundle", () => {
+		const raw = JSON.parse(readFileSync(projectsPath, "utf8"));
+		Object.assign(raw[0].leads[0], {
+			backend: "codex-app-server",
+			codexProfile: "full-access",
+			canSpawnRunners: false,
+			codexCapabilityBundleVersion: 2,
+		});
+		raw[0].generalChannel = raw[0].leads[0].chatChannel;
+		writeFileSync(projectsPath, JSON.stringify(raw));
+		const output: string[] = [];
+		const errors: string[] = [];
+		expect(
+			runLeadIdentityCommand(
+				[
+					"resolve",
+					"--projects-file",
+					projectsPath,
+					"--project",
+					"flywheel",
+					"--lead",
+					"eng-lead",
+					"--include-capabilities",
+				],
+				{
+					stdout: (line) => output.push(line),
+					stderr: (line) => errors.push(line),
+					homeDir: dir,
+				},
+			),
+		).not.toBe(0);
+		expect(output).toHaveLength(0);
+		expect(errors.join("\n")).toContain("identity_capability_bundle_invalid");
+	});
 	it("accepts an explicit summary config home for an isolated launcher", () => {
 		const summaryHome = join(dir, "qa-summary-home");
 		mkdirSync(join(summaryHome, ".flywheel"), { recursive: true });

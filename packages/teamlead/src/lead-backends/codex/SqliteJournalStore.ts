@@ -20,6 +20,10 @@ import { installSqlTiming } from "flywheel-config";
 
 import Database from "better-sqlite3";
 import {
+	migrateOperationReceipts,
+	OperationReceiptStore,
+} from "../../lead-capabilities/receipts.js";
+import {
 	type BatchAcceptResult,
 	type JournalEntry,
 	type JournalState,
@@ -78,6 +82,7 @@ function rowToEntry(r: Row): JournalEntry {
 
 export class SqliteJournalStore implements JournalStore {
 	private readonly db: Database.Database;
+	readonly operationReceipts: OperationReceiptStore;
 
 	/** @param dbPath file path, or ":memory:" for tests. */
 	constructor(dbPath: string) {
@@ -114,6 +119,7 @@ export class SqliteJournalStore implements JournalStore {
 				ON journal_member(entry_id, member_index);
 		`);
 		this.migrate();
+		this.operationReceipts = new OperationReceiptStore(this.db);
 	}
 
 	/**
@@ -124,6 +130,7 @@ export class SqliteJournalStore implements JournalStore {
 	 * (>= 3.35); better-sqlite3 12.x bundles a newer SQLite.
 	 */
 	private migrate(): void {
+		migrateOperationReceipts(this.db);
 		const cols = this.db.prepare("PRAGMA table_info(journal)").all() as Array<{
 			name: string;
 		}>;

@@ -1,0 +1,66 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2519 · Codex Lead 能力对等</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:48px 20px 70px}header{margin-bottom:28px}h1{font-size:36px;letter-spacing:-1px;line-height:1.2;margin:10px 0}h2{font-size:22px;line-height:1.4;margin:0 0 16px}.eyebrow{font-size:13px;color:#0071e3;font-weight:650}.muted{color:#6e6e73;font-size:14px}.card{background:white;border:1px solid #e5e5e7;border-radius:20px;padding:28px;margin:18px 0;box-shadow:0 3px 15px #00000003}.card p{margin:12px 0}.lead{font-size:18px}.diagram{border:1px dashed #b76a00;border-radius:12px;padding:18px;background:#fffbf2;margin:18px 0;color:#805000}.diagram strong{display:block}.comment{border-top:1px solid #eee;padding-top:18px;margin-top:22px}label{display:block;font-size:14px;color:#6e6e73;margin-bottom:8px}textarea{width:100%;resize:vertical;min-height:84px;border:1px solid #d2d2d7;border-radius:10px;padding:12px;background:#fbfbfd;font:inherit}textarea:focus{outline:3px solid #0071e32a;border-color:#0071e3}button{border:0;border-radius:9px;background:#0071e3;color:white;font:inherit;padding:9px 16px;cursor:pointer}button:focus-visible{outline:3px solid #0071e36b;outline-offset:3px}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#f5f5f7;border-radius:12px;font:14px/1.7 -apple-system,sans-serif}.chunk{margin:16px 0}#copy-status{min-height:24px}.badge{display:inline-block;padding:4px 10px;background:#eaf2ff;border-radius:20px;color:#005bb5;font-size:13px}@media(max-width:600px){main{padding:28px 14px}h1{font-size:29px}.card{padding:20px;border-radius:16px}h2{font-size:20px}}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;vertical-align:top;padding:12px 8px;border-bottom:1px solid #e5e5e7}th{color:#6e6e73}code{overflow-wrap:anywhere}.table-wrap{overflow-x:auto}.card{border-radius:12px}li{margin:7px 0}.diagram svg{width:100%;height:auto}</style></head><body><main><header><div class="eyebrow">FLYWHEEL · FLY-2519 · 设计方案</div><h1>保留已有实现，<br>补完五项剩余工作。</h1><p class="muted">2026-09-14 · 现有实现接续方案，尚未完成上线验收</p><span class="badge">17 组能力 · 原生浏览器 · 授权边界不变</span></header>
+<section class="card" data-section="goal" data-title="一句话：同样能做事，同样守边界"><h2>一句话：同样能做事，同样守边界</h2><p>让 Honey Lemon 在自己的 Codex 窗口里，完整完成派单、线程沟通、真实浏览器验收和证据留存。</p><p>本页交付剩余工作的设计：保留已有代码和测试，补齐默认启动装配、可见窗口、逐项验收、评审和代码审查提交。设计通过不等于全部能力已经可用。</p><div class="comment"><label for="comment-goal">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-goal" data-comment="goal" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="flow" data-title="01 · 从 issue 到可核对的结果"><h2>01 · 从 issue 到可核对的结果</h2><p>Issue 是一项有独立编号的工作。下面这条流程必须由同一个 Honey Lemon 会话完成，证据能对应到同一项工作。</p><div class="diagram"><strong>DIAGRAM PENDING LOCAL RENDER</strong>计划流程：读取能力与规则、派 runner、看线程、浏览验收页、在 Linear 和 Discord 留痕、发布报告。Runner 是受 Lead 派遣执行具体任务的工作会话。<p>本机 Chromium 启动被权限拒绝；初次与标准重试均失败。Mermaid 源已随设计保存，未使用远程渲染。</p></div><div class="comment"><label for="comment-flow">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-flow" data-comment="flow" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="gaps" data-title="02 · 要补齐的不只有浏览器"><h2>02 · 要补齐的不只有浏览器</h2><div class="table-wrap"><table><thead><tr><th>能力</th><th>原始盘点发现（9月13日）</th><th>完成时的证据</th></tr></thead><tbody><tr><td>派 runner</td><td>前置 #1162 已合并；本分支有六个工具</td><td>一次派单与后续查看、传话、回答记录</td></tr><tr><td>Discord 线程与附件</td><td>自动收信/回复已有；主动历史读取、线程操作和附件动作不齐</td><td>线程、消息和附件的精确编号</td></tr><tr><td>Linear 与 GitHub</td><td>配置、认证与日常入口需要逐项兑现</td><td>真实 issue 评论、PR 与检查记录</td></tr><tr><td>巡检与报告</td><td>脚本存在，但有写入范围和凭证传递差异</td><td>六步巡检、托管页面及发布记录</td></tr><tr><td>浏览器</td><td>当前配置只允许一个服务，新增浏览器会被拒绝</td><td>独立可见 Chrome 的页面、操作和截图</td></tr><tr><td>规则、写作与知识工具</td><td>规则装配不完全对等，PM 等技能需受管安装</td><td>实际装配来源、技能可见与使用证据</td></tr></tbody></table></div><p>完整技术清单有 17 组，包括终端、事件确认、gbrain 项目知识、Xiaohongshu 学习与 Context7 文档查询。每个适用入口都要在实施 PR 逐项核对，缺项不能算通过。PR 是提交给代码仓库审查的一组改动。</p><div class="comment"><label for="comment-gaps">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-gaps" data-comment="gaps" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="secrets" data-title="03 · 凭证留在可信进程里"><h2>03 · 凭证留在可信进程里</h2><p>Broker 是替模型执行认证动作的可信进程：它持有账号凭证，检查当前身份与操作范围，只把结果交给模型。</p><div class="diagram"><strong>DIAGRAM PENDING LOCAL RENDER</strong>普通已授权工作通过检查后执行；合并、关闭和重启直接拒绝，交回原 founder 流程。<p>本机 Chromium 启动被权限拒绝；初次与标准重试均失败。Mermaid 源已随设计保存，未使用远程渲染。</p></div><p>初始 full-access 曾把部分凭证传给 Codex 环境。现有 v2 代码已加入可信进程和凭证边界，还需接通默认启动路径并取得完整验收证据。模型保留项目文件读写与网络能力，认证后的 GitHub 操作、报告发布和巡检由可信入口代办。</p><p>R1–R5 是项目已有的五组授权规则。此设计不改规则：合并、发布代码、关闭 runner、重启都不能由这个 broker 执行；也不改 Claude 侧的凭证处理。</p><div class="comment"><label for="comment-secrets">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-secrets" data-comment="secrets" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="browser" data-title="04 · Codex 自己的真实 Chrome"><h2>04 · Codex 自己的真实 Chrome</h2><p>MCP 是模型连接工具的标准接口。Chrome DevTools MCP 让 Codex 控制真实 Chrome 页面，完成查看、点击、填写、截图与错误检查。</p><p>每位 Lead 的每次启动拥有独立浏览器身份和页面，使用可见 Chrome。浏览器进程单独限制文件与网络访问；不能读取本机凭证，不能直接访问管理台的改动入口。它不接 Claude-in-Chrome，也不连接 founder 的个人浏览器。</p><p>打开 QA 报告和管理台只读验收视图，完成一次无破坏性的页面操作并保存截图。只读视图允许查看真实状态，但请求更改设置、关闭或重启会被系统拒绝。QA 是对实现结果的验收检查。登录态缺失或浏览器失败会明确记录未验收，不能用工具已配置代替通过。</p><div class="comment"><label for="comment-browser">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-browser" data-comment="browser" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="model" data-title="05 · 用什么记录“真的完成”"><h2>05 · 用什么记录“真的完成”</h2><div class="table-wrap"><table><thead><tr><th>记录</th><th>保存内容</th><th>用途</th></tr></thead><tbody><tr><td>能力清单</td><td>身份、能力版本、工具与规则来源的校验值</td><td>确认当前会话拿到的是同一套能力</td></tr><tr><td>动作回执</td><td>请求编号、结果状态、外部资源编号</td><td>重启后对账，避免重复发消息或重复派单</td></tr><tr><td>验收证据</td><td>工作/会话编号、代码版本、截图、评论与工具调用记录</td><td>逐项证明能力可用且未调用 Claude 工具</td></tr></tbody></table></div><p>回执是动作完成后的可核对记录。状态不明时先查询已有结果；无法确认是否执行，就保留“未知”，不自动再做一次。记录不保存 token、cookie 或其他账号秘密。</p><div class="comment"><label for="comment-model">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-model" data-comment="model" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="tradeoffs" data-title="06 · 选择与取舍"><h2>06 · 选择与取舍</h2><div class="table-wrap"><table><thead><tr><th>采用</th><th>理由</th></tr></thead><tbody><tr><td>共用能力与规则目录</td><td>工具配置、帮助说明和验收清单从同一来源产生</td></tr><tr><td>认证操作走可信入口</td><td>保留日常工作能力，同时不把凭证交给模型</td></tr><tr><td>受管安装原生浏览器</td><td>下次启动仍能找到，且多位 Lead 不共用个人登录态</td></tr></tbody></table></div><p>没有采用：复制 Claude 插件与凭证；只加浏览器就称全部对等；开放任意认证网络请求。它们分别留下供应商依赖、漏项或授权缺口。</p><div class="comment"><label for="comment-tradeoffs">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-tradeoffs" data-comment="tradeoffs" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="delivery" data-title="07 · 如何实施，何时算通过"><h2>07 · 如何实施，何时算通过</h2><p>实施顺序：盘点与目录 → 凭证和权限边界 → 日常工具 → 规则、技能和浏览器 → 真机验收。每一步先用会失败的测试证明缺口，再补实现。</p><p>生产仍由独立 updater 在原窗口部署。Updater 是项目专门负责上线的独立更新进程。前置 #1162 已合并；本轮观察到的运行中 Bridge 仍是更早版本，因此不能声称依赖已上线。</p><p>通过条件：Honey Lemon 用 Codex 派 runner，读取并回复同一工作线程，用独立 Chrome 打开报告与只读管理台，在 Linear/Discord 留证据，再完成主流程未覆盖的全部能力测试。17 组清单逐项闭合。</p><p>边界：本节点只交付设计和本页；不迁移、不重启、不运行生产演练，也不授予合并或关闭权限。</p><div class="comment"><label for="comment-delivery">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-delivery" data-comment="delivery" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="qa-boundary" data-title="08 · 本轮验收的明确边界"><h2>08 · 本轮验收的明确边界</h2><p>本轮验收使用隔离的账号配置目录、状态登记和通信通道，不启用生产 v2、不重启 Lead、不对生产服务写入。v2 是本次新增能力包的版本号。原来要求的完整 Honey Lemon 工作流程仍须留下证据，不能把隔离测试说成生产已经完成。</p><p>业务状态只由 Bridge 写入。Bridge 是维护工作状态和执行授权检查的服务。Codex 的可信父进程通过固定入口请求业务操作；Bridge 核对当前身份、部门和运行归属后才执行。这个入口不允许 Lead 修改自己的身份或权限，也不能把启动时缓存当成当前授权。</p><p>同一次请求重试时先核对回执；相同编号换了内容会被拒绝。推送功能分支最长等待 180 秒，其他操作 15 秒。初始化失败或退出时关闭已创建的资源；结果不明的写操作保留“未知”，重启后不自动重发。</p><p>原生 Chrome 必须在宿主机器的系统隔离下实际启动，并提供可重复执行的浏览器和数据库联调证据。页面脚本输出按未受信内容处理，网络登录头会脱敏；不承诺任意页面脚本都无法看到产品测试账号的同站数据。仍不转授 founder 登录态或生产管理权限。</p><p>实现 PR 必须可供审查，并在其当前代码版本上通过持续集成检查。持续集成是代码仓库自动运行的检查。原有非阻断评审建议继续留档，不把建议变成本轮新增门槛。</p><div class="comment"><label for="comment-qa-boundary">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-qa-boundary" data-comment="qa-boundary" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="remaining-gaps" data-title="09 · 五项差距，沿着现有代码补完"><h2>09 · 五项差距，沿着现有代码补完</h2><div class="table-wrap"><table><thead><tr><th>剩余项</th><th>已有证据</th><th>接下来补什么</th></tr></thead><tbody><tr><td>默认启动装配</td><td>可信进程、工具和规则模块已写；普通启动仍依赖测试手工注入。</td><td>共用一个装配入口，安装实际技能，补齐报告、终端、巡检和其他尚未接入的适用工具。</td></tr><tr><td>可见窗口</td><td>命令和环境清洗已有支持；窗口运行时仍拒绝新能力版本。</td><td>把同一身份、权限和可信进程接到可见窗口，验证恢复与退出清理。</td></tr><tr><td>逐项验收</td><td>当前脚本只做静态盘点，17组状态均保持未验证。</td><td>隔离真实浏览器和数据库联调，每项留下可复跑证据；不能据此声称生产已经完成。</td></tr><tr><td>评审</td><td>原方案已通过设计评审，最终实现头还未完成审阅。</td><td>修复阻断问题，对最终代码版本取得有效评审；非阻断建议报告留档。</td></tr><tr><td>PR</td><td>当前未找到本单的代码审查提交。</td><td>恢复已有提交与具名暂存工作，创建可审查的非草稿 PR，逐项链接真实证据。</td></tr></tbody></table></div><p>已有实现仍保存在 Git 提交中。Git 是保存代码版本的工具；暂存工作是中断前尚未提交的改动。后续实现先按名称核对并恢复这些内容，不能盲目取最新暂存项或从零重写。</p><div class="comment"><label for="comment-remaining-gaps">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-remaining-gaps" data-comment="remaining-gaps" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="summary" data-title="页面总体意见"><h2>页面总体意见</h2><p>每段意见会带上所属标题。长意见分段，每段都带同一个反馈标记；这个标记表示修改意见，不表示批准。</p><div class="comment"><label for="comment-summary">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-summary" data-comment="summary" rows="3" placeholder="写下你希望调整的地方"></textarea></div><div id="chunks" aria-live="polite"></div><button type="button" id="copy-all">复制全部意见</button><p id="copy-status" class="muted" role="status"></p></section></main>
+<script nonce="__CSP_NONCE__">
+(function(){
+'use strict';
+const marker='【页面意见汇总】FLY-2519';
+const prefix='flywheel-comments:'+location.pathname+':';
+const inputs=Array.from(document.querySelectorAll('[data-comment]'));
+const box=document.getElementById('chunks');
+const status=document.getElementById('copy-status');
+let chunks=[];
+function fallbackCopy(text){
+ const temp=document.createElement('textarea');
+ temp.value=text;temp.setAttribute('readonly','');temp.style.position='fixed';temp.style.opacity='0';
+ document.body.appendChild(temp);temp.select();
+ let ok=false;try{ok=document.execCommand('copy');}finally{temp.remove();}
+ if(!ok)throw new Error('copy unavailable');
+}
+async function copy(text){
+ try{
+  if(navigator.clipboard&&typeof navigator.clipboard.writeText==='function'){
+   try{await navigator.clipboard.writeText(text);}catch(_){fallbackCopy(text);}
+  }else{fallbackCopy(text);}
+  status.textContent='已复制。';
+ }catch(_){status.textContent='无法自动复制，请选中汇总文字手动复制。';}
+}
+function render(){
+ const entries=inputs.map(input=>{
+  const value=input.value.trim();
+  return value?'【'+input.closest('[data-section]').dataset.title+'】\n'+value:'';
+ }).filter(Boolean);
+ const body=entries.join('\n\n');
+ const chars=Array.from(body);const size=1750-Array.from(marker).length;
+ chunks=[];
+ if(!chars.length)chunks.push(marker+'\n暂无意见');
+ else for(let i=0;i<chars.length;i+=size)chunks.push(marker+'\n'+chars.slice(i,i+size).join(''));
+ box.replaceChildren();
+ chunks.forEach((text,index)=>{
+  const row=document.createElement('div');row.className='chunk';
+  const pre=document.createElement('pre');pre.textContent=text;row.appendChild(pre);
+  if(chunks.length>1){const button=document.createElement('button');button.type='button';button.textContent='复制第 '+(index+1)+' / '+chunks.length+' 段';button.addEventListener('click',()=>copy(text));row.appendChild(button);}
+  box.appendChild(row);
+ });
+}
+inputs.forEach(input=>{
+ try{input.value=localStorage.getItem(prefix+input.dataset.comment)||'';}catch(_){}
+ input.addEventListener('input',()=>{
+  try{localStorage.setItem(prefix+input.dataset.comment,input.value);}catch(_){status.textContent='浏览器无法保存，本页仍可汇总复制。';}
+  render();
+ });
+});
+document.getElementById('copy-all').addEventListener('click',()=>copy(chunks.join('\n\n')));
+render();
+})();
+</script></body></html>

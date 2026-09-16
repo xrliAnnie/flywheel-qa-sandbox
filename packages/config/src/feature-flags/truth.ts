@@ -244,6 +244,14 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:
+		"FLY-2519 context: canonical Lead registry capability bundle version projected into one launcher invocation, not an independent feature toggle",
+	FLYWHEEL_CODEX_LEAD_DEV_SOURCE:
+		"FLY-2519 per-invocation development entry selection: explicit source execution instead of deployed dist; production launch requires deployed artifact verification",
+	FLYWHEEL_LEAD_CAPABILITY_MANIFEST:
+		"FLY-2519 plumbing: nonsecret capability manifest file coordinate for the current Lead runtime, not an on/off gate",
+	FLYWHEEL_LEAD_CAPABILITY_SOCKET:
+		"FLY-2519 plumbing: capability broker Unix socket coordinate for the current Lead runtime, not an on/off gate",
 	FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS:
 		"credential selector allowlist: operator-owned comma-separated beta Actions token variable names, not a feature toggle",
 	FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS:
@@ -444,6 +452,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
+	FLYWHEEL_WRAPPER_ENV_FILE:
+		"plumbing: explicit wrapper/body environment file path, not a feature switch",
 	FLYWHEEL_ISOLATION_ROOT:
 		"plumbing: fail-closed 529 slot ownership root (FLY-2454), not an on/off gate",
 	FLYWHEEL_ISOLATION_CONTRACT:

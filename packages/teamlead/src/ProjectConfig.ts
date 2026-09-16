@@ -205,6 +205,8 @@ export interface LeadConfig {
 	 * the object (FLY-231 reverse-compat pattern).
 	 */
 	codexProfile?: "companion" | "write-capable" | "full-access";
+	/** FLY-2519: explicit adoption; runtime confinement is a separate startup gate. */
+	codexCapabilityBundleVersion?: 2;
 	/**
 	 * FLY-2216: explicit opt-in for the shared resident Codex Lead business-
 	 * liveness patrol. Absent / false leaves the Lead's runtime byte path
@@ -802,6 +804,14 @@ export function parseAndValidateProjects(
 			}
 			// Capture capability from raw values: a normalized default is not consent.
 			const codexCapability = resolveCodexLeadCapabilities(lead);
+			if (
+				lead.codexCapabilityBundleVersion !== undefined &&
+				codexCapability.reason
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}]: ${codexCapability.reason}`,
+				);
+			}
 			if (
 				lead.codexRunnerActions !== undefined &&
 				codexCapability.reason &&

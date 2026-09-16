@@ -15,6 +15,11 @@ import {
 	removeUserFromChatThread,
 	startThreadFromMessage,
 } from "./chat-thread-utils.js";
+import {
+	ChatThreadSideEffectDenied,
+	type ChatThreadWriteGuard,
+	guardChatThreadFetch,
+} from "./chat-thread-write-guard.js";
 import { deleteDiscordMessageInChannel } from "./discord-utils.js";
 import {
 	type DisplayWriteResult,
@@ -128,7 +133,9 @@ interface TitleWriteState {
 	lastStatus?: TitleWriteResult["status"];
 }
 
-export interface ChatThreadContext {
+export interface ChatThreadContext extends ChatThreadWriteGuard {
+	/** Trusted synchronous observer of this call's exact newly registered root; never invoked for reuse or competing claims. */
+	onCanonicalThreadRegistered?: (threadId: string) => void;
 	chatChannelId: string;
 	issueId: string;
 	issueIdentifier?: string;
@@ -382,7 +389,7 @@ export class ChatThreadCreator {
 				messageContent: markAutomatedDiscordText(messageContent),
 				botToken: ctx.botToken,
 			},
-			{ timeoutMs: CREATE_TIMEOUT_MS },
+			{ timeoutMs: CREATE_TIMEOUT_MS, fetchImpl: guardChatThreadFetch(ctx) },
 		);
 		if (!root.posted) {
 			console.warn(`[ChatThreadCreator] root POST FAILED: ${root.error}`);
@@ -391,13 +398,28 @@ export class ChatThreadCreator {
 
 		let claim: ReturnType<StateStore["registerChatThreadConditional"]>;
 		try {
+			try {
+				if (ctx.beforeSideEffect) await ctx.beforeSideEffect();
+				ctx.assertSideEffectCurrent?.();
+			} catch {
+				throw new ChatThreadSideEffectDenied();
+			}
+			if (ctx.signal?.aborted) throw new ChatThreadSideEffectDenied();
 			claim = this.store.registerChatThreadConditional(
 				root.rootMessageId,
 				ctx.chatChannelId,
 				ctx.issueId,
 				ctx.leadId,
 			);
+			if (claim.status === "registered") {
+				try {
+					ctx.onCanonicalThreadRegistered?.(root.rootMessageId);
+				} catch {
+					throw new ChatThreadSideEffectDenied();
+				}
+			}
 		} catch (err) {
+			if (err instanceof ChatThreadSideEffectDenied) throw err;
 			await this.cleanupFreshRoot(ctx, root.rootMessageId);
 			const message = err instanceof Error ? err.message : String(err);
 			return {
@@ -431,7 +453,7 @@ export class ChatThreadCreator {
 			ctx.chatChannelId,
 			rootMessageId,
 			ctx.botToken,
-			fetch,
+			guardChatThreadFetch(ctx),
 			CREATE_TIMEOUT_MS,
 		);
 		if (!cleanup.ok) {
@@ -456,7 +478,9 @@ export class ChatThreadCreator {
 			await this.maybeBackfillThreadName(ctx, threadId);
 			await this.postChannelNotification(ctx, threadId);
 			if (ctx.ownerUserId) {
-				await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken);
+				await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken, {
+					fetchImpl: guardChatThreadFetch(ctx),
+				});
 			}
 			return { created: false, threadId };
 		}
@@ -505,7 +529,7 @@ export class ChatThreadCreator {
 				threadName,
 				botToken: ctx.botToken,
 			},
-			{ timeoutMs: CREATE_TIMEOUT_MS },
+			{ timeoutMs: CREATE_TIMEOUT_MS, fetchImpl: guardChatThreadFetch(ctx) },
 		);
 		if (attempt.created) {
 			await this.addOwnerAfterCreate(ctx, rootMessageId);
@@ -552,7 +576,7 @@ export class ChatThreadCreator {
 				threadName,
 				botToken: ctx.botToken,
 			},
-			{ timeoutMs: CREATE_TIMEOUT_MS },
+			{ timeoutMs: CREATE_TIMEOUT_MS, fetchImpl: guardChatThreadFetch(ctx) },
 		);
 		if (attempt.created) {
 			await this.addOwnerAfterCreate(ctx, rootMessageId);
@@ -597,7 +621,9 @@ export class ChatThreadCreator {
 		threadId: string,
 	): Promise<void> {
 		if (ctx.ownerUserId) {
-			await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken);
+			await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken, {
+				fetchImpl: guardChatThreadFetch(ctx),
+			});
 		}
 	}
 
@@ -1412,15 +1438,18 @@ export class ChatThreadCreator {
 			if (!desiredName || desiredName === ctx.issueId) return;
 			if (currentName === desiredName) return;
 
-			const patchRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
-				method: "PATCH",
-				headers: {
-					Authorization: `Bot ${ctx.botToken}`,
-					"Content-Type": "application/json",
+			const patchRes = await guardChatThreadFetch(ctx)(
+				`${DISCORD_API}/channels/${threadId}`,
+				{
+					method: "PATCH",
+					headers: {
+						Authorization: `Bot ${ctx.botToken}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({ name: desiredName }),
+					signal: controller.signal,
 				},
-				body: JSON.stringify({ name: desiredName }),
-				signal: controller.signal,
-			});
+			);
 			if (!patchRes.ok) {
 				const body = await patchRes.text().catch(() => "");
 				console.warn(
@@ -1428,6 +1457,7 @@ export class ChatThreadCreator {
 				);
 			}
 		} catch (err) {
+			if (err instanceof ChatThreadSideEffectDenied) throw err;
 			const msg = (err as Error).message;
 			if ((err as Error).name === "AbortError") {
 				console.warn(
@@ -1463,7 +1493,7 @@ export class ChatThreadCreator {
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 
 		try {
-			const res = await fetch(
+			const res = await guardChatThreadFetch(ctx)(
 				`${DISCORD_API}/channels/${ctx.chatChannelId}/messages`,
 				{
 					method: "POST",
@@ -1488,6 +1518,7 @@ export class ChatThreadCreator {
 				);
 			}
 		} catch (err) {
+			if (err instanceof ChatThreadSideEffectDenied) throw err;
 			const msg = (err as Error).message;
 			if ((err as Error).name === "AbortError") {
 				console.warn(

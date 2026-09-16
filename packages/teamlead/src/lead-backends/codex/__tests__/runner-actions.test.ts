@@ -7,19 +7,31 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import Database from "better-sqlite3";
+import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import {
 	identityEnvProjection,
 	resolveLeadIdentity,
 } from "flywheel-comm/lead-identity";
+import * as leadLease from "flywheel-comm/lead-lease";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createLeadRunnerRouter } from "../../../bridge/lead-capability-runners.js";
+import { executeLeadRunnerOperation } from "../../../bridge/lead-runner-operation.js";
+import { LeadCapabilityBroker } from "../../../lead-capabilities/broker.js";
+import { getLeadCapability } from "../../../lead-capabilities/catalog.js";
+import { createRunnerBridgeHandlers } from "../../../lead-capabilities/handlers/bridge-read.js";
+import { createLeadCapabilityManifest } from "../../../lead-capabilities/manifest.js";
+import { createLeadCapabilityProxy } from "../lead-capability-proxy.js";
 import { createRunnerActionContext } from "../runner-action-context.js";
 import {
 	createRunnerActions,
 	RUNNER_ACTION_TOOL_NAMES,
 	registerRunnerActions,
 } from "../runner-actions.js";
+import { SqliteOutboundDedupStore } from "../SqliteOutboundDedupStore.js";
 
 const EXEC = "12345678-1234-4234-8234-123456789012";
 const FOREIGN = "12345678-1234-4234-8234-123456789013";
@@ -29,7 +41,7 @@ afterEach(() => {
 	for (const dir of dirs.splice(0))
 		rmSync(dir, { recursive: true, force: true });
 });
-function fixture() {
+function fixture(v2 = false) {
 	const home = mkdtempSync(join(tmpdir(), "fly2459-actions-"));
 	dirs.push(home);
 	mkdirSync(join(home, ".flywheel"));
@@ -58,6 +70,7 @@ function fixture() {
 						codexProfile: "full-access",
 						canSpawnRunners: true,
 						codexRunnerActions: true,
+						...(v2 ? { codexCapabilityBundleVersion: 2 } : {}),
 					},
 					{
 						agentId: "eng-lead",
@@ -569,4 +582,436 @@ describe("shared Codex runner actions", () => {
 		expect(result).toMatchObject({ paneStatus: "unknown" });
 		expect(JSON.stringify(result)).not.toContain("SECRET");
 	});
+});
+
+it("provides read-only scope authorization without sending or answering", () => {
+	const f = fixture();
+	expect(() =>
+		f.actions.authorize("send_runner", {
+			executionId: EXEC,
+			text: "hi",
+			idempotencyKey: "same",
+		}),
+	).not.toThrow();
+	expect(() =>
+		f.actions.authorize("send_runner", {
+			executionId: FOREIGN,
+			text: "hi",
+			idempotencyKey: "same",
+		}),
+	).toThrow();
+	expect(() =>
+		f.actions.authorize("respond_runner", {
+			questionId: QUESTION,
+			answer: "yes",
+		}),
+	).toThrow();
+	expect(f.fetchImpl).not.toHaveBeenCalled();
+	const db = new Database(f.commDbPath, { readonly: true });
+	try {
+		expect(
+			db
+				.prepare(
+					"SELECT count(*) AS n FROM mailbox_message_projection WHERE type = ?",
+				)
+				.get("response"),
+		).toEqual({ n: 0 });
+	} finally {
+		db.close();
+	}
+});
+it("retains nullable sourceRef in the v2 start result contract", async () => {
+	const f = fixture();
+	const result = await f.actions.execute("start_runner", {
+		issueId: "FLY-1",
+		taskCategory: "prd",
+		idempotencyKey: "manual-1",
+	});
+	expect(result.sourceRef).toBeNull();
+	expect(
+		getLeadCapability("start_runner")!.outputSchema.safeParse({
+			result,
+			receiptId: QUESTION,
+			observedAt: new Date().toISOString(),
+		}).success,
+	).toBe(true);
+});
+
+it("runs a v2 Bridge start once and replays only a scoped durable receipt", async () => {
+	const f = fixture(true),
+		receipts = new SqliteOutboundDedupStore(
+			join(dirs[dirs.length - 1]!, "runner-receipts.db"),
+		);
+	const requestId = QUESTION,
+		input = {
+			issueId: "FLY-2457",
+			taskCategory: "prd",
+			idempotencyKey: "manual-1",
+		};
+	const options = {
+		actions: f.options,
+		projectName: "demo",
+		leadId: "product-lead",
+		activationId: "activation-1",
+		operationId: "start_runner",
+		requestId,
+		input,
+		receipts: receipts.operationReceipts,
+		signal: new AbortController().signal,
+		secrets: ["SECRET"],
+		assertCurrent: () => {},
+	};
+	try {
+		expect(
+			await executeLeadRunnerOperation({ ...options, receiptOnly: true }),
+		).toMatchObject({ status: "unknown" });
+		expect(f.fetchImpl).not.toHaveBeenCalled();
+		expect(await executeLeadRunnerOperation(options)).toMatchObject({
+			status: "succeeded",
+			data: { result: { executionId: EXEC, sourceRef: null } },
+		});
+		expect(
+			await executeLeadRunnerOperation({
+				...options,
+				activationId: "activation-2",
+				receiptOnly: true,
+			}),
+		).toMatchObject({
+			status: "succeeded",
+			data: { result: { executionId: EXEC } },
+		});
+		expect(
+			await executeLeadRunnerOperation({
+				...options,
+				input: { ...input, idempotencyKey: "changed" },
+			}),
+		).toMatchObject({ status: "rejected", errorCode: "input_digest_conflict" });
+		expect(f.fetchImpl).toHaveBeenCalledOnce();
+		const db = new Database(f.stateDbPath);
+		db.prepare("UPDATE sessions SET project_name=? WHERE execution_id=?").run(
+			"foreign",
+			EXEC,
+		);
+		db.close();
+		expect(
+			(await executeLeadRunnerOperation({ ...options, receiptOnly: true }))
+				.status,
+		).not.toBe("succeeded");
+		expect(f.fetchImpl).toHaveBeenCalledOnce();
+	} finally {
+		receipts.close();
+	}
+});
+
+it("composes all remaining runner actions with typed output and durable write replay", async () => {
+	const f = fixture(true),
+		receipts = new SqliteOutboundDedupStore(
+			join(dirs[dirs.length - 1]!, "runner-receipts.db"),
+		);
+	const comm = new CommDB(f.commDbPath);
+	comm.insertQuestion(EXEC, "product-lead", "which?", { id: QUESTION });
+	comm.close();
+	f.fetchImpl.mockImplementation(async (url: string) => {
+		if (url.includes("/capture"))
+			return Response.json({ execution_id: EXEC, output: "pane" });
+		if (url.includes("/status"))
+			return Response.json({
+				execution_id: EXEC,
+				status: "waiting",
+				checked_at: "2026-09-14T00:00:00.000Z",
+			});
+		const db = new Database(f.stateDbPath, { readonly: true });
+		try {
+			return Response.json({
+				sessions: db.prepare("SELECT * FROM sessions").all(),
+			});
+		} finally {
+			db.close();
+		}
+	});
+	const cases: [string, Record<string, unknown>][] = [
+		["list_runners", {}],
+		["get_runner_status", { executionId: EXEC }],
+		["read_runner_tmux", { executionId: EXEC }],
+		[
+			"send_runner",
+			{
+				executionId: EXEC,
+				text: "instruction",
+				idempotencyKey: "instruction-1",
+			},
+		],
+		["respond_runner", { questionId: QUESTION, answer: "A" }],
+	];
+	try {
+		for (const [operationId, input] of cases) {
+			const options = {
+				actions: f.options,
+				projectName: "demo",
+				leadId: "product-lead",
+				activationId: "activation-1",
+				operationId,
+				requestId: QUESTION,
+				input,
+				receipts: receipts.operationReceipts,
+				signal: new AbortController().signal,
+				secrets: ["SECRET"],
+				assertCurrent: () => {},
+			};
+			const result = await executeLeadRunnerOperation(options);
+			expect(result.status, operationId).toBe("succeeded");
+			expect(
+				getLeadCapability(operationId)!.outputSchema.safeParse(result.data)
+					.success,
+			).toBe(true);
+			if (["send_runner", "respond_runner"].includes(operationId))
+				expect(
+					await executeLeadRunnerOperation({ ...options, receiptOnly: true }),
+				).toMatchObject({
+					status: "succeeded",
+					resourceRefs: result.resourceRefs,
+				});
+		}
+	} finally {
+		receipts.close();
+	}
+});
+it("never redispatches an interrupted or concurrent runner start", async () => {
+	const f = fixture(true),
+		receipts = new SqliteOutboundDedupStore(
+			join(dirs[dirs.length - 1]!, "runner-receipts.db"),
+		),
+		controller = new AbortController();
+	f.fetchImpl.mockImplementation(() => new Promise(() => {}));
+	const options = {
+		actions: f.options,
+		projectName: "demo",
+		leadId: "product-lead",
+		activationId: "activation-1",
+		operationId: "start_runner",
+		requestId: QUESTION,
+		input: {
+			issueId: "FLY-2457",
+			taskCategory: "prd",
+			idempotencyKey: "manual-1",
+		},
+		receipts: receipts.operationReceipts,
+		signal: controller.signal,
+		secrets: [],
+		assertCurrent: () => {},
+	};
+	try {
+		const pending = executeLeadRunnerOperation(options);
+		await vi.waitFor(() => expect(f.fetchImpl).toHaveBeenCalledOnce());
+		expect((await executeLeadRunnerOperation(options)).status).toBe("unknown");
+		controller.abort();
+		expect((await pending).status).toBe("unknown");
+		expect(
+			(
+				await executeLeadRunnerOperation({
+					...options,
+					signal: new AbortController().signal,
+					activationId: "activation-2",
+				})
+			).status,
+		).toBe("unknown");
+		expect(f.fetchImpl).toHaveBeenCalledOnce();
+	} finally {
+		receipts.close();
+	}
+});
+
+it("serves result-only runner writes on a real isolated Bridge HTTP route", async () => {
+	const f = fixture(true),
+		receipts = new SqliteOutboundDedupStore(
+			join(dirs[dirs.length - 1]!, "runner-http-receipts.db"),
+		);
+	const identity = f.options.context.assertCurrent().identity;
+	const carrierProbe = vi
+		.spyOn(leadLease, "validateLeadCarrierAuthorization")
+		.mockImplementation((input) =>
+			input.env?.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID === "fixture-claim"
+				? {
+						valid: true,
+						disposition: "carrier_passthrough",
+						leadKey: identity.leadKey,
+						carrier: {
+							leadKey: identity.leadKey,
+							backend: "codex-app-server",
+							identityDigest: identity.identityDigest,
+							pid: process.pid,
+							lstart: "fixture",
+							instanceDigest: "a".repeat(64),
+						},
+					}
+				: { valid: false, reason: "carrier_claim_wrong" },
+		);
+	const app = express();
+	app.use(express.json());
+	app.use(
+		"/api/lead-capabilities/runners",
+		createLeadRunnerRouter({
+			apiToken: "SECRET",
+			bridgeUrl: f.options.bridge.bridgeUrl,
+			stateDbPath: f.stateDbPath,
+			receipts: receipts.operationReceipts,
+			homeDir: f.options.context.env.HOME,
+			projectsPath: f.projectsPath,
+			env: f.options.context.env,
+			commDbPath: () => f.commDbPath,
+			fetchImpl: f.fetchImpl,
+			resolveMenus: f.menus,
+		}),
+	);
+	const server = app.listen(0, "127.0.0.1");
+	await new Promise<void>((resolve) => server.once("listening", resolve));
+	const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/lead-capabilities/runners`;
+	const body = {
+		schemaVersion: 1,
+		operationId: "start_runner",
+		requestId: QUESTION,
+		projectName: "demo",
+		leadId: "product-lead",
+		identityDigest: f.options.context.env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
+		carrierClaim: "fixture-claim",
+		activationId: "activation-1",
+		input: {
+			issueId: "FLY-2457",
+			taskCategory: "prd",
+			idempotencyKey: "http-start",
+		},
+	};
+	const post = (value: unknown, token = "SECRET") =>
+		fetch(url, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(value),
+		});
+	try {
+		expect((await post(body, "wrong")).status).toBe(401);
+		expect(
+			await (await post({ ...body, receiptOnly: true })).json(),
+		).toMatchObject({ status: "unknown" });
+		expect(f.fetchImpl).not.toHaveBeenCalled();
+		expect(await (await post(body)).json()).toMatchObject({
+			status: "succeeded",
+		});
+		expect(
+			await (await post({ ...body, receiptOnly: true })).json(),
+		).toMatchObject({ status: "succeeded" });
+		expect(f.fetchImpl).toHaveBeenCalledOnce();
+		expect(
+			(await post({ ...body, identityDigest: "f".repeat(64) })).status,
+		).toBe(403);
+		expect(f.fetchImpl).toHaveBeenCalledOnce();
+		f.fetchImpl.mockImplementation(async () =>
+			Response.json({ success: true, executionId: EXEC }),
+		);
+		const parentReceipts = new SqliteOutboundDedupStore(
+			join(dirs[dirs.length - 1]!, "parent-receipts.db"),
+		);
+		const parentEnv = {
+			...f.options.context.env,
+			FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION: "2",
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "fixture-claim",
+			FLYWHEEL_API_TOKEN: "SECRET",
+			FLYWHEEL_BRIDGE_URL: new URL(url).origin,
+		};
+		const handlers = createRunnerBridgeHandlers({
+			env: parentEnv,
+			activationId: "activation-parent",
+		});
+		const parent = new LeadCapabilityBroker({
+			projectName: "demo",
+			leadId: "product-lead",
+			activationId: "activation-parent",
+			receipts: parentReceipts.operationReceipts,
+			secrets: ["SECRET", "fixture-claim"],
+			allowedOperationIds: () => new Set(handlers.keys()),
+			assertCurrent: async () => {},
+			handlers,
+		});
+		const proxy = createLeadCapabilityProxy({
+			manifest: createLeadCapabilityManifest({
+				projectName: "demo",
+				leadId: "product-lead",
+				identityDigest: identity.identityDigest,
+				backend: "codex-app-server",
+				profile: "full-access",
+				activationId: "activation-parent",
+				sourceRevision: "fixture",
+				operations: RUNNER_ACTION_TOOL_NAMES.map(
+					(name) => getLeadCapability(name)!,
+				),
+				ruleSources: [],
+				skillSources: [],
+				integrations: [],
+			}),
+			socketPath: "/tmp/fixture-broker.sock",
+			requestClient: async (_path, request) => parent.execute(request),
+		});
+		const client = new Client({ name: "composed-runner-test", version: "1" });
+		const [a, b] = InMemoryTransport.createLinkedPair();
+		try {
+			await Promise.all([proxy.connect(a), client.connect(b)]);
+			const args = {
+				requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				issueId: "FLY-2457",
+				taskCategory: "prd",
+				idempotencyKey: "parent-start",
+			};
+			for (let i = 0; i < 2; i++) {
+				const reply = await client.callTool({
+					name: "start_runner",
+					arguments: args,
+				});
+				expect(reply.content).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							type: "text",
+							text: expect.stringContaining('"status":"succeeded"'),
+						}),
+					]),
+				);
+			}
+			expect(f.fetchImpl).toHaveBeenCalledTimes(2);
+			const receipt = parentReceipts.operationReceipts.get({
+				projectName: "demo",
+				leadId: "product-lead",
+				operationId: "start_runner",
+				requestId: args.requestId,
+			})!;
+			expect(
+				await handlers.get("start_runner")!.reconcile!(
+					receipt,
+					{
+						issueId: args.issueId,
+						taskCategory: args.taskCategory,
+						idempotencyKey: args.idempotencyKey,
+					},
+					{
+						projectName: "demo",
+						leadId: "product-lead",
+						activationId: "activation-parent",
+						requestId: args.requestId,
+						signal: new AbortController().signal,
+						assertCurrent: async () => {},
+					},
+				),
+			).toMatchObject({ status: "succeeded" });
+			expect(f.fetchImpl).toHaveBeenCalledTimes(2);
+		} finally {
+			await client.close();
+			await proxy.close();
+			await parent.close();
+			parentReceipts.close();
+		}
+	} finally {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		carrierProbe.mockRestore();
+		receipts.close();
+	}
 });

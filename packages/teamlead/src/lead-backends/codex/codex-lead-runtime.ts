@@ -1,3 +1,12 @@
+import { startDefaultLeadCapabilityParent } from "../../lead-capabilities/default-runtime.js";
+import {
+	buildLeadModelEnv,
+	type LeadModelEnvPins,
+} from "../../lead-capabilities/model-env.js";
+import { LEAD_PERMISSION_PROFILE } from "../../lead-capabilities/permission-profile.js";
+import { createLeadCapabilityContext } from "../../lead-capabilities/runtime-context.js";
+import type { LeadCapabilityParent } from "../../lead-capabilities/runtime-parent.js";
+import { verifyLeadCapabilityReadiness } from "./capability-readiness.js";
 import { writeAtomicFile } from "./codex-lead-thread-rotation.js";
 import { buildFullAccessLeadActionsMcpServerConfig } from "./lead-actions/mcp-config.js";
 import {
@@ -156,6 +165,8 @@ export interface CodexLeadRuntimeConfig {
 	 * (R2-4) — never a silent default, so a launcher typo can't half-enable a tier.
 	 * Profile ↔ sandbox consistency is asserted in `parseCodexLeadRuntimeConfig`. */
 	codexProfile: CodexLeadProfile;
+	/** Explicit current-registry v2 selection; absence retains the legacy runtime. */
+	capabilityBundleVersion?: 2;
 	/** FLY-245 Phase A: canonical write-capable Lead scratch workspace (plan §3.3).
 	 * Resolved + validated (realpath; no overlap with control-plane/state/CODEX_HOME)
 	 * only for write-capable sandboxes when `FLYWHEEL_CODEX_LEAD_WORKSPACE` is set;
@@ -462,8 +473,12 @@ export function buildFullAccessAppServerEnv(
 		bridgeUrl: string;
 		apiToken: string;
 		runnerActionContext?: RunnerActionMcpContext;
+		/** Trusted parent pins only; never inferred from a model-provided env marker. */
+		capabilityModelEnv?: LeadModelEnvPins;
 	},
 ): NodeJS.ProcessEnv {
+	if (pins.capabilityModelEnv)
+		return buildLeadModelEnv(env, pins.capabilityModelEnv);
 	return {
 		...buildFullAccessEnv(env),
 		...pins.runnerActionContext?.env,
@@ -545,6 +560,16 @@ export function resolveFullAccessProjectRoot(
 export function parseCodexLeadRuntimeConfig(
 	env: NodeJS.ProcessEnv,
 ): CodexLeadRuntimeConfig {
+	const marker = env.FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION;
+	if (marker !== undefined && marker !== "2")
+		throw new Error("capability_bundle_version_invalid");
+	const capabilityBundleVersion = marker === "2" ? (2 as const) : undefined;
+	if (capabilityBundleVersion && env.FLYWHEEL_CODEX_LEAD_SANDBOX !== undefined)
+		throw new Error("capability_bundle_legacy_sandbox_override");
+	const capabilityContext = capabilityBundleVersion
+		? createLeadCapabilityContext(env)
+		: undefined;
+
 	const missing: string[] = [];
 	const req = (name: string): string => {
 		const v = env[name]?.trim();
@@ -554,7 +579,10 @@ export function parseCodexLeadRuntimeConfig(
 	const opt = (name: string): string => env[name]?.trim() ?? "";
 
 	const outboundMode: "direct" | "bridge" =
-		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct";
+		capabilityBundleVersion === 2 ||
+		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge"
+			? "bridge"
+			: "direct";
 	const typingEnabled = true;
 
 	const leadId = req("FLYWHEEL_LEAD_ID");
@@ -802,7 +830,11 @@ export function parseCodexLeadRuntimeConfig(
 	// FLY-350 full-access (= Claude-equal): workspace-write with network ON + local
 	// gh/git. Like write-capable it REQUIRES workspace-write (a read-only "full-access"
 	// is a contradiction); unlike it, there is no gateway/broker/release-gate.
-	if (codexProfile === "full-access" && sandboxMode !== "workspace-write") {
+	if (
+		!capabilityBundleVersion &&
+		codexProfile === "full-access" &&
+		sandboxMode !== "workspace-write"
+	) {
 		throw new Error(
 			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=full-access requires sandbox=workspace-write (got "${sandboxMode}") — a full-access Codex Lead is workspace-write + network ON, Claude-equal (FLY-350)`,
 		);
@@ -895,7 +927,14 @@ export function parseCodexLeadRuntimeConfig(
 		projectRepo = env.FLYWHEEL_GATEWAY_PROJECT_REPO?.trim() || undefined;
 	}
 
+	if (capabilityContext) {
+		capabilityContext.assertCurrent();
+		if (fullAccessProjectRoot !== capabilityContext.projectRoot)
+			throw new Error("capability_bundle_project_root_mismatch");
+	}
+
 	return {
+		...(capabilityBundleVersion ? { capabilityBundleVersion } : {}),
 		...(env.FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS !== undefined
 			? { runnerActionContext: resolveRunnerActionMcpContext(env) }
 			: {}),
@@ -1091,6 +1130,7 @@ export function buildThreadParams(
 	config: Pick<
 		CodexLeadRuntimeConfig,
 		| "sandboxMode"
+		| "capabilityBundleVersion"
 		| "workspace"
 		| "fullAccessProjectRoot"
 		| "model"
@@ -1101,7 +1141,9 @@ export function buildThreadParams(
 ): Record<string, unknown> {
 	const params: Record<string, unknown> = {
 		approvalPolicy: "never",
-		sandbox: config.sandboxMode,
+		...(config.capabilityBundleVersion === 2
+			? { permissions: LEAD_PERMISSION_PROFILE }
+			: { sandbox: config.sandboxMode }),
 	};
 	// FLY-245 Phase A (plan §3.3, R7): pin cwd to the canonical Lead scratch for a
 	// write-capable Lead — an unpinned cwd auto-becomes a writable root (= the
@@ -1335,6 +1377,8 @@ export function spawnCodexAppServer(cfg: {
 	 * confined / read-only / (Z) write-capable path keeps the unconditional
 	 * action-secret wash (byte-compat — the FLY-245 Phase E sentinel holds). */
 	washSecrets?: boolean;
+	/** Validated v2 parent pins take precedence over every legacy env input. */
+	capabilityModelEnv?: LeadModelEnvPins;
 	carrierInstanceId?: string;
 	leadId?: string;
 	projectName?: string;
@@ -1347,19 +1391,21 @@ export function spawnCodexAppServer(cfg: {
 	];
 	const base = cfg.baseEnv ?? process.env;
 	const child = spawn(cfg.codexBin, args, {
-		env: {
-			...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
-			CODEX_HOME: cfg.codexHome,
-			...(cfg.carrierInstanceId
-				? {
-						FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: cfg.carrierInstanceId,
-						...(cfg.leadId ? { FLYWHEEL_LEAD_ID: cfg.leadId } : {}),
-						...(cfg.projectName
-							? { FLYWHEEL_PROJECT_NAME: cfg.projectName }
-							: {}),
-					}
-				: {}),
-		},
+		env: cfg.capabilityModelEnv
+			? buildLeadModelEnv(base, cfg.capabilityModelEnv)
+			: {
+					...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
+					CODEX_HOME: cfg.codexHome,
+					...(cfg.carrierInstanceId
+						? {
+								FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: cfg.carrierInstanceId,
+								...(cfg.leadId ? { FLYWHEEL_LEAD_ID: cfg.leadId } : {}),
+								...(cfg.projectName
+									? { FLYWHEEL_PROJECT_NAME: cfg.projectName }
+									: {}),
+							}
+						: {}),
+				},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	child.stdout?.setEncoding("utf8");
@@ -1386,6 +1432,16 @@ export function spawnCodexAppServer(cfg: {
 	};
 }
 
+export interface CodexLeadRuntimeDependencies {
+	/** Trusted parent assembly; never supplied through model parameters or environment JSON. */
+	capabilityParent?: (input: {
+		config: CodexLeadRuntimeConfig;
+		journal: SqliteJournalStore;
+		carrierInstanceId: string;
+	}) => Promise<LeadCapabilityParent>;
+	/** Process boundary injection for hermetic lifecycle tests. Production publishes the carrier below. */
+	publishCapabilityCarrier?: () => string;
+}
 /** Assemble the full Codex Lead into a CodexLeadRuntime (real-component wiring). */
 export function buildCodexLeadRuntime(
 	config: CodexLeadRuntimeConfig,
@@ -1394,12 +1450,18 @@ export function buildCodexLeadRuntime(
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
 	} = console,
+	dependencies: CodexLeadRuntimeDependencies = {},
 ): CodexLeadRuntime {
+	const capabilityV2 = config.capabilityBundleVersion === 2;
+	const assembleCapabilityParent =
+		dependencies.capabilityParent ?? startDefaultLeadCapabilityParent;
+	let capabilityParent: LeadCapabilityParent | undefined;
+	let capabilityCarrierInstanceId: string | undefined;
+
 	mkdirSync(config.stateDir, { recursive: true });
 
-	const journal = new LeadJournal({
-		store: new SqliteJournalStore(config.journalDbPath),
-	});
+	const journalStore = new SqliteJournalStore(config.journalDbPath);
+	const journal = new LeadJournal({ store: journalStore });
 
 	// FLY-245 F-b: the write-capable release gate (plan §7) — replaces the
 	// FLY-224 unconditional fail-close. Every statically-checkable condition
@@ -1435,64 +1497,71 @@ export function buildCodexLeadRuntime(
 
 	// ④ MCP allowlist: write-capable = EXACTLY the gateway (A2); read-only
 	// companions keep the FLY-224 chrome-gated path byte-for-byte.
-	const mcp = release
-		? buildCodexLeadMcpArgv({
-				chrome: config.chrome,
-				gateway: {
-					...(config.runnerActionContext
-						? { env: config.runnerActionContext.env }
-						: {}),
-					command: process.execPath,
-					args: [release.gatewayEntry],
-					envVarNames: [
-						"HOME",
-						"PATH",
-						"FLYWHEEL_LEAD_ID",
-						"FLYWHEEL_PROJECT_NAME",
-						"FLYWHEEL_FOUNDER_DISCORD_USER_ID",
-						"FLYWHEEL_GATEWAY_STATE_DIR",
-						"FLYWHEEL_GATEWAY_BROKER_SOCKET",
-						"FLYWHEEL_GATEWAY_CONFIRM_CHANNEL_ID",
-						"FLYWHEEL_BRIDGE_URL",
-						"FLYWHEEL_COMM_ROOT",
-						// R2 HIGH-5: the model's canonical writable scratch — the gateway's
-						// ship-preflight rejects a target worktree overlapping it. Without
-						// forwarding this, the gateway built untrustedRoots=[] and silently
-						// disabled the overlap check.
-						"FLYWHEEL_CODEX_LEAD_WORKSPACE",
-						// FLY-350 (Z) unit 3: discord_send alias coordinates (non-secret).
-						// The gateway resolves "chat"/"roundtable" → channel id server-side.
-						"FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
-						"FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
-						"FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES",
-						// FLY-350 (Z) unit 4: gateway-proxied PR scope (non-secret;
-						// "owner/repo"). The GH_TOKEN itself travels over the broker, NOT
-						// the env — so it is deliberately NOT listed here.
-						"FLYWHEEL_GATEWAY_PROJECT_REPO",
-					],
-				},
-			})
-		: fullAccess
+	let mcp = capabilityV2
+		? {
+				argv: [] as string[],
+				included: [] as string[],
+				configHash: "",
+				warnings: [] as string[],
+			}
+		: release
 			? buildCodexLeadMcpArgv({
 					chrome: config.chrome,
-					// FLY-304: proactive discord_send for full-access (Claude-equal). The
-					// Audited lead-actions MCP via the SHARED helper (so the dry-run report
-					// cannot diverge). entry is existsSync-
-					// validated here (fail-closed); the bot token is by NAME (env_vars) —
-					// pinned into baseEnv below — never a literal. NO broker.
-					leadActions: fullAccessLeadActionsMcpConfig(
-						config,
-						assertLeadActionsEntry(config.leadActionsEntry),
-						config.replyInThread?.autoContinue === true,
-					),
+					gateway: {
+						...(config.runnerActionContext
+							? { env: config.runnerActionContext.env }
+							: {}),
+						command: process.execPath,
+						args: [release.gatewayEntry],
+						envVarNames: [
+							"HOME",
+							"PATH",
+							"FLYWHEEL_LEAD_ID",
+							"FLYWHEEL_PROJECT_NAME",
+							"FLYWHEEL_FOUNDER_DISCORD_USER_ID",
+							"FLYWHEEL_GATEWAY_STATE_DIR",
+							"FLYWHEEL_GATEWAY_BROKER_SOCKET",
+							"FLYWHEEL_GATEWAY_CONFIRM_CHANNEL_ID",
+							"FLYWHEEL_BRIDGE_URL",
+							"FLYWHEEL_COMM_ROOT",
+							// R2 HIGH-5: the model's canonical writable scratch — the gateway's
+							// ship-preflight rejects a target worktree overlapping it. Without
+							// forwarding this, the gateway built untrustedRoots=[] and silently
+							// disabled the overlap check.
+							"FLYWHEEL_CODEX_LEAD_WORKSPACE",
+							// FLY-350 (Z) unit 3: discord_send alias coordinates (non-secret).
+							// The gateway resolves "chat"/"roundtable" → channel id server-side.
+							"FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+							"FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
+							"FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES",
+							// FLY-350 (Z) unit 4: gateway-proxied PR scope (non-secret;
+							// "owner/repo"). The GH_TOKEN itself travels over the broker, NOT
+							// the env — so it is deliberately NOT listed here.
+							"FLYWHEEL_GATEWAY_PROJECT_REPO",
+						],
+					},
 				})
-			: buildCodexLeadMcpArgv({ chrome: config.chrome });
+			: fullAccess
+				? buildCodexLeadMcpArgv({
+						chrome: config.chrome,
+						// FLY-304: proactive discord_send for full-access (Claude-equal). The
+						// Audited lead-actions MCP via the SHARED helper (so the dry-run report
+						// cannot diverge). entry is existsSync-
+						// validated here (fail-closed); the bot token is by NAME (env_vars) —
+						// pinned into baseEnv below — never a literal. NO broker.
+						leadActions: fullAccessLeadActionsMcpConfig(
+							config,
+							assertLeadActionsEntry(config.leadActionsEntry),
+							config.replyInThread?.autoContinue === true,
+						),
+					})
+				: buildCodexLeadMcpArgv({ chrome: config.chrome });
 	for (const w of mcp.warnings) logger.warn(`MCP: ${w}`);
 	// FLY-304 (codex review item 5 + R2#1): make roundtable availability visible at
 	// boot. "roundtable" resolves when EXACTLY one cross-dept channel is configured,
 	// OR when an explicit roundtable pin selects one of several (mirror the alias
 	// resolver, so the log matches what the MCP child will actually authorize).
-	if (fullAccess) {
+	if (fullAccess && !capabilityV2) {
 		const ids = config.crossDeptChannelIds;
 		const pin = config.leadActionsChannelAliases
 			? parseExplicitAliases(config.leadActionsChannelAliases).roundtable
@@ -1514,18 +1583,20 @@ export function buildCodexLeadRuntime(
 	// the MCP overrides on the spawn command line (write-capable only). FLY-350
 	// full-access prepends buildFullAccessArgv (net ON + project writable root) but
 	// NO action-surface disable (a Claude-equal Lead keeps a normal agent surface).
-	const spawnArgv = release
-		? [
-				...buildConfinementArgv(release.workspace),
-				...buildActionSurfaceDisableArgv(),
-				...mcp.argv,
-			]
-		: fullAccess
+	const spawnArgv = capabilityV2
+		? []
+		: release
 			? [
-					...buildFullAccessArgv(config.fullAccessProjectRoot as string),
+					...buildConfinementArgv(release.workspace),
+					...buildActionSurfaceDisableArgv(),
 					...mcp.argv,
 				]
-			: mcp.argv;
+			: fullAccess
+				? [
+						...buildFullAccessArgv(config.fullAccessProjectRoot as string),
+						...mcp.argv,
+					]
+				: mcp.argv;
 
 	// The gateway child resolves these env var NAMES from the app-server env —
 	// non-secret coordinates only (the wash strips anything secret-shaped).
@@ -1561,27 +1632,38 @@ export function buildCodexLeadRuntime(
 					: {}),
 			}
 		: undefined;
-
+	const publishCarrier = () => {
+		const carrierInstanceId = randomBytes(32).toString("base64url");
+		publishCarrierRuntimeAssertion({
+			leadKey: config.leadKey,
+			identityDigest: config.identityDigest,
+			rawCarrierInstanceId: carrierInstanceId,
+			pid: process.pid,
+			lstart: withSyncOpMarker("codex-lead:process-start", () =>
+				getProcessStart(process.pid),
+			),
+		});
+		return carrierInstanceId;
+	};
 	const proc = new CodexLeadProcess({
+		experimentalApi: capabilityV2,
 		spawnChild: () => {
-			const carrierInstanceId = randomBytes(32).toString("base64url");
-			publishCarrierRuntimeAssertion({
-				leadKey: config.leadKey,
-				identityDigest: config.identityDigest,
-				rawCarrierInstanceId: carrierInstanceId,
-				pid: process.pid,
-				lstart: withSyncOpMarker("codex-lead:process-start", () =>
-					getProcessStart(process.pid),
-				),
-			});
+			const carrierInstanceId = capabilityV2
+				? capabilityCarrierInstanceId
+				: publishCarrier();
+			if (capabilityV2 && !capabilityParent)
+				throw new Error("capability_parent_not_ready");
 			if (config.runnerActionContext && broker)
-				broker.setRunnerCarrierClaim(carrierInstanceId);
+				broker.setRunnerCarrierClaim(carrierInstanceId!);
 			const transport = spawnCodexAppServer({
 				codexBin: config.codexBin,
-				mcpArgv: spawnArgv,
+				mcpArgv: capabilityV2
+					? [...capabilityParent!.permissionArgv, ...capabilityParent!.mcp.argv]
+					: spawnArgv,
+				...(capabilityV2 ? { capabilityModelEnv: capabilityParent!.pins } : {}),
 				codexHome: config.codexHome,
 				carrierInstanceId:
-					writeCapable && config.runnerActionContext
+					capabilityV2 || (writeCapable && config.runnerActionContext)
 						? undefined
 						: carrierInstanceId,
 				leadId: config.leadId,
@@ -1594,7 +1676,7 @@ export function buildCodexLeadRuntime(
 				// values, so it keeps the allowlisted aliases inherited from the pane.
 				// DISCORD_BOT_TOKEN serves inbound only; lead_actions receives the
 				// Bridge aliases by name and never sees the Discord credential.
-				...(fullAccess
+				...(fullAccess && !capabilityV2
 					? {
 							baseEnv: buildFullAccessAppServerEnv(process.env, config),
 							washSecrets: false,
@@ -1609,7 +1691,8 @@ export function buildCodexLeadRuntime(
 
 	// ④ runtime half: collect MCP startup notifications; ensureThread blocks on
 	// "exactly the gateway, ready" before any thread starts (fail-closed).
-	const inventory = release ? new McpInventoryWatcher() : undefined;
+	const inventory =
+		release || capabilityV2 ? new McpInventoryWatcher() : undefined;
 	if (inventory) {
 		proc.on("notification", (method, params) =>
 			inventory.record(method, params),
@@ -1628,6 +1711,19 @@ export function buildCodexLeadRuntime(
 					leadId: config.leadId,
 					channelId: config.chatChannelId,
 					dbPath: config.outboxDbPath,
+					...(capabilityV2
+						? {
+								post: (
+									request: Parameters<LeadCapabilityParent["outboundPost"]>[0],
+								) => {
+									if (!capabilityParent)
+										return Promise.reject(
+											new Error("capability_outbound_unavailable"),
+										);
+									return capabilityParent.outboundPost(request);
+								},
+							}
+						: {}),
 				})
 			: undefined;
 	const sender: OutboundSender =
@@ -1641,12 +1737,14 @@ export function buildCodexLeadRuntime(
 	// Persona injection: concatenate identity/persona files → thread baseInstructions
 	// (the Codex equivalent of claude-lead.sh's --append-system-prompt-file). Absent
 	// → undefined → thread starts with no baseInstructions (byte-compat).
-	const baseInstructions = readBaseInstructions(config.systemPromptFiles);
+	const baseInstructions = capabilityV2
+		? undefined
+		: readBaseInstructions(config.systemPromptFiles);
 	if (baseInstructions) {
 		logger.info(
 			`persona: baseInstructions injected (${baseInstructions.length} chars from ${config.systemPromptFiles.length} file(s))`,
 		);
-	} else if (config.systemPromptFiles.length > 0) {
+	} else if (!capabilityV2 && config.systemPromptFiles.length > 0) {
 		// FAIL-CLOSED (FLY-224 review MEDIUM): persona files were EXPLICITLY configured
 		// but none was readable/non-empty. A companion silently falling back to the
 		// default engineering persona is worse than failing loudly at boot — surface
@@ -1661,29 +1759,87 @@ export function buildCodexLeadRuntime(
 	// still cannot self-authorize: confinement (③) blocks its shell's
 	// network/socket actions, the gateway (④) is its only action channel, and
 	// every reserved action there passes founder preflight/consent (C2/D).
-	const threadParams = buildThreadParams(config, baseInstructions);
+	let threadParams = buildThreadParams(config, baseInstructions);
+
+	let resourcesClosed = false;
+	const shutdownProcess = async () => {
+		if (resourcesClosed) return;
+		resourcesClosed = true;
+		try {
+			await proc.stop();
+		} finally {
+			try {
+				await broker?.close();
+			} finally {
+				try {
+					try {
+						await capabilityParent?.close();
+					} finally {
+						bridgeSender?.close();
+					}
+				} finally {
+					journalStore.close();
+				}
+			}
+		}
+	};
+	const verifyCapabilityConfig = () =>
+		verifyLeadCapabilityReadiness({
+			parent: capabilityParent!,
+			cwd: config.fullAccessProjectRoot!,
+			request: (method, params) => proc.request(method, params),
+		});
 
 	const steps = {
 		startProcess: async () => {
-			// ⑦ the broker must be listening BEFORE the app-server (and so the
-			// gateway child) comes up — the gateway fetches its secrets at startup.
-			if (broker) await broker.listen();
-			await proc.start();
-			if (bridgeSender) {
-				try {
+			try {
+				// Parent services must be ready before the app-server starts.
+				if (capabilityV2) {
+					capabilityCarrierInstanceId =
+						dependencies.publishCapabilityCarrier?.() ?? publishCarrier();
+					capabilityParent = await assembleCapabilityParent({
+						config,
+						journal: journalStore,
+						carrierInstanceId: capabilityCarrierInstanceId,
+					});
+					await capabilityParent.assertCurrent();
+					if (capabilityParent.skillGaps?.length)
+						logger.warn("Codex Lead persona skill gaps: manual fallback", {
+							skillGaps: capabilityParent.skillGaps,
+						});
+					if (!capabilityParent.baseInstructions?.trim())
+						throw new Error("capability_rules_unverified");
+					threadParams = buildThreadParams(
+						config,
+						capabilityParent.baseInstructions,
+					);
+					mcp = capabilityParent.mcp;
+				}
+				if (broker) await broker.listen();
+				await proc.start();
+				if (capabilityV2) await verifyCapabilityConfig();
+				if (bridgeSender)
 					await runOutboundPreflight({
 						probe: (channelId) => bridgeSender.probeAuthorization(channelId),
 						channelIds: config.outboundProbeChannelIds,
 						log: logger,
 					});
-				} catch (error) {
-					await proc.stop();
-					throw error;
+			} catch (error) {
+				// The outer lifecycle cannot know which resources a partial start acquired.
+				try {
+					await shutdownProcess();
+				} catch {
+					logger.warn("Codex Lead partial startup cleanup failed");
 				}
+				throw error;
 			}
 		},
 		ensureThread: async (): Promise<string> => {
 			const saved = readThreadId(config.threadIdPath);
+			if (capabilityV2) {
+				await verifyCapabilityConfig();
+				await inventory!.waitForExact(mcp.included, 30_000);
+			}
 			if (release && inventory) {
 				// ④ runtime inventory: EXACTLY the gateway, ready — or fail-closed.
 				await inventory.waitForExact(mcp.included, 30_000);
@@ -1769,6 +1925,12 @@ export function buildCodexLeadRuntime(
 				journal,
 				executor,
 				sender,
+				...(capabilityV2
+					? {
+							enterDeliveryContext: (entryId: string) =>
+								capabilityParent!.enterDeliveryContext(entryId),
+						}
+					: {}),
 				onEntryCompleted: (entry) => {
 					if (
 						entry.source === "discord" &&
@@ -1922,10 +2084,7 @@ export function buildCodexLeadRuntime(
 				},
 			};
 		},
-		shutdownProcess: async () => {
-			await proc.stop();
-			await broker?.close();
-		},
+		shutdownProcess,
 		logger,
 	};
 
@@ -1951,6 +2110,11 @@ function redactSecret(s: string): string {
  * real cutover.
  */
 export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
+	if (config.capabilityBundleVersion === 2)
+		return [
+			"DRY RUN: capability bundle v2",
+			"Default parent factory selected; dry run performs no provider or process startup.",
+		];
 	// FLY-304 (code-review R1#3): mirror the LIVE full-access MCP injection so the
 	// preflight evidence (MCP injected / spawn cmd) actually shows `lead_actions` +
 	// mode-selected env_vars — names only, never secret values. Uses the

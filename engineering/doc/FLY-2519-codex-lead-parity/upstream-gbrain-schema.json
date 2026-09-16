@@ -1,0 +1,581 @@
+{
+  "schemaVersion": 1,
+  "server": "gbrain",
+  "observedAt": "2026-09-14T11:14:33.712Z",
+  "serverInfo": {
+    "name": "gbrain",
+    "version": "0.9.0"
+  },
+  "transport": "stdio-isolated-pglite",
+  "source": {
+    "command": "~/.bun/bin/gbrain",
+    "args": [
+      "serve"
+    ],
+    "executableSha256": "b6b6affa201d9ebc0f1b6e372bc7cd5cc8dadd111984bfb74f03ec5ef3a2184a"
+  },
+  "toolSchemaDigest": "e0835ffe366c98afdbbd96b6da6f30061e5f0b6cbde24a8a9e61e82df0fc84b2",
+  "tools": [
+    {
+      "name": "add_link",
+      "description": "Create link between pages",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "link_type": {
+            "type": "string",
+            "description": "Link type (e.g., invested_in, works_at)"
+          },
+          "context": {
+            "type": "string",
+            "description": "Context for the link"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      }
+    },
+    {
+      "name": "add_tag",
+      "description": "Add tag to page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "tag"
+        ]
+      }
+    },
+    {
+      "name": "add_timeline_entry",
+      "description": "Add timeline entry to a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "date",
+          "summary"
+        ]
+      }
+    },
+    {
+      "name": "delete_page",
+      "description": "Delete a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "file_list",
+      "description": "List stored files",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Filter by page slug"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "file_upload",
+      "description": "Upload a file to storage",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Local file path"
+          },
+          "page_slug": {
+            "type": "string",
+            "description": "Associate with page"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "file_url",
+      "description": "Get a URL for a stored file",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "storage_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "storage_path"
+        ]
+      }
+    },
+    {
+      "name": "get_backlinks",
+      "description": "List incoming links to a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_chunks",
+      "description": "Get content chunks for a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_health",
+      "description": "Brain health dashboard (embed coverage, stale pages, orphans)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_ingest_log",
+      "description": "Get recent ingestion log entries",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Max entries (default 20)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_links",
+      "description": "List outgoing links from a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_page",
+      "description": "Read a page by slug (supports optional fuzzy matching)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Page slug"
+          },
+          "fuzzy": {
+            "type": "boolean",
+            "description": "Enable fuzzy slug resolution (default: false)"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_raw_data",
+      "description": "Retrieve raw data for a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "Filter by source"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_stats",
+      "description": "Brain statistics (page count, chunk count, etc.)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_tags",
+      "description": "List tags for a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_timeline",
+      "description": "Get timeline entries for a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "get_versions",
+      "description": "Page version history",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    {
+      "name": "list_pages",
+      "description": "List pages with optional filters",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Filter by page type"
+          },
+          "tag": {
+            "type": "string",
+            "description": "Filter by tag"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 50)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "log_ingest",
+      "description": "Log an ingestion event",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_type": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "pages_updated": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_type",
+          "source_ref",
+          "pages_updated",
+          "summary"
+        ]
+      }
+    },
+    {
+      "name": "put_page",
+      "description": "Write/update a page (markdown with frontmatter). Chunks, embeds, and reconciles tags.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Page slug"
+          },
+          "content": {
+            "type": "string",
+            "description": "Full markdown content with YAML frontmatter"
+          }
+        },
+        "required": [
+          "slug",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "put_raw_data",
+      "description": "Store raw API response data for a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "Data source (e.g., crustdata, happenstance)"
+          },
+          "data": {
+            "type": "object",
+            "description": "Raw data object"
+          }
+        },
+        "required": [
+          "slug",
+          "source",
+          "data"
+        ]
+      }
+    },
+    {
+      "name": "query",
+      "description": "Hybrid search with vector + keyword + multi-query expansion",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          },
+          "expand": {
+            "type": "boolean",
+            "description": "Enable multi-query expansion (default: true)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "remove_link",
+      "description": "Remove link between pages",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      }
+    },
+    {
+      "name": "remove_tag",
+      "description": "Remove tag from page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "tag"
+        ]
+      }
+    },
+    {
+      "name": "resolve_slugs",
+      "description": "Fuzzy-resolve a partial slug to matching page slugs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "partial": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "partial"
+        ]
+      }
+    },
+    {
+      "name": "revert_version",
+      "description": "Revert page to a previous version",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "version_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "slug",
+          "version_id"
+        ]
+      }
+    },
+    {
+      "name": "search",
+      "description": "Keyword search using full-text search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "sync_brain",
+      "description": "Sync git repo to brain (incremental)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Path to git repo (optional if configured)"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Preview changes without applying"
+          },
+          "full": {
+            "type": "boolean",
+            "description": "Full re-sync (ignore checkpoint)"
+          },
+          "no_pull": {
+            "type": "boolean",
+            "description": "Skip git pull"
+          },
+          "no_embed": {
+            "type": "boolean",
+            "description": "Skip embedding generation"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "traverse_graph",
+      "description": "Traverse link graph from a page",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "number",
+            "description": "Max traversal depth (default 5)"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    }
+  ]
+}

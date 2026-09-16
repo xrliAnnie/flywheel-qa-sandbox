@@ -44,6 +44,7 @@ export type FetchImpl = (
 	init?: {
 		method?: string;
 		headers?: Record<string, string>;
+		signal?: AbortSignal;
 	},
 ) => Promise<{
 	ok: boolean;
@@ -68,6 +69,89 @@ export class DiscordFetcher {
 	) {
 		this.apiBase = apiBase.replace(/\/+$/, "");
 	}
+	/** Read exact message ownership before emitting a reply reference. */
+	async fetchMessage(
+		threadId: string,
+		messageId: string,
+		options: { signal?: AbortSignal } = {},
+	): Promise<DiscordMessage> {
+		if (!/^\d{17,20}$/.test(threadId) || !/^\d{17,20}$/.test(messageId))
+			throw new Error("invalid_discord_message_target");
+		options.signal?.throwIfAborted();
+		let response: Awaited<ReturnType<FetchImpl>>;
+		try {
+			response = await this.fetchImpl(
+				`${this.apiBase}/channels/${threadId}/messages/${messageId}`,
+				{
+					method: "GET",
+					headers: { Authorization: `Bot ${this.botToken}` },
+					...(options.signal ? { signal: options.signal } : {}),
+				},
+			);
+		} catch {
+			throw new DiscordFetchError(
+				"network",
+				null,
+				"Discord message fetch failed",
+			);
+		}
+		if (!response.ok) {
+			const status = response.status;
+			throw new DiscordFetchError(
+				status === 401 || status === 403
+					? "auth"
+					: status === 404
+						? "not_found"
+						: status === 429
+							? "rate_limited"
+							: "upstream",
+				status,
+				"Discord message unavailable",
+			);
+		}
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			throw new DiscordFetchError(
+				"network",
+				response.status,
+				"Discord message returned non-JSON",
+			);
+		}
+		if (!body || typeof body !== "object" || Array.isArray(body))
+			throw new DiscordFetchError(
+				"network",
+				response.status,
+				"Discord message invalid",
+			);
+		const data = body as RawDiscordMessage & { channel_id?: string };
+		if (data.id !== messageId || data.channel_id !== threadId)
+			throw new DiscordFetchError(
+				"network",
+				response.status,
+				"Discord reply target mismatch",
+			);
+		if (
+			typeof data.author?.id !== "string" ||
+			!/^\d{17,20}$/.test(data.author.id) ||
+			typeof data.content !== "string" ||
+			typeof data.timestamp !== "string" ||
+			!Number.isFinite(Date.parse(data.timestamp))
+		)
+			throw new DiscordFetchError(
+				"network",
+				response.status,
+				"Discord message invalid",
+			);
+		return {
+			id: data.id,
+			authorId: data.author.id,
+			content: data.content,
+			ts: data.timestamp,
+			isBot: Boolean(data.author.bot),
+		};
+	}
 
 	/**
 	 * Fetch the latest `limit` messages from a thread/channel, newest first.
@@ -76,16 +160,20 @@ export class DiscordFetcher {
 	async fetchThreadMessages(
 		threadId: string,
 		limit: number,
+		options: { before?: string; signal?: AbortSignal } = {},
 	): Promise<DiscordMessage[]> {
+		if (options.before !== undefined && !/^[0-9]{1,20}$/.test(options.before))
+			throw new Error("invalid_discord_cursor");
 		const url = `${this.apiBase}/channels/${encodeURIComponent(
 			threadId,
-		)}/messages?limit=${Math.max(1, Math.min(100, limit))}`;
+		)}/messages?limit=${Math.max(1, Math.min(100, limit))}${options.before !== undefined ? `&before=${options.before}` : ""}`;
 
 		let res: Awaited<ReturnType<FetchImpl>>;
 		try {
 			res = await this.fetchImpl(url, {
 				method: "GET",
 				headers: { Authorization: `Bot ${this.botToken}` },
+				...(options.signal ? { signal: options.signal } : {}),
 			});
 		} catch (err) {
 			throw new DiscordFetchError(

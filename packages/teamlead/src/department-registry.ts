@@ -69,6 +69,36 @@ function effectiveCanSpawn(lead: LeadConfig): boolean {
 export class DepartmentRegistry {
 	constructor(private readonly projects: ProjectEntry[]) {}
 
+	/** Ordinary membership uses the existing unambiguous label matcher, without granting spawn rights.
+	 * Role exclusions mirror canonical Lead identity; match.labels has no separate excludes field.
+	 */
+	isLeadDepartmentMember(
+		projectName: string,
+		leadId: string,
+		issueLabels: string[],
+	): ScopeDecision {
+		const membershipProjects = this.projects.map((project) => ({
+			...project,
+			leads: project.leads
+				.filter(
+					(lead) =>
+						lead.external !== true &&
+						lead.companion !== true &&
+						lead.codexProfile !== "companion" &&
+						!(
+							typeof project.generalChannel === "string" &&
+							lead.chatChannel === project.generalChannel
+						),
+				)
+				.map((lead) => ({ ...lead, canSpawnRunners: true })),
+		}));
+		return new DepartmentRegistry(membershipProjects).isLeadInScope(
+			projectName,
+			leadId,
+			issueLabels,
+		);
+	}
+
 	/**
 	 * Strict classification of an issue's department membership against
 	 * the project's spawning leads only. Case-insensitive label match.

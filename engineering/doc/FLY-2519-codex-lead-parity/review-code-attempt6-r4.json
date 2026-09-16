@@ -1,0 +1,536 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "935ec889-feb1-40e9-b444-18515fed6785",
+  "round": 4,
+  "findings": [
+    {
+      "id": "v2-bundle-cannot-boot-sandbox-override",
+      "severity": "HIGH",
+      "file": "packages/teamlead/scripts/run-codex-infra-bot-tui.sh",
+      "line": 77,
+      "title": "5 of the 7 callers of canonical_lead_identity_resolve re-export FLYWHEEL_CODEX_LEAD_SANDBOX AFTER the resolver's unset, so a bundle-v2 Lead still dies at boot on the windowed TUI launchers",
+      "detail": "Re-verified fresh at this head. parseCodexLeadRuntimeConfig throws capability_bundle_legacy_sandbox_override when FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION=2 and FLYWHEEL_CODEX_LEAD_SANDBOX are both set; parseCodexLeadTuiRuntimeConfig delegates to it. The repair put `unset FLYWHEEL_CODEX_LEAD_SANDBOX` inside canonical_lead_identity_resolve (canonical-lead-identity.sh:182), which only helps the generic path where scripts/flywheel-lead.sh:173 exports before exec'ing codex-lead.sh — and that is the only path the new regression covers (I ran scripts/__tests__/flywheel-lead.test.sh at this head: 71/71, including 'registry v2 replaces legacy sandbox before the actual TUI child'). I swept every resolver caller: run-codex-infra-bot-tui.sh (resolve@53, export@77, exec node@125), run-codex-lead-mufasa-tui-fullaccess.sh (54/81/157), run-codex-lead-mufasa-tui.sh (59/129), run-codex-lead-mufasa-fullaccess.sh (44/60), run-codex-lead-mufasa-writecapable.sh (40/54) — all export after the resolve, none unsets it again. I reproduced the boot failure by replaying that ordering into the built TUI parser: 'env at exec: BUNDLE=2 SANDBOX=workspace-write' -> 'BOOT THROWS -> capability_bundle_legacy_sandbox_override' (exit 1). Reachable: the production registry row flywheel/codex-infra-bot-lead is backend=codex-app-server, codexProfile=full-access, companion=false, external=false — exactly what resolveCodexLeadCapabilities requires for codexCapabilityBundleVersion:2 — and CLAUDE.md names these windowed TUI launchers as the mandated production form. Fix: move the unset to a final pre-exec step, skip the sandbox export when the resolved bundle is 2, or make the parser ignore rather than reject the legacy value under v2.",
+      "findingKey": "v2-bundle-cannot-boot-sandbox-override"
+    },
+    {
+      "id": "upstream-provider-startup-has-no-fallback",
+      "severity": "HIGH",
+      "file": "packages/teamlead/src/lead-capabilities/runtime-factory.ts",
+      "line": 325,
+      "title": "Three third-party providers are awaited with no catch, and gbrain's startup precondition is a sha256 pin on a globally-mutable bun.lock — any vendor drift takes every v2 Lead down with no degraded mode",
+      "detail": "startGbrainProvider (:325), startXiaohongshuProvider (:332) and startContext7Provider (:339) are each awaited bare, in deliberate contrast to startBrowserProvider immediately below (:345) which has an explicit `.catch()` that swaps in browser_unavailable handlers and keeps the Lead alive. A throw from any of the three propagates through startLeadRuntimeProviders to the runtime and the Lead does not start. Degrading is also structurally blocked: resolveLeadCapabilities would then report missingOperationIds and runtime-factory.ts:112-113 throws runtime_capabilities_incomplete. The triggers are ordinary, not exotic — I confirmed startGbrainProvider calls pinGbrainHost() (gbrain-provider.ts:22), and gbrain-host.ts:35-39 pins `/Users/xiaorongli/.bun/install/global/bun.lock` by sha256 (plus bun.exe at :31-33). Any global `bun add`/`bun upgrade` rewrites that lock file and bricks every v2 Codex Lead at startup until a human regenerates the pin. Context7 has the same shape via its baseline pin (handlers/context7.ts:9-14) on a vendor-released tool list, and the xiaohongshu provider depends on a loopback server being up. Give these three the same fallback the browser already has, or stop treating a vendor-controlled artifact digest as a hard startup precondition.",
+      "findingKey": "upstream-provider-startup-has-no-fallback"
+    },
+    {
+      "id": "seatbelt-read-boundary-only-home-anchored",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-sandbox.ts",
+      "line": 248,
+      "title": "Blanket (allow file-read*) is retracted only for $HOME and the enumerated credential roots, leaving /private/tmp, /private/var/folders, /etc and /Library readable from a --no-sandbox Chrome",
+      "detail": "Anchor re-verified at this head. Policy order is (deny default) -> ... -> '(allow file-read*)' (248) -> a deny over homedir() with carve-outs (253-256) -> readDenials over credentialPaths (which I read in full: it is a thorough list but every entry is home-relative except /Library/Keychains). Nothing denies /private/tmp, /private/var/folders/*/T, /etc, /Library, /opt or /Volumes. Since browser-config.ts:98 ships --chrome-arg=--no-sandbox (documented as Lead ruling ed48f532, naming the outer Seatbelt as the only boundary), a compromised renderer inherits that read surface plus process-exec of /bin/bash (243) and file-write* over qaRoot, letting it read every other activation's control root under /private/tmp (default-runtime.ts:144) and the founder's TMPDIR. Writes, network and $HOME stay closed and I found no credential provably stored outside $HOME, so this is defence-in-depth — but the comment at 245-247 overstates what the retained denials actually cover.",
+      "findingKey": "seatbelt-read-boundary-only-home-anchored"
+    },
+    {
+      "id": "app-server-close-memoizes-rejection-wedges-rebuild",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts",
+      "line": 102,
+      "title": "A rejected close() is memoized, so the daemon rebuild loop can never recover and the Lead silently stops serving",
+      "detail": "Anchor re-verified at this head. close() sets closed=true synchronously and caches `closing` on first call (82-105). The body can reject via capability_app_server_stop_unproved, sameDirectory(), or rmSync(root, {recursive:true}) at 102 — which omits force:true, so a vanished /tmp root throws ENOENT. In capability-tui-runtime.ts:110-118 the `await server.close()` inside the catch then rejects and `server = undefined` never runs; every later retry calls server.assertCurrent(), which throws 'capability_app_server_closed' (126) — not the 'capability_app_server_exited' string the catch filters on — so the supervisor retries forever at the backoff cap while the process stays alive and launchd never restarts it. Same missing force:true at line 54.",
+      "findingKey": "app-server-close-memoizes-rejection-wedges-rebuild"
+    },
+    {
+      "id": "delivery-context-key-collapses-identical-sends",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/CodexLeadOutboundHandler.ts",
+      "line": 203,
+      "title": "With deliveryContext set, the idempotency key drops the caller nonce and keys on a hash of the text, so a second identical message is silently dropped but reported delivered",
+      "detail": "Anchor re-verified. With req.deliveryContext present the handler ignores the caller idempotencyKey/nonce and derives the key from sha256([projectName, leadId, deliveryContext, channelId, replyTo ?? null, sha256(text)]). deliveryContext is the journal entry id, stable for the whole turn, and nothing in the tuple separates two sends. Two discord_send calls with the same text to the same channel in one turn: the second hits the existing.status === 'sent' fast path at 227, is never posted, and returns 200 with the FIRST message's id, so model and receipt both record it as delivered. I confirmed the automatic journal-reply transport is not affected — automatic-outbound.ts:109-115 pins idempotencyKey to `${entry.id}:out` and requires entry.output === body.text.",
+      "findingKey": "delivery-context-key-collapses-identical-sends"
+    },
+    {
+      "id": "bridge-attachments-rejection-reported-as-unknown",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/handlers/bridge-attachments.ts",
+      "line": 273,
+      "title": "A definitively rejected attachment send is reported as `unknown` and durably written as a maybe-delivered receipt",
+      "detail": "Anchor re-verified. Any non-200 becomes `throw denied()` caught into {status:'unknown'}, but the Bridge emits unambiguous rejections as non-200: 403 discord_scope_denied, 503 provider_capacity when another Lead holds uploadActive (lead-capability-discord.ts:128-133), 401, 400 invalid_upload. Lead A calling attachments.send during Lead B's upload gets 503 with nothing posted, the receipt transitions dispatched->unknown, and reconcile can never clear it, so the only way forward is a new requestId — the blind-retry path the receipt machine exists to prevent. handlers/bridge-discord.ts:157-206 and handlers/report-publish.ts:210-214 decode the same envelope into {status:'rejected'}; this file is the outlier.",
+      "findingKey": "bridge-attachments-rejection-reported-as-unknown"
+    },
+    {
+      "id": "upstream-read-collapses-all-failures-to-unknown",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/handlers/upstream-read.ts",
+      "line": 173,
+      "title": "The upstream read handler wraps authorize+dispatch in one catch that returns bare `unknown`, so a permanent scope/token defect is indistinguishable from a flaky upstream",
+      "detail": "The whole body including `await authorize(...)` sits inside a single catch returning {status:'unknown'} with an errorCode only for baseline_drift; the broker then surfaces provider_unknown. Scope denial, a stale or unresolvable token handle, an oversized reply and a genuine upstream timeout all look identical to the Lead. The sibling context7 handler does this correctly — it tracks `authorized` and returns {status:'rejected', errorCode:'context7_scope_denied'} for pre-dispatch failures (handlers/context7.ts:68-70, 113-118). This is also what makes the noteId defect below silent in production.",
+      "findingKey": "upstream-read-collapses-all-failures-to-unknown"
+    },
+    {
+      "id": "xiaohongshu-token-id-allowlist-omits-noteid",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/xiaohongshu-tokens.ts",
+      "line": 46,
+      "title": "The xsec_token identifier allowlist omits noteId, the field the real server returns, so the xiaohongshu read capability cannot mint a resourceHandle",
+      "detail": "project() accepts only [object.id, object.feed_id, object.feedId, object.user_id, object.userId] as the identifier sibling of an xsecToken key, and throws denied() at :60-63 when ids.length !== 1. The repo's own plan doc documents the real get_feed_detail shape as `{note:{noteId,xsecToken,title,desc,...}}` (doc/engineer/plan/inprogress/v1.36.2-FLY-222-xiaohongshu-periodic-learning.md:40), i.e. noteId paired with xsecToken and no `id`. On a real response ids.length === 0 -> upstream_token_unverified -> swallowed to {status:'unknown'} by the finding above, so no resourceHandle is ever minted and every downstream tool that declares resourceHandle required (upstream-inputs.ts get_feed_detail/user_profile/like_feed/favorite_feed/post_comment_to_feed/reply_comment_in_feed) is unreachable. The tests miss it because both fixtures are hand-written with `id` (__tests__/upstream-read.test.ts and __tests__/xiaohongshu-tokens.test.ts); the fix needs a captured real payload as the fixture, not another hand-made one.",
+      "findingKey": "xiaohongshu-token-id-allowlist-omits-noteid"
+    },
+    {
+      "id": "native-home-verifies-a-different-read-than-it-copies",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/native-home.ts",
+      "line": 158,
+      "title": "assertOrigin digests its own snapshot of the source tree, then a second unverified snapshot is the one actually copied into the Lead's skills home",
+      "detail": "Line 158 calls assertOrigin(sourceRoot, ...), which takes its own `snapshot(root)` (native-home.ts:85) and validates it against baseline.origin.files digests, then discards it. Line 160 takes a second `snapshot(options.sourceRoot)` and that is what gets written at line 187. verify(target) -> verifyNativeSkillBaseline only re-digests the six `<name>/SKILL.md` files (native-skills.ts:39-49) and does not recurse, so every other pinned file (imagegen/scripts/*.py, skill-installer/scripts/*.py, */agents/*.yaml) lands unverified; assertCurrent then compares the target against that same unverified snapshot, so the substitution is never detected for the activation's life. Exploiting it needs a same-uid write to PINNED_NATIVE_ORIGIN.root racing the window between :158 and :160 — a high bar that already grants a lot, which is why I rate this MEDIUM — but native-skill-baseline.ts:5-6 explicitly promises this path fails closed on changed content, and it does not. Verify `source` against baseline.origin.files instead of re-reading.",
+      "findingKey": "native-home-verifies-a-different-read-than-it-copies"
+    },
+    {
+      "id": "hardcoded-operator-absolute-paths-in-production-source",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/native-resource-baseline.ts",
+      "line": 3,
+      "title": "Production startup pins absolute paths inside one operator's home, including another agent's mutable Codex home",
+      "detail": "PINNED_NATIVE_ORIGIN.root is the literal string '/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement/skills/.system', and preparePinnedNativeSkillHome hard-fails with native_skill_home_unverified when it is absent or drifted, with no fallback. Same pattern in gbrain-host.ts:31-39 ('/Users/xiaorongli/.npm-global/.../bun.exe', '/Users/xiaorongli/.bun/install/global/bun.lock') and in lead-skill-adapters/source-pins.json ('/Users/xiaorongli/.agents/skills/...'). Consequences: no Codex Lead can start on any other machine, user or CI runner; and because the pinned root is a Codex home owned by a full-auto runner, any codex upgrade or skill-installer run inside agents/flywheel/implement rewrites those bytes and takes every Codex Lead down until both baselines are regenerated by hand.",
+      "findingKey": "hardcoded-operator-absolute-paths-in-production-source"
+    },
+    {
+      "id": "manifest-skills-stale-root-wedges-activation",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/manifest-skills.ts",
+      "line": 110,
+      "title": "An ungraceful Lead exit leaves installed skill directories behind and every future activation then fails closed forever",
+      "detail": "If <codexHome>/skills exists, startup requires JSON.stringify(readdirSync(root)) === JSON.stringify(['.system']) and otherwise throws invalid(). Removal of the installed skill directories lives only in close() (45-65), which runs on graceful teardown; I grepped the package and nothing pre-cleans <codexHome>/skills. After a SIGKILL, crash or reboot the directory still holds founder-html-delivery/, proofshot/ etc., so the next activation throws capability_skills_unverified permanently until a human runs rm -rf. This fleet kills panes routinely, so this is a likely non-self-healing outage. preparePinnedNativeSkillHome already models the right behaviour (verify an existing home rather than reject it).",
+      "findingKey": "manifest-skills-stale-root-wedges-activation"
+    },
+    {
+      "id": "persona-and-shared-lead-rules-are-unpinned-model-writable",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/rule-sources.ts",
+      "line": 234,
+      "title": "The persona and .lead/shared rules become required system instructions with no digest pin, from inside the model's only writable root",
+      "detail": "persona resolves to projectRoot/.lead/<leadId>/{identity.md|agent.md} and is added with required=true (:234); project/common-rules.md and department-lead-rules.md resolve under projectRoot/.lead/shared, also required. These flow through prepareLeadManifestSources -> manifest.ruleSources -> readManifestInstructions (runtime-parent.ts:207) into the Codex thread's system prompt. permission-profile.ts grants workspace_roots {[writableRoot]: true} where writableRoot is projectRoot, carving back only .codex and .git — so .lead/** is model-writable. Unlike every other trust-relevant input here (skills -> adapter pins, native skills -> PINNED_NATIVE_ORIGIN, patrol rule -> pinLeadPatrolSources, dist -> LEAD_DEPLOYMENT_ENTRIES) this layer has no digest pin, and identityDigest comes from the registry, not the persona bytes. Mid-activation edits are caught (default-runtime.ts:203 re-runs discover()), so the gap is across restarts, which are routine. This mirrors how Claude Leads already work — the branch even edits .lead/flywheel-product-lead/identity.md — so if a self-editable persona is the accepted product design this should be an explicit ruling rather than the one unpinned edge in an otherwise fully-pinned design.",
+      "findingKey": "persona-and-shared-lead-rules-are-unpinned-model-writable"
+    },
+    {
+      "id": "report-publish-size-band-exceeds-express-json-limit",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/handlers/report-publish.ts",
+      "line": 119,
+      "title": "report.publish accepts 512 KiB artifacts but the Bridge body parser caps at 512 kb, creating a dead band that permanently burns the requestId",
+      "detail": "Anchor re-verified. The handler accepts artifact.data up to 512*1024 bytes and POSTs the HTML as a JSON string; the only parser on that route is express.json({limit:'512kb'}) in bridge/plugin.ts (= 524288 bytes) with no larger per-route parser on /api/lead-capabilities/reports. JSON escaping plus the envelope makes the body strictly larger than the HTML, so anything near the cap — and quote-dense HTML well below it — gets a 413 before reaching the route. That maps to {status:'unknown'}, the receipt is written unknown, and reconcile via /publish-receipt never finds a report, so the requestId stays unknown forever while the tool contract tells the Lead to reuse it.",
+      "findingKey": "report-publish-size-band-exceeds-express-json-limit"
+    },
+    {
+      "id": "discord-reply-16000-chars-one-receipt",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/catalog.ts",
+      "line": 228,
+      "title": "discord.thread.reply accepts 16 000 chars and silently posts up to 9 real messages while recording only the first id",
+      "detail": "Re-verified at this head: line 615 of handlers/discord.ts is the only length cap in the file and it is gated on isEdit, so the reply path inherits the shared text schema's .max(16000). postDiscordMessageToChannel splits at MAX_DISCORD_MESSAGE_LENGTH=1900 and POSTs each chunk, but buildLeadDiscordSend keeps only messageIds[0] (leadDiscordSend.ts:50). So the providerRef and receipt understate what was posted; ownsSentMessage records only chunk 1 so editing chunks 2..N is permanently denied by the isEdit guard at :634; and a failure on chunk k leaves chunks 1..k-1 in the channel while the receipt goes unknown, so any retry re-posts them. The chunk-dropping predates this change; what is new is exposing a 16 000-char write through a receipt machine that assumes one message per operation.",
+      "findingKey": "discord-reply-16000-chars-one-receipt"
+    },
+    {
+      "id": "egress-proxy-30s-idle-timeout-shared-with-model",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-egress-proxy.ts",
+      "line": 268,
+      "title": "The Lead model's entire network egress rides the browser's proxy under a 30 s per-socket idle timeout and a 64-connection cap",
+      "detail": "Anchor re-verified. runtime-factory.ts returns proxyPort: browser.proxyPort, which permission-profile.ts renders as the model's proxy_url with domains {'*':'allow'}, so the Codex Lead's own API traffic and the QA Chrome share one Node server with maxConnections = 64 (263), requestTimeout 30_000 (265) and socket.setTimeout(30_000, () => socket.destroy()) on every accepted connection (268), plus the same on the upstream socket. A reasoning request with more than 30 s before its first response byte is destroyed mid-request, and one content-heavy page can consume most of the 64-socket budget. Note the coupling: runtime-factory.ts:351-378 keeps the browser-owned proxy as the model's network path even when the browser fails to start. I did not run this end to end.",
+      "findingKey": "egress-proxy-30s-idle-timeout-shared-with-model"
+    },
+    {
+      "id": "chrome-orphan-survives-process-group-kill",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts",
+      "line": 140,
+      "title": "Chrome is spawned into its own process group by bundled Puppeteer, so process.kill(-pid) never reaches it and its profile is deleted underneath a live headed browser",
+      "detail": "Anchor re-verified. BoundedStdioTransport spawns sandbox-exec detached and cleans up with process.kill(-pid, signal) — correct for the MCP node process, but chrome-devtools-mcp's bundled Puppeteer sets detached on its own spawn, making Chrome a separate process-group leader the negative-pid kill cannot reach. close() also escalates to SIGKILL 250 ms after SIGTERM, skipping Puppeteer's own handler. browser-provider.ts:54 then rmSync(qaRoot, {recursive:true, force:true}) right after worker.close() returns, deleting the still-running browser's --user-data-dir and crashpad dir. Nothing verifies Chrome actually died; verifyNativeHeadedChrome is only called before close.",
+      "findingKey": "chrome-orphan-survives-process-group-kill"
+    },
+    {
+      "id": "attachment-send-no-aggregate-size-cap",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/attachment-upload.ts",
+      "line": 4,
+      "title": "Attachment send caps per-file (25 MB) and count (10) but never the sum, so one request can force ~750 MB of transient Bridge RSS for a message Discord will always reject",
+      "detail": "Anchor re-verified. MAX_ATTACHMENT_UPLOAD_BYTES = 250 MB + 64 KiB + 4 is the express raw() limit (lead-capability-discord.ts:151-155) and the per-file/per-count caps permit 10 x 25 MB. The Bridge buffers 250 MB in req.body, executeDiscordAttachmentSend copies each file (discord-attachments.ts:437), and sendDiscordAttachments copies again into Blobs (:292) — roughly 750 MB peak in the single Bridge process serving the whole fleet, for a request Discord's 25 MB per-message budget guarantees will fail after the spike.",
+      "findingKey": "attachment-send-no-aggregate-size-cap"
+    },
+    {
+      "id": "broker-socket-has-no-credential",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/broker-socket.ts",
+      "line": 58,
+      "title": "The capability broker unix socket carries no token; authentication is purely filesystem reachability, and chmod 0600 runs after listen()",
+      "detail": "Re-verified at this head: accept() reads one JSON frame and dispatches into LeadCapabilityBroker.execute with no token, nonce or peer check — the only gate is the 0700 uid-checked parent directory (35-42), and chmodSync(socketPath, 0o600) at :58 runs after server.listen(socketPath) at :51, leaving a umask-dependent window. Any same-uid process (including a Runner tmux session with full bash) can connect to /tmp/fw-cap-*/run-*/broker.sock and invoke every operation in that Lead's manifest, while the Bridge HTTP legs all require both the API token and a live carrierClaim. Honest caveat: a same-uid attacker can also read the Lead process env, so this is not uniquely weak — but it is the only surface in this change with zero credential.",
+      "findingKey": "broker-socket-has-no-credential"
+    },
+    {
+      "id": "codesign-60s-budget-below-observed-host-max",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-host-identity.ts",
+      "line": 115,
+      "title": "codesign --verify --deep is given a fixed 60 s budget, below the observed host maximum, so the browser capability disappears intermittently and indistinguishably from a tampered binary",
+      "detail": "Anchor re-verified. execFileSync with timeout 60000 SIGTERMs and throws; the same command on this host has measured 8 s–113 s depending on cache warmth and load. On a slow run verifyBrowserHostIdentity throws browser_host_identity_unverified, BrowserWorker.start throws browser_lost, and runtime-factory.ts:349 swaps in browser_unavailable for the whole activation. Fails closed, so not a security hole, but the Lead gets a silently and intermittently absent browser and browser_unavailable cannot be told apart from a genuine integrity failure. Same category: the fixed 5 000 ms whole-probe budget in browser-isolation.ts:99-102.",
+      "findingKey": "codesign-60s-budget-below-observed-host-max"
+    },
+    {
+      "id": "terminal-input-partial-send-on-guard-failure",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-terminal-read-io.ts",
+      "line": 101,
+      "title": "The re-check between the literal send-keys and the Enter send-keys can leave half-submitted text in a Runner pane",
+      "detail": "Re-anchored this round to the new Bridge-side IO, which is the v2 Lead's actual path: send() calls beforeSend(), writes the text literally with `send-keys -l --`, then calls beforeSend() again (:101) before pressing Enter. The guard is the full unchanged+observe+unchanged chain and the surrounding core carries a 15 s deadline while each tmux round trip has its own 5 s timeout, so under load the second beforeSend() can throw terminal_timeout or terminal_not_waiting after the literal text is already typed into the pane. The Lead sees a failure and retries, appending the same text again, so the runner receives 'texttext' then Enter. terminal-mcp/src/index.ts:177 has the identical two-phase pattern; the pre-change code sent text and Enter back to back with no intervening guard, so this partial-write window is new.",
+      "findingKey": "terminal-input-partial-send-on-guard-failure"
+    },
+    {
+      "id": "resolve-patrol-session-owner-is-dead-code",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/db.ts",
+      "line": 8434,
+      "title": "New CommDB.resolvePatrolSessionOwner is never called and never tested, yet an anti-drift fixture cites it as a live addition",
+      "detail": "Re-verified at this head: a repo-wide search excluding node_modules and dist returns exactly one occurrence, the definition. No caller in packages/teamlead/src or packages/flywheel-comm, no script, no CLI export, no test. Its docstring carries authorization semantics ('missing/pruned or ambiguous ownership never produces an authorization'), so a future caller is likely to adopt it believing the contract has been exercised, and nothing in CI would catch a regression. The SQL is read-only, fully parameterized and does fail closed as documented, so there is no runtime risk today. The fly2567 compatibility fixture rationale names 'resolvePatrolSessionOwner and listLeadTerminalSessions' as though both were in use — only listLeadTerminalSessions is (bridge/lead-capability-read.ts:546).",
+      "findingKey": "resolve-patrol-session-owner-is-dead-code"
+    },
+    {
+      "id": "new-slow-tests-rely-on-default-5s-vitest-timeout",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/__tests__/deployment.test.ts",
+      "line": 111,
+      "title": "Two new tests that spawn real subprocesses/servers use vitest's default 5 s timeout and fail intermittently under load",
+      "detail": "Still present. deployment.test.ts:111 spawns the compiled preflight CLI and git-push-transport.test.ts:107 stands up a real smart-HTTP server plus git subprocesses, neither with a per-test timeout override, so both inherit vitest's 5 000 ms default (packages/teamlead/vitest.config.ts sets no testTimeout). On a loaded host these timed out at 5 s; with --testTimeout=60000 the whole 78-file lead-capabilities suite passes 533/533. That is a flaky-red risk on a busy CI runner.",
+      "findingKey": "new-slow-tests-rely-on-default-5s-vitest-timeout"
+    },
+    {
+      "id": "browser-sandbox-has-no-ci-coverage",
+      "severity": "MEDIUM",
+      "file": "scripts/__tests__/qa-fly-2519-browser-node.test.mjs",
+      "line": 27,
+      "title": "Both tests that exercise the Seatbelt policy are darwin-gated while CI runs ubuntu-latest, so the browser sandbox has zero automated coverage",
+      "detail": "The CI addition at .github/workflows/ci.yml wires this file into the ubuntu-latest quick-gate job, but both of its tests begin with `if (process.platform !== 'darwin') return t.skip(...)`, so on CI they are no-ops — the generated policy, the credential probe and the isolation verifier are never executed. Its sibling qa-fly-2519-browser-process.test.mjs does run on CI but is a pure string-parser test over `parseChromeObservation`, proving nothing about an actual launch. The result is that CI green carries no signal at all for the subsystem with the most host-specific behaviour, which is exactly the failure mode already recorded for this issue (CI all green, host 3/3 failing). Either mark the CI step as macOS-only so the gap is visible, or add a policy-text golden that can run cross-platform.",
+      "findingKey": "browser-sandbox-has-no-ci-coverage"
+    },
+    {
+      "id": "journal-store-leaks-sqlite-handle-on-migration-failure",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-backends/codex/SqliteJournalStore.ts",
+      "line": 122,
+      "title": "migrateOperationReceipts / new OperationReceiptStore added to the constructor without the close-on-throw wrapper used by the sibling store",
+      "detail": "Still present. The receipts migration and OperationReceiptStore construction sit inside the SqliteJournalStore constructor with no try/catch, while the identical addition to SqliteOutboundDedupStore.ts:45-61 in this same change did get `try { ... } catch { this.db.close(); throw }`. If the migration throws, the better-sqlite3 handle plus its WAL/SHM files are never closed, and in capability-tui-runtime.ts the `journal` local is also never assigned so cleanup()'s journal?.close() is a no-op.",
+      "findingKey": "journal-store-leaks-sqlite-handle-on-migration-failure"
+    },
+    {
+      "id": "terminal-list-cursor-bound-mismatch",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/catalog.ts",
+      "line": 60,
+      "title": "terminal.list accepts a 2048-char cursor but listLeadTerminalSessions throws on anything over 256, classifying a malformed model cursor as `unknown`",
+      "detail": "The shared `cursor` schema is z.string().max(2048) while CommDB.listLeadTerminalSessions throws terminal_page_invalid above 256 chars. bridge/lead-capability-read.ts:546 passes raw.cursor straight through inside a try/finally that only closes the DB handle, and the outer catch at :801-823 only classifies bridge_read_scope_denied / inbox_event_scope_denied / pr_not_bound_to_lead as rejected — so a 257..2048 char cursor yields 503 with status 'unknown' and errorCode 'read_unavailable' instead of a clean rejection. The sibling `limit` bound (1..100) does agree between the two layers. Read-only, so no receipt consequence, only error classification.",
+      "findingKey": "terminal-list-cursor-bound-mismatch"
+    },
+    {
+      "id": "runner-tool-names-filtered-out-by-enabled-tools",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-backends/codex/buildCodexLeadMcpArgv.ts",
+      "line": 191,
+      "title": "The v2 MCP config pins enabledTools to ['lead_operation'], so the six advertised runner tool names are stripped",
+      "detail": "Still present. lead-capability-proxy.ts:164-175 advertises RUNNER_ACTION_TOOL_NAMES as standalone tools, but the v2 lead_actions server config sets enabledTools: ['lead_operation'], so Codex filters them out. No capability is lost (runner operations remain reachable through lead_operation's oneOf), but the advertised inventory does not match what the model can call.",
+      "findingKey": "runner-tool-names-filtered-out-by-enabled-tools"
+    },
+    {
+      "id": "lead-operation-cli-64k-cap-contradicts-artifact-text-band",
+      "severity": "LOW",
+      "file": "packages/flywheel-comm/src/commands/lead-operation.ts",
+      "line": 12,
+      "title": "The lead-operation CLI caps request input at 64 KiB while the client grants artifact.text.create a ~3.2 MiB frame",
+      "detail": "Anchor corrected to the MAX_INPUT_BYTES declaration. lead-operation-client.ts:10-16 gives artifact.text.create MAX_LEAD_OPERATION_FRAME_BYTES (6 * 512 KiB + 64 KiB) while the CLI's MAX_INPUT_BYTES is 65536, so any artifact.text.create over 64 KiB submitted through `flywheel-comm lead-operation` is rejected locally with request_input_too_large and never reaches the broker. Harmless if the CLI is not the intended path for that operation, but the limits should agree or the CLI should say which operations it cannot carry.",
+      "findingKey": "lead-operation-cli-64k-cap-contradicts-artifact-text-band"
+    },
+    {
+      "id": "git-feature-push-primitive-unwired-with-weaker-branch-gate",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/git-push-transport.ts",
+      "line": 63,
+      "title": "The v2 git push primitives call assertFeaturePushBranch without defaultBranch, a weaker gate than the v1 path, in code that is shipped but unreachable",
+      "detail": "assertFeaturePushBranch (GitPushRunner.ts:937-952) only rejects exact PROTECTED_BRANCHES names (main/master/trunk/release/production/prod) and an exactly-equal defaultBranch, unlike v1's assertPushableBranch which also requires a flywheel/ prefix and rejects any leaf ending in /main. Both lower-level callers — git-push-transport.ts:63 and GitPushRunner.ts:714 inside materializeAndPushV2 — omit defaultBranch, so a repo whose default branch is e.g. `develop` would pass the primitive's own gate; only handlers/git.ts:126 passes policy.defaultBranch. Not exploitable: catalog.ts gives git.feature.push unconditionalDenial 'lead_runner_owned_operation' and broker.ts:167-168 rejects it before any handler, and I confirmed createGitFeaturePushHandler is referenced only by its own tests and is wired into no provider handler map. Defence-in-depth gap in currently dead code.",
+      "findingKey": "git-feature-push-primitive-unwired-with-weaker-branch-gate"
+    },
+    {
+      "id": "qa-view-server-is-dead-code",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/qa-view.ts",
+      "line": 1,
+      "title": "QaViewServer ships 222 lines with a 350-line test and no production reference, and as written is an unauthenticated loopback HTTP server",
+      "detail": "QaViewServer has no reference outside its own test. Its DNS-rebinding, CSP, method and path guards are well built, but assertCurrent gates activation liveness only — there is no token — so if it is later wired up as-is, any local process satisfying the Host: 127.0.0.1:<port> check can read fleet/run status. Same dead-code hygiene call as resolvePatrolSessionOwner: wire it with an auth decision or drop it.",
+      "findingKey": "qa-view-server-is-dead-code"
+    },
+    {
+      "id": "bridge-tests-red-at-this-head-not-attributable",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+      "line": 2239,
+      "title": "Two bridge tests fail at this head in code the branch does not touch, so exact-head CI may be red for reasons outside this change",
+      "detail": "Running the full src/bridge/__tests__ directory gives 2 failed / 4591 passed: lead-inbox-runtime.test.ts 'rejects audit-only queue admission even after archival and raw registry dispatch' (expected archived 1, got 0) and epic-residual-plugin-wiring.test.ts 'creates one scan, emits boot warnings once...'. Both also fail in isolation. I could not attribute either to this change: neither test file nor lead-inbox-runtime.ts, epic-residual*, mailbox-queue.ts or lead-inbox-loop appears in the branch diff against merge base b9418b780, and the branch's only StateStore.ts edit is a single additive read method (getProjectPrSessions) that cannot affect archival counts. Note the failing assertion hardcodes now:'2026-09-15' against created_at '2026-08-01', i.e. it is date-sensitive and today is 2026-09-15. Recorded so a red exact-head CI run is not misread as a defect in this change — but it does need resolving before landing. Everything else I ran at this head is green: lead-capabilities 533/533, lead-backends/codex 1032/1032, changed bridge tests 90/90, flywheel-comm 72/72, terminal-mcp 3/3, config 37/37, edge-worker 28/28, hermetic QA scripts 17/17, flywheel-lead.test.sh 71/71, canonical-lead-identity 12/12, patrol-snapshot 402/402, lint exit 0, typecheck exit 0 for teamlead/flywheel-comm/terminal-mcp.",
+      "findingKey": "bridge-tests-red-at-this-head-not-attributable"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "seatbelt-read-boundary-only-home-anchored",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-sandbox.ts",
+      "line": 248,
+      "title": "Blanket (allow file-read*) is retracted only for $HOME and the enumerated credential roots, leaving /private/tmp, /private/var/folders, /etc and /Library readable from a --no-sandbox Chrome",
+      "detail": "Anchor re-verified at this head. Policy order is (deny default) -> ... -> '(allow file-read*)' (248) -> a deny over homedir() with carve-outs (253-256) -> readDenials over credentialPaths (which I read in full: it is a thorough list but every entry is home-relative except /Library/Keychains). Nothing denies /private/tmp, /private/var/folders/*/T, /etc, /Library, /opt or /Volumes. Since browser-config.ts:98 ships --chrome-arg=--no-sandbox (documented as Lead ruling ed48f532, naming the outer Seatbelt as the only boundary), a compromised renderer inherits that read surface plus process-exec of /bin/bash (243) and file-write* over qaRoot, letting it read every other activation's control root under /private/tmp (default-runtime.ts:144) and the founder's TMPDIR. Writes, network and $HOME stay closed and I found no credential provably stored outside $HOME, so this is defence-in-depth — but the comment at 245-247 overstates what the retained denials actually cover.",
+      "findingKey": "seatbelt-read-boundary-only-home-anchored"
+    },
+    {
+      "id": "app-server-close-memoizes-rejection-wedges-rebuild",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts",
+      "line": 102,
+      "title": "A rejected close() is memoized, so the daemon rebuild loop can never recover and the Lead silently stops serving",
+      "detail": "Anchor re-verified at this head. close() sets closed=true synchronously and caches `closing` on first call (82-105). The body can reject via capability_app_server_stop_unproved, sameDirectory(), or rmSync(root, {recursive:true}) at 102 — which omits force:true, so a vanished /tmp root throws ENOENT. In capability-tui-runtime.ts:110-118 the `await server.close()` inside the catch then rejects and `server = undefined` never runs; every later retry calls server.assertCurrent(), which throws 'capability_app_server_closed' (126) — not the 'capability_app_server_exited' string the catch filters on — so the supervisor retries forever at the backoff cap while the process stays alive and launchd never restarts it. Same missing force:true at line 54.",
+      "findingKey": "app-server-close-memoizes-rejection-wedges-rebuild"
+    },
+    {
+      "id": "delivery-context-key-collapses-identical-sends",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/CodexLeadOutboundHandler.ts",
+      "line": 203,
+      "title": "With deliveryContext set, the idempotency key drops the caller nonce and keys on a hash of the text, so a second identical message is silently dropped but reported delivered",
+      "detail": "Anchor re-verified. With req.deliveryContext present the handler ignores the caller idempotencyKey/nonce and derives the key from sha256([projectName, leadId, deliveryContext, channelId, replyTo ?? null, sha256(text)]). deliveryContext is the journal entry id, stable for the whole turn, and nothing in the tuple separates two sends. Two discord_send calls with the same text to the same channel in one turn: the second hits the existing.status === 'sent' fast path at 227, is never posted, and returns 200 with the FIRST message's id, so model and receipt both record it as delivered. I confirmed the automatic journal-reply transport is not affected — automatic-outbound.ts:109-115 pins idempotencyKey to `${entry.id}:out` and requires entry.output === body.text.",
+      "findingKey": "delivery-context-key-collapses-identical-sends"
+    },
+    {
+      "id": "bridge-attachments-rejection-reported-as-unknown",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/handlers/bridge-attachments.ts",
+      "line": 273,
+      "title": "A definitively rejected attachment send is reported as `unknown` and durably written as a maybe-delivered receipt",
+      "detail": "Anchor re-verified. Any non-200 becomes `throw denied()` caught into {status:'unknown'}, but the Bridge emits unambiguous rejections as non-200: 403 discord_scope_denied, 503 provider_capacity when another Lead holds uploadActive (lead-capability-discord.ts:128-133), 401, 400 invalid_upload. Lead A calling attachments.send during Lead B's upload gets 503 with nothing posted, the receipt transitions dispatched->unknown, and reconcile can never clear it, so the only way forward is a new requestId — the blind-retry path the receipt machine exists to prevent. handlers/bridge-discord.ts:157-206 and handlers/report-publish.ts:210-214 decode the same envelope into {status:'rejected'}; this file is the outlier.",
+      "findingKey": "bridge-attachments-rejection-reported-as-unknown"
+    },
+    {
+      "id": "upstream-read-collapses-all-failures-to-unknown",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/handlers/upstream-read.ts",
+      "line": 173,
+      "title": "The upstream read handler wraps authorize+dispatch in one catch that returns bare `unknown`, so a permanent scope/token defect is indistinguishable from a flaky upstream",
+      "detail": "The whole body including `await authorize(...)` sits inside a single catch returning {status:'unknown'} with an errorCode only for baseline_drift; the broker then surfaces provider_unknown. Scope denial, a stale or unresolvable token handle, an oversized reply and a genuine upstream timeout all look identical to the Lead. The sibling context7 handler does this correctly — it tracks `authorized` and returns {status:'rejected', errorCode:'context7_scope_denied'} for pre-dispatch failures (handlers/context7.ts:68-70, 113-118). This is also what makes the noteId defect below silent in production.",
+      "findingKey": "upstream-read-collapses-all-failures-to-unknown"
+    },
+    {
+      "id": "xiaohongshu-token-id-allowlist-omits-noteid",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/xiaohongshu-tokens.ts",
+      "line": 46,
+      "title": "The xsec_token identifier allowlist omits noteId, the field the real server returns, so the xiaohongshu read capability cannot mint a resourceHandle",
+      "detail": "project() accepts only [object.id, object.feed_id, object.feedId, object.user_id, object.userId] as the identifier sibling of an xsecToken key, and throws denied() at :60-63 when ids.length !== 1. The repo's own plan doc documents the real get_feed_detail shape as `{note:{noteId,xsecToken,title,desc,...}}` (doc/engineer/plan/inprogress/v1.36.2-FLY-222-xiaohongshu-periodic-learning.md:40), i.e. noteId paired with xsecToken and no `id`. On a real response ids.length === 0 -> upstream_token_unverified -> swallowed to {status:'unknown'} by the finding above, so no resourceHandle is ever minted and every downstream tool that declares resourceHandle required (upstream-inputs.ts get_feed_detail/user_profile/like_feed/favorite_feed/post_comment_to_feed/reply_comment_in_feed) is unreachable. The tests miss it because both fixtures are hand-written with `id` (__tests__/upstream-read.test.ts and __tests__/xiaohongshu-tokens.test.ts); the fix needs a captured real payload as the fixture, not another hand-made one.",
+      "findingKey": "xiaohongshu-token-id-allowlist-omits-noteid"
+    },
+    {
+      "id": "native-home-verifies-a-different-read-than-it-copies",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/native-home.ts",
+      "line": 158,
+      "title": "assertOrigin digests its own snapshot of the source tree, then a second unverified snapshot is the one actually copied into the Lead's skills home",
+      "detail": "Line 158 calls assertOrigin(sourceRoot, ...), which takes its own `snapshot(root)` (native-home.ts:85) and validates it against baseline.origin.files digests, then discards it. Line 160 takes a second `snapshot(options.sourceRoot)` and that is what gets written at line 187. verify(target) -> verifyNativeSkillBaseline only re-digests the six `<name>/SKILL.md` files (native-skills.ts:39-49) and does not recurse, so every other pinned file (imagegen/scripts/*.py, skill-installer/scripts/*.py, */agents/*.yaml) lands unverified; assertCurrent then compares the target against that same unverified snapshot, so the substitution is never detected for the activation's life. Exploiting it needs a same-uid write to PINNED_NATIVE_ORIGIN.root racing the window between :158 and :160 — a high bar that already grants a lot, which is why I rate this MEDIUM — but native-skill-baseline.ts:5-6 explicitly promises this path fails closed on changed content, and it does not. Verify `source` against baseline.origin.files instead of re-reading.",
+      "findingKey": "native-home-verifies-a-different-read-than-it-copies"
+    },
+    {
+      "id": "hardcoded-operator-absolute-paths-in-production-source",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/native-resource-baseline.ts",
+      "line": 3,
+      "title": "Production startup pins absolute paths inside one operator's home, including another agent's mutable Codex home",
+      "detail": "PINNED_NATIVE_ORIGIN.root is the literal string '/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement/skills/.system', and preparePinnedNativeSkillHome hard-fails with native_skill_home_unverified when it is absent or drifted, with no fallback. Same pattern in gbrain-host.ts:31-39 ('/Users/xiaorongli/.npm-global/.../bun.exe', '/Users/xiaorongli/.bun/install/global/bun.lock') and in lead-skill-adapters/source-pins.json ('/Users/xiaorongli/.agents/skills/...'). Consequences: no Codex Lead can start on any other machine, user or CI runner; and because the pinned root is a Codex home owned by a full-auto runner, any codex upgrade or skill-installer run inside agents/flywheel/implement rewrites those bytes and takes every Codex Lead down until both baselines are regenerated by hand.",
+      "findingKey": "hardcoded-operator-absolute-paths-in-production-source"
+    },
+    {
+      "id": "manifest-skills-stale-root-wedges-activation",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/manifest-skills.ts",
+      "line": 110,
+      "title": "An ungraceful Lead exit leaves installed skill directories behind and every future activation then fails closed forever",
+      "detail": "If <codexHome>/skills exists, startup requires JSON.stringify(readdirSync(root)) === JSON.stringify(['.system']) and otherwise throws invalid(). Removal of the installed skill directories lives only in close() (45-65), which runs on graceful teardown; I grepped the package and nothing pre-cleans <codexHome>/skills. After a SIGKILL, crash or reboot the directory still holds founder-html-delivery/, proofshot/ etc., so the next activation throws capability_skills_unverified permanently until a human runs rm -rf. This fleet kills panes routinely, so this is a likely non-self-healing outage. preparePinnedNativeSkillHome already models the right behaviour (verify an existing home rather than reject it).",
+      "findingKey": "manifest-skills-stale-root-wedges-activation"
+    },
+    {
+      "id": "persona-and-shared-lead-rules-are-unpinned-model-writable",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/rule-sources.ts",
+      "line": 234,
+      "title": "The persona and .lead/shared rules become required system instructions with no digest pin, from inside the model's only writable root",
+      "detail": "persona resolves to projectRoot/.lead/<leadId>/{identity.md|agent.md} and is added with required=true (:234); project/common-rules.md and department-lead-rules.md resolve under projectRoot/.lead/shared, also required. These flow through prepareLeadManifestSources -> manifest.ruleSources -> readManifestInstructions (runtime-parent.ts:207) into the Codex thread's system prompt. permission-profile.ts grants workspace_roots {[writableRoot]: true} where writableRoot is projectRoot, carving back only .codex and .git — so .lead/** is model-writable. Unlike every other trust-relevant input here (skills -> adapter pins, native skills -> PINNED_NATIVE_ORIGIN, patrol rule -> pinLeadPatrolSources, dist -> LEAD_DEPLOYMENT_ENTRIES) this layer has no digest pin, and identityDigest comes from the registry, not the persona bytes. Mid-activation edits are caught (default-runtime.ts:203 re-runs discover()), so the gap is across restarts, which are routine. This mirrors how Claude Leads already work — the branch even edits .lead/flywheel-product-lead/identity.md — so if a self-editable persona is the accepted product design this should be an explicit ruling rather than the one unpinned edge in an otherwise fully-pinned design.",
+      "findingKey": "persona-and-shared-lead-rules-are-unpinned-model-writable"
+    },
+    {
+      "id": "report-publish-size-band-exceeds-express-json-limit",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/handlers/report-publish.ts",
+      "line": 119,
+      "title": "report.publish accepts 512 KiB artifacts but the Bridge body parser caps at 512 kb, creating a dead band that permanently burns the requestId",
+      "detail": "Anchor re-verified. The handler accepts artifact.data up to 512*1024 bytes and POSTs the HTML as a JSON string; the only parser on that route is express.json({limit:'512kb'}) in bridge/plugin.ts (= 524288 bytes) with no larger per-route parser on /api/lead-capabilities/reports. JSON escaping plus the envelope makes the body strictly larger than the HTML, so anything near the cap — and quote-dense HTML well below it — gets a 413 before reaching the route. That maps to {status:'unknown'}, the receipt is written unknown, and reconcile via /publish-receipt never finds a report, so the requestId stays unknown forever while the tool contract tells the Lead to reuse it.",
+      "findingKey": "report-publish-size-band-exceeds-express-json-limit"
+    },
+    {
+      "id": "discord-reply-16000-chars-one-receipt",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/catalog.ts",
+      "line": 228,
+      "title": "discord.thread.reply accepts 16 000 chars and silently posts up to 9 real messages while recording only the first id",
+      "detail": "Re-verified at this head: line 615 of handlers/discord.ts is the only length cap in the file and it is gated on isEdit, so the reply path inherits the shared text schema's .max(16000). postDiscordMessageToChannel splits at MAX_DISCORD_MESSAGE_LENGTH=1900 and POSTs each chunk, but buildLeadDiscordSend keeps only messageIds[0] (leadDiscordSend.ts:50). So the providerRef and receipt understate what was posted; ownsSentMessage records only chunk 1 so editing chunks 2..N is permanently denied by the isEdit guard at :634; and a failure on chunk k leaves chunks 1..k-1 in the channel while the receipt goes unknown, so any retry re-posts them. The chunk-dropping predates this change; what is new is exposing a 16 000-char write through a receipt machine that assumes one message per operation.",
+      "findingKey": "discord-reply-16000-chars-one-receipt"
+    },
+    {
+      "id": "egress-proxy-30s-idle-timeout-shared-with-model",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-egress-proxy.ts",
+      "line": 268,
+      "title": "The Lead model's entire network egress rides the browser's proxy under a 30 s per-socket idle timeout and a 64-connection cap",
+      "detail": "Anchor re-verified. runtime-factory.ts returns proxyPort: browser.proxyPort, which permission-profile.ts renders as the model's proxy_url with domains {'*':'allow'}, so the Codex Lead's own API traffic and the QA Chrome share one Node server with maxConnections = 64 (263), requestTimeout 30_000 (265) and socket.setTimeout(30_000, () => socket.destroy()) on every accepted connection (268), plus the same on the upstream socket. A reasoning request with more than 30 s before its first response byte is destroyed mid-request, and one content-heavy page can consume most of the 64-socket budget. Note the coupling: runtime-factory.ts:351-378 keeps the browser-owned proxy as the model's network path even when the browser fails to start. I did not run this end to end.",
+      "findingKey": "egress-proxy-30s-idle-timeout-shared-with-model"
+    },
+    {
+      "id": "chrome-orphan-survives-process-group-kill",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts",
+      "line": 140,
+      "title": "Chrome is spawned into its own process group by bundled Puppeteer, so process.kill(-pid) never reaches it and its profile is deleted underneath a live headed browser",
+      "detail": "Anchor re-verified. BoundedStdioTransport spawns sandbox-exec detached and cleans up with process.kill(-pid, signal) — correct for the MCP node process, but chrome-devtools-mcp's bundled Puppeteer sets detached on its own spawn, making Chrome a separate process-group leader the negative-pid kill cannot reach. close() also escalates to SIGKILL 250 ms after SIGTERM, skipping Puppeteer's own handler. browser-provider.ts:54 then rmSync(qaRoot, {recursive:true, force:true}) right after worker.close() returns, deleting the still-running browser's --user-data-dir and crashpad dir. Nothing verifies Chrome actually died; verifyNativeHeadedChrome is only called before close.",
+      "findingKey": "chrome-orphan-survives-process-group-kill"
+    },
+    {
+      "id": "attachment-send-no-aggregate-size-cap",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/attachment-upload.ts",
+      "line": 4,
+      "title": "Attachment send caps per-file (25 MB) and count (10) but never the sum, so one request can force ~750 MB of transient Bridge RSS for a message Discord will always reject",
+      "detail": "Anchor re-verified. MAX_ATTACHMENT_UPLOAD_BYTES = 250 MB + 64 KiB + 4 is the express raw() limit (lead-capability-discord.ts:151-155) and the per-file/per-count caps permit 10 x 25 MB. The Bridge buffers 250 MB in req.body, executeDiscordAttachmentSend copies each file (discord-attachments.ts:437), and sendDiscordAttachments copies again into Blobs (:292) — roughly 750 MB peak in the single Bridge process serving the whole fleet, for a request Discord's 25 MB per-message budget guarantees will fail after the spike.",
+      "findingKey": "attachment-send-no-aggregate-size-cap"
+    },
+    {
+      "id": "broker-socket-has-no-credential",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/broker-socket.ts",
+      "line": 58,
+      "title": "The capability broker unix socket carries no token; authentication is purely filesystem reachability, and chmod 0600 runs after listen()",
+      "detail": "Re-verified at this head: accept() reads one JSON frame and dispatches into LeadCapabilityBroker.execute with no token, nonce or peer check — the only gate is the 0700 uid-checked parent directory (35-42), and chmodSync(socketPath, 0o600) at :58 runs after server.listen(socketPath) at :51, leaving a umask-dependent window. Any same-uid process (including a Runner tmux session with full bash) can connect to /tmp/fw-cap-*/run-*/broker.sock and invoke every operation in that Lead's manifest, while the Bridge HTTP legs all require both the API token and a live carrierClaim. Honest caveat: a same-uid attacker can also read the Lead process env, so this is not uniquely weak — but it is the only surface in this change with zero credential.",
+      "findingKey": "broker-socket-has-no-credential"
+    },
+    {
+      "id": "codesign-60s-budget-below-observed-host-max",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-host-identity.ts",
+      "line": 115,
+      "title": "codesign --verify --deep is given a fixed 60 s budget, below the observed host maximum, so the browser capability disappears intermittently and indistinguishably from a tampered binary",
+      "detail": "Anchor re-verified. execFileSync with timeout 60000 SIGTERMs and throws; the same command on this host has measured 8 s–113 s depending on cache warmth and load. On a slow run verifyBrowserHostIdentity throws browser_host_identity_unverified, BrowserWorker.start throws browser_lost, and runtime-factory.ts:349 swaps in browser_unavailable for the whole activation. Fails closed, so not a security hole, but the Lead gets a silently and intermittently absent browser and browser_unavailable cannot be told apart from a genuine integrity failure. Same category: the fixed 5 000 ms whole-probe budget in browser-isolation.ts:99-102.",
+      "findingKey": "codesign-60s-budget-below-observed-host-max"
+    },
+    {
+      "id": "terminal-input-partial-send-on-guard-failure",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-terminal-read-io.ts",
+      "line": 101,
+      "title": "The re-check between the literal send-keys and the Enter send-keys can leave half-submitted text in a Runner pane",
+      "detail": "Re-anchored this round to the new Bridge-side IO, which is the v2 Lead's actual path: send() calls beforeSend(), writes the text literally with `send-keys -l --`, then calls beforeSend() again (:101) before pressing Enter. The guard is the full unchanged+observe+unchanged chain and the surrounding core carries a 15 s deadline while each tmux round trip has its own 5 s timeout, so under load the second beforeSend() can throw terminal_timeout or terminal_not_waiting after the literal text is already typed into the pane. The Lead sees a failure and retries, appending the same text again, so the runner receives 'texttext' then Enter. terminal-mcp/src/index.ts:177 has the identical two-phase pattern; the pre-change code sent text and Enter back to back with no intervening guard, so this partial-write window is new.",
+      "findingKey": "terminal-input-partial-send-on-guard-failure"
+    },
+    {
+      "id": "resolve-patrol-session-owner-is-dead-code",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/db.ts",
+      "line": 8434,
+      "title": "New CommDB.resolvePatrolSessionOwner is never called and never tested, yet an anti-drift fixture cites it as a live addition",
+      "detail": "Re-verified at this head: a repo-wide search excluding node_modules and dist returns exactly one occurrence, the definition. No caller in packages/teamlead/src or packages/flywheel-comm, no script, no CLI export, no test. Its docstring carries authorization semantics ('missing/pruned or ambiguous ownership never produces an authorization'), so a future caller is likely to adopt it believing the contract has been exercised, and nothing in CI would catch a regression. The SQL is read-only, fully parameterized and does fail closed as documented, so there is no runtime risk today. The fly2567 compatibility fixture rationale names 'resolvePatrolSessionOwner and listLeadTerminalSessions' as though both were in use — only listLeadTerminalSessions is (bridge/lead-capability-read.ts:546).",
+      "findingKey": "resolve-patrol-session-owner-is-dead-code"
+    },
+    {
+      "id": "new-slow-tests-rely-on-default-5s-vitest-timeout",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/__tests__/deployment.test.ts",
+      "line": 111,
+      "title": "Two new tests that spawn real subprocesses/servers use vitest's default 5 s timeout and fail intermittently under load",
+      "detail": "Still present. deployment.test.ts:111 spawns the compiled preflight CLI and git-push-transport.test.ts:107 stands up a real smart-HTTP server plus git subprocesses, neither with a per-test timeout override, so both inherit vitest's 5 000 ms default (packages/teamlead/vitest.config.ts sets no testTimeout). On a loaded host these timed out at 5 s; with --testTimeout=60000 the whole 78-file lead-capabilities suite passes 533/533. That is a flaky-red risk on a busy CI runner.",
+      "findingKey": "new-slow-tests-rely-on-default-5s-vitest-timeout"
+    },
+    {
+      "id": "browser-sandbox-has-no-ci-coverage",
+      "severity": "MEDIUM",
+      "file": "scripts/__tests__/qa-fly-2519-browser-node.test.mjs",
+      "line": 27,
+      "title": "Both tests that exercise the Seatbelt policy are darwin-gated while CI runs ubuntu-latest, so the browser sandbox has zero automated coverage",
+      "detail": "The CI addition at .github/workflows/ci.yml wires this file into the ubuntu-latest quick-gate job, but both of its tests begin with `if (process.platform !== 'darwin') return t.skip(...)`, so on CI they are no-ops — the generated policy, the credential probe and the isolation verifier are never executed. Its sibling qa-fly-2519-browser-process.test.mjs does run on CI but is a pure string-parser test over `parseChromeObservation`, proving nothing about an actual launch. The result is that CI green carries no signal at all for the subsystem with the most host-specific behaviour, which is exactly the failure mode already recorded for this issue (CI all green, host 3/3 failing). Either mark the CI step as macOS-only so the gap is visible, or add a policy-text golden that can run cross-platform.",
+      "findingKey": "browser-sandbox-has-no-ci-coverage"
+    },
+    {
+      "id": "journal-store-leaks-sqlite-handle-on-migration-failure",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-backends/codex/SqliteJournalStore.ts",
+      "line": 122,
+      "title": "migrateOperationReceipts / new OperationReceiptStore added to the constructor without the close-on-throw wrapper used by the sibling store",
+      "detail": "Still present. The receipts migration and OperationReceiptStore construction sit inside the SqliteJournalStore constructor with no try/catch, while the identical addition to SqliteOutboundDedupStore.ts:45-61 in this same change did get `try { ... } catch { this.db.close(); throw }`. If the migration throws, the better-sqlite3 handle plus its WAL/SHM files are never closed, and in capability-tui-runtime.ts the `journal` local is also never assigned so cleanup()'s journal?.close() is a no-op.",
+      "findingKey": "journal-store-leaks-sqlite-handle-on-migration-failure"
+    },
+    {
+      "id": "terminal-list-cursor-bound-mismatch",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/catalog.ts",
+      "line": 60,
+      "title": "terminal.list accepts a 2048-char cursor but listLeadTerminalSessions throws on anything over 256, classifying a malformed model cursor as `unknown`",
+      "detail": "The shared `cursor` schema is z.string().max(2048) while CommDB.listLeadTerminalSessions throws terminal_page_invalid above 256 chars. bridge/lead-capability-read.ts:546 passes raw.cursor straight through inside a try/finally that only closes the DB handle, and the outer catch at :801-823 only classifies bridge_read_scope_denied / inbox_event_scope_denied / pr_not_bound_to_lead as rejected — so a 257..2048 char cursor yields 503 with status 'unknown' and errorCode 'read_unavailable' instead of a clean rejection. The sibling `limit` bound (1..100) does agree between the two layers. Read-only, so no receipt consequence, only error classification.",
+      "findingKey": "terminal-list-cursor-bound-mismatch"
+    },
+    {
+      "id": "runner-tool-names-filtered-out-by-enabled-tools",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-backends/codex/buildCodexLeadMcpArgv.ts",
+      "line": 191,
+      "title": "The v2 MCP config pins enabledTools to ['lead_operation'], so the six advertised runner tool names are stripped",
+      "detail": "Still present. lead-capability-proxy.ts:164-175 advertises RUNNER_ACTION_TOOL_NAMES as standalone tools, but the v2 lead_actions server config sets enabledTools: ['lead_operation'], so Codex filters them out. No capability is lost (runner operations remain reachable through lead_operation's oneOf), but the advertised inventory does not match what the model can call.",
+      "findingKey": "runner-tool-names-filtered-out-by-enabled-tools"
+    },
+    {
+      "id": "lead-operation-cli-64k-cap-contradicts-artifact-text-band",
+      "severity": "LOW",
+      "file": "packages/flywheel-comm/src/commands/lead-operation.ts",
+      "line": 12,
+      "title": "The lead-operation CLI caps request input at 64 KiB while the client grants artifact.text.create a ~3.2 MiB frame",
+      "detail": "Anchor corrected to the MAX_INPUT_BYTES declaration. lead-operation-client.ts:10-16 gives artifact.text.create MAX_LEAD_OPERATION_FRAME_BYTES (6 * 512 KiB + 64 KiB) while the CLI's MAX_INPUT_BYTES is 65536, so any artifact.text.create over 64 KiB submitted through `flywheel-comm lead-operation` is rejected locally with request_input_too_large and never reaches the broker. Harmless if the CLI is not the intended path for that operation, but the limits should agree or the CLI should say which operations it cannot carry.",
+      "findingKey": "lead-operation-cli-64k-cap-contradicts-artifact-text-band"
+    },
+    {
+      "id": "git-feature-push-primitive-unwired-with-weaker-branch-gate",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/git-push-transport.ts",
+      "line": 63,
+      "title": "The v2 git push primitives call assertFeaturePushBranch without defaultBranch, a weaker gate than the v1 path, in code that is shipped but unreachable",
+      "detail": "assertFeaturePushBranch (GitPushRunner.ts:937-952) only rejects exact PROTECTED_BRANCHES names (main/master/trunk/release/production/prod) and an exactly-equal defaultBranch, unlike v1's assertPushableBranch which also requires a flywheel/ prefix and rejects any leaf ending in /main. Both lower-level callers — git-push-transport.ts:63 and GitPushRunner.ts:714 inside materializeAndPushV2 — omit defaultBranch, so a repo whose default branch is e.g. `develop` would pass the primitive's own gate; only handlers/git.ts:126 passes policy.defaultBranch. Not exploitable: catalog.ts gives git.feature.push unconditionalDenial 'lead_runner_owned_operation' and broker.ts:167-168 rejects it before any handler, and I confirmed createGitFeaturePushHandler is referenced only by its own tests and is wired into no provider handler map. Defence-in-depth gap in currently dead code.",
+      "findingKey": "git-feature-push-primitive-unwired-with-weaker-branch-gate"
+    },
+    {
+      "id": "qa-view-server-is-dead-code",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/qa-view.ts",
+      "line": 1,
+      "title": "QaViewServer ships 222 lines with a 350-line test and no production reference, and as written is an unauthenticated loopback HTTP server",
+      "detail": "QaViewServer has no reference outside its own test. Its DNS-rebinding, CSP, method and path guards are well built, but assertCurrent gates activation liveness only — there is no token — so if it is later wired up as-is, any local process satisfying the Host: 127.0.0.1:<port> check can read fleet/run status. Same dead-code hygiene call as resolvePatrolSessionOwner: wire it with an auth decision or drop it.",
+      "findingKey": "qa-view-server-is-dead-code"
+    },
+    {
+      "id": "bridge-tests-red-at-this-head-not-attributable",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+      "line": 2239,
+      "title": "Two bridge tests fail at this head in code the branch does not touch, so exact-head CI may be red for reasons outside this change",
+      "detail": "Running the full src/bridge/__tests__ directory gives 2 failed / 4591 passed: lead-inbox-runtime.test.ts 'rejects audit-only queue admission even after archival and raw registry dispatch' (expected archived 1, got 0) and epic-residual-plugin-wiring.test.ts 'creates one scan, emits boot warnings once...'. Both also fail in isolation. I could not attribute either to this change: neither test file nor lead-inbox-runtime.ts, epic-residual*, mailbox-queue.ts or lead-inbox-loop appears in the branch diff against merge base b9418b780, and the branch's only StateStore.ts edit is a single additive read method (getProjectPrSessions) that cannot affect archival counts. Note the failing assertion hardcodes now:'2026-09-15' against created_at '2026-08-01', i.e. it is date-sensitive and today is 2026-09-15. Recorded so a red exact-head CI run is not misread as a defect in this change — but it does need resolving before landing. Everything else I ran at this head is green: lead-capabilities 533/533, lead-backends/codex 1032/1032, changed bridge tests 90/90, flywheel-comm 72/72, terminal-mcp 3/3, config 37/37, edge-worker 28/28, hermetic QA scripts 17/17, flywheel-lead.test.sh 71/71, canonical-lead-identity 12/12, patrol-snapshot 402/402, lint exit 0, typecheck exit 0 for teamlead/flywheel-comm/terminal-mcp.",
+      "findingKey": "bridge-tests-red-at-this-head-not-attributable"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "2e76f7ecdd6eb259cee0f799c6aa038e2717eb02",
+  "deliveryNonce": "7da9bdf9-0e37-40ba-8209-f1aa1d362496"
+}

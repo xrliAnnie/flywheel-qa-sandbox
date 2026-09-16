@@ -117,3 +117,70 @@ describe("runner Bridge boundary", () => {
 		);
 	});
 });
+
+it("honors caller cancellation before dispatch and while a provider ignores abort", async () => {
+	const controller = new AbortController();
+	controller.abort();
+	const fetchImpl = vi.fn<typeof fetch>(() => new Promise(() => {}));
+	let settled = false;
+	const pending = requestRunnerBridge(
+		{
+			bridgeUrl: "http://localhost",
+			apiToken: "TOKEN",
+			fetchImpl,
+			signal: controller.signal,
+		},
+		"/api/runs/start",
+		{},
+	).then((value) => {
+		settled = true;
+		return value;
+	});
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(fetchImpl).not.toHaveBeenCalled();
+	expect(await pending).toEqual({});
+	const active = new AbortController();
+	const later = requestRunnerBridge(
+		{
+			bridgeUrl: "http://localhost",
+			apiToken: "TOKEN",
+			fetchImpl,
+			signal: active.signal,
+		},
+		"/api/runs/start",
+		{},
+	);
+	active.abort();
+	expect(await later).toEqual({});
+	expect(settled).toBe(true);
+	expect(fetchImpl).toHaveBeenCalledOnce();
+});
+it("times out an uncooperative provider without retaining its late response body", async () => {
+	vi.useFakeTimers();
+	let finish!: (response: Response) => void;
+	const fetchImpl = vi.fn<typeof fetch>(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+	);
+	let result: unknown;
+	try {
+		void requestRunnerBridge(
+			{ bridgeUrl: "http://localhost", apiToken: "TOKEN", fetchImpl },
+			"/api/runs/start",
+			{},
+		).then((value) => {
+			result = value;
+		});
+		await vi.advanceTimersByTimeAsync(15000);
+		expect(result).toEqual({});
+		const cancel = vi.fn();
+		finish(new Response(new ReadableStream({ cancel })));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(cancel).toHaveBeenCalledOnce();
+	} finally {
+		vi.useRealTimers();
+	}
+});

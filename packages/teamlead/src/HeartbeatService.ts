@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { withSyncOpMarker } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import { phaseThreadBadge } from "flywheel-config";
@@ -2511,7 +2512,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		}
 
 		const sessionKey = buildSessionKey(session);
-		const eventId = `heartbeat-${session.execution_id}-${Date.now()}`;
+		const eventId = `heartbeat-${session.execution_id}-${Date.now()}-${randomUUID()}`;
 		// FLY-1282 (R2 #3/R3 #5): shared append→deliver lifecycle. The legacy
 		// hook keeps "propagate" — a deliver() throw escapes to the caller with
 		// the appended row left untouched (attempt=0), exactly as before.

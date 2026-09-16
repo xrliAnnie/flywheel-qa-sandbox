@@ -145,10 +145,14 @@ describe("automated Discord sender inventory", () => {
 			"bridge/runner-ready-to-close-notifier.ts",
 			"bridge/standup-service.ts",
 			"lead-backends/codex/gateway/gateway-main.ts",
+			// Typed Lead-authored attachment text preserves user content (no automation marker).
+			"lead-capabilities/discord-attachments.ts",
 		]);
 
 		for (const file of rawMessageFiles) {
 			if (file === "bridge/discord-utils.ts") continue;
+			// Exact multipart content is asserted in discord-attachment-send.test.ts.
+			if (file === "lead-capabilities/discord-attachments.ts") continue;
 			expect(readFileSync(resolve(srcRoot, file), "utf8"), file).toContain(
 				"markAutomatedDiscordText",
 			);

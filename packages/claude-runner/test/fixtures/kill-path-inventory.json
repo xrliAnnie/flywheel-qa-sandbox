@@ -1200,6 +1200,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/__tests__/lead-patrol-snapshot.test.ts:expect(() => process.kill(pid, 0)).toThrow();#1",
+		"path": "packages/teamlead/src/bridge/__tests__/lead-patrol-snapshot.test.ts",
+		"code": "expect(() => process.kill(pid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/lead-terminal-read-io.test.ts:await cmd([\"kill-window\", \"-t\", target]);#1",
+		"path": "packages/teamlead/src/bridge/__tests__/lead-terminal-read-io.test.ts",
+		"code": "await cmd([\"kill-window\", \"-t\", target]);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/__tests__/lifecycle-closeout.test.ts:liveGroup.kill();#1",
 		"path": "packages/teamlead/src/bridge/__tests__/lifecycle-closeout.test.ts",
 		"code": "liveGroup.kill();",
@@ -1314,6 +1326,12 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/lead-patrol-snapshot.ts:process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/lead-patrol-snapshot.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/management-cron-writer.ts:process.kill(pid, 0);#1",
 		"path": "packages/teamlead/src/bridge/management-cron-writer.ts",
 		"code": "process.kill(pid, 0);",
@@ -1374,6 +1392,18 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/capability-app-server.test.ts:expect(() => process.kill(captured.pid, 0)).toThrow();#1",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/capability-app-server.test.ts",
+		"code": "expect(() => process.kill(captured.pid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/capability-app-server.test.ts:expect(() => process.kill(captured.pid, 0)).toThrow();#2",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/capability-app-server.test.ts",
+		"code": "expect(() => process.kill(captured.pid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts:mocks.kill();#1",
 		"path": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts",
 		"code": "mocks.kill();",
@@ -1398,6 +1428,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts:child.kill(signal);#1",
 		"path": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
 		"code": "child.kill(signal);",
@@ -1407,6 +1449,24 @@
 		"key": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts:child.kill(\"SIGTERM\");#1",
 		"path": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts",
 		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts:() => child.kill(\"SIGKILL\"),#1",
+		"path": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts",
+		"code": "() => child.kill(\"SIGKILL\"),",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts:if (bytes > 65536) child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts",
+		"code": "if (bytes > 65536) child.kill(\"SIGKILL\");",
 		"classification": "out-of-scope"
 	},
 	{
@@ -1428,6 +1488,102 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/browser-transport.test.ts:process.kill(orphan, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/browser-transport.test.ts",
+		"code": "process.kill(orphan, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/browser-transport.test.ts:process.kill(orphan, 0);#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/browser-transport.test.ts",
+		"code": "process.kill(orphan, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/browser-upstream.test.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/browser-upstream.test.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/browser-upstream.test.ts:const timer = setTimeout(() => child?.kill(\"SIGKILL\"), 5000);#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/browser-upstream.test.ts",
+		"code": "const timer = setTimeout(() => child?.kill(\"SIGKILL\"), 5000);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/gbrain-provider.test.ts:expect(() => process.kill(pid, 0)).toThrow();#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/gbrain-provider.test.ts",
+		"code": "expect(() => process.kill(pid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts:child.kill();#1",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts",
+		"code": "child.kill();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts:child.kill();#2",
+		"path": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts",
+		"code": "child.kill();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts:process.kill(-pid, 0);#1",
+		"path": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts",
+		"code": "process.kill(-pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts:process.kill(-pid, signal);#1",
+		"path": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts",
+		"code": "process.kill(-pid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/browser-isolation.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-capabilities/browser-isolation.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/browser-isolation.ts:child.kill(\"SIGKILL\");#2",
+		"path": "packages/teamlead/src/lead-capabilities/browser-isolation.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/model-isolation.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-capabilities/model-isolation.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/model-isolation.ts:child.kill(\"SIGKILL\");#2",
+		"path": "packages/teamlead/src/lead-capabilities/model-isolation.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/model-isolation.ts:process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-capabilities/model-isolation.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-capabilities/model-isolation.ts:process.kill(-child.pid, \"SIGKILL\");#2",
+		"path": "packages/teamlead/src/lead-capabilities/model-isolation.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/teamlead/src/ship-judgment/__tests__/subscription-process.test.ts:expect(() => process.kill(pid, 0)).toThrow();#1",
 		"path": "packages/teamlead/src/ship-judgment/__tests__/subscription-process.test.ts",
 		"code": "expect(() => process.kill(pid, 0)).toThrow();",
@@ -1444,6 +1600,12 @@
 		"path": "packages/teamlead/src/ship-judgment/subscription-process.ts",
 		"code": "child.kill(\"SIGTERM\");",
 		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/terminal-mcp/src/__tests__/capability-core-wiring.test.ts:await cmd([\"kill-window\", \"-t\", `fixture:${own}`]);#1",
+		"path": "packages/terminal-mcp/src/__tests__/capability-core-wiring.test.ts",
+		"code": "await cmd([\"kill-window\", \"-t\", `fixture:${own}`]);",
+		"classification": "qa-only"
 	},
 	{
 		"key": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts:[\"-S\", privateSocket, \"kill-session\", \"-t\", \"=lead-seat\"],#1",

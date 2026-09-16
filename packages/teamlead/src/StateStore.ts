@@ -14741,6 +14741,25 @@ export class StateStore {
 		return count;
 	}
 
+	/** Existing live session/PR evidence for bounded Lead writes. Pruned evidence denies.
+	 * 101 rows lets callers reject overflow instead of treating a truncated set as complete. */
+	getProjectPrSessions(projectName: string, prNumber: number): Session[] {
+		if (!Number.isSafeInteger(prNumber) || prNumber <= 0)
+			throw new Error("invalid_pr_number");
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE project_name = ? AND pr_number = ? ORDER BY execution_id LIMIT 101",
+		);
+		try {
+			stmt.bind([projectName, prNumber]);
+			const rows: Session[] = [];
+			while (stmt.step())
+				rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			return rows;
+		} finally {
+			stmt.free();
+		}
+	}
+
 	/**
 	 * FLY-603 Layer B: all sessions for a project (any status) — candidates for
 	 * the independent live-runner probe (a terminal session with a still-live

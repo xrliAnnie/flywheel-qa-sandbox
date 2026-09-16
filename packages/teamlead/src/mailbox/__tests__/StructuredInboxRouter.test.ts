@@ -237,11 +237,14 @@ describe.sequential("StructuredInboxRouter", () => {
 			});
 
 			const startPromise = router.start();
-			// Yield so doStart() can register the once('ready'/'error') listeners
-			// before we emit. With usePolling+mkdir, doStart hits the await
-			// after the synchronous chokidar.watch + on/once setup, so a
-			// single microtask flush is enough.
-			await new Promise((r) => setTimeout(r, 5));
+			// Wait for doStart() to create the mocked watcher and register its
+			// pre-ready error listener. A fixed sleep races the two async mkdir
+			// calls above chokidar.watch(), especially under package-gate load.
+			await waitFor(
+				() =>
+					watchSpy.mock.calls.length === 1 &&
+					(fakeWatcher as unknown as EventEmitter).listenerCount("error") > 0,
+			);
 
 			// Emit error BEFORE ready — this is the path R3 was meant to handle.
 			(fakeWatcher as unknown as EventEmitter).emit(

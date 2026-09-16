@@ -119,3 +119,58 @@ it("prefixes optional feature argv while keeping the default argv byte-identical
 		"mcp_servers={}",
 	]);
 });
+
+it("bundle v2 washes the final spawn boundary even with legacy full-access and carrier inputs", async () => {
+	const envDump = join(dir, "v2-env.json");
+	const stub = join(dir, "codex-v2-stub");
+	writeFileSync(
+		stub,
+		`#!${process.execPath}\nrequire("fs").writeFileSync(${JSON.stringify(envDump)}, JSON.stringify(process.env));\n`,
+	);
+	chmodSync(stub, 0o755);
+	const pins = {
+		codexHome: join(dir, "v2-home"),
+		brokerSocket: join(dir, "broker.sock"),
+		manifestPath: join(dir, "manifest.json"),
+		artifactRoot: join(dir, "artifacts"),
+		modelTempRoot: join(dir, "model-tmp"),
+		projectName: "flywheel",
+		leadId: "honey-lemon",
+		activationId: "activation-v2",
+	};
+	const transport = spawnCodexAppServer({
+		codexBin: stub,
+		mcpArgv: [],
+		codexHome: pins.codexHome,
+		washSecrets: false,
+		carrierInstanceId: "private-carrier-claim",
+		leadId: "legacy-lead",
+		projectName: "legacy-project",
+		baseEnv: {
+			PATH: process.env.PATH,
+			DISCORD_BOT_TOKEN: "private-token",
+			NODE_OPTIONS: "--no-warnings",
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "private-carrier-env",
+			CUSTOM_AUTH: "private-custom",
+		},
+		capabilityModelEnv: pins,
+	});
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new Error("stub did not exit")),
+			5000,
+		);
+		transport.onExit(() => {
+			clearTimeout(timer);
+			resolve();
+		});
+	});
+	const env = JSON.parse(readFileSync(envDump, "utf8"));
+	expect(JSON.stringify(env)).not.toContain("private-");
+	expect(env.NODE_OPTIONS).toBeUndefined();
+	expect(env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID).toBeUndefined();
+	expect(env.FLYWHEEL_LEAD_ID).toBe(pins.leadId);
+	expect(env.FLYWHEEL_PROJECT_NAME).toBe(pins.projectName);
+	expect(env.FLYWHEEL_LEAD_CAPABILITY_SOCKET).toBe(pins.brokerSocket);
+	expect(env.CODEX_HOME).toBe(pins.codexHome);
+});

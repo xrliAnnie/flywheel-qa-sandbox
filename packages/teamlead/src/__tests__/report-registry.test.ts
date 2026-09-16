@@ -69,6 +69,51 @@ describe("ReportRegistry", () => {
 		return walk(dir).sort();
 	}
 
+	it("persists capability ownership atomically without retaining carrier credentials", async () => {
+		const owner = {
+			leadId: "eng",
+			identityDigest: "a".repeat(64),
+			issueId: "FLY-2519",
+			requestId: "123e4567-e89b-42d3-a456-426614174000",
+		};
+		const registry = makeRegistry();
+		const staged = registry.stagePublish(
+			"flywheel",
+			HTML,
+			"Report",
+			registry.hostingBinding(),
+			owner,
+		);
+		expect(registry.list()).toHaveLength(0);
+		owner.leadId = "changed";
+		await staged.commit();
+		expect(new ReportRegistry(dir).list()[0]?.capabilityOwner).toEqual({
+			leadId: "eng",
+			identityDigest: "a".repeat(64),
+			issueId: "FLY-2519",
+			requestId: "123e4567-e89b-42d3-a456-426614174000",
+		});
+		const legacy = registry.stagePublish(
+			"flywheel",
+			HTML,
+			"Legacy",
+			registry.hostingBinding(),
+		);
+		expect(legacy.entry.capabilityOwner).toBeUndefined();
+		expect(() =>
+			registry.stagePublish(
+				"flywheel",
+				HTML,
+				"Invalid",
+				registry.hostingBinding(),
+				{
+					...owner,
+					requestId: "invalid",
+				},
+			),
+		).toThrow("invalid_report_capability_owner");
+	});
+
 	// ── transaction boundaries ──────────────────────────────────────────
 
 	it("publishes and verifies the two interactive design templates", async () => {

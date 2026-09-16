@@ -1,3 +1,4 @@
+import { leadOperationTimeoutMs } from "flywheel-comm/lead-operation-client";
 /**
  * FLY-350 (Z) unit 4 — GitPushRunner + open_pr: the gateway-proxied "open a PR"
  * path for a write-capable Codex Lead (plan §3.1, codex design R3/R4).
@@ -45,16 +46,26 @@
  * uncertainty — the gateway refuses to start the push path on an unproven token.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
 	chmodSync,
+	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
+	readdirSync,
+	readSync,
+	realpathSync,
 	rmSync,
+	statfsSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
@@ -314,11 +325,7 @@ export function materializeAndPush(
 			return out;
 		}
 		// 2) borrow the model object store read-only (NO transport / NO upload-pack).
-		const alt = join(stagingDir, ".git", "objects", "info", "alternates");
-		mkdirSync(join(stagingDir, ".git", "objects", "info"), {
-			recursive: true,
-		});
-		writeFileSync(alt, `${join(req.modelGitDir, "objects")}\n`);
+		installObjectAlternate(stagingDir, join(req.modelGitDir, "objects"));
 		// 3) confirm the validated commit is reachable (object read only; no exec).
 		const reach = exec(
 			[...GIT_PUSH_SAFE_CONFIG, "cat-file", "-e", `${req.headSha}^{commit}`],
@@ -664,4 +671,283 @@ export function readModelHeadSha(modelWorktree: string, exec: GitExec): string {
  * explicit stagingRoot OUTSIDE the model writableRoots in production). */
 export function defaultStagingRoot(): string {
 	return join(tmpdir(), "flywheel-gateway-staging");
+}
+
+function installObjectAlternate(stagingDir: string, objects: string): void {
+	mkdirSync(join(stagingDir, ".git", "objects", "info"), { recursive: true });
+	writeFileSync(
+		join(stagingDir, ".git", "objects", "info", "alternates"),
+		`${objects}\n`,
+	);
+}
+export interface GitPushV2Request {
+	modelGitDir: string;
+	headSha: string;
+	branch: string;
+	transport: { remoteUrl: string; readHead(): Promise<string | undefined> };
+	signal: AbortSignal;
+	assertCurrent(): Promise<void>;
+	assertCurrentSync(): void;
+}
+export interface GitPushV2Deps {
+	gitPath: string;
+	stagingRoot: string;
+	run?: (
+		args: string[],
+		options: { cwd: string; env: Record<string, string> },
+	) => Promise<number>;
+}
+/** V2 uses the existing clean-staging/object-alternate design, with a private
+ * snapshot and a parent HTTP relay. No credential enters Git or its config. */
+export async function materializeAndPushV2(
+	req: GitPushV2Request,
+	deps: GitPushV2Deps,
+): Promise<GitPushResult> {
+	const deadline = Date.now() + leadOperationTimeoutMs("git.feature.push");
+	const out: GitPushResult = {
+		ok: false,
+		localSha: req.headSha,
+		branch: req.branch,
+	};
+	let stage: string | undefined;
+	try {
+		assertFeaturePushBranch(req.branch);
+		if (
+			!FULL_SHA_RE.test(req.headSha) ||
+			!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/[a-f0-9]{64}\/repo\.git$/.test(
+				req.transport.remoteUrl,
+			)
+		)
+			throw new Error("invalid");
+		if (
+			!isAbsolute(deps.gitPath) ||
+			realpathSync(deps.gitPath) !== deps.gitPath ||
+			(lstatSync(deps.gitPath).mode & 0o022) !== 0
+		)
+			throw new Error("invalid");
+		if (
+			!isAbsolute(deps.stagingRoot) ||
+			!isAbsolute(req.modelGitDir) ||
+			/[\r\n]/.test(req.modelGitDir)
+		)
+			throw new Error("invalid");
+		mkdirSync(deps.stagingRoot, { recursive: true, mode: 0o700 });
+		if (
+			realpathSync(deps.stagingRoot) !== deps.stagingRoot ||
+			(lstatSync(deps.stagingRoot).mode & 0o077) !== 0
+		)
+			throw new Error("invalid");
+		stage = mkdtempSync(join(deps.stagingRoot, "push-v2-"));
+		const cwd = stage;
+		const env = {
+			PATH: `${dirname(deps.gitPath)}:/usr/bin:/bin`,
+			HOME: stage,
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_TERMINAL_PROMPT: "0",
+			GIT_OPTIONAL_LOCKS: "0",
+			LC_ALL: "C",
+		};
+		const run = async (args: string[]) => {
+			await req.assertCurrent();
+			if (req.signal.aborted || Date.now() >= deadline)
+				throw new Error("aborted");
+			req.assertCurrentSync();
+			const status = deps.run
+				? await deps.run(args, { cwd, env })
+				: await new Promise<number>((resolve) => {
+						const child = spawn(deps.gitPath, args, {
+							cwd,
+							env,
+							stdio: ["ignore", "pipe", "pipe"],
+							signal: req.signal,
+							killSignal: "SIGKILL",
+						});
+						let bytes = 0;
+						const timer = setTimeout(
+							() => child.kill("SIGKILL"),
+							Math.max(1, deadline - Date.now()),
+						);
+						timer.unref();
+						const bound = (data: Buffer) => {
+							bytes += data.length;
+							if (bytes > 65536) child.kill("SIGKILL");
+						};
+						child.stdout.on("data", bound);
+						child.stderr.on("data", bound);
+						child.once("error", () => {
+							// Wait for close before deleting the private staging directory.
+							child.kill("SIGKILL");
+						});
+						child.once("close", (code) => {
+							clearTimeout(timer);
+							resolve(code ?? -1);
+						});
+					});
+			if (status !== 0) throw new Error("git failed");
+			await req.assertCurrent();
+			req.assertCurrentSync();
+		};
+		const template = join(stage, "empty-template");
+		mkdirSync(template);
+		await run(["init", "-q", `--template=${template}`, "."]);
+		await run(["check-ref-format", `refs/heads/${req.branch}`]);
+		const snapshot = join(stage, "snapshot");
+		mkdirSync(snapshot);
+		let size = 0;
+		let count = 0;
+		const source = join(req.modelGitDir, "objects");
+		if (realpathSync(source) !== source) throw new Error("invalid");
+		let required = 0;
+		for (const dir of readdirSync(source, { withFileTypes: true })) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			if (req.signal.aborted || Date.now() >= deadline)
+				throw new Error("aborted");
+			if (
+				dir.name === "info" ||
+				(dir.name === "maintenance.lock" && dir.isFile())
+			)
+				continue;
+			if (!dir.isDirectory()) throw new Error("object");
+			for (const name of readdirSync(join(source, dir.name))) {
+				const stat = lstatSync(join(source, dir.name, name));
+				required += stat.size;
+				if (!stat.isFile() || required > 4 * 1024 * 1024 * 1024)
+					throw new Error("size");
+			}
+		}
+		const disk = statfsSync(stage);
+		if (disk.bavail * disk.bsize < required + 256 * 1024 * 1024)
+			throw new Error("disk");
+
+		for (const entry of readdirSync(source, { withFileTypes: true })) {
+			if (entry.name === "maintenance.lock" && entry.isFile()) continue;
+			if (entry.name === "info") {
+				if (
+					!entry.isDirectory() ||
+					realpathSync(join(source, "info")) !== join(source, "info")
+				)
+					throw new Error("info");
+				if (
+					readdirSync(join(source, "info")).some(
+						(name) => name === "alternates" || name === "http-alternates",
+					)
+				)
+					throw new Error("alternate");
+				continue;
+			}
+			if (
+				!entry.isDirectory() ||
+				!(/^[a-f0-9]{2}$/.test(entry.name) || entry.name === "pack")
+			)
+				throw new Error("objects");
+			const from = join(source, entry.name);
+			if (realpathSync(from) !== from) throw new Error("symlink");
+			mkdirSync(join(snapshot, entry.name));
+			for (const name of readdirSync(from)) {
+				if (count % 64 === 0)
+					await new Promise<void>((resolve) => setImmediate(resolve));
+				if (req.signal.aborted || Date.now() >= deadline)
+					throw new Error("aborted");
+				if (
+					!(
+						entry.name === "pack"
+							? /^pack-[a-f0-9]{40}\.(?:pack|idx|rev)$/
+							: /^[a-f0-9]{38}$/
+					).test(name) ||
+					++count > 250000
+				)
+					throw new Error("object");
+				const fd = openSync(
+					join(from, name),
+					constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+				);
+				try {
+					const stat = fstatSync(fd);
+					size += stat.size;
+					if (!stat.isFile() || size > 4 * 1024 * 1024 * 1024)
+						throw new Error("size");
+					const output = openSync(
+						join(snapshot, entry.name, name),
+						constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+						0o600,
+					);
+					try {
+						const buffer = Buffer.alloc(65536);
+						let copied = 0;
+						for (;;) {
+							if (req.signal.aborted || Date.now() >= deadline)
+								throw new Error("aborted");
+							const n = readSync(fd, buffer);
+							if (!n) break;
+							copied += n;
+							if (copied % (4 * 1024 * 1024) === 0)
+								await new Promise<void>((resolve) => setImmediate(resolve));
+							if (copied > stat.size) throw new Error("changed");
+							let offset = 0;
+							while (offset < n)
+								offset += writeSync(output, buffer, offset, n - offset);
+						}
+						if (copied !== stat.size || fstatSync(fd).mtimeMs !== stat.mtimeMs)
+							throw new Error("changed");
+					} finally {
+						closeSync(output);
+					}
+				} finally {
+					closeSync(fd);
+				}
+			}
+		}
+		installObjectAlternate(stage, snapshot);
+		const config = [
+			"-c",
+			"core.fsmonitor=false",
+			"-c",
+			"credential.helper=",
+			"-c",
+			"core.askpass=",
+			"-c",
+			"protocol.ext.allow=never",
+			"-c",
+			"http.proxy=",
+			"-c",
+			"http.followRedirects=false",
+		];
+		await run([...config, "cat-file", "-e", `${req.headSha}^{commit}`]);
+		await run([
+			...config,
+			"push",
+			req.transport.remoteUrl,
+			`${req.headSha}:refs/heads/${req.branch}`,
+		]);
+		out.pushedSha = await req.transport.readHead();
+		await req.assertCurrent();
+		req.assertCurrentSync();
+		out.ok = out.pushedSha === req.headSha;
+		if (!out.ok) out.error = "git_push_unconfirmed";
+	} catch {
+		out.error = "git_push_unconfirmed";
+	} finally {
+		if (stage) rmSync(stage, { recursive: true, force: true });
+	}
+	return out;
+}
+
+/** Exact parent policy chooses the feature branch; this gate only excludes unsafe refs. */
+export function assertFeaturePushBranch(
+	branch: string,
+	defaultBranch?: string,
+): void {
+	if (
+		!/^(?!refs\/|[-.])(?!.*(?:\.\.|[ ~^:?*[\\]))[a-zA-Z0-9_./-]+$/.test(
+			branch,
+		) ||
+		branch.length > 240 ||
+		branch.endsWith("/") ||
+		branch.endsWith(".lock") ||
+		branch.includes("//") ||
+		branch === defaultBranch ||
+		PROTECTED_BRANCHES.includes(branch.toLowerCase())
+	)
+		throw new Error("git_feature_branch_denied");
 }

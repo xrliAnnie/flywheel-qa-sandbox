@@ -1,0 +1,103 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "03da9402-6dc7-48a2-b755-3fd58c17e4c8",
+  "round": 2,
+  "findings": [
+    {
+      "id": "browser-seatbelt-nesting-feasibility",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 144,
+      "title": "Chrome 放进 sandbox-exec 同时禁止 --no-sandbox，很可能根本启动不了；设计是 fail-closed，安全上没问题，但 P12 浏览器能力可能交付不了",
+      "detail": "§6.2 用 sandbox-exec 包住上游 worker，Chrome 及其 helper 继承这层策略，同时禁止 `--no-sandbox`。问题在于 Chrome 的 renderer/GPU helper 启动时要自己再套一层 Seatbelt（sandbox_apply），而 macOS 不允许在已经 sandbox 的进程里再套一层。仓库里多次实测到同一个错误：FLY-2211 implementation-evidence.md:35/112、FLY-2168 qa/live-rejoin-evidence.md:49、FLY-2389 acceptance.md:35、FLY-2394 research.md:91 都是 `sandbox-exec: sandbox_apply: Operation not permitted`（exit 71）。FLY-2215 research.md:100 还记录了 runner 沙箱里的 Chrome 连 `--no-sandbox` 都起不来。按设计，这种情况会 fail closed，不会退回到不加隔离的 MCP，所以不构成 HIGH；但 §9 验收要求真实 Chrome，很可能过不了。另外 §9.1 要在 C1–C4 的 fixture/QA slot 里跑 OS 负例；如果实现 runner 本身就在 Codex Seatbelt 里，嵌套的 sandbox-exec 也会失败，负例必须在非嵌套的宿主上执行。建议：C4 开头先做 spike，在非嵌套环境里验证“外层 sandbox-exec + Chrome”能否启动。若必须改用 `--no-sandbox`（renderer 不再有沙箱，只靠外层 OS 策略），或改成专用 macOS 用户、VM 这类替代方案，需要先写进设计并请 Lead 裁定，不能到实现期再临时决定。",
+      "findingKey": "browser-seatbelt-nesting-feasibility"
+    },
+    {
+      "id": "browser-filter-enforcement-location",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 131,
+      "title": "URL scheme 和工具白名单要在 parent/worker 边界强制执行，不能只放在 façade 里",
+      "detail": "§6.1 写的是 façade“只把准许工具请求交给可信 parent”。但模型 shell 为了用 `flywheel-comm lead-operation`，必须能连到本 Lead 自己的 broker socket（§4.3 只拦了其他 Lead 的 socket）。如果 file:/chrome: 拦截、去掉 upload_file、path 替换这些检查只做在 façade 里，shell 直连 socket 就能绕过。外层 OS 策略还能兜住文件读取和网络，所以只算纵深防御的缺口。建议写明这些校验由 parent 执行，并加一条负例：从 shell 直连 socket 调用被禁的浏览器工具。",
+      "findingKey": "browser-filter-enforcement-location"
+    },
+    {
+      "id": "broker-socket-no-caller-binding",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 242,
+      "title": "已部分缓解：v2 模型 shell 被拦在其他 Lead 的 broker 之外，但同 UID 的 Claude 或其他非受管进程仍能调用",
+      "detail": "§4.3 已经禁止 shell 读取其他 Lead 的 state/broker 目录、禁止直连它们的 socket，§11 把 0700/0600 权限和跨 Lead 负例列为 Follow-up，并明确承认同 UID 非受管进程的残余风险，也没有把它说成已隔离。受管 Codex 这一侧的处理可以接受，所以从 MEDIUM 降为 LOW。实现时，Codex 网络配置里的 `unix_sockets` 白名单应只放行本 Lead 的 socket，不能用 `dangerously_allow_all_unix_sockets`。",
+      "findingKey": "broker-socket-no-caller-binding"
+    },
+    {
+      "id": "fixture-attach-dynamic-seatbelt",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 146,
+      "title": "“OS 临时准许”一份 fixture 拷贝做不到：Seatbelt 策略在 sandbox-exec 启动时就固定了",
+      "detail": "Seatbelt 策略没法对正在运行的 worker/Chrome 动态放宽。`browser.fixture.attach` 应该由 parent 把审核过的 artifact 拷进启动时就已放行的固定只读 fixture 目录，用完再清理。措辞需要改，避免实现时为此重启 worker 或把白名单放宽成通配。",
+      "findingKey": "fixture-attach-dynamic-seatbelt"
+    },
+    {
+      "id": "single-issue-scope-size",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 244,
+      "title": "范围仍然很大；§11 已承诺内部里程碑",
+      "detail": "§11 保留了 C2、安全浏览器、C3 各组的独立测试和内部里程碑，也没有缩减 founder 要求的范围，可以接受。建议把 browser-seatbelt-nesting-feasibility 那个 spike 作为最早的里程碑门槛，免得 C1–C3 做完才发现 P12 走不通。",
+      "findingKey": "single-issue-scope-size"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "browser-seatbelt-nesting-feasibility",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 144,
+      "title": "Chrome 放进 sandbox-exec 同时禁止 --no-sandbox，很可能根本启动不了；设计是 fail-closed，安全上没问题，但 P12 浏览器能力可能交付不了",
+      "detail": "§6.2 用 sandbox-exec 包住上游 worker，Chrome 及其 helper 继承这层策略，同时禁止 `--no-sandbox`。问题在于 Chrome 的 renderer/GPU helper 启动时要自己再套一层 Seatbelt（sandbox_apply），而 macOS 不允许在已经 sandbox 的进程里再套一层。仓库里多次实测到同一个错误：FLY-2211 implementation-evidence.md:35/112、FLY-2168 qa/live-rejoin-evidence.md:49、FLY-2389 acceptance.md:35、FLY-2394 research.md:91 都是 `sandbox-exec: sandbox_apply: Operation not permitted`（exit 71）。FLY-2215 research.md:100 还记录了 runner 沙箱里的 Chrome 连 `--no-sandbox` 都起不来。按设计，这种情况会 fail closed，不会退回到不加隔离的 MCP，所以不构成 HIGH；但 §9 验收要求真实 Chrome，很可能过不了。另外 §9.1 要在 C1–C4 的 fixture/QA slot 里跑 OS 负例；如果实现 runner 本身就在 Codex Seatbelt 里，嵌套的 sandbox-exec 也会失败，负例必须在非嵌套的宿主上执行。建议：C4 开头先做 spike，在非嵌套环境里验证“外层 sandbox-exec + Chrome”能否启动。若必须改用 `--no-sandbox`（renderer 不再有沙箱，只靠外层 OS 策略），或改成专用 macOS 用户、VM 这类替代方案，需要先写进设计并请 Lead 裁定，不能到实现期再临时决定。",
+      "findingKey": "browser-seatbelt-nesting-feasibility"
+    },
+    {
+      "id": "browser-filter-enforcement-location",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 131,
+      "title": "URL scheme 和工具白名单要在 parent/worker 边界强制执行，不能只放在 façade 里",
+      "detail": "§6.1 写的是 façade“只把准许工具请求交给可信 parent”。但模型 shell 为了用 `flywheel-comm lead-operation`，必须能连到本 Lead 自己的 broker socket（§4.3 只拦了其他 Lead 的 socket）。如果 file:/chrome: 拦截、去掉 upload_file、path 替换这些检查只做在 façade 里，shell 直连 socket 就能绕过。外层 OS 策略还能兜住文件读取和网络，所以只算纵深防御的缺口。建议写明这些校验由 parent 执行，并加一条负例：从 shell 直连 socket 调用被禁的浏览器工具。",
+      "findingKey": "browser-filter-enforcement-location"
+    },
+    {
+      "id": "broker-socket-no-caller-binding",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 242,
+      "title": "已部分缓解：v2 模型 shell 被拦在其他 Lead 的 broker 之外，但同 UID 的 Claude 或其他非受管进程仍能调用",
+      "detail": "§4.3 已经禁止 shell 读取其他 Lead 的 state/broker 目录、禁止直连它们的 socket，§11 把 0700/0600 权限和跨 Lead 负例列为 Follow-up，并明确承认同 UID 非受管进程的残余风险，也没有把它说成已隔离。受管 Codex 这一侧的处理可以接受，所以从 MEDIUM 降为 LOW。实现时，Codex 网络配置里的 `unix_sockets` 白名单应只放行本 Lead 的 socket，不能用 `dangerously_allow_all_unix_sockets`。",
+      "findingKey": "broker-socket-no-caller-binding"
+    },
+    {
+      "id": "fixture-attach-dynamic-seatbelt",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 146,
+      "title": "“OS 临时准许”一份 fixture 拷贝做不到：Seatbelt 策略在 sandbox-exec 启动时就固定了",
+      "detail": "Seatbelt 策略没法对正在运行的 worker/Chrome 动态放宽。`browser.fixture.attach` 应该由 parent 把审核过的 artifact 拷进启动时就已放行的固定只读 fixture 目录，用完再清理。措辞需要改，避免实现时为此重启 worker 或把白名单放宽成通配。",
+      "findingKey": "fixture-attach-dynamic-seatbelt"
+    },
+    {
+      "id": "single-issue-scope-size",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 244,
+      "title": "范围仍然很大；§11 已承诺内部里程碑",
+      "detail": "§11 保留了 C2、安全浏览器、C3 各组的独立测试和内部里程碑，也没有缩减 founder 要求的范围，可以接受。建议把 browser-seatbelt-nesting-feasibility 那个 spike 作为最早的里程碑门槛，免得 C1–C3 做完才发现 P12 走不通。",
+      "findingKey": "single-issue-scope-size"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "9742d749-6999-4b51-8e01-b84ce1ed0d37"
+}

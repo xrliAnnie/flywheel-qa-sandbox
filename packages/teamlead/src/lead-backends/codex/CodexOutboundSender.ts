@@ -36,6 +36,7 @@ import { installSqlTiming } from "flywheel-config";
 
 import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
+import type { ChatThreadWriteGuard } from "../../bridge/chat-thread-write-guard.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import type { ProbeResult } from "./outbound-preflight.js";
 
@@ -45,9 +46,15 @@ export type HttpPost = (req: {
 	headers: Record<string, string>;
 	body: string;
 	signal?: AbortSignal;
+	/** Trusted in-process parent transport only; never serialized in the HTTP body. */
+	guard?: ChatThreadWriteGuard;
+	/** Persisted parent journal binding, available only to a trusted adapter. */
+	deliveryContext?: string;
 }) => Promise<{ status: number; body: string }>;
 
 const defaultPost: HttpPost = async (req) => {
+	if (req.deliveryContext !== undefined)
+		throw new Error("delivery_context_transport_required");
 	const res = await fetch(req.url, {
 		method: "POST",
 		headers: req.headers,
@@ -69,6 +76,8 @@ interface OutboxRow {
 	channel_id: string;
 	status: string;
 	message_id: string | null;
+	reply_to: string | null;
+	delivery_context: string | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -167,6 +176,12 @@ export class CodexOutboundSender implements OutboundSender {
 		}
 		if (!columns.some((column) => column.name === "message_id")) {
 			this.db.exec("ALTER TABLE outbox ADD COLUMN message_id TEXT");
+		}
+		if (!columns.some((column) => column.name === "reply_to")) {
+			this.db.exec("ALTER TABLE outbox ADD COLUMN reply_to TEXT");
+		}
+		if (!columns.some((column) => column.name === "delivery_context")) {
+			this.db.exec("ALTER TABLE outbox ADD COLUMN delivery_context TEXT");
 		}
 	}
 
@@ -288,6 +303,8 @@ export class CodexOutboundSender implements OutboundSender {
 		text: string;
 		idempotencyKey: string;
 		channelId?: string;
+		replyTo?: string;
+		deliveryContext?: string;
 		roundtableEngage?: boolean;
 	}): Promise<string> {
 		if (!args.idempotencyKey)
@@ -298,11 +315,18 @@ export class CodexOutboundSender implements OutboundSender {
 		// FLY-267: per-message channel override (cross-dept reply), else the default
 		// chat channel (byte-compat). Persisted per row so deliver() + recovery target it.
 		const channelId = args.channelId ?? this.channelId;
+		if (args.replyTo !== undefined && !/^\d{17,20}$/.test(args.replyTo))
+			throw new Error("invalid_discord_reply_target");
+		if (
+			args.deliveryContext !== undefined &&
+			!/^[A-Za-z0-9_.:-]{1,512}$/.test(args.deliveryContext)
+		)
+			throw new Error("invalid_delivery_context");
 		this.db
 			.prepare(
 				`INSERT INTO outbox
-				 (outbox_id, idempotency_key, lead_id, text, nonce, channel_id, status, created_at, updated_at, roundtable_engage, engagement, project_name)
-				 VALUES (@outboxId, @idempotencyKey, @leadId, @text, @nonce, @channelId, 'pending', @ts, @ts, @roundtableEngage, @engagement, @projectName)
+				 (outbox_id, idempotency_key, lead_id, text, nonce, channel_id, reply_to, delivery_context, status, created_at, updated_at, roundtable_engage, engagement, project_name)
+				 VALUES (@outboxId, @idempotencyKey, @leadId, @text, @nonce, @channelId, @replyTo, @deliveryContext, 'pending', @ts, @ts, @roundtableEngage, @engagement, @projectName)
 				 ON CONFLICT(idempotency_key) DO NOTHING`,
 			)
 			.run({
@@ -315,6 +339,8 @@ export class CodexOutboundSender implements OutboundSender {
 				text: args.text,
 				nonce,
 				channelId,
+				replyTo: args.replyTo ?? null,
+				deliveryContext: args.deliveryContext ?? null,
 				ts,
 			});
 		const row = this.db
@@ -324,6 +350,8 @@ export class CodexOutboundSender implements OutboundSender {
 			row.lead_id !== args.leadId ||
 			row.text !== args.text ||
 			row.channel_id !== channelId ||
+			row.reply_to !== (args.replyTo ?? null) ||
+			row.delivery_context !== (args.deliveryContext ?? null) ||
 			row.roundtable_engage !== (args.roundtableEngage === true ? 1 : 0) ||
 			(args.roundtableEngage === true && row.project_name !== this.projectName)
 		) {
@@ -333,13 +361,58 @@ export class CodexOutboundSender implements OutboundSender {
 		}
 		return outboxId;
 	}
+	/** Only confirmed sends in this Lead's bound thread authorize subsequent edits. */
+	ownsSentMessage(channelId: string, messageId: string): boolean {
+		return !!this.db
+			.prepare(
+				"SELECT 1 FROM outbox WHERE lead_id = ? AND channel_id = ? AND message_id = ? AND status = 'sent' LIMIT 1",
+			)
+			.get(this.leadId, channelId, messageId);
+	}
+	/** Read-only local evidence. Unknown/pending is never a reason to resend. */
+	getDeliveryStatus(
+		outboxId: string,
+		expected?: {
+			leadId: string;
+			channelId?: string;
+			text: string;
+			replyTo?: string;
+			deliveryContext?: string;
+		},
+	):
+		| { status: "pending" | "ambiguous" | "sent"; messageId?: string }
+		| undefined {
+		const row = this.db
+			.prepare("SELECT * FROM outbox WHERE outbox_id = ?")
+			.get(outboxId) as OutboxRow | undefined;
+		if (!row) return undefined;
+		if (
+			row.lead_id !== this.leadId ||
+			(expected &&
+				(row.lead_id !== expected.leadId ||
+					row.channel_id !== (expected.channelId ?? this.channelId) ||
+					row.text !== expected.text ||
+					row.reply_to !== (expected.replyTo ?? null) ||
+					row.delivery_context !== (expected.deliveryContext ?? null)))
+		)
+			throw new Error("outbound_evidence_conflict");
+		if (!["pending", "ambiguous", "sent"].includes(row.status))
+			throw new Error("outbound_status_invalid");
+		return {
+			status: row.status as "pending" | "ambiguous" | "sent",
+			...(row.message_id ? { messageId: row.message_id } : {}),
+		};
+	}
 
 	/**
 	 * Deliver a previously-enqueued reply via the canonical Bridge endpoint.
 	 * Idempotent: a row already `sent` is a no-op. A non-2xx / transport error
 	 * leaves the row `pending` and throws (router → ambiguous; retry on recovery).
 	 */
-	async deliverWithResult(outboxId: string): Promise<{
+	async deliverWithResult(
+		outboxId: string,
+		guard?: ChatThreadWriteGuard,
+	): Promise<{
 		messageId?: string;
 		status?: "sent" | "pending";
 		sendStatus?: "sent";
@@ -381,8 +454,15 @@ export class CodexOutboundSender implements OutboundSender {
 		}
 
 		let res: Awaited<ReturnType<HttpPost>>;
+		if (guard?.beforeSideEffect) await guard.beforeSideEffect();
+		guard?.assertSideEffectCurrent?.();
+		if (guard?.signal?.aborted) throw new Error("outbound_operation_aborted");
 		try {
 			res = await this.post({
+				...(row.delivery_context
+					? { deliveryContext: row.delivery_context }
+					: {}),
+				...(guard ? { guard, signal: guard.signal } : {}),
 				url: `${this.bridgeUrl}/api/lead-outbound/send`,
 				headers: {
 					"content-type": "application/json",
@@ -394,6 +474,7 @@ export class CodexOutboundSender implements OutboundSender {
 					leadId: row.lead_id,
 					channelId: row.channel_id,
 					text: row.text,
+					...(row.reply_to ? { replyTo: row.reply_to } : {}),
 					// Stable dedup key the Bridge persists (idempotencyKey→result) so a
 					// repeat returns the prior result instead of re-sending. Closing the
 					// Bridge-crash gap (sent-but-not-persisted) is the Bridge route's job

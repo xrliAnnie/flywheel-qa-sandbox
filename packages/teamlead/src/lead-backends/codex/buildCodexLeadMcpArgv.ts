@@ -27,7 +27,12 @@
  */
 
 import { createHash } from "node:crypto";
+import { isAbsolute, normalize } from "node:path";
+import { leadOperationTimeoutMs } from "flywheel-comm/lead-operation-client";
+import type { LeadCapabilityManifest } from "../../lead-capabilities/manifest.js";
+import { browserFacadeSchemaDigest } from "./browser-capability-proxy.js";
 import { LEAD_ACTIONS_MCP_SERVER_NAME } from "./lead-actions/mcp-config.js";
+import { validateLeadCapabilityManifest } from "./lead-capability-proxy.js";
 
 export const CHROME_MCP_PACKAGE = "chrome-devtools-mcp@1.1.1";
 export const CHROME_SERVER_NAME = "chrome_devtools";
@@ -73,7 +78,16 @@ export interface LeadActionsMcpConfig {
 	envVarNames?: string[];
 }
 
+/** Paths are resolved by the trusted runtime, never by model tool arguments. */
+export interface CapabilityV2McpConfig {
+	nodePath: string;
+	proxyEntryPath: string;
+	socketPath: string;
+	manifestPath: string;
+	manifest: LeadCapabilityManifest;
+}
 export interface CodexLeadMcpOptions {
+	capabilityV2?: CapabilityV2McpConfig;
 	chrome?: ChromeMcpConfig;
 	/** FLY-245 Phase A2: when set (write-capable Lead), the MCP allowlist is
 	 * EXACTLY this gateway — Chrome and every other MCP are force-excluded. */
@@ -95,6 +109,7 @@ export type McpToolsApprovalMode = "auto" | "prompt" | "approve";
 /** A resolved MCP server to inject (no raw secrets — env values are NON-SECRET
  * coordinates only; secrets travel by NAME via `envVarNames`). */
 export interface McpServerSpec {
+	toolTimeoutSec?: number;
 	enabledTools?: readonly string[];
 	name: string;
 	command: string;
@@ -125,6 +140,77 @@ export function buildCodexLeadMcpArgv(
 ): CodexLeadMcpResult {
 	const specs: McpServerSpec[] = [];
 	const warnings: string[] = [];
+	if (opts.capabilityV2) {
+		if (
+			opts.gateway !== undefined ||
+			opts.leadActions !== undefined ||
+			opts.chrome !== undefined
+		)
+			throw new Error("v2 MCP configuration cannot include legacy servers");
+		const config = opts.capabilityV2;
+		for (const path of [
+			config.nodePath,
+			config.proxyEntryPath,
+			config.socketPath,
+			config.manifestPath,
+		]) {
+			if (
+				typeof path !== "string" ||
+				!isAbsolute(path) ||
+				normalize(path) !== path ||
+				[...path].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+			)
+				throw new Error("invalid v2 MCP path");
+		}
+		if (Buffer.byteLength(config.socketPath) > 103)
+			throw new Error("invalid v2 socket path");
+		const manifest = validateLeadCapabilityManifest(config.manifest);
+		const browserTools = manifest.operationIds
+			.filter((id) => id.startsWith("browser."))
+			.map((id) => id.slice(8))
+			.sort();
+		const browser = manifest.integrations.filter((i) => i.id === "browser");
+		if (
+			!manifest.browserGeneration ||
+			!browserTools.length ||
+			browser.length !== 1 ||
+			browser[0]?.version !== "1.9.0" ||
+			browser[0].toolSchemaDigest !== browserFacadeSchemaDigest(browserTools)
+		)
+			throw new Error("invalid v2 browser integration");
+		const env = {
+			FLYWHEEL_LEAD_CAPABILITY_SOCKET: config.socketPath,
+			FLYWHEEL_LEAD_CAPABILITY_MANIFEST: config.manifestPath,
+		};
+		const specs: McpServerSpec[] = [
+			{
+				name: LEAD_ACTIONS_MCP_SERVER_NAME,
+				command: config.nodePath,
+				args: [config.proxyEntryPath, "actions"],
+				env,
+				enabledTools: ["lead_operation"],
+				defaultToolsApprovalMode: "approve",
+				toolTimeoutSec:
+					Math.ceil(leadOperationTimeoutMs("git.feature.push") / 1000) + 5,
+			},
+			{
+				name: CHROME_SERVER_NAME,
+				command: config.nodePath,
+				args: [config.proxyEntryPath, "browser"],
+				env,
+				enabledTools: browserTools,
+				defaultToolsApprovalMode: "approve",
+				toolTimeoutSec: 20,
+			},
+		];
+		for (const spec of specs) assertNoRawSecret(spec);
+		return {
+			argv: specs.flatMap(specToArgv),
+			configHash: hashConfig(specs),
+			included: specs.map((s) => s.name),
+			warnings,
+		};
+	}
 
 	// FLY-304: gateway (write-capable) and leadActions (full-access) are mutually
 	// exclusive. The gateway path is an EXACT allowlist (gateway-only) precisely
@@ -268,6 +354,8 @@ function specToArgv(spec: McpServerSpec): string[] {
 			`${base}.default_tools_approval_mode=${tomlValue(spec.defaultToolsApprovalMode)}`,
 		);
 	}
+	if (spec.toolTimeoutSec !== undefined)
+		out.push("-c", `${base}.tool_timeout_sec=${spec.toolTimeoutSec}`);
 	if (spec.enabledTools)
 		out.push(
 			"-c",
@@ -373,6 +461,9 @@ function hashConfig(specs: McpServerSpec[]): string {
 					: undefined,
 				envVarNames: [...(s.envVarNames ?? [])].sort(),
 				defaultToolsApprovalMode: s.defaultToolsApprovalMode,
+				...(s.toolTimeoutSec !== undefined
+					? { toolTimeoutSec: s.toolTimeoutSec, enabledTools: s.enabledTools }
+					: {}),
 			})),
 	);
 	return createHash("sha256").update(canonical).digest("hex").slice(0, 16);

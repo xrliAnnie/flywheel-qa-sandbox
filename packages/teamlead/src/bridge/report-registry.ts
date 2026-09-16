@@ -275,7 +275,16 @@ function hasMetaAttribute(
 	});
 }
 
+export interface ReportCapabilityOwner {
+	leadId: string;
+	identityDigest: string;
+	issueId: string;
+	requestId: string;
+}
+
 export interface ReportEntry {
+	/** Bridge-verified provenance; never includes a carrier claim or credential. */
+	capabilityOwner?: ReportCapabilityOwner;
 	/** Reserved Epic token whose object is intentionally overwritten. */
 	mutable?: true;
 	token: string;
@@ -695,7 +704,26 @@ export class ReportRegistry {
 		html: string,
 		title: string | undefined,
 		binding: HostingBinding,
+		capabilityOwner?: ReportCapabilityOwner,
 	): StagedPublish {
+		let owner: ReportCapabilityOwner | undefined;
+		if (capabilityOwner !== undefined) {
+			const { leadId, identityDigest, issueId, requestId } = capabilityOwner;
+			if (
+				typeof leadId !== "string" ||
+				!/^[A-Za-z0-9_.:-]{1,128}$/.test(leadId) ||
+				typeof issueId !== "string" ||
+				!/^[A-Za-z0-9_.:-]{1,128}$/.test(issueId) ||
+				typeof identityDigest !== "string" ||
+				!/^[a-f0-9]{64}$/.test(identityDigest) ||
+				typeof requestId !== "string" ||
+				!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
+					requestId,
+				)
+			)
+				throw new Error("invalid_report_capability_owner");
+			owner = { leadId, identityDigest, issueId, requestId };
+		}
 		return this.stageReport(
 			projectName,
 			html,
@@ -703,6 +731,9 @@ export class ReportRegistry {
 			title,
 			false,
 			binding,
+			undefined,
+			undefined,
+			owner,
 		);
 	}
 
@@ -784,6 +815,7 @@ export class ReportRegistry {
 		binding: HostingBinding,
 		restoredEntry?: ReportEntry,
 		signal?: AbortSignal,
+		capabilityOwner?: ReportCapabilityOwner,
 	): StagedPublish {
 		const hardened = injectHeadMeta(html);
 		const committed = this.load();
@@ -796,6 +828,7 @@ export class ReportRegistry {
 		const entry: ReportEntry = restoredEntry
 			? { ...restoredEntry }
 			: {
+					...(capabilityOwner ? { capabilityOwner } : {}),
 					...(replaceToken ? { mutable: true as const } : {}),
 					token,
 					projectName,

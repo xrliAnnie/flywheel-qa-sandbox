@@ -30,7 +30,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 usage() {
-  echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>] [--record-dwell-receipts <verdict> [--note <text>]]" >&2
+  echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>] [--github-facts <parent-json>] [--tmux-socket <trusted-path>] [--record-dwell-receipts <verdict> [--note <text>]]" >&2
 }
 
 PROJECT_NAME=""
@@ -38,9 +38,11 @@ LEAD_ID="${FLYWHEEL_LEAD_ID:-}"
 TICK_SEQ="NA"
 RECORD_DWELL_VERDICT=""
 RECORD_DWELL_NOTE=""
+GITHUB_FACTS_PATH=""
+TMUX_ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --project|--lead|--tick-seq|--record-dwell-receipts|--note)
+    --project|--lead|--tick-seq|--record-dwell-receipts|--note|--github-facts|--tmux-socket)
       if [ "$#" -lt 2 ]; then
         echo "[patrol-snapshot] ERROR: $1 requires a value" >&2
         usage
@@ -52,6 +54,17 @@ while [ "$#" -gt 0 ]; do
         --tick-seq) TICK_SEQ="$2" ;;
         --record-dwell-receipts) RECORD_DWELL_VERDICT="$2" ;;
         --note) RECORD_DWELL_NOTE="$2" ;;
+        --tmux-socket)
+          case "$2" in
+            /*) ;;
+            *) echo "[patrol-snapshot] ERROR: tmux socket must be absolute" >&2; exit 2 ;;
+          esac
+          TMUX_ARGS=(-S "$2")
+          ;;
+        --github-facts)
+          [ -n "$2" ] || { echo "[patrol-snapshot] ERROR: parent GitHub facts path is empty" >&2; exit 2; }
+          GITHUB_FACTS_PATH="$2"
+          ;;
       esac
       shift 2
       ;;
@@ -92,6 +105,10 @@ case "$TICK_SEQ" in
 esac
 if [ "${#TICK_SEQ}" -gt 16 ]; then
   echo "[patrol-snapshot] ERROR: tick sequence is too long" >&2
+  exit 2
+fi
+if [ -n "$GITHUB_FACTS_PATH" ] && [ -n "$RECORD_DWELL_VERDICT" ]; then
+  echo "[patrol-snapshot] ERROR: parent GitHub facts are read-only snapshot input" >&2
   exit 2
 fi
 if [ -n "$RECORD_DWELL_VERDICT" ]; then
@@ -384,7 +401,7 @@ fi
 if [ "$OWNER_INDEX_COMPLETE" -eq 1 ]; then
   if command -v tmux >/dev/null 2>&1; then
     TMUX_ERR_FILE="$WORK_TMP/tmux-list.err"
-    PANE_LIST_RAW="$(TMUX= tmux list-panes -a -F $'#{pane_id}\t#{session_name}\t#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_command}\t#{pane_dead}' 2>"$TMUX_ERR_FILE")"
+    PANE_LIST_RAW="$(TMUX= tmux ${TMUX_ARGS[@]+"${TMUX_ARGS[@]}"} list-panes -a -F $'#{pane_id}\t#{session_name}\t#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_command}\t#{pane_dead}' 2>"$TMUX_ERR_FILE")"
     PANE_LIST_RC=$?
     if [ "$PANE_LIST_RC" -eq 0 ]; then
       CANONICAL_PANES="$(printf '%s\n' "$PANE_LIST_RAW" | awk -F '\t' '
@@ -478,7 +495,7 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   last_change_epoch="$NOW_EPOCH"
   capture_file="$(mktemp "$WORK_TMP/pane.XXXXXX")" || true
   if [ -z "$capture_file" ] || [ ! -x "$BOUNDED_RUN" ] \
-    || ! "$BOUNDED_RUN" 5 env TMUX= tmux capture-pane -p -S - -t "$pane_id" > "$capture_file" 2>/dev/null; then
+    || ! "$BOUNDED_RUN" 5 env TMUX= tmux ${TMUX_ARGS[@]+"${TMUX_ARGS[@]}"} capture-pane -p -S - -t "$pane_id" > "$capture_file" 2>/dev/null; then
     findings="$(append_finding "$findings" CAPTURE_FAILED)"
     STEP2_STATUS="UNAVAILABLE(structural: pane_capture_incomplete)"
   else
@@ -1210,13 +1227,26 @@ else
     DISK_UNAVAILABLE="data_volume_probe_invalid"
   fi
 fi
-if [ "$PROJECTS_OK" != 1 ] || ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+if [ "$PROJECTS_OK" != 1 ] || { [ -z "$GITHUB_FACTS_PATH" ] && ! command -v gh >/dev/null 2>&1; } || ! command -v jq >/dev/null 2>&1; then
   STEP5_STATUS="UNAVAILABLE(structural: gh_unavailable)"
 else
+  if [ -n "$GITHUB_FACTS_PATH" ]; then
+    # Explicit parent input never falls back to a credential-bearing gh invocation.
+    GITHUB_FACTS="$(node "$SNAPSHOT_SOURCE_DIR/lead-patrol-github-facts.mjs" "$GITHUB_FACTS_PATH" "$PROJECT_NAME" "$LEAD_ID" 2>/dev/null)"
+    PR_RC=$?
+    RUN_RC="$PR_RC"
+    PR_JSON=""
+    RUN_JSON=""
+    if [ "$PR_RC" -eq 0 ]; then
+      PR_JSON="$(printf '%s' "$GITHUB_FACTS" | jq -c '.pulls')"
+      RUN_JSON="$(printf '%s' "$GITHUB_FACTS" | jq -c '.runs')"
+    fi
+  else
   PR_JSON="$(GH_REPO="$PROJECT_REPO" gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50' 2>/dev/null)"
   PR_RC=$?
   RUN_JSON="$(GH_REPO="$PROJECT_REPO" gh api 'repos/{owner}/{repo}/actions/runs?per_page=5' 2>/dev/null)"
   RUN_RC=$?
+  fi
   if [ "$PR_RC" -ne 0 ] || [ "$RUN_RC" -ne 0 ]; then
     STEP5_STATUS="UNAVAILABLE(structural: gh_unavailable)"
   elif ! printf '%s' "$PR_JSON" | jq -e '

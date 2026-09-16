@@ -1810,6 +1810,34 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		expect(() => loadProjects()).toThrow(/write-capable.*companion/);
 	});
 
+	it.each([false, null, "2", 3])(
+		"rejects invalid v2 bundle even on Claude: %j",
+		(codexCapabilityBundleVersion) => {
+			expect(() =>
+				loadWith(
+					fleetLead({
+						backend: "claude-code",
+						canSpawnRunners: false,
+						codexCapabilityBundleVersion,
+					} as unknown as Partial<LeadConfig>),
+				),
+			).toThrow(/codexCapabilityBundleVersion/);
+		},
+	);
+	it("preserves explicit v2 adoption on a Codex department Lead", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexCapabilityBundleVersion: 2,
+			} as Partial<LeadConfig>),
+		);
+		expect(projects[0].leads[0]).toHaveProperty(
+			"codexCapabilityBundleVersion",
+			2,
+		);
+	});
 	it("FLY-350: accepts codexProfile:full-access (canSpawnRunners:false, not a companion)", () => {
 		const projects = loadWith(
 			fleetLead({

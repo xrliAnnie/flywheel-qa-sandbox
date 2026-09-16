@@ -86,5 +86,29 @@ else
   fail "post-resolve conflict did not invoke failure marker writer"
 fi
 
+# v2 is a separate capability projection; it must survive the launcher boundary.
+if (
+  unset LEAD_ID FLYWHEEL_LEAD_ID PROJECT_NAME FLYWHEEL_PROJECT_NAME \
+    FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_BACKEND FLYWHEEL_LEAD_ROLE \
+    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
+    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST \
+    FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS \
+    FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION FLYWHEEL_CANONICAL_IDENTITY_RESOLVED \
+    DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE FLYWHEEL_LEAD_BOT_USER_ID
+  export PATH="$TMP/bin:$PATH" FLYWHEEL_COMM_CLI="$TMP/flywheel-comm.js" PRODUCT_TOKEN="secret-token"
+  export RESOLVED_IDENTITY_JSON="$(jq '.codexCapabilities.capabilityBundleVersion = 2' <<<"$RESOLVED_IDENTITY_JSON")"
+  export FLYWHEEL_CODEX_LEAD_SANDBOX=workspace-write
+  . "$SUT"
+  canonical_lead_identity_resolve flywheel product-lead || exit 1
+  [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ] &&
+    [ "${FLYWHEEL_CODEX_LEAD_SANDBOX+x}" != x ]
+); then pass "bundle v2 projected independently"; else fail "bundle v2 lost at launcher boundary"; fi
+
+if python3 "$SCRIPT_DIR/canonical-launcher-matrix.py" "$TMP"; then
+  pass "all five specialized launchers preserve v1 and clear legacy sandbox for v2"
+else
+  fail "specialized launcher sandbox contract"
+fi
+
 echo "canonical-lead-identity.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

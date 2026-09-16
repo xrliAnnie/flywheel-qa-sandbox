@@ -88,3 +88,16 @@ describe("daemonSocketPath", () => {
 		);
 	});
 });
+
+it("connects to the exact activation socket instead of the legacy home daemon", async () => {
+	const fake = new FakeWs();
+	const ctor = vi.fn(ctorOf(fake));
+	const pending = connectDaemonWs({
+		codexHome: "/legacy",
+		socketPath: "/tmp/owned/app.sock",
+		wsCtor: ctor,
+	});
+	fake.emit("open");
+	await pending;
+	expect(ctor).toHaveBeenCalledWith("ws+unix:///tmp/owned/app.sock:/");
+});

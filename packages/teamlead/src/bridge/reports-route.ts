@@ -56,6 +56,7 @@ import {
 	type ReportHostingCredentials,
 } from "./report-hosting-credentials.js";
 import {
+	type ReportCapabilityOwner,
 	ReportHostingBindingConflict,
 	ReportHtmlInvalidError,
 	type ReportRegistry,
@@ -78,6 +79,11 @@ export type ReportPostTextFn = (
 ) => Promise<PostDiscordResult>;
 
 export interface ReportsRouterOptions {
+	/** Capability mount supplies live scope authorization inside the publish queue.
+	 * Returned check runs synchronously before upload and registry commit. */
+	authorizePublish?: (
+		body: Readonly<Record<string, unknown>>,
+	) => Promise<() => void>;
 	blobStore?: Pick<ReportBlobStore, "putReport" | "deleteReports"> &
 		Partial<Pick<ReportBlobStore, "bind">>;
 	credentials?: ReportHostingCredentials;
@@ -339,10 +345,28 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				}
 			}
 
+			let assertPublishCurrent: (() => void) | undefined;
+			try {
+				if (opts.authorizePublish) {
+					assertPublishCurrent = await opts.authorizePublish(body);
+					if (typeof assertPublishCurrent !== "function")
+						throw new Error("missing publish guard");
+					assertPublishCurrent();
+				}
+			} catch {
+				res.status(403).json({ error: "report publish scope denied" });
+				return;
+			}
+
 			let staged: ReturnType<ReportRegistry["stagePublish"]>;
 			let operationStore = blobStore;
 			let snapshot: CredentialSnapshot | undefined;
 			try {
+				if (
+					assertPublishCurrent &&
+					(!body.capability || typeof body.capability !== "object")
+				)
+					throw new Error("missing_report_capability_owner");
 				if (!hostOverride && opts.credentials) {
 					snapshot = opts.credentials.snapshot("BLOB_READ_WRITE_TOKEN");
 					if (!snapshot.value) {
@@ -365,6 +389,9 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 					html,
 					title as string | undefined,
 					binding,
+					assertPublishCurrent
+						? (body.capability as ReportCapabilityOwner)
+						: undefined,
 				);
 			} catch (err) {
 				if (err instanceof ReportHostingCredentialMismatch) {
@@ -391,6 +418,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			}
 
 			try {
+				assertPublishCurrent?.();
 				if (hostOverride) {
 					await deployFiles(
 						hostVercelToken as string,
@@ -416,6 +444,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			}
 
 			try {
+				assertPublishCurrent?.();
 				await staged.commit();
 			} catch (error) {
 				if (!hostOverride && blobStore) {
@@ -459,6 +488,11 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 					staged.entry.token,
 				),
 				reportId: staged.entry.token,
+				...(assertPublishCurrent &&
+				typeof (body.capability as { requestId?: unknown } | undefined)
+					?.requestId === "string"
+					? { requestId: (body.capability as { requestId: string }).requestId }
+					: {}),
 			});
 		};
 

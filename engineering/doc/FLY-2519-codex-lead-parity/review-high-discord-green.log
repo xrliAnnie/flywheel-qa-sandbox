@@ -1,0 +1,23 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2519/packages/teamlead
+
+stdout | src/bridge/__tests__/lead-capability-discord.test.ts > HTTP new-create preserves canonical UUID storage and verified identifier title for aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+[ChatThreadCreator] create thread channel=22345678901234567 name="[FLY-1] Review report" content="🧵 **FLY-1** — Review report"
+
+stdout | src/bridge/__tests__/lead-capability-discord.test.ts > HTTP new-create preserves canonical UUID storage and verified identifier title for FLY-1
+[ChatThreadCreator] create thread channel=22345678901234567 name="[FLY-1] Review report" content="🧵 **FLY-1** — Review report"
+
+ ✓ |parallel| src/bridge/__tests__/lead-capability-discord.test.ts (7 tests) 63796ms
+   ✓ Bridge typed Discord route > rejects missing master token on the actual operation route  655ms
+   ✓ exercises the registry-owned typed route: routing  55235ms
+   ✓ exercises the registry-owned typed route: unknown-write-capacity  6126ms
+   ✓ exercises the registry-owned typed route: missing-receipts  427ms
+   ✓ mounts the provider at its literal Bridge route  309ms
+   ✓ HTTP new-create preserves canonical UUID storage and verified identifier title for aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa  530ms
+   ✓ HTTP new-create preserves canonical UUID storage and verified identifier title for FLY-1  515ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  22:04:36
+   Duration  67.05s (transform 1.79s, setup 13ms, collect 2.85s, tests 63.80s, environment 0ms, prepare 46ms)
+

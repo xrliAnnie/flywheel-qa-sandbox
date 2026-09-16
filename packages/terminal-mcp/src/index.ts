@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { buildSafeRegex, CommDB, validateProjectName } from "flywheel-comm/db";
+import { CommDB, validateProjectName } from "flywheel-comm/db";
+import { createTerminalSessionCore } from "flywheel-comm/terminal-observation";
 import { z } from "zod";
 import {
 	ABANDON_STATUSES_PARAM,
@@ -14,7 +15,6 @@ import {
 	type RunnerRow,
 	validateAbandonReason,
 } from "./lifecycle.js";
-import { detectTerminalStatus } from "./status.js";
 import { execTmux, requireTmuxTarget } from "./tmux-exec.js";
 
 // FLY-229: cap on terminal rows fetched per `runner_terminal_list` call, to
@@ -103,6 +103,88 @@ async function tmuxAlive(tmuxTarget: string): Promise<boolean> {
 	}
 }
 
+/** A fresh per-call deadline and exact current CommDB scope. */
+function terminalCore(enter = true) {
+	const deadline = Date.now() + 15000;
+	return createTerminalSessionCore({
+		legacyContract: true,
+		projectName: projectName!,
+		leadId: leadId!,
+		assertCurrent: () => {
+			if (Date.now() >= deadline) throw new Error("terminal_timeout");
+		},
+		getSession: async (executionId) => {
+			const db = openDb();
+			try {
+				const row = db.getSession(executionId);
+				return row
+					? {
+							executionId: row.execution_id,
+							projectName: row.project_name,
+							leadId: row.lead_id,
+							target: row.tmux_window,
+							status: row.status,
+						}
+					: undefined;
+			} finally {
+				db.close();
+			}
+		},
+		inspect: async (target) => {
+			requireTmuxTarget(target);
+			// Resolve legacy indexes/names with a strict probe, then pin the window ID.
+			let expectedWindow = /:(@\d+)$/.exec(target)?.[1];
+			if (!expectedWindow) {
+				try {
+					expectedWindow = (
+						await execTmux(["list-panes", "-t", target, "-F", "#{window_id}"], {
+							timeout: 3000,
+						})
+					).stdout
+						.trim()
+						.split("\n")[0];
+				} catch {
+					throw new Error("terminal_not_found");
+				}
+			}
+			if (!expectedWindow || !/^@\d+$/.test(expectedWindow))
+				throw new Error("terminal_not_found");
+			const { stdout } = await execTmux(
+				[
+					"display-message",
+					"-p",
+					"-t",
+					target,
+					"#{session_id}:#{pane_id}|#{pane_dead}|#{window_id}",
+				],
+				{ timeout: 3000 },
+			).catch(() => {
+				throw new Error("terminal_not_found");
+			});
+			const [observedSessionId, dead, observedWindow] = stdout
+				.trim()
+				.split("|");
+			if (observedWindow !== expectedWindow)
+				throw new Error("terminal_not_found");
+			return {
+				observedSessionId: observedSessionId ?? "",
+				alive: dead === "0",
+			};
+		},
+		capture: tmuxCapture,
+		send: async (target, text, beforeSend) => {
+			await beforeSend();
+			await execTmux(["send-keys", "-t", target, "-l", "--", text], {
+				timeout: 5000,
+			});
+			if (enter) {
+				await beforeSend();
+				await execTmux(["send-keys", "-t", target, "Enter"], { timeout: 5000 });
+			}
+		},
+	});
+}
+
 // ── MCP Server ──
 
 const server = new McpServer({
@@ -125,19 +207,8 @@ server.tool(
 	},
 	async ({ session_id, lines }) => {
 		try {
-			if (!existsSync(dbPath)) {
-				throw new Error(`Database not found: ${dbPath}`);
-			}
-			const db = openDb();
-			let tmuxTarget: string;
-			try {
-				const session = getSessionScoped(db, session_id);
-				tmuxTarget = session.tmux_window;
-			} finally {
-				db.close();
-			}
-			const output = await tmuxCapture(tmuxTarget, lines);
-			return { content: [{ type: "text" as const, text: output }] };
+			const output = await terminalCore().capture(session_id, lines);
+			return { content: [{ type: "text" as const, text: output.text }] };
 		} catch (e) {
 			return {
 				content: [
@@ -262,44 +333,12 @@ server.tool(
 	},
 	async ({ session_id, pattern, lines }) => {
 		try {
-			if (!existsSync(dbPath)) {
-				throw new Error(`Database not found: ${dbPath}`);
-			}
-			const db = openDb();
-			let tmuxTarget: string;
-			try {
-				const session = getSessionScoped(db, session_id);
-				tmuxTarget = session.tmux_window;
-			} finally {
-				db.close();
-			}
-
-			const output = await tmuxCapture(tmuxTarget, lines);
-			const regex = buildSafeRegex(pattern);
-			const allLines = output.split("\n");
-			const matches: string[] = [];
-			for (let i = 0; i < allLines.length; i++) {
-				const line = allLines[i]!;
-				if (regex.test(line)) {
-					matches.push(`${i + 1}: ${line}`);
-				}
-			}
-
-			if (matches.length === 0) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `No matches for "${pattern}" in ${allLines.length} lines.`,
-						},
-					],
-				};
-			}
+			const matches = await terminalCore().search(session_id, lines, pattern);
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: `${matches.length} matches in ${allLines.length} lines:\n${matches.join("\n")}`,
+						text: matches.text || `No matches for "${pattern}".`,
 					},
 				],
 			};
@@ -326,35 +365,7 @@ server.tool(
 	},
 	async ({ session_id }) => {
 		try {
-			if (!existsSync(dbPath)) {
-				throw new Error(`Database not found: ${dbPath}`);
-			}
-			const db = openDb();
-			let tmuxTarget: string;
-			try {
-				const session = getSessionScoped(db, session_id);
-				tmuxTarget = session.tmux_window;
-			} finally {
-				db.close();
-			}
-
-			const alive = await tmuxAlive(tmuxTarget);
-			if (!alive) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: JSON.stringify({
-								status: "dead",
-								reason: "tmux session not running",
-							}),
-						},
-					],
-				};
-			}
-
-			const output = await tmuxCapture(tmuxTarget, 30);
-			const status = detectTerminalStatus(output);
+			const status = await terminalCore().status(session_id);
 			return {
 				content: [{ type: "text" as const, text: JSON.stringify(status) }],
 			};
@@ -378,52 +389,33 @@ server.tool(
 	"Send text input to a Runner's terminal via tmux send-keys. SAFETY: Only use when runner_terminal_status reports 'waiting'. Sending input while status is 'executing' may corrupt the agent's context.",
 	{
 		session_id: z.string().describe("Execution ID of the Runner session"),
+		expectedSessionId: z
+			.string()
+			.optional()
+			.describe(
+				"Optional observedSessionId returned by runner_terminal_status",
+			),
 		text: z
 			.string()
 			.max(2000)
-			.describe("Text to send to the terminal (max 2000 chars)"),
+			.refine(
+				(value) => !/[\r\n]/.test(value),
+				"Terminal input must be one submission",
+			)
+			.describe("Single-line text to send to the terminal (max 2000 chars)"),
 		enter: z
 			.boolean()
 			.default(true)
 			.describe("Whether to press Enter after the text (default true)"),
 	},
-	async ({ session_id, text, enter }) => {
+	async ({ session_id, expectedSessionId, text, enter }) => {
 		try {
-			if (!existsSync(dbPath)) {
-				throw new Error(`Database not found: ${dbPath}`);
-			}
-			const db = openDb();
-			let tmuxTarget: string;
-			try {
-				const session = getSessionScoped(db, session_id, {
-					requireExactLead: true,
-				});
-				tmuxTarget = session.tmux_window;
-			} finally {
-				db.close();
-			}
-
-			const alive = await tmuxAlive(tmuxTarget);
-			if (!alive) {
-				throw new Error(`tmux session not running for ${session_id}`);
-			}
-
-			// Use -l (literal) to prevent key-name interpretation.
-			// Send text and Enter separately — -l makes "Enter" literal too.
-			await execTmux(["send-keys", "-t", tmuxTarget, "-l", text], {
-				timeout: 5000,
-			});
-			if (enter) {
-				await execTmux(["send-keys", "-t", tmuxTarget, "Enter"], {
-					timeout: 5000,
-				});
-			}
-
+			await terminalCore(enter).input(session_id, expectedSessionId, text);
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: `Sent${enter ? " (with Enter)" : ""}: ${text.length > 100 ? `${text.slice(0, 100)}...` : text}`,
+						text: "Sent to the verified waiting session.",
 					},
 				],
 			};

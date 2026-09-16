@@ -47,7 +47,7 @@ canonical_lead_identity_resolve() {
   local selected_lead="${2:?lead selector required}"
   local projects_file="${3:-${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}}"
   local comm_cli="${FLYWHEEL_COMM_CLI:-}"
-  local identity_json canonical_runner_actions
+  local identity_json canonical_runner_actions canonical_bundle_version
   local canonical_lead canonical_project canonical_key canonical_team
   local canonical_bot_id canonical_token_env canonical_state_dir
   local canonical_backend canonical_role projects_digest identity_digest
@@ -82,6 +82,7 @@ canonical_lead_identity_resolve() {
     --format json --include-capabilities)" || return 1
 
   canonical_runner_actions="$(jq -er '.codexCapabilities.runnerActionsEnabled | if . == true then "1" elif . == false then "0" else error("runner capability must be boolean") end' <<<"$identity_json")" || return 1
+  canonical_bundle_version="$(jq -er '.codexCapabilities | if has("capabilityBundleVersion") then .capabilityBundleVersion | if . == 2 then "2" else error("unsupported capability bundle") end else "" end' <<<"$identity_json")" || return 1
   canonical_lead="$(jq -er '.leadId | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_project="$(jq -er '.projectName | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_key="$(jq -er '.leadKey | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
@@ -134,6 +135,7 @@ canonical_lead_identity_resolve() {
   canonical_lead_identity_assert_existing PROJECT_NAME "$canonical_project" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_KEY "$canonical_key" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS "$canonical_runner_actions" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION "$canonical_bundle_version" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_BACKEND "$canonical_backend" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_MODEL "$canonical_model" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_EFFORT "$canonical_effort" || return 1
@@ -173,6 +175,14 @@ canonical_lead_identity_resolve() {
   export FLYWHEEL_SUMMARY_GRANULARITY="$canonical_summary_granularity"
   export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest"
   export FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS="$canonical_runner_actions"
+  if [ -n "$canonical_bundle_version" ]; then
+    export FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION="$canonical_bundle_version"
+    # Registry v2 selects the managed permission profile, replacing the generic
+    # launcher's legacy workspace-write default before either runtime starts.
+    unset FLYWHEEL_CODEX_LEAD_SANDBOX
+  else
+    unset FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION
+  fi
   export FLYWHEEL_LEAD_BACKEND="$canonical_backend"
   if [ -n "$canonical_model" ]; then
     export FLYWHEEL_LEAD_MODEL="$canonical_model"

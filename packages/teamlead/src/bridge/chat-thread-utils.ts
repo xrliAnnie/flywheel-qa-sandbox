@@ -1,3 +1,4 @@
+import { ChatThreadSideEffectDenied } from "./chat-thread-write-guard.js";
 /**
  * FLY-91: Shared helpers for chat thread operations.
  * Used by DirectEventSink, HeartbeatService, actions.ts, gate-poller.ts.
@@ -420,6 +421,7 @@ export async function addThreadMember(
 			return "transient";
 		return "permanent";
 	} catch (err) {
+		if (err instanceof ChatThreadSideEffectDenied) throw err;
 		console.warn(
 			`[chat-thread-utils] addThreadMember error: thread=${threadId} user=${userId}`,
 			(err as Error).message,
@@ -625,6 +627,7 @@ export async function postThreadRootMessage(
 		if (!data.id) return { posted: false, error: "no message ID in response" };
 		return { posted: true, rootMessageId: data.id };
 	} catch (err) {
+		if (err instanceof ChatThreadSideEffectDenied) throw err;
 		if ((err as Error).name === "AbortError") {
 			return { posted: false, error: "timeout" };
 		}
@@ -701,6 +704,7 @@ export async function startThreadFromMessage(
 			rootMessageId: input.rootMessageId,
 		};
 	} catch (err) {
+		if (err instanceof ChatThreadSideEffectDenied) throw err;
 		return {
 			created: false,
 			rootMessageId: input.rootMessageId,

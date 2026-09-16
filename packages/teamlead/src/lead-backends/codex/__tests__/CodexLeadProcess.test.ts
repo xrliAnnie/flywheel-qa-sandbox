@@ -476,3 +476,105 @@ describe("CodexLeadProcess — shutdown", () => {
 		await expect(reqP).rejects.toMatchObject({ kind: "closed" });
 	});
 });
+
+describe("managed permission profile protocol", () => {
+	const params = {
+		permissions: "flywheel-lead-v2",
+		approvalPolicy: "never",
+		cwd: "/project",
+	};
+	it.each(["start", "resume"] as const)(
+		"checks profile provenance on %s before returning a usable thread",
+		async (mode) => {
+			const { child, proc } = make({ experimentalApi: true });
+			const startup = proc.start();
+			child.respond(1, {});
+			await startup;
+			const start = () =>
+				mode === "start"
+					? proc.startThread(params)
+					: proc.resumeThread("thread-1", params);
+			for (const bad of [
+				null,
+				{ id: ":workspace" },
+				{ id: "flywheel-lead-v2", extends: ":root" },
+			]) {
+				const pending = start();
+				const rejected = expect(pending).rejects.toThrow(/permission_profile/);
+				child.respond(child.lastFrame().id as number, {
+					thread: { id: "thread-1" },
+					cwd: "/project",
+					approvalPolicy: "never",
+					activePermissionProfile: bad,
+				});
+				await rejected;
+			}
+			const pending = start();
+			child.respond(child.lastFrame().id as number, {
+				thread: { id: "thread-1" },
+				cwd: "/project",
+				approvalPolicy: "never",
+				activePermissionProfile: {
+					id: "flywheel-lead-v2",
+					extends: ":workspace",
+				},
+			});
+			expect(await pending).toBe("thread-1");
+		},
+	);
+	it("refuses managed profile requests without experimental negotiation or with a legacy override", async () => {
+		for (const experimentalApi of [false, true]) {
+			const { child, proc } = make({ experimentalApi });
+			const startup = proc.start();
+			child.respond(1, {});
+			await startup;
+			const before = child.frames().length;
+			await expect(
+				proc.startThread(
+					experimentalApi ? { ...params, sandbox: "workspace-write" } : params,
+				),
+			).rejects.toThrow(/permission_profile/);
+			expect(child.frames()).toHaveLength(before);
+		}
+	});
+});
+it("rejects a managed thread echo with changed cwd or approval policy", async () => {
+	const { child, proc } = make({ experimentalApi: true });
+	const startup = proc.start();
+	child.respond(1, {});
+	await startup;
+	const params = {
+		permissions: "flywheel-lead-v2",
+		approvalPolicy: "never",
+		cwd: "/project",
+	};
+	for (const bad of [
+		{ cwd: "/other", approvalPolicy: "never" },
+		{ cwd: "/project", approvalPolicy: "on-request" },
+	]) {
+		const pending = proc.startThreadWithResult(params);
+		const rejected = expect(pending).rejects.toThrow(
+			"permission_profile_response_mismatch",
+		);
+		child.respond(child.lastFrame().id as number, {
+			thread: { id: "thread" },
+			activePermissionProfile: {
+				id: "flywheel-lead-v2",
+				extends: ":workspace",
+			},
+			...bad,
+		});
+		await rejected;
+	}
+	for (const bad of [
+		{ ...params, cwd: "relative" },
+		{ ...params, config: { sandbox_mode: "danger-full-access" } },
+		{ ...params, permissions: ":root" },
+	]) {
+		const before = child.frames().length;
+		await expect(proc.resumeThreadWithResult("thread", bad)).rejects.toThrow(
+			"permission_profile_request_invalid",
+		);
+		expect(child.frames()).toHaveLength(before);
+	}
+});

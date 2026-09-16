@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	annotateRoles,
 	DiscordFetchError,
@@ -15,6 +15,60 @@ const errFetch =
 	async () => ({ ok: false, status, json: async () => ({}) });
 
 describe("DiscordFetcher.fetchThreadMessages", () => {
+	it("fetches and verifies one exact reply message without accepting foreign-channel evidence", async () => {
+		const channelId = "111111111111111111",
+			messageId = "222222222222222222";
+		let actualChannel = channelId;
+		const request = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				id: messageId,
+				channel_id: actualChannel,
+				content: "hello",
+				timestamp: "2026-09-13T00:00:00Z",
+				author: { id: "333333333333333333" },
+			}),
+		}));
+		const f = new DiscordFetcher("tok", request);
+		const signal = new AbortController().signal;
+		expect(
+			await f.fetchMessage(channelId, messageId, { signal }),
+		).toMatchObject({ id: messageId, content: "hello" });
+		expect(request).toHaveBeenCalledWith(
+			`https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+			{ method: "GET", headers: { Authorization: "Bot tok" }, signal },
+		);
+		actualChannel = "444444444444444444";
+		await expect(f.fetchMessage(channelId, messageId)).rejects.toThrow(
+			"Discord reply target mismatch",
+		);
+		await expect(f.fetchMessage(channelId, "../x")).rejects.toThrow(
+			"invalid_discord_message_target",
+		);
+		expect(request).toHaveBeenCalledTimes(2);
+	});
+	it("passes a bounded before cursor and cancellation signal without changing legacy requests", async () => {
+		const fetch = vi.fn(okFetch([]));
+		const f = new DiscordFetcher("tok", fetch);
+		const signal = new AbortController().signal;
+		await f.fetchThreadMessages("123", 10, { before: "456", signal });
+		expect(fetch).toHaveBeenLastCalledWith(
+			"https://discord.com/api/v10/channels/123/messages?limit=10&before=456",
+			{ method: "GET", headers: { Authorization: "Bot tok" }, signal },
+		);
+		await f.fetchThreadMessages("123", 10);
+		expect(fetch).toHaveBeenLastCalledWith(
+			"https://discord.com/api/v10/channels/123/messages?limit=10",
+			{ method: "GET", headers: { Authorization: "Bot tok" } },
+		);
+		for (const before of ["", "1&limit=100", "1".repeat(21)]) {
+			await expect(
+				f.fetchThreadMessages("123", 10, { before }),
+			).rejects.toThrow("invalid_discord_cursor");
+		}
+		expect(fetch).toHaveBeenCalledTimes(2);
+	});
 	it("maps raw messages to {id, authorId, content, ts, isBot}", async () => {
 		const f = new DiscordFetcher(
 			"tok",

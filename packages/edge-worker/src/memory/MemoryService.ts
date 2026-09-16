@@ -61,6 +61,23 @@ export class MemoryService {
 		agentId?: string;
 		limit?: number;
 	}): Promise<string[]> {
+		return (await this.searchLearningMemories(params)).map((row) => row.text);
+	}
+	async searchLearningMemories(params: {
+		query: string;
+		projectName: string;
+		userId: string;
+		agentId?: string;
+		limit?: number;
+	}): Promise<
+		Array<{
+			text: string;
+			opId: string | null;
+			runKey: string | null;
+			noteId: string | null;
+			collection: string | null;
+		}>
+	> {
 		const results = await this.memory.search(params.query, {
 			userId: params.userId,
 			agentId: params.agentId,
@@ -76,12 +93,32 @@ export class MemoryService {
 
 		const memories = results.results
 			.filter(
-				(m: unknown): m is { memory: string } =>
+				(
+					m: unknown,
+				): m is { memory: string; metadata?: Record<string, unknown> } =>
 					typeof m === "object" &&
 					m !== null &&
 					typeof (m as { memory: unknown }).memory === "string",
 			)
-			.map((m) => m.memory);
+			.map((m) => {
+				const metadata =
+					m.metadata &&
+					typeof m.metadata === "object" &&
+					!Array.isArray(m.metadata)
+						? m.metadata
+						: {};
+				const field = (name: string) =>
+					typeof metadata[name] === "string"
+						? (metadata[name] as string)
+						: null;
+				return {
+					text: m.memory,
+					opId: field("op_id"),
+					runKey: field("run_key"),
+					noteId: field("note_id"),
+					collection: field("collection"),
+				};
+			});
 
 		// If mem0 returned items but none had a valid `memory` field, the response is malformed
 		if (results.results.length > 0 && memories.length === 0) {

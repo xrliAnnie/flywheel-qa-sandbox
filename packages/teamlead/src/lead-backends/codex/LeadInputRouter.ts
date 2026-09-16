@@ -66,6 +66,7 @@ export interface OutboundSender {
 		text: string;
 		idempotencyKey: string;
 		channelId?: string;
+		deliveryContext?: string;
 	}): Promise<string>;
 	/** Deliver a previously-enqueued reply (canonical sender + Discord nonce). */
 	deliver(outboxId: string): Promise<void>;
@@ -123,6 +124,8 @@ export interface LeadInputRouterOptions {
 	executor: TurnExecutor;
 	sender: OutboundSender;
 	correlationFactory?: () => string;
+	/** Parent-only binding from the durable journal row, held through delivery. */
+	enterDeliveryContext?: (entryId: string) => () => void;
 	/** FLY-404: optional Discord typing indicator. Absent → no typing (byte-compat
 	 * with every existing caller/test). Driven across the whole model turn in
 	 * `processEntry` so the founder sees "typing…" while the Lead works. */
@@ -161,6 +164,7 @@ export class LeadInputRouter {
 	private readonly onTopicEngaged?: (route: RoundtableReplyRoute) => void;
 	private readonly onInputAccepted?: LeadInputRouterOptions["onInputAccepted"];
 	private readonly onEntryCompleted?: LeadInputRouterOptions["onEntryCompleted"];
+	private readonly enterDeliveryContext?: LeadInputRouterOptions["enterDeliveryContext"];
 	private readonly corr: () => string;
 	private readonly logger: {
 		warn: (m: string, c?: unknown) => void;
@@ -184,6 +188,7 @@ export class LeadInputRouter {
 		this.onTopicEngaged = opts.onTopicEngaged;
 		this.onInputAccepted = opts.onInputAccepted;
 		this.onEntryCompleted = opts.onEntryCompleted;
+		this.enterDeliveryContext = opts.enterDeliveryContext;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
 		this.logger = opts.logger ?? {
@@ -298,11 +303,13 @@ export class LeadInputRouter {
 
 	/** Drive one entry accepted → completed; any failure → ambiguous (no retry). */
 	private async processEntry(id: string): Promise<void> {
+		let releaseDeliveryContext: (() => void) | undefined;
 		try {
 			const corrId = this.corr();
 			// toDispatching returns the updated entry (carrying payload) — no need
 			// to re-read the store.
 			const entry = this.journal.toDispatching(id, corrId);
+			releaseDeliveryContext = this.enterDeliveryContext?.(entry.id);
 			// FLY-404: show "typing…" in the channel the founder will see the reply in
 			// (cross-dept → source channel; chat/core/mailbox → notifier default chat)
 			// for the WHOLE model turn, and ALWAYS stop it after (finally) so a mid-turn
@@ -338,6 +345,8 @@ export class LeadInputRouter {
 				err: (err as Error).message,
 			});
 			this.safeAmbiguous(id, `process failed: ${(err as Error).message}`);
+		} finally {
+			releaseDeliveryContext?.();
 		}
 	}
 
@@ -354,6 +363,7 @@ export class LeadInputRouter {
 			leadId: this.leadId,
 			text: output,
 			idempotencyKey: `${id}:out`,
+			...(this.enterDeliveryContext ? { deliveryContext: id } : {}),
 			// FLY-267: undefined → sender's default chat channel (byte-compat).
 			...(channelId ? { channelId } : {}),
 		});

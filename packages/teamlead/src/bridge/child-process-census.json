@@ -283,6 +283,11 @@
 			"disposition": "bridge_sync_marker_timeout"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/lead-patrol-snapshot.ts",
+			"raw_spawn": 1,
+			"disposition": "Bridge read-only patrol helper: pinned deployment scripts, private facts, washed environment, deadline and owned process-group cleanup"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/management-cron-source.ts",
 			"sync_child": 1,
 			"sync_marker": 1,
@@ -362,6 +367,11 @@
 			"disposition": "observed_async_lifecycle"
 		},
 		{
+			"file": "packages/teamlead/src/lead-backends/codex/capability-app-server.ts",
+			"raw_spawn": 1,
+			"disposition": "Lead activation owns pinned Codex app-server over private Unix socket; washed environment, bounded startup and TERM/KILL cleanup"
+		},
+		{
 			"file": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
 			"sync_marker": 1,
 			"raw_spawn": 1,
@@ -375,7 +385,8 @@
 		{
 			"file": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts",
 			"sync_child": 1,
-			"disposition": "separate_gateway"
+			"disposition": "separate_gateway: bounded owned Git command in private staging repository",
+			"raw_spawn": 1
 		},
 		{
 			"file": "packages/teamlead/src/lead-backends/codex/gateway/ship-preflight.ts",
@@ -387,6 +398,46 @@
 			"sync_child": 2,
 			"sync_marker": 2,
 			"disposition": "lead_runtime_bounded"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/bounded-stdio-transport.ts",
+			"raw_spawn": 1,
+			"disposition": "Lead parent: bounded MCP stdio transport, owned detached process group, byte limits and TERM/KILL cleanup"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/browser-host-identity.ts",
+			"sync_child": 2,
+			"disposition": "Lead startup only: fixed PlistBuddy/codesign checks, 15 second timeout and 4 KiB output bound; no browser launch"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/browser-isolation.ts",
+			"raw_spawn": 1,
+			"disposition": "Lead parent startup: bounded disposable browser isolation probe"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/default-runtime.ts",
+			"sync_child": 1,
+			"disposition": "Lead startup only: canonical Codex --version, 5 second timeout and 4 KiB output bound with washed environment"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/deployment.ts",
+			"sync_child": 1,
+			"disposition": "Lead startup deployment verification: fixed git HEAD read with bounded timeout"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/github-client.ts",
+			"sync_child": 1,
+			"disposition": "Lazy parent credential resolution: fixed gh auth token for github.com, 15 second timeout and 8 KiB output bound; token remains parent-only"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/model-isolation.ts",
+			"raw_spawn": 1,
+			"disposition": "Lead parent startup: bounded Codex permission probe in owned process group"
+		},
+		{
+			"file": "packages/teamlead/src/lead-capabilities/patrol-completion-gates.ts",
+			"sync_child": 1,
+			"disposition": "Parent verifies pinned patrol rule programs and owned report before each of three gates; 3 second timeout and 4 KiB output bound, washed environment"
 		},
 		{
 			"file": "packages/teamlead/src/ship-judgment/subscription-process.ts",

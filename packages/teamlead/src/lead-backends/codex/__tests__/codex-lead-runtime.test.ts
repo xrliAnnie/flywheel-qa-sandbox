@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import {
+	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -11,6 +14,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// These runtime fixtures exercise protocol startup; OS canaries have independent tests.
+vi.mock("../../../lead-capabilities/model-isolation.js", () => ({
+	verifyModelIsolation: vi.fn(async () => {}),
+}));
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +47,7 @@ import {
 import { buildTuiDaemonEnv } from "../codex-lead-tui-runtime.js";
 import { fullAccessLeadActionsConfigFromEnv } from "../lead-actions/mcp-config.js";
 import { McpInventoryWatcher } from "../mcp-inventory.js";
+import { SqliteJournalStore } from "../SqliteJournalStore.js";
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -1488,6 +1497,31 @@ describe("FLY-245 F-b: write-capable release gate (plan §7)", () => {
 		});
 	}
 
+	it("closes the real parent socket when initialization fails after listen", async () => {
+		const start = vi
+			.spyOn(CodexLeadProcess.prototype, "start")
+			.mockImplementation(async () => {
+				expect(existsSync(join(stateDir, "broker.sock"))).toBe(true);
+				throw new Error("initialize_failed_after_listen");
+			});
+		vi.spyOn(CodexLeadProcess.prototype, "stop").mockResolvedValue();
+		const journalClose = vi.spyOn(SqliteJournalStore.prototype, "close");
+		const runtime = buildCodexLeadRuntime(
+			parseCodexLeadRuntimeConfig(releaseEnv()),
+			silentLogger,
+		);
+		try {
+			await expect(runtime.start()).rejects.toThrow(
+				"initialize_failed_after_listen",
+			);
+			expect(start).toHaveBeenCalledOnce();
+			expect(existsSync(join(stateDir, "broker.sock"))).toBe(false);
+			expect(journalClose).toHaveBeenCalledOnce();
+		} finally {
+			await runtime.stop();
+			vi.restoreAllMocks();
+		}
+	});
 	it("UNLOCKS: all release conditions present → buildCodexLeadRuntime succeeds", () => {
 		const config = parseCodexLeadRuntimeConfig(releaseEnv());
 		expect(() => buildCodexLeadRuntime(config, silentLogger)).not.toThrow();
@@ -1803,4 +1837,374 @@ describe("FLY-898 core-room mention gate (Codex)", () => {
 		);
 		expect(dryRunReport(off).join("\n")).toMatch(/core mention gate\s*: off/);
 	});
+});
+
+describe("parent resources on partial startup failure", () => {
+	it.each([false, true])(
+		"closes journal and outbox even when process shutdown fails=%s",
+		async (stopFails) => {
+			const stateDir = mkdtempSync(join(tmpdir(), "fly2519-runtime-cleanup-"));
+			vi.spyOn(CodexLeadProcess.prototype, "start").mockRejectedValue(
+				new Error("initialize_failed"),
+			);
+			const stop = vi
+				.spyOn(CodexLeadProcess.prototype, "stop")
+				.mockImplementation(async () => {
+					if (stopFails) throw new Error("stop_failed");
+				});
+			const thread = vi.spyOn(CodexLeadProcess.prototype, "startThread");
+			const journalClose = vi.spyOn(SqliteJournalStore.prototype, "close");
+			const outboxClose = vi.spyOn(CodexOutboundSender.prototype, "close");
+			const runtime = buildCodexLeadRuntime(
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+						FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+					}),
+				),
+				silentLogger,
+			);
+			try {
+				await expect(runtime.start()).rejects.toThrow("initialize_failed");
+				expect(stop).toHaveBeenCalledOnce();
+				expect(journalClose).toHaveBeenCalledOnce();
+				expect(outboxClose).toHaveBeenCalledOnce();
+				expect(thread).not.toHaveBeenCalled();
+				await runtime.stop();
+				expect(journalClose).toHaveBeenCalledOnce();
+				expect(outboxClose).toHaveBeenCalledOnce();
+			} finally {
+				await runtime.stop();
+				vi.restoreAllMocks();
+				rmSync(stateDir, { recursive: true, force: true });
+			}
+		},
+	);
+});
+
+describe("explicit v2 runtime selection", () => {
+	it.each(["workspace-write", "danger-full-access"])(
+		"still rejects direct v2 runtime callers with legacy sandbox %s",
+		(sandbox) => {
+			expect(() =>
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION: "2",
+						FLYWHEEL_CODEX_LEAD_SANDBOX: sandbox,
+					}),
+				),
+			).toThrow("capability_bundle_legacy_sandbox_override");
+		},
+	);
+	it.each(["", "1", "3", " 2", "false"])(
+		"rejects malformed bundle marker %j instead of selecting legacy",
+		(value) => {
+			expect(() =>
+				parseCodexLeadRuntimeConfig(
+					fullEnv({ FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION: value }),
+				),
+			).toThrow(/capability_bundle/);
+		},
+	);
+	it.each([
+		"initialize",
+		"config",
+		"skills",
+		"skills-error",
+		"thread",
+		"resume",
+	])(
+		"binds v2 to registry and cleans up rejected %s startup",
+		async (failurePoint) => {
+			const { identityEnvProjection, resolveLeadIdentity } = await import(
+				"flywheel-comm/lead-identity"
+			);
+			const root = realpathSync(mkdtempSync(join(tmpdir(), "v2-")));
+			try {
+				const project = join(root, "project"),
+					projectsPath = join(root, "projects.json");
+				mkdirSync(project);
+				mkdirSync(join(root, "a"), { mode: 0o700 });
+				mkdirSync(join(root, "codex"), { mode: 0o700 });
+				mkdirSync(join(root, ".flywheel"));
+				writeFileSync(
+					join(root, ".flywheel", "summary-config.json"),
+					JSON.stringify({
+						granularity: "per-lead",
+						setBy: "test",
+						setAt: "2026-09-10T00:00:00Z",
+					}),
+				);
+				const rows = [
+					{
+						projectName: "demo",
+						projectRoot: project,
+						leads: [
+							{
+								agentId: "product-lead",
+								botUserId: "1499895683287748679",
+								summaryRole: "producer",
+								backend: "codex-app-server",
+								codexProfile: "full-access",
+								canSpawnRunners: false,
+								codexCapabilityBundleVersion: 2,
+							},
+						],
+					},
+				];
+				writeFileSync(projectsPath, JSON.stringify(rows));
+				const identity = resolveLeadIdentity({
+					projectsPath,
+					projectName: "demo",
+					leadId: "product-lead",
+					homeDir: root,
+				});
+				const env = fullEnv({
+					HOME: root,
+					CODEX_HOME: join(root, "codex"),
+					FLYWHEEL_CODEX_LEAD_STATE_DIR: join(root, "state"),
+					FLYWHEEL_PROJECTS_FILE: projectsPath,
+					FLYWHEEL_CODEX_LEAD_PROJECT_DIR: project,
+					FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+					FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION: "2",
+					...Object.fromEntries(
+						identityEnvProjection(identity).map((line) => {
+							const i = line.indexOf("=");
+							return [line.slice(0, i), line.slice(i + 1)];
+						}),
+					),
+				});
+				const config = parseCodexLeadRuntimeConfig(env);
+				expect(config.capabilityBundleVersion).toBe(2);
+				expect(dryRunReport(config).join(" ")).toContain(
+					"Default parent factory selected",
+				);
+				const { parseCodexLeadTuiRuntimeConfig } = await import(
+					"../codex-lead-tui-runtime.js"
+				);
+				expect(
+					parseCodexLeadTuiRuntimeConfig({
+						...env,
+						FLYWHEEL_CODEX_TUI_CWD: project,
+					}),
+				).toMatchObject({ capabilityBundleVersion: 2, tuiCwd: project });
+				expect(buildThreadParams(config, undefined)).toEqual({
+					approvalPolicy: "never",
+					permissions: "flywheel-lead-v2",
+					cwd: project,
+				});
+				const defaultFactory = await import(
+					"../../../lead-capabilities/default-runtime.js"
+				);
+				const defaultSpy = vi
+					.spyOn(defaultFactory, "startDefaultLeadCapabilityParent")
+					.mockRejectedValueOnce(new Error("default_factory_probe"));
+				const defaultRuntime = buildCodexLeadRuntime(config, silentLogger, {
+					publishCapabilityCarrier: () => "fixture-claim",
+				});
+				await expect(defaultRuntime.start()).rejects.toThrow(
+					"default_factory_probe",
+				);
+				expect(defaultSpy).toHaveBeenCalledOnce();
+				defaultSpy.mockRestore();
+				const { startLeadCapabilityParent } = await import(
+					"../../../lead-capabilities/runtime-parent.js"
+				);
+				const { createLeadCapabilityManifest } = await import(
+					"../../../lead-capabilities/manifest.js"
+				);
+				const { getLeadCapability } = await import(
+					"../../../lead-capabilities/catalog.js"
+				);
+				const { browserFacadeSchemaDigest } = await import(
+					"../browser-capability-proxy.js"
+				);
+				let socketPath = "";
+				const closeProvider = vi.fn(async () => {});
+
+				const capture = join(root, "child-capture.json");
+				const fakeCodex = join(root, "fake-codex");
+				mkdirSync(join(project, ".lead-tmp"));
+				writeFileSync(
+					fakeCodex,
+					`#!${process.execPath}
+const fs = require('node:fs');
+const probe=fs.mkdtempSync(require('node:path').join(process.env.TMPDIR,'probe-'));
+fs.writeFileSync(require('node:path').join(probe,'file'),'ok');
+fs.rmSync(probe,{recursive:true});
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({argv:process.argv.slice(2),socketReady:fs.existsSync(process.env.FLYWHEEL_LEAD_CAPABILITY_SOCKET || ''),hasSecret:Object.keys(process.env).some(k=>/TOKEN|SECRET|CARRIER_INSTANCE/.test(k)),home:process.env.CODEX_HOME,tempRoot:process.env.TMPDIR}));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.method==='initialize')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,...(${JSON.stringify(failurePoint)}==='initialize'?{error:{code:-32000,message:'v2_initialize_failed'}}:{result:{}})})+'\\n');if(r.method==='config/read'){fs.writeFileSync(${JSON.stringify(join(root, "config-request.json"))},JSON.stringify(r.params));process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{config:(['skills','skills-error','thread','resume'].includes(${JSON.stringify(failurePoint)})?JSON.parse(fs.readFileSync(${JSON.stringify(join(root, "effective-config.json"))},'utf8')):{default_permissions:'foreign'})}})+'\\n');}if(r.method==='skills/list'){fs.writeFileSync(${JSON.stringify(join(root, "skills-request.json"))},JSON.stringify(r.params));process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,...(${JSON.stringify(failurePoint)}==='skills-error'?{error:{code:-32000,message:'unavailable'}}:{result:{data:[{cwd:${JSON.stringify(project)},skills:(${JSON.stringify(failurePoint)}==='skills'?[{name:'foreign',path:'/foreign/SKILL.md',scope:'user',enabled:true}]:[])}]}})})+'\\n');}if(r.method==='initialized'){for(const name of ['lead_actions','chrome_devtools'])process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'mcpServer/startupStatus/updated',params:{name,status:'ready'}})+'\\n');}if(r.method==='thread/start' || r.method==='thread/resume'){fs.writeFileSync(${JSON.stringify(join(root, "thread-params.json"))},JSON.stringify(r.params));process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,error:{code:-32000,message:'v2_thread_failed'}})+'\\n');}});
+`,
+				);
+				chmodSync(fakeCodex, 0o700);
+				config.codexBin = fakeCodex;
+				config.systemPromptFiles = [join(root, "absent-legacy-rule.md")];
+				vi.stubEnv("FLYWHEEL_API_TOKEN", "SYNTHETIC_SECRET_CANARY");
+				const procStart = vi.spyOn(CodexLeadProcess.prototype, "start");
+				const closeJournal = vi.spyOn(SqliteJournalStore.prototype, "close");
+				const outboundPost = vi.fn(async () => ({
+					status: 200,
+					body: JSON.stringify({ status: "authorized" }),
+				}));
+				const assembled = buildCodexLeadRuntime(config, silentLogger, {
+					publishCapabilityCarrier: () => "synthetic-carrier",
+					capabilityParent: async ({ journal, carrierInstanceId }) => {
+						expect(carrierInstanceId).toBe("synthetic-carrier");
+						const rulePath = join(root, "verified-rule.md");
+						writeFileSync(rulePath, "Verified parent rule");
+						const manifest = createLeadCapabilityManifest({
+							projectName: config.projectName,
+							leadId: config.leadId,
+							identityDigest: config.identityDigest,
+							backend: "codex-app-server",
+							profile: "full-access",
+							activationId: "test",
+							browserGeneration: "aaaa0000-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+							sourceRevision: "sha",
+							operations: [getLeadCapability("browser.list_pages")!],
+							ruleSources: [
+								{
+									path: rulePath,
+									sha256: createHash("sha256")
+										.update("Verified parent rule")
+										.digest("hex"),
+								},
+							],
+							skillSources: [],
+							integrations: [
+								{
+									id: "browser",
+									version: "1.9.0",
+									toolSchemaDigest: browserFacadeSchemaDigest(["list_pages"]),
+								},
+							],
+						});
+						const parent = await startLeadCapabilityParent({
+							outboundTransport: outboundPost,
+							manifest,
+							journal,
+							activationRoot: join(root, "a"),
+							codexHome: config.codexHome,
+							artifactRoot: join(root, "artifacts"),
+							modelTempRoot: join(project, ".lead-tmp"),
+							nodePath: process.execPath,
+							codexPath: config.codexBin,
+							proxyEntryPath: "/opt/flywheel/capability-mcp-entry.js",
+							handlers: new Map([
+								[
+									"browser.list_pages",
+									{
+										authorize: async () => {},
+										execute: async () => ({
+											status: "succeeded" as const,
+											data: { content: [] },
+										}),
+									},
+								],
+							]),
+							secrets: [],
+							assertCurrent: async () => {},
+							permissionProfile: {
+								deploymentRoot: "/opt/flywheel",
+								projectRoot: project,
+								readPaths: [],
+								credentialPaths: [join(root, "credentials")],
+								proxyPort: 32189,
+							},
+							verifyDeployment: async () => {},
+							closeProviders: closeProvider,
+						});
+						socketPath = parent.pins.brokerSocket;
+						const { parse } = await import("smol-toml");
+						writeFileSync(
+							join(root, "effective-config.json"),
+							JSON.stringify({
+								...parse(
+									readFileSync(join(config.codexHome, "config.toml"), "utf8"),
+								),
+								...parse(
+									parent.mcp.argv
+										.filter((_, index) => index % 2 === 1)
+										.join("\n"),
+								),
+							}),
+						);
+						writeFileSync(rulePath, "Changed after snapshot");
+						return parent;
+					},
+				});
+				if (failurePoint === "resume")
+					writeFileSync(config.threadIdPath, "previous-thread");
+				try {
+					await expect(assembled.start()).rejects.toThrow(
+						failurePoint === "initialize"
+							? "v2_initialize_failed"
+							: failurePoint === "config"
+								? "effective permission profile differs"
+								: ["skills", "skills-error"].includes(failurePoint)
+									? "capability_skills_unverified"
+									: "v2_thread_failed",
+					);
+					if (failurePoint === "thread" || failurePoint === "resume")
+						expect(
+							JSON.parse(readFileSync(join(root, "thread-params.json"), "utf8"))
+								.baseInstructions,
+						).toBe("Verified parent rule");
+					if (failurePoint === "config")
+						expect(
+							JSON.parse(
+								readFileSync(join(root, "config-request.json"), "utf8"),
+							),
+						).toEqual({ cwd: project, includeLayers: false });
+					if (failurePoint === "thread" || failurePoint === "resume")
+						expect(outboundPost).toHaveBeenCalled();
+					if (
+						["skills", "skills-error", "thread", "resume"].includes(
+							failurePoint,
+						)
+					)
+						expect(
+							JSON.parse(
+								readFileSync(join(root, "skills-request.json"), "utf8"),
+							),
+						).toEqual({ cwds: [project], forceReload: true });
+					if (["skills", "skills-error"].includes(failurePoint)) {
+						expect(outboundPost).not.toHaveBeenCalled();
+						expect(existsSync(join(root, "thread-params.json"))).toBe(false);
+					}
+					expect(procStart).toHaveBeenCalledOnce();
+					const captured = JSON.parse(readFileSync(capture, "utf8"));
+					expect(captured).toMatchObject({
+						socketReady: true,
+						hasSecret: false,
+						home: config.codexHome,
+						tempRoot: join(project, ".lead-tmp"),
+					});
+					expect(captured.argv).toContain(
+						'default_permissions="flywheel-lead-v2"',
+					);
+					expect(captured.argv.join(" ")).not.toContain("sandbox_mode");
+					expect(closeProvider).toHaveBeenCalledOnce();
+					expect(existsSync(socketPath)).toBe(false);
+					expect(closeJournal).toHaveBeenCalledOnce();
+				} finally {
+					await assembled.stop();
+					vi.unstubAllEnvs();
+					vi.restoreAllMocks();
+				}
+
+				expect(() =>
+					parseCodexLeadRuntimeConfig({
+						...env,
+						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+					}),
+				).toThrow(/capability_bundle/);
+				rows[0]!.leads[0]!.codexCapabilityBundleVersion = 1;
+				writeFileSync(projectsPath, JSON.stringify(rows));
+				expect(() => parseCodexLeadRuntimeConfig(env)).toThrow();
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
 });

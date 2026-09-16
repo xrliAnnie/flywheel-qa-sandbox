@@ -287,7 +287,7 @@ const fs = require("node:fs");
 const names = [
   "FLYWHEEL_PROJECTS_FILE", "FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST",
   "FLYWHEEL_LEAD_PROJECTS_DIGEST", "FLYWHEEL_CODEX_LEAD_MODE", "FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS",
-  "FLYWHEEL_CODEX_LEAD_PROFILE", "FLYWHEEL_CODEX_LEAD_SANDBOX",
+  "FLYWHEEL_CODEX_LEAD_PROFILE", "FLYWHEEL_CODEX_LEAD_SANDBOX", "FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION",
   "FLYWHEEL_LEAD_CHAT_CHANNEL_ID", "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
   "FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD", "FLYWHEEL_ROUNDTABLE_CHANNEL_ID",
   "FLYWHEEL_ROUNDTABLE_ENABLED", "FLYWHEEL_ROUNDTABLE_GUILD_ID",
@@ -383,6 +383,26 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
 else
   fail "Codex run composition failed: $(cat "$TMP/codex-run.err"); capture=$(cat "$CODEX_CAPTURE" 2>/dev/null || true)"
 fi
+
+# Exercise the actual registry launcher -> canonical projection -> TUI child boundary.
+# Deployment identity is a fixture here; this test starts no real Lead or model.
+mkdir -p "$TEAMLEAD_FIXTURE/dist/bin"
+printf '%s\n' '// isolated deployment verifier fixture' > "$TEAMLEAD_FIXTURE/dist/bin/verify-codex-deployment.js"
+cp "$STATE/projects.json" "$TMP/before-bundle-v2.json"
+jq 'map(if .projectName == "codex-demo" then .leads |= map(. + {canSpawnRunners:true,codexRunnerActions:true,codexCapabilityBundleVersion:2}) else . end)' \
+  "$TMP/before-bundle-v2.json" > "$STATE/projects.json"
+rm -f "$CODEX_CAPTURE"
+if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
+  FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \
+  FLYWHEEL_TEAMLEAD_ROOT="$TEAMLEAD_FIXTURE" FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" FLYWHEEL_LEAD_DRY_RUN=1 \
+  CODEX_CAPTURE="$CODEX_CAPTURE" HOST_GATE_CALLS="$HOST_GATE_CALLS" \
+  "$LAUNCHER" run "$codex_manifest" >"$TMP/bundle-v2.out" 2>"$TMP/bundle-v2.err" \
+  && jq -e '.FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION == "2" and .FLYWHEEL_CODEX_LEAD_SANDBOX == null' "$CODEX_CAPTURE" >/dev/null; then
+  pass "registry v2 replaces legacy sandbox before the actual TUI child"
+else
+  fail "registry v2 child has incompatible sandbox: $(cat "$TMP/bundle-v2.err")"
+fi
+mv "$TMP/before-bundle-v2.json" "$STATE/projects.json"
 
 # Verify actual child delivery for the explicit department capability and fail closed otherwise.
 cp "$STATE/projects.json" "$TMP/before-runner-capability.json"

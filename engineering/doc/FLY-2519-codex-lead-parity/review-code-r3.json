@@ -1,0 +1,302 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "0cc872a6-c795-44b7-a707-f30d81e525bf",
+  "round": 3,
+  "findings": [
+    {
+      "id": "discord-receipt-rework-breaks-bridge-discord-suite",
+      "severity": "HIGH",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 795,
+      "title": "NEW REGRESSION — the Discord receipt rework fails exact-head CI: bridge-discord.test.ts fails 12/37, and 3 of those failures come from a production TypeError, not from fixture drift",
+      "detail": "Exact-head CI at c2de88abb fails job 'Unit (teamlead 1 of 4)' (run 34914462447, job 104209017921, exit code 1). I downloaded the job log: every failure is in src/lead-capabilities/__tests__/bridge-discord.test.ts. The same file passed at 988e7b154 (run 34910095446 = success) and has not changed since, so the source rework caused this. I reproduced it locally: 12 failed, 129 passed across the focused suites. There are two root causes. (1) Fixture drift. Generic writes now do `if (!options.operationReceipts) throw denied()` (line 670), but the real-router fixture at bridge-discord.test.ts:205-214 passes only `outboundDedupStore`. Every write therefore returns rejected, which breaks 'dispatches once through the real Bridge router after the parent receipt is durable', 'parent restart replays local receipt…', 'typed reply keeps durable parent outcome across restart', 'retains an uncertain write' and similar tests. (2) Production bug. The new catch block reads `let settled = definition.classification === 'read'` (line 795). The old code used `definition?.classification`. For `discord.output.deliver` / `discord.output.authorize`, `definition = getLeadCapability(body.operationId)!` (line 203) is undefined, because those operations are not in the catalog. Any throw on that path — carrier, lead or context denial, or an authorize failure — now raises a TypeError inside the catch. Express passes it to the Bridge JSON error handler, which responds 500 `{error:'internal error'}` and logs '[bridge] Unhandled error' instead of the intended 403 rejected (or 200 unknown). Proof that (2) is a real bug and not just fixture drift: in a scratch copy of the package (worktree untouched), I added `operationReceipts: outboundDedupStore.operationReceipts` to the fixture. 9 of the 12 tests recovered. The 3 'automatic output rejects invalid carrier/lead/context before sending' tests still failed with 'expected [400, 403] to include 500' at bridge-discord.test.ts:745. Denials still fail closed (automatic-outbound.ts turns the 500 body into denied, so nothing is sent), so this is not a send-safety hole. But the head cannot land, and the error path now crashes in production. Fix: restore optional chaining (`definition?.classification`) in the catch, and give the bridge-discord fixture the receipt store. The prior-rework docs only report the lead-capability-discord.test.ts route and capacity runs; this sibling suite was never run locally.",
+      "findingKey": "discord-receipt-rework-breaks-bridge-discord-suite"
+    },
+    {
+      "id": "v2-terminal-status-last-line-only",
+      "severity": "HIGH",
+      "file": "packages/flywheel-comm/src/terminal-observation.ts",
+      "line": 233,
+      "title": "NOT CORRECTLY FIXED — the new menu-tail stripping only handles the synthetic fixture; real Claude Code select menus render a key-hint footer after the options, so v2 terminal.status still reports 'executing' and terminal.input is still refused",
+      "detail": "Commit 03fac84ac now pops trailing numbered-option and box-border lines (lines 222-233) and passes the last remaining line to detectTerminalStatus. The popping stops at the first line that matches neither pattern. I executed the rebuilt dist createTerminalSessionCore at this head against six pane shapes. (A) The new test fixture (options then border, no footer) → waiting, sent. (B) Options, a blank line, then an 'Esc to cancel' footer → executing / terminal_not_waiting. (C) Options then 'Enter to confirm · Esc to cancel' → executing / terminal_not_waiting. (D) The repo's own boxed dialog fixture from scripts/__tests__/fly1679-dev-channels-v2.test.sh:101-107 (question in the top border, description line above the options) → executing / terminal_not_waiting. (E) Option 2 wrapped onto a continuation line in a narrow pane → executing / terminal_not_waiting. (F) A stale prompt followed by build output → executing (correct). Evidence that (B)/(C) is the real layout: in the installed Claude Code binary (~/.local/share/claude/versions/2.1.272), the Bash-command permission dialog source renders the text 'Do you want to proceed?', then the Select of options, then an unconditional `Box({justifyContent:'space-between', marginTop:1})` containing a dimColor key-hint `{chord:'escape', action:'cancel'}` plus extra hints. That is a separate visible footer line below the options. The same key-hint component shows up in the repo's real pane capture packages/teamlead/src/__tests__/fixtures/lead-panes/freeze-resume-menu.txt as its own trailing line, 'Enter to confirm · Esc to cancel', after '3. Don't ask me again'. The trust prompt that TrustPromptHandler.ts already matches on 'enter to confirm' has the same shape. So in production the loop halts at the footer, detectTerminalStatus sees a line with no waiting pattern, and terminal.input throws terminal_not_waiting — the pre-fix outcome. The new test passes only because terminal-session-core.test.ts:109 omits the footer. Fix: also strip trailing key-hint footer lines (e.g. lines made only of '<Key> to <verb>' segments joined by '·') and blank or box-content-only lines. Alternatively, walk up through the contiguous trailing menu block looking for a waiting line. Then add the verbatim footer shape and the boxed-title shape to the regression test.",
+      "findingKey": "v2-terminal-status-last-line-only"
+    },
+    {
+      "id": "discord-memory-cache-shadows-durable-reconcile",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 648,
+      "title": "NEW (rework residual) — a settled 'unknown' write stays in the in-memory map and short-circuits the new durable receipt reconcile until eviction or restart",
+      "detail": "The wedge itself is fixed: completed and unknown writes are now marked settled and evictable, and bridge lead-capability-discord.test.ts passes 7/7 at this head, including the 65-request capacity and router-recreation replay scenarios. That is why discord-router-unsettled-request-wedge is not re-raised. However, the in-memory `prior = requests.get(key)` check at line 648 runs before the durable receipt branch at line 669. An unknown outcome is cached as `{result: {status:'unknown', …}, settled: true}` (lines 779-783, or lines 804-808 in the catch). Any retry with the same requestId inside the same router lifetime returns that cached unknown and never reaches `handler.reconcile` (line 709). Eviction only removes one settled entry when size reaches 64. Failure scenario: on a quiet Bridge, a discord.thread.reply times out after Discord accepted it. Every retry returns cached unknown until 64 other requests arrive or the Bridge restarts, so the read-only reconcile the fix advertises is effectively unreachable in normal traffic. There is no duplicate write, but the outcome stays unresolved. Fix: skip the memory cache for settled write entries (or drop them once the receipt is durable) so replays go through the receipt branch.",
+      "findingKey": "discord-memory-cache-shadows-durable-reconcile"
+    },
+    {
+      "id": "discord-concurrent-replay-transition-conflict-403",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 709,
+      "title": "NEW (rework residual) — concurrent replays of one requestId both reconcile; the loser's receipt transition throws and is reported as a terminal 403 scope denial",
+      "detail": "The replay branch (lines 669-732) is not registered in `requests`, so two concurrent requests with the same requestId and an 'unknown' or 'dispatched' receipt both await handler.reconcile. Both then call settleWrite, which transitions from the stale `receipt.state`. The second transition matches zero rows and throws receipt_transition_conflict. That lands in the catch with executing=false, which answers HTTP 403 `discord_scope_denied`, status rejected. Failure scenario: a model issues the same reply requestId twice concurrently after a timeout. One caller is told its write was rejected for lack of scope, although the first reconcile just confirmed the message was delivered. This is narrow (it needs concurrent same-id replays), so LOW. Fix: pin the requestId in `requests` during replay, or treat a transition conflict as a re-read of the current receipt.",
+      "findingKey": "discord-concurrent-replay-transition-conflict-403"
+    },
+    {
+      "id": "github-tierb-reconcile-missing-data",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/broker.ts",
+      "line": 473,
+      "title": "UNCHANGED — GitHub Tier-B write reconciliation cannot converge because the Bridge receipt replay returns no data and validateOutcome requires schema-valid data",
+      "detail": "Not touched by this rework; the Discord router now reconstructs replay data, but the GitHub path does not. The Bridge receipt-only replay (bridge/lead-github-write.ts:41-63) returns `{status:'succeeded', resourceRefs:[ref]}` without data. handlers/bridge-read.ts:411-412 forwards it without data, and broker.ts:473 `outputSchema.safeParse(undefined)` throws invalid_provider_output. Failure scenario: github.pr.comment times out after the comment was posted. Every same-requestId retry answers unknown/invalid_provider_output, the receipt never reaches succeeded, and a fresh requestId posts a duplicate comment. Fix: reconstruct minimal schema-valid data on the Bridge replay, as the Discord rework now does, or skip outputSchema on reconcile when only resourceRefs are present.",
+      "findingKey": "github-tierb-reconcile-missing-data"
+    },
+    {
+      "id": "browser-sandbox-global-file-read",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-sandbox.ts",
+      "line": 186,
+      "title": "UNCHANGED (governance-approved design) — `(allow file-read*)` with a fixed deny-list leaves real credential stores readable by the headed Chrome sandbox, which also has public-internet egress",
+      "detail": "Non-blocking advisory under Lead ruling e3d41f41; not touched. In round 1 I probed the generated policy on this host: ~/.zshrc, ~/.npmrc, ~/Library/Application Support/discord/Local Storage and ~/Dev were readable, while ~/.codex/auth.json and the Chrome profile were correctly denied. browser-egress.ts permits any public IP, so a compromised Chrome process can read and exfiltrate those files. The model's own profile is default-deny, so this asymmetry is specific to the browser worker. Cheap mitigation before activation: append ~/.aws, ~/.npmrc, ~/.docker, ~/.kube, ~/.gnupg, shell rc files, other browsers' profiles and the Discord desktop store to the fixed list.",
+      "findingKey": "browser-sandbox-global-file-read"
+    },
+    {
+      "id": "discord-transient-parent-lookup-terminal-403",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 353,
+      "title": "UNCHANGED — a transient Discord thread-parent lookup is still turned into a terminal 403 scope denial",
+      "detail": "Now at line 353 because of inserted lines. buildAuthorizeLeadChannel returns 'unavailable' on a transient parent lookup, but `if (allowed !== true) throw denied()` answers 403 `discord_scope_denied` before CodexLeadOutboundHandler's existing 503 mapping can run. The same pattern is at lead-capability-report-deliver.ts:121-128. Failure scenario: a Discord 429 during parent resolution makes discord.output.deliver terminally rejected, the message is never sent under that id, and the Lead is told it lacks scope for its own channel.",
+      "findingKey": "discord-transient-parent-lookup-terminal-403"
+    },
+    {
+      "id": "sessions-list-serial-linear-lookups",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-read.ts",
+      "line": 772,
+      "title": "UNCHANGED — sessions.list and terminal.list make serial per-candidate Linear round-trips under a 15s hard abort",
+      "detail": "Not touched. inScope() does issue(), then team/project/labels, for each candidate, one at a time (lines 242-271 and 770-773), while a fixed 15s abort at line 170 bounds the whole request. Failure scenario: a project with about 25-30 active sessions, mostly owned by another department, exceeds 15s and returns read_unavailable (503) on every call.",
+      "findingKey": "sessions-list-serial-linear-lookups"
+    },
+    {
+      "id": "legacy-terminal-input-requires-running-status",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/terminal-observation.ts",
+      "line": 195,
+      "title": "UNCHANGED — the `write && row.status !== 'running'` guard still silently narrows the legacy Claude runner_terminal_input tool",
+      "detail": "Not touched by the menu fix. This guard is not gated by legacyContract, unlike the sibling terminal_not_waiting checks. packages/terminal-mcp/src/index.ts routes the existing Claude tool through it. Failure scenario: a 'blocked' session with a live pane, which lifecycle.ts classifies as parked-alive and re-engageable, previously accepted input and now fails with terminal_not_running. No legacy test covers a non-running status.",
+      "findingKey": "legacy-terminal-input-requires-running-status"
+    },
+    {
+      "id": "runner-receipt-reconstruct-reauthorizes",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-runner-operation.ts",
+      "line": 78,
+      "title": "UNCHANGED — receipt-only runner reconciliation re-runs state-dependent authorization and can report a succeeded operation as rejected",
+      "detail": "Not touched. reconstruct() calls authorize() (lease, menu adoption, session-row checks) before reading the receipt, and any throw returns rejected/runner_scope_denied (lines 214-219). Failure scenario: start_runner succeeded, then the lease flips or the category is de-adopted. Reconcile then tells the model 'rejected' while the runner is running, and the parent receipt stays unknown.",
+      "findingKey": "runner-receipt-reconstruct-reauthorizes"
+    },
+    {
+      "id": "v2-mcp-inventory-gate-before-thread-start",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+      "line": 1837,
+      "title": "UNCHANGED / unconfirmed — v2 boot awaits the MCP startup-status inventory before thread/start",
+      "detail": "Not touched. Both v2 entrypoints wait up to 30s for mcpServer/startupStatus notifications before startThread/resumeThread (this file:1837 and codex-lead-tui-runtime.ts:788). The FLY-1547 real-codex spike log shows those notifications carry a threadId and arrive only after a thread exists. The unit fake emits them on 'initialized'. If this ordering holds on 0.153.2, v2 never boots. This still needs the isolated host probe described in round 1 before activation.",
+      "findingKey": "v2-mcp-inventory-gate-before-thread-start"
+    },
+    {
+      "id": "prepared-receipts-recovered-as-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/receipts.ts",
+      "line": 208,
+      "title": "UNCHANGED — crash recovery marks never-dispatched 'prepared' receipts as 'unknown', contrary to the module's own transition table",
+      "detail": "Not touched. recoverInterruptedParent raw-updates `state IN ('prepared','dispatched')` to 'unknown', but the table at line 168 allows prepared only to dispatched or rejected. broker.ts commits prepared→dispatched before handler.execute, so a row still 'prepared' after a restart provably never reached the provider. Failure scenario: a restart between prepare and dispatch leaves an operation that never ran stuck as unknown; for GitHub Tier-B it is unreconcilable forever. Fix: recover 'prepared' → 'rejected'.",
+      "findingKey": "prepared-receipts-recovered-as-unknown"
+    },
+    {
+      "id": "patrol-snapshot-prespawn-failure-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/lead-patrol-registration.ts",
+      "line": 138,
+      "title": "UNCHANGED — deterministic pre-spawn patrol validation failures are recorded as unknown instead of rejected",
+      "detail": "Not touched. A bad tickId, a pin mismatch or missing githubFacts throws before any subprocess starts, yet the receipt goes to unknown/snapshot_interrupted. Replays of that requestId then return unknown forever.",
+      "findingKey": "patrol-snapshot-prespawn-failure-unknown"
+    },
+    {
+      "id": "github-issue-view-no-body-truncation",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/catalog.ts",
+      "line": 455,
+      "title": "UNCHANGED — github.issue.view has no truncation, so bodies over 16000 characters are unreadable",
+      "detail": "Not touched. The output schema caps body at 16000 characters, while the handler returns data.body verbatim and parses it against that schema. Any longer issue yields provider_failure, and there is no cursor to page through it.",
+      "findingKey": "github-issue-view-no-body-truncation"
+    },
+    {
+      "id": "chrome-version-drift-warning-discarded",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/browser-worker.ts",
+      "line": 74,
+      "title": "UNCHANGED — BrowserWorker.start discards verifyBrowserHostIdentity's chrome_version_drift warning",
+      "detail": "Not touched. The return value is ignored, so an auto-updated, unreviewed Chrome build launches with no log, manifest or receipt signal. The generated policy on this host already grants exec to helpers from two framework versions (153.0.8010.12 and .37).",
+      "findingKey": "chrome-version-drift-warning-discarded"
+    },
+    {
+      "id": "skill-adapter-pins-absolute-host-paths",
+      "severity": "LOW",
+      "file": "packages/teamlead/lead-skill-adapters/source-pins.json",
+      "line": 68,
+      "title": "UNCHANGED — the committed skill adapter pins hardcode /Users/xiaorongli/.agents/skills absolute paths",
+      "detail": "Not touched. On any HOME or host relocation, or any pin-file edit that doesn't also update INDEX_SHA256, every pinned PM skill silently becomes skill_adapter_unverified. The only signal is 'missing' rows in the manifest.",
+      "findingKey": "skill-adapter-pins-absolute-host-paths"
+    },
+    {
+      "id": "publish-receipt-scope-denial-as-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/lead-capability-report-verify.ts",
+      "line": 28,
+      "title": "UNCHANGED — /publish-receipt answers a scope denial with 503 unknown",
+      "detail": "Not touched. A mis-scoped lead polls indefinitely instead of getting a terminal 403. reports-route.ts:420/446 similarly report assertPublishCurrent failures as 502 rather than 403; this is misclassification only, with no leak.",
+      "findingKey": "publish-receipt-scope-denial-as-unknown"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "discord-memory-cache-shadows-durable-reconcile",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 648,
+      "title": "NEW (rework residual) — a settled 'unknown' write stays in the in-memory map and short-circuits the new durable receipt reconcile until eviction or restart",
+      "detail": "The wedge itself is fixed: completed and unknown writes are now marked settled and evictable, and bridge lead-capability-discord.test.ts passes 7/7 at this head, including the 65-request capacity and router-recreation replay scenarios. That is why discord-router-unsettled-request-wedge is not re-raised. However, the in-memory `prior = requests.get(key)` check at line 648 runs before the durable receipt branch at line 669. An unknown outcome is cached as `{result: {status:'unknown', …}, settled: true}` (lines 779-783, or lines 804-808 in the catch). Any retry with the same requestId inside the same router lifetime returns that cached unknown and never reaches `handler.reconcile` (line 709). Eviction only removes one settled entry when size reaches 64. Failure scenario: on a quiet Bridge, a discord.thread.reply times out after Discord accepted it. Every retry returns cached unknown until 64 other requests arrive or the Bridge restarts, so the read-only reconcile the fix advertises is effectively unreachable in normal traffic. There is no duplicate write, but the outcome stays unresolved. Fix: skip the memory cache for settled write entries (or drop them once the receipt is durable) so replays go through the receipt branch.",
+      "findingKey": "discord-memory-cache-shadows-durable-reconcile"
+    },
+    {
+      "id": "discord-concurrent-replay-transition-conflict-403",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 709,
+      "title": "NEW (rework residual) — concurrent replays of one requestId both reconcile; the loser's receipt transition throws and is reported as a terminal 403 scope denial",
+      "detail": "The replay branch (lines 669-732) is not registered in `requests`, so two concurrent requests with the same requestId and an 'unknown' or 'dispatched' receipt both await handler.reconcile. Both then call settleWrite, which transitions from the stale `receipt.state`. The second transition matches zero rows and throws receipt_transition_conflict. That lands in the catch with executing=false, which answers HTTP 403 `discord_scope_denied`, status rejected. Failure scenario: a model issues the same reply requestId twice concurrently after a timeout. One caller is told its write was rejected for lack of scope, although the first reconcile just confirmed the message was delivered. This is narrow (it needs concurrent same-id replays), so LOW. Fix: pin the requestId in `requests` during replay, or treat a transition conflict as a re-read of the current receipt.",
+      "findingKey": "discord-concurrent-replay-transition-conflict-403"
+    },
+    {
+      "id": "github-tierb-reconcile-missing-data",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/broker.ts",
+      "line": 473,
+      "title": "UNCHANGED — GitHub Tier-B write reconciliation cannot converge because the Bridge receipt replay returns no data and validateOutcome requires schema-valid data",
+      "detail": "Not touched by this rework; the Discord router now reconstructs replay data, but the GitHub path does not. The Bridge receipt-only replay (bridge/lead-github-write.ts:41-63) returns `{status:'succeeded', resourceRefs:[ref]}` without data. handlers/bridge-read.ts:411-412 forwards it without data, and broker.ts:473 `outputSchema.safeParse(undefined)` throws invalid_provider_output. Failure scenario: github.pr.comment times out after the comment was posted. Every same-requestId retry answers unknown/invalid_provider_output, the receipt never reaches succeeded, and a fresh requestId posts a duplicate comment. Fix: reconstruct minimal schema-valid data on the Bridge replay, as the Discord rework now does, or skip outputSchema on reconcile when only resourceRefs are present.",
+      "findingKey": "github-tierb-reconcile-missing-data"
+    },
+    {
+      "id": "browser-sandbox-global-file-read",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-capabilities/browser-sandbox.ts",
+      "line": 186,
+      "title": "UNCHANGED (governance-approved design) — `(allow file-read*)` with a fixed deny-list leaves real credential stores readable by the headed Chrome sandbox, which also has public-internet egress",
+      "detail": "Non-blocking advisory under Lead ruling e3d41f41; not touched. In round 1 I probed the generated policy on this host: ~/.zshrc, ~/.npmrc, ~/Library/Application Support/discord/Local Storage and ~/Dev were readable, while ~/.codex/auth.json and the Chrome profile were correctly denied. browser-egress.ts permits any public IP, so a compromised Chrome process can read and exfiltrate those files. The model's own profile is default-deny, so this asymmetry is specific to the browser worker. Cheap mitigation before activation: append ~/.aws, ~/.npmrc, ~/.docker, ~/.kube, ~/.gnupg, shell rc files, other browsers' profiles and the Discord desktop store to the fixed list.",
+      "findingKey": "browser-sandbox-global-file-read"
+    },
+    {
+      "id": "discord-transient-parent-lookup-terminal-403",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-discord.ts",
+      "line": 353,
+      "title": "UNCHANGED — a transient Discord thread-parent lookup is still turned into a terminal 403 scope denial",
+      "detail": "Now at line 353 because of inserted lines. buildAuthorizeLeadChannel returns 'unavailable' on a transient parent lookup, but `if (allowed !== true) throw denied()` answers 403 `discord_scope_denied` before CodexLeadOutboundHandler's existing 503 mapping can run. The same pattern is at lead-capability-report-deliver.ts:121-128. Failure scenario: a Discord 429 during parent resolution makes discord.output.deliver terminally rejected, the message is never sent under that id, and the Lead is told it lacks scope for its own channel.",
+      "findingKey": "discord-transient-parent-lookup-terminal-403"
+    },
+    {
+      "id": "sessions-list-serial-linear-lookups",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-read.ts",
+      "line": 772,
+      "title": "UNCHANGED — sessions.list and terminal.list make serial per-candidate Linear round-trips under a 15s hard abort",
+      "detail": "Not touched. inScope() does issue(), then team/project/labels, for each candidate, one at a time (lines 242-271 and 770-773), while a fixed 15s abort at line 170 bounds the whole request. Failure scenario: a project with about 25-30 active sessions, mostly owned by another department, exceeds 15s and returns read_unavailable (503) on every call.",
+      "findingKey": "sessions-list-serial-linear-lookups"
+    },
+    {
+      "id": "legacy-terminal-input-requires-running-status",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/terminal-observation.ts",
+      "line": 195,
+      "title": "UNCHANGED — the `write && row.status !== 'running'` guard still silently narrows the legacy Claude runner_terminal_input tool",
+      "detail": "Not touched by the menu fix. This guard is not gated by legacyContract, unlike the sibling terminal_not_waiting checks. packages/terminal-mcp/src/index.ts routes the existing Claude tool through it. Failure scenario: a 'blocked' session with a live pane, which lifecycle.ts classifies as parked-alive and re-engageable, previously accepted input and now fails with terminal_not_running. No legacy test covers a non-running status.",
+      "findingKey": "legacy-terminal-input-requires-running-status"
+    },
+    {
+      "id": "runner-receipt-reconstruct-reauthorizes",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-runner-operation.ts",
+      "line": 78,
+      "title": "UNCHANGED — receipt-only runner reconciliation re-runs state-dependent authorization and can report a succeeded operation as rejected",
+      "detail": "Not touched. reconstruct() calls authorize() (lease, menu adoption, session-row checks) before reading the receipt, and any throw returns rejected/runner_scope_denied (lines 214-219). Failure scenario: start_runner succeeded, then the lease flips or the category is de-adopted. Reconcile then tells the model 'rejected' while the runner is running, and the parent receipt stays unknown.",
+      "findingKey": "runner-receipt-reconstruct-reauthorizes"
+    },
+    {
+      "id": "v2-mcp-inventory-gate-before-thread-start",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+      "line": 1837,
+      "title": "UNCHANGED / unconfirmed — v2 boot awaits the MCP startup-status inventory before thread/start",
+      "detail": "Not touched. Both v2 entrypoints wait up to 30s for mcpServer/startupStatus notifications before startThread/resumeThread (this file:1837 and codex-lead-tui-runtime.ts:788). The FLY-1547 real-codex spike log shows those notifications carry a threadId and arrive only after a thread exists. The unit fake emits them on 'initialized'. If this ordering holds on 0.153.2, v2 never boots. This still needs the isolated host probe described in round 1 before activation.",
+      "findingKey": "v2-mcp-inventory-gate-before-thread-start"
+    },
+    {
+      "id": "prepared-receipts-recovered-as-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/receipts.ts",
+      "line": 208,
+      "title": "UNCHANGED — crash recovery marks never-dispatched 'prepared' receipts as 'unknown', contrary to the module's own transition table",
+      "detail": "Not touched. recoverInterruptedParent raw-updates `state IN ('prepared','dispatched')` to 'unknown', but the table at line 168 allows prepared only to dispatched or rejected. broker.ts commits prepared→dispatched before handler.execute, so a row still 'prepared' after a restart provably never reached the provider. Failure scenario: a restart between prepare and dispatch leaves an operation that never ran stuck as unknown; for GitHub Tier-B it is unreconcilable forever. Fix: recover 'prepared' → 'rejected'.",
+      "findingKey": "prepared-receipts-recovered-as-unknown"
+    },
+    {
+      "id": "patrol-snapshot-prespawn-failure-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/lead-patrol-registration.ts",
+      "line": 138,
+      "title": "UNCHANGED — deterministic pre-spawn patrol validation failures are recorded as unknown instead of rejected",
+      "detail": "Not touched. A bad tickId, a pin mismatch or missing githubFacts throws before any subprocess starts, yet the receipt goes to unknown/snapshot_interrupted. Replays of that requestId then return unknown forever.",
+      "findingKey": "patrol-snapshot-prespawn-failure-unknown"
+    },
+    {
+      "id": "github-issue-view-no-body-truncation",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/catalog.ts",
+      "line": 455,
+      "title": "UNCHANGED — github.issue.view has no truncation, so bodies over 16000 characters are unreadable",
+      "detail": "Not touched. The output schema caps body at 16000 characters, while the handler returns data.body verbatim and parses it against that schema. Any longer issue yields provider_failure, and there is no cursor to page through it.",
+      "findingKey": "github-issue-view-no-body-truncation"
+    },
+    {
+      "id": "chrome-version-drift-warning-discarded",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/lead-capabilities/browser-worker.ts",
+      "line": 74,
+      "title": "UNCHANGED — BrowserWorker.start discards verifyBrowserHostIdentity's chrome_version_drift warning",
+      "detail": "Not touched. The return value is ignored, so an auto-updated, unreviewed Chrome build launches with no log, manifest or receipt signal. The generated policy on this host already grants exec to helpers from two framework versions (153.0.8010.12 and .37).",
+      "findingKey": "chrome-version-drift-warning-discarded"
+    },
+    {
+      "id": "skill-adapter-pins-absolute-host-paths",
+      "severity": "LOW",
+      "file": "packages/teamlead/lead-skill-adapters/source-pins.json",
+      "line": 68,
+      "title": "UNCHANGED — the committed skill adapter pins hardcode /Users/xiaorongli/.agents/skills absolute paths",
+      "detail": "Not touched. On any HOME or host relocation, or any pin-file edit that doesn't also update INDEX_SHA256, every pinned PM skill silently becomes skill_adapter_unverified. The only signal is 'missing' rows in the manifest.",
+      "findingKey": "skill-adapter-pins-absolute-host-paths"
+    },
+    {
+      "id": "publish-receipt-scope-denial-as-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/lead-capability-report-verify.ts",
+      "line": 28,
+      "title": "UNCHANGED — /publish-receipt answers a scope denial with 503 unknown",
+      "detail": "Not touched. A mis-scoped lead polls indefinitely instead of getting a terminal 403. reports-route.ts:420/446 similarly report assertPublishCurrent failures as 502 rather than 403; this is misclassification only, with no leak.",
+      "findingKey": "publish-receipt-scope-denial-as-unknown"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "c2de88abb81e7672f84ca3dd16cf947aa8e0985b",
+  "deliveryNonce": "a0478e99-1c7e-41e8-ab38-50714ad9629c"
+}

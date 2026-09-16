@@ -145,6 +145,20 @@ export FLYWHEEL_CODEX_LEAD_SUBDIR="$SUBDIR"
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
 export FLYWHEEL_LEAD_ACTIONS_STATE_DIR="$STATE_DIR"
 
+# FLY-2519: v2 follows the updater's deployed dist truth before home/daemon work.
+# Source execution is an explicit development-only escape, never an implicit fallback.
+if [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ] && [ "${FLYWHEEL_CODEX_LEAD_DEV_SOURCE:-0}" != "1" ]; then
+  deployment_verifier="${SCRIPT_DIR}/../dist/bin/verify-codex-deployment.js"
+  if [ ! -f "$deployment_verifier" ]; then
+    log "ERROR: v2 deployment verifier missing; build/deploy TeamLead before launch."
+    exit 78
+  fi
+  if ! node "$deployment_verifier"; then
+    log "ERROR: v2 updater deployment is not verified."
+    exit 78
+  fi
+fi
+
 # ── FLY-898: fleet-wide core-room mention gate signal (non-CoS Codex lead) ────
 # A Codex lead that subscribes to a core room (FLYWHEEL_LEAD_CORE_CHANNEL_ID set)
 # AND is a NON-CoS lead in a project that HAS a CoS must id-only-gate that core
@@ -210,7 +224,8 @@ if [ "${FLYWHEEL_CODEX_LEAD_MODE:-headless}" = "tui" ]; then
   # Honor the dry-run contract (review MED): in dry-run we must NOT touch the
   # home or start the daemon — the runtime prints its report and exits. Only run
   # the side-effecting ensures on a real start.
-  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+  # Bundle v2 parent owns its named-profile home; never run the legacy writer.
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] && [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" != "2" ]; then
     FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" FLYWHEEL_CODEX_TUI_CWD="${FLYWHEEL_CODEX_TUI_CWD:?FLYWHEEL_CODEX_TUI_CWD required in tui mode}"     /bin/bash "$TUI_HOME_SH" ensure-home
     if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" != "full-access" ]; then
       FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" /bin/bash "$TUI_HOME_SH" ensure-daemon
@@ -221,7 +236,7 @@ if [ "${FLYWHEEL_CODEX_LEAD_MODE:-headless}" = "tui" ]; then
   log "Starting codex TUI Lead '${FLYWHEEL_LEAD_ID}' (project: ${FLYWHEEL_PROJECT_NAME}, state: ${STATE_DIR}, ③ real terminal)"
   if [ -f "$TUI_RUNTIME_DIST" ]; then
     exec node "$TUI_RUNTIME_DIST"
-  elif [ -f "$TUI_RUNTIME_SRC" ] && command -v npx >/dev/null 2>&1; then
+  elif { [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" != "2" ] || [ "${FLYWHEEL_CODEX_LEAD_DEV_SOURCE:-0}" = "1" ]; } && [ -f "$TUI_RUNTIME_SRC" ] && command -v npx >/dev/null 2>&1; then
     exec npx tsx "$TUI_RUNTIME_SRC"
   else
     log "ERROR: codex-lead-tui runtime entrypoint not found (build the teamlead package)."
@@ -237,7 +252,7 @@ log "Starting codex Lead '${FLYWHEEL_LEAD_ID}' (project: ${FLYWHEEL_PROJECT_NAME
 
 if [ -f "$RUNTIME_DIST" ]; then
   exec node "$RUNTIME_DIST"
-elif [ -f "$RUNTIME_SRC" ] && command -v npx >/dev/null 2>&1; then
+elif { [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" != "2" ] || [ "${FLYWHEEL_CODEX_LEAD_DEV_SOURCE:-0}" = "1" ]; } && [ -f "$RUNTIME_SRC" ] && command -v npx >/dev/null 2>&1; then
   exec npx tsx "$RUNTIME_SRC"
 else
   log "ERROR: codex-lead runtime entrypoint not found."

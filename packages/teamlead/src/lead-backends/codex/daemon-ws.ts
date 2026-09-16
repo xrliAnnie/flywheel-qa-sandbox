@@ -19,6 +19,8 @@ export function daemonSocketPath(codexHome: string): string {
 
 export interface ConnectDaemonWsOptions {
 	codexHome: string;
+	/** Trusted activation-owned app-server socket; absent for legacy remote-control. */
+	socketPath?: string;
 	/** Pre-open handshake timeout (default 10s). */
 	connectTimeoutMs?: number;
 	/** Injectable ctor for tests. */
@@ -27,7 +29,13 @@ export interface ConnectDaemonWsOptions {
 
 /** Connect to the daemon control socket; resolve once OPEN. */
 export function connectDaemonWs(opts: ConnectDaemonWsOptions): Promise<WsLike> {
-	const sock = daemonSocketPath(opts.codexHome);
+	const sock = opts.socketPath ?? daemonSocketPath(opts.codexHome);
+	if (
+		!/^\/[A-Za-z0-9_./-]+$/.test(sock) ||
+		sock.split("/").includes("..") ||
+		Buffer.byteLength(sock) > 103
+	)
+		return Promise.reject(new Error("invalid app-server socket path"));
 	// `ws` supports WS-over-unix via the ws+unix scheme: socket path, then
 	// `:` + request path (spike-verified handshake: HTTP/1.1 101).
 	// CRITICAL (real-daemon verified): permessage-deflate MUST be disabled —

@@ -130,6 +130,8 @@ export function runLeadIdentityCommand(
 				stdout(
 					`FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=${capabilities.runnerActionsEnabled ? "1" : "0"}`,
 				);
+			if (capabilities?.capabilityBundleVersion === 2)
+				stdout("FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION=2");
 		}
 		return 0;
 	} catch (error) {

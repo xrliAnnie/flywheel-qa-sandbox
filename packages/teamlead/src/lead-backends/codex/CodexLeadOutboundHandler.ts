@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 /**
  * FLY-224 Phase 2b — CodexLeadOutboundHandler: the Bridge-side `/api/lead-outbound/
  * send` handler (plan §6.4, Phase 0A §4). This is the server piece paired with
@@ -31,6 +30,9 @@ import { createHash } from "node:crypto";
  * The SQLite dedup store + the plugin.ts mount are the following 2b sub-steps.
  */
 
+import { createHash } from "node:crypto";
+import type { ChatThreadWriteGuard } from "../../bridge/chat-thread-write-guard.js";
+
 export interface OutboundSendBody {
 	projectName?: unknown;
 	leadId?: unknown;
@@ -40,6 +42,7 @@ export interface OutboundSendBody {
 	text?: unknown;
 	idempotencyKey?: unknown;
 	nonce?: unknown;
+	replyTo?: unknown;
 }
 
 export type OutboundSendStatus =
@@ -112,6 +115,8 @@ export type DiscordSendFn = (args: {
 	channelId: string;
 	text: string;
 	nonce: string;
+	replyTo?: string;
+	guard?: ChatThreadWriteGuard;
 }) => Promise<string>;
 
 export type PrepareProactiveEngagement = (identity: {
@@ -173,6 +178,10 @@ export class CodexLeadOutboundHandler {
 	async handle(req: {
 		body: OutboundSendBody;
 		providedToken: string | undefined;
+		/** Supplied only by trusted in-process adapter; HTTP handlers do not read it from body. */
+		guard?: ChatThreadWriteGuard;
+		/** Trusted parent journal entry only. Never read from model input or the HTTP body. */
+		deliveryContext?: string;
 	}): Promise<OutboundSendOutcome> {
 		// 1. Auth — reserved endpoint, fail-closed.
 		if (
@@ -217,7 +226,50 @@ export class CodexLeadOutboundHandler {
 		}
 		if (req.body.roundtableEngage === true) return this.handleProactive(v);
 		if (v.probe) return { httpStatus: 200, status: "authorized" };
-		const { text, idempotencyKey, nonce } = v.value;
+		const { text, nonce, replyTo } = v.value;
+		if (
+			req.deliveryContext !== undefined &&
+			(typeof req.deliveryContext !== "string" ||
+				!req.deliveryContext ||
+				req.deliveryContext.length > 512 ||
+				[...req.deliveryContext].some(
+					(character) =>
+						character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+				))
+		)
+			return {
+				httpStatus: 400,
+				status: "rejected",
+				reason: "invalid_delivery_context",
+			};
+		// Both send paths share the existing durable claim. Unknown claims remain
+		// ambiguous; only a confirmed sent record can suppress a second delivery.
+		const idempotencyKey =
+			req.deliveryContext === undefined
+				? v.value.idempotencyKey
+				: `delivery-context:${createHash("sha256")
+						.update(
+							JSON.stringify([
+								projectName,
+								leadId,
+								req.deliveryContext,
+								channelId,
+								replyTo ?? null,
+								createHash("sha256").update(text).digest("hex"),
+							]),
+						)
+						.digest("hex")}`;
+		try {
+			if (req.guard?.beforeSideEffect) await req.guard.beforeSideEffect();
+			req.guard?.assertSideEffectCurrent?.();
+			if (req.guard?.signal?.aborted) throw new Error();
+		} catch {
+			return {
+				httpStatus: 403,
+				status: "rejected",
+				reason: "outbound_scope_revoked",
+			};
+		}
 
 		// 4. Durable dedup — fast path on an existing record.
 		const existing = this.store.get(idempotencyKey);
@@ -267,6 +319,8 @@ export class CodexLeadOutboundHandler {
 				channelId,
 				text,
 				nonce,
+				...(replyTo ? { replyTo } : {}),
+				...(req.guard ? { guard: req.guard } : {}),
 			});
 		} catch (err) {
 			// HIGH-3: a thrown send is AMBIGUOUS — the message may have reached Discord
@@ -423,6 +477,7 @@ function validateBody(body: OutboundSendBody):
 				text: string;
 				idempotencyKey: string;
 				nonce: string;
+				replyTo?: string;
 			};
 	  }
 	| { ok: false; reason: string } {
@@ -456,10 +511,23 @@ function validateBody(body: OutboundSendBody):
 		return { ok: false, reason: "idempotencyKey_required" };
 	if (typeof nonce !== "string" || nonce === "")
 		return { ok: false, reason: "nonce_required" };
+	if (
+		body.replyTo !== undefined &&
+		(typeof body.replyTo !== "string" || !/^\d{17,20}$/.test(body.replyTo))
+	)
+		return { ok: false, reason: "invalid_reply_target" };
 	return {
 		ok: true,
 		probe: false,
-		value: { projectName, leadId, channelId, text, idempotencyKey, nonce },
+		value: {
+			projectName,
+			leadId,
+			channelId,
+			text,
+			idempotencyKey,
+			nonce,
+			...(typeof body.replyTo === "string" ? { replyTo: body.replyTo } : {}),
+		},
 	};
 }
 

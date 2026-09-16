@@ -17,6 +17,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import {
+	migrateOperationReceipts,
+	OperationReceiptStore,
+} from "../../lead-capabilities/receipts.js";
+import {
 	type DedupRecord,
 	engagementBindingKey,
 	type OutboundDedupStore,
@@ -34,6 +38,7 @@ interface Row {
 }
 
 export class SqliteOutboundDedupStore implements OutboundDedupStore {
+	readonly operationReceipts: OperationReceiptStore;
 	private readonly db: Database.Database;
 	private readonly now: () => number;
 
@@ -41,8 +46,11 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
 		this.now = now;
 		mkdirSync(dirname(dbPath), { recursive: true });
 		this.db = installSqlTiming(new Database(dbPath), "bridge-local");
-		this.db.pragma("journal_mode = WAL");
-		this.db.exec(`
+		try {
+			this.db.pragma("journal_mode = WAL");
+			migrateOperationReceipts(this.db);
+			this.operationReceipts = new OperationReceiptStore(this.db);
+			this.db.exec(`
 			CREATE TABLE IF NOT EXISTS outbound_dedup (
 				idempotency_key TEXT PRIMARY KEY,
 				status TEXT NOT NULL,
@@ -51,15 +59,19 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
 				updated_at INTEGER NOT NULL
 			);
 		`);
-		this.db.transaction(() => {
-			const columns = this.db
-				.prepare("PRAGMA table_info(outbound_dedup)")
-				.all() as { name: string }[];
-			if (!columns.some((c) => c.name === "binding"))
-				this.db.exec("ALTER TABLE outbound_dedup ADD COLUMN binding TEXT");
-			if (!columns.some((c) => c.name === "engagement"))
-				this.db.exec("ALTER TABLE outbound_dedup ADD COLUMN engagement TEXT");
-		})();
+			this.db.transaction(() => {
+				const columns = this.db
+					.prepare("PRAGMA table_info(outbound_dedup)")
+					.all() as { name: string }[];
+				if (!columns.some((c) => c.name === "binding"))
+					this.db.exec("ALTER TABLE outbound_dedup ADD COLUMN binding TEXT");
+				if (!columns.some((c) => c.name === "engagement"))
+					this.db.exec("ALTER TABLE outbound_dedup ADD COLUMN engagement TEXT");
+			})();
+		} catch (error) {
+			this.db.close();
+			throw error;
+		}
 	}
 
 	close(): void {

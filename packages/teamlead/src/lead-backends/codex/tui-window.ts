@@ -1,3 +1,4 @@
+import { LEAD_PERMISSION_PROFILE } from "../../lead-capabilities/permission-profile.js";
 /**
  * FLY-259 PR-C — tui-window: ensure the founder-facing tmux window running the
  * REAL interactive `codex resume --remote` TUI against the Lead's shared
@@ -28,6 +29,17 @@ import {
 	withSyncOpMarker,
 } from "flywheel-claude-runner";
 
+import {
+	buildLeadModelEnv,
+	type LeadModelEnvPins,
+} from "../../lead-capabilities/model-env.js";
+
+/** Trusted parent inputs, never reconstructed from model-supplied environment. */
+export interface TuiCapabilityModelEnv {
+	pins: LeadModelEnvPins;
+	env: NodeJS.ProcessEnv;
+}
+
 export const TUI_TMUX_SESSION = "flywheel";
 
 export interface TuiWindowSpec {
@@ -49,6 +61,9 @@ export interface TuiWindowSpec {
 	fullAccess?: boolean;
 	/** FLY-1309 generation capability, inherited by the founder TUI shell. */
 	carrierInstanceId?: string;
+	capabilityModelEnv?: TuiCapabilityModelEnv;
+	/** Trusted parent-owned socket; only valid with capabilityModelEnv. */
+	capabilitySocketPath?: string;
 }
 
 /** The command string is executed by tmux via a shell — every interpolated
@@ -83,7 +98,48 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 		);
 	}
 	const bin = spec.codexBin ?? "codex";
-	const sock = `${spec.codexHome}/app-server-control/app-server-control.sock`;
+	const sock =
+		spec.capabilitySocketPath ??
+		`${spec.codexHome}/app-server-control/app-server-control.sock`;
+	if (spec.capabilitySocketPath) {
+		assertShellSafe("capabilitySocketPath", sock, SAFE_PATH);
+		if (
+			!spec.capabilityModelEnv ||
+			!sock.startsWith("/") ||
+			sock.split("/").includes("..") ||
+			Buffer.byteLength(sock) > 103
+		)
+			throw new Error("tui-window: invalid capability socket");
+	}
+	if (spec.capabilityModelEnv) {
+		const { pins, env } = spec.capabilityModelEnv;
+		if (
+			pins.codexHome !== spec.codexHome ||
+			pins.projectName !== spec.projectName ||
+			pins.leadId !== spec.leadId
+		)
+			throw new Error("tui-window: capability identity mismatch");
+		const modelEnv = buildLeadModelEnv(env, pins);
+		const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+		return [
+			"/usr/bin/env",
+			"-i",
+			...Object.entries(modelEnv).map(([key, value]) =>
+				quote(`${key}=${value}`),
+			),
+			quote(bin),
+			"resume",
+			"--remote",
+			quote(`unix://${sock}`),
+			"-C",
+			quote(spec.cwd),
+			"-c",
+			quote('approval_policy="never"'),
+			"-c",
+			quote(`default_permissions=${JSON.stringify(LEAD_PERMISSION_PROFILE)}`),
+			quote(spec.threadId),
+		].join(" ");
+	}
 	return [
 		`CODEX_HOME="${spec.codexHome}"`,
 		bin,
@@ -163,7 +219,7 @@ export function ensureTuiWindow(
 			`=${TUI_TMUX_SESSION}`,
 			"-n",
 			windowName,
-			...(spec.carrierInstanceId
+			...(spec.carrierInstanceId && !spec.capabilityModelEnv
 				? [
 						"-e",
 						`FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=${spec.carrierInstanceId}`,

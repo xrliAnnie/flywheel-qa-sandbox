@@ -83,7 +83,7 @@ run_dry() {
 	export ENVDUMP
 	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
 		FLYWHEEL_BRIDGE_URL=http://127.0.0.1:1 TEAMLEAD_API_TOKEN=DRY \
-		CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+		CANONICAL_JSON='{"codexCapabilities":{"runnerActionsEnabled":false},"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_TUI_CWD="$T/proj" FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		MUFASA_BOT_TOKEN=DRY \
 		"$@" /bin/bash "$SUT" >/dev/null 2>"${RUN_STDERR:-/dev/null}"
@@ -178,7 +178,7 @@ LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
 	FLYWHEEL_LEAD_DRY_RUN=0 FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 	FLYWHEEL_BRIDGE_URL=http://127.0.0.1:1 TEAMLEAD_API_TOKEN=DRY \
 	MUFASA_BOT_TOKEN=DRY \
-	CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+	CANONICAL_JSON='{"codexCapabilities":{"runnerActionsEnabled":false},"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 	/bin/bash "$RT/scripts/run-codex-lead-mufasa-tui-fullaccess.sh" >/dev/null 2>&1
 real_rc=$?
 if [ "$real_rc" -eq 0 ] \

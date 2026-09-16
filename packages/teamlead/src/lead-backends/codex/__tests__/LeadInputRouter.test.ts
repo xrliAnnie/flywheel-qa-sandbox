@@ -715,6 +715,97 @@ describe("FLY-1942 accepted subscription callbacks", () => {
 	});
 });
 
+it.each([false, true])(
+	"binds the durable entry before model execution and releases it after settlement (failure=%s)",
+	async (fail) => {
+		const { journal, store } = make();
+		let active: string | undefined;
+		const observed: string[] = [];
+		const router = new LeadInputRouter({
+			leadId: "lead-x",
+			threadId: "thread",
+			journal,
+			enterDeliveryContext: (entryId: string) => {
+				expect(store.getById(entryId)?.state).toBe("dispatching");
+				active = entryId;
+				return () => {
+					observed.push("release");
+					active = undefined;
+				};
+			},
+			executor: {
+				startTurn: async () => {
+					expect(active).toBeDefined();
+					observed.push("start");
+					if (fail) throw new Error("lost");
+					return "turn";
+				},
+				awaitCompletion: async () => {
+					expect(active).toBeDefined();
+					return { output: "reply" };
+				},
+				reconcile: async () => ({ exists: false, completed: false }),
+			},
+			sender: {
+				enqueue: async (args) => {
+					expect(active).toBeDefined();
+					expect(args.deliveryContext).toBe(active);
+					return "out";
+				},
+				deliver: async () => {
+					expect(active).toBeDefined();
+					observed.push("deliver");
+				},
+			},
+			logger: silent,
+		});
+		router.submitBatch({
+			batchId: "context-batch",
+			memberIds: ["member"],
+			payload: "model-supplied-fake-entry",
+		});
+		await router.whenIdle();
+		expect(observed).toEqual(
+			fail ? ["start", "release"] : ["start", "deliver", "release"],
+		);
+		expect(active).toBeUndefined();
+	},
+);
+
+it("recovers persisted output with its original journal context without starting a model turn", async () => {
+	const { journal, executor } = make();
+	const { entry } = journal.accept({
+		idempotencyKey: "recovery",
+		source: "discord",
+		payload: "input",
+	});
+	journal.toDispatching(entry.id, "correlation");
+	journal.toDispatched(entry.id, "turn");
+	journal.toModelCompleted(entry.id, "reply");
+	const enqueue = vi.fn(async () => "out");
+	const enter = vi.fn(() => () => {});
+	const router = new LeadInputRouter({
+		leadId: "lead-x",
+		threadId: "thread",
+		journal,
+		executor,
+		enterDeliveryContext: enter,
+		sender: { enqueue, deliver: async () => {} },
+		logger: silent,
+	});
+	await router.recover();
+	await router.whenIdle();
+	expect(enqueue).toHaveBeenCalledWith(
+		expect.objectContaining({
+			deliveryContext: entry.id,
+			idempotencyKey: `${entry.id}:out`,
+			text: "reply",
+		}),
+	);
+	expect(executor.startCalls).toHaveLength(0);
+	expect(enter).not.toHaveBeenCalled();
+});
+
 describe("LeadInputRouter rotation fence", () => {
 	it("durably accepts inputs and batches while paused, then dispatches on resume", async () => {
 		const { router, executor, store } = make();

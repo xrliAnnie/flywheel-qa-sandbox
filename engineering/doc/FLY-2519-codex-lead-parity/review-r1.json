@@ -1,0 +1,112 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "81cb31fb-27a8-4201-ae93-ac3e8129b1fb",
+  "round": 1,
+  "findings": [
+    {
+      "id": "browser-mcp-unsandboxed-bypass",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 135,
+      "title": "chrome_devtools MCP 在 exec sandbox 之外运行，可以绕过 §4.3 凭证读取禁令和 founder-admin 门禁；计划误以为“无凭证 Chrome”就安全",
+      "detail": "代码库在 buildCodexLeadMcpArgv.ts:36-40 已写明：每个 MCP child 都在 exec sandbox 之外运行，Chrome DevTools 能操作 loopback Bridge 页面，会成为绕过 gateway 的 action 通道（FLY-245 R1）。计划没有回应这一点，还有两个错误前提。(1) 管理台门禁本来就不需要凭证。/api/fleet/stage|apply、/api/fleet/changes/*、/api/fleet/flag/*（plugin.ts:2605-2867）、runner defaults（runner-routes.ts:6）、re-qa/stage 和 gate-carrier-rebind（workflow-decision-routes.ts:943-1030）只校验 loopback Host、same-origin 和服务端签发的 confirmToken，没有 Bearer。本机 Chrome 打开 Bridge 页面后，用 evaluate_script 或点按钮，就能先 stage 再 apply，完成改 Lead model/effort（会起 detached engine 重启 Lead）、翻 flag、改 runner defaults、re-QA、gate carrier rebind 等操作。§9 第 4 步还明确要求 Honey Lemon 用这个浏览器打开管理台，而且 Discord/Linear 内容里的 prompt injection 也能驱动它。§4.3 那句“发现 alias 绕过就作为阻断差集报告”只把问题推到实现期，没有给出控制方案。(2) 文件读取也会绕过 permission profile。Chrome 和 MCP 进程都不受 flywheel-lead-v2 约束，navigate_page 到 file:// 再 take_snapshot，或者用 upload_file(filePath)，都能读到 §4.3 想 deny 的 gh auth、ssh、Claude 凭证文件。§8.1 的负例只写了“截图和报告中 canary”，没有 file://、upload_file、chrome://，也没有对 Bridge console 路由做浏览器侧 stage/apply 的负例。要求在设计中给出强制控制并配上负例，至少包括：用 sandbox-exec 等手段约束 Chrome 和 chrome-devtools-mcp 的文件读取，禁止 file:// 并用 enabled_tools 去掉 upload_file 或限定路径；阻止 Codex Chrome 访问 Bridge loopback 的 console 和 admin 写路由（例如用 proxy/host-resolver 规则拦截，或让这些路由要求 Codex Chrome 拿不到的 founder session）；验收时改为只读访问管理台。",
+      "findingKey": "browser-mcp-unsandboxed-bypass"
+    },
+    {
+      "id": "ambient-credential-denylist-gap",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 99,
+      "title": "deny 名单只从 resolver 已知的凭证来源生成，漏掉环境里已有的凭证",
+      "detail": "§4.3 保留“常规文件读取和网络”，deny 名单只由 broker 凭证来源元数据展开，再加 gh store、keychain、Claude 文件。这样会漏掉 ~/.ssh 私钥、git credential helper、~/.netrc、其他 Lead 的 carrier claim 和 state/token 文件、launchd plist 或 .env 里的 Bridge token 等。模型 shell 开着网络，拿到 SSH key 就能直接 git push，绕开 GitPushRunner 对 main/force 的限制（GitPushRunner.ts:72 PROTECTED_BRANCHES）。另外 secret-broker.ts 的威胁模型建立在 network-off 时 AF_UNIX connect 被拦的前提上，在 network-on 下不能沿用。建议改为默认拒读 HOME、只放行项目根和必要的配置目录（此前 sandbox-exec 实测过拒读 HOME 可行），或者先做一次环境凭证盘点，并把 ssh/git-credential/netrc、其他 Lead state、读父进程 env（ps -E / KERN_PROCARGS2）加进 canary 负例。v1 full-access 本来就把 GH_TOKEN 放在 env 里，所以这不是回退，但 v2 以凭证隔离为卖点，需要把这个口子补上。",
+      "findingKey": "ambient-credential-denylist-gap"
+    },
+    {
+      "id": "broker-socket-no-caller-binding",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 56,
+      "title": "broker socket 不绑定调用方，同 uid 的其他 Lead 能以本 Lead 身份调用",
+      "detail": "§4 规定 proxy 只拿到非秘密的 socket 坐标，身份和 scope 由 broker 自己的启动上下文决定，并称连到 socket“最多调用本身份相同受管动作”。这里的“本身份”是 socket 所属 Lead，而不是调用方。network-on 沙箱下不再拦 AF_UNIX connect，另一个 Lead 的模型 shell（v2 Codex 或 Claude）只要知道路径，就能以 Honey Lemon 的身份 start_runner、在她的线程发帖、写 Linear。计划没有写 socket 目录权限，没有把其他 Lead 的 socket 路径列入 deny，也没有跨 Lead 负例。建议至少在 §8.1 加“其他 Lead 进程连接本 Lead socket”的负例，并在 permission profile 里 deny 其他 Lead 的 broker 目录，或者说明为什么接受这个残余风险。",
+      "findingKey": "broker-socket-no-caller-binding"
+    },
+    {
+      "id": "browser-pipe-vs-per-turn-respawn",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 137,
+      "title": "pipe 连接、parent 持有 Chrome、MCP 每轮重启后复用浏览器，这三点在当前 Codex 运行方式下互相矛盾",
+      "detail": "codex-lead-tui-runtime.ts:696 确认 Codex 每个 turn 临时拉起 MCP。CDP pipe 要求 Chrome 是连接进程的子进程（fd 3/4），parent 持有的 Chrome 没法被每轮新起的 chrome-devtools-mcp 通过 pipe 接上。要跨 turn 复用，只能用 --browser-url/--wsEndpoint，也就是 TCP CDP 端口，而开着网络的模型 shell 能直接连这个端口，完全控制浏览器（含 file:// 读取）。§6 需要给出能实现的方案（例如 parent 持有的 CDP relay 只转发给经认证的 proxy），或者承认每轮会丢页面。计划也没说明新的 browser-config.ts 与现有 buildCodexLeadMcpArgv.ts 里 CHROME_MCP_PACKAGE（npx -y chrome-devtools-mcp@1.1.1 --browser-url）的关系；“gateway 与 leadActions 互斥”的现有规则怎么处理也要写清楚。",
+      "findingKey": "browser-pipe-vs-per-turn-respawn"
+    },
+    {
+      "id": "integration-routing-ambiguous",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 136,
+      "title": "P15–P17 集成走 broker catalog 还是独立 MCP server，§5 和 §6 说法不一致",
+      "detail": "§5 把 knowledge.*、xiaohongshu.*、docs.lookup 列为 lead_operation catalog 的操作（由 broker 持凭证），§6 的 TUI 精确集合却写成 {lead_actions, chrome_devtools, 适用的已登记无秘密集成}，看起来是独立 MCP server。独立 server 同样在 sandbox 外运行；Xiaohongshu cookie、gbrain token 这类集成需要凭证，又不属于“无秘密”。需要明确一条路径，避免实现期为了让它能用把凭证放进 MCP child env。",
+      "findingKey": "integration-routing-ambiguous"
+    },
+    {
+      "id": "single-issue-scope-size",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 151,
+      "title": "C1–C5 一次交付范围过大，验收全有或全无",
+      "detail": "一个 issue 里要做约 30 个新文件、凭证 broker、permission profile 迁移、九组 handler、浏览器、规则和 skills 统一，以及 Xiaohongshu/gbrain/Context7。§9 又规定 P01–P17 全部闭合才算对等。建议把 broker、凭证隔离（C2）和浏览器安全控制做成可单独验收的里程碑，日常 handler 按组增量上线，免得一个集成的认证缺失卡住整单。",
+      "findingKey": "single-issue-scope-size"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "ambient-credential-denylist-gap",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 99,
+      "title": "deny 名单只从 resolver 已知的凭证来源生成，漏掉环境里已有的凭证",
+      "detail": "§4.3 保留“常规文件读取和网络”，deny 名单只由 broker 凭证来源元数据展开，再加 gh store、keychain、Claude 文件。这样会漏掉 ~/.ssh 私钥、git credential helper、~/.netrc、其他 Lead 的 carrier claim 和 state/token 文件、launchd plist 或 .env 里的 Bridge token 等。模型 shell 开着网络，拿到 SSH key 就能直接 git push，绕开 GitPushRunner 对 main/force 的限制（GitPushRunner.ts:72 PROTECTED_BRANCHES）。另外 secret-broker.ts 的威胁模型建立在 network-off 时 AF_UNIX connect 被拦的前提上，在 network-on 下不能沿用。建议改为默认拒读 HOME、只放行项目根和必要的配置目录（此前 sandbox-exec 实测过拒读 HOME 可行），或者先做一次环境凭证盘点，并把 ssh/git-credential/netrc、其他 Lead state、读父进程 env（ps -E / KERN_PROCARGS2）加进 canary 负例。v1 full-access 本来就把 GH_TOKEN 放在 env 里，所以这不是回退，但 v2 以凭证隔离为卖点，需要把这个口子补上。",
+      "findingKey": "ambient-credential-denylist-gap"
+    },
+    {
+      "id": "broker-socket-no-caller-binding",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 56,
+      "title": "broker socket 不绑定调用方，同 uid 的其他 Lead 能以本 Lead 身份调用",
+      "detail": "§4 规定 proxy 只拿到非秘密的 socket 坐标，身份和 scope 由 broker 自己的启动上下文决定，并称连到 socket“最多调用本身份相同受管动作”。这里的“本身份”是 socket 所属 Lead，而不是调用方。network-on 沙箱下不再拦 AF_UNIX connect，另一个 Lead 的模型 shell（v2 Codex 或 Claude）只要知道路径，就能以 Honey Lemon 的身份 start_runner、在她的线程发帖、写 Linear。计划没有写 socket 目录权限，没有把其他 Lead 的 socket 路径列入 deny，也没有跨 Lead 负例。建议至少在 §8.1 加“其他 Lead 进程连接本 Lead socket”的负例，并在 permission profile 里 deny 其他 Lead 的 broker 目录，或者说明为什么接受这个残余风险。",
+      "findingKey": "broker-socket-no-caller-binding"
+    },
+    {
+      "id": "browser-pipe-vs-per-turn-respawn",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 137,
+      "title": "pipe 连接、parent 持有 Chrome、MCP 每轮重启后复用浏览器，这三点在当前 Codex 运行方式下互相矛盾",
+      "detail": "codex-lead-tui-runtime.ts:696 确认 Codex 每个 turn 临时拉起 MCP。CDP pipe 要求 Chrome 是连接进程的子进程（fd 3/4），parent 持有的 Chrome 没法被每轮新起的 chrome-devtools-mcp 通过 pipe 接上。要跨 turn 复用，只能用 --browser-url/--wsEndpoint，也就是 TCP CDP 端口，而开着网络的模型 shell 能直接连这个端口，完全控制浏览器（含 file:// 读取）。§6 需要给出能实现的方案（例如 parent 持有的 CDP relay 只转发给经认证的 proxy），或者承认每轮会丢页面。计划也没说明新的 browser-config.ts 与现有 buildCodexLeadMcpArgv.ts 里 CHROME_MCP_PACKAGE（npx -y chrome-devtools-mcp@1.1.1 --browser-url）的关系；“gateway 与 leadActions 互斥”的现有规则怎么处理也要写清楚。",
+      "findingKey": "browser-pipe-vs-per-turn-respawn"
+    },
+    {
+      "id": "integration-routing-ambiguous",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 136,
+      "title": "P15–P17 集成走 broker catalog 还是独立 MCP server，§5 和 §6 说法不一致",
+      "detail": "§5 把 knowledge.*、xiaohongshu.*、docs.lookup 列为 lead_operation catalog 的操作（由 broker 持凭证），§6 的 TUI 精确集合却写成 {lead_actions, chrome_devtools, 适用的已登记无秘密集成}，看起来是独立 MCP server。独立 server 同样在 sandbox 外运行；Xiaohongshu cookie、gbrain token 这类集成需要凭证，又不属于“无秘密”。需要明确一条路径，避免实现期为了让它能用把凭证放进 MCP child env。",
+      "findingKey": "integration-routing-ambiguous"
+    },
+    {
+      "id": "single-issue-scope-size",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2519-codex-lead-parity/plan.md",
+      "line": 151,
+      "title": "C1–C5 一次交付范围过大，验收全有或全无",
+      "detail": "一个 issue 里要做约 30 个新文件、凭证 broker、permission profile 迁移、九组 handler、浏览器、规则和 skills 统一，以及 Xiaohongshu/gbrain/Context7。§9 又规定 P01–P17 全部闭合才算对等。建议把 broker、凭证隔离（C2）和浏览器安全控制做成可单独验收的里程碑，日常 handler 按组增量上线，免得一个集成的认证缺失卡住整单。",
+      "findingKey": "single-issue-scope-size"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "0d8a01fd-4500-418a-811d-5c7ed90d076a"
+}

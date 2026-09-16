@@ -50,6 +50,8 @@ FLYWHEEL_ROOT="$(cd "${TEAMLEAD_ROOT}/../.." && pwd)"
 export FLYWHEEL_ROOT
 # ── Infra Bot identity: selectors in launcher, coordinates from registry ──
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
+# Apply the legacy default before canonical v2 selects its managed permissions.
+export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
 canonical_lead_identity_resolve "flywheel" "codex-infra-bot-lead"
 . "${FLYWHEEL_ROOT}/scripts/lib/lead-address.sh"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
@@ -74,7 +76,6 @@ export FLYWHEEL_CODEX_LEAD_MODE=tui
 # ── full-access tier (= Claude-equal), WINDOWED via the TUI runtime ──
 FLYWHEEL_CODEX_LEAD_PROFILE="$(node "$FLYWHEEL_COMM_CLI" lead-registry generic-codex-profile)" || exit $?
 export FLYWHEEL_CODEX_LEAD_PROFILE
-export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
 # The single writable root / cwd — the flywheel checkout the infra bot operates from.
 export FLYWHEEL_CODEX_LEAD_PROJECT_DIR="${FLYWHEEL_CODEX_LEAD_PROJECT_DIR:-${HOME}/Dev/flywheel}"
 export FLYWHEEL_CODEX_TUI_CWD="${FLYWHEEL_CODEX_LEAD_PROJECT_DIR}"

@@ -31,6 +31,50 @@ describe("MemoryService", () => {
 		vi.clearAllMocks();
 	});
 
+	it("projects only learning provenance for scoped dedup search", async () => {
+		const svc = new MemoryService({
+			googleApiKey: "test",
+			historyDbPath: ":memory:",
+		});
+		mockSearch.mockResolvedValue({
+			results: [
+				{
+					memory: "learning",
+					metadata: {
+						op_id: "op",
+						run_key: "run",
+						note_id: "note",
+						collection: "c",
+						token: "hidden",
+					},
+				},
+			],
+		});
+		expect(
+			await svc.searchLearningMemories({
+				query: "op",
+				projectName: "p",
+				userId: "p",
+				limit: 1,
+			}),
+		).toEqual([
+			{
+				text: "learning",
+				opId: "op",
+				runKey: "run",
+				noteId: "note",
+				collection: "c",
+			},
+		]);
+		expect(mockSearch).toHaveBeenCalledWith(
+			"op",
+			expect.objectContaining({
+				filters: { app_id: "p" },
+				userId: "p",
+				limit: 1,
+			}),
+		);
+	});
 	// ── Constructor ─────────────────────────────────
 
 	it("creates instance without error", () => {

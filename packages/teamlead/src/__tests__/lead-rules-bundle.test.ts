@@ -28,6 +28,7 @@ function runBundle(
 	commBackend: string,
 	governanceRequired: string,
 	summaryDuty = "0",
+	bundleVersion = "",
 ): { lines: string[]; status: number; stderr: string } {
 	try {
 		const out = execFileSync(
@@ -46,6 +47,7 @@ function runBundle(
 				env: {
 					...process.env,
 					FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: summaryDuty,
+					FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION: bundleVersion,
 				},
 			},
 		);
@@ -603,4 +605,62 @@ it("includes full recipient identity and ACK verification in shared Runner messa
 	expect(
 		readFileSync(join(BASE_RULES_DIR, "runner-messaging-rules.md"), "utf8"),
 	).toContain("## Recipient ID + post-send verification (FLY-1942)");
+});
+
+it("v2 department assembly includes the actual default-enable contract and Claude summary/patrol order", () => {
+	const result = runBundle("dept", BASE_RULES_DIR, "mailbox", "1", "1", "2");
+	expect(result.status).toBe(0);
+	const emitted = names(result.lines);
+	expect(emitted).toContain("default-enable-policy.md");
+	expect(emitted.indexOf("default-enable-policy.md")).toBe(
+		emitted.indexOf("doc-flow-rules.md") + 1,
+	);
+	expect(emitted.indexOf("runner-patrol-rules.md")).toBe(
+		emitted.indexOf("summary-inflow.md") + 1,
+	);
+	const claude = readFileSync(CLAUDE_SH, "utf8");
+	expect(
+		claude.indexOf('rules_bundle_add "$BASE_DEFAULT_ENABLE_RULES"'),
+	).toBeGreaterThan(claude.indexOf('rules_bundle_add "$BASE_DOC_FLOW_RULES"'));
+	expect(
+		claude.indexOf('rules_bundle_add "$BASE_PATROL_RULES"'),
+	).toBeGreaterThan(
+		claude.indexOf('rules_bundle_add "$BASE_SUMMARY_INFLOW_RULES"'),
+	);
+	const legacy = names(
+		runBundle("dept", BASE_RULES_DIR, "mailbox", "1", "1").lines,
+	);
+	expect(legacy).not.toContain("default-enable-policy.md");
+	expect(legacy.indexOf("runner-patrol-rules.md")).toBeLessThan(
+		legacy.indexOf("summary-inflow.md"),
+	);
+});
+
+it("loads the Codex reply transport contract for v2 without advertising a Claude plugin", () => {
+	const result = runBundle("dept", BASE_RULES_DIR, "mailbox", "1", "1", "2");
+	expect(result.status).toBe(0);
+	expect(names(result.lines)).toContain("codex-discord-reply-contract.md");
+	expect(names(result.lines)).not.toContain("discord-reply-contract.md");
+	const rule = readFileSync(
+		join(BASE_RULES_DIR, "codex-discord-reply-contract.md"),
+		"utf8",
+	);
+	expect(rule).toContain("discord.thread.reply");
+	expect(rule).toContain("lead_operation");
+	expect(rule).not.toContain("mcp__plugin_discord");
+	expect(
+		names(runBundle("dept", BASE_RULES_DIR, "mailbox", "1").lines),
+	).not.toContain("codex-discord-reply-contract.md");
+});
+
+it("refuses a v2 department bundle if its Codex reply adapter is missing", () => {
+	const root = mkdtempSync(join(tmpdir(), "missing-codex-reply-"));
+	try {
+		const missing = runBundle("dept", root, "mailbox", "0", "0", "2");
+		expect(missing.status).not.toBe(0);
+		expect(missing.stderr).toContain("codex-discord-reply-contract.md");
+		expect(runBundle("dept", root, "mailbox", "0", "0").status).toBe(0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

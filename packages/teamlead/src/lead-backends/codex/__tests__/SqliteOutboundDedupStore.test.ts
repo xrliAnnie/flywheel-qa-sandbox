@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CodexLeadOutboundHandler,
 	type DiscordSendFn,
@@ -114,6 +114,22 @@ describe("SqliteOutboundDedupStore — durable across reopen + handler integrati
 		expect(n).toBe(1); // sent exactly once
 		store.close();
 	});
+});
+
+it("closes the acquired connection when receipt schema initialization fails", () => {
+	const home = mkdtempSync(join(tmpdir(), "outbound-init-fail-")),
+		path = join(home, "outbound.db"),
+		db = new Database(path);
+	db.exec("CREATE TABLE lead_operation_receipts (unexpected TEXT)");
+	db.close();
+	const close = vi.spyOn(Database.prototype, "close");
+	try {
+		expect(() => new SqliteOutboundDedupStore(path)).toThrow();
+		expect(close).toHaveBeenCalledTimes(1);
+	} finally {
+		close.mockRestore();
+		rmSync(home, { recursive: true, force: true });
+	}
 });
 
 describe("proactive roundtable dedup persistence", () => {

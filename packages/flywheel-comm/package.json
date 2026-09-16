@@ -31,6 +31,7 @@
 		"./lead-lease": "./dist/lead-lease.js",
 		"./canonical-lead": "./dist/canonical-lead.js",
 		"./lead-identity": "./dist/lead-identity.js",
+		"./lead-operation-client": "./dist/lead-operation-client.js",
 		"./lead-identity-migration": "./dist/lead-identity-migration.js",
 		"./summary-config": "./dist/summary-config.js",
 		"./summary-command": "./dist/commands/summary.js",
@@ -52,8 +53,10 @@
 		"./approval-intent": "./dist/approval-intent.js",
 		"./design-html-evidence": "./dist/design-html-evidence.js",
 		"./report-html": "./dist/report-html.js",
+		"./verify-report": "./dist/commands/verify-report.js",
 		"./oncall-receipts": "./dist/oncall-receipts.js",
 		"./session-terminal": "./dist/session-terminal.js",
+		"./terminal-observation": "./dist/terminal-observation.js",
 		"./snapshot-storage": "./dist/snapshot-storage.js",
 		"./lead-backend-migration-runtime": "./dist/lead-backend-migration-runtime.js"
 	},

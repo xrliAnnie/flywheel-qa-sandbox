@@ -38,6 +38,7 @@ import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { runLeadNote } from "./commands/lead-note.js";
+import { runLeadOperationCommand } from "./commands/lead-operation.js";
 import { runLeadRegistryCommand } from "./commands/lead-registry.js";
 import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
@@ -137,6 +138,9 @@ Commands:
   respond   Respond to a runner's question
   chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
+  lead-operation  Call one catalog operation via the trusted capability socket.
+            --request-file <absolute-path|->; JSON envelope, max 64 KiB.
+            No CommDB/actor required. Keep requestId after a lost reply; no retries.
   lead-identity  Resolve one immutable Lead identity from an explicit registry selector
   lead-registry  Add, recover, or select an installable Lead registry row
   summary-registry  Migrate or verify the FLY-2030 summary assignment registry fence
@@ -322,6 +326,9 @@ async function main(): Promise<void> {
 			break;
 		case "send":
 			await runSend(commandArgs);
+			break;
+		case "lead-operation":
+			process.exitCode = await runLeadOperationCommand(commandArgs);
 			break;
 		case "lead-identity":
 			process.exitCode = await runLeadIdentityCommand(commandArgs);

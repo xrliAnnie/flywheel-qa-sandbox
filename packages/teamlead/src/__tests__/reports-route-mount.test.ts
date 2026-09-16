@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { ReportRegistry } from "../bridge/report-registry.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -143,6 +144,83 @@ describe("/api/reports mount (plugin layer)", () => {
 			{ vercelToken: undefined, ...bridgeOptions },
 		);
 	}
+
+	it("capability report mount requires master auth and a Linear scope provider", async () => {
+		const app = makeApp({ apiToken: "secret", ingestToken: "ingest" });
+		const path = "/api/lead-capabilities/reports/publish";
+		const body = { projectName: "p", html: "<html>report</html>" };
+		expect(
+			(await makeRequest(app, path, body, { Authorization: "Bearer secret" }))
+				.status,
+		).toBe(503);
+		expect(
+			(await makeRequest(app, path, body, { Authorization: "Bearer ingest" }))
+				.status,
+		).toBe(401);
+		expect(
+			(
+				await makeRequest(app, "/api/lead-capabilities/reports/deliver", body, {
+					Authorization: "Bearer secret",
+				})
+			).status,
+		).toBe(503);
+	});
+
+	it("capability publish cannot use a master token without a scoped proof", async () => {
+		const registry = new ReportRegistry(reportsDir);
+		await registry.ensureVercelProjectName();
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: "2026-09-03T16:00:00.000Z",
+				gatewayDeploymentId: "test",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
+		const putReport = vi.fn();
+		const app = makeApp(
+			{ apiToken: "secret", linearApiKey: "synthetic-linear" },
+			{ reportBlobStore: { putReport, deleteReports: vi.fn() } },
+		);
+		const response = await makeRequest(
+			app,
+			"/api/lead-capabilities/reports/publish",
+			{
+				projectName: "TestProject",
+				html: "<html><head></head><body>Report</body></html>",
+			},
+			{ Authorization: "Bearer secret" },
+		);
+		expect(response.status).toBe(403);
+		expect(putReport).not.toHaveBeenCalled();
+		expect(registry.list()).toHaveLength(0);
+	});
+
+	it("mounts scoped verify but rejects missing scope provider", async () => {
+		const app = makeApp({ apiToken: "secret" });
+		const response = await makeRequest(
+			app,
+			"/api/lead-capabilities/reports/verify",
+			{},
+			{
+				Authorization: "Bearer secret",
+			},
+		);
+		expect(response.status).toBe(503);
+	});
+
+	it("mounts scoped deliver and receipt while rejecting missing scope providers", async () => {
+		const app = makeApp({ apiToken: "secret" });
+		for (const endpoint of ["deliver", "delivery-receipt", "publish-receipt"]) {
+			const response = await makeRequest(
+				app,
+				`/api/lead-capabilities/reports/${endpoint}`,
+				{},
+				{ Authorization: "Bearer secret" },
+			);
+			expect(response.status).toBe(503);
+		}
+	});
 
 	it("no apiToken configured → 503 (never unauthenticated)", async () => {
 		const app = makeApp();

@@ -1,3 +1,11 @@
+import {
+	buildLeadModelEnv,
+	type LeadModelEnvPins,
+} from "../../lead-capabilities/model-env.js";
+import type { LeadCapabilityParent } from "../../lead-capabilities/runtime-parent.js";
+import { verifyLeadCapabilityReadiness } from "./capability-readiness.js";
+import { createCapabilityTuiRuntime } from "./capability-tui-runtime.js";
+import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { resolveRunnerActionMcpContext } from "./runner-action-mcp.js";
 /**
  * FLY-259 PR-D — codex-lead-tui-runtime: the ③ (real interactive terminal)
@@ -141,6 +149,11 @@ export function parseCodexLeadTuiRuntimeConfig(
 			"codex-lead-tui-runtime: missing required env: FLYWHEEL_CODEX_TUI_CWD",
 		);
 	}
+	if (
+		base.capabilityBundleVersion === 2 &&
+		tuiCwd !== base.fullAccessProjectRoot
+	)
+		throw new Error("capability_tui_cwd_mismatch");
 	return {
 		...base,
 		tuiCwd,
@@ -222,8 +235,15 @@ export function buildTuiDaemonEnv(opts: {
 	carrierInstanceId?: string;
 	leadId?: string;
 	projectName?: string;
+	/** Trusted parent pins only; never inferred from a model-provided env marker. */
+	capabilityModelEnv?: LeadModelEnvPins;
 }): NodeJS.ProcessEnv {
 	const { profile, env, codexHome, botToken } = opts;
+	if (opts.capabilityModelEnv) {
+		if (profile !== "full-access")
+			throw new Error("capability model env requires full-access profile");
+		return buildLeadModelEnv(env, opts.capabilityModelEnv);
+	}
 	const carrierEnv = opts.carrierInstanceId
 		? {
 				FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: opts.carrierInstanceId,
@@ -505,6 +525,13 @@ export function requirePersona(
 // ── generation assembly (glue — validated by real bring-up) ────────────────
 
 export interface TuiGenerationDeps {
+	/** Process-owned resources outlive a transient WS generation. Main owns shutdown. */
+	capabilitySession?: {
+		parent: LeadCapabilityParent;
+		journal: SqliteJournalStore;
+		socket?: { path: string; assertCurrent(): Promise<void> };
+	};
+	onWindowOwned?: () => void;
 	requestRebuild?: (reason: string) => boolean;
 	connectDaemon?: typeof connectDaemonWs;
 	createSender?: (config: CodexLeadTuiRuntimeConfig) => OutboundSender;
@@ -520,8 +547,12 @@ export function buildTuiGeneration(
 	},
 	deps: TuiGenerationDeps = {},
 ) {
+	const capabilityV2 = config.capabilityBundleVersion === 2;
+	const capabilityParent = deps.capabilitySession?.parent;
 	const journal = new LeadJournal({
-		store: new SqliteJournalStore(config.journalDbPath),
+		store:
+			deps.capabilitySession?.journal ??
+			new SqliteJournalStore(config.journalDbPath),
 	});
 	const residentCodexLeadProjects = loadResidentCodexLeadProjectsSafely({
 		log: (message) => logger.warn(message),
@@ -533,6 +564,7 @@ export function buildTuiGeneration(
 	// still bound to the OLD thread). Only same-thread transient rebuilds preserve
 	// a live founder session.
 	let ownedTuiThreadId: string | undefined;
+	let ownedTuiSocketPath: string | undefined;
 	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
 	// the per-generation closure) so its consecutive-failure count + episode latch
 	// survive generation rebuilds. It is non-null only for a roster opt-in target
@@ -687,11 +719,18 @@ export function buildTuiGeneration(
 			// (W2). healthy=false unifies "create failed" and "died, re-create
 			// failed"; a genuinely alive owned window is healthy without a rebuild.
 			let healthy: boolean;
-			if (ownedTuiThreadId !== tuiSpec.threadId) {
+			if (
+				ownedTuiThreadId !== tuiSpec.threadId ||
+				ownedTuiSocketPath !== tuiSpec.capabilitySocketPath
+			) {
 				const created = ensureTuiWindow(tuiSpec, {
 					log: (m) => logger.warn(m),
 				});
-				if (created) ownedTuiThreadId = tuiSpec.threadId;
+				if (created) {
+					deps.onWindowOwned?.();
+					ownedTuiThreadId = tuiSpec.threadId;
+					ownedTuiSocketPath = tuiSpec.capabilitySocketPath;
+				}
 				healthy = created;
 			} else if (isTuiWindowAlive(tuiSpec)) {
 				healthy = true;
@@ -804,38 +843,121 @@ export function buildTuiGeneration(
 				attemptInFlight = false;
 			}
 		};
+		let closing: Promise<void> | undefined;
+		const closeGeneration = () => {
+			if (closing) return closing;
+			closing = (async () => {
+				stopped = true;
+				if (rotationTimer) clearInterval(rotationTimer);
+				rotationTimer = null;
+				if (livenessTimer) clearInterval(livenessTimer);
+				livenessTimer = null;
+				residencyLifecycle?.generationLost();
+				try {
+					await runtime?.stop();
+				} finally {
+					try {
+						await proc?.stop();
+					} finally {
+						try {
+							sender?.close?.();
+						} finally {
+							runtime = null;
+							proc = null;
+							sender = null;
+							residencyLifecycle = null;
+						}
+					}
+				}
+			})();
+			return closing;
+		};
+		const startSafely = (start: () => Promise<void>) => async () => {
+			try {
+				await start();
+			} catch (error) {
+				await closeGeneration().catch(() =>
+					logger.warn("TUI partial startup cleanup failed"),
+				);
+				throw error;
+			}
+		};
+
 		return {
-			start: async () => {
+			start: startSafely(async () => {
 				// Validate persona BEFORE opening the WS (review R3 MED-2): a
 				// fail-close here must not leak an already-connected transport (at
 				// this point `runtime` is unassigned, so stop() couldn't close it).
 				// Re-read on every (re)build so a persona edit takes effect on restart.
-				const baseInstructions = requirePersona(config);
-				let flagStore: StateStore | undefined;
-				try {
-					flagStore = await StateStore.openForMaintenance(
-						config.flagStoreDbPath,
-						{ readonly: true },
-					);
-					threadRotationEnabled = storeCodexLeadThreadRotationEnabled(
-						{ mode: "ready", store: flagStore },
-						config.projectName,
-					);
-				} catch (error) {
+				if (
+					capabilityV2 &&
+					(!capabilityParent || !config.fullAccessProjectRoot)
+				)
+					throw new Error("capability_parent_not_assembled");
+				if (
+					capabilityV2 &&
+					(capabilityParent!.pins.codexHome !== config.codexHome ||
+						capabilityParent!.pins.projectName !== config.projectName ||
+						capabilityParent!.pins.leadId !== config.leadId)
+				)
+					throw new Error("capability_parent_identity_mismatch");
+				if (!capabilityV2 && deps.capabilitySession)
+					throw new Error("capability_parent_version_mismatch");
+				if (capabilityV2 && config.outboundMode !== "bridge")
+					throw new Error("capability_outbound_requires_bridge");
+				if (capabilityV2) await capabilityParent!.assertCurrent();
+				const baseInstructions = capabilityV2
+					? capabilityParent!.baseInstructions
+					: requirePersona(config);
+				if (capabilityV2 && !baseInstructions?.trim())
+					throw new Error("capability_rules_unverified");
+				if (capabilityParent?.skillGaps?.length)
+					logger.warn("Codex Lead persona skill gaps: manual fallback", {
+						skillGaps: capabilityParent.skillGaps,
+					});
+				await deps.capabilitySession?.socket?.assertCurrent();
+				if (capabilityV2) {
 					logger.warn(
-						"[codex-lead-thread-rotation] flag read failed; disabled for this generation",
-						{ error: String(error) },
+						"[codex-lead-thread-rotation] disabled for capability v2: FLY-2576; rotation flag requires Bridge authority",
 					);
-				} finally {
-					flagStore?.close();
+				} else {
+					let flagStore: StateStore | undefined;
+					try {
+						flagStore = await StateStore.openForMaintenance(
+							config.flagStoreDbPath,
+							{ readonly: true },
+						);
+						threadRotationEnabled = storeCodexLeadThreadRotationEnabled(
+							{ mode: "ready", store: flagStore },
+							config.projectName,
+						);
+					} catch (error) {
+						logger.warn(
+							"[codex-lead-thread-rotation] flag read failed; disabled for this generation",
+							{ error: String(error) },
+						);
+					} finally {
+						flagStore?.close();
+					}
 				}
 
 				const ws = await (deps.connectDaemon ?? connectDaemonWs)({
 					codexHome: config.codexHome,
+					...(deps.capabilitySession?.socket
+						? { socketPath: deps.capabilitySession.socket.path }
+						: {}),
 				});
 				const transport = new WsTransport(ws);
-				proc = new CodexLeadProcess({ spawnChild: () => transport });
+				proc = new CodexLeadProcess({
+					spawnChild: () => transport,
+					experimentalApi: capabilityV2,
+				});
 				if (lostCb) proc.on("exit", () => lostCb?.());
+				const inventory = capabilityV2 ? new McpInventoryWatcher() : undefined;
+				if (inventory)
+					proc.on("notification", (method, params) =>
+						inventory.record(method, params),
+					);
 
 				// The full-access tool-surface guarantee is enforced by the config gate
 				// in main() (exact lead_actions MCP, command/args/env, no literal secret)
@@ -891,6 +1013,9 @@ export function buildTuiGeneration(
 						? new CodexOutboundSender({
 								bridgeUrl: config.bridgeUrl,
 								apiToken: config.apiToken,
+								...(capabilityV2
+									? { post: capabilityParent!.outboundPost }
+									: {}),
 								projectName: config.projectName,
 								leadId: config.leadId,
 								channelId: config.chatChannelId,
@@ -907,6 +1032,18 @@ export function buildTuiGeneration(
 				runtime = new CodexLeadRuntime({
 					startProcess: async () => {
 						await p.start(); // initialize/initialized over WS
+						if (capabilityV2) {
+							try {
+								await verifyLeadCapabilityReadiness({
+									parent: capabilityParent!,
+									cwd: config.fullAccessProjectRoot!,
+									request: (method, params) => p.request(method, params),
+								});
+							} catch (error) {
+								await p.stop();
+								throw error;
+							}
+						}
 						if (config.outboundMode === "bridge") {
 							try {
 								await (deps.preflight ?? runOutboundPreflight)({
@@ -927,6 +1064,17 @@ export function buildTuiGeneration(
 						}
 					},
 					ensureThread: async (): Promise<string> => {
+						if (capabilityV2) {
+							await verifyLeadCapabilityReadiness({
+								parent: capabilityParent!,
+								cwd: config.fullAccessProjectRoot!,
+								request: (method, params) => p.request(method, params),
+							});
+							await inventory!.waitForExact(
+								capabilityParent!.mcp.included,
+								30_000,
+							);
+						}
 						const strict = readThreadIdStrict(config.threadIdPath);
 						if (strict.kind !== "ok" && strict.kind !== "missing")
 							throw new Error(
@@ -1140,6 +1288,12 @@ export function buildTuiGeneration(
 							journal,
 							executor,
 							sender: builtSender,
+							...(capabilityV2
+								? {
+										enterDeliveryContext: (entryId: string) =>
+											capabilityParent!.enterDeliveryContext(entryId),
+									}
+								: {}),
 							onEntryCompleted: (entry) => {
 								lastActivityAt = Date.now();
 								if (
@@ -1330,11 +1484,27 @@ export function buildTuiGeneration(
 							codexHome: config.codexHome,
 							threadId,
 							cwd: config.tuiCwd,
-							codexBin: config.codexBin,
+							codexBin: capabilityV2
+								? capabilityParent!.codexPath
+								: config.codexBin,
 							// FLY-398 (pin ③): a full-access TUI Lead shares the thread's
 							// workspace-write sandbox → the founder resume pane passes
 							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
 							fullAccess: config.codexProfile === "full-access",
+							...(capabilityV2
+								? {
+										...(deps.capabilitySession?.socket
+											? {
+													capabilitySocketPath:
+														deps.capabilitySession.socket.path,
+												}
+											: {}),
+										capabilityModelEnv: {
+											pins: capabilityParent!.pins,
+											env: process.env,
+										},
+									}
+								: {}),
 							...(config.carrierInstanceId
 								? { carrierInstanceId: config.carrierInstanceId }
 								: {}),
@@ -1408,30 +1578,8 @@ export function buildTuiGeneration(
 					logger,
 				});
 				await runtime.start();
-			},
-			stop: async () => {
-				// Stop the probe FIRST so a tick can't re-create the window during
-				// teardown. NOTE: we do NOT kill the TUI window here — generation stop
-				// also fires on a transient daemon-WS rebuild, and the founder's
-				// `codex resume --remote` window (connected to the still-live daemon)
-				// must survive that. The orphan-kill on real shutdown lives in main().
-				stopped = true;
-				if (rotationTimer) {
-					clearInterval(rotationTimer);
-					rotationTimer = null;
-				}
-				if (livenessTimer) {
-					clearInterval(livenessTimer);
-					livenessTimer = null;
-				}
-				residencyLifecycle?.generationLost();
-				await runtime?.stop(); // gateway first (review-pinned), then process
-				sender?.close?.(); // close the outbox SQLite handle (review MED — no leak per rebuild)
-				runtime = null;
-				proc = null;
-				sender = null;
-				residencyLifecycle = null;
-			},
+			}),
+			stop: closeGeneration,
 			onConnectionLost: (cb: () => void) => {
 				lostCb = cb;
 				if (proc) proc.on("exit", () => lostCb?.());
@@ -1465,7 +1613,7 @@ export async function main(
 	// Persona fail-close at boot (review MED — parity with headless). The same
 	// check runs at every generation read point (requirePersona), so a companion
 	// never silently falls back to the default persona.
-	requirePersona(config);
+	if (config.capabilityBundleVersion !== 2) requirePersona(config);
 	// DRY-RUN (review MED — parity with headless): describe what WOULD start with
 	// zero side effects (no daemon connect, no Discord poll). The launcher skips
 	// ensure-home/ensure-daemon in dry-run so this path is genuinely side-effect free.
@@ -1492,6 +1640,25 @@ export async function main(
 			getProcessStart(process.pid),
 		),
 	});
+	if (config.capabilityBundleVersion === 2) {
+		const owned = createCapabilityTuiRuntime(carrierConfig, env, console);
+		const stop = () => {
+			void owned.stop().then(
+				() => process.exit(0),
+				() => process.exit(1),
+			);
+		};
+		process.once("SIGTERM", stop);
+		process.once("SIGINT", stop);
+		try {
+			await owned.start();
+		} catch (error) {
+			process.off("SIGTERM", stop);
+			process.off("SIGINT", stop);
+			throw error;
+		}
+		return;
+	}
 	// Resolve the home script for BOTH layouts: from dist/lead-backends/codex
 	// it's ../../../scripts; from src/lead-backends/codex it's ../../scripts
 	// is wrong too — scripts/ lives at the package root in both cases, three

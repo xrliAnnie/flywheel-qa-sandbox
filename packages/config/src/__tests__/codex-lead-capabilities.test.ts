@@ -3,6 +3,55 @@ import { resolveCodexLeadCapabilities } from "../codex-lead-capabilities.js";
 
 describe("explicit Codex runner capabilities", () => {
 	it.each([
+		{ backend: "claude-code" },
+		{ backend: undefined },
+		{ codexProfile: "write-capable" },
+		{ codexProfile: "companion" },
+		{ companion: true },
+		{ external: true },
+	])("rejects bundle v2 on ineligible carrier %j", (override) => {
+		expect(
+			resolveCodexLeadCapabilities({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexCapabilityBundleVersion: 2,
+				...override,
+			}),
+		).toMatchObject({ eligible: false, runnerActionsEnabled: false });
+	});
+	it("projects explicit v2 adoption without granting runner actions", () => {
+		expect(
+			resolveCodexLeadCapabilities({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexCapabilityBundleVersion: 2,
+			}),
+		).toEqual({
+			eligible: true,
+			runnerActionsEnabled: false,
+			capabilityBundleVersion: 2,
+			reason: null,
+		});
+	});
+	it.each([false, true, null, 1, 3, "2", {}, []])(
+		"rejects invalid capability bundle version %j",
+		(codexCapabilityBundleVersion) => {
+			expect(
+				resolveCodexLeadCapabilities({
+					backend: "codex-app-server",
+					codexProfile: "full-access",
+					canSpawnRunners: false,
+					codexCapabilityBundleVersion,
+				} as Parameters<typeof resolveCodexLeadCapabilities>[0]),
+			).toMatchObject({
+				eligible: false,
+				reason: expect.stringContaining("codexCapabilityBundleVersion"),
+			});
+		},
+	);
+	it.each([
 		{ codexProfile: "unknown", companion: true },
 		{ codexProfile: "full-access", companion: true },
 		{ codexProfile: "write-capable", companion: true },

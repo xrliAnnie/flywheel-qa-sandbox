@@ -151,6 +151,11 @@ jobs:
           node --test scripts/__tests__/fly1165-sweep-decision.test.mjs
           node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
           node --test scripts/__tests__/fly-2413-retention-mutations.test.mjs
+          node --test scripts/__tests__/qa-codex-lead-parity-drill.test.mjs
+          node --test scripts/__tests__/qa-fly-2519-529-drill.test.mjs scripts/__tests__/qa-fly-2519-browser-node.test.mjs scripts/__tests__/qa-fly-2519-browser-process.test.mjs
+
+      - name: Test — FLY-2519 bounded patrol GitHub facts
+        run: bash scripts/__tests__/lead-patrol-github-facts.test.sh
 
       - name: Enforce FLY-2165 torn mailbox identity repair contracts
         run: bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
@@ -663,6 +668,9 @@ jobs:
           python3 scripts/__tests__/qa-fly-2456-comparison.test.py
           python3 scripts/qa-fly-2456-guard-receipt.py engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md scripts/hooks/flywheel-restart-guard.py "$RUNNER_TEMP/fly2456-runbook-guard.json"
           node scripts/qa-fly-2456-drill-tools.mjs dry-run --runbook engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md --scanner scripts/hooks/flywheel-restart-guard.py --receipt "$RUNNER_TEMP/fly2456-runbook-guard.json"
+
+      - name: Test — FLY-2519 read-only Lead parity inventory
+        run: node --test scripts/__tests__/qa-codex-lead-parity.test.mjs
 
       # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
       # seed/verify, deterministic persistent stub, and the nine-step replay

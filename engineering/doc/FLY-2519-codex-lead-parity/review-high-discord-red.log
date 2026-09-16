@@ -1,0 +1,64 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2519/packages/teamlead
+
+stdout | src/bridge/__tests__/lead-capability-discord.test.ts > HTTP new-create preserves canonical UUID storage and verified identifier title for aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+[ChatThreadCreator] create thread channel=22345678901234567 name="[FLY-1] Review report" content="🧵 **FLY-1** — Review report"
+
+stdout | src/bridge/__tests__/lead-capability-discord.test.ts > HTTP new-create preserves canonical UUID storage and verified identifier title for FLY-1
+[ChatThreadCreator] create thread channel=22345678901234567 name="[FLY-1] Review report" content="🧵 **FLY-1** — Review report"
+
+ ❯ |parallel| src/bridge/__tests__/lead-capability-discord.test.ts (7 tests | 2 failed) 32860ms
+   ✓ Bridge typed Discord route > rejects missing master token on the actual operation route  640ms
+   × exercises the registry-owned typed route: routing 30008ms
+     → Test timed out in 30000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+   × exercises the registry-owned typed route: unknown-write-capacity 516ms
+     → expected 403 to be 200 // Object.is equality
+   ✓ exercises the registry-owned typed route: missing-receipts  416ms
+   ✓ mounts the provider at its literal Bridge route  305ms
+   ✓ HTTP new-create preserves canonical UUID storage and verified identifier title for aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa  477ms
+   ✓ HTTP new-create preserves canonical UUID storage and verified identifier title for FLY-1  497ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-discord.test.ts > exercises the registry-owned typed route: routing
+Error: Test timed out in 30000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/bridge/__tests__/lead-capability-discord.test.ts:922:66
+    920| }
+    921| 
+    922| it.each(["routing", "unknown-write-capacity", "missing-receipts"])(
+       |                                                                  ^
+    923|  "exercises the registry-owned typed route: %s",
+    924|  exerciseDiscordRoute,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-discord.test.ts > exercises the registry-owned typed route: unknown-write-capacity
+AssertionError: expected 403 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 403
+
+ ❯ exerciseDiscordRoute src/bridge/__tests__/lead-capability-discord.test.ts:245:27
+    243|    },
+    244|   );
+    245|   expect(response.status).toBe(200);
+       |                           ^
+    246|   const first = await response.json();
+    247|   expect(first.status).toBe("succeeded");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 passed (7)
+   Start at  22:02:15
+   Duration  37.93s (transform 2.70s, setup 18ms, collect 4.44s, tests 32.86s, environment 0ms, prepare 125ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2519/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/lead-capability-discord.test.ts

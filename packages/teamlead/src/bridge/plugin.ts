@@ -15,6 +15,7 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { LinearClient } from "@linear/sdk";
 import express from "express";
 import {
 	AgentTeamTransportFactory,
@@ -141,6 +142,7 @@ import {
 	buildResolveBotToken,
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
+import { createLazyLeadGithubClient } from "../lead-capabilities/github-client.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import {
 	type LeadConfig,
@@ -543,6 +545,22 @@ import {
 	defaultLeadPaneCapture,
 	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
+import { mountLeadCapabilityDiscordProvider } from "./lead-capability-discord.js";
+import {
+	type LeadCapabilityReadOptions,
+	mountLeadCapabilityReadProvider,
+} from "./lead-capability-read.js";
+import {
+	createLeadReportOwnerAuthorizer,
+	createLeadReportPublishAuthorizer,
+	createLeadReportPublishReceiptAuthorizer,
+} from "./lead-capability-report.js";
+import {
+	createLeadReportDeliverRouter,
+	createLeadReportDeliveryProviders,
+} from "./lead-capability-report-deliver.js";
+import { createLeadReportVerifyRouter } from "./lead-capability-report-verify.js";
+import { mountLeadRunnerProvider } from "./lead-capability-runners.js";
 import {
 	LeadDualActiveMonitor,
 	type LeadIdentityFinding,
@@ -553,6 +571,7 @@ import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
+import { createLeadPatrolConfiguration } from "./lead-patrol-config.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -684,7 +703,10 @@ import { installReportBlobSweep } from "./report-hosting-maintenance.js";
 import { installReportHostingUsage } from "./report-hosting-usage.js";
 import { resolveProjectIssueThread } from "./report-issue-thread-resolver.js";
 import { ReportRegistry } from "./report-registry.js";
-import { createReportsRouter } from "./reports-route.js";
+import {
+	createReportsRouter,
+	type ReportsRouterOptions,
+} from "./reports-route.js";
 import { isSafeResumeMenuForEnter } from "./rescue.js";
 import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
 import {
@@ -1585,6 +1607,9 @@ export interface BridgeAppOptions {
 	 * Absent (standalone createBridgeApp / tests) ⇒ /health reports
 	 * shuttingDown:false (byte-compat).
 	 */
+	leadEventDelivery?: LeadEventDeliveryCoordinator;
+	leadPatrol?: LeadCapabilityReadOptions["patrol"];
+	leadGithub?: LeadCapabilityReadOptions["github"];
 	shutdownStateHolder?: { shuttingDown: boolean };
 	/** FLY-1393: late-bound minimum-set liveness manifest. */
 	livenessHealthProvider?: { current?: () => unknown };
@@ -3119,6 +3144,51 @@ export function createBridgeApp(
 		);
 	}
 
+	const leadOutboundDedupStore = config.apiToken
+		? new SqliteOutboundDedupStore(
+				join(homedir(), ".flywheel", "codex-lead-outbound-dedup.db"),
+			)
+		: undefined;
+	if (config.apiToken && leadOutboundDedupStore) {
+		mountLeadRunnerProvider(app, {
+			apiToken: config.apiToken,
+			bridgeUrl: `http://${config.host === "::1" ? "[::1]" : "127.0.0.1"}:${config.port}`,
+			stateDbPath: store.getDbPath(),
+			receipts: leadOutboundDedupStore.operationReceipts,
+		});
+	}
+	if (config.apiToken) {
+		mountLeadCapabilityReadProvider(app, {
+			memoryService,
+			patrol: opts?.leadPatrol,
+			github: opts?.leadGithub,
+			eventCoordinator: () => opts?.leadEventDelivery,
+			terminalReceipts: leadOutboundDedupStore?.operationReceipts,
+			apiToken: config.apiToken,
+			store,
+			linearClient: config.linearApiKey
+				? new LinearClient({ apiKey: config.linearApiKey })
+				: undefined,
+			shutdownStateHolder: opts?.shutdownStateHolder,
+		});
+	}
+
+	if (config.chatThreadsEnabled && config.apiToken) {
+		mountLeadCapabilityDiscordProvider(app, {
+			apiToken: config.apiToken,
+			store,
+			chatThreadCreator: opts?.chatThreadCreator,
+			ownerUserId: config.discordOwnerUserId,
+			outboundDedupStore: leadOutboundDedupStore,
+			operationReceipts: leadOutboundDedupStore?.operationReceipts,
+			outboundDbPath: join(
+				homedir(),
+				".flywheel",
+				"codex-lead-capability-outbox.db",
+			),
+		});
+	}
+
 	// /api/* — api auth
 	app.use(
 		"/api",
@@ -3344,9 +3414,7 @@ export function createBridgeApp(
 			process.env,
 		);
 		const codexLeadOutboundHandler = new CodexLeadOutboundHandler({
-			store: new SqliteOutboundDedupStore(
-				join(homedir(), ".flywheel", "codex-lead-outbound-dedup.db"),
-			),
+			store: leadOutboundDedupStore!,
 			send: buildLeadDiscordSend({
 				resolveBotToken: resolveCodexLeadBotToken,
 			}),
@@ -5195,7 +5263,7 @@ export function createBridgeApp(
 	// Auth ownership (Codex R2#4): the plugin layer owns auth. Unlike
 	// publish-html, this surface posts as a bot and reads local files, so it
 	// NEVER runs unauthenticated — no apiToken → always 503.
-	const reportsRouter = createReportsRouter({
+	const reportOptions: ReportsRouterOptions = {
 		blobStore: opts?.reportBlobStore,
 		credentials: opts?.reportHostingCredentials,
 		vercelToken: opts?.vercelToken,
@@ -5209,14 +5277,95 @@ export function createBridgeApp(
 		resolveIssueThread: (issueIdentifier, projectName) =>
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
 		registry: reportRegistry,
-		criticalSection: opts?.reportCriticalSection,
-	});
+		criticalSection:
+			opts?.reportCriticalSection ?? createReportCriticalSection(),
+	};
+	const reportsRouter = createReportsRouter(reportOptions);
 	app.use(
 		"/api/reports",
 		reportsAuthMiddleware(config.apiToken, config.ingestToken),
 		reportsRouter,
 	);
 
+	if (config.apiToken) {
+		const reportDeliveryProviders = createLeadReportDeliveryProviders();
+		const reportLinearClient = config.linearApiKey
+			? new LinearClient({ apiKey: config.linearApiKey })
+			: undefined;
+		app.use(
+			"/api/lead-capabilities/reports",
+			reportsAuthMiddleware(config.apiToken, undefined),
+			(req, res, next) => {
+				if (
+					req.method !== "POST" ||
+					![
+						"/publish",
+						"/verify",
+						"/deliver",
+						"/delivery-receipt",
+						"/publish-receipt",
+					].includes(req.path)
+				) {
+					res.status(404).json({ error: "unsupported report capability" });
+					return;
+				}
+				if (!reportLinearClient) {
+					res.status(503).json({ error: "report scope provider unavailable" });
+					return;
+				}
+				next();
+			},
+			createLeadReportDeliverRouter({
+				registry: reportOptions.registry,
+				store: leadOutboundDedupStore!,
+				apiToken: config.apiToken,
+				authorize: reportLinearClient
+					? createLeadReportOwnerAuthorizer({
+							linearClient: reportLinearClient,
+							registry: reportOptions.registry,
+						})
+					: async () => {
+							throw new Error("report scope provider unavailable");
+						},
+				resolveIssueThread: (issue, project) =>
+					resolveProjectIssueThread(
+						store,
+						reportDeliveryProviders.currentProjects(),
+						issue,
+						project,
+					),
+				authorizeChannel: reportDeliveryProviders.authorizeChannel,
+				send: reportDeliveryProviders.send,
+			}),
+			createLeadReportVerifyRouter({
+				registry: reportOptions.registry,
+				lookupPublishReceipt: reportLinearClient
+					? createLeadReportPublishReceiptAuthorizer({
+							linearClient: reportLinearClient,
+							registry: reportOptions.registry,
+						})
+					: undefined,
+				authorize: reportLinearClient
+					? createLeadReportOwnerAuthorizer({
+							linearClient: reportLinearClient,
+							registry: reportOptions.registry,
+						})
+					: async () => {
+							throw new Error("report scope provider unavailable");
+						},
+			}),
+			createReportsRouter({
+				...reportOptions,
+				authorizePublish: reportLinearClient
+					? createLeadReportPublishAuthorizer({
+							linearClient: reportLinearClient,
+						})
+					: async () => {
+							throw new Error("report scope provider unavailable");
+						},
+			}),
+		);
+	}
 	const readinessSubject = readRunningSubject(
 		join(
 			process.env.FLYWHEEL_REPO_ROOT?.trim() ||
@@ -8470,6 +8619,7 @@ export async function startBridge(
 		}
 	}
 
+	const leadGithubProvider = createLazyLeadGithubClient(process.env);
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
@@ -8493,6 +8643,11 @@ export async function startBridge(
 		standupService,
 		standupProjectName,
 		{
+			leadEventDelivery,
+			leadGithub: leadGithubProvider.get,
+			leadPatrol: createLeadPatrolConfiguration(
+				process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+			),
 			codexQuota: {
 				runtime: codexQuotaRuntime,
 				rootKey: codexQuotaRootKey,
@@ -14463,6 +14618,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await leadGithubProvider?.close();
 		await customerReleaseHost.stop();
 		await observationStorageAlert?.stop();
 		await processResources.stop();

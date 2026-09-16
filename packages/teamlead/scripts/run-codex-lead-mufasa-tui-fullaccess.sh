@@ -51,6 +51,8 @@ fi
 
 # ── Mufasa identity: selectors in launcher, coordinates from registry ──
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
+# Apply the legacy default before canonical v2 selects its managed permissions.
+export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
 canonical_lead_identity_resolve "growth" "mufasa-lead"
 . "${FLYWHEEL_ROOT}/scripts/lib/lead-address.sh"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
@@ -78,7 +80,6 @@ export FLYWHEEL_CODEX_LEAD_MODE=tui
 
 # ── full-access tier (= Claude-equal), WINDOWED via the TUI runtime ──
 export FLYWHEEL_CODEX_LEAD_PROFILE="full-access"
-export FLYWHEEL_CODEX_LEAD_SANDBOX="workspace-write"
 # The project checkout the Lead works IN (cwd + the single writable root). Realpath-
 # validated by the runtime (resolveFullAccessProjectRoot); must NOT overlap
 # ~/.flywheel / the state dir / CODEX_HOME.

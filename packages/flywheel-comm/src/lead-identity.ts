@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { CodexLeadCapabilityInput } from "flywheel-config";
+import {
+	type CodexLeadCapabilityInput,
+	resolveCodexLeadCapabilities,
+} from "flywheel-config";
 import { compileSummaryAssignmentRows } from "./summary-assignment-core.js";
 import {
 	readSummaryGranularity,
@@ -21,6 +24,7 @@ export type LeadIdentityErrorCode =
 	| "identity_row_missing"
 	| "identity_row_ambiguous"
 	| "identity_backend_invalid"
+	| "identity_capability_bundle_invalid"
 	| "identity_model_config_invalid"
 	| "identity_bot_token_env_invalid"
 	| "identity_bot_user_id_invalid"
@@ -279,6 +283,16 @@ function identityFields(
 	lead: IdentityLeadRow,
 	homeDir: string,
 ): Omit<CanonicalLeadIdentity, "projectsDigest" | "identityDigest"> {
+	if (
+		lead.codexCapabilityBundleVersion !== undefined &&
+		(!resolveCodexLeadCapabilities(lead).eligible ||
+			canonicalRole(project, lead) !== "dept")
+	) {
+		throw identityError(
+			"identity_capability_bundle_invalid",
+			"codexCapabilityBundleVersion requires an eligible Codex full-access department Lead",
+		);
+	}
 	const backend = lead.backend ?? "claude-code";
 	if (backend !== "claude-code" && backend !== "codex-app-server") {
 		throw identityError(

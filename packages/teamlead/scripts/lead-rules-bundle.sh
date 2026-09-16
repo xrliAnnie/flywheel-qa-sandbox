@@ -404,10 +404,15 @@ compute_lead_rule_bundle() {
       _lrb_emit "${base}/stuck-runner-remanage.md" 0 || return 10
       _lrb_emit "${base}/runner-reengage-rules.md" 0 || return 10
       _lrb_emit "${base}/doc-flow-rules.md" 0 || return 10
+      if [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ]; then
+        _lrb_emit "${base}/default-enable-policy.md" 0 || return 10
+      fi
       _lrb_emit "${base}/xiaohongshu-memory-rules.md" 0 || return 10
       # FLY-369/FLY-2080: backend-independent patrol. Keep this after the
       # role-specific dept list, matching claude-lead.sh's common block.
-      _lrb_emit "${base}/runner-patrol-rules.md" 0 || return 10
+      if [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" != "2" ]; then
+        _lrb_emit "${base}/runner-patrol-rules.md" 0 || return 10
+      fi
       ;;
     *)
       printf 'UNKNOWN_ROLE:%s\n' "$role" >&2
@@ -427,6 +432,11 @@ compute_lead_rule_bundle() {
       ;;
   esac
 
+  # v2 follows the actual Claude consumer order: summary duty precedes patrol.
+  if [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ] && [ "$role" = "dept" ]; then
+    _lrb_emit "${base}/runner-patrol-rules.md" 0 || return 10
+  fi
+
   # ── Universal governance (claude-lead.sh:1581-1617) ──
   # Founder-local time is universal for companion + cos + dept. It is a short
   # time-interpretation contract, not an engineering-role rule.
@@ -438,6 +448,9 @@ compute_lead_rule_bundle() {
   fi
   # cross-dept channel rules: ALL roles (companion included).
   _lrb_emit "${base}/cross-dept-channel-rules.md" 0 || return 10
+  if [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ] && [ "$role" = "dept" ]; then
+    _lrb_emit "${base}/codex-discord-reply-contract.md" 1 || return 10
+  fi
   return 0
 }
 

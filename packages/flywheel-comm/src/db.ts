@@ -8428,6 +8428,29 @@ export class CommDB {
 			.run(nowMs, executionId).changes;
 	}
 
+	/** Live patrol owner attribution: exact execution, current issue cohort, then latest cohort.
+	 * Read-only; missing/pruned or ambiguous ownership never produces an authorization. */
+	resolvePatrolSessionOwner(
+		projectName: string,
+		executionId: string,
+		issueId: string,
+	): string | null {
+		const row = this.db
+			.prepare(`WITH exact AS (
+ SELECT issue_id,lead_id,0 AS priority FROM sessions WHERE project_name=@projectName AND execution_id=@executionId
+ ), current_cohort AS (
+ SELECT issue_id,lead_id,1 AS priority FROM sessions WHERE project_name=@projectName AND issue_id=@issueId AND status IN ('running','blocked')
+ ), latest_cohort AS (
+ SELECT issue_id,lead_id,2 AS priority FROM sessions WHERE project_name=@projectName AND issue_id=@issueId
+ AND started_at=(SELECT max(started_at) FROM sessions WHERE project_name=@projectName AND issue_id=@issueId)
+ ), candidates AS (SELECT * FROM exact UNION ALL SELECT * FROM current_cohort UNION ALL SELECT * FROM latest_cohort)
+ SELECT CASE WHEN count(*)>0 AND count(nullif(trim(lead_id),''))=count(*)
+ AND count(DISTINCT trim(lead_id))=1 AND min(issue_id)=@issueId AND max(issue_id)=@issueId
+ THEN min(trim(lead_id)) ELSE NULL END AS owner FROM candidates WHERE priority=(SELECT min(priority) FROM candidates)`)
+			.get({ projectName, executionId, issueId }) as { owner: string | null };
+		return row.owner;
+	}
+
 	getSession(executionId: string): Session | undefined {
 		return this.db
 			.prepare("SELECT * FROM sessions WHERE execution_id = ?")
@@ -8877,6 +8900,31 @@ export class CommDB {
 				"SELECT * FROM sessions WHERE status = 'running' ORDER BY started_at ASC",
 			)
 			.all() as Session[];
+	}
+
+	/** Bounded keyset page for terminal discovery; authorization still checks each row. */
+	listLeadTerminalSessions(
+		projectName: string,
+		leadId: string,
+		afterExecutionId: string,
+		limit: number,
+	): Session[] {
+		if (
+			!projectName ||
+			projectName.length > 256 ||
+			!leadId ||
+			leadId.length > 256 ||
+			afterExecutionId.length > 256 ||
+			!Number.isInteger(limit) ||
+			limit < 1 ||
+			limit > 100
+		)
+			throw new Error("terminal_page_invalid");
+		return this.db
+			.prepare(
+				"SELECT * FROM sessions WHERE project_name = ? AND (lead_id = ? OR lead_id IS NULL) AND execution_id > ? ORDER BY execution_id ASC LIMIT ?",
+			)
+			.all(projectName, leadId, afterExecutionId, limit) as Session[];
 	}
 
 	listSessions(projectName?: string, statuses?: string[]): Session[] {

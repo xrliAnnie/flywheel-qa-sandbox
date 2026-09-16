@@ -64,7 +64,7 @@ echo "MOCK_NODE_RAN $*"
 exit 0
 EOF
 chmod +x "$T/bin/node"
-export CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+export CANONICAL_JSON='{"codexCapabilities":{"runnerActionsEnabled":false},"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 
 # run the launcher in dry-run with the mock node first on PATH; capture env dump.
 run_dry() {

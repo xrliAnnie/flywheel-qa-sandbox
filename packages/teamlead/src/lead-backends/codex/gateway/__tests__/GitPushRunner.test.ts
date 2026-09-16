@@ -14,6 +14,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -471,4 +472,164 @@ describe("probeGitHubToken (R3-3 fail-closed)", () => {
 		});
 		expect(res.ok).toBe(false);
 	});
+});
+
+it("v2 stages without askpass, credentials, or hooks overrides and verifies remote head", async () => {
+	const { materializeAndPushV2 } = await import("../GitPushRunner.js");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "push-v2-")));
+	const source = join(root, "source");
+	mkdirSync(source);
+	mkdirSync(join(source, "objects"));
+	const head = "a".repeat(40);
+	const calls: { args: string[]; env: Record<string, string>; cwd: string }[] =
+		[];
+	try {
+		const result = await materializeAndPushV2(
+			{
+				modelGitDir: source,
+				headSha: head,
+				branch: "flywheel/eng/FLY-1",
+				transport: {
+					remoteUrl: `http://127.0.0.1:1234/${"b".repeat(64)}/repo.git`,
+					readHead: async () => head,
+				},
+				signal: new AbortController().signal,
+				assertCurrent: async () => {},
+				assertCurrentSync: () => {},
+			},
+			{
+				gitPath: "/usr/bin/git",
+				stagingRoot: join(root, "stage"),
+				run: async (args, opts) => {
+					calls.push({ args, ...opts });
+					if (args[0] === "init")
+						mkdirSync(join(opts.cwd, ".git", "objects", "info"), {
+							recursive: true,
+						});
+					return 0;
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		expect(result.pushedSha).toBe(head);
+		expect(JSON.stringify(calls)).not.toMatch(
+			/hooksPath|ASKPASS|TOKEN|PASSWORD|no-verify/,
+		);
+		expect(calls.some((c) => c.args.includes("push"))).toBe(true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("v2 copies an isolated object snapshot and rejects source alternates before push", async () => {
+	const { materializeAndPushV2 } = await import("../GitPushRunner.js");
+	const { readFileSync } = await import("node:fs");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "push-copy-"))),
+		source = join(root, "source");
+	mkdirSync(join(source, "objects", "aa"), { recursive: true });
+	mkdirSync(join(source, "objects", "info"));
+	const object = join(source, "objects", "aa", "b".repeat(38));
+	writeFileSync(object, "original");
+	writeFileSync(join(source, "objects", "maintenance.lock"), "");
+	let pushes = 0;
+	const request = {
+		modelGitDir: source,
+		headSha: "a".repeat(40),
+		branch: "feature/test",
+		transport: {
+			remoteUrl: `http://127.0.0.1:1234/${"b".repeat(64)}/repo.git`,
+			readHead: async () => "a".repeat(40),
+		},
+		signal: new AbortController().signal,
+		assertCurrent: async () => {},
+		assertCurrentSync: () => {},
+	};
+	const deps = {
+		gitPath: "/usr/bin/git",
+		stagingRoot: join(root, "stage"),
+		run: async (args: string[], opts: { cwd: string }) => {
+			if (args[0] === "init")
+				mkdirSync(join(opts.cwd, ".git", "objects", "info"), {
+					recursive: true,
+				});
+			if (args.includes("cat-file")) {
+				writeFileSync(object, "changed");
+				expect(
+					readFileSync(
+						join(opts.cwd, "snapshot", "aa", "b".repeat(38)),
+						"utf8",
+					),
+				).toBe("original");
+			}
+			if (args.includes("push")) pushes++;
+			return 0;
+		},
+	};
+	try {
+		expect((await materializeAndPushV2(request, deps)).ok).toBe(true);
+		expect(pushes).toBe(1);
+		writeFileSync(
+			join(source, "objects", "info", "alternates"),
+			"/untrusted\n",
+		);
+		expect((await materializeAndPushV2(request, deps)).ok).toBe(false);
+		expect(pushes).toBe(1);
+		expect((await import("node:fs")).readdirSync(deps.stagingRoot)).toEqual([]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("v2 uses a single 180-second budget and stops after cancellation", async () => {
+	const { vi } = await import("vitest");
+	const { materializeAndPushV2 } = await import("../GitPushRunner.js");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "push-deadline-"))),
+		source = join(root, "source");
+	mkdirSync(join(source, "objects"), { recursive: true });
+	let now = 1000,
+		pushes = 0,
+		expire = false;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const cancel = new AbortController();
+	const request = {
+		modelGitDir: source,
+		headSha: "a".repeat(40),
+		branch: "feature/test",
+		transport: {
+			remoteUrl: `http://127.0.0.1:1234/${"b".repeat(64)}/repo.git`,
+			readHead: async () => "a".repeat(40),
+		},
+		signal: cancel.signal,
+		assertCurrent: async () => {},
+		assertCurrentSync: () => {},
+	};
+	const deps = {
+		gitPath: "/usr/bin/git",
+		stagingRoot: join(root, "stage"),
+		run: async (args: string[], opts: { cwd: string }) => {
+			if (args[0] === "init") {
+				mkdirSync(join(opts.cwd, ".git", "objects", "info"), {
+					recursive: true,
+				});
+				now += 130000;
+			}
+			if (args.includes("cat-file") && expire) now += 50001;
+			if (args.includes("push")) pushes++;
+			return 0;
+		},
+	};
+	try {
+		expect((await materializeAndPushV2(request, deps)).ok).toBe(true);
+		expect(pushes).toBe(1);
+		expire = true;
+		expect((await materializeAndPushV2(request, deps)).ok).toBe(false);
+		expect(pushes).toBe(1);
+		cancel.abort();
+		expect((await materializeAndPushV2(request, deps)).ok).toBe(false);
+		expect(pushes).toBe(1);
+		expect((await import("node:fs")).readdirSync(deps.stagingRoot)).toEqual([]);
+	} finally {
+		clock.mockRestore();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

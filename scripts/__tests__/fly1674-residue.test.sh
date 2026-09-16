@@ -164,10 +164,10 @@ is_allowed_hit() {
   return 1
 }
 
-raw_hits="$TMP_ROOT/raw-hits"
-(
-  cd "$REPO_ROOT" || exit 2
+scan_content() (
+  cd "$1" || exit 2
   rg -n -o -i --hidden '[[:alnum:]_-]*three[-_ ]?stage[[:alnum:]_-]*' . \
+    -g '!packages/teamlead/lead-skill-adapters/**' \
     -g '!doc/**' \
     -g '!docs/**' \
     -g '!engineering/doc/**' \
@@ -175,8 +175,30 @@ raw_hits="$TMP_ROOT/raw-hits"
     -g '!dist/**' \
     -g '!**/dist/**' \
     -g '!scripts/__tests__/fly1674-residue.test.sh'
-) \
-  > "$raw_hits" 2>&1
+)
+
+# Exercise the production scanner in an isolated tree: only vendored prose may
+# be excluded, never active code or a similarly named sibling directory.
+mutant_root="$TMP_ROOT/mutant"
+mkdir -p "$mutant_root/packages/teamlead/lead-skill-adapters/mvp" \
+  "$mutant_root/packages/teamlead/src" \
+  "$mutant_root/packages/teamlead/lead-skill-adapters-extra"
+for mutant_path in lead-skill-adapters/mvp/SKILL.md src/mutant.ts lead-skill-adapters-extra/mutant.md; do
+  printf '%s\n' 'three-stage' > "$mutant_root/packages/teamlead/$mutant_path"
+done
+scan_content "$mutant_root" > "$TMP_ROOT/mutant-hits" 2>&1
+mutant_rc=$?
+if [ "$mutant_rc" -eq 0 ] \
+  && grep -Fq 'packages/teamlead/src/mutant.ts:1:three-stage' "$TMP_ROOT/mutant-hits" \
+  && grep -Fq 'packages/teamlead/lead-skill-adapters-extra/mutant.md:1:three-stage' "$TMP_ROOT/mutant-hits" \
+  && ! grep -Fq 'packages/teamlead/lead-skill-adapters/mvp/SKILL.md' "$TMP_ROOT/mutant-hits"; then
+  pass "vendored prose exclusion preserves active-code and sibling-path detection"
+else
+  fail "vendored prose exclusion or outside-directory mutation detection failed"
+fi
+
+raw_hits="$TMP_ROOT/raw-hits"
+scan_content "$REPO_ROOT" > "$raw_hits" 2>&1
 scan_rc=$?
 if [ "$scan_rc" -gt 1 ]; then
   fail "tracked-file residue scan failed (rc=$scan_rc)"

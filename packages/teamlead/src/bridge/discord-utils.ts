@@ -1,3 +1,4 @@
+import { ChatThreadSideEffectDenied } from "./chat-thread-write-guard.js";
 /**
  * Shared Discord utilities used by standup-service and FLY-162 reply-by-issue.
  */
@@ -398,6 +399,7 @@ export async function deleteDiscordMessageInChannel(
 			},
 		);
 	} catch (err) {
+		if (err instanceof ChatThreadSideEffectDenied) throw err;
 		const msg = err instanceof Error ? err.message : String(err);
 		return { ok: false, error: `Discord DELETE failed: ${msg}` };
 	} finally {
@@ -452,5 +454,43 @@ export async function sendTypingToChannel(
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		return { ok: false, error: `Discord typing POST failed: ${msg}` };
+	}
+}
+
+/** Add the bot's own reaction only. No removal, alternate actor, URL or retries. */
+export async function reactDiscordMessageInChannel(
+	threadId: string,
+	messageId: string,
+	emoji: string,
+	botToken: string,
+	options: { signal?: AbortSignal } = {},
+	fetchImpl: typeof fetch = fetch,
+): Promise<EditDiscordResult> {
+	if (
+		!/^\d{17,20}$/.test(threadId) ||
+		!/^\d{17,20}$/.test(messageId) ||
+		!emoji.trim() ||
+		emoji.length > 128 ||
+		[...emoji].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+	)
+		return { ok: false, error: "invalid_discord_reaction" };
+	try {
+		const response = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+			{
+				method: "PUT",
+				headers: { Authorization: `Bot ${botToken}` },
+				signal: options.signal,
+			},
+		);
+		return response.ok
+			? { ok: true }
+			: {
+					ok: false,
+					status: response.status,
+					error: "discord_reaction_failed",
+				};
+	} catch {
+		return { ok: false, error: "discord_reaction_failed" };
 	}
 }

@@ -5,11 +5,14 @@ export type CodexLeadCapabilityInput = {
 	external?: boolean;
 	canSpawnRunners?: boolean;
 	codexRunnerActions?: boolean;
+	codexCapabilityBundleVersion?: 2;
 };
 
 export type CodexLeadCapability = {
 	eligible: boolean;
 	runnerActionsEnabled: boolean;
+	/** Absent on legacy rows; adoption is not proof of runtime readiness. */
+	capabilityBundleVersion?: 2;
 	reason: string | null;
 };
 
@@ -22,6 +25,27 @@ export function resolveCodexLeadCapabilities(
 		runnerActionsEnabled: false,
 		reason,
 	});
+	if (
+		input.codexCapabilityBundleVersion !== undefined &&
+		input.codexCapabilityBundleVersion !== 2
+	) {
+		return refuse("codexCapabilityBundleVersion must be 2 when present");
+	}
+	if (
+		input.codexCapabilityBundleVersion === 2 &&
+		(input.backend !== "codex-app-server" ||
+			input.codexProfile !== "full-access" ||
+			input.companion === true ||
+			input.external === true)
+	) {
+		return refuse(
+			"codexCapabilityBundleVersion requires a full-access Codex department Lead",
+		);
+	}
+	const bundle =
+		input.codexCapabilityBundleVersion === 2
+			? { capabilityBundleVersion: 2 as const }
+			: {};
 	if (
 		input.codexRunnerActions !== undefined &&
 		typeof input.codexRunnerActions !== "boolean"
@@ -58,6 +82,7 @@ export function resolveCodexLeadCapabilities(
 		}
 		return {
 			eligible: true,
+			...bundle,
 			runnerActionsEnabled: input.backend === "codex-app-server",
 			reason: null,
 		};
@@ -71,7 +96,12 @@ export function resolveCodexLeadCapabilities(
 			"Codex requires canSpawnRunners: false and a recognized tier, or explicit codexRunnerActions authorization (FLY-245/FLY-2459)",
 		);
 	}
-	return { eligible: true, runnerActionsEnabled: false, reason: null };
+	return {
+		eligible: true,
+		runnerActionsEnabled: false,
+		...bundle,
+		reason: null,
+	};
 }
 
 /** Current generic TUI contract; a requested unsupported tier must never fall back. */

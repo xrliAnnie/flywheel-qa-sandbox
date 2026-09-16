@@ -298,3 +298,58 @@ describe("DepartmentRegistry — isLeadInScope (precedence)", () => {
 		}
 	});
 });
+
+describe("ordinary department membership", () => {
+	it("allows a nonspawning department without granting spawn authority", () => {
+		const project = baseProject();
+		project.leads[0]!.canSpawnRunners = false;
+		const registry = new DepartmentRegistry([project]);
+		expect(
+			registry.isLeadDepartmentMember("TestProject", "product-lead", [
+				"product",
+			]).allowed,
+		).toBe(true);
+		expect(
+			registry.isLeadInScope("TestProject", "product-lead", ["product"]).reason,
+		).toBe("lead_cannot_spawn");
+	});
+});
+
+it("ordinary membership rejects foreign, missing, ambiguous and excluded roles", () => {
+	const project = baseProject();
+	project.leads[0]!.canSpawnRunners = false;
+	const registry = new DepartmentRegistry([project]);
+	for (const labels of [[], ["Operations"], ["Product", "Operations"]])
+		expect(
+			registry.isLeadDepartmentMember("TestProject", "product-lead", labels)
+				.allowed,
+		).toBe(false);
+	for (const overrides of [
+		{ external: true },
+		{ companion: true },
+		{ codexProfile: "companion" as const },
+	]) {
+		const changed = baseProject();
+		Object.assign(changed.leads[0]!, overrides);
+		expect(
+			new DepartmentRegistry([changed]).isLeadDepartmentMember(
+				"TestProject",
+				"product-lead",
+				["Product"],
+			).allowed,
+		).toBe(false);
+	}
+	const cos = baseProject();
+	cos.generalChannel = cos.leads[0]!.chatChannel;
+	expect(
+		new DepartmentRegistry([cos]).isLeadDepartmentMember(
+			"TestProject",
+			"product-lead",
+			["Product"],
+		).allowed,
+	).toBe(false);
+	expect(
+		registry.isLeadDepartmentMember("foreign", "product-lead", ["Product"])
+			.allowed,
+	).toBe(false);
+});

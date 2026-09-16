@@ -1,0 +1,261 @@
+[
+	{
+		"name": "company-values",
+		"sourceSha256": "d8c017eb5ad222630fbf503320ead27c9ef39909db5752c8a38b0e96428d19ad",
+		"adapterSha256": "d8c017eb5ad222630fbf503320ead27c9ef39909db5752c8a38b0e96428d19ad",
+		"resources": []
+	},
+	{
+		"name": "find-community",
+		"sourceSha256": "74725186bcad409520a59edffa14689bcbbfc213c4dc5dae4dffce97fd5183dc",
+		"adapterSha256": "74725186bcad409520a59edffa14689bcbbfc213c4dc5dae4dffce97fd5183dc",
+		"resources": []
+	},
+	{
+		"name": "first-customers",
+		"sourceSha256": "da4bfe33a52b6911388561e752691bb51f544c7965715c78ce16e33c47d84b64",
+		"adapterSha256": "da4bfe33a52b6911388561e752691bb51f544c7965715c78ce16e33c47d84b64",
+		"resources": []
+	},
+	{
+		"name": "grow-sustainably",
+		"sourceSha256": "55e382834d6e2416c26a2a869af52e23f4c6e30ead40703864114321ee92f6b5",
+		"adapterSha256": "55e382834d6e2416c26a2a869af52e23f4c6e30ead40703864114321ee92f6b5",
+		"resources": []
+	},
+	{
+		"name": "marketing-plan",
+		"sourceSha256": "f0776f808cba0afde645919d3f33682f89d5104513627dfcc2b0b1055f2ed5f6",
+		"adapterSha256": "f0776f808cba0afde645919d3f33682f89d5104513627dfcc2b0b1055f2ed5f6",
+		"resources": []
+	},
+	{
+		"name": "minimalist-review",
+		"sourceSha256": "2c4a8735bb4978f1b7e213c782044cb5ad7279492db1b725caa71a4b380dccd8",
+		"adapterSha256": "0258c9a9d105e3d60eb7d964be0fac6fe668aca5d6ccb1ea0695e08554fd37eb",
+		"resources": []
+	},
+	{
+		"name": "mvp",
+		"sourceSha256": "0546a592044bf2ada0f61507991cc41ab10507f7131b666a25caca10e6c2339a",
+		"adapterSha256": "0546a592044bf2ada0f61507991cc41ab10507f7131b666a25caca10e6c2339a",
+		"resources": []
+	},
+	{
+		"name": "pricing",
+		"sourceSha256": "120d0c341219051bf9b769d288ad47c0cf104602213e05dc612303c0468a2d1d",
+		"adapterSha256": "120d0c341219051bf9b769d288ad47c0cf104602213e05dc612303c0468a2d1d",
+		"resources": []
+	},
+	{
+		"name": "processize",
+		"sourceSha256": "a5a6888ce36d56a63b0abeff06256e64642b79f4f35309993ea80f243f078560",
+		"adapterSha256": "a5a6888ce36d56a63b0abeff06256e64642b79f4f35309993ea80f243f078560",
+		"resources": []
+	},
+	{
+		"name": "validate-idea",
+		"sourceSha256": "46d931aaef8e74c358253161d3950ea0c18525778b3b0286a925bf42917d6b03",
+		"adapterSha256": "46d931aaef8e74c358253161d3950ea0c18525778b3b0286a925bf42917d6b03",
+		"resources": []
+	},
+	{
+		"name": "problem-definition",
+		"sourceSha256": "3f0cbefef3f728b09ba27a8e40e70fd172d04a83ad7fd765ad2ebf2d6c8e62b2",
+		"adapterSha256": "a3fae5d12c2129db820f4d89a140009628ee467501c6ae276cf72f287a3f4dcf",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/problem-definition/references/guest-insights.md",
+				"sha256": "ab30357bed04dde83ab2f97815535c25ea6a1113968826df84927b0c40577f66"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/problem-definition/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "product-brainstorming",
+		"sourceSha256": "68ddcabfa552c5bef590e419b03c1d2b41665d827c987c6143a9b003306ed19e",
+		"adapterSha256": "e02521dbe70c1965c021fd7c9dc8511244fe45703ea8447cbc8f7c899b20dadf",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/product-brainstorming/LICENSE",
+				"sha256": "a6946284993aeec75c7d75906064b66210c46051e562077efb30eb6dcfe72e26"
+			}
+		]
+	},
+	{
+		"name": "defining-product-vision",
+		"sourceSha256": "829c4b8f49ee515ea3713fc3e8d5ec8080fce90f68425b6528c409c53da63b7a",
+		"adapterSha256": "7c55676d902cee49c762be93337a38ae024fa67cd76c8370bc0b351a8df288f1",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/defining-product-vision/references/guest-insights.md",
+				"sha256": "3bcf4b1d08dd30ee9dabbab4294d547d6773477fb856e45a4ef3fde7c6854238"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/defining-product-vision/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "working-backwards",
+		"sourceSha256": "9f303b699213e37387c5c19c6875e8f5ac5306c7ad60d128264ead99b0ea531d",
+		"adapterSha256": "359e5fb6b2b437a1542e0cf1bab65443e5920f230760c10d9741af550638a7c9",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/working-backwards/references/guest-insights.md",
+				"sha256": "27d4216f3377a6d2eb5e61f7c8e9bd0948d19020fe3d1c892ae185f2d79db01a"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/working-backwards/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "writing-prds",
+		"sourceSha256": "d50f38d7d96603e754fcc3418815c2c6eaf49a307c33f66f87989d1f4ee57ebc",
+		"adapterSha256": "18cb7254eb4d2cb94796f649f369225b5b588a83dc48b6a1289775f931ad5fd2",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/writing-prds/references/guest-insights.md",
+				"sha256": "137edd02952e9bc7ec771b846fb92550b34bc198981ac8118d87d8271cc911ee"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/writing-prds/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "scoping-cutting",
+		"sourceSha256": "1ee06c295b548abda9f8128b12f96ea4b1b43c4d1ecf895c9bbbfd345845168b",
+		"adapterSha256": "1297c32ae0f475c7b5eaa5ad2f02ba1ec2e7065d1dd92af36250824c0bcb2367",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/scoping-cutting/references/guest-insights.md",
+				"sha256": "4b98123277be4e0c98097af6b2c0d1ad777fc07ae94e13cdb9a7ee372c369f45"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/scoping-cutting/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "prioritizing-roadmap",
+		"sourceSha256": "8db23f87817a0b3231420a7f2298f84f13c2a3caacaa0ed5fb5579af1e685d33",
+		"adapterSha256": "547a29a94843204609595c21304eddd6c4a83cea425862f67e3efa2e2ce37597",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/prioritizing-roadmap/references/guest-insights.md",
+				"sha256": "51067e9eb7152bc4c1cc13e8d41e280642aeeccd4b442982a016d5b7ab02c1be"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/prioritizing-roadmap/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "writing-north-star-metrics",
+		"sourceSha256": "fba320bc3116cb6b426081ce805245f43ec0ed68262cee9cef55bb2a6ae3d273",
+		"adapterSha256": "be8579c1235e382328a5b1f3e39938d9ced79ab48952f549c1ce5f7b2bff6e00",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/writing-north-star-metrics/references/guest-insights.md",
+				"sha256": "80357509475d573defa60f4b44754cfd14de4a74ac42195f10d48b3df8df0c80"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/writing-north-star-metrics/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "product-taste-intuition",
+		"sourceSha256": "c92ba75a1bc708abd27bcc062aece839d662efd2c7beacaa00044d686153b5e4",
+		"adapterSha256": "345e4fd62fa573f55725c6f99d677db6ed2a3410a4aea85bf5cd232db637c452",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/product-taste-intuition/references/guest-insights.md",
+				"sha256": "3757c03b777c803b515ad0f5c75a3e6f52092821e866c982b263de5bd16f5e29"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/product-taste-intuition/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "analyzing-user-feedback",
+		"sourceSha256": "0097f858d094fa637ebb1b136e98b5a1a2e4376cde40d657ce91ce11eed12cf6",
+		"adapterSha256": "e21cbb81d6c2f957223c60825f72dfdb4ffe9b2aedcd61a373c510cc5d3eaed6",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/analyzing-user-feedback/references/guest-insights.md",
+				"sha256": "ba0b876a4f89c033c04e9529349be0412c194f97b14ddec319a1f9519be5ca8e"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/analyzing-user-feedback/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "synthesize-research",
+		"sourceSha256": "822ed6c48e856846e52c8496055642351c4757863807652e220f416707c06dd8",
+		"adapterSha256": "3c009436db5219982a5e7a77de0d1f245e3738b0726e1c41e5aca064ffc7d9a7",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/synthesize-research/LICENSE",
+				"sha256": "a6946284993aeec75c7d75906064b66210c46051e562077efb30eb6dcfe72e26"
+			}
+		]
+	},
+	{
+		"name": "competitive-analysis",
+		"sourceSha256": "b49801a00236d479ce5570a5cc2ef8b4059caf1cdb1f7e0f6dad88d425e09be9",
+		"adapterSha256": "851f0f826123a297f2cfdc56dd734849145c370cf4d561535b5dec12a6a6478e",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/competitive-analysis/references/guest-insights.md",
+				"sha256": "7b177abc2fb9700b5c57184bbee17b855003c8f3d1c161b376e01acd92e59d9c"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/competitive-analysis/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "dogfooding",
+		"sourceSha256": "797192967070d51a1ed01daff8e6741a7c63c71ac05979aac200f8b8852d1f88",
+		"adapterSha256": "6fff78fc726df97e90b54fd23a72727f88414e4af1feb616eaa1365d5d921386",
+		"resources": [
+			{
+				"source": "/Users/xiaorongli/.agents/skills/dogfooding/references/guest-insights.md",
+				"sha256": "50a91dd2cd983688efdb910b55886d9020370da523ee22cc9504a2a408ea4ae6"
+			},
+			{
+				"source": "/Users/xiaorongli/.agents/skills/dogfooding/LICENSE",
+				"sha256": "e282fa0e40644e932d13e2d77e8c91e9599c516deea52f22563e3a9e8389a416"
+			}
+		]
+	},
+	{
+		"name": "founder-html-delivery",
+		"sourceSha256": "b9dc392830d099775a508b712cc7df90bf49de5735961252ac585d60624277d6",
+		"adapterSha256": "218050693ca7947c2127508eacccf3f5f69c6dd5bbc51046ad2a6686e2fbabb7",
+		"resources": []
+	},
+	{
+		"name": "proofshot",
+		"sourceSha256": "0d730b66713764ef0a16f7e167b2e56250099d0b94a48be2a0e36ebbccfdac5c",
+		"adapterSha256": "2d70688011f68a7b58412d4b04d15c8841b3fcfd245d0482b6e0dbcccf9b2ef6",
+		"resources": []
+	}
+]

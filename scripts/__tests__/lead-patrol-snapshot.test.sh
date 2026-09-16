@@ -159,6 +159,9 @@ SH
 
 run_snapshot() {
   local dir="$1" out="$2" lead_id="${3:-flywheel-eng-lead}" executable="${4:-$SCRIPT}"
+  local parent_args=()
+  [ -z "${5:-}" ] || parent_args=(--github-facts "$5")
+  [ -z "${6:-}" ] || parent_args+=(--tmux-socket "$6")
   HOME="$dir/home" \
   PATH="$dir/bin:$PATH" \
   FLYWHEEL_STATE_DIR="$dir/state" \
@@ -173,7 +176,7 @@ run_snapshot() {
   PATROL_NOW_EPOCH="${PATROL_NOW_EPOCH:-}" \
   TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
   TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
-    bash "$executable" --project flywheel --lead "$lead_id" > "$out" 2>&1
+    "${PATROL_TEST_BASH:-bash}" "$executable" --project flywheel --lead "$lead_id" ${parent_args[@]+"${parent_args[@]}"} > "$out" 2>&1
 }
 
 RAYA_TEST_NOW=2000000000
@@ -769,6 +772,14 @@ LEGACY_CONTINUITY_SHA="$(shasum -a 256 "$PANES/state/patrol-continuity/flywheel-
 PANES_OUT="$PANES/out.txt"
 PATROL_NOW_EPOCH=2000000000 TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
 contains "$PANES_OUT" "pane_count=2" "Lead pane count contains only its two owned panes"
+# Exercise the shipped shebang interpreter, including macOS Bash 3.2, without -S.
+BASH32_OUT="$PANES/bash32.txt"
+PATROL_TEST_BASH=/bin/bash TMUX_CALL_LOG="$PANES/bash32-calls.log" run_snapshot "$PANES" "$BASH32_OUT" || fail "system Bash default-socket snapshot exits zero"
+not_contains "$BASH32_OUT" "unbound variable" "system Bash optional args are nounset-safe"
+contains "$BASH32_OUT" "pane_count=2" "system Bash lists both owned panes without socket args"
+contains "$PANES/bash32-calls.log" "capture-pane -p -S - -t %1" "system Bash captures first owned pane without socket args"
+contains "$PANES/bash32-calls.log" "capture-pane -p -S - -t %2" "system Bash captures second owned pane without socket args"
+
 count_is "$PANES_OUT" "PANE_EVIDENCE " 2 "only owned panes have evidence rows"
 for pane in %1 %2; do
   contains "$PANES/tmux-calls.log" "capture-pane -p -S - -t $pane" "pane $pane uses full scrollback capture"
@@ -1891,6 +1902,39 @@ else
 fi
 contains "$PUBLISH_OUT" "## STEP 1" "publication failure still returns collected facts"
 not_contains "$PUBLISH_OUT" "REPORT_PATH=" "publication failure does not claim a durable artifact"
+
+PARENT_FACTS="$TMP/parent-facts"
+make_case "$PARENT_FACTS"
+cat > "$PARENT_FACTS/bin/gh" <<'SH'
+#!/bin/bash
+echo called >> "$GH_CALL_LOG"
+exit 1
+SH
+chmod 0755 "$PARENT_FACTS/bin/gh"
+printf '%s' '{"projectName":"flywheel","leadId":"flywheel-eng-lead","pulls":[],"runs":{"workflow_runs":[]}}' > "$PARENT_FACTS/facts.json"
+chmod 0600 "$PARENT_FACTS/facts.json"
+PARENT_FACTS_PATH="$(node -e 'process.stdout.write(require("fs").realpathSync(process.argv[1]))' "$PARENT_FACTS/facts.json")"
+GH_CALL_LOG="$PARENT_FACTS/gh.log" run_snapshot "$PARENT_FACTS" "$PARENT_FACTS/valid.txt" flywheel-eng-lead "$SCRIPT" "$PARENT_FACTS_PATH" || fail "parent facts snapshot exits zero"
+contains "$PARENT_FACTS/valid.txt" "PR none" "parent GitHub facts feed the existing STEP 5"
+[ ! -e "$PARENT_FACTS/gh.log" ] && pass "parent GitHub facts do not invoke gh" || fail "parent facts invoked gh"
+printf '%s' '{"projectName":"foreign","leadId":"flywheel-eng-lead","pulls":[],"runs":{"workflow_runs":[]}}' > "$PARENT_FACTS/facts.json"
+GH_CALL_LOG="$PARENT_FACTS/gh.log" run_snapshot "$PARENT_FACTS" "$PARENT_FACTS/invalid.txt" flywheel-eng-lead "$SCRIPT" "$PARENT_FACTS_PATH" || fail "invalid parent facts still produce a visible snapshot"
+contains "$PARENT_FACTS/invalid.txt" "STEP 5: UNAVAILABLE" "foreign parent facts remain unavailable"
+[ ! -e "$PARENT_FACTS/gh.log" ] && pass "invalid parent facts never fall back to gh" || fail "invalid parent facts fell back to gh"
+
+SOCKET_CASE="$TMP/explicit-socket"
+make_case "$SOCKET_CASE"
+cat > "$SOCKET_CASE/bin/tmux" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" >> "$TMUX_CALL_LOG"
+[ "$1" = -S ] && [ "$2" = '/private/tmp/owned socket' ] || exit 90
+shift 2
+[ "$1" = list-panes ] || exit 91
+SH
+chmod 0755 "$SOCKET_CASE/bin/tmux"
+run_snapshot "$SOCKET_CASE" "$SOCKET_CASE/out.txt" flywheel-eng-lead "$SCRIPT" "" '/private/tmp/owned socket' || fail "explicit socket snapshot exits zero"
+contains "$SOCKET_CASE/tmux-calls.log" '/private/tmp/owned socket' "explicit socket reaches tmux as one argument"
+not_contains "$SOCKET_CASE/out.txt" 'tmux_unavailable' "explicit socket does not fall back to default server"
 
 printf '\nFLY-1855 patrol snapshot: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
