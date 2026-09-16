@@ -1,10 +1,7 @@
 import type { MailboxSettlement } from "flywheel-comm/mailbox-queue";
 import type { SummaryGranularitySelection } from "flywheel-comm/summary-config";
 import { founderLocalIso } from "flywheel-config";
-import {
-	type AlertPayload,
-	FLEET_ALERT_PROJECT,
-} from "../LeadAlertNotifier.js";
+import type { AlertPayload } from "../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { canonicalLeadEventDeliveryId } from "./lead-event-queue.js";
@@ -20,6 +17,10 @@ import {
 	type SummaryDueRoundRow,
 	type SummaryRoundResult,
 } from "./summary-round-classify.js";
+import {
+	formatSummaryVisibleFailureAlert,
+	formatSummaryVisibleStaleAlert,
+} from "./summary-visible-alert.js";
 
 export const SUMMARY_ABSORPTION_SESSION_KEY = "summary-absorption";
 
@@ -40,7 +41,14 @@ export interface SummaryAbsorptionPassDeps {
 		| "listSummaryDueRows"
 		| "getLeadEventByLeadAndId"
 		| "tryClaimLeadEvent"
-	>;
+	> &
+		Partial<
+			Pick<
+				StateStore,
+				| "appendSummaryPresentationRounds"
+				| "claimSummaryPresentationStaleSignals"
+			>
+		>;
 	enqueueLeadEvent(
 		envelope: ReturnType<typeof leadEventEnvelopeFromJournalRow>,
 	): DurableQueueReceipt;
@@ -214,17 +222,25 @@ function frozenRoundFromRow(
 	return payload as SummaryRoundResult;
 }
 
-function appendRayaRound(
-	deps: SummaryAbsorptionPassDeps,
+interface PendingRayaRound {
+	leadId: string;
+	eventId: string;
+	payload: string;
+	projectName: string;
+	slotStartMs: number;
+}
+
+function buildRayaRound(
 	raya: { projectName: string; leadId: string },
 	slotStartMs: number,
 	nowMs: number,
 	result: SummaryRoundResult,
-): void {
+): PendingRayaRound {
 	const roundId = summaryAbsorptionRoundId(slotStartMs);
 	const generatedAt = new Date(nowMs).toISOString();
 	const payload = {
 		...result,
+		contract_version: 2,
 		event_type: "summary_absorption_round",
 		execution_id: roundId,
 		issue_id: "FLY-2131",
@@ -232,30 +248,17 @@ function appendRayaRound(
 		status: "scheduled",
 		generated_at: generatedAt,
 		summary:
-			`[${roundId}] 开始一轮 summary review/吸收：先对账已 merge summary 与 MEMORY.md provenance，` +
-			"review 未读 PR；看不懂时按 roundId+PR 聚合追问该项目 Lead；" +
-			"有 review/吸收/追问活动时在 #raya 发可见汇报。",
+			"后台 summary 业务轮次；逐轮事实保持独立，founder 呈现由 v2 presentation group 统一决定。",
 		notification_context:
-			`This event id is the roundId: ${roundId}. Carry it through summary merge --round, ` +
-			"MEMORY.md provenance/commit, Lead questions, the durable round ledger, and the #raya report.\n" +
-			"【本轮对账(FLY-2382)】无论本轮有没有 review/吸收/追问活动,都要在 #raya 发一条汇报,\n" +
-			"并逐字包含下面这几行(不要改写、不要省略):\n" +
-			result.report_line,
+			"使用 summary_presentation begin/record/finalize；没有实质内容可以 silent，且不要另发逐轮消息。",
 	};
-	const seq = deps.store.appendLeadEvent(
-		raya.leadId,
-		roundId,
-		"summary_absorption_round",
-		JSON.stringify(payload),
-		SUMMARY_ABSORPTION_SESSION_KEY,
-	);
-	const durable = deps.store.getLeadEventBySeq(seq);
-	if (!durable) {
-		throw new Error(
-			`summary absorption journal row missing after append seq=${seq}`,
-		);
-	}
-	deps.enqueueLeadEvent(leadEventEnvelopeFromJournalRow(durable, 2));
+	return {
+		leadId: raya.leadId,
+		eventId: roundId,
+		payload: JSON.stringify(payload),
+		projectName: raya.projectName,
+		slotStartMs,
+	};
 }
 
 async function settleSummarySlot(
@@ -265,10 +268,10 @@ async function settleSummarySlot(
 	nowMs: number,
 	ledgerForSettlement: () => Promise<SummaryLedgerResult>,
 	degradedSlots: Set<string>,
-): Promise<void> {
+): Promise<PendingRayaRound | null> {
 	const slotStart = new Date(slotStartMs).toISOString();
 	const dueJournalRows = deps.store.listSummaryDueRows(slotStart);
-	if (dueJournalRows.length === 0) return;
+	if (dueJournalRows.length === 0) return null;
 
 	const frozenEventId = `summary_slot_settled:${slotStart}`;
 	let frozen = deps.store.getLeadEventByLeadAndId(
@@ -326,15 +329,10 @@ async function settleSummarySlot(
 	}
 	const result = frozenRoundFromRow(frozen);
 
-	if (raya) {
-		try {
-			appendRayaRound(deps, raya, slotStartMs, nowMs, result);
-		} catch (error) {
-			deps.log?.(
-				`[summary_due] Raya replay failed for ${slotStart}: ${error instanceof Error ? error.message : String(error)}; ${result.report_line}`,
-			);
-		}
-	} else if (!degradedSlots.has(slotStart)) {
+	const pendingRound = raya
+		? buildRayaRound(raya, slotStartMs, nowMs, result)
+		: null;
+	if (!raya && !degradedSlots.has(slotStart)) {
 		degradedSlots.add(slotStart);
 		deps.log?.(
 			`[summary-due] slot ${slotStart} settled without Raya recipient (DEGRADED: no #raya report): ${result.report_line}`,
@@ -343,31 +341,18 @@ async function settleSummarySlot(
 
 	if (result.undelivered.length > 0) {
 		try {
-			const undeliveredProducers = result.producers.filter(
-				(producer) => producer.due_delivery === "undelivered",
+			const alert = formatSummaryVisibleFailureAlert({ slotStart, result });
+			deps.log?.(
+				`[summary_due] ${alert.diagnosticRef} internal delivery detail: ${result.report_line}`,
 			);
-			await deps.alertFailure({
-				leadId: "patrol-roster:summary-due",
-				projectName: FLEET_ALERT_PROJECT,
-				eventId: `summary_due_undelivered:${slotStart}`,
-				eventType: "inbox_loop_stalled",
-				title: `summary_due not delivered to ${undeliveredProducers.length} Lead inbox(es)`,
-				body: [
-					`slot=${slotStart}`,
-					...undeliveredProducers.map(
-						(producer) =>
-							`${producer.project}/${producer.lead}: ${producer.due_delivery}`,
-					),
-					result.report_line,
-				].join("\n"),
-				severity: "warning",
-			});
+			await deps.alertFailure(alert.payload);
 		} catch (error) {
 			deps.log?.(
 				`[summary_due] alert replay failed for ${slotStart}: ${error instanceof Error ? error.message : String(error)}; ${result.report_line}`,
 			);
 		}
 	}
+	return pendingRound;
 }
 
 async function runSummaryAbsorptionPass(
@@ -403,10 +388,11 @@ async function runSummaryAbsorptionPass(
 		if (!settlementLedger) settlementLedger = deps.listSummaryPulls();
 		return settlementLedger;
 	};
+	const pendingRounds: PendingRayaRound[] = [];
 	for (const candidate of [slotStartMs, slotStartMs - cadenceMs]) {
 		if (candidate < 0 || nowMs < candidate + graceMs) continue;
 		try {
-			await settleSummarySlot(
+			const pendingRound = await settleSummarySlot(
 				deps,
 				raya,
 				candidate,
@@ -414,9 +400,63 @@ async function runSummaryAbsorptionPass(
 				ledgerForSettlement,
 				degradedSlots,
 			);
+			if (pendingRound) pendingRounds.push(pendingRound);
 		} catch (error) {
 			deps.log?.(
 				`[summary_due] slot settlement failed for ${new Date(candidate).toISOString()}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	if (pendingRounds.length > 0) {
+		try {
+			const durableRows = deps.store.appendSummaryPresentationRounds
+				? deps.store.appendSummaryPresentationRounds(pendingRounds)
+				: pendingRounds.map((round) => {
+						const seq = deps.store.appendLeadEvent(
+							round.leadId,
+							round.eventId,
+							"summary_absorption_round",
+							round.payload,
+							SUMMARY_ABSORPTION_SESSION_KEY,
+						);
+						const durable = deps.store.getLeadEventBySeq(seq);
+						if (!durable) {
+							throw new Error(
+								`summary absorption journal row missing after append seq=${seq}`,
+							);
+						}
+						return durable;
+					});
+			for (const durable of durableRows) {
+				deps.enqueueLeadEvent(leadEventEnvelopeFromJournalRow(durable, 2));
+			}
+		} catch (error) {
+			deps.log?.(
+				`[summary_due] Raya presentation batch failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	if (raya && deps.store.claimSummaryPresentationStaleSignals) {
+		try {
+			const signals = deps.store.claimSummaryPresentationStaleSignals({
+				projectName: raya.projectName,
+				leadId: raya.leadId,
+				nowMs,
+				cadenceMs,
+			});
+			for (const signal of signals) {
+				deps.log?.(
+					`[summary_due] ${signal.diagnosticRef} internal stale state: ${signal.kind} ${signal.internalRef}`,
+				);
+				await deps.alertFailure(
+					formatSummaryVisibleStaleAlert({
+						diagnosticRef: signal.diagnosticRef,
+					}),
+				);
+			}
+		} catch (error) {
+			deps.log?.(
+				`[summary_due] stale-state inspection failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}

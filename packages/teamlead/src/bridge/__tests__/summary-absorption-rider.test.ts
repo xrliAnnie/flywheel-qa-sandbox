@@ -5,6 +5,7 @@ import {
 	createSummaryAbsorptionPass,
 	summaryAbsorptionRoundId,
 } from "../summary-absorption-rider.js";
+import { SummaryPresentationController } from "../summary-presentation-controller.js";
 
 function harness(options: { now?: number; cadences?: number[] } = {}) {
 	const now = options.now ?? 190_000;
@@ -435,10 +436,20 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 			execution_id: summaryAbsorptionRoundId(180_000),
 			issue_id: "FLY-2131",
 			status: "scheduled",
-			notification_context: expect.stringContaining(
-				"本轮 0/1 份已交;未交:reflection-lead",
-			),
+			contract_version: 2,
+			notification_context: expect.stringContaining("summary_presentation"),
 		});
+		const rayaPayload = JSON.parse(rayaRound!.payload) as {
+			notification_context: string;
+			report_line: string;
+		};
+		expect(rayaPayload.report_line).toBe(
+			"本轮 0/1 份已交;未交:reflection-lead",
+		);
+		expect(rayaPayload.notification_context).not.toContain(
+			rayaPayload.report_line,
+		);
+		expect(rayaPayload.notification_context).not.toContain("无论本轮有没有");
 		expect(enqueueLeadEvent.mock.calls.at(-1)?.[0]).toMatchObject({
 			eventId: summaryAbsorptionRoundId(180_000),
 			event: {
@@ -627,15 +638,20 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 		expect(alertFailure).toHaveBeenNthCalledWith(
 			1,
 			expect.objectContaining({
-				leadId: "patrol-roster:summary-due",
+				leadId: "raya-summary",
 				projectName: "machine",
-				eventId: `summary_due_undelivered:${slotStart}`,
+				eventId: expect.stringMatching(/^summary-alert:[a-f0-9]{20}$/),
 				eventType: "inbox_loop_stalled",
-				title: "summary_due not delivered to 1 Lead inbox(es)",
-				body: expect.stringContaining("growth/reflection-lead: undelivered"),
+				title: "进展收集出现送达问题",
+				body: expect.stringContaining("工程侧正在处理"),
 				severity: "warning",
 			}),
 		);
+		const visibleAlert = JSON.stringify(alertFailure.mock.calls[0]?.[0]);
+		expect(visibleAlert).not.toContain(slotStart);
+		expect(visibleAlert).not.toContain("0/1");
+		expect(visibleAlert).not.toContain("reflection-lead");
+		expect(visibleAlert).not.toContain("undelivered");
 		expect(alertFailure.mock.calls[1]?.[0].eventId).toBe(
 			alertFailure.mock.calls[0]?.[0].eventId,
 		);
@@ -1029,6 +1045,192 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 			expect(log.mock.calls.flat().join("\n")).toContain(
 				`invalid summary_due payload: summary_due:growth/broken-lead:${currentSlot}`,
 			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("commits both mature slots as one batch before enqueueing either round", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const slots = [60 * 60_000, 2 * 60 * 60_000];
+			store.appendSummaryDueRows(
+				slots.map((slotStartMs) => {
+					const slot = new Date(slotStartMs).toISOString();
+					return {
+						leadId: "reflection-lead",
+						eventId: `summary_due:flywheel/reflection-lead:${slot}`,
+						payload: JSON.stringify({
+							event_type: "summary_due",
+							project_name: "flywheel",
+							summary_due: { period: `period-${slot}` },
+						}),
+					};
+				}),
+			);
+			const appendBatch = vi.spyOn(store, "appendSummaryPresentationRounds");
+			const enqueueLeadEvent = vi.fn(() => ({
+				queued: true as const,
+				deliveryId: "delivery",
+				seq: 1,
+			}));
+			const pass = createSummaryAbsorptionPass({
+				projects: [
+					{
+						projectName: "flywheel",
+						projectRoot: "/tmp/flywheel",
+						leads: [{ agentId: "raya", summaryRole: "recipient" }],
+					} as never,
+				],
+				store,
+				enqueueLeadEvent,
+				inspectDeliveryState: vi.fn(() => ({
+					kind: "archived_terminal" as const,
+					state: "ACKED" as const,
+					settledAt: "1970-01-01T00:04:30.000Z",
+					deadReason: null,
+					lastError: null,
+					createdAt: "1970-01-01T00:00:00.000Z",
+					deliveredAt: "1970-01-01T00:00:01.000Z",
+					notifiedAt: null,
+				})),
+				readSummaryGranularity: vi.fn(() => ({ state: "unselected" as const })),
+				listSummaryPulls: vi.fn(async () => ({
+					status: "ok" as const,
+					pulls: [],
+				})),
+				alertFailure: vi.fn(async () => undefined),
+				cadenceMs: () => 60 * 60_000,
+				now: () => 2 * 60 * 60_000 + 30 * 60_000,
+			});
+
+			await pass();
+
+			expect(appendBatch).toHaveBeenCalledTimes(1);
+			expect(appendBatch.mock.calls[0]![0]).toHaveLength(2);
+			expect(enqueueLeadEvent).toHaveBeenCalledTimes(2);
+			for (const slotStartMs of slots) {
+				expect(
+					store.summaryPresentations.getRound(
+						"flywheel",
+						"raya",
+						summaryAbsorptionRoundId(slotStartMs),
+					)?.disposition,
+				).toBe("eligible");
+			}
+		} finally {
+			store.close();
+		}
+	});
+
+	it("settles the configured six-hour cadence without an automatic founder message", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const cadenceMs = 6 * 60 * 60_000;
+			const slotStartMs = cadenceMs;
+			const slot = new Date(slotStartMs).toISOString();
+			store.summaryPresentations.beginMigration({
+				projectName: "raya",
+				leadId: "raya",
+				boundarySeq: 0,
+				sourceDigests: { journal: "empty-at-cutover" },
+			});
+			store.summaryPresentations.completeMigration({
+				projectName: "raya",
+				leadId: "raya",
+				sourceDigests: { journal: "empty-at-cutover" },
+			});
+			store.appendSummaryDueRows([
+				{
+					leadId: "producer",
+					eventId: `summary_due:raya/producer:${slot}`,
+					payload: JSON.stringify({
+						event_type: "summary_due",
+						project_name: "raya",
+						summary_due: { period: "six-hour-fixture" },
+					}),
+				},
+			]);
+			const pass = createSummaryAbsorptionPass({
+				projects: [
+					{
+						projectName: "raya",
+						projectRoot: "/tmp/raya-isolated",
+						leads: [{ agentId: "raya", summaryRole: "recipient" }],
+					} as never,
+				],
+				store,
+				enqueueLeadEvent: vi.fn(() => ({
+					queued: true as const,
+					deliveryId: "backend-only",
+					seq: 1,
+				})),
+				inspectDeliveryState: vi.fn(() => ({
+					kind: "archived_terminal" as const,
+					state: "ACKED" as const,
+					settledAt: new Date(slotStartMs + 1).toISOString(),
+					deadReason: null,
+					lastError: null,
+					createdAt: new Date(slotStartMs).toISOString(),
+					deliveredAt: new Date(slotStartMs + 1).toISOString(),
+					notifiedAt: null,
+				})),
+				readSummaryGranularity: vi.fn(() => ({ state: "unselected" as const })),
+				listSummaryPulls: vi.fn(async () => ({
+					status: "ok" as const,
+					pulls: [],
+				})),
+				alertFailure: vi.fn(async () => undefined),
+				cadenceMs: () => cadenceMs,
+				now: () => cadenceMs * 2 + 30 * 60_000,
+			});
+			await pass();
+
+			const outbound = { handle: vi.fn() };
+			const controller = new SummaryPresentationController({
+				store,
+				outbound: outbound as never,
+				expectedApiToken: "isolated-token",
+				canonicalIdentity: {
+					projectName: "raya",
+					leadId: "raya",
+					channelId: "111111111111111111",
+				},
+			});
+			const begun = await controller.handle({
+				providedToken: "isolated-token",
+				body: { operation: "begin", projectName: "raya", leadId: "raya" },
+			});
+			const group = begun.body.group as { id: string };
+			const members = begun.body.members as Array<{ roundId: string }>;
+			expect(members).toHaveLength(1);
+			await controller.handle({
+				providedToken: "isolated-token",
+				body: {
+					operation: "record",
+					projectName: "raya",
+					leadId: "raya",
+					groupId: group.id,
+					roundId: members[0]!.roundId,
+					businessState: "complete",
+					outcome: { substantive: false },
+					evidenceRef: "qa:six-hour:empty",
+				},
+			});
+			expect(
+				await controller.handle({
+					providedToken: "isolated-token",
+					body: {
+						operation: "finalize",
+						projectName: "raya",
+						leadId: "raya",
+						groupId: group.id,
+						decision: "silent",
+						reason: "no substantive founder value",
+					},
+				}),
+			).toMatchObject({ httpStatus: 200, body: { status: "silent" } });
+			expect(outbound.handle).not.toHaveBeenCalled();
 		} finally {
 			store.close();
 		}

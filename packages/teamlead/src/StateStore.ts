@@ -1,4 +1,13 @@
-import { epicIntakeResultSchema, sameEpicIntakeEvidence, type EpicIntakeResult } from "./bridge/epic-intake-result.js";
+import {
+	epicIntakeResultSchema,
+	sameEpicIntakeEvidence,
+	type EpicIntakeResult,
+} from "./bridge/epic-intake-result.js";
+import {
+	SummaryPresentationStore,
+	summaryPresentationPayloadDigest,
+	type SummaryPresentationStaleSignal,
+} from "./bridge/summary-presentation-store.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
@@ -2699,12 +2708,26 @@ export type AttentionThreadBinding =
 
 export class StateStore {
 	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
+	private summaryPresentationStoreCache?: {
+		db: BetterDb;
+		store: SummaryPresentationStore;
+	};
 	get customerReleases(): CustomerReleaseStore {
 		const db = this.db.raw;
 		if (this.customerReleaseStoreCache?.db !== db) {
 			this.customerReleaseStoreCache = { db, store: new CustomerReleaseStore(db) };
 		}
 		return this.customerReleaseStoreCache.store;
+	}
+	get summaryPresentations(): SummaryPresentationStore {
+		const db = this.db.raw;
+		if (this.summaryPresentationStoreCache?.db !== db) {
+			this.summaryPresentationStoreCache = {
+				db,
+				store: new SummaryPresentationStore(db),
+			};
+		}
+		return this.summaryPresentationStoreCache.store;
 	}
 	private observationStorage: ObservationStorageState = { status: "unavailable", reason: "not_initialized" };
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
@@ -6762,6 +6785,7 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+		this.summaryPresentations.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,
@@ -20792,6 +20816,54 @@ export class StateStore {
 				);
 			}
 		});
+	}
+
+	/** FLY-2619: journal and admit every Raya round in one transaction. */
+	appendSummaryPresentationRounds(
+		rows: Array<{
+			leadId: string;
+			eventId: string;
+			payload: string;
+			projectName: string;
+			slotStartMs: number;
+		}>,
+	): LeadEventRow[] {
+		return this.db.raw.transaction(() =>
+			rows.map((row) => {
+				const seq = this.appendLeadEvent(
+					row.leadId,
+					row.eventId,
+					"summary_absorption_round",
+					row.payload,
+					"summary-absorption",
+				);
+				this.summaryPresentations.admitRound({
+					projectName: row.projectName,
+					leadId: row.leadId,
+					roundId: row.eventId,
+					sourceSeq: seq,
+					slotStartMs: row.slotStartMs,
+					sourceDigest: summaryPresentationPayloadDigest(row.payload),
+				});
+				const durable = this.getLeadEventBySeq(seq);
+				if (!durable) {
+					throw new Error(
+						`summary absorption journal row missing after append seq=${seq}`,
+					);
+				}
+				return durable;
+			}),
+		)();
+	}
+
+	/** FLY-2619: atomically claim once-only stale presentation diagnostics. */
+	claimSummaryPresentationStaleSignals(input: {
+		projectName: string;
+		leadId: string;
+		nowMs?: number;
+		cadenceMs: number;
+	}): SummaryPresentationStaleSignal[] {
+		return this.summaryPresentations.claimStaleSignals(input);
 	}
 
 	/** FLY-2382: read the immutable producer roster captured for one exact slot. */

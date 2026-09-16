@@ -202,9 +202,10 @@ for (const [file, table] of [
 		"packages/teamlead/src/bin/backend-migration-evidence.ts",
 		"workflow_run_event",
 	],
+	["packages/teamlead/src/bridge/summary-presentation-store.ts", "lead_events"],
 	["packages/teamlead/src/lead-backends/codex/runner-actions.ts", "mailbox"],
 ]) {
-	test(`registers the exact guarded migration/question read: ${file}`, () => {
+	test(`registers the exact guarded retention read: ${file}`, () => {
 		const source = readFileSync(
 			new URL(`../../${file}`, import.meta.url),
 			"utf8",
@@ -226,8 +227,8 @@ for (const [file, table] of [
 			),
 		);
 		const entries = config.consumers.filter((entry) => entry.file === file);
-		// Missing retained evidence refuses the operation; registration does not
-		// change retention policy or turn absence into dispatch/response authority.
+		// Missing retained evidence refuses or skips the operation; registration
+		// does not change retention policy or make absence authoritative.
 		assert.deepEqual(entries, [
 			{ ...consumers[0], disposition: "candidate_guarded" },
 		]);

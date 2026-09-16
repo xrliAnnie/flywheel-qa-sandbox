@@ -333,6 +333,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/summary-presentation-store.ts",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "packages/teamlead/src/terminal-row-archive.ts",
 			"relation": "lead_event_delivery_attempts",
 			"baseTable": "lead_event_delivery_attempts",

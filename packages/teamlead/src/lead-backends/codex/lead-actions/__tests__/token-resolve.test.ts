@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	isReservedRayaSummaryEventId,
 	resolveLeadActionEventId,
 	resolveLeadActionsApiToken,
 	resolveLeadActionsBotToken,
@@ -67,5 +68,20 @@ describe("resolveLeadActionEventId (FLY-2445)", () => {
 		);
 		expect(eventId).toBe("durable-event-id");
 		expect(seen).toEqual([["roundtable", "invite"]]);
+	});
+});
+
+describe("reserved Raya summary event ids (FLY-2619)", () => {
+	it.each([
+		"summary-absorption:2026-09-16T06:00:00.000Z:report",
+		"lead-action:raya:raya:summary-absorption:2026-09-16T06:00:00.000Z:report",
+		"summary-presentation:7a5a46a0-5385-45ab-b652-9d2d1b6a066e",
+		"lead-action:raya:raya:summary-presentation:7a5a46a0-5385-45ab-b652-9d2d1b6a066e",
+	])("rejects %s", (eventId) => {
+		expect(isReservedRayaSummaryEventId(eventId)).toBe(true);
+	});
+
+	it("does not block ordinary conversation event ids", () => {
+		expect(isReservedRayaSummaryEventId("founder-question:42")).toBe(false);
 	});
 });

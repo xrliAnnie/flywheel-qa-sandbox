@@ -557,9 +557,44 @@ git -C "$publisher" push -q origin main
 followup_target="$(git -C "$publisher" rev-parse HEAD)"
 saved_bounded="$(declare -f raya_run_bounded_in_checkout)"
 saved_lead="$(declare -f raya_standard_lead)"
+saved_summary_migration="$(declare -f raya_migrate_summary_presentation)"
 raya_run_bounded_in_checkout() { return 0; }
 : > "$CALLS"
 raya_standard_lead() { printf '%s\n' "$*" >> "$CALLS"; return 0; }
+
+# The standard update must complete the FLY-2619 data-first migration before
+# preflight/install. Exercise the shell boundary with an isolated fake adapter;
+# the TypeScript suite covers the real database classifier.
+summary_node="$TMP/summary-migration-node"
+summary_tool="$TMP/raya-summary-presentation-migrate.js"
+summary_db="$TMP/teamlead.db"
+summary_calls="$TMP/summary-migration-calls"
+printf 'fixture tool\n' > "$summary_tool"
+printf 'fixture db\n' > "$summary_db"
+: > "$RAYA_WORKSPACE/state/summary-merge-receipts.jsonl"
+cat > "$summary_node" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SUMMARY_MIGRATION_CALLS"
+printf '%s\n' '{"state":"complete","boundarySeq":12,"cursorSeq":12}'
+SH
+chmod +x "$summary_node"
+saved_summary_node="$RAYA_STANDARD_NODE_BIN"
+saved_summary_tool="$RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL"
+RAYA_STANDARD_NODE_BIN="$summary_node"
+RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL="$summary_tool"
+TEAMLEAD_DB_PATH="$summary_db"
+export SUMMARY_MIGRATION_CALLS="$summary_calls"
+if raya_migrate_summary_presentation \
+  && grep -F -- "--db $summary_db --workspace $RAYA_WORKSPACE --project raya --lead raya" \
+    "$summary_calls" >/dev/null; then
+  pass "standard update completes the bounded summary presentation migration before install"
+else
+  fail "standard update must complete the bounded summary presentation migration before install"
+fi
+RAYA_STANDARD_NODE_BIN="$saved_summary_node"
+RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL="$saved_summary_tool"
+unset TEAMLEAD_DB_PATH SUMMARY_MIGRATION_CALLS
+raya_migrate_summary_presentation() { return 0; }
 
 legacy_plist_dir="$TMP/legacy-launch-agents"
 mkdir -p "$legacy_plist_dir"
@@ -676,6 +711,7 @@ else
 fi
 eval "$saved_bounded"
 eval "$saved_lead"
+eval "$saved_summary_migration"
 
 # Flywheel may deploy while this migration waits at P5/P6. Rebinding must
 # quarantine the old proof before changing its SHA owner, including crash recovery.

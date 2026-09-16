@@ -33,9 +33,9 @@
 - Bridge delivers `[summary_due]` at the founder-owned cadence. When it arrives,
   write the summary and 原样使用事件里的 `--period`; the mechanism recognizes a
   delivery for this round only through that exact period.
-- If this period has no new Facts or Judgment, 可以不交 (PRD §6.3). A missing
-  summary will appear as “未交” in Raya's round report. That is visibility, not
-  a reminder or demand to manufacture content.
+- If this period has no new Facts or Judgment, 可以不交 (PRD §6.3). The backend
+  reconciliation ledger still records that outcome, but no missing-delivery list
+  is shown to the founder. Do not manufacture content merely to fill a period.
 - `[summary_due]` is the 唯一的节奏来源. Do not create a local timer, cron,
   launchd job, or another reminder for summary delivery.
 

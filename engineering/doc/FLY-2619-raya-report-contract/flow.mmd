@@ -1,0 +1,12 @@
+flowchart TD
+  A[后台按原节奏收集进展] --> B[每一轮分别记账]
+  B --> C[本次积压一起处理]
+  C --> D{有值得告诉她的新内容吗}
+  D -->|没有| E[记下已处理并保持安静]
+  D -->|有| F[整理一条简短中文消息]
+  F --> G[内部编号和报错留在后台]
+  G --> H[只发送一次并保存回执]
+  classDef normal fill:#ffffff,stroke:#86868b,color:#1d1d1f
+  classDef focus fill:#eaf3ff,stroke:#007aff,color:#1d1d1f
+  class A,B,C,E,F,G,H normal
+  class D focus

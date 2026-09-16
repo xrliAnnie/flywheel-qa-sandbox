@@ -789,6 +789,7 @@ import {
 } from "./stuck-remanage-routes.js";
 import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
 import { listSummaryPulls } from "./summary-delivery-ledger.js";
+import { SummaryPresentationController } from "./summary-presentation-controller.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -3332,29 +3333,30 @@ export function createBridgeApp(
 			projects,
 			process.env,
 		);
-		const codexLeadOutbound = buildLeadOutboundExpressHandler(
-			new CodexLeadOutboundHandler({
-				store: new SqliteOutboundDedupStore(
-					join(homedir(), ".flywheel", "codex-lead-outbound-dedup.db"),
-				),
-				send: buildLeadDiscordSend({
-					resolveBotToken: resolveCodexLeadBotToken,
-				}),
-				expectedApiToken: config.apiToken,
-				prepareProactiveEngagement: buildPrepareProactiveEngagement(projects, {
-					resolveBotToken: resolveCodexLeadBotToken,
-					resolveStateDir: async (projectName, leadId) => {
-						const { resolveCodexLeadStateDir } = await import(
-							"./lead-inbox-runtime.js"
-						);
-						return resolveCodexLeadStateDir(projectName, leadId);
-					},
-				}),
-				// Anti-impersonation: a Lead may only post to its own channels (FLY-246).
-				authorizeLeadChannel: buildAuthorizeLeadChannel(projects, {
-					resolveBotToken: resolveCodexLeadBotToken,
-				}),
+		const codexLeadOutboundHandler = new CodexLeadOutboundHandler({
+			store: new SqliteOutboundDedupStore(
+				join(homedir(), ".flywheel", "codex-lead-outbound-dedup.db"),
+			),
+			send: buildLeadDiscordSend({
+				resolveBotToken: resolveCodexLeadBotToken,
 			}),
+			expectedApiToken: config.apiToken,
+			prepareProactiveEngagement: buildPrepareProactiveEngagement(projects, {
+				resolveBotToken: resolveCodexLeadBotToken,
+				resolveStateDir: async (projectName, leadId) => {
+					const { resolveCodexLeadStateDir } = await import(
+						"./lead-inbox-runtime.js"
+					);
+					return resolveCodexLeadStateDir(projectName, leadId);
+				},
+			}),
+			// Anti-impersonation: a Lead may only post to its own channels (FLY-246).
+			authorizeLeadChannel: buildAuthorizeLeadChannel(projects, {
+				resolveBotToken: resolveCodexLeadBotToken,
+			}),
+		});
+		const codexLeadOutbound = buildLeadOutboundExpressHandler(
+			codexLeadOutboundHandler,
 			console,
 		);
 		app.post(
@@ -3364,6 +3366,48 @@ export function createBridgeApp(
 				void codexLeadOutbound(req, res);
 			},
 		);
+
+		const rayaIdentities = projects.flatMap((project) =>
+			(project.leads ?? [])
+				.filter((lead) => lead.agentId === "raya")
+				.map((lead) => ({
+					projectName: project.projectName,
+					leadId: lead.agentId,
+					channelId: lead.chatChannel,
+				})),
+		);
+		if (rayaIdentities.length > 1) {
+			throw new Error(
+				"summary presentation requires exactly one canonical Raya Lead",
+			);
+		}
+		const rayaIdentity = rayaIdentities[0];
+		if (rayaIdentity) {
+			const summaryPresentation = new SummaryPresentationController({
+				store,
+				outbound: codexLeadOutboundHandler,
+				expectedApiToken: config.apiToken,
+				canonicalIdentity: rayaIdentity,
+			});
+			app.post(
+				"/api/summary-presentation",
+				tokenAuthMiddleware(config.apiToken),
+				async (req, res) => {
+					const rawAuthorization = req.headers.authorization;
+					const authorization = Array.isArray(rawAuthorization)
+						? rawAuthorization[0]
+						: rawAuthorization;
+					const providedToken = authorization?.startsWith("Bearer ")
+						? authorization.slice("Bearer ".length)
+						: authorization;
+					const outcome = await summaryPresentation.handle({
+						body: req.body ?? {},
+						providedToken,
+					});
+					res.status(outcome.httpStatus).json(outcome.body);
+				},
+			);
+		}
 	}
 
 	app.post(

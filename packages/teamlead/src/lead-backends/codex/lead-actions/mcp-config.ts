@@ -19,6 +19,7 @@ export const LEAD_ACTIONS_MCP_SERVER_NAME = "lead_actions";
  * Linear create/assign is a FLY-351 follow-on (added here when it lands). */
 export const LEAD_ACTIONS_TOOLS: readonly string[] = [
 	"discord_send",
+	"summary_presentation",
 	"ack_batch",
 	"directory",
 ];

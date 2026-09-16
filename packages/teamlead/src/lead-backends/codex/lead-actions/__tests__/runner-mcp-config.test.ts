@@ -31,10 +31,11 @@ const opts = {
 	},
 };
 describe("runner-enabled full-access static MCP config", () => {
-	it("adds the six tools and union of direct/Bridge credential names", () => {
+	it("adds the seven tools and union of direct/Bridge credential names", () => {
 		const cfg = buildFullAccessLeadActionsMcpServerConfig(opts);
 		expect(cfg.enabledTools).toEqual([
 			"discord_send",
+			"summary_presentation",
 			"ack_batch",
 			"directory",
 			...RUNNER_ACTION_TOOL_NAMES,

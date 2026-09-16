@@ -25,6 +25,7 @@ import {
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
+	formatSummaryAbsorptionRound,
 	formatSummaryDue,
 	formatWorkflowClaimRecorded,
 	formatWorkflowReplacementEligibility,
@@ -103,6 +104,9 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (e.event_type === "epic_intake") return formatEpicIntake(env);
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 		if (e.event_type === "summary_due") return formatSummaryDue(env);
+		if (e.event_type === "summary_absorption_round") {
+			return formatSummaryAbsorptionRound(env);
+		}
 		if (e.event_type === "business_wake") return formatBusinessWake(env);
 		if (e.event_type === "workflow_replacement_eligibility") {
 			return formatWorkflowReplacementEligibility(env);

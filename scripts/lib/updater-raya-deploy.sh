@@ -43,6 +43,7 @@ raya_configure_runtime_paths() {
     FLYWHEEL_LEAD_BIN="${base}/bin/flywheel-lead.sh"
     RAYA_STANDARD_NODE_BIN="${UPDATER_NODE:-node}"
     RAYA_STANDARD_SEED_TOOL="${FLYWHEEL_TEAMLEAD_ROOT}/dist/bin/seed-lead-inbound-cursor.js"
+    RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL="${FLYWHEEL_TEAMLEAD_ROOT}/dist/bin/raya-summary-presentation-migrate.js"
     return
   fi
   : "${RAYA_HOME:=${base}/raya}"
@@ -59,6 +60,7 @@ raya_configure_runtime_paths() {
   : "${FLYWHEEL_LEAD_BIN:=${base}/bin/flywheel-lead.sh}"
   : "${RAYA_STANDARD_NODE_BIN:=${UPDATER_NODE:-node}}"
   : "${RAYA_STANDARD_SEED_TOOL:=${FLYWHEEL_TEAMLEAD_ROOT}/dist/bin/seed-lead-inbound-cursor.js}"
+  : "${RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL:=${FLYWHEEL_TEAMLEAD_ROOT}/dist/bin/raya-summary-presentation-migrate.js}"
 }
 
 raya_log() {
@@ -992,6 +994,7 @@ raya_prepare_source() {
   if [[ "$(jq -r '.mode // "migration"' "$RAYA_MIGRATION_MANIFEST")" == standard-update ]]; then
     [[ "$flywheel_sha" == "$(jq -r .target_flywheel_sha "$RAYA_MIGRATION_MANIFEST")" \
       && "$manifest_sha" == "$(jq -r .target_manifest_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+    raya_migrate_summary_presentation || return 1
     raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
     RAYA_PREFLIGHT_RC=$?
     (( RAYA_PREFLIGHT_RC == 0 )) || return 1
@@ -1014,6 +1017,35 @@ raya_prepare_source() {
       --arg artifact "$RAYA_ARTIFACT_DIGEST" --arg persona "$RAYA_PERSONA_DIGEST" \
       --arg workspace "$RAYA_WORKSPACE" || return 1
   fi
+}
+
+# FLY-2619: install the data-first presentation gate before the updated Raya
+# process can consume a summary round. The adapter is idempotent and bounded to
+# the canonical workspace plus the current authoritative teamlead database.
+raya_migrate_summary_presentation() {
+  local project="" lead="" db="" ledger="" decisions="" output=""
+  project="$(jq -er .projectName "$RAYA_CANONICAL_MANIFEST")" || return 1
+  lead="$(jq -er .leadId "$RAYA_CANONICAL_MANIFEST")" || return 1
+  [[ "$project" == raya && "$lead" == raya ]] || return 1
+  db="${TEAMLEAD_DB_PATH:-${FLYWHEEL_HOME:-${HOME}/.flywheel}/teamlead.db}"
+  ledger="$RAYA_WORKSPACE/state/summary-merge-receipts.jsonl"
+  decisions="$RAYA_WORKSPACE/state/summary-presentation-migration-decisions.jsonl"
+  [[ -f "$RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL" \
+    && ! -L "$RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL" \
+    && -f "$db" && ! -L "$db" \
+    && -f "$ledger" && ! -L "$ledger" ]] || return 1
+  if [[ -e "$decisions" || -L "$decisions" ]]; then
+    [[ -f "$decisions" && ! -L "$decisions" ]] || return 1
+    output="$("$RAYA_STANDARD_NODE_BIN" "$RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL" \
+      --db "$db" --workspace "$RAYA_WORKSPACE" --project "$project" --lead "$lead" \
+      --ledger "$ledger" --decisions "$decisions")" || return 1
+  else
+    output="$("$RAYA_STANDARD_NODE_BIN" "$RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL" \
+      --db "$db" --workspace "$RAYA_WORKSPACE" --project "$project" --lead "$lead" \
+      --ledger "$ledger")" || return 1
+  fi
+  jq -e '.state == "complete" and (.boundarySeq | type == "number") and
+    (.cursorSeq == .boundarySeq)' <<<"$output" >/dev/null 2>&1
 }
 
 raya_fail() {

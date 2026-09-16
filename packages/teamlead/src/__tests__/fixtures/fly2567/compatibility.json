@@ -93,7 +93,7 @@
 		},
 		{
 			"id": "bootstrap-format",
-			"rationale": "FLY-2557 adds an epic_intake branch to both MailboxLeadRuntime and CommDBLeadRuntime; each calls the same formatEpicIntake before other event branches, independently of the token-savings switch. Existing bootstrap-format ON bounds, historical OFF bytes and the shared bootstrap selector are unchanged. Both transports therefore receive the same new intake identity, backfill, ledger/thread and resolve instructions without changing bootstrap formatting. Syncing main 451812138 adds formatBusinessWake and its business_wake dispatch branch to both transports; this independent event branch preserves frozen schedule identity and does not modify bootstrap selection or formatting. The existing intake branches are retained alongside it.",
+			"rationale": "FLY-2557 adds an epic_intake branch to both MailboxLeadRuntime and CommDBLeadRuntime; each calls the same formatEpicIntake before other event branches, independently of the token-savings switch. Existing bootstrap-format ON bounds and the shared bootstrap selector are unchanged. Both transports therefore receive the same new intake identity, backfill, ledger/thread and resolve instructions without changing bootstrap formatting. Syncing main 451812138 adds formatBusinessWake and its business_wake dispatch branch to both transports; this independent event branch preserves frozen schedule identity and does not modify bootstrap selection or formatting. FLY-2619 adds the shared summary_absorption_round branch to both transports and revises the shared summary duty bytes so silent rounds stay founder-invisible; the branch is independent of the token-savings switch and both modes retain identical summary presentation behavior.",
 			"members": [
 				{
 					"path": "packages/teamlead/src/bridge/bootstrap-format.ts",
@@ -105,11 +105,11 @@
 				},
 				{
 					"path": "packages/teamlead/src/bridge/mailbox-lead-runtime.ts",
-					"sha256": "3aacc1881ef585e3275dfd622d31bca80504af1a26fd579641de9a176f6095f4"
+					"sha256": "c1463aacf113d6353fd1b0079072c028e8cbfe10f5f234d694a1cd9bfc2edb2e"
 				},
 				{
 					"path": "packages/teamlead/src/bridge/commdb-lead-runtime.ts",
-					"sha256": "29289c1fc9a65396fbf3c70c4487f4a007501b48716db64400efcaa24f6908fe"
+					"sha256": "60f96846750ef8cb186f412ce193d7ab4ee0f414a45f64bcd119782f6bee1457"
 				}
 			]
 		}

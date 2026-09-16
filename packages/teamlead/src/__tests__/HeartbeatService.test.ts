@@ -415,6 +415,8 @@ describe("RegistryHeartbeatNotifier", () => {
 	it("hot toggles monitoring re-entry on the same notifier", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
+		let now = 1_000;
+		const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now++);
 		try {
 			const notifier = new RegistryHeartbeatNotifier(
 				registry,
@@ -455,6 +457,7 @@ describe("RegistryHeartbeatNotifier", () => {
 				hbStore.getLeadEventBySeq(1)?.payload,
 			);
 		} finally {
+			dateNow.mockRestore();
 			hbStore.close();
 		}
 	});

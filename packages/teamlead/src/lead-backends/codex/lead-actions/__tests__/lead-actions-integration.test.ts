@@ -4,7 +4,7 @@ import { createServer } from "node:http";
  *
  * Spawns the built entrypoint the same way Codex does and drives it with a real
  * MCP stdio client. The child receives Bridge credentials but no Discord token,
- * registers the directory, discord_send and ack_batch tools, remains stable across repeated ephemeral
+ * registers the directory, discord_send, summary_presentation and ack_batch tools, remains stable across repeated ephemeral
  * spawns, and fails closed when the token is absent or empty.
  *
  * Skips automatically when the package has not been built.
@@ -113,7 +113,12 @@ describe("lead-actions MCP real-spawn integration", () => {
 				join(dir, "state"),
 				"test-bot-token-xyz",
 			);
-			expect(tools).toEqual(["directory", "discord_send", "ack_batch"]);
+			expect(tools).toEqual([
+				"directory",
+				"discord_send",
+				"summary_presentation",
+				"ack_batch",
+			]);
 		},
 		20_000,
 	);
@@ -126,7 +131,12 @@ describe("lead-actions MCP real-spawn integration", () => {
 				"direct-discord-token",
 				"direct",
 			);
-			expect(tools).toEqual(["directory", "discord_send", "ack_batch"]);
+			expect(tools).toEqual([
+				"directory",
+				"discord_send",
+				"summary_presentation",
+				"ack_batch",
+			]);
 		},
 		20_000,
 	);
@@ -142,6 +152,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 				expect(tools, `respawn #${i + 1}`).toEqual([
 					"directory",
 					"discord_send",
+					"summary_presentation",
 					"ack_batch",
 				]);
 			}
@@ -256,5 +267,89 @@ describe("lead-actions MCP real-spawn integration", () => {
 			}
 		},
 		20000,
+	);
+
+	run(
+		"forwards summary presentation operations to the canonical Bridge route",
+		async () => {
+			const { Client } = await import(
+				"@modelcontextprotocol/sdk/client/index.js"
+			);
+			const { StdioClientTransport } = await import(
+				"@modelcontextprotocol/sdk/client/stdio.js"
+			);
+			const requests: Array<{
+				authorization: string | undefined;
+				url: string | undefined;
+				body: Record<string, unknown>;
+			}> = [];
+			const server = createServer((req, res) => {
+				let raw = "";
+				req.on("data", (chunk) => {
+					raw += chunk;
+				});
+				req.on("end", () => {
+					const body = JSON.parse(raw) as Record<string, unknown>;
+					requests.push({
+						authorization: req.headers.authorization,
+						url: req.url,
+						body,
+					});
+					res.setHeader("content-type", "application/json");
+					if (body.probe) {
+						res.end(JSON.stringify({ status: "authorized" }));
+						return;
+					}
+					res.end(
+						JSON.stringify({
+							status: "begun",
+							groupId: "opaque-group",
+							members: [{ roundId: "opaque-round" }],
+						}),
+					);
+				});
+			});
+			await new Promise<void>((resolve) =>
+				server.listen(0, "127.0.0.1", resolve),
+			);
+			const address = server.address() as { port: number };
+			const transport = new StdioClientTransport({
+				command: process.execPath,
+				args: [distMain],
+				env: {
+					...childEnv(join(dir, "summary-state"), "test-summary-token"),
+					BRIDGE_URL: `http://127.0.0.1:${address.port}`,
+				},
+			});
+			const client = new Client({ name: "summary-test", version: "1" });
+			try {
+				await client.connect(transport);
+				const result = await client.callTool({
+					name: "summary_presentation",
+					arguments: { operation: "begin" },
+				});
+				expect(result.structuredContent).toEqual({
+					status: "begun",
+					groupId: "opaque-group",
+					members: [{ roundId: "opaque-round" }],
+				});
+				const presentationRequest = requests.find(
+					(request) => request.url === "/api/summary-presentation",
+				);
+				expect(presentationRequest).toEqual({
+					authorization: "Bearer test-summary-token",
+					url: "/api/summary-presentation",
+					body: {
+						operation: "begin",
+						projectName: "growth",
+						leadId: "mufasa-lead",
+					},
+				});
+			} finally {
+				await client.close().catch(() => {});
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+			}
+		},
+		20_000,
 	);
 });

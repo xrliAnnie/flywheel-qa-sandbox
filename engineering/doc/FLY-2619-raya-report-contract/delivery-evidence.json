@@ -1,0 +1,20 @@
+{
+  "url": "https://fw-reports-e8af2b.vercel.app/r/f4d9f5aab7ec71072f458b9e55a75697/",
+  "reportId": "f4d9f5aab7ec71072f458b9e55a75697",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "publishedFromCommit": "c3f62b536",
+  "sourceSha256": "06dbdacf5218698693cb90955df076b8e0cfc929d4f4f9f7207da5ac6b7d7dbf",
+  "httpStatus": 200,
+  "noncePlaceholderAbsent": true,
+  "cspScriptNonceMatched": true,
+  "hostedMatchesSourceAfterPublisherCspNonceRobotsNormalization": true,
+  "externalAssets": 0,
+  "commentDomHarness": "pass",
+  "diagram": "pending-local-render-after-two-permission-failures",
+  "browserVisualQA": false,
+  "leadHtmlReportReceipt": "4f73a2b1-4bed-45ad-a7a3-cfe7d008d3f2",
+  "reviewRequestId": "e6df50c6-e482-4ba0-94b0-6ce36f3e2bba",
+  "reviewVerdict": "APPROVED"
+}

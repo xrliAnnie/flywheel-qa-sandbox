@@ -38,6 +38,7 @@ import {
 
 const DISCORD_SEND_TOOL = "discord_send";
 const ACK_BATCH_TOOL = "ack_batch";
+const SUMMARY_PRESENTATION_TOOL = "summary_presentation";
 
 /**
  * Resolve the Bridge API token from the MCP child's env, fail-closed. The
@@ -74,6 +75,15 @@ export function resolveLeadActionEventId(
 	return requestedEventId ?? allocate(target, text);
 }
 
+/** Defense in depth: presentation keys are minted only by the Bridge controller. */
+export function isReservedRayaSummaryEventId(eventId: string): boolean {
+	return (
+		/(?:^|:)summary-absorption:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z:report$/u.test(
+			eventId,
+		) || eventId.includes("summary-presentation:")
+	);
+}
+
 /**
  * Assemble + run the lead-actions MCP server: env token → McpServer →
  * discord_send tool → stdio transport (awaits forever in production).
@@ -89,15 +99,17 @@ export async function leadActionsMain(
 	// closed independently and never falls back to the other transport.
 	let botToken: string | undefined;
 	let outbound: CodexOutboundSender | undefined;
+	let bridgeApiToken: string | undefined;
 	if (cfg.outboundMode === "bridge") {
 		if (!cfg.bridgeUrl) {
 			throw new Error(
 				"lead-actions: bridge mode parsed without BRIDGE_URL (invariant violation)",
 			);
 		}
+		bridgeApiToken = resolveLeadActionsApiToken(env);
 		outbound = new CodexOutboundSender({
 			bridgeUrl: cfg.bridgeUrl,
-			apiToken: resolveLeadActionsApiToken(env),
+			apiToken: bridgeApiToken,
 			projectName: cfg.projectName,
 			leadId: cfg.leadId,
 			channelId: cfg.chatChannelId,
@@ -180,6 +192,22 @@ export async function leadActionsMain(
 				),
 		},
 		async ({ target, text, eventId: requestedEventId }) => {
+			if (
+				cfg.leadId === "raya" &&
+				requestedEventId &&
+				isReservedRayaSummaryEventId(requestedEventId)
+			) {
+				return {
+					...asText(
+						"reserved summary event id: use summary_presentation instead",
+						true,
+					),
+					structuredContent: {
+						status: "rejected",
+						reason: "reserved_summary_event_id",
+					},
+				};
+			}
 			let effectiveEventId = requestedEventId;
 			// FLY-350 (R1-4): delegate to the SHARED send core (alias gate →
 			// idempotency → rate limit → post → record → metadata audit). The
@@ -258,6 +286,69 @@ export async function leadActionsMain(
 					...(effectiveEventId ? { eventId: effectiveEventId } : {}),
 				},
 			};
+		},
+	);
+
+	server.tool(
+		SUMMARY_PRESENTATION_TOOL,
+		"Process durable Raya summary rounds as one presentation group. Call begin, " +
+			"record every returned member, then finalize exactly once as silent or " +
+			"substantive. The Bridge chooses the channel and idempotency key.",
+		{
+			operation: z.enum(["begin", "record", "finalize", "status"]),
+			groupId: z.string().trim().min(1).optional(),
+			roundId: z.string().trim().min(1).optional(),
+			businessState: z.enum(["complete", "failed"]).optional(),
+			outcome: z.unknown().optional(),
+			evidenceRef: z.string().trim().min(1).max(512).optional(),
+			decision: z.enum(["silent", "substantive"]).optional(),
+			reason: z.string().trim().min(1).max(1_000).optional(),
+			text: z.string().trim().min(1).max(1_800).optional(),
+		},
+		async (request) => {
+			if (!cfg.bridgeUrl || !bridgeApiToken) {
+				return asText(
+					"summary_presentation unavailable: canonical Bridge transport is not configured",
+					true,
+				);
+			}
+			try {
+				const response = await fetch(
+					`${cfg.bridgeUrl}/api/summary-presentation`,
+					{
+						method: "POST",
+						headers: {
+							"content-type": "application/json",
+							authorization: `Bearer ${bridgeApiToken}`,
+						},
+						body: JSON.stringify({
+							...request,
+							projectName: cfg.projectName,
+							leadId: cfg.leadId,
+						}),
+						signal: AbortSignal.timeout(10_000),
+					},
+				);
+				const raw = await response.text();
+				let result: Record<string, unknown>;
+				try {
+					result = JSON.parse(raw) as Record<string, unknown>;
+				} catch {
+					return asText(
+						`summary_presentation failed: Bridge returned HTTP ${response.status}`,
+						true,
+					);
+				}
+				return {
+					...asText(JSON.stringify(result), !response.ok),
+					structuredContent: result,
+				};
+			} catch (error) {
+				return asText(
+					`summary_presentation unavailable: ${(error as Error).message}`,
+					true,
+				);
+			}
 		},
 	);
 

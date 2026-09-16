@@ -99,7 +99,7 @@ describe("FLY-2382 summary_due rendering", () => {
 		expect(env.event.summary_due).toEqual(original);
 	});
 
-	it("keeps the full eleven-producer report in both final runtime strings", () => {
+	it("projects legacy round payloads into the silent-capable v2 contract", () => {
 		const producers = Array.from(
 			{ length: 11 },
 			(_, index) => `department-${index + 1}/producer-lead-${index + 1}`,
@@ -128,8 +128,16 @@ describe("FLY-2382 summary_due rendering", () => {
 
 		for (const runtime of [MailboxLeadRuntime, CommDBLeadRuntime]) {
 			const rendered = renderViaPrototype(runtime, env);
-			expect(rendered).toContain(context);
-			expect(rendered).toContain(reportLine);
+			expect(rendered).toContain("summary_presentation begin");
+			expect(rendered).toContain("没有实质内容时选择 silent");
+			expect(rendered).toContain("不要按轮发送 Discord 消息");
+			expect(rendered).not.toContain(context);
+			expect(rendered).not.toContain(reportLine);
+			expect(rendered).not.toContain(
+				"summary-absorption:2026-09-07T06:00:00.000Z",
+			);
+			expect(rendered).not.toContain("0/11");
+			expect(rendered).not.toContain("未交:");
 			expect(rendered).not.toContain("x".repeat(301));
 		}
 	});

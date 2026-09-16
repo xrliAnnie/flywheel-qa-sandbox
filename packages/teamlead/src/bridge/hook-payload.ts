@@ -197,6 +197,7 @@ export interface HookPayload {
 		command_hint: string;
 	};
 	/** FLY-2382: immutable reconciliation result copied onto Raya's round event. */
+	contract_version?: number;
 	round_ledger?: "ok" | "unavailable";
 	producer_count?: number;
 	delivered_count?: number;
@@ -364,6 +365,26 @@ function summaryDueUrl(value: unknown): string {
 	}
 }
 
+/**
+ * FLY-2619: render both v2 and already-queued legacy rounds through one
+ * presentation-safe contract. The immutable round payload keeps reconciliation
+ * diagnostics, but none of those diagnostics are copied into Raya's prompt.
+ */
+export function formatSummaryAbsorptionRound(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	return [
+		`[Event #${env.seq}] summary_absorption_round`,
+		"后台已记入新的 summary 轮次；先调用 summary_presentation begin 领取当前呈现组。",
+		"按 begin 返回的 members 逐轮完成 review、merge、追问和 memory provenance，并用 summary_presentation record 记录每轮业务结果。",
+		"所有 members 都有结果后只调用一次 summary_presentation finalize：没有实质内容时选择 silent；沉默不算失职。",
+		"只有出现新的、对 founder 有实际价值的业务事实或判断时才选择 substantive，并提交一条简短中文正文。",
+		"不要按轮发送 Discord 消息，也不要用 discord_send 或 assistant final 另发轮报。",
+		"任何 founder 可见正文都不得包含统计头、缺交名单、roundId、groupId 或原始报错；内部诊断留在后台记录。",
+		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
+	].join("\n");
+}
+
 /** Shared renderer so both Lead transports preserve the complete due contract. */
 export function formatSummaryDue(
 	env: StuckEscalationEnvelopeLike & { leadId: string },
@@ -402,7 +423,7 @@ export function formatSummaryDue(
 		"1. 写本 period 的 summary(Facts + Judgment;合同见 Raya 仓 summaries/README.md)。",
 		`2. 运行:${command}`,
 		"   （请原样使用上面的 period;机制只按它识别「本轮已交」。）",
-		"3. 没有新事实与判断可写时可以不交(PRD §6.3)。未交会在 Raya 的轮报里以「未交」出现——那是可见性,不是催促。",
+		"3. 没有新事实与判断可写时可以不交(PRD §6.3)。后台仍会逐轮对账，但不会向 founder 展示缺交名单；不要为凑数制造内容。",
 		"4. 这是唯一的节奏来源;不要自建定时器(R4)。",
 		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
 	].join("\n");
