@@ -14,12 +14,19 @@ export class LinearUpstreamError extends Error {
 	}
 }
 
+export interface LinearIssueParent {
+	id: string;
+	identifier: string;
+}
+
 export interface LinearIssue {
 	id: string;
 	identifier: string;
 	title: string;
 	description: string | null;
 	priority: number;
+	/** Present on exact lookup; null means no native parent. */
+	parent?: LinearIssueParent | null;
 	priorityLabel: string;
 	state: string;
 	stateType: string;
@@ -27,6 +34,8 @@ export interface LinearIssue {
 	assignee: string | null;
 	/** Linear project name (null when the issue has none). */
 	project: string | null;
+	/** Canonical project identity, present on exact lookup. */
+	projectId?: string | null;
 	url: string;
 	createdAt: string;
 	updatedAt: string;
@@ -165,7 +174,8 @@ type LinearIssueNode = {
 	state: { name: string; type: string };
 	labels: { nodes: Array<{ name: string }> };
 	assignee: { name: string } | null;
-	project?: { name: string } | null;
+	project?: { id?: string; name: string } | null;
+	parent?: LinearIssueParent | null;
 };
 
 function mapIssueNode(n: LinearIssueNode, slim: boolean): LinearIssue {
@@ -213,7 +223,8 @@ export async function lookupLinearIssueByIdentifier(
 				state { name type }
 				labels { nodes { name } }
 				assignee { name }
-				project { name }
+				project { id name }
+				parent { id identifier }
 			}
 		}
 	`;
@@ -238,7 +249,15 @@ export async function lookupLinearIssueByIdentifier(
 		throw new LinearUpstreamError(msg || "Linear API request failed", err);
 	}
 	const node = (result.data as { issue: LinearIssueNode | null }).issue;
-	return node ? mapIssueNode(node, false) : null;
+	return node
+		? {
+				...mapIssueNode(node, false),
+				...(node.project === null || node.project?.id !== undefined
+					? { projectId: node.project?.id ?? null }
+					: {}),
+				...(node.parent !== undefined ? { parent: node.parent } : {}),
+			}
+		: null;
 }
 
 /** one comment as the landing reconciliation reads it (FLY-1160 §3.3 读口). */

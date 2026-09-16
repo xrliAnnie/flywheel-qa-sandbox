@@ -575,6 +575,10 @@ import {
 	queryLinearIssues,
 } from "./linear-query.js";
 import {
+	LinearReparentError,
+	prepareLinearReparent,
+} from "./linear-reparent.js";
+import {
 	issueMatchesBinding,
 	resolveLinearScope,
 	resolveProjectNameParam,
@@ -4320,13 +4324,18 @@ export function createBridgeApp(
 
 	app.patch(
 		"/api/linear/update-issue",
+		(req, res, next) =>
+			req.body?.parentId === undefined
+				? next()
+				: createIssueParentAuth(req, res, next),
 		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			if (!config.linearApiKey) {
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
 				return;
 			}
-			const { issueId, title, description, priority, status } = req.body ?? {};
+			const { issueId, title, description, priority, status, parentId } =
+				req.body ?? {};
 			if (!issueId || typeof issueId !== "string") {
 				res.status(400).json({ error: "issueId is required" });
 				return;
@@ -4346,7 +4355,43 @@ export function createBridgeApp(
 				res.status(400).json({ error: "priority must be 0-4" });
 				return;
 			}
+			if (
+				parentId !== undefined &&
+				parentId !== null &&
+				(typeof parentId !== "string" || parentId.trim().length === 0)
+			) {
+				res
+					.status(400)
+					.json({ error: "parentId must be a non-empty string or null" });
+				return;
+			}
+			let reparent:
+				| Awaited<ReturnType<typeof prepareLinearReparent>>
+				| undefined;
+			let mutationMayHaveSucceeded = false;
 			try {
+				if (parentId !== undefined) {
+					if (
+						typeof req.body?.projectName !== "string" ||
+						!req.body.projectName.trim()
+					) {
+						res
+							.status(400)
+							.json({ error: "projectName is required with parentId" });
+						return;
+					}
+					const bound = resolveProjectNameParam(projects, req.body.projectName);
+					if (!bound.ok) {
+						res.status(bound.status).json({ error: bound.error });
+						return;
+					}
+					reparent = await prepareLinearReparent(
+						config.linearApiKey,
+						issueId,
+						parentId,
+						bound.binding!,
+					);
+				}
 				const { LinearClient } = await import("@linear/sdk");
 				const client = new LinearClient({ apiKey: config.linearApiKey });
 				const update: Record<string, unknown> = {};
@@ -4373,6 +4418,44 @@ export function createBridgeApp(
 						}
 					}
 				}
+				if (reparent) {
+					update.parentId = reparent.parentId;
+					mutationMayHaveSucceeded = true;
+					const payload = await client.updateIssue(reparent.source.id, update);
+					if (!payload.success) {
+						res.status(502).json({
+							error: "Linear rejected parent update",
+							mutationMayHaveSucceeded: true,
+						});
+						return;
+					}
+					const actual = await lookupLinearIssueByIdentifier(
+						config.linearApiKey,
+						reparent.source.id,
+					);
+					if (
+						!actual ||
+						actual.id !== reparent.source.id ||
+						actual.identifier !== reparent.source.identifier ||
+						actual.parent === undefined ||
+						(actual.parent?.id ?? null) !== reparent.parentId
+					) {
+						res.status(409).json({
+							error: "parent read-back mismatch",
+							mutationMayHaveSucceeded: true,
+						});
+						return;
+					}
+					res.json({
+						ok: true,
+						issue: {
+							id: actual.id,
+							identifier: actual.identifier,
+							parent: actual.parent,
+						},
+					});
+					return;
+				}
 				await client.updateIssue(issueId, update);
 				res.json({ ok: true });
 			} catch (err) {
@@ -4380,7 +4463,15 @@ export function createBridgeApp(
 					"[linear-proxy] update-issue failed:",
 					(err as Error).message,
 				);
-				res.status(502).json({ error: "Linear API error" });
+				res.status(err instanceof LinearReparentError ? err.status : 502).json({
+					error:
+						err instanceof LinearReparentError
+							? err.message
+							: "Linear API error",
+					...(mutationMayHaveSucceeded
+						? { mutationMayHaveSucceeded: true }
+						: {}),
+				});
 			}
 		},
 	);
