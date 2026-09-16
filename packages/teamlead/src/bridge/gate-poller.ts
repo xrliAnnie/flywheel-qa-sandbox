@@ -2775,6 +2775,7 @@ export class GatePoller {
 								commDbPath: dbPath,
 								leadId: lead.agentId,
 								attentionSinceMs: Date.parse(ask.asked_at),
+								...(rolloutOwner ? { replyChannelId: ask.thread_id } : {}),
 							},
 							questions: [],
 						});
