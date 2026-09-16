@@ -79,7 +79,7 @@ graphs:
             defaultEffort: xhigh
           - model: astra
             allowedEfforts: [low, medium, high, xhigh, max]
-            defaultEffort: xhigh
+            defaultEffort: high
       implement:
         defaultModel: codex
         models:

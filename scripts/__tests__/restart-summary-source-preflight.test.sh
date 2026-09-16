@@ -117,6 +117,21 @@ cmp "$ROOT/before" "$ROOT/after"
 # The same read-only preflight is used by --dry-run, without install or build.
 DRY_RUN=true summary_registry_activation_preflight > "$ROOT/dry-run.log"
 grep -q '"ok":true' "$ROOT/dry-run.log"
+# FLY-2602 read-only experiment: change only effort without receipt refresh.
+cp "$ROOT/receipt.json" "$ROOT/receipt-before.json"
+python3 <<'PY2'
+import json, os
+from pathlib import Path
+path = Path(os.environ['ROOT']) / 'projects.json'
+projects = json.loads(path.read_text())
+projects[0]['leads'][0]['effort'] = 'high'
+path.write_text(json.dumps(projects))
+PY2
+summary_registry_activation_preflight > "$ROOT/effort-only.log" 2>&1
+cat "$ROOT/effort-only.log"
+grep -q '"ok":true' "$ROOT/effort-only.log"
+cmp "$ROOT/receipt-before.json" "$ROOT/receipt.json"
+echo 'PASS: effort-only byte change passes actual source restart preflight with unchanged receipt'
 # Valid JSON with a stale digest must still fail closed.
 python3 <<'PY2'
 import json, os

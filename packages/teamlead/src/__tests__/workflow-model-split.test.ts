@@ -98,7 +98,7 @@ describe("FLY-2403 automatic design model split", () => {
 		expect(odd.templateOverride.nodes?.eng_design).toEqual({
 			vendor: "codex",
 			model: "gpt-6-astra",
-			effort: "xhigh",
+			effort: "high",
 		});
 		expect(even.assignments.eng_design).toMatchObject({
 			arm: "B",
@@ -311,6 +311,22 @@ const percentagePolicy = (codexPercent: number) => ({
 	fable: { arm: "B", model: "fable" },
 });
 describe("FLY-2570 hot design percentage", () => {
+	it("uses Astra high for percentage-selected Codex design (FLY-2602)", () => {
+		withRuntimeModelConfig({ modelSplit: percentagePolicy(100) }, () => {
+			const resolved = resolveMenuOverrides(code(), undefined, {
+				issueIdentifier: "FLY-2602",
+			});
+			expect(resolved.assignments.eng_design.basis).toMatchObject({
+				rule: "issue_number_percentage",
+				codexPercent: 100,
+			});
+			expect(resolved.templateOverride.nodes?.eng_design).toEqual({
+				vendor: "codex",
+				model: "gpt-6-astra",
+				effort: "high",
+			});
+		});
+	});
 	it("sees an atomic ratio change on the next decision with the same loaded menu", () => {
 		withRuntimeModelConfig({ modelSplit: percentagePolicy(0) }, (path) => {
 			const menu = code();

@@ -33,7 +33,7 @@ describe("workflow menu policy catalog", () => {
 			code.nodes.find((node) => node.nodeId === "eng_design"),
 		).toMatchObject({
 			defaultModel: "fable",
-			models: expect.arrayContaining([astra]),
+			models: expect.arrayContaining([{ ...astra, defaultEffort: "high" }]),
 		});
 		expect(
 			code.nodes.find((node) => node.nodeId === "implement"),

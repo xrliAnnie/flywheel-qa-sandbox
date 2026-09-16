@@ -1771,7 +1771,7 @@ describe("FLY-1436 menu start contract", () => {
 				nodeModels: {
 					eng_design: {
 						model: "astra (= gpt-6-astra)",
-						effort: "xhigh",
+						effort: "high",
 						overridden: true,
 					},
 					implement: {
@@ -1790,7 +1790,7 @@ describe("FLY-1436 menu start contract", () => {
 		expect(h.calls[0]!.generalizedExecution?.dispatch).toEqual({
 			vendor: "codex",
 			model: "gpt-6-astra",
-			effort: "xhigh",
+			effort: "high",
 		});
 		const events = h.store.listWorkflowRunEvents(json.workflowRunId as string);
 		expect(events).toContainEqual(

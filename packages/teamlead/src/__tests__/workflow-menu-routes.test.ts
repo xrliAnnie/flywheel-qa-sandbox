@@ -113,7 +113,7 @@ describe("GET /api/workflow/menus", () => {
 					resolvedModel: "gpt-6-astra",
 					receipt: "astra (= gpt-6-astra)",
 					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
-					defaultEffort: "xhigh",
+					defaultEffort: "high",
 				},
 			],
 		});

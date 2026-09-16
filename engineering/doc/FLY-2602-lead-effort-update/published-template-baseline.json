@@ -1,0 +1,337 @@
+[
+  {
+    "id": "tpl_code",
+    "status": 200,
+    "ok": true,
+    "template": {
+      "template_id": "tpl_code",
+      "name": "工程开发",
+      "project_scope": "global",
+      "current_published_revision": 13,
+      "created_by": "system",
+      "created_at": "2026-07-24 04:59:43",
+      "seed_owner": "founder",
+      "seed_content_hash": "78c76759c9b11756bb29d18a9479ffd718141d062b01caada61f2c5cc224b3e7",
+      "retired_at": null
+    },
+    "current_revision": {
+      "template_id": "tpl_code",
+      "revision": 13,
+      "manifest": {
+        "schema_version": 2,
+        "nodes": [
+          {
+            "id": "eng_design",
+            "label": "设计(工程)",
+            "type": "design",
+            "vendor": "claude",
+            "model": "fable",
+            "effort": "high"
+          },
+          {
+            "id": "implement",
+            "label": "实现",
+            "type": "implement",
+            "vendor": "codex",
+            "model": "astra",
+            "effort": "medium"
+          },
+          {
+            "id": "qa",
+            "label": "QA 验证",
+            "type": "qa",
+            "vendor": "claude",
+            "model": "claude-opus-5",
+            "effort": "high"
+          },
+          {
+            "id": "founder_gate",
+            "label": "创始人门",
+            "type": "gate"
+          },
+          {
+            "id": "land",
+            "label": "合入",
+            "type": "land",
+            "execution": "engine"
+          }
+        ],
+        "edges": [
+          {
+            "id": "design_done",
+            "from": "eng_design",
+            "to": "implement",
+            "condition": "design_done"
+          },
+          {
+            "id": "implement_done",
+            "from": "implement",
+            "to": "qa",
+            "condition": "implement_done"
+          },
+          {
+            "id": "qa_pass",
+            "from": "qa",
+            "to": "founder_gate",
+            "condition": "qa_pass"
+          },
+          {
+            "id": "founder_gate_approved",
+            "from": "founder_gate",
+            "to": "land",
+            "condition": "founder_approved"
+          }
+        ],
+        "loops": [
+          {
+            "id": "qa_retry",
+            "from": "qa",
+            "to": "implement",
+            "loop_when": "qa_fail",
+            "exit_when": "qa_pass"
+          },
+          {
+            "id": "founder_rework",
+            "from": "founder_gate",
+            "to": "implement",
+            "loop_when": "founder_feedback_kickback",
+            "exit_when": "founder_approved"
+          }
+        ],
+        "approval_gate": {
+          "node": "founder_gate",
+          "predicate": "founder_approved"
+        },
+        "terminal_node": {
+          "node": "land"
+        },
+        "ship_claims": [
+          "qa_passed",
+          "founder_approved"
+        ]
+      },
+      "manifest_digest": "06b57133c5f07dde5aceab48fa0a36d36a74c482bd370e05c72cf01b62979f85",
+      "schema_version": 2,
+      "created_by": "founder-management-console",
+      "created_at": "2026-09-09 04:31:42"
+    }
+  },
+  {
+    "id": "tpl_simple_code",
+    "status": 200,
+    "ok": true,
+    "template": {
+      "template_id": "tpl_simple_code",
+      "name": "轻量开发",
+      "project_scope": "global",
+      "current_published_revision": 5,
+      "created_by": "system",
+      "created_at": "2026-08-20 16:29:04",
+      "seed_owner": "founder",
+      "seed_content_hash": "9e39298595cfb17b2c594c78b263c6d544fcff112231852ae23d1b42638aee5b",
+      "retired_at": null
+    },
+    "current_revision": {
+      "template_id": "tpl_simple_code",
+      "revision": 5,
+      "manifest": {
+        "schema_version": 3,
+        "nodes": [
+          {
+            "id": "implement",
+            "label": "实现",
+            "type": "implement",
+            "vendor": "codex",
+            "model": "astra",
+            "effort": "medium",
+            "handbook_ref": "implement"
+          },
+          {
+            "id": "qa",
+            "label": "QA 验证",
+            "type": "qa",
+            "vendor": "claude",
+            "model": "claude-opus-5",
+            "effort": "high",
+            "handbook_ref": "qa"
+          },
+          {
+            "id": "founder_gate",
+            "label": "创始人门",
+            "type": "gate"
+          },
+          {
+            "id": "land",
+            "label": "合入",
+            "type": "land",
+            "execution": "engine"
+          }
+        ],
+        "edges": [
+          {
+            "id": "implement_done",
+            "from": "implement",
+            "to": "qa",
+            "condition": "implement_done"
+          },
+          {
+            "id": "qa_pass",
+            "from": "qa",
+            "to": "founder_gate",
+            "condition": "qa_pass"
+          },
+          {
+            "id": "founder_gate_approved",
+            "from": "founder_gate",
+            "to": "land",
+            "condition": "founder_approved"
+          }
+        ],
+        "loops": [
+          {
+            "id": "qa_retry",
+            "from": "qa",
+            "to": "implement",
+            "loop_when": "qa_fail",
+            "exit_when": "qa_pass"
+          },
+          {
+            "id": "founder_rework",
+            "from": "founder_gate",
+            "to": "implement",
+            "loop_when": "founder_feedback_kickback",
+            "exit_when": "founder_approved"
+          }
+        ],
+        "approval_gate": {
+          "node": "founder_gate",
+          "predicate": "founder_approved"
+        },
+        "terminal_node": {
+          "node": "land"
+        },
+        "ship_claims": [
+          "qa_passed",
+          "founder_approved"
+        ]
+      },
+      "manifest_digest": "1150f0aa5a996330b596861978086fb1e99d76f10f3697c3cf4957d348939374",
+      "schema_version": 3,
+      "created_by": "founder-management-console",
+      "created_at": "2026-09-09 04:31:42"
+    }
+  },
+  {
+    "id": "tpl_eng_heavy",
+    "status": 200,
+    "ok": true,
+    "template": {
+      "template_id": "tpl_eng_heavy",
+      "name": "Engineering heavy",
+      "project_scope": "global",
+      "current_published_revision": 5,
+      "created_by": "system",
+      "created_at": "2026-07-15 07:53:27",
+      "seed_owner": "system",
+      "seed_content_hash": "04fbe8db50e8e608002db28a9dff4ea2dc2729758106b3c0540487f5cf1be13f",
+      "retired_at": "2026-08-11 21:39:41"
+    },
+    "current_revision": {
+      "template_id": "tpl_eng_heavy",
+      "revision": 5,
+      "manifest": {
+        "schema_version": 1,
+        "nodes": [
+          {
+            "id": "design",
+            "type": "design",
+            "vendor": "claude",
+            "model": "claude-fable-5",
+            "handoff_pointer": {
+              "worktree": true,
+              "design_doc": true
+            }
+          },
+          {
+            "id": "implement",
+            "type": "implement",
+            "vendor": "codex",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh",
+            "handoff_pointer": {
+              "worktree": true,
+              "design_doc": true
+            }
+          },
+          {
+            "id": "qa",
+            "type": "qa",
+            "vendor": "claude",
+            "model": "claude-opus-5[1m]",
+            "handoff_pointer": {
+              "worktree": true,
+              "design_doc": true
+            },
+            "submissionWindowMinutes": 180
+          },
+          {
+            "id": "founder_gate",
+            "type": "gate"
+          }
+        ],
+        "edges": [
+          {
+            "id": "design_done",
+            "from": "design",
+            "to": "implement",
+            "condition": "design_done"
+          },
+          {
+            "id": "implement_done",
+            "from": "implement",
+            "to": "qa",
+            "condition": "implement_done"
+          },
+          {
+            "id": "qa_pass",
+            "from": "qa",
+            "to": "founder_gate",
+            "condition": "qa_pass"
+          }
+        ],
+        "loops": [
+          {
+            "id": "qa_retry",
+            "from": "qa",
+            "to": "implement",
+            "loop_when": "qa_fail",
+            "exit_when": "qa_pass",
+            "max_iterations": 3,
+            "on_limit": "escalate"
+          },
+          {
+            "id": "founder_feedback",
+            "from": "founder_gate",
+            "to": "implement",
+            "loop_when": "founder_feedback_kickback",
+            "exit_when": "founder_approved",
+            "max_iterations": 3,
+            "on_limit": "escalate"
+          }
+        ],
+        "terminal_gate": {
+          "node": "founder_gate",
+          "predicate": "founder_approved"
+        },
+        "ship_claims": [
+          "qa_passed",
+          "founder_approved"
+        ]
+      },
+      "manifest_digest": "48a29b62bb0311b800962e85ae265188f241d57abc5bf5e3614066941b915705",
+      "schema_version": 1,
+      "created_by": "system",
+      "created_at": "2026-07-29 13:01:07"
+    }
+  }
+]

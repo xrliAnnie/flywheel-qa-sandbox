@@ -243,7 +243,11 @@ describe("founder-approved workflow menu source", () => {
 					model.model === "opus" ? OPUS_EFFORTS : ALL_EFFORTS,
 				);
 				expect(model.defaultEffort).toBe(
-					["codex", "astra"].includes(model.model) ? "xhigh" : "high",
+					node.id === "eng_design" && model.model === "astra"
+						? "high"
+						: ["codex", "astra"].includes(model.model)
+							? "xhigh"
+							: "high",
 				);
 			}
 		}
@@ -744,14 +748,14 @@ describe("workflow menu override validation", () => {
 				eng_design: {
 					vendor: "codex",
 					model: "gpt-6-astra",
-					effort: "xhigh",
+					effort: "high",
 				},
 			},
 		});
 		expect(resolved.receipts).toMatchObject({
 			eng_design: {
 				model: "astra (= gpt-6-astra)",
-				effort: "xhigh",
+				effort: "high",
 				overridden: true,
 			},
 			implement: {

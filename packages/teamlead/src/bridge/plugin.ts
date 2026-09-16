@@ -158,6 +158,7 @@ import {
 	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
 import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
+import { migrateFly2602WorkflowEffort } from "../workflow-effort-migration.js";
 import {
 	loadBundledWorkflowNodeNames,
 	loadWorkflowMenuSeeds,
@@ -5437,6 +5438,20 @@ export async function startBridge(
 	});
 	console.warn(
 		`[workflow-catalog] FLY-2121 migration: changed=${workflowCatalogMigration.plan.requiresMutation} bindings=${workflowCatalogMigration.plan.bindingRows} deleted=${workflowCatalogMigration.plan.templatesToDelete.length} skipped=${workflowCatalogMigration.plan.templateSkips.length + workflowCatalogMigration.plan.seeds.filter((seed) => seed.status === "skipped").length} backup=${workflowCatalogMigration.backupPath ?? "not-required"}`,
+	);
+	const effortMigration = await migrateFly2602WorkflowEffort(store, {
+		...(store.getDbPath() === ":memory:"
+			? {}
+			: {
+					backupPath: join(
+						dirname(store.getDbPath()),
+						"backups",
+						`teamlead.pre-fly2602.${Date.now()}-${randomUUID()}.db`,
+					),
+				}),
+	});
+	console.warn(
+		`[workflow-catalog] FLY-2602: ${JSON.stringify(effortMigration)}`,
 	);
 	for (const skip of workflowCatalogMigration.plan.templateSkips) {
 		console.warn(

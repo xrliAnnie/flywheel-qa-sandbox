@@ -29307,6 +29307,39 @@ export class StateStore {
 		) as unknown as WorkflowCatalogMigrationAuditRow[];
 	}
 
+	/** FLY-2602: couple an immutable publication with its one-time migration receipt. */
+	applyFly2602EffortPublication(input: {
+		templateId: string;
+		manifest: unknown;
+		expectedRevision: number;
+		modelSnapshot: ModelConfigSnapshot;
+	}): WorkflowTemplatePublishResult {
+		let result: WorkflowTemplatePublishResult = { status: "not_found" };
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT id FROM workflow_catalog_migration_audit WHERE migration_id = 'FLY-2602' AND item_kind = 'seed_update' AND item_id = ? AND reason = 'published'",
+				[input.templateId],
+			);
+			if (prior.length) throw new Error("fly2602_already_applied");
+			result = this.createAndPublishWorkflowTemplateRevision({
+				...input, createdBy: "system", allowUnsupportedModels: true,
+			});
+			if (result.status !== "published") throw new Error(`fly2602_publish_${result.status}`);
+			this.recordFly2602EffortResult(input.templateId, "published", {
+				fromRevision: input.expectedRevision, revision: result.revision,
+			});
+		});
+		return result;
+	}
+
+	recordFly2602EffortResult(templateId: string, reason: string, detail: unknown): void {
+		this.db.run(
+			"INSERT OR IGNORE INTO workflow_catalog_migration_audit (migration_id, item_kind, item_id, reason, detail) VALUES ('FLY-2602', 'seed_update', ?, ?, ?)",
+			[templateId, reason, JSON.stringify({ reason, detail })],
+		);
+		this.save();
+	}
+
 	private preservedTemplateUnrunnableDiagnostic(
 		templateId: string,
 	):
@@ -75467,7 +75500,7 @@ export interface WorkflowCatalogMigrationAuditRow {
 	migration_id: string;
 	item_kind: "template_cleanup" | "seed_update";
 	item_id: string;
-	reason: "founder_owned" | "not_retired" | "referenced";
+	reason: "founder_owned" | "not_retired" | "referenced" | "published" | "failed";
 	detail: string;
 }
 
