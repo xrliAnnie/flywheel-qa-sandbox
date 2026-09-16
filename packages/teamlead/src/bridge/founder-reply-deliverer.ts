@@ -26,6 +26,7 @@ import type { GateMessageBinding } from "./approval-signal/gate-message-binding.
 import { markAutomatedDiscordText } from "./automated-message.js";
 import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import {
+	isDiscordSnowflake,
 	msToSnowflakeLowerBound,
 	snowflakeToMs,
 	truncate,
@@ -44,6 +45,7 @@ const DEFAULT_FOUNDER_DECISION_DEADLINE_MS = 3 * 60_000;
 const DISCORD_MESSAGE_TYPE_REPLY = 19;
 interface RawDiscordMessage {
 	id: string;
+	channel_id?: string;
 	content?: string;
 	timestamp?: string;
 	author?: {
@@ -83,6 +85,12 @@ export interface FounderReplyThreadCtx {
 	commDbPath: string;
 	/** Lead id — for the still-pending recheck (getPendingQuestions). */
 	leadId: string;
+	/** Registry-only thread coverage: persist the raw founder input and stop. */
+	ingestOnly?: boolean;
+	/** Fixed deployment lower bound for registry-only first scans. */
+	rolloutAfter?: string;
+	/** Explicit destination carried by the immutable mailbox envelope. */
+	replyChannelId?: string;
 }
 
 export interface PendingQuestionForThread {
@@ -211,6 +219,10 @@ export interface FounderReplyDeliverDeps {
 	};
 	/** FLY-1099 §7.1: bounded retry + dead-letter (absent → legacy behavior). */
 	retryLedger?: FounderReplyRetryLedger;
+	/** Best-effort wake after a new inbox row is durably inserted. */
+	nudgeLeadInbox?: () => void;
+	/** Fail-closed overlap recheck immediately before a registry-only read. */
+	admitIngestOnly?: () => Promise<boolean>;
 	/**
 	 * Durable founder-message handoff to Lead. GatePoller mirrors the ingress in
 	 * its StateStore audit ledger, flushes it, and nudges the canonical inbox row
@@ -328,9 +340,48 @@ export async function emitFounderReplyDeliveryForThread(
 	} = deps;
 	// ── (A) READ THE THREAD ONCE ──
 	let cursor = cursorStore?.load(ctx.threadId);
-	if (cursor === undefined && Number.isFinite(ctx.attentionSinceMs))
+	if (
+		!ctx.ingestOnly &&
+		cursor === undefined &&
+		Number.isFinite(ctx.attentionSinceMs)
+	)
 		cursor = msToSnowflakeLowerBound(ctx.attentionSinceMs!);
-	if (cursor === undefined) {
+	if (
+		ctx.ingestOnly &&
+		(!isDiscordSnowflake(ctx.threadId) ||
+			!isDiscordSnowflake(ctx.rolloutAfter) ||
+			(cursor !== undefined && !isDiscordSnowflake(cursor)) ||
+			!cursorStore)
+	) {
+		return {
+			threadId: ctx.threadId,
+			result: "process_failed",
+			stage: "rollout_boundary_unavailable",
+			reason: !cursorStore
+				? "cursor_store_missing"
+				: "invalid_snowflake_boundary",
+		};
+	}
+	if (ctx.ingestOnly && deps.admitIngestOnly) {
+		try {
+			if (!(await deps.admitIngestOnly())) {
+				return {
+					threadId: ctx.threadId,
+					result: "process_failed",
+					stage: "producer_overlap",
+					reason: "native_subscription_present",
+				};
+			}
+		} catch (error) {
+			return {
+				threadId: ctx.threadId,
+				result: "read_failed",
+				stage: "subscription_check_failed",
+				reason: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+	if (cursor === undefined && !ctx.ingestOnly) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
 		try {
@@ -366,9 +417,14 @@ export async function emitFounderReplyDeliveryForThread(
 			clearTimeout(timer);
 		}
 	}
-	const after =
-		cursor ??
-		msToSnowflakeLowerBound(Math.min(...questions.map((q) => q.createdAtMs)));
+	const after = ctx.ingestOnly
+		? [ctx.threadId, ctx.rolloutAfter!, cursor]
+				.filter((value): value is string => value !== undefined)
+				.reduce((left, right) => (BigInt(left) > BigInt(right) ? left : right))
+		: (cursor ??
+			msToSnowflakeLowerBound(
+				Math.min(...questions.map((q) => q.createdAtMs)),
+			));
 	let messages: RawDiscordMessage[];
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
@@ -398,7 +454,29 @@ export async function emitFounderReplyDeliveryForThread(
 				reason: `status_${res.status}`,
 			};
 		}
-		messages = (await res.json()) as RawDiscordMessage[];
+		const body = await res.json();
+		if (
+			!Array.isArray(body) ||
+			body.some((message) => {
+				if (!message || typeof message !== "object") return true;
+				const candidate = message as RawDiscordMessage;
+				return (
+					!/^[0-9]{17,20}$/.test(candidate.id) ||
+					(candidate.channel_id !== undefined &&
+						candidate.channel_id !== ctx.threadId) ||
+					(candidate.attachments !== undefined &&
+						!Array.isArray(candidate.attachments))
+				);
+			})
+		) {
+			return {
+				threadId: ctx.threadId,
+				result: "read_failed",
+				stage: "invalid_response",
+				reason: "invalid_discord_message_page",
+			};
+		}
+		messages = body as RawDiscordMessage[];
 	} catch (err) {
 		audit(
 			store,
@@ -432,9 +510,13 @@ export async function emitFounderReplyDeliveryForThread(
 	};
 	{
 		// Snapshot of still-pending qids (catch a Lead that just relayed).
-		const pendingNow = new Set(
-			withCommDb((db) => db.getPendingQuestions(ctx.leadId).map((m) => m.id)),
-		);
+		const pendingNow = ctx.ingestOnly
+			? new Set<string>()
+			: new Set(
+					withCommDb((db) =>
+						db.getPendingQuestions(ctx.leadId).map((m) => m.id),
+					),
+				);
 		const now = Date.now();
 		let advanceableUpTo: string | undefined = cursor;
 		// FLY-945 Fix A: once a message with matching questions is immature (its
@@ -461,8 +543,9 @@ export async function emitFounderReplyDeliveryForThread(
 				if (!cursorPinned) advanceableUpTo = msg.id;
 				continue;
 			}
+			let lane: ReturnType<CommDB["ingestDiscordChat"]>;
 			try {
-				withCommDb((db) =>
+				lane = withCommDb((db) =>
 					db.ingestDiscordChat({
 						leadId: ctx.leadId,
 						chatId: ctx.threadId,
@@ -484,6 +567,9 @@ export async function emitFounderReplyDeliveryForThread(
 							sizeKb: Math.max(0, (attachment.size ?? 0) / 1024),
 						})),
 						text: msg.content ?? "",
+						...(ctx.replyChannelId
+							? { replyChannelId: ctx.replyChannelId }
+							: {}),
 						...(msg.message_reference?.message_id &&
 						(msg.message_reference.type === undefined ||
 							msg.message_reference.type === 0)
@@ -507,6 +593,35 @@ export async function emitFounderReplyDeliveryForThread(
 					reason: error instanceof Error ? error.message : String(error),
 				};
 				break;
+			}
+			if (ctx.ingestOnly) {
+				if (
+					lane.lane === "inserted_external" ||
+					lane.lane === "legacy_external" ||
+					(lane.lane === "inserted_inbox" && lane.deadLettered)
+				) {
+					audit(store, ctx, "", "founder_reply_discord_lane_unconfirmed", {
+						messageId: msg.id,
+						lane: lane.lane,
+					});
+					brokeOn = {
+						msgId: msg.id,
+						stage: "discord_lane_unconfirmed",
+						reason: lane.lane,
+					};
+					break;
+				}
+				if (lane.lane === "inserted_inbox") {
+					try {
+						deps.nudgeLeadInbox?.();
+					} catch (error) {
+						console.warn(
+							`[founder-reply] inbox nudge failed after durable ingest: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
+				if (!cursorPinned) advanceableUpTo = msg.id;
+				continue;
 			}
 			// FLY-1099 §7.1: an already dead-lettered message is DISPOSED — skip it
 			// exactly like a non-matching one (its loss is on the durable record;
@@ -610,7 +725,17 @@ export async function emitFounderReplyDeliveryForThread(
 		}
 
 		if (advanceableUpTo !== undefined) {
-			cursorStore?.save(ctx.threadId, advanceableUpTo);
+			try {
+				cursorStore?.save(ctx.threadId, advanceableUpTo);
+			} catch (error) {
+				return {
+					threadId: ctx.threadId,
+					result: "process_failed",
+					pinnedMsgId: advanceableUpTo,
+					stage: "cursor_save_failed",
+					reason: error instanceof Error ? error.message : String(error),
+				};
+			}
 			// FLY-1099 §7.2 (Codex R2 #6): the waterline safely crossed everything
 			// up to the cursor — clear their retry rows (answered by another path /
 			// proven irrelevant) so the pin reconcile never false-alarms.

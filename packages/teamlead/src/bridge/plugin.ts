@@ -481,6 +481,12 @@ import { resolveFounderGateBotToken } from "./founder-gate-bot-token.js";
 import { isDiscordSnowflake } from "./founder-notify-utils.js";
 import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
 import {
+	type FounderThreadIngressOwner,
+	type FounderThreadIngressRollout,
+	loadFounderThreadIngressRollout,
+	resolveFounderThreadIngressEnvironment,
+} from "./founder-thread-ingress-rollout.js";
+import {
 	emitFounderThreadNotification,
 	emitIssueThreadInfraNotification,
 	scanFounderThreadForGateCard,
@@ -10188,11 +10194,45 @@ export async function startBridge(
 	// reachable through the dynamically-imported getStateDir below). Unset →
 	// GatePoller falls back to an in-memory cursor.
 	let founderReplyCursorPath: string | undefined;
+	let founderThreadIngressRollout: FounderThreadIngressRollout = {
+		kind: "inactive",
+		reason: "state_dir_unavailable",
+	};
 	if (resolveCommBackend() === "mailbox") {
 		try {
 			const { getStateDir } = await import("flywheel-agent-team-transport");
-			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
-		} catch {}
+			const stateDir = getStateDir();
+			founderReplyCursorPath = join(stateDir, "founder-reply-cursor.json");
+			const currentOwners: FounderThreadIngressOwner[] = projects.flatMap(
+				(project) =>
+					project.leads
+						.filter((lead) => isDiscordSnowflake(lead.chatChannel))
+						.map((lead) => ({
+							projectName: project.projectName,
+							leadId: lead.agentId,
+							chatChannelId: lead.chatChannel,
+						})),
+			);
+			founderThreadIngressRollout = loadFounderThreadIngressRollout({
+				stateDir,
+				environment: resolveFounderThreadIngressEnvironment({
+					stateDir,
+					teamleadDbPath: config.dbPath,
+					commRoot: commDbRootDir(),
+				}),
+				currentOwners,
+			});
+		} catch (error) {
+			founderThreadIngressRollout = {
+				kind: "inactive",
+				reason: `rollout_environment_unavailable:${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+	}
+	if (founderThreadIngressRollout.kind === "inactive") {
+		console.warn(
+			`[founder-thread-ingress] disabled reason=${founderThreadIngressRollout.reason}`,
+		);
 	}
 	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
 	// host's actual `codex`. Disabled under VITEST (same boundary as
@@ -12048,6 +12088,34 @@ export async function startBridge(
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
+		discordGuildId: config.discordGuildId,
+		founderThreadIngressRollout,
+		listLeadSubscriptions: async (projectName, leadId) => {
+			const project = projects.find(
+				(candidate) => candidate.projectName === projectName,
+			);
+			const lead = project?.leads.find(
+				(candidate) => candidate.agentId === leadId,
+			);
+			if (!lead) throw new Error("owner_not_configured");
+			if (
+				effectiveLeadBackend(lead.backend, process.env.FLYWHEEL_LEAD_BACKEND)
+					.backend !== "codex-app-server"
+			)
+				return [];
+			if (!lead.botToken) throw new Error("owner_token_missing");
+			const [inbox, runtime] = await Promise.all([
+				import("../lead-backends/codex/CodexLeadInboxSocket.js"),
+				import("./lead-inbox-runtime.js"),
+			]);
+			return inbox.listCodexLeadSubscriptions({
+				socketPath: inbox.resolveCodexLeadInboxSocketPath(
+					runtime.resolveCodexLeadStateDir(projectName, leadId),
+				),
+				leadId,
+				authSecret: lead.botToken,
+			});
+		},
 		tryFounderShipApproval: founderShipApprovalCallback,
 		observeShipJudgmentReply: createShipJudgmentReplyObserver({
 			store,

@@ -53,7 +53,8 @@ import {
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { getChannelName, resolveChatThreadId } from "./chat-thread-utils.js";
+import { listGuildActiveThreads } from "./discord-guild-active-threads.js";
 import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
 import { drainFounderActionLedger } from "./founder-action-drain.js";
 import {
@@ -70,6 +71,10 @@ import {
 import { FounderReplyUnreachableReconcile } from "./founder-reply-unreachable.js";
 import { founderReviewCheckpointEnabled } from "./founder-review-authority.js";
 import { tryFounderReviewReactionResponse } from "./founder-review-response.js";
+import type {
+	FounderThreadIngressOwner,
+	FounderThreadIngressRollout,
+} from "./founder-thread-ingress-rollout.js";
 import { emitFounderThreadNotification } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
@@ -199,6 +204,8 @@ export interface GatePollerConfig {
 	discordOwnerUserId?: string;
 	/** Test seam for Discord HTTP (passed to notifier/deliverer). */
 	fetchImpl?: typeof fetch;
+	/** Bridge guild used for owner-authenticated active-thread recovery. */
+	discordGuildId?: string;
 	/** Part A grace before the in-thread fallback fires (default 10min). */
 	founderThreadNotifyGraceMs?: number;
 	/** Part A transient-retry TIME budget (default 45min); not a fast tick count. */
@@ -225,6 +232,13 @@ export interface GatePollerConfig {
 	founderReplyDeliverEveryNTicks?: number;
 	/** FLY-2008: rotating budget for pure ingress-scan threads (question lane excluded). */
 	founderReplyScanBudget?: number;
+	/** FLY-2608: environment-bound registry-thread rollout authority. */
+	founderThreadIngressRollout?: FounderThreadIngressRollout;
+	/** FLY-2608: authenticated snapshot of an owner's native subscriptions. */
+	listLeadSubscriptions?: (
+		projectName: string,
+		leadId: string,
+	) => Promise<Array<{ threadId: string; parentChannelId: string }>>;
 	/** FLY-1448: durable decision convergence on this existing cadence. */
 	onFounderDecisionConvergenceTick?: () => void | Promise<void>;
 	/** Part B thread-read cursor store (default in-memory). */
@@ -341,6 +355,12 @@ const yieldToEventLoop = (): Promise<void> =>
 	new Promise((resolve) => setImmediate(resolve));
 const compareThreadIds = (left: string, right: string): number =>
 	left < right ? -1 : left > right ? 1 : 0;
+const ingressOwnerKey = (owner: FounderThreadIngressOwner): string =>
+	`${owner.projectName}\u0000${owner.leadId}\u0000${owner.chatChannelId}`;
+const sameIngressOwner = (
+	left: FounderThreadIngressOwner,
+	right: FounderThreadIngressOwner,
+): boolean => ingressOwnerKey(left) === ingressOwnerKey(right);
 
 interface PendingQuestion {
 	id: string;
@@ -2364,6 +2384,200 @@ export class GatePoller {
 		this.retryPendingDeadLetters();
 
 		const sessions = this.config.store.listNonTerminalSessions();
+		const rollout = this.config.founderThreadIngressRollout;
+		const activeRollout = rollout?.kind === "active" ? rollout : undefined;
+		const registryByOwner = new Map<
+			string,
+			Array<{ threadId: string; issueId: string }>
+		>();
+		if (activeRollout) {
+			const rows: Array<{
+				thread_id: string;
+				channel_id: string;
+				issue_id: string;
+				lead_id: string | null;
+			}> = [
+				...this.config.store.getUnarchivedIssueChatThreads(),
+				...this.config.store.getUnarchivedPhaseChatThreads(),
+			];
+			const unarchivedThreadIds = new Set(
+				rows.map(({ thread_id }) => thread_id),
+			);
+			for (const owner of activeRollout.owners) {
+				const project = this.config.projects.find(
+					(candidate) => candidate.projectName === owner.projectName,
+				);
+				const lead = project?.leads.find(
+					(candidate) =>
+						candidate.agentId === owner.leadId &&
+						candidate.chatChannel === owner.chatChannelId,
+				);
+				if (!lead?.botToken || !this.config.discordGuildId) {
+					console.warn(
+						`[founder-thread-ingress] guild_unavailable project=${owner.projectName} lead=${owner.leadId}`,
+					);
+					continue;
+				}
+				const active = await listGuildActiveThreads(
+					{ botToken: lead.botToken, guildId: this.config.discordGuildId },
+					{ fetchImpl: this.config.fetchImpl },
+				);
+				if (!active.ok) {
+					console.warn(
+						`[founder-thread-ingress] guild_read_failed project=${owner.projectName} lead=${owner.leadId} reason=${active.error}`,
+					);
+					continue;
+				}
+				for (const thread of active.threads) {
+					if (thread.parent_id !== owner.chatChannelId) {
+						if (unarchivedThreadIds.has(thread.id)) {
+							console.info(
+								`[founder-thread-ingress] skip reason=non_owner thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+							);
+						}
+						continue;
+					}
+					const row = this.config.store.getChatThreadByThreadId(thread.id);
+					if (!row) {
+						console.info(
+							`[founder-thread-ingress] skip reason=unregistered thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+						continue;
+					}
+					if (
+						row.channel_id !== owner.chatChannelId ||
+						(row.lead_id && row.lead_id !== owner.leadId)
+					) {
+						console.info(
+							`[founder-thread-ingress] skip reason=non_owner thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+						continue;
+					}
+					if (thread.thread_metadata?.archived === true) {
+						console.info(
+							`[founder-thread-ingress] skip reason=discord_archived thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+						continue;
+					}
+					if (!unarchivedThreadIds.has(thread.id)) {
+						console.info(
+							`[founder-thread-ingress] rediscovered thread=${thread.id} project=${owner.projectName} lead=${owner.leadId}`,
+						);
+					}
+					rows.push({
+						thread_id: row.thread_id,
+						channel_id: row.channel_id,
+						issue_id: row.issue_id,
+						lead_id: row.lead_id || null,
+					});
+				}
+			}
+			const candidates = new Map<
+				string,
+				Array<{
+					owner: FounderThreadIngressOwner;
+					threadId: string;
+					issueId: string;
+				}>
+			>();
+			const subscriptionsByOwner = new Map<
+				string,
+				Array<{ threadId: string }> | null
+			>();
+			for (const row of rows) {
+				const matches = this.config.projects.flatMap((project) =>
+					project.leads
+						.filter(
+							(lead) =>
+								lead.chatChannel === row.channel_id &&
+								(!row.lead_id || lead.agentId === row.lead_id),
+						)
+						.map((lead) => ({
+							projectName: project.projectName,
+							leadId: lead.agentId,
+							chatChannelId: lead.chatChannel,
+						})),
+				);
+				if (matches.length !== 1) {
+					console.warn(
+						`[founder-thread-ingress] owner_${matches.length === 0 ? "missing" : "ambiguous"} thread=${row.thread_id}`,
+					);
+					continue;
+				}
+				const owner = matches[0]!;
+				if (
+					!activeRollout.owners.some((candidate) =>
+						sameIngressOwner(candidate, owner),
+					)
+				)
+					continue;
+				const list = candidates.get(row.thread_id) ?? [];
+				list.push({ owner, threadId: row.thread_id, issueId: row.issue_id });
+				candidates.set(row.thread_id, list);
+			}
+			for (const entries of candidates.values()) {
+				const owners = new Set(
+					entries.map((entry) => ingressOwnerKey(entry.owner)),
+				);
+				if (owners.size !== 1) {
+					console.warn(
+						`[founder-thread-ingress] owner_conflict thread=${entries[0]!.threadId}`,
+					);
+					continue;
+				}
+				const entry = entries[0]!;
+				const ownerKey = ingressOwnerKey(entry.owner);
+				const ownerProject = this.config.projects.find(
+					(project) => project.projectName === entry.owner.projectName,
+				);
+				const ownerLead = ownerProject?.leads.find(
+					(lead) => lead.agentId === entry.owner.leadId,
+				);
+				if (!ownerLead?.botToken) {
+					console.warn(
+						`[founder-thread-ingress] owner_token_missing project=${entry.owner.projectName} lead=${entry.owner.leadId} thread=${entry.threadId}`,
+					);
+					continue;
+				}
+				if (ownerLead.roundtableChannel === ownerLead.chatChannel) {
+					console.warn(
+						`[founder-thread-ingress] producer_overlap project=${entry.owner.projectName} lead=${entry.owner.leadId} thread=${entry.threadId}`,
+					);
+					continue;
+				}
+				if (this.config.listLeadSubscriptions) {
+					let subscriptions = subscriptionsByOwner.get(ownerKey);
+					if (subscriptions === undefined) {
+						try {
+							subscriptions = await this.config.listLeadSubscriptions(
+								entry.owner.projectName,
+								entry.owner.leadId,
+							);
+							subscriptionsByOwner.set(ownerKey, subscriptions);
+						} catch (error) {
+							console.warn(
+								`[founder-thread-ingress] subscription_check_failed project=${entry.owner.projectName} lead=${entry.owner.leadId}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							subscriptionsByOwner.set(ownerKey, null);
+							subscriptions = null;
+						}
+					}
+					if (subscriptions === null) continue;
+					if (
+						subscriptions.some(({ threadId }) => threadId === entry.threadId)
+					) {
+						console.warn(
+							`[founder-thread-ingress] producer_overlap project=${entry.owner.projectName} lead=${entry.owner.leadId} thread=${entry.threadId}`,
+						);
+						continue;
+					}
+				}
+				const ownerRows = registryByOwner.get(ownerKey) ?? [];
+				if (!ownerRows.some(({ threadId }) => threadId === entry.threadId))
+					ownerRows.push({ threadId: entry.threadId, issueId: entry.issueId });
+				registryByOwner.set(ownerKey, ownerRows);
+			}
+		}
 		let historical: ShipJudgmentReplyThreadPage = { threads: [] };
 		try {
 			historical =
@@ -2375,13 +2589,63 @@ export class GatePoller {
 				`[GatePoller] learning reply thread scan failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const tasks: Array<{
+		type FounderReplyTask = {
 			ctx: FounderReplyThreadCtx;
 			questions: PendingQuestionForThread[];
 			deliverAmbiguousToLead: NonNullable<
 				FounderReplyDeliverDeps["deliverAmbiguousToLead"]
 			>;
-		}> = [];
+		};
+		const tasks: FounderReplyTask[] = [];
+		const conflictedThreads = new Set<string>();
+		const isRolloutOwner = (task: FounderReplyTask): boolean =>
+			activeRollout?.owners.some(
+				(owner) =>
+					owner.projectName === task.ctx.projectName &&
+					owner.leadId === task.ctx.leadId,
+			) ?? false;
+		const addTask = (task: FounderReplyTask): void => {
+			const threadId = task.ctx.threadId;
+			if (conflictedThreads.has(threadId)) return;
+			const matchingIndexes = tasks.flatMap((existing, index) =>
+				existing.ctx.threadId === threadId ? [index] : [],
+			);
+			if (matchingIndexes.length === 0) {
+				tasks.push(task);
+				return;
+			}
+			const matchingTasks = matchingIndexes.map((index) => tasks[index]!);
+			if (
+				!isRolloutOwner(task) &&
+				!matchingTasks.some((existing) => isRolloutOwner(existing))
+			) {
+				tasks.push(task);
+				return;
+			}
+			const existing = matchingTasks[0]!;
+			if (
+				matchingTasks.some(
+					(candidate) =>
+						candidate.ctx.projectName !== task.ctx.projectName ||
+						candidate.ctx.leadId !== task.ctx.leadId,
+				)
+			) {
+				for (const index of matchingIndexes.reverse()) tasks.splice(index, 1);
+				conflictedThreads.add(threadId);
+				console.warn(
+					`[founder-thread-ingress] owner_conflict thread=${threadId}`,
+				);
+				return;
+			}
+			const seen = new Set(
+				existing.questions.map(({ questionId }) => questionId),
+			);
+			existing.questions.push(
+				...task.questions.filter(({ questionId }) => !seen.has(questionId)),
+			);
+			if (existing.ctx.ingestOnly && !task.ctx.ingestOnly)
+				existing.ctx = task.ctx;
+		};
 		{
 			for (const project of this.config.projects) {
 				const dbPath = defaultGetCommDbPath(project.projectName);
@@ -2483,6 +2747,14 @@ export class GatePoller {
 							questions: PendingQuestionForThread[];
 						}
 					>();
+					const rolloutOwner = activeRollout
+						? activeRollout.owners.find(
+								(owner) =>
+									owner.projectName === project.projectName &&
+									owner.leadId === lead.agentId &&
+									owner.chatChannelId === lead.chatChannel,
+							)
+						: undefined;
 					for (const session of sessions) {
 						if (session.project_name !== project.projectName) continue;
 						try {
@@ -2506,6 +2778,7 @@ export class GatePoller {
 								graceMs,
 								commDbPath: dbPath,
 								leadId: lead.agentId,
+								...(rolloutOwner ? { replyChannelId: thread.thread_id } : {}),
 							},
 							questions: [],
 						});
@@ -2537,6 +2810,7 @@ export class GatePoller {
 								commDbPath: dbPath,
 								leadId: lead.agentId,
 								attentionSinceMs: Date.parse(ask.asked_at),
+								...(rolloutOwner ? { replyChannelId: ask.thread_id } : {}),
 							},
 							questions: [],
 						});
@@ -2559,6 +2833,7 @@ export class GatePoller {
 								graceMs,
 								commDbPath: dbPath,
 								leadId: lead.agentId,
+								...(rolloutOwner ? { replyChannelId: thread.threadId } : {}),
 							},
 							questions: [],
 						});
@@ -2601,6 +2876,7 @@ export class GatePoller {
 									graceMs,
 									commDbPath: dbPath,
 									leadId: lead.agentId,
+									...(rolloutOwner ? { replyChannelId: thread.thread_id } : {}),
 								},
 								questions: [],
 							};
@@ -2614,13 +2890,36 @@ export class GatePoller {
 							checkpointGraceMs: this.checkpointGraceMsFor(q.checkpoint),
 						});
 					}
+					if (rolloutOwner && lead.botToken && activeRollout) {
+						for (const row of registryByOwner.get(
+							ingressOwnerKey(rolloutOwner),
+						) ?? []) {
+							if (byThread.has(row.threadId)) continue;
+							byThread.set(row.threadId, {
+								ctx: {
+									issueId: row.issueId,
+									projectName: project.projectName,
+									threadId: row.threadId,
+									botToken: lead.botToken,
+									ownerUserId: ownerUserId as string,
+									graceMs,
+									commDbPath: dbPath,
+									leadId: lead.agentId,
+									ingestOnly: true,
+									rolloutAfter: activeRollout.rolloutAfter,
+									replyChannelId: row.threadId,
+								},
+								questions: [],
+							});
+						}
+					}
 
 					const deliverAmbiguousToLead = this.makeAmbiguousHandoff(
 						lead,
 						project.projectName,
 					);
 					for (const { ctx, questions } of byThread.values()) {
-						tasks.push({
+						addTask({
 							ctx,
 							questions,
 							deliverAmbiguousToLead,
@@ -2660,6 +2959,21 @@ export class GatePoller {
 			]) {
 				const { ctx, questions, deliverAmbiguousToLead } = task.value;
 				try {
+					if (ctx.ingestOnly) {
+						const thread = await getChannelName(ctx.threadId, ctx.botToken, {
+							fetchImpl: this.config.fetchImpl,
+						});
+						if (!thread.ok || thread.archived !== false) {
+							const reason =
+								thread.ok && thread.archived === true
+									? "discord_archived"
+									: "discord_state_unavailable";
+							const message = `[founder-thread-ingress] skip reason=${reason} thread=${ctx.threadId} project=${ctx.projectName} lead=${ctx.leadId}`;
+							if (reason === "discord_archived") console.info(message);
+							else console.warn(message);
+							continue;
+						}
+					}
 					await emitFounderReplyDeliveryForThread(ctx, questions, {
 						store: this.config.store,
 						onFounderThreadMessage: (input) => {
@@ -2682,6 +2996,23 @@ export class GatePoller {
 							this.config.store.classifyFounderDecisionConvergence(input);
 						},
 						retryLedger: this.founderReplyRetryLedger(),
+						nudgeLeadInbox: () => {
+							this.config.runtimeRegistry.nudgeLeadInbox?.(
+								ctx.leadId,
+								ctx.projectName,
+							);
+						},
+						...(ctx.ingestOnly && this.config.listLeadSubscriptions
+							? {
+									admitIngestOnly: async () =>
+										!(
+											await this.config.listLeadSubscriptions!(
+												ctx.projectName,
+												ctx.leadId,
+											)
+										).some(({ threadId }) => threadId === ctx.threadId),
+								}
+							: {}),
 					});
 				} catch (err) {
 					console.warn(

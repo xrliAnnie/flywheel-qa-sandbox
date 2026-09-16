@@ -1,0 +1,16 @@
+{
+  "url": "https://fw-reports-e8af2b.vercel.app/r/b69057303a8a84c780ec90bf62e55c49/",
+  "reportId": "b69057303a8a84c780ec90bf62e55c49",
+  "verifiedAt": "2026-09-16T04:25:50.104759+00:00",
+  "status": 200,
+  "sourceSha256": "457ebada19aac3e6d5132c4d6356d11415dab172549e57873918d192f4391fdf",
+  "checks": {
+    "nonceReplaced": true,
+    "matchingCsp": true,
+    "sourceMatchesCommittedHtml": true,
+    "zeroExternalAssets": true,
+    "diagramLimitationVisible": true
+  },
+  "publishReceiptRecovery": "Registry entry created 2026-09-16T04:21:21.686Z; original CLI output truncated during context rollover. Verified exact hosted content after removing publisher-injected CSP, noindex, nonce and whitespace; no republish.",
+  "browserVisualQa": false
+}

@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { parseDiscordChatRoute } from "flywheel-comm/discord-chat-ingest";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -39,8 +40,14 @@ function snowflakeAt(ms: number): string {
 
 interface RawMsg {
 	id: string;
+	channel_id?: string;
 	content?: string;
 	author?: { id?: string; bot?: boolean };
+	attachments?: Array<{
+		filename?: string;
+		content_type?: string;
+		size?: number;
+	}>;
 	type?: number;
 	message_reference?: {
 		type?: number;
@@ -1904,5 +1911,265 @@ describe("FLY-1392 v2 founder ingress", () => {
 		expect(outcome.result).toBe("noop");
 		expect(freshCursor.load(THREAD)).toBe(head);
 		expect(handoff).not.toHaveBeenCalled();
+	});
+
+	it("ingests the first founder message after a fixed rollout boundary and replies in the source thread", async () => {
+		const freshCursor = new InMemoryInboundCursorStore();
+		const rolloutAfter = snowflakeAt(Date.now() - 60_000);
+		const message = {
+			id: snowflakeAt(Date.now() - 20_000),
+			content: "first question",
+			channel_id: THREAD,
+			author: { id: OWNER },
+		};
+		const handoff = vi.fn(async () => true);
+		const nudgeLeadInbox = vi.fn();
+		const fetchImpl = discordGet([message]);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			{
+				...ctx(dbPath),
+				ingestOnly: true,
+				rolloutAfter,
+				replyChannelId: THREAD,
+			},
+			[question("must-not-run", "approve_to_ship")],
+			{
+				store: store(),
+				fetchImpl,
+				cursorStore: freshCursor,
+				deliverAmbiguousToLead: handoff,
+				nudgeLeadInbox,
+			},
+		);
+
+		expect(outcome).toEqual({ threadId: THREAD, result: "advanced" });
+		expect(freshCursor.load(THREAD)).toBe(message.id);
+		expect(handoff).not.toHaveBeenCalled();
+		expect(nudgeLeadInbox).toHaveBeenCalledOnce();
+		expect(fetchImpl).toHaveBeenCalledWith(
+			expect.stringContaining(`after=${rolloutAfter}`),
+			expect.any(Object),
+		);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			const row = queue.getById(`chat:test-lead:${message.id}`);
+			expect(row).toBeDefined();
+			expect(parseDiscordChatRoute(row!.content)).toEqual({
+				replyChannelId: THREAD,
+			});
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("pins ingest-only scanning when another carrier owns the delivery identity", async () => {
+		const before = cursor.load(THREAD);
+		const message = {
+			id: snowflakeAt(Date.now() - 20_000),
+			content: "do not skip this external winner",
+			author: { id: OWNER },
+		};
+		const fakeDb = {
+			getPendingQuestions: vi.fn(() => []),
+			ingestDiscordChat: vi.fn(() => ({
+				lane: "legacy_external" as const,
+				deliveryId: `chat:test-lead:${message.id}`,
+			})),
+		} as unknown as CommDB;
+		const outcome = await emitFounderReplyDeliveryForThread(
+			{
+				...ctx(dbPath),
+				ingestOnly: true,
+				rolloutAfter: before!,
+				replyChannelId: THREAD,
+			},
+			[],
+			{
+				store: store(),
+				fetchImpl: discordGet([message]),
+				cursorStore: cursor,
+				commDbLeaseFactory: () => ({ db: fakeDb, release: vi.fn() }),
+			},
+		);
+
+		expect(outcome).toMatchObject({
+			result: "process_failed",
+			pinnedMsgId: message.id,
+			stage: "discord_lane_unconfirmed",
+		});
+		expect(cursor.load(THREAD)).toBe(before);
+	});
+
+	it("rechecks native subscription ownership immediately before ingest-only reads", async () => {
+		const fetchImpl = discordGet([]);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			{
+				...ctx(dbPath),
+				ingestOnly: true,
+				rolloutAfter: cursor.load(THREAD)!,
+				replyChannelId: THREAD,
+			},
+			[],
+			{
+				store: store(),
+				fetchImpl,
+				cursorStore: cursor,
+				admitIngestOnly: async () => false,
+			},
+		);
+
+		expect(outcome).toMatchObject({
+			result: "process_failed",
+			stage: "producer_overlap",
+		});
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("continues an ingest-only backlog across more than two bounded pages", async () => {
+		const freshCursor = new InMemoryInboundCursorStore();
+		const base = Date.now() - 120_000;
+		const rolloutAfter = snowflakeAt(base);
+		const messages = Array.from({ length: 101 }, (_, index) => ({
+			id: snowflakeAt(base + 1_000 + index * 500),
+			content: `message-${index}`,
+			author: { id: OWNER },
+		}));
+		const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+			const after = new URL(String(url)).searchParams.get("after")!;
+			const page = messages
+				.filter(({ id }) => BigInt(id) > BigInt(after))
+				.slice(0, 50)
+				.reverse();
+			return { ok: true, status: 200, json: async () => page };
+		}) as unknown as typeof fetch;
+		const fakeDb = {
+			ingestDiscordChat: vi.fn((input: { messageId: string }) => ({
+				lane: "inserted_inbox" as const,
+				deliveryId: `chat:test-lead:${input.messageId}`,
+				seq: 1,
+			})),
+		} as unknown as CommDB;
+		const release = vi.fn();
+		const nudgeLeadInbox = vi.fn();
+		const threadCtx = {
+			...ctx(dbPath),
+			ingestOnly: true,
+			rolloutAfter,
+			replyChannelId: THREAD,
+		};
+		const deps: FounderReplyDeliverDeps = {
+			store: store(),
+			fetchImpl,
+			cursorStore: freshCursor,
+			commDbLeaseFactory: () => ({ db: fakeDb, release }),
+			nudgeLeadInbox,
+		};
+
+		expect(
+			(await emitFounderReplyDeliveryForThread(threadCtx, [], deps)).result,
+		).toBe("advanced");
+		expect(
+			(await emitFounderReplyDeliveryForThread(threadCtx, [], deps)).result,
+		).toBe("advanced");
+		expect(
+			(await emitFounderReplyDeliveryForThread(threadCtx, [], deps)).result,
+		).toBe("advanced");
+		expect(fetchImpl).toHaveBeenCalledTimes(3);
+		expect(fakeDb.ingestDiscordChat).toHaveBeenCalledTimes(101);
+		expect(nudgeLeadInbox).toHaveBeenCalledTimes(101);
+		expect(freshCursor.load(THREAD)).toBe(messages.at(-1)!.id);
+	});
+
+	it("retries from the prior cursor after a cursor-save failure without a second nudge", async () => {
+		const before = cursor.load(THREAD)!;
+		const message = {
+			id: snowflakeAt(Date.now() - 20_000),
+			content: "persist me once",
+			author: { id: OWNER },
+			attachments: [
+				{ filename: "question.png", content_type: "image/png", size: 1024 },
+			],
+		};
+		const failingCursor = {
+			load: () => before,
+			save: vi.fn(() => {
+				throw new Error("cursor disk full");
+			}),
+		};
+		const firstNudge = vi.fn();
+		const first = await emitFounderReplyDeliveryForThread(
+			{
+				...ctx(dbPath),
+				ingestOnly: true,
+				rolloutAfter: before,
+				replyChannelId: THREAD,
+			},
+			[],
+			{
+				store: store(),
+				fetchImpl: discordGet([message]),
+				cursorStore: failingCursor,
+				nudgeLeadInbox: firstNudge,
+			},
+		);
+		expect(first).toMatchObject({
+			result: "process_failed",
+			stage: "cursor_save_failed",
+		});
+		expect(firstNudge).toHaveBeenCalledOnce();
+
+		const resumedCursor = new InMemoryInboundCursorStore();
+		resumedCursor.save(THREAD, before);
+		const replayNudge = vi.fn();
+		const replay = await emitFounderReplyDeliveryForThread(
+			{
+				...ctx(dbPath),
+				ingestOnly: true,
+				rolloutAfter: before,
+				replyChannelId: THREAD,
+			},
+			[],
+			{
+				store: store(),
+				fetchImpl: discordGet([message]),
+				cursorStore: resumedCursor,
+				nudgeLeadInbox: replayNudge,
+			},
+		);
+		expect(replay.result).toBe("advanced");
+		expect(replayNudge).not.toHaveBeenCalled();
+		expect(resumedCursor.load(THREAD)).toBe(message.id);
+	});
+
+	it("fails closed on malformed ids or a mismatched response channel", async () => {
+		for (const message of [
+			{ id: "invalid", author: { id: OWNER } },
+			{
+				id: snowflakeAt(Date.now() - 20_000),
+				channel_id: WRONG_THREAD,
+				author: { id: OWNER },
+			},
+		]) {
+			const before = cursor.load(THREAD);
+			const outcome = await emitFounderReplyDeliveryForThread(
+				{
+					...ctx(dbPath),
+					ingestOnly: true,
+					rolloutAfter: before!,
+					replyChannelId: THREAD,
+				},
+				[],
+				{
+					store: store(),
+					fetchImpl: discordGet([message]),
+					cursorStore: cursor,
+				},
+			);
+			expect(outcome).toMatchObject({
+				result: "read_failed",
+				stage: "invalid_response",
+			});
+			expect(cursor.load(THREAD)).toBe(before);
+		}
 	});
 });
