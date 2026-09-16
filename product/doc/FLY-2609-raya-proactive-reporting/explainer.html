@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2609 · Raya 什么时候该跟你说话 — 第一轮共创</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card p + p { margin-top: 8px; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px; margin-bottom: 8px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-bottom: 14px; text-align: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .badge.rec { background: #e8f8ee; color: #1d8a43; }
+  .badge.no { background: #fdebea; color: #c62d23; }
+  .badge.mid { background: #fff3e0; color: #c77400; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 10px 14px; font-size: 13.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 8px; border-left: 3px solid #d2d2d7; }
+  .msg { background: #2b2d31; color: #f2f3f5; border-radius: 10px; padding: 12px 14px; font-size: 13.5px; margin: 8px 0; white-space: pre-wrap; }
+  .ask { background: #f0f7ff; border: 1px solid #cfe4ff; border-radius: 10px; padding: 12px 14px; margin-top: 10px; font-size: 14px; color: #1a365d; font-weight: 600; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 40px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Raya 什么时候该跟你说话</h1>
+  <div class="meta">Issue <span class="mono">FLY-2609</span> · 产品共创第 1 轮 · 2026-09-15 · Honey Lemon 的产品设计节点 · <b>这是一起评估的材料，不是我定好的结论</b></div>
+
+  <!-- S1 -->
+  <div class="section" data-section="1 我理解你要的是什么">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>1 · 我理解你要的是什么（请先纠正我）</div>
+    <div class="card">
+      <p class="lede">Raya 现在把「后台一轮活干完了」直接当成「该跟你说话了」。这两件事应该分开：后台的记录她自己存着，发到你眼前的每一条都得是你看得懂、跟你有关、你能顺手回一句的内容。</p>
+      <p style="margin-top:10px;">我认为你要的<b>不是「她少说点」，是「她说的每一句都值得」</b>。如果我这句理解错了，后面整张页都会跑偏 —— 请在这一节直接纠正我。</p>
+      <p class="jargon" style="margin-top:8px;">名词：Raya = 你的跨项目总管。Lead = 各个部门的 AI 主管。「一轮」= 系统每隔一段时间叫 Raya 去读一次各部门交上来的汇报。「线程」= Discord 里每张单子自己的讨论串。</p>
+    </div>
+    <div class="card gray">
+      <h3>你 9 月 15 日说的三句，我拆成四件事</h3>
+      <div class="quote">不需要每件事都告诉我，想慢慢讨论 Raya 应该有的样子。
+分不同线程没有问题，不是要取消所有线程。
+纯内部记录自己存就好；发到 Discord 的就是做给我看的，要有意义、可理解，而且我能原地回。</div>
+      <table>
+        <tr><th>#</th><th>你要的</th><th>今天为什么做不到</th></tr>
+        <tr><td><b>A</b></td><td>不是每件事都要告诉你</td><td>规矩写死了「每一轮都必须汇报」</td></tr>
+        <tr><td><b>B</b></td><td>发出来的要说清「实际变了什么、跟我什么关系」</td><td>规矩规定的格式就是数字：看了几个、吸收了几条、编号串</td></tr>
+        <tr><td><b>C</b></td><td>积压的事不该变成连续打扰</td><td>代码里确实会把两轮攒在一起、一次发两条</td></tr>
+        <tr><td><b>D</b></td><td>线程要能双向说话（你能原地回）</td><td>这条归同一个大项目下的工程单，本页不碰</td></tr>
+      </table>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存在你浏览器里）</label><textarea data-key="s1" placeholder="我理解错了的地方…"></textarea></div>
+  </div>
+
+  <!-- S2 -->
+  <div class="section" data-section="2 我查出来的原因">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>2 · 我去查了，问题不在 Raya 话多</div>
+    <div class="card amber">
+      <h3>原因一：规矩明文要求她「每轮都必须发」，而且不许她改写</h3>
+      <p>系统每一轮都会给 Raya 塞一段指令，原文是：</p>
+      <div class="quote">无论本轮有没有 review/吸收/追问活动，都要在 #raya 发一条汇报，并逐字包含下面这几行（不要改写、不要省略）：
+本轮 N/M 份已交；未交：某某 Lead、某某 Lead</div>
+      <p><b>所以她不是不懂节制，是被明文禁止节制。</b>「谁没交作业」这种话本来是给运维看的，今天被强制塞进给你看的那条里。</p>
+    </div>
+    <div class="card amber">
+      <h3>原因二：给你看的那条长什么样，也是规矩规定死的模板</h3>
+      <p>Raya 的行为手册里写了一个逐字模板：</p>
+      <div class="msg">今天下午 6 点，我 review 了 11 个 PR，吸收了 8 条（覆盖 6 个项目），3 处没看懂已去问对应 Lead。PR：#…；roundId：…</div>
+      <p>并要求必须包含：时间、看了几个、吸收几条、几个项目、问了几个、编号列表。<b>你说的「不要用编号、统计数、报错串取代内容」，正是这个模板 + 原因一那几行叠出来的必然结果。</b>光让她写短是改不动的 —— 模板和那几行是硬要求。</p>
+      <p class="jargon">那串编号（roundId）机器是真的需要：出故障重跑时靠它认出「这轮我已经做过了」，不会重复。但那是机器的需要，不是你的需要。它不该出现在给人看的话里。</p>
+    </div>
+    <div class="card amber">
+      <h3>原因三：两轮背靠背，是代码里确定会发生的，不是偶然</h3>
+      <p>调度代码每次检查时，会一口气结算<b>当前这一轮 + 上一轮</b>。所以只要系统重启过、或上一轮没结算成，下一次就会把两轮一起交给 Raya，Raya 按规矩各发一条 → 你就在短时间里看到两段长 update。这是可以复现的机制问题。</p>
+    </div>
+    <div class="card gray">
+      <h3>顺带：两个工程线程里的那两条，是全局规则自动分的</h3>
+      <p>系统有一条对所有 AI 主管生效的规则：<b>一条消息里出现几个单号，就自动拆成几条，分别发到各自的线程里</b>，并且明令禁止按内容判断该不该发。所以 Raya 的汇报里带了两个单号，就自动在两个工程线程里各留了一条。</p>
+      <p><b>你说「分线程没问题」，所以这条规则我不动。</b>要改的是「喂进去的是什么内容」—— 分流规则是对的，被分流的东西不该存在。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S3 -->
+  <div class="section" data-section="3 一个意外发现">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>3 · 一个意外发现：两份规矩自己在打架</div>
+    <div class="card red">
+      <p>Raya 自己的行为手册里其实写着：<b>「真正空的一轮保持沉默，除非 Annie 明确要求空轮也报个平安。」</b></p>
+      <p>但系统每一轮塞给她的那段指令说：<b>「无论有没有活动都要发。」</b></p>
+      <p>后者每轮现场注入、语气更硬（「逐字、不要改写、不要省略」），实际压过了前者。<b>也就是说：「不用每件事都说」这条，八月就已经写在她手册里了，是后来加的机制把它盖掉了。</b></p>
+      <p>这对本单是个好消息 —— 我们不是要发明一条新规矩，是要把被盖掉的那条恢复成唯一有效的那条。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S4 -->
+  <div class="section" data-section="4 别人怎么解决">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>4 · 这类问题别人怎么解决（用你自己跑过的那份研究）</div>
+    <div class="card purple">
+      <p class="jargon" style="margin-bottom:10px;">下面四条全部出自 FLY-1854《一个总管怎么在正确的时刻提醒正确的事》—— 那是<b>你本人跑的两份深度研究</b>（59 条引用 / 520 次检索）。我不重做研究，直接引用。</p>
+      <h3>① 「发现问题」和「开口打扰人」必须是两件事 —— 支持我们要做的拆分</h3>
+      <p>医院的快速反应系统分两条腿：一条负责<b>监测和发现</b>，另一条负责<b>行动</b>。原文结论：<i>「一个完美的触发器，如果激活被抑制、或响应方不可用，就是无效的。」</i></p>
+      <p><b>今天 Raya 的毛病正是这两条腿被焊死了：一轮读完（发现）自动等于开口（行动）。</b></p>
+      <h3 style="margin-top:14px;">② 报得多不等于报得对</h3>
+      <p>一项大型对照试验发现：装上快速反应机制后呼叫次数大幅上升，但结果<b>并没有变好</b>。研究者的评语是：这把「反应得更频繁」和「在有益的时刻反应」区分开了。</p>
+      <h3 style="margin-top:14px;">③ 但也不能几乎不说话 —— 这条反对「干脆全静默」</h3>
+      <p>同一份研究指出这类机制有一个<b>最小剂量</b>：使用频率低于某个门槛，就测不到任何效果。原话：<i>「一个几乎从不被行使的名义权利，不构成一个有效的机制。」</i></p>
+      <p><b>所以「Raya 只在你问她时才说话」这个方案我不推荐</b>，那会把她从总管降级成查询接口 —— 而你在 FLY-1854 里明确说过，你要的是<b>有能动性</b>的那种角色。</p>
+      <h3 style="margin-top:14px;">④ 同一件事，在不同时候值不值得说是可以不一样的</h3>
+      <p>美股熔断规则：大盘跌 7% 要停市 15 分钟，<b>但同样的跌幅发生在下午 3:25 之后就不停了</b>。研究评语：监管没有把「正确时刻」定义成「跌够 7% 就是」，触发条件同时挂在幅度和剩余时间上。</p>
+      <p><b>给我们的启发：判断该不该打扰你，不必是单一开关，可以是「这条判断有多重」×「你现在能拿它做什么」。</b></p>
+    </div>
+    <div class="card gray">
+      <h3>我也要诚实说清楚：这份研究没回答的</h3>
+      <p>它<b>没有</b>给出「频率高到多少人就开始无视」的具体数字。所以本单我<b>不会</b>承诺「每周最多几条」这种指标 —— 那会是我编的。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S5 -->
+  <div class="section" data-section="5 我推荐的形状">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>5 · 我推荐的形状（连同它的代价）</div>
+    <div class="diagram">
+      <svg viewBox="0 0 900 330" role="img" aria-label="今天与建议的两种流程对比图">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#86868b"/>
+          </marker>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff3b30"/>
+          </marker>
+          <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#34c759"/>
+          </marker>
+        </defs>
+        <text x="16" y="26" font-family="-apple-system, system-ui, sans-serif" font-size="14" font-weight="700" fill="#ff3b30">今天</text>
+        <rect x="16" y="40" width="170" height="54" rx="10" fill="#fff" stroke="#d2d2d7"/>
+        <text x="101" y="63" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#1d1d1f">后台跑一轮</text>
+        <text x="101" y="81" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#86868b">每 6 小时</text>
+        <line x1="186" y1="67" x2="286" y2="67" stroke="#ff3b30" stroke-width="2" marker-end="url(#arr)"/>
+        <text x="236" y="58" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#ff3b30">跑完 = 说话</text>
+        <rect x="290" y="40" width="200" height="54" rx="10" fill="#fdebea" stroke="#f3c2be"/>
+        <text x="390" y="63" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#c62d23">一条统计式汇报</text>
+        <text x="390" y="81" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#c62d23">看了几个 / 谁没交 / 编号串</text>
+        <line x1="490" y1="67" x2="590" y2="67" stroke="#ff3b30" stroke-width="2" marker-end="url(#arr)"/>
+        <rect x="594" y="40" width="130" height="54" rx="10" fill="#fff" stroke="#d2d2d7"/>
+        <text x="659" y="72" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#1d1d1f">Annie</text>
+        <text x="744" y="58" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#ff3b30">积压两轮</text>
+        <text x="744" y="76" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#ff3b30">就发两条</text>
+
+        <line x1="16" y1="120" x2="884" y2="120" stroke="#e5e5ea" stroke-width="1"/>
+
+        <text x="16" y="152" font-family="-apple-system, system-ui, sans-serif" font-size="14" font-weight="700" fill="#34c759">建议</text>
+        <rect x="16" y="166" width="170" height="54" rx="10" fill="#fff" stroke="#d2d2d7"/>
+        <text x="101" y="189" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#1d1d1f">后台跑一轮</text>
+        <text x="101" y="207" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#86868b">每 6 小时，不改</text>
+        <line x1="186" y1="193" x2="266" y2="193" stroke="#86868b" stroke-width="2" marker-end="url(#ar)"/>
+        <rect x="270" y="166" width="160" height="54" rx="10" fill="#f5f5f7" stroke="#d2d2d7"/>
+        <text x="350" y="189" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#1d1d1f">后台自己记着</text>
+        <text x="350" y="207" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#86868b">你想看时能翻</text>
+        <line x1="430" y1="193" x2="500" y2="193" stroke="#86868b" stroke-width="2" marker-end="url(#ar)"/>
+        <rect x="504" y="158" width="180" height="70" rx="10" fill="#fff8ed" stroke="#f0d9b5"/>
+        <text x="594" y="182" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#c77400">有没有一条判断</text>
+        <text x="594" y="200" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#c77400">是你需要知道的？</text>
+        <text x="594" y="218" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#86868b">积压几轮也合成一条</text>
+        <line x1="684" y1="193" x2="754" y2="193" stroke="#34c759" stroke-width="2" marker-end="url(#arg)"/>
+        <text x="719" y="184" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#34c759">有才说</text>
+        <rect x="758" y="166" width="126" height="54" rx="10" fill="#fff" stroke="#d2d2d7"/>
+        <text x="821" y="198" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13" fill="#1d1d1f">Annie</text>
+        <path d="M 594 228 L 594 262 L 350 262 L 350 226" fill="none" stroke="#86868b" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#ar)"/>
+        <text x="472" y="280" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#86868b">没有 → 不说话，只留记录</text>
+      </svg>
+    </div>
+    <div class="diagram-caption">上：今天 —— 后台跑完就等于开口。下：建议 —— 后台照跑照记，只有「真有一条你需要知道的判断」才开口。</div>
+    <div class="card green">
+      <h3><span class="badge rec">我推荐</span>方案 A · 后台照跑，说不说话由「有没有判断要交换」决定</h3>
+      <ul>
+        <li>后台节奏<b>一点不改</b>（还是 6 小时）：照读、照记、照存。这些<b>全部只落后台</b>。</li>
+        <li>开口的条件<b>不再是「一轮结束」</b>，改成：Raya 形成了一条<b>跨项目的判断</b> —— 比如她看到的进展和你说过的重点对不上，或者某个方向到了你该知道的节点。</li>
+        <li>积压几轮 → <b>合成一条</b>说（「这两轮我看到的是……」），不背靠背发两条。</li>
+        <li>「谁没交、看了几个、编号串」<b>全部移出你的视线</b>，进后台记录和运维面。</li>
+        <li>你想看后台时，有一个固定入口自己翻 —— <b>你拉，不是她推</b>。</li>
+      </ul>
+      <p style="margin-top:10px;"><b>代价（我不粉饰）：</b></p>
+      <ul>
+        <li>🔴 <b>一定会有漏报。</b>「什么值得说」没有客观标准，她可能憋着一条你其实想知道的事。</li>
+        <li>🔴 <b>「多久没说话算不正常」也没有客观答案。</b>可能连续几天安静，你分不清是真没事还是机制坏了。</li>
+        <li>🟡 要改三处规矩（系统注入的指令、Raya 的手册、统计信息的新落点），迁移面比「只是降频」大。</li>
+      </ul>
+    </div>
+    <div class="card gray">
+      <h3><span class="badge no">不推荐</span>方案 B · 只在需要你做决定时才出现，其余全静默</h3>
+      <p>代价：第 4 节的 ③ 直接反对 —— 几乎不主动说话的总管会退化成查询接口；而且跟你的原话不符，你说的是「不需要<b>每件事</b>都告诉我」，不是「什么都别告诉我」。还会把你推回「要自己去查」。</p>
+    </div>
+    <div class="card gray">
+      <h3><span class="badge no">不推荐</span>方案 C · 保留固定节奏，改成每天/每周一条人话</h3>
+      <p>代价：跟你七月定稿的一条铁律直接冲突 —— 当时你拍板「<b>不要定期汇总（digest）</b>」。而且定期形态我们已经试了三次（每日简报、简报页面、Raya 轮报），这次的反馈就是第三次失败。唯一优点是可预期、没有漏报焦虑。</p>
+    </div>
+    <div class="card gray">
+      <h3><span class="badge no">对照组</span>方案 D · 维持现状，只把文字写短</h3>
+      <p>就是这次的临时措施。列在这里只是为了对比完整：统计模板和那几行是<b>规矩的硬要求</b>，文字再短也改不动它们。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（哪个方案、或者你有别的形状）</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S6 -->
+  <div class="section" data-section="6 我不确定的三件事">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>6 · 我不确定的三件事（这三件只能你定）</div>
+    <div class="card">
+      <h3>① 漏报怎么兜？</h3>
+      <p>方案 A 一定会漏。兜底有三种：<b>(a)</b> 什么都不做，信任 Raya；<b>(b)</b> 给你一个想看时能翻的后台入口；<b>(c)</b> 一个很低频的「我这阵子没找你，是因为……」的存活信号。</p>
+      <p>我倾向 <b>(b)</b>，但 (c) 要不要做只有你能决定 —— 它正好踩在第 4 节 ③ 说的「最小剂量」上。</p>
+    </div>
+    <div class="card">
+      <h3>② <span class="mono">#raya</span> 这个频道，你当它是什么？</h3>
+      <p>如果它是<b>你和 Raya 聊天的地方</b>，她主动发言就是打断；如果它是<b>她的总管面板</b>，主动发言是本职。这个定位直接决定方案 A 里「她开口时说到哪儿」。</p>
+      <p class="jargon">背景：你七月定过一条「不要单独的 founder 频道」，但 <span class="mono">#raya</span> 现在存在而且你在用。所以我不替你推断。</p>
+    </div>
+    <div class="card">
+      <h3>③ 过渡期怎么办？</h3>
+      <p><b>规矩和机制改完之前，Raya 今天仍然按老规矩跑</b> —— 我不会假装它已经停用了。所以：你希望她<b>先照旧发</b>（等改完），还是<b>先手动让她静默、只落后台</b>？</p>
+    </div>
+    <div class="comment-box"><label>对这三件的回答</label><textarea data-key="s6" placeholder="①… ②… ③…"></textarea></div>
+  </div>
+
+  <!-- S7 -->
+  <div class="section" data-section="7 接下来怎么钻">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>7 · 接下来我打算怎么跟你钻（一次一块）</div>
+    <div class="card purple">
+      <p>你说想「慢慢讨论 Raya 应该有的样子」，所以我不会一次甩一份完整方案给你。我拆成五块，<b>一轮只钻一块</b>：</p>
+      <table>
+        <tr><th>块</th><th>要定什么</th><th>顺序</th></tr>
+        <tr><td><b>T1</b></td><td>分层：哪些只落后台 / 哪些值得主动找你 / 哪些留到你们对话时展开</td><td><b>本轮</b></td></tr>
+        <tr><td>T2</td><td>节奏：后台读的周期 和 找你的节奏怎么分开；积压怎么合并</td><td>下一轮</td></tr>
+        <tr><td>T3</td><td>场所：<span class="mono">#raya</span> 是对话场还是面板；什么内容进单子的线程</td><td>之后</td></tr>
+        <tr><td>T4</td><td>形态：一条给你的消息具体长什么样（替掉统计模板）</td><td>之后</td></tr>
+        <tr><td>T5</td><td>旧规矩怎么下线，下线前怎么办</td><td>最后</td></tr>
+      </table>
+      <div class="ask">本轮要问你的一句：<b>T1 这块，你有定见，还是我来发挥？</b><br>
+      具体就是 —— <b>什么样的事，值得 Raya 打断你？</b>如果你已经有想法，我照你的来，不自由发挥；如果还没想清楚，我按方案 A 拟一版给你砍。</div>
+    </div>
+    <div class="comment-box"><label>T1：你有定见还是我来发挥？</label><textarea data-key="s7" placeholder="有定见的话，直接写你的想法；没有就写「你来发挥」…"></textarea></div>
+  </div>
+
+  <!-- S8 -->
+  <div class="section" data-section="8 本单明确不做">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span>8 · 本单明确不做的（免得我越界）</div>
+    <div class="card gray">
+      <ul>
+        <li><b>不改后台 6 小时的周期</b> —— 单子里明令不自行改。</li>
+        <li><b>不预先简化成「每 X 分钟发一次」</b> —— 单子里明令。</li>
+        <li><b>不取消线程分流</b> —— 你说了分线程没问题。</li>
+        <li><b>不动 summary 机制本身</b>（各部门写、Raya 读完算已读）—— 除非你说要动。</li>
+        <li><b>不修「线程双向可用」的实现</b> —— 归同 Epic 的工程子单。</li>
+        <li><b>不另造一套通用提醒引擎</b> —— 直接复用 FLY-2597 已经在做的那套。</li>
+        <li><b>不写生产代码</b> —— 我只出需求文档 + 拆成工程单交给 Tadashi。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- Summary -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集你在各节写的意见。<b>写完要点一下按钮复制、贴回 issue 线程里我才收得到</b> —— 页面上的字只存在你自己浏览器里，不会自动同步给我。</p>
+      <div id="summary-body">(还没有意见)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">一键汇总复制</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2609";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2609-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2609-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败，请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "(还没有意见)"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长，已拆成 " + chunks.length + " 段，请逐段复制：";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n(无意见)", "已复制(无意见)"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

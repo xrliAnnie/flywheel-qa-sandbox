@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2609 · T1 这张表，你改几行</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 26px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 32px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card p + p { margin-top: 8px; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 10px 14px; font-size: 13.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 8px; border-left: 3px solid #d2d2d7; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .t1 { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 8px 14px 14px; }
+  .t1 td { vertical-align: middle; }
+  .t1 .rid { font-family: 'SF Mono', monospace; font-size: 12px; color: #86868b; width: 40px; }
+  .t1 .rlabel { font-size: 13.5px; width: 46%; }
+  .t1 .rownote { color: #86868b; font-size: 12px; margin-top: 3px; }
+  .t1 .ropts { white-space: normal; }
+  .opt { display: inline-flex; align-items: center; gap: 4px; margin: 2px 8px 2px 0; font-size: 12.5px; padding: 3px 9px; border-radius: 20px; border: 1px solid #e5e5ea; cursor: pointer; background: #fafafa; }
+  .opt input { margin: 0; }
+  .opt:hover { border-color: #007aff; }
+  .changed { background: #fff8ed; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 60px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 40px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+  .ask { background: #f0f7ff; border: 1px solid #cfe4ff; border-radius: 10px; padding: 12px 14px; margin-top: 10px; font-size: 14px; color: #1a365d; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>T1 · 这张表，你改几行</h1>
+  <div class="meta">Issue <span class="mono">FLY-2609</span> · 产品共创第 2 轮 · 2026-09-15 · <b>本轮只问一件事：这张表哪几行你不同意</b></div>
+
+  <!-- S0 -->
+  <div class="section" data-section="0 我按你说的换了轴">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>0 · 我上一轮想错了，按你说的换了</div>
+    <div class="card red">
+      <p class="lede">上一轮我假设「说不说话」看的是<b>这条判断重不重要</b>。你给的是另一个轴：<b>看你在哪个模式</b>。</p>
+      <table>
+        <tr><th></th><th>我上一轮的假设（已作废）</th><th>你给的</th></tr>
+        <tr><td><b>文字模式</b></td><td>有重要判断才主动说</td><td><b>完全不主动汇报</b>，只开 thread 把过程留在那儿</td></tr>
+        <tr><td><b>耳机模式</b></td><td>八月已定稿（FLY-1850），我上一轮写「我没设计」是错的</td><td><b>这时才统管全局</b>，报「现在发生了什么、哪些要你 action」</td></tr>
+      </table>
+      <p style="margin-top:10px;">所以我上一轮推荐的方案 A 那条开口条件<b>作废</b>，整张表按你的轴重画了。</p>
+    </div>
+    <div class="card gray">
+      <h3>你还顺手回答了我上一轮问的「漏报了怎么办」</h3>
+      <div class="quote">我不一定会去看，但还是希望能有一个 track record 在那边……我希望很多进展能保持 visible，这样如果发现问题，我就可以及时参与、调整。</div>
+      <p style="margin-top:8px;">我把这句当成<b>设计约束</b>，不是背景话：所以文字模式<b>不会</b>做成完全静默的后台，留痕是刻意保留的。这一件我不再问你了。</p>
+    </div>
+    <div class="comment-box"><label>这一节我有没有理解错（自动保存在你浏览器里）</label><textarea data-key="s0" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S1 -->
+  <div class="section" data-section="1 你给的规矩我复述一遍">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>1 · 你给的三条规矩，我复述一遍（怕记错）</div>
+    <div class="card">
+      <h3>① thread 的生命周期</h3>
+      <ul>
+        <li>每轮同步 + 合 PR 时，<b>开一个新 thread</b>，过程写在里面；</li>
+        <li><b>PR 合完就 archive 掉</b>；</li>
+        <li>只有两种情况留着：<b>① 中间有问题要问你　② 你有问题要问她</b>。</li>
+      </ul>
+      <h3 style="margin-top:14px;">② thread 里要记的四类</h3>
+      <ul>
+        <li>现在有什么新的 report</li>
+        <li>他有没有读懂发生了什么</li>
+        <li>有没有问题需要问那些 lead</li>
+        <li>他有没有去 ship</li>
+      </ul>
+      <h3 style="margin-top:14px;">③ 6 小时那个周期</h3>
+      <p>你说「这部分没问题」，所以<b>周期我一点不动</b>。</p>
+    </div>
+    <div class="comment-box"><label>这三条我记错了哪条</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S2 TABLE -->
+  <div class="section" data-section="2 主表">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>2 · 主表：她一天真产生的每一类东西，各归哪一档</div>
+    <div class="card green" style="padding-bottom:10px;">
+      <p class="lede">左边这些<b>不是我编的类目</b> —— 是从她今天三轮的实际记录里一条条拆出来的（她的账本 46 行、发给你的三条原文、追加到两个工程 thread 的四条）。</p>
+      <p style="margin-top:8px;"><b>每一行我已经先填好我的建议。你只要点掉你不同意的那几行就行</b>，改过的行会自动变黄并进汇总，没改的不会出现。</p>
+      <p class="jargon" style="margin-top:8px;">三档意思：<b>只落后台</b> = Discord 上永远看不到；<b>写进 thread 留痕</b> = 在当轮 thread 里，你不一定看但它在那儿；<b>耳机模式才报</b> = 文字区绝不主动发，你戴上耳机时才统管播报。</p>
+    </div>
+    <div class="t1">
+      <table>
+        <tr><th></th><th>她产生的东西</th><th>归哪一档（已填我的建议）</th></tr>
+<tr><td class="rid">A</td><td class="rlabel">后台账本行（她看 PR、吸收、合并被拒、去问 Lead、写记忆…共 10 类流水）</td><td class="ropts"><label class="opt"><input type="radio" name="r-A" value="只落后台" data-row="A" checked><span>只落后台</span></label><label class="opt"><input type="radio" name="r-A" value="写进 thread 留痕" data-row="A"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-A" value="耳机模式才报" data-row="A"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B1</td><td class="rlabel">时间 + 统计头（这轮看了几个、吸收几条、覆盖几个项目）</td><td class="ropts"><label class="opt"><input type="radio" name="r-B1" value="只落后台" data-row="B1"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B1" value="写进 thread 留痕" data-row="B1" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B1" value="耳机模式才报" data-row="B1"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B2</td><td class="rlabel">PR 号列表（#140、#141、#142）</td><td class="ropts"><label class="opt"><input type="radio" name="r-B2" value="只落后台" data-row="B2"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B2" value="写进 thread 留痕" data-row="B2" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B2" value="耳机模式才报" data-row="B2"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B3</td><td class="rlabel">那串内部编号 roundId</td><td class="ropts"><label class="opt"><input type="radio" name="r-B3" value="只落后台" data-row="B3" checked><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B3" value="写进 thread 留痕" data-row="B3"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B3" value="耳机模式才报" data-row="B3"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B4</td><td class="rlabel"><b>Raya 自己的判断</b>（例：「我不同意把瓶颈只归成等你按卡」）<div class="rownote">对应你说的「他有没有读懂发生了什么」</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B4" value="只落后台" data-row="B4"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B4" value="写进 thread 留痕" data-row="B4"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B4" value="耳机模式才报" data-row="B4"><span>耳机模式才报</span></label><label class="opt"><input type="radio" name="r-B4" value="留痕+耳机" data-row="B4" checked><span>留痕+耳机</span></label></td></tr>
+<tr><td class="rid">B5</td><td class="rlabel">跨项目的事实观察（例：配置文件已存在 ≠ 派工已恢复）<div class="rownote">对应「现在有什么新的 report」</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B5" value="只落后台" data-row="B5"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B5" value="写进 thread 留痕" data-row="B5" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B5" value="耳机模式才报" data-row="B5"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B6</td><td class="rlabel">对账结果：没发现缺漏</td><td class="ropts"><label class="opt"><input type="radio" name="r-B6" value="只落后台" data-row="B6" checked><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B6" value="写进 thread 留痕" data-row="B6"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B6" value="耳机模式才报" data-row="B6"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B7</td><td class="rlabel">机制故障（合并被拒、同步失败）<div class="rownote">你说「发现问题我可以及时参与」——故障正该看得见</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B7" value="只落后台" data-row="B7"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B7" value="写进 thread 留痕" data-row="B7" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B7" value="耳机模式才报" data-row="B7"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B8</td><td class="rlabel">整段英文报错原文（REFUSED: no cross-department channel configured…）<div class="rownote">thread 里写一句人话就够</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B8" value="只落后台" data-row="B8" checked><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B8" value="写进 thread 留痕" data-row="B8"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B8" value="耳机模式才报" data-row="B8"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B9</td><td class="rlabel">谁没交作业的名单（本轮 3/11 份已交；未交：8 个 Lead）<div class="rownote">降成一行，不再逐字强制、不再进主频道</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B9" value="只落后台" data-row="B9"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B9" value="写进 thread 留痕" data-row="B9" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B9" value="耳机模式才报" data-row="B9"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B10</td><td class="rlabel">队列有多深（还有 118 个没读）</td><td class="ropts"><label class="opt"><input type="radio" name="r-B10" value="只落后台" data-row="B10"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B10" value="写进 thread 留痕" data-row="B10" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B10" value="耳机模式才报" data-row="B10"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B11</td><td class="rlabel">有哪些要去问 Lead 的问题<div class="rownote">对应「有没有问题需要问那些 lead」</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B11" value="只落后台" data-row="B11"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B11" value="写进 thread 留痕" data-row="B11" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B11" value="耳机模式才报" data-row="B11"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">B12</td><td class="rlabel">「我记下了你的沟通偏好」这类确认话<div class="rownote">风格归 FLY-2610</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-B12" value="只落后台" data-row="B12" checked><span>只落后台</span></label><label class="opt"><input type="radio" name="r-B12" value="写进 thread 留痕" data-row="B12"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-B12" value="耳机模式才报" data-row="B12"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">C</td><td class="rlabel">合了哪些 PR / 有没有去 ship<div class="rownote">对应「他有没有去 ship」</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-C" value="只落后台" data-row="C"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-C" value="写进 thread 留痕" data-row="C" checked><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-C" value="耳机模式才报" data-row="C"><span>耳机模式才报</span></label></td></tr>
+<tr><td class="rid">D</td><td class="rlabel"><b>要你本人决定的事</b><div class="rownote">两个例外之一：thread 留着不 archive</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-D" value="只落后台" data-row="D"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-D" value="写进 thread 留痕" data-row="D"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-D" value="耳机模式才报" data-row="D"><span>耳机模式才报</span></label><label class="opt"><input type="radio" name="r-D" value="留着+要你答" data-row="D" checked><span>留着+要你答</span></label></td></tr>
+<tr><td class="rid">E</td><td class="rlabel">每 6 小时往 #raya 主频道发的那条汇总<div class="rownote">你的原话：在平常的文字区，它完全不需要发这些东西</div></td><td class="ropts"><label class="opt"><input type="radio" name="r-E" value="只落后台" data-row="E"><span>只落后台</span></label><label class="opt"><input type="radio" name="r-E" value="写进 thread 留痕" data-row="E"><span>写进 thread 留痕</span></label><label class="opt"><input type="radio" name="r-E" value="耳机模式才报" data-row="E"><span>耳机模式才报</span></label><label class="opt"><input type="radio" name="r-E" value="取消" data-row="E" checked><span>取消</span></label></td></tr>
+      </table>
+    </div>
+    <div class="card gray" style="margin-top:14px;">
+      <h3>一个量化，解释你为什么会觉得「看不懂做了什么」</h3>
+      <p>她今天发给你的那三条里，真正算「她的判断 / 新情况」的（上表 B4+B5）大约只占 <b>15%</b>；其余 <b>85%</b> 是统计头、PR 号串、内部编号、对账、谁没交名单，还有整段英文报错原文。</p>
+    </div>
+    <div class="comment-box"><label>表里哪几行你不同意，或者我漏了什么类目</label><textarea data-key="s2" placeholder="点上面的选项就行；这里可以补充说明…"></textarea></div>
+  </div>
+
+  <!-- S3 -->
+  <div class="section" data-section="3 关于开 thread 这件事 本轮不用你答">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>3 · 你要的「开新 thread、合完 archive」—— 查了，现成就有（<b>本轮不用你答</b>）</div>
+    <div class="card green">
+      <p class="lede">结论：<b>不需要新造能力，系统里已经在这么做了。</b></p>
+      <p>我一开始查错了地方，得出「每个 thread 都得绑一张 Linear 单」的结论。重查之后发现那只是<b>其中一条路的入口限制</b>，不是系统的能力边界：</p>
+      <ul>
+        <li><b>开 thread</b>：Flywheel 生产里已经有三处在开「不绑单」的 thread —— 告警中心、圆桌讨论区、旧开关退役流程。Raya 自己的仓里也有一处（会议模式）。</li>
+        <li><b>archive</b>：底层只要一个 thread 编号就能归档，同样不需要绑单。Discord 还支持「多久没人说话就自动归档」。</li>
+      </ul>
+      <p style="margin-top:8px;">所以你说的「每轮开一个新 thread，合完 archive 掉」<b>机制上是现成的</b>。剩下的是产品选择：这些 thread 开在哪个频道、叫什么名字、要不要跟单子关联。</p>
+      <p><b>这一件归到后面「场所」那一轮（跟「#raya 是对话场还是面板」一起问），本轮你不用管。</b></p>
+    </div>
+    <div class="comment-box"><label>这一节如果你已经有想法可以直接写（不写也行）</label><textarea data-key="s3" placeholder="留空就行…"></textarea></div>
+  </div>
+
+  <!-- S4 -->
+  <div class="section" data-section="4 耳机模式本轮不设计">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>4 · 耳机模式：你说之后再聊，所以本轮我不设计</div>
+    <div class="card purple">
+      <p>而且我查到<b>耳机模式的汇报规矩你八月已经定过稿了</b>（FLY-1850），我不会重开它：</p>
+      <ul>
+        <li>它<b>一定主动开口</b>，不被动等你问；</li>
+        <li>触发点 = <b>你进入语音模式那一刻</b>，积压的一次性给你；</li>
+        <li>报的形式 = 「现在是什么情况」+「<b>哪些事情需要你做决定</b>」；</li>
+        <li><b>进来的全部 / 出声的筛过</b>（这两层不能合成一句）；</li>
+        <li>筛的标准是<b>长出来的</b>：起点不筛 → 你随口说「这个不用告诉我」→ 它记住 → 慢慢减少；</li>
+        <li><b>沉默必须被主动打破</b> —— 耳机里「安静」和「坏了」长得一样。</li>
+      </ul>
+      <p style="margin-top:8px;">你这次新加的一句「<b>更节制、简洁，不要一股脑全发</b>」我记下来了，放进后续轮次细化。</p>
+    </div>
+    <div class="comment-box"><label>这一节的意见</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S5 -->
+  <div class="section" data-section="5 我会去废掉哪些旧规矩">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span>5 · 照你这个轴，我会去废掉 / 改掉哪些旧规矩</div>
+    <div class="card gray">
+      <table>
+        <tr><th>旧规矩</th><th>处置</th></tr>
+        <tr><td>「无论有没有活动，每轮都必须发汇报」（系统每轮注入的硬指令）</td><td><b>废</b></td></tr>
+        <tr><td>「必须逐字带上『本轮 N/M 份已交；未交：…』，不许改写」</td><td><b>废</b>，降成 thread 里一行</td></tr>
+        <tr><td>她手册里「在你自己的 #raya 频道发汇报」</td><td><b>改</b>成写进当轮 thread</td></tr>
+        <tr><td>八月定的「文字那边只报走偏的」（FLY-1850）</td><td><b>收紧</b>成「一条都不主动报，全部留痕」</td></tr>
+        <tr><td>「消息里有几个单号就分几条发到各自线程」</td><td><b>保留</b>（你说分线程没问题）</td></tr>
+        <tr><td>各部门交的汇报必须写判断，不能只列清单</td><td><b>保留</b>，它正是「有没有读懂」的原料</td></tr>
+        <tr><td>6 小时周期</td><td><b>不动</b>（你说这部分没问题）</td></tr>
+      </table>
+      <p style="margin-top:10px;" class="jargon">⚠️ 说清楚：这些改动要等相应的 PR 合进去才生效。<b>在那之前她还是按老规矩跑</b>，我不会假装已经停了。</p>
+    </div>
+    <div class="comment-box"><label>这一节的意见</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section">
+    <div class="card" style="border-left-color:#007aff;">
+      <div class="ask">本轮就问这一件：<b>上面那张表，哪几行你不同意？</b><br>点掉就行，其余的留着即可。改完点最下面的按钮复制，贴回线程给我。</div>
+    </div>
+  </div>
+
+  <!-- Summary -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集<b>你改动的行</b> + 你写的意见。<b>写完要点一下按钮复制、贴回线程我才收得到</b> —— 页面上的字只存在你自己浏览器里，不会自动同步给我。</p>
+      <div id="summary-body">(还没有改动)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">一键汇总复制</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2609";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2609-t1:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2609-t1:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var radios = Array.prototype.slice.call(document.querySelectorAll("input[type=radio][data-row]"));
+
+  var defaults = {};
+  radios.forEach(function (r) { if (r.defaultChecked) defaults[r.getAttribute("data-row")] = r.value; });
+
+  function rowLabel(rid) {
+    var td = document.querySelector("input[data-row='" + rid + "']");
+    if (!td) return rid;
+    var tr = td.closest ? td.closest("tr") : null;
+    if (!tr) return rid;
+    var cell = tr.querySelector(".rlabel");
+    if (!cell) return rid;
+    var clone = cell.cloneNode(true);
+    var note = clone.querySelector(".rownote");
+    if (note) note.parentNode.removeChild(note);
+    return (clone.textContent || "").trim();
+  }
+
+  function currentFor(rid) {
+    var sel = document.querySelector("input[data-row='" + rid + "']:checked");
+    return sel ? sel.value : "";
+  }
+
+  function markRows() {
+    radios.forEach(function (r) {
+      var tr = r.closest ? r.closest("tr") : null;
+      if (!tr) return;
+      var rid = r.getAttribute("data-row");
+      if (currentFor(rid) !== defaults[rid]) { tr.classList.add("changed"); }
+      else { tr.classList.remove("changed"); }
+    });
+  }
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    var changed = [];
+    Object.keys(defaults).forEach(function (rid) {
+      var cur = currentFor(rid);
+      if (cur && cur !== defaults[rid]) {
+        changed.push(rid + " " + rowLabel(rid) + "\n  " + defaults[rid] + " -> " + cur);
+      }
+    });
+    if (changed.length) {
+      parts.push("【表格改动 " + changed.length + " 行】\n" + changed.join("\n"));
+    } else {
+      parts.push("【表格改动】没有改动,默认值全部同意");
+    }
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败，请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    markRows();
+    var parts = collect();
+    chunksDiv.textContent = "";
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "内容较长，已拆成 " + chunks.length + " 段，请逐段复制：";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  radios.forEach(function (r) {
+    var saved = lsGet("row:" + r.getAttribute("data-row"));
+    if (saved && saved === r.value) r.checked = true;
+    r.addEventListener("change", function () {
+      lsSet("row:" + r.getAttribute("data-row"), r.value);
+      render();
+    });
+  });
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    doCopy(chunkText(collect()).join("\n\n"), "已复制");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

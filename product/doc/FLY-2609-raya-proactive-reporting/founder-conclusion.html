@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raya 主动汇报 · 定稿</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.6; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 27px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 8px; }
+  .noask { background: #e8f8ee; border: 1px solid #b7e6c9; color: #1d8a43; border-radius: 10px; padding: 10px 14px; font-size: 14px; font-weight: 600; margin-bottom: 26px; }
+  .section { margin-bottom: 30px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 18px 22px; margin-bottom: 12px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card p + p { margin-top: 7px; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 4px; }
+  .lede { font-size: 17px; font-weight: 600; color: #1d1d1f; line-height: 1.5; }
+  .big { font-size: 15px; font-weight: 600; color: #1a365d; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 9px 13px; font-size: 13.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 7px; border-left: 3px solid #d2d2d7; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 6px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+  .tag.bg { background: #f0f0f2; color: #6e6e73; }
+  .tag.tr { background: #eaf3ff; color: #0060d0; }
+  .tag.hp { background: #f5ecff; color: #8b3fd0; }
+  .tag.no { background: #fdebea; color: #c62d23; }
+  .tag.keep { background: #fff3e0; color: #c77400; }
+  .ok { color: #1d8a43; font-weight: 700; }
+  .no2 { color: #c62d23; font-weight: 700; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 14px; margin-bottom: 12px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 9px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 36px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Raya 主动汇报 · 定稿</h1>
+  <div class="meta">FLY-2609 · 2026-09-15 · 依据你今晚两轮的回话</div>
+  <div class="noask">这张页没有问题要你答。看一眼就行。</div>
+
+  <!-- 1 结论 -->
+  <div class="section" data-section="结论">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>结论</div>
+    <div class="card green">
+      <p class="lede">文字区，Raya 不再主动给你发汇报。过程写进当轮 thread，你不一定看，但它在那儿。只有戴上耳机时，她才统管全局、报给你听。</p>
+    </div>
+    <div class="card">
+      <h3>对你来说具体变三件事</h3>
+      <table>
+        <tr><th>今天</th><th>改成</th></tr>
+        <tr><td>每 6 小时往 #raya 发一条长 update</td><td><b>不发了</b></td></tr>
+        <tr><td>里面是「看了几个、吸收几条、谁没交、一串编号、英文报错」</td><td>这些<b>全部离开你的视线</b>，进后台或 thread</td></tr>
+        <tr><td>积压两轮就背靠背发两条</td><td><b>合成一次</b></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 2 你定的 -->
+  <div class="section" data-section="你定的规矩">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>你定的规矩</div>
+    <div class="diagram">
+      <svg viewBox="0 0 880 210" role="img" aria-label="文字模式与耳机模式的分工">
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#86868b"/></marker>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#af52de"/></marker>
+        </defs>
+        <rect x="14" y="16" width="176" height="64" rx="10" fill="#fff" stroke="#d2d2d7"/>
+        <text x="102" y="42" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13.5" fill="#1d1d1f">每 6 小时跑一轮</text>
+        <text x="102" y="62" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#86868b">读各部门进展 · 合 PR</text>
+        <line x1="190" y1="48" x2="262" y2="48" stroke="#86868b" stroke-width="2" marker-end="url(#a1)"/>
+        <rect x="266" y="10" width="240" height="76" rx="10" fill="#eaf3ff" stroke="#c3ddff"/>
+        <text x="386" y="34" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13.5" font-weight="600" fill="#0060d0">文字模式</text>
+        <text x="386" y="54" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#0060d0">开一个 thread 记过程</text>
+        <text x="386" y="72" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#0060d0">不主动找你 · 合完就归档</text>
+        <line x1="506" y1="48" x2="578" y2="48" stroke="#86868b" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#a1)"/>
+        <text x="542" y="38" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11" fill="#86868b">你想看才看</text>
+        <rect x="582" y="16" width="120" height="64" rx="10" fill="#fff" stroke="#d2d2d7"/>
+        <text x="642" y="52" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13.5" fill="#1d1d1f">你</text>
+        <line x1="386" y1="86" x2="386" y2="126" stroke="#af52de" stroke-width="2" marker-end="url(#a2)"/>
+        <rect x="266" y="130" width="240" height="64" rx="10" fill="#f5ecff" stroke="#e0c9f5"/>
+        <text x="386" y="154" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="13.5" font-weight="600" fill="#8b3fd0">耳机模式</text>
+        <text x="386" y="174" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#8b3fd0">统管全局 · 报哪些要你 action</text>
+        <path d="M 506 162 L 642 162 L 642 84" fill="none" stroke="#af52de" stroke-width="2" marker-end="url(#a2)"/>
+        <text x="574" y="154" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11" fill="#af52de">主动开口</text>
+      </svg>
+    </div>
+    <div class="card">
+      <h3>thread 的生命周期</h3>
+      <ol>
+        <li>每轮同步 + 合 PR，开一个新 thread，过程写在里面。</li>
+        <li>PR 合完就 archive。</li>
+        <li>两种情况留着：<b>有问题要问你</b>，或<b>你有问题要问她</b>。</li>
+      </ol>
+      <h3 style="margin-top:14px;">thread 里记四件事</h3>
+      <ul>
+        <li>现在有什么新的 report</li>
+        <li>他有没有读懂发生了什么</li>
+        <li>有没有问题需要问那些 lead</li>
+        <li>他有没有去 ship</li>
+      </ul>
+      <h3 style="margin-top:14px;">6 小时周期</h3>
+      <p>不动。</p>
+    </div>
+  </div>
+
+  <!-- 3 归属表 -->
+  <div class="section" data-section="十六行归属">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>她产生的东西，各归哪一档（你已通过，零改动）</div>
+    <div class="card">
+      <table>
+        <tr><th>内容</th><th>归档</th></tr>
+        <tr><td>后台流水（看 PR、吸收、合并被拒、去问 Lead、写记忆…10 类）</td><td><span class="tag bg">只落后台</span></td></tr>
+        <tr><td>时间 + 统计头（看了几个、吸收几条）</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>PR 号列表</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>内部编号 roundId</td><td><span class="tag bg">只落后台</span></td></tr>
+        <tr><td><b>她自己的判断</b></td><td><span class="tag tr">thread 留痕</span> <span class="tag hp">耳机才报</span></td></tr>
+        <tr><td>跨项目的事实观察</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>对账没发现缺漏</td><td><span class="tag bg">只落后台</span></td></tr>
+        <tr><td>机制故障（合并被拒、同步失败）</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>整段英文报错原文</td><td><span class="tag bg">只落后台</span></td></tr>
+        <tr><td>谁没交作业的名单</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>队列还有多深</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>要去问 Lead 的问题</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td>「我记下了你的偏好」这类确认话</td><td><span class="tag bg">只落后台</span></td></tr>
+        <tr><td>合了哪些 PR / 有没有去 ship</td><td><span class="tag tr">thread 留痕</span></td></tr>
+        <tr><td><b>要你本人决定的事</b></td><td><span class="tag keep">thread 留着 + 标「要你答」</span></td></tr>
+        <tr><td>每 6 小时发 #raya 的那条汇总</td><td><span class="tag no">取消</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 4 根因 -->
+  <div class="section" data-section="根因">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>为什么会变成今天这样</div>
+    <div class="card red">
+      <h3>一条系统硬指令覆盖了你八月的决定</h3>
+      <p>系统每一轮塞给 Raya 的指令原文：<b>无论本轮有没有活动，都要在 #raya 发一条汇报，并逐字包含「本轮 N/M 份已交；未交：…」，不要改写、不要省略。</b></p>
+      <p>而你 8 月 17 日在总管 PRD 里圈的是<b>「到点没东西说，可以跳过，不必凑」</b>，理由当时就写下了：</p>
+      <div class="quote">信息不足还开口 = 干扰源；规定它到点必须说话，就会逼它凑。</div>
+      <p class="big" style="margin-top:9px;">所以这不是一条中性的工程默认值，它推翻了你已经拍过的决定。这一条排第一个改。</p>
+    </div>
+    <div class="card gray">
+      <h3>另外两条</h3>
+      <ul>
+        <li>她手册里规定了逐字模板，必须写满时间、看了几个、吸收几条、几个项目、编号串 —— 你看到的「统计取代内容」是这个模板的结果，写短改不动。</li>
+        <li>调度器一次结算两轮，各触发一条必发汇报 —— 所以积压必然背靠背。</li>
+      </ul>
+      <p style="margin-top:8px;">她三条消息里，真正是判断和新情况的约占 <b>15%</b>，其余 85% 是统计、编号、对账、名单、英文报错。</p>
+    </div>
+  </div>
+
+  <!-- 5 耳机 -->
+  <div class="section" data-section="耳机模式到哪一步">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>耳机模式今天到哪一步</div>
+    <div class="card amber">
+      <p class="lede">今天戴上耳机还不能真用。卡在「主机激活」这一步。</p>
+      <table style="margin-top:10px;">
+        <tr><th>环节</th><th></th><th>说明</th></tr>
+        <tr><td>设计定稿</td><td class="ok">已完成</td><td>八月 24 日</td></tr>
+        <tr><td>代码合入</td><td class="ok">已完成</td><td>九月 10 日</td></tr>
+        <tr><td>主机激活</td><td class="no2">卡在这里</td><td>代码已过评审、正在测试；装服务和写配置由工程做，<b>要你点头的只有一件：放行每个 Lead 自己的 bot 进 General 语音房说话</b></td></tr>
+        <tr><td>重启生效</td><td class="no2">没有</td><td>代码合进去不等于已经在跑，要装好服务并重启才算生效；现在还没到这一步</td></tr>
+        <tr><td>真跑过一场</td><td class="no2">没有</td><td>首场验证要在生效之后</td></tr>
+      </table>
+      <p style="margin-top:9px;">你八月定的耳机汇报规矩（一进语音就把积压一次性给你、进来的全收出声的筛过、你说一声就少一点、不能长时间不出声）<b>不重开</b>。你这次加的「更节制、简洁」记下了，留到耳机模式那一轮细化。</p>
+    </div>
+  </div>
+
+  <!-- 6 会改什么 -->
+  <div class="section" data-section="会废掉哪些旧规矩">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span>会废掉 / 改掉哪些旧规矩</div>
+    <div class="card gray">
+      <table>
+        <tr><th>旧规矩</th><th>处置</th></tr>
+        <tr><td>无论有没有活动，每轮都必须发汇报</td><td><b>废</b></td></tr>
+        <tr><td>必须逐字带「本轮 N/M 份已交；未交…」，不许改写</td><td><b>废</b>，降成 thread 里一行</td></tr>
+        <tr><td>汇报发在 #raya 频道</td><td><b>改</b>成写进当轮 thread</td></tr>
+        <tr><td>「空轮保持沉默」（她手册里本来就有，被上面那条压住了）</td><td><b>恢复有效</b></td></tr>
+        <tr><td>八月定的「文字那边只报走偏的」</td><td><b>收紧</b>成「一条都不主动报，全部留痕」</td></tr>
+        <tr><td>消息里有几个单号就分几条发到各自线程</td><td><b>保留</b></td></tr>
+        <tr><td>各部门交的汇报必须写判断，不能只列清单</td><td><b>保留</b></td></tr>
+        <tr><td>6 小时周期</td><td><b>不动</b></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 7 何时生效 -->
+  <div class="section" data-section="什么时候生效">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>什么时候生效</div>
+    <div class="card amber">
+      <p>这些改动要等相应代码合进去才生效。<b>在那之前 Raya 仍然按老规矩跑</b>，还会发那种汇报。</p>
+      <p>第一条（停掉「每轮必发」）<b>已经交给工程开始做了（FLY-2619）</b>，不等其余部分。</p>
+    </div>
+  </div>
+
+  <!-- 8 还没定 -->
+  <div class="section" data-section="还没定的">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span>还没定的（之后再聊，不用现在答）</div>
+    <div class="card gray">
+      <ul>
+        <li>thread 开在哪个频道、怎么命名</li>
+        <li>积压怎么合并、后台读的节奏和找你的节奏怎么分开</li>
+        <li>一条留痕具体长什么样</li>
+        <li>耳机模式里「更节制、简洁」具体怎么落</li>
+        <li>旧规矩下线的先后顺序</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="card" id="summary-card">
+      <h3>有意见可以写，没有就不用回</h3>
+      <p class="meta" style="margin-bottom:8px;">下面汇集你写的内容。<b>写完点一下按钮复制、贴回线程我才收得到</b> —— 页面上的字只存在你自己浏览器里，不会自动同步。</p>
+      <div class="comment-box"><textarea data-key="c1" placeholder="留空就行…"></textarea></div>
+      <div id="summary-body">(没有意见)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">一键汇总复制</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2609";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2609-concl:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2609-concl:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败，请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "(没有意见)"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "内容较长，已拆成 " + chunks.length + " 段，请逐段复制：";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n(无意见)", "已复制(无意见)"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
