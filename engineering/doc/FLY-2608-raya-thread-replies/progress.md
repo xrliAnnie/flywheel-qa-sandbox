@@ -1,14 +1,15 @@
 ---
 issue: FLY-2608
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-16T04:21:14.469Z
-nextStep: R3 effective APPROVED; publish committed design.html --publish-only,
-  verify hosted CSP/source, report Lead, then phase_design_complete and park
+phaseCursor: 5/5
+updated: 2026-09-16T04:26:16.519Z
+nextStep: Design R3 APPROVED; HTML published, hosted source/CSP verified and
+  Lead report receipted. Run phase_design_complete then park; downstream owns
+  implementation and live acceptance.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2608 progress
-**phase**: design (4/5)
-**next**: R3 effective APPROVED; publish committed design.html --publish-only, verify hosted CSP/source, report Lead, then phase_design_complete and park
+**phase**: design (5/5)
+**next**: Design R3 APPROVED; HTML published, hosted source/CSP verified and Lead report receipted. Run phase_design_complete then park; downstream owns implementation and live acceptance.
