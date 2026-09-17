@@ -1,9 +1,40 @@
 import { createServer } from "node:http";
-import { expect, it } from "vitest";
+import express from "express";
+import { expect, it, vi } from "vitest";
 import {
 	bindingFixture,
 	NOW,
 } from "../../ship-judgment/__tests__/binding-fixture.js";
+import { createShipJudgmentReadRouter } from "../ship-judgment-read-routes.js";
+
+it("renders at the injected clock without reading or mutating next_due_at", async () => {
+	const { store, db } = await bindingFixture();
+	const reader = store.getShipJudgmentHistory();
+	const read = vi.spyOn(reader, "read");
+	vi.spyOn(store, "getShipJudgmentHistory").mockReturnValue(reader);
+	db.prepare(
+		"INSERT INTO ship_judgment_project_state(project_name,next_due_at) VALUES('flywheel','2026-12-31T00:00:00.000Z') ON CONFLICT(project_name) DO UPDATE SET next_due_at=excluded.next_due_at",
+	).run();
+	const before = db.prepare("SELECT total_changes() AS n").get();
+	const app = express();
+	app.use(createShipJudgmentReadRouter(store, () => new Date(NOW)));
+	const server = createServer(app);
+	try {
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		const response = await fetch(
+			`http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/history/render?project=flywheel`,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("机器试判历史（按需生成）");
+		expect(read).toHaveBeenCalledExactlyOnceWith(NOW);
+		expect(db.prepare("SELECT total_changes() AS n").get()).toEqual(before);
+	} finally {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		store.close();
+	}
+});
 
 it(
 	"serves authenticated read-only statistics while off and rejects invalid scope",
@@ -40,8 +71,18 @@ it(
 			});
 			expect((await fetch(`${base}?${query}`)).status).toBe(401);
 			const headers = { Authorization: "Bearer fixture-api-token" };
-			const showUrl =
-				base.replace("/report", "/show") + "?project=flywheel&question=q";
+			const historyUrl = `${base.replace("/report", "/history/render")}?project=flywheel`;
+			expect((await fetch(historyUrl)).status).toBe(401);
+			const history = await fetch(historyUrl, { headers });
+			expect(history.status).toBe(200);
+			expect(history.headers.get("content-type")).toContain("text/html");
+			const historyHtml = await history.text();
+			expect(historyHtml).toContain("机器试判历史（按需生成）");
+			expect(historyHtml).toContain("不会自动上传");
+			expect((await fetch(`${historyUrl}&extra=1`, { headers })).status).toBe(
+				400,
+			);
+			const showUrl = `${base.replace("/report", "/show")}?project=flywheel&question=q`;
 			const shown = await fetch(showUrl, { headers });
 			expect(shown.status).toBe(200);
 			expect(await shown.json()).toMatchObject({
@@ -49,13 +90,13 @@ it(
 				questionId: "q",
 				records: [],
 			});
-			expect((await fetch(showUrl + "&id=extra", { headers })).status).toBe(
+			expect((await fetch(`${showUrl}&id=extra`, { headers })).status).toBe(
 				400,
 			);
 			expect(
 				(
 					await fetch(
-						base.replace("/report", "/show") + "?project=flywheel&id=missing",
+						`${base.replace("/report", "/show")}?project=flywheel&id=missing`,
 						{ headers },
 					)
 				).status,

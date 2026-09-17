@@ -143,6 +143,65 @@ describe("report hosting migration", () => {
 		});
 	});
 
+	it("skips only untitled legacy automatic history while retaining manual history documents", async () => {
+		dir = mkdtempSync(join(tmpdir(), "fly2661-migrate-filter-"));
+		let sequence = 0;
+		const registry = new ReportRegistry(dir, {
+			randomHex: (bytes) => String(++sequence).padStart(bytes * 2, "0"),
+		});
+		const legacyAuto = registry.stagePublish(
+			"flywheel",
+			"<!doctype html><html><head><title>机器试判历史</title></head><body><p>automatic</p></body></html>",
+			undefined,
+			registry.hostingBinding(),
+		);
+		await legacyAuto.commit();
+		const manualOnDemand = registry.stagePublish(
+			"flywheel",
+			"<!doctype html><html><head><title>机器试判历史（按需生成）</title></head><body><p>manual</p></body></html>",
+			undefined,
+			registry.hostingBinding(),
+		);
+		await manualOnDemand.commit();
+		const titledLegacy = registry.stagePublish(
+			"flywheel",
+			"<!doctype html><html><head><title>机器试判历史</title></head><body><p>manual titled copy</p></body></html>",
+			"manual copy",
+			registry.hostingBinding(),
+		);
+		await titledLegacy.commit();
+		const putMigratedReport = vi.fn(async (token: string) => ({
+			pathname: `r/${token}/index.html`,
+			url: `https://store.private.blob.vercel-storage.com/r/${token}/index.html`,
+		}));
+		const deployGateway = vi
+			.fn()
+			.mockResolvedValue({ deploymentId: "dpl_filtered" });
+
+		await migrateReportHosting({
+			registry,
+			blobStore: { putMigratedReport },
+			vercelToken: "vercel-secret",
+			deployGateway,
+			verifyGatewayEnvironment: vi.fn().mockResolvedValue(undefined),
+			gatewayRuntimeSource: "export function GET() {}",
+			gatewayHtmlSource: "",
+			reportRetentionSource: RETENTION_SOURCE,
+		});
+
+		const migratedTokens = putMigratedReport.mock.calls.map(([token]) => token);
+		expect(migratedTokens).not.toContain(legacyAuto.entry.token);
+		expect(migratedTokens).toContain(manualOnDemand.entry.token);
+		expect(migratedTokens).toContain(titledLegacy.entry.token);
+		const manifest = deployGateway.mock.calls[0]![2].find(
+			(file: { file: string }) =>
+				file.file === "api/report-gateway-migration-manifest.js",
+		).data;
+		expect(manifest).not.toContain(legacyAuto.entry.token);
+		expect(manifest).toContain(manualOnDemand.entry.token);
+		expect(manifest).toContain(titledLegacy.entry.token);
+	});
+
 	it("bootstraps a stable gateway project when the reports directory is empty", async () => {
 		dir = mkdtempSync(join(tmpdir(), "fly2283-migrate-"));
 		const registry = new ReportRegistry(dir, {
@@ -412,6 +471,20 @@ it.each([false, true])(
 				registry.hostingBinding(),
 			);
 			await old.commit();
+			const legacyAuto = registry.stagePublish(
+				"old-auto-history",
+				"<!doctype html><html><head><title>机器试判历史</title></head><body><p>automatic</p></body></html>",
+				undefined,
+				registry.hostingBinding(),
+			);
+			await legacyAuto.commit();
+			const manualOnDemand = registry.stagePublish(
+				"manual-history",
+				"<!doctype html><html><head><title>机器试判历史（按需生成）</title></head><body><p>manual</p></body></html>",
+				undefined,
+				registry.hostingBinding(),
+			);
+			await manualOnDemand.commit();
 			await registry.markHostingMigrated(
 				{
 					provider: "vercel-blob",
@@ -454,6 +527,8 @@ it.each([false, true])(
 					file.file === "api/report-gateway-migration-manifest.js",
 			).data;
 			expect(manifest).toContain(old.entry.token);
+			expect(manifest).not.toContain(legacyAuto.entry.token);
+			expect(manifest).toContain(manualOnDemand.entry.token);
 			expect(manifest).not.toContain(fresh.entry.token);
 			expect(registry.hosting()?.gatewayFormat).toBe(
 				failProbe ? undefined : "gzip-v1",

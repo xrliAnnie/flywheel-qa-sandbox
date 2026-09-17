@@ -336,9 +336,7 @@ function renderJudgmentHistory(
 	const cell = page.ship_judgment_history;
 	if (!cell) return "";
 	dictionary.sidecar?.add(cell);
-	const url = cell.value?.url;
-	if (!url || Buffer.byteLength(escapeHtml(url)) > 512) return "";
-	return `<footer data-history-link><a href="${escapeHtml(url)}" rel="noreferrer">查看近 30 天历史</a></footer>`;
+	return "<footer data-history-on-demand><strong>机器试判历史按需生成</strong>：需要查看时，由 Lead 运行 <code>flywheel-comm ship-judgment-history render</code>。</footer>";
 }
 function renderLeadNotes(
 	notes: Cell<string>[] | undefined,

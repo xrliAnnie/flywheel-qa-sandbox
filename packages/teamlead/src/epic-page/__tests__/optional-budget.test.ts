@@ -68,7 +68,7 @@ it("keeps the history footer independent of preview-row budgets and retains hist
 	const limit = hostedBundleBytes(full);
 	const fitted = renderEpicPageBudgetBundle(page, EPIC_SHAPE_NOW, limit);
 	expect(fitted.html).not.toContain("data-history-row");
-	expect(fitted.html.match(/查看近 30 天历史/g)).toHaveLength(1);
+	expect(fitted.html.match(/机器试判历史按需生成/g)).toHaveLength(1);
 	expect(fitted.html.match(/<div data-judgment>/g)).toHaveLength(60);
 	expect(hostedBundleBytes(fitted)).toBeLessThanOrEqual(limit);
 	expect(decodeAuditSidecar(fitted.audit.json)).toContainEqual(

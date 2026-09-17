@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
 	type HistoryRow,
 	historyContentDigest,
-	renderHistoryPage,
+	renderHistoryDocument,
 } from "../history-pages.js";
 
 const row: HistoryRow = {
@@ -24,52 +24,43 @@ const row: HistoryRow = {
 };
 const options = {
 	asOf: "2026-09-11T00:00:00.000Z",
-	page: 1,
-	pageCount: 2,
 	total: 40,
-	reportOrigin: "https://reports.example.com",
-	nextUrl: "https://reports.example.com/r/token",
 };
-it("renders twenty bounded escaped rows, hardened CSP and only a validated next-page link", () => {
-	const rows = Array.from({ length: 20 }, (_, n) => ({
+it("renders every bounded escaped row in one local-only document", () => {
+	const rows = Array.from({ length: 40 }, (_, n) => ({
 		...row,
 		questionId: `q-${n}`,
 		auditId: `audit-${n}`,
 		issue: "<img src=x onerror=alert(1)> & 文".repeat(30),
 		summary: '<script>alert("x")</script>&中文'.repeat(1000),
 	}));
-	const html = renderHistoryPage(rows, options);
-	expect(Buffer.byteLength(html)).toBeLessThanOrEqual(65536);
+	const html = renderHistoryDocument(rows, options);
+	expect(Buffer.byteLength(html)).toBeLessThanOrEqual(32 * 1024 * 1024);
 	expect(html).toContain("Content-Security-Policy");
-	expect(html).toContain("第 1 / 2 页");
 	expect(html).toContain("共 40 张卡");
-	expect(html).toContain('href="https://reports.example.com/r/token"');
+	expect(html).toContain("机器试判历史（按需生成）");
+	expect(html).toContain("本文件仅在 Lead 明确请求时生成，不会自动上传");
+	expect(html).not.toContain("下一页");
 	expect(html).not.toMatch(/<script|<[^>]+onerror=|<img|fetch\(/);
 	const rendered = html.match(/<tr data-audit=[\s\S]*?<\/tr>/g)!;
-	expect(rendered).toHaveLength(20);
+	expect(rendered).toHaveLength(40);
 	for (const line of rendered)
 		expect(Buffer.byteLength(line)).toBeLessThanOrEqual(2048);
 	expect(html).toContain("&lt;");
-	expect(html).toContain("audit-19");
+	expect(html).toContain("audit-39");
 });
-it("rejects excess rows, invalid pagination and untrusted navigation", () => {
-	for (const patch of [
-		{ nextUrl: "javascript:alert(1)" },
-		{ nextUrl: "https://evil.example/r/token" },
-		{ page: 0 },
-		{ pageCount: 1 },
-		{ total: 0 },
-	]) {
-		expect(() => renderHistoryPage([row], { ...options, ...patch })).toThrow();
-	}
+it("rejects an invalid timestamp, total mismatch and untrusted row link", () => {
 	expect(() =>
-		renderHistoryPage(
-			Array.from({ length: 21 }, () => row),
-			options,
-		),
+		renderHistoryDocument([row], { asOf: "not-utc", total: 1 }),
 	).toThrow();
 	expect(() =>
-		renderHistoryPage([{ ...row, cardUrl: "javascript:alert(1)" }], options),
+		renderHistoryDocument([row], { asOf: options.asOf, total: 2 }),
+	).toThrow();
+	expect(() =>
+		renderHistoryDocument([{ ...row, cardUrl: "javascript:alert(1)" }], {
+			asOf: options.asOf,
+			total: 1,
+		}),
 	).toThrow();
 });
 it("uses content-only stable digest and labels empty, unknown and historical sources honestly", () => {
@@ -77,15 +68,12 @@ it("uses content-only stable digest and labels empty, unknown and historical sou
 	expect(historyContentDigest([row])).not.toBe(
 		historyContentDigest([{ ...row, clarification: "pending" }]),
 	);
-	const html = renderHistoryPage([], {
+	const html = renderHistoryDocument([], {
 		asOf: options.asOf,
-		page: 1,
-		pageCount: 1,
 		total: 0,
-		reportOrigin: options.reportOrigin,
 	});
 	expect(html).toContain("暂无历史记录");
-	const unknown = renderHistoryPage(
+	const unknown = renderHistoryDocument(
 		[
 			{
 				...row,
@@ -95,7 +83,7 @@ it("uses content-only stable digest and labels empty, unknown and historical sou
 				authorship: "unknown",
 			},
 		],
-		{ ...options, pageCount: 1, total: 1, nextUrl: undefined },
+		{ ...options, total: 1 },
 	);
 	expect(unknown).toContain("历史补录");
 	expect(unknown).toContain("暂无意见");
@@ -105,7 +93,7 @@ it("uses content-only stable digest and labels empty, unknown and historical sou
 it("keeps the largest enumerated row states and identifiers inside the hardened byte budgets", () => {
 	const rows = Array.from({ length: 20 }, (_, n) => ({
 		...row,
-		questionId: "q" + n,
+		questionId: `q${n}`,
 		auditId: "a".repeat(238) + n,
 		source: "lead_manual" as const,
 		overall: "recommend_reject" as const,
@@ -116,16 +104,11 @@ it("keeps the largest enumerated row states and identifiers inside the hardened 
 		issue: "&".repeat(2000),
 		summary: "😀<&".repeat(2000),
 	}));
-	const html = renderHistoryPage(rows, {
-		...options,
-		pageCount: 1,
-		total: 20,
-		nextUrl: undefined,
-	});
+	const html = renderHistoryDocument(rows, { ...options, total: 20 });
 	const lines = html.match(/<tr data-audit=[\s\S]*?<\/tr>/g)!;
 	expect(lines).toHaveLength(20);
 	for (const line of lines)
 		expect(Buffer.byteLength(line)).toBeLessThanOrEqual(2048);
-	expect(Buffer.byteLength(html)).toBeLessThanOrEqual(65536);
+	expect(Buffer.byteLength(html)).toBeLessThanOrEqual(32 * 1024 * 1024);
 	expect(html).toContain("历史补录：取消（作者未核验）");
 });

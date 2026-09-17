@@ -93,7 +93,7 @@ describe("hosted Epic page publisher", () => {
 		expect(html.match(/class="kid"/g)).toHaveLength(60);
 		expect(html.match(/data-root=/g)).toHaveLength(8);
 		expect(html).not.toContain("data-history-row");
-		expect(html.match(/查看近 30 天历史/g)).toHaveLength(1);
+		expect(html.match(/机器试判历史按需生成/g)).toHaveLength(1);
 		const { decodeAuditSidecar } = await import(
 			"../epic-page/audit-sidecar.js"
 		);

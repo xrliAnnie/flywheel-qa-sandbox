@@ -1,4 +1,3 @@
-import { Window } from "happy-dom";
 import { expect, it } from "vitest";
 import { decodeAuditSidecar } from "../audit-sidecar.js";
 import { generateEpicPage } from "../generate.js";
@@ -79,11 +78,11 @@ it("renders bounded judgment links with lossless sidecar and standalone audit ev
 	expect(markdown).toContain("missing_qa");
 });
 
-it("keeps only one history footer link in HTML and preserves Markdown and audit history", () => {
+it("shows history as on-demand only without exposing stale hosted publication state", () => {
 	const snapshot = epicShapeSnapshot();
 	const rows = Array.from({ length: 20 }, (_, i) => ({
 		questionId: `q${i}`,
-		issue: `FLY-${i} ` + "<&😀".repeat(300),
+		issue: `FLY-${i} ${"<&😀".repeat(300)}`,
 		auditId: `audit-${i}`,
 		source: "legacy_retro" as const,
 		overall: "recommend_reject" as const,
@@ -123,45 +122,33 @@ it("keeps only one history footer link in HTML and preserves Markdown and audit 
 		expect(html).not.toContain("data-judgment-history");
 		expect(html).not.toContain("机器意见历史");
 		expect(html).not.toContain("data-history-row");
-		expect(html.match(/查看近 30 天历史/g)).toHaveLength(1);
-		const window = new Window({
-			settings: { disableJavaScriptEvaluation: true },
-		});
-		window.document.write(html);
-		const link = window.document.querySelector("footer[data-history-link] a");
-		expect(link?.getAttribute("href")).toBe(history.url);
-		expect(link?.closest("details")).toBeNull();
-		expect(link?.parentElement?.textContent).toBe("查看近 30 天历史");
-		window.close();
+		expect(html.match(/机器试判历史按需生成/g)).toHaveLength(1);
+		expect(html).toContain("ship-judgment-history render");
+		expect(html).not.toContain(history.url);
+		expect(html).not.toContain("data-history-link");
 	}
 	expect(decodeAuditSidecar(bundle.audit.json)).toContainEqual(
 		page.ship_judgment_history,
 	);
-	expect(renderEpicPageMarkdown(page, EPIC_SHAPE_NOW)).toContain(
-		"最近 20 / 150 条",
-	);
+	const markdown = renderEpicPageMarkdown(page, EPIC_SHAPE_NOW);
+	expect(markdown).toContain("最近 20 / 150 条");
+	expect(markdown).toContain("机器试判历史按需生成");
+	expect(markdown).not.toContain(history.url);
+	expect(markdown).not.toContain("等待更新");
+	expect(markdown).not.toContain("历史发布快照");
+	expect(markdown).not.toContain("更新失败");
 	page.ship_judgment_history!.value!.readError = true;
 	const failed = renderEpicPageBundle(page, EPIC_SHAPE_NOW).html;
 	expect(failed).not.toContain("预览读取失败");
-	expect(failed).toContain('href="https://reports.example/r/old"');
-	page.ship_judgment_history!.value!.url =
-		'https://reports.example/r/old?x=1&y="quoted"';
-	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).toContain(
-		'href="https://reports.example/r/old?x=1&amp;y=&quot;quoted&quot;"',
-	);
-	for (const url of [null, "", "https://reports.example/" + "&".repeat(400)]) {
-		page.ship_judgment_history!.value!.url = url;
-		expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).not.toContain(
-			"data-history-link",
-		);
-	}
+	expect(failed).not.toContain(history.url);
+	expect(failed).toContain("机器试判历史按需生成");
 	page.ship_judgment_history!.value = null;
-	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).not.toContain(
-		"机器意见历史",
+	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).toContain(
+		"机器试判历史按需生成",
 	);
 	delete page.ship_judgment_history;
 	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).not.toContain(
-		"data-history-link",
+		"机器试判历史按需生成",
 	);
 });
 
@@ -186,9 +173,8 @@ it("bounds zero-row fallback and does not claim an unavailable prior publication
 	const fallback = renderHistoryPreview(cell, 0);
 	expect(Buffer.byteLength(fallback)).toBeLessThanOrEqual(1024);
 	expect(fallback).toContain("最近 0 / 200 条");
-	cell.value.url = "https://reports.example/r/" + "&".repeat(400);
-	const unavailable = renderHistoryPreview(cell, 0);
-	expect(Buffer.byteLength(unavailable)).toBeLessThanOrEqual(1024);
-	expect(unavailable).toContain("历史入口尚不可用");
-	expect(unavailable).not.toContain("保留上次发布");
+	expect(fallback).toContain("机器试判历史按需生成");
+	expect(fallback).not.toContain(cell.value.url);
+	expect(fallback).not.toContain("等待更新");
+	expect(fallback).not.toContain("更新失败");
 });

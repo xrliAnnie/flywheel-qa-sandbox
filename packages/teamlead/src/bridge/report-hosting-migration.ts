@@ -4,6 +4,7 @@ import {
 	type GatewayRequest,
 	probeGatewayFormats,
 } from "./report-gateway-probe.js";
+import { isUntitledLegacyAutomaticHistory } from "./report-migration-filter.js";
 import type { ReportRegistry } from "./report-registry.js";
 import { isReportExpired } from "./report-retention.js";
 import { deployFilesToVercel, type VercelDeployFile } from "./vercel-deploy.js";
@@ -185,7 +186,13 @@ async function migrateReportHostingLocked(
 				`report hosting migration found invalid createdAt for token=${entry.token}`,
 			);
 		}
-		return !isReportExpired(now, createdAt);
+		return (
+			!isReportExpired(now, createdAt) &&
+			!isUntitledLegacyAutomaticHistory(
+				entry,
+				options.registry.readReportHtml(entry.token),
+			)
+		);
 	});
 	const migratedCreatedAt = Object.fromEntries(
 		retained
@@ -259,7 +266,15 @@ export async function deployReportGatewayOnly(
 		const snapshot = await options.registry.withLock(async () => ({
 			binding: options.registry.hostingBinding(),
 			hosting: options.registry.hosting(),
-			reports: options.registry.list(),
+			reports: options.registry
+				.list()
+				.filter(
+					(entry) =>
+						!isUntitledLegacyAutomaticHistory(
+							entry,
+							options.registry.readReportHtml(entry.token),
+						),
+				),
 		}));
 		const { binding, hosting } = snapshot;
 		if (binding.storeId && options.bound.storeId !== binding.storeId)

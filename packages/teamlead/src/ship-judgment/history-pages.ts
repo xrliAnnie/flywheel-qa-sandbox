@@ -2,7 +2,6 @@ import { z } from "zod";
 import { injectHeadMeta } from "../bridge/report-registry.js";
 import { canonicalDigest, OVERALL_LABELS, overallSchema } from "./contract.js";
 export const HISTORY_TEMPLATE_VERSION = "ship-judgment-history-v1";
-export const HISTORY_PAGE_ROWS = 20;
 const utc = z
 	.string()
 	.datetime()
@@ -44,13 +43,9 @@ export const historyRowSchema = z
 	})
 	.strict();
 export type HistoryRow = z.infer<typeof historyRowSchema>;
-interface PageOptions {
+interface DocumentOptions {
 	asOf: string;
-	page: number;
-	pageCount: number;
 	total: number;
-	reportOrigin: string;
-	nextUrl?: string;
 }
 const escapeHistoryHtml = (value: string) =>
 	value.replace(
@@ -67,7 +62,7 @@ function bounded(value: string, maxBytes: number) {
 	for (const point of value) {
 		const escaped = escapeHistoryHtml(point.codePointAt(0)! < 32 ? " " : point);
 		const size = Buffer.byteLength(escaped);
-		if (bytes + size > maxBytes - 3) return result + "…";
+		if (bytes + size > maxBytes - 3) return `${result}…`;
 		result += escaped;
 		bytes += size;
 	}
@@ -101,7 +96,7 @@ function renderRow(row: HistoryRow) {
 	const decision = row.decision
 		? (row.decisionSource === "machine"
 				? ""
-				: sources[row.decisionSource] + "：") + decisions[row.decision]
+				: `${sources[row.decisionSource]}：`) + decisions[row.decision]
 		: "待决定";
 	const attribution =
 		row.decision &&
@@ -114,55 +109,20 @@ function renderRow(row: HistoryRow) {
 		throw new Error("history_row_budget_exceeded");
 	return html;
 }
-/** Fully static output. Callers may supply only a next page already verified as published. */
-export function renderHistoryPage(
+/** Fully static, local-only output containing the complete bounded history snapshot. */
+export function renderHistoryDocument(
 	input: HistoryRow[],
-	options: PageOptions,
+	options: DocumentOptions,
 ): string {
 	const rows = input.map((row) => historyRowSchema.parse(row));
 	utc.parse(options.asOf);
-	const { page, pageCount, total } = options;
-	if (
-		!Number.isSafeInteger(total) ||
-		total < 0 ||
-		!Number.isSafeInteger(page) ||
-		page < 1 ||
-		!Number.isSafeInteger(pageCount) ||
-		pageCount !== Math.max(1, Math.ceil(total / HISTORY_PAGE_ROWS)) ||
-		page > pageCount ||
-		rows.length !==
-			Math.min(
-				HISTORY_PAGE_ROWS,
-				Math.max(0, total - (page - 1) * HISTORY_PAGE_ROWS),
-			)
-	)
-		throw new Error("invalid_history_pagination");
-	const origin = new URL(options.reportOrigin);
-	if (
-		origin.protocol !== "https:" ||
-		origin.username ||
-		origin.password ||
-		origin.origin !== options.reportOrigin
-	)
-		throw new Error("invalid_history_origin");
-	let next = "";
-	if (page < pageCount) {
-		if (!options.nextUrl) throw new Error("history_next_page_required");
-		const url = new URL(options.nextUrl);
-		if (
-			url.protocol !== "https:" ||
-			url.origin !== origin.origin ||
-			url.username ||
-			url.password ||
-			url.hash
-		)
-			throw new Error("invalid_history_next_url");
-		next = `<a rel="next" href="${escapeHistoryHtml(url.href)}">下一页</a>`;
-	} else if (options.nextUrl) throw new Error("unexpected_history_next_page");
+	const { total } = options;
+	if (!Number.isSafeInteger(total) || total < 0 || rows.length !== total)
+		throw new Error("invalid_history_total");
 	const html = injectHeadMeta(
-		`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>机器试判历史</title><style>body{font:16px system-ui,sans-serif;margin:24px;color:#222;line-height:1.6}main{max-width:1100px;margin:auto}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd;overflow-wrap:anywhere}small,footer{color:#555}a{color:#174da0}</style></head><body><main><h1>机器试判历史</h1><p>截至 ${escapeHistoryHtml(options.asOf)} 的近 30 天记录 · 共 ${total} 张卡 · 第 ${page} / ${pageCount} 页</p><p>机器意见不改变批准。可见不代表已读，判断一致不代表质量准确。</p>${rows.length ? `<table><thead><tr><th>事项</th><th>来源与意见</th><th>决定与解释</th><th>依据摘要</th></tr></thead><tbody>${rows.map(renderRow).join("")}</tbody></table>` : "<p>暂无历史记录</p>"}<footer><p>${page > 1 ? "上一页请使用浏览器返回。 " : ""}${next}</p><p>完整记录可按审计 ID 查询；历史补录与人工记录不计入前瞻比较。</p></footer></main></body></html>`,
+		`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>机器试判历史（按需生成）</title><style>body{font:16px system-ui,sans-serif;margin:24px;color:#222;line-height:1.6}main{max-width:1100px;margin:auto}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd;overflow-wrap:anywhere}small,footer{color:#555}a{color:#174da0}</style></head><body><main><h1>机器试判历史（按需生成）</h1><p>截至 ${escapeHistoryHtml(options.asOf)} 的近 30 天记录 · 共 ${total} 张卡</p><p>本文件仅在 Lead 明确请求时生成，不会自动上传。机器意见不改变批准；可见不代表已读，判断一致不代表质量准确。</p>${rows.length ? `<table><thead><tr><th>事项</th><th>来源与意见</th><th>决定与解释</th><th>依据摘要</th></tr></thead><tbody>${rows.map(renderRow).join("")}</tbody></table>` : "<p>暂无历史记录</p>"}<footer><p>完整记录可按审计 ID 查询；历史补录与人工记录不计入前瞻比较。</p></footer></main></body></html>`,
 	);
-	if (Buffer.byteLength(html) > 65536)
-		throw new Error("history_page_budget_exceeded");
+	if (Buffer.byteLength(html) > 32 * 1024 * 1024)
+		throw new Error("history_document_budget_exceeded");
 	return html;
 }

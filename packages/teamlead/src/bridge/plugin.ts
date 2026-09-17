@@ -791,7 +791,6 @@ import {
 } from "./session-capture.js";
 import { reconcileSessionlessWorkflowGates } from "./sessionless-founder-gate-reconciler.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
-import { createShipJudgmentHistoryRuntime } from "./ship-judgment-history-runtime.js";
 import { createShipJudgmentReadRouter } from "./ship-judgment-read-routes.js";
 import { handleShipJudgmentReference } from "./ship-judgment-reference-route.js";
 import {
@@ -7076,17 +7075,6 @@ export async function startBridge(
 		linearApiKey: config.linearApiKey,
 		runAttempt: runEpicPageRefreshAttempt,
 	});
-	const shipJudgmentHistoryRuntime = createShipJudgmentHistoryRuntime({
-		credentials: reportHostingCredentials,
-		store,
-		projects,
-		registry: hostedReportRegistry,
-		blob: reportBlobStore,
-		critical: reportCriticalSection,
-		hostOverride: Boolean(reportHostOverride),
-		onChanged: () =>
-			epicPageRefresher.requestRefresh("flywheel", "ship_judgment_history"),
-	});
 	const reportBlobSweepTimer = installReportBlobSweep({
 		credentials: reportHostingCredentials,
 		blobStore: reportBlobStore,
@@ -13077,11 +13065,6 @@ export async function startBridge(
 		} catch {
 			console.error("[ship-judgment] mode_read_failed");
 		}
-		try {
-			shipJudgmentHistoryRuntime?.start();
-		} catch {
-			console.error("[ship-judgment] history_state_unavailable");
-		}
 	}
 
 	try {
@@ -14757,7 +14740,6 @@ export async function startBridge(
 		await residentReceiverSupervisor.stop();
 		gatePoller.stop();
 		await shipJudgmentRuntime?.stop();
-		await shipJudgmentHistoryRuntime?.stop();
 		await codexQuotaRuntime?.stop();
 		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap

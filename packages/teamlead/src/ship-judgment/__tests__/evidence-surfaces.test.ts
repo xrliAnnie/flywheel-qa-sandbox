@@ -6,7 +6,7 @@ import {
 	buildEvidenceLedger,
 	EVIDENCE_POLICY_VERSION,
 } from "../evidence-ledger.js";
-import { renderHistoryPage } from "../history-pages.js";
+import { renderHistoryDocument } from "../history-pages.js";
 import { ShipJudgmentHistory } from "../history-query.js";
 import { bindingFixture, CHANNEL, NOW } from "./binding-fixture.js";
 import { evidenceMaterials } from "./evidence-fixture.js";
@@ -51,12 +51,9 @@ it("carries three labels and precise missing evidence into Epic and history, wit
 		expect(summary).toContain("③ 缺 QA 判决");
 		const history = new ShipJudgmentHistory(db).read(NOW);
 		expect(history.rows[0]!.summary).toContain("① 通过；② 通过；③ 缺 QA 判决");
-		const html = renderHistoryPage(history.rows, {
+		const html = renderHistoryDocument(history.rows, {
 			asOf: NOW,
-			page: 1,
-			pageCount: 1,
 			total: 1,
-			reportOrigin: "https://reports.vercel.app",
 		});
 		expect(html).toContain("③ 缺 QA 判决");
 		for (const reference of ["design-r1", "code-r5", "1148"]) {

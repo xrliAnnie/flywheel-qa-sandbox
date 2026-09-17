@@ -15,7 +15,6 @@ import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
 import { readEpicHistory } from "./ship-judgment/epic-history.js";
 import { readEpicJudgment, type EpicJudgment } from "./ship-judgment/epic-facts.js";
-import { ShipJudgmentHistoryState } from "./ship-judgment/history-state.js";
 import { ShipJudgmentHistory } from "./ship-judgment/history-query.js";
 import { ShipJudgmentReader } from "./ship-judgment/show.js";
 import { ShipJudgmentDelivery } from "./ship-judgment/delivery.js";
@@ -5448,10 +5447,6 @@ export class StateStore {
 
 	getEpicPageShipJudgmentFact(projectName:string,issueKeys:string[]) {
 		return readEpicJudgment(this.db.raw,projectName,issueKeys);
-	}
-
-	getShipJudgmentHistoryState(): ShipJudgmentHistoryState {
-		return new ShipJudgmentHistoryState(this.db.raw);
 	}
 
 	getShipJudgmentHistory(): ShipJudgmentHistory {

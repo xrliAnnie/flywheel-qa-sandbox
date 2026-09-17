@@ -46,6 +46,7 @@ import {
 	scanHtmlTags,
 } from "flywheel-comm/report-html";
 import { type MkdirLockOpts, withMkdirLock } from "flywheel-config";
+import { isUntitledLegacyAutomaticHistory } from "./report-migration-filter.js";
 import { isReportExpired, REPORT_RETENTION_MS } from "./report-retention.js";
 
 /** Founder requirement (FLY-2283, 2026-09-02): retain report links for 14 days. */
@@ -490,20 +491,22 @@ export class ReportRegistry {
 				return Number.isFinite(created) && !isReportExpired(now, created);
 			})
 			.sort((a, b) => a.token.localeCompare(b.token));
-		const contents = reports.map((entry) => {
-			if (!REPORT_TOKEN_RE.test(entry.token))
-				throw new Error("[report-registry] invalid report token");
-			const html = readFileSync(
-				join(this.filesDir, `${entry.token}.html`),
-				"utf8",
-			);
-			return {
-				...entry,
-				html,
-				bytes: Buffer.byteLength(html),
-				sha256: createHash("sha256").update(html).digest("hex"),
-			};
-		});
+		const contents = reports
+			.map((entry) => {
+				if (!REPORT_TOKEN_RE.test(entry.token))
+					throw new Error("[report-registry] invalid report token");
+				const html = readFileSync(
+					join(this.filesDir, `${entry.token}.html`),
+					"utf8",
+				);
+				return {
+					...entry,
+					html,
+					bytes: Buffer.byteLength(html),
+					sha256: createHash("sha256").update(html).digest("hex"),
+				};
+			})
+			.filter((entry) => !isUntitledLegacyAutomaticHistory(entry, entry.html));
 		const digest = (rows: unknown[]) =>
 			createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 		return {

@@ -157,6 +157,34 @@ it("retargets the retained set, commits provenance and replays without upload/de
 	expect(JSON.stringify(result)).not.toContain("vercel_blob_rw_abc_secret");
 });
 
+it("does not retarget untitled legacy automatic history but keeps untitled on-demand history", async () => {
+	const { options, registry, put } = await fixture();
+	const legacyAuto = registry.stagePublish(
+		"p",
+		"<!doctype html><html><head><title>机器试判历史</title></head><body><p>automatic</p></body></html>",
+		undefined,
+		registry.hostingBinding(),
+	);
+	await legacyAuto.commit();
+	const manualOnDemand = registry.stagePublish(
+		"p",
+		"<!doctype html><html><head><title>机器试判历史（按需生成）</title></head><body><p>manual</p></body></html>",
+		undefined,
+		registry.hostingBinding(),
+	);
+	await manualOnDemand.commit();
+
+	const result = await retargetReportHosting(options);
+	const uploadedPaths = put.mock.calls.map(([path]) => path);
+	expect(result.uploaded).toBe(4);
+	expect(
+		uploadedPaths.some((path) => path.includes(legacyAuto.entry.token)),
+	).toBe(false);
+	expect(
+		uploadedPaths.some((path) => path.includes(manualOnDemand.entry.token)),
+	).toBe(true);
+});
+
 it("converges after a concurrent publish changes the retained manifest", async () => {
 	const { options, registry, put } = await fixture();
 	const commit = registry.commitRetarget.bind(registry);

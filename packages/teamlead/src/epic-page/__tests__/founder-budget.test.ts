@@ -39,7 +39,7 @@ it("fits the unchanged eight-root sixty-child scale with notes, judgments and a 
 		),
 	).toBe(true);
 	expect(bundle.html).not.toContain("data-history-row");
-	expect(bundle.html.match(/查看近 30 天历史/g)).toHaveLength(1);
+	expect(bundle.html.match(/机器试判历史按需生成/g)).toHaveLength(1);
 	expect(bundle.html.match(/<div data-judgment>/g)).toHaveLength(60);
 	expect(Buffer.byteLength(bundle.html)).toBeLessThanOrEqual(491520);
 	expect(hostedBundleBytes(bundle)).toBeLessThanOrEqual(524288);

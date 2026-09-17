@@ -69,6 +69,7 @@ import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { runShadowDeclareCommand } from "./commands/shadow-declare.js";
 import { runShipJudgment } from "./commands/ship-judgment.js";
+import { runShipJudgmentHistory } from "./commands/ship-judgment-history.js";
 import { runShipJudgmentRef } from "./commands/ship-judgment-ref.js";
 import { runSnapshotCommand } from "./commands/snapshot.js";
 import { stage } from "./commands/stage.js";
@@ -202,6 +203,9 @@ Commands:
             [--chrome-bin <absolute executable>]. Always prints a one-line JSON
             envelope to stdout.
 	  ship-judgment      Read judgment audits (show) or statistics (report --project --from --to).
+	  ship-judgment-history  Generate history on demand without uploading:
+	            render --project flywheel --out <file.html>. Local output may be
+	            up to 32MiB; publish-report rejects HTML over 512KiB.
 	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
 	  lead-config    Set Lead model/effort for subsequent turns without restart:
 	            set --project P --lead ID [--model ID] [--effort VALUE] --reason TEXT
@@ -451,6 +455,9 @@ async function main(): Promise<void> {
 			break;
 		case "ship-judgment":
 			process.exitCode = await runShipJudgment(commandArgs);
+			break;
+		case "ship-judgment-history":
+			process.exitCode = await runShipJudgmentHistory(commandArgs);
 			break;
 		case "ship-judgment-ref":
 			process.exitCode = await runShipJudgmentRef(commandArgs);
