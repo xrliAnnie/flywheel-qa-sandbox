@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CI 跑在哪儿 — 六个方案对比</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759;
+    --purple:#af52de; --navy:#1a365d;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:28px 16px 80px; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:30px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 24px}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+
+  .card{background:var(--card);border-radius:12px;padding:20px 22px;margin-bottom:16px;
+        box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+  .card.green{border-left-color:var(--green)}
+  .card.blue{border-left-color:var(--blue)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.red{border-left-color:var(--red)}
+  .card.purple{border-left-color:var(--purple)}
+  .card.gray{border-left-color:#c7c7cc}
+
+  .verdict{background:linear-gradient(180deg,#fff,#fbfbfd);border-left-color:var(--green)}
+  .verdict h2{font-size:21px;margin:0 0 10px;letter-spacing:-.01em}
+  .verdict .big{font-size:17px;font-weight:600;line-height:1.55}
+  .verdict .why{margin-top:12px;color:#3a3a3c;font-size:15px}
+
+  .section-title{font-size:19px;font-weight:700;margin:34px 0 12px;display:flex;align-items:center;gap:8px}
+  .section-title .count{font-size:13px;color:var(--dim);font-weight:500}
+
+  .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;
+         letter-spacing:.02em;vertical-align:middle}
+  .b-rec{background:#e8f8ed;color:#1e8e3e}
+  .b-next{background:#e8f1ff;color:#0a58ca}
+  .b-no{background:#ffecea;color:#c62f26}
+  .b-maybe{background:#fff4e5;color:#b25f00}
+  .b-now{background:#f3e8fd;color:#7d34b5}
+  .b-unv{background:#f0f0f2;color:#6e6e73}
+
+  .tablewrap{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+             overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;width:100%;min-width:760px;font-size:13.5px}
+  th,td{padding:11px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafc;color:var(--navy);font-weight:700;font-size:12.5px;white-space:nowrap;
+     position:sticky;top:0}
+  td:first-child,th:first-child{position:sticky;left:0;background:var(--card);z-index:1;
+     box-shadow:1px 0 0 var(--line);min-width:168px}
+  th:first-child{background:#fafafc;z-index:2}
+  tr:last-child td{border-bottom:none}
+  .num{font-family:"SF Mono",ui-monospace,Menlo,monospace;white-space:nowrap}
+  .win{color:#1e8e3e;font-weight:700}
+  .lose{color:#c62f26}
+  .scrollhint{color:var(--dim);font-size:12px;margin:8px 2px 0}
+
+  .kv{margin:14px 0 0}
+  .kv .row{display:flex;gap:12px;padding:7px 0;border-top:1px solid var(--line);font-size:14.5px}
+  .kv .row:first-child{border-top:none}
+  .kv .k{flex:0 0 96px;color:var(--dim);font-size:13px;padding-top:1px}
+  .kv .v{flex:1}
+  @media(max-width:520px){
+    .kv .row{flex-direction:column;gap:2px}
+    .kv .k{flex:none}
+  }
+
+  .pc{display:flex;gap:14px;margin-top:14px;flex-wrap:wrap}
+  .pc>div{flex:1 1 260px;min-width:0}
+  .pc h4{margin:0 0 6px;font-size:13px;letter-spacing:.02em}
+  .pc .good h4{color:#1e8e3e}
+  .pc .bad h4{color:#c62f26}
+  .pc ul{margin:0;padding-left:18px;font-size:14px}
+  .pc li{margin-bottom:5px}
+
+  .cardhead{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:4px}
+  .cardhead h3{margin:0;font-size:17.5px;letter-spacing:-.01em}
+  .price{font-size:15px;font-weight:700;margin:6px 0 2px}
+  .price .after{color:#1e8e3e}
+  .price .sm{font-weight:400;color:var(--dim);font-size:13px}
+
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:8px 0 0}
+  ol.steps li{counter-increment:s;position:relative;padding:12px 0 12px 44px;border-top:1px solid var(--line)}
+  ol.steps li:first-child{border-top:none}
+  ol.steps li::before{content:counter(s);position:absolute;left:0;top:12px;width:28px;height:28px;
+    border-radius:50%;background:var(--green);color:#fff;font-weight:700;font-size:14px;
+    display:flex;align-items:center;justify-content:center}
+  ol.steps .t{font-weight:600}
+  ol.steps .d{color:#3a3a3c;font-size:14px;margin-top:3px}
+  ol.steps .who{font-size:12px;color:var(--dim);margin-top:4px}
+
+  .facts .row{display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:14.5px}
+  .facts .row:first-child{border-top:none}
+  .facts .f{flex:0 0 132px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-weight:700;color:var(--navy)}
+  @media(max-width:520px){.facts .row{flex-direction:column;gap:1px}.facts .f{flex:none}}
+
+  a{color:var(--blue);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .src{font-size:12px;color:var(--dim);margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+  .src a{color:var(--dim);text-decoration:underline}
+  footer{color:var(--dim);font-size:12.5px;margin-top:36px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>CI 该跑在哪儿</h1>
+  <p class="sub">FLY-2682 · 六个方案的 pros / cons / 月成本 / 你要亲手做什么 · 数据实测于 2026-09-17</p>
+
+  <!-- ===== 一句话推荐 ===== -->
+  <div class="card verdict">
+    <h2>👉 我的建议：<span style="color:#1e8e3e">不买机器</span></h2>
+    <p class="big">
+      先把按需矩阵（FLY-2681）做完，同时把 CI 从 GitHub 自家的 runner 搬到
+      <strong>Ubicloud</strong> —— 一家按分钟收费、比 GitHub 便宜约 6 倍的托管 runner。
+      月账单从今天的约 <span class="mono lose">$1,486</span> 降到约
+      <span class="mono win">$104</span>（其中一半是按需矩阵省的，另一半是换供应商省的），
+      你只需要开一个账号、绑一张卡、点一次授权。
+    </p>
+    <p class="why">
+      <strong>为什么不买机器：</strong>省下的那点钱（租一台服务器 $77/月 vs Ubicloud $104/月，差 $27）
+      换来的是我们多花 3–5 个人日去搭隔离环境、以后我们自己扛机器的健康，
+      而如果放你家里，停电断网死机都得<strong>你</strong>去重启。为了每月 $27 不值得。
+    </p>
+    <p class="why">
+      <strong>什么情况下改选别的：</strong>如果 Ubicloud 上线一周后并发跟不上或不稳定 → 换 Blacksmith（贵一些但同样零运维）。
+      如果两家都不行，或者用量再涨 3 倍以上 → 那时才去租一台 OVHcloud 独立服务器（$77/月）。
+      <strong>任何时候要回头，都是改一行 <span class="mono">runs-on:</span> 的事。</strong>
+    </p>
+  </div>
+
+  <!-- ===== 实测事实 ===== -->
+  <div class="section-title">📊 先看事实 <span class="count">全部来自 GitHub API 实测，不是估算</span></div>
+  <div class="card blue facts">
+    <div class="row"><div class="f">186,000 分钟</div><div>我们一个月烧掉的 runner 分钟数（按 9/11–9/17 实测的 43,343 分钟折算成 30 天）</div></div>
+    <div class="row"><div class="f">$1,486 / 月</div><div>按 GitHub 私有仓 Linux $0.008/分钟算。若按官方文档今天写的 $0.006 则是 $1,115。<span class="badge b-unv">账单页未读到</span> —— 我的 token 没有读账单的权限，准数请你在 GitHub Billing → Actions usage 核一眼</div></div>
+    <div class="row"><div class="f">99.2%</div><div>这些钱几乎全烧在 <span class="mono">CI</span> 这一个 workflow 上，其它 workflow 加起来不到 1%</div></div>
+    <div class="row"><div class="f">一次全量 CI</div><div>平均 14 个 job、103 分钟 runner 时间；最重的一次 16 个 job、157 分钟。最长的单个 job 是 <span class="mono">Script Tests 2/5</span>，19 分钟</div></div>
+    <div class="row"><div class="f">7 天 418 次</div><div>7 天里跑了 418 次全量 CI（另有 573 次其它 workflow）。最忙的一天 9/15 烧了 11,751 分钟 ≈ $94</div></div>
+    <div class="row"><div class="f">峰值 54 个</div><div>同一时刻最多有 54 个 job 在跑（中位数 10 个，95% 的时间不超过 33 个）—— 这决定了自建机器要多大</div></div>
+    <div class="row"><div class="f">三次停摆</div><div>两天内三次撞上 Actions 账单上限（9/16 两次、9/17 一次），每次全部 PR 的 CI 一起停，要你手动加预算</div></div>
+  </div>
+
+  <div class="card gray">
+    <strong>一个必须先说清楚的前提：</strong>
+    FLY-2681（按需矩阵）正在做，它会让 CI 只跑跟这次改动有关的那几个 job，而不是每次都跑满 16 个。
+    <strong>所以下面所有方案我都算两笔账</strong>：「今天的用量」和「按需矩阵之后」（按砍掉 55% 估，即每月约 83,600 分钟）。
+    <span class="badge b-unv">55% 是估算</span> —— 实际效果要等 FLY-2681 上线跑一周才知道，真实区间大概在砍掉 50%–65% 之间。
+    <strong>选机器/选服务要按「之后」那一栏来选，不要按今天的全量。</strong>
+  </div>
+
+  <!-- ===== 对比表 ===== -->
+  <div class="section-title">🧮 六个方案一眼对比 <span class="count">手机上左右滑动</span></div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方案</th>
+          <th>今天用量<br>月成本</th>
+          <th>矩阵之后<br>月成本</th>
+          <th>一次性<br>成本</th>
+          <th>你要亲手做什么</th>
+          <th>我们要做<br>多少工程</th>
+          <th>够不够用</th>
+          <th>退路</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="badge b-now">先做</span> <strong>1. 什么都不买</strong><br><span class="sub" style="font-size:12px">只做按需矩阵 + 提预算</span></td>
+          <td class="num lose">$1,486</td>
+          <td class="num">$669</td>
+          <td class="num">$0</td>
+          <td>调一次预算上限，5 分钟</td>
+          <td>0（FLY-2681 本来就在做）</td>
+          <td>够，不排队</td>
+          <td>不需要</td>
+        </tr>
+        <tr>
+          <td><span class="badge b-no">不推荐</span> <strong>2. GitHub 更大 runner</strong></td>
+          <td class="num lose">$1,560+</td>
+          <td class="num lose">$702+</td>
+          <td class="num">$0</td>
+          <td>什么都不用做</td>
+          <td>半天</td>
+          <td>单个 job 更快，但总账更贵</td>
+          <td>改一行</td>
+        </tr>
+        <tr>
+          <td><span class="badge b-maybe">备胎</span> <strong>3. 租独立服务器</strong><br><span class="sub" style="font-size:12px">OVHcloud RISE-S</span></td>
+          <td class="num">$77</td>
+          <td class="num">$77</td>
+          <td class="num">$77 + 3–5 人日</td>
+          <td>开账号、绑卡、可能要验证身份</td>
+          <td>3–5 人日</td>
+          <td>矩阵后够；今天的全量峰值会排队</td>
+          <td>改一行</td>
+        </tr>
+        <tr>
+          <td><span class="badge b-no">不推荐</span> <strong>4. 租云 VM 用完即关</strong><br><span class="sub" style="font-size:12px">Hetzner Cloud</span></td>
+          <td class="num">$61–159</td>
+          <td class="num">$34–61</td>
+          <td class="num">5–8 人日</td>
+          <td>开账号、绑卡、身份验证</td>
+          <td>5–8 人日（要写自动开关机）</td>
+          <td>够，但冷启动要等 1–2 分钟</td>
+          <td>改一行</td>
+        </tr>
+        <tr>
+          <td><span class="badge b-no">最不推荐</span> <strong>5. 买机器放家里</strong></td>
+          <td class="num">$10–20 电费</td>
+          <td class="num">$10–20 电费</td>
+          <td class="num lose">$1,400–2,000<br>+ 4–7 人日</td>
+          <td class="lose">选型、下单、收货、找地方放、接网线、以后你重启</td>
+          <td>4–7 人日</td>
+          <td>够，但停电/断网就全停</td>
+          <td>有，但机器钱不退</td>
+        </tr>
+        <tr>
+          <td><span class="badge b-rec">推荐</span> <strong>6. 第三方托管 runner</strong><br><span class="sub" style="font-size:12px">Ubicloud</span></td>
+          <td class="num win">$232</td>
+          <td class="num win">$104</td>
+          <td class="num">$0 + 半天</td>
+          <td>开账号、绑卡、GitHub 上点一次授权</td>
+          <td>半天（改 runs-on 标签）</td>
+          <td>够，跟 GitHub 同样的弹性</td>
+          <td>改一行</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="scrollhint">月成本按 GitHub $0.008/分钟计。欧元按 2026-09-17 汇率 1 EUR = 1.1481 USD 折算。</p>
+
+  <!-- ===== 每个方案一张卡 ===== -->
+  <div class="section-title">📇 每个方案展开说</div>
+
+  <!-- 1 -->
+  <div class="card green">
+    <div class="cardhead"><h3>1 · 什么都不买</h3><span class="badge b-now">现在就该做</span></div>
+    <div class="price">今天用量 <span class="mono">$1,486/月</span> &nbsp;·&nbsp; 矩阵之后 <span class="mono after">$669/月</span> &nbsp;<span class="sm">一次性 $0</span></div>
+    <p style="margin:10px 0 0">继续用 GitHub 自家的 runner，只做两件事：把按需矩阵（FLY-2681）做完，把 Actions 预算上限调高到不会再撞。</p>
+    <div class="pc">
+      <div class="good"><h4>好处</h4><ul>
+        <li>零风险、零新账号、零新供应商，今天就能生效</li>
+        <li>省下的那一半（$817/月）是纯赚，不管后面选哪家都保留</li>
+        <li>CI 停摆这个最疼的问题当天就解决</li>
+      </ul></div>
+      <div class="bad"><h4>代价</h4><ul>
+        <li>就算砍一半，每月还是 $669 —— 比第三方托管贵 6 倍</li>
+        <li>用量再涨（多几个 Runner 并行开发）账单就跟着涨</li>
+      </ul></div>
+    </div>
+    <div class="kv">
+      <div class="row"><div class="k">你要做</div><div class="v">GitHub → Settings → Billing → Spending limit，把 Actions 的上限调到 <strong>$400/月</strong>（或干脆不限）。一次，5 分钟。</div></div>
+      <div class="row"><div class="k">够不够用</div><div class="v">够。这是今天的状态，实测峰值 54 个 job 同时跑也没排队。</div></div>
+      <div class="row"><div class="k">安全</div><div class="v">无新增风险。</div></div>
+      <div class="row"><div class="k">退路</div><div class="v">不需要退路，这就是现状。</div></div>
+    </div>
+  </div>
+
+  <!-- 2 -->
+  <div class="card gray">
+    <div class="cardhead"><h3>2 · 换 GitHub 自家更大的 runner / 预付</h3><span class="badge b-no">省不了钱</span></div>
+    <div class="price">今天用量 <span class="mono">$1,560/月起</span> &nbsp;·&nbsp; 矩阵之后 <span class="mono">$702/月起</span></div>
+    <p style="margin:10px 0 0">
+      GitHub 的大号 runner：4 核 $0.012/分钟、8 核 $0.022、16 核 $0.042 —— 分别是 2 核价格（$0.006–0.008）的 2 倍、3.7 倍、7 倍。
+      问题是<strong>我们最重的 job 是 shell 测试，它们是一条一条串着跑的，多给核心不会快一倍</strong>。
+      给 4 核只能快大约 30%，账反而更贵。
+    </p>
+    <p style="margin:10px 0 0"><strong>关于「预付折扣」：GitHub 的 Actions 价目表里没有任何按量或预付的折扣档</strong>。
+      唯一的「预付」就是把 spending limit 调高，单价一分不变。（只有 Enterprise 合同能另谈，我们不在那个盘子里。）</p>
+    <div class="pc">
+      <div class="good"><h4>好处</h4><ul>
+        <li>唯一真实收益：最长那个 19 分钟的 job 大概能缩到 12–13 分钟，等 CI 的体感变好</li>
+        <li>改一行就能试，不用开任何账号</li>
+      </ul></div>
+      <div class="bad"><h4>代价</h4><ul>
+        <li>总账更贵，跟「省钱」这个目标反着走</li>
+        <li>大号 runner 不吃计划里赠送的免费分钟，一分钟都要付</li>
+      </ul></div>
+    </div>
+    <div class="kv"><div class="row"><div class="k">你要做</div><div class="v">什么都不用做。</div></div>
+      <div class="row"><div class="k">结论</div><div class="v">可以作为「哪天等 CI 等到烦」的单独小改动，但不是成本方案。</div></div></div>
+  </div>
+
+  <!-- 3 -->
+  <div class="card amber">
+    <div class="cardhead"><h3>3 · 租一台独立服务器</h3><span class="badge b-maybe">备胎，暂不做</span></div>
+    <div class="price">
+      <span class="mono">$77/月</span>（OVHcloud RISE-S） &nbsp;<span class="sm">一次性 $77 开通费 + 3–5 个人日工程</span>
+    </div>
+    <p style="margin:10px 0 0">价格不随用量变 —— 跑多跑少都是这个数。我比了两家：</p>
+    <div class="kv">
+      <div class="row"><div class="k">OVHcloud<br>RISE-S</div><div class="v"><strong>$77/月 + $77 开通费</strong>。AMD Ryzen 7 9700X（8 核 16 线程）、64 GB DDR5 ECC、2×512 GB NVMe。美国公司、美元结算、机房在美国 —— 对你最省事。</div></div>
+      <div class="row"><div class="k">Hetzner<br>AX42-1</div><div class="v">€97.30/月（≈ <strong>$112</strong>）+ €49 开通费。8 核 16 线程、64 GB DDR5 ECC。注意：Hetzner <strong>2026-06-15 刚大幅涨过价</strong>，以前的「欧洲最便宜」已经不成立了。</div></div>
+      <div class="row"><div class="k">Hetzner<br>竞拍区</div><div class="v">€108/月（≈ $124），Ryzen 7 7700 / 64 GB / 2×1 TB NVMe，<strong>开通费 €0</strong>。但竞拍区是捡剩的，型号和价格每天变，不适合长期依赖。</div></div>
+    </div>
+    <p style="margin:12px 0 0"><strong>一台 8 核 16 线程够不够？</strong>
+      我按实测算过：今天的全量需要每月 6,192 个 vCPU-小时，一台 8 核 16 线程的机器满打满算能提供 11,680 —— 用到 <strong>53%</strong>，
+      平时够，但峰值 54 个 job 同时来的时候会排队。矩阵之后只需要 2,786，利用率降到 <strong>24%</strong>，就很宽裕了。
+      <strong>所以这个方案必须等 FLY-2681 上线之后再评估，现在上会被峰值噎住。</strong></p>
+    <div class="pc">
+      <div class="good"><h4>好处</h4><ul>
+        <li>成本封顶。用量翻倍账单也不变，这是它唯一真正的优势</li>
+        <li>硬件比 GitHub 的共享 2 核快得多，CI 整体会明显变快</li>
+        <li>机器在数据中心，坏了对方换硬件，不用你管物理</li>
+      </ul></div>
+      <div class="bad"><h4>代价</h4><ul>
+        <li>我们要花 3–5 个人日搭：一次性 runner + 每个 job 一个用完就扔的容器 + 监控 + 一键切回的开关</li>
+        <li>PR 里的代码会跑在我们自己的机器上 —— 必须做隔离，不然任何人提个 PR 就能在我们机器上执行代码</li>
+        <li>机器的健康从此是我们的事：磁盘满了、系统要更新、卡死了要重启（是我们 ssh 上去，不是你）</li>
+        <li>省下的钱不多：比 Ubicloud 只便宜 $27/月</li>
+      </ul></div>
+    </div>
+    <div class="kv">
+      <div class="row"><div class="k">你要做</div><div class="v">去 OVHcloud 开账号、绑卡、下单（可能要做一次身份验证）。大约 20 分钟。之后的一切都是我们的事，<strong>不会有人来找你重启机器</strong>。</div></div>
+      <div class="row"><div class="k">安全</div><div class="v">这是自托管最大的一条：PR 代码跑在我们自己的机器上。做法是每个 job 开一个一次性容器、跑完即毁、机器上不放任何 secret、出站网络限白名单。这也是那 3–5 个人日的主要去处。</div></div>
+      <div class="row"><div class="k">退路</div><div class="v">workflow 里把 <span class="mono">runs-on</span> 写成变量，一行切回 <span class="mono">ubuntu-latest</span>，几秒生效。</div></div>
+    </div>
+  </div>
+
+  <!-- 4 -->
+  <div class="card gray">
+    <div class="cardhead"><h3>4 · 租云 VM，用完即关</h3><span class="badge b-no">不划算</span></div>
+    <div class="price">今天用量 <span class="mono">$61–159/月</span> &nbsp;·&nbsp; 矩阵之后 <span class="mono">$34–61/月</span> &nbsp;<span class="sm">一次性 5–8 个人日</span></div>
+    <p style="margin:10px 0 0">
+      Hetzner Cloud 按小时计费：CCX33（16 个独占 vCPU / 64 GB）€0.2219/小时 —— 只在需要时开 8 小时/天就是 €53/月（≈$61）；
+      CX53（16 个共享 vCPU / 32 GB）干脆包月 €29.49（≈$34）封顶。数字很漂亮。
+    </p>
+    <p style="margin:10px 0 0">
+      <strong>但「用完即关」这四个字要我们写一套自动伸缩</strong>：监听 GitHub 的 job 事件 → 开机 → 注册 runner → 跑完 → 关机，
+      还要处理开机失败、僵尸机器、并发打架。5–8 个人日，换来比方案 3 每月再省 $20–40。
+      <strong>拿工程时间换这点钱，不值。</strong>（同样提醒：Hetzner Cloud 在 2026-06-15 涨价很凶，CCX 系列涨了 120%–170%。）
+    </p>
+    <div class="kv">
+      <div class="row"><div class="k">你要做</div><div class="v">开 Hetzner Cloud 账号、绑卡、过身份验证（Hetzner 对新账号有人工验证流程，可能要一两天）。</div></div>
+      <div class="row"><div class="k">够不够用</div><div class="v">够，但每次冷启动要等 1–2 分钟，PR 的第一个反馈会变慢。</div></div>
+    </div>
+  </div>
+
+  <!-- 5 -->
+  <div class="card red">
+    <div class="cardhead"><h3>5 · 买一台机器放家里 / 办公室</h3><span class="badge b-no">最不推荐</span></div>
+    <div class="price">
+      一次性 <span class="mono lose">$1,400–2,000</span> <span class="badge b-unv">价格未验证</span> &nbsp;·&nbsp; 之后每月 <span class="mono">$10–20</span> 电费 &nbsp;<span class="sm">+ 4–7 个人日工程</span>
+    </div>
+    <p style="margin:10px 0 0">
+      <strong>价格标「未验证」是因为：</strong>今天（2026-09-17）Apple 的商店页面价格是脚本渲染的，我读不到；
+      而且新的 M6 Mac mini <strong>9 月 22 日才开始预订</strong>。上面的区间是量级估算，不是查到的官方价。
+    </p>
+    <p style="margin:10px 0 0">
+      <strong>更关键的是这里有个技术错配：</strong>我们的 CI 全部跑在 Linux 容器里。
+      Mac mini 是 macOS，要跑 Linux 容器得再套一层虚拟机，慢且多一层会坏的东西。
+      真要买，该买的是一台 Linux 小主机，不是 Mac mini。
+    </p>
+    <div class="pc">
+      <div class="good"><h4>好处</h4><ul>
+        <li>付一次钱，之后每月只有电费，两年摊下来单看钱是最便宜的</li>
+        <li>机器是自己的，想怎么用怎么用</li>
+      </ul></div>
+      <div class="bad"><h4>代价（这栏才是重点）</h4><ul>
+        <li><strong>你会变成这台机器的运维。</strong>停电、断网、路由器重启、机器死机 —— 都得有人走过去按一下，而那个人只可能是你</li>
+        <li>家里网络一断，所有 PR 的 CI 一起停 —— 跟现在撞账单上限一样疼，但这次没有「加预算」这个快速解法</li>
+        <li>它会发热、会响、会占地方，要一直开着</li>
+        <li>硬件坏了没有远程换件的人，返修期间 CI 全停</li>
+        <li>钱花出去就收不回来了，选错了只能吃下</li>
+      </ul></div>
+    </div>
+    <div class="kv">
+      <div class="row"><div class="k">你要做</div><div class="v">选型、下单、收货、找地方摆、接网线和电源、以后长期负责它还活着。<strong>这正是你说不想要的那种事。</strong></div></div>
+      <div class="row"><div class="k">结论</div><div class="v">除非你本来就想在家放一台可以干别的活的机器，否则这一档我建议直接划掉。</div></div>
+    </div>
+  </div>
+
+  <!-- 6 -->
+  <div class="card green">
+    <div class="cardhead"><h3>6 · 第三方托管的 Actions runner</h3><span class="badge b-rec">推荐</span></div>
+    <div class="price">
+      <span class="mono">Ubicloud $232/月</span> → 矩阵之后 <span class="mono after">$104/月</span> &nbsp;<span class="sm">一次性 $0 + 半个人日</span>
+    </div>
+    <p style="margin:10px 0 0">
+      跟 GitHub 一模一样的用法 —— 他们提供机器、我们按分钟付钱、机器每跑完一个 job 就销毁。
+      区别只有单价。我们这边要改的就是 workflow 里那一行 <span class="mono">runs-on: ubuntu-latest</span> → <span class="mono">runs-on: ubicloud-standard-2</span>。
+    </p>
+    <div class="kv">
+      <div class="row"><div class="k">Ubicloud</div><div class="v"><strong>$0.00125/分钟</strong>（2 vCPU / 8 GB）—— 比 GitHub 便宜 <strong>4.8–6.4 倍</strong>。高配版 $0.002/分钟。按我们的量：今天 $232/月，矩阵之后 <strong>$104/月</strong>。</div></div>
+      <div class="row"><div class="k">Blacksmith</div><div class="v"><strong>$0.004/分钟</strong>（2 vCPU），每月送 3,000 分钟，号称硬件比 GitHub 快 2 倍。按我们的量：今天 $731/月；如果真快 2 倍、分钟数减半，实际约 $366/月。矩阵之后约 $161–322/月。<strong>作为备选</strong>：更贵，但公司更成熟一点。</div></div>
+    </div>
+    <div class="pc">
+      <div class="good"><h4>好处</h4><ul>
+        <li>钱省得最狠：同样的用量下 GitHub $669 → Ubicloud $104，<strong>每月省 $565，一年约 $6,800</strong>（按需矩阵本身再省一半，那部分不管选哪家都有）</li>
+        <li>你只做一次性的三件事（开户、绑卡、授权），之后再也不用管</li>
+        <li>没有任何机器归我们养 —— 不用做隔离、不用监控、不用半夜重启</li>
+        <li>不满意就改回一行，两分钟退回原状，零沉没成本</li>
+      </ul></div>
+      <div class="bad"><h4>代价 / 风险</h4><ul>
+        <li>Ubicloud 是家小公司，出问题的赔付和响应速度不能跟 GitHub 比</li>
+        <li>还是按分钟计费 —— 用量涨账单就涨（但基数低 6 倍，涨得起）</li>
+        <li>代码会经过第三方的机器，多了一个要信任的对象</li>
+        <li><span class="badge b-unv">未验证</span> 官方文档没写清楚：并发上限多少、私有仓是否全支持、VM 是不是每次都销毁。<strong>切之前我会先跟他们确认这三条，确认不了就不切。</strong></li>
+      </ul></div>
+    </div>
+    <div class="kv">
+      <div class="row"><div class="k">你要做</div><div class="v">注册 ubicloud.com、填账单信息、在 GitHub 上授权他们的 App 访问 <span class="mono">xrliAnnie/flywheel</span>。约 15 分钟，一次性。</div></div>
+      <div class="row"><div class="k">安全</div><div class="v">跟今天用 GitHub 托管的模型一样：机器是他们的、一次性的、我们不持有。风险从「我们要自己做隔离」变成「要信任一家供应商」—— 对我们这个规模，后者更划算。</div></div>
+      <div class="row"><div class="k">退路</div><div class="v">改一行 <span class="mono">runs-on</span> 切回 <span class="mono">ubuntu-latest</span>。这是所有方案里退路最干净的一个。</div></div>
+    </div>
+  </div>
+
+  <!-- ===== 三步 ===== -->
+  <div class="section-title">✅ 如果你同意「不买机器 + 用 Ubicloud」，接下来你要做的三步</div>
+  <div class="card green">
+    <ol class="steps">
+      <li>
+        <div class="t">今天，5 分钟：把 Actions 预算上限调高</div>
+        <div class="d">GitHub → Settings → Billing and licensing → Spending limits → Actions，调到 <strong>$400/月</strong>。
+          这是为了在按需矩阵落地前不再出现「全部 PR 的 CI 一起停」。矩阵上线后这个额度会用不完。</div>
+        <div class="who">只有你能做 —— 需要账号的账单权限</div>
+      </li>
+      <li>
+        <div class="t">这周，15 分钟：开一个 Ubicloud 账号</div>
+        <div class="d">去 <a href="https://www.ubicloud.com">ubicloud.com</a> 注册 → 填账单信息（绑卡）→ 在 Dashboard 里点 “GitHub Runners → Connect New Account”，
+          授权给 <span class="mono">xrliAnnie/flywheel</span>。弄完在频道里说一声就行。</div>
+        <div class="who">只有你能做 —— 需要绑卡和 GitHub 的授权权限</div>
+      </li>
+      <li>
+        <div class="t">之后什么都不用做，等我们的回执</div>
+        <div class="d">我们会先跟 Ubicloud 确认并发上限 / 私有仓支持 / VM 是否一次性这三条，然后改 <span class="mono">runs-on</span>、
+          跑一周、把「实际账单省了多少、CI 变快还是变慢」做成一份回执给你。<strong>不行就改回去，一行的事。</strong></div>
+        <div class="who">我们做 —— 不需要你参与</div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- ===== 来源 ===== -->
+  <div class="section-title">🔗 数据来源</div>
+  <div class="card gray">
+    <div class="kv">
+      <div class="row"><div class="k">用量数据</div><div class="v">GitHub REST API 实测：<span class="mono">/repos/xrliAnnie/flywheel/actions/runs</span> + <span class="mono">/jobs</span>，991 次 run / 6,166 个计费 job，区间 2026-09-11 → 2026-09-17。按 GitHub 的计费规则（每个 job 向上取整到分钟）汇总。<br>
+        <span class="badge b-unv">未验证</span> GitHub 账单页面本身读不到 —— 我的 token 缺 <span class="mono">user</span> 权限，也不该由我去要。上面的金额是「实测分钟数 × 官方单价」，准数以你的 Billing 页为准。</div></div>
+      <div class="row"><div class="k">GitHub 价格</div><div class="v"><a href="https://docs.github.com/en/billing/reference/actions-minute-multipliers">docs.github.com — Actions minute multipliers</a>（2026-09-17 查）。Linux 2 核 $0.006、4 核 $0.012、8 核 $0.022、16 核 $0.042 每分钟。
+        FLY-2647 里用的是 $0.008 —— 我表里按 $0.008 算（偏保守），实际可能更低。</div></div>
+      <div class="row"><div class="k">Hetzner</div><div class="v"><a href="https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/">docs.hetzner.com — 2026-06-15 价格调整</a>（2026-09-17 查，不含增值税）；竞拍区实时数据 <span class="mono">hetzner.com/_resources/app/data/app/live_data_sb.json</span>（2026-09-17 抓取，价格每天变）。
+        产品页上的价格是脚本渲染的，抓不到，所以用的是官方价目表页。</div></div>
+      <div class="row"><div class="k">OVHcloud</div><div class="v"><a href="https://eco.ovhcloud.com/en/rise/">eco.ovhcloud.com/en/rise</a>（2026-09-17 查，美元标价）。</div></div>
+      <div class="row"><div class="k">Ubicloud</div><div class="v"><a href="https://www.ubicloud.com/docs/about/pricing">ubicloud.com/docs/about/pricing</a> + <a href="https://www.ubicloud.com/docs/github-actions-integration/quickstart">quickstart</a>（2026-09-17 查）。</div></div>
+      <div class="row"><div class="k">Blacksmith</div><div class="v"><a href="https://www.blacksmith.sh/pricing">blacksmith.sh/pricing</a>（2026-09-17 查）。</div></div>
+      <div class="row"><div class="k">Mac mini</div><div class="v"><span class="badge b-unv">未验证</span> apple.com 商店页面价格读不到（脚本渲染），且 M6 Mac mini 2026-09-22 才开始预订。$1,400–2,000 是量级估算，不是官方价。</div></div>
+      <div class="row"><div class="k">汇率</div><div class="v">1 EUR = 1.1481 USD（<a href="https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD">frankfurter.dev / ECB 参考汇率</a>，2026-09-17）。</div></div>
+    </div>
+  </div>
+
+  <footer>
+    FLY-2682 · 纯调研文档：没有开任何账号、没有下单、没有改 CI、没有装 runner。<br>
+    「矩阵之后」一栏基于 FLY-2681 砍掉 55% runner 分钟的估算 —— 这是本页唯一一个影响结论的估算值，
+    如果实际只砍掉 30%，推荐结论不变（Ubicloud 仍然最便宜），只是省下的绝对金额变少。
+  </footer>
+
+</div>
+</body>
+</html>
