@@ -20,6 +20,20 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 		involuntarySwitches?: number;
 		voluntarySwitches?: number;
 	}> = [];
+	const checkpoints: Array<{
+		phase: "before_backlog" | "before_tail" | "before_mode_tick";
+		wallMs: number;
+		cpuMs: number;
+		involuntarySwitches: number;
+		voluntarySwitches: number;
+		walBytesBefore: number;
+		walBytesAfter: number;
+		result: Array<{
+			busy?: number;
+			log?: number;
+			checkpointed?: number;
+		}>;
+	}> = [];
 	const monitor = new PerformanceObserver((list) => {
 		for (const entry of list.getEntries())
 			gc.push({ start: entry.startTime, duration: entry.duration });
@@ -31,6 +45,36 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 		tail: [],
 		auto_merge_narrow_gate: [],
 		dry_run: [],
+	};
+	const checkpoint = (
+		phase: "before_backlog" | "before_tail" | "before_mode_tick",
+	) => {
+		const started = performance.now();
+		const cpu = process.cpuUsage();
+		const resources = process.resourceUsage();
+		const walBytesBefore = statSync(`${path}-wal`).size;
+		const result = db.pragma("wal_checkpoint(TRUNCATE)") as Array<{
+			busy?: number;
+			log?: number;
+			checkpointed?: number;
+		}>;
+		const end = performance.now();
+		const usage = process.cpuUsage(cpu);
+		const afterResources = process.resourceUsage();
+		checkpoints.push({
+			phase,
+			wallMs: end - started,
+			cpuMs: (usage.user + usage.system) / 1000,
+			involuntarySwitches:
+				afterResources.involuntaryContextSwitches -
+				resources.involuntaryContextSwitches,
+			voluntarySwitches:
+				afterResources.voluntaryContextSwitches -
+				resources.voluntaryContextSwitches,
+			walBytesBefore,
+			walBytesAfter: statSync(`${path}-wal`).size,
+			result,
+		});
 	};
 	const preparation = performance.now();
 	try {
@@ -50,7 +94,7 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				NOW,
 			);
 		})();
-		db.pragma("wal_checkpoint(TRUNCATE)");
+		checkpoint("before_backlog");
 		const preparedMs = performance.now() - preparation;
 		expect(
 			db.prepare("SELECT count(*) AS n FROM session_events").get(),
@@ -127,6 +171,7 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				outcomes: 0,
 			});
 		}
+		checkpoint("before_tail");
 		const append = (id: string) =>
 			store.insertEvent({
 				event_id: id,
@@ -147,6 +192,7 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 			expect(observer.pageStats().outcomes).toBeGreaterThan(0);
 			await betweenPages();
 		}
+		checkpoint("before_mode_tick");
 		for (const mode of ["auto_merge_narrow_gate", "dry_run"] as const) {
 			const onError = vi.fn();
 			const runtime = new ShipJudgmentRuntime({
@@ -204,6 +250,7 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				databaseBytes: statSync(path).size,
 				sqlite: db.prepare("SELECT sqlite_version() AS version").get(),
 				node: process.version,
+				checkpoints,
 				samples: summary,
 				windows: windows.map((window) => ({
 					...window,
@@ -215,6 +262,15 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				})),
 			}),
 		);
+		expect(checkpoints.map(({ phase }) => phase)).toEqual([
+			"before_backlog",
+			"before_tail",
+			"before_mode_tick",
+		]);
+		for (const checkpoint of checkpoints) {
+			expect(checkpoint.result[0]?.busy).toBe(0);
+			expect(checkpoint.walBytesAfter).toBe(0);
+		}
 		for (const kind of ["backlog", "steady", "tail"])
 			expect(Math.max(...samples[kind]!)).toBeLessThan(50);
 		for (const mode of ["auto_merge_narrow_gate", "dry_run"])
