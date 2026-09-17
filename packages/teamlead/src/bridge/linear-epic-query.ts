@@ -247,16 +247,16 @@ const sharedHistoryCache: EpicHistoryCache = new Map();
 const HISTORY_CACHE_TTL_MS = 10 * 60_000;
 const HISTORY_CACHE_MAX_ROOTS = 512;
 
-type EpicRequest = <T>(
+export type LinearRequest = <T>(
 	query: string,
 	variables: Record<string, unknown>,
 ) => Promise<T>;
 
-async function createEpicRequest(
+export async function createLinearRequest(
 	apiKey: string,
 	deadlineAt: number,
 	now: () => Date,
-): Promise<EpicRequest> {
+): Promise<LinearRequest> {
 	const { LinearClient } = await import("@linear/sdk");
 	const client = new LinearClient({ apiKey });
 	return async <T>(
@@ -325,7 +325,7 @@ export async function collectEpicScope(
 ): Promise<CollectedEpicScope> {
 	const now = options.now ?? (() => new Date());
 	const started = now();
-	const request = await createEpicRequest(
+	const request = await createLinearRequest(
 		apiKey,
 		started.getTime() + (options.deadlineMs ?? 20_000),
 		now,
@@ -556,7 +556,7 @@ export async function fetchLinearActiveScopeSnapshot(
 	const maxChildPages = options.maxChildPages ?? 10;
 	const maxNestedPages = options.maxNestedPages ?? 10;
 	const maxItems = options.maxItems ?? 500;
-	const request = await createEpicRequest(apiKey, deadlineAt, now);
+	const request = await createLinearRequest(apiKey, deadlineAt, now);
 
 	const scope =
 		options.collectedScope ??

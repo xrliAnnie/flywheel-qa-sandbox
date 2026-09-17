@@ -32,6 +32,7 @@ import {
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
 	storeSummaryAbsorptionCadenceMs,
+	storeSummaryDueActivityGateEnabled,
 	storeWorkflowGateQuestionRecoveryEnabled,
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
@@ -449,6 +450,25 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeSummaryAbsorptionCadenceMs(runtime)).toBe(60_000);
+	});
+
+	it("FLY-2634 reads the summary activity gate at call time", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeSummaryDueActivityGateEnabled(runtime)).toBe(true);
+
+		for (const rawTo of ["0", null]) {
+			expect(
+				store.applyFlagValueChange({
+					name: "summary_due_activity_gate",
+					rawTo,
+					expectedRevision: store.getFlagValueRow("summary_due_activity_gate")!
+						.revision,
+					actor: "bridge-local-operator",
+					reason: "exercise summary activity kill switch",
+				}),
+			).toMatchObject({ ok: true });
+			expect(storeSummaryDueActivityGateEnabled(runtime)).toBe(rawTo === null);
+		}
 	});
 
 	it("falls back to the cadence default when the bootstrap seed is invalid without weakening writes", () => {

@@ -11,11 +11,22 @@ export interface SummaryDueRoundRow {
 	period: string;
 }
 
-export type DueDelivery = "delivered" | "undelivered" | "unknown";
+export type SummarySkippedRoundRow = SummaryDueRoundRow;
+export type ProducerDisposition =
+	| "due"
+	| "skipped_no_activity"
+	| "skipped_but_delivered";
+export type DueDelivery =
+	| "delivered"
+	| "undelivered"
+	| "unknown"
+	| "not_issued";
 
 export interface SummaryRoundProducer {
 	project: string;
 	lead: string;
+	period: string;
+	disposition: ProducerDisposition;
 	delivered: boolean | "unknown";
 	due_delivery: DueDelivery;
 	delivered_pr?: Pick<SummaryPull, "number" | "url" | "state">;
@@ -23,12 +34,19 @@ export interface SummaryRoundProducer {
 
 export interface SummaryRoundResult {
 	round_ledger: "ok" | "unavailable";
+	raya_round?: "issued" | "not_issued";
+	not_issued_reason?: "nothing_to_read";
+	roster_count?: number;
 	producer_count?: number;
 	delivered_count?: number;
+	skipped_count?: number;
+	skipped_delivered_count?: number;
+	open_unread_count?: number;
 	producers: SummaryRoundProducer[];
 	absent: string[];
 	undelivered: string[];
 	delivery_unknown: string[];
+	skipped: string[];
 	report_line: string;
 }
 
@@ -51,6 +69,26 @@ function dueDelivery(settlement: InspectedSettlement): DueDelivery {
 		return "undelivered";
 	}
 	return settlement.deliveredAt === null ? "undelivered" : "delivered";
+}
+
+function deliveredPullFor(
+	row: SummaryDueRoundRow,
+	ledger: Extract<SummaryLedgerResult, { status: "ok" }>,
+): SummaryPull | undefined {
+	const expectedBranch = summaryDeliveryBranch({
+		project: row.projectName,
+		author: row.leadId,
+		period: row.period,
+	});
+	return ledger.pulls.find(
+		(pull) => pull.headRefName === expectedBranch && pull.state !== "CLOSED",
+	);
+}
+
+function deliveredPr(
+	pull: SummaryPull,
+): Pick<SummaryPull, "number" | "url" | "state"> {
+	return { number: pull.number, url: pull.url, state: pull.state };
 }
 
 function reportToken(value: string): string {
@@ -77,11 +115,12 @@ function reportNames(values: string[]): string {
 /** Classify one frozen cadence slot without turning unknown evidence into absence. */
 export function classifyRound(
 	dueRows: readonly SummaryDueRoundRow[],
+	skippedRows: readonly SummarySkippedRoundRow[],
 	ledger: SummaryLedgerResult,
 	settlements: ReadonlyMap<string, InspectedSettlement>,
 ): SummaryRoundResult {
 	const leadCounts = new Map<string, number>();
-	for (const row of dueRows) {
+	for (const row of [...dueRows, ...skippedRows]) {
 		leadCounts.set(row.leadId, (leadCounts.get(row.leadId) ?? 0) + 1);
 	}
 	const displayName = (row: SummaryDueRoundRow) =>
@@ -92,30 +131,24 @@ export function classifyRound(
 	const absent: string[] = [];
 	const undelivered: string[] = [];
 	const deliveryUnknown: string[] = [];
+	const skipped: string[] = [];
 	const producers: SummaryRoundProducer[] = [];
 	let deliveredCount = 0;
+	let skippedDeliveredCount = 0;
 
 	for (const row of dueRows) {
 		const dueState = dueDelivery(
 			settlements.get(producerKey(row)) ?? "unknown",
 		);
-		const expectedBranch = summaryDeliveryBranch({
-			project: row.projectName,
-			author: row.leadId,
-			period: row.period,
-		});
 		const deliveredPull =
-			ledger.status === "ok"
-				? ledger.pulls.find(
-						(pull) =>
-							pull.headRefName === expectedBranch && pull.state !== "CLOSED",
-					)
-				: undefined;
+			ledger.status === "ok" ? deliveredPullFor(row, ledger) : undefined;
 		const delivered =
 			ledger.status === "unavailable" ? "unknown" : deliveredPull !== undefined;
 		const producer: SummaryRoundProducer = {
 			project: row.projectName,
 			lead: row.leadId,
+			period: row.period,
+			disposition: "due",
 			delivered,
 			due_delivery: dueState,
 		};
@@ -126,14 +159,33 @@ export function classifyRound(
 		}
 		if (deliveredPull) {
 			deliveredCount += 1;
-			producer.delivered_pr = {
-				number: deliveredPull.number,
-				url: deliveredPull.url,
-				state: deliveredPull.state,
-			};
+			producer.delivered_pr = deliveredPr(deliveredPull);
 		} else if (dueState === "delivered" && delivered === false) {
 			absent.push(displayName(row));
 		}
+		producers.push(producer);
+	}
+
+	for (const row of skippedRows) {
+		const deliveredPull =
+			ledger.status === "ok" ? deliveredPullFor(row, ledger) : undefined;
+		const delivered =
+			ledger.status === "unavailable" ? "unknown" : deliveredPull !== undefined;
+		const producer: SummaryRoundProducer = {
+			project: row.projectName,
+			lead: row.leadId,
+			period: row.period,
+			disposition: deliveredPull
+				? "skipped_but_delivered"
+				: "skipped_no_activity",
+			delivered,
+			due_delivery: "not_issued",
+		};
+		if (deliveredPull) {
+			skippedDeliveredCount += 1;
+			producer.delivered_pr = deliveredPr(deliveredPull);
+		}
+		skipped.push(displayName(row));
 		producers.push(producer);
 	}
 
@@ -159,19 +211,46 @@ export function classifyRound(
 	if (deliveryUnknown.length > 0) {
 		lines.push(`送达状态不可得(不计未交):${reportNames(deliveryUnknown)}`);
 	}
+	if (skipped.length > 0) {
+		lines.push(`无变化跳过:${reportNames(skipped)}`);
+	}
+	const openUnreadCount =
+		ledger.status === "ok"
+			? ledger.pulls.filter((pull) => pull.state === "OPEN").length
+			: undefined;
+	if (openUnreadCount) {
+		lines.push(`未读 open PR:${openUnreadCount}`);
+	}
 
 	return {
 		round_ledger: ledger.status,
+		roster_count: dueRows.length + skippedRows.length,
+		skipped_count: skippedRows.length,
 		...(ledger.status === "ok"
 			? {
 					producer_count: dueRows.length,
 					delivered_count: deliveredCount,
+					skipped_delivered_count: skippedDeliveredCount,
+					open_unread_count: openUnreadCount,
 				}
 			: {}),
 		producers,
 		absent: ledger.status === "ok" ? absent : [],
 		undelivered,
 		delivery_unknown: deliveryUnknown,
+		skipped,
 		report_line: replaceControls(lines.join(" ")),
 	};
+}
+
+/** Decide whether the frozen slot contains anything Raya still needs to read. */
+export function issueRayaRound(result: SummaryRoundResult): boolean {
+	return (
+		result.round_ledger === "unavailable" ||
+		(result.delivered_count ?? 0) > 0 ||
+		(result.skipped_delivered_count ?? 0) > 0 ||
+		(result.open_unread_count ?? 0) > 0 ||
+		result.undelivered.length > 0 ||
+		result.delivery_unknown.length > 0
+	);
 }

@@ -24,6 +24,10 @@ import {
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { isCapacityUnavailableToken } from "./machine-free-pct.js";
 import type { PatrolLoopEntry } from "./patrol-loop-ledger.js";
+import type {
+	ActivityProbeResult,
+	SourceResult,
+} from "./summary-activity-probe.js";
 
 export interface HookPayload {
 	epic_intake?: EpicIntakeEvent;
@@ -195,17 +199,26 @@ export interface HookPayload {
 						| "timeout";
 			  };
 		command_hint: string;
+		activity?: ActivityProbeResult;
 	};
 	/** FLY-2382: immutable reconciliation result copied onto Raya's round event. */
 	contract_version?: number;
 	round_ledger?: "ok" | "unavailable";
+	raya_round?: "issued" | "not_issued";
+	not_issued_reason?: "nothing_to_read";
+	roster_count?: number;
 	producer_count?: number;
 	delivered_count?: number;
+	skipped_count?: number;
+	skipped_delivered_count?: number;
+	open_unread_count?: number;
 	producers?: Array<{
 		project: string;
 		lead: string;
+		period?: string;
+		disposition?: "due" | "skipped_no_activity" | "skipped_but_delivered";
 		delivered: boolean | "unknown";
-		due_delivery: "delivered" | "undelivered" | "unknown";
+		due_delivery: "delivered" | "undelivered" | "unknown" | "not_issued";
 		delivered_pr?: {
 			number: number;
 			url: string;
@@ -215,6 +228,7 @@ export interface HookPayload {
 	absent?: string[];
 	undelivered?: string[];
 	delivery_unknown?: string[];
+	skipped?: string[];
 	report_line?: string;
 	// FLY-91: Chat thread for per-issue conversation in chatChannel
 	chat_thread_id?: string;
@@ -365,6 +379,25 @@ function summaryDueUrl(value: unknown): string {
 	}
 }
 
+function summaryActivityValue(
+	source: SourceResult,
+	notBoundLabel: string,
+): string {
+	if (source.status === "unavailable") return "不可得";
+	if (source.status === "not_bound") return notBoundLabel;
+	return Number.isSafeInteger(source.count) && source.count >= 0
+		? String(source.count)
+		: "?";
+}
+
+function summaryActivityLine(activity: ActivityProbeResult): string {
+	return (
+		`本窗口观测: 业务事件 ${summaryActivityValue(activity.sources.lead_events, "?")} · ` +
+		`founder/派活消息 ${summaryActivityValue(activity.sources.mailbox, "?")} · ` +
+		`Linear 变动 ${summaryActivityValue(activity.sources.linear, "未绑定")}`
+	);
+}
+
 /**
  * FLY-2619: render both v2 and already-queued legacy rounds through one
  * presentation-safe contract. The immutable round payload keeps reconciliation
@@ -419,11 +452,12 @@ export function formatSummaryDue(
 		`[summary_due] 到 summary 节奏点(每 ${formatDurationMs(due.cadence_ms)};founder 可在管理台改)。`,
 		`Period: ${period}`,
 		`上次交付: ${lastDelivered}`,
+		...(due.activity ? [summaryActivityLine(due.activity)] : []),
 		"---",
 		"1. 写本 period 的 summary(Facts + Judgment;合同见 Raya 仓 summaries/README.md)。",
 		`2. 运行:${command}`,
 		"   （请原样使用上面的 period;机制只按它识别「本轮已交」。）",
-		"3. 没有新事实与判断可写时可以不交(PRD §6.3)。后台仍会逐轮对账，但不会向 founder 展示缺交名单；不要为凑数制造内容。",
+		"3. 没有新事实与判断可写时可以不交；已有的暂停/阻塞状态若无变化不要复述。后台仍会逐轮对账，但不会向 founder 展示缺交名单；不要为凑数制造内容。",
 		"4. 这是唯一的节奏来源;不要自建定时器(R4)。",
 		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
 	].join("\n");

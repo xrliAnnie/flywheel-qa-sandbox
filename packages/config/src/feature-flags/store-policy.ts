@@ -158,6 +158,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		name === "loop_profiler" ||
 		name === "shipped_husk_force" ||
 		name === "flag_retirement_scan" ||
+		name === "summary_due_activity_gate" ||
 		name === "workflow_rework_reentry"
 	) {
 		return defaultOnCodec;

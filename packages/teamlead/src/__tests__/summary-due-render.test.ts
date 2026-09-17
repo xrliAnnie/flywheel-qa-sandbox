@@ -70,6 +70,54 @@ describe("FLY-2382 summary_due rendering", () => {
 			"flywheel-comm summary --file <your-summary.md> --project flywheel --period 2026-09-06T18:00:00-07:00/2026-09-07T00:00:00-07:00",
 		);
 		expect(text).toContain("不要自建定时器");
+		expect(text).not.toContain("本窗口观测:");
+	});
+
+	it("renders bounded activity evidence and preserves runtime parity", () => {
+		const env = envelope({ status: "none" });
+		env.event.summary_due!.activity = {
+			verdict: "active",
+			window: {
+				from: "2026-09-06T18:00:00.000Z",
+				to: "2026-09-07T00:00:00.000Z",
+			},
+			probe_version: 4,
+			previous_decision_at: "2026-09-06T18:00:01.000Z",
+			sources: {
+				lead_events: { status: "ok", count: 2 },
+				mailbox: { status: "unavailable", reason: "comm_db_unavailable" },
+				linear: { status: "not_bound", count: 0 },
+			},
+			cursors: { mailbox: null },
+		};
+		const expected = formatSummaryDue(env);
+		expect(expected).toContain(
+			"本窗口观测: 业务事件 2 · founder/派活消息 不可得 · Linear 变动 未绑定",
+		);
+		expect(renderViaPrototype(MailboxLeadRuntime, env)).toBe(expected);
+		expect(renderViaPrototype(CommDBLeadRuntime, env)).toBe(expected);
+	});
+
+	it("renders invalid source counts as unknown rather than trusting them", () => {
+		const env = envelope({ status: "none" });
+		env.event.summary_due!.activity = {
+			verdict: "active",
+			window: {
+				from: "2026-09-06T18:00:00.000Z",
+				to: "2026-09-07T00:00:00.000Z",
+			},
+			probe_version: 4,
+			previous_decision_at: null,
+			sources: {
+				lead_events: { status: "ok", count: -1 },
+				mailbox: { status: "ok", count: 1.5 },
+				linear: { status: "ok", count: Number.NaN },
+			},
+			cursors: { mailbox: null },
+		};
+		expect(formatSummaryDue(env)).toContain(
+			"本窗口观测: 业务事件 ? · founder/派活消息 ? · Linear 变动 ?",
+		);
 	});
 
 	it("uses the same complete renderer in Mailbox and CommDB runtimes", () => {

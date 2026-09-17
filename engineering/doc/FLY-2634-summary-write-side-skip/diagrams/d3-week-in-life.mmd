@@ -1,0 +1,27 @@
+sequenceDiagram
+  participant B as Bridge 第一拍
+  participant J as joycon-lead 静默项目
+  participant G as geoforge3d product-lead
+  participant E as flywheel-eng-lead 活跃项目
+  participant Y as Raya
+
+  Note over B: 时段 1 四类信号都为零的项目
+  B-->>J: 不叫（写 skipped）
+  B-->>G: 不叫（写 skipped，Raya 审摘要的追问不算）
+  B->>E: summary_due 带上观测到的信号计数
+  E->>Y: 交 summary PR
+  B->>Y: Raya 轮（有 1 张 PR 未读）
+  Note over B: 时段 2 founder 在 joycon 频道说了一句话
+  B->>J: summary_due（founder 消息 1 条）
+  J->>Y: 交增量 summary
+  B-->>G: 不叫
+  B->>E: summary_due
+  Note over B: 时段 3 Aunt Cass 在圆桌 @product-lead 派活
+  B-->>J: 不叫
+  B->>G: summary_due（派活消息 1 条）
+  B->>E: summary_due
+  Note over B: 时段 4 全员没事，Raya 已把上面的 PR 都 merge
+  B-->>J: 不叫
+  B-->>G: 不叫
+  B-->>E: 不叫
+  Note over B,Y: 0 张未读 PR 且无机制异常，不建 Raya 轮

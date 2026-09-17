@@ -443,6 +443,7 @@ import {
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSummaryAbsorptionCadenceMs,
+	storeSummaryDueActivityGateEnabled,
 	storeWorkflowGateQuestionRecoveryEnabled,
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
@@ -834,6 +835,7 @@ import {
 } from "./stuck-remanage-routes.js";
 import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
 import { listSummaryPulls } from "./summary-delivery-ledger.js";
+import { readSummaryLinearActivity } from "./summary-linear-activity.js";
 import { SummaryPresentationController } from "./summary-presentation-controller.js";
 import {
 	createTerminalCommDbSync,
@@ -11572,6 +11574,32 @@ export async function startBridge(
 					stderr: String(result.stderr),
 				};
 			}, SUMMARY_TARGET_REPOSITORY),
+		activityGateEnabled: () => storeSummaryDueActivityGateEnabled(flagStore),
+		readMailboxActivity: async (input) => {
+			const db = CommDB.openReadonly(commDbPathForProject(input.projectName));
+			try {
+				return db.readMailboxActivity({
+					leadId: input.leadId,
+					leadBotUserId: input.leadBotUserId,
+					founderUserId: config.discordOwnerUserId ?? "",
+					recipientBotUserId: input.recipientBotUserId,
+					senderBotUserIds: input.senderBotUserIds,
+					fromIso: input.fromIso,
+					toIso: input.toIso,
+					allocatedSeq: input.allocatedSeq,
+					contiguous: input.contiguous,
+				});
+			} finally {
+				db.close();
+			}
+		},
+		readLinearActivity: (projectName, window) =>
+			readSummaryLinearActivity({
+				binding: projects.find((project) => project.projectName === projectName)
+					?.linear,
+				window,
+				apiKey: config.linearApiKey,
+			}),
 		alertFailure: async (payload) => {
 			const sink = leadPendingAlertHolder.current;
 			if (!sink) {

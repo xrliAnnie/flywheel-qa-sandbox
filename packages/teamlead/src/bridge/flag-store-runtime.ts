@@ -367,6 +367,12 @@ export function storeSummaryAbsorptionCadenceMs(
 	return value;
 }
 
+export function storeSummaryDueActivityGateEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "summary_due_activity_gate");
+}
+
 export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "alert_system");
 }

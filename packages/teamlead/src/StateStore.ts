@@ -8,6 +8,7 @@ import {
 	summaryPresentationPayloadDigest,
 	type SummaryPresentationStaleSignal,
 } from "./bridge/summary-presentation-store.js";
+import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
@@ -21097,19 +21098,100 @@ export class StateStore {
 
 	/** FLY-2382: atomically materialize one summary cadence slot's producer roster. */
 	appendSummaryDueRows(
-		rows: Array<{ leadId: string; eventId: string; payload: string }>,
+		rows: Array<{
+			leadId: string;
+			eventId: string;
+			payload: string;
+			eventType?: "summary_due" | "summary_due_skipped";
+		}>,
+	): void {
+		this.appendSummaryDecisionRows(() =>
+			rows.map((row) => ({
+				...row,
+				eventType: row.eventType ?? "summary_due",
+			})),
+		);
+	}
+
+	/**
+	 * FLY-2634: count StateStore activity and append every producer decision
+	 * under the same synchronous write transaction.
+	 */
+	appendSummaryDecisionRows(
+		build: (
+			countActivity: StateStore["countLeadEventActivity"],
+		) => Array<{
+			leadId: string;
+			eventId: string;
+			eventType: "summary_due" | "summary_due_skipped";
+			payload: string;
+		}>,
 	): void {
 		this.db.transaction(() => {
+			const rows = build(this.countLeadEventActivity.bind(this));
 			for (const row of rows) {
 				this.appendLeadEvent(
 					row.leadId,
 					row.eventId,
-					"summary_due",
+					row.eventType,
 					row.payload,
 					"summary-due",
 				);
 			}
 		});
+	}
+
+	/** FLY-2634: count non-mechanism Lead events across a cursor-fenced window. */
+	countLeadEventActivity(
+		leadId: string,
+		fromMs: number,
+		toMs: number,
+		decisionSeq: number,
+		contiguous: boolean,
+	): number {
+		if (
+			!Number.isSafeInteger(fromMs) ||
+			!Number.isSafeInteger(toMs) ||
+			!Number.isSafeInteger(decisionSeq) ||
+			fromMs < 0 ||
+			toMs <= fromMs ||
+			decisionSeq < 0
+		) {
+			throw new Error("invalid_summary_activity_window");
+		}
+		if (
+			(SUMMARY_ACTIVITY_NOISE_EVENT_TYPES as readonly string[]).length === 0
+		) {
+			throw new Error("summary_activity_noise_types_empty");
+		}
+		const timestampMs =
+			"(CAST(strftime('%s', e.created_at) AS INTEGER) * 1000 + " +
+			"CAST(substr(strftime('%f', e.created_at), 4, 3) AS INTEGER))";
+		const noisePlaceholders = SUMMARY_ACTIVITY_NOISE_EVENT_TYPES.map(
+			() => "?",
+		).join(",");
+		const cursorRows = `(e.seq > ? AND (${timestampMs} IS NULL OR ${timestampMs} < ?))`;
+		const windowRows = `(e.seq <= ? AND ${timestampMs} >= ? AND ${timestampMs} < ?)`;
+		const row = this.db.raw
+			.prepare(
+				`SELECT COUNT(*) AS count
+				 FROM lead_events e
+				 WHERE e.lead_id = ?
+				   AND e.event_type NOT IN (${noisePlaceholders})
+				   AND (${cursorRows}${contiguous ? ` OR ${windowRows}` : ""})`,
+			)
+			.get(
+				leadId,
+				...SUMMARY_ACTIVITY_NOISE_EVENT_TYPES,
+				decisionSeq,
+				toMs,
+				...(contiguous ? [decisionSeq, fromMs, toMs] : []),
+			) as { count: number } | undefined;
+		const count = Number(row?.count ?? 0);
+		if (!Number.isSafeInteger(count) || count < 0) {
+			throw new Error("invalid_summary_activity_count");
+		}
+		return count;
 	}
 
 	/** FLY-2619: journal and admit every Raya round in one transaction. */
@@ -21175,6 +21257,47 @@ export class StateStore {
 					 ORDER BY seq ASC`,
 				)
 				.all(`summary\\_due:%:${escapedSlot}`) as Record<string, unknown>[]
+		).map(mapLeadEventRow);
+	}
+
+	/** FLY-2634: read the evidence-only quiet roster for one exact slot. */
+	listSummaryDueSkippedRows(slotStart: string): LeadEventRow[] {
+		const escapedSlot = slotStart
+			.replaceAll("\\", "\\\\")
+			.replaceAll("%", "\\%")
+			.replaceAll("_", "\\_");
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT * FROM lead_events
+					 WHERE event_type = 'summary_due_skipped'
+					   AND event_id LIKE ? ESCAPE '\\'
+					 ORDER BY seq ASC`,
+				)
+				.all(
+					`summary\\_due\\_skipped:%:${escapedSlot}`,
+				) as Record<string, unknown>[]
+		).map(mapLeadEventRow);
+	}
+
+	/** FLY-2634: newest durable due/skipped decision rows for one producer. */
+	listLatestSummaryDecisionRows(
+		leadId: string,
+		limit = 8,
+	): LeadEventRow[] {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+			throw new Error("invalid_summary_decision_limit");
+		}
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT * FROM lead_events
+					 WHERE lead_id = ?
+					   AND event_type IN ('summary_due', 'summary_due_skipped')
+					 ORDER BY seq DESC
+					 LIMIT ?`,
+				)
+				.all(leadId, limit) as Record<string, unknown>[]
 		).map(mapLeadEventRow);
 	}
 

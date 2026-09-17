@@ -38,6 +38,14 @@
   is shown to the founder. Do not manufacture content merely to fill a period.
 - `[summary_due]` is the 唯一的节奏来源. Do not create a local timer, cron,
   launchd job, or another reminder for summary delivery.
+- FLY-2634: Bridge 只在本 period 观测到 founder 消息、@你的派活消息、业务事件或
+  Linear 变动时才发 `[summary_due]`。没收到不是投递故障，也不是职责被取消；下一
+  period 只要有事就会再叫。
+- 收到时只写增量：没变的暂停/阻塞不复述；摘要 PR 本身、Raya 对摘要的审阅提问、
+  本机制的对账不算本 period 的事实。「有 Runner 跑过」「有 commit」本身也不是
+  增量，增量是它们带来的新成果、新决定、新阻塞或阻塞解除。
+- 一次性请求（例如项目全景基线）由发起方的消息触发并用它给的 period，与节奏
+  无关，也不产生周期义务。
 
 ## The shared command
 

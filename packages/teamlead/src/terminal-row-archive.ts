@@ -40,7 +40,7 @@ const SESSION_EVENT_TYPES = [
 	"detection_suspicious",
 ] as const;
 
-const LEAD_EVENT_TYPES = [
+export const LEAD_EVENT_TYPES = [
 	"detection_escalation",
 	"detection_page_undeliverable",
 	"runner_idle_detected",

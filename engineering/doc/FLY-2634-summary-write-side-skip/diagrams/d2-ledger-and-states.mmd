@@ -1,0 +1,20 @@
+flowchart TD
+  subgraph L["lead_events 账本（不建新表）"]
+    direction LR
+    R1["summary_due × 有事的人<br/>投给该 Lead，带四类信号计数"]
+    R2["summary_due_skipped × 没事的人<br/>永不投递，只留证据和游标"]
+  end
+  R1 --> S{"半小时后对账"}
+  R2 --> S
+  S --> D1["已交<br/>找到本时段的 PR"]
+  S --> D2["未交<br/>叫醒了、没交（允许）"]
+  S --> D3["未送达 / 不可得<br/>机制问题，照旧告警"]
+  S --> D4["无变化跳过<br/>新的第四态<br/>不进未交、不告警"]
+  D1 --> R3["summary_slot_settled × 1<br/>冻结的对账结果"]
+  D2 --> R3
+  D3 --> R3
+  D4 --> R3
+  R3 --> Q{"有本轮交付，<br/>或 Raya 仓里还有 open（=未读）的 summary PR，<br/>或有机制异常？"}
+  Q -->|是| R4["summary_absorption_round × 1<br/>发给 Raya"]
+  Q -->|"否：一切正常只是没人交"| N["不建 Raya 轮<br/>Raya 不被叫醒"]
+  R4 --> Y["Raya 轮首自己 gh pr list<br/>读未读队列（今天就是这样）"]

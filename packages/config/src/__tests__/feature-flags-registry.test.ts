@@ -25,6 +25,8 @@ const EXPECTED_WHEN_ON = {
 	cmux_rebind_disabled: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
 	summary_absorption_cadence_ms:
 		"Raya 两轮总结复盘之间要等待的毫秒数；默认 21600000 毫秒（6 小时）",
+	summary_due_activity_gate:
+		"每个 summary 节奏点先看该项目本 period 有没有 founder 或派活消息、业务事件、Linear 变动；都没有且观测完整就不叫醒该 Lead",
 	alert_system:
 		"把系统告警发到 Discord、创建处理工单，并通知值班 Claw；原始告警仍会留档",
 	review_quota_auto_retry: "Claude 额度恢复后，自动重试仍然有效的跨模型评审",
@@ -80,7 +82,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(31);
+		expect(FEATURE_FLAGS).toHaveLength(32);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

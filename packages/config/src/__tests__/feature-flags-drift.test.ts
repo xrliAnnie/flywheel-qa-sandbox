@@ -385,6 +385,7 @@ describe("feature-flag drift guard", () => {
 				["cmux_watcher_rebuild_disabled", "storeCmuxWatcherRebuildDisabled"],
 				["cmux_rebind_disabled", "storeCmuxRebindDisabled"],
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
+				["summary_due_activity_gate", "storeSummaryDueActivityGateEnabled"],
 				["alert_system", "storeAlertSystemEnabled"],
 				["review_quota_auto_retry", "storeReviewQuotaAutoRetryEnabled"],
 				["codex_quota_auto_switch", "storeCodexQuotaAutoSwitchEnabled"],

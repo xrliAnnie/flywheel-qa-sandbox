@@ -82,6 +82,17 @@ export interface PendingRunnerMailboxSnapshot {
 	questionIds: string[];
 }
 
+export interface MailboxActivityCursorInstance {
+	schema_generation: string;
+	completed_at: string;
+}
+
+export interface MailboxActivitySnapshot {
+	count: number;
+	allocatedSeq: number;
+	instance: MailboxActivityCursorInstance;
+}
+
 export const PENDING_RUNNER_MAILBOX_SQL = `SELECT state, type, ref_id,
        CASE WHEN type = 'instruction'
                   AND COALESCE(datetime(expires_at) > datetime('now'), 0) = 0
@@ -1183,6 +1194,129 @@ export class CommDB {
 			...input,
 			dbPath: "<shared-connection>",
 		});
+	}
+
+	/**
+	 * FLY-2634: read founder/dispatch activity and the durable mailbox cursor in
+	 * one SQLite statement so both values describe the same read snapshot.
+	 */
+	readMailboxActivity(input: {
+		leadId: string;
+		leadBotUserId: string;
+		founderUserId: string;
+		recipientBotUserId: string;
+		senderBotUserIds: string[];
+		fromIso: string;
+		toIso: string;
+		allocatedSeq: number | null;
+		contiguous: boolean;
+	}): MailboxActivitySnapshot {
+		if (!input.leadId.trim()) throw new Error("leadId is required");
+		if (!input.leadBotUserId.trim()) {
+			throw new Error("leadBotUserId is required");
+		}
+		if (!/^\d{17,20}$/u.test(input.founderUserId)) {
+			throw new Error("founderUserId must be a Discord snowflake");
+		}
+		if (!input.recipientBotUserId.trim()) {
+			throw new Error("recipientBotUserId is required");
+		}
+		const senderBotUserIds = [
+			...new Set(
+				input.senderBotUserIds
+					.map((id) => id.trim())
+					.filter((id) => id && id !== input.recipientBotUserId),
+			),
+		];
+		if (senderBotUserIds.length === 0) {
+			throw new Error("senderBotUserIds is required");
+		}
+		assertUtcIsoTimestamp(input.fromIso, "fromIso");
+		assertUtcIsoTimestamp(input.toIso, "toIso");
+		if (input.fromIso >= input.toIso) {
+			throw new Error("mailbox activity window must be increasing");
+		}
+		if (
+			input.allocatedSeq !== null &&
+			(!Number.isSafeInteger(input.allocatedSeq) || input.allocatedSeq < 0)
+		) {
+			throw new Error("allocatedSeq must be a non-negative safe integer");
+		}
+
+		const cursor = input.allocatedSeq ?? -1;
+		const senderPlaceholders = senderBotUserIds.map(() => "?").join(",");
+		const cursorRows = "(m.seq > ? AND m.created_at < ?)";
+		const windowRows =
+			"(m.seq <= ? AND m.created_at >= ? AND m.created_at < ?)";
+		const row = this.db
+			.prepare(
+				`SELECT
+				   (SELECT COUNT(*)
+				      FROM mailbox m
+				     WHERE m.to_agent = ?
+				       AND m.recipient_kind = 'lead'
+				       AND m.type = 'discord_chat'
+				       AND (
+				            m.from_agent = 'founder'
+				            OR m.from_agent = ?
+				            OR (
+				                 m.from_agent IN (${senderPlaceholders})
+				                 AND m.from_agent <> ?
+				                 AND (
+				                      instr(m.content, ?) > 0
+				                      OR instr(m.content, ?) > 0
+				                 )
+				            )
+				       )
+				       AND (${cursorRows}${input.contiguous ? ` OR ${windowRows}` : ""})
+				   ) AS count,
+				   COALESCE(
+				     (SELECT seq FROM sqlite_sequence WHERE name = 'mailbox'), 0
+				   ) AS allocated_seq,
+				   (SELECT schema_generation FROM mailbox_migration_meta WHERE singleton = 1)
+				     AS schema_generation,
+				   (SELECT completed_at FROM mailbox_migration_meta WHERE singleton = 1)
+				     AS completed_at`,
+			)
+			.get(
+				input.leadId,
+				`discord:${input.founderUserId}`,
+				...senderBotUserIds.map((id) => `discord:${id}`),
+				`discord:${input.recipientBotUserId}`,
+				`<@${input.leadBotUserId}>`,
+				`<@!${input.leadBotUserId}>`,
+				cursor,
+				input.toIso,
+				...(input.contiguous ? [cursor, input.fromIso, input.toIso] : []),
+			) as
+			| {
+					count: number;
+					allocated_seq: number;
+					schema_generation: string | null;
+					completed_at: string | null;
+			  }
+			| undefined;
+		if (!row?.schema_generation || !row.completed_at) {
+			throw new Error("mailbox_migration_meta_missing");
+		}
+		const count = Number(row.count);
+		const allocatedSeq = Number(row.allocated_seq);
+		if (
+			!Number.isSafeInteger(count) ||
+			count < 0 ||
+			!Number.isSafeInteger(allocatedSeq) ||
+			allocatedSeq < 0
+		) {
+			throw new Error("invalid_mailbox_activity_snapshot");
+		}
+		return {
+			count,
+			allocatedSeq,
+			instance: {
+				schema_generation: row.schema_generation,
+				completed_at: row.completed_at,
+			},
+		};
 	}
 
 	/**

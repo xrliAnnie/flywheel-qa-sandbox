@@ -1,0 +1,15 @@
+flowchart TD
+  T["节奏钟到点<br/>每 6 小时一格，管理台可改"] --> F{"开关 summary_due_activity_gate"}
+  F -->|关| OLD["和今天一样<br/>11 位 Lead 全部叫醒"]
+  F -->|开| P["对每位 producer Lead<br/>看上次判断以来的四类信号"]
+  P --> A["账本 A · 业务事件<br/>Bridge 推给这位 Lead 的提问、门等待、<br/>阶段变化、Runner 派出/失败/僵死…<br/>（钟、巡逻、周期提醒不算）"]
+  P --> C["账本 C · 消息<br/>founder 本人说的话<br/>+ 其它 Lead bot @这位 Lead 的派活<br/>（Raya 的追问、bot 闲聊不算）"]
+  P --> D["账本 D · Linear<br/>issue 新建 / 状态 / 父子 / 优先级变化<br/>（评论不算；没绑 Linear 的项目记「未绑定」）"]
+  A --> V{"合起来看"}
+  C --> V
+  D --> V
+  V -->|"有事：任一本有记录"| DUE["写一行 summary_due<br/>叫醒这位 Lead"]
+  V -->|"不知道：有一本读不到<br/>或证明不了完整"| DUE
+  V -->|"没事：每本都读得到、<br/>都完整、都是零"| SKIP["写一行 summary_due_skipped<br/>不叫醒，留证据"]
+  DUE --> TX[("同一笔数据库事务<br/>账本 A 的计数也在这笔事务里")]
+  SKIP --> TX

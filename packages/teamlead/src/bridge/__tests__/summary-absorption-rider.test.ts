@@ -123,7 +123,10 @@ function harness(options: { now?: number; cadences?: number[] } = {}) {
 			setBy: "founder",
 			setAt: "2026-09-06T00:00:00Z",
 		})),
-		listSummaryPulls: vi.fn(async () => ({ status: "ok" as const, pulls: [] })),
+		listSummaryPulls: vi.fn(async () => ({
+			status: "unavailable" as const,
+			reason: "fixture ledger unavailable",
+		})),
 		alertFailure: vi.fn(async () => undefined),
 		cadenceMs: () => cadences.shift() ?? 60_000,
 		now: () => now,
@@ -208,12 +211,461 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 				last_delivered: { status: "none" },
 			},
 		});
+		expect(JSON.parse(rows[0]!.payload).summary_due).not.toHaveProperty(
+			"activity",
+		);
 		expect(enqueueLeadEvent).toHaveBeenCalledWith(
 			expect.objectContaining({
 				eventId: "summary_due:growth/reflection-lead:1970-01-01T00:03:00.000Z",
 				leadId: "reflection-lead",
 			}),
 		);
+	});
+
+	it("baselines once, skips a quiet slot, and resumes after a business event", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const cadenceMs = 60_000;
+			const firstSlotMs = Date.parse("2026-09-16T00:00:00.000Z");
+			let nowMs = firstSlotMs + 10_000;
+			let mailboxUnavailable = false;
+			let mailboxCount = 0;
+			let mailboxAllocatedSeq = 0;
+			const enqueueLeadEvent = vi.fn(() => ({
+				queued: true as const,
+				deliveryId: "delivery",
+				seq: 1,
+			}));
+			const readMailboxActivity = vi.fn(async () => {
+				if (mailboxUnavailable) throw new Error("comm db unavailable");
+				return {
+					count: mailboxCount,
+					allocatedSeq: mailboxAllocatedSeq,
+					instance: {
+						schema_generation: "v1",
+						completed_at: "2026-09-15T00:00:00.000Z",
+					},
+				};
+			});
+			const readLinearActivity = vi.fn(async () => ({
+				status: "not_bound" as const,
+				count: 0 as const,
+			}));
+			const pass = createSummaryAbsorptionPass({
+				projects: [
+					{
+						projectName: "growth",
+						projectRoot: "/tmp/growth",
+						leads: [
+							{
+								agentId: "reflection-lead",
+								summaryRole: "producer",
+								botUserId: "producer-bot",
+							},
+							{
+								agentId: "raya",
+								summaryRole: "recipient",
+								botUserId: "raya-bot",
+							},
+						],
+					} as never,
+				],
+				store,
+				enqueueLeadEvent,
+				inspectDeliveryState: vi.fn(() => ({
+					kind: "absent_identity" as const,
+				})),
+				readSummaryGranularity: vi.fn(() => ({
+					state: "selected" as const,
+					granularity: "per-lead" as const,
+					setBy: "founder",
+					setAt: "2026-09-15T00:00:00.000Z",
+				})),
+				listSummaryPulls: vi.fn(async () => ({
+					status: "ok" as const,
+					pulls: [],
+				})),
+				activityGateEnabled: () => true,
+				readMailboxActivity,
+				readLinearActivity,
+				alertFailure: vi.fn(async () => undefined),
+				cadenceMs: () => cadenceMs,
+				now: () => nowMs,
+			});
+
+			await pass();
+			const firstSlot = new Date(firstSlotMs).toISOString();
+			const firstDue = store.listSummaryDueRows(firstSlot);
+			expect(firstDue).toHaveLength(1);
+			expect(JSON.parse(firstDue[0]!.payload)).toMatchObject({
+				summary_due: {
+					activity: {
+						verdict: "unknown",
+						sources: {
+							lead_events: {
+								status: "unavailable",
+								reason: "no_previous_decision",
+							},
+							mailbox: {
+								status: "unavailable",
+								reason: "no_previous_cursor",
+							},
+						},
+					},
+				},
+			});
+			store.db.run("UPDATE lead_events SET created_at=? WHERE seq=?", [
+				new Date(nowMs).toISOString(),
+				firstDue[0]!.seq,
+			]);
+
+			nowMs += cadenceMs;
+			await pass();
+			const quietSlot = new Date(firstSlotMs + cadenceMs).toISOString();
+			const skipped = store.listSummaryDueSkippedRows(quietSlot);
+			expect(skipped).toHaveLength(1);
+			expect(JSON.parse(skipped[0]!.payload)).toMatchObject({
+				event_type: "summary_due_skipped",
+				issue_id: "FLY-2634",
+				summary_due_skipped: {
+					activity: { verdict: "quiet" },
+				},
+			});
+			expect(
+				enqueueLeadEvent.mock.calls.filter(
+					([envelope]) => envelope.event.event_type === "summary_due",
+				),
+			).toHaveLength(1);
+			store.db.run("UPDATE lead_events SET created_at=? WHERE seq=?", [
+				new Date(nowMs).toISOString(),
+				skipped[0]!.seq,
+			]);
+
+			for (let quietIndex = 2; quietIndex <= 12; quietIndex++) {
+				nowMs = firstSlotMs + quietIndex * cadenceMs + 10_000;
+				await pass();
+				const quietRows = store.listSummaryDueSkippedRows(
+					new Date(firstSlotMs + quietIndex * cadenceMs).toISOString(),
+				);
+				expect(quietRows, `quiet slot ${quietIndex}`).toHaveLength(1);
+				store.db.run("UPDATE lead_events SET created_at=? WHERE seq=?", [
+					new Date(nowMs).toISOString(),
+					quietRows[0]!.seq,
+				]);
+			}
+			expect(
+				store.db.exec(
+					"SELECT COUNT(*) AS count FROM lead_events WHERE event_type='summary_due_skipped'",
+				)[0]?.values[0]?.[0],
+			).toBe(12);
+
+			const businessSeq = store.appendLeadEvent(
+				"reflection-lead",
+				"business-after-quiet",
+				"runner_question",
+				"{}",
+			);
+			store.db.run("UPDATE lead_events SET created_at=? WHERE seq=?", [
+				new Date(firstSlotMs + 12 * cadenceMs + 30_000).toISOString(),
+				businessSeq,
+			]);
+			nowMs = firstSlotMs + 13 * cadenceMs + 10_000;
+			await pass();
+			const activeSlot = new Date(firstSlotMs + 13 * cadenceMs).toISOString();
+			const activeDue = store.listSummaryDueRows(activeSlot);
+			expect(activeDue).toHaveLength(1);
+			expect(JSON.parse(activeDue[0]!.payload)).toMatchObject({
+				summary_due: {
+					activity: {
+						verdict: "active",
+						sources: { lead_events: { status: "ok", count: 1 } },
+					},
+				},
+			});
+			const frozenQuiet = store.getLeadEventByLeadAndId(
+				"summary-clock",
+				`summary_slot_settled:${quietSlot}`,
+			);
+			expect(JSON.parse(frozenQuiet!.payload)).toMatchObject({
+				raya_round: "not_issued",
+				not_issued_reason: "nothing_to_read",
+				skipped_count: 1,
+				producer_count: 0,
+			});
+			expect(
+				store.getLeadEventByLeadAndId(
+					"raya",
+					summaryAbsorptionRoundId(firstSlotMs + cadenceMs),
+				),
+			).toBeNull();
+
+			mailboxUnavailable = true;
+			nowMs += cadenceMs;
+			await pass();
+			const unavailableSlot = new Date(
+				firstSlotMs + 14 * cadenceMs,
+			).toISOString();
+			const unavailableDue = store.listSummaryDueRows(unavailableSlot);
+			expect(unavailableDue).toHaveLength(1);
+			expect(JSON.parse(unavailableDue[0]!.payload)).toMatchObject({
+				summary_due: {
+					activity: {
+						verdict: "unknown",
+						sources: {
+							mailbox: {
+								status: "unavailable",
+								reason: "comm db unavailable",
+							},
+						},
+						cursors: { mailbox: { allocated_seq: 0 } },
+					},
+				},
+			});
+
+			mailboxUnavailable = false;
+			mailboxCount = 1;
+			mailboxAllocatedSeq = 1;
+			nowMs += cadenceMs;
+			await pass();
+			const founderRequestSlot = new Date(
+				firstSlotMs + 15 * cadenceMs,
+			).toISOString();
+			const founderRequestDue = store.listSummaryDueRows(founderRequestSlot);
+			expect(founderRequestDue).toHaveLength(1);
+			expect(JSON.parse(founderRequestDue[0]!.payload)).toMatchObject({
+				summary_due: {
+					activity: {
+						verdict: "active",
+						sources: { mailbox: { status: "ok", count: 1 } },
+					},
+				},
+			});
+
+			mailboxCount = 0;
+			nowMs += cadenceMs;
+			await pass();
+			const postRequestQuietSlot = new Date(
+				firstSlotMs + 16 * cadenceMs,
+			).toISOString();
+			expect(
+				store.listSummaryDueSkippedRows(postRequestQuietSlot),
+			).toHaveLength(1);
+			expect(readLinearActivity).toHaveBeenCalledTimes(17);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("G7 never enqueues skipped decisions across a replayed slot sequence", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const cadenceMs = 60_000;
+			const firstSlotMs = Date.parse("2026-09-16T00:00:00.000Z");
+			let nowMs = firstSlotMs + 10_000;
+			const enqueueLeadEvent = vi.fn(() => ({
+				queued: true as const,
+				deliveryId: "delivery",
+				seq: 1,
+			}));
+			const pass = createSummaryAbsorptionPass({
+				projects: [
+					{
+						projectName: "growth",
+						projectRoot: "/tmp/growth",
+						leads: [
+							{
+								agentId: "reflection-lead",
+								summaryRole: "producer",
+								botUserId: "producer-bot",
+							},
+							{
+								agentId: "raya",
+								summaryRole: "recipient",
+								botUserId: "raya-bot",
+							},
+						],
+					} as never,
+				],
+				store,
+				enqueueLeadEvent,
+				inspectDeliveryState: vi.fn(() => ({
+					kind: "absent_identity" as const,
+				})),
+				readSummaryGranularity: vi.fn(() => ({
+					state: "selected" as const,
+					granularity: "per-lead" as const,
+					setBy: "founder",
+					setAt: "2026-09-15T00:00:00.000Z",
+				})),
+				listSummaryPulls: vi.fn(async () => ({
+					status: "ok" as const,
+					pulls: [],
+				})),
+				activityGateEnabled: () => true,
+				readMailboxActivity: vi.fn(async () => ({
+					count: 0,
+					allocatedSeq: 0,
+					instance: {
+						schema_generation: "v1",
+						completed_at: "2026-09-15T00:00:00.000Z",
+					},
+				})),
+				readLinearActivity: vi.fn(async () => ({
+					status: "not_bound" as const,
+					count: 0 as const,
+				})),
+				alertFailure: vi.fn(async () => undefined),
+				cadenceMs: () => cadenceMs,
+				now: () => nowMs,
+			});
+
+			const decisionTypes: string[] = [];
+			const stampDecision = (slotMs: number) => {
+				const slotStart = new Date(slotMs).toISOString();
+				const decisions = [
+					...store.listSummaryDueRows(slotStart),
+					...store.listSummaryDueSkippedRows(slotStart),
+				];
+				expect(decisions, `decision for ${slotStart}`).toHaveLength(1);
+				store.db.run("UPDATE lead_events SET created_at=? WHERE seq=?", [
+					new Date(nowMs).toISOString(),
+					decisions[0]!.seq,
+				]);
+				decisionTypes.push(decisions[0]!.event_type);
+			};
+
+			await pass();
+			stampDecision(firstSlotMs);
+			for (let slotIndex = 1; slotIndex <= 3; slotIndex++) {
+				nowMs = firstSlotMs + slotIndex * cadenceMs + 10_000;
+				await pass();
+				stampDecision(firstSlotMs + slotIndex * cadenceMs);
+			}
+
+			const businessSeq = store.appendLeadEvent(
+				"reflection-lead",
+				"g7-business-change",
+				"runner_question",
+				"{}",
+			);
+			store.db.run("UPDATE lead_events SET created_at=? WHERE seq=?", [
+				new Date(firstSlotMs + 3 * cadenceMs + 30_000).toISOString(),
+				businessSeq,
+			]);
+			nowMs = firstSlotMs + 4 * cadenceMs + 10_000;
+			await pass();
+			stampDecision(firstSlotMs + 4 * cadenceMs);
+
+			nowMs = firstSlotMs + 5 * cadenceMs + 10_000;
+			await pass();
+			stampDecision(firstSlotMs + 5 * cadenceMs);
+
+			expect(decisionTypes).toEqual([
+				"summary_due",
+				"summary_due_skipped",
+				"summary_due_skipped",
+				"summary_due_skipped",
+				"summary_due",
+				"summary_due_skipped",
+			]);
+			expect(
+				enqueueLeadEvent.mock.calls
+					.filter(([envelope]) => envelope.leadId === "reflection-lead")
+					.map(([envelope]) => envelope.event.event_type),
+			).toEqual(["summary_due", "summary_due"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("shares one Linear probe across producers in the same project", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const readLinearActivity = vi.fn(async () => ({
+				status: "not_bound" as const,
+				count: 0 as const,
+			}));
+			const readMailboxActivity = vi.fn(async () => ({
+				count: 0,
+				allocatedSeq: 0,
+				instance: {
+					schema_generation: "v1",
+					completed_at: "born",
+				},
+			}));
+			const pass = createSummaryAbsorptionPass({
+				projects: [
+					{
+						projectName: "growth",
+						projectRoot: "/tmp/growth",
+						leads: [
+							{
+								agentId: "alpha",
+								summaryRole: "producer",
+								botUserId: "alpha-bot",
+							},
+							{
+								agentId: "beta",
+								summaryRole: "producer",
+							},
+							{
+								agentId: "raya",
+								summaryRole: "recipient",
+								botUserId: "raya-bot",
+							},
+						],
+					} as never,
+				],
+				store,
+				enqueueLeadEvent: vi.fn(() => ({
+					queued: true as const,
+					deliveryId: "delivery",
+					seq: 1,
+				})),
+				inspectDeliveryState: vi.fn(() => ({
+					kind: "absent_identity" as const,
+				})),
+				readSummaryGranularity: vi.fn(() => ({
+					state: "selected" as const,
+					granularity: "per-lead" as const,
+					setBy: "founder",
+					setAt: "2026-09-15T00:00:00.000Z",
+				})),
+				listSummaryPulls: vi.fn(async () => ({
+					status: "ok" as const,
+					pulls: [],
+				})),
+				activityGateEnabled: () => true,
+				readMailboxActivity,
+				readLinearActivity,
+				alertFailure: vi.fn(async () => undefined),
+				cadenceMs: () => 60_000,
+				now: () => Date.parse("2026-09-16T00:00:10.000Z"),
+			});
+
+			await pass();
+			expect(readLinearActivity).toHaveBeenCalledTimes(1);
+			expect(readMailboxActivity).toHaveBeenCalledTimes(1);
+			const dueRows = store.listSummaryDueRows("2026-09-16T00:00:00.000Z");
+			expect(dueRows).toHaveLength(2);
+			expect(
+				JSON.parse(dueRows.find((row) => row.lead_id === "beta")!.payload),
+			).toMatchObject({
+				summary_due: {
+					activity: {
+						verdict: "unknown",
+						sources: {
+							mailbox: {
+								status: "unavailable",
+								reason: "producer_bot_id_missing",
+							},
+						},
+					},
+				},
+			});
+		} finally {
+			store.close();
+		}
 	});
 
 	it("skips a first-seen slot after grace and logs that cold-start gap once", async () => {
@@ -267,7 +719,7 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 		);
 	});
 
-	it("freezes a mature called slot and appends its exact report line to Raya", async () => {
+	it("freezes an acknowledged missing summary without waking Raya", async () => {
 		const rows: LeadEventRow[] = [];
 		let seq = 0;
 		const appendLeadEvent = vi.fn(
@@ -421,6 +873,8 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 		expect(frozen).not.toBeNull();
 		expect(JSON.parse(frozen!.payload)).toMatchObject({
 			round_ledger: "ok",
+			raya_round: "not_issued",
+			not_issued_reason: "nothing_to_read",
 			producer_count: 1,
 			delivered_count: 0,
 			absent: ["reflection-lead"],
@@ -430,33 +884,13 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 			"raya",
 			summaryAbsorptionRoundId(180_000),
 		);
-		expect(rayaRound).not.toBeNull();
-		expect(JSON.parse(rayaRound!.payload)).toMatchObject({
-			event_type: "summary_absorption_round",
-			execution_id: summaryAbsorptionRoundId(180_000),
-			issue_id: "FLY-2131",
-			status: "scheduled",
-			contract_version: 2,
-			notification_context: expect.stringContaining("summary_presentation"),
-		});
-		const rayaPayload = JSON.parse(rayaRound!.payload) as {
-			notification_context: string;
-			report_line: string;
-		};
-		expect(rayaPayload.report_line).toBe(
-			"本轮 0/1 份已交;未交:reflection-lead",
-		);
-		expect(rayaPayload.notification_context).not.toContain(
-			rayaPayload.report_line,
-		);
-		expect(rayaPayload.notification_context).not.toContain("无论本轮有没有");
-		expect(enqueueLeadEvent.mock.calls.at(-1)?.[0]).toMatchObject({
-			eventId: summaryAbsorptionRoundId(180_000),
-			event: {
-				event_type: "summary_absorption_round",
-				execution_id: summaryAbsorptionRoundId(180_000),
-			},
-		});
+		expect(rayaRound).toBeNull();
+		expect(
+			enqueueLeadEvent.mock.calls.some(
+				([envelope]) =>
+					envelope.event.event_type === "summary_absorption_round",
+			),
+		).toBe(false);
 	});
 
 	it.each([0, 2_000, 27_999, 29_999, 30_000, 32_000, 57_999, 59_999])(
@@ -822,9 +1256,108 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 		expect(JSON.parse(frozen!.payload)).toMatchObject({
 			delivered_count: 1,
 			absent: [],
-			report_line: "本轮 1/1 份已交。",
+			report_line: "本轮 1/1 份已交。 未读 open PR:1",
 		});
 		expect(listSummaryPulls).toHaveBeenCalledTimes(3);
+	});
+
+	it("issues the next frozen round when an open summary PR arrives after a silent freeze", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const cadenceMs = 60_000;
+			const firstSlotMs = 60_000;
+			const secondSlotMs = 120_000;
+			for (const slotStartMs of [firstSlotMs, secondSlotMs]) {
+				const slot = new Date(slotStartMs).toISOString();
+				store.appendSummaryDecisionRows(() => [
+					{
+						leadId: "quiet-lead",
+						eventId: `summary_due_skipped:growth/quiet-lead:${slot}`,
+						eventType: "summary_due_skipped",
+						payload: JSON.stringify({
+							event_type: "summary_due_skipped",
+							project_name: "growth",
+							summary_due_skipped: { period: `period-${slotStartMs}` },
+						}),
+					},
+				]);
+			}
+			let nowMs = secondSlotMs + 10_000;
+			let openUnread = false;
+			const pass = createSummaryAbsorptionPass({
+				projects: [
+					{
+						projectName: "raya",
+						projectRoot: "/tmp/raya",
+						leads: [{ agentId: "raya", summaryRole: "recipient" }],
+					} as never,
+				],
+				store,
+				enqueueLeadEvent: vi.fn(() => ({
+					queued: true as const,
+					deliveryId: "delivery",
+					seq: 1,
+				})),
+				inspectDeliveryState: vi.fn(() => ({
+					kind: "absent_identity" as const,
+				})),
+				readSummaryGranularity: vi.fn(() => ({
+					state: "selected" as const,
+					granularity: "per-lead" as const,
+					setBy: "founder",
+					setAt: "1970-01-01T00:00:00.000Z",
+				})),
+				listSummaryPulls: vi.fn(async () => ({
+					status: "ok" as const,
+					pulls: openUnread
+						? [
+								{
+									number: 25,
+									url: "https://github.com/xrliAnnie/raya/pull/25",
+									state: "OPEN" as const,
+									project: "growth",
+									lead: "quiet-lead",
+									headRefName: "summary/growth/quiet-lead/late",
+									createdAt: secondSlotMs + 1,
+								},
+							]
+						: [],
+				})),
+				alertFailure: vi.fn(async () => undefined),
+				cadenceMs: () => cadenceMs,
+				now: () => nowMs,
+			});
+
+			await pass();
+			const firstFrozen = store.getLeadEventByLeadAndId(
+				"summary-clock",
+				`summary_slot_settled:${new Date(firstSlotMs).toISOString()}`,
+			);
+			expect(JSON.parse(firstFrozen!.payload)).toMatchObject({
+				raya_round: "not_issued",
+				open_unread_count: 0,
+			});
+
+			openUnread = true;
+			nowMs += cadenceMs;
+			await pass();
+			const secondFrozen = store.getLeadEventByLeadAndId(
+				"summary-clock",
+				`summary_slot_settled:${new Date(secondSlotMs).toISOString()}`,
+			);
+			expect(JSON.parse(secondFrozen!.payload)).toMatchObject({
+				raya_round: "issued",
+				open_unread_count: 1,
+			});
+			expect(
+				store.getLeadEventByLeadAndId(
+					"raya",
+					summaryAbsorptionRoundId(secondSlotMs),
+				),
+			).not.toBeNull();
+		} finally {
+			store.close();
+		}
 	});
 
 	it("isolates one producer enqueue failure and retries only its absent identity", async () => {
@@ -1096,8 +1629,8 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 				})),
 				readSummaryGranularity: vi.fn(() => ({ state: "unselected" as const })),
 				listSummaryPulls: vi.fn(async () => ({
-					status: "ok" as const,
-					pulls: [],
+					status: "unavailable" as const,
+					reason: "fixture ledger unavailable",
 				})),
 				alertFailure: vi.fn(async () => undefined),
 				cadenceMs: () => 60 * 60_000,
@@ -1177,8 +1710,8 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 				})),
 				readSummaryGranularity: vi.fn(() => ({ state: "unselected" as const })),
 				listSummaryPulls: vi.fn(async () => ({
-					status: "ok" as const,
-					pulls: [],
+					status: "unavailable" as const,
+					reason: "fixture ledger unavailable",
 				})),
 				alertFailure: vi.fn(async () => undefined),
 				cadenceMs: () => cadenceMs,

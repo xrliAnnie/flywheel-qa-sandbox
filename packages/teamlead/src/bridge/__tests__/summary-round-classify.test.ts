@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 import type { SummaryPull } from "../summary-delivery-ledger.js";
 import {
 	classifyRound,
+	issueRayaRound,
 	type SummaryDueRoundRow,
+	type SummaryRoundResult,
 } from "../summary-round-classify.js";
 
 const PERIOD = "2026-09-07T00:00:00-07:00/2026-09-07T06:00:00-07:00";
@@ -63,6 +65,7 @@ describe("FLY-2382 summary round classification", () => {
 		};
 		const result = classifyRound(
 			[exact, wrongPeriod],
+			[],
 			{ status: "ok", pulls: [pull(exact), wrongPull] },
 			new Map([
 				[key(exact), live("DEAD")],
@@ -77,7 +80,7 @@ describe("FLY-2382 summary round classification", () => {
 			absent: ["product-lead"],
 			undelivered: ["eng-lead"],
 			report_line:
-				"本轮 1/2 份已交;未交:product-lead 未送达(机制问题,已告警):eng-lead",
+				"本轮 1/2 份已交;未交:product-lead 未送达(机制问题,已告警):eng-lead 未读 open PR:2",
 		});
 		expect(result.producers[0]).toMatchObject({
 			delivered: true,
@@ -90,6 +93,7 @@ describe("FLY-2382 summary round classification", () => {
 		const row = due("eng-lead");
 		const result = classifyRound(
 			[row],
+			[],
 			{ status: "ok", pulls: [{ ...pull(row), state: "CLOSED" }] },
 			new Map([[key(row), live("ACKED")]]),
 		);
@@ -165,6 +169,7 @@ describe("FLY-2382 summary round classification", () => {
 		const row = due("eng-lead");
 		const result = classifyRound(
 			[row],
+			[],
 			{ status: "ok", pulls: [] },
 			new Map([[key(row), settlement]]),
 		);
@@ -175,6 +180,7 @@ describe("FLY-2382 summary round classification", () => {
 		const row = due("eng-lead");
 		const result = classifyRound(
 			[row],
+			[],
 			{ status: "unavailable", reason: "gh exit 7" },
 			new Map([[key(row), live("DEAD")]]),
 		);
@@ -192,18 +198,50 @@ describe("FLY-2382 summary round classification", () => {
 		);
 	});
 
+	it("keeps the due disposition closed across all delivery and ledger states", () => {
+		const row = due("eng-lead");
+		const deliveries = [
+			["delivered", live("ACKED")],
+			["undelivered", live("DEAD")],
+			["unknown", "unknown"],
+		] as const;
+		const ledgers = [
+			[true, { status: "ok", pulls: [pull(row)] }],
+			[false, { status: "ok", pulls: [] }],
+			["unknown", { status: "unavailable", reason: "timeout" }],
+		] as const;
+
+		for (const [dueDelivery, settlement] of deliveries) {
+			for (const [delivered, ledger] of ledgers) {
+				const result = classifyRound(
+					[row],
+					[],
+					ledger,
+					new Map([[key(row), settlement]]),
+				);
+				expect(result.producers[0]).toMatchObject({
+					disposition: "due",
+					due_delivery: dueDelivery,
+					delivered,
+				});
+			}
+		}
+	});
+
 	it("renders complete and unexplained-difference branches without listing absent producers", () => {
 		const row = due("eng-lead");
 		expect(
 			classifyRound(
 				[row],
+				[],
 				{ status: "ok", pulls: [pull(row)] },
 				new Map([[key(row), live("ACKED")]]),
 			).report_line,
-		).toBe("本轮 1/1 份已交。");
+		).toBe("本轮 1/1 份已交。 未读 open PR:1");
 		expect(
 			classifyRound(
 				[row],
+				[],
 				{ status: "ok", pulls: [] },
 				new Map([[key(row), "unknown"]]),
 			).report_line,
@@ -219,6 +257,7 @@ describe("FLY-2382 summary round classification", () => {
 		];
 		const result = classifyRound(
 			rows,
+			[],
 			{ status: "ok", pulls: [] },
 			new Map(rows.map((row) => [key(row), live("ACKED")])),
 		);
@@ -236,5 +275,118 @@ describe("FLY-2382 summary round classification", () => {
 				return code < 32 || code === 127;
 			}),
 		).toBe(false);
+	});
+
+	it("keeps skipped producers out of due counts and adopts an unsolicited exact-period PR", () => {
+		const skipped = due("quiet-lead", "sub");
+		const result = classifyRound(
+			[],
+			[skipped],
+			{ status: "ok", pulls: [pull(skipped)] },
+			new Map(),
+		);
+
+		expect(result).toMatchObject({
+			roster_count: 1,
+			producer_count: 0,
+			delivered_count: 0,
+			skipped_count: 1,
+			skipped_delivered_count: 1,
+			open_unread_count: 1,
+			skipped: ["quiet-lead"],
+			absent: [],
+			undelivered: [],
+			delivery_unknown: [],
+		});
+		expect(result.producers).toEqual([
+			expect.objectContaining({
+				project: "sub",
+				lead: "quiet-lead",
+				period: PERIOD,
+				disposition: "skipped_but_delivered",
+				delivered: true,
+				due_delivery: "not_issued",
+				delivered_pr: expect.objectContaining({ number: 24 }),
+			}),
+		]);
+		expect(result.report_line).toContain("无变化跳过:quiet-lead");
+		expect(result.report_line).toContain("未读 open PR:1");
+		expect(issueRayaRound(result)).toBe(true);
+	});
+
+	it("does not turn skipped producers into healthy silence when the ledger is unavailable", () => {
+		const skipped = due("quiet-lead");
+		const result = classifyRound(
+			[],
+			[skipped],
+			{ status: "unavailable", reason: "timeout" },
+			new Map(),
+		);
+
+		expect(result).toMatchObject({
+			roster_count: 1,
+			skipped_count: 1,
+			skipped: ["quiet-lead"],
+			producers: [
+				{
+					project: "flywheel",
+					lead: "quiet-lead",
+					period: PERIOD,
+					disposition: "skipped_no_activity",
+					delivered: "unknown",
+					due_delivery: "not_issued",
+				},
+			],
+		});
+		expect(result).not.toHaveProperty("skipped_delivered_count");
+		expect(result).not.toHaveProperty("open_unread_count");
+		expect(issueRayaRound(result)).toBe(true);
+	});
+
+	it("keeps a proven quiet skip silent when there is no unread work", () => {
+		const skipped = due("quiet-lead");
+		const result = classifyRound(
+			[],
+			[skipped],
+			{ status: "ok", pulls: [] },
+			new Map(),
+		);
+
+		expect(result.producers[0]).toMatchObject({
+			disposition: "skipped_no_activity",
+			delivered: false,
+			due_delivery: "not_issued",
+		});
+		expect(result).toMatchObject({
+			producer_count: 0,
+			delivered_count: 0,
+			skipped_count: 1,
+			skipped_delivered_count: 0,
+			open_unread_count: 0,
+		});
+		expect(issueRayaRound(result)).toBe(false);
+	});
+
+	it.each([
+		["ledger unavailable", { round_ledger: "unavailable" }, true],
+		["delivered due", { delivered_count: 1 }, true],
+		["delivered skip", { skipped_delivered_count: 1 }, true],
+		["open unread", { open_unread_count: 1 }, true],
+		["undelivered", { undelivered: ["lead"] }, true],
+		["delivery unknown", { delivery_unknown: ["lead"] }, true],
+		["nothing to read", {}, false],
+	] as const)("issues a Raya round for %s", (_name, overrides, expected) => {
+		const result: SummaryRoundResult = {
+			round_ledger: "ok",
+			producer_count: 0,
+			delivered_count: 0,
+			producers: [],
+			absent: [],
+			undelivered: [],
+			delivery_unknown: [],
+			report_line: "",
+			...overrides,
+		};
+		expect(issueRayaRound(result)).toBe(expected);
 	});
 });

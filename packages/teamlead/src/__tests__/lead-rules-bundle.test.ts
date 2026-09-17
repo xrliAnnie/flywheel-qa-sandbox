@@ -231,6 +231,8 @@ trap -p EXIT`,
 		expect(summaryRule).toContain("原样使用事件里的 `--period`");
 		expect(summaryRule).toContain("唯一的节奏来源");
 		expect(summaryRule).toContain("可以不交");
+		expect(summaryRule).toContain("FLY-2634");
+		expect(summaryRule).toContain("只写增量");
 		const authority = readFileSync(
 			join(BASE_RULES_DIR, "founder-only-authority.md"),
 			"utf8",

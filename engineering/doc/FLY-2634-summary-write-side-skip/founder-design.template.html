@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2634 · summary 写侧省量：没事不叫、有事才报 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px; margin-bottom: 14px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 8px; margin-bottom: 14px; text-align: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .badge.done { background: #e8f8ee; color: #1d8a43; }
+  .badge.pending { background: #fff3e0; color: #c77400; }
+  .badge.hard { background: #fdebea; color: #c62d23; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 10px 14px; font-family: 'SF Mono', monospace; font-size: 12.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 8px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 40px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2634 · summary 写侧省量：没事不叫、有事才报</h1>
+  <div class="meta">Issue <span class="mono">FLY-2634</span> · 设计阶段 v4 · 2026-09-16 · 出自 Tadashi 的工程设计节点 · 属于 Epic FLY-2611（Raya 工程修复）· 上游 FLY-2382 / FLY-2619 · Codex 设计评审见文末</div>
+
+  <!-- S1 -->
+  <div class="section" data-section="一句话总结">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一句话总结</div>
+    <div class="card">
+      <p class="lede">现在每 6 小时 Bridge 会把 11 位部门 Lead 全部叫醒写 summary，可真正有东西可写的只有 3–5 位；其余的要么白醒一次，要么写一份「这段时间什么都没发生」的报告让 Raya 再读一遍。这一单让 Bridge 在叫人之前先翻它手里已经有的账——你有没有对这位 Lead 说话、有没有别的 Lead @它派活、Bridge 有没有推过业务事件、Linear 上这个项目的 issue 有没有新建或改状态——都是零而且每本账都读得到、证明得了完整，才不叫；任何一本读不到就照旧叫。不加定时器、不改节奏、不按项目名硬编码。</p>
+      <p class="jargon" style="margin-top:8px;">summary = 各项目 Lead 定期写给总管 Raya 的情况汇总（事实 + 判断）。Bridge = Flywheel 的中枢调度程序，一直在跑。Lead = 每个项目的 AI 负责人；Runner = Lead 派出去干具体活的 AI 工人。PR（pull request）= 往仓库交一份文件的提交单；Lead 交 summary 就是往 Raya 的仓库开一张 PR。token = AI 模型读写文字的计费单位，叫醒一次 Lead 就要重新读一遍它的规则和记忆，这是最贵的部分。Linear = 我们记 issue（任务单）的系统。</p>
+    </div>
+    <div class="card gray">
+      <h3>这次核实到的四件事（全部来自生产数据库的只读快照）</h3>
+      <table>
+        <tr><th>#</th><th>事实</th><th>怎么核的</th></tr>
+        <tr><td>1</td><td><b>每格叫 11 人、10–11 人真被叫醒、只有 3–5 人交。</b>最近 7 天 27 个时段无一例外。</td><td>生产 teamlead.db 按时段统计 summary_due 行数、已投递数；对账行里的 delivered_count。</td></tr>
+        <tr><td>2</td><td><b>静默项目的 Lead 最近 48–72 小时除了这口钟什么都没收到。</b>growth 三位、joycon、Belle、tidal-echo 内容 Lead、geoforge3d 两位：founder 消息 0、Runner 会话 0、业务事件 0。</td><td>lead_events 按 Lead 分类型计数；各项目 comm.db 的 mailbox 按发信人分类。</td></tr>
+        <tr><td>3</td><td><b>「空窗口摘要」确实存在，而且在自转。</b>geoforge3d 的 PR #145 开头是 "The window itself is empty"，#159 是 "第五个连续空时段"，正文写的是「Raya 审了我上一份摘要」。</td><td>直接读 Raya 仓的 PR 内容。</td></tr>
+        <tr><td>4</td><td><b>静默 Lead 收到的唯一「消息」是 bot 之间的对话。</b>product-lead 72 小时收到 Raya 10 条、Tadashi 7 条、Honey Lemon 5 条——都是关于摘要本身的互审。</td><td>mailbox 的 from_agent 字段：founder 本人标 founder，bot 标 discord:&lt;bot 编号&gt;，对照 projects.json 的 bot 编号。</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">第 4 条是关键：如果把 Raya 的审阅追问也当「有事」，Raya 每审一次摘要，下一轮就又有「事」可写，循环永远停不下来。所以 Raya 的消息永远不算；别的 Lead 明确 @这位 Lead 派活才算（Tadashi 的裁定）。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S2 -->
+  <div class="section" data-section="核心流程：叫人之前先翻账">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>核心流程：叫人之前先翻账</div>
+    <div class="diagram"><!--SVG:d1--></div>
+    <div class="diagram-caption">钟、名单、第一拍/第二拍都是 FLY-2382 已经上线的东西；这一单只在「叫人」前面插一道用现成数据做的判断。</div>
+    <div class="card green">
+      <h3>四类信号、三本账，分别看什么</h3>
+      <table>
+        <tr><th>账本</th><th>算「有事」</th><th>不算</th></tr>
+        <tr><td>A · 业务事件（Bridge 自己的账本 lead_events）</td><td>这段时间推给这位 Lead 的事件：Runner 提问、门等待、阶段变化、founder 回复、Epic 进件、Runner 派出/完成/失败、Runner 僵死检测……</td><td>钟本身、巡逻心跳、监控断线重连、投递机制的死信、配额切换确认、以及按类型就是「周期提醒」的两种（暂停提醒、僵死汇总）——一张写死的清单，清单之外的一律算有事</td></tr>
+        <tr><td>C · 消息（各项目的收件箱 mailbox）</td><td>你本人在 Discord 对这位 Lead 说的话；别的 Lead bot 在共享频道 @这位 Lead 的派活消息（当格就算）</td><td>Raya 的任何消息（审阅追问）、没 @它的 bot 闲聊、普通用户或没登记的 bot、Bridge 回执、Runner 的提问包</td></tr>
+        <tr><td>D · Linear（实时查一次）</td><td>这个项目绑定的 team 里 issue 的新建、状态、父子关系、优先级变化——你直接改 Linear 也算重要决定</td><td>评论、描述、标签、排序的改动。注意：Linear 没有可读的变更日志，「查了一遍没看到变化」证明不了「没发生」（issue 被删、被挪出 team 都看不见），所以绑了 Linear 的项目查到零也当「不知道」，不会被判「没事」；没绑 Linear 的项目记「未绑定」。今天只有 flywheel 绑了，而它本来每格都有事，所以静默项目不受影响</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">一开始的版本还看「Runner 会话表」（有没有 Runner 在跑），评审发现那张表的时间列会被后来的写入覆盖、行号会在整理数据库时重编，证明不了「上次看过之后有没有新东西」，所以去掉了。Runner 的派出和结束本来就会作为业务事件进账本 A，没有损失。</p>
+    </div>
+    <div class="card green">
+      <h3>三种结论，只有一种会「不叫」</h3>
+      <ul>
+        <li><b>有事</b>：任一本账有记录 ⇒ 照旧发 summary_due，并把计数一起带给 Lead（「本窗口观测：业务事件 12 · founder/派活消息 1 · Linear 变动 3」），Lead 判断更快。</li>
+        <li><b>没事</b>：每本账<b>都读得到、都能证明看全了</b>、都是零 ⇒ 不发，改写一行 summary_due_skipped 留证据，Lead 不被叫醒。</li>
+        <li><b>不知道</b>：任一本账读不到（数据库打不开、查询报错、Linear 超时、bot 编号没登记、上一次的游标丢了……） ⇒ 当「有事」处理，照旧叫。<b>不知道永远不会被写成没事。</b></li>
+      </ul>
+      <p class="jargon">「看全了」怎么证明：每本账都记一个游标（上次看到哪一行），这次只看游标之后新到的行，再补上时间戳落在本时段的旧行——这样 Bridge 停机后补录进来的旧消息也不会漏。游标写在这次的判断行里，和判断本身同一笔事务落盘；重启、重跑都不会漏掉谁、也不会叫两次。</p>
+    </div>
+    <div class="card amber">
+      <h3>Lead 那边的规则文字也改几句</h3>
+      <ul>
+        <li>没收到 summary_due 不是投递故障，也不是职责被取消；下一时段有事就会再叫。</li>
+        <li>收到时只写增量：没变的暂停/阻塞不复述；摘要 PR 本身、Raya 对摘要的审阅提问、对账机制都不算本时段的事实；「有 Runner 跑过」「有 commit」本身也不是增量，增量是它们带来的新成果、新决定、新阻塞或阻塞解除。</li>
+        <li>一次性请求（比如 FLY-2633 的六项目全景基线）由发起方的消息触发，走它给的时间段，与节奏无关、也不会变成周期义务——这条今天已经是这样，写明而已。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S3 -->
+  <div class="section" data-section="数据模型：账本里多一种行，对账多一种态">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>数据模型：账本里多一种行，对账多一种态</div>
+    <div class="diagram"><!--SVG:d2--></div>
+    <div class="diagram-caption">不建新表。lead_events 是 Bridge 给各 Lead 发事件的账本，FLY-2382 已经往里写三种行；这一单加第四种（summary_due_skipped），并让半小时后的对账认得它。</div>
+    <div class="card purple">
+      <h3>对账的四种结论，各自去哪</h3>
+      <table>
+        <tr><th>结论</th><th>意思</th><th>会不会告警</th><th>Raya 看不看</th></tr>
+        <tr><td>已交</td><td>找到本时段那张 PR</td><td>否</td><td>看（review + merge）</td></tr>
+        <tr><td>未交</td><td>叫醒了、没交——规则允许的沉默</td><td>否</td><td>后台记着，不催、不给你看名单（FLY-2619）</td></tr>
+        <tr><td>未送达 / 不可得</td><td>消息没进收件箱、或查不出状态——机制问题</td><td>照旧一格一条</td><td>看</td></tr>
+        <tr><td><b>无变化跳过</b>（新）</td><td>每本账都是零，压根没叫</td><td><b>否</b></td><td>后台记着，不进未交名单</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">如果某位被跳过的 Lead 自己算好时间段主动交了，记成「跳过但主动交付」，单独计数——主动汇报永远欢迎。原有的「应叫人数 / 已交人数」两个数字口径不变。</p>
+    </div>
+    <div class="card amber">
+      <h3>Raya 也不再为空轮被叫醒，晚交的 PR 也不会丢</h3>
+      <p>今天每个时段 Raya 都会收到一轮「开始吸收」事件，哪怕 0 张 PR。新规则用的就是你定下的读模型——<b>open 的 summary PR = Raya 未读，merge = 读回执</b>：对账时只要有本轮交付、或 Raya 仓里还有任何 open 的 summary PR、或账本查不到、或有投递故障，照旧给 Raya 发轮；<b>只有「没有任何未读且一切正常」才不发</b>，对账行里记一笔「本轮未建 Raya 轮」。谁在对账冻结之后才补交的 PR，下一次对账时还是 open，自然会触发一轮；Raya 轮首本来就自己列一遍 open PR 当未读队列（FLY-2131），不需要任何新的传递机制。已核对 FLY-2619 的呈现组机制：它只看每组的进度，不要求每个时段都有轮，不会因此误报。</p>
+    </div>
+    <div class="card gray">
+      <h3>一个开关，随时回到今天</h3>
+      <p>管理台新增 <span class="mono">summary_due_activity_gate</span>（默认开）。关掉 ⇒ 不翻账本、不写跳过行、消息文本与今天逐字相同，不用重启。重新打开的第一格因为没有游标会全员照旧叫一次，之后正常。回滚代码 = 撤销这张 PR；已写的跳过行是惰性数据，旧代码看不见它们。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S4 -->
+  <div class="section" data-section="关键取舍与否决的方案">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>关键取舍与被否决的方案</div>
+    <div class="card amber">
+      <h3>选了什么 · 为什么</h3>
+      <table>
+        <tr><th>取舍</th><th>选择</th><th>理由</th></tr>
+        <tr><td>门放在哪</td><td>Bridge 叫人之前</td><td>让 Lead 醒来后再判断「要不要交」等于先付钱再决定买不买；今天规则第 3 条就是这么写的，所以省不下来</td></tr>
+        <tr><td>「有事」怎么定义</td><td>四类信号：你说话 / 别的 Lead @它派活 / Bridge 推业务事件 / Linear 上 issue 新建或改状态</td><td>不是「有 Runner 才算」——你一句话就算；也不是「有 commit 才算」——账本里没有 git。Bridge 没有大模型，判不了「实质」，它只保证「真的什么都没发生的项目一定不被叫」，「只写增量」交给 Lead 的规则</td></tr>
+        <tr><td>Raya 的消息算不算</td><td>永远不算</td><td>否则 Raya 审一次摘要就制造下一轮「事」，正是你指出的自激循环；别的 Lead @它派活算（Tadashi 裁定）</td></tr>
+        <tr><td>不知道怎么办</td><td>当有事，照旧叫</td><td>你的要求：未知不能自动写成无变化；代价只是多叫一次</td></tr>
+        <tr><td>Raya 空轮</td><td>没有未读 PR 且一切正常就不发轮</td><td>同一个道理，读的那头也别为空报告醒来；任何机制异常仍照旧发</td></tr>
+        <tr><td>Runner 僵死这类「旧阻塞」反复提醒</td><td>每条新落账的检测记录叫醒一次</td><td>评审证明「同一个阻塞的第一次 vs 后续」在现有数据里判不出来（事件的会话键是 issue 级的，最早那条 7 天后还会被归档）；与其冒险把新阻塞当旧的吞掉，不如按记录叫。实际上同一个 Runner 的僵死记录只会落一条（按 Runner 编号去重），所以不会每格都叫</td></tr>
+      </table>
+    </div>
+    <div class="card red">
+      <h3>否决的方案</h3>
+      <ul>
+        <li><b>给 Lead 加一条「本轮无更新」的回执命令</b>：Lead 还是得醒来才能回这句话，writer 端一分不省；FLY-2382 当时就是这么否的。</li>
+        <li><b>改节奏或按项目关掉职责</b>：你明令不改六小时、不按项目名硬编码；关掉也无法在「静默转活跃」时自动恢复。</li>
+        <li><b>让 Raya 那头过滤空摘要</b>：写的钱已经花了，Raya 还得先读一遍才知道是空的。</li>
+        <li><b>给「晚交的 PR」做一套认领回执</b>（评审第二轮的版本）：三轮评审证明它在崩溃重放时会重复认领或永久丢失；改用「open = 未读」这条你已经定下的规则后，整套机制都不需要了。</li>
+        <li><b>再加 git 探针</b>：本版不做（Tadashi 裁定，见边界 L1）；探针是按来源列表设计的，以后要加只是多一个来源，不改对账。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S5 -->
+  <div class="section" data-section="一周会是什么样">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>上线后一周会是什么样</div>
+    <div class="diagram"><!--SVG:d3--></div>
+    <div class="diagram-caption">按今天的数据推算：每格从叫醒 10–11 位降到 3–5 位，静默项目连续多格零唤醒、零空 PR；你在某个静默项目频道说一句话、或别的 Lead @它派活、或你在 Linear 上改了状态，下一格那位 Lead 就会被叫、交一份增量。</div>
+    <div class="card green">
+      <h3>验收怎么量（不是比文字长短）</h3>
+      <ul>
+        <li><b>唤醒次数</b>：每格 summary_due 的「已投递」行数——这是 token 的直接驱动量；目标静默 Lead 为 0，并且连续 12 格（72 小时，跨过收件箱归档的时点）不出现莫名其妙的「不知道」。</li>
+        <li><b>跳过次数</b>：每格 summary_due_skipped 行数，目标 7–8。</li>
+        <li><b>活跃 Lead 的交付逐格列出、Raya 轮在没有未读 PR 的格为 0。</b></li>
+        <li>正向样例：你在静默频道说一句话 ⇒ 下一格被叫（必须你本人发，QA 不能冒充你）；静默项目派一个 Runner ⇒ 下一格被叫；别的 Lead @它派活 ⇒ 当格被叫；你在 Linear 改一张 flywheel issue 的状态 ⇒ 当格被叫。反向样例：某项目数据库打不开 ⇒ 照旧叫、绝不写跳过；对账冻结后才补交的 PR ⇒ 下一次对账照样给 Raya 发轮。</li>
+        <li>合入的 SHA、部署回执、生效后第一个完整时段的快照，三样分开列，不混着说；三份快照（Bridge 库、各项目收件箱、GitHub）各记取样时刻。</li>
+      </ul>
+      <p class="jargon">token 的绝对数在 Bridge 里读不到（Claude 桌面版 Lead 没有用量账本），所以以「唤醒次数」为准，QA 可另抽一位静默 Lead 的会话看它 6 小时内确实没有新 turn。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S6 -->
+  <div class="section" data-section="诚实边界：做什么、不做什么">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>诚实边界：这一单做什么、不做什么</div>
+    <div class="card green">
+      <h3>做到的</h3>
+      <ul>
+        <li><span class="badge done">做</span>已知没事的项目不被叫醒、不产生空 PR、不重复旧暂停/旧阻塞。</li>
+        <li><span class="badge done">做</span>你说话、别的 Lead @它派活、Bridge 推业务事件、Linear 上改 issue 四者任一都算有事；静默转活跃自动恢复，没有永久关闭。</li>
+        <li><span class="badge done">做</span>跳过、未交、未送达/不可得四态分开记；跳过不催不告警；不知道不写成没事；晚交的 PR 靠「open = 未读」照样进 Raya 的轮。</li>
+        <li><span class="badge done">做</span>零新进程、零新 LLM 调用、零新表；一个开关可随时回到今天。</li>
+        <li><span class="badge done">做</span>一次性基线不受影响，也不会升级成周期义务。</li>
+      </ul>
+    </div>
+    <div class="card red">
+      <h3>不做 / 需要你知道的</h3>
+      <table>
+        <tr><th>#</th><th>限制</th><th>为什么这版不做</th></tr>
+        <tr><td>L1</td><td>你直接往项目仓 push、既不经 Discord 也不经 Linear 也不起 Runner——这版看不见，不会因此叫醒</td><td>Tadashi 裁定本版继续排除；以后要加只是多一个来源</td></tr>
+        <tr><td>L2</td><td>没 @那位 Lead 的 bot 间对话不算有事；Raya 的消息永远不算</td><td>否则自激循环回来</td></tr>
+        <tr><td>L3</td><td>被叫醒但沉默的 Lead 仍记「未交」，没有 Lead 侧「无更新」回执</td><td>回执也要唤醒，省不了 writer</td></tr>
+        <tr><td>L5</td><td>Runner 僵死这类阻塞每落一条新记录就叫醒 Lead 一次（同一个 Runner 通常只有一条）</td><td>「同一个阻塞的第一次 vs 后续」在现有数据里判不出来，宁多勿少</td></tr>
+        <tr><td>L7</td><td>Linear 这本账只对绑了 Linear 的项目生效（今天只有 flywheel），只看新建/状态/父子/优先级；查到零算「不知道」，所以绑了 Linear 的项目这一版永远不会被判「没事」（只多叫，不少叫）</td><td>给项目绑 Linear 是配置动作，不在这一单；Linear 没有变更日志，被删除、被挪出 team 的 issue 证明不了「没发生」；要让绑定项目也能省，需要后续单做一份持久的 Linear 观测记录</td></tr>
+        <tr><td>L8</td><td>一张一直没 merge 的 summary PR 会让每个时段都给 Raya 发轮</td><td>这就是「open = 未读」的本意，和今天每格一轮一样，Raya merge 即止</td></tr>
+      </table>
+    </div>
+    <div class="card gray">
+      <h3>需要你拍一句的（不阻塞，默认按 Tadashi 的裁定推进）</h3>
+      <p>Tadashi 已经替你拍了三条：Linear 算第四本账、别的 Lead @它派活当格就算、git 直推这版不看。如果你希望静默项目（geoforge3d、joycon、Belle、growth、tidal-echo）也享受 Linear 这本账，需要在 projects.json 里给它们绑上 Linear 的 team——那是一次配置，说一声即可。</p>
+    </div>
+    <div class="card gray">
+      <h3>评审状态（如实）</h3>
+      <p id="review-status">Codex 设计评审四轮：前三轮每轮都提出新的攻击面并全部吸收进方案（去掉不可靠的 Runner 会话表、游标改用不会被归档影响的序号、晚交改用「open = 未读」、Linear 加入、bot 身份缺失当不知道处理）；第四轮为核验轮：七项里五项确认已解决，剩下两项（Linear 查到零不能算「没事」、上游文档残留）已在 v5 吸收。按 Tadashi 的裁定以 Lead 验收收口，逐项处理记录见 plan.md §7。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- Summary card -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集你在各节写的意见；点按钮一键复制，贴回给 Tadashi 即可。这是修改意见，不是通过信号。</p>
+      <div id="summary-body">（还没有意见）</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2634";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2634-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2634-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败，请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "（还没有意见）"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长，已拆成 " + chunks.length + " 段，请逐段复制：";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n（无意见）", "已复制（无意见）"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -301,6 +301,31 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Strict integer milliseconds in [60000,2592000000]; invalid seed or management writes fail loudly.",
 	},
 	{
+		name: "summary_due_activity_gate",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SUMMARY_DUE_ACTIVITY_GATE",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2634: skip the summary_due wake for a producer whose period shows no founder or dispatch message, business event or Linear change",
+		whenOn:
+			"每个 summary 节奏点先看该项目本 period 有没有 founder 或派活消息、业务事件、Linear 变动；都没有且观测完整就不叫醒该 Lead",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeSummaryDueActivityGateEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2634 reads the summary activity gate at call time",
+	},
+	{
 		name: "alert_system",
 		category: "kill_switch",
 		source: "env",
