@@ -22,6 +22,7 @@ import { SqliteJournalStore } from "../../lead-backends/codex/SqliteJournalStore
 import { LEAD_CAPABILITY_CATALOG } from "../catalog.js";
 import { startDefaultLeadCapabilityParent } from "../default-runtime.js";
 import { NATIVE_CODEX_SKILL_NAMES } from "../native-skills.js";
+import { UPSTREAM_TOOL_ROWS } from "../upstream-inputs.js";
 
 const state = vi.hoisted(() => ({
 	project: "",
@@ -130,7 +131,14 @@ async function upstream(id: string) {
 	return {
 		handlers: new Map(
 			LEAD_CAPABILITY_CATALOG.filter(
-				(op) => op.credentialConsumer === id && op.classification === "read",
+				(op) =>
+					op.credentialConsumer === id &&
+					op.classification === "read" &&
+					(id !== "xiaohongshu-mcp" ||
+						UPSTREAM_TOOL_ROWS.some(
+							(row) =>
+								row.serverId === id && row.operationId === op.operationId,
+						)),
 			).map((op) => [
 				op.operationId,
 				{

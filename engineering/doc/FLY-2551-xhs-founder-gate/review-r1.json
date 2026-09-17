@@ -1,0 +1,189 @@
+{
+  "request_id": "9d472603-6a41-403b-951f-f737d42cfa06",
+  "question_id": "741d8b12-c3b3-45e4-ac87-a32fd59c805f",
+  "reviewer_session_uuid": "0c1b3c2d-e0cc-4f42-b938-4b58996db447",
+  "verdict": "CHANGES_REQUESTED",
+  "reviewer_verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": "isolation-mechanism-unspecified",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 44,
+      "title": "§2.2 的隔离前提没有任何机制设计，而当前所有主体同 UID 共存，T6/A9 无可达出口",
+      "detail": "整个设计的授权保证(\"Lead 绝不能绕过\")完全压在 §2.2 的一句要求上：Lead 不可达 provider 私有端口、不可读 cookie/签名密钥/Bridge 凭据、不可写 store 目录、不可 inspect 可信进程。实测当前基线全部相反：Bridge(`npm exec tsx scripts/run-bridge.ts`)、Lead(tmux `claude --dangerously-skip-permissions`)、provider LaunchAgent(`com.codex.xiaohongshu-mcp.plist`)全部以 UID xiaorongli 运行；`~/.flywheel/teamlead.db` 是 0644 同属主且仓内数十个脚本直接 sqlite3 查询它，因此任何 Lead/Runner 进程可以直接 `INSERT INTO xhs_write_decision ... decision='approved'` —— 这一步就把 §5 的全部 founder 绑定短路了；`~/.config/xiaohongshu-mcp/cookies.json` 虽 0600 但同属主可读；provider 监听 127.0.0.1:18060 无任何认证(routes.go:24-53)且 `Access-Control-Allow-Origin: *`(middleware.go)。计划从未命名实现机制(独立 UID？LaunchDaemon？sandbox-exec 规则集？),也未处理两个结构性障碍：(a) Bridge 自己 spawn Lead 进程,子进程默认继承父进程 principal,不降权就永远同主体；(b) provider 跑的是 headed 浏览器(`-headless=false`,需要 founder 的 Aqua 会话),这挡住了\"换成非 GUI service account\"这个最自然的答案。同时也没写 HMAC permit key 与回执账本落在哪个 principal 拥有的路径下,以及 §9 T6 的 `verify-xhs-write-boundary.mjs` 探针的通过判据是什么、由谁签字。后果：按本计划实施后,要么 A9/T7 永远无法通过(能力永久停在 boundary_unproven,整单白做),要么探针被以弱证据放行(本库 verification-discipline 反复记录的失效模式),而弱证据下 gate 一旦 on,同 UID 的 Lead 可以直接写 decision 表铸出\"founder 批准\"。请在计划内增加一节：明确 principal 拓扑(谁是哪个 uid/沙箱)、spawn 时如何降权、key 与 ledger 的属主与权限位、headed 浏览器如何与隔离共存、以及每条探针的命令与 pass/fail 判据。"
+    },
+    {
+      "id": "principal-set-omits-runners",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 44,
+      "title": "受保护主体按角色枚举(Lead 及其子进程),漏掉 Runner 与其他同用户 agent 会话",
+      "detail": "§2.2 只枚举\"全部受管 Claude/Codex Lead 及其 MCP/浏览器/终端子进程\",§11 的例外也只排除\"独立管理员/root\"。但 Flywheel 的 Runner 是 Bridge run-dispatcher 直接 spawn 的 tmux Claude 会话(不是 Lead 的子进程),本机还有其它同用户 Lead/会话(如 growth 的 Mufasa lead),它们同样以 UID xiaorongli 运行、同样带 --dangerously-skip-permissions,今天即可读 cookies.json、直连 18060、写 teamlead.db。以角色清单定义边界,实施方会照单实现\"Lead 被挡住\"然后宣称 A9 通过,而实际写能力仍开放。建议边界按 principal 定义(\"任何以模型 principal 运行的进程\"),并在 §10 A9 增加一行以 Runner 会话作为探针主体的否证。"
+    },
+    {
+      "id": "video-preview-exceeds-discord-limits",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 105,
+      "title": "512MiB 视频上限与\"必须在 Discord 完整预览、禁止缩略图、禁止公开 report URL\"三条互相矛盾",
+      "detail": "§4 同时规定：单视频上限 512MiB；审核预览只走 founder 私有 thread 的附件/私有媒体读取；\"视频提供完整播放/下载,不以缩略图代替\";通用 7 日公开 report URL 不能作为唯一批准预览凭据；预览未能完整交付则 proposal 停在 awaiting_delivery、无批准入口。Discord 的 bot 附件上限远低于 512MiB(按 guild boost 档,数十 MB 量级),因此任何超过该上限的视频都没有任何合规的预览通道,`publish_with_video` 这条路径在 v1 结构性不可用,且失败形态是静默卡在 awaiting_delivery(founder 只看到一张永不可批准的卡)。请二选一并写进计划：(a) v1 视频硬上限降到 Discord 实际附件上限,超限直接在 prepare 阶段以固定码拒绝；或 (b) 定义一条边界内的完整保真预览通道(founder 认证、绑定 manifest digest 的本地/主机作用域流),并把它纳入 §10 A13 的判据。"
+    },
+    {
+      "id": "approval-window-vs-lead-notification",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 122,
+      "title": "批准 15 分钟消费窗按 messageCreatedAt 计,却没有设计任何\"批准已落盘\"到 Lead 的唤醒路径",
+      "detail": "§5 第 4 条把 expiresAt 钉在 `min(proposalExpiresAt, messageCreatedAt+15min)`,并明确\"按消息创建时间而非迟到观测延长\"。但全文(grep 唤醒/wake/通知/轮询/mailbox 均无命中)没有说明 Lead 如何得知批准已落盘：§7.1 只给了 `write.status` 只读查询。本库已记录的行为是信箱只在 turn 边界注入,Lead 常常 park 远超 15 分钟;observer 本身还有 15s 轮询 + 429 退避。结果是常态路径为：founder 认真审完并批准 → 15 分钟内无人消费 → 回执静默过期 → 必须重新出卡重新批准,而 founder 侧没有任何提示。请补：批准落盘后的 Lead 唤醒/投递路径(以及唤醒失败时的 founder 回执)、窗口取值依据,并在 §10 增加一行\"已批准但未在窗口内消费\"的验收(期望：0 次外部写 + founder 可见的过期回执)。"
+    },
+    {
+      "id": "challenge-format-and-exact-match",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 120,
+      "title": "32 位 hex 被描述为\"短码\",且要求字节精确匹配、不做任何规范化,与本仓既有 founder 指令协议和移动端输入现实冲突",
+      "detail": "§1 说 challenge 是\"随机短码\",§5 第 2 条定义为 crypto.randomBytes(16) 的 32 位 hex,且全文必须精确等于 `批准本次 <challenge>`(只允许末尾一个换行)。两处自相矛盾,而且 32 位 hex 在 Discord 手机端要求 founder 精确复现;本仓既有的 founder 卡协议(`workflow-rework-hint.ts:190-212` normalizeFounderCardProtocolText / isFixedFounderCardApproval)恰恰做 NFKC + trim + 去尾部标点,正是为了吸收中文 IME 的全角字符、尾随空格与自动标点。本设计反其道而行且不给 founder 任何\"码不对\"的反馈(§8 的拒绝码只面向模型),失败形态是 founder 反复发消息而系统一声不吭 —— 对一个以 founder 控制为唯一目的的门,这是可用性硬伤。建议：(a) 指令文本(不是 payload)采用与既有协议一致的受限规范化,并在计划里写明规范化只作用于命令行文本、绝不作用于 FrozenWrite；(b) challenge 改为不含易混字符的 6–8 位短码(绑定强度本来就来自 reply reference + proposal 绑定 + 速率限制,而非熵);(c) 定义\"回复了卡但码不匹配\"的 founder 可见回执。"
+    },
+    {
+      "id": "ship-classifier-cross-talk",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 113,
+      "title": "\"XHS 消息不得进 ship classifier\"只写成要求,没有落点与线程互斥规则,反向串扰(XHS 批准语被判成 ship 批准)也不在验收矩阵里",
+      "detail": "§5/T4 要求独立待审 thread 列表且\"XHS消息不得传ship classifier处理\",但没有指定强制点,也没有要求 XHS 卡所在 thread 与 ship/opinion ingress 轮询的 thread 互斥。现状是 `bridge/founder-reply-deliverer.ts` 会在已注册 thread 里抓 founder 消息并交给 ship 归因链,其 Tier-3 `bridge/approval-signal/founder-ship-approval-classifier.ts` 是 LLM 判别,`replyToCard` 只是\"放宽短肯定\"的可选输入而非绑定条件 —— 也就是说,founder 在一个同时挂着 pending approve_to_ship 的 thread 里回复 `批准本次 <code>`,这段明显是批准语气的中文完全可能被判成该 ship gate 的 approve,造成未经审阅的 PR 被 land。§10 A4 只覆盖了反方向(ship receipt 不能批准 XHS)。请补：XHS 卡只允许发到 ship/opinion ingress 永不轮询的 thread(或在 deliverer 按 card_id 显式抑制),并在 §10 增加一行\"XHS 协议文本在任何 thread 中产生 0 个 ship 批准\"的否证测试。"
+    },
+    {
+      "id": "ledger-cotenancy-durability",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 131,
+      "title": "回执账本与 StateStore 共用 teamlead.db：FULL/fullfsync 保证会被同库 NORMAL 连接的 checkpoint 稀释,且 DB 生命周期不归写者所有",
+      "detail": "§6 要求专用连接 WAL + synchronous=FULL + macOS fullfsync,并声称启动回读实际值不合格即关服。但同一文件上的 StateStore 连接实测是 `synchronous = NORMAL`(StateStore.ts:4157-4160),并且由它执行 `wal_checkpoint(TRUNCATE)`、迁移(4412 行 `foreign_keys = OFF`)、备份/恢复；pragma 是连接级的,写者的 fullfsync 管不到别人发起的 checkpoint 把 WAL 帧落盘的那一次 sync。生产 `~/.flywheel/teamlead.db` 现为 1.7GB 且被大量脚本直接读写,进一步放大\"账本生命周期不归写者所有\"的问题。虽然 §7.2 的 provider 墓碑在多数情况下兜住了\"消费记录丢失 → 回执复活\",但计划把 durability 说成已由 FULL 保证是过强的。建议：write ledger 单独一个 DB 文件(属主与 §2.2 的 principal 一致,顺带解决 finding isolation-mechanism-unspecified 里的可写问题),或在 §6/§10 A14 明确写出\"fullfsync 不覆盖同库他方 checkpoint,残余风险由 provider 墓碑兜底\"。"
+    },
+    {
+      "id": "provider-lease-browser-lifecycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 194,
+      "title": "120s 账号独占 lease 跨两次 RPC 持有同一 browser/page,与 fork 现有 per-call withBrowserPage 模型冲突,且该 fork 刚修完 chromium 泄漏",
+      "detail": "§7.2 要求 prepareExecution 建立最多 120s 的账号独占 lease 并在 commitExecution 复用同一个 browser/page。fork 基线 cf70792 的实现是每次操作 `withBrowserPage`(service.go:664-672)开关一个 headed 浏览器,而该基线的最近一次合并正是 `fix/fly-2024-chromium-leak`(附 service_cleanup_test.go / service_timeout_test.go)。跨 RPC 长持 page 是对这块刚稳定下来的生命周期的实质改动,计划没有要求 lease 到期/崩溃时的强制 teardown、并发 lease 上限(应为 1)、以及泄漏断言。建议在 T5 勾选项里加：lease 超时必 Close、进程重启后无孤儿 Chromium、并发第二个 prepareExecution 必须被拒(而不是新开浏览器)。"
+    },
+    {
+      "id": "provider-cors-and-surface",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 192,
+      "title": "未要求收掉 fork 的通配 CORS 与既有开放监听面,新私有协议若与其同引擎并存会留下浏览器可达面",
+      "detail": "fork 现状：gin 引擎全局挂 `corsMiddleware()`,对所有路由返回 `Access-Control-Allow-Origin: *`,且 `/mcp`、`/mcp/*path` 与 `/api/v1/*` 全部无认证(middleware.go, routes.go:24-53)。§7.2 只说旧写入口 403、私有协议用独立 service identity/mTLS,没说通配 CORS 要不要撤、新受保护端点是否与开放引擎共用监听器。若共用,任何模型可驱动的浏览器(2519 的 browser 能力)在访问任意页面时都能对 127.0.0.1:18060 发跨源请求并读到响应。建议在 T5 明确列出：新守卫端点用独立监听器(优先 UDS)、移除或收窄通配 CORS、并把必须 403 的路由清单逐条钉死(含 `/mcp/*path` 通配与 REST 别名)。"
+    },
+    {
+      "id": "no-rate-limit-on-proposals",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 183,
+      "title": "prepare 没有每 Lead/每项目的待审上限或发卡速率限制",
+      "detail": "§4 只有容量上限(全局 2GiB、单 proposal 512MiB),§7.1 的 prepare 无任何频次或 pending 数量约束。一个陷入循环的 Lead 可以连续 prepare,把 founder 的审核 thread 刷满(注意力 DoS)、打满 Discord 发消息速率、并吃光媒体预算导致合法请求被 `durability/容量` 类拒绝。建议增加：每 Lead 的 awaiting_approval 上限与发卡速率上限,超限用固定拒绝码(计入 §8 表),并在 §10 增加一行验收。"
+    },
+    {
+      "id": "message-content-intent",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 115,
+      "title": "未指明 observer 用哪个 bot token 重取原消息,以及 content 取不到时的可区分拒绝",
+      "detail": "§5 的整个校验链建立在\"trusted refetch 拿到 content 原文\"之上,但没写 refetch 用的是发卡的可信 XHS card bot 的 token 还是 Bridge 通用 bot 的 token。Discord 的 Message Content 属于特权 intent,拿不到时 REST 返回的 content 会是空串,而不是错误 —— 在本设计里它会被当成\"文本不精确匹配\"静默丢弃,founder 得不到任何反馈(与 finding challenge-format-and-exact-match 叠加后更难诊断)。建议：钉死 refetch 使用发卡 bot 的凭据、把\"content 不可得\"做成与\"码不匹配\"不同的固定拒绝码与 founder 可见回执,并在 T4 的错误注入用例里补一条空 content 的 fixture。"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "principal-set-omits-runners",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 44,
+      "title": "受保护主体按角色枚举(Lead 及其子进程),漏掉 Runner 与其他同用户 agent 会话",
+      "detail": "§2.2 只枚举\"全部受管 Claude/Codex Lead 及其 MCP/浏览器/终端子进程\",§11 的例外也只排除\"独立管理员/root\"。但 Flywheel 的 Runner 是 Bridge run-dispatcher 直接 spawn 的 tmux Claude 会话(不是 Lead 的子进程),本机还有其它同用户 Lead/会话(如 growth 的 Mufasa lead),它们同样以 UID xiaorongli 运行、同样带 --dangerously-skip-permissions,今天即可读 cookies.json、直连 18060、写 teamlead.db。以角色清单定义边界,实施方会照单实现\"Lead 被挡住\"然后宣称 A9 通过,而实际写能力仍开放。建议边界按 principal 定义(\"任何以模型 principal 运行的进程\"),并在 §10 A9 增加一行以 Runner 会话作为探针主体的否证。",
+      "findingKey": "principal-set-omits-runners"
+    },
+    {
+      "id": "video-preview-exceeds-discord-limits",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 105,
+      "title": "512MiB 视频上限与\"必须在 Discord 完整预览、禁止缩略图、禁止公开 report URL\"三条互相矛盾",
+      "detail": "§4 同时规定：单视频上限 512MiB；审核预览只走 founder 私有 thread 的附件/私有媒体读取；\"视频提供完整播放/下载,不以缩略图代替\";通用 7 日公开 report URL 不能作为唯一批准预览凭据；预览未能完整交付则 proposal 停在 awaiting_delivery、无批准入口。Discord 的 bot 附件上限远低于 512MiB(按 guild boost 档,数十 MB 量级),因此任何超过该上限的视频都没有任何合规的预览通道,`publish_with_video` 这条路径在 v1 结构性不可用,且失败形态是静默卡在 awaiting_delivery(founder 只看到一张永不可批准的卡)。请二选一并写进计划：(a) v1 视频硬上限降到 Discord 实际附件上限,超限直接在 prepare 阶段以固定码拒绝；或 (b) 定义一条边界内的完整保真预览通道(founder 认证、绑定 manifest digest 的本地/主机作用域流),并把它纳入 §10 A13 的判据。",
+      "findingKey": "video-preview-exceeds-discord-limits"
+    },
+    {
+      "id": "approval-window-vs-lead-notification",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 122,
+      "title": "批准 15 分钟消费窗按 messageCreatedAt 计,却没有设计任何\"批准已落盘\"到 Lead 的唤醒路径",
+      "detail": "§5 第 4 条把 expiresAt 钉在 `min(proposalExpiresAt, messageCreatedAt+15min)`,并明确\"按消息创建时间而非迟到观测延长\"。但全文(grep 唤醒/wake/通知/轮询/mailbox 均无命中)没有说明 Lead 如何得知批准已落盘：§7.1 只给了 `write.status` 只读查询。本库已记录的行为是信箱只在 turn 边界注入,Lead 常常 park 远超 15 分钟;observer 本身还有 15s 轮询 + 429 退避。结果是常态路径为：founder 认真审完并批准 → 15 分钟内无人消费 → 回执静默过期 → 必须重新出卡重新批准,而 founder 侧没有任何提示。请补：批准落盘后的 Lead 唤醒/投递路径(以及唤醒失败时的 founder 回执)、窗口取值依据,并在 §10 增加一行\"已批准但未在窗口内消费\"的验收(期望：0 次外部写 + founder 可见的过期回执)。",
+      "findingKey": "approval-window-vs-lead-notification"
+    },
+    {
+      "id": "challenge-format-and-exact-match",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 120,
+      "title": "32 位 hex 被描述为\"短码\",且要求字节精确匹配、不做任何规范化,与本仓既有 founder 指令协议和移动端输入现实冲突",
+      "detail": "§1 说 challenge 是\"随机短码\",§5 第 2 条定义为 crypto.randomBytes(16) 的 32 位 hex,且全文必须精确等于 `批准本次 <challenge>`(只允许末尾一个换行)。两处自相矛盾,而且 32 位 hex 在 Discord 手机端要求 founder 精确复现;本仓既有的 founder 卡协议(`workflow-rework-hint.ts:190-212` normalizeFounderCardProtocolText / isFixedFounderCardApproval)恰恰做 NFKC + trim + 去尾部标点,正是为了吸收中文 IME 的全角字符、尾随空格与自动标点。本设计反其道而行且不给 founder 任何\"码不对\"的反馈(§8 的拒绝码只面向模型),失败形态是 founder 反复发消息而系统一声不吭 —— 对一个以 founder 控制为唯一目的的门,这是可用性硬伤。建议：(a) 指令文本(不是 payload)采用与既有协议一致的受限规范化,并在计划里写明规范化只作用于命令行文本、绝不作用于 FrozenWrite；(b) challenge 改为不含易混字符的 6–8 位短码(绑定强度本来就来自 reply reference + proposal 绑定 + 速率限制,而非熵);(c) 定义\"回复了卡但码不匹配\"的 founder 可见回执。",
+      "findingKey": "challenge-format-and-exact-match"
+    },
+    {
+      "id": "ship-classifier-cross-talk",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 113,
+      "title": "\"XHS 消息不得进 ship classifier\"只写成要求,没有落点与线程互斥规则,反向串扰(XHS 批准语被判成 ship 批准)也不在验收矩阵里",
+      "detail": "§5/T4 要求独立待审 thread 列表且\"XHS消息不得传ship classifier处理\",但没有指定强制点,也没有要求 XHS 卡所在 thread 与 ship/opinion ingress 轮询的 thread 互斥。现状是 `bridge/founder-reply-deliverer.ts` 会在已注册 thread 里抓 founder 消息并交给 ship 归因链,其 Tier-3 `bridge/approval-signal/founder-ship-approval-classifier.ts` 是 LLM 判别,`replyToCard` 只是\"放宽短肯定\"的可选输入而非绑定条件 —— 也就是说,founder 在一个同时挂着 pending approve_to_ship 的 thread 里回复 `批准本次 <code>`,这段明显是批准语气的中文完全可能被判成该 ship gate 的 approve,造成未经审阅的 PR 被 land。§10 A4 只覆盖了反方向(ship receipt 不能批准 XHS)。请补：XHS 卡只允许发到 ship/opinion ingress 永不轮询的 thread(或在 deliverer 按 card_id 显式抑制),并在 §10 增加一行\"XHS 协议文本在任何 thread 中产生 0 个 ship 批准\"的否证测试。",
+      "findingKey": "ship-classifier-cross-talk"
+    },
+    {
+      "id": "ledger-cotenancy-durability",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 131,
+      "title": "回执账本与 StateStore 共用 teamlead.db：FULL/fullfsync 保证会被同库 NORMAL 连接的 checkpoint 稀释,且 DB 生命周期不归写者所有",
+      "detail": "§6 要求专用连接 WAL + synchronous=FULL + macOS fullfsync,并声称启动回读实际值不合格即关服。但同一文件上的 StateStore 连接实测是 `synchronous = NORMAL`(StateStore.ts:4157-4160),并且由它执行 `wal_checkpoint(TRUNCATE)`、迁移(4412 行 `foreign_keys = OFF`)、备份/恢复；pragma 是连接级的,写者的 fullfsync 管不到别人发起的 checkpoint 把 WAL 帧落盘的那一次 sync。生产 `~/.flywheel/teamlead.db` 现为 1.7GB 且被大量脚本直接读写,进一步放大\"账本生命周期不归写者所有\"的问题。虽然 §7.2 的 provider 墓碑在多数情况下兜住了\"消费记录丢失 → 回执复活\",但计划把 durability 说成已由 FULL 保证是过强的。建议：write ledger 单独一个 DB 文件(属主与 §2.2 的 principal 一致,顺带解决 finding isolation-mechanism-unspecified 里的可写问题),或在 §6/§10 A14 明确写出\"fullfsync 不覆盖同库他方 checkpoint,残余风险由 provider 墓碑兜底\"。",
+      "findingKey": "ledger-cotenancy-durability"
+    },
+    {
+      "id": "provider-lease-browser-lifecycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 194,
+      "title": "120s 账号独占 lease 跨两次 RPC 持有同一 browser/page,与 fork 现有 per-call withBrowserPage 模型冲突,且该 fork 刚修完 chromium 泄漏",
+      "detail": "§7.2 要求 prepareExecution 建立最多 120s 的账号独占 lease 并在 commitExecution 复用同一个 browser/page。fork 基线 cf70792 的实现是每次操作 `withBrowserPage`(service.go:664-672)开关一个 headed 浏览器,而该基线的最近一次合并正是 `fix/fly-2024-chromium-leak`(附 service_cleanup_test.go / service_timeout_test.go)。跨 RPC 长持 page 是对这块刚稳定下来的生命周期的实质改动,计划没有要求 lease 到期/崩溃时的强制 teardown、并发 lease 上限(应为 1)、以及泄漏断言。建议在 T5 勾选项里加：lease 超时必 Close、进程重启后无孤儿 Chromium、并发第二个 prepareExecution 必须被拒(而不是新开浏览器)。",
+      "findingKey": "provider-lease-browser-lifecycle"
+    },
+    {
+      "id": "provider-cors-and-surface",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 192,
+      "title": "未要求收掉 fork 的通配 CORS 与既有开放监听面,新私有协议若与其同引擎并存会留下浏览器可达面",
+      "detail": "fork 现状：gin 引擎全局挂 `corsMiddleware()`,对所有路由返回 `Access-Control-Allow-Origin: *`,且 `/mcp`、`/mcp/*path` 与 `/api/v1/*` 全部无认证(middleware.go, routes.go:24-53)。§7.2 只说旧写入口 403、私有协议用独立 service identity/mTLS,没说通配 CORS 要不要撤、新受保护端点是否与开放引擎共用监听器。若共用,任何模型可驱动的浏览器(2519 的 browser 能力)在访问任意页面时都能对 127.0.0.1:18060 发跨源请求并读到响应。建议在 T5 明确列出：新守卫端点用独立监听器(优先 UDS)、移除或收窄通配 CORS、并把必须 403 的路由清单逐条钉死(含 `/mcp/*path` 通配与 REST 别名)。",
+      "findingKey": "provider-cors-and-surface"
+    },
+    {
+      "id": "no-rate-limit-on-proposals",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 183,
+      "title": "prepare 没有每 Lead/每项目的待审上限或发卡速率限制",
+      "detail": "§4 只有容量上限(全局 2GiB、单 proposal 512MiB),§7.1 的 prepare 无任何频次或 pending 数量约束。一个陷入循环的 Lead 可以连续 prepare,把 founder 的审核 thread 刷满(注意力 DoS)、打满 Discord 发消息速率、并吃光媒体预算导致合法请求被 `durability/容量` 类拒绝。建议增加：每 Lead 的 awaiting_approval 上限与发卡速率上限,超限用固定拒绝码(计入 §8 表),并在 §10 增加一行验收。",
+      "findingKey": "no-rate-limit-on-proposals"
+    },
+    {
+      "id": "message-content-intent",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 115,
+      "title": "未指明 observer 用哪个 bot token 重取原消息,以及 content 取不到时的可区分拒绝",
+      "detail": "§5 的整个校验链建立在\"trusted refetch 拿到 content 原文\"之上,但没写 refetch 用的是发卡的可信 XHS card bot 的 token 还是 Bridge 通用 bot 的 token。Discord 的 Message Content 属于特权 intent,拿不到时 REST 返回的 content 会是空串,而不是错误 —— 在本设计里它会被当成\"文本不精确匹配\"静默丢弃,founder 得不到任何反馈(与 finding challenge-format-and-exact-match 叠加后更难诊断)。建议：钉死 refetch 使用发卡 bot 的凭据、把\"content 不可得\"做成与\"码不匹配\"不同的固定拒绝码与 founder 可见回执,并在 T4 的错误注入用例里补一条空 content 的 fixture。",
+      "findingKey": "message-content-intent"
+    }
+  ]
+}

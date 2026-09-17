@@ -1,0 +1,156 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "05b532ff-0000-440a-bc77-a5b0d5f73406",
+  "round": 2,
+  "findings": [
+    {
+      "id": "media-ingest-crosses-new-uid-boundary",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 140,
+      "title": "§4 媒体入库仍写着走登录UID的 LeadArtifactStore.read 文件句柄，与 §2.2 新定的「有界字节流导入、不按登录UID给的路径读」相互矛盾",
+      "detail": "R2 把 store 的属主从 Bridge 换成了 `_flywheel_xhs` authority（§2.2 第62行明确：\"媒体提交通过有界字节流导入新store，不让authority按登录UID给的任意路径读取\"），但 §4 第一段没同步：仍写 \"接收已认证 artifact handle，读取通过当前 `LeadArtifactStore.read` 的字节\"，后面整段 O_NOFOLLOW / inode / TOCTOU / 目录替换的语言也都是同 UID 按路径开文件的模型。实测 2519 的 `LeadArtifactStore`(8e182b22 `lead-capabilities/artifacts.ts:88`)是进程内 `put(data: Uint8Array)` + 登录 UID home 下 0600 文件，新 authority 换了 UID 之后既不该、也不能直接 open 这些路径。照 §4 实施会把刚刚用独立 UID 关掉的 symlink/TOCTOU 面重新打开，而且在权限边界上根本跑不通；照 §2.2 实施则 §4 的 fd/inode 条款失去落点。请把 §4 第一段改写成流式导入合同（谁是发送方、边界在哪、hash 在 authority 侧的 fd 上算、inode/TOCTOU 断言改为对 authority 自己 store 的断言），并让 T3 的用例明确断言 authority 从不 open 登录 UID 提供的路径。",
+      "findingKey": "media-ingest-crosses-new-uid-boundary"
+    },
+    {
+      "id": "video-preview-exceeds-discord-limits",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 420,
+      "title": "R1 的矛盾已消除（硬上限 min(10MiB,实测附件上限) + preview_media_too_large + A13），但 §11 的能力声明没同步这个实际天花板",
+      "detail": "修复到位：§4 第140行把媒体上限钉到 `min(10MiB, 发卡bot在目标guild实际验证的附件上限)`、超限走 `preview_media_too_large` 且不发卡、A13 增加了超限行，founder HTML 第03节也照实写了 10MiB —— 不再有永远停在 awaiting_delivery 的卡。残留：§11「明确限制」仍只说 \"图文/视频均在v1\"，没说 v1 视频实际只能是 ≤10MiB 的短片（真实小红书视频通常远大于此），§9 T3 也还留着 \"不得把256MiB单帧塞进broker JSON\" 这句已经失效的上限。建议在 §11 补一句实际天花板并清掉 T3 的 256MiB 残句；另外 §4 \"多图分批消息每请求≤20MiB\" 与同段 per-file min(10MiB,…) 的口径不一致，按实测 guild 上限统一表述更稳。",
+      "findingKey": "video-preview-exceeds-discord-limits"
+    },
+    {
+      "id": "runtime-socket-dir-lifecycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 60,
+      "title": "/var/run 下两个 socket 目录的创建者与重启后重建没有指派，而 daemon 以非 root 运行",
+      "detail": "§2.2 把 `provider.sock` 放在 \"专用账号0700父目录\"、把 ingress socket 放在 \"root-created目录\"，这个选型是对的（把连接权限压在目录遍历位上，不依赖 socket inode 权限在 macOS 上是否被 connect 检查），probe 里 \"不能把ECONNREFUSED当作私有socket权限证据\" 也很到位。缺的是生命周期：macOS 的 /var/run 是每次开机清空的，而 authority 以 `_flywheel_xhs` 运行、无法在 root 拥有的 /var/run 下新建目录，所以必须有一个 root 侧的 RunAtLoad 步骤在每次启动时重建这两个目录并设好属主/模式（否则重启后 authority bind 失败，虽然 fail-closed，但是一次静默停机）。另外 ingress 目录本身的 mode 没写（只写了 socket 0660 + 组成员），请一并钉死。",
+      "findingKey": "runtime-socket-dir-lifecycle"
+    },
+    {
+      "id": "notification-cursor-scope",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 172,
+      "title": "批准通知 cursor 对整个不可信域可读，使「同UID会话执行别人已批准的内容」从理论可能变成顺手可做",
+      "detail": "R1 的唤醒缺口已修好（outbox 表 + 5s 拉取 + 幂等入 mailbox + 未送达/过期两种 founder 回执 + A16），设计上也正确地声明事件本身不是写许可。残留的是投影范围：通知里带 proposalId/receiptId/digest/到期时间，而 Bridge 与所有 Lead/Runner 共用同一个 peerUid，也就是任何同 UID 会话都能从 ingress 读到别人刚被批准的 receiptId。§2.2 已诚实声明 \"同UID恶意会话若获知另一个proposal，最多请求执行那份已经由founder批准的原内容\"，但这条通知把 \"获知\" 变成了默认可得。建议把 cursor 的读取按 leadId/归属过滤（纵深防御，不宣称是安全边界），或在 §2.2 明写 \"通知投影对整个不可信域可读\" 以免后续 QA 误以为有租户隔离。",
+      "findingKey": "notification-cursor-scope"
+    },
+    {
+      "id": "rate-limit-shared-peeruid",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 231,
+      "title": "限流键 (peerUid, project) 在同 UID 拓扑下等于全项目共享 3 条待审/10 分钟 3 张卡，缺每 Lead 子额度与 retry-after 语义",
+      "detail": "R1 的限流缺口已补上（3 条待批准、10 分钟 3 张新卡、`proposal_rate_limited`、A17）。但既然 §2.2 把整个登录 UID 视作一个 principal，(peerUid, project) 实际上就是全项目一个额度：一个循环的 Lead 可以把同项目其他 Lead 的配额吃干，而这正是本设计明确不打算解决的同 UID 互扰域。建议在共享额度下再加一个 per-leadId 子额度（只减不增，不作为安全边界），并规定 `proposal_rate_limited` 返回何时可重试，避免 Lead 把限流当永久失败或立刻重试打成忙等。",
+      "findingKey": "rate-limit-shared-peeruid"
+    },
+    {
+      "id": "policy-version-consume-semantics",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 105,
+      "title": "`authorityPolicyVersion` 进了冻结指纹，但 policy 版本在 await 期间变化时对已批准未消费回执的处置没写",
+      "detail": "FrozenWrite 新增 `requesterUid`/`authorityPolicyVersion` 并绑定 root policy，方向正确。但 policy 里同时装着 canonical founder ID、账号 registry、guild/thread 配置和允许的 peer UID —— §5.5 只说 mint 时重读身份配置版本、§7.2 说消费前重验 \"不可变policy\"，没定义：policy 版本在 prepare→批准→消费之间上了一版时，已 mint 的回执是作废还是继续有效（按语义应当区分：canonical founder / 账号 registry 变更必须作废，纯文案或 thread 配置变更可继续）。请把规则写进 §6 的消费前置条件（连同 §8 里对应的拒绝码），否则实施方要么一律放行（founder 轮换后旧身份的批准仍可消费），要么一律作废（每次装新 policy 就把在飞批准全部打掉）。",
+      "findingKey": "policy-version-consume-semantics"
+    },
+    {
+      "id": "challenge-case-folding",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 159,
+      "title": "短码字母表是大写，但命令规范化只做 NFKC/trim/去尾标点，没说比较时是否折叠大小写",
+      "detail": "R1 的可用性问题已基本修好：命名空间化的 `批准小红书`、8 位去混淆大写字母表（32^8 ≈ 40 bit，够用）、命令侧受限规范化而 FrozenWrite 字节绝不规范化、`founder_command_mismatch` 与 `founder_content_unavailable` 两种 founder 可见回执。剩一个一行的口子：NFKC 不改大小写，手机键盘/自动更正很容易给出小写码，founder 会拿到一次 mismatch 提示再重发。建议明确 challenge 比较对 ASCII 字母做大小写折叠（命令关键词仍精确匹配），并在 T4 补一条小写码的用例。",
+      "findingKey": "challenge-case-folding"
+    },
+    {
+      "id": "founder-html-diagram-placeholders",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/founder-design.html",
+      "line": 3,
+      "title": "founder HTML 仍带两处 DIAGRAM PENDING LOCAL RENDER 占位块，按 §12 直接 publish 就是把占位符发给 founder",
+      "detail": "verification.md 如实记录了 mmdc 四次失败（`bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer … Permission denied (1100)`），没有伪造图、没有走远端渲染 —— 这点是对的，我也实跑了 `node engineering/doc/FLY-2551-xhs-founder-gate/verify-founder-html.mjs`，输出确为 PASS（附 \"no browser rendering or real CSP execution\" 的自述限制），作者的验证声明属实。但 §12 的收口动作是 publish-only + verify-report，若照现状发布，founder 拿到的是两个黄框占位块。本仓的既有规矩是视觉产物发布前必须真看渲染图、并做占位符自检。建议在 publish 之前换一条渲染路径（给 mmdc 传 puppeteer 配置放开 sandbox / 用已知可用的 headless Chrome CLI 渲染 SVG 再内联；注意多张 SVG 内联同一 HTML 时要改唯一 svg id 并同步改选择器，否则节点会渲染成黑块），仍不成则在页面与报告里把 \"未含流程图\" 当作已知缺口显式上报 Lead，不要让它跟着 DESIGN-HTML ready 一起出口。",
+      "findingKey": "founder-html-diagram-placeholders"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "media-ingest-crosses-new-uid-boundary",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 140,
+      "title": "§4 媒体入库仍写着走登录UID的 LeadArtifactStore.read 文件句柄，与 §2.2 新定的「有界字节流导入、不按登录UID给的路径读」相互矛盾",
+      "detail": "R2 把 store 的属主从 Bridge 换成了 `_flywheel_xhs` authority（§2.2 第62行明确：\"媒体提交通过有界字节流导入新store，不让authority按登录UID给的任意路径读取\"），但 §4 第一段没同步：仍写 \"接收已认证 artifact handle，读取通过当前 `LeadArtifactStore.read` 的字节\"，后面整段 O_NOFOLLOW / inode / TOCTOU / 目录替换的语言也都是同 UID 按路径开文件的模型。实测 2519 的 `LeadArtifactStore`(8e182b22 `lead-capabilities/artifacts.ts:88`)是进程内 `put(data: Uint8Array)` + 登录 UID home 下 0600 文件，新 authority 换了 UID 之后既不该、也不能直接 open 这些路径。照 §4 实施会把刚刚用独立 UID 关掉的 symlink/TOCTOU 面重新打开，而且在权限边界上根本跑不通；照 §2.2 实施则 §4 的 fd/inode 条款失去落点。请把 §4 第一段改写成流式导入合同（谁是发送方、边界在哪、hash 在 authority 侧的 fd 上算、inode/TOCTOU 断言改为对 authority 自己 store 的断言），并让 T3 的用例明确断言 authority 从不 open 登录 UID 提供的路径。",
+      "findingKey": "media-ingest-crosses-new-uid-boundary"
+    },
+    {
+      "id": "video-preview-exceeds-discord-limits",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 420,
+      "title": "R1 的矛盾已消除（硬上限 min(10MiB,实测附件上限) + preview_media_too_large + A13），但 §11 的能力声明没同步这个实际天花板",
+      "detail": "修复到位：§4 第140行把媒体上限钉到 `min(10MiB, 发卡bot在目标guild实际验证的附件上限)`、超限走 `preview_media_too_large` 且不发卡、A13 增加了超限行，founder HTML 第03节也照实写了 10MiB —— 不再有永远停在 awaiting_delivery 的卡。残留：§11「明确限制」仍只说 \"图文/视频均在v1\"，没说 v1 视频实际只能是 ≤10MiB 的短片（真实小红书视频通常远大于此），§9 T3 也还留着 \"不得把256MiB单帧塞进broker JSON\" 这句已经失效的上限。建议在 §11 补一句实际天花板并清掉 T3 的 256MiB 残句；另外 §4 \"多图分批消息每请求≤20MiB\" 与同段 per-file min(10MiB,…) 的口径不一致，按实测 guild 上限统一表述更稳。",
+      "findingKey": "video-preview-exceeds-discord-limits"
+    },
+    {
+      "id": "runtime-socket-dir-lifecycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 60,
+      "title": "/var/run 下两个 socket 目录的创建者与重启后重建没有指派，而 daemon 以非 root 运行",
+      "detail": "§2.2 把 `provider.sock` 放在 \"专用账号0700父目录\"、把 ingress socket 放在 \"root-created目录\"，这个选型是对的（把连接权限压在目录遍历位上，不依赖 socket inode 权限在 macOS 上是否被 connect 检查），probe 里 \"不能把ECONNREFUSED当作私有socket权限证据\" 也很到位。缺的是生命周期：macOS 的 /var/run 是每次开机清空的，而 authority 以 `_flywheel_xhs` 运行、无法在 root 拥有的 /var/run 下新建目录，所以必须有一个 root 侧的 RunAtLoad 步骤在每次启动时重建这两个目录并设好属主/模式（否则重启后 authority bind 失败，虽然 fail-closed，但是一次静默停机）。另外 ingress 目录本身的 mode 没写（只写了 socket 0660 + 组成员），请一并钉死。",
+      "findingKey": "runtime-socket-dir-lifecycle"
+    },
+    {
+      "id": "notification-cursor-scope",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 172,
+      "title": "批准通知 cursor 对整个不可信域可读，使「同UID会话执行别人已批准的内容」从理论可能变成顺手可做",
+      "detail": "R1 的唤醒缺口已修好（outbox 表 + 5s 拉取 + 幂等入 mailbox + 未送达/过期两种 founder 回执 + A16），设计上也正确地声明事件本身不是写许可。残留的是投影范围：通知里带 proposalId/receiptId/digest/到期时间，而 Bridge 与所有 Lead/Runner 共用同一个 peerUid，也就是任何同 UID 会话都能从 ingress 读到别人刚被批准的 receiptId。§2.2 已诚实声明 \"同UID恶意会话若获知另一个proposal，最多请求执行那份已经由founder批准的原内容\"，但这条通知把 \"获知\" 变成了默认可得。建议把 cursor 的读取按 leadId/归属过滤（纵深防御，不宣称是安全边界），或在 §2.2 明写 \"通知投影对整个不可信域可读\" 以免后续 QA 误以为有租户隔离。",
+      "findingKey": "notification-cursor-scope"
+    },
+    {
+      "id": "rate-limit-shared-peeruid",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 231,
+      "title": "限流键 (peerUid, project) 在同 UID 拓扑下等于全项目共享 3 条待审/10 分钟 3 张卡，缺每 Lead 子额度与 retry-after 语义",
+      "detail": "R1 的限流缺口已补上（3 条待批准、10 分钟 3 张新卡、`proposal_rate_limited`、A17）。但既然 §2.2 把整个登录 UID 视作一个 principal，(peerUid, project) 实际上就是全项目一个额度：一个循环的 Lead 可以把同项目其他 Lead 的配额吃干，而这正是本设计明确不打算解决的同 UID 互扰域。建议在共享额度下再加一个 per-leadId 子额度（只减不增，不作为安全边界），并规定 `proposal_rate_limited` 返回何时可重试，避免 Lead 把限流当永久失败或立刻重试打成忙等。",
+      "findingKey": "rate-limit-shared-peeruid"
+    },
+    {
+      "id": "policy-version-consume-semantics",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 105,
+      "title": "`authorityPolicyVersion` 进了冻结指纹，但 policy 版本在 await 期间变化时对已批准未消费回执的处置没写",
+      "detail": "FrozenWrite 新增 `requesterUid`/`authorityPolicyVersion` 并绑定 root policy，方向正确。但 policy 里同时装着 canonical founder ID、账号 registry、guild/thread 配置和允许的 peer UID —— §5.5 只说 mint 时重读身份配置版本、§7.2 说消费前重验 \"不可变policy\"，没定义：policy 版本在 prepare→批准→消费之间上了一版时，已 mint 的回执是作废还是继续有效（按语义应当区分：canonical founder / 账号 registry 变更必须作废，纯文案或 thread 配置变更可继续）。请把规则写进 §6 的消费前置条件（连同 §8 里对应的拒绝码），否则实施方要么一律放行（founder 轮换后旧身份的批准仍可消费），要么一律作废（每次装新 policy 就把在飞批准全部打掉）。",
+      "findingKey": "policy-version-consume-semantics"
+    },
+    {
+      "id": "challenge-case-folding",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/plan.md",
+      "line": 159,
+      "title": "短码字母表是大写，但命令规范化只做 NFKC/trim/去尾标点，没说比较时是否折叠大小写",
+      "detail": "R1 的可用性问题已基本修好：命名空间化的 `批准小红书`、8 位去混淆大写字母表（32^8 ≈ 40 bit，够用）、命令侧受限规范化而 FrozenWrite 字节绝不规范化、`founder_command_mismatch` 与 `founder_content_unavailable` 两种 founder 可见回执。剩一个一行的口子：NFKC 不改大小写，手机键盘/自动更正很容易给出小写码，founder 会拿到一次 mismatch 提示再重发。建议明确 challenge 比较对 ASCII 字母做大小写折叠（命令关键词仍精确匹配），并在 T4 补一条小写码的用例。",
+      "findingKey": "challenge-case-folding"
+    },
+    {
+      "id": "founder-html-diagram-placeholders",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2551-xhs-founder-gate/founder-design.html",
+      "line": 3,
+      "title": "founder HTML 仍带两处 DIAGRAM PENDING LOCAL RENDER 占位块，按 §12 直接 publish 就是把占位符发给 founder",
+      "detail": "verification.md 如实记录了 mmdc 四次失败（`bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer … Permission denied (1100)`），没有伪造图、没有走远端渲染 —— 这点是对的，我也实跑了 `node engineering/doc/FLY-2551-xhs-founder-gate/verify-founder-html.mjs`，输出确为 PASS（附 \"no browser rendering or real CSP execution\" 的自述限制），作者的验证声明属实。但 §12 的收口动作是 publish-only + verify-report，若照现状发布，founder 拿到的是两个黄框占位块。本仓的既有规矩是视觉产物发布前必须真看渲染图、并做占位符自检。建议在 publish 之前换一条渲染路径（给 mmdc 传 puppeteer 配置放开 sandbox / 用已知可用的 headless Chrome CLI 渲染 SVG 再内联；注意多张 SVG 内联同一 HTML 时要改唯一 svg id 并同步改选择器，否则节点会渲染成黑块），仍不成则在页面与报告里把 \"未含流程图\" 当作已知缺口显式上报 Lead，不要让它跟着 DESIGN-HTML ready 一起出口。",
+      "findingKey": "founder-html-diagram-placeholders"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

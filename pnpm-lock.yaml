@@ -31,6 +31,9 @@ importers:
       '@biomejs/biome':
         specifier: 2.1.4
         version: 2.1.4
+      esbuild:
+        specifier: 0.25.10
+        version: 0.25.10
       husky:
         specifier: ^9.1.7
         version: 9.1.7

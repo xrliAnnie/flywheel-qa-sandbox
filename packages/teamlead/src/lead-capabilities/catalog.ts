@@ -1,11 +1,18 @@
 import { z } from "zod";
 import { createRunnerActionSchemas } from "../lead-backends/codex/runner-action-schemas.js";
+import { authorityResponseSchemas } from "../xiaohongshu-write/authority-client.js";
+import { WRITE_OPERATIONS } from "../xiaohongshu-write/contracts.js";
 import { BROWSER_TOOL_SCHEMAS } from "./browser-schemas.js";
 import {
 	patrolFindingIdentity,
 	patrolMechanismInput,
 } from "./patrol-schema2.js";
 import { UPSTREAM_TOOL_ROWS } from "./upstream-inputs.js";
+import {
+	xhsWritePrepareInput,
+	xhsWriteProposalInput,
+	xhsWriteReceiptInput,
+} from "./xiaohongshu-write-input.js";
 
 export type CapabilityClassification = "read" | "write" | "reserved";
 export type CredentialConsumer =
@@ -25,7 +32,7 @@ export interface LeadCapabilityDefinition {
 	readonly operationId: string;
 	readonly parityId: string;
 	readonly classification: CapabilityClassification;
-	readonly inputSchema: z.ZodObject<z.ZodRawShape>;
+	readonly inputSchema: z.ZodType<Record<string, unknown>>;
 	readonly outputSchema: z.ZodObject<z.ZodRawShape>;
 	/** A dispatch key, never an executable provider or an authorization grant. */
 	readonly handlerKey: string | null;
@@ -97,6 +104,7 @@ function add(
 	credentialConsumer: CredentialConsumer,
 	input: z.ZodRawShape,
 	output: z.ZodRawShape,
+	inputSchema?: LeadCapabilityDefinition["inputSchema"],
 ) {
 	const unconditionalDenial =
 		operationId === "git.feature.push" || operationId === "github.pr.create"
@@ -121,7 +129,7 @@ function add(
 					}
 				: {}),
 			...(unconditionalDenial ? { unconditionalDenial } : {}),
-			inputSchema: object(input),
+			inputSchema: inputSchema ?? object(input),
 			outputSchema: object(output),
 			handlerKey: classification === "reserved" ? null : operationId,
 			scope: "canonical-project-lead",
@@ -670,6 +678,18 @@ for (const row of UPSTREAM_TOOL_ROWS)
 		row.serverId,
 		row.input.shape,
 		{ result: z.unknown(), untrusted: z.literal(true), ...receipt },
+		WRITE_OPERATIONS.some((operationId) => operationId === row.operationId)
+			? z.union([xhsWriteReceiptInput, row.input])
+			: undefined,
+	);
+for (const action of ["prepare", "status", "cancel"] as const)
+	add(
+		`xiaohongshu.write.${action}`,
+		"P16",
+		action === "status" ? "read" : "write",
+		"xiaohongshu-mcp",
+		(action === "prepare" ? xhsWritePrepareInput : xhsWriteProposalInput).shape,
+		authorityResponseSchemas[action].shape,
 	);
 add(
 	"docs.library.resolve",

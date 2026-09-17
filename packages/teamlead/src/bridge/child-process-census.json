@@ -450,6 +450,21 @@
 			"disposition": "FLY-2399 isolated subscription evaluator: async child, minimal environment, 120s deadline, bounded output, abort and TERM/KILL drain"
 		},
 		{
+			"file": "packages/teamlead/src/xiaohongshu-write/inherited-listeners.ts",
+			"disposition": "standalone_runtime",
+			"sync_child": 1
+		},
+		{
+			"file": "packages/teamlead/src/xiaohongshu-write/native-peer.ts",
+			"disposition": "standalone_runtime",
+			"raw_spawn": 1
+		},
+		{
+			"file": "packages/teamlead/src/xiaohongshu-write/provider-process.ts",
+			"disposition": "standalone_runtime",
+			"raw_spawn": 1
+		},
+		{
 			"file": "packages/voice-codex/src/adapters.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime_observed"

@@ -17,6 +17,7 @@ const extensions: Readonly<Record<string, string>> = {
 	"image/png": "png",
 	"image/jpeg": "jpeg",
 	"image/webp": "webp",
+	"video/mp4": "mp4",
 	"application/pdf": "pdf",
 	"text/html": "html",
 	"text/plain": "txt",
@@ -41,6 +42,7 @@ interface RecordEntry {
 export class LeadArtifactStore {
 	private readonly records = new Map<string, RecordEntry>();
 	private bytes = 0;
+	private videoImportActive = false;
 	private closed = false;
 	private readonly rootDevice: number;
 	private readonly rootInode: number;
@@ -85,6 +87,65 @@ export class LeadArtifactStore {
 		)
 			throw denied();
 	}
+	/** Trusted parent intake only: no URL/path interpretation. Authority performs
+	 * full media decoding before this handle can become a publish artifact. */
+	async putVideo(
+		stream: AsyncIterable<Uint8Array>,
+		signal?: AbortSignal,
+	): Promise<LeadArtifactHandle> {
+		let iterator: AsyncIterator<Uint8Array> | undefined;
+		let done = false;
+		let ownsImport = false;
+		const stopped = signal
+			? AbortSignal.any([signal, AbortSignal.timeout(180000)])
+			: AbortSignal.timeout(180000);
+		let rejectStopped!: () => void;
+		const cancelled = new Promise<never>((_, reject) => {
+			rejectStopped = () => reject(denied());
+		});
+		void cancelled.catch(() => {});
+		stopped.addEventListener("abort", rejectStopped, { once: true });
+		try {
+			this.current();
+			stopped.throwIfAborted();
+			if (this.videoImportActive) throw denied();
+			this.videoImportActive = true;
+			ownsImport = true;
+			if (
+				!stream ||
+				typeof stream === "string" ||
+				typeof stream[Symbol.asyncIterator] !== "function"
+			)
+				throw denied();
+			iterator = stream[Symbol.asyncIterator]();
+			const buffer = Buffer.alloc(10 * 1024 * 1024);
+			let size = 0;
+			for (;;) {
+				const next = await Promise.race([iterator.next(), cancelled]);
+				this.current();
+				stopped.throwIfAborted();
+				if (next.done) {
+					done = true;
+					break;
+				}
+				if (!(next.value instanceof Uint8Array)) throw denied();
+				size += next.value.byteLength;
+				if (size > 10 * 1024 * 1024) throw denied();
+				buffer.set(next.value, size - next.value.byteLength);
+			}
+			return await this.put(buffer.subarray(0, size), "video/mp4");
+		} catch {
+			throw denied();
+		} finally {
+			stopped.removeEventListener("abort", rejectStopped);
+			if (ownsImport) this.videoImportActive = false;
+			if (!done && iterator?.return) {
+				try {
+					void Promise.resolve(iterator.return()).catch(() => {});
+				} catch {}
+			}
+		}
+	}
 	async put(data: Uint8Array, mimeType: string): Promise<LeadArtifactHandle> {
 		let fd: number | undefined;
 		try {
@@ -96,6 +157,7 @@ export class LeadArtifactStore {
 				!extension ||
 				data.byteLength === 0 ||
 				data.byteLength > 25 * 1024 * 1024 ||
+				(mimeType === "video/mp4" && data.byteLength > 10 * 1024 * 1024) ||
 				this.records.size >= 128 ||
 				this.bytes + data.byteLength > 256 * 1024 * 1024
 			)

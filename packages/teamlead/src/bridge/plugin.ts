@@ -935,12 +935,14 @@ import {
 	makeBridgeWorktreeCleanup,
 	worktreeAutocleanEnabled,
 } from "./worktree-cleanup.js";
+import { startXhsNotificationService } from "./xhs-notification-service.js";
 import {
 	createInMemoryTokenStore,
 	handleGetReview,
 	handlePostAction,
 	type XhsReviewDeps,
 } from "./xhs-review-routes.js";
+import { createXhsBridgeWriteService } from "./xhs-write-service.js";
 import { scanZombies } from "./zombie-scan.js";
 
 /**
@@ -1628,6 +1630,7 @@ export interface BridgeAppOptions {
 	leadPatrol?: LeadCapabilityReadOptions["patrol"];
 	leadGithub?: LeadCapabilityReadOptions["github"];
 	shutdownStateHolder?: { shuttingDown: boolean };
+	xhsWriteService?: ReturnType<typeof createXhsBridgeWriteService>;
 	/** FLY-1393: late-bound minimum-set liveness manifest. */
 	livenessHealthProvider?: { current?: () => unknown };
 	/**
@@ -1852,6 +1855,8 @@ export function createBridgeApp(
 		});
 	}
 
+	// Raw XHS media/JSON handlers must see the original bytes.
+	if (opts?.xhsWriteService) app.use(opts.xhsWriteService.router);
 	app.use(express.json({ limit: "512kb" }));
 
 	const reportRegistry =
@@ -6757,6 +6762,10 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
+	const xhsNotificationService = startXhsNotificationService({
+		enqueue: (scope, notice) =>
+			leadInboxRuntime.enqueueXhsNotification(scope, notice),
+	});
 	workflowSourceAlertFallback.current = async (payload) => {
 		// Recipient tiering stays centralized in classifyInfraLetter inside the runtime.
 		const receipt = leadInboxRuntime.enqueueInfraAlert(payload.leadId, payload);
@@ -8697,6 +8706,11 @@ export async function startBridge(
 		projects,
 		config,
 	});
+	const xhsWriteService = createXhsBridgeWriteService({
+		apiToken: config.apiToken ?? "",
+		env: process.env,
+		shuttingDown: () => shutdownStateHolder.shuttingDown,
+	});
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -8960,6 +8974,7 @@ export async function startBridge(
 			globalBotToken: config.discordBotToken,
 			fleetConsole,
 			// FLY-516: /health reads this; close() flips it at teardown start.
+			xhsWriteService,
 			shutdownStateHolder,
 			livenessHealthProvider,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
@@ -14696,6 +14711,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await xhsWriteService.close();
 		await leadGithubProvider?.close();
 		await customerReleaseHost.stop();
 		await observationStorageAlert?.stop();
@@ -14759,6 +14775,7 @@ export async function startBridge(
 		await idleThreadSweepScheduler?.stop();
 		stopWatchingBotSends();
 		await doneThreadReconcile.stop();
+		await xhsNotificationService.close();
 		leadInboxRuntime.close();
 		await registry.shutdownAll();
 		broadcaster.destroy();

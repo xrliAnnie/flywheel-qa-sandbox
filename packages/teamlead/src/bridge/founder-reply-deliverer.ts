@@ -21,6 +21,7 @@ import { CommDB } from "flywheel-comm/db";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
 import { isFixedFounderCardApproval } from "../workflow-rework-hint.js";
+import { isXhsProtocolReply } from "../xiaohongshu-write/founder-message.js";
 import { reactToFounderMessage as addFounderReaction } from "./approval-signal/founder-ack.js";
 import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
@@ -794,9 +795,11 @@ async function processFounderMessage(
 ): Promise<ProcessOutcome> {
 	const db = scopedGateResponseDb(deps.withCommDb);
 	const rawAnswer = msg.content ?? "";
+	const xhsProtocolReply = isXhsProtocolReply(rawAnswer);
 	const nowDate = new Date();
 	const now = nowDate.toISOString();
 	if (
+		!xhsProtocolReply &&
 		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
 		msg.message_reference?.message_id &&
 		(msg.message_reference.type === undefined ||
@@ -865,12 +868,14 @@ async function processFounderMessage(
 		}
 	}
 	const shipGates = matching.filter(
-		(question) => question.checkpoint === "approve_to_ship",
+		(question) =>
+			!xhsProtocolReply && question.checkpoint === "approve_to_ship",
 	);
 	const founderReviewGates = matching.filter(
-		(question) => question.checkpoint === "founder_review",
+		(question) => !xhsProtocolReply && question.checkpoint === "founder_review",
 	);
 	const isCardReply =
+		!xhsProtocolReply &&
 		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
 		(msg.message_reference?.type === undefined ||
 			msg.message_reference.type === 0) &&

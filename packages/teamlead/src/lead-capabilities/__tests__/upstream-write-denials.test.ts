@@ -24,8 +24,10 @@ it("preserves every captured upstream row and records explicit denied writes thr
 			),
 		);
 		expect(
-			LEAD_CAPABILITY_CATALOG.filter((op) =>
-				op.operationId.startsWith(`${prefix}.`),
+			LEAD_CAPABILITY_CATALOG.filter(
+				(op) =>
+					op.operationId.startsWith(`${prefix}.`) &&
+					!op.operationId.startsWith("xiaohongshu.write."),
 			)
 				.map((op) => op.operationId)
 				.sort(),

@@ -1,0 +1,30 @@
+[
+	{
+		"name": "unicode",
+		"input": {
+			"z": "中🙂\r\né",
+			"a": [null, true, false, 0, -1]
+		},
+		"canonical": "{\"a\":[null,true,false,0,-1],\"z\":\"中🙂\\r\\né\"}",
+		"digest": "da372b7602de79861ccf25a158a87b2dc3d95f96b927686bad3e471defb3714c"
+	},
+	{
+		"name": "utf16-key-order",
+		"input": {
+			"": 1,
+			"😀": 2,
+			"a": "quote\"\\"
+		},
+		"canonical": "{\"a\":\"quote\\\"\\\\\",\"😀\":2,\"\":1}",
+		"digest": "30b38bd93a61594aa16879bec9ada19cc3e1c3742ea8c4a41edc1f88b59cdbd3"
+	},
+	{
+		"name": "array-order",
+		"input": {
+			"tags": ["二", "一"],
+			"empty": []
+		},
+		"canonical": "{\"empty\":[],\"tags\":[\"二\",\"一\"]}",
+		"digest": "2fc2bc936abd00f0eaaaff9b64f3898aa7a8c22306381ed46c103bd6afa1d0f8"
+	}
+]

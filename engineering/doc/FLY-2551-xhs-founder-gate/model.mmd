@@ -1,0 +1,19 @@
+erDiagram
+  accTitle: 一份内容对应一次批准与一次尝试
+  accDescr: 冻结内容引用不可变媒体，批准只能被一次执行尝试消费，所有决定均可追溯。
+  CONTENT ||--o| RECEIPT : "一次批准"
+  CONTENT ||--o{ MEDIA : "完整文字与媒体指纹"
+  RECEIPT ||--o| ATTEMPT : "最多消费一次"
+  CONTENT ||--o{ AUDIT : "批准 撤回 与结果"
+  CONTENT {
+    string contentDigest "内容指纹"
+    string accountUserId "账号稳定编号"
+    string operation "本次动作与目标"
+  }
+  RECEIPT {
+    string founderMessageId "本人原始回复"
+    string expiresAt "使用截止时间"
+  }
+  ATTEMPT {
+    string state "成功 失败 或未知"
+  }

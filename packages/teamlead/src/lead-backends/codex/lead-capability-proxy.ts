@@ -162,6 +162,8 @@ export function createLeadCapabilityProxy(
 				inputSchema: { type: "object" as const, oneOf: schemas },
 			},
 			...runnerOperations.map((operation) => {
+				if (!(operation.inputSchema instanceof z.ZodObject))
+					throw new Error("runner_input_schema_invalid");
 				const schema = z.toJSONSchema(
 					operation.inputSchema.extend({ requestId: z.string().uuid() }),
 				);

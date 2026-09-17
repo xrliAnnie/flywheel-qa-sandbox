@@ -249,3 +249,25 @@ write_atomic_mcp_config() {
   _cleanup_tmp=""   # tmp is now the live file — don't delete it
   trap - RETURN
 }
+
+# Fixed Claude XHS requester. No authority credentials or model-selected paths.
+# Lease values are expanded in the launched pane after its lease is acquired.
+build_xhs_write_mcp_fragment() {
+  local entry="$1" role="$2"
+  case "$role" in dept|cos) ;; *) echo '{}'; return 0 ;; esac
+  if [[ "$entry" != /* ]] || [ ! -f "$entry" ]; then
+    echo '{}'
+    return 0
+  fi
+  jq -n --arg entry "$entry" '{"flywheel-xhs-write": {
+    command: "node", args: [$entry], env: {
+      BRIDGE_URL: "${BRIDGE_URL:-http://localhost:9876}",
+      TEAMLEAD_API_TOKEN: "${TEAMLEAD_API_TOKEN:-}",
+      FLYWHEEL_PROJECT_NAME: "${FLYWHEEL_PROJECT_NAME:-}",
+      FLYWHEEL_LEAD_ID: "${FLYWHEEL_LEAD_ID:-}",
+      FLYWHEEL_LEAD_IDENTITY_DIGEST: "${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}",
+      FLYWHEEL_LEAD_LEASE_KEY: "${FLYWHEEL_LEAD_LEASE_KEY:-}",
+      FLYWHEEL_LEAD_GENERATION: "${FLYWHEEL_LEAD_GENERATION:-}"
+    }
+  }}'
+}

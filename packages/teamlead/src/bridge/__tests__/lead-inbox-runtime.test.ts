@@ -87,6 +87,54 @@ function projectsWithDutyLead(): ProjectEntry[] {
 }
 
 describe("LeadInboxRuntime", () => {
+	it("routes XHS notices through the shared runtime to the scoped durable mailbox", () => {
+		const root = mkdtempSync(join(tmpdir(), "xhs-inbox-runtime-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-xhs",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		const scope = { projectId: "project-a", leadId: "lead-a" };
+		const notice = {
+			eventId: "xhs-approved:12345678-1234-4234-8234-123456789012",
+			eventKind: "approved",
+			receiptId: "12345678-1234-4234-8234-123456789012",
+			proposalId: "12345678-1234-4234-8234-123456789013",
+			contentDigest: "a".repeat(64),
+			expiry: Date.now() + 60000,
+		};
+		try {
+			expect(() =>
+				runtime.enqueueXhsNotification(
+					{ ...scope, projectId: "other" },
+					notice,
+				),
+			).toThrow();
+			const receipt = runtime.enqueueXhsNotification(scope, notice);
+			expect(queue.getById(receipt.deliveryId)).toMatchObject({
+				to_agent: "lead-a",
+				source_kind: "xiaohongshu_notification",
+				recipient_kind: "lead",
+				msg_class: "model",
+			});
+			expect(runtime.enqueueXhsNotification(scope, notice)).toEqual(receipt);
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("periodically archives terminal mailbox families with audit evidence", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2136-runtime-archive-"));
 		const dbPath = join(root, "project-a.db");

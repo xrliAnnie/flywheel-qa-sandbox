@@ -74,6 +74,7 @@ import type {
 	DurableQueueReceipt,
 	RuntimeRegistry,
 } from "./runtime-registry.js";
+import { enqueueXhsNotification } from "./xhs-notification-poller.js";
 
 export interface InfraAlertQueueReceipt {
 	queued: boolean;
@@ -624,6 +625,20 @@ export class LeadInboxRuntime {
 			this.nudge(envelope.leadId, project.projectName);
 		}
 		return result;
+	}
+
+	enqueueXhsNotification(
+		scope: Parameters<typeof enqueueXhsNotification>[1],
+		notice: unknown,
+	): ReturnType<typeof enqueueXhsNotification> {
+		const project = this.projectByLead.get(scope.leadId);
+		if (!project || project.projectName !== scope.projectId)
+			throw Error("notification_queue_scope_denied");
+		const queue = this.queues.get(project.projectName);
+		if (!queue) throw Error("notification_queue_unavailable");
+		const receipt = enqueueXhsNotification(queue, scope, notice);
+		this.nudge(scope.leadId, scope.projectId);
+		return receipt;
 	}
 
 	/** FLY-1764 Flow 2: one durable alert letter to the actionable owner. */

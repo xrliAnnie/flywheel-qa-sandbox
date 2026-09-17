@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { browserFacadeSchemaDigest } from "../lead-backends/codex/browser-capability-proxy.js";
+import { createParentXhsAuthorityClient } from "../xiaohongshu-write/parent-client-policy.js";
 import type { LeadArtifactStore } from "./artifacts.js";
 import { createAutomaticOutboundTransport } from "./automatic-outbound.js";
 import type { LeadOperationHandler } from "./broker.js";
@@ -33,6 +34,9 @@ import { createReportDeliverHandlers } from "./handlers/report-deliver.js";
 import { createReportPublishHandlers } from "./handlers/report-publish.js";
 import { createReportVerifyHandlers } from "./handlers/report-verify.js";
 import { createUpstreamWriteDenials } from "./handlers/upstream-write-denials.js";
+import { createXhsAuthorityReadHandlers } from "./handlers/xiaohongshu-authority-read.js";
+import { createXhsWriteHandlers } from "./handlers/xiaohongshu-write.js";
+import { createXhsWriteManagementHandlers } from "./handlers/xiaohongshu-write-management.js";
 import { createLeadCapabilityManifest } from "./manifest.js";
 import { PINNED_NATIVE_CODEX_SKILLS } from "./native-skill-baseline.js";
 import { resolveLeadCapabilities } from "./resolve.js";
@@ -269,6 +273,26 @@ export async function startLeadRuntimeProviders(
 			fetchImpl: options.fetchImpl,
 			secrets,
 		};
+		let authorityClient: ReturnType<
+			typeof createParentXhsAuthorityClient
+		> | null = null;
+		try {
+			authorityClient = createParentXhsAuthorityClient({
+				policyPath: "/Library/Application Support/Flywheel/Xhs/policy.json",
+				env,
+				activationId: options.activationId,
+			});
+		} catch {
+			// Absent or unverifiable root policy leaves all six writes denied.
+			// A disabled write gate still permits authority read transport; writes
+			// remain gated by the authority's preparation/execution checks.
+		}
+		const writeHandlers = new Map(createUpstreamWriteDenials(common));
+		for (const [id, handler] of createXhsWriteHandlers({
+			...common,
+			client: authorityClient,
+		}))
+			writeHandlers.set(id, handler);
 		const github = createLeadGithubClient({
 			token: githubToken,
 			fetchImpl: options.fetchImpl,
@@ -318,7 +342,12 @@ export async function startLeadRuntimeProviders(
 			createReportDeliverHandlers(common),
 			createReportVerifyHandlers(common),
 			linear.handlers,
-			createUpstreamWriteDenials(common),
+			writeHandlers,
+			createXhsWriteManagementHandlers({
+				...common,
+				client: authorityClient,
+				artifacts: options.artifacts,
+			}),
 		])
 			add(group);
 		current();
@@ -334,7 +363,13 @@ export async function startLeadRuntimeProviders(
 			artifacts: options.artifacts,
 		});
 		cleanup.push(xiaohongshu.close);
-		add(xiaohongshu.handlers);
+		const xhsReads = new Map(xiaohongshu.handlers);
+		for (const [id, handler] of createXhsAuthorityReadHandlers({
+			...common,
+			client: authorityClient,
+		}))
+			xhsReads.set(id, handler);
+		add(xhsReads);
 		current();
 		const context7 = await startContext7Provider({
 			...common,

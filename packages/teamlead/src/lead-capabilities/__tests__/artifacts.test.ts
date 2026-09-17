@@ -1,6 +1,7 @@
 import {
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -97,4 +98,97 @@ it("requires a direct project child so a writable intermediate directory cannot 
 		() =>
 			new LeadArtifactStore({ projectRoot, artifactRoot, assertCurrent() {} }),
 	).toThrow(/artifact/);
+});
+
+it("registers a bounded video stream in the current parent scope and preserves bytes", async () => {
+	const a = setup(),
+		b = setup();
+	const data = Buffer.from(
+		"000000186674797069736f6d0000000069736f6d6d703432",
+		"hex",
+	);
+	const handle = await a.store.putVideo(
+		(async function* () {
+			yield data.subarray(0, 8);
+			yield data.subarray(8);
+		})(),
+	);
+	expect(handle).toMatchObject({ mimeType: "video/mp4", size: data.length });
+	expect(handle.relativePath).toMatch(/\.mp4$/);
+	expect((await a.store.read(handle.handle)).data).toEqual(data);
+	await expect(b.store.read(handle.handle)).rejects.toThrow(
+		"lead_artifact_denied",
+	);
+});
+it("rejects oversized, failed, cancelled or stale video streams without registering a handle", async () => {
+	const a = setup();
+	const cancelled = new AbortController();
+	cancelled.abort();
+	for (const stream of [
+		(async function* () {
+			yield Buffer.alloc(10 * 1024 * 1024);
+			yield Buffer.from("x");
+		})(),
+		(async function* () {
+			yield Buffer.from("x");
+			throw Error("private details");
+		})(),
+		(async function* () {})(),
+	])
+		await expect(a.store.putVideo(stream)).rejects.toThrow(
+			"lead_artifact_denied",
+		);
+	await expect(
+		a.store.putVideo(
+			(async function* () {
+				yield Buffer.from("x");
+			})(),
+			cancelled.signal,
+		),
+	).rejects.toThrow("lead_artifact_denied");
+	await expect(
+		a.store.putVideo("https://example.test/video" as never),
+	).rejects.toThrow("lead_artifact_denied");
+	await expect(
+		a.store.put(Buffer.alloc(10 * 1024 * 1024 + 1), "video/mp4"),
+	).rejects.toThrow("lead_artifact_denied");
+	await expect(
+		a.store.putVideo(
+			(async function* () {
+				yield Buffer.from("x");
+				a.store.close();
+				yield Buffer.from("y");
+			})(),
+		),
+	).rejects.toThrow("lead_artifact_denied");
+	expect(readdirSync(a.artifactRoot)).toEqual([]);
+});
+it("cancels a pending video read and admits only one active video stream", async () => {
+	const a = setup(),
+		abort = new AbortController();
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const pending = a.store.putVideo(
+		(async function* () {
+			await held;
+			yield Buffer.from("x");
+		})(),
+		abort.signal,
+	);
+	try {
+		await expect(
+			a.store.putVideo(
+				(async function* () {
+					yield Buffer.from("x");
+				})(),
+			),
+		).rejects.toThrow("lead_artifact_denied");
+		abort.abort();
+		await expect(pending).rejects.toThrow("lead_artifact_denied");
+		expect(readdirSync(a.artifactRoot)).toEqual([]);
+	} finally {
+		release();
+	}
 });

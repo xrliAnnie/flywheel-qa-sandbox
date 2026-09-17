@@ -1450,6 +1450,107 @@ export type LeadCarrierValidation =
 	| { valid: false; reason: string };
 
 /** Side-effect-free carrier check shared by runtime authorization and self-check. */
+/** Narrow Claude route guard. It never treats mode bypasses or Codex carrier
+ * evidence as identity proof, and does not grant founder write authority. */
+export function validateClaudeLeadLeaseAuthorization(
+	input: { claimedLeadId: string; env?: NodeJS.ProcessEnv },
+	deps: Pick<LeadWriteAuthorizationDeps, "processAliveWithStart"> = {},
+):
+	| {
+			valid: true;
+			leadKey: string;
+			generation: number;
+			holderPid: number;
+			holderStart: string;
+	  }
+	| { valid: false; reason: "claude_lease_unverified" } {
+	const env = Object.freeze({ ...(input.env ?? process.env) });
+	let store: LeadLeaseStore | undefined;
+	try {
+		if (!env.FLYWHEEL_PROJECT_NAME) throw Error();
+		const readIdentity = () =>
+			resolveLeadIdentity({
+				leadId: input.claimedLeadId,
+				projectName: env.FLYWHEEL_PROJECT_NAME!,
+				projectsPath:
+					env.FLYWHEEL_PROJECTS_FILE ??
+					join(homedir(), ".flywheel", "projects.json"),
+				homeDir: canonicalIdentityHomeDir(env),
+			});
+		const identity = readIdentity();
+		const generation = Number(env.FLYWHEEL_LEAD_GENERATION);
+		if (
+			identity.backend !== "claude-code" ||
+			!env.FLYWHEEL_LEAD_IDENTITY_DIGEST ||
+			!safeDigestMatch(
+				env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
+				identity.identityDigest,
+			) ||
+			env.FLYWHEEL_LEAD_LEASE_KEY !== identity.leadKey ||
+			!Number.isSafeInteger(generation) ||
+			generation <= 0
+		)
+			throw Error();
+		const dbPath =
+			env.FLYWHEEL_LEAD_LEASE_DB ??
+			join(homedir(), ".flywheel", "lead-lease.db");
+		if (!lstatSync(dbPath).isFile()) throw Error();
+		store = new LeadLeaseStore(dbPath);
+		const readBound = () => {
+			if (
+				!store!.validate({
+					leaseKey: identity.leadKey,
+					generation,
+					identityDigest: identity.identityDigest,
+				}).valid
+			)
+				throw Error();
+			const lease = store!.getLease(identity.leadKey);
+			const history = store!.getGenerationHistory(identity.leadKey, generation);
+			if (
+				!lease ||
+				!history ||
+				lease.project !== identity.projectName ||
+				lease.leadId !== identity.leadId ||
+				lease.holderPid !== history.holderPid ||
+				lease.holderStart !== history.holderStart ||
+				lease.boundAt !== history.boundAt ||
+				!Number.isSafeInteger(history.holderPid) ||
+				history.holderPid <= 0 ||
+				!history.holderStart
+			)
+				throw Error();
+			return {
+				valid: true as const,
+				leadKey: identity.leadKey,
+				generation,
+				holderPid: history.holderPid,
+				holderStart: history.holderStart,
+			};
+		};
+		const bound = readBound();
+		if (
+			!(deps.processAliveWithStart ?? processAliveWithStart)(
+				bound.holderPid,
+				bound.holderStart,
+			)
+		)
+			throw Error();
+		const fresh = readIdentity();
+		if (
+			fresh.backend !== "claude-code" ||
+			!safeDigestMatch(fresh.identityDigest, identity.identityDigest) ||
+			JSON.stringify(readBound()) !== JSON.stringify(bound)
+		)
+			throw Error();
+		return bound;
+	} catch {
+		return { valid: false, reason: "claude_lease_unverified" };
+	} finally {
+		store?.close();
+	}
+}
+
 export function validateLeadCarrierAuthorization(
 	input: { claimedLeadId: string; env?: NodeJS.ProcessEnv },
 	deps: LeadWriteAuthorizationDeps = {},

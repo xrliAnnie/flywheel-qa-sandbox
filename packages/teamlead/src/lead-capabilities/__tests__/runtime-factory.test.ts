@@ -28,6 +28,18 @@ const state = vi.hoisted(() => ({
 	parentFailure: false,
 	identity: "1".repeat(64),
 }));
+const authority = vi.hoisted(() => ({
+	enabled: false,
+	factory: vi.fn(),
+	call: vi.fn(),
+}));
+vi.mock("../../xiaohongshu-write/parent-client-policy.js", () => ({
+	createParentXhsAuthorityClient: (options: unknown) => {
+		authority.factory(options);
+		if (!authority.enabled) throw Error("authority_client_policy_unavailable");
+		return { call: authority.call };
+	},
+}));
 vi.mock("../runtime-context.js", () => ({
 	createLeadCapabilityContext: () => ({
 		assertActivationCurrent: () => {
@@ -66,7 +78,10 @@ async function upstream(id: string) {
 	if (state.fail === id) throw new Error("provider_start_failed");
 	const handlers = new Map(
 		LEAD_CAPABILITY_CATALOG.filter(
-			(row) => row.credentialConsumer === id && row.classification === "read",
+			(row) =>
+				row.credentialConsumer === id &&
+				row.classification === "read" &&
+				!row.operationId.startsWith("xiaohongshu.write."),
 		).map((row) => [
 			row.operationId,
 			{ execute: async () => ({ status: "unknown" as const }) },
@@ -114,6 +129,9 @@ vi.mock("../browser-provider.js", () => ({
 }));
 const roots: string[] = [];
 afterEach(() => {
+	authority.enabled = false;
+	authority.factory.mockClear();
+	authority.call.mockReset();
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
 	state.events = [];
@@ -441,4 +459,174 @@ it("keeps non-browser capabilities available when native browser startup fails",
 		"close:xiaohongshu-mcp",
 		"close:gbrain",
 	]);
+});
+
+it("routes feed reads through the verified authority without reminting resource handles", async () => {
+	const options = fixture();
+	authority.enabled = true;
+	const text = JSON.stringify({
+		feeds: [
+			{ id: "feed-a", resourceHandle: "123e4567-e89b-42d3-a456-426614174000" },
+		],
+		count: 1,
+	});
+	authority.call.mockResolvedValue({ text });
+	const active = await startLeadRuntimeProviders(options);
+	let forwarded: AbortSignal | undefined;
+	try {
+		const context = {
+			requestId: "read-request",
+			projectName: "flywheel",
+			leadId: "eng",
+			activationId: "activation",
+			signal: new AbortController().signal,
+			assertCurrent: async () => {},
+		};
+		expect(
+			await active.handlers.get("xiaohongshu.list_feeds")!.execute({}, context),
+		).toMatchObject({
+			status: "succeeded",
+			data: {
+				result: { content: [{ type: "text", text }] },
+				untrusted: true,
+				receiptId: "read-request",
+			},
+		});
+		expect(authority.call).toHaveBeenCalledWith(
+			"list_feeds",
+			{},
+			expect.any(AbortSignal),
+		);
+		for (const [action, input] of [
+			["search_feeds", { keyword: "query" }],
+			["list_saved_content", {}],
+			["list_collections", {}],
+			["get_collection_content", { collection_id: "collection-a" }],
+			[
+				"get_feed_detail",
+				{
+					feed_id: "feed-a",
+					resourceHandle: "00000000-0000-4000-8000-000000000001",
+				},
+			],
+		] as const) {
+			expect(
+				await active.handlers
+					.get(`xiaohongshu.${action}`)!
+					.execute(input, context),
+			).toMatchObject({ status: "succeeded" });
+			expect(authority.call).toHaveBeenLastCalledWith(
+				action,
+				input,
+				expect.any(AbortSignal),
+			);
+		}
+		authority.call.mockResolvedValue({ loggedIn: false });
+		expect(
+			await active.handlers
+				.get("xiaohongshu.check_login_status")!
+				.execute({}, context),
+		).toMatchObject({ status: "succeeded" });
+		expect(authority.call).toHaveBeenLastCalledWith(
+			"check_login_status",
+			{},
+			expect.any(AbortSignal),
+		);
+		authority.call.mockResolvedValue({
+			loggedIn: false,
+			image:
+				"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGP4DwABAQEAsTj2FAAAAABJRU5ErkJggg==",
+			expiresAt: Date.now() + 60000,
+		});
+		expect(
+			await active.handlers
+				.get("xiaohongshu.get_login_qrcode")!
+				.execute({}, context),
+		).toMatchObject({
+			status: "succeeded",
+			data: {
+				result: {
+					content: [
+						expect.objectContaining({ type: "text" }),
+						expect.objectContaining({ type: "image", mimeType: "image/png" }),
+					],
+				},
+			},
+		});
+		expect(authority.call).toHaveBeenLastCalledWith(
+			"get_login_qrcode",
+			{},
+			expect.any(AbortSignal),
+		);
+		forwarded = authority.call.mock.calls[0][2];
+		expect(forwarded?.aborted).toBe(false);
+		authority.call.mockRejectedValue(Error("private-error"));
+		expect(
+			await active.handlers.get("xiaohongshu.list_feeds")!.execute({}, context),
+		).toMatchObject({ status: "unknown" });
+	} finally {
+		await active.close();
+	}
+	expect(forwarded?.aborted).toBe(true);
+});
+it("assembles receipt writes only through the verified authority client and keeps default denial", async () => {
+	const options = fixture();
+	authority.call.mockResolvedValue({
+		kind: "attempt",
+		attemptId: "123e4567-e89b-42d3-a456-426614174003",
+		state: "succeeded",
+	});
+	const input = {
+		proposalId: "123e4567-e89b-42d3-a456-426614174000",
+		receiptId: "123e4567-e89b-42d3-a456-426614174001",
+		expectedContentDigest: "a".repeat(64),
+	};
+	const context = {
+		requestId: "123e4567-e89b-42d3-a456-426614174002",
+		projectName: "flywheel",
+		leadId: "eng",
+		activationId: "activation",
+		signal: new AbortController().signal,
+		assertCurrent: async () => {},
+	};
+	const denied = await startLeadRuntimeProviders(options);
+	try {
+		expect(
+			await denied.handlers
+				.get("xiaohongshu.like_feed")!
+				.execute(input, context),
+		).toMatchObject({
+			status: "rejected",
+			errorCode: "founder_write_gate_absent",
+		});
+	} finally {
+		await denied.close();
+	}
+	authority.enabled = true;
+	const active = await startLeadRuntimeProviders(options);
+	try {
+		expect(authority.factory).toHaveBeenLastCalledWith({
+			policyPath: "/Library/Application Support/Flywheel/Xhs/policy.json",
+			env: options.env,
+			activationId: "activation",
+		});
+		expect(
+			await active.handlers
+				.get("xiaohongshu.like_feed")!
+				.execute(input, context),
+		).toMatchObject({ status: "succeeded" });
+		expect(authority.call).toHaveBeenCalledTimes(1);
+		expect(
+			await active.handlers
+				.get("xiaohongshu.delete_cookies")!
+				.execute({}, context),
+		).toMatchObject({ status: "rejected", errorCode: "unclassified_write" });
+		expect(authority.call).toHaveBeenCalledTimes(1);
+	} finally {
+		await active.close();
+	}
+	await expect(
+		active.handlers.get("xiaohongshu.like_feed")!.execute(input, context),
+	).rejects.toThrow("runtime_providers_closed");
+	expect(authority.call).toHaveBeenCalledTimes(1);
 });

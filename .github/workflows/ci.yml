@@ -242,7 +242,7 @@ jobs:
       # missing, broken, or below-floor tool enters the bounded repair path.
       - name: Ensure lsof/tmux (FLY-1905 hardened, normally zero-network)
         timeout-minutes: 8
-        run: bash scripts/ci-apt-install.sh tmux lsof
+        run: bash scripts/ci-apt-install.sh tmux lsof ffmpeg
 
       - name: Install better-sqlite3 prebuilt binary
         run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release

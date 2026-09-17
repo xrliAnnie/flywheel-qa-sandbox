@@ -2472,10 +2472,22 @@ MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
 # Class blacklist: hardcoded "audible" today (personal media history).
 # Future personal/account/desktop-control MCPs default-deny via this list.
 LEAD_USER_MCP_BLACKLIST="${FLYWHEEL_LEAD_MCP_BLACKLIST:-audible}"
-RESERVED_INFRA_NAMES="flywheel-terminal,flywheel-inbox"
+RESERVED_INFRA_NAMES="flywheel-terminal,flywheel-inbox,flywheel-xhs-write"
 
 # shellcheck source=lib/mcp-inherit.sh
 source "${SCRIPT_DIR}/lib/mcp-inherit.sh"
+
+# FLY-2551: add the fixed receipt-based XHS facade only to eligible Lead roles.
+# Legacy read migration is handled separately; this fragment grants no approval.
+xhs_write_server='{}'
+if [ "$IS_COMPANION_ROLE" = false ] && [ "$IS_EXTERNAL_ROLE" = false ]; then
+  xhs_write_server=$(build_xhs_write_mcp_fragment \
+    "${SCRIPT_DIR}/../dist/xiaohongshu-write/claude-mcp-entry.js" \
+    "${FLYWHEEL_LEAD_ROLE:-}")
+fi
+terminal_server=$(jq -cn --argjson terminal "$terminal_server" \
+  --argjson xhs "$xhs_write_server" '$terminal + $xhs')
+
 
 # FLY-231: companion gets NO user-scope MCP at all (project-scope default-deny in
 # the generated .mcp.json). Note (per plan §2.4, Path A): this only controls the

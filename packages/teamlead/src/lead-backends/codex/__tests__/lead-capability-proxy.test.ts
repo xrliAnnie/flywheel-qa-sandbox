@@ -262,3 +262,77 @@ it("retains runner tool names while forwarding only UUID-bound broker operations
 		await server.close();
 	}
 });
+
+it("advertises and dispatches receipt-only XHS input while rejecting mixed content", async () => {
+	const xhsManifest = createLeadCapabilityManifest({
+		projectName: "flywheel",
+		leadId: "product",
+		identityDigest: "a".repeat(64),
+		backend: "codex-app-server",
+		profile: "full-access",
+		activationId: "activation",
+		sourceRevision: "abc",
+		operations: [getLeadCapability("xiaohongshu.like_feed")!],
+		ruleSources: [],
+		skillSources: [],
+		integrations: [],
+	});
+	const dispatch = vi.fn(async () => ({
+		...result,
+		data: {
+			result: { attemptId: request.requestId, state: "succeeded" },
+			untrusted: true,
+			receiptId: "123e4567-e89b-42d3-a456-426614174001",
+			observedAt: "2026-09-15T08:00:00.000Z",
+		},
+	}));
+	const server = createLeadCapabilityProxy({
+		manifest: xhsManifest,
+		socketPath: "/tmp/activation/broker.sock",
+		requestClient: dispatch,
+	});
+	const client = new Client({ name: "test", version: "1" });
+	const [a, b] = InMemoryTransport.createLinkedPair();
+	await Promise.all([server.connect(a), client.connect(b)]);
+	const input = {
+		proposalId: request.requestId,
+		receiptId: "123e4567-e89b-42d3-a456-426614174001",
+		expectedContentDigest: "a".repeat(64),
+	};
+	const xhsRequest = {
+		...request,
+		operationId: "xiaohongshu.like_feed",
+		input,
+	};
+	try {
+		const schema = JSON.stringify(
+			(await client.listTools()).tools[0]!.inputSchema,
+		);
+		expect(schema).toContain("expectedContentDigest");
+		expect(schema).toContain("anyOf");
+		expect(schema).not.toContain("xsec_token");
+		expect(
+			(await client.callTool({ name: "lead_operation", arguments: xhsRequest }))
+				.isError,
+		).not.toBe(true);
+		expect(dispatch).toHaveBeenCalledWith(
+			"/tmp/activation/broker.sock",
+			xhsRequest,
+		);
+		expect(
+			(
+				await client.callTool({
+					name: "lead_operation",
+					arguments: {
+						...xhsRequest,
+						input: { ...input, feed_id: "replacement" },
+					},
+				})
+			).isError,
+		).toBe(true);
+		expect(dispatch).toHaveBeenCalledTimes(1);
+	} finally {
+		await client.close();
+		await server.close();
+	}
+});

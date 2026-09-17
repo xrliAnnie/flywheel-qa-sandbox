@@ -949,6 +949,77 @@ describe("FLY-1392 v2 founder ingress", () => {
 		},
 	);
 
+	it.each([
+		"批准小红书 ABCDEFGH",
+		"批准小红书 错码",
+		"拒绝小红书 ABCDEFGH",
+		"撤回小红书 ABCDEFGH",
+		"　批准小红书 ＡＢＣＤＥＦＧＨ！　",
+		"批准小红书：这是转述，不是 ship 批准",
+	])("keeps XHS namespace out of a bound ship card: %s", async (content) => {
+		const db = new CommDB(dbPath);
+		const questionId = db.insertQuestion("exec-ship", "test-lead", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const handoff = vi.fn(
+			async (_id: string, _payload: Record<string, unknown>) => true,
+		);
+		const ship = vi.fn(async () => ({ bound: [], deferred: [], retry: false }));
+		const learning = vi.fn(async () => "ignored" as const);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-ship",
+					createdAtMs: Date.now() - 3600000,
+				},
+			],
+			{
+				store: founderReviewStore([]),
+				cursorStore: cursor,
+				commDbLeaseFactory: () => ({ db, release: () => {} }),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10000),
+						content,
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: SHIP_CARD,
+							channel_id: THREAD,
+						},
+					},
+				]),
+				deliverAmbiguousToLead: handoff,
+				tryFounderShipApproval: ship,
+				observeShipJudgmentReply: learning,
+				readCurrentBinding: () => ({
+					questionId,
+					executionId: "exec-ship",
+					issueId: "FLY-1392",
+					prHeadSha: "b".repeat(40),
+					threadId: THREAD,
+					gateMessageId: SHIP_CARD,
+					checkpoint: "approve_to_ship",
+					postedAt: new Date().toISOString(),
+				}),
+			},
+		);
+		try {
+			expect(outcome.result).toBe("advanced");
+			expect(ship).not.toHaveBeenCalled();
+			expect(learning).not.toHaveBeenCalled();
+			expect(handoff).toHaveBeenCalledOnce();
+			expect(handoff.mock.calls[0]?.[1]).toMatchObject({ answer: content });
+			expect(db.getPendingQuestions("test-lead")).toHaveLength(1);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("never sends free thread speech through the ship verdict classifier", async () => {
 		const db = new CommDB(dbPath);
 		db.registerSession(

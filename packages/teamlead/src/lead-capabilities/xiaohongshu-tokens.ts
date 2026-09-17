@@ -39,7 +39,9 @@ export class XiaohongshuTokenHandles {
 			const keys = Object.keys(object).filter((key) =>
 				/^xsec_?token$/i.test(key),
 			);
-			if (keys.length) {
+			// Go response structs include empty token fields when no grant was returned.
+			// Strip those fields without creating a handle; mixed aliases still fail closed.
+			if (keys.length && !keys.every((key) => object[key] === "")) {
 				const tokens = [...new Set(keys.map((key) => object[key]))],
 					ids = [
 						...new Set(
@@ -47,6 +49,8 @@ export class XiaohongshuTokenHandles {
 								object.id,
 								object.feed_id,
 								object.feedId,
+								object.note_id,
+								object.noteId,
 								object.user_id,
 								object.userId,
 							].filter((v) => typeof v === "string" && v.length > 0),

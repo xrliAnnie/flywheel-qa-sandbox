@@ -1602,6 +1602,48 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/xiaohongshu-write/__tests__/concurrency.test.ts:for (const child of children) if (child.exitCode === null) child.kill();#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/__tests__/concurrency.test.ts",
+		"code": "for (const child of children) if (child.exitCode === null) child.kill();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/xiaohongshu-write/__tests__/launchd-sockets.test.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/__tests__/launchd-sockets.test.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/xiaohongshu-write/__tests__/media-validator.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/__tests__/media-validator.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/xiaohongshu-write/__tests__/media-validator.test.ts:expect(() => process.kill(pid!, 0)).toThrow();#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/__tests__/media-validator.test.ts",
+		"code": "expect(() => process.kill(pid!, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/xiaohongshu-write/__tests__/provider-process.test.ts:expect(() => process.kill(child!.pid, 0)).toThrow();#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/__tests__/provider-process.test.ts",
+		"code": "expect(() => process.kill(child!.pid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/xiaohongshu-write/native-peer.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/native-peer.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/xiaohongshu-write/provider-process.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/xiaohongshu-write/provider-process.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/terminal-mcp/src/__tests__/capability-core-wiring.test.ts:await cmd([\"kill-window\", \"-t\", `fixture:${own}`]);#1",
 		"path": "packages/terminal-mcp/src/__tests__/capability-core-wiring.test.ts",
 		"code": "await cmd([\"kill-window\", \"-t\", `fixture:${own}`]);",

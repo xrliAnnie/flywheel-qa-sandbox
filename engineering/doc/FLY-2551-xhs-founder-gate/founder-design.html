@@ -1,0 +1,84 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2551 · 小红书逐次批准门</title><style>:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--blue:#007aff}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;line-height:1.75}
+main{max-width:1000px;margin:auto;padding:40px 22px 80px}header{padding:10px 6px 30px}h1{font-size:clamp(28px,5vw,42px);line-height:1.25;letter-spacing:-.04em;margin:8px 0 12px}h2{font-size:21px;letter-spacing:-.015em;margin:0 0 20px}.eyebrow{font-size:12px;letter-spacing:.15em;color:var(--blue);font-weight:650}.muted,.small{color:var(--muted);font-size:13px}.card{background:#fff;border:1px solid #e8e8ed;border-radius:16px;padding:28px;margin-bottom:20px}.hero{font-size:24px;line-height:1.65;margin-top:0}p{margin:12px 0}.tag{display:inline-block;padding:5px 10px;background:#edf5ff;color:#145b9b;border-radius:6px;font-size:12px;margin:8px 8px 0 0}.diagram{overflow-x:auto}.diagram svg{display:block;max-width:100%;height:auto;margin:8px auto 24px}.pending{padding:20px;border:1px dashed #c58c33;border-radius:8px;background:#fffaf0;color:#725320;font-size:14px;margin:12px 0 22px}.pending strong{font-size:12px;letter-spacing:.06em}.pending p{margin:6px 0}dl{margin:18px 0}dt{font-weight:650;color:#15599c;margin-top:18px}dd{margin:5px 0 0}.sample{background:#f5f5f7;padding:18px;border-radius:8px}code{font:13px "SFMono-Regular",Consolas,monospace;background:#f5f5f7;padding:3px 6px;border-radius:4px}li{margin:7px 0}.comment{border-top:1px solid #ececf0;margin-top:24px;padding-top:18px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:8px}label span{margin-left:12px;color:#237343}textarea{width:100%;min-height:76px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;font-size:14px;background:#fcfcfd}textarea:focus{outline:2px solid #7ab7ff;outline-offset:2px}button{background:var(--blue);color:#fff;border:0;border-radius:7px;padding:10px 16px;font:inherit;font-size:14px;cursor:pointer;margin:14px 12px 0 0}.secondary{background:#eaf3ff;color:#15599c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif;background:#f5f5f7;padding:16px;border-radius:8px}.chunk{margin-top:18px}#copy-status{font-size:13px;color:var(--muted)}a{color:#0067d6;text-decoration:none}@media(max-width:600px){main{padding:22px 12px 50px}.card{padding:22px 18px;border-radius:12px}.hero{font-size:21px}h2{font-size:18px}}</style></head><body><main><header><div class="eyebrow">FLY-2551 · 设计方案 · 2026-09-14</div><h1>你确认的内容，<br>只执行这一次。</h1><p class="muted">小红书发布、评论、点赞与收藏的可核验批准<br>设计交付 · 实施等待排期</p></header><section class="card" id="summary"><h2>01 / 一句话</h2><p class="hero">你批准的是<strong>这份内容、这个账号、这一次尝试</strong>。任一项改变，都要重新确认。</p><p>Lead 是替你准备与执行工作的组长。Claude 和 Codex 两种组长将使用同一条批准通道；它们都不能自行判断“你应该已经同意了”。</p><span class="tag">无批准就拒绝</span><span class="tag">内容改变就拒绝</span><span class="tag">同一批准只用一次</span><div class="comment"><label for="comment-summary">这一节的意见<span data-saved="summary" aria-live="polite"></span></label><textarea id="comment-summary" data-comment="summary" data-title="01 / 一句话" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="flow"><h2>02 / 从草稿到发送</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本次批准流程图：本机 Chromium 启动被权限限制阻止，首次与标准参数重试均失败。</p><p>图源已保存为 Mermaid 文件；下方文字说明其含义，没有使用远程渲染服务。</p></div><ol><li>组长准备完整草稿，系统固定文字、账号、目标和媒体。</li><li>你在 Discord 看到完整审核材料，回复指定卡片上的批准指令。</li><li>系统核验原始消息确实来自你，留下可追溯的批准记录。</li><li>执行前再检查一次，先把批准标为已用，再发送一次。</li></ol><p>发图文、发视频、评论、回复、点赞和收藏都走这条路。取消赞、取消收藏也需要新批准。</p><div class="comment"><label for="comment-flow">这一节的意见<span data-saved="flow" aria-live="polite"></span></label><textarea id="comment-flow" data-comment="flow" data-title="02 / 从草稿到发送" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="card"><h2>03 / 审核卡必须让你看全</h2><p>卡片显示账号昵称与稳定编号、本次动作、完整正文、目标笔记或评论、图片顺序、完整视频、可见范围、定时时间和批准到期时间。长文和视频不能只用摘要或缩略图代替。首版媒体每个最多10MiB，并以实际Discord附件上限为准；过大时会提前明确拒绝，不让你等一张永远无法批准的卡。</p><div class="sample"><span class="small">审核卡示意 · 没有发出实际请求</span><p>账号：你选择的账号 ＋ 稳定编号<br>动作：发布这份图文<br>内容：完整标题、正文、图片、标签<br>范围：公开 / 私密 / 互关，明确列出<br>时间：立即提交，或明确的定时时刻<br>回复本卡：批准小红书 &lt;卡片上的随机短码&gt;</p></div><p>8位短码只用来对应这张卡；手机输入的全角字符与尾部标点会按固定规则处理，内容本身不会改。正文或媒体一改，系统就生成新卡；旧卡不能批准新内容。普通“好”、组长转述、代码上线批准和本页意见均不算。</p><div class="comment"><label for="comment-card">这一节的意见<span data-saved="card" aria-live="polite"></span></label><textarea id="comment-card" data-comment="card" data-title="03 / 审核卡必须让你看全" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="model"><h2>04 / 一次批准留下哪些记录</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>内容、批准与尝试的关系图：本机 Chromium 启动被权限限制阻止，首次与标准参数重试均失败。</p><p>图源已保存为 Mermaid 文件；下方文字说明其含义，没有使用远程渲染服务。</p></div><dl><dt>冻结内容</dt><dd>保存完整文字、账号稳定编号、动作与目标，以及媒体内容和顺序。</dd><dt>批准记录</dt><dd>保存你的原始回复编号、真实作者、消息时间、有效期及对应内容。</dd><dt>执行尝试</dt><dd>只对应一条批准，记录成功、失败或结果未知；重启也不能把已用批准变回可用。</dd></dl><p>内容指纹，是系统根据所有固定内容计算出的核对值。改一个字、换一张图、换账号或取消赞方向，指纹就会不同。</p><div class="comment"><label for="comment-model">这一节的意见<span data-saved="model" aria-live="polite"></span></label><textarea id="comment-model" data-comment="model" data-title="04 / 一次批准留下哪些记录" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="account"><h2>05 / 换账号或换媒体，不能蒙混过去</h2><p>账号以平台稳定编号为准，不能只比较昵称或“已登录”。真正发送的服务要锁住同一个登录会话，在里面核验自己的账号并完成操作；账号变化时，旧批准失效。</p><p>图片和视频先复制成受控、不可替换的文件，再给你预览。最后上传的是对应的固定字节。组长不能把任意网址或本机路径塞进发布接口。</p><p>访问令牌，是平台用来允许访问的凭据。它只留在可信执行服务，不进入模型消息、审核页面或公开日志。</p><div class="comment"><label for="comment-account">这一节的意见<span data-saved="account" aria-live="polite"></span></label><textarea id="comment-account" data-comment="account" data-title="05 / 换账号或换媒体，不能蒙混过去" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="once"><h2>06 / “只用一次”也包括失败的尝试</h2><p>系统先可靠保存“已消费”，再发送。两个组长同时执行、网络重复请求或服务重启，都只能对应同一次尝试。</p><p><strong>超时不代表没发出去。</strong>如果发出后没有收到结果，系统显示“结果未知，可能已发送”，只能查状态，不会自动再发。</p><p>再次发送要有新卡和新批准。这个取舍宁可让某次请求没有发出，也不让一张批准造成重复发布。</p><div class="comment"><label for="comment-once">这一节的意见<span data-saved="once" aria-live="polite"></span></label><textarea id="comment-once" data-comment="once" data-title="06 / “只用一次”也包括失败的尝试" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="expiry"><h2>07 / 批准时限与撤回</h2><p>草稿卡最多等待 24 小时；批准后最多 15 分钟内使用，并且不能超过草稿本来的到期时间。迟到的批准消息不会重新延长时限。系统会通知组长及时执行；尚未送达或最终过期时，你也会收到明确提醒。</p><p>回复同一张卡“撤回小红书 &lt;短码&gt;”可撤回尚未消费的批准。以系统确认入库的先后为准：撤回先落库，就不会发；已经消费，就提示已开始，不能保证取消。</p><p>删除或编辑批准消息不会自动撤销已有批准。请使用撤回指令并等到系统确认。定时发布批准的是本次提交该定时任务，不是允许组长未来重复发布。</p><div class="comment"><label for="comment-expiry">这一节的意见<span data-saved="expiry" aria-live="polite"></span></label><textarea id="comment-expiry" data-comment="expiry" data-title="07 / 批准时限与撤回" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="tradeoffs"><h2>08 / 为什么需要两边一起改</h2><p><strong>采用：统一批准账本，加真正发送服务的最后一道检查。</strong>Flywheel 的独立授权服务核实你是谁、批准了什么；小红书服务核实当前账号与内容，只接受一次有效执行许可。独立系统账号，是操作系统区分访问权限的身份：组长和工作会话不能读它的凭据或改它的批准账本。原来的 Bridge 中转服务不再持有这份批准权。</p><p><strong>放弃：只让模型读聊天判断。</strong>这无法证明内容对应、消息作者和一次性使用。</p><p><strong>放弃：只给 Codex 加检查。</strong>Claude 的原始工具、终端或已登录浏览器仍可能绕过。两边的原始写入口和凭据访问必须一起封闭。</p><p>代价是需要修改 Flywheel 和现有小红书服务两个代码仓库，并验证两种组长实际运行时的隔离。只改配置名称不能算通过。</p><div class="comment"><label for="comment-tradeoffs">这一节的意见<span data-saved="tradeoffs" aria-live="polite"></span></label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="08 / 为什么需要两边一起改" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="boundary"><h2>09 / 这次设计的边界</h2><p>覆盖六类核心写操作、明确目标的回复、取消赞与收藏、定时提交、图文和视频；读取能力继续保留。动态搜索“第一个匹配商品”的绑定不在首版，不能在你批准后换成未确认的商品。</p><p>它不提供批量长期授权，也不复用代码上线批准。已经发布到外部的内容，不能通过回退代码自动撤销。</p><p><strong>本页是设计交付。</strong>本轮没有实现运行时代码、没有调用小红书写操作、没有派工、合并或部署。实施等待你的排期。</p><p>两张图因本机浏览器权限问题保留明确待渲染标识和源文件。页面可检查结构与评论逻辑，但不能说已经通过浏览器视觉验收。</p><div class="comment"><label for="comment-boundary">这一节的意见<span data-saved="boundary" aria-live="polite"></span></label><textarea id="comment-boundary" data-comment="boundary" data-title="09 / 这次设计的边界" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="validation"><h2>10 / 后续如何证明门真的有效</h2><ul><li>六类操作没有回执时，外部写入次数必须为零。</li><li>逐个修改文字、账号、目标、图片或选项，全部必须拒绝。</li><li>让两种组长并发、重放、超时和重启，最多只发送一次。</li><li>直接调用原始服务、借工具别名、终端或浏览器绕过，全部必须失败。</li><li>完整预览、实际上传媒体和批准记录必须对应同一份内容。</li></ul><p>先在隔离环境证明，再按你排定的时间使用测试账号完成真实验证。真实对外测试也逐次要你的批准；文档评审通过不代表这一步已经完成。</p><div class="comment"><label for="comment-validation">这一节的意见<span data-saved="validation" aria-live="polite"></span></label><textarea id="comment-validation" data-comment="validation" data-title="10 / 后续如何证明门真的有效" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="feedback"><h2>11 / 意见汇总</h2><p>每节意见实时汇总。复制后发给组长即可；这只是修改意见，不代表批准任何操作。长意见分段复制，每段都带同一标记。</p><div class="comment"><label for="comment-feedback">这一节的意见<span data-saved="feedback" aria-live="polite"></span></label><textarea id="comment-feedback" data-comment="feedback" data-title="11 / 总体意见" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status"></span><div id="comment-chunks"></div></section><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2551';
+  const prefix = 'flywheel:design-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const chunksBox = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function splitText(text) {
+    const chars = Array.from(text);
+    const room = 1800 - Array.from(marker).length - 1;
+    if (!chars.length) return [marker + '\n（暂无意见）'];
+    const result = [];
+    let part = '';
+    for (const char of chars) {
+      if (part.length + char.length > room) {
+        result.push(marker + '\n' + part);
+        part = '';
+      }
+      part += char;
+    }
+    if (part) result.push(marker + '\n' + part);
+    return result;
+  }
+  function fallbackCopy(text) {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '复制意见');
+    helper.style.position = 'fixed';
+    helper.style.left = '-10000px';
+    document.body.appendChild(helper);
+    helper.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    helper.remove();
+    return ok;
+  }
+  async function copyText(text) {
+    let ok = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { await navigator.clipboard.writeText(text); ok = true; }
+      catch (_) { ok = fallbackCopy(text); }
+    } else { ok = fallbackCopy(text); }
+    status.textContent = ok ? '已复制' : '复制失败，请选中下方文字手动复制';
+  }
+  function updateSummary() {
+    const entries = inputs.filter(input => input.value.trim()).map(input =>
+      input.dataset.title + '\n' + input.value.trim());
+    chunks = splitText(entries.join('\n\n'));
+    chunksBox.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const block = document.createElement('div');
+      block.className = 'chunk';
+      const text = document.createElement('pre');
+      text.textContent = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      block.appendChild(text);
+      block.appendChild(button);
+      chunksBox.appendChild(block);
+    });
+  }
+  inputs.forEach(input => {
+    const saved = document.querySelector('[data-saved="' + input.dataset.comment + '"]');
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+    catch (_) { if (saved) saved.textContent = '无法读取本机保存'; }
+    input.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + input.dataset.comment, input.value);
+        if (saved) saved.textContent = '已保存';
+      } catch (_) { if (saved) saved.textContent = '未保存；仍可复制'; }
+      updateSummary();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copyText(chunks.join('\n\n')));
+  updateSummary();
+})();
+</script></main></body></html>

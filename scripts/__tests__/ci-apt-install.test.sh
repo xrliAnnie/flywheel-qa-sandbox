@@ -407,5 +407,17 @@ else
   fail "T14 parser mismatch healthy_rc=$t14a_rc healthy_apt=[$t14a_apt] bad_rc=$RUN_RC err=[$(<"$ERR")]"
 fi
 
+# FLY-2551: the media decoder tests require both tools from the ffmpeg package.
+setup_case t15-media-decoders
+printf '#!/bin/sh\necho "ffmpeg version 6.1"\n' > "$BIN/ffmpeg"
+printf '#!/bin/sh\necho "ffprobe version 6.1"\n' > "$BIN/ffprobe"
+chmod +x "$BIN/ffmpeg" "$BIN/ffprobe"
+run_helper fast-success --timeout-secs 2 --mirror-file "$MIRROR_FILE" ffmpeg
+if [[ "$RUN_RC" -eq 0 && ! -s "$APT_LOG" && ! -s "$SUDO_LOG" ]]; then
+  pass "T15 healthy ffmpeg and ffprobe avoid package installation"
+else
+  fail "T15 media decoder dependency probe failed rc=$RUN_RC"
+fi
+
 printf '\nci-apt-install.test: %s passed, %s failed\n' "$PASSED" "$FAILED"
 [[ "$FAILED" -eq 0 ]]

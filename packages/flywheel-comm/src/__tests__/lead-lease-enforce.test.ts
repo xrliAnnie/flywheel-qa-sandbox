@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { respond } from "../commands/respond.js";
 import { send } from "../commands/send.js";
@@ -22,6 +23,7 @@ import {
 	LeadLeaseStore,
 	type LeadWriteAuthorizationDeps,
 	ProcessProbeTimeoutError,
+	validateClaudeLeadLeaseAuthorization,
 } from "../lead-lease.js";
 import { LeadLeaseModeStore } from "../lead-lease-mode.js";
 
@@ -342,6 +344,105 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		env.FLYWHEEL_LEAD_LEASE_KEY = "flywheel-eng-lead";
 		env.FLYWHEEL_LEAD_GENERATION = String(generation);
 	}
+
+	it("validates Claude route identity only with a live current lease and matching history", () => {
+		const liveLease = {
+			processAliveWithStart: (pid: number, start: string) =>
+				pid === 222 && start === "pane-start",
+		};
+		setMode("off");
+		expect(
+			validateClaudeLeadLeaseAuthorization(
+				{ claimedLeadId: "eng-lead", env },
+				liveLease,
+			).valid,
+		).toBe(false);
+		setMode("enforce");
+		bindLease();
+		expect(
+			validateClaudeLeadLeaseAuthorization(
+				{ claimedLeadId: "eng-lead", env },
+				liveLease,
+			),
+		).toMatchObject({
+			valid: true,
+			generation: 1,
+			leadKey: env.FLYWHEEL_LEAD_KEY,
+		});
+		expect(
+			validateClaudeLeadLeaseAuthorization(
+				{ claimedLeadId: "eng-lead", env },
+				{ processAliveWithStart: () => false },
+			).valid,
+		).toBe(false);
+		expect(
+			validateClaudeLeadLeaseAuthorization(
+				{ claimedLeadId: "eng-lead", env },
+				{
+					processAliveWithStart: () => {
+						throw Error("sensor");
+					},
+				},
+			).valid,
+		).toBe(false);
+		for (const patch of [
+			{ FLYWHEEL_LEAD_GENERATION: "2" },
+			{ FLYWHEEL_LEAD_LEASE_KEY: "other" },
+			{ FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64) },
+		])
+			expect(
+				validateClaudeLeadLeaseAuthorization(
+					{ claimedLeadId: "eng-lead", env: { ...env, ...patch } },
+					liveLease,
+				).valid,
+			).toBe(false);
+	});
+	it("rejects Claude registry changes during a liveness probe", () => {
+		setMode("enforce");
+		bindLease();
+		const result = validateClaudeLeadLeaseAuthorization(
+			{ claimedLeadId: "eng-lead", env },
+			{
+				processAliveWithStart: () => {
+					writeProjects("codex-app-server");
+					return true;
+				},
+			},
+		);
+		expect(result.valid).toBe(false);
+	});
+
+	it("rejects inconsistent Claude history and accepts only the restored current tuple", () => {
+		setMode("enforce");
+		bindLease();
+		const probe = {
+			processAliveWithStart: (pid: number, start: string) =>
+				pid === 222 && start === "pane-start",
+		};
+		const db = new Database(env.FLYWHEEL_LEAD_LEASE_DB!);
+		try {
+			db.prepare(
+				"UPDATE lease_generation_history SET holder_pid=333 WHERE lead_key=? AND generation=1",
+			).run(env.FLYWHEEL_LEAD_KEY);
+			expect(
+				validateClaudeLeadLeaseAuthorization(
+					{ claimedLeadId: "eng-lead", env },
+					probe,
+				).valid,
+			).toBe(false);
+			db.prepare(
+				"UPDATE lease_generation_history SET holder_pid=222 WHERE lead_key=? AND generation=1",
+			).run(env.FLYWHEEL_LEAD_KEY);
+			expect(
+				validateClaudeLeadLeaseAuthorization(
+					{ claimedLeadId: "eng-lead", env },
+					probe,
+				).valid,
+			).toBe(true);
+		} finally {
+			db.close();
+		}
+	});
 
 	function instructions(): ReturnType<CommDB["getUnreadInstructions"]> {
 		const db = new CommDB(dbPath);

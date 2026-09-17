@@ -10,7 +10,7 @@ PACKAGES=()
 
 usage() {
   printf '%s\n' \
-    'usage: ci-apt-install.sh [--timeout-secs N] [--mirror-file PATH] <tmux|lsof|sqlite3|ripgrep>...' >&2
+    'usage: ci-apt-install.sh [--timeout-secs N] [--mirror-file PATH] <tmux|lsof|sqlite3|ripgrep|ffmpeg>...' >&2
 }
 
 log() {
@@ -54,7 +54,7 @@ done
 REQUESTED=()
 for package in "${PACKAGES[@]}"; do
   case "$package" in
-    tmux|lsof|sqlite3|ripgrep) ;;
+    tmux|lsof|sqlite3|ripgrep|ffmpeg) ;;
     *) die_argv "unknown-package:$package" ;;
   esac
   case " ${REQUESTED[*]-} " in
@@ -65,6 +65,7 @@ done
 
 package_spec() {
   case "$1" in
+    ffmpeg) BINARY=ffmpeg; MIN_MAJOR=4; MIN_MINOR=4 ;;
     tmux)
       BINARY=tmux
       MIN_MAJOR=3
@@ -108,6 +109,10 @@ probe_package() {
 
   rc=0
   case "$package" in
+    ffmpeg)
+      output="$(ffmpeg -version 2>&1)" || rc=$?
+      ffprobe -version >/dev/null 2>&1 || rc=$?
+      ;;
     tmux)
       output="$(tmux -V 2>&1)" || rc=$?
       ;;
