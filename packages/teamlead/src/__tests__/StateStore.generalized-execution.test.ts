@@ -218,6 +218,138 @@ const DECLARED_NESTED_PR = {
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it("refreshes the same-run worktree binding cohort only inside an accepted completion", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		for (const [ordinal, executionId] of [
+			[2, "exec-design"],
+			[3, "exec-qa"],
+		] as const) {
+			raw
+				.prepare(
+					`INSERT INTO workflow_side_effect_ledger
+				 (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state, created_at, updated_at)
+				 VALUES ('run-1', 'execute', 1, 'dispatch', ?, ?, 'intent_recorded',
+				         '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')`,
+				)
+				.run(ordinal, executionId);
+		}
+		for (const executionId of [
+			"exec-1",
+			"exec-design",
+			"exec-qa",
+			"unrelated",
+			"other-generation",
+		]) {
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: "FLY-X",
+				project_name: "flywheel",
+				status: "running",
+			});
+			store.bindWorktreeOnce(
+				executionId,
+				{
+					path: "/tmp/flywheel-FLY-X",
+					branch: "flywheel-FLY-X",
+					generation: executionId === "other-generation" ? "gen-2" : "gen-1",
+				},
+				{ issueId: "FLY-X", projectName: "flywheel" },
+			);
+		}
+
+		const completion = {
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "complete-refresh",
+			completionSubmission: { decision: { route: "needs_review" } },
+			worktreeBranchObservation: {
+				path: "/tmp/flywheel-FLY-X",
+				generation: "gen-1",
+				expectedBranch: "flywheel-FLY-X",
+				observedBranch: "docs/FLY-X-cleanup",
+				observedHead: "a".repeat(40),
+			},
+			now: "2026-09-17T00:00:00.000Z",
+		};
+		expect(store.commitEnrolledCompletion(completion)).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
+		for (const executionId of ["exec-1", "exec-design", "exec-qa"]) {
+			expect(store.getWorktreeBinding(executionId)?.branch).toBe(
+				"docs/FLY-X-cleanup",
+			);
+			expect(
+				store.hasAcceptedWorktreeBranchRefresh({
+					executionId,
+					path: "/tmp/flywheel-FLY-X",
+					generation: "gen-1",
+					oldBranch: "flywheel-FLY-X",
+					newBranch: "docs/FLY-X-cleanup",
+				}),
+			).toBe(true);
+		}
+		expect(store.getWorktreeBinding("unrelated")?.branch).toBe(
+			"flywheel-FLY-X",
+		);
+		expect(store.getWorktreeBinding("other-generation")?.branch).toBe(
+			"flywheel-FLY-X",
+		);
+
+		expect(
+			store.commitEnrolledCompletion({
+				...completion,
+				sourceEventId: "complete-refresh-replay",
+				worktreeBranchObservation: {
+					...completion.worktreeBranchObservation,
+					expectedBranch: "docs/FLY-X-cleanup",
+					observedBranch: "feat/FLY-X-late",
+				},
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(store.getWorktreeBinding("exec-1")?.branch).toBe(
+			"docs/FLY-X-cleanup",
+		);
+		store.close();
+	});
+
+	it("does not refresh a worktree binding when completion is refused", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		store.bindWorktreeOnce("exec-1", {
+			path: "/tmp/flywheel-FLY-X",
+			branch: "flywheel-FLY-X",
+			generation: "gen-1",
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "wrong-route",
+				sourceEventId: "complete-refresh-refused",
+				completionSubmission: {},
+				worktreeBranchObservation: {
+					path: "/tmp/flywheel-FLY-X",
+					generation: "gen-1",
+					expectedBranch: "flywheel-FLY-X",
+					observedBranch: "docs/FLY-X-cleanup",
+					observedHead: "a".repeat(40),
+				},
+			}),
+		).toMatchObject({ ok: false });
+		expect(store.getWorktreeBinding("exec-1")?.branch).toBe("flywheel-FLY-X");
+		store.close();
+	});
+
 	it("commits declared PR evidence atomically and replays only the identical receipt set", async () => {
 		const store = await StateStore.create(":memory:");
 		createAdmittedEngineRun(store);

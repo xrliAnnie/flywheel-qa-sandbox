@@ -56,6 +56,7 @@ describe("land retry policy", () => {
 		"arbitration_failed:linear timeout",
 		"land_execution_error:github temporarily unavailable",
 		"issue_closeout_incomplete",
+		"issue_closeout_incomplete:cause=worktree_remove_failed",
 		"land_postconditions_incomplete:thread_archive",
 		"workflow_pr_manifest_manifest_unavailable",
 		"founder_review_producer_ambiguous",
@@ -205,6 +206,28 @@ describe("land retry policy", () => {
 		expect(exhausted.lastError).toBe(
 			"retry_exhausted:linear_lookup_failed_retryable",
 		);
+	});
+
+	it("holds a merged cleanup with a residual local ref after the ninth bounded retry", () => {
+		const reason = "issue_closeout_incomplete:cause=worktree_remove_failed";
+		expect(classifyLandRetryReason(reason)).toBe("retryable");
+		expect(
+			nextLandRetry({
+				classification: "retryable",
+				reason,
+				now: "2026-09-17T20:00:00.000Z",
+				epochKey: "5:finalization_partial",
+				priorRetryCount: 8,
+				priorRetryEpochKey: "5:finalization_partial",
+			}),
+		).toEqual({
+			state: "held",
+			retryCount: 9,
+			retryEpochKey: "5:finalization_partial",
+			nextAttemptAt: null,
+			lastError:
+				"retry_exhausted:issue_closeout_incomplete:cause=worktree_remove_failed",
+		});
 	});
 
 	it("does not reset the budget when retryable reasons oscillate without durable progress", () => {

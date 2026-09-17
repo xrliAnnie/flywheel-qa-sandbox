@@ -40,12 +40,26 @@ import {
 } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import { casDeleteLocalBranch } from "./branch-cleanup.js";
+import {
+	casDeleteLocalBranch,
+	isBaseBranch,
+	isProtectedBranch,
+} from "./branch-cleanup.js";
+import { type CleanupPolicyByProject, policyFor } from "./cleanup-policy.js";
+import {
+	type WorktreeFailure,
+	worktreeFailureFromSkippedReason,
+} from "./land-closeout-cause.js";
 import type { BoundWorktreeCloseoutTarget } from "./land-intent-targets.js";
 import {
 	type LandOperationAuditIdentity,
 	recordLandCloseoutAudit,
 } from "./land-operation-audit.js";
+import {
+	type BranchCoverage,
+	type MergedWorktreeProof,
+	verifyMergedBranchCoverage,
+} from "./merged-worktree-proof.js";
 import type { WithRepoLock } from "./repo-mutation-lock.js";
 
 /** FLY-603: `git status --porcelain` clean? `"unknown"` on probe error
@@ -65,6 +79,20 @@ export function gitWorktreeClean(
 				}
 				resolve(stdout.trim().length === 0);
 			},
+		);
+	});
+}
+
+function gitBranchNameValid(
+	projectRoot: string,
+	branch: string,
+): Promise<boolean> {
+	return new Promise((resolve) => {
+		execFile(
+			"git",
+			["-C", projectRoot, "check-ref-format", "--branch", branch],
+			{ timeout: 15_000 },
+			(error) => resolve(!error),
 		);
 	});
 }
@@ -91,6 +119,7 @@ export type WorktreeCleanupInput = WorktreeCleanupCommonInput &
 				operationContext: {
 					operationAudit: LandOperationAuditIdentity;
 					target: BoundWorktreeCloseoutTarget;
+					mergedWorktreeProof?: MergedWorktreeProof;
 				};
 		  }
 	);
@@ -108,11 +137,15 @@ export interface WorktreeCleanupAttestation {
 	/** The worktree HEAD sha at delete time. */
 	headSha?: string;
 	branchDeleted?: boolean;
+	branchDeleteReason?: string;
+	verificationMode?: "derived_branch" | "merged_branch_verified";
+	mergeProof?: Extract<BranchCoverage, { ok: true }>;
 	/** True ONLY when path/branch/generation matched the persisted binding. */
 	bindingVerified: boolean;
 	bindingBranch?: string;
 	bindingGeneration?: string;
 	skippedReason?: string;
+	failure?: { token: WorktreeFailure; detail?: string };
 	absentEvidence?: {
 		path: string;
 		observedAt: string;
@@ -131,7 +164,8 @@ export interface WorktreeCleanupDeps {
 		| "getWorktreeBinding"
 		| "getLandOperation"
 		| "recordLandOperationStep"
-	>;
+	> &
+		Partial<Pick<StateStore, "listLandOperationSteps">>;
 	worktreeManager: Pick<
 		WorktreeManager,
 		| "expectedWorktree"
@@ -152,6 +186,14 @@ export interface WorktreeCleanupDeps {
 	casDeleteLocalBranchFn?: typeof casDeleteLocalBranch;
 	realpath?: typeof realpath;
 	lstat?: typeof lstat;
+	protectedBranchesForProject?: (
+		projectName: string,
+	) => readonly string[] | undefined;
+	verifyMergedBranchCoverageFn?: typeof verifyMergedBranchCoverage;
+	isBranchNameValid?: typeof gitBranchNameValid;
+	isOperationAuthorityCurrent?: (
+		identity: LandOperationAuditIdentity,
+	) => boolean;
 }
 
 export type WorktreeCleanupFn = (
@@ -166,6 +208,10 @@ const SKIPPED = (
 	cleanupState: "blocked",
 	bindingVerified: false,
 	skippedReason: reason,
+	failure: {
+		token: worktreeFailureFromSkippedReason(reason),
+		detail: reason,
+	},
 	...extra,
 });
 
@@ -239,6 +285,142 @@ export function makeWorktreeCleanup(
 				const operationTarget = input.operationContext?.target;
 				const realpathFn = deps.realpath ?? realpath;
 				const lstatFn = deps.lstat ?? lstat;
+				const resumePreparedCleanup = async (): Promise<
+					WorktreeCleanupAttestation | undefined
+				> => {
+					const context = input.operationContext;
+					const listSteps = deps.store.listLandOperationSteps;
+					if (!context || !listSteps) return undefined;
+					const proof = context.mergedWorktreeProof;
+					if (!proof) return undefined;
+					const prepared = listSteps
+						.call(deps.store, context.operationAudit.operationId)
+						.map((step) => step.receipt)
+						.find(
+							(receipt) =>
+								receipt.eventKind === "worktree_cleanup_prepared" &&
+								receipt.reason === "merged_branch_verified" &&
+								receipt.worktreePath === context.target.path &&
+								receipt.bindingGeneration === context.target.generation &&
+								receipt.mergeSha === proof.mergeSha &&
+								receipt.mergedPrHead === proof.mergedPrHead,
+						);
+					if (!prepared) return undefined;
+					const actualBranch =
+						typeof prepared.registeredBranch === "string"
+							? prepared.registeredBranch
+							: undefined;
+					const headSha =
+						typeof prepared.headSha === "string" ? prepared.headSha : undefined;
+					const coverage =
+						prepared.coverage === "exact_pr_head" ||
+						prepared.coverage === "ancestor_of_main"
+							? prepared.coverage
+							: undefined;
+					const protectedBranches = deps.protectedBranchesForProject?.(
+						input.projectName,
+					);
+					if (
+						!actualBranch ||
+						!headSha ||
+						!coverage ||
+						!protectedBranches ||
+						isBaseBranch(actualBranch) ||
+						isProtectedBranch(actualBranch, protectedBranches) ||
+						!(await (deps.isBranchNameValid ?? gitBranchNameValid)(
+							projectRoot,
+							actualBranch,
+						)) ||
+						deps.isOperationAuthorityCurrent?.(context.operationAudit) !== true
+					) {
+						return SKIPPED("remove_failed:prepared_recovery_unavailable", {
+							removed: true,
+							actualBranch,
+							headSha,
+							verificationMode: "merged_branch_verified",
+						});
+					}
+					const registered = await deps.worktreeManager.getRegisteredWorktree(
+						projectRoot,
+						context.target.path,
+					);
+					if (registered) {
+						return SKIPPED("remove_failed:path_reappeared", {
+							actualBranch,
+							headSha,
+							verificationMode: "merged_branch_verified",
+						});
+					}
+					const deleted = await (
+						deps.casDeleteLocalBranchFn ?? casDeleteLocalBranch
+					)({
+						mainRepoPath: projectRoot,
+						branch: actualBranch,
+						expectedSha: headSha,
+					});
+					const branchDeleted =
+						deleted.deleted ||
+						(!deleted.deleted && deleted.reason === "branch_missing");
+					const branchDeleteReason = deleted.deleted
+						? undefined
+						: deleted.reason;
+					const mergeProof: Extract<BranchCoverage, { ok: true }> =
+						coverage === "exact_pr_head"
+							? { ok: true, via: coverage }
+							: {
+									ok: true,
+									via: coverage,
+									...(typeof prepared.mainSha === "string"
+										? { mainSha: prepared.mainSha }
+										: {}),
+								};
+					const recorded = audit(
+						input,
+						branchDeleted
+							? "worktree_cleanup_branch_deleted"
+							: "worktree_cleanup_failed",
+						{
+							reason: branchDeleted ? "prepared_recovery" : "remove_failed",
+							worktreePath: context.target.path,
+							branch: actualBranch,
+							headSha,
+							branchDeleted,
+							branchDeleteReason: branchDeleteReason ?? null,
+						},
+						`prepared-recovery-${context.target.generation}`,
+					);
+					if (!branchDeleted || !recorded) {
+						return SKIPPED(
+							`remove_failed:${
+								!recorded
+									? "operation_audit_unavailable"
+									: (branchDeleteReason ?? "branch_delete_failed")
+							}`,
+							{
+								removed: true,
+								actualBranch,
+								headSha,
+								branchDeleted,
+								branchDeleteReason,
+								verificationMode: "merged_branch_verified",
+								mergeProof,
+							},
+						);
+					}
+					return {
+						removed: true,
+						cleanupState: "removed",
+						actualBranch,
+						headSha,
+						branchDeleted: true,
+						branchDeleteReason,
+						verificationMode: "merged_branch_verified",
+						mergeProof,
+						bindingVerified: false,
+						bindingBranch: context.target.branch,
+						bindingGeneration: context.target.generation,
+					};
+				};
 
 				// (2) target resolution — persisted worktree_path is authoritative.
 				let worktreePath =
@@ -345,6 +527,8 @@ export function makeWorktreeCleanup(
 						}
 					} catch (error) {
 						if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+							const recovered = await resumePreparedCleanup();
+							if (recovered) return recovered;
 							const observedAt = new Date().toISOString();
 							const absentEvidence = {
 								path: operationTarget.path,
@@ -423,6 +607,8 @@ export function makeWorktreeCleanup(
 						await lstatFn(worktreePath);
 					} catch (error) {
 						if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+							const recovered = await resumePreparedCleanup();
+							if (recovered) return recovered;
 							const observedAt = new Date().toISOString();
 							audit(input, "worktree_cleanup_absent", {
 								worktreePath,
@@ -453,18 +639,6 @@ export function makeWorktreeCleanup(
 					});
 					return SKIPPED("branchless_or_detached");
 				}
-				if (
-					reg.branch !== expectedBranch ||
-					(operationTarget && reg.branch !== operationTarget.branch)
-				) {
-					audit(input, "worktree_cleanup_skipped", {
-						reason: "branch_mismatch",
-						worktreePath,
-						registeredBranch: reg.branch,
-						expectedBranch,
-					});
-					return SKIPPED("branch_mismatch");
-				}
 				branch = reg.branch; // delete the ACTUAL registered branch
 				// FLY-793 (824 R2 E2E): probe + remove by the ACTUAL registered path.
 				// git reports symlink-resolved paths (e.g. /private/tmp/... for a
@@ -485,18 +659,19 @@ export function makeWorktreeCleanup(
 						}
 					: deps.store.getWorktreeBinding(input.executionId!);
 				let bindingVerified = false;
+				let pathMatch = false;
+				let generationMatch = false;
 				if (binding) {
-					const pathMatch =
+					pathMatch =
 						canonicalizeWorktreePath(binding.path) ===
 						canonicalizeWorktreePath(registeredPath);
 					const branchMatch = binding.branch === reg.branch;
-					let generationMatch = false;
-					if (pathMatch && branchMatch) {
+					if (pathMatch) {
 						const marker =
 							await deps.worktreeManager.readWorktreeGeneration(registeredPath);
 						generationMatch = !!marker && marker === binding.generation;
 					}
-					if (!pathMatch || !branchMatch || !generationMatch) {
+					if (!pathMatch || !generationMatch) {
 						audit(input, "worktree_cleanup_skipped", {
 							reason: "binding_mismatch",
 							worktreePath: registeredPath,
@@ -509,7 +684,69 @@ export function makeWorktreeCleanup(
 							bindingGeneration: binding.generation,
 						});
 					}
-					bindingVerified = true;
+					bindingVerified = branchMatch;
+				}
+
+				const legacyNamesMatch =
+					reg.branch === expectedBranch &&
+					(!operationTarget || reg.branch === operationTarget.branch) &&
+					(!binding || reg.branch === binding.branch);
+				let verificationMode: WorktreeCleanupAttestation["verificationMode"] =
+					"derived_branch";
+				let mergeProof: Extract<BranchCoverage, { ok: true }> | undefined;
+				if (!legacyNamesMatch) {
+					const proof = input.operationContext?.mergedWorktreeProof;
+					const protectedBranches = deps.protectedBranchesForProject?.(
+						input.projectName,
+					);
+					const authorityCurrent =
+						input.operationContext && deps.isOperationAuthorityCurrent
+							? deps.isOperationAuthorityCurrent(
+									input.operationContext.operationAudit,
+								)
+							: false;
+					if (
+						!input.operationContext ||
+						!operationTarget ||
+						!proof ||
+						!deps.withRepoLock ||
+						!authorityCurrent ||
+						!protectedBranches ||
+						!(await (deps.isBranchNameValid ?? gitBranchNameValid)(
+							projectRoot,
+							reg.branch,
+						))
+					) {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "branch_mismatch",
+							worktreePath,
+							registeredBranch: reg.branch,
+							expectedBranch,
+							detail: "merged_proof_unavailable",
+						});
+						return SKIPPED("branch_mismatch");
+					}
+					const coverage = await (
+						deps.verifyMergedBranchCoverageFn ?? verifyMergedBranchCoverage
+					)({
+						proof,
+						projectRoot,
+						registeredBranch: reg.branch,
+						registeredHead: reg.head ?? "",
+						protectedBranches,
+					});
+					if (!coverage.ok) {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "branch_mismatch",
+							worktreePath,
+							registeredBranch: reg.branch,
+							expectedBranch,
+							detail: coverage.detail,
+						});
+						return SKIPPED("branch_mismatch");
+					}
+					verificationMode = "merged_branch_verified";
+					mergeProof = coverage;
 				}
 
 				// (4) clean-guard — fail-closed on probe error.
@@ -523,11 +760,76 @@ export function makeWorktreeCleanup(
 						bindingVerified,
 						bindingBranch: binding?.branch,
 						bindingGeneration: binding?.generation,
+						verificationMode,
+						mergeProof,
 					});
 				}
 
 				// Capture the attestation facts BEFORE removal destroys the marker.
 				const headSha = reg.head ?? undefined;
+				if (verificationMode === "merged_branch_verified") {
+					const authorityCurrent = deps.isOperationAuthorityCurrent?.(
+						input.operationContext!.operationAudit,
+					);
+					const [fresh, marker, freshClean] = await Promise.all([
+						deps.worktreeManager.getRegisteredWorktree(
+							projectRoot,
+							registeredPath,
+						),
+						deps.worktreeManager.readWorktreeGeneration(registeredPath),
+						deps.isWorktreeClean(registeredPath),
+					]);
+					if (
+						authorityCurrent !== true ||
+						!fresh ||
+						fresh.isDetached ||
+						fresh.path !== registeredPath ||
+						fresh.branch !== reg.branch ||
+						fresh.head !== reg.head
+					) {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "branch_mismatch",
+							worktreePath: registeredPath,
+							detail: "pre_remove_identity_changed",
+						});
+						return SKIPPED("branch_mismatch");
+					}
+					if (marker !== binding?.generation) {
+						return SKIPPED("binding_mismatch", {
+							bindingBranch: binding?.branch,
+							bindingGeneration: binding?.generation,
+						});
+					}
+					if (freshClean !== true) {
+						return SKIPPED(
+							freshClean === "unknown" ? "clean_unknown" : "dirty",
+							{
+								bindingVerified,
+								bindingBranch: binding?.branch,
+								bindingGeneration: binding?.generation,
+								verificationMode,
+								mergeProof,
+							},
+						);
+					}
+					const proof = input.operationContext!.mergedWorktreeProof!;
+					if (
+						!audit(input, "worktree_cleanup_prepared", {
+							reason: "merged_branch_verified",
+							worktreePath: registeredPath,
+							registeredBranch: reg.branch,
+							expectedBranch,
+							mergeSha: proof.mergeSha,
+							mergedPrHead: proof.mergedPrHead,
+							coverage: mergeProof?.via,
+							mainSha: mergeProof?.mainSha ?? null,
+							headSha: headSha ?? null,
+							bindingGeneration: binding?.generation,
+						})
+					) {
+						return SKIPPED("operation_audit_unavailable");
+					}
+				}
 
 				// (5) dirty-safe removal — WORKTREE ONLY (branch passed as null).
 				// Codex R1#9: the local ref is deleted below via the CAS primitive
@@ -538,6 +840,25 @@ export function makeWorktreeCleanup(
 					registeredPath,
 					null,
 				);
+				let directoryRemovalVerified = res.removed;
+				if (verificationMode === "merged_branch_verified" && res.removed) {
+					let pathAbsent = false;
+					try {
+						await lstatFn(registeredPath);
+					} catch (error) {
+						pathAbsent = (error as NodeJS.ErrnoException).code === "ENOENT";
+					}
+					try {
+						const registeredAfter =
+							await deps.worktreeManager.getRegisteredWorktree(
+								projectRoot,
+								registeredPath,
+							);
+						directoryRemovalVerified = pathAbsent && !registeredAfter;
+					} catch {
+						directoryRemovalVerified = false;
+					}
+				}
 				for (const reap of res.reaps ?? []) {
 					if (!isReapIncomplete(reap.summary)) continue;
 					const pathHash = createHash("sha256")
@@ -560,7 +881,7 @@ export function makeWorktreeCleanup(
 				// the same repo lock. Missing head → leave the ref to the sweep.
 				let branchDeleted = false;
 				let branchDeleteReason: string | undefined;
-				if (res.removed && branch && headSha) {
+				if (directoryRemovalVerified && branch && headSha) {
 					const del = await (
 						deps.casDeleteLocalBranchFn ?? casDeleteLocalBranch
 					)({
@@ -570,19 +891,32 @@ export function makeWorktreeCleanup(
 					});
 					branchDeleted = del.deleted;
 					if (!del.deleted) branchDeleteReason = del.reason;
-				} else if (res.removed && branch && !headSha) {
+				} else if (directoryRemovalVerified && branch && !headSha) {
 					branchDeleteReason = "no_attested_head";
 				}
+				if (res.removed && !directoryRemovalVerified) {
+					branchDeleteReason = "remove_readback_failed";
+				}
+				const cleanupComplete =
+					directoryRemovalVerified &&
+					(verificationMode !== "merged_branch_verified" || branchDeleted);
+				const skippedReason = cleanupComplete
+					? undefined
+					: `remove_failed:${
+							branchDeleteReason ?? res.error ?? "worktree_remove_failed"
+						}`;
 
 				const outcomeRecorded = audit(
 					input,
-					res.removed ? "worktree_cleanup_done" : "worktree_cleanup_failed",
+					cleanupComplete ? "worktree_cleanup_done" : "worktree_cleanup_failed",
 					{
 						worktreePath,
 						branch,
 						branchDeleted,
 						branchDeleteReason: branchDeleteReason ?? null,
 						bindingVerified,
+						verificationMode,
+						mergeProof,
 						headSha: headSha ?? null,
 						error: res.error,
 						reaps: res.reaps ?? [],
@@ -595,15 +929,26 @@ export function makeWorktreeCleanup(
 					});
 				}
 				return {
-					removed: res.removed,
-					cleanupState: res.removed ? "removed" : "blocked",
+					removed: directoryRemovalVerified,
+					cleanupState: cleanupComplete ? "removed" : "blocked",
 					actualBranch: branch ?? undefined,
 					headSha,
 					branchDeleted,
+					branchDeleteReason,
 					bindingVerified,
 					bindingBranch: binding?.branch,
 					bindingGeneration: binding?.generation,
-					skippedReason: res.removed ? undefined : `remove_failed:${res.error}`,
+					verificationMode,
+					mergeProof,
+					skippedReason,
+					...(skippedReason
+						? {
+								failure: {
+									token: worktreeFailureFromSkippedReason(skippedReason),
+									detail: skippedReason,
+								},
+							}
+						: {}),
 					reaps: res.reaps,
 				};
 			};
@@ -633,6 +978,7 @@ export function makeBridgeWorktreeCleanup(
 	store: StateStore,
 	projects: ProjectEntry[],
 	withRepoLock?: WithRepoLock,
+	policies?: CleanupPolicyByProject,
 ): WorktreeCleanupFn {
 	const worktreeManager = new WorktreeManager(
 		withRepoLock ? { withRepoLock } : undefined,
@@ -645,5 +991,22 @@ export function makeBridgeWorktreeCleanup(
 		isWorktreeClean: gitWorktreeClean,
 		autoclean: worktreeAutocleanEnabled(),
 		withRepoLock,
+		protectedBranchesForProject: (projectName) => {
+			const policy = policyFor(policies, projectName);
+			return policy.enabled ? policy.protectedBranches : undefined;
+		},
+		isOperationAuthorityCurrent: (identity) => {
+			const operation = store.getLandOperation(identity.operationId);
+			return Boolean(
+				operation &&
+					operation.state === "running" &&
+					!operation.superseded_at &&
+					operation.owner_id === identity.ownerId &&
+					operation.generation === identity.generation &&
+					operation.run_id === identity.runId &&
+					operation.lease_expires_at &&
+					operation.lease_expires_at > new Date().toISOString(),
+			);
+		},
 	});
 }

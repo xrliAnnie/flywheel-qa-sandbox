@@ -36,7 +36,10 @@ import { emitIssueThreadInfraNotification } from "./founder-thread-notifier.js";
 import {
 	inferLandCloseoutCause,
 	type LandCloseoutCause,
+	landCloseoutCauseFromWorktreeFailure,
 	landCloseoutReason,
+	type WorktreeFailure,
+	worktreeFailureFromSkippedReason,
 } from "./land-closeout-cause.js";
 import { readLandTargetSnapshot } from "./land-intent-targets.js";
 import {
@@ -48,6 +51,7 @@ import {
 	type LinearDoneFinalizer,
 	raceMarkIssueDoneWithAbort,
 } from "./linear-issue-finalizer.js";
+import type { MergedWorktreeProof } from "./merged-worktree-proof.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
@@ -326,6 +330,8 @@ interface PostShipCommonOpts {
 		ownerId: string;
 		generation: number;
 	};
+	/** Server-constructed proof that this operation's exact PR landed on main. */
+	mergedWorktreeProof?: MergedWorktreeProof;
 }
 
 export type PostShipOpts = PostShipCommonOpts &
@@ -564,6 +570,7 @@ export interface PostShipDeps {
 export interface LandWorktreeCloseoutReport {
 	complete: boolean;
 	reason?: string;
+	failure?: { token: WorktreeFailure; detail?: string };
 	attestations: WorktreeCleanupAttestation[];
 }
 
@@ -647,7 +654,13 @@ export async function settleLandOperationWorktrees(
 				projectName: opts.projectName,
 				tmuxClosed: tmuxConfirmedGone,
 				tmuxErrors: [],
-				operationContext: { operationAudit, target },
+				operationContext: {
+					operationAudit,
+					target,
+					...(opts.mergedWorktreeProof
+						? { mergedWorktreeProof: opts.mergedWorktreeProof }
+						: {}),
+				},
 			});
 		} catch (error) {
 			return {
@@ -667,9 +680,14 @@ export async function settleLandOperationWorktrees(
 		const cleanupState =
 			attestation.cleanupState ?? (attestation.removed ? "removed" : "blocked");
 		if (cleanupState !== "removed" && cleanupState !== "absent") {
+			const detail = attestation.skippedReason ?? "worktree_cleanup_blocked";
 			return {
 				complete: false,
-				reason: attestation.skippedReason ?? "worktree_cleanup_blocked",
+				reason: detail,
+				failure: attestation.failure ?? {
+					token: worktreeFailureFromSkippedReason(detail),
+					detail,
+				},
 				attestations,
 			};
 		}
@@ -1325,6 +1343,7 @@ async function runPostShipFinalizationInner(
 	}
 	let worktreeRemoved = !resumable;
 	let worktreeFailureReason: string | undefined;
+	let worktreeFailure: WorktreeFailure | undefined;
 	if (resumable && !closeoutBlocked) {
 		if (landManaged) {
 			const report = await settleLandOperationWorktrees(
@@ -1336,11 +1355,17 @@ async function runPostShipFinalizationInner(
 			);
 			worktreeRemoved = report.complete;
 			worktreeFailureReason = report.reason;
+			worktreeFailure = report.failure?.token;
 		} else {
 			const attestation = await cleanLegacyWorktree(true);
 			worktreeRemoved =
 				attestation?.removed === true || attestation?.cleanupState === "absent";
 			worktreeFailureReason = attestation?.skippedReason;
+			if (!worktreeRemoved) {
+				worktreeFailure =
+					attestation?.failure?.token ??
+					worktreeFailureFromSkippedReason(attestation?.skippedReason);
+			}
 		}
 	}
 
@@ -1734,7 +1759,7 @@ async function runPostShipFinalizationInner(
 	}
 	if (resumable && (!worktreeRemoved || !threadArchived)) {
 		const postconditionCause: LandCloseoutCause = !worktreeRemoved
-			? "worktree_branch_mismatch"
+			? landCloseoutCauseFromWorktreeFailure(worktreeFailure ?? "unknown")
 			: "archive_failed";
 		const reason = landCloseoutReason(postconditionCause);
 		if (!worktreeRemoved && worktreeFailureReason) {

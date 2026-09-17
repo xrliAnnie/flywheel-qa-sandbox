@@ -340,13 +340,17 @@ describe("land executor", () => {
 			commentUrl: "https://github.test/pull/1375#issuecomment-9001",
 		});
 		const mergeDriver: LandMergeDriver = {
-			inspectPr: vi
-				.fn()
-				.mockImplementation(async () =>
-					merged
-						? { state: "MERGED", headSha: HEAD, mergeSha: MERGE }
-						: { state: "OPEN", headSha: HEAD },
-				),
+			inspectPr: vi.fn().mockImplementation(async () =>
+				merged
+					? {
+							state: "MERGED",
+							headSha: HEAD,
+							mergeSha: MERGE,
+							baseRefName: "main",
+							repoIdentity: "xrliAnnie/flywheel",
+						}
+					: { state: "OPEN", headSha: HEAD },
+			),
 			triggerCool,
 			inspectTriggeredWorkflow: vi
 				.fn()
@@ -391,7 +395,20 @@ describe("land executor", () => {
 			"merge_confirmed",
 			"cleanup_requested",
 			"finalization_completed",
+			"aux:merged_worktree_proof",
 		]);
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.find((step) => step.step === "aux:merged_worktree_proof")?.receipt,
+		).toEqual({
+			state: "MERGED",
+			headSha: HEAD,
+			mergeSha: MERGE,
+			baseRefName: "main",
+			repoIdentity: "xrliAnnie/flywheel",
+			prNumber: 1375,
+		});
 		expect(store.listLandCoolAttempts(operation.operation_id)).toEqual([
 			expect.objectContaining({
 				ordinal: 1,
@@ -2580,6 +2597,8 @@ describe("land executor", () => {
 				state: "MERGED" as const,
 				headSha: HEAD,
 				mergeSha: MERGE,
+				baseRefName: "main",
+				repoIdentity: "xrliAnnie/flywheel",
 			}),
 			triggerCool,
 			inspectTriggeredWorkflow: vi.fn(),
@@ -2648,6 +2667,17 @@ describe("land executor", () => {
 			}),
 		).resolves.toMatchObject({ status: "completed" });
 		expect(triggerCool).not.toHaveBeenCalled();
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.find((step) => step.step === "aux:merged_worktree_proof")?.receipt,
+		).toMatchObject({
+			state: "MERGED",
+			headSha: HEAD,
+			mergeSha: MERGE,
+			baseRefName: "main",
+			repoIdentity: "xrliAnnie/flywheel",
+		});
 		const stepsBeforeReplay = store.listLandOperationSteps(
 			operation.operation_id,
 		);

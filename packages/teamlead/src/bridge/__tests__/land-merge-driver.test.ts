@@ -149,10 +149,85 @@ describe("GhCliLandMergeDriver", () => {
 				"view",
 				"1375",
 				"--json",
-				"state,headRefOid,baseRefOid,mergeCommit,mergeable,mergeStateStatus,isDraft,reviewDecision,statusCheckRollup",
+				"state,headRefOid,baseRefOid,baseRefName,mergeCommit,mergeable,mergeStateStatus,isDraft,reviewDecision,statusCheckRollup",
 			],
 			{ cwd: "/repo" },
 		);
+	});
+
+	it("binds merged cleanup evidence to the configured repository and main base", async () => {
+		const exec = vi.fn().mockResolvedValue({
+			stdout: JSON.stringify({
+				state: "MERGED",
+				headRefOid: HEAD,
+				baseRefOid: "b".repeat(40),
+				baseRefName: "main",
+				mergeCommit: { oid: "c".repeat(40) },
+				mergeable: "MERGEABLE",
+				mergeStateStatus: "CLEAN",
+				isDraft: false,
+				reviewDecision: "APPROVED",
+				statusCheckRollup: [],
+			}),
+			stderr: "",
+		});
+		const driver = new GhCliLandMergeDriver(
+			() => "/repo",
+			exec,
+			undefined,
+			undefined,
+			() => "xrliAnnie/flywheel",
+		);
+
+		await expect(
+			driver.inspectPr({ projectName: "flywheel", prNumber: 1375 }),
+		).resolves.toMatchObject({
+			state: "MERGED",
+			headSha: HEAD,
+			baseRefName: "main",
+			repoIdentity: "xrliAnnie/flywheel",
+		});
+		expect(exec).toHaveBeenCalledWith(
+			"gh",
+			[
+				"pr",
+				"view",
+				"1375",
+				"--repo",
+				"xrliAnnie/flywheel",
+				"--json",
+				"state,headRefOid,baseRefOid,baseRefName,mergeCommit,mergeable,mergeStateStatus,isDraft,reviewDecision,statusCheckRollup",
+			],
+			{ cwd: "/repo" },
+		);
+	});
+
+	it("keeps ordinary PR inspection compatible but emits no trusted repo identity for an invalid configured repo", async () => {
+		const exec = vi.fn().mockResolvedValue({
+			stdout: JSON.stringify({
+				state: "MERGED",
+				headRefOid: HEAD,
+				baseRefName: "main",
+				mergeCommit: { oid: "c".repeat(40) },
+				statusCheckRollup: [],
+			}),
+			stderr: "",
+		});
+		const driver = new GhCliLandMergeDriver(
+			() => "/repo",
+			exec,
+			undefined,
+			undefined,
+			() => "not-a-repo-slug",
+		);
+
+		const inspected = await driver.inspectPr({
+			projectName: "flywheel",
+			prNumber: 1375,
+		});
+		expect(inspected).toMatchObject({ state: "MERGED", baseRefName: "main" });
+		expect(inspected.repoIdentity).toBeUndefined();
+		expect(exec.mock.calls[0]?.[1]).not.toContain("--repo");
 	});
 
 	it("posts the exact sanctioned :cool: trigger body", async () => {

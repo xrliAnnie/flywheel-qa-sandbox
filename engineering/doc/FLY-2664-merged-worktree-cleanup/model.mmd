@@ -1,0 +1,21 @@
+classDiagram
+ class Binding {
+  项目与任务
+  路径与创建代次
+  可核验更新的实际分支
+ }
+ class LandTarget {
+  冻结路径与代次
+  冻结分支与来源
+ }
+ class MergeProof {
+  同仓同PR且目标main
+  合入前提交与合入后提交
+ }
+ class CleanupReceipt {
+  删除前实际分支与提交
+  路径和分支分别记录结果
+ }
+ Binding --> LandTarget : 捕获
+ LandTarget --> CleanupReceipt : 核对身份
+ MergeProof --> CleanupReceipt : 证明代码安全

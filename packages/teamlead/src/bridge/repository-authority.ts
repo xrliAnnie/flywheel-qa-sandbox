@@ -10,6 +10,7 @@ export interface BoundRepositoryAuthority {
 	identity: string;
 	probeRepoSlug: string;
 	headSha: string;
+	branch: string;
 }
 
 export function normalizeGitHubRepoSlug(remote: string): string {
@@ -86,6 +87,22 @@ export async function resolveBoundRepositoryAuthority(input: {
 			signal: input.signal,
 		}),
 	]);
+	let branch = "";
+	try {
+		const { stdout } = await execFileAsync(
+			"git",
+			["-C", target, "symbolic-ref", "--quiet", "--short", "HEAD"],
+			{ timeout: 15_000, signal: input.signal },
+		);
+		branch = stdout.trim();
+	} catch (error) {
+		if (
+			input.signal?.aborted ||
+			Number((error as NodeJS.ErrnoException).code) !== 1
+		) {
+			throw error;
+		}
+	}
 	const headSha = headOut.trim().toLowerCase();
 	if (!/^[0-9a-f]{40}$/.test(headSha)) {
 		throw new Error("target repository HEAD is invalid");
@@ -96,5 +113,6 @@ export async function resolveBoundRepositoryAuthority(input: {
 		identity: requested ? probeRepoSlug : "__main__",
 		probeRepoSlug,
 		headSha,
+		branch,
 	};
 }

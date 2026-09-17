@@ -1,0 +1,42 @@
+{
+  "date": "2026-09-17",
+  "baseline": "06cbb3615",
+  "turn": {
+    "phase": "design",
+    "epoch": 1,
+    "executionId": "f8e4af62-14ac-44af-9067-b75f944a54d1",
+    "activation": "activation:f8e4af62-14ac-44af-9067-b75f944a54d1:9645f6b0-5047-464c-8ecd-be7fcabd988f:eng_design:1",
+    "run": "9645f6b0-5047-464c-8ecd-be7fcabd988f"
+  },
+  "leadQuestions": [
+    {
+      "id": "f1b78d0c-622e-4351-96b1-69c3fd221f48",
+      "decision": "same-generation branch-only CAS; old immutable snapshot merged-proof fallback; trusted main evidence mandatory; no production inventory deletion"
+    },
+    {
+      "id": "33d0de07-d4b1-433c-92fe-94d02735581a",
+      "decision": "exact merged PR head OR trusted same-repo main ancestry both remain in scope; both prove pushed/merged code; clean required; inventory read-only"
+    }
+  ],
+  "review": {
+    "questionId": "e9f6ec1e-6d94-4fcc-9fdd-d836aa5bb4e6",
+    "requestId": "96fb4c28-4e69-4212-ae8d-daddd5f17e0a",
+    "status": "APPROVED",
+    "advisories": [
+      "remote-delete-eligibility-widened",
+      "managed-shape-gate-unaddressed",
+      "inspectpr-repo-missing-unspecified",
+      "branch-cas-failure-now-blocks-closeout",
+      "absent-early-return-precedes-crash-recovery",
+      "direct-event-sink-rebind-noise",
+      "vitest-positional-batch-too-large",
+      "settle-early-return-limits-multi-cause"
+    ]
+  },
+  "evidenceBoundary": {
+    "productionCleanup": false,
+    "implementationTests": false,
+    "browserVisualQA": false,
+    "reportBehaviorControllerTest": true
+  }
+}

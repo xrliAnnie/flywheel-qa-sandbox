@@ -1,0 +1,17 @@
+{
+  "httpStatus": 200,
+  "noncePlaceholderRemaining": false,
+  "singleScript": true,
+  "nonceMatchesCSP": true,
+  "hostedScriptMatchesCommittedSource": true,
+  "hostedBodyMatchesCommittedSource": true,
+  "externalAssets": false,
+  "commentMarkerPresent": true,
+  "diagram": "PENDING LOCAL RENDER",
+  "browserQA": "NOT RUN: local Chromium denied",
+  "sourceSha256": "4335aa18dc6ad48516d5474a9f9f04178a548ab4d1c20ea58d431c6cbf5cdc30",
+  "hostedSha256": "998cbbdc4b7bd2c22d739eaad5806c3b3036d36cd9848e5817a26e9a3cbd2ee4",
+  "publishOnly": true,
+  "delivered": false,
+  "messageId": null
+}

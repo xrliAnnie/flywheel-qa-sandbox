@@ -4,12 +4,39 @@ import {
 	inferLandCloseoutCause,
 	inferLandCloseoutCauseFromClosureReport,
 	landCloseoutCauseFromReason,
+	landCloseoutCauseFromWorktreeFailure,
 	landCloseoutReason,
 	landIssueCloseoutResultFromClosureReport,
 	renderLandThreadNotification,
 } from "../land-closeout-cause.js";
 
 describe("land closeout cause", () => {
+	it.each([
+		["branch_mismatch", "worktree_branch_mismatch", "分支"],
+		["not_registered", "worktree_not_registered", "登记"],
+		["dirty", "worktree_dirty", "未提交"],
+		["clean_unknown", "worktree_clean_unknown", "干净"],
+		["binding_mismatch", "worktree_binding_mismatch", "绑定"],
+		["remove_failed", "worktree_remove_failed", "删除"],
+		["unknown", "worktree_unknown", "清理结论"],
+	] as const)(
+		"maps typed worktree failure %s to %s with founder copy",
+		(failure, cause, copy) => {
+			expect(landCloseoutCauseFromWorktreeFailure(failure)).toBe(cause);
+			expect(landCloseoutCauseFromReason(landCloseoutReason(cause))).toBe(
+				cause,
+			);
+			expect(describeLandCloseoutCause(cause)).toContain(copy);
+		},
+	);
+
+	it("does not infer branch mismatch from arbitrary branch/worktree text", () => {
+		expect(inferLandCloseoutCause(["worktree cleanup exploded"])).toBe(
+			"unknown",
+		);
+		expect(inferLandCloseoutCause(["branch probe timed out"])).toBe("unknown");
+	});
+
 	it("FLY-2313: classifies a pending window identity without masking a CommDB failure", () => {
 		expect(
 			inferLandCloseoutCause([

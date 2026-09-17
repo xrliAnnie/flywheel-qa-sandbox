@@ -71,6 +71,58 @@ function storeFixture(input: {
 }
 
 describe("land finalization plugin wiring", () => {
+	it("passes only a trusted operation-scoped merged-worktree proof into cleanup", () => {
+		const store = storeFixture({ ownerExecutionId: "implement-deleted" });
+		store.listLandOperationSteps = (() => [
+			{
+				operation_id: "land:operation-1",
+				step: "merge_confirmed",
+				receipt: { prNumber: 1216, headSha: HEAD },
+				generation: 1,
+				completed_at: "2026-09-16T05:00:00.000Z",
+			},
+			{
+				operation_id: "land:operation-1",
+				step: "aux:merged_worktree_proof",
+				receipt: {
+					state: "MERGED",
+					prNumber: 1216,
+					headSha: HEAD,
+					mergeSha: "b".repeat(40),
+					baseRefName: "main",
+					repoIdentity: "xrliAnnie/flywheel",
+				},
+				generation: 1,
+				completed_at: "2026-09-16T05:01:00.000Z",
+			},
+		]) as StateStore["listLandOperationSteps"];
+
+		const prepared = prepareLandFinalization(
+			store,
+			operation(),
+			{},
+			{
+				projectName: "flywheel",
+				projectRoot: "/repo/flywheel",
+				projectRepo: "xrliAnnie/flywheel",
+			},
+		);
+
+		expect(prepared.ok).toBe(true);
+		if (!prepared.ok) return;
+		expect(prepared.opts.mergedWorktreeProof).toMatchObject({
+			operationId: "land:operation-1",
+			operationGeneration: 1,
+			repoIdentity: "xrliAnnie/flywheel",
+			projectRoot: "/repo/flywheel",
+			prNumber: 1216,
+			baseRefName: "main",
+			mergedPrHead: HEAD,
+			mergeSha: "b".repeat(40),
+			mergeReceiptId: "land:operation-1:aux:merged_worktree_proof",
+		});
+	});
+
 	it("enters operation-scoped finalization after the exact source session row is gone", () => {
 		const prepared = prepareLandFinalization(
 			storeFixture({ ownerExecutionId: "implement-deleted" }),

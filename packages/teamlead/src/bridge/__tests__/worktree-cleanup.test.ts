@@ -204,6 +204,94 @@ describe("FLY-603 Layer A worktree cleanup", () => {
 		expect(recordLandOperationStep).toHaveBeenCalled();
 	});
 
+	it.each([
+		["deletes the captured ref", { deleted: true, sha: "h" }],
+		[
+			"accepts an already-missing ref",
+			{ deleted: false, reason: "branch_missing" },
+		],
+	])(
+		"resumes a prepared merged cleanup after directory removal and %s",
+		async (_label, casResult) => {
+			const cas = vi.fn(async () => casResult as never);
+			const recordLandOperationStep = vi.fn(() => ({
+				ok: true as const,
+				idempotentReplay: false,
+			}));
+			const { d, remove } = operationDepsForLeaf("missing");
+			d.store = {
+				getSession: () => undefined,
+				getWorktreeBinding: () => undefined,
+				insertEvent: vi.fn(),
+				getLandOperation: () => ({ closeout_reservation_epoch: 1 }),
+				recordLandOperationStep,
+				listLandOperationSteps: () => [
+					{
+						operation_id: "land:2616",
+						step: "aux:closeout_audit:1:prepared",
+						generation: 1,
+						completed_at: "2026-09-17T00:00:00.000Z",
+						receipt: {
+							eventKind: "worktree_cleanup_prepared",
+							reason: "merged_branch_verified",
+							worktreePath: operationInput.operationContext.target.path,
+							registeredBranch: "docs/FLY-2602-cleanup",
+							expectedBranch: "flywheel-FLY-2602",
+							headSha: "h",
+							bindingGeneration: "generation-1",
+							mergeSha: "m".repeat(40),
+							mergedPrHead: "h",
+							coverage: "exact_pr_head",
+						},
+					},
+				],
+			} as never;
+			d.worktreeManager.getRegisteredWorktree = vi.fn(async () => null);
+			d.casDeleteLocalBranchFn = cas;
+			d.isBranchNameValid = vi.fn(async () => true);
+			d.protectedBranchesForProject = () => ["main"];
+			d.isOperationAuthorityCurrent = () => true;
+			const withProof = {
+				...operationInput,
+				operationContext: {
+					...operationInput.operationContext,
+					mergedWorktreeProof: {
+						operationId: "land:2616",
+						operationGeneration: 2,
+						projectName: "flywheel",
+						issueId: "issue-2616",
+						runId: "run-2616",
+						repoIdentity: "owner/flywheel",
+						projectRoot: ROOT,
+						prNumber: 1232,
+						baseRefName: "main" as const,
+						mergedPrHead: "h",
+						mergeSha: "m".repeat(40),
+						mergeReceiptId: "merge-2616",
+						observedAt: "2026-09-17T00:00:00.000Z",
+					},
+				},
+			};
+
+			const attestation = await makeWorktreeCleanup(d)(withProof as never);
+
+			expect(attestation).toMatchObject({
+				removed: true,
+				cleanupState: "removed",
+				actualBranch: "docs/FLY-2602-cleanup",
+				branchDeleted: true,
+				verificationMode: "merged_branch_verified",
+			});
+			expect(remove).not.toHaveBeenCalled();
+			expect(cas).toHaveBeenCalledWith(
+				expect.objectContaining({
+					branch: "docs/FLY-2602-cleanup",
+					expectedSha: "h",
+				}),
+			);
+		},
+	);
+
 	it("FLY-2616: permission errors are not absence proof", async () => {
 		const { d, remove } = operationDepsForLeaf("eacces");
 		const attestation = await makeWorktreeCleanup(d)(operationInput as never);

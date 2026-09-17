@@ -179,4 +179,44 @@ describe("FLY-2616 operation worktree closeout", () => {
 			store.close();
 		}
 	});
+
+	it.each([
+		["branch_mismatch", "branch_mismatch"],
+		["not_registered", "not_registered"],
+		["dirty", "dirty"],
+		["clean_unknown", "clean_unknown"],
+		["binding_mismatch", "binding_mismatch"],
+		["remove_failed:ref_moved", "remove_failed"],
+		["parent_unavailable", "unknown"],
+	] as const)(
+		"returns typed worktree failure for %s and stops at the first failed target",
+		async (skippedReason, failure) => {
+			const { store, claim } = await fixture();
+			try {
+				const removeCleanWorktree = vi.fn().mockResolvedValue({
+					removed: false,
+					cleanupState: "blocked",
+					bindingVerified: false,
+					skippedReason,
+				});
+				const result = await settleLandOperationWorktrees(
+					{
+						issueId: "issue-2616",
+						projectName: "flywheel",
+						landOperation: claim,
+					},
+					{ store, removeCleanWorktree },
+					true,
+				);
+
+				expect(result).toMatchObject({
+					complete: false,
+					failure: { token: failure, detail: skippedReason },
+				});
+				expect(removeCleanWorktree).toHaveBeenCalledTimes(1);
+			} finally {
+				store.close();
+			}
+		},
+	);
 });

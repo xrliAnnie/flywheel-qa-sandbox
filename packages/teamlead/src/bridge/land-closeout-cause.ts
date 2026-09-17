@@ -8,6 +8,12 @@ export const LAND_CLOSEOUT_CAUSES = [
 	"window_identity_pending",
 	"commdb_finalize_failed",
 	"worktree_branch_mismatch",
+	"worktree_not_registered",
+	"worktree_dirty",
+	"worktree_clean_unknown",
+	"worktree_binding_mismatch",
+	"worktree_remove_failed",
+	"worktree_unknown",
 	"nodes_not_confirmed_gone",
 	"lifecycle_conflict",
 	"archive_failed",
@@ -16,6 +22,48 @@ export const LAND_CLOSEOUT_CAUSES = [
 ] as const;
 
 export type LandCloseoutCause = (typeof LAND_CLOSEOUT_CAUSES)[number];
+
+export const WORKTREE_FAILURES = [
+	"branch_mismatch",
+	"not_registered",
+	"dirty",
+	"clean_unknown",
+	"binding_mismatch",
+	"remove_failed",
+	"unknown",
+] as const;
+
+export type WorktreeFailure = (typeof WORKTREE_FAILURES)[number];
+
+const WORKTREE_FAILURE_CAUSE: Record<WorktreeFailure, LandCloseoutCause> = {
+	branch_mismatch: "worktree_branch_mismatch",
+	not_registered: "worktree_not_registered",
+	dirty: "worktree_dirty",
+	clean_unknown: "worktree_clean_unknown",
+	binding_mismatch: "worktree_binding_mismatch",
+	remove_failed: "worktree_remove_failed",
+	unknown: "worktree_unknown",
+};
+
+export function worktreeFailureFromSkippedReason(
+	reason: string | undefined,
+): WorktreeFailure {
+	if (reason === "branch_mismatch") return "branch_mismatch";
+	if (reason === "not_registered") return "not_registered";
+	if (reason === "dirty") return "dirty";
+	if (reason === "clean_unknown") return "clean_unknown";
+	if (reason === "binding_mismatch") return "binding_mismatch";
+	if (reason === "remove_failed" || reason?.startsWith("remove_failed:")) {
+		return "remove_failed";
+	}
+	return "unknown";
+}
+
+export function landCloseoutCauseFromWorktreeFailure(
+	failure: WorktreeFailure,
+): LandCloseoutCause {
+	return WORKTREE_FAILURE_CAUSE[failure];
+}
 
 export function landCloseoutReason(cause: LandCloseoutCause): string {
 	return `issue_closeout_incomplete:cause=${cause}`;
@@ -44,7 +92,6 @@ export function inferLandCloseoutCause(errors: string[]): LandCloseoutCause {
 		window_cleanup_failed: ["window_cleanup_failed"],
 		commdb_finalize_failed: ["commdb finalize", "commdb_finalize_failed"],
 		window_identity_pending: ["tmux window identity is still pending"],
-		worktree_branch_mismatch: ["branch", "worktree"],
 		lifecycle_conflict: ["authority_lost", "disposition_conflict"],
 		archive_failed: ["archive_failed"],
 		source_session_unavailable: ["source_session_unavailable"],
@@ -122,7 +169,19 @@ export function describeLandCloseoutCause(cause: LandCloseoutCause): string {
 		case "window_identity_pending":
 			return "Runner 窗口身份仍未完成注册";
 		case "worktree_branch_mismatch":
-			return "worktree 或分支状态与预期不一致";
+			return "当前分支未能证明已合入主分支";
+		case "worktree_not_registered":
+			return "目录存在，但 Git 没有对应工作目录登记";
+		case "worktree_dirty":
+			return "工作目录有未提交或未跟踪文件，已保留";
+		case "worktree_clean_unknown":
+			return "无法确认工作目录是否干净，已保留";
+		case "worktree_binding_mismatch":
+			return "工作目录路径或创建代次与绑定不一致";
+		case "worktree_remove_failed":
+			return "目录或本地分支删除未完成，详情见审计";
+		case "worktree_unknown":
+			return "缺少 worktree 清理结论，已保留";
 		case "nodes_not_confirmed_gone":
 			return "有 Runner 节点尚未被证明已消失（见 closeout_issue_items_blocked 审计事件）";
 		case "lifecycle_conflict":

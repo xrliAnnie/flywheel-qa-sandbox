@@ -228,6 +228,116 @@ describe("land intent target snapshot", () => {
 		}
 	});
 
+	it("captures a self-started live branch when its registered head exactly matches the approved PR head", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2664-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const worktreePath = join(parent, "flywheel-FLY-2664");
+		await mkdir(projectRoot);
+		await mkdir(worktreePath);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "issue-1",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-1", {
+				path: worktreePath,
+				branch: "flywheel-FLY-2664",
+				generation: "generation-1",
+			});
+			const approvedHead = "a".repeat(40);
+			const result = await prepareLandIntent(
+				store,
+				{
+					issueId: "issue-1",
+					projectName: "flywheel",
+					prNumber: 2664,
+					approvedHead,
+					now: "2026-09-17T05:20:00.000Z",
+				},
+				{
+					resolveProjectRoot: () => projectRoot,
+					getRegisteredWorktree: async () => ({
+						path: await realpath(worktreePath),
+						branch: "docs/FLY-2664-cleanup",
+						head: approvedHead,
+						isDetached: false,
+					}),
+					readWorktreeGeneration: async () => "generation-1",
+				},
+			);
+
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+			expect(JSON.parse(result.operation.closeout_targets_json!)).toMatchObject(
+				{
+					targets: [
+						{
+							kind: "bound_worktree",
+							branch: "docs/FLY-2664-cleanup",
+							generation: "generation-1",
+						},
+					],
+				},
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses a self-started live branch whose head is not the approved PR head", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2664-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const worktreePath = join(parent, "flywheel-FLY-2664");
+		await mkdir(projectRoot);
+		await mkdir(worktreePath);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "issue-1",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-1", {
+				path: worktreePath,
+				branch: "flywheel-FLY-2664",
+				generation: "generation-1",
+			});
+			const result = await prepareLandIntent(
+				store,
+				{
+					issueId: "issue-1",
+					projectName: "flywheel",
+					prNumber: 2664,
+					approvedHead: "a".repeat(40),
+					now: "2026-09-17T05:20:00.000Z",
+				},
+				{
+					resolveProjectRoot: () => projectRoot,
+					getRegisteredWorktree: async () => ({
+						path: await realpath(worktreePath),
+						branch: "docs/FLY-2664-cleanup",
+						head: "b".repeat(40),
+						isDetached: false,
+					}),
+					readWorktreeGeneration: async () => "generation-1",
+				},
+			);
+
+			expect(result).toMatchObject({
+				ok: false,
+				missing: ["implement-1:worktree_registration_mismatch"],
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("keeps a same-path historical attempt after the current attempt rebuilds the worktree", async () => {
 		const parent = await mkdtemp(join(tmpdir(), "fly2616-targets-"));
 		roots.push(parent);

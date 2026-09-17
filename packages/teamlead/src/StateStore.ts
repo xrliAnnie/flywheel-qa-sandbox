@@ -41,6 +41,7 @@ import {
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
@@ -25572,10 +25573,11 @@ export class StateStore {
 	// ── FLY-1185: unified lifecycle closeout state ──────────────────────────
 
 	/**
-	 * FLY-1185 §2.1: atomic create-time worktree authority binding. The ONLY
-	 * writer of the `worktree_binding_*` column group. Refuses when a binding
-	 * already exists (set-once); creates a minimal `pending` session row when
-	 * none exists yet (worktree creation precedes emitStarted).
+	 * FLY-1185 §2.1: atomic create-time worktree authority binding. This is the
+	 * only writer for path/generation/baseline. The branch may later move through
+	 * the narrowly fenced completion-time cohort CAS below. Refuses when a
+	 * binding already exists (set-once); creates a minimal `pending` session row
+	 * when none exists yet (worktree creation precedes emitStarted).
 	 */
 	bindWorktreeOnce(
 		executionId: string,
@@ -25685,6 +25687,137 @@ export class StateStore {
 		}
 		stmt.free();
 		return out;
+	}
+
+	private refreshCompletionWorktreeBindingCohortTx(input: {
+		runId: string;
+		issueId: string;
+		projectName: string;
+		sourceExecutionId: string;
+		observation: CompletionWorktreeBranchObservation;
+		now: string;
+	}): boolean {
+		const observation = input.observation;
+		if (
+			!observation.path ||
+			!observation.generation ||
+			!observation.expectedBranch ||
+			!observation.observedBranch ||
+			observation.observedBranch === "HEAD" ||
+			observation.observedBranch === "main" ||
+			observation.observedBranch === "master" ||
+			!/^[0-9a-f]{40}$/i.test(observation.observedHead)
+		) {
+			return false;
+		}
+		const attributed = new Set(this.listRunAttributedExecutions(input.runId));
+		if (!attributed.has(input.sourceExecutionId)) return false;
+		const cohort = this.listWorktreeBindings(input.projectName).filter(
+			(binding) =>
+				attributed.has(binding.execution_id) &&
+				binding.path === observation.path &&
+				binding.generation === observation.generation &&
+				this.getSession(binding.execution_id)?.issue_id === input.issueId,
+		);
+		if (
+			cohort.length === 0 ||
+			!cohort.some(
+				(binding) => binding.execution_id === input.sourceExecutionId,
+			) ||
+			cohort.some((binding) => binding.branch !== observation.expectedBranch)
+		) {
+			return false;
+		}
+		if (observation.expectedBranch === observation.observedBranch) return true;
+		const placeholders = cohort.map(() => "?").join(", ");
+		this.db.run("SAVEPOINT completion_worktree_branch_refresh");
+		try {
+			this.db.run(
+				`UPDATE sessions
+			    SET worktree_binding_branch = ?
+			  WHERE execution_id IN (${placeholders})
+			    AND project_name = ? AND issue_id = ?
+			    AND worktree_binding_path = ?
+			    AND worktree_binding_generation = ?
+			    AND worktree_binding_branch = ?`,
+				[
+				observation.observedBranch,
+				...cohort.map((binding) => binding.execution_id),
+				input.projectName,
+				input.issueId,
+				observation.path,
+				observation.generation,
+				observation.expectedBranch,
+				],
+			);
+			if (this.db.getRowsModified() !== cohort.length) {
+				this.db.run("ROLLBACK TO completion_worktree_branch_refresh");
+				this.db.run("RELEASE completion_worktree_branch_refresh");
+				return false;
+			}
+			this.db.run("RELEASE completion_worktree_branch_refresh");
+		} catch {
+			this.db.run("ROLLBACK TO completion_worktree_branch_refresh");
+			this.db.run("RELEASE completion_worktree_branch_refresh");
+			return false;
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: `worktree_binding_branch_refreshed:${canonicalSubmissionDigest({
+				runId: input.runId,
+				path: observation.path,
+				generation: observation.generation,
+				oldBranch: observation.expectedBranch,
+				newBranch: observation.observedBranch,
+				head: observation.observedHead.toLowerCase(),
+			})}`,
+			kind: "worktree_binding_branch_refreshed",
+			executionId: input.sourceExecutionId,
+			payload: {
+				path: observation.path,
+				generation: observation.generation,
+				oldBranch: observation.expectedBranch,
+				newBranch: observation.observedBranch,
+				observedHead: observation.observedHead.toLowerCase(),
+				sourceExecutionIds: cohort
+					.map((binding) => binding.execution_id)
+					.sort(),
+				observedAt: input.now,
+			},
+		});
+		return true;
+	}
+
+	hasAcceptedWorktreeBranchRefresh(input: {
+		executionId: string;
+		path: string;
+		generation: string;
+		oldBranch: string;
+		newBranch: string;
+	}): boolean {
+		return this.workflowSelectAll(
+			`SELECT payload FROM workflow_run_event
+			  WHERE kind = 'worktree_binding_branch_refreshed'
+			  ORDER BY seq DESC`,
+			[],
+		).some((row) => {
+			try {
+				const payload = JSON.parse(String(row.payload)) as Record<
+					string,
+					unknown
+				>;
+				return (
+					payload.path === input.path &&
+					payload.generation === input.generation &&
+					payload.oldBranch === input.oldBranch &&
+					payload.newBranch === input.newBranch &&
+					Array.isArray(payload.sourceExecutionIds) &&
+					payload.sourceExecutionIds.includes(input.executionId)
+				);
+			} catch {
+				return false;
+			}
+		});
 	}
 
 	/**
@@ -56983,6 +57116,8 @@ export class StateStore {
 			baselineDigest: string;
 			currentDigest: string;
 		};
+		/** Server-only root repository observation; never decoded from payload. */
+		worktreeBranchObservation?: CompletionWorktreeBranchObservation;
 		now?: string;
 	}): WorkflowCompletionResult {
 		const now = input.now ?? new Date().toISOString();
@@ -57441,6 +57576,16 @@ export class StateStore {
 							? "stale_execution_superseded"
 							: `${ENGINE_INVARIANT_REASON_PREFIX}${currentWriter.reason}`;
 					throw new Error("engine_completion_transition_refused");
+				}
+				if (input.worktreeBranchObservation) {
+					this.refreshCompletionWorktreeBindingCohortTx({
+						runId: context.binding.run_id,
+						issueId: context.run.issue_id,
+						projectName: context.run.project_name,
+						sourceExecutionId: input.executionId,
+						observation: input.worktreeBranchObservation,
+						now,
+					});
 				}
 				if (
 					input.drainChallenge &&

@@ -198,6 +198,30 @@ describe("makeShipRemoteBranchCleanup", () => {
 		expect(execCalls).toEqual([]);
 	});
 
+	it.each(["docs/FLY-603-copy", "flywheel-FLY-603-retry"])(
+		"merged-proof local cleanup for %s never widens remote deletion eligibility",
+		async (actualBranch) => {
+			const { deps, events, execCalls } = shipDeps({
+				binding: { path: WT, branch: actualBranch, generation: "g" },
+				mergedHeads: ["headsha123"],
+			});
+			await makeShipRemoteBranchCleanup(deps)({
+				executionId: "e1",
+				issueId: "FLY-603",
+				projectName: "flywheel",
+				attestation: {
+					...attOk,
+					actualBranch,
+					verificationMode: "merged_branch_verified",
+				},
+			});
+			expect(
+				events.find((e) => e.type === "remote_delete_skipped")?.payload.reason,
+			).toBe("merged_proof_local_only");
+			expect(execCalls).toEqual([]);
+		},
+	);
+
 	it("production shape: binding.branch differs from attested branch → skip", async () => {
 		const { deps, events } = shipDeps({
 			binding: { path: WT, branch: "flywheel-OTHER", generation: "g" },

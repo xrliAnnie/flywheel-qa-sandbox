@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "issue": "FLY-2664",
+  "mode": "derived_fixture",
+  "command": "node scripts/qa-fly2664-closeout-replay.mjs --sandbox-only",
+  "observedAt": "2026-09-17T20:00:00.000Z",
+  "fixture": {
+    "incidentShape": "FLY-2601",
+    "prNumber": 1232,
+    "bindingBranch": "flywheel-FLY-2601",
+    "registeredBranch": "docs/FLY-2601-founder-page-copy-block-placement",
+    "fixtureDigest": "8ae570fe8f67ffb6ae7b88cf6cfce90a9d6e641b1a61ae4c7c06cc2f406b6e86"
+  },
+  "result": {
+    "landFinalization": "completed",
+    "directoryExists": false,
+    "registrationExists": false,
+    "branchExists": false,
+    "remoteMutationAttempts": 0,
+    "networkCalls": 0
+  },
+  "productionAcceptance": false,
+  "productionMutation": false
+}

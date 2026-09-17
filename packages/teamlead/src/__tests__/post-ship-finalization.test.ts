@@ -1374,8 +1374,8 @@ describe("runPostShipFinalization", () => {
 		expect(result).toMatchObject({
 			complete: false,
 			outcome: "partial",
-			reason: "issue_closeout_incomplete:cause=worktree_branch_mismatch",
-			cause: { token: "worktree_branch_mismatch" },
+			reason: "issue_closeout_incomplete:cause=worktree_unknown",
+			cause: { token: "worktree_unknown" },
 		});
 		expect(archiveFn).not.toHaveBeenCalled();
 		expect(markIssueDone).not.toHaveBeenCalled();
@@ -1417,6 +1417,8 @@ describe("runPostShipFinalization", () => {
 		expect(result).toMatchObject({
 			complete: false,
 			outcome: "partial",
+			reason: "issue_closeout_incomplete:cause=worktree_not_registered",
+			cause: { token: "worktree_not_registered" },
 			details: { worktreeRemoved: false, issueDone: true },
 		});
 		expect(removeCleanWorktree).toHaveBeenCalledOnce();

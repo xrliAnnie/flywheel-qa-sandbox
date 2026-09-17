@@ -7841,6 +7841,9 @@ export async function startBridge(
 	const landProjectRootFor = (projectName: string) =>
 		projects.find((project) => project.projectName === projectName)
 			?.projectRoot;
+	const landProjectRepoFor = (projectName: string) =>
+		projects.find((project) => project.projectName === projectName)
+			?.projectRepo;
 	const landTicketPrivateKeyPem = process.env
 		.FLYWHEEL_LAND_TICKET_PRIVATE_KEY_B64
 		? Buffer.from(
@@ -7853,6 +7856,7 @@ export async function startBridge(
 		undefined,
 		undefined,
 		landTicketPrivateKeyPem,
+		landProjectRepoFor,
 	);
 	const landHeadRefreshProver = new GitLandHeadRefreshProver(
 		landProjectRootFor,
@@ -7897,6 +7901,7 @@ export async function startBridge(
 		store,
 		projects,
 		repoMutationLock.withRepoLock,
+		cleanupPolicies,
 	);
 	const landOwnerIdentity = defaultLandOwnerIdentity();
 	const landExecutor = async (operationId: string) =>
@@ -7921,10 +7926,18 @@ export async function startBridge(
 					})(),
 				}),
 			finalize: async (operation) => {
-				const prepared = prepareLandFinalization(store, operation, {
-					discordOwnerUserId: config.discordOwnerUserId,
-					fallbackBotToken: config.discordBotToken,
-				});
+				const finalizationProject = projects.find(
+					(project) => project.projectName === operation.project_name,
+				);
+				const prepared = prepareLandFinalization(
+					store,
+					operation,
+					{
+						discordOwnerUserId: config.discordOwnerUserId,
+						fallbackBotToken: config.discordBotToken,
+					},
+					finalizationProject,
+				);
 				if (!prepared.ok) {
 					return {
 						complete: false,

@@ -595,8 +595,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				const current = this.store.getWorktreeBinding(env.executionId);
 				const identical =
 					current?.path === worktreePath &&
-					current?.branch === binding.branch &&
-					current?.generation === binding.generation;
+					current?.generation === binding.generation &&
+					(current?.branch === binding.branch ||
+						(current?.branch !== undefined &&
+							this.store.hasAcceptedWorktreeBranchRefresh({
+								executionId: env.executionId,
+								path: worktreePath,
+								generation: binding.generation,
+								oldBranch: binding.branch,
+								newBranch: current.branch,
+							})));
 				if (!identical) {
 					this.store.insertEvent({
 						event_id: `worktree-binding-rejected-${env.executionId}-${binding.generation}`,

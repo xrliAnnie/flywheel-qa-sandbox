@@ -126,6 +126,54 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 		expect(store.getWorktreeBinding("seam-1")?.generation).toBe("generation-1");
 	});
 
+	it("accepts a worktree-ready replay after an audited same-generation branch refresh", async () => {
+		const { sink, store } = await harness();
+		await sink.emitStarted(baseEnv);
+		await sink.emitWorktreeReady(baseEnv, "/tmp/flywheel-seam", {
+			branch: "flywheel-FLY-802",
+			generation: "generation-1",
+		});
+
+		const raw = (store as unknown as { db: { raw: BetterSqlite3.Database } }).db
+			.raw;
+		raw
+			.prepare(
+				`UPDATE sessions
+				    SET worktree_binding_branch = 'docs/FLY-802-cleanup'
+				  WHERE execution_id = 'seam-1'`,
+			)
+			.run();
+		store.createWorkflowRun({
+			runId: "run-branch-refresh",
+			issueId: "FLY-802",
+			projectName: "flywheel",
+			claimsReadEnrolled: true,
+		});
+		store.appendWorkflowRunEvent({
+			runId: "run-branch-refresh",
+			eventUid: "worktree-binding-branch-refreshed:test",
+			kind: "worktree_binding_branch_refreshed",
+			executionId: "seam-1",
+			payload: {
+				path: "/tmp/flywheel-seam",
+				generation: "generation-1",
+				oldBranch: "flywheel-FLY-802",
+				newBranch: "docs/FLY-802-cleanup",
+				sourceExecutionIds: ["seam-1"],
+			},
+		});
+
+		await sink.emitWorktreeReady(baseEnv, "/tmp/flywheel-seam", {
+			branch: "flywheel-FLY-802",
+			generation: "generation-1",
+		});
+
+		expect(store.getEventsByType("worktree_binding_rejected")).toHaveLength(0);
+		expect(store.getWorktreeBinding("seam-1")?.branch).toBe(
+			"docs/FLY-802-cleanup",
+		);
+	});
+
 	it("persists the three behavior fields atomically with session-row creation", async () => {
 		const { sink, raw } = await harness();
 		await sink.emitStarted({

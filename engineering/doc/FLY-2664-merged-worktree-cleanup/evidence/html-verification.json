@@ -1,0 +1,11 @@
+{
+  "staticChecks": "PASS",
+  "commentBehavior": "PASS",
+  "pathIsolation": "PASS",
+  "storageFailure": "PASS",
+  "chunkBound": 1800,
+  "clipboardRejectFallback": "PASS",
+  "clipboardMissingFallback": "PASS",
+  "browserQA": "NOT RUN: Chromium MachPort sandbox denied",
+  "diagram": "PENDING LOCAL RENDER"
+}

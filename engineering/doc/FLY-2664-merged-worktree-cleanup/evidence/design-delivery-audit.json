@@ -1,0 +1,74 @@
+{
+  "issue": "FLY-2664",
+  "phase": "design",
+  "requirements": [
+    {
+      "requirement": "merged-main verified alternative with exact head and ancestry",
+      "plan": "sections 3-4",
+      "state": "specified; implementation verification deferred"
+    },
+    {
+      "requirement": "actual branch binding with generation",
+      "plan": "section 5",
+      "state": "specified incl shared phases and pre-land capture"
+    },
+    {
+      "requirement": "real cause tokens and describeLandCloseoutCause",
+      "plan": "section 6",
+      "state": "specified; implementation tests deferred"
+    },
+    {
+      "requirement": "real delete positive and reject unmerged/dirty",
+      "plan": "section 8B/E",
+      "state": "acceptance specified, not executed"
+    },
+    {
+      "requirement": "read-only inventory command and output",
+      "plan": "section 7",
+      "state": "specified; implementation delivery deferred"
+    },
+    {
+      "requirement": "preserve 2616 absent",
+      "plan": "sections 4/8B/9",
+      "state": "explicitly preserved"
+    },
+    {
+      "requirement": "plan-only artifacts and exact frontmatter",
+      "state": "plan.md present; no exploration/research output created"
+    },
+    {
+      "requirement": "founder HTML comment/CSP contract",
+      "evidence": "html-verification.json",
+      "state": "static/controller verified; browser QA unavailable"
+    },
+    {
+      "requirement": "local Mermaid render",
+      "evidence": "render-status.json",
+      "state": "two attempts each failed; source and explicit placeholder; Lead accepted"
+    },
+    {
+      "requirement": "approved review",
+      "state": "APPROVED; 8 nonblocking advisories dispositioned in plan section 11",
+      "evidence": "review-r1.json"
+    },
+    {
+      "requirement": "publication/hosted verification/report",
+      "state": "verified",
+      "evidence": "publication.json + hosted-verification.json",
+      "leadReport": "e2febe23-dbcf-4de0-ace2-4072d2fd80c0"
+    },
+    {
+      "requirement": "phase complete and park",
+      "state": "next commands after evidence commit; authoritative receipts in CommDB"
+    }
+  ],
+  "excludedActions": {
+    "productImplementation": false,
+    "productionCleanup": false,
+    "successorDispatch": false,
+    "shipApproval": false,
+    "mergeDeployRestart": false
+  },
+  "publicationUrl": "https://fw-reports-42fba7.vercel.app/r/e2ec600e4202af6178cbcc11006d8204/",
+  "memoryCloseout": "Managed memory update note recorded; existing role index not edited under current memory-write contract."
+}

@@ -1,0 +1,13 @@
+{
+  "status": "deferred",
+  "reason": "consume_pending_mail",
+  "executionId": "f8e4af62-14ac-44af-9067-b75f944a54d1",
+  "route": "phase_design_complete",
+  "challenge": "drain:f8e4af62-14ac-44af-9067-b75f944a54d1:activation:f8e4af62-14ac-44af-9067-b75f944a54d1:9645f6b0-5047-464c-8ecd-be7fcabd988f:eng_design:1:eca7221fde44e1b8",
+  "wakeId": "doorbell:mailbox-batch:fca592c4-7371-44e9-82b3-1cef63d1faf7#r0",
+  "observedState": "pending",
+  "admissionState": "deferred_midturn",
+  "mailboxUnacked": 0,
+  "action": "End current turn so runtime can start deferred wake; reread TURN and wake then retry exact challenge once. Do not republish/review/recreate artifacts. Park only after successful phase completion.",
+  "memoryCloseout": "unchanged 83L/19984B; managed update note recorded separately"
+}

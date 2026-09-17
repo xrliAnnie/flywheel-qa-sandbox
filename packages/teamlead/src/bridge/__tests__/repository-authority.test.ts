@@ -67,6 +67,11 @@ describe("FLY-1434 bound repository authority", () => {
 			path: main,
 			identity: "__main__",
 			probeRepoSlug: "geoforge3d/flywheel",
+			branch: execFileSync(
+				"git",
+				["-C", main, "symbolic-ref", "--quiet", "--short", "HEAD"],
+				{ encoding: "utf8" },
+			).trim(),
 			headSha: execFileSync("git", ["-C", main, "rev-parse", "HEAD"], {
 				encoding: "utf8",
 			})
@@ -107,5 +112,28 @@ describe("FLY-1434 bound repository authority", () => {
 				requestedRepoPath: "plain",
 			}),
 		).rejects.toThrow("exact git repository root");
+	});
+
+	it("returns an empty branch for a detached repository HEAD", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1434-repo-authority-"));
+		cleanups.push(root);
+		const main = createRepository(
+			root,
+			"main",
+			"git@github.com:GeoForge3D/flywheel.git",
+		);
+		execFileSync("git", ["-C", main, "checkout", "--detach", "-q", "HEAD"]);
+
+		await expect(
+			resolveBoundRepositoryAuthority({ authorityRoot: main }),
+		).resolves.toMatchObject({
+			path: main,
+			branch: "",
+			headSha: execFileSync("git", ["-C", main, "rev-parse", "HEAD"], {
+				encoding: "utf8",
+			})
+				.trim()
+				.toLowerCase(),
+		});
 	});
 });

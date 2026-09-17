@@ -357,6 +357,12 @@ export function makeShipRemoteBranchCleanup(deps: ShipRemoteCleanupDeps) {
 			if (!projectRoot) return skip("no_project_root");
 			const policy = policyFor(deps.policies, input.projectName);
 			if (!policy.enabled) return skip(`policy_disabled:${policy.reason}`);
+			// The merged-branch proof is deliberately scoped to local worktree
+			// cleanup. It must never make a self-started branch eligible for the
+			// separate remote-delete path.
+			if (att.verificationMode === "merged_branch_verified") {
+				return skip("merged_proof_local_only");
+			}
 
 			if (!att.removed) return skip("layer_a_not_removed");
 			if (!att.bindingVerified) return skip("binding_not_verified");

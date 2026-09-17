@@ -23,7 +23,11 @@ import {
 	PRE_ADAPTER_FAILURE_KINDS,
 } from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
-import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
+import {
+	extractDimensions,
+	generatePatternKeys,
+	WorktreeManager,
+} from "flywheel-edge-worker";
 import {
 	type AccountRotationNotice,
 	formatAccountRotationNotice,
@@ -121,6 +125,10 @@ import {
 	enqueueWorkflowReplacementLeadEvent,
 	resolveWorkflowReplacementLeadIntent,
 } from "./workflow-replacement-lead-event.js";
+import {
+	type CompletionWorktreeBranchObservation,
+	observeCompletionWorktreeBranch,
+} from "./worktree-binding-refresh.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 // Re-export so existing callers (if any) keep working.
@@ -666,6 +674,7 @@ export function createEventRouter(
 	) => void,
 ): Router {
 	const router = Router();
+	const completionWorktreeManager = new WorktreeManager();
 	const notifyEpicChanged = (
 		projectName: string,
 		reason: "session_started" | "session_completed" | "session_failed",
@@ -1378,6 +1387,9 @@ export function createEventRouter(
 				const completionRoute = asString(decision?.route) ?? "";
 				let completionHead = callerCompletionHead;
 				let completionRepoPath: string | undefined;
+				let worktreeBranchObservation:
+					| CompletionWorktreeBranchObservation
+					| undefined;
 				let noCodeAttestation:
 					| {
 							worktreeBindingGeneration: string;
@@ -1489,6 +1501,26 @@ export function createEventRouter(
 									targetRepoPath: authority.path,
 									worktreeBindingGeneration: worktreeBinding.generation,
 								};
+								try {
+									worktreeBranchObservation =
+										await observeCompletionWorktreeBranch(
+											{
+												binding: worktreeBinding,
+												authority,
+												prBinding,
+											},
+											{
+												readWorktreeGeneration: (path) =>
+													completionWorktreeManager.readWorktreeGeneration(
+														path,
+													),
+											},
+										);
+								} catch (error) {
+									console.warn(
+										`[event-route] completion worktree branch observation skipped for ${event.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								}
 							} else if (hasPrEvidence) {
 								console.warn(
 									`[event-route] generalized PR #${prNumber} for ${event.execution_id} was not bound because evidence.headSha is missing`,
@@ -1790,6 +1822,7 @@ export function createEventRouter(
 					...(completionHead ? { subjectDigest: completionHead } : {}),
 					...(workflowActivation ? { workflowActivation } : {}),
 					...(prBinding ? { prBinding } : {}),
+					...(worktreeBranchObservation ? { worktreeBranchObservation } : {}),
 					...(declaredPrs?.length ? { declaredPrs } : {}),
 					...(noCodeAttestation ? { noCodeAttestation } : {}),
 					alertIdentity,

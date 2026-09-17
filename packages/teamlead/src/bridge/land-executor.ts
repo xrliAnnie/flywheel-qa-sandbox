@@ -49,7 +49,9 @@ export interface LandPrState {
 	state: "OPEN" | "MERGED" | "CLOSED";
 	headSha: string;
 	baseSha?: string;
+	baseRefName?: string;
 	mergeSha?: string;
+	repoIdentity?: string;
 	mergeable?: string | null;
 	mergeStateStatus?: string | null;
 	isDraft?: boolean;
@@ -2614,13 +2616,44 @@ export async function executeLandOperation(
 			}
 		}
 
+		const mergedWorktreeProofReceipt =
+			pr.state === "MERGED" &&
+			pr.baseRefName === "main" &&
+			/^[^/\s]+\/[^/\s]+$/.test(pr.repoIdentity ?? "") &&
+			/^[0-9a-f]{40}$/.test(pr.mergeSha ?? "") &&
+			pr.headSha.toLowerCase() === operation.approved_head
+				? {
+						state: "MERGED",
+						headSha: pr.headSha.toLowerCase(),
+						mergeSha: pr.mergeSha!.toLowerCase(),
+						baseRefName: "main",
+						repoIdentity: pr.repoIdentity!,
+						prNumber: operation.pr_number,
+					}
+				: undefined;
 		if (!stepReceipt(deps.store, operationId, "merge_confirmed")) {
 			recordStep(
 				deps,
 				operation,
 				claim,
 				"merge_confirmed",
-				{ mergeSha: pr.mergeSha ?? null, headSha: pr.headSha },
+				mergedWorktreeProofReceipt ?? {
+					mergeSha: pr.mergeSha ?? null,
+					headSha: pr.headSha,
+				},
+				now,
+			);
+		}
+		if (
+			mergedWorktreeProofReceipt &&
+			!stepReceipt(deps.store, operationId, "aux:merged_worktree_proof")
+		) {
+			recordStep(
+				deps,
+				operation,
+				claim,
+				"aux:merged_worktree_proof",
+				mergedWorktreeProofReceipt,
 				now,
 			);
 		}
@@ -2833,6 +2866,9 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			}>,
 		private readonly now: () => Date = () => new Date(),
 		private readonly landTicketPrivateKeyPem?: string,
+		private readonly projectRepoFor?: (
+			projectName: string,
+		) => string | undefined,
 	) {}
 
 	private root(projectName: string): string {
@@ -3023,14 +3059,20 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 		projectName: string;
 		prNumber: number;
 	}): Promise<LandPrState> {
+		const configuredRepo = this.projectRepoFor?.(input.projectName);
+		const trustedRepo =
+			configuredRepo && /^[^/\s]+\/[^/\s]+$/.test(configuredRepo)
+				? configuredRepo
+				: undefined;
 		const result = await this.exec(
 			"gh",
 			[
 				"pr",
 				"view",
 				String(input.prNumber),
+				...(trustedRepo ? ["--repo", trustedRepo] : []),
 				"--json",
-				"state,headRefOid,baseRefOid,mergeCommit,mergeable,mergeStateStatus,isDraft,reviewDecision,statusCheckRollup",
+				"state,headRefOid,baseRefOid,baseRefName,mergeCommit,mergeable,mergeStateStatus,isDraft,reviewDecision,statusCheckRollup",
 			],
 			{ cwd: this.root(input.projectName) },
 		);
@@ -3038,6 +3080,7 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			state: LandPrState["state"];
 			headRefOid: string;
 			baseRefOid?: string | null;
+			baseRefName?: string | null;
 			mergeCommit?: { oid?: string } | null;
 			mergeable?: string | null;
 			mergeStateStatus?: string | null;
@@ -3056,9 +3099,11 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			...(parsed.baseRefOid
 				? { baseSha: parsed.baseRefOid.toLowerCase() }
 				: {}),
+			...(parsed.baseRefName ? { baseRefName: parsed.baseRefName } : {}),
 			...(parsed.mergeCommit?.oid
 				? { mergeSha: parsed.mergeCommit.oid.toLowerCase() }
 				: {}),
+			...(trustedRepo ? { repoIdentity: trustedRepo } : {}),
 			mergeable: parsed.mergeable ?? null,
 			mergeStateStatus: parsed.mergeStateStatus ?? null,
 			isDraft: parsed.isDraft ?? false,

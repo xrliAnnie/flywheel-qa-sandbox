@@ -1,8 +1,10 @@
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { LandOperationRow, StateStore } from "../StateStore.js";
 import {
 	type LandFinalizationContext,
 	resolveLandFinalizationContext,
 } from "./land-source-session.js";
+import { buildMergedWorktreeProof } from "./merged-worktree-proof.js";
 import type { PostShipOpts } from "./post-ship-finalization.js";
 
 export type PreparedLandFinalization =
@@ -24,6 +26,7 @@ export function prepareLandFinalization(
 	store: StateStore,
 	operation: LandOperationRow,
 	common: Pick<PostShipOpts, "discordOwnerUserId" | "fallbackBotToken"> = {},
+	project?: Pick<ProjectEntry, "projectName" | "projectRoot" | "projectRepo">,
 ): PreparedLandFinalization {
 	const context = resolveLandFinalizationContext(store, operation);
 	if (context.kind === "unresolved")
@@ -35,6 +38,32 @@ export function prepareLandFinalization(
 		ownerId: operation.owner_id,
 		generation: operation.generation,
 	};
+	const proofStep = store
+		.listLandOperationSteps(operation.operation_id)
+		.find((step) => step.step === "aux:merged_worktree_proof");
+	const mergedWorktreeProof =
+		project?.projectName === operation.project_name &&
+		project.projectRepo &&
+		proofStep
+			? buildMergedWorktreeProof({
+					operation: {
+						operationId: operation.operation_id,
+						operationGeneration: operation.generation,
+						projectName: operation.project_name,
+						issueId: operation.issue_id,
+						runId: operation.run_id,
+						prNumber: operation.pr_number,
+						approvedHead: operation.approved_head,
+					},
+					mergeReceipt: {
+						receiptId: `${operation.operation_id}:${proofStep.step}`,
+						observedAt: proofStep.completed_at,
+						receipt: proofStep.receipt,
+					},
+					projectRoot: project.projectRoot,
+					trustedRepoIdentity: project.projectRepo,
+				})
+			: undefined;
 	const shared = {
 		runId: operation.run_id ?? undefined,
 		mergedPr: {
@@ -44,6 +73,7 @@ export function prepareLandFinalization(
 		issueId: operation.issue_id,
 		projectName: operation.project_name,
 		landOperation,
+		...(mergedWorktreeProof ? { mergedWorktreeProof } : {}),
 		...common,
 	};
 	if (context.kind === "session") {

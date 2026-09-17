@@ -313,6 +313,11 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
+      # FLY-2664: the one-shot residue inventory must remain read-only while
+      # classifying real Git worktrees against a SQLite snapshot.
+      - name: Test — FLY-2664 merged worktree read-only audit
+        run: node --test scripts/__tests__/audit-merged-worktrees.test.mjs
+
       - name: Test — FLY-2549 summary preflight with stale workspace dist
         run: bash scripts/__tests__/restart-summary-source-preflight.test.sh
 

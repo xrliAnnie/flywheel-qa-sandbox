@@ -388,14 +388,25 @@ export async function prepareLandIntent(
 				missing.push(`${executionId}:worktree_not_registered`);
 				continue;
 			}
+			const registeredPathMatches =
+				(await realpathFn(registered.path)) === canonicalPath;
 			if (
 				registered.isDetached ||
-				registered.branch !== binding.branch ||
-				(await realpathFn(registered.path)) !== canonicalPath
+				!registered.branch ||
+				!registeredPathMatches
 			) {
 				missing.push(`${executionId}:worktree_registration_mismatch`);
 				continue;
 			}
+			const liveBranchFallback = registered.branch !== binding.branch;
+			if (
+				liveBranchFallback &&
+				registered.head?.toLowerCase() !== input.approvedHead.toLowerCase()
+			) {
+				missing.push(`${executionId}:worktree_registration_mismatch`);
+				continue;
+			}
+			const targetBranch = registered.branch;
 			let generation: string | undefined;
 			try {
 				generation = await deps.readWorktreeGeneration(canonicalPath);
@@ -408,7 +419,7 @@ export async function prepareLandIntent(
 			}
 			const parentPath = dirname(canonicalPath);
 			const parent = await statFn(parentPath);
-			const key = `${canonicalPath}\0${binding.branch}\0${generation}`;
+			const key = `${canonicalPath}\0${targetBranch}\0${generation}`;
 			const prior = byBinding.get(key);
 			if (prior) {
 				prior.sourceExecutionIds.push(executionId);
@@ -418,7 +429,7 @@ export async function prepareLandIntent(
 			byBinding.set(key, {
 				kind: "bound_worktree",
 				path: canonicalPath,
-				branch: binding.branch,
+				branch: targetBranch,
 				generation,
 				projectRoot: canonicalProjectRoot,
 				parentIdentity: {
@@ -428,7 +439,9 @@ export async function prepareLandIntent(
 				},
 				sourceExecutionIds: [executionId],
 				sourceRunId: input.runId ?? null,
-				sourceReceipt: `state_session_binding:${executionId}:${generation}`,
+				sourceReceipt: liveBranchFallback
+					? `live_registration_exact_head:${executionId}:${generation}:${binding.branch}`
+					: `state_session_binding:${executionId}:${generation}`,
 			});
 			currentByPath.set(canonicalPath, byBinding.get(key)!);
 		}

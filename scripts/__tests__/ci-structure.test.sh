@@ -604,6 +604,26 @@ require(isinstance(script_steps_5, list), "script-tests-5.steps must be a list")
 all_script_steps = (script_steps, script_steps_2, script_steps_3, script_steps_4, script_steps_5)
 quick_steps = quick_gate.get("steps")
 require(isinstance(quick_steps, list), "quick-gate.steps must be a list")
+fly2664_steps = [
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Test — FLY-2664 merged worktree read-only audit"
+]
+require(
+    len(fly2664_steps) == 1,
+    "script shards must contain exactly one FLY-2664 merged worktree audit step",
+)
+require(
+    str(fly2664_steps[0].get("run", "")).strip()
+    == "node --test scripts/__tests__/audit-merged-worktrees.test.mjs",
+    "FLY-2664 merged worktree audit command drifted",
+)
+require(
+    "continue-on-error" not in fly2664_steps[0],
+    "FLY-2664 merged worktree audit must fail closed",
+)
 ci_structure_in_quick = sum(
     "bash scripts/__tests__/ci-structure.test.sh" in str(step.get("run", ""))
     for step in quick_steps if isinstance(step, dict)
@@ -749,6 +769,7 @@ expected_setup = [
 ]
 expected_shard_tests = {
     "script-tests": [
+        "Test — FLY-2664 merged worktree read-only audit",
         "Test — FLY-2549 summary preflight with stale workspace dist",
         "Test — FLY-1707 incident replay",
         "Test — FLY-1393 flag truth CLI",
