@@ -64,3 +64,9 @@ Lead question 7712f43a-8364-4842-8bdf-b00ff6257c50：认可严格按需launchd�
 ## 7. 合并裁定补充
 
 Lead 4891fab3-1055-4b83-b02a-1358788d37bc明确取代deca6970的canonical起点要求：Bridge scheduleId/revision为唯一预约事实，QA直接API/CLI；canonical仅旧即时入口校验，双入口冲突409并告警。现代Raya origin/main 90e433e的meeting-artifact.ts:77禁止提前begin_start，meeting.json到点才产，不能用于提前两分钟调度。
+
+## 8. R1补查：监督消费者和部署跨停机窗口
+
+R1三条HIGH均确认：wrapper每次调用restart-storm gate voice，正常boot也计600秒/5次；plist/installer固定ThrottleInterval=30；部署stop Bridge后才build，90秒Bridge续租无法跨越该窗口。plan修为按需失败预算、1秒显式节流加实测、draining→committed持久暂停（committed不自动过期）。
+
+其余五条一并落实：会议deadline改为T（正常warming不沿即时60秒误报）；setup专用字节及loaded身份检查，原copy检查不自动适用；健康owner锁冲突只记良性事件，不弹桌面；补host-tmux/converge/storm与新restart-voice套件；点名StateStore三道no_human状态/原因门及VoiceEnd类型。没有执行这些实现测试，均为后继施工要求。

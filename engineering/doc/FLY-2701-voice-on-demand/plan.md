@@ -33,7 +33,7 @@ flowchart LR
 - `prewarmLeadMs=120000`，由Bridge可信配置取值（允许60000–300000，部署时校验，不从请求任意覆盖），写入每条预约的冻结提前量；配置修改只影响新预约，已有预约需显式改期重算；正常提前预约在T时必须已roomReady+frontendReady。120秒是初始资源预算：52秒旧全程+未实测冷启+约一分钟调度/尾延迟余量，不冒充实测。QA若不能满足，修复或向Lead调参，不改口算通过。
 - Bridge正常事件循环下，desired提交后立即wake；补扫间隔3000ms；launchctl单次deadline2000ms，每服务单飞、每3秒最多一次。正常宿主desired→系统受理目标≤5秒，命令超时/机器睡眠不声称硬实时；恢复后立即重估。
 - 耳机每次实际`request→live <= 52.046s + C_i`，C_i为同次wrapper入口→daemon可claim的实测冷启。另列request→roomReady与firstHeard，不能用进房替代可通话。≥3次记录每次值和最大值，不以三个样本捏造p95。冷启可变、未测不得填估算。
-- 保留2693从有效需求起60秒未ready提醒；claim/PID不复位计时。预约未来等待不计故障，会议在min(prewarmAt+60s,T)尚未ready时提醒，并在T仍未ready明确迟到。耳机120秒未ready、会议T+120秒仍未ready终结failed，保留未满足需求告警。60秒提醒不自动取消有效启动。
+- 即时耳机沿2693从有效需求起60秒未ready提醒，claim/PID不复位计时。预约未来等待不计故障，会议readiness deadline为T，到T仍未ready才报迟到；提前量与ready deadline同一预约事务冻结，不能沿用即时60秒阈值。明确启动错误立即告警、无进展60秒守卫仍可报故障；正常持续准备不能仅因超过60秒就误报。耳机120秒未ready、会议T+120秒仍未ready终结failed，保留未满足需求告警。60秒提醒不自动取消有效启动。
 
 ## 3. 状态和持久数据
 
@@ -71,7 +71,7 @@ stateDiagram-v2
 
 状态图为主路径；live取消先ending再cancelled、无人到场T+120标ended/no_human；改期清旧session后回scheduled，见§5，不复活已terminal的预约。
 
-新增 `voice_deploy_drain` 单行持久记录：serviceId、deploymentAttemptId、tokenHash、createdAt、waitDeadlineAt、leaseExpiresAt、state/releaseReason；token仅在受限调用凭据与0600 updater receipt中流转，不进日志。数据库唯一serviceId、更新校验tokenHash与attempt，读者不能凭文字创建/释放。此表也登记schema/retention。
+新增 `voice_deploy_drain` 单行持久记录：serviceId、deploymentAttemptId、tokenHash、createdAt、waitDeadlineAt、leaseExpiresAt（仅draining阶段）、committedAt、state/releaseReason；token仅在受限调用凭据与0600 updater receipt中流转，不进日志。数据库唯一serviceId、更新校验tokenHash与attempt，读者不能凭文字创建/释放。此表也登记schema/retention。
 
 ## 4. 对外预约接口
 
@@ -116,13 +116,21 @@ Bridge重启直接扫描持久scheduled/desired；命令曾成功或PID存在不
 
 ## 6. launchd、退出竞态与异常
 
-plist固定 `RunAtLoad=false, KeepAlive=false`，无StartInterval/CalendarInterval。删除SuccessfulExit子键；不能只改RunAtLoad。桥侧 `voice-launchd-waker.ts`仅用execFile('/bin/launchctl',['kickstart',fixedDomainLabel])，受信host配置绑定当前UID/label；deadline2秒、输出限量、只记录枚举结果，不shell拼接、不-k、不调用node语音入口。
+plist固定 `RunAtLoad=false, KeepAlive=false, ThrottleInterval=1`，无StartInterval/CalendarInterval。安装器原有`ThrottleInterval==30`断言同步改为1；source/installed/loaded三者都验。1秒仅是配置值，实际kickstart是否绕过/服从节流不能凭man措辞推断；QA在短命实例退出后0/1/3/10/29秒再次请求，记录kickstart受理和真正wrapper入口时间，证明实际spawn等待纳入≤5秒目标及耳机总时限。若宿主实际节流仍超目标，验收失败，不能用受理成功或放宽C_i定义隐藏等待。删除SuccessfulExit子键；不能只改RunAtLoad。桥侧 `voice-launchd-waker.ts`仅用execFile('/bin/launchctl',['kickstart',fixedDomainLabel])，受信host配置绑定当前UID/label；deadline2秒、输出限量、只记录枚举结果，不shell拼接、不-k、不调用node语音入口。
 
 启动调用成功只记accepted。失败三类统一接2693：kickstart明确失败立即startup failure；单元不存在/disabled/字节身份不匹配立即configuration unavailable且不偷偷安装/enable；进程存在但从未claim从desired原时间起60秒startup_not_ready。未知命令结果仍保留desired，下轮安全重试。重复失败复用同故障episode，不每次刷频道。宿主睡眠或Bridge停机不能保证实时送达，恢复补读、显示陈旧。
 
 daemon run初次不等5秒先desired；无本地active/inflight/recovery、完整成功null连续120秒后停止接新工作、做最后成功读、有限收尾并exit0。读取失败清空idle计时，按2693退避与告警，不以错误当空闲。资源都释放：Discord/VAD、Codex子进程、timer、process lock、健康待写记录；正常收尾deadline5秒，不能清理成功就伪记exit0，超时记录shutdown_failed并非0退出。
 
 竞态证明：最后空读N后新desired D，第一次kickstart命中尚未退出旧PID，旧PID退出E；D没有被claim所以仍是待办，E后下一次≤3秒扫描再kickstart，直至claim或明确失败deadline。Bridge在D后崩溃则重启第一次扫描同理。不能以一次kickstart受理清除D。若旧进程挂死没有退出，超时告警，不杀未知进程、不宣称已完成启动。
+
+### 旧重启风暴刹车与按需失败预算
+
+`scripts/restart-storm-gate.py gate voice`把每次正常启动都计入600秒/5次账本，第6次会hold并要求resume。按需wrapper从生产固定按需安装契约切换后**不再调用这个常驻服务gate**；不改其它service的风暴策略、不清旧ledger伪造恢复。旧voice hold若是风暴自动判据，迁移明确记retired_by_on_demand_policy且留历史；显式操作者禁用/停用仍保留为可信停用，不借迁移自动解禁。完整扫描wrapper、restart mounts、patrol repair及voice启动其它消费者，统一按需模式，禁止另一路重新gate voice。
+
+替代刹车是同一StateStore需求上的有限失败预算，不限制正常会话次数：voice_launch_attempts新增actualBootId、spawnObservedAt、claimObservedAt、failedAt、failureClass；wrapper/cli通过2693现有startup观测提交实际boot事件，Bridge将其与当时唯一desired绑定。一个desired最多3个已证实失败的实际boot（配置/权限永久错第一次就停止重试）；只有kickstart重放、命令结果未知、或健康旧owner锁冲突不算新失败boot。命令本身错误仍按同需求最多3次尝试，3/10/30秒退避并记录nextAttemptAt；前一次结果未知先观察launchd identity和startup证据，不把未知当失败再无限起进程。预算耗尽写failed/startup_retry_exhausted并复用2693锁存未满足需求，停止自动wake，不永远留desired。每次claim消费该需求的启动预算；claim只代表启动结束，不当健康恢复。实际会话崩溃仍按原lease failed，不自动新建通话。新的明确用户请求是新需求，正常完成后再次启动不累计成“重启风暴”。
+
+wrapper配置拒绝、host-tmux guard失败、锁helper不可用都交2693统一startup分类，保留原安全拒绝；不得用`exit0`吞掉失败意义。原startup-alert.ts的meta-alert仅在2693源不可写/不可用时作为fallback，正常已有同episode不得再弹桌面通知。进程锁conflict且能核验当前launchd/boot持有者健康或正在有限收尾时，仅记录benign_owner_conflict、退出0并保留desired补扫；无法证明健康owner的冲突记unknown，60秒无claim告警，不能立即把设计内竞态弹给founder。进程锁unavailable仍是明确故障。
 
 PID文件不作为互斥权威：保留OS级process lifetime lock；删去“任何活PID就exit0”的早退，或严格验证daemon实例/启动时间/launchd归属后仅作诊断。不能杀复用PID。测试必须预置指向无关sleep进程的voice.pid并证明合法启动未被抑制。进程由launchd持有的父子证据由QA采集。
 
@@ -136,7 +144,7 @@ claim成功后立即建立SessionLifetime，再做token identity/createSession�
 
 GenericVoiceSession新增 `ready` 与 `live` 两个门：ready之前不接受任何媒体；ready后会议到T之前也丢弃输入/输出音频，不缓存隐私音频、不产生transcript或用户消息、不朗读队列。房间状态明确“已准备，等待开会”。即时rg在ready且本人在场后live；预约必须Bridge验证now≥T且schedule revision仍当前，再允许setState live。等待本人以T+120秒为绝对截止，不从提前启动时算120秒。早到本人不提前开麦；无人到场标正常no_human，与配置故障分开。live前重新查询当前presence，不能沿用曾经出现过的一次布尔事件。
 
-新增lease认证的 `POST /api/voice/sessions/:id/ready`，body为当前scheduleRevision（即时null）；StateStore同事务校验lease、warming状态、当前预约版本、未取消并写ready_at及schedule ready；重复幂等。session自身仍为warming，不新增并列session ready枚举。renew响应和projection带notBeforeLiveAt/presenceDeadlineAt；setState live必须核验ready_at和now≥notBeforeLiveAt，旧版本409。正常no_human终结允许warming→ended/no_human，同步StateStore allowed-map、VoiceEnd、route/client类型、source健康原因映射；不可沿现有failed/no_human偷偷将正常缺席算故障。
+新增lease认证的 `POST /api/voice/sessions/:id/ready`，body为当前scheduleRevision（即时null）；StateStore同事务校验lease、warming状态、当前预约版本、未取消并写ready_at及schedule ready；重复幂等。session自身仍为warming，不新增并列session ready枚举。renew响应和projection带notBeforeLiveAt/presenceDeadlineAt；setState live必须核验ready_at和now≥notBeforeLiveAt，旧版本409。正常no_human终结允许warming→ended/no_human，同步StateStore allowed-map（warming→ended）、ended reason白名单（新增no_human）、live→ended额外限制（no_human仍不得由已live使用），以及VoiceEnd.ended.reason、route/client类型、source健康原因映射；不可沿现有failed/no_human偷偷将正常缺席算故障。
 
 `ready_at`需roomReady+frontendReady+lease有效的真实回执；schedule ready允许等待T，不触发2693“未live60秒”误报。健康合同新增readinessTarget=ready|live与readyDeadline，信息来源仍同一demand snapshot；即时仍要求live，预约预热要求ready，到点改live；本人缺席正常显示等待，不把无本人当模型故障。启动终态failed仍锁存未满足需求，取消才closed_not_required。
 
@@ -144,13 +152,19 @@ GenericVoiceSession新增 `ready` 与 `live` 两个门：ready之前不接受任
 
 installer验证固定label、ProgramArguments、受信路径/权限、两个false、legacy单元不存在、未显式disabled，然后bootstrap注册；无需求时不kickstart，成功条件registered/identity verified，不要求PID。installed-idle重复安装幂等。现有plist不同必须走有权部署事务的session-free刷新，不能无条件bootout在通话单元。manifest从hold改setup，表示显式安装所有权；不用managed（其语义禁止loaded），不开copy自动安装。更新supervisor_assert_keepalive按需模式及测试，保持其他服务契约。
 
+显式新增voice专用`voice_on_demand_contract_check`，供setup行convergence、census、installer和waker共同调用：核验source↔installed完整字节摘要、loaded ProgramArguments/固定label、RunAtLoad=false/KeepAlive=false/ThrottleInterval=1、受信路径owner/non-symlink；不能只因为选setup就假定有字节drift检查（现有仅copy检查）。setup继续不自动安装/覆盖；检测失败报configuration unavailable，waker禁止启动但不擅自bootout正在通话的实例。测试将installed plist替换为旧常驻字节，即使pid=-且exit0也必须非healthy。
+
 census区分registered dormant与unregistered/config drift。无需求注册正常显示休眠；有需求采用2693 source检查启动/进房而非只看PID。未知需求保持unknown；旧none不能覆盖新required。先前非0退出是诊断历史，不让零需求无限发新失败；明确disabled保留操作者意图，有需求则告不可用不偷偷enable。
 
-正常班车：在任何停止Bridge/替换voice构件之前，由restart transaction向Bridge申请新增voice drain fence（持久、绑定deploymentAttemptId、随机token、600秒固定deadline）。获取fence与检查全局非终态voice_sessions在同事务中完成：新的rg/reserve/claim/预约prewarm在fence下排队或返回503 retryAfter；已有claimed/warming/live继续renew，不能把drain当lease丢失。已provisioning/desired也算排空中，安全取消并明确结果或等待其终态，禁止遗留新claim。等待循环只读状态，每3秒一次，最多600秒；不永久占用新的许可。
+正常班车：在任何停止Bridge/替换voice构件之前，由restart transaction向Bridge申请新增voice drain fence（持久、绑定deploymentAttemptId、随机token、600秒固定deadline）。获取fence与检查全局非终态voice_sessions在同事务中完成：新的rg/reserve/claim/预约prewarm在fence下排队或返回503 retryAfter；已有claimed/warming/live继续renew，不能把drain当lease丢失。已provisioning/desired也算排空中，安全取消并明确结果或等待其终态，禁止遗留新claim。等待循环只读状态，每3秒一次，最多600秒。
 
 fence生效后全空可立即重启；到deadline仍不空照常重启，记录defer_exhausted和受影响session IDs，2693负责中断告警。600秒依据是保留短会/收尾机会且低于Lead≤15分钟上限，不是测得的最优值。急迫founder授权request-restart走同fence但不等待，不增改授权机制。所有正常/回滚stop路径共用该守卫；不得只在后置ensure_voice_for_deploy加。
 
-fence在计划重启全过程保持，不因600秒等待结束自动放开：deadline是等待上限，holder需每30秒续持有许可，租期90秒；replacement Bridge启动读持久fence。只有同attempt+token可释放；updater崩溃超租期后Bridge自动解除并记录abandoned。执行任何破坏动作前需重证fence未过期；过期重获时沿用原attempt等待deadline，不重置600秒。Bridge不可达/无法获取fence时记录unknown并在同600秒预算内重试，预算尽后按Lead容错取舍执行并标continuity_unverified；不能把未知当“无通话”。紧急路径立即继续但留unknown证据。
+fence分为`draining`和`committed`：等待通话期间draining可每30秒续90秒租期；在任何stop_bridge之前，必须用当前attempt+token向Bridge执行原子commit-drain，确认持久state=committed及committedAt，并将回执原子写入既有updater受限0600 receipt。**committed fence无自动到期，不依赖已停Bridge续租**；600秒只决定何时结束等通话，绝不释放准入。新Bridge启动时先加载committed fence再开放voice admission，整个build/健康探测/Step3.5 voice刷新/回滚期间持续拒绝新claim。离线阶段只核验已冻结receipt和本部署事务锁身份，不能调用不存在的Bridge续期API。未收到commit收据不得把draining当committed。
+
+同attempt+token只有在最后一次voice构件刷新/回滚和验证完成后才release；release失败不自动开启voice，重试精确release。draining租期过期允许Bridge解除并记录abandoned，但仅当未commit；迟到commit必须CAS拒绝，执行者重获时沿用原600秒等待deadline。committed updater崩溃时保持voice暂停并通过2693/部署告警显示drain_recovery_required，不以时间流逝开放。恢复由后续独立updater或既有运维命令接管：先取得现有全局restart事务锁、证明旧事务及其有界子进程均终止、完成/回滚构件一致性检查，再带原attempt receipt和新owner绑定CAS接管，最后release；单PID缺失/旧时间戳/任意请求体不足以解锁。不能保证旧子进程死亡则保留暂停并告警，这只冻结voice接入，不无限延期全舰队部署。
+
+Bridge初始不可达而无法commit时，等候仍最多600秒，紧急不等；按Lead裁定可以继续重启，但要标continuity_unverified。此降级路径replacement Bridge健康后，必须先取得并commit新的同attempt drain（等待deadline仍原值）再执行任何后置voice构件刷新；若无法取得就跳过voice变更并标部署降级/未验证，不能无保护地-k刚恢复的通话。正常已commit路径启动后无需重申请，不因Bridge停机数分钟解除。
 
 修改点：update-flywheel.sh班车attempt/窗口结果；restart-services.sh stop_bridge前共同守卫、ensure_voice_for_deploy、rollback；lib/restart-voice.sh需求敏感注册刷新。voice构件未变化时不-k语音；有变更且排空后刷新注册、由仍有效需求唤醒。无需求更新/回滚均不空启。合并与部署分离，只有独立updater按授权窗口部署；本设计节点不部署。
 
@@ -165,8 +179,10 @@ fence在计划重启全过程保持，不因600秒等待结束自动放开：dea
 | C 唤醒与退出 | 新bridge/voice-launchd-waker.ts，voice-session-runtime.ts，daemon.ts、config.ts、cli.ts，wrapper/plist | 最后空读→新desired→kickstart命中旧PID→退出→下轮启动；重复wake不-k；Bridge写后崩溃不漏；命令超时不消费desired；读失败不idle |
 | D 预热并行 | session/realtime/discord-room/daemon、bridge-client/projection/saved-state | 两分支互不等待但live需两者+presence+T；取消发生在任意await都关闭迟到资源；提前进房音频/转录/队列零处理；lease覆盖createSession |
 | E 健康安装 | 2693 health/demand/projector最终文件、install-voice-launchd.sh、lib/{supervisor,restart-voice,converge-nonlead-daemons}.sh、units.manifest、CLI voice-session.ts | no demand+no PID休眠；三启动失败类别同episode；failed不消警；ready等到T不误报；stale foreign PID不抑制启动；安装/部署/回滚无空启 |
-| F 班车保护 | update-flywheel.sh、restart-services.sh、Bridge drain route+StateStore fence、新lib/voice-deploy-drain.sh | 原子fence与新reserve竞争；600秒上限、重试不延长、急迫不等；旧token不能释放新版；租期丢失重证；Bridge未知不伪空 |
+| F 班车保护 | update-flywheel.sh、restart-services.sh、Bridge drain route+StateStore fence、新lib/voice-deploy-drain.sh | 原子fence与新reserve竞争；600秒上限、重试不延长、急迫不等；draining→committed确认后停Bridge，停机>90秒/10分钟重启仍暂停到Step3.5完成；旧token不能释放新版；committed崩溃不自动解锁；Bridge未知不伪空 |
 | G 真机报告 | qa-driver.md、qa-report.md、脱敏证据附件 | 见§10，每项有实际命令/结果/时间、build/host/session/attempt关联 |
+
+新增 `scripts/__tests__/restart-voice-on-demand.test.sh`，直接source实际lib/restart-voice.sh并注入launchctl/stub需求：idle注册不-k、active排空、drift拒绝、回滚同fence、disabled不enable；登记CI shell枚举。
 
 新增测试建议：`voice-schedule-runtime.test.ts`、`voice-schedule-routes.test.ts`、`voice-launchd-waker.test.ts`、`voice-deploy-drain.test.ts`在teamlead/src/bridge/__tests__；`StateStore.voice-schedule.test.ts`；voice-codex/__tests__/`startup-timing.test.ts`、`daemon-idle-exit.test.ts`、`session-prewarm.test.ts`。扩展现有daemon/realtime/session/lease/parser测试。
 
@@ -182,6 +198,12 @@ bash scripts/__tests__/launchd-units-manifest.test.sh
 bash scripts/__tests__/launchd-census.test.sh
 bash scripts/__tests__/supervisor.test.sh
 bash scripts/__tests__/updater-trigger-policy.test.sh
+bash scripts/__tests__/converge-nonlead-daemons.test.sh
+bash scripts/__tests__/host-tmux-selection-mounts.test.sh
+bash scripts/__tests__/host-tmux-selection-census.test.sh
+bash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh
+bash scripts/__tests__/restart-storm-gate.test.sh
+bash scripts/__tests__/restart-voice-on-demand.test.sh
 ```
 
 comm实际package名为flywheel-comm；禁止零收集假通过；增加新shell suite到CI枚举。扩展retention/schema清单完整性测试。外网/launchctl/时钟用注入fake做确定性交错，单元测试不碰生产库、不发真实Discord。变异验证至少删除补扫/去掉revision核对/提前audio门/允许idle -k四个分别让测试红。
@@ -193,7 +215,7 @@ comm实际package名为flywheel-comm；禁止零收集假通过；增加新shell
 1. 初始无会话，launchctl print显示注册但未运行、无voice PID/子Codex；持续超过两轮巡检不被拉起。安装、重启Bridge、idle部署也不产生空启。
 2. ≥3次真正冷启动耳机：每次先证无PID；记录全链分段、C_i、request→roomReady/live/firstHeard、实际双向语音；逐次比较52.046+C_i。另有优化前串行分段对照，不用估计填进房/Codex/realtime。
 3. 通过真实CLI/POST预约至少提前120秒以上，提交后停止调用方；T−120附近由Bridge触发，T时room+frontend已ready；T前输入音频不转录/不送Lead，T时本人在场能说能听。本人缺席到T+120才no_human；晚预约标lateAdmission不算准时通过。
-4. 结束后120秒空闲+最多5秒收尾退出0，launchctl未运行；未来预约不常驻。精确屏障注入退出临界新会话，保存两个boot及同一desired→claim证明不漏；中间Bridge重启重复该项。
+4. 结束后120秒空闲+最多5秒收尾退出0，launchctl未运行；未来预约不常驻。另在隔离真launchd服务连续10分钟触发至少6次合法按需启动（测试配置缩短idle窗口，保留生产120秒独立验证），证明不会触发旧storm hold；再故意注入3次真实失败证明按需求刹车和告警。实测短命退出0/1/3/10/29秒后重启的系统等待，不能靠假launchctl证明无30秒尾延迟。精确屏障注入退出临界新会话，保存两个boot及同一desired→claim证明不漏；中间Bridge重启重复该项。
 5. kickstart失败、单元缺失、进程无claim、起来后room失败分别触发2693真实工程频道消息回执+固定页；无PID休眠阴性不告警；失败转terminal不消警，恢复须真实成功。
 6. 改期、取消在provision/claim/ready边界，旧revision无音频；同房冲突不抢占；sleep/wake、墙钟跳变、Bridge启动补扫。单进程锁真实拒绝并发但不误杀复用PID。
 7. 授权隔离环境验证班车：短会完成再更新，600秒仍通话则按裁定更新/中断告警；urgent零等待；真实观察短Bridge中断同lease继续、超过窗口failed且无自动rejoin。不在未经批准的生产通话上注入故障。
