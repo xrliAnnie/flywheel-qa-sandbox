@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>复制按钮放页面最底部</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--blue:#007aff;--green:#34c759;--red:#ff3b30;--amber:#ff9500;--navy:#1a365d;--line:#e5e5ea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,system-ui,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:26px;margin:0 0 6px;color:var(--navy)}
+.sub{color:var(--dim);margin:0 0 22px;font-size:14px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin:0 0 16px;border-left:4px solid var(--blue)}
+.card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}
+.card h2{font-size:18px;margin:0 0 8px}
+.card p{margin:6px 0}
+ul{margin:6px 0;padding-left:20px}
+.rule{background:#f2f7ff;border-radius:10px;padding:12px 14px;margin:8px 0}
+.mono{font-family:'SF Mono',monospace;font-size:13px}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
+@media (max-width:640px){.cmp{grid-template-columns:1fr}}
+.mock{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fafafa}
+.mock .cap{font-size:13px;padding:6px 10px;background:#fff;border-bottom:1px solid var(--line)}
+.mock .view{height:170px;position:relative;padding:8px 10px;font-size:12px;color:var(--dim)}
+.mock .l{height:8px;background:#e3e3e8;border-radius:4px;margin:7px 0}
+.mock .float{position:absolute;left:0;right:0;bottom:0;height:62%;background:rgba(255,59,48,.12);border-top:2px solid var(--red);display:flex;align-items:center;justify-content:center;color:var(--red);font-weight:600}
+textarea.note{width:100%;min-height:64px;margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:8px;font:14px/1.5 -apple-system,system-ui,sans-serif;background:#fcfcfd}
+.foot{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin-top:28px;border-top:4px solid var(--navy)}
+.foot h2{font-size:17px;margin:0 0 6px}
+button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:15px;cursor:pointer}
+.status{font-size:14px;color:var(--dim);margin-left:10px}.status.ok{color:var(--green)}.status.err{color:var(--red)}
+#summary{white-space:pre-wrap;font-size:13px;background:#f7f7f9;border-radius:8px;padding:10px;margin:10px 0;color:#333}
+.chunk{margin-top:10px}.chunk textarea{width:100%;min-height:90px;font:13px/1.5 'SF Mono',monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>复制按钮放到页面最底部,不再悬浮挡字</h1>
+<p class="sub">FLY-2601 · 2026-09-16 · 只改了三份「怎么做 founder 页面」的说明书,没有重发任何已有页面</p>
+
+<div class="card red">
+<h2>1. 你说的问题</h2>
+<p>FLY-2591 第 3 轮那张页面,底部「一键汇总复制」那块一直浮在屏幕上,占掉大半个窗口,你一次能看到的内容很少。</p>
+<p>查下来:<b>不是那个体自己想这么做,是说明书里根本没写这块该放哪</b>。三份说明书(写 PRD 的、做视觉设计的、做原型的)都只写了「点一键汇总复制再贴回来」,位置、要不要悬浮一字没提,所以每个体各自发明。只纠正那一个体,下一个体还会再发明一遍。</p>
+<textarea class="note" data-s="1. 你说的问题" placeholder="这段有意见写这里(可不写)"></textarea>
+</div>
+
+<div class="card green">
+<h2>2. 加进三份说明书的那条规矩</h2>
+<div class="rule">
+<b>给你看的页面里,汇总/复制那块:</b>
+<ul>
+<li>放在页面<b>最底部</b>,跟着页面正常滚动</li>
+<li>⛔ 不许悬浮、不许钉在屏幕上(技术上就是禁止 <span class="mono">sticky</span> / <span class="mono">fixed</span>)</li>
+<li>理由(也写进去了):<b>你一次能看到多少内容,比按钮随时够得着更重要</b> —— 要复制时拉到底就行</li>
+</ul>
+</div>
+<p>同一条原样加进了三份:写 PRD 的、做视觉设计的、做原型的。这三类就是会给你出评审页的全部。</p>
+<textarea class="note" data-s="2. 加进三份说明书的那条规矩" placeholder="这段有意见写这里(可不写)"></textarea>
+</div>
+
+<div class="card">
+<h2>3. 前后对比</h2>
+<div class="cmp">
+<div class="mock"><div class="cap">以前:悬浮块常驻屏幕底部</div><div class="view"><div class="l"></div><div class="l"></div><div class="l" style="width:70%"></div><div class="l"></div><div class="float">写完点这里 · 一键汇总复制</div></div></div>
+<div class="mock"><div class="cap">以后:整屏都是内容,复制在最底下</div><div class="view"><div class="l"></div><div class="l"></div><div class="l" style="width:70%"></div><div class="l"></div><div class="l"></div><div class="l" style="width:80%"></div><div class="l"></div><div class="l" style="width:60%"></div><div class="l"></div><div class="l"></div></div></div>
+</div>
+<p>这张页面本身就是按新规矩做的:复制在最底部,不跟着你走。</p>
+<textarea class="note" data-s="3. 前后对比" placeholder="这段有意见写这里(可不写)"></textarea>
+</div>
+
+<div class="card amber">
+<h2>4. 故意没做的</h2>
+<ul>
+<li>没有重发 FLY-2591 第 3 轮那张页面 —— 重发会让你手上那张卡再失效一次。这条只管<b>以后</b>的页面。</li>
+<li>没有并进 FLY-2244(那张之前在等你批,现已合入,这次和它不冲突)。</li>
+<li>系统自动塞给每个体的那段通用说明里写的是「底部放汇总和复制」,没说能不能悬浮。它不矛盾,但也没禁止;改它要动代码,不在这单范围,我已经报给 Lead 看要不要另开一单。</li>
+</ul>
+<textarea class="note" data-s="4. 故意没做的" placeholder="这段有意见写这里(可不写)"></textarea>
+</div>
+
+<div class="foot">
+<h2>写完意见,在这里复制,贴回讨论串</h2>
+<p style="margin:0;color:var(--dim);font-size:14px">意见只存在你这台浏览器里,不会自动同步 —— 写完点复制贴回来,我才收得到。</p>
+<div id="summary">还没写意见</div>
+<button id="copy" type="button">一键汇总复制</button><span id="st" class="status"></span>
+<div id="chunks"></div>
+</div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK="【页面意见汇总】FLY-2601",LIMIT=1800,KEY="fly2601-copy-block-notes-v1";
+var boxes=Array.prototype.slice.call(document.querySelectorAll("textarea.note"));
+var sum=document.getElementById("summary"),st=document.getElementById("st"),wrap=document.getElementById("chunks");
+function load(){var raw=null;try{raw=window.localStorage.getItem(KEY);}catch(e){}if(!raw)return;var d=null;try{d=JSON.parse(raw);}catch(e){return;}if(!d||typeof d!=="object")return;boxes.forEach(function(b){var v=d[b.getAttribute("data-s")];if(typeof v==="string")b.value=v;});}
+function save(){var d={};boxes.forEach(function(b){if(b.value.trim())d[b.getAttribute("data-s")]=b.value;});try{window.localStorage.setItem(KEY,JSON.stringify(d));}catch(e){}}
+function parts(){return boxes.filter(function(b){return b.value.trim();}).map(function(b){return "【"+b.getAttribute("data-s")+"】\n"+b.value.trim();});}
+function chunks(){var ps=parts(),out=[],cur="";ps.forEach(function(p){var c=cur?cur+"\n\n"+p:p;if(cur&&MARK.length+12+c.length>LIMIT){out.push(cur);cur=p;}else cur=c;});if(cur)out.push(cur);
+ return out.map(function(body,i){return (out.length>1?MARK+" ("+(i+1)+"/"+out.length+")":MARK)+"\n"+body;});}
+function refresh(){var cs=chunks();sum.textContent=cs.length?cs.join("\n\n----\n\n"):"还没写意见";}
+function copyText(t,done){var n=window.navigator;if(n&&n.clipboard&&n.clipboard.writeText){n.clipboard.writeText(t).then(function(){done(true);},function(){done(false);});}else done(false);}
+function renderChunks(cs){while(wrap.firstChild)wrap.removeChild(wrap.firstChild);
+ cs.forEach(function(c,i){var d=document.createElement("div");d.className="chunk";var ta=document.createElement("textarea");ta.readOnly=true;ta.value=c;var b=document.createElement("button");b.type="button";b.textContent="复制第 "+(i+1)+"/"+cs.length+" 段";
+  b.addEventListener("click",function(){copyText(c,function(ok){if(ok){st.className="status ok";st.textContent="第 "+(i+1)+" 段已复制,贴回讨论串";}else{ta.focus();ta.select();st.className="status err";st.textContent="自动复制失败,请手动全选这段复制";}});});
+  d.appendChild(ta);d.appendChild(b);wrap.appendChild(d);});}
+document.getElementById("copy").addEventListener("click",function(){var cs=chunks();
+ if(!cs.length){st.className="status err";st.textContent="一条意见都没写,没东西可复制";return;}
+ if(cs.length>1){renderChunks(cs);st.className="status";st.textContent="太长,拆成了 "+cs.length+" 段,每段都要复制贴回";return;}
+ renderChunks([]);copyText(cs[0],function(ok){if(ok){st.className="status ok";st.textContent="已复制,贴回讨论串";}else{renderChunks(cs);st.className="status err";st.textContent="自动复制失败,请在下方手动全选复制";}});});
+boxes.forEach(function(b){b.addEventListener("input",function(){save();refresh();});});
+load();refresh();
+})();
+</script>
+</body>
+</html>

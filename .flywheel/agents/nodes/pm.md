@@ -173,6 +173,11 @@ Before asking Annie to evaluate, do the homework and make it **legible**:
   - The page comments are local only: Annie clicks 「一键汇总复制」and pastes the
     summary back into the issue thread. Never imply the comments auto-sync to the
     Runner.
+  - **Summary/copy block placement (FLY-2601, hard rule).** On every founder-facing page,
+    the summary + 「一键汇总复制」block sits at the very bottom, in normal document flow,
+    scrolling with the page. ⛔ No `position: sticky` / `position: fixed`, no floating block
+    over the content. Why: how much Annie can read at once matters more than keeping the
+    button in reach — she scrolls to the bottom to copy.
 
 ## Step 3 — co-eval with the founder (the FLY-1089 addition)
 

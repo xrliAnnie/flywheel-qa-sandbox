@@ -145,6 +145,11 @@ Get the prototype in front of Annie so she can **feel it**, not read a report ab
   committed HTML path. Bridge delivers the official card; a Runner never posts to
   Discord directly and a Lead answer cannot satisfy the round. Page comments do not
   auto-sync: Annie clicks 「一键汇总复制」and pastes the summary into the issue thread.
+- **Summary/copy block placement (FLY-2601, hard rule).** On every founder-facing page,
+  the summary + 「一键汇总复制」block sits at the very bottom, in normal document flow,
+  scrolling with the page. ⛔ No `position: sticky` / `position: fixed`, no floating block
+  over the content. Why: how much Annie can read at once matters more than keeping the
+  button in reach — she scrolls to the bottom to copy.
 - **De-jargon (去黑话)**: the surface is for an often-non-technical audience — no
   "DAG"-style terms, say it in human words.
 - **Then open `founder_review`** asking the ONE feasibility question tied to Step 1's bar, e.g.「你觉得这个
