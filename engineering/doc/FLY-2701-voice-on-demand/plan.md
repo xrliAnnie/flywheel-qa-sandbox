@@ -30,7 +30,7 @@ flowchart LR
 
 - 实施前FLY-2693、FLY-2655先合入；动updater前同步已合入FLY-2669/2657。未合向Lead报告顺序，不merge在飞工作分支。2693的需求revision、健康helper、reason和投递接口按最终合入代码对齐。
 - `idleExitMs=120000`，最近一次会话全部收尾并首次成功空读后开始；未来未到预热时间的预约不留住进程。
-- `prewarmLeadMs=120000`，由Bridge可信配置固定，客户端不任意增加提前量；正常提前预约在T时必须已roomReady+frontendReady。120秒是初始资源预算：52秒旧全程+未实测冷启+约一分钟调度/尾延迟余量，不冒充实测。QA若不能满足，修复或向Lead调参，不改口算通过。
+- `prewarmLeadMs=120000`，由Bridge可信配置取值（允许60000–300000，部署时校验，不从请求任意覆盖），写入每条预约的冻结提前量；配置修改只影响新预约，已有预约需显式改期重算；正常提前预约在T时必须已roomReady+frontendReady。120秒是初始资源预算：52秒旧全程+未实测冷启+约一分钟调度/尾延迟余量，不冒充实测。QA若不能满足，修复或向Lead调参，不改口算通过。
 - Bridge正常事件循环下，desired提交后立即wake；补扫间隔3000ms；launchctl单次deadline2000ms，每服务单飞、每3秒最多一次。正常宿主desired→系统受理目标≤5秒，命令超时/机器睡眠不声称硬实时；恢复后立即重估。
 - 耳机每次实际`request→live <= 52.046s + C_i`，C_i为同次wrapper入口→daemon可claim的实测冷启。另列request→roomReady与firstHeard，不能用进房替代可通话。≥3次记录每次值和最大值，不以三个样本捏造p95。冷启可变、未测不得填估算。
 - 保留2693从有效需求起60秒未ready提醒；claim/PID不复位计时。预约未来等待不计故障，会议在min(prewarmAt+60s,T)尚未ready时提醒，并在T仍未ready明确迟到。耳机120秒未ready、会议T+120秒仍未ready终结failed，保留未满足需求告警。60秒提醒不自动取消有效启动。
@@ -106,9 +106,13 @@ reconcile(now):
 
 provisioner进入desired前重读schedule revision；claim事务再核对同一revision+取消+drain。修改发生在上述任何await之后，旧副作用不可提交，已建Discord thread沿现有取消收尾；取消不得删除未确认的外部回执。跨进程只claim胜者能发音。
 
-改期事务递增revision并先stop旧session；标scheduled且保留旧session作为cleanup引用。新版本到期也要等旧会话彻底终态，才分配新session；不得重用旧lease或并发两个bot。旧claim/ready/live回执返回409，旧进程按原lease fence停止。预约reserve幂等键为(schedule_id,schedule_revision)，修改StateStore当前meeting_id历史去重分支：仅旧即时meetingId请求沿原逻辑，预约按新键查重；同schedule同时最多一条非终态session。getVoiceSessionByMeeting旧路由不承担新预约状态查询，新调用方用scheduleId。预约结束记录保留，不自动重建新的需求。房间被即时rg占用时预约等待到原deadline，T未ready告警；不抢走正在通话者。
+改期事务递增revision并先stop旧session；标scheduled且保留旧session作为cleanup引用。新版本到期也要等旧会话彻底终态，才分配新session；不得重用旧lease或并发两个bot。旧claim/ready/live回执返回409，旧进程按原lease fence停止。预约reserve幂等键为(schedule_id,schedule_revision)，修改StateStore当前meeting_id历史去重分支：仅未绑定预约的旧即时meetingId请求沿原逻辑，预约按新键查重；同schedule同时最多一条非终态session。getVoiceSessionByMeeting旧路由不承担新预约状态查询，新调用方用scheduleId。预约结束记录保留，不自动重建新的需求。房间被即时rg占用时预约等待到原deadline，T未ready告警；不抢走正在通话者。
 
 Bridge重启直接扫描持久scheduled/desired；命令曾成功或PID存在不能抑制补扫。没有额外wake outbox：desired本身就是未完成待办，claim CAS才消费；新增launch审计不承担投递状态。已claim后daemon死亡遵循现有failed收尾，不重领旧session；需要用户新请求，不自动重join。
+
+### 同一会议双入口去重（Lead合并裁定4891fab3，取代deca旧口径）
+
+新预约只由Bridge API/CLI写入；canonical meeting.json不作为预约定时来源。当即时meetingId请求命中同主体/meeting_id的Bridge预约时，优先返回已有scheduleId/sessionId和状态，不reserve第二场；canonical仅用现有可信加载器核对meeting/Lead绑定。topic等显示文本不参与身份判定。不同Lead/房间/时间与当前预约不一致则409 voice_schedule_binding_conflict，复用2693同需求故障告警，不能自动覆盖预约或改期。scheduled未到期也不借即时入口提前启动。已终态预约不得被旧canonical重新创建会话；需要明确新预约requestId。查询/去重同事务，按canonical先发和schedule先发两个顺序测试，POST新预约遇到同meeting已有非终态即时session时409并报告冲突，不把旧即时会话偷转预约。
 
 ## 6. launchd、退出竞态与异常
 

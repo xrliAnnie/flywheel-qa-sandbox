@@ -60,3 +60,7 @@ Lead question 7712f43a-8364-4842-8bdf-b00ff6257c50：认可严格按需launchd�
 无需求无PID=正常休眠。desired未claim=仍欠启动，launchctl成功/进程存在不清账。已claim后崩溃保留现有lease过期failed及2693告警，不擅自再join同场。计划重启最多推迟600秒；异常/强制重启可能超过15秒lease并中断，告警而非伪恢复。未来会议的等待时间不算启动超时，从prewarmAt/实际接入时间起算。
 
 完整测试/迁移/接受标准见plan；当前只做源码和日志审计，没有启动生产实例、没有运行候选代码、没有真实房间验收。
+
+## 7. 合并裁定补充
+
+Lead 4891fab3-1055-4b83-b02a-1358788d37bc明确取代deca6970的canonical起点要求：Bridge scheduleId/revision为唯一预约事实，QA直接API/CLI；canonical仅旧即时入口校验，双入口冲突409并告警。现代Raya origin/main 90e433e的meeting-artifact.ts:77禁止提前begin_start，meeting.json到点才产，不能用于提前两分钟调度。
