@@ -39,6 +39,30 @@ describe("Codex candidate selection", () => {
 			}).candidate?.profile,
 		).toBe("business");
 	});
+	it("replays the same three-account snapshot independently of input order", () => {
+		const business = obs("business", 500, 10);
+		const personal = obs("personal", 100, 80);
+		const school = {
+			...obs("school", 50, 1),
+			windows: [{ usedPercent: 1, resetsAt: null }],
+		};
+		const replays = [
+			[business, personal, school],
+			[business, school, personal],
+			[personal, business, school],
+			[personal, school, business],
+			[school, business, personal],
+			[school, personal, business],
+		];
+
+		for (const replay of replays) {
+			for (let run = 0; run < 3; run += 1) {
+				expect(
+					selectCodexQuotaCandidate(replay, { now }).candidate?.profile,
+				).toBe("personal");
+			}
+		}
+	});
 	it("excludes retired, refresh-invalid, unshared, expired and limited candidates", () => {
 		const candidates = [
 			obs("personal1", 100),
