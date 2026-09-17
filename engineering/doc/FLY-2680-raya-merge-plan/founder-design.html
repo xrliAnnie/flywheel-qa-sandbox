@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2680 Raya 并仓 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Helvetica Neue",sans-serif; line-height:1.55; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:22px; }
+  .sub code { font-family:"SF Mono",Menlo,monospace; color:#1a365d; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:0 0 18px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; } .card.amber { border-left-color:#ff9500; } .card.green { border-left-color:#34c759; } .card.purple { border-left-color:#af52de; } .card.gray { border-left-color:#86868b; } .card.navy { border-left-color:#1a365d; }
+  .card h2 { font-size:18px; margin:0 0 10px; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; margin-right:6px; vertical-align:middle; }
+  .badge.new { background:#e9f9ee; color:#1f8a3b; } .badge.update { background:#fff4e5; color:#b85c00; } .badge.candidate { background:#f5e9fb; color:#7a2ea8; } .badge.urgent { background:#ffe9e7; color:#c0271d; } .badge.medium { background:#f2f2f7; color:#5c5c61; }
+  p { margin:8px 0; }
+  ul { margin:6px 0 6px 20px; padding:0; } li { margin:4px 0; }
+  ol { margin:6px 0 6px 22px; padding:0; } ol li { margin:6px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid #eee; padding:7px 8px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; font-weight:600; }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:13px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  pre { background:#1a365d; color:#f5f5f7; padding:12px 14px; border-radius:8px; overflow-x:auto; font-size:13px; }
+  pre code { background:none; color:inherit; padding:0; }
+  .term { border-bottom:1px dotted #86868b; }
+  .note { color:#86868b; font-size:13px; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:13px; color:#86868b; margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; box-sizing:border-box; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fff; }
+  .comment textarea:focus { outline:none; border-color:#007aff; box-shadow:0 0 0 3px rgba(0,122,255,.15); }
+  .summary pre { background:#f2f2f7; color:#1d1d1f; white-space:pre-wrap; word-break:break-word; }
+  .btn { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#f2f2f7; color:#1d1d1f; }
+  .status { font-size:13px; color:#86868b; margin-left:4px; }
+  .chunk { margin:10px 0; padding:10px; border:1px solid #e5e5ea; border-radius:8px; }
+  .quad { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:12px 0 4px; }
+  .q { border-radius:10px; padding:14px 16px; background:#fafafa; border-top:3px solid #007aff; }
+  .q.move { border-top-color:#34c759; } .q.keep { border-top-color:#007aff; } .q.kill { border-top-color:#ff3b30; } .q.card4 { border-top-color:#af52de; }
+  .q .lbl { font-size:12px; font-weight:700; letter-spacing:.04em; color:#86868b; text-transform:uppercase; }
+  .q .big { font-size:19px; font-weight:700; margin:4px 0 2px; color:#1d1d1f; }
+  .q .small { font-size:13px; color:#5c5c61; }
+  .phase { border:1px solid #e5e5ea; border-radius:10px; padding:12px 14px; margin:10px 0; }
+  .phase .ttl { font-weight:700; color:#1a365d; margin-bottom:4px; }
+  .phase.a { border-left:4px solid #34c759; } .phase.b { border-left:4px solid #ff3b30; } .phase.c { border-left:4px solid #86868b; }
+  @media (max-width:600px){ .quad { grid-template-columns:1fr; } .card { padding:16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2680 Raya 并仓 — 设计</h1>
+  <div class="sub">Issue FLY-2680 · 2026-09-17 · 只读调查 + 设计,本单不改任何代码 · Epic FLY-2679 · plan v5,Codex 四轮评审 6→7→7→6 条<b>全部采纳,无驳回</b></div>
+
+  <!-- 1 一句话 -->
+  <div class="card green" data-section="一句话">
+    <h2><span class="badge new">第一屏</span>一句话</h2>
+    <div class="quad">
+      <div class="q move"><div class="lbl">搬什么</div><div class="big">一个包,120 个文件</div><div class="small">Raya 仓的 <code>packages/cos</code>(她的"业务大脑")搬进 Flywheel。它零依赖,搬起来没有技术障碍。</div></div>
+      <div class="q keep"><div class="lbl">留什么</div><div class="big">人设 + 收件箱 + 历史</div><div class="small">Raya 的人设文件、各 Lead 交 summary 的 <code>summaries/</code> 收件箱、旧文档与素材,全部留在 Raya 仓。<code>raya-memory</code> 仓一个字节不动。</div></div>
+      <div class="q kill"><div class="lbl">删什么</div><div class="big">一整套跨仓部署机制</div><div class="small">为"两个仓要同步部署"而存在的班车、迁移账本、专用部署回执、巡检里那行 Raya 事实、以及规则文件里"合入≠上线"那一段。</div></div>
+      <div class="q card4"><div class="lbl">你要按几次</div><div class="big">7 张卡 + 3 次授权</div><div class="small">7 张是合并 PR 的卡。<b>另外 3 次不是卡,是授权</b>,而且其中一次是不可逆的。详见下一节。</div></div>
+    </div>
+    <p class="note">名词:<span class="term">卡</span>= 你在 Discord 上按的那个 ship 按钮(合并一个 PR)。<span class="term">班车</span>= <code>com.flywheel.updater</code>,每天 00:00 / 12:00 自动跑的部署。<span class="term">旧壳</span>= 2026-09-06 那版 Raya 自带的小脑进程 <code>com.xrli.raya.brain</code>。<span class="term">标准 Lead</span>= 和 Mufasa 一样走公共信箱、公共启动器的 Codex Lead。</p>
+    <div class="comment"><label for="c1">你的意见(自动存在本机浏览器)</label><textarea id="c1" data-key="s1" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 2 你要亲手做什么 -->
+  <div class="card red" data-section="你要亲手做什么">
+    <h2><span class="badge urgent">最重要</span>你要亲手做什么</h2>
+    <p><b>别只记住"7 次卡"这个数。</b> 7 只是合并 PR 的次数;真正需要你判断的是下面那 3 次授权,尤其是第 2 次。</p>
+    <table>
+      <tr><th style="width:26%">动作</th><th style="width:14%">次数</th><th>它到底授权了什么</th></tr>
+      <tr><td><b>Flywheel ship 卡</b></td><td>7</td><td>合并 7 个 PR:这份设计文档、搬包、装调用入口、人设投影、迁移工具、拆旧机制、改规则+巡检。<b>合并代码,不等于在生产上执行任何东西。</b></td></tr>
+      <tr><td><b>Raya 仓 merge 授权</b></td><td>1</td><td>Raya 仓改人设路径 + 删包的那个 PR。Raya 仓的 main <b>没有任何服务端保护</b>,所以这一步只有你的授权在挡。</td></tr>
+      <tr><td><b>割接窗口授权</b> 🔴</td><td>1</td><td><b>这是唯一不可逆的一次。</b> 它授权:停掉旧 Raya → 对数据库做一次历史数据迁移 → 换人设 → 重启 → 确认无误后放行。<b>数据迁移一旦做完就回不去了</b>(人设文件能回滚,数据不能)。</td></tr>
+      <tr><td><b>宿主收尾授权</b></td><td>1</td><td>删掉两个旧 launchd 任务和残留文件。这一步之后旧壳<b>永久</b>起不来了。</td></tr>
+    </table>
+    <h3>为什么"割接窗口"必须单独授权,不能被 ship 卡覆盖</h3>
+    <p>因为 ship 卡授权的是"把这段代码合进 main",而那一次要做的是"对当前这个生产数据库执行一次不可逆的历史数据分类迁移"。这两件事的风险完全不同。所以它要绑定<b>当时那一刻的</b>数据库状态、工具版本和回执,是一次性的、针对那一次的授权。</p>
+    <p class="note">如果流程能把"割接窗口"和"钉住人设版本"这两件事合并成一条同时满足两边条件的指令,对你来说就是一次交互 —— 但它们在计划里必须分别写明,不能糊成一句。</p>
+    <p class="note">上表即完整账本,取自 <code>plan.md §11.1a</code>(该表是 founder 动作次数的唯一权威口径)。本页不再出现第二个合计数字。</p>
+    <div class="comment"><label for="c2">你的意见</label><textarea id="c2" data-key="s2" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 3 现状 -->
+  <div class="card amber" data-section="一个你可能不知道的现状">
+    <h2><span class="badge update">现状</span>此刻有两个 Raya 同时连着 Discord</h2>
+    <p>我在调查时做了只读取证,发现的现场比工单描述的更紧张:</p>
+    <ul>
+      <li><b>旧壳还活着,而且还连着 Discord。</b> 进程 PID 1671,今天 10:23 被系统自动拉回(宿主今早 08:55 重启过)。它持有<b>两条 Discord 长连接</b>,但从 9 月 4 日起就没往日志里写过一个字 —— 连着,但不出声。</li>
+      <li><b>标准 Lead 也活着,而且它才是在干活的那个。</b> 进程 PID 17271,今天 12:04 起,今天还在写工作区状态、界面线程 13:38 仍活跃。<b>今天在回你的是它。</b></li>
+      <li><b>那个"业务大脑"从来没在生产上跑起来过。</b> 它需要工作区里有一个叫 <code>business/current</code> 的入口才会被调用,而生产工作区里<b>根本没有这个目录</b> —— 因为唯一会创建它的就是这套一直在失败回滚的旧机制。而且当前活着的那份人设里,连"去跑这个业务大脑"的指令段都没有。</li>
+    </ul>
+    <p><b>这对你意味着两件好事:</b>① 搬家本身不会让 Raya 掉线,因为今天在回你的能力来自人设,不来自那个包;② 真正需要小心的是"换人设"和"停旧壳"这两步,不是"搬包"。</p>
+    <div class="comment"><label for="c3">你的意见</label><textarea id="c3" data-key="s3" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 4 纠正 -->
+  <div class="card purple" data-section="我纠正了工单里的两处说法">
+    <h2><span class="badge candidate">纠正</span>工单里有两处说法不成立</h2>
+    <table>
+      <tr><th style="width:38%">工单原话</th><th>核实结果</th></tr>
+      <tr><td>「<code>packages/cos</code> import 了 Flywheel 内部模块,并仓后要改成 workspace 依赖」</td><td><b>不成立。</b> 我逐文件查了全部 120 个源文件:它一个 Flywheel 模块都没 import,连 <code>dependencies</code> 字段都没有。所以"解耦依赖"这项工作<b>不存在</b>,搬家比想的简单。</td></tr>
+      <tr><td>「今晚 FLY-2657 切换(旧机制最后一次使用)」</td><td><b>"今晚"查无实据。</b> FLY-2657 不是一次切换,是对旧机制两个故障点的修复,而且它自己还在实现中(6 步走到 4 步),<b>连 PR 都还没开</b>,它的计划里明确写着"不运行班车、不更新生产、不重启"。所以本方案按"它何时落地、是否落地都不确定"来设计 —— 不等它,也不挡它。</td></tr>
+    </table>
+    <p class="note">另有一项工单列进拆除清单的东西(FLY-2654 Part B)在主干上根本不存在:它在一个没合入的分支上,而且已经自己关闭了,被这个 Epic 取代。</p>
+    <div class="comment"><label for="c4">你的意见</label><textarea id="c4" data-key="s4" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 5 割接 -->
+  <div class="card navy" data-section="割接怎么做">
+    <h2><span class="badge medium">怎么做</span>割接分三段,只有中间那段有风险</h2>
+    <div class="phase a"><div class="ttl">🟢 阶段 A — 纯增量,生产 Raya 一点感觉都没有</div>
+      <p>搬包、装调用入口、部署人设投影器(但先不启用)、部署迁移工具(但先不执行)。<b>这一段结束时,生产上的 Raya 与今天完全一样。</b> 每一步都能直接撤销。</p></div>
+    <div class="phase b"><div class="ttl">🔴 阶段 B — 割接窗口,一口气走完,不能停在半路</div>
+      <ol>
+        <li>冻结 Raya 仓那个 PR 的内容指纹 → <b>你授权</b> → 合并 → 复核合进去的内容没变 → 钉住这个精确版本</li>
+        <li><b>停掉旧 Raya</b>,并证明它的进程与占位都真的消失了</li>
+        <li>在停机状态下执行那次<b>不可逆</b>的数据迁移,并留下回执</li>
+        <li>换人设 → 启动 → <b>在打开收件箱之前</b>先验证"我加载的确实是你授权的那份人设",不对就拒绝启动</li>
+        <li>确认无误,放行</li>
+      </ol>
+      <p class="note">窗口期间你在 #raya 说的话<b>不会丢</b>(有游标记位,重启后接着读),但会<b>延迟</b>到放行之后才被处理。</p></div>
+    <div class="phase c"><div class="ttl">⚪ 阶段 C — 拆旧机制、清理宿主</div>
+      <p>逐个 PR 拆掉班车、迁移工具、巡检里的 Raya 事实行、规则文件里"合入≠上线"那一段,最后清理宿主上的旧任务与残留文件。</p></div>
+    <h3>一件我特意查清楚的事</h3>
+    <p>割接窗口里<b>不能</b>顺手把"生成 summary 的那个后台服务"也停掉 —— 直觉上停了更干净,但实际上<b>停它反而危险</b>:那个服务每次只回看很窄的一个时间窗,停的时间点如果卡在窗口上,那段时间的 summary 记录就<b>永久补不回来了</b>。而且它不只管 Raya,它给全舰队的 Lead 排 summary。<b>正确做法是让它照常跑,只把 Raya 这一个"读的人"围起来。</b></p>
+    <div class="comment"><label for="c5">你的意见</label><textarea id="c5" data-key="s5" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 6 备注 -->
+  <div class="card gray" data-section="一条留给你的备注">
+    <h2><span class="badge medium">备注</span>一个我没自作主张改的边界</h2>
+    <p>工单规定"人设文件留在 Raya 仓",本方案照办了。但调查中发现一件值得你知道的事:</p>
+    <p><b>Raya 仓的 main 没有任何服务端保护</b>(我实际查了 GitHub,分支保护返回"未保护",规则集为空),<b>而人设是直接进 Raya 的最高权限系统提示的</b>。也就是说,任何改到那个仓 main 的内容,下次她启动时就会成为她的行为准则。</p>
+    <p>方案里已经用"必须钉住一个经你授权的精确版本,不能跟着 main 走"把这个洞堵上了。但更彻底的做法是把人设也搬进 Flywheel —— 那样它会受 main 保护 + CI 覆盖。<b>我没有这么做,因为那会改掉你定的边界,而且要重做本方案的一半。</b></p>
+    <p>👉 <b>如果你想换这个口径,那是一张独立的后续单,现在不做。</b> 这里只是让你知道有这个选项,以及它的代价。</p>
+    <div class="comment"><label for="c6">你的意见</label><textarea id="c6" data-key="s6" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 7 子单 -->
+  <div class="card" data-section="后续子单">
+    <h2><span class="badge medium">拆单</span>建议拆成 7 张子单</h2>
+    <table>
+      <tr><th style="width:20%">子单</th><th style="width:16%">能不能并行</th><th>一句话</th></tr>
+      <tr><td><b>S1</b> 搬包</td><td>✅ 最先,无依赖</td><td>把那 120 个文件落进 Flywheel,接上 CI</td></tr>
+      <tr><td><b>S2</b> 调用入口</td><td>依赖 S1</td><td>装一个小转接脚本,让 Raya 能调到它。<b>这单的核心风险是要实测她的沙箱允许不允许</b></td></tr>
+      <tr><td><b>S4</b> 人设投影</td><td>✅ 可并行</td><td>让人设能从 Raya 仓自动送到她工作区,并在启动时验证版本对不对</td></tr>
+      <tr><td><b>M0</b> 迁移工具</td><td>✅ 可并行</td><td>包一层受权外壳 + 回执 + 崩溃恢复。<b>合并它 ≠ 执行它</b></td></tr>
+      <tr><td><b>S3</b> Raya 仓改造</td><td>依赖 S2 已部署</td><td>改人设里的调用路径 + 删掉那个包。<b>合并后仍然不生效</b>,生效点在割接窗口</td></tr>
+      <tr><td><b>T1–T3</b> 拆机制</td><td>依赖割接完成</td><td>拆班车、迁移账本、相关工具与测试</td></tr>
+      <tr><td><b>T4–T5</b> 巡检+规则</td><td>依赖 T1–T3</td><td>拆巡检的 Raya 事实行,改规则文件里"合入≠上线"那段</td></tr>
+    </table>
+    <p class="note">另外调查中撞到两件不属于本 Epic、建议单独开单的事:① 打包安装的环境里有个脚本会加载一个没被打包的文件;② 宿主上还躺着一个 9 月 1 日退役的 Raya 专用启动器,仓库里的守卫管不到宿主,它仍是一条可执行的旧入口。</p>
+    <div class="comment"><label for="c7">你的意见</label><textarea id="c7" data-key="s7" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 8 未验证 -->
+  <div class="card gray" data-section="我没验证的东西">
+    <h2><span class="badge medium">诚实交代</span>我没验证的东西</h2>
+    <ol>
+      <li><b>Epic FLY-2679 的正文和你 2026-09-17 20:29Z 的原话我没读到</b> —— Linear 接口这次会话鉴权失败(401)。方案里凡是引用 Epic 范围的地方,都来自本单工单的转述。</li>
+      <li>FLY-2657 是否"今晚"切换 —— 无任何文档支持。</li>
+      <li>Raya 仓上一个代码 PR 是谁按的合 —— 记录里都显示同一个 GitHub 账号,分辨不出。</li>
+      <li>那次不可逆数据迁移要跑多久 —— 没实测。<b>子单必须先量一次,把预估写进那次授权申请</b>。</li>
+      <li>Raya 的沙箱能不能执行新的调用入口 —— <b>这是 S2 的核心风险,必须实测</b>。</li>
+      <li>巡检快照当前真实输出 —— 我没运行它,只按现场数据推断。</li>
+    </ol>
+    <div class="comment"><label for="c8">你的意见</label><textarea id="c8" data-key="s8" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 汇总 -->
+  <div class="card summary" data-section="汇总">
+    <h2><span class="badge medium">汇总</span>把你的意见一次性复制给我</h2>
+    <p class="note">上面每一节的意见都存在你这台设备的浏览器里。点下面的按钮复制,贴回 Discord 给我就行。</p>
+    <div id="summaryChunks"></div>
+    <button class="btn" id="copyAll" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clearAll" type="button">清空本页意见</button>
+    <span class="status" id="copyStatus"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2680';
+  var MARK = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2680-comments:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(PREFIX + k); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(ta) {
+    var card = ta.closest('.card');
+    return card && card.getAttribute('data-section') ? card.getAttribute('data-section') : ta.getAttribute('data-key');
+  }
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return parts;
+  }
+  function chunk(parts) {
+    var chunks = [], cur = MARK;
+    parts.forEach(function (p) {
+      var next = cur + '\n' + p;
+      if (next.length > LIMIT && cur !== MARK) { chunks.push(cur); cur = MARK + '\n' + p; }
+      else cur = next;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  function render() {
+    var box = document.getElementById('summaryChunks');
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var parts = collect();
+    var chunks = chunk(parts);
+    chunks.forEach(function (c, i) {
+      var d = document.createElement('div'); d.className = 'chunk';
+      var h = document.createElement('div'); h.className = 'note'; h.textContent = chunks.length > 1 ? ('第 ' + (i + 1) + ' / ' + chunks.length + ' 块') : (parts.length ? '共 ' + parts.length + ' 条意见' : '还没有意见');
+      var pre = document.createElement('pre'); pre.textContent = c;
+      d.appendChild(h); d.appendChild(pre); box.appendChild(d);
+    });
+  }
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () { lsSet(ta.getAttribute('data-key'), ta.value); render(); });
+  });
+  function setStatus(t) { document.getElementById('copyStatus').textContent = t; }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.getElementById('copyAll').addEventListener('click', function () {
+    var text = chunk(collect()).join('\n\n');
+    var done = function (ok) { setStatus(ok ? '已复制 ' + text.length + ' 字' : '复制失败，请手动选中上方文本'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  });
+  document.getElementById('clearAll').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsDel(ta.getAttribute('data-key')); });
+    render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>
