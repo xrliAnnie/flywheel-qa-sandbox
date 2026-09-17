@@ -124,6 +124,81 @@ describe("archiveThreadAndRecord", () => {
 		);
 	});
 
+	it("FLY-2616: an operation audit clears compensation before a closeout retry", async () => {
+		const operationNow = Date.now();
+		const operation = store.ensureLandOperation({
+			issueId: "FLY-100",
+			projectName: "Flywheel",
+			prNumber: 2616,
+			approvedHead: "a".repeat(40),
+			now: new Date(operationNow - 1_000).toISOString(),
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-worker",
+			now: new Date(operationNow).toISOString(),
+			leaseExpiresAt: new Date(operationNow + 60_000).toISOString(),
+		});
+		expect(claim).toBeDefined();
+
+		let discordArchived = false;
+		const unarchiveFn = vi.fn(async () => {
+			discordArchived = false;
+			return { ok: true as const };
+		});
+		const input = {
+			threadId: "t-1",
+			issueId: "FLY-100",
+			projectName: "Flywheel",
+			operationAudit: {
+				operationId: operation.operation_id,
+				ownerId: claim!.ownerId,
+				generation: claim!.generation,
+				runId: null,
+				sourceExecutionId: null,
+			},
+		};
+		const deps = {
+			authority: "terminal" as const,
+			timing: "immediate" as const,
+			successReceipt: {
+				eventId: "chat-thread-archived-fly2616-operation-t-1",
+				payload: { threadId: "t-1", closeoutKind: "land" },
+			},
+			archiveFn: vi.fn(async () => {
+				discordArchived = true;
+				return OK_ARCHIVE;
+			}),
+			unarchiveFn,
+			probeFn: vi.fn(async () => ({
+				ok: true as const,
+				name: "thread",
+				archived: discordArchived,
+			})),
+			frontierFn: vi.fn(async () => ({
+				ok: true as const,
+				messageId: snowflakeAt(NOW - 5 * 60_000),
+			})),
+			classifyFn: vi.fn(async () => ({ kind: "bot" as const })),
+			nowMs: () => NOW,
+		};
+
+		await expect(
+			archiveThreadAndRecord(store, input, "tok-tadashi", deps),
+		).resolves.toMatchObject({ archived: true, reason: "ok" });
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+
+		await expect(
+			archiveThreadAndRecord(store, input, "tok-tadashi", deps),
+		).resolves.toMatchObject({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(unarchiveFn).not.toHaveBeenCalled();
+		expect(discordArchived).toBe(true);
+	});
+
 	it("on failure: does NOT mark archived, writes chat_thread_archive_failed event", async () => {
 		const archiveFn = vi.fn().mockResolvedValue(FAIL_ARCHIVE);
 		const res = await archiveThreadAndRecord(

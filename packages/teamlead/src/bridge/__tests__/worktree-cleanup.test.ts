@@ -71,7 +71,208 @@ const input = {
 	tmuxErrors: [] as string[],
 };
 
+const operationInput = {
+	issueId: "issue-2616",
+	projectName: "flywheel",
+	tmuxClosed: true,
+	tmuxErrors: [] as string[],
+	operationContext: {
+		operationAudit: {
+			operationId: "land:2616",
+			ownerId: "land-worker",
+			generation: 2,
+			runId: "run-2616",
+			sourceExecutionId: null,
+		},
+		target: {
+			kind: "bound_worktree" as const,
+			path: "/Users/x/Dev/flywheel-FLY-2602",
+			branch: "flywheel-FLY-2602",
+			generation: "generation-1",
+			projectRoot: ROOT,
+			parentIdentity: { path: "/Users/x/Dev", dev: 7, ino: 11 },
+			sourceExecutionIds: ["implement-deleted"],
+			sourceRunId: "run-2616",
+			sourceReceipt: "state_session_binding:implement-deleted:generation-1",
+		},
+	},
+};
+
+function operationDepsForLeaf(
+	leaf: "missing" | "eacces" | "symlink" | "directory",
+) {
+	return deps({
+		store: {
+			getSession: () => undefined,
+			getWorktreeBinding: () => undefined,
+			insertEvent: vi.fn(),
+			getLandOperation: () => ({ closeout_reservation_epoch: 1 }),
+			recordLandOperationStep: vi.fn(() => ({
+				ok: true as const,
+				idempotentReplay: false,
+			})),
+		} as never,
+		resolveProjectRoot: () => ROOT,
+		...({
+			realpath: async (path: string) => path,
+			lstat: async (path: string) => {
+				if (path === "/Users/x/Dev") {
+					return {
+						dev: 7,
+						ino: 11,
+						isDirectory: () => true,
+						isSymbolicLink: () => false,
+					};
+				}
+				if (path === ROOT) {
+					return {
+						dev: 7,
+						ino: 12,
+						isDirectory: () => true,
+						isSymbolicLink: () => false,
+					};
+				}
+				if (leaf === "missing") {
+					throw Object.assign(new Error("missing"), { code: "ENOENT" });
+				}
+				if (leaf === "eacces") {
+					throw Object.assign(new Error("denied"), { code: "EACCES" });
+				}
+				return {
+					dev: 7,
+					ino: 13,
+					isDirectory: () => leaf === "directory",
+					isSymbolicLink: () => leaf === "symlink",
+				};
+			},
+		} as never),
+	});
+}
+
 describe("FLY-603 Layer A worktree cleanup", () => {
+	it("FLY-2616: a verified bound target with an absent leaf is already cleaned", async () => {
+		const recordLandOperationStep = vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		}));
+		const { d, remove } = deps({
+			store: {
+				getSession: () => undefined,
+				getWorktreeBinding: () => undefined,
+				insertEvent: vi.fn(),
+				getLandOperation: () => ({ closeout_reservation_epoch: 1 }),
+				recordLandOperationStep,
+			} as never,
+			resolveProjectRoot: () => ROOT,
+			...({
+				realpath: async (path: string) => path,
+				lstat: async (path: string) => {
+					if (path === "/Users/x/Dev") {
+						return {
+							dev: 7,
+							ino: 11,
+							isDirectory: () => true,
+							isSymbolicLink: () => false,
+						};
+					}
+					if (path === ROOT) {
+						return {
+							dev: 7,
+							ino: 12,
+							isDirectory: () => true,
+							isSymbolicLink: () => false,
+						};
+					}
+					throw Object.assign(new Error("missing"), { code: "ENOENT" });
+				},
+			} as never),
+		});
+
+		const attestation = await makeWorktreeCleanup(d)(operationInput as never);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "absent",
+			removed: false,
+			bindingVerified: false,
+			absentEvidence: {
+				path: "/Users/x/Dev/flywheel-FLY-2602",
+				bindingGeneration: "generation-1",
+				operationId: "land:2616",
+			},
+		});
+		expect(remove).not.toHaveBeenCalled();
+		expect(recordLandOperationStep).toHaveBeenCalled();
+	});
+
+	it("FLY-2616: permission errors are not absence proof", async () => {
+		const { d, remove } = operationDepsForLeaf("eacces");
+		const attestation = await makeWorktreeCleanup(d)(operationInput as never);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "leaf_unavailable",
+		});
+		expect(attestation.absentEvidence).toBeUndefined();
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2616: an unavailable frozen parent blocks absence proof", async () => {
+		const { d, remove } = operationDepsForLeaf("missing");
+		d.realpath = vi.fn(async (path: string) => {
+			if (path === "/Users/x/Dev") {
+				throw Object.assign(new Error("parent missing"), { code: "ENOENT" });
+			}
+			return path;
+		}) as never;
+
+		const attestation = await makeWorktreeCleanup(d)(operationInput as never);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "parent_unavailable",
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2616: a symlink at the frozen leaf is not absence proof", async () => {
+		const { d, remove } = operationDepsForLeaf("symlink");
+		const attestation = await makeWorktreeCleanup(d)(operationInput as never);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "leaf_identity_mismatch",
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2616: an existing but unregistered leaf remains blocked", async () => {
+		const { d, remove } = operationDepsForLeaf("directory");
+		d.worktreeManager.getRegisteredWorktree = vi.fn(async () => null);
+
+		const attestation = await makeWorktreeCleanup(d)(operationInput as never);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "not_registered",
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2616: a recreated leaf with the wrong generation remains blocked", async () => {
+		const { d, remove } = operationDepsForLeaf("directory");
+		d.worktreeManager.readWorktreeGeneration = vi.fn(
+			async () => "generation-recreated",
+		);
+
+		const attestation = await makeWorktreeCleanup(d)(operationInput as never);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "binding_mismatch",
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
 	it("FLY-1759 carries reap evidence and emits an incomplete audit event", async () => {
 		const { d, events, remove } = deps();
 		const reaps = [
@@ -260,6 +461,10 @@ describe("FLY-603 Layer A worktree cleanup", () => {
 
 	it("not registered at the exact path → skip (HIGH-2)", async () => {
 		const { d, remove } = deps({
+			lstat: vi.fn(async () => ({
+				isDirectory: () => true,
+				isSymbolicLink: () => false,
+			})) as never,
 			worktreeManager: {
 				expectedWorktree: (_r: string, _p: string, key: string) => ({
 					path: `/Users/x/Dev/flywheel-${key}`,
@@ -271,7 +476,115 @@ describe("FLY-603 Layer A worktree cleanup", () => {
 				removeCleanWorktreeByPath: vi.fn(),
 			} as never,
 		});
-		await makeWorktreeCleanup(d)(input);
+		const attestation = await makeWorktreeCleanup(d)(input);
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "not_registered",
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2616: an unregistered legacy path is absent only after ENOENT proof", async () => {
+		const { d, events, remove } = deps({
+			lstat: vi.fn(async () => {
+				throw Object.assign(new Error("missing"), { code: "ENOENT" });
+			}) as never,
+			worktreeManager: {
+				expectedWorktree: (_r: string, _p: string, key: string) => ({
+					path: `/Users/x/Dev/flywheel-${key}`,
+					branch: `flywheel-${key}`,
+				}),
+				parseWorktreeKeyFromPath: (_r: string, _p: string, p: string) =>
+					p.split("/").pop()?.slice("flywheel-".length) ?? null,
+				getRegisteredWorktree: async () => null,
+				removeCleanWorktreeByPath: vi.fn(),
+			} as never,
+		});
+
+		const attestation = await makeWorktreeCleanup(d)(input);
+
+		expect(attestation).toMatchObject({
+			removed: false,
+			cleanupState: "absent",
+			bindingVerified: false,
+		});
+		expect(events).toContainEqual({
+			type: "worktree_cleanup_absent",
+			payload: expect.objectContaining({
+				worktreePath: "/Users/x/Dev/flywheel-FLY-603",
+			}),
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2616: ENOENT at the expected legacy path is absence proof", async () => {
+		const { d, remove } = deps({
+			store: {
+				getSession: () => ({ session_role: "main" }) as never,
+				insertEvent: () => true,
+				getWorktreeBinding: () => undefined,
+			} as never,
+			lstat: vi.fn(async () => {
+				throw Object.assign(new Error("missing"), { code: "ENOENT" });
+			}) as never,
+			worktreeManager: {
+				expectedWorktree: (_r: string, _p: string, key: string) => ({
+					path: `/Users/x/Dev/flywheel-${key}`,
+					branch: `flywheel-${key}`,
+				}),
+				parseWorktreeKeyFromPath: (_r: string, _p: string, p: string) =>
+					p.split("/").pop()?.slice("flywheel-".length) ?? null,
+				getRegisteredWorktree: async () => null,
+				removeCleanWorktreeByPath: vi.fn(),
+			} as never,
+		});
+
+		const attestation = await makeWorktreeCleanup(d)(input);
+
+		expect(attestation).toMatchObject({
+			removed: false,
+			cleanupState: "absent",
+			bindingVerified: false,
+		});
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["symlink", true, false],
+		["non-directory", false, false],
+	])(
+		"FLY-2616: an unregistered legacy %s remains blocked",
+		async (_label, isSymbolicLink, isDirectory) => {
+			const { d, remove } = deps();
+			d.worktreeManager.getRegisteredWorktree = vi.fn(async () => null);
+			d.lstat = vi.fn(async () => ({
+				isDirectory: () => isDirectory,
+				isSymbolicLink: () => isSymbolicLink,
+			})) as never;
+
+			const attestation = await makeWorktreeCleanup(d)(input);
+
+			expect(attestation).toMatchObject({
+				cleanupState: "blocked",
+				skippedReason: "not_registered",
+			});
+			expect(remove).not.toHaveBeenCalled();
+		},
+	);
+
+	it("FLY-2616: an unregistered legacy permission error remains blocked", async () => {
+		const { d, remove } = deps();
+		d.worktreeManager.getRegisteredWorktree = vi.fn(async () => null);
+		d.lstat = vi.fn(async () => {
+			throw Object.assign(new Error("denied"), { code: "EACCES" });
+		}) as never;
+
+		const attestation = await makeWorktreeCleanup(d)(input);
+
+		expect(attestation).toMatchObject({
+			cleanupState: "blocked",
+			skippedReason: "leaf_unavailable",
+		});
 		expect(remove).not.toHaveBeenCalled();
 	});
 

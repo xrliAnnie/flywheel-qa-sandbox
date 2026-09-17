@@ -134,6 +134,29 @@ describe("land retry policy", () => {
 		});
 	});
 
+	it("retries a lost owner lease promptly without spending retry budget", () => {
+		expect(classifyLandRetryReason("stale_land_generation")).toBe("lease_lost");
+		expect(classifyLandRetryReason("land_execution_error:lease_lost")).toBe(
+			"lease_lost",
+		);
+		expect(
+			nextLandRetry({
+				classification: "lease_lost",
+				reason: "lease_lost",
+				now: "2026-09-16T03:49:51.000Z",
+				epochKey: "4:cleanup_requested",
+				priorRetryCount: 8,
+				priorRetryEpochKey: "4:cleanup_requested",
+			}),
+		).toEqual({
+			state: "partial",
+			retryCount: 8,
+			retryEpochKey: "4:cleanup_requested",
+			nextAttemptAt: "2026-09-16T03:49:53.000Z",
+			lastError: "lease_lost",
+		});
+	});
+
 	it("backs retryable failures off through a bounded four-hour recovery window", () => {
 		const epochKey = "3:cleanup_requested";
 		const start = Date.parse("2026-08-14T20:00:00.000Z");

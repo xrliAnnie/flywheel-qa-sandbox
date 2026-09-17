@@ -557,4 +557,110 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 		expect(db.listRunnerPhaseWakes("exec-a")).toHaveLength(1);
 		expect(db.getRunnerShutdown("exec-a")?.request_id).toBe("shutdown-a");
 	});
+
+	it("FLY-2616: trusted gone evidence disposes an exact dead parked identity", () => {
+		const nowMs = Date.parse("2026-09-16T05:00:00.000Z");
+		db.registerSession(
+			"exec-a",
+			"runner-flywheel:@9",
+			"proj",
+			"FLY-2616",
+			"lead",
+		);
+		db.updateSessionStatus("exec-a", "completed");
+		db.upsertDeclaredState("exec-a", "parked", "phase complete", nowMs, null);
+		const identity = db.getSessionCloseoutIdentity("exec-a");
+
+		expect(
+			db.finalizeProvenGoneSession("exec-a", {
+				reservationId: "reservation-1",
+				evidenceId: "evidence-1",
+				expectedIdentityRevision: identity.revision,
+				observedAt: "2026-09-16T05:00:00.000Z",
+				expiresAt: "2026-09-16T05:00:30.000Z",
+				now: "2026-09-16T05:00:01.000Z",
+			}),
+		).toEqual({
+			finalized: true,
+			idempotentReplay: false,
+			result: {
+				retiredQuestionCount: 0,
+				retiredAskCount: 0,
+				deletedSessionCount: 1,
+			},
+		});
+		expect(db.getSession("exec-a")).toBeUndefined();
+		expect(db.getEffectiveDeclaredState("exec-a", nowMs + 2_000)).toBeNull();
+	});
+
+	it("FLY-2616: trusted gone finalization settles orphan ledgers when the session row is already absent", () => {
+		const question = db.insertQuestion("exec-missing", "lead", "cleanup?", {
+			checkpoint: "approve_to_ship",
+		});
+		const identity = db.getSessionCloseoutIdentity("exec-missing");
+		const input = {
+			reservationId: "reservation-missing",
+			evidenceId: "evidence-missing",
+			expectedIdentityRevision: identity.revision,
+			observedAt: "2026-09-16T05:00:00.000Z",
+			expiresAt: "2026-09-16T05:00:30.000Z",
+			now: "2026-09-16T05:00:01.000Z",
+		};
+
+		const first = db.finalizeProvenGoneSession("exec-missing", input);
+		expect(first).toMatchObject({
+			finalized: true,
+			idempotentReplay: false,
+			result: { deletedSessionCount: 0, retiredQuestionCount: 1 },
+		});
+		expect(db.isQuestionPending(question)).toBe(false);
+		expect(db.finalizeProvenGoneSession("exec-missing", input)).toEqual({
+			...first,
+			idempotentReplay: true,
+		});
+	});
+
+	it("FLY-2616: trusted gone evidence is fenced against identity drift and founder wakes", () => {
+		db.registerSession(
+			"exec-a",
+			"runner-flywheel:@9",
+			"proj",
+			"FLY-2616",
+			"lead",
+		);
+		db.updateSessionStatus("exec-a", "completed");
+		const identity = db.getSessionCloseoutIdentity("exec-a");
+		db.upsertDeclaredState("exec-a", "parked", "new declaration", 2, null);
+		const base = {
+			reservationId: "reservation-race",
+			evidenceId: "evidence-race",
+			expectedIdentityRevision: identity.revision,
+			observedAt: "2026-09-16T05:00:00.000Z",
+			expiresAt: "2026-09-16T05:00:30.000Z",
+			now: "2026-09-16T05:00:01.000Z",
+		};
+		expect(db.finalizeProvenGoneSession("exec-a", base)).toEqual({
+			finalized: false,
+			reason: "closeout_identity_changed",
+		});
+
+		const current = db.getSessionCloseoutIdentity("exec-a");
+		db.enqueueRunnerPhaseWake(
+			"exec-a",
+			{
+				id: "founder-wake",
+				to: "exec-a",
+				content: "resume",
+				metadata: { origin: "founder" },
+			},
+			3,
+		);
+		expect(
+			db.finalizeProvenGoneSession("exec-a", {
+				...base,
+				reservationId: "reservation-wake",
+				expectedIdentityRevision: current.revision,
+			}),
+		).toEqual({ finalized: false, reason: "founder_wake_pending" });
+	});
 });

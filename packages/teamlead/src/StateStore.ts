@@ -18721,6 +18721,39 @@ export class StateStore {
 		return undefined;
 	}
 
+	/** Resolve an issue thread without assuming which configured Lead channel owns it. */
+	getChatThreadsByIssue(issueId: string): Array<{
+		thread_id: string;
+		channel_id: string;
+		lead_id: string | null;
+		archived_at: string | null;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT thread_id, channel_id, lead_id, archived_at
+			   FROM chat_threads
+			  WHERE issue_id = ? AND discord_missing_at IS NULL
+			  ORDER BY channel_id, thread_id`,
+		);
+		stmt.bind([issueId]);
+		const rows: Array<{
+			thread_id: string;
+			channel_id: string;
+			lead_id: string | null;
+			archived_at: string | null;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+				lead_id: (row.lead_id as string) ?? null,
+				archived_at: (row.archived_at as string) ?? null,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
 	/**
 	 * FLY-91 Round 2: Reverse lookup by thread_id for conflict detection.
 	 *
@@ -27050,6 +27083,15 @@ export class StateStore {
 				result = { ok: false, reason: "claim_missing" };
 				return;
 			}
+			if (
+				this.getActiveLandCloseoutReservation(
+					claim.project,
+					claim.rootUuid,
+				)
+			) {
+				result = { ok: false, reason: "land_closeout_reserved" };
+				return;
+			}
 			if (!this.getWorktreeBinding(executionId)) {
 				result = { ok: false, reason: "worktree_binding_missing" };
 				return;
@@ -28593,6 +28635,11 @@ export class StateStore {
 				state TEXT NOT NULL DEFAULT 'intent'
 				  CHECK (state IN ('intent','running','partial','completed','held')),
 				owner_id TEXT,
+				owner_instance_id TEXT,
+				owner_pid INTEGER,
+				owner_process_start TEXT,
+				owner_host_boot_id TEXT,
+				owner_heartbeat_at TEXT,
 				lease_expires_at TEXT,
 				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
 				ship_attempt INTEGER NOT NULL DEFAULT 0 CHECK (ship_attempt >= 0),
@@ -28613,6 +28660,14 @@ export class StateStore {
 				  CHECK (linear_done_retry_count >= 0),
 				linear_done_next_attempt_at TEXT,
 				linear_done_last_attempt_at TEXT,
+				closeout_targets_json TEXT,
+				closeout_targets_digest TEXT,
+				closeout_targets_version INTEGER,
+				closeout_attribution_digest TEXT,
+				closeout_targets_observed_at TEXT,
+				closeout_reservation_epoch INTEGER,
+				closeout_inventory_digest TEXT,
+				closeout_reserved_at TEXT,
 				last_error TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
@@ -28629,6 +28684,11 @@ export class StateStore {
 			"resume_generation",
 			"INTEGER NOT NULL DEFAULT 0 CHECK (resume_generation >= 0)",
 		);
+		this.addColumnIfMissing("land_operation", "owner_instance_id", "TEXT");
+		this.addColumnIfMissing("land_operation", "owner_pid", "INTEGER");
+		this.addColumnIfMissing("land_operation", "owner_process_start", "TEXT");
+		this.addColumnIfMissing("land_operation", "owner_host_boot_id", "TEXT");
+		this.addColumnIfMissing("land_operation", "owner_heartbeat_at", "TEXT");
 		this.addColumnIfMissing(
 			"land_operation",
 			"retry_count",
@@ -28674,6 +28734,38 @@ export class StateStore {
 			"linear_done_last_attempt_at",
 			"TEXT",
 		);
+		this.addColumnIfMissing("land_operation", "closeout_targets_json", "TEXT");
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_targets_digest",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_targets_version",
+			"INTEGER",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_attribution_digest",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_targets_observed_at",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_reservation_epoch",
+			"INTEGER",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_inventory_digest",
+			"TEXT",
+		);
+		this.addColumnIfMissing("land_operation", "closeout_reserved_at", "TEXT");
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_operation_work ON land_operation(state, lease_expires_at, updated_at)",
 		);
@@ -28698,6 +28790,41 @@ export class StateStore {
 				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS closeout_execution_evidence (
+				evidence_id TEXT PRIMARY KEY,
+				operation_id TEXT NOT NULL,
+				operation_generation INTEGER NOT NULL CHECK (operation_generation >= 0),
+				probe_sequence INTEGER NOT NULL CHECK (probe_sequence > 0),
+				project_name TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				run_id TEXT,
+				execution_id TEXT NOT NULL,
+				activation_id TEXT,
+				lifecycle_revision INTEGER,
+				attribution_digest TEXT NOT NULL,
+				comm_identity_revision TEXT,
+				observed_started_at TEXT NOT NULL,
+				observed_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				verdict TEXT NOT NULL CHECK (verdict IN ('gone','alive','unknown')),
+				evidence_digest TEXT NOT NULL,
+				evidence_json TEXT NOT NULL,
+				UNIQUE (operation_id, operation_generation, execution_id, probe_sequence),
+				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		for (const trigger of ["update", "delete"]) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS closeout_execution_evidence_no_${trigger}
+				BEFORE ${trigger.toUpperCase()} ON closeout_execution_evidence
+				BEGIN SELECT RAISE(ABORT, 'closeout_execution_evidence is immutable'); END
+			`);
+		}
+		this.db.run(
+			`CREATE INDEX IF NOT EXISTS idx_closeout_execution_evidence_operation
+			   ON closeout_execution_evidence(operation_id, operation_generation, execution_id, probe_sequence)`,
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS land_cool_attempt (
 				operation_id TEXT NOT NULL,
@@ -28754,12 +28881,24 @@ export class StateStore {
 				repo_identity TEXT NOT NULL,
 				owner_operation_id TEXT NOT NULL,
 				owner_id TEXT NOT NULL,
+				owner_operation_generation INTEGER,
+				owner_instance_id TEXT,
 				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
 				lease_expires_at TEXT NOT NULL,
 				PRIMARY KEY (project_name, repo_identity),
 				FOREIGN KEY (owner_operation_id) REFERENCES land_operation(operation_id)
 			)
 		`);
+		this.addColumnIfMissing(
+			"land_repo_admission",
+			"owner_operation_generation",
+			"INTEGER",
+		);
+		this.addColumnIfMissing(
+			"land_repo_admission",
+			"owner_instance_id",
+			"TEXT",
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS land_recovery_episode (
 				episode_id TEXT PRIMARY KEY,
@@ -28784,10 +28923,9 @@ export class StateStore {
 			   ON land_recovery_episode(run_id, root_approval_ref, kind, scope_key)
 			   WHERE state = 'open'`,
 		);
-		// FLY-1861: legacy land rows have no workflow run id, so they cannot use
-		// workflow_alert_outbox's NOT NULL run identity. This parallel outbox is
-		// committed atomically with the held transition and uses the same fenced
-		// lease/attempt delivery contract.
+		// FLY-1861/FLY-2616: this operation-keyed outbox also covers the crash
+		// window before a workflow dispatcher can mirror held into its run. It is
+		// committed atomically with the held transition and works for null-run rows.
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS land_alert_outbox (
 				operation_id TEXT NOT NULL,
@@ -28808,6 +28946,23 @@ export class StateStore {
 		`);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_alert_delivery ON land_alert_outbox(state, lease_expires_at, created_at)",
+		);
+		// A transport can be unavailable for the whole three-attempt process
+		// window. `failed` is a durable diagnostic, not a delivered terminal:
+		// the next Bridge incarnation re-arms it with a fresh fenced generation.
+		this.db.run(
+			`UPDATE land_alert_outbox
+			    SET state = 'pending', attempt = 0, lease_owner = NULL,
+			        lease_expires_at = NULL, generation = generation + 1,
+			        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			  WHERE state = 'failed'
+			    AND EXISTS (
+			      SELECT 1 FROM land_operation operation
+			       WHERE operation.operation_id = land_alert_outbox.operation_id
+			         AND operation.state = 'held'
+			         AND operation.superseded_at IS NULL
+			         AND operation.resume_generation = land_alert_outbox.resume_generation
+			    )`,
 		);
 		// FLY-1385: alert delivery is a durable outbox, not a best-effort side
 		// effect of the state transition. A lease generation fences late send
@@ -52409,6 +52564,8 @@ export class StateStore {
 		epochKey?: string;
 		operationId?: string;
 		resumeGeneration?: number;
+		recoveryEpisode?: string;
+		missing?: string[];
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
 		const partial = input.disposition === "partial";
@@ -52432,7 +52589,7 @@ export class StateStore {
 					: `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
 				: closeout
 					? `Run ${input.runId} node ${input.nodeId} is held and automatic retries have stopped after execution ${input.executionId}: ${closeoutExplanation} (${input.reason}).${input.operationId ? ` Prove the execution-attributed host processes and Runner window quiescent, repair teardown, then POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`
-					: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}.${input.operationId ? ` Recover after inspecting the PR with POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`,
+					: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}.${input.missing?.length ? ` Missing closeout evidence: ${input.missing.join(", ")}.` : ""}${input.operationId ? ` Recover after inspecting the PR with POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`,
 			metadata: {
 				workflowEngine: {
 					runId: input.runId,
@@ -52449,6 +52606,10 @@ export class StateStore {
 								resumeGeneration: input.resumeGeneration,
 							}
 						: {}),
+					...(input.recoveryEpisode
+						? { recoveryEpisode: input.recoveryEpisode }
+						: {}),
+					...(input.missing?.length ? { missing: input.missing } : {}),
 					leadResolution: input.identity.leadResolution,
 				},
 			},
@@ -74665,7 +74826,28 @@ export class StateStore {
 		prNumber: number;
 		approvedHead: string;
 		now: string;
+		verifiedTargets?: LandVerifiedTargets;
 	}): LandOperationRow {
+		let verifiedTargets: LandVerifiedTargets | undefined;
+		if (input.verifiedTargets) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(input.verifiedTargets.json);
+			} catch {
+				throw new Error("invalid_land_target_snapshot");
+			}
+			if (
+				input.verifiedTargets.version !== 1 ||
+				!/^[0-9a-f]{64}$/.test(input.verifiedTargets.digest) ||
+				!/^[0-9a-f]{64}$/.test(input.verifiedTargets.attributionDigest) ||
+				!StateStore.workflowFiniteTimestamp(input.verifiedTargets.observedAt) ||
+				canonicalJsonString(parsed) !== input.verifiedTargets.json ||
+				canonicalSubmissionDigest(parsed) !== input.verifiedTargets.digest
+			) {
+				throw new Error("invalid_land_target_snapshot");
+			}
+			verifiedTargets = input.verifiedTargets;
+		}
 		if (
 			!input.issueId ||
 			!input.projectName ||
@@ -74688,8 +74870,11 @@ export class StateStore {
 			this.db.run(
 				`INSERT OR IGNORE INTO land_operation
 				   (operation_id, run_id, issue_id, project_name, pr_number,
-				    approved_head, state, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+				    approved_head, state, closeout_targets_json,
+				    closeout_targets_digest, closeout_targets_version,
+				    closeout_attribution_digest, closeout_targets_observed_at,
+				    created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					operationId,
 					input.runId ?? null,
@@ -74697,6 +74882,11 @@ export class StateStore {
 					input.projectName,
 					input.prNumber,
 					approvedHead,
+					verifiedTargets?.json ?? null,
+					verifiedTargets?.digest ?? null,
+					verifiedTargets?.version ?? null,
+					verifiedTargets?.attributionDigest ?? null,
+					verifiedTargets?.observedAt ?? null,
 					input.now,
 					input.now,
 				],
@@ -74717,6 +74907,41 @@ export class StateStore {
 				if (this.db.getRowsModified() === 1) {
 					row.run_id = input.runId;
 					row.updated_at = input.now;
+				}
+			}
+			if (verifiedTargets) {
+				if (row.closeout_targets_version == null) {
+					this.db.run(
+						`UPDATE land_operation
+						    SET closeout_targets_json = ?, closeout_targets_digest = ?,
+						        closeout_targets_version = ?, closeout_attribution_digest = ?,
+						        closeout_targets_observed_at = ?, updated_at = ?
+						  WHERE operation_id = ? AND closeout_targets_version IS NULL
+						    AND superseded_at IS NULL`,
+						[
+							verifiedTargets.json,
+							verifiedTargets.digest,
+							verifiedTargets.version,
+							verifiedTargets.attributionDigest,
+							verifiedTargets.observedAt,
+							input.now,
+							operationId,
+						],
+					);
+					row = this.workflowSelectAll(
+						"SELECT * FROM land_operation WHERE operation_id = ?",
+						[operationId],
+					)[0];
+				}
+				if (!row) throw new Error("land_operation_not_created");
+				if (
+					Number(row.closeout_targets_version) !== verifiedTargets.version ||
+					row.closeout_targets_digest !== verifiedTargets.digest ||
+					row.closeout_targets_json !== verifiedTargets.json ||
+					row.closeout_attribution_digest !==
+						verifiedTargets.attributionDigest
+				) {
+					throw new Error("land_target_snapshot_conflict");
 				}
 			}
 			this.mintWorkflowStateDeliveryAttemptTx({
@@ -76177,7 +76402,9 @@ export class StateStore {
 					`UPDATE land_operation
 					    SET superseded_at = ?, superseded_by_operation_id = ?,
 					        generation = generation + 1, owner_id = NULL,
-					        lease_expires_at = NULL, current_step = 'superseded', updated_at = ?
+					        lease_expires_at = NULL, closeout_reservation_epoch = NULL,
+					        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
+					        current_step = 'superseded', updated_at = ?
 					  WHERE operation_id = ? AND superseded_at IS NULL
 					    AND state = 'running' AND owner_id = ? AND generation = ?`,
 					[
@@ -76245,20 +76472,56 @@ export class StateStore {
 		)[0] as unknown as LandOperationRow | undefined;
 	}
 
+	getActiveLandCloseoutReservation(
+		projectName: string,
+		issueId: string,
+		now = new Date().toISOString(),
+	):
+		| {
+				operationId: string;
+				generation: number;
+				epoch: number;
+				expiresAt: string;
+		  }
+		| undefined {
+		if (!StateStore.workflowFiniteTimestamp(now)) return undefined;
+		const row = this.workflowSelectAll(
+			`SELECT operation_id, generation, closeout_reservation_epoch,
+			        lease_expires_at
+			   FROM land_operation
+			  WHERE project_name = ? AND issue_id = ? AND superseded_at IS NULL
+			    AND state = 'running' AND owner_id IS NOT NULL
+			    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+			    AND closeout_reservation_epoch IS NOT NULL
+			    AND closeout_inventory_digest IS NOT NULL
+			    AND closeout_reserved_at IS NOT NULL
+			  ORDER BY created_at DESC LIMIT 1`,
+			[projectName, issueId, now],
+		)[0];
+		return row
+			? {
+					operationId: String(row.operation_id),
+					generation: Number(row.generation),
+					epoch: Number(row.closeout_reservation_epoch),
+					expiresAt: String(row.lease_expires_at),
+				}
+			: undefined;
+	}
+
 	recordLandLinearDoneDisposition(input: {
 		operationId: string;
 		ownerId: string;
 		generation: number;
 		disposition: "done" | "canceled_refused" | "deferred";
 		reason: string;
-		executionId: string;
+		/** Real source execution when one exists; operation identity is separate. */
+		executionId?: string | null;
 		now: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		if (
 			!input.reason ||
 			input.reason.length > 500 ||
-			!input.executionId ||
 			!StateStore.workflowFiniteTimestamp(input.now)
 		) {
 			return { ok: false, reason: "invalid_land_linear_done_disposition" };
@@ -76334,9 +76597,15 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;
-			if (firstDeferred && input.alertIdentity && operation.run_id) {
+			if (
+				firstDeferred &&
+				input.alertIdentity &&
+				operation.run_id
+			) {
 				const escalationUid = `linear_done_deferred:${input.operationId}`;
 				const run = this.getWorkflowRun(String(operation.run_id));
+				const alertExecutionId =
+					input.executionId ?? `land-operation:${input.operationId}`;
 				this.enqueueWorkflowEngineAlertTx({
 					escalationUid,
 					runId: String(operation.run_id),
@@ -76355,7 +76624,7 @@ export class StateStore {
 								runId: String(operation.run_id),
 								issueId: String(operation.issue_id),
 								nodeId: run?.current_node_id ?? "land",
-								executionId: input.executionId,
+								executionId: alertExecutionId,
 								disposition: "linear_done_deferred",
 								operationId: input.operationId,
 								reason: input.reason,
@@ -76598,11 +76867,30 @@ export class StateStore {
 	claimLandOperation(input: {
 		operationId: string;
 		ownerId: string;
+		ownerInstanceId?: string;
+		ownerPid?: number;
+		ownerProcessStart?: string;
+		ownerHostBootId?: string;
 		now: string;
 		leaseExpiresAt: string;
 	}): LandOperationClaim | undefined {
+		const ownerIdentity = [
+			input.ownerInstanceId,
+			input.ownerPid,
+			input.ownerProcessStart,
+			input.ownerHostBootId,
+		];
+		const modernIdentity = ownerIdentity.every((value) => value !== undefined);
+		const partialIdentity = ownerIdentity.some((value) => value !== undefined);
 		if (
 			!input.ownerId ||
+			partialIdentity !== modernIdentity ||
+			(modernIdentity &&
+				(!input.ownerInstanceId ||
+					!Number.isSafeInteger(input.ownerPid) ||
+					(input.ownerPid ?? 0) <= 0 ||
+					!input.ownerProcessStart ||
+					!input.ownerHostBootId)) ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
 			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
 			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
@@ -76634,8 +76922,12 @@ export class StateStore {
 			const generation = Number(row.generation) + 1;
 			this.db.run(
 				`UPDATE land_operation
-				    SET state = 'running', owner_id = ?, lease_expires_at = ?,
-				        generation = ?, updated_at = ?
+				    SET state = 'running', owner_id = ?, owner_instance_id = ?,
+				        owner_pid = ?, owner_process_start = ?, owner_host_boot_id = ?,
+				        owner_heartbeat_at = ?, lease_expires_at = ?, generation = ?,
+				        closeout_reservation_epoch = NULL,
+				        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
+				        updated_at = ?
 				  WHERE operation_id = ? AND generation = ?
 				    AND superseded_at IS NULL
 				    AND (
@@ -76657,6 +76949,11 @@ export class StateStore {
 				        )`,
 				[
 					input.ownerId,
+					input.ownerInstanceId ?? null,
+					input.ownerPid ?? null,
+					input.ownerProcessStart ?? null,
+					input.ownerHostBootId ?? null,
+					modernIdentity ? input.now : null,
 					input.leaseExpiresAt,
 					generation,
 					input.now,
@@ -76671,6 +76968,9 @@ export class StateStore {
 				operationId: input.operationId,
 				ownerId: input.ownerId,
 				generation,
+				...(input.ownerInstanceId
+					? { ownerInstanceId: input.ownerInstanceId }
+					: {}),
 			};
 		});
 		if (claim) this.save();
@@ -76702,6 +77002,7 @@ export class StateStore {
 			      )
 				    )
 				    AND state = 'running' AND owner_id = ? AND generation = ?
+				    AND owner_instance_id IS ?
 				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
 				[
 					operation.operation_id,
@@ -76712,10 +77013,217 @@ export class StateStore {
 					operation.approved_head,
 					input.claim.ownerId,
 					input.claim.generation,
+					input.claim.ownerInstanceId ?? null,
 					input.now,
 				],
 			)[0],
 		);
+	}
+
+	listActiveLandOwnerLeases(): LandOwnerLease[] {
+		return this.workflowSelectAll(
+			`SELECT operation_id, project_name, owner_id, owner_instance_id,
+			        owner_pid, owner_process_start, owner_host_boot_id,
+			        owner_heartbeat_at, lease_expires_at, generation
+			   FROM land_operation
+			  WHERE state = 'running' AND superseded_at IS NULL
+			    AND owner_id IS NOT NULL AND lease_expires_at IS NOT NULL
+			  ORDER BY project_name, operation_id`,
+			[],
+		).map((row) => ({
+			operationId: String(row.operation_id),
+			projectName: String(row.project_name),
+			ownerId: String(row.owner_id),
+			ownerInstanceId: (row.owner_instance_id as string | null) ?? null,
+			ownerPid:
+				row.owner_pid == null || !Number.isSafeInteger(Number(row.owner_pid))
+					? null
+					: Number(row.owner_pid),
+			ownerProcessStart: (row.owner_process_start as string | null) ?? null,
+			ownerHostBootId: (row.owner_host_boot_id as string | null) ?? null,
+			ownerHeartbeatAt: (row.owner_heartbeat_at as string | null) ?? null,
+			leaseExpiresAt: String(row.lease_expires_at),
+			generation: Number(row.generation),
+		}));
+	}
+
+	renewLandOperationOwner(input: {
+		claim: LandOperationClaim;
+		identity: LandOwnerIdentity;
+		now: string;
+		leaseExpiresAt: string;
+	}): boolean {
+		if (
+			!input.claim.ownerInstanceId ||
+			input.claim.ownerInstanceId !== input.identity.ownerInstanceId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			return false;
+		}
+		let renewed = false;
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT * FROM land_operation
+				  WHERE operation_id = ? AND state = 'running'
+				    AND superseded_at IS NULL AND owner_id = ? AND generation = ?
+				    AND owner_instance_id = ? AND owner_pid = ?
+				    AND owner_process_start = ? AND owner_host_boot_id = ?
+				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
+				[
+					input.claim.operationId,
+					input.claim.ownerId,
+					input.claim.generation,
+					input.identity.ownerInstanceId,
+					input.identity.ownerPid,
+					input.identity.ownerProcessStart,
+					input.identity.ownerHostBootId,
+					input.now,
+				],
+			)[0];
+			if (!operation) return;
+			this.db.run(
+				`UPDATE land_operation
+				    SET owner_heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
+				  WHERE operation_id = ? AND state = 'running' AND owner_id = ?
+				    AND generation = ? AND owner_instance_id = ?
+				    AND lease_expires_at > ?`,
+				[
+					input.now,
+					input.leaseExpiresAt,
+					input.now,
+					input.claim.operationId,
+					input.claim.ownerId,
+					input.claim.generation,
+					input.identity.ownerInstanceId,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			renewed = true;
+		});
+		if (renewed) this.save();
+		return renewed;
+	}
+
+	reclaimLandOperationOwner(input: {
+		observed: LandOwnerLease;
+		reason:
+			| "process_absent"
+			| "process_identity_mismatch"
+			| "legacy_process_absent"
+			| "deadline_expired";
+		now: string;
+		nextAttemptAt: string;
+	}): { ok: true; generation: number } | { ok: false; reason: string } {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.nextAttemptAt) ||
+			Date.parse(input.nextAttemptAt) > Date.parse(input.now) + 2_000
+		) {
+			return { ok: false, reason: "invalid_land_owner_reclaim" };
+		}
+		let result:
+			| { ok: true; generation: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_owner_tuple",
+		};
+		this.db.transaction(() => {
+			const current = this.workflowSelectAll(
+				`SELECT * FROM land_operation
+				  WHERE operation_id = ? AND project_name = ? AND state = 'running'
+				    AND superseded_at IS NULL AND owner_id = ? AND generation = ?
+				    AND owner_instance_id IS ? AND owner_pid IS ?
+				    AND owner_process_start IS ? AND owner_host_boot_id IS ?
+				    AND owner_heartbeat_at IS ? AND lease_expires_at = ?`,
+				[
+					input.observed.operationId,
+					input.observed.projectName,
+					input.observed.ownerId,
+					input.observed.generation,
+					input.observed.ownerInstanceId,
+					input.observed.ownerPid,
+					input.observed.ownerProcessStart,
+					input.observed.ownerHostBootId,
+					input.observed.ownerHeartbeatAt,
+					input.observed.leaseExpiresAt,
+				],
+			)[0];
+			if (!current) return;
+			const expired = String(current.lease_expires_at) <= input.now;
+			if (!expired && input.reason === "deadline_expired") return;
+			const generation = Number(current.generation) + 1;
+			this.db.run(
+				`UPDATE land_operation
+				    SET state = 'partial', owner_id = NULL, owner_instance_id = NULL,
+				        owner_pid = NULL, owner_process_start = NULL,
+				        owner_host_boot_id = NULL, owner_heartbeat_at = NULL,
+				        lease_expires_at = NULL, generation = ?,
+				        last_error = ?, next_attempt_at = ?,
+				        closeout_reservation_epoch = NULL,
+				        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
+				        updated_at = ?
+				  WHERE operation_id = ? AND state = 'running' AND owner_id = ?
+				    AND generation = ? AND owner_instance_id IS ?
+				    AND lease_expires_at = ?`,
+				[
+					generation,
+					`lease_lost:${input.reason}`,
+					input.nextAttemptAt,
+					input.now,
+					input.observed.operationId,
+					input.observed.ownerId,
+					input.observed.generation,
+					input.observed.ownerInstanceId,
+					input.observed.leaseExpiresAt,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`DELETE FROM land_repo_admission
+				  WHERE project_name = ? AND repo_identity = '__main__'
+				    AND owner_operation_id = ? AND owner_id = ?
+				    AND owner_operation_generation = ? AND owner_instance_id IS ?`,
+				[
+					input.observed.projectName,
+					input.observed.operationId,
+					input.observed.ownerId,
+					input.observed.generation,
+					input.observed.ownerInstanceId,
+				],
+			);
+			const step = `aux:land_owner_reclaimed:${input.observed.generation}:${input.observed.ownerInstanceId ?? "legacy"}`;
+			const receipt = {
+				reason: input.reason,
+				ownerId: input.observed.ownerId,
+				ownerInstanceId: input.observed.ownerInstanceId,
+				ownerPid: input.observed.ownerPid,
+				ownerProcessStart: input.observed.ownerProcessStart,
+				ownerHostBootId: input.observed.ownerHostBootId,
+				ownerHeartbeatAt: input.observed.ownerHeartbeatAt,
+				leaseExpiresAt: input.observed.leaseExpiresAt,
+				reclaimedAt: input.now,
+				newGeneration: generation,
+			};
+			this.db.run(
+				`INSERT OR IGNORE INTO land_operation_step
+				   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.observed.operationId,
+					step,
+					canonicalSubmissionDigest(receipt),
+					JSON.stringify(receipt),
+					generation,
+					input.now,
+				],
+			);
+			result = { ok: true, generation };
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	hasWorkflowResumeRedispatchAfter(runId: string, createdAt: string): boolean {
@@ -76736,6 +77244,7 @@ export class StateStore {
 		step: string;
 		receipt: Record<string, unknown>;
 		now: string;
+		threadArchive?: { threadId: string; archivedAt: string };
 	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		const receiptDigest = canonicalSubmissionDigest(input.receipt);
 		let result:
@@ -76745,6 +77254,19 @@ export class StateStore {
 			reason: "stale_land_generation",
 		};
 		this.db.transaction(() => {
+			const commitThreadArchive = (): void => {
+				if (!input.threadArchive) return;
+				this.db.run(
+					`UPDATE chat_threads
+					 SET archived_at = ?, reopen_compensation_pending = NULL
+					 WHERE thread_id = ?`,
+					[input.threadArchive.archivedAt, input.threadArchive.threadId],
+				);
+				this.db.run(
+					"UPDATE phase_chat_threads SET archived_at = ? WHERE thread_id = ?",
+					[input.threadArchive.archivedAt, input.threadArchive.threadId],
+				);
+			};
 			const operation = this.workflowSelectAll(
 				"SELECT * FROM land_operation WHERE operation_id = ?",
 				[input.operationId],
@@ -76755,10 +77277,12 @@ export class StateStore {
 				[input.operationId, input.step],
 			)[0];
 			if (prior) {
-				result =
-					prior.receipt_digest === receiptDigest
-						? { ok: true, idempotentReplay: true }
-						: { ok: false, reason: "land_step_receipt_conflict" };
+				if (prior.receipt_digest === receiptDigest) {
+					commitThreadArchive();
+					result = { ok: true, idempotentReplay: true };
+				} else {
+					result = { ok: false, reason: "land_step_receipt_conflict" };
+				}
 				return;
 			}
 			if (
@@ -76812,6 +77336,7 @@ export class StateStore {
 					input.now,
 				],
 			);
+			commitThreadArchive();
 			this.projectWorkflowDeliveryClockTx({
 				family: "land",
 				table: "land_operation",
@@ -76827,7 +77352,10 @@ export class StateStore {
 				        updated_at = ?,
 				        merge_confirmed_at = CASE WHEN ? = 'merge_confirmed' THEN COALESCE(merge_confirmed_at, ?) ELSE merge_confirmed_at END,
 				        finalization_completed_at = CASE WHEN ? = 'finalization_completed' THEN COALESCE(finalization_completed_at, ?) ELSE finalization_completed_at END,
-				        state = CASE WHEN ? = 1 THEN 'completed' ELSE state END
+				        state = CASE WHEN ? = 1 THEN 'completed' ELSE state END,
+				        closeout_reservation_epoch = CASE WHEN ? = 1 THEN NULL ELSE closeout_reservation_epoch END,
+				        closeout_inventory_digest = CASE WHEN ? = 1 THEN NULL ELSE closeout_inventory_digest END,
+				        closeout_reserved_at = CASE WHEN ? = 1 THEN NULL ELSE closeout_reserved_at END
 				  WHERE operation_id = ? AND superseded_at IS NULL
 				    AND owner_id = ? AND generation = ?`,
 				[
@@ -76838,6 +77366,9 @@ export class StateStore {
 					input.now,
 					input.step,
 					input.now,
+					completed ? 1 : 0,
+					completed ? 1 : 0,
+					completed ? 1 : 0,
 					completed ? 1 : 0,
 					input.operationId,
 					input.ownerId,
@@ -76853,14 +77384,260 @@ export class StateStore {
 					now: input.now,
 				});
 				this.db.run(
-					"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
-					[input.operationId],
+					`DELETE FROM land_repo_admission
+					  WHERE owner_operation_id = ? AND owner_id = ?
+					    AND owner_operation_generation = ?`,
+					[input.operationId, input.ownerId, input.generation],
+				);
+				this.db.run(
+					`UPDATE land_operation
+					    SET owner_id = NULL, owner_instance_id = NULL, owner_pid = NULL,
+					        owner_process_start = NULL, owner_host_boot_id = NULL,
+					        owner_heartbeat_at = NULL, lease_expires_at = NULL
+					  WHERE operation_id = ? AND state = 'completed' AND generation = ?`,
+					[input.operationId, input.generation],
 				);
 			}
 			result = { ok: true, idempotentReplay: false };
 		});
 		if (result.ok) this.save();
 		return result;
+	}
+
+	recordCloseoutExecutionEvidence(
+		input: CloseoutExecutionEvidenceInput,
+	):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		const verdict = input.evidence.verdict;
+		if (
+			!input.evidenceId ||
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.operationGeneration) ||
+			input.operationGeneration < 0 ||
+			!Number.isSafeInteger(input.probeSequence) ||
+			input.probeSequence < 1 ||
+			!input.projectName ||
+			!input.issueId ||
+			!input.executionId ||
+			!/^[0-9a-f]{64}$/.test(input.attributionDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.observedStartedAt) ||
+			!StateStore.workflowFiniteTimestamp(input.observedAt) ||
+			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
+			Date.parse(input.observedStartedAt) > Date.parse(input.observedAt) ||
+			Date.parse(input.expiresAt) <= Date.parse(input.observedAt) ||
+			!(["gone", "alive", "unknown"] as const).includes(verdict)
+		) {
+			return { ok: false, reason: "invalid_closeout_evidence" };
+		}
+		const evidenceJson = canonicalJsonString(input.evidence);
+		const evidenceDigest = canonicalSubmissionDigest(input.evidence);
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		let inserted = false;
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				`SELECT * FROM closeout_execution_evidence
+				  WHERE evidence_id = ? OR
+				        (operation_id = ? AND operation_generation = ?
+				         AND execution_id = ? AND probe_sequence = ?)
+				  ORDER BY evidence_id`,
+				[
+					input.evidenceId,
+					input.operationId,
+					input.operationGeneration,
+					input.executionId,
+					input.probeSequence,
+				],
+			);
+			if (prior.length > 0) {
+				const exact = prior.length === 1 ? prior[0] : undefined;
+				result =
+					exact?.evidence_id === input.evidenceId &&
+					exact.operation_id === input.operationId &&
+					Number(exact.operation_generation) === input.operationGeneration &&
+					exact.execution_id === input.executionId &&
+					Number(exact.probe_sequence) === input.probeSequence &&
+					exact.evidence_digest === evidenceDigest
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "closeout_evidence_conflict" };
+				return;
+			}
+			const operation = this.workflowSelectAll(
+				`SELECT * FROM land_operation
+				  WHERE operation_id = ? AND superseded_at IS NULL`,
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				Number(operation.generation) !== input.operationGeneration ||
+				!operation.lease_expires_at ||
+				String(operation.lease_expires_at) <= input.observedAt ||
+				operation.project_name !== input.projectName ||
+				operation.issue_id !== input.issueId ||
+				(operation.run_id ?? null) !== (input.runId ?? null)
+			) {
+				return;
+			}
+			this.db.run(
+				`INSERT INTO closeout_execution_evidence
+				   (evidence_id, operation_id, operation_generation, probe_sequence,
+				    project_name, issue_id, run_id, execution_id, activation_id,
+				    lifecycle_revision, attribution_digest, comm_identity_revision,
+				    observed_started_at, observed_at, expires_at, verdict,
+				    evidence_digest, evidence_json)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.evidenceId,
+					input.operationId,
+					input.operationGeneration,
+					input.probeSequence,
+					input.projectName,
+					input.issueId,
+					input.runId ?? null,
+					input.executionId,
+					input.activationId ?? null,
+					input.lifecycleRevision ?? null,
+					input.attributionDigest,
+					input.commIdentityRevision ?? null,
+					input.observedStartedAt,
+					input.observedAt,
+					input.expiresAt,
+					verdict,
+					evidenceDigest,
+					evidenceJson,
+				],
+			);
+			inserted = true;
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (inserted) this.save();
+		return result;
+	}
+
+	reserveLandCloseout(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		inventoryDigest: string;
+		now: string;
+	}):
+		| {
+				ok: true;
+				idempotentReplay: boolean;
+				epoch: number;
+				reservationId: string;
+				expiresAt: string;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 0 ||
+			!/^[0-9a-f]{64}$/.test(input.inventoryDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_closeout_reservation" };
+		}
+		let result:
+			| {
+					ok: true;
+					idempotentReplay: boolean;
+					epoch: number;
+					reservationId: string;
+					expiresAt: string;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			let operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.superseded_at ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				Number(operation.generation) !== input.generation ||
+				!operation.lease_expires_at ||
+				String(operation.lease_expires_at) <= input.now
+			) {
+				return;
+			}
+			if (
+				operation.closeout_reservation_epoch != null &&
+				operation.closeout_inventory_digest === input.inventoryDigest &&
+				operation.closeout_reserved_at != null
+			) {
+				const epoch = Number(operation.closeout_reservation_epoch);
+				result = {
+					ok: true,
+					idempotentReplay: true,
+					epoch,
+					reservationId: `${input.operationId}:${input.generation}:${epoch}:${input.inventoryDigest}`,
+					expiresAt: String(operation.lease_expires_at),
+				};
+				return;
+			}
+			this.db.run(
+				`UPDATE land_operation
+				    SET closeout_reservation_epoch = COALESCE(closeout_reservation_epoch, 0) + 1,
+				        closeout_inventory_digest = ?, closeout_reserved_at = ?, updated_at = ?
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND state = 'running' AND owner_id = ? AND generation = ?
+				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
+				[
+					input.inventoryDigest,
+					input.now,
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (!operation) return;
+			const epoch = Number(operation.closeout_reservation_epoch);
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				epoch,
+				reservationId: `${input.operationId}:${input.generation}:${epoch}:${input.inventoryDigest}`,
+				expiresAt: String(operation.lease_expires_at),
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listCloseoutExecutionEvidence(
+		operationId: string,
+	): CloseoutExecutionEvidenceRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM closeout_execution_evidence
+			  WHERE operation_id = ?
+			  ORDER BY operation_generation, execution_id, probe_sequence`,
+			[operationId],
+		).map((row) => ({
+			...(row as unknown as Omit<CloseoutExecutionEvidenceRow, "evidence">),
+			evidence: JSON.parse(String(row.evidence_json)) as Record<string, unknown>,
+		}));
 	}
 
 	listLandOperationSteps(operationId: string): LandOperationStepRow[] {
@@ -76924,19 +77701,35 @@ export class StateStore {
 		};
 	}
 
-	private enqueueLegacyLandAlertTx(
-		operation: Record<string, unknown>,
+	private enqueueLandHeldAlertTx(
+		operation: LandOperationRow,
 		reason: string,
 		now: string,
 	): void {
-		if (operation.run_id != null) return;
-		const resumeGeneration = Number(operation.resume_generation ?? 0);
+		const resumeGeneration = operation.resume_generation;
+		const mergeReceipt = this.listLandOperationSteps(operation.operation_id).find(
+			(step) => step.step === "merge_confirmed",
+		)?.receipt;
+		const recoveryMode =
+			String(mergeReceipt?.headSha ?? "").toLowerCase() ===
+				operation.approved_head &&
+			/^[0-9a-f]{40}$/.test(
+				String(mergeReceipt?.mergeSha ?? "").toLowerCase(),
+			)
+				? "closeout_only"
+				: "full";
 		const payload: LandAlertPayload = {
-			operationId: operation.operation_id as string,
+			operationId: operation.operation_id,
 			resumeGeneration,
-			issueId: operation.issue_id as string,
-			projectName: operation.project_name as string,
-			prNumber: Number(operation.pr_number),
+			issueId: operation.issue_id,
+			projectName: operation.project_name,
+			prNumber: operation.pr_number,
+			approvedHead: operation.approved_head,
+			runId: operation.run_id,
+			retryCount: operation.retry_count,
+			retryEpochKey: operation.retry_epoch_key,
+			currentStep: operation.current_step ?? "start",
+			recoveryMode,
 			reason,
 		};
 		const payloadJson = JSON.stringify(payload);
@@ -77116,7 +77909,12 @@ export class StateStore {
 		this.db.run(
 			`UPDATE land_operation
 			    SET state = ?, last_error = ?, owner_id = NULL,
-			        lease_expires_at = NULL, updated_at = ?
+			        owner_instance_id = NULL, owner_pid = NULL,
+			        owner_process_start = NULL, owner_host_boot_id = NULL,
+			        owner_heartbeat_at = NULL, lease_expires_at = NULL,
+			        closeout_reservation_epoch = NULL,
+			        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
+			        updated_at = ?
 			  WHERE operation_id = ? AND superseded_at IS NULL AND state = 'running'
 			    AND owner_id = ? AND generation = ?`,
 			[
@@ -77131,8 +77929,10 @@ export class StateStore {
 		const updated = this.db.getRowsModified() === 1;
 		if (updated) {
 			this.db.run(
-				"DELETE FROM land_repo_admission WHERE owner_operation_id = ? AND owner_id = ?",
-				[input.operationId, input.ownerId],
+				`DELETE FROM land_repo_admission
+				  WHERE owner_operation_id = ? AND owner_id = ?
+				    AND owner_operation_generation = ?`,
+				[input.operationId, input.ownerId, input.generation],
 			);
 			this.save();
 		}
@@ -77210,7 +78010,12 @@ export class StateStore {
 			this.db.run(
 				`UPDATE land_operation
 				    SET state = ?, last_error = ?, retry_count = ?, retry_epoch_key = ?,
-				        next_attempt_at = ?, owner_id = NULL, lease_expires_at = NULL,
+				        next_attempt_at = ?, owner_id = NULL, owner_instance_id = NULL,
+				        owner_pid = NULL, owner_process_start = NULL,
+				        owner_host_boot_id = NULL, owner_heartbeat_at = NULL,
+				        lease_expires_at = NULL,
+				        closeout_reservation_epoch = NULL,
+				        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
 				        ship_attempt = ship_attempt + ?,
 				        updated_at = ?
 				  WHERE operation_id = ? AND superseded_at IS NULL AND state = 'running'
@@ -77234,12 +78039,17 @@ export class StateStore {
 			);
 			if (this.db.getRowsModified() !== 1) return;
 			if (decision.state === "held") {
-				this.enqueueLegacyLandAlertTx(operation, decision.lastError, input.now);
+				this.enqueueLandHeldAlertTx(
+					this.getLandOperation(input.operationId)!,
+					decision.lastError,
+					input.now,
+				);
 			}
 			this.db.run(
 				`DELETE FROM land_repo_admission
-				  WHERE owner_operation_id = ? AND owner_id = ?`,
-				[input.operationId, input.ownerId],
+				  WHERE owner_operation_id = ? AND owner_id = ?
+				    AND owner_operation_generation = ?`,
+				[input.operationId, input.ownerId, input.generation],
 			);
 			result = {
 				state: decision.state,
@@ -77260,12 +78070,24 @@ export class StateStore {
 		now: string;
 		expectedPrDisposition: "open" | "merged";
 		expectedHeadSha: string;
+		expectedMergeSha?: string;
+		mode?: "full" | "closeout_only";
+		expectedResumeGeneration?: number;
+		expectedApprovedHead?: string;
+		requestId?: string;
 	}):
-		| { ok: true; operation: LandOperationRow }
+		| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
 		| { ok: false; reason: string } {
 		const actor = input.actor.trim();
 		const reason = input.reason.trim();
 		const expectedHeadSha = input.expectedHeadSha.trim().toLowerCase();
+		const expectedMergeSha = input.expectedMergeSha?.trim().toLowerCase();
+		const mode = input.mode ?? "full";
+		const closeoutOnly = mode === "closeout_only";
+		const expectedApprovedHead = input.expectedApprovedHead
+			?.trim()
+			.toLowerCase();
+		const requestId = input.requestId?.trim().toLowerCase();
 		if (
 			!input.operationId ||
 			!actor ||
@@ -77273,12 +78095,22 @@ export class StateStore {
 			!reason ||
 			reason.length > 500 ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!/^[0-9a-f]{40}$/.test(expectedHeadSha)
+			!/^[0-9a-f]{40}$/.test(expectedHeadSha) ||
+			(closeoutOnly &&
+				(input.expectedPrDisposition !== "merged" ||
+					!Number.isSafeInteger(input.expectedResumeGeneration) ||
+					(input.expectedResumeGeneration ?? -1) < 0 ||
+					!/^[0-9a-f]{40}$/.test(expectedApprovedHead ?? "") ||
+					expectedApprovedHead !== expectedHeadSha ||
+					!/^[0-9a-f]{40}$/.test(expectedMergeSha ?? "") ||
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+						requestId ?? "",
+					)))
 		) {
 			return { ok: false, reason: "resume_refused:invalid_input" };
 		}
 		let result:
-			| { ok: true; operation: LandOperationRow }
+			| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
 			| { ok: false; reason: string } = {
 			ok: false,
 			reason: "resume_refused:state_changed",
@@ -77290,12 +78122,83 @@ export class StateStore {
 					result = { ok: false, reason: "resume_refused:not_found" };
 					return;
 				}
-				if (operation.state !== "held") {
-					result = { ok: false, reason: "resume_refused:not_held" };
-					return;
-				}
 				if (operation.approved_head.toLowerCase() !== expectedHeadSha) {
 					result = { ok: false, reason: "resume_refused:head_moved" };
+					return;
+				}
+				if (closeoutOnly) {
+					const priorRequest = this.listLandOperationSteps(
+						input.operationId,
+					).find((step) => step.step.endsWith(`:${requestId}`))?.receipt;
+					if (priorRequest) {
+						if (
+							priorRequest.mode !== "closeout_only" ||
+							priorRequest.expectedApprovedHead !== expectedApprovedHead ||
+							priorRequest.expectedResumeGeneration !==
+								input.expectedResumeGeneration
+						) {
+							result = {
+								ok: false,
+								reason: "resume_refused:request_id_conflict",
+							};
+							return;
+						}
+						result = {
+							ok: true,
+							operation,
+							...(operation.state === "completed"
+								? { alreadyCompleted: true as const }
+								: {}),
+						};
+						return;
+					}
+				}
+				if (
+					closeoutOnly &&
+					operation.resume_generation !== input.expectedResumeGeneration
+				) {
+					result = {
+						ok: false,
+						reason: "resume_refused:resume_generation_mismatch",
+					};
+					return;
+				}
+				if (closeoutOnly) {
+					const mergeReceipt = this.listLandOperationSteps(
+						input.operationId,
+					).find((step) => step.step === "merge_confirmed")?.receipt;
+					if (
+						String(mergeReceipt?.headSha ?? "").toLowerCase() !==
+							expectedHeadSha ||
+						String(mergeReceipt?.mergeSha ?? "").toLowerCase() !==
+							expectedMergeSha
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:merge_receipt_mismatch",
+						};
+						return;
+					}
+					if (this.getActiveIssueDispositionIntent(operation.issue_id)) {
+						result = {
+							ok: false,
+							reason: "resume_refused:issue_parked",
+						};
+						return;
+					}
+					if (operation.state === "completed") {
+						result = { ok: true, operation, alreadyCompleted: true };
+						return;
+					}
+					if (operation.state !== "held" && operation.state !== "partial") {
+						result = {
+							ok: false,
+							reason: "resume_refused:not_closeout_retryable",
+						};
+						return;
+					}
+				} else if (operation.state !== "held") {
+					result = { ok: false, reason: "resume_refused:not_held" };
 					return;
 				}
 
@@ -77306,7 +78209,10 @@ export class StateStore {
 					if (
 						!run ||
 						run.engine_owned !== 1 ||
-						run.status !== "held" ||
+						run.status !==
+							(closeoutOnly && operation.state === "partial"
+								? "active"
+								: "held") ||
 						!run.snapshot
 					) {
 						result = {
@@ -77362,51 +78268,66 @@ export class StateStore {
 						};
 						return;
 					}
-					const holder = this.getCurrentWorkflowGateHolder(runId, gateNode);
-					if (
-						!holder ||
-						holder.state !== "approved" ||
-						holder.head_sha.toLowerCase() !== expectedHeadSha
-					) {
-						result = {
-							ok: false,
-							reason: "resume_refused:approval_not_current",
-						};
-						return;
-					}
-					const binding = this.getCurrentWorkflowNodePrBindingForHead(
-						runId,
-						expectedHeadSha,
-					);
-					if (
-						!binding ||
-						binding.pr_number !== operation.pr_number ||
-						binding.target_repo_identity !== "__main__"
-					) {
-						result = {
-							ok: false,
-							reason: "resume_refused:pr_binding_not_current",
-						};
-						return;
+					if (!closeoutOnly) {
+						const holder = this.getCurrentWorkflowGateHolder(runId, gateNode);
+						if (
+							!holder ||
+							holder.state !== "approved" ||
+							holder.head_sha.toLowerCase() !== expectedHeadSha
+						) {
+							result = {
+								ok: false,
+								reason: "resume_refused:approval_not_current",
+							};
+							return;
+						}
+						const binding = this.getCurrentWorkflowNodePrBindingForHead(
+							runId,
+							expectedHeadSha,
+						);
+						if (
+							!binding ||
+							binding.pr_number !== operation.pr_number ||
+							binding.target_repo_identity !== "__main__"
+						) {
+							result = {
+								ok: false,
+								reason: "resume_refused:pr_binding_not_current",
+							};
+							return;
+						}
 					}
 				}
 
 				const resumeGeneration = operation.resume_generation + 1;
 				this.db.run(
 					`UPDATE land_operation
-					    SET state = 'partial', owner_id = NULL, lease_expires_at = NULL,
+					    SET state = 'partial', owner_id = NULL, owner_instance_id = NULL,
+					        owner_pid = NULL, owner_process_start = NULL,
+					        owner_host_boot_id = NULL, owner_heartbeat_at = NULL,
+					        lease_expires_at = NULL,
+					        closeout_reservation_epoch = NULL,
+					        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
 					        retry_count = 0, retry_epoch_key = NULL, next_attempt_at = ?,
 					        resume_generation = ?, ship_attempt = ship_attempt + ?,
 					        last_error = ?, updated_at = ?
-					  WHERE operation_id = ? AND state = 'held'
+					  WHERE operation_id = ? AND state = ?
 					    AND resume_generation = ? AND lower(approved_head) = ?`,
 					[
 						input.now,
 						resumeGeneration,
-						input.expectedPrDisposition === "open" ? 1 : 0,
-						`resumed:${operation.last_error ?? "held"}`.slice(0, 500),
+						closeoutOnly
+							? 0
+							: input.expectedPrDisposition === "open"
+								? 1
+								: 0,
+						`${closeoutOnly ? "reclose" : "resumed"}:${operation.last_error ?? operation.state}`.slice(
+							0,
+							500,
+						),
 						input.now,
 						input.operationId,
+						operation.state,
 						operation.resume_generation,
 						expectedHeadSha,
 					],
@@ -77414,7 +78335,7 @@ export class StateStore {
 				if (this.db.getRowsModified() !== 1) {
 					throw new Error("resume_state_changed");
 				}
-				if (runId) {
+				if (runId && operation.state === "held") {
 					this.db.run(
 						"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
 						[runId],
@@ -77426,8 +78347,14 @@ export class StateStore {
 				const receipt = {
 					actor,
 					reason,
+					mode,
+					requestId: requestId ?? null,
+					expectedResumeGeneration:
+						input.expectedResumeGeneration ?? operation.resume_generation,
 					expectedPrDisposition: input.expectedPrDisposition,
 					expectedHeadSha,
+					expectedApprovedHead: expectedApprovedHead ?? expectedHeadSha,
+					mergeSha: expectedMergeSha ?? null,
 					priorLastError: operation.last_error,
 					priorRetryCount: operation.retry_count,
 					priorRetryEpochKey: operation.retry_epoch_key,
@@ -77439,7 +78366,9 @@ export class StateStore {
 					 VALUES (?, ?, ?, ?, ?, ?)`,
 					[
 						input.operationId,
-						`resume_authorized:${resumeGeneration}`,
+						closeoutOnly
+							? `closeout_only_authorized:${resumeGeneration}:${requestId}`
+							: `resume_authorized:${resumeGeneration}`,
 						canonicalSubmissionDigest(receipt),
 						JSON.stringify(receipt),
 						operation.generation,
@@ -77557,6 +78486,7 @@ export class StateStore {
 		attempt: number;
 		executionId: string;
 		operationId?: string;
+		missing?: string[];
 		reason: string;
 		now: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
@@ -77569,20 +78499,20 @@ export class StateStore {
 			!input.executionId ||
 			!input.reason ||
 			input.reason.length > 500 ||
-			!StateStore.workflowFiniteTimestamp(input.now)
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.missing !== undefined &&
+				(input.missing.length > 64 ||
+					input.missing.some(
+						(item) =>
+							typeof item !== "string" ||
+							!item.trim() ||
+							item.length > 300,
+					)))
 		) {
 			return { ok: false, reason: "invalid_land_hold" };
 		}
-		const resumeGeneration = input.operationId
-			? (this.getLandOperation(input.operationId)?.resume_generation ?? 0)
-			: 0;
-		const escalationUid = `land_held:${input.runId}:${input.nodeId}:${input.attempt}:${canonicalSubmissionDigest(
-			{
-				operationId: input.operationId ?? null,
-				resumeGeneration,
-				reason: input.reason,
-			},
-		)}`;
+		const missing = [...new Set((input.missing ?? []).map((item) => item.trim()))]
+			.sort();
 		let result:
 			| { ok: true; idempotentReplay: boolean }
 			| { ok: false; reason: string } = {
@@ -77590,20 +78520,52 @@ export class StateStore {
 			reason: "land_hold_not_committed",
 		};
 		this.db.transaction(() => {
-			const prior = this.workflowSelectAll(
-				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
-				[escalationUid],
-			)[0];
-			if (prior) {
-				result = { ok: true, idempotentReplay: true };
-				return;
-			}
 			const run = this.getWorkflowRun(input.runId);
 			const node = this.getWorkflowRunNode(
 				input.runId,
 				input.nodeId,
 				input.attempt,
 			);
+			const resumeGeneration = input.operationId
+				? (this.getLandOperation(input.operationId)?.resume_generation ?? 0)
+				: 0;
+			const recoveryEpisode = input.operationId
+				? `land_operation_resume_generation:${resumeGeneration}`
+				: (this.workflowSelectAll(
+						`SELECT event_uid, payload FROM workflow_run_event
+						  WHERE run_id = ? AND kind = 'hold_resumed'
+						  ORDER BY seq DESC`,
+						[input.runId],
+					).find((event) => {
+						try {
+							const payload = JSON.parse(String(event.payload)) as {
+								shape?: unknown;
+							};
+							return payload.shape === "land_held_without_operation";
+						} catch {
+							return false;
+						}
+					})?.event_uid as string | undefined) ?? "initial";
+			const escalationUid = `land_held:${input.runId}:${input.nodeId}:${input.attempt}:${canonicalSubmissionDigest(
+				{
+					operationId: input.operationId ?? null,
+					resumeGeneration,
+					recoveryEpisode,
+					reason: input.reason,
+					missing,
+				},
+			)}`;
+			const prior = this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+				[escalationUid],
+			)[0];
+			if (prior) {
+				result =
+					run?.status === "active"
+						? { ok: false, reason: "land_hold_episode_conflict" }
+						: { ok: true, idempotentReplay: true };
+				return;
+			}
 			if (
 				!run ||
 				run.engine_owned !== 1 ||
@@ -77654,11 +78616,22 @@ export class StateStore {
 					attempt: input.attempt,
 					operationId: input.operationId ?? null,
 					reason: input.reason,
+					recoveryEpisode,
+					...(missing.length > 0 ? { missing } : {}),
 					...(retryExhaustion ?? {}),
 					at: input.now,
 				},
 			});
-			if (input.alertIdentity) {
+			const operationAlertPresent =
+				input.operationId !== undefined &&
+				Boolean(
+					this.workflowSelectAll(
+						`SELECT 1 AS present FROM land_alert_outbox
+						  WHERE operation_id = ? AND resume_generation = ?`,
+						[input.operationId, resumeGeneration],
+					)[0],
+				);
+			if (input.alertIdentity && !operationAlertPresent) {
 				this.enqueueWorkflowEngineAlertTx({
 					escalationUid,
 					runId: input.runId,
@@ -77674,6 +78647,8 @@ export class StateStore {
 						...(retryExhaustion ?? {}),
 						operationId: input.operationId,
 						resumeGeneration,
+						recoveryEpisode,
+						...(missing.length > 0 ? { missing } : {}),
 						identity: input.alertIdentity,
 					}),
 				});
@@ -78405,6 +79380,11 @@ export interface LandOperationRow {
 	approved_head: string;
 	state: LandOperationState;
 	owner_id: string | null;
+	owner_instance_id?: string | null;
+	owner_pid?: number | null;
+	owner_process_start?: string | null;
+	owner_host_boot_id?: string | null;
+	owner_heartbeat_at?: string | null;
 	lease_expires_at: string | null;
 	generation: number;
 	ship_attempt: number;
@@ -78425,9 +79405,69 @@ export interface LandOperationRow {
 	linear_done_retry_count: number;
 	linear_done_next_attempt_at: string | null;
 	linear_done_last_attempt_at: string | null;
+	closeout_targets_json: string | null;
+	closeout_targets_digest: string | null;
+	closeout_targets_version: number | null;
+	closeout_attribution_digest: string | null;
+	closeout_targets_observed_at: string | null;
+	closeout_reservation_epoch: number | null;
+	closeout_inventory_digest: string | null;
+	closeout_reserved_at: string | null;
 	last_error: string | null;
 	created_at: string;
 	updated_at: string;
+}
+
+export interface LandVerifiedTargets {
+	json: string;
+	digest: string;
+	version: 1;
+	attributionDigest: string;
+	observedAt: string;
+}
+
+export interface CloseoutExecutionEvidenceInput {
+	evidenceId: string;
+	operationId: string;
+	ownerId: string;
+	operationGeneration: number;
+	probeSequence: number;
+	projectName: string;
+	issueId: string;
+	runId?: string | null;
+	executionId: string;
+	activationId?: string | null;
+	lifecycleRevision?: number | null;
+	attributionDigest: string;
+	commIdentityRevision?: string | null;
+	observedStartedAt: string;
+	observedAt: string;
+	expiresAt: string;
+	evidence: Record<string, unknown> & {
+		verdict: "gone" | "alive" | "unknown";
+	};
+}
+
+export interface CloseoutExecutionEvidenceRow {
+	evidence_id: string;
+	operation_id: string;
+	operation_generation: number;
+	probe_sequence: number;
+	project_name: string;
+	issue_id: string;
+	run_id: string | null;
+	execution_id: string;
+	activation_id: string | null;
+	lifecycle_revision: number | null;
+	attribution_digest: string;
+	comm_identity_revision: string | null;
+	observed_started_at: string;
+	observed_at: string;
+	expires_at: string;
+	verdict: "gone" | "alive" | "unknown";
+	evidence_digest: string;
+	evidence_json: string;
+	evidence: Record<string, unknown>;
 }
 
 export type LandRecoveryKind =
@@ -78473,6 +79513,28 @@ export interface WorkflowPendingCarryoverDeparture {
 export interface LandOperationClaim {
 	operationId: string;
 	ownerId: string;
+	generation: number;
+	ownerInstanceId?: string;
+}
+
+export interface LandOwnerIdentity {
+	ownerId: string;
+	ownerInstanceId: string;
+	ownerPid: number;
+	ownerProcessStart: string;
+	ownerHostBootId: string;
+}
+
+export interface LandOwnerLease {
+	operationId: string;
+	projectName: string;
+	ownerId: string;
+	ownerInstanceId: string | null;
+	ownerPid: number | null;
+	ownerProcessStart: string | null;
+	ownerHostBootId: string | null;
+	ownerHeartbeatAt: string | null;
+	leaseExpiresAt: string;
 	generation: number;
 }
 
@@ -78581,6 +79643,12 @@ export interface LandAlertPayload {
 	issueId: string;
 	projectName: string;
 	prNumber: number;
+	approvedHead: string;
+	runId: string | null;
+	retryCount: number;
+	retryEpochKey: string | null;
+	currentStep: string;
+	recoveryMode: "full" | "closeout_only";
 	reason: string;
 }
 

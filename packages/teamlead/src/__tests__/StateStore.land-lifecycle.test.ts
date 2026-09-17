@@ -1990,6 +1990,103 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("atomically settles an operation-audited thread archive behind the land fence", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "issue-archive",
+			projectName: "flywheel",
+			prNumber: 2616,
+			approvedHead: "b".repeat(40),
+			now: "2026-09-16T05:00:00.000Z",
+		});
+		const first = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker-a",
+			now: "2026-09-16T05:00:01.000Z",
+			leaseExpiresAt: "2026-09-16T05:01:01.000Z",
+		})!;
+		const takeover = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker-b",
+			now: "2026-09-16T05:02:00.000Z",
+			leaseExpiresAt: "2026-09-16T05:03:00.000Z",
+		})!;
+		store.upsertChatThread(
+			"thread-operation-archive",
+			"channel-1",
+			"issue-archive",
+			"flywheel-eng-lead",
+		);
+		const compensation = {
+			version: 1 as const,
+			state: "prepared" as const,
+			archiveEpoch: "2026-09-16T04:00:00.000Z",
+			frontier: "message-1",
+			cause: "unknown" as const,
+			at: "2026-09-16T05:02:00.000Z",
+		};
+		store.setChatThreadCompensationPending(
+			"thread-operation-archive",
+			compensation,
+		);
+		const archiveCommit = {
+			threadId: "thread-operation-archive",
+			archivedAt: "2026-09-16T05:02:01.000Z",
+		};
+		const receipt = { eventId: "archive-receipt", archived: true };
+
+		expect(
+			store.recordLandOperationStep({
+				operationId: operation.operation_id,
+				ownerId: first.ownerId,
+				generation: first.generation,
+				step: "aux:closeout_audit:archive-receipt",
+				receipt,
+				now: "2026-09-16T05:02:01.000Z",
+				threadArchive: archiveCommit,
+			}),
+		).toEqual({ ok: false, reason: "stale_land_generation" });
+		expect(
+			store.getChatThreadArchivedAt("thread-operation-archive"),
+		).toBeNull();
+		expect(
+			store.getChatThreadCompensationPending("thread-operation-archive"),
+		).toEqual(compensation);
+
+		const authorized = {
+			operationId: operation.operation_id,
+			ownerId: takeover.ownerId,
+			generation: takeover.generation,
+			step: "aux:closeout_audit:archive-receipt",
+			receipt,
+			now: "2026-09-16T05:02:01.000Z",
+			threadArchive: archiveCommit,
+		};
+		expect(store.recordLandOperationStep(authorized)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.getChatThreadArchivedAt("thread-operation-archive")).toBe(
+			archiveCommit.archivedAt,
+		);
+		expect(
+			store.getChatThreadCompensationPending("thread-operation-archive"),
+		).toBeNull();
+
+		store.setChatThreadCompensationPending(
+			"thread-operation-archive",
+			compensation,
+		);
+		expect(store.recordLandOperationStep(authorized)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(
+			store.getChatThreadCompensationPending("thread-operation-archive"),
+		).toBeNull();
+		store.close();
+	});
+
 	it("holds the engine run and enqueues an escalation when land cannot continue", async () => {
 		const store = await StateStore.create(":memory:");
 		store.createWorkflowRun({
@@ -2174,6 +2271,130 @@ describe("StateStore land lifecycle ledger", () => {
 			}),
 		).toEqual({ ok: true, state: "sent" });
 		store.close();
+	});
+
+	it("re-arms an undelivered land escalation after a Bridge restart", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2616-land-alert-restart-"));
+		const dbPath = join(root, "state.db");
+		try {
+			let store = await StateStore.create(dbPath);
+			const operation = store.ensureLandOperation({
+				issueId: "FLY-2616-restart",
+				projectName: "flywheel",
+				prNumber: 2616,
+				approvedHead: HEAD,
+				now: "2026-09-16T03:34:00.000Z",
+			});
+			const claim = store.claimLandOperation({
+				operationId: operation.operation_id,
+				ownerId: "worker",
+				now: "2026-09-16T03:34:01.000Z",
+				leaseExpiresAt: "2026-09-16T03:44:01.000Z",
+			})!;
+			store.releaseLandOperationWithRetryAccounting({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				class: "terminal",
+				reason: "retry_exhausted:issue_closeout_incomplete",
+				now: "2026-09-16T03:34:02.000Z",
+			});
+			for (let attempt = 1; attempt <= 3; attempt += 1) {
+				const delivery = store.claimNextLandAlert({
+					ownerId: `alert-${attempt}`,
+					now: `2026-09-16T03:34:0${attempt + 2}.000Z`,
+					leaseExpiresAt: `2026-09-16T03:35:0${attempt + 2}.000Z`,
+				})!;
+				expect(
+					store.finishLandAlertDelivery({
+						operationId: delivery.operationId,
+						resumeGeneration: delivery.resumeGeneration,
+						ownerId: delivery.ownerId,
+						generation: delivery.generation,
+						outcome: "failed",
+						error: "transport unavailable",
+						now: `2026-09-16T03:34:1${attempt}.000Z`,
+					}),
+				).toMatchObject({ ok: true });
+			}
+			expect(store.listLandAlertOutbox()[0]).toMatchObject({
+				state: "failed",
+				attempt: 3,
+			});
+			const completedOperation = store.ensureLandOperation({
+				issueId: "FLY-2616-already-completed",
+				projectName: "flywheel",
+				prNumber: 2617,
+				approvedHead: "b".repeat(40),
+				now: "2026-09-16T03:40:00.000Z",
+			});
+			const completedClaim = store.claimLandOperation({
+				operationId: completedOperation.operation_id,
+				ownerId: "worker-completed",
+				now: "2026-09-16T03:40:01.000Z",
+				leaseExpiresAt: "2026-09-16T03:50:01.000Z",
+			})!;
+			store.releaseLandOperationWithRetryAccounting({
+				operationId: completedOperation.operation_id,
+				ownerId: completedClaim.ownerId,
+				generation: completedClaim.generation,
+				class: "terminal",
+				reason: "retry_exhausted:issue_closeout_incomplete",
+				now: "2026-09-16T03:40:02.000Z",
+			});
+			for (let attempt = 1; attempt <= 3; attempt += 1) {
+				const delivery = store.claimNextLandAlert({
+					ownerId: `completed-alert-${attempt}`,
+					now: `2026-09-16T03:40:0${attempt + 2}.000Z`,
+					leaseExpiresAt: `2026-09-16T03:41:0${attempt + 2}.000Z`,
+				})!;
+				store.finishLandAlertDelivery({
+					operationId: delivery.operationId,
+					resumeGeneration: delivery.resumeGeneration,
+					ownerId: delivery.ownerId,
+					generation: delivery.generation,
+					outcome: "failed",
+					error: "transport unavailable",
+					now: `2026-09-16T03:40:1${attempt}.000Z`,
+				});
+			}
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				"UPDATE land_operation SET state = 'completed' WHERE operation_id = ?",
+				[completedOperation.operation_id],
+			);
+			store.close();
+
+			store = await StateStore.create(dbPath);
+			const alerts = new Map(
+				store
+					.listLandAlertOutbox()
+					.map((row) => [row.operation_id, row] as const),
+			);
+			expect(alerts.get(operation.operation_id)).toMatchObject({
+				state: "pending",
+				attempt: 0,
+				last_error: "transport unavailable",
+			});
+			expect(alerts.get(completedOperation.operation_id)).toMatchObject({
+				state: "failed",
+				attempt: 3,
+				last_error: "transport unavailable",
+			});
+			expect(
+				store.claimNextLandAlert({
+					ownerId: "alert-after-restart",
+					now: "2026-09-16T03:36:00.000Z",
+					leaseExpiresAt: "2026-09-16T03:37:00.000Z",
+				}),
+			).toMatchObject({ attempt: 1 });
+			store.close();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("resumes an engine-owned held land operation and its run in one audited generation", async () => {
@@ -2697,6 +2918,58 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("emits an operation-keyed deferred Linear alert when the source execution is gone", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			runId: "run-linear-operation-alert",
+			issueId: "issue-linear-operation-alert",
+			projectName: "flywheel",
+			prNumber: 1776,
+			approvedHead: HEAD,
+			now: "2026-08-14T22:30:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker-a",
+			now: "2026-08-14T22:30:01.000Z",
+			leaseExpiresAt: "2026-08-14T22:40:01.000Z",
+		})!;
+
+		expect(
+			store.recordLandLinearDoneDisposition({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				disposition: "deferred",
+				reason: "linear_done_timeout",
+				executionId: null,
+				now: "2026-08-14T22:30:02.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(
+			store.getWorkflowAlertOutbox(
+				`linear_done_deferred:${operation.operation_id}`,
+			),
+		).toMatchObject({
+			state: "pending",
+			payload: {
+				metadata: {
+					workflowEngine: {
+						executionId: `land-operation:${operation.operation_id}`,
+						operationId: operation.operation_id,
+						disposition: "linear_done_deferred",
+					},
+				},
+			},
+		});
+		store.close();
+	});
+
 	it("requires a Linear Done disposition before recording finalization completion", async () => {
 		const store = await StateStore.create(":memory:");
 		const operation = store.ensureLandOperation({
@@ -2956,6 +3229,57 @@ describe("StateStore land lifecycle ledger", () => {
 					now: "2026-09-16T16:34:02.000Z",
 				}),
 			).toEqual({ ok: false, reason: "land_external_effect_inflight" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps concurrent modern land preparation owners current in one project", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const operations = [2616, 2632].map((prNumber, index) =>
+				store.ensureLandOperation({
+					issueId: `FLY-${prNumber}`,
+					projectName: "flywheel",
+					prNumber,
+					approvedHead: String(index + 1).repeat(40),
+					now: "2026-09-16T18:00:00.000Z",
+				}),
+			);
+			const owners = [
+				{
+					ownerId: "land-engine:26160",
+					ownerInstanceId: "11111111-1111-4111-8111-111111111111",
+					ownerPid: 26160,
+					ownerProcessStart: "Wed Sep 16 18:00:00 2026",
+					ownerHostBootId: "host-boot-1",
+				},
+				{
+					ownerId: "land-engine:26320",
+					ownerInstanceId: "22222222-2222-4222-8222-222222222222",
+					ownerPid: 26320,
+					ownerProcessStart: "Wed Sep 16 18:00:00 2026",
+					ownerHostBootId: "host-boot-1",
+				},
+			];
+			const claims = operations.map((operation, index) =>
+				store.claimLandOperation({
+					operationId: operation.operation_id,
+					...owners[index]!,
+					now: "2026-09-16T18:00:01.000Z",
+					leaseExpiresAt: "2026-09-16T18:05:01.000Z",
+				}),
+			);
+			expect(claims.every(Boolean)).toBe(true);
+			for (const [index, operation] of operations.entries()) {
+				expect(
+					store.isCurrentLandOperationClaim({
+						operation,
+						claim: claims[index]!,
+						now: "2026-09-16T18:00:02.000Z",
+					}),
+				).toBe(true);
+			}
 		} finally {
 			store.close();
 		}

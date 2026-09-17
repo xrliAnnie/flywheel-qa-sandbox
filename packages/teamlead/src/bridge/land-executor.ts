@@ -4,6 +4,7 @@ import type {
 	LandMergeTicketRow,
 	LandOperationClaim,
 	LandOperationRow,
+	LandOwnerIdentity,
 	StateStore,
 } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -28,6 +29,11 @@ import {
 	renderLandMergeTicketComment,
 	signLandMergeTicket,
 } from "./land-merge-ticket.js";
+import {
+	defaultLandOwnerIdentity,
+	LAND_OWNER_DEADLINE_MS,
+	LAND_OWNER_HEARTBEAT_MS,
+} from "./land-owner-liveness.js";
 import { classifyLandRetryReason } from "./land-retry-policy.js";
 import { computeAuthoritativeShipDecision } from "./merge-ship-gate.js";
 
@@ -282,7 +288,9 @@ export interface LandExecutorDeps {
 		  >;
 	now?: () => Date;
 	ownerId?: string;
+	ownerIdentity?: LandOwnerIdentity;
 	leaseMs?: number;
+	ownerHeartbeatMs?: number;
 }
 
 export type LandExecutionResult =
@@ -294,14 +302,28 @@ export type LandExecutionResult =
 	| { status: "held"; operationId: string; reason: string };
 
 export async function resumeHeldLandOperation(
-	input: { operationId: string; actor: string; reason: string },
+	input: {
+		operationId: string;
+		actor: string;
+		reason: string;
+		mode?: "full" | "closeout_only";
+		expectedResumeGeneration?: number;
+		expectedApprovedHead?: string;
+		requestId?: string;
+	},
 	deps: Pick<LandExecutorDeps, "store" | "mergeDriver"> & { now?: () => Date },
 ): Promise<
-	{ ok: true; operation: LandOperationRow } | { ok: false; reason: string }
+	| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
+	| { ok: false; reason: string }
 > {
 	const operation = deps.store.getLandOperation(input.operationId);
 	if (!operation) return { ok: false, reason: "resume_refused:not_found" };
-	if (operation.state !== "held") {
+	const closeoutOnly = input.mode === "closeout_only";
+	if (
+		(!closeoutOnly && operation.state !== "held") ||
+		(closeoutOnly &&
+			!new Set(["held", "partial", "completed"]).has(operation.state))
+	) {
 		return { ok: false, reason: "resume_refused:not_held" };
 	}
 	let pr: LandPrState;
@@ -326,6 +348,9 @@ export async function resumeHeldLandOperation(
 	if (pr.state === "CLOSED") {
 		return { ok: false, reason: "resume_refused:pr_closed_unmerged" };
 	}
+	if (closeoutOnly && pr.state !== "MERGED") {
+		return { ok: false, reason: "resume_refused:pr_not_merged" };
+	}
 	return deps.store.resumeHeldLandOperation({
 		operationId: input.operationId,
 		actor: input.actor,
@@ -333,6 +358,15 @@ export async function resumeHeldLandOperation(
 		now: (deps.now ?? (() => new Date()))().toISOString(),
 		expectedPrDisposition: pr.state === "MERGED" ? "merged" : "open",
 		expectedHeadSha: pr.headSha,
+		...(pr.mergeSha ? { expectedMergeSha: pr.mergeSha } : {}),
+		...(input.mode ? { mode: input.mode } : {}),
+		...(input.expectedResumeGeneration === undefined
+			? {}
+			: { expectedResumeGeneration: input.expectedResumeGeneration }),
+		...(input.expectedApprovedHead
+			? { expectedApprovedHead: input.expectedApprovedHead }
+			: {}),
+		...(input.requestId ? { requestId: input.requestId } : {}),
 	});
 }
 
@@ -344,6 +378,16 @@ function stepReceipt(
 	return store
 		.listLandOperationSteps(operationId)
 		.find((candidate) => candidate.step === step)?.receipt;
+}
+
+function closeoutOnlyReceipt(
+	store: StateStore,
+	operation: LandOperationRow,
+): Record<string, unknown> | undefined {
+	const prefix = `closeout_only_authorized:${operation.resume_generation}:`;
+	return store
+		.listLandOperationSteps(operation.operation_id)
+		.find((candidate) => candidate.step.startsWith(prefix))?.receipt;
 }
 
 function coolTriggerReceipt(
@@ -363,6 +407,33 @@ async function authorizeLandOperation(
 	store: StateStore,
 	operation: LandOperationRow,
 ): Promise<{ ok: true } | { ok: false; reason: string; retryable?: boolean }> {
+	const reclose = closeoutOnlyReceipt(store, operation);
+	if (reclose) {
+		if (
+			String(reclose.expectedApprovedHead ?? "").toLowerCase() !==
+				operation.approved_head ||
+			!/^[0-9a-f]{40}$/.test(String(reclose.mergeSha ?? "").toLowerCase())
+		) {
+			return { ok: false, reason: "closeout_only_receipt_invalid" };
+		}
+		if (store.getActiveIssueDispositionIntent(operation.issue_id)) {
+			return { ok: false, reason: "closeout_only_issue_parked" };
+		}
+		if (!operation.run_id) return { ok: true };
+		const run = store.getWorkflowRun(operation.run_id);
+		if (!run?.snapshot || run.engine_owned !== 1 || run.status !== "active") {
+			return { ok: false, reason: "closeout_only_run_not_active" };
+		}
+		try {
+			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			return isWorkflowManifestLand(snapshot.manifest) &&
+				run.current_node_id === workflowTerminalNode(snapshot.manifest)
+				? { ok: true }
+				: { ok: false, reason: "closeout_only_land_not_current" };
+		} catch {
+			return { ok: false, reason: "closeout_only_snapshot_invalid" };
+		}
+	}
 	if (!operation.run_id) {
 		const candidates = store
 			.getSessionsByIssue(operation.issue_id)
@@ -1487,16 +1558,41 @@ export async function executeLandOperation(
 	}
 	const nowDate = deps.now?.() ?? new Date();
 	const now = nowDate.toISOString();
+	// `ownerId` without an identity is the explicit legacy/test compatibility
+	// seam. Production omits it and always writes the full process incarnation.
+	const ownerIdentity =
+		deps.ownerIdentity ??
+		(deps.ownerId ? undefined : defaultLandOwnerIdentity());
+	const leaseMs =
+		deps.leaseMs ?? (ownerIdentity ? LAND_OWNER_DEADLINE_MS : 60 * 60_000);
 	const claim = deps.store.claimLandOperation({
 		operationId,
-		ownerId: deps.ownerId ?? `land-engine:${process.pid}`,
+		...(ownerIdentity ?? { ownerId: deps.ownerId! }),
 		now,
-		leaseExpiresAt: new Date(
-			nowDate.getTime() + (deps.leaseMs ?? 60 * 60_000),
-		).toISOString(),
+		leaseExpiresAt: new Date(nowDate.getTime() + leaseMs).toISOString(),
 	});
 	if (!claim) return { status: "busy", operationId };
 	operation = deps.store.getLandOperation(operationId)!;
+	const ownerHeartbeat = ownerIdentity
+		? setInterval(() => {
+				const heartbeatAt = deps.now?.() ?? new Date();
+				try {
+					deps.store.renewLandOperationOwner({
+						claim,
+						identity: ownerIdentity,
+						now: heartbeatAt.toISOString(),
+						leaseExpiresAt: new Date(
+							heartbeatAt.getTime() + leaseMs,
+						).toISOString(),
+					});
+				} catch (error) {
+					console.warn(
+						`[land] owner heartbeat failed for ${operationId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}, deps.ownerHeartbeatMs ?? LAND_OWNER_HEARTBEAT_MS)
+		: undefined;
+	ownerHeartbeat?.unref?.();
 	try {
 		const authorization = await authorizeLandEffect(deps, operation, claim);
 		if (!authorization.ok) {
@@ -1568,6 +1664,20 @@ export async function executeLandOperation(
 					prNumber: operation.pr_number,
 				}),
 		);
+		if (
+			closeoutOnlyReceipt(deps.store, operation) &&
+			(pr.headSha.toLowerCase() !== operation.approved_head ||
+				pr.state !== "MERGED")
+		) {
+			return release(
+				deps,
+				operation,
+				claim,
+				"held",
+				"closeout_only_merge_not_observed",
+				now,
+			);
+		}
 		if (
 			pr.headSha.toLowerCase() === operation.approved_head &&
 			deps.contentProver
@@ -1917,6 +2027,16 @@ export async function executeLandOperation(
 				claim,
 				"held",
 				`cool_adjudication_failed:${adjudicated.reason}`,
+				now,
+			);
+		}
+		if (closeoutOnlyReceipt(deps.store, operation) && pr.state !== "MERGED") {
+			return release(
+				deps,
+				operation,
+				claim,
+				"held",
+				"closeout_only_merge_not_observed",
 				now,
 			);
 		}
@@ -2672,6 +2792,8 @@ export async function executeLandOperation(
 			reason,
 			now,
 		);
+	} finally {
+		if (ownerHeartbeat) clearInterval(ownerHeartbeat);
 	}
 }
 

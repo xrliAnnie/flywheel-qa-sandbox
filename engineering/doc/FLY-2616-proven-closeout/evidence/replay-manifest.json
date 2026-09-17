@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "mode": "derived_fixture",
+  "createdAt": "2026-09-16T07:34:21Z",
+  "productionSnapshot": {
+    "status": "unavailable",
+    "attemptedAt": "2026-09-16T07:30:00Z",
+    "helper": "/Users/xiaorongli/Dev/flywheel/scripts/flywheel-snapshot-control.mjs",
+    "reason": "snapshot_owner_unavailable: TEAMLEAD_API_TOKEN was unavailable to the managed runner; no production database was copied or opened",
+    "sourceBytes": {
+      "teamlead": 1955307520,
+      "comm": 1129107456
+    },
+    "executionHardLimitBytes": 2147483648,
+    "budgetNote": "The two current source files also exceed the 2 GiB per-execution snapshot admission limit when combined. A future authorized replay must extract and release bounded relationship closures under the managed helper."
+  },
+  "externalSandbox": {
+    "status": "not_run",
+    "reason": "Discord #cos-test readback preflight succeeded, but FLY-SBX-1 returned Entity not found for the injected LINEAR_API_KEY. No dedicated sandbox Linear issue allowlist and matching credential were injected, so external mutations and acceptance readbacks were not run."
+  },
+  "allowlist": {
+    "network": [],
+    "discordThreadIds": [],
+    "linearIssueIds": []
+  },
+  "cases": [
+    {
+      "incident": "2391",
+      "sourceKind": "derived_fixture",
+      "productionAcceptance": false,
+      "provenance": {
+        "shape": "session_row_missing",
+        "sourceDecision": "Founder issue statement identifies a dead runner whose session row was already removed; this fixture is derived from that shape and is not a production snapshot."
+      }
+    },
+    {
+      "incident": "2588",
+      "sourceKind": "derived_fixture",
+      "productionAcceptance": false,
+      "provenance": {
+        "shape": "never_started_engine",
+        "sourceDecision": "Approved plan identifies an engine land node with no runner session; this fixture is derived from that shape and is not a production snapshot."
+      }
+    },
+    {
+      "incident": "2413",
+      "sourceKind": "derived_fixture",
+      "productionAcceptance": false,
+      "provenance": {
+        "shape": "dead_parked",
+        "sourceDecision": "Founder issue statement identifies a parked declaration with no live runner; this fixture is derived from that shape and is not a production snapshot."
+      }
+    },
+    {
+      "incident": "2602",
+      "sourceKind": "derived_fixture",
+      "productionAcceptance": false,
+      "provenance": {
+        "shape": "absent_worktree",
+        "sourceDecision": "Founder issue statement identifies a bound worktree directory already removed after merge; this fixture is derived from that shape and is not a production snapshot."
+      }
+    }
+  ]
+}

@@ -24,7 +24,12 @@
  */
 
 import { existsSync } from "node:fs";
-import { CommDB, type Session } from "flywheel-comm/db";
+import {
+	CommDB,
+	type ProvenGoneFinalizationInput,
+	type Session,
+	type SessionCloseoutIdentity,
+} from "flywheel-comm/db";
 import { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
@@ -118,6 +123,10 @@ export interface FinalizeCommDbResult {
 		| "turn_holder"
 		| "parked"
 		| "founder_wake_pending"
+		| "evidence_expired"
+		| "closeout_identity_changed"
+		| "closeout_receipt_conflict"
+		| "invalid_trusted_context"
 		| "failed";
 	retiredGateCount: number;
 	/**
@@ -128,6 +137,78 @@ export interface FinalizeCommDbResult {
 	retiredAskCount: number;
 	deletedSessionCount: number;
 	error?: string;
+}
+
+/** Exact CommDB row/declaration revision bound into multi-source evidence. */
+export function readCommDbCloseoutIdentity(
+	executionId: string,
+	projectName: string,
+	dbPath: string | undefined = resolveCommDbPath(projectName),
+): SessionCloseoutIdentity | undefined {
+	if (!dbPath) return undefined;
+	let db: CommDB | undefined;
+	try {
+		db = CommDB.openReadonly(dbPath);
+		return db.getSessionCloseoutIdentity(executionId);
+	} catch (error) {
+		console.warn(
+			`[commdb-prune] closeout identity unavailable for ${executionId}: ${(error as Error).message}`,
+		);
+		return undefined;
+	} finally {
+		db?.close();
+	}
+}
+
+/** Generation-reservation caller path for exact physically-gone evidence. */
+export function finalizeProvenGoneCommDbSession(
+	executionId: string,
+	projectName: string,
+	input: ProvenGoneFinalizationInput,
+	dbPath: string | undefined = resolveCommDbPath(projectName),
+): FinalizeCommDbResult {
+	if (!dbPath) {
+		return {
+			ok: true,
+			outcome: "no_db",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+		};
+	}
+	let db: CommDB | undefined;
+	try {
+		db = new CommDB(dbPath, false);
+		const finalized = db.finalizeProvenGoneSession(executionId, input);
+		if (!finalized.finalized) {
+			return {
+				ok: false,
+				outcome: finalized.reason,
+				retiredGateCount: 0,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+				error: finalized.reason,
+			};
+		}
+		return {
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: finalized.result.retiredQuestionCount,
+			retiredAskCount: finalized.result.retiredAskCount,
+			deletedSessionCount: finalized.result.deletedSessionCount,
+		};
+	} catch (error) {
+		return {
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	} finally {
+		db?.close();
+	}
 }
 
 export function finalizeCommDbSession(

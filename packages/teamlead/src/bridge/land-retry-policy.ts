@@ -1,4 +1,8 @@
-export type LandRetryClassification = "waiting" | "retryable" | "terminal";
+export type LandRetryClassification =
+	| "waiting"
+	| "retryable"
+	| "terminal"
+	| "lease_lost";
 
 export interface LandRetryInput {
 	classification: LandRetryClassification;
@@ -82,6 +86,9 @@ export function classifyLandRetryReason(
 	const unwrapped = reason.startsWith("land_execution_error:")
 		? reason.slice("land_execution_error:".length)
 		: reason;
+	if (unwrapped === "stale_land_generation" || unwrapped === "lease_lost") {
+		return "lease_lost";
+	}
 	if (
 		WAITING_REASONS.has(unwrapped) ||
 		reason.startsWith("workflow_pr_manifest_partial:")
@@ -111,9 +118,11 @@ function exhaustedReason(reason: string): string {
 export function nextLandRetry(input: LandRetryInput): LandRetryDecision {
 	if (input.classification !== "retryable") {
 		const cadenceMs =
-			input.classification === "waiting"
-				? WAITING_CADENCE_MS.get(input.reason)
-				: undefined;
+			input.classification === "lease_lost"
+				? 2_000
+				: input.classification === "waiting"
+					? WAITING_CADENCE_MS.get(input.reason)
+					: undefined;
 		return {
 			state: input.classification === "terminal" ? "held" : "partial",
 			retryCount: input.priorRetryCount,

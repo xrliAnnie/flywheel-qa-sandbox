@@ -258,11 +258,14 @@ async function inspectCodexDaemonOwnership(
 	const ledger = readPersistedDaemonLedger(executionId, env);
 	const pgid = ledger.state === "valid_group" ? ledger.pgid : undefined;
 	if (pgid === undefined) {
+		const socketLive = await (deps.isSocketLive ?? defaultIsSocketLive)(
+			socketPath,
+		);
 		return {
 			ledger: ledger.state,
 			liveness: "unknown",
 			socketPath,
-			socketLive: await (deps.isSocketLive ?? defaultIsSocketLive)(socketPath),
+			socketLive,
 			groupState: "unknown",
 		};
 	}

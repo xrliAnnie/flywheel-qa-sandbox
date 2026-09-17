@@ -677,6 +677,168 @@ describe("closeoutIssue — canceled disposition", () => {
 			},
 		});
 	});
+
+	it.each(["gone", "alive"] as const)(
+		"requires persisted multi-source %s evidence before a land closeout retires a missing session",
+		async (verdict) => {
+			const store = await freshStore();
+			vi.spyOn(store, "listRunAttributedExecutions").mockReturnValue([
+				"retired-implement",
+			]);
+			const base = Date.now();
+			const operation = store.ensureLandOperation({
+				runId: "run-evidence",
+				issueId: UUID,
+				projectName: "proj",
+				prNumber: 2616,
+				approvedHead: "f".repeat(40),
+				now: new Date(base - 1_000).toISOString(),
+			});
+			const claim = store.claimLandOperation({
+				operationId: operation.operation_id,
+				ownerId: "land-worker",
+				now: new Date(base).toISOString(),
+				leaseExpiresAt: new Date(base + 60_000).toISOString(),
+			});
+			expect(claim).toBeDefined();
+			const finalizeCommDbSessionFn = vi.fn(() => ({
+				ok: true,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+			}));
+			const finalizeProvenGoneCommDbSessionFn = vi.fn(() => ({
+				ok: true,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+			}));
+			const observedAt = new Date(base - 500).toISOString();
+			const collectCloseoutEvidenceFn = vi.fn(async (identity: never) => ({
+				...(identity as object),
+				version: 1 as const,
+				observedAt,
+				expiresAt: new Date(base + 31_000).toISOString(),
+				observations: {},
+				negativeReasons:
+					verdict === "gone" ? ["stateSession:state_session_absent"] : [],
+				liveVetoes: verdict === "alive" ? ["daemon:codex_daemon_alive"] : [],
+				unknownReasons: [],
+				commIdentityRevision: "c".repeat(64),
+				verdict,
+			}));
+
+			const report = await closeoutIssue(
+				baseDeps(store, {
+					collectCloseoutEvidenceFn,
+					finalizeCommDbSessionFn,
+					finalizeProvenGoneCommDbSessionFn,
+				} as never),
+				{
+					issueKey: UUID,
+					projectName: "proj",
+					disposition: "shipped",
+					authority: "ship_complete",
+					runIds: ["run-evidence"],
+					landOperation: {
+						operationId: operation.operation_id,
+						ownerId: claim!.ownerId,
+						generation: claim!.generation,
+					},
+				},
+			);
+
+			expect(collectCloseoutEvidenceFn).toHaveBeenCalledOnce();
+			expect(
+				store.listCloseoutExecutionEvidence(operation.operation_id),
+			).toHaveLength(1);
+			expect(report.nodes[0]).toMatchObject({
+				evidenceVerdict: verdict,
+				confirmedGone: verdict === "gone",
+			});
+			expect(finalizeProvenGoneCommDbSessionFn).toHaveBeenCalledTimes(
+				verdict === "gone" ? 1 : 0,
+			);
+			expect(finalizeCommDbSessionFn).not.toHaveBeenCalled();
+			expect(report.outcome).toBe(verdict === "gone" ? "complete" : "blocked");
+		},
+	);
+
+	it("FLY-2616: dead parked session uses fresh gone evidence to clear its CommDB declaration", async () => {
+		const store = await freshStore();
+		seedSession(store, "parked-exec", "completed");
+		const base = Date.now();
+		const operation = store.ensureLandOperation({
+			issueId: UUID,
+			projectName: "proj",
+			prNumber: 2616,
+			approvedHead: "e".repeat(40),
+			now: new Date(base - 1_000).toISOString(),
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-worker",
+			now: new Date(base).toISOString(),
+			leaseExpiresAt: new Date(base + 60_000).toISOString(),
+		});
+		expect(claim).toBeDefined();
+		const collectCloseoutEvidenceFn = vi.fn(async (identity: never) => ({
+			...(identity as object),
+			version: 1 as const,
+			observedAt: new Date(base - 500).toISOString(),
+			expiresAt: new Date(base + 30_000).toISOString(),
+			observations: {},
+			negativeReasons: ["window:execution_window_absent"],
+			liveVetoes: [],
+			unknownReasons: [],
+			commIdentityRevision: "d".repeat(64),
+			verdict: "gone" as const,
+		}));
+		const finalizeProvenGoneCommDbSessionFn = vi.fn(() => ({
+			ok: true,
+			outcome: "finalized" as const,
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 1,
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: vi.fn(async () => ({
+					closed: false,
+					alreadyGone: true,
+					runnerDeathProven: true,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					error: "commdb_finalize_failed:parked",
+				})),
+				collectCloseoutEvidenceFn,
+				finalizeProvenGoneCommDbSessionFn,
+			} as never),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "shipped",
+				authority: "ship_complete",
+				landOperation: {
+					operationId: operation.operation_id,
+					ownerId: claim!.ownerId,
+					generation: claim!.generation,
+				},
+			},
+		);
+
+		expect(collectCloseoutEvidenceFn).toHaveBeenCalledOnce();
+		expect(finalizeProvenGoneCommDbSessionFn).toHaveBeenCalledOnce();
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+			teardown: { state: "done" },
+		});
+		expect(report.outcome).toBe("complete");
+	});
 });
 
 describe("closeoutIssue — shipped disposition", () => {
@@ -1069,6 +1231,67 @@ describe("admission barrier + launch claims (plan §4 #38)", () => {
 		expect(nodes.map((n) => n.executionId)).toContain("spawning-e");
 	});
 
+	it("a current land closeout reservation blocks births and release removes the temporary barrier", async () => {
+		const store = await freshStore();
+		const now = Date.now();
+		const operation = store.ensureLandOperation({
+			issueId: UUID,
+			projectName: "proj",
+			prNumber: 2616,
+			approvedHead: "a".repeat(40),
+			now: new Date(now - 1_000).toISOString(),
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-worker",
+			now: new Date(now).toISOString(),
+			leaseExpiresAt: new Date(now + 60_000).toISOString(),
+		});
+		expect(claim).toBeDefined();
+		expect(
+			store.reserveLandCloseout({
+				operationId: operation.operation_id,
+				ownerId: claim!.ownerId,
+				generation: claim!.generation,
+				inventoryDigest: "b".repeat(64),
+				now: new Date(now + 1).toISOString(),
+			}),
+		).toMatchObject({ ok: true });
+
+		const denied = await assertIssueNotLifecycleClosed(
+			{ store, withIssueMutex: createIssueMutex() },
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				executionId: "new-during-closeout",
+			},
+		);
+		expect(denied).toEqual({
+			admitted: false,
+			reason: "land_closeout_reserved",
+		});
+
+		expect(
+			store.setLandOperationDisposition({
+				operationId: operation.operation_id,
+				ownerId: claim!.ownerId,
+				generation: claim!.generation,
+				state: "partial",
+				error: "retry",
+				now: new Date(now + 2).toISOString(),
+			}),
+		).toBe(true);
+		const admitted = await assertIssueNotLifecycleClosed(
+			{ store, withIssueMutex: createIssueMutex() },
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				executionId: "new-after-release",
+			},
+		);
+		expect(admitted.admitted).toBe(true);
+	});
+
 	it("fresh issue with zero history (no UUID mapping) is ADMITTED — availability must not regress", async () => {
 		const store = await freshStore();
 		const res = await assertIssueNotLifecycleClosed(
@@ -1305,6 +1528,72 @@ describe("Codex R1 fixes", () => {
 		const node = report.nodes.find((n) => n.node.executionId === "e-inflight");
 		expect(node?.confirmedGone).toBe(false);
 		expect(report.outcome).toBe("blocked");
+	});
+
+	it("FLY-2616: terminal session with stale active claim closes after fresh gone evidence", async () => {
+		const store = await freshStore();
+		seedSession(store, "completed-stale-claim", "completed");
+		store.insertLaunchClaim({
+			executionId: "completed-stale-claim",
+			rootUuid: UUID,
+			project: "proj",
+		});
+		store.casLaunchClaimState("completed-stale-claim", "starting", "active");
+		const base = Date.now();
+		const operation = store.ensureLandOperation({
+			issueId: UUID,
+			projectName: "proj",
+			prNumber: 2616,
+			approvedHead: "a".repeat(40),
+			now: new Date(base - 1_000).toISOString(),
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-worker",
+			now: new Date(base).toISOString(),
+			leaseExpiresAt: new Date(base + 60_000).toISOString(),
+		});
+		expect(claim).toBeDefined();
+		const collectCloseoutEvidenceFn = vi.fn(async (identity: never) => ({
+			...(identity as object),
+			version: 1 as const,
+			observedAt: new Date(base + 1).toISOString(),
+			expiresAt: new Date(base + 30_001).toISOString(),
+			observations: {},
+			negativeReasons: ["window:execution_window_absent"],
+			liveVetoes: [],
+			unknownReasons: [],
+			commIdentityRevision: "c".repeat(64),
+			verdict: "gone" as const,
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				collectCloseoutEvidenceFn,
+				finalizeProvenGoneCommDbSessionFn: vi.fn(() => ({
+					ok: true,
+					outcome: "finalized",
+					retiredGateCount: 1,
+					retiredAskCount: 0,
+					deletedSessionCount: 1,
+				})),
+			} as never),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "shipped",
+				authority: "ship_complete",
+				landOperation: {
+					operationId: operation.operation_id,
+					ownerId: claim!.ownerId,
+					generation: claim!.generation,
+				},
+			},
+		);
+
+		expect(collectCloseoutEvidenceFn).toHaveBeenCalledOnce();
+		expect(report.nodes[0]).toMatchObject({ confirmedGone: true });
+		expect(store.getLaunchClaim("completed-stale-claim")?.state).toBe("closed");
 	});
 
 	it("R1#5: parkIssue is atomic — tombstone + authority + closeout under one mutex hold", async () => {

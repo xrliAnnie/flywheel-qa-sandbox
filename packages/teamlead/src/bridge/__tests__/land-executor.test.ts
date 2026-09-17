@@ -2541,6 +2541,210 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("recloses an exact merged operation without reviving merge authority", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "issue-reclose",
+			projectName: "flywheel",
+			prNumber: 2616,
+			approvedHead: HEAD,
+			now: "2026-09-16T03:34:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker",
+			now: "2026-09-16T03:34:01.000Z",
+			leaseExpiresAt: "2026-09-16T03:44:01.000Z",
+		})!;
+		expect(
+			store.recordLandOperationStep({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "merge_confirmed",
+				receipt: { headSha: HEAD, mergeSha: MERGE },
+				now: "2026-09-16T03:34:02.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "retryable",
+			reason: "issue_closeout_incomplete",
+			now: "2026-09-16T03:34:03.000Z",
+		});
+		const triggerCool = vi.fn();
+		const mergeDriver = {
+			inspectPr: vi.fn().mockResolvedValue({
+				state: "MERGED" as const,
+				headSha: HEAD,
+				mergeSha: MERGE,
+			}),
+			triggerCool,
+			inspectTriggeredWorkflow: vi.fn(),
+		} satisfies LandMergeDriver;
+
+		await expect(
+			resumeHeldLandOperation(
+				{
+					operationId: operation.operation_id,
+					actor: "authenticated-master",
+					reason: "retry closeout evidence only",
+					mode: "closeout_only",
+					expectedResumeGeneration: 0,
+					expectedApprovedHead: HEAD,
+					requestId: "11111111-1111-4111-8111-111111111111",
+				},
+				{
+					store,
+					mergeDriver,
+					now: () => new Date("2026-09-16T03:35:00.000Z"),
+				},
+			),
+		).resolves.toMatchObject({
+			ok: true,
+			operation: {
+				state: "partial",
+				resume_generation: 1,
+				ship_attempt: 0,
+			},
+		});
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.find((step) => step.step.startsWith("closeout_only_authorized:1:"))
+				?.receipt,
+		).toMatchObject({ expectedApprovedHead: HEAD, mergeSha: MERGE });
+		await expect(
+			resumeHeldLandOperation(
+				{
+					operationId: operation.operation_id,
+					actor: "authenticated-master",
+					reason: "retry closeout evidence",
+					mode: "closeout_only",
+					expectedResumeGeneration: 0,
+					expectedApprovedHead: HEAD,
+					requestId: "11111111-1111-4111-8111-111111111111",
+				},
+				{
+					store,
+					mergeDriver,
+					now: () => new Date("2026-09-16T03:35:00.500Z"),
+				},
+			),
+		).resolves.toMatchObject({
+			ok: true,
+			operation: { state: "partial", resume_generation: 1 },
+		});
+
+		await expect(
+			executeLandOperation(operation.operation_id, {
+				store,
+				mergeDriver,
+				finalize: completedFinalizer(store),
+				ownerId: "reclose-worker",
+				now: () => new Date("2026-09-16T03:35:01.000Z"),
+			}),
+		).resolves.toMatchObject({ status: "completed" });
+		expect(triggerCool).not.toHaveBeenCalled();
+		const stepsBeforeReplay = store.listLandOperationSteps(
+			operation.operation_id,
+		);
+		await expect(
+			resumeHeldLandOperation(
+				{
+					operationId: operation.operation_id,
+					actor: "authenticated-master",
+					reason: "idempotent closeout replay",
+					mode: "closeout_only",
+					expectedResumeGeneration: 1,
+					expectedApprovedHead: HEAD,
+					requestId: "22222222-2222-4222-8222-222222222222",
+				},
+				{
+					store,
+					mergeDriver,
+					now: () => new Date("2026-09-16T03:36:00.000Z"),
+				},
+			),
+		).resolves.toMatchObject({ ok: true, alreadyCompleted: true });
+		expect(store.listLandOperationSteps(operation.operation_id)).toEqual(
+			stepsBeforeReplay,
+		);
+		store.close();
+	});
+
+	it("fences a closeout-only replay before any merge effect if merged proof regresses", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "issue-reclose-fence",
+			projectName: "flywheel",
+			prNumber: 2617,
+			approvedHead: HEAD,
+			now: "2026-09-16T03:34:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker",
+			now: "2026-09-16T03:34:01.000Z",
+			leaseExpiresAt: "2026-09-16T03:44:01.000Z",
+		})!;
+		store.recordLandOperationStep({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			step: "merge_confirmed",
+			receipt: { headSha: HEAD, mergeSha: MERGE },
+			now: "2026-09-16T03:34:02.000Z",
+		});
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "terminal",
+			reason: "retry_exhausted:issue_closeout_incomplete",
+			now: "2026-09-16T03:34:03.000Z",
+		});
+		expect(
+			store.resumeHeldLandOperation({
+				operationId: operation.operation_id,
+				actor: "authenticated-master",
+				reason: "retry only closeout",
+				now: "2026-09-16T03:35:00.000Z",
+				expectedPrDisposition: "merged",
+				expectedHeadSha: HEAD,
+				expectedMergeSha: MERGE,
+				mode: "closeout_only",
+				expectedResumeGeneration: 0,
+				expectedApprovedHead: HEAD,
+				requestId: "11111111-1111-4111-8111-111111111111",
+			}),
+		).toMatchObject({ ok: true });
+		const triggerCool = vi.fn();
+		await expect(
+			executeLandOperation(operation.operation_id, {
+				store,
+				mergeDriver: {
+					inspectPr: vi.fn().mockResolvedValue({
+						state: "OPEN" as const,
+						headSha: HEAD,
+					}),
+					triggerCool,
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				finalize: vi.fn(),
+				ownerId: "reclose-worker",
+				now: () => new Date("2026-09-16T03:35:01.000Z"),
+			}),
+		).resolves.toMatchObject({
+			status: "held",
+			reason: "closeout_only_merge_not_observed",
+		});
+		expect(triggerCool).not.toHaveBeenCalled();
+		store.close();
+	});
+
 	it("turns the ninth retryable failure into a fail-loud held operation", async () => {
 		const { store, operation } = await fixture();
 		const attempts = [
@@ -2586,6 +2790,18 @@ describe("land executor", () => {
 			next_attempt_at: null,
 			last_error: "retry_exhausted:linear_lookup_failed_retryable",
 		});
+		expect(store.listLandAlertOutbox()).toMatchObject([
+			{
+				operation_id: operation.operation_id,
+				state: "pending",
+				payload: {
+					runId: "run-1",
+					approvedHead: HEAD,
+					retryCount: 9,
+					retryEpochKey: "0:start",
+				},
+			},
+		]);
 		store.close();
 	});
 
@@ -2657,6 +2873,18 @@ describe("land executor", () => {
 				.listLandOperationSteps(operation.operation_id)
 				.filter((step) => step.step.startsWith("aux:notification:land_held:")),
 		).toHaveLength(1);
+		expect(store.listLandAlertOutbox()).toMatchObject([
+			{
+				operation_id: operation.operation_id,
+				state: "pending",
+				payload: {
+					runId: "run-1",
+					approvedHead: HEAD,
+					retryCount: 9,
+					recoveryMode: "closeout_only",
+				},
+			},
+		]);
 		store.close();
 	});
 });

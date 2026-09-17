@@ -28,6 +28,9 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { lstat, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import {
 	canonicalizeWorktreePath,
 	deriveWorktreeKey,
@@ -38,6 +41,11 @@ import {
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { casDeleteLocalBranch } from "./branch-cleanup.js";
+import type { BoundWorktreeCloseoutTarget } from "./land-intent-targets.js";
+import {
+	type LandOperationAuditIdentity,
+	recordLandCloseoutAudit,
+} from "./land-operation-audit.js";
 import type { WithRepoLock } from "./repo-mutation-lock.js";
 
 /** FLY-603: `git status --porcelain` clean? `"unknown"` on probe error
@@ -66,8 +74,7 @@ export function worktreeAutocleanEnabled(): boolean {
 	return true;
 }
 
-export interface WorktreeCleanupInput {
-	executionId: string;
+interface WorktreeCleanupCommonInput {
 	issueId: string;
 	issueIdentifier?: string;
 	projectName: string;
@@ -76,6 +83,18 @@ export interface WorktreeCleanupInput {
 	tmuxErrors?: string[];
 }
 
+export type WorktreeCleanupInput = WorktreeCleanupCommonInput &
+	(
+		| { executionId: string; operationContext?: never }
+		| {
+				executionId?: never;
+				operationContext: {
+					operationAudit: LandOperationAuditIdentity;
+					target: BoundWorktreeCloseoutTarget;
+				};
+		  }
+	);
+
 /**
  * FLY-1185 §2.4 (R6#2): the structured pre-delete attestation. Captured
  * inside the repo lock BEFORE removal; the ship-time remote branch CAS
@@ -83,6 +102,7 @@ export interface WorktreeCleanupInput {
  */
 export interface WorktreeCleanupAttestation {
 	removed: boolean;
+	cleanupState?: "removed" | "absent" | "blocked";
 	/** The ACTUAL registered branch at delete time. */
 	actualBranch?: string;
 	/** The worktree HEAD sha at delete time. */
@@ -93,12 +113,25 @@ export interface WorktreeCleanupAttestation {
 	bindingBranch?: string;
 	bindingGeneration?: string;
 	skippedReason?: string;
+	absentEvidence?: {
+		path: string;
+		observedAt: string;
+		bindingGeneration: string;
+		operationId: string;
+	};
 	/** FLY-1759: pre-delete process census/reap evidence. */
 	reaps?: WorktreeReapRecord[];
 }
 
 export interface WorktreeCleanupDeps {
-	store: Pick<StateStore, "getSession" | "insertEvent" | "getWorktreeBinding">;
+	store: Pick<
+		StateStore,
+		| "getSession"
+		| "insertEvent"
+		| "getWorktreeBinding"
+		| "getLandOperation"
+		| "recordLandOperationStep"
+	>;
 	worktreeManager: Pick<
 		WorktreeManager,
 		| "expectedWorktree"
@@ -117,6 +150,8 @@ export interface WorktreeCleanupDeps {
 	withRepoLock?: WithRepoLock;
 	/** Codex R1#9 test seam — the local-branch CAS delete primitive. */
 	casDeleteLocalBranchFn?: typeof casDeleteLocalBranch;
+	realpath?: typeof realpath;
+	lstat?: typeof lstat;
 }
 
 export type WorktreeCleanupFn = (
@@ -128,6 +163,7 @@ const SKIPPED = (
 	extra: Partial<WorktreeCleanupAttestation> = {},
 ): WorktreeCleanupAttestation => ({
 	removed: false,
+	cleanupState: "blocked",
 	bindingVerified: false,
 	skippedReason: reason,
 	...extra,
@@ -141,16 +177,38 @@ export function makeWorktreeCleanup(
 		eventType: string,
 		payload: Record<string, unknown>,
 		eventKey = eventType,
-	) => {
+	): boolean => {
+		if (input.operationContext) {
+			return recordLandCloseoutAudit(
+				deps.store,
+				input.operationContext.operationAudit,
+				{
+					evidenceId: `worktree:${canonicalSubmissionDigest({
+						path: input.operationContext.target.path,
+						eventKey,
+						payload,
+					})}`,
+					eventKind: eventType,
+					receipt: {
+						issueId: input.issueId,
+						projectName: input.projectName,
+						...payload,
+					},
+				},
+			).ok;
+		}
 		deps.store.insertEvent({
-			event_id: `worktree-cleanup-${input.executionId}-${eventKey}`,
-			execution_id: input.executionId,
+			event_id: `worktree-cleanup-${input.executionId!}-${eventKey}`,
+			execution_id: input.executionId!,
 			issue_id: input.issueId,
 			project_name: input.projectName,
 			event_type: eventType,
 			source: "bridge.worktree-cleanup",
 			payload,
 		});
+		// Legacy session-event insertion is idempotent: false can mean the
+		// stable event id was already recorded by an earlier attempt.
+		return true;
 	};
 
 	return async (input) => {
@@ -175,11 +233,144 @@ export function makeWorktreeCleanup(
 			}
 
 			const run = async (): Promise<WorktreeCleanupAttestation> => {
-				const session = deps.store.getSession(input.executionId);
+				const session = input.operationContext
+					? undefined
+					: deps.store.getSession(input.executionId!);
+				const operationTarget = input.operationContext?.target;
+				const realpathFn = deps.realpath ?? realpath;
+				const lstatFn = deps.lstat ?? lstat;
 
 				// (2) target resolution — persisted worktree_path is authoritative.
-				let worktreePath = session?.worktree_path || "";
-				let branch: string | null = session?.branch ?? null;
+				let worktreePath =
+					operationTarget?.path ?? session?.worktree_path ?? "";
+				let branch: string | null =
+					operationTarget?.branch ?? session?.branch ?? null;
+				if (operationTarget) {
+					if (
+						operationTarget.projectRoot !== projectRoot ||
+						operationTarget.parentIdentity.path !==
+							dirname(operationTarget.path) ||
+						dirname(operationTarget.projectRoot) !==
+							operationTarget.parentIdentity.path
+					) {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "operation_target_scope_mismatch",
+							worktreePath,
+						});
+						return SKIPPED("operation_target_scope_mismatch");
+					}
+					let canonicalRoot: string;
+					let canonicalParent: string;
+					try {
+						[canonicalRoot, canonicalParent] = await Promise.all([
+							realpathFn(projectRoot),
+							realpathFn(operationTarget.parentIdentity.path),
+						]);
+					} catch {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "parent_unavailable",
+							worktreePath,
+						});
+						return SKIPPED("parent_unavailable");
+					}
+					if (
+						canonicalRoot !== operationTarget.projectRoot ||
+						canonicalParent !== operationTarget.parentIdentity.path
+					) {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "parent_identity_mismatch",
+							worktreePath,
+						});
+						return SKIPPED("parent_identity_mismatch");
+					}
+					let parentStat: Awaited<ReturnType<typeof lstat>>;
+					let rootStat: Awaited<ReturnType<typeof lstat>>;
+					try {
+						[parentStat, rootStat] = await Promise.all([
+							lstatFn(operationTarget.parentIdentity.path),
+							lstatFn(projectRoot),
+						]);
+					} catch {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "parent_unavailable",
+							worktreePath,
+						});
+						return SKIPPED("parent_unavailable");
+					}
+					if (
+						parentStat.isSymbolicLink() ||
+						!parentStat.isDirectory() ||
+						rootStat.isSymbolicLink() ||
+						!rootStat.isDirectory() ||
+						Number(parentStat.dev) !== operationTarget.parentIdentity.dev ||
+						Number(parentStat.ino) !== operationTarget.parentIdentity.ino ||
+						Number(rootStat.dev) !== Number(parentStat.dev)
+					) {
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "parent_identity_mismatch",
+							worktreePath,
+						});
+						return SKIPPED("parent_identity_mismatch");
+					}
+					if (
+						!audit(
+							input,
+							"worktree_cleanup_probe",
+							{
+								worktreePath,
+								bindingGeneration: operationTarget.generation,
+							},
+							`probe-${operationTarget.generation}`,
+						)
+					) {
+						return SKIPPED("operation_audit_unavailable");
+					}
+					try {
+						const leaf = await lstatFn(operationTarget.path);
+						if (leaf.isSymbolicLink() || !leaf.isDirectory()) {
+							audit(input, "worktree_cleanup_skipped", {
+								reason: "leaf_identity_mismatch",
+								worktreePath,
+							});
+							return SKIPPED("leaf_identity_mismatch");
+						}
+						if (
+							(await realpathFn(operationTarget.path)) !== operationTarget.path
+						) {
+							audit(input, "worktree_cleanup_skipped", {
+								reason: "leaf_identity_mismatch",
+								worktreePath,
+							});
+							return SKIPPED("leaf_identity_mismatch");
+						}
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+							const observedAt = new Date().toISOString();
+							const absentEvidence = {
+								path: operationTarget.path,
+								observedAt,
+								bindingGeneration: operationTarget.generation,
+								operationId: input.operationContext!.operationAudit.operationId,
+							};
+							if (!audit(input, "worktree_cleanup_absent", absentEvidence)) {
+								return SKIPPED("operation_audit_unavailable");
+							}
+							return {
+								removed: false,
+								cleanupState: "absent",
+								bindingVerified: false,
+								bindingBranch: operationTarget.branch,
+								bindingGeneration: operationTarget.generation,
+								absentEvidence,
+							};
+						}
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "leaf_unavailable",
+							worktreePath,
+						});
+						return SKIPPED("leaf_unavailable");
+					}
+				}
 				if (!worktreePath) {
 					const ident =
 						input.issueIdentifier ??
@@ -228,6 +419,27 @@ export function makeWorktreeCleanup(
 					key,
 				).branch;
 				if (!reg) {
+					try {
+						await lstatFn(worktreePath);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+							const observedAt = new Date().toISOString();
+							audit(input, "worktree_cleanup_absent", {
+								worktreePath,
+								observedAt,
+							});
+							return {
+								removed: false,
+								cleanupState: "absent",
+								bindingVerified: false,
+							};
+						}
+						audit(input, "worktree_cleanup_skipped", {
+							reason: "leaf_unavailable",
+							worktreePath,
+						});
+						return SKIPPED("leaf_unavailable");
+					}
 					audit(input, "worktree_cleanup_skipped", {
 						reason: "not_registered",
 						worktreePath,
@@ -241,7 +453,10 @@ export function makeWorktreeCleanup(
 					});
 					return SKIPPED("branchless_or_detached");
 				}
-				if (reg.branch !== expectedBranch) {
+				if (
+					reg.branch !== expectedBranch ||
+					(operationTarget && reg.branch !== operationTarget.branch)
+				) {
 					audit(input, "worktree_cleanup_skipped", {
 						reason: "branch_mismatch",
 						worktreePath,
@@ -262,7 +477,13 @@ export function makeWorktreeCleanup(
 				// BEFORE removal. Four-way agreement → bindingVerified:true; a
 				// binding that exists but DISAGREES → no removal at all (R7);
 				// no binding → legacy removal path with bindingVerified:false.
-				const binding = deps.store.getWorktreeBinding(input.executionId);
+				const binding = operationTarget
+					? {
+							path: operationTarget.path,
+							branch: operationTarget.branch,
+							generation: operationTarget.generation,
+						}
+					: deps.store.getWorktreeBinding(input.executionId!);
 				let bindingVerified = false;
 				if (binding) {
 					const pathMatch =
@@ -353,7 +574,7 @@ export function makeWorktreeCleanup(
 					branchDeleteReason = "no_attested_head";
 				}
 
-				audit(
+				const outcomeRecorded = audit(
 					input,
 					res.removed ? "worktree_cleanup_done" : "worktree_cleanup_failed",
 					{
@@ -367,8 +588,15 @@ export function makeWorktreeCleanup(
 						reaps: res.reaps ?? [],
 					},
 				);
+				if (input.operationContext && !outcomeRecorded) {
+					return SKIPPED("operation_audit_unavailable", {
+						bindingBranch: binding?.branch,
+						bindingGeneration: binding?.generation,
+					});
+				}
 				return {
 					removed: res.removed,
+					cleanupState: res.removed ? "removed" : "blocked",
 					actualBranch: branch ?? undefined,
 					headSha,
 					branchDeleted,

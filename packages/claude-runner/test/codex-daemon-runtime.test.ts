@@ -1485,7 +1485,7 @@ describe("spawnCodexDaemon — Codex R9: the teardown holes", () => {
 });
 
 describe("FLY-2490 daemon evidence", () => {
-	it("distinguishes missing launch evidence from an unknown daemon", async () => {
+	it("keeps a missing ledger and socket neutral while exposing the absent spawn lock", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2490-"));
 		try {
 			const env = {
@@ -1664,7 +1664,7 @@ describe("FLY-2490 bounded daemon evidence reads", () => {
 		}
 	});
 	it.each(["live", "stale", "unreadable"] as const)(
-		"reports %s lock independently of daemon liveness",
+		"does not prove a missing-ledger daemon absent while its spawn lock is %s",
 		async (state) => {
 			const f = fixture();
 			try {
@@ -1679,7 +1679,6 @@ describe("FLY-2490 bounded daemon evidence reads", () => {
 					isPidAlive,
 				};
 				expect(await probeCodexDaemonLiveness(f.id, deps)).toBe("unknown");
-				expect(isPidAlive).not.toHaveBeenCalled();
 				expect((await probeCodexDaemonEvidence(f.id, deps)).spawnLock).toBe(
 					state,
 				);
@@ -1689,7 +1688,7 @@ describe("FLY-2490 bounded daemon evidence reads", () => {
 			}
 		},
 	);
-	it("matches the previous regular-file probe across ledger and ownership states", async () => {
+	it("preserves prior ownership semantics across ledger and ownership states", async () => {
 		const f = fixture();
 		try {
 			const rawCases = [

@@ -1,0 +1,148 @@
+{
+  "ok": true,
+  "head": "2b18a0bac66994b57f4804a0475a33cb7c2cae97",
+  "manifest": "engineering/doc/FLY-2616-proven-closeout/evidence/replay-manifest.json",
+  "manifestDigest": "c0db131687366f05593bab0ca8f903ec27c1bd5fc16242d6c44b54ca125755df",
+  "mode": "derived_fixture",
+  "networkCalls": 0,
+  "cases": [
+    {
+      "incident": "2391",
+      "sourceKind": "derived_fixture",
+      "fixtureDigest": "4ce42441ec43e6e0fa769b013ccf7738a060a8a5b6973ba415e16fe74558b51d",
+      "verdict": "gone",
+      "negativeReasons": [
+        "stateSession:session_row_missing",
+        "commSession:comm_row_missing",
+        "window:tmux_window_missing",
+        "hostProcess:process_absent",
+        "daemon:daemon_absent",
+        "launch:launch_settled"
+      ],
+      "landOperation": "completed",
+      "workflowRun": "completed_local_double",
+      "simulatedFinalization": {
+        "evidenceKind": "local_double",
+        "threadArchive": "completed",
+        "linearDisposition": "completed"
+      },
+      "completedNotificationCount": 1,
+      "comm": {
+        "applicable": true,
+        "deletedSessionCount": 0,
+        "retiredQuestionCount": 0,
+        "idempotentReplay": true
+      }
+    },
+    {
+      "incident": "2588",
+      "sourceKind": "derived_fixture",
+      "fixtureDigest": "70f619319dc4546609e5035f7c4eae786cd24a0d3415237e1dcd21b620f58097",
+      "verdict": "gone",
+      "negativeReasons": [
+        "stateSession:session_row_never_created",
+        "commSession:comm_row_never_created",
+        "launch:dispatch_has_no_runner_launch"
+      ],
+      "landOperation": "completed",
+      "workflowRun": "completed_local_double",
+      "simulatedFinalization": {
+        "evidenceKind": "local_double",
+        "threadArchive": "completed",
+        "linearDisposition": "completed"
+      },
+      "completedNotificationCount": 1,
+      "comm": {
+        "applicable": false
+      }
+    },
+    {
+      "incident": "2413",
+      "sourceKind": "derived_fixture",
+      "fixtureDigest": "0d6b2dfbea9d3294edc14524feb8d13ab5c67909cdb78a718f0a74464405d621",
+      "verdict": "gone",
+      "negativeReasons": [
+        "window:tmux_window_missing",
+        "hostProcess:process_absent",
+        "daemon:daemon_absent",
+        "heartbeat:heartbeat_expired",
+        "launch:launch_settled"
+      ],
+      "landOperation": "completed",
+      "workflowRun": "completed_local_double",
+      "simulatedFinalization": {
+        "evidenceKind": "local_double",
+        "threadArchive": "completed",
+        "linearDisposition": "completed"
+      },
+      "completedNotificationCount": 1,
+      "comm": {
+        "applicable": true,
+        "deletedSessionCount": 1,
+        "retiredQuestionCount": 0,
+        "idempotentReplay": true
+      }
+    },
+    {
+      "incident": "2602",
+      "sourceKind": "derived_fixture",
+      "fixtureDigest": "634066008abbfac5bbba07f54acedf440c22dba4c968609cb7265a57f8018b23",
+      "verdict": "gone",
+      "negativeReasons": [
+        "stateSession:session_row_missing",
+        "commSession:comm_row_missing",
+        "window:tmux_window_missing",
+        "hostProcess:process_absent",
+        "daemon:daemon_absent",
+        "launch:launch_settled"
+      ],
+      "landOperation": "completed",
+      "workflowRun": "completed_local_double",
+      "simulatedFinalization": {
+        "evidenceKind": "local_double",
+        "threadArchive": "completed",
+        "linearDisposition": "completed"
+      },
+      "completedNotificationCount": 1,
+      "comm": {
+        "applicable": false
+      },
+      "worktree": {
+        "cleanupState": "absent",
+        "removed": false
+      }
+    }
+  ],
+  "controls": {
+    "alive": {
+      "verdict": "alive",
+      "sideEffects": "not_exercised"
+    },
+    "unknown": {
+      "verdict": "unknown",
+      "sideEffects": "not_exercised"
+    }
+  },
+  "lease": {
+    "elapsedMs": 2015,
+    "thresholdMs": 10000,
+    "successorClaimed": true,
+    "staleOwnerFenced": true
+  },
+  "archiveFailure": {
+    "first": "partial",
+    "replay": "completed",
+    "finalizeAttempts": 2
+  },
+  "productionAcceptance": false,
+  "productionAcceptanceReason": "snapshot_owner_unavailable: TEAMLEAD_API_TOKEN was unavailable to the managed runner; no production database was copied or opened",
+  "externalSandboxAcceptance": false,
+  "externalSandboxAcceptanceReason": "Discord #cos-test readback preflight succeeded, but FLY-SBX-1 returned Entity not found for the injected LINEAR_API_KEY. No dedicated sandbox Linear issue allowlist and matching credential were injected, so external mutations and acceptance readbacks were not run.",
+  "externalSandboxReadback": {
+    "status": "not_run",
+    "threadArchived": null,
+    "linearStateType": null,
+    "archiveCalls": null,
+    "linearCalls": null
+  }
+}

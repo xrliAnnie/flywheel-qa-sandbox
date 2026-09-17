@@ -19,7 +19,7 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
-import { phaseMessageTag } from "flywheel-config";
+import { canonicalSubmissionDigest, phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
@@ -38,6 +38,11 @@ import {
 	type LandCloseoutCause,
 	landCloseoutReason,
 } from "./land-closeout-cause.js";
+import { readLandTargetSnapshot } from "./land-intent-targets.js";
+import {
+	type LandOperationAuditIdentity,
+	recordLandCloseoutAudit,
+} from "./land-operation-audit.js";
 import { normalizeLandLinearDoneReason } from "./land-retry-policy.js";
 import {
 	type LinearDoneFinalizer,
@@ -50,7 +55,10 @@ import {
 	type ForceShippedHusksResult,
 	forceShippedHusks,
 } from "./shipped-husk-escalation.js";
-import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
+import type {
+	WorktreeCleanupAttestation,
+	WorktreeCleanupFn,
+} from "./worktree-cleanup.js";
 
 /** No-op policy outcomes that deliberately discharge finalization's archive duty. */
 export function isArchiveObligationSettled(
@@ -68,7 +76,10 @@ function postShipArchiveReceipt(
 	threadId: string,
 ): { eventId: string; payload: Record<string, unknown> } {
 	const closeoutKind = opts.landOperation ? "land" : "execution";
-	const closeoutId = opts.landOperation?.operationId ?? opts.executionId;
+	const closeoutId =
+		opts.landOperation?.operationId ??
+		opts.operationContext?.operationId ??
+		opts.executionId;
 	return {
 		eventId: `chat-thread-archived-fly2377-${closeoutKind}-${closeoutId}-${threadId}`,
 		payload: {
@@ -293,8 +304,7 @@ export function settleShipAttemptFailed(
 	return result ?? { outcome: "unknown_head_skipped" };
 }
 
-export interface PostShipOpts {
-	executionId: string;
+interface PostShipCommonOpts {
 	/** Workflow authority when the session belongs to an engine-owned run. */
 	runId?: string;
 	/** Exact merge receipt attributed to this finalization trigger. */
@@ -306,8 +316,6 @@ export interface PostShipOpts {
 	issueId: string;
 	issueIdentifier?: string;
 	projectName: string;
-	/** Final status written by DES / event-route (for notifier display). */
-	sessionStatus: string;
 	/** Discord user ID to remove from chat thread (optional). */
 	discordOwnerUserId?: string;
 	/** Fallback if lead has no per-lead bot token. */
@@ -318,6 +326,74 @@ export interface PostShipOpts {
 		ownerId: string;
 		generation: number;
 	};
+}
+
+export type PostShipOpts = PostShipCommonOpts &
+	(
+		| {
+				executionId: string;
+				/** Final status written by DES / event-route (for notifier display). */
+				sessionStatus: string;
+				operationContext?: never;
+		  }
+		| {
+				executionId?: never;
+				sessionStatus?: never;
+				operationContext: LandOperationAuditIdentity & {
+					mergeReceiptId: string;
+				};
+		  }
+	);
+
+function postShipExecutionId(opts: PostShipOpts): string | undefined {
+	return (
+		opts.executionId ?? opts.operationContext?.sourceExecutionId ?? undefined
+	);
+}
+
+function postShipAnchor(opts: PostShipOpts): string {
+	return opts.operationContext?.operationId ?? opts.executionId!;
+}
+
+function postShipOperationAudit(
+	opts: PostShipOpts,
+): LandOperationAuditIdentity | undefined {
+	return opts.operationContext;
+}
+
+function recordPostShipAudit(
+	store: StateStore,
+	opts: PostShipOpts,
+	eventType: string,
+	payload: Record<string, unknown>,
+): boolean {
+	const executionId = postShipExecutionId(opts);
+	const operationAudit = postShipOperationAudit(opts);
+	const eventId =
+		eventType === "post_ship_finalization_claim"
+			? `post-ship-finalization-${postShipAnchor(opts)}`
+			: `${eventType.replaceAll("_", "-")}-${postShipAnchor(opts)}`;
+	if (!operationAudit && executionId) {
+		return store.insertEvent({
+			event_id: eventId,
+			execution_id: executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: eventType,
+			source: "bridge.post-ship-finalization",
+			payload,
+		});
+	}
+	if (!operationAudit) return false;
+	return recordLandCloseoutAudit(store, operationAudit, {
+		evidenceId: eventId,
+		eventKind: eventType,
+		receipt: {
+			issueId: opts.issueId,
+			projectName: opts.projectName,
+			...payload,
+		},
+	}).ok;
 }
 
 /**
@@ -392,7 +468,11 @@ export interface PostShipDeps {
 	 * Best-effort; absent → classic behavior only (byte-compat).
 	 */
 	issueCloseout?: (input: {
-		executionId: string;
+		/** Real source execution when one exists; never an operation surrogate. */
+		executionId?: string;
+		/** Durable workflow inventory survives retirement of the source session. */
+		runId?: string;
+		landOperation?: PostShipOpts["landOperation"];
 		issueId: string;
 		issueIdentifier?: string;
 		projectName: string;
@@ -479,6 +559,139 @@ export interface PostShipDeps {
 	fetchImpl?: typeof fetch;
 	/** FLY-1992: evidence-gated cleanup for shipped workflow-node husks. */
 	forceShippedHusks?: typeof forceShippedHusks;
+}
+
+export interface LandWorktreeCloseoutReport {
+	complete: boolean;
+	reason?: string;
+	attestations: WorktreeCleanupAttestation[];
+}
+
+/**
+ * Settle every immutable intent-time worktree target. A missing leaf is a
+ * positive `absent` proof only when the cleanup closure also verifies the
+ * persisted parent identity; live/recreated leaves must still pass the full
+ * registration, branch and generation checks.
+ */
+export async function settleLandOperationWorktrees(
+	opts: PostShipOpts & {
+		landOperation: NonNullable<PostShipOpts["landOperation"]>;
+	},
+	deps: Pick<
+		PostShipDeps,
+		"store" | "removeCleanWorktree" | "remoteBranchCleanup"
+	>,
+	tmuxConfirmedGone: boolean,
+): Promise<LandWorktreeCloseoutReport> {
+	const { store } = deps;
+	const claim = opts.landOperation;
+	const operation = store.getLandOperation(claim.operationId);
+	if (
+		!operation ||
+		operation.owner_id !== claim.ownerId ||
+		operation.generation !== claim.generation ||
+		operation.issue_id !== opts.issueId ||
+		operation.project_name !== opts.projectName ||
+		operation.run_id !== (opts.runId ?? null)
+	) {
+		return {
+			complete: false,
+			reason: "land_operation_identity_mismatch",
+			attestations: [],
+		};
+	}
+	const parsed = readLandTargetSnapshot(operation);
+	if (!parsed.ok) {
+		return { complete: false, reason: parsed.reason, attestations: [] };
+	}
+	const operationAudit: LandOperationAuditIdentity = {
+		operationId: claim.operationId,
+		ownerId: claim.ownerId,
+		generation: claim.generation,
+		runId: opts.runId ?? null,
+		sourceExecutionId: postShipExecutionId(opts) ?? null,
+	};
+	const attestations: WorktreeCleanupAttestation[] = [];
+	for (const target of parsed.snapshot.targets) {
+		if (target.kind === "worktree_not_applicable") {
+			const receipt = recordLandCloseoutAudit(store, operationAudit, {
+				evidenceId: `worktree-not-applicable:${canonicalSubmissionDigest(target)}`,
+				eventKind: "worktree_cleanup_not_applicable",
+				receipt: {
+					issueId: opts.issueId,
+					projectName: opts.projectName,
+					target,
+				},
+			});
+			if (!receipt.ok) {
+				return {
+					complete: false,
+					reason: `worktree_not_applicable_receipt_failed:${receipt.reason}`,
+					attestations,
+				};
+			}
+			continue;
+		}
+		if (!deps.removeCleanWorktree) {
+			return {
+				complete: false,
+				reason: "worktree_cleanup_unavailable",
+				attestations,
+			};
+		}
+		let attestation: WorktreeCleanupAttestation;
+		try {
+			attestation = await deps.removeCleanWorktree({
+				issueId: opts.issueId,
+				issueIdentifier: opts.issueIdentifier,
+				projectName: opts.projectName,
+				tmuxClosed: tmuxConfirmedGone,
+				tmuxErrors: [],
+				operationContext: { operationAudit, target },
+			});
+		} catch (error) {
+			return {
+				complete: false,
+				reason: `worktree_cleanup_exception:${(error as Error).message}`,
+				attestations,
+			};
+		}
+		if (!attestation) {
+			return {
+				complete: false,
+				reason: "worktree_cleanup_missing_attestation",
+				attestations,
+			};
+		}
+		attestations.push(attestation);
+		const cleanupState =
+			attestation.cleanupState ?? (attestation.removed ? "removed" : "blocked");
+		if (cleanupState !== "removed" && cleanupState !== "absent") {
+			return {
+				complete: false,
+				reason: attestation.skippedReason ?? "worktree_cleanup_blocked",
+				attestations,
+			};
+		}
+		// An absent leaf has no branch mutation to perform. For a removed leaf,
+		// preserve the existing attestation-driven remote CAS cleanup.
+		if (cleanupState === "removed" && deps.remoteBranchCleanup) {
+			await deps
+				.remoteBranchCleanup({
+					executionId: target.sourceExecutionIds[0]!,
+					issueId: opts.issueId,
+					projectName: opts.projectName,
+					attestation,
+				})
+				.catch((error) => {
+					console.error(
+						"[post-ship] operation worktree remote branch cleanup failed:",
+						(error as Error).message,
+					);
+				});
+		}
+	}
+	return { complete: true, attestations };
 }
 
 /**
@@ -724,6 +937,9 @@ async function runPostShipFinalizationInner(
 ): Promise<ResumablePostShipFinalizationReport> {
 	const { store, projects } = deps;
 	const landManaged = resumable && !!opts.landOperation;
+	const sourceExecutionId = postShipExecutionId(opts);
+	const finalizationAnchor = postShipAnchor(opts);
+	const operationScoped = Boolean(opts.operationContext);
 	const replayCompletedFinalization =
 		async (): Promise<ResumablePostShipFinalizationReport> => {
 			if (!resumable) {
@@ -776,14 +992,8 @@ async function runPostShipFinalizationInner(
 			console.warn(
 				`[post-ship] disposition pre-arbitration refused ship finalization for ${opts.issueIdentifier ?? opts.issueId}: ${arb.reason ?? "conflict"} — ZERO mutation`,
 			);
-			store.insertEvent({
-				event_id: `post-ship-arbitration-refused-${opts.executionId}`,
-				execution_id: opts.executionId,
-				issue_id: opts.issueId,
-				project_name: opts.projectName,
-				event_type: "post_ship_arbitration_refused",
-				source: "bridge.post-ship-finalization",
-				payload: { reason: arb.reason ?? "conflict" },
+			recordPostShipAudit(store, opts, "post_ship_arbitration_refused", {
+				reason: arb.reason ?? "conflict",
 			});
 			return {
 				complete: false,
@@ -794,14 +1004,8 @@ async function runPostShipFinalizationInner(
 		}
 		if (arb.degraded) {
 			if (!resumable) {
-				store.insertEvent({
-					event_id: `post-ship-arbitration-refused-${opts.executionId}`,
-					execution_id: opts.executionId,
-					issue_id: opts.issueId,
-					project_name: opts.projectName,
-					event_type: "post_ship_arbitration_refused",
-					source: "bridge.post-ship-finalization",
-					payload: { reason: "linear_lookup_failed_retryable" },
+				recordPostShipAudit(store, opts, "post_ship_arbitration_refused", {
+					reason: "linear_lookup_failed_retryable",
 				});
 				return {
 					complete: false,
@@ -810,14 +1014,8 @@ async function runPostShipFinalizationInner(
 					details: {},
 				};
 			}
-			store.insertEvent({
-				event_id: `post-ship-arbitration-degraded-${opts.executionId}`,
-				execution_id: opts.executionId,
-				issue_id: opts.issueId,
-				project_name: opts.projectName,
-				event_type: "post_ship_arbitration_degraded",
-				source: "bridge.post-ship-finalization",
-				payload: { reason: arb.degraded },
+			recordPostShipAudit(store, opts, "post_ship_arbitration_degraded", {
+				reason: arb.degraded,
 			});
 		}
 	}
@@ -841,10 +1039,21 @@ async function runPostShipFinalizationInner(
 				};
 			}
 		}
-		const manifestClaim = store.claimWorkflowPrFinalization({
-			runId: opts.runId,
-			sourceExecutionId: opts.executionId,
-		});
+		const workflowManifest = store.getWorkflowPrManifest(opts.runId);
+		if (workflowManifest && !sourceExecutionId) {
+			return {
+				complete: false,
+				outcome: "partial",
+				reason: "workflow_pr_manifest_source_unavailable",
+				details: {},
+			};
+		}
+		const manifestClaim = sourceExecutionId
+			? store.claimWorkflowPrFinalization({
+					runId: opts.runId,
+					sourceExecutionId,
+				})
+			: ({ ok: true, mode: "single", idempotentReplay: false } as const);
 		if (!manifestClaim.ok) {
 			const held = manifestClaim.reason === "run_not_active";
 			const reason =
@@ -867,23 +1076,24 @@ async function runPostShipFinalizationInner(
 	// ── (0) ATOMIC ORCHESTRATOR CLAIM ──
 	// Stable event_id → UNIQUE constraint collapses concurrent callers
 	// (DES + event-route dual paths) to one winner for the full pipeline.
-	const claimed = store.insertEvent({
-		event_id: `post-ship-finalization-${opts.executionId}`,
-		execution_id: opts.executionId,
-		issue_id: opts.issueId,
-		project_name: opts.projectName,
-		event_type: "post_ship_finalization_claim",
-		source: "bridge.post-ship-finalization",
-		payload: { claimedAt: new Date().toISOString() },
-	});
+	const claimed = recordPostShipAudit(
+		store,
+		opts,
+		"post_ship_finalization_claim",
+		operationScoped
+			? { mergeReceiptId: opts.operationContext!.mergeReceiptId }
+			: { claimedAt: new Date().toISOString() },
+	);
 	if (!claimed) {
-		const alreadyCompleted = store
-			.getEventsByExecution(opts.executionId)
-			.some(
-				(event) =>
-					event.event_id ===
-					`post-ship-finalization-completed-${opts.executionId}`,
-			);
+		const alreadyCompleted = sourceExecutionId
+			? store
+					.getEventsByExecution(sourceExecutionId)
+					.some(
+						(event) =>
+							event.event_id ===
+							`post-ship-finalization-completed-${finalizationAnchor}`,
+					)
+			: false;
 		if (alreadyCompleted) {
 			return replayCompletedFinalization();
 		}
@@ -929,25 +1139,32 @@ async function runPostShipFinalizationInner(
 	}
 
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
-	const cleanup = await postMergeTmuxCleanup(
-		{
-			executionId: opts.executionId,
-			issueId: opts.issueId,
-			projectName: opts.projectName,
-		},
-		store,
-	).catch((err) => {
-		console.error(
-			`[post-ship] postMergeTmuxCleanup failed:`,
-			(err as Error).message,
-		);
-		return {
-			tmuxClosed: false,
-			commDbFinalized: false,
-			retiredGateCount: 0,
-			errors: [(err as Error).message],
-		};
-	});
+	const cleanup = operationScoped
+		? {
+				tmuxClosed: true,
+				commDbFinalized: true,
+				retiredGateCount: 0,
+				errors: [] as string[],
+			}
+		: await postMergeTmuxCleanup(
+				{
+					executionId: sourceExecutionId!,
+					issueId: opts.issueId,
+					projectName: opts.projectName,
+				},
+				store,
+			).catch((err) => {
+				console.error(
+					`[post-ship] postMergeTmuxCleanup failed:`,
+					(err as Error).message,
+				);
+				return {
+					tmuxClosed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					errors: [(err as Error).message],
+				};
+			});
 
 	// ── (1.25) FLY-887 DAG workflow keep-alive: close the still-alive parked
 	// design + implement phases for this issue BEFORE the shared worktree is
@@ -995,11 +1212,12 @@ async function runPostShipFinalizationInner(
 
 	// FLY-1375: land replay calls this only after issue-level closeout confirms
 	// every related session is gone. Legacy callers retain their prior order.
-	const cleanWorktree = async (closeoutConfirmed = false) => {
+	const cleanLegacyWorktree = async (closeoutConfirmed = false) => {
 		if (!deps.removeCleanWorktree) return undefined;
+		if (!sourceExecutionId) return undefined;
 		const attestation = await deps
 			.removeCleanWorktree({
-				executionId: opts.executionId,
+				executionId: sourceExecutionId,
 				issueId: opts.issueId,
 				issueIdentifier: opts.issueIdentifier,
 				projectName: opts.projectName,
@@ -1024,7 +1242,7 @@ async function runPostShipFinalizationInner(
 		if (attestation && deps.remoteBranchCleanup) {
 			await deps
 				.remoteBranchCleanup({
-					executionId: opts.executionId,
+					executionId: sourceExecutionId,
 					issueId: opts.issueId,
 					projectName: opts.projectName,
 					attestation,
@@ -1038,7 +1256,7 @@ async function runPostShipFinalizationInner(
 		}
 		return attestation;
 	};
-	if (!resumable) await cleanWorktree();
+	if (!resumable) await cleanLegacyWorktree();
 
 	// ── (1.7) FLY-1185 §2.12 entry A: issue-level lifecycle closeout —
 	// collect ALL related nodes (parked phases already finalized above,
@@ -1057,13 +1275,15 @@ async function runPostShipFinalizationInner(
 	if (closeoutBlocked) {
 		closeoutCause ??= inferLandCloseoutCause(cleanup.errors);
 		console.warn(
-			`[post-ship] CommDB finalization incomplete for ${opts.executionId} — thread archive + Linear Done deferred`,
+			`[post-ship] CommDB finalization incomplete for ${finalizationAnchor} — thread archive + Linear Done deferred`,
 		);
 	}
 	if (deps.issueCloseout) {
 		const closeoutRes = await deps
 			.issueCloseout({
-				executionId: opts.executionId,
+				executionId: sourceExecutionId,
+				runId: opts.runId,
+				landOperation: opts.landOperation,
 				issueId: opts.issueId,
 				issueIdentifier: opts.issueIdentifier,
 				projectName: opts.projectName,
@@ -1104,54 +1324,125 @@ async function runPostShipFinalizationInner(
 		}
 	}
 	let worktreeRemoved = !resumable;
+	let worktreeFailureReason: string | undefined;
 	if (resumable && !closeoutBlocked) {
-		const attestation = await cleanWorktree(true);
-		worktreeRemoved =
-			attestation?.removed === true ||
-			attestation?.skippedReason === "not_registered";
+		if (landManaged) {
+			const report = await settleLandOperationWorktrees(
+				opts as PostShipOpts & {
+					landOperation: NonNullable<PostShipOpts["landOperation"]>;
+				},
+				deps,
+				cleanup.tmuxClosed || cleanup.commDbFinalized,
+			);
+			worktreeRemoved = report.complete;
+			worktreeFailureReason = report.reason;
+		} else {
+			const attestation = await cleanLegacyWorktree(true);
+			worktreeRemoved =
+				attestation?.removed === true || attestation?.cleanupState === "absent";
+			worktreeFailureReason = attestation?.skippedReason;
+		}
 	}
 
 	// ── Resolve lead + thread ONCE, reused by notifier AND archiver ──
 	let chatChannel: string | undefined;
 	let botToken: string | undefined;
-	try {
-		const labels = store.getSessionLabels(opts.executionId);
-		const { lead } = resolveLeadForIssue(projects, opts.projectName, labels);
-		chatChannel = lead.chatChannel;
-		botToken = lead.botToken ?? opts.fallbackBotToken;
-	} catch (err) {
-		console.warn(
-			`[post-ship] resolveLeadForIssue failed:`,
-			(err as Error).message,
-		);
-		botToken = opts.fallbackBotToken;
-	}
-	const thread = chatChannel
-		? store.getChatThreadByIssue(opts.issueId, chatChannel)
+	let thread: ReturnType<StateStore["getChatThreadByIssue"]>;
+	let threadResolutionFailure: string | undefined;
+	const sourceSession = sourceExecutionId
+		? store.getSession(sourceExecutionId)
 		: undefined;
+	if (operationScoped && !sourceSession) {
+		const project = projects.find(
+			(candidate) => candidate.projectName === opts.projectName,
+		);
+		const candidates = store
+			.getChatThreadsByIssue(opts.issueId)
+			.flatMap((registered) =>
+				(project?.leads ?? [])
+					.filter(
+						(lead) =>
+							lead.chatChannel === registered.channel_id &&
+							(registered.lead_id === null ||
+								registered.lead_id === lead.agentId),
+					)
+					.map((lead) => ({ registered, lead })),
+			);
+		if (candidates.length === 1) {
+			const resolved = candidates[0]!;
+			chatChannel = resolved.registered.channel_id;
+			botToken = resolved.lead.botToken ?? opts.fallbackBotToken;
+			thread = resolved.registered;
+		} else {
+			threadResolutionFailure =
+				candidates.length === 0
+					? "issue_thread_registry_missing"
+					: "issue_thread_registry_ambiguous";
+		}
+	} else {
+		try {
+			const labels = sourceExecutionId
+				? store.getSessionLabels(sourceExecutionId)
+				: [];
+			const { lead } = resolveLeadForIssue(projects, opts.projectName, labels);
+			chatChannel = lead.chatChannel;
+			botToken = lead.botToken ?? opts.fallbackBotToken;
+		} catch (err) {
+			console.warn(
+				`[post-ship] resolveLeadForIssue failed:`,
+				(err as Error).message,
+			);
+			botToken = opts.fallbackBotToken;
+		}
+		thread = chatChannel
+			? store.getChatThreadByIssue(opts.issueId, chatChannel)
+			: undefined;
+	}
+	if (operationScoped && threadResolutionFailure) {
+		recordPostShipAudit(store, opts, "post_ship_thread_resolution_escalated", {
+			reason: threadResolutionFailure,
+			issueId: opts.issueId,
+			projectName: opts.projectName,
+		});
+		return {
+			complete: false,
+			outcome: "partial",
+			reason: "land_thread_resolution_incomplete",
+			cause: { token: "archive_failed" },
+			details: {
+				tmuxClosed: cleanup.tmuxClosed,
+				commDbFinalized: cleanup.commDbFinalized,
+				closeoutBlocked: false,
+				worktreeRemoved,
+				threadArchived: false,
+			},
+		};
+	}
 
 	// ── (2) notifier — atomic dedupe; MUST run BEFORE archive ──
 	// FLY-892 (Step 3): tag which phase's runner finished; "" for main (byte-compat).
-	const finalizedSession = store.getSession(opts.executionId);
-	await emitRunnerReadyToCloseNotification(
-		{
-			executionId: opts.executionId,
-			issueId: opts.issueId,
-			issueIdentifier: opts.issueIdentifier,
-			projectName: opts.projectName,
-			sessionStatus: opts.sessionStatus,
-			tmuxClosed: cleanup.tmuxClosed,
-			errors: cleanup.errors?.length ? cleanup.errors : undefined,
-			thread,
-			botToken,
-			phasePrefix: phaseMessageTag(
-				finalizedSession?.chat_thread_role,
-				finalizedSession?.runner_model,
-				finalizedSession?.design_backend,
-			),
-		},
-		{ store, fetchImpl: deps.fetchImpl },
-	);
+	if (!operationScoped) {
+		const finalizedSession = store.getSession(sourceExecutionId!);
+		await emitRunnerReadyToCloseNotification(
+			{
+				executionId: sourceExecutionId!,
+				issueId: opts.issueId,
+				issueIdentifier: opts.issueIdentifier,
+				projectName: opts.projectName,
+				sessionStatus: opts.sessionStatus!,
+				tmuxClosed: cleanup.tmuxClosed,
+				errors: cleanup.errors?.length ? cleanup.errors : undefined,
+				thread,
+				botToken,
+				phasePrefix: phaseMessageTag(
+					finalizedSession?.chat_thread_role,
+					finalizedSession?.runner_model,
+					finalizedSession?.design_backend,
+				),
+			},
+			{ store, fetchImpl: deps.fetchImpl },
+		);
+	}
 
 	// FLY-1832: the resumable land operation owns one terminal founder message.
 	// It is generation-fenced and must settle only after closeout + worktree
@@ -1181,7 +1472,9 @@ async function runPostShipFinalizationInner(
 		} else if (botToken) {
 			const terminal = await emitIssueThreadInfraNotification(
 				{
-					executionId: opts.executionId,
+					...(operationScoped
+						? { operationAudit: opts.operationContext! }
+						: { executionId: sourceExecutionId! }),
 					issueId: opts.issueId,
 					issueIdentifier: opts.issueIdentifier,
 					projectName: opts.projectName,
@@ -1247,7 +1540,9 @@ async function runPostShipFinalizationInner(
 				threadId: thread.thread_id,
 				issueId: opts.issueId,
 				projectName: opts.projectName,
-				executionId: opts.executionId,
+				...(operationScoped
+					? { operationAudit: opts.operationContext! }
+					: { executionId: sourceExecutionId! }),
 			},
 			botToken,
 			{
@@ -1278,7 +1573,9 @@ async function runPostShipFinalizationInner(
 				if (!prior) {
 					const explained = await emitIssueThreadInfraNotification(
 						{
-							executionId: opts.executionId,
+							...(operationScoped
+								? { operationAudit: opts.operationContext! }
+								: { executionId: sourceExecutionId! }),
 							issueId: opts.issueId,
 							issueIdentifier: opts.issueIdentifier,
 							projectName: opts.projectName,
@@ -1440,6 +1737,11 @@ async function runPostShipFinalizationInner(
 			? "worktree_branch_mismatch"
 			: "archive_failed";
 		const reason = landCloseoutReason(postconditionCause);
+		if (!worktreeRemoved && worktreeFailureReason) {
+			console.warn(
+				`[post-ship] worktree closeout incomplete for ${opts.issueIdentifier ?? opts.issueId}: ${worktreeFailureReason}`,
+			);
+		}
 		if (declaredFinalization && opts.runId) {
 			store.setWorkflowPrFinalizationOutcome({
 				runId: opts.runId,
@@ -1464,15 +1766,21 @@ async function runPostShipFinalizationInner(
 		};
 	}
 
-	store.insertEvent({
-		event_id: `post-ship-finalization-completed-${opts.executionId}`,
-		execution_id: opts.executionId,
-		issue_id: opts.issueId,
-		project_name: opts.projectName,
-		event_type: "post_ship_finalization_completed",
-		source: "bridge.post-ship-finalization",
-		payload: { completedAt: new Date().toISOString() },
-	});
+	if (operationScoped) {
+		recordPostShipAudit(store, opts, "post_ship_finalization_completed", {
+			mergeReceiptId: opts.operationContext!.mergeReceiptId,
+		});
+	} else {
+		store.insertEvent({
+			event_id: `post-ship-finalization-completed-${finalizationAnchor}`,
+			execution_id: sourceExecutionId!,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: "post_ship_finalization_completed",
+			source: "bridge.post-ship-finalization",
+			payload: { completedAt: new Date().toISOString() },
+		});
+	}
 	if (declaredFinalization && opts.runId) {
 		store.setWorkflowPrFinalizationOutcome({
 			runId: opts.runId,

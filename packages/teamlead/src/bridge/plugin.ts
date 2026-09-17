@@ -527,7 +527,6 @@ import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import {
-	landCloseoutReason,
 	landIssueCloseoutResultFromClosureReport,
 	renderLandThreadNotification,
 } from "./land-closeout-cause.js";
@@ -539,13 +538,18 @@ import {
 	landThreadNotificationPreflight,
 	resumeHeldLandOperation,
 } from "./land-executor.js";
+import { prepareLandFinalization } from "./land-finalization-context.js";
 import { GitLandHeadRefreshProver } from "./land-head-refresh-proof.js";
+import { prepareLandIntent } from "./land-intent-targets.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
 import {
 	buildAgedDeferredLinearDoneAlert,
 	sweepDeferredLandLinearDone,
 } from "./land-linear-done-sweep.js";
-import { resolveLandSourceSession } from "./land-source-session.js";
+import {
+	defaultLandOwnerIdentity,
+	LandOwnerLivenessMonitor,
+} from "./land-owner-liveness.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
 	createClaimsClaimer,
@@ -7203,6 +7207,20 @@ export async function startBridge(
 	const lifecycleWorktreeManager = new WorktreeManager({
 		withRepoLock: repoMutationLock.withRepoLock,
 	});
+	const prepareLandIntentFn = (
+		input: Parameters<typeof prepareLandIntent>[1],
+	) =>
+		prepareLandIntent(store, input, {
+			resolveProjectRoot: resolveProjectRootByName,
+			getRegisteredWorktree: (mainRepoPath, worktreePath) =>
+				lifecycleWorktreeManager.getRegisteredWorktree(
+					mainRepoPath,
+					worktreePath,
+				),
+			readWorktreeGeneration: (worktreePath) =>
+				lifecycleWorktreeManager.readWorktreeGeneration(worktreePath),
+			withRepoLock: repoMutationLock.withRepoLock,
+		});
 	const runProjectSweep = (projectName: string): void => {
 		const project = projects.find((p) => p.projectName === projectName);
 		if (!project) return;
@@ -7238,6 +7256,12 @@ export async function startBridge(
 			disposition: "shipped" | "canceled" | "founder_parked";
 			authority: "ship_complete" | "linear_reconcile" | "founder_park";
 			extraAliases?: string[];
+			runIds?: string[];
+			landOperation?: {
+				operationId: string;
+				ownerId: string;
+				generation: number;
+			};
 			budget?: { tryConsume: () => boolean; shouldStop?: () => boolean };
 			freshAuthority?: () => Promise<"authorized" | "reopened" | "unknown">;
 		},
@@ -7255,6 +7279,8 @@ export async function startBridge(
 				projectName: input.projectName,
 				disposition: input.disposition,
 				authority: input.authority,
+				runIds: input.runIds,
+				landOperation: input.landOperation,
 			},
 			closeoutOpts,
 		);
@@ -7348,6 +7374,8 @@ export async function startBridge(
 					projectName: input.projectName,
 					disposition: "shipped",
 					authority: "ship_complete",
+					runIds: input.runId ? [input.runId] : undefined,
+					landOperation: input.landOperation,
 				},
 				// R4#3: the ship DAG already holds the canonical issue mutex.
 				input.alreadyLocked ? { alreadyLocked: true } : undefined,
@@ -7717,6 +7745,18 @@ export async function startBridge(
 								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
 							return issueMutex(keys, async () => {
 								const fresh = store.getLaunchClaim(executionId);
+								if (
+									fresh &&
+									store.getActiveLandCloseoutReservation(
+										fresh.project,
+										fresh.rootUuid,
+									)
+								) {
+									return {
+										ok: false as const,
+										reason: "land_closeout_reserved",
+									};
+								}
 								const doaOwner = store.verifyAndRenewDoaReleaseOwner(
 									executionId,
 									Date.now(),
@@ -7858,9 +7898,11 @@ export async function startBridge(
 		projects,
 		repoMutationLock.withRepoLock,
 	);
+	const landOwnerIdentity = defaultLandOwnerIdentity();
 	const landExecutor = async (operationId: string) =>
 		executeLandOperation(operationId, {
 			store,
+			ownerIdentity: landOwnerIdentity,
 			mergeDriver: landMergeDriver,
 			headRefreshProver: landHeadRefreshProver,
 			contentProver: landContentProver,
@@ -7879,81 +7921,57 @@ export async function startBridge(
 					})(),
 				}),
 			finalize: async (operation) => {
-				const session = resolveLandSourceSession(store, {
-					runId: operation.run_id,
-					issueId: operation.issue_id,
-					projectName: operation.project_name,
-					prNumber: operation.pr_number,
-					approvedHead: operation.approved_head,
+				const prepared = prepareLandFinalization(store, operation, {
+					discordOwnerUserId: config.discordOwnerUserId,
+					fallbackBotToken: config.discordBotToken,
 				});
-				if (!session) {
+				if (!prepared.ok) {
 					return {
 						complete: false,
 						outcome: "partial" as const,
-						reason: landCloseoutReason("source_session_unavailable"),
+						reason: `land_finalization_context_unavailable:${prepared.reason}`,
 					};
 				}
-				return runResumablePostShipFinalization(
-					{
-						executionId: session.execution_id,
-						runId: operation.run_id ?? undefined,
-						mergedPr: {
-							prNumber: operation.pr_number,
-							headSha: operation.approved_head,
-						},
-						issueId: operation.issue_id,
-						issueIdentifier: session.issue_identifier,
-						projectName: operation.project_name,
-						sessionStatus: session.status,
-						discordOwnerUserId: config.discordOwnerUserId,
-						fallbackBotToken: config.discordBotToken,
-						...(operation.owner_id
-							? {
-									landOperation: {
-										operationId: operation.operation_id,
-										ownerId: operation.owner_id,
-										generation: operation.generation,
-									},
-								}
-							: {}),
+				const sourceExecutionId =
+					prepared.context.kind === "session"
+						? prepared.context.session.execution_id
+						: prepared.context.sourceExecutionId;
+				return runResumablePostShipFinalization(prepared.opts, {
+					store,
+					projects,
+					removeCleanWorktree: landWorktreeCleanup,
+					markIssueDone: landLinearDoneFinalizer,
+					recordLinearDoneDisposition: (disposition) => {
+						if (!operation.owner_id) {
+							return { ok: false, reason: "stale_land_generation" };
+						}
+						const alertIdentity = operation.run_id
+							? resolveWorkflowRunAlertIdentity({
+									store,
+									projects,
+									defaultLeadAgentId: config.defaultLeadAgentId,
+									projectName: operation.project_name,
+									issueId: operation.issue_id,
+									runId: operation.run_id,
+								})
+							: undefined;
+						return store.recordLandLinearDoneDisposition({
+							operationId: operation.operation_id,
+							ownerId: operation.owner_id,
+							generation: operation.generation,
+							disposition: disposition.disposition,
+							reason: disposition.reason,
+							executionId: sourceExecutionId,
+							now: new Date().toISOString(),
+							...(alertIdentity ? { alertIdentity } : {}),
+						});
 					},
-					{
-						store,
-						projects,
-						removeCleanWorktree: landWorktreeCleanup,
-						markIssueDone: landLinearDoneFinalizer,
-						recordLinearDoneDisposition: (disposition) => {
-							if (!operation.owner_id) {
-								return { ok: false, reason: "stale_land_generation" };
-							}
-							const alertIdentity = operation.run_id
-								? resolveWorkflowRunAlertIdentity({
-										store,
-										projects,
-										defaultLeadAgentId: config.defaultLeadAgentId,
-										projectName: operation.project_name,
-										issueId: operation.issue_id,
-										runId: operation.run_id,
-									})
-								: undefined;
-							return store.recordLandLinearDoneDisposition({
-								operationId: operation.operation_id,
-								ownerId: operation.owner_id,
-								generation: operation.generation,
-								disposition: disposition.disposition,
-								reason: disposition.reason,
-								executionId: session.execution_id,
-								now: new Date().toISOString(),
-								...(alertIdentity ? { alertIdentity } : {}),
-							});
-						},
-						finalizeWorkflowPhaseRoles,
-						refreshIssueDisplay: (issueId) =>
-							issueDisplayRefreshHolder.current?.refresh(issueId) ??
-							Promise.resolve(),
-						...lifecycleInfra,
-					},
-				);
+					finalizeWorkflowPhaseRoles,
+					refreshIssueDisplay: (issueId) =>
+						issueDisplayRefreshHolder.current?.refresh(issueId) ??
+						Promise.resolve(),
+					...lifecycleInfra,
+				});
 			},
 			notify: async (operation, stage, detail) => {
 				const terminalDisposition = landThreadNotificationPreflight(
@@ -8073,6 +8091,17 @@ export async function startBridge(
 				return { disposition: "posted" as const };
 			},
 		});
+	const landOwnerLivenessMonitor = new LandOwnerLivenessMonitor(store, {
+		hostBootId: landOwnerIdentity.ownerHostBootId,
+		onReclaimed: ({ operationId }) => {
+			void landExecutor(operationId).catch((error) =>
+				console.warn(
+					`[land-owner-liveness] immediate retry failed for ${operationId}: ${error instanceof Error ? error.message : String(error)}`,
+				),
+			);
+		},
+	});
+	landOwnerLivenessMonitor.start();
 	const workflowShipReadyArm = createWorkflowShipReadyArm({
 		store,
 		resolveLead: (notice) => {
@@ -8601,6 +8630,7 @@ export async function startBridge(
 				log: (message) => console.warn(`[workflow-engine] ${message}`),
 				materializedHeadAuthority,
 				landExecutor,
+				prepareLandIntent: prepareLandIntentFn,
 				shipReadyArm: workflowShipReadyArm,
 				reconcileWorkflowRework: (requestId) =>
 					workflowReworkCoordinatorHolder.current?.reconcile(requestId) ??
@@ -8824,7 +8854,7 @@ export async function startBridge(
 						),
 					land: {
 						enabled: () => true,
-						createIntent: (input: {
+						createIntent: async (input: {
 							projectName: string;
 							issueId: string;
 							prNumber?: number;
@@ -8846,7 +8876,22 @@ export async function startBridge(
 								) {
 									throw new Error("land_intent_assertion_mismatch");
 								}
-								return existing;
+								if (
+									existing.closeout_targets_version === 1 &&
+									existing.closeout_targets_json &&
+									existing.closeout_targets_digest &&
+									existing.closeout_attribution_digest
+								) {
+									return { ok: true as const, operation: existing };
+								}
+								return prepareLandIntentFn({
+									...(existing.run_id ? { runId: existing.run_id } : {}),
+									issueId: existing.issue_id,
+									projectName: existing.project_name,
+									prNumber: existing.pr_number,
+									approvedHead: existing.approved_head,
+									now: new Date().toISOString(),
+								});
 							}
 							const run = store.getActiveWorkflowRun(
 								input.projectName,
@@ -8885,7 +8930,7 @@ export async function startBridge(
 								) {
 									throw new Error("land_intent_assertion_mismatch");
 								}
-								return store.ensureLandOperation({
+								return prepareLandIntentFn({
 									runId: run.run_id,
 									issueId: canonicalIssueId,
 									projectName: input.projectName,
@@ -8928,7 +8973,7 @@ export async function startBridge(
 								);
 							}
 							const legacy = [...legacyEvidence.values()][0]!;
-							return store.ensureLandOperation({
+							return prepareLandIntentFn({
 								issueId: canonicalIssueId,
 								projectName: input.projectName,
 								prNumber: legacy.prNumber,
@@ -8940,6 +8985,10 @@ export async function startBridge(
 							operationId: string;
 							actor: string;
 							reason: string;
+							mode?: "full" | "closeout_only";
+							expectedResumeGeneration?: number;
+							expectedApprovedHead?: string;
+							requestId?: string;
 						}) =>
 							resumeHeldLandOperation(input, {
 								store,
@@ -14736,6 +14785,7 @@ export async function startBridge(
 		workflowSourceProjector.stop();
 		workflowEngineDispatcher?.stop();
 		workflowDocsMaterializer.stop();
+		await landOwnerLivenessMonitor.stop();
 		heartbeatService?.stop();
 		await residentReceiverSupervisor.stop();
 		gatePoller.stop();

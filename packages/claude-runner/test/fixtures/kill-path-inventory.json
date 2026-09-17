@@ -1320,6 +1320,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/land-owner-liveness.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/land-owner-liveness.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/lead-alert-helpers.ts:child.kill(\"SIGKILL\");#1",
 		"path": "packages/teamlead/src/bridge/lead-alert-helpers.ts",
 		"code": "child.kill(\"SIGKILL\");",
@@ -3927,6 +3933,24 @@
 		"key": "scripts/qa-fly-60-driver.sh:if ! kill -0 \"$claude_pid\" 2>/dev/null; then#1",
 		"path": "scripts/qa-fly-60-driver.sh",
 		"code": "if ! kill -0 \"$claude_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly2616-closeout-replay.mjs:child.kill(\"SIGKILL\");#1",
+		"path": "scripts/qa-fly2616-closeout-replay.mjs",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly2616-closeout-replay.mjs:child.kill(\"SIGKILL\");#2",
+		"path": "scripts/qa-fly2616-closeout-replay.mjs",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly2616-closeout-replay.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/qa-fly2616-closeout-replay.mjs",
+		"code": "process.kill(pid, 0);",
 		"classification": "qa-only"
 	},
 	{

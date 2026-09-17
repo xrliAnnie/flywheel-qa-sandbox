@@ -23,9 +23,12 @@
  *     conflicting authorities → `disposition_conflict`, zero mutation.
  */
 
+import { randomUUID } from "node:crypto";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import { WORKFLOW_TRANSITIONS } from "flywheel-core";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { applyTransition } from "../applyTransition.js";
+import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	AUTO_CLOSE_STATES,
@@ -35,7 +38,12 @@ import {
 import {
 	finalizeCommDbSession,
 	finalizeCommDbTerminalSession,
+	finalizeProvenGoneCommDbSession,
 } from "./commdb-session-prune.js";
+import {
+	type CloseoutEvidence,
+	collectExecutionCloseoutEvidence,
+} from "./execution-closeout-evidence.js";
 import { isUuidKey, resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import type { WithRepoLock } from "./repo-mutation-lock.js";
 import {
@@ -89,7 +97,7 @@ export interface CloseoutNode {
 	executionId: string;
 	issueKey: string;
 	projectName: string;
-	role: "root" | "session" | "qa" | "launch_claim";
+	role: "root" | "session" | "qa" | "launch_claim" | "workflow";
 	status?: string;
 	qaStatus?: string;
 	/**
@@ -119,6 +127,9 @@ export interface NodeClosureReport {
 	 * atomically. Issue-level cleanup is blocked until both this and
 	 * confirmedGone are true. */
 	communicationsFinalized: boolean;
+	evidenceId?: string;
+	evidenceVerdict?: "gone" | "alive" | "unknown";
+	evidenceReasons?: string[];
 }
 
 export interface ClosureReport {
@@ -146,10 +157,16 @@ export function collectIssueCloseoutNodes(
 		| "getSessionsForIssueAliases"
 		| "findAutoQaRecordsByParentIssueKeys"
 		| "listOpenLaunchClaims"
+		| "listRunAttributedExecutions"
 		| "getSession"
 		| "getWorktreeBinding"
 	>,
-	args: { rootKey: string; aliasKeys: string[]; projectName: string },
+	args: {
+		rootKey: string;
+		aliasKeys: string[];
+		projectName: string;
+		runIds?: string[];
+	},
 ): CloseoutNode[] {
 	const byExec = new Map<string, CloseoutNode>();
 
@@ -186,7 +203,8 @@ export function collectIssueCloseoutNodes(
 			// PARTIAL, so a park can't complete before the runner is born.
 			if (
 				(claim.state === "starting" || claim.state === "active") &&
-				!store.getWorktreeBinding(claim.executionId)
+				!store.getWorktreeBinding(claim.executionId) &&
+				!isOperationalTerminalStatus(existing.status ?? "")
 			) {
 				existing.claimInFlight = true;
 			}
@@ -200,6 +218,24 @@ export function collectIssueCloseoutNodes(
 			role: "launch_claim",
 			status: session?.status,
 		});
+	}
+
+	// A session row is intentionally disposable and therefore cannot define the
+	// complete post-merge cleanup set. Workflow attribution rows and immutable
+	// side-effect receipts survive session retirement, including old attempts.
+	for (const runId of [...new Set(args.runIds ?? [])].sort()) {
+		for (const executionId of store.listRunAttributedExecutions(runId)) {
+			if (/^mat:[0-9a-f]{64}$/.test(executionId)) continue;
+			if (byExec.has(executionId)) continue;
+			const session = store.getSession(executionId);
+			byExec.set(executionId, {
+				executionId,
+				issueKey: session?.issue_id ?? args.rootKey,
+				projectName: session?.project_name ?? args.projectName,
+				role: session ? "session" : "workflow",
+				status: session?.status,
+			});
+		}
 	}
 
 	return [...byExec.values()];
@@ -248,6 +284,7 @@ export interface LifecycleCloseoutDeps {
 	closeRunnerFn?: typeof closeRunner;
 	finalizeCommDbSessionFn?: typeof finalizeCommDbSession;
 	finalizeCommDbTerminalSessionFn?: typeof finalizeCommDbTerminalSession;
+	finalizeProvenGoneCommDbSessionFn?: typeof finalizeProvenGoneCommDbSession;
 	lookupTarget?: typeof lookupTmuxTarget;
 	probeLiveness?: (w: string) => Promise<RunnerLiveness>;
 	/** Execution-identity-aware liveness proof for preserved crash forensics. */
@@ -274,6 +311,7 @@ export interface LifecycleCloseoutDeps {
 	}) => Promise<{ blockedItems?: string[] } | undefined>;
 	audit?: (event: string, detail: Record<string, unknown>) => void;
 	log?: (msg: string) => void;
+	collectCloseoutEvidenceFn?: typeof collectExecutionCloseoutEvidence;
 }
 
 export interface CloseoutInput {
@@ -281,6 +319,19 @@ export interface CloseoutInput {
 	projectName: string;
 	disposition: IssueDisposition;
 	authority: CloseoutAuthority;
+	/** Workflow runs whose immutable attribution expands the closeout inventory. */
+	runIds?: string[];
+	landOperation?: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+	};
+}
+
+interface ActiveCloseoutReservation {
+	reservationId: string;
+	epoch: number;
+	expiresAt: string;
 }
 
 function makeAudit(
@@ -977,7 +1028,49 @@ async function closeoutIssueLocked(
 		rootKey,
 		aliasKeys: resolution.aliasKeys,
 		projectName: input.projectName,
+		runIds: input.runIds,
 	});
+	const attributionDigest = canonicalSubmissionDigest(
+		nodes
+			.map((node) => ({
+				executionId: node.executionId,
+				issueKey: node.issueKey,
+				projectName: node.projectName,
+				role: node.role,
+			}))
+			.sort((left, right) => left.executionId.localeCompare(right.executionId)),
+	);
+	let closeoutReservation: ActiveCloseoutReservation | undefined;
+	if (input.landOperation) {
+		const reserved = store.reserveLandCloseout({
+			operationId: input.landOperation.operationId,
+			ownerId: input.landOperation.ownerId,
+			generation: input.landOperation.generation,
+			inventoryDigest: attributionDigest,
+			now: new Date().toISOString(),
+		});
+		if (!reserved.ok) {
+			const blocked = baseReport("blocked");
+			blocked.operatorItems.push(
+				`closeout_reservation_failed:${reserved.reason}`,
+			);
+			blocked.nodes = nodes.map((node) => ({
+				node,
+				transition: {
+					state: "blocked" as const,
+					prerequisite: `closeout_reservation_failed:${reserved.reason}`,
+				},
+				teardown: {
+					state: "skipped" as const,
+					reason: "closeout_reservation_unavailable",
+				},
+				confirmedGone: false,
+				communicationsFinalized: false,
+			}));
+			return blocked;
+		}
+		closeoutReservation = reserved;
+	}
 
 	const report = baseReport("complete");
 	let anyBlocked = false;
@@ -1018,7 +1111,15 @@ async function closeoutIssueLocked(
 			anyBlocked = true;
 			continue;
 		}
-		const nodeReport = await closeoutOneNode(deps, input, node, audit, log);
+		const nodeReport = await closeoutOneNode(
+			deps,
+			input,
+			node,
+			attributionDigest,
+			closeoutReservation,
+			audit,
+			log,
+		);
 		report.nodes.push(nodeReport);
 		if (
 			nodeReport.transition.state === "blocked" ||
@@ -1183,6 +1284,8 @@ async function closeoutOneNode(
 	deps: LifecycleCloseoutDeps,
 	input: CloseoutInput,
 	node: CloseoutNode,
+	attributionDigest: string,
+	closeoutReservation: ActiveCloseoutReservation | undefined,
 	audit: (event: string, detail: Record<string, unknown>) => void,
 	log: (msg: string) => void,
 ): Promise<NodeClosureReport> {
@@ -1192,6 +1295,8 @@ async function closeoutOneNode(
 		deps.finalizeCommDbSessionFn ?? finalizeCommDbSession;
 	const finalizeCommDbTerminalSessionFn =
 		deps.finalizeCommDbTerminalSessionFn ?? finalizeCommDbTerminalSession;
+	const finalizeProvenGoneCommDbSessionFn =
+		deps.finalizeProvenGoneCommDbSessionFn ?? finalizeProvenGoneCommDbSession;
 	const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
 	const probeLiveness = deps.probeLiveness ?? probeRunnerProcessLiveness;
 	const probeExecutionLiveness =
@@ -1259,6 +1364,156 @@ async function closeoutOneNode(
 				result.confirmedGone = false; // dispatcher won the CAS — wait
 				return result;
 			}
+		}
+		if (input.landOperation) {
+			if (!closeoutReservation) {
+				result.teardown = {
+					state: "blocked",
+					prerequisite: "closeout_reservation_unavailable",
+				};
+				return result;
+			}
+			const operation = store.getLandOperation(input.landOperation.operationId);
+			if (
+				!operation ||
+				operation.project_name !== input.projectName ||
+				operation.issue_id !== input.issueKey
+			) {
+				result.teardown = {
+					state: "blocked",
+					prerequisite: "land_operation_identity_changed",
+				};
+				return result;
+			}
+			const activation = store.getWorkflowExecutionBinding(node.executionId);
+			let evidence: CloseoutEvidence;
+			try {
+				evidence = await (
+					deps.collectCloseoutEvidenceFn ?? collectExecutionCloseoutEvidence
+				)(
+					{
+						evidenceId: randomUUID(),
+						project: operation.project_name,
+						issueUuid: operation.issue_id,
+						runId: operation.run_id,
+						executionId: node.executionId,
+						activationId: activation?.activation_id ?? null,
+						operationId: operation.operation_id,
+						operationGeneration: input.landOperation.generation,
+						lifecycleRevision: null,
+						attributionDigest,
+						commIdentityRevision: null,
+						windowIdentity: null,
+						controllerGeneration: null,
+						adapter: "unknown",
+					},
+					{
+						session: undefined,
+						launchClaimState: store.getLaunchClaim(node.executionId)?.state,
+					},
+				);
+			} catch (error) {
+				result.evidenceVerdict = "unknown";
+				result.evidenceReasons = [
+					`collector_error:${error instanceof Error ? error.message : String(error)}`,
+				];
+				result.teardown = {
+					state: "blocked",
+					prerequisite: "closeout_evidence_unknown",
+				};
+				return result;
+			}
+			result.evidenceId = evidence.evidenceId;
+			result.evidenceVerdict = evidence.verdict;
+			result.evidenceReasons = [
+				...evidence.negativeReasons,
+				...evidence.liveVetoes,
+				...evidence.unknownReasons,
+			];
+			const observationTimes = Object.values(evidence.observations).map(
+				(observation) => observation.observedAt,
+			);
+			const recorded = store.recordCloseoutExecutionEvidence({
+				evidenceId: evidence.evidenceId,
+				operationId: operation.operation_id,
+				ownerId: input.landOperation.ownerId,
+				operationGeneration: input.landOperation.generation,
+				probeSequence:
+					store
+						.listCloseoutExecutionEvidence(operation.operation_id)
+						.filter(
+							(row) =>
+								row.operation_generation === input.landOperation!.generation &&
+								row.execution_id === node.executionId,
+						).length + 1,
+				projectName: operation.project_name,
+				issueId: operation.issue_id,
+				runId: operation.run_id,
+				executionId: node.executionId,
+				activationId: evidence.activationId,
+				lifecycleRevision: evidence.lifecycleRevision,
+				attributionDigest: evidence.attributionDigest,
+				commIdentityRevision: evidence.commIdentityRevision,
+				observedStartedAt: observationTimes.sort()[0] ?? evidence.observedAt,
+				observedAt: evidence.observedAt,
+				expiresAt: evidence.expiresAt,
+				evidence: { ...evidence },
+			});
+			if (!recorded.ok) {
+				result.teardown = {
+					state: "blocked",
+					prerequisite: `closeout_evidence_write_failed:${recorded.reason}`,
+				};
+				return result;
+			}
+			if (evidence.verdict !== "gone") {
+				result.teardown = {
+					state: "blocked",
+					prerequisite: `closeout_evidence_${evidence.verdict}`,
+				};
+				return result;
+			}
+			if (!evidence.commIdentityRevision) {
+				result.teardown = {
+					state: "blocked",
+					prerequisite: "comm_identity_revision_unavailable",
+				};
+				return result;
+			}
+			const finalized = finalizeProvenGoneCommDbSessionFn(
+				node.executionId,
+				node.projectName,
+				{
+					reservationId: `${closeoutReservation.reservationId}:${node.executionId}`,
+					evidenceId: evidence.evidenceId,
+					expectedIdentityRevision: evidence.commIdentityRevision,
+					observedAt: evidence.observedAt,
+					expiresAt: evidence.expiresAt,
+					now: new Date().toISOString(),
+				},
+			);
+			store.recordCommDbFinalizeOutcome({
+				executionId: node.executionId,
+				issueId: node.issueKey,
+				projectName: node.projectName,
+				ok: finalized.ok,
+				error: finalized.error,
+				runnerDeathProven: true,
+				audit: {
+					retiredGateCount: finalized.retiredGateCount,
+					retiredAskCount: finalized.retiredAskCount,
+					source: "bridge.lifecycle-closeout.trusted-gone",
+				},
+			});
+			result.communicationsFinalized = finalized.ok;
+			result.teardown = finalized.ok
+				? { state: "done", detail: "no_session_row_communications_finalized" }
+				: {
+						state: "failed",
+						error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+					};
+			result.confirmedGone = true;
+			return result;
 		}
 		const finalized = finalizeCommDbSessionFn(
 			node.executionId,
@@ -1542,7 +1797,12 @@ async function closeoutOneNode(
 			result.confirmedGone = false;
 		}
 	// Physical crash evidence stays intact; only its communication ledger closes.
-	if (preserved && result.confirmedGone && executionDeathProven) {
+	if (
+		preserved &&
+		result.confirmedGone &&
+		executionDeathProven &&
+		!input.landOperation
+	) {
 		const currentStatus = store.getSession(node.executionId)?.status;
 		const authoritativeCrashStatus =
 			currentStatus === "failed" || currentStatus === "blocked"
@@ -1584,6 +1844,150 @@ async function closeoutOneNode(
 				error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
 			};
 		}
+	}
+	// A parked declaration is only a liveness claim. Once teardown has physical
+	// death proof, a land closeout re-probes every source and uses the fenced
+	// trusted CommDB path so an exact dead parked row cannot veto forever.
+	if (input.landOperation && result.confirmedGone) {
+		const operation = store.getLandOperation(input.landOperation.operationId);
+		if (!operation || !closeoutReservation) {
+			result.confirmedGone = false;
+			result.communicationsFinalized = false;
+			result.teardown = {
+				state: "blocked",
+				prerequisite: "closeout_reservation_unavailable",
+			};
+			return result;
+		}
+		const activation = store.getWorkflowExecutionBinding(node.executionId);
+		let evidence: CloseoutEvidence;
+		try {
+			evidence = await (
+				deps.collectCloseoutEvidenceFn ?? collectExecutionCloseoutEvidence
+			)(
+				{
+					evidenceId: randomUUID(),
+					project: operation.project_name,
+					issueUuid: operation.issue_id,
+					runId: operation.run_id,
+					executionId: node.executionId,
+					activationId: activation?.activation_id ?? null,
+					operationId: operation.operation_id,
+					operationGeneration: input.landOperation.generation,
+					lifecycleRevision: fresh.lifecycle_revision ?? null,
+					attributionDigest,
+					commIdentityRevision: null,
+					windowIdentity: executionDeathTarget ?? null,
+					controllerGeneration: null,
+					adapter:
+						fresh.adapter_type === "codex-tmux" ||
+						fresh.adapter_type === "claude-tmux"
+							? fresh.adapter_type
+							: "unknown",
+				},
+				{
+					session: fresh,
+					launchClaimState: store.getLaunchClaim(node.executionId)?.state,
+				},
+			);
+		} catch (error) {
+			result.confirmedGone = false;
+			result.communicationsFinalized = false;
+			result.evidenceVerdict = "unknown";
+			result.evidenceReasons = [
+				`collector_error:${error instanceof Error ? error.message : String(error)}`,
+			];
+			return result;
+		}
+		result.evidenceId = evidence.evidenceId;
+		result.evidenceVerdict = evidence.verdict;
+		result.evidenceReasons = [
+			...evidence.negativeReasons,
+			...evidence.liveVetoes,
+			...evidence.unknownReasons,
+		];
+		const observationTimes = Object.values(evidence.observations).map(
+			(observation) => observation.observedAt,
+		);
+		const recorded = store.recordCloseoutExecutionEvidence({
+			evidenceId: evidence.evidenceId,
+			operationId: operation.operation_id,
+			ownerId: input.landOperation.ownerId,
+			operationGeneration: input.landOperation.generation,
+			probeSequence:
+				store
+					.listCloseoutExecutionEvidence(operation.operation_id)
+					.filter(
+						(row) =>
+							row.operation_generation === input.landOperation!.generation &&
+							row.execution_id === node.executionId,
+					).length + 1,
+			projectName: operation.project_name,
+			issueId: operation.issue_id,
+			runId: operation.run_id,
+			executionId: node.executionId,
+			activationId: evidence.activationId,
+			lifecycleRevision: evidence.lifecycleRevision,
+			attributionDigest: evidence.attributionDigest,
+			commIdentityRevision: evidence.commIdentityRevision,
+			observedStartedAt: observationTimes.sort()[0] ?? evidence.observedAt,
+			observedAt: evidence.observedAt,
+			expiresAt: evidence.expiresAt,
+			evidence: { ...evidence },
+		});
+		if (!recorded.ok || evidence.verdict !== "gone") {
+			result.confirmedGone = false;
+			result.communicationsFinalized = false;
+			result.teardown = {
+				state: "blocked",
+				prerequisite: !recorded.ok
+					? `closeout_evidence_write_failed:${recorded.reason}`
+					: `closeout_evidence_${evidence.verdict}`,
+			};
+			return result;
+		}
+		if (!evidence.commIdentityRevision) {
+			result.confirmedGone = false;
+			result.communicationsFinalized = false;
+			result.teardown = {
+				state: "blocked",
+				prerequisite: "comm_identity_revision_unavailable",
+			};
+			return result;
+		}
+		const finalized = finalizeProvenGoneCommDbSessionFn(
+			node.executionId,
+			node.projectName,
+			{
+				reservationId: `${closeoutReservation.reservationId}:${node.executionId}`,
+				evidenceId: evidence.evidenceId,
+				expectedIdentityRevision: evidence.commIdentityRevision,
+				observedAt: evidence.observedAt,
+				expiresAt: evidence.expiresAt,
+				now: new Date().toISOString(),
+			},
+		);
+		store.recordCommDbFinalizeOutcome({
+			executionId: node.executionId,
+			issueId: node.issueKey,
+			projectName: node.projectName,
+			ok: finalized.ok,
+			error: finalized.error,
+			runnerDeathProven: true,
+			audit: {
+				retiredGateCount: finalized.retiredGateCount,
+				retiredAskCount: finalized.retiredAskCount,
+				source: "bridge.lifecycle-closeout.trusted-gone",
+			},
+		});
+		result.communicationsFinalized = finalized.ok;
+		result.confirmedGone = finalized.ok;
+		result.teardown = finalized.ok
+			? { state: "done", detail: "proven_gone_communications_finalized" }
+			: {
+					state: "failed",
+					error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+				};
 	}
 	return result;
 }

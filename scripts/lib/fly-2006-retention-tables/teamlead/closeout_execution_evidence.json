@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "closeout_execution_evidence",
+	"classification": "protectedCurrentOrReference"
+}

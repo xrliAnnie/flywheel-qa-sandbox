@@ -113,19 +113,32 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 			const res = await request(server, path, body);
 			expect(res.status, path).toBe(403);
 		}
+		const reclose = await request(
+			server,
+			"/api/lifecycle/land/land%3Aone/resume",
+			{
+				mode: "closeout_only",
+				reason: "retry closeout",
+				expectedResumeGeneration: 0,
+				expectedApprovedHead: "a".repeat(40),
+				requestId: "11111111-1111-4111-8111-111111111111",
+			},
+		);
+		expect(reclose.status).toBe(503);
 	});
 
 	it("land: flag-off writes no intent; enabled path returns a stable 202 operation", async () => {
 		const kick = vi.fn();
-		const createIntent = vi.fn((input) =>
-			store.ensureLandOperation({
+		const createIntent = vi.fn(async (input) => ({
+			ok: true as const,
+			operation: store.ensureLandOperation({
 				issueId: input.issueId,
 				projectName: input.projectName,
 				prNumber: 1375,
 				approvedHead: "a".repeat(40),
 				now: "2026-07-21T20:00:00.000Z",
 			}),
-		);
+		}));
 		serve(
 			makeDeps({
 				land: { enabled: () => false, createIntent, kick },
@@ -188,7 +201,10 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 			makeDeps({
 				land: {
 					enabled: () => true,
-					createIntent: () => store.getLandOperation(operation.operation_id)!,
+					createIntent: async () => ({
+						ok: true as const,
+						operation: store.getLandOperation(operation.operation_id)!,
+					}),
 					kick,
 				},
 			}),
@@ -204,6 +220,42 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 			next_attempt_at: null,
 		});
 		expect(kick).toHaveBeenCalledWith(operation.operation_id);
+	});
+
+	it("land: target snapshot refusal returns 409 with zero kick", async () => {
+		const kick = vi.fn();
+		serve(
+			makeDeps({
+				land: {
+					enabled: () => true,
+					createIntent: vi.fn(async () => ({
+						ok: false as const,
+						reason: "land_target_snapshot_unavailable" as const,
+						missing: ["implement-1:worktree_not_registered"],
+						retryable: true,
+					})),
+					kick,
+				},
+			}),
+		);
+
+		const refused = await request(server, "/api/lifecycle/land", {
+			issueId: UUID,
+			project: "proj",
+			prNumber: 1375,
+			approvedHead: "a".repeat(40),
+		});
+
+		expect(refused).toEqual({
+			status: 409,
+			body: {
+				error: "land_target_snapshot_unavailable",
+				missing: ["implement-1:worktree_not_registered"],
+				retryable: true,
+				retryVia: "POST /api/lifecycle/land",
+			},
+		});
+		expect(kick).not.toHaveBeenCalled();
 	});
 
 	it("land resume: requires audited authority fields and kicks only after an accepted resume", async () => {
@@ -280,6 +332,60 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 			body: { error: "resume_refused:pr_head_mismatch" },
 		});
 		expect(kick).not.toHaveBeenCalled();
+	});
+
+	it("land reclose: derives the actor from authenticated authority and validates the exact tuple", async () => {
+		const kick = vi.fn();
+		const resume = vi.fn(async () => ({
+			ok: true as const,
+			operation: {
+				...store.ensureLandOperation({
+					issueId: UUID,
+					projectName: "proj",
+					prNumber: 2616,
+					approvedHead: "a".repeat(40),
+					now: "2026-09-16T03:34:00.000Z",
+				}),
+				state: "partial" as const,
+			},
+		}));
+		serve(
+			makeDeps({
+				land: {
+					enabled: () => true,
+					createIntent: vi.fn(),
+					resume,
+					kick,
+				},
+			}),
+		);
+		const path = "/api/lifecycle/land/land%3Aone/resume";
+		const invalid = await request(server, path, {
+			mode: "closeout_only",
+			reason: "retry closeout",
+		});
+		expect(invalid.status).toBe(400);
+		expect(resume).not.toHaveBeenCalled();
+
+		const accepted = await request(server, path, {
+			mode: "closeout_only",
+			actor: "untrusted-body-actor",
+			reason: "retry closeout",
+			expectedResumeGeneration: 3,
+			expectedApprovedHead: "a".repeat(40),
+			requestId: "11111111-1111-4111-8111-111111111111",
+		});
+		expect(accepted.status).toBe(200);
+		expect(resume).toHaveBeenCalledWith({
+			operationId: "land:one",
+			actor: "authenticated-master",
+			reason: "retry closeout",
+			mode: "closeout_only",
+			expectedResumeGeneration: 3,
+			expectedApprovedHead: "a".repeat(40),
+			requestId: "11111111-1111-4111-8111-111111111111",
+		});
+		expect(kick).toHaveBeenCalledWith("land:one");
 	});
 
 	it("park: delegates to the ATOMIC parkFn (mutex-held tombstone + closeout)", async () => {

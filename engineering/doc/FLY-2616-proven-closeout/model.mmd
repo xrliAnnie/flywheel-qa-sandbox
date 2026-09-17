@@ -1,0 +1,25 @@
+classDiagram
+ class ExecutionIdentity {
+  项目与任务
+  执行编号与启动代次
+  来源集合摘要
+ }
+ class DeathEvidence {
+  会话与窗口观察
+  进程与心跳观察
+  观察时间与有效期
+  消失或存活或未知
+ }
+ class CleanupReceipt {
+  通信记录清理
+  工作目录移除或缺失
+  通知与归档回执
+ }
+ class LandOwner {
+  进程出生身份
+  当前操作代次
+  自己发出的心跳
+ }
+ ExecutionIdentity "1" --> "many" DeathEvidence : 每次重新探测
+ DeathEvidence "1" --> "0..1" CleanupReceipt : 消失才可清理
+ LandOwner "1" --> "many" CleanupReceipt : 写入前验权

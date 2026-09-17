@@ -10,7 +10,11 @@ const CATEGORIES = Object.freeze({
 		"protectedAuthority",
 		"protectedCurrentOrReference",
 	],
-	comm: ["deleteTarget", "protectedCurrentOrAuthority"],
+	comm: [
+		"deleteTarget",
+		"protectedCurrentOrAuthority",
+		"protectedCurrentOrReference",
+	],
 });
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 

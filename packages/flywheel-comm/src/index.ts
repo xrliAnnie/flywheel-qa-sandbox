@@ -35,6 +35,7 @@ import { founderTime } from "./commands/founder-time.js";
 import { gate } from "./commands/gate.js";
 import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
+import { runLandCommand } from "./commands/land.js";
 import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
@@ -133,6 +134,8 @@ Commands:
             JSON immediately; runner goes idle and is woken by mailbox.
   hold      List or resume a registered workflow hold through the authenticated
             two-step recovery door: hold list|resume --run <id> ...
+  land      Lead-only land recovery commands: land reclose --operation <id>
+            --expected-generation <n> --expected-head <sha> --reason <text>
   verify-approval  MANDATORY pre-ship authority check (FLY-191): re-verify the
             approve_to_ship gate response + StateStore approved_to_ship +
             pr_head_sha against --pr-head $(git rev-parse HEAD). Fail-closed;
@@ -327,6 +330,9 @@ async function main(): Promise<void> {
 			break;
 		case "hold":
 			process.exitCode = await runHoldCommand(commandArgs);
+			break;
+		case "land":
+			process.exitCode = await runLandCommand(commandArgs);
 			break;
 		case "pending":
 			runPending(commandArgs);

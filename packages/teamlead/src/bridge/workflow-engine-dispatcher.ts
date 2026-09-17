@@ -57,6 +57,10 @@ import {
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
+import type {
+	PrepareLandIntentInput,
+	PrepareLandIntentResult,
+} from "./land-intent-targets.js";
 import {
 	type MaterializedHeadAuthority,
 	unavailableMaterializedHeadAuthority,
@@ -144,6 +148,9 @@ interface WorkflowEngineDispatcherOptions {
 		status: "completed" | "busy" | "partial" | "held" | "superseded" | "rework";
 		reason?: string;
 	}>;
+	prepareLandIntent?: (
+		input: PrepareLandIntentInput,
+	) => Promise<PrepareLandIntentResult>;
 	shipReadyArm?: WorkflowShipReadyArm;
 	reconcileWorkflowRework?: (
 		requestId: string,
@@ -1721,11 +1728,24 @@ export class WorkflowEngineDispatcher {
 				leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
 			});
 			if (!claim) break;
+			const operation = this.options.store.getLandOperation(claim.operationId);
+			const runId = claim.payload.runId ?? operation?.run_id ?? null;
+			const approvedHead =
+				claim.payload.approvedHead ?? operation?.approved_head ?? "unavailable";
+			const retryCount =
+				claim.payload.retryCount ?? operation?.retry_count ?? 0;
+			const retryEpochKey =
+				claim.payload.retryEpochKey ?? operation?.retry_epoch_key ?? null;
+			const recoveryMode = claim.payload.recoveryMode ?? "full";
 			const identity = this.resolveRunAlertIdentity(
 				claim.payload.projectName,
 				claim.payload.issueId,
-				`land:${claim.operationId}`,
+				runId ?? `land:${claim.operationId}`,
 			);
+			const recoveryInstruction =
+				recoveryMode === "closeout_only"
+					? `After inspecting the exact merged head, run: flywheel-comm land reclose --operation ${claim.operationId} --expected-generation ${claim.resumeGeneration} --expected-head ${approvedHead} --reason "Lead reviewed held closeout evidence"`
+					: `Inspect the PR, then recover with POST /api/lifecycle/land/${claim.operationId}/resume using audited actor and reason fields.`;
 			try {
 				const delivery = await sink.alert({
 					leadId: identity.leadId,
@@ -1735,10 +1755,10 @@ export class WorkflowEngineDispatcher {
 					severity: "severe",
 					sessionKey: `land:${claim.operationId}`,
 					title: `Land operation held for ${claim.payload.issueId}`,
-					body: `PR #${claim.payload.prNumber} land operation ${claim.operationId} is held. Reason: ${claim.payload.reason}. Inspect the PR, then recover with POST /api/lifecycle/land/${claim.operationId}/resume using audited actor and reason fields.`,
+					body: `PR #${claim.payload.prNumber} land operation ${claim.operationId} is held after ${retryCount} retries in epoch ${retryEpochKey ?? "unknown"}. Reason: ${claim.payload.reason}. It will not archive without fresh closeout proof. ${recoveryInstruction}`,
 					metadata: {
 						workflowEngine: {
-							runId: `land:${claim.operationId}`,
+							runId: runId ?? `land:${claim.operationId}`,
 							issueId: claim.payload.issueId,
 							nodeId: "land",
 							executionId: `land:${claim.operationId}`,
@@ -2193,13 +2213,18 @@ export class WorkflowEngineDispatcher {
 			(candidate) => candidate.id === intent.node_id,
 		);
 		if (node?.type === "land") {
-			const holdLandRun = (reason: string, operationId?: string): boolean => {
+			const holdLandRun = (
+				reason: string,
+				operationId?: string,
+				missing?: string[],
+			): boolean => {
 				const held = store.holdWorkflowLandNode({
 					runId: run.run_id,
 					nodeId: node.id,
 					attempt: intent.attempt,
 					executionId: intent.execution_id,
 					...(operationId ? { operationId } : {}),
+					...(missing ? { missing } : {}),
 					reason,
 					now: this.now().toISOString(),
 					alertIdentity: this.resolveRunAlertIdentity(
@@ -2264,9 +2289,17 @@ export class WorkflowEngineDispatcher {
 					existingOperation.operation_id,
 				);
 			}
-			const operation =
-				existingOperation ??
-				store.ensureLandOperation({
+			let operation = existingOperation;
+			if (
+				this.options.prepareLandIntent &&
+				!(
+					existingOperation?.closeout_targets_version === 1 &&
+					existingOperation.closeout_targets_json &&
+					existingOperation.closeout_targets_digest &&
+					existingOperation.closeout_attribution_digest
+				)
+			) {
+				const prepared = await this.options.prepareLandIntent({
 					runId: run.run_id,
 					issueId: run.issue_id,
 					projectName: run.project_name,
@@ -2274,6 +2307,24 @@ export class WorkflowEngineDispatcher {
 					approvedHead: holder.head_sha,
 					now: this.now().toISOString(),
 				});
+				if (!prepared.ok) {
+					return holdLandRun(
+						"land_target_snapshot_unavailable",
+						undefined,
+						prepared.missing,
+					);
+				}
+				operation = prepared.operation;
+			} else {
+				operation ??= store.ensureLandOperation({
+					runId: run.run_id,
+					issueId: run.issue_id,
+					projectName: run.project_name,
+					prNumber,
+					approvedHead: holder.head_sha,
+					now: this.now().toISOString(),
+				});
+			}
 			const execution = await this.options.landExecutor(operation.operation_id);
 			if (execution.status === "superseded" || execution.status === "rework") {
 				// The holder + operation generation swap committed atomically. Leave

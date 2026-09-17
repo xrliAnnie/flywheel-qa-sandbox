@@ -56,6 +56,10 @@ import {
 } from "./chat-thread-utils.js";
 import { snowflakeToMs } from "./discord-guild-active-threads.js";
 import {
+	type LandOperationAuditIdentity,
+	recordLandCloseoutAudit,
+} from "./land-operation-audit.js";
+import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	type RunnerLiveness,
@@ -112,9 +116,21 @@ export interface ArchiveThreadInput {
 	threadId: string;
 	issueId: string;
 	projectName: string;
-	/** For the audit event grouping; synthetic when no session row exists. */
+	/** Real execution identity used for session-scoped audit events. */
 	executionId: string;
 }
+
+export interface OperationArchiveThreadInput {
+	threadId: string;
+	issueId: string;
+	projectName: string;
+	/** Generation-fenced audit identity; never projected into session_events. */
+	operationAudit: LandOperationAuditIdentity;
+}
+
+export type ArchiveThreadRequest =
+	| ArchiveThreadInput
+	| OperationArchiveThreadInput;
 
 /**
  * FLY-1165: per-thread archive locks. Every archive of the same thread runs
@@ -302,7 +318,7 @@ export async function reactivateChatThreadForStartedSession(
  */
 export async function archiveThreadAndRecord(
 	store: StateStore,
-	input: ArchiveThreadInput,
+	input: ArchiveThreadRequest,
 	botToken: string,
 	deps: ArchiveThreadDeps = {},
 ): Promise<ArchiveChatThreadResult> {
@@ -319,6 +335,75 @@ export async function archiveThreadAndRecord(
 	const sleepImpl =
 		deps.sleepImpl ??
 		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	type ArchiveAuditEvent = {
+		event_id: string;
+		issue_id: string;
+		project_name: string;
+		event_type: string;
+		severity?: string;
+		payload?: unknown;
+		source: string;
+	};
+	const recordAuditEvent = (event: ArchiveAuditEvent): boolean => {
+		if ("executionId" in input) {
+			return store.insertEvent({
+				...event,
+				execution_id: input.executionId,
+			});
+		}
+		const recorded = recordLandCloseoutAudit(store, input.operationAudit, {
+			evidenceId: event.event_id,
+			eventKind: event.event_type,
+			receipt: {
+				eventId: event.event_id,
+				issueId: event.issue_id,
+				projectName: event.project_name,
+				source: event.source,
+				payload: event.payload ?? null,
+			},
+		});
+		return recorded.ok && !recorded.idempotentReplay;
+	};
+	const auditPayload = (
+		eventId: string,
+	): { status: "valid" | "missing" | "invalid"; payload?: unknown } => {
+		if ("executionId" in input) {
+			const result = store.lookupEventPayloadById(eventId);
+			return result.status === "valid"
+				? { status: "valid", payload: result.payload }
+				: { status: result.status };
+		}
+		const step = store
+			.listLandOperationSteps(input.operationAudit.operationId)
+			.find((candidate) => candidate.receipt.eventId === eventId);
+		return step
+			? { status: "valid", payload: step.receipt.payload }
+			: { status: "missing" };
+	};
+	const commitArchive = (event: ArchiveAuditEvent): void => {
+		if ("executionId" in input) {
+			store.commitThreadArchive(input.threadId, {
+				...event,
+				execution_id: input.executionId,
+			});
+			return;
+		}
+		const archivedAt = new Date().toISOString();
+		const recorded = recordLandCloseoutAudit(store, input.operationAudit, {
+			evidenceId: event.event_id,
+			eventKind: event.event_type,
+			receipt: {
+				eventId: event.event_id,
+				issueId: event.issue_id,
+				projectName: event.project_name,
+				source: event.source,
+				payload: event.payload ?? null,
+			},
+			now: archivedAt,
+			threadArchive: { threadId: input.threadId, archivedAt },
+		});
+		if (!recorded.ok) throw new Error(recorded.reason);
+	};
 	const retryDiscordRead = async <
 		T extends { ok: boolean; status?: number; retryAfterMs?: number },
 	>(
@@ -398,13 +483,12 @@ export async function archiveThreadAndRecord(
 		opts: { skip?: boolean; reArchived?: boolean } = {},
 	): ArchiveChatThreadResult => {
 		const success = result.archived || opts.skip;
-		store.insertEvent({
+		recordAuditEvent({
 			event_id: opts.reArchived
 				? `chat-thread-rearchived-fly1709-${randomUUID()}`
 				: success
 					? `chat-thread-archive-skip-fly1709-${randomUUID()}`
 					: `chat-thread-archive-failed-fly369-${randomUUID()}`,
-			execution_id: input.executionId,
 			issue_id: input.issueId,
 			project_name: input.projectName,
 			event_type: success
@@ -553,11 +637,10 @@ export async function archiveThreadAndRecord(
 				...patchResult,
 				archived: true,
 			};
-			store.commitThreadArchive(input.threadId, {
+			commitArchive({
 				event_id:
 					deps.successReceipt?.eventId ??
 					`chat-thread-rearchived-fly1709-${randomUUID()}`,
-				execution_id: input.executionId,
 				issue_id: input.issueId,
 				project_name: input.projectName,
 				event_type: "chat_thread_archived",
@@ -625,7 +708,7 @@ export async function archiveThreadAndRecord(
 			return audit(await resumeCompensation());
 		}
 		if (deps.successReceipt) {
-			const receipt = store.lookupEventPayloadById(deps.successReceipt.eventId);
+			const receipt = auditPayload(deps.successReceipt.eventId);
 			if (receipt.status === "valid") {
 				if (isDeepStrictEqual(receipt.payload, deps.successReceipt.payload)) {
 					return {
@@ -670,9 +753,8 @@ export async function archiveThreadAndRecord(
 			}
 			if (probe.archived === true) {
 				if (deps.successReceipt) {
-					const inserted = store.insertEvent({
+					const inserted = recordAuditEvent({
 						event_id: deps.successReceipt.eventId,
-						execution_id: input.executionId,
 						issue_id: input.issueId,
 						project_name: input.projectName,
 						event_type: "chat_thread_archived",
@@ -680,9 +762,7 @@ export async function archiveThreadAndRecord(
 						payload: deps.successReceipt.payload,
 					});
 					if (!inserted) {
-						const replay = store.lookupEventPayloadById(
-							deps.successReceipt.eventId,
-						);
+						const replay = auditPayload(deps.successReceipt.eventId);
 						if (
 							replay.status !== "valid" ||
 							!isDeepStrictEqual(replay.payload, deps.successReceipt.payload)
@@ -808,11 +888,10 @@ export async function archiveThreadAndRecord(
 					attempts: 0,
 					reason: "already_archived",
 				};
-				store.commitThreadArchive(input.threadId, {
+				commitArchive({
 					event_id:
 						deps.successReceipt?.eventId ??
 						`chat-thread-archive-skip-fly1709-${randomUUID()}`,
-					execution_id: input.executionId,
 					issue_id: input.issueId,
 					project_name: input.projectName,
 					event_type: "chat_thread_archived",
@@ -859,11 +938,10 @@ export async function archiveThreadAndRecord(
 			const commitAutomaticArchive = (
 				result: ArchiveChatThreadResult,
 			): ArchiveChatThreadResult => {
-				store.commitThreadArchive(input.threadId, {
+				commitArchive({
 					event_id:
 						deps.successReceipt?.eventId ??
 						`chat-thread-archived-fly2028-${input.threadId}-${archiveEpoch}`,
-					execution_id: input.executionId,
 					issue_id: input.issueId,
 					project_name: input.projectName,
 					event_type: "chat_thread_archived",
@@ -991,9 +1069,8 @@ export async function archiveThreadAndRecord(
 
 		if (result.archived) {
 			store.markChatThreadArchived(input.threadId);
-			store.insertEvent({
+			recordAuditEvent({
 				event_id: `chat-thread-archived-fly369-${input.threadId}`,
-				execution_id: input.executionId,
 				issue_id: input.issueId,
 				project_name: input.projectName,
 				event_type: "chat_thread_archived",
@@ -1006,9 +1083,8 @@ export async function archiveThreadAndRecord(
 				},
 			});
 		} else {
-			store.insertEvent({
+			recordAuditEvent({
 				event_id: `chat-thread-archive-failed-fly369-${randomUUID()}`,
-				execution_id: input.executionId,
 				issue_id: input.issueId,
 				project_name: input.projectName,
 				event_type: "chat_thread_archive_failed",
@@ -1040,7 +1116,7 @@ export async function archiveThreadAndRecord(
 			deps.successReceipt &&
 			message === `session_event_replay:${deps.successReceipt.eventId}`
 		) {
-			const replay = store.lookupEventPayloadById(deps.successReceipt.eventId);
+			const replay = auditPayload(deps.successReceipt.eventId);
 			if (
 				replay.status === "valid" &&
 				isDeepStrictEqual(replay.payload, deps.successReceipt.payload)
@@ -1056,9 +1132,8 @@ export async function archiveThreadAndRecord(
 			`[done-thread-archiver] archive of ${input.threadId} (${input.issueId}) threw: ${message}`,
 		);
 		try {
-			store.insertEvent({
+			recordAuditEvent({
 				event_id: `chat-thread-archive-failed-fly369-${randomUUID()}`,
-				execution_id: input.executionId,
 				issue_id: input.issueId,
 				project_name: input.projectName,
 				event_type: "chat_thread_archive_failed",

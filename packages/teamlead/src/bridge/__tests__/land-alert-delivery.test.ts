@@ -63,6 +63,41 @@ describe("legacy land held alert delivery", () => {
 		expect(alert.mock.calls[0]?.[0].body).toContain(
 			`POST /api/lifecycle/land/${operation.operation_id}/resume`,
 		);
+
+		const closeout = store.ensureLandOperation({
+			issueId: "FLY-2616",
+			projectName: "flywheel",
+			prNumber: 2616,
+			approvedHead: HEAD,
+			now: "2026-08-18T00:00:05.000Z",
+		});
+		const closeoutClaim = store.claimLandOperation({
+			operationId: closeout.operation_id,
+			ownerId: "closeout-worker",
+			now: "2026-08-18T00:00:06.000Z",
+			leaseExpiresAt: "2026-08-18T00:10:06.000Z",
+		})!;
+		store.recordLandOperationStep({
+			operationId: closeout.operation_id,
+			ownerId: closeoutClaim.ownerId,
+			generation: closeoutClaim.generation,
+			step: "merge_confirmed",
+			receipt: { headSha: HEAD, mergeSha: "b".repeat(40) },
+			now: "2026-08-18T00:00:07.000Z",
+		});
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: closeout.operation_id,
+			ownerId: closeoutClaim.ownerId,
+			generation: closeoutClaim.generation,
+			class: "terminal",
+			reason: "retry_exhausted:issue_closeout_incomplete",
+			now: "2026-08-18T00:00:08.000Z",
+		});
+		alert.mockResolvedValueOnce({ sent: true });
+		await expect(dispatcher.reconcileWorkflowEngineAlerts(1)).resolves.toBe(1);
+		expect(alert.mock.calls.at(-1)?.[0].body).toContain(
+			`flywheel-comm land reclose --operation ${closeout.operation_id} --expected-generation 0 --expected-head ${HEAD}`,
+		);
 		store.close();
 	});
 });

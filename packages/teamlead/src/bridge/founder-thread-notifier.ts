@@ -20,6 +20,10 @@ import { markAutomatedDiscordText } from "./automated-message.js";
 import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import { parseRetryAfterMs } from "./chat-thread-utils.js";
 import { isDiscordSnowflake, truncate } from "./founder-notify-utils.js";
+import {
+	type LandOperationAuditIdentity,
+	recordLandCloseoutAudit,
+} from "./land-operation-audit.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const POST_TIMEOUT_MS = 5_000;
@@ -527,8 +531,7 @@ export async function scanFounderThreadForGateCard(input: {
 //    wires it to the RAW sink, not back through the Router).
 // ─────────────────────────────────────────────────────────────────────────
 
-export interface IssueThreadInfraNotifyOpts {
-	executionId: string;
+interface IssueThreadInfraNotifyCommon {
 	issueId: string;
 	issueIdentifier?: string;
 	projectName: string;
@@ -545,6 +548,12 @@ export interface IssueThreadInfraNotifyOpts {
 	/** Fail-safe seam — invoked on ANY non-posted terminal outcome. */
 	onUndeliverable: (reason: string) => void | Promise<void>;
 }
+
+export type IssueThreadInfraNotifyOpts = IssueThreadInfraNotifyCommon &
+	(
+		| { executionId: string; operationAudit?: never }
+		| { executionId?: never; operationAudit: LandOperationAuditIdentity }
+	);
 
 export interface IssueThreadInfraNotifyDeps extends FounderThreadNotifyDeps {
 	/** Transient attempts budget (default 3 total). */
@@ -579,7 +588,7 @@ function rateLimitSkippedAudit(
 	}
 	const key = [
 		opts.projectName,
-		opts.executionId,
+		opts.executionId ?? opts.operationAudit.operationId,
 		opts.issueId,
 		opts.kind,
 		String(payload.reason ?? "unknown"),
@@ -616,14 +625,28 @@ function auditInfra(
 			? rateLimitSkippedAudit(store, opts, payload)
 			: payload;
 	if (!auditedPayload) return;
-	store.insertEvent({
-		event_id: `${eventType}-${randomUUID()}`,
-		execution_id: opts.executionId,
-		issue_id: opts.issueId,
-		project_name: opts.projectName,
-		event_type: eventType,
-		source: "bridge.founder-thread-notifier",
-		payload: { kind: opts.kind, ...auditedPayload },
+	const eventId = `${eventType}-${randomUUID()}`;
+	if (opts.executionId) {
+		store.insertEvent({
+			event_id: eventId,
+			execution_id: opts.executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: eventType,
+			source: "bridge.founder-thread-notifier",
+			payload: { kind: opts.kind, ...auditedPayload },
+		});
+		return;
+	}
+	recordLandCloseoutAudit(store, opts.operationAudit!, {
+		evidenceId: eventId,
+		eventKind: eventType,
+		receipt: {
+			issueId: opts.issueId,
+			projectName: opts.projectName,
+			kind: opts.kind,
+			...auditedPayload,
+		},
 	});
 }
 

@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "closeout_finalization_receipt",
+	"classification": "protectedCurrentOrReference"
+}

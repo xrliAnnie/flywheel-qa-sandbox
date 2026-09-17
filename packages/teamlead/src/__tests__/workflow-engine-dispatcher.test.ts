@@ -1939,6 +1939,129 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("holds and alerts when the verified target snapshot cannot be captured", async () => {
+		const store = await storeWithLandIntent();
+		const landExecutor = vi.fn();
+		const prepareLandIntent = vi.fn().mockResolvedValue({
+			ok: false,
+			reason: "land_target_snapshot_unavailable",
+			missing: ["implement-land:worktree_binding_unavailable"],
+			retryable: true,
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-21T20:02:00.000Z"),
+			landExecutor,
+			prepareLandIntent,
+			resolveRunAlertIdentity: (projectName) => ({
+				leadId: "flywheel-eng-lead",
+				projectName,
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(prepareLandIntent).toHaveBeenCalledOnce();
+		expect(landExecutor).not.toHaveBeenCalled();
+		expect(store.getWorkflowRun("run-land")?.status).toBe("held");
+		expect(store.getLandOperationForRun("run-land")).toBeUndefined();
+		const hold = store
+			.listWorkflowRunEvents("run-land")
+			.find((event) => event.kind === "land_held");
+		expect(hold?.payload).toMatchObject({
+			reason: "land_target_snapshot_unavailable",
+			operationId: null,
+			missing: ["implement-land:worktree_binding_unavailable"],
+		});
+		expect(store.getWorkflowAlertOutbox(hold!.event_uid)).toMatchObject({
+			state: "pending",
+			run_id: "run-land",
+		});
+		const normalized = StateStore.canonicalizeHoldResume({
+			runId: "run-land",
+			shape: "land_held_without_operation",
+			holdEventUid: hold!.event_uid,
+			decision: "retry",
+			reason: "retry after repairing target inventory",
+			principal: "master",
+			clientRequestId: "resume:land-target-snapshot:1",
+		});
+		expect(normalized).toBeDefined();
+		expect(
+			store.resumeWorkflowHold({
+				canonical: normalized!.canonical,
+				digest: normalized!.digest,
+				now: "2026-07-21T20:02:01.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "projected" });
+		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(prepareLandIntent).toHaveBeenCalledTimes(2);
+		expect(store.getWorkflowRun("run-land")?.status).toBe("held");
+		const holds = store
+			.listWorkflowRunEvents("run-land")
+			.filter((event) => event.kind === "land_held");
+		expect(holds).toHaveLength(2);
+		expect(holds[1]!.event_uid).not.toBe(holds[0]!.event_uid);
+		expect(holds[1]!.payload).toMatchObject({
+			missing: ["implement-land:worktree_binding_unavailable"],
+			recoveryEpisode: `hold_resumed:land_held_without_operation:${hold!.event_uid}`,
+		});
+		store.close();
+	});
+
+	it("reuses a verified land target snapshot when partial closeout is re-consumed", async () => {
+		const store = await storeWithLandIntent();
+		const operation = store.ensureLandOperation({
+			runId: "run-land",
+			issueId: "FLY-1375",
+			projectName: "flywheel",
+			prNumber: 1375,
+			approvedHead: HEAD,
+			now: "2026-07-21T20:01:30.000Z",
+			verifiedTargets: {
+				json: "{}",
+				digest: canonicalSubmissionDigest({}),
+				version: 1,
+				attributionDigest: "b".repeat(64),
+				observedAt: "2026-07-21T20:01:00.000Z",
+			},
+		});
+		const prepareLandIntent = vi.fn().mockResolvedValue({
+			ok: false,
+			reason: "land_target_snapshot_unavailable",
+			missing: ["implement-land:worktree_path_unresolvable"],
+			retryable: true,
+		});
+		const landExecutor = vi.fn().mockResolvedValue({
+			status: "partial",
+			reason: "issue_closeout_incomplete:cause=archive_failed",
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-21T20:02:00.000Z"),
+			landExecutor,
+			prepareLandIntent,
+			resolveRunAlertIdentity: (projectName) => ({
+				leadId: "flywheel-eng-lead",
+				projectName,
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(prepareLandIntent).not.toHaveBeenCalled();
+		expect(landExecutor).toHaveBeenCalledOnce();
+		expect(landExecutor).toHaveBeenCalledWith(operation.operation_id);
+		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+		store.close();
+	});
+
 	it.each([
 		"issue_closeout_incomplete",
 		"ship_workflow_pending",

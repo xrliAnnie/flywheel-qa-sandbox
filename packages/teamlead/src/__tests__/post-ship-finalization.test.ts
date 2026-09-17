@@ -1,3 +1,7 @@
+import {
+	canonicalJsonString,
+	canonicalSubmissionDigest,
+} from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	isPostApproveShipComplete,
@@ -17,6 +21,18 @@ const mockProbeRunExecutionLiveness = vi.fn();
 const mockHasEndedCommDbSession = vi.fn();
 
 const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
+
+// A unit test must never control the developer's real Terminal/tmux viewer.
+vi.mock("flywheel-core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("flywheel-core")>();
+	return {
+		...actual,
+		closeRunnerTerminalView: vi.fn(async () => ({
+			viewerSessionKilled: false,
+			terminalTabClosed: false,
+		})),
+	};
+});
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
@@ -123,12 +139,38 @@ function seedLandOperationClaim(store: StateStore) {
 	// recordLandOperationStep compares the lease with the real clock, so this
 	// fixture must stay relative to now instead of becoming a wall-clock fuse.
 	const base = Date.now();
+	const targetSnapshot = {
+		version: 1,
+		project: "flywheel",
+		issueUuid: "FLY-102",
+		runId: null,
+		targets: [
+			{
+				kind: "bound_worktree",
+				path: "/tmp/flywheel-FLY-102",
+				branch: "flywheel-FLY-102",
+				generation: "generation-1",
+				projectRoot: "/tmp/flywheel",
+				parentIdentity: { path: "/tmp", dev: 1, ino: 1 },
+				sourceExecutionIds: ["exec-1"],
+				sourceRunId: null,
+				sourceReceipt: "state_session_binding:exec-1:generation-1",
+			},
+		],
+	} as const;
 	const operation = store.ensureLandOperation({
 		issueId: "FLY-102",
 		projectName: "flywheel",
 		prNumber: 1832,
 		approvedHead: "a".repeat(40),
 		now: new Date(base - 1_000).toISOString(),
+		verifiedTargets: {
+			json: canonicalJsonString(targetSnapshot),
+			digest: canonicalSubmissionDigest(targetSnapshot),
+			version: 1,
+			attributionDigest: canonicalSubmissionDigest(["exec-1"]),
+			observedAt: new Date(base - 1_000).toISOString(),
+		},
 	});
 	const claim = store.claimLandOperation({
 		operationId: operation.operation_id,
@@ -1076,6 +1118,43 @@ describe("runPostShipFinalization", () => {
 		]);
 	});
 
+	it("passes workflow attribution to issue closeout after the source session is disposable", async () => {
+		store.createWorkflowRun({
+			runId: "run-closeout-inventory",
+			issueId: "FLY-102",
+			projectName: "flywheel",
+			claimsReadEnrolled: true,
+		});
+		const issueCloseout = vi.fn().mockResolvedValue({ outcome: "completed" });
+
+		await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				runId: "run-closeout-inventory",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				issueCloseout,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+			},
+		);
+
+		expect(issueCloseout).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "exec-1",
+				runId: "run-closeout-inventory",
+			}),
+		);
+	});
+
 	it.each(["partial", "needs_operator"] as const)(
 		"keeps a typed %s lifecycle diagnostic non-blocking",
 		async (outcome) => {
@@ -1307,6 +1386,80 @@ describe("runPostShipFinalization", () => {
 		).toBe(false);
 	});
 
+	it("does not accept legacy registration absence without filesystem absence proof", async () => {
+		const removeCleanWorktree = vi.fn().mockResolvedValue({
+			removed: false,
+			bindingVerified: false,
+			skippedReason: "not_registered",
+		});
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+				removeCleanWorktree,
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: false,
+			outcome: "partial",
+			details: { worktreeRemoved: false, issueDone: true },
+		});
+		expect(removeCleanWorktree).toHaveBeenCalledOnce();
+		expect(markIssueDone).toHaveBeenCalledOnce();
+	});
+
+	it("accepts a filesystem-proven absent legacy worktree as cleanup complete on retry", async () => {
+		const removeCleanWorktree = vi.fn().mockResolvedValue({
+			removed: false,
+			cleanupState: "absent",
+			bindingVerified: false,
+		});
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+				removeCleanWorktree,
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: true,
+			outcome: "completed",
+			details: { worktreeRemoved: true, issueDone: true },
+		});
+		expect(removeCleanWorktree).toHaveBeenCalledOnce();
+		expect(markIssueDone).toHaveBeenCalledOnce();
+	});
+
 	it("settles a terminal receipt before archive and leaves archive as the final thread write", async () => {
 		const landOperation = seedLandOperationClaim(store);
 		const order: string[] = [];
@@ -1408,6 +1561,142 @@ describe("runPostShipFinalization", () => {
 			threadId: "thread-1",
 			issueId: "FLY-102",
 		});
+	});
+
+	it("resolves an operation-scoped thread by issue after the source session row is gone", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		store.upsertChatThread("thread-1", "chan-1", "FLY-102", "lead-correct");
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("DELETE FROM sessions WHERE execution_id = ?", ["exec-1"]);
+		const archiveFn = vi.fn(async () => {
+			discordArchived = true;
+			return {
+				archived: true,
+				attempts: 1,
+				status: 200,
+				reason: "ok" as const,
+			};
+		});
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+		const projects: ProjectEntry[] = [
+			{
+				projectName: "flywheel",
+				projectRoot: "/tmp/flywheel",
+				leads: [
+					{
+						agentId: "lead-wrong",
+						chatChannel: "chan-wrong",
+						botToken: "wrong-token",
+						match: { labels: [] },
+					},
+					{
+						agentId: "lead-correct",
+						chatChannel: "chan-1",
+						botToken: "correct-token",
+						match: { labels: ["correct"] },
+					},
+				],
+			},
+		];
+
+		const result = await runResumablePostShipFinalization(
+			{
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				landOperation,
+				operationContext: {
+					...landOperation,
+					runId: null,
+					sourceExecutionId: "exec-1",
+					mergeReceiptId: "merge-receipt-1",
+				},
+			},
+			{
+				store,
+				projects,
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(archiveFn).toHaveBeenCalledOnce();
+		expect(markIssueDone).toHaveBeenCalledOnce();
+	});
+
+	it("escalates and keeps Linear untouched when an operation-scoped thread cannot be resolved", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		store.markChatThreadMissing("thread-1");
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("DELETE FROM sessions WHERE execution_id = ?", ["exec-1"]);
+		const archiveFn = vi.fn();
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+
+		const result = await runResumablePostShipFinalization(
+			{
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				landOperation,
+				operationContext: {
+					...landOperation,
+					runId: null,
+					sourceExecutionId: "exec-1",
+					mergeReceiptId: "merge-receipt-1",
+				},
+			},
+			{
+				store,
+				projects: PROJECTS,
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl,
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: false,
+			outcome: "partial",
+			reason: "land_thread_resolution_incomplete",
+			details: { threadArchived: false },
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(markIssueDone).not.toHaveBeenCalled();
+		expect(
+			store
+				.listLandOperationSteps(landOperation.operationId)
+				.some(
+					(step) =>
+						(step.receipt as { eventKind?: string }).eventKind ===
+						"post_ship_thread_resolution_escalated",
+				),
+		).toBe(true);
 	});
 
 	it("preserves a founder-reopened thread when the same land receipt replays", async () => {

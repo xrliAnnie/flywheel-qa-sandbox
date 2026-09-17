@@ -225,6 +225,23 @@ CREATE TABLE IF NOT EXISTS runner_declared_states (
   expires_at    INTEGER,
   updated_at    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS closeout_finalization_receipt (
+  reservation_id          TEXT PRIMARY KEY,
+  evidence_id             TEXT NOT NULL,
+  execution_id            TEXT NOT NULL,
+  expected_identity_digest TEXT NOT NULL,
+  input_digest            TEXT NOT NULL,
+  result_json             TEXT NOT NULL CHECK(json_valid(result_json)),
+  finalized_at            TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS closeout_finalization_receipt_no_update
+BEFORE UPDATE ON closeout_finalization_receipt BEGIN
+  SELECT RAISE(ABORT, 'closeout_finalization_receipt is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS closeout_finalization_receipt_no_delete
+BEFORE DELETE ON closeout_finalization_receipt BEGIN
+  SELECT RAISE(ABORT, 'closeout_finalization_receipt is append-only');
+END;
 CREATE TABLE IF NOT EXISTS runner_stop_declarations (
   execution_id  TEXT PRIMARY KEY,
   state_hash    TEXT NOT NULL,
@@ -660,6 +677,52 @@ export type FinalizeSessionCommunicationsResult =
 	| { finalized: false; reason: "parked" }
 	| { finalized: false; reason: "founder_wake_pending" }
 	| { finalized: true; result: FinalizeSessionResult };
+
+export interface SessionCloseoutIdentity {
+	version: 1;
+	executionId: string;
+	revision: string;
+	session: {
+		tmuxWindow: string;
+		projectName: string;
+		issueId: string | null;
+		status: string;
+		endedAt: string | null;
+	} | null;
+	declaredState: {
+		kind: "parked" | "long_task";
+		reason: string | null;
+		createdAt: number;
+		expiresAt: number | null;
+		updatedAt: number;
+	} | null;
+}
+
+export interface ProvenGoneFinalizationInput {
+	reservationId: string;
+	evidenceId: string;
+	expectedIdentityRevision: string;
+	observedAt: string;
+	expiresAt: string;
+	now: string;
+}
+
+export type ProvenGoneFinalizationResult =
+	| {
+			finalized: true;
+			idempotentReplay: boolean;
+			result: FinalizeSessionResult;
+	  }
+	| {
+			finalized: false;
+			reason:
+				| "invalid_trusted_context"
+				| "evidence_expired"
+				| "closeout_identity_changed"
+				| "turn_holder"
+				| "founder_wake_pending"
+				| "closeout_receipt_conflict";
+	  };
 
 /**
  * FLY-1328: an ask younger than this at teardown is spared. It kills the
@@ -8749,6 +8812,175 @@ export class CommDB {
 		return this.db.transaction((targetExecutionId: string) =>
 			this.finalizeSessionEffects(targetExecutionId, true),
 		)(executionId);
+	}
+
+	/** Exact CommDB identity bound into a physical-gone evidence receipt. */
+	getSessionCloseoutIdentity(executionId: string): SessionCloseoutIdentity {
+		const session = this.db
+			.prepare(
+				`SELECT tmux_window, project_name, issue_id, status, ended_at
+				   FROM sessions WHERE execution_id = ?`,
+			)
+			.get(executionId) as
+			| {
+					tmux_window: string;
+					project_name: string;
+					issue_id: string | null;
+					status: string;
+					ended_at: string | null;
+			  }
+			| undefined;
+		const declared = this.db
+			.prepare(
+				`SELECT kind, reason, created_at, expires_at, updated_at
+				   FROM runner_declared_states WHERE execution_id = ?`,
+			)
+			.get(executionId) as
+			| {
+					kind: "parked" | "long_task";
+					reason: string | null;
+					created_at: number;
+					expires_at: number | null;
+					updated_at: number;
+			  }
+			| undefined;
+		const identity = {
+			version: 1 as const,
+			executionId,
+			session: session
+				? {
+						tmuxWindow: session.tmux_window,
+						projectName: session.project_name,
+						issueId: session.issue_id,
+						status: session.status,
+						endedAt: session.ended_at,
+					}
+				: null,
+			declaredState: declared
+				? {
+						kind: declared.kind,
+						reason: declared.reason,
+						createdAt: declared.created_at,
+						expiresAt: declared.expires_at,
+						updatedAt: declared.updated_at,
+					}
+				: null,
+		};
+		return {
+			...identity,
+			revision: canonicalSubmissionDigest(identity),
+		};
+	}
+
+	/**
+	 * Finalize a physically-gone execution using a current land reservation.
+	 * The immutable identity digest closes the probe→write race. Parked is
+	 * bypassed only on this trusted path; TURN and unread founder wakes remain
+	 * hard vetoes. Missing session rows still settle orphan communication rows.
+	 */
+	finalizeProvenGoneSession(
+		executionId: string,
+		input: ProvenGoneFinalizationInput,
+	): ProvenGoneFinalizationResult {
+		const observedMs = Date.parse(input.observedAt);
+		const expiresMs = Date.parse(input.expiresAt);
+		const nowMs = Date.parse(input.now);
+		if (
+			!executionId ||
+			!input.reservationId ||
+			input.reservationId.length > 300 ||
+			!input.evidenceId ||
+			input.evidenceId.length > 300 ||
+			!/^[0-9a-f]{64}$/.test(input.expectedIdentityRevision) ||
+			!Number.isFinite(observedMs) ||
+			!Number.isFinite(expiresMs) ||
+			!Number.isFinite(nowMs) ||
+			expiresMs <= observedMs ||
+			nowMs < observedMs
+		) {
+			return { finalized: false, reason: "invalid_trusted_context" };
+		}
+		if (nowMs >= expiresMs) {
+			return { finalized: false, reason: "evidence_expired" };
+		}
+		const immutableInput = {
+			reservationId: input.reservationId,
+			evidenceId: input.evidenceId,
+			executionId,
+			expectedIdentityRevision: input.expectedIdentityRevision,
+			observedAt: input.observedAt,
+			expiresAt: input.expiresAt,
+		};
+		const inputDigest = canonicalSubmissionDigest(immutableInput);
+		const finalize = this.db.transaction((): ProvenGoneFinalizationResult => {
+			const prior = this.db
+				.prepare(
+					`SELECT input_digest, result_json
+						   FROM closeout_finalization_receipt
+						  WHERE reservation_id = ?`,
+				)
+				.get(input.reservationId) as
+				| { input_digest: string; result_json: string }
+				| undefined;
+			if (prior) {
+				if (prior.input_digest !== inputDigest) {
+					return {
+						finalized: false,
+						reason: "closeout_receipt_conflict",
+					};
+				}
+				return {
+					finalized: true,
+					idempotentReplay: true,
+					result: JSON.parse(prior.result_json) as FinalizeSessionResult,
+				};
+			}
+			if (
+				this.getSessionCloseoutIdentity(executionId).revision !==
+				input.expectedIdentityRevision
+			) {
+				return { finalized: false, reason: "closeout_identity_changed" };
+			}
+			const holdsTurn = this.db
+				.prepare(
+					"SELECT 1 FROM three_stage_turn WHERE holder_exec_id = ? LIMIT 1",
+				)
+				.get(executionId);
+			if (holdsTurn) return { finalized: false, reason: "turn_holder" };
+			const founderWakePending = (
+				this.db
+					.prepare(
+						"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND state = 'pending'",
+					)
+					.all(executionId) as RunnerPhaseWake[]
+			).some((wake) => runnerWakeMetadata(wake).origin === "founder");
+			if (founderWakePending) {
+				return { finalized: false, reason: "founder_wake_pending" };
+			}
+			const result = this.finalizeSessionEffects(executionId, true);
+			this.db
+				.prepare("DELETE FROM runner_declared_states WHERE execution_id = ?")
+				.run(executionId);
+			this.db
+				.prepare(
+					`INSERT INTO closeout_finalization_receipt
+						   (reservation_id, evidence_id, execution_id,
+						    expected_identity_digest, input_digest, result_json,
+						    finalized_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					input.reservationId,
+					input.evidenceId,
+					executionId,
+					input.expectedIdentityRevision,
+					inputDigest,
+					canonicalJsonString(result),
+					input.now,
+				);
+			return { finalized: true, idempotentReplay: false, result };
+		});
+		return finalize.immediate();
 	}
 
 	/**

@@ -26,6 +26,7 @@ import type { WorktreeManager } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { LandOperationRow, StateStore } from "../StateStore.js";
 import type { CleanupPolicyByProject } from "./cleanup-policy.js";
+import type { PrepareLandIntentResult } from "./land-intent-targets.js";
 import {
 	type ClosureReport,
 	collectIssueCloseoutNodes,
@@ -75,13 +76,18 @@ export interface LifecycleRoutesDeps {
 			issueId: string;
 			prNumber?: number;
 			approvedHead?: string;
-		}): LandOperationRow;
+		}): Promise<PrepareLandIntentResult>;
 		resume?(input: {
 			operationId: string;
 			actor: string;
 			reason: string;
+			mode?: "full" | "closeout_only";
+			expectedResumeGeneration?: number;
+			expectedApprovedHead?: string;
+			requestId?: string;
 		}): Promise<
-			{ ok: true; operation: LandOperationRow } | { ok: false; reason: string }
+			| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
+			| { ok: false; reason: string }
 		>;
 		kick(operationId: string): void;
 	};
@@ -216,7 +222,7 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 		return true;
 	};
 
-	router.post("/land", (req, res) => {
+	router.post("/land", async (req, res) => {
 		if (!guard(res)) return;
 		if (!deps.land?.enabled()) {
 			res.status(503).json({ error: "land_node_disabled" });
@@ -240,7 +246,7 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 			return;
 		}
 		try {
-			const operation = deps.land.createIntent({
+			const prepared = await deps.land.createIntent({
 				projectName: project,
 				issueId,
 				...(prNumber !== undefined ? { prNumber } : {}),
@@ -248,6 +254,16 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 					? { approvedHead: approvedHead.toLowerCase() }
 					: {}),
 			});
+			if (!prepared.ok) {
+				res.status(409).json({
+					error: prepared.reason,
+					missing: prepared.missing,
+					retryable: prepared.retryable,
+					retryVia: "POST /api/lifecycle/land",
+				});
+				return;
+			}
+			const operation = prepared.operation;
 			deps.store.makeLandOperationRetryRunnable(operation.operation_id);
 			deps.land.kick(operation.operation_id);
 			res.status(202).json({
@@ -275,16 +291,52 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 	});
 
 	router.post("/land/:operationId/resume", async (req, res) => {
+		if (
+			req.body?.mode !== undefined &&
+			req.body.mode !== "full" &&
+			req.body.mode !== "closeout_only"
+		) {
+			res.status(400).json({ error: "invalid land resume mode" });
+			return;
+		}
+		const mode = req.body?.mode === "closeout_only" ? "closeout_only" : "full";
+		if (!deps.apiTokenConfigured && mode === "closeout_only") {
+			res.status(503).json({ error: "api_token_not_configured (fail-closed)" });
+			return;
+		}
 		if (!guard(res)) return;
 		if (!deps.land?.enabled() || !deps.land.resume) {
 			res.status(503).json({ error: "land_node_disabled" });
 			return;
 		}
 		const actor =
-			typeof req.body?.actor === "string" ? req.body.actor.trim() : "";
+			mode === "closeout_only"
+				? "authenticated-master"
+				: typeof req.body?.actor === "string"
+					? req.body.actor.trim()
+					: "";
 		const reason =
 			typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
-		if (!actor || actor.length > 200 || !reason || reason.length > 500) {
+		const expectedResumeGeneration = req.body?.expectedResumeGeneration;
+		const expectedApprovedHead =
+			typeof req.body?.expectedApprovedHead === "string"
+				? req.body.expectedApprovedHead.trim().toLowerCase()
+				: "";
+		const requestId =
+			typeof req.body?.requestId === "string"
+				? req.body.requestId.trim().toLowerCase()
+				: "";
+		if (
+			!actor ||
+			actor.length > 200 ||
+			!reason ||
+			reason.length > 500 ||
+			(mode === "closeout_only" &&
+				(!Number.isSafeInteger(expectedResumeGeneration) ||
+					expectedResumeGeneration < 0 ||
+					!/^[0-9a-f]{40}$/.test(expectedApprovedHead) ||
+					!isUuidKey(requestId)))
+		) {
 			res.status(400).json({ error: "actor + reason required" });
 			return;
 		}
@@ -293,13 +345,24 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 				operationId: req.params.operationId,
 				actor,
 				reason,
+				...(mode === "closeout_only"
+					? {
+							mode,
+							expectedResumeGeneration,
+							expectedApprovedHead,
+							requestId,
+						}
+					: {}),
 			});
 			if (!resumed.ok) {
 				res.status(409).json({ error: resumed.reason });
 				return;
 			}
-			deps.land.kick(req.params.operationId);
-			res.status(200).json(resumed.operation);
+			if (!resumed.alreadyCompleted) deps.land.kick(req.params.operationId);
+			res.status(200).json({
+				...resumed.operation,
+				...(resumed.alreadyCompleted ? { already_completed: true } : {}),
+			});
 		} catch (error) {
 			res.status(409).json({
 				error: error instanceof Error ? error.message : String(error),

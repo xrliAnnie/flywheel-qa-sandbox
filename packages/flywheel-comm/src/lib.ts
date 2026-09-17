@@ -41,12 +41,15 @@ export type {
 	PatrolTurnWaitRow,
 	PatrolTurnWakeRow,
 	PhaseWakeInput,
+	ProvenGoneFinalizationInput,
+	ProvenGoneFinalizationResult,
 	RunnerDeliveryProjectionRow,
 	RunnerDoorbellWakeResult,
 	RunnerPhaseWake,
 	RunnerPhaseWakeStartResult,
 	RunnerShutdownControl,
 	RunnerTurnWakeProjectionRow,
+	SessionCloseoutIdentity,
 	TurnWakeOutboxRow,
 } from "./db.js";
 export {

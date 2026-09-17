@@ -30,6 +30,7 @@ export interface AdmissionDeps {
 		| "findAutoQaRecordsByQaIssueKeys"
 		| "getSession"
 		| "getActiveIssueDispositionIntent"
+		| "getActiveLandCloseoutReservation"
 		| "insertLaunchClaim"
 		| "insertEvent"
 	>;
@@ -117,6 +118,25 @@ export async function assertIssueNotLifecycleClosed(
 					founderDecisionId: intent.founderDecisionId,
 				});
 				return { admitted: false as const, reason: "founder_parked" };
+			}
+		}
+		for (const key of keysToCheck) {
+			const reservation = deps.store.getActiveLandCloseoutReservation(
+				input.projectName,
+				key,
+			);
+			if (reservation) {
+				audit("admission_denied", {
+					reason: "land_closeout_reserved",
+					rootKey: key,
+					operationId: reservation.operationId,
+					generation: reservation.generation,
+					epoch: reservation.epoch,
+				});
+				return {
+					admitted: false as const,
+					reason: "land_closeout_reserved",
+				};
 			}
 		}
 
