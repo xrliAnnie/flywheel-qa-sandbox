@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
+	LandMergeTicketRow,
 	LandOperationClaim,
 	LandOperationRow,
 	StateStore,
@@ -12,11 +13,21 @@ import {
 	workflowTerminalNode,
 } from "../workflow-template.js";
 import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
+import type {
+	ApprovedContentFingerprint,
+	ContentContinuityProof,
+} from "./land-content-proof.js";
+import type { LandContentReviewResult } from "./land-content-review.js";
 import {
 	classifyLandFailure,
 	extractBoundedFailedStepLog,
 } from "./land-failure-classifier.js";
 import type { CleanBaseMergeProof } from "./land-head-refresh-proof.js";
+import {
+	parseLandMergeTicketComment,
+	renderLandMergeTicketComment,
+	signLandMergeTicket,
+} from "./land-merge-ticket.js";
 import { classifyLandRetryReason } from "./land-retry-policy.js";
 import { computeAuthoritativeShipDecision } from "./merge-ship-gate.js";
 
@@ -37,7 +48,11 @@ export interface LandPrState {
 	mergeStateStatus?: string | null;
 	isDraft?: boolean;
 	reviewDecision?: string | null;
-	checks?: Array<{ status?: string | null; conclusion?: string | null }>;
+	checks?: Array<{
+		name?: string | null;
+		status?: string | null;
+		conclusion?: string | null;
+	}>;
 }
 
 export type LandWorkflowState =
@@ -74,6 +89,7 @@ export interface LandMergeDriver {
 		prNumber: number;
 		operationId: string;
 		headSha: string;
+		mergeTicket?: LandMergeTicketRow;
 	}): Promise<{ commentId: string; commentUrl?: string }>;
 	inspectPreparedCoolAttempt?(input: {
 		projectName: string;
@@ -136,6 +152,33 @@ export interface LandExecutorDeps {
 			candidateHead: string;
 		}): Promise<CleanBaseMergeProof>;
 	};
+	contentProver?: {
+		fingerprint(input: {
+			projectName: string;
+			prNumber: number;
+			approvedHead: string;
+			baseOid: string;
+		}): Promise<ApprovedContentFingerprint>;
+		prove(input: {
+			projectName: string;
+			prNumber: number;
+			fingerprint: ApprovedContentFingerprint;
+			priorHead: string;
+			baseOid: string;
+			candidateHead: string;
+		}): Promise<ContentContinuityProof>;
+	};
+	contentReviewer?: {
+		ensureReview(input: {
+			runId: string;
+			issueId: string;
+			projectName: string;
+			prNumber: number;
+			headSha: string;
+			executionId: string;
+			repoIdentity: string;
+		}): Promise<LandContentReviewResult>;
+	};
 	carryEquivalentHead?: (input: {
 		operation: LandOperationRow;
 		claim: LandOperationClaim;
@@ -158,6 +201,35 @@ export interface LandExecutorDeps {
 				  }
 				| { ok: false; reason: string }
 		  >;
+	carryContentBoundHead?: (input: {
+		operation: LandOperationRow;
+		claim: LandOperationClaim;
+		fingerprint: ApprovedContentFingerprint;
+		proof: Extract<ContentContinuityProof, { ok: true }>;
+		ci: {
+			evidenceId: string;
+			checks: Array<{ name: string; status: string; conclusion: string }>;
+		};
+		review: { executionId: string; requestId: string };
+		qa: { kind: "carried" | "fresh"; claimId: number };
+		now: string;
+	}) =>
+		| {
+				ok: true;
+				operation: LandOperationRow;
+				receiptId: string;
+				ordinal: number;
+		  }
+		| { ok: false; reason: string }
+		| Promise<
+				| {
+						ok: true;
+						operation: LandOperationRow;
+						receiptId: string;
+						ordinal: number;
+				  }
+				| { ok: false; reason: string }
+		  >;
 	recordCarryoverDepartureCutoff?: (input: {
 		operation: LandOperationRow;
 		receiptId: string;
@@ -168,7 +240,19 @@ export interface LandExecutorDeps {
 		operation: LandOperationRow;
 		claim: LandOperationClaim;
 		proofStep: string;
-		reason: "merge_conflict_requires_rework";
+		reason:
+			| "merge_conflict_requires_rework"
+			| "land_merge_ticket_signing_unavailable";
+		now: string;
+	}) =>
+		| { ok: true; requestId: string }
+		| { ok: false; reason: string }
+		| Promise<{ ok: true; requestId: string } | { ok: false; reason: string }>;
+	openConflictResolution?: (input: {
+		operation: LandOperationRow;
+		claim: LandOperationClaim;
+		proofStep: string;
+		reason: "merge_conflict_requires_resolution";
 		now: string;
 	}) =>
 		| { ok: true; requestId: string }
@@ -566,19 +650,313 @@ async function carryEquivalentLandHead(
 	return { ok: true, operation: carried.operation };
 }
 
+function contentCarryoverContext(
+	store: StateStore,
+	operation: LandOperationRow,
+):
+	| {
+			runId: string;
+			gateNodeId: string;
+			questionId: string;
+			rootGateId: string;
+			rootHead: string;
+			repoIdentity: string;
+			implementationExecutionId: string;
+	  }
+	| undefined {
+	if (!operation.run_id) return undefined;
+	const run = store.getWorkflowRun(operation.run_id);
+	if (!run?.snapshot) return undefined;
+	let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	try {
+		snapshot = parseWorkflowRunSnapshot(run.snapshot);
+	} catch {
+		return undefined;
+	}
+	const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
+	const holder = store.getCurrentWorkflowGateHolder(
+		operation.run_id,
+		gateNodeId,
+	);
+	const authority = store.resolveWorkflowExactHeadAuthority({
+		runId: operation.run_id,
+		headSha: operation.approved_head,
+	});
+	if (!holder || holder.state !== "approved" || !authority.valid)
+		return undefined;
+	const implementation = store.getWorkflowRunNode(
+		operation.run_id,
+		authority.binding.node_id,
+		authority.binding.attempt,
+	);
+	if (!implementation?.execution_id) return undefined;
+	return {
+		runId: operation.run_id,
+		gateNodeId,
+		questionId: holder.question_id,
+		rootGateId:
+			authority.kind === "carryover"
+				? authority.rootHolderQuestionId
+				: holder.question_id,
+		rootHead: authority.rootHead,
+		repoIdentity: authority.binding.target_repo_identity,
+		implementationExecutionId: implementation.execution_id,
+	};
+}
+
+async function stageApprovedContent(
+	deps: LandExecutorDeps,
+	operation: LandOperationRow,
+	claim: LandOperationClaim,
+	pr: LandPrState,
+	now: string,
+): Promise<
+	| { ok: true; fingerprint: ApprovedContentFingerprint }
+	| { ok: false; reason: string }
+	| undefined
+> {
+	if (!deps.contentProver || !pr.baseSha) return undefined;
+	const context = contentCarryoverContext(deps.store, operation);
+	if (!context) return undefined;
+	const existing = deps.store.getWorkflowApprovedContent(context.rootGateId);
+	if (existing) return { ok: true, fingerprint: existing.fingerprint };
+	if (context.rootHead !== operation.approved_head) {
+		return { ok: false, reason: "approved_content_root_missing" };
+	}
+	let fingerprint: ApprovedContentFingerprint;
+	try {
+		fingerprint = await deps.contentProver.fingerprint({
+			projectName: operation.project_name,
+			prNumber: operation.pr_number,
+			approvedHead: operation.approved_head,
+			baseOid: pr.baseSha,
+		});
+	} catch (error) {
+		return {
+			ok: false,
+			reason: `approved_content_fingerprint_failed:${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	const staged = deps.store.stageWorkflowApprovedContent({
+		runId: context.runId,
+		gateNodeId: context.gateNodeId,
+		questionId: context.questionId,
+		operationId: operation.operation_id,
+		ownerId: claim.ownerId,
+		generation: claim.generation,
+		fingerprint,
+		now,
+	});
+	return staged.ok
+		? { ok: true, fingerprint: staged.fingerprint }
+		: { ok: false, reason: staged.reason };
+}
+
+function exactGreenCi(pr: LandPrState):
+	| {
+			status: "green";
+			checks: Array<{ name: string; status: string; conclusion: string }>;
+	  }
+	| { status: "pending" | "failed"; reason: string } {
+	const checks = pr.checks ?? [];
+	if (checks.length === 0) {
+		return { status: "pending", reason: "content_carryover_ci_pending" };
+	}
+	const normalized = checks.map((check, index) => ({
+		name: check.name?.trim() || `check-${index + 1}`,
+		status: String(check.status ?? "").toUpperCase(),
+		conclusion: String(check.conclusion ?? "").toUpperCase(),
+	}));
+	const requiredGate = normalized.filter((check) => check.name === "CI OK");
+	if (requiredGate.length > 0) {
+		if (requiredGate.some((check) => check.status !== "COMPLETED")) {
+			return { status: "pending", reason: "content_carryover_ci_pending" };
+		}
+		if (requiredGate.some((check) => check.conclusion !== "SUCCESS")) {
+			return { status: "failed", reason: "content_carryover_ci_failed" };
+		}
+		return { status: "green", checks: normalized };
+	}
+	if (normalized.some((check) => check.status !== "COMPLETED")) {
+		return { status: "pending", reason: "content_carryover_ci_pending" };
+	}
+	if (normalized.some((check) => check.conclusion !== "SUCCESS")) {
+		return { status: "failed", reason: "content_carryover_ci_failed" };
+	}
+	return { status: "green", checks: normalized };
+}
+
+function contentCarryoverEvidencePending(reason: string): boolean {
+	return (
+		reason === "content_carryover_ci_pending" ||
+		reason === "content_carryover_qa_pending" ||
+		reason === "content_carryover_head_moved" ||
+		[
+			"content_review_project_unavailable",
+			"content_review_remote_unavailable",
+			"content_review_head_moved",
+			"content_review_spawn_error",
+			"content_review_timeout",
+			"content_review_nonzero_exit",
+			"content_review_stdout_overflow",
+			"content_review_no_verdict",
+		].includes(reason) ||
+		reason.startsWith("content_review_infrastructure:")
+	);
+}
+
+function contentCarryoverMayUseCleanTreeFallback(reason: string): boolean {
+	return (
+		reason === "approved_content_root_missing" ||
+		reason === "unsupported_content_structure" ||
+		reason === "content_carryover_context_unavailable" ||
+		reason === "content_carryover_reviewer_unavailable" ||
+		reason === "content_carryover_cross_family_reviewer_unavailable"
+	);
+}
+
+async function carryContentBoundLandHead(input: {
+	deps: LandExecutorDeps;
+	operation: LandOperationRow;
+	claim: LandOperationClaim;
+	fingerprint: ApprovedContentFingerprint;
+	proof: Extract<ContentContinuityProof, { ok: true }>;
+	pr: LandPrState;
+	now: string;
+}): Promise<
+	{ ok: true; operation: LandOperationRow } | { ok: false; reason: string }
+> {
+	const { deps, operation, claim, fingerprint, proof, pr, now } = input;
+	const context = contentCarryoverContext(deps.store, operation);
+	if (!context || !operation.run_id) {
+		return { ok: false, reason: "content_carryover_context_unavailable" };
+	}
+	const ci = exactGreenCi(pr);
+	if (ci.status !== "green") return { ok: false, reason: ci.reason };
+	if (!deps.contentReviewer) {
+		return { ok: false, reason: "content_carryover_reviewer_unavailable" };
+	}
+	const review = await deps.contentReviewer.ensureReview({
+		runId: operation.run_id,
+		issueId: operation.issue_id,
+		projectName: operation.project_name,
+		prNumber: operation.pr_number,
+		headSha: proof.candidateHead,
+		executionId: context.implementationExecutionId,
+		repoIdentity: context.repoIdentity,
+	});
+	if (review.status !== "approved") {
+		return { ok: false, reason: review.reason };
+	}
+	const qa = deps.store.resolveContentCarryoverQaEvidence({
+		runId: operation.run_id,
+		rootHolderQuestionId: context.rootGateId,
+		rootHead: context.rootHead,
+		candidateHead: proof.candidateHead,
+		requiresFreshQa: proof.requiresFreshQa,
+		now,
+	});
+	if (qa.status !== "ready") return { ok: false, reason: qa.reason };
+	const refreshed = await deps.mergeDriver.inspectPr({
+		projectName: operation.project_name,
+		prNumber: operation.pr_number,
+	});
+	if (
+		refreshed.state !== "OPEN" ||
+		refreshed.headSha.toLowerCase() !== proof.candidateHead ||
+		refreshed.baseSha?.toLowerCase() !== proof.baseOid
+	) {
+		return { ok: false, reason: "content_carryover_head_moved" };
+	}
+	const refreshedCi = exactGreenCi(refreshed);
+	if (refreshedCi.status !== "green") {
+		return { ok: false, reason: refreshedCi.reason };
+	}
+	let committed:
+		| {
+				ok: true;
+				operation: LandOperationRow;
+				receiptId: string;
+				ordinal: number;
+		  }
+		| { ok: false; reason: string };
+	if (deps.carryContentBoundHead) {
+		committed = await deps.carryContentBoundHead({
+			operation,
+			claim,
+			fingerprint,
+			proof,
+			ci: {
+				evidenceId: `github-check-rollup:${proof.candidateHead}`,
+				checks: refreshedCi.checks,
+			},
+			review: {
+				executionId: review.executionId,
+				requestId: review.requestId,
+			},
+			qa: { kind: qa.kind, claimId: qa.claimId },
+			now,
+		});
+	} else {
+		const committedReceipt = deps.store.commitContentBoundHeadCarryover({
+			runId: operation.run_id,
+			gateNodeId: context.gateNodeId,
+			fromQuestionId: context.questionId,
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			fingerprint,
+			proof,
+			ci: {
+				evidenceId: `github-check-rollup:${proof.candidateHead}`,
+				checks: refreshedCi.checks,
+			},
+			review: {
+				executionId: review.executionId,
+				requestId: review.requestId,
+			},
+			qa: { kind: qa.kind, claimId: qa.claimId },
+			now,
+		});
+		committed = committedReceipt.ok
+			? {
+					ok: true,
+					operation: committedReceipt.operation,
+					receiptId: committedReceipt.receiptId,
+					ordinal: committedReceipt.ordinal,
+				}
+			: committedReceipt;
+	}
+	if (!committed.ok) return committed;
+	if (deps.recordCarryoverDepartureCutoff) {
+		await deps.recordCarryoverDepartureCutoff({
+			operation: committed.operation,
+			receiptId: committed.receiptId,
+			ordinal: committed.ordinal,
+			at: now,
+		});
+	}
+	return { ok: true, operation: committed.operation };
+}
+
 async function openConflictRework(
 	deps: LandExecutorDeps,
 	operation: LandOperationRow,
 	claim: LandOperationClaim,
 	proofStep: string,
 	now: string,
+	reason:
+		| "merge_conflict_requires_rework"
+		| "land_merge_ticket_signing_unavailable" = "merge_conflict_requires_rework",
 ): Promise<LandExecutionResult> {
 	const opened = deps.openConflictRework
 		? await deps.openConflictRework({
 				operation,
 				claim,
 				proofStep,
-				reason: "merge_conflict_requires_rework",
+				reason,
 				now,
 			})
 		: operation.run_id
@@ -588,7 +966,7 @@ async function openConflictRework(
 					ownerId: claim.ownerId,
 					generation: claim.generation,
 					proofStep,
-					reason: "merge_conflict_requires_rework",
+					reason,
 					now,
 				})
 			: { ok: false as const, reason: "engine_land_rework_run_required" };
@@ -613,6 +991,92 @@ async function openConflictRework(
 		};
 	}
 	if (opened.reason === "engine_land_rework_cycle_limit") {
+		await announce(
+			deps,
+			operation,
+			claim,
+			"engine_land_rework_cycle_limit",
+			{
+				approvedHead: operation.approved_head,
+				prNumber: operation.pr_number,
+				cycleLimit: 3,
+				proofStep,
+				requiresLeadAction: true,
+			},
+			now,
+		);
+		return release(deps, operation, claim, "held", opened.reason, now);
+	}
+	return release(
+		deps,
+		operation,
+		claim,
+		"partial",
+		`merge_conflict_rework_pending:${opened.reason}`,
+		now,
+	);
+}
+
+async function openConflictResolution(
+	deps: LandExecutorDeps,
+	operation: LandOperationRow,
+	claim: LandOperationClaim,
+	proofStep: string,
+	now: string,
+): Promise<LandExecutionResult> {
+	const opened = deps.openConflictResolution
+		? await deps.openConflictResolution({
+				operation,
+				claim,
+				proofStep,
+				reason: "merge_conflict_requires_resolution",
+				now,
+			})
+		: operation.run_id
+			? deps.store.openEngineLandConflictResolution({
+					runId: operation.run_id,
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					proofStep,
+					reason: "merge_conflict_requires_resolution",
+					now,
+				})
+			: { ok: false as const, reason: "engine_land_rework_run_required" };
+	if (opened.ok) {
+		try {
+			await deps.notify?.(operation, "conflict_resolution_started", {
+				requestId: opened.requestId,
+				approvedHead: operation.approved_head,
+				requiresQaRetest: true,
+				requiresFreshApproval: false,
+				scope: "resolve_conflicts_only",
+			});
+		} catch {
+			// The durable engine rework receipt is authoritative; notification is
+			// observability only and must not duplicate the resolution request.
+		}
+		return {
+			status: "rework",
+			operationId: operation.operation_id,
+			requestId: opened.requestId,
+		};
+	}
+	if (opened.reason === "engine_land_rework_cycle_limit") {
+		await announce(
+			deps,
+			operation,
+			claim,
+			"engine_land_rework_cycle_limit",
+			{
+				approvedHead: operation.approved_head,
+				prNumber: operation.pr_number,
+				cycleLimit: 3,
+				proofStep,
+				requiresLeadAction: true,
+			},
+			now,
+		);
 		return release(deps, operation, claim, "held", opened.reason, now);
 	}
 	return release(
@@ -724,7 +1188,11 @@ function closePolicyEpisodes(
 ): void {
 	if (!operation.run_id) return;
 	const rootApprovalRef = landRecoveryRootApprovalRef(store, operation);
-	for (const scopeKey of ["mergeability_pending", "policy_alignment_pending"]) {
+	for (const scopeKey of [
+		"mergeability_pending",
+		"policy_alignment_pending",
+		"content_carryover_head_moved",
+	]) {
 		const episode = store.getOpenLandRecoveryEpisode({
 			runId: operation.run_id,
 			rootApprovalRef,
@@ -739,6 +1207,40 @@ function closePolicyEpisodes(
 			});
 		}
 	}
+}
+
+async function releaseContentCarryoverHeadMoved(
+	deps: LandExecutorDeps,
+	operation: LandOperationRow,
+	claim: LandOperationClaim,
+	now: string,
+): Promise<LandExecutionResult> {
+	const reason = "content_carryover_head_moved";
+	const policy = touchPolicyEpisode(deps.store, operation, reason, now);
+	if (!policy.horizonExceeded) {
+		return release(deps, operation, claim, "partial", reason, now);
+	}
+	await announce(
+		deps,
+		operation,
+		claim,
+		"content_carryover_head_moved_horizon_exceeded",
+		{
+			firstObservedAt: policy.firstObservedAt,
+			lastReason: reason,
+			requiresLeadAction: true,
+			escalationUid: `land-content-head-moved:${operation.operation_id}`,
+		},
+		now,
+	);
+	return release(
+		deps,
+		operation,
+		claim,
+		"held",
+		"content_carryover_head_moved_horizon_exceeded",
+		now,
+	);
 }
 
 class ExternalLandProbeFailure extends Error {
@@ -1066,6 +1568,37 @@ export async function executeLandOperation(
 					prNumber: operation.pr_number,
 				}),
 		);
+		if (
+			pr.headSha.toLowerCase() === operation.approved_head &&
+			deps.contentProver
+		) {
+			const staged = await stageApprovedContent(
+				deps,
+				operation,
+				claim,
+				pr,
+				now,
+			);
+			if (
+				staged &&
+				!stepReceipt(deps.store, operationId, "approved_content_frozen")
+			) {
+				recordStep(
+					deps,
+					operation,
+					claim,
+					"approved_content_frozen",
+					staged.ok
+						? {
+								rootDigest: staged.fingerprint.rootDigest,
+								mergeBase: staged.fingerprint.mergeBase,
+								approvedHead: staged.fingerprint.approvedHead,
+							}
+						: { failed: true, reason: staged.reason },
+					now,
+				);
+			}
+		}
 		if (pr.headSha.toLowerCase() !== operation.approved_head) {
 			const alignment = touchAlignmentEpisode(deps.store, operation, now);
 			const candidateHead = pr.headSha.toLowerCase();
@@ -1131,6 +1664,110 @@ export async function executeLandOperation(
 					now,
 				);
 			}
+			let contentFallbackReason: string | undefined;
+			if (
+				deps.contentProver &&
+				refreshReceipt?.approvedHead === operation.approved_head &&
+				/^[0-9a-f]{40}$/.test(refreshBase)
+			) {
+				const context = contentCarryoverContext(deps.store, operation);
+				const approved = context
+					? deps.store.getWorkflowApprovedContent(context.rootGateId)
+					: undefined;
+				if (!context || !approved) {
+					contentFallbackReason = context
+						? "approved_content_root_missing"
+						: "content_carryover_context_unavailable";
+				} else {
+					const contentProof = await runExternalLandProbe(
+						deps,
+						operation,
+						"content_continuity_proof",
+						now,
+						() =>
+							deps.contentProver!.prove({
+								projectName: operation.project_name,
+								prNumber: operation.pr_number,
+								fingerprint: approved.fingerprint,
+								priorHead: operation.approved_head,
+								baseOid: refreshBase,
+								candidateHead,
+							}),
+					);
+					if (contentProof.ok) {
+						closePolicyEpisodes(deps.store, operation, now);
+						const carried = await carryContentBoundLandHead({
+							deps,
+							operation,
+							claim,
+							fingerprint: approved.fingerprint,
+							proof: contentProof,
+							pr,
+							now,
+						});
+						if (carried.ok) {
+							return {
+								status: "superseded",
+								operationId,
+								nextOperationId: carried.operation.operation_id,
+							};
+						}
+						if (contentCarryoverEvidencePending(carried.reason)) {
+							return release(
+								deps,
+								operation,
+								claim,
+								"partial",
+								carried.reason,
+								now,
+							);
+						}
+						if (contentCarryoverMayUseCleanTreeFallback(carried.reason)) {
+							contentFallbackReason = carried.reason;
+						} else {
+							return openConflictRework(
+								deps,
+								operation,
+								claim,
+								effectiveProofStep,
+								now,
+							);
+						}
+					} else if (
+						contentProof.reason === "content_proof_object_unavailable"
+					) {
+						return releaseExternalOutage(
+							deps,
+							operation,
+							claim,
+							"content_continuity_proof",
+							contentProof.reason,
+							now,
+						);
+					} else if (
+						contentProof.reason === "candidate_parent_identity_mismatch"
+					) {
+						return releaseContentCarryoverHeadMoved(
+							deps,
+							operation,
+							claim,
+							now,
+						);
+					} else if (
+						contentCarryoverMayUseCleanTreeFallback(contentProof.reason)
+					) {
+						contentFallbackReason = contentProof.reason;
+					} else {
+						return openConflictRework(
+							deps,
+							operation,
+							claim,
+							effectiveProofStep,
+							now,
+						);
+					}
+				}
+			}
 			if (
 				deps.headRefreshProver &&
 				refreshReceipt?.approvedHead === operation.approved_head &&
@@ -1192,6 +1829,16 @@ export async function executeLandOperation(
 					proof.reason === "parent_identity_mismatch" ||
 					proof.reason === "tree_identity_mismatch"
 				) {
+					if (contentFallbackReason) {
+						return release(
+							deps,
+							operation,
+							claim,
+							"partial",
+							contentFallbackReason,
+							now,
+						);
+					}
 					return openConflictRework(
 						deps,
 						operation,
@@ -1223,6 +1870,16 @@ export async function executeLandOperation(
 						now,
 					);
 				}
+			}
+			if (contentFallbackReason) {
+				return release(
+					deps,
+					operation,
+					claim,
+					"partial",
+					contentFallbackReason,
+					now,
+				);
 			}
 			if (alignment.horizonExceeded) {
 				return release(
@@ -1350,13 +2007,24 @@ export async function executeLandOperation(
 						);
 					}
 					if (refresh.status === "conflict") {
-						return openConflictRework(
-							deps,
-							operation,
-							claim,
-							"base_refresh_prepared",
-							now,
-						);
+						const context = contentCarryoverContext(deps.store, operation);
+						return deps.contentProver &&
+							context &&
+							deps.store.getWorkflowApprovedContent(context.rootGateId)
+							? openConflictResolution(
+									deps,
+									operation,
+									claim,
+									"base_refresh_prepared",
+									now,
+								)
+							: openConflictRework(
+									deps,
+									operation,
+									claim,
+									"base_refresh_prepared",
+									now,
+								);
 					}
 					if (refresh.status === "policy_blocked") {
 						return release(
@@ -1439,6 +2107,8 @@ export async function executeLandOperation(
 			let trigger = triggerReceipt.receipt;
 			if (!trigger) {
 				let attempt = deps.store.getOpenLandCoolAttempt(operationId);
+				let mergeTicket =
+					deps.store.getLandMergeTicketForOperation(operationId);
 				if (attempt?.state === "prepared") {
 					const ambiguousScope = `ambiguous_cool:${operationId}:${attempt.ordinal}`;
 					if (!deps.mergeDriver.inspectPreparedCoolAttempt) {
@@ -1546,6 +2216,7 @@ export async function executeLandOperation(
 						now,
 					);
 					attempt = prepared.attempt;
+					mergeTicket = prepared.mergeTicket;
 				}
 				const rejected = await rejectUnauthorizedLandEffect(
 					deps,
@@ -1565,8 +2236,65 @@ export async function executeLandOperation(
 							prNumber: operation.pr_number,
 							operationId,
 							headSha: operation.approved_head,
+							...(mergeTicket ? { mergeTicket } : {}),
 						});
-					} catch {
+					} catch (error) {
+						if (
+							error instanceof Error &&
+							error.message === "land_merge_ticket_signing_unavailable"
+						) {
+							const reset = deps.store.resetUndeliveredLandCoolAttempt({
+								operationId,
+								ordinal: attempt.ordinal,
+								ownerId: claim.ownerId,
+								generation: claim.generation,
+								attemptGeneration: attempt.generation,
+								reason: error.message,
+								now,
+							});
+							if (!reset.ok) throw new Error(reset.reason);
+							const proofStep = "merge_ticket_signing_unavailable";
+							recordStep(
+								deps,
+								operation,
+								claim,
+								proofStep,
+								{
+									approvedHead: operation.approved_head,
+									reason: error.message,
+									requiresFreshApproval: true,
+								},
+								now,
+							);
+							try {
+								await announce(
+									deps,
+									operation,
+									claim,
+									"land_merge_ticket_signing_unavailable",
+									{
+										approvedHead: operation.approved_head,
+										prNumber: operation.pr_number,
+										requiresFreshApproval: true,
+										requiresLeadAction: true,
+										escalationUid: `land-ticket-signing:${operation.operation_id}`,
+									},
+									now,
+								);
+							} catch {
+								// The production notifier enqueues the durable Lead alert before
+								// best-effort thread delivery. Alert delivery failure must not
+								// preserve an unusable carried approval.
+							}
+							return openConflictRework(
+								deps,
+								operation,
+								claim,
+								proofStep,
+								now,
+								error.message,
+							);
+						}
 						return releaseCoolFenceWait(
 							deps,
 							operation,
@@ -1982,6 +2710,7 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 				stderr: string;
 			}>,
 		private readonly now: () => Date = () => new Date(),
+		private readonly landTicketPrivateKeyPem?: string,
 	) {}
 
 	private root(projectName: string): string {
@@ -2193,6 +2922,8 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			isDraft?: boolean;
 			reviewDecision?: string | null;
 			statusCheckRollup?: Array<{
+				name?: string | null;
+				context?: string | null;
 				status?: string | null;
 				conclusion?: string | null;
 			}> | null;
@@ -2211,6 +2942,7 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			isDraft: parsed.isDraft ?? false,
 			reviewDecision: parsed.reviewDecision ?? null,
 			checks: (parsed.statusCheckRollup ?? []).map((check) => ({
+				name: check.name ?? check.context ?? null,
 				status: check.status ?? null,
 				conclusion: check.conclusion ?? null,
 			})),
@@ -2222,11 +2954,40 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 		prNumber: number;
 		operationId: string;
 		headSha: string;
+		mergeTicket?: LandMergeTicketRow;
 	}): Promise<{ commentId: string; commentUrl?: string }> {
-		// The sanctioned workflow deliberately requires an exact `:cool:` body.
-		// The durable operation already carries idempotency; adding metadata here
-		// would make GitHub skip the workflow entirely.
-		const body = ":cool:";
+		let body = ":cool:";
+		if (input.mergeTicket) {
+			const ticket = input.mergeTicket;
+			if (
+				!this.landTicketPrivateKeyPem ||
+				ticket.state !== "consumed" ||
+				!ticket.nonce ||
+				!ticket.issued_at ||
+				!ticket.expires_at ||
+				ticket.head_sha !== input.headSha ||
+				ticket.pr_number !== input.prNumber
+			) {
+				throw new Error("land_merge_ticket_signing_unavailable");
+			}
+			body = renderLandMergeTicketComment(
+				signLandMergeTicket({
+					payload: {
+						version: 1,
+						ticketId: ticket.ticket_id,
+						repoIdentity: ticket.repo_identity,
+						prNumber: ticket.pr_number,
+						rootGateId: ticket.root_gate_id,
+						headSha: ticket.head_sha,
+						operationGeneration: ticket.operation_generation,
+						nonce: ticket.nonce,
+						issuedAt: ticket.issued_at,
+						expiresAt: ticket.expires_at,
+					},
+					privateKeyPem: this.landTicketPrivateKeyPem,
+				}),
+			);
+		}
 		const result = await this.exec(
 			"gh",
 			["pr", "comment", String(input.prNumber), "--body", body],
@@ -2277,7 +3038,11 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			Math.floor(preparedMs / 1_000) * 1_000 - COOL_COMMENT_CLOCK_SKEW_MS;
 		const rows = pages.flat();
 		const candidates = rows
-			.filter((row) => row.body?.trim() === ":cool:")
+			.filter(
+				(row) =>
+					row.body?.trim() === ":cool:" ||
+					parseLandMergeTicketComment(row.body ?? "") !== undefined,
+			)
 			.filter((row) => Date.parse(row.created_at ?? "") >= earliestCandidateMs)
 			.filter((row) => Number.isInteger(row.id));
 		const receiptedCommentIds = new Set(

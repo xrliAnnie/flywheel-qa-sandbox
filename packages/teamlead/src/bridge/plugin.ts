@@ -530,6 +530,8 @@ import {
 	landIssueCloseoutResultFromClosureReport,
 	renderLandThreadNotification,
 } from "./land-closeout-cause.js";
+import { GitLandContentProver } from "./land-content-proof.js";
+import { GitLandContentReviewer } from "./land-content-review.js";
 import {
 	executeLandOperation,
 	GhCliLandMergeDriver,
@@ -7800,8 +7802,25 @@ export async function startBridge(
 	const landProjectRootFor = (projectName: string) =>
 		projects.find((project) => project.projectName === projectName)
 			?.projectRoot;
-	const landMergeDriver = new GhCliLandMergeDriver(landProjectRootFor);
+	const landTicketPrivateKeyPem = process.env
+		.FLYWHEEL_LAND_TICKET_PRIVATE_KEY_B64
+		? Buffer.from(
+				process.env.FLYWHEEL_LAND_TICKET_PRIVATE_KEY_B64,
+				"base64",
+			).toString("utf8")
+		: undefined;
+	const landMergeDriver = new GhCliLandMergeDriver(
+		landProjectRootFor,
+		undefined,
+		undefined,
+		landTicketPrivateKeyPem,
+	);
 	const landHeadRefreshProver = new GitLandHeadRefreshProver(
+		landProjectRootFor,
+	);
+	const landContentProver = new GitLandContentProver(landProjectRootFor);
+	const landContentReviewer = new GitLandContentReviewer(
+		store,
 		landProjectRootFor,
 	);
 	const recordCarryoverDepartureCutoff = (input: {
@@ -7845,6 +7864,8 @@ export async function startBridge(
 			store,
 			mergeDriver: landMergeDriver,
 			headRefreshProver: landHeadRefreshProver,
+			contentProver: landContentProver,
+			contentReviewer: landContentReviewer,
 			recordCarryoverDepartureCutoff,
 			requestCleanup: (operation) =>
 				requestLandCleanupOpportunities(operation, {
@@ -7960,9 +7981,11 @@ export async function startBridge(
 					operation.run_id &&
 					[
 						"conflict_rework_started",
+						"land_merge_ticket_signing_unavailable",
 						"external_outage_fyi",
 						"external_outage_horizon_exceeded",
 						"cool_fence_horizon_exceeded",
+						"content_carryover_head_moved_horizon_exceeded",
 					].includes(stage)
 				) {
 					const identity = resolveWorkflowRunAlertIdentity({

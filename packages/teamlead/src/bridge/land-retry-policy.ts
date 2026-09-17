@@ -28,6 +28,7 @@ const WAITING_REASONS = new Set([
 	"external_outage",
 	"policy_alignment_pending",
 	"mergeability_pending",
+	"content_carryover_head_moved",
 	"land_queue_busy",
 	"founder_projection_pending",
 	"founder_review_missing",
@@ -48,6 +49,7 @@ const TERMINAL_REASONS = new Set([
 const WAITING_CADENCE_MS = new Map<string, number>([
 	["external_outage", 5 * 60_000],
 	["policy_alignment_pending", 60_000],
+	["content_carryover_head_moved", 60_000],
 	["ambiguous_cool_reconcile_pending", 60_000],
 ]);
 
@@ -56,6 +58,8 @@ export const SHIP_WORKFLOW_RETRYABLE_FAILURES = new Set([
 	"merge_405_required_check",
 	"run_cancelled",
 	"run_timed_out",
+	"prepare_cancelled",
+	"merge_cancelled",
 ]);
 
 const RETRY_DELAYS_MS = [

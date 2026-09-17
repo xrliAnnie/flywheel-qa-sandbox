@@ -759,6 +759,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: unavailable mailbox delivery retry limit (FLY-1750)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
 		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
+	FLYWHEEL_LAND_TICKET_PRIVATE_KEY_B64:
+		"secret value: FLY-2632 Ed25519 signing credential for single-use land merge tickets, never a feature toggle",
 	FLYWHEEL_REVIEW_MAX_CONCURRENT:
 		"numeric tuning: optional review concurrency cap; zero is unlimited (FLY-1949)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:

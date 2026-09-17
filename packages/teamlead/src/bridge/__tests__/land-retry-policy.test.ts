@@ -39,6 +39,7 @@ describe("land retry policy", () => {
 		"external_outage",
 		"policy_alignment_pending",
 		"mergeability_pending",
+		"content_carryover_head_moved",
 		"land_queue_busy",
 		"workflow_pr_manifest_partial:1; partial delivery must stay flag-off until all declared PRs merge",
 		"founder_projection_pending",
@@ -65,6 +66,8 @@ describe("land retry policy", () => {
 		"ship_workflow_failed:merge_405_required_check",
 		"ship_workflow_failed:run_cancelled",
 		"ship_workflow_failed:run_timed_out",
+		"ship_workflow_failed:prepare_cancelled",
+		"ship_workflow_failed:merge_cancelled",
 	])("classifies %s as retryable", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("retryable");
 	});

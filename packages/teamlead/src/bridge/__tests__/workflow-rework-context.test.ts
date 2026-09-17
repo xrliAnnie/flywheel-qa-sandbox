@@ -96,4 +96,34 @@ describe("replacement launch rework context", () => {
 			`Verification context: ${JSON.stringify(context)}`,
 		);
 	});
+	it("pins conflict-only replacements to existing Git conflict hunks without founder synthesis", () => {
+		const context = {
+			requestId: "conflict-resolution-1",
+			authority: "engine" as const,
+			authorityContext: { kind: "land_conflict_resolution_v2" },
+			target: {
+				nodeId: "implement",
+				attempt: 2,
+				invalidationScope: ["implement", "qa"],
+				verificationPolicy: ["conflict_resolution_only", "code_review"],
+			},
+		};
+		const line = renderWorkflowReworkContextLine(context);
+		expect(line).toContain("Conflict-resolution-only context");
+		expect(line).toContain("resolve only existing Git conflict hunks");
+		expect(line).toContain("no feature edits or cleanup");
+		expect(line).toContain("merge the engine-supplied base");
+		expect(line).toContain("parents=[approved head, base]");
+		expect(line).toContain("do not rebase");
+		expect(line).toContain("do not merge a newer main");
+		expect(line).toContain("do not seek or synthesize founder approval");
+		const stable = renderWorkflowReworkLaunchStableSection({
+			context,
+			baseRevision: "a".repeat(40),
+		});
+		expect(stable).toContain("merge the engine-supplied base");
+		expect(stable).toContain("parents=[approved head, base]");
+		expect(stable).toContain("do not rebase");
+		expect(stable).toContain("do not merge a newer main");
+	});
 });

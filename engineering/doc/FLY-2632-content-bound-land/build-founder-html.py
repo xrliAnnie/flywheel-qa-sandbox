@@ -1,0 +1,80 @@
+from pathlib import Path
+from html import escape
+p=Path(__file__).parent
+
+def diagram(name):
+    svg=p/(name+'.svg')
+    if svg.exists():
+        return svg.read_text()
+    return '<div class="pending"><b>DIAGRAM PENDING LOCAL RENDER</b><p>本地绘图程序被系统权限拒绝；按规定重试仍失败。图源已保留，未使用远端绘图。</p></div><details><summary>查看 Mermaid 图源（流程图的文本原稿）</summary><pre>'+escape((p/(name+'.mmd')).read_text())+'</pre></details>'
+
+def card(key,title,body):
+    return '<section class="card"><h2>'+escape(title)+'</h2>'+body+'<div class="comment"><label for="c-'+key+'">对「'+escape(title)+'」的意见</label><textarea id="c-'+key+'" data-comment="'+key+'" data-title="'+escape(title)+'" placeholder="自动保存在这个浏览器，不会自动发送"></textarea></div></section>'
+
+cards=[
+('flow','按一次之后，系统接着完成', '<p class="lead">多张改动同时准备；内容证明、自动检查和独立复审通过后，沿用你的原批准，最后逐张合入主线。</p><p>PR 是一份等待合入的改动。同步主线会把别人的最新改动带进来；冲突是两份改动碰到了同一段，需要重新拼合。</p>'+diagram('flow')),
+('proof','只允许解决真正的冲突', '<p>批准时保存文件清单和每段修改的原始字节。行号移位可以，偷偷改空格、增加文件或改旁边另一段都不行。</p><p>系统先确认冲突片段，再交给返工体；即使某个文件有冲突，文件里其它片段仍必须逐字不变。证明不了，就回到现有重新立卡流程。</p><p class="note">冲突片段的变化不等于语义不变。因此新版本仍必须通过独立复审；碰到产品代码时还要重跑验收。</p>'),
+('model','批准始终能追溯到你按的那一次', diagram('model')+'<table><tr><th>保存什么</th><th>用来证明什么</th></tr><tr><td>原批准与内容指纹</td><td>是你、同一任务、同一份原改动</td></tr><tr><td>新版本内容证明</td><td>非冲突部分没夹带修改</td></tr><tr><td>检查、复审与验收记录</td><td>这个精确版本已满足质量条件</td></tr><tr><td>最终合入凭据</td><td>只合入被验证的版本，且只消费一次</td></tr></table><p>沿用记录会指回原批准编号。Lead 或引擎写一句“已沿用”不会获得批准权限；缺原始记录、已撤回或不是同一任务都不能通过。</p>'),
+('qa','哪些检查必须重跑', '<p>CI 是自动运行的构建与测试检查，必须在新版本全绿。独立代码复审也必须检查新版本，不能套用旧结论。标记为跳过复审的任务不能使用自动沿用，仍需按现有流程重新立卡。</p><p>QA 是对功能行为的验收。只改变可信的测试代码时，原验收仍有效才可沿用；冲突解决碰到产品代码，必须先得到新版本验收通过。等待结果不会催你再按；失败或内容证明不成立才回既有流程。</p>'),
+('parallel','三张一起准备，只把最后写入排队', '<p>每张改动独立同步、处理冲突、自动检查、复审与验收。最后写入主线才串行，不让检查耗时占住队列。</p><p>每合入一张，系统立即重查其余分支；又冲突就继续自动同步。自动同步最多三轮，超限给 Lead 明确告警与原因，不静默卡住。</p><p class="note">最终合入还会核对版本和批准有效性，避免等待期间改动被替换。合入后的报告与清理不占住下一张。</p>'),
+('choices','为何选这个方案', '<table><tr><th>选项</th><th>取舍</th></tr><tr><td>保留原批准，加内容证明</td><td>满足按一次；代价是精确保存和核验完整证据</td></tr><tr><td>版本编号一变就重按</td><td>拒绝：重复消耗你的注意力</td></tr><tr><td>有冲突的整份文件都放行</td><td>拒绝：会让旁边的额外修改混进去</td></tr><tr><td>从同步开始就一张张跑</td><td>拒绝：三张的等待时间仍会叠加</td></tr></table>'),
+('acceptance','验收必须看这三张真正跑完', '<p>隔离环境重放 2519、2606、2616 的事故形状：每张各批准一次，三张最终全部合入，零次重按。准备时间段要重叠，最终合入时间段不能重叠，总耗时小于同等条件单张返工耗时的三倍。</p><p>七组回归覆盖：单张成功、夹带改动拒绝、伪造批准拒绝、新版本检查与复审、验收沿用或重跑、三张并发与崩溃恢复、轮数上限和报告发布。</p><p class="note">这些是下游验收要求，本页不宣称已实现或已通过生产验证。</p>'),
+('boundary','本次交付的边界', '<p>本次交付工程设计和实施计划，覆盖内容指纹、冲突证明、批准与验收沿用、并行准备、最终合入串行及可审计告警。</p><p>不拆分总装配文件 plugin.ts，不放宽首次批准，不把合并当成部署。二进制或结构复杂冲突等无法证明的情况仍回现有流程。</p><p>本地两张图均因系统权限失败，已保留图源并标明待渲染；未做浏览器视觉验收。</p>'),
+('summary','页面意见汇总','<p>意见只保存在这个浏览器。复制后发回即可；这是修改反馈，不是通过信号。</p>')]
+style='''*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.75 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:40px 18px 70px}h1{font-size:clamp(28px,4vw,42px);line-height:1.25;letter-spacing:-1px}h2{font-size:23px;line-height:1.4;margin:0 0 16px}.eyebrow,.note,label{color:#68686e;font-size:14px}.card{background:white;border:1px solid #e7e7ec;border-left:4px solid #007aff;border-radius:12px;padding:26px;margin:22px 0;box-shadow:0 1px 3px #0000000f}.lead{font-size:21px}.pending{padding:18px;background:#fff8ed;border:1px dashed #c28226;border-radius:10px;color:#744d18}.pending b{font-size:14px}.comment{border-top:1px solid #eee;padding-top:18px;margin-top:22px}label{display:block;margin-bottom:7px}textarea{width:100%;min-height:86px;border:1px solid #cfcfd5;border-radius:9px;padding:12px;font:inherit;resize:vertical}textarea:focus{outline:2px solid #007aff77}table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;border-bottom:1px solid #e8e8ed;text-align:left;vertical-align:top}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.65 ui-monospace,monospace}button{background:#007aff;color:#fff;border:0;border-radius:8px;padding:11px 16px;font:inherit;cursor:pointer;margin:12px 8px 0 0}button:disabled{opacity:.4}#summary-text{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:16px;margin-top:20px;border-radius:9px}.chunk{padding:12px 0;border-top:1px solid #ddd}svg{width:100%;height:auto}@media(max-width:600px){main{padding:24px 12px}.card{padding:20px 15px}h2{font-size:21px}td,th{font-size:14px;padding:8px 4px}}'''
+script='''(() => {
+const marker = '【页面意见汇总】FLY-2632';
+const prefix = 'flywheel-comments:' + location.pathname + ':';
+const fields = Array.from(document.querySelectorAll('[data-comment]'));
+const summary = document.getElementById('summary-text');
+const chunkHost = document.getElementById('chunks');
+const status = document.getElementById('copy-status');
+const all = document.getElementById('copy-all');
+let pieces = [];
+async function copy(text) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const field = document.createElement('textarea'); field.value = text;
+    field.style.position='fixed'; field.style.opacity='0';
+    document.body.appendChild(field); field.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch {}
+    field.remove();
+    if (!ok) { status.textContent='自动复制失败，请手动选择汇总文字。'; return; }
+  }
+  status.textContent='已复制。发回后作为修改意见处理。';
+}
+function update() {
+  const entries = fields.filter(f => f.value.trim()).map(f => '【' + f.dataset.title + '】' + f.value.trim());
+  const body = entries.join('\\n\\n');
+  pieces = [];
+  if (body) {
+    const points = Array.from(body);
+    for (let i=0; i<points.length; i+=1700) pieces.push(marker + '\\n' + points.slice(i,i+1700).join(''));
+  }
+  summary.textContent = pieces.length ? pieces.join('\\n\\n') : marker + '\\n暂无意见';
+  all.disabled = !pieces.length;
+  chunkHost.replaceChildren();
+  if (pieces.length > 1) pieces.forEach((part,i) => {
+    const wrap=document.createElement('div'); wrap.className='chunk';
+    const pre=document.createElement('pre'); pre.textContent=part;
+    const button=document.createElement('button'); button.type='button'; button.textContent='复制第 '+(i+1)+' / '+pieces.length+' 段';
+    button.addEventListener('click',()=>copy(part));
+    wrap.append(pre,button); chunkHost.append(wrap);
+  });
+}
+fields.forEach(f => {
+  try { f.value = localStorage.getItem(prefix + f.dataset.comment) || ''; } catch {}
+  f.addEventListener('input',()=>{
+    try { localStorage.setItem(prefix + f.dataset.comment,f.value); } catch { status.textContent='浏览器未允许保存；仍可复制本页意见。'; }
+    update();
+  });
+});
+all.addEventListener('click',()=>copy(pieces.join('\\n\\n')));
+update();
+})();'''
+body=''.join(card(*c) for c in cards)
+# Summary controls are inside the summary card, after its own comment field.
+body=body[:-len('</section>')]+'<div id="summary-text" aria-live="polite"></div><button id="copy-all" type="button">复制全部意见</button><div id="chunks"></div><p id="copy-status" role="status"></p></section>'
+(p/'founder-design.html').write_text('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2632 · 批准一次，系统接着合入</title><style>'+style+'</style></head><body><main><p class="eyebrow">FLY-2632 · 工程设计 · 2026-09-16</p><h1>批准一次，<br>系统接着合入。</h1>'+body+'</main><script nonce="__CSP_NONCE__">'+script+'</script></body></html>')

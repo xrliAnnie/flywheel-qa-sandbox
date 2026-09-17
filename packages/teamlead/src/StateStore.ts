@@ -179,6 +179,11 @@ import {
 	describeLandCloseoutCause,
 	landCloseoutCauseFromReason,
 } from "./bridge/land-closeout-cause.js";
+import {
+	approvedContentFingerprintRoot,
+	type ApprovedContentFingerprint,
+	type ContentContinuityProof,
+} from "./bridge/land-content-proof.js";
 import type {
 	PatrolLoopAttempt,
 	PatrolLoopGateAuthority,
@@ -28222,6 +28227,182 @@ export class StateStore {
 				  REFERENCES workflow_head_carryover_receipt(receipt_id)
 			)
 		`);
+		// FLY-2632: content-bound approval is an additive protocol. The v1
+		// clean-tree receipt above remains byte-compatible and keeps its narrow
+		// CHECK constraint; v2 records the founder-approved patch plus exact-C
+		// CI/review/QA evidence instead of reinterpreting old rows.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_approved_content (
+				root_gate_id TEXT PRIMARY KEY,
+				schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+				run_id TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				repo_identity TEXT NOT NULL,
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				founder_claim_id INTEGER NOT NULL,
+				founder_response_id TEXT NOT NULL,
+				founder_actor TEXT NOT NULL CHECK (founder_actor = 'founder'),
+				approved_head TEXT NOT NULL CHECK (length(approved_head) = 40),
+				merge_base TEXT NOT NULL CHECK (length(merge_base) = 40),
+				approved_tree_oid TEXT,
+				merge_base_tree_oid TEXT,
+				fingerprint_json TEXT NOT NULL,
+				root_digest TEXT NOT NULL CHECK (length(root_digest) = 64),
+				created_at TEXT NOT NULL,
+				UNIQUE (run_id, issue_id, repo_identity, pr_number, approved_head),
+				FOREIGN KEY (founder_claim_id) REFERENCES workflow_claims(id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_land_preparation (
+				preparation_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				root_gate_id TEXT NOT NULL,
+				cycle INTEGER NOT NULL CHECK (cycle BETWEEN 1 AND 3),
+				prior_head TEXT NOT NULL CHECK (length(prior_head) = 40),
+				base_oid TEXT NOT NULL CHECK (length(base_oid) = 40),
+				candidate_head TEXT NOT NULL CHECK (length(candidate_head) = 40),
+				operation_id TEXT NOT NULL,
+				operation_generation INTEGER NOT NULL CHECK (operation_generation >= 0),
+				lease_owner TEXT NOT NULL,
+				lease_epoch INTEGER NOT NULL CHECK (lease_epoch >= 0),
+				state TEXT NOT NULL CHECK (state IN ('proving','ready','failed','superseded')),
+				next_probe_at TEXT,
+				git_config_json TEXT NOT NULL,
+				verifier_version TEXT NOT NULL,
+				conflict_proof_digest TEXT NOT NULL CHECK (length(conflict_proof_digest) = 64),
+				review_request_id TEXT NOT NULL,
+				ci_evidence_id TEXT NOT NULL,
+				qa_disposition TEXT NOT NULL CHECK (qa_disposition IN ('carried','fresh')),
+				reason TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE (run_id, root_gate_id, cycle),
+				FOREIGN KEY (root_gate_id) REFERENCES workflow_approved_content(root_gate_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_content_proof (
+				proof_id TEXT PRIMARY KEY,
+				preparation_id TEXT NOT NULL UNIQUE,
+				root_digest TEXT NOT NULL CHECK (length(root_digest) = 64),
+				approved_head TEXT NOT NULL CHECK (length(approved_head) = 40),
+				merge_base TEXT NOT NULL CHECK (length(merge_base) = 40),
+				prior_head TEXT NOT NULL CHECK (length(prior_head) = 40),
+				base_oid TEXT NOT NULL CHECK (length(base_oid) = 40),
+				candidate_head TEXT NOT NULL CHECK (length(candidate_head) = 40),
+				candidate_tree_oid TEXT NOT NULL CHECK (length(candidate_tree_oid) = 40),
+				protected_spans_json TEXT NOT NULL,
+				conflict_files_json TEXT NOT NULL,
+				conflict_proof_digest TEXT NOT NULL CHECK (length(conflict_proof_digest) = 64),
+				verifier_version TEXT NOT NULL,
+				raw_artifact_digest TEXT NOT NULL CHECK (length(raw_artifact_digest) = 64),
+				requires_fresh_qa INTEGER NOT NULL CHECK (requires_fresh_qa IN (0,1)),
+				result INTEGER NOT NULL CHECK (result = 1),
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (preparation_id) REFERENCES workflow_land_preparation(preparation_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_head_carryover_receipt_v2 (
+				receipt_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				gate_node_id TEXT NOT NULL,
+				holder_attempt INTEGER NOT NULL CHECK (holder_attempt > 0),
+				predecessor_receipt_id TEXT,
+				root_gate_id TEXT NOT NULL,
+				root_head TEXT NOT NULL CHECK (length(root_head) = 40),
+				from_head TEXT NOT NULL CHECK (length(from_head) = 40),
+				to_head TEXT NOT NULL CHECK (length(to_head) = 40),
+				depth INTEGER NOT NULL CHECK (depth BETWEEN 1 AND 3),
+				proof_id TEXT NOT NULL UNIQUE,
+				root_founder_claim_ref TEXT NOT NULL,
+				root_source_receipt_ref TEXT NOT NULL,
+				root_evidence_digest TEXT NOT NULL,
+				root_binding_receipt_ref TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				repo_identity TEXT NOT NULL,
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				preparation_id TEXT NOT NULL UNIQUE,
+				cycle INTEGER NOT NULL CHECK (cycle BETWEEN 1 AND 3),
+				ci_evidence_id TEXT NOT NULL,
+				ci_checks_json TEXT NOT NULL,
+				ci_digest TEXT NOT NULL CHECK (length(ci_digest) = 64),
+				review_execution_id TEXT NOT NULL,
+				review_request_id TEXT NOT NULL,
+				qa_disposition TEXT NOT NULL CHECK (qa_disposition IN ('carried','fresh')),
+				qa_claim_id INTEGER NOT NULL,
+				successor_question_id TEXT NOT NULL UNIQUE,
+				audit_labels_json TEXT NOT NULL,
+				source_input_cutoff INTEGER,
+				created_at TEXT NOT NULL,
+				UNIQUE (run_id, gate_node_id, root_gate_id, to_head),
+				UNIQUE (run_id, gate_node_id, from_head, to_head),
+				FOREIGN KEY (root_gate_id) REFERENCES workflow_approved_content(root_gate_id),
+				FOREIGN KEY (proof_id) REFERENCES workflow_content_proof(proof_id),
+				FOREIGN KEY (preparation_id) REFERENCES workflow_land_preparation(preparation_id),
+				FOREIGN KEY (qa_claim_id) REFERENCES workflow_claims(id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_carryover_activation_v2 (
+				carryover_receipt_id TEXT PRIMARY KEY,
+				state TEXT NOT NULL CHECK (state IN ('pending','departure_authorized','superseded')),
+				source_cutoff_row_id INTEGER,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				first_observed_at TEXT NOT NULL,
+				next_probe_at TEXT,
+				alert_uid TEXT,
+				FOREIGN KEY (carryover_receipt_id)
+				  REFERENCES workflow_head_carryover_receipt_v2(receipt_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_merge_ticket (
+				ticket_id TEXT PRIMARY KEY,
+				carryover_receipt_id TEXT NOT NULL UNIQUE,
+				operation_id TEXT NOT NULL UNIQUE,
+				preparation_id TEXT NOT NULL UNIQUE,
+				operation_generation INTEGER NOT NULL CHECK (operation_generation >= 0),
+				root_gate_id TEXT NOT NULL,
+				head_sha TEXT NOT NULL CHECK (length(head_sha) = 40),
+				observed_base_oid TEXT NOT NULL CHECK (length(observed_base_oid) = 40),
+				project_name TEXT NOT NULL,
+				repo_identity TEXT NOT NULL,
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				state TEXT NOT NULL CHECK (state IN ('authorized','consumed','reconciled','invalidated')),
+				workflow_run_id TEXT NOT NULL,
+				source_cutoff_row_id INTEGER,
+				delivery_identity TEXT NOT NULL,
+				merge_result_json TEXT,
+				created_at TEXT NOT NULL,
+				consumed_at TEXT,
+				reconciled_at TEXT,
+				invalidated_at TEXT,
+				FOREIGN KEY (carryover_receipt_id)
+				  REFERENCES workflow_head_carryover_receipt_v2(receipt_id),
+				FOREIGN KEY (preparation_id) REFERENCES workflow_land_preparation(preparation_id)
+			)
+		`);
+		this.addColumnIfMissing("land_merge_ticket", "nonce", "TEXT");
+		this.addColumnIfMissing("land_merge_ticket", "issued_at", "TEXT");
+		this.addColumnIfMissing("land_merge_ticket", "expires_at", "TEXT");
+		this.addColumnIfMissing("land_merge_ticket", "trigger_comment_id", "TEXT");
+		for (const table of [
+			"workflow_approved_content",
+			"workflow_content_proof",
+			"workflow_head_carryover_receipt_v2",
+		]) {
+			for (const action of ["update", "delete"]) {
+				this.db.run(`
+					CREATE TRIGGER IF NOT EXISTS ${table}_no_${action}
+					BEFORE ${action.toUpperCase()} ON ${table}
+					BEGIN SELECT RAISE(ABORT, '${table} is immutable'); END
+				`);
+			}
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_gate_carrier_rebind_receipt (
 				request_id TEXT PRIMARY KEY,
@@ -43937,13 +44118,13 @@ export class StateStore {
 		});
 	}
 
-	openEngineLandConflictRework(input: {
+	openEngineLandConflictResolution(input: {
 		runId: string;
 		operationId: string;
 		ownerId: string;
 		generation: number;
 		proofStep: string;
-		reason: "merge_conflict_requires_rework";
+		reason: "merge_conflict_requires_resolution";
 		now: string;
 	}): WorkflowLandConflictReworkResult {
 		if (
@@ -43959,7 +44140,355 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_engine_land_rework" };
 		}
-		const sourceEventId = `engine_land_rework:${canonicalSubmissionDigest({
+		const sourceEventId = `engine_land_resolution:${canonicalSubmissionDigest({
+			runId: input.runId,
+			operationId: input.operationId,
+			generation: input.generation,
+			proofStep: input.proofStep,
+			reason: input.reason,
+		})}`;
+		let result: WorkflowLandConflictReworkResult = {
+			ok: false,
+			reason: "engine_land_rework_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const replay = this.workflowSelectAll(
+				`SELECT payload FROM workflow_run_event
+				  WHERE run_id = ? AND event_uid = ?
+				    AND kind = 'engine_land_conflict_resolution_requested'`,
+				[input.runId, sourceEventId],
+			)[0];
+			if (replay) {
+				const payload = JSON.parse(String(replay.payload)) as Record<
+					string,
+					unknown
+				>;
+				if (
+					typeof payload.requestId === "string" &&
+					typeof payload.targetNodeId === "string" &&
+					typeof payload.targetAttempt === "number" &&
+					typeof payload.preferredActorExecutionId === "string"
+				) {
+					result = {
+						ok: true,
+						idempotentReplay: true,
+						requestId: payload.requestId,
+						targetNodeId: payload.targetNodeId,
+						targetAttempt: payload.targetAttempt,
+						preferredActorExecutionId: payload.preferredActorExecutionId,
+					};
+				}
+				return;
+			}
+			const priorCycles = Number(
+				this.workflowSelectAll(
+					`SELECT COUNT(*) AS count FROM workflow_rework_request
+					  WHERE run_id = ? AND authority = 'engine'
+					    AND source_event_id LIKE 'engine_land_resolution:%'`,
+					[input.runId],
+				)[0]?.count ?? 0,
+			);
+			if (priorCycles >= 3) {
+				result = { ok: false, reason: "engine_land_rework_cycle_limit" };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				!run?.snapshot ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				operation.superseded_at !== null ||
+				!operation.lease_expires_at ||
+				operation.lease_expires_at <= input.now
+			) {
+				return;
+			}
+			const proof = this.workflowSelectAll(
+				`SELECT receipt_digest, receipt_json, generation
+				   FROM land_operation_step
+				  WHERE operation_id = ? AND step = ? AND generation <= ?
+				  ORDER BY generation DESC LIMIT 1`,
+				[input.operationId, input.proofStep, input.generation],
+			)[0];
+			if (!proof) {
+				result = { ok: false, reason: "engine_land_rework_proof_missing" };
+				return;
+			}
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				result = { ok: false, reason: "engine_land_rework_snapshot_invalid" };
+				return;
+			}
+			if (
+				!isWorkflowManifestLand(snapshot.manifest) ||
+				run.current_node_id !== workflowTerminalNode(snapshot.manifest)
+			) {
+				return;
+			}
+			let resolvedRoute: ReturnType<typeof resolveFounderReworkRoute>;
+			try {
+				resolvedRoute = resolveFounderReworkRoute(snapshot, "implement");
+			} catch {
+				result = { ok: false, reason: "engine_land_rework_target_invalid" };
+				return;
+			}
+			const target = snapshot.resolved.nodes.find(
+				(node) => node.id === resolvedRoute.targetNodeId,
+			);
+			if (!target?.dispatch || target.type === "gate") {
+				result = { ok: false, reason: "engine_land_rework_target_invalid" };
+				return;
+			}
+			const openDelivery = this.workflowSelectAll(
+				`SELECT request_id FROM (
+				   SELECT delivery.request_id
+				     FROM workflow_rework_delivery AS delivery
+				     JOIN workflow_rework_request AS request
+				       ON request.request_id = delivery.request_id
+				    WHERE request.run_id = ?
+				      AND delivery.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+				   UNION ALL
+				   SELECT request_id FROM workflow_rework_verification_path
+				    WHERE run_id = ? AND state IN ('pending','active')
+				 ) LIMIT 1`,
+				[input.runId, input.runId],
+			)[0];
+			if (openDelivery) {
+				result = { ok: false, reason: "engine_land_rework_already_open" };
+				return;
+			}
+			const preferredActor = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			);
+			if (!preferredActor) {
+				result = { ok: false, reason: "engine_land_rework_actor_missing" };
+				return;
+			}
+			const targetAttempt =
+				this.listWorkflowRunNodes(input.runId, target.id).reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) + 1;
+			const sourceNodeId = workflowTerminalNode(snapshot.manifest);
+			const sourceAttempt =
+				this.listWorkflowRunNodes(input.runId, sourceNodeId).reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) || 1;
+			const invalidationScope = resolvedRoute.invalidationScope;
+			const verificationPolicy = [
+				"conflict_resolution_only",
+				"code_review",
+				"qa_retest",
+				"content_continuity",
+			];
+			const authorityContext = {
+				kind: "land_conflict_resolution_v2",
+				authority: "engine",
+				sourceEventId,
+				operationId: input.operationId,
+				operationGeneration: input.generation,
+				rootApprovedHead: operation.approved_head,
+				proofStep: input.proofStep,
+				proofReceiptGeneration: Number(proof.generation),
+				proofReceiptDigest: String(proof.receipt_digest),
+				proofReceipt: JSON.parse(String(proof.receipt_json)),
+				reason: input.reason,
+				targetNodeId: target.id,
+				targetAttempt,
+				scope: "resolve_conflicts_only",
+			};
+			const authorityContextJson = canonicalJsonString(authorityContext);
+			const authorityContextDigest =
+				canonicalSubmissionDigest(authorityContext);
+			const requestId = `rework:${canonicalSubmissionDigest({
+				runId: input.runId,
+				sourceEventId,
+				targetNodeId: target.id,
+				targetAttempt,
+			})}`;
+			this.db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, founder_feedback_verbatim, requested_at)
+				 VALUES (?, ?, ?, 'engine', ?, ?, ?, ?, ?, NULL, ?)`,
+				[
+					requestId,
+					input.runId,
+					sourceEventId,
+					sourceNodeId,
+					sourceAttempt,
+					operation.approved_head,
+					authorityContextJson,
+					authorityContextDigest,
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, 1, ?, ?, ?, ?, ?, 'engine:land_conflict_resolution',
+				         'resolve_conflict_hunks_without_new_founder_gate', ?)`,
+				[
+					requestId,
+					target.id,
+					targetAttempt,
+					preferredActor.executionId,
+					canonicalJsonString(invalidationScope),
+					canonicalJsonString(verificationPolicy),
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, 'pending', ?)`,
+				[requestId, input.now],
+			);
+			this.mintWorkflowReworkDeliveryAttemptTx({
+				requestId,
+				runId: input.runId,
+				now: input.now,
+			});
+			this.db.run(
+				`INSERT INTO workflow_rework_verification_path
+				   (request_id, run_id, route_revision, state,
+				    current_node_id, current_attempt, updated_at)
+				 VALUES (?, ?, 1, 'pending', ?, ?, ?)`,
+				[
+					requestId,
+					input.runId,
+					target.id,
+					targetAttempt,
+					input.now,
+				],
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: target.id,
+				attempt: targetAttempt,
+				state: "pending",
+				executionId: preferredActor.executionId,
+			});
+			this.db.run(
+				`UPDATE land_operation
+				    SET state = 'partial', generation = generation + 1,
+				        owner_id = NULL, lease_expires_at = NULL,
+				        current_step = 'conflict_resolution', next_attempt_at = NULL,
+				        last_error = 'conflict_resolution_pending', updated_at = ?
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND state = 'running' AND owner_id = ? AND generation = ?`,
+				[
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("engine_land_resolution_operation_cas_lost");
+			}
+			this.db.run(
+				`UPDATE workflow_run SET current_node_id = ?
+				  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+				[target.id, input.runId, sourceNodeId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("engine_land_resolution_run_cas_lost");
+			}
+			for (const event of [
+				{ uid: `rework_requested:${requestId}`, kind: "rework_requested" },
+				{
+					uid: `rework_route_interpreted:${requestId}:1`,
+					kind: "rework_route_interpreted",
+				},
+				{
+					uid: `rework_target_reserved:${requestId}`,
+					kind: "rework_target_reserved",
+				},
+				{
+					uid: sourceEventId,
+					kind: "engine_land_conflict_resolution_requested",
+				},
+			]) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: event.uid,
+					kind: event.kind,
+					nodeId: target.id,
+					executionId: preferredActor.executionId,
+					payload: {
+						requestId,
+						targetNodeId: target.id,
+						targetAttempt,
+						preferredActorExecutionId: preferredActor.executionId,
+						invalidationScope,
+						verificationPolicy,
+						authorityContextDigest,
+						approvalPreserved: true,
+					},
+				});
+			}
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				requestId,
+				targetNodeId: target.id,
+				targetAttempt,
+				preferredActorExecutionId: preferredActor.executionId,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	openEngineLandConflictRework(input: {
+		runId: string;
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		proofStep: string;
+		reason:
+			| "merge_conflict_requires_rework"
+			| "land_merge_ticket_signing_unavailable";
+		now: string;
+	}): WorkflowLandConflictReworkResult {
+		const proofMatchesReason =
+			(input.reason === "merge_conflict_requires_rework" &&
+				/^base_refresh_(?:prepared|requested)$|^alignment_observed:[0-9a-f]{40}$/.test(
+					input.proofStep,
+				)) ||
+			(input.reason === "land_merge_ticket_signing_unavailable" &&
+				input.proofStep === "merge_ticket_signing_unavailable");
+		if (
+			!input.runId ||
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!proofMatchesReason ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_engine_land_rework" };
+		}
+		const sourceEventKind =
+			input.reason === "merge_conflict_requires_rework"
+				? "engine_land_rework"
+				: "engine_land_reapproval";
+		const sourceEventId = `${sourceEventKind}:${canonicalSubmissionDigest({
 			runId: input.runId,
 			operationId: input.operationId,
 			generation: input.generation,
@@ -43998,17 +44527,19 @@ export class StateStore {
 				}
 				return;
 			}
-			const priorEngineCycles = Number(
-				this.workflowSelectAll(
-					`SELECT COUNT(*) AS count FROM workflow_rework_request
-					  WHERE run_id = ? AND authority = 'engine'
-					    AND source_event_id LIKE 'engine_land_rework:%'`,
-					[input.runId],
-				)[0]?.count ?? 0,
-			);
-			if (priorEngineCycles >= 3) {
-				result = { ok: false, reason: "engine_land_rework_cycle_limit" };
-				return;
+			if (input.reason === "merge_conflict_requires_rework") {
+				const priorEngineCycles = Number(
+					this.workflowSelectAll(
+						`SELECT COUNT(*) AS count FROM workflow_rework_request
+						  WHERE run_id = ? AND authority = 'engine'
+						    AND source_event_id LIKE 'engine_land_rework:%'`,
+						[input.runId],
+					)[0]?.count ?? 0,
+				);
+				if (priorEngineCycles >= 3) {
+					result = { ok: false, reason: "engine_land_rework_cycle_limit" };
+					return;
+				}
 			}
 
 			const run = this.getWorkflowRun(input.runId);
@@ -44145,14 +44676,21 @@ export class StateStore {
 					input.now,
 				],
 			);
+			const interpretedBy =
+				input.reason === "merge_conflict_requires_rework"
+					? "engine:land_conflict"
+					: "engine:land_merge_ticket";
+			const interpretationReason =
+				input.reason === "merge_conflict_requires_rework"
+					? "semantic_merge_conflict_requires_runner"
+					: "merge_ticket_unavailable_requires_fresh_approval";
 			this.db.run(
 				`INSERT INTO workflow_rework_route_revision
 				   (request_id, revision, target_node_id, target_attempt,
 				    preferred_actor_execution_id, invalidation_scope_json,
 				    verification_policy_json, interpreted_by,
 				    interpretation_reason, created_at)
-					 VALUES (?, 1, ?, ?, ?, ?, ?, 'engine:land_conflict',
-				         'semantic_merge_conflict_requires_runner', ?)`,
+					 VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					requestId,
 					target.id,
@@ -44160,6 +44698,8 @@ export class StateStore {
 					preferredActorExecutionId,
 					JSON.stringify(invalidationScope),
 					JSON.stringify(verificationPolicy),
+					interpretedBy,
+					interpretationReason,
 					input.now,
 				],
 			);
@@ -44198,10 +44738,14 @@ export class StateStore {
 				    )`,
 				[input.runId, ...invalidationScope],
 			);
+			const revocationReason =
+				input.reason === "merge_conflict_requires_rework"
+					? "engine_land_conflict_rework"
+					: "engine_land_merge_ticket_reapproval";
 			for (const stale of staleClaims) {
 				this.revokeWorkflowClaimTx({
 					claimId: Number(stale.id),
-					reason: "engine_land_conflict_rework",
+					reason: revocationReason,
 					actor: "workflow-engine",
 					runId: input.runId,
 					nodeId: (stale.node_id as string | null) ?? undefined,
@@ -44219,13 +44763,18 @@ export class StateStore {
 				reason: "land_rework",
 				now: input.now,
 			});
-			this.db.run(
-				`UPDATE workflow_carryover_activation
-				    SET state = 'superseded', generation = generation + 1,
-				        next_probe_at = NULL
-				  WHERE carryover_receipt_id = ? AND state = 'pending'`,
-				[operation.carryover_receipt_id],
-			);
+			const carryoverActivationTable = operation.carryover_receipt_id
+				? this.workflowCarryoverActivationTable(operation.carryover_receipt_id)
+				: undefined;
+			if (carryoverActivationTable) {
+				this.db.run(
+					`UPDATE ${carryoverActivationTable}
+					    SET state = 'superseded', generation = generation + 1,
+					        next_probe_at = NULL
+					  WHERE carryover_receipt_id = ? AND state = 'pending'`,
+					[operation.carryover_receipt_id],
+				);
+			}
 			this.db.run(
 				`UPDATE land_operation
 				    SET superseded_at = ?, generation = generation + 1,
@@ -59763,6 +60312,17 @@ export class StateStore {
 				result = { ok: false, reason: "rework_verification_path_conflict" };
 				return;
 			}
+			let activeAuthorityContext: Record<string, unknown> | undefined;
+			if (activeRequest) {
+				try {
+					activeAuthorityContext = JSON.parse(
+						activeRequest.authority_context_json,
+					) as Record<string, unknown>;
+				} catch {
+					result = { ok: false, reason: "rework_verification_path_conflict" };
+					return;
+				}
+			}
 			let activePathCurrentIndex: number | undefined;
 			if (activePath && activeRoute && edge) {
 				const currentIndex = activeRoute.invalidation_scope.indexOf(
@@ -59782,6 +60342,231 @@ export class StateStore {
 					return;
 				}
 				selectedId = `rework_verify:${activePath.request_id}:${input.nodeId}:${target.id}`;
+			}
+			const completesConflictResolution = Boolean(
+				activePath &&
+					activeRoute &&
+					activeRequest &&
+					activeAuthorityContext?.kind === "land_conflict_resolution_v2" &&
+					edge &&
+					activePathCurrentIndex === activeRoute.invalidation_scope.length - 1 &&
+					target.type === "gate",
+			);
+			if (completesConflictResolution) {
+				const candidateHead = input.subjectDigest?.trim().toLowerCase();
+				let decision: ReturnType<typeof resolveWorkflowDecisionContract>;
+				try {
+					decision = resolveWorkflowDecisionContract(snapshot, input.nodeId);
+				} catch {
+					decision = undefined;
+				}
+				const qaClaim =
+					candidateHead &&
+					/^[0-9a-f]{40}$/.test(candidateHead) &&
+					decision?.family === "qa_verdict" &&
+					decision.passOutcome === input.outcome
+						? this.resolveWorkflowDecisionClaim({
+								runId: input.runId,
+								nodeId: input.nodeId,
+								decisionKind: decision.family,
+								predicate: decision.passPredicate,
+								requiredAttempt: input.attempt,
+								subjectKind: "git_head",
+								subjectDigest: candidateHead,
+								now,
+							})
+						: undefined;
+				if (!candidateHead || !qaClaim?.valid) {
+					result = {
+						ok: false,
+						reason: "conflict_resolution_exact_qa_required",
+					};
+					return;
+				}
+				const operationId = String(
+					activeAuthorityContext!.operationId ?? "",
+				);
+				const sourceGeneration = Number(
+					activeAuthorityContext!.operationGeneration,
+				);
+				const operation = this.getLandOperation(operationId);
+				if (
+					!operation ||
+					operation.run_id !== input.runId ||
+					operation.state !== "partial" ||
+					operation.superseded_at !== null ||
+					operation.current_step !== "conflict_resolution" ||
+					!Number.isInteger(sourceGeneration) ||
+					operation.generation !== sourceGeneration + 1
+				) {
+					result = {
+						ok: false,
+						reason: "conflict_resolution_operation_changed",
+					};
+					return;
+				}
+				const terminalNodeId = workflowTerminalNode(snapshot.manifest);
+				const terminalAttempt =
+					this.listWorkflowRunNodes(input.runId, terminalNodeId).reduce(
+						(max, candidate) => Math.max(max, candidate.attempt),
+						0,
+					) || 1;
+				const completionEdgeId = `rework_verify:${activePath!.request_id}:${input.nodeId}:${terminalNodeId}`;
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					state: "done",
+					executionId: input.executionId,
+					endedAt: now,
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid:
+						input.nodeCompletionEventUid ??
+						`engine_node_completed:${input.runId}:${input.nodeId}:${input.attempt}`,
+					kind: "node_completed",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: { attempt: input.attempt, outcome: input.outcome },
+				});
+				const receipt = {
+					edgeId: completionEdgeId,
+					targetNodeId: terminalNodeId,
+					targetAttempt: terminalAttempt,
+					sourceAttempt: input.attempt,
+					outcome: input.outcome,
+					requestId: activePath!.request_id,
+					operationId,
+					candidateHead,
+					qaClaimId: qaClaim.claim.id,
+					approvalPreserved: true,
+				};
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: transitionUid,
+					kind: "edge_traversed",
+					nodeId: input.nodeId,
+					edgeId: completionEdgeId,
+					executionId: input.executionId,
+					payload: receipt,
+				});
+				const proofStep = `conflict_resolution_candidate:${candidateHead}`;
+				const proofReceipt = {
+					requestId: activePath!.request_id,
+					candidateHead,
+					qaClaimId: qaClaim.claim.id,
+					completedAt: now,
+				};
+				const priorProof = this.workflowSelectAll(
+					`SELECT receipt_digest FROM land_operation_step
+					  WHERE operation_id = ? AND step = ?`,
+					[operationId, proofStep],
+				)[0];
+				const proofDigest = canonicalSubmissionDigest(proofReceipt);
+				if (priorProof && priorProof.receipt_digest !== proofDigest) {
+					throw new WorkflowEngineInvariantError(
+						"conflict_resolution_candidate_receipt_conflict",
+					);
+				}
+				if (!priorProof) {
+					this.db.run(
+						`INSERT INTO land_operation_step
+						   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+						 VALUES (?, ?, ?, ?, ?, ?)`,
+						[
+							operationId,
+							proofStep,
+							proofDigest,
+							canonicalJsonString(proofReceipt),
+							operation.generation,
+							now,
+						],
+					);
+				}
+				this.db.run(
+					`UPDATE workflow_rework_verification_path
+					    SET state = 'completed', current_node_id = ?, current_attempt = ?,
+					        updated_at = ?
+					  WHERE request_id = ? AND state = 'active'
+					    AND current_node_id = ? AND current_attempt = ?`,
+					[
+						terminalNodeId,
+						terminalAttempt,
+						now,
+						activePath!.request_id,
+						input.nodeId,
+						input.attempt,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						"conflict_resolution_verification_complete_cas_failed",
+					);
+				}
+				this.db.run(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'completed', updated_at = ?
+					  WHERE request_id = ? AND state = 'wake_delivered'`,
+					[now, activePath!.request_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						"conflict_resolution_delivery_complete_cas_failed",
+					);
+				}
+				this.settleWorkflowDeliveryAttemptIfPresentTx({
+					family: "rework",
+					table: "workflow_rework_delivery",
+					pk: activePath!.request_id,
+					version: {
+						routeRevision: this.getWorkflowReworkDelivery(
+							activePath!.request_id,
+						)!.route_revision,
+					},
+					reason: "settled",
+					now,
+				});
+				this.db.run(
+					`UPDATE land_operation
+					    SET current_step = 'conflict_resolution_complete',
+					        next_attempt_at = NULL, last_error = NULL, updated_at = ?
+					  WHERE operation_id = ? AND state = 'partial'
+					    AND superseded_at IS NULL AND owner_id IS NULL
+					    AND generation = ?`,
+					[now, operationId, operation.generation],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						"conflict_resolution_operation_resume_cas_failed",
+					);
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `conflict_resolution_completed:${activePath!.request_id}`,
+					kind: "engine_land_conflict_resolution_completed",
+					nodeId: terminalNodeId,
+					executionId: input.executionId,
+					payload: receipt,
+				});
+				this.db.run(
+					`UPDATE workflow_run SET current_node_id = ?
+					  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+					[terminalNodeId, input.runId, input.nodeId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						"conflict_resolution_run_resume_cas_failed",
+					);
+				}
+				result = {
+					ok: true,
+					idempotentReplay: false,
+					edgeId: completionEdgeId,
+					targetNodeId: terminalNodeId,
+					targetAttempt: terminalAttempt,
+				};
+				return;
 			}
 			const authorityKickback: "qa" | "founder" | undefined =
 				loop && input.outcome === "qa_fail"
@@ -60189,6 +60974,19 @@ export class StateStore {
 						}
 					: chainedRework || supersedingRework
 						? {
+								...(activeAuthorityContext?.kind ===
+								"land_conflict_resolution_v2"
+									? {
+											kind: "land_conflict_resolution_v2",
+											operationId: activeAuthorityContext.operationId,
+											operationGeneration:
+												activeAuthorityContext.operationGeneration,
+											rootRequestId:
+												activeAuthorityContext.rootRequestId ??
+												activePath!.request_id,
+											scope: "resolve_conflicts_only",
+										}
+									: {}),
 								authority: effectiveReworkAuthority,
 								outcome: input.outcome,
 								parentRequestId: activePath!.request_id,
@@ -61777,8 +62575,14 @@ export class StateStore {
 			reason: "founder_feedback",
 			now: input.now,
 		});
+		const carryoverActivationTable = operation.carryover_receipt_id
+			? this.workflowCarryoverActivationTable(operation.carryover_receipt_id)
+			: undefined;
+		if (!carryoverActivationTable) {
+			throw new Error("founder feedback cutoff activation missing");
+		}
 		this.db.run(
-			`UPDATE workflow_carryover_activation
+			`UPDATE ${carryoverActivationTable}
 			    SET state = 'superseded', generation = generation + 1,
 			        next_probe_at = NULL
 			  WHERE carryover_receipt_id = ? AND state = 'pending'`,
@@ -64179,6 +64983,15 @@ export class StateStore {
 					}`,
 				};
 			}
+			if (authority.carryoverVersion === 2) {
+				const reason = this.validateContentBoundReceiptAtUse(
+					authority.endpointReceiptId,
+					input.now ?? new Date().toISOString(),
+				);
+				return reason
+					? { valid: false, reason: `content_carryover:${reason}` }
+					: { valid: true };
+			}
 			const rootHolder = this.getWorkflowGateHolderByQuestionId(
 				authority.rootHolderQuestionId,
 			);
@@ -65939,6 +66752,7 @@ export class StateStore {
 			| "operator_rework"
 			| "land_rework"
 			| "head_refresh_equivalent"
+			| "head_refresh_content_bound"
 			| "run_sessionless"
 			| "question_unanswerable_recovery";
 		now: string;
@@ -68981,6 +69795,434 @@ export class StateStore {
 		);
 	}
 
+	private contentCarryoverReviewSkipped(
+		runId: string,
+		reviewExecutionId: string,
+	): boolean {
+		if (this.getSession(reviewExecutionId)?.codex_skip) return true;
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS skipped
+				   FROM workflow_run_node AS node
+				   JOIN sessions AS session
+				     ON session.execution_id = node.execution_id
+				  WHERE node.run_id = ? AND session.codex_skip = 1
+				  LIMIT 1`,
+				[runId],
+			)[0],
+		);
+	}
+
+	private contentCarryoverCiReason(
+		checks: unknown,
+	): "content_carryover_ci_incomplete" | undefined {
+		if (!Array.isArray(checks) || checks.length === 0) {
+			return "content_carryover_ci_incomplete";
+		}
+		const normalized: Array<{
+			name: string;
+			status: string;
+			conclusion: string;
+		}> = [];
+		for (const check of checks) {
+			if (
+				!check ||
+				typeof check !== "object" ||
+				typeof (check as { name?: unknown }).name !== "string" ||
+				!(check as { name: string }).name.trim()
+			) {
+				return "content_carryover_ci_incomplete";
+			}
+			normalized.push({
+				name: (check as { name: string }).name.trim(),
+				status: String((check as { status?: unknown }).status).toUpperCase(),
+				conclusion: String(
+					(check as { conclusion?: unknown }).conclusion,
+				).toUpperCase(),
+			});
+		}
+		const requiredGate = normalized.filter((check) => check.name === "CI OK");
+		const authoritativeChecks =
+			requiredGate.length > 0 ? requiredGate : normalized;
+		if (
+			authoritativeChecks.some(
+				(check) =>
+					check.status !== "COMPLETED" || check.conclusion !== "SUCCESS",
+			)
+		) {
+			return "content_carryover_ci_incomplete";
+		}
+		return undefined;
+	}
+
+	private contentCarryoverReviewReason(input: {
+		runId: string;
+		issueId: string;
+		projectName: string;
+		repoIdentity: string;
+		headSha: string;
+		executionId: string;
+		requestId: string;
+	}):
+		| "content_carryover_review_skipped"
+		| "content_carryover_review_missing"
+		| undefined {
+		if (this.contentCarryoverReviewSkipped(input.runId, input.executionId)) {
+			return "content_carryover_review_skipped";
+		}
+		const record = this.getCodexReviewRecord(
+			input.executionId,
+			input.repoIdentity,
+			input.headSha,
+		);
+		if (
+			!record ||
+			record.status === "skipped" ||
+			record.status !== "approved" ||
+			!record.approved_at ||
+			record.issue_id !== input.issueId ||
+			record.project_name !== input.projectName ||
+			record.request_id !== input.requestId ||
+			!this.isCodexCodeReviewApproved(
+				input.executionId,
+				input.repoIdentity,
+				input.headSha,
+			)
+		) {
+			return record?.status === "skipped"
+				? "content_carryover_review_skipped"
+				: "content_carryover_review_missing";
+		}
+		return undefined;
+	}
+
+	private contentCarryoverQaReason(input: {
+		runId: string;
+		issueId: string;
+		claimId: number;
+		expectedHead: string;
+		now: string;
+		rootHolderQuestionId?: string;
+	}): "content_carryover_qa_invalid" | undefined {
+		const claim = this.getWorkflowClaim(input.claimId);
+		const revoked = this.workflowSelectAll(
+			"SELECT 1 AS revoked FROM workflow_claim_revocation WHERE claim_id = ?",
+			[input.claimId],
+		)[0];
+		if (
+			!claim ||
+			revoked ||
+			claim.workflow_run_id !== input.runId ||
+			claim.issue_id !== input.issueId ||
+			claim.decision_kind !== "qa_verdict" ||
+			claim.predicate !== "qa_passed" ||
+			claim.issuer_kind !== "runner_node" ||
+			claim.subject_kind !== "git_head" ||
+			claim.subject_digest.toLowerCase() !== input.expectedHead ||
+			(claim.permanent !== 1 &&
+				(!claim.expires_at ||
+					StateStore.workflowExpired(claim.expires_at, input.now)))
+		) {
+			return "content_carryover_qa_invalid";
+		}
+		if (input.rootHolderQuestionId) {
+			const frozen = this.workflowSelectAll(
+				`SELECT 1 AS frozen
+				   FROM workflow_gate_holder_evidence
+				  WHERE run_id = ? AND claim_id = ? AND predicate = 'qa_passed'
+				    AND holder_subject_digest = ?
+				    AND (run_id, gate_node_id, holder_attempt, holder_subject_digest) IN (
+				      SELECT run_id, gate_node_id, attempt, head_sha
+				        FROM workflow_gate_holder WHERE question_id = ?
+				    )`,
+				[
+					input.runId,
+					input.claimId,
+					input.expectedHead,
+					input.rootHolderQuestionId,
+				],
+			)[0];
+			if (!frozen) return "content_carryover_qa_invalid";
+		}
+		const laterFailure = this.workflowSelectAll(
+			`SELECT 1 AS failed
+			   FROM workflow_claims AS candidate
+			  WHERE candidate.workflow_run_id = ?
+			    AND candidate.decision_kind = 'qa_verdict'
+			    AND candidate.server_seq > ?
+			    AND candidate.predicate <> 'qa_passed'
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_claim_revocation AS revocation
+			       WHERE revocation.claim_id = candidate.id
+			    )
+			  LIMIT 1`,
+			[input.runId, claim.server_seq],
+		)[0];
+		return laterFailure ? "content_carryover_qa_invalid" : undefined;
+	}
+
+	private validateContentBoundReceiptAtUse(
+		receiptId: string,
+		now: string,
+	): string | undefined {
+		const receipt = this.workflowSelectAll(
+			"SELECT * FROM workflow_head_carryover_receipt_v2 WHERE receipt_id = ?",
+			[receiptId],
+		)[0];
+		if (!receipt) return "content_carryover_receipt_missing";
+		let checks: unknown;
+		try {
+			checks = JSON.parse(String(receipt.ci_checks_json));
+		} catch {
+			return "content_carryover_ci_incomplete";
+		}
+		const ciReason = this.contentCarryoverCiReason(checks);
+		if (
+			ciReason ||
+			canonicalSubmissionDigest(checks) !== String(receipt.ci_digest)
+		) {
+			return ciReason ?? "content_carryover_ci_incomplete";
+		}
+		const reviewReason = this.contentCarryoverReviewReason({
+			runId: String(receipt.run_id),
+			issueId: String(receipt.issue_id),
+			projectName: String(receipt.project_name),
+			repoIdentity: String(receipt.repo_identity),
+			headSha: String(receipt.to_head).toLowerCase(),
+			executionId: String(receipt.review_execution_id),
+			requestId: String(receipt.review_request_id),
+		});
+		if (reviewReason) return reviewReason;
+		const proof = this.workflowSelectAll(
+			"SELECT requires_fresh_qa FROM workflow_content_proof WHERE proof_id = ? AND result = 1",
+			[receipt.proof_id],
+		)[0];
+		if (!proof) return "content_carryover_proof_invalid";
+		const qaDisposition = String(receipt.qa_disposition);
+		if (Number(proof.requires_fresh_qa) === 1 && qaDisposition !== "fresh") {
+			return "content_carryover_fresh_qa_required";
+		}
+		return this.contentCarryoverQaReason({
+			runId: String(receipt.run_id),
+			issueId: String(receipt.issue_id),
+			claimId: Number(receipt.qa_claim_id),
+			expectedHead:
+				qaDisposition === "fresh"
+					? String(receipt.to_head).toLowerCase()
+					: String(receipt.root_head).toLowerCase(),
+			now,
+			...(qaDisposition === "carried" && {
+				rootHolderQuestionId: String(receipt.root_source_receipt_ref),
+			}),
+		});
+	}
+
+	private resolveWorkflowExactHeadAuthorityV2(input: {
+		runId: string;
+		headSha: string;
+		holder: WorkflowGateHolderRow;
+		now: string;
+	}): WorkflowExactHeadAuthorityResolution | undefined {
+		let receipt = this.workflowSelectAll(
+			`SELECT * FROM workflow_head_carryover_receipt_v2
+			  WHERE successor_question_id = ? AND run_id = ? AND to_head = ?`,
+			[input.holder.question_id, input.runId, input.headSha],
+		)[0];
+		if (!receipt) return undefined;
+		const endpointId = String(receipt.receipt_id);
+		const endpointDepth = Number(receipt.depth);
+		const receiptIds: string[] = [];
+		const visited = new Set<string>();
+		let expectedTo = input.headSha;
+		let rootGateId = "";
+		let rootHead = "";
+		let rootFounderClaimRef = "";
+		let rootSourceReceiptRef = "";
+		let rootEvidenceDigest = "";
+		let rootBindingReceiptRef = "";
+		let depth = 0;
+		while (receipt) {
+			const receiptId = String(receipt.receipt_id);
+			if (visited.has(receiptId) || depth >= 3) {
+				return { valid: false, reason: "carryover_lineage_invalid" };
+			}
+			visited.add(receiptId);
+			receiptIds.unshift(receiptId);
+			depth += 1;
+			if (
+				receipt.run_id !== input.runId ||
+				receipt.gate_node_id !== input.holder.gate_node_id ||
+				String(receipt.to_head).toLowerCase() !== expectedTo ||
+				Number(receipt.depth) !== endpointDepth - depth + 1 ||
+				!/^[0-9a-f]{40}$/.test(String(receipt.from_head).toLowerCase())
+			) {
+				return { valid: false, reason: "carryover_receipt_invalid" };
+			}
+			const proof = this.workflowSelectAll(
+				`SELECT proof.*, preparation.state AS preparation_state,
+				        preparation.root_gate_id AS preparation_root_gate_id,
+				        preparation.cycle AS preparation_cycle
+				   FROM workflow_content_proof AS proof
+				   JOIN workflow_land_preparation AS preparation
+				     ON preparation.preparation_id = proof.preparation_id
+				  WHERE proof.proof_id = ? AND proof.preparation_id = ?`,
+				[receipt.proof_id, receipt.preparation_id],
+			)[0];
+			if (
+				!proof ||
+				Number(proof.result) !== 1 ||
+				proof.preparation_state !== "ready" ||
+				proof.preparation_root_gate_id !== receipt.root_gate_id ||
+				Number(proof.preparation_cycle) !== Number(receipt.cycle) ||
+				String(proof.candidate_head).toLowerCase() !== expectedTo ||
+				String(proof.prior_head).toLowerCase() !==
+					String(receipt.from_head).toLowerCase()
+			) {
+				return { valid: false, reason: "content_carryover_proof_invalid" };
+			}
+			if (!rootGateId) {
+				rootGateId = String(receipt.root_gate_id);
+				rootHead = String(receipt.root_head).toLowerCase();
+				rootFounderClaimRef = String(receipt.root_founder_claim_ref);
+				rootSourceReceiptRef = String(receipt.root_source_receipt_ref);
+				rootEvidenceDigest = String(receipt.root_evidence_digest);
+				rootBindingReceiptRef = String(receipt.root_binding_receipt_ref);
+			} else if (
+				rootGateId !== String(receipt.root_gate_id) ||
+				rootHead !== String(receipt.root_head).toLowerCase() ||
+				rootFounderClaimRef !== String(receipt.root_founder_claim_ref) ||
+				rootSourceReceiptRef !== String(receipt.root_source_receipt_ref) ||
+				rootBindingReceiptRef !== String(receipt.root_binding_receipt_ref)
+			) {
+				return { valid: false, reason: "carryover_root_changed" };
+			}
+			const predecessorId: string | undefined = receipt.predecessor_receipt_id
+				? String(receipt.predecessor_receipt_id)
+				: undefined;
+			if (!predecessorId) {
+				if (String(receipt.from_head).toLowerCase() !== rootHead) {
+					return { valid: false, reason: "carryover_lineage_broken" };
+				}
+				break;
+			}
+			expectedTo = String(receipt.from_head).toLowerCase();
+			receipt = this.workflowSelectAll(
+				"SELECT * FROM workflow_head_carryover_receipt_v2 WHERE receipt_id = ?",
+				[predecessorId],
+			)[0];
+		}
+		if (!receipt || depth !== endpointDepth) {
+			return { valid: false, reason: "carryover_lineage_broken" };
+		}
+		const approved = this.workflowSelectAll(
+			"SELECT * FROM workflow_approved_content WHERE root_gate_id = ?",
+			[rootGateId],
+		)[0];
+		let fingerprint: ApprovedContentFingerprint;
+		try {
+			fingerprint = JSON.parse(String(approved?.fingerprint_json));
+		} catch {
+			return { valid: false, reason: "content_carryover_fingerprint_invalid" };
+		}
+		if (
+			!approved ||
+			approved.run_id !== input.runId ||
+			String(approved.approved_head).toLowerCase() !== rootHead ||
+			fingerprint.schemaVersion !== 1 ||
+			fingerprint.approvedHead.toLowerCase() !== rootHead ||
+			fingerprint.rootDigest !== approved.root_digest ||
+			approvedContentFingerprintRoot(fingerprint.files) !==
+				fingerprint.rootDigest
+		) {
+			return { valid: false, reason: "content_carryover_fingerprint_invalid" };
+		}
+		const rootHolder = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?
+			    AND lower(head_sha) = ?`,
+			[
+				rootSourceReceiptRef,
+				input.runId,
+				input.holder.gate_node_id,
+				rootHead,
+			],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+		if (
+			!rootHolder ||
+			!new Set(["approved", "superseded"]).has(rootHolder.state) ||
+			(rootHolder.state === "superseded" &&
+				rootHolder.superseded_from_state !== "approved") ||
+			this.workflowGateEvidenceDigest(rootHolder) !== rootEvidenceDigest
+		) {
+			return { valid: false, reason: "carryover_root_holder_invalid" };
+		}
+		const founderClaimId = Number(rootFounderClaimRef);
+		const founderClaim = Number.isInteger(founderClaimId)
+			? this.getWorkflowClaim(founderClaimId)
+			: undefined;
+		const founderRevoked = founderClaim
+			? this.workflowSelectAll(
+					"SELECT 1 AS revoked FROM workflow_claim_revocation WHERE claim_id = ?",
+					[founderClaim.id],
+				)[0]
+			: undefined;
+		if (
+			!founderClaim ||
+			founderRevoked ||
+			founderClaim.workflow_run_id !== input.runId ||
+			founderClaim.issue_id !== approved.issue_id ||
+			founderClaim.decision_kind !== "founder_decision" ||
+			founderClaim.predicate !== "founder_approved" ||
+			founderClaim.issuer_kind !== "founder_challenge" ||
+			founderClaim.subject_kind !== "git_head" ||
+			founderClaim.subject_digest.toLowerCase() !== rootHead ||
+			founderClaim.authority_id !== rootSourceReceiptRef ||
+			Number(approved.founder_claim_id) !== founderClaim.id ||
+			approved.founder_response_id !== rootSourceReceiptRef ||
+			approved.founder_actor !== "founder" ||
+			(founderClaim.permanent !== 1 &&
+				(!founderClaim.expires_at ||
+					StateStore.workflowExpired(founderClaim.expires_at, input.now)))
+		) {
+			return { valid: false, reason: "carryover_root_founder_claim_invalid" };
+		}
+		const rootBinding = this.workflowSelectAll(
+			`SELECT * FROM workflow_node_pr_binding
+			  WHERE receipt_id = ? AND run_id = ? AND lower(head_sha) = ?`,
+			[rootBindingReceiptRef, input.runId, rootHead],
+		)[0] as unknown as WorkflowNodePrBindingRow | undefined;
+		const endpoint = this.workflowSelectAll(
+			"SELECT * FROM workflow_head_carryover_receipt_v2 WHERE receipt_id = ?",
+			[endpointId],
+		)[0];
+		if (
+			!rootBinding ||
+			!endpoint ||
+			rootBinding.pr_number !== Number(endpoint.pr_number) ||
+			rootBinding.target_repo_identity !== endpoint.repo_identity ||
+			approved.issue_id !== endpoint.issue_id ||
+			approved.project_name !== endpoint.project_name ||
+			approved.repo_identity !== endpoint.repo_identity ||
+			Number(approved.pr_number) !== Number(endpoint.pr_number)
+		) {
+			return { valid: false, reason: "carryover_root_binding_invalid" };
+		}
+		return {
+			valid: true,
+			kind: "carryover",
+			binding: { ...rootBinding, head_sha: input.headSha },
+			authorityHead: rootHead,
+			rootHead,
+			rootHolderQuestionId: rootSourceReceiptRef,
+			rootFounderClaimRef,
+			rootEvidenceDigest,
+			endpointReceiptId: endpointId,
+			receiptIds,
+			depth,
+			carryoverVersion: 2,
+		};
+	}
+
 	/**
 	 * The sole exact-head authority resolver for land-capable paths. Normal
 	 * bindings remain byte-for-byte authoritative. A carryover is accepted only
@@ -69018,6 +70260,14 @@ export class StateStore {
 		if (holder?.approval_origin !== "engine_equivalence_carryover") {
 			return { valid: false, reason: "exact_head_binding_missing" };
 		}
+		const now = input.now ?? new Date().toISOString();
+		const v2Authority = this.resolveWorkflowExactHeadAuthorityV2({
+			runId: input.runId,
+			headSha,
+			holder,
+			now,
+		});
+		if (v2Authority) return v2Authority;
 		const holderEvidence = this.workflowSelectAll(
 			`SELECT * FROM workflow_gate_holder_carryover_evidence
 			  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?
@@ -69145,7 +70395,6 @@ export class StateStore {
 					[founderClaim.id],
 				)[0]
 			: undefined;
-		const now = input.now ?? new Date().toISOString();
 		if (
 			!founderClaim ||
 			founderRevoked ||
@@ -69194,6 +70443,7 @@ export class StateStore {
 			endpointReceiptId: endpointId,
 			receiptIds,
 			depth,
+			carryoverVersion: 1,
 		};
 	}
 
@@ -72300,6 +73550,996 @@ export class StateStore {
 		return result;
 	}
 
+	getWorkflowApprovedContent(
+		rootGateId: string,
+	):
+		| {
+				rootGateId: string;
+				runId: string;
+				issueId: string;
+				projectName: string;
+				repoIdentity: string;
+				prNumber: number;
+				founderClaimId: number;
+				fingerprint: ApprovedContentFingerprint;
+				createdAt: string;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_approved_content WHERE root_gate_id = ?",
+			[rootGateId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const fingerprint = JSON.parse(
+				String(row.fingerprint_json),
+			) as ApprovedContentFingerprint;
+			if (
+				fingerprint.schemaVersion !== 1 ||
+				fingerprint.rootDigest !== row.root_digest ||
+				approvedContentFingerprintRoot(fingerprint.files) !==
+					fingerprint.rootDigest
+			) {
+				return undefined;
+			}
+			return {
+				rootGateId: String(row.root_gate_id),
+				runId: String(row.run_id),
+				issueId: String(row.issue_id),
+				projectName: String(row.project_name),
+				repoIdentity: String(row.repo_identity),
+				prNumber: Number(row.pr_number),
+				founderClaimId: Number(row.founder_claim_id),
+				fingerprint,
+				createdAt: String(row.created_at),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	stageWorkflowApprovedContent(input: {
+		runId: string;
+		gateNodeId: string;
+		questionId: string;
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		fingerprint: ApprovedContentFingerprint;
+		now: string;
+	}):
+		| {
+				ok: true;
+				idempotentReplay: boolean;
+				rootGateId: string;
+				fingerprint: ApprovedContentFingerprint;
+		  }
+		| { ok: false; reason: string } {
+		const fingerprint = input.fingerprint;
+		const approvedHead = fingerprint.approvedHead.trim().toLowerCase();
+		const mergeBase = fingerprint.mergeBase.trim().toLowerCase();
+		if (
+			!input.runId ||
+			!input.gateNodeId ||
+			!input.questionId ||
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			fingerprint.schemaVersion !== 1 ||
+			![approvedHead, mergeBase].every((value) =>
+				/^[0-9a-f]{40}$/.test(value),
+			) ||
+			!/^[0-9a-f]{64}$/.test(fingerprint.rootDigest) ||
+			approvedContentFingerprintRoot(fingerprint.files) !==
+				fingerprint.rootDigest ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_approved_content" };
+		}
+		const existing = this.getWorkflowApprovedContent(input.questionId);
+		if (existing) {
+			return existing.runId === input.runId &&
+				existing.fingerprint.rootDigest === fingerprint.rootDigest &&
+				existing.fingerprint.approvedHead === approvedHead &&
+				existing.fingerprint.mergeBase === mergeBase
+				? {
+						ok: true,
+						idempotentReplay: true,
+						rootGateId: input.questionId,
+						fingerprint: existing.fingerprint,
+					}
+				: { ok: false, reason: "approved_content_replay_conflict" };
+		}
+		let result:
+			| {
+					ok: true;
+					idempotentReplay: boolean;
+					rootGateId: string;
+					fingerprint: ApprovedContentFingerprint;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "approved_content_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+				input.questionId,
+			);
+			const operation = this.getLandOperation(input.operationId);
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: approvedHead,
+				now: input.now,
+			});
+			if (
+				run?.engine_owned !== 1 ||
+				run.status !== "active" ||
+				!holder ||
+				holder.run_id !== input.runId ||
+				holder.gate_node_id !== input.gateNodeId ||
+				holder.state !== "approved" ||
+				holder.approval_origin === "engine_equivalence_carryover" ||
+				holder.head_sha.toLowerCase() !== approvedHead ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.approved_head !== approvedHead ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				operation.superseded_at !== null ||
+				!authority.valid ||
+				authority.kind !== "normal" ||
+				authority.binding.pr_number !== operation.pr_number
+			) {
+				return;
+			}
+			if (
+				this.contentCarryoverReviewSkipped(
+					input.runId,
+					this.getWorkflowRunNode(
+						input.runId,
+						authority.binding.node_id,
+						authority.binding.attempt,
+					)?.execution_id ?? "",
+				)
+			) {
+				result = { ok: false, reason: "content_carryover_review_skipped" };
+				return;
+			}
+			const founder = this.resolveWorkflowDecisionClaim({
+				runId: input.runId,
+				decisionKind: "founder_decision",
+				predicate: "founder_approved",
+				subjectKind: "git_head",
+				subjectDigest: approvedHead,
+				now: input.now,
+			});
+			if (
+				!founder.valid ||
+				founder.claim.authority_id !== input.questionId ||
+				founder.claim.issue_id !== run.issue_id ||
+				founder.claim.issuer_kind !== "founder_challenge"
+			) {
+				result = { ok: false, reason: "approved_content_founder_invalid" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_approved_content
+				   (root_gate_id, schema_version, run_id, issue_id, project_name,
+				    repo_identity, pr_number, founder_claim_id, founder_response_id,
+				    founder_actor, approved_head, merge_base, fingerprint_json,
+				    root_digest, created_at)
+				 VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 'founder', ?, ?, ?, ?, ?)`,
+				[
+					input.questionId,
+					input.runId,
+					run.issue_id,
+					operation.project_name,
+					authority.binding.target_repo_identity,
+					operation.pr_number,
+					founder.claim.id,
+					input.questionId,
+					approvedHead,
+					mergeBase,
+					canonicalJsonString(fingerprint),
+					fingerprint.rootDigest,
+					input.now,
+				],
+			);
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				rootGateId: input.questionId,
+				fingerprint,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	resolveContentCarryoverQaEvidence(input: {
+		runId: string;
+		rootHolderQuestionId: string;
+		rootHead: string;
+		candidateHead: string;
+		requiresFreshQa: boolean;
+		now: string;
+	}):
+		| { status: "ready"; kind: "carried" | "fresh"; claimId: number }
+		| { status: "pending" | "failed"; reason: string } {
+		const expectedHead = input.requiresFreshQa
+			? input.candidateHead.toLowerCase()
+			: input.rootHead.toLowerCase();
+		if (input.requiresFreshQa) {
+			const candidate = this.workflowSelectAll(
+				`SELECT claim.* FROM workflow_claims AS claim
+				  WHERE claim.workflow_run_id = ?
+				    AND claim.decision_kind = 'qa_verdict'
+				    AND claim.subject_kind = 'git_head'
+				    AND lower(claim.subject_digest) = ?
+				  ORDER BY claim.attempt DESC, claim.server_seq DESC LIMIT 1`,
+				[input.runId, expectedHead],
+			)[0];
+			if (!candidate) {
+				return { status: "pending", reason: "content_carryover_qa_pending" };
+			}
+			if (candidate.predicate !== "qa_passed") {
+				return { status: "failed", reason: "content_carryover_qa_failed" };
+			}
+			const claimId = Number(candidate.id);
+			const reason = this.contentCarryoverQaReason({
+				runId: input.runId,
+				issueId: String(candidate.issue_id),
+				claimId,
+				expectedHead,
+				now: input.now,
+			});
+			return reason
+				? { status: "failed", reason }
+				: { status: "ready", kind: "fresh", claimId };
+		}
+		const frozen = this.workflowSelectAll(
+			`SELECT evidence.claim_id, run.issue_id
+			   FROM workflow_gate_holder_evidence AS evidence
+			   JOIN workflow_gate_holder AS holder
+			     ON holder.run_id = evidence.run_id
+			    AND holder.gate_node_id = evidence.gate_node_id
+			    AND holder.attempt = evidence.holder_attempt
+			    AND holder.head_sha = evidence.holder_subject_digest
+			   JOIN workflow_run AS run ON run.run_id = evidence.run_id
+			  WHERE holder.question_id = ? AND evidence.run_id = ?
+			    AND evidence.predicate = 'qa_passed'
+			    AND lower(evidence.subject_digest) = ?`,
+			[input.rootHolderQuestionId, input.runId, expectedHead],
+		)[0];
+		if (!frozen) {
+			return { status: "failed", reason: "content_carryover_qa_invalid" };
+		}
+		const claimId = Number(frozen.claim_id);
+		const reason = this.contentCarryoverQaReason({
+			runId: input.runId,
+			issueId: String(frozen.issue_id),
+			claimId,
+			expectedHead,
+			now: input.now,
+			rootHolderQuestionId: input.rootHolderQuestionId,
+		});
+		return reason
+			? { status: "failed", reason }
+			: { status: "ready", kind: "carried", claimId };
+	}
+
+	commitContentBoundHeadCarryover(input: {
+		runId: string;
+		gateNodeId: string;
+		fromQuestionId: string;
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		fingerprint: ApprovedContentFingerprint;
+		proof: Extract<ContentContinuityProof, { ok: true }>;
+		ci: {
+			evidenceId: string;
+			checks: Array<{ name: string; status: string; conclusion: string }>;
+		};
+		review: { executionId: string; requestId: string };
+		qa: { kind: "carried" | "fresh"; claimId: number };
+		codexSkip?: boolean;
+		now: string;
+	}):
+		| {
+				ok: true;
+				idempotentReplay: boolean;
+				receiptId: string;
+				ordinal: number;
+				questionId: string;
+				operation: LandOperationRow;
+				auditLabels: string[];
+		  }
+		| { ok: false; reason: string } {
+		const fingerprint = input.fingerprint;
+		const proof = input.proof;
+		const approvedHead = fingerprint.approvedHead.trim().toLowerCase();
+		const mergeBase = fingerprint.mergeBase.trim().toLowerCase();
+		const priorHead = proof.priorHead.trim().toLowerCase();
+		const baseOid = proof.baseOid.trim().toLowerCase();
+		const candidateHead = proof.candidateHead.trim().toLowerCase();
+		const candidateTreeOid = proof.candidateTreeOid.trim().toLowerCase();
+		const conflictProofDigest = proof.conflictProofDigest.trim().toLowerCase();
+		const rootDigest = fingerprint.rootDigest.trim().toLowerCase();
+		const validFileSet =
+			Array.isArray(fingerprint.files) &&
+			fingerprint.files.length <= 10_000 &&
+			fingerprint.files.every(
+				(file, index) =>
+					typeof file.path === "string" &&
+					file.path.length > 0 &&
+					(index === 0 ||
+						Buffer.compare(
+							Buffer.from(fingerprint.files[index - 1]!.path),
+							Buffer.from(file.path),
+						) < 0) &&
+					new Set(["A", "D", "M"]).has(file.status) &&
+					/^\d{6}$/.test(file.oldMode) &&
+					/^\d{6}$/.test(file.newMode) &&
+					file.hunkDigests.every((digest) => /^[0-9a-f]{64}$/.test(digest)),
+			);
+		if (
+			!input.runId ||
+			!input.gateNodeId ||
+			!input.fromQuestionId ||
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			fingerprint.schemaVersion !== 1 ||
+			proof.proofKind !== "content_bound_merge_v2" ||
+			![
+				approvedHead,
+				mergeBase,
+				proof.approvedHead.toLowerCase(),
+				proof.mergeBase.toLowerCase(),
+				priorHead,
+				baseOid,
+				candidateHead,
+				candidateTreeOid,
+			].every((value) => /^[0-9a-f]{40}$/.test(value)) ||
+			![rootDigest, proof.rootDigest, conflictProofDigest].every((value) =>
+				/^[0-9a-f]{64}$/.test(value),
+			) ||
+			proof.approvedHead.toLowerCase() !== approvedHead ||
+			proof.mergeBase.toLowerCase() !== mergeBase ||
+			proof.rootDigest !== rootDigest ||
+			priorHead === candidateHead ||
+			!validFileSet ||
+			approvedContentFingerprintRoot(fingerprint.files) !== rootDigest ||
+			!input.ci.evidenceId.trim() ||
+			!input.review.executionId.trim() ||
+			!input.review.requestId.trim() ||
+			!Number.isInteger(input.qa.claimId) ||
+			input.qa.claimId < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_content_bound_carryover" };
+		}
+		if (input.codexSkip) {
+			return { ok: false, reason: "content_carryover_review_skipped" };
+		}
+		const ciReason = this.contentCarryoverCiReason(input.ci.checks);
+		if (ciReason) return { ok: false, reason: ciReason };
+		const run = this.getWorkflowRun(input.runId);
+		if (!run) return { ok: false, reason: "content_carryover_run_missing" };
+		const operationBefore = this.getLandOperation(input.operationId);
+		if (!operationBefore) {
+			return { ok: false, reason: "content_carryover_operation_missing" };
+		}
+		const repoIdentity =
+			this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: priorHead,
+				now: input.now,
+			}).valid
+				? (this.resolveWorkflowExactHeadAuthority({
+						runId: input.runId,
+						headSha: priorHead,
+						now: input.now,
+					}) as Extract<WorkflowExactHeadAuthorityResolution, { valid: true }>)
+						.binding.target_repo_identity
+				: "__main__";
+		const reviewReason = this.contentCarryoverReviewReason({
+			runId: input.runId,
+			issueId: run.issue_id,
+			projectName: operationBefore.project_name,
+			repoIdentity,
+			headSha: candidateHead,
+			executionId: input.review.executionId,
+			requestId: input.review.requestId,
+		});
+		if (reviewReason) return { ok: false, reason: reviewReason };
+		const ciDigest = canonicalSubmissionDigest(input.ci.checks);
+		const proofId = `content-proof:${canonicalSubmissionDigest({
+			runId: input.runId,
+			rootDigest,
+			priorHead,
+			baseOid,
+			candidateHead,
+			candidateTreeOid,
+			conflictProofDigest,
+		})}`;
+		const receiptId = `content-carryover:${canonicalSubmissionDigest({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			rootDigest,
+			priorHead,
+			candidateHead,
+			proofId,
+			ciDigest,
+			reviewRequestId: input.review.requestId,
+			qaClaimId: input.qa.claimId,
+		})}`;
+		const questionId = `workflow-gate-content-carryover:${canonicalSubmissionDigest({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			receiptId,
+			candidateHead,
+		})}`;
+		const replayReceipt = this.workflowSelectAll(
+			"SELECT * FROM workflow_head_carryover_receipt_v2 WHERE receipt_id = ?",
+			[receiptId],
+		)[0];
+		if (replayReceipt) {
+			const successor = operationBefore.superseded_by_operation_id
+				? this.getLandOperation(operationBefore.superseded_by_operation_id)
+				: undefined;
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: candidateHead,
+				now: input.now,
+			});
+			if (
+				replayReceipt.successor_question_id === questionId &&
+				authority.valid &&
+				authority.kind === "carryover" &&
+				authority.carryoverVersion === 2 &&
+				authority.endpointReceiptId === receiptId &&
+				successor?.approved_head === candidateHead &&
+				successor.superseded_at === null
+			) {
+				return {
+					ok: true,
+					idempotentReplay: true,
+					receiptId,
+					ordinal: authority.depth,
+					questionId,
+					operation: successor,
+					auditLabels: JSON.parse(String(replayReceipt.audit_labels_json)),
+				};
+			}
+			return { ok: false, reason: "content_carryover_replay_conflict" };
+		}
+
+		let result:
+			| {
+					ok: true;
+					idempotentReplay: boolean;
+					receiptId: string;
+					ordinal: number;
+					questionId: string;
+					operation: LandOperationRow;
+					auditLabels: string[];
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "content_carryover_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const currentRun = this.getWorkflowRun(input.runId);
+			const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+				input.fromQuestionId,
+			);
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				currentRun?.engine_owned !== 1 ||
+				!currentRun.snapshot ||
+				currentRun.status !== "active" ||
+				currentRun.current_node_id == null ||
+				!holder ||
+				holder.run_id !== input.runId ||
+				holder.gate_node_id !== input.gateNodeId ||
+				holder.state !== "approved" ||
+				holder.head_sha.toLowerCase() !== priorHead ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.approved_head !== priorHead ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!operation.lease_expires_at ||
+				operation.lease_expires_at <= input.now
+			) {
+				return;
+			}
+			let parsed: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				parsed = parseWorkflowRunSnapshot(currentRun.snapshot);
+			} catch {
+				result = { ok: false, reason: "content_carryover_snapshot_invalid" };
+				return;
+			}
+			if (
+				workflowApprovalGate(parsed.manifest).node !== input.gateNodeId ||
+				workflowTerminalNode(parsed.manifest) !== currentRun.current_node_id
+			) {
+				return;
+			}
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: priorHead,
+				now: input.now,
+			});
+			if (!authority.valid) {
+				result = {
+					ok: false,
+					reason: `content_carryover_authority:${authority.reason}`,
+				};
+				return;
+			}
+			if (authority.kind === "carryover" && authority.carryoverVersion !== 2) {
+				result = { ok: false, reason: "content_carryover_v1_lineage" };
+				return;
+			}
+			if (authority.depth >= 3) {
+				result = { ok: false, reason: "carryover_lineage_limit" };
+				return;
+			}
+			const reviewReasonAtCommit = this.contentCarryoverReviewReason({
+				runId: input.runId,
+				issueId: currentRun.issue_id,
+				projectName: operation.project_name,
+				repoIdentity: authority.binding.target_repo_identity,
+				headSha: candidateHead,
+				executionId: input.review.executionId,
+				requestId: input.review.requestId,
+			});
+			if (input.codexSkip || reviewReasonAtCommit) {
+				result = {
+					ok: false,
+					reason:
+						input.codexSkip || reviewReasonAtCommit === "content_carryover_review_skipped"
+							? "content_carryover_review_skipped"
+							: "content_carryover_review_missing",
+				};
+				return;
+			}
+			let rootFounderClaimRef: string;
+			let rootHolderQuestionId: string;
+			let rootEvidenceDigest: string;
+			let rootHead: string;
+			let predecessorReceiptId: string | null;
+			if (authority.kind === "carryover") {
+				rootFounderClaimRef = authority.rootFounderClaimRef;
+				rootHolderQuestionId = authority.rootHolderQuestionId;
+				rootEvidenceDigest = authority.rootEvidenceDigest;
+				rootHead = authority.rootHead;
+				predecessorReceiptId = authority.endpointReceiptId;
+			} else {
+				const founder = this.resolveWorkflowDecisionClaim({
+					runId: input.runId,
+					decisionKind: "founder_decision",
+					predicate: "founder_approved",
+					subjectKind: "git_head",
+					subjectDigest: priorHead,
+					now: input.now,
+				});
+				if (
+					!founder.valid ||
+					founder.claim.authority_id !== holder.question_id
+				) {
+					result = {
+						ok: false,
+						reason: "carryover_root_founder_claim_invalid",
+					};
+					return;
+				}
+				rootFounderClaimRef = String(founder.claim.id);
+				rootHolderQuestionId = holder.question_id;
+				rootEvidenceDigest = this.workflowGateEvidenceDigest(holder);
+				rootHead = priorHead;
+				predecessorReceiptId = null;
+			}
+			if (approvedHead !== rootHead) {
+				result = { ok: false, reason: "content_carryover_root_mismatch" };
+				return;
+			}
+			const rootHolder = this.getWorkflowGateHolderByQuestionId(
+				rootHolderQuestionId,
+			);
+			const founderClaim = this.getWorkflowClaim(Number(rootFounderClaimRef));
+			if (
+				!rootHolder ||
+				!founderClaim ||
+				founderClaim.issuer_kind !== "founder_challenge" ||
+				founderClaim.authority_id !== rootHolderQuestionId ||
+				founderClaim.issue_id !== currentRun.issue_id ||
+				founderClaim.subject_digest.toLowerCase() !== rootHead
+			) {
+				result = { ok: false, reason: "carryover_root_founder_claim_invalid" };
+				return;
+			}
+			const qaReason = this.contentCarryoverQaReason({
+				runId: input.runId,
+				issueId: currentRun.issue_id,
+				claimId: input.qa.claimId,
+				expectedHead: input.qa.kind === "fresh" ? candidateHead : rootHead,
+				now: input.now,
+				...(input.qa.kind === "carried" && {
+					rootHolderQuestionId,
+				}),
+			});
+			if (proof.requiresFreshQa && input.qa.kind !== "fresh") {
+				result = { ok: false, reason: "content_carryover_fresh_qa_required" };
+				return;
+			}
+			if (qaReason) {
+				result = { ok: false, reason: qaReason };
+				return;
+			}
+			const cycle = authority.depth + 1;
+			const rootGateId = rootHolderQuestionId;
+			const preparationId = `land-preparation:${canonicalSubmissionDigest({
+				runId: input.runId,
+				rootGateId,
+				cycle,
+				priorHead,
+				candidateHead,
+			})}`;
+			const auditLabels = [
+				`approval_carried_from:${rootGateId}`,
+				input.qa.kind === "carried"
+					? `qa_carried_from:${input.qa.claimId}`
+					: `qa_fresh_at:${candidateHead}`,
+			];
+			const approvedContent = this.workflowSelectAll(
+				"SELECT * FROM workflow_approved_content WHERE root_gate_id = ?",
+				[rootGateId],
+			)[0];
+			if (approvedContent) {
+				if (
+					approvedContent.run_id !== input.runId ||
+					approvedContent.issue_id !== currentRun.issue_id ||
+					approvedContent.project_name !== operation.project_name ||
+					approvedContent.repo_identity !==
+						authority.binding.target_repo_identity ||
+					Number(approvedContent.pr_number) !== operation.pr_number ||
+					String(approvedContent.root_digest) !== rootDigest ||
+					String(approvedContent.approved_head).toLowerCase() !== rootHead
+				) {
+					result = { ok: false, reason: "content_carryover_root_conflict" };
+					return;
+				}
+			} else {
+				this.db.run(
+					`INSERT INTO workflow_approved_content
+					   (root_gate_id, schema_version, run_id, issue_id, project_name,
+					    repo_identity, pr_number, founder_claim_id, founder_response_id,
+					    founder_actor, approved_head, merge_base, fingerprint_json,
+					    root_digest, created_at)
+					 VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 'founder', ?, ?, ?, ?, ?)`,
+					[
+						rootGateId,
+						input.runId,
+						currentRun.issue_id,
+						operation.project_name,
+						authority.binding.target_repo_identity,
+						operation.pr_number,
+						founderClaim.id,
+						rootHolderQuestionId,
+						rootHead,
+						mergeBase,
+						canonicalJsonString(fingerprint),
+						rootDigest,
+						input.now,
+					],
+				);
+			}
+			this.db.run(
+				`INSERT INTO workflow_land_preparation
+				   (preparation_id, run_id, root_gate_id, cycle, prior_head, base_oid,
+				    candidate_head, operation_id, operation_generation, lease_owner,
+				    lease_epoch, state, git_config_json, verifier_version,
+				    conflict_proof_digest, review_request_id, ci_evidence_id,
+				    qa_disposition, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					preparationId,
+					input.runId,
+					rootGateId,
+					cycle,
+					priorHead,
+					baseOid,
+					candidateHead,
+					input.operationId,
+					input.generation,
+					input.ownerId,
+					input.generation,
+					canonicalJsonString({
+						mergeConflictStyle: "diff3",
+						renames: false,
+					}),
+					"land-content-proof-v1",
+					conflictProofDigest,
+					input.review.requestId,
+					input.ci.evidenceId,
+					input.qa.kind,
+					input.now,
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_content_proof
+				   (proof_id, preparation_id, root_digest, approved_head, merge_base,
+				    prior_head, base_oid, candidate_head, candidate_tree_oid,
+				    protected_spans_json, conflict_files_json, conflict_proof_digest,
+				    verifier_version, raw_artifact_digest, requires_fresh_qa,
+				    result, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, 1, ?)`,
+				[
+					proofId,
+					preparationId,
+					rootDigest,
+					approvedHead,
+					mergeBase,
+					priorHead,
+					baseOid,
+					candidateHead,
+					candidateTreeOid,
+					canonicalJsonString(proof.conflictFiles),
+					conflictProofDigest,
+					"land-content-proof-v1",
+					canonicalSubmissionDigest(proof),
+					proof.requiresFreshQa ? 1 : 0,
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_head_carryover_receipt_v2
+				   (receipt_id, run_id, gate_node_id, holder_attempt,
+				    predecessor_receipt_id, root_gate_id, root_head, from_head,
+				    to_head, depth, proof_id, root_founder_claim_ref,
+				    root_source_receipt_ref, root_evidence_digest,
+				    root_binding_receipt_ref, issue_id, project_name, repo_identity,
+				    pr_number, preparation_id, cycle, ci_evidence_id, ci_checks_json,
+				    ci_digest, review_execution_id, review_request_id,
+				    qa_disposition, qa_claim_id, successor_question_id,
+				    audit_labels_json, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+				         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					receiptId,
+					input.runId,
+					input.gateNodeId,
+					holder.attempt,
+					predecessorReceiptId,
+					rootGateId,
+					rootHead,
+					priorHead,
+					candidateHead,
+					cycle,
+					proofId,
+					rootFounderClaimRef,
+					rootHolderQuestionId,
+					rootEvidenceDigest,
+					authority.binding.receipt_id,
+					currentRun.issue_id,
+					operation.project_name,
+					authority.binding.target_repo_identity,
+					operation.pr_number,
+					preparationId,
+					cycle,
+					input.ci.evidenceId,
+					canonicalJsonString(input.ci.checks),
+					ciDigest,
+					input.review.executionId,
+					input.review.requestId,
+					input.qa.kind,
+					input.qa.claimId,
+					questionId,
+					canonicalJsonString(auditLabels),
+					input.now,
+				],
+			);
+			this.supersedeWorkflowShipTargetsForCurrentGateTx({
+				runId: input.runId,
+				gateNodeId: input.gateNodeId,
+				now: input.now,
+			});
+			const superseded = this.supersedeWorkflowGateHoldersTx({
+				runId: input.runId,
+				gateNodeId: input.gateNodeId,
+				questionId: input.fromQuestionId,
+				fromStates: ["approved"],
+				reason: "head_refresh_content_bound",
+				now: input.now,
+			});
+			if (superseded.updated !== 1) {
+				throw new Error("content_carryover_holder_cas_lost");
+			}
+			this.db.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, authority_mode, subject_kind, carrier_binding_state,
+				    approval_origin, state, materialization_stage, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'bound',
+				         'engine_equivalence_carryover', 'approved', 'completed', ?, ?)`,
+				[
+					input.runId,
+					input.gateNodeId,
+					holder.attempt,
+					candidateHead,
+					holder.source_execution_id,
+					questionId,
+					holder.authority_mode,
+					holder.subject_kind ?? "git_head",
+					input.now,
+					input.now,
+				],
+			);
+			this.recordWorkflowShipTargetBindingTx({
+				approveQuestionId: questionId,
+				runId: input.runId,
+				sourceRequestId: receiptId,
+				binding: { ...authority.binding, head_sha: candidateHead },
+			});
+			this.db.run(
+				`INSERT INTO workflow_carryover_activation_v2
+				   (carryover_receipt_id, state, first_observed_at)
+				 VALUES (?, 'pending', ?)`,
+				[receiptId, input.now],
+			);
+			const nextOperationId = `land:${canonicalSubmissionDigest({
+				projectName: operation.project_name,
+				issueId: operation.issue_id,
+				prNumber: Number(operation.pr_number),
+				approvedHead: candidateHead,
+			})}`;
+			this.db.run(
+				`INSERT INTO land_operation
+				   (operation_id, run_id, issue_id, project_name, pr_number,
+				    approved_head, carryover_receipt_id, state, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+				[
+					nextOperationId,
+					operation.run_id,
+					operation.issue_id,
+					operation.project_name,
+					operation.pr_number,
+					candidateHead,
+					receiptId,
+					input.now,
+					input.now,
+				],
+			);
+			this.mintWorkflowStateDeliveryAttemptTx({
+				family: "land",
+				table: "land_operation",
+				pk: nextOperationId,
+				runId: input.runId,
+				mintedAt: input.now,
+				sentAt: input.now,
+			});
+			const ticketId = `land-merge-ticket:${canonicalSubmissionDigest({
+				receiptId,
+				nextOperationId,
+				candidateHead,
+			})}`;
+			this.db.run(
+				`INSERT INTO land_merge_ticket
+				   (ticket_id, carryover_receipt_id, operation_id, preparation_id,
+				    operation_generation, root_gate_id, head_sha, observed_base_oid,
+				    project_name, repo_identity, pr_number, state, workflow_run_id,
+				    delivery_identity, created_at)
+				 VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'authorized', ?, ?, ?)`,
+				[
+					ticketId,
+					receiptId,
+					nextOperationId,
+					preparationId,
+					rootGateId,
+					candidateHead,
+					baseOid,
+					operation.project_name,
+					authority.binding.target_repo_identity,
+					operation.pr_number,
+					input.runId,
+					`workflow-engine:${receiptId}`,
+					input.now,
+				],
+			);
+			const supersedeReceipt = {
+				nextApprovedHead: candidateHead,
+				nextOperationId,
+				reason: "head_refresh_content_bound",
+				receiptId,
+				auditLabels,
+			};
+			this.db.run(
+				`INSERT INTO land_operation_step
+				   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+				 VALUES (?, 'superseded', ?, ?, ?, ?)`,
+				[
+					input.operationId,
+					canonicalSubmissionDigest(supersedeReceipt),
+					canonicalJsonString(supersedeReceipt),
+					input.generation,
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE land_operation
+				    SET superseded_at = ?, superseded_by_operation_id = ?,
+				        generation = generation + 1, owner_id = NULL,
+				        lease_expires_at = NULL, current_step = 'superseded', updated_at = ?
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND state = 'running' AND owner_id = ? AND generation = ?`,
+				[
+					input.now,
+					nextOperationId,
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("content_carryover_operation_cas_lost");
+			}
+			this.db.run(
+				"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+				[input.operationId],
+			);
+			this.db.run(
+				`UPDATE land_recovery_episode SET current_operation_id = ?
+				  WHERE current_operation_id = ? AND state = 'open'`,
+				[nextOperationId, input.operationId],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `content_head_carryover:${receiptId}`,
+				kind: "head_content_carried_over",
+				nodeId: input.gateNodeId,
+				executionId: holder.source_execution_id,
+				payload: {
+					receiptId,
+					rootGateId,
+					fromHead: priorHead,
+					toHead: candidateHead,
+					baseOid,
+					proofId,
+					depth: cycle,
+					questionId,
+					nextOperationId,
+					auditLabels,
+				},
+			});
+			const nextOperation = this.getLandOperation(nextOperationId);
+			if (!nextOperation) throw new Error("content_carryover_operation_missing");
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				receiptId,
+				ordinal: cycle,
+				questionId,
+				operation: nextOperation,
+				auditLabels,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	ensureLandOperation(input: {
 		runId?: string;
 		issueId: string;
@@ -72382,13 +74622,35 @@ export class StateStore {
 		)[0] as unknown as LandOperationRow | undefined;
 	}
 
+	private workflowCarryoverActivationTable(
+		carryoverReceiptId: string,
+	): "workflow_carryover_activation" | "workflow_carryover_activation_v2" | undefined {
+		if (
+			this.workflowSelectAll(
+				"SELECT 1 AS present FROM workflow_carryover_activation_v2 WHERE carryover_receipt_id = ?",
+				[carryoverReceiptId],
+			)[0]
+		) {
+			return "workflow_carryover_activation_v2";
+		}
+		return this.workflowSelectAll(
+			"SELECT 1 AS present FROM workflow_carryover_activation WHERE carryover_receipt_id = ?",
+			[carryoverReceiptId],
+		)[0]
+			? "workflow_carryover_activation"
+			: undefined;
+	}
+
 	getWorkflowCarryoverActivation(
 		carryoverReceiptId: string,
 	): WorkflowCarryoverActivationRow | undefined {
-		return this.workflowSelectAll(
-			"SELECT * FROM workflow_carryover_activation WHERE carryover_receipt_id = ?",
-			[carryoverReceiptId],
-		)[0] as unknown as WorkflowCarryoverActivationRow | undefined;
+		const table = this.workflowCarryoverActivationTable(carryoverReceiptId);
+		return table
+			? (this.workflowSelectAll(
+					`SELECT * FROM ${table} WHERE carryover_receipt_id = ?`,
+					[carryoverReceiptId],
+				)[0] as unknown as WorkflowCarryoverActivationRow | undefined)
+			: undefined;
 	}
 
 	getWorkflowSourceReceipt(
@@ -72480,8 +74742,12 @@ export class StateStore {
 				result = { ok: false, reason: "carryover_departure_horizon_pending" };
 				return;
 			}
+			const activationTable = this.workflowCarryoverActivationTable(
+				input.carryoverReceiptId,
+			);
+			if (!activationTable) return;
 			this.db.run(
-				`UPDATE workflow_carryover_activation
+				`UPDATE ${activationTable}
 				    SET state = 'superseded', generation = generation + 1,
 				        next_probe_at = NULL, alert_uid = ?
 				  WHERE carryover_receipt_id = ? AND state = 'pending'`,
@@ -72565,9 +74831,16 @@ export class StateStore {
 	): WorkflowPendingCarryoverDeparture[] {
 		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
 		const candidates = this.workflowSelectAll(
-			`SELECT operation.*,
+			`WITH activation AS (
+			   SELECT carryover_receipt_id, state, first_observed_at
+			     FROM workflow_carryover_activation
+			   UNION ALL
+			   SELECT carryover_receipt_id, state, first_observed_at
+			     FROM workflow_carryover_activation_v2
+			 )
+			 SELECT operation.*,
 			        activation.first_observed_at AS carryover_first_observed_at
-			   FROM workflow_carryover_activation AS activation
+			   FROM activation
 			   JOIN land_operation AS operation
 			     ON operation.carryover_receipt_id = activation.carryover_receipt_id
 			  WHERE activation.state = 'pending'
@@ -72665,8 +74938,12 @@ export class StateStore {
 				result = { ok: false, reason: "carryover_departure_authority_invalid" };
 				return;
 			}
+			const activationTable = this.workflowCarryoverActivationTable(
+				input.carryoverReceiptId,
+			);
+			if (!activationTable) return;
 			this.db.run(
-				`UPDATE workflow_carryover_activation
+				`UPDATE ${activationTable}
 				    SET state = 'departure_authorized', source_cutoff_row_id = ?,
 				        generation = generation + 1, next_probe_at = NULL
 				  WHERE carryover_receipt_id = ? AND state = 'pending'`,
@@ -72852,6 +75129,53 @@ export class StateStore {
 		)[0] as unknown as LandCoolAttemptRow | undefined;
 	}
 
+	getLandMergeTicketForOperation(
+		operationId: string,
+	): LandMergeTicketRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM land_merge_ticket WHERE operation_id = ?",
+			[operationId],
+		)[0] as unknown as LandMergeTicketRow | undefined;
+	}
+
+	private landMergeTicketCanReauthorize(
+		ticket: LandMergeTicketRow,
+		attempt: LandCoolAttemptRow,
+	): boolean {
+		const provenUndelivered =
+			ticket.state === "consumed" &&
+			ticket.trigger_comment_id === null &&
+			attempt.state === "voided";
+		const retryableTerminal =
+			ticket.state === "reconciled" &&
+			attempt.state === "terminal" &&
+			attempt.classification !== "merged" &&
+			attempt.comment_id !== null &&
+			ticket.trigger_comment_id === attempt.comment_id;
+		return provenUndelivered || retryableTerminal;
+	}
+
+	private reauthorizeLandMergeTicketTx(input: {
+		operationId: string;
+		attempt: LandCoolAttemptRow;
+	}): LandMergeTicketRow | undefined {
+		const ticket = this.getLandMergeTicketForOperation(input.operationId);
+		if (!ticket || !this.landMergeTicketCanReauthorize(ticket, input.attempt)) {
+			return undefined;
+		}
+		this.db.run(
+			`UPDATE land_merge_ticket
+			    SET state = 'authorized', source_cutoff_row_id = NULL,
+			        merge_result_json = NULL, consumed_at = NULL,
+			        reconciled_at = NULL, nonce = NULL, issued_at = NULL,
+			        expires_at = NULL, trigger_comment_id = NULL
+			  WHERE operation_id = ? AND state = ?`,
+			[input.operationId, ticket.state],
+		);
+		if (this.db.getRowsModified() !== 1) return undefined;
+		return this.getLandMergeTicketForOperation(input.operationId);
+	}
+
 	prepareLandCoolAttempt(input: {
 		operationId: string;
 		ownerId: string;
@@ -72888,7 +75212,15 @@ export class StateStore {
 			}
 			const open = this.getOpenLandCoolAttempt(input.operationId);
 			if (open) {
-				result = { ok: true, idempotentReplay: true, attempt: open };
+				const mergeTicket = this.getLandMergeTicketForOperation(
+					input.operationId,
+				);
+				result = {
+					ok: true,
+					idempotentReplay: true,
+					attempt: open,
+					...(mergeTicket?.state === "consumed" ? { mergeTicket } : {}),
+				};
 				return;
 			}
 			const ordinal =
@@ -72913,6 +75245,94 @@ export class StateStore {
 				result = { ok: false, reason: "land_external_effect_inflight" };
 				return;
 			}
+			let mergeTicket = this.getLandMergeTicketForOperation(input.operationId);
+			const priorAttempt = this.listLandCoolAttempts(input.operationId).at(-1);
+			const canReauthorize = Boolean(
+				mergeTicket &&
+				priorAttempt &&
+				this.landMergeTicketCanReauthorize(mergeTicket, priorAttempt),
+			);
+			if (mergeTicket) {
+				if (
+					(mergeTicket.state !== "authorized" && !canReauthorize) ||
+					mergeTicket.head_sha !== operation.approved_head ||
+					mergeTicket.project_name !== operation.project_name ||
+					mergeTicket.repo_identity !== input.repoIdentity ||
+					mergeTicket.pr_number !== operation.pr_number ||
+					mergeTicket.workflow_run_id !== operation.run_id ||
+					!operation.carryover_receipt_id ||
+					mergeTicket.carryover_receipt_id !==
+						operation.carryover_receipt_id
+				) {
+					result = {
+						ok: false,
+						reason:
+							mergeTicket.state === "consumed"
+								? "land_merge_ticket_already_consumed"
+								: "land_merge_ticket_invalid",
+					};
+					return;
+				}
+				const activation = this.getWorkflowCarryoverActivation(
+					operation.carryover_receipt_id,
+				);
+				const authority = operation.run_id
+					? this.resolveWorkflowExactHeadAuthority({
+							runId: operation.run_id,
+							headSha: operation.approved_head,
+							now: input.now,
+						})
+					: undefined;
+				const claims = operation.run_id
+					? this.resolveEngineWorkflowShipClaims({
+							runId: operation.run_id,
+							subjectDigest: operation.approved_head,
+							now: input.now,
+						})
+					: undefined;
+				if (
+					activation?.state !== "departure_authorized" ||
+					!activation.source_cutoff_row_id ||
+					!authority?.valid ||
+					!claims?.valid
+				) {
+					result = { ok: false, reason: "land_merge_ticket_authority_invalid" };
+					return;
+				}
+				if (canReauthorize) {
+					mergeTicket = this.reauthorizeLandMergeTicketTx({
+						operationId: input.operationId,
+						attempt: priorAttempt!,
+					});
+					if (mergeTicket?.state !== "authorized") return;
+				}
+				const issuedAt = input.now;
+				const expiresAt = new Date(Date.parse(input.now) + 10 * 60_000).toISOString();
+				const nonce = canonicalSubmissionDigest({
+					ticketId: mergeTicket.ticket_id,
+					operationGeneration: input.generation,
+					ordinal,
+					issuedAt,
+				});
+				this.db.run(
+					`UPDATE land_merge_ticket
+					    SET state = 'consumed', operation_generation = ?,
+					        source_cutoff_row_id = ?, nonce = ?, issued_at = ?,
+					        expires_at = ?, consumed_at = ?
+					  WHERE ticket_id = ? AND state = 'authorized'`,
+					[
+						input.generation,
+						activation.source_cutoff_row_id,
+						nonce,
+						issuedAt,
+						expiresAt,
+						input.now,
+						mergeTicket.ticket_id,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) return;
+				mergeTicket = this.getLandMergeTicketForOperation(input.operationId)!;
+			}
 			this.db.run(
 				`INSERT INTO land_cool_attempt
 				   (operation_id, ordinal, project_name, repo_identity, state,
@@ -72932,7 +75352,90 @@ export class StateStore {
 				ok: true,
 				idempotentReplay: false,
 				attempt: this.getOpenLandCoolAttempt(input.operationId)!,
+				...(mergeTicket ? { mergeTicket } : {}),
 			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	resetUndeliveredLandCoolAttempt(input: {
+		operationId: string;
+		ordinal: number;
+		ownerId: string;
+		generation: number;
+		attemptGeneration: number;
+		reason: string;
+		now: string;
+	}): LandCoolAttemptMutationResult {
+		if (
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.ordinal) ||
+			input.ordinal < 1 ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!Number.isInteger(input.attemptGeneration) ||
+			input.attemptGeneration < 0 ||
+			!input.reason ||
+			input.reason.length > 160 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_cool_undelivered" };
+		}
+		let result: LandCoolAttemptMutationResult = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			const operation = this.getLandOperation(input.operationId);
+			const attempt = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			const ticket = this.getLandMergeTicketForOperation(input.operationId);
+			if (
+				!operation ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!attempt ||
+				attempt.state !== "prepared" ||
+				attempt.generation !== input.attemptGeneration ||
+				!ticket ||
+				ticket.state !== "consumed" ||
+				ticket.trigger_comment_id !== null
+			) {
+				return;
+			}
+			const classification = `undelivered:${input.reason}`;
+			this.db.run(
+				`UPDATE land_cool_attempt
+				    SET state = 'voided', classification = ?, voided_at = ?
+				  WHERE operation_id = ? AND ordinal = ? AND state = 'prepared'
+				    AND generation = ?`,
+				[
+					classification,
+					input.now,
+					input.operationId,
+					input.ordinal,
+					input.attemptGeneration,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			const voided = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			if (
+				!voided ||
+				this.reauthorizeLandMergeTicketTx({
+					operationId: input.operationId,
+					attempt: voided,
+				})?.state !== "authorized"
+			) {
+				throw new Error("land_merge_ticket_reauthorize_cas_lost");
+			}
+			result = { ok: true, idempotentReplay: false, attempt: voided };
 		});
 		if (result.ok) this.save();
 		return result;
@@ -72976,6 +75479,14 @@ export class StateStore {
 				return;
 			}
 			if (attempt.state === "sent" && attempt.comment_id === input.commentId) {
+				const ticket = this.getLandMergeTicketForOperation(input.operationId);
+				if (
+					ticket?.state === "consumed" &&
+					ticket.trigger_comment_id !== input.commentId
+				) {
+					result = { ok: false, reason: "land_merge_ticket_comment_conflict" };
+					return;
+				}
 				result = { ok: true, idempotentReplay: true, attempt };
 				return;
 			}
@@ -72996,6 +75507,18 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;
+			const ticket = this.getLandMergeTicketForOperation(input.operationId);
+			if (ticket?.state === "consumed") {
+				this.db.run(
+					`UPDATE land_merge_ticket SET trigger_comment_id = ?
+					  WHERE operation_id = ? AND state = 'consumed'
+					    AND trigger_comment_id IS NULL`,
+					[input.commentId, input.operationId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("land_merge_ticket_comment_cas_lost");
+				}
+			}
 			result = {
 				ok: true,
 				idempotentReplay: false,
@@ -73121,6 +75644,20 @@ export class StateStore {
 					input.now,
 				],
 			);
+			const voidedAttempt = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			const ticket = this.getLandMergeTicketForOperation(input.operationId);
+			if (
+				ticket &&
+				(!voidedAttempt ||
+					this.reauthorizeLandMergeTicketTx({
+						operationId: input.operationId,
+						attempt: voidedAttempt,
+					})?.state !== "authorized")
+			) {
+				throw new Error("land_merge_ticket_reauthorize_cas_lost");
+			}
 			result = { ok: true, idempotentReplay: false, voidedCount: 1 };
 			changed = true;
 		});
@@ -73194,6 +75731,30 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;
+			const ticket = this.getLandMergeTicketForOperation(input.operationId);
+			if (ticket?.state === "consumed") {
+				const mergeResult = canonicalJsonString({
+					classification: input.classification,
+					shipRunId: input.shipRunId ?? null,
+					commentId: attempt.comment_id,
+					headSha: attempt.head_sha,
+				});
+				this.db.run(
+					`UPDATE land_merge_ticket
+					    SET state = 'reconciled', merge_result_json = ?, reconciled_at = ?
+					  WHERE operation_id = ? AND state = 'consumed'
+					    AND trigger_comment_id = ?`,
+					[
+						mergeResult,
+						input.now,
+						input.operationId,
+						attempt.comment_id,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("land_merge_ticket_reconcile_cas_lost");
+				}
+			}
 			const settled = this.listLandCoolAttempts(input.operationId).find(
 				(candidate) => candidate.ordinal === input.ordinal,
 			);
@@ -73856,14 +76417,20 @@ export class StateStore {
 			        SELECT 1 FROM workflow_carryover_activation activation
 			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
 			           AND activation.state = 'departure_authorized'
+			      ) OR EXISTS (
+			        SELECT 1 FROM workflow_carryover_activation_v2 activation
+			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+			           AND activation.state = 'departure_authorized'
 			      )
 			    ) AND (
-			        (state IN ('intent','partial') AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+			        (state = 'intent' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+			     OR (state = 'partial' AND COALESCE(current_step, '') <> 'conflict_resolution'
+			           AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
 			     OR (state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
 			        )
 			  ORDER BY updated_at ASC, operation_id ASC
 			  LIMIT ?`,
-			[now, now, boundedLimit],
+			[now, now, now, boundedLimit],
 		) as unknown as LandOperationRow[];
 	}
 
@@ -73937,24 +76504,13 @@ export class StateStore {
 				) &&
 				(row?.state === "intent" ||
 					(row?.state === "partial" &&
+						row.current_step !== "conflict_resolution" &&
 						(!row.next_attempt_at ||
 							String(row.next_attempt_at) <= input.now)) ||
 					(row?.state === "running" &&
 						(!row.lease_expires_at ||
 							String(row.lease_expires_at) <= input.now)));
 			if (!row || !due) {
-				return;
-			}
-			const admission = this.workflowSelectAll(
-				`SELECT * FROM land_repo_admission
-				  WHERE project_name = ? AND repo_identity = '__main__'`,
-				[row.project_name],
-			)[0];
-			if (
-				admission &&
-				admission.owner_operation_id !== input.operationId &&
-				String(admission.lease_expires_at) > input.now
-			) {
 				return;
 			}
 			const generation = Number(row.generation) + 1;
@@ -73965,15 +76521,20 @@ export class StateStore {
 				  WHERE operation_id = ? AND generation = ?
 				    AND superseded_at IS NULL
 				    AND (
-				      carryover_receipt_id IS NULL OR EXISTS (
-				        SELECT 1 FROM workflow_carryover_activation activation
-				         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
-				           AND activation.state = 'departure_authorized'
-				      )
+			      carryover_receipt_id IS NULL OR EXISTS (
+			        SELECT 1 FROM workflow_carryover_activation activation
+			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+			           AND activation.state = 'departure_authorized'
+			      ) OR EXISTS (
+			        SELECT 1 FROM workflow_carryover_activation_v2 activation
+			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+			           AND activation.state = 'departure_authorized'
+			      )
 				    )
 				    AND (
 				          state = 'intent'
-				       OR (state = 'partial' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+				       OR (state = 'partial' AND COALESCE(current_step, '') <> 'conflict_resolution'
+				             AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
 				       OR (state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
 				        )`,
 				[
@@ -73988,23 +76549,6 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;
-			this.db.run(
-				`INSERT INTO land_repo_admission
-				   (project_name, repo_identity, owner_operation_id, owner_id,
-				    generation, lease_expires_at)
-				 VALUES (?, '__main__', ?, ?, 1, ?)
-				 ON CONFLICT(project_name, repo_identity) DO UPDATE SET
-				   owner_operation_id = excluded.owner_operation_id,
-				   owner_id = excluded.owner_id,
-				   generation = land_repo_admission.generation + 1,
-				   lease_expires_at = excluded.lease_expires_at`,
-				[
-					row.project_name,
-					input.operationId,
-					input.ownerId,
-					input.leaseExpiresAt,
-				],
-			);
 			claim = {
 				operationId: input.operationId,
 				ownerId: input.ownerId,
@@ -74029,11 +76573,15 @@ export class StateStore {
 				    AND project_name = ? AND pr_number = ? AND approved_head = ?
 				    AND superseded_at IS NULL
 				    AND (
-				      carryover_receipt_id IS NULL OR EXISTS (
-				        SELECT 1 FROM workflow_carryover_activation activation
-				         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
-				           AND activation.state = 'departure_authorized'
-				      )
+			      carryover_receipt_id IS NULL OR EXISTS (
+			        SELECT 1 FROM workflow_carryover_activation activation
+			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+			           AND activation.state = 'departure_authorized'
+			      ) OR EXISTS (
+			        SELECT 1 FROM workflow_carryover_activation_v2 activation
+			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+			           AND activation.state = 'departure_authorized'
+			      )
 				    )
 				    AND state = 'running' AND owner_id = ? AND generation = ?
 				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
@@ -75852,6 +78400,33 @@ export interface LandCoolAttemptRow {
 	voided_at: string | null;
 }
 
+export interface LandMergeTicketRow {
+	ticket_id: string;
+	carryover_receipt_id: string;
+	operation_id: string;
+	preparation_id: string;
+	operation_generation: number;
+	root_gate_id: string;
+	head_sha: string;
+	observed_base_oid: string;
+	project_name: string;
+	repo_identity: string;
+	pr_number: number;
+	state: "authorized" | "consumed" | "reconciled" | "invalidated";
+	workflow_run_id: string;
+	source_cutoff_row_id: number | null;
+	delivery_identity: string;
+	merge_result_json: string | null;
+	created_at: string;
+	consumed_at: string | null;
+	reconciled_at: string | null;
+	invalidated_at: string | null;
+	nonce: string | null;
+	issued_at: string | null;
+	expires_at: string | null;
+	trigger_comment_id: string | null;
+}
+
 export type LandCoolAdjudicationBasis =
 	| "comment_absence"
 	| "exact_run_terminal"
@@ -75878,6 +78453,7 @@ export type LandCoolAttemptMutationResult =
 			ok: true;
 			idempotentReplay: boolean;
 			attempt: LandCoolAttemptRow;
+			mergeTicket?: LandMergeTicketRow;
 	  }
 	| { ok: false; reason: string };
 
@@ -76344,6 +78920,7 @@ export type WorkflowExactHeadAuthorityResolution =
 			endpointReceiptId: string;
 			receiptIds: string[];
 			depth: number;
+			carryoverVersion: 1 | 2;
 	  }
 	| { valid: false; reason: string };
 

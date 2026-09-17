@@ -8,6 +8,7 @@ import {
 } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { drainWorkflowSourceEvents } from "../bridge/founder-approval-projector.js";
+import { approvedContentFingerprintRoot } from "../bridge/land-content-proof.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
 
@@ -17,6 +18,12 @@ const HEAD_B = "c".repeat(40);
 const TREE_1 = "d".repeat(40);
 const T0 = "2026-08-17T20:00:00.000Z";
 const T1 = "2026-08-17T20:01:00.000Z";
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+};
 
 function db(store: StateStore): {
 	run(sql: string, params?: unknown[]): void;
@@ -237,15 +244,95 @@ async function fixture() {
 	return { store, holder, operation, claim };
 }
 
+function activateRework(
+	store: StateStore,
+	input: {
+		requestId: string;
+		nodeId: "implement" | "qa";
+		executionId: string;
+		attempt: number;
+		epoch: number;
+	},
+): void {
+	const activationId = `activation:${input.requestId}`;
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: "run-carryover",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			attempt: input.attempt,
+			activationId,
+			activationMode: "wake",
+			reworkRequestId: input.requestId,
+			now: "2026-08-17T20:02:00.000Z",
+			expiresAt: "2026-08-17T21:02:00.000Z",
+			absoluteDeadlineAt: "2026-08-18T20:02:00.000Z",
+			env: WORKFLOW_ON,
+		}),
+	).toMatchObject({ ok: true });
+	expect(
+		store.recordWorkflowActivationTurn({
+			activationId,
+			issueId: "FLY-1833",
+			executionId: input.executionId,
+			epoch: input.epoch,
+			sourceEventId: `turn:${input.requestId}`,
+			grantedAt: "2026-08-17T20:02:01.000Z",
+		}),
+	).toMatchObject({ ok: true });
+	const claim = store.claimWorkflowReworkDelivery({
+		requestId: input.requestId,
+		ownerId: "coordinator",
+		now: "2026-08-17T20:02:02.000Z",
+		leaseExpiresAt: "2026-08-17T20:03:02.000Z",
+	});
+	expect(claim).toMatchObject({ ok: true });
+	if (!claim.ok) throw new Error(claim.reason);
+	expect(
+		store.advanceWorkflowReworkDelivery({
+			requestId: input.requestId,
+			ownerId: "coordinator",
+			generation: claim.generation,
+			from: "pending",
+			to: "turn_granted",
+			now: "2026-08-17T20:02:03.000Z",
+		}),
+	).toMatchObject({ ok: true });
+	expect(
+		store.advanceWorkflowReworkDelivery({
+			requestId: input.requestId,
+			ownerId: "coordinator",
+			generation: claim.generation,
+			from: "turn_granted",
+			to: "awaiting_receipt",
+			now: "2026-08-17T20:02:04.000Z",
+			releaseOwner: true,
+		}),
+	).toEqual({ ok: true });
+	expect(
+		store.recordWorkflowReworkWakeReceipt({
+			activationId,
+			executionId: input.executionId,
+			epoch: input.epoch,
+			ackedAt: "2026-08-17T20:02:05.000Z",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		}),
+	).toMatchObject({ ok: true });
+}
+
 describe("equivalent-head carryover authority", () => {
-	it("keeps the synthetic approval origin behind one audited writer", () => {
+	it("keeps the synthetic approval origin behind the two audited carryover writers", () => {
 		const source = readFileSync(
 			new URL("../StateStore.ts", import.meta.url),
 			"utf8",
 		);
 		expect(
 			source.match(/'engine_equivalence_carryover', 'approved', 'completed'/g),
-		).toHaveLength(1);
+		).toHaveLength(2);
 	});
 
 	it("atomically carries the root approval to an exact tree-proven head", async () => {
@@ -722,6 +809,224 @@ describe("equivalent-head carryover authority", () => {
 		}
 	});
 
+	it("reuses the fresh-approval rework path when merge-ticket signing is unavailable", async () => {
+		const { store, operation, claim } = await fixture();
+		try {
+			expect(
+				store.openEngineLandConflictRework({
+					runId: "run-carryover",
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					proofStep: "base_refresh_prepared",
+					reason: "land_merge_ticket_signing_unavailable",
+					now: T1,
+				}),
+			).toEqual({ ok: false, reason: "invalid_engine_land_rework" });
+			expect(
+				store.recordLandOperationStep({
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					step: "merge_ticket_signing_unavailable",
+					receipt: { approvedHead: HEAD_A, requiresFreshApproval: true },
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+
+			const opened = store.openEngineLandConflictRework({
+				runId: "run-carryover",
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				proofStep: "merge_ticket_signing_unavailable",
+				reason: "land_merge_ticket_signing_unavailable",
+				now: T1,
+			});
+			expect(opened).toMatchObject({
+				ok: true,
+				targetNodeId: "implement",
+				targetAttempt: 2,
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+				superseded_at: T1,
+			});
+			expect(
+				store.resolveWorkflowDecisionClaim({
+					runId: "run-carryover",
+					decisionKind: "founder_decision",
+					subjectKind: "git_head",
+					subjectDigest: HEAD_A,
+				}),
+			).toMatchObject({ valid: false, reason: "revoked" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("runs conflict-only implement and QA without opening a second founder gate", async () => {
+		const { store, holder, operation, claim } = await fixture();
+		try {
+			expect(
+				store.recordLandOperationStep({
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					step: "base_refresh_prepared",
+					receipt: { approvedHead: HEAD_A, baseOid: BASE_1 },
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			const opened = store.openEngineLandConflictResolution({
+				runId: "run-carryover",
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				proofStep: "base_refresh_prepared",
+				reason: "merge_conflict_requires_resolution",
+				now: T1,
+			});
+			expect(opened).toMatchObject({
+				ok: true,
+				targetNodeId: "implement",
+				targetAttempt: 2,
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+				state: "partial",
+				superseded_at: null,
+				current_step: "conflict_resolution",
+			});
+			expect(store.listRunnableLandOperations(T1)).not.toContainEqual(
+				expect.objectContaining({ operation_id: operation.operation_id }),
+			);
+			expect(
+				store.claimLandOperation({
+					operationId: operation.operation_id,
+					ownerId: "sweep-must-wait",
+					now: T1,
+					leaseExpiresAt: "2026-08-17T21:01:00.000Z",
+				}),
+			).toBeUndefined();
+			expect(
+				store.getCurrentWorkflowGateHolder("run-carryover", "founder_gate"),
+			).toMatchObject({ question_id: holder.question_id, state: "approved" });
+			expect(
+				store.getLatestWorkflowReworkRoute(opened.requestId),
+			).toMatchObject({
+				invalidation_scope: ["implement", "qa"],
+				verification_policy: [
+					"conflict_resolution_only",
+					"code_review",
+					"qa_retest",
+					"content_continuity",
+				],
+			});
+
+			activateRework(store, {
+				requestId: opened.requestId,
+				nodeId: "implement",
+				executionId: "implement-carryover",
+				attempt: 2,
+				epoch: 2,
+			});
+			const implemented = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "run-carryover",
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "implement-carryover",
+				outcome: "implement_done",
+				subjectDigest: HEAD_B,
+				now: "2026-08-17T20:03:00.000Z",
+			});
+			expect(implemented).toMatchObject({
+				ok: true,
+				targetNodeId: "qa",
+				targetAttempt: 2,
+			});
+			if (!implemented.ok || !implemented.reworkRequestId) {
+				throw new Error("conflict resolution did not chain to QA");
+			}
+			expect(
+				JSON.parse(
+					store.getWorkflowReworkRequest(implemented.reworkRequestId)!
+						.authority_context_json,
+				),
+			).toMatchObject({
+				kind: "land_conflict_resolution_v2",
+				operationId: operation.operation_id,
+				scope: "resolve_conflicts_only",
+			});
+
+			activateRework(store, {
+				requestId: implemented.reworkRequestId,
+				nodeId: "qa",
+				executionId: "qa-carryover",
+				attempt: 2,
+				epoch: 2,
+			});
+			db(store).run(
+				`INSERT INTO workflow_claims
+				   (server_seq, issued_at, issue_id, workflow_run_id, node_id,
+				    decision_kind, attempt, predicate, issuer_kind,
+				    issuer_execution_id, issuer_node_id, issuer_vendor, issuer_model,
+				    subject_producer_execution_id, subject_kind, subject_digest,
+				    permanent, submission_digest, client_request_id, authority_id)
+				 VALUES ((SELECT COALESCE(MAX(server_seq), 0) + 1 FROM workflow_claims),
+				         ?, 'FLY-1833', 'run-carryover', 'qa',
+				         'qa_verdict', 2, 'qa_passed', 'runner_node',
+				         'qa-carryover', 'qa', 'claude', 'claude-opus-5',
+				         'implement-carryover', 'git_head', ?, 1,
+				         'qa-conflict-submission', 'qa-conflict-client', 'qa-carryover')`,
+				["2026-08-17T20:04:00.000Z", HEAD_B],
+			);
+			const qaPassed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "run-carryover",
+				nodeId: "qa",
+				attempt: 2,
+				executionId: "qa-carryover",
+				outcome: "qa_pass",
+				subjectDigest: HEAD_B,
+				now: "2026-08-17T20:04:00.000Z",
+			});
+			expect(qaPassed).toMatchObject({
+				ok: true,
+				targetNodeId: "land",
+			});
+			expect("gateOpened" in qaPassed).toBe(false);
+			expect(store.getWorkflowRun("run-carryover")).toMatchObject({
+				status: "active",
+				current_node_id: "land",
+			});
+			expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+				state: "partial",
+				current_step: "conflict_resolution_complete",
+				last_error: null,
+				superseded_at: null,
+			});
+			expect(
+				store.getCurrentWorkflowGateHolder("run-carryover", "founder_gate"),
+			).toMatchObject({ question_id: holder.question_id, state: "approved" });
+			expect(
+				store
+					.listWorkflowRunEvents("run-carryover")
+					.filter((event) => event.kind === "gate_opened"),
+			).toHaveLength(1);
+			expect(
+				store.listLandOperationSteps(operation.operation_id),
+			).toContainEqual(
+				expect.objectContaining({
+					step: `conflict_resolution_candidate:${HEAD_B}`,
+				}),
+			);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("accepts an immutable refresh proof from the prior land lease generation", async () => {
 		const { store, operation, claim } = await fixture();
 		try {
@@ -1096,14 +1401,14 @@ describe("equivalent-head carryover authority", () => {
 				approvedHead: "e".repeat(40),
 				now: T1,
 			});
-			expect(
-				store.claimLandOperation({
-					operationId: other.operation_id,
-					ownerId: "other-worker",
-					now: T1,
-					leaseExpiresAt: "2026-08-17T21:01:00.000Z",
-				}),
-			).toBeUndefined();
+			const otherClaim = store.claimLandOperation({
+				operationId: other.operation_id,
+				ownerId: "other-worker",
+				now: T1,
+				leaseExpiresAt: "2026-08-17T21:01:00.000Z",
+			});
+			expect(otherClaim).toMatchObject({ ownerId: "other-worker" });
+			if (!otherClaim) throw new Error("parallel land claim missing");
 			expect(
 				store.markLandCoolAttemptSent({
 					operationId: operation.operation_id,
@@ -1122,13 +1427,6 @@ describe("equivalent-head carryover authority", () => {
 				reason: "ship_workflow_pending",
 				now: T1,
 			});
-			const otherClaim = store.claimLandOperation({
-				operationId: other.operation_id,
-				ownerId: "other-worker",
-				now: T1,
-				leaseExpiresAt: "2026-08-17T21:01:00.000Z",
-			});
-			if (!otherClaim) throw new Error("other claim missing after release");
 			expect(
 				store.prepareLandCoolAttempt({
 					operationId: other.operation_id,
@@ -1291,6 +1589,343 @@ describe("equivalent-head carryover authority", () => {
 			).toMatchObject({ ok: true, attempt: { ordinal: 1 } });
 		} finally {
 			store.close();
+		}
+	});
+
+	it("carries founder authority on v2 only with exact-C CI, independent review, and fresh QA", async () => {
+		const { store, holder, operation, claim } = await fixture();
+		try {
+			const files = [
+				{
+					path: "packages/teamlead/src/bridge/plugin.ts",
+					status: "M" as const,
+					oldMode: "100644",
+					newMode: "100644",
+					hunkDigests: ["1".repeat(64)],
+				},
+			];
+			const rootDigest = approvedContentFingerprintRoot(files);
+			db(store).run(
+				`INSERT INTO workflow_claims
+				   (server_seq, issued_at, issue_id, workflow_run_id, node_id,
+				    decision_kind, attempt, predicate, issuer_kind,
+				    issuer_execution_id, issuer_node_id, issuer_vendor, issuer_model,
+				    subject_producer_execution_id, subject_kind, subject_digest,
+				    permanent, submission_digest, client_request_id, authority_id)
+				 VALUES ((SELECT COALESCE(MAX(server_seq), 0) + 1 FROM workflow_claims),
+				         ?, 'FLY-1833', 'run-carryover', 'qa',
+				         'qa_verdict', 1, 'qa_passed', 'runner_node',
+				         'qa-carryover', 'qa', 'claude', 'claude-opus-5',
+				         'implement-carryover', 'git_head', ?, 1,
+				         'qa-c-submission', 'qa-c-client-request', 'qa-carryover')`,
+				[T1, HEAD_B],
+			);
+			store.recordCodexReviewApproved({
+				executionId: "implement-carryover",
+				targetRepoIdentity: "__main__",
+				targetPrHeadSha: HEAD_B,
+				issueId: "FLY-1833",
+				projectName: "flywheel",
+				verdictEventId: "verdict-c",
+				authorFamily: "codex",
+				reviewerFamily: "claude",
+				requestId: "review-c",
+			});
+
+			const committed = store.commitContentBoundHeadCarryover({
+				runId: "run-carryover",
+				gateNodeId: "founder_gate",
+				fromQuestionId: holder.question_id,
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				fingerprint: {
+					schemaVersion: 1,
+					mergeBase: BASE_1,
+					approvedHead: HEAD_A,
+					files,
+					rootDigest,
+				},
+				proof: {
+					ok: true,
+					proofKind: "content_bound_merge_v2",
+					rootDigest,
+					approvedHead: HEAD_A,
+					mergeBase: BASE_1,
+					priorHead: HEAD_A,
+					baseOid: BASE_1,
+					candidateHead: HEAD_B,
+					candidateTreeOid: TREE_1,
+					conflictFiles: ["packages/teamlead/src/bridge/plugin.ts"],
+					conflictProofDigest: "3".repeat(64),
+					requiresFreshQa: true,
+				},
+				ci: {
+					evidenceId: "github-check-suite-c",
+					checks: [
+						{ name: "CI OK", status: "COMPLETED", conclusion: "SUCCESS" },
+						{
+							name: "Unit (light)",
+							status: "COMPLETED",
+							conclusion: "SKIPPED",
+						},
+					],
+				},
+				review: {
+					executionId: "implement-carryover",
+					requestId: "review-c",
+				},
+				qa: { kind: "fresh", claimId: 3 },
+				now: T1,
+			});
+
+			expect(committed).toMatchObject({
+				ok: true,
+				idempotentReplay: false,
+				auditLabels: [
+					`approval_carried_from:${holder.question_id}`,
+					`qa_fresh_at:${HEAD_B}`,
+				],
+			});
+			if (!committed.ok) throw new Error(committed.reason);
+			expect(
+				store.resolveWorkflowExactHeadAuthority({
+					runId: "run-carryover",
+					headSha: HEAD_B,
+				}),
+			).toMatchObject({
+				valid: true,
+				kind: "carryover",
+				rootHead: HEAD_A,
+				endpointReceiptId: committed.receiptId,
+			});
+			expect(
+				store.resolveEngineWorkflowShipClaims({
+					runId: "run-carryover",
+					subjectDigest: HEAD_B,
+				}),
+			).toEqual({ valid: true });
+			expect(
+				store.authorizeWorkflowCarryoverDeparture({
+					carryoverReceiptId: committed.receiptId,
+					sourceCutoffRowId: 91,
+					operationId: committed.operation.operation_id,
+					expectedGeneration: committed.operation.generation,
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			const landClaim = store.claimLandOperation({
+				operationId: committed.operation.operation_id,
+				ownerId: "v2-merge-worker",
+				now: T1,
+				leaseExpiresAt: "2026-08-17T21:01:00.000Z",
+			});
+			if (!landClaim) throw new Error("v2 land claim missing");
+			const prepared = store.prepareLandCoolAttempt({
+				operationId: committed.operation.operation_id,
+				ownerId: landClaim.ownerId,
+				generation: landClaim.generation,
+				repoIdentity: "__main__",
+				now: T1,
+			});
+			expect(prepared).toMatchObject({
+				ok: true,
+				mergeTicket: {
+					state: "consumed",
+					head_sha: HEAD_B,
+					operation_generation: landClaim.generation,
+					source_cutoff_row_id: 91,
+					nonce: expect.stringMatching(/^[0-9a-f]{64}$/),
+					expires_at: "2026-08-17T20:11:00.000Z",
+				},
+			});
+			if (!prepared.ok) throw new Error(prepared.reason);
+			const firstNonce = prepared.mergeTicket?.nonce;
+			expect(
+				store.resetUndeliveredLandCoolAttempt({
+					operationId: committed.operation.operation_id,
+					ordinal: prepared.attempt.ordinal,
+					ownerId: landClaim.ownerId,
+					generation: landClaim.generation,
+					attemptGeneration: prepared.attempt.generation,
+					reason: "land_merge_ticket_signing_unavailable",
+					now: T1,
+				}),
+			).toMatchObject({
+				ok: true,
+				attempt: {
+					state: "voided",
+					classification: "undelivered:land_merge_ticket_signing_unavailable",
+				},
+			});
+			expect(
+				store.getLandMergeTicketForOperation(committed.operation.operation_id),
+			).toMatchObject({
+				state: "authorized",
+				nonce: null,
+				trigger_comment_id: null,
+			});
+
+			const retryPrepared = store.prepareLandCoolAttempt({
+				operationId: committed.operation.operation_id,
+				ownerId: landClaim.ownerId,
+				generation: landClaim.generation,
+				repoIdentity: "__main__",
+				now: "2026-08-17T20:02:00.000Z",
+			});
+			expect(retryPrepared).toMatchObject({
+				ok: true,
+				attempt: { ordinal: 2, state: "prepared" },
+				mergeTicket: { state: "consumed" },
+			});
+			if (!retryPrepared.ok) throw new Error(retryPrepared.reason);
+			expect(retryPrepared.mergeTicket?.nonce).not.toBe(firstNonce);
+			expect(
+				store.markLandCoolAttemptSent({
+					operationId: committed.operation.operation_id,
+					ordinal: retryPrepared.attempt.ordinal,
+					ownerId: landClaim.ownerId,
+					generation: landClaim.generation,
+					commentId: "v2-comment-retryable",
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.markLandCoolAttemptTerminal({
+					operationId: committed.operation.operation_id,
+					ordinal: retryPrepared.attempt.ordinal,
+					ownerId: landClaim.ownerId,
+					generation: landClaim.generation,
+					classification: "external_outage",
+					shipRunId: "github-run-91",
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			const retryableTicket = store.getLandMergeTicketForOperation(
+				committed.operation.operation_id,
+			);
+			expect(retryableTicket).toMatchObject({
+				state: "reconciled",
+				trigger_comment_id: "v2-comment-retryable",
+				merge_result_json: expect.stringContaining(
+					'"classification":"external_outage"',
+				),
+			});
+			const finalPrepared = store.prepareLandCoolAttempt({
+				operationId: committed.operation.operation_id,
+				ownerId: landClaim.ownerId,
+				generation: landClaim.generation,
+				repoIdentity: "__main__",
+				now: "2026-08-17T20:03:00.000Z",
+			});
+			expect(finalPrepared).toMatchObject({
+				ok: true,
+				attempt: { ordinal: 3, state: "prepared" },
+				mergeTicket: { state: "consumed" },
+			});
+			if (!finalPrepared.ok) throw new Error(finalPrepared.reason);
+			expect(finalPrepared.mergeTicket?.nonce).not.toBe(retryableTicket?.nonce);
+			expect(
+				store.markLandCoolAttemptSent({
+					operationId: committed.operation.operation_id,
+					ordinal: finalPrepared.attempt.ordinal,
+					ownerId: landClaim.ownerId,
+					generation: landClaim.generation,
+					commentId: "v2-comment-91",
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.markLandCoolAttemptTerminal({
+					operationId: committed.operation.operation_id,
+					ordinal: finalPrepared.attempt.ordinal,
+					ownerId: landClaim.ownerId,
+					generation: landClaim.generation,
+					classification: "merged",
+					shipRunId: "github-run-92",
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.getLandMergeTicketForOperation(committed.operation.operation_id),
+			).toMatchObject({
+				state: "reconciled",
+				trigger_comment_id: "v2-comment-91",
+				merge_result_json: expect.stringContaining('"classification":"merged"'),
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("fails v2 closed for skipped review, empty CI, or a review missing on C", async () => {
+		const emptyRootDigest = approvedContentFingerprintRoot([]);
+		const cases = [
+			{
+				codexSkip: true,
+				checks: undefined,
+				reason: "content_carryover_review_skipped",
+			},
+			{
+				codexSkip: false,
+				checks: [],
+				reason: "content_carryover_ci_incomplete",
+			},
+			{
+				codexSkip: false,
+				checks: undefined,
+				reason: "content_carryover_review_missing",
+			},
+		] as const;
+		for (const candidate of cases) {
+			const { store, holder, operation, claim } = await fixture();
+			try {
+				const result = store.commitContentBoundHeadCarryover({
+					runId: "run-carryover",
+					gateNodeId: "founder_gate",
+					fromQuestionId: holder.question_id,
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					fingerprint: {
+						schemaVersion: 1,
+						mergeBase: BASE_1,
+						approvedHead: HEAD_A,
+						files: [],
+						rootDigest: emptyRootDigest,
+					},
+					proof: {
+						ok: true,
+						proofKind: "content_bound_merge_v2",
+						rootDigest: emptyRootDigest,
+						approvedHead: HEAD_A,
+						mergeBase: BASE_1,
+						priorHead: HEAD_A,
+						baseOid: BASE_1,
+						candidateHead: HEAD_B,
+						candidateTreeOid: TREE_1,
+						conflictFiles: [],
+						conflictProofDigest: "3".repeat(64),
+						requiresFreshQa: false,
+					},
+					ci: {
+						evidenceId: "github-check-suite-c",
+						checks: candidate.checks ?? [
+							{ name: "CI", status: "COMPLETED", conclusion: "SUCCESS" },
+						],
+					},
+					review: {
+						executionId: "implement-carryover",
+						requestId: "missing-review-c",
+					},
+					qa: { kind: "carried", claimId: 1 },
+					codexSkip: candidate.codexSkip,
+					now: T1,
+				});
+				expect(result).toEqual({ ok: false, reason: candidate.reason });
+			} finally {
+				store.close();
+			}
 		}
 	});
 });

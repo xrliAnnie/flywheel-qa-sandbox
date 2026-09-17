@@ -130,7 +130,7 @@ async function buildPrompt(
 }
 
 describe("FLY-1505 ship poll budget contract", () => {
-	it("keeps exactly one workflow-owned timeout budget", () => {
+	it("keeps bounded prepare and serialized-merge timeout budgets", () => {
 		const workflowPath = fileURLToPath(
 			new URL(
 				"../../../../.github/workflows/ship-on-comment.yml",
@@ -141,8 +141,7 @@ describe("FLY-1505 ship poll budget contract", () => {
 		const matches = [...workflow.matchAll(/timeout-minutes:\s*(\d+)/g)].map(
 			(match) => Number(match[1]),
 		);
-		expect(matches).toHaveLength(1);
-		expect(matches[0]).toBeGreaterThan(0);
+		expect(matches).toEqual([30, 10]);
 		expect(SHIP_MERGE_POLL_INTERVAL_SECONDS).toBe(60);
 	});
 

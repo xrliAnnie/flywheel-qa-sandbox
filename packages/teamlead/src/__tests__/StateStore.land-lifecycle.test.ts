@@ -2913,4 +2913,51 @@ describe("StateStore land lifecycle ledger", () => {
 		});
 		store.close();
 	});
+
+	it("leases three land preparations concurrently while keeping final effects serialized", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const operations = [2519, 2606, 2616].map((prNumber, index) =>
+				store.ensureLandOperation({
+					issueId: `FLY-${prNumber}`,
+					projectName: "flywheel",
+					prNumber,
+					approvedHead: String(index + 1).repeat(40),
+					now: "2026-09-16T16:34:00.000Z",
+				}),
+			);
+			const claims = operations.map((operation, index) =>
+				store.claimLandOperation({
+					operationId: operation.operation_id,
+					ownerId: `prepare-${index + 1}`,
+					now: "2026-09-16T16:34:01.000Z",
+					leaseExpiresAt: "2026-09-16T17:34:01.000Z",
+				}),
+			);
+			expect(claims).toEqual([
+				expect.objectContaining({ ownerId: "prepare-1" }),
+				expect.objectContaining({ ownerId: "prepare-2" }),
+				expect.objectContaining({ ownerId: "prepare-3" }),
+			]);
+			const first = store.prepareLandCoolAttempt({
+				operationId: operations[0]!.operation_id,
+				ownerId: claims[0]!.ownerId,
+				generation: claims[0]!.generation,
+				repoIdentity: "__main__",
+				now: "2026-09-16T16:34:02.000Z",
+			});
+			expect(first).toMatchObject({ ok: true });
+			expect(
+				store.prepareLandCoolAttempt({
+					operationId: operations[1]!.operation_id,
+					ownerId: claims[1]!.ownerId,
+					generation: claims[1]!.generation,
+					repoIdentity: "__main__",
+					now: "2026-09-16T16:34:02.000Z",
+				}),
+			).toEqual({ ok: false, reason: "land_external_effect_inflight" });
+		} finally {
+			store.close();
+		}
+	});
 });

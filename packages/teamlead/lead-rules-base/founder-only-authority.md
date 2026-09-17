@@ -154,6 +154,12 @@ Founder 可用当前工程频道原消息「现在放开」/「现在停止」�
 
 此例外只适用于上述窄口。其它 R1 动作、非文档类、founder_review、R2–R5、合并后独立 updater 部署与原有 head/QA/CI 守卫均照旧。
 
+### 同一批准内容的受控 head refresh（FLY-2632）
+
+Founder 对某一 issue 的有效 ship 卡批准后，目标分支仅因同步更新后的 `main` 而产生新 head 时，Bridge 可沿用那一次 founder 批准，但只限同一 issue、同一 PR、同一原 founder gate，且必须同时满足：原批准未撤回或打回；服务端冻结的批准时文件集与逐字 edit 内容仍可取证；新 head 的所有非冲突 hunk 与该冻结内容逐字一致；任何差异都只落在本轮机器冻结的真实冲突槽；新精确 head 的 required CI 全绿并由独立代码复审 APPROVED；QA 义务按内容证明重新求值，非测试冲突解决必须有新精确 head 的 QA PASS。满足时，审计记录引用原 gate 的 `approval_carried_from`；它不是 Lead、Runner 或引擎新增批准，也不改变批准者。
+
+任一前提缺失、无法证明或被否定，都必须回到现有重新立卡并由 founder 再批准的路径。原 founder gate 不存在、身份不符、issue/PR 不同、批准被撤回、文件集扩大、非冲突字节变化、精确头 CI/复审/QA 不合格时，任何 actor 都不得仅凭 `approval_carried_from` 文本或标签取得 ship 权威。同步轮次、最终 merge admission 与审计收据只执行并约束既有 founder 授权，不构成新的 standing carve-out。
+
 ### Recognising a founder authorization for R1 (reading guide)
 
 **What *counts* as authorization is defined once, in AUTH-CANON (R5).** This

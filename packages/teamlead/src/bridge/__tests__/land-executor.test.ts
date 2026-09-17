@@ -6,6 +6,10 @@ import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-ma
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import {
+	type ApprovedContentFingerprint,
+	approvedContentFingerprintRoot,
+} from "../land-content-proof.js";
+import {
 	executeLandOperation,
 	type LandMergeDriver,
 	landThreadNotificationPreflight,
@@ -14,6 +18,73 @@ import {
 
 const HEAD = "a".repeat(40);
 const MERGE = "b".repeat(40);
+const BASE = "b".repeat(40);
+const CANDIDATE = "c".repeat(40);
+
+function contentFingerprint(): ApprovedContentFingerprint {
+	const files = [
+		{
+			path: "packages/teamlead/src/bridge/plugin.ts",
+			status: "M" as const,
+			oldMode: "100644",
+			newMode: "100644",
+			hunkDigests: ["1".repeat(64)],
+		},
+	];
+	return {
+		schemaVersion: 1,
+		mergeBase: BASE,
+		approvedHead: HEAD,
+		files,
+		rootDigest: approvedContentFingerprintRoot(files),
+	};
+}
+
+function mockContentAuthority(
+	store: StateStore,
+	approved: () => ApprovedContentFingerprint | undefined,
+): void {
+	const seed = legacyWorkflowSeeds().find(
+		(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+	)!;
+	vi.spyOn(store, "getWorkflowRun").mockReturnValue({
+		run_id: "run-1",
+		issue_id: "issue-1",
+		project_name: "flywheel",
+		snapshot: JSON.stringify(
+			buildWorkflowRunSnapshotV1({
+				template: { id: seed.templateId, revision: 1 },
+				manifest: seed.manifest,
+			}),
+		),
+	} as ReturnType<StateStore["getWorkflowRun"]>);
+	vi.spyOn(store, "getCurrentWorkflowGateHolder").mockReturnValue({
+		question_id: "founder-root",
+		state: "approved",
+		head_sha: HEAD,
+	} as ReturnType<StateStore["getCurrentWorkflowGateHolder"]>);
+	vi.spyOn(store, "resolveWorkflowExactHeadAuthority").mockReturnValue({
+		valid: true,
+		kind: "direct",
+		rootHead: HEAD,
+		binding: {
+			node_id: "implement",
+			attempt: 1,
+			target_repo_identity: "__main__",
+		},
+	} as ReturnType<StateStore["resolveWorkflowExactHeadAuthority"]>);
+	vi.spyOn(store, "getWorkflowRunNode").mockReturnValue({
+		execution_id: "implement-1",
+	} as ReturnType<StateStore["getWorkflowRunNode"]>);
+	vi.spyOn(store, "getWorkflowApprovedContent").mockImplementation(() => {
+		const fingerprint = approved();
+		return fingerprint
+			? ({ fingerprint } as ReturnType<
+					StateStore["getWorkflowApprovedContent"]
+				>)
+			: undefined;
+	});
+}
 
 async function fixture() {
 	const store = await StateStore.create(":memory:");
@@ -26,6 +97,35 @@ async function fixture() {
 		now: "2026-07-21T20:00:00.000Z",
 	});
 	return { store, operation };
+}
+
+function seedBaseRefreshReceipt(
+	store: StateStore,
+	operation: ReturnType<StateStore["ensureLandOperation"]>,
+): void {
+	const seeded = store.claimLandOperation({
+		operationId: operation.operation_id,
+		ownerId: "seed-worker",
+		now: "2026-07-21T20:00:10.000Z",
+		leaseExpiresAt: "2026-07-21T20:00:20.000Z",
+	});
+	if (!seeded) throw new Error("seed land claim missing");
+	store.recordLandOperationStep({
+		operationId: operation.operation_id,
+		ownerId: seeded.ownerId,
+		generation: seeded.generation,
+		step: "base_refresh_requested",
+		receipt: { approvedHead: HEAD, baseOid: BASE, status: "accepted" },
+		now: "2026-07-21T20:00:10.000Z",
+	});
+	store.releaseLandOperationWithRetryAccounting({
+		operationId: operation.operation_id,
+		ownerId: seeded.ownerId,
+		generation: seeded.generation,
+		class: "waiting",
+		reason: "base_refresh_pending",
+		now: "2026-07-21T20:00:11.000Z",
+	});
 }
 
 function completedFinalizer(store: StateStore) {
@@ -308,6 +408,69 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("falls back to fresh founder approval and alerts Lead when ticket signing is unavailable", async () => {
+		const { store, operation } = await fixture();
+		const openConflictRework = vi.fn().mockResolvedValue({
+			ok: true,
+			requestId: "signing-fallback-rework",
+		});
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const resetUndelivered = vi
+			.spyOn(store, "resetUndeliveredLandCoolAttempt")
+			.mockImplementation((input) => ({
+				ok: true,
+				idempotentReplay: false,
+				attempt: store
+					.listLandCoolAttempts(input.operationId)
+					.find((attempt) => attempt.ordinal === input.ordinal)!,
+			}));
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({ state: "OPEN", headSha: HEAD }),
+				triggerCool: vi
+					.fn()
+					.mockRejectedValue(
+						new Error("land_merge_ticket_signing_unavailable"),
+					),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			finalize: vi.fn(),
+			openConflictRework,
+			notify,
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+
+		expect(result).toEqual({
+			status: "rework",
+			operationId: operation.operation_id,
+			requestId: "signing-fallback-rework",
+		});
+		expect(resetUndelivered).toHaveBeenCalledWith(
+			expect.objectContaining({
+				operationId: operation.operation_id,
+				reason: "land_merge_ticket_signing_unavailable",
+			}),
+		);
+		expect(openConflictRework).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proofStep: "merge_ticket_signing_unavailable",
+				reason: "land_merge_ticket_signing_unavailable",
+			}),
+		);
+		expect(notify).toHaveBeenCalledWith(
+			expect.objectContaining({ operation_id: operation.operation_id }),
+			"land_merge_ticket_signing_unavailable",
+			expect.objectContaining({
+				requiresFreshApproval: true,
+				requiresLeadAction: true,
+			}),
+		);
+		store.close();
+	});
+
 	it("keeps the run retryable on a head mismatch without triggering merge", async () => {
 		const { store, operation } = await fixture();
 		const triggerCool = vi.fn();
@@ -556,8 +719,559 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("uses a frozen content root to dispatch conflict-only rework without a new founder approval", async () => {
+		const { store, operation } = await fixture();
+		const fingerprint = contentFingerprint();
+		let frozen: ApprovedContentFingerprint | undefined;
+		mockContentAuthority(store, () => frozen);
+		vi.spyOn(store, "stageWorkflowApprovedContent").mockImplementation(() => {
+			frozen = fingerprint;
+			return { ok: true, idempotentReplay: false, fingerprint };
+		});
+		const openConflictResolution = vi.fn().mockReturnValue({
+			ok: true,
+			requestId: "resolution-1",
+		});
+		const openConflictRework = vi.fn();
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({
+					state: "OPEN",
+					headSha: HEAD,
+					baseSha: BASE,
+					mergeStateStatus: "DIRTY",
+				}),
+				requestBaseRefresh: vi.fn().mockResolvedValue({ status: "conflict" }),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			contentProver: {
+				fingerprint: vi.fn().mockResolvedValue(fingerprint),
+				prove: vi.fn(),
+			},
+			openConflictResolution,
+			openConflictRework,
+			notify,
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+
+		expect(result).toEqual({
+			status: "rework",
+			operationId: operation.operation_id,
+			requestId: "resolution-1",
+		});
+		expect(openConflictResolution).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proofStep: "base_refresh_prepared",
+				reason: "merge_conflict_requires_resolution",
+			}),
+		);
+		expect(openConflictRework).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledWith(
+			expect.anything(),
+			"conflict_resolution_started",
+			expect.objectContaining({
+				requiresFreshApproval: false,
+				scope: "resolve_conflicts_only",
+			}),
+		);
+		store.close();
+	});
+
+	it("carries one founder approval only after exact-C CI, review, QA, and content proof", async () => {
+		const { store, operation } = await fixture();
+		const fingerprint = contentFingerprint();
+		mockContentAuthority(store, () => fingerprint);
+		vi.spyOn(store, "resolveContentCarryoverQaEvidence").mockReturnValue({
+			status: "ready",
+			kind: "fresh",
+			claimId: 73,
+		});
+		const seeded = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "seed-worker",
+			now: "2026-07-21T20:00:10.000Z",
+			leaseExpiresAt: "2026-07-21T20:00:20.000Z",
+		});
+		if (!seeded) throw new Error("seed land claim missing");
+		store.recordLandOperationStep({
+			operationId: operation.operation_id,
+			ownerId: seeded.ownerId,
+			generation: seeded.generation,
+			step: "base_refresh_requested",
+			receipt: { approvedHead: HEAD, baseOid: BASE, status: "accepted" },
+			now: "2026-07-21T20:00:10.000Z",
+		});
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: seeded.ownerId,
+			generation: seeded.generation,
+			class: "waiting",
+			reason: "base_refresh_pending",
+			now: "2026-07-21T20:00:11.000Z",
+		});
+		const greenCandidate = {
+			state: "OPEN" as const,
+			headSha: CANDIDATE,
+			baseSha: BASE,
+			mergeStateStatus: "CLEAN",
+			checks: [
+				{ name: "CI OK", status: "COMPLETED", conclusion: "SUCCESS" },
+				{ name: "Unit (light)", status: "COMPLETED", conclusion: "SKIPPED" },
+			],
+		};
+		const inspectPr = vi.fn().mockResolvedValue(greenCandidate);
+		const prove = vi.fn().mockResolvedValue({
+			ok: true,
+			proofKind: "content_bound_merge_v2",
+			rootDigest: fingerprint.rootDigest,
+			approvedHead: HEAD,
+			mergeBase: BASE,
+			priorHead: HEAD,
+			baseOid: BASE,
+			candidateHead: CANDIDATE,
+			candidateTreeOid: "d".repeat(40),
+			conflictFiles: ["packages/teamlead/src/bridge/plugin.ts"],
+			conflictProofDigest: "2".repeat(64),
+			requiresFreshQa: true,
+		});
+		const ensureReview = vi.fn().mockResolvedValue({
+			status: "approved",
+			executionId: "implement-1",
+			requestId: "review-c",
+		});
+		const nextOperation = {
+			...operation,
+			operation_id: "land-next",
+			approved_head: CANDIDATE,
+		};
+		const carryContentBoundHead = vi.fn().mockResolvedValue({
+			ok: true,
+			operation: nextOperation,
+			receiptId: "carry-v2",
+			ordinal: 1,
+		});
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr,
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			contentProver: { fingerprint: vi.fn(), prove },
+			contentReviewer: { ensureReview },
+			carryContentBoundHead,
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+
+		expect(result).toEqual({
+			status: "superseded",
+			operationId: operation.operation_id,
+			nextOperationId: "land-next",
+		});
+		expect(prove).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fingerprint,
+				priorHead: HEAD,
+				baseOid: BASE,
+				candidateHead: CANDIDATE,
+			}),
+		);
+		expect(ensureReview).toHaveBeenCalledWith(
+			expect.objectContaining({ headSha: CANDIDATE }),
+		);
+		expect(carryContentBoundHead).toHaveBeenCalledWith(
+			expect.objectContaining({
+				ci: {
+					evidenceId: `github-check-rollup:${CANDIDATE}`,
+					checks: [
+						{ name: "CI OK", status: "COMPLETED", conclusion: "SUCCESS" },
+						{
+							name: "Unit (light)",
+							status: "COMPLETED",
+							conclusion: "SKIPPED",
+						},
+					],
+				},
+				review: { executionId: "implement-1", requestId: "review-c" },
+				qa: { kind: "fresh", claimId: 73 },
+			}),
+		);
+		expect(inspectPr).toHaveBeenCalledTimes(2);
+		store.close();
+	});
+
+	it("keeps founder approval by falling back to clean-tree proof when cross-family review is unavailable", async () => {
+		const { store, operation } = await fixture();
+		const fingerprint = contentFingerprint();
+		mockContentAuthority(store, () => fingerprint);
+		seedBaseRefreshReceipt(store, operation);
+		const candidate = {
+			state: "OPEN" as const,
+			headSha: CANDIDATE,
+			baseSha: BASE,
+			mergeStateStatus: "CLEAN",
+			checks: [{ name: "CI", status: "COMPLETED", conclusion: "SUCCESS" }],
+		};
+		const contentProof = {
+			ok: true as const,
+			proofKind: "content_bound_merge_v2" as const,
+			rootDigest: fingerprint.rootDigest,
+			approvedHead: HEAD,
+			mergeBase: BASE,
+			priorHead: HEAD,
+			baseOid: BASE,
+			candidateHead: CANDIDATE,
+			candidateTreeOid: "d".repeat(40),
+			conflictFiles: [],
+			conflictProofDigest: "2".repeat(64),
+			requiresFreshQa: false,
+		};
+		const cleanTreeProof = {
+			ok: true as const,
+			proofKind: "clean_base_merge_tree_identity" as const,
+			approvedHead: HEAD,
+			baseOid: BASE,
+			candidateHead: CANDIDATE,
+			secondParentObserved: BASE,
+			proofTreeOid: "d".repeat(40),
+		};
+		const successor = store.ensureLandOperation({
+			runId: "run-1",
+			issueId: "issue-1",
+			projectName: "flywheel",
+			prNumber: 1375,
+			approvedHead: CANDIDATE,
+			now: "2026-07-21T20:00:00.000Z",
+		});
+		const carryEquivalentHead = vi.fn().mockReturnValue({
+			ok: true,
+			operation: successor,
+			receiptId: "clean-tree-fallback",
+			ordinal: 1,
+		});
+		const openConflictRework = vi.fn().mockReturnValue({
+			ok: true,
+			requestId: "should-not-open-rework",
+		});
+		const proveContent = vi.fn().mockResolvedValue(contentProof);
+		const proveCleanTree = vi.fn().mockResolvedValue(cleanTreeProof);
+		const ensureReview = vi.fn().mockResolvedValue({
+			status: "rejected",
+			reason: "content_carryover_cross_family_reviewer_unavailable",
+			executionId: "implement-1",
+			requestId: "land-content-review:missing-codex",
+		});
+
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue(candidate),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			contentProver: { fingerprint: vi.fn(), prove: proveContent },
+			contentReviewer: { ensureReview },
+			headRefreshProver: { prove: proveCleanTree },
+			carryEquivalentHead,
+			openConflictRework,
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+
+		expect(result).toEqual({
+			status: "superseded",
+			operationId: operation.operation_id,
+			nextOperationId: successor.operation_id,
+		});
+		expect(proveContent).toHaveBeenCalledOnce();
+		expect(ensureReview).toHaveBeenCalledOnce();
+		expect(proveCleanTree).toHaveBeenCalledOnce();
+		expect(carryEquivalentHead).toHaveBeenCalledOnce();
+		expect(openConflictRework).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it.each([
+		{
+			name: "approved content was not staged",
+			approvedContentPresent: false,
+			contentProofReason: undefined,
+			cleanTreeOk: true,
+			expectedFallbackReason: "approved_content_root_missing",
+		},
+		{
+			name: "content shape exceeds the v2 proof contract",
+			approvedContentPresent: true,
+			contentProofReason: "unsupported_content_structure" as const,
+			cleanTreeOk: true,
+			expectedFallbackReason: "unsupported_content_structure",
+		},
+		{
+			name: "content shape is unsupported and the candidate is not a clean merge",
+			approvedContentPresent: true,
+			contentProofReason: "unsupported_content_structure" as const,
+			cleanTreeOk: false,
+			expectedFallbackReason: "unsupported_content_structure",
+		},
+	])(
+		"does not burn founder approval when $name",
+		async ({
+			approvedContentPresent,
+			contentProofReason,
+			cleanTreeOk,
+			expectedFallbackReason,
+		}) => {
+			const { store, operation } = await fixture();
+			const fingerprint = contentFingerprint();
+			mockContentAuthority(store, () =>
+				approvedContentPresent ? fingerprint : undefined,
+			);
+			seedBaseRefreshReceipt(store, operation);
+			const candidate = {
+				state: "OPEN" as const,
+				headSha: CANDIDATE,
+				baseSha: BASE,
+				mergeStateStatus: "CLEAN",
+				checks: [{ name: "CI", status: "COMPLETED", conclusion: "SUCCESS" }],
+			};
+			const proveContent = vi.fn().mockResolvedValue({
+				ok: false,
+				reason: contentProofReason,
+			});
+			const proveCleanTree = vi.fn().mockResolvedValue(
+				cleanTreeOk
+					? {
+							ok: true,
+							proofKind: "clean_base_merge_tree_identity",
+							approvedHead: HEAD,
+							baseOid: BASE,
+							candidateHead: CANDIDATE,
+							secondParentObserved: BASE,
+							proofTreeOid: "d".repeat(40),
+						}
+					: { ok: false, reason: "tree_identity_mismatch" },
+			);
+			const successor = store.ensureLandOperation({
+				runId: "run-1",
+				issueId: "issue-1",
+				projectName: "flywheel",
+				prNumber: 1375,
+				approvedHead: CANDIDATE,
+				now: "2026-07-21T20:00:00.000Z",
+			});
+			const carryEquivalentHead = vi.fn().mockReturnValue({
+				ok: true,
+				operation: successor,
+				receiptId: "capability-gap-fallback",
+				ordinal: 1,
+			});
+			const openConflictRework = vi.fn().mockReturnValue({
+				ok: true,
+				requestId: "should-not-open-rework",
+			});
+
+			const result = await executeLandOperation(operation.operation_id, {
+				store,
+				mergeDriver: {
+					inspectPr: vi.fn().mockResolvedValue(candidate),
+					triggerCool: vi.fn(),
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				contentProver: { fingerprint: vi.fn(), prove: proveContent },
+				headRefreshProver: { prove: proveCleanTree },
+				carryEquivalentHead,
+				openConflictRework,
+				finalize: vi.fn(),
+				authorize: () => ({ ok: true }),
+				ownerId: "worker",
+				now: () => new Date("2026-07-21T20:01:00.000Z"),
+			});
+
+			if (cleanTreeOk) {
+				expect(result).toEqual({
+					status: "superseded",
+					operationId: operation.operation_id,
+					nextOperationId: successor.operation_id,
+				});
+				expect(carryEquivalentHead).toHaveBeenCalledOnce();
+			} else {
+				expect(result).toEqual({
+					status: "partial",
+					operationId: operation.operation_id,
+					reason: expectedFallbackReason,
+				});
+				expect(carryEquivalentHead).not.toHaveBeenCalled();
+			}
+			expect(proveContent).toHaveBeenCalledTimes(
+				approvedContentPresent ? 1 : 0,
+			);
+			expect(proveCleanTree).toHaveBeenCalledOnce();
+			expect(openConflictRework).not.toHaveBeenCalled();
+			store.close();
+		},
+	);
+
+	it("falls back to a fresh founder card when a candidate changes protected content", async () => {
+		const { store, operation } = await fixture();
+		const fingerprint = contentFingerprint();
+		mockContentAuthority(store, () => fingerprint);
+		const seeded = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "seed-worker",
+			now: "2026-07-21T20:00:10.000Z",
+			leaseExpiresAt: "2026-07-21T20:00:20.000Z",
+		});
+		if (!seeded) throw new Error("seed land claim missing");
+		store.recordLandOperationStep({
+			operationId: operation.operation_id,
+			ownerId: seeded.ownerId,
+			generation: seeded.generation,
+			step: "base_refresh_requested",
+			receipt: { approvedHead: HEAD, baseOid: BASE, status: "accepted" },
+			now: "2026-07-21T20:00:10.000Z",
+		});
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: seeded.ownerId,
+			generation: seeded.generation,
+			class: "waiting",
+			reason: "base_refresh_pending",
+			now: "2026-07-21T20:00:11.000Z",
+		});
+		const openConflictRework = vi.fn().mockResolvedValue({
+			ok: true,
+			requestId: "fresh-card-rework",
+		});
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({
+					state: "OPEN",
+					headSha: CANDIDATE,
+					baseSha: BASE,
+					checks: [{ name: "CI", status: "COMPLETED", conclusion: "SUCCESS" }],
+				}),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			contentProver: {
+				fingerprint: vi.fn(),
+				prove: vi.fn().mockResolvedValue({
+					ok: false,
+					reason: "protected_content_changed",
+				}),
+			},
+			openConflictRework,
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+
+		expect(result).toMatchObject({
+			status: "rework",
+			requestId: "fresh-card-rework",
+		});
+		expect(openConflictRework).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proofStep: "base_refresh_requested",
+				reason: "merge_conflict_requires_rework",
+			}),
+		);
+		store.close();
+	});
+
+	it("alerts Lead and stops retrying when candidate parent identity keeps moving past the horizon", async () => {
+		const { store, operation } = await fixture();
+		const fingerprint = contentFingerprint();
+		mockContentAuthority(store, () => fingerprint);
+		const seeded = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "seed-worker",
+			now: "2026-07-21T20:00:10.000Z",
+			leaseExpiresAt: "2026-07-21T20:00:20.000Z",
+		});
+		if (!seeded) throw new Error("seed land claim missing");
+		store.recordLandOperationStep({
+			operationId: operation.operation_id,
+			ownerId: seeded.ownerId,
+			generation: seeded.generation,
+			step: "base_refresh_requested",
+			receipt: { approvedHead: HEAD, baseOid: BASE, status: "accepted" },
+			now: "2026-07-21T20:00:10.000Z",
+		});
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: seeded.ownerId,
+			generation: seeded.generation,
+			class: "waiting",
+			reason: "base_refresh_pending",
+			now: "2026-07-21T20:00:11.000Z",
+		});
+		let now = new Date("2026-07-21T20:01:00.000Z");
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const deps = {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({
+					state: "OPEN" as const,
+					headSha: CANDIDATE,
+					baseSha: BASE,
+					checks: [{ name: "CI", status: "COMPLETED", conclusion: "SUCCESS" }],
+				}),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			contentProver: {
+				fingerprint: vi.fn(),
+				prove: vi.fn().mockResolvedValue({
+					ok: false as const,
+					reason: "candidate_parent_identity_mismatch" as const,
+				}),
+			},
+			finalize: vi.fn(),
+			notify,
+			authorize: () => ({ ok: true as const }),
+			ownerId: "worker",
+			now: () => now,
+		};
+
+		expect(await executeLandOperation(operation.operation_id, deps)).toEqual({
+			status: "partial",
+			operationId: operation.operation_id,
+			reason: "content_carryover_head_moved",
+		});
+		now = new Date("2026-07-22T20:01:00.000Z");
+		expect(await executeLandOperation(operation.operation_id, deps)).toEqual({
+			status: "held",
+			operationId: operation.operation_id,
+			reason: "content_carryover_head_moved_horizon_exceeded",
+		});
+		expect(notify).toHaveBeenCalledWith(
+			expect.objectContaining({ operation_id: operation.operation_id }),
+			"content_carryover_head_moved_horizon_exceeded",
+			expect.objectContaining({
+				firstObservedAt: "2026-07-21T20:01:00.000Z",
+				requiresLeadAction: true,
+			}),
+		);
+		store.close();
+	});
+
 	it("holds land when the automatic conflict rework cycle cap is exhausted", async () => {
 		const { store, operation } = await fixture();
+		const notify = vi.fn().mockResolvedValue(undefined);
 		const result = await executeLandOperation(operation.operation_id, {
 			store,
 			mergeDriver: {
@@ -575,6 +1289,7 @@ describe("land executor", () => {
 				ok: false,
 				reason: "engine_land_rework_cycle_limit",
 			}),
+			notify,
 			finalize: vi.fn(),
 			authorize: () => ({ ok: true }),
 			ownerId: "worker",
@@ -590,6 +1305,11 @@ describe("land executor", () => {
 			state: "held",
 			last_error: "engine_land_rework_cycle_limit",
 		});
+		expect(notify).toHaveBeenCalledWith(
+			expect.objectContaining({ operation_id: operation.operation_id }),
+			"engine_land_rework_cycle_limit",
+			expect.objectContaining({ requiresLeadAction: true }),
+		);
 		store.close();
 	});
 

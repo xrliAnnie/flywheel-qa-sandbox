@@ -1,7 +1,12 @@
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { GhCliLandMergeDriver } from "../land-executor.js";
+import {
+	parseLandMergeTicketComment,
+	verifyLandMergeTicket,
+} from "../land-merge-ticket.js";
 
 const HEAD = "a".repeat(40);
 const VECTORS = JSON.parse(
@@ -135,7 +140,7 @@ describe("GhCliLandMergeDriver", () => {
 			mergeStateStatus: "DIRTY",
 			isDraft: false,
 			reviewDecision: "APPROVED",
-			checks: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+			checks: [{ name: null, status: "COMPLETED", conclusion: "SUCCESS" }],
 		});
 		expect(exec).toHaveBeenCalledWith(
 			"gh",
@@ -173,6 +178,69 @@ describe("GhCliLandMergeDriver", () => {
 			["pr", "comment", "1375", "--body", ":cool:"],
 			{ cwd: "/repo" },
 		);
+	});
+
+	it("signs a consumed v2 ticket into an exact-head structured comment", async () => {
+		const keys = generateKeyPairSync("ed25519");
+		const privateKeyPem = keys.privateKey
+			.export({ type: "pkcs8", format: "pem" })
+			.toString();
+		const publicKeyPem = keys.publicKey
+			.export({ type: "spki", format: "pem" })
+			.toString();
+		const exec = vi.fn().mockResolvedValue({
+			stdout: "https://github.test/flywheel/pull/1375#issuecomment-9002\n",
+			stderr: "",
+		});
+		const driver = new GhCliLandMergeDriver(
+			() => "/repo",
+			exec,
+			undefined,
+			privateKeyPem,
+		);
+		await driver.triggerCool({
+			projectName: "flywheel",
+			prNumber: 1375,
+			operationId: "land:v2",
+			headSha: HEAD,
+			mergeTicket: {
+				ticket_id: `land-merge-ticket:${"1".repeat(64)}`,
+				carryover_receipt_id: "carry-v2",
+				operation_id: "land:v2",
+				preparation_id: "prep-v2",
+				operation_generation: 2,
+				root_gate_id: "founder-root",
+				head_sha: HEAD,
+				observed_base_oid: "b".repeat(40),
+				project_name: "flywheel",
+				repo_identity: "__main__",
+				pr_number: 1375,
+				state: "consumed",
+				workflow_run_id: "run-v2",
+				source_cutoff_row_id: 42,
+				delivery_identity: "workflow-engine:carry-v2",
+				merge_result_json: null,
+				created_at: "2026-09-16T18:00:00.000Z",
+				consumed_at: "2026-09-16T18:00:00.000Z",
+				reconciled_at: null,
+				invalidated_at: null,
+				nonce: "2".repeat(64),
+				issued_at: "2026-09-16T18:00:00.000Z",
+				expires_at: "2026-09-16T18:10:00.000Z",
+				trigger_comment_id: null,
+			},
+		});
+		const args = exec.mock.calls[0]![1] as string[];
+		const body = args.at(-1)!;
+		const envelope = parseLandMergeTicketComment(body);
+		expect(envelope).toMatchObject({ prNumber: 1375, headSha: HEAD });
+		expect(
+			verifyLandMergeTicket({
+				envelope: envelope!,
+				publicKeyPem,
+				now: "2026-09-16T18:05:00.000Z",
+			}),
+		).toBe(true);
 	});
 
 	it("reconciles a prepared trigger to the unique remote :cool: comment", async () => {
