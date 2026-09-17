@@ -92,7 +92,7 @@ describe("automated Discord sender inventory", () => {
 			);
 		}
 		expect([...authored].sort()).toHaveLength(4);
-	});
+	}, 60_000);
 
 	it("marks every direct text POST/PATCH sender", () => {
 		const rawMessageFiles = new Set<string>();
@@ -157,5 +157,5 @@ describe("automated Discord sender inventory", () => {
 				"markAutomatedDiscordText",
 			);
 		}
-	});
+	}, 60_000);
 });

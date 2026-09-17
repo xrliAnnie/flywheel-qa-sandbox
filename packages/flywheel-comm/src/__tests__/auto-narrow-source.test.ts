@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { autoNarrowVerdictId } from "../auto-narrow-contract.js";
 import { CommDB } from "../db.js";
 
@@ -162,10 +162,10 @@ describe("CommDB auto narrow source writer", () => {
 		});
 		const internal = (db as unknown as { db: Database.Database }).db;
 		internal.pragma("busy_timeout = 777");
+		const pragma = vi.spyOn(internal, "pragma");
 		const locker = new Database(path);
 		locker.pragma("busy_timeout = 0");
 		locker.exec("BEGIN IMMEDIATE");
-		const started = Date.now();
 		expect(() =>
 			db.insertAutoNarrowApprovalWithSource({
 				project: "flywheel",
@@ -174,7 +174,9 @@ describe("CommDB auto narrow source writer", () => {
 				envelope: envelope(questionId),
 			}),
 		).toThrow(/busy|locked/i);
-		expect(Date.now() - started).toBeLessThan(250);
+		expect(pragma.mock.calls.map(([statement]) => statement)).toContain(
+			"busy_timeout = 0",
+		);
 		expect(internal.pragma("busy_timeout", { simple: true })).toBe(777);
 		locker.exec("ROLLBACK");
 		locker.close();

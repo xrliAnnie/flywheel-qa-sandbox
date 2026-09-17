@@ -2061,17 +2061,20 @@ describe("TmuxAdapter", () => {
 	// ─── Timeout ────────────────────────────────────
 
 	it("honors ctx.timeoutMs over default timeout", async () => {
+		vi.useFakeTimers();
 		// Use a very short timeout + never-dead pane
 		const { fn } = makeMockExec({ paneDead: false });
 		const adapter = new TmuxAdapter("flywheel", fn, 10, 60000);
 
-		// Short timeout should resolve quickly
-		const start = Date.now();
-		const result = await adapter.execute(makeCtx({ timeoutMs: 50 }));
-		const elapsed = Date.now() - start;
-
-		expect(result.success).toBe(true); // timeout resolves, not rejects
-		expect(elapsed).toBeLessThan(5000); // should be fast
+		try {
+			const execution = adapter.execute(makeCtx({ timeoutMs: 50 }));
+			await vi.advanceTimersByTimeAsync(50);
+			const result = await execution;
+			expect(result.success).toBe(true); // timeout resolves, not rejects
+			expect(result.timedOut).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("resolves on timeout with timedOut=true and kills zombie window (FLY-86)", async () => {
@@ -3258,12 +3261,11 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 				makeCtx({
 					commDbPath,
 					timeoutMs: 25,
-					waitingTimeoutMs: 500,
+					waitingTimeoutMs: 60_000,
 					residentLoopTarget: { nodeId: "repair-any-name" },
 				}),
 			);
 			expect(result.timedOut).toBe(true);
-			expect(result.durationMs).toBeLessThan(500);
 			expect(killWindowTargets(pane.calls)).toContain("@44");
 		} finally {
 			db.close();

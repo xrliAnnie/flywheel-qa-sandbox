@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EdgeTtsBackend } from "../backends/edge-tts/EdgeTtsBackend.js";
 import { MemoryTranscriptSink } from "../transcript.js";
 import type { VoiceError } from "../types.js";
@@ -97,6 +97,8 @@ describe("AnnouncerSession", () => {
 	// hardcodes playbackStartMs=3 regardless of synth delay, which is why this
 	// went unnoticed by the existing suite.
 	it("playbackStartMs reflects real elapsed time to first sound, including TTS synth wait", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
 		const SYNTH_DELAY_MS = 60;
 		const tts = new FakeTts(Buffer.from("MP3"), {
 			ttsFirstByteMs: SYNTH_DELAY_MS,
@@ -106,13 +108,15 @@ describe("AnnouncerSession", () => {
 			tts,
 			new FakeAudioPlayer("immediate"),
 		).createAnnouncer({});
-		const wallStart = Date.now();
-		const r = await announcer.speak("延迟播报测试");
-		const wallElapsed = Date.now() - wallStart;
-		// the founder cannot hear anything before synthesis is done — the honest
-		// first-response anchor must be at least as large as the real synth wait.
-		expect(r.playbackStartMs).toBeGreaterThanOrEqual(SYNTH_DELAY_MS - 5);
-		expect(r.playbackStartMs).toBeLessThanOrEqual(wallElapsed + 5);
+		try {
+			const speaking = announcer.speak("延迟播报测试");
+			await vi.advanceTimersByTimeAsync(SYNTH_DELAY_MS);
+			const r = await speaking;
+			// The injected clock proves the session anchor includes the synth wait.
+			expect(r.playbackStartMs).toBe(SYNTH_DELAY_MS);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("rejects empty text and speaking after close", async () => {

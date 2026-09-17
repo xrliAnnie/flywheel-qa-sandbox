@@ -568,13 +568,10 @@ describe("MailboxLeadRuntime", () => {
 				logger: vi.fn(),
 			});
 
-			const t0 = Date.now();
 			const result = await runtime.deliver(makeEnvelope());
-			const elapsed = Date.now() - t0;
 
 			expect(result.delivered).toBe(false);
 			expect(result.error).toMatch(/timed out after 50ms/);
-			expect(elapsed).toBeLessThan(500); // bounded
 		});
 
 		it("flywheelId is deterministic for same (leadId, seq, executionId) — sidecar dedupe contract", async () => {

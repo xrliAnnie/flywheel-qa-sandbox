@@ -1,9 +1,18 @@
-import { expect, it, vi } from "vitest";
+import { performance } from "node:perf_hooks";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { canonicalDigest } from "../contract.js";
 import { ShipJudgmentLearning } from "../learning.js";
 import { refreshHistoryAt, ShipJudgmentOutcomes } from "../outcomes.js";
 import { ShipJudgmentRuntime } from "../runtime.js";
 import { bindingFixture, CHANNEL, HEAD, NOW } from "./binding-fixture.js";
+
+beforeEach(() => {
+	vi.spyOn(performance, "now").mockReturnValue(0);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 it("defers future and invalid timestamps without blocking later sources", async () => {
 	const { store, db } = await bindingFixture();

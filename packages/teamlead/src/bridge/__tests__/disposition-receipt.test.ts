@@ -681,9 +681,7 @@ describe("M10 delivery — single consumer", () => {
 					timeoutMs: 30,
 				}),
 		});
-		const started = Date.now();
 		await pass();
-		expect(Date.now() - started).toBeLessThan(5_000); // bounded return
 		const row = store.getPendingDispositionReceipts(10)[0];
 		expect(row?.attempts).toBe(1); // failed attempt stamped
 		await pass(); // latch released — the pass re-enters

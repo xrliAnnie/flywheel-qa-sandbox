@@ -16,7 +16,8 @@ describe("session_events ts round-trip (FLY-1048 PR-B)", () => {
 		store = await StateStore.create(":memory:");
 	});
 
-	it("a real inserted row comes back with a parseable ts yielding a sane age", () => {
+	it("a real inserted row comes back with a parseable ts in its insertion window", () => {
+		const before = Date.now();
 		expect(
 			store.insertEvent({
 				event_id: "evt-ts-roundtrip",
@@ -27,6 +28,7 @@ describe("session_events ts round-trip (FLY-1048 PR-B)", () => {
 				source: "test",
 			}),
 		).toBe(true);
+		const after = Date.now();
 		const events = store.getEventsByExecution("exec-ts");
 		expect(events).toHaveLength(1);
 		const ts = events[0]!.ts;
@@ -35,8 +37,7 @@ describe("session_events ts round-trip (FLY-1048 PR-B)", () => {
 		// input parser handles exactly this shape.
 		const ms = parseSqliteUtcMs(ts ?? "") ?? Date.parse(ts ?? "");
 		expect(Number.isFinite(ms)).toBe(true);
-		const ageMs = Date.now() - (ms as number);
-		expect(ageMs).toBeGreaterThanOrEqual(0);
-		expect(ageMs).toBeLessThan(60_000); // freshly inserted → seconds, not hours
+		expect(ms).toBeGreaterThanOrEqual(Math.floor(before / 1_000) * 1_000);
+		expect(ms).toBeLessThanOrEqual(Math.ceil(after / 1_000) * 1_000);
 	});
 });

@@ -1111,11 +1111,11 @@ describe("StateStore auto narrow approval", () => {
 			);
 			if (!holder) throw new Error("missing holder");
 			rawDb(store).pragma("busy_timeout = 777");
+			const pragma = vi.spyOn(rawDb(store), "pragma");
 			locker = new Database(statePath);
 			locker.pragma("busy_timeout = 0");
 			locker.exec("BEGIN IMMEDIATE");
 			const writeSource = vi.fn(() => ({ written: true, replayed: false }));
-			const started = Date.now();
 			expect(() =>
 				store!.commitAutoNarrowSourceIfEligible({
 					questionId: holder.question_id,
@@ -1123,7 +1123,9 @@ describe("StateStore auto narrow approval", () => {
 					writeSource,
 				}),
 			).toThrow(/busy|locked/i);
-			expect(Date.now() - started).toBeLessThan(250);
+			expect(pragma.mock.calls.map(([statement]) => statement)).toContain(
+				"busy_timeout = 0",
+			);
 			expect(writeSource).not.toHaveBeenCalled();
 			expect(rawDb(store).pragma("busy_timeout", { simple: true })).toBe(777);
 			locker.exec("ROLLBACK");

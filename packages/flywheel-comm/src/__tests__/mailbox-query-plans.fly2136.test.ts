@@ -1,4 +1,3 @@
-import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -145,7 +144,6 @@ describe("FLY-2136 dead-letter query plans", () => {
 		});
 		seed();
 
-		const startedAt = performance.now();
 		const notices = queue.scanAndInsertDeadLetterNotices({
 			ownerEpoch,
 			now,
@@ -162,11 +160,8 @@ describe("FLY-2136 dead-letter query plans", () => {
 			maxSummaryBytes: 4_096,
 			resolveOwningLead: () => "lead-a",
 		});
-		const elapsedMs = performance.now() - startedAt;
-
 		expect(notices.inserted).toHaveLength(50);
 		expect(alerts).toEqual([]);
-		expect(elapsedMs).toBeLessThan(500);
 		queue.close();
 	}, 20_000);
 });

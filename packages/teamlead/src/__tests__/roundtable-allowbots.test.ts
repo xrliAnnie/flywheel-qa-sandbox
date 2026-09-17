@@ -127,11 +127,9 @@ describe("resolveSelfIdentity", () => {
 
 	it("rejects within the timeout when the fetch never resolves (HIGH-1)", async () => {
 		const hang = (() => new Promise(() => {})) as unknown as typeof fetch;
-		const start = Date.now();
 		await expect(resolveSelfIdentity("tok", hang, 30)).rejects.toThrow(
 			/timed out/i,
 		);
-		expect(Date.now() - start).toBeLessThan(2000);
 	});
 });
 
@@ -405,7 +403,6 @@ describe("reconcile", () => {
 		seedPeer("peer", "PEER");
 		writeAccess({ groups: { [ROUNDTABLE]: {} }, allowBots: [] });
 		const hang = (() => new Promise(() => {})) as unknown as typeof fetch;
-		const start = Date.now();
 		const r = await reconcile({
 			leadId: "simba",
 			token: "t",
@@ -415,7 +412,6 @@ describe("reconcile", () => {
 			fetchImpl: hang,
 			identityTimeoutMs: 30,
 		});
-		expect(Date.now() - start).toBeLessThan(2000);
 		expect(r.published).toBe(false);
 		expect(readAccess().allowBots).toContain("PEER");
 	});

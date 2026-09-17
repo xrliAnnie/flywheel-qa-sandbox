@@ -1174,7 +1174,12 @@ globalThis.fetch = async () => {
 				"Report feedback",
 				{ BRIDGE_URL: undefined, TEAMLEAD_API_TOKEN: undefined },
 			);
-			expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+			expect(result.exitCode).toBe(0);
+			expect(
+				result.stderr
+					.split(/\r?\n/)
+					.filter((line) => line && !line.startsWith("[slow-sql] ")),
+			).toEqual([]);
 			const db = new CommDB(dbPath);
 			try {
 				expect(

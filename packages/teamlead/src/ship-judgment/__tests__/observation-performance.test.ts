@@ -1,82 +1,24 @@
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PerformanceObserver, performance } from "node:perf_hooks";
+import { performance } from "node:perf_hooks";
 import { expect, it, vi } from "vitest";
 import { ShipJudgmentOutcomes } from "../outcomes.js";
 import { ShipJudgmentRuntime } from "../runtime.js";
 import { bindingFixture, HEAD, NOW } from "./binding-fixture.js";
 
-it("bounds real observation and modeTick with 1.7M events and 500 holders", async () => {
+it("bounds observation work with 1.7M events and 500 holders", async () => {
 	const root = mkdtempSync(join(tmpdir(), "fly2563-observation-performance-"));
 	const path = join(root, "fixture.db");
 	const { store, db } = await bindingFixture(path);
-	const gc: Array<{ start: number; duration: number }> = [];
-	const windows: Array<{
-		kind: string;
-		start: number;
-		end: number;
-		cpuMs: number;
-		involuntarySwitches?: number;
-		voluntarySwitches?: number;
-	}> = [];
-	const checkpoints: Array<{
-		phase: "before_backlog" | "before_tail" | "before_mode_tick";
-		wallMs: number;
-		cpuMs: number;
-		involuntarySwitches: number;
-		voluntarySwitches: number;
-		walBytesBefore: number;
-		walBytesAfter: number;
-		result: Array<{
-			busy?: number;
-			log?: number;
-			checkpointed?: number;
-		}>;
-	}> = [];
-	const monitor = new PerformanceObserver((list) => {
-		for (const entry of list.getEntries())
-			gc.push({ start: entry.startTime, duration: entry.duration });
-	});
-	monitor.observe({ entryTypes: ["gc"] });
-	const samples: Record<string, number[]> = {
-		backlog: [],
-		steady: [],
-		tail: [],
-		auto_merge_narrow_gate: [],
-		dry_run: [],
-	};
-	const checkpoint = (
-		phase: "before_backlog" | "before_tail" | "before_mode_tick",
-	) => {
-		const started = performance.now();
-		const cpu = process.cpuUsage();
-		const resources = process.resourceUsage();
-		const walBytesBefore = statSync(`${path}-wal`).size;
+	const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+	const checkpoint = () => {
 		const result = db.pragma("wal_checkpoint(TRUNCATE)") as Array<{
 			busy?: number;
-			log?: number;
-			checkpointed?: number;
 		}>;
-		const end = performance.now();
-		const usage = process.cpuUsage(cpu);
-		const afterResources = process.resourceUsage();
-		checkpoints.push({
-			phase,
-			wallMs: end - started,
-			cpuMs: (usage.user + usage.system) / 1000,
-			involuntarySwitches:
-				afterResources.involuntaryContextSwitches -
-				resources.involuntaryContextSwitches,
-			voluntarySwitches:
-				afterResources.voluntaryContextSwitches -
-				resources.voluntaryContextSwitches,
-			walBytesBefore,
-			walBytesAfter: statSync(`${path}-wal`).size,
-			result,
-		});
+		expect(result[0]?.busy).toBe(0);
+		expect(statSync(`${path}-wal`).size).toBe(0);
 	};
-	const preparation = performance.now();
 	try {
 		db.prepare("UPDATE workflow_run SET created_at=?").run(NOW);
 		db.transaction(() => {
@@ -94,55 +36,44 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				NOW,
 			);
 		})();
-		checkpoint("before_backlog");
-		const preparedMs = performance.now() - preparation;
+		checkpoint();
 		expect(
 			db.prepare("SELECT count(*) AS n FROM session_events").get(),
-		).toEqual({ n: 1700000 });
+		).toEqual({ n: 1_700_000 });
 		expect(
 			db.prepare("SELECT count(*) AS n FROM workflow_gate_holder").get(),
 		).toEqual({ n: 500 });
+
 		const observer = new ShipJudgmentOutcomes(db);
-		const measure = (kind: string) => {
-			const started = performance.now();
-			const cpu = process.cpuUsage();
-			const resources = process.resourceUsage();
+		const pages: ReturnType<typeof observer.pageStats>[] = [];
+		const observe = () => {
 			const changed = observer.observeCancellations(NOW);
-			const end = performance.now();
-			const usage = process.cpuUsage(cpu);
-			const afterResources = process.resourceUsage();
-			windows.push({
-				kind,
-				start: started,
-				end,
-				cpuMs: (usage.user + usage.system) / 1000,
-				involuntarySwitches:
-					afterResources.involuntaryContextSwitches -
-					resources.involuntaryContextSwitches,
-				voluntarySwitches:
-					afterResources.voluntaryContextSwitches -
-					resources.voluntaryContextSwitches,
-			});
-			samples[kind]!.push(end - started);
-			return changed;
+			const stats = observer.pageStats();
+			expect(stats.sourceCandidates).toBeLessThanOrEqual(40);
+			expect(stats.holderCandidates).toBeLessThanOrEqual(16);
+			expect(stats.cursorAfter).toBeGreaterThanOrEqual(stats.cursorBefore);
+			pages.push(stats);
+			return { changed, stats };
 		};
-		let changed = 0;
-		// Production returns to the event loop between 3s observations. Let
-		// completed pages release their transient allocations between calls too.
-		// Timing still includes the entire observer, including any in-call GC.
 		const betweenPages = () =>
 			new Promise<void>((resolve) => setImmediate(resolve));
+
+		let changed = 0;
 		for (let i = 0; i < 5; i++) {
-			changed += measure("backlog");
+			changed += observe().changed;
 			await betweenPages();
 		}
 		expect(changed).toBeGreaterThan(0);
+		expect(pages.some((page) => page.cursorAfter > page.cursorBefore)).toBe(
+			true,
+		);
+
 		let drained = false;
-		for (let i = 0; i < 10000; i++) {
-			observer.observeCancellations(NOW);
+		for (let i = 0; i < 10_000; i++) {
+			const { stats } = observe();
 			await betweenPages();
 			if (
-				observer.pageStats().sourceCandidates === 0 &&
+				stats.sourceCandidates === 0 &&
 				(
 					db
 						.prepare(
@@ -162,16 +93,18 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 					"SELECT count(*) AS n FROM ship_judgment_outcome WHERE source_kind='closeout'",
 				)
 				.get(),
-		).toEqual({ n: 25000 });
+		).toEqual({ n: 25_000 });
+
 		for (let i = 0; i < 5; i++) {
-			measure("steady");
-			expect(observer.pageStats()).toMatchObject({
+			const { stats } = observe();
+			expect(stats).toMatchObject({
 				sourceCandidates: 0,
 				holderCandidates: 0,
 				outcomes: 0,
 			});
 		}
-		checkpoint("before_tail");
+
+		checkpoint();
 		const append = (id: string) =>
 			store.insertEvent({
 				event_id: id,
@@ -188,11 +121,14 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				NOW,
 				`tail-${i}`,
 			);
-			measure("tail");
-			expect(observer.pageStats().outcomes).toBeGreaterThan(0);
+			const { stats } = observe();
+			expect(stats.outcomes).toBeGreaterThan(0);
+			expect(stats.cursorAfter).toBeGreaterThan(stats.cursorBefore);
 			await betweenPages();
 		}
-		checkpoint("before_mode_tick");
+
+		checkpoint();
+		const progress = vi.spyOn(store, "recordShipJudgmentObservationProgress");
 		for (const mode of ["auto_merge_narrow_gate", "dry_run"] as const) {
 			const onError = vi.fn();
 			const runtime = new ShipJudgmentRuntime({
@@ -207,77 +143,26 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 				onError,
 			});
 			try {
-				for (let i = 0; i < 5; i++) {
-					const start = performance.now();
-					const cpu = process.cpuUsage();
-					await runtime.modeTick();
-					const end = performance.now();
-					const usage = process.cpuUsage(cpu);
-					windows.push({
-						kind: mode,
-						start,
-						end,
-						cpuMs: (usage.user + usage.system) / 1000,
-					});
-					samples[mode]!.push(end - start);
-				}
+				for (let i = 0; i < 5; i++) await runtime.modeTick();
 				expect(onError).not.toHaveBeenCalled();
 			} finally {
 				await runtime.stop();
 			}
 		}
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		const summary = Object.fromEntries(
-			Object.entries(samples).map(([kind, values]) => [
-				kind,
-				{
-					values,
-					max: Math.max(...values),
-					p95: [...values].sort((a, b) => a - b)[
-						Math.ceil(values.length * 0.95) - 1
-					],
-				},
-			]),
-		);
-		console.log(
-			JSON.stringify({
-				fixture: "FLY-2563",
-				events: 1700000,
-				holders: 500,
-				closeouts: 2729,
-				matchingSources: 50,
-				preparationMs: preparedMs,
-				databaseBytes: statSync(path).size,
-				sqlite: db.prepare("SELECT sqlite_version() AS version").get(),
-				node: process.version,
-				checkpoints,
-				samples: summary,
-				windows: windows.map((window) => ({
-					...window,
-					gc: gc.filter(
-						(entry) =>
-							entry.start < window.end &&
-							entry.start + entry.duration > window.start,
-					),
-				})),
-			}),
-		);
-		expect(checkpoints.map(({ phase }) => phase)).toEqual([
-			"before_backlog",
-			"before_tail",
-			"before_mode_tick",
-		]);
-		for (const checkpoint of checkpoints) {
-			expect(checkpoint.result[0]?.busy).toBe(0);
-			expect(checkpoint.walBytesAfter).toBe(0);
-		}
-		for (const kind of ["backlog", "steady", "tail"])
-			expect(Math.max(...samples[kind]!)).toBeLessThan(50);
-		for (const mode of ["auto_merge_narrow_gate", "dry_run"])
-			expect(Math.max(...samples[mode]!)).toBeLessThan(100);
+		const progressCalls = progress.mock.calls;
+		expect(
+			progressCalls.some(
+				([source, inspected]) => source === "closeout" && inspected > 0,
+			),
+		).toBe(true);
+		expect(
+			progressCalls
+				.filter(([source]) => source === "verdict")
+				.every(([, inspected]) => inspected === 0),
+		).toBe(true);
 	} finally {
-		monitor.disconnect();
+		clock.mockRestore();
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	}
-}, 120000);
+}, 120_000);

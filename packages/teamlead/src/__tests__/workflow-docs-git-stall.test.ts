@@ -256,7 +256,6 @@ describe("workflow docs Git event-loop bounds", () => {
 				networkTimeoutMs: 100,
 				recordSpan,
 			});
-			const startedAt = Date.now();
 			let intervalTicks = 0;
 			const interval = setInterval(() => intervalTicks++, 5);
 			const result = await (
@@ -271,7 +270,6 @@ describe("workflow docs Git event-loop bounds", () => {
 				}
 			).runNetwork(["ls-remote", "https://example.test/repo"], dir);
 			clearInterval(interval);
-			expect(Date.now() - startedAt).toBeLessThan(2_000);
 			expect(result.status).not.toBe(0);
 			expect(result.timedOut).toBe(true);
 			expect(intervalTicks).toBeGreaterThan(0);

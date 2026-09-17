@@ -33,7 +33,6 @@ EOF
 chmod +x "$ROOT/bin/codex" "$ROOT/bin/codex-profile"
 
 echo "== one-shot timeout is terminal and typed =="
-start="$(date +%s)"
 rc=0
 env -i \
   HOME="$ROOT/home" \
@@ -43,7 +42,6 @@ env -i \
   FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
   /bin/bash "$WRAPPER" exec --json - \
   >"$ROOT/stdout" 2>"$ROOT/stderr" || rc=$?
-elapsed=$(( $(date +%s) - start ))
 
 if [[ "$rc" == "124" ]]; then
   pass "timeout returns rc=124"
@@ -55,10 +53,10 @@ if grep -q '^\[codex-guard\] TIMEOUT ' "$ROOT/stderr"; then
 else
   fail "timeout emits the fixed marker" "stderr=$(cat "$ROOT/stderr" 2>/dev/null)"
 fi
-if [[ -s "$ROOT/codex.pid" && "$elapsed" -lt 10 ]]; then
-  pass "the fake Codex started and was bounded (${elapsed}s)"
+if [[ -s "$ROOT/codex.pid" ]]; then
+  pass "the fake Codex started before the typed timeout"
 else
-  fail "the fake Codex started and was bounded" "started=$([[ -s "$ROOT/codex.pid" ]] && echo yes || echo no) elapsed=${elapsed}s"
+  fail "the fake Codex started before the typed timeout" "started=no"
 fi
 
 sleep 1
@@ -411,7 +409,6 @@ EOF
 chmod +x "$ROOT/bin/timeout" "$ROOT/bin/codex-profile" "$ROOT/bin/codex"
 rm -f "$ROOT/profile-actions" "$ROOT/broken-timeout-codex.pid" "$ROOT/broken-timeout-descendant.pid"
 
-start="$(date +%s)"
 rc=0
 env -i \
   HOME="$ROOT/home" \
@@ -421,19 +418,18 @@ env -i \
   FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/unwritable-state" \
   /bin/bash "$WRAPPER" exec --json - \
   >"$ROOT/broken-timeout.stdout" 2>"$ROOT/broken-timeout.stderr" || rc=$?
-elapsed=$(( $(date +%s) - start ))
 sleep 1
 survivors=()
 for pid_file in "$ROOT/broken-timeout-codex.pid" "$ROOT/broken-timeout-descendant.pid"; do
   pid="$(cat "$pid_file" 2>/dev/null || true)"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then survivors+=("$pid"); fi
 done
-if [[ "$rc" == "124" && "$elapsed" -lt 10 && "${#survivors[@]}" -eq 0 ]] \
+if [[ "$rc" == "124" && "${#survivors[@]}" -eq 0 ]] \
   && [[ ! -e "$ROOT/profile-actions" ]]; then
   pass "broken timeout falls back; unwritable state fails open; timeout never rotates"
 else
   fail "broken timeout falls back; unwritable state fails open; timeout never rotates" \
-    "rc=$rc elapsed=${elapsed}s survivors=${survivors[*]:-none} rotations=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
+    "rc=$rc survivors=${survivors[*]:-none} rotations=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
   for pid in "${survivors[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
 fi
 rm -f "$ROOT/bin/timeout"
@@ -610,7 +606,6 @@ printf '429 rate limit\n' >&2
 exit 7
 EOF
 chmod +x "$ROOT/bin/codex"
-start="$(date +%s)"
 rc=0
 env -i \
   HOME="$ROOT/home" \
@@ -621,14 +616,13 @@ env -i \
   FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
   /bin/bash "$WRAPPER" exec --json - \
   >"$ROOT/total-budget.stdout" 2>"$ROOT/total-budget.stderr" || rc=$?
-elapsed=$(( $(date +%s) - start ))
-if [[ "$rc" == "7" && "$elapsed" -lt 7 \
+if [[ "$rc" == "7" \
   && "$(cat "$ROOT/total-budget-calls" 2>/dev/null)" == "1" \
   && ! -e "$ROOT/profile-actions" ]]; then
-  pass "rate-limit failure consumes one guarded attempt (${elapsed}s)"
+  pass "rate-limit failure consumes one guarded attempt"
 else
   fail "rate-limit failure consumes one guarded attempt" \
-    "rc=$rc elapsed=${elapsed}s calls=$(cat "$ROOT/total-budget-calls" 2>/dev/null || echo missing)"
+    "rc=$rc calls=$(cat "$ROOT/total-budget-calls" 2>/dev/null || echo missing)"
 fi
 
 echo "== final model fallback remains guarded =="

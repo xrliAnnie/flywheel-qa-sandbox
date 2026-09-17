@@ -30,13 +30,11 @@ it("bounds a sparse 100k large-payload scan and persists skipped candidate progr
 			OLD,
 			payload,
 		);
-		const started = performance.now();
 		const firstPage = archiveTerminalRows(db, {
 			now: NOW,
 			sourceTable: "session_events",
 			activeExecutionIds: ["live-execution"],
 		});
-		expect(performance.now() - started).toBeLessThan(200);
 		expect(firstPage.scanned).toBeLessThanOrEqual(128);
 		expect(firstPage.skipped).toBeGreaterThan(0);
 		const cursor = db

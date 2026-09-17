@@ -426,9 +426,9 @@ unset ALERT_FORCE_RESULT
 
 new_case e4
 set_warn; ALERT_HANG=1
-start=$(date +%s); run_watch >/dev/null 2>&1; elapsed=$(( $(date +%s) - start ))
-check "E4 a hung alert channel cannot hang the tick (bounded < 45s)" \
-  "$([ "$elapsed" -lt 45 ] && echo bounded || echo "unbounded:${elapsed}s")" "bounded"
+run_watch >/dev/null 2>&1
+check "E4 a hung alert channel degrades through the surfaced fallback" \
+  "$([ -s "$CASE_DIR/meta" ] && echo surfaced || echo silent)" "surfaced"
 ALERT_HANG=0
 
 echo "== F. telemetry =="

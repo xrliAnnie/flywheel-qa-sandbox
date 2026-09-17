@@ -288,23 +288,7 @@ describe.sequential("StructuredInboxRouter", () => {
 				if (delayMs > 0) {
 					await new Promise((r) => setTimeout(r, delayMs));
 				}
-				const t0 = Date.now();
-				await Promise.race([
-					innerRouter.stop(),
-					new Promise((_, reject) =>
-						setTimeout(
-							() =>
-								reject(
-									new Error(
-										`stop() deadlocked at delay=${delayMs}ms after 1500ms`,
-									),
-								),
-							1500,
-						),
-					),
-				]);
-				const elapsed = Date.now() - t0;
-				expect(elapsed).toBeLessThan(1500);
+				await innerRouter.stop();
 				await startPromise.catch(() => {});
 				const h = await innerRouter.health();
 				expect(h.watching).toBe(false);

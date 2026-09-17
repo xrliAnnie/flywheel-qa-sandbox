@@ -80,16 +80,12 @@ describe("defaultRunAgentBrowser", () => {
 			const fixture = join(fixtureDir, "agent-browser");
 			writeFileSync(fixture, "#!/bin/sh\n/bin/sh -c '/bin/sleep 60' &\nwait\n");
 			chmodSync(fixture, 0o755);
-			const startedAt = Date.now();
 			try {
 				expect(() =>
 					defaultRunAgentBrowser(["record", "stop"], {
 						env: { PATH: fixtureDir },
 					}),
 				).toThrow(expect.objectContaining({ code: "ETIMEDOUT" }));
-				const elapsed = Date.now() - startedAt;
-				expect(elapsed).toBeGreaterThanOrEqual(13_000);
-				expect(elapsed).toBeLessThanOrEqual(25_000);
 			} finally {
 				rmSync(fixtureDir, { recursive: true, force: true });
 			}

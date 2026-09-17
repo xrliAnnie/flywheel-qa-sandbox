@@ -147,11 +147,17 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		db.registerSession("exec-a", "window-a", "proj", "FLY-1328", "lead");
 		const ask = db.insertQuestion("exec-a", "lead", "which approach?");
 		backdate(dbPath, ask, "-16 minutes");
+		const before = Date.now();
 		db.finalizeSession("exec-a");
+		const after = Date.now();
 
-		const ttlMs = expiresAtMs(dbPath, ask) - Date.now();
-		expect(ttlMs).toBeGreaterThan(0.5 * HOUR_MS);
-		expect(ttlMs).toBeLessThanOrEqual(1.05 * HOUR_MS);
+		const expiresAt = expiresAtMs(dbPath, ask);
+		expect(expiresAt).toBeGreaterThanOrEqual(
+			Math.floor(before / 1_000) * 1_000 + HOUR_MS,
+		);
+		expect(expiresAt).toBeLessThanOrEqual(
+			Math.ceil(after / 1_000) * 1_000 + HOUR_MS,
+		);
 
 		// A fresh open runs purgeExpired — the forensic row must survive it.
 		db.close();

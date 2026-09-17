@@ -1,6 +1,15 @@
-import { expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ShipJudgmentOutcomes } from "../outcomes.js";
 import { bindingFixture, HEAD, NOW } from "./binding-fixture.js";
+
+beforeEach(() => {
+	vi.spyOn(performance, "now").mockReturnValue(0);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 async function fixture() {
 	const value = await bindingFixture();

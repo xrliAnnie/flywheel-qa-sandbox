@@ -486,6 +486,7 @@ it.each([
 			closed: "skipped:runtime_stopped",
 		};
 		expect(result.status).toBe(expected[scenario as keyof typeof expected]);
+		// wall-clock-audit: deterministic-clock fixture deps.now advances logical time
 		expect(result.cost.wallMs).toBeLessThanOrEqual(60000);
 		if (c.client.setEvents.mock.calls.length)
 			expect(c.client.setEvents).toHaveBeenLastCalledWith({});

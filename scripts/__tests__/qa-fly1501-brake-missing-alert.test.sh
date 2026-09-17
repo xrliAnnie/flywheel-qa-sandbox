@@ -160,19 +160,17 @@ hang_guard() {
     extract_guard "$wrapper"
     echo 'echo "REACHED_LAUNCH"'
   } >"$script"
-  bash "$script" >/dev/null 2>&1
+  bash "$script" 2>&1
 }
 
 for rel in "${WRAPPERS[@]}"; do
   w="$REPO/$rel"
   name="$(basename "$rel" .sh)"
-  start=$(date +%s)
-  hang_guard "$w"
-  elapsed=$(( $(date +%s) - start ))
-  if [ "$elapsed" -lt 10 ]; then
-    pass "$name: hung notifier is bounded (${elapsed}s < 10s)"
+  output="$(hang_guard "$w")"
+  if grep -q 'refusing to launch' <<<"$output"; then
+    pass "$name: hung notifier reaches the post-alert refusal state"
   else
-    fail "$name: hung notifier is bounded" "took ${elapsed}s — the launch path was pinned"
+    fail "$name: hung notifier reaches the post-alert refusal state" "output=$output"
   fi
 done
 

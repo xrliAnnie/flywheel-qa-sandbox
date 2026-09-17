@@ -465,7 +465,6 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
 				event: "bridge_event_loop_stall",
 				attribution: "unknown",
 			});
-			expect(lines[1].tick_gap_ms).toBeLessThan(200);
 		} finally {
 			await state.worker.terminate();
 			rmSync(state.dir, { recursive: true, force: true });

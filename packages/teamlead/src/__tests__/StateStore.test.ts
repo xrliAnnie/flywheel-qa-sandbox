@@ -437,12 +437,18 @@ describe("StateStore", () => {
 
 	it("updateHeartbeat sets heartbeat_at to now", () => {
 		store.upsertSession(makeSession());
+		const before = Date.now();
 		store.updateHeartbeat("exec-1");
+		const after = Date.now();
 		const s = store.getSession("exec-1");
 		expect(s!.heartbeat_at).toBeDefined();
-		// Should be a recent timestamp (within the last minute)
 		const hb = new Date(`${s!.heartbeat_at!.replace(" ", "T")}Z`);
-		expect(Date.now() - hb.getTime()).toBeLessThan(60_000);
+		// SQLite CURRENT_TIMESTAMP has whole-second precision. Assert ordering
+		// against the operation window, not a host-duration threshold.
+		expect(hb.getTime()).toBeGreaterThanOrEqual(
+			Math.floor(before / 1_000) * 1_000,
+		);
+		expect(hb.getTime()).toBeLessThanOrEqual(Math.ceil(after / 1_000) * 1_000);
 	});
 
 	it("updateHeartbeat is no-op for nonexistent session", () => {

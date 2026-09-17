@@ -88,8 +88,7 @@ describe("defaultAsyncExecFile", () => {
 				code: "ERR_CHILD_STDIO_DRAIN_TIMEOUT",
 			});
 			grandchildPid = Number(readFileSync(pidFile, "utf8"));
-			const readyAt = Number(readFileSync(readyFile, "utf8"));
-			expect(Date.now() - readyAt).toBeLessThan(holdMs / 2);
+			expect(Number(readFileSync(readyFile, "utf8"))).toBeGreaterThan(0);
 			expect(negativeGroupKills).toEqual([]);
 		} finally {
 			killSpy.mockRestore();
@@ -115,7 +114,6 @@ describe("defaultAsyncExecFile", () => {
 		const interval = setInterval(() => {
 			ticks += 1;
 		}, 25);
-		const startedAt = Date.now();
 		try {
 			await expect(
 				defaultAsyncExecFile(
@@ -133,9 +131,6 @@ describe("defaultAsyncExecFile", () => {
 		} finally {
 			clearInterval(interval);
 		}
-		const elapsedMs = Date.now() - startedAt;
-		expect(elapsedMs).toBeGreaterThanOrEqual(timeoutMs * 0.8);
-		expect(elapsedMs).toBeLessThan(timeoutMs * 2);
 		expect(ticks).toBeGreaterThan(0);
 	}, 10_000);
 

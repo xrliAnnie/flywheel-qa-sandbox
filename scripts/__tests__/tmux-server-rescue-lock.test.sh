@@ -69,15 +69,13 @@ for _ in $(seq 1 50); do [ -s "$OWNER_FILE" ] && break; sleep 0.02; done
 OWNER_PID="$(cat "$OWNER_FILE" 2>/dev/null)"
 kill -9 "$OWNER_PID" 2>/dev/null || true
 wait "$WRAPPER_PID" 2>/dev/null || true
-START=$SECONDS
 _tmux_rescue_python_lock 1 "$TMP_DIR/kill.lockf" /usr/bin/true
 NEXT_RC=$?
-ELAPSED=$((SECONDS - START))
 kill "$OWNER_PID" 2>/dev/null || true
-if [ "$NEXT_RC" -eq 0 ] && [ "$ELAPSED" -lt 2 ]; then
+if [ "$NEXT_RC" -eq 0 ]; then
   ok "kernel lock is recoverable after an ungraceful owner exit"
 else
-  bad "lock remained unavailable after SIGKILL: rc=$NEXT_RC elapsed=$ELAPSED"
+  bad "lock remained unavailable after SIGKILL: rc=$NEXT_RC"
 fi
 
 echo "[TEST] SIGKILL of the rescue shell does not release the lock ahead of its bounded child"

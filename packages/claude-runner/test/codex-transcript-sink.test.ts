@@ -328,6 +328,7 @@ describe("CodexTranscriptSink", () => {
 	});
 
 	it("returns from close when an append never resolves", async () => {
+		vi.useFakeTimers();
 		const logs: string[] = [];
 		const sink = new CodexTranscriptSink({
 			path: "/virtual/transcript.log",
@@ -342,11 +343,14 @@ describe("CodexTranscriptSink", () => {
 		});
 		sink.appendMeta("never flushed");
 
-		const startedAt = Date.now();
-		await sink.close("timeout");
-
-		expect(Date.now() - startedAt).toBeLessThan(100);
-		expect(logs.join("\n")).toContain("close deadline");
+		try {
+			const closing = sink.close("timeout");
+			await vi.advanceTimersByTimeAsync(5);
+			await closing;
+			expect(logs.join("\n")).toContain("close deadline");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not require the transcript to exist before construction", () => {

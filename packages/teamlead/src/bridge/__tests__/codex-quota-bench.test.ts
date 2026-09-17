@@ -515,7 +515,6 @@ it.each(["success", "queued", "crash_reconstruct"] as const)(
 		const f = await fixture(
 			scenario === "crash_reconstruct" ? "success" : scenario,
 		);
-		const started = Date.now();
 		await f.intake();
 		expect(f.store.codexQuota.listIncidents()).toHaveLength(1);
 		expect(f.store.codexQuota.listTargets(f.incidentId)).toHaveLength(6);
@@ -584,7 +583,6 @@ it.each(["success", "queued", "crash_reconstruct"] as const)(
 		expect(
 			f.requests.filter((r) => r.path.endsWith("/terminate")),
 		).toHaveLength(6);
-		expect(Date.now() - started).toBeLessThan(600000);
 		for (const child of f.spawned.values())
 			expect(await work(child, "refresh")).toMatchObject({
 				ok: true,
@@ -614,7 +612,6 @@ it.each(["success", "queued", "crash_reconstruct"] as const)(
 			usageLimitMessages: 1,
 			founderMessages: 0,
 			probeOk: 1,
-			elapsedMs: Date.now() - started,
 			provider: "synthetic",
 			actualRunRoutes: true,
 			refreshBoundaryWorkers: 6,

@@ -60,7 +60,8 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 			return;
 		}
 		const timeoutFloors = new Map([
-			["unit-tests", 15],
+			// FLY-2663: shared runners need headroom for the post-shard stub-hygiene step.
+			["unit-tests", 25],
 			// FLY-1482: main reached 13m42s and the PR replay hit the old 15m cap.
 			["script-tests", 20],
 			["script-tests-2", 20],
