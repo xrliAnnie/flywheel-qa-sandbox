@@ -1,15 +1,14 @@
 ---
 issue: FLY-2749
 phase: design
-phaseCursor: 2/6
-updated: 2026-09-18T21:36:59.196Z
-nextStep: Production ON verified; stage allowlist+stale decision_route and
-  independent question admission gaps proven. Draft research/plan incl per-type
-  negative guards, no context or UI scope.
+phaseCursor: 3/6
+updated: 2026-09-18T21:38:31.031Z
+nextStep: Research complete; draft additive audit-disposition contract,
+  receipt-classified DONE, machine status relay and acceptance matrix
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
-**phase**: design (2/6)
-**next**: Production ON verified; stage allowlist+stale decision_route and independent question admission gaps proven. Draft research/plan incl per-type negative guards, no context or UI scope.
+**phase**: design (3/6)
+**next**: Research complete; draft additive audit-disposition contract, receipt-classified DONE, machine status relay and acceptance matrix
