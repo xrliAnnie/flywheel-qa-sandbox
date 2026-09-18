@@ -1,14 +1,13 @@
 ---
 issue: FLY-2523
 phase: design
-phaseCursor: 1/4
-updated: 2026-09-18T16:45:29.209Z
-nextStep: Commit the 529-slot rework delta and obtain design review approval
-  before tests/code
+phaseCursor: 2/4
+updated: 2026-09-18T16:56:27.451Z
+nextStep: Commit the R1 isolation corrections and open a fresh R2 design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: design (1/4)
-**next**: Commit the 529-slot rework delta and obtain design review approval before tests/code
+**phase**: design (2/4)
+**next**: Commit the R1 isolation corrections and open a fresh R2 design review
