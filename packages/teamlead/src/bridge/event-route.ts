@@ -69,10 +69,7 @@ import {
 	hasPendingCompleteMarker,
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
-import {
-	type EventFilter,
-	leadEventDeliveryDisposition,
-} from "./EventFilter.js";
+import { type EventFilter, leadNotificationDecision } from "./EventFilter.js";
 import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
 import {
 	evaluateFounderReviewAuthority,
@@ -3699,21 +3696,48 @@ export function createEventRouter(
 				} else {
 					// Persist every event after its domain side effects; routine trusted
 					// progress can remain audit-only without fabricating delivery.
+					const stage = asString(payload.stage);
+					const inheritedDecision = Boolean(hookPayload.decision_route);
+					const stageEvidence = stageRecord
+						? {
+								kind: "stage_recorded" as const,
+								proofRef: `stage-event:${stageRecord.row.event_id}`,
+								actionState: inheritedDecision
+									? session.status === "running"
+										? ("resolved" as const)
+										: ("pending" as const)
+									: ("none" as const),
+								...(inheritedDecision && session.status === "running"
+									? {
+											actionProofRef: `stage-event:${stageRecord.row.event_id}:current-running`,
+										}
+									: {}),
+								...(["design_review", "code_review", "pr_created"].includes(
+									stage,
+								) && !stagePending.has("codex_trigger")
+									? { reviewOwnerRef: `runner:${session.execution_id}` }
+									: {}),
+							}
+						: undefined;
+					const deliveryDecision =
+						tokenSavingsEnabled && stageEvidence
+							? [hookPayload, payload].map((part) =>
+									leadNotificationDecision(
+										event.event_type,
+										{ ...part },
+										stageEvidence,
+									),
+								)
+							: [];
 					const seq = store.appendLeadEvent(
 						lead.agentId,
 						event.event_id,
 						event.event_type,
 						JSON.stringify(hookPayload),
 						sessionKey,
-						tokenSavingsEnabled &&
-							[hookPayload, payload].every(
-								(part) =>
-									leadEventDeliveryDisposition(
-										event.event_type,
-										{ ...part },
-										event.event_type === "stage_changed" &&
-											Boolean(stageRecord),
-									) === "audit_only",
+						deliveryDecision.length > 0 &&
+							deliveryDecision.every(
+								(decision) => decision.disposition === "audit_only",
 							)
 							? "audit_only"
 							: "model",

@@ -3179,6 +3179,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 			"plan",
 			"implement",
 			"test",
+			"code_review",
 			"approve",
 		]) {
 			const response = await fetch(`${baseUrl}/events`, {
@@ -3232,6 +3233,46 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		expect(
 			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
 		).toHaveLength(2);
+	});
+
+	it("does not reawaken the Lead for a fresh routine stage carrying an inherited decision", async () => {
+		store.upsertSession({
+			execution_id: "exec-stale-decision",
+			issue_id: "issue-stale-decision",
+			project_name: "geoforge3d",
+			status: "running",
+			decision_route: "needs_review",
+			issue_labels: JSON.stringify(["PM"]),
+		});
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify({
+				event_id: "routine-inherited-decision",
+				execution_id: "exec-stale-decision",
+				issue_id: "issue-stale-decision",
+				project_name: "geoforge3d",
+				event_type: "stage_changed",
+				source: "flywheel-comm",
+				payload: { stage: "implement" },
+			}),
+		});
+		expect(response.status).toBe(200);
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
+				)
+				.get("routine-inherited-decision"),
+		).toEqual({ delivery_disposition: "audit_only" });
+		expect(
+			capturedEnvelopes.find(
+				(envelope) => envelope.eventId === "routine-inherited-decision",
+			),
+		).toBeUndefined();
 	});
 
 	it("session_started event delivers to runtime for PM lead via chat_channel", async () => {
