@@ -32,6 +32,7 @@ const FOUNDER_DECIDED_RULES = new Set([
 	"ready.v1",
 	"dependents.v1",
 ]);
+const SHUTTLE_CYCLE_MS = 12 * 60 * 60_000;
 
 function relativeTime(iso: string, now: Date): string {
 	const minutes = Math.max(
@@ -39,6 +40,22 @@ function relativeTime(iso: string, now: Date): string {
 		Math.floor((now.getTime() - Date.parse(iso)) / 60_000),
 	);
 	return label("time.minutes_ago", { n: minutes });
+}
+
+function shuttleDriftAge(driftSince: string | null, now: Date): string {
+	if (driftSince === null) return "落后时间未知";
+	const hours = Math.max(
+		0,
+		Math.floor((now.getTime() - Date.parse(driftSince)) / 3_600_000),
+	);
+	return `已确认至少落后 ${hours} 小时`;
+}
+
+function shuttleSourceIsStale(observedAt: string | null, now: Date): boolean {
+	return (
+		observedAt === null ||
+		now.getTime() - Date.parse(observedAt) > SHUTTLE_CYCLE_MS
+	);
 }
 
 function markdownText(value: unknown): string {
@@ -430,8 +447,17 @@ function renderDependencyReview(entries: DependencyReviewEntry[]): string {
 
 function renderAttention(page: EpicPage, now: Date): string {
 	const heading = `## ${label("section.attention")}`;
+	const deploymentFounder = (page.deployment?.value?.units ?? []).filter(
+		(unit) => unit.episodeId !== null && unit.founderAware,
+	);
+	const founderDeploymentRows = deploymentFounder.map(
+		(unit) =>
+			`- **需要你知道，Lead 处理中**：${markdownText(`${unit.displayName} · ${unit.reasonDisplay} · ${unit.behindCommits === null ? "落后提交数未知" : `落后 ${unit.behindCommits} 个提交`} · ${shuttleDriftAge(unit.driftSince, now)} · ${unit.logRef}`)}`,
+	);
 	if (page.schema_version === 1)
-		return `${heading}\n\n${label("attention.legacy")}`;
+		return [heading, label("attention.legacy"), ...founderDeploymentRows].join(
+			"\n\n",
+		);
 	const renderItem = (item: (typeof page.attention)[number]) => {
 		const link = attentionLink(page, item);
 		const discordLink = link.url
@@ -463,7 +489,8 @@ function renderAttention(page: EpicPage, now: Date): string {
 	);
 	return [
 		heading,
-		attentionSummary(page),
+		attentionSummary(page, page.attention.length + deploymentFounder.length),
+		...founderDeploymentRows,
 		...founder.map(renderItem),
 		...(lead.length
 			? [
@@ -478,6 +505,41 @@ function renderAttention(page: EpicPage, now: Date): string {
 	].join("\n\n");
 }
 
+function renderDeployment(page: EpicPage, now: Date): string {
+	const deployment = page.deployment?.value;
+	if (!deployment)
+		return "## 班车状态\n\n班车状态尚未采集（旧页面不代表健康）。";
+	const stale = shuttleSourceIsStale(deployment.observedAt, now);
+	const activeIds = new Set(deployment.activeIncidents);
+	const active = deployment.units.filter((unit) => activeIds.has(unit.unitId));
+	const hasExpectedSkips = deployment.units.some(
+		(unit) => unit.outcome === "skipped" && unit.expected,
+	);
+	const source =
+		deployment.sourceStatus === "unavailable"
+			? "状态来源不可用；以下为最后一次成功投影，不视为当前健康。"
+			: stale
+				? "班车停跑/读数过期；超过一个班次没有新记录，不视为当前健康。"
+				: deployment.sourceStatus === "truncated"
+					? `状态已截断（展示 ${deployment.retained}/${deployment.total}）。`
+					: `已采集 ${deployment.total} 个部署单元。`;
+	const status = active.length
+		? active
+				.map(
+					(unit) =>
+						`- ${markdownText(`${unit.displayName} (${unit.projectName}) · ${unit.outcome}:${unit.reason} · ${unit.reasonDisplay} · ${unit.behindCommits === null ? "落后提交数未知" : `落后 ${unit.behindCommits} 个提交`} · ${shuttleDriftAge(unit.driftSince, now)} · 连续 ${unit.consecutiveScheduledBad} 班 · 告警 ${unit.deliveryState ?? "待记录"} · 日志 ${unit.logRef}`)}`,
+				)
+				.join("\n")
+		: deployment.sourceStatus === "unavailable"
+			? "无法判定当前班车是否健康。"
+			: stale
+				? "班车停跑/读数过期。"
+				: hasExpectedSkips
+					? "部分单元本班未验证；未发现新异常，但不能声明全部正常。"
+					: "班车全部单元正常。";
+	return ["## 班车状态", source, status].join("\n\n");
+}
+
 export function renderEpicPageMarkdown(
 	page: EpicPage,
 	now = new Date(),
@@ -486,6 +548,7 @@ export function renderEpicPageMarkdown(
 		return [
 			`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
 			renderAttention(page, now),
+			renderDeployment(page, now),
 			label("attention.scope_unavailable"),
 			`${label("page.generated_at")}: ${page.generated_at}`,
 			renderFreshness(page),
@@ -519,6 +582,7 @@ export function renderEpicPageMarkdown(
 	return [
 		`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
 		renderAttention(page, now),
+		renderDeployment(page, now),
 		`${label("page.generated_at")}: ${page.generated_at}`,
 		renderFreshness(page),
 		`## ${label("section.ready")}`,

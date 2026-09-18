@@ -26,7 +26,20 @@ const scriptShardIds = [
 	"script-tests-2",
 	"script-tests-3",
 	"script-tests-4",
+	"script-tests-5",
 ] as const;
+
+const requiredScriptShardIds = [
+	"script-tests",
+	"script-tests-2",
+	"script-tests-3",
+	"script-tests-4",
+	"script-tests-5",
+] as const;
+
+function hasEveryScriptShard(ids: readonly string[]): boolean {
+	return requiredScriptShardIds.every((id) => ids.includes(id));
+}
 
 /** Walk up from this test file to the repo root (the dir holding .github). */
 function findRepoRoot(): string | undefined {
@@ -67,6 +80,7 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 			["script-tests-2", 20],
 			["script-tests-3", 20],
 			["script-tests-4", 20],
+			["script-tests-5", 20],
 		]);
 		for (const [jobId, timeoutFloor] of timeoutFloors) {
 			const job = jobs[jobId] as Record<string, unknown> | undefined;
@@ -76,6 +90,12 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 				timeoutFloor,
 			);
 		}
+	});
+
+	it("the redundant shard inventory includes shard 5 and detects its removal", () => {
+		expect(hasEveryScriptShard(scriptShardIds)).toBe(true);
+		const mutant = scriptShardIds.filter((id) => id !== "script-tests-5");
+		expect(hasEveryScriptShard(mutant)).toBe(false);
 	});
 
 	it("each script shard uses one bounded helper and no workflow step runs apt-get", () => {

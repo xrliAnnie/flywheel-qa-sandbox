@@ -983,6 +983,75 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("rejects a scoped-only rollup with skipped heavy checks during content carryover", async () => {
+		const { store, operation } = await fixture();
+		const fingerprint = contentFingerprint();
+		mockContentAuthority(store, () => fingerprint);
+		seedBaseRefreshReceipt(store, operation);
+		const ensureReview = vi.fn();
+		const openConflictRework = vi.fn().mockResolvedValue({
+			ok: true,
+			requestId: "scoped-ci-rework",
+		});
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({
+					state: "OPEN" as const,
+					headSha: CANDIDATE,
+					baseSha: BASE,
+					mergeStateStatus: "CLEAN",
+					checks: [
+						{
+							name: "CI Scope OK",
+							status: "COMPLETED",
+							conclusion: "SUCCESS",
+						},
+						{
+							name: "Unit ($" + "{{ matrix.name }})",
+							status: "COMPLETED",
+							conclusion: "SKIPPED",
+						},
+					],
+				}),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			contentProver: {
+				fingerprint: vi.fn(),
+				prove: vi.fn().mockResolvedValue({
+					ok: true,
+					proofKind: "content_bound_merge_v2",
+					rootDigest: fingerprint.rootDigest,
+					approvedHead: HEAD,
+					mergeBase: BASE,
+					priorHead: HEAD,
+					baseOid: BASE,
+					candidateHead: CANDIDATE,
+					candidateTreeOid: "d".repeat(40),
+					conflictFiles: [],
+					conflictProofDigest: "2".repeat(64),
+					requiresFreshQa: false,
+				}),
+			},
+			contentReviewer: { ensureReview },
+			openConflictRework,
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+
+		expect(result).toEqual({
+			status: "rework",
+			operationId: operation.operation_id,
+			requestId: "scoped-ci-rework",
+		});
+		expect(ensureReview).not.toHaveBeenCalled();
+		expect(openConflictRework).toHaveBeenCalledOnce();
+		store.close();
+	});
+
 	it("keeps founder approval by falling back to clean-tree proof when cross-family review is unavailable", async () => {
 		const { store, operation } = await fixture();
 		const fingerprint = contentFingerprint();

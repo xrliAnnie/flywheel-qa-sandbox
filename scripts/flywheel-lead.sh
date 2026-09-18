@@ -147,7 +147,8 @@ sanitize_codex_child_env() {
   unset FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS \
     FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD FLYWHEEL_ROUNDTABLE_CHANNEL_ID \
     FLYWHEEL_ROUNDTABLE_ENABLED FLYWHEEL_ROUNDTABLE_GUILD_ID \
-    FLYWHEEL_LEAD_CORE_CHANNEL_ID FLYWHEEL_LEAD_MENTION_PATTERNS
+    FLYWHEEL_LEAD_CORE_CHANNEL_ID FLYWHEEL_LEAD_MENTION_PATTERNS \
+    FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED FLYWHEEL_RAYA_PERSONA_GENERATION_ID
   if [ -n "$roundtable_channel" ]; then
     export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$roundtable_channel"
     export FLYWHEEL_ROUNDTABLE_CHANNEL_ID="$roundtable_channel"
@@ -227,7 +228,7 @@ acquire_codex_home_launch_fence() {
 }
 
 run_manifest() {
-  local manifest="$1" selector wrapper token_env project_root target_sha gate_rc
+  local manifest="$1" selector wrapper token_env project_root target_sha gate_rc persona_result
   load_common || return $?
   require_registry_intent_clear || return $?
   read_manifest_identity "$manifest" || return $?
@@ -252,6 +253,19 @@ run_manifest() {
   [ -n "${!token_env:-}" ] || { fail "$token_env is unset or empty" 78; return $?; }
 
   sanitize_codex_child_env "$selector"
+
+  # FLY-2696: only the exact Raya carrier crosses the projector seam. The CLI
+  # performs the local no-contract enrollment latch without contacting Bridge;
+  # an opted-in row then projects and verifies the exact authorized commit.
+  if [ "$RUN_PROJECT" = "raya" ] && [ "$RUN_LEAD" = "raya" ]; then
+    if ! persona_result="$(node "$FLYWHEEL_COMM_CLI" persona-project \
+      --project raya --lead raya --projects-file "$PROJECTS_FILE" \
+      --bridge-url "${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}")"; then
+      fail "Raya persona projection refused: ${persona_result:-no receipt}" 78
+      return $?
+    fi
+    log "Raya persona projection: $persona_result"
+  fi
 
   target_sha="$(lead_host_tmux_target_sha)"
   export FLYWHEEL_HOST_TMUX_TARGET_SHA="$target_sha"

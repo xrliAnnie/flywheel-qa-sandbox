@@ -13,6 +13,7 @@ import {
 	type CodexQuotaObservation,
 	selectCodexQuotaCandidate,
 } from "../codex-quota/candidate-selector.js";
+import type { CodexSwitchNotificationSnapshot } from "../codex-quota/switch-notification.js";
 
 export type CodexQuotaRoot = {
 	rootKey: string;
@@ -118,7 +119,7 @@ export class CodexQuotaStore {
    CREATE TRIGGER IF NOT EXISTS codex_quota_legacy_start_no_update BEFORE UPDATE ON codex_quota_legacy_start BEGIN SELECT RAISE(ABORT, 'quota legacy reservation is append-only'); END;
    CREATE TRIGGER IF NOT EXISTS codex_quota_legacy_start_no_delete BEFORE DELETE ON codex_quota_legacy_start BEGIN SELECT RAISE(ABORT, 'quota legacy reservation is append-only'); END;
    CREATE TABLE IF NOT EXISTS codex_quota_root(root_key TEXT PRIMARY KEY,account_key TEXT NOT NULL,profile TEXT NOT NULL,generation INTEGER NOT NULL);
-   CREATE TABLE IF NOT EXISTS codex_quota_install_material(incident_id TEXT PRIMARY KEY,profile TEXT NOT NULL,account_key TEXT NOT NULL,prior_auth_digest TEXT NOT NULL,installed_auth_digest TEXT NOT NULL,recovery_material_path TEXT NOT NULL,recorded_at TEXT NOT NULL,resolution TEXT NOT NULL DEFAULT 'pending',resolved_at TEXT);
+   CREATE TABLE IF NOT EXISTS codex_quota_install_material(incident_id TEXT PRIMARY KEY,profile TEXT NOT NULL,account_key TEXT NOT NULL,prior_auth_digest TEXT NOT NULL,installed_auth_digest TEXT NOT NULL,recovery_material_path TEXT NOT NULL,recorded_at TEXT NOT NULL,resolution TEXT NOT NULL DEFAULT 'pending',resolved_at TEXT,notification_json TEXT);
    CREATE TABLE IF NOT EXISTS codex_quota_binding(binding_id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, run_id TEXT, purpose TEXT NOT NULL, account_key TEXT NOT NULL, profile TEXT NOT NULL, generation INTEGER NOT NULL, root_key TEXT NOT NULL, created_at TEXT NOT NULL);
    CREATE INDEX IF NOT EXISTS codex_quota_binding_execution ON codex_quota_binding(execution_id);
    CREATE TABLE IF NOT EXISTS codex_quota_incident(incident_id TEXT PRIMARY KEY, root_key TEXT NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL, first_seen_at TEXT NOT NULL, next_attempt_at TEXT, selection_id TEXT, target_profile TEXT, probe_result TEXT, probe_at TEXT, prior_auth_digest TEXT, installed_auth_digest TEXT, installed_generation INTEGER, failure_code TEXT, UNIQUE(root_key,generation));
@@ -157,6 +158,10 @@ export class CodexQuotaStore {
 		if (!installMaterialColumns.has("resolved_at"))
 			this.db.exec(
 				"ALTER TABLE codex_quota_install_material ADD COLUMN resolved_at TEXT",
+			);
+		if (!installMaterialColumns.has("notification_json"))
+			this.db.exec(
+				"ALTER TABLE codex_quota_install_material ADD COLUMN notification_json TEXT",
 			);
 		// Upgrade the only durable legacy rollback evidence before later retry
 		// state changes can overwrite its incident failure_code.
@@ -357,6 +362,7 @@ export class CodexQuotaStore {
 		priorAuthDigest: string;
 		installedAuthDigest: string;
 		recoveryMaterialPath: string;
+		notification?: CodexSwitchNotificationSnapshot;
 		now?: string;
 	}): void {
 		if (
@@ -367,6 +373,17 @@ export class CodexQuotaStore {
 			!input.installedAuthDigest
 		)
 			throw new Error("invalid_quota_installation");
+		let notificationJson: string | null = null;
+		try {
+			const encoded =
+				input.notification === undefined
+					? null
+					: JSON.stringify(input.notification);
+			if (encoded !== null && encoded.length <= 16_384)
+				notificationJson = encoded;
+		} catch {
+			// Notification evidence can degrade to n/a; it must never block install.
+		}
 		this.db.transaction(() => {
 			const incident = this.getIncident(input.incidentId);
 			if (
@@ -390,7 +407,7 @@ export class CodexQuotaStore {
 			});
 			this.db
 				.prepare(
-					"INSERT INTO codex_quota_install_material(incident_id,profile,account_key,prior_auth_digest,installed_auth_digest,recovery_material_path,recorded_at,resolution,resolved_at) VALUES(?,?,?,?,?,?,?,'pending',NULL) ON CONFLICT(incident_id) DO UPDATE SET profile=excluded.profile,account_key=excluded.account_key,prior_auth_digest=excluded.prior_auth_digest,installed_auth_digest=excluded.installed_auth_digest,recovery_material_path=excluded.recovery_material_path,recorded_at=excluded.recorded_at,resolution='pending',resolved_at=NULL",
+					"INSERT INTO codex_quota_install_material(incident_id,profile,account_key,prior_auth_digest,installed_auth_digest,recovery_material_path,recorded_at,resolution,resolved_at,notification_json) VALUES(?,?,?,?,?,?,?,'pending',NULL,?) ON CONFLICT(incident_id) DO UPDATE SET profile=excluded.profile,account_key=excluded.account_key,prior_auth_digest=excluded.prior_auth_digest,installed_auth_digest=excluded.installed_auth_digest,recovery_material_path=excluded.recovery_material_path,recorded_at=excluded.recorded_at,resolution='pending',resolved_at=NULL,notification_json=excluded.notification_json",
 				)
 				.run(
 					input.incidentId,
@@ -400,6 +417,7 @@ export class CodexQuotaStore {
 					input.installedAuthDigest,
 					input.recoveryMaterialPath,
 					now,
+					notificationJson,
 				);
 			this.db
 				.prepare(
@@ -424,6 +442,7 @@ export class CodexQuotaStore {
 				recordedAt: string;
 				resolution: "pending" | "installed" | "rolled_back";
 				resolvedAt: string | null;
+				notificationJson: string | null;
 		  }
 		| undefined {
 		const row = this.db
@@ -439,6 +458,7 @@ export class CodexQuotaStore {
 					recordedAt: row.recorded_at!,
 					resolution: row.resolution as "pending" | "installed" | "rolled_back",
 					resolvedAt: row.resolved_at ?? null,
+					notificationJson: row.notification_json ?? null,
 				}
 			: undefined;
 	}
@@ -503,7 +523,10 @@ export class CodexQuotaStore {
 				incidentId: input.incidentId,
 				kind: "switch_notification",
 				destination: "founder",
-				payload: { reason: "switch_succeeded" },
+				payload: {
+					reason: "switch_succeeded",
+					notification: material.notificationJson,
+				},
 			});
 		})();
 	}

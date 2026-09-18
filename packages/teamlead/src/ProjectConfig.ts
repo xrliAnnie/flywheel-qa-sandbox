@@ -3,7 +3,11 @@ import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
-import { resolveCodexLeadCapabilities } from "flywheel-config";
+import {
+	type PersonaProjection,
+	parsePersonaProjection,
+	resolveCodexLeadCapabilities,
+} from "flywheel-config";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
@@ -313,7 +317,14 @@ export interface ProjectEntry {
 	projectName: string;
 	projectRoot: string;
 	projectRepo?: string;
+	personaProjection?: PersonaProjection;
+	personaProjectionContractDigest?: string;
+	invalidPersonaProjection?: string;
 	leads: LeadConfig[];
+	/** Optional unique primary recipient for every shuttle infrastructure alert. */
+	shuttlePrimaryEngineeringLeadId?: string;
+	/** Optional project-local copy recipient for this project's shuttle alerts. */
+	shuttleEngineeringLeadId?: string;
 	/** Required only while the founder-selected summary mode is per-project. */
 	summaryAggregatorLeadId?: string;
 	generalChannel?: string;
@@ -517,6 +528,20 @@ export function parseAndValidateProjects(
 			throw new Error(
 				`Project "${entry.projectName}": projectName must match ${SAFE_IDENTIFIER_RE} (it becomes a filesystem path component)`,
 			);
+		}
+		for (const field of [
+			"shuttlePrimaryEngineeringLeadId",
+			"shuttleEngineeringLeadId",
+		] as const) {
+			const value = (entry as Record<string, unknown>)[field];
+			if (
+				value !== undefined &&
+				(typeof value !== "string" || !SAFE_IDENTIFIER_RE.test(value))
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" ${field}: must be a safe non-empty Lead id`,
+				);
+			}
 		}
 
 		// Validate leads config (GEO-152: 1:N multi-lead routing)
@@ -1274,6 +1299,67 @@ export function parseAndValidateProjects(
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" linear.label: if provided, must be a non-empty string (scope label name), got ${JSON.stringify(lb.label)}`,
+				);
+			}
+		}
+
+		const parsedProjection = parsePersonaProjection(
+			(entry as Record<string, unknown>).personaProjection,
+			{
+				projectName: entry.projectName,
+				projectRepo:
+					typeof entry.projectRepo === "string" ? entry.projectRepo : undefined,
+			},
+		);
+		delete (entry as Record<string, unknown>).invalidPersonaProjection;
+		delete (entry as Record<string, unknown>).personaProjectionContractDigest;
+		if (parsedProjection.kind === "valid") {
+			const selectedLead = leads.find(
+				(lead) => lead.agentId === parsedProjection.value.leadId,
+			);
+			const runtimeValid =
+				selectedLead?.backend === "codex-app-server" &&
+				selectedLead.codexProfile === "full-access" &&
+				selectedLead.codexCapabilityBundleVersion !== 2;
+			if (!runtimeValid) {
+				delete (entry as Record<string, unknown>).personaProjection;
+				(entry as Record<string, unknown>).invalidPersonaProjection =
+					"personaProjection requires raya/raya Codex TUI full-access capability bundle version 1";
+			} else {
+				(entry as Record<string, unknown>).personaProjection =
+					parsedProjection.value;
+				(entry as Record<string, unknown>).personaProjectionContractDigest =
+					parsedProjection.contractDigest;
+			}
+		} else if (parsedProjection.kind === "invalid") {
+			delete (entry as Record<string, unknown>).personaProjection;
+			(entry as Record<string, unknown>).invalidPersonaProjection =
+				parsedProjection.reason;
+		}
+	}
+
+	const primaryBindings = raw.filter(
+		(entry) => entry.shuttlePrimaryEngineeringLeadId !== undefined,
+	);
+	if (primaryBindings.length > 1) {
+		throw new Error(
+			"shuttle routing allows at most one primary engineering Lead",
+		);
+	}
+	for (const entry of raw) {
+		for (const field of [
+			"shuttlePrimaryEngineeringLeadId",
+			"shuttleEngineeringLeadId",
+		] as const) {
+			const leadId = entry[field];
+			if (
+				leadId !== undefined &&
+				entry.leads.filter(
+					(lead: ProjectEntry["leads"][number]) => lead.agentId === leadId,
+				).length !== 1
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" ${field}: Lead must resolve exactly once`,
 				);
 			}
 		}

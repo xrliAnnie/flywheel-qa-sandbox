@@ -234,6 +234,7 @@ export class CodexQuotaRuntime {
 	async rotate(
 		incident: Record<string, unknown>,
 		candidate: CodexQuotaObservation,
+		observations: readonly CodexQuotaObservation[],
 	): Promise<{ ok: boolean; authDigest?: string }> {
 		await this.requireReadiness();
 		if (
@@ -242,6 +243,32 @@ export class CodexQuotaRuntime {
 			return { ok: false };
 		if (this.candidateInUse(candidate.accountKey)) return { ok: false };
 		const identify = codexQuotaIdentityReader(this.options.registry);
+		const root = this.options.store.codexQuota.getRoot(
+			String(incident.root_key),
+		);
+		const profileEmail = (profile: string) =>
+			this.options.registry.profiles.find((entry) => entry.name === profile)
+				?.email ?? null;
+		const notification = root
+			? {
+					version: 1 as const,
+					from: {
+						profile: root.profile,
+						accountKey: root.accountKey,
+						email: profileEmail(root.profile),
+						windows:
+							observations.find(
+								(observation) => observation.accountKey === root.accountKey,
+							)?.windows ?? [],
+					},
+					to: {
+						profile: candidate.profile,
+						accountKey: candidate.accountKey,
+						email: profileEmail(candidate.profile),
+						windows: candidate.windows,
+					},
+				}
+			: undefined;
 		const authPath = join(
 			this.options.profilesRoot,
 			candidate.profile,
@@ -321,6 +348,7 @@ export class CodexQuotaRuntime {
 						this.options.store.codexQuota.recordInstalling({
 							incidentId: String(incident.incident_id),
 							...receipt,
+							notification,
 						}),
 				});
 				if (installed.profilePersisted)
@@ -448,7 +476,8 @@ export class CodexQuotaRuntime {
 				: {}),
 			readiness: () => this.readiness(),
 			observe: () => this.observe(),
-			rotate: (incident, candidate) => this.rotate(incident, candidate),
+			rotate: (incident, candidate, observations) =>
+				this.rotate(incident, candidate, observations),
 			reconcileInstallation: (incident, material) =>
 				this.reconcileInstallation(incident, material),
 			recover: this.options.recover,

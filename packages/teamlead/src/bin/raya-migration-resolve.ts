@@ -43,9 +43,24 @@ export async function resolveMigration(input: {
 		const file = join(raya, "migrations/FLY-2445-standard-lead/manifest.json");
 		const bytes = readPrivate(file);
 		const manifest = JSON.parse(bytes);
+		const postActivationRecovery =
+			manifest.checkpoint === "P4b" &&
+			["probe_message-id", "probe_not_delivered"].includes(input.as) &&
+			manifest.cursor?.status === "preexisting" &&
+			Number.isFinite(Date.parse(manifest.activated_at)) &&
+			Number.isFinite(Date.parse(manifest.lead_restart_installed_at)) &&
+			typeof manifest.seed_probe?.intent?.nonce === "string" &&
+			/^[a-zA-Z0-9-]+$/.test(manifest.seed_probe.intent.nonce) &&
+			typeof manifest.seed_probe?.message_id === "string" &&
+			/^[0-9]{17,20}$/.test(manifest.seed_probe.message_id) &&
+			Array.isArray(manifest.probe_resets) &&
+			manifest.probe_resets.some(
+				(entry: { nonce?: string }) =>
+					entry.nonce === manifest.seed_probe.intent.nonce,
+			);
 		if (
 			manifest.schemaVersion !== 1 ||
-			manifest.checkpoint !== "P3" ||
+			(manifest.checkpoint !== "P3" && !postActivationRecovery) ||
 			!Array.isArray(manifest.unresolved) ||
 			(manifest.resolutions !== undefined &&
 				!Array.isArray(manifest.resolutions))
@@ -215,6 +230,12 @@ async function resolveRecovery(
 				message.content !== `[${intent.prefix} ${intent.nonce}] ${intent.text}`
 			)
 				throw new Error("probe-message-mismatch");
+			if (
+				manifest.checkpoint === "P4b" &&
+				Number((BigInt(message.id) >> 22n) + 1420070400000n) <
+					Date.parse(manifest.activated_at as string)
+			)
+				throw new Error("activation-probe-before-activation");
 			manifest.cutover_probe = {
 				intent: { nonce: intent.nonce, at: intent.at },
 				message_id: message.id,

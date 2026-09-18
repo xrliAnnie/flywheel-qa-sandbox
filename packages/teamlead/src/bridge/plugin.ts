@@ -74,6 +74,7 @@ import {
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	resolveFounderTimezone,
+	resolvePersonaStateRoot,
 } from "flywheel-config";
 import {
 	closeRunnerTerminalView,
@@ -612,6 +613,11 @@ import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
 import { createLeadPatrolConfiguration } from "./lead-patrol-config.js";
+import {
+	PersonaActivationReader,
+	verifyStoppedPersonaConsumer,
+} from "./lead-persona-activation.js";
+import { createLeadPersonaRouter } from "./lead-persona-routes.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -837,6 +843,11 @@ import {
 	type ShipRelevantGitHubApi,
 } from "./ship-relevant-diff.js";
 import { forceShippedHusks } from "./shipped-husk-escalation.js";
+import {
+	createShuttleDeliveryRecorder,
+	createShuttleObservationExportReader,
+	createShuttleObservationProjector,
+} from "./shuttle-observation-projector.js";
 import {
 	resolveActiveSnapshotOwner,
 	runSnapshotMaintenance,
@@ -5114,6 +5125,47 @@ export function createBridgeApp(
 	);
 
 	app.use(
+		"/api/lead-persona",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createLeadPersonaRouter({
+			readActivation: async (projectName, leadId) => {
+				const project = projects.find((row) => row.projectName === projectName);
+				const lead = project?.leads.find((row) => row.agentId === leadId);
+				const botToken = lead?.botToken ?? config.discordBotToken;
+				if (!botToken)
+					return { kind: "refused", reason: "discord_token_unavailable" };
+				let stateRoot: string;
+				try {
+					stateRoot = resolvePersonaStateRoot(process.env, homedir());
+				} catch (error) {
+					return {
+						kind: "refused",
+						reason:
+							error instanceof Error
+								? error.message
+								: "persona_state_root_invalid",
+					};
+				}
+				return new PersonaActivationReader({
+					store,
+					projects,
+					stateRoot,
+					founderUserId:
+						config.discordOwnerUserId ?? config.founderConsent?.founderUserId,
+					fetchMessage: (channelId, messageId) =>
+						fetchDiscordMessageFromChannel(channelId, messageId, botToken),
+					verifyStoppedConsumer: (leadKey, proof) =>
+						verifyStoppedPersonaConsumer(leadKey, proof, {
+							leaseDbPath:
+								process.env.FLYWHEEL_LEAD_LEASE_DB ??
+								join(homedir(), ".flywheel", "lead-lease.db"),
+						}),
+				}).read(projectName, leadId);
+			},
+		}),
+	);
+
+	app.use(
 		"/api/epic-intake",
 		reportsAuthMiddleware(config.apiToken),
 		createEpicIntakeRouter({
@@ -7085,6 +7137,8 @@ export async function startBridge(
 								history: store.getEpicPageFreshness(projectName),
 								publication: store.getEpicPagePublication(projectName),
 							}),
+							readDeployment: (projectName) =>
+								store.getShuttleDeploymentProjection(projectName),
 							generatePage: generateAttentionEpicPage,
 							buildReceipt: buildEpicPageRenderReceipt,
 							now: () => new Date(),
@@ -7105,6 +7159,30 @@ export async function startBridge(
 		projects,
 		linearApiKey: config.linearApiKey,
 		runAttempt: runEpicPageRefreshAttempt,
+	});
+	const shuttleObservationScriptPath = resolve(
+		dirname(fileURLToPath(import.meta.url)),
+		"..",
+		"..",
+		"..",
+		"..",
+		"scripts",
+		"lib",
+		"shuttle-observation.py",
+	);
+	const shuttleFlywheelHome =
+		process.env.FLYWHEEL_HOME?.trim() || join(homedir(), ".flywheel");
+	const shuttleObservationProjector = createShuttleObservationProjector({
+		store,
+		projects: projects.map((project) => project.projectName),
+		readExport: createShuttleObservationExportReader({
+			scriptPath: shuttleObservationScriptPath,
+			flywheelHome: shuttleFlywheelHome,
+		}),
+		requestRefresh: (projectName, reason) =>
+			epicPageRefresher.requestRefresh(projectName, reason),
+		everyNTicks: 20,
+		log: (message) => console.warn(message),
 	});
 	const reportBlobSweepTimer = installReportBlobSweep({
 		credentials: reportHostingCredentials,
@@ -12034,7 +12112,11 @@ export async function startBridge(
 			enqueueIssueDisplayRefresh(issueId);
 			epicPageRefresher.requestRefresh(projectName, "founder_attention");
 		},
-		onEpicIntakeTick: () => epicIntakeScheduler.tick(),
+		onEpicIntakeTick: () =>
+			Promise.all([
+				epicIntakeScheduler.tick(),
+				shuttleObservationProjector.tick(),
+			]).then(() => undefined),
 		pollIntervalMs: 3_000,
 		recordSpan: (name, startMs, endMs) =>
 			eventLoopAttribution.recordSpan(name, startMs, endMs),
@@ -12787,6 +12869,10 @@ export async function startBridge(
 		claimsReader,
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
+		shuttleDeliveryRecorder: createShuttleDeliveryRecorder({
+			scriptPath: shuttleObservationScriptPath,
+			flywheelHome: shuttleFlywheelHome,
+		}),
 		unifiedAlert,
 		...(alertRatePerMin
 			? { rateLimiter: createAlertRateLimiter(alertRatePerMin) }
@@ -12866,6 +12952,7 @@ export async function startBridge(
 				config.discordOwnerUserId,
 				config.founderConsent?.founderUserId,
 			) ?? undefined,
+		timezone: resolveFounderTimezone,
 	});
 	tuiWindowAlertHolder.lost = async (evidence) => {
 		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert(

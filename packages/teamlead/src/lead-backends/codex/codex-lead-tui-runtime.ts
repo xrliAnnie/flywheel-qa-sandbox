@@ -51,6 +51,10 @@ import {
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import {
+	canonicalSubmissionDigest,
+	resolvePersonaStateRoot,
+} from "flywheel-config";
 import { storeCodexLeadThreadRotationEnabled } from "../../bridge/flag-store-runtime.js";
 import { loadProjects, type ProjectEntry } from "../../ProjectConfig.js";
 import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.js";
@@ -114,6 +118,13 @@ import {
 } from "./lead-actions/mcp-config.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
+import {
+	type PersonaColdProof,
+	type VerifiedPersona,
+	verifyPersonaColdProof,
+	verifyPersonaStartup,
+	writePersonaObservationReceipt,
+} from "./persona-startup-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { ResidentCodexLeadLifecycleObserver } from "./resident-codex-lead-lifecycle.js";
 import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js";
@@ -246,8 +257,24 @@ export function buildTuiDaemonEnv(opts: {
 	projectName?: string;
 	/** Trusted parent pins only; never inferred from a model-provided env marker. */
 	capabilityModelEnv?: LeadModelEnvPins;
+	/** Set only after the exact Raya opt-in startup gate succeeds. */
+	personaColdRequired?: boolean;
+	personaGenerationId?: string;
 }): NodeJS.ProcessEnv {
-	const { profile, env, codexHome, botToken } = opts;
+	const { profile, codexHome, botToken } = opts;
+	const env = { ...opts.env };
+	delete env.FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED;
+	delete env.FLYWHEEL_RAYA_PERSONA_GENERATION_ID;
+	if (opts.personaColdRequired) {
+		if (
+			profile !== "full-access" ||
+			!/^[a-f0-9]{32}$/.test(opts.personaGenerationId ?? "")
+		) {
+			throw new Error(
+				"persona cold daemon generation requires full-access and a valid generation id",
+			);
+		}
+	}
 	if (opts.capabilityModelEnv) {
 		if (profile !== "full-access")
 			throw new Error("capability model env requires full-access profile");
@@ -293,6 +320,12 @@ export function buildTuiDaemonEnv(opts: {
 			// script's ensure-daemon does stop-before-start (no stale read-only daemon
 			// survives the flip — Codex R1 HIGH-1). Non-secret.
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+			...(opts.personaColdRequired
+				? {
+						FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED: "1",
+						FLYWHEEL_RAYA_PERSONA_GENERATION_ID: opts.personaGenerationId!,
+					}
+				: {}),
 			...carrierEnv,
 		};
 	}
@@ -552,6 +585,14 @@ export interface TuiGenerationDeps {
 	connectDaemon?: typeof connectDaemonWs;
 	createSender?: (config: CodexLeadTuiRuntimeConfig) => OutboundSender;
 	preflight?: typeof runOutboundPreflight;
+	verifyPersona?: () => Promise<VerifiedPersona | null>;
+	verifyColdProof?: (persona: VerifiedPersona) => Promise<void> | void;
+	recordPersonaObservation?: (
+		stage: "verified" | "ready",
+		persona: VerifiedPersona,
+		threadId: string,
+		threadRpcAckAt: string,
+	) => Promise<void> | void;
 }
 
 export function buildTuiGeneration(
@@ -595,6 +636,7 @@ export function buildTuiGeneration(
 		log: (m) => logger.warn(m),
 	});
 	return () => {
+		let activeVerifiedPersona: VerifiedPersona | null = null;
 		let threadRotationEnabled = false;
 		let runtime: CodexLeadRuntime | null = null;
 		let proc: CodexLeadProcess | null = null;
@@ -619,6 +661,22 @@ export function buildTuiGeneration(
 		let lastActivityAt = Date.now();
 		let gatewayReady = false;
 		let rotationTimer: ReturnType<typeof setInterval> | null = null;
+		const markPersonaReady = async (threadId: string): Promise<void> => {
+			if (!activeVerifiedPersona) return;
+			const threadRpcAckAt = new Date().toISOString();
+			await deps.recordPersonaObservation?.(
+				"verified",
+				activeVerifiedPersona,
+				threadId,
+				threadRpcAckAt,
+			);
+			await deps.recordPersonaObservation?.(
+				"ready",
+				activeVerifiedPersona,
+				threadId,
+				threadRpcAckAt,
+			);
+		};
 		const emit = (event: string, fields: Record<string, unknown> = {}) => {
 			if (!threadRotationEnabled) return;
 			appendRotationReceipt(
@@ -903,6 +961,9 @@ export function buildTuiGeneration(
 
 		return {
 			start: startSafely(async () => {
+				const verifiedPersona = (await deps.verifyPersona?.()) ?? null;
+				if (verifiedPersona) await deps.verifyColdProof?.(verifiedPersona);
+				activeVerifiedPersona = verifiedPersona;
 				// Validate persona BEFORE opening the WS (review R3 MED-2): a
 				// fail-close here must not leak an already-connected transport (at
 				// this point `runtime` is unassigned, so stop() couldn't close it).
@@ -924,9 +985,11 @@ export function buildTuiGeneration(
 				if (capabilityV2 && config.outboundMode !== "bridge")
 					throw new Error("capability_outbound_requires_bridge");
 				if (capabilityV2) await capabilityParent!.assertCurrent();
-				const baseInstructions = capabilityV2
-					? capabilityParent!.baseInstructions
-					: requirePersona(config);
+				const baseInstructions =
+					verifiedPersona?.baseInstructions ??
+					(capabilityV2
+						? capabilityParent!.baseInstructions
+						: requirePersona(config));
 				if (capabilityV2 && !baseInstructions?.trim())
 					throw new Error("capability_rules_unverified");
 				if (capabilityParent?.skillGaps?.length)
@@ -1226,6 +1289,7 @@ export function buildTuiGeneration(
 													ledgerWriteFailed,
 												});
 												activeThreadId = id;
+												await markPersonaReady(id);
 												return id;
 											}
 										}
@@ -1237,6 +1301,7 @@ export function buildTuiGeneration(
 							try {
 								await p.resumeThread(saved, threadParams());
 								activeThreadId = saved;
+								await markPersonaReady(saved);
 								return saved;
 							} catch (err) {
 								if (!isTurnlessRolloutError(err)) throw err;
@@ -1271,6 +1336,7 @@ export function buildTuiGeneration(
 							});
 						}
 						activeThreadId = id;
+						await markPersonaReady(id);
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
@@ -1665,6 +1731,7 @@ export async function main(
 	// full-access ⟹ workspace-write (profile↔sandbox lockstep), so reaching here
 	// with full-access guarantees workspace-write.
 	const fullAccess = config.codexProfile === "full-access";
+	const exactRaya = config.projectName === "raya" && config.leadId === "raya";
 	if (config.sandboxMode !== "read-only" && !fullAccess) {
 		throw new Error(
 			`codex-lead-tui-runtime: sandbox="${config.sandboxMode}" profile="${config.codexProfile}" is write-capable but not full-access — the ③ TUI Lead supports only read-only companion and full-access (Claude-equal); the (Z) write-capable gateway tier is headless-only (FLY-245). Refusing to start.`,
@@ -1673,7 +1740,8 @@ export async function main(
 	// Persona fail-close at boot (review MED — parity with headless). The same
 	// check runs at every generation read point (requirePersona), so a companion
 	// never silently falls back to the default persona.
-	if (config.capabilityBundleVersion !== 2) requirePersona(config);
+	if (config.capabilityBundleVersion !== 2 && !exactRaya)
+		requirePersona(config);
 	// DRY-RUN (review MED — parity with headless): describe what WOULD start with
 	// zero side effects (no daemon connect, no Discord poll). The launcher skips
 	// ensure-home/ensure-daemon in dry-run so this path is genuinely side-effect free.
@@ -1690,6 +1758,32 @@ export async function main(
 		...config,
 		carrierInstanceId,
 	};
+	let personaStateRoot: string | undefined;
+	const verifyCurrentPersona = async (): Promise<VerifiedPersona | null> => {
+		if (!exactRaya) return null;
+		if (
+			!config.projectsFile ||
+			!config.expectedProjectsDigest ||
+			!config.fullAccessProjectRoot
+		) {
+			throw new Error("persona_startup_authority_missing");
+		}
+		personaStateRoot ??= resolvePersonaStateRoot(env, homedir());
+		return verifyPersonaStartup({
+			projectName: config.projectName,
+			leadId: config.leadId,
+			projectsPath: config.projectsFile,
+			expectedProjectsDigest: config.expectedProjectsDigest,
+			projectRoot: config.fullAccessProjectRoot,
+			stateRoot: personaStateRoot,
+			systemPromptFiles: config.systemPromptFiles,
+			...(config.capabilityBundleVersion === 2
+				? { capabilityBundleVersion: 2 as const }
+				: {}),
+			bridgeUrl: config.bridgeUrl,
+			bridgeToken: config.apiToken,
+		});
+	};
 	publishCarrierRuntimeAssertion({
 		env,
 		leadKey: config.leadKey,
@@ -1701,6 +1795,7 @@ export async function main(
 		),
 	});
 	if (config.capabilityBundleVersion === 2) {
+		await verifyCurrentPersona();
 		const owned = createCapabilityTuiRuntime(carrierConfig, env, console);
 		const stop = () => {
 			void owned.stop().then(
@@ -1790,7 +1885,15 @@ export async function main(
 			`[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, outbound=${config.outboundMode}, credential by-name, no broker)`,
 		);
 	}
+	let preparedPersona: VerifiedPersona | null | undefined;
+	let preparedPersonaGenerationId: string | undefined;
+	let preparedPersonaColdProof: PersonaColdProof | undefined;
 	const ensureDaemon = async () => {
+		preparedPersona = await verifyCurrentPersona();
+		preparedPersonaColdProof = undefined;
+		preparedPersonaGenerationId = preparedPersona
+			? randomBytes(16).toString("hex")
+			: undefined;
 		const { stderr } = await execFileP(
 			"/bin/bash",
 			[homeScript, "ensure-daemon"],
@@ -1806,6 +1909,8 @@ export async function main(
 					carrierInstanceId,
 					leadId: config.leadId,
 					projectName: config.projectName,
+					personaColdRequired: preparedPersona !== null,
+					personaGenerationId: preparedPersonaGenerationId,
 				}),
 			},
 		);
@@ -1815,6 +1920,50 @@ export async function main(
 		{
 			buildGeneration: buildTuiGeneration(carrierConfig, console, {
 				requestRebuild: (reason) => supervisor.requestRebuild(reason),
+				verifyPersona: async () => {
+					if (preparedPersona === undefined)
+						throw new Error("persona_daemon_not_prepared");
+					const fresh = await verifyCurrentPersona();
+					if (
+						canonicalSubmissionDigest(fresh) !==
+						canonicalSubmissionDigest(preparedPersona)
+					)
+						throw new Error("persona_authority_changed_after_daemon_start");
+					return fresh;
+				},
+				verifyColdProof: () => {
+					if (!preparedPersonaGenerationId)
+						throw new Error("persona_cold_generation_missing");
+					preparedPersonaColdProof = verifyPersonaColdProof({
+						codexHome: config.codexHome,
+						generationId: preparedPersonaGenerationId,
+					});
+				},
+				recordPersonaObservation: (
+					stage,
+					persona,
+					threadId,
+					threadRpcAckAt,
+				) => {
+					if (
+						!personaStateRoot ||
+						!preparedPersonaColdProof ||
+						!preparedPersonaGenerationId
+					) {
+						throw new Error("persona_observation_authority_missing");
+					}
+					writePersonaObservationReceipt(personaStateRoot, {
+						schemaVersion: 1,
+						stage,
+						generationId: preparedPersonaGenerationId,
+						pid: preparedPersonaColdProof.pid,
+						processStartTime: preparedPersonaColdProof.processStartTime,
+						leadKey: config.leadKey,
+						threadId,
+						threadRpcAckAt,
+						...persona,
+					});
+				},
 			}),
 			ensureDaemon,
 			log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`),

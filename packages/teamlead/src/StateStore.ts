@@ -60,8 +60,10 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -206,6 +208,8 @@ import {
 	REFRESH_REASONS,
 	type EpicPage,
 	type RefreshReason,
+	type ShuttleDeploymentUnit,
+	type ShuttleDeploymentView,
 } from "./epic-page/model.js";
 import { EPIC_RESIDUAL_UNAVAILABLE_TOKENS } from "./epic-page/residual.js";
 import {
@@ -2498,6 +2502,18 @@ export interface EpicPageFreshnessRead {
 	};
 }
 
+export interface ShuttleProjectionCursorRead {
+	sourceId: string | null;
+	cursor: number;
+	status: ShuttleDeploymentView["sourceStatus"];
+	lastOkAt: string | null;
+}
+
+export interface ShuttleProjectionApplyResult {
+	changed: boolean;
+	changedProjects: string[];
+}
+
 export interface EpicPageRenderReceiptRow {
 	version: number;
 	generated_at: string;
@@ -2716,6 +2732,62 @@ export type AttentionThreadBinding =
 				| "issue_identity_unknown";
 	  };
 
+export interface OpenedDatabaseIdentity {
+	canonicalPath: string;
+	device: string;
+	inode: string;
+}
+
+function readDatabaseIdentity(dbPath: string): OpenedDatabaseIdentity {
+	const canonicalPath = realpathSync.native(dbPath);
+	const stat = statSync(canonicalPath, { bigint: true });
+	if (!stat.isFile()) throw new Error("database_identity_not_regular_file");
+	return {
+		canonicalPath,
+		device: stat.dev.toString(10),
+		inode: stat.ino.toString(10),
+	};
+}
+
+function sameDatabaseIdentity(
+	left: OpenedDatabaseIdentity,
+	right: OpenedDatabaseIdentity,
+): boolean {
+	return (
+		left.canonicalPath === right.canonicalPath &&
+		left.device === right.device &&
+		left.inode === right.inode
+	);
+}
+
+/**
+ * Bind the opened handle to the path identity observed on both sides of open.
+ * The injected opener keeps the race seam executable without weakening the
+ * production constructor.
+ */
+export function openWithDatabaseIdentity<T extends { close(): void }>(
+	dbPath: string,
+	open: () => T,
+): { connection: T; identity: OpenedDatabaseIdentity | null } {
+	if (dbPath === ":memory:") return { connection: open(), identity: null };
+	const before = existsSync(dbPath) ? readDatabaseIdentity(dbPath) : null;
+	const connection = open();
+	try {
+		const after = readDatabaseIdentity(dbPath);
+		if (before !== null && !sameDatabaseIdentity(before, after)) {
+			throw new Error("database_identity_changed_during_open");
+		}
+		return { connection, identity: after };
+	} catch (error) {
+		try {
+			connection.close();
+		} catch {
+			// Best effort: the identity failure is authoritative.
+		}
+		throw error;
+	}
+}
+
 export class StateStore {
 	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
 	private summaryPresentationStoreCache?: {
@@ -2746,6 +2818,7 @@ export class StateStore {
 	}
 	private db: CompatDb;
 	private dbPath: string;
+	private openedDatabaseIdentity: OpenedDatabaseIdentity | null;
 	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
 	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
 	codexQuotaLaunchEnabled: () => boolean = () => true;
@@ -2871,9 +2944,11 @@ export class StateStore {
 		db: CompatDb,
 		dbPath: string,
 		private readonly maintenance?: { readonly: boolean },
+		openedDatabaseIdentity: OpenedDatabaseIdentity | null = null,
 	) {
 		this.db = db;
 		this.dbPath = dbPath;
+		this.openedDatabaseIdentity = openedDatabaseIdentity;
 	}
 
 	/**
@@ -2884,6 +2959,66 @@ export class StateStore {
 	 */
 	getDbPath(): string {
 		return this.dbPath;
+	}
+
+	/** The file identity held by this live SQLite connection. */
+	getOpenedDatabaseIdentity(): OpenedDatabaseIdentity | null {
+		return this.openedDatabaseIdentity
+			? { ...this.openedDatabaseIdentity }
+			: null;
+	}
+
+	/** Refuse when the path now names a different file than the live handle. */
+	assertOpenedDatabaseIdentityCurrent(): OpenedDatabaseIdentity {
+		const opened = this.openedDatabaseIdentity;
+		if (this.dbPath === ":memory:" || opened === null) {
+			throw new Error("database_identity_unavailable");
+		}
+		let current: OpenedDatabaseIdentity;
+		try {
+			current = readDatabaseIdentity(this.dbPath);
+		} catch {
+			throw new Error("database_identity_path_unavailable");
+		}
+		if (!sameDatabaseIdentity(opened, current)) {
+			throw new Error("database_identity_changed_after_open");
+		}
+		return { ...opened };
+	}
+
+	/** Read-only S4 evidence seam; FLY-2697 owns adding/populating completed_at_ms. */
+	readSummaryPresentationMigrationEvidence(
+		projectName: string,
+		leadId: string,
+	): {
+		migration: ReturnType<SummaryPresentationStore["getMigration"]>;
+		completedAtMs: number | null;
+	} {
+		const migration = this.summaryPresentations.getMigration(projectName, leadId);
+		const hasCompletedAt = (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM pragma_table_info('summary_presentation_migration') WHERE name = 'completed_at_ms'",
+				)
+				.get() as { "1": number } | undefined
+		) !== undefined;
+		if (!migration || !hasCompletedAt) {
+			return { migration, completedAtMs: null };
+		}
+		const row = this.db.raw
+			.prepare(
+				`SELECT completed_at_ms AS completedAtMs
+				 FROM summary_presentation_migration
+				 WHERE project_name = ? AND lead_id = ? AND contract_version = 2`,
+			)
+			.get(projectName, leadId) as { completedAtMs: number | null } | undefined;
+		return {
+			migration,
+			completedAtMs:
+				row?.completedAtMs != null && Number.isSafeInteger(row.completedAtMs)
+					? row.completedAtMs
+					: null,
+		};
 	}
 
 	/** Persist the resolved configuration before page consumers start. */
@@ -3919,7 +4054,15 @@ export class StateStore {
 	 * full-DB export-on-every-write.
 	 */
 	static async create(dbPath: string): Promise<StateStore> {
-		const store = new StateStore(StateStore.openDatabase(dbPath), dbPath);
+		const opened = openWithDatabaseIdentity(dbPath, () =>
+			StateStore.openDatabase(dbPath),
+		);
+		const store = new StateStore(
+			opened.connection,
+			dbPath,
+			undefined,
+			opened.identity,
+		);
 		store.migrate();
 		store.codexQuota.migrate();
 		return store;
@@ -3938,10 +4081,15 @@ export class StateStore {
 		if (dbPath === ":memory:" || !existsSync(dbPath)) {
 			throw new Error(`maintenance_database_missing:${dbPath}`);
 		}
-		const raw = new BetterSqlite3(dbPath, {
-			readonly: options.readonly,
-			fileMustExist: true,
-		});
+		const opened = openWithDatabaseIdentity(
+			dbPath,
+			() =>
+				new BetterSqlite3(dbPath, {
+					readonly: options.readonly,
+					fileMustExist: true,
+				}),
+		);
+		const raw = opened.connection;
 		try {
 			installSqlTiming(raw, "teamlead");
 			raw.pragma("busy_timeout = 5000");
@@ -3955,9 +4103,12 @@ export class StateStore {
 				raw.pragma("foreign_keys = ON");
 			}
 			StateStore.assertMaintenanceSchema(raw);
-			return new StateStore(new CompatDb(raw), dbPath, {
-				readonly: options.readonly,
-			});
+			return new StateStore(
+				new CompatDb(raw),
+				dbPath,
+				{ readonly: options.readonly },
+				opened.identity,
+			);
 		} catch (error) {
 			raw.close();
 			throw error;
@@ -4355,11 +4506,14 @@ export class StateStore {
 		// Track the freshly-built handle so it can be closed if migration throws
 		// (no leaked handle on the failure path — Codex code R1 LOW).
 		let next: CompatDb | undefined;
+		const oldIdentity = this.openedDatabaseIdentity;
 		try {
 			// Reopen from the on-disk file, swap it in, then migrate it (idempotent;
 			// synchronous). On ANY throw the catch restores `old` and closes `next`.
-			next = this.buildDatabaseFromDisk();
+			const rebuilt = this.buildDatabaseFromDisk();
+			next = rebuilt.db;
 			this.db = next;
+			this.openedDatabaseIdentity = rebuilt.identity;
 			this.migrate();
 			// Best-effort close of the old (corrupt) handle. A close failure does
 			// not fail recovery.
@@ -4375,6 +4529,7 @@ export class StateStore {
 			return true;
 		} catch (rebuildErr) {
 			this.db = old; // restore defined state (old is corrupt, retried next window)
+			this.openedDatabaseIdentity = oldIdentity;
 			// Close the half-built replacement so a failed rebuild never leaks a handle.
 			if (next) {
 				try {
@@ -4405,19 +4560,25 @@ export class StateStore {
 	 * failure in `recoverFromCorruption()` and can reach the unrecoverable
 	 * escalation (FLY-639 contract preserved; Codex code R1 MEDIUM).
 	 */
-	private buildDatabaseFromDisk(): CompatDb {
+	private buildDatabaseFromDisk(): {
+		db: CompatDb;
+		identity: OpenedDatabaseIdentity | null;
+	} {
 		if (this.dbPath === ":memory:") {
-			return StateStore.openDatabase(":memory:");
+			return { db: StateStore.openDatabase(":memory:"), identity: null };
 		}
 		const fileExisted = existsSync(this.dbPath);
-		const db = StateStore.openDatabase(this.dbPath);
+		const opened = openWithDatabaseIdentity(this.dbPath, () =>
+			StateStore.openDatabase(this.dbPath),
+		);
+		const db = opened.connection;
 		if (fileExisted) {
 			// Existing file → prove it is a real SQLite DB. A malformed/NOTADB image
 			// makes this read throw, which the caller counts as a rebuild failure
 			// (rather than masking corruption as a clean empty DB).
 			db.raw.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
 		}
-		return db;
+		return { db, identity: opened.identity };
 	}
 
 	/**
@@ -8303,6 +8464,7 @@ export class StateStore {
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
 		this.migrateEpicPage();
+		this.migrateShuttleProjection();
 		this.migrateReleaseReadiness();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
@@ -8602,6 +8764,34 @@ export class StateStore {
 		});
 		this.addColumnIfMissing("epic_page_publication", "last_content_digest", "TEXT");
 		this.addColumnIfMissing("epic_page_publication", "last_hosting_key", "TEXT");
+	}
+
+	private migrateShuttleProjection(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS shuttle_unit_projection (
+				unit_id TEXT PRIMARY KEY,
+				project_name TEXT NOT NULL,
+				source_id TEXT NOT NULL,
+				source_change_seq INTEGER NOT NULL CHECK (source_change_seq >= 0),
+				payload_json TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_shuttle_unit_projection_project
+			ON shuttle_unit_projection(project_name, unit_id)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS shuttle_projection_cursor (
+				source_key TEXT PRIMARY KEY CHECK (source_key = 'updater'),
+				source_id TEXT,
+				cursor INTEGER NOT NULL CHECK (cursor >= 0),
+				status TEXT NOT NULL CHECK (status IN ('complete','truncated','unavailable')),
+				last_ok_at TEXT,
+				last_error TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
 	}
 
 	/** FLY-1778/2100: scoped current-value rows plus append-only operator audit. */
@@ -14392,6 +14582,216 @@ export class StateStore {
 			};
 		}
 		return result;
+	}
+
+	getShuttleProjectionCursor(): ShuttleProjectionCursorRead {
+		const row = this.workflowSelectAll(
+			`SELECT source_id, cursor, status, last_ok_at
+			   FROM shuttle_projection_cursor
+			  WHERE source_key = 'updater'`,
+			[],
+		)[0];
+		return row
+			? {
+					sourceId: row.source_id == null ? null : String(row.source_id),
+					cursor: Number(row.cursor),
+					status: row.status as ShuttleDeploymentView["sourceStatus"],
+					lastOkAt: row.last_ok_at == null ? null : String(row.last_ok_at),
+				}
+			: {
+					sourceId: null,
+					cursor: 0,
+					status: "unavailable",
+					lastOkAt: null,
+				};
+	}
+
+	applyShuttleProjection(input: {
+		sourceId: string;
+		cursor: number;
+		status: "complete" | "truncated";
+		units: ShuttleDeploymentUnit[];
+		now: string;
+	}): ShuttleProjectionApplyResult {
+		if (
+			!input.sourceId.trim() ||
+			input.sourceId.length > 160 ||
+			!Number.isSafeInteger(input.cursor) ||
+			input.cursor < 0 ||
+			!Number.isFinite(Date.parse(input.now))
+		) {
+			throw new Error("shuttle_projection_invalid");
+		}
+		const duplicate = new Set<string>();
+		for (const unit of input.units) {
+			if (
+				!unit.unitId ||
+				!unit.projectName ||
+				duplicate.has(unit.unitId)
+			) {
+				throw new Error("shuttle_projection_unit_invalid");
+			}
+			duplicate.add(unit.unitId);
+		}
+		const cursor = this.getShuttleProjectionCursor();
+		const previous = this.workflowSelectAll(
+			`SELECT unit_id, project_name, payload_json
+			   FROM shuttle_unit_projection ORDER BY unit_id`,
+			[],
+		);
+		if (
+			cursor.sourceId !== null &&
+			cursor.sourceId !== input.sourceId &&
+			previous.length > 0 &&
+			input.units.length === 0
+		) {
+			throw new Error("shuttle_projection_empty_source_reset");
+		}
+		const previousById = new Map(
+			previous.map((row) => [
+				String(row.unit_id),
+				{
+					projectName: String(row.project_name),
+					payload: String(row.payload_json),
+				},
+			]),
+		);
+		const nextById = new Map(
+			input.units.map((unit) => [unit.unitId, canonicalJsonString(unit)]),
+		);
+		const changedProjects = new Set<string>();
+		for (const [unitId, prior] of previousById) {
+			const next = nextById.get(unitId);
+			if (next === undefined || next !== prior.payload)
+				changedProjects.add(prior.projectName);
+		}
+		for (const unit of input.units) {
+			if (previousById.get(unit.unitId)?.payload !== nextById.get(unit.unitId))
+				changedProjects.add(unit.projectName);
+		}
+		const statusChanged = cursor.status !== input.status;
+		if (statusChanged) {
+			for (const unit of input.units) changedProjects.add(unit.projectName);
+			for (const row of previous) changedProjects.add(String(row.project_name));
+		}
+		this.db.transaction(() => {
+			if (input.units.length === 0) {
+				this.db.run("DELETE FROM shuttle_unit_projection");
+			} else {
+				const placeholders = input.units.map(() => "?").join(",");
+				this.db.run(
+					`DELETE FROM shuttle_unit_projection
+					  WHERE unit_id NOT IN (${placeholders})`,
+					input.units.map((unit) => unit.unitId),
+				);
+			}
+			for (const unit of input.units) {
+				this.db.run(
+					`INSERT INTO shuttle_unit_projection
+					 (unit_id, project_name, source_id, source_change_seq, payload_json, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(unit_id) DO UPDATE SET
+					 project_name=excluded.project_name,
+					 source_id=excluded.source_id,
+					 source_change_seq=excluded.source_change_seq,
+					 payload_json=excluded.payload_json,
+					 updated_at=excluded.updated_at`,
+					[
+						unit.unitId,
+						unit.projectName,
+						input.sourceId,
+						input.cursor,
+						nextById.get(unit.unitId)!,
+						input.now,
+					],
+				);
+			}
+			this.db.run(
+				`INSERT INTO shuttle_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('updater', ?, ?, ?, ?, NULL, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 source_id=excluded.source_id, cursor=excluded.cursor,
+				 status=excluded.status, last_ok_at=excluded.last_ok_at,
+				 last_error=NULL, updated_at=excluded.updated_at`,
+				[input.sourceId, input.cursor, input.status, input.now, input.now],
+			);
+		});
+		this.save();
+		return {
+			changed: changedProjects.size > 0 || statusChanged,
+			changedProjects: [...changedProjects].sort(),
+		};
+	}
+
+	markShuttleProjectionUnavailable(input: {
+		error: string;
+		now: string;
+	}): boolean {
+		if (!input.error.trim() || !Number.isFinite(Date.parse(input.now)))
+			throw new Error("shuttle_projection_unavailable_invalid");
+		const previous = this.getShuttleProjectionCursor();
+		this.db.run(
+			`INSERT INTO shuttle_projection_cursor
+			 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+			 VALUES ('updater', NULL, 0, 'unavailable', NULL, ?, ?)
+			 ON CONFLICT(source_key) DO UPDATE SET
+			 status='unavailable', last_error=excluded.last_error,
+			 updated_at=excluded.updated_at`,
+			[input.error.slice(0, 240), input.now],
+		);
+		this.save();
+		return previous.status !== "unavailable";
+	}
+
+	getShuttleDeploymentProjection(projectName: string): ShuttleDeploymentView {
+		if (!projectName.trim()) throw new Error("shuttle_projection_project_required");
+		const cursor = this.getShuttleProjectionCursor();
+		const rows = this.workflowSelectAll(
+			`SELECT payload_json, updated_at
+			   FROM shuttle_unit_projection
+			  ${projectName === "flywheel" ? "" : "WHERE project_name = ?"}
+			  ORDER BY project_name, unit_id`,
+			projectName === "flywheel" ? [] : [projectName],
+		);
+		const units = rows.map(
+			(row) => JSON.parse(String(row.payload_json)) as ShuttleDeploymentUnit,
+		);
+		const active = units
+			.filter((unit) => unit.episodeId !== null)
+			.sort(
+				(a, b) =>
+					Number(b.founderAware) - Number(a.founderAware) ||
+					a.projectName.localeCompare(b.projectName) ||
+					a.displayName.localeCompare(b.displayName),
+			);
+		const healthy = units
+			.filter((unit) => unit.episodeId === null)
+			.sort(
+				(a, b) =>
+					a.projectName.localeCompare(b.projectName) ||
+					a.displayName.localeCompare(b.displayName),
+			);
+		const retained = [
+			...active,
+			...healthy.slice(0, Math.max(0, 200 - active.length)),
+		];
+		const observedAt = units
+			.map((unit) => unit.observedAt)
+			.sort()
+			.at(-1) ?? cursor.lastOkAt;
+		return {
+			schemaVersion: 1,
+			sourceStatus:
+				units.length > retained.length && cursor.status === "complete"
+					? "truncated"
+					: cursor.status,
+			observedAt,
+			retained: retained.length,
+			total: units.length,
+			units: retained,
+			activeIncidents: active.map((unit) => unit.unitId).sort(),
+		};
 	}
 
 	insertEpicPageRenderReceipt(input: {

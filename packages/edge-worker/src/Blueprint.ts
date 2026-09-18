@@ -1840,7 +1840,9 @@ export class Blueprint {
 			);
 		}
 		const approveGateCiPrecondition =
-			"CI PRECONDITION (HARD): Before opening any approve_to_ship gate, run one short probe: `gh pr checks <NUMBER>` (never use `--watch`). Exit 0 means every reported check passed and you may continue. Exit 8 means checks are still pending: this is NOT a CI failure; do NOT open the approve gate, keep the runner/session alive, and re-run the short probe on the next turn or wake. Any other non-zero exit, including no reported checks, is a real precondition failure: diagnose/fix CI before opening the gate.";
+			"CI PRECONDITION (HARD): Before opening any approve_to_ship gate, run `node " +
+			commCliPath +
+			" ci-full ensure --pr <NUMBER> --head $(git rev-parse HEAD) --json`. Exit 0 means this exact head has a verified full-matrix CI OK and you may continue. Exit 8 means full CI is requested or running: this is NOT a CI failure; do NOT open the approve gate, keep the runner/session alive, and re-run ci-full ensure on the next turn or wake. Exit 1 or 2 is a real precondition failure: do NOT open the approve gate; follow the command's printed diagnosis and recovery before retrying.";
 
 		// FLY-1059: a UI/design-flavored Design phase runs the mockup-first
 		// Designer workflow (concept images → founder design gate → high-fidelity)

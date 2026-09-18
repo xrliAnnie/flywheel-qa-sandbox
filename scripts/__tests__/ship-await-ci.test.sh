@@ -56,7 +56,9 @@ case "${1:-} ${2:-}" in
     [[ ! -f "$MOCK_STATE/check-count" ]] || count="$(<"$MOCK_STATE/check-count")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$MOCK_STATE/check-count"
-    if [[ "${MOCK_CHECK_SUCCESS_AT:-0}" -gt 0 && "$count" -ge "$MOCK_CHECK_SUCCESS_AT" ]]; then
+    if [[ "${MOCK_SCOPE_ONLY:-0}" == "1" ]]; then
+      printf '%s\n' '{"check_runs":[{"name":"CI Scope OK","status":"completed","conclusion":"success","started_at":"2026-08-18T00:01:00Z"}]}'
+    elif [[ "${MOCK_CHECK_SUCCESS_AT:-0}" -gt 0 && "$count" -ge "$MOCK_CHECK_SUCCESS_AT" ]]; then
       printf '%s\n' '{"check_runs":[{"name":"CI OK","status":"completed","conclusion":"success","started_at":"2026-08-18T00:01:00Z"}]}'
     else
       printf '%s\n' '{"check_runs":[]}'
@@ -107,6 +109,7 @@ run_subject() {
     MOCK_HEAD_SHA="${MOCK_HEAD_SHA:-}" \
     MOCK_PR_STATE="${MOCK_PR_STATE:-OPEN}" \
     MOCK_CHECK_SUCCESS_AT="${MOCK_CHECK_SUCCESS_AT:-0}" \
+    MOCK_SCOPE_ONLY="${MOCK_SCOPE_ONLY:-0}" \
     MOCK_TIMEOUT_FAIL_ONCE="${MOCK_TIMEOUT_FAIL_ONCE:-0}" \
     bash "$SUBJECT" >"$CASE_DIR/stdout" 2>"$CASE_DIR/stderr"
   SUBJECT_RC=$?
@@ -123,6 +126,11 @@ else
   printf '%s\n' '[[{"databaseId":1,"status":"completed","conclusion":"success","createdAt":"2026-08-18T00:00:00Z"}]]' >"$CASE_DIR/runs.json"
   MOCK_CHECK_SUCCESS_AT=1 run_subject
   [[ "$SUBJECT_RC" -eq 0 && "$(outcome)" == "success" ]] && pass "CI OK success returns immediately" || fail "CI OK success returns immediately"
+
+  reset_case scoped_only
+  printf '%s\n' '[[{"databaseId":2,"status":"completed","conclusion":"success","createdAt":"2026-08-18T00:00:00Z"}]]' >"$CASE_DIR/runs.json"
+  MOCK_SCOPE_ONLY=1 run_subject 0
+  [[ "$SUBJECT_RC" -ne 0 && "$(outcome)" == "await_ci_timeout" ]] && pass "CI Scope OK never satisfies the full-CI ship gate" || fail "CI Scope OK never satisfies the full-CI ship gate"
 
   reset_case pending_success
   printf '%s\n' '[[{"databaseId":1,"status":"in_progress","conclusion":null,"createdAt":"2026-08-18T00:00:00Z"}],[{"databaseId":1,"status":"completed","conclusion":"success","createdAt":"2026-08-18T00:00:00Z"}]]' >"$CASE_DIR/runs.json"

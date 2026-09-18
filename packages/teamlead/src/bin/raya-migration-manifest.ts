@@ -97,6 +97,7 @@ export function buildCutoverSeed(input: {
 	historyComplete: boolean;
 	resolutions: MigrationResolution[];
 	expectedBeforeSha256: string | null;
+	writerStopped?: boolean;
 }): {
 	seed?: CursorSeed;
 	boundaryMessageId: string | null;
@@ -211,7 +212,7 @@ export function buildCutoverSeed(input: {
 		schemaVersion: 1,
 		migrationId: input.migrationId,
 		expectedBeforeSha256: input.expectedBeforeSha256,
-		writerStopped: true,
+		writerStopped: input.writerStopped ?? true,
 		unresolved: [],
 		channels: boundaryMessageId
 			? [

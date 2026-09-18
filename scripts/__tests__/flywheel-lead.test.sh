@@ -304,6 +304,7 @@ const names = [
   "FLYWHEEL_LEAD_ACTIONS_NODE_BIN", "FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
   "FLYWHEEL_CODEX_LEAD_STATE_DIR", "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES",
   "FLYWHEEL_CODEX_LEAD_OUTBOUND", "FLYWHEEL_BRIDGE_URL", "FLYWHEEL_API_TOKEN",
+  "FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED", "FLYWHEEL_RAYA_PERSONA_GENERATION_ID",
   "FLYWHEEL_ROOT", "FLYWHEEL_TEAMLEAD_ROOT"
 ];
 const out = Object.fromEntries(names.map((name) => [name, process.env[name] ?? null]));
@@ -335,6 +336,8 @@ FLYWHEEL_ROUNDTABLE_GUILD_ID=forbidden-guild
 FLYWHEEL_LEAD_CORE_CHANNEL_ID=forbidden-core-channel
 FLYWHEEL_LEAD_MENTION_PATTERNS=forbidden-mention
 FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=1
+FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED=1
+FLYWHEEL_RAYA_PERSONA_GENERATION_ID=ffffffffffffffffffffffffffffffff
 FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1
 ENV
 
@@ -353,6 +356,7 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   >"$TMP/codex-run.out" 2>"$TMP/codex-run.err" \
   && [ "$(grep -c '^lead-registry selector ' "$CLI_CALLS" || true)" -eq 1 ] \
   && [ "$(grep -c '^lead-identity resolve ' "$CLI_CALLS" || true)" -eq 1 ] \
+  && [ "$(grep -c '^persona-project ' "$CLI_CALLS" || true)" -eq 0 ] \
   && [ "$(grep -cFx 'gate codex-generic' "$HOST_GATE_CALLS" || true)" -eq 1 ] \
   && [ "$(grep -cFx 'verify codex-generic' "$HOST_GATE_CALLS" || true)" -eq 1 ] \
   && jq -e --arg projects "$STATE/projects.json" --arg project "$CODEX_PROJECT_CANON" \
@@ -381,6 +385,8 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
       .FLYWHEEL_LEAD_ACTIONS_STATE_DIR == .FLYWHEEL_CODEX_LEAD_STATE_DIR and
       .FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES == ($project + "/.lead/demo-codex/identity.md") and
       .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
+	  .FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED == null and
+	  .FLYWHEEL_RAYA_PERSONA_GENERATION_ID == null and
       .FLYWHEEL_BRIDGE_URL == "http://localhost:9876" and
       .FLYWHEEL_API_TOKEN == "api-token" and
       .FLYWHEEL_ROOT == $repo and .FLYWHEEL_TEAMLEAD_ROOT == $teamlead
@@ -581,6 +587,7 @@ fi
 RAYA_PROJECT="$H/Dev/raya-outside"
 mkdir -p "$RAYA_PROJECT/.lead/raya"
 printf '%s\n' '# Raya Codex Lead' >"$RAYA_PROJECT/.lead/raya/identity.md"
+RAYA_PROJECT_CANON="$(cd "$RAYA_PROJECT" && pwd -P)"
 if ! HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \
   FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
@@ -1154,6 +1161,27 @@ for optin in false true; do
   done
 done
 cp "$TMP/projects-before-optin.json" "$STATE/projects.json"
+
+# FLY-2696: the execution seam invokes the projector only for exact Raya. This
+# dormant fixture has no contract, so the CLI must return skipped and the child
+# still launches without any projection write or Bridge activation read.
+persona_calls_before="$(grep -c '^persona-project ' "$CLI_CALLS" || true)"
+rm -f "$CODEX_CAPTURE"
+if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
+  FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$TMP/cli-wrapper.mjs" \
+  FLYWHEEL_TEAMLEAD_ROOT="$TEAMLEAD_FIXTURE" \
+  FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
+  FLYWHEEL_LEAD_DRY_RUN=1 REAL_CLI="$CLI" CLI_CALLS="$CLI_CALLS" \
+  CODEX_CAPTURE="$CODEX_CAPTURE" HOST_GATE_CALLS="$HOST_GATE_CALLS" \
+  "$LAUNCHER" run "$raya_manifest" >"$TMP/raya-run.out" 2>"$TMP/raya-run.err" \
+  && [ "$(grep -c '^persona-project ' "$CLI_CALLS" || true)" -eq "$((persona_calls_before + 1))" ] \
+  && grep -Fq "persona-project --project raya --lead raya --projects-file $STATE/projects.json" "$CLI_CALLS" \
+  && jq -e --arg prompt "$RAYA_PROJECT_CANON/.lead/raya/identity.md" \
+    '.FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES == $prompt' "$CODEX_CAPTURE" >/dev/null; then
+  pass "FLY-2696: exact dormant Raya crosses the local projector seam once and still launches unchanged"
+else
+  fail "FLY-2696: exact dormant Raya projector seam failed: $(cat "$TMP/raya-run.err")"
+fi
 
 echo ""
 echo "[flywheel-lead] passed=$PASSED failed=$FAILED"

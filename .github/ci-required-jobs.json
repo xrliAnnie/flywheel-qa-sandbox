@@ -1,0 +1,21 @@
+{
+	"schema": 1,
+	"aggregate": "CI OK",
+	"aggregate_scoped": "CI Scope OK",
+	"always": ["Classify CI scope", "Quick Gate (build + typecheck + lint)"],
+	"heavy": [
+		"Unit (teamlead 1 of 4)",
+		"Unit (teamlead 2 of 4)",
+		"Unit (teamlead 3 of 4)",
+		"Unit (teamlead 4 of 4)",
+		"Unit (observation performance)",
+		"Unit (heavy)",
+		"Unit (light)",
+		"Script Tests 1/5 — session/lifecycle (shell suites)",
+		"Script Tests 2/5 — fleet/setup/packaging A (shell suites)",
+		"Script Tests 3/5 — fleet/setup/packaging B (shell suites)",
+		"Script Tests 4/5 — cmux repair + Lead memory (shell suites)",
+		"Script Tests 5/5 — Lead memory remote sync",
+		"NPM payload distribution (endpoint + release pipeline)"
+	]
+}

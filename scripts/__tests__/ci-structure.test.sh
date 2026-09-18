@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+REQUIRED_JOBS="$REPO_ROOT/.github/ci-required-jobs.json"
 CLASSIFIER="$REPO_ROOT/scripts/ci-classify.sh"
 SUFFIX_LEDGER="$REPO_ROOT/engineering/doc/FLY-1987-actions-cost-audit/data/derive-lib.mjs"
 REVIEW_GOVERNANCE_DOCS="$REPO_ROOT/packages/teamlead/src/bridge/__tests__/review-governance-docs.test.ts"
@@ -20,8 +21,10 @@ if grep -Fq -- ' -- --shard' "$WORKFLOW"; then
   exit 1
 fi
 
-WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" FLY2331_GUARD_TEST="$FLY2331_GUARD_TEST" python3 <<'PY'
+WORKFLOW="$WORKFLOW" REQUIRED_JOBS="$REQUIRED_JOBS" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" FLY2331_GUARD_TEST="$FLY2331_GUARD_TEST" python3 <<'PY'
 import ast
+import copy
+import json
 import os
 import re
 import shlex
@@ -326,6 +329,29 @@ require(
 with open(workflow_path, encoding="utf-8") as handle:
     workflow = mapping(yaml.safe_load(handle), "workflow")
 
+expected_run_name = "${{ (github.event.action == 'labeled' && github.event.label.name == 'ci:full') && format('CI full-request {0}', github.event.pull_request.head.sha) || '' }}"
+require(workflow.get("run-name") == expected_run_name, "workflow run-name contract changed")
+triggers = mapping(workflow.get("on", workflow.get(True)), "on")
+require(
+    mapping(triggers.get("push"), "on.push") == {"branches": ["main"]},
+    "push trigger must remain main-only",
+)
+pull_request_trigger = mapping(triggers.get("pull_request"), "on.pull_request")
+expected_pull_request_trigger = {
+    "branches": ["main"],
+    "types": ["opened", "synchronize", "reopened", "labeled"],
+}
+require(
+    pull_request_trigger == expected_pull_request_trigger,
+    "pull_request trigger must include exactly opened/synchronize/reopened/labeled",
+)
+trigger_mutant = copy.deepcopy(pull_request_trigger)
+trigger_mutant["types"].remove("labeled")
+require(
+    trigger_mutant != expected_pull_request_trigger,
+    "positive control must reject removal of the labeled trigger",
+)
+
 jobs = mapping(workflow.get("jobs"), "jobs")
 expected_job_ids = {
     "classify",
@@ -386,10 +412,16 @@ for job_id, job in (
     ("payload-distribution", payload_distribution),
 ):
     require(job.get("needs") == ["classify"], f"{job_id} must depend only on classify")
+    expected_heavy_if = "needs.classify.outputs.heavy!='skip'"
     require(
-        normalize_expression(job.get("if")) == "needs.classify.outputs.no_code!='true'",
-        f"{job_id} must run unless classify proves no_code=true",
+        normalize_expression(job.get("if")) == expected_heavy_if,
+        f"{job_id} must run unless scope explicitly emits heavy=skip",
     )
+require(
+    normalize_expression("${{ needs.classify.outputs.heavy == 'run' }}")
+    != expected_heavy_if,
+    "positive control must reject fail-open heavy == run conditions",
+)
 
 permissions = mapping(classify.get("permissions"), "classify.permissions")
 require(
@@ -398,6 +430,17 @@ require(
 )
 classify_steps = classify.get("steps")
 require(isinstance(classify_steps, list), "classify.steps must be a list")
+expected_classify_outputs = {
+    "no_code": "${{ steps.classify.outputs.no_code }}",
+    "heavy": "${{ steps.scope.outputs.heavy }}",
+    "mode": "${{ steps.scope.outputs.mode }}",
+    "tested_tree": "${{ steps.scope.outputs.tested_tree }}",
+    "reuse_run": "${{ steps.scope.outputs.reuse_run }}",
+}
+require(
+    classify.get("outputs") == expected_classify_outputs,
+    "classify outputs must expose the exact five-value scope contract",
+)
 classify_checkout = [
     step for step in classify_steps
     if isinstance(step, dict) and step.get("uses") == "actions/checkout@v4"
@@ -413,6 +456,25 @@ classify_runs = [
 ]
 require(len(classify_runs) == 1, "classify must run scripts/ci-classify.sh exactly once")
 require(classify_runs[0].get("id") == "classify", "classifier step id must be classify")
+classify_step_contract = [
+    (step.get("uses"), step.get("id"), str(step.get("run", "")).strip())
+    for step in classify_steps
+    if isinstance(step, dict)
+]
+require(
+    classify_step_contract == [
+        ("actions/checkout@v4", None, ""),
+        (None, "classify", "bash scripts/ci-classify.sh"),
+        (None, "reuse", "bash scripts/ci-full-reuse.sh"),
+        (None, "scope", "bash scripts/ci-scope.sh"),
+    ],
+    f"classify step order/identity changed: {classify_step_contract}",
+)
+reuse_step = classify_steps[2]
+require(
+    normalize_expression(reuse_step.get("if")) == "github.event_name=='push'",
+    "reuse probe must run only for push events",
+)
 
 concurrency = mapping(workflow.get("concurrency"), "concurrency")
 require(
@@ -514,6 +576,42 @@ require(
 )
 require(actual_matrix == expected_matrix, "unit-tests matrix name/cmd contract changed")
 
+with open(os.environ["REQUIRED_JOBS"], encoding="utf-8") as handle:
+    required_jobs = mapping(json.load(handle), "ci-required-jobs.json")
+unit_check_names = [f"Unit ({entry['name']})" for entry in actual_matrix]
+script_check_names = [
+    str(script_tests["name"]),
+    str(script_tests_2["name"]),
+    str(script_tests_3["name"]),
+    str(script_tests_4["name"]),
+    str(script_tests_5["name"]),
+]
+expected_required_jobs = {
+    "schema": 1,
+    "aggregate": "CI OK",
+    "aggregate_scoped": "CI Scope OK",
+    "always": ["Classify CI scope", "Quick Gate (build + typecheck + lint)"],
+    "heavy": unit_check_names
+    + script_check_names
+    + [str(payload_distribution["name"])],
+}
+require(
+    required_jobs == expected_required_jobs,
+    "required-job manifest must exactly expand the ci.yml check graph",
+)
+manifest_without_shard = copy.deepcopy(required_jobs)
+manifest_without_shard["heavy"].remove(script_check_names[-1])
+require(
+    manifest_without_shard != expected_required_jobs,
+    "positive control must reject a manifest missing one script shard",
+)
+renamed_matrix = copy.deepcopy(expected_required_jobs)
+renamed_matrix["heavy"][0] += " renamed"
+require(
+    renamed_matrix != expected_required_jobs,
+    "positive control must reject a renamed unit matrix check",
+)
+
 ci_ok_needs = ci_ok.get("needs")
 require(isinstance(ci_ok_needs, list), "ci-ok.needs must be a list")
 expected_needs = {
@@ -535,9 +633,22 @@ require(
     normalize_expression(ci_ok.get("if")) == "always()&&!cancelled()",
     "ci-ok.if must be always() && !cancelled()",
 )
+expected_aggregate_name = "contains(fromJSON('[\"full\",\"docs_only\",\"reuse\"]'),needs.classify.outputs.mode)&&'CIOK'||'CIScopeOK'"
+require(
+    normalize_expression(ci_ok.get("name")) == expected_aggregate_name,
+    "aggregate name must whitelist full/docs_only/reuse as CI OK",
+)
+swapped_aggregate_name = expected_aggregate_name.replace(
+    "&&'CIOK'||'CIScopeOK'", "&&'CIScopeOK'||'CIOK'"
+)
+require(
+    swapped_aggregate_name != expected_aggregate_name,
+    "positive control must reject swapped CI OK and CI Scope OK names",
+)
 ci_ok_steps = ci_ok.get("steps")
 require(isinstance(ci_ok_steps, list), "ci-ok.steps must be a list")
 aggregate_steps = []
+aggregate_run = None
 for step in ci_ok_steps:
     if not isinstance(step, dict):
         continue
@@ -545,33 +656,175 @@ for step in ci_ok_steps:
     run = str(step.get("run", ""))
     if isinstance(env, dict) and normalize_expression(env.get("NEEDS_JSON")) == "toJSON(needs)":
         aggregate_steps.append(step)
+        aggregate_run = run
         require(
             normalize_expression(env.get("NO_CODE")) == "needs.classify.outputs.no_code",
             "ci-ok aggregate must receive classify no_code output",
+        )
+        require(
+            normalize_expression(env.get("HEAVY")) == "needs.classify.outputs.heavy",
+            "ci-ok aggregate must receive classify heavy output",
+        )
+        require(
+            normalize_expression(env.get("MODE")) == "needs.classify.outputs.mode",
+            "ci-ok aggregate must receive classify mode output",
         )
         normalized_run = re.sub(r"\s+", "", run)
         expected_run = re.sub(
             r"\s+",
             "",
-            """printf '%s\\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" '
+            """printf '%s\\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" --arg heavy "$HEAVY" --arg mode "$MODE" '
               . as $needs
+              | ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"] as $heavy_jobs
               | ($needs["quick-gate"].result == "success")
                 and ($needs.classify.result == "success")
                 and (
-                  ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"]
-                  | all(
-                      . as $job
-                      | ($needs[$job].result == "success")
-                        or ($no_code == "true" and $needs[$job].result == "skipped")
-                    )
+                  ( $mode == "full" and $heavy == "run" and $no_code != "true"
+                    and ($needs["unit-tests"].result == "success")
+                    and ($needs["script-tests"].result == "success")
+                    and ($needs["script-tests-2"].result == "success")
+                    and ($needs["script-tests-3"].result == "success")
+                    and ($needs["script-tests-4"].result == "success")
+                    and ($needs["script-tests-5"].result == "success")
+                    and ($needs["payload-distribution"].result == "success") )
+                  or
+                  ( $heavy == "skip"
+                    and ( ($mode == "docs_only" and $no_code == "true")
+                          or (($mode == "scoped" or $mode == "reuse") and $no_code != "true") )
+                    and ($heavy_jobs | all(. as $job | $needs[$job].result == "skipped")) )
                 )
             '""",
         )
         require(
             normalized_run == expected_run,
-            "ci-ok aggregate must accept heavy-job skips only when no_code=true",
+            "ci-ok aggregate must enforce exact full and skip-mode result shapes",
+        )
+        jq_mutant = normalized_run.replace(
+            'and($needs["script-tests-5"].result=="success")', "", 1
+        )
+        require(
+            jq_mutant != expected_run,
+            "positive control must reject removing one full-mode success assertion",
         )
 require(len(aggregate_steps) == 1, "ci-ok must contain exactly one NEEDS_JSON aggregate step")
+require(isinstance(aggregate_run, str), "ci-ok aggregate run command must be text")
+
+heavy_job_ids = [
+    "unit-tests",
+    "script-tests",
+    "script-tests-2",
+    "script-tests-3",
+    "script-tests-4",
+    "script-tests-5",
+    "payload-distribution",
+]
+
+
+def aggregate_status(
+    no_code: str,
+    heavy: str,
+    mode: str,
+    heavy_result: str = "success",
+    overrides: dict[str, str] | None = None,
+    command: str = aggregate_run,
+) -> int:
+    results = {job_id: heavy_result for job_id in heavy_job_ids}
+    results.update(overrides or {})
+    needs = {
+        "classify": {"result": "success"},
+        "quick-gate": {"result": "success"},
+        **{job_id: {"result": result} for job_id, result in results.items()},
+    }
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "NEEDS_JSON": json.dumps(needs),
+            "NO_CODE": no_code,
+            "HEAVY": heavy,
+            "MODE": mode,
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.returncode
+
+
+require(aggregate_status("false", "run", "full") == 0, "full aggregate fixture must pass")
+require(
+    aggregate_status("true", "skip", "docs_only", "skipped") == 0,
+    "docs-only aggregate fixture must pass",
+)
+for skip_mode in ("scoped", "reuse"):
+    require(
+        aggregate_status("false", "skip", skip_mode, "skipped") == 0,
+        f"{skip_mode} aggregate fixture must pass",
+    )
+require(
+    aggregate_status("false", "run", "full", overrides={"script-tests-5": "skipped"})
+    != 0,
+    "full mode must reject even one skipped required job",
+)
+require(
+    aggregate_status("false", "skip", "scoped", "skipped", {"script-tests-5": "success"})
+    != 0,
+    "skip modes must reject partially executed heavy jobs",
+)
+require(
+    aggregate_status("false", "run", "") != 0,
+    "missing mode must fail closed",
+)
+require(
+    aggregate_status("false", "skip", "docs_only", "skipped") != 0,
+    "docs-only mode must require no_code=true",
+)
+aggregate_mutant = aggregate_run.replace(
+    'and ($needs["script-tests-5"].result == "success")', "", 1
+)
+require(aggregate_mutant != aggregate_run, "positive control must remove one success assertion")
+mutant_results = {"script-tests-5": "failure"}
+require(
+    aggregate_status("false", "run", "full", overrides=mutant_results) != 0,
+    "real aggregate must reject a failed script shard",
+)
+require(
+    aggregate_status(
+        "false", "run", "full", overrides=mutant_results, command=aggregate_mutant
+    )
+    == 0,
+    "positive control must prove removing one success assertion creates a false green",
+)
+
+summary_steps = [
+    step
+    for step in ci_ok_steps
+    if isinstance(step, dict) and step.get("name") == "Summarize CI scope"
+]
+require(len(summary_steps) == 1, "ci-ok must contain exactly one scope summary step")
+require(
+    normalize_expression(summary_steps[0].get("if")) == "always()",
+    "scope summary must run always",
+)
+upload_steps = [
+    step
+    for step in ci_ok_steps
+    if isinstance(step, dict) and step.get("uses") == "actions/upload-artifact@v4"
+]
+require(len(upload_steps) == 1, "ci-ok must contain exactly one evidence upload")
+upload_step = upload_steps[0]
+require(
+    normalize_expression(upload_step.get("if"))
+    == "success()&&needs.classify.outputs.mode=='full'",
+    "full evidence upload condition changed",
+)
+upload_with = mapping(upload_step.get("with"), "ci-ok evidence upload.with")
+require(
+    upload_with.get("name")
+    == "ci-full-green-${{ needs.classify.outputs.tested_tree }}",
+    "full evidence artifact name changed",
+)
+require(upload_with.get("retention-days") == 14, "full evidence retention must be 14 days")
 
 timeout_floors = {
     "unit-tests": (unit_tests, 15),
@@ -638,6 +891,19 @@ require(
     ci_structure_in_quick == 1 and ci_structure_in_scripts == 0,
     "ci-structure.test.sh must run exactly once in the always-on quick-gate",
 )
+for new_suite in (
+    "bash scripts/__tests__/ci-scope.test.sh",
+    "bash scripts/__tests__/ci-full-reuse.test.sh",
+):
+    require(
+        sum(
+            new_suite in str(step.get("run", ""))
+            for step in quick_steps
+            if isinstance(step, dict)
+        )
+        == 1,
+        f"{new_suite} must run exactly once in quick-gate",
+    )
 retention_consumer_steps = [
     step for step in quick_steps
     if isinstance(step, dict)

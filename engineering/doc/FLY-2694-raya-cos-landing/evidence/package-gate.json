@@ -1,0 +1,464 @@
+{
+  "schemaVersion": 1,
+  "directory": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr",
+  "root": "/Users/xiaorongli/Dev/flywheel-FLY-2694",
+  "head": "41d09ae7b126ba9b00067353f8f417f179a9ee60",
+  "startedAt": "2026-09-18T03:24:28.464Z",
+  "packages": [
+    {
+      "name": "flywheel-claude-runner",
+      "script": "vitest run",
+      "status": "failed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-claude-runner",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/0-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T03:26:35.515Z",
+          "finishedAt": "2026-09-18T03:41:08.659Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/0-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 50,
+            "files": 50,
+            "passed": 1341,
+            "failed": 0,
+            "skipped": 2,
+            "errors": [
+              {
+                "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\""
+              }
+            ]
+          },
+          "status": "worker_rpc_timeout"
+        },
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-claude-runner",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/0-2.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T03:41:08.660Z",
+          "finishedAt": "2026-09-18T03:57:52.617Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/0-2.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "failed",
+            "expectedFiles": 50,
+            "files": 50,
+            "passed": 1339,
+            "failed": 6,
+            "skipped": 2,
+            "errors": [
+              {
+                "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\""
+              }
+            ]
+          },
+          "status": "failed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-comm",
+      "script": "vitest run",
+      "status": "failed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-comm",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/1-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T03:57:52.621Z",
+          "finishedAt": "2026-09-18T04:06:48.414Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/1-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "failed",
+            "expectedFiles": 204,
+            "files": 204,
+            "passed": 2688,
+            "failed": 5,
+            "skipped": 3,
+            "errors": []
+          },
+          "status": "failed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-config",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-config",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/2-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:06:48.417Z",
+          "finishedAt": "2026-09-18T04:08:18.106Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/2-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 57,
+            "files": 57,
+            "passed": 866,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-core",
+      "script": "vitest run --passWithNoTests",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-core",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/3-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:08:18.107Z",
+          "finishedAt": "2026-09-18T04:08:42.996Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/3-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 22,
+            "files": 22,
+            "passed": 263,
+            "failed": 0,
+            "skipped": 2,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-edge-worker",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-edge-worker",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/4-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:08:42.997Z",
+          "finishedAt": "2026-09-18T04:14:47.262Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/4-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 117,
+            "files": 117,
+            "passed": 1348,
+            "failed": 0,
+            "skipped": 14,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-gemini-agent",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-gemini-agent",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/5-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:14:47.263Z",
+          "finishedAt": "2026-09-18T04:15:03.798Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/5-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 12,
+            "files": 12,
+            "passed": 158,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-github-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-github-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/6-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:15:03.798Z",
+          "finishedAt": "2026-09-18T04:15:11.468Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/6-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 4,
+            "files": 4,
+            "passed": 73,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-linear-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-linear-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/7-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:15:11.469Z",
+          "finishedAt": "2026-09-18T04:15:15.476Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/7-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 1,
+            "files": 1,
+            "passed": 18,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-qa-framework",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-qa-framework",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/8-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:15:15.476Z",
+          "finishedAt": "2026-09-18T04:15:25.925Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/8-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 6,
+            "files": 6,
+            "passed": 83,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-raya-cos",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-raya-cos",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/9-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:15:25.926Z",
+          "finishedAt": "2026-09-18T04:16:44.755Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/9-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 56,
+            "files": 56,
+            "passed": 317,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-release-contract",
+      "script": "node --test __tests__/*.test.mjs",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-release-contract",
+            "test:run"
+          ],
+          "startedAt": "2026-09-18T04:16:44.756Z",
+          "finishedAt": "2026-09-18T04:16:46.389Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/10-1.log",
+          "receipt": null,
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-slack-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-slack-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/11-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2694/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-18T04:16:46.390Z",
+          "finishedAt": "2026-09-18T04:16:52.196Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/11-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 3,
+            "files": 3,
+            "passed": 56,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    }
+  ],
+  "build": {
+    "command": [
+      "pnpm",
+      "-r",
+      "build"
+    ],
+    "startedAt": "2026-09-18T03:24:28.475Z",
+    "finishedAt": "2026-09-18T03:26:35.495Z",
+    "exitCode": 0,
+    "signal": null,
+    "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-wCEDgr/build.log"
+  }
+}

@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
-import { runSummaryPresentationMigration } from "../summary-presentation-migration.js";
+import {
+	resolveSummaryPresentationMigrationInputs,
+	runSummaryPresentationMigration,
+} from "../summary-presentation-migration.js";
 
 function payload(
 	projectName: string,
@@ -350,6 +353,47 @@ describe("FLY-2619 summary presentation historical migration", () => {
 			expect(
 				store.summaryPresentations.getRound("raya", "raya", round.roundId),
 			).toMatchObject({ disposition: "needs_reconciliation" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("uses one frozen input snapshot when the journal grows before writes begin", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2697-migration-frozen-"));
+		cleanups.push(root);
+		const state = join(root, "state");
+		mkdirSync(state);
+		writeFileSync(join(state, "summary-merge-receipts.jsonl"), "");
+		const store = await StateStore.create(join(root, "teamlead.db"));
+		try {
+			const frozenRound = appendRound(store, 0);
+			const resolved = resolveSummaryPresentationMigrationInputs(
+				{
+					store: store.summaryPresentations,
+					projectName: "raya",
+					leadId: "raya",
+					workspaceRoot: root,
+				},
+				null,
+			);
+			const laterRound = appendRound(store, 1, 2);
+
+			expect(
+				runSummaryPresentationMigration({
+					store: store.summaryPresentations,
+					projectName: "raya",
+					leadId: "raya",
+					workspaceRoot: root,
+					resolved,
+				}),
+			).toMatchObject({
+				state: "complete",
+				boundarySeq: frozenRound.seq,
+				processed: 1,
+			});
+			expect(
+				store.summaryPresentations.getRound("raya", "raya", laterRound.roundId),
+			).toMatchObject({ disposition: "eligible" });
 		} finally {
 			store.close();
 		}

@@ -365,6 +365,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Flywheel deploy failed";
 		case "deploy_degraded":
 			return "Flywheel deploy degraded";
+		case "shuttle_unit_unhealthy":
+			return "Shuttle deployment unit unhealthy";
 		// FLY-1256: never routed through this table; the external quota monitor
 		// supplies its own title. Cases keep the shared union exhaustive.
 		case "account_switched":
@@ -639,6 +641,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log, ~/.flywheel/state/bridge-startup.log, ~/.flywheel/state/bridge-log-rotation-error.json, and ~/.flywheel/deployed-sha.";
 		case "deploy_degraded":
 			return "A Flywheel deploy completed degraded (skipped/failed leads, plugin update problem, or idle-wait timeout). Shell-only kind via lead-alert.sh — see the shell alert body for specifics.";
+		case "shuttle_unit_unhealthy":
+			return "A shuttle deployment unit failed or was unexpectedly skipped. The durable observation ledger owns recovery and founder-awareness state; this notification opens no ticket or automated repair.";
 		// FLY-1256: never routed through this table. The external daemon supplies
 		// account/quota/reset evidence in the real alert body.
 		case "account_switched":

@@ -41,6 +41,7 @@ import {
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { resolvePersonaStateRoot } from "flywheel-config";
 import {
 	assertGatewayOnlyToolSurface,
 	gatewayActionToolNames,
@@ -80,6 +81,7 @@ import { parseExplicitAliases } from "./lead-actions/alias-allowlist.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
+import { assertPersonaNotHeadless } from "./persona-startup-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import {
 	buildReplyInThreadWiring,
@@ -92,6 +94,7 @@ const runtimeBuildIdentity = captureLeadRuntimeBuild();
 
 export interface CodexLeadRuntimeConfig {
 	projectsFile?: string;
+	expectedProjectsDigest?: string;
 	runnerActionContext?: RunnerActionMcpContext;
 	projectName: string;
 	leadId: string;
@@ -649,6 +652,14 @@ export function parseCodexLeadRuntimeConfig(
 			"codex-lead-runtime: FLYWHEEL_LEAD_IDENTITY_DIGEST must be a 64-character lowercase hex digest",
 		);
 	}
+	if (
+		env.FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST !== undefined &&
+		!/^[a-f0-9]{64}$/.test(env.FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST)
+	) {
+		throw new Error(
+			"codex-lead-runtime: FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST must be a 64-character lowercase hex digest",
+		);
+	}
 	if (env.LEAD_ID !== undefined && env.LEAD_ID.trim() !== leadId) {
 		throw new Error(
 			"codex-lead-runtime: LEAD_ID conflicts with FLYWHEEL_LEAD_ID",
@@ -949,6 +960,9 @@ export function parseCodexLeadRuntimeConfig(
 			: {}),
 		...(env.FLYWHEEL_PROJECTS_FILE
 			? { projectsFile: env.FLYWHEEL_PROJECTS_FILE }
+			: {}),
+		...(env.FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST
+			? { expectedProjectsDigest: env.FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST }
 			: {}),
 		projectName,
 		leadId,
@@ -2271,6 +2285,26 @@ export async function main(
 	if (env.FLYWHEEL_LEAD_DRY_RUN === "1") {
 		for (const line of dryRunReport(config)) console.log(line);
 		return;
+	}
+	if (config.projectName === "raya" && config.leadId === "raya") {
+		if (
+			!config.projectsFile ||
+			!config.expectedProjectsDigest ||
+			!config.fullAccessProjectRoot
+		) {
+			throw new Error("persona_headless_authority_missing");
+		}
+		await assertPersonaNotHeadless({
+			projectName: config.projectName,
+			leadId: config.leadId,
+			projectsPath: config.projectsFile,
+			expectedProjectsDigest: config.expectedProjectsDigest,
+			projectRoot: config.fullAccessProjectRoot,
+			stateRoot: resolvePersonaStateRoot(env, homedir()),
+			...(config.capabilityBundleVersion === 2
+				? { capabilityBundleVersion: 2 as const }
+				: {}),
+		});
 	}
 
 	const runtime = buildCodexLeadRuntime(config);

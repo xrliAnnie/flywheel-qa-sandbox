@@ -24,6 +24,7 @@ export interface CodexQuotaCoordinatorOptions {
 	rotate(
 		incident: Record<string, unknown>,
 		candidate: CodexQuotaObservation,
+		observations: readonly CodexQuotaObservation[],
 	): Promise<{ ok: boolean; authDigest?: string }>;
 	recover(incident: Record<string, unknown>): Promise<void>;
 }
@@ -255,7 +256,11 @@ export class CodexQuotaCoordinator {
 						continue;
 					}
 				}
-				const rotated = await this.options.rotate(incident, selected.candidate);
+				const rotated = await this.options.rotate(
+					incident,
+					selected.candidate,
+					observations,
+				);
 				if (rotated.ok && rotated.authDigest) {
 					// rotate() has already installed the canonical credential and journaled
 					// its material. Persist that known success before a newly-invalid

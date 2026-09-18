@@ -17,6 +17,11 @@ const registry = {
 			email: "personal@example.test",
 			role: "primary" as const,
 		},
+		{
+			name: "business" as const,
+			email: "business@example.test",
+			role: "manual_backup" as const,
+		},
 	],
 };
 const auth = (refresh: string) =>
@@ -50,6 +55,17 @@ async function fixture(
 	);
 	const collectHomes = vi.fn(async () => ({ complete: ready, homes: [] }));
 	const recordInstalling = vi.fn();
+	const getRoot = vi.fn(
+		() =>
+			undefined as
+				| {
+						rootKey: string;
+						accountKey: string;
+						profile: string;
+						generation: number;
+				  }
+				| undefined,
+	);
 	const runtime = new CodexQuotaRuntime({
 		canonicalHome,
 		profilesRoot,
@@ -59,15 +75,14 @@ async function fixture(
 		model: "fixture",
 		limitId: "codex",
 		collectHomes,
-		store:
-			store ??
-			({ codexQuota: { recordInstalling, getRoot: () => undefined } } as never),
+		store: store ?? ({ codexQuota: { recordInstalling, getRoot } } as never),
 		recover: async () => {},
 	});
 	return {
 		runtime,
 		collectHomes,
 		recordInstalling,
+		getRoot,
 		profilesRoot,
 		canonicalHome,
 		binary,
@@ -114,7 +129,11 @@ it("probe failure never installs and still preserves refreshed candidate credent
 		windows: [],
 		scopeKnown: true,
 	};
-	const result = await f.runtime.rotate({ incident_id: "incident" }, candidate);
+	const result = await f.runtime.rotate(
+		{ incident_id: "incident" },
+		candidate,
+		[candidate],
+	);
 	expect(result.ok).toBe(false);
 	expect(f.recordInstalling).not.toHaveBeenCalled();
 	expect(
@@ -147,21 +166,111 @@ it("successful probe journals before canonical rename and installs the proven by
 		observedAt: Date.now(),
 		identityVerified: true,
 		authHealth: "valid" as const,
-		windows: [],
+		windows: [
+			{
+				usedPercent: 38,
+				resetsAt: Date.parse("2026-09-19T17:17:00.000Z"),
+			},
+		],
 		scopeKnown: true,
 	};
+	f.getRoot.mockReturnValue({
+		rootKey: "root",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+	});
+	const observations = [
+		{
+			...candidate,
+			profile: "business",
+			accountKey: "business-key",
+			authHealth: "in_use_unshared" as const,
+			windows: [],
+			scopeKnown: false,
+		},
+		candidate,
+	];
 	expect(
-		(await f.runtime.rotate({ incident_id: "incident" }, candidate)).ok,
+		(
+			await f.runtime.rotate(
+				{ incident_id: "incident", root_key: "root" },
+				candidate,
+				observations,
+			)
+		).ok,
 	).toBe(true);
 	expect(JSON.parse(prior).tokens.refresh_token).toBe("old");
 	expect(f.recordInstalling).toHaveBeenCalledWith(
-		expect.objectContaining({ incidentId: "incident", profile: "personal" }),
+		expect.objectContaining({
+			incidentId: "incident",
+			profile: "personal",
+			notification: {
+				version: 1,
+				from: {
+					profile: "business",
+					accountKey: "business-key",
+					email: "business@example.test",
+					windows: [],
+				},
+				to: {
+					profile: "personal",
+					accountKey: candidate.accountKey,
+					email: "personal@example.test",
+					windows: candidate.windows,
+				},
+			},
+		}),
 	);
 	expect(
 		JSON.parse(await readFile(join(f.canonicalHome, "auth.json"), "utf8"))
 			.tokens.refresh_token,
 	).toBe("proven");
 	await f.runtime.stop();
+});
+it("the tick coordinator wiring forwards the same observation snapshot to rotation", async () => {
+	const { StateStore } = await import("../../StateStore.js");
+	const store = await StateStore.create(":memory:");
+	const f = await fixture(true, store);
+	const candidate = {
+		profile: "personal",
+		accountKey: "personal-key",
+		observedAt: Date.now(),
+		identityVerified: true,
+		authHealth: "valid" as const,
+		windows: [{ usedPercent: 38, resetsAt: null }],
+		scopeKnown: true,
+	};
+	const observations = [
+		{
+			...candidate,
+			profile: "business",
+			accountKey: "business-key",
+			windows: [{ usedPercent: 100, resetsAt: null }],
+		},
+		candidate,
+	];
+	const rotate = vi.spyOn(f.runtime, "rotate").mockResolvedValue({ ok: false });
+	try {
+		await f.runtime.tick();
+		const coordinator = (
+			f.runtime as unknown as {
+				coordinator: {
+					options: {
+						rotate: (
+							...args: Parameters<CodexQuotaRuntime["rotate"]>
+						) => ReturnType<CodexQuotaRuntime["rotate"]>;
+					};
+				};
+			}
+		).coordinator;
+		const incident = { incident_id: "incident", root_key: "root" };
+		await coordinator.options.rotate(incident, candidate, observations);
+		expect(rotate).toHaveBeenLastCalledWith(incident, candidate, observations);
+	} finally {
+		await f.runtime.stop();
+		store.close();
+	}
 });
 it("reconciliation refuses unrelated canonical bytes and recognizes only journal digests", async () => {
 	const f = await fixture(true);
@@ -228,18 +337,16 @@ it("active independent candidate is excluded before any reader or probe", async 
 		activeUnsharedAccountKeys: [identity.accountKey],
 	} as never);
 	expect((await f.runtime.observe())[0].authHealth).toBe("in_use_unshared");
+	const candidate = {
+		...identity,
+		observedAt: Date.now(),
+		identityVerified: true,
+		authHealth: "valid",
+		scopeKnown: true,
+		windows: [],
+	} as const;
 	expect(
-		await f.runtime.rotate(
-			{ incident_id: "i" },
-			{
-				...identity,
-				observedAt: Date.now(),
-				identityVerified: true,
-				authHealth: "valid",
-				scopeKnown: true,
-				windows: [],
-			},
-		),
+		await f.runtime.rotate({ incident_id: "i" }, candidate, [candidate]),
 	).toEqual({ ok: false });
 	expect(
 		JSON.parse(
@@ -262,20 +369,16 @@ it("readiness lost after successful probe preserves refreshed bytes and prevents
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(
 		registry,
 	)(auth("old"));
+	const candidate = {
+		...identity,
+		observedAt: Date.now(),
+		identityVerified: true,
+		authHealth: "valid" as const,
+		scopeKnown: true,
+		windows: [],
+	};
 	expect(
-		(
-			await f.runtime.rotate(
-				{ incident_id: "i" },
-				{
-					...identity,
-					observedAt: Date.now(),
-					identityVerified: true,
-					authHealth: "valid",
-					scopeKnown: true,
-					windows: [],
-				},
-			)
-		).ok,
+		(await f.runtime.rotate({ incident_id: "i" }, candidate, [candidate])).ok,
 	).toBe(false);
 	expect(f.recordInstalling).not.toHaveBeenCalled();
 	expect(

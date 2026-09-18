@@ -18,17 +18,17 @@ import { promisify } from "node:util";
 
 export interface MigrationIO {
 	fetch: typeof fetch;
-	run(file: string, args: string[]): Promise<string>;
+	run(file: string, args: string[], timeoutMs?: number): Promise<string>;
 	now(): number;
 }
 
 export const migrationIO: MigrationIO = {
 	fetch: globalThis.fetch,
 	now: Date.now,
-	run: async (file, args) =>
+	run: async (file, args, timeoutMs = 15_000) =>
 		(
 			await promisify(execFile)(file, args, {
-				timeout: 15_000,
+				timeout: timeoutMs,
 				maxBuffer: 4 * 1024 * 1024,
 				encoding: "utf8",
 				env: { ...process.env, LC_ALL: "C", BASH_ENV: "" },

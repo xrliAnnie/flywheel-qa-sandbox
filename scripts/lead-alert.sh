@@ -31,7 +31,7 @@
 #   2 — Discord POST failed, payload queued for later drain
 #
 # --strict-delivery (FLY-913): print ONE machine-readable result line on stdout
-#   (`sent|duplicate|queued_transient|dead_lettered|config_error`) so callers
+#   (`sent|duplicate|queued_transient|delivery_unknown|dead_lettered|config_error`) so callers
 #   can distinguish "transient failure, queued and WILL drain" from "permanently
 #   undeliverable" — exit 2 alone conflates the two (Codex R1 #1). Without the
 #   flag, behavior (stdout/stderr/exit codes) is byte-for-byte unchanged.
@@ -40,6 +40,7 @@ set -euo pipefail
 log() {
   echo "[lead-alert] $(date '+%H:%M:%S') $*" >&2
 }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # FLY-1319: resolve Annie's current timezone without trusting `TZ=bad date`.
 # macOS date silently renders UTC and exits 0 for an invalid TZ, so every named
@@ -117,10 +118,15 @@ STRICT_DELIVERY=0
 DELIVERY_MESSAGE_ID=""
 MENTION_USER=""
 PLAIN_MESSAGE=0
+SHUTTLE_INTENT=""
+SHUTTLE_ROUTE_KEY=""
+SHUTTLE_ROUTE_BINDING=""
+SHUTTLE_CHANNEL=""
+SHUTTLE_ROUTE_TOKEN_ENV=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock"
+INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock shuttle_unit_unhealthy"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -137,7 +143,7 @@ is_quota_switch_kind() {
 
 carries_delivery_channel() {
   case "$1" in
-    account_switched|account_switch_degraded|quota_switch_confirmation|account_dead|codex_home_migration_overdue) return 0 ;;
+    account_switched|account_switch_degraded|quota_switch_confirmation|account_dead|codex_home_migration_overdue|shuttle_unit_unhealthy) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -146,7 +152,13 @@ carries_delivery_channel() {
 # --strict-delivery. log() writes to stderr, so this is the sole stdout line.
 emit_result() {
   if [ "$STRICT_DELIVERY" = "1" ]; then
-    if [[ ( "$KIND" == activation_probe || "$KIND" == codex_home_migration_overdue ) && "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+    if [[ "$KIND" == shuttle_unit_unhealthy && -n "$SHUTTLE_CHANNEL" ]]; then
+      printf '%s channel_id=%s binding_digest=%s' "$1" "$SHUTTLE_CHANNEL" "$SHUTTLE_ROUTE_BINDING"
+      if [[ "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+        printf ' message_id=%s' "$DELIVERY_MESSAGE_ID"
+      fi
+      printf '\n'
+    elif [[ ( "$KIND" == activation_probe || "$KIND" == codex_home_migration_overdue ) && "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
       printf '%s message_id=%s\n' "$1" "$DELIVERY_MESSAGE_ID"
     else
       printf '%s\n' "$1"
@@ -166,6 +178,7 @@ while [ $# -gt 0 ]; do
     --strict-delivery) STRICT_DELIVERY=1; shift ;;
     --mention-user) MENTION_USER="${2:?--mention-user requires a value}"; shift 2 ;;
     --plain-message) PLAIN_MESSAGE=1; shift ;;
+    --shuttle-intent) SHUTTLE_INTENT="${2:?--shuttle-intent requires a value}"; shift 2 ;;
     -h|--help)   usage ;;
     *)
       log "ERROR: unknown flag '$1'"
@@ -175,10 +188,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] || [ -z "$TITLE" ] || [ -z "$BODY" ]; then
+if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] \
+  || { [ "$KIND" != shuttle_unit_unhealthy ] && { [ -z "$TITLE" ] || [ -z "$BODY" ]; }; }; then
   log "ERROR: --lead, --project, --kind, --title, --body are all required"
   emit_result "config_error"
   usage
+fi
+if { [ "$KIND" = shuttle_unit_unhealthy ] && [ -z "$SHUTTLE_INTENT" ]; } \
+  || { [ "$KIND" != shuttle_unit_unhealthy ] && [ -n "$SHUTTLE_INTENT" ]; }; then
+  log "ERROR: --shuttle-intent is required only for shuttle_unit_unhealthy"
+  emit_result "config_error"
+  exit 1
 fi
 
 case "$KIND" in
@@ -210,7 +230,7 @@ case "$KIND" in
   # Covers BOTH sources; pressure vs panic is encoded in the body + signature,
   # because a validated occupancy climb and a fresh panic report are the same
   # incident class with the same (absent) remediation posture.
-  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident|codex_home_migration_overdue) ;;
+  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|shuttle_unit_unhealthy|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident|codex_home_migration_overdue) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -485,7 +505,7 @@ if [ "$LEAD_ID" = "system" ] || [ "${FLYWHEEL_CMUX_SUPERVISED:-0}" = "1" ]; then
 fi
 
 # ── Tool preflight ──────────────────────────────────────────
-for tool in jq sqlite3 curl shasum node; do
+for tool in jq sqlite3 curl shasum node python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     log "ERROR: required tool '$tool' not found in PATH"
     emit_result "config_error"
@@ -498,13 +518,79 @@ done
 # failure branch — including unknown-lead, which exits before the later
 # dead_letter() definition. meta-alert.sh self-debounces per reason and
 # OVERWRITES its marker, so repeated calls neither spam nor grow unbounded.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fire_meta_alert() {
   # $1 = reason, $2 = title, $3 = body. Best-effort; never breaks the caller.
   if [ -x "${SCRIPT_DIR}/meta-alert.sh" ]; then
     "${SCRIPT_DIR}/meta-alert.sh" "$1" "$2" "$3" || true
   fi
 }
+
+# FLY-2669: a shuttle alert may only render a frozen observation intent and may
+# only route through the canonical config resolver. The resolver checks the
+# selected sender's effective VIEW_CHANNEL + SEND_MESSAGES permissions before
+# claims or POST side effects. Tests inject a local permission fixture; live
+# callers use read-only Discord API requests.
+if [ "$KIND" = shuttle_unit_unhealthy ]; then
+  SHUTTLE_PAYLOAD=""
+  SHUTTLE_HELPER="$SCRIPT_DIR/lib/shuttle-observation.py"
+  if [ -n "${SHUTTLE_OBSERVER_BUNDLE_DIR:-}" ] \
+    && [ -f "$SHUTTLE_OBSERVER_BUNDLE_DIR/shuttle-observation.py" ] \
+    && [ ! -L "$SHUTTLE_OBSERVER_BUNDLE_DIR/shuttle-observation.py" ]; then
+    SHUTTLE_HELPER="$SHUTTLE_OBSERVER_BUNDLE_DIR/shuttle-observation.py"
+  fi
+  if ! SHUTTLE_PAYLOAD=$(python3 "$SHUTTLE_HELPER" \
+      intent --intent-id "$SHUTTLE_INTENT" 2>/dev/null) \
+    || ! printf '%s' "$SHUTTLE_PAYLOAD" | jq -e \
+      '(.schemaVersion == 1) and (.batchId | test("^[0-9a-f]{64}$"))
+       and (.routeKey == "primary" or .routeKey == "project_copy")
+       and (.originProject | type == "string") and (.title | type == "string")
+       and (.body | type == "string") and (.signature == .batchId)' >/dev/null; then
+    log "ERROR: shuttle observation intent is missing or malformed"
+    fire_meta_alert "shuttle_alert_intent_unavailable" \
+      "Shuttle alert intent unavailable" \
+      "The updater created a shuttle failure but its frozen notification intent could not be read. Inspect flywheel-updater.log and the shuttle fixed-page source."
+    emit_result "config_error"
+    exit 1
+  fi
+  SHUTTLE_ORIGIN="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .originProject)"
+  if [ "$PROJECT_NAME" != "$SHUTTLE_ORIGIN" ]; then
+    log "ERROR: shuttle intent origin does not match --project"
+    emit_result "config_error"
+    exit 1
+  fi
+  SHUTTLE_ROUTE_KEY="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .routeKey)"
+  TITLE="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .title)"
+  BODY="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .body)"
+  SIGNATURE="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .signature)"
+  PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  shuttle_route_args=(--resolve --projects-file "$PROJECTS_JSON" \
+    --origin-project "$SHUTTLE_ORIGIN" --route-key "$SHUTTLE_ROUTE_KEY" \
+    --permission-preflight)
+  if [ -n "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    shuttle_route_args+=(--sender-token-env "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV")
+  fi
+  if [ -n "${SHUTTLE_ROUTE_PERMISSION_FIXTURE:-}" ]; then
+    shuttle_route_args+=(--permission-fixture "$SHUTTLE_ROUTE_PERMISSION_FIXTURE")
+  fi
+  SHUTTLE_ROUTE=""
+  if ! SHUTTLE_ROUTE=$(node "$SCRIPT_DIR/shuttle-route-bindings.mjs" \
+      "${shuttle_route_args[@]}" 2>/dev/null); then
+    log "ERROR: shuttle route or sender permission preflight failed"
+    fire_meta_alert "shuttle_alert_route_unavailable" \
+      "Shuttle alert route unavailable" \
+      "A shuttle unit failed, but the configured engineering alert route or sender permission preflight failed. Inspect flywheel-updater.log and projects.json."
+    emit_result "config_error"
+    exit 1
+  fi
+  SHUTTLE_CHANNEL="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .channelId)"
+  SHUTTLE_ROUTE_BINDING="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .bindingDigest)"
+  SHUTTLE_ROUTE_TOKEN_ENV="$(printf '%s' "$SHUTTLE_ROUTE" | jq -r '.tokenEnv // ""')"
+  # Persist the resolved route identity, not the updater's synthetic caller
+  # identity, so a queued alert can drain through either unified or legacy
+  # LeadAlertNotifier routing without becoming an unknown-lead dead letter.
+  LEAD_ID="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .leadId)"
+  PROJECT_NAME="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .deliveryProject)"
+fi
 
 # Escape single quotes for sqlite3 string literals (parity with the TS
 # sqlString() claimer). sqlite3-over-stdin can't bind params, so we double any
@@ -527,7 +613,9 @@ FALLBACK_TO_CORE=""
 GENERAL_CHANNEL=""
 ALERT_BOT_TOKEN_ENV=""
 LEAD_BOT_TOKEN_ENV=""
-if [ "$KIND" != "codex_home_migration_overdue" ] && [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
+if [ "$KIND" = shuttle_unit_unhealthy ]; then
+  : # frozen shuttle route above; never replace it with unified or per-origin config
+elif [ "$KIND" != "codex_home_migration_overdue" ] && [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
   : # channel + identity fully env-driven — skip projects.json entirely
 else
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
@@ -639,7 +727,9 @@ fi # end projects.json resolution (skipped when unified channel + sender env set
 # Resolve channel: FLY-927 unified channel env wins; else
 # alertChannel → generalChannel (if alertFallbackToCore) — the legacy path.
 CHANNEL_ID=""
-if [ "$KIND" = "codex_home_migration_overdue" ]; then
+if [ "$KIND" = shuttle_unit_unhealthy ]; then
+  CHANNEL_ID="$SHUTTLE_CHANNEL"
+elif [ "$KIND" = "codex_home_migration_overdue" ]; then
   CHANNEL_ID="$ALERT_CHANNEL"
 elif [ -n "$UNIFIED_CHANNEL" ]; then
   CHANNEL_ID="$UNIFIED_CHANNEL"
@@ -661,6 +751,9 @@ fi
 # a dead-letter than an unauthorized sender). Else the legacy per-lead chain:
 # alertBotTokenEnv → botTokenEnv (fallback warned once).
 TOKEN=""
+if [ "$KIND" = shuttle_unit_unhealthy ] && [ -z "$SENDER_TOKEN_ENV" ]; then
+  SENDER_TOKEN_ENV="$SHUTTLE_ROUTE_TOKEN_ENV"
+fi
 if [ "$CODEX_HOME_SLOT_ROUTE" != "1" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
   TOKEN="${!SENDER_TOKEN_ENV:-}"
   if [ -z "$TOKEN" ]; then
@@ -889,6 +982,7 @@ write_record() {
   # FLY-2051: the switch family carries its resolved primary channel through a
   # transient queue. Every other kind omits the key to retain its legacy shape.
   local mention_args=() mention_expr="" route_args=() route_expr="" style_args=() style_expr=""
+  local shuttle_args=() shuttle_expr=""
   if [ -n "$MENTION_USER" ]; then
     mention_args=(--arg mentionUserId "$MENTION_USER")
     mention_expr=', mentionUserId: $mentionUserId'
@@ -900,6 +994,12 @@ write_record() {
   if [ "$PLAIN_MESSAGE" = "1" ]; then
     style_args=(--arg deliveryStyle "plain")
     style_expr=', deliveryStyle: $deliveryStyle'
+  fi
+  if [ "$KIND" = shuttle_unit_unhealthy ]; then
+    shuttle_args=(--arg shuttleBatchId "$SHUTTLE_INTENT" \
+      --arg shuttleRouteKey "$SHUTTLE_ROUTE_KEY" \
+      --arg shuttleBindingDigest "$SHUTTLE_ROUTE_BINDING")
+    shuttle_expr=', shuttleBatchId: $shuttleBatchId, shuttleRouteKey: $shuttleRouteKey, shuttleBindingDigest: $shuttleBindingDigest'
   fi
   jq -n \
     --arg leadId "$LEAD_ID" \
@@ -914,9 +1014,10 @@ write_record() {
     ${mention_args[@]+"${mention_args[@]}"} \
     ${route_args[@]+"${route_args[@]}"} \
     ${style_args[@]+"${style_args[@]}"} \
+    ${shuttle_args[@]+"${shuttle_args[@]}"} \
     "{leadId: \$leadId, projectName: \$projectName, eventId: \$eventId,
       eventType: \$eventType, title: \$title, body: \$body,
-      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}${route_expr}${style_expr}}" \
+      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}${route_expr}${style_expr}${shuttle_expr}}" \
     > "$1"
 }
 
@@ -1046,14 +1147,18 @@ case "$HTTP_CODE" in
 esac
 
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
-if [[ "$KIND" == activation_probe || "$KIND" == codex_home_migration_overdue ]]; then
+  if [[ "$KIND" == activation_probe || "$KIND" == shuttle_unit_unhealthy || "$KIND" == codex_home_migration_overdue ]]; then
     DELIVERY_MESSAGE_ID="$(jq -er '.id | select(type == "string" and test("^[0-9]{17,20}$"))' \
       "/tmp/lead-alert-$$.out" 2>/dev/null || true)"
   fi
   rm -f /tmp/lead-alert-$$.out
   log "sent lead=$LEAD_ID kind=$KIND channel=$CHANNEL_ID (HTTP $HTTP_CODE)"
   if record_delivery "sent"; then
-    emit_result "sent"
+    if [[ "$KIND" == shuttle_unit_unhealthy && ! "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+      emit_result "delivery_unknown"
+    else
+      emit_result "sent"
+    fi
   else
     # POST may have landed, but without a durable receipt the daemon must keep
     # its outbox and replay. A duplicate post is preferable to silent loss.
@@ -1071,6 +1176,11 @@ log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 #   5xx / 429 / 000(network) → TRANSIENT → queue for Bridge drainQueue retry.
 #   other 4xx (401/403/404 — bad token, forbidden, channel gone) → PERMANENT
 #     → dead-letter + meta-alert (retry is pointless).
+if [ "$HTTP_CODE" = "000" ] && [ "$KIND" = shuttle_unit_unhealthy ]; then
+  record_delivery "dead_lettered" "delivery-unknown" || true
+  emit_result "delivery_unknown"
+  exit 2
+fi
 if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
   || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
   if enqueue "discord-${HTTP_CODE}"; then

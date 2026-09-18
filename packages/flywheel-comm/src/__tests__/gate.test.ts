@@ -30,6 +30,7 @@ describe("gate command", () => {
 			cleanupTtlHours: 24,
 			pollIntervalMs: 50, // fast polling for tests
 			shipCiProbe: () => ({ green: true, reason: "ci_green" }),
+			fullCiEnsure: async () => ({ exitCode: 8, status: "full_requested" }),
 			...overrides,
 		};
 	}
@@ -131,6 +132,10 @@ describe("gate command", () => {
 			reason: "ci_not_green" as const,
 			detail: "required check Build & Test is fail",
 		}));
+		const fullCiEnsure = vi.fn(async () => ({
+			exitCode: 8 as const,
+			status: "full_requested",
+		}));
 		await expect(
 			gate(
 				baseArgs({
@@ -138,10 +143,12 @@ describe("gate command", () => {
 					noBlock: true,
 					timeoutBehavior: "fail-open",
 					shipCiProbe,
+					fullCiEnsure,
 				}),
 			),
-		).rejects.toThrow(/CI not green.*Build & Test/);
+		).rejects.toThrow(/CI not green.*Build & Test.*full CI: full_requested/);
 		expect(shipCiProbe).toHaveBeenCalledOnce();
+		expect(fullCiEnsure).toHaveBeenCalledOnce();
 		const db = new CommDB(dbPath);
 		try {
 			expect(db.getPendingQuestions("product-lead")).toHaveLength(0);

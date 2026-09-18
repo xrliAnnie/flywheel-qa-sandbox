@@ -63,6 +63,7 @@ const FOUNDER_DECIDED_RULES = new Set([
 	"ready.v1",
 	"dependents.v1",
 ]);
+const SHUTTLE_CYCLE_MS = 12 * 60 * 60_000;
 
 function relativeTime(iso: string, now: Date): string {
 	const minutes = Math.max(
@@ -70,6 +71,22 @@ function relativeTime(iso: string, now: Date): string {
 		Math.floor((now.getTime() - Date.parse(iso)) / 60_000),
 	);
 	return label("time.minutes_ago", { n: minutes });
+}
+
+function shuttleDriftAge(driftSince: string | null, now: Date): string {
+	if (driftSince === null) return "落后时间未知";
+	const hours = Math.max(
+		0,
+		Math.floor((now.getTime() - Date.parse(driftSince)) / 3_600_000),
+	);
+	return `已确认至少落后 ${hours} 小时`;
+}
+
+function shuttleSourceIsStale(observedAt: string | null, now: Date): boolean {
+	return (
+		observedAt === null ||
+		now.getTime() - Date.parse(observedAt) > SHUTTLE_CYCLE_MS
+	);
 }
 
 function rawCellValue(cell: Cell<unknown>): unknown {
@@ -446,10 +463,20 @@ function renderAttention(
 	now: Date,
 	dictionary: RenderAudit,
 ): string {
+	const deploymentRows = (page.deployment?.value?.units ?? []).filter(
+		(unit) => unit.episodeId !== null && unit.founderAware,
+	);
+	const renderDeploymentRows = () =>
+		deploymentRows
+			.map(
+				(unit) =>
+					`<article class="u-row" data-shuttle-founder="${escapeHtml(unit.unitId)}"><div class="u-l"><span class="u-kind k-gate">需要你知道，Lead 处理中</span><span class="mono">${escapeHtml(unit.projectName)}</span><span class="u-t">${escapeHtml(unit.displayName)}</span></div><div class="u-act">▶ ${escapeHtml(unit.reasonDisplay)}</div><div class="u-r"><span class="u-since">${escapeHtml(unit.behindCommits === null ? "落后提交数未知" : `落后 ${unit.behindCommits} 个提交`)}</span><span>${escapeHtml(shuttleDriftAge(unit.driftSince, now))}</span><span>${escapeHtml(`日志 ${unit.logRef}`)}</span></div></article>`,
+			)
+			.join("");
 	if (page.schema_version === 1)
-		return `<section data-attention-section><h2 class="sec">⚡ 现在要你看</h2><p>${escapeHtml(label("attention.legacy"))}</p></section>`;
+		return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${deploymentRows.length} 件</h2><div class="urgent">${renderDeploymentRows()}</div><p>${escapeHtml(label("attention.legacy"))}</p></section>`;
 	const rows = attentionAudience(page, true);
-	return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${rows.length} 件</h2><div class="urgent">${rows
+	return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${rows.length + deploymentRows.length} 件</h2><div class="urgent">${renderDeploymentRows()}${rows
 		.map(({ item, olderQuestions }) => {
 			dictionary.appendix.push(
 				`<details class="attention-sources"><summary>${escapeHtml(label("attention.sources", { n: item.sources.length }))}</summary><ul>${item.sources.map((source) => `<li>${escapeHtml(attentionSourceText(source, now))}</li>`).join("")}</ul></details>`,
@@ -471,7 +498,42 @@ function renderAttention(
 		})
 		.join(
 			"",
-		)}</div><p class="note attention-status">${escapeHtml(attentionSummary(page, rows.length))}</p></section>`;
+		)}</div><p class="note attention-status">${escapeHtml(attentionSummary(page, rows.length + deploymentRows.length))}</p></section>`;
+}
+
+function renderDeployment(page: EpicPage, now: Date): string {
+	const deployment = page.deployment?.value;
+	if (!deployment)
+		return '<section data-shuttle-status><h2 class="sec">班车状态</h2><p class="note">班车状态尚未采集（旧页面不代表健康）。</p></section>';
+	const stale = shuttleSourceIsStale(deployment.observedAt, now);
+	const activeIds = new Set(deployment.activeIncidents);
+	const active = deployment.units.filter((unit) => activeIds.has(unit.unitId));
+	const hasExpectedSkips = deployment.units.some(
+		(unit) => unit.outcome === "skipped" && unit.expected,
+	);
+	const source =
+		deployment.sourceStatus === "unavailable"
+			? "状态来源不可用；以下为最后一次成功投影，不视为当前健康。"
+			: stale
+				? "班车停跑/读数过期；超过一个班次没有新记录，不视为当前健康。"
+				: deployment.sourceStatus === "truncated"
+					? `状态已截断（展示 ${deployment.retained}/${deployment.total}）。`
+					: `已采集 ${deployment.total} 个部署单元。`;
+	const body = active.length
+		? active
+				.map(
+					(unit) =>
+						`<article class="u-row" data-shuttle-unit="${escapeHtml(unit.unitId)}"><div class="u-l"><span class="u-kind k-gate">${escapeHtml(`${unit.outcome}:${unit.reason}`)}</span><span class="mono">${escapeHtml(unit.projectName)}</span><span class="u-t">${escapeHtml(unit.displayName)}</span></div><div class="u-act">${escapeHtml(unit.reasonDisplay)}</div><div class="u-r"><span>${escapeHtml(unit.behindCommits === null ? "落后提交数未知" : `落后 ${unit.behindCommits} 个提交`)}</span><span>${escapeHtml(shuttleDriftAge(unit.driftSince, now))}</span><span>${escapeHtml(`连续 ${unit.consecutiveScheduledBad} 班`)}</span><span>${escapeHtml(`告警 ${unit.deliveryState ?? "待记录"}`)}</span><span>${escapeHtml(`日志 ${unit.logRef}`)}</span></div></article>`,
+				)
+				.join("")
+		: deployment.sourceStatus === "unavailable"
+			? "<p data-shuttle-unknown>无法判定当前班车是否健康。</p>"
+			: stale
+				? "<p data-shuttle-stale>班车停跑/读数过期。</p>"
+				: hasExpectedSkips
+					? "<p data-shuttle-unverified>部分单元本班未验证；未发现新异常，但不能声明全部正常。</p>"
+					: "<p data-shuttle-healthy>班车全部单元正常。</p>";
+	return `<section data-shuttle-status><h2 class="sec">班车状态</h2><p class="note">${escapeHtml(source)}</p><div class="urgent">${body}</div></section>`;
 }
 
 function renderLeadAttention(page: EpicPage, now: Date): string {
@@ -620,6 +682,7 @@ function renderHtml(
 	<div class="mock-bar" data-generated-at="${escapeHtml(page.generated_at)}">🔒 一个固定链接 · 手机能开 · 系统自己刷新 · ${escapeHtml(page.generated_at)} · <span data-opened-age>${escapeHtml(relativeTime(page.generated_at, now))}</span></div>
 	<div class="m-h"><h1 class="m-t">${escapeHtml(page.key.project_name)} · 现在在做什么</h1><div class="note">全部默认收起,点开才展开</div></div>
 	${renderAttention(page, now, dictionary)}
+	${renderDeployment(page, now)}
 	${
 		view === null
 			? `<p class="scope-unavailable">${escapeHtml(label("attention.scope_unavailable"))}</p>`

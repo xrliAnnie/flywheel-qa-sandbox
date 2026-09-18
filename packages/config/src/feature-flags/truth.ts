@@ -332,6 +332,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:
 		"FLY-2446 config value: comma-separated bot author ids excluded from Codex Lead intake, not an on/off gate",
+	FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST:
+		"FLY-2696 per-invocation identity binding: selector-observed projects registry digest checked by the launcher, not an on/off gate",
+	FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED:
+		"FLY-2696 per-invocation startup-barrier context derived from a verified persona projection, not an operator feature toggle",
+	FLYWHEEL_RAYA_PERSONA_GENERATION_ID:
+		"FLY-2696 per-invocation projected persona generation identity consumed by the startup barrier, not an on/off gate",
 	...Object.fromEntries(
 		[
 			"FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS",

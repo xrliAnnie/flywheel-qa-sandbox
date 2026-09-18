@@ -99,10 +99,28 @@ export async function runShuttleStep(input: {
 	const work = async () => {
 		const bytes = readPrivate(file),
 			manifest = JSON.parse(bytes);
-		const beforeStop = ["quiet-check", "prestop-probe"].includes(input.step);
+		const beforeStop = ["quiet-check", "prestop-probe"].includes(input.step),
+			postActivationProbe =
+				input.step === "cutover-probe" && manifest.checkpoint === "P4b",
+			activatedAt = Date.parse(manifest.activated_at),
+			seedProbe = manifest.seed_probe;
 		if (
 			manifest.schemaVersion !== 1 ||
-			manifest.checkpoint !== (beforeStop ? "P2" : "P3")
+			(!postActivationProbe &&
+				manifest.checkpoint !== (beforeStop ? "P2" : "P3")) ||
+			(postActivationProbe &&
+				(manifest.cursor?.status !== "preexisting" ||
+					!Number.isFinite(activatedAt) ||
+					!Number.isFinite(Date.parse(manifest.lead_restart_installed_at)) ||
+					typeof seedProbe?.intent?.nonce !== "string" ||
+					!/^[a-zA-Z0-9-]+$/.test(seedProbe.intent.nonce) ||
+					typeof seedProbe?.message_id !== "string" ||
+					!/^[0-9]{17,20}$/.test(seedProbe.message_id) ||
+					!Array.isArray(manifest.probe_resets) ||
+					!manifest.probe_resets.some(
+						(entry: { nonce?: string }) =>
+							entry.nonce === seedProbe.intent.nonce,
+					)))
 		)
 			throw new Error("shuttle-checkpoint-invalid");
 		const connection = await probeConnection(input.home, manifest, input.io);
@@ -184,6 +202,11 @@ export async function runShuttleStep(input: {
 						`[FLY-2445 cutover window probe ${manifest.cutover_probe.intent?.nonce}] Raya，请回复一句确认收到。`
 				)
 					throw new Error("probe-message-mismatch");
+				if (
+					postActivationProbe &&
+					Number((BigInt(found.id) >> 22n) + 1420070400000n) < activatedAt
+				)
+					throw new Error("activation-probe-before-activation");
 				return { status: "probe-confirmed", message_id: found.id };
 			}
 			try {
@@ -200,6 +223,12 @@ export async function runShuttleStep(input: {
 				});
 				if (prestop && input.io.now() - Date.parse(probe.at) > 15 * 60_000)
 					throw new Error("prestop-probe-stale");
+				if (
+					postActivationProbe &&
+					Number((BigInt(probe.message_id) >> 22n) + 1420070400000n) <
+						activatedAt
+				)
+					throw new Error("activation-probe-before-activation");
 				manifest[prestop ? "prestop_probe" : "cutover_probe"] = {
 					intent: { nonce: probe.nonce, at: probe.at },
 					message_id: probe.message_id,
@@ -297,6 +326,7 @@ export async function runShuttleStep(input: {
 			expectedBeforeSha256: existsSync(cursor.path)
 				? digest(readPrivate(cursor.path))
 				: null,
+			writerStopped: cursor.status !== "preexisting",
 		});
 		manifest.unresolved = result.unresolved;
 		if (!result.seed) {

@@ -24,6 +24,7 @@ export interface SummaryPresentationMigration {
 	sourceDigests: Record<string, string>;
 	cursorSeq: number;
 	state: "building" | "complete";
+	completedAtMs: number | null;
 }
 
 export interface SummaryPresentationRound {
@@ -203,6 +204,7 @@ export class SummaryPresentationStore {
 				cursor_seq INTEGER NOT NULL DEFAULT 0 CHECK(cursor_seq >= 0),
 				state TEXT NOT NULL CHECK(state IN ('building','complete')),
 				stale_alerted_at_ms INTEGER,
+				completed_at_ms INTEGER,
 				created_at_ms INTEGER NOT NULL,
 				updated_at_ms INTEGER NOT NULL,
 				PRIMARY KEY(project_name, lead_id, contract_version)
@@ -265,6 +267,11 @@ export class SummaryPresentationStore {
 		this.ensureColumn(
 			"summary_presentation_migration",
 			"stale_alerted_at_ms",
+			"INTEGER",
+		);
+		this.ensureColumn(
+			"summary_presentation_migration",
+			"completed_at_ms",
 			"INTEGER",
 		);
 		this.ensureColumn(
@@ -354,8 +361,33 @@ export class SummaryPresentationStore {
 					) as Record<string, string>,
 					cursorSeq: Number(row.cursor_seq),
 					state: row.state as "building" | "complete",
+					completedAtMs:
+						typeof row.completed_at_ms === "number"
+							? row.completed_at_ms
+							: null,
 				}
 			: null;
+	}
+
+	adoptMigrationCompletedAt(projectName: string, leadId: string): number {
+		assertIdentity(projectName, leadId);
+		const migration = this.getMigration(projectName, leadId);
+		if (!migration || migration.state !== "complete") {
+			throw new Error("summary_presentation_migration_not_complete");
+		}
+		this.db
+			.prepare(
+				`UPDATE summary_presentation_migration
+				 SET completed_at_ms = updated_at_ms
+				 WHERE project_name = ? AND lead_id = ? AND contract_version = 2
+				   AND state = 'complete' AND completed_at_ms IS NULL`,
+			)
+			.run(projectName, leadId);
+		const completedAtMs = this.getMigration(projectName, leadId)?.completedAtMs;
+		if (completedAtMs === null || completedAtMs === undefined) {
+			throw new Error("summary_presentation_migration_completed_at_missing");
+		}
+		return completedAtMs;
 	}
 
 	classifyHistoricalRound(input: {
@@ -475,10 +507,11 @@ export class SummaryPresentationStore {
 		this.db
 			.prepare(
 				`UPDATE summary_presentation_migration
-				 SET state = 'complete', cursor_seq = migration_boundary_seq, updated_at_ms = ?
+				 SET state = 'complete', cursor_seq = migration_boundary_seq,
+				     completed_at_ms = COALESCE(completed_at_ms, ?), updated_at_ms = ?
 				 WHERE project_name = ? AND lead_id = ? AND contract_version = 2`,
 			)
-			.run(nowMs, input.projectName, input.leadId);
+			.run(nowMs, nowMs, input.projectName, input.leadId);
 		return this.getMigration(input.projectName, input.leadId)!;
 	}
 
@@ -1059,6 +1092,20 @@ export class SummaryPresentationStore {
 			.prepare("SELECT * FROM summary_presentation_groups WHERE id = ?")
 			.get(groupId) as Record<string, unknown> | undefined;
 		return row ? mapGroup(row) : null;
+	}
+
+	getMemberByRound(
+		projectName: string,
+		leadId: string,
+		roundId: string,
+	): SummaryPresentationMember | null {
+		const row = this.db
+			.prepare(
+				`SELECT * FROM summary_presentation_members
+				 WHERE project_name = ? AND lead_id = ? AND round_id = ?`,
+			)
+			.get(projectName, leadId, roundId) as Record<string, unknown> | undefined;
+		return row ? mapMember(row) : null;
 	}
 
 	listMembers(groupId: string): SummaryPresentationMember[] {

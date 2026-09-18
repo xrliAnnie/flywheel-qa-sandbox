@@ -32,6 +32,7 @@ export const RULE_IDS = [
 	"freshness.v1",
 	"signals.v1",
 	"attention.v1",
+	"deployment.v1",
 	"lead_note_fade.v1",
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
@@ -63,6 +64,7 @@ export const MISSING_REASONS = [
 	"source_truncated",
 	"epic_scope_unavailable",
 	"legacy_attention_unavailable",
+	"shuttle_observation_unavailable",
 ] as const;
 export type MissingReason = (typeof MISSING_REASONS)[number];
 
@@ -99,6 +101,7 @@ export const REFRESH_REASONS = [
 	"dependency_changed",
 	"lead_note_changed",
 	"ship_judgment_history",
+	"deployment_changed",
 	"scan",
 	"manual",
 ] as const;
@@ -278,8 +281,38 @@ export interface EpicIntakeValue {
 	work_state: "pending" | "complete" | "needs_founder" | "superseded";
 }
 
+export interface ShuttleDeploymentUnit {
+	unitId: string;
+	projectName: string;
+	displayName: string;
+	outcome: "deployed" | "up_to_date" | "skipped" | "failed";
+	reason: string;
+	reasonDisplay: string;
+	expected: boolean;
+	observedAt: string;
+	episodeId: string | null;
+	episodeOpenedAt: string | null;
+	consecutiveScheduledBad: number;
+	founderAware: boolean;
+	behindCommits: number | null;
+	driftSince: string | null;
+	logRef: string;
+	deliveryState: string | null;
+}
+
+export interface ShuttleDeploymentView {
+	schemaVersion: 1;
+	sourceStatus: "complete" | "truncated" | "unavailable";
+	observedAt: string | null;
+	retained: number;
+	total: number;
+	units: ShuttleDeploymentUnit[];
+	activeIncidents: string[];
+}
+
 interface EpicPageBase {
 	ship_judgment_history?: Cell<EpicHistory>;
+	deployment?: Cell<ShuttleDeploymentView>;
 	lead_note_policy?: Cell<{ fade_after_days: number }>;
 	key: {
 		project_name: string;
@@ -914,9 +947,141 @@ export function assertEpicPage(
 				? ["discord", "attention_sources", "attention", "epic_scope"]
 				: []),
 		],
-		["lead_note_policy", "ship_judgment_history"],
+		["lead_note_policy", "ship_judgment_history", "deployment"],
 		"",
 	);
+	if (root.deployment !== undefined) {
+		assertCell(root.deployment, "/deployment", root);
+		const cell = root.deployment as Cell<ShuttleDeploymentView>;
+		if (
+			cell.provenance.kind !== "statestore" ||
+			cell.provenance.table !== "shuttle_unit_projection"
+		) {
+			fail("/deployment/provenance", "expected shuttle_unit_projection source");
+		}
+		const value = requireRecord(cell.value, "/deployment/value");
+		requireExactKeys(
+			value,
+			[
+				"schemaVersion",
+				"sourceStatus",
+				"observedAt",
+				"retained",
+				"total",
+				"units",
+				"activeIncidents",
+			],
+			[],
+			"/deployment/value",
+		);
+		if (value.schemaVersion !== 1)
+			fail("/deployment/value/schemaVersion", "expected 1");
+		if (
+			!new Set(["complete", "truncated", "unavailable"]).has(
+				String(value.sourceStatus),
+			)
+		)
+			fail("/deployment/value/sourceStatus", "unsupported status");
+		if (value.observedAt !== null)
+			requireTimestamp(value.observedAt, "/deployment/value/observedAt");
+		const retained = requireNonNegativeInteger(
+			value.retained,
+			"/deployment/value/retained",
+		);
+		const total = requireNonNegativeInteger(
+			value.total,
+			"/deployment/value/total",
+		);
+		if (total < retained)
+			fail("/deployment/value/total", "must be at least retained");
+		if (!Array.isArray(value.units))
+			fail("/deployment/value/units", "expected array");
+		if (value.units.length !== retained)
+			fail("/deployment/value/retained", "must equal units length");
+		const unitIds = new Set<string>();
+		for (const [index, rawUnit] of value.units.entries()) {
+			const path = `/deployment/value/units/${index}`;
+			const unit = requireRecord(rawUnit, path);
+			requireExactKeys(
+				unit,
+				[
+					"unitId",
+					"projectName",
+					"displayName",
+					"outcome",
+					"reason",
+					"reasonDisplay",
+					"expected",
+					"observedAt",
+					"episodeId",
+					"episodeOpenedAt",
+					"consecutiveScheduledBad",
+					"founderAware",
+					"behindCommits",
+					"driftSince",
+					"logRef",
+					"deliveryState",
+				],
+				[],
+				path,
+			);
+			for (const key of [
+				"unitId",
+				"projectName",
+				"displayName",
+				"reason",
+				"reasonDisplay",
+				"logRef",
+			] as const)
+				requireNonEmptyString(unit[key], `${path}/${key}`);
+			if (unitIds.has(String(unit.unitId)))
+				fail(`${path}/unitId`, "duplicate unit");
+			unitIds.add(String(unit.unitId));
+			if (
+				!new Set(["deployed", "up_to_date", "skipped", "failed"]).has(
+					String(unit.outcome),
+				)
+			)
+				fail(`${path}/outcome`, "unsupported outcome");
+			if (typeof unit.expected !== "boolean")
+				fail(`${path}/expected`, "expected boolean");
+			if (typeof unit.founderAware !== "boolean")
+				fail(`${path}/founderAware`, "expected boolean");
+			requireTimestamp(unit.observedAt, `${path}/observedAt`);
+			requireNonNegativeInteger(
+				unit.consecutiveScheduledBad,
+				`${path}/consecutiveScheduledBad`,
+			);
+			if (unit.behindCommits !== null)
+				requireNonNegativeInteger(unit.behindCommits, `${path}/behindCommits`);
+			for (const key of ["episodeOpenedAt", "driftSince"] as const) {
+				if (unit[key] !== null) requireTimestamp(unit[key], `${path}/${key}`);
+			}
+			for (const key of ["episodeId", "deliveryState"] as const) {
+				if (unit[key] !== null)
+					requireNonEmptyString(unit[key], `${path}/${key}`);
+			}
+		}
+		if (!Array.isArray(value.activeIncidents))
+			fail("/deployment/value/activeIncidents", "expected array");
+		const expectedActive = value.units
+			.filter((unit) => unit.episodeId !== null)
+			.map((unit) => unit.unitId)
+			.sort();
+		const actualActive = value.activeIncidents.map((unitId, index) =>
+			requireNonEmptyString(
+				unitId,
+				`/deployment/value/activeIncidents/${index}`,
+			),
+		);
+		if (
+			canonicalJsonString(actualActive) !== canonicalJsonString(expectedActive)
+		)
+			fail(
+				"/deployment/value/activeIncidents",
+				"must match active unit episodes",
+			);
+	}
 	if (root.ship_judgment_history !== undefined) {
 		assertCell(root.ship_judgment_history, "/ship_judgment_history", root);
 		const cell = root.ship_judgment_history as Cell<EpicHistory>;

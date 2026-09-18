@@ -1,0 +1,21 @@
+{
+  "url": "https://fw-reports-42fba7.vercel.app/r/841ccb02cfb362b4a36f1b9fd1ce7e2a/",
+  "reportId": "841ccb02cfb362b4a36f1b9fd1ce7e2a",
+  "publishOnly": true,
+  "delivered": false,
+  "messageId": null,
+  "verifiedAt": "2026-09-17T20:16:41.036166+00:00",
+  "checks": {
+    "http200": true,
+    "placeholderAbsent": true,
+    "singleScript": true,
+    "cspNonceMatches": true,
+    "scriptEqualsCommittedLocal": true,
+    "comments": 8,
+    "noExternalAssets": true,
+    "noInlineHandlers": true,
+    "diagramPendingPlaceholders": 2
+  },
+  "hostedSha256": "30d53244e7b0f93766293fa2cac3680bb478cdd1384bce92390401fe52aaf778",
+  "browserVisualQA": "unavailable; local Chromium launch denied"
+}
