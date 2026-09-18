@@ -178,6 +178,10 @@ function sendMigrationAlert({ alertBin, args, env }) {
 	) {
 		throw new Error("overdue_alert_delivery_failed");
 	}
+	return {
+		outcome: receipt.split(" ", 1)[0],
+		receipt,
+	};
 }
 
 function alertOverdueHomes({
@@ -230,29 +234,81 @@ function alertOverdueHomes({
 	return overdue.length;
 }
 
-function alertRosterFailure({ now, alertBin, env, reason }) {
+function normalizeFailureReason(error, layer) {
+	return error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+		? error.message
+		: `${layer}_unavailable`;
+}
+
+function alertPipelineFailure({
+	migrationRoot,
+	now,
+	source,
+	alertBin,
+	env,
+	layer,
+	reason,
+}) {
 	const utcDay = now.toISOString().slice(0, 10).replaceAll("-", "");
-	sendMigrationAlert({
-		alertBin,
-		args: [
-			"--lead",
-			"flywheel-eng-lead",
-			"--project",
-			"flywheel",
-			"--kind",
-			"codex_home_migration_overdue",
-			"--severity",
-			"severe",
-			"--title",
-			"Codex credential home roster unavailable",
-			"--body",
-			`FLY-2523 cannot resolve the approved-home roster; reason=${reason}. The previous roster was preserved, but migration deadline monitoring is degraded until authority recovers.`,
-			"--signature",
-			`roster-unavailable:${reason}:${utcDay}`,
-			"--strict-delivery",
-		],
-		env,
-	});
+	const receiptRoot = join(migrationRoot, "alert-pipeline-receipts");
+	ensureDirectory(receiptRoot);
+	const receiptPath = join(receiptRoot, `${utcDay}-${layer}-${reason}.json`);
+	const base = {
+		schemaVersion: 1,
+		at: now.toISOString(),
+		source,
+		unit: "approved-home-roster",
+		layer,
+		reason,
+		severity: "warning",
+		mentionUserId: null,
+	};
+	atomicJson(receiptPath, { ...base, delivery: { outcome: "attempting" } });
+	try {
+		const delivery = sendMigrationAlert({
+			alertBin,
+			args: [
+				"--lead",
+				"flywheel-eng-lead",
+				"--project",
+				"flywheel",
+				"--kind",
+				"codex_home_migration_overdue",
+				"--severity",
+				"warning",
+				"--title",
+				"Codex home alert pipeline unavailable",
+				"--body",
+				`FLY-2523 alert pipeline unavailable; layer=${layer}; reason=${reason}. This warning reports a system fault, not an overdue migration notice, and does not mention the founder.`,
+				"--signature",
+				`alert-pipeline:approved-home-roster:${layer}:${reason}:${utcDay}`,
+				"--strict-delivery",
+			],
+			env,
+		});
+		atomicJson(receiptPath, { ...base, delivery });
+	} catch (error) {
+		atomicJson(receiptPath, {
+			...base,
+			delivery: {
+				outcome: "failed",
+				reason: normalizeFailureReason(error, "alert_delivery"),
+			},
+		});
+		throw error;
+	}
+}
+
+function alertPipelineObligationExists(migrationRoot, now) {
+	try {
+		return evaluateCodexHomeMigrationDeadlines(
+			readJson(join(migrationRoot, "state.json"), "migration_state"),
+			readAttemptReceipts(migrationRoot),
+			now,
+		).some((status) => status.overdue);
+	} catch {
+		return true;
+	}
 }
 
 function loadPolicy(path) {
@@ -353,172 +409,167 @@ try {
 				? Number(process.env.FLYWHEEL_CODEX_RECONCILE_NOW_MS)
 				: Date.now();
 			if (!Number.isFinite(nowMs)) throw new Error("now_invalid");
-			const schedulePath = join(migrationRoot, "schedule.json");
-			let previous;
+			let failureLayer = "schedule";
+			let alertProduced = 0;
 			try {
-				previous = readJson(schedulePath, "schedule");
-			} catch (error) {
-				if (error?.code !== "ENOENT") throw error;
-			}
-			if (previous !== undefined) {
-				if (
-					previous?.schemaVersion !== 1 ||
-					!Number.isFinite(Date.parse(previous.lastAttemptStartedAt)) ||
-					!SOURCES.has(previous.source)
-				)
-					throw new Error("schedule_invalid");
-				if (
-					args.source === "health" &&
-					nowMs < Date.parse(previous.lastAttemptStartedAt) + 3_600_000
-				) {
-					process.stdout.write(
-						"CODEX_HOME_RECONCILE_CYCLE skipped reason=not_due\n",
-					);
-					return;
+				const schedulePath = join(migrationRoot, "schedule.json");
+				let previous;
+				try {
+					previous = readJson(schedulePath, "schedule");
+				} catch (error) {
+					if (error?.code !== "ENOENT") throw error;
 				}
-			}
-			atomicJson(schedulePath, {
-				schemaVersion: 1,
-				lastAttemptStartedAt: new Date(nowMs).toISOString(),
-				source: args.source,
-			});
-			const policy = loadPolicy(policyPath);
-			const projects = parseAndValidateProjects(
-				readJson(projectsPath, "projects"),
-			);
-			let homes;
-			try {
-				homes = await resolveCodexCredentialHomeRoster(projects, {
+				if (previous !== undefined) {
+					if (
+						previous?.schemaVersion !== 1 ||
+						!Number.isFinite(Date.parse(previous.lastAttemptStartedAt)) ||
+						!SOURCES.has(previous.source)
+					)
+						throw new Error("schedule_invalid");
+					if (
+						args.source === "health" &&
+						nowMs < Date.parse(previous.lastAttemptStartedAt) + 3_600_000
+					) {
+						process.stdout.write(
+							"CODEX_HOME_RECONCILE_CYCLE skipped reason=not_due\n",
+						);
+						return;
+					}
+				}
+				atomicJson(schedulePath, {
+					schemaVersion: 1,
+					lastAttemptStartedAt: new Date(nowMs).toISOString(),
+					source: args.source,
+				});
+				failureLayer = "policy";
+				const policy = loadPolicy(policyPath);
+				failureLayer = "projects";
+				const projects = parseAndValidateProjects(
+					readJson(projectsPath, "projects"),
+				);
+				failureLayer = "roster";
+				const homes = await resolveCodexCredentialHomeRoster(projects, {
 					homeDir: userHome,
 					runnerHomes: policy.runnerHomes,
 					resolveLeadAuthority: (target) =>
 						resolveAuthority(authorityBin, target, process.env),
 				});
-			} catch (error) {
-				const reason =
-					error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
-						? error.message
-						: "roster_unavailable";
-				let deadlineAlerts = 0;
-				try {
-					deadlineAlerts = alertOverdueHomes({
-						migrationRoot,
-						now: new Date(nowMs),
-						alertBin,
-						reconcileBin,
-						approvedPath,
-						stateRoot,
-						env: process.env,
-					});
-				} catch (alertError) {
-					if (
-						alertError instanceof Error &&
-						alertError.message === "overdue_alert_delivery_failed"
-					)
-						throw alertError;
+				failureLayer = "roster_write";
+				atomicJson(approvedPath, homes);
+				failureLayer = "build";
+				let buildSha = process.env.FLYWHEEL_BUILD_SHA?.trim();
+				if (!buildSha) {
+					const deployed = join(stateRoot, "deployed-sha");
+					plainFile(deployed, 256);
+					buildSha = readFileSync(deployed, "utf8").trim();
 				}
-				if (deadlineAlerts === 0) {
-					alertRosterFailure({
-						now: new Date(nowMs),
+				if (!SHA40.test(buildSha)) throw new Error("build_sha_invalid");
+				const childArgs = [
+					"--approved-homes",
+					approvedPath,
+					"--state-root",
+					stateRoot,
+					"--source",
+					args.source,
+					"--overdue-days",
+					String(policy.overdueDays),
+				];
+				if (args.homeId) childArgs.push("--home-id", args.homeId);
+				failureLayer = "reconcile";
+				const result = spawnSync(
+					processManagerBin,
+					[
+						"--fence",
+						join(migrationRoot, "reconcile-process-fence"),
+						"--timeout-ms",
+						"25000",
+						"--kill-grace-ms",
+						"1000",
+						"--proof-ms",
+						"4000",
+						"--",
+						reconcileBin,
+						...childArgs,
+					],
+					{
+						env: { ...process.env, FLYWHEEL_BUILD_SHA: buildSha },
+						encoding: "utf8",
+						timeout: 32_000,
+						maxBuffer: 4 * 1024 * 1024,
+					},
+				);
+				process.stdout.write(result.stdout || "");
+				process.stderr.write(result.stderr || "");
+				const reconcileFailed = result.status !== 0 || result.error;
+				failureLayer = "overdue_evaluation";
+				alertProduced += alertOverdueHomes({
+					migrationRoot,
+					now: new Date(nowMs),
+					alertBin,
+					reconcileBin,
+					approvedPath,
+					stateRoot,
+					env: process.env,
+				});
+				if (result.status === 75) {
+					throw new CycleError("reconcile_exit_unproven", 75);
+				}
+				if (reconcileFailed) throw new Error("reconcile_failed");
+				failureLayer = "readiness_evaluation";
+				const statuses = evaluateCodexHomeMigrationDeadlines(
+					readJson(join(migrationRoot, "state.json"), "migration_state"),
+					readAttemptReceipts(migrationRoot),
+					new Date(nowMs),
+				);
+				if (
+					statuses.length === homes.length &&
+					statuses.every((status) => status.satisfied)
+				) {
+					failureLayer = "readiness_receipt";
+					const receipt = spawnSync(
+						readinessReceiptBin,
+						[
+							"--approved-homes",
+							approvedPath,
+							"--canonical-home",
+							canonicalHome,
+							"--state-root",
+							stateRoot,
+							"--build-sha",
+							buildSha,
+						],
+						{
+							env: process.env,
+							encoding: "utf8",
+							timeout: 10_000,
+							maxBuffer: 1024 * 1024,
+						},
+					);
+					process.stdout.write(receipt.stdout || "");
+					process.stderr.write(receipt.stderr || "");
+					if (receipt.status !== 0 || receipt.error) {
+						throw new Error("readiness_receipt_failed");
+					}
+				}
+				ran = true;
+			} catch (error) {
+				const now = new Date(nowMs);
+				if (
+					alertProduced === 0 &&
+					alertPipelineObligationExists(migrationRoot, now)
+				) {
+					alertPipelineFailure({
+						migrationRoot,
+						now,
+						source: args.source,
 						alertBin,
 						env: process.env,
-						reason,
+						layer: failureLayer,
+						reason: normalizeFailureReason(error, failureLayer),
 					});
 				}
 				throw error;
 			}
-			atomicJson(approvedPath, homes);
-			let buildSha = process.env.FLYWHEEL_BUILD_SHA?.trim();
-			if (!buildSha) {
-				const deployed = join(stateRoot, "deployed-sha");
-				plainFile(deployed, 256);
-				buildSha = readFileSync(deployed, "utf8").trim();
-			}
-			if (!SHA40.test(buildSha)) throw new Error("build_sha_invalid");
-			const childArgs = [
-				"--approved-homes",
-				approvedPath,
-				"--state-root",
-				stateRoot,
-				"--source",
-				args.source,
-				"--overdue-days",
-				String(policy.overdueDays),
-			];
-			if (args.homeId) childArgs.push("--home-id", args.homeId);
-			const result = spawnSync(
-				processManagerBin,
-				[
-					"--fence",
-					join(migrationRoot, "reconcile-process-fence"),
-					"--timeout-ms",
-					"25000",
-					"--kill-grace-ms",
-					"1000",
-					"--proof-ms",
-					"4000",
-					"--",
-					reconcileBin,
-					...childArgs,
-				],
-				{
-					env: { ...process.env, FLYWHEEL_BUILD_SHA: buildSha },
-					encoding: "utf8",
-					timeout: 32_000,
-					maxBuffer: 4 * 1024 * 1024,
-				},
-			);
-			process.stdout.write(result.stdout || "");
-			process.stderr.write(result.stderr || "");
-			const reconcileFailed = result.status !== 0 || result.error;
-			alertOverdueHomes({
-				migrationRoot,
-				now: new Date(nowMs),
-				alertBin,
-				reconcileBin,
-				approvedPath,
-				stateRoot,
-				env: process.env,
-			});
-			if (result.status === 75) {
-				throw new CycleError("reconcile_exit_unproven", 75);
-			}
-			if (reconcileFailed) throw new Error("reconcile_failed");
-			const statuses = evaluateCodexHomeMigrationDeadlines(
-				readJson(join(migrationRoot, "state.json"), "migration_state"),
-				readAttemptReceipts(migrationRoot),
-				new Date(nowMs),
-			);
-			if (
-				statuses.length === homes.length &&
-				statuses.every((status) => status.satisfied)
-			) {
-				const receipt = spawnSync(
-					readinessReceiptBin,
-					[
-						"--approved-homes",
-						approvedPath,
-						"--canonical-home",
-						canonicalHome,
-						"--state-root",
-						stateRoot,
-						"--build-sha",
-						buildSha,
-					],
-					{
-						env: process.env,
-						encoding: "utf8",
-						timeout: 10_000,
-						maxBuffer: 1024 * 1024,
-					},
-				);
-				process.stdout.write(receipt.stdout || "");
-				process.stderr.write(receipt.stderr || "");
-				if (receipt.status !== 0 || receipt.error) {
-					throw new Error("readiness_receipt_failed");
-				}
-			}
-			ran = true;
 		},
 		{ timeoutMs: 0, bare: true },
 	);

@@ -78,7 +78,7 @@ chmod +x "$PROCESS_PS" "$PROCESS_PROBE"
 
 run_cycle() {
 	HOME="$USER_HOME" \
-	FLYWHEEL_BUILD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+	FLYWHEEL_BUILD_SHA="${FLYWHEEL_BUILD_SHA_OVERRIDE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
 	FLYWHEEL_CODEX_PROJECTS_FILE="$PROJECTS" \
 	FLYWHEEL_CODEX_HOME_POLICY="$POLICY" \
 	FLYWHEEL_CODEX_APPROVED_HOMES="$APPROVED" \
@@ -109,24 +109,6 @@ run_cycle health
 run_cycle updater
 [ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 2 ]
 
-# Registered authority failure is fail-loud and cannot replace the last roster.
-before="$(shasum -a 256 "$APPROVED" | awk '{print $1}')"
-: > "$ALERT_CALLS"
-cat > "$AUTHORITY" <<'SH'
-#!/usr/bin/env bash
-exit 1
-SH
-set +e
-run_cycle updater > "$TMP/failure.out" 2>&1
-rc=$?
-set -e
-[ "$rc" -ne 0 ]
-[ "$(shasum -a 256 "$APPROVED" | awk '{print $1}')" = "$before" ]
-[ "$(wc -l < "$ALERT_CALLS" | tr -d ' ')" -eq 1 ]
-grep -F -- "--kind codex_home_migration_overdue --severity severe" "$ALERT_CALLS" >/dev/null
-grep -F -- "--title Codex\\ credential\\ home\\ roster\\ unavailable" "$ALERT_CALLS" >/dev/null
-grep -F -- "reason=roster_unavailable" "$ALERT_CALLS" >/dev/null
-
 # An enrolled home with no attempt receipt pages at the exact N-day boundary.
 cat > "$AUTHORITY" <<SH
 #!/usr/bin/env bash
@@ -147,6 +129,82 @@ mkdir -p "$STATE_ROOT/codex-quota/home-migration/attempts"
 cat > "$STATE_ROOT/codex-quota/home-migration/state.json" <<JSON
 {"schemaVersion":1,"inventoryDigest":"$inventory_digest","overdueDays":1,"enrolledAt":"2026-09-11T17:58:38.000Z","homes":[{"id":"flywheel/implement","home":"$RUNNER_HOME","ownership":"managed","enrolledAt":"2026-09-11T17:58:38.000Z"},{"id":"raya/raya","home":"$LEAD_HOME","ownership":"managed","enrolledAt":"2026-09-12T17:58:38.000Z"}]}
 JSON
+
+# Failure-mutation family: once the durable state is overdue, no upstream
+# control-plane failure may silently suppress the alert pipeline. System faults
+# are warning-only, never mention a user, and leave a local delivery receipt.
+valid_policy="$(cat "$POLICY")"
+valid_projects="$(cat "$PROJECTS")"
+valid_state="$(cat "$STATE_ROOT/codex-quota/home-migration/state.json")"
+before="$(shasum -a 256 "$APPROVED" | awk '{print $1}')"
+PIPELINE_RECEIPTS="$STATE_ROOT/codex-quota/home-migration/alert-pipeline-receipts"
+
+assert_pipeline_degradation() {
+	local layer="$1" reason="$2" receipt
+	[ "$(wc -l < "$ALERT_CALLS" | tr -d ' ')" -eq 1 ]
+	grep -F -- "--kind codex_home_migration_overdue --severity warning" "$ALERT_CALLS" >/dev/null
+	grep -F -- "--title Codex\\ home\\ alert\\ pipeline\\ unavailable" "$ALERT_CALLS" >/dev/null
+	grep -F -- "layer=$layer" "$ALERT_CALLS" >/dev/null
+	grep -F -- "reason=$reason" "$ALERT_CALLS" >/dev/null
+	grep -F -- "--signature alert-pipeline:approved-home-roster:$layer:$reason:20260912" "$ALERT_CALLS" >/dev/null
+	if grep -F -- "--mention-user" "$ALERT_CALLS" >/dev/null; then
+		echo "pipeline degradation alert must not mention a user" >&2
+		exit 1
+	fi
+	receipt="$PIPELINE_RECEIPTS/20260912-$layer-$reason.json"
+	jq -e --arg layer "$layer" --arg reason "$reason" '
+	  .schemaVersion == 1 and .severity == "warning" and .mentionUserId == null and
+	  .layer == $layer and .reason == $reason and .delivery.outcome == "sent"
+	' "$receipt" >/dev/null
+}
+
+run_expected_failure() {
+	local layer="$1" reason="$2"
+	shift 2
+	: > "$ALERT_CALLS"
+	set +e
+	FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235918000 "$@" > "$TMP/$layer.out" 2>&1
+	local rc=$?
+	set -e
+	[ "$rc" -ne 0 ]
+	assert_pipeline_degradation "$layer" "$reason"
+}
+
+cat > "$AUTHORITY" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+run_expected_failure roster roster_unavailable run_cycle updater
+[ "$(shasum -a 256 "$APPROVED" | awk '{print $1}')" = "$before" ]
+cat > "$AUTHORITY" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' '{"codexHome":"$LEAD_HOME"}'
+SH
+chmod +x "$AUTHORITY"
+
+printf '%s\n' '{}' > "$POLICY"
+run_expected_failure policy policy_invalid run_cycle updater
+printf '%s\n' "$valid_policy" > "$POLICY"
+
+printf '%s\n' '{' > "$PROJECTS"
+run_expected_failure projects projects_invalid run_cycle updater
+printf '%s\n' "$valid_projects" > "$PROJECTS"
+
+: > "$ALERT_CALLS"
+set +e
+FLYWHEEL_BUILD_SHA_OVERRIDE=invalid \
+	FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235918000 run_cycle updater \
+	> "$TMP/build.out" 2>&1
+build_rc=$?
+set -e
+[ "$build_rc" -ne 0 ]
+assert_pipeline_degradation build build_sha_invalid
+
+printf '%s\n' '{' > "$STATE_ROOT/codex-quota/home-migration/state.json"
+run_expected_failure overdue_evaluation migration_state_invalid run_cycle updater
+printf '%s\n' "$valid_state" > "$STATE_ROOT/codex-quota/home-migration/state.json"
+
 : > "$ALERT_CALLS"
 FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235917999 run_cycle updater
 [ ! -s "$ALERT_CALLS" ]
