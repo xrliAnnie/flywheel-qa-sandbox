@@ -5,9 +5,26 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	createCodexHomeReconcileHealthRider,
 	isCodexHomeReconcileHealthRiderEnabled,
+	resolveCodexHomeReconcileStateRoot,
 } from "../codex-home-reconcile-rider.js";
 
 describe("Codex home reconcile health rider", () => {
+	it("uses the contract-projected slot state root and preserves production fallback", () => {
+		expect(resolveCodexHomeReconcileStateRoot({}, "/Users/tester")).toBe(
+			"/Users/tester/.flywheel",
+		);
+		expect(
+			resolveCodexHomeReconcileStateRoot(
+				{
+					FLYWHEEL_CODEX_HOME_RECONCILE_SLOT: "1",
+					FLYWHEEL_ISOLATION_ROOT: "/tmp/flywheel-test-slot-42",
+					FLYWHEEL_STATE_DIR: "/tmp/flywheel-test-slot-42",
+				},
+				"/Users/tester",
+			),
+		).toBe("/tmp/flywheel-test-slot-42");
+	});
+
 	it("is fail-closed unless the production Bridge wrapper explicitly opts in", () => {
 		expect(isCodexHomeReconcileHealthRiderEnabled({})).toBe(false);
 		expect(

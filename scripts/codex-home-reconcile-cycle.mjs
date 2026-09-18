@@ -15,7 +15,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { evaluateCodexHomeMigrationDeadlines } from "../packages/claude-runner/dist/index.js";
 import { withMkdirLock } from "../packages/config/dist/index.js";
@@ -192,6 +192,7 @@ function alertOverdueHomes({
 	approvedPath,
 	stateRoot,
 	env,
+	alertRoute,
 }) {
 	const statuses = evaluateCodexHomeMigrationDeadlines(
 		readJson(join(migrationRoot, "state.json"), "migration_state"),
@@ -213,9 +214,9 @@ function alertOverdueHomes({
 			alertBin,
 			args: [
 				"--lead",
-				"flywheel-eng-lead",
+				alertRoute.leadId,
 				"--project",
-				"flywheel",
+				alertRoute.projectName,
 				"--kind",
 				"codex_home_migration_overdue",
 				"--severity",
@@ -248,6 +249,7 @@ function alertPipelineFailure({
 	env,
 	layer,
 	reason,
+	alertRoute,
 }) {
 	const utcDay = now.toISOString().slice(0, 10).replaceAll("-", "");
 	const receiptRoot = join(migrationRoot, "alert-pipeline-receipts");
@@ -269,9 +271,9 @@ function alertPipelineFailure({
 			alertBin,
 			args: [
 				"--lead",
-				"flywheel-eng-lead",
+				alertRoute.leadId,
 				"--project",
-				"flywheel",
+				alertRoute.projectName,
 				"--kind",
 				"codex_home_migration_overdue",
 				"--severity",
@@ -350,11 +352,89 @@ function resolveAuthority(authorityBin, target, env) {
 	return { codexHome: parsed.codexHome };
 }
 
+function pathIsWithin(rootPath, candidate) {
+	const rel = relative(rootPath, candidate);
+	return (
+		rel === "" ||
+		(!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
+	);
+}
+
+function validateSlotDirectory(path) {
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isDirectory() || stat.isSymbolicLink())
+			fail("slot_root_unsafe", 2);
+	} catch {
+		fail("slot_root_unsafe", 2);
+	}
+}
+
+function validateSlotPathAncestors(rootPath, candidate) {
+	const rel = relative(rootPath, candidate);
+	const components = rel === "" ? [] : rel.split(sep);
+	let cursor = rootPath;
+	for (const component of components.slice(0, -1)) {
+		cursor = join(cursor, component);
+		try {
+			const stat = lstatSync(cursor);
+			if (!stat.isDirectory() || stat.isSymbolicLink())
+				fail("slot_path_unsafe", 2);
+		} catch (error) {
+			if (error?.code === "ENOENT") return;
+			throw error;
+		}
+	}
+}
+
+function resolveCycleCoordinates(env) {
+	const hostHome = env.HOME?.trim();
+	if (!hostHome || !isAbsolute(hostHome) || resolve(hostHome) !== hostHome)
+		fail("home_invalid", 2);
+	if (env.FLYWHEEL_CODEX_HOME_RECONCILE_SLOT !== "1") {
+		return {
+			userHome: hostHome,
+			stateRoot: join(hostHome, ".flywheel"),
+			alertRoute: { projectName: "flywheel", leadId: "flywheel-eng-lead" },
+			slot: false,
+		};
+	}
+
+	const isolationRoot = env.FLYWHEEL_ISOLATION_ROOT?.trim() ?? "";
+	const stateRoot = env.FLYWHEEL_STATE_DIR?.trim() ?? "";
+	const projectName = env.FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT?.trim() ?? "";
+	const leadId = env.FLYWHEEL_CODEX_HOME_RECONCILE_LEAD?.trim() ?? "";
+	const defaultLead = env.TEAMLEAD_DEFAULT_LEAD_AGENT?.trim() ?? "";
+	const match = isolationRoot.match(
+		/^\/(?:private\/)?tmp\/flywheel-test-slot-([1-9][0-9]*)$/,
+	);
+	if (
+		!match ||
+		!isAbsolute(isolationRoot) ||
+		resolve(isolationRoot) !== isolationRoot ||
+		!isAbsolute(stateRoot) ||
+		resolve(stateRoot) !== stateRoot ||
+		!pathIsWithin(isolationRoot, stateRoot) ||
+		projectName !== `test-slot-${match[1]}` ||
+		!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(leadId) ||
+		leadId !== defaultLead
+	)
+		fail("slot_identity_invalid", 2);
+	validateSlotDirectory(isolationRoot);
+	validateSlotPathAncestors(isolationRoot, stateRoot);
+	validateSlotDirectory(stateRoot);
+	return {
+		userHome: isolationRoot,
+		stateRoot,
+		alertRoute: { projectName, leadId },
+		slot: true,
+		isolationRoot,
+	};
+}
+
 const args = parseArgs(process.argv.slice(2));
-const userHome = process.env.HOME?.trim();
-if (!userHome || !isAbsolute(userHome) || resolve(userHome) !== userHome)
-	fail("home_invalid", 2);
-const stateRoot = join(userHome, ".flywheel");
+const coordinates = resolveCycleCoordinates(process.env);
+const { userHome, stateRoot, alertRoute } = coordinates;
 const projectsPath =
 	process.env.FLYWHEEL_CODEX_PROJECTS_FILE?.trim() ||
 	join(stateRoot, "projects.json");
@@ -393,6 +473,29 @@ for (const path of [
 	canonicalHome,
 ])
 	if (!isAbsolute(path) || resolve(path) !== path) fail("path_invalid", 2);
+
+if (coordinates.slot) {
+	for (const path of [projectsPath, policyPath, approvedPath, canonicalHome]) {
+		if (!pathIsWithin(coordinates.isolationRoot, path))
+			fail("slot_path_outside_isolation", 2);
+		validateSlotPathAncestors(coordinates.isolationRoot, path);
+	}
+	let slotProjects;
+	try {
+		slotProjects = readJson(projectsPath, "projects");
+	} catch {
+		fail("slot_projects_invalid", 2);
+	}
+	const matches = Array.isArray(slotProjects)
+		? slotProjects.flatMap((project) =>
+				project?.projectName === alertRoute.projectName &&
+				Array.isArray(project?.leads)
+					? project.leads.filter((lead) => lead?.agentId === alertRoute.leadId)
+					: [],
+			)
+		: [];
+	if (matches.length !== 1) fail("slot_lead_binding_invalid", 2);
+}
 
 ensureDirectory(stateRoot);
 const quotaRoot = join(stateRoot, "codex-quota");
@@ -510,6 +613,7 @@ try {
 					approvedPath,
 					stateRoot,
 					env: process.env,
+					alertRoute,
 				});
 				if (result.status === 75) {
 					throw new CycleError("reconcile_exit_unproven", 75);
@@ -566,6 +670,7 @@ try {
 						env: process.env,
 						layer: failureLayer,
 						reason: normalizeFailureReason(error, failureLayer),
+						alertRoute,
 					});
 				}
 				throw error;

@@ -227,6 +227,113 @@ case "$SEVERITY" in
     ;;
 esac
 
+# FLY-2523 rework: this one migration kind may target a QA slot only when the
+# complete slot isolation tuple is present. A lone leaked flag on production is
+# ignored for the historical production tuple; a real slot tuple can never name
+# that production identity.
+CODEX_HOME_SLOT_ROUTE=0
+slot_path_within() {
+  local root="$1" candidate="$2"
+  case "/${candidate#/}/" in */../*|*/./*) return 1 ;; esac
+  case "$candidate" in "$root"|"$root"/*) return 0 ;; *) return 1 ;; esac
+}
+slot_path_parents_safe() {
+  local root="$1" candidate="$2" rel parent current component old_ifs
+  slot_path_within "$root" "$candidate" || return 1
+  rel="${candidate#"$root"/}"
+  [ "$rel" != "$candidate" ] || return 0
+  parent="${rel%/*}"
+  [ "$parent" != "$rel" ] || return 0
+  current="$root"
+  old_ifs="$IFS"; IFS='/'
+  for component in $parent; do
+    current="$current/$component"
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      if [ -L "$current" ] || [ ! -d "$current" ]; then IFS="$old_ifs"; return 1; fi
+    else
+      break
+    fi
+  done
+  IFS="$old_ifs"
+  return 0
+}
+if [ "$KIND" = "codex_home_migration_overdue" ] \
+    && [ "${FLYWHEEL_CODEX_HOME_RECONCILE_SLOT:-0}" = "1" ]; then
+  SLOT_ROOT="${FLYWHEEL_ISOLATION_ROOT:-}"
+  SLOT_STATE="${FLYWHEEL_STATE_DIR:-}"
+  SLOT_PROJECT="${FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT:-}"
+  SLOT_LEAD="${FLYWHEEL_CODEX_HOME_RECONCILE_LEAD:-}"
+  SLOT_DEFAULT_LEAD="${TEAMLEAD_DEFAULT_LEAD_AGENT:-}"
+  SLOT_PROJECTS_PATH="${FLYWHEEL_PROJECTS_FILE:-}"
+  if [[ "$SLOT_ROOT" =~ ^/(private/)?tmp/flywheel-test-slot-[1-9][0-9]*$ ]]; then
+    SLOT_ROOT_SHAPED=1
+  else
+    SLOT_ROOT_SHAPED=0
+  fi
+  if slot_path_within "$SLOT_ROOT" "$SLOT_STATE"; then SLOT_STATE_SCOPED=1; else SLOT_STATE_SCOPED=0; fi
+  if [ "$PROJECT_NAME" = "flywheel" ] && [ "$LEAD_ID" = "flywheel-eng-lead" ]; then
+    if [ "$SLOT_ROOT_SHAPED" = "1" ] && [ "$SLOT_STATE_SCOPED" = "1" ]; then
+      log "ERROR: a QA slot cannot use the production migration alert identity"
+      emit_result "config_error"
+      exit 1
+    fi
+    # Incomplete/ambient slot env on the production tuple preserves the
+    # historical production pin instead of silently suppressing its page.
+  else
+    if [ "$SLOT_ROOT_SHAPED" != "1" ] || [ ! -d "$SLOT_ROOT" ] \
+        || [ -L "$SLOT_ROOT" ] || [ "$SLOT_STATE_SCOPED" != "1" ] \
+        || [ ! -d "$SLOT_STATE" ] || [ -L "$SLOT_STATE" ] \
+        || ! slot_path_parents_safe "$SLOT_ROOT" "$SLOT_STATE" \
+        || [ "$SLOT_PROJECT" != "test-slot-${SLOT_ROOT##*-}" ] \
+        || [ "$PROJECT_NAME" != "$SLOT_PROJECT" ] \
+        || [ -z "$SLOT_LEAD" ] || [ "$LEAD_ID" != "$SLOT_LEAD" ] \
+        || [ "$SLOT_LEAD" != "$SLOT_DEFAULT_LEAD" ]; then
+      log "ERROR: incomplete Codex home reconcile QA-slot identity"
+      emit_result "config_error"
+      exit 1
+    fi
+    if ! slot_path_within "$SLOT_ROOT" "$SLOT_PROJECTS_PATH" \
+        || ! slot_path_parents_safe "$SLOT_ROOT" "$SLOT_PROJECTS_PATH" \
+        || [ ! -f "$SLOT_PROJECTS_PATH" ] || [ -L "$SLOT_PROJECTS_PATH" ]; then
+      log "ERROR: QA-slot projects path escaped isolation root"
+      emit_result "config_error"
+      exit 1
+    fi
+    for SLOT_WRITE_PATH in \
+      "${FLYWHEEL_ALERT_QUEUE_DIR:-}" \
+      "${FLYWHEEL_ALERT_DEADLETTER_DIR:-}" \
+      "${FLYWHEEL_CLAIMS_DB:-}"; do
+      if ! slot_path_within "$SLOT_ROOT" "$SLOT_WRITE_PATH"; then
+        log "ERROR: QA-slot alert state path escaped isolation root"
+        emit_result "config_error"
+        exit 1
+      fi
+      if ! slot_path_parents_safe "$SLOT_ROOT" "$SLOT_WRITE_PATH"; then
+        log "ERROR: QA-slot alert state path has an unsafe parent"
+        emit_result "config_error"
+        exit 1
+      fi
+    done
+    for SLOT_DIRECTORY_PATH in \
+      "${FLYWHEEL_ALERT_QUEUE_DIR:-}" \
+      "${FLYWHEEL_ALERT_DEADLETTER_DIR:-}"; do
+      if { [ -e "$SLOT_DIRECTORY_PATH" ] || [ -L "$SLOT_DIRECTORY_PATH" ]; } \
+          && { [ -L "$SLOT_DIRECTORY_PATH" ] || [ ! -d "$SLOT_DIRECTORY_PATH" ]; }; then
+        log "ERROR: QA-slot alert directory is unsafe"
+        emit_result "config_error"
+        exit 1
+      fi
+    done
+    if { [ -e "${FLYWHEEL_CLAIMS_DB:-}" ] || [ -L "${FLYWHEEL_CLAIMS_DB:-}" ]; } \
+        && { [ -L "${FLYWHEEL_CLAIMS_DB:-}" ] || [ ! -f "${FLYWHEEL_CLAIMS_DB:-}" ]; }; then
+      log "ERROR: QA-slot claims database is unsafe"
+      emit_result "config_error"
+      exit 1
+    fi
+    CODEX_HOME_SLOT_ROUTE=1
+  fi
+fi
+
 # FLY-2390: capture intent precedes config/tool exits. Keep it until the
 # observation transaction lands; a missing tool/token must not look healthy.
 readiness_json_string() {
@@ -474,7 +581,8 @@ if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
 fi
 
 if [ "$KIND" = "codex_home_migration_overdue" ]; then
-  if [ "$PROJECT_NAME" != "flywheel" ] || [ "$LEAD_ID" != "flywheel-eng-lead" ]; then
+  if [ "$CODEX_HOME_SLOT_ROUTE" != "1" ] \
+      && { [ "$PROJECT_NAME" != "flywheel" ] || [ "$LEAD_ID" != "flywheel-eng-lead" ]; }; then
     log "ERROR: codex_home_migration_overdue requires flywheel/flywheel-eng-lead"
     emit_result "config_error"
     exit 1
@@ -492,6 +600,40 @@ FALLBACK_TO_CORE=$(printf '%s' "$LEAD_CFG" | jq -r '.alertFallbackToCore')
 GENERAL_CHANNEL=$(printf '%s' "$LEAD_CFG" | jq -r '.generalChannel // ""')
 ALERT_BOT_TOKEN_ENV=$(printf '%s' "$LEAD_CFG" | jq -r '.alertBotTokenEnv // ""')
 LEAD_BOT_TOKEN_ENV=$(printf '%s' "$LEAD_CFG" | jq -r '.botTokenEnv // ""')
+if [ "$KIND" = "codex_home_migration_overdue" ] \
+    && [ "$CODEX_HOME_SLOT_ROUTE" = "1" ]; then
+  if [[ ! "$ALERT_BOT_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+      || [[ ! "$LEAD_BOT_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    log "ERROR: QA-slot alert token binding is invalid (alert=${ALERT_BOT_TOKEN_ENV:-missing}, lead=${LEAD_BOT_TOKEN_ENV:-missing})"
+    emit_result "config_error"
+    exit 1
+  fi
+  PRODUCTION_PROJECTS_JSON="${FLYWHEEL_CODEX_PRODUCTION_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  if [ ! -f "$PRODUCTION_PROJECTS_JSON" ] || [ -L "$PRODUCTION_PROJECTS_JSON" ]; then
+    log "ERROR: production channel census is unavailable"
+    emit_result "config_error"
+    exit 1
+  fi
+  if ! PRODUCTION_CHANNELS=$(jq -er '
+    if type != "array" then error("projects must be an array") else
+      [ .[] |
+        (.generalChannel // empty),
+        (.leads[]? | (.alertChannel // empty), (.chatChannel // empty))
+      ]
+      | map(select(type == "string" and test("^[0-9]{17,20}$")))
+      | unique | .[]
+    end
+  ' "$PRODUCTION_PROJECTS_JSON" 2>/dev/null); then
+    log "ERROR: production channel census is invalid"
+    emit_result "config_error"
+    exit 1
+  fi
+  if printf '%s\n' "$PRODUCTION_CHANNELS" | grep -Fxq "$ALERT_CHANNEL"; then
+    log "ERROR: QA-slot alertChannel collides with a production channel"
+    emit_result "config_error"
+    exit 1
+  fi
+fi
 fi # end projects.json resolution (skipped when unified channel + sender env set)
 
 # Resolve channel: FLY-927 unified channel env wins; else
@@ -519,7 +661,7 @@ fi
 # a dead-letter than an unauthorized sender). Else the legacy per-lead chain:
 # alertBotTokenEnv → botTokenEnv (fallback warned once).
 TOKEN=""
-if [ -n "$SENDER_TOKEN_ENV" ]; then
+if [ "$CODEX_HOME_SLOT_ROUTE" != "1" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
   TOKEN="${!SENDER_TOKEN_ENV:-}"
   if [ -z "$TOKEN" ]; then
     log "ERROR: FLYWHEEL_ALERT_SENDER_TOKEN_ENV='$SENDER_TOKEN_ENV' does not resolve — refusing per-lead fallback"

@@ -55,6 +55,31 @@ grep -Fq 'updater_run_cycle' "$UPDATER"
 grep -Fq 'createCodexHomeReconcileHealthRider' "$PLUGIN"
 grep -Fq 'onHealthTick' "$PLUGIN"
 grep -Fq 'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=0")' "$TEST_DEPLOY"
+grep -Fq 'CODEX_HOME_RECONCILE=0' "$TEST_DEPLOY"
+grep -Fq -- '--codex-home-reconcile)' "$TEST_DEPLOY"
+grep -Fq -- '--codex-home-reconcile requires --alerts' "$TEST_DEPLOY"
+grep -Fq 'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=1")' "$TEST_DEPLOY"
+grep -Fq 'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_SLOT=1")' "$TEST_DEPLOY"
+grep -Fq 'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT=${TEST_PROJECT_NAME}")' "$TEST_DEPLOY"
+grep -Fq 'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_LEAD=${AGENT_ID}")' "$TEST_DEPLOY"
+grep -Fq 'FLYWHEEL_STATE_DIR' "$ROOT/scripts/lib/qa-slot-env-contract.json"
+[ -x "$ROOT/scripts/qa-fly-2523-529-alerts.sh" ]
+
+# The opt-in fails before slot allocation unless the isolated alert route is
+# explicitly requested too.
+DEPLOY_HOME="$TMP/deploy-home"
+mkdir -p "$DEPLOY_HOME/.flywheel"
+: > "$DEPLOY_HOME/.flywheel/.env"
+printf '%s\n' '{"guildId":"111111111111111111","slots":[]}' \
+	> "$DEPLOY_HOME/.flywheel/test-slots.json"
+set +e
+HOME="$DEPLOY_HOME" bash "$TEST_DEPLOY" 1 --codex-home-reconcile \
+	> "$TMP/deploy-negative.out" 2>&1
+deploy_negative_rc=$?
+set -e
+[ "$deploy_negative_rc" -ne 0 ]
+grep -F -- '--codex-home-reconcile requires --alerts' \
+	"$TMP/deploy-negative.out" >/dev/null
 if git -C "$ROOT" diff --name-only --diff-filter=A | grep -Eq '(^|/)(LaunchAgents|LaunchDaemons)/|\.plist$|crontab|cron\.'; then
 	echo "FLY-2523 added a forbidden scheduler artifact" >&2
 	exit 1

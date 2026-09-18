@@ -285,6 +285,7 @@ import {
 import {
 	createCodexHomeReconcileHealthRider,
 	isCodexHomeReconcileHealthRiderEnabled,
+	resolveCodexHomeReconcileStateRoot,
 } from "./codex-home-reconcile-rider.js";
 import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
@@ -11931,7 +11932,7 @@ export async function startBridge(
 		targets: residentCodexLeadTargets,
 	});
 	const codexHomeReconcileHealthRider = createCodexHomeReconcileHealthRider({
-		stateRoot: join(homedir(), ".flywheel"),
+		stateRoot: resolveCodexHomeReconcileStateRoot(process.env, homedir()),
 		enabled: isCodexHomeReconcileHealthRiderEnabled(process.env),
 		cycleScript: join(
 			residentCodexLeadFlywheelRoot,

@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$ROOT/scripts/codex-home-reconcile-cycle.mjs"
 TMP="$(mktemp -d /tmp/fly2523-cycle.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+SLOT_NUMBER="$((910000 + $$))"
+SLOT_ROOT="/tmp/flywheel-test-slot-${SLOT_NUMBER}"
+trap 'rm -rf "$TMP" "$SLOT_ROOT"' EXIT
 
 USER_HOME="$TMP/home"
 STATE_ROOT="$USER_HOME/.flywheel"
@@ -253,6 +255,123 @@ JSON
 FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235918000 run_cycle updater
 jq -e --arg digest "$inventory_digest" '.inventoryDigest == $digest and (.homes | length) == 2' \
 	"$STATE_ROOT/codex-quota/readiness-receipt.json" >/dev/null
+
+# Explicit QA-slot mode keeps every writable cycle coordinate under the slot
+# root and rewrites both severe and warning alert tuples to the slot project.
+SLOT_PROJECT="test-slot-${SLOT_NUMBER}"
+SLOT_LEAD="cos-test-${SLOT_NUMBER}"
+SLOT_FIXTURE="$SLOT_ROOT/state/fly2523-alert-driver"
+SLOT_PROJECTS="$SLOT_ROOT/flywheel-projects.json"
+SLOT_POLICY="$SLOT_FIXTURE/policy.json"
+SLOT_APPROVED="$SLOT_FIXTURE/approved-homes.json"
+SLOT_RUNNER_HOME="$SLOT_FIXTURE/runner-home"
+SLOT_CANONICAL_HOME="$SLOT_FIXTURE/canonical-home"
+SLOT_ALERT_CALLS="$SLOT_FIXTURE/alert-calls"
+SLOT_ALERT="$SLOT_FIXTURE/alert.sh"
+SLOT_RECONCILE="$SLOT_FIXTURE/reconcile.sh"
+mkdir -p "$SLOT_RUNNER_HOME" "$SLOT_CANONICAL_HOME"
+printf '%s\n' '{"project":"fixture","role":"implement"}' \
+	> "$SLOT_RUNNER_HOME/.flywheel-agent-home.json"
+cat > "$SLOT_PROJECTS" <<JSON
+[{"projectName":"$SLOT_PROJECT","projectRoot":"$SLOT_FIXTURE/repo","generalChannel":"777777777777777777","leads":[{"agentId":"$SLOT_LEAD","summaryRole":"producer","chatChannel":"777777777777777777","match":{"labels":["*"]}}]}]
+JSON
+cat > "$SLOT_POLICY" <<JSON
+{"schemaVersion":1,"enabled":true,"overdueDays":1,"runnerHomes":[{"id":"fixture/implement","project":"fixture","role":"implement","relativeHome":"state/fly2523-alert-driver/runner-home","pendingAt":"2026-09-11T17:58:38.000Z"}]}
+JSON
+cat > "$SLOT_RECONCILE" <<'SH'
+#!/usr/bin/env bash
+exit 75
+SH
+cat > "$SLOT_ALERT" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "\$@" >> "$SLOT_ALERT_CALLS"
+printf '\n' >> "$SLOT_ALERT_CALLS"
+printf '%s\n' 'sent message_id=123456789012345678'
+SH
+chmod +x "$SLOT_RECONCILE" "$SLOT_ALERT"
+slot_inventory_digest="$(node - "$SLOT_RUNNER_HOME" <<'NODE'
+const crypto = require("crypto");
+const home = process.argv[2];
+process.stdout.write(crypto.createHash("sha256").update(JSON.stringify([{home, ownership:"managed"}])).digest("hex"));
+NODE
+)"
+mkdir -p "$SLOT_ROOT/codex-quota/home-migration/attempts"
+cat > "$SLOT_ROOT/codex-quota/home-migration/state.json" <<JSON
+{"schemaVersion":1,"inventoryDigest":"$slot_inventory_digest","overdueDays":1,"enrolledAt":"2026-09-11T17:58:38.000Z","homes":[{"id":"fixture/implement","home":"$SLOT_RUNNER_HOME","ownership":"managed","enrolledAt":"2026-09-11T17:58:38.000Z"}]}
+JSON
+
+run_slot_cycle() {
+	HOME="$USER_HOME" \
+	FLYWHEEL_BUILD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+	FLYWHEEL_CODEX_HOME_RECONCILE_SLOT=1 \
+	FLYWHEEL_ISOLATION_ROOT="$SLOT_ROOT" \
+	FLYWHEEL_STATE_DIR="$SLOT_ROOT" \
+	FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT="$SLOT_PROJECT" \
+	FLYWHEEL_CODEX_HOME_RECONCILE_LEAD="$SLOT_LEAD" \
+	TEAMLEAD_DEFAULT_LEAD_AGENT="$SLOT_LEAD" \
+	FLYWHEEL_CODEX_PROJECTS_FILE="$SLOT_PROJECTS" \
+	FLYWHEEL_CODEX_HOME_POLICY="$SLOT_POLICY" \
+	FLYWHEEL_CODEX_APPROVED_HOMES="${FLYWHEEL_CODEX_APPROVED_HOMES_OVERRIDE:-$SLOT_APPROVED}" \
+	FLYWHEEL_CODEX_RECONCILE_BIN="$SLOT_RECONCILE" \
+	FLYWHEEL_CODEX_ALERT_BIN="$SLOT_ALERT" \
+	FLYWHEEL_CODEX_RECONCILE_PS_BIN="$PROCESS_PS" \
+	FLYWHEEL_CODEX_RECONCILE_GROUP_PROBE_BIN="$PROCESS_PROBE" \
+	FLYWHEEL_CODEX_SOURCE_HOME="$SLOT_CANONICAL_HOME" \
+	FLYWHEEL_CODEX_RECONCILE_NOW_MS="1789235918000" \
+		node "$SUT" --source updater
+}
+
+: > "$SLOT_ALERT_CALLS"
+set +e
+run_slot_cycle > "$TMP/slot-severe.out" 2>&1
+slot_severe_rc=$?
+set -e
+[ "$slot_severe_rc" -eq 75 ]
+grep -F -- "--lead $SLOT_LEAD --project $SLOT_PROJECT --kind codex_home_migration_overdue --severity severe" \
+	"$SLOT_ALERT_CALLS" >/dev/null
+
+# A distinct upstream control-plane failure routes a warning to the same slot.
+printf '%s\n' '{}' > "$SLOT_POLICY"
+set +e
+run_slot_cycle > "$TMP/slot-warning.out" 2>&1
+slot_warning_rc=$?
+set -e
+[ "$slot_warning_rc" -ne 0 ]
+grep -F -- "--lead $SLOT_LEAD --project $SLOT_PROJECT --kind codex_home_migration_overdue --severity warning" \
+	"$SLOT_ALERT_CALLS" >/dev/null
+
+tree_snapshot() {
+	node - "$1" <<'NODE'
+const { createHash } = require("crypto");
+const { lstatSync, readFileSync, readdirSync } = require("fs");
+const { join, relative } = require("path");
+const root = process.argv[2];
+const rows = [];
+function walk(path) {
+  const stat = lstatSync(path);
+  const row = [relative(root, path) || ".", stat.ino, stat.mode, stat.size,
+    stat.mtimeMs, stat.ctimeMs];
+  if (stat.isFile()) row.push(createHash("sha256").update(readFileSync(path)).digest("hex"));
+  rows.push(row);
+  if (stat.isDirectory()) for (const name of readdirSync(path).sort()) walk(join(path, name));
+}
+walk(root);
+process.stdout.write(JSON.stringify(rows));
+NODE
+}
+
+# A malformed slot coordinate is rejected before mkdir/chmod/lock/schedule and
+# cannot alter the production migration fixture tree.
+production_before="$(tree_snapshot "$STATE_ROOT/codex-quota/home-migration")"
+set +e
+FLYWHEEL_CODEX_APPROVED_HOMES_OVERRIDE="$TMP/outside-approved.json" \
+	run_slot_cycle > "$TMP/slot-escape.out" 2>&1
+slot_escape_rc=$?
+set -e
+[ "$slot_escape_rc" -ne 0 ]
+[ "$(tree_snapshot "$STATE_ROOT/codex-quota/home-migration")" = "$production_before" ]
+grep -F 'reason=slot_path_outside_isolation' "$TMP/slot-escape.out" >/dev/null
 
 RESTART="$ROOT/scripts/restart-services.sh"
 deploy_body="$TMP/deploy-body"

@@ -7,6 +7,17 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const HOUR_MS = 60 * 60 * 1000;
 
+export function resolveCodexHomeReconcileStateRoot(
+	env: NodeJS.ProcessEnv,
+	homeDir: string,
+): string {
+	if (env.FLYWHEEL_CODEX_HOME_RECONCILE_SLOT === "1") {
+		const stateRoot = env.FLYWHEEL_STATE_DIR?.trim();
+		if (stateRoot) return stateRoot;
+	}
+	return join(homeDir, ".flywheel");
+}
+
 export function isCodexHomeReconcileHealthRiderEnabled(
 	env: NodeJS.ProcessEnv,
 ): boolean {
