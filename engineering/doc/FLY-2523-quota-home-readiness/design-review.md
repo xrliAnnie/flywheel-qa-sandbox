@@ -43,3 +43,7 @@ Lead明确批准改验收范围：桌面凭据权威另单、本单交付注册h
 | lead-launch-fence-blast-radius / MEDIUM | reviewer接受Lead保留fence裁定；锁残留/PID误判仍可能阻挡Lead启动，应保留T3 barrier及旧launcher覆盖未知跳过用例。 | 保留为风险与测试项；不删除fence、不新增Lead重启。 |
 
 六条已通过ask --report报告Lead。APPROVED不等于这些建议已被实现，更不代表生产ready或切号恢复。
+
+## 最终HTML
+
+有效APPROVED后已静默发布并核验：https://fw-reports-42fba7.vercel.app/r/6f025a3d6f35ac79e67b2e72a8f7d5d2/ 。详细HTTP/CSP/source证据见artifact-validation.md。
