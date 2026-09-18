@@ -82,7 +82,7 @@ Lead 首选实际 restart window：`restart-services.sh` 的 `lead_restart_wait_
 
 ## 5. 超时必须实际发到工程频道
 
-deadline 以 config.enrolledAt（或可信更早 pendingAt）为基准，不以最后一次尝试刷新；`now >= dueAt && !currentSatisfied`，含完全没有 attempt/receipt 的 home。首次部署就加载固定五家 obligation，因此“从没调用”也会被监控发现。N=1天默认，首次符合条件的下一个既有 cadence 触发；正常 Bridge 时最多约1小时延迟，Bridge 不在线由 updater 0/12点兜底。所有 cadence 均死时不声称能自我通知，沿用现有宿主监控。
+deadline 以 config.enrolledAt（或可信更早 pendingAt）为基准，不以最后一次尝试刷新；`now >= dueAt && !currentSatisfied`，含完全没有 attempt/receipt 的 home。首次部署就加载当前派生清单的全部 obligation，因此“从没调用”也会被监控发现。N=1天默认，首次符合条件的下一个既有 cadence 触发；正常 Bridge 时最多约1小时延迟，Bridge 不在线由 updater 0/12点兜底。所有 cadence 均死时不声称能自我通知，沿用现有宿主监控。
 
 新增告警 kind `codex_home_migration_overdue`，同步 `LeadAlertNotifier.ts`、shell allowlist 与 kind-contract。调用既有 `lead-alert.sh --lead flywheel-eng-lead --project flywheel --kind codex_home_migration_overdue --severity severe --strict-delivery`。**专用 kind 的 destination 从受信任 projects.json 中 flywheel/flywheel-eng-lead 的工程 alertChannel 解析并校验；不接受 caller 任意 channel，不让全局 unified override 悄悄改道。** 本轮配置观察该字段为1516209714097291335，值不是代码常量；QA 必须核实它仍是工程目的频道。未知/重复 Lead、无 channel 为 config_error，不退回 general/core 冒充送达。
 
@@ -91,6 +91,10 @@ deadline 以 config.enrolledAt（或可信更早 pendingAt）为基准，不以�
 `sent` + transport message id 才是送达；duplicate 只关联先前实际 sent/queued 状态，不能凭 exit 0 写 delivered。queued_transient 记 pendingDelivery 并由已有 queue drain 恢复；dead_lettered/config_error 触发现有 meta-alert 并在下一 cadence 重试，不清 obligation。新 kind 的 strict 输出补充 message id，与既有返回兼容。告警发生与迁移成功是不同账，不用发告警代替完成迁移。
 
 ## 6. Receipt 与 flag 激活
+
+**硬红：FLY-2729 未落地并证明相关 daemon 重载新 token 生效之前，codex_quota_auto_switch 必须保持 off。** 这是Lead对问题5b425684-55e5-42db-a2c9-90727afed7ec回复新增的正式前置条件。FLY-2523可以交付迁移/回执/告警及设计阶段，但不能把这些当作激活许可。
+
+activation守卫新增 `daemonRecoveryDependencyReady`：从现有部署账本取得FLY-2729对应merge SHA，验证当前实际deployed SHA包含该提交，且引用独立QA的隔离daemon换代+新凭据后续请求成功证据；缺失、失败、陈旧构建或仅issue状态为Done均拒绝`dependency_not_ready:FLY-2729`。不接受命令行boolean或自然语言“已落地”覆盖。使用现有部署/QA证据读取入口，若没有可验证证据则保持off并报告，不在本单重写2729实现。该检查和home/readiness检查一起在正式flag off→on入口执行，任何UI/CLI同门；off操作永远不受此依赖阻断。
 
 五家满足后封装现有生成器，不另造 schema：
 
@@ -145,17 +149,17 @@ expect(validateReceipt({ ...valid, inventoryDigest: other })).toEqual(false);
 
 ### T5 — ready与activation守卫
 
-新增 check/activate wrappers，提取 collector options 单源，`packages/teamlead/src/bridge/flag-routes.ts` apply-requested之前的off→on守卫及`src/__tests__/flag-routes.test.ts` tests。复用 readiness-receipt.test.sh；新增 missing-one receipt、old digest、pending残留、unapproved active home、unknown comm、错误build、wrong state root、flag revision冲突、kill-switch随后关回不重开。真实 checker+fixture collector，不能 stub ready=true 来证明完整路径。运行 teamlead 的 host-readiness、codex-quota-readiness、runtime、feature-flag 聚焦 suites。
+新增 check/activate wrappers，提取 collector options 单源，`packages/teamlead/src/bridge/flag-routes.ts` apply-requested之前的off→on守卫及`src/__tests__/flag-routes.test.ts` tests。复用 readiness-receipt.test.sh；新增 FLY-2729未部署/无daemon生效QA证据但五家全ready仍拒绝on、off始终允许、missing-one receipt、old digest、pending残留、unapproved active home、unknown comm、错误build、wrong state root、flag revision冲突、kill-switch随后关回不重开。真实 checker+fixture collector，不能 stub ready=true 来证明完整路径。运行 teamlead 的 host-readiness、codex-quota-readiness、runtime、feature-flag 聚焦 suites。
 
 ### T6 — 交接与生产验收（后续节点）
 
 PR静态证据 `git diff --name-status <base>...HEAD`：无新增 launchd plist、crontab、timer；`rg -n 'codex.home.reconcile|home.migration' scripts/update-flywheel.sh scripts/restart-services.sh packages/teamlead/src/bridge/plugin.ts`；源码扫描加 cadence call-order tests 共同证明。所有不相关生产目录未变。
 
-授权部署后依次收集：实际deployed SHA；固定五家归属；每家done/already回执（活跃则正常skip并等自动机会）；原auth备份的受限验证结果；marker清零；真实readiness JSON ready=true；flag before/off→after/on 的scope+revision审计。不要因持续活跃阻断监控或忘掉 obligation。
+授权部署后依次收集：实际deployed SHA及FLY-2729已部署/验收证据；派生清单当前五家归属；每家done/already回执（活跃且需要迁移则skip，已完整共享可只读already）；原auth备份的受限验证结果；marker清零；真实readiness JSON ready=true；flag before/off→after/on 的scope+revision审计。不要因持续活跃阻断监控或忘掉 obligation。
 
-隔离 usage-limit 证据：运行同 deployed 模块的隔离 Bridge/StateStore、fixture canonical+pool+homes，注入唯一 test execution/root 的 usage-limit signal，经真实 ingest/coordinator→target_profile→install到fixture canonical→recover 流程，断言 incident 恢复及只重启隔离 execution；stub外部 transport 可替代真实登录，标注 fixture，不能声称生产已经自动切过账号。为生产开关有效性另收集 live consumer enabled/readiness 的只读结果。若现有入口不能做到不污染生产root，禁止向生产发合成事件，先完成隔离 harness；任务验收用用户允许的隔离信号，不动 founder 登录态。动态验收必须再证明相关 home daemon PID/start identity 换代、新进程实际读到目标账户的非秘密身份，并且一次后续请求成功。不能只看 target_profile 或 incident settled。Lead daemon 仅允许通过 `CODEX_HOME=<隔离home> codex remote-control stop --json` + 既有 supervisor ensure-daemon；Lead 进程、thread、窗口身份必须保持。不要把手工执行此命令补齐探针称为自动链已完成。若现有自动链缺少这一步，标明失败依赖并报 Lead 另开单，禁止在2523增加该恢复实现。PR同时贴生产配置证据与隔离动态证明，不能混写。
+隔离 usage-limit 证据：运行同 deployed 模块的隔离 Bridge/StateStore、fixture canonical+pool+homes，注入唯一 test execution/root 的 usage-limit signal，经真实 ingest/coordinator→target_profile→install到fixture canonical→recover 流程，断言 incident 恢复及只重启隔离 execution；stub外部 transport 可替代真实登录，标注 fixture，不能声称生产已经自动切过账号。为生产开关有效性另收集 live consumer enabled/readiness 的只读结果。若现有入口不能做到不污染生产root，禁止向生产发合成事件，先完成隔离 harness；任务验收用用户允许的隔离信号，不动 founder 登录态。动态验收必须再证明相关 home daemon PID/start identity 换代、新进程实际读到目标账户的非秘密身份，并且一次后续请求成功。不能只看 target_profile 或 incident settled。Lead daemon 仅允许通过 `CODEX_HOME=<隔离home> codex remote-control stop --json` + 既有 supervisor ensure-daemon；Lead 进程、thread、窗口身份必须保持。不要把手工执行此命令补齐探针称为自动链已完成。现有自动链缺口归FLY-2729；其部署与daemon新token有效证据未通过前，2523不得激活flag，禁止在2523增加该恢复实现。PR同时贴生产配置证据与隔离动态证明，不能混写。
 
-生产预检若实际存在超出五家live home或其它authority失败，报告精确阻碍，flag保持off；不得缩scope/伪造清单。完成真实验收前不报“自动切号已恢复”。
+生产预检若实际存在不在注册派生清单内的live home或其它authority失败，报告精确阻碍，flag保持off；不得缩scope/伪造清单。完成真实验收前不报“自动切号已恢复”。
 
 ## 8. 回滚、失败与观测
 

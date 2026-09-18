@@ -64,3 +64,7 @@ Lead 2026-09-18 04:14Z Raya 观察：canonical换号后运行中daemon仍缓存�
 全部找到注册/marker身份。mufasa不是依据launchd名字猜出，更不是rafiki：其authority把projects、manifest、plist、wrapper连成准确的mufasa tuple。Raya本轮另行readlink确认canonical共享、pending=false。Lead已明确批准五家并要求派生清单及unknown-home fail loud。
 
 本地Mermaid两张图均首次和标准参数重试失败：Chromium MachPortRendezvousServer bootstrap_check_in Permission denied(1100)。按交付合同保留.mmd并显示DIAGRAM PENDING LOCAL RENDER；无远程渲染。
+
+## 依赖归属更新
+
+Lead已创建FLY-2729（FLY-2072下，High）处理Lead daemon换代/新token生效缺口。其回复5b425684要求：2729未落地不得on，已作为plan第6节正式flag写门和T5阴性测试。此节点不实现2729、不启动它。
