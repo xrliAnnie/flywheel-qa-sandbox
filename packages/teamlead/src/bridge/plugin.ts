@@ -28,6 +28,7 @@ import {
 	connectDaemonTransport,
 	parseThreadReadTurns,
 	probeCodexDaemonLiveness,
+	probeCodexDaemonProcessBinding,
 	probeCodexRolloutMtime,
 	type RunnerTuiWindowLostEvidence,
 	rawCodexBin,
@@ -35,6 +36,7 @@ import {
 	readCodexLaunchSnapshot,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
+	resolveExecutionCodexHome,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
 	withSyncOpMarker,
@@ -99,9 +101,13 @@ import {
 } from "../applyTransition.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
-import { createCodexQuotaHostCollector } from "../codex-quota/host-readiness.js";
+import {
+	createCodexQuotaHostCollector,
+	createRegisteredCodexQuotaHostCollectorOptions,
+} from "../codex-quota/host-readiness.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
+import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
 	type CodexQuotaDispatcherWiring,
@@ -8384,35 +8390,42 @@ export async function startBridge(
 				limitId: "codex",
 				recover: recovery.recover,
 				autoEnabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
-				collectHomes: createCodexQuotaHostCollector({
-					canonicalHome,
-					homesRoot:
-						process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
-						join(homedir(), ".flywheel", "codex-homes"),
-					commRoot: commDbRootDir(),
-					projectNames: projects.map((p) => p.projectName),
-					approvedManifestPath: join(
-						codexQuotaStateRoot,
-						"readiness-receipt.json",
-					),
-					leadTargets: findResidentCodexLeadTargets(projects),
-					credentialIdentity: async (home) => {
-						const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
-						const token = JSON.parse(bytes)?.tokens?.refresh_token;
-						if (typeof token !== "string" || !token)
-							throw new Error("quota_refresh_identity_unavailable");
-						return {
-							...codexQuotaIdentityReader(accountRegistry)(bytes),
-							chainKey: createHash("sha256").update(token).digest("hex"),
-						};
-					},
-					leadAuthorityScript: join(
-						process.env.FLYWHEEL_REPO_ROOT?.trim() ||
-							resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
-						"scripts",
-						"resident-codex-lead-recover.sh",
-					),
-				}),
+				collectHomes: createCodexQuotaHostCollector(
+					createRegisteredCodexQuotaHostCollectorOptions(projects, {
+						canonicalHome,
+						homesRoot:
+							process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
+							join(homedir(), ".flywheel", "codex-homes"),
+						commRoot: commDbRootDir(),
+						projectNames: projects.map((p) => p.projectName),
+						approvedManifestPath: join(
+							codexQuotaStateRoot,
+							"readiness-receipt.json",
+						),
+						residentEvidence: createResidentHomeEvidence({
+							getSession: (executionId) => store.getSession(executionId),
+							resolveExecutionHome: resolveExecutionCodexHome,
+							readLaunchSnapshot: readCodexLaunchSnapshot,
+							probeDaemonProcessBinding: probeCodexDaemonProcessBinding,
+						}),
+						credentialIdentity: async (home) => {
+							const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
+							const token = JSON.parse(bytes)?.tokens?.refresh_token;
+							if (typeof token !== "string" || !token)
+								throw new Error("quota_refresh_identity_unavailable");
+							return {
+								...codexQuotaIdentityReader(accountRegistry)(bytes),
+								chainKey: createHash("sha256").update(token).digest("hex"),
+							};
+						},
+						leadAuthorityScript: join(
+							process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+								resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
+							"scripts",
+							"resident-codex-lead-recover.sh",
+						),
+					}),
+				),
 			});
 			if (!store.codexQuota.getRoot(codexQuotaRootKey))
 				await codexQuotaRuntime.credential();

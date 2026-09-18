@@ -112,6 +112,7 @@ export interface CodexDaemonOwnershipDeps {
 	isSocketLive?: (socketPath: string) => Promise<boolean>;
 	socketHolderPids?: (socketPath: string) => number[];
 	processGroupOf?: (pid: number) => number | undefined;
+	processStartIdentity?: (pid: number) => string | undefined;
 	processGroupState?: (pgid: number) => ProcessGroupState;
 	killGroup?: (pgid: number, signal: NodeJS.Signals) => void;
 	now?: () => number;
@@ -143,6 +144,19 @@ export interface CodexDaemonEvidence {
 	ledger: CodexDaemonLedgerState["state"];
 	socketLive: boolean;
 	spawnLock: CodexDaemonSpawnLockState;
+}
+
+export type CodexDaemonProcessBindingReason =
+	| "bound"
+	| "daemon_not_alive"
+	| "process_identity_unavailable"
+	| "process_start_mismatch"
+	| "socket_holder_mismatch"
+	| "process_group_mismatch";
+
+export interface CodexDaemonProcessBindingResult {
+	bound: boolean;
+	reason: CodexDaemonProcessBindingReason;
 }
 
 /** Bound the read itself even if the file grows after fstat. Never follow links
@@ -252,6 +266,7 @@ async function inspectCodexDaemonOwnership(
 	socketPath: string;
 	socketLive: boolean;
 	groupState: ProcessGroupState;
+	socketHolderPids: number[];
 }> {
 	const env = deps.env ?? process.env;
 	const socketPath = resolveDaemonSocketPath(executionId, env);
@@ -267,6 +282,7 @@ async function inspectCodexDaemonOwnership(
 			socketPath,
 			socketLive,
 			groupState: "unknown",
+			socketHolderPids: [],
 		};
 	}
 	const isSocketLive = deps.isSocketLive ?? defaultIsSocketLive;
@@ -281,6 +297,7 @@ async function inspectCodexDaemonOwnership(
 			socketPath,
 			socketLive,
 			groupState,
+			socketHolderPids: [],
 		};
 	}
 	if (groupState !== "alive") {
@@ -291,6 +308,7 @@ async function inspectCodexDaemonOwnership(
 			socketPath,
 			socketLive,
 			groupState,
+			socketHolderPids: [],
 		};
 	}
 	const holders = (deps.socketHolderPids ?? defaultSocketHolderPids)(
@@ -307,6 +325,7 @@ async function inspectCodexDaemonOwnership(
 		socketPath,
 		socketLive,
 		groupState,
+		socketHolderPids: holders,
 	};
 }
 
@@ -322,6 +341,48 @@ export async function probeCodexDaemonEvidence(
 		socketLive: inspected.socketLive,
 		spawnLock: inspectDaemonSpawnLock(`${inspected.socketPath}.lock`, deps),
 	};
+}
+
+/** Bind a census PID/start tuple to the execution's live socket-owning group. */
+export async function probeCodexDaemonProcessBinding(
+	executionId: string,
+	processIdentity: { pid: number; startIdentity: string },
+	deps: CodexDaemonOwnershipDeps = {},
+): Promise<CodexDaemonProcessBindingResult> {
+	if (
+		!Number.isSafeInteger(processIdentity.pid) ||
+		processIdentity.pid <= 1 ||
+		!processIdentity.startIdentity.trim()
+	) {
+		return { bound: false, reason: "process_identity_unavailable" };
+	}
+	const inspected = await inspectCodexDaemonOwnership(executionId, deps);
+	if (
+		inspected.liveness !== "alive" ||
+		inspected.pgid === undefined ||
+		!inspected.socketLive
+	) {
+		return { bound: false, reason: "daemon_not_alive" };
+	}
+	const currentStart = (
+		deps.processStartIdentity ?? defaultProcessStartIdentity
+	)(processIdentity.pid);
+	if (!currentStart) {
+		return { bound: false, reason: "process_identity_unavailable" };
+	}
+	if (currentStart !== processIdentity.startIdentity) {
+		return { bound: false, reason: "process_start_mismatch" };
+	}
+	if (!inspected.socketHolderPids.includes(processIdentity.pid)) {
+		return { bound: false, reason: "socket_holder_mismatch" };
+	}
+	const processPgid = (deps.processGroupOf ?? defaultProcessGroupOf)(
+		processIdentity.pid,
+	);
+	if (processPgid !== inspected.pgid) {
+		return { bound: false, reason: "process_group_mismatch" };
+	}
+	return { bound: true, reason: "bound" };
 }
 
 /** Non-destructive daemon evidence used by workflow quiescence. `absent`
@@ -1309,6 +1370,22 @@ function defaultProcessGroupOf(pid: number): number | undefined {
 		);
 		const pgid = Number.parseInt(out.trim(), 10);
 		return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function defaultProcessStartIdentity(pid: number): string | undefined {
+	try {
+		const out = withSyncOpMarker("codex-daemon:ps-start", () =>
+			execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+				encoding: "utf8",
+				timeout: 2000,
+				stdio: ["ignore", "pipe", "ignore"],
+			}),
+		);
+		const value = out.trim().replace(/\s+/g, " ");
+		return value.length > 0 ? value : undefined;
 	} catch {
 		return undefined;
 	}

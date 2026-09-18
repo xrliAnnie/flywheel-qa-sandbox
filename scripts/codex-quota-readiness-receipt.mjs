@@ -3,8 +3,12 @@
 // Only an explicitly supplied approved inventory is eligible; no auto-enrollment.
 import { randomUUID } from "node:crypto";
 import {
+	closeSync,
+	constants as fsConstants,
+	fsyncSync,
 	lstatSync,
-	mkdirSync,
+	openSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
@@ -12,7 +16,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { computeCodexHomeInventoryDigest } from "../packages/claude-runner/dist/index.js";
+import {
+	computeCodexHomeInventoryDigest,
+	evaluateCodexHomeMigrationDeadlines,
+} from "../packages/claude-runner/dist/index.js";
 
 let temporary;
 try {
@@ -60,7 +67,64 @@ try {
 	)
 		throw new Error("canonical_unavailable");
 	const seen = new Set(),
+		ids = new Set(),
 		checkedAt = new Date().toISOString();
+	const approved = input.map((entry) => {
+		if (
+			typeof entry?.id !== "string" ||
+			!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(entry.id) ||
+			entry.id.includes("..") ||
+			ids.has(entry.id)
+		)
+			throw new Error("approved_inventory");
+		ids.add(entry.id);
+		return entry;
+	});
+	const inventoryDigest = computeCodexHomeInventoryDigest(approved);
+	const migrationRoot = join(stateRoot, "codex-quota", "home-migration");
+	const migrationStatePath = join(migrationRoot, "state.json");
+	const migrationStateStat = lstatSync(migrationStatePath);
+	if (
+		!migrationStateStat.isFile() ||
+		migrationStateStat.isSymbolicLink() ||
+		migrationStateStat.size > 1024 * 1024
+	)
+		throw new Error("migration_state_unavailable");
+	const attemptsPath = join(migrationRoot, "attempts");
+	const attemptsStat = lstatSync(attemptsPath);
+	if (!attemptsStat.isDirectory() || attemptsStat.isSymbolicLink())
+		throw new Error("migration_receipts_unavailable");
+	const attemptNames = readdirSync(attemptsPath)
+		.filter((name) => name.endsWith(".json"))
+		.sort();
+	if (attemptNames.length > 50_000)
+		throw new Error("migration_receipts_unbounded");
+	const attempts = attemptNames.map((name) => {
+		const path = join(attemptsPath, name),
+			stat = lstatSync(path);
+		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
+			throw new Error("migration_receipt_unsafe");
+		return JSON.parse(readFileSync(path, "utf8"));
+	});
+	const statuses = evaluateCodexHomeMigrationDeadlines(
+		JSON.parse(readFileSync(migrationStatePath, "utf8")),
+		attempts,
+		new Date(),
+	);
+	const byId = new Map(statuses.map((status) => [status.homeId, status]));
+	if (
+		statuses.length !== approved.length ||
+		approved.some((entry) => {
+			const status = byId.get(entry.id);
+			return (
+				!status ||
+				!status.satisfied ||
+				status.home !== entry.home ||
+				status.inventoryDigest !== inventoryDigest
+			);
+		})
+	)
+		throw new Error("migration_not_satisfied");
 	const homes = input
 		.map((entry) => {
 			if (
@@ -99,17 +163,39 @@ try {
 			};
 		})
 		.sort((a, b) => a.home.localeCompare(b.home));
-	const inventoryDigest = computeCodexHomeInventoryDigest(homes);
 	const directory = join(stateRoot, "codex-quota");
-	mkdirSync(directory, { recursive: true, mode: 0o700 });
-	if (lstatSync(directory).isSymbolicLink()) throw new Error("output_unsafe");
+	for (const path of [stateRoot, directory]) {
+		const stat = lstatSync(path);
+		if (!stat.isDirectory() || stat.isSymbolicLink())
+			throw new Error("output_unsafe");
+	}
+	const output = join(directory, "readiness-receipt.json");
+	try {
+		const stat = lstatSync(output);
+		if (!stat.isFile() || stat.isSymbolicLink())
+			throw new Error("output_unsafe");
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
 	temporary = join(directory, `.readiness-${randomUUID()}.tmp`);
 	writeFileSync(
 		temporary,
 		`${JSON.stringify({ schemaVersion: 1, buildSha, inventoryDigest, createdAt: checkedAt, homes }, null, 2)}\n`,
 		{ mode: 0o600, flag: "wx" },
 	);
-	renameSync(temporary, join(directory, "readiness-receipt.json"));
+	const fd = openSync(temporary, fsConstants.O_RDONLY);
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+	renameSync(temporary, output);
+	const directoryFd = openSync(directory, fsConstants.O_RDONLY);
+	try {
+		fsyncSync(directoryFd);
+	} finally {
+		closeSync(directoryFd);
+	}
 	temporary = undefined;
 	console.log("CODEX_READINESS_RECEIPT written");
 } catch {

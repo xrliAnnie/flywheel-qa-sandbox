@@ -7,6 +7,7 @@ import {
 	findRegisteredCodexCredentialLeadTargets,
 	resolveCodexCredentialHomeRoster,
 } from "../credential-home-roster.js";
+import { createRegisteredCodexQuotaHostCollectorOptions } from "../host-readiness.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -53,6 +54,17 @@ describe("Codex credential-home roster", () => {
 			{ projectName: "growth", leadId: "mufasa-lead" },
 			{ projectName: "raya", leadId: "raya" },
 		]);
+		const collector = createRegisteredCodexQuotaHostCollectorOptions(projects, {
+			homesRoot: "/fixture/homes",
+			canonicalHome: "/fixture/canonical",
+			commRoot: "/fixture/comm",
+			projectNames: projects.map((entry) => entry.projectName),
+			approvedManifestPath: "/fixture/readiness.json",
+			leadAuthorityScript: "/fixture/authority",
+		});
+		expect(collector.leadTargets).toEqual(
+			findRegisteredCodexCredentialLeadTargets(projects),
+		);
 	});
 
 	it("combines fixed runner homes and authoritative Lead homes", async () => {

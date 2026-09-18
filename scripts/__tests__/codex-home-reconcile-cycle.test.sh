@@ -177,6 +177,20 @@ JSON
 FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235918000 run_cycle updater
 [ "$(wc -l < "$ALERT_CALLS" | tr -d ' ')" -eq 2 ]
 
+# Once every current-digest home is satisfied, the same existing cadence emits
+# the deployment readiness receipt without a separate human-scheduled step.
+mkdir -p "$USER_HOME/.codex"
+printf '{}' > "$USER_HOME/.codex/auth.json"
+chmod 600 "$USER_HOME/.codex/auth.json"
+ln -s "$USER_HOME/.codex/auth.json" "$RUNNER_HOME/auth.json"
+ln -s "$USER_HOME/.codex/auth.json" "$LEAD_HOME/auth.json"
+cat > "$STATE_ROOT/codex-quota/home-migration/attempts/62fbdc95-5825-4f0b-a654-6938b1825faa.json" <<JSON
+{"schemaVersion":1,"attemptId":"62fbdc95-5825-4f0b-a654-6938b1825faa","at":"2026-09-12T17:58:38.000Z","homeId":"raya/raya","home":"$LEAD_HOME","inventoryDigest":"$inventory_digest","source":"updater","buildSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","result":"already-satisfied","reason":"canonical_link_verified","satisfied":true,"backupRef":null,"postcondition":{"credentialShared":true,"pending":false}}
+JSON
+FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235918000 run_cycle updater
+jq -e --arg digest "$inventory_digest" '.inventoryDigest == $digest and (.homes | length) == 2' \
+	"$STATE_ROOT/codex-quota/readiness-receipt.json" >/dev/null
+
 RESTART="$ROOT/scripts/restart-services.sh"
 deploy_body="$TMP/deploy-body"
 lead_body="$TMP/lead-body"

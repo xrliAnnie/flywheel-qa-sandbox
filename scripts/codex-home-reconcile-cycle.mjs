@@ -9,16 +9,16 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
-	readFileSync,
 	readdirSync,
+	readFileSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withMkdirLock } from "../packages/config/dist/index.js";
 import { evaluateCodexHomeMigrationDeadlines } from "../packages/claude-runner/dist/index.js";
+import { withMkdirLock } from "../packages/config/dist/index.js";
 import { resolveCodexCredentialHomeRoster } from "../packages/teamlead/dist/codex-quota/credential-home-roster.js";
 import { parseAndValidateProjects } from "../packages/teamlead/dist/ProjectConfig.js";
 
@@ -136,7 +136,9 @@ function readAttemptReceipts(migrationRoot) {
 		if (!stat.isDirectory() || stat.isSymbolicLink()) {
 			throw new Error("attempts_unsafe");
 		}
-		entries = readdirSync(attemptsPath).filter((name) => name.endsWith(".json"));
+		entries = readdirSync(attemptsPath).filter((name) =>
+			name.endsWith(".json"),
+		);
 	} catch (error) {
 		if (error?.code === "ENOENT") return [];
 		throw error;
@@ -209,8 +211,10 @@ function alertOverdueHomes({
 		const receipt = (result.stdout || "").trim().split("\n").at(-1) ?? "";
 		if (
 			result.error ||
-			!(/^(sent|duplicate)(?: |$)/.test(receipt) ||
-				(result.status === 2 && receipt === "queued_transient"))
+			!(
+				/^(sent|duplicate)(?: |$)/.test(receipt) ||
+				(result.status === 2 && receipt === "queued_transient")
+			)
 		) {
 			failed = true;
 		}
@@ -283,6 +287,11 @@ const alertBin =
 const processManagerBin =
 	process.env.FLYWHEEL_CODEX_RECONCILE_PROCESS_BIN?.trim() ||
 	join(root, "scripts/lib/codex-home-reconcile-process.mjs");
+const readinessReceiptBin =
+	process.env.FLYWHEEL_CODEX_READINESS_RECEIPT_BIN?.trim() ||
+	join(root, "scripts/codex-quota-readiness-receipt.mjs");
+const canonicalHome =
+	process.env.FLYWHEEL_CODEX_SOURCE_HOME?.trim() || join(userHome, ".codex");
 for (const path of [
 	projectsPath,
 	policyPath,
@@ -291,6 +300,8 @@ for (const path of [
 	reconcileBin,
 	alertBin,
 	processManagerBin,
+	readinessReceiptBin,
+	canonicalHome,
 ])
 	if (!isAbsolute(path) || resolve(path) !== path) fail("path_invalid", 2);
 
@@ -367,24 +378,28 @@ try {
 				String(policy.overdueDays),
 			];
 			if (args.homeId) childArgs.push("--home-id", args.homeId);
-			const result = spawnSync(processManagerBin, [
-				"--fence",
-				join(migrationRoot, "reconcile-process-fence"),
-				"--timeout-ms",
-				"25000",
-				"--kill-grace-ms",
-				"1000",
-				"--proof-ms",
-				"4000",
-				"--",
-				reconcileBin,
-				...childArgs,
-			], {
-				env: { ...process.env, FLYWHEEL_BUILD_SHA: buildSha },
-				encoding: "utf8",
-				timeout: 32_000,
-				maxBuffer: 4 * 1024 * 1024,
-			});
+			const result = spawnSync(
+				processManagerBin,
+				[
+					"--fence",
+					join(migrationRoot, "reconcile-process-fence"),
+					"--timeout-ms",
+					"25000",
+					"--kill-grace-ms",
+					"1000",
+					"--proof-ms",
+					"4000",
+					"--",
+					reconcileBin,
+					...childArgs,
+				],
+				{
+					env: { ...process.env, FLYWHEEL_BUILD_SHA: buildSha },
+					encoding: "utf8",
+					timeout: 32_000,
+					maxBuffer: 4 * 1024 * 1024,
+				},
+			);
 			process.stdout.write(result.stdout || "");
 			process.stderr.write(result.stderr || "");
 			const reconcileFailed = result.status !== 0 || result.error;
@@ -401,6 +416,40 @@ try {
 				throw new CycleError("reconcile_exit_unproven", 75);
 			}
 			if (reconcileFailed) throw new Error("reconcile_failed");
+			const statuses = evaluateCodexHomeMigrationDeadlines(
+				readJson(join(migrationRoot, "state.json"), "migration_state"),
+				readAttemptReceipts(migrationRoot),
+				new Date(nowMs),
+			);
+			if (
+				statuses.length === homes.length &&
+				statuses.every((status) => status.satisfied)
+			) {
+				const receipt = spawnSync(
+					readinessReceiptBin,
+					[
+						"--approved-homes",
+						approvedPath,
+						"--canonical-home",
+						canonicalHome,
+						"--state-root",
+						stateRoot,
+						"--build-sha",
+						buildSha,
+					],
+					{
+						env: process.env,
+						encoding: "utf8",
+						timeout: 10_000,
+						maxBuffer: 1024 * 1024,
+					},
+				);
+				process.stdout.write(receipt.stdout || "");
+				process.stderr.write(receipt.stderr || "");
+				if (receipt.status !== 0 || receipt.error) {
+					throw new Error("readiness_receipt_failed");
+				}
+			}
 			ran = true;
 		},
 		{ timeoutMs: 0, bare: true },

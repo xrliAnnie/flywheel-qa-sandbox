@@ -214,3 +214,69 @@ it("reports direct canonical readers even when canonical is not an enrolled mana
 		canonicalChainActive: false,
 	});
 });
+
+it("uses strict resident evidence for a keyed active home without a lease", async () => {
+	const f = fixture();
+	writeFileSync(
+		join(f.home, ".flywheel-agent-home.json"),
+		JSON.stringify({ project: "project", role: "implement" }),
+	);
+	const db = new Database(join(f.options.commRoot, "project", "comm.db"));
+	db.prepare("INSERT INTO sessions VALUES(?,?,?,?,?)").run(
+		"exec",
+		"codex",
+		"running",
+		null,
+		0,
+	);
+	db.close();
+	f.setProcesses(
+		`12 Thu Sep 18 01:00:00 2026 /bin/codex app-server CODEX_HOME=${f.home} FLYWHEEL_EXEC_ID=exec`,
+	);
+	let verified = true;
+	const collect = createCodexQuotaHostCollector({
+		...f.options,
+		residentEvidence: async (input) => {
+			expect(input).toMatchObject({
+				executionId: "exec",
+				project: "project",
+				role: "implement",
+				process: { pid: 12, startIdentity: "Thu Sep 18 01:00:00 2026" },
+			});
+			return {
+				verified,
+				reason: verified ? "verified" : "socket_holder_mismatch",
+			};
+		},
+	});
+	expect(await collect()).toMatchObject({
+		complete: true,
+		registeredComplete: true,
+		homes: [{ activity: "active" }],
+	});
+	verified = false;
+	expect(await collect()).toMatchObject({
+		complete: false,
+		registeredComplete: false,
+		homes: [{ activity: "unknown" }],
+	});
+});
+
+it("preserves an unattributed desktop reader as global unknown", async () => {
+	const f = fixture();
+	f.setProcesses(
+		"77 Thu Sep 18 01:00:00 2026 /Applications/ChatGPT.app/Contents/Resources/codex app-server",
+	);
+	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
+		complete: false,
+		registeredComplete: true,
+		diagnostics: [{ reason: "process_home_unknown", scope: "global" }],
+		unattributedReaders: [
+			{
+				pid: 77,
+				startIdentity: "Thu Sep 18 01:00:00 2026",
+				reason: "process_home_unknown",
+			},
+		],
+	});
+});
