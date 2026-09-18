@@ -15,7 +15,7 @@ import {
 	createCodexQuotaHostCollector,
 	createRegisteredCodexQuotaHostCollectorOptions,
 } from "../packages/teamlead/dist/codex-quota/host-readiness.js";
-import { readFly2729Dependency } from "../packages/teamlead/dist/codex-quota/qa-dependency.js";
+import { readBoundFly2729Dependency } from "../packages/teamlead/dist/codex-quota/qa-dependency.js";
 import { checkCodexQuotaReadiness } from "../packages/teamlead/dist/codex-quota/readiness.js";
 import {
 	evaluateRegisteredHomeReadiness,
@@ -151,11 +151,13 @@ async function liveInput() {
 	const dependencyInputPath =
 		process.env.FLYWHEEL_FLY2729_DEPENDENCY_INPUT?.trim();
 	const fly2729 = dependencyInputPath
-		? readFly2729Dependency({
-				expectedRoot: join(stateRoot, "state", "qa-evidence", "FLY-2729"),
-				expectedDeployedSha: deployedSha,
-				...plainJson(dependencyInputPath, 64 * 1024),
-			})
+		? readBoundFly2729Dependency(
+				{
+					expectedRoot: join(stateRoot, "state", "qa-evidence", "FLY-2729"),
+					expectedDeployedSha: deployedSha,
+				},
+				plainJson(dependencyInputPath, 64 * 1024),
+			)
 		: { status: "pending" };
 	const quotaRoot = join(stateRoot, "codex-quota");
 	const manifestPath = join(quotaRoot, "readiness-receipt.json");

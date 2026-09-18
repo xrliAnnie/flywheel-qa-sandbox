@@ -159,6 +159,27 @@ function repairCommand({ reconcileBin, approvedPath, stateRoot, homeId }) {
 	return `node ${shellQuote(reconcileBin)} --approved-homes ${shellQuote(approvedPath)} --state-root ${shellQuote(stateRoot)} --source manual --home-id ${homeId}`;
 }
 
+function sendMigrationAlert({ alertBin, args, env }) {
+	const result = spawnSync(alertBin, args, {
+		env,
+		encoding: "utf8",
+		timeout: 30_000,
+		maxBuffer: 1024 * 1024,
+	});
+	process.stdout.write(result.stdout || "");
+	process.stderr.write(result.stderr || "");
+	const receipt = (result.stdout || "").trim().split("\n").at(-1) ?? "";
+	if (
+		result.error ||
+		!(
+			/^(sent|duplicate)(?: |$)/.test(receipt) ||
+			(result.status === 2 && receipt === "queued_transient")
+		)
+	) {
+		throw new Error("overdue_alert_delivery_failed");
+	}
+}
+
 function alertOverdueHomes({
 	migrationRoot,
 	now,
@@ -174,7 +195,7 @@ function alertOverdueHomes({
 		now,
 	);
 	const overdue = statuses.filter((status) => status.overdue);
-	if (overdue.length === 0) return;
+	if (overdue.length === 0) return 0;
 	const outstanding = statuses.filter((status) => !status.satisfied);
 	const lines = outstanding.map((status) => {
 		const last = status.lastAttemptAt
@@ -183,11 +204,10 @@ function alertOverdueHomes({
 		return `- ${status.homeId}: pending=${status.pendingDays}d; last=${last}; repair=${repairCommand({ reconcileBin, approvedPath, stateRoot, homeId: status.homeId })}`;
 	});
 	const utcDay = now.toISOString().slice(0, 10).replaceAll("-", "");
-	let failed = false;
 	for (const status of overdue) {
-		const result = spawnSync(
+		sendMigrationAlert({
 			alertBin,
-			[
+			args: [
 				"--lead",
 				"flywheel-eng-lead",
 				"--project",
@@ -204,22 +224,35 @@ function alertOverdueHomes({
 				`${status.inventoryDigest}:${status.homeId}:${status.dueAt}:${utcDay}`,
 				"--strict-delivery",
 			],
-			{ env, encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024 },
-		);
-		process.stdout.write(result.stdout || "");
-		process.stderr.write(result.stderr || "");
-		const receipt = (result.stdout || "").trim().split("\n").at(-1) ?? "";
-		if (
-			result.error ||
-			!(
-				/^(sent|duplicate)(?: |$)/.test(receipt) ||
-				(result.status === 2 && receipt === "queued_transient")
-			)
-		) {
-			failed = true;
-		}
+			env,
+		});
 	}
-	if (failed) throw new Error("overdue_alert_delivery_failed");
+	return overdue.length;
+}
+
+function alertRosterFailure({ now, alertBin, env, reason }) {
+	const utcDay = now.toISOString().slice(0, 10).replaceAll("-", "");
+	sendMigrationAlert({
+		alertBin,
+		args: [
+			"--lead",
+			"flywheel-eng-lead",
+			"--project",
+			"flywheel",
+			"--kind",
+			"codex_home_migration_overdue",
+			"--severity",
+			"severe",
+			"--title",
+			"Codex credential home roster unavailable",
+			"--body",
+			`FLY-2523 cannot resolve the approved-home roster; reason=${reason}. The previous roster was preserved, but migration deadline monitoring is degraded until authority recovers.`,
+			"--signature",
+			`roster-unavailable:${reason}:${utcDay}`,
+			"--strict-delivery",
+		],
+		env,
+	});
 }
 
 function loadPolicy(path) {
@@ -353,12 +386,47 @@ try {
 			const projects = parseAndValidateProjects(
 				readJson(projectsPath, "projects"),
 			);
-			const homes = await resolveCodexCredentialHomeRoster(projects, {
-				homeDir: userHome,
-				runnerHomes: policy.runnerHomes,
-				resolveLeadAuthority: (target) =>
-					resolveAuthority(authorityBin, target, process.env),
-			});
+			let homes;
+			try {
+				homes = await resolveCodexCredentialHomeRoster(projects, {
+					homeDir: userHome,
+					runnerHomes: policy.runnerHomes,
+					resolveLeadAuthority: (target) =>
+						resolveAuthority(authorityBin, target, process.env),
+				});
+			} catch (error) {
+				const reason =
+					error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+						? error.message
+						: "roster_unavailable";
+				let deadlineAlerts = 0;
+				try {
+					deadlineAlerts = alertOverdueHomes({
+						migrationRoot,
+						now: new Date(nowMs),
+						alertBin,
+						reconcileBin,
+						approvedPath,
+						stateRoot,
+						env: process.env,
+					});
+				} catch (alertError) {
+					if (
+						alertError instanceof Error &&
+						alertError.message === "overdue_alert_delivery_failed"
+					)
+						throw alertError;
+				}
+				if (deadlineAlerts === 0) {
+					alertRosterFailure({
+						now: new Date(nowMs),
+						alertBin,
+						env: process.env,
+						reason,
+					});
+				}
+				throw error;
+			}
 			atomicJson(approvedPath, homes);
 			let buildSha = process.env.FLYWHEEL_BUILD_SHA?.trim();
 			if (!buildSha) {

@@ -32,6 +32,36 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Bind caller-supplied dependency evidence to host-derived authority values. */
+export function readBoundFly2729Dependency(
+	binding: Pick<Fly2729DependencyInput, "expectedRoot" | "expectedDeployedSha">,
+	candidate: unknown,
+): ReadinessDependencyState {
+	if (!plainObject(candidate)) return invalid("dependency_input_invalid");
+	if (
+		Object.hasOwn(candidate, "expectedRoot") ||
+		Object.hasOwn(candidate, "expectedDeployedSha")
+	) {
+		return invalid("dependency_binding_override");
+	}
+	const allowed = new Set([
+		"evidencePath",
+		"acceptedClaim",
+		"land",
+		"deployment",
+	]);
+	if (Object.keys(candidate).some((key) => !allowed.has(key))) {
+		return invalid("dependency_input_invalid");
+	}
+	return readFly2729Dependency({
+		...(candidate as Omit<
+			Fly2729DependencyInput,
+			"expectedRoot" | "expectedDeployedSha"
+		>),
+		...binding,
+	});
+}
+
 function isoInstant(value: unknown): value is string {
 	if (typeof value !== "string") return false;
 	try {

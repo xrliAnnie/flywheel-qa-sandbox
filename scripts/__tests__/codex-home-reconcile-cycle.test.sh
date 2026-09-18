@@ -111,6 +111,7 @@ run_cycle updater
 
 # Registered authority failure is fail-loud and cannot replace the last roster.
 before="$(shasum -a 256 "$APPROVED" | awk '{print $1}')"
+: > "$ALERT_CALLS"
 cat > "$AUTHORITY" <<'SH'
 #!/usr/bin/env bash
 exit 1
@@ -121,6 +122,10 @@ rc=$?
 set -e
 [ "$rc" -ne 0 ]
 [ "$(shasum -a 256 "$APPROVED" | awk '{print $1}')" = "$before" ]
+[ "$(wc -l < "$ALERT_CALLS" | tr -d ' ')" -eq 1 ]
+grep -F -- "--kind codex_home_migration_overdue --severity severe" "$ALERT_CALLS" >/dev/null
+grep -F -- "--title Codex\\ credential\\ home\\ roster\\ unavailable" "$ALERT_CALLS" >/dev/null
+grep -F -- "reason=roster_unavailable" "$ALERT_CALLS" >/dev/null
 
 # An enrolled home with no attempt receipt pages at the exact N-day boundary.
 cat > "$AUTHORITY" <<SH

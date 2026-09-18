@@ -3,7 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { readFly2729Dependency } from "../qa-dependency.js";
+import {
+	readBoundFly2729Dependency,
+	readFly2729Dependency,
+} from "../qa-dependency.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -83,4 +86,20 @@ it("requires immutable evidence, accepted claim, land mapping, and deployment ma
 			deployment: { ...input.deployment, mergeSha: "d".repeat(40) },
 		}),
 	).toEqual({ status: "invalid", reason: "dependency_deployment_mismatch" });
+});
+
+it("rejects an external dependency input that tries to override trusted bindings", () => {
+	const { expectedRoot, expectedDeployedSha, ...dependency } = fixture();
+	expect(
+		readBoundFly2729Dependency(
+			{ expectedRoot, expectedDeployedSha },
+			{ ...dependency, expectedRoot: "/tmp/untrusted-root" },
+		),
+	).toEqual({ status: "invalid", reason: "dependency_binding_override" });
+	expect(
+		readBoundFly2729Dependency(
+			{ expectedRoot, expectedDeployedSha },
+			{ ...dependency, expectedDeployedSha: "d".repeat(40) },
+		),
+	).toEqual({ status: "invalid", reason: "dependency_binding_override" });
 });
