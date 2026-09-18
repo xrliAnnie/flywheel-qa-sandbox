@@ -55,3 +55,28 @@ R1 questionId=`4b7c17ac-c60d-4a3f-b427-44f2521f44c1`，requestId=`28fa9948-8e59-
 同时吸收非阻塞意见：Vitest filter 改为真实包名 `flywheel-teamlead` 并核对 Tests 数量；production tuple 遇 slot env 泄漏时回落原硬钉；production channel 集合明确为 general/alert/chat；loopback 与 QA 真 Discord REST 反查分开；漂移行号改为符号名加基线约数。R2 必须开新 gate/request，不复用 R1。
 
 R2 questionId=`02993337-40e8-46ee-82ab-b8aea54cb0db`，requestId=`f065b37e-cf90-4474-8a42-3537f5291cc4`，round=2，effective `reviewVerdict=APPROVED`、`reviewerVerdict=APPROVED`、`settled=[]`。没有 HIGH；四项非阻塞建议已接受并写回计划：slot bot 对生产频道的负向 REST 证据按查询身份记录403/404；`FLYWHEEL_STATE_DIR` 保持 slot contract 单写；生产树零写入证明允许且必须单独归因窗口内合法 hourly health tick；最后一处源码引用补基线说明。APPROVED仅授权本节实现，不是QA实发、生产激活、merge或ship授权。
+
+## 2026-09-18 design 重派审查：APPROVED
+
+- questionId: `6a6559f7-9846-4e46-8d55-1958969fa924`
+- requestId: `9941da33-2bbe-4998-8c5d-bd880a0fc70b`；round=1。
+- effective `reviewVerdict=APPROVED`，`reviewerVerdict=APPROVED`；`settled=[]`；policyNote=`medium_low_findings_are_non_blocking_v1`。
+- 注册时 HEAD=`a06c81df6df66e69ea1452ce5a7851115960fc96`；本轮核对 plan 与新增 design-correction/HTML，保留原两次R2沿革。之后仅补设计交接记录。不是精确头代码审查、QA PASS 或 ship 授权。
+- 7 MEDIUM、5 LOW；以下均为审查者报告，作者本轮未重演其fixture，也未改实现。已通过指定 ask --report 全量转交Lead；不把advisory自行升级为阻塞，也不以APPROVED声称实现已满足。
+
+| findingKey / severity | 风险与后续处置 |
+|---|---|
+| lead-active-lease-blocks-already-satisfied / MEDIUM | 活跃Lead lease先于只读inspect会将已满足记skipped；交实现/QA覆盖C3的已满足+busy与清单digest变化。 |
+| pipeline-warning-gated-on-existing-overdue / MEDIUM | 尚未enroll的新home或控制目录失败可能永远无告警；交实现核查fail-loud与warning路径，不把日志当已告警。 |
+| kill-switch-enabled-false-is-a-fault / MEDIUM | enabled=false目前可能被判policy_invalid并停掉逾期监控；交实现与§8回滚语义核对。 |
+| bare-mkdir-locks-age-steal-and-leak / MEDIUM | 仅按120秒年龄抢锁及进程被杀后残留可能违背互斥/恢复；交实现核对PID/start ownership与活锁不抢。 |
+| d1-canonical-no-diff-conflicts-write-through / MEDIUM | 合法OAuth刷新可能导致D1/D2差异；最新注入判据明确差异即红，作者不自行放宽，交Lead决定。 |
+| dedupe-key-spec-conflict / MEDIUM | severe旧签名无reason，新判据要求同日新原因不被压掉；以最新要求为准，交Lead/实现核对，不能擅自改成永远只有overdue一种原因。 |
+| snapshot-evidence-unmarked-provenance / MEDIUM | snapshot-input可能写入与live相同证据树；交实现/QA核查来源标记及生产根隔离，snapshot不冒充当场global证明。 |
+| removed-home-obligation-dropped / LOW | roster移除可能静默丢旧义务；交实现核对process/lease证据后才能解除。 |
+| deploy-window-exit75-no-terminal-recovery / LOW | exit75可能仅走泛化trap与TTL；交实现核对原terminal恢复合同，不在设计节点重启。 |
+| slot-canonical-home-not-propagated / LOW | slot校验canonical默认值与child使用值可能不同；交实现检查显式传播/强制输入，slot绝不链接真实canonical。 |
+| slot-meta-alert-plan-text / LOW | slot config_error不得通过meta告警触达生产；隔离边界优先。生产pin失败是否补meta告警交实现核对，fixture验证不发真实生产消息。 |
+| activation-goal-wording-ambiguous / LOW | 标题保留的是历史总目标；按Lead aa341d63/本轮fe089c5f，本单可在注册home证明完成且global unknown如实披露后收口，激活由独立授权动作承接；本轮只是design phase完成，更不等待激活。 |
+
+无server治理settled记录。审查通过后继续既定设计交接；如后续实现违反注入硬红，QA仍须如实报红，不能用本次APPROVED盖过实测。
