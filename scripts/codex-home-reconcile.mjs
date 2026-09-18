@@ -51,9 +51,7 @@ function parseArgs(argv) {
 				"--source",
 				"--home-id",
 				"--overdue-days",
-			].includes(
-				key,
-			) ||
+			].includes(key) ||
 			!value ||
 			values.has(key)
 		) {

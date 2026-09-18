@@ -21,7 +21,9 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 const MAX_OUTPUT = 4 * 1024 * 1024;
 
 function fail(reason, code = 75) {
-	process.stderr.write(`CODEX_HOME_RECONCILE_PROCESS unavailable reason=${reason}\n`);
+	process.stderr.write(
+		`CODEX_HOME_RECONCILE_PROCESS unavailable reason=${reason}\n`,
+	);
 	process.exit(code);
 }
 
@@ -34,9 +36,12 @@ function parse(argv) {
 		const value = argv[index + 1];
 		if (
 			!value ||
-			!["--fence", "--timeout-ms", "--kill-grace-ms", "--proof-ms"].includes(key) ||
+			!["--fence", "--timeout-ms", "--kill-grace-ms", "--proof-ms"].includes(
+				key,
+			) ||
 			values.has(key)
-		) fail("usage", 2);
+		)
+			fail("usage", 2);
 		values.set(key, value);
 	}
 	const fence = values.get("--fence");
@@ -48,21 +53,37 @@ function parse(argv) {
 		!isAbsolute(fence) ||
 		resolve(fence) !== fence ||
 		!fence.includes("/codex-quota/home-migration/") ||
-		!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 25000 ||
-		!Number.isInteger(killGraceMs) || killGraceMs < 1 || killGraceMs > 1000 ||
-		!Number.isInteger(proofMs) || proofMs < 1 || proofMs > 4000
-	) fail("arguments", 2);
-	return { fence, timeoutMs, killGraceMs, proofMs, command: argv.slice(separator + 1) };
+		!Number.isInteger(timeoutMs) ||
+		timeoutMs < 1 ||
+		timeoutMs > 25000 ||
+		!Number.isInteger(killGraceMs) ||
+		killGraceMs < 1 ||
+		killGraceMs > 1000 ||
+		!Number.isInteger(proofMs) ||
+		proofMs < 1 ||
+		proofMs > 4000
+	)
+		fail("arguments", 2);
+	return {
+		fence,
+		timeoutMs,
+		killGraceMs,
+		proofMs,
+		command: argv.slice(separator + 1),
+	};
 }
 
 function readProcessStart(pid) {
-	const psBin = process.env.FLYWHEEL_CODEX_RECONCILE_PS_BIN?.trim() || "/bin/ps";
+	const psBin =
+		process.env.FLYWHEEL_CODEX_RECONCILE_PS_BIN?.trim() || "/bin/ps";
 	const result = spawnSync(psBin, ["-o", "lstart=", "-p", String(pid)], {
 		encoding: "utf8",
 		timeout: 2000,
 		maxBuffer: 64 * 1024,
 	});
-	return result.status === 0 && !result.error ? result.stdout.trim() || null : null;
+	return result.status === 0 && !result.error
+		? result.stdout.trim() || null
+		: null;
 }
 
 function processAlive(pid) {
@@ -81,7 +102,8 @@ function sameProcess(pid, start) {
 }
 
 function groupAlive(pgid) {
-	if (process.env.FLYWHEEL_CODEX_RECONCILE_FORCE_GROUP_UNKNOWN === "1") return null;
+	if (process.env.FLYWHEEL_CODEX_RECONCILE_FORCE_GROUP_UNKNOWN === "1")
+		return null;
 	const probeBin = process.env.FLYWHEEL_CODEX_RECONCILE_GROUP_PROBE_BIN?.trim();
 	if (probeBin) {
 		const result = spawnSync(probeBin, [String(pgid)], {
@@ -107,21 +129,36 @@ function groupAlive(pgid) {
 function ensureParent(path) {
 	const parent = dirname(path);
 	const stat = lstatSync(parent);
-	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("fence_parent_unsafe");
+	if (!stat.isDirectory() || stat.isSymbolicLink())
+		throw new Error("fence_parent_unsafe");
 }
 
 function fsyncDirectory(path) {
 	const fd = openSync(path, fsConstants.O_RDONLY);
-	try { fsyncSync(fd); } finally { closeSync(fd); }
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 function atomicJson(path, value) {
 	const directory = dirname(path);
-	const temporary = join(directory, `.owner.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+	const temporary = join(
+		directory,
+		`.owner.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
+	);
 	try {
-		writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+		writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+			mode: 0o600,
+			flag: "wx",
+		});
 		const fd = openSync(temporary, fsConstants.O_RDONLY);
-		try { fsyncSync(fd); } finally { closeSync(fd); }
+		try {
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
 		renameSync(temporary, path);
 		chmodSync(path, 0o600);
 		fsyncDirectory(directory);
@@ -133,15 +170,21 @@ function atomicJson(path, value) {
 
 function readOwner(path) {
 	const stat = lstatSync(path);
-	if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) throw new Error("fence_owner_unsafe");
+	if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
+		throw new Error("fence_owner_unsafe");
 	const value = JSON.parse(readFileSync(path, "utf8"));
 	if (
 		value?.schemaVersion !== 1 ||
-		!Number.isInteger(value.managerPid) || value.managerPid <= 0 ||
-		typeof value.managerStart !== "string" || !value.managerStart ||
-		(value.childPid !== null && (!Number.isInteger(value.childPid) || value.childPid <= 0)) ||
-		(value.childStart !== null && (typeof value.childStart !== "string" || !value.childStart))
-	) throw new Error("fence_owner_invalid");
+		!Number.isInteger(value.managerPid) ||
+		value.managerPid <= 0 ||
+		typeof value.managerStart !== "string" ||
+		!value.managerStart ||
+		(value.childPid !== null &&
+			(!Number.isInteger(value.childPid) || value.childPid <= 0)) ||
+		(value.childStart !== null &&
+			(typeof value.childStart !== "string" || !value.childStart))
+	)
+		throw new Error("fence_owner_invalid");
 	return value;
 }
 
@@ -159,13 +202,16 @@ function acquireFence(fence, managerStart) {
 	} catch (error) {
 		if (error?.code !== "EEXIST") throw error;
 		const stat = lstatSync(fence);
-		if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("fence_unsafe");
+		if (!stat.isDirectory() || stat.isSymbolicLink())
+			throw new Error("fence_unsafe");
 		const owner = readOwner(join(fence, "owner.json"));
 		const manager = sameProcess(owner.managerPid, owner.managerStart);
-		const child = owner.childPid && owner.childStart
-			? sameProcess(owner.childPid, owner.childStart)
-			: false;
-		if (manager === null || child === null) throw new Error("fence_identity_unknown");
+		const child =
+			owner.childPid && owner.childStart
+				? sameProcess(owner.childPid, owner.childStart)
+				: false;
+		if (manager === null || child === null)
+			throw new Error("fence_identity_unknown");
 		if (manager || child) throw new Error("fence_busy");
 		releaseFence(fence);
 		mkdirSync(fence, { mode: 0o700 });
@@ -236,7 +282,7 @@ try {
 		detached: true,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-} catch (error) {
+} catch (_error) {
 	releaseFence(args.fence);
 	fail("spawn_failed", 74);
 }
@@ -256,7 +302,9 @@ child.stderr.on("data", (chunk) => {
 	if (outputBytes <= MAX_OUTPUT) process.stderr.write(chunk);
 	else forcedReason ??= "output_unbounded";
 });
-child.on("error", () => { forcedReason ??= "spawn_failed"; });
+child.on("error", () => {
+	forcedReason ??= "spawn_failed";
+});
 child.on("close", (code, signal) => {
 	closed = true;
 	exitCode = code;
