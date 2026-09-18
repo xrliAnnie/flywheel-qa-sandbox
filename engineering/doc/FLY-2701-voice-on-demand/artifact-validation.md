@@ -18,4 +18,8 @@ flow.mmd与model.mmd各自尝试本地mmdc，并各用标准参数重试一次�
 
 ## 发布验证
 
-待有效APPROVED后静默发布，再记录实际HTTP、CSP nonce匹配和托管内容验证。尚未发布时此段不是完成凭据。
+R2 gate 72ea5043-232e-4070-9ef8-ce8dbb8de89b有效APPROVED后，使用publish-report --publish-only静默发布。reportId=01cedc40cc9fd6c1f7d6393f4781419c，messageId=null、delivered=false、publishOnly=true符合本任务要求。
+
+托管地址：https://fw-reports-42fba7.vercel.app/r/01cedc40cc9fd6c1f7d6393f4781419c/ 。实取HTTP200；nonce占位符已替换且与CSP一致；inline脚本逐字匹配；去除publisher新增CSP/noindex元数据并还原nonce后，其余全文与提交源一致；零外部资源。详见publish-verification.json和publish-receipt.json。已用DESIGN-HTML ready格式报给Lead。
+
+这些HTTP与DOM检查不是视觉浏览器QA；两图仍按允许fallback标待本地渲染。
