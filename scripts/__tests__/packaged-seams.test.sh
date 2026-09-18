@@ -65,6 +65,38 @@ else
   fail "S0 packaged restart-gate runtime closure incomplete"
 fi
 
+# The compatibility mirror is installed later than the packaged Lead startup
+# fence and reconciliation rider. Give this scripts-only fixture the same
+# embedded package paths as a payload, then prove the four shipped Codex-home
+# entrypoints reach their own argument validation instead of failing ESM
+# resolution against a nonexistent packages/ tree.
+mkdir -p "$PACKAGED_ASSEMBLY/node_modules"
+ln -s "$REPO_ROOT/packages/config" "$PACKAGED_ASSEMBLY/node_modules/flywheel-config"
+ln -s "$REPO_ROOT/packages/claude-runner" "$PACKAGED_ASSEMBLY/node_modules/flywheel-claude-runner"
+ln -s "$REPO_ROOT/packages/teamlead" "$PACKAGED_ASSEMBLY/node_modules/flywheel-teamlead"
+packaged_codex_imports_ok=1
+for spec in \
+  'codex-home-launch-fence.mjs:CODEX_HOME_LAUNCH_FENCE unavailable reason=usage' \
+  'codex-home-reconcile.mjs:CODEX_HOME_RECONCILE unavailable reason=usage' \
+  'codex-home-reconcile-cycle.mjs:CODEX_HOME_RECONCILE_CYCLE unavailable reason=source_invalid' \
+  'codex-quota-readiness-receipt.mjs:CODEX_READINESS_RECEIPT unavailable'; do
+  script="${spec%%:*}"
+  expected="${spec#*:}"
+  output="$(node "$PACKAGED_ASSEMBLY/scripts/$script" 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ] \
+     || ! grep -Fq "$expected" <<<"$output" \
+     || grep -Fq 'ERR_MODULE_NOT_FOUND' <<<"$output" \
+     || grep -Fq '../packages/' "$PACKAGED_ASSEMBLY/scripts/$script"; then
+    packaged_codex_imports_ok=0
+  fi
+done
+if [ "$packaged_codex_imports_ok" -eq 1 ]; then
+  pass "S0b packaged Codex-home entrypoints resolve embedded workspace modules before compat mirror"
+else
+  fail "S0b packaged Codex-home entrypoint module resolution is broken"
+fi
+
 # ── fixture tree builder ─────────────────────────────────────────────────────
 # mk_tree <dir> [prebuilt] — a minimal tree carrying the REAL scripts under
 # test. Prebuilt fixtures copy from PACKAGED_ASSEMBLY; monorepo sentinels copy
