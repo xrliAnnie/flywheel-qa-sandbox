@@ -1,0 +1,1207 @@
+{
+  "observedAt": "2026-09-18T21:36:58.973379+00:00",
+  "windowStart": "2026-09-12T00:00:00Z",
+  "flags": [
+    {
+      "flag_name": "lead_token_savings",
+      "scope": "flywheel",
+      "has_override": 1,
+      "raw_value": "1",
+      "last_effective": "true",
+      "revision": 1
+    }
+  ],
+  "events": [
+    {
+      "day": "2026-09-12",
+      "event_type": "founder_reply",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 8,
+      "delivered": 8
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "mailbox_dead_letter",
+      "delivery_disposition": "model",
+      "n": 12,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 12,
+      "delivered": 12
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 39,
+      "delivered": 39
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 2,
+      "delivered": 2
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 8,
+      "delivered": 8
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-12",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 22,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 34,
+      "delivered": 34
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 24,
+      "delivered": 24
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 201,
+      "delivered": 201
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "session_monitoring_lost",
+      "delivery_disposition": "model",
+      "n": 12,
+      "delivered": 12
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "model",
+      "n": 15,
+      "delivered": 15
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 27,
+      "delivered": 27
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 133,
+      "delivered": 133
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 8,
+      "delivered": 8
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 26,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-13",
+      "event_type": "workflow_replacement_eligibility",
+      "delivery_disposition": "model",
+      "n": 2,
+      "delivered": 2
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "action_executed",
+      "delivery_disposition": "model",
+      "n": 22,
+      "delivered": 22
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "founder_reply",
+      "delivery_disposition": "model",
+      "n": 19,
+      "delivered": 19
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 158,
+      "delivered": 158
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 24,
+      "delivered": 24
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 1056,
+      "delivered": 1055
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "session_monitoring_lost",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "model",
+      "n": 12,
+      "delivered": 12
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 119,
+      "delivered": 119
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 429,
+      "delivered": 429
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 30,
+      "delivered": 30
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 190,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-14",
+      "event_type": "workflow_replacement_eligibility",
+      "delivery_disposition": "model",
+      "n": 47,
+      "delivered": 47
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "action_executed",
+      "delivery_disposition": "model",
+      "n": 3,
+      "delivered": 3
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "epic_intake",
+      "delivery_disposition": "model",
+      "n": 15,
+      "delivered": 15
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "founder_reply",
+      "delivery_disposition": "model",
+      "n": 23,
+      "delivered": 23
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 157,
+      "delivered": 157
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "mailbox_dead_letter",
+      "delivery_disposition": "model",
+      "n": 3,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 23,
+      "delivered": 23
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 1211,
+      "delivered": 1210
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "session_failed",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "session_monitoring_lost",
+      "delivery_disposition": "model",
+      "n": 2,
+      "delivered": 2
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "audit_only",
+      "n": 16,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "model",
+      "n": 53,
+      "delivered": 53
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 98,
+      "delivered": 98
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "session_zombie_detected",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "stage_changed",
+      "delivery_disposition": "audit_only",
+      "n": 17,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 287,
+      "delivered": 287
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 3,
+      "delivered": 3
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 32,
+      "delivered": 32
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 178,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-15",
+      "event_type": "workflow_replacement_eligibility",
+      "delivery_disposition": "model",
+      "n": 51,
+      "delivered": 51
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "action_executed",
+      "delivery_disposition": "model",
+      "n": 3,
+      "delivered": 3
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "epic_intake",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "founder_reply",
+      "delivery_disposition": "model",
+      "n": 38,
+      "delivered": 38
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 129,
+      "delivered": 129
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 24,
+      "delivered": 24
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 498,
+      "delivered": 498
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "session_failed",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "session_monitoring_lost",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "audit_only",
+      "n": 64,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "model",
+      "n": 5,
+      "delivered": 5
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 78,
+      "delivered": 78
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "session_zombie_detected",
+      "delivery_disposition": "model",
+      "n": 2,
+      "delivered": 2
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "stage_changed",
+      "delivery_disposition": "audit_only",
+      "n": 194,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 106,
+      "delivered": 106
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 21,
+      "delivered": 21
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 101,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-16",
+      "event_type": "workflow_replacement_eligibility",
+      "delivery_disposition": "model",
+      "n": 29,
+      "delivered": 29
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "epic_intake",
+      "delivery_disposition": "model",
+      "n": 3,
+      "delivered": 3
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "founder_reply",
+      "delivery_disposition": "model",
+      "n": 36,
+      "delivered": 36
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 81,
+      "delivered": 81
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 24,
+      "delivered": 24
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 265,
+      "delivered": 265
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "session_failed",
+      "delivery_disposition": "model",
+      "n": 2,
+      "delivered": 2
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "audit_only",
+      "n": 5,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 46,
+      "delivered": 46
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "stage_changed",
+      "delivery_disposition": "audit_only",
+      "n": 140,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 65,
+      "delivered": 65
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 15,
+      "delivered": 15
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 37,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-17",
+      "event_type": "workflow_replacement_eligibility",
+      "delivery_disposition": "model",
+      "n": 5,
+      "delivered": 5
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "epic_intake",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "founder_reply",
+      "delivery_disposition": "model",
+      "n": 38,
+      "delivered": 38
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "gate_question",
+      "delivery_disposition": "model",
+      "n": 221,
+      "delivered": 221
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "mailbox_dead_letter",
+      "delivery_disposition": "model",
+      "n": 5,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "patrol_tick",
+      "delivery_disposition": "model",
+      "n": 21,
+      "delivered": 21
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "runner_question",
+      "delivery_disposition": "model",
+      "n": 551,
+      "delivered": 551
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "session_failed",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "session_monitoring_reestablished",
+      "delivery_disposition": "audit_only",
+      "n": 34,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "session_started",
+      "delivery_disposition": "model",
+      "n": 137,
+      "delivered": 137
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "session_zombie_detected",
+      "delivery_disposition": "model",
+      "n": 1,
+      "delivered": 1
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "stage_changed",
+      "delivery_disposition": "audit_only",
+      "n": 308,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "stage_changed",
+      "delivery_disposition": "model",
+      "n": 219,
+      "delivered": 219
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "summary_due",
+      "delivery_disposition": "model",
+      "n": 4,
+      "delivered": 4
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "workflow_claim_recorded",
+      "delivery_disposition": "model",
+      "n": 31,
+      "delivered": 31
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "workflow_engine_escalation",
+      "delivery_disposition": "model",
+      "n": 188,
+      "delivered": 0
+    },
+    {
+      "day": "2026-09-18",
+      "event_type": "workflow_replacement_eligibility",
+      "delivery_disposition": "model",
+      "n": 71,
+      "delivered": 71
+    }
+  ],
+  "stageGuards": [
+    {
+      "stage": "None",
+      "disposition": "model",
+      "guards": "",
+      "n": 833
+    },
+    {
+      "stage": "implement",
+      "disposition": "model",
+      "guards": "decision_route",
+      "n": 24
+    },
+    {
+      "stage": "test",
+      "disposition": "model",
+      "guards": "decision_route",
+      "n": 12
+    },
+    {
+      "stage": "code_review",
+      "disposition": "model",
+      "guards": "decision_route",
+      "n": 25
+    },
+    {
+      "stage": "onboard",
+      "disposition": "audit_only",
+      "guards": "",
+      "n": 168
+    },
+    {
+      "stage": "brainstorm",
+      "disposition": "audit_only",
+      "guards": "",
+      "n": 169
+    },
+    {
+      "stage": "None",
+      "disposition": "model",
+      "guards": "decision_route",
+      "n": 14
+    },
+    {
+      "stage": "test",
+      "disposition": "audit_only",
+      "guards": "",
+      "n": 76
+    },
+    {
+      "stage": "code_review",
+      "disposition": "model",
+      "guards": "",
+      "n": 173
+    },
+    {
+      "stage": "implement",
+      "disposition": "audit_only",
+      "guards": "",
+      "n": 140
+    },
+    {
+      "stage": "research",
+      "disposition": "audit_only",
+      "guards": "",
+      "n": 51
+    },
+    {
+      "stage": "plan",
+      "disposition": "audit_only",
+      "guards": "",
+      "n": 55
+    },
+    {
+      "stage": "design_review",
+      "disposition": "model",
+      "guards": "",
+      "n": 92
+    },
+    {
+      "stage": "pr_created",
+      "disposition": "model",
+      "guards": "",
+      "n": 56
+    },
+    {
+      "stage": "approve",
+      "disposition": "model",
+      "guards": "",
+      "n": 4
+    },
+    {
+      "stage": "None",
+      "disposition": "model",
+      "guards": "decision_route,status=ship_parked",
+      "n": 2
+    },
+    {
+      "stage": "pr_created",
+      "disposition": "model",
+      "guards": "decision_route",
+      "n": 12
+    }
+  ],
+  "examples": [
+    {
+      "seq": 115160,
+      "eventId": "a1728114-be11-406c-946e-9595efa80361",
+      "at": "2026-09-14 21:06:19",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 115171,
+      "eventId": "4001ddaf-828d-496e-a45a-fcbfffed6d7a",
+      "at": "2026-09-14 21:07:45",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 115180,
+      "eventId": "412cdf4b-f93e-49b5-9797-d600fad10930",
+      "at": "2026-09-14 21:09:33",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 116893,
+      "eventId": "eaf82671-f8b4-4d03-835a-2a7524acdd2c",
+      "at": "2026-09-15 09:08:10",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 116896,
+      "eventId": "7ca4a322-ab58-4ea2-916c-24ebbec1f5c6",
+      "at": "2026-09-15 09:09:29",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 116897,
+      "eventId": "a2d42861-203c-4acc-a0ef-ca17d5808dba",
+      "at": "2026-09-15 09:09:31",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 117163,
+      "eventId": "04585060-4cee-4784-ae04-bf9d92d46d3c",
+      "at": "2026-09-15 15:26:28",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    },
+    {
+      "seq": 117166,
+      "eventId": "3e814f27-925b-4a38-8ec2-eef6ca15e4cc",
+      "at": "2026-09-15 15:27:49",
+      "stage": null,
+      "status": "running",
+      "decision_route": null,
+      "guardFields": []
+    }
+  ],
+  "commSchemas": {
+    "mailbox": [
+      "seq",
+      "id",
+      "delivery_id",
+      "from_agent",
+      "to_agent",
+      "recipient_kind",
+      "source_kind",
+      "source_ref",
+      "type",
+      "msg_class",
+      "content",
+      "delivery_content",
+      "content_ref",
+      "content_type",
+      "ref_id",
+      "kind",
+      "checkpoint",
+      "deadline_at",
+      "expires_at",
+      "relay_state",
+      "resolved_at",
+      "resolved_via",
+      "superseded_at",
+      "superseded_by",
+      "created_at",
+      "state",
+      "claimed_by",
+      "claim_expires_at",
+      "retry_count",
+      "next_retry_at",
+      "last_error",
+      "acked_at",
+      "dead_at",
+      "dead_reason",
+      "carrier",
+      "sender_ref",
+      "priority",
+      "batch_id",
+      "collapse_key",
+      "delivered_at",
+      "lease_retry_count",
+      "notified_at"
+    ],
+    "mailbox_message_projection": [
+      "rowid",
+      "id",
+      "from_agent",
+      "to_agent",
+      "type",
+      "content",
+      "parent_id",
+      "read_at",
+      "created_at",
+      "expires_at",
+      "deadline_at",
+      "relay_state",
+      "resolved_via",
+      "logical_event_id",
+      "superseded_at",
+      "superseded_by",
+      "sender_lease_key",
+      "sender_generation",
+      "sender_holder_pid",
+      "sender_holder_start",
+      "writer_pid",
+      "writer_start",
+      "checkpoint",
+      "content_ref",
+      "content_type",
+      "resolved_at",
+      "delivered_at",
+      "attachments",
+      "kind"
+    ],
+    "runner_stop_declarations": [
+      "execution_id",
+      "content_hash",
+      "content",
+      "question_id",
+      "derived_at_ms",
+      "updated_at",
+      "state_hash",
+      "state_key",
+      "emitted_at_ms"
+    ]
+  },
+  "questionKinds": [
+    {
+      "day": "2026-09-13",
+      "checkpoint": null,
+      "kind": "report",
+      "n": 9
+    },
+    {
+      "day": "2026-09-14",
+      "checkpoint": null,
+      "kind": null,
+      "n": 1
+    },
+    {
+      "day": "2026-09-14",
+      "checkpoint": null,
+      "kind": "report",
+      "n": 9
+    },
+    {
+      "day": "2026-09-15",
+      "checkpoint": null,
+      "kind": null,
+      "n": 3
+    },
+    {
+      "day": "2026-09-15",
+      "checkpoint": null,
+      "kind": "report",
+      "n": 31
+    },
+    {
+      "day": "2026-09-15",
+      "checkpoint": "approve_to_ship",
+      "kind": null,
+      "n": 6
+    },
+    {
+      "day": "2026-09-16",
+      "checkpoint": null,
+      "kind": null,
+      "n": 59
+    },
+    {
+      "day": "2026-09-16",
+      "checkpoint": null,
+      "kind": "report",
+      "n": 439
+    },
+    {
+      "day": "2026-09-16",
+      "checkpoint": "approve_to_ship",
+      "kind": null,
+      "n": 15
+    },
+    {
+      "day": "2026-09-16",
+      "checkpoint": "question",
+      "kind": null,
+      "n": 5
+    },
+    {
+      "day": "2026-09-16",
+      "checkpoint": "review_code",
+      "kind": null,
+      "n": 81
+    },
+    {
+      "day": "2026-09-16",
+      "checkpoint": "review_design",
+      "kind": null,
+      "n": 28
+    },
+    {
+      "day": "2026-09-17",
+      "checkpoint": null,
+      "kind": null,
+      "n": 34
+    },
+    {
+      "day": "2026-09-17",
+      "checkpoint": null,
+      "kind": "report",
+      "n": 231
+    },
+    {
+      "day": "2026-09-17",
+      "checkpoint": "approve_to_ship",
+      "kind": null,
+      "n": 14
+    },
+    {
+      "day": "2026-09-17",
+      "checkpoint": "question",
+      "kind": null,
+      "n": 5
+    },
+    {
+      "day": "2026-09-17",
+      "checkpoint": "review_code",
+      "kind": null,
+      "n": 27
+    },
+    {
+      "day": "2026-09-17",
+      "checkpoint": "review_design",
+      "kind": null,
+      "n": 35
+    },
+    {
+      "day": "2026-09-18",
+      "checkpoint": null,
+      "kind": null,
+      "n": 55
+    },
+    {
+      "day": "2026-09-18",
+      "checkpoint": null,
+      "kind": "report",
+      "n": 496
+    },
+    {
+      "day": "2026-09-18",
+      "checkpoint": "approve_to_ship",
+      "kind": null,
+      "n": 16
+    },
+    {
+      "day": "2026-09-18",
+      "checkpoint": "question",
+      "kind": null,
+      "n": 44
+    },
+    {
+      "day": "2026-09-18",
+      "checkpoint": "review_code",
+      "kind": null,
+      "n": 123
+    },
+    {
+      "day": "2026-09-18",
+      "checkpoint": "review_design",
+      "kind": null,
+      "n": 38
+    }
+  ],
+  "reportKinds": [
+    {
+      "day": "2026-09-13",
+      "shape": "done_text_only",
+      "n": 9
+    },
+    {
+      "day": "2026-09-14",
+      "shape": "done_text_only",
+      "n": 9
+    },
+    {
+      "day": "2026-09-15",
+      "shape": "done_text_only",
+      "n": 28
+    },
+    {
+      "day": "2026-09-15",
+      "shape": "other_report",
+      "n": 1
+    },
+    {
+      "day": "2026-09-15",
+      "shape": "runner_stop_text",
+      "n": 2
+    },
+    {
+      "day": "2026-09-16",
+      "shape": "done_text_only",
+      "n": 302
+    },
+    {
+      "day": "2026-09-16",
+      "shape": "other_report",
+      "n": 18
+    },
+    {
+      "day": "2026-09-16",
+      "shape": "runner_stop_text",
+      "n": 119
+    },
+    {
+      "day": "2026-09-17",
+      "shape": "done_text_only",
+      "n": 151
+    },
+    {
+      "day": "2026-09-17",
+      "shape": "other_report",
+      "n": 20
+    },
+    {
+      "day": "2026-09-17",
+      "shape": "runner_stop_text",
+      "n": 60
+    },
+    {
+      "day": "2026-09-18",
+      "shape": "done_text_only",
+      "n": 346
+    },
+    {
+      "day": "2026-09-18",
+      "shape": "other_report",
+      "n": 43
+    },
+    {
+      "day": "2026-09-18",
+      "shape": "runner_stop_text",
+      "n": 107
+    }
+  ]
+}
