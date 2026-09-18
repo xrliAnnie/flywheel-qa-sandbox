@@ -1,0 +1,26 @@
+flowchart LR
+    subgraph DB["teamlead.db(生产库)"]
+        J["lead_events<br/>summary round 流水账(只追加)"]
+        M["summary_presentation_migration<br/>迁移行:state · boundary · cursor ·<br/>3 个 source digest · completed_at_ms"]
+        RND["summary_presentation_rounds<br/>每轮一行:disposition"]
+    end
+    subgraph WS["Raya 工作区(旧文件,只读)"]
+        LG["state/summary-merge-receipts.jsonl<br/>旧账本"]
+        DC["state/…-decisions.jsonl<br/>人工决定(可选)"]
+        ID[".lead/raya/identity.md<br/>当前人设"]
+    end
+    subgraph ST["状态目录 state/lead-persona/raya/raya/(S4 定的位置)"]
+        EX["m0-execution.json<br/>wrapper 私有:mode · 冻结的授权引用 · planned identity"]
+        DJ["m0-dispositions.jsonl<br/>冻结的逐行证据"]
+        RC["m0-receipt.json<br/>M0ReceiptV1(S4 §4.3 原样)"]
+        FN["activation.json / enrollment.json<br/>(S4 写,wrapper 不碰)"]
+    end
+    J -- "boundary 以内的每轮" --> RND
+    LG --> RND
+    DC --> RND
+    M -- "state/boundary/cursor/digests/completedAt" --> RC
+    RND -- "逐行冻结 → dispositionDigest" --> DJ
+    DJ --> RC
+    ID -- "sha256 → workspaceIdentityDigest" --> RC
+    EX -- "mode · planned receiptId" --> RC
+    RC -. "activation owner 把 receiptId 填进 fence" .-> FN

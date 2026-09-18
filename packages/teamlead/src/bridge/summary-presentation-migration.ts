@@ -3,15 +3,37 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
 	SUMMARY_PRESENTATION_CONTRACT_VERSION,
+	type SummaryPresentationJournalRound,
+	type SummaryPresentationMigration,
 	type SummaryPresentationStore,
 } from "./summary-presentation-store.js";
 
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 
-interface LegacyRow {
+export interface SummaryPresentationLegacyRow {
 	line: number;
 	raw: string;
 	value: Record<string, unknown>;
+}
+
+export interface SummaryPresentationParsedJsonLines {
+	rows: SummaryPresentationLegacyRow[];
+	malformed: Array<{ line: number; raw: string }>;
+}
+
+export interface ResolvedSummaryPresentationMigrationInputs {
+	workspaceRoot: string;
+	ledgerPath: string;
+	decisionsPath: string | null;
+	ledger: SummaryPresentationParsedJsonLines;
+	decisions: SummaryPresentationParsedJsonLines;
+	journal: SummaryPresentationJournalRound[];
+	boundarySeq: number;
+	sourceDigests: {
+		journal: string;
+		legacyLedger: string;
+		migrationDecisions: string;
+	};
 }
 
 export interface SummaryPresentationMigrationResult {
@@ -38,6 +60,7 @@ export interface RunSummaryPresentationMigrationInput {
 	decisionsPath?: string;
 	maxRows?: number;
 	nowMs?: number;
+	resolved?: ResolvedSummaryPresentationMigrationInputs;
 }
 
 function sha256(value: string): string {
@@ -81,11 +104,11 @@ function assertManagedSource(
 }
 
 function parseJsonLines(path: string | null): {
-	rows: LegacyRow[];
+	rows: SummaryPresentationLegacyRow[];
 	malformed: Array<{ line: number; raw: string }>;
 } {
 	if (!path) return { rows: [], malformed: [] };
-	const rows: LegacyRow[] = [];
+	const rows: SummaryPresentationLegacyRow[] = [];
 	const malformed: Array<{ line: number; raw: string }> = [];
 	for (const [index, rawLine] of readFileSync(path, "utf8")
 		.split(/\r?\n/u)
@@ -119,14 +142,17 @@ function validMessageId(value: unknown): value is string {
 	return typeof value === "string" && /^[1-9][0-9]{0,24}$/u.test(value);
 }
 
-function evidenceRef(prefix: string, row: LegacyRow): string {
+function evidenceRef(
+	prefix: string,
+	row: SummaryPresentationLegacyRow,
+): string {
 	return `${prefix}:${row.line}:${sha256(row.raw).slice(0, 20)}`;
 }
 
-function classifyRound(input: {
+export function classifyRound(input: {
 	roundId: string;
-	ledgerRows: LegacyRow[];
-	decisionRows: LegacyRow[];
+	ledgerRows: SummaryPresentationLegacyRow[];
+	decisionRows: SummaryPresentationLegacyRow[];
 	ledgerMalformed: boolean;
 }): {
 	disposition:
@@ -226,8 +252,8 @@ function classifyRound(input: {
 	};
 }
 
-function boundedDigest(
-	rows: LegacyRow[],
+export function summaryPresentationBoundedSourceDigest(
+	rows: SummaryPresentationLegacyRow[],
 	malformed: Array<{ line: number; raw: string }>,
 	roundIds: Set<string>,
 ): string {
@@ -239,6 +265,78 @@ function boundedDigest(
 		.map((row) => `${row.line}:${row.raw}`);
 	const bad = malformed.map((row) => `${row.line}:${row.raw}`);
 	return sha256([...relevant, ...bad].sort().join("\n"));
+}
+
+export function resolveSummaryPresentationMigrationInputs(
+	input: Pick<
+		RunSummaryPresentationMigrationInput,
+		| "store"
+		| "projectName"
+		| "leadId"
+		| "workspaceRoot"
+		| "ledgerPath"
+		| "decisionsPath"
+	>,
+	existing: SummaryPresentationMigration | null,
+): ResolvedSummaryPresentationMigrationInputs {
+	const workspaceRoot = realpathSync(input.workspaceRoot);
+	const ledgerPath = assertManagedSource(
+		workspaceRoot,
+		input.ledgerPath ?? "state/summary-merge-receipts.jsonl",
+		false,
+	);
+	if (!ledgerPath) {
+		throw new Error("summary_presentation_migration_ledger_missing");
+	}
+	const decisionsPath = assertManagedSource(
+		workspaceRoot,
+		input.decisionsPath ??
+			"state/summary-presentation-migration-decisions.jsonl",
+		true,
+	);
+	const ledger = parseJsonLines(ledgerPath);
+	const decisions = parseJsonLines(decisionsPath);
+	if (decisions.malformed.length > 0) {
+		throw new Error(
+			`summary_presentation_migration_decisions_malformed:${decisions.malformed[0]!.line}`,
+		);
+	}
+
+	const journal = input.store.listMigrationJournalRounds(
+		input.projectName,
+		input.leadId,
+		existing ? { throughSeq: existing.boundarySeq } : {},
+	);
+	const boundarySeq = existing?.boundarySeq ?? journal.at(-1)?.sourceSeq ?? 0;
+	const roundIds = new Set(journal.map((row) => row.roundId));
+	return {
+		workspaceRoot,
+		ledgerPath,
+		decisionsPath,
+		ledger,
+		decisions,
+		journal,
+		boundarySeq,
+		sourceDigests: {
+			journal: sha256(
+				journal
+					.map((row) => `${row.sourceSeq}:${row.roundId}:${row.sourceDigest}`)
+					.join("\n"),
+			),
+			legacyLedger: summaryPresentationBoundedSourceDigest(
+				ledger.rows,
+				ledger.malformed,
+				roundIds,
+			),
+			migrationDecisions: decisionsPath
+				? summaryPresentationBoundedSourceDigest(
+						decisions.rows,
+						decisions.malformed,
+						roundIds,
+					)
+				: sha256("absent"),
+		},
+	};
 }
 
 export function runSummaryPresentationMigration(
@@ -260,45 +358,16 @@ export function runSummaryPresentationMigration(
 			sourceDigests: existing.sourceDigests,
 		};
 	}
-	const workspaceRoot = realpathSync(input.workspaceRoot);
-	const ledgerPath = assertManagedSource(
-		workspaceRoot,
-		input.ledgerPath ?? "state/summary-merge-receipts.jsonl",
-		false,
-	);
-	const decisionsPath = assertManagedSource(
-		workspaceRoot,
-		input.decisionsPath ??
-			"state/summary-presentation-migration-decisions.jsonl",
-		true,
-	);
-	const ledger = parseJsonLines(ledgerPath);
-	const decisions = parseJsonLines(decisionsPath);
-	if (decisions.malformed.length > 0) {
-		throw new Error(
-			`summary_presentation_migration_decisions_malformed:${decisions.malformed[0]!.line}`,
-		);
-	}
-
-	const currentJournal = input.store.listMigrationJournalRounds(
-		input.projectName,
-		input.leadId,
-		existing ? { throughSeq: existing.boundarySeq } : {},
-	);
-	const boundarySeq =
-		existing?.boundarySeq ?? currentJournal.at(-1)?.sourceSeq ?? 0;
-	const roundIds = new Set(currentJournal.map((row) => row.roundId));
-	const sourceDigests = {
-		journal: sha256(
-			currentJournal
-				.map((row) => `${row.sourceSeq}:${row.roundId}:${row.sourceDigest}`)
-				.join("\n"),
-		),
-		legacyLedger: boundedDigest(ledger.rows, ledger.malformed, roundIds),
-		migrationDecisions: decisionsPath
-			? boundedDigest(decisions.rows, decisions.malformed, roundIds)
-			: sha256("absent"),
-	};
+	const resolved =
+		input.resolved ??
+		resolveSummaryPresentationMigrationInputs(input, existing);
+	const {
+		ledger,
+		decisions,
+		journal: currentJournal,
+		boundarySeq,
+		sourceDigests,
+	} = resolved;
 	let migration = input.store.beginMigration({
 		projectName: input.projectName,
 		leadId: input.leadId,
