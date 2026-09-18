@@ -35,3 +35,7 @@ Lead aa341d63裁定已同步plan、exploration、research、HTML和两个Mermaid
 静态检查通过：10节逐节评论、唯一DOM id、单一精确nonce script、无内联handler、自带CSP meta或外部资源。Node VM 实际执行当前script，覆盖路径隔离localStorage、存储拒绝、5000字符分段（每段<1800且重复指定marker）、新增节标题汇总、clipboard成功/拒绝/缺失六种组合，全部通过。JavaScript未改，新增节自动进入既有汇总。
 
 本轮未运行浏览器视觉QA或重做图形渲染；原两次本地Chromium渲染失败及Mermaid源码/明确占位保留。占位不是529截图，也不是实际流程图已渲染的证据。Lead d707871b 指示托管store suspension时不反复重试，允许记录实际publish-failed并交接；后续仅在托管恢复后重新publish-only和核验，禁止把旧URL当新页发布成功。
+
+### 本轮发布结果：失败，未托管
+
+在本轮effective APPROVED后，对已提交推送的 `founder-design.html` 执行了一次指定 `publish-report --project flywheel --publish-only`。exit 1：`publish failed (502): report publishing failed`；url/reportId/messageId/screenshot均为null，delivered=false。未重试，未发送频道消息，未声明HTTP200/CSP或浏览器验证。已按指定 `DESIGN-HTML publish-failed` 向Lead报告。依据Lead d707871b的明确例外，托管故障不阻塞本次phase_design_complete；恢复后的publish-only及托管核验由Lead再唤醒。
