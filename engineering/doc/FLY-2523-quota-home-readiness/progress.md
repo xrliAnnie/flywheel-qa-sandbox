@@ -1,14 +1,14 @@
 ---
 issue: FLY-2523
-phase: implement
-phaseCursor: 6/6
-updated: 2026-09-18T12:12:03.255Z
-nextStep: Commit the codex-lead-args fence fixture repair, push, refresh
-  exact-head review, and rerun CI
+phase: design
+phaseCursor: 1/4
+updated: 2026-09-18T16:45:29.209Z
+nextStep: Commit the 529-slot rework delta and obtain design review approval
+  before tests/code
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: implement (6/6)
-**next**: Commit the codex-lead-args fence fixture repair, push, refresh exact-head review, and rerun CI
+**phase**: design (1/4)
+**next**: Commit the 529-slot rework delta and obtain design review approval before tests/code
