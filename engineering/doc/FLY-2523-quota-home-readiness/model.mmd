@@ -1,0 +1,28 @@
+classDiagram
+ class ApprovedInventory {
+  stableHomeId
+  managedOwnership
+  inventoryDigest
+  enrolledAt
+  overdueDays
+ }
+ class AttemptReceipt {
+  attemptId
+  at
+  result
+  reason
+  satisfied
+ }
+ class ReadinessReceipt {
+  buildSha
+  inventoryDigest
+  homes
+ }
+ class DeliveryReceipt {
+  destination
+  sentOrQueued
+  messageId
+ }
+ ApprovedInventory "1" --> "many" AttemptReceipt : 每次尝试
+ ApprovedInventory "1" --> "1" ReadinessReceipt : 全部满足后生成
+ AttemptReceipt --> DeliveryReceipt : 逾期未满足则告警
