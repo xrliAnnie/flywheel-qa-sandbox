@@ -80,3 +80,7 @@ R2 questionId=`02993337-40e8-46ee-82ab-b8aea54cb0db`，requestId=`f065b37e-cf90-
 | activation-goal-wording-ambiguous / LOW | 标题保留的是历史总目标；按Lead aa341d63/本轮fe089c5f，本单可在注册home证明完成且global unknown如实披露后收口，激活由独立授权动作承接；本轮只是design phase完成，更不等待激活。 |
 
 无server治理settled记录。审查通过后继续既定设计交接；如后续实现违反注入硬红，QA仍须如实报红，不能用本次APPROVED盖过实测。
+
+### Lead 对本轮12条建议的最终处置（e3167133回复）
+
+12条均不阻塞当前设计交接，不开新单。实现体在本单改动面内处理 `bare-mkdir-locks-age-steal-and-leak`、`kill-switch-enabled-false-is-a-fault`、`deploy-window-exit75-no-terminal-recovery` 三条，其余9条已逐项写进 PR #1260 的 Follow-ups。D1/D2及同日新原因不得被压掉的判据保持不变，不放宽。此为Lead工作安排，非server settled治理记录；作者未伪称这三项已修复。PR新首段明确最新设计交接状态及旧PASS不能覆盖新头。
