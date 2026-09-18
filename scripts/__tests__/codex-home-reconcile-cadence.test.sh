@@ -49,6 +49,53 @@ fleet_guard="$(grep -n 'if ! codex_home_reconcile_restart_window; then' "$TMP/de
 bridge_start="$(grep -n '^[[:space:]]*start_bridge$' "$TMP/deploy.body" | head -1 | cut -d: -f1)"
 [ -n "$fleet_guard" ] && [ -n "$bridge_start" ] && [ "$fleet_guard" -lt "$bridge_start" ]
 
+# An unproven reconciliation child is an explicit deploy terminal, not an
+# unexpected-exit trap fallback: release this deploy's admission brake, emit a
+# dedicated severe alert, and mark the terminal receipt before returning 1.
+terminal_events="$TMP/deploy-exit75-events"
+set +e
+FLY2523_TERMINAL_EVENTS="$terminal_events" bash -c '
+	set -uo pipefail
+	source "$1"
+	log() { :; }
+	notify_routine() { :; }
+	audit_tmux_qa_residue_read_only() { :; }
+	pause_admission_best_effort() { return 0; }
+	stop_bridge() { return 0; }
+	bash() { return 0; }
+	codex_home_reconcile_restart_window() {
+		printf "%s\n" reconcile >> "$FLY2523_TERMINAL_EVENTS"
+		return 75
+	}
+	resume_admission_best_effort() {
+		printf "%s\n" resume >> "$FLY2523_TERMINAL_EVENTS"
+	}
+	alert_severe() {
+		printf "alert:%s\n" "$1" >> "$FLY2523_TERMINAL_EVENTS"
+	}
+	restart_bridge=true
+	SKIP_BUILD=true
+	RESTART_REASON=fixture
+	DEPLOYED_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	CURRENT_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+	FLYWHEEL_DIR="$2"
+	RESTART_NOTICE_STARTED=false
+	RESTART_TERMINAL_REPORTED=false
+	deploy_and_verify
+	rc=$?
+	printf "terminal=%s rc=%s\n" "$RESTART_TERMINAL_REPORTED" "$rc" \
+		>> "$FLY2523_TERMINAL_EVENTS"
+	exit 0
+' _ "$TMP/deploy.body" "$ROOT"
+terminal_harness_rc=$?
+set -e
+[ "$terminal_harness_rc" -eq 0 ]
+grep -Fx 'reconcile' "$terminal_events" >/dev/null
+grep -Fx 'resume' "$terminal_events" >/dev/null
+grep -Fx 'alert:deploy-codex-home-reconcile-exit-unproven' \
+	"$terminal_events" >/dev/null
+grep -Fx 'terminal=true rc=1' "$terminal_events" >/dev/null
+
 # All callers ride existing updater, GatePoller health, or restart rhythms.
 grep -Fq 'if ! updater_codex_home_reconcile; then' "$UPDATER"
 grep -Fq 'updater_run_cycle' "$UPDATER"

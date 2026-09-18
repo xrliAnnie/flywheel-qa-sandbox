@@ -223,7 +223,7 @@ try {
 				acquiredAt: new Date().toISOString(),
 			});
 		},
-		{ timeoutMs: 5_000, bare: true },
+		{ timeoutMs: 5_000 },
 	);
 } catch (error) {
 	const reason = error instanceof Error ? error.message : String(error);

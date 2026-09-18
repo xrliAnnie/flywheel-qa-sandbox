@@ -500,7 +500,7 @@ for (const entry of selected) {
 					stateRoot: args.stateRoot,
 					leadLeaseRoot,
 				}),
-			{ timeoutMs: 0, bare: Boolean(entry.leadTuple) },
+			{ timeoutMs: 0 },
 		);
 	} catch (error) {
 		const lockBusy =

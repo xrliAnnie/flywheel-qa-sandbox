@@ -39,6 +39,10 @@ cat > "$RECONCILE" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$CALLS"
+if [ -n "\${RECONCILE_HOLD_READY:-}" ]; then
+  : > "\$RECONCILE_HOLD_READY"
+  while [ ! -e "\$RECONCILE_HOLD_RELEASE" ]; do sleep 0.02; done
+fi
 if [ ! -f "$STATE_ROOT/codex-quota/home-migration/state.json" ]; then
   mkdir -p "$STATE_ROOT/codex-quota/home-migration"
   node - "$APPROVED" "$STATE_ROOT/codex-quota/home-migration/state.json" <<'NODE'
@@ -103,13 +107,56 @@ jq -e --arg runner "$RUNNER_HOME" --arg lead "$LEAD_HOME" '
 [ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 1 ]
 grep -F -- "--approved-homes $APPROVED --state-root $STATE_ROOT --source health" "$CALLS" >/dev/null
 
+# A live cycle holder carries PID+start ownership. Aging the directory cannot
+# make a concurrent cadence steal it; the contender must remain a lock_busy
+# no-op and the first holder must release cleanly.
+cycle_lock="$STATE_ROOT/codex-quota/home-migration/cycle.lock"
+export RECONCILE_HOLD_READY="$TMP/reconcile-hold-ready"
+export RECONCILE_HOLD_RELEASE="$TMP/reconcile-hold-release"
+run_cycle updater > "$TMP/live-lock-holder.out" 2>&1 &
+live_lock_pid=$!
+for _ in $(seq 1 200); do
+	[ -e "$RECONCILE_HOLD_READY" ] && break
+	sleep 0.02
+done
+[ -e "$RECONCILE_HOLD_READY" ]
+holder_count="$(find "$cycle_lock" -maxdepth 1 -type f -name 'holder.*' | wc -l | tr -d ' ')"
+node - "$cycle_lock" <<'NODE'
+const fs = require("fs");
+fs.utimesSync(process.argv[2], new Date(0), new Date(0));
+NODE
+unset RECONCILE_HOLD_READY RECONCILE_HOLD_RELEASE
+set +e
+run_cycle updater > "$TMP/live-lock-contender.out" 2>&1
+contender_rc=$?
+touch "$TMP/reconcile-hold-release"
+wait "$live_lock_pid"
+holder_rc=$?
+set -e
+[ "$holder_count" -eq 1 ]
+[ "$contender_rc" -eq 0 ]
+[ "$holder_rc" -eq 0 ]
+grep -F 'CODEX_HOME_RECONCILE_CYCLE skipped reason=lock_busy' \
+	"$TMP/live-lock-contender.out" >/dev/null
+[ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 2 ]
+
+# These locks have no legacy shell peer. Opting into an empty bare directory
+# discards owner identity and reintroduces age-steal/leak behavior.
+if grep -n 'bare:[[:space:]]*true' \
+	"$ROOT/scripts/codex-home-reconcile-cycle.mjs" \
+	"$ROOT/scripts/codex-home-reconcile.mjs" \
+	"$ROOT/scripts/codex-home-launch-fence.mjs"; then
+	echo "FLY-2523 reconciliation locks must retain PID+start holder markers" >&2
+	exit 1
+fi
+
 # Same health hour is a durable no-op, including after a fresh process launch.
 run_cycle health
-[ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 1 ]
+[ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 2 ]
 
 # Updater is an explicit existing-cadence opportunity and may run early.
 run_cycle updater
-[ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 2 ]
+[ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 3 ]
 
 # An enrolled home with no attempt receipt pages at the exact N-day boundary.
 cat > "$AUTHORITY" <<SH
@@ -132,10 +179,30 @@ cat > "$STATE_ROOT/codex-quota/home-migration/state.json" <<JSON
 {"schemaVersion":1,"inventoryDigest":"$inventory_digest","overdueDays":1,"enrolledAt":"2026-09-11T17:58:38.000Z","homes":[{"id":"flywheel/implement","home":"$RUNNER_HOME","ownership":"managed","enrolledAt":"2026-09-11T17:58:38.000Z"},{"id":"raya/raya","home":"$LEAD_HOME","ownership":"managed","enrolledAt":"2026-09-12T17:58:38.000Z"}]}
 JSON
 
+# The documented rollback switch disables mutation only. Existing obligations
+# must remain monitored and produce the ordinary overdue severe alert without
+# invoking the reconcile child or misclassifying the switch as a pipeline fault.
+valid_policy="$(cat "$POLICY")"
+jq '.enabled = false' "$POLICY" > "$TMP/policy-disabled.json"
+mv "$TMP/policy-disabled.json" "$POLICY"
+: > "$ALERT_CALLS"
+calls_before_disabled="$(wc -l < "$CALLS" | tr -d ' ')"
+FLYWHEEL_CODEX_RECONCILE_NOW_MS=1789235918000 run_cycle updater \
+	> "$TMP/disabled.out" 2>&1
+[ "$(wc -l < "$CALLS" | tr -d ' ')" -eq "$calls_before_disabled" ]
+grep -F 'CODEX_HOME_RECONCILE_CYCLE skipped reason=disabled' \
+	"$TMP/disabled.out" >/dev/null
+grep -F -- '--kind codex_home_migration_overdue --severity severe' \
+	"$ALERT_CALLS" >/dev/null
+if grep -F -- '--severity warning' "$ALERT_CALLS" >/dev/null; then
+	echo "enabled=false must not be reported as a pipeline fault" >&2
+	exit 1
+fi
+printf '%s\n' "$valid_policy" > "$POLICY"
+
 # Failure-mutation family: once the durable state is overdue, no upstream
 # control-plane failure may silently suppress the alert pipeline. System faults
 # are warning-only, never mention a user, and leave a local delivery receipt.
-valid_policy="$(cat "$POLICY")"
 valid_projects="$(cat "$PROJECTS")"
 valid_state="$(cat "$STATE_ROOT/codex-quota/home-migration/state.json")"
 before="$(shasum -a 256 "$APPROVED" | awk '{print $1}')"

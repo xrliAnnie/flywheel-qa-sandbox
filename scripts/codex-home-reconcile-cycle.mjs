@@ -317,7 +317,7 @@ function loadPolicy(path) {
 	const value = readJson(path, "policy");
 	if (
 		value?.schemaVersion !== 1 ||
-		value.enabled !== true ||
+		typeof value.enabled !== "boolean" ||
 		!Number.isInteger(value.overdueDays) ||
 		value.overdueDays < 1 ||
 		value.overdueDays > 30 ||
@@ -578,32 +578,38 @@ try {
 					String(policy.overdueDays),
 				];
 				if (args.homeId) childArgs.push("--home-id", args.homeId);
-				failureLayer = "reconcile";
-				const result = spawnSync(
-					processManagerBin,
-					[
-						"--fence",
-						join(migrationRoot, "reconcile-process-fence"),
-						"--timeout-ms",
-						"25000",
-						"--kill-grace-ms",
-						"1000",
-						"--proof-ms",
-						"4000",
-						"--",
-						reconcileBin,
-						...childArgs,
-					],
-					{
-						env: { ...process.env, FLYWHEEL_BUILD_SHA: buildSha },
-						encoding: "utf8",
-						timeout: 32_000,
-						maxBuffer: 4 * 1024 * 1024,
-					},
-				);
-				process.stdout.write(result.stdout || "");
-				process.stderr.write(result.stderr || "");
-				const reconcileFailed = result.status !== 0 || result.error;
+				let reconcileResult;
+				if (policy.enabled) {
+					failureLayer = "reconcile";
+					reconcileResult = spawnSync(
+						processManagerBin,
+						[
+							"--fence",
+							join(migrationRoot, "reconcile-process-fence"),
+							"--timeout-ms",
+							"25000",
+							"--kill-grace-ms",
+							"1000",
+							"--proof-ms",
+							"4000",
+							"--",
+							reconcileBin,
+							...childArgs,
+						],
+						{
+							env: { ...process.env, FLYWHEEL_BUILD_SHA: buildSha },
+							encoding: "utf8",
+							timeout: 32_000,
+							maxBuffer: 4 * 1024 * 1024,
+						},
+					);
+					process.stdout.write(reconcileResult.stdout || "");
+					process.stderr.write(reconcileResult.stderr || "");
+				} else {
+					process.stdout.write(
+						"CODEX_HOME_RECONCILE_CYCLE skipped reason=disabled\n",
+					);
+				}
 				failureLayer = "overdue_evaluation";
 				alertProduced += alertOverdueHomes({
 					migrationRoot,
@@ -615,10 +621,14 @@ try {
 					env: process.env,
 					alertRoute,
 				});
-				if (result.status === 75) {
+				if (reconcileResult?.status === 75) {
 					throw new CycleError("reconcile_exit_unproven", 75);
 				}
-				if (reconcileFailed) throw new Error("reconcile_failed");
+				if (
+					reconcileResult &&
+					(reconcileResult.status !== 0 || reconcileResult.error)
+				)
+					throw new Error("reconcile_failed");
 				failureLayer = "readiness_evaluation";
 				const statuses = evaluateCodexHomeMigrationDeadlines(
 					readJson(join(migrationRoot, "state.json"), "migration_state"),
@@ -676,7 +686,7 @@ try {
 				throw error;
 			}
 		},
-		{ timeoutMs: 0, bare: true },
+		{ timeoutMs: 0 },
 	);
 } catch (error) {
 	const message = error instanceof Error ? error.message : String(error);

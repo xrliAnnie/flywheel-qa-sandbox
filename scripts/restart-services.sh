@@ -3262,6 +3262,13 @@ deploy_and_verify() {
     # changes restart success; durable receipts and overdue alerts own follow-up.
     if ! codex_home_reconcile_restart_window; then
         log "ERROR: deployment restart window cannot continue while a Codex home reconcile child may still write"
+        if [[ "$restart_bridge" == "true" ]]; then
+            resume_admission_best_effort
+        fi
+        alert_severe "deploy-codex-home-reconcile-exit-unproven" \
+            "Flywheel deploy stopped: Codex home reconciliation exit unproven" \
+            "The stopped-window Codex home reconciliation child could not be proven terminated. Its migration fence remains authoritative; deployed-sha was not advanced, the ordinary deploy admission brake was released, and the restart requires operator inspection before retry."
+        RESTART_TERMINAL_REPORTED=true
         return 1
     fi
 
