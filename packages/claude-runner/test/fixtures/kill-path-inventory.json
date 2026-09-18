@@ -4032,6 +4032,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/qa-fly-2523-529-alerts.sh:|| ! kill -0 \"$slot_pid\" 2>/dev/null; then#1",
+		"path": "scripts/qa-fly-2523-529-alerts.sh",
+		"code": "|| ! kill -0 \"$slot_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/qa-fly-2533-phase-protocol.mjs:process.kill(lease.pid, 0);#1",
 		"path": "scripts/qa-fly-2533-phase-protocol.mjs",
 		"code": "process.kill(lease.pid, 0);",
