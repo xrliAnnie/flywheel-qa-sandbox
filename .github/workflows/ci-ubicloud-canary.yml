@@ -1,0 +1,665 @@
+name: Ubicloud Canary
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner provider for this isolated trial
+        required: true
+        type: choice
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - ubicloud-standard-2
+      capacity:
+        description: Capacity-only job count; 0 runs the payload trial
+        required: true
+        type: choice
+        default: "0"
+        options:
+          - "0"
+          - "1"
+          - "8"
+          - "33"
+          - "54"
+permissions:
+  contents: read
+concurrency:
+  group: ubicloud-canary-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  preflight:
+    name: Ubicloud Canary / Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CANARY_RUNNER: ${{ inputs.runner }}
+      CANARY_CAPACITY: ${{ inputs.capacity }}
+      CANARY_AUTHORIZED: ${{ vars.UBICLOUD_CANARY_AUTHORIZED }}
+      DEFAULT_BRANCH_REF: refs/heads/${{ github.event.repository.default_branch }}
+    outputs:
+      slots: ${{ steps.matrix.outputs.slots }}
+    steps:
+      - name: Validate bounded manual trial
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "xrliAnnie/flywheel"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REF" = "$DEFAULT_BRANCH_REF"
+          case "$CANARY_RUNNER" in
+            ubuntu-latest|ubicloud-standard-2) ;;
+            *) printf '%s\n' 'unsupported canary runner' >&2; exit 1 ;;
+          esac
+          case "$CANARY_CAPACITY" in
+            0|1|8|33|54) ;;
+            *) printf '%s\n' 'unsupported capacity' >&2; exit 1 ;;
+          esac
+          if [ "$CANARY_RUNNER" = "ubicloud-standard-2" ]; then
+            test "$CANARY_AUTHORIZED" = "true"
+          fi
+      - name: Build validated capacity matrix
+        id: matrix
+        env:
+          CAPACITY: ${{ inputs.capacity }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          slots="$(node -e 'const n=Number(process.argv[1]); console.log(JSON.stringify(Array.from({length:n},(_,i)=>i+1)))' "$CAPACITY")"
+          printf 'slots=%s\n' "$slots" >> "$GITHUB_OUTPUT"
+  quick-gate:
+    name: Ubicloud Canary / Quick Gate
+    runs-on: ${{ inputs.runner == 'ubicloud-standard-2' && 'ubicloud-standard-2' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Canary — Record job start
+        shell: bash
+        run: date +%s > "$RUNNER_TEMP/fly2684-canary-start"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canary — Restore non-secret cache probe
+        id: cache-probe
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fly2684-cache-probe
+          key: fly2684-canary-${{ inputs.runner }}-${{ github.job }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Canary — Prepare non-secret cache probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fly2684-cache-probe"
+          printf '%s\n' 'fly2684-cache-probe-v1' > "$RUNNER_TEMP/fly2684-cache-probe/payload"
+          test -s "$RUNNER_TEMP/fly2684-cache-probe/payload"
+      - name: Canary — Verify dedicated secret delivery
+        env:
+          CANARY_PROBE: ${{ secrets.UBICLOUD_CANARY_PROBE }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "$CANARY_PROBE"
+          printf '%s\n' 'secret_present=true'
+      - name: Verify shell suite CI enumeration is complete
+        run: bash scripts/__tests__/ci-shell-suite-enumeration.test.sh
+      - name: Test — FLY-1338/1861 CI structure guard
+        run: bash scripts/__tests__/ci-structure.test.sh
+      - name: Enforce FLY-1773 ACK-only delivery semantics
+        run: bash scripts/__tests__/fly1773-delivery-semantics.test.sh
+      - name: Enforce FLY-2045 milestone layout
+        run: bash scripts/__tests__/fly2045-milestone-layout.test.sh
+      - name: Enforce FLY-2030 summary inflow gates
+        run: |
+          bash scripts/__tests__/fly2030-summary-prefix-pair.test.sh
+          bash scripts/__tests__/fly2030-summary-registry-activation.test.sh
+      - name: Enforce FLY-2445 Raya standard Lead migration contracts
+        run: bash scripts/__tests__/raya-standard-migration.test.sh
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Canary — Record public runner facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'runner_name=%s\n' "$RUNNER_NAME"
+          uname -a
+          cat /etc/os-release
+          nproc
+          free -h
+          df -h "$RUNNER_TEMP"
+          node --version
+          pnpm --version
+      - name: Enforce FLY-2074 founder disclosure contract
+        run: node scripts/fly2074-founder-disclosure-guard.mjs
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate workflow startup syntax and contexts (FLY-2534)
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/fly2534-actionlint"
+          archive="actionlint_1.7.12_linux_amd64.tar.gz"
+          mkdir -p "$install_dir"
+          curl --retry 3 --connect-timeout 15 --max-time 120 -fsSLo "$install_dir/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' "$install_dir/$archive" | sha256sum -c -
+          tar -xzf "$install_dir/$archive" -C "$install_dir" actionlint
+          export PATH="$install_dir:$PATH"
+          node scripts/check-workflow-startup.mjs
+          node --test scripts/__tests__/workflow-startup.test.mjs
+      - name: Enforce FLY-1781 flag-governance safety contracts
+        run: |
+          bash scripts/__tests__/flag-governance-cos-contract.test.sh
+          bash scripts/__tests__/test-verify-flag-verdicts.test.sh
+      - name: Build
+        run: pnpm build
+      - name: Test — root Node contract suites
+        run: |
+          node --test scripts/__tests__/beta-schedule-receipt.test.mjs
+          node --test scripts/__tests__/beta-workflow-structure.test.mjs
+          node --test scripts/__tests__/customer-release-reservation.test.mjs
+          node --test scripts/__tests__/payload-promote-commit-shared.test.mjs
+          node --test scripts/__tests__/payload-auto-release.test.mjs
+          node --test scripts/__tests__/payload-auto-release-workflow.test.mjs
+          node --test scripts/__tests__/payload-manual-decision-workflow.test.mjs
+          node --test scripts/__tests__/payload-rebind-workflow.test.mjs
+          node --test scripts/__tests__/payload-rebind-prepared.test.mjs
+          node --test scripts/__tests__/fly-2395-ship-relevance-retro.test.mjs
+          node --test scripts/__tests__/fly-2397-strength-two-acceptance.test.mjs
+          node --test scripts/__tests__/fly-2398-shadow-table.test.mjs
+          node --test scripts/__tests__/import-ship-judgment-retro.test.mjs
+          node --test scripts/__tests__/replay-ship-judgment.test.mjs
+          node --test scripts/__tests__/replay-ship-judgment-cards.test.mjs
+          node --test scripts/__tests__/ship-judgment-timer.test.mjs
+          node --test scripts/__tests__/ship-judgment-mutations.test.mjs
+          node --test scripts/__tests__/fly-2490-backfill-receipts.test.mjs
+          node --test scripts/__tests__/fly1165-sweep-decision.test.mjs
+          node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
+          node --test scripts/__tests__/fly-2413-retention-mutations.test.mjs
+          node --test scripts/__tests__/qa-codex-lead-parity-drill.test.mjs
+          node --test scripts/__tests__/qa-fly-2519-529-drill.test.mjs scripts/__tests__/qa-fly-2519-browser-node.test.mjs scripts/__tests__/qa-fly-2519-browser-process.test.mjs
+      - name: Test — FLY-2519 bounded patrol GitHub facts
+        run: bash scripts/__tests__/lead-patrol-github-facts.test.sh
+      - name: Enforce FLY-2165 torn mailbox identity repair contracts
+        run: bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
+      - name: Enforce FLY-2103 project config generator retirement
+        run: bash scripts/__tests__/fly2103-project-config-generators.test.sh
+      - name: Verify workflow seed authority
+        run: pnpm verify:workflow-seeds
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Enforce FLY-1645 receipt teardown residue gate
+        run: |
+          node --test scripts/__tests__/fly1645-receipt-residue-gate.test.mjs
+          node scripts/fly1645-receipt-residue-gate.mjs --main-only
+      - name: Package gate receipt and retry guards (FLY-2467)
+        run: |
+          node --test scripts/__tests__/package-gate.test.mjs
+          node --test scripts/__tests__/teamlead-shards.test.mjs
+          node --test scripts/__tests__/vitest-worker-rpc.test.mjs
+      - name: Enforce FLY-2006 retention consumer gate
+        run: |
+          node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs
+          node scripts/fly-2006-retention-consumer-gate.mjs
+      - name: Canary — Report elapsed and cache state
+        if: ${{ always() }}
+        env:
+          CACHE_HIT: ${{ steps.cache-probe.outputs.cache-hit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start="$(cat "$RUNNER_TEMP/fly2684-canary-start")"
+          now="$(date +%s)"
+          printf 'elapsed_seconds=%s\n' "$((now - start))"
+          if [ -n "$CACHE_HIT" ]; then cache_hit="$CACHE_HIT"; else cache_hit=false; fi
+          printf 'cache_hit=%s\n' "$cache_hit"
+    needs:
+      - preflight
+    if: ${{ needs.preflight.result == 'success' && inputs.capacity == '0' }}
+  unit-tests:
+    name: Ubicloud Canary / Unit (${{ matrix.name }})
+    env:
+      VITEST_MAX_FORKS: "1"
+      VITEST_MIN_FORKS: "1"
+    runs-on: ${{ inputs.runner == 'ubicloud-standard-2' && 'ubicloud-standard-2' || 'ubuntu-latest' }}
+    needs:
+      - preflight
+    if: ${{ needs.preflight.result == 'success' && inputs.capacity == '0' }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: teamlead 1 of 4
+            cmd: node scripts/teamlead-ci-shard.mjs --shard=1/4
+    steps:
+      - name: Canary — Record job start
+        shell: bash
+        run: date +%s > "$RUNNER_TEMP/fly2684-canary-start"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canary — Restore non-secret cache probe
+        id: cache-probe
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fly2684-cache-probe
+          key: fly2684-canary-${{ inputs.runner }}-${{ github.job }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Canary — Prepare non-secret cache probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fly2684-cache-probe"
+          printf '%s\n' 'fly2684-cache-probe-v1' > "$RUNNER_TEMP/fly2684-cache-probe/payload"
+          test -s "$RUNNER_TEMP/fly2684-cache-probe/payload"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Canary — Record public runner facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'runner_name=%s\n' "$RUNNER_NAME"
+          uname -a
+          cat /etc/os-release
+          nproc
+          free -h
+          df -h "$RUNNER_TEMP"
+          node --version
+          pnpm --version
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Ensure lsof/tmux (FLY-1905 hardened, normally zero-network)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof ffmpeg
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+      - name: Build
+        run: pnpm build
+      - name: FLY-2453 whole-gate writer mutations
+        if: matrix.name == 'teamlead 1 of 4'
+        run: node scripts/fly-2453-narrow-gate-mutations.mjs
+      - name: Record matrix worker budget
+        run: node -e "console.log(JSON.stringify({cpus:require('node:os').availableParallelism(),maxForks:process.env.VITEST_MAX_FORKS,minForks:process.env.VITEST_MIN_FORKS}))"
+      - name: Run matrix tests
+        run: ${{ matrix.cmd }}
+      - name: FLY-1883 stub-hygiene pairing
+        if: matrix.name == 'teamlead 1 of 4'
+        run: pnpm --filter flywheel-teamlead test:stub-hygiene
+      - name: Canary — Report elapsed and cache state
+        if: ${{ always() }}
+        env:
+          CACHE_HIT: ${{ steps.cache-probe.outputs.cache-hit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start="$(cat "$RUNNER_TEMP/fly2684-canary-start")"
+          now="$(date +%s)"
+          printf 'elapsed_seconds=%s\n' "$((now - start))"
+          if [ -n "$CACHE_HIT" ]; then cache_hit="$CACHE_HIT"; else cache_hit=false; fi
+          printf 'cache_hit=%s\n' "$cache_hit"
+  script-tests-2:
+    name: Ubicloud Canary / Script 2
+    runs-on: ${{ inputs.runner == 'ubicloud-standard-2' && 'ubicloud-standard-2' || 'ubuntu-latest' }}
+    needs:
+      - preflight
+    if: ${{ needs.preflight.result == 'success' && inputs.capacity == '0' }}
+    timeout-minutes: 20
+    steps:
+      - name: Canary — Record job start
+        shell: bash
+        run: date +%s > "$RUNNER_TEMP/fly2684-canary-start"
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canary — Restore non-secret cache probe
+        id: cache-probe
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fly2684-cache-probe
+          key: fly2684-canary-${{ inputs.runner }}-${{ github.job }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Canary — Prepare non-secret cache probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fly2684-cache-probe"
+          printf '%s\n' 'fly2684-cache-probe-v1' > "$RUNNER_TEMP/fly2684-cache-probe/payload"
+          test -s "$RUNNER_TEMP/fly2684-cache-probe/payload"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Canary — Record public runner facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'runner_name=%s\n' "$RUNNER_NAME"
+          uname -a
+          cat /etc/os-release
+          nproc
+          free -h
+          df -h "$RUNNER_TEMP"
+          node --version
+          pnpm --version
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+      - name: Build
+        run: pnpm build
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+      - name: Test — FLY-1905 CI apt-install helper
+        timeout-minutes: 10
+        run: bash scripts/__tests__/ci-apt-install.test.sh
+      - name: Test — FLY-519 fleet provisioning + zero-secret gate
+        run: |
+          bash scripts/__tests__/fleet-sanitize.test.sh
+          bash scripts/__tests__/fleet-capture.test.sh
+          bash scripts/__tests__/provision-fleet-host.test.sh
+          bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+      - name: Test — FLY-2034 Belle staged credential gate
+        run: bash scripts/__tests__/fly2034-onboarding-credential-gate.test.sh
+      - name: Test — FLY-1356 skill-framework vendor + variant contracts
+        run: bash scripts/__tests__/skill-framework-variants.test.sh
+      - name: Test — FLY-1609 four-arm analysis contract
+        run: bash scripts/__tests__/test-fly1609-design-compare.test.sh
+      - name: Test — FLY-648 one-command setup wizard
+        run: |
+          bash scripts/__tests__/flywheel-setup-engine.test.sh
+          bash scripts/__tests__/flywheel-setup-config.test.sh
+          bash scripts/__tests__/flywheel-setup-bot.test.sh
+          bash scripts/__tests__/flywheel-setup-channels.test.sh
+          bash scripts/__tests__/flywheel-setup-linear.test.sh
+          bash scripts/__tests__/flywheel-setup-services.test.sh
+          bash scripts/__tests__/flywheel-setup-poc.test.sh
+          bash scripts/__tests__/flywheel-setup-resume-e2e.test.sh
+      - name: Test — FLY-1023 Buddy onboarding (step CLI + provider contract)
+        run: |
+          bash scripts/__tests__/flywheel-buddy-steps.test.sh
+          bash scripts/__tests__/agent-cli-provider-contract.test.sh
+          bash scripts/__tests__/flywheel-onboard.test.sh
+          bash scripts/__tests__/flywheel-buddy.test.sh
+          bash scripts/__tests__/flywheel-buddy-github.test.sh
+          bash scripts/__tests__/flywheel-buddy-captain.test.sh
+          bash scripts/__tests__/flywheel-buddy-connect.test.sh
+          bash scripts/__tests__/buddy-escalate.test.sh
+      - name: Test — FLY-1189 multi-Lead campaign harness
+        run: bash scripts/__tests__/test-deploy-multilead.test.sh
+      - name: Test — FLY-2237 slot Bridge cycle
+        run: bash scripts/__tests__/test-cycle-bridge.test.sh
+      - name: Test — FLY-2270 QA report host stub
+        run: bash scripts/__tests__/qa-report-host.test.sh
+      - name: Test — FLY-2270 slot Bridge launch boundary
+        run: bash scripts/__tests__/test-deploy-launch-boundary.test.sh
+      - name: Test — FLY-2454 slot isolation contracts
+        run: |
+          bash scripts/__tests__/qa-slot-env-contract.test.sh
+          bash scripts/__tests__/run-bridge-isolation-boot.test.sh
+          bash scripts/__tests__/qa-fly-2454-fleet-snapshot.test.sh
+      - name: Test — FLY-2456 hermetic restart drill evidence
+        run: |
+          node --test scripts/__tests__/qa-fly-2533-phase-protocol.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-drill-tools.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-scan.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-shape.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-observe.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-cli.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-liveness.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-proc.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-room-info.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-alerts.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-fleet.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-dry-run.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-file-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-launch-delta.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-rework-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-terminate-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-park-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-runner-windows.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-verdict.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-qa-identity.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-selection.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-report-pair.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-host-runbook.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-proc-comparison.test.mjs
+          python3 scripts/__tests__/qa-fly-2456-comparison.test.py
+          python3 scripts/qa-fly-2456-guard-receipt.py engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md scripts/hooks/flywheel-restart-guard.py "$RUNNER_TEMP/fly2456-runbook-guard.json"
+          node scripts/qa-fly-2456-drill-tools.mjs dry-run --runbook engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md --scanner scripts/hooks/flywheel-restart-guard.py --receipt "$RUNNER_TEMP/fly2456-runbook-guard.json"
+      - name: Test — FLY-2519 read-only Lead parity inventory
+        run: node --test scripts/__tests__/qa-codex-lead-parity.test.mjs
+      - name: Test — FLY-1775 generalized-DAG 529 room
+        run: |
+          bash scripts/__tests__/test-deploy-generalized.test.sh
+          bash scripts/__tests__/fly2121-node-contract-and-setup.test.sh
+          node --test scripts/__tests__/qa-generalized-helper.test.mjs
+          node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+          node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+      - name: Test — FLY-2383 voice concurrency measurement contract
+        run: |
+          node --test scripts/__tests__/fly2383-voice-soak-measure.test.mjs
+          node --test scripts/__tests__/fly2383-voice-soak-calibration.test.mjs
+          node --test scripts/__tests__/fly2383-voice-soak-evidence.test.mjs
+      - name: Test — FLY-2446 two-Lead voice driver
+        run: node --test scripts/__tests__/fly2446-two-lead-run.test.mjs
+      - name: Test — FLY-1189 fault injector safety lock
+        run: bash scripts/__tests__/qa-fly-1189-fault-inject.test.sh
+      - name: Test — FLY-1189 assert library + driver trap owner
+        run: |
+          bash scripts/__tests__/qa-fly-1189-assert.test.sh
+          bash scripts/__tests__/qa-fly-1189-driver.test.sh
+      - name: Test — FLY-1389 path-hygiene + 529-Room repair batch
+        run: |
+          bash scripts/__tests__/path-hygiene.test.sh
+          bash scripts/__tests__/converge-flywheel-bin.test.sh
+          bash scripts/__tests__/converge-fly1389.test.sh
+          bash scripts/__tests__/fly1577-cmux-bin-closure.test.sh
+          bash scripts/__tests__/fly1577-alert-arrival.test.sh
+          bash scripts/__tests__/check-global-path-hygiene.test.sh
+          bash scripts/__tests__/install-hooks-fly1389.test.sh
+          bash scripts/__tests__/register-local-marketplace.test.sh
+          bash scripts/__tests__/v2-retirement-cleanup.test.sh
+          bash scripts/__tests__/test-deploy-fly1389.test.sh
+          bash scripts/__tests__/test-deploy-preflight-github.test.sh
+      - name: Test — resident Codex recovery contracts
+        run: |
+          bash scripts/__tests__/resident-codex-lead-recover.test.sh
+          # FLY-2259: pure-shell generic Codex Lead home rule + production wiring.
+          bash scripts/__tests__/codex-lead-home-rule.test.sh
+      - name: Test — NPM packaging pipeline + packaged-mode seams
+        run: |
+          bash scripts/__tests__/package-onboard.test.sh
+          bash scripts/__tests__/packaged-seams.test.sh
+          bash scripts/__tests__/packaged-auto-update-wrapper.test.sh
+          bash scripts/__tests__/packaged-restart.test.sh
+          bash scripts/__tests__/gate4-allowlist-masking.test.sh
+          bash scripts/__tests__/gate4-forms-probe.test.sh
+          bash scripts/__tests__/setup-prebuilt.test.sh
+          bash scripts/__tests__/provision-prebuilt.test.sh
+      - name: Test — FLY-2190 host tmux selection S0
+        run: |
+          bash scripts/__tests__/host-tmux-selection-census.test.sh
+          bash scripts/__tests__/host-tmux-selection-gate.test.sh
+          bash scripts/__tests__/host-tmux-selection-mounts.test.sh
+          bash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh
+          bash scripts/__tests__/host-tmux-selection-s0-scope.test.sh
+      - name: Test — FLY-2444 generalized Lead launcher
+        run: |
+          bash scripts/__tests__/flywheel-lead.test.sh
+          bash scripts/__tests__/flywheel-lead-packaging.test.sh
+          bash scripts/__tests__/host-tmux-selection-gate-probe.test.sh
+          bash scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh
+      - name: Test — FLY-2459 Codex department capability and migration
+        run: |
+          bash scripts/__tests__/codex-runner-capability-env.test.sh
+          bash scripts/__tests__/lead-backend-migration.test.sh
+          bash scripts/__tests__/lead-backend-migration-load.test.sh
+          bash scripts/__tests__/lead-backend-migration-wave.test.sh
+      - name: Test — FLY-1501 restart brake + heartbeat guard contracts
+        run: |
+          bash scripts/__tests__/restart-storm-gate.test.sh
+          bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
+          bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
+      - name: Test — FLY-1634 restart net-deletion contracts
+        run: |
+          bash scripts/__tests__/lead-body-hard-clear.test.sh
+          bash scripts/__tests__/lead-restart-controlled-wave.test.sh
+          bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh
+          bash scripts/__tests__/restart-self-detach.test.sh
+          bash scripts/__tests__/fly1783-restart-detach-contract.test.sh
+      - name: Test — FLY-1959 updater sources + body provenance contracts
+        run: |
+          bash scripts/__tests__/lead-body-evidence.test.sh
+          bash scripts/__tests__/lead-body-provenance.test.sh
+          bash scripts/__tests__/request-restart.test.sh
+          bash scripts/__tests__/updater-trigger-policy.test.sh
+      - name: Test — payload real-install smoke
+        run: bash scripts/__tests__/package-onboard-smoke.test.sh
+      - name: Test — onboard-shell public install chain
+        run: |
+          bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
+          node --test packages/onboard-shell/__tests__/*.test.mjs
+          bash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh
+      - name: Test — FLY-882 Discord bot token pool
+        run: bash scripts/__tests__/discord-bot-pool.test.sh
+      - name: Test — FLY-513 global-codex repoint apply-path
+        run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
+      - name: Test — FLY-1955/2211 Codex daemon mutation safety
+        run: |
+          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh
+          bash scripts/__tests__/kill-ledger.test.sh
+      - name: Test — FLY-697 codex-log-guard
+        run: bash scripts/__tests__/codex-log-guard.test.sh
+      - name: Test — FLY-1330 log janitor
+        run: bash scripts/__tests__/flywheel-log-janitor.test.sh
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+      - name: Canary — Report elapsed and cache state
+        if: ${{ always() }}
+        env:
+          CACHE_HIT: ${{ steps.cache-probe.outputs.cache-hit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start="$(cat "$RUNNER_TEMP/fly2684-canary-start")"
+          now="$(date +%s)"
+          printf 'elapsed_seconds=%s\n' "$((now - start))"
+          if [ -n "$CACHE_HIT" ]; then cache_hit="$CACHE_HIT"; else cache_hit=false; fi
+          printf 'cache_hit=%s\n' "$cache_hit"
+  isolation-write:
+    name: Ubicloud Canary / Isolation Writer
+    runs-on: ${{ inputs.runner == 'ubicloud-standard-2' && 'ubicloud-standard-2' || 'ubuntu-latest' }}
+    needs:
+      - preflight
+    if: ${{ needs.preflight.result == 'success' && inputs.capacity == '0' }}
+    timeout-minutes: 5
+    steps:
+      - name: Canary — Verify absence then write fixed sentinels
+        shell: bash
+        run: |
+          set -euo pipefail
+          for sentinel in /tmp/fly2684-vm-sentinel "$HOME/.fly2684-vm-sentinel" /var/tmp/fly2684-vm-sentinel; do
+            test ! -e "$sentinel"
+          done
+          printf '%s\n' 'fly2684-non-secret-sentinel' > /tmp/fly2684-vm-sentinel
+          printf '%s\n' 'fly2684-non-secret-sentinel' > "$HOME/.fly2684-vm-sentinel"
+          printf '%s\n' 'fly2684-non-secret-sentinel' > /var/tmp/fly2684-vm-sentinel
+          test -s /tmp/fly2684-vm-sentinel
+          test -s "$HOME/.fly2684-vm-sentinel"
+          test -s /var/tmp/fly2684-vm-sentinel
+          printf 'runner_name=%s\n' "$RUNNER_NAME"
+  isolation-read:
+    name: Ubicloud Canary / Isolation Reader
+    runs-on: ${{ inputs.runner == 'ubicloud-standard-2' && 'ubicloud-standard-2' || 'ubuntu-latest' }}
+    needs:
+      - preflight
+      - isolation-write
+    if: ${{ needs.preflight.result == 'success' && inputs.capacity == '0' }}
+    timeout-minutes: 5
+    steps:
+      - name: Canary — Verify fixed sentinels did not persist
+        shell: bash
+        run: |
+          set -euo pipefail
+          for sentinel in /tmp/fly2684-vm-sentinel "$HOME/.fly2684-vm-sentinel" /var/tmp/fly2684-vm-sentinel; do
+            test ! -e "$sentinel"
+          done
+          boot_hash="$(sha256sum /proc/sys/kernel/random/boot_id | cut -d' ' -f1)"
+          printf 'runner_name=%s\n' "$RUNNER_NAME"
+          printf 'boot_id_sha256=%s\n' "$boot_hash"
+  capacity-probe:
+    name: Ubicloud Canary / Capacity (${{ matrix.slot }})
+    runs-on: ${{ inputs.runner == 'ubicloud-standard-2' && 'ubicloud-standard-2' || 'ubuntu-latest' }}
+    needs:
+      - preflight
+    if: ${{ needs.preflight.result == 'success' && inputs.capacity != '0' }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 54
+      matrix:
+        slot: ${{ fromJSON(needs.preflight.outputs.slots) }}
+    steps:
+      - name: Hold one capacity slot
+        shell: bash
+        run: |
+          sleep 180
+  result:
+    name: Ubicloud Canary Result
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - quick-gate
+      - unit-tests
+      - script-tests-2
+      - isolation-write
+      - isolation-read
+      - capacity-probe
+    if: ${{ always() }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify the selected canary mode passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CAPACITY: ${{ inputs.capacity }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$NEEDS_JSON" | jq -e --arg capacity "$CAPACITY" '
+            . as $needs
+            | ($needs["preflight"].result == "success")
+              and if $capacity == "0" then
+                (["quick-gate", "unit-tests", "script-tests-2", "isolation-write", "isolation-read"]
+                  | all(. as $job | $needs[$job].result == "success"))
+                and ($needs["capacity-probe"].result == "skipped")
+              else
+                ($needs["capacity-probe"].result == "success")
+                and (["quick-gate", "unit-tests", "script-tests-2", "isolation-write", "isolation-read"]
+                  | all(. as $job | $needs[$job].result == "skipped"))
+              end
+          '
