@@ -155,6 +155,7 @@ export {
 	stripSecretEnv,
 } from "./codex-home.js";
 export {
+	type CodexHomeAttemptIntent,
 	type CodexHomeAttemptReason,
 	type CodexHomeAttemptReceipt,
 	type CodexHomeAttemptResult,
@@ -165,6 +166,7 @@ export {
 	type CodexHomeOwnership,
 	computeCodexHomeInventoryDigest,
 	isCodexHomeMigrationOverdue,
+	reserveCodexHomeAttemptIntent,
 	type UpdateCodexHomeMigrationStateInput,
 	updateCodexHomeMigrationState,
 	validateCodexHomeAttemptReceipt,

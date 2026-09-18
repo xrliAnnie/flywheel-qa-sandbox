@@ -82,6 +82,18 @@ export interface CodexHomeAttemptReceipt {
 	postcondition: Record<string, unknown> | null;
 }
 
+export interface CodexHomeAttemptIntent {
+	schemaVersion: 1;
+	attemptId: string;
+	at: string;
+	homeId: string;
+	home: string;
+	inventoryDigest: string;
+	source: CodexHomeAttemptSource;
+	buildSha: string;
+	status: "started";
+}
+
 export interface CodexHomeMigrationEnrollment {
 	id: string;
 	home: string;
@@ -248,6 +260,29 @@ export function validateCodexHomeAttemptReceipt(
 	const successful =
 		value.result === "done" || value.result === "already-satisfied";
 	return value.satisfied === successful;
+}
+
+function validateCodexHomeAttemptIntent(
+	value: unknown,
+): value is CodexHomeAttemptIntent {
+	return (
+		isPlainObject(value) &&
+		value.schemaVersion === 1 &&
+		typeof value.attemptId === "string" &&
+		UUID_RE.test(value.attemptId) &&
+		isIsoInstant(value.at) &&
+		typeof value.homeId === "string" &&
+		SAFE_ID_RE.test(value.homeId) &&
+		!value.homeId.includes("..") &&
+		isNormalizedAbsolutePath(value.home) &&
+		typeof value.inventoryDigest === "string" &&
+		SHA256_RE.test(value.inventoryDigest) &&
+		typeof value.source === "string" &&
+		SOURCES.has(value.source as CodexHomeAttemptSource) &&
+		typeof value.buildSha === "string" &&
+		BUILD_SHA_RE.test(value.buildSha) &&
+		value.status === "started"
+	);
 }
 
 function ensurePlainDirectory(path: string, create: boolean): void {
@@ -495,6 +530,39 @@ export function writeCodexHomeAttemptReceipt(input: {
 	} catch (error) {
 		if (fd !== undefined) closeSync(fd);
 		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
+export function reserveCodexHomeAttemptIntent(input: {
+	stateRoot: string;
+	intent: unknown;
+}): string {
+	if (!validateCodexHomeAttemptIntent(input.intent)) {
+		throw new Error("invalid Codex home attempt intent");
+	}
+	const directory = controlDirectory(input.stateRoot);
+	const intents = join(directory, "intents");
+	ensurePlainDirectory(intents, true);
+	const path = join(intents, `${input.intent.attemptId}.json`);
+	let fd: number | undefined;
+	try {
+		fd = openSync(
+			path,
+			fsConstants.O_WRONLY |
+				fsConstants.O_CREAT |
+				fsConstants.O_EXCL |
+				(fsConstants.O_NOFOLLOW ?? 0),
+			0o600,
+		);
+		writeFileSync(fd, `${JSON.stringify(input.intent, null, 2)}\n`);
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		fsyncDirectory(intents);
+		return path;
+	} catch (error) {
+		if (fd !== undefined) closeSync(fd);
 		throw error;
 	}
 }

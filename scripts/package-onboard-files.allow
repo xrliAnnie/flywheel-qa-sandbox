@@ -39,6 +39,7 @@ scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 scripts/resident-codex-lead-recover.sh
 scripts/codex-home-link-truth.sh
+scripts/codex-home-reconcile.mjs
 scripts/codex-credential-cutover.sh
 scripts/codex-home-credential-sweep.mjs
 scripts/flywheel-lead-attach.sh
@@ -48,6 +49,7 @@ scripts/restart-storm-gate.py
 scripts/host-tmux-selection-gate.sh
 scripts/lead-alert.sh
 scripts/codex-quota-readiness-receipt.mjs
+scripts/config/codex-quota-home-policy.json
 scripts/flywheel-node-dwell-control.mjs
 scripts/flywheel-patrol-continuity.mjs
 scripts/lead-patrol-snapshot.sh

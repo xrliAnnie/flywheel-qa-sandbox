@@ -2782,6 +2782,31 @@ describe("Codex credential migration (WS-A)", () => {
 		);
 	});
 
+	it("does not chmod a keyed home before refusing its live lease", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				project: "flywheel",
+				role: "qa",
+				executionId: "exec-live-metadata",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		writeFileSync(join(admission.handle.home, "auth.json"), "legacy-copy", {
+			mode: 0o600,
+		});
+		chmodSync(admission.handle.home, 0o755);
+
+		await expect(
+			migrateCodexAgentHomeCredential({
+				home: admission.handle.home,
+				env,
+				registryPath,
+			}),
+		).rejects.toThrow(/live leases/);
+		expect(statSync(admission.handle.home).mode & 0o777).toBe(0o755);
+	});
+
 	it("repairs a missing credential in a drained home and can roll it back to a 0600 copy", () => {
 		const home = join(tmp, "missing-link-home");
 		mkdirSync(home, { mode: 0o700 });

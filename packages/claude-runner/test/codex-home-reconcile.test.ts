@@ -43,6 +43,10 @@ type ReconcileExports = {
 		stateRoot: string;
 		receipt: Record<string, unknown>;
 	}) => string;
+	reserveCodexHomeAttemptIntent: (input: {
+		stateRoot: string;
+		intent: Record<string, unknown>;
+	}) => string;
 };
 
 const api = runner as unknown as ReconcileExports;
@@ -74,6 +78,7 @@ describe("codex home reconciliation state", () => {
 		expect(typeof api.validateCodexHomeAttemptReceipt).toBe("function");
 		expect(typeof api.updateCodexHomeMigrationState).toBe("function");
 		expect(typeof api.writeCodexHomeAttemptReceipt).toBe("function");
+		expect(typeof api.reserveCodexHomeAttemptIntent).toBe("function");
 	});
 
 	it("computes one deterministic digest from home and ownership only", () => {
@@ -219,6 +224,27 @@ describe("codex home reconciliation state", () => {
 				receipt: attempt(),
 			}),
 		).toThrow(/already exists/);
+	});
+
+	it("durably reserves an external intent before home mutation", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2523-intent-"));
+		const intent = {
+			schemaVersion: 1,
+			attemptId: "8e237eaa-b23c-432f-a507-ad28052b51bd",
+			at: "2026-09-18T00:00:00.000Z",
+			homeId: "flywheel/implement",
+			home: "/Users/test/.flywheel/codex-homes/agents/flywheel/implement",
+			inventoryDigest: sha("a"),
+			source: "manual",
+			buildSha: "b".repeat(40),
+			status: "started",
+		};
+		const path = api.reserveCodexHomeAttemptIntent({
+			stateRoot: root,
+			intent,
+		});
+		expect(lstatSync(path).mode & 0o777).toBe(0o600);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(intent);
 	});
 
 	it("rejects a symlinked attempts directory", () => {

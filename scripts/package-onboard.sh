@@ -101,9 +101,11 @@ flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
 resident-codex-lead-recover.sh
 codex-home-link-truth.sh
+codex-home-reconcile.mjs
 codex-credential-cutover.sh
 codex-home-credential-sweep.mjs
 codex-quota-readiness-receipt.mjs
+config/codex-quota-home-policy.json
 flywheel-lead-attach.sh
 flywheel-view-attach.sh
 flywheel-node-status.sh
