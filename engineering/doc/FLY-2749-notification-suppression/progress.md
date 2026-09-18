@@ -1,15 +1,14 @@
 ---
 issue: FLY-2749
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-18T23:27:02.636Z
-nextStep: Design deliverables complete and APPROVED; Lead explicitly waived
-  hosting failure for current activation (7d432b5f). Execute
-  phase_design_complete then park; later publish-only only on Lead wake.
+phase: implement
+phaseCursor: 0/7
+updated: 2026-09-18T23:30:13.857Z
+nextStep: "Audit current #1204 code paths and freeze T1 regression cases before
+  implementation"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
-**phase**: design (6/6)
-**next**: Design deliverables complete and APPROVED; Lead explicitly waived hosting failure for current activation (7d432b5f). Execute phase_design_complete then park; later publish-only only on Lead wake.
+**phase**: implement (0/7)
+**next**: Audit current #1204 code paths and freeze T1 regression cases before implementation
