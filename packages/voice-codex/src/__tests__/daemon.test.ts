@@ -653,6 +653,170 @@ describe("VoiceDaemon", () => {
 			expect(stateStore.remove).not.toHaveBeenCalled();
 		},
 	);
+
+	it("exits after 120 seconds of continuously successful empty reads", async () => {
+		let elapsed = 0;
+		const daemonRef: { current?: VoiceDaemon } = {};
+		const desired = vi.fn(async () => null);
+		const sleep = vi.fn(async (ms: number) => {
+			elapsed += ms;
+			// Escape hatch keeps the pre-feature implementation from hanging the RED run.
+			if (elapsed > 125_000) daemonRef.current?.shutdown();
+		});
+		const daemon = new VoiceDaemon({
+			bridge: {
+				desired,
+				claim: vi.fn(),
+				renew: vi.fn(),
+				renewRecovered: vi.fn(),
+				setState: vi.fn(),
+				outbound: vi.fn(),
+				claimOutbound: vi.fn(),
+				receipt: vi.fn(),
+			},
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: vi.fn(),
+			recoverSession: vi.fn(),
+			sleep,
+			now: () => elapsed,
+			timing: {
+				idlePollMs: 5_000,
+				idleExitMs: 120_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 120_000,
+				speechChunkTokens: 600,
+			},
+		});
+		daemonRef.current = daemon;
+
+		await daemon.run();
+
+		expect(elapsed).toBe(120_000);
+		expect(desired).toHaveBeenCalledTimes(26); // 25 polls plus the final race read
+	});
+
+	it("resets idle accounting after a desired read fails", async () => {
+		let elapsed = 0;
+		const daemonRef: { current?: VoiceDaemon } = {};
+		let failed = false;
+		const desired = vi.fn(async () => {
+			if (!failed && elapsed === 115_000) {
+				failed = true;
+				throw new Error("bridge_unavailable");
+			}
+			return null;
+		});
+		const sleep = vi.fn(async (ms: number) => {
+			elapsed += ms;
+			if (elapsed > 240_000) daemonRef.current?.shutdown();
+		});
+		const daemon = new VoiceDaemon({
+			bridge: {
+				desired,
+				claim: vi.fn(),
+				renew: vi.fn(),
+				renewRecovered: vi.fn(),
+				setState: vi.fn(),
+				outbound: vi.fn(),
+				claimOutbound: vi.fn(),
+				receipt: vi.fn(),
+			},
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: vi.fn(),
+			recoverSession: vi.fn(),
+			sleep,
+			now: () => elapsed,
+			timing: {
+				idlePollMs: 5_000,
+				idleExitMs: 120_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 120_000,
+				speechChunkTokens: 600,
+			},
+		});
+		daemonRef.current = daemon;
+
+		await daemon.run();
+
+		expect(failed).toBe(true);
+		expect(elapsed).toBe(240_000);
+	});
+
+	it("claims a demand found by the final idle-exit read", async () => {
+		let elapsed = 0;
+		const daemonRef: { current?: VoiceDaemon } = {};
+		let finalRaceDelivered = false;
+		const runtime = active();
+		const desired = vi.fn(async () => {
+			if (elapsed === 120_000 && !finalRaceDelivered) {
+				finalRaceDelivered = true;
+				return { sessionId: SESSION_ID };
+			}
+			return null;
+		});
+		const sleep = vi.fn(async (ms: number) => {
+			elapsed += ms;
+			if (elapsed > 245_000) daemonRef.current?.shutdown();
+		});
+		const bridge = {
+			desired,
+			claim: vi.fn(async () => ({
+				lease: lease(),
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection,
+			})),
+			renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+			renewRecovered: vi.fn(),
+			setState: vi.fn(async () => {}),
+			outbound: vi.fn(async () => []),
+			claimOutbound: vi.fn(),
+			receipt: vi.fn(),
+		};
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: () => runtime,
+			recoverSession: vi.fn(),
+			sleep,
+			now: () => elapsed,
+			timing: {
+				idlePollMs: 5_000,
+				idleExitMs: 120_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 120_000,
+				speechChunkTokens: 600,
+			},
+		});
+		daemonRef.current = daemon;
+
+		await daemon.run();
+
+		expect(finalRaceDelivered).toBe(true);
+		expect(bridge.claim).toHaveBeenCalledOnce();
+		expect(elapsed).toBe(240_000);
+	});
 });
 
 function pending<T>() {

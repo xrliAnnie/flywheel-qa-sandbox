@@ -35,6 +35,39 @@ afterEach(() => {
 });
 
 describe("VoiceSessionRuntime", () => {
+	it("scans desired sessions in a wake lane independent of provisioning", async () => {
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+		});
+		const requestWake = vi.fn();
+		const runtime = new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => T0,
+			provision: vi.fn(() => new Promise(() => {})),
+			poll: vi.fn(),
+			requestWake,
+		});
+
+		await runtime.wakeTick();
+
+		expect(requestWake).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: SESSION_ID, state: "desired" }),
+		);
+	});
+
 	it("hands stale provisioning back to the reducer", async () => {
 		const provision = vi.fn(async () => {});
 		const runtime = new VoiceSessionRuntime({

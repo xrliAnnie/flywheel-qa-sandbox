@@ -27,6 +27,7 @@ export interface VoiceDaemonConfig {
 	projectsPath: string;
 	leaseHttpTimeoutMs: number;
 	idlePollMs: number;
+	idleExitMs: number;
 	leaseRenewMs: number;
 	leaseMissMax: number;
 	presenceGraceMs: number;
@@ -111,6 +112,7 @@ export function loadVoiceDaemonConfig(
 		projectsPath: env.FLYWHEEL_PROJECTS_FILE ?? join(stateDir, "projects.json"),
 		leaseHttpTimeoutMs,
 		idlePollMs: integer(env, "FLYWHEEL_VOICE_IDLE_POLL_MS", 5_000),
+		idleExitMs: integer(env, "FLYWHEEL_VOICE_IDLE_EXIT_MS", 120_000),
 		leaseRenewMs,
 		leaseMissMax: integer(env, "FLYWHEEL_VOICE_LEASE_MISS_MAX", 2),
 		presenceGraceMs: integer(env, "FLYWHEEL_VOICE_PRESENCE_GRACE_MS", 120_000),

@@ -17,25 +17,18 @@ restart_voice_managed() {
     voice_restart_log "voice unit not loaded; managed restart is a no-op"
     return 0
   fi
-  if ! supervisor_assert_keepalive voice on-failure; then
+  if ! declare -F voice_on_demand_contract_check >/dev/null 2>&1; then
+    # shellcheck source=voice-on-demand.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/voice-on-demand.sh"
+  fi
+  if ! voice_on_demand_contract_check \
+    "${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}" "${HOME}" "gui/$(id -u)"; then
     VOICE_RESTART_STATE="failed"
-    VOICE_RESTART_DETAIL="keepalive_contract_missing"
-    voice_restart_log "ERROR: loaded voice unit has no KeepAlive contract"
+    VOICE_RESTART_DETAIL="on_demand_contract_mismatch"
+    voice_restart_log "ERROR: loaded voice unit does not match the on-demand contract; refusing an unsafe restart"
     return 1
   fi
-  if ! supervisor_restart voice service >/dev/null 2>&1; then
-    VOICE_RESTART_STATE="failed"
-    VOICE_RESTART_DETAIL="supervisor_restart_failed"
-    voice_restart_log "ERROR: voice supervisor restart failed"
-    return 1
-  fi
-  if ! supervisor_assert_keepalive voice on-failure; then
-    VOICE_RESTART_STATE="failed"
-    VOICE_RESTART_DETAIL="keepalive_contract_lost"
-    voice_restart_log "ERROR: voice unit lost its KeepAlive contract after restart"
-    return 1
-  fi
-  VOICE_RESTART_STATE="restarted"
-  VOICE_RESTART_DETAIL="supervisor restart accepted"
-  voice_restart_log "voice supervisor restart accepted"
+  VOICE_RESTART_STATE="registered"
+  VOICE_RESTART_DETAIL="on-demand registration already current; no process restart"
+  voice_restart_log "voice on-demand registration already current; leaving the idle job dormant"
 }

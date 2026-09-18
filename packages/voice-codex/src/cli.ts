@@ -322,6 +322,7 @@ export async function main(): Promise<void> {
 		sleep: pause,
 		timing: {
 			idlePollMs: config.idlePollMs,
+			idleExitMs: config.idleExitMs,
 			leaseRenewMs: config.leaseRenewMs,
 			leaseMissMax: config.leaseMissMax,
 			presenceGraceMs: config.presenceGraceMs,

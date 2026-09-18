@@ -135,6 +135,49 @@ for rel in "${WRAPPERS[@]}"; do
   eq "$name: healthy brake stays quiet" "$(grep -c '^meta ' "$ALERT_LOG")" "0"
 done
 
+# FLY-2701: the voice wrapper retires the resident-service storm ledger only
+# after the installed/source/loaded on-demand identity has been verified. The
+# legacy branch above remains the mixed-migration fail-closed path.
+extract_voice_policy() {
+  awk '
+    /^if \[\[ "\$ON_DEMAND_CONTRACT" != true \]\]; then$/ { grab = 1 }
+    grab {
+      print
+      if ($0 ~ /^ *if /) depth++
+      if ($0 ~ /^ *fi$/) { depth--; if (depth == 0) exit }
+    }
+  ' "$REPO/scripts/flywheel-voice-wrapper.sh"
+}
+run_voice_policy() {
+  local verified="$1" script="$WORK/voice-policy.sh"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -euo pipefail'
+    echo 'log() { echo "log: $*"; }'
+    echo "FLYWHEEL_DIR='$REPO'"
+    echo "FLYWHEEL_META_ALERT_BIN='$WORK/meta-alert.sh'"
+    echo "RESTART_STORM_GATE_BIN='$WORK/definitely-absent-gate.py'"
+    echo "ON_DEMAND_CONTRACT='$verified'"
+    extract_voice_policy
+    echo 'echo "REACHED_LAUNCH"'
+  } > "$script"
+  bash "$script" 2>&1
+}
+
+: >"$ALERT_LOG"
+out="$(run_voice_policy true)"
+eq "voice: verified on-demand contract bypasses resident storm accounting" \
+  "$(echo "$out" | grep -c REACHED_LAUNCH)" "1"
+eq "voice: verified on-demand bypass stays quiet" "$(grep -c '^meta ' "$ALERT_LOG")" "0"
+
+: >"$ALERT_LOG"
+out="$(run_voice_policy false)"
+eq "voice: mixed migration keeps missing-brake fail-close" \
+  "$(echo "$out" | grep -c REACHED_LAUNCH)" "0"
+wait_for_alert
+eq "voice: mixed migration still alerts on missing brake" \
+  "$(grep -c '^meta restart_storm_gate_unavailable' "$ALERT_LOG")" "1"
+
 # --- the bound itself -------------------------------------------------------
 # A hung notifier must not pin the launch path. Uses the real watchdog with a
 # short override so the assertion is about the mechanism, not about waiting 15s.

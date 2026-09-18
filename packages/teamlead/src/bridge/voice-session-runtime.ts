@@ -9,6 +9,7 @@ export interface VoiceSessionRuntimeDeps {
 	now?: () => string;
 	provision: (sessionId: string, signal: AbortSignal) => Promise<void>;
 	poll: (session: VoiceSessionRow) => Promise<void>;
+	requestWake?: (session: VoiceSessionRow) => void;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
 	reportPollFailure?: (
 		session: VoiceSessionRow,
@@ -18,7 +19,9 @@ export interface VoiceSessionRuntimeDeps {
 
 export class VoiceSessionRuntime {
 	private timer?: ReturnType<typeof setInterval>;
+	private wakeTimer?: ReturnType<typeof setInterval>;
 	private ticking = false;
+	private wakeTicking = false;
 	private readonly now: () => string;
 	private readonly pollFailures = new Map<
 		string,
@@ -136,6 +139,24 @@ export class VoiceSessionRuntime {
 		}
 	}
 
+	async wakeTick(): Promise<void> {
+		if (this.wakeTicking || !this.deps.requestWake) return;
+		this.wakeTicking = true;
+		try {
+			for (const session of this.deps.store.listVoiceSessions(["desired"])) {
+				try {
+					this.deps.requestWake(session);
+				} catch {
+					console.warn(
+						`[voice-session] wake request ${session.sessionId} failed`,
+					);
+				}
+			}
+		} finally {
+			this.wakeTicking = false;
+		}
+	}
+
 	private async provisionWithDeadline(sessionId: string): Promise<void> {
 		const controller = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -160,6 +181,13 @@ export class VoiceSessionRuntime {
 
 	start(): void {
 		if (this.timer) return;
+		if (this.deps.requestWake) {
+			void this.wakeTick();
+			this.wakeTimer = setInterval(() => {
+				void this.wakeTick();
+			}, this.deps.timing.pollIntervalMs);
+			this.wakeTimer.unref?.();
+		}
 		void this.tick().catch((error) =>
 			console.warn(
 				`[voice-session] runtime tick failed: ${(error as Error).message}`,
@@ -177,6 +205,8 @@ export class VoiceSessionRuntime {
 
 	stop(): void {
 		if (this.timer) clearInterval(this.timer);
+		if (this.wakeTimer) clearInterval(this.wakeTimer);
 		this.timer = undefined;
+		this.wakeTimer = undefined;
 	}
 }

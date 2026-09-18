@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type {
 	VoiceOutboundItem,
 	VoiceSessionProjection,
@@ -97,6 +98,7 @@ export interface VoiceDaemonOptions {
 	bridge: VoiceDaemonBridge;
 	stateStore: VoiceSessionStore;
 	bootId: string;
+	now?: () => number;
 	createSession(
 		context: VoiceSessionContext,
 	): ActiveVoiceSession | Promise<ActiveVoiceSession>;
@@ -107,6 +109,7 @@ export interface VoiceDaemonOptions {
 	sleep(ms: number, signal?: AbortSignal): Promise<void>;
 	timing: {
 		idlePollMs: number;
+		idleExitMs?: number;
 		leaseRenewMs: number;
 		leaseMissMax: number;
 		presenceGraceMs: number;
@@ -229,15 +232,38 @@ class SessionLifetime {
 export class VoiceDaemon {
 	private stopping = false;
 	private current?: ActiveVoiceSession;
+	private readonly now: () => number;
 
-	constructor(private readonly options: VoiceDaemonOptions) {}
+	constructor(private readonly options: VoiceDaemonOptions) {
+		this.now = options.now ?? (() => performance.now());
+	}
 
 	async run(): Promise<void> {
 		await this.recover();
+		let idleSince: number | undefined;
 		while (!this.stopping) {
 			try {
-				await this.runOnce();
+				const desired = await this.options.bridge.desired();
+				if (desired) {
+					idleSince = undefined;
+					await this.runDesired(desired);
+					continue;
+				}
+				const observedAt = this.now();
+				idleSince ??= observedAt;
+				if (
+					observedAt - idleSince >=
+					(this.options.timing.idleExitMs ?? 120_000)
+				) {
+					const finalDesired = await this.options.bridge.desired();
+					if (!finalDesired) return;
+					idleSince = undefined;
+					await this.runDesired(finalDesired);
+					continue;
+				}
+				await this.options.sleep(this.options.timing.idlePollMs);
 			} catch (error) {
+				idleSince = undefined;
 				console.error(
 					`[voice] daemon iteration failed: ${(error as Error).message}`,
 				);
@@ -309,6 +335,10 @@ export class VoiceDaemon {
 			await this.options.sleep(this.options.timing.idlePollMs);
 			return "idle";
 		}
+		return this.runDesired(desired);
+	}
+
+	private async runDesired(desired: { sessionId: string }): Promise<string> {
 		const claimed = await this.options.bridge.claim(
 			desired.sessionId,
 			this.options.bootId,

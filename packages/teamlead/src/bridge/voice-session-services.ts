@@ -6,6 +6,11 @@ import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import type { BridgeConfig } from "./types.js";
+import {
+	kickstartVoiceOnDemand,
+	VoiceLaunchdWaker,
+	verifyVoiceOnDemandContract,
+} from "./voice-launchd-waker.js";
 import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
@@ -53,6 +58,15 @@ export function createVoiceSessionServices(input: {
 		pollIntervalMs: 3_000,
 	};
 	const fetchImpl = input.fetchImpl ?? fetch;
+	const voiceLaunchdWaker = new VoiceLaunchdWaker({
+		verify: () =>
+			verifyVoiceOnDemandContract({
+				repoRoot: input.cwd ?? process.cwd(),
+				homeDir,
+			}),
+		wake: () => kickstartVoiceOnDemand(),
+		log: (message) => console.warn(`[voice-session] ${message}`),
+	});
 	const discordDeps = createDiscordVoiceProvisionerDeps(fetchImpl);
 	const resolve = (session: VoiceSessionRow) => {
 		if (!session.voiceBotUserId) throw new Error("identity_binding_missing");
@@ -225,6 +239,9 @@ export function createVoiceSessionServices(input: {
 				rootMessageId: session.rootMessageId,
 				fetchImpl,
 			});
+		},
+		requestWake: () => {
+			voiceLaunchdWaker.requestWake();
 		},
 		reportPollFailure: (session) => postStatus(session, "📻 回程暂时不通"),
 	});

@@ -123,6 +123,7 @@ describe("voice daemon config", () => {
 		);
 		expect(config).toMatchObject({
 			realtimeApiKey: "api-key",
+			idleExitMs: 120_000,
 			mirrorRetryWindowMs: 60_000,
 			mirrorRetries: 1,
 			ingestRetries: 1,
