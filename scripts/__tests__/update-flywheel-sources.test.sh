@@ -44,6 +44,8 @@ required_functions=(
   updater_token_shape_valid updater_claim_token updater_urgent_signature
   updater_scheduled_signature updater_sync_fable_model update_main
   updater_raya_pass raya_configure_runtime_paths raya_host_capable raya_alert_dispatch
+  updater_alert_observation
+  shuttle_observation_begin shuttle_observation_record_values shuttle_observation_finish
 )
 missing_functions=()
 for fn in "${required_functions[@]}"; do
@@ -67,7 +69,7 @@ else
 fi
 if ! rg -n "$bash3_guard" \
   "$UPDATER" "$ROOT/scripts/lib/updater-raya-deploy.sh" \
-  "$ROOT/scripts/lead-patrol-snapshot.sh" >/dev/null; then
+  "$ROOT/scripts/lib/shuttle-observation.sh" "$ROOT/scripts/lead-patrol-snapshot.sh" >/dev/null; then
   pass "Raya updater path stays compatible with production /bin/bash 3.2"
 else
   fail "Raya updater path contains a bash 4+ construct"
@@ -79,7 +81,7 @@ else
   fail "CI does not run updater-raya-deploy.test.sh"
 fi
 
-last_library_source_line="$(rg -n '^source "\$\{SCRIPT_DIR\}/lib/updater-raya-deploy\.sh"$' "$UPDATER" | tail -1 | cut -d: -f1)"
+last_library_source_line="$(rg -n '^source "\$\{SCRIPT_DIR\}/lib/shuttle-observation\.sh"$' "$UPDATER" | tail -1 | cut -d: -f1)"
 last_runtime_pin_line="$(rg -n '^updater_configure_runtime_paths$' "$UPDATER" | tail -1 | cut -d: -f1)"
 last_raya_runtime_pin_line="$(rg -n '^raya_configure_runtime_paths$' "$UPDATER" | tail -1 | cut -d: -f1)"
 if [[ "$last_library_source_line" =~ ^[0-9]+$ \
@@ -237,6 +239,10 @@ FLYWHEEL_FOUNDER_USER_ID=founder-123 raya_alert_dispatch severe raya-deploy-roll
 warning_argv="$(sed -n '1p' "$RAYA_ALERT_ARGV")"
 severe_argv="$(sed -n '2p' "$RAYA_ALERT_ARGV")"
 : > "$RAYA_ALERT_ARGV"
+FLYWHEEL_FOUNDER_USER_ID=founder-123 updater_alert_observation \
+  observation-write-failed observation-body >/dev/null 2>&1
+observation_argv="$(sed -n '1p' "$RAYA_ALERT_ARGV")"
+: > "$RAYA_ALERT_ARGV"
 UPDATER_UTC_DAY=20260821 FLYWHEEL_FOUNDER_USER_ID=founder-123 \
   /bin/bash -c 'source "$1"; raya_alert_dispatch warning raya-fetch-failed ignored compat-body' \
   fly2385 "$UPDATER" >/dev/null 2>&1
@@ -252,6 +258,11 @@ if [ "$compat_argv" = "--project flywheel --lead updater --kind deploy_degraded 
   pass "production /bin/bash executes the Raya alert path through lead-alert.sh"
 else
   fail "production /bin/bash did not deliver the Raya alert path (argv=$compat_argv)"
+fi
+if [ "$observation_argv" = "--project flywheel --lead updater --kind deploy_degraded --severity warning --title Shuttle observation degraded --body observation-body --signature observation-write-failed-scheduled-20260821" ]; then
+  pass "observation failures use degraded warning copy without a founder mention"
+else
+  fail "observation failure alert is not isolated from deploy_failed/founder paging (argv=$observation_argv)"
 fi
 stub_deploy_ok() {
   printf 'call\n' >> "$DEPLOY_CALLS"

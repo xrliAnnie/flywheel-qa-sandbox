@@ -65,6 +65,7 @@ const CROSS_PROVIDER_KINDS: ReadonlySet<AlertEventType> =
 
 const OWNING_LEAD_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	"review_job_failed",
+	"shuttle_unit_unhealthy",
 ]);
 
 /** Kinds with NO bot owner. */

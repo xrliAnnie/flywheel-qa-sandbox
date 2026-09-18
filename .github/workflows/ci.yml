@@ -1141,6 +1141,9 @@ jobs:
           bash scripts/__tests__/restart-notify-routine.test.sh
           bash scripts/__tests__/restart-services-notify.test.sh
           bash scripts/__tests__/update-flywheel-sources.test.sh
+          python3 scripts/__tests__/shuttle-observation.test.py
+          bash scripts/__tests__/shuttle-unit-results.test.sh
+          bash scripts/__tests__/shuttle-alert-route.test.sh
           bash scripts/__tests__/auto-narrow-rollback-precheck.test.sh
           bash scripts/__tests__/updater-raya-deploy.test.sh
           bash scripts/__tests__/raya-prestop.test.sh

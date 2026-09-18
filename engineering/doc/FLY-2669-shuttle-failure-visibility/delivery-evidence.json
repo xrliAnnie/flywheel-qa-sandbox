@@ -1,0 +1,41 @@
+{
+  "issue": "FLY-2669",
+  "observedAt": "2026-09-17T19:57:10.061891+00:00",
+  "phase": "design",
+  "render": {
+    "flow": {
+      "attempts": 2,
+      "result": "failed"
+    },
+    "model": {
+      "attempts": 2,
+      "result": "failed"
+    },
+    "error": "Chromium MachPortRendezvousServer bootstrap_check_in Permission denied (1100)",
+    "disposition": "DIAGRAM PENDING LOCAL RENDER; sources retained; no remote rendering"
+  },
+  "htmlVerification": {
+    "command": "node engineering/doc/FLY-2669-shuttle-failure-visibility/verify-founder-html.mjs",
+    "result": "PASS",
+    "checks": [
+      "single nonced script",
+      "8 section comments",
+      "pathname-scoped localStorage",
+      "storage exceptions",
+      "live aggregation",
+      "1800-char chunking",
+      "clipboard success/rejection/absence",
+      "derived text not HTML",
+      "zero external assets"
+    ],
+    "browserVisualQA": "unavailable"
+  },
+  "review": {
+    "questionId": "cef0cde6-ca8a-473a-8fd5-fabbf4aff6f2",
+    "requestId": "f21ab753-cde4-41c0-8f5e-dbe5223892ea",
+    "status": "APPROVED"
+  },
+  "productionChanges": false,
+  "publicationReceipt": "publication-receipt.json",
+  "leadHtmlReportId": "e8a4e240-c0e8-422a-8dbb-5ef242e83d7d"
+}

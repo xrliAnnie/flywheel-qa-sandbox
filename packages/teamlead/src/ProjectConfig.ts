@@ -321,6 +321,10 @@ export interface ProjectEntry {
 	personaProjectionContractDigest?: string;
 	invalidPersonaProjection?: string;
 	leads: LeadConfig[];
+	/** Optional unique primary recipient for every shuttle infrastructure alert. */
+	shuttlePrimaryEngineeringLeadId?: string;
+	/** Optional project-local copy recipient for this project's shuttle alerts. */
+	shuttleEngineeringLeadId?: string;
 	/** Required only while the founder-selected summary mode is per-project. */
 	summaryAggregatorLeadId?: string;
 	generalChannel?: string;
@@ -524,6 +528,20 @@ export function parseAndValidateProjects(
 			throw new Error(
 				`Project "${entry.projectName}": projectName must match ${SAFE_IDENTIFIER_RE} (it becomes a filesystem path component)`,
 			);
+		}
+		for (const field of [
+			"shuttlePrimaryEngineeringLeadId",
+			"shuttleEngineeringLeadId",
+		] as const) {
+			const value = (entry as Record<string, unknown>)[field];
+			if (
+				value !== undefined &&
+				(typeof value !== "string" || !SAFE_IDENTIFIER_RE.test(value))
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" ${field}: must be a safe non-empty Lead id`,
+				);
+			}
 		}
 
 		// Validate leads config (GEO-152: 1:N multi-lead routing)
@@ -1317,6 +1335,33 @@ export function parseAndValidateProjects(
 			delete (entry as Record<string, unknown>).personaProjection;
 			(entry as Record<string, unknown>).invalidPersonaProjection =
 				parsedProjection.reason;
+		}
+	}
+
+	const primaryBindings = raw.filter(
+		(entry) => entry.shuttlePrimaryEngineeringLeadId !== undefined,
+	);
+	if (primaryBindings.length > 1) {
+		throw new Error(
+			"shuttle routing allows at most one primary engineering Lead",
+		);
+	}
+	for (const entry of raw) {
+		for (const field of [
+			"shuttlePrimaryEngineeringLeadId",
+			"shuttleEngineeringLeadId",
+		] as const) {
+			const leadId = entry[field];
+			if (
+				leadId !== undefined &&
+				entry.leads.filter(
+					(lead: ProjectEntry["leads"][number]) => lead.agentId === leadId,
+				).length !== 1
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" ${field}: Lead must resolve exactly once`,
+				);
+			}
 		}
 	}
 

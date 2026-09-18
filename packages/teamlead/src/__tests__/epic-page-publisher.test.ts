@@ -82,7 +82,9 @@ describe("hosted Epic page publisher", () => {
 			"../epic-page/render-html.js"
 		);
 		const page = pageForShipJudgmentBudget();
-		page.items[0]!.title.value = "X".repeat(300000);
+		// Keep the positive fixture near the hosted limit while leaving headroom
+		// for platform-dependent URL/path serialization in Linux CI.
+		page.items[0]!.title.value = "X".repeat(298000);
 		expect(
 			Buffer.byteLength(renderEpicPageBundle(page, EPIC_SHAPE_NOW).html),
 		).toBeLessThanOrEqual(524288);

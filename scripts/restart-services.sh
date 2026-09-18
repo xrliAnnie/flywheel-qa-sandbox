@@ -99,6 +99,18 @@ fi
 # shellcheck source=lib/legacy-swap-broadcast-retirement.sh
 source "${FLYWHEEL_DIR}/scripts/lib/legacy-swap-broadcast-retirement.sh"
 
+# FLY-2669: only updater-owned cycles carry this identity. Source the immutable
+# observer bundle chosen before the ff-merge, never a second scheduler or writer.
+SHUTTLE_OBSERVATION_LIB_READY=0
+if [[ -n "${SHUTTLE_OBSERVATION_CYCLE_ID:-}" \
+  && -n "${SHUTTLE_OBSERVER_BUNDLE_DIR:-}" \
+  && -f "${SHUTTLE_OBSERVER_BUNDLE_DIR}/shuttle-observation.sh" \
+  && ! -L "${SHUTTLE_OBSERVER_BUNDLE_DIR}/shuttle-observation.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${SHUTTLE_OBSERVER_BUNDLE_DIR}/shuttle-observation.sh"
+    SHUTTLE_OBSERVATION_LIB_READY=1
+fi
+
 # FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
 # Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
 # commit in the range as source=fallback-git-log (inferred). merge_sha = the
@@ -193,6 +205,30 @@ fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
+}
+
+restart_shuttle_record() { # project kind owner display outcome reason evidence [deployed target behind drift]
+    [[ "$SHUTTLE_OBSERVATION_LIB_READY" == 1 \
+      && -n "${SHUTTLE_OBSERVATION_CYCLE_ID:-}" \
+      && "${SHUTTLE_OBSERVATION_RECORDING:-forward}" != rollback ]] || return 0
+    local project="$1" kind="$2" owner="$3" display="$4" outcome="$5" reason="$6" evidence="$7"
+    local deployed="${8:-}" target="${9:-}" behind="${10:-}" drift="${11:-unknown}"
+    local receipt="" rc=0
+    receipt="$(mktemp "$(shuttle_observation_state_root)/runtime/restart-record.XXXXXX")" || rc=$?
+    if (( rc == 0 )); then
+        shuttle_observation_record_values "$SHUTTLE_OBSERVATION_CYCLE_ID" \
+          "$project" "$kind" "$owner" "$display" "$outcome" "$reason" \
+          "$evidence" flywheel-updater.log#restart "$deployed" "$target" "$behind" "$drift" \
+          "$receipt" >/dev/null 2>&1 || rc=$?
+    fi
+    [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+    if (( rc != 0 )); then
+        log "ERROR: shuttle observation write failed project=$project kind=$kind owner=$owner rc=$rc" >&2
+        if [[ -n "${SHUTTLE_OBSERVATION_ERROR_FILE:-}" ]]; then
+            printf 'record_failed\n' >>"$SHUTTLE_OBSERVATION_ERROR_FILE" 2>/dev/null || true
+        fi
+    fi
+    return 0
 }
 
 # FLY-2030: the new required summary assignment schema/rule bundle may activate
@@ -1356,8 +1392,11 @@ resolve_main_repo() {
 
 # Check all project repos from manifests for .lead/ changes.
 # Sets global: project_lead_changed=true/false
-# Writes to: PROJECT_SHA_UPDATES_FILE (one "projectName=sha" per line)
+# Writes to: PROJECT_SHA_UPDATES_FILE (project name, baseline SHA, target SHA TSV)
 check_project_lead_changes() {
+    if ! declare -F restart_shuttle_record >/dev/null 2>&1; then
+        restart_shuttle_record() { :; }
+    fi
     project_lead_changed=false
     : > "$PROJECT_SHA_UPDATES_FILE"  # truncate
 
@@ -1367,11 +1406,18 @@ check_project_lead_changes() {
 
     if (( ${#manifests[@]} == 0 )); then
         log "No manifests found, skipping project repo check"
+        if [[ -f "${HOME}/.flywheel/projects.json" ]]; then
+            while IFS= read -r pname; do
+                [[ -n "$pname" ]] || continue
+                restart_shuttle_record "$pname" project_repo "$pname" \
+                  "$pname Lead config" failed ref-unresolved project-manifest-missing
+            done < <(jq -r '.[].projectName // empty' "${HOME}/.flywheel/projects.json" 2>/dev/null || true)
+        fi
         return
     fi
 
     # Collect unique project repos (try each manifest's projectDir until one works)
-    local seen_names=""
+    local seen_names="" all_names=""
     local project_names=()
     local project_dirs=()
 
@@ -1379,6 +1425,10 @@ check_project_lead_changes() {
         local pname pdir
         pname=$(jq -r '.projectName' "$mf")
         pdir=$(jq -r '.projectDir' "$mf")
+        # Raya's manifest projectDir is its Lead workspace, not the separately
+        # observed deployable checkout. It has no project_repo check duty.
+        [[ "$pname" == "raya" ]] && continue
+        case " $all_names " in *" $pname "*) ;; *) all_names="$all_names $pname" ;; esac
 
         # Skip if already seen this project
         case " $seen_names " in
@@ -1391,6 +1441,17 @@ check_project_lead_changes() {
             project_dirs+=("$main_repo")
             seen_names="$seen_names $pname"
         fi
+    done
+
+    local unresolved_name
+    for unresolved_name in $all_names; do
+        case " $seen_names " in
+            *" $unresolved_name "*) ;;
+            *)
+                restart_shuttle_record "$unresolved_name" project_repo "$unresolved_name" \
+                  "$unresolved_name Lead config" failed ref-unresolved project-repo-unresolved
+                ;;
+        esac
     done
 
     # Check each unique project
@@ -1406,6 +1467,8 @@ check_project_lead_changes() {
         if [[ "$DRY_RUN" != "true" ]]; then
             git -C "$repo" fetch origin main --quiet 2>/dev/null || {
                 log "WARNING: Failed to fetch project $pname (${repo}), skipping"
+                restart_shuttle_record "$pname" project_repo "$pname" \
+                  "$pname Lead config" failed fetch-failed project-fetch
                 continue
             }
         fi
@@ -1413,13 +1476,15 @@ check_project_lead_changes() {
         local current_sha
         current_sha=$(git -C "$repo" rev-parse origin/main 2>/dev/null) || {
             log "WARNING: Cannot resolve origin/main for project $pname, skipping"
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" failed ref-unresolved project-origin-main
             continue
         }
 
-        # Store for later SHA update (tab-separated, one per line)
-        printf '%s\t%s\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
-
         if [[ "$stored_sha" == "$current_sha" ]]; then
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" up_to_date up-to-date project-sha \
+              "$current_sha" "$current_sha" 0 unknown
             continue
         fi
 
@@ -1428,6 +1493,9 @@ check_project_lead_changes() {
             log "Project $pname: first run, recording SHA ${current_sha:0:7} (no restart forced)"
             mkdir -p "$PROJECT_SHA_DIR"
             echo "$current_sha" > "$sha_file"
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" skipped baseline-initialized project-sha \
+              "" "$current_sha" "" unknown
             continue
         fi
 
@@ -1440,6 +1508,7 @@ check_project_lead_changes() {
         if [[ "$diff_ok" == "false" ]]; then
             log "WARNING: git diff failed for project $pname (${stored_sha:0:7}→${current_sha:0:7}), treating as changed (fail-safe)"
             project_lead_changed=true
+            printf '%s\t%s\tdeployed\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
         elif [[ -n "$lead_changes" ]]; then
             local change_count
             change_count=$(echo "$lead_changes" | wc -l | tr -d ' ')
@@ -1449,18 +1518,33 @@ check_project_lead_changes() {
                 echo "$lead_changes" | head -10
             fi
             project_lead_changed=true
+            printf '%s\t%s\tdeployed\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
+        else
+            printf '%s\t%s\tup_to_date\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
         fi
     done
 }
 
 # Update project deployed SHAs after successful restart.
 update_project_shas() {
+    if ! declare -F restart_shuttle_record >/dev/null 2>&1; then
+        restart_shuttle_record() { :; }
+    fi
     [[ ! -s "$PROJECT_SHA_UPDATES_FILE" ]] && return
     mkdir -p "$PROJECT_SHA_DIR"
-    while IFS=$'\t' read -r pname sha; do
+    while IFS=$'\t' read -r pname sha disposition; do
         [[ -z "$pname" || -z "$sha" ]] && continue
         echo "$sha" > "${PROJECT_SHA_DIR}/${pname}"
         log "Project $pname: deployed-sha updated to ${sha:0:7}"
+        if [[ "$disposition" == deployed ]]; then
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" deployed deployed project-lead-change \
+              "$sha" "$sha" 0 unknown
+        else
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" up_to_date up-to-date project-lead-check \
+              "$sha" "$sha" 0 unknown
+        fi
     done < "$PROJECT_SHA_UPDATES_FILE"
 }
 
@@ -2616,6 +2700,12 @@ _dral_sleep() {
 # Outputs "skipped:N failed:M total:K" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
 do_restart_all_leads() {
+    # Source-only unit harnesses extract this function without the updater
+    # observer. Preserve their original behavior while production uses the
+    # bundle-backed implementation defined above.
+    if ! declare -F restart_shuttle_record >/dev/null 2>&1; then
+        restart_shuttle_record() { :; }
+    fi
     local mode="${1:-}"
     local batch_size=4 pause_secs=60
     local skipped=0
@@ -2759,16 +2849,22 @@ do_restart_all_leads() {
         case "$classification" in
             skip-test)
                 log "Skipping test-slot Lead candidate (lifecycle-owned, not deploy-blocking): key=$key sources=$sources" >&2
+                restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                  skipped test-slot lead-candidate
                 ;;
             restart)
                 if [[ -n "$migration_activated_key" && "$key" == "$migration_activated_key" ]]; then
                     log "Migration activation already verified in this wave: $key" >&2
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      deployed deployed migration-verify
                     continue
                 fi
                 if [[ "$mf" == "-" || ! -f "$mf" ]]; then
                     log "ERROR: restart candidate $key has no readable manifest" >&2
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed config-drift manifest-missing
                     continue
                 fi
                 if [[ "$mode" == "stagger" && "$restart_attempts" -gt 0 ]] \
@@ -2781,11 +2877,15 @@ do_restart_all_leads() {
                 if (( rc != 0 )); then
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed lead-verify-failed lead-verify
                 else
                     record_successful_lead_verify_timing \
                       "$key" "$VERIFIED_LEAD_ELAPSED_SECONDS"
                     record_successful_lead_body_observation \
                       "$key" "$pn" "$lid" "$VERIFIED_LEAD_PID" "$VERIFIED_LEAD_START"
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      deployed deployed lead-verify
                 fi
                 ;;
             pending-install)
@@ -2794,6 +2894,8 @@ do_restart_all_leads() {
                     "Lead $key 已注册但尚未安装，本次跳过重启，等待所属安装流程。"
                 skipped=$((skipped + 1))
                 record_lead_restart_detail skipped "$key"
+                restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                  skipped pending-install lead-candidate
                 ;;
             manifestless)
                 log "WARNING: loaded/running Lead $key has no manifest — visible but not restarted (sources=$sources)" >&2
@@ -2801,6 +2903,8 @@ do_restart_all_leads() {
                     "Lead $key 已加载但没有 manifest，本次未重启；请补齐 carrier 配置后再收敛。"
                 skipped=$((skipped + 1))
                 record_lead_restart_detail skipped "$key"
+                restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                  skipped manifestless lead-candidate
                 ;;
             probe-error|config-drift|*)
                 log "ERROR: Lead candidate $key cannot be assigned safe restart authority (class=$classification project=$pn lead=$lid sources=$sources)" >&2
@@ -2808,6 +2912,13 @@ do_restart_all_leads() {
                     "Lead $key 无法从 manifest/loaded plist/process 与 projects.json 得到唯一一致身份，本次拒绝重启。"
                 failed=$((failed + 1))
                 record_lead_restart_detail failed "$key"
+                if [[ "$classification" == probe-error ]]; then
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed probe-error lead-candidate
+                else
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed config-drift lead-candidate
+                fi
                 ;;
         esac
     done < "$candidates_file"
@@ -2940,8 +3051,10 @@ rollback_and_restart() {
             # FLY-270 (R1#4): parse the Lead-restart result instead of discarding
             # it. A rolled-back-but-NOT-recovered Eng Lead must be surfaced as a
             # severe alert, never conflated with "code rolled back" success.
-            local rb_lead_result
+            local rb_lead_result previous_shuttle_recording="${SHUTTLE_OBSERVATION_RECORDING:-forward}"
+            SHUTTLE_OBSERVATION_RECORDING=rollback
             rb_lead_result=$(do_restart_all_leads immediate)
+            SHUTTLE_OBSERVATION_RECORDING="$previous_shuttle_recording"
             rb_leads_failed=$(rn_parse_count failed "$rb_lead_result")
             if [[ "$rb_leads_failed" == "invalid" ]]; then
                 alert_severe "rollback-lead-result-unreadable" "Flywheel deploy failed" \

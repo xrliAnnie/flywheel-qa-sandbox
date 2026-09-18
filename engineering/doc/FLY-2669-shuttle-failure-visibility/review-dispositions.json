@@ -1,0 +1,54 @@
+{
+  "issue": "FLY-2669",
+  "round": 1,
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "dispositions": [
+    {
+      "findingKey": "shuttle-route-binding-unpopulated-in-production",
+      "severity": "HIGH",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "expected-skip-resets-consecutive-blocks-escalation",
+      "severity": "HIGH",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "python-test-command-discovers-zero-tests",
+      "severity": "MEDIUM",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "bash32-guard-not-extended-to-new-sourced-lib",
+      "severity": "MEDIUM",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "observation-helper-swapped-mid-cycle-by-ff-merge",
+      "severity": "MEDIUM",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "projector-runs-on-every-3s-gatepoller-tick",
+      "severity": "MEDIUM",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "plan-line-references-drift",
+      "severity": "LOW",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "schema-v1-block-incomplete-vs-later-sections",
+      "severity": "LOW",
+      "disposition": "addressed_in_R2_plan"
+    },
+    {
+      "findingKey": "deployment-v1-arrays-have-no-budget-degradation-rule",
+      "severity": "LOW",
+      "disposition": "addressed_in_R2_plan"
+    }
+  ],
+  "leadRoutingDecisionQuestion": "48427c93-b493-4928-bc37-654c667b0b66",
+  "remaining": "R2 APPROVED; 3 MEDIUM + 2 LOW retained in follow-ups.md"
+}

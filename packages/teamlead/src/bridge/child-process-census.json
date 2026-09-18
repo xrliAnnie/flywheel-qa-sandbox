@@ -332,6 +332,11 @@
 			"disposition": "observed_async_lifecycle"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/shuttle-observation-projector.ts",
+			"sync_child": 1,
+			"disposition": "bridge_bounded_sync_receipt"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
 			"sync_child": 1,
 			"sync_marker": 1,

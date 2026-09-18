@@ -1,0 +1,54 @@
+{
+  "issue": "FLY-2669",
+  "observedAt": "2026-09-17T20:08:51.507273+00:00",
+  "method": "read-only production configuration lookup; no messages sent",
+  "primary": {
+    "project": "flywheel",
+    "agentId": "flywheel-eng-lead",
+    "chatChannel": "1516209714097291335",
+    "unique": true,
+    "validSnowflake": true
+  },
+  "originProjects": [
+    {
+      "projectName": "geoforge3d",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    },
+    {
+      "projectName": "joycon-typeless",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    },
+    {
+      "projectName": "personal-assistant",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    },
+    {
+      "projectName": "growth",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    },
+    {
+      "projectName": "flywheel",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    },
+    {
+      "projectName": "tidal-echo",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    },
+    {
+      "projectName": "raya",
+      "primaryResolvable": true,
+      "explicitSecondary": false
+    }
+  ],
+  "limits": [
+    "does not prove bot permissions or Discord delivery",
+    "does not install binding or change production configuration",
+    "implementation and isolated end-to-end QA remain required"
+  ]
+}

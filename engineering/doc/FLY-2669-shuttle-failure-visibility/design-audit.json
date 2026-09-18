@@ -1,0 +1,96 @@
+{
+  "issue": "FLY-2669",
+  "phase": "design",
+  "checks": [
+    {
+      "requirement": "design_only",
+      "evidence": "git diff contains only issue doc folder",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "plan_only",
+      "evidence": "exploration/research findings integrated in plan.md",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "stable_unit_and_cycle_ids",
+      "evidence": "plan section three",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "all_current_deploy_consumers",
+      "evidence": "plan source audit and producer tasks",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "outcomes_aggregate",
+      "evidence": "plan results table and partial_failure reducer",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "utc_dedup_recovery",
+      "evidence": "plan section four and fixture matrix",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "founder_awareness",
+      "evidence": "second evaluated scheduled failure; expected skip neutral",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "primary_route",
+      "evidence": "Lead decision 48427c93 and route-audit.json",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "no_new_scheduler_restart",
+      "evidence": "existing cadence; original deployment rc/ordering preserved",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "historical_replay",
+      "evidence": "2026-09-17 12:06 fixture spec; implementation still pending",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "html_comments",
+      "evidence": "verify-founder-html.mjs PASS",
+      "scope": "design contract, not implementation proof"
+    },
+    {
+      "requirement": "diagrams",
+      "evidence": "two local attempts per diagram failed; source and explicit placeholder retained",
+      "scope": "design contract, not implementation proof"
+    }
+  ],
+  "planSha256": "95f8ca8a87061e95e15cbe2ef0b62eb0dcac92218db39885d50c99b68eb8b5a4",
+  "review": {
+    "questionId": "cef0cde6-ca8a-473a-8fd5-fabbf4aff6f2",
+    "requestId": "f21ab753-cde4-41c0-8f5e-dbe5223892ea",
+    "status": "APPROVED",
+    "advisories": 5
+  },
+  "publication": {
+    "url": "https://fw-reports-42fba7.vercel.app/r/841ccb02cfb362b4a36f1b9fd1ce7e2a/",
+    "reportId": "841ccb02cfb362b4a36f1b9fd1ce7e2a",
+    "publishOnly": true,
+    "delivered": false,
+    "messageId": null,
+    "verifiedAt": "2026-09-17T20:16:41.036166+00:00",
+    "checks": {
+      "http200": true,
+      "placeholderAbsent": true,
+      "singleScript": true,
+      "cspNonceMatches": true,
+      "scriptEqualsCommittedLocal": true,
+      "comments": 8,
+      "noExternalAssets": true,
+      "noInlineHandlers": true,
+      "diagramPendingPlaceholders": 2
+    },
+    "hostedSha256": "30d53244e7b0f93766293fa2cac3680bb478cdd1384bce92390401fe52aaf778",
+    "browserVisualQA": "unavailable; local Chromium launch denied"
+  },
+  "handoff": "all artifacts/review/publication/report verified; exact phase_design_complete command is next; its Bridge receipt is authoritative",
+  "leadHtmlReportId": "e8a4e240-c0e8-422a-8dbb-5ef242e83d7d"
+}

@@ -833,6 +833,11 @@ import {
 } from "./ship-relevant-diff.js";
 import { forceShippedHusks } from "./shipped-husk-escalation.js";
 import {
+	createShuttleDeliveryRecorder,
+	createShuttleObservationExportReader,
+	createShuttleObservationProjector,
+} from "./shuttle-observation-projector.js";
+import {
 	resolveActiveSnapshotOwner,
 	runSnapshotMaintenance,
 } from "./snapshot-closeout.js";
@@ -7121,6 +7126,8 @@ export async function startBridge(
 								history: store.getEpicPageFreshness(projectName),
 								publication: store.getEpicPagePublication(projectName),
 							}),
+							readDeployment: (projectName) =>
+								store.getShuttleDeploymentProjection(projectName),
 							generatePage: generateAttentionEpicPage,
 							buildReceipt: buildEpicPageRenderReceipt,
 							now: () => new Date(),
@@ -7141,6 +7148,30 @@ export async function startBridge(
 		projects,
 		linearApiKey: config.linearApiKey,
 		runAttempt: runEpicPageRefreshAttempt,
+	});
+	const shuttleObservationScriptPath = resolve(
+		dirname(fileURLToPath(import.meta.url)),
+		"..",
+		"..",
+		"..",
+		"..",
+		"scripts",
+		"lib",
+		"shuttle-observation.py",
+	);
+	const shuttleFlywheelHome =
+		process.env.FLYWHEEL_HOME?.trim() || join(homedir(), ".flywheel");
+	const shuttleObservationProjector = createShuttleObservationProjector({
+		store,
+		projects: projects.map((project) => project.projectName),
+		readExport: createShuttleObservationExportReader({
+			scriptPath: shuttleObservationScriptPath,
+			flywheelHome: shuttleFlywheelHome,
+		}),
+		requestRefresh: (projectName, reason) =>
+			epicPageRefresher.requestRefresh(projectName, reason),
+		everyNTicks: 20,
+		log: (message) => console.warn(message),
 	});
 	const reportBlobSweepTimer = installReportBlobSweep({
 		credentials: reportHostingCredentials,
@@ -12055,7 +12086,11 @@ export async function startBridge(
 			enqueueIssueDisplayRefresh(issueId);
 			epicPageRefresher.requestRefresh(projectName, "founder_attention");
 		},
-		onEpicIntakeTick: () => epicIntakeScheduler.tick(),
+		onEpicIntakeTick: () =>
+			Promise.all([
+				epicIntakeScheduler.tick(),
+				shuttleObservationProjector.tick(),
+			]).then(() => undefined),
 		pollIntervalMs: 3_000,
 		recordSpan: (name, startMs, endMs) =>
 			eventLoopAttribution.recordSpan(name, startMs, endMs),
@@ -12807,6 +12842,10 @@ export async function startBridge(
 		claimsReader,
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
+		shuttleDeliveryRecorder: createShuttleDeliveryRecorder({
+			scriptPath: shuttleObservationScriptPath,
+			flywheelHome: shuttleFlywheelHome,
+		}),
 		unifiedAlert,
 		...(alertRatePerMin
 			? { rateLimiter: createAlertRateLimiter(alertRatePerMin) }

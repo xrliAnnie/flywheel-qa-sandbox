@@ -13,7 +13,12 @@ import type { EpicHistory } from "../ship-judgment/epic-history.js";
 import { type AttentionInput, buildAttention } from "./attention.js";
 import { buildFreshness } from "./freshness.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS } from "./lead-note.js";
-import type { EpicIntakeValue, EpicPageV1, EpicPageV2 } from "./model.js";
+import type {
+	EpicIntakeValue,
+	EpicPageV1,
+	EpicPageV2,
+	ShuttleDeploymentView,
+} from "./model.js";
 import {
 	assertEpicPage,
 	type Cell,
@@ -33,6 +38,7 @@ import {
 import type { EpicPageItemSignals } from "./signals.js";
 
 export interface GenerateEpicPageInput {
+	deployment?: ShuttleDeploymentView;
 	intakes?: EpicIntakeRecord[];
 	childThreads?: Map<string, Cell<string>>;
 	shipJudgmentHistory?: EpicHistory;
@@ -594,6 +600,22 @@ function generatePage(
 			),
 		},
 		items,
+		...(input.deployment
+			? {
+					deployment: {
+						value: input.deployment,
+						observed_at: generatedAt,
+						...(input.deployment.observedAt
+							? { source_updated_at: input.deployment.observedAt }
+							: {}),
+						provenance: {
+							kind: "statestore" as const,
+							table: "shuttle_unit_projection",
+							key: { project_name: input.projectName },
+						},
+					},
+				}
+			: {}),
 		...(input.shipJudgmentHistory
 			? {
 					ship_judgment_history: {
