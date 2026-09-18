@@ -1,13 +1,13 @@
 ---
 issue: FLY-2523
-phase: design
-phaseCursor: 2/4
-updated: 2026-09-18T16:56:27.451Z
-nextStep: Commit the R1 isolation corrections and open a fresh R2 design review
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-18T17:03:19.575Z
+nextStep: Add failing slot alert, cycle isolation, rider, and test-deploy opt-in tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: design (2/4)
-**next**: Commit the R1 isolation corrections and open a fresh R2 design review
+**phase**: implement (1/6)
+**next**: Add failing slot alert, cycle isolation, rider, and test-deploy opt-in tests
