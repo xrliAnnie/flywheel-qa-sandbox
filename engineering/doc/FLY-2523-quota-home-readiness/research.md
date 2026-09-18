@@ -87,3 +87,20 @@ Lead已创建FLY-2729（FLY-2072下，High）处理Lead daemon换代/新token生
 ## 最终验收边界裁定
 
 Lead通过aa341d63批准桌面凭据证明另单；2523只证注册home，global unknown原样保留，本单不开flag。2729不可变QA收据合同获采纳。本单仍修复Raya credential roster及registered resident证据路径，不开启Raya patrol、不改lease语义、不触碰活app-server。独立开关必须同时解决2729与桌面权威，再重验global。本节和plan §1/§6取代前文调查期间的开关范围。
+
+## 529 房返工代码事实（2026-09-18）
+
+| Source | 基线 `2bd9a1ed7` 行为 | 返工后果 |
+|---|---|---|
+| `scripts/codex-home-reconcile-cycle.mjs:211-232,268-288` | severe 与 warning 都传固定 `flywheel/flywheel-eng-lead` | cycle 需要只在显式 slot 模式下改用受约束的 slot tuple；生产默认参数不改 |
+| `scripts/lead-alert.sh:476-487` | `codex_home_migration_overdue` 拒绝非生产 tuple | 增加第二个 fail-closed 分支：slot tuple 必须与隔离根编号、projects 单一绑定一致 |
+| `scripts/lead-alert.sh:500-513` | dedicated kind 只取绑定 Lead 的 `alertChannel`，忽略 unified destination | 保留这一点；slot 同样只取其 Lead 行，不接受 caller 任意 channel |
+| `scripts/lead-alert.sh:874-879` | 未传 `--mention-user` 时 payload 是 `allowed_mentions:{parse:[]}` | driver 必须走该真实 payload，并对 severe/warning 两条都断言空 mention |
+| `scripts/test-deploy.sh:2112-2115` | 每个 slot 最后一项都强制 `FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=0` | 改为默认 0、显式 `--codex-home-reconcile --alerts` 才为 1；ambient env 仍不能翻开 |
+| `plugin.ts:11933-11940` / rider | stateRoot 固定 `homedir()/.flywheel` | rider 改读已经过 slot contract 重定向的 `FLYWHEEL_STATE_DIR`；生产未设置时仍取原路径 |
+| `cycle.mjs:353-400` | stateRoot 与 roster homeDir 都由 HOME 派生 | slot 需要分别使用受隔离校验的 `FLYWHEEL_STATE_DIR` 与 fixture homeDir；生产默认不变 |
+| `scripts/lib/qa-room.sh:87-100` | `--alerts` 已把 slot channel/token 写进 slot projects Lead 行 | 直接复用，不新增第二套频道配置 |
+
+生产频道阴性不能只比较当前一个常量。slot emitter 将读取 canonical `${HOME}/.flywheel/projects.json`，收集 production projects 内的 Discord snowflake 频道字段；生产配置缺失、不可解析或 slot channel 与任一生产频道相同都 fail closed。测试用独立 HOME 中的 production projects fixture 证明该 guard，不读取或修改真实配置。
+
+可复现驱动使用独立的 slot 子目录，保留实际 slot projects 与 `.env` 的 Lead/token 绑定；roster/policy/home/state/process-manager 都是该子目录 fixture。severe 通过一个超过一天、无满足 receipt 的 obligation 触发；warning 通过同一 obligation 下的上游 policy failure 触发。这样验证的是 cycle 的两个分支与真实 shell payload，而不是手工伪造两条 Discord 文本。

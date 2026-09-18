@@ -44,3 +44,16 @@ Lead 非阻塞问题 e451c20d-d6d2-4d95-b601-358e30ac4c5a：四家 managed + N=1
 ## 更新裁定（问题83649a39）
 
 Lead明确把正式注册的raya/raya、.codex-raya纳入，当前共五家。清单改为两家Runner明确policy加注册Codex Lead派生，不硬编码数量；无法确认的live home立即告警且readiness失败。已满足的活跃home允许只读already-satisfied（不调用迁移），需要写入的活跃home仍skipped。原四家提案保留为探索历史，以plan最终合同为准。
+
+## 2026-09-18 529 房返工增量
+
+Lead 返工 `rework:0557b89044f3bbe04f3c8bc42c497efe19a90ca185a54d0165e872ea8bc388ef` 已明确批准所需形状：不重做既有 reconciliation，只补 slot 中可见的真实告警证据。当前失败链是三重叠加：cycle 把 `--project/--lead` 固定为生产 tuple；shell emitter 对该 kind 只接受生产 tuple；test-deploy 无条件关闭 rider，且 rider/cycle 默认根会回落到宿主 HOME。
+
+采用窄的显式 slot 模式，而不是放宽生产路由：
+
+1. slot 必须声明 `/tmp/flywheel-test-slot-N` 隔离根、`test-slot-N` project、绑定 Lead、slot projects 文件及 slot-local state/queue/claims/dead-letter；任一坐标越界即 `config_error`。
+2. 告警频道只从该 projects 行的 Lead `alertChannel` 读取；再读取 canonical `${HOME}/.flywheel/projects.json` 的生产频道集合，任何碰撞都拒绝。生产模式继续只接受 `flywheel/flywheel-eng-lead`，不接受 slot override。
+3. test-deploy 只在显式 `--codex-home-reconcile` 且同时 `--alerts` 时打开 rider，并预写当前 schedule 使 Bridge 启动不自动发测试噪音；默认 slot 行为仍关闭。
+4. 提供 slot-local 驱动，分别构造 overdue obligation 和上游 policy failure，通过真实 cycle + shell emitter 发 severe、warning 两条；二者都不传 mention，Discord payload 的 `allowed_mentions.parse` 必须为空。
+
+拒绝的方案：仅在 QA 脚本里直接 curl（绕过被测路由）；允许任意 env channel（无法证明生产频道拒绝）；让所有 `--alerts` slot 自动开 rider（会在无 fixture 时制造启动噪音）。

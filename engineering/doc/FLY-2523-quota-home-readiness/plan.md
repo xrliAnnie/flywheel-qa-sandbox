@@ -238,3 +238,52 @@ MEDIUM keyed-home-no-drain-window：不虚构当前implement的自然空闲频�
 作者本轮lsof只读核查：PID1612 executable=/Applications/ChatGPT.app/Contents/Resources/codex，codesign身份OpenAI OpCo/2DC432GLL2；打开canonical目录下logs_2.sqlite、queue_1.sqlite与tmp/arg0/.../.lock。这些证明其使用该状态目录，但不独立证明其内存凭据来源/账号chain。SQLite还可经CODEX_SQLITE_HOME搬离CODEX_HOME；官方auth支持file/keyring/auto/ephemeral，不能仅凭路径或缺环境变量推凭据authority。源码目前没有desktop credential attestation adapter。未读取token、未给活app-server发RPC或重启。
 
 Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负责，本单只证已注册home；全局桌面unknown仍原样展示，开flag移至独立受控动作并同时依赖FLY-2729与桌面权威证明。§6/T5/T6落实该裁定，既不排除桌面进程也不谎称通过。Lead同时采纳2729不可变证据+accepted qa_passed claim合同。该答复不是server review-ruling；R1的HIGH仍记录，交R2核对修订后的范围和设计。
+
+## 14. 返工实施计划：529 slot 告警实发
+
+本节是 Lead attempt 2 对已批准实现的窄增量，基线为 `2bd9a1ed77dcbabb8802a052303ba394f06544a7`。不改变第1–13节的生产 reconciliation、roster、readiness、flag 或启动边界；只让显式 529 slot 用自己的测试频道验证告警。
+
+### Task 1：先锁定 shell 路由三条回归
+
+**Files:** `scripts/__tests__/codex-home-migration-alert.test.sh`, `scripts/lead-alert.sh`
+
+- [ ] 在现有 HTTP 捕获器测试中先加入 slot→测试频道正例、slot→生产频道拒绝、生产模式硬钉不变三条断言；两条成功 payload 都断言 `allowed_mentions.parse == []`。
+- [ ] 运行 `bash scripts/__tests__/codex-home-migration-alert.test.sh`，确认新增 slot 正例先因固定 production tuple 失败，错误原因准确。
+- [ ] 最小实现显式 `FLYWHEEL_CODEX_HOME_RECONCILE_SLOT=1` 分支：要求隔离根为 `/tmp/flywheel-test-slot-N`、state/projects/queue/dead-letter/claims 均在根内、project 为同编号 `test-slot-N`、Lead 等于 `TEAMLEAD_DEFAULT_LEAD_AGENT` 且在 projects 中唯一；频道仍只取该 Lead 的 `alertChannel`。
+- [ ] slot 分支读取 canonical `${HOME}/.flywheel/projects.json` 的生产频道集合；缺失/坏 JSON/频道碰撞全部 `config_error` 且零 POST。非 slot 分支保留 `flywheel/flywheel-eng-lead` 守卫和现有 channel/token 选择。
+- [ ] 重跑同一 focused shell suite 到绿。
+
+### Task 2：把 cycle/rider 坐标限制在 slot
+
+**Files:** `packages/teamlead/src/bridge/codex-home-reconcile-rider.ts`, `packages/teamlead/src/bridge/__tests__/codex-home-reconcile-rider.test.ts`, `packages/teamlead/src/bridge/plugin.ts`, `scripts/codex-home-reconcile-cycle.mjs`, `scripts/__tests__/codex-home-reconcile-cycle.test.sh`
+
+- [ ] 先加失败测试：rider 使用显式 slot state root；cycle 在 slot 模式把 severe/warning 的 project/lead 参数改为 slot tuple；越界 state/home/projects 或非 `test-slot-N` tuple 必拒；生产未设置 slot 时仍输出固定 production tuple。
+- [ ] 分别运行 `pnpm --filter @cyrus/teamlead exec vitest run src/bridge/__tests__/codex-home-reconcile-rider.test.ts --maxWorkers=1` 与 `bash scripts/__tests__/codex-home-reconcile-cycle.test.sh`，观察缺少 slot 能力导致的红。
+- [ ] 最小实现：plugin 优先使用 `FLYWHEEL_STATE_DIR`；cycle 生产默认保持 HOME 派生，只有显式 slot 模式才接受受隔离根约束的 state/home/alert tuple；alert args 从一次解析后的 route 生成，两个 severity 分支共用，避免分叉。
+- [ ] 重跑两条 focused suite 到绿，再运行 `pnpm --filter @cyrus/teamlead exec vitest run src/bridge/__tests__/codex-home-reconcile-rider.test.ts --maxWorkers=1` 的生产默认反例。
+
+### Task 3：显式 test-deploy opt-in 与两消息驱动
+
+**Files:** `scripts/test-deploy.sh`, `scripts/qa-fly-2523-529-alerts.sh`, `scripts/__tests__/codex-home-reconcile-cadence.test.sh`, `scripts/__tests__/codex-home-migration-alert.test.sh`
+
+- [ ] 先给 test-deploy source/harness 加失败断言：默认最后仍注入 enabled=0；`--codex-home-reconcile` 未同时 `--alerts` 立即拒绝；二者同时存在才注入 enabled=1、slot mode、slot project/Lead，并预写当前 schedule 防启动噪音。
+- [ ] 编写 driver：只接受正整数 slot；校验 live slot 与 mode-0600 projects/.env；在 `${slotRoot}/state/fly2523-alert-driver` 下创建 policy/runner marker/migration state/stub，不触碰生产 home；先跑 overdue severe，再用坏 policy 跑 upstream warning；输出两个严格 delivery receipt 与 message id。
+- [ ] 用现有本地 HTTP 捕获器执行 driver fixture，断言 exactly two POST、severity severe/warning、目标均为 slot channel、`allowed_mentions.parse=[]`；将 slot channel 改为 production channel 后必须零 POST。
+- [ ] 运行 `bash scripts/__tests__/codex-home-reconcile-cadence.test.sh` 与 `bash scripts/__tests__/codex-home-migration-alert.test.sh` 到绿。
+
+### Task 4：范围回归、文档、同头复审
+
+**Files:** 以上修改、`engineering/doc/FLY-2523-quota-home-readiness/{exploration,research,plan,progress}.md`, `engineering/doc/milestones/FLY-2523.md`
+
+- [ ] 运行 formatter/lint、`pnpm -r build`、FLY-2523 affected vitest/shell suites及 test-deploy 静态/fixture suite；遵守 Lead 边界，不运行本地 `pnpm test:packages:run`。
+- [ ] grep 证明没有新增 launchd/plist/crontab/cron，且没有 feature flag 写入、生产 home mutation 或 restart 代码。
+- [ ] 更新 milestone 为返工 HEAD 的精确证据并作为字面最后提交；push feature branch，不 force push。
+- [ ] 对同一最终 HEAD 发起新的 code review gate/request；CHANGES 则修复并新开 gate，APPROVED 后仅报告 advisories。
+- [ ] 核对 PR #1260 的 head/CI；通过 `ask --report` 回执完整 `[lead-instruction 96ea4fad-f9ea-4b97-ba03-27a460eca6dd]`，然后执行 `complete --route needs_review --pr 1260`。不派 QA、不 merge、不 deploy、不重启、不翻 flag。
+
+### 返工计划自检
+
+- 三条指定路由回归各有独立测试，不把 driver 成功替代生产硬钉阴性。
+- severe 与 warning 都走同一实际 cycle/emitter；没有直接 curl 伪证。
+- 所有新写入仅在 worktree 或 `/tmp/flywheel-test-slot-N`；生产配置只读用于 channel collision guard。
+- 本节无 TBD/TODO，无新增调度器，也未扩展到 QA 截图、生产激活或真实 home。
