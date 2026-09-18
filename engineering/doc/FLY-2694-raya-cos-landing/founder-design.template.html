@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2694 cos 搬进 Flywheel — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Helvetica Neue",sans-serif; line-height:1.55; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:22px; }
+  .sub code { font-family:"SF Mono",Menlo,monospace; color:#1a365d; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:0 0 18px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; } .card.amber { border-left-color:#ff9500; } .card.green { border-left-color:#34c759; } .card.purple { border-left-color:#af52de; } .card.gray { border-left-color:#86868b; } .card.navy { border-left-color:#1a365d; }
+  .card h2 { font-size:18px; margin:0 0 10px; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; margin-right:6px; vertical-align:middle; }
+  .badge.new { background:#e9f9ee; color:#1f8a3b; } .badge.update { background:#fff4e5; color:#b85c00; } .badge.candidate { background:#f5e9fb; color:#7a2ea8; } .badge.urgent { background:#ffe9e7; color:#c0271d; } .badge.medium { background:#f2f2f7; color:#5c5c61; }
+  p { margin:8px 0; }
+  ul { margin:6px 0 6px 20px; padding:0; } li { margin:4px 0; }
+  ol { margin:6px 0 6px 22px; padding:0; } ol li { margin:6px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid #eee; padding:7px 8px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; font-weight:600; }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:13px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .note { color:#86868b; font-size:13px; }
+  .diagram { margin:12px 0 4px; padding:10px; background:#fafafa; border:1px solid #e5e5ea; border-radius:10px; overflow-x:auto; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:13px; color:#86868b; margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; box-sizing:border-box; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fff; }
+  .comment textarea:focus { outline:none; border-color:#007aff; box-shadow:0 0 0 3px rgba(0,122,255,.15); }
+  .summary pre { background:#f2f2f7; color:#1d1d1f; white-space:pre-wrap; word-break:break-word; padding:12px 14px; border-radius:8px; font-size:13px; }
+  .btn { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#f2f2f7; color:#1d1d1f; }
+  .status { font-size:13px; color:#86868b; margin-left:4px; }
+  .chunk { margin:10px 0; padding:10px; border:1px solid #e5e5ea; border-radius:8px; }
+  .quad { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:12px 0 4px; }
+  .q { border-radius:10px; padding:14px 16px; background:#fafafa; border-top:3px solid #007aff; }
+  .q.move { border-top-color:#34c759; } .q.keep { border-top-color:#007aff; } .q.guard { border-top-color:#ff9500; } .q.card4 { border-top-color:#af52de; }
+  .q .lbl { font-size:12px; font-weight:700; letter-spacing:.04em; color:#86868b; text-transform:uppercase; }
+  .q .big { font-size:19px; font-weight:700; margin:4px 0 2px; color:#1d1d1f; }
+  .q .small { font-size:13px; color:#5c5c61; }
+  .legend span { display:inline-block; font-size:12px; padding:1px 8px; border-radius:6px; margin-right:6px; border:1px solid #ccc; }
+  @media (max-width:600px){ .quad { grid-template-columns:1fr; } .card { padding:16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2694 把 Raya 的「业务大脑」搬进 Flywheel — S1 设计</h1>
+  <div class="sub">Issue FLY-2694 · 2026-09-17 · Epic FLY-2679 的第一张子单 · 只设计,不改代码 · plan v3,Codex 三轮评审 7 → 4 → <b>APPROVED</b>,全部采纳无驳回</div>
+
+  <!-- 1 一句话 -->
+  <div class="card green" data-section="一句话">
+    <h2><span class="badge new">第一屏</span>一句话</h2>
+    <p>把 Raya 仓里那个零依赖的包 <code>packages/cos</code>(她的<span class="term">业务大脑</span>,即处理日报、summary、目标跟踪等业务逻辑的代码)<b>原样</b>复制进 Flywheel 仓,改名 <code>flywheel-raya-cos</code>,接上 Flywheel 自己的测试与 CI;<b>除此之外不改任何既有文件,不部署,Raya 今天怎么跑明天还怎么跑。</b></p>
+    <div class="quad">
+      <div class="q move"><div class="lbl">搬什么</div><div class="big">120 个文件,一个字节不改</div><div class="small">来源钉死在 Raya 仓的一个精确版本(<code>90e433e8</code>)。搬家时逐文件对照指纹,多一个、少一个、改一个字节都会被拦下。</div></div>
+      <div class="q keep"><div class="lbl">怎么接</div><div class="big">零改动自动接入</div><div class="small">Flywheel 认包只看两件事:目录在 <code>packages/</code> 下、包里有 <code>test:run</code> 这个脚本名。补上这一行,workspace、CI、package-gate 三个地方就都自动认得它。</div></div>
+      <div class="q guard"><div class="lbl">守卫</div><div class="big">两份测试锁住合同</div><div class="small">「零运行时依赖」「只放松一个编译开关」「不进客户打包闭包」「三条命令行行为不变」——都变成会红的测试,不靠约定。</div></div>
+      <div class="q card4"><div class="lbl">你要按几次</div><div class="big">1 张 ship 卡</div><div class="small">就是合并这一个 PR。<b>没有任何授权动作</b>:不停旧壳、不迁数据、不换人设、不碰 launchd。那些都在后面的子单里。</div></div>
+    </div>
+    <p class="note">名词:<span class="term">ship 卡</span>= 你在 Discord 上按的合并按钮。<span class="term">workspace</span>= pnpm 管理的「这个仓里有哪些包」清单。<span class="term">package-gate</span>= Flywheel 本地/CI 逐包跑测试并出回执的脚本。<span class="term">CI light shard</span>= CI 里跑「轻量包」测试的那条车道。</p>
+    <div class="comment"><label for="c1">你的意见(自动存在本机浏览器)</label><textarea id="c1" data-key="s1" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 2 核心流程 -->
+  <div class="card navy" data-section="核心流程">
+    <h2><span class="badge medium">怎么做</span>核心流程:六步施工,三个 commit</h2>
+    <div class="diagram"><!--SVG:flow--></div>
+    <p class="legend"><span style="background:#f5e9fb;border-color:#af52de">来源</span><span style="background:#fff;border-color:#007aff">施工步骤</span><span style="background:#e9f9ee;border-color:#34c759">commit</span><span style="background:#fff4e5;border-color:#ff9500">证据 / 门</span></p>
+    <ul>
+      <li><b>C1 落盘</b>:临时克隆 Raya 仓(<b>不碰</b>生产机器上的 Raya checkout),按钉死的版本复制;脚本自己算每个文件的指纹跟来源对照,对不上就停。</li>
+      <li><b>C2 / C3</b>:写两份很小的配置文件(包名、脚本、编译选项)和 README 里的来源说明。</li>
+      <li><b>C4 守卫</b>:一份在包内(合同不变量),一份在仓根跑<b>构建出来的</b>命令行(三条行为)。CI 里只在既有的一个 step 末尾追加一行,<b>不新增 step</b>——因为 Flywheel 有一个「CI 结构守卫」会拒绝任何新 step(Codex 第一轮抓到的)。</li>
+      <li><b>C5 lockfile</b>:pnpm 的依赖锁文件必须多一段(否则 CI 的 <code>--frozen-lockfile</code> 直接拒绝);我实测它只多 12 行、零新依赖解析。</li>
+      <li><b>三个 commit</b>:①搬运、②守卫(<b>这是「被测版本」</b>)、③证据。顺序是先推 ② 等 CI 跑完记下链接,再推 ③——因为 CI 对同一个 PR 会「新的取消旧的」,一起推就拿不到 ② 的证据(Codex 第二轮抓到的)。</li>
+    </ul>
+    <div class="comment"><label for="c2">你的意见</label><textarea id="c2" data-key="s2" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 3 结构模型 -->
+  <div class="card" data-section="结构模型">
+    <h2><span class="badge medium">长什么样</span>结构模型:新增什么、改了什么、谁会认它</h2>
+    <div class="diagram"><!--SVG:model--></div>
+    <p class="legend"><span style="background:#e9f9ee;border-color:#34c759">新增</span><span style="background:#fff4e5;border-color:#ff9500">修改(仅两处)</span><span style="background:#fff;border-color:#007aff">Flywheel 既有机制</span><span style="background:#f2f2f7;border-color:#86868b">未来(S2)</span></p>
+    <table>
+      <tr><th style="width:34%">路径</th><th style="width:12%">状态</th><th>说明</th></tr>
+      <tr><td><code>packages/raya-cos/src/**</code></td><td>新增 120</td><td>上游原样;另加 1 份守卫测试 <code>package-contract.test.ts</code></td></tr>
+      <tr><td><code>packages/raya-cos/{package.json, tsconfig.json, README.md}</code></td><td>新增 3</td><td>Flywheel 口径的包描述、编译选项、来源说明</td></tr>
+      <tr><td><code>scripts/__tests__/raya-cos-cli-dist.test.mjs</code></td><td>新增 1</td><td>跑构建产物的三条命令行行为(Raya 仓原来那份校验脚本的替代)</td></tr>
+      <tr><td><code>.github/workflows/ci.yml</code></td><td><b>修改</b></td><td>一个既有 step 末尾追加一行</td></tr>
+      <tr><td><code>pnpm-lock.yaml</code></td><td><b>修改</b></td><td>多一个 importer 条目(+12 行)</td></tr>
+    </table>
+    <p><b>全部变更就这些。</b>设计里有一段脚本把这张表变成机器检查:任何删除、改名、第三个被修改的文件、包目录里多塞的文件,都会让它输出 FAIL。这就是工单判据「全程未触碰任何 raya / updater 脚本」的证据形式。</p>
+    <div class="comment"><label for="c3">你的意见</label><textarea id="c3" data-key="s3" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 4 上游没核到的一件事 + 取舍 -->
+  <div class="card amber" data-section="一件上游没核到的事与取舍">
+    <h2><span class="badge update">取舍</span>一件上游方案没核到的事,以及我怎么选的</h2>
+    <p>上游方案(FLY-2680)说「编译配置改成继承 Flywheel 的公共配置就行」。我真的把包放进去试编译了一次:<b>报 170 个类型错误,分布在 26 个文件里</b>。原因只有一个——Flywheel 的公共配置开了一个 Raya 仓没开的严格开关(<span class="term"><code>noUncheckedIndexedAccess</code></span>,意思是「数组取元素时编译器强迫你先考虑取不到的情况」)。把这一个开关在本包关掉,<b>170 → 0</b>;其它所有严格开关这个包本来就全过。</p>
+    <table>
+      <tr><th style="width:30%">选项</th><th style="width:14%">结论</th><th>理由</th></tr>
+      <tr><td><b>A. 包级只关这一个开关,源码不动</b></td><td><b>采用</b></td><td>这是 Raya 那边原本的编译语义,不是放松;120 个文件保持字节不改,来源可核;后续子单 S3 删 Raya 仓副本时还能逐文件对照。Flywheel 里此前没有包这么做过,所以用测试把「只关这一个」锁死,并在 README 写明原因。</td></tr>
+      <tr><td>B. 改 26 个文件 170 处让它满足全部开关</td><td>不采用</td><td>破坏「原样搬运」;S3 时两边对不上;而且这是纯类型加固,与「搬家」无关——如果要做,应在 S3 之后单开一张单。</td></tr>
+      <tr><td>C. 不继承公共配置,自带一份完整编译配置</td><td>不采用</td><td>能编过,但会让这个包在 Flywheel 里成为唯一一个「不跟公共配置走」的包,以后公共配置的任何调整都漏掉它。</td></tr>
+    </table>
+    <p class="note">Codex 评审时用等价的编译参数独立复现了 170 / 0 这条分界。</p>
+    <div class="comment"><label for="c4">你的意见</label><textarea id="c4" data-key="s4" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 5 评审 -->
+  <div class="card purple" data-section="评审抓到了什么">
+    <h2><span class="badge candidate">评审</span>Codex 三轮抓到了什么(全部采纳)</h2>
+    <table>
+      <tr><th style="width:10%">轮次</th><th style="width:18%">结论</th><th>抓到的要点</th></tr>
+      <tr><td>R1</td><td>7 条,3 阻断</td><td>① CI 里新开 step 会被「CI 结构守卫」拒绝 → 改成在既有 step 追加一行;② 「没碰 raya 脚本」的检查可以被<b>删除或改名</b>绕过 → 改成先拒绝一切非新增/非修改状态;③ lockfile 的「零新依赖」检查必误报 → 改成解析后做结构比较;另有 README 措辞、脚本不自包含、守卫可被语法变体绕过、证据与 commit 的时间环 4 条。</td></tr>
+      <tr><td>R2</td><td>4 条,2 阻断</td><td>① README 新文案里还含被禁止的字样,自己的收尾检查必红;② 包目录内部还能夹带文件(Codex 用合成 diff 证明);③ 「先推 ② 等 CI 再推 ③」的顺序没写死;④ 两处机械精确性。</td></tr>
+      <tr><td>R3</td><td><b>APPROVED</b></td><td>无新问题;Codex 实跑了边界脚本的正反例、CI 两条守卫、lockfile 比较。</td></tr>
+    </table>
+    <div class="comment"><label for="c5">你的意见</label><textarea id="c5" data-key="s5" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 6 边界 -->
+  <div class="card gray" data-section="诚实边界">
+    <h2><span class="badge medium">诚实边界</span>这张单做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>把包搬进来、接上测试与 CI、提交依赖锁文件、留下来源与证据。</li>
+      <li>工单五条判据每条都有对应的机器证据(测试全绿、package-gate 回执含包名、CI 车道日志含包名、全仓 build/typecheck/lint 绿、边界脚本 OK)。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li><b>不让 Raya 用上它。</b>调用入口(宿主转接脚本)是 S2;人设投影是 S4;Raya 仓删旧包是 S3。搬完之后 Raya 的行为<b>零变化</b>。</li>
+      <li><b>不碰</b>任何 updater / raya 脚本、不改 launchd、不重启、不进客户打包闭包(上游裁定 Raya 是你自托管宿主独有的 Lead)。</li>
+      <li><b>不改</b>搬来的任何测试文件;原来 Raya 仓校验脚本里「空工作区 status 返回空列表」这一条没被现有测试覆盖,由新加的命令行测试补上。</li>
+    </ul>
+    <h3>现场事实(与本单无关,只记录)</h3>
+    <ul>
+      <li>旧壳 <code>com.xrli.raya.brain</code> 已于 2026-09-17T22:01Z 由 Lead 按你的指示停用。本单不部署、不重启,与此无关;后面 S2 / T6 的人要把上游方案里「停旧 Raya」读成「复核仍为停用」。</li>
+      <li>FLY-2657(PR #1241)独立推进;本单与它零文件交集,互不等待、互不阻挡。</li>
+      <li>上游方案 §14 那六条「评审后未经复核的修订」我逐条核对过:全落在 S3 / S4 / 授权账本 / 割接窗口,<b>没有一条涉及本单</b>。PR 描述里会写明。</li>
+      <li>Linear 接口本次会话鉴权失败(401),Epic 正文没读到;工单已把判据原文抄给本单,足够施工。</li>
+    </ul>
+    <div class="comment"><label for="c6">你的意见</label><textarea id="c6" data-key="s6" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 汇总 -->
+  <div class="card summary" data-section="汇总">
+    <h2><span class="badge medium">汇总</span>把你的意见一次性复制给我</h2>
+    <p class="note">上面每一节的意见都存在你这台设备的浏览器里。点下面的按钮复制,贴回 Discord 给我就行。复制出来的第一行固定是 <code>【页面意见汇总】FLY-2694</code>,它表示「有修订意见」,不是通过信号。</p>
+    <div id="summaryChunks"></div>
+    <button class="btn" id="copyAll" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clearAll" type="button">清空本页意见</button>
+    <span class="status" id="copyStatus"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2694';
+  var MARK = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2694-comments:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(PREFIX + k); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(ta) {
+    var card = ta.closest('.card');
+    return card && card.getAttribute('data-section') ? card.getAttribute('data-section') : ta.getAttribute('data-key');
+  }
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return parts;
+  }
+  function chunk(parts) {
+    var chunks = [], cur = MARK;
+    parts.forEach(function (p) {
+      var next = cur + '\n' + p;
+      if (next.length > LIMIT && cur !== MARK) { chunks.push(cur); cur = MARK + '\n' + p; }
+      else cur = next;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  function render() {
+    var box = document.getElementById('summaryChunks');
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var parts = collect();
+    var chunks = chunk(parts);
+    chunks.forEach(function (c, i) {
+      var d = document.createElement('div'); d.className = 'chunk';
+      var h = document.createElement('div'); h.className = 'note';
+      h.textContent = chunks.length > 1 ? ('第 ' + (i + 1) + ' / ' + chunks.length + ' 块') : (parts.length ? '共 ' + parts.length + ' 条意见' : '还没有意见');
+      var pre = document.createElement('pre'); pre.textContent = c;
+      d.appendChild(h); d.appendChild(pre); box.appendChild(d);
+    });
+  }
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () { lsSet(ta.getAttribute('data-key'), ta.value); render(); });
+  });
+  function setStatus(t) { document.getElementById('copyStatus').textContent = t; }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.getElementById('copyAll').addEventListener('click', function () {
+    var text = chunk(collect()).join('\n\n');
+    var done = function (ok) { setStatus(ok ? '已复制 ' + text.length + ' 字' : '复制失败，请手动选中上方文本'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  });
+  document.getElementById('clearAll').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsDel(ta.getAttribute('data-key')); });
+    render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>
