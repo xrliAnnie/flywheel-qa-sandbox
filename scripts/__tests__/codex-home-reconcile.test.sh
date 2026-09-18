@@ -19,6 +19,10 @@ APPROVED="$TMP/approved.json"
 PS_BIN="$TMP/ps"
 BUILD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+mode_of() {
+	stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
 mkdir -p "$CANONICAL" "$TARGET"
 printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' > "$REGISTRY"
 python3 - "$CANONICAL/auth.json" <<'PY'
@@ -101,7 +105,7 @@ backup_count="$(find "$STATE_ROOT/codex-credential-backups" -type f | wc -l | tr
 [ "$backup_count" -eq 1 ]
 backup="$(find "$STATE_ROOT/codex-credential-backups" -type f -print -quit)"
 [ "$(cat "$backup")" = legacy-copy ]
-[ "$(stat -f '%Lp' "$backup")" = 600 ]
+[ "$(mode_of "$backup")" = 600 ]
 
 before="$(snapshot "$TARGET")"
 if ! RECONCILE_PS_MODE=fail run_reconcile > "$TMP/already.json"; then

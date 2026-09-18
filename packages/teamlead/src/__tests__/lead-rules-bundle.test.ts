@@ -493,12 +493,14 @@ exit 0
 				"DISCORD_EXPECTED_BOT_USER_ID",
 				"FLYWHEEL_LEAD_IDENTITY_DIGEST",
 				"FLYWHEEL_CANONICAL_IDENTITY_RESOLVED",
+				"CODEX_HOME",
 			]) {
 				delete env[name];
 			}
 			return {
 				...env,
 				HOME: home,
+				CODEX_HOME: home,
 				PATH: `${shimDir}:${process.env.PATH}`,
 				FLYWHEEL_COMM_CLI: join(
 					SCRIPTS,

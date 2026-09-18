@@ -93,6 +93,7 @@ exit 0
 			"DISCORD_EXPECTED_BOT_USER_ID",
 			"FLYWHEEL_LEAD_IDENTITY_DIGEST",
 			"FLYWHEEL_CANONICAL_IDENTITY_RESOLVED",
+			"CODEX_HOME",
 		]) {
 			delete env[name];
 		}
@@ -100,6 +101,7 @@ exit 0
 			env: {
 				...env,
 				HOME: home,
+				CODEX_HOME: home,
 				PATH: `${shimDir}:${process.env.PATH}`,
 				DUMP_FILE: dumpFile,
 				CORE_GATE_RESULT: String(computed),
