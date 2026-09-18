@@ -105,7 +105,7 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
      `last_change_epoch` 只锚真实状态跃迁或该身份的远端 head 推进；初次采样是 baseline。
      渲染行 hash、spinner、poll、重复 stage、park 续期、报告重排或 result 修改均不刷新。
      旧 TSV 不迁移 epoch。`state_sha256` 仅用于渲染诊断，不能判停滞。
-     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待或有未到期 expires_at 的 long_task 声明为 WAITING，
+     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待、未到期 expires_at 的 long_task 声明，或 collector 以当前 execution/activation/TURN/worktree、grant/binding 时间、live owner lock 与 supervisor 进程核验的 `package_gate_queue` 均为 WAITING。队列证据写入 `queue_request`/`queue_position`/`queue_wait_seconds`；它只移除 STALLED，不得遮蔽 LIMIT_LIVE、INTERACTIVE_MENU、PANE_DEAD、capture/hash finding；
      source 不完整为 UNKNOWN，只有完整连续观测满 3600 秒才可生成候选。
      任何 exact 同期 push receipt 都能证伪：作者/committer 时间和 PR updated_at 不算 push。
      当前 head 改变以及最近 3600 秒内已验证推进为 ACTIVE；保留活动的观察区间。

@@ -1,0 +1,41 @@
+{
+  "executionId": "196865ef-5793-4c95-8212-eb3ee7bc2f60",
+  "activationId": "activation:196865ef-5793-4c95-8212-eb3ee7bc2f60:7d76b428-4b84-422a-a7fa-62b73f4f2b93:eng_design:1",
+  "runId": "7d76b428-4b84-422a-a7fa-62b73f4f2b93",
+  "turnEpoch": 1,
+  "scopeQuestion": "b44b5250-57a1-4fce-a36e-27475cf3f6a4",
+  "scopeReplyDisposition": "accepted same UID global FIFO, independent baseline, CI unchanged, env rollback, crash safe recovery",
+  "scopeDoneReport": "fce32007-e2d8-4def-85a3-55949c4132b5",
+  "reviewQuestion": "0dc1b6ae-8aa5-4534-bb68-1550f7be53e1",
+  "reviewRequestId": "384bd7ed-b0e5-405c-b22a-574e3969d4f7",
+  "reviewAccepted": true,
+  "reviewStatus": "APPROVED",
+  "planCommit": "7a2512f2a",
+  "htmlCommit": "cb8f62af6",
+  "reviewRounds": [
+    {
+      "questionId": "5036577d-f2cc-4734-a0f9-cd0c0b22e6c3",
+      "requestId": "75c19236-b704-40a2-8a88-17078030aefa",
+      "effectiveVerdict": "CHANGES_REQUESTED",
+      "fixCommit": "b3bb3f90e"
+    },
+    {
+      "questionId": "0dc1b6ae-8aa5-4534-bb68-1550f7be53e1",
+      "requestId": "384bd7ed-b0e5-405c-b22a-574e3969d4f7",
+      "accepted": true,
+      "status": "done",
+      "effectiveVerdict": "APPROVED"
+    }
+  ],
+  "approvedPlanSha256": "8a92b854f8b708803d4165ab707c9577573b4c5854212bf558a7302494f61186",
+  "hostedUrl": "https://fw-reports-42fba7.vercel.app/r/e2d914f765d1ca5d800cbea539aaa115/",
+  "htmlReportReceipt": "fb9cead3-9344-462c-a839-efc21e10b27c",
+  "validationReportReceipt": "7cd3374e-9106-48c3-bd04-48bba1906ef6",
+  "advisoryReportReceipt": "2143b7fb-6b54-49eb-9d22-448869e8a76d",
+  "phaseCompletion": "deferred: consume_pending_mail, wake deferred_midturn; end turn to allow runtime to start wake",
+  "park": "only after successful exact completion",
+  "drainChallenge": "drain:196865ef-5793-4c95-8212-eb3ee7bc2f60:activation:196865ef-5793-4c95-8212-eb3ee7bc2f60:7d76b428-4b84-422a-a7fa-62b73f4f2b93:eng_design:1:01ac2171f8a2ba36",
+  "pendingWake": "doorbell:mailbox-batch:4ba6bab8-a81a-41bf-998b-d5cd7e8186e4#r0",
+  "pendingWakeContent": "check both review questions; already read round1 and round2",
+  "nextCommand": "node \"$FLYWHEEL_COMM_CLI\" complete --route phase_design_complete --drain-receipt drain:196865ef-5793-4c95-8212-eb3ee7bc2f60:activation:196865ef-5793-4c95-8212-eb3ee7bc2f60:7d76b428-4b84-422a-a7fa-62b73f4f2b93:eng_design:1:01ac2171f8a2ba36"
+}

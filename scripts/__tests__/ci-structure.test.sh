@@ -922,6 +922,24 @@ require(
     "continue-on-error" not in retention_consumer_steps[0],
     "FLY-2006 retention consumer gate must fail closed",
 )
+package_gate_steps = [
+    step for step in quick_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Package gate receipt, retry, and host admission guards (FLY-2467/FLY-2702)"
+]
+require(
+    len(package_gate_steps) == 1,
+    "quick-gate must contain exactly one package gate receipt and host admission step",
+)
+require(
+    str(package_gate_steps[0].get("run", "")).strip()
+    == "node --test scripts/__tests__/package-gate.test.mjs\nnode --test scripts/__tests__/package-gate-host.test.mjs\nnode --test scripts/__tests__/qa-package-gate-host.test.mjs\nnode --test scripts/__tests__/teamlead-shards.test.mjs\nnode --test scripts/__tests__/vitest-worker-rpc.test.mjs",
+    "package gate quick-gate inventory drifted",
+)
+require(
+    "continue-on-error" not in package_gate_steps[0],
+    "package gate quick-gate inventory must fail closed",
+)
 
 # FLY-2074: founder-facing acceptance must disclose all measured rounds and keep
 # its machine-readable facts aligned with the rendered page. This is docs-only,

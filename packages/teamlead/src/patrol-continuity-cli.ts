@@ -31,6 +31,7 @@ export function activityEvidence(
 			? Math.floor(e.lastVeto.fromMs / 1000)
 			: result.interval_start;
 	const end = result.interval_end;
+	const queue = e?.queueEvidence;
 	const record = {
 		id: result.key,
 		entry: e ?? null,
@@ -40,7 +41,7 @@ export function activityEvidence(
 		interval_end: end,
 	};
 	return [
-		`ACTIVITY_EVIDENCE id=${result.key} exec=${exec} activation=${e?.identity.activationId ?? "unavailable"} interval_start=${start} interval_end=${end} source=${source} ref_complete=${e?.sourcesComplete && e.refs.length ? "yes" : "no"} refs_sha256=${continuityDigest(e?.refs ?? [])} semantic_sha256=${e?.semanticDigest ?? "unavailable"} coverage_since=${Math.floor((e?.coverageSinceMs ?? nowMs) / 1000)} reason=${result.reason} branch_activity=${result.branch_activity ? "yes" : "no"}`,
+		`ACTIVITY_EVIDENCE id=${result.key} exec=${exec} activation=${e?.identity.activationId ?? "unavailable"} interval_start=${start} interval_end=${end} source=${source} ref_complete=${e?.sourcesComplete && e.refs.length ? "yes" : "no"} refs_sha256=${continuityDigest(e?.refs ?? [])} semantic_sha256=${e?.semanticDigest ?? "unavailable"} coverage_since=${Math.floor((e?.coverageSinceMs ?? nowMs) / 1000)} reason=${result.reason} branch_activity=${result.branch_activity ? "yes" : "no"} queue_request=${queue?.requestId ?? "unavailable"} queue_position=${queue?.position ?? 0} queue_wait_seconds=${Math.floor((queue?.waitMs ?? 0) / 1000)}`,
 		`ACTIVITY_RECORD ${JSON.stringify(record)}`,
 	];
 }

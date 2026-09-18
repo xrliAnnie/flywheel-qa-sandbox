@@ -41,7 +41,10 @@ checkout 或旧部署取配方。legacy prompt-file 模式使用实际加载的�
   不是独立真相或完成证据。报告仅留 allowlist 元数据/hash，不存 secret、消息正文或 token。
 - STEP 2 必有 pane_count=N 与恰好 N 行 PANE_EVIDENCE；零 pane 也写 0。不抽样、
   不用 tail 代替全 scrollback；保留 machine-owned 连续性，不修改 sidecar。只在明确
-  允许的名下场景唤醒/按 Enter，未知菜单写 UNAVAILABLE。命令失败不得静默跳过。
+  允许的名下场景唤醒/按 Enter，未知菜单写 UNAVAILABLE。经 execution/activation/TURN/
+  worktree、时间边界、owner lock 与 supervisor 核验的 `package_gate_queue` 是 WAITING，
+  PANE_EVIDENCE 保留 `queue_request`/position/wait seconds；只抑制 STALLED，不遮 finding。
+  命令失败不得静默跳过。
 - STEP DWELL 先验证 canonical founder gate/question/card/run/execution 绑定，再决定
   grouped founder reminder 或强制 deep dive。非 founder 等待须读最新 transition、
   终端内容和工作日志，不能以画面刷新封口。founder 等待按同一 durable episode 只提醒

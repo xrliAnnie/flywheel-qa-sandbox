@@ -142,6 +142,28 @@ describe("patrol continuity semantics", () => {
 		expect(evaluateContinuity(previous, next).activity).toBe("WAITING");
 		expect(evaluateContinuity(previous, next).branch_activity).toBe(true);
 	});
+	it("treats a verified package-gate queue as waiting on the first sample and ahead of recent progress", () => {
+		const queued = sample();
+		queued.semanticState.effectiveWait = {
+			kind: "package_gate_queue",
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		};
+		expect(evaluateContinuity(undefined, queued)).toMatchObject({
+			activity: "WAITING",
+			reason: "package_gate_queue",
+		});
+		const previous = evaluateContinuity(undefined, sample()).entry;
+		if (!previous) throw new Error("missing continuity entry");
+		previous.lastProgressObservedAtMs = start - 1_000;
+		expect(
+			evaluateContinuity(previous, {
+				...queued,
+				sampledAtMs: start + 1_000,
+			}),
+		).toMatchObject({ activity: "WAITING", reason: "package_gate_queue" });
+		queued.sourcesComplete = false;
+		expect(evaluateContinuity(undefined, queued).activity).toBe("UNKNOWN");
+	});
 	it("does not attribute a branch change across an ambiguous-writer observation", () => {
 		const old = sample(start, { canAttributeRemote: false });
 		const previous = evaluateContinuity(undefined, old).entry;

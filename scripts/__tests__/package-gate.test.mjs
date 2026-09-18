@@ -86,6 +86,55 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGate } from "../package-gate.mjs";
 
+function createSupervisorFixture({
+	root,
+	workerResult,
+	supervisorExitCode,
+	supervisorResultContent,
+}) {
+	const stateRoot = join(root, "state");
+	const resultDirectory = join(root, "receipts", "worker-receipt");
+	mkdirSync(stateRoot, { recursive: true });
+	mkdirSync(resultDirectory, { recursive: true });
+	writeFileSync(
+		join(stateRoot, "control.json"),
+		JSON.stringify({
+			schemaVersion: 1,
+			mode: "enabled",
+			generation: "test-generation",
+		}),
+	);
+	const result = {
+		schemaVersion: 1,
+		directory: resultDirectory,
+		root,
+		head: null,
+		startedAt: "2026-09-18T00:00:00.000Z",
+		finishedAt: "2026-09-18T00:00:01.000Z",
+		packages: [],
+		...workerResult,
+	};
+	writeFileSync(
+		join(resultDirectory, "summary.json"),
+		`${JSON.stringify(result)}\n`,
+	);
+	const supervisor = join(root, "fake-supervisor");
+	const resultContent =
+		supervisorResultContent === undefined
+			? `${JSON.stringify(result)}\n`
+			: supervisorResultContent;
+	const writeResult =
+		resultContent === null
+			? ""
+			: `fs.writeFileSync(args[index+1],${JSON.stringify(resultContent)});`;
+	writeFileSync(
+		supervisor,
+		`#!/usr/bin/env node\nconst fs=require("node:fs");const args=process.argv.slice(2);const index=args.indexOf("--result-path");${writeResult}process.exit(${supervisorExitCode});\n`,
+		{ mode: 0o755 },
+	);
+	return { stateRoot, resultDirectory, supervisor };
+}
+
 test("build barrier, once-only retry, downstream execution and receipts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "package-gate-test-"));
 	try {
@@ -107,6 +156,7 @@ test("build barrier, once-only retry, downstream execution and receipts", async 
 			pnpm: fake,
 			receiptRoot: join(root, "receipts"),
 			quiet: true,
+			environment: { FLYWHEEL_PACKAGE_GATE_HOST_LIMIT: "0" },
 		});
 		assert.equal(result.exitCode, 2);
 		assert.equal(result.status, "artifact");
@@ -128,6 +178,119 @@ test("build barrier, once-only retry, downstream execution and receipts", async 
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("supervisor failure cannot turn a successful worker receipt green", async () => {
+	for (const supervisorExitCode of [1, 70, 130, 143]) {
+		const root = mkdtempSync(join(tmpdir(), "package-gate-supervisor-exit-"));
+		try {
+			const fixture = createSupervisorFixture({
+				root,
+				workerResult: { status: "passed", exitCode: 0 },
+				supervisorExitCode,
+			});
+			const result = await runGate({
+				root,
+				receiptRoot: join(root, "receipts"),
+				quiet: true,
+				environment: {},
+				hostQueue: { stateRoot: fixture.stateRoot },
+				python: fixture.supervisor,
+			});
+			assert.equal(
+				result.status,
+				"failed",
+				`supervisor exit ${supervisorExitCode}`,
+			);
+			assert.equal(
+				result.exitCode,
+				[130, 143].includes(supervisorExitCode) ? supervisorExitCode : 1,
+				`supervisor exit ${supervisorExitCode}`,
+			);
+			assert.equal(
+				result.failureKind,
+				"host_queue",
+				`supervisor exit ${supervisorExitCode}`,
+			);
+			const stored = JSON.parse(
+				readFileSync(join(fixture.resultDirectory, "summary.json"), "utf8"),
+			);
+			assert.equal(stored.status, "failed");
+			assert.equal(stored.exitCode, result.exitCode);
+			assert.equal(stored.failureKind, "host_queue");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+});
+
+test("matching supervisor exit preserves worker pass, failure, and RPC artifact receipts", async () => {
+	for (const workerResult of [
+		{ status: "passed", exitCode: 0 },
+		{ status: "failed", exitCode: 1 },
+		{ status: "artifact", exitCode: 2 },
+	]) {
+		const root = mkdtempSync(join(tmpdir(), "package-gate-supervisor-match-"));
+		try {
+			const fixture = createSupervisorFixture({
+				root,
+				workerResult,
+				supervisorExitCode: workerResult.exitCode,
+			});
+			const result = await runGate({
+				root,
+				receiptRoot: join(root, "receipts"),
+				quiet: true,
+				environment: {},
+				hostQueue: { stateRoot: fixture.stateRoot },
+				python: fixture.supervisor,
+			});
+			assert.equal(result.status, workerResult.status);
+			assert.equal(result.exitCode, workerResult.exitCode);
+			assert.equal(result.failureKind, undefined);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+});
+
+for (const [scenario, supervisorResultContent, reason] of [
+	["missing", null, "host_supervisor_result_missing"],
+	["malformed", "{not-json", "host_supervisor_result_invalid"],
+]) {
+	test(`${scenario} supervisor result fails closed with a diagnostic receipt`, async () => {
+		const root = mkdtempSync(
+			join(tmpdir(), `package-gate-supervisor-${scenario}-`),
+		);
+		try {
+			const fixture = createSupervisorFixture({
+				root,
+				workerResult: { status: "passed", exitCode: 0 },
+				supervisorExitCode: 0,
+				supervisorResultContent,
+			});
+			const result = await runGate({
+				root,
+				receiptRoot: join(root, "receipts"),
+				quiet: true,
+				environment: {},
+				hostQueue: { stateRoot: fixture.stateRoot },
+				python: fixture.supervisor,
+			});
+			assert.equal(result.status, "failed");
+			assert.equal(result.exitCode, 1);
+			assert.equal(result.failureKind, "host_queue");
+			assert.equal(result.hostQueue.reason, reason);
+			assert.deepEqual(
+				JSON.parse(
+					readFileSync(join(result.directory, "summary.json"), "utf8"),
+				),
+				result,
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+}
 
 for (const scenario of [
 	"assertion",
@@ -165,6 +328,7 @@ for (const scenario of [
 				pnpm: fake,
 				receiptRoot: join(root, "receipts"),
 				quiet: true,
+				environment: { FLYWHEEL_PACKAGE_GATE_HOST_LIMIT: "0" },
 			});
 			assert.equal(result.exitCode, 1);
 			const commands = readFileSync(join(root, "commands"), "utf8")
@@ -308,9 +472,113 @@ test("malformed package metadata cannot silently remove a package from the gate"
 				pnpm: fake,
 				receiptRoot: join(root, "receipts"),
 				quiet: true,
+				environment: { FLYWHEEL_PACKAGE_GATE_HOST_LIMIT: "0" },
 			}),
 			SyntaxError,
 		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("explicit local bypass is visible and never invokes the Python supervisor", async () => {
+	const root = mkdtempSync(join(tmpdir(), "package-gate-bypass-"));
+	try {
+		mkdirSync(join(root, "packages", "a"), { recursive: true });
+		writeFileSync(
+			join(root, "packages", "a", "package.json"),
+			JSON.stringify({ name: "a", scripts: { "test:run": "node --test" } }),
+		);
+		const fake = join(root, "pnpm");
+		writeFileSync(fake, "#!/usr/bin/env node\nprocess.exit(0);\n", {
+			mode: 0o755,
+		});
+		const messages = [];
+		const result = await runGate({
+			root,
+			pnpm: fake,
+			receiptRoot: join(root, "receipts"),
+			quiet: true,
+			environment: { FLYWHEEL_PACKAGE_GATE_HOST_LIMIT: "0" },
+			python: "/missing/python3",
+			statusSink: (message) => messages.push(message),
+		});
+		assert.equal(result.exitCode, 0);
+		assert.deepEqual(result.hostQueue, {
+			state: "bypassed",
+			reason: "environment_disabled",
+		});
+		assert.deepEqual(messages, [
+			"PACKAGE_GATE_HOST_BYPASS reason=environment_disabled\n",
+		]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+for (const environment of [{ CI: "true" }, { GITHUB_ACTIONS: "true" }]) {
+	test(`CI bypass ${JSON.stringify(environment)} never invokes Python or the host ledger`, async () => {
+		const root = mkdtempSync(join(tmpdir(), "package-gate-ci-"));
+		try {
+			mkdirSync(join(root, "packages", "a"), { recursive: true });
+			writeFileSync(
+				join(root, "packages", "a", "package.json"),
+				JSON.stringify({ name: "a", scripts: { "test:run": "node --test" } }),
+			);
+			const fake = join(root, "pnpm");
+			writeFileSync(fake, "#!/usr/bin/env node\nprocess.exit(0);\n", {
+				mode: 0o755,
+			});
+			const result = await runGate({
+				root,
+				pnpm: fake,
+				receiptRoot: join(root, "receipts"),
+				quiet: true,
+				environment,
+				python: "/missing/python3",
+				statusSink: () => {},
+			});
+			assert.equal(result.exitCode, 0);
+			assert.equal(result.hostQueue.reason, "ci");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+}
+
+test("missing host control defaults disabled and does not require Python", async () => {
+	const root = mkdtempSync(join(tmpdir(), "package-gate-control-default-"));
+	try {
+		mkdirSync(join(root, "packages", "a"), { recursive: true });
+		const stateRoot = join(root, "state");
+		mkdirSync(stateRoot);
+		writeFileSync(
+			join(root, "packages", "a", "package.json"),
+			JSON.stringify({ name: "a", scripts: { "test:run": "node --test" } }),
+		);
+		const fake = join(root, "pnpm");
+		writeFileSync(fake, "#!/usr/bin/env node\nprocess.exit(0);\n", {
+			mode: 0o755,
+		});
+		const messages = [];
+		const result = await runGate({
+			root,
+			pnpm: fake,
+			receiptRoot: join(root, "receipts"),
+			quiet: true,
+			environment: {},
+			hostQueue: { stateRoot },
+			python: "/missing/python3",
+			statusSink: (message) => messages.push(message),
+		});
+		assert.equal(result.exitCode, 0);
+		assert.deepEqual(result.hostQueue, {
+			state: "bypassed",
+			reason: "host_control_disabled",
+		});
+		assert.deepEqual(messages, [
+			"PACKAGE_GATE_HOST_BYPASS reason=host_control_disabled\n",
+		]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

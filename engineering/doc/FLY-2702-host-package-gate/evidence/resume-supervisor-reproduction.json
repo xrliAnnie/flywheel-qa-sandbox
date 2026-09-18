@@ -1,0 +1,43 @@
+{
+  "findingKey": "supervisor-exit-status-discarded",
+  "checkedAt": "2026-09-18T16:52:59.967Z",
+  "scope": "Isolated injected supervisor, no build/Vitest or production queue touched",
+  "rows": [
+    {
+      "supervisorExitCode": 0,
+      "workerExitCode": 0,
+      "returnedExitCode": 0,
+      "returnedStatus": "passed",
+      "failureKind": null
+    },
+    {
+      "supervisorExitCode": 1,
+      "workerExitCode": 0,
+      "returnedExitCode": 0,
+      "returnedStatus": "passed",
+      "failureKind": null
+    },
+    {
+      "supervisorExitCode": 70,
+      "workerExitCode": 0,
+      "returnedExitCode": 0,
+      "returnedStatus": "passed",
+      "failureKind": null
+    },
+    {
+      "supervisorExitCode": 130,
+      "workerExitCode": 0,
+      "returnedExitCode": 0,
+      "returnedStatus": "passed",
+      "failureKind": null
+    },
+    {
+      "supervisorExitCode": 143,
+      "workerExitCode": 0,
+      "returnedExitCode": 0,
+      "returnedStatus": "passed",
+      "failureKind": null
+    }
+  ],
+  "confirmed": true
+}

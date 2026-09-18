@@ -118,6 +118,11 @@ host-tmux-selection-gate.sh
 lead-patrol-snapshot.sh
 flywheel-node-dwell-control.mjs
 flywheel-patrol-continuity.mjs
+package-gate.mjs
+package-gate-worker.mjs
+package-gate-host.py
+package-gate-reporter.mjs
+lib/package-gate-core.mjs
 lead-alert.sh
 meta-alert.sh
 update-flywheel.sh

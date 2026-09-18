@@ -7,6 +7,11 @@ import {
 	canonicalSubmissionDigest,
 } from "flywheel-config";
 import { VALID_STAGES } from "./bridge/stage-utils.js";
+import {
+	type PackageGateQueueContext,
+	type PackageGateQueueResult,
+	readPackageGateQueue,
+} from "./package-gate-queue.js";
 import type {
 	ContinuityIdentity,
 	ContinuityObservation,
@@ -14,6 +19,19 @@ import type {
 } from "./patrol-continuity.js";
 
 type Row = Record<string, any>;
+const EXECUTION_SCOPED_QUEUE_FAILURES = new Set([
+	"queue_context_invalid",
+	"queue_worktree_unavailable",
+	"queue_request_ambiguous",
+	"queue_worktree_mismatch",
+	"queue_request_invalid",
+	"queue_activation_boundary_invalid",
+	"queue_heartbeat_stale",
+	"queue_clock_invalid",
+	"queue_owner_identity_invalid",
+	"queue_process_unverified",
+	"queue_position_invalid",
+]);
 export interface PatrolCollectorInput {
 	dbPath: string;
 	commDbPath: string;
@@ -35,6 +53,9 @@ export interface PatrolCollectorInput {
 		options: { timeout: number; maxBuffer: number },
 	) => Promise<string>;
 	signal?: AbortSignal;
+	packageGateQueueReader?: (
+		context: PackageGateQueueContext,
+	) => PackageGateQueueResult;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{40}$/i;
@@ -102,6 +123,15 @@ function one(
 function safeError(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	return /^[a-z_]+$/.test(message) ? message : "source_unavailable";
+}
+function strictUtcMs(value: unknown): number | null {
+	if (
+		typeof value !== "string" ||
+		!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+	)
+		return null;
+	const parsed = Date.parse(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
 }
 function empty(
 	input: PatrolCollectorInput,
@@ -207,7 +237,7 @@ function readLocal(
 			fail("stage_invalid");
 		const bindings = all(
 			state,
-			"SELECT activation_id,execution_id,run_id,node_id,attempt FROM workflow_execution_binding WHERE execution_id=?",
+			"SELECT activation_id,execution_id,run_id,node_id,attempt,bound_at FROM workflow_execution_binding WHERE execution_id=?",
 			executionId,
 		);
 		const projections = all(
@@ -260,7 +290,7 @@ function readLocal(
 				fail("activation_attempt_mismatch");
 			grant = one(
 				state,
-				"SELECT activation_id,execution_id,issue_id,epoch FROM workflow_activation_turn WHERE activation_id=?",
+				"SELECT activation_id,execution_id,issue_id,epoch,granted_at FROM workflow_activation_turn WHERE activation_id=?",
 				binding.activation_id,
 			);
 			turn = one(
@@ -341,6 +371,34 @@ function readLocal(
 			semanticState.effectiveWait = {
 				kind: "phase",
 				id: `${binding.activation_id}:${turn!.epoch}`,
+			};
+		const boundAtMs = strictUtcMs(binding?.bound_at);
+		const grantedAtMs = strictUtcMs(grant?.granted_at);
+		const activationBoundaryMs = binding
+			? boundAtMs === null || grantedAtMs === null
+				? null
+				: Math.max(boundAtMs, grantedAtMs)
+			: null;
+		const queue = (input.packageGateQueueReader ?? readPackageGateQueue)({
+			executionId,
+			worktreePath: session.worktree_binding_path,
+			activationBoundaryMs,
+			nowMs: input.nowMs,
+		});
+		const queueFingerprint =
+			queue.status === "queued-valid"
+				? {
+						status: queue.evidence.status,
+						requestId: queue.evidence.requestId,
+						activationId: binding?.activation_id ?? null,
+						attempt: binding?.attempt ?? null,
+						turnEpoch: turn?.epoch ?? null,
+					}
+				: queue;
+		if (queue.status === "queued-valid" && !semanticState.effectiveWait)
+			semanticState.effectiveWait = {
+				kind: "package_gate_queue",
+				id: queue.evidence.requestId,
 			};
 		const targets: Target[] = [
 			{
@@ -452,9 +510,19 @@ function readLocal(
 			eventsComplete: true,
 			canAttributeRemote: holder && !competing,
 			semanticTransitions: [],
+			...(queue.status === "queued-valid"
+				? { queueEvidence: queue.evidence }
+				: {}),
 		};
-		if (!observation.sourcesComplete)
+		if (
+			queue.status === "unknown" &&
+			EXECUTION_SCOPED_QUEUE_FAILURES.has(queue.reason)
+		) {
+			observation.sourcesComplete = false;
+			observation.reason = queue.reason;
+		} else if (!observation.sourcesComplete)
 			observation.reason = "ref_binding_incomplete";
+		else if (queue.status === "unknown") observation.reason = queue.reason;
 		if (replay) readEvents(state, input, observation);
 		return {
 			observation,
@@ -467,6 +535,7 @@ function readLocal(
 				owner,
 				grant,
 				turn,
+				queue: queueFingerprint,
 			}),
 		};
 	} finally {

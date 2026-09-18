@@ -476,6 +476,26 @@ else
  fail "X0b patrol continuity trusted launcher is missing from payload closure"
 fi
 
+package_gate_files=(
+  package-gate.mjs
+  package-gate-worker.mjs
+  package-gate-host.py
+  package-gate-reporter.mjs
+  lib/package-gate-core.mjs
+)
+package_gate_closure_ok=true
+for package_gate_file in "${package_gate_files[@]}"; do
+  if ! env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "$2" <<<"$PO_SCRIPT_FILES"' _ "$PO" "$package_gate_file" \
+      || ! grep -qx "scripts/$package_gate_file" "$REPO_ROOT/scripts/package-onboard-files.allow"; then
+    package_gate_closure_ok=false
+  fi
+done
+if [ "$package_gate_closure_ok" = true ]; then
+  pass "X0c package gate host semaphore runtime is in the payload closure"
+else
+  fail "X0c package gate host semaphore runtime is missing from payload closure"
+fi
+
 # ── X1 · audit-table closure over the REAL default whitelist ─────────────────
 AUDIT="$REPO_ROOT/engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md"
 if [ -f "$AUDIT" ]; then

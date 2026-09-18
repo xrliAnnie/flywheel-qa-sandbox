@@ -1,0 +1,22 @@
+{
+  "url": "https://fw-reports-42fba7.vercel.app/r/e2d914f765d1ca5d800cbea539aaa115/",
+  "reportId": "e2d914f765d1ca5d800cbea539aaa115",
+  "publishOnly": true,
+  "delivered": false,
+  "messageId": null,
+  "checkedAt": "2026-09-18T01:24:15.748550+00:00",
+  "checks": {
+    "http200": true,
+    "placeholderGone": true,
+    "scriptNonceMinted": true,
+    "nonceInCsp": true,
+    "marker": true,
+    "noExternalAssets": true,
+    "scriptContentMatches": true,
+    "bodyMatches": true
+  },
+  "csp": "default-src 'none'; script-src 'nonce-a2d5a8d3b814b6308742510ac1343090'; style-src 'unsafe-inline'; img-src data:;",
+  "sourceSha256": "4e406f1f5fd3c3a17038da7b7a2a6b36262603f6fd107fe1e6fbc635f4ce5cf0",
+  "hostedSha256": "481bd167ba1c54ba7f605d420d91e8f6de32c5cc29d77a54afc5414ce23f3b6e",
+  "browserExecution": "not verified; browser tool approval denied; source/controller checks recorded separately"
+}

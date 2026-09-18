@@ -213,9 +213,11 @@ jobs:
           node --test scripts/__tests__/fly1645-receipt-residue-gate.test.mjs
           node scripts/fly1645-receipt-residue-gate.mjs --main-only
 
-      - name: Package gate receipt and retry guards (FLY-2467)
+      - name: Package gate receipt, retry, and host admission guards (FLY-2467/FLY-2702)
         run: |
           node --test scripts/__tests__/package-gate.test.mjs
+          node --test scripts/__tests__/package-gate-host.test.mjs
+          node --test scripts/__tests__/qa-package-gate-host.test.mjs
           node --test scripts/__tests__/teamlead-shards.test.mjs
           node --test scripts/__tests__/vitest-worker-rpc.test.mjs
 

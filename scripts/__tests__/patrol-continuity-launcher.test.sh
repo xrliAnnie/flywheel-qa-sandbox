@@ -17,7 +17,7 @@ PAYLOAD="$TMP/payload"
 mkdir -p "$PAYLOAD/scripts" "$PAYLOAD/packages/teamlead/dist/bridge" "$PAYLOAD/packages/teamlead/dist/lead-backends/codex"
 cp "$HELPER" "$PAYLOAD/scripts/flywheel-patrol-continuity.mjs"
 printf '{"type":"module"}\n' > "$PAYLOAD/packages/teamlead/package.json"
-for module in patrol-continuity-cli patrol-continuity patrol-continuity-collector patrol-report process-lock; do
+for module in patrol-continuity-cli patrol-continuity patrol-continuity-collector package-gate-queue patrol-report process-lock; do
  cp "$ROOT/packages/teamlead/dist/$module.js" "$PAYLOAD/packages/teamlead/dist/$module.js"
 done
 cp "$ROOT/packages/teamlead/dist/bridge/stage-utils.js" "$PAYLOAD/packages/teamlead/dist/bridge/stage-utils.js"

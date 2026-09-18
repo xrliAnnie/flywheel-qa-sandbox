@@ -470,6 +470,11 @@
 			"disposition": "Parent verifies pinned patrol rule programs and owned report before each of three gates; 3 second timeout and 4 KiB output bound, washed environment"
 		},
 		{
+			"file": "packages/teamlead/src/package-gate-queue.ts",
+			"sync_child": 2,
+			"disposition": "FLY-2702 bounded read-only owner-lock probes: fixed /usr/bin/python3 helper, 1 second timeout, 1 MiB output bound, no shell"
+		},
+		{
 			"file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
 			"raw_spawn": 1,
 			"disposition": "FLY-2399 isolated subscription evaluator: async child, minimal environment, 120s deadline, bounded output, abort and TERM/KILL drain"

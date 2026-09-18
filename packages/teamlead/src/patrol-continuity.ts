@@ -49,6 +49,16 @@ export interface ContinuityObservation {
 	reason?: string;
 	semanticTransitions?: Array<{ atMs: number; state: SemanticState }>;
 	sourceCursors: { stageEventId: number; workflowEventSeq: number };
+	queueEvidence?: {
+		requestId: string;
+		status: "queued";
+		seq: number;
+		position: number;
+		enqueuedAt: string;
+		observedAt: string;
+		revision: number;
+		waitMs: number;
+	};
 }
 export interface ContinuityEntry {
 	canAttributeRemote: boolean;
@@ -70,6 +80,7 @@ export interface ContinuityEntry {
 		oldHead: string;
 		newHead: string;
 	} | null;
+	queueEvidence?: ContinuityObservation["queueEvidence"];
 }
 export interface ContinuityResult {
 	key: string;
@@ -228,6 +239,7 @@ export function evaluateContinuity(
 		sourceCursors: current.sourceCursors,
 		refs: validRefs,
 		lastVeto: prior?.lastVeto ?? null,
+		queueEvidence: current.queueEvidence,
 	};
 	// Only the exact writer throughout the observation interval owns branch progress.
 	if (
@@ -250,6 +262,14 @@ export function evaluateContinuity(
 			newHead: changed.headSha,
 		};
 		return finish("ACTIVE", "remote_head_changed");
+	}
+	if (current.semanticState.effectiveWait?.kind === "package_gate_queue") {
+		if (!complete)
+			return unknown(
+				current.reason ??
+					(!refsComplete ? "ref_incomplete" : "source_incomplete"),
+			);
+		return finish("WAITING", "package_gate_queue");
 	}
 	if (stateChanged) return finish("ACTIVE", "state_transition");
 	const recent = Math.max(
@@ -360,6 +380,20 @@ export function validSidecar(
 							n >= e.observedSinceMs &&
 							n <= doc.sampledAtMs),
 				)
+			)
+				return false;
+			if (
+				e.queueEvidence !== undefined &&
+				(!/^[0-9a-f-]{36}$/i.test(e.queueEvidence.requestId) ||
+					e.queueEvidence.status !== "queued" ||
+					![
+						e.queueEvidence.seq,
+						e.queueEvidence.position,
+						e.queueEvidence.revision,
+						e.queueEvidence.waitMs,
+					].every((n) => Number.isSafeInteger(n) && n >= 0) ||
+					!Number.isSafeInteger(Date.parse(e.queueEvidence.enqueuedAt)) ||
+					!Number.isSafeInteger(Date.parse(e.queueEvidence.observedAt)))
 			)
 				return false;
 			return e.refs.every(
