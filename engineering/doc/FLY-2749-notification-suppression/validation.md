@@ -25,3 +25,8 @@ node engineering/doc/FLY-2749-notification-suppression/verify-founder-html.mjs
 - 原 baseline manifest 再次逐字节重放一致，SHA256：`392c744684d28bb11fecaf2c243384ca244664608af67c94450732aa2fc0f36b`。
 - 9 个 section 的评论、长文本分块、剪贴板两种失败回退、存储失败安全定向检查再次 PASS；审计脚本语法检查 PASS。
 - 评审通过并报告 11 条非阻断建议，逐项见 review-followups.md；没有声称建议已修复。
+
+## 发布未完成
+- 2026-09-18 接续发布与一次重试均返回 502 `report publishing failed`，url/reportId 为 null；收据见 evidence/publication-status.json。没有托管 HTTP/CSP 验证。
+- Chrome DevTools list_pages 未返回，终止等待；不声称浏览器验证通过。
+- 设计完成命令和 park 均未执行；等待托管恢复或 Lead 明确处置，目标仍保持 active。
