@@ -270,6 +270,44 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2465 internal wrapper recursion marker set for a single child invocation",
 	FLYWHEEL_CODEX_QUOTA_SPOOL_DIR:
 		"FLY-2465 explicit durable review-signal spool path, not a switch",
+	FLYWHEEL_BUILD_SHA:
+		"FLY-2523 deployed artifact identity bound into reconciliation receipts, not an on/off gate",
+	FLYWHEEL_CODEX_ALERT_BIN:
+		"FLY-2523 plumbing: alert executable path override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_APPROVED_HOMES:
+		"FLY-2523 plumbing: explicit approved-home roster coordinate, not an on/off gate",
+	FLYWHEEL_CODEX_FENCE_PS_BIN:
+		"FLY-2523 plumbing: process census executable override for hermetic launch-fence tests, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_POLICY:
+		"FLY-2523 plumbing: managed home-policy manifest path, not an on/off gate",
+	FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED:
+		"FLY-2523 per-invocation authority marker injected by the owning Lead launcher, not a persistent feature toggle",
+	FLYWHEEL_CODEX_LEAD_AUTHORITY_BIN:
+		"FLY-2523 plumbing: Lead authority collector executable path override, not an on/off gate",
+	FLYWHEEL_CODEX_LINK_STRUCTURED:
+		"FLY-2523 internal one-invocation output-shape marker for the link-truth child, not a persistent feature toggle",
+	FLYWHEEL_CODEX_LINK_TRUTH_BIN:
+		"FLY-2523 plumbing: link-truth executable path override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_PROJECTS_FILE:
+		"FLY-2523 plumbing: project registry path used to derive the approved-home roster, not an on/off gate",
+	FLYWHEEL_CODEX_READINESS_RECEIPT_BIN:
+		"FLY-2523 plumbing: readiness-receipt executable path override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_BIN:
+		"FLY-2523 plumbing: home reconciliation executable path override, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_FORCE_GROUP_UNKNOWN:
+		"FLY-2523 test-only process-group uncertainty fault seam, not a runtime feature toggle",
+	FLYWHEEL_CODEX_RECONCILE_GROUP_PROBE_BIN:
+		"FLY-2523 plumbing: process-group probe executable override for hermetic tests, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_NOW_MS:
+		"FLY-2523 test-only reconciliation clock seam, not a runtime feature toggle",
+	FLYWHEEL_CODEX_RECONCILE_PROCESS_BIN:
+		"FLY-2523 plumbing: bounded process-manager executable path override, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_PS_BIN:
+		"FLY-2523 plumbing: process census executable override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_SIGNAL_BIN:
+		"FLY-2523 plumbing: bounded process-group signal executable override for hermetic tests, not an on/off gate",
+	FLYWHEEL_FLY2729_DEPENDENCY_INPUT:
+		"FLY-2523 plumbing: immutable FLY-2729 acceptance-evidence file coordinate, not an on/off gate",
 	...Object.fromEntries(
 		FLY1455_NON_FLAG_ENV.map((name) => [
 			name,

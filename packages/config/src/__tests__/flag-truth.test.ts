@@ -1032,6 +1032,36 @@ describe("FLY-2131 Codex Lead model coordinates", () => {
 	});
 });
 
+describe("FLY-2523 Codex home reconciliation env contract", () => {
+	it("accounts for every reconciliation coordinate and test seam as a non-flag", () => {
+		const expected = [
+			"FLYWHEEL_BUILD_SHA",
+			"FLYWHEEL_CODEX_ALERT_BIN",
+			"FLYWHEEL_CODEX_APPROVED_HOMES",
+			"FLYWHEEL_CODEX_FENCE_PS_BIN",
+			"FLYWHEEL_CODEX_HOME_POLICY",
+			"FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED",
+			"FLYWHEEL_CODEX_LEAD_AUTHORITY_BIN",
+			"FLYWHEEL_CODEX_LINK_STRUCTURED",
+			"FLYWHEEL_CODEX_LINK_TRUTH_BIN",
+			"FLYWHEEL_CODEX_PROJECTS_FILE",
+			"FLYWHEEL_CODEX_READINESS_RECEIPT_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_FORCE_GROUP_UNKNOWN",
+			"FLYWHEEL_CODEX_RECONCILE_GROUP_PROBE_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_NOW_MS",
+			"FLYWHEEL_CODEX_RECONCILE_PROCESS_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_PS_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_SIGNAL_BIN",
+			"FLYWHEEL_FLY2729_DEPENDENCY_INPUT",
+		] as const;
+
+		for (const envVar of expected) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/FLY-2523/);
+		}
+	});
+});
+
 /**
  * FLY-1560 (Codex R1 MEDIUM-2). The out-of-process liveness probe's numeric
  * knobs were renamed FLYWHEEL_WATCHDOG_* → FLYWHEEL_LIVENESS_* along with the
