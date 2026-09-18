@@ -1,0 +1,22 @@
+sequenceDiagram
+  autonumber
+  participant I as 实现 Runner
+  participant GH as GitHub Actions
+  participant Q as QA Runner
+  participant S as 立卡守卫 approve_to_ship
+  participant L as Bridge land 执行器
+  I->>GH: 推送头 1 / 2 / 3（复审修订）
+  GH-->>I: 每个头只跑廉价门 约 7 分钟<br/>检查名 CI Scope OK
+  I->>GH: 推送最终头 H
+  GH-->>I: 廉价门
+  Q->>GH: 开场第一步 ci-full ensure<br/>发现 H 上没有 CI OK 就打 label ci:full
+  GH-->>Q: 全量 16 job 开跑 约 17 分钟墙钟<br/>run 标题 CI full-request H
+  Q->>Q: 同时做 QA
+  Q->>GH: 发 QA PASS 前再跑一次 ensure
+  GH-->>Q: 退出码 0 表示 H 上 CI OK 为绿<br/>不会触发第二次全量
+  S->>GH: 立卡前探测 H
+  GH-->>S: 最新 CI OK 为绿 且同一次 run 内全绿 才放行
+  L->>GH: main 前进了 刷新分支 得到合并头 C
+  GH-->>L: C 是合并提交 classify 直接判全量<br/>CI OK 绿后才合并
+  L->>GH: 合并进 main
+  GH-->>GH: main 的树 和 C 上全量所测的树相同<br/>回验通过 跳过重 job

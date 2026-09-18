@@ -17,6 +17,7 @@ import {
 	CONTENT_REF_THRESHOLD,
 	writeContentRef,
 } from "../utils/content-ref.js";
+import { type CiFullOutcome, ensureFullCi } from "./ci-full.js";
 
 /**
  * Source of `timeoutBehavior` value. Two-value enum (FLY-159 Codex R2 Issue 3):
@@ -54,6 +55,8 @@ export interface GateArgs {
 	noBlock?: boolean;
 	/** Test seam; production probes the current branch's GitHub PR. */
 	shipCiProbe?: () => ShipCiGuardResult;
+	/** Test seam; production best-effort requests full CI before refusing ship. */
+	fullCiEnsure?: () => Promise<CiFullOutcome>;
 	/** Best-effort queue doorbell; durable DB state remains authoritative. */
 	nudge?: () => Promise<void>;
 	/** Queue-native SLA carried by the canonical mailbox row. */
@@ -96,7 +99,16 @@ export async function gate(args: GateArgs): Promise<GateResult> {
 	if (args.checkpoint === "approve_to_ship") {
 		const ci = args.shipCiProbe?.() ?? probeShipCiGreen({ cwd: process.cwd() });
 		if (!ci.green) {
-			throw new Error(`CI not green: ${ci.detail}`);
+			let fullStatus = "request_failed";
+			try {
+				const requested = await (args.fullCiEnsure?.() ??
+					ensureFullCi({ cwd: process.cwd() }));
+				fullStatus = requested.status;
+			} catch {
+				// This is a best-effort latency optimization only. The existing CI
+				// refusal remains authoritative and must always throw.
+			}
+			throw new Error(`CI not green: ${ci.detail}; full CI: ${fullStatus}`);
 		}
 	}
 	if (args.checkpoint === FOUNDER_REVIEW_CHECKPOINT) {

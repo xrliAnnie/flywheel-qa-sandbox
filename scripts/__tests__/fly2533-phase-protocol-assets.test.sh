@@ -16,6 +16,14 @@ try {
     cpSync(join(root, path), join(temp, path), { recursive: true });
   }
   const script = join(temp, 'scripts/sync-phase-protocols.mjs');
+  const qaCanonical = readFileSync(join(temp, 'packages/teamlead/phase-protocols/qa.md'), 'utf8');
+  const implementCanonical = readFileSync(join(temp, 'packages/teamlead/phase-protocols/implement.md'), 'utf8');
+  assert.match(qaCanonical, /ci-full ensure --pr <NUMBER> --head \$\(git rev-parse HEAD\) --json/);
+  assert.ok(qaCanonical.indexOf('ci-full ensure') < qaCanonical.indexOf('qa-result --status pass'), 'QA requests full CI before a pass verdict');
+  assert.match(qaCanonical, /Exit 8/);
+  assert.match(qaCanonical, /require exit 0/);
+  assert.match(implementCanonical, /CI Scope OK/);
+  assert.match(implementCanonical, /ci-full ensure/);
   assert.equal(run([script]).status, 0, 'default check accepts exact projections');
   const file = join(temp, '.flywheel/agents/nodes/qa.md');
   const original = readFileSync(file, 'utf8');

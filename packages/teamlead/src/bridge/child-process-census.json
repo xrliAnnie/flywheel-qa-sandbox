@@ -101,6 +101,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/flywheel-comm/src/commands/ci-full.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/flywheel-comm/src/commands/codex-resume.ts",
 			"raw_spawn": 1,
 			"disposition": "one_shot_cli"

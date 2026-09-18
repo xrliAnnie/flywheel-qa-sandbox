@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2681 · CI 按需矩阵 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px; margin-bottom: 14px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 8px; margin-bottom: 14px; text-align: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .badge.done { background: #e8f8ee; color: #1d8a43; }
+  .badge.pending { background: #fff3e0; color: #c77400; }
+  .badge.hard { background: #fdebea; color: #c62d23; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 10px 14px; font-family: 'SF Mono', monospace; font-size: 12.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 8px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 40px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2681 · CI 按需矩阵：平时只跑廉价门，全量只在被请求时跑</h1>
+  <div class="meta">Issue <span class="mono">FLY-2681</span> · 设计阶段 · 2026-09-17 · 出自 Tadashi 的工程设计节点 · 属于 Epic FLY-2651（CI 成本）· 另一条腿是 FLY-2647（自托管机器）· 外部评审（Codex）三轮后通过：第一轮 7 条、第二轮 3 条，全部采纳 · 本页不等你审完，实现会先往下走；你的意见会作为修订追加</div>
+
+  <div class="section" data-section="一句话总结">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一句话总结</div>
+    <div class="card">
+      <p class="lede">今天每往 PR 推一次代码，GitHub 就把 16 项检查全跑一遍，约 140 分钟机器时间；一张卡推 4–5 次很常见，所以两天撞了三次账单上限。这一单改成：平时每次推送只跑一道约 7 分钟的「廉价门」，完整的 16 项只在两个时刻跑——交给 QA 验收的那个版本、以及立发布卡之前。发布的门槛一条不松：没跑过完整 16 项的版本，合不进去。</p>
+      <p class="jargon" style="margin-top:8px;">CI（持续集成）= 每次改代码后 GitHub 自动替我们跑的一组检查。PR（pull request）= 往主干交代码的提交单。「头」= PR 当前最新的那个版本，每推一次就换一个头。job = CI 里的一项检查，我们有 16 项。Quick Gate（廉价门）= 其中最便宜的一项：编译、类型检查、代码规范，约 5 分钟。runner-分钟 = GitHub 按「每项检查用了几分钟机器」收费的单位。QA = 专门验收的 AI 工人。立卡 = 给你发那张「可以发布吗」的确认卡。</p>
+    </div>
+    <div class="card amber">
+      <h3>先说一个和单子不一样的发现</h3>
+      <p>单子原本的想法是「改了哪个包就只跑哪个包的测试」。我拿 2026-09-16 一整天的真实记录重算了一遍：这样只能省 −8% 到 21%，有时还更贵。原因不是规则写得不够细，而是我们的代码长得就不适合这么裁：那天 76 次 PR 检查里有 55 次改了同一个大包 teamlead，46 次改了脚本目录；而脚本类的测试（占一次全量的将近一半）会直接读 teamlead 编译出来的产物，改了 teamlead 就不能不跑它们。</p>
+      <p style="margin-top:6px;">真正能省钱的是「分层」：平时只跑廉价门，全量攒到关键时刻跑一次。Tadashi 已经据此裁定改走这条路。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="核心流程：每个头跑什么">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>核心流程：每个头跑什么</div>
+    <div class="diagram"><!--SVG:d1--></div>
+    <div class="diagram-caption">图 1 · 第一项检查（Classify）用约 20 秒决定这个头属于哪种模式；绿色 = 完整 16 项，橙色 = 只跑廉价门，蓝色 = 发布的门怎么看。</div>
+    <div class="card green">
+      <h3>安全靠一个很朴素的约定</h3>
+      <p>今天所有发布的门（GitHub 的分支保护、合并前的等待脚本、Bridge 的合并执行器）都只认一项名字叫 <span class="mono">CI OK</span> 的汇总检查。新方案让这项汇总检查<b>换名字</b>：完整 16 项全绿时它叫 <span class="mono">CI OK</span>；只跑了廉价门时它叫 <span class="mono">CI Scope OK</span>。于是没跑过全量的头上根本不存在 <span class="mono">CI OK</span>，三个门自动拒绝——它们的代码一行都不用改，也就没有「漏改一处就悄悄放宽」的风险。</p>
+      <p class="jargon" style="margin-top:6px;">分支保护 = GitHub 仓库的一条设置：指定的检查没绿就不让合并。Bridge = Flywheel 一直在跑的中枢程序。</p>
+    </div>
+    <div class="card">
+      <h3>拿不准就跑全量</h3>
+      <p>判定只看这一次事件本身和代码历史的形状，不查 CI 的过往记录。任何读不懂的输入、任何 git 命令失败、开关没打开——统统落到「跑完整 16 项」。判错的方向只会多花钱，不会少测。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="一张卡从头到尾">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>一张卡从头到尾</div>
+    <div class="diagram"><!--SVG:d2--></div>
+    <div class="diagram-caption">图 2 · 谁在什么时候请求全量。Runner = Lead 派出去干具体活的 AI 工人。</div>
+    <div class="card purple">
+      <h3>谁来触发全量、怎么留痕</h3>
+      <table>
+        <tr><th>时刻</th><th>谁</th><th>怎么做</th></tr>
+        <tr><td>交给 QA 的那个头</td><td>QA Runner，开场第一步</td><td>运行新命令 <span class="mono">flywheel-comm ci-full ensure</span>：这个头上已经有 <span class="mono">CI OK</span> 就什么都不做；没有就给 PR 打一个标签 <span class="mono">ci:full</span>，GitHub 收到后跑完整 16 项。QA 一边验收一边等，发「通过」之前再确认一次。</td></tr>
+        <tr><td>立卡之前</td><td>立卡守卫（程序，不是提示词）</td><td>发现这个头没有全量绿 ⇒ 自动补一次请求，然后<b>照旧拒绝</b>立卡；等全量绿了再来。</td></tr>
+        <tr><td>合并前 main 又前进了</td><td>不需要任何人</td><td>Bridge 刷新分支会产生一个「合并提交」形状的头，Classify 认得这个形状，直接跑全量。</td></tr>
+        <tr><td>任何时候</td><td>你或 Lead</td><td>在 GitHub 页面上给 PR 打 <span class="mono">ci:full</span> 标签即可。</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">每次请求在 GitHub 上留三处痕迹：PR 时间线里的打标签记录（谁、几点）、那次运行的标题 <span class="mono">CI full-request &lt;版本号&gt;</span>、以及运行记录里的触发人。对同一个头，标签最多打一次：命令动手之前先在本机写一张「我要请求了」的回执，之后无论进程崩溃还是网络丢包，再调用都只会观察、不会再打；全量被取消或抖动红了，是在<b>同一次运行</b>上点「重跑」，而不是再开一次新的。</p>
+    </div>
+    <div class="card gray">
+      <h3>触发得早晚只影响快慢，不影响安全</h3>
+      <p>如果谁都忘了触发，后果是「这个头上没有 CI OK，所有门拒绝」，看得见、卡得住；不会出现「没人触发所以没测就过了」。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="数据与结构：一个头的几种状态">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>数据与结构：一个头的几种状态</div>
+    <div class="diagram"><!--SVG:d3--></div>
+    <div class="diagram-caption">图 3 · 一个 PR 头在 CI 眼里的生命周期。</div>
+    <div class="card amber">
+      <h3>Classify 给后面所有检查的四个信号</h3>
+      <table>
+        <tr><th>信号</th><th>取值</th><th>谁用</th></tr>
+        <tr><td class="mono">mode</td><td>full（全量）/ docs_only（纯文档）/ scoped（只跑廉价门）/ reuse（main 上复用）</td><td>决定汇总检查叫什么名字；写进运行摘要供人查</td></tr>
+        <tr><td class="mono">heavy</td><td>run / skip</td><td>13 项重检查的唯一开关；读不到值时按 run 处理</td></tr>
+        <tr><td class="mono">no_code</td><td>true / false</td><td>今天就有的「纯文档」判定，原样保留</td></tr>
+        <tr><td class="mono">tested_tree</td><td>一串 40 位指纹</td><td>这次运行实际测的那份代码的指纹，用于 main 上的复用</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">汇总检查在全量模式下会逐项点名：13 项重检查每一项都必须是「成功」，跳过、取消、失败都不算；在跳过模式下则要求 13 项<b>全部</b>是「跳过」，不接受一半跑一半跳。这两条由一份常驻的 CI 结构测试逐字钉住，改了就红。</p>
+    </div>
+    <div class="card">
+      <h3>main 上的「同一份代码不测第二遍」</h3>
+      <p>PR 合进主干后，GitHub 今天会在主干上把 16 项再跑一遍（那天 14 次，其中 6 次跑到一半被下一次合并顶掉）。很多时候主干上的代码和 PR 最后一次全量测的那份<b>逐字节相同</b>（那天 12 次里有 6 次）。新方案：全量全绿时留一张以代码指纹为名的凭证；主干运行时查到同指纹的凭证，再独立核对四件事（那次运行确实是本仓库的 CI、确实全绿、16 项一项没跳、用 git 重新算出来的指纹确实相同），都对上才跳过重检查。凭证本身只当索引用，里面写了什么一概不读、不信。任何一项对不上就照常全量。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="能省多少（按 2026-09-16 重放）">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>能省多少（按 2026-09-16 重放）</div>
+    <div class="card green">
+      <h3>基线：那天 90 次运行，10,936 计费分钟，15 次 QA 验收</h3>
+      <table>
+        <tr><th>那天一共多跑几次全量</th><th>主干不复用</th><th>主干复用一半</th></tr>
+        <tr><td>0 次（每次 QA 验收一次全量，全部一次过）</td><td><b>省 59%</b></td><td><b>省 67%</b></td></tr>
+        <tr><td>+5 次</td><td>省 53%</td><td>省 60%</td></tr>
+        <tr><td>+10 次（那天每个真出过红的分支各多跑一次）</td><td><b>省 46%</b></td><td><b>省 54%</b></td></tr>
+        <tr><td>+16 次（每次红都单独多跑一次，不会真发生的悲观上界）</td><td>省 39%</td><td>省 46%</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">「多跑一次全量」= 全量第一次跑红了，修完换了新头再跑一次。今天这些红是分散在各个中间头上一个个发现的；新方案下同一分支的多处红会在第一次全量里一起暴露。偶发抖动的红只重跑红的那几项（每项约 12 分钟），不重跑全量。</p>
+    </div>
+    <div class="card red">
+      <h3>一处我自己订正过的数字</h3>
+      <p>我最初报给 Tadashi 的「最坏情形省 49%」用的是「多跑 8 次」，那个 8 是我在查失败记录之前估的，依据不足。查完之后：那天 16 次失败分布在 10 个分支上，有依据的最坏情形是「多跑 10 次」= 省 46%（含主干复用 54%）。订正发给 Tadashi 后已被接受，单子上的验收判据已改为「常规至少省 59%；最坏（多跑 10 次）至少省 46%」，原来的 49% 作废。常规情形的 59% / 67% 不受影响。</p>
+    </div>
+    <div class="card gray">
+      <h3>怎么复核</h3>
+      <p>合入并打开开关 7 天后，Tadashi 用同一个脚本拉真实记录，主指标是「每次 QA 验收摊到的 CI 分钟」：2026-09-16 是 729 分钟，常规目标 ≤ 299，最坏目标 ≤ 391。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="关键取舍与被否掉的方案">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>关键取舍与被否掉的方案</div>
+    <div class="card amber">
+      <h3>我们接受的代价</h3>
+      <ul>
+        <li><b>测试红会晚一点才看到。</b>平时的头只跑廉价门，单元测试和脚本测试的红要到全量那次才暴露。Tadashi 的裁定：实现 Runner 本来就该在本地跑相关测试；它也可以在交给复审前自己请求一次全量。</li>
+        <li><b>平时的 PR 页面上 CI OK 会显示「等待中」。</b>这是设计内的样子，不是故障：它表示「这个头还没跑过全量」。</li>
+        <li><b>立卡守卫（程序）要改一小处。</b>旧的廉价门运行会在这个头上留下两条永远盖不掉的旧记录（一条「跳过」、一条可能是「已取消」）。守卫今天见到任何非绿记录就拒绝，所以要开一个很窄的口子：只豁免<b>早于最新 CI OK</b>、而且名字恰好是这两条之一的旧记录；其余一切照旧从严——包括全量绿了之后才出现的任何红、跑着的、取消的记录。守卫还会自己去 GitHub 核对那次全量运行：确实是这个头、确实是我们的 CI、检查名单和仓库里登记的 16 项一项不多一项不少、每一项都成功。纯文档 PR 在这个守卫下照旧过不了（今天也是这样，靠 Lead 直接放行），不借机放宽。（这一条在外部评审 Codex 第一轮后收紧过：原稿会放过「全量绿之后又出现的红」。）</li>
+      </ul>
+    </div>
+    <div class="card red">
+      <h3>被否掉的方案</h3>
+      <table>
+        <tr><th>方案</th><th>为什么不要</th></tr>
+        <tr><td>改哪个包只跑哪个包（单子原文）</td><td>重放只省 −8%～21%；跨层的毛病恰恰不出在被改的那一层，之前的成本审计（FLY-1987）也明确说过这类测试不能按路径裁。</td></tr>
+        <tr><td>只看「这一次推送改了什么」</td><td>要依赖推送的先后记录；被顶掉的那次推送的改动在中间头上永远没测到；你在 FLY-1877 已经否过「看历史」的判定；也只省 13.5%。</td></tr>
+        <tr><td>平时的头上 CI OK 也显示绿，另加一项新的必过检查</td><td>三个发布的门都得学会认新名字，漏改一处就是悄悄放宽；还要改仓库设置。</td></tr>
+        <tr><td>用手动触发（workflow_dispatch）跑全量</td><td>实测：这种运行的结果盖不掉之前留下的「跳过」记录，立卡守卫会一直拒绝；而且它测的是分支本身，不是「合进主干之后」的样子。</td></tr>
+        <tr><td>让 Bridge 在 QA 开始时自动触发</td><td>要在中枢程序里加对外操作、重试和失败处理；而触发只关乎快慢不关乎安全，一条命令加门前补请求已经闭环。</td></tr>
+        <tr><td>把「任何 .md 文件」都算文档</td><td>设计节点的产物（engineering/doc、product/doc）今天已经算文档、只跑约 6 分钟；但仓库里另有 259 个 .md 是 Lead 规则、技能说明这类会被测试直接读取的文件，不能一律当文档。</td></tr>
+      </table>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="诚实边界：做什么、不做什么">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span>诚实边界：做什么、不做什么</div>
+    <div class="card green">
+      <h3>做</h3>
+      <ul>
+        <li>平时的 PR 头只跑 Classify + 廉价门；全量由打标签触发；合并提交形状的头自动全量。</li>
+        <li>新命令 <span class="mono">ci-full ensure</span>；QA 开场步骤、立卡前提示词、立卡守卫的补请求。</li>
+        <li>主干上同一份代码不测第二遍（带独立核对）。</li>
+        <li>一个仓库开关 <span class="mono">CI_SCOPED_MODE</span>，默认关 = 和今天完全一样。</li>
+        <li>度量脚本与 7 天复核方法。</li>
+      </ul>
+    </div>
+    <div class="card red">
+      <h3>不做</h3>
+      <ul>
+        <li>不买机器、不上自托管（那是 FLY-2647）。</li>
+        <li>不改必过检查的名字，不改 GitHub 分支保护，不改合并前等待脚本，不改 Bridge 的合并执行器。</li>
+        <li>不删、不缩、不跳过任何一项测试本身；全量还是那 16 项。</li>
+        <li>不做「PR 头上同一份代码不测第二遍」——立卡守卫不接受带跳过的运行，要做就得让守卫自己去核对凭证，那是另一个门的改动，单独立项。</li>
+        <li>不给 QA 的「通过」加服务端 CI 校验；最后一道硬门仍是立卡守卫和 GitHub 自身。</li>
+      </ul>
+    </div>
+    <div class="card gray">
+      <h3>已知的小毛刺</h3>
+      <ul>
+        <li>有人对一个只跑过廉价门的头直接发 :cool:，合并前等待脚本会空等 25 分钟再报超时（安全，但慢）。留作后续改成立刻报错。</li>
+        <li>合并进主干时若「代码相同但提交信息不同」，极少数依赖提交信息的测试在复用时不会重跑；廉价门每次都跑。</li>
+        <li>GitHub 账单此刻可能仍受限，本单自己的 CI 也可能起不来——如实记录，恢复后重跑，不绕过。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s7" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="上线与回滚">
+    <div class="section-title"><span class="dot" style="color:#1a365d;">●</span>上线与回滚</div>
+    <div class="card">
+      <table>
+        <tr><th>步骤</th><th>谁</th><th>效果</th></tr>
+        <tr><td>1. 合入这个 PR</td><td>正常发布流程</td><td>开关没打开 ⇒ 每个头照旧跑 16 项，和今天一样</td></tr>
+        <tr><td>2. 等新版命令行工具部署到本机</td><td>自动更新器</td><td>立卡守卫换成新规则</td></tr>
+        <tr><td>3. 打开开关</td><td>Tadashi</td><td>下一个 PR 头开始只跑廉价门</td></tr>
+        <tr><td>回滚</td><td>Tadashi，一条命令</td><td>关掉开关 ⇒ 下一个头恢复 16 项；不需要撤销代码</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">顺序必须是「先部署、后打开」：反过来的话，旧版立卡守卫会被那两条旧记录卡住（是卡住，不是放行）。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见（自动保存）</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <div class="section" data-section="页面意见汇总">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集你在各节写的意见；点按钮一键复制，贴回给 Tadashi 即可。这是修改意见，不是通过信号。</p>
+      <div id="summary-body">（还没有意见）</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2681";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2681-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2681-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败，请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "（还没有意见）"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长，已拆成 " + chunks.length + " 段，请逐段复制：";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n（无意见）", "已复制（无意见）"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

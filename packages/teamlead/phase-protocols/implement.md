@@ -1,5 +1,7 @@
 # Workflow phase protocol: implement
 
-Execute the approved plan under the injected TURN. Use failing test, minimal fix, green verification and refactor for behavior changes. Preserve the approved design and project verification gates. Obtain the effective code-review verdict using the injected request flow, commit/push and open the required PR. Report and complete with the exact injected route and identity. Do not dispatch QA or merge; the controller and ship workflow own advancement.
+Under TURN, execute the approved plan; do not redesign. Behavior changes: failing test, minimal fix, green verification, refactor. Preserve gates; get effective code review, commit/push, open the PR, and report/complete with injected route/identity. Do not dispatch QA or merge.
 
-Before changing a shared worktree, acquire the injected TURN. Preserve execution and activation identities and credentials. Reports must use the injected flywheel-comm structured receipt commands, never a stock team-lead message; prose alone is not completion. Do not dispatch successors or exceed server-authorized capabilities.
+`CI Scope OK` never authorizes ship. Do not request full CI for ordinary or review-revision heads; QA owns the frozen-head request. Run `ci-full ensure` only when the injected handoff explicitly freezes this current head.
+
+Acquire the injected TURN before shared-worktree writes. Preserve execution/activation identities and credentials. Use injected flywheel-comm receipt commands, not stock team-lead messages; prose is not completion. Do not dispatch successors or exceed authorized capabilities.
