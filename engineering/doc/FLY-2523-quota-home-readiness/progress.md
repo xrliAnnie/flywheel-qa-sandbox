@@ -1,13 +1,13 @@
 ---
 issue: FLY-2523
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-18T17:03:19.575Z
-nextStep: Add failing slot alert, cycle isolation, rider, and test-deploy opt-in tests
+phaseCursor: 2/6
+updated: 2026-09-18T17:26:25.404Z
+nextStep: Format and inspect implementation, then run focused and affected verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: implement (1/6)
-**next**: Add failing slot alert, cycle isolation, rider, and test-deploy opt-in tests
+**phase**: implement (2/6)
+**next**: Format and inspect implementation, then run focused and affected verification
