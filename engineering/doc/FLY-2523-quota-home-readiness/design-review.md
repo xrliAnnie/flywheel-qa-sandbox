@@ -17,4 +17,8 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 
 当前修订：roster单源且与patrol分离；无lease resident增加持久执行/socket强证据，不mint lease；desktop正向credential proof的范围向Lead询问；小时节流、单次process退出验证、digest准确公式与测试名、2729 QA证据schema已补。Lead问题0d98895d已确认保留fence并解释长期漂移需求；此是范围指令，未伪称review-ruling。完整生产activation继续禁止直到所有条件与2729证据满足。
 
-下一次review必须新gate+新request（本次已得到有效CHANGES），与同request处理no_verdict的重放不同。尚未创建R2，等desktop范围答复后冻结完整修订，再提交审查。
+下一次review必须新gate+新request（本次已得到有效CHANGES），与同request处理no_verdict的重放不同。desktop范围答复现已收到，修订后创建R2，身份记录追加在下文。
+
+## R2前范围修订（Lead aa341d63回复）
+
+Lead明确批准改验收范围：桌面凭据权威另单、本单交付注册home就绪证明并原样展示global unknown、开flag移至独立受控动作。FLY-2729证据合同采纳；独立开关仍须2729部署/QA和桌面正向权威。plan已撤activation wrapper/flag-routes改动/本单动态恢复任务，增加双结果JSON、有限证明正向条件、默认global失败exit与显式registered验收模式、runtime继续只读global以及相应反例。HTML和Mermaid源同步。本轮保留R1 finding记录，不把Lead范围答复当server settled。

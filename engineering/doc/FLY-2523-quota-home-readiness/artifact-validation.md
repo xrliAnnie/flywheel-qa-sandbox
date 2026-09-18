@@ -13,3 +13,7 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 - 生产home：仅readlink/lstat/marker/注册authority只读核查；未运行迁移、账号登录、flag写入或重启。
 
 R1修订后再次运行同一Node VM校验，8区域、路径隔离存储、长意见分段、clipboard拒绝/缺失回退均PASS。仅更新Mermaid源码以匹配“已满足可只读留证”；遵守Lead指令未再尝试渲染。
+
+## R2范围同步核验
+
+Lead aa341d63裁定已同步plan、exploration、research、HTML和两个Mermaid源。2026-09-18 UTC重跑HTML静态/VM交互验证：8个section、单nonced script、路径隔离存储、storage拒绝、1800字符分段、两类clipboard fallback均pass。git diff --check通过。图仍使用已报告的本地渲染失败占位，遵照Lead不再重试；没有浏览器视觉QA证明。

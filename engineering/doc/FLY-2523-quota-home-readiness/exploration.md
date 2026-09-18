@@ -7,7 +7,7 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 
 2026-09-18 05:53Z founder 裁定取代旧手工窗口方案：凭据迁移必须自己重试、每次留回执、逾期主动告警。日期头使用宿主本地 2026-09-17；裁定按 UTC 保留。当前节点只设计，不迁移 home、不登录、不翻 flag、不重启。
 
-交付顺序：明确全部 approved home → 在既有节律下检查使用状态 → 空闲才备份及迁移 → 全部都有满足回执并重验真实拓扑 → 生成 readiness-receipt → 真实 collector 判 ready → 后续获授权部署者打开 flag → 隔离 usage-limit 恢复验收。
+最终交付顺序：明确全部 approved home → 既有节律检查使用状态 → 空闲才备份迁移 → 全部满足回执及当场拓扑 → 生成 receipt 与有范围的注册home证明，同时完整展示global unknown。本单不开flag。Lead aa341d63已将桌面凭据权威、独立开关及动态恢复验收移出本单；后续开关仍须2729 QA、桌面正向证明和当场global ready。
 
 ## 当前证据
 

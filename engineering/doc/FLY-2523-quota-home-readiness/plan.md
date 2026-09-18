@@ -7,10 +7,11 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 
 设计节点限定文档、审查、HTML、提交推送与交接。以下是 implement/QA 工作，不表示已执行。以 2026-09-18 05:53Z founder 裁定为准，不再等人寻找安静窗口。无新 launchd、cron、interval；不改变 R1–R5 或额度引擎决策，不登录、不写 founder canonical auth，不自动恢复被人关闭的 flag。
 
-验收分为可独立交付的机制与跨单恢复依赖，两者不混称DONE：
+**最终范围以Lead问题aa341d63-0fb2-4982-acb6-44a95efe148b的四条裁定为准，取代本计划早期全宿主ready与开flag要求。** 本单交付三项：①自动检测、幂等迁移、回执和逾期告警机制；②已注册home的readiness证明；③注册派生且对未知项fail-loud的approved清单。本单不开flag、不实现activation wrapper或修改flag-routes，不执行全局切号恢复验收。
 
-- **机制交付判据**：注册派生inventory、safe anytime attempt、持久done/already-satisfied回执、逾期真实告警、全部home真实拓扑+同digest回执+真实readiness checker、正式activation守卫和反例测试均通过。implement可提交机制交付证据；设计节点的DONE只指审查批准、HTML交付、文档提交及phase_design_complete，不表示生产目标完成。
-- **完整issue端到端判据**：在FLY-2729部署/独立验收后，才执行受控flag activation和isolated usage-limit恢复验证（包含daemon换代及新token生效）。FLY-2729 pending时，明确记录activation/recovery为dependency-pending并保持off，交接后持续保留该验收项；不得把它删掉或把机制交付写成全单生产DONE。FLY-2729不是唯一条件：还必须解决R1指出的roster分叉、无lease resident绑定和未知桌面reader；只有全部前置证据满足才可继续，详见§13。readiness ready=true只是必要条件，必须与全部home的当场拓扑和同digest满足回执共同通过。
+本单可在“已注册home全部证明成立、全局桌面reader仍unknown”的诚实结果下完成。不能把未知者静默排除或改成通过，也不能让已另定归属的桌面缺口无限阻止本单收口。完整全局结果与有限范围证明必须同时输出，详见§6；不存在无scope的ready=true。Raya roster单源和已注册resident缺lease的强绑定核验仍属本单，不因新边界删去。
+
+开flag成为后续独立受控动作，由Lead落实归属：FLY-2729部署且daemon/新token生效QA通过、桌面凭据权威单解决unknown、当场全局readiness与全部home证据重验，才有资格进入授权开关流程。桌面依赖的issue ID尚未提供，交接明确为“Lead待分配”，不得虚构已立项或已解决。本单向后续动作交付可消费证据；不以“本单完成”作为启动授权。FLY-2729证据生产合同已获Lead采纳，本单只读消费状态可为pending，不阻断本单的注册home验收。
 
 ## 2. 固定输入、身份与状态模型
 
@@ -37,7 +38,7 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 
 reason 枚举：active_process、active_lease、lock_busy、process_unknown、lead_authority_unknown、launch_fence_unavailable、unsafe_path、backup_failed、mutation_failed、durability_uncertain、receipt_failed、linked、marker_cleared、canonical_link_verified。结果不含 token、auth hash、环境全文。backupRef 是受限本地相对位置，不把备份内容/路径发到公开报告。
 
-所有结果保留；最新一次 skipped 不删除先前满足证据。但 activation 只接受同 inventoryDigest 下的 done/already-satisfied、satisfied=true、durable receipt，加上当场五家文件拓扑重查。任一失败/漂移使其不能单凭历史通过。状态丢失不能用现有 symlink 伪造旧 done；下一次安全观察只能生成新的 already-satisfied。
+所有结果保留；最新一次 skipped 不删除先前满足证据。但注册home就绪证明只接受同 inventoryDigest 下的 done/already-satisfied、satisfied=true、durable receipt，加上当场五家文件拓扑重查。任一失败/漂移使其不能单凭历史通过。状态丢失不能用现有 symlink 伪造旧 done；下一次安全观察只能生成新的 already-satisfied。
 
 ## 3. 安全单次操作
 
@@ -76,7 +77,7 @@ finally release only own mutex, finish external attempt receipt
 
 Lead 首选实际 restart window：`restart-services.sh` 的 `lead_restart_wait_quiescent` 与 `lead_body_hard_clear` 后、controlled-wave arm/bootstrap 前调用一次，仍检查 same-home fence。任一 query/launchctl error 不当 unloaded。小时/手工调用也用同一 fence，空闲且 fence 覆盖完整可执行，不必等待全舰队空闲。普通 raw Codex 可被 census 检出；不支持绕过所有 Flywheel 启动入口的恶意并发写入，不以两次 ps 声称对恶意同 UID 进程有安全隔离。
 
-备份或 fsync 失败不生成满足证据。auth 已换而 marker/receipt 失败，记 failed/uncertain；下轮重查可收敛，不重复覆盖原备份。使用 attempt intent 关联原始 backup，崩溃后不拿新的 canonical 内容伪装原始副本。崩溃在最终 receipt 前，激活失败，下一次重试留新的完整证据。禁止自动 --unlink 或恢复备份覆盖当前 auth。
+备份或 fsync 失败不生成满足证据。auth 已换而 marker/receipt 失败，记 failed/uncertain；下轮重查可收敛，不重复覆盖原备份。使用 attempt intent 关联原始 backup，崩溃后不拿新的 canonical 内容伪装原始副本。崩溃在最终 receipt 前，注册home满足证明失败，下一次重试留新的完整证据。禁止自动 --unlink 或恢复备份覆盖当前 auth。
 
 ## 4. 接入已有节律，避免再忘
 
@@ -95,13 +96,9 @@ deadline 以 config.enrolledAt（或可信更早 pendingAt）为基准，不以�
 
 `sent` + transport message id 才是送达；duplicate 只关联先前实际 sent/queued 状态，不能凭 exit 0 写 delivered。queued_transient 记 pendingDelivery 并由已有 queue drain 恢复；dead_lettered/config_error 触发现有 meta-alert 并在下一 cadence 重试，不清 obligation。新 kind 的 strict 输出补充 message id，与既有返回兼容。告警发生与迁移成功是不同账，不用发告警代替完成迁移。
 
-## 6. Receipt 与 flag 激活
+## 6. 有范围的就绪证据与后续开关边界
 
-**硬红：FLY-2729 未落地并证明相关 daemon 重载新 token 生效之前，codex_quota_auto_switch 必须保持 off。** 这是Lead对问题5b425684-55e5-42db-a2c9-90727afed7ec回复新增的正式前置条件。FLY-2523可以交付迁移/回执/告警及设计阶段，但不能把这些当作激活许可。
-
-activation守卫新增 `daemonRecoveryDependencyReady`：从现有deployment_events取得FLY-2729对应merge SHA，验证当前实际deployed SHA包含该提交，且引用下述被独立QA正式提交并绑定tested head的daemon换代+新凭据后续请求成功证据；缺失、失败、陈旧构建或仅issue状态为Done均拒绝`dependency_not_ready:FLY-2729`。不接受命令行boolean或自然语言“已落地”覆盖。使用现有部署/QA证据读取入口，若没有可验证证据则保持off并报告，不在本单重写2729实现。证据合同由2729 QA生产、2523只消费，不能自行造成功回执：不可变JSON存于 `~/.flywheel/state/qa-evidence/FLY-2729/<testedHeadSha>/<sha256>.json`，file<=64KiB、0600、目录0700、禁止symlink/路径逃逸。schemaVersion=1，issueId=FLY-2729，testedHeadSha，qaExecutionId，observedAt，scenario=isolated_usage_limit，homes数组（homeId、daemonBefore/After的pid+startIdentity、targetAccountKey的非秘密标识、requestAfterReload.ok=true与requestId、leadPidUnchanged=true、threadUnchanged=true、windowUnchanged=true），result=PASS；全字段严格验证，daemon before/after不能相同。对应引擎接受的 `workflow_claims` 行必须predicate=qa_passed、subject_kind=git_head、subject_digest=testedHeadSha、issuer_execution_id=qaExecutionId，evidence.summary含精确机器标记 `FLY2729_DAEMON_EVIDENCE sha256=<digest> path=<bounded absolute path>`。读取并哈希文件，再和正式claim绑定比对；只有文件、只有PASS或只有issue Done都不够。使用正式PR/land证据连接QA testedHeadSha与merge SHA（squash不能假设祖先）；部署账本连接merge与deployed SHA。缺映射拒绝，不拿git当前branch猜。该生产合同已报Lead送2729执行；若2729未交此证据，保持off。
-
-该检查和home/readiness检查一起在正式flag off→on入口执行，任何UI/CLI同门；off操作永远不受此依赖阻断。
+**本单不开flag。** 不创建codex-quota-activate.mjs、不修改flag-routes、不运行feature-flags set。原off→on事务/CAS方案撤出本单，交给后续独立开关任务重新审查。周期任务只收敛home和告警，从来不自动on。
 
 五家满足后封装现有生成器，不另造 schema：
 
@@ -111,11 +108,23 @@ node scripts/codex-quota-readiness-receipt.mjs   --approved-homes "$FLY2523_APPR
 
 `FLY2523_DEPLOYED_SHA` 来自部署证据且与本次实际加载构建一致，不能用 feature HEAD 冒充。output 必须是 `~/.flywheel/codex-quota/readiness-receipt.json`，禁止双层 codex-quota。生成前校验全部 migration receipts 的 digest+postcondition；生成器仍对 managed home 的当前 symlink+pending 作检查。失败不替换旧有效 receipt；旧 receipt 不能覆盖当前 failed topology。
 
-新增只读 `scripts/codex-quota-readiness-check.mjs`，复用 `checkCodexQuotaReadiness` + 与 bridge/plugin 同源 host collector options（提取窄工厂避免两套配置），输出 ready/failures、inventoryDigest、deployedSha、checkedAt。不得用 `CodexQuotaRuntime.readiness()` 做 flag-off 预检，它会因 flag off 恒为 false。不得用日志“没有报错”代替 JSON ready=true。发现其它 active home/未知 authority 时保留失败，报告 Lead，不扩 inventory。
+新增只读 `scripts/codex-quota-readiness-check.mjs`，提取与bridge/plugin同源的collector options工厂。采集一次不可变host快照，然后输出两个有名字段，禁止顶层裸ready：
 
-提供一次 activation wrapper `scripts/codex-quota-activate.mjs`：与 reconcile 的状态锁串行；重新检查五家满足证据、symlink+无 marker、真实 checker ready、build identity；读取当前 flag scope/revision，记录 before；再调用既有 feature flag 正式写入口（不直接 SQL）。必须在该写入口针对 codex_quota_auto_switch 的 off→on 分支也执行同一个前置检查，覆盖 CLI/UI/API，不让裸 set 绕过“只有所有 home 满足才可开”。读取/检查与实际 set 在串行 activation 事务内，若 revision 变化则拒绝、重新读取，不覆盖新的 kill-switch 决定。任何周期检查都不自动 set on。
+```json
+{"schemaVersion":1,"scope":"registered_homes","inventoryDigest":"sha256","deployedSha":"40hex","checkedAt":"ISO UTC","registered":{"ready":true,"homeIds":["exact registered IDs"],"failures":[]},"global":{"ready":false,"failures":[{"reason":"process_home_unknown","processIdentity":"pid+start","status":"unknown"}]},"activation":{"authorized":false,"ownedBy":"separate_gated_task"},"dependencies":{"FLY-2729":{"status":"pending"},"desktopCredentialAuthority":{"status":"unknown","issueId":null}}}
+```
 
-后续部署者命令语法以当前 CLI 为准：`node "$FLYWHEEL_COMM_CLI" feature-flags set --name codex_quota_auto_switch --to on --project '*' --reason 'FLY-2523 receipts and readiness verified'`；只有上段守卫通过才能生效。设计节点不执行。
+新增 `packages/teamlead/src/codex-quota/registered-home-readiness.ts`，作为有限范围证明的纯只读组合器，不替换或放宽 `checkCodexQuotaReadiness`。global字段原样来自现有checker与完整collector，保留全部未知进程/CommDB失败。本单设计不让注册证明流入运行时的global ready字段；quota runtime/launch-binding继续消费现有全局检查结果。
+
+registered.ready的充分条件：共享roster完整可解析、manifest digest/build正确、全部列出的home身份/真实拓扑/无pending/同digest持久满足回执通过，以及所有权威映射到这些home的当前executions、processes、leases、Lead targets均被原有lease路径或§13的严格resident路径解释。每home列出实际证明的执行与进程identity、证据来源和failures；不能只筛掉global.failures就得到registered=true。registered manifest/authority失败、匹配到注册home的未知或冲突、注册execution的CommDB孤项、PID/socket矛盾均使registered=false。新增的已注册Codex Lead仍须派生，不得固定只验五家。明确属于未批准home的活进程需fail-loud并使registered=false，禁止自动收编。
+
+没有可验证home绑定的进程保持global unknown；另列 `unattributedReaders`（PID/start、可信executable身份、原因，不含环境全文或凭据），明确“未证明它不读取已注册home”。有限registered证明仅声明受信任注册/执行绑定下的读者，不宣称宿主所有读者均已覆盖；桌面OpenAI签名与打开SQLite只能解释观察，不能授予凭据authority。无法采集进程/CommDB等整体输入则两者都失败，不能把采集失败误作一个可分离桌面unknown。桌面unknown不阻止有限证明生成，但它始终阻止全局ready和后续开flag。这样的区别是Lead明确调整的验收范围，不是忽略未知者。
+
+证据文件为 `~/.flywheel/codex-quota/registered-readiness/<inventoryDigest>/<evidenceDigest>.json`，0700/0600、原子写+fsync、禁止symlink，内容hash由后续QA accepted claim引用并绑定tested/deployed identity。传统readiness-receipt.json仍保持原schema和意义，不能向其中塞入registeredReady以冒充全局通过。CLI默认展示两种结果并返回非零当global非ready；仅显式 `--acceptance-scope registered_homes` 用registered结果定exit status，仍完整输出global unknown和activation.authorized=false。运行时不得调用该验收exit status做启动/开关判断。证据是带时间快照，后续开关必须重验，不能把旧文件当永久许可。
+
+FLY-2729状态读取器只负责核验并记录pending/verified/invalid，缺证据不阻断2523注册home证明；缺证据仍是后续开关硬门。证据合同由2729 QA生产、2523只消费，不能自行造成功回执：不可变JSON存于 `~/.flywheel/state/qa-evidence/FLY-2729/<testedHeadSha>/<sha256>.json`，file<=64KiB、0600、目录0700、禁止symlink/路径逃逸。schemaVersion=1，issueId=FLY-2729，testedHeadSha，qaExecutionId，observedAt，scenario=isolated_usage_limit，homes数组（homeId、daemonBefore/After的pid+startIdentity、targetAccountKey的非秘密标识、requestAfterReload.ok=true与requestId、leadPidUnchanged=true、threadUnchanged=true、windowUnchanged=true），result=PASS；全字段严格验证，daemon before/after不能相同。对应引擎接受的 `workflow_claims` 行必须predicate=qa_passed、subject_kind=git_head、subject_digest=testedHeadSha、issuer_execution_id=qaExecutionId，evidence.summary含精确机器标记 `FLY2729_DAEMON_EVIDENCE sha256=<digest> path=<bounded absolute path>`。读取并哈希文件，再和正式claim绑定比对；只有文件、只有PASS或只有issue Done都不够。使用正式PR/land证据连接QA testedHeadSha与merge SHA（squash不能假设祖先）；部署账本连接merge与deployed SHA。缺映射拒绝，不拿git当前branch猜。该生产合同已报Lead送2729执行；若2729未交此证据，保持off。
+
+后续独立开关验收须同时满足：①本单最新注册home证据及当场全部拓扑；②FLY-2729对应代码实际部署且上面QA证据有效；③桌面凭据来源已有正向权威证明，完整global checker ready=true；④独立开关授权、scope/revision审计；⑤隔离usage-limit真实链选到target_profile、相关daemon换代且后续请求成功，Lead/thread/window保持。任何条件缺失都保持off。该任务的实现、开关写入口守卫和动态恢复证明不在本单。
 
 ## 7. 实施拆分与红绿验证
 
@@ -158,19 +167,19 @@ expect(validateReceipt({ ...valid, inventoryDigest: other })).toEqual(false);
 
 **变异测试硬红**：在隔离源码副本把 `now >= dueAt` 变为永假（及 satisfied 取反），运行同一“无回执逾期”integration test必须失败，因为本地接收器POST数=0；保留变异diff、原pass与变异fail输出，不在主工作树遗留变异。测试不是仅 spy `.notify()`。
 
-### T5 — ready与activation守卫
+### T5 — 注册home证明与全局unknown同时保真
 
-新增 check/activate wrappers，提取 collector options 单源，`packages/teamlead/src/bridge/flag-routes.ts` apply-requested之前的off→on守卫及`src/__tests__/flag-routes.test.ts` tests。复用 `scripts/__tests__/codex-quota-readiness-receipt.test.sh`；新增 FLY-2729未部署/无daemon生效QA证据但五家全ready仍拒绝on、off始终允许、missing-one receipt、old digest、pending残留、unapproved active home、unknown comm、错误build、wrong state root、flag revision冲突、kill-switch随后关回不重开。真实 checker+fixture collector，不能 stub ready=true 来证明完整路径。运行 teamlead 的 host-readiness、codex-quota-readiness、runtime、feature-flag 聚焦 suites。
+新增readonly check wrapper、registered-home-readiness.ts、同源collector工厂与§13的resident adapter；不改flag写入口。复用 `scripts/__tests__/codex-quota-readiness-receipt.test.sh`，新增 `registered-home-readiness.test.ts`。通过真实checker+fixture collector验证：五家全部正向证据→registered.ready=true；同时注入无CODEX_HOME桌面process→global.ready=false且原样unknown、unattributedReaders包含它、activation.authorized=false。删除桌面观察或将unknown改PASS的变异必须使测试失败。默认CLI exit非零；显式registered验收模式可exit0但JSON全局仍非ready。断言runtime仍调用原global checker，无注册结果代换入口。
 
-### T6 — 交接与生产验收（后续节点）
+阴性例：missing-one receipt、old digest、pending残留、known unapproved active home、registered CommDB孤项、错误build、wrong state root、整体census失败均不得registered=true；Raya无patrol且Lead authority完整仍覆盖；无lease resident只有全部强证据成立才active，任一socket/PID/持久身份不符即失败。FLY-2729缺证据时允许注册home证明成立，但dependencies必须pending且activation始终false；伪造PASS文件无accepted QA claim、hash不匹配、squash映射缺失均不得verified。运行teamlead host-readiness、codex-quota-readiness、runtime及新增聚焦suites。
 
-PR静态证据 `git diff --name-status <base>...HEAD`：无新增 launchd plist、crontab、timer；`rg -n 'codex.home.reconcile|home.migration' scripts/update-flywheel.sh scripts/restart-services.sh packages/teamlead/src/bridge/plugin.ts`；源码扫描加 cadence call-order tests 共同证明。所有不相关生产目录未变。
+### T6 — 交接与本单生产验收（后续节点）
 
-授权部署后依次收集：实际deployed SHA及FLY-2729已部署/验收证据；派生清单当前五家归属；每家done/already回执（活跃且需要迁移则skip，已完整共享可只读already）；原auth备份的受限验证结果；marker清零；真实readiness JSON ready=true（仅必要条件，须合并全部拓扑+同digest满足回执）；flag before/off→after/on 的scope+revision审计。不要因持续活跃阻断监控或忘掉 obligation。
+PR静态证据 `git diff --name-status <base>...HEAD`：无新增launchd plist、crontab、timer、activation wrapper或flag写路径改动；`rg -n 'codex.home.reconcile|home.migration' scripts/update-flywheel.sh scripts/restart-services.sh packages/teamlead/src/bridge/plugin.ts`；源码扫描加cadence call-order tests共同证明。所有不相关生产目录未变。
 
-隔离 usage-limit 证据：运行同 deployed 模块的隔离 Bridge/StateStore、fixture canonical+pool+homes，注入唯一 test execution/root 的 usage-limit signal，经真实 ingest/coordinator→target_profile→install到fixture canonical→recover 流程，断言 incident 恢复及只重启隔离 execution；stub外部 transport 可替代真实登录，标注 fixture，不能声称生产已经自动切过账号。为生产开关有效性另收集 live consumer enabled/readiness 的只读结果。若现有入口不能做到不污染生产root，禁止向生产发合成事件，先完成隔离 harness；任务验收用用户允许的隔离信号，不动 founder 登录态。动态验收必须再证明相关 home daemon PID/start identity 换代、新进程实际读到目标账户的非秘密身份，并且一次后续请求成功。不能只看 target_profile 或 incident settled。Lead daemon 仅允许通过 `CODEX_HOME=<隔离home> codex remote-control stop --json` + 既有 supervisor ensure-daemon；Lead 进程、thread、窗口身份必须保持。不要把手工执行此命令补齐探针称为自动链已完成。现有自动链缺口归FLY-2729；其部署与daemon新token有效证据未通过前，2523不得激活flag，禁止在2523增加该恢复实现。PR同时贴生产配置证据与隔离动态证明，不能混写。
+授权部署后收集实际deployed SHA、派生清单当前五家准确归属、每家done/already回执及同digest当场拓扑（活跃需改动者skip，已完整共享者只读already）、备份受限验证结果、marker清零、真实registered证明及完整global诊断。测试环境真实告警POST与变异红证据、生产工程频道路由/送达收据分列。只读记录flag前后状态不变；本单不运行on，也不合成生产usage-limit。持续忙仍未完成者保持obligation并告警，不能为收口将其删出清单。
 
-生产预检若实际存在不在注册派生清单内的live home或其它authority失败，报告精确阻碍，flag保持off；不得缩scope/伪造清单。完成真实验收前不报“自动切号已恢复”。
+本单生产验收成功要求全部注册home通过，不要求桌面unknown已解决或2729部署。PR明确列出本单完成项、global未知项、FLY-2729依赖状态、桌面凭据权威任务归属待Lead落实及独立开关的前置清单。不能把registered.ready=true写成“自动切号已恢复”。后续开关任务使用隔离canonical/pool/homes验证真实ingest→coordinator→target_profile→fixture安装→daemon新token后续请求；测试slot不连接真实canonical。该动态链验收归后续动作，不能由2523手工stop daemon补成自动恢复。
 
 ## 8. 回滚、失败与观测
 
@@ -186,7 +195,7 @@ PR静态证据 `git diff --name-status <base>...HEAD`：无新增 launchd plist�
 | idle备份link清marker；重复无home写 | T2真实CLI与backup计数 |
 | 缺receipt超过N天告警真发+变异红 | T4真实sender到本地HTTP+变异输出；生产目的channel验收 |
 | 无新增launchd/cron | T3/T6 diff与既有cadence调用trace |
-| 全五家满足→真实ready→flag→隔离incident恢复 | T5守卫与T6生产/隔离分列证据 |
+| 原全局ready→开flag→恢复验收：Lead aa341d63已改范围 | 本单T5/T6证明registered homes并保留global unknown；开flag及恢复归独立受控动作 |
 | founder登录态不动、先备份 | T2 canonical快照、T6操作审计 |
 
 effective reviewVerdict、审查questionId、最终HTML URL与发布核验放 progress.md / design-review.md，不能以本文自称批准。剩余部署与实现明确由后续阶段完成。
@@ -205,7 +214,7 @@ MEDIUM Lead-launch-fence-blast-radius：现有三家Lead确实无需写入。建
 
 ## 12. 有效审查R1与Lead范围裁定
 
-2026-09-18本轮有效reviewVerdict=CHANGES_REQUESTED，request=d7ab6f48-fe2a-458b-9b31-95b9a1896a7e。HIGH raya-lead-roster-divergence：本单共享credential-home roster修复，原resident patrol名册保持不变，禁止通过给Raya盲加patrol=true回避；T5新增集合一致性测试。HIGH readiness-ready-unreachable-on-host：桌面Codex无CODEX_HOME、keyed resident进程无lease两类已知阻碍须明确归属后重审，不能只等待2729就宣布可开。
+2026-09-18本轮有效reviewVerdict=CHANGES_REQUESTED，request=d7ab6f48-fe2a-458b-9b31-95b9a1896a7e。HIGH raya-lead-roster-divergence：本单共享credential-home roster修复，原resident patrol名册保持不变，禁止通过给Raya盲加patrol=true回避；T5新增集合一致性测试。HIGH readiness-ready-unreachable-on-host：keyed resident强绑定修复仍在本单；桌面权威经Lead aa341d63明确移至独立任务，本单改为注册home证明，全局unknown保留，开flag动作移出。此为验收边界裁定，仍须R2有效审查通过。
 
 Lead问题0d98895d-f500-4375-afe1-65d7b82123f8明确保留Lead fence：已满足不等于不变量；fence在当前状态下no-op，保留用于未来漂移安全收敛。MEDIUM lead-launch-fence-blast-radius保留在审查记录，按此范围决定继续；该prose是设计范围指令，不冒充server review-ruling或抹掉finding。Lead正常结果只允许already-satisfied、skipped+原因、done+回执；I/O失败是外置attempt失败诊断，不触发第四种修复动作。本单绝不为了满足home而重启Lead/动Lead进程。daemon恢复实现归2729且只走remote-control stop+既有supervisor。
 
@@ -228,4 +237,4 @@ MEDIUM keyed-home-no-drain-window：不虚构当前implement的自然空闲频�
 
 作者本轮lsof只读核查：PID1612 executable=/Applications/ChatGPT.app/Contents/Resources/codex，codesign身份OpenAI OpCo/2DC432GLL2；打开canonical目录下logs_2.sqlite、queue_1.sqlite与tmp/arg0/.../.lock。这些证明其使用该状态目录，但不独立证明其内存凭据来源/账号chain。SQLite还可经CODEX_SQLITE_HOME搬离CODEX_HOME；官方auth支持file/keyring/auto/ephemeral，不能仅凭路径或缺环境变量推凭据authority。源码目前没有desktop credential attestation adapter。未读取token、未给活app-server发RPC或重启。
 
-向Lead问题aa341d63-0fb2-4982-acb6-44a95efe148b请求边界裁定：若必须新建desktop runtime正向证据producer，按90a807c5约定由Lead调整验收/另定归属；未裁定前维持全宿主checker unknown、flag off。禁止把“已证明五家”偷换成global ready。T5必须包含无CODEX_HOME桌面进程fixture，当前行为应可复现unknown；缺权威不能写成PASS。该条的最终处置必须得到Lead明确回答后才提交下一轮设计审查。
+Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负责，本单只证已注册home；全局桌面unknown仍原样展示，开flag移至独立受控动作并同时依赖FLY-2729与桌面权威证明。§6/T5/T6落实该裁定，既不排除桌面进程也不谎称通过。Lead同时采纳2729不可变证据+accepted qa_passed claim合同。该答复不是server review-ruling；R1的HIGH仍记录，交R2核对修订后的范围和设计。

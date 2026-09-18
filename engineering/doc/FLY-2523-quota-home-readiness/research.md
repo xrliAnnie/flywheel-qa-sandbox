@@ -83,3 +83,7 @@ Lead已创建FLY-2729（FLY-2072下，High）处理Lead daemon换代/新token生
 [OpenAI认证说明](https://learn.chatgpt.com/docs/auth)明确提供file、keyring、auto、ephemeral存储；file才对应CODEX_HOME/auth.json，ephemeral在进程内存。[环境变量说明](https://learn.chatgpt.com/docs/config-file/environment-variables)分别定义CODEX_HOME和CODEX_SQLITE_HOME。因此从打开SQLite推断credential home是未经证明的推理，本设计拒绝这样放行。
 
 源码强证据：Blueprint.ts:993正常admit；CodexTmuxAdapter.ts:910持久home binding、398 launch snapshot；codex-home.ts:2308 resolver可只读验证keyed旧binding；codex-daemon-runtime.ts:314/329以socket holder+PGID核实活daemon。无leaseresident可新增严格只读adapter，不修改lease语义。桌面尚无同等producer，Lead边界问题aa341d63待答。
+
+## 最终验收边界裁定
+
+Lead通过aa341d63批准桌面凭据证明另单；2523只证注册home，global unknown原样保留，本单不开flag。2729不可变QA收据合同获采纳。本单仍修复Raya credential roster及registered resident证据路径，不开启Raya patrol、不改lease语义、不触碰活app-server。独立开关必须同时解决2729与桌面权威，再重验global。本节和plan §1/§6取代前文调查期间的开关范围。
