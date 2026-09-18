@@ -3,7 +3,7 @@ Issue: FLY-2701 (https://linear.app/geoforge3d/issue/FLY-2701/语音按需启动
 日期: 2026-09-17
 基于: research.md
 
-状态: 待有效设计评审。此设计取代FLY-2446常驻模型；2693健康来源继续复用，不复制告警系统。
+状态: R2有效APPROVED（2026-09-18 UTC；gate 72ea5043-232e-4070-9ef8-ce8dbb8de89b）。非阻塞建议见review-disposition.md，不代表实现或生产验收。此设计取代FLY-2446常驻模型；2693健康来源继续复用，不复制告警系统。
 
 ## 1. Founder视角与最终范围
 
