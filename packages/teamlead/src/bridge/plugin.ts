@@ -2303,12 +2303,6 @@ export function createBridgeApp(
 				reason: "bridge ingest token not configured",
 			});
 		});
-		app.post("/api/workflow/shadow-declaration", (_req, res) => {
-			res.status(503).json({
-				ok: false,
-				reason: "bridge ingest token not configured",
-			});
-		});
 	} else {
 		app.post(
 			"/api/workflow/evidence-run",
@@ -2323,9 +2317,18 @@ export function createBridgeApp(
 				vercelProjectName: () => reportRegistry.vercelProjectName(),
 			}),
 		);
+	}
+	if (!config.apiToken) {
+		app.post("/api/workflow/shadow-declaration", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				reason: "bridge api token not configured",
+			});
+		});
+	} else {
 		app.post(
 			"/api/workflow/shadow-declaration",
-			tokenAuthMiddleware(config.ingestToken),
+			tokenAuthMiddleware(config.apiToken),
 		);
 		app.use("/api/workflow", createAutoMergeShadowRouter({ store, projects }));
 	}

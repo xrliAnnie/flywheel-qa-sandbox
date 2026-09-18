@@ -184,7 +184,7 @@ Commands:
             --rerun-spec <path.json> [--local-copy <path>] [--record-id <uuid>]
   shadow-declare  Record one Lead-authenticated shadow class declaration.
             --question <qid> --class pure_docs|config_only|single_point_change|other_code
-            --message-ref <Discord URL|channelId/messageId> [--declaration-id <uuid-v4>]
+            [--declaration-id <uuid-v4>] (direct to Bridge; do not post to Discord)
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for an explicit execution/head (FLY-827; requires --exec-id and --pr-head)

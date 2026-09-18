@@ -520,6 +520,80 @@ describe("StateStore auto-merge shadow ledger", () => {
 		store.close();
 	});
 
+	it("records direct Lead-authenticated evidence without Discord residue", async () => {
+		const store = await StateStore.create(":memory:");
+		seedBoundVerdict(store);
+		const input = {
+			declarationId: DECLARATION_ID,
+			questionId: "question-1",
+			runId: "run-1",
+			declaredClass: "pure_docs" as const,
+			declaredBy: "flywheel-eng-lead",
+			evidenceKind: "lead_authenticated" as const,
+			leadIdentityDigest: "b".repeat(64),
+			leadAuthMethod: "lead_hmac" as const,
+			declaredAt: "2026-09-08T12:01:00.000Z",
+		};
+
+		expect(store.recordAutoMergeShadowDeclaration(input)).toMatchObject({
+			ok: true,
+			status: "created",
+			row: {
+				evidence_kind: "lead_authenticated",
+				lead_identity_digest: "b".repeat(64),
+				lead_auth_method: "lead_hmac",
+				discord_channel_id: null,
+				discord_message_id: null,
+				discord_author_user_id: null,
+				message_ts: null,
+			},
+		});
+		expect(store.recordAutoMergeShadowDeclaration(input)).toMatchObject({
+			ok: true,
+			status: "replayed",
+		});
+		expect(
+			store.recordAutoMergeShadowDeclaration({
+				...input,
+				leadAuthMethod: "carrier_passthrough",
+			}),
+		).toEqual({ ok: false, reason: "declaration_conflict" });
+		store.close();
+	});
+
+	it("rejects mixed direct and Discord evidence at the SQLite boundary", async () => {
+		const store = await StateStore.create(":memory:");
+		seedBoundVerdict(store);
+		expect(() =>
+			rawDb(store)
+				.prepare(
+					`INSERT INTO auto_merge_shadow_declaration
+					  (declaration_id, question_id, run_id, declared_class, declared_by,
+					   discord_channel_id, discord_message_id, discord_author_user_id,
+					   message_ts, evidence_kind, lead_identity_digest, lead_auth_method,
+					   declaration_seq, declared_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					DECLARATION_ID,
+					"question-1",
+					"run-1",
+					"pure_docs",
+					"flywheel-eng-lead",
+					"12345678901234567",
+					"22345678901234567",
+					"32345678901234567",
+					OBSERVED_AT,
+					"lead_authenticated",
+					"b".repeat(64),
+					"lead_hmac",
+					1,
+					OBSERVED_AT,
+				),
+		).toThrow();
+		store.close();
+	});
+
 	it("rejects a Discord message already used by a different declaration", async () => {
 		const store = await StateStore.create(":memory:");
 		seedBoundVerdict(store);

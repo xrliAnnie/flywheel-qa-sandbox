@@ -144,7 +144,7 @@ describe("Bridge scaffold", () => {
 		protectedStore.close();
 	});
 
-	it("fail-closes the shadow declaration mount and requires the ingest bearer", async () => {
+	it("fail-closes the shadow declaration mount and requires the master bearer", async () => {
 		const tokenlessStore = await StateStore.create(":memory:");
 		const tokenlessApp = createBridgeApp(tokenlessStore, [], makeConfig());
 		const tokenless = await fetch(
@@ -158,7 +158,7 @@ describe("Bridge scaffold", () => {
 		expect(tokenless.status).toBe(503);
 		expect(await tokenless.json()).toEqual({
 			ok: false,
-			reason: "bridge ingest token not configured",
+			reason: "bridge api token not configured",
 		});
 		tokenlessStore.close();
 
@@ -166,7 +166,7 @@ describe("Bridge scaffold", () => {
 		const protectedApp = createBridgeApp(
 			protectedStore,
 			[],
-			makeConfig({ ingestToken: "ingest-secret" }),
+			makeConfig({ apiToken: "master-secret", ingestToken: "ingest-secret" }),
 		);
 		const url = await startAndGetUrl(
 			protectedApp,
@@ -181,7 +181,7 @@ describe("Bridge scaffold", () => {
 		const authenticated = await fetch(url, {
 			method: "POST",
 			headers: {
-				Authorization: "Bearer ingest-secret",
+				Authorization: "Bearer master-secret",
 				"content-type": "application/json",
 			},
 			body: "{}",
