@@ -2,15 +2,15 @@
 issue: FLY-2523
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-18T06:26:09.122Z
-nextStep: Review retry d7ab6f48 / gate edf3b199 after no_verdict; scope question
-  0d98895d pending. All design docs+HTML pushed; wait effective approval then
-  publish-only, verify hosted CSP, report, phase_design_complete+park. FLY2729
-  hard activation dependency.
+updated: 2026-09-18T06:43:52.224Z
+nextStep: R1 effective CHANGES_REQUESTED. Draft fixes cover roster and resident
+  strong evidence; await Lead desktop credential boundary aa341d63 and2729 QA
+  contract report5e3a7937. Then commit/push, new review gate+request. No new
+  replay of resolved gate.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
 **phase**: design (4/6)
-**next**: Review retry d7ab6f48 / gate edf3b199 after no_verdict; scope question 0d98895d pending. All design docs+HTML pushed; wait effective approval then publish-only, verify hosted CSP, report, phase_design_complete+park. FLY2729 hard activation dependency.
+**next**: R1 effective CHANGES_REQUESTED. Draft fixes cover roster and resident strong evidence; await Lead desktop credential boundary aa341d63 and2729 QA contract report5e3a7937. Then commit/push, new review gate+request. No new replay of resolved gate.
