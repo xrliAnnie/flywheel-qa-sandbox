@@ -265,6 +265,13 @@ chmod 600 "$SLOT_PROJECTS"
 printf '%s\n' "SLOT_TOKEN='slot-token'" > "$SLOT_ROOT/q/$SLOT_NUMBER/.env"
 chmod 600 "$SLOT_ROOT/q/$SLOT_NUMBER/.env"
 printf '%s\n' "$SERVER_PID" > "$SLOT_ROOT.lock/pid"
+# The driver must not depend on BSD/GNU `stat` option ambiguity for its trust
+# check. Node's lstat metadata is already part of the shipped runtime contract.
+cat > "$TMP/bin/stat" <<'SH'
+#!/bin/sh
+exit 99
+SH
+chmod +x "$TMP/bin/stat"
 before="$(wc -l < "$REQUESTS" | tr -d ' ')"
 DRIVER_OUTPUT=$(env \
 	PATH="$TMP/bin:$PATH" HOME="$HOME_DIR" \

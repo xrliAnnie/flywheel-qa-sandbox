@@ -15,9 +15,17 @@ fail() {
 
 trusted_slot_file() {
 	local path="$1" metadata owner mode
-	[ -f "$path" ] && [ ! -L "$path" ] || return 1
-	metadata=$(stat -f '%u %Lp' "$path" 2>/dev/null \
-		|| stat -c '%u %a' "$path" 2>/dev/null) || return 1
+	metadata=$(node - "$path" <<'NODE'
+const { lstatSync } = require("node:fs");
+try {
+	const stat = lstatSync(process.argv[2]);
+	if (!stat.isFile() || stat.isSymbolicLink()) process.exit(1);
+	process.stdout.write(`${stat.uid} ${(stat.mode & 0o777).toString(8)}`);
+} catch {
+	process.exit(1);
+}
+NODE
+	) || return 1
 	owner=${metadata%% *}
 	mode=${metadata##* }
 	[ "$owner" = "$(id -u)" ] && [ "$mode" = "600" ]

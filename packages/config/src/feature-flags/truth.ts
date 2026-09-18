@@ -280,6 +280,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2523 plumbing: process census executable override for hermetic launch-fence tests, not an on/off gate",
 	FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED:
 		"FLY-2523 per-invocation production Bridge identity marker authorizing the existing health rider, not a persistent feature toggle",
+	FLYWHEEL_CODEX_HOME_RECONCILE_LEAD:
+		"FLY-2523 plumbing: QA-slot Lead identity bound to one isolated reconciliation route, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT:
+		"FLY-2523 plumbing: QA-slot project identity bound to one isolated reconciliation route, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_RECONCILE_SLOT:
+		"FLY-2523 per-invocation QA-slot isolation identity marker, not a persistent feature toggle",
 	FLYWHEEL_CODEX_HOME_POLICY:
 		"FLY-2523 plumbing: managed home-policy manifest path, not an on/off gate",
 	FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED:
