@@ -1,16 +1,16 @@
 ---
 issue: FLY-2523
 phase: design
-phaseCursor: 3/4
-updated: 2026-09-18T23:27:18.608Z
-nextStep: Design review 6a6559f7 pending; supplemental sync checks passed.
-  Finish HTML publish/report (Lead d707871b allows publish-failed on suspended
-  hosting), then phase_design_complete and park. fe089c5f confirms design-only
-  route.
+phaseCursor: 4/4
+updated: 2026-09-18T23:38:25.881Z
+nextStep: APPROVED 6a6559f7/9941da33; 12 advisories reported. HTML committed;
+  one publish failed 502 and reported, Lead d707871b authorizes phase handoff
+  despite suspension. Run phase_design_complete then park; controller owns
+  implement. CI/QA remain downstream.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: design (3/4)
-**next**: Design review 6a6559f7 pending; supplemental sync checks passed. Finish HTML publish/report (Lead d707871b allows publish-failed on suspended hosting), then phase_design_complete and park. fe089c5f confirms design-only route.
+**phase**: design (4/4)
+**next**: APPROVED 6a6559f7/9941da33; 12 advisories reported. HTML committed; one publish failed 502 and reported, Lead d707871b authorizes phase handoff despite suspension. Run phase_design_complete then park; controller owns implement. CI/QA remain downstream.
