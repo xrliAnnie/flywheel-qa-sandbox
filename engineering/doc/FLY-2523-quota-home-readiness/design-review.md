@@ -22,3 +22,24 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 ## R2前范围修订（Lead aa341d63回复）
 
 Lead明确批准改验收范围：桌面凭据权威另单、本单交付注册home就绪证明并原样展示global unknown、开flag移至独立受控动作。FLY-2729证据合同采纳；独立开关仍须2729部署/QA和桌面正向权威。plan已撤activation wrapper/flag-routes改动/本单动态恢复任务，增加双结果JSON、有限证明正向条件、默认global失败exit与显式registered验收模式、runtime继续只读global以及相应反例。HTML和Mermaid源同步。本轮保留R1 finding记录，不把Lead范围答复当server settled。
+
+## R2有效结论：APPROVED
+
+- questionId: 26854a59-7c17-4fc8-918f-c1f527e2dc98
+- requestId: a9182ea3-c0bc-4bdc-aaba-dbaa27156262
+- reviewed HEAD: 24919f1f2ef6e3a2dce403381b24200dd5ddc3cd
+- round: 2；reviewVerdict=APPROVED；reviewerVerdict=APPROVED。权威job于2026-09-18 07:04:18 UTC为done；failure_reason=null。
+- settled=[]；policyNote=medium_low_findings_are_non_blocking_v1。没有HIGH；以下六条是非阻塞建议，未冒充已实现或server settled。有效批准取代R1结论；获批plan与HTML正文不在收尾中改写。
+
+### Follow-ups — 实现交接关注项
+
+| findingKey / severity | 审查证据与建议 | 当前处置 |
+|---|---|---|
+| resident-evidence-completed-status / MEDIUM | reviewer只读核查24个keyed执行均有home绑定/launchSnapshot/daemonPgid；其中eng_design 9个StateStore completed而CommDB running+phase_keep_alive=1。应按身份与活socket证据归属，不按StateStore status过滤，补正例fixture。 | 交Lead与implement，未改lease语义或活进程。计数为reviewer观察。 |
+| resident-tui-client-binding / MEDIUM | TUI是tmux下独立进程，非daemon子进程。应核对remote socket等于执行确定性socket、execution identity与稳定PID/start，补真实形状fixture。 | 交Lead与implement，保留强证据要求，不用env-only推断。 |
+| health-callback-vitest-production-reach / MEDIUM | 现有plugin suites会装配health callback。建议测试环境未显式注入隔离state-root/approved-homes/HOME时默认no-op；回归验证reconcile子进程零启动、生产路径零写。 | 明确交接为测试隔离关注项，不能把“注入fixture”一句当现有隔离证据。 |
+| collector-global-semantics-change-unstated / LOW | checker算法保持，但共享roster和resident证据会有意改变global collector结果；runtime/launch-binding需覆盖两项变化。 | “原样”指完整保留checker输出与unknown，不表示collector行为完全不变；交回归验证。 |
+| digest-localecompare-locale-dependence / LOW | 默认localeCompare受ICU locale影响；建议固定locale或明确跨环境支持范围，跨LANG验证。 | 保留兼容现有digest的约束；若改公式需所有producer/consumer同步，交Lead决定。 |
+| lead-launch-fence-blast-radius / MEDIUM | reviewer接受Lead保留fence裁定；锁残留/PID误判仍可能阻挡Lead启动，应保留T3 barrier及旧launcher覆盖未知跳过用例。 | 保留为风险与测试项；不删除fence、不新增Lead重启。 |
+
+六条已通过ask --report报告Lead。APPROVED不等于这些建议已被实现，更不代表生产ready或切号恢复。
