@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 91817,
-      "sha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389"
+      "bytes": 92150,
+      "sha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100"
     }
   ],
   "constraints": [
@@ -90,5 +90,11 @@
     "beforeBundleSha256": "377c59fef2830389845c7cfe5b379123eaedac488e0b6678db4bdf4313b3da45",
     "afterBundleSha256": "6da8f967cc4d715ed7b4568b40f1bb6969227c31ab511ec89af6d4194e4be816",
     "meaning": "FLY-2597 approved plan: identical explicit founder attention and quiet receipt duties in ON/OFF; all other historical bytes preserved."
+  },
+  "packageGateQueueEvolution": {
+    "issue": "FLY-2702",
+    "beforeSourceSha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389",
+    "afterSourceSha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100",
+    "meaning": "The historical patrol procedure gains only the verified package-gate WAITING evidence and finding non-suppression contract."
   }
 }

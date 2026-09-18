@@ -33,15 +33,15 @@
 		},
 		{
 			"id": "runner-patrol-rules.md",
-			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
+			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2702 adds the same verified package-gate WAITING evidence and non-suppression rule to the shortened resident source and the historical procedure.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
-					"sha256": "dad5c6d233c98307cf3c072942a14a22f35c755afd0d0062c860a277308216ad"
+					"sha256": "d74692e5509738c9e65abae330b47b768cddd487617a961d59ac85671efe126c"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389"
+					"sha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100"
 				}
 			]
 		},
@@ -61,15 +61,15 @@
 		},
 		{
 			"id": "patrol-runbook",
-			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged. FLY-2597 updates the OFF shared section 0.11 and adds the same attention/quiet-record duty as ON; runbook recipes remain unchanged. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
+			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged. FLY-2597 updates the OFF shared section 0.11 and adds the same attention/quiet-record duty as ON; runbook recipes remain unchanged. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2702 updates both operational procedures with the identical package-gate queue WAITING contract while the resident ON source carries its concise equivalent.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runbooks/patrol-v1.md",
-					"sha256": "8e79bd0c350f775b624b5f25c463baad3fa52811aa627851fe5e5461c0e947b2"
+					"sha256": "e0e352927689129dc435fe955e6b51c0ff2108e31b938ca63acbddcdfbf767d4"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389"
+					"sha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100"
 				}
 			]
 		},

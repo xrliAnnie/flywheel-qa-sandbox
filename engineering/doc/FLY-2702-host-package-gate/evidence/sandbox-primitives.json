@@ -1,0 +1,26 @@
+{
+  "observedAt": "2026-09-18T01:17Z",
+  "environment": "actual Codex workspace-write, approval never, separate exec tool calls",
+  "pwdGetpwuid": "success uid501 /Users/xiaorongli",
+  "sqliteVersion": "3.53.1",
+  "flock": "LOCK_EX|LOCK_NB acquired in TemporaryFile",
+  "selfKillpg0": "success",
+  "nonexistentGroupKillpg0": "ESRCH 3",
+  "crossToolCallGroup": {
+    "pgid": 94199,
+    "whileAlive": "EPERM 1",
+    "after45sExit": "ESRCH 3",
+    "execSession": 84135,
+    "terminal": "probe child finished, exit0"
+  },
+  "sysctlKernBoottime": "EPERM 1",
+  "sysctlKernBootsessionuuid": "EPERM 1",
+  "ps": "exec PermissionError EPERM 1",
+  "scope": "primitive feasibility only; not two independently provisioned Runner sandboxes; not implementation/throughput acceptance",
+  "crossToolCallFlock": {
+    "whileOwnerAlive": "conflict",
+    "afterOwnerExit": "acquired",
+    "execSession": 58576,
+    "scope": "two tools calls; not independent provisioned Runners"
+  }
+}

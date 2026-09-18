@@ -50,6 +50,11 @@ scripts/lead-alert.sh
 scripts/codex-quota-readiness-receipt.mjs
 scripts/flywheel-node-dwell-control.mjs
 scripts/flywheel-patrol-continuity.mjs
+scripts/package-gate.mjs
+scripts/package-gate-worker.mjs
+scripts/package-gate-host.py
+scripts/package-gate-reporter.mjs
+scripts/lib/package-gate-core.mjs
 scripts/lead-patrol-snapshot.sh
 scripts/meta-alert.sh
 scripts/update-flywheel.sh

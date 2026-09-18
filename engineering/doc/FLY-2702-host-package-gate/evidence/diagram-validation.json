@@ -1,0 +1,16 @@
+{
+  "result": "DIAGRAM PENDING LOCAL RENDER",
+  "attempts": [
+    {
+      "command": "mmdc -i flow.mmd -o flow.svg -w 1000 -b white --svgId FLY-2702-d1",
+      "exitCode": 1,
+      "stderr": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0917/180220.547715:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0917/180220.578766:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0917/180220.622188:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.75832: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "command": "mmdc -i flow.mmd -o flow.svg -w 1000 -b white --svgId FLY-2702-d1",
+      "exitCode": 1,
+      "stderr": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0917/180300.288796:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0917/180300.305438:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0917/180300.312247:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.93253: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    }
+  ],
+  "remoteRendererUsed": false
+}

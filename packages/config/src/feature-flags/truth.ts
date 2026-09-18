@@ -262,6 +262,14 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2662 build and test output path for the native peer adapter, not an on/off gate",
 	FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS:
 		"credential selector allowlist: operator-owned comma-separated beta Actions token variable names, not a feature toggle",
+	FLYWHEEL_PACKAGE_GATE_ADMITTED_AT_MS:
+		"FLY-2702 per-invocation package-gate admission timestamp, not a persistent on/off gate",
+	FLYWHEEL_PACKAGE_GATE_HOST_LIMIT:
+		"FLY-2702 per-invocation host queue selection and rollback value, not a persistent on/off gate",
+	FLYWHEEL_PACKAGE_GATE_REQUEST_ID:
+		"FLY-2702 opaque package-gate request identity propagated to one admitted worker, not a persistent on/off gate",
+	FLYWHEEL_PACKAGE_GATE_SUBMITTED_AT_MS:
+		"FLY-2702 per-invocation package-gate submission timestamp, not a persistent on/off gate",
 	FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS:
 		"FLY-2465 per-invocation execution timeout duration, not a persistent switch",
 	FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS:

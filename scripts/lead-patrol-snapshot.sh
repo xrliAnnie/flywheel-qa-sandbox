@@ -527,11 +527,14 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   semantic_hash="unavailable"
   activity_key="$(sha256_text "$PROJECT_NAME:$LEAD_ID:$execution_id")"
   continuity_reason="helper_unavailable"
+  queue_request="unavailable"
+  queue_position=0
+  queue_wait_seconds=0
   last_change_epoch=0
   if [ "$CONTINUITY_OK" -eq 1 ]; then
-    activity_row="$(jq -er --arg exec "$execution_id" '.facts[$exec] | select(. != null) | [.activity,.last_change_epoch,.last_change_basis,(.entry.semanticDigest // "unavailable"),.key,.reason] | @tsv' "$CONTINUITY_FACTS" 2>/dev/null || true)"
+    activity_row="$(jq -er --arg exec "$execution_id" '.facts[$exec] | select(. != null) | [.activity,.last_change_epoch,.last_change_basis,(.entry.semanticDigest // "unavailable"),.key,.reason,(.entry.queueEvidence.requestId // "unavailable"),(.entry.queueEvidence.position // 0),((.entry.queueEvidence.waitMs // 0) / 1000 | floor)] | @tsv' "$CONTINUITY_FACTS" 2>/dev/null || true)"
     if [ -n "$activity_row" ]; then
-      IFS=$'\t' read -r activity last_change_epoch last_change_basis semantic_hash activity_key continuity_reason <<< "$activity_row"
+      IFS=$'\t' read -r activity last_change_epoch last_change_basis semantic_hash activity_key continuity_reason queue_request queue_position queue_wait_seconds <<< "$activity_row"
     fi
   fi
   case "$activity" in
@@ -557,7 +560,7 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
       *) STEP2_STATUS="FINDING-CANDIDATE" ;;
     esac
   fi
-  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result schema=2 activity=$activity semantic_sha256=$semantic_hash last_change_basis=$last_change_basis last_checked_epoch=$NOW_EPOCH activity_evidence=$activity_key"
+  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result schema=2 activity=$activity semantic_sha256=$semantic_hash last_change_basis=$last_change_basis last_checked_epoch=$NOW_EPOCH activity_evidence=$activity_key queue_request=$queue_request queue_position=$queue_position queue_wait_seconds=$queue_wait_seconds"
   STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}$evidence"
 done <<< "$RUNNER_PANES"
 

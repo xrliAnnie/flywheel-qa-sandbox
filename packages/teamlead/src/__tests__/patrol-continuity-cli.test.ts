@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runPatrolContinuity } from "../patrol-continuity-cli.js";
+import {
+	activityEvidence,
+	runPatrolContinuity,
+} from "../patrol-continuity-cli.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -10,6 +13,42 @@ afterEach(() => {
 		rmSync(root, { recursive: true, force: true });
 });
 describe("patrol helper CLI", () => {
+	it("projects verified package queue fields into machine evidence", () => {
+		const line = activityEvidence(
+			{
+				key: "a".repeat(64),
+				activity: "WAITING",
+				reason: "package_gate_queue",
+				last_change_basis: "baseline",
+				interval_start: 1,
+				interval_end: 2,
+				branch_activity: false,
+				last_change_epoch: 1,
+				entry: {
+					identity: { activationId: "activation:test" },
+					refs: [],
+					sourcesComplete: true,
+					semanticDigest: "b".repeat(64),
+					coverageSinceMs: 1_000,
+					queueEvidence: {
+						requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+						status: "queued",
+						seq: 1,
+						position: 3,
+						enqueuedAt: "2026-09-18T02:00:00.000Z",
+						observedAt: "2026-09-18T02:01:05.000Z",
+						revision: 2,
+						waitMs: 65_000,
+					},
+				},
+			} as never,
+			"exec",
+			2_000,
+		)[0];
+		expect(line).toContain(
+			"queue_request=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa queue_position=3 queue_wait_seconds=65",
+		);
+	});
 	it("validates reports without opening any production data source", async () => {
 		const root = mkdtempSync(join(tmpdir(), "patrol-cli-"));
 		roots.push(root);

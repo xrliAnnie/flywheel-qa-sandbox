@@ -1,0 +1,11 @@
+{
+  "ruling_id": "29aa397c-baf3-4d52-b631-451a1670662a",
+  "source_request_id": "483175f7-567a-4a78-ba55-7f6e094c22c4",
+  "finding_key": "supervisor-exit-status-discarded",
+  "disposition": "follow_up",
+  "follow_up_issue": "FLY-2702",
+  "rationale": "Design node is design-only; HIGH supervisor-exit-status-discarded targets inherited implementation scripts/package-gate.mjs:167. Plan 4.1 already requires cleanup failure to map to failureKind=host_queue/exit1, so the design contract stands. Ruling: fix is owed by the Implement node of this same issue (not waived for code review/QA); design handoff must carry the full finding plus required negative tests.",
+  "ruled_by": "flywheel-eng-lead",
+  "created_at": "2026-09-18 16:58:04",
+  "revoked_at": null
+}

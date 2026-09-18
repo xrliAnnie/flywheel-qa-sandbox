@@ -1020,6 +1020,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/package-gate-queue.test.ts:for (const child of children) child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/package-gate-queue.test.ts",
+		"code": "for (const child of children) child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts:process.kill(pid!, \"SIGKILL\");#1",
 		"path": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts",
 		"code": "process.kill(pid!, \"SIGKILL\");",
@@ -2241,6 +2247,42 @@
 		"key": "scripts/__tests__/flywheel-log-rotate.test.sh:kill -0 \"$PRODUCER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/flywheel-log-rotate.test.sh",
 		"code": "kill -0 \"$PRODUCER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:a.child.kill(\"SIGKILL\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "a.child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:a.child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "a.child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:b.child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "b.child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:child.kill(\"SIGKILL\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:process.kill(-a.child.pid, \"SIGKILL\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "process.kill(-a.child.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:process.kill(started.residualPid, 0);#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "process.kill(started.residualPid, 0);",
 		"classification": "qa-only"
 	},
 	{
@@ -3783,6 +3825,24 @@
 		"key": "scripts/linux-preflight.sh:( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &#1",
 		"path": "scripts/linux-preflight.sh",
 		"code": "( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/package-gate-host.py:launcher.kill()#1",
+		"path": "scripts/package-gate-host.py",
+		"code": "launcher.kill()",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/package-gate-host.py:launcher.kill()#2",
+		"path": "scripts/package-gate-host.py",
+		"code": "launcher.kill()",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/package-gate-host.py:launcher.kill()#3",
+		"path": "scripts/package-gate-host.py",
+		"code": "launcher.kill()",
 		"classification": "out-of-scope"
 	},
 	{

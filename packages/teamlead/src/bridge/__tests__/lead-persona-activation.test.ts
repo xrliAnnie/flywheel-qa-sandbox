@@ -364,9 +364,14 @@ describe("PersonaActivationReader", () => {
 			});
 			const db = new BetterSqlite3(join(f.root, "teamlead.db"));
 			try {
-				db.exec(
-					"ALTER TABLE summary_presentation_migration ADD COLUMN completed_at_ms INTEGER",
-				);
+				const columns = db
+					.prepare("PRAGMA table_info(summary_presentation_migration)")
+					.all() as Array<{ name: string }>;
+				if (!columns.some(({ name }) => name === "completed_at_ms")) {
+					db.exec(
+						"ALTER TABLE summary_presentation_migration ADD COLUMN completed_at_ms INTEGER",
+					);
+				}
 				db.prepare(
 					"UPDATE summary_presentation_migration SET completed_at_ms = ? WHERE project_name = ? AND lead_id = ?",
 				).run(completedAtMs, "raya", "raya");
