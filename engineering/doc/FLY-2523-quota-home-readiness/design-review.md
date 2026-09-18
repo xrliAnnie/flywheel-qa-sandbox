@@ -7,9 +7,9 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 - RequestId: d7ab6f48-fe2a-458b-9b31-95b9a1896a7e
 - 初次 accepted 2026-09-18T06:14:12Z；权威job在06:23:46变failed，failure_reason=no_verdict，reviewer verdict为空。没有有效APPROVED/CHANGES，不将raw输出当批准。
 - raw尾段可读意见：DONE/跨单依赖歧义、restart timeout恢复用例、Lead fence范围、drained checker只是必要条件、告警kind consumer sweep。
-- 1cee2240c修订§1/T3/T4及必要条件；FLY-2729部署+新token验收硬门保持。Lead fence范围问题0d98895d-f500-4375-afe1-65d7b82123f8等待Lead裁定。
+- 1cee2240c修订§1/T3/T4及必要条件；FLY-2729部署+新token验收硬门保持。当时待答的Lead fence范围问题0d98895d已在下文R1处置中更新。
 - 使用相同requestId正式重试返回accepted=true, duplicate=true；不因观察超时另建并行reviewer。
-- 最新有效reviewVerdict：尚无。未发布HTML、未phase complete、未操作生产。
+- 首次失败时没有有效reviewVerdict；随后重放取得下文R1结论。当前仍未发布HTML、未phase complete、未操作生产。
 
 ## R1正式结论
 

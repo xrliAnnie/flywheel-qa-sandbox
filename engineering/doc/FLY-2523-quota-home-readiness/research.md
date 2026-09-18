@@ -13,8 +13,8 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 | 同文件:880–913 | keepBackup 创建 0700 目录、0600 独占文件，fsync | 保留并强制 regular auth 先备份，禁止 canonical 写入 |
 | packages/claude-runner/bin/flywheel-codex-link-truth.mjs:76 | already 不写 report；failed/skipped 无统一回执 | 外层增 attempt ledger，helper 的 report 不能当唯一验收 |
 | scripts/codex-quota-readiness-receipt.mjs:103 | output=join(stateRoot,'codex-quota') | 正确参数 state-root=~/.flywheel，不是 ~/.flywheel/codex-quota |
-| packages/teamlead/src/codex-quota/readiness.ts | 检查 active managed symlink；drained managed 不查 auth | 激活前必须额外重验四家拓扑与满足回执；直接复用 exported checker，不能用 runtime.readiness（flag off 时必 false） |
-| host-readiness.ts | 校验 manifest digest；枚举 leases、所有 CommDB、进程、Lead authority | 四家 receipt 不自动等于 complete；其它 live home 必须报告，不扩大清单或伪造 complete |
+| packages/teamlead/src/codex-quota/readiness.ts | 检查 active managed symlink；drained managed 不查 auth | 激活前必须额外重验全部批准home拓扑与满足回执；直接复用 exported checker，不能用 runtime.readiness（flag off 时必 false） |
+| host-readiness.ts | 校验 manifest digest；枚举 leases、所有 CommDB、进程、Lead authority | 批准home的 receipt 不自动等于 complete；其它 live home 必须报告，不扩大清单或伪造 complete |
 | bridge/plugin.ts:8386 | collector 使用 findResidentCodexLeadTargets 与 commDbRootDir | 验收入口复用真实装配参数，禁止删掉 collector 的不匹配结果 |
 | bridge/gate-poller.ts:778 | onHealthTick 首 tick 与每 healthCheckEveryNTicks，现有 cadence | 在此 callback 调 single-flight reconcile，不新增 timer |
 | bridge/plugin.ts:12565 | health 回调现在 void report；boot 同样调用 | 独立捕获迁移/告警异常，既有健康探测不被阻断；迁移不受 quota flag off 限制 |
@@ -37,7 +37,7 @@ fixture auth 仅伪造测试数据。每个测试提供独立 HOME、state root�
 
 ## 尚未证明的事实
 
-生产 flag 当前值、实时 process census、所有 runtime homes 是否恰为四家、真实告警送达与 usage-limit 恢复均留给 implement/QA 的授权生产验收。两个 Lead home 当前已满足是本轮文件元数据观察，不能据此宣布 readiness ready。
+生产 flag 当前值、实时 process census、所有 runtime homes 是否均被当前批准清单覆盖、真实告警送达与 usage-limit 恢复均留给 implement/QA 的授权生产验收。初始观察的两个 Lead home 当前已满足是本轮文件元数据观察，不能据此宣布 readiness ready。
 
 ## Lead 新事实及恢复链审计
 
@@ -74,7 +74,7 @@ Lead已创建FLY-2729（FLY-2072下，High）处理Lead daemon换代/新token生
 - findResidentCodexLeadTargets额外要求codexResidencyPatrol=true、canSpawnRunners=false及recognizedTier；Raya注册无patrol字段，故quota collector与新清单分叉。resident-codex-lead-recover的standard authority fallback能识别Raya，这不等于旧collector名册已包含它。修复归本单共享credential-home roster，不扩大原巡检政策。
 - GatePoller健康tick实际默认3000ms×20≈60秒；原“小时巡检”来自旧brief，现纠正为复用60秒tick并在callback内持久节流3600秒。
 - scripts/lib/bounded-run.sh的direct-child wait返回会取消watchdog，不能作后代终止证明；计划改为本机制私有的一次性进程管理器。
-- reviewer提供生产ps只读观察：ChatGPT桌面codex app-server无CODEX_HOME；eng_design约10、implement约13个带执行ID的live app-server且lease目录空。作者当前沙箱ps被拒（operation not permitted），不将reviewer计数冒充本轮独立采样；源码host-readiness.ts的process_home_unknown、active keyed无lease→unknown路径已独立复核。两类都不是FLY2729解决范围；不得通过忽略未知进程或自动mint lease绕过。Lead归属问题90a807c5待答。
+- reviewer提供生产ps只读观察：ChatGPT桌面codex app-server无CODEX_HOME；eng_design约10、implement约13个带执行ID的live app-server且lease目录空。作者当前沙箱ps被拒（operation not permitted），不将reviewer计数冒充本轮独立采样；源码host-readiness.ts的process_home_unknown、active keyed无lease→unknown路径已独立复核。两类都不是FLY2729解决范围；不得通过忽略未知进程或自动mint lease绕过。Lead已通过90a807c5将两项HIGH修复纳入本单，并要求涉及lease语义或活app-server时另报边界；后续调查与问题aa341d63见下文。
 
 ## HIGH2进一步只读核查与官方说明
 

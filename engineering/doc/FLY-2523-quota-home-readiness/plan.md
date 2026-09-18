@@ -201,7 +201,7 @@ effective reviewVerdict、审查questionId、最终HTML URL与发布核验放 pr
 
 首请求edf3b199 / d7ab6f48返回no_verdict（没有有效审查结论），以下只是可读raw反馈处置，不伪称findingKey或治理裁决。范围/DONE歧义已在§1分两段，完整生产目标仍保留；restart超时退出/恢复反例已加入T3；drained checker不足已显式补全部拓扑+回执；告警copy/contract/shell消费者已补T4。
 
-MEDIUM Lead-launch-fence-blast-radius：现有三家Lead确实无需写入。建议“全部Lead永远只读”会改变本单safe-anytime契约及未来注册派生home的收尾能力，因此暂保留写入所需的startup fence，只在实际需要变更的home使用；已满足路径零触碰启动。此项报Lead确认是否进一步收窄；不把审查建议当已批准scope削减。
+MEDIUM Lead-launch-fence-blast-radius：现有三家Lead确实无需写入。建议“全部Lead永远只读”会改变本单safe-anytime契约及未来注册派生home的收尾能力，因此暂保留写入所需的startup fence，只在实际需要变更的home使用；已满足路径零触碰启动。Lead已明确保留此fence，范围裁定与未获server settled的审查状态见§12。
 
 ## 12. 有效审查R1与Lead范围裁定
 
