@@ -47,3 +47,9 @@ Lead明确批准改验收范围：桌面凭据权威另单、本单交付注册h
 ## 最终HTML
 
 有效APPROVED后已静默发布并核验：https://fw-reports-42fba7.vercel.app/r/6f025a3d6f35ac79e67b2e72a8f7d5d2/ 。详细HTTP/CSP/source证据见artifact-validation.md。
+
+## 529 slot 返工设计审查
+
+R1 questionId=`4b7c17ac-c60d-4a3f-b427-44f2521f44c1`，requestId=`28fa9948-8e59-4159-9908-1078fcc80ad1`，结论 `CHANGES_REQUESTED`。唯一 HIGH `slot-rider-writes-production-state-root` 指出原返工计划没有把 slot state-root guard 放在 cycle 首次目录/schedule 写之前，也没有 production migration 树零变化证明。修订后的 §14 明确：slot mode 全部坐标先纯只读校验，再允许任何 mkdir/chmod/lock/schedule；Bridge 显式注入 `FLYWHEEL_STATE_DIR=${SLOT_DIR}` 和所有 cycle 路径；driver + health tick 前后递归比较 production fixture/host migration 树的 inode/mode/size/mtime/ctime/digest。
+
+同时吸收非阻塞意见：Vitest filter 改为真实包名 `flywheel-teamlead` 并核对 Tests 数量；production tuple 遇 slot env 泄漏时回落原硬钉；production channel 集合明确为 general/alert/chat；loopback 与 QA 真 Discord REST 反查分开；漂移行号改为符号名加基线约数。R2 必须开新 gate/request，不复用 R1。

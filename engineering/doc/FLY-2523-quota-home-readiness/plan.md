@@ -224,11 +224,11 @@ MEDIUM keyed-home-no-drain-window：不虚构当前implement的自然空闲频�
 
 ### keyed resident无lease的只读一致性修复（本单）
 
-正常启动 `packages/edge-worker/src/Blueprint.ts:993` 已走admitCodexAgentHome；lease缺失不是新正常语义。collector保持原lease匹配路径，新增只读且更严格的resident binding证据路径，既不造lease也不修改admission lease语义：
+正常启动 `packages/edge-worker/src/Blueprint.ts` 的 `admitCodexAgentHome`（基线 `2bd9a1ed7` 约997行）已走home admission；lease缺失不是新正常语义。collector保持原lease匹配路径，新增只读且更严格的resident binding证据路径，既不造lease也不修改admission lease语义：
 1. 从StateStore当前execution/runtime/workflow node绑定取得project/role/execution，和CommDB running或phase_keep_alive身份一致；不能以进程env自报代替。
-2. `resolveExecutionCodexHome`（claude-runner/src/codex-home.ts:2308）核对持久session.json.codexAgentHome与期望project/role、marker及精确路径。
+2. `resolveExecutionCodexHome`（`claude-runner/src/codex-home.ts`，基线约2358行）核对持久session.json.codexAgentHome与期望project/role、marker及精确路径。
 3. `readCodexLaunchSnapshot`（CodexTmuxAdapter.ts:398）校验该execution的持久launch状态。
-4. `probeCodexDaemonEvidence`（codex-daemon-runtime.ts:314）通过确定性execution socket、持久daemon PGID、当前内核socket holder/PGID、PID start identity证明是该执行的活daemon。env与该证据矛盾则unknown；同execution的其它进程只在可证明同一持久launch或TUI child关系时覆盖，任一未覆盖Codex进程继续unknown。
+4. `probeCodexDaemonEvidence`（`codex-daemon-runtime.ts`，基线约333行）通过确定性execution socket、持久daemon PGID、当前内核socket holder/PGID、PID start identity证明是该执行的活daemon。env与该证据矛盾则unknown；同execution的其它进程只在可证明同一持久launch或TUI child关系时覆盖，任一未覆盖Codex进程继续unknown。
 5. 所有匹配成功才记该home active，并把该exec计入matched；缺lease诊断保留（不影响无写入原则），缺任一强证据仍unknown且报警。迁移操作仍看进程active而跳过，不能借此触碰在用home。
 
 新增 `packages/teamlead/src/codex-quota/resident-home-evidence.ts` 作为上述窄adapter，从plugin注入真实StateStore/CommDB/launch/socket探针；host-readiness.ts和readonly readiness CLI共用；collector不得写任何home。T5新增真实fixture形状：无lease但全部持久+socket证据→active；env-only、错project/role、stale snapshot、PID复用、socket holder错组、未匹配CommDB或未覆盖process→unknown。若已部署旧resident连这些持久证据都缺，不能扩大兼容路径，按Lead90a807c5要求停下报精确边界，不修活daemon、不造lease。
@@ -247,28 +247,29 @@ Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负�
 
 **Files:** `scripts/__tests__/codex-home-migration-alert.test.sh`, `scripts/lead-alert.sh`
 
-- [ ] 在现有 HTTP 捕获器测试中先加入 slot→测试频道正例、slot→生产频道拒绝、生产模式硬钉不变三条断言；两条成功 payload 都断言 `allowed_mentions.parse == []`。
+- [ ] 在现有 HTTP 捕获器测试中先加入 slot→测试频道正例、slot→生产频道拒绝、生产模式硬钉不变三条断言；两条成功 payload 都断言 `allowed_mentions.parse == []`。再加入 slot channel 分别碰撞 production `generalChannel`、Lead `alertChannel`、Lead `chatChannel` 的三格零 POST 反例。
 - [ ] 运行 `bash scripts/__tests__/codex-home-migration-alert.test.sh`，确认新增 slot 正例先因固定 production tuple 失败，错误原因准确。
-- [ ] 最小实现显式 `FLYWHEEL_CODEX_HOME_RECONCILE_SLOT=1` 分支：要求隔离根为 `/tmp/flywheel-test-slot-N`、state/projects/queue/dead-letter/claims 均在根内、project 为同编号 `test-slot-N`、Lead 等于 `TEAMLEAD_DEFAULT_LEAD_AGENT` 且在 projects 中唯一；频道仍只取该 Lead 的 `alertChannel`。
-- [ ] slot 分支读取 canonical `${HOME}/.flywheel/projects.json` 的生产频道集合；缺失/坏 JSON/频道碰撞全部 `config_error` 且零 POST。非 slot 分支保留 `flywheel/flywheel-eng-lead` 守卫和现有 channel/token 选择。
+- [ ] 最小实现的 slot 判定是合取条件，而不是只看一个 env：`FLYWHEEL_CODEX_HOME_RECONCILE_SLOT=1`、隔离根为 `/tmp/flywheel-test-slot-N`、state/projects/queue/dead-letter/claims 全部在根内、project 为同编号 `test-slot-N`、Lead 等于 `TEAMLEAD_DEFAULT_LEAD_AGENT` 且在 projects 中唯一。完整成立才进入 slot 路由；生产 tuple 即使意外带 slot env 也回落到现有生产硬钉，保证逾期页不会静默消失；非生产且不完整的 slot tuple 才 `config_error` 并走现有 meta-alert escape。
+- [ ] slot 分支读取 canonical `${HOME}/.flywheel/projects.json` 的生产频道集合，明确定义为所有 project 的 `generalChannel` 加所有 Lead 的 `alertChannel`、`chatChannel`；缺失/坏 JSON/任一频道碰撞全部 `config_error` 且零 POST。非 slot 分支保留 `flywheel/flywheel-eng-lead` 守卫和现有 channel/token 选择；生产 pinning 的 config_error 补 `fire_meta_alert`，测试用 stub 捕获且不触达真实外部面。
 - [ ] 重跑同一 focused shell suite 到绿。
 
 ### Task 2：把 cycle/rider 坐标限制在 slot
 
 **Files:** `packages/teamlead/src/bridge/codex-home-reconcile-rider.ts`, `packages/teamlead/src/bridge/__tests__/codex-home-reconcile-rider.test.ts`, `packages/teamlead/src/bridge/plugin.ts`, `scripts/codex-home-reconcile-cycle.mjs`, `scripts/__tests__/codex-home-reconcile-cycle.test.sh`
 
-- [ ] 先加失败测试：rider 使用显式 slot state root；cycle 在 slot 模式把 severe/warning 的 project/lead 参数改为 slot tuple；越界 state/home/projects 或非 `test-slot-N` tuple 必拒；生产未设置 slot 时仍输出固定 production tuple。
-- [ ] 分别运行 `pnpm --filter @cyrus/teamlead exec vitest run src/bridge/__tests__/codex-home-reconcile-rider.test.ts --maxWorkers=1` 与 `bash scripts/__tests__/codex-home-reconcile-cycle.test.sh`，观察缺少 slot 能力导致的红。
-- [ ] 最小实现：plugin 优先使用 `FLYWHEEL_STATE_DIR`；cycle 生产默认保持 HOME 派生，只有显式 slot 模式才接受受隔离根约束的 state/home/alert tuple；alert args 从一次解析后的 route 生成，两个 severity 分支共用，避免分叉。
-- [ ] 重跑两条 focused suite 到绿，再运行 `pnpm --filter @cyrus/teamlead exec vitest run src/bridge/__tests__/codex-home-reconcile-rider.test.ts --maxWorkers=1` 的生产默认反例。
+- [ ] 先加失败测试：rider 使用显式 slot state root；cycle 在 slot 模式把 severe/warning 的 project/lead 参数改为 slot tuple；越界 state/home/projects 或非 `test-slot-N` tuple 必须在第一次 `ensureDirectory`、chmod、lock、schedule 写之前拒绝；生产未设置 slot 时仍输出固定 production tuple。另对一个 production migration fixture 树递归记录路径、inode、mode、size、mtime、ctime和文件digest，跑 slot driver + 一次 health tick 后逐项相等。
+- [ ] 分别运行 `pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/codex-home-reconcile-rider.test.ts --maxWorkers=1` 与 `bash scripts/__tests__/codex-home-reconcile-cycle.test.sh`，确认输出确实是1个test file/预期Tests数量且新增断言因缺少 slot 能力变红，不以 exit 0 单独判定。
+- [ ] 最小实现：plugin 优先使用已经由 `qa_slot_env_contract_render` 间接加入 Bridge `BRIDGE_EXTRA_ENV` 的 `FLYWHEEL_STATE_DIR`；cycle 先做纯只读 mode/路径/tuple 解析，只有通过后才执行任何 `ensureDirectory`，生产默认继续 HOME 派生，slot 的 state/home/projects/approved/canonical 全部由隔离根派生并逐项校验；alert args 从一次解析后的 route 生成，两个 severity 分支共用，避免分叉。
+- [ ] 重跑两条 focused suite 到绿；生产固定 tuple 反例属于 `codex-home-reconcile-cycle.test.sh`，rider suite只证明state-root传递与single-flight，最后核对 Vitest `Test Files` / `Tests` 数量。
 
 ### Task 3：显式 test-deploy opt-in 与两消息驱动
 
 **Files:** `scripts/test-deploy.sh`, `scripts/qa-fly-2523-529-alerts.sh`, `scripts/__tests__/codex-home-reconcile-cadence.test.sh`, `scripts/__tests__/codex-home-migration-alert.test.sh`
 
-- [ ] 先给 test-deploy source/harness 加失败断言：默认最后仍注入 enabled=0；`--codex-home-reconcile` 未同时 `--alerts` 立即拒绝；二者同时存在才注入 enabled=1、slot mode、slot project/Lead，并预写当前 schedule 防启动噪音。
+- [ ] 先给 test-deploy source/harness 加失败断言：默认最后仍注入 enabled=0；`--codex-home-reconcile` 未同时 `--alerts` 立即拒绝；二者同时存在才注入 enabled=1、slot mode、slot project/Lead、显式 `FLYWHEEL_STATE_DIR=${SLOT_DIR}` 及所有 slot-local cycle 路径，并在该 state root 预写当前 schedule 防启动噪音。不得依赖 ambient HOME 或 caller env。
 - [ ] 编写 driver：只接受正整数 slot；校验 live slot 与 mode-0600 projects/.env；在 `${slotRoot}/state/fly2523-alert-driver` 下创建 policy/runner marker/migration state/stub，不触碰生产 home；先跑 overdue severe，再用坏 policy 跑 upstream warning；输出两个严格 delivery receipt 与 message id。
-- [ ] 用现有本地 HTTP 捕获器执行 driver fixture，断言 exactly two POST、severity severe/warning、目标均为 slot channel、`allowed_mentions.parse=[]`；将 slot channel 改为 production channel 后必须零 POST。
+- [ ] 单元/集成强度：用现有本地 HTTP 捕获器执行 driver fixture，断言 exactly two POST、severity severe/warning、目标均为 slot channel、`allowed_mentions.parse=[]`；将 slot channel 改为任一 production general/alert/chat channel 后必须零 POST。
+- [ ] QA 真发强度（实现节点不代发）：driver 输出两条真实 Discord message id 后，QA 必须分别 `GET /channels/{slotChannel}/messages/{id}` 得到200，并用相同 id 查询 production engineer channel 得到404；message id、slot channel id、两次REST状态与截图一起写入 `qa-e2e-529`。本地 loopback 证据不得冒充这一格。
 - [ ] 运行 `bash scripts/__tests__/codex-home-reconcile-cadence.test.sh` 与 `bash scripts/__tests__/codex-home-migration-alert.test.sh` 到绿。
 
 ### Task 4：范围回归、文档、同头复审
@@ -276,7 +277,7 @@ Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负�
 **Files:** 以上修改、`engineering/doc/FLY-2523-quota-home-readiness/{exploration,research,plan,progress}.md`, `engineering/doc/milestones/FLY-2523.md`
 
 - [ ] 运行 formatter/lint、`pnpm -r build`、FLY-2523 affected vitest/shell suites及 test-deploy 静态/fixture suite；遵守 Lead 边界，不运行本地 `pnpm test:packages:run`。
-- [ ] grep 证明没有新增 launchd/plist/crontab/cron，且没有 feature flag 写入、生产 home mutation 或 restart 代码。
+- [ ] grep 证明没有新增 launchd/plist/crontab/cron，且没有 feature flag 写入、生产 home mutation 或 restart 代码；执行 slot driver 与显式 health tick 的前后生产 migration 树递归元数据/字节快照必须相等。
 - [ ] 更新 milestone 为返工 HEAD 的精确证据并作为字面最后提交；push feature branch，不 force push。
 - [ ] 对同一最终 HEAD 发起新的 code review gate/request；CHANGES 则修复并新开 gate，APPROVED 后仅报告 advisories。
 - [ ] 核对 PR #1260 的 head/CI；通过 `ask --report` 回执完整 `[lead-instruction 96ea4fad-f9ea-4b97-ba03-27a460eca6dd]`，然后执行 `complete --route needs_review --pr 1260`。不派 QA、不 merge、不 deploy、不重启、不翻 flag。
