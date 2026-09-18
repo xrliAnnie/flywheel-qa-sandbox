@@ -1,16 +1,16 @@
 ---
 issue: FLY-2523
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-18T06:56:32.812Z
-nextStep: "Lead aa341d63 accepted scope: registered-home proof plus full global
-  unknown; flag activation separate; FLY-2729 evidence contract accepted. Final
-  revision and HTML validated. Submit new R2 gate/request; freeze worktree HEAD
-  during review. No implementation or production actions."
+phaseCursor: 5/6
+updated: 2026-09-18T07:05:58.257Z
+nextStep: R2 effective APPROVED (gate 26854a59, request a9182ea3, reviewed HEAD
+  24919f1f2); six nonblocking advisories recorded and reported. Publish
+  committed HTML silently, verify hosted HTTP/CSP/source, report URL, complete
+  phase_design_complete, then park.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: design (4/6)
-**next**: Lead aa341d63 accepted scope: registered-home proof plus full global unknown; flag activation separate; FLY-2729 evidence contract accepted. Final revision and HTML validated. Submit new R2 gate/request; freeze worktree HEAD during review. No implementation or production actions.
+**phase**: design (5/6)
+**next**: R2 effective APPROVED (gate 26854a59, request a9182ea3, reviewed HEAD 24919f1f2); six nonblocking advisories recorded and reported. Publish committed HTML silently, verify hosted HTTP/CSP/source, report URL, complete phase_design_complete, then park.
