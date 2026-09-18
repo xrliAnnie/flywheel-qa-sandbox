@@ -3,11 +3,16 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
+	constants as fsConstants,
+	fsyncSync,
 	lstatSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	readlinkSync,
 	realpathSync,
+	unlinkSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +22,7 @@ import {
 	updateCodexHomeMigrationState,
 	writeCodexHomeAttemptReceipt,
 } from "../packages/claude-runner/dist/index.js";
-import { withMkdirLock } from "../packages/config/dist/index.js";
+import { processAlive, withMkdirLock } from "../packages/config/dist/index.js";
 
 const SOURCE_VALUES = new Set([
 	"health",
@@ -40,7 +45,13 @@ function parseArgs(argv) {
 		const key = argv[index];
 		const value = argv[index + 1];
 		if (
-			!["--approved-homes", "--state-root", "--source", "--home-id"].includes(
+			![
+				"--approved-homes",
+				"--state-root",
+				"--source",
+				"--home-id",
+				"--overdue-days",
+			].includes(
 				key,
 			) ||
 			!value ||
@@ -57,18 +68,22 @@ function parseArgs(argv) {
 	const stateRoot = values.get("--state-root");
 	const source = values.get("--source");
 	const homeId = values.get("--home-id");
+	const overdueDays = Number(values.get("--overdue-days") ?? "1");
 	if (
 		!isAbsolute(approvedHomes) ||
 		resolve(approvedHomes) !== approvedHomes ||
 		!isAbsolute(stateRoot) ||
 		resolve(stateRoot) !== stateRoot ||
 		!SOURCE_VALUES.has(source) ||
+		!Number.isInteger(overdueDays) ||
+		overdueDays < 1 ||
+		overdueDays > 30 ||
 		(homeId !== undefined &&
 			(!HOME_ID_RE.test(homeId) || homeId.includes("..")))
 	) {
 		fail("arguments");
 	}
-	return { approvedHomes, stateRoot, source, homeId };
+	return { approvedHomes, stateRoot, source, homeId, overdueDays };
 }
 
 function plainFile(path, label) {
@@ -180,8 +195,8 @@ function emitReceipt(stateRoot, receipt) {
 	process.stdout.write(`${JSON.stringify(receipt)}\n`);
 }
 
-function ensureLockRoot(stateRoot) {
-	const lockRoot = join(stateRoot, "codex-quota", "home-migration", "locks");
+function ensureLockRoot(stateRoot, name) {
+	const lockRoot = join(stateRoot, "codex-quota", "home-migration", name);
 	try {
 		mkdirSync(lockRoot, { mode: 0o700 });
 	} catch (error) {
@@ -195,6 +210,64 @@ function ensureLockRoot(stateRoot) {
 	return lockRoot;
 }
 
+function fsyncDirectory(path) {
+	const fd = openSync(path, fsConstants.O_RDONLY);
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function readProcessStart(pid) {
+	const psBin = process.env.FLYWHEEL_CODEX_FENCE_PS_BIN?.trim() || "/bin/ps";
+	const result = spawnSync(psBin, ["-o", "lstart=", "-p", String(pid)], {
+		encoding: "utf8",
+		timeout: 2_000,
+		maxBuffer: 64 * 1024,
+	});
+	return result.status === 0 && !result.error
+		? result.stdout.trim() || null
+		: null;
+}
+
+function inspectLeadLaunchLease(leaseRoot, entry) {
+	const key = createHash("sha256").update(entry.home).digest("hex");
+	const path = join(leaseRoot, `${key}.json`);
+	let value;
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
+			return "unknown";
+		value = JSON.parse(readFileSync(path, "utf8"));
+	} catch (error) {
+		if (error?.code === "ENOENT") return "inactive";
+		return "unknown";
+	}
+	if (
+		value?.schemaVersion !== 1 ||
+		!Number.isInteger(value.pid) ||
+		value.pid <= 0 ||
+		typeof value.processStartTime !== "string" ||
+		!value.processStartTime ||
+		value.home !== entry.home ||
+		value.lead !== entry.leadTuple
+	)
+		return "unknown";
+	if (processAlive(value.pid)) {
+		const liveStart = readProcessStart(value.pid);
+		if (liveStart === null) return "unknown";
+		if (liveStart === value.processStartTime) return "active";
+	}
+	try {
+		unlinkSync(path);
+		fsyncDirectory(leaseRoot);
+		return "inactive";
+	} catch {
+		return "unknown";
+	}
+}
+
 function reconcileUnderLock({
 	common,
 	entry,
@@ -202,7 +275,25 @@ function reconcileUnderLock({
 	canonicalAuth,
 	env,
 	stateRoot,
+	leadLeaseRoot,
 }) {
+	if (entry.leadTuple) {
+		const lease = inspectLeadLaunchLease(leadLeaseRoot, entry);
+		if (lease !== "inactive") {
+			return {
+				failed: false,
+				receipt: {
+					...common,
+					result: "skipped",
+					reason:
+						lease === "active" ? "active_lease" : "launch_fence_unavailable",
+					satisfied: false,
+					backupRef: null,
+					postcondition: null,
+				},
+			};
+		}
+	}
 	const inspect = runLink(linkBin, entry, ["--inspect"], env);
 	if (inspect.status !== 0 || inspect.error) {
 		return {
@@ -354,7 +445,7 @@ try {
 	updateCodexHomeMigrationState({
 		stateRoot: args.stateRoot,
 		inventoryDigest,
-		overdueDays: 1,
+		overdueDays: args.overdueDays,
 		now: new Date(),
 		homes: inventory,
 	});
@@ -363,8 +454,12 @@ try {
 }
 
 let lockRoot;
+let leadFenceRoot;
+let leadLeaseRoot;
 try {
-	lockRoot = ensureLockRoot(args.stateRoot);
+	lockRoot = ensureLockRoot(args.stateRoot, "locks");
+	leadFenceRoot = ensureLockRoot(args.stateRoot, "lead-fences");
+	leadLeaseRoot = ensureLockRoot(args.stateRoot, "lead-leases");
 } catch {
 	fail("lock_root_unavailable", 6);
 }
@@ -390,7 +485,7 @@ for (const entry of selected) {
 	}
 	const env = { ...process.env, FLYWHEEL_CODEX_LINK_STRUCTURED: "1" };
 	const lockPath = join(
-		lockRoot,
+		entry.leadTuple ? leadFenceRoot : lockRoot,
 		createHash("sha256").update(entry.home).digest("hex"),
 	);
 	let outcome;
@@ -405,8 +500,9 @@ for (const entry of selected) {
 					canonicalAuth,
 					env,
 					stateRoot: args.stateRoot,
+					leadLeaseRoot,
 				}),
-			{ timeoutMs: 0 },
+			{ timeoutMs: 0, bare: Boolean(entry.leadTuple) },
 		);
 	} catch (error) {
 		const lockBusy =

@@ -464,6 +464,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "tmux rescue lock held too long";
 		case "host_voucher_incident":
 			return "Host IPC-voucher incident (kernel panic risk)";
+		case "codex_home_migration_overdue":
+			return "Codex credential home migration overdue";
 	}
 }
 
@@ -735,5 +737,7 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// kind switch exhaustive.
 		case "host_voucher_incident":
 			return "Host IPC-voucher occupancy climbed toward IVAC_ENTRIES_MAX, or a new voucher kernel-panic report appeared. The known holder is macOS ecosystemanalyticsd, not a Flywheel process; the containment action is root- and founder-gated. See the FLY-1929 runbook.";
+		case "codex_home_migration_overdue":
+			return "One or more approved Codex credential homes remain unsatisfied past their durable enrollment deadline. Run only the exact safe reconcile commands in the alert; active homes will skip without mutation.";
 	}
 }

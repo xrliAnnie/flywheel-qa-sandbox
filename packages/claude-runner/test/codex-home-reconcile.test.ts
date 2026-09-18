@@ -20,6 +20,20 @@ type ReconcileExports = {
 		now: Date,
 		satisfied: boolean,
 	) => boolean;
+	evaluateCodexHomeMigrationDeadlines: (
+		state: unknown,
+		receipts: unknown[],
+		now: Date,
+	) => Array<{
+		homeId: string;
+		dueAt: string;
+		pendingDays: number;
+		overdue: boolean;
+		satisfied: boolean;
+		lastAttemptAt: string | null;
+		lastResult: string | null;
+		lastReason: string | null;
+	}>;
 	validateCodexHomeAttemptReceipt: (
 		value: unknown,
 		expectedInventoryDigest?: string,
@@ -75,10 +89,102 @@ describe("codex home reconciliation state", () => {
 	it("exports the T1 state primitives", () => {
 		expect(typeof api.computeCodexHomeInventoryDigest).toBe("function");
 		expect(typeof api.isCodexHomeMigrationOverdue).toBe("function");
+		expect(typeof api.evaluateCodexHomeMigrationDeadlines).toBe("function");
 		expect(typeof api.validateCodexHomeAttemptReceipt).toBe("function");
 		expect(typeof api.updateCodexHomeMigrationState).toBe("function");
 		expect(typeof api.writeCodexHomeAttemptReceipt).toBe("function");
 		expect(typeof api.reserveCodexHomeAttemptIntent).toBe("function");
+	});
+
+	it("keeps missing receipts overdue and ignores stale-inventory satisfaction", () => {
+		const state = {
+			schemaVersion: 1,
+			inventoryDigest: sha("a"),
+			overdueDays: 1,
+			enrolledAt: "2026-09-17T00:00:00.000Z",
+			homes: [
+				{
+					id: "flywheel/implement",
+					home: "/Users/test/.flywheel/codex-homes/agents/flywheel/implement",
+					ownership: "managed",
+					enrolledAt: "2026-09-17T00:00:00.000Z",
+				},
+			],
+		};
+		const missing = api.evaluateCodexHomeMigrationDeadlines(
+			state,
+			[],
+			new Date("2026-09-18T00:00:00.000Z"),
+		);
+		expect(missing).toEqual([
+			expect.objectContaining({
+				homeId: "flywheel/implement",
+				dueAt: "2026-09-18T00:00:00.000Z",
+				pendingDays: 1,
+				overdue: true,
+				satisfied: false,
+				lastAttemptAt: null,
+			}),
+		]);
+
+		const stale = api.evaluateCodexHomeMigrationDeadlines(
+			state,
+			[
+				attempt({
+					inventoryDigest: sha("b"),
+					result: "done",
+					reason: "linked",
+					satisfied: true,
+				}),
+			],
+			new Date("2026-09-18T00:00:00.000Z"),
+		);
+		expect(stale[0]).toMatchObject({ overdue: true, satisfied: false });
+	});
+
+	it("preserves current-digest satisfaction while reporting the latest attempt", () => {
+		const state = {
+			schemaVersion: 1,
+			inventoryDigest: sha("a"),
+			overdueDays: 1,
+			enrolledAt: "2026-09-17T00:00:00.000Z",
+			homes: [
+				{
+					id: "flywheel/implement",
+					home: "/Users/test/.flywheel/codex-homes/agents/flywheel/implement",
+					ownership: "managed",
+					enrolledAt: "2026-09-17T00:00:00.000Z",
+				},
+			],
+		};
+		const status = api.evaluateCodexHomeMigrationDeadlines(
+			state,
+			[
+				attempt({
+					at: "2026-09-17T12:00:00.000Z",
+					result: "done",
+					reason: "linked",
+					satisfied: true,
+				}),
+				attempt({
+					attemptId: "8e237eaa-b23c-432f-a507-ad28052b51bd",
+					at: "2026-09-18T01:00:00.000Z",
+					result: "skipped",
+					reason: "active_process",
+					satisfied: false,
+				}),
+			],
+			new Date("2026-09-19T00:00:00.000Z"),
+		)[0];
+
+		expect(status).toMatchObject({
+			satisfied: true,
+			overdue: false,
+			pendingDays: 2,
+			lastAttemptAt: "2026-09-18T01:00:00.000Z",
+			lastResult: "skipped",
+			lastReason: "active_process",
+		});
 	});
 
 	it("computes one deterministic digest from home and ownership only", () => {

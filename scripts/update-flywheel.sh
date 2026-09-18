@@ -255,6 +255,9 @@ updater_fetch_origin() {
 updater_restart_services() {
   FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
 }
+updater_codex_home_reconcile() {
+  "$UPDATER_NODE" "${SCRIPT_DIR}/codex-home-reconcile-cycle.mjs" --source updater
+}
 updater_remote_sha() { git -C "$FLYWHEEL_DIR" rev-parse origin/main 2>/dev/null; }
 updater_host_tmux_gate() {
   local target="" gate_bin="${FLYWHEEL_HOME}/bin/host-tmux-selection-gate.sh" rc=0
@@ -659,6 +662,9 @@ updater_run_cycle() {
 # suppress that independent health pass.
 updater_run_launchd_then_cycle() {
   updater_launchd_pass || true
+  if ! updater_codex_home_reconcile; then
+    log "Codex home reconciliation was unavailable (non-fatal; receipts/alerts retain the obligation)"
+  fi
   updater_run_cycle
 }
 

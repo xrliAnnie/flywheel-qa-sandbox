@@ -80,7 +80,13 @@ cat >"$STATE/bin/tmux" <<'SH'
 #!/bin/bash
 exit 0
 SH
-chmod +x "$STATE/bin/host-tmux-selection-gate.sh" "$STATE/bin/tmux"
+cat >"$STATE/bin/fence-ps" <<'SH'
+#!/bin/bash
+printf '%s\n' 'Thu Sep 18 05:00:00 2026'
+SH
+chmod +x "$STATE/bin/host-tmux-selection-gate.sh" "$STATE/bin/tmux" \
+  "$STATE/bin/fence-ps"
+export FLYWHEEL_CODEX_FENCE_PS_BIN="$STATE/bin/fence-ps"
 
 projects_before_dry_run="$(shasum -a 256 "$STATE/projects.json" | awk '{print $1}')"
 receipt_before_dry_run="$(shasum -a 256 "$STATE/state/summary-registry/migration-receipt.json" | awk '{print $1}')"

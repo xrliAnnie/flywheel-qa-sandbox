@@ -122,6 +122,21 @@ export interface UpdateCodexHomeMigrationStateInput {
 	}>;
 }
 
+export interface CodexHomeMigrationDeadlineStatus {
+	homeId: string;
+	home: string;
+	inventoryDigest: string;
+	enrolledAt: string;
+	dueAt: string;
+	overdueDays: number;
+	pendingDays: number;
+	overdue: boolean;
+	satisfied: boolean;
+	lastAttemptAt: string | null;
+	lastResult: CodexHomeAttemptResult | null;
+	lastReason: CodexHomeAttemptReason | null;
+}
+
 const RESULTS = new Set<CodexHomeAttemptResult>([
 	"done",
 	"skipped",
@@ -412,6 +427,71 @@ function parseMigrationState(value: unknown): CodexHomeMigrationState {
 		enrolledAt: value.enrolledAt,
 		homes,
 	};
+}
+
+export function evaluateCodexHomeMigrationDeadlines(
+	stateValue: unknown,
+	receiptValues: unknown[],
+	now: Date,
+): CodexHomeMigrationDeadlineStatus[] {
+	const state = parseMigrationState(stateValue);
+	const nowMs = now.getTime();
+	if (!Number.isFinite(nowMs) || !Array.isArray(receiptValues)) {
+		throw new Error("invalid Codex home migration deadline input");
+	}
+	const homeById = new Map(state.homes.map((home) => [home.id, home]));
+	const currentReceipts = new Map<string, CodexHomeAttemptReceipt[]>();
+	for (const value of receiptValues) {
+		if (!validateCodexHomeAttemptReceipt(value)) {
+			throw new Error("corrupt Codex home attempt receipt");
+		}
+		if (value.inventoryDigest !== state.inventoryDigest) continue;
+		const enrolled = homeById.get(value.homeId);
+		if (!enrolled) continue;
+		if (enrolled.home !== value.home) {
+			throw new Error("Codex home attempt receipt identity mismatch");
+		}
+		const receipts = currentReceipts.get(value.homeId) ?? [];
+		receipts.push(value);
+		currentReceipts.set(value.homeId, receipts);
+	}
+
+	return state.homes.map((home) => {
+		const receipts = currentReceipts.get(home.id) ?? [];
+		receipts.sort(
+			(a, b) =>
+				Date.parse(a.at) - Date.parse(b.at) ||
+				a.attemptId.localeCompare(b.attemptId, "en"),
+		);
+		const latest = receipts.at(-1);
+		const satisfied = receipts.some((receipt) => receipt.satisfied);
+		const dueAtMs =
+			Date.parse(home.enrolledAt) + state.overdueDays * 24 * 60 * 60 * 1000;
+		return {
+			homeId: home.id,
+			home: home.home,
+			inventoryDigest: state.inventoryDigest,
+			enrolledAt: home.enrolledAt,
+			dueAt: new Date(dueAtMs).toISOString(),
+			overdueDays: state.overdueDays,
+			pendingDays: Math.max(
+				0,
+				Math.floor(
+					(nowMs - Date.parse(home.enrolledAt)) / (24 * 60 * 60 * 1000),
+				),
+			),
+			overdue: isCodexHomeMigrationOverdue(
+				home.enrolledAt,
+				state.overdueDays,
+				now,
+				satisfied,
+			),
+			satisfied,
+			lastAttemptAt: latest?.at ?? null,
+			lastResult: latest?.result ?? null,
+			lastReason: latest?.reason ?? null,
+		};
+	});
 }
 
 export function updateCodexHomeMigrationState(

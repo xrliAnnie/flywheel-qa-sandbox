@@ -2283,6 +2283,27 @@ restart_lead_recover_job_after_failure() {
     return 1
 }
 
+codex_home_reconcile_restart_window() {
+    local home_id="${1:-}"
+    local cycle="${FLYWHEEL_CODEX_RECONCILE_CYCLE_BIN:-${FLYWHEEL_DIR}/scripts/codex-home-reconcile-cycle.mjs}"
+    local args=(--source restart-window)
+    [[ -z "$home_id" ]] || args+=(--home-id "$home_id")
+    if [[ ! -f "$cycle" || -L "$cycle" ]]; then
+        log "WARNING: Codex home reconcile cycle is missing or unsafe: $cycle"
+        return 0
+    fi
+    local rc=0
+    node "$cycle" "${args[@]}" || rc=$?
+    if (( rc != 0 )); then
+        log "WARNING: Codex home reconciliation was unavailable in the restart window${home_id:+ for $home_id}; receipts/alerts retain the obligation"
+        if (( rc == 75 )); then
+            log "ERROR: Codex home reconcile child exit is unproven; refusing to reopen this restart window"
+            return 75
+        fi
+    fi
+    return 0
+}
+
 # Returns: 0=success, 1=error
 # Args: <manifest_path>  (caller passes the manifest directly, no re-globbing)
 restart_lead() {
@@ -2505,6 +2526,16 @@ restart_lead() {
             return 1
         fi
         rm -f "$pid_file"
+
+        if [[ "$canonical_backend" == "codex-app-server" ]]; then
+            if ! codex_home_reconcile_restart_window "${project_name}/${lead_id}"; then
+                log "ERROR: Lead $lead_id remains offline because Codex home reconciliation exit is unproven"
+                restart_lead_recover_job_after_failure \
+                    "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" \
+                    "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root" || true
+                return 1
+            fi
+        fi
 
         if ! lead_restart_arm_controlled_wave \
           "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root"; then
@@ -3111,6 +3142,14 @@ deploy_and_verify() {
         fi
     else
         log "Build skipped (no build-relevant code delta)"
+    fi
+
+    # FLY-2523: this existing stopped/build window is a high-value opportunity
+    # for managed homes. The operation remains fail-closed per home and never
+    # changes restart success; durable receipts and overdue alerts own follow-up.
+    if ! codex_home_reconcile_restart_window; then
+        log "ERROR: deployment restart window cannot continue while a Codex home reconcile child may still write"
+        return 1
     fi
 
     # FLY-1764: the old Bridge is stopped and the freshly built bytes no longer

@@ -194,11 +194,13 @@ ALERT_CALLS="$TMP/alert.calls"
 FETCH_MODE=ok
 LAUNCHD_PASS_CALLS="$TMP/launchd-pass.calls"
 MODEL_SYNC_CALLS="$TMP/model-sync.calls"
+CODEX_RECONCILE_CALLS="$TMP/codex-reconcile.calls"
 : > "$DEPLOY_CALLS"
 : > "$RAYA_CALLS"
 : > "$ALERT_CALLS"
 : > "$LAUNCHD_PASS_CALLS"
 : > "$MODEL_SYNC_CALLS"
+: > "$CODEX_RECONCILE_CALLS"
 
 updater_fetch_origin() {
   case "$FETCH_MODE" in
@@ -213,6 +215,7 @@ updater_sync_fable_model() {
   printf 'call\n' >> "$MODEL_SYNC_CALLS"
   [ "${MODEL_SYNC_MODE:-ok}" = ok ]
 }
+updater_codex_home_reconcile() { printf 'call\n' >> "$CODEX_RECONCILE_CALLS"; }
 severe_alert() { printf '%s|%s\n' "$1" "$2" >> "$ALERT_CALLS"; }
 PRODUCTION_RAYA_PASS_DEFINITION="$(declare -f updater_raya_pass)"
 updater_raya_pass() {
@@ -294,6 +297,7 @@ reset_case() {
   : > "$ALERT_CALLS"
   : > "$LAUNCHD_PASS_CALLS"
   : > "$MODEL_SYNC_CALLS"
+  : > "$CODEX_RECONCILE_CALLS"
   FETCH_MODE=ok
   MODEL_SYNC_MODE=ok
   RAYA_STUB_STATE=current
@@ -308,11 +312,12 @@ printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
   && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
+  && [ "$(grep -c '^call$' "$CODEX_RECONCILE_CALLS")" = 1 ] \
   && [ "$(raya_count)" = 1 ] \
   && grep -q '^call wake=scheduled result=scheduled_current$' "$RAYA_CALLS"; then
   pass "caught-up schedule runs one independent Raya pass after the Flywheel cycle"
 else
-  fail "caught-up schedule/model sync/Raya wiring drifted (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") syncs=$(cat "$MODEL_SYNC_CALLS"))"
+  fail "caught-up schedule/model sync/home reconcile/Raya wiring drifted (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") syncs=$(cat "$MODEL_SYNC_CALLS") reconcile=$(cat "$CODEX_RECONCILE_CALLS"))"
 fi
 
 reset_case

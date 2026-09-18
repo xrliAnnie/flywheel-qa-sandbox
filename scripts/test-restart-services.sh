@@ -3638,6 +3638,7 @@ fly1649_run_deploy_case() {
       pause_admission_best_effort() { :; }
       resume_admission_best_effort() { :; }
       stop_bridge() { return 0; }
+      codex_home_reconcile_restart_window() { return 0; }
       start_bridge() { :; }
       curl() { return 1; }
       jq() { return 1; }

@@ -352,6 +352,11 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		arc: "human_by_design",
 		remediationRef: "FLY-1929",
 	},
+	codex_home_migration_overdue: {
+		owner: "owning_lead",
+		arc: "human_by_design",
+		remediationRef: "FLY-2523 safe per-home reconcile command in alert body",
+	},
 };
 
 /**

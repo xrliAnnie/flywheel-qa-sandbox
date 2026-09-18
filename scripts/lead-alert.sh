@@ -137,7 +137,7 @@ is_quota_switch_kind() {
 
 carries_delivery_channel() {
   case "$1" in
-    account_switched|account_switch_degraded|quota_switch_confirmation|account_dead) return 0 ;;
+    account_switched|account_switch_degraded|quota_switch_confirmation|account_dead|codex_home_migration_overdue) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -146,7 +146,7 @@ carries_delivery_channel() {
 # --strict-delivery. log() writes to stderr, so this is the sole stdout line.
 emit_result() {
   if [ "$STRICT_DELIVERY" = "1" ]; then
-    if [[ "$KIND" == activation_probe && "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+    if [[ ( "$KIND" == activation_probe || "$KIND" == codex_home_migration_overdue ) && "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
       printf '%s message_id=%s\n' "$1" "$DELIVERY_MESSAGE_ID"
     else
       printf '%s\n' "$1"
@@ -209,7 +209,7 @@ case "$KIND" in
   # Covers BOTH sources; pressure vs panic is encoded in the body + signature,
   # because a validated occupancy climb and a fresh panic report are the same
   # incident class with the same (absent) remediation posture.
-  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident) ;;
+  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident|codex_home_migration_overdue) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -419,7 +419,7 @@ FALLBACK_TO_CORE=""
 GENERAL_CHANNEL=""
 ALERT_BOT_TOKEN_ENV=""
 LEAD_BOT_TOKEN_ENV=""
-if [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
+if [ "$KIND" != "codex_home_migration_overdue" ] && [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
   : # channel + identity fully env-driven — skip projects.json entirely
 else
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
@@ -472,6 +472,20 @@ if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
   exit 1
 fi
 
+if [ "$KIND" = "codex_home_migration_overdue" ]; then
+  if [ "$PROJECT_NAME" != "flywheel" ] || [ "$LEAD_ID" != "flywheel-eng-lead" ]; then
+    log "ERROR: codex_home_migration_overdue requires flywheel/flywheel-eng-lead"
+    emit_result "config_error"
+    exit 1
+  fi
+  LEAD_CFG_COUNT=$(printf '%s\n' "$LEAD_CFG" | jq -s 'length')
+  if [ "$LEAD_CFG_COUNT" != "1" ]; then
+    log "ERROR: dedicated engineering alert route is ambiguous"
+    emit_result "config_error"
+    exit 1
+  fi
+fi
+
 ALERT_CHANNEL=$(printf '%s' "$LEAD_CFG" | jq -r '.alertChannel // ""')
 FALLBACK_TO_CORE=$(printf '%s' "$LEAD_CFG" | jq -r '.alertFallbackToCore')
 GENERAL_CHANNEL=$(printf '%s' "$LEAD_CFG" | jq -r '.generalChannel // ""')
@@ -482,13 +496,20 @@ fi # end projects.json resolution (skipped when unified channel + sender env set
 # Resolve channel: FLY-927 unified channel env wins; else
 # alertChannel → generalChannel (if alertFallbackToCore) — the legacy path.
 CHANNEL_ID=""
-if [ -n "$UNIFIED_CHANNEL" ]; then
+if [ "$KIND" = "codex_home_migration_overdue" ]; then
+  CHANNEL_ID="$ALERT_CHANNEL"
+elif [ -n "$UNIFIED_CHANNEL" ]; then
   CHANNEL_ID="$UNIFIED_CHANNEL"
 elif [ -n "$ALERT_CHANNEL" ]; then
   CHANNEL_ID="$ALERT_CHANNEL"
 elif [ "$FALLBACK_TO_CORE" = "true" ] && [ -n "$GENERAL_CHANNEL" ]; then
   CHANNEL_ID="$GENERAL_CHANNEL"
   log "WARNING: no alertChannel configured, falling back to generalChannel ($CHANNEL_ID)"
+fi
+if [ "$KIND" = "codex_home_migration_overdue" ] \
+    && ! printf '%s' "$CHANNEL_ID" | grep -Eq '^[0-9]{17,20}$'; then
+  log "ERROR: dedicated engineering alertChannel is missing or invalid"
+  CHANNEL_ID=""
 fi
 
 # Resolve token: FLY-927 (D2) sender identity env wins — and when it is set but
@@ -882,7 +903,7 @@ case "$HTTP_CODE" in
 esac
 
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
-  if [[ "$KIND" == activation_probe ]]; then
+if [[ "$KIND" == activation_probe || "$KIND" == codex_home_migration_overdue ]]; then
     DELIVERY_MESSAGE_ID="$(jq -er '.id | select(type == "string" and test("^[0-9]{17,20}$"))' \
       "/tmp/lead-alert-$$.out" 2>/dev/null || true)"
   fi

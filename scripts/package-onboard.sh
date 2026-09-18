@@ -102,6 +102,9 @@ flywheel-codex-lead-wrapper-codex-infra-bot.sh
 resident-codex-lead-recover.sh
 codex-home-link-truth.sh
 codex-home-reconcile.mjs
+codex-home-reconcile-cycle.mjs
+codex-home-launch-fence.mjs
+lib/codex-home-reconcile-process.mjs
 codex-credential-cutover.sh
 codex-home-credential-sweep.mjs
 codex-quota-readiness-receipt.mjs

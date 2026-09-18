@@ -273,6 +273,7 @@ import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
 } from "./codex-global-health.js";
+import { createCodexHomeReconcileHealthRider } from "./codex-home-reconcile-rider.js";
 import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
@@ -11865,6 +11866,14 @@ export async function startBridge(
 		flywheelRoot: residentCodexLeadFlywheelRoot,
 		targets: residentCodexLeadTargets,
 	});
+	const codexHomeReconcileHealthRider = createCodexHomeReconcileHealthRider({
+		stateRoot: join(homedir(), ".flywheel"),
+		enabled: !process.env.VITEST,
+		cycleScript: join(
+			residentCodexLeadFlywheelRoot,
+			"scripts/codex-home-reconcile-cycle.mjs",
+		),
+	});
 	const residentCodexLeadPatrols = residentCodexLeadTargets.map((target) => ({
 		target,
 		patrol: createHostResidentCodexLeadPatrol({
@@ -12562,13 +12571,14 @@ export async function startBridge(
 			: undefined,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Always-on advisory probe; failures alert but never abort Bridge boot.
-		onHealthTick: codexHealthEnabled
-			? () => {
-					void reportCodexGlobalHealth(metaAlertNotifier, {
-						credentialProbe,
-					});
-				}
-			: undefined,
+		onHealthTick: () => {
+			if (codexHealthEnabled) {
+				void reportCodexGlobalHealth(metaAlertNotifier, {
+					credentialProbe,
+				});
+			}
+			return codexHomeReconcileHealthRider.tick();
+		},
 	});
 	// FLY-513: one-shot boot check — surfaces an already-contaminated global codex
 	// immediately at startup (the periodic probe then covers the running window).

@@ -1017,6 +1017,12 @@ require(
     == [
         "bash scripts/__tests__/codex-home-link-truth.test.sh",
         "bash scripts/__tests__/codex-home-reconcile.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-cycle.test.sh",
+        "bash scripts/__tests__/codex-home-launch-fence.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-process.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+        "bash scripts/__tests__/codex-home-migration-alert.test.sh",
+        "bash scripts/__tests__/codex-home-migration-overdue-mutation.test.sh",
         "bash scripts/__tests__/codex-lead-launchd-preflight.test.sh",
         "bash scripts/__tests__/codex-credential-cutover.test.sh",
         "bash scripts/__tests__/codex-home-credential-sweep.test.sh",

@@ -40,6 +40,9 @@ scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 scripts/resident-codex-lead-recover.sh
 scripts/codex-home-link-truth.sh
 scripts/codex-home-reconcile.mjs
+scripts/codex-home-reconcile-cycle.mjs
+scripts/codex-home-launch-fence.mjs
+scripts/lib/codex-home-reconcile-process.mjs
 scripts/codex-credential-cutover.sh
 scripts/codex-home-credential-sweep.mjs
 scripts/flywheel-lead-attach.sh
