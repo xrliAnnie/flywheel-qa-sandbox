@@ -127,6 +127,52 @@ function outboundPreflightHarness(
 }
 
 describe("buildTuiGeneration — outbound preflight lifecycle (FLY-2442)", () => {
+	it("refuses a persona gate failure before daemon connect, sender, or inbound wiring", async () => {
+		const h = outboundPreflightHarness();
+		const stateDir = mkdtempSync(join(tmpdir(), "fly2696-raya-state-"));
+		const createSender = vi.fn(() => h.sender);
+		const generation = buildTuiGeneration(
+			parseCodexLeadTuiRuntimeConfig({
+				FLYWHEEL_LEAD_ID: "raya",
+				FLYWHEEL_PROJECT_NAME: "raya",
+				FLYWHEEL_LEAD_KEY: "raya-raya",
+				FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+				FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+				DISCORD_EXPECTED_BOT_USER_ID: "12345678901234567",
+				DISCORD_BOT_TOKEN: "bot-token",
+				FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chat",
+				FLYWHEEL_BRIDGE_URL: "http://bridge.local",
+				FLYWHEEL_API_TOKEN: "api-token",
+				FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+				FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+				FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
+				CODEX_HOME: "/tmp/fly2696-raya-codex",
+				FLYWHEEL_COMM_DB: join(stateDir, "comm.db"),
+				TEAMLEAD_DB_PATH: join(stateDir, "flags.db"),
+				FLYWHEEL_CODEX_TUI_CWD: "/tmp",
+			}),
+			h.logger,
+			{
+				connectDaemon: h.connectDaemon,
+				createSender,
+				verifyPersona: async () => {
+					throw new Error("persona_authority_changed");
+				},
+			},
+		)();
+		try {
+			await expect(generation.start()).rejects.toThrow(
+				"persona_authority_changed",
+			);
+			expect(h.connectDaemon).not.toHaveBeenCalled();
+			expect(createSender).not.toHaveBeenCalled();
+		} finally {
+			await generation.stop();
+			h.remove();
+			rmSync(stateDir, { recursive: true, force: true });
+		}
+	});
+
 	it("closes the started WS before rejecting and closes the sender on generation stop", async () => {
 		const h = outboundPreflightHarness();
 		try {
@@ -297,6 +343,8 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 			TEAMLEAD_API_TOKEN: "api-tok",
 			BRIDGE_URL: "http://bridge.local",
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access", // present in source env
+			FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED: "1",
+			FLYWHEEL_RAYA_PERSONA_GENERATION_ID: "f".repeat(32),
 			SOME_RANDOM_SECRET: "leak-me",
 		} as NodeJS.ProcessEnv,
 		codexHome: "/Users/x/.codex-mufasa",
@@ -319,6 +367,28 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		expect(e.BRIDGE_URL).toBe("http://bridge.local");
 		expect(e.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID).toBe("alerts-channel");
 		expect(e.FLYWHEEL_ALERT_SENDER_TOKEN_ENV).toBe("DISCORD_BOT_TOKEN");
+		expect(e.FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED).toBeUndefined();
+		expect(e.FLYWHEEL_RAYA_PERSONA_GENERATION_ID).toBeUndefined();
+	});
+
+	it("injects cold-start authority only for an explicit verified Raya generation", () => {
+		const generationId = "a".repeat(32);
+		const e = buildTuiDaemonEnv({
+			...base,
+			profile: "full-access",
+			personaColdRequired: true,
+			personaGenerationId: generationId,
+		});
+		expect(e.FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED).toBe("1");
+		expect(e.FLYWHEEL_RAYA_PERSONA_GENERATION_ID).toBe(generationId);
+		expect(() =>
+			buildTuiDaemonEnv({
+				...base,
+				profile: "companion",
+				personaColdRequired: true,
+				personaGenerationId: generationId,
+			}),
+		).toThrow("persona cold daemon generation requires full-access");
 	});
 
 	it("full-access: stays available when the optional alert route is absent", () => {
@@ -344,6 +414,8 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		const e = buildTuiDaemonEnv({ ...base, profile: "companion" });
 		expect(e.SOME_RANDOM_SECRET).toBe("leak-me"); // raw — companion has no secrets in play
 		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
+		expect(e.FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED).toBeUndefined();
+		expect(e.FLYWHEEL_RAYA_PERSONA_GENERATION_ID).toBeUndefined();
 	});
 
 	it("injects one carrier generation into both full-access and companion daemons", () => {

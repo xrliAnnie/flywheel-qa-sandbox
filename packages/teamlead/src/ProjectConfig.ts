@@ -3,7 +3,11 @@ import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
-import { resolveCodexLeadCapabilities } from "flywheel-config";
+import {
+	type PersonaProjection,
+	parsePersonaProjection,
+	resolveCodexLeadCapabilities,
+} from "flywheel-config";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
@@ -313,6 +317,9 @@ export interface ProjectEntry {
 	projectName: string;
 	projectRoot: string;
 	projectRepo?: string;
+	personaProjection?: PersonaProjection;
+	personaProjectionContractDigest?: string;
+	invalidPersonaProjection?: string;
 	leads: LeadConfig[];
 	/** Required only while the founder-selected summary mode is per-project. */
 	summaryAggregatorLeadId?: string;
@@ -1276,6 +1283,40 @@ export function parseAndValidateProjects(
 					`Project "${entry.projectName}" linear.label: if provided, must be a non-empty string (scope label name), got ${JSON.stringify(lb.label)}`,
 				);
 			}
+		}
+
+		const parsedProjection = parsePersonaProjection(
+			(entry as Record<string, unknown>).personaProjection,
+			{
+				projectName: entry.projectName,
+				projectRepo:
+					typeof entry.projectRepo === "string" ? entry.projectRepo : undefined,
+			},
+		);
+		delete (entry as Record<string, unknown>).invalidPersonaProjection;
+		delete (entry as Record<string, unknown>).personaProjectionContractDigest;
+		if (parsedProjection.kind === "valid") {
+			const selectedLead = leads.find(
+				(lead) => lead.agentId === parsedProjection.value.leadId,
+			);
+			const runtimeValid =
+				selectedLead?.backend === "codex-app-server" &&
+				selectedLead.codexProfile === "full-access" &&
+				selectedLead.codexCapabilityBundleVersion !== 2;
+			if (!runtimeValid) {
+				delete (entry as Record<string, unknown>).personaProjection;
+				(entry as Record<string, unknown>).invalidPersonaProjection =
+					"personaProjection requires raya/raya Codex TUI full-access capability bundle version 1";
+			} else {
+				(entry as Record<string, unknown>).personaProjection =
+					parsedProjection.value;
+				(entry as Record<string, unknown>).personaProjectionContractDigest =
+					parsedProjection.contractDigest;
+			}
+		} else if (parsedProjection.kind === "invalid") {
+			delete (entry as Record<string, unknown>).personaProjection;
+			(entry as Record<string, unknown>).invalidPersonaProjection =
+				parsedProjection.reason;
 		}
 	}
 

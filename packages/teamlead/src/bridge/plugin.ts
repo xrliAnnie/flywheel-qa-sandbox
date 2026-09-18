@@ -72,6 +72,7 @@ import {
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	resolveFounderTimezone,
+	resolvePersonaStateRoot,
 } from "flywheel-config";
 import {
 	closeRunnerTerminalView,
@@ -601,6 +602,11 @@ import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
 import { createLeadPatrolConfiguration } from "./lead-patrol-config.js";
+import {
+	PersonaActivationReader,
+	verifyStoppedPersonaConsumer,
+} from "./lead-persona-activation.js";
+import { createLeadPersonaRouter } from "./lead-persona-routes.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -5099,6 +5105,47 @@ export function createBridgeApp(
 			projects,
 			linearApiKey: config.linearApiKey,
 			onEpicChange: opts?.epicPageRefresher?.requestRefresh,
+		}),
+	);
+
+	app.use(
+		"/api/lead-persona",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createLeadPersonaRouter({
+			readActivation: async (projectName, leadId) => {
+				const project = projects.find((row) => row.projectName === projectName);
+				const lead = project?.leads.find((row) => row.agentId === leadId);
+				const botToken = lead?.botToken ?? config.discordBotToken;
+				if (!botToken)
+					return { kind: "refused", reason: "discord_token_unavailable" };
+				let stateRoot: string;
+				try {
+					stateRoot = resolvePersonaStateRoot(process.env, homedir());
+				} catch (error) {
+					return {
+						kind: "refused",
+						reason:
+							error instanceof Error
+								? error.message
+								: "persona_state_root_invalid",
+					};
+				}
+				return new PersonaActivationReader({
+					store,
+					projects,
+					stateRoot,
+					founderUserId:
+						config.discordOwnerUserId ?? config.founderConsent?.founderUserId,
+					fetchMessage: (channelId, messageId) =>
+						fetchDiscordMessageFromChannel(channelId, messageId, botToken),
+					verifyStoppedConsumer: (leadKey, proof) =>
+						verifyStoppedPersonaConsumer(leadKey, proof, {
+							leaseDbPath:
+								process.env.FLYWHEEL_LEAD_LEASE_DB ??
+								join(homedir(), ".flywheel", "lead-lease.db"),
+						}),
+				}).read(projectName, leadId);
+			},
 		}),
 	);
 

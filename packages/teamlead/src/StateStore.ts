@@ -60,8 +60,10 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -2716,6 +2718,62 @@ export type AttentionThreadBinding =
 				| "issue_identity_unknown";
 	  };
 
+export interface OpenedDatabaseIdentity {
+	canonicalPath: string;
+	device: string;
+	inode: string;
+}
+
+function readDatabaseIdentity(dbPath: string): OpenedDatabaseIdentity {
+	const canonicalPath = realpathSync.native(dbPath);
+	const stat = statSync(canonicalPath, { bigint: true });
+	if (!stat.isFile()) throw new Error("database_identity_not_regular_file");
+	return {
+		canonicalPath,
+		device: stat.dev.toString(10),
+		inode: stat.ino.toString(10),
+	};
+}
+
+function sameDatabaseIdentity(
+	left: OpenedDatabaseIdentity,
+	right: OpenedDatabaseIdentity,
+): boolean {
+	return (
+		left.canonicalPath === right.canonicalPath &&
+		left.device === right.device &&
+		left.inode === right.inode
+	);
+}
+
+/**
+ * Bind the opened handle to the path identity observed on both sides of open.
+ * The injected opener keeps the race seam executable without weakening the
+ * production constructor.
+ */
+export function openWithDatabaseIdentity<T extends { close(): void }>(
+	dbPath: string,
+	open: () => T,
+): { connection: T; identity: OpenedDatabaseIdentity | null } {
+	if (dbPath === ":memory:") return { connection: open(), identity: null };
+	const before = existsSync(dbPath) ? readDatabaseIdentity(dbPath) : null;
+	const connection = open();
+	try {
+		const after = readDatabaseIdentity(dbPath);
+		if (before !== null && !sameDatabaseIdentity(before, after)) {
+			throw new Error("database_identity_changed_during_open");
+		}
+		return { connection, identity: after };
+	} catch (error) {
+		try {
+			connection.close();
+		} catch {
+			// Best effort: the identity failure is authoritative.
+		}
+		throw error;
+	}
+}
+
 export class StateStore {
 	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
 	private summaryPresentationStoreCache?: {
@@ -2746,6 +2804,7 @@ export class StateStore {
 	}
 	private db: CompatDb;
 	private dbPath: string;
+	private openedDatabaseIdentity: OpenedDatabaseIdentity | null;
 	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
 	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
 	codexQuotaLaunchEnabled: () => boolean = () => true;
@@ -2871,9 +2930,11 @@ export class StateStore {
 		db: CompatDb,
 		dbPath: string,
 		private readonly maintenance?: { readonly: boolean },
+		openedDatabaseIdentity: OpenedDatabaseIdentity | null = null,
 	) {
 		this.db = db;
 		this.dbPath = dbPath;
+		this.openedDatabaseIdentity = openedDatabaseIdentity;
 	}
 
 	/**
@@ -2884,6 +2945,66 @@ export class StateStore {
 	 */
 	getDbPath(): string {
 		return this.dbPath;
+	}
+
+	/** The file identity held by this live SQLite connection. */
+	getOpenedDatabaseIdentity(): OpenedDatabaseIdentity | null {
+		return this.openedDatabaseIdentity
+			? { ...this.openedDatabaseIdentity }
+			: null;
+	}
+
+	/** Refuse when the path now names a different file than the live handle. */
+	assertOpenedDatabaseIdentityCurrent(): OpenedDatabaseIdentity {
+		const opened = this.openedDatabaseIdentity;
+		if (this.dbPath === ":memory:" || opened === null) {
+			throw new Error("database_identity_unavailable");
+		}
+		let current: OpenedDatabaseIdentity;
+		try {
+			current = readDatabaseIdentity(this.dbPath);
+		} catch {
+			throw new Error("database_identity_path_unavailable");
+		}
+		if (!sameDatabaseIdentity(opened, current)) {
+			throw new Error("database_identity_changed_after_open");
+		}
+		return { ...opened };
+	}
+
+	/** Read-only S4 evidence seam; FLY-2697 owns adding/populating completed_at_ms. */
+	readSummaryPresentationMigrationEvidence(
+		projectName: string,
+		leadId: string,
+	): {
+		migration: ReturnType<SummaryPresentationStore["getMigration"]>;
+		completedAtMs: number | null;
+	} {
+		const migration = this.summaryPresentations.getMigration(projectName, leadId);
+		const hasCompletedAt = (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM pragma_table_info('summary_presentation_migration') WHERE name = 'completed_at_ms'",
+				)
+				.get() as { "1": number } | undefined
+		) !== undefined;
+		if (!migration || !hasCompletedAt) {
+			return { migration, completedAtMs: null };
+		}
+		const row = this.db.raw
+			.prepare(
+				`SELECT completed_at_ms AS completedAtMs
+				 FROM summary_presentation_migration
+				 WHERE project_name = ? AND lead_id = ? AND contract_version = 2`,
+			)
+			.get(projectName, leadId) as { completedAtMs: number | null } | undefined;
+		return {
+			migration,
+			completedAtMs:
+				row?.completedAtMs != null && Number.isSafeInteger(row.completedAtMs)
+					? row.completedAtMs
+					: null,
+		};
 	}
 
 	/** Persist the resolved configuration before page consumers start. */
@@ -3919,7 +4040,15 @@ export class StateStore {
 	 * full-DB export-on-every-write.
 	 */
 	static async create(dbPath: string): Promise<StateStore> {
-		const store = new StateStore(StateStore.openDatabase(dbPath), dbPath);
+		const opened = openWithDatabaseIdentity(dbPath, () =>
+			StateStore.openDatabase(dbPath),
+		);
+		const store = new StateStore(
+			opened.connection,
+			dbPath,
+			undefined,
+			opened.identity,
+		);
 		store.migrate();
 		store.codexQuota.migrate();
 		return store;
@@ -3938,10 +4067,15 @@ export class StateStore {
 		if (dbPath === ":memory:" || !existsSync(dbPath)) {
 			throw new Error(`maintenance_database_missing:${dbPath}`);
 		}
-		const raw = new BetterSqlite3(dbPath, {
-			readonly: options.readonly,
-			fileMustExist: true,
-		});
+		const opened = openWithDatabaseIdentity(
+			dbPath,
+			() =>
+				new BetterSqlite3(dbPath, {
+					readonly: options.readonly,
+					fileMustExist: true,
+				}),
+		);
+		const raw = opened.connection;
 		try {
 			installSqlTiming(raw, "teamlead");
 			raw.pragma("busy_timeout = 5000");
@@ -3955,9 +4089,12 @@ export class StateStore {
 				raw.pragma("foreign_keys = ON");
 			}
 			StateStore.assertMaintenanceSchema(raw);
-			return new StateStore(new CompatDb(raw), dbPath, {
-				readonly: options.readonly,
-			});
+			return new StateStore(
+				new CompatDb(raw),
+				dbPath,
+				{ readonly: options.readonly },
+				opened.identity,
+			);
 		} catch (error) {
 			raw.close();
 			throw error;
@@ -4355,11 +4492,14 @@ export class StateStore {
 		// Track the freshly-built handle so it can be closed if migration throws
 		// (no leaked handle on the failure path — Codex code R1 LOW).
 		let next: CompatDb | undefined;
+		const oldIdentity = this.openedDatabaseIdentity;
 		try {
 			// Reopen from the on-disk file, swap it in, then migrate it (idempotent;
 			// synchronous). On ANY throw the catch restores `old` and closes `next`.
-			next = this.buildDatabaseFromDisk();
+			const rebuilt = this.buildDatabaseFromDisk();
+			next = rebuilt.db;
 			this.db = next;
+			this.openedDatabaseIdentity = rebuilt.identity;
 			this.migrate();
 			// Best-effort close of the old (corrupt) handle. A close failure does
 			// not fail recovery.
@@ -4375,6 +4515,7 @@ export class StateStore {
 			return true;
 		} catch (rebuildErr) {
 			this.db = old; // restore defined state (old is corrupt, retried next window)
+			this.openedDatabaseIdentity = oldIdentity;
 			// Close the half-built replacement so a failed rebuild never leaks a handle.
 			if (next) {
 				try {
@@ -4405,19 +4546,25 @@ export class StateStore {
 	 * failure in `recoverFromCorruption()` and can reach the unrecoverable
 	 * escalation (FLY-639 contract preserved; Codex code R1 MEDIUM).
 	 */
-	private buildDatabaseFromDisk(): CompatDb {
+	private buildDatabaseFromDisk(): {
+		db: CompatDb;
+		identity: OpenedDatabaseIdentity | null;
+	} {
 		if (this.dbPath === ":memory:") {
-			return StateStore.openDatabase(":memory:");
+			return { db: StateStore.openDatabase(":memory:"), identity: null };
 		}
 		const fileExisted = existsSync(this.dbPath);
-		const db = StateStore.openDatabase(this.dbPath);
+		const opened = openWithDatabaseIdentity(this.dbPath, () =>
+			StateStore.openDatabase(this.dbPath),
+		);
+		const db = opened.connection;
 		if (fileExisted) {
 			// Existing file → prove it is a real SQLite DB. A malformed/NOTADB image
 			// makes this read throw, which the caller counts as a rebuild failure
 			// (rather than masking corruption as a clean empty DB).
 			db.raw.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
 		}
-		return db;
+		return { db, identity: opened.identity };
 	}
 
 	/**

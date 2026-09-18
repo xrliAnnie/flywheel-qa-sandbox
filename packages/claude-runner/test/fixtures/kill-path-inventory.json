@@ -930,6 +930,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh:[ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null || exit 1#1",
+		"path": "packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh",
+		"code": "[ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null || exit 1",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/scripts/claude-lead.sh:if [ -n \"${CLAUDE_CHILD_PID:-}\" ] && kill -0 \"$CLAUDE_CHILD_PID\" 2>/dev/null; then#1",
 		"path": "packages/teamlead/scripts/claude-lead.sh",
 		"code": "if [ -n \"${CLAUDE_CHILD_PID:-}\" ] && kill -0 \"$CLAUDE_CHILD_PID\" 2>/dev/null; then",

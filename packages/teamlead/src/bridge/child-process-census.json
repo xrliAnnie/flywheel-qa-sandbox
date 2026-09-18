@@ -161,6 +161,11 @@
 			"disposition": "bridge_sync_marker_timeout_at_callers"
 		},
 		{
+			"file": "packages/flywheel-comm/src/persona-projector.ts",
+			"sync_child": 3,
+			"disposition": "one_shot_launcher: exact-commit Git projection with sanitized auth, bounded local tracking/fetch/blob reads, and temporary-repository cleanup"
+		},
+		{
 			"file": "packages/flywheel-comm/src/proofshot/free-port.ts",
 			"sync_child": 1,
 			"disposition": "one_shot_cli"
@@ -402,6 +407,11 @@
 			"file": "packages/teamlead/src/lead-backends/codex/gateway/ship-preflight.ts",
 			"sync_child": 1,
 			"disposition": "separate_gateway"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/persona-startup-gate.ts",
+			"sync_marker": 1,
+			"disposition": "lead_runtime_bounded: process-start identity probe under the canonical sync-operation marker"
 		},
 		{
 			"file": "packages/teamlead/src/lead-backends/codex/tui-window.ts",

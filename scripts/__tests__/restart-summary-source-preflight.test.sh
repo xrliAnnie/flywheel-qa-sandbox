@@ -91,8 +91,9 @@ if pnpm --dir "$FLYWHEEL_DIR" exec tsx \
   echo 'FAIL: unmapped stale workspace dist unexpectedly passed'; exit 1
 fi
 cat "$ROOT/unmapped.log"
-grep -q 'resolveCodexLeadCapabilities' "$ROOT/unmapped.log"
-echo 'PASS: unmapped real verifier fails on missing resolveCodexLeadCapabilities'
+grep -q 'does not provide an export named' "$ROOT/unmapped.log"
+grep -Eq 'parsePersonaProjection|resolveCodexLeadCapabilities' "$ROOT/unmapped.log"
+echo 'PASS: unmapped real verifier fails on a stale flywheel-config export'
 # Now poison every fixture workspace dist entry to catch accidental fallback to
 # another freshly built workspace package, including future dependency additions.
 python3 <<'PY2'

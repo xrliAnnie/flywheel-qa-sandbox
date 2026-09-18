@@ -60,7 +60,9 @@
 		"./session-terminal": "./dist/session-terminal.js",
 		"./terminal-observation": "./dist/terminal-observation.js",
 		"./snapshot-storage": "./dist/snapshot-storage.js",
-		"./lead-backend-migration-runtime": "./dist/lead-backend-migration-runtime.js"
+		"./lead-backend-migration-runtime": "./dist/lead-backend-migration-runtime.js",
+		"./persona-activation-client": "./dist/persona-activation-client.js",
+		"./persona-projector": "./dist/persona-projector.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

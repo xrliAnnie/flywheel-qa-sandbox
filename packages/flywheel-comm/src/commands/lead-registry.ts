@@ -1191,12 +1191,52 @@ function runSelector(
 		);
 	}
 	const match = matches[0]!;
+	if (
+		match.identity.projectName === "raya" &&
+		match.identity.leadId === "raya" &&
+		match.project.invalidPersonaProjection !== undefined
+	) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_persona_projection_invalid",
+			78,
+			match.project.invalidPersonaProjection,
+		);
+	}
+	const projection =
+		match.project.personaProjection?.leadId === match.identity.leadId
+			? match.project.personaProjection
+			: undefined;
+	if (projection !== undefined) {
+		if (
+			match.identity.projectName !== "raya" ||
+			match.identity.leadId !== "raya" ||
+			match.identity.backend !== "codex-app-server" ||
+			match.lead.codexProfile !== "full-access" ||
+			match.lead.codexCapabilityBundleVersion === 2
+		) {
+			throw new LeadRegistryCommandError(
+				"lead_registry_persona_projection_invalid",
+				78,
+				"personaProjection requires raya/raya Codex TUI full-access capability bundle version 1",
+			);
+		}
+	}
 	stdout(
 		JSON.stringify({
 			projectsDigest,
 			projectName,
 			leadId,
 			projectRoot: match.project.projectRoot,
+			...(typeof match.project.projectRepo === "string"
+				? { projectRepo: match.project.projectRepo }
+				: {}),
+			...(projection !== undefined
+				? {
+						personaProjection: projection,
+						personaProjectionContractDigest:
+							match.project.personaProjectionContractDigest,
+					}
+				: {}),
 			chatChannel: match.lead.chatChannel,
 			...(match.project.generalChannel !== undefined
 				? { generalChannel: match.project.generalChannel }

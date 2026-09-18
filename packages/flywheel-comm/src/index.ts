@@ -46,6 +46,7 @@ import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { runOncallDraftCommand } from "./commands/oncall-draft.js";
 import { pending } from "./commands/pending.js";
+import { runPersonaProject } from "./commands/persona-project.js";
 import { progress } from "./commands/progress.js";
 import {
 	type PublishReportArgs,
@@ -238,6 +239,8 @@ Commands:
             Uses FLYWHEEL_BRIDGE_URL and TEAMLEAD_API_TOKEN.
   lead-note   Set, show or clear a role-declared judgment beside machine facts.
               set | show | clear --project <project> --issue <ID> [--role <role>] [--text <text>].
+  persona-project  Project the exact authorized Raya persona before runtime start.
+              --project raya --lead raya [--projects-file <path>] [--bridge-url <url>].
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
@@ -488,6 +491,9 @@ async function main(): Promise<void> {
 			break;
 		case "lead-note":
 			process.exitCode = await runLeadNote(commandArgs);
+			break;
+		case "persona-project":
+			process.exitCode = await runPersonaProject(commandArgs);
 			break;
 		case "release-bug-tag":
 			process.exitCode = await runReleaseBugTag(commandArgs);

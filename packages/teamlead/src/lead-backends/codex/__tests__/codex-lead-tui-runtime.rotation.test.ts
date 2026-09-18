@@ -12,6 +12,7 @@ import {
 } from "../codex-lead-tui-runtime.js";
 import type { LeadInputRouter } from "../LeadInputRouter.js";
 import { LeadJournal } from "../LeadJournal.js";
+import type { VerifiedPersona } from "../persona-startup-gate.js";
 import { SqliteJournalStore } from "../SqliteJournalStore.js";
 
 const mocks = vi.hoisted(() => ({
@@ -111,6 +112,7 @@ function harness(
 		saved?: string | null;
 		ledger?: rotation.RotationLedger;
 		complete?: boolean;
+		persona?: VerifiedPersona;
 	} = {},
 ) {
 	if (options.off) {
@@ -196,6 +198,12 @@ function harness(
 		model: "gpt-6-astra",
 		reasoningEffort: "high" as const,
 	}));
+	const personaObservations: Array<{
+		stage: "verified" | "ready";
+		threadId: string;
+		baseInstructions: string;
+	}> = [];
+	const verifyColdProof = vi.fn();
 	const make = buildTuiGeneration(
 		config,
 		{ info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -207,6 +215,23 @@ function harness(
 				deliver: async () => {},
 			}),
 			preflight: async () => {},
+			...(options.persona
+				? {
+						verifyPersona: async () => options.persona!,
+						verifyColdProof,
+						recordPersonaObservation: (
+							stage: "verified" | "ready",
+							persona: VerifiedPersona,
+							threadId: string,
+						) => {
+							personaObservations.push({
+								stage,
+								threadId,
+								baseInstructions: persona.baseInstructions,
+							});
+						},
+					}
+				: {}),
 			connectDaemon: async () => {
 				const handlers = new Map<string, Array<(value?: unknown) => void>>();
 				const fire = (event: string, value?: unknown) => {
@@ -262,6 +287,8 @@ function harness(
 		requests,
 		rebuild,
 		readTuning,
+		personaObservations,
+		verifyColdProof,
 		emit: (method: string, params: unknown) => emit(method, params),
 		respond: (fn: typeof respond) => {
 			respond = fn;
@@ -283,6 +310,51 @@ function harness(
 				: [],
 	};
 }
+
+describe("FLY-2696 verified persona generation", () => {
+	const persona: VerifiedPersona = {
+		personaBlobDigest: "a".repeat(64),
+		baseInstructionsDigest: "b".repeat(64),
+		baseInstructions: "exact verified Raya instructions",
+		contractDigest: "c".repeat(64),
+		activationRevision: "9",
+		source: "post-m0-fallback",
+	};
+
+	it("uses the verified string for resume and records ready only after the RPC ack", async () => {
+		const h = harness({ persona });
+		await h.make().start();
+		expect(h.verifyColdProof).toHaveBeenCalledWith(persona);
+		expect(
+			h.requests.find((request) => request.method === "thread/resume")?.params
+				.baseInstructions,
+		).toBe(persona.baseInstructions);
+		expect(h.personaObservations).toEqual([
+			{
+				stage: "verified",
+				threadId: OLD,
+				baseInstructions: persona.baseInstructions,
+			},
+			{
+				stage: "ready",
+				threadId: OLD,
+				baseInstructions: persona.baseInstructions,
+			},
+		]);
+		expect(mocks.gatewayStart).toHaveBeenCalledTimes(1);
+	});
+
+	it("publishes no ready receipt and opens no gateway when resume RPC fails", async () => {
+		const h = harness({ persona });
+		h.respond((method) => {
+			if (method === "thread/resume") throw new Error("resume refused");
+			return {};
+		});
+		await expect(h.make().start()).rejects.toThrow("injected failure");
+		expect(h.personaObservations).toEqual([]);
+		expect(mocks.gatewayStart).not.toHaveBeenCalled();
+	});
+});
 
 describe("rotation pending and replay", () => {
 	it("consumes pending only after terminal proof and a durable attempt marker; never resumes old", async () => {

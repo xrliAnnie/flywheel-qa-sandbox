@@ -1,0 +1,71 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2696 · Raya 人设投影</title><style>body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:920px;margin:auto;padding:40px 18px 70px}h1{font-size:34px;line-height:1.25;letter-spacing:-.025em}h2{font-size:23px;margin:0 0 14px}p{margin:10px 0}.eyebrow,.muted{color:#6e6e73;font-size:14px}.card{background:white;margin:22px 0;padding:28px;border:1px solid #e5e5e7;border-radius:20px}.lead{font-size:24px;font-weight:600}.pending{border:1px dashed #d8a343;background:#fff8e9;border-radius:12px;padding:18px;color:#72531f}.pending b{font-size:14px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:12px 8px;border-bottom:1px solid #e9e9ec}th{color:#555}label{display:block;color:#6e6e73;font-size:14px;margin:22px 0 6px}textarea{box-sizing:border-box;width:100%;min-height:74px;font:inherit;border:1px solid #c7c7cc;border-radius:10px;padding:10px;resize:vertical}textarea:focus{outline:2px solid #007aff}button{border:0;border-radius:10px;background:#007aff;color:white;padding:10px 16px;font:inherit;cursor:pointer;margin:10px 8px 4px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;border-radius:10px;padding:14px;font-size:13px}summary{cursor:pointer;color:#0066cc}#copy-status{font-size:14px}#chunks textarea{min-height:130px}@media(max-width:600px){main{padding:24px 12px}h1{font-size:28px}.card{padding:19px}.lead{font-size:21px}th,td{font-size:14px;padding:9px 5px}}</style></head><body><main><p class="eyebrow">FLY-2696 · Raya 并仓 S4 · 2026-09-17</p><h1>先认准人设，再接收消息</h1>
+<section class="card" id="summary"><h2>一句话</h2><p class="lead">Raya 只加载获准的人设版本；迁移后找不到兼容版本，就停止接收消息。</p><p>本次交付默认关闭的投影代码设计。人设继续留在 Raya 仓，其他 16 个 Lead 不发生投影写入。</p><p class="muted">设计审查 R3 已通过 · 未实施、未激活、未验证生产切换</p><label for="comment-summary">对「一句话」的意见</label><textarea id="comment-summary" data-section="summary" data-title="一句话" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="flow"><h2>核心流程</h2><div class="pending"><b>DIAGRAM PENDING LOCAL RENDER</b><p>本地 Mermaid 渲染两次均被系统权限拒绝。流程源码已随设计保存。</p></div><p>先核对授权与迁移记录，再获取指定版本，最后校验实际加载内容。只有通过全部检查，才允许接收消息。</p><details><summary>查看 Mermaid 流程源码</summary><pre>flowchart TD
+ A[&quot;Raya 启动&quot;] --&gt; B[&quot;核对获准版本与迁移记录&quot;]
+ B --&gt; C[&quot;读取指定提交的人设&quot;]
+ C --&gt; D[&quot;核对实际加载的内容&quot;]
+ D --&gt; E[&quot;成功后才接收消息&quot;]
+ C --&gt;|取源失败| F{&quot;迁移是否完成？&quot;}
+ F --&gt;|尚未开始| G[&quot;验证旧版后回退&quot;]
+ F --&gt;|已完成| H[&quot;只用迁移前冻结的兼容版&quot;]
+ G --&gt; D
+ H --&gt; D
+ B --&gt;|证据不全| X[&quot;停止启动&quot;]
+ H --&gt;|没有安全副本| X
+ D --&gt;|内容不符| X
+</pre></details><label for="comment-flow">对「核心流程」的意见</label><textarea id="comment-flow" data-section="flow" data-title="核心流程" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="fallback"><h2>迁移前后，回退规则不同</h2><p><b>M0</b> 是一次性的数据迁移，完成后不能再让旧人设处理新数据。<b>回退</b> 是取不到目标版本时，改用事先核验过的副本。</p><table><tr><th>状态</th><th>能使用什么</th></tr><tr><td>尚未开始迁移</td><td>经验证的旧版人设</td></tr><tr><td>迁移进行中或证据冲突</td><td>停止启动，保持消息等待</td></tr><tr><td>迁移已完成</td><td>获准目标版，或迁移窗口开始前冻结的兼容版</td></tr><tr><td>迁移后只有旧版可用</td><td>停止启动；不能因文件还在就放行</td></tr></table><p>Bridge 与 GatePoller 是负责记录和排队事件的常驻服务。它们继续运行，只有 Raya 的消息消费受到限制。</p><label for="comment-fallback">对「迁移前后，回退规则不同」的意见</label><textarea id="comment-fallback" data-section="fallback" data-title="迁移前后，回退规则不同" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="model"><h2>四份证据各司其职</h2><div class="pending"><b>DIAGRAM PENDING LOCAL RENDER</b><p>数据关系图保留 Mermaid 源码，尚无可交付的本地渲染。</p></div><table><tr><th>证据</th><th>回答什么</th></tr><tr><td>授权版本</td><td>哪个仓库、哪次精确提交、哪份人设得到批准？</td></tr><tr><td>激活窗口</td><td>这次切换针对哪个 Raya、哪份数据库、哪个兼容回退版？</td></tr><tr><td>迁移回执</td><td>迁移完成了吗？边界、游标、来源与逐行结果能复验吗？</td></tr><tr><td>加载证明</td><td>这个正在运行的进程和线程实际用了哪些内容？</td></tr></table><p><b>摘要</b> 是文件内容的数字指纹；原始人设与整理后的提示词分别记录摘要。配置身份的摘要不能冒充人设内容的摘要。</p><details><summary>查看 Mermaid 数据模型源码</summary><pre>classDiagram
+ class 授权版本 {
+ 精确提交
+ 原始人设摘要
+ founder原始授权
+ }
+ class 激活窗口 {
+ Raya身份
+ 数据库身份
+ 迁移前冻结的回退版
+ 消费围栏
+ }
+ class 迁移回执 {
+ 完成状态
+ 边界等于游标
+ 来源与逐行分类摘要
+ 工具与授权证据
+ }
+ class 加载证明 {
+ 实际人设摘要
+ 最终提示词摘要
+ 进程与线程身份
+ }
+ 激活窗口 --&gt; 授权版本 : 固定版本
+ 激活窗口 --&gt; 迁移回执 : 确认数据兼容
+ 加载证明 --&gt; 激活窗口 : 同一窗口
+ 加载证明 --&gt; 授权版本 : 内容一致
+</pre></details><label for="comment-model">对「四份证据各司其职」的意见</label><textarea id="comment-model" data-section="model" data-title="四份证据各司其职" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="negative"><h2>16 个 Lead，一个也不能漏</h2><p><b>显式 opt-in</b> 就是明确为 Raya 配置启用合同，不能根据“有仓库、有文件夹”猜测要启用。</p><p>本次只读清点确认：16 个非 Raya Lead 全部有仓库配置和人设文件，其中 13 份人设受 Git 跟踪。实施验收将在隔离副本上逐个证明：文件内容、权限、修改时间和工作区状态不变，且没有取源、临时目录或投影写入。</p><p class="muted">名册清点已经完成；零写测试尚未实施，不能把清点当测试通过。</p><label for="comment-negative">对「16 个 Lead，一个也不能漏」的意见</label><textarea id="comment-negative" data-section="negative" data-title="16 个 Lead，一个也不能漏" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="tradeoffs"><h2>沿用已裁定的方案</h2><table><tr><th>选择</th><th>原因与代价</th></tr><tr><td>人设留 Raya 仓，固定精确提交</td><td>保持既定仓库边界；换版本需要单独授权，启动需要核验证据。</td></tr><tr><td>不跟随 main</td><td>仓库最新版本不等于获准在生产使用的版本。</td></tr><tr><td>不搬人设进 Flywheel</td><td>该替代方案已评估并否决，会改变母方案的仓库边界。</td></tr><tr><td>不依赖人工同步</td><td>人工副本容易过时，也不能证明实际加载的版本。</td></tr></table><p>首轮显式启用只支持 Raya 当前标准启动路径。新的规则组装方式（capability v2）需另行验证；本设计先拒绝该组合。</p><label for="comment-tradeoffs">对「沿用已裁定的方案」的意见</label><textarea id="comment-tradeoffs" data-section="tradeoffs" data-title="沿用已裁定的方案" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="boundaries"><h2>这次交付到哪里</h2><p><b>包含：</b>配置合同、取源与替换算法、启动前校验、全部 16 个负例、M0 回执与激活围栏 v1 合同。Lead 已指定 S4 定义合同，FLY-2697 按此产出。旧机制如果已经完成迁移，默认关闭的 S4 仍不介入；旧写入者的交接另做激活准备，排在 FLY-2657 收口后，S4 本身不等待。真正接管时先交接旧写入者，再在停止消费的窗口中验证已有迁移，不能重做分类。</p><p><b>不包含：</b>生产启用、执行迁移、重启服务、换人设版本、拆旧班车、合并或部署。代码合入与部署由不同流程完成。</p><p>旧 Raya brain 已停用来自任务现场说明，后续只复核仍停用。真正切换后的 summary 成功与新业务记录，必须留到获准激活窗口中实测。</p><label for="comment-boundaries">对「这次交付到哪里」的意见</label><textarea id="comment-boundaries" data-section="boundaries" data-title="这次交付到哪里" placeholder="写下你希望调整的地方"></textarea></section>
+<section class="card" id="feedback"><h2>页面意见汇总</h2><p>留言仅保存在当前浏览器。此汇总用于修订反馈，不代表批准设计、合并或激活。</p><div id="chunks"></div><button id="copy-all" type="button">复制全部意见</button><span id="copy-status" role="status"></span><label for="comment-feedback">对「页面意见汇总」的意见</label><textarea id="comment-feedback" data-section="feedback" data-title="页面意见汇总" placeholder="写下你希望调整的地方"></textarea></section>
+</main><script nonce="__CSP_NONCE__">(()=>{
+ const marker="【页面意见汇总】FLY-2696";
+ const prefix="fly2696:comments:"+location.pathname+":";
+ const fields=[...document.querySelectorAll("textarea[data-section]")];
+ const area=document.getElementById("chunks"); const status=document.getElementById("copy-status");
+ let chunks=[];
+ async function copy(text){
+  try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw new Error("unavailable");await navigator.clipboard.writeText(text);status.textContent="已复制";}
+  catch(e){const t=document.createElement("textarea");t.value=text;document.body.appendChild(t);t.select();let ok=false;try{ok=document.execCommand("copy");}catch(e){}t.remove();status.textContent=ok?"已复制":"自动复制失败，请选择汇总文字复制";}
+ }
+ function update(){
+  const text=fields.filter(t=>t.value.trim()).map(t=>"【"+t.dataset.title+"】\n"+t.value.trim()).join("\n\n");
+  const chars=Array.from(text);chunks=[];
+  if(!chars.length)chunks.push(marker+"\n（尚无意见）");
+  for(let i=0;i<chars.length;i+=1650)chunks.push(marker+"\n"+chars.slice(i,i+1650).join(""));
+  area.replaceChildren();
+  chunks.forEach((part,i)=>{const label=document.createElement("label");label.textContent="第 "+(i+1)+" / "+chunks.length+" 段";const t=document.createElement("textarea");t.readOnly=true;t.value=part;t.setAttribute("aria-label",label.textContent);const b=document.createElement("button");b.type="button";b.textContent="复制本段";b.addEventListener("click",()=>copy(part));area.append(label,t,b);});
+ }
+ fields.forEach(t=>{try{t.value=localStorage.getItem(prefix+t.dataset.section)||"";}catch(e){}t.addEventListener("input",()=>{try{localStorage.setItem(prefix+t.dataset.section,t.value);}catch(e){}update();});});
+ document.getElementById("copy-all").addEventListener("click",()=>copy(chunks.join("\n\n")));
+ update();
+})();</script></body></html>

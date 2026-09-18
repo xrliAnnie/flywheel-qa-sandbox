@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type CodexLeadCapabilityInput,
+	type PersonaProjection,
+	parsePersonaProjection,
 	resolveCodexLeadCapabilities,
 } from "flywheel-config";
 import { compileSummaryAssignmentRows } from "./summary-assignment-core.js";
@@ -85,6 +87,10 @@ export interface IdentityLeadRow
 
 export interface IdentityProjectRow extends Record<string, unknown> {
 	projectName: string;
+	projectRepo?: string;
+	personaProjection?: PersonaProjection;
+	personaProjectionContractDigest?: string;
+	invalidPersonaProjection?: string;
 	leads: IdentityLeadRow[];
 }
 
@@ -257,7 +263,32 @@ function parseProjects(raw: unknown): IdentityProjectRow[] {
 			}
 			return lead as IdentityLeadRow;
 		});
-		return { ...project, projectName: project.projectName, leads };
+		const parsedProjection = parsePersonaProjection(project.personaProjection, {
+			projectName: project.projectName,
+			projectRepo:
+				typeof project.projectRepo === "string"
+					? project.projectRepo
+					: undefined,
+		});
+		const {
+			personaProjection: _personaProjection,
+			personaProjectionContractDigest: _projectionDigest,
+			invalidPersonaProjection: _invalidProjection,
+			...projectFields
+		} = project;
+		return {
+			...projectFields,
+			projectName: project.projectName,
+			leads,
+			...(parsedProjection.kind === "valid"
+				? {
+						personaProjection: parsedProjection.value,
+						personaProjectionContractDigest: parsedProjection.contractDigest,
+					}
+				: parsedProjection.kind === "invalid"
+					? { invalidPersonaProjection: parsedProjection.reason }
+					: {}),
+		} as IdentityProjectRow;
 	});
 }
 
