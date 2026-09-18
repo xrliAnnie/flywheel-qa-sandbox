@@ -77,7 +77,7 @@ describe("attention rendering", () => {
 				expect(part.closest("details")).toBeNull();
 			expect(item.querySelectorAll("[data-attention-part]")).toHaveLength(4);
 			expect(item.querySelector("a")?.getAttribute("href")).toMatch(
-				/^https:\/\/discord.com\/channels\//,
+				/^https:\/\/discord\.com\/channels\//,
 			);
 		}
 		expect(dom.querySelectorAll("details.epic").length).toBeGreaterThan(0);
@@ -439,6 +439,155 @@ it("uses compact v5 attention rows with a count and real Discord jump", () => {
 	expect(row.querySelector("dl")).toBeNull();
 });
 
+it("renders mobile-safe HTTPS primaries with desktop app targets on every page surface", () => {
+	const document = page();
+	document.items[0]!.thread_url = sourceCell(
+		"https://discord.com/channels/123/456",
+		"statestore",
+		"chat_threads",
+	);
+	const window = new Window();
+	try {
+		window.document.write(renderEpicPageHtml(document, now));
+		const pairs = [
+			window.document.querySelector(".kid .discord-links"),
+			window.document.querySelector("[data-attention-key] .discord-links"),
+			window.document.querySelector("[data-lead-question] .discord-links"),
+		];
+		for (const pair of pairs) {
+			expect(pair).not.toBeNull();
+			const primary = pair!.querySelector("a[data-discord-app]");
+			expect(primary?.getAttribute("href")).toBe(
+				"https://discord.com/channels/123/456",
+			);
+			expect(primary?.hasAttribute("data-discord-app")).toBe(true);
+			expect(
+				pair!.querySelector("a[data-discord-fallback]")?.getAttribute("href"),
+			).toBe("https://discord.com/channels/123/456");
+			expect(
+				pair!
+					.querySelector("a[data-discord-fallback]")
+					?.getAttribute("aria-label"),
+			).toMatch(/.+ Discord 网页版/);
+		}
+		expect(
+			window.document.querySelectorAll('a[href^="discord://"]'),
+		).toHaveLength(0);
+	} finally {
+		window.close();
+	}
+});
+
+it.each([
+	{
+		name: "iOS Safari",
+		userAgent:
+			"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+		maxTouchPoints: 5,
+		expected: "https://discord.com/channels/123/456",
+	},
+	{
+		name: "Discord iOS WebView",
+		userAgent:
+			"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Discord/253.0",
+		maxTouchPoints: 5,
+		expected: "https://discord.com/channels/123/456",
+	},
+	{
+		name: "Android Chrome",
+		userAgent:
+			"Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36",
+		maxTouchPoints: 5,
+		expected: "https://discord.com/channels/123/456",
+	},
+	{
+		name: "iPadOS desktop UA",
+		userAgent:
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+		maxTouchPoints: 5,
+		expected: "https://discord.com/channels/123/456",
+	},
+	{
+		name: "desktop Chrome",
+		userAgent:
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
+		maxTouchPoints: 0,
+		expected: "discord://-/channels/123/456",
+	},
+	{
+		name: "desktop Safari",
+		userAgent:
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+		maxTouchPoints: 0,
+		expected: "discord://-/channels/123/456",
+	},
+])("upgrades Discord links only for $name", async (device) => {
+	const document = page();
+	document.items[0]!.thread_url = sourceCell(
+		"https://discord.com/channels/123/456",
+		"statestore",
+		"chat_threads",
+	);
+	const window = new Window({
+		settings: {
+			enableJavaScriptEvaluation: true,
+			suppressInsecureJavaScriptEnvironmentWarning: true,
+		},
+	});
+	Object.defineProperty(window.navigator, "userAgent", {
+		value: device.userAgent,
+		configurable: true,
+	});
+	Object.defineProperty(window.navigator, "maxTouchPoints", {
+		value: device.maxTouchPoints,
+		configurable: true,
+	});
+	try {
+		window.document.write(renderEpicPageHtml(document, now));
+		expect(
+			window.document
+				.querySelector(".kid a[data-discord-app]")
+				?.getAttribute("href"),
+		).toBe(device.expected);
+	} finally {
+		await window.happyDOM.close();
+	}
+});
+
+it("does not upgrade a non-canonical primary href on desktop", async () => {
+	const document = page();
+	document.items[0]!.thread_url = sourceCell(
+		"https://discord.com/channels/123/456",
+		"statestore",
+		"chat_threads",
+	);
+	const html = renderEpicPageHtml(document, now).replaceAll(
+		'data-discord-app href="https://discord.com/channels/123/456"',
+		'data-discord-app href="https://discord.com.evil/channels/123/456"',
+	);
+	const window = new Window({
+		settings: {
+			enableJavaScriptEvaluation: true,
+			suppressInsecureJavaScriptEnvironmentWarning: true,
+		},
+	});
+	Object.defineProperty(window.navigator, "userAgent", {
+		value:
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
+		configurable: true,
+	});
+	try {
+		window.document.write(html);
+		expect(
+			window.document
+				.querySelector(".kid a[data-discord-app]")
+				?.getAttribute("href"),
+		).toBe("https://discord.com.evil/channels/123/456");
+	} finally {
+		await window.happyDOM.close();
+	}
+});
+
 it("keeps a nomination label alone out of the founder action list", () => {
 	const dom = new Window().document;
 	dom.write(renderEpicPageHtml(page(), now));
@@ -502,7 +651,16 @@ it.each([
 			"chat_threads",
 		);
 		const markdown = renderEpicPageMarkdown(document, now);
-		if (valid) expect(markdown).toContain(`[跳 Discord ↗](${url})`);
-		else expect(markdown).not.toContain(url);
+		if (valid) {
+			expect(markdown).toContain(
+				'href="https://discord.com/channels/1485787271192907816/1549550796725690459"',
+			);
+			expect(markdown).toContain("data-discord-app");
+			expect(markdown).toContain(`data-discord-fallback href="${url}"`);
+			expect(markdown).not.toContain('href="discord://');
+		} else {
+			expect(markdown).not.toContain(url);
+			expect(markdown).toContain("Discord 链接不可用");
+		}
 	},
 );

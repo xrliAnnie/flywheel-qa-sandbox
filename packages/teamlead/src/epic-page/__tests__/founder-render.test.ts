@@ -362,6 +362,16 @@ it("carries a validated child Discord binding through generation to the row", ()
 			.querySelector('[data-item="EPX-1"] .jump')
 			?.getAttribute("href"),
 	).toBe("https://discord.com/channels/123/456");
+	expect(
+		window.document
+			.querySelector('[data-item="EPX-1"] .jump')
+			?.hasAttribute("data-discord-app"),
+	).toBe(true);
+	expect(
+		window.document
+			.querySelector('[data-item="EPX-1"] [data-discord-fallback]')
+			?.getAttribute("href"),
+	).toBe("https://discord.com/channels/123/456");
 });
 
 it("uses short Epic names and calls a ready child unstarted", () => {

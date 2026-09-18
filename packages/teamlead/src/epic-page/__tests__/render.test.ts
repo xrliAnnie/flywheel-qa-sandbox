@@ -139,6 +139,7 @@ it("omits the judgment region when nobody wrote and updates time without a fresh
 		const future = EPIC_SHAPE_NOW.getTime() + 6 * 86_400_000;
 		runInNewContext(script, {
 			document: window.document,
+			navigator: { userAgent: "", maxTouchPoints: 0 },
 			Date: class extends Date {
 				static now() {
 					return future;
@@ -415,7 +416,7 @@ describe("Epic page render parity", () => {
 		expect(html).not.toContain("FREE_TEXT_SENTINEL_MUST_NOT_RENDER");
 	});
 
-	it("uses one inert nonce script for reader age and no self-supplied CSP", () => {
+	it("uses one nonce script for local enhancements and no self-supplied CSP", () => {
 		const html = renderEpicPageHtml(pageWithLiveness(), EPIC_SHAPE_NOW);
 		const scripts = (
 			html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? []
@@ -429,7 +430,9 @@ describe("Epic page render parity", () => {
 		expect(scripts).toHaveLength(1);
 		expect(scripts[0]).toContain('nonce="__CSP_NONCE__"');
 		expect(scripts[0]).toContain("textContent");
-		expect(scripts[0]).not.toMatch(/innerHTML|fetch\(|https?:\/\//);
+		expect(scripts[0]).toContain("https://discord.com/channels/");
+		expect(scripts[0]).not.toMatch(/innerHTML|fetch\(/);
+		expect(html).not.toMatch(/<script\b[^>]*\bsrc=/);
 	});
 
 	it("says zero signals explicitly", () => {

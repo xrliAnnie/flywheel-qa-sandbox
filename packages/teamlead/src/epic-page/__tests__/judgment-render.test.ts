@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { decodeAuditSidecar } from "../audit-sidecar.js";
+import { discordLinkPair, renderDiscordLinkPair } from "../discord-link.js";
 import { generateEpicPage } from "../generate.js";
 import { renderHistoryPreview } from "../history-preview.js";
 import { renderEpicPageBudgetBundle } from "../optional-budget.js";
@@ -10,6 +11,27 @@ import {
 	emptyItemFacts,
 	epicShapeSnapshot,
 } from "./fixtures/epic-shape.js";
+
+it("converts the production @me history-card shape to an app link", () => {
+	expect(
+		discordLinkPair(
+			"https://discord.com/channels/@me/222222222222222222/333333333333333333",
+		),
+	).toEqual({
+		app: "discord://-/channels/@me/222222222222222222/333333333333333333",
+		web: "https://discord.com/channels/@me/222222222222222222/333333333333333333",
+	});
+	expect(
+		renderDiscordLinkPair(
+			"https://discord.com/channels/123/456",
+			"<原卡>",
+			'jump" onclick="alert(1)',
+		),
+	).toContain('class="jump&quot; onclick=&quot;alert(1)"');
+	expect(
+		renderDiscordLinkPair("https://discord.com/channels/123/456", "原卡"),
+	).toContain('data-discord-app href="https://discord.com/channels/123/456"');
+});
 
 it("renders bounded judgment links with lossless sidecar and standalone audit evidence", () => {
 	const snapshot = epicShapeSnapshot();
@@ -84,14 +106,14 @@ it("shows history as on-demand only without exposing stale hosted publication st
 		questionId: `q${i}`,
 		issue: `FLY-${i} ${"<&😀".repeat(300)}`,
 		auditId: `audit-${i}`,
-		source: "legacy_retro" as const,
+		source: "auto_narrow_gate" as const,
 		overall: "recommend_reject" as const,
 		decision: "approved" as const,
 		decisionSource: "lead_manual" as const,
 		decisionAuditId: "decision",
 		clarificationAuditId: null,
 		authorship: "unknown" as const,
-		clarification: "pending" as const,
+		clarification: "unavailable" as const,
 		summary: "</script><img src=x onerror=alert(1)>".repeat(100),
 		cardUrl: `https://discord.com/channels/111111111111111111/222222222222222222/333333333333333333`,
 		updatedAt: EPIC_SHAPE_NOW.toISOString(),
@@ -133,10 +155,21 @@ it("shows history as on-demand only without exposing stale hosted publication st
 	const markdown = renderEpicPageMarkdown(page, EPIC_SHAPE_NOW);
 	expect(markdown).toContain("最近 20 / 150 条");
 	expect(markdown).toContain("机器试判历史按需生成");
+	expect(markdown).toContain("data-discord-app");
+	expect(markdown).toContain(
+		'href="https://discord.com/channels/111111111111111111/222222222222222222/333333333333333333"',
+	);
+	expect(markdown).toContain(
+		'data-discord-fallback href="https://discord.com/channels/111111111111111111/222222222222222222/333333333333333333"',
+	);
+	expect(markdown).toContain('aria-label="FLY-0 Discord 网页版"');
 	expect(markdown).not.toContain(history.url);
 	expect(markdown).not.toContain("等待更新");
 	expect(markdown).not.toContain("历史发布快照");
 	expect(markdown).not.toContain("更新失败");
+	expect(
+		Buffer.byteLength(renderHistoryPreview(page.ship_judgment_history)),
+	).toBeLessThanOrEqual(16_384);
 	page.ship_judgment_history!.value!.readError = true;
 	const failed = renderEpicPageBundle(page, EPIC_SHAPE_NOW).html;
 	expect(failed).not.toContain("预览读取失败");

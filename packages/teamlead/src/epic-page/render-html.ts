@@ -12,6 +12,7 @@ import {
 } from "./attention-presentation.js";
 import { AuditDictionary, judgmentSummary } from "./audit-dictionary.js";
 import { AuditSidecar } from "./audit-sidecar.js";
+import { renderDiscordLinkPair } from "./discord-link.js";
 import {
 	buildFounderView,
 	type ChildView,
@@ -27,6 +28,10 @@ export interface EpicOptionalRows {
 	judgmentRows?: number;
 	historyRows?: number;
 }
+
+const DISCORD_LINK_UPGRADE_SCRIPT =
+	'(()=>{let u=navigator.userAgent;if(/Android|iP|Mobile/i.test(u)||u.includes("Macintosh")&&navigator.maxTouchPoints>1||!/(Chrome|Safari)\\//.test(u))return;for(let a of document.querySelectorAll("[data-discord-app]"))a.href=a.href.replace("https://discord.com/channels/","discord://-/channels/")})();';
+
 class RenderAudit extends AuditDictionary {
 	appendix: string[] = [];
 	judgmentCount = 0;
@@ -373,13 +378,10 @@ function renderChild(
 			),
 	);
 	const url = item.thread_url?.value;
-	const thread =
-		url &&
-		/^https:\/\/discord\.com\/channels\/[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/.test(
-			url,
-		)
-			? `<a class="jump" href="${escapeHtml(url)}">跳 Discord ↗</a>`
-			: `<span class="jump-off">这张单还没有 thread</span>`;
+	const thread = url
+		? renderDiscordLinkPair(url, "跳 Discord ↗", "jump", child.identifier) ||
+			`<span class="jump-off">Discord 链接不可用</span>`
+		: `<span class="jump-off">这张单还没有 thread</span>`;
 	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id mono">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span class="kid-t">${escapeHtml(child.title)}</span></div><div class="kid-a">↳ ${escapeHtml(progressText(child))} · ${thread}</div></div>`;
 }
 
@@ -454,7 +456,13 @@ function renderAttention(
 			);
 			const link = attentionLink(page, item);
 			const where = link.url
-				? `<a class="jump" href="${escapeHtml(link.url)}">跳 Discord ↗</a>`
+				? renderDiscordLinkPair(
+						link.url,
+						"跳 Discord ↗",
+						"jump",
+						item.identifier.value ?? label("attention.unknown"),
+					) ||
+					`<span class="jump-off" aria-disabled="true">Discord 链接不可用</span>`
 				: `<span class="jump-off" aria-disabled="true" title="${escapeHtml(attentionMissing(link.reason))}">这张单还没有 thread</span>`;
 			const question = item.sources.every(
 				(source) => source.fact.value?.kind === "question",
@@ -473,18 +481,20 @@ function renderLeadAttention(page: EpicPage, now: Date): string {
 	return `<details class="lead-panel" data-lead-attention><summary>${escapeHtml(label("section.waiting_lead"))}（${rows.length}）</summary>${rows
 		.map(({ item, olderQuestions }) => {
 			const link = attentionLink(page, item);
-			const title = escapeHtml(
-				[
-					item.identifier.value ?? label("attention.unknown"),
-					item.title.value ?? label("attention.unknown"),
-				].join(" · "),
-			);
+			const title = [
+				item.identifier.value ?? label("attention.unknown"),
+				item.title.value ?? label("attention.unknown"),
+			].join(" · ");
 			const diagnostic = item.sources.some(
 				(source) => source.fact.value?.kind !== "lead_question",
 			)
 				? ` · ${escapeHtml(item.kind.value ?? label("attention.unknown"))} · ${escapeHtml(item.action.value ?? label("attention.unknown"))}`
 				: "";
-			return `<p data-lead-question>${diagnostic}${link.url ? `<a href="${escapeHtml(link.url)}">${title}</a>` : title} · ${escapeHtml(attentionWait(item.since, now))}${olderQuestions ? ` · ${escapeHtml(label("attention.older_questions", { n: olderQuestions }))}` : ""}</p>`;
+			const destination = link.url
+				? renderDiscordLinkPair(link.url, title, undefined, title) ||
+					`${escapeHtml(title)} · Discord 链接不可用`
+				: escapeHtml(title);
+			return `<p data-lead-question>${diagnostic}${destination} · ${escapeHtml(attentionWait(item.since, now))}${olderQuestions ? ` · ${escapeHtml(label("attention.older_questions", { n: olderQuestions }))}` : ""}</p>`;
 		})
 		.join("")}</details>`;
 }
@@ -574,6 +584,7 @@ function renderHtml(
   .u-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .u-since{font-size:12px;color:var(--dim)}
   .jump{font-size:12px;padding:3px 9px;border-radius:7px;border:1px solid var(--blue);color:var(--blue);text-decoration:none}
+  .discord-links{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}[data-discord-fallback]{font-size:11px;color:var(--dim)}
   .jump-off{font-size:12px;padding:3px 9px;border-radius:7px;border:1px dashed #c7c7cc;color:#a1a1a6;background:#fafafa;cursor:not-allowed}
   .epic{background:#fff;border-radius:10px;border:1px solid var(--line);border-left:4px solid var(--green);margin-bottom:8px;overflow:hidden}
   .epic.e-idle{border-left-color:var(--dim)}
@@ -643,5 +654,5 @@ function renderHtml(
 </details>
 ${renderJudgmentHistory(page, dictionary)}
 ${dictionary.omittedJudgments ? "<p>机器意见摘要已缩减；完整依据见审计附件。</p>" : ""}
-${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</div></main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
+${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</div></main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${DISCORD_LINK_UPGRADE_SCRIPT}${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

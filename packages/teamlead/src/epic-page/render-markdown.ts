@@ -9,6 +9,7 @@ import {
 	isFounderAttention,
 } from "./attention-presentation.js";
 import { judgmentSummary } from "./audit-dictionary.js";
+import { renderDiscordLinkPair } from "./discord-link.js";
 import { escapeMarkdownTableCell } from "./escape.js";
 import { renderHistoryPreview } from "./history-preview.js";
 import { epicIntakeStatus } from "./intake.js";
@@ -327,14 +328,21 @@ function renderItem(
 					.join(", "),
 			})
 		: label("page.no_dependents");
+	const thread = item.thread_url?.value
+		? renderDiscordLinkPair(
+				item.thread_url.value,
+				"跳 Discord ↗",
+				undefined,
+				item.identifier,
+			)
+		: null;
 	return [
 		`### ${markdownText(`${item.identifier} · ${title} · ${state}`)}`,
-		...(item.thread_url?.value &&
-		/^https:\/\/discord\.com\/channels\/[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/.test(
-			item.thread_url.value,
-		)
-			? [`- [跳 Discord ↗](${item.thread_url.value})`]
-			: []),
+		...(thread
+			? [`- ${thread}`]
+			: item.thread_url?.value
+				? ["- Discord 链接不可用"]
+				: []),
 		`- **${label("page.what")}**: ${markdownText(title)}`,
 		`- **${label("page.why")}**: ${markdownText(why)}`,
 		`- **${label("page.done_outcome")}**: ${markdownText(acceptance)}`,
@@ -426,9 +434,19 @@ function renderAttention(page: EpicPage, now: Date): string {
 		return `${heading}\n\n${label("attention.legacy")}`;
 	const renderItem = (item: (typeof page.attention)[number]) => {
 		const link = attentionLink(page, item);
-		const where = link.url
-			? `[${label("attention.open_thread")}](${link.url})`
-			: `${label("attention.unknown")}（${attentionMissing(link.reason)}）`;
+		const discordLink = link.url
+			? renderDiscordLinkPair(
+					link.url,
+					label("attention.open_thread"),
+					undefined,
+					item.identifier.value ?? label("attention.unknown"),
+				)
+			: null;
+		const where = discordLink
+			? discordLink
+			: link.url
+				? "Discord 链接不可用"
+				: `${label("attention.unknown")}（${attentionMissing(link.reason)}）`;
 		return [
 			`- **① ${label("attention.what")}**：${markdownText([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}`,
 			`- **② ${label("attention.action")}**：${markdownText(attentionActionText(item))}`,
