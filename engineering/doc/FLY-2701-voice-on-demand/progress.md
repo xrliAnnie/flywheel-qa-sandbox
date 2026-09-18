@@ -1,16 +1,15 @@
 ---
 issue: FLY-2701
 phase: design
-phaseCursor: 3/5
-updated: 2026-09-17T23:55:04.083Z
-nextStep: "R1 CHANGES fully addressed in ebdaac502, 8 findings disposition + raw
-  review retained. Poll R2 gate 72ea5043-232e-4070-9ef8-ce8dbb8de89b. HTML
-  ready; local diagrams failed twice, DOM checks passed. After effective
-  approval: publish-only, hosted verify, Lead report, phase complete, park."
+phaseCursor: 4/5
+updated: 2026-09-18T00:02:50.529Z
+nextStep: R2 effective APPROVED; 5 advisories retained/reported. Commit approved
+  metadata and review receipt, publish founder-design.html silently, verify
+  hosted bytes/CSP, report URL, complete phase_design_complete, park.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2701 progress
-**phase**: design (3/5)
-**next**: R1 CHANGES fully addressed in ebdaac502, 8 findings disposition + raw review retained. Poll R2 gate 72ea5043-232e-4070-9ef8-ce8dbb8de89b. HTML ready; local diagrams failed twice, DOM checks passed. After effective approval: publish-only, hosted verify, Lead report, phase complete, park.
+**phase**: design (4/5)
+**next**: R2 effective APPROVED; 5 advisories retained/reported. Commit approved metadata and review receipt, publish founder-design.html silently, verify hosted bytes/CSP, report URL, complete phase_design_complete, park.
