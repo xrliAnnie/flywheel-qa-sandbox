@@ -139,6 +139,7 @@ printf 'stale-wrapper-capture\n' > "$H/.flywheel/state/bridge-startup.log"
 stub "$H" node \
   'printf "%s\n" "${FLYWHEEL_TMUX_SOCKET_OVERRIDE-}" > "$HOME/bridge-socket"' \
   'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/bridge-log-env"' \
+  'printf "%s\n" "${FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED-}" > "$HOME/bridge-reconcile-enabled"' \
   'printf "packaged-wrapper-startup\n"' \
   'exit 0'
 stub "$H" npx 'exit 0'
@@ -148,6 +149,7 @@ if [ "$rc" -eq 0 ] && grep -q "^node dist/run-bridge.js$" <(calls "$H") \
    && ! grep -q "^npx " <(calls "$H") \
    && [ -z "$(cat "$H/bridge-socket")" ] \
    && [ "$(cat "$H/bridge-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
+   && [ "$(cat "$H/bridge-reconcile-enabled")" = "1" ] \
    && grep -q '^packaged-wrapper-startup$' "$H/.flywheel/state/bridge-startup.log" \
    && ! grep -q 'stale-wrapper-capture' "$H/.flywheel/state/bridge-startup.log"; then
   pass "S1 bridge-wrapper packaged: command unchanged, rotation env isolated, startup capture truncated"
@@ -161,12 +163,14 @@ printf 'stale-wrapper-capture\n' > "$H/.flywheel/state/bridge-startup.log"
 stub "$H" node 'exit 0'
 stub "$H" npx \
   'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/bridge-log-env"' \
+  'printf "%s\n" "${FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED-}" > "$HOME/bridge-reconcile-enabled"' \
   'printf "monorepo-wrapper-startup\n"' \
   'exit 0'
 run_bridge_wrapper "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^npx tsx scripts/run-bridge.ts$" <(calls "$H") \
    && ! grep -q "^node " <(calls "$H") \
    && [ "$(cat "$H/bridge-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
+   && [ "$(cat "$H/bridge-reconcile-enabled")" = "1" ] \
    && grep -q '^monorepo-wrapper-startup$' "$H/.flywheel/state/bridge-startup.log" \
    && ! grep -q 'stale-wrapper-capture' "$H/.flywheel/state/bridge-startup.log"; then
   pass "S2 bridge-wrapper monorepo sentinel: command unchanged, rotation env isolated, startup capture truncated"

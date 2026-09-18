@@ -334,6 +334,10 @@ cd "$FLYWHEEL_DIR"
 # before the TypeScript entry can install the adapter; single `>` bounds it to
 # the latest launch attempt.
 BRIDGE_RUNTIME_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state"
+# Only the canonical launchd wrapper grants the Bridge host-maintenance rider
+# permission to touch the production credential-migration control plane. QA
+# slots and ad-hoc `run-bridge` processes bypass this wrapper and stay read-only.
+export FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=1
 export FLYWHEEL_BRIDGE_LOG_PATH="${FLYWHEEL_BRIDGE_LOG_PATH:-/tmp/flywheel-bridge.log}"
 export FLYWHEEL_BRIDGE_RAW_STARTUP_LOG="${FLYWHEEL_BRIDGE_RAW_STARTUP_LOG:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-startup.log}"
 export FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="${FLYWHEEL_BRIDGE_LOG_ERROR_MARKER:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-log-rotation-error.json}"

@@ -17,10 +17,18 @@ PS_BIN="$TMP/ps"
 cat > "$PS_BIN" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${2:-}" = "ppid=" ]; then
+  case "${4:-}" in
+    "$FLY2523_TEST_ROOT_PID") printf '%s\n' 1 ;;
+    1) printf '%s\n' 0 ;;
+    *) printf '%s\n' "$FLY2523_TEST_ROOT_PID" ;;
+  esac
+  exit 0
+fi
 printf '%s\n' 'Thu Sep 18 00:00:00 2026'
 SH
 chmod +x "$PS_BIN"
-export FLYWHEEL_CODEX_FENCE_PS_BIN="$PS_BIN"
+export FLYWHEEL_CODEX_FENCE_PS_BIN="$PS_BIN" FLY2523_TEST_ROOT_PID="$$"
 
 snapshot() {
 	python3 - "$1" <<'PY'
@@ -56,12 +64,34 @@ before="$(shasum -a 256 "$lease" | awk '{print $1}')"
 node "$FENCE" acquire --home "$LEAD_HOME" --lead raya/raya --state-root "$STATE_ROOT" >/dev/null
 [ "$(shasum -a 256 "$lease" | awk '{print $1}')" = "$before" ]
 
-set +e
-bash -c 'node "$1" acquire --home "$2" --lead raya/raya --state-root "$3" >/dev/null 2>&1' \
+# Descendants in the same launch generation reuse the exact live ancestor
+# lease instead of self-locking when ensure-daemon runs in a child shell.
+bash -c 'node "$1" acquire --home "$2" --lead raya/raya --state-root "$3" >/dev/null' \
 	fly2523 "$FENCE" "$LEAD_HOME" "$STATE_ROOT"
+
+# A live owner outside the caller's ancestor chain remains a hard conflict.
+foreign_home="$USER_HOME/.codex-foreign"
+mkdir "$foreign_home"
+foreign_ready="$TMP/foreign-ready"
+foreign_release="$TMP/foreign-release"
+(
+	node "$FENCE" acquire --home "$foreign_home" --lead raya/foreign --state-root "$STATE_ROOT" >/dev/null
+	: > "$foreign_ready"
+	while [ ! -e "$foreign_release" ]; do sleep 0.05; done
+) &
+foreign_pid=$!
+for _ in $(seq 1 100); do
+	[ -e "$foreign_ready" ] && break
+	sleep 0.05
+done
+[ -e "$foreign_ready" ]
+set +e
+node "$FENCE" acquire --home "$foreign_home" --lead raya/foreign --state-root "$STATE_ROOT" >/dev/null 2>&1
 busy_rc=$?
 set -e
 [ "$busy_rc" -eq 3 ]
+: > "$foreign_release"
+wait "$foreign_pid"
 
 home_before="$(snapshot "$LEAD_HOME")"
 HOME="$USER_HOME" \

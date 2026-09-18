@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RESTART="$ROOT/scripts/restart-services.sh"
 UPDATER="$ROOT/scripts/update-flywheel.sh"
 PLUGIN="$ROOT/packages/teamlead/src/bridge/plugin.ts"
+TEST_DEPLOY="$ROOT/scripts/test-deploy.sh"
 TMP="$(mktemp -d /tmp/fly2523-cadence.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -53,6 +54,7 @@ grep -Fq 'if ! updater_codex_home_reconcile; then' "$UPDATER"
 grep -Fq 'updater_run_cycle' "$UPDATER"
 grep -Fq 'createCodexHomeReconcileHealthRider' "$PLUGIN"
 grep -Fq 'onHealthTick' "$PLUGIN"
+grep -Fq 'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=0")' "$TEST_DEPLOY"
 if git -C "$ROOT" diff --name-only --diff-filter=A | grep -Eq '(^|/)(LaunchAgents|LaunchDaemons)/|\.plist$|crontab|cron\.'; then
 	echo "FLY-2523 added a forbidden scheduler artifact" >&2
 	exit 1

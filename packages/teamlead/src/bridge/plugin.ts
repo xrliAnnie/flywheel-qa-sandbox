@@ -279,7 +279,10 @@ import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
 } from "./codex-global-health.js";
-import { createCodexHomeReconcileHealthRider } from "./codex-home-reconcile-rider.js";
+import {
+	createCodexHomeReconcileHealthRider,
+	isCodexHomeReconcileHealthRiderEnabled,
+} from "./codex-home-reconcile-rider.js";
 import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
@@ -11881,7 +11884,7 @@ export async function startBridge(
 	});
 	const codexHomeReconcileHealthRider = createCodexHomeReconcileHealthRider({
 		stateRoot: join(homedir(), ".flywheel"),
-		enabled: !process.env.VITEST,
+		enabled: isCodexHomeReconcileHealthRiderEnabled(process.env),
 		cycleScript: join(
 			residentCodexLeadFlywheelRoot,
 			"scripts/codex-home-reconcile-cycle.mjs",

@@ -2109,6 +2109,10 @@ BRIDGE_EXTRA_ENV+=("DISCORD_GUILD_ID=${GUILD_ID}")
 BRIDGE_EXTRA_ENV+=("TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}")
 BRIDGE_EXTRA_ENV+=(${BRIDGE_EXPLICIT_CALLER_ENV[@]+"${BRIDGE_EXPLICIT_CALLER_ENV[@]}"})
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")
+# QA Bridges must never inherit the production wrapper's permission to run the
+# host credential-home migration rider. Keep this assignment last so an ambient
+# or explicitly forwarded value cannot re-enable production writes in a slot.
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=0")
 
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
 # FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible

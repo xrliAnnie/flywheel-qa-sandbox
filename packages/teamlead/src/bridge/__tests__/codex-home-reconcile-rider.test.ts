@@ -2,9 +2,32 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createCodexHomeReconcileHealthRider } from "../codex-home-reconcile-rider.js";
+import {
+	createCodexHomeReconcileHealthRider,
+	isCodexHomeReconcileHealthRiderEnabled,
+} from "../codex-home-reconcile-rider.js";
 
 describe("Codex home reconcile health rider", () => {
+	it("is fail-closed unless the production Bridge wrapper explicitly opts in", () => {
+		expect(isCodexHomeReconcileHealthRiderEnabled({})).toBe(false);
+		expect(
+			isCodexHomeReconcileHealthRiderEnabled({
+				FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED: "0",
+			}),
+		).toBe(false);
+		expect(
+			isCodexHomeReconcileHealthRiderEnabled({
+				FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED: "1",
+			}),
+		).toBe(true);
+		expect(
+			isCodexHomeReconcileHealthRiderEnabled({
+				FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED: "1",
+				VITEST: "true",
+			}),
+		).toBe(false);
+	});
+
 	it("uses the existing tick but launches at most once while a cycle is in flight", async () => {
 		const stateRoot = mkdtempSync(join(tmpdir(), "fly2523-rider-"));
 		let release!: () => void;

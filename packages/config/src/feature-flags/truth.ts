@@ -278,6 +278,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2523 plumbing: explicit approved-home roster coordinate, not an on/off gate",
 	FLYWHEEL_CODEX_FENCE_PS_BIN:
 		"FLY-2523 plumbing: process census executable override for hermetic launch-fence tests, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED:
+		"FLY-2523 per-invocation production Bridge identity marker authorizing the existing health rider, not a persistent feature toggle",
 	FLYWHEEL_CODEX_HOME_POLICY:
 		"FLY-2523 plumbing: managed home-policy manifest path, not an on/off gate",
 	FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED:

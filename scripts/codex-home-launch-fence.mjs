@@ -137,6 +137,32 @@ function readProcessStart(pid) {
 		: null;
 }
 
+function readProcessParent(pid) {
+	const psBin = process.env.FLYWHEEL_CODEX_FENCE_PS_BIN?.trim() || "/bin/ps";
+	const result = spawnSync(psBin, ["-o", "ppid=", "-p", String(pid)], {
+		encoding: "utf8",
+		timeout: 2_000,
+		maxBuffer: 64 * 1024,
+	});
+	if (result.status !== 0 || result.error) return null;
+	const value = Number(result.stdout.trim());
+	return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function isAncestorProcess(ancestorPid, descendantPid) {
+	let current = descendantPid;
+	const visited = new Set();
+	for (let depth = 0; depth < 64 && current > 0; depth += 1) {
+		if (current === ancestorPid) return true;
+		if (visited.has(current)) return null;
+		visited.add(current);
+		const parent = readProcessParent(current);
+		if (parent === null) return null;
+		current = parent;
+	}
+	return current === 0 ? false : null;
+}
+
 const args = parse(process.argv.slice(2));
 const ownerPid = process.ppid;
 const ownerStart = readProcessStart(ownerPid);
@@ -175,8 +201,16 @@ try {
 					return;
 				if (liveStart === null && processAlive(existing.pid))
 					throw new Error("lease_owner_unknown");
-				if (liveStart === existing.processStartTime)
+				if (liveStart === existing.processStartTime) {
+					const sameLaunchGeneration = isAncestorProcess(
+						existing.pid,
+						ownerPid,
+					);
+					if (sameLaunchGeneration === true) return;
+					if (sameLaunchGeneration === null)
+						throw new Error("lease_ancestry_unknown");
 					throw new Error("lease_busy");
+				}
 				unlinkSync(leasePath);
 				fsyncDirectory(leases);
 			}
