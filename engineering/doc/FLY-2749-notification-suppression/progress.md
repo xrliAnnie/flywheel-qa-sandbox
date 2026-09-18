@@ -1,14 +1,14 @@
 ---
 issue: FLY-2749
 phase: implement
-phaseCursor: 0/7
-updated: 2026-09-18T23:30:13.857Z
-nextStep: "Audit current #1204 code paths and freeze T1 regression cases before
-  implementation"
+phaseCursor: 1/7
+updated: 2026-09-18T23:41:14.886Z
+nextStep: "T2/T3: persist authoritative mailbox audit decisions and suppress
+  REVIEW gates before adapter handoff"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
-**phase**: implement (0/7)
-**next**: Audit current #1204 code paths and freeze T1 regression cases before implementation
+**phase**: implement (1/7)
+**next**: T2/T3: persist authoritative mailbox audit decisions and suppress REVIEW gates before adapter handoff
