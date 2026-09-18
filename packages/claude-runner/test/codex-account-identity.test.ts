@@ -121,11 +121,20 @@ describe("Codex auth identity", () => {
 			"invalid base64 payload",
 			JSON.stringify({ tokens: { id_token: "head.%%%%.sig" } }),
 		],
-		["unknown zombie email", authJson("personal1@example.test")],
 	])("rejects %s without guessing a profile", (_label, raw) => {
 		expect(() =>
 			identifyCodexAuth(raw, loadCodexAccountRegistry(fixtureRegistry())),
 		).toThrow(/Codex auth identity|unknown Codex account/i);
+	});
+
+	it("accepts an unregistered account with an email-derived profile (FLY-2750)", () => {
+		const identity = identifyCodexAuth(
+			authJson("xrliannie.shopping@example.test"),
+			loadCodexAccountRegistry(fixtureRegistry()),
+		);
+		expect(identity.profile).toBe("account-xrliannie-shopping");
+		expect(identity.mode).toBe("manual_backup");
+		expect(identity.email).toBe("xrliannie.shopping@example.test");
 	});
 
 	it("reads only regular auth files and refuses a symlink", () => {
