@@ -2,16 +2,15 @@
 issue: FLY-2523
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-18T06:50:32.908Z
-nextStep: Consistency sweep committed 7e742ddfe; HTML behavior checks pass,
-  browser render unavailable. Await desktop authority boundary aa341d63 and
-  FLY-2729 evidence contract 5e3a7937; then finalize revision and open new
-  review gate/request. Current effective verdict remains CHANGES_REQUESTED; no
-  production actions.
+updated: 2026-09-18T06:56:32.812Z
+nextStep: "Lead aa341d63 accepted scope: registered-home proof plus full global
+  unknown; flag activation separate; FLY-2729 evidence contract accepted. Final
+  revision and HTML validated. Submit new R2 gate/request; freeze worktree HEAD
+  during review. No implementation or production actions."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
 **phase**: design (4/6)
-**next**: Consistency sweep committed 7e742ddfe; HTML behavior checks pass, browser render unavailable. Await desktop authority boundary aa341d63 and FLY-2729 evidence contract 5e3a7937; then finalize revision and open new review gate/request. Current effective verdict remains CHANGES_REQUESTED; no production actions.
+**next**: Lead aa341d63 accepted scope: registered-home proof plus full global unknown; flag activation separate; FLY-2729 evidence contract accepted. Final revision and HTML validated. Submit new R2 gate/request; freeze worktree HEAD during review. No implementation or production actions.
