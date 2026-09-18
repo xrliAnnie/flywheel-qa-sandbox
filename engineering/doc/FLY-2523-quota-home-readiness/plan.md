@@ -227,7 +227,7 @@ MEDIUM keyed-home-no-drain-window：不虚构当前implement的自然空闲频�
 正常启动 `packages/edge-worker/src/Blueprint.ts` 的 `admitCodexAgentHome`（基线 `2bd9a1ed7` 约997行）已走home admission；lease缺失不是新正常语义。collector保持原lease匹配路径，新增只读且更严格的resident binding证据路径，既不造lease也不修改admission lease语义：
 1. 从StateStore当前execution/runtime/workflow node绑定取得project/role/execution，和CommDB running或phase_keep_alive身份一致；不能以进程env自报代替。
 2. `resolveExecutionCodexHome`（`claude-runner/src/codex-home.ts`，基线约2358行）核对持久session.json.codexAgentHome与期望project/role、marker及精确路径。
-3. `readCodexLaunchSnapshot`（CodexTmuxAdapter.ts:398）校验该execution的持久launch状态。
+3. `readCodexLaunchSnapshot`（`CodexTmuxAdapter.ts`，基线约398行）校验该execution的持久launch状态。
 4. `probeCodexDaemonEvidence`（`codex-daemon-runtime.ts`，基线约333行）通过确定性execution socket、持久daemon PGID、当前内核socket holder/PGID、PID start identity证明是该执行的活daemon。env与该证据矛盾则unknown；同execution的其它进程只在可证明同一持久launch或TUI child关系时覆盖，任一未覆盖Codex进程继续unknown。
 5. 所有匹配成功才记该home active，并把该exec计入matched；缺lease诊断保留（不影响无写入原则），缺任一强证据仍unknown且报警。迁移操作仍看进程active而跳过，不能借此触碰在用home。
 
@@ -266,10 +266,10 @@ Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负�
 
 **Files:** `scripts/test-deploy.sh`, `scripts/qa-fly-2523-529-alerts.sh`, `scripts/__tests__/codex-home-reconcile-cadence.test.sh`, `scripts/__tests__/codex-home-migration-alert.test.sh`
 
-- [ ] 先给 test-deploy source/harness 加失败断言：默认最后仍注入 enabled=0；`--codex-home-reconcile` 未同时 `--alerts` 立即拒绝；二者同时存在才注入 enabled=1、slot mode、slot project/Lead、显式 `FLYWHEEL_STATE_DIR=${SLOT_DIR}` 及所有 slot-local cycle 路径，并在该 state root 预写当前 schedule 防启动噪音。不得依赖 ambient HOME 或 caller env。
+- [ ] 先给 test-deploy source/harness 加失败断言：默认最后仍注入 enabled=0；`--codex-home-reconcile` 未同时 `--alerts` 立即拒绝；二者同时存在才注入 enabled=1、slot mode、slot project/Lead及所有 slot-local cycle 路径，并在该 state root 预写当前 schedule 防启动噪音。`FLYWHEEL_STATE_DIR=${SLOT_DIR}` 只由既有 `qa_slot_env_contract_render` 单写，本任务仅断言该 contract 项存在，不另写同名 env。不得依赖 ambient HOME 或 caller env。
 - [ ] 编写 driver：只接受正整数 slot；校验 live slot 与 mode-0600 projects/.env；在 `${slotRoot}/state/fly2523-alert-driver` 下创建 policy/runner marker/migration state/stub，不触碰生产 home；先跑 overdue severe，再用坏 policy 跑 upstream warning；输出两个严格 delivery receipt 与 message id。
 - [ ] 单元/集成强度：用现有本地 HTTP 捕获器执行 driver fixture，断言 exactly two POST、severity severe/warning、目标均为 slot channel、`allowed_mentions.parse=[]`；将 slot channel 改为任一 production general/alert/chat channel 后必须零 POST。
-- [ ] QA 真发强度（实现节点不代发）：driver 输出两条真实 Discord message id 后，QA 必须分别 `GET /channels/{slotChannel}/messages/{id}` 得到200，并用相同 id 查询 production engineer channel 得到404；message id、slot channel id、两次REST状态与截图一起写入 `qa-e2e-529`。本地 loopback 证据不得冒充这一格。
+- [ ] QA 真发强度（实现节点不代发）：driver 输出两条真实 Discord message id 后，QA 必须分别以 slot bot 身份 `GET /channels/{slotChannel}/messages/{id}` 得到200；再记录对 production engineer channel 的查询身份与状态。slot bot 无生产频道读取权时接受403作为隔离证据；只有使用获准的生产频道只读身份时才要求相同id得到404作为“不在生产”的强反证。message id、slot channel id、每次REST使用的bot身份、状态与截图一起写入 `qa-e2e-529`。本地 loopback 证据不得冒充这一格。
 - [ ] 运行 `bash scripts/__tests__/codex-home-reconcile-cadence.test.sh` 与 `bash scripts/__tests__/codex-home-migration-alert.test.sh` 到绿。
 
 ### Task 4：范围回归、文档、同头复审
@@ -277,7 +277,7 @@ Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负�
 **Files:** 以上修改、`engineering/doc/FLY-2523-quota-home-readiness/{exploration,research,plan,progress}.md`, `engineering/doc/milestones/FLY-2523.md`
 
 - [ ] 运行 formatter/lint、`pnpm -r build`、FLY-2523 affected vitest/shell suites及 test-deploy 静态/fixture suite；遵守 Lead 边界，不运行本地 `pnpm test:packages:run`。
-- [ ] grep 证明没有新增 launchd/plist/crontab/cron，且没有 feature flag 写入、生产 home mutation 或 restart 代码；执行 slot driver 与显式 health tick 的前后生产 migration 树递归元数据/字节快照必须相等。
+- [ ] grep 证明没有新增 launchd/plist/crontab/cron，且没有 feature flag 写入、生产 home mutation 或 restart 代码；执行 slot driver 与显式 health tick 时，生产 approved-homes/备份区不得变化，也不得出现带 slot/driver 归属的生产 attempt。若生产自己的 hourly rider 恰在窗口内合法写入 schedule/attempt，必须用 `lastAttemptStartedAt`、`source=health` 与时间窗单独归因，不得把它当 slot 写入，也不得把无法归因的差异当噪音忽略。
 - [ ] 更新 milestone 为返工 HEAD 的精确证据并作为字面最后提交；push feature branch，不 force push。
 - [ ] 对同一最终 HEAD 发起新的 code review gate/request；CHANGES 则修复并新开 gate，APPROVED 后仅报告 advisories。
 - [ ] 核对 PR #1260 的 head/CI；通过 `ask --report` 回执完整 `[lead-instruction 96ea4fad-f9ea-4b97-ba03-27a460eca6dd]`，然后执行 `complete --route needs_review --pr 1260`。不派 QA、不 merge、不 deploy、不重启、不翻 flag。

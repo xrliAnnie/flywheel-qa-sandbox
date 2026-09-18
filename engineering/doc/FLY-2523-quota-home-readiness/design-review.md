@@ -53,3 +53,5 @@ Lead明确批准改验收范围：桌面凭据权威另单、本单交付注册h
 R1 questionId=`4b7c17ac-c60d-4a3f-b427-44f2521f44c1`，requestId=`28fa9948-8e59-4159-9908-1078fcc80ad1`，结论 `CHANGES_REQUESTED`。唯一 HIGH `slot-rider-writes-production-state-root` 指出原返工计划没有把 slot state-root guard 放在 cycle 首次目录/schedule 写之前，也没有 production migration 树零变化证明。修订后的 §14 明确：slot mode 全部坐标先纯只读校验，再允许任何 mkdir/chmod/lock/schedule；Bridge 显式注入 `FLYWHEEL_STATE_DIR=${SLOT_DIR}` 和所有 cycle 路径；driver + health tick 前后递归比较 production fixture/host migration 树的 inode/mode/size/mtime/ctime/digest。
 
 同时吸收非阻塞意见：Vitest filter 改为真实包名 `flywheel-teamlead` 并核对 Tests 数量；production tuple 遇 slot env 泄漏时回落原硬钉；production channel 集合明确为 general/alert/chat；loopback 与 QA 真 Discord REST 反查分开；漂移行号改为符号名加基线约数。R2 必须开新 gate/request，不复用 R1。
+
+R2 questionId=`02993337-40e8-46ee-82ab-b8aea54cb0db`，requestId=`f065b37e-cf90-4474-8a42-3537f5291cc4`，round=2，effective `reviewVerdict=APPROVED`、`reviewerVerdict=APPROVED`、`settled=[]`。没有 HIGH；四项非阻塞建议已接受并写回计划：slot bot 对生产频道的负向 REST 证据按查询身份记录403/404；`FLYWHEEL_STATE_DIR` 保持 slot contract 单写；生产树零写入证明允许且必须单独归因窗口内合法 hourly health tick；最后一处源码引用补基线说明。APPROVED仅授权本节实现，不是QA实发、生产激活、merge或ship授权。
