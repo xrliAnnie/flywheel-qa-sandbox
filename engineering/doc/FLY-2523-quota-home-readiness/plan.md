@@ -7,7 +7,10 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 
 设计节点限定文档、审查、HTML、提交推送与交接。以下是 implement/QA 工作，不表示已执行。以 2026-09-18 05:53Z founder 裁定为准，不再等人寻找安静窗口。无新 launchd、cron、interval；不改变 R1–R5 或额度引擎决策，不登录、不写 founder canonical auth，不自动恢复被人关闭的 flag。
 
-验收全链：五家 approved inventory → safe anytime attempt → durable done/already-satisfied receipts → deadline alert → fresh topology + real readiness checker → 一次受控 flag activation → isolated usage-limit incident 的 target_profile 与恢复证据。缺任一项仍未完成。
+验收分为可独立交付的机制与跨单恢复依赖，两者不混称DONE：
+
+- **机制交付判据**：注册派生inventory、safe anytime attempt、持久done/already-satisfied回执、逾期真实告警、全部home真实拓扑+同digest回执+真实readiness checker、正式activation守卫和反例测试均通过。implement可提交机制交付证据；设计节点的DONE只指审查批准、HTML交付、文档提交及phase_design_complete，不表示生产目标完成。
+- **完整issue端到端判据**：在FLY-2729部署/独立验收后，才执行受控flag activation和isolated usage-limit恢复验证（包含daemon换代及新token生效）。FLY-2729 pending时，明确记录activation/recovery为dependency-pending并保持off，交接后持续保留该验收项；不得把它删掉或把机制交付写成全单生产DONE。FLY-2729落地后这一路径可继续，因此不是永远无法完成。readiness ready=true只是必要条件，必须与全部home的当场拓扑和同digest满足回执共同通过。
 
 ## 2. 固定输入、身份与状态模型
 
@@ -139,11 +142,13 @@ expect(validateReceipt({ ...valid, inventoryDigest: other })).toEqual(false);
 
 新增 `packages/teamlead/src/codex-home-launch-fence.ts`，将 TS 与 shell launcher 共同调用的窄 CLI 放 `scripts/codex-home-launch-fence.mjs`；接入第3节所有真实子进程启动 consumer。先用 barrier 测试 pause 在 spawn 前，另一进程 reconcile 必须 skipped，反向持 migration mutex 时启动不得 spawn。旧启动覆盖未知必须 skipped，不放行。
 
-修改 bridge/plugin.ts health callback、update-flywheel.sh、restart-services.sh；可提取 `scripts/lib/codex-home-reconcile.sh` 保持主脚本薄。新集成测试 `scripts/__tests__/codex-home-reconcile-cadence.test.sh`，验证 updater current/fetch-failed、Bridge health、Lead quiescence失败/成功、 detached Codex 仍活时、原流程恢复。不执行真实 launchctl，夹具 stub 显式记录 call order。运行相关 updater-trigger-policy、lead lifecycle 与 codex home launcher regression。
+修改 bridge/plugin.ts health callback、update-flywheel.sh、restart-services.sh；可提取 `scripts/lib/codex-home-reconcile.sh` 保持主脚本薄。调用点使用既有bounded-run.sh包住30秒总预算（包含child退出确认），显式捕获退出码：`if ! bounded_reconcile_attempt; then record_reconcile_failure_and_alert; fi`，语义等价有日志的`|| true`，不得让set -e吞掉后面的controlled-wave arm/bootstrap。T3硬红新增：helper非零、抛错、超时、child收到TERM不退出需KILL；确认child PID/start已终止且自有锁释放后，原arm+bootstrap恰执行一次。若连KILL后也不能确认child退出，保持迁移fence、报警并走既有restart失败恢复门，不可一边允许旧child写一边启动新daemon；不能把此不可证明状态伪称“正常恢复”。这属于安全失败的显式异常而非静默挂死。
+
+新集成测试 `scripts/__tests__/codex-home-reconcile-cadence.test.sh`，验证 updater current/fetch-failed、Bridge health、Lead quiescence失败/成功、 detached Codex 仍活时、原流程恢复。不执行真实 launchctl，夹具 stub 显式记录 call order。运行相关 updater-trigger-policy、lead lifecycle 与 codex home launcher regression。
 
 ### T4 — 工程频道逾期告警
 
-修改 lead-alert.sh + LeadAlertNotifier kind + queue destination consumer，新增 `scripts/__tests__/codex-home-migration-alert.test.sh`。使用 fixture projects/clock/claims/queue 与本地 HTTP接收器跑真实 shell sender：到N天恰收到一次对应工程 channel 的 POST；未到/已满足=零次；无任何 receipt 也会发。全局 unified channel 设置成另一个 fixture ID，仍必须工程 channel。429/5xx→queued且drain恢复到原目的地；403/config坏→不记sent，有failure与fallback；duplicate不能伪造送达。
+修改 `scripts/lead-alert.sh` allowlist、`carries_delivery_channel()`及`emit_result()`对新kind的message_id分支；`packages/teamlead/src/LeadAlertNotifier.ts` union；`bridge/alert-kind-copy.ts`的titleFor/bodyFor穷尽switch；`bridge/kind-contract.ts` KIND_CONTRACTS，owner=owning_lead、arc=human_by_design（按现有准确字段/枚举结构填入），以及queue destination consumer。新kind出站目的仍固定工程Lead；不能让owner推断更改已持久destination。新增 `scripts/__tests__/codex-home-migration-alert.test.sh`。使用 fixture projects/clock/claims/queue 与本地 HTTP接收器跑真实 shell sender：到N天恰收到一次对应工程 channel 的 POST；未到/已满足=零次；无任何 receipt 也会发。全局 unified channel 设置成另一个 fixture ID，仍必须工程 channel。429/5xx→queued且drain恢复到原目的地；403/config坏→不记sent，有failure与fallback；duplicate不能伪造送达。
 
 **变异测试硬红**：在隔离源码副本把 `now >= dueAt` 变为永假（及 satisfied 取反），运行同一“无回执逾期”integration test必须失败，因为本地接收器POST数=0；保留变异diff、原pass与变异fail输出，不在主工作树遗留变异。测试不是仅 spy `.notify()`。
 
@@ -155,7 +160,7 @@ expect(validateReceipt({ ...valid, inventoryDigest: other })).toEqual(false);
 
 PR静态证据 `git diff --name-status <base>...HEAD`：无新增 launchd plist、crontab、timer；`rg -n 'codex.home.reconcile|home.migration' scripts/update-flywheel.sh scripts/restart-services.sh packages/teamlead/src/bridge/plugin.ts`；源码扫描加 cadence call-order tests 共同证明。所有不相关生产目录未变。
 
-授权部署后依次收集：实际deployed SHA及FLY-2729已部署/验收证据；派生清单当前五家归属；每家done/already回执（活跃且需要迁移则skip，已完整共享可只读already）；原auth备份的受限验证结果；marker清零；真实readiness JSON ready=true；flag before/off→after/on 的scope+revision审计。不要因持续活跃阻断监控或忘掉 obligation。
+授权部署后依次收集：实际deployed SHA及FLY-2729已部署/验收证据；派生清单当前五家归属；每家done/already回执（活跃且需要迁移则skip，已完整共享可只读already）；原auth备份的受限验证结果；marker清零；真实readiness JSON ready=true（仅必要条件，须合并全部拓扑+同digest满足回执）；flag before/off→after/on 的scope+revision审计。不要因持续活跃阻断监控或忘掉 obligation。
 
 隔离 usage-limit 证据：运行同 deployed 模块的隔离 Bridge/StateStore、fixture canonical+pool+homes，注入唯一 test execution/root 的 usage-limit signal，经真实 ingest/coordinator→target_profile→install到fixture canonical→recover 流程，断言 incident 恢复及只重启隔离 execution；stub外部 transport 可替代真实登录，标注 fixture，不能声称生产已经自动切过账号。为生产开关有效性另收集 live consumer enabled/readiness 的只读结果。若现有入口不能做到不污染生产root，禁止向生产发合成事件，先完成隔离 harness；任务验收用用户允许的隔离信号，不动 founder 登录态。动态验收必须再证明相关 home daemon PID/start identity 换代、新进程实际读到目标账户的非秘密身份，并且一次后续请求成功。不能只看 target_profile 或 incident settled。Lead daemon 仅允许通过 `CODEX_HOME=<隔离home> codex remote-control stop --json` + 既有 supervisor ensure-daemon；Lead 进程、thread、窗口身份必须保持。不要把手工执行此命令补齐探针称为自动链已完成。现有自动链缺口归FLY-2729；其部署与daemon新token有效证据未通过前，2523不得激活flag，禁止在2523增加该恢复实现。PR同时贴生产配置证据与隔离动态证明，不能混写。
 
@@ -185,3 +190,9 @@ effective reviewVerdict、审查questionId、最终HTML URL与发布核验放 pr
 问题83649a39-783b-4b54-93d0-3dacd7fdd7cf已由Lead明确扩到五家，优先注册表派生。已逐一查询本机注册表、Runner marker以及Lead authority，全部有对应身份，详见research。当前五家managed；N=1天与state-root修正已获确认。旧四家上限被更新裁定取代，不是自动批准野生home。
 
 共享 symlink 是双向的：daemon 的 OAuth 刷新会写穿到 canonical 凭据，对受管舰队是有意的单一真相源。必须写进manifest的说明与运维文档；测试slot绝不可链接真实canonical（FLY-2716），fixture canonical只可位于隔离临时根。迁移操作本身不写canonical，不能因此宣传以后daemon也不写。
+
+## 11. 审查反馈处置记录
+
+首请求edf3b199 / d7ab6f48返回no_verdict（没有有效审查结论），以下只是可读raw反馈处置，不伪称findingKey或治理裁决。范围/DONE歧义已在§1分两段，完整生产目标仍保留；restart超时退出/恢复反例已加入T3；drained checker不足已显式补全部拓扑+回执；告警copy/contract/shell消费者已补T4。
+
+MEDIUM Lead-launch-fence-blast-radius：现有三家Lead确实无需写入。建议“全部Lead永远只读”会改变本单safe-anytime契约及未来注册派生home的收尾能力，因此暂保留写入所需的startup fence，只在实际需要变更的home使用；已满足路径零触碰启动。此项报Lead确认是否进一步收窄；不把审查建议当已批准scope削减。
