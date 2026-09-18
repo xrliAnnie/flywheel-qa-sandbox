@@ -1,0 +1,10 @@
+{
+  "request_id": "c6c482ed-dade-453d-acc7-13825179194e",
+  "status": "running",
+  "reviewer_session_uuid": "476bbc1b-b3e3-497a-bb44-43904b2d76f6",
+  "updated_at": "2026-09-18 21:42:14",
+  "verdict": null,
+  "transcriptModifiedAt": "2026-09-18T21:50:10.604312+00:00",
+  "transcriptBytes": 1415237,
+  "checkedAt": "2026-09-18T21:50:12.079117+00:00"
+}

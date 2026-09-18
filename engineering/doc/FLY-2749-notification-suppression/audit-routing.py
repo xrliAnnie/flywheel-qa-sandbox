@@ -15,6 +15,11 @@ for name,path in [('teamlead','~/.flywheel/teamlead.db'),('comm','~/.flywheel/co
    if p.get('status') not in (None,'running'): guards.append('status='+str(p.get('status')))
    stages[(str(p.get('stage')),r['delivery_disposition'],','.join(guards))]+=1
    if len(examples)<8 and r['delivery_disposition']=='model': examples.append({'seq':r['seq'],'eventId':r['event_id'],'at':r['created_at'],'stage':p.get('stage'),'status':p.get('status'),'decision_route':p.get('decision_route'),'guardFields':guards})
+  monitoring=collections.Counter()
+  for r in c.execute("select created_at,delivery_disposition,payload from lead_events where lead_id=? and event_type='session_monitoring_reestablished' and created_at>=?",('flywheel-eng-lead',start)):
+   p=json.loads(r['payload']); guard=[k for k in ['last_error','error','failure_kind','failureKind','blocked','needs_action','requires_action','action_required','checkpoint','decision_route','review','ship','messages','founder_message'] if p.get(k) not in (None,False,'')]
+   monitoring[(r['created_at'][:10],r['delivery_disposition'],str(p.get('status')),','.join(guard))]+=1
+  out['monitoringByDay']=[{'day':k[0],'disposition':k[1],'status':k[2],'guards':k[3],'n':v} for k,v in monitoring.items()]
   out['stageGuards']=[{'stage':k[0],'disposition':k[1],'guards':k[2],'n':v} for k,v in stages.items()];out['examples']=examples
  else:
   out['commSchemas']={t:[r['name'] for r in c.execute('pragma table_info('+t+')')] for t in ['mailbox','mailbox_message_projection','runner_stop_declarations']}

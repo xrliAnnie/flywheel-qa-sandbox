@@ -19,3 +19,9 @@ python3 engineering/doc/FLY-2749-notification-suppression/measure-usage.py --man
 cmp engineering/doc/FLY-2749-notification-suppression/evidence/baseline-usage.json /tmp/fly2749-replay.json
 node engineering/doc/FLY-2749-notification-suppression/verify-founder-html.mjs
 ```
+
+## 接续核验（2026-09-18）
+- 取回备份 `origin/backup/FLY-2749-wip-stash-20260918@9dd592a4b`：保留 monitoringByDay 统计扩展、routing-followup.json 与历史 review-wait.json；合并 HTML 术语解释。历史 wait 收据已被 review-receipt.json 的有效 APPROVED 替代。
+- 原 baseline manifest 再次逐字节重放一致，SHA256：`392c744684d28bb11fecaf2c243384ca244664608af67c94450732aa2fc0f36b`。
+- 9 个 section 的评论、长文本分块、剪贴板两种失败回退、存储失败安全定向检查再次 PASS；审计脚本语法检查 PASS。
+- 评审通过并报告 11 条非阻断建议，逐项见 review-followups.md；没有声称建议已修复。
