@@ -423,6 +423,9 @@ describe("Codex quota coordinator", () => {
 		await new CodexQuotaCoordinator(options).tick();
 		expect(rotate).toHaveBeenCalledOnce();
 		expect(rotate.mock.calls[0]?.[1].profile).toBe("business");
+		expect(rotate.mock.calls[0]?.[2]).toEqual(
+			await observe.mock.results.at(-1)?.value,
+		);
 	});
 
 	it("keeps a fresh proven pool exhaustion guarded while readiness is manual, then releases stale evidence", async () => {

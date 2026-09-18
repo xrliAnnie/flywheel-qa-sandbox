@@ -10,6 +10,11 @@ import {
 	type CodexQuotaManualReason,
 	formatCodexQuotaManualReason,
 } from "./availability.js";
+import {
+	type CodexSwitchNotificationSnapshot,
+	formatCodexSwitchNotification,
+	parseCodexSwitchNotificationSnapshot,
+} from "./switch-notification.js";
 
 const MANUAL_REASONS = new Set<CodexQuotaManualReason>([
 	"flag_disabled",
@@ -33,6 +38,7 @@ export interface CodexQuotaOutboxOptions {
 		content: string,
 	): DurableQueueReceipt;
 	now?: () => number;
+	timezone?: () => string;
 }
 /** The existing notifier owns Discord retries; claims never substitute for its receipt. */
 export function createCodexQuotaOutboxDelivery(
@@ -215,6 +221,7 @@ export function createCodexQuotaOutboxDelivery(
 			const incidentId = String(row.incident_id);
 			const incident = options.store.codexQuota.getIncident(incidentId);
 			let reason = "quota_incident";
+			let notificationJson: string | null = null;
 			try {
 				const data = JSON.parse(String(row.payload_json));
 				if (
@@ -222,6 +229,8 @@ export function createCodexQuotaOutboxDelivery(
 					/^[a-z_]{1,80}$/.test(data.reason)
 				)
 					reason = data.reason;
+				if (typeof data.notification === "string")
+					notificationJson = data.notification;
 			} catch {}
 			let sourceProfile = "unknown";
 			let reset = "unknown";
@@ -243,6 +252,46 @@ export function createCodexQuotaOutboxDelivery(
 			)
 				? String(incident?.target_profile)
 				: "none";
+			const material =
+				options.store.codexQuota.getInstallationMaterial(incidentId);
+			let notificationSnapshot: CodexSwitchNotificationSnapshot | null = null;
+			try {
+				notificationSnapshot = parseCodexSwitchNotificationSnapshot(
+					notificationJson === null ? null : JSON.parse(notificationJson),
+				);
+			} catch {
+				// A malformed historical snapshot degrades to explicit n/a cells.
+			}
+			if (
+				!material ||
+				notificationSnapshot?.to.profile !== material.profile ||
+				notificationSnapshot.to.accountKey !== material.accountKey
+			)
+				notificationSnapshot = null;
+			if (!notificationSnapshot && notification) {
+				notificationSnapshot = {
+					version: 1,
+					from: {
+						profile: sourceProfile,
+						accountKey: "unknown",
+						email: null,
+						windows: [],
+					},
+					to: {
+						profile: targetProfile,
+						accountKey: "unknown",
+						email: null,
+						windows: [],
+					},
+				};
+			}
+			let timezone = "America/Los_Angeles";
+			try {
+				timezone = options.timezone?.() ?? timezone;
+				new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+			} catch {
+				timezone = "America/Los_Angeles";
+			}
 			const details = `Trigger=usageLimited from=${sourceProfile} reset=${reset} to=${targetProfile} affected_runs=${runs.length} restarted_runs=${runs.filter((target) => target.state === "recovered").length}`;
 			const payload: AlertPayload = {
 				leadId: "codex-quota",
@@ -261,9 +310,9 @@ export function createCodexQuotaOutboxDelivery(
 				body: founder
 					? `Codex fleet remains paused (${reason}). No blind replacement is allowed. Check account resets or add credits. ${details}`
 					: notification
-						? `Codex automatic account switch (${reason}). ${details}`
+						? formatCodexSwitchNotification(notificationSnapshot!, timezone)
 						: `Codex incident ${incidentId}: ${reason}. Recovery is tracked by the fleet coordinator.`,
-				severity: founder ? "severe" : "warning",
+				severity: founder ? "severe" : notification ? "info" : "warning",
 				metadata: {
 					codexQuota: {
 						vendor: "codex",
@@ -272,6 +321,7 @@ export function createCodexQuotaOutboxDelivery(
 					},
 				},
 				...(founder ? { mentionUserId: options.founderUserId } : {}),
+				...(notification ? { deliveryStyle: "plain" as const } : {}),
 			};
 			try {
 				await options.send(payload, {

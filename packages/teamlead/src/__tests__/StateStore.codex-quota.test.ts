@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
@@ -412,6 +413,103 @@ it("commits a probed generation with compare-and-swap and never unpauses on a fa
 			probeResult: "ok",
 		}),
 	).toThrow("quota_generation_conflict");
+});
+it("replaces stale N1 evidence when an installation retry selects another account", async () => {
+	store = await StateStore.create(":memory:");
+	store.codexQuota.initializeRoot({
+		rootKey: "root",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+	});
+	store.codexQuota.registerBinding({
+		...binding(),
+		accountKey: "business-key",
+	});
+	store.codexQuota.recordSignal({ executionId: "e0", bindingId: "b0" });
+	const notification = (
+		profile: "school" | "personal",
+		accountKey: string,
+	) => ({
+		version: 1 as const,
+		from: {
+			profile: "business",
+			accountKey: "business-key",
+			email: "business@example.test",
+			windows: [],
+		},
+		to: {
+			profile,
+			accountKey,
+			email: `${profile}@example.test`,
+			windows: [{ usedPercent: 38, resetsAt: null }],
+		},
+	});
+	store.codexQuota.recordInstalling({
+		incidentId: "codex:root:1",
+		profile: "school",
+		accountKey: "school-key",
+		priorAuthDigest: "prior",
+		installedAuthDigest: "school-digest",
+		recoveryMaterialPath: "/fixture/school-auth",
+		notification: notification("school", "school-key"),
+	});
+	store.codexQuota.setIncidentState(
+		"codex:root:1",
+		"retry_wait",
+		"installation_rolled_back",
+		"2026-09-18T00:01:00.000Z",
+	);
+	store.codexQuota.recordInstalling({
+		incidentId: "codex:root:1",
+		profile: "personal",
+		accountKey: "personal-key",
+		priorAuthDigest: "prior",
+		installedAuthDigest: "personal-digest",
+		recoveryMaterialPath: "/fixture/personal-auth",
+		notification: notification("personal", "personal-key"),
+	});
+	const material = store.codexQuota.getInstallationMaterial("codex:root:1")!;
+	expect(material).toMatchObject({
+		profile: "personal",
+		accountKey: "personal-key",
+	});
+	expect(JSON.parse(material.notificationJson!)).toMatchObject({
+		to: { profile: "personal", accountKey: "personal-key" },
+	});
+});
+it("migrates legacy installation material with an empty N1 snapshot", async () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2673-install-material-"));
+	cleanups.push(root);
+	const dbPath = join(root, "state.db");
+	const legacy = new Database(dbPath);
+	legacy.exec(`
+		CREATE TABLE codex_quota_install_material(
+			incident_id TEXT PRIMARY KEY,
+			profile TEXT NOT NULL,
+			account_key TEXT NOT NULL,
+			prior_auth_digest TEXT NOT NULL,
+			installed_auth_digest TEXT NOT NULL,
+			recovery_material_path TEXT NOT NULL,
+			recorded_at TEXT NOT NULL,
+			resolution TEXT NOT NULL DEFAULT 'pending',
+			resolved_at TEXT
+		);
+		INSERT INTO codex_quota_install_material VALUES(
+			'legacy-incident', 'school', 'school-key', 'prior', 'installed',
+			'/fixture/auth', '2026-09-18T00:00:00.000Z', 'pending', NULL
+		);
+	`);
+	legacy.close();
+
+	store = await StateStore.create(dbPath);
+	expect(
+		store.codexQuota.getInstallationMaterial("legacy-incident"),
+	).toMatchObject({
+		profile: "school",
+		accountKey: "school-key",
+		notificationJson: null,
+	});
 });
 it("uses only the latest unresolved capacity fact as the current guard", async () => {
 	store = await StateStore.create(":memory:");

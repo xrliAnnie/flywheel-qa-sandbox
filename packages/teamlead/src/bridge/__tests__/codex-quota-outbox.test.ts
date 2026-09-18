@@ -215,13 +215,90 @@ it("delivers recovery summaries to each owning Lead with a durable queue receipt
 	await createCodexQuotaOutboxDelivery(options)();
 	expect(queued).toHaveBeenCalledOnce();
 });
+it("degrades stale installation evidence to explicit n/a cells", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	store.codexQuota.initializeRoot({
+		rootKey: "root",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+	});
+	store.codexQuota.registerBinding({
+		bindingId: "binding",
+		executionId: "exec",
+		runId: "run",
+		purpose: "runner",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+		credentialRootKey: "root",
+	});
+	store.codexQuota.recordSignal({ executionId: "exec", bindingId: "binding" });
+	store.codexQuota.recordInstalling({
+		incidentId: "codex:root:1",
+		profile: "personal",
+		accountKey: "personal-key",
+		priorAuthDigest: "prior",
+		installedAuthDigest: "digest",
+		recoveryMaterialPath: "/fixture/auth",
+		notification: {
+			version: 1,
+			from: {
+				profile: "business",
+				accountKey: "business-key",
+				email: "business@example.test",
+				windows: [{ usedPercent: 100, resetsAt: null }],
+			},
+			to: {
+				profile: "school",
+				accountKey: "stale-school-key",
+				email: "stale@example.test",
+				windows: [{ usedPercent: 4, resetsAt: null }],
+			},
+		},
+	});
+	store.codexQuota.commitGeneration({
+		incidentId: "codex:root:1",
+		expectedGeneration: 1,
+		profile: "personal",
+		accountKey: "personal-key",
+		authDigest: "digest",
+		probeResult: "ok",
+	});
+	const messages: AlertPayload[] = [];
+	await createCodexQuotaOutboxDelivery({
+		store,
+		founderUserId: "123456789012345678",
+		send: async (payload) => {
+			messages.push(payload);
+			store.recordAlertDeliveryReceipt(
+				payload.eventId,
+				"queued_durable",
+				"2026-09-18T00:00:00.000Z",
+			);
+		},
+	})();
+	const notification = messages.find(
+		(message) => message.eventType === "quota_switch_confirmation",
+	);
+	expect(notification?.body).toContain(
+		"Codex 已切号：**business → personal**（quota:weekly）",
+	);
+	expect(notification?.body.match(/邮箱暂时未读到/g)).toHaveLength(2);
+	expect(
+		notification?.body.match(/weekly {2}n\/a {4}n\/a {4}n\/a/g),
+	).toHaveLength(2);
+	expect(notification?.body).not.toContain("stale@example.test");
+	expect(notification?.body).not.toContain("4%");
+});
 
 for (const exhausted of [false, true]) {
 	it(`delivers a founder notification with quota and run details when ${exhausted ? "the pool is exhausted" : "switching succeeds"}`, async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
-		const now = Date.now();
-		const resetsAt = now + 86400_000;
+		const now = Date.parse("2026-09-18T00:00:00.000Z");
+		const resetsAt = Date.parse("2026-09-21T22:31:00.000Z");
 		const quota = store.codexQuota;
 		quota.initializeRoot({
 			rootKey: "root",
@@ -244,29 +321,73 @@ for (const exhausted of [false, true]) {
 			store: quota,
 			now: () => now,
 			readiness: async () => true,
-			observe: async () =>
-				["business", "school", "personal"].map((profile, index) => ({
-					profile,
-					accountKey: `${profile}-key`,
+			observe: async () => [
+				{
+					profile: "business",
+					accountKey: "business-key",
+					observedAt: now,
+					identityVerified: true,
+					authHealth: "valid" as const,
+					scopeKnown: true,
+					windows: [{ usedPercent: 100, resetsAt }],
+				},
+				{
+					profile: "school",
+					accountKey: "school-key",
 					observedAt: now,
 					identityVerified: true,
 					authHealth: "valid" as const,
 					scopeKnown: true,
 					windows: [
 						{
-							usedPercent: exhausted || profile === "business" ? 100 : 10,
-							resetsAt: resetsAt + index * 1000,
+							usedPercent: exhausted ? 100 : 70,
+							resetsAt: Date.parse("2026-09-20T20:00:00.000Z"),
 						},
 					],
-				})),
-			rotate: async () => {
+				},
+				{
+					profile: "personal",
+					accountKey: "personal-key",
+					observedAt: now,
+					identityVerified: true,
+					authHealth: "valid" as const,
+					scopeKnown: true,
+					windows: [
+						{
+							usedPercent: exhausted ? 100 : 38,
+							resetsAt: Date.parse("2026-09-19T17:17:00.000Z"),
+						},
+					],
+				},
+			],
+			rotate: async (_incident, candidate) => {
 				quota.recordInstalling({
 					incidentId: "codex:root:1",
-					profile: "school",
-					accountKey: "school-key",
+					profile: candidate.profile,
+					accountKey: candidate.accountKey,
 					priorAuthDigest: "old",
 					installedAuthDigest: "a".repeat(64),
 					recoveryMaterialPath: "/fixture/auth",
+					notification: {
+						version: 1,
+						from: {
+							profile: "business",
+							accountKey: "business-key",
+							email: "business@example.test",
+							windows: [{ usedPercent: 100, resetsAt }],
+						},
+						to: {
+							profile: "personal",
+							accountKey: "personal-key",
+							email: "personal@example.test",
+							windows: [
+								{
+									usedPercent: 38,
+									resetsAt: Date.parse("2026-09-19T17:17:00.000Z"),
+								},
+							],
+						},
+					},
 				});
 				return { ok: true, authDigest: "a".repeat(64) };
 			},
@@ -303,17 +424,48 @@ for (const exhausted of [false, true]) {
 		expect(notifications[0]).toMatchObject({
 			eventType: exhausted ? "quota_no_target" : "quota_switch_confirmation",
 		});
-		expect(notifications[0]!.body).toContain("usageLimited");
-		expect(notifications[0]!.body).toContain("from=business");
-		expect(notifications[0]!.body).toContain(
-			`reset=${new Date(resetsAt).toISOString()}`,
-		);
-		expect(notifications[0]!.body).toContain(
-			`to=${exhausted ? "none" : "school"}`,
-		);
-		expect(notifications[0]!.body).toContain("affected_runs=1");
-		expect(notifications[0]!.body).toContain(
-			`restarted_runs=${exhausted ? 0 : 1}`,
+		if (exhausted) {
+			expect(notifications[0]!.body).toContain("usageLimited");
+			expect(notifications[0]!.body).toContain("from=business");
+			expect(notifications[0]!.body).toContain(
+				`reset=${new Date(resetsAt).toISOString()}`,
+			);
+			expect(notifications[0]!.body).toContain("to=none");
+			expect(notifications[0]!.body).toContain("affected_runs=1");
+			expect(notifications[0]!.body).toContain("restarted_runs=0");
+			return;
+		}
+		expect(notifications[0]).toMatchObject({
+			title: "Codex quota recovery update",
+			severity: "info",
+			deliveryStyle: "plain",
+			metadata: {
+				codexQuota: {
+					vendor: "codex",
+					incidentId: "codex:root:1",
+					generation: 1,
+				},
+			},
+		});
+		expect(notifications[0]).not.toHaveProperty("mentionUserId");
+		expect(notifications[0]!.body).toBe(
+			[
+				"Codex 已切号：**business → personal**（quota:weekly）",
+				"",
+				"原账号 **business**",
+				"business@example.test",
+				"```text",
+				"window  used   left   reset (PT)",
+				"weekly  100%   0%     09-21 Mon 15:31",
+				"```",
+				"",
+				"新账号 **personal**",
+				"personal@example.test",
+				"```text",
+				"window  used   left   reset (PT)",
+				"weekly  38%    62%    09-19 Sat 10:17",
+				"```",
+			].join("\n"),
 		);
 	});
 }

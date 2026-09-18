@@ -12839,6 +12839,7 @@ export async function startBridge(
 				config.discordOwnerUserId,
 				config.founderConsent?.founderUserId,
 			) ?? undefined,
+		timezone: resolveFounderTimezone,
 	});
 	tuiWindowAlertHolder.lost = async (evidence) => {
 		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert(
