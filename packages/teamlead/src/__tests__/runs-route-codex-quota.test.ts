@@ -10,6 +10,7 @@ import { CodexQuotaQueuedError } from "../bridge/retry-dispatcher.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import { createRunsRouter } from "../bridge/runs-route.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
+import type { CodexQuotaAvailabilitySnapshot } from "../codex-quota/availability.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
@@ -387,6 +388,67 @@ describe("FLY-2465 Codex quota admission", () => {
 			status: "queued",
 		});
 		expect(start).toHaveBeenCalledTimes(2);
+	});
+	it("readiness manual fallback releases ordinary HTTP admission while preserving the dead casualty", async () => {
+		let availability: CodexQuotaAvailabilitySnapshot = {
+			mode: "automatic",
+			reasons: [],
+			revision: 1,
+			checkedAt: "2026-09-11T18:37:00.000Z",
+		};
+		store.codexQuotaAvailability = () => availability;
+		store.codexQuota.initializeRoot({
+			rootKey: "test-root",
+			profile: "business",
+			accountKey: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "readiness-binding",
+			executionId: "readiness-dead",
+			runId: "readiness-run",
+			purpose: "runner",
+			profile: "business",
+			accountKey: "business",
+			generation: 1,
+			credentialRootKey: "test-root",
+		});
+		store.codexQuota.recordSignal({
+			bindingId: "readiness-binding",
+			executionId: "readiness-dead",
+			source: "runner_terminal",
+			sourceEventId: "readiness-event",
+			availability,
+		});
+		expect(
+			(await postStart("FLY-READINESS-QUEUED", "readiness-queued-key")).status,
+		).toBe(202);
+		availability = {
+			mode: "manual",
+			reasons: ["readiness_receipt_missing"],
+			revision: 2,
+			checkedAt: "2026-09-11T18:45:00.000Z",
+		};
+		store.codexQuota.handoffIncidentManual("codex:test-root:1", [
+			"readiness_receipt_missing",
+		]);
+		dispatchMode = "delivered";
+
+		const fresh = await postStart("FLY-READINESS-NEW", "readiness-new-key");
+		expect(fresh.status).toBe(200);
+		const replay = await postStart(
+			"FLY-READINESS-QUEUED",
+			"readiness-queued-key",
+		);
+		expect(replay.status).toBe(200);
+		expect(start).toHaveBeenCalledTimes(2);
+		expect(store.codexQuota.isExecutionPaused("readiness-dead")).toBe(true);
+		expect(store.codexQuota.isPaused("test-root")).toBe(false);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.filter((row) => row.kind === "automation_disabled"),
+		).toHaveLength(1);
 	});
 	it.each(["generalized", "legacy", "legacy-fresh", "scoped-fresh"] as const)(
 		"OFF dispatcher replay starts persisted %s HTTP queue without a second user request",

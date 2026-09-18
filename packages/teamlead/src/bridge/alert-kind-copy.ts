@@ -391,6 +391,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Claude requires a manual model choice";
 		case "quota_switch_confirmation":
 			return "Claude quota switch recovery confirmation";
+		case "codex_quota_automation_disabled":
+			return "Codex 自动切号关着";
 		case "quota_no_target":
 			return "No Claude account has quota";
 		case "quota_blocked_recovered":
@@ -472,6 +474,7 @@ export function titleFor(kind: AlertEventType): string {
 export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 	if (kind === "activation_probe") return "info";
 	if (kind === "model_family_updated") return "info";
+	if (kind === "codex_quota_automation_disabled") return "info";
 	if (
 		kind === "crash_loop" ||
 		kind === "login_expired" ||
@@ -662,6 +665,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Claude is asking for a paid-model choice. The monitor will not choose or send keys; a human must decide.";
 		case "quota_switch_confirmation":
 			return "The external quota monitor rechecked every recorded affected pane after the switch and reported the five-state recovery result.";
+		case "codex_quota_automation_disabled":
+			return "Codex 自动切号不可用；本次额度事件已交 Lead 手工处理。";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
 		case "quota_blocked_recovered":

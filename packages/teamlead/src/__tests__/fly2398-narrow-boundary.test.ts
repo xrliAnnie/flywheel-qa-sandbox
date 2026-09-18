@@ -11,6 +11,7 @@ const SHADOW_FACT =
 const ALLOWED = new Set([
 	"engineering/doc/FLY-2398-auto-merge-shadow-run/shadow-table.sql",
 	"packages/teamlead/src/StateStore.ts",
+	"packages/teamlead/src/auto-merge-shadow-declaration-migration.ts",
 	"packages/teamlead/src/auto-merge-shadow/observation.ts",
 	"packages/teamlead/src/bridge/auto-merge-shadow-route.ts",
 	"scripts/fly-2398-shadow-table.mjs",
@@ -92,5 +93,33 @@ describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
 				SHADOW_FACT,
 			);
 		}
+	});
+
+	it("keeps shadow declarations off Discord while preserving the retired-option guard", () => {
+		const route = readFileSync(
+			resolve(
+				REPO_ROOT,
+				"packages/teamlead/src/bridge/auto-merge-shadow-route.ts",
+			),
+			"utf8",
+		);
+		expect(route).not.toMatch(/discord-utils|fetchDiscordMessage|message_ref/);
+
+		const prompt = readFileSync(
+			resolve(REPO_ROOT, "packages/teamlead/src/bridge/hook-payload.ts"),
+			"utf8",
+		);
+		expect(prompt).toContain("Do not post or relay");
+		expect(prompt).not.toContain("--message-ref <that message>");
+
+		const command = readFileSync(
+			resolve(
+				REPO_ROOT,
+				"packages/flywheel-comm/src/commands/shadow-declare.ts",
+			),
+			"utf8",
+		);
+		expect(command).toContain("--message-ref is retired");
+		expect(command).not.toContain("FLYWHEEL_INGEST_TOKEN");
 	});
 });

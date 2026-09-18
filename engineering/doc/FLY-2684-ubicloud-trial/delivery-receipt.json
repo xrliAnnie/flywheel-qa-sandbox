@@ -1,0 +1,30 @@
+{
+  "issue": "FLY-2684",
+  "phase": "design",
+  "reviewQuestionId": "9cfd3fdf-68d6-462f-b950-2c71035a3baf",
+  "reviewRequestId": "4417fc13-5b03-4d4f-99f5-4375e5b8f744",
+  "effectiveReviewVerdict": "APPROVED",
+  "advisories": 10,
+  "approvedPlanBlob": "5ed98d594fc4162d0326437d5dab11f8d0492b73",
+  "artifactCommit": "c4c7e6e2c07443ff368159eaeb5607272e9636fa",
+  "url": "https://fw-reports-42fba7.vercel.app/r/9b088e92ca0aa0bc73620a116d528483/",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "validation": {
+    "http": 200,
+    "nonceReplaced": true,
+    "cspNonceMatches": true,
+    "scriptMatchesCommittedSource": true,
+    "commentSections": 8,
+    "externalAssets": 0,
+    "controllerTests": "PASS storage failures, clipboard unavailable/rejected fallback, long-comment chunks, text-only writes",
+    "browserInteraction": "UNVERIFIED: new_page rejected because approval policy is never",
+    "diagram": "DIAGRAM PENDING LOCAL RENDER; mmdc failed twice: MachPortRendezvousServer bootstrap_check_in Permission denied (1100)"
+  },
+  "localHtmlSha256": "bb9dae25a1bc0e39df014082b9cbfe10342dbdf18ce084c36edfa54348bd4d65",
+  "hostedHtmlSha256": "085a4213c296d3e37064d22e5d95fa982003ac32035acfbf53d582edb96d06d9",
+  "liveTrial": "NOT RUN: implementation and founder authorization required",
+  "productionSwitch": "NOT PERFORMED: Lead-owned after FLY-2681 and canary acceptance",
+  "weeklyReceipt": "METHOD DESIGNED; no live savings claim"
+}

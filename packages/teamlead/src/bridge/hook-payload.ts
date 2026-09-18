@@ -1526,7 +1526,7 @@ export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
 		replyCmd,
 		...(isApprove
 			? [
-					`Shadow run (FLY-2398, Lead-only, do not relay to the founder): post "shadow-declare ${e.question_id} <class>" in your Lead channel, then run flywheel-comm shadow-declare --question ${e.question_id} --class <class> --message-ref <that message>`,
+					`Shadow run (FLY-2398, Lead-only): run flywheel-comm shadow-declare --question ${e.question_id} --class <class>. Do not post or relay \`shadow-declare\` to Discord.`,
 				]
 			: []),
 	];

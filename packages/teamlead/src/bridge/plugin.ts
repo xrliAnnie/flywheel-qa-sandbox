@@ -101,12 +101,15 @@ import {
 } from "../applyTransition.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
+import { CodexQuotaAvailability } from "../codex-quota/availability.js";
 import {
 	createCodexQuotaHostCollector,
 	createRegisteredCodexQuotaHostCollectorOptions,
 } from "../codex-quota/host-readiness.js";
+import { createCodexQuotaMaintenance } from "../codex-quota/maintenance.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
+import { checkCodexQuotaReadiness } from "../codex-quota/readiness.js";
 import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
@@ -2310,12 +2313,6 @@ export function createBridgeApp(
 				reason: "bridge ingest token not configured",
 			});
 		});
-		app.post("/api/workflow/shadow-declaration", (_req, res) => {
-			res.status(503).json({
-				ok: false,
-				reason: "bridge ingest token not configured",
-			});
-		});
 	} else {
 		app.post(
 			"/api/workflow/evidence-run",
@@ -2330,9 +2327,18 @@ export function createBridgeApp(
 				vercelProjectName: () => reportRegistry.vercelProjectName(),
 			}),
 		);
+	}
+	if (!config.apiToken) {
+		app.post("/api/workflow/shadow-declaration", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				reason: "bridge api token not configured",
+			});
+		});
+	} else {
 		app.post(
 			"/api/workflow/shadow-declaration",
-			tokenAuthMiddleware(config.ingestToken),
+			tokenAuthMiddleware(config.apiToken),
 		);
 		app.use("/api/workflow", createAutoMergeShadowRouter({ store, projects }));
 	}
@@ -8340,16 +8346,80 @@ export async function startBridge(
 			if (!receipt.queued) throw new Error("quota_runtime_alert_not_queued");
 		},
 	});
+	let codexQuotaAccountRegistry: ReturnType<
+		typeof loadCodexAccountRegistry
+	> | null = null;
+	const getCodexQuotaAccountRegistry = () => {
+		if (!codexQuotaAccountRegistry)
+			codexQuotaAccountRegistry = loadCodexAccountRegistry();
+		return codexQuotaAccountRegistry;
+	};
+	const codexQuotaCollectHomes = createCodexQuotaHostCollector(
+		createRegisteredCodexQuotaHostCollectorOptions(projects, {
+			canonicalHome: codexQuotaCanonicalHome,
+			homesRoot:
+				process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
+				join(homedir(), ".flywheel", "codex-homes"),
+			commRoot: commDbRootDir(),
+			projectNames: projects.map((p) => p.projectName),
+			approvedManifestPath: join(codexQuotaStateRoot, "readiness-receipt.json"),
+			residentEvidence: createResidentHomeEvidence({
+				getSession: (executionId) => store.getSession(executionId),
+				resolveExecutionHome: resolveExecutionCodexHome,
+				readLaunchSnapshot: readCodexLaunchSnapshot,
+				probeDaemonProcessBinding: probeCodexDaemonProcessBinding,
+			}),
+			credentialIdentity: async (home) => {
+				const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
+				const token = JSON.parse(bytes)?.tokens?.refresh_token;
+				if (typeof token !== "string" || !token)
+					throw new Error("quota_refresh_identity_unavailable");
+				return {
+					...codexQuotaIdentityReader(getCodexQuotaAccountRegistry())(bytes),
+					chainKey: createHash("sha256").update(token).digest("hex"),
+				};
+			},
+			leadAuthorityScript: join(
+				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+					resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
+				"scripts",
+				"resident-codex-lead-recover.sh",
+			),
+		}),
+	);
+	const codexQuotaAvailability = new CodexQuotaAvailability({
+		enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+		runtimeAvailable: () => codexQuotaRuntime !== undefined,
+		check: () =>
+			process.env.VITEST
+				? Promise.resolve({
+						ready: false,
+						failures: [{ reason: "authority_unavailable" as const }],
+					})
+				: checkCodexQuotaReadiness({
+						canonicalAuthPath: join(codexQuotaCanonicalHome, "auth.json"),
+						collectHomes: codexQuotaCollectHomes,
+					}),
+	});
+	store.codexQuotaAvailability = () => codexQuotaAvailability.snapshot();
+	const codexQuotaMaintenance = createCodexQuotaMaintenance({
+		store,
+		refreshAvailability: () => codexQuotaAvailability.refresh(),
+		runtime: () => codexQuotaRuntime,
+		flushOutbox: async () => codexQuotaOutboxHolder.flush?.(),
+		projectAudit: () =>
+			projectCodexQuotaAudit(store.codexQuota, dirname(codexQuotaStateRoot)),
+	});
+	await codexQuotaMaintenance.bootstrap();
 	codexQuotaRuntime = await initializeCodexQuotaRuntime(
 		() => !process.env.VITEST && storeCodexQuotaAutoSwitchEnabled(flagStore),
 		async () => {
-			store.codexQuota.backfillHistoricalQuotaFailures();
 			const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
 			codexQuotaRootKey = createHash("sha256")
 				.update(canonicalHome)
 				.digest("hex");
 			if (!config.apiToken) throw new Error("quota_api_token_missing");
-			const accountRegistry = loadCodexAccountRegistry();
+			const accountRegistry = getCodexQuotaAccountRegistry();
 			const recovery = createCodexQuotaRunRecovery({
 				readiness: async () => (await codexQuotaRuntime?.readiness()) ?? false,
 				store,
@@ -8393,42 +8463,8 @@ export async function startBridge(
 				limitId: "codex",
 				recover: recovery.recover,
 				autoEnabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
-				collectHomes: createCodexQuotaHostCollector(
-					createRegisteredCodexQuotaHostCollectorOptions(projects, {
-						canonicalHome,
-						homesRoot:
-							process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
-							join(homedir(), ".flywheel", "codex-homes"),
-						commRoot: commDbRootDir(),
-						projectNames: projects.map((p) => p.projectName),
-						approvedManifestPath: join(
-							codexQuotaStateRoot,
-							"readiness-receipt.json",
-						),
-						residentEvidence: createResidentHomeEvidence({
-							getSession: (executionId) => store.getSession(executionId),
-							resolveExecutionHome: resolveExecutionCodexHome,
-							readLaunchSnapshot: readCodexLaunchSnapshot,
-							probeDaemonProcessBinding: probeCodexDaemonProcessBinding,
-						}),
-						credentialIdentity: async (home) => {
-							const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
-							const token = JSON.parse(bytes)?.tokens?.refresh_token;
-							if (typeof token !== "string" || !token)
-								throw new Error("quota_refresh_identity_unavailable");
-							return {
-								...codexQuotaIdentityReader(accountRegistry)(bytes),
-								chainKey: createHash("sha256").update(token).digest("hex"),
-							};
-						},
-						leadAuthorityScript: join(
-							process.env.FLYWHEEL_REPO_ROOT?.trim() ||
-								resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
-							"scripts",
-							"resident-codex-lead-recover.sh",
-						),
-					}),
-				),
+				availability: codexQuotaAvailability,
+				collectHomes: codexQuotaCollectHomes,
 			});
 			if (!store.codexQuota.getRoot(codexQuotaRootKey))
 				await codexQuotaRuntime.credential();
@@ -8436,6 +8472,7 @@ export async function startBridge(
 		},
 		reportCodexQuotaFailure,
 	);
+	await codexQuotaMaintenance.bootstrap();
 
 	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
 		if (dispatcher)
@@ -8445,14 +8482,25 @@ export async function startBridge(
 				codexQuotaRuntime,
 				codexQuotaRootKey,
 				{
-					enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+					enabled: () => codexQuotaAvailability.snapshot().mode === "automatic",
 					report: reportCodexQuotaFailure,
 				},
 			);
 	const resumeDisabledCodexQuotaAdmissions = config.apiToken
 		? createCodexQuotaDisabledAdmissionReplay({
 				store,
-				enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+				enabled: (rootKey, generation) =>
+					codexQuotaAvailability.snapshot().mode === "automatic" ||
+					(typeof rootKey === "string" &&
+						Number.isInteger(generation) &&
+						store.codexQuota.hasRootGenerationSafetyGuard(
+							rootKey,
+							generation!,
+							Date.now(),
+							storeCodexQuotaAutoSwitchEnabled(flagStore),
+						)),
+				manualDisposition: (rootKey, generation) =>
+					store.codexQuota.isRootGenerationManual(rootKey, generation),
 				report: reportCodexQuotaFailure,
 				post: async (path, body) => {
 					if (path !== "/api/runs/start")
@@ -11999,15 +12047,7 @@ export async function startBridge(
 		onLandOperationTick: async () => {
 			await landOperationTick();
 			if (process.env.VITEST) return;
-			try {
-				await codexQuotaRuntime?.tick();
-			} finally {
-				await codexQuotaOutboxHolder.flush?.();
-				await projectCodexQuotaAudit(
-					store.codexQuota,
-					dirname(codexQuotaStateRoot),
-				);
-			}
+			await codexQuotaMaintenance.tick();
 		},
 		onAutoNarrowGateTick: async () => {
 			const control = readAutoNarrowRuntimeControl(flagStore, "flywheel");

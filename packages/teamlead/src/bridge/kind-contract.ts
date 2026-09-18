@@ -210,6 +210,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	model_bench_malformed: { owner: "claude", arc: "human_by_design" },
 	quota_choice: { owner: "founder_direct", arc: "human_by_design" },
 	quota_switch_confirmation: { owner: "claude", arc: "human_by_design" },
+	codex_quota_automation_disabled: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	quota_no_target: { owner: "claude", arc: "human_by_design" },
 	quota_blocked_recovered: { owner: "claude", arc: "human_by_design" },
 	quota_read_blind: { owner: "claude", arc: "human_by_design" },

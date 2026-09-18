@@ -88,8 +88,11 @@ describe("gate_question rendering (FLY-208 6a)", () => {
 		expect(text).not.toContain("respond --db");
 		expect(text).not.toContain("APPROVAL SHAPE");
 		expect(text).toContain(
-			'Shadow run (FLY-2398, Lead-only, do not relay to the founder): post "shadow-declare q-e60b91b9 <class>" in your Lead channel, then run flywheel-comm shadow-declare --question q-e60b91b9 --class <class> --message-ref <that message>',
+			"Shadow run (FLY-2398, Lead-only): run flywheel-comm shadow-declare --question q-e60b91b9 --class <class>",
 		);
+		expect(text).toContain("Do not post or relay `shadow-declare` to Discord");
+		expect(text).not.toContain("--message-ref");
+		expect(text).not.toContain('post "shadow-declare');
 	});
 
 	it("non-approve checkpoints keep the legacy direct command (no --bridge-url, no shape banner)", () => {

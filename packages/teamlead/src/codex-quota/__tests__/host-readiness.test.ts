@@ -111,9 +111,10 @@ it("never trusts missing manifests or unowned live homes", async () => {
 		false,
 	);
 	rmSync(f.options.approvedManifestPath);
-	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
-		false,
-	);
+	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
+		complete: false,
+		failureReasons: ["readiness_receipt_missing"],
+	});
 });
 it("rejects unapproved lease homes even without a live CommDB row", async () => {
 	const f = fixture();
@@ -153,9 +154,10 @@ it("rejects deployment receipt inventory tampering", async () => {
 	);
 	receipt.inventoryDigest = "bad";
 	writeFileSync(f.options.approvedManifestPath, JSON.stringify(receipt));
-	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
-		false,
-	);
+	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
+		complete: false,
+		failureReasons: ["readiness_receipt_invalid"],
+	});
 });
 it("allows an approved legacy execution home using exact CommDB and process identity without inventing a keyed lease", async () => {
 	const f = fixture();

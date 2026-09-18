@@ -555,6 +555,63 @@ describe("FLY-2465 quota direct intake", () => {
 			);
 		},
 	);
+	it("uses the durable sink event id for manual disposition and N11", async () => {
+		const { store, sink } = await harness();
+		store.upsertSession({
+			execution_id: "seam-1",
+			issue_id: "FLY-802",
+			project_name: "flywheel",
+			status: "running",
+		});
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "account",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "manual-binding",
+			executionId: "seam-1",
+			runId: null,
+			accountKey: "account",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+			purpose: "runner",
+		});
+		store.codexQuotaAvailability = () => ({
+			mode: "manual",
+			reasons: ["readiness_receipt_missing"],
+			revision: 2,
+			checkedAt: "2026-09-11T18:45:00.000Z",
+		});
+		await sink.emitFailed(baseEnv, "quota", undefined, {
+			failureKind: "goal_usage_limited",
+			failureReason: "goal ended non-complete: usageLimited",
+			quotaSignal: {
+				version: 1,
+				vendor: "codex",
+				source: "goal_ended",
+				sourceEventId: "provider-local-id",
+				bindingId: "manual-binding",
+				evidence: "usageLimited",
+				observedAt: "2026-09-11T18:45:00.000Z",
+			},
+		});
+		expect(store.codexQuota.listIncidents()).toHaveLength(0);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.filter((row) => row.kind === "automation_disabled"),
+		).toHaveLength(1);
+		const signal = (store as any).db.raw
+			.prepare(
+				"SELECT source_event_id FROM codex_quota_signal_event WHERE source='runner_terminal'",
+			)
+			.get() as { source_event_id: string };
+		expect(signal.source_event_id).not.toBe("provider-local-id");
+		expect(store.codexQuota.isExecutionPaused("seam-1")).toBe(true);
+	});
 	it("missing binding records one diagnostic without pausing legacy execution", async () => {
 		const { store, sink } = await harness();
 		store.upsertSession({

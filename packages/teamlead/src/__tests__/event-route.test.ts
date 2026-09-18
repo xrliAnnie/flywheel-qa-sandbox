@@ -2094,6 +2094,82 @@ describe("Event route", () => {
 			);
 		},
 	);
+	it("uses the outer HTTP event identity for a manual N11 without creating an automatic incident", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "account",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "manual-quota-binding",
+			executionId: "exec-1",
+			runId: null,
+			accountKey: "account",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+			purpose: "runner",
+		});
+		store.codexQuotaAvailability = () => ({
+			mode: "manual",
+			reasons: ["readiness_receipt_missing"],
+			revision: 2,
+			checkedAt: "2026-09-11T18:45:00.000Z",
+		});
+		const event = makeEvent({
+			event_id: "quota-http-manual",
+			event_type: "session_failed",
+			payload: {
+				error: "untrusted raw diagnostic",
+				failure: {
+					failureKind: "goal_usage_limited",
+					failureReason: "goal ended non-complete: usageLimited",
+					quotaSignal: {
+						version: 1,
+						vendor: "codex",
+						source: "goal_ended",
+						sourceEventId: "provider-local-id",
+						bindingId: "manual-quota-binding",
+						evidence: "usageLimited",
+						observedAt: "2026-09-11T18:45:00.000Z",
+					},
+				},
+			},
+		});
+		for (let attempt = 0; attempt < 2; attempt++)
+			expect(
+				(
+					await fetch(`${baseUrl}/events`, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Authorization: "Bearer ingest-secret",
+						},
+						body: JSON.stringify(event),
+					})
+				).status,
+			).toBe(200);
+		expect(store.codexQuota.listIncidents()).toHaveLength(0);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.filter((row) => row.kind === "automation_disabled"),
+		).toHaveLength(1);
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT source_event_id FROM codex_quota_signal_event WHERE source='runner_terminal'",
+				)
+				.get(),
+		).toEqual({ source_event_id: "quota-http-manual" });
+	});
 	it.each([true, false])(
 		"FLY-2465 invalid quota does not consume HTTP event id; generalized=%s",
 		async (generalized) => {

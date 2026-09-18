@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
 import { installSqlTiming } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import type { CodexQuotaManualReason } from "./availability.js";
 import { findRegisteredCodexCredentialLeadTargets } from "./credential-home-roster.js";
 import type { CodexQuotaHomeObservation } from "./readiness.js";
 
@@ -67,6 +68,7 @@ export interface CodexQuotaHostInventory {
 	canonicalChainActive: boolean;
 	diagnostics: CodexQuotaHostDiagnostic[];
 	unattributedReaders: CodexQuotaUnattributedReader[];
+	failureReasons?: CodexQuotaManualReason[];
 }
 
 export interface CodexQuotaHostDiagnostic {
@@ -136,7 +138,16 @@ export function createCodexQuotaHostCollector(
 					throw new Error("authority_absolute_paths_required");
 			plainDirectory(options.homesRoot);
 			plainDirectory(options.commRoot);
-			plainFile(options.approvedManifestPath);
+			try {
+				plainFile(options.approvedManifestPath);
+			} catch (error) {
+				if (
+					(error as NodeJS.ErrnoException).code === "ENOENT" &&
+					(error as NodeJS.ErrnoException).path === options.approvedManifestPath
+				)
+					throw new Error("readiness_receipt_missing");
+				throw new Error("readiness_receipt_invalid");
+			}
 			if (lstatSync(options.approvedManifestPath).size > 1024 * 1024)
 				throw new Error("manifest_too_large");
 			const manifest = JSON.parse(
@@ -539,6 +550,14 @@ export function createCodexQuotaHostCollector(
 					? error.message
 					: "collector_failed";
 			diagnostics.push({ reason, scope: "all" });
+			const message = error instanceof Error ? error.message : "";
+			const receiptInvalid = new Set([
+				"manifest_too_large",
+				"manifest_invalid",
+				"manifest_digest_invalid",
+				"home_receipt_invalid",
+				"readiness_receipt_invalid",
+			]);
 			return {
 				complete: false,
 				registeredComplete: false,
@@ -549,6 +568,13 @@ export function createCodexQuotaHostCollector(
 				canonicalChainActive: true,
 				diagnostics,
 				unattributedReaders,
+				failureReasons: [
+					message === "readiness_receipt_missing"
+						? "readiness_receipt_missing"
+						: receiptInvalid.has(message)
+							? "readiness_receipt_invalid"
+							: "authority_unavailable",
+				],
 			};
 		}
 	};

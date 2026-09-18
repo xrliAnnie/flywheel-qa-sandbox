@@ -1,0 +1,29 @@
+{
+	"schemaVersion": 1,
+	"fixtureKind": "synthetic_replay_from_documented_incident_shape",
+	"source": "FLY-2676 acceptance and product/doc/FLY-2591-codex-quota-switch/prd.md section 9",
+	"containsProductionCredentials": false,
+	"timeline": {
+		"manualVoucherAt": "2026-09-11T18:43:00.000Z",
+		"independentProbeUsableAt": "2026-09-11T18:45:00.000Z",
+		"quotaEventAt": "2026-09-11T18:45:01.000Z",
+		"oldFleetStallMs": 480000
+	},
+	"readiness": {
+		"ready": false,
+		"reason": "readiness_receipt_missing"
+	},
+	"identity": {
+		"rootKey": "fixture-root",
+		"accountKey": "fixture-business",
+		"profile": "business",
+		"generation": 11,
+		"bindingId": "fixture-binding",
+		"executionId": "fixture-execution",
+		"runId": "fixture-run"
+	},
+	"event": {
+		"source": "runner_terminal",
+		"sourceEventId": "fixture-20260911-quota-event"
+	}
+}

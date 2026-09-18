@@ -248,6 +248,7 @@ export const ALERT_EVENT_TYPES = [
 	"model_bench_malformed",
 	"quota_choice",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"quota_no_target",
 	"quota_blocked_recovered",
 	"quota_read_blind",
@@ -386,6 +387,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"model_cap_switched",
 	"model_cap_unknown",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
@@ -402,6 +404,7 @@ const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switched",
 	"account_switch_degraded",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 ]);
 
 function hasValidDeliveryStyle(

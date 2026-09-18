@@ -74,6 +74,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"model_cap_switched",
 	"model_cap_unknown",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",

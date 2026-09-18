@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import type { CodexQuotaManualReason } from "./availability.js";
 
 export interface CodexQuotaHomeObservation {
 	home: string;
@@ -13,6 +14,7 @@ export interface CodexQuotaReadinessOptions {
 	collectHomes(): Promise<{
 		complete: boolean;
 		homes: CodexQuotaHomeObservation[];
+		failureReasons?: CodexQuotaManualReason[];
 	}>;
 }
 
@@ -23,7 +25,9 @@ export interface CodexQuotaReadinessResult {
 		reason:
 			| "credential_not_shared"
 			| "authority_unavailable"
-			| "canonical_unavailable";
+			| "canonical_unavailable"
+			| "readiness_receipt_missing"
+			| "readiness_receipt_invalid";
 	}>;
 }
 
@@ -53,7 +57,20 @@ export async function checkCodexQuotaReadiness(
 		return { ready: false, failures: [{ reason: "authority_unavailable" }] };
 	}
 	const failures: CodexQuotaReadinessResult["failures"] = [];
-	if (!inventory.complete) failures.push({ reason: "authority_unavailable" });
+	if (!inventory.complete) {
+		let preserved = false;
+		for (const reason of inventory.failureReasons ?? []) {
+			if (
+				reason === "readiness_receipt_missing" ||
+				reason === "readiness_receipt_invalid" ||
+				reason === "authority_unavailable"
+			) {
+				failures.push({ reason });
+				preserved = true;
+			}
+		}
+		if (!preserved) failures.push({ reason: "authority_unavailable" });
+	}
 	for (const observation of inventory.homes) {
 		if (
 			observation.ownership === "unknown" ||

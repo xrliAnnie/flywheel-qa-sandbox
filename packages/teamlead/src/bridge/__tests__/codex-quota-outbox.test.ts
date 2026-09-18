@@ -8,6 +8,93 @@ const stores: StateStore[] = [];
 afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
 });
+it("delivers one plain informational N11 for every durable quota event", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	for (const sourceEventId of ["event-1", "event-2"])
+		store.codexQuota.recordSignal({
+			executionId: "unbound-exec",
+			source: "runner_terminal",
+			sourceEventId,
+			availability: {
+				mode: "manual",
+				reasons: ["readiness_receipt_missing"],
+				revision: 1,
+				checkedAt: "2026-09-11T18:45:00.000Z",
+			},
+		});
+	const messages: AlertPayload[] = [];
+	await createCodexQuotaOutboxDelivery({
+		store,
+		send: async (payload) => {
+			messages.push(payload);
+			store.recordAlertDeliveryReceipt(
+				payload.eventId,
+				"queued_durable",
+				"2026-09-11T18:45:01.000Z",
+			);
+		},
+	})();
+	expect(messages).toHaveLength(2);
+	for (const message of messages) {
+		expect(message).toMatchObject({
+			eventType: "codex_quota_automation_disabled",
+			title: "Codex 自动切号关着",
+			body: "⚙️ 自动切号关着：readiness-receipt 不存在。需要手工切号。",
+			severity: "info",
+			deliveryStyle: "plain",
+		});
+		expect(message).not.toHaveProperty("mentionUserId");
+	}
+	expect(
+		store.codexQuota
+			.listOutbox()
+			.filter((row) => row.kind === "automation_disabled"),
+	).toMatchObject([
+		{ delivery_state: "delivered" },
+		{ delivery_state: "delivered" },
+	]);
+});
+it("renders one bounded legacy-batch N11 and explains why first flag enable stays manual", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	store.codexQuota.enqueueOutbox({
+		incidentId: null,
+		kind: "automation_disabled",
+		eventId: "legacy-batch:N11:summary",
+		destination: "lead",
+		payload: {
+			scope: "legacy_batch",
+			totalCount: 1001,
+			manualCount: 998,
+			guardedCount: 2,
+			skippedCount: 1,
+			failedCount: 1,
+		},
+	});
+	const messages: AlertPayload[] = [];
+	await createCodexQuotaOutboxDelivery({
+		store,
+		send: async (payload) => {
+			messages.push(payload);
+			store.recordAlertDeliveryReceipt(
+				payload.eventId,
+				"queued_durable",
+				"2026-09-17T20:00:00.000Z",
+			);
+		},
+	})();
+	expect(messages).toHaveLength(1);
+	expect(messages[0]?.body).toContain("1001 条历史记录");
+	expect(messages[0]?.body).toContain("998 条已交手工");
+	expect(messages[0]?.body).toContain("2 条仍有当前容量或安装保护");
+	expect(messages[0]?.body).toContain("当前 generation 不会因首次开旗自动接管");
+	expect(messages[0]).toMatchObject({
+		eventType: "codex_quota_automation_disabled",
+		severity: "info",
+		deliveryStyle: "plain",
+	});
+});
 it("only settles from a durable receipt and fences ambiguous restart retries", async () => {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);

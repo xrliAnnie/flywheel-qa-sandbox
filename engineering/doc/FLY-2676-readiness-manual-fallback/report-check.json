@@ -1,0 +1,12 @@
+{
+  "static": "passed",
+  "commentInputs": 7,
+  "pathScopedStorage": true,
+  "liveAggregation": true,
+  "chunkMarkerAndLimit": true,
+  "clipboardRejectionFallback": true,
+  "clipboardMissingFallback": true,
+  "storageDeniedHandled": true,
+  "browserQA": "unavailable: tool requires approval; policy never",
+  "diagrams": "both failed twice: Chromium MachPortRendezvousServer Permission denied (1100)"
+}

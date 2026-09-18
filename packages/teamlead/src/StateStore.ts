@@ -47,6 +47,7 @@ import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "fl
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
+import type { CodexQuotaAvailabilitySnapshot } from "./codex-quota/availability.js";
 import { ShipJudgmentJobs } from "./ship-judgment/jobs.js";
 import { ShipJudgmentInputs } from "./ship-judgment/inputs.js";
 import { ShipJudgmentOpinions } from "./ship-judgment/opinions.js";
@@ -115,6 +116,7 @@ import {
 	judgeRecord,
 } from "./strength-two/judge.js";
 import { buildShadowObservation } from "./auto-merge-shadow/observation.js";
+import { migrateAutoMergeShadowDeclarationV2 } from "./auto-merge-shadow-declaration-migration.js";
 import {
 	evaluateAutoNarrowEligibility,
 	type AutoNarrowEligibility,
@@ -2747,10 +2749,30 @@ export class StateStore {
 	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
 	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
 	codexQuotaLaunchEnabled: () => boolean = () => true;
+	codexQuotaAvailability: () => CodexQuotaAvailabilitySnapshot = () =>
+		this.codexQuotaLaunchEnabled()
+			? { mode: "automatic", reasons: [], revision: 0, checkedAt: null }
+			: {
+					mode: "manual",
+					reasons: ["flag_disabled"],
+					revision: 0,
+					checkedAt: null,
+				};
 	isCodexQuotaLaunchPaused(executionId: string, rootKey?: string): boolean {
-		if (!this.codexQuotaLaunchEnabled()) return false;
-		return this.codexQuota.isExecutionPaused(executionId) ||
-			(rootKey !== undefined && this.codexQuota.isPaused(rootKey));
+		if (this.codexQuota.isExecutionPaused(executionId)) return true;
+		if (rootKey === undefined) return false;
+		if (
+			this.codexQuota.hasRootSafetyGuard(
+				rootKey,
+				Date.now(),
+				this.codexQuotaLaunchEnabled(),
+			)
+		)
+			return true;
+		return (
+			this.codexQuotaAvailability().mode === "automatic" &&
+			this.codexQuota.isPaused(rootKey)
+		);
 	}
 
 
@@ -29487,6 +29509,7 @@ export class StateStore {
 		this.migrateFounderGateVerdictLedger();
 		this.migrateAutoMergeShadowLedger();
 		this.migrateAutoNarrowGateLedger();
+		migrateAutoMergeShadowDeclarationV2(this.db.raw);
 		this.migrateShipJudgmentLedger();
 		try {
 			installObservationStorage(this.db.raw);
@@ -42680,7 +42703,17 @@ export class StateStore {
 				if(prior.execution_id!==input.executionId || prior.event_type!=="session_failed" || canonicalSubmissionDigest(JSON.parse(String(prior.payload)))!==canonicalSubmissionDigest(payload)) return {ok:false as const,reason:"terminal_signal_conflict"};
 				return {ok:true as const,idempotentReplay:true};
 			}
-			this.codexQuota.recordSignal({executionId:input.executionId,bindingId:signal?.bindingId,now:input.now});
+			this.codexQuota.recordSignal({
+				executionId: input.executionId,
+				bindingId: signal?.bindingId,
+				now: input.now,
+				source:
+					signal?.source === "review_exec"
+						? "review_exec"
+						: "runner_terminal",
+				sourceEventId: input.sourceEventId,
+				availability: this.codexQuotaAvailability(),
+			});
 			this.db.run("INSERT INTO session_events(event_id,execution_id,issue_id,project_name,event_type,severity,payload,source) VALUES(?,?,?,?,'session_failed','info',?,?)",[input.sourceEventId,input.executionId,input.issueId,input.projectName,JSON.stringify(payload),input.source]);
 			this.upsertSession({execution_id:input.executionId,issue_id:input.issueId,project_name:input.projectName,status:"failed",last_error:"goal ended non-complete: usageLimited"});
 			return {ok:true as const,idempotentReplay:false};
@@ -42794,7 +42827,18 @@ export class StateStore {
 				return;
 			} else {
 				if (input.failureKind === "goal_usage_limited") {
-					this.codexQuota.recordSignal({executionId:input.executionId,bindingId:quotaSignal?.bindingId,nodeId:context.binding.node_id,now});
+					this.codexQuota.recordSignal({
+						executionId: input.executionId,
+						bindingId: quotaSignal?.bindingId,
+						nodeId: context.binding.node_id,
+						now,
+						source:
+							quotaSignal?.source === "review_exec"
+								? "review_exec"
+								: "runner_terminal",
+						sourceEventId: input.sourceEventId,
+						availability: this.codexQuotaAvailability(),
+					});
 				}
 				const canonical =
 					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);
@@ -59265,10 +59309,16 @@ export class StateStore {
 			declared_class:
 				row.declared_class as AutoMergeShadowDeclarationRow["declared_class"],
 			declared_by: row.declared_by as string,
-			discord_channel_id: row.discord_channel_id as string,
-			discord_message_id: row.discord_message_id as string,
-			discord_author_user_id: row.discord_author_user_id as string,
-			message_ts: row.message_ts as string,
+			discord_channel_id: (row.discord_channel_id as string | null) ?? null,
+			discord_message_id: (row.discord_message_id as string | null) ?? null,
+			discord_author_user_id:
+				(row.discord_author_user_id as string | null) ?? null,
+			message_ts: (row.message_ts as string | null) ?? null,
+			evidence_kind: row.evidence_kind as AutoMergeShadowDeclarationEvidenceKind,
+			lead_identity_digest:
+				(row.lead_identity_digest as string | null) ?? null,
+			lead_auth_method:
+				(row.lead_auth_method as AutoMergeShadowLeadAuthMethod | null) ?? null,
 			declaration_seq: Number(row.declaration_seq),
 			declared_at: row.declared_at as string,
 		};
@@ -59287,7 +59337,19 @@ export class StateStore {
 	recordAutoMergeShadowDeclaration(
 		input: RecordAutoMergeShadowDeclarationInput,
 	): RecordAutoMergeShadowDeclarationResult {
+		const evidenceKind = input.evidenceKind ?? "discord_message";
+		const discordEvidence =
+			evidenceKind === "discord_message"
+				? (input as RecordDiscordAutoMergeShadowDeclarationInput)
+				: undefined;
+		const leadEvidence =
+			evidenceKind === "lead_authenticated"
+				? (input as RecordLeadAuthenticatedAutoMergeShadowDeclarationInput)
+				: undefined;
 		if (
+			!(
+				["discord_message", "lead_authenticated"] as const
+			).includes(evidenceKind) ||
 			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
 				input.declarationId,
 			) ||
@@ -59297,10 +59359,16 @@ export class StateStore {
 				input.declaredClass,
 			) ||
 			!/^[A-Za-z0-9._-]{1,64}$/.test(input.declaredBy) ||
-			!/^\d{1,32}$/.test(input.discordChannelId) ||
-			!/^\d{1,32}$/.test(input.discordMessageId) ||
-			!/^\d{1,32}$/.test(input.discordAuthorUserId) ||
-			!StateStore.workflowFiniteTimestamp(input.messageTs) ||
+			(discordEvidence != null &&
+				(!/^\d{1,32}$/.test(discordEvidence.discordChannelId) ||
+					!/^\d{1,32}$/.test(discordEvidence.discordMessageId) ||
+					!/^\d{1,32}$/.test(discordEvidence.discordAuthorUserId) ||
+					!StateStore.workflowFiniteTimestamp(discordEvidence.messageTs))) ||
+			(leadEvidence != null &&
+				(!/^[0-9a-f]{64}$/.test(leadEvidence.leadIdentityDigest) ||
+					!(
+						["lead_hmac", "carrier_passthrough"] as const
+					).includes(leadEvidence.leadAuthMethod))) ||
 			!StateStore.workflowFiniteTimestamp(input.declaredAt)
 		) {
 			return { ok: false, reason: "invalid_declaration" };
@@ -59320,8 +59388,17 @@ export class StateStore {
 				result =
 					row.question_id === input.questionId &&
 					row.declared_class === input.declaredClass &&
-					row.discord_channel_id === input.discordChannelId &&
-					row.discord_message_id === input.discordMessageId
+					row.declared_by === input.declaredBy &&
+					row.evidence_kind === evidenceKind &&
+					(discordEvidence
+						? row.discord_channel_id === discordEvidence.discordChannelId &&
+							row.discord_message_id === discordEvidence.discordMessageId &&
+							row.discord_author_user_id ===
+								discordEvidence.discordAuthorUserId &&
+							row.message_ts === discordEvidence.messageTs
+						: row.lead_identity_digest ===
+								leadEvidence?.leadIdentityDigest &&
+							row.lead_auth_method === leadEvidence?.leadAuthMethod)
 						? { ok: true, status: "replayed", row }
 						: { ok: false, reason: "declaration_conflict" };
 				return;
@@ -59332,13 +59409,15 @@ export class StateStore {
 				result = { ok: false, reason: "question_run_mismatch" };
 				return;
 			}
-			const usedMessage = this.workflowSelectAll(
-				"SELECT 1 FROM auto_merge_shadow_declaration WHERE discord_message_id = ?",
-				[input.discordMessageId],
-			)[0];
-			if (usedMessage) {
-				result = { ok: false, reason: "message_already_used" };
-				return;
+			if (discordEvidence) {
+				const usedMessage = this.workflowSelectAll(
+					"SELECT 1 FROM auto_merge_shadow_declaration WHERE discord_message_id = ?",
+					[discordEvidence.discordMessageId],
+				)[0];
+				if (usedMessage) {
+					result = { ok: false, reason: "message_already_used" };
+					return;
+				}
 			}
 			const sequenceRow = this.workflowSelectAll(
 				`SELECT COALESCE(MAX(declaration_seq), 0) + 1 AS next_seq
@@ -59350,18 +59429,22 @@ export class StateStore {
 				`INSERT INTO auto_merge_shadow_declaration
 				   (declaration_id, question_id, run_id, declared_class, declared_by,
 				    discord_channel_id, discord_message_id, discord_author_user_id,
-				    message_ts, declaration_seq, declared_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    message_ts, evidence_kind, lead_identity_digest, lead_auth_method,
+				    declaration_seq, declared_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					input.declarationId,
 					input.questionId,
 					input.runId,
 					input.declaredClass,
 					input.declaredBy,
-					input.discordChannelId,
-					input.discordMessageId,
-					input.discordAuthorUserId,
-					input.messageTs,
+					discordEvidence?.discordChannelId ?? null,
+					discordEvidence?.discordMessageId ?? null,
+					discordEvidence?.discordAuthorUserId ?? null,
+					discordEvidence?.messageTs ?? null,
+					evidenceKind,
+					leadEvidence?.leadIdentityDigest ?? null,
+					leadEvidence?.leadAuthMethod ?? null,
 					sequence,
 					input.declaredAt,
 				],
@@ -81607,6 +81690,12 @@ export const AUTO_MERGE_SHADOW_DECLARED_CLASSES = [
 ] as const;
 export type AutoMergeShadowDeclaredClass =
 	(typeof AUTO_MERGE_SHADOW_DECLARED_CLASSES)[number];
+export type AutoMergeShadowDeclarationEvidenceKind =
+	| "discord_message"
+	| "lead_authenticated";
+export type AutoMergeShadowLeadAuthMethod =
+	| "lead_hmac"
+	| "carrier_passthrough";
 
 export interface AutoMergeShadowDeclarationRow {
 	declaration_id: string;
@@ -81614,26 +81703,45 @@ export interface AutoMergeShadowDeclarationRow {
 	run_id: string;
 	declared_class: AutoMergeShadowDeclaredClass;
 	declared_by: string;
-	discord_channel_id: string;
-	discord_message_id: string;
-	discord_author_user_id: string;
-	message_ts: string;
+	discord_channel_id: string | null;
+	discord_message_id: string | null;
+	discord_author_user_id: string | null;
+	message_ts: string | null;
+	evidence_kind: AutoMergeShadowDeclarationEvidenceKind;
+	lead_identity_digest: string | null;
+	lead_auth_method: AutoMergeShadowLeadAuthMethod | null;
 	declaration_seq: number;
 	declared_at: string;
 }
 
-export interface RecordAutoMergeShadowDeclarationInput {
+interface RecordAutoMergeShadowDeclarationBaseInput {
 	declarationId: string;
 	questionId: string;
 	runId: string;
 	declaredClass: AutoMergeShadowDeclaredClass;
 	declaredBy: string;
+	declaredAt: string;
+}
+
+export interface RecordDiscordAutoMergeShadowDeclarationInput
+	extends RecordAutoMergeShadowDeclarationBaseInput {
+	evidenceKind?: "discord_message";
 	discordChannelId: string;
 	discordMessageId: string;
 	discordAuthorUserId: string;
 	messageTs: string;
-	declaredAt: string;
 }
+
+export interface RecordLeadAuthenticatedAutoMergeShadowDeclarationInput
+	extends RecordAutoMergeShadowDeclarationBaseInput {
+	evidenceKind: "lead_authenticated";
+	leadIdentityDigest: string;
+	leadAuthMethod: AutoMergeShadowLeadAuthMethod;
+}
+
+export type RecordAutoMergeShadowDeclarationInput =
+	| RecordDiscordAutoMergeShadowDeclarationInput
+	| RecordLeadAuthenticatedAutoMergeShadowDeclarationInput;
 
 export type RecordAutoMergeShadowDeclarationResult =
 	| {

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { CodexQuotaStore } from "../bridge/codex-quota-store.js";
+import type { CodexQuotaAvailabilitySnapshot } from "./availability.js";
 import {
 	type CodexQuotaObservation,
 	selectCodexQuotaCandidate,
@@ -11,6 +12,7 @@ export interface CodexQuotaCoordinatorOptions {
 	store: CodexQuotaStore;
 	now?: () => number;
 	autoEnabled?: () => boolean;
+	availability?(): Promise<CodexQuotaAvailabilitySnapshot>;
 	reconcileInstallation?(
 		incident: Record<string, unknown>,
 		material: NonNullable<
@@ -43,6 +45,28 @@ export class CodexQuotaCoordinator {
 			let now = clock();
 			const id = String(incident.incident_id);
 			const rootKey = String(incident.root_key);
+			if (this.options.store.isIncidentManual(id)) continue;
+			if (this.options.availability) {
+				let availability: CodexQuotaAvailabilitySnapshot;
+				try {
+					availability = await this.options.availability();
+				} catch {
+					availability = {
+						mode: "manual",
+						reasons: ["authority_unavailable"],
+						revision: 0,
+						checkedAt: new Date(now).toISOString(),
+					};
+				}
+				if (availability.mode === "manual") {
+					this.options.store.handoffIncidentManual(
+						id,
+						availability.reasons,
+						new Date(now).toISOString(),
+					);
+					continue;
+				}
+			}
 			const pendingTargets = this.options.store
 				.listTargets(id)
 				.some(
@@ -115,7 +139,21 @@ export class CodexQuotaCoordinator {
 					Date.parse(String(incident.next_attempt_at)) > now
 				)
 					continue;
-				if (!(await this.options.readiness(rootKey))) {
+				const readiness = this.options.availability
+					? await this.options.availability()
+					: undefined;
+				if (
+					(readiness && readiness.mode === "manual") ||
+					(!readiness && !(await this.options.readiness(rootKey)))
+				) {
+					if (readiness) {
+						this.options.store.handoffIncidentManual(
+							id,
+							readiness.reasons,
+							new Date(now).toISOString(),
+						);
+						continue;
+					}
 					this.options.store.setIncidentState(
 						id,
 						incident.state === "installing" ? "installing" : "retry_wait",
@@ -168,16 +206,25 @@ export class CodexQuotaCoordinator {
 				const selected = selectCodexQuotaCandidate(observations, { now });
 				if (selected.kind !== "selected" || !selected.candidate) {
 					const exhausted = selected.kind === "pool_exhausted";
+					if (exhausted) {
+						this.options.store.recordPoolExhausted({
+							incidentId: id,
+							observations,
+							observedAt: now,
+							nextAttemptAt: selected.nextAttemptAt ?? now + 60_000,
+						});
+						continue;
+					}
 					this.options.store.setIncidentState(
 						id,
-						exhausted ? "pool_exhausted" : "retry_wait",
+						"retry_wait",
 						selected.kind,
 						new Date(selected.nextAttemptAt ?? now + 60_000).toISOString(),
 					);
 					this.options.store.enqueueOutbox({
 						incidentId: id,
-						kind: exhausted ? "founder_alert" : "lead_diagnostic",
-						destination: exhausted ? "founder" : "lead",
+						kind: "lead_diagnostic",
+						destination: "lead",
 						payload: {
 							vendor: "codex",
 							reason: selected.kind,
@@ -187,12 +234,53 @@ export class CodexQuotaCoordinator {
 					});
 					continue;
 				}
+				this.options.store.resolveCapacityFacts({
+					incidentId: id,
+					observations,
+					observedAt: now,
+				});
 				const { observedAt: _observedAt, ...evidence } = selected.candidate;
 				const evidenceKey = createHash("sha256")
 					.update(JSON.stringify(evidence))
 					.digest("hex");
 				if (!this.options.store.claimSelection(id, evidenceKey)) continue;
+				if (this.options.availability) {
+					const beforeRotate = await this.options.availability();
+					if (beforeRotate.mode === "manual") {
+						this.options.store.handoffIncidentManual(
+							id,
+							beforeRotate.reasons,
+							new Date(clock()).toISOString(),
+						);
+						continue;
+					}
+				}
 				const rotated = await this.options.rotate(incident, selected.candidate);
+				if (rotated.ok && rotated.authDigest) {
+					// rotate() has already installed the canonical credential and journaled
+					// its material. Persist that known success before a newly-invalid
+					// availability snapshot hands the remaining recovery work to the Lead.
+					this.options.store.commitGeneration({
+						incidentId: id,
+						expectedGeneration: root.generation,
+						accountKey: selected.candidate.accountKey,
+						profile: selected.candidate.profile,
+						authDigest: rotated.authDigest,
+						probeResult: "ok",
+						now: new Date(now).toISOString(),
+					});
+				}
+				if (this.options.availability) {
+					const afterRotate = await this.options.availability();
+					if (afterRotate.mode === "manual") {
+						this.options.store.handoffIncidentManual(
+							id,
+							afterRotate.reasons,
+							new Date(clock()).toISOString(),
+						);
+						continue;
+					}
+				}
 				if (!rotated.ok || !rotated.authDigest) {
 					// A failed install can have renamed canonical already. Its durable journal
 					// outranks the transport result; reconcile before any new selection/probe.
@@ -233,15 +321,6 @@ export class CodexQuotaCoordinator {
 					});
 					continue;
 				}
-				this.options.store.commitGeneration({
-					incidentId: id,
-					expectedGeneration: root.generation,
-					accountKey: selected.candidate.accountKey,
-					profile: selected.candidate.profile,
-					authDigest: rotated.authDigest,
-					probeResult: "ok",
-					now: new Date(now).toISOString(),
-				});
 				await this.options.recover(this.options.store.getIncident(id)!);
 			} catch {
 				const current = this.options.store.getIncident(id);

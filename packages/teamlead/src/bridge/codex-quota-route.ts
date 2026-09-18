@@ -90,18 +90,26 @@ export function createCodexQuotaRouter(
 		const state =
 			parentTerminal || target?.state === "abandoned"
 				? "abandoned"
-				: incident?.state === "probe_failed" &&
-						root?.generation === binding.generation
-					? "probe_failed"
-					: !root ||
-							quota.isPaused(binding.credentialRootKey) ||
-							(target &&
-								target.state !== "recovered" &&
-								!options.store.getCodexQuotaRecoveryPermit(
-									String(incident!.incident_id),
-								))
-						? "paused"
-						: "ready";
+				: !root ||
+						quota.hasRootSafetyGuard(
+							binding.credentialRootKey,
+							Date.now(),
+							options.store.codexQuotaLaunchEnabled(),
+						)
+					? "paused"
+					: quota.isBindingManual(bindingId)
+						? "manual_required"
+						: incident?.state === "probe_failed" &&
+								root?.generation === binding.generation
+							? "probe_failed"
+							: quota.isPaused(binding.credentialRootKey) ||
+									(target &&
+										target.state !== "recovered" &&
+										!options.store.getCodexQuotaRecoveryPermit(
+											String(incident!.incident_id),
+										))
+								? "paused"
+								: "ready";
 		return { state, generation: root?.generation ?? binding.generation };
 	};
 	router.post("/bind", async (req, res) => {
@@ -192,6 +200,9 @@ export function createCodexQuotaRouter(
 		quota.recordSignal({
 			executionId: binding.executionId,
 			bindingId: binding.bindingId,
+			source: "review_exec",
+			sourceEventId: signal.sourceEventId,
+			availability: options.store.codexQuotaAvailability(),
 		});
 		res.json({ accepted: true });
 	});

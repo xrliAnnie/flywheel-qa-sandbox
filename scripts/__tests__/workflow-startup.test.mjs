@@ -7,6 +7,9 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import "../ci-ubicloud/__tests__/canary.test.mjs";
+import "../ci-ubicloud/__tests__/collector.test.mjs";
+
 const require = createRequire(
 	new URL("../../packages/teamlead/package.json", import.meta.url),
 );
