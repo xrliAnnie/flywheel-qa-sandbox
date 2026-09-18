@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"enabled": true,
+	"overdueDays": 1,
+	"runnerHomes": [
+		{
+			"id": "flywheel/eng_design",
+			"project": "flywheel",
+			"role": "eng_design",
+			"relativeHome": ".flywheel/codex-homes/agents/flywheel/eng_design"
+		},
+		{
+			"id": "flywheel/implement",
+			"project": "flywheel",
+			"role": "implement",
+			"relativeHome": ".flywheel/codex-homes/agents/flywheel/implement"
+		}
+	]
+}

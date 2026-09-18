@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deployment receipt generation is read-only toward every credential/home.
 // Only an explicitly supplied approved inventory is eligible; no auto-enrollment.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
 	lstatSync,
 	mkdirSync,
@@ -12,6 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { computeCodexHomeInventoryDigest } from "../packages/claude-runner/dist/index.js";
 
 let temporary;
 try {
@@ -98,11 +99,7 @@ try {
 			};
 		})
 		.sort((a, b) => a.home.localeCompare(b.home));
-	const inventoryDigest = createHash("sha256")
-		.update(
-			JSON.stringify(homes.map(({ home, ownership }) => ({ home, ownership }))),
-		)
-		.digest("hex");
+	const inventoryDigest = computeCodexHomeInventoryDigest(homes);
 	const directory = join(stateRoot, "codex-quota");
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	if (lstatSync(directory).isSymbolicLink()) throw new Error("output_unsafe");

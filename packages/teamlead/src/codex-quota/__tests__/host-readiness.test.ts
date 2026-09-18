@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -9,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
 import { afterEach, expect, it } from "vitest";
 import { createCodexQuotaHostCollector } from "../host-readiness.js";
 
@@ -21,9 +21,9 @@ function receipt(homes: { home: string; ownership: string }[]) {
 	return {
 		schemaVersion: 1,
 		buildSha: "a".repeat(40),
-		inventoryDigest: createHash("sha256")
-			.update(JSON.stringify(homes))
-			.digest("hex"),
+		inventoryDigest: computeCodexHomeInventoryDigest(
+			homes as Array<{ home: string; ownership: "managed" | "independent" }>,
+		),
 		homes: homes.map((home) => ({
 			...home,
 			credentialShared: home.ownership === "managed",

@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
+import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
 import { installSqlTiming } from "flywheel-config";
 import type { CodexQuotaHomeObservation } from "./readiness.js";
 
@@ -75,17 +75,17 @@ export function createCodexQuotaHostCollector(
 				manifest.homes.length > 5000
 			)
 				throw new Error("manifest_invalid");
-			const inventory = manifest.homes
-				.map(({ home, ownership }: { home: string; ownership: string }) => ({
+			const inventory = manifest.homes.map(
+				({ home, ownership }: { home: string; ownership: string }) => ({
 					home,
 					ownership,
-				}))
-				.sort((a: { home: string }, b: { home: string }) =>
-					a.home.localeCompare(b.home),
-				);
+				}),
+			) as Array<{
+				home: string;
+				ownership: "managed" | "independent";
+			}>;
 			if (
-				manifest.inventoryDigest !==
-				createHash("sha256").update(JSON.stringify(inventory)).digest("hex")
+				manifest.inventoryDigest !== computeCodexHomeInventoryDigest(inventory)
 			)
 				throw new Error("manifest_digest_invalid");
 			const approved = new Map<string, "managed" | "independent">();

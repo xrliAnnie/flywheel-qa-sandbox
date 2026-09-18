@@ -155,6 +155,22 @@ export {
 	stripSecretEnv,
 } from "./codex-home.js";
 export {
+	type CodexHomeAttemptReason,
+	type CodexHomeAttemptReceipt,
+	type CodexHomeAttemptResult,
+	type CodexHomeAttemptSource,
+	type CodexHomeInventoryDigestInput,
+	type CodexHomeMigrationEnrollment,
+	type CodexHomeMigrationState,
+	type CodexHomeOwnership,
+	computeCodexHomeInventoryDigest,
+	isCodexHomeMigrationOverdue,
+	type UpdateCodexHomeMigrationStateInput,
+	updateCodexHomeMigrationState,
+	validateCodexHomeAttemptReceipt,
+	writeCodexHomeAttemptReceipt,
+} from "./codex-home-reconcile.js";
+export {
 	CODEX_MEMORY_SEED_MAX_FILE_BYTES,
 	CODEX_MEMORY_SEED_MAX_FILES,
 	CODEX_MEMORY_SEED_MAX_INDEX_BYTES,
