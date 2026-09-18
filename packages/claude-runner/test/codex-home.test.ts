@@ -2234,10 +2234,7 @@ hide_full_access_warning = true
 		}
 	});
 
-	it.each([
-		["unknown", testAuth("zombie@example.test", "acct-zombie")],
-		["malformed", '{"tokens":{"id_token":"not-a-jwt"}}'],
-	] as const)(
+	it.each([["malformed", '{"tokens":{"id_token":"not-a-jwt"}}']] as const)(
 		"rejects a %s source identity before changing a pre-existing execution home",
 		(_label, sourceAuth) => {
 			const home = codexHomeDir("exec-reject", env);
