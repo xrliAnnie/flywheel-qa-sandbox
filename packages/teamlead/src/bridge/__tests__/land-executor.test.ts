@@ -1,6 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	canonicalJsonString,
+	canonicalSubmissionDigest,
+} from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
@@ -20,6 +24,59 @@ const HEAD = "a".repeat(40);
 const MERGE = "b".repeat(40);
 const BASE = "b".repeat(40);
 const CANDIDATE = "c".repeat(40);
+
+function verifiedEngineTargets(store: StateStore, issueId: string) {
+	if (!store.getSession("legacy-land-engine")) {
+		store.upsertSession({
+			execution_id: "legacy-land-engine",
+			issue_id: issueId,
+			project_name: "flywheel",
+			status: "completed",
+		});
+	}
+	const attribution = store.getCloseoutAttributionSnapshot({
+		projectName: "flywheel",
+		issueId,
+	});
+	const snapshot = {
+		version: 1 as const,
+		project: "flywheel",
+		issueUuid: issueId,
+		runId: null,
+		targets: [
+			{
+				kind: "worktree_not_applicable" as const,
+				executionId: "legacy-land-engine",
+				reason: "pinned_engine_execution" as const,
+				nodeType: "land",
+				dispatchReceipt: "legacy-dispatch",
+			},
+		],
+	};
+	return {
+		json: canonicalJsonString(snapshot),
+		digest: canonicalSubmissionDigest(snapshot),
+		version: 1 as const,
+		attributionDigest: attribution.digest,
+		attributionEpoch: attribution.epoch,
+		observedAt: "2026-09-16T03:34:00.000Z",
+	};
+}
+
+function refreshedEngineTargets(store: StateStore, issueId: string) {
+	const current = verifiedEngineTargets(store, issueId);
+	const snapshot = {
+		...(JSON.parse(current.json) as Record<string, unknown>),
+		version: 2 as const,
+	};
+	return {
+		...current,
+		json: canonicalJsonString(snapshot),
+		digest: canonicalSubmissionDigest(snapshot),
+		version: 2 as const,
+		observedAt: "2026-09-16T03:35:00.000Z",
+	};
+}
 
 function contentFingerprint(): ApprovedContentFingerprint {
 	const files = [
@@ -2198,6 +2255,46 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("does not announce an execution retry after its owner generation is fenced", async () => {
+		const { store, operation } = await fixture();
+		const notify = vi.fn();
+		const internals = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		const inspectPr = vi.fn(async () => {
+			internals.db.run(
+				`UPDATE land_operation
+				    SET owner_id = 'replacement-owner', owner_instance_id = 'replacement-instance',
+				        generation = generation + 1
+				  WHERE operation_id = ?`,
+				[operation.operation_id],
+			);
+			throw new Error("probe failed after takeover");
+		});
+
+		await expect(
+			executeLandOperation(operation.operation_id, {
+				store,
+				mergeDriver: {
+					inspectPr,
+					triggerCool: vi.fn(),
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				finalize: completedFinalizer(store),
+				notify,
+				authorize: () => ({ ok: true }),
+				ownerId: "worker",
+				now: () => new Date("2026-08-17T00:00:00.000Z"),
+			}),
+		).resolves.toMatchObject({ status: "busy" });
+		expect(notify).not.toHaveBeenCalledWith(
+			expect.anything(),
+			"execution_retry",
+			expect.anything(),
+		);
+		store.close();
+	});
+
 	it("records a covered terminal notification as intentionally not delivered", async () => {
 		const { store, operation } = await fixture();
 		const notify = vi.fn(async (_operation, stage: string) => ({
@@ -2603,6 +2700,41 @@ describe("land executor", () => {
 			triggerCool,
 			inspectTriggeredWorkflow: vi.fn(),
 		} satisfies LandMergeDriver;
+		const prepareRecloseTargets = vi.fn(async () => ({
+			ok: true as const,
+			verifiedTargets: verifiedEngineTargets(store, "issue-reclose"),
+		}));
+		await expect(
+			resumeHeldLandOperation(
+				{
+					operationId: operation.operation_id,
+					actor: "authenticated-reclose-peer",
+					reason: "authority changes after preparation",
+					mode: "closeout_only",
+					expectedResumeGeneration: 0,
+					expectedApprovedHead: HEAD,
+					requestId: "33333333-3333-4333-8333-333333333333",
+					authorityCheck: () => {
+						throw new Error("peer exited");
+					},
+				},
+				{
+					store,
+					mergeDriver,
+					prepareRecloseTargets,
+					now: () => new Date("2026-09-16T03:34:59.000Z"),
+				},
+			),
+		).resolves.toEqual({
+			ok: false,
+			reason: "resume_refused:peer_authority_changed",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "partial",
+			resume_generation: 0,
+			closeout_targets_version: null,
+		});
+		prepareRecloseTargets.mockClear();
 
 		await expect(
 			resumeHeldLandOperation(
@@ -2618,6 +2750,7 @@ describe("land executor", () => {
 				{
 					store,
 					mergeDriver,
+					prepareRecloseTargets,
 					now: () => new Date("2026-09-16T03:35:00.000Z"),
 				},
 			),
@@ -2635,12 +2768,13 @@ describe("land executor", () => {
 				.find((step) => step.step.startsWith("closeout_only_authorized:1:"))
 				?.receipt,
 		).toMatchObject({ expectedApprovedHead: HEAD, mergeSha: MERGE });
+		expect(prepareRecloseTargets).toHaveBeenCalledOnce();
 		await expect(
 			resumeHeldLandOperation(
 				{
 					operationId: operation.operation_id,
 					actor: "authenticated-master",
-					reason: "retry closeout evidence",
+					reason: "retry closeout evidence only",
 					mode: "closeout_only",
 					expectedResumeGeneration: 0,
 					expectedApprovedHead: HEAD,
@@ -2705,6 +2839,103 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("refreshes a pre-deployment v1 target pointer with no attribution epoch", async () => {
+		const store = await StateStore.create(":memory:");
+		const issueId = "issue-reclose-v1";
+		const operation = store.ensureLandOperation({
+			issueId,
+			projectName: "flywheel",
+			prNumber: 2606,
+			approvedHead: HEAD,
+			now: "2026-09-16T03:34:00.000Z",
+			verifiedTargets: verifiedEngineTargets(store, issueId),
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker",
+			now: "2026-09-16T03:34:01.000Z",
+			leaseExpiresAt: "2026-09-16T03:44:01.000Z",
+		})!;
+		expect(
+			store.recordLandOperationStep({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "merge_confirmed",
+				receipt: { headSha: HEAD, mergeSha: MERGE },
+				now: "2026-09-16T03:34:02.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "terminal",
+			reason: "retry_exhausted:issue_closeout_incomplete",
+			now: "2026-09-16T03:34:03.000Z",
+		});
+		const internals = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internals.db.run(
+			`UPDATE land_operation
+			    SET closeout_attribution_digest = NULL,
+			        closeout_attribution_epoch = NULL
+			  WHERE operation_id = ?`,
+			[operation.operation_id],
+		);
+		const verifiedTargets = refreshedEngineTargets(store, issueId);
+		const prepareRecloseTargets = vi.fn(async () => ({
+			ok: true as const,
+			verifiedTargets,
+		}));
+
+		const resumed = await resumeHeldLandOperation(
+			{
+				operationId: operation.operation_id,
+				actor: "authenticated-reclose-peer",
+				reason: "refresh pre-deployment attribution",
+				mode: "closeout_only",
+				expectedResumeGeneration: 0,
+				expectedApprovedHead: HEAD,
+				requestId: "44444444-4444-4444-8444-444444444444",
+			},
+			{
+				store,
+				mergeDriver: {
+					inspectPr: vi.fn().mockResolvedValue({
+						state: "MERGED" as const,
+						headSha: HEAD,
+						mergeSha: MERGE,
+					}),
+					triggerCool: vi.fn(),
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				prepareRecloseTargets,
+				now: () => new Date("2026-09-16T03:35:00.000Z"),
+			},
+		);
+
+		expect(prepareRecloseTargets).toHaveBeenCalledOnce();
+		expect(resumed).toMatchObject({
+			ok: true,
+			operation: {
+				state: "partial",
+				closeout_targets_version: 2,
+				closeout_targets_revision: 2,
+				closeout_targets_source: "attribution_refresh",
+				closeout_attribution_digest: verifiedTargets.attributionDigest,
+				closeout_attribution_epoch: verifiedTargets.attributionEpoch,
+			},
+		});
+		if (resumed.ok) {
+			expect(store.isCurrentLandCloseoutAttribution(resumed.operation)).toBe(
+				true,
+			);
+		}
+		store.close();
+	});
+
 	it("fences a closeout-only replay before any merge effect if merged proof regresses", async () => {
 		const store = await StateStore.create(":memory:");
 		const operation = store.ensureLandOperation({
@@ -2713,6 +2944,7 @@ describe("land executor", () => {
 			prNumber: 2617,
 			approvedHead: HEAD,
 			now: "2026-09-16T03:34:00.000Z",
+			verifiedTargets: verifiedEngineTargets(store, "issue-reclose-fence"),
 		});
 		const claim = store.claimLandOperation({
 			operationId: operation.operation_id,

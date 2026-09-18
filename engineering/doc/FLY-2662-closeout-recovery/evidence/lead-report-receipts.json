@@ -1,0 +1,19 @@
+{
+  "executionId": "34627a91-90da-4f99-a1c5-79149cc00848",
+  "lead": "flywheel-eng-lead",
+  "reports": [
+    {
+      "purpose": "applied peer socket ruling and R2 fixes",
+      "questionId": "79fa8324-6bf0-4bc2-a7e0-fe98026cb786"
+    },
+    {
+      "purpose": "APPROVED with three MEDIUM advisories",
+      "questionId": "3d9c7ad2-baf7-48d7-9169-3c88a75bac10"
+    },
+    {
+      "purpose": "DESIGN-HTML ready hosted URL",
+      "questionId": "3cf17d1f-1dbe-456a-b7f1-6481de2db4e7"
+    }
+  ],
+  "boundary": "ask --report registration receipts; no assertion that Lead consumed the report"
+}

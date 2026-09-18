@@ -166,6 +166,7 @@ export function collectIssueCloseoutNodes(
 		aliasKeys: string[];
 		projectName: string;
 		runIds?: string[];
+		landManaged?: boolean;
 	},
 ): CloseoutNode[] {
 	const byExec = new Map<string, CloseoutNode>();
@@ -223,7 +224,9 @@ export function collectIssueCloseoutNodes(
 	// A session row is intentionally disposable and therefore cannot define the
 	// complete post-merge cleanup set. Workflow attribution rows and immutable
 	// side-effect receipts survive session retirement, including old attempts.
-	for (const runId of [...new Set(args.runIds ?? [])].sort()) {
+	for (const runId of [
+		...new Set(args.landManaged ? (args.runIds ?? []) : []),
+	].sort()) {
 		for (const executionId of store.listRunAttributedExecutions(runId)) {
 			if (/^mat:[0-9a-f]{64}$/.test(executionId)) continue;
 			if (byExec.has(executionId)) continue;
@@ -324,8 +327,11 @@ export interface CloseoutInput {
 	landOperation?: {
 		operationId: string;
 		ownerId: string;
+		ownerInstanceId?: string;
 		generation: number;
 	};
+	/** Physical land pass: prove every body gone but preserve record identity. */
+	deferRecordFinalization?: boolean;
 }
 
 interface ActiveCloseoutReservation {
@@ -1029,6 +1035,7 @@ async function closeoutIssueLocked(
 		aliasKeys: resolution.aliasKeys,
 		projectName: input.projectName,
 		runIds: input.runIds,
+		landManaged: Boolean(input.landOperation),
 	});
 	const attributionDigest = canonicalSubmissionDigest(
 		nodes
@@ -1045,6 +1052,7 @@ async function closeoutIssueLocked(
 		const reserved = store.reserveLandCloseout({
 			operationId: input.landOperation.operationId,
 			ownerId: input.landOperation.ownerId,
+			ownerInstanceId: input.landOperation.ownerInstanceId,
 			generation: input.landOperation.generation,
 			inventoryDigest: attributionDigest,
 			now: new Date().toISOString(),
@@ -1437,6 +1445,7 @@ async function closeoutOneNode(
 				evidenceId: evidence.evidenceId,
 				operationId: operation.operation_id,
 				ownerId: input.landOperation.ownerId,
+				ownerInstanceId: input.landOperation.ownerInstanceId,
 				operationGeneration: input.landOperation.generation,
 				probeSequence:
 					store
@@ -1477,6 +1486,15 @@ async function closeoutOneNode(
 				result.teardown = {
 					state: "blocked",
 					prerequisite: "comm_identity_revision_unavailable",
+				};
+				return result;
+			}
+			if (input.deferRecordFinalization) {
+				result.confirmedGone = true;
+				result.communicationsFinalized = true;
+				result.teardown = {
+					state: "done",
+					detail: "no_session_row_physical_gone_records_deferred",
 				};
 				return result;
 			}
@@ -1664,6 +1682,7 @@ async function closeoutOneNode(
 				// authority (audited above) — that is exactly forcePreserved.
 				forcePreserved: preserveForensics,
 				finalizeDone,
+				deferCommunicationFinalization: input.deferRecordFinalization,
 				// Codex R1#13: legacy statuses OUTSIDE closeRunner's eligible sets
 				// (e.g. a live `approved` husk) are torn down under the explicit
 				// issue-terminal authority — without this the matrix's
@@ -1699,9 +1718,11 @@ async function closeoutOneNode(
 		closeRunnerDeathProven = Boolean(
 			closeRes.closed || closeRes.alreadyGone || executionDeathProven,
 		);
-		result.communicationsFinalized = closeRes.commDbFinalized;
+		result.communicationsFinalized = input.deferRecordFinalization
+			? closeRunnerDeathProven
+			: closeRes.commDbFinalized;
 		if (closeRunnerDeathProven) {
-			result.teardown = closeRes.commDbFinalized
+			result.teardown = result.communicationsFinalized
 				? {
 						state: "done",
 						detail: closeRes.alreadyGone
@@ -1913,6 +1934,7 @@ async function closeoutOneNode(
 			evidenceId: evidence.evidenceId,
 			operationId: operation.operation_id,
 			ownerId: input.landOperation.ownerId,
+			ownerInstanceId: input.landOperation.ownerInstanceId,
 			operationGeneration: input.landOperation.generation,
 			probeSequence:
 				store
@@ -1952,6 +1974,15 @@ async function closeoutOneNode(
 			result.teardown = {
 				state: "blocked",
 				prerequisite: "comm_identity_revision_unavailable",
+			};
+			return result;
+		}
+		if (input.deferRecordFinalization) {
+			result.confirmedGone = true;
+			result.communicationsFinalized = true;
+			result.teardown = {
+				state: "done",
+				detail: "physical_gone_records_deferred",
 			};
 			return result;
 		}

@@ -103,8 +103,12 @@ export interface ExecutionCloseoutProbeDeps {
 				revision: string | null;
 		  };
 	lookupTarget?: (executionId: string, projectName: string) => TmuxTargetLookup;
+	listWindows?: (executionId: string) => Promise<RunnerTmuxWindowInventory>;
 	probeWindow?: (tmuxWindow: string) => Promise<RunnerLiveness>;
 	hasHostProcess?: (executionId: string) => Promise<boolean>;
+	probeHostProcess?: (
+		executionId: string,
+	) => Promise<HostProcessByExecutionIdProbe>;
 	probeCodexDaemon?: (
 		executionId: string,
 	) => Promise<"alive" | "absent" | "unknown">;
@@ -269,6 +273,9 @@ export async function collectExecutionCloseoutEvidence(
 		identity.executionId,
 		identity.project,
 	);
+	const windowInventory = await (
+		deps.listWindows ?? listTmuxWindowsByExecutionId
+	)(identity.executionId);
 	const adapter =
 		identity.adapter === "unknown"
 			? closeoutAdapter(facts.session)
@@ -303,31 +310,81 @@ export async function collectExecutionCloseoutEvidence(
 			};
 		},
 		window: async () => {
-			if (lookup.kind === "gone") {
-				return { state: "absent", reason: "execution_window_absent" };
+			const targets = new Map<string, string>();
+			if (
+				lookup.kind === "found" &&
+				!lookup.target.tmuxWindow.endsWith(":pending")
+			) {
+				const windowId = lookup.target.tmuxWindow.slice(
+					lookup.target.tmuxWindow.lastIndexOf(":") + 1,
+				);
+				targets.set(windowId, lookup.target.tmuxWindow);
 			}
-			if (lookup.kind === "error") {
+			if (windowInventory.kind === "ok") {
+				for (const window of windowInventory.windows) {
+					const sessionName = window.sessions[0];
+					if (!sessionName) {
+						return {
+							state: "unknown",
+							reason: "execution_window_inventory_missing_session",
+						};
+					}
+					targets.set(window.windowId, `${sessionName}:${window.windowId}`);
+				}
+			}
+
+			const results = await Promise.all(
+				[...targets.values()].map((target) =>
+					(deps.probeWindow ?? probeRunnerProcessLiveness)(target),
+				),
+			);
+			if (results.includes("alive")) {
+				return { state: "live", reason: "execution_window_live" };
+			}
+			if (
+				lookup.kind === "error" ||
+				windowInventory.kind === "indeterminate" ||
+				results.some((result) => result !== "absent" && result !== "dead_pin")
+			) {
 				return {
 					state: "unknown",
-					reason: `window_lookup_error:${lookup.error}`,
+					reason:
+						lookup.kind === "error"
+							? `window_lookup_error:${lookup.error}`
+							: windowInventory.kind === "indeterminate"
+								? `window_inventory_error:${windowInventory.reason}`
+								: "execution_window_indeterminate",
 				};
 			}
-			const live = await (deps.probeWindow ?? probeRunnerProcessLiveness)(
-				lookup.target.tmuxWindow,
-			);
-			return live === "alive"
-				? { state: "live", reason: "execution_window_live" }
-				: live === "absent" || live === "dead_pin"
-					? { state: "absent", reason: `execution_window_${live}` }
-					: { state: "unknown", reason: "execution_window_indeterminate" };
+			return {
+				state: "absent",
+				reason:
+					targets.size === 0
+						? "execution_window_absent"
+						: "execution_windows_confirmed_absent",
+			};
 		},
 		hostProcess: async () => {
-			const live = await (deps.hasHostProcess ?? hasHostProcessByExecutionId)(
-				identity.executionId,
-			);
+			const result = deps.probeHostProcess
+				? await deps.probeHostProcess(identity.executionId)
+				: deps.hasHostProcess
+					? (await deps.hasHostProcess(identity.executionId))
+						? ({ verdict: "live" } as const)
+						: ({ verdict: "absent" } as const)
+					: await probeHostProcessByExecutionId(identity.executionId);
 			return {
-				state: live ? "live" : "absent",
-				reason: live ? "execution_process_live" : "execution_process_absent",
+				state:
+					result.verdict === "live"
+						? "live"
+						: result.verdict === "absent"
+							? "absent"
+							: "unknown",
+				reason:
+					result.verdict === "live"
+						? "execution_process_live"
+						: result.verdict === "absent"
+							? "execution_process_absent"
+							: `execution_process_probe_error:${result.reason}`,
 			};
 		},
 		daemon: async () => {
@@ -454,14 +511,19 @@ import { CommDB } from "flywheel-comm/db";
 import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { Session } from "../StateStore.js";
 import { resolveCommDbPath } from "./commdb-session-prune.js";
-import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
+import {
+	type HostProcessByExecutionIdProbe,
+	probeHostProcessByExecutionId,
+} from "./generalized-launch-recovery.js";
 import {
 	isFreshControllerHeartbeat,
 	parseControllerHeartbeatMs,
 } from "./runner-shutdown-evidence.js";
 import {
+	listTmuxWindowsByExecutionId,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	type RunnerLiveness,
+	type RunnerTmuxWindowInventory,
 	type TmuxTargetLookup,
 } from "./tmux-lookup.js";

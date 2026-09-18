@@ -34,11 +34,12 @@ describe("legacy land held alert delivery", () => {
 			.mockResolvedValueOnce({ skipped: "transport_unavailable" })
 			.mockResolvedValueOnce({ sent: true });
 		let tick = 3;
+		const clockBase = Date.parse("2026-08-18T00:00:00.000Z");
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: {} as never,
 			alertSink: { current: { alert } },
-			now: () => new Date(`2026-08-18T00:00:0${tick++}.000Z`),
+			now: () => new Date(clockBase + tick++ * 1_000),
 			resolveRunAlertIdentity: (projectName) => ({
 				leadId: "flywheel-eng-lead",
 				projectName,

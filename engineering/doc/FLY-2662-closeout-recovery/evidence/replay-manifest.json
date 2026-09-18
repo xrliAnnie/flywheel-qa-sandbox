@@ -1,0 +1,50 @@
+{
+	"schemaVersion": 1,
+	"mode": "readonly_shape_reconstruction",
+	"productionMutation": false,
+	"managedSnapshot": false,
+	"sourceEvidence": "engineering/doc/FLY-2662-closeout-recovery/evidence/incident-readonly.json",
+	"fixture": "packages/teamlead/src/bridge/__tests__/fixtures/fly2662-predeploy/held-closeout.json",
+	"provenance": {
+		"method": "field-by-field de-identified reconstruction from read-only sqlite queries",
+		"managedSnapshotRefusal": "snapshot_owner_unavailable",
+		"capturedOn": "2026-09-17",
+		"productionAcceptance": false
+	},
+	"cases": [
+		{
+			"id": "pending-window",
+			"fixturePointer": "pendingWindow",
+			"sourceIssueExamples": ["FLY-2519", "FLY-2606", "FLY-2608", "FLY-2612", "FLY-2619"],
+			"requiredShape": {
+				"commSession.tmux_window": "runner-flywheel:pending",
+				"commSession.status": "running",
+				"commSession.ended_at": null,
+				"landOperation.state": "held",
+				"landOperation.last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending"
+			},
+			"acceptance": [
+				"dead execution-wide process evidence converges pending identity to gone",
+				"live process evidence remains fail-closed"
+			]
+		},
+		{
+			"id": "null-targets-held-operation",
+			"fixturePointer": "nullTargets",
+			"sourceIssueExamples": ["FLY-2598", "FLY-2601", "FLY-2616"],
+			"requiredShape": {
+				"landOperation.state": "held",
+				"landOperation.closeout_targets_json": null,
+				"landOperation.closeout_targets_digest": null,
+				"landOperation.closeout_targets_version": null,
+				"workflowRun.status": "held",
+				"stateSession.worktree_binding_path": "$SANDBOX_PARENT/flywheel-FLY-9002"
+			},
+			"acceptance": [
+				"land reclose attaches a verified legacy absence target to the exact operation",
+				"the next dispatcher execution completes without merge authority",
+				"effects remain ordered gone, worktree, records, thread, linear"
+			]
+		}
+	]
+}

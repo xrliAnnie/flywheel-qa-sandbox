@@ -124,10 +124,11 @@ function legacyOwnerPid(lease: LandOwnerLease): number | undefined {
 export async function runLandOwnerLivenessPass(
 	store: StateStore,
 	options: LandOwnerLivenessOptions,
-): Promise<{ reclaimed: string[]; unresolved: string[] }> {
+): Promise<{ reclaimed: string[]; unresolved: string[]; stalled: string[] }> {
 	const now = (options.now ?? (() => new Date()))().toISOString();
 	const reclaimed: string[] = [];
 	const unresolved: string[] = [];
+	const stalled: string[] = [];
 	for (const lease of store.listActiveLandOwnerLeases()) {
 		let reason:
 			| "process_absent"
@@ -164,6 +165,14 @@ export async function runLandOwnerLivenessPass(
 				unresolved.push(lease.operationId);
 				continue;
 			} else {
+				if (
+					lease.ownerLastProgressAt &&
+					Date.parse(now) - Date.parse(lease.ownerLastProgressAt) >=
+						LAND_OWNER_DEADLINE_MS &&
+					store.recordLandOwnerHealthStall({ observed: lease, now })
+				) {
+					stalled.push(lease.operationId);
+				}
 				continue;
 			}
 		} else {
@@ -195,7 +204,7 @@ export async function runLandOwnerLivenessPass(
 			reason,
 		});
 	}
-	return { reclaimed, unresolved };
+	return { reclaimed, unresolved, stalled };
 }
 
 /** Independent timer: reclaimed work is kicked without awaiting that work. */

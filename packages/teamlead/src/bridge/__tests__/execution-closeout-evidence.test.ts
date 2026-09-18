@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
 	type CloseoutObservations,
@@ -123,6 +123,7 @@ describe("execution closeout evidence", () => {
 				aliasKeys: ["issue-1", "FLY-2616"],
 				projectName: "flywheel",
 				runIds: ["run-1"],
+				landManaged: true,
 			} as never,
 		);
 
@@ -133,6 +134,30 @@ describe("execution closeout evidence", () => {
 			role: "workflow",
 		});
 		expect(nodes).toHaveLength(1);
+	});
+
+	it("does not expand run-attributed sessionless nodes for non-land closeout", () => {
+		const listRunAttributedExecutions = vi.fn(() => ["missing-session"]);
+		const nodes = collectIssueCloseoutNodes(
+			{
+				getSessionsForIssueAliases: () => [],
+				findAutoQaRecordsByParentIssueKeys: () => [],
+				listOpenLaunchClaims: () => [],
+				getSession: () => undefined,
+				getWorktreeBinding: () => undefined,
+				listRunAttributedExecutions,
+			} as never,
+			{
+				rootKey: "issue-1",
+				aliasKeys: ["issue-1"],
+				projectName: "flywheel",
+				runIds: ["run-1"],
+				landManaged: false,
+			},
+		);
+
+		expect(nodes).toEqual([]);
+		expect(listRunAttributedExecutions).not.toHaveBeenCalled();
 	});
 
 	it("persists append-only evidence under the exact land claim generation", async () => {
@@ -149,6 +174,10 @@ describe("execution closeout evidence", () => {
 			const claim = store.claimLandOperation({
 				operationId: operation.operation_id,
 				ownerId: "land-worker:1",
+				ownerInstanceId: "instance-current",
+				ownerPid: 123,
+				ownerProcessStart: "process-start-current",
+				ownerHostBootId: "host-boot-current",
 				now: "2026-09-16T05:00:01.000Z",
 				leaseExpiresAt: "2026-09-16T05:01:01.000Z",
 			});
@@ -158,6 +187,7 @@ describe("execution closeout evidence", () => {
 				evidenceId: "11111111-1111-4111-8111-111111111111",
 				operationId: operation.operation_id,
 				ownerId: "land-worker:1",
+				ownerInstanceId: "instance-current",
 				operationGeneration: claim!.generation,
 				probeSequence: 1,
 				projectName: "flywheel",
@@ -177,6 +207,12 @@ describe("execution closeout evidence", () => {
 					verdict: "gone",
 				},
 			};
+			expect(
+				store.recordCloseoutExecutionEvidence({
+					...input,
+					ownerInstanceId: "instance-stale",
+				}),
+			).toEqual({ ok: false, reason: "stale_land_generation" });
 			expect(store.recordCloseoutExecutionEvidence(input)).toEqual({
 				ok: true,
 				idempotentReplay: false,
@@ -324,6 +360,7 @@ describe("execution closeout evidence", () => {
 				{
 					readCommSession: () => "absent",
 					lookupTarget: () => ({ kind: "gone" }),
+					listWindows: async () => ({ kind: "ok", windows: [] }),
 					hasHostProcess: async () => false,
 					probeCodexDaemon: async () => daemon,
 				},
@@ -365,6 +402,7 @@ describe("execution closeout evidence", () => {
 			{
 				readCommSession: () => "absent",
 				lookupTarget: () => ({ kind: "gone" }),
+				listWindows: async () => ({ kind: "ok", windows: [] }),
 				hasHostProcess: async () => false,
 				probeCodexDaemonEvidence: async () => ({
 					liveness: "unknown",
@@ -412,6 +450,7 @@ describe("execution closeout evidence", () => {
 			{
 				readCommSession: () => "absent",
 				lookupTarget: () => ({ kind: "gone" }),
+				listWindows: async () => ({ kind: "ok", windows: [] }),
 				hasHostProcess: async () => false,
 				probeCodexDaemon: async () => "absent",
 			},
@@ -454,6 +493,7 @@ describe("execution closeout evidence", () => {
 			{
 				readCommSession: () => "absent",
 				lookupTarget: () => ({ kind: "gone" }),
+				listWindows: async () => ({ kind: "ok", windows: [] }),
 				hasHostProcess: async () => false,
 				probeCodexDaemonEvidence: async () => ({
 					liveness: "unknown",
@@ -468,6 +508,110 @@ describe("execution closeout evidence", () => {
 			state: "unknown",
 			reason: "codex_daemon_unknown",
 		});
+		expect(evidence.verdict).toBe("unknown");
+	});
+
+	it("finds every exec-marker window when the CommDB target is still pending", async () => {
+		const probes: string[] = [];
+		const evidence = await collectExecutionCloseoutEvidence(
+			{
+				evidenceId: "99999999-9999-4999-8999-999999999999",
+				project: "flywheel",
+				issueUuid: "issue-1",
+				runId: "run-1",
+				executionId: "pending-codex",
+				activationId: "activation-1",
+				operationId: "land:1",
+				operationGeneration: 3,
+				lifecycleRevision: 4,
+				attributionDigest: "9".repeat(64),
+				commIdentityRevision: null,
+				windowIdentity: "flywheel:pending",
+				controllerGeneration: null,
+				adapter: "codex-tmux",
+			},
+			{
+				session: {
+					status: "running",
+					adapter_type: "codex-tmux",
+					heartbeat_at: undefined,
+					lifecycle_revision: 4,
+				},
+				launchClaimState: undefined,
+			},
+			{
+				readCommSession: () => "present",
+				lookupTarget: () => ({
+					kind: "found",
+					target: { tmuxWindow: "flywheel:pending", sessionName: "flywheel" },
+				}),
+				listWindows: async () => ({
+					kind: "ok",
+					windows: [
+						{
+							windowId: "@42",
+							windowName: "FLY-2662-implement",
+							sessions: ["flywheel", "cmux-FLY-2662-implement"],
+						},
+						{
+							windowId: "@43",
+							windowName: "FLY-2662-watch",
+							sessions: ["flywheel"],
+						},
+					],
+				}),
+				probeWindow: async (target) => {
+					probes.push(target);
+					return target.endsWith("@43") ? "alive" : "dead_pin";
+				},
+				probeHostProcess: async () => ({ verdict: "absent", source: "pgrep" }),
+				probeCodexDaemon: async () => "absent",
+			},
+		);
+
+		expect(probes).toEqual(["flywheel:@42", "flywheel:@43"]);
+		expect(evidence.observations.window).toMatchObject({ state: "live" });
+		expect(evidence.verdict).toBe("alive");
+	});
+
+	it("keeps a host sensor error unknown instead of calling it live", async () => {
+		const evidence = await collectExecutionCloseoutEvidence(
+			{
+				evidenceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				project: "flywheel",
+				issueUuid: "issue-1",
+				runId: "run-1",
+				executionId: "sensor-error",
+				activationId: "activation-1",
+				operationId: "land:1",
+				operationGeneration: 3,
+				lifecycleRevision: null,
+				attributionDigest: "a".repeat(64),
+				commIdentityRevision: null,
+				windowIdentity: null,
+				controllerGeneration: null,
+				adapter: "claude-tmux",
+			},
+			{ session: undefined, launchClaimState: undefined },
+			{
+				readCommSession: () => "absent",
+				lookupTarget: () => ({ kind: "gone" }),
+				listWindows: async () => ({ kind: "ok", windows: [] }),
+				probeHostProcess: async () => ({
+					verdict: "unknown",
+					source: "pgrep",
+					reason: "pgrep_failed:ETIMEDOUT",
+				}),
+			},
+		);
+
+		expect(evidence.observations.hostProcess).toMatchObject({
+			state: "unknown",
+			reason: "execution_process_probe_error:pgrep_failed:ETIMEDOUT",
+		});
+		expect(evidence.liveVetoes).not.toContainEqual(
+			expect.stringContaining("hostProcess"),
+		);
 		expect(evidence.verdict).toBe("unknown");
 	});
 });

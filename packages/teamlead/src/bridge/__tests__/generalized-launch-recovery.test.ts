@@ -11,6 +11,7 @@ import {
 	type GeneralizedLaunchTargetLookup,
 	hasHostProcessByExecutionId,
 	probeGeneralizedLaunchLiveness,
+	probeHostProcessByExecutionId,
 	waitForGeneralizedLaunchDelivery,
 } from "../generalized-launch-recovery.js";
 
@@ -28,6 +29,98 @@ it("bounds the production host-process probe and fails closed on timeout/error",
 		["-f", "exec-timeout"],
 		{ timeout: 5_000 },
 	]);
+});
+
+it("reports host sensor failure as unknown while preserving the conservative boolean wrapper", async () => {
+	mockExecFile
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (
+				error: Error & { code?: string },
+			) => void;
+			callback(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }));
+		})
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (
+				error: Error & { code?: string },
+			) => void;
+			callback(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }));
+		});
+
+	await expect(probeHostProcessByExecutionId("exec-timeout")).resolves.toEqual({
+		verdict: "unknown",
+		source: "pgrep",
+		reason: "pgrep_failed:ETIMEDOUT",
+	});
+	await expect(hasHostProcessByExecutionId("exec-timeout")).resolves.toBe(true);
+});
+
+it("requires both argv and process-environment absence", async () => {
+	mockExecFile
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (
+				error: Error & { code?: number },
+			) => void;
+			callback(Object.assign(new Error("no match"), { code: 1 }));
+		})
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (error: null, stdout: string) => void;
+			callback(null, "12 /usr/bin/node unrelated=1\n");
+		});
+
+	await expect(probeHostProcessByExecutionId("exec-gone")).resolves.toEqual({
+		verdict: "absent",
+		source: "process-environment",
+	});
+});
+
+it("finds an env-only Codex process after pgrep misses its argv", async () => {
+	mockExecFile
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (
+				error: Error & { code?: number },
+			) => void;
+			callback(Object.assign(new Error("no argv match"), { code: 1 }));
+		})
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (error: null, stdout: string) => void;
+			callback(
+				null,
+				"144 /opt/codex app-server CODEX_HOME=/tmp/codex FLYWHEEL_EXEC_ID=exec-env-only\n",
+			);
+		});
+
+	await expect(probeHostProcessByExecutionId("exec-env-only")).resolves.toEqual(
+		{
+			verdict: "live",
+			source: "process-environment",
+		},
+	);
+});
+
+it("keeps a failed environment snapshot unknown after pgrep misses", async () => {
+	mockExecFile
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (
+				error: Error & { code?: number },
+			) => void;
+			callback(Object.assign(new Error("no argv match"), { code: 1 }));
+		})
+		.mockImplementationOnce((...args: unknown[]) => {
+			const callback = args.at(-1) as (
+				error: Error & { code?: string },
+				stdout: string,
+			) => void;
+			callback(
+				Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
+				"",
+			);
+		});
+
+	await expect(probeHostProcessByExecutionId("exec-unknown")).resolves.toEqual({
+		verdict: "unknown",
+		source: "process-environment",
+		reason: "process_snapshot_failed:ETIMEDOUT",
+	});
 });
 
 describe("generalized launch recovery liveness", () => {

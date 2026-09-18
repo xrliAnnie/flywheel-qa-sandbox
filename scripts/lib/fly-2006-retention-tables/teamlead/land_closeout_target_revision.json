@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "land_closeout_target_revision",
+	"classification": "protectedCurrentOrReference"
+}

@@ -3,6 +3,7 @@ import {
 	canonicalSubmissionDigest,
 } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PostShipDeps } from "../bridge/post-ship-finalization.js";
 import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
@@ -158,6 +159,10 @@ function seedLandOperationClaim(store: StateStore) {
 			},
 		],
 	} as const;
+	const attribution = store.getCloseoutAttributionSnapshot({
+		projectName: "flywheel",
+		issueId: "FLY-102",
+	});
 	const operation = store.ensureLandOperation({
 		issueId: "FLY-102",
 		projectName: "flywheel",
@@ -168,13 +173,18 @@ function seedLandOperationClaim(store: StateStore) {
 			json: canonicalJsonString(targetSnapshot),
 			digest: canonicalSubmissionDigest(targetSnapshot),
 			version: 1,
-			attributionDigest: canonicalSubmissionDigest(["exec-1"]),
+			attributionDigest: attribution.digest,
+			attributionEpoch: attribution.epoch,
 			observedAt: new Date(base - 1_000).toISOString(),
 		},
 	});
 	const claim = store.claimLandOperation({
 		operationId: operation.operation_id,
 		ownerId: "land-worker",
+		ownerInstanceId: "11111111-1111-4111-8111-111111111111",
+		ownerPid: 12345,
+		ownerProcessStart: "fixture-process-start",
+		ownerHostBootId: "fixture-host-boot",
 		now: new Date(base).toISOString(),
 		leaseExpiresAt: new Date(base + 60 * 60 * 1_000).toISOString(),
 	});
@@ -182,6 +192,7 @@ function seedLandOperationClaim(store: StateStore) {
 	return {
 		operationId: operation.operation_id,
 		ownerId: claim.ownerId,
+		ownerInstanceId: claim.ownerInstanceId,
 		generation: claim.generation,
 	};
 }
@@ -1298,6 +1309,14 @@ describe("runPostShipFinalization", () => {
 		);
 
 		expect(forceHusks).toHaveBeenCalledOnce();
+		expect(forceHusks).toHaveBeenCalledWith(
+			expect.objectContaining({
+				claim: expect.objectContaining({
+					ownerInstanceId: "11111111-1111-4111-8111-111111111111",
+				}),
+			}),
+			store,
+		);
 		expect(callOrder.indexOf("husk:force")).toBeLessThan(
 			callOrder.indexOf("tmux:lookup"),
 		);
@@ -1384,6 +1403,63 @@ describe("runPostShipFinalization", () => {
 				.listLandOperationSteps(landOperation.operationId)
 				.some((step) => step.step === "terminal_notified"),
 		).toBe(false);
+	});
+
+	it("orders land closeout as physical proof, worktree settlement, then record finalization", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const order: string[] = [];
+		const issueCloseout: NonNullable<PostShipDeps["issueCloseout"]> = vi.fn(
+			async (input) => {
+				order.push(
+					input.deferRecordFinalization ? "physical-proof" : "records-closed",
+				);
+				return { outcome: "completed" as const };
+			},
+		);
+		const removeCleanWorktree = vi.fn(async () => {
+			order.push("worktree-settled");
+			return {
+				removed: true,
+				cleanupState: "removed" as const,
+				bindingVerified: true,
+			};
+		});
+
+		await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				issueCloseout,
+				removeCleanWorktree,
+				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+			},
+		);
+
+		expect(order.slice(0, 3)).toEqual([
+			"physical-proof",
+			"worktree-settled",
+			"records-closed",
+		]);
+		expect(issueCloseout).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ deferRecordFinalization: true }),
+		);
+		expect(issueCloseout).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ deferRecordFinalization: false }),
+		);
 	});
 
 	it("does not accept legacy registration absence without filesystem absence proof", async () => {

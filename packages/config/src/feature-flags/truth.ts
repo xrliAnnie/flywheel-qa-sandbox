@@ -250,8 +250,16 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2519 per-invocation development entry selection: explicit source execution instead of deployed dist; production launch requires deployed artifact verification",
 	FLYWHEEL_LEAD_CAPABILITY_MANIFEST:
 		"FLY-2519 plumbing: nonsecret capability manifest file coordinate for the current Lead runtime, not an on/off gate",
+	FLYWHEEL_LEAD_CAPABILITY_ACTIVATION:
+		"FLY-2519 per-invocation capability activation identity, not a persistent feature toggle",
 	FLYWHEEL_LEAD_CAPABILITY_SOCKET:
 		"FLY-2519 plumbing: capability broker Unix socket coordinate for the current Lead runtime, not an on/off gate",
+	FLYWHEEL_RECLOSE_PEER_SOCKET:
+		"FLY-2662 plumbing: land reclose Unix socket coordinate, not an on/off gate",
+	FLYWHEEL_RECLOSE_PEER_NATIVE_FORCE_FAIL:
+		"FLY-2662 test-only native-adapter fault seam, not a runtime feature toggle",
+	FLYWHEEL_RECLOSE_PEER_NATIVE_OUT_DIR:
+		"FLY-2662 build and test output path for the native peer adapter, not an on/off gate",
 	FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS:
 		"credential selector allowlist: operator-owned comma-separated beta Actions token variable names, not a feature toggle",
 	FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS:

@@ -540,7 +540,11 @@ import {
 } from "./land-executor.js";
 import { prepareLandFinalization } from "./land-finalization-context.js";
 import { GitLandHeadRefreshProver } from "./land-head-refresh-proof.js";
-import { prepareLandIntent } from "./land-intent-targets.js";
+import {
+	type PrepareLandIntentDeps,
+	prepareLandIntent,
+	prepareLandRecloseTargets,
+} from "./land-intent-targets.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
 import {
 	buildAgedDeferredLinearDoneAlert,
@@ -550,6 +554,10 @@ import {
 	defaultLandOwnerIdentity,
 	LandOwnerLivenessMonitor,
 } from "./land-owner-liveness.js";
+import {
+	type LandReclosePeerServer,
+	startLandReclosePeerServer,
+} from "./land-reclose-peer.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
 	createClaimsClaimer,
@@ -693,6 +701,7 @@ import {
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
+import { loadReclosePeerNative } from "./reclose-peer-native.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { appendBugVersionFooter } from "./release-readiness/bug-footer.js";
 import { ReleaseReadinessRider } from "./release-readiness/ingest-rider.js";
@@ -947,6 +956,7 @@ import {
 	handlePostAction,
 	type XhsReviewDeps,
 } from "./xhs-review-routes.js";
+import { createXhsWriteContext } from "./xhs-write-context.js";
 import { createXhsBridgeWriteService } from "./xhs-write-service.js";
 import { scanZombies } from "./zombie-scan.js";
 
@@ -7207,20 +7217,20 @@ export async function startBridge(
 	const lifecycleWorktreeManager = new WorktreeManager({
 		withRepoLock: repoMutationLock.withRepoLock,
 	});
+	const landTargetPreparationDeps = {
+		resolveProjectRoot: resolveProjectRootByName,
+		getRegisteredWorktree: (mainRepoPath, worktreePath) =>
+			lifecycleWorktreeManager.getRegisteredWorktree(
+				mainRepoPath,
+				worktreePath,
+			),
+		readWorktreeGeneration: (worktreePath) =>
+			lifecycleWorktreeManager.readWorktreeGeneration(worktreePath),
+		withRepoLock: repoMutationLock.withRepoLock,
+	} satisfies PrepareLandIntentDeps;
 	const prepareLandIntentFn = (
 		input: Parameters<typeof prepareLandIntent>[1],
-	) =>
-		prepareLandIntent(store, input, {
-			resolveProjectRoot: resolveProjectRootByName,
-			getRegisteredWorktree: (mainRepoPath, worktreePath) =>
-				lifecycleWorktreeManager.getRegisteredWorktree(
-					mainRepoPath,
-					worktreePath,
-				),
-			readWorktreeGeneration: (worktreePath) =>
-				lifecycleWorktreeManager.readWorktreeGeneration(worktreePath),
-			withRepoLock: repoMutationLock.withRepoLock,
-		});
+	) => prepareLandIntent(store, input, landTargetPreparationDeps);
 	const runProjectSweep = (projectName: string): void => {
 		const project = projects.find((p) => p.projectName === projectName);
 		if (!project) return;
@@ -7260,8 +7270,10 @@ export async function startBridge(
 			landOperation?: {
 				operationId: string;
 				ownerId: string;
+				ownerInstanceId?: string;
 				generation: number;
 			};
+			deferRecordFinalization?: boolean;
 			budget?: { tryConsume: () => boolean; shouldStop?: () => boolean };
 			freshAuthority?: () => Promise<"authorized" | "reopened" | "unknown">;
 		},
@@ -7281,6 +7293,7 @@ export async function startBridge(
 				authority: input.authority,
 				runIds: input.runIds,
 				landOperation: input.landOperation,
+				deferRecordFinalization: input.deferRecordFinalization,
 			},
 			closeoutOpts,
 		);
@@ -7374,8 +7387,10 @@ export async function startBridge(
 					projectName: input.projectName,
 					disposition: "shipped",
 					authority: "ship_complete",
-					runIds: input.runId ? [input.runId] : undefined,
+					runIds:
+						input.landOperation && input.runId ? [input.runId] : undefined,
 					landOperation: input.landOperation,
+					deferRecordFinalization: input.deferRecordFinalization,
 				},
 				// R4#3: the ship DAG already holds the canonical issue mutex.
 				input.alreadyLocked ? { alreadyLocked: true } : undefined,
@@ -8744,6 +8759,13 @@ export async function startBridge(
 		env: process.env,
 		shuttingDown: () => shutdownStateHolder.shuttingDown,
 	});
+	const reclosePeerNative = await loadReclosePeerNative();
+	let landReclosePeerServer: LandReclosePeerServer | undefined;
+	if (!reclosePeerNative.available) {
+		console.warn(
+			`[land-reclose-peer] peer_adapter_unavailable: ${reclosePeerNative.detail}`,
+		);
+	}
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -9002,10 +9024,17 @@ export async function startBridge(
 							expectedResumeGeneration?: number;
 							expectedApprovedHead?: string;
 							requestId?: string;
+							authorityCheck?: () => void | Promise<void>;
 						}) =>
 							resumeHeldLandOperation(input, {
 								store,
 								mergeDriver: landMergeDriver,
+								prepareRecloseTargets: (prepareInput) =>
+									prepareLandRecloseTargets(
+										store,
+										prepareInput,
+										landTargetPreparationDeps,
+									),
 							}),
 						kick: (operationId: string) => {
 							void landExecutor(operationId).catch((error) =>
@@ -9016,7 +9045,54 @@ export async function startBridge(
 						},
 					},
 					apiTokenConfigured: Boolean(config.apiToken),
+					authorizeRecloseHttp: (header: unknown) => {
+						const context = createXhsWriteContext(header, process.env);
+						if (context.scope.activationId.startsWith("claude-lease:")) {
+							throw new Error("claude_reclose_peer_transport_required");
+						}
+						context.assertCurrent();
+						const actorDigest = createHash("sha256")
+							.update(
+								JSON.stringify([
+									context.scope.projectId,
+									context.scope.leadId,
+									context.scope.activationId,
+								]),
+							)
+							.digest("hex");
+						return Object.freeze({
+							actor: `authenticated-reclose-carrier:${actorDigest}`,
+							projectName: context.scope.projectId,
+							leadId: context.scope.leadId,
+							assertCurrent: () => context.assertCurrent(),
+						});
+					},
 				};
+				if (reclosePeerNative.available) {
+					try {
+						landReclosePeerServer = startLandReclosePeerServer({
+							adapter: reclosePeerNative.adapter,
+							socketPath:
+								process.env.FLYWHEEL_RECLOSE_PEER_SOCKET?.trim() ||
+								join(
+									process.env.FLYWHEEL_STATE_DIR?.trim() ||
+										join(homedir(), ".flywheel"),
+									"reclose-peer",
+									"bridge.sock",
+								),
+							store,
+							resume: routeDeps.land.resume,
+							kick: routeDeps.land.kick,
+						});
+						console.log(
+							`[land-reclose-peer] listening at ${landReclosePeerServer.socketPath}`,
+						);
+					} catch (error) {
+						console.warn(
+							`[land-reclose-peer] peer_adapter_unavailable: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
 				return {
 					parkRouter: createLifecycleRouter(routeDeps),
 					applyRouter: createLifecycleApplyRouter(routeDeps),
@@ -14784,6 +14860,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		landReclosePeerServer?.close();
 		await xhsWriteService.close();
 		await leadGithubProvider?.close();
 		await customerReleaseHost.stop();

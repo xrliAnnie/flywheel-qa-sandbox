@@ -1,0 +1,28 @@
+{
+  "verifyReport": {
+    "ok": true,
+    "url": "https://fw-reports-42fba7.vercel.app/r/0901dfed11a9a83166b28ebdc126369b/",
+    "status": 200,
+    "checks": {
+      "http": "pass",
+      "noncePlaceholder": "pass",
+      "scriptCsp": "pass",
+      "scriptNonce": "pass",
+      "expect": "pass"
+    },
+    "warnings": [],
+    "info": {
+      "hasInlineSvg": false,
+      "imgCount": 0
+    },
+    "screenshot": null
+  },
+  "additionalFetch": {
+    "status": 200,
+    "exactSourceExceptMintedNonceAndInjectedCspAndNoindex": true,
+    "localSha256": "a95e2f39db311ee105060c387ee40bdb265deca211faeb65e32ad18eb994f3b5",
+    "hostedSha256": "fd89b6705ccdbbcd72a99592489c1cf664abdbe4a51d5d6f082f807e95516be9",
+    "noExternalAssets": true
+  },
+  "boundary": "HTTP/source/CSP plus prior DOM/VM; no browser visual or hosted script execution QA"
+}

@@ -268,6 +268,11 @@
 			"disposition": "observed_async_lifecycle"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/land-reclose-peer.ts",
+			"sync_child": 2,
+			"disposition": "bounded_identity_probe"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/lead-alert-helpers.ts",
 			"raw_spawn": 1,
 			"disposition": "observed_async_lifecycle"

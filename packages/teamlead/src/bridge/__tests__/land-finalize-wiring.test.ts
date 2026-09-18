@@ -20,6 +20,7 @@ function operation(
 		approved_head: HEAD,
 		state: "running",
 		owner_id: "land-owner",
+		owner_instance_id: "11111111-1111-4111-8111-111111111111",
 		lease_expires_at: "2099-09-16T05:10:00.000Z",
 		generation: 1,
 		ship_attempt: 1,
@@ -40,6 +41,16 @@ function operation(
 		linear_done_retry_count: 0,
 		linear_done_next_attempt_at: null,
 		linear_done_last_attempt_at: null,
+		closeout_targets_json: null,
+		closeout_targets_digest: null,
+		closeout_targets_version: null,
+		closeout_targets_revision: 0,
+		closeout_targets_source: null,
+		closeout_attribution_digest: null,
+		closeout_targets_observed_at: null,
+		closeout_reservation_epoch: null,
+		closeout_inventory_digest: null,
+		closeout_reserved_at: null,
 		last_error: null,
 		created_at: "2026-09-16T04:50:00.000Z",
 		updated_at: "2026-09-16T05:00:00.000Z",
@@ -71,6 +82,15 @@ function storeFixture(input: {
 }
 
 describe("land finalization plugin wiring", () => {
+	it("refuses an operation claim that omits the owner instance fence", () => {
+		expect(
+			prepareLandFinalization(
+				storeFixture({ ownerExecutionId: "implement-deleted" }),
+				operation({ owner_instance_id: null }),
+			),
+		).toEqual({ ok: false, reason: "land_claim_unavailable" });
+	});
+
 	it("passes only a trusted operation-scoped merged-worktree proof into cleanup", () => {
 		const store = storeFixture({ ownerExecutionId: "implement-deleted" });
 		store.listLandOperationSteps = (() => [
@@ -141,6 +161,7 @@ describe("land finalization plugin wiring", () => {
 			operationContext: {
 				operationId: "land:operation-1",
 				ownerId: "land-owner",
+				ownerInstanceId: "11111111-1111-4111-8111-111111111111",
 				generation: 1,
 				sourceExecutionId: "implement-deleted",
 			},
@@ -152,9 +173,11 @@ describe("land finalization plugin wiring", () => {
 	it("keeps a null source identity instead of borrowing a surviving sibling", () => {
 		const sibling = {
 			execution_id: "qa-sibling",
-			issue_id: "different-issue",
+			issue_id: "issue-1",
 			project_name: "flywheel",
 			status: "completed",
+			pr_number: 1216,
+			pr_head_sha: HEAD,
 		} as Session;
 		const prepared = prepareLandFinalization(
 			storeFixture({ sessions: [sibling] }),

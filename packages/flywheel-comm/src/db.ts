@@ -679,9 +679,10 @@ export type FinalizeSessionCommunicationsResult =
 	| { finalized: true; result: FinalizeSessionResult };
 
 export interface SessionCloseoutIdentity {
-	version: 1;
+	version: 2;
 	executionId: string;
 	revision: string;
+	contentDigest: string;
 	session: {
 		tmuxWindow: string;
 		projectName: string;
@@ -1587,6 +1588,7 @@ export class CommDB {
 			SELECT execution_id, project_name, issue_id, lead_id
 			  FROM sessions
 		`);
+		this.installSessionIdentityEpoch();
 
 		// FLY-1375: founder feedback is an immutable workflow source event just
 		// like approval. SQLite cannot widen the CHECK constraint in place.
@@ -1707,6 +1709,104 @@ export class CommDB {
 				PRIMARY KEY (execution_id, epoch)
 			)
 		`);
+	}
+
+	private installSessionIdentityEpoch(): void {
+		this.db
+			.transaction(() => {
+				this.db.exec(`
+					CREATE TABLE IF NOT EXISTS session_identity_epoch (
+						execution_id TEXT PRIMARY KEY,
+						epoch INTEGER NOT NULL CHECK (epoch >= 1)
+					);
+					INSERT OR IGNORE INTO session_identity_epoch (execution_id, epoch)
+					SELECT execution_id, 1 FROM sessions
+					UNION
+					SELECT execution_id, 1 FROM runner_declared_states;
+
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_insert;
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_delete;
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_update_same;
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_update_move;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_insert;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_delete;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_update_same;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_update_move;
+
+					CREATE TRIGGER session_identity_epoch_sessions_insert
+					AFTER INSERT ON sessions BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_sessions_delete
+					AFTER DELETE ON sessions BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_sessions_update_same
+					AFTER UPDATE ON sessions
+					WHEN OLD.execution_id IS NEW.execution_id AND (
+						OLD.tmux_window IS NOT NEW.tmux_window OR
+						OLD.project_name IS NOT NEW.project_name OR
+						OLD.issue_id IS NOT NEW.issue_id OR
+						OLD.status IS NOT NEW.status OR
+						OLD.ended_at IS NOT NEW.ended_at
+					) BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_sessions_update_move
+					AFTER UPDATE ON sessions
+					WHEN OLD.execution_id IS NOT NEW.execution_id BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+
+					CREATE TRIGGER session_identity_epoch_declared_insert
+					AFTER INSERT ON runner_declared_states BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_declared_delete
+					AFTER DELETE ON runner_declared_states BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_declared_update_same
+					AFTER UPDATE ON runner_declared_states
+					WHEN OLD.execution_id IS NEW.execution_id AND (
+						OLD.kind IS NOT NEW.kind OR
+						OLD.reason IS NOT NEW.reason OR
+						OLD.created_at IS NOT NEW.created_at OR
+						OLD.expires_at IS NOT NEW.expires_at OR
+						OLD.updated_at IS NOT NEW.updated_at
+					) BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_declared_update_move
+					AFTER UPDATE ON runner_declared_states
+					WHEN OLD.execution_id IS NOT NEW.execution_id BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+				`);
+			})
+			.exclusive();
 	}
 
 	purgeExpired(): number {
@@ -8845,7 +8945,7 @@ export class CommDB {
 			  }
 			| undefined;
 		const identity = {
-			version: 1 as const,
+			version: 2 as const,
 			executionId,
 			session: session
 				? {
@@ -8866,9 +8966,26 @@ export class CommDB {
 					}
 				: null,
 		};
+		const epoch = (() => {
+			try {
+				return Number(
+					(
+						this.db
+							.prepare(
+								"SELECT epoch FROM session_identity_epoch WHERE execution_id = ?",
+							)
+							.get(executionId) as { epoch?: number } | undefined
+					)?.epoch ?? 0,
+				);
+			} catch (error) {
+				if (isMissingTableError(error, "session_identity_epoch")) return 0;
+				throw error;
+			}
+		})();
 		return {
 			...identity,
-			revision: canonicalSubmissionDigest(identity),
+			revision: `epoch:${epoch}`,
+			contentDigest: canonicalSubmissionDigest(identity),
 		};
 	}
 
@@ -8891,7 +9008,7 @@ export class CommDB {
 			input.reservationId.length > 300 ||
 			!input.evidenceId ||
 			input.evidenceId.length > 300 ||
-			!/^[0-9a-f]{64}$/.test(input.expectedIdentityRevision) ||
+			!/^epoch:(?:0|[1-9][0-9]*)$/.test(input.expectedIdentityRevision) ||
 			!Number.isFinite(observedMs) ||
 			!Number.isFinite(expiresMs) ||
 			!Number.isFinite(nowMs) ||
