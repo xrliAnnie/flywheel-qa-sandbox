@@ -134,6 +134,23 @@ describe("Codex quota shared credential readiness", () => {
 		}
 	});
 
+	it("preserves a restricted host receipt reason instead of flattening it", async () => {
+		const { truth } = fixture();
+		expect(
+			await checkCodexQuotaReadiness({
+				canonicalAuthPath: truth,
+				collectHomes: async () => ({
+					complete: false,
+					homes: [],
+					failureReasons: ["readiness_receipt_missing" as const],
+				}),
+			}),
+		).toEqual({
+			ready: false,
+			failures: [{ reason: "readiness_receipt_missing" }],
+		});
+	});
+
 	it("rejects an active managed copy even when its bytes match canonical", async () => {
 		const { truth, home } = fixture();
 		writeFileSync(join(home, "auth.json"), "fixture-auth", { mode: 0o600 });

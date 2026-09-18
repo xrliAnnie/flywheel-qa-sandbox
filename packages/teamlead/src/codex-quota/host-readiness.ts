@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import { installSqlTiming } from "flywheel-config";
+import type { CodexQuotaManualReason } from "./availability.js";
 import type { CodexQuotaHomeObservation } from "./readiness.js";
 
 const execFileAsync = promisify(execFile);
@@ -42,6 +43,7 @@ export interface CodexQuotaHostInventory {
 	homes: CodexQuotaHomeObservation[];
 	activeUnsharedAccountKeys: string[];
 	canonicalChainActive: boolean;
+	failureReasons?: CodexQuotaManualReason[];
 }
 export function createCodexQuotaHostCollector(
 	options: CodexQuotaHostCollectorOptions,
@@ -61,7 +63,16 @@ export function createCodexQuotaHostCollector(
 					throw new Error("authority_absolute_paths_required");
 			plainDirectory(options.homesRoot);
 			plainDirectory(options.commRoot);
-			plainFile(options.approvedManifestPath);
+			try {
+				plainFile(options.approvedManifestPath);
+			} catch (error) {
+				if (
+					(error as NodeJS.ErrnoException).code === "ENOENT" &&
+					(error as NodeJS.ErrnoException).path === options.approvedManifestPath
+				)
+					throw new Error("readiness_receipt_missing");
+				throw new Error("readiness_receipt_invalid");
+			}
 			if (lstatSync(options.approvedManifestPath).size > 1024 * 1024)
 				throw new Error("manifest_too_large");
 			const manifest = JSON.parse(
@@ -325,12 +336,27 @@ export function createCodexQuotaHostCollector(
 							home.ownership === "managed" && home.activity === "active",
 					),
 			};
-		} catch {
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "";
+			const receiptInvalid = new Set([
+				"manifest_too_large",
+				"manifest_invalid",
+				"manifest_digest_invalid",
+				"home_receipt_invalid",
+				"readiness_receipt_invalid",
+			]);
 			return {
 				complete: false,
 				homes,
 				activeUnsharedAccountKeys,
 				canonicalChainActive: true,
+				failureReasons: [
+					message === "readiness_receipt_missing"
+						? "readiness_receipt_missing"
+						: receiptInvalid.has(message)
+							? "readiness_receipt_invalid"
+							: "authority_unavailable",
+				],
 			};
 		}
 	};

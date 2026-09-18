@@ -1,9 +1,18 @@
+import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Database } from "better-sqlite3";
 import {
 	type CodexQuotaBindingV1,
 	parseCodexQuotaBindingV1,
 } from "flywheel-core";
+import type {
+	CodexQuotaAvailabilitySnapshot,
+	CodexQuotaManualReason,
+} from "../codex-quota/availability.js";
+import {
+	type CodexQuotaObservation,
+	selectCodexQuotaCandidate,
+} from "../codex-quota/candidate-selector.js";
 
 export type CodexQuotaRoot = {
 	rootKey: string;
@@ -21,6 +30,85 @@ export type CodexQuotaIncidentState =
 	| "pool_exhausted"
 	| "probe_failed"
 	| "identity_uncertain";
+export type CodexQuotaSignalSource =
+	| "runner_terminal"
+	| "review_exec"
+	| "legacy_backfill"
+	| "legacy_incident";
+const LEGACY_MIGRATION_KEY = "FLY-2676:v1";
+const LEGACY_BATCH_ID = "codex-quota-legacy:FLY-2676:v1";
+// Bound startup write-lock time even if an unexpectedly large old fleet exists.
+const LEGACY_FREEZE_LIMIT = 10_000;
+const LEGACY_MEMBER_MAX_ATTEMPTS = 3;
+function quotaSignalEventKey(
+	source: CodexQuotaSignalSource,
+	executionId: string,
+	sourceEventId: string,
+): string {
+	return `codex-quota-event:v1:${createHash("sha256")
+		.update(JSON.stringify([source, executionId, sourceEventId]))
+		.digest("hex")}`;
+}
+function quotaSignalPayloadDigest(input: {
+	source: CodexQuotaSignalSource;
+	sourceEventId: string;
+	executionId: string;
+	bindingId?: string;
+	nodeId?: string;
+	attempt?: number;
+}): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				source: input.source,
+				sourceEventId: input.sourceEventId,
+				executionId: input.executionId,
+				bindingId: input.bindingId ?? null,
+				nodeId: input.nodeId ?? null,
+				attempt: input.attempt ?? null,
+			}),
+		)
+		.digest("hex");
+}
+function canonicalCapacityObservation(
+	observations: readonly CodexQuotaObservation[],
+): string {
+	return JSON.stringify(
+		observations
+			.map((observation) => ({
+				profile: observation.profile,
+				accountKey: observation.accountKey,
+				observedAt: observation.observedAt,
+				identityVerified: observation.identityVerified,
+				authHealth: observation.authHealth,
+				scopeKnown: observation.scopeKnown,
+				windows: observation.windows
+					.map((window) => ({
+						usedPercent: window.usedPercent,
+						resetsAt: window.resetsAt,
+					}))
+					.sort(
+						(a, b) =>
+							a.usedPercent - b.usedPercent ||
+							(a.resetsAt ?? -1) - (b.resetsAt ?? -1),
+					),
+				...(observation.reached === undefined
+					? {}
+					: { reached: observation.reached }),
+				...(observation.lastRefresh === undefined
+					? {}
+					: { lastRefresh: observation.lastRefresh }),
+				...(observation.credentialFingerprint === undefined
+					? {}
+					: { credentialFingerprint: observation.credentialFingerprint }),
+			}))
+			.sort(
+				(a, b) =>
+					a.profile.localeCompare(b.profile) ||
+					a.accountKey.localeCompare(b.accountKey),
+			),
+	);
+}
 /** The StateStore connection owns every quota transaction; never a second DB. */
 export class CodexQuotaStore {
 	constructor(private readonly db: Database) {}
@@ -30,7 +118,7 @@ export class CodexQuotaStore {
    CREATE TRIGGER IF NOT EXISTS codex_quota_legacy_start_no_update BEFORE UPDATE ON codex_quota_legacy_start BEGIN SELECT RAISE(ABORT, 'quota legacy reservation is append-only'); END;
    CREATE TRIGGER IF NOT EXISTS codex_quota_legacy_start_no_delete BEFORE DELETE ON codex_quota_legacy_start BEGIN SELECT RAISE(ABORT, 'quota legacy reservation is append-only'); END;
    CREATE TABLE IF NOT EXISTS codex_quota_root(root_key TEXT PRIMARY KEY,account_key TEXT NOT NULL,profile TEXT NOT NULL,generation INTEGER NOT NULL);
-   CREATE TABLE IF NOT EXISTS codex_quota_install_material(incident_id TEXT PRIMARY KEY,profile TEXT NOT NULL,account_key TEXT NOT NULL,prior_auth_digest TEXT NOT NULL,installed_auth_digest TEXT NOT NULL,recovery_material_path TEXT NOT NULL,recorded_at TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS codex_quota_install_material(incident_id TEXT PRIMARY KEY,profile TEXT NOT NULL,account_key TEXT NOT NULL,prior_auth_digest TEXT NOT NULL,installed_auth_digest TEXT NOT NULL,recovery_material_path TEXT NOT NULL,recorded_at TEXT NOT NULL,resolution TEXT NOT NULL DEFAULT 'pending',resolved_at TEXT);
    CREATE TABLE IF NOT EXISTS codex_quota_binding(binding_id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, run_id TEXT, purpose TEXT NOT NULL, account_key TEXT NOT NULL, profile TEXT NOT NULL, generation INTEGER NOT NULL, root_key TEXT NOT NULL, created_at TEXT NOT NULL);
    CREATE INDEX IF NOT EXISTS codex_quota_binding_execution ON codex_quota_binding(execution_id);
    CREATE TABLE IF NOT EXISTS codex_quota_incident(incident_id TEXT PRIMARY KEY, root_key TEXT NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL, first_seen_at TEXT NOT NULL, next_attempt_at TEXT, selection_id TEXT, target_profile TEXT, probe_result TEXT, probe_at TEXT, prior_auth_digest TEXT, installed_auth_digest TEXT, installed_generation INTEGER, failure_code TEXT, UNIQUE(root_key,generation));
@@ -43,7 +131,45 @@ export class CodexQuotaStore {
    CREATE TABLE IF NOT EXISTS codex_quota_outbox_attempt(event_id TEXT PRIMARY KEY,attempted_at INTEGER NOT NULL);
    CREATE TABLE IF NOT EXISTS codex_quota_outbox(event_id TEXT PRIMARY KEY,incident_id TEXT,kind TEXT NOT NULL,destination TEXT NOT NULL,payload_json TEXT NOT NULL,delivery_state TEXT NOT NULL DEFAULT 'pending',receipt_id TEXT);
    CREATE TABLE IF NOT EXISTS codex_quota_execution_pause(execution_id TEXT PRIMARY KEY,incident_id TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS codex_quota_manual_disposition(incident_id TEXT PRIMARY KEY,reason TEXT NOT NULL,recorded_at TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS codex_quota_signal_event(event_key TEXT PRIMARY KEY,source TEXT NOT NULL,source_event_id TEXT NOT NULL,execution_id TEXT NOT NULL,binding_id TEXT,root_key TEXT,generation INTEGER,observed_at TEXT NOT NULL,payload_digest TEXT NOT NULL,disposition TEXT NOT NULL,reason_codes_json TEXT NOT NULL,evaluated_at TEXT,initial_disposition TEXT,initial_reason_codes_json TEXT,initial_evaluated_at TEXT);
+   CREATE INDEX IF NOT EXISTS codex_quota_signal_source ON codex_quota_signal_event(source,source_event_id,execution_id);
+   CREATE INDEX IF NOT EXISTS codex_quota_signal_root_generation ON codex_quota_signal_event(root_key,generation,disposition);
+   CREATE TABLE IF NOT EXISTS codex_quota_capacity_fact(root_key TEXT NOT NULL,generation INTEGER NOT NULL,evidence_digest TEXT NOT NULL,status TEXT NOT NULL,observation_json TEXT NOT NULL,evidence_ref TEXT NOT NULL,observed_at TEXT NOT NULL,resolved_at TEXT,resolution_evidence_ref TEXT,resolution_observation_json TEXT,PRIMARY KEY(root_key,generation,evidence_digest));
+   CREATE TABLE IF NOT EXISTS codex_quota_legacy_batch(batch_id TEXT PRIMARY KEY,migration_key TEXT NOT NULL UNIQUE,state TEXT NOT NULL,total_count INTEGER NOT NULL DEFAULT 0,manual_count INTEGER NOT NULL DEFAULT 0,guarded_count INTEGER NOT NULL DEFAULT 0,skipped_count INTEGER NOT NULL DEFAULT 0,failed_count INTEGER NOT NULL DEFAULT 0,sealed_at TEXT);
+   CREATE TABLE IF NOT EXISTS codex_quota_legacy_member(batch_id TEXT NOT NULL,source TEXT NOT NULL,source_ref TEXT NOT NULL,run_id TEXT,node_id TEXT,attempt INTEGER,execution_id TEXT,incident_id TEXT,result TEXT NOT NULL DEFAULT 'pending',reason TEXT,event_key TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(batch_id,source,source_ref));
+   CREATE INDEX IF NOT EXISTS codex_quota_legacy_member_result ON codex_quota_legacy_member(batch_id,result,source,source_ref);
+   CREATE INDEX IF NOT EXISTS codex_quota_legacy_workflow_held ON workflow_run(status,current_node_id,run_id);
   `);
+		const installMaterialColumns = new Set(
+			(
+				this.db
+					.prepare("PRAGMA table_info(codex_quota_install_material)")
+					.all() as {
+					name: string;
+				}[]
+			).map((column) => column.name),
+		);
+		if (!installMaterialColumns.has("resolution"))
+			this.db.exec(
+				"ALTER TABLE codex_quota_install_material ADD COLUMN resolution TEXT NOT NULL DEFAULT 'pending'",
+			);
+		if (!installMaterialColumns.has("resolved_at"))
+			this.db.exec(
+				"ALTER TABLE codex_quota_install_material ADD COLUMN resolved_at TEXT",
+			);
+		// Upgrade the only durable legacy rollback evidence before later retry
+		// state changes can overwrite its incident failure_code.
+		this.db.exec(`
+			UPDATE codex_quota_install_material
+			SET resolution='rolled_back',resolved_at=COALESCE(resolved_at,recorded_at)
+			WHERE resolution='pending'
+			  AND EXISTS (
+				SELECT 1 FROM codex_quota_incident i
+				WHERE i.incident_id=codex_quota_install_material.incident_id
+				  AND i.failure_code='installation_rolled_back'
+			  )
+		`);
 	}
 	reserveLegacyStart(input: {
 		startKey: string;
@@ -264,7 +390,7 @@ export class CodexQuotaStore {
 			});
 			this.db
 				.prepare(
-					"INSERT INTO codex_quota_install_material VALUES(?,?,?,?,?,?,?) ON CONFLICT(incident_id) DO UPDATE SET profile=excluded.profile,account_key=excluded.account_key,prior_auth_digest=excluded.prior_auth_digest,installed_auth_digest=excluded.installed_auth_digest,recovery_material_path=excluded.recovery_material_path,recorded_at=excluded.recorded_at",
+					"INSERT INTO codex_quota_install_material(incident_id,profile,account_key,prior_auth_digest,installed_auth_digest,recovery_material_path,recorded_at,resolution,resolved_at) VALUES(?,?,?,?,?,?,?,'pending',NULL) ON CONFLICT(incident_id) DO UPDATE SET profile=excluded.profile,account_key=excluded.account_key,prior_auth_digest=excluded.prior_auth_digest,installed_auth_digest=excluded.installed_auth_digest,recovery_material_path=excluded.recovery_material_path,recorded_at=excluded.recorded_at,resolution='pending',resolved_at=NULL",
 				)
 				.run(
 					input.incidentId,
@@ -296,6 +422,8 @@ export class CodexQuotaStore {
 				installedAuthDigest: string;
 				recoveryMaterialPath: string;
 				recordedAt: string;
+				resolution: "pending" | "installed" | "rolled_back";
+				resolvedAt: string | null;
 		  }
 		| undefined {
 		const row = this.db
@@ -309,6 +437,8 @@ export class CodexQuotaStore {
 					installedAuthDigest: row.installed_auth_digest!,
 					recoveryMaterialPath: row.recovery_material_path!,
 					recordedAt: row.recorded_at!,
+					resolution: row.resolution as "pending" | "installed" | "rolled_back",
+					resolvedAt: row.resolved_at ?? null,
 				}
 			: undefined;
 	}
@@ -342,6 +472,7 @@ export class CodexQuotaStore {
 				material.installedAuthDigest !== input.authDigest
 			)
 				throw new Error("quota_installation_not_recorded");
+			const committedAt = input.now ?? new Date().toISOString();
 			this.db
 				.prepare(
 					"UPDATE codex_quota_root SET account_key=?,profile=?,generation=? WHERE root_key=?",
@@ -358,11 +489,16 @@ export class CodexQuotaStore {
 				)
 				.run(
 					input.profile,
-					input.now ?? new Date().toISOString(),
+					committedAt,
 					input.authDigest,
 					root.generation + 1,
 					input.incidentId,
 				);
+			this.db
+				.prepare(
+					"UPDATE codex_quota_install_material SET resolution='installed',resolved_at=? WHERE incident_id=? AND resolution='pending'",
+				)
+				.run(committedAt, input.incidentId);
 			this.enqueueOutbox({
 				incidentId: input.incidentId,
 				kind: "switch_notification",
@@ -395,11 +531,19 @@ export class CodexQuotaStore {
 			this.getIncident(incidentId)?.probe_result !== "ok"
 		)
 			throw new Error("quota_probe_not_successful");
-		this.db
-			.prepare(
-				"UPDATE codex_quota_incident SET state=?,failure_code=?,next_attempt_at=? WHERE incident_id=?",
-			)
-			.run(state, failureCode ?? null, nextAttemptAt ?? null, incidentId);
+		this.db.transaction(() => {
+			if (failureCode === "installation_rolled_back")
+				this.db
+					.prepare(
+						"UPDATE codex_quota_install_material SET resolution='rolled_back',resolved_at=? WHERE incident_id=? AND resolution='pending'",
+					)
+					.run(new Date().toISOString(), incidentId);
+			this.db
+				.prepare(
+					"UPDATE codex_quota_incident SET state=?,failure_code=?,next_attempt_at=? WHERE incident_id=?",
+				)
+				.run(state, failureCode ?? null, nextAttemptAt ?? null, incidentId);
+		})();
 	}
 	updateTarget(
 		incidentId: string,
@@ -446,17 +590,27 @@ export class CodexQuotaStore {
 				targetId,
 			);
 	}
-	enqueueOutbox(input: {
-		incidentId: string;
-		kind:
-			| "founder_alert"
-			| "lead_summary"
-			| "lead_diagnostic"
-			| "switch_notification";
-		eventId?: string;
-		destination: string;
-		payload: Record<string, unknown>;
-	}): void {
+	enqueueOutbox(
+		input:
+			| {
+					incidentId: string | null;
+					kind: "automation_disabled";
+					eventId: string;
+					destination: string;
+					payload: Record<string, unknown>;
+			  }
+			| {
+					incidentId: string;
+					kind:
+						| "founder_alert"
+						| "lead_summary"
+						| "lead_diagnostic"
+						| "switch_notification";
+					eventId?: string;
+					destination: string;
+					payload: Record<string, unknown>;
+			  },
+	): void {
 		this.db
 			.prepare(
 				"INSERT OR IGNORE INTO codex_quota_outbox(event_id,incident_id,kind,destination,payload_json) VALUES(?,?,?,?,?)",
@@ -613,42 +767,385 @@ export class CodexQuotaStore {
 			credentialRootKey: r.root_key,
 		});
 	}
-	/** Only an exact failed current activation plus its retry hold is eligible. */
+	/**
+	 * Freeze the pre-FLY-2676 population once, then consume at most 1000 members
+	 * per maintenance pass. Historical rows deliberately share one summary N11.
+	 */
 	backfillHistoricalQuotaFailures(limit = 1000): number {
+		const passLimit = Math.min(1000, Math.max(1, Math.floor(limit)));
 		return this.db.transaction(() => {
-			const rows = this.db
-				.prepare(`
+			let batch = this.db
+				.prepare("SELECT * FROM codex_quota_legacy_batch WHERE migration_key=?")
+				.get(LEGACY_MIGRATION_KEY) as Record<string, unknown> | undefined;
+			if (!batch) {
+				const historical = this.db
+					.prepare(`
+                    SELECT r.run_id,n.node_id,n.attempt,n.execution_id,
+                      'legacy:' || r.run_id || ':' || n.node_id || ':' || n.attempt || ':' || n.execution_id AS source_ref
+                    FROM workflow_run r
+                    JOIN workflow_run_node n ON n.run_id=r.run_id AND n.node_id=r.current_node_id
+                    JOIN sessions s ON s.execution_id=n.execution_id
+                    WHERE r.status='held' AND s.status IN ('failed','terminated','stopped')
+                    AND s.last_error='goal ended non-complete: usageLimited'
+                    AND n.attempt=(SELECT MAX(latest.attempt) FROM workflow_run_node latest WHERE latest.run_id=n.run_id AND latest.node_id=n.node_id)
+                    AND NOT EXISTS (SELECT 1 FROM codex_quota_target t WHERE t.old_execution_id=n.execution_id)
+                    AND NOT EXISTS (SELECT 1 FROM codex_quota_outbox o WHERE o.event_id='codex:unbound:' || n.execution_id || ':lead_diagnostic')
+                    AND NOT EXISTS (SELECT 1 FROM codex_quota_signal_event q WHERE q.source='legacy_backfill' AND q.source_event_id='legacy:' || r.run_id || ':' || n.node_id || ':' || n.attempt || ':' || n.execution_id AND q.execution_id=n.execution_id)
+                    AND EXISTS (SELECT 1 FROM workflow_run_event e WHERE e.run_id=r.run_id AND e.execution_id=n.execution_id AND e.node_id=n.node_id AND e.kind='retry_limit_escalated'
+                      AND NOT EXISTS (SELECT 1 FROM workflow_run_event later WHERE later.run_id=r.run_id AND later.seq>e.seq AND later.kind IN ('run_held_by_operator','run_terminated','run_terminated_by_operator','run_terminated_by_supersession','run_completed','run_cancelled','run_shipped','land_held','unlaunched_admission_rolled_back','unlaunched_admission_held','rework_activation_stalled_held','rework_pane_loss_handoff','rework_retry_exhausted','completion_receipt_missing','retry_limit_escalated','environment_failure_escalated','loop_limit_escalated','rework_suppressed_idle_spin','workflow_gate_origin_preflight_terminal')))
+                    ORDER BY r.run_id,n.node_id,n.attempt,n.execution_id LIMIT ?
+                `)
+					.all(LEGACY_FREEZE_LIMIT + 1) as {
+					run_id: string;
+					node_id: string;
+					attempt: number;
+					execution_id: string;
+					source_ref: string;
+				}[];
+				const remainingCapacity = Math.max(
+					0,
+					LEGACY_FREEZE_LIMIT -
+						Math.min(historical.length, LEGACY_FREEZE_LIMIT),
+				);
+				const incidents = this.db
+					.prepare(`
+                    SELECT incident_id,root_key,generation
+                    FROM codex_quota_incident
+                    WHERE failure_code='readiness_failed'
+                      AND state IN ('prepared','retry_wait','probe_failed','identity_uncertain','pool_exhausted')
+                      AND NOT EXISTS (SELECT 1 FROM codex_quota_manual_disposition m WHERE m.incident_id=codex_quota_incident.incident_id)
+                    ORDER BY first_seen_at,incident_id LIMIT ?
+                `)
+					.all(remainingCapacity + 1) as {
+					incident_id: string;
+					root_key: string;
+					generation: number;
+				}[];
+				const overflow =
+					historical.length > LEGACY_FREEZE_LIMIT ||
+					incidents.length > remainingCapacity;
+				const frozenHistorical = historical.slice(0, LEGACY_FREEZE_LIMIT);
+				const frozenIncidents = incidents.slice(0, remainingCapacity);
+				this.db
+					.prepare(
+						"INSERT INTO codex_quota_legacy_batch(batch_id,migration_key,state,total_count) VALUES(?,?,'collecting',0)",
+					)
+					.run(LEGACY_BATCH_ID, LEGACY_MIGRATION_KEY);
+				const insert = this.db.prepare(
+					"INSERT INTO codex_quota_legacy_member(batch_id,source,source_ref,run_id,node_id,attempt,execution_id,incident_id,result,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
+				);
+				for (const row of frozenHistorical)
+					insert.run(
+						LEGACY_BATCH_ID,
+						"legacy_backfill",
+						row.source_ref,
+						row.run_id,
+						row.node_id,
+						row.attempt,
+						row.execution_id,
+						null,
+						"pending",
+						null,
+					);
+				for (const row of frozenIncidents)
+					insert.run(
+						LEGACY_BATCH_ID,
+						"legacy_incident",
+						row.incident_id,
+						null,
+						null,
+						null,
+						`legacy-incident:${row.incident_id}`,
+						row.incident_id,
+						"pending",
+						null,
+					);
+				if (overflow)
+					insert.run(
+						LEGACY_BATCH_ID,
+						"freeze_guard",
+						`limit:${LEGACY_FREEZE_LIMIT}`,
+						null,
+						null,
+						null,
+						null,
+						null,
+						"skipped",
+						"legacy_freeze_limit_exceeded",
+					);
+				this.db
+					.prepare(
+						"UPDATE codex_quota_legacy_batch SET total_count=(SELECT COUNT(*) FROM codex_quota_legacy_member WHERE batch_id=?) WHERE batch_id=?",
+					)
+					.run(LEGACY_BATCH_ID, LEGACY_BATCH_ID);
+				batch = this.db
+					.prepare("SELECT * FROM codex_quota_legacy_batch WHERE batch_id=?")
+					.get(LEGACY_BATCH_ID) as Record<string, unknown>;
+			}
+			if (batch.state === "sealed") return 0;
+			const members = this.db
+				.prepare(
+					"SELECT * FROM codex_quota_legacy_member WHERE batch_id=? AND result='pending' ORDER BY source,source_ref LIMIT ?",
+				)
+				.all(LEGACY_BATCH_ID, passLimit) as Record<string, unknown>[];
+			for (const member of members) {
+				try {
+					if (member.source === "legacy_backfill")
+						this.processLegacyBackfillMember(member);
+					else if (member.source === "legacy_incident")
+						this.processLegacyIncidentMember(member);
+					else throw new Error("legacy_member_source_invalid");
+				} catch {
+					const attemptCount = Number(member.attempt_count) + 1;
+					this.db
+						.prepare(
+							"UPDATE codex_quota_legacy_member SET attempt_count=?,result=?,reason=? WHERE batch_id=? AND source=? AND source_ref=?",
+						)
+						.run(
+							attemptCount,
+							attemptCount >= LEGACY_MEMBER_MAX_ATTEMPTS
+								? "skipped"
+								: "pending",
+							attemptCount >= LEGACY_MEMBER_MAX_ATTEMPTS
+								? "legacy_member_skipped_after_3_failures"
+								: "legacy_member_processing_failed",
+							LEGACY_BATCH_ID,
+							member.source,
+							member.source_ref,
+						);
+				}
+			}
+			this.sealLegacyBatchIfComplete();
+			return members.length;
+		})();
+	}
+
+	private processLegacyBackfillMember(member: Record<string, unknown>): void {
+		const row = this.db
+			.prepare(`
                 SELECT r.run_id,n.node_id,n.attempt,n.execution_id FROM workflow_run r
                 JOIN workflow_run_node n ON n.run_id=r.run_id AND n.node_id=r.current_node_id
                 JOIN sessions s ON s.execution_id=n.execution_id
-                WHERE r.status='held' AND s.status IN ('failed','terminated','stopped')
-                AND s.last_error='goal ended non-complete: usageLimited'
-                AND n.attempt=(SELECT MAX(latest.attempt) FROM workflow_run_node latest WHERE latest.run_id=n.run_id AND latest.node_id=n.node_id)
-                AND NOT EXISTS (SELECT 1 FROM codex_quota_target t WHERE t.old_execution_id=n.execution_id)
-                AND NOT EXISTS (SELECT 1 FROM codex_quota_outbox o WHERE o.event_id='codex:unbound:' || n.execution_id || ':lead_diagnostic')
-                AND EXISTS (SELECT 1 FROM workflow_run_event e WHERE e.run_id=r.run_id AND e.execution_id=n.execution_id AND e.node_id=n.node_id AND e.kind='retry_limit_escalated'
-                  AND NOT EXISTS (SELECT 1 FROM workflow_run_event later WHERE later.run_id=r.run_id AND later.seq>e.seq AND later.kind IN ('run_held_by_operator','run_terminated','run_terminated_by_operator','run_terminated_by_supersession','run_completed','run_cancelled','run_shipped','land_held','unlaunched_admission_rolled_back','unlaunched_admission_held','rework_activation_stalled_held','rework_pane_loss_handoff','rework_retry_exhausted','completion_receipt_missing','retry_limit_escalated','environment_failure_escalated','loop_limit_escalated','rework_suppressed_idle_spin','workflow_gate_origin_preflight_terminal')))
-                ORDER BY r.run_id LIMIT ?
+                WHERE r.run_id=? AND n.node_id=? AND n.attempt=? AND n.execution_id=?
+                  AND r.status='held' AND s.status IN ('failed','terminated','stopped')
+                  AND s.last_error='goal ended non-complete: usageLimited'
+                  AND n.attempt=(SELECT MAX(latest.attempt) FROM workflow_run_node latest WHERE latest.run_id=n.run_id AND latest.node_id=n.node_id)
+                  AND NOT EXISTS (SELECT 1 FROM codex_quota_target t WHERE t.old_execution_id=n.execution_id)
+                  AND EXISTS (SELECT 1 FROM workflow_run_event e WHERE e.run_id=r.run_id AND e.execution_id=n.execution_id AND e.node_id=n.node_id AND e.kind='retry_limit_escalated'
+                    AND NOT EXISTS (SELECT 1 FROM workflow_run_event later WHERE later.run_id=r.run_id AND later.seq>e.seq AND later.kind IN ('run_held_by_operator','run_terminated','run_terminated_by_operator','run_terminated_by_supersession','run_completed','run_cancelled','run_shipped','land_held','unlaunched_admission_rolled_back','unlaunched_admission_held','rework_activation_stalled_held','rework_pane_loss_handoff','rework_retry_exhausted','completion_receipt_missing','retry_limit_escalated','environment_failure_escalated','loop_limit_escalated','rework_suppressed_idle_spin','workflow_gate_origin_preflight_terminal')))
             `)
-				.all(Math.min(1000, Math.max(1, Math.floor(limit)))) as {
-				run_id: string;
-				node_id: string;
-				attempt: number;
-				execution_id: string;
-			}[];
-			for (const row of rows) {
-				const bindings = this.getRunnerBindings(row.execution_id).filter(
-					(b) => b.runId === row.run_id,
-				);
-				this.recordSignal({
-					executionId: row.execution_id,
-					bindingId: bindings.length === 1 ? bindings[0]!.bindingId : undefined,
-					nodeId: row.node_id,
-					attempt: row.attempt,
-				});
-			}
-			return rows.length;
-		})();
+			.get(
+				member.run_id,
+				member.node_id,
+				member.attempt,
+				member.execution_id,
+			) as
+			| {
+					run_id: string;
+					node_id: string;
+					attempt: number;
+					execution_id: string;
+			  }
+			| undefined;
+		if (!row) {
+			this.finishLegacyMember(
+				member,
+				"skipped",
+				"legacy_source_no_longer_held",
+			);
+			return;
+		}
+		const bindings = this.getRunnerBindings(row.execution_id).filter(
+			(binding) => binding.runId === row.run_id,
+		);
+		const binding = bindings.length === 1 ? bindings[0] : undefined;
+		this.recordSignal({
+			executionId: row.execution_id,
+			bindingId: binding?.bindingId,
+			nodeId: row.node_id,
+			attempt: row.attempt,
+			source: "legacy_backfill",
+			sourceEventId: String(member.source_ref),
+			availability: {
+				mode: "manual",
+				reasons: ["legacy_capacity_evidence_missing"],
+				revision: 0,
+				checkedAt: new Date().toISOString(),
+			},
+			suppressNotification: true,
+		});
+		const signal = this.db
+			.prepare(
+				"SELECT event_key,disposition FROM codex_quota_signal_event WHERE source='legacy_backfill' AND source_event_id=? AND execution_id=?",
+			)
+			.get(member.source_ref, row.execution_id) as {
+			event_key: string;
+			disposition: string;
+		};
+		if (signal.disposition !== "manual") {
+			this.finishLegacyMember(
+				member,
+				"skipped",
+				"legacy_source_already_automatic",
+			);
+			return;
+		}
+		const guarded =
+			binding &&
+			this.hasRootGenerationSafetyGuard(
+				binding.credentialRootKey,
+				binding.generation,
+			);
+		this.finishLegacyMember(
+			member,
+			guarded ? "guarded" : "manual",
+			guarded
+				? "current_capacity_or_install_guard"
+				: "legacy_capacity_evidence_missing",
+			signal.event_key,
+		);
+	}
+
+	private processLegacyIncidentMember(member: Record<string, unknown>): void {
+		const incidentId = String(member.incident_id);
+		const incident = this.getIncident(incidentId);
+		if (!incident) {
+			this.finishLegacyMember(member, "skipped", "legacy_incident_missing");
+			return;
+		}
+		const rootKey = String(incident.root_key);
+		const generation = Number(incident.generation);
+		if (this.hasRootGenerationSafetyGuard(rootKey, generation)) {
+			this.finishLegacyMember(
+				member,
+				"guarded",
+				"current_capacity_or_install_guard",
+			);
+			return;
+		}
+		if (!this.canRecordManualDisposition(incidentId)) {
+			this.finishLegacyMember(
+				member,
+				"guarded",
+				"ambiguous_install_or_recovery_guard",
+			);
+			return;
+		}
+		const source = "legacy_incident" as const;
+		const sourceEventId = incidentId;
+		const executionId = `legacy-incident:${incidentId}`;
+		const eventKey = quotaSignalEventKey(source, executionId, sourceEventId);
+		const now = new Date().toISOString();
+		this.db
+			.prepare(
+				"INSERT OR IGNORE INTO codex_quota_signal_event(event_key,source,source_event_id,execution_id,binding_id,root_key,generation,observed_at,payload_digest,disposition,reason_codes_json) VALUES(?,?,?,?,NULL,?,?,?,?,'pending','[]')",
+			)
+			.run(
+				eventKey,
+				source,
+				sourceEventId,
+				executionId,
+				rootKey,
+				generation,
+				now,
+				quotaSignalPayloadDigest({ source, sourceEventId, executionId }),
+			);
+		this.finishSignalManual({
+			eventKey,
+			incidentId,
+			source,
+			sourceEventId,
+			executionId,
+			binding: undefined,
+			reasons: ["legacy_capacity_evidence_missing"],
+			now,
+			suppressNotification: true,
+		});
+		this.finishLegacyMember(
+			member,
+			"manual",
+			"legacy_capacity_evidence_missing",
+			eventKey,
+		);
+	}
+
+	private finishLegacyMember(
+		member: Record<string, unknown>,
+		result: "manual" | "guarded" | "skipped",
+		reason: string,
+		eventKey?: string,
+	): void {
+		this.db
+			.prepare(
+				"UPDATE codex_quota_legacy_member SET result=?,reason=?,event_key=?,attempt_count=attempt_count+1 WHERE batch_id=? AND source=? AND source_ref=? AND result='pending'",
+			)
+			.run(
+				result,
+				reason,
+				eventKey ?? null,
+				LEGACY_BATCH_ID,
+				member.source,
+				member.source_ref,
+			);
+	}
+
+	private sealLegacyBatchIfComplete(): void {
+		const pending = this.db
+			.prepare(
+				"SELECT 1 FROM codex_quota_legacy_member WHERE batch_id=? AND result='pending' LIMIT 1",
+			)
+			.get(LEGACY_BATCH_ID);
+		if (pending) return;
+		const totals = this.db
+			.prepare(`
+                SELECT COUNT(*) AS total_count,
+                  SUM(CASE WHEN result='manual' THEN 1 ELSE 0 END) AS manual_count,
+                  SUM(CASE WHEN result='guarded' THEN 1 ELSE 0 END) AS guarded_count,
+                  SUM(CASE WHEN result='skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                  SUM(CASE WHEN reason IN ('legacy_freeze_limit_exceeded','legacy_member_skipped_after_3_failures') THEN 1 ELSE 0 END) AS failed_count
+                FROM codex_quota_legacy_member WHERE batch_id=?
+            `)
+			.get(LEGACY_BATCH_ID) as Record<string, number>;
+		const sealedAt = new Date().toISOString();
+		this.db
+			.prepare(
+				"UPDATE codex_quota_legacy_batch SET state='sealed',total_count=?,manual_count=?,guarded_count=?,skipped_count=?,failed_count=?,sealed_at=? WHERE batch_id=? AND state='collecting'",
+			)
+			.run(
+				Number(totals.total_count),
+				Number(totals.manual_count),
+				Number(totals.guarded_count),
+				Number(totals.skipped_count),
+				Number(totals.failed_count),
+				sealedAt,
+				LEGACY_BATCH_ID,
+			);
+		if (Number(totals.total_count) === 0) return;
+		const reasons = this.db
+			.prepare(
+				"SELECT reason,COUNT(*) AS count FROM codex_quota_legacy_member WHERE batch_id=? AND reason IS NOT NULL GROUP BY reason ORDER BY reason",
+			)
+			.all(LEGACY_BATCH_ID) as { reason: string; count: number }[];
+		this.enqueueOutbox({
+			incidentId: null,
+			kind: "automation_disabled",
+			eventId: `${LEGACY_BATCH_ID}:N11:summary`,
+			destination: "lead",
+			payload: {
+				scope: "legacy_batch",
+				batchId: LEGACY_BATCH_ID,
+				totalCount: Number(totals.total_count),
+				manualCount: Number(totals.manual_count),
+				guardedCount: Number(totals.guarded_count),
+				skippedCount: Number(totals.skipped_count),
+				failedCount: Number(totals.failed_count),
+				reasonCounts: Object.fromEntries(
+					reasons.map((row) => [row.reason, Number(row.count)]),
+				),
+				manualUntilGenerationChange: Number(totals.manual_count) > 0,
+				sealedAt,
+			},
+		});
 	}
 
 	recordSignal(input: {
@@ -657,6 +1154,10 @@ export class CodexQuotaStore {
 		nodeId?: string;
 		attempt?: number;
 		now?: string;
+		source?: CodexQuotaSignalSource;
+		sourceEventId?: string;
+		availability?: CodexQuotaAvailabilitySnapshot;
+		suppressNotification?: boolean;
 	}): string | null {
 		return this.db.transaction(() => {
 			const now = input.now ?? new Date().toISOString();
@@ -666,6 +1167,83 @@ export class CodexQuotaStore {
 			const incidentId = b
 				? `codex:${b.credentialRootKey}:${b.generation}`
 				: null;
+			if (
+				(input.source === undefined) !== (input.sourceEventId === undefined) ||
+				(input.availability !== undefined &&
+					(!input.source || !input.sourceEventId))
+			)
+				throw new Error("invalid_quota_signal_identity");
+			if (input.source && input.sourceEventId) {
+				const eventKey = quotaSignalEventKey(
+					input.source,
+					input.executionId,
+					input.sourceEventId,
+				);
+				const payloadDigest = quotaSignalPayloadDigest({
+					source: input.source,
+					sourceEventId: input.sourceEventId,
+					executionId: input.executionId,
+					bindingId: input.bindingId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+				});
+				const prior = this.db
+					.prepare(
+						"SELECT payload_digest FROM codex_quota_signal_event WHERE event_key=?",
+					)
+					.get(eventKey) as { payload_digest: string } | undefined;
+				if (prior) {
+					if (prior.payload_digest !== payloadDigest)
+						throw new Error("quota_signal_event_conflict");
+					return incidentId;
+				}
+				this.db
+					.prepare(
+						"INSERT INTO codex_quota_signal_event(event_key,source,source_event_id,execution_id,binding_id,root_key,generation,observed_at,payload_digest,disposition,reason_codes_json) VALUES(?,?,?,?,?,?,?,?,?,'pending','[]')",
+					)
+					.run(
+						eventKey,
+						input.source,
+						input.sourceEventId,
+						input.executionId,
+						b?.bindingId ?? null,
+						b?.credentialRootKey ?? null,
+						b?.generation ?? null,
+						now,
+						payloadDigest,
+					);
+				const stickyManual =
+					incidentId !== null && this.isIncidentManual(incidentId);
+				const availability = input.availability ?? {
+					mode: "automatic" as const,
+					reasons: [],
+					revision: 0,
+					checkedAt: now,
+				};
+				if (availability.mode === "manual" || stickyManual) {
+					const reasons: CodexQuotaManualReason[] =
+						availability.mode === "manual"
+							? [...availability.reasons]
+							: ["manual_handoff"];
+					this.finishSignalManual({
+						eventKey,
+						incidentId,
+						source: input.source,
+						sourceEventId: input.sourceEventId,
+						executionId: input.executionId,
+						binding: b,
+						reasons,
+						now,
+						suppressNotification: input.suppressNotification,
+					});
+					return incidentId;
+				}
+				this.db
+					.prepare(
+						"UPDATE codex_quota_signal_event SET disposition='automatic',reason_codes_json='[]',evaluated_at=?,initial_disposition='automatic',initial_reason_codes_json='[]',initial_evaluated_at=? WHERE event_key=?",
+					)
+					.run(now, now, eventKey);
+			}
 			if (b?.purpose === "runner") {
 				this.db
 					.prepare(
@@ -723,10 +1301,247 @@ export class CodexQuotaStore {
 			return incidentId;
 		})();
 	}
+	private finishSignalManual(input: {
+		eventKey: string;
+		incidentId: string | null;
+		source: CodexQuotaSignalSource;
+		sourceEventId: string;
+		executionId: string;
+		binding: CodexQuotaBindingV1 | undefined;
+		reasons: CodexQuotaManualReason[];
+		now: string;
+		suppressNotification?: boolean;
+	}): void {
+		const reasons = input.reasons.length
+			? [...new Set(input.reasons)]
+			: (["manual_handoff"] satisfies CodexQuotaManualReason[]);
+		const reasonsJson = JSON.stringify(reasons);
+		this.db
+			.prepare(
+				"UPDATE codex_quota_signal_event SET disposition='manual',reason_codes_json=?,evaluated_at=?,initial_disposition=COALESCE(initial_disposition,'manual'),initial_reason_codes_json=COALESCE(initial_reason_codes_json,?),initial_evaluated_at=COALESCE(initial_evaluated_at,?) WHERE event_key=?",
+			)
+			.run(reasonsJson, input.now, reasonsJson, input.now, input.eventKey);
+		if (
+			input.incidentId &&
+			this.canRecordManualDisposition(input.incidentId, Date.parse(input.now))
+		) {
+			this.db
+				.prepare(
+					"INSERT OR IGNORE INTO codex_quota_manual_disposition VALUES(?,?,?)",
+				)
+				.run(input.incidentId, reasons[0], input.now);
+			this.db
+				.prepare(
+					"UPDATE codex_quota_outbox SET delivery_state='superseded',payload_json=json_set(payload_json,'$.supersededBy',?) WHERE incident_id=? AND kind='founder_alert' AND delivery_state='pending' AND json_extract(payload_json,'$.reason')='quota_pause_expired'",
+				)
+				.run(
+					input.suppressNotification
+						? `${LEGACY_BATCH_ID}:N11:summary`
+						: `${input.eventKey}:N11`,
+					input.incidentId,
+				);
+		}
+		if (input.suppressNotification) return;
+		this.enqueueOutbox({
+			incidentId: input.incidentId,
+			kind: "automation_disabled",
+			eventId: `${input.eventKey}:N11`,
+			destination: "lead",
+			payload: {
+				scope: "event",
+				eventKey: input.eventKey,
+				source: input.source,
+				sourceEventId: input.sourceEventId,
+				executionId: input.executionId,
+				reasons,
+				evaluatedAt: input.now,
+				...(input.binding
+					? {
+							bindingId: input.binding.bindingId,
+							rootKey: input.binding.credentialRootKey,
+							generation: input.binding.generation,
+						}
+					: {}),
+			},
+		});
+	}
+	private canRecordManualDisposition(
+		incidentId: string,
+		now = Date.now(),
+	): boolean {
+		const incident = this.getIncident(incidentId);
+		if (
+			incident &&
+			["installing", "committed", "recovering"].includes(String(incident.state))
+		)
+			return false;
+		if (
+			incident &&
+			this.hasUncertainInstallationGuard(
+				String(incident.incident_id),
+				incident.state,
+			)
+		)
+			return false;
+		if (this.hasCurrentCapacityGuard(incidentId, now)) return false;
+		return !this.db
+			.prepare(
+				"SELECT 1 FROM codex_quota_target WHERE incident_id=? AND (terminate_key IS NOT NULL OR start_key IS NOT NULL OR state IN ('terminating','terminated','starting','queued','recovered')) LIMIT 1",
+			)
+			.get(incidentId);
+	}
+	recordPoolExhausted(input: {
+		incidentId: string;
+		observations: readonly CodexQuotaObservation[];
+		observedAt: number;
+		nextAttemptAt: number;
+	}): void {
+		this.db.transaction(() => {
+			const incident = this.getIncident(input.incidentId);
+			if (!incident) throw new Error("quota_incident_missing");
+			const observationJson = canonicalCapacityObservation(input.observations);
+			if (
+				selectCodexQuotaCandidate(JSON.parse(observationJson), {
+					now: input.observedAt,
+				}).kind !== "pool_exhausted"
+			)
+				throw new Error("quota_capacity_fact_not_exhausted");
+			const digest = createHash("sha256").update(observationJson).digest("hex");
+			this.db
+				.prepare(
+					"INSERT OR IGNORE INTO codex_quota_capacity_fact(root_key,generation,evidence_digest,status,observation_json,evidence_ref,observed_at) VALUES(?,? ,?,'exhausted',?,?,?)",
+				)
+				.run(
+					incident.root_key,
+					incident.generation,
+					digest,
+					observationJson,
+					digest,
+					new Date(input.observedAt).toISOString(),
+				);
+			this.setIncidentState(
+				input.incidentId,
+				"pool_exhausted",
+				"pool_exhausted",
+				new Date(input.nextAttemptAt).toISOString(),
+			);
+			this.enqueueOutbox({
+				incidentId: input.incidentId,
+				kind: "founder_alert",
+				destination: "founder",
+				payload: {
+					vendor: "codex",
+					reason: "pool_exhausted",
+					incidentId: input.incidentId,
+					nextAttemptAt: input.nextAttemptAt,
+				},
+			});
+		})();
+	}
+	hasCurrentCapacityGuard(incidentId: string, now = Date.now()): boolean {
+		const incident = this.getIncident(incidentId);
+		if (!incident || !Number.isFinite(now)) return false;
+		const row = this.db
+			.prepare(
+				// Deliberately latest-only: an older positive sample must not outvote
+				// the newest unresolved sample after its reset window elapsed.
+				"SELECT observation_json FROM codex_quota_capacity_fact WHERE root_key=? AND generation=? AND resolved_at IS NULL ORDER BY observed_at DESC,evidence_digest DESC LIMIT 1",
+			)
+			.get(incident.root_key, incident.generation) as
+			| { observation_json: string }
+			| undefined;
+		if (!row) return false;
+		try {
+			return (
+				selectCodexQuotaCandidate(JSON.parse(row.observation_json), { now })
+					.kind === "pool_exhausted"
+			);
+		} catch {
+			return false;
+		}
+	}
+	resolveCapacityFacts(input: {
+		incidentId: string;
+		observations: readonly CodexQuotaObservation[];
+		observedAt: number;
+	}): void {
+		const incident = this.getIncident(input.incidentId);
+		if (!incident) throw new Error("quota_incident_missing");
+		const observationJson = canonicalCapacityObservation(input.observations);
+		const digest = createHash("sha256").update(observationJson).digest("hex");
+		this.db
+			.prepare(
+				"UPDATE codex_quota_capacity_fact SET resolved_at=?,resolution_evidence_ref=?,resolution_observation_json=? WHERE root_key=? AND generation=? AND resolved_at IS NULL",
+			)
+			.run(
+				new Date(input.observedAt).toISOString(),
+				digest,
+				observationJson,
+				incident.root_key,
+				incident.generation,
+			);
+	}
+	isIncidentManual(incidentId: string): boolean {
+		return !!this.db
+			.prepare(
+				"SELECT 1 FROM codex_quota_manual_disposition WHERE incident_id=?",
+			)
+			.get(incidentId);
+	}
+	isRootGenerationManual(rootKey: string, generation: number): boolean {
+		if (!Number.isInteger(generation) || generation < 0) return false;
+		return this.isIncidentManual(`codex:${rootKey}:${generation}`);
+	}
+	isBindingManual(bindingId: string): boolean {
+		const binding = this.getBinding(bindingId);
+		if (!binding) return false;
+		return !!this.db
+			.prepare(
+				"SELECT 1 FROM codex_quota_signal_event WHERE binding_id=? AND disposition='manual' LIMIT 1",
+			)
+			.get(bindingId);
+	}
+	handoffIncidentManual(
+		incidentId: string,
+		reasons: CodexQuotaManualReason[],
+		now = new Date().toISOString(),
+	): void {
+		this.db.transaction(() => {
+			const incident = this.getIncident(incidentId);
+			if (!incident) throw new Error("quota_incident_missing");
+			for (const row of this.db
+				.prepare(
+					"SELECT * FROM codex_quota_signal_event WHERE root_key=? AND generation=?",
+				)
+				.all(incident.root_key, incident.generation) as Record<
+				string,
+				unknown
+			>[]) {
+				const binding = row.binding_id
+					? this.getBinding(String(row.binding_id))
+					: undefined;
+				this.finishSignalManual({
+					eventKey: String(row.event_key),
+					incidentId,
+					source: String(row.source) as CodexQuotaSignalSource,
+					sourceEventId: String(row.source_event_id),
+					executionId: String(row.execution_id),
+					binding,
+					reasons,
+					now,
+				});
+			}
+			this.db
+				.prepare(
+					"UPDATE codex_quota_outbox SET delivery_state='superseded',payload_json=json_set(payload_json,'$.supersededBy',?) WHERE incident_id=? AND kind='founder_alert' AND delivery_state='pending' AND json_extract(payload_json,'$.reason')='quota_pause_expired'",
+				)
+				.run(`${incidentId}:N11`, incidentId);
+		})();
+	}
 	isPaused(rootKey: string): boolean {
 		return !!this.db
 			.prepare(
-				"SELECT 1 FROM codex_quota_incident WHERE root_key=? AND generation >= COALESCE((SELECT generation FROM codex_quota_root WHERE root_key=codex_quota_incident.root_key),generation) AND state NOT IN ('committed','recovering','settled') LIMIT 1",
+				"SELECT 1 FROM codex_quota_incident i WHERE root_key=? AND generation >= COALESCE((SELECT generation FROM codex_quota_root WHERE root_key=i.root_key),generation) AND state NOT IN ('committed','recovering','settled') AND NOT EXISTS (SELECT 1 FROM codex_quota_manual_disposition m WHERE m.incident_id=i.incident_id) LIMIT 1",
 			)
 			.get(rootKey);
 	}
@@ -739,17 +1554,73 @@ export class CodexQuotaStore {
 				.get(executionId)
 		)
 			return true;
-		const roots = this.db
-			.prepare(
-				"SELECT root_key FROM codex_quota_binding WHERE execution_id=? AND purpose='runner'",
-			)
-			.all(executionId) as { root_key: string }[];
-		if (roots.some((r) => this.isPaused(r.root_key))) return true;
+		if (
+			this.db
+				.prepare(
+					"SELECT 1 FROM codex_quota_signal_event s JOIN codex_quota_root r ON r.root_key=s.root_key WHERE s.execution_id=? AND s.source='runner_terminal' AND s.binding_id IS NOT NULL AND s.disposition IN ('pending','manual') AND s.generation>=r.generation LIMIT 1",
+				)
+				.get(executionId)
+		)
+			return true;
 		return !!this.db
 			.prepare(
 				"SELECT 1 FROM codex_quota_execution_pause p JOIN codex_quota_incident i ON i.incident_id=p.incident_id WHERE p.execution_id=? AND i.generation >= COALESCE((SELECT generation FROM codex_quota_root WHERE root_key=i.root_key),i.generation) AND i.state NOT IN ('committed','recovering','settled')",
 			)
 			.get(executionId);
+	}
+	hasRootSafetyGuard(
+		rootKey: string,
+		now = Date.now(),
+		includeCapacity = true,
+	): boolean {
+		const root = this.getRoot(rootKey);
+		if (!root) return false;
+		return this.hasRootGenerationSafetyGuard(
+			rootKey,
+			root.generation,
+			now,
+			includeCapacity,
+		);
+	}
+	hasRootGenerationSafetyGuard(
+		rootKey: string,
+		generation: number,
+		now = Date.now(),
+		includeCapacity = true,
+	): boolean {
+		if (!Number.isInteger(generation) || generation < 0) return false;
+		const incidents = this.db
+			.prepare(
+				"SELECT incident_id,state FROM codex_quota_incident WHERE root_key=? AND generation=? AND state NOT IN ('committed','recovering','settled')",
+			)
+			.all(rootKey, generation) as {
+			incident_id: string;
+			state: string;
+		}[];
+		for (const incident of incidents) {
+			if (
+				this.hasUncertainInstallationGuard(
+					incident.incident_id,
+					incident.state,
+				) ||
+				(includeCapacity &&
+					this.hasCurrentCapacityGuard(incident.incident_id, now)) ||
+				this.db
+					.prepare(
+						"SELECT 1 FROM codex_quota_target WHERE incident_id=? AND (terminate_key IS NOT NULL OR start_key IS NOT NULL OR state IN ('terminating','terminated','starting','queued')) LIMIT 1",
+					)
+					.get(incident.incident_id)
+			)
+				return true;
+		}
+		return false;
+	}
+	private hasUncertainInstallationGuard(
+		incidentId: string,
+		state: unknown,
+	): boolean {
+		if (state === "installing") return true;
+		return this.getInstallationMaterial(incidentId)?.resolution === "pending";
 	}
 	enqueueAdmissionWait(input: {
 		startKey: string;

@@ -5659,9 +5659,12 @@ it.each(["bound", "new", "bound without root resolver"])(
 	},
 );
 
-it.each(["bound", "fresh"])(
-	"FLY-2465 OFF releases a %s queued launch on the next pass without changing pause facts",
-	async (kind) => {
+it.each([
+	{ kind: "bound", expectedRelease: false },
+	{ kind: "fresh", expectedRelease: true },
+] as const)(
+	"FLY-2676 OFF releases only a fresh queued launch on the next pass without changing pause facts ($kind)",
+	async ({ kind, expectedRelease }) => {
 		const store = await storeWithIntent("implement");
 		const stateRoot = mkdtempSync(join(tmpdir(), "fly2465-off-intent-"));
 		let enabled = true;
@@ -5696,8 +5699,13 @@ it.each(["bound", "fresh"])(
 			expect(fake.start).not.toHaveBeenCalled();
 			enabled = false;
 			await engine.reconcile();
-			expect(fake.start).toHaveBeenCalledTimes(1);
-			expect(store.getSession("implement-1")?.status).toBe("running");
+			expect(fake.start).toHaveBeenCalledTimes(expectedRelease ? 1 : 0);
+			if (expectedRelease) {
+				expect(store.getSession("implement-1")?.status).toBe("running");
+			} else {
+				expect(store.getSession("implement-1")).toBeUndefined();
+				expect(store.codexQuota.isExecutionPaused("implement-1")).toBe(true);
+			}
 			expect(store.getSession("dead-old")).toBeUndefined();
 			expect(store.codexQuota.listIncidents()).toEqual(incidentBefore);
 			expect(store.codexQuota.isPaused("root")).toBe(true);

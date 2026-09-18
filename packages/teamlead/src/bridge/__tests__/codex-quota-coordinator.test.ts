@@ -271,6 +271,86 @@ describe("Codex quota coordinator", () => {
 		);
 	});
 
+	it("keeps a proven rollback released after a later observation replaces the incident failure", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		let now = Date.parse("2026-09-11T18:45:00Z");
+		let enabled = true;
+		store.codexQuotaLaunchEnabled = () => enabled;
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "binding",
+			executionId: "exec",
+			runId: "run",
+			purpose: "runner",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+		});
+		store.codexQuota.recordSignal({
+			executionId: "exec",
+			bindingId: "binding",
+			source: "runner_terminal",
+			sourceEventId: "durable-rollback",
+			now: new Date(now).toISOString(),
+		});
+		store.codexQuota.recordInstalling({
+			incidentId: "codex:root:1",
+			profile: "school",
+			accountKey: "school-key",
+			priorAuthDigest: "prior",
+			installedAuthDigest: "a".repeat(64),
+			recoveryMaterialPath: "/fixture/auth",
+			now: new Date(now).toISOString(),
+		});
+		const observations = ["school", "personal", "business"].map((profile) => ({
+			profile,
+			accountKey: `${profile}-key`,
+			observedAt: now,
+			identityVerified: true,
+			authHealth: "valid" as const,
+			scopeKnown: true,
+			windows: [{ usedPercent: 100, resetsAt: now + 3_600_000 }],
+		}));
+		const options = {
+			store: store.codexQuota,
+			now: () => now,
+			autoEnabled: () => enabled,
+			readiness: async () => true,
+			observe: async () => observations,
+			rotate: vi.fn(),
+			recover: vi.fn(),
+			reconcileInstallation: vi.fn(async () => "rolled_back" as const),
+		};
+
+		await new CodexQuotaCoordinator(options).tick();
+		expect(
+			store.codexQuota.getInstallationMaterial("codex:root:1"),
+		).toMatchObject({ resolution: "rolled_back" });
+		now += 60_001;
+		await new CodexQuotaCoordinator(options).tick();
+		expect(store.codexQuota.getIncident("codex:root:1")).toMatchObject({
+			state: "retry_wait",
+			failure_code: "observation_unavailable",
+		});
+		expect(store.codexQuota.hasRootSafetyGuard("root", now, false)).toBe(false);
+
+		enabled = false;
+		store.codexQuota.handoffIncidentManual("codex:root:1", ["flag_disabled"]);
+		expect(store.isCodexQuotaLaunchPaused("fresh", "root")).toBe(false);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.filter((row) => row.kind === "automation_disabled"),
+		).toHaveLength(1);
+	});
+
 	it("emits one pool alert immediately and shares that latch with later pause aging", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
@@ -343,6 +423,82 @@ describe("Codex quota coordinator", () => {
 		await new CodexQuotaCoordinator(options).tick();
 		expect(rotate).toHaveBeenCalledOnce();
 		expect(rotate.mock.calls[0]?.[1].profile).toBe("business");
+	});
+
+	it("keeps a fresh proven pool exhaustion guarded while readiness is manual, then releases stale evidence", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		let now = Date.parse("2026-09-11T18:45:00Z");
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "binding",
+			executionId: "exec",
+			runId: "run",
+			purpose: "runner",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+		});
+		store.codexQuota.recordSignal({
+			executionId: "exec",
+			bindingId: "binding",
+			source: "runner_terminal",
+			sourceEventId: "event",
+			availability: {
+				mode: "automatic",
+				reasons: [],
+				revision: 1,
+				checkedAt: new Date(now).toISOString(),
+			},
+		});
+		let automatic = true;
+		const observations = ["school", "personal", "business"].map((profile) => ({
+			profile,
+			accountKey: `${profile}-key`,
+			observedAt: now,
+			identityVerified: true,
+			authHealth: "valid" as const,
+			scopeKnown: true,
+			windows: [{ usedPercent: 100, resetsAt: now + 3_600_000 }],
+		}));
+		const options = {
+			store: store.codexQuota,
+			now: () => now,
+			availability: async () =>
+				automatic
+					? {
+							mode: "automatic" as const,
+							reasons: [],
+							revision: 1,
+							checkedAt: new Date(now).toISOString(),
+						}
+					: {
+							mode: "manual" as const,
+							reasons: ["readiness_receipt_missing" as const],
+							revision: 2,
+							checkedAt: new Date(now).toISOString(),
+						},
+			readiness: async () => true,
+			observe: async () => observations,
+			rotate: vi.fn(),
+			recover: vi.fn(),
+		};
+		await new CodexQuotaCoordinator(options).tick();
+		automatic = false;
+		await new CodexQuotaCoordinator(options).tick();
+		expect(store.codexQuota.isPaused("root")).toBe(true);
+		expect(store.codexQuota.isIncidentManual("codex:root:1")).toBe(false);
+
+		now += 60_001;
+		await new CodexQuotaCoordinator(options).tick();
+		expect(store.codexQuota.isIncidentManual("codex:root:1")).toBe(true);
+		expect(store.codexQuota.isPaused("root")).toBe(false);
 	});
 
 	it("keeps failed probes paused with no recovery and no immediate repeated exec", async () => {
@@ -493,7 +649,7 @@ describe("Codex quota coordinator", () => {
 		).toHaveLength(1);
 	});
 
-	it("ages a readiness pause into one durable founder alert shared with pool exhaustion", async () => {
+	it("hands a readiness failure to manual immediately without the old ten-minute alert loop", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		const start = Date.parse("2026-09-09T00:00:00Z");
@@ -518,6 +674,14 @@ describe("Codex quota coordinator", () => {
 			executionId: "exec-1",
 			bindingId: "binding-1",
 			now: new Date(now).toISOString(),
+			source: "runner_terminal",
+			sourceEventId: "2026-09-11-quota-event",
+			availability: {
+				mode: "automatic",
+				reasons: [],
+				revision: 1,
+				checkedAt: new Date(now).toISOString(),
+			},
 		});
 		const observe = vi.fn();
 		const rotate = vi.fn();
@@ -526,6 +690,12 @@ describe("Codex quota coordinator", () => {
 			store: store.codexQuota,
 			now: () => now,
 			readiness: async () => false,
+			availability: async () => ({
+				mode: "manual" as const,
+				reasons: ["readiness_receipt_missing" as const],
+				revision: 2,
+				checkedAt: new Date(now).toISOString(),
+			}),
 			observe,
 			rotate,
 			recover,
@@ -536,14 +706,21 @@ describe("Codex quota coordinator", () => {
 				.listOutbox()
 				.filter((row) => row.kind === "founder_alert"),
 		).toHaveLength(0);
-		now += CODEX_QUOTA_MAX_PAUSE_MS + 1;
+		expect(store.codexQuota.isPaused("root")).toBe(false);
+		expect(store.codexQuota.isExecutionPaused("exec-1")).toBe(true);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.filter((row) => row.kind === "automation_disabled"),
+		).toHaveLength(1);
+		now += 12 * 60_000;
 		await new CodexQuotaCoordinator(options).tick();
 		await new CodexQuotaCoordinator(options).tick();
 		expect(
 			store.codexQuota
 				.listOutbox()
 				.filter((row) => row.kind === "founder_alert"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 		expect(rotate).not.toHaveBeenCalled();
 		expect(recover).not.toHaveBeenCalled();
 		expect(observe).not.toHaveBeenCalled();
@@ -619,5 +796,101 @@ describe("Codex quota coordinator", () => {
 		expect(rotate).toHaveBeenCalledOnce();
 		expect(store.codexQuota.getRoot("root")?.generation).toBe(2);
 		expect(recover).toHaveBeenCalledOnce();
+	});
+
+	it("commits a known successful install before handing a post-rotate readiness failure to manual", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		const now = Date.parse("2026-09-11T18:45:00Z");
+		let automatic = true;
+		store.codexQuotaLaunchEnabled = () => automatic;
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "binding",
+			executionId: "exec",
+			runId: "run",
+			purpose: "runner",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+		});
+		store.codexQuota.recordSignal({
+			executionId: "exec",
+			bindingId: "binding",
+			now: new Date(now).toISOString(),
+			source: "runner_terminal",
+			sourceEventId: "post-rotate-readiness-failure",
+		});
+		const recover = vi.fn();
+		const rotate = vi.fn(async () => {
+			store.codexQuota.recordInstalling({
+				incidentId: "codex:root:1",
+				profile: "school",
+				accountKey: "school-key",
+				priorAuthDigest: "prior",
+				installedAuthDigest: "a".repeat(64),
+				recoveryMaterialPath: "/fixture/auth",
+				now: new Date(now).toISOString(),
+			});
+			automatic = false;
+			return { ok: true, authDigest: "a".repeat(64) };
+		});
+		const availability = async () =>
+			automatic
+				? {
+						mode: "automatic" as const,
+						reasons: [],
+						revision: 1,
+						checkedAt: new Date(now).toISOString(),
+					}
+				: {
+						mode: "manual" as const,
+						reasons: ["flag_disabled" as const],
+						revision: 2,
+						checkedAt: new Date(now).toISOString(),
+					};
+
+		await new CodexQuotaCoordinator({
+			store: store.codexQuota,
+			now: () => now,
+			availability,
+			readiness: async () => true,
+			observe: async () => [
+				{
+					profile: "school",
+					accountKey: "school-key",
+					observedAt: now,
+					identityVerified: true,
+					authHealth: "valid",
+					scopeKnown: true,
+					windows: [{ usedPercent: 10, resetsAt: now + 3_600_000 }],
+				},
+			],
+			rotate,
+			recover,
+		}).tick();
+
+		expect(store.codexQuota.getRoot("root")).toMatchObject({
+			generation: 2,
+			profile: "school",
+			accountKey: "school-key",
+		});
+		expect(store.codexQuota.getIncident("codex:root:1")?.state).toBe(
+			"committed",
+		);
+		expect(store.codexQuota.hasRootSafetyGuard("root")).toBe(false);
+		expect(store.isCodexQuotaLaunchPaused("fresh-exec", "root")).toBe(false);
+		expect(recover).not.toHaveBeenCalled();
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.filter((row) => row.kind === "automation_disabled"),
+		).toHaveLength(1);
 	});
 });

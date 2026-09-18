@@ -2,7 +2,8 @@ import type { StateStore } from "../StateStore.js";
 
 export interface DisabledAdmissionReplayOptions {
 	store: StateStore;
-	enabled(): boolean;
+	enabled(rootKey?: string, generation?: number): boolean;
+	manualDisposition?(rootKey: string, generation: number): boolean;
 	report?(code: string, cause: string): void | Promise<void>;
 	post(
 		path: string,
@@ -49,12 +50,17 @@ export function createCodexQuotaDisabledAdmissionReplay(
 	options: DisabledAdmissionReplayOptions,
 ): () => Promise<void> {
 	let inFlight = false;
+	const blocked = (rootKey: string, generation: number) =>
+		options.enabled(rootKey, generation) &&
+		!options.manualDisposition?.(rootKey, generation);
 	return async () => {
-		if (inFlight || options.enabled()) return;
+		if (inFlight) return;
 		inFlight = true;
 		try {
 			for (const waiter of options.store.codexQuota.listAdmissionWaits()) {
-				if (options.enabled()) return;
+				const rootKey = String(waiter.root_key ?? "");
+				const generation = Number(waiter.generation);
+				if (blocked(rootKey, generation)) continue;
 				const startKey = String(waiter.start_key);
 				try {
 					const current =
@@ -79,7 +85,7 @@ export function createCodexQuotaDisabledAdmissionReplay(
 							executionId,
 							String(current.request.projectName),
 						);
-						if (options.enabled()) return;
+						if (blocked(rootKey, generation)) continue;
 						const latest =
 							options.store.getCodexQuotaAdmissionWaitContext(startKey);
 						if (latest.stopped)
@@ -102,7 +108,7 @@ export function createCodexQuotaDisabledAdmissionReplay(
 						"/api/runs/start",
 						codexQuotaAdmissionRequest(current),
 					);
-					if (options.enabled()) return;
+					if (blocked(rootKey, generation)) continue;
 					if (
 						response.status !== 200 ||
 						response.body.success !== true ||
@@ -121,7 +127,7 @@ export function createCodexQuotaDisabledAdmissionReplay(
 						executionId,
 						String(current.request.projectName),
 					);
-					if (options.enabled()) return;
+					if (blocked(rootKey, generation)) continue;
 					const latest =
 						options.store.getCodexQuotaAdmissionWaitContext(startKey);
 					if (latest.stopped)

@@ -47,6 +47,7 @@ import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "fl
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
+import type { CodexQuotaAvailabilitySnapshot } from "./codex-quota/availability.js";
 import { ShipJudgmentJobs } from "./ship-judgment/jobs.js";
 import { ShipJudgmentInputs } from "./ship-judgment/inputs.js";
 import { ShipJudgmentOpinions } from "./ship-judgment/opinions.js";
@@ -2747,10 +2748,30 @@ export class StateStore {
 	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
 	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
 	codexQuotaLaunchEnabled: () => boolean = () => true;
+	codexQuotaAvailability: () => CodexQuotaAvailabilitySnapshot = () =>
+		this.codexQuotaLaunchEnabled()
+			? { mode: "automatic", reasons: [], revision: 0, checkedAt: null }
+			: {
+					mode: "manual",
+					reasons: ["flag_disabled"],
+					revision: 0,
+					checkedAt: null,
+				};
 	isCodexQuotaLaunchPaused(executionId: string, rootKey?: string): boolean {
-		if (!this.codexQuotaLaunchEnabled()) return false;
-		return this.codexQuota.isExecutionPaused(executionId) ||
-			(rootKey !== undefined && this.codexQuota.isPaused(rootKey));
+		if (this.codexQuota.isExecutionPaused(executionId)) return true;
+		if (rootKey === undefined) return false;
+		if (
+			this.codexQuota.hasRootSafetyGuard(
+				rootKey,
+				Date.now(),
+				this.codexQuotaLaunchEnabled(),
+			)
+		)
+			return true;
+		return (
+			this.codexQuotaAvailability().mode === "automatic" &&
+			this.codexQuota.isPaused(rootKey)
+		);
 	}
 
 
@@ -42680,7 +42701,17 @@ export class StateStore {
 				if(prior.execution_id!==input.executionId || prior.event_type!=="session_failed" || canonicalSubmissionDigest(JSON.parse(String(prior.payload)))!==canonicalSubmissionDigest(payload)) return {ok:false as const,reason:"terminal_signal_conflict"};
 				return {ok:true as const,idempotentReplay:true};
 			}
-			this.codexQuota.recordSignal({executionId:input.executionId,bindingId:signal?.bindingId,now:input.now});
+			this.codexQuota.recordSignal({
+				executionId: input.executionId,
+				bindingId: signal?.bindingId,
+				now: input.now,
+				source:
+					signal?.source === "review_exec"
+						? "review_exec"
+						: "runner_terminal",
+				sourceEventId: input.sourceEventId,
+				availability: this.codexQuotaAvailability(),
+			});
 			this.db.run("INSERT INTO session_events(event_id,execution_id,issue_id,project_name,event_type,severity,payload,source) VALUES(?,?,?,?,'session_failed','info',?,?)",[input.sourceEventId,input.executionId,input.issueId,input.projectName,JSON.stringify(payload),input.source]);
 			this.upsertSession({execution_id:input.executionId,issue_id:input.issueId,project_name:input.projectName,status:"failed",last_error:"goal ended non-complete: usageLimited"});
 			return {ok:true as const,idempotentReplay:false};
@@ -42794,7 +42825,18 @@ export class StateStore {
 				return;
 			} else {
 				if (input.failureKind === "goal_usage_limited") {
-					this.codexQuota.recordSignal({executionId:input.executionId,bindingId:quotaSignal?.bindingId,nodeId:context.binding.node_id,now});
+					this.codexQuota.recordSignal({
+						executionId: input.executionId,
+						bindingId: quotaSignal?.bindingId,
+						nodeId: context.binding.node_id,
+						now,
+						source:
+							quotaSignal?.source === "review_exec"
+								? "review_exec"
+								: "runner_terminal",
+						sourceEventId: input.sourceEventId,
+						availability: this.codexQuotaAvailability(),
+					});
 				}
 				const canonical =
 					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);

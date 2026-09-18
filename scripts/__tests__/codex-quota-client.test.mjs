@@ -81,6 +81,19 @@ test("wait expiry is 75 and spawns zero", async () => {
 	assert.equal(await runReview(h.deps), 75);
 	assert.deepEqual(h.calls, []);
 });
+test("manual-required exits immediately for Lead handling without spawning", async () => {
+	const h = harness(),
+		markers = [];
+	h.deps.bind = async () => ({
+		binding: { bindingId: "manual-binding", generation: 1 },
+		state: "manual_required",
+		generation: 1,
+	});
+	h.deps.marker = (marker) => markers.push(marker);
+	assert.equal(await runReview(h.deps), 75);
+	assert.deepEqual(h.calls, []);
+	assert.deepEqual(markers, ["CODEX_QUOTA_MANUAL_REQUIRED"]);
+});
 test("quota observed only after durable spool then retries once with fresh full budget", async () => {
 	const h = harness();
 	assert.equal(await runReview(h.deps), 0);

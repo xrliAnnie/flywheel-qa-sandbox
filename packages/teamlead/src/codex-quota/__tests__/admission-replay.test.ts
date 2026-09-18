@@ -7,7 +7,7 @@ beforeEach(async () => {
 	store = await StateStore.create(":memory:");
 });
 afterEach(() => store.close());
-function enqueue(key = "key") {
+function enqueue(key = "key", rootKey = "root", generation = 1) {
 	store.codexQuota.reserveLegacyStart({
 		startKey: key,
 		executionId: key,
@@ -26,8 +26,8 @@ function enqueue(key = "key") {
 	});
 	store.codexQuota.enqueueLegacyAdmissionWait({
 		startKey: key,
-		rootKey: "root",
-		generation: 1,
+		rootKey,
+		generation,
 	});
 }
 function running(key = "key") {
@@ -64,6 +64,60 @@ it("OFF replays a persisted legacy reservation and releases only after matching 
 	expect(store.codexQuota.getAdmissionWait("key")?.state).toBe("released");
 	await replay();
 	expect(post).toHaveBeenCalledTimes(1);
+});
+it("replays only the exact manual root generation after global automation recovers", async () => {
+	enqueue("manual", "root", 1);
+	enqueue("healthy", "other", 1);
+	store.codexQuota.initializeRoot({
+		rootKey: "root",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+	});
+	store.codexQuota.registerBinding({
+		bindingId: "manual-binding",
+		executionId: "manual-casualty",
+		runId: "manual-run",
+		purpose: "runner",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+		credentialRootKey: "root",
+	});
+	store.codexQuota.recordSignal({
+		executionId: "manual-casualty",
+		bindingId: "manual-binding",
+		source: "runner_terminal",
+		sourceEventId: "manual-event",
+		availability: {
+			mode: "automatic",
+			reasons: [],
+			revision: 1,
+			checkedAt: "2026-09-17T20:00:00.000Z",
+		},
+	});
+	store.codexQuota.handoffIncidentManual("codex:root:1", [
+		"readiness_receipt_missing",
+	]);
+	const post = vi.fn(async (_path: string, body: Record<string, unknown>) => {
+		running(String(body.idempotencyKey));
+		return {
+			status: 200,
+			body: { success: true, executionId: body.idempotencyKey },
+		};
+	});
+	await createCodexQuotaDisabledAdmissionReplay({
+		store,
+		enabled: () => true,
+		manualDisposition: (rootKey, generation) =>
+			store.codexQuota.isRootGenerationManual(rootKey, generation),
+		post,
+		liveness: async () => "alive",
+	})();
+	expect(post).toHaveBeenCalledOnce();
+	expect(post.mock.calls[0]?.[1]).toMatchObject({ idempotencyKey: "manual" });
+	expect(store.codexQuota.getAdmissionWait("manual")?.state).toBe("released");
+	expect(store.codexQuota.getAdmissionWait("healthy")?.state).toBe("waiting");
 });
 it.each(["queued", "wrong-exec", "not-running", "not-live", "reenabled"])(
 	"keeps %s replay pending",

@@ -1,0 +1,17 @@
+erDiagram
+ SIGNAL_EVENT ||--o| N11_OUTBOX : "一事件一通知"
+ SIGNAL_EVENT }o--o| INCIDENT : "自动可用才关联"
+ INCIDENT ||--o| MANUAL_DISPOSITION : "记住已交人工"
+ SIGNAL_EVENT {
+  string event_key "稳定来源身份"
+  string disposition "自动或手工"
+  string reasons "发生时的原因"
+ }
+ N11_OUTBOX {
+  string event_id "事件身份加N11"
+  string delivery_state "待送达或已证实送达"
+ }
+ MANUAL_DISPOSITION {
+  string incident_id "保留旧事实"
+  string reason "不自动重新接管"
+ }

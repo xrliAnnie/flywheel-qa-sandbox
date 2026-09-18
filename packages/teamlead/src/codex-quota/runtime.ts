@@ -14,6 +14,7 @@ import {
 	withCodexInstallLock,
 } from "flywheel-claude-runner/bin/codex-account-install.mjs";
 import type { StateStore } from "../StateStore.js";
+import type { CodexQuotaAvailability } from "./availability.js";
 import type { CodexQuotaObservation } from "./candidate-selector.js";
 import { CodexQuotaCoordinator } from "./coordinator.js";
 import {
@@ -28,6 +29,7 @@ import {
 import { readCodexQuota } from "./quota-reader.js";
 import {
 	type CodexQuotaReadinessOptions,
+	type CodexQuotaReadinessResult,
 	checkCodexQuotaReadiness,
 } from "./readiness.js";
 export interface CodexQuotaRuntimeOptions {
@@ -42,6 +44,7 @@ export interface CodexQuotaRuntimeOptions {
 	collectHomes: CodexQuotaReadinessOptions["collectHomes"];
 	recover(incident: Record<string, unknown>): Promise<void>;
 	autoEnabled?: () => boolean;
+	availability?: CodexQuotaAvailability;
 }
 export class CodexQuotaRuntime {
 	private canonicalChainActive = false;
@@ -64,32 +67,35 @@ export class CodexQuotaRuntime {
 			{ profilesRoot: options.profilesRoot },
 		);
 	}
+	async readinessResult(): Promise<CodexQuotaReadinessResult> {
+		return checkCodexQuotaReadiness({
+			canonicalAuthPath: join(this.options.canonicalHome, "auth.json"),
+			collectHomes: async () => {
+				const inventory = await this.options.collectHomes();
+				this.canonicalChainActive =
+					(inventory as typeof inventory & { canonicalChainActive?: boolean })
+						.canonicalChainActive === true ||
+					inventory.homes.some(
+						(home) =>
+							home.ownership === "managed" && home.activity === "active",
+					);
+				this.activeUnsharedAccountKeys = new Set(
+					(
+						inventory as typeof inventory & {
+							activeUnsharedAccountKeys?: string[];
+						}
+					).activeUnsharedAccountKeys ?? [],
+				);
+				return inventory;
+			},
+		});
+	}
 	async readiness(): Promise<boolean> {
 		if (this.abort.signal.aborted || this.options.autoEnabled?.() === false)
 			return false;
-		return (
-			await checkCodexQuotaReadiness({
-				canonicalAuthPath: join(this.options.canonicalHome, "auth.json"),
-				collectHomes: async () => {
-					const inventory = await this.options.collectHomes();
-					this.canonicalChainActive =
-						(inventory as typeof inventory & { canonicalChainActive?: boolean })
-							.canonicalChainActive === true ||
-						inventory.homes.some(
-							(home) =>
-								home.ownership === "managed" && home.activity === "active",
-						);
-					this.activeUnsharedAccountKeys = new Set(
-						(
-							inventory as typeof inventory & {
-								activeUnsharedAccountKeys?: string[];
-							}
-						).activeUnsharedAccountKeys ?? [],
-					);
-					return inventory;
-				},
-			})
-		).ready;
+		if (this.options.availability)
+			return (await this.options.availability.refresh()).mode === "automatic";
+		return (await this.readinessResult()).ready;
 	}
 	private candidateInUse(accountKey: string): boolean {
 		if (this.activeUnsharedAccountKeys.has(accountKey)) return true;
@@ -437,6 +443,9 @@ export class CodexQuotaRuntime {
 		this.coordinator ??= new CodexQuotaCoordinator({
 			store: this.options.store.codexQuota,
 			autoEnabled: this.options.autoEnabled,
+			...(this.options.availability
+				? { availability: () => this.options.availability!.refresh() }
+				: {}),
 			readiness: () => this.readiness(),
 			observe: () => this.observe(),
 			rotate: (incident, candidate) => this.rotate(incident, candidate),
@@ -504,15 +513,36 @@ export function wireCodexQuotaDispatcher(
 			console.warn({ code, cause, rotation: "disabled" }),
 	},
 ): void {
+	const hasLaunchPolicy =
+		typeof (store as Partial<StateStore>).isCodexQuotaLaunchPaused ===
+		"function";
+	const launchPaused = (executionId: string) => {
+		const policy = (store as Partial<StateStore>).isCodexQuotaLaunchPaused;
+		if (typeof policy === "function")
+			return policy.call(store, executionId, rootKey);
+		const casualty = store.codexQuota.isExecutionPaused(executionId);
+		const safety =
+			typeof store.codexQuota.hasRootSafetyGuard === "function" &&
+			store.codexQuota.hasRootSafetyGuard(
+				rootKey,
+				Date.now(),
+				options.enabled(),
+			);
+		return (
+			casualty ||
+			safety ||
+			(options.enabled() && store.codexQuota.isPaused(rootKey))
+		);
+	};
 	dispatcher.beforeCodexDaemonStart = async (home, executionId) => {
-		if (!options.enabled()) return null;
 		const assertUnpaused = () => {
-			if (
-				store.codexQuota.isPaused(rootKey) ||
-				store.codexQuota.isExecutionPaused(executionId)
-			)
-				throw new CodexQuotaLaunchPausedError();
+			if (launchPaused(executionId)) throw new CodexQuotaLaunchPausedError();
 		};
+		if (!options.enabled()) {
+			if (!hasLaunchPolicy) return null;
+			assertUnpaused();
+			return null;
+		}
 		try {
 			assertUnpaused();
 			if (!runtime) return null;
@@ -536,8 +566,8 @@ export function wireCodexQuotaDispatcher(
 	dispatcher.executionQuotaPaused = (executionId) =>
 		store.codexQuota.isExecutionPaused(executionId);
 	dispatcher.codexQuotaAdmission = () => {
-		if (!options.enabled() || !runtime) return undefined;
-		if (!store.codexQuota.isPaused(rootKey)) return undefined;
+		if (!options.enabled() && !hasLaunchPolicy) return undefined;
+		if (!launchPaused("quota-admission")) return undefined;
 		const root = store.codexQuota.getRoot(rootKey);
 		if (!root) throw new Error("quota_root_unavailable");
 		return { rootKey, generation: root.generation };

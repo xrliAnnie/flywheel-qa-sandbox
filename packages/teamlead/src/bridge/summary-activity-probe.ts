@@ -10,6 +10,7 @@ export const SUMMARY_ACTIVITY_NOISE_EVENT_TYPES = [
 	"flag_scan_no_clock",
 	"receipt_foundation_off",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"usage_limit",
 	"session_monitoring_lost",
 	"session_monitoring_reestablished",

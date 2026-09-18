@@ -1,0 +1,28 @@
+{
+  "checkedAt": "2026-09-17T20:47:12.859310+00:00",
+  "hostedUrl": "https://fw-reports-42fba7.vercel.app/r/dfb13362b7bd1496075ff01299169127/",
+  "httpStatus": 200,
+  "placeholderCount": 0,
+  "singleNoncedScript": true,
+  "matchingCspNonce": true,
+  "hostedBodyMatchesCommittedSource": true,
+  "externalAssetUrls": [],
+  "inlineHandlerAttributes": [],
+  "htmlSha256": "6176cdf7b7a2972e0d61953755b717ddce898fbf989ccc52cdea5e490378202a",
+  "planSha256": "a53c5c095731f3124c9b79a7487c921e4aec4c9281474a13ff5574841c8c9ca9",
+  "reviewQuestion": "f841d680-b82a-4535-ae1b-a1e31d246a6c",
+  "reviewVerdict": "APPROVED",
+  "planMatchesReviewedRevision": "8860c1a3a",
+  "advisories": [
+    "legacy-batch-seal-blocked-by-stuck-member",
+    "legacy-batch-freeze-unbounded-transaction",
+    "migration-manual-disposition-makes-first-flag-enable-inert",
+    "capacity-fact-multi-row-guard-selection-unstated"
+  ],
+  "publishOnly": true,
+  "delivered": false,
+  "messageId": null,
+  "browserQa": "not verified; Chrome tool requires approval unavailable under policy never",
+  "diagrams": "DIAGRAM PENDING LOCAL RENDER; local mmdc and standard retry both denied Chromium launch",
+  "commentValidation": "static plus VM simulated DOM/clipboard/storage checks; not live browser proof"
+}
