@@ -1,14 +1,13 @@
 ---
 issue: FLY-2523
 phase: implement
-phaseCursor: 2/6
-updated: 2026-09-18T07:37:50.642Z
-nextStep: "T3: derive approved Lead homes and wire reconcile into existing
-  health/updater/restart rhythms"
+phaseCursor: 4/6
+updated: 2026-09-18T08:26:41.967Z
+nextStep: Implement registered-home readiness evidence while preserving global unknown
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: implement (2/6)
-**next**: T3: derive approved Lead homes and wire reconcile into existing health/updater/restart rhythms
+**phase**: implement (4/6)
+**next**: Implement registered-home readiness evidence while preserving global unknown
