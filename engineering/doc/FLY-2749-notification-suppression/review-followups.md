@@ -22,3 +22,6 @@ Issue: FLY-2749 (https://linear.app/geoforge3d/issue/FLY-2749)
 元数据说明：本次动态 DOC-FLOW 明确要求 title、Issue、日期、基于；现有文件保留这一格式。plan-frontmatter 建议不覆盖动态合同。
 
 交接注意：APPROVED 仅代表设计门禁通过；上述回滚、持久队列、既有机器转报复用、receipt 生产者等建议仍需实现者和 Lead 逐项明确处置，不能在实现验收里静默略过。
+
+## Lead 最终处置
+Lead response `0f01abd7-c1ce-4907-8c0e-9cdafb0df32d`：11 条 advisory 不挡交付，不单独开单；全部带入后续 PR 的 Follow-ups。实现体按本单范围处理 `relay-duplicates-disposition-receipt`：复用现有 `disposition-receipt`，不另起 relay。其余留记录。此处是 Lead 的后续实施指令，不把未实现项标成已修复。当前分支没有 PR，设计节点不新开 PR；实现者创建 PR 时转录本清单。

@@ -30,3 +30,6 @@ node engineering/doc/FLY-2749-notification-suppression/verify-founder-html.mjs
 - 2026-09-18 接续发布与一次重试均返回 502 `report publishing failed`，url/reportId 为 null；收据见 evidence/publication-status.json。没有托管 HTTP/CSP 验证。
 - Chrome DevTools list_pages 未返回，终止等待；不声称浏览器验证通过。
 - 设计完成命令和 park 均未执行；等待托管恢复或 Lead 明确处置，目标仍保持 active。
+
+## 交接门禁处置
+Lead 已明确豁免本次交接前托管成功要求，准许记录 DESIGN-HTML publish-failed 后 phase_design_complete + park。见 handoff.md 与 evidence/lead-closeout-decisions.json。托管/浏览器验证仍未完成；此处仅记录交接授权，不改写验证结论。
