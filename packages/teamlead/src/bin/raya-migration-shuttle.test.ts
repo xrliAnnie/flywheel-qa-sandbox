@@ -220,6 +220,49 @@ describe("Raya shuttle I/O steps", () => {
 			BigInt(ledger.cutover_probe.message_id),
 		);
 	});
+	it("marks a preexisting live cursor boundary without claiming its writer stopped", async () => {
+		const f = fixture("P3");
+		f.ledger.cursor.status = "preexisting";
+		writeFileSync(f.file, JSON.stringify(f.ledger), { mode: 0o600 });
+		await f.run("cutover-probe");
+		await f.run("seed-boundary");
+		const seed = JSON.parse(
+			readFileSync(
+				JSON.parse(readFileSync(f.file, "utf8")).cursor.seed_input,
+				"utf8",
+			),
+		);
+		expect(seed.writerStopped).toBe(false);
+	});
+	it("reissues a preexisting window probe after P4b activation and reuses its durable receipt", async () => {
+		const f = fixture("P3");
+		f.ledger.cursor.status = "preexisting";
+		writeFileSync(f.file, JSON.stringify(f.ledger), { mode: 0o600 });
+		await f.run("cutover-probe");
+		await f.run("seed-boundary");
+		const ledger = JSON.parse(readFileSync(f.file, "utf8"));
+		const seedProbe = ledger.cutover_probe;
+		ledger.checkpoint = "P4b";
+		ledger.lead_restart_installed_at = "2026-09-13T00:00:00.001Z";
+		ledger.activated_at = "2026-09-13T00:00:00.002Z";
+		ledger.seed_probe = seedProbe;
+		ledger.probe_resets = [{ nonce: seedProbe.intent.nonce }];
+		delete ledger.cutover_probe;
+		writeFileSync(f.file, JSON.stringify(ledger), { mode: 0o600 });
+
+		await f.run("cutover-probe");
+		await f.run("cutover-probe");
+
+		const after = JSON.parse(readFileSync(f.file, "utf8"));
+		expect(f.posts()).toBe(2);
+		expect(after.seed_probe.message_id).toBe(seedProbe.message_id);
+		expect(BigInt(after.cutover_probe.message_id)).toBeGreaterThan(
+			BigInt(seedProbe.message_id),
+		);
+		expect(Date.parse(after.cutover_probe.sent_at)).toBeGreaterThanOrEqual(
+			Date.parse(ledger.activated_at),
+		);
+	});
 	it("leaves stop-window input unresolved and never writes a seed", async () => {
 		const f = fixture("P3");
 		f.active();

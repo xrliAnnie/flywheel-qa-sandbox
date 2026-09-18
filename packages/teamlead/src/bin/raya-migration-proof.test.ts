@@ -315,6 +315,22 @@ it("accepts an advanced live cursor while retaining the actual seed boundary", a
 	]);
 	expect(JSON.stringify(proof)).not.toContain("CANARY");
 });
+it("accepts a preexisting live-writer cursor while retaining the migration boundary digest", async () => {
+	const f = fixture();
+	const seed = JSON.parse(readFileSync(f.manifest.cursor.seed_input, "utf8"));
+	seed.writerStopped = false;
+	writeFileSync(f.manifest.cursor.seed_input, JSON.stringify(seed));
+	f.manifest.cursor.status = "preexisting";
+	writeFileSync(
+		f.manifest.cursor.path,
+		JSON.stringify({ [channel]: f.textId }),
+	);
+	writeFileSync(f.file, JSON.stringify(f.manifest));
+	await f.run();
+	expect(JSON.parse(readFileSync(f.proof, "utf8")).cutover.seed_digest).toBe(
+		f.manifest.cursor.sha256,
+	);
+});
 it("requires the original seed writer-stop and unresolved guards", async () => {
 	const f = fixture(),
 		path = f.manifest.cursor.seed_input,

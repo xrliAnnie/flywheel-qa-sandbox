@@ -77,6 +77,7 @@ raya_alert() {
 }
 raya_now() { date +%s; }
 raya_now_iso() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+raya_wait() { sleep "$1"; }
 raya_is_sha40() { [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]]; }
 raya_is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 raya_git() { git -C "$RAYA_CODE_DIR" "$@"; }
@@ -105,6 +106,13 @@ raya_host_capable() { raya_validate_canonical_manifest; }
 raya_process_start() {
   LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null \
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+raya_process_command() {
+  LC_ALL=C ps -ww -o command= -p "$1" 2>/dev/null \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+raya_process_snapshot() {
+  LC_ALL=C ps -ww -axo pid=,command= 2>/dev/null
 }
 raya_lock_clear() {
   rm -f "$RAYA_DEPLOY_LOCK_DIR/pid" "$RAYA_DEPLOY_LOCK_DIR/start" 2>/dev/null || true
@@ -245,11 +253,13 @@ raya_legacy_disabled() {
 }
 
 raya_verify_legacy_retired() {
-  local label=""
+  local app="" label=""
   jq -e '([.legacy_owner[].label] | sort) == ["com.xrli.raya.brain","com.xrli.raya.voice"] and
     all(.legacy_owner[]; (.disabled_at_ms | type == "number") and (.stopped_at_ms | type == "number"))' \
     "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
-  for label in com.xrli.raya.brain com.xrli.raya.voice; do
+  for app in brain voice; do
+    label="com.xrli.raya.$app"
+    raya_legacy_process_census_clear "$app" || return 1
     raya_legacy_disabled "$label" || return 1
     local observation=""
     if observation="$(launchctl print "gui/$(id -u)/$label" 2>&1)"; then return 1; fi
@@ -257,12 +267,84 @@ raya_verify_legacy_retired() {
   done
 }
 
+raya_legacy_recorded_owner_gone() {
+  local label="$1" pid="" recorded_start="" current_start=""
+  pid="$(jq -er --arg label "$label" '
+    [.legacy_owner[] | select(.label == $label)] |
+    select(length == 1) | .[0].pid | select(type == "number" and . > 0)
+  ' "$RAYA_MIGRATION_MANIFEST")" || return 1
+  recorded_start="$(jq -er --arg label "$label" '
+    .legacy_owner[] | select(.label == $label) | .start |
+    select(type == "string" and length > 0)
+  ' "$RAYA_MIGRATION_MANIFEST")" || return 1
+  kill -0 "$pid" 2>/dev/null || return 0
+  current_start="$(raya_process_start "$pid")" || return 1
+  [[ -n "$current_start" && "$current_start" != "$recorded_start" ]]
+}
+
+raya_legacy_launchd_not_running() {
+  printf '%s\n' "$1" | awk '
+    $1 == "pid" && $2 == "=" { pid++ }
+    $1 == "state" && $2 == "=" && !seen++ { state = $3 " " $4 }
+    END { exit !(pid == 0 && state == "not running") }'
+}
+
+raya_legacy_process_matches() {
+  local plist="$1" pid="$2" command=""
+  command="$(raya_process_command "$pid")" || return 1
+  [[ -n "$command" ]] || return 1
+  python3 - "$plist" "$command" <<'PY'
+import os, plistlib, shlex, sys
+path, command = sys.argv[1:]
+try:
+    with open(path, "rb") as handle:
+        expected = plistlib.load(handle).get("ProgramArguments")
+    actual = shlex.split(command)
+except (OSError, plistlib.InvalidFileException, ValueError):
+    raise SystemExit(1)
+if (not isinstance(expected, list) or len(expected) != 3 or len(actual) != 3 or
+        os.path.basename(actual[0]) != os.path.basename(expected[0]) or
+        actual[1:] != expected[1:]):
+    raise SystemExit(1)
+PY
+}
+
+raya_legacy_process_census_clear() {
+  local app="$1" allowed_pid="${2:-}" snapshot="" expected_cli=""
+  [[ "$app" == brain || "$app" == voice ]] || return 1
+  expected_cli="$RAYA_CODE_DIR/apps/$app/dist/cli.js"
+  snapshot="$(raya_process_snapshot)" || return 1
+  printf '%s\n' "$snapshot" | python3 -c '
+import os, shlex, sys
+
+expected_cli, allowed_pid = sys.argv[1:]
+if not os.path.isabs(expected_cli):
+    raise SystemExit(1)
+if allowed_pid and (not allowed_pid.isdigit() or int(allowed_pid) < 1):
+    raise SystemExit(1)
+
+for line in sys.stdin:
+    fields = line.strip().split(None, 1)
+    if len(fields) != 2 or not fields[0].isdigit():
+        continue
+    try:
+        actual = shlex.split(fields[1])
+    except ValueError:
+        continue
+    if (len(actual) == 3 and
+            os.path.basename(actual[0]) == "node" and
+            actual[1:] == [expected_cli, "run"] and fields[0] != allowed_pid):
+        raise SystemExit(1)
+' "$expected_cli" "$allowed_pid"
+}
+
 raya_quiesce_legacy_owner() {
   # Only the verified ledger grants this call authority. Never trust inherited
   # environment state, even when this function is invoked outside the pass.
   local RAYA_MIGRATION_ALLOW_LEGACY_STOP=0
   if raya_legacy_stop_authorized; then RAYA_MIGRATION_ALLOW_LEGACY_STOP=1; fi
-  local app="" label="" plist="" found=0 loaded="" pid="" start="" digest="" now=""
+  raya_verify_legacy_owners || return 1
+  local app="" label="" plist="" found=0 loaded="" pid="" start="" digest="" now="" already_missing=0 loaded_not_running=0
   for app in brain voice; do
     label="com.xrli.raya.$app"
     plist="${RAYA_LEGACY_PLIST_DIR:-${HOME}/Library/LaunchAgents}/${label}.plist"
@@ -278,31 +360,57 @@ raya_quiesce_legacy_owner() {
       ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
       if loaded="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
         pid="$(printf '%s\n' "$loaded" | awk '$1 == "pid" && $2 == "=" {print $3}')"
-        [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-        start="$(raya_process_start "$pid")" || return 1
-        [[ -n "$start" ]] || return 1
-        jq -e --arg label "$label" --argjson pid "$pid" --arg start "$start" '
+        if [[ -z "$pid" ]]; then
+          raya_legacy_launchd_not_running "$loaded" || return 1
+          loaded_not_running=1
+          already_missing=1
+        else
+          [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+          start="$(raya_process_start "$pid")" || return 1
+          [[ -n "$start" ]] || return 1
+          raya_legacy_process_matches "$plist" "$pid" || return 1
+          jq -e --arg label "$label" '
+            .legacy_owner[] | select(.label == $label) |
+            .stopped_at_ms == null
+          ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+          now="$("$RAYA_STANDARD_NODE_BIN" -p 'Date.now()')" || return 1
+          raya_manifest_transform P2 P2 '
+            (.legacy_owner[] | select(.label == $label)) |=
+              (.pid = $pid | .start = $start | .stop_started_at_ms //= $now)
+          ' --arg label "$label" --argjson pid "$pid" --arg start "$start" \
+            --argjson now "$now" || return 1
+          launchctl disable "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
+          raya_legacy_disabled "$label" || return 1
+          raya_manifest_transform P2 P2 '
+            (.legacy_owner[] | select(.label == $label)).disabled_at_ms //= $now
+          ' --arg label "$label" --argjson now "$now" || return 1
+          launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || return 1
+          launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && return 1
+        fi
+      else
+        loaded="$(launchctl print "gui/$(id -u)/$label" 2>&1 || true)"
+        case "$loaded" in *"Could not find service"*|*"Could not find specified service"*) ;; *) return 1 ;; esac
+        jq -e --arg label "$label" '
           .legacy_owner[] | select(.label == $label) |
-          .pid == $pid and .start == $start and .stopped_at_ms == null
-        ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
-        now="$("$RAYA_STANDARD_NODE_BIN" -p 'Date.now()')" || return 1
-        raya_manifest_transform P2 P2 '
-          (.legacy_owner[] | select(.label == $label)) |=
-            (.stop_started_at_ms //= $now)
-        ' --arg label "$label" --argjson now "$now" || return 1
-        launchctl disable "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
-        raya_legacy_disabled "$label" || return 1
-        raya_manifest_transform P2 P2 '
-          (.legacy_owner[] | select(.label == $label)).disabled_at_ms //= $now
-        ' --arg label "$label" --argjson now "$now" || return 1
-        launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || return 1
-        launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && return 1
+          .pid == null or .stop_started_at_ms != null or .stopped_at_ms != null
+        ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 \
+          || raya_legacy_recorded_owner_gone "$label" || return 1
+        if jq -e --arg label "$label" '
+          .legacy_owner[] | select(.label == $label) |
+          .stop_started_at_ms == null and .stopped_at_ms == null
+        ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+          already_missing=1
+        fi
       fi
       # Also disable an already unloaded job; a crash after bootout must not
       # allow its RunAtLoad plist and ignored runtime to revive at login.
       if ! raya_legacy_disabled "$label"; then
         launchctl disable "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
         raya_legacy_disabled "$label" || return 1
+      fi
+      if [[ "$loaded_not_running" == 1 ]]; then
+        launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || return 1
+        launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && return 1
       fi
       # An already unloaded matching job is a completed stop, including a
       # crash after bootout but before recording its receipt.
@@ -311,6 +419,13 @@ raya_quiesce_legacy_owner() {
         (.legacy_owner[] | select(.label == $label)) |=
           (.stop_started_at_ms //= $now | .disabled_at_ms //= $now | .stopped_at_ms //= $now)
       ' --arg label "$label" --argjson now "$now" || return 1
+      if [[ "$already_missing" == 1 ]]; then
+        raya_alert warning raya-legacy-owner-already-exited \
+          "Raya legacy owner already exited" \
+          "$label was absent before quiesce; recorded its observed retirement at $now." || true
+      fi
+      already_missing=0
+      loaded_not_running=0
     fi
   done
   [[ "$found" == 0 || "${RAYA_MIGRATION_ALLOW_LEGACY_STOP:-0}" == 1 ]]
@@ -370,8 +485,30 @@ raya_manifest_record_cursor() {
     --arg status "$status" --arg digest "$digest" --arg seeded "$seeded_at"
 }
 
+raya_manifest_record_preexisting_cursor() {
+  local receipt="$1" observed="" boundary="" seeded_at=""
+  observed="$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' <<<"$receipt")" || return 1
+  boundary="$(jq -er '.seedSha256 | select(test("^[0-9a-f]{64}$"))' <<<"$receipt")" || return 1
+  [[ "$(jq -r .status <<<"$receipt")" == preexisting ]] || return 1
+  [[ "$(jq -r .migrationId <<<"$receipt")" == "$(jq -r .migration_id "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  seeded_at="$(raya_now_iso)" || return 1
+  raya_manifest_transform P3 P4b \
+    '.cursor.status = "preexisting" | .cursor.sha256 = $boundary |
+      .cursor.observed_sha256 = $observed | .cursor.seeded_at = $seeded' \
+    --arg boundary "$boundary" --arg observed "$observed" --arg seeded "$seeded_at"
+}
+
+raya_standard_lead_wait_live() {
+  local attempt=1
+  for (( attempt=1; attempt<=30; attempt++ )); do
+    if raya_standard_lead verify --stage live "$RAYA_CANONICAL_MANIFEST"; then return 0; fi
+    (( attempt < 30 )) && raya_wait 2
+  done
+  return 1
+}
+
 raya_standard_cutover() {
-  local checkpoint="" stopped_at="" cursor="" input="" receipt="" activated=""
+  local checkpoint="" stopped_at="" cursor="" input="" receipt="" activated="" installed=""
   raya_manifest_base_valid || return 1
   jq -e '(.unresolved | length) == 0' "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
   while :; do
@@ -388,20 +525,66 @@ raya_standard_cutover() {
         raya_compute_seed_boundary || return 1
         cursor="$(jq -er '.cursor.path | select(type == "string" and startswith("/"))' "$RAYA_MIGRATION_MANIFEST")" || return 1
         input="$(jq -er '.cursor.seed_input | select(type == "string" and startswith("/"))' "$RAYA_MIGRATION_MANIFEST")" || return 1
-        receipt="$(raya_standard_seed_inbound_cursor "$cursor" "$input")" || return 1
-        raya_manifest_record_cursor "$receipt" || return 1
+        if [[ "$(jq -r '.cursor.status // empty' "$RAYA_MIGRATION_MANIFEST")" == preexisting ]]; then
+          receipt="$(raya_standard_seed_inbound_cursor "$cursor" "$input" preexisting)" || return 1
+          raya_manifest_record_preexisting_cursor "$receipt" || return 1
+        else
+          receipt="$(raya_standard_seed_inbound_cursor "$cursor" "$input")" || return 1
+          raya_manifest_record_cursor "$receipt" || return 1
+        fi
         ;;
       P4b)
         cursor="$(jq -er .cursor.path "$RAYA_MIGRATION_MANIFEST")" || return 1
         raya_standard_preinstall_ready "$RAYA_MIGRATION_MANIFEST" "$cursor" || return 1
         raya_bridge_token_ready || return 1
-        raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
-        RAYA_PREFLIGHT_RC=$?
-        (( RAYA_PREFLIGHT_RC == 0 )) || return 1
-        raya_standard_lead install --project raya --lead raya || return 1
-        raya_standard_lead verify --stage installed "$RAYA_CANONICAL_MANIFEST" || return 1
-        activated="$(raya_now_iso)" || return 1
-        raya_manifest_transform P4b P5 '.activated_at = $activated' --arg activated "$activated" || return 1
+        if [[ "$(jq -r .cursor.status "$RAYA_MIGRATION_MANIFEST")" == preexisting ]]; then
+          if [[ "$(jq -r '.lead_restart_installed_at // empty' "$RAYA_MIGRATION_MANIFEST")" == "" ]]; then
+            if ! raya_standard_lead verify --stage live "$RAYA_CANONICAL_MANIFEST"; then
+              RAYA_DEPLOY_DETAIL=awaiting_standard_lead_pre_restart
+              return 1
+            fi
+            raya_standard_lead install --project raya --lead raya || return 1
+            installed="$(raya_now_iso)" || return 1
+            raya_manifest_transform P4b P4b '.lead_restart_installed_at = $installed' \
+              --arg installed "$installed" || return 1
+          fi
+          if ! raya_standard_lead_wait_live; then
+            RAYA_DEPLOY_DETAIL=awaiting_standard_lead_readiness
+            return 1
+          fi
+          if [[ "$(jq -r '.activated_at // empty' "$RAYA_MIGRATION_MANIFEST")" == "" ]]; then
+            jq -e '
+              (.cutover_probe.intent.nonce | type == "string" and length > 0) and
+              (.cutover_probe.message_id | type == "string" and test("^[0-9]{17,20}$"))
+            ' "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+            activated="$(raya_now_iso)" || return 1
+            raya_manifest_transform P4b P4b '
+              .activated_at = $activated |
+              .seed_probe = .cutover_probe |
+              .probe_resets = ((.probe_resets // []) + [{
+                nonce:.cutover_probe.intent.nonce,
+                at:$activated,
+                reason:"preexisting-post-activation"
+              }]) |
+              del(.cutover_probe)
+            ' --arg activated "$activated" || return 1
+          fi
+          jq -e '
+            (.activated_at | type == "string" and length > 0) and
+            (.seed_probe.intent.nonce | type == "string" and length > 0) and
+            (.seed_probe.message_id | type == "string" and test("^[0-9]{17,20}$"))
+          ' "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+          raya_emit_window_probe || return 1
+          raya_manifest_transform P4b P5 '.' || return 1
+        else
+          raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
+          RAYA_PREFLIGHT_RC=$?
+          (( RAYA_PREFLIGHT_RC == 0 )) || return 1
+          raya_standard_lead install --project raya --lead raya || return 1
+          raya_standard_lead verify --stage installed "$RAYA_CANONICAL_MANIFEST" || return 1
+          activated="$(raya_now_iso)" || return 1
+          raya_manifest_transform P4b P5 '.activated_at = $activated' --arg activated "$activated" || return 1
+        fi
         ;;
       P5|P6|P7) return 0 ;;
       *) return 1 ;;
@@ -785,11 +968,12 @@ raya_verify_legacy_owners() {
     raya_verify_legacy_retired
     return
   fi
-  local app="" label="" plist="" loaded="" pid="" start="" hash=""
+  local app="" label="" plist="" loaded="" pid="" start="" hash="" allowed_pid=""
   raya_legacy_stop_authorized || return 1
   jq -e '([.legacy_owner[].label] | sort) == ["com.xrli.raya.brain","com.xrli.raya.voice"]' \
     "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
   for app in brain voice; do
+    allowed_pid=""
     label="com.xrli.raya.$app"
     plist="${RAYA_LEGACY_PLIST_DIR:-${HOME}/Library/LaunchAgents}/${label}.plist"
     [[ -f "$plist" && ! -L "$plist" ]] || return 1
@@ -799,17 +983,27 @@ raya_verify_legacy_owners() {
       "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
     if loaded="$(launchctl print "gui/$(id -u)/$label" 2>&1)"; then
       pid="$(printf '%s\n' "$loaded" | awk '$1 == "pid" && $2 == "=" {print $3}')"
-      [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-      start="$(raya_process_start "$pid")" || return 1
-      [[ -n "$start" ]] || return 1
-      jq -e --arg label "$label" --argjson pid "$pid" --arg start "$start" '
-        .legacy_owner[] | select(.label==$label) | .pid==$pid and .start==$start and .stopped_at_ms==null
-      ' "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+      if [[ -z "$pid" ]]; then
+        raya_legacy_launchd_not_running "$loaded" || return 1
+      else
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+        start="$(raya_process_start "$pid")" || return 1
+        [[ -n "$start" ]] || return 1
+        raya_legacy_process_matches "$plist" "$pid" || return 1
+        allowed_pid="$pid"
+        jq -e --arg label "$label" '
+          .legacy_owner[] | select(.label==$label) | .stopped_at_ms==null
+        ' "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+      fi
     else
       case "$loaded" in *"Could not find service"*|*"Could not find specified service"*) ;; *) return 1 ;; esac
-      jq -e --arg label "$label" '.legacy_owner[] | select(.label==$label) | .pid==null or .stop_started_at_ms!=null' \
-        "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+      jq -e --arg label "$label" '
+        .legacy_owner[] | select(.label==$label) |
+        .pid==null or .stop_started_at_ms!=null or .stopped_at_ms!=null
+      ' "$RAYA_MIGRATION_MANIFEST" >/dev/null \
+        || raya_legacy_recorded_owner_gone "$label" || return 1
     fi
+    raya_legacy_process_census_clear "$app" "$allowed_pid" || return 1
   done
 }
 
@@ -1214,6 +1408,13 @@ updater_raya_pass() {
     if jq -e '.checkpoint == "P3" and (.unresolved | length) > 0' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
       RAYA_DEPLOY_STATE=awaiting_reconciliation
       RAYA_DEPLOY_DETAIL=p3-unresolved-window
+      raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
+      raya_lock_release
+      return 2
+    fi
+    if [[ "$RAYA_DEPLOY_DETAIL" == awaiting_standard_lead_readiness \
+      || "$RAYA_DEPLOY_DETAIL" == awaiting_standard_lead_pre_restart ]]; then
+      RAYA_DEPLOY_STATE=awaiting_lead
       raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
       raya_lock_release
       return 2

@@ -263,7 +263,7 @@ export async function collectMigrationProof(input: {
 			seed.schemaVersion !== 1 ||
 			seed.migrationId !== manifest.migration_id ||
 			!Array.isArray(seed.channels) ||
-			seed.writerStopped !== true ||
+			seed.writerStopped !== (manifest.cursor.status !== "preexisting") ||
 			!Array.isArray(seed.unresolved) ||
 			seed.unresolved.length ||
 			(seed.expectedBeforeSha256 !== null &&

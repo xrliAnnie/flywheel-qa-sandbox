@@ -3102,6 +3102,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/updater-raya-deploy.test.sh:kill -0 \"$ghost_pid\" 2>/dev/null || exit 1#1",
+		"path": "scripts/__tests__/updater-raya-deploy.test.sh",
+		"code": "kill -0 \"$ghost_pid\" 2>/dev/null || exit 1",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/codex-tui-nudge-probe.sh:kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\#1",
 		"path": "scripts/codex-tui-nudge-probe.sh",
 		"code": "kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\",
@@ -3765,6 +3771,12 @@
 		"key": "scripts/lib/updater-raya-deploy.sh:if [[ \"$owner\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$owner\" 2>/dev/null; then#1",
 		"path": "scripts/lib/updater-raya-deploy.sh",
 		"code": "if [[ \"$owner\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$owner\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/updater-raya-deploy.sh:kill -0 \"$pid\" 2>/dev/null || return 0#1",
+		"path": "scripts/lib/updater-raya-deploy.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 0",
 		"classification": "signal-0-probe"
 	},
 	{

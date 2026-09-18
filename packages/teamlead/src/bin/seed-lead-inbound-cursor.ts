@@ -37,11 +37,22 @@ export type CursorSeedResult = {
 	channels: number;
 };
 
+export type PreexistingCursorResult = {
+	status: "preexisting";
+	migrationId: string;
+	sha256: string;
+	seedSha256: string;
+	channels: number;
+};
+
 function sha256(bytes: string): string {
 	return createHash("sha256").update(bytes, "utf8").digest("hex");
 }
 
-function canonicalMap(seed: CursorSeed): Record<string, string> {
+function canonicalMap(
+	seed: CursorSeed,
+	writerStopped = true,
+): Record<string, string> {
 	if (seed.schemaVersion !== 1 || !seed.migrationId.trim()) {
 		throw new Error("cursor seed migration identity is invalid");
 	}
@@ -51,7 +62,8 @@ function canonicalMap(seed: CursorSeed): Record<string, string> {
 	) {
 		throw new Error("cursor seed before digest is invalid");
 	}
-	if (!seed.writerStopped) throw new Error("cursor seed writer is not stopped");
+	if (seed.writerStopped !== writerStopped)
+		throw new Error("cursor seed writer state is invalid");
 	if (!Array.isArray(seed.unresolved) || seed.unresolved.length !== 0) {
 		throw new Error("cursor seed has unresolved side effects");
 	}
@@ -85,14 +97,18 @@ function canonicalMap(seed: CursorSeed): Record<string, string> {
 	return Object.fromEntries(entries);
 }
 
-function parseExisting(path: string): Record<string, string> {
+function readCursorFile(path: string): {
+	bytes: string;
+	map: Record<string, string>;
+} {
 	const stat = lstatSync(path);
 	if (stat.isSymbolicLink())
 		throw new Error("cursor target must not be a symlink");
 	if (!stat.isFile()) throw new Error("cursor target must be a regular file");
 	if ((stat.mode & 0o077) !== 0)
 		throw new Error("cursor target must be owner-only");
-	const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+	const bytes = readFileSync(path, "utf8");
+	const value: unknown = JSON.parse(bytes);
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error("existing cursor is invalid");
 	}
@@ -107,16 +123,21 @@ function parseExisting(path: string): Record<string, string> {
 	) {
 		throw new Error("existing cursor is invalid");
 	}
-	return map as Record<string, string>;
+	return { bytes, map: map as Record<string, string> };
+}
+
+export function readLeadInboundCursor(path: string): Record<string, string> {
+	return readCursorFile(path).map;
 }
 
 function relation(
 	current: Record<string, string>,
 	seeded: Record<string, string>,
+	exactKeys = true,
 ): "equal" | "advanced" | "conflict" {
 	const currentKeys = Object.keys(current).sort();
 	const seedKeys = Object.keys(seeded).sort();
-	if (JSON.stringify(currentKeys) !== JSON.stringify(seedKeys))
+	if (exactKeys && JSON.stringify(currentKeys) !== JSON.stringify(seedKeys))
 		return "conflict";
 	let advanced = false;
 	for (const key of seedKeys) {
@@ -148,8 +169,7 @@ export function seedLeadInboundCursor(input: {
 	const bytes = `${JSON.stringify(map)}\n`;
 	const digest = sha256(bytes);
 	if (existsSync(input.path)) {
-		const currentBytes = readFileSync(input.path, "utf8");
-		const current = parseExisting(input.path);
+		const { bytes: currentBytes, map: current } = readCursorFile(input.path);
 		const state = relation(current, map);
 		if (state === "equal") {
 			return {
@@ -209,6 +229,25 @@ export function seedLeadInboundCursor(input: {
 	};
 }
 
+export function verifyPreexistingLeadInboundCursor(input: {
+	path: string;
+	seed: CursorSeed;
+}): PreexistingCursorResult {
+	if (!isAbsolute(input.path))
+		throw new Error("cursor target must be absolute");
+	const map = canonicalMap(input.seed, false);
+	const { bytes, map: current } = readCursorFile(input.path);
+	if (relation(current, map, false) === "conflict")
+		throw new Error("existing cursor conflicts with the migration seed");
+	return {
+		status: "preexisting",
+		migrationId: input.seed.migrationId,
+		sha256: sha256(bytes),
+		seedSha256: sha256(`${JSON.stringify(map)}\n`),
+		channels: Object.keys(map).length,
+	};
+}
+
 function inputFile(path: string): CursorSeed {
 	if (!isAbsolute(path)) throw new Error("cursor seed input must be absolute");
 	const stat = lstatSync(path);
@@ -230,10 +269,15 @@ function flag(argv: readonly string[], name: string): string {
 }
 
 export function main(argv = process.argv.slice(2)): number {
-	const result = seedLeadInboundCursor({
+	const input = {
 		path: flag(argv, "--path"),
 		seed: inputFile(flag(argv, "--input")),
-	});
+	};
+	const preexisting = argv.filter((arg) => arg === "--preexisting").length;
+	if (preexisting > 1) throw new Error("duplicate --preexisting");
+	const result = preexisting
+		? verifyPreexistingLeadInboundCursor(input)
+		: seedLeadInboundCursor(input);
 	process.stdout.write(`${JSON.stringify(result)}\n`);
 	return 0;
 }

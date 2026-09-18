@@ -21,14 +21,15 @@ raya_standard_sha256() {
 }
 
 raya_standard_seed_inbound_cursor() {
-  local cursor_path="$1" input_path="$2"
+  local cursor_path="$1" input_path="$2" mode="${3:-}"
   [[ -n "$RAYA_STANDARD_SEED_TOOL" && -f "$RAYA_STANDARD_SEED_TOOL" \
     && ! -L "$RAYA_STANDARD_SEED_TOOL" ]] || return 64
   raya_standard_owner_file "$input_path" || return 65
   command -v "$RAYA_STANDARD_NODE_BIN" >/dev/null 2>&1 \
     || [[ -x "$RAYA_STANDARD_NODE_BIN" ]] || return 69
-  "$RAYA_STANDARD_NODE_BIN" "$RAYA_STANDARD_SEED_TOOL" \
-    --path "$cursor_path" --input "$input_path"
+  local args=(--path "$cursor_path" --input "$input_path")
+  [[ "$mode" != preexisting ]] || args+=(--preexisting)
+  "$RAYA_STANDARD_NODE_BIN" "$RAYA_STANDARD_SEED_TOOL" "${args[@]}"
 }
 
 raya_standard_manifest_checkpoint() {
@@ -48,9 +49,20 @@ raya_standard_manifest_checkpoint() {
 }
 
 raya_standard_preinstall_ready() {
-  local manifest="$1" cursor_path="$2" expected="" actual=""
+  local manifest="$1" cursor_path="$2" expected="" actual="" input="" receipt=""
   raya_standard_manifest_checkpoint "$manifest" P4b || return 1
   [[ -f "$cursor_path" && ! -L "$cursor_path" ]] || return 1
+  if jq -e '.cursor.status == "preexisting"' "$manifest" >/dev/null 2>&1; then
+    input="$(jq -er '.cursor.seed_input | select(type == "string" and startswith("/"))' "$manifest")" || return 1
+    receipt="$(raya_standard_seed_inbound_cursor "$cursor_path" "$input" preexisting)" || return 1
+    jq -e --arg migration "$(jq -r .migration_id "$manifest")" \
+      --arg expected "$(jq -r .cursor.sha256 "$manifest")" '
+      ($manifest[0].unresolved | length) == 0 and
+      .status == "preexisting" and .migrationId == $migration and
+      .seedSha256 == $expected and (.sha256 | test("^[0-9a-f]{64}$"))
+    ' --slurpfile manifest "$manifest" <<<"$receipt" >/dev/null 2>&1
+    return
+  fi
   jq -e '
     (.unresolved | length) == 0
     and (.cursor.status == "seeded" or .cursor.status == "already_seeded")
