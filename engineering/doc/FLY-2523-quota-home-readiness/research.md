@@ -104,3 +104,7 @@ Lead通过aa341d63批准桌面凭据证明另单；2523只证注册home，global
 生产频道阴性不能只比较当前一个常量。slot emitter 将读取 canonical `${HOME}/.flywheel/projects.json`，收集 production projects 内的 Discord snowflake 频道字段；生产配置缺失、不可解析或 slot channel 与任一生产频道相同都 fail closed。测试用独立 HOME 中的 production projects fixture 证明该 guard，不读取或修改真实配置。
 
 可复现驱动使用独立的 slot 子目录，保留实际 slot projects 与 `.env` 的 Lead/token 绑定；roster/policy/home/state/process-manager 都是该子目录 fixture。severe 通过一个超过一天、无满足 receipt 的 obligation 触发；warning 通过同一 obligation 下的上游 policy failure 触发。这样验证的是 cycle 的两个分支与真实 shell payload，而不是手工伪造两条 Discord 文本。
+
+## 2026-09-18 design 重派校准
+
+继承 `f0ad7e677` 及两次有效 R2 APPROVED，保留上文设计和实现历史。最新 Lead G/A/B/C/D/E/K 判据及与旧条款的优先关系见 [design-correction.md](design-correction.md)。该补充只校准验收与激活边界，不以本轮文档交接宣称 QA 或生产完成。

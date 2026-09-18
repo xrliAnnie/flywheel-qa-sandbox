@@ -57,3 +57,7 @@ Lead 返工 `rework:0557b89044f3bbe04f3c8bc42c497efe19a90ca185a54d0165e872ea8bc3
 4. 提供 slot-local 驱动，分别构造 overdue obligation 和上游 policy failure，通过真实 cycle + shell emitter 发 severe、warning 两条；二者都不传 mention，Discord payload 的 `allowed_mentions.parse` 必须为空。
 
 拒绝的方案：仅在 QA 脚本里直接 curl（绕过被测路由）；允许任意 env channel（无法证明生产频道拒绝）；让所有 `--alerts` slot 自动开 rider（会在无 fixture 时制造启动噪音）。
+
+## 2026-09-18 design 重派校准
+
+继承 `f0ad7e677` 及两次有效 R2 APPROVED，保留上文设计和实现历史。最新 Lead G/A/B/C/D/E/K 判据及与旧条款的优先关系见 [design-correction.md](design-correction.md)。该补充只校准验收与激活边界，不以本轮文档交接宣称 QA 或生产完成。

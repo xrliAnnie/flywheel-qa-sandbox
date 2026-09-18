@@ -288,3 +288,7 @@ Lead已回答aa341d63-0fb2-4982-acb6-44a95efe148b：桌面凭据来源另单负�
 - severe 与 warning 都走同一实际 cycle/emitter；没有直接 curl 伪证。
 - 所有新写入仅在 worktree 或 `/tmp/flywheel-test-slot-N`；生产配置只读用于 channel collision guard。
 - 本节无 TBD/TODO，无新增调度器，也未扩展到 QA 截图、生产激活或真实 home。
+
+## 2026-09-18 design 重派校准
+
+继承 `f0ad7e677` 及两次有效 R2 APPROVED，保留上文设计和实现历史。最新 Lead G/A/B/C/D/E/K 判据及与旧条款的优先关系见 [design-correction.md](design-correction.md)。该补充只校准验收与激活边界，不以本轮文档交接宣称 QA 或生产完成。
