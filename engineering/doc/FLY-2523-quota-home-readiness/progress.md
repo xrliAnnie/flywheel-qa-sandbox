@@ -1,13 +1,13 @@
 ---
 issue: FLY-2523
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-18T08:26:41.967Z
-nextStep: Implement registered-home readiness evidence while preserving global unknown
+phaseCursor: 5/6
+updated: 2026-09-18T08:50:25.824Z
+nextStep: Run aggregate verification, exact-head code review, then milestone/PR handoff
 chunks: []
 pointers: {}
 ---
 
 # FLY-2523 progress
-**phase**: implement (4/6)
-**next**: Implement registered-home readiness evidence while preserving global unknown
+**phase**: implement (5/6)
+**next**: Run aggregate verification, exact-head code review, then milestone/PR handoff
