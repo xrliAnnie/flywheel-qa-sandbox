@@ -10,11 +10,11 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 验收分为可独立交付的机制与跨单恢复依赖，两者不混称DONE：
 
 - **机制交付判据**：注册派生inventory、safe anytime attempt、持久done/already-satisfied回执、逾期真实告警、全部home真实拓扑+同digest回执+真实readiness checker、正式activation守卫和反例测试均通过。implement可提交机制交付证据；设计节点的DONE只指审查批准、HTML交付、文档提交及phase_design_complete，不表示生产目标完成。
-- **完整issue端到端判据**：在FLY-2729部署/独立验收后，才执行受控flag activation和isolated usage-limit恢复验证（包含daemon换代及新token生效）。FLY-2729 pending时，明确记录activation/recovery为dependency-pending并保持off，交接后持续保留该验收项；不得把它删掉或把机制交付写成全单生产DONE。FLY-2729落地后这一路径可继续，因此不是永远无法完成。readiness ready=true只是必要条件，必须与全部home的当场拓扑和同digest满足回执共同通过。
+- **完整issue端到端判据**：在FLY-2729部署/独立验收后，才执行受控flag activation和isolated usage-limit恢复验证（包含daemon换代及新token生效）。FLY-2729 pending时，明确记录activation/recovery为dependency-pending并保持off，交接后持续保留该验收项；不得把它删掉或把机制交付写成全单生产DONE。FLY-2729不是唯一条件：还必须解决R1指出的roster分叉、无lease resident绑定和未知桌面reader；只有全部前置证据满足才可继续，详见§13。readiness ready=true只是必要条件，必须与全部home的当场拓扑和同digest满足回执共同通过。
 
 ## 2. 固定输入、身份与状态模型
 
-在 repo 新增 `scripts/config/codex-quota-home-policy.json`，固定两条 Runner project/role（flywheel/eng_design、flywheel/implement），Lead 部分从受信任 projects.json 中 backend=codex-app-server 的已注册身份派生，并逐个调用 resident-codex-lead-recover --authority 解析 home。只纳入宿主存在且通过普通目录/注册身份验证的home；registered却缺失或authority失败必须fail loud，不能静默过滤后生成看似完整的清单。当前为以下五家。materializer 生成 `~/.flywheel/codex-quota/approved-homes.json` 的 `{home,ownership}[]` 给旧receipt脚本。新Lead纳入只能由已生效注册表授权，未知live home禁止自动收编并立即工程告警；删除entry必须确认无process/lease，未知不丢弃旧obligation。每次inventory改变计算新digest；未完成旧home保留原enrolledAt，新home记录注册/首次发现时间，重启不重置。新digest要求重新观察所有homes以取得当前digest回执，不能复用旧批准文件。拒绝../、symlink祖先、重复home/身份、非普通目录和未知backend。
+在 repo 新增 `scripts/config/codex-quota-home-policy.json`，固定两条 Runner project/role（flywheel/eng_design、flywheel/implement），Lead 部分与真实readiness collector共享新增的 `packages/teamlead/src/codex-quota/credential-home-roster.ts` 中 `resolveCodexCredentialHomeRoster(projects, authority)`；它从受信任 projects.json 中 backend=codex-app-server 的已注册身份派生，并逐个调用 resident-codex-lead-recover --authority 解析 home。只纳入宿主存在且通过普通目录/注册身份验证的home；registered却缺失或authority失败必须fail loud，不能静默过滤后生成看似完整的清单。当前为以下五家。materializer 生成 `~/.flywheel/codex-quota/approved-homes.json` 的 `{home,ownership}[]` 给旧receipt脚本。新Lead纳入只能由已生效注册表授权，未知live home禁止自动收编并立即工程告警；删除entry必须确认无process/lease，未知不丢弃旧obligation。每次inventory改变计算新digest；未完成旧home保留原enrolledAt，新home记录注册/首次发现时间，重启不重置。新digest要求重新观察所有homes以取得当前digest回执，不能复用旧批准文件。拒绝../、symlink祖先、重复home/身份、非普通目录和未知backend。
 | id（固定机器键） | user-root relative path | owner identity |
 |---|---|---|
 | flywheel/eng_design | .flywheel/codex-homes/agents/flywheel/eng_design | marker.project=flywheel, role=eng_design |
@@ -22,6 +22,8 @@ Issue: FLY-2523 (https://linear.app/geoforge3d/issue/FLY-2523/部署-codex-额�
 | flywheel/codex-infra-bot-lead | .codex-infra-bot | resident-codex-lead-recover --project flywheel --lead codex-infra-bot-lead --authority |
 | growth/mufasa-lead | .codex-mufasa | 同入口，project=growth, lead=mufasa-lead |
 | raya/raya | .codex-raya | 同入口，project=raya, lead=raya |
+
+新credential-home roster只描述凭据归属，明确不使用codexResidencyPatrol/canSpawnRunners/companion作为名册筛选条件。`findResidentCodexLeadTargets`继续只供原resident巡检使用，不扩该巡检到Raya。修改bridge/plugin.ts的quota collector装配和materializer，使两者从同一个resolver结果取得完全相同的Lead tuple/home集合；resolver一次失败两边都fail closed。T5用Raya缺codexResidencyPatrol且authority可验证的fixture，断言派生Lead集合等于collector leadTargets，Raya active无Runner lease仍按Lead规则校验。
 
 每次处理 Lead 先比对 authority 返回的 codexHome，不能从 basename 或显示名推身份。independent 不作为默认修复方式；若后续真有独立账号授权，另变更 inventory 并重新走审查/独立 chain 验证。
 
@@ -78,7 +80,7 @@ Lead 首选实际 restart window：`restart-services.sh` 的 `lead_restart_wait_
 
 ## 4. 接入已有节律，避免再忘
 
-1. `bridge/plugin.ts` 现有 `onHealthTick` 与 boot 检查并列调用 reconcile；复用 GatePoller health cadence，不创建 timer。单进程 single-flight，跨进程外置 locks；有限时子进程（每轮最多30秒，逐家处理，忙即退出），不 await 慢操作阻塞 GatePoller。无 quota flag 依赖——flag off 正是需要修复的状态。
+1. `bridge/plugin.ts` 现有 `onHealthTick` 的底层节拍实际为3000ms×20，约每60秒；不是每小时。新增同一callback内的独立 `maybeReconcileCodexHomes()`，持久lastAttemptStartedAt节流为3600秒，boot读同一timestamp，不因重启重置。30秒重复tick、并发boot、进程重启都不能额外启动；due告警用同一轮。updater/restart-window显式机会可以提前调用，仍受跨进程互斥；它们更新lastAttemptStartedAt避免紧接health重复。独立挂载此callback，不受codexHealthEnabled=!VITEST门控；原有reportCodexGlobalHealth继续保持自己的门控。测试注入clock/fixture collector，不能VITEST下意外触达生产。复用GatePoller节拍，不创建timer。单进程 single-flight，跨进程外置 locks；有限时子进程（每轮最多30秒，逐家处理，忙即退出），不 await 慢操作阻塞 GatePoller。无 quota flag 依赖——flag off 正是需要修复的状态。
 2. `scripts/update-flywheel.sh:updater_run_launchd_then_cycle` 调同一 reconcile + deadline checker，放在 fetch/deploy/current return 之前。即使当天没有新代码，检查照跑。失败记收据/告警，不改变现有班车成败或自动加重启。
 3. `scripts/restart-services.sh` build 成功后、Bridge restart 前做 managed bounded attempt；每席 Codex Lead 在上述真实停机点做 targeted attempt。后续正常启动恢复仍由既有 restart 控制。机制不为迁移强停任何活进程，不抢外来 admission pause。
 4. 同一操作两个触发重叠：跨进程锁保护，第二次写 skipped/lock_busy；不能重复 backup/link。standalone updater 不依赖 Bridge 在线才能留证或告警。
@@ -97,7 +99,9 @@ deadline 以 config.enrolledAt（或可信更早 pendingAt）为基准，不以�
 
 **硬红：FLY-2729 未落地并证明相关 daemon 重载新 token 生效之前，codex_quota_auto_switch 必须保持 off。** 这是Lead对问题5b425684-55e5-42db-a2c9-90727afed7ec回复新增的正式前置条件。FLY-2523可以交付迁移/回执/告警及设计阶段，但不能把这些当作激活许可。
 
-activation守卫新增 `daemonRecoveryDependencyReady`：从现有部署账本取得FLY-2729对应merge SHA，验证当前实际deployed SHA包含该提交，且引用独立QA的隔离daemon换代+新凭据后续请求成功证据；缺失、失败、陈旧构建或仅issue状态为Done均拒绝`dependency_not_ready:FLY-2729`。不接受命令行boolean或自然语言“已落地”覆盖。使用现有部署/QA证据读取入口，若没有可验证证据则保持off并报告，不在本单重写2729实现。该检查和home/readiness检查一起在正式flag off→on入口执行，任何UI/CLI同门；off操作永远不受此依赖阻断。
+activation守卫新增 `daemonRecoveryDependencyReady`：从现有deployment_events取得FLY-2729对应merge SHA，验证当前实际deployed SHA包含该提交，且引用下述被独立QA正式提交并绑定tested head的daemon换代+新凭据后续请求成功证据；缺失、失败、陈旧构建或仅issue状态为Done均拒绝`dependency_not_ready:FLY-2729`。不接受命令行boolean或自然语言“已落地”覆盖。使用现有部署/QA证据读取入口，若没有可验证证据则保持off并报告，不在本单重写2729实现。证据合同由2729 QA生产、2523只消费，不能自行造成功回执：不可变JSON存于 `~/.flywheel/state/qa-evidence/FLY-2729/<testedHeadSha>/<sha256>.json`，file<=64KiB、0600、目录0700、禁止symlink/路径逃逸。schemaVersion=1，issueId=FLY-2729，testedHeadSha，qaExecutionId，observedAt，scenario=isolated_usage_limit，homes数组（homeId、daemonBefore/After的pid+startIdentity、targetAccountKey的非秘密标识、requestAfterReload.ok=true与requestId、leadPidUnchanged=true、threadUnchanged=true、windowUnchanged=true），result=PASS；全字段严格验证，daemon before/after不能相同。对应引擎接受的 `workflow_claims` 行必须predicate=qa_passed、subject_kind=git_head、subject_digest=testedHeadSha、issuer_execution_id=qaExecutionId，evidence.summary含精确机器标记 `FLY2729_DAEMON_EVIDENCE sha256=<digest> path=<bounded absolute path>`。读取并哈希文件，再和正式claim绑定比对；只有文件、只有PASS或只有issue Done都不够。使用正式PR/land证据连接QA testedHeadSha与merge SHA（squash不能假设祖先）；部署账本连接merge与deployed SHA。缺映射拒绝，不拿git当前branch猜。该生产合同已报Lead送2729执行；若2729未交此证据，保持off。
+
+该检查和home/readiness检查一起在正式flag off→on入口执行，任何UI/CLI同门；off操作永远不受此依赖阻断。
 
 五家满足后封装现有生成器，不另造 schema：
 
@@ -118,6 +122,8 @@ node scripts/codex-quota-readiness-receipt.mjs   --approved-homes "$FLY2523_APPR
 每任务先提交针对反例的 failing test，确认失败归因于缺失行为，再最小实现、聚焦回归、独立 commit。不要在本设计节点运行实现。
 
 ### T1 — inventory、时钟与 receipts
+
+inventoryDigest必须与现有生成器/collector逐字相同：`sha256(JSON.stringify(homes.map(({home,ownership})=>({home,ownership})).sort((a,b)=>a.home.localeCompare(b.home))))`。id、enrolledAt、owner与checkedAt全部排除；抽出同一导出函数给materializer/reconcile/receipt/collector使用，不引入第二个同名digest。跨实现测试用乱序、非ASCII绝对路径、额外metadata，断言三者digest完全一致。
 
 新增 config、`codex-home-reconcile.ts` 与 `test/codex-home-reconcile.test.ts`，导出纯 `isOverdue(enrolledAt,days,now,satisfied)` 和 receipt validator。外置路径拒绝 symlink，atomic+fsync，manifest 规范排序 digest。
 
@@ -142,7 +148,7 @@ expect(validateReceipt({ ...valid, inventoryDigest: other })).toEqual(false);
 
 新增 `packages/teamlead/src/codex-home-launch-fence.ts`，将 TS 与 shell launcher 共同调用的窄 CLI 放 `scripts/codex-home-launch-fence.mjs`；接入第3节所有真实子进程启动 consumer。先用 barrier 测试 pause 在 spawn 前，另一进程 reconcile 必须 skipped，反向持 migration mutex 时启动不得 spawn。旧启动覆盖未知必须 skipped，不放行。
 
-修改 bridge/plugin.ts health callback、update-flywheel.sh、restart-services.sh；可提取 `scripts/lib/codex-home-reconcile.sh` 保持主脚本薄。调用点使用既有bounded-run.sh包住30秒总预算（包含child退出确认），显式捕获退出码：`if ! bounded_reconcile_attempt; then record_reconcile_failure_and_alert; fi`，语义等价有日志的`|| true`，不得让set -e吞掉后面的controlled-wave arm/bootstrap。T3硬红新增：helper非零、抛错、超时、child收到TERM不退出需KILL；确认child PID/start已终止且自有锁释放后，原arm+bootstrap恰执行一次。若连KILL后也不能确认child退出，保持迁移fence、报警并走既有restart失败恢复门，不可一边允许旧child写一边启动新daemon；不能把此不可证明状态伪称“正常恢复”。这属于安全失败的显式异常而非静默挂死。
+修改 bridge/plugin.ts health callback、update-flywheel.sh、restart-services.sh；可提取 `scripts/lib/codex-home-reconcile.sh` 保持主脚本薄。现有bounded-run.sh不能证明后代已退出：direct child退出会提前杀watchdog，KILL步可能不运行，因此不直接当安全fence。新增本机制私有的 `scripts/lib/codex-home-reconcile-process.mjs` 一次性子进程管理器（不是scheduler），总预算30秒：spawn独立process group，保存PID/start identity与受控子进程集合；25秒发TERM、1秒后由父管理器独立发KILL（不随direct-child exit取消），余下4秒检查PGID为空、已记录PID/start全部dead；超时/无法确认产生exit_unproven并保持fence。进程逃逸新session/身份无法证明视为exit_unproven，不能正常释放。正常退出也执行后代检查。调用点用该管理器包住30秒总预算（包含child退出确认），显式捕获退出码：`if ! bounded_reconcile_attempt; then record_reconcile_failure_and_alert; fi`，语义等价有日志的`|| true`，不得让set -e吞掉后面的controlled-wave arm/bootstrap。T3硬红新增：helper非零、抛错、超时、child收到TERM不退出需KILL；确认child PID/start已终止且自有锁释放后，原arm+bootstrap恰执行一次。若连KILL后也不能确认child退出，保持迁移fence、报警并走既有restart失败恢复门，不可一边允许旧child写一边启动新daemon；不能把此不可证明状态伪称“正常恢复”。这属于安全失败的显式异常而非静默挂死。
 
 新集成测试 `scripts/__tests__/codex-home-reconcile-cadence.test.sh`，验证 updater current/fetch-failed、Bridge health、Lead quiescence失败/成功、 detached Codex 仍活时、原流程恢复。不执行真实 launchctl，夹具 stub 显式记录 call order。运行相关 updater-trigger-policy、lead lifecycle 与 codex home launcher regression。
 
@@ -154,7 +160,7 @@ expect(validateReceipt({ ...valid, inventoryDigest: other })).toEqual(false);
 
 ### T5 — ready与activation守卫
 
-新增 check/activate wrappers，提取 collector options 单源，`packages/teamlead/src/bridge/flag-routes.ts` apply-requested之前的off→on守卫及`src/__tests__/flag-routes.test.ts` tests。复用 readiness-receipt.test.sh；新增 FLY-2729未部署/无daemon生效QA证据但五家全ready仍拒绝on、off始终允许、missing-one receipt、old digest、pending残留、unapproved active home、unknown comm、错误build、wrong state root、flag revision冲突、kill-switch随后关回不重开。真实 checker+fixture collector，不能 stub ready=true 来证明完整路径。运行 teamlead 的 host-readiness、codex-quota-readiness、runtime、feature-flag 聚焦 suites。
+新增 check/activate wrappers，提取 collector options 单源，`packages/teamlead/src/bridge/flag-routes.ts` apply-requested之前的off→on守卫及`src/__tests__/flag-routes.test.ts` tests。复用 `scripts/__tests__/codex-quota-readiness-receipt.test.sh`；新增 FLY-2729未部署/无daemon生效QA证据但五家全ready仍拒绝on、off始终允许、missing-one receipt、old digest、pending残留、unapproved active home、unknown comm、错误build、wrong state root、flag revision冲突、kill-switch随后关回不重开。真实 checker+fixture collector，不能 stub ready=true 来证明完整路径。运行 teamlead 的 host-readiness、codex-quota-readiness、runtime、feature-flag 聚焦 suites。
 
 ### T6 — 交接与生产验收（后续节点）
 
@@ -196,3 +202,30 @@ effective reviewVerdict、审查questionId、最终HTML URL与发布核验放 pr
 首请求edf3b199 / d7ab6f48返回no_verdict（没有有效审查结论），以下只是可读raw反馈处置，不伪称findingKey或治理裁决。范围/DONE歧义已在§1分两段，完整生产目标仍保留；restart超时退出/恢复反例已加入T3；drained checker不足已显式补全部拓扑+回执；告警copy/contract/shell消费者已补T4。
 
 MEDIUM Lead-launch-fence-blast-radius：现有三家Lead确实无需写入。建议“全部Lead永远只读”会改变本单safe-anytime契约及未来注册派生home的收尾能力，因此暂保留写入所需的startup fence，只在实际需要变更的home使用；已满足路径零触碰启动。此项报Lead确认是否进一步收窄；不把审查建议当已批准scope削减。
+
+## 12. 有效审查R1与Lead范围裁定
+
+2026-09-18本轮有效reviewVerdict=CHANGES_REQUESTED，request=d7ab6f48-fe2a-458b-9b31-95b9a1896a7e。HIGH raya-lead-roster-divergence：本单共享credential-home roster修复，原resident patrol名册保持不变，禁止通过给Raya盲加patrol=true回避；T5新增集合一致性测试。HIGH readiness-ready-unreachable-on-host：桌面Codex无CODEX_HOME、keyed resident进程无lease两类已知阻碍须明确归属后重审，不能只等待2729就宣布可开。
+
+Lead问题0d98895d-f500-4375-afe1-65d7b82123f8明确保留Lead fence：已满足不等于不变量；fence在当前状态下no-op，保留用于未来漂移安全收敛。MEDIUM lead-launch-fence-blast-radius保留在审查记录，按此范围决定继续；该prose是设计范围指令，不冒充server review-ruling或抹掉finding。Lead正常结果只允许already-satisfied、skipped+原因、done+回执；I/O失败是外置attempt失败诊断，不触发第四种修复动作。本单绝不为了满足home而重启Lead/动Lead进程。daemon恢复实现归2729且只走remote-control stop+既有supervisor。
+
+MEDIUM keyed-home-no-drain-window：不虚构当前implement的自然空闲频率，没有采到可支持SLO的数据。仅安全观察不能保证固定期限完成；持续忙则持续skipped并在N天告警，正是founder指定的行为。role级自动pause会改launch admission政策，未获本单授权，不暗加。可收敛条件写成可测的liveness：fixture连续busy三轮均零写入；第四轮真实idle后在下一受控机会完成，无人工重发命令。生产一直busy时保留未完成并按时告警，不声称已迁移。
+
+## 13. R1 HIGH2：真实进程与home权威
+
+### keyed resident无lease的只读一致性修复（本单）
+
+正常启动 `packages/edge-worker/src/Blueprint.ts:993` 已走admitCodexAgentHome；lease缺失不是新正常语义。collector保持原lease匹配路径，新增只读且更严格的resident binding证据路径，既不造lease也不修改admission lease语义：
+1. 从StateStore当前execution/runtime/workflow node绑定取得project/role/execution，和CommDB running或phase_keep_alive身份一致；不能以进程env自报代替。
+2. `resolveExecutionCodexHome`（claude-runner/src/codex-home.ts:2308）核对持久session.json.codexAgentHome与期望project/role、marker及精确路径。
+3. `readCodexLaunchSnapshot`（CodexTmuxAdapter.ts:398）校验该execution的持久launch状态。
+4. `probeCodexDaemonEvidence`（codex-daemon-runtime.ts:314）通过确定性execution socket、持久daemon PGID、当前内核socket holder/PGID、PID start identity证明是该执行的活daemon。env与该证据矛盾则unknown；同execution的其它进程只在可证明同一持久launch或TUI child关系时覆盖，任一未覆盖Codex进程继续unknown。
+5. 所有匹配成功才记该home active，并把该exec计入matched；缺lease诊断保留（不影响无写入原则），缺任一强证据仍unknown且报警。迁移操作仍看进程active而跳过，不能借此触碰在用home。
+
+新增 `packages/teamlead/src/codex-quota/resident-home-evidence.ts` 作为上述窄adapter，从plugin注入真实StateStore/CommDB/launch/socket探针；host-readiness.ts和readonly readiness CLI共用；collector不得写任何home。T5新增真实fixture形状：无lease但全部持久+socket证据→active；env-only、错project/role、stale snapshot、PID复用、socket holder错组、未匹配CommDB或未覆盖process→unknown。若已部署旧resident连这些持久证据都缺，不能扩大兼容路径，按Lead90a807c5要求停下报精确边界，不修活daemon、不造lease。
+
+### 桌面reader：已尝试的只读证据与边界
+
+作者本轮lsof只读核查：PID1612 executable=/Applications/ChatGPT.app/Contents/Resources/codex，codesign身份OpenAI OpCo/2DC432GLL2；打开canonical目录下logs_2.sqlite、queue_1.sqlite与tmp/arg0/.../.lock。这些证明其使用该状态目录，但不独立证明其内存凭据来源/账号chain。SQLite还可经CODEX_SQLITE_HOME搬离CODEX_HOME；官方auth支持file/keyring/auto/ephemeral，不能仅凭路径或缺环境变量推凭据authority。源码目前没有desktop credential attestation adapter。未读取token、未给活app-server发RPC或重启。
+
+向Lead问题aa341d63-0fb2-4982-acb6-44a95efe148b请求边界裁定：若必须新建desktop runtime正向证据producer，按90a807c5约定由Lead调整验收/另定归属；未裁定前维持全宿主checker unknown、flag off。禁止把“已证明五家”偷换成global ready。T5必须包含无CODEX_HOME桌面进程fixture，当前行为应可复现unknown；缺权威不能写成PASS。该条的最终处置必须得到Lead明确回答后才提交下一轮设计审查。

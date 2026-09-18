@@ -68,3 +68,18 @@ Lead 2026-09-18 04:14Z Raya 观察：canonical换号后运行中daemon仍缓存�
 ## 依赖归属更新
 
 Lead已创建FLY-2729（FLY-2072下，High）处理Lead daemon换代/新token生效缺口。其回复5b425684要求：2729未落地不得on，已作为plan第6节正式flag写门和T5阴性测试。此节点不实现2729、不启动它。
+
+## R1有效审查纠正（当前源码已复核）
+
+- findResidentCodexLeadTargets额外要求codexResidencyPatrol=true、canSpawnRunners=false及recognizedTier；Raya注册无patrol字段，故quota collector与新清单分叉。resident-codex-lead-recover的standard authority fallback能识别Raya，这不等于旧collector名册已包含它。修复归本单共享credential-home roster，不扩大原巡检政策。
+- GatePoller健康tick实际默认3000ms×20≈60秒；原“小时巡检”来自旧brief，现纠正为复用60秒tick并在callback内持久节流3600秒。
+- scripts/lib/bounded-run.sh的direct-child wait返回会取消watchdog，不能作后代终止证明；计划改为本机制私有的一次性进程管理器。
+- reviewer提供生产ps只读观察：ChatGPT桌面codex app-server无CODEX_HOME；eng_design约10、implement约13个带执行ID的live app-server且lease目录空。作者当前沙箱ps被拒（operation not permitted），不将reviewer计数冒充本轮独立采样；源码host-readiness.ts的process_home_unknown、active keyed无lease→unknown路径已独立复核。两类都不是FLY2729解决范围；不得通过忽略未知进程或自动mint lease绕过。Lead归属问题90a807c5待答。
+
+## HIGH2进一步只读核查与官方说明
+
+本轮lsof读取成功：桌面codex PID1612打开~/.codex/logs_2.sqlite、queue_1.sqlite及tmp/arg0/codex-arg0qQqg82/.lock；codesign只读显示OpenAI OpCo签名TeamIdentifier=2DC432GLL2。这支持状态目录归属，但不能证明内存账号或凭据store；不把它升级为ready authority。
+
+[OpenAI认证说明](https://learn.chatgpt.com/docs/auth)明确提供file、keyring、auto、ephemeral存储；file才对应CODEX_HOME/auth.json，ephemeral在进程内存。[环境变量说明](https://learn.chatgpt.com/docs/config-file/environment-variables)分别定义CODEX_HOME和CODEX_SQLITE_HOME。因此从打开SQLite推断credential home是未经证明的推理，本设计拒绝这样放行。
+
+源码强证据：Blueprint.ts:993正常admit；CodexTmuxAdapter.ts:910持久home binding、398 launch snapshot；codex-home.ts:2308 resolver可只读验证keyed旧binding；codex-daemon-runtime.ts:314/329以socket holder+PGID核实活daemon。无leaseresident可新增严格只读adapter，不修改lease语义。桌面尚无同等producer，Lead边界问题aa341d63待答。
