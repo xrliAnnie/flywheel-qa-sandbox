@@ -1,0 +1,36 @@
+Generating single mermaid chart
+
+Error: Failed to launch the browser process!
+[0918/144238.349867:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0918/144238.361579:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.
+[0918/144238.368108:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.1673: Permission denied (1100)
+
+
+TROUBLESHOOTING: https://pptr.dev/troubleshooting
+
+    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)
+    at Interface.emit (node:events:520:22)
+    at Interface.close (node:internal/readline/interface:555:10)
+    at Socket.onend (node:internal/readline/interface:273:10)
+    at Socket.emit (node:events:520:22)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+
+Generating single mermaid chart
+
+Error: Failed to launch the browser process!
+[0918/144246.225812:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0918/144246.226780:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.
+[0918/144246.227849:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.4942: Permission denied (1100)
+
+
+TROUBLESHOOTING: https://pptr.dev/troubleshooting
+
+    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)
+    at Interface.emit (node:events:520:22)
+    at Interface.close (node:internal/readline/interface:555:10)
+    at Socket.onend (node:internal/readline/interface:273:10)
+    at Socket.emit (node:events:520:22)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+

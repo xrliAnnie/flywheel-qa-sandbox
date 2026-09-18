@@ -5,6 +5,11 @@
   "counts": {
     "different_cwd_rows": 12,
     "eligible_usage_rows": 9232,
+    "excluded_compaction_input_rows": 7,
+    "external_input_conflicts": 0,
+    "external_input_duplicate_rows": 0,
+    "external_input_invalid_timestamps": 0,
+    "external_input_key_fallback_rows": 0,
     "invalid_timestamps": 0,
     "invalid_usage_rows": 0,
     "message_duplicate_rows": 4721,
@@ -21,6 +26,67 @@
   "crosscheck_totals_match": true,
   "effective_end_exclusive": "2026-09-18T21:38:41.250775Z",
   "exact_cwd_sha256": "84e24f8274426d8a839753c4899fa4c47be1d28d847380839d26a4cea60cce0d",
+  "external_input_turn_definition": "Distinct user-message UUIDs in the exact CWD and UTC window, excluding tool_result messages and inherited compaction summaries. All model/tool loops following an input remain one external input turn. One input can contain several events; this is not a backend wake/RPC count. Missing UUIDs use a counted source-offset fallback.",
+  "external_input_turns": {
+    "by_utc_day": {
+      "2026-09-17": {
+        "by_source_kind": {
+          "founder_or_mixed_with_founder": 62,
+          "mixed_event_types": 61,
+          "nonreview_or_unknown_gate": 7,
+          "review_gate_text": 15,
+          "runner_ask_or_unclassified": 101,
+          "runner_report_text": 32,
+          "session_failed": 1,
+          "session_started": 13,
+          "stage_changed": 20,
+          "summary_due": 4,
+          "task_notification": 28,
+          "unclassified_external_input": 40,
+          "workflow_claim_recorded": 1
+        },
+        "external_input_turns": 385
+      },
+      "2026-09-18": {
+        "by_source_kind": {
+          "founder_or_mixed_with_founder": 61,
+          "mixed_event_types": 147,
+          "nonreview_or_unknown_gate": 9,
+          "review_gate_text": 30,
+          "runner_ask_or_unclassified": 151,
+          "runner_report_text": 47,
+          "session_failed": 2,
+          "session_started": 36,
+          "stage_changed": 59,
+          "summary_due": 2,
+          "task_notification": 16,
+          "unclassified_external_input": 58,
+          "workflow_claim_recorded": 7,
+          "workflow_replacement_eligibility": 27
+        },
+        "external_input_turns": 652
+      }
+    },
+    "window": {
+      "by_source_kind": {
+        "founder_or_mixed_with_founder": 123,
+        "mixed_event_types": 208,
+        "nonreview_or_unknown_gate": 16,
+        "review_gate_text": 45,
+        "runner_ask_or_unclassified": 252,
+        "runner_report_text": 79,
+        "session_failed": 3,
+        "session_started": 49,
+        "stage_changed": 79,
+        "summary_due": 6,
+        "task_notification": 44,
+        "unclassified_external_input": 98,
+        "workflow_claim_recorded": 8,
+        "workflow_replacement_eligibility": 27
+      },
+      "external_input_turns": 1037
+    }
+  },
   "message_id_primary": {
     "by_utc_day": {
       "2026-09-17": {
@@ -1022,7 +1088,7 @@
     "start_inclusive": "2026-09-17T00:00:00Z"
   },
   "schema_version": 1,
-  "script_sha256": "8dfe2583cf0df58e95a946fc76f5a2a1b3e7e43e944ea83ac57eba8aff3bb0af",
+  "script_sha256": "4e34cdf5a1b6818bca9ee767a63e01899abce2e02f8886e3536764889a1a7c78",
   "source_kind": "claude-jsonl",
   "sources": [
     {

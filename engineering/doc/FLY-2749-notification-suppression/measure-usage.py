@@ -8,8 +8,8 @@ Frozen replay (even if the live files have since grown):
   python3 measure-usage.py --manifest evidence/baseline-usage.json --out /tmp/replay.json
 
 The manifest stores relative filenames, complete-line prefix sizes and SHA-256,
-never transcript content. This is Claude model-request accounting, not a count
-of Lead wakes and not a cross-vendor usage collector.
+never transcript content. Counts external input turns separately from Claude
+model requests; neither metric proves Lead wake count or cross-vendor usage.
 """
 import argparse
 import collections
@@ -58,7 +58,7 @@ def external_kind(content):
             return "review_gate_text" if re.search(r"REVIEW_CODE|REVIEW_DESIGN|review_code|review_design", text) else "nonreview_or_unknown_gate"
         # Restrict output vocabulary: arbitrary transcript text never becomes a label.
         known = {"stage_changed", "session_started", "session_failed", "workflow_replacement_eligibility",
-                 "workflow_claim_recorded", "action_executed", "monitoring_reestablished", "patrol_tick",
+                 "workflow_claim_recorded", "action_executed", "session_monitoring_reestablished", "patrol_tick",
                  "summary_due", "replacement", "alert"}
         return event if event in known else "other_event_type"
     if "## Bootstrap — Lead:" in text:
@@ -99,6 +99,19 @@ def summarize(records):
                                               if row["day"] == day})},
         } for day in days},
     }
+
+
+def summarize_external_turns(records):
+    rows = list(records.values())
+
+    def group(selected):
+        return {"external_input_turns": len(selected),
+                "by_source_kind": dict(sorted(collections.Counter(
+                    row["source_kind"] for row in selected).items()))}
+
+    return {"window": group(rows),
+            "by_utc_day": {day: group([row for row in rows if row["day"] == day])
+                           for day in sorted({row["day"] for row in rows})}}
 
 
 def run():
@@ -143,8 +156,11 @@ def run():
         "different_cwd_rows", "invalid_usage_rows", "missing_identity_rows",
         "eligible_usage_rows", "message_key_fallback_rows", "request_key_fallback_rows",
         "message_duplicate_rows", "request_duplicate_rows",
-        "message_usage_conflicts", "request_usage_conflicts")})
-    by_message, by_request, sources = {}, {}, []
+        "message_usage_conflicts", "request_usage_conflicts",
+        "external_input_duplicate_rows", "external_input_conflicts",
+        "external_input_key_fallback_rows", "external_input_invalid_timestamps",
+        "excluded_compaction_input_rows")})
+    by_message, by_request, external_turns, sources = {}, {}, {}, []
     for entry in entries:
         source_kind = "unknown_inherited_source"
         relative = pathlib.Path(entry["path"])
@@ -183,6 +199,28 @@ def run():
                         isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
                     if not tool_result:
                         source_kind = external_kind(content)
+                        try:
+                            user_timestamp = instant(obj.get("timestamp", ""))
+                        except (ValueError, TypeError, AttributeError):
+                            stats["external_input_invalid_timestamps"] += 1
+                        else:
+                            if start <= user_timestamp < effective_end and obj.get("cwd") == exact_cwd:
+                                if source_kind == "inherited_compaction_summary":
+                                    stats["excluded_compaction_input_rows"] += 1
+                                else:
+                                    user_uuid = obj.get("uuid")
+                                    if isinstance(user_uuid, str) and user_uuid:
+                                        user_key = ("uuid", user_uuid)
+                                    else:
+                                        stats["external_input_key_fallback_rows"] += 1
+                                        user_key = ("source_offset", str(relative), consumed)
+                                    external_row = {"day": user_timestamp.date().isoformat(),
+                                                    "source_kind": source_kind}
+                                    if user_key in external_turns:
+                                        stats["external_input_duplicate_rows"] += 1
+                                        stats["external_input_conflicts"] += external_turns[user_key] != external_row
+                                    else:
+                                        external_turns[user_key] = external_row
                 if obj.get("type") != "assistant":
                     continue
                 if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
@@ -243,6 +281,7 @@ def run():
         "script_sha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
         "source_kind": "claude-jsonl",
         "metric": "deduplicated model requests, not inbound events or Lead wakes",
+        "external_input_turn_definition": "Distinct user-message UUIDs in the exact CWD and UTC window, excluding tool_result messages and inherited compaction summaries. All model/tool loops following an input remain one external input turn. One input can contain several events; this is not a backend wake/RPC count. Missing UUIDs use a counted source-offset fallback.",
         "attribution_method": "All model requests after the last external user input until the next external input; tool_result messages do not reset attribution. Compaction summaries and unknown inherited inputs are explicit. Text categories are descriptive, not suppression authority or proven removable savings.",
         "exact_cwd_sha256": cwd_digest,
         "captured_at": iso(captured),
@@ -253,6 +292,7 @@ def run():
         "capture_boundary": "per-file complete-line prefixes, not an atomic filesystem snapshot",
         "sources": sources,
         "counts": dict(stats),
+        "external_input_turns": summarize_external_turns(external_turns),
         "message_id_primary": message_summary,
         "request_id_crosscheck": request_summary,
         "crosscheck_totals_match": message_summary == request_summary,

@@ -52,3 +52,8 @@ Lead 在 ae5477ac-dea7-4401-86c7-aa256908270a 回答：硬验收改为已证纯�
 
 ## 实现风险
 最大风险是抑制 claim/stop 把待办一起吞掉，其次是只修 lead_events 却留下可领取 mailbox，以及重启后镜像分裂复活。需要双存储幂等恢复、既有 batch 成员冻结、kill-switch 新事件恢复、真实模型零调用负证据。所有策略在桥接层复用，不能为某个Lead或vendor特判。
+
+## 后续分层核查（21:46Z）
+`evidence/guard-reasons.json`：85条 monitoring model 中，76条 running无现有guard，全部在9/13–15；9条ship_parked（其中5条9/16）。#1204 merge是9/15 16:36Z；无guard旧行与部署前历史相容，尚无逐event部署时间证明，不断言它们是当前绕路bug。9/16–18 running恢复样本均audit_only。7天58%是混合历史率，不是当前漏拦率。
+CommDB当前热投影的runner-stop文本有blocked108、awaiting_approval131、done49；这不是lead_events七天3451条文本近似的同一分母，也未覆盖所有归档。两者不可相减或据此宣称零遗漏。原事件payload内容仍保留，安全分类必须联结声明和行动收据。
+最终冻结baseline新增外部输入turn计数：9/17为385轮、1710模型请求；9/18 partial为652轮、2801模型请求，工具结果与7份compaction摘要不作为外部输入。全turn统计不等同消息类型就是无待办证明。
