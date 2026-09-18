@@ -27,3 +27,11 @@ Lead aa341d63裁定已同步plan、exploration、research、HTML和两个Mermaid
 - hosted HTML SHA256=7c382d564951dd5d7a281e2075d1ad4b7ec37bb5c15edf55d2bbbf584cd82f99（nonce/CSP注入造成预期差异）。
 - 页面明确本单不开开关、全局仍有未知项、两处DIAGRAM PENDING LOCAL RENDER；未宣称浏览器视觉QA。
 - URL与核验结果已通过指定DESIGN-HTML ready报告送Lead。
+
+## 2026-09-18 重派设计交付验证
+
+本轮继承 f0ad7e677，最新 main d8b3f3cd5 已无冲突技术同步；没有重做实现。HTML 增至10节/10个评论输入，新增529真实告警取证、阴性判据、激活五条件；历史 home 表标注原06:12Z观察，不当作本轮生产状态。
+
+静态检查通过：10节逐节评论、唯一DOM id、单一精确nonce script、无内联handler、自带CSP meta或外部资源。Node VM 实际执行当前script，覆盖路径隔离localStorage、存储拒绝、5000字符分段（每段<1800且重复指定marker）、新增节标题汇总、clipboard成功/拒绝/缺失六种组合，全部通过。JavaScript未改，新增节自动进入既有汇总。
+
+本轮未运行浏览器视觉QA或重做图形渲染；原两次本地Chromium渲染失败及Mermaid源码/明确占位保留。占位不是529截图，也不是实际流程图已渲染的证据。Lead d707871b 指示托管store suspension时不反复重试，允许记录实际publish-failed并交接；后续仅在托管恢复后重新publish-only和核验，禁止把旧URL当新页发布成功。

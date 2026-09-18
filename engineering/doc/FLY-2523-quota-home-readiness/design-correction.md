@@ -61,10 +61,18 @@ E1 报告逐项列实际退出码与 POST 计数、房号/消息/频道/驱动 J
 
 ## 读数同源与告警等级
 
-本轮只读复核 `packages/teamlead/src/bridge/capacity.ts` 仍产出 Codex `source: null`；`hook-payload.ts` 的 `capacity.quota.codex.source !== null` 仍拒绝非空值。就绪回执是凭据拓扑证明，不是额度用量数值源。本补充不提出新 Codex 数值源；QA 应回归 /api/capacity、巡检和 FLY-2688 accounts builder 一致性，若实现引入非空 source 则明确报依赖未覆盖，不以 ready 字段替换用量。
+本轮只读复核 `packages/teamlead/src/bridge/capacity-snapshot.ts` 仍产出 Codex `source: null`；`hook-payload.ts` 的 `capacity.quota.codex.source !== null` 仍拒绝非空值。就绪回执是凭据拓扑证明，不是额度用量数值源。本补充不提出新 Codex 数值源；QA 应回归 /api/capacity、巡检和 FLY-2688 accounts builder 一致性，若实现引入非空 source 则明确报依赖未覆盖，不以 ready 字段替换用量。
 
 逾期且需要人处理才允许 severe；名册读取失败或观察管道故障只能 warning、不 @founder。两条 slot 测试消息均无 mention。按(单元,原因,UTC日)去重，不能压掉同日新原因；无回执逾期真实发送及破坏条件后变红的测试保留。
 
 ## 本轮交付边界
 
 仅补文档与 founder HTML，并请求当前 activation 的有效设计审查。未执行任何 QA 真发、production home 迁移、登录、flag 写入、重启、部署或 ship。图沿用此前两次本地渲染失败后保留的 Mermaid 源及明确占位，不将其称为截图或浏览器视觉验证。
+
+## Lead 接续裁定与同步证据
+
+问题 `fe089c5f-6cec-4a53-b2c9-71b6469d7632` 明确本次只走 design handoff，原接续指令中的实现工作由后续实现体承担。问题 `d707871b-2fc4-4713-ad25-aa61aa4ad195` 确认无额外设计更正；允许托管失败时记录 DESIGN-HTML publish-failed 并正常 phase_design_complete/park，不因宿主 Blob store suspension 反复重试。
+
+该回复到达前，已按接续指令将 `origin/main@d8b3f3cd571587a1a798eede565076c7db3b91b2` 技术合并为 `993e63bcd`，无冲突，未应用 WIP 或编写 runtime 代码。#1267 放宽登录账号识别，不自动授权新的 home，也不把未登记账号变成自动切号候选；home 清单与账号数是不同维度。定向验证：account identity + home 174/174，CodexTmuxAdapter 130/130，roster/global/registered/Bridge readiness 29/29，receipt shell 正向和拒绝路径通过，相关13包依赖构建通过。初次 Tmux 运行发生在依赖产物生成前，import 失败；构建后单独重跑130/130，不改产品代码。未跑本地全量套件。
+
+这仅是同步后的补充验证，不替代下游完整精确头 CI、code review 和 G/A/B/C/D/E/K QA。当前时刻的 merge-tree 对上述 main 无冲突；下游仍须重采当场 main 与最终被测头。
