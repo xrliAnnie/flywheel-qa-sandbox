@@ -1522,6 +1522,7 @@ export class MailboxQueue {
 							`SELECT COUNT(DISTINCT batch_id) AS count FROM mailbox
 							  WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
 							    AND state = 'LEASED' AND batch_id IS NOT NULL
+							    AND delivery_disposition = 'model'
 							    AND COALESCE(notified_at, delivered_at) IS NULL`,
 						)
 						.get(input.toAgent) as { count: number };

@@ -621,6 +621,42 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(adapter.deliverBatch).not.toHaveBeenCalled();
 	});
 
+	it("removes a quiet row from a fresh mixed batch while delivering the urgent member", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "review-question");
+		enqueueModel(queue, "founder-question");
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const consumer = loop(queue, adapter, {
+			revalidateModel: async (row) =>
+				row.id === "review-question"
+					? {
+							deliver: false as const,
+							disposition: "audit_only" as const,
+							auditDecision: {
+								policyVersion: "notification-v1",
+								reason: "review_gate_owned_by_reviewer",
+								proofRef: "question:review-question",
+								decidedAt: "2099-07-19T12:00:00.000Z",
+							},
+						}
+					: { deliver: true as const },
+		});
+
+		expect(await consumer.tick()).toMatchObject({
+			ok: true,
+			modelConsumed: 1,
+		});
+		expect(queue.getById("review-question")).toMatchObject({
+			state: "QUEUED",
+			delivery_disposition: "audit_only",
+			batch_id: null,
+		});
+		expect(adapter.deliverBatch).toHaveBeenCalledOnce();
+		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
+			expect.objectContaining({ deliveryId: "founder-question#r0" }),
+		]);
+	});
+
 	it("routes bridge protocol separately from Lead model delivery", async () => {
 		const queue = makeQueue();
 		queue.enqueue({
