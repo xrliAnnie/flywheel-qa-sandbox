@@ -1956,6 +1956,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/codex-home-reconcile-cycle.test.sh:kill -0 \"$1\" >/dev/null 2>&1 && exit 0#1",
+		"path": "scripts/__tests__/codex-home-reconcile-cycle.test.sh",
+		"code": "kill -0 \"$1\" >/dev/null 2>&1 && exit 0",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-home-reconcile-process.test.sh:kill -0 \"$1\" >/dev/null 2>&1 && exit 0#1",
+		"path": "scripts/__tests__/codex-home-reconcile-process.test.sh",
+		"code": "kill -0 \"$1\" >/dev/null 2>&1 && exit 0",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/customer-e2e-acceptance.test.sh:kill -0 \"$SERVER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/customer-e2e-acceptance.test.sh",
 		"code": "kill -0 \"$SERVER_PID\" 2>/dev/null || break",
@@ -3552,6 +3564,24 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "scripts/lib/codex-home-reconcile-process.mjs:process.kill(-pgid, 0);#1",
+		"path": "scripts/lib/codex-home-reconcile-process.mjs",
+		"code": "process.kill(-pgid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/codex-home-reconcile-process.mjs:process.kill(-pgid, signal);#1",
+		"path": "scripts/lib/codex-home-reconcile-process.mjs",
+		"code": "process.kill(-pgid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/codex-home-reconcile-process.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/lib/codex-home-reconcile-process.mjs",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "scripts/lib/codex-quota-client.mjs:activeChild?.kill(signal);#1",
 		"path": "scripts/lib/codex-quota-client.mjs",
 		"code": "activeChild?.kill(signal);",
@@ -3999,6 +4029,12 @@
 		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:print) kill -0 \"$DAEMON_PID\" 2>/dev/null ;;#1",
 		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
 		"code": "print) kill -0 \"$DAEMON_PID\" 2>/dev/null ;;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-2523-529-alerts.sh:|| ! kill -0 \"$slot_pid\" 2>/dev/null; then#1",
+		"path": "scripts/qa-fly-2523-529-alerts.sh",
+		"code": "|| ! kill -0 \"$slot_pid\" 2>/dev/null; then",
 		"classification": "qa-only"
 	},
 	{

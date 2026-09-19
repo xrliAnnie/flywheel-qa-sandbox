@@ -368,6 +368,9 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-2033: fail-loud meeting issue/notes/card reconciliation.
 	"meeting_notes_failed",
 	"host_voucher_incident",
+	// FLY-2523: an approved Codex credential home remains unsatisfied past its
+	// durable enrollment deadline. Shell-emitted to the fixed engineering route.
+	"codex_home_migration_overdue",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
 	 * skipped it. A REAL notification is being held back, so someone has to be

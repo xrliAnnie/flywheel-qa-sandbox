@@ -260,6 +260,7 @@ bash -c '
   pause_admission_best_effort() { :; }
   resume_admission_best_effort() { :; }
   stop_bridge() { return 0; }
+  codex_home_reconcile_restart_window() { return 0; }
   log() { :; }
   alert_severe() { :; }
   legacy_swap_retirement_required() { return 0; }

@@ -2,6 +2,7 @@
 # FLY-96: Deploy a test slot (Bridge + Lead) for Discord E2E testing.
 #
 # Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
+#        [--alerts [--codex-home-reconcile]]
 #        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
@@ -169,6 +170,7 @@ REQUESTED_SLOT=""
 MODE="slot"   # FLY-153: slot (default, per-slot channel) | mirror (3-Lead shared channel)
               # FLY-529: roundtable (test #leads-roundtable mirror + auto-thread host)
 ALERTS=0      # FLY-529: --alerts wires the isolated test alert channel (any mode)
+CODEX_HOME_RECONCILE=0 # FLY-2523: explicit QA-only health-rider opt-in (requires --alerts)
 DIGEST_CHANNEL=""  # FLY-727: --digest <id> mounts the daily-digest route on the slot
                    # Bridge (FLYWHEEL_DIGEST_CHANNEL) so a real staging E2E can render
                    # /api/digest/render + deliver to an isolated test channel.
@@ -202,6 +204,8 @@ while [[ $# -gt 0 ]]; do
       MODE="${1#*=}"; shift ;;
     --alerts)
       ALERTS=1; shift ;;
+    --codex-home-reconcile)
+      CODEX_HOME_RECONCILE=1; shift ;;
     --digest)
       DIGEST_CHANNEL="${2:?--digest requires a channel id}"; shift 2 ;;
     --digest=*)
@@ -244,6 +248,11 @@ while [[ $# -gt 0 ]]; do
       echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
+
+if [[ "$CODEX_HOME_RECONCILE" == "1" && "$ALERTS" != "1" ]]; then
+  echo "ERROR: --codex-home-reconcile requires --alerts" >&2
+  exit 1
+fi
 
 # Default branch — sandbox `main` works for most smoke / regression suites.
 FROM_BRANCH="${FROM_BRANCH:-main}"
@@ -1527,6 +1536,7 @@ fi
 # below — this is a double-write, not a relocation.
 FLYWHEEL_PROJECTS_FILE="${SLOT_DIR}/flywheel-projects.json"
 echo "$FLYWHEEL_PROJECTS" > "$FLYWHEEL_PROJECTS_FILE"
+chmod 600 "$FLYWHEEL_PROJECTS_FILE"
 log "Wrote ${FLYWHEEL_PROJECTS_FILE}"
 
 # FLY-1775 pit 5: GET visibility does not prove Send Messages. In a
@@ -2109,6 +2119,35 @@ BRIDGE_EXTRA_ENV+=("DISCORD_GUILD_ID=${GUILD_ID}")
 BRIDGE_EXTRA_ENV+=("TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}")
 BRIDGE_EXTRA_ENV+=(${BRIDGE_EXPLICIT_CALLER_ENV[@]+"${BRIDGE_EXPLICIT_CALLER_ENV[@]}"})
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")
+# FLY-2523: default remains off. The explicit opt-in is allowed only with the
+# slot alert channel and projects binding above. The contract is the sole writer
+# of FLYWHEEL_STATE_DIR; every additional mutable coordinate is slot-local.
+if [[ "$CODEX_HOME_RECONCILE" == "1" ]]; then
+  CODEX_RECONCILE_DRIVER_ROOT="${SLOT_DIR}/state/fly2523-alert-driver"
+  CODEX_RECONCILE_SCHEDULE_ROOT="${SLOT_DIR}/codex-quota/home-migration"
+  mkdir -p "$CODEX_RECONCILE_DRIVER_ROOT" "$CODEX_RECONCILE_SCHEDULE_ROOT"
+  chmod 700 "$CODEX_RECONCILE_DRIVER_ROOT" \
+    "${SLOT_DIR}/codex-quota" "$CODEX_RECONCILE_SCHEDULE_ROOT"
+  CODEX_RECONCILE_SCHEDULE_TMP="${CODEX_RECONCILE_SCHEDULE_ROOT}/.schedule.$$.tmp"
+  printf '{"schemaVersion":1,"lastAttemptStartedAt":"%s","source":"health"}\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')" > "$CODEX_RECONCILE_SCHEDULE_TMP"
+  chmod 600 "$CODEX_RECONCILE_SCHEDULE_TMP"
+  mv "$CODEX_RECONCILE_SCHEDULE_TMP" \
+    "${CODEX_RECONCILE_SCHEDULE_ROOT}/schedule.json"
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=1")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_SLOT=1")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT=${TEST_PROJECT_NAME}")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_LEAD=${AGENT_ID}")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_PROJECTS_FILE=${FLYWHEEL_PROJECTS_FILE}")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_POLICY=${CODEX_RECONCILE_DRIVER_ROOT}/rider-policy.json")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_APPROVED_HOMES=${CODEX_RECONCILE_DRIVER_ROOT}/rider-approved-homes.json")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SOURCE_HOME=${SLOT_DIR}/state/codex-home")
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_PRODUCTION_PROJECTS_FILE=${HOME}/.flywheel/projects.json")
+else
+  # Keep this assignment last in the default branch so ambient or explicitly
+  # forwarded values cannot re-enable production writes in a slot.
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED=0")
+fi
 
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
 # FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible

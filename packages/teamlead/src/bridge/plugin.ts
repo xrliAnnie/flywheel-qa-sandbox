@@ -28,6 +28,7 @@ import {
 	connectDaemonTransport,
 	parseThreadReadTurns,
 	probeCodexDaemonLiveness,
+	probeCodexDaemonProcessBinding,
 	probeCodexRolloutMtime,
 	type RunnerTuiWindowLostEvidence,
 	rawCodexBin,
@@ -35,6 +36,7 @@ import {
 	readCodexLaunchSnapshot,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
+	resolveExecutionCodexHome,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
 	withSyncOpMarker,
@@ -101,11 +103,15 @@ import {
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
-import { createCodexQuotaHostCollector } from "../codex-quota/host-readiness.js";
+import {
+	createCodexQuotaHostCollector,
+	createRegisteredCodexQuotaHostCollectorOptions,
+} from "../codex-quota/host-readiness.js";
 import { createCodexQuotaMaintenance } from "../codex-quota/maintenance.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
 import { checkCodexQuotaReadiness } from "../codex-quota/readiness.js";
+import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
 	type CodexQuotaDispatcherWiring,
@@ -274,6 +280,11 @@ import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
 } from "./codex-global-health.js";
+import {
+	createCodexHomeReconcileHealthRider,
+	isCodexHomeReconcileHealthRiderEnabled,
+	resolveCodexHomeReconcileStateRoot,
+} from "./codex-home-reconcile-rider.js";
 import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
@@ -8425,32 +8436,39 @@ export async function startBridge(
 			codexQuotaAccountRegistry = loadCodexAccountRegistry();
 		return codexQuotaAccountRegistry;
 	};
-	const codexQuotaCollectHomes = createCodexQuotaHostCollector({
-		canonicalHome: codexQuotaCanonicalHome,
-		homesRoot:
-			process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
-			join(homedir(), ".flywheel", "codex-homes"),
-		commRoot: commDbRootDir(),
-		projectNames: projects.map((p) => p.projectName),
-		approvedManifestPath: join(codexQuotaStateRoot, "readiness-receipt.json"),
-		leadTargets: findResidentCodexLeadTargets(projects),
-		credentialIdentity: async (home) => {
-			const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
-			const token = JSON.parse(bytes)?.tokens?.refresh_token;
-			if (typeof token !== "string" || !token)
-				throw new Error("quota_refresh_identity_unavailable");
-			return {
-				...codexQuotaIdentityReader(getCodexQuotaAccountRegistry())(bytes),
-				chainKey: createHash("sha256").update(token).digest("hex"),
-			};
-		},
-		leadAuthorityScript: join(
-			process.env.FLYWHEEL_REPO_ROOT?.trim() ||
-				resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
-			"scripts",
-			"resident-codex-lead-recover.sh",
-		),
-	});
+	const codexQuotaCollectHomes = createCodexQuotaHostCollector(
+		createRegisteredCodexQuotaHostCollectorOptions(projects, {
+			canonicalHome: codexQuotaCanonicalHome,
+			homesRoot:
+				process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
+				join(homedir(), ".flywheel", "codex-homes"),
+			commRoot: commDbRootDir(),
+			projectNames: projects.map((p) => p.projectName),
+			approvedManifestPath: join(codexQuotaStateRoot, "readiness-receipt.json"),
+			residentEvidence: createResidentHomeEvidence({
+				getSession: (executionId) => store.getSession(executionId),
+				resolveExecutionHome: resolveExecutionCodexHome,
+				readLaunchSnapshot: readCodexLaunchSnapshot,
+				probeDaemonProcessBinding: probeCodexDaemonProcessBinding,
+			}),
+			credentialIdentity: async (home) => {
+				const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
+				const token = JSON.parse(bytes)?.tokens?.refresh_token;
+				if (typeof token !== "string" || !token)
+					throw new Error("quota_refresh_identity_unavailable");
+				return {
+					...codexQuotaIdentityReader(getCodexQuotaAccountRegistry())(bytes),
+					chainKey: createHash("sha256").update(token).digest("hex"),
+				};
+			},
+			leadAuthorityScript: join(
+				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+					resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
+				"scripts",
+				"resident-codex-lead-recover.sh",
+			),
+		}),
+	);
 	const codexQuotaAvailability = new CodexQuotaAvailability({
 		enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
 		runtimeAvailable: () => codexQuotaRuntime !== undefined,
@@ -11974,6 +11992,14 @@ export async function startBridge(
 		flywheelRoot: residentCodexLeadFlywheelRoot,
 		targets: residentCodexLeadTargets,
 	});
+	const codexHomeReconcileHealthRider = createCodexHomeReconcileHealthRider({
+		stateRoot: resolveCodexHomeReconcileStateRoot(process.env, homedir()),
+		enabled: isCodexHomeReconcileHealthRiderEnabled(process.env),
+		cycleScript: join(
+			residentCodexLeadFlywheelRoot,
+			"scripts/codex-home-reconcile-cycle.mjs",
+		),
+	});
 	const residentCodexLeadPatrols = residentCodexLeadTargets.map((target) => ({
 		target,
 		patrol: createHostResidentCodexLeadPatrol({
@@ -12698,13 +12724,14 @@ export async function startBridge(
 			: undefined,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Always-on advisory probe; failures alert but never abort Bridge boot.
-		onHealthTick: codexHealthEnabled
-			? () => {
-					void reportCodexGlobalHealth(metaAlertNotifier, {
-						credentialProbe,
-					});
-				}
-			: undefined,
+		onHealthTick: () => {
+			if (codexHealthEnabled) {
+				void reportCodexGlobalHealth(metaAlertNotifier, {
+					credentialProbe,
+				});
+			}
+			return codexHomeReconcileHealthRider.tick();
+		},
 	});
 	// FLY-513: one-shot boot check — surfaces an already-contaminated global codex
 	// immediately at startup (the periodic probe then covers the running window).

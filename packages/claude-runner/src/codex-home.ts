@@ -448,6 +448,28 @@ function assertHomeIsPlainDirectory(
 	chmodSync(home, 0o700);
 }
 
+function assertHomeIsPlainDirectoryReadOnly(
+	home: string,
+	env: NodeJS.ProcessEnv,
+): void {
+	const canonicalSource = realpathSync(sourceCodexDir(env));
+	const canonicalCandidate = canonicalPathWithMissingTail(home);
+	if (pathIsWithin(canonicalSource, canonicalCandidate)) {
+		throw new Error(
+			`unsafe codex home path inside credential source directory: ${home}`,
+		);
+	}
+	const stat = lstatSync(home);
+	if (!stat.isDirectory() || stat.isSymbolicLink()) {
+		throw new Error(`unsafe codex home path: ${home}`);
+	}
+	if (pathIsWithin(canonicalSource, realpathSync(home))) {
+		throw new Error(
+			`unsafe codex home path inside credential source directory: ${home}`,
+		);
+	}
+}
+
 function codexAgentHomeLockPath(
 	identity: CodexAgentHomeIdentity,
 	env: NodeJS.ProcessEnv,
@@ -976,11 +998,39 @@ function migrateCodexHomeCredentialAt(
 		destinationStat?.isSymbolicLink() &&
 		readlinkSync(destination) === truthPath
 	) {
+		const pendingPath = join(opts.home, ".credential-copy-pending");
+		let pending = false;
+		try {
+			const stat = lstatSync(pendingPath);
+			if (!stat.isFile() || stat.isSymbolicLink()) {
+				throw new Error("unsafe credential migration pending marker");
+			}
+			pending = true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		if (!pending) {
+			return {
+				home: opts.home,
+				state: "already",
+				profile: source.identity.profile,
+			};
+		}
+		unlinkSync(pendingPath);
+		let state: CodexCredentialMigrationState = "linked";
+		try {
+			(opts.testing?.fsyncDirectory ?? fsyncDirectory)(opts.home);
+		} catch {
+			state = "uncertain";
+		}
 		return {
 			home: opts.home,
-			state: "already",
+			state,
 			profile: source.identity.profile,
 		};
+	}
+	if (destinationStat?.isSymbolicLink()) {
+		throw new Error("unsafe credential migration symlink");
 	}
 	if (
 		destinationStat &&
@@ -1032,7 +1082,7 @@ export async function migrateCodexAgentHomeCredential(
 	if (!isAbsolute(opts.home)) {
 		throw new Error("credential migration home must be absolute");
 	}
-	assertHomeIsPlainDirectory(opts.home, env);
+	assertHomeIsPlainDirectoryReadOnly(opts.home, env);
 	const marker = readCodexAgentHomeMarker(opts.home);
 	if (marker === null) throw new Error("missing codex agent home marker");
 	const identity = { project: marker.project, role: marker.role };

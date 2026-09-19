@@ -69,18 +69,9 @@ fi
 [ -x "$PS_BIN" ] && [ ! -L "$PS_BIN" ] || fail 5 "process-fence-unavailable"
 ps_output="$($PS_BIN -axo pid=,ppid=,comm= 2>/dev/null)" \
 	|| fail 5 "process-fence-unavailable"
-ancestor=" $$ $PPID "
-cursor="$PPID"
-while [ "$cursor" -gt 1 ] 2>/dev/null; do
-	parent="$(awk -v pid="$cursor" '$1 == pid {print $2; exit}' <<<"$ps_output")"
-	case "$parent" in ''|*[!0-9]*|0) break ;; esac
-	ancestor+="$parent "
-	cursor="$parent"
-done
 while read -r pid _ppid command; do
 	[ -n "${pid:-}" ] || continue
 	[ "${command##*/}" = codex ] || continue
-	case "$ancestor" in *" $pid "*) continue ;; esac
 	environment="$($PS_BIN -E -o command= -p "$pid" 2>/dev/null)" \
 		|| fail 5 "process-environment-unavailable"
 	case " $environment " in

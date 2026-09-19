@@ -23,6 +23,7 @@ import {
 	daemonSocketDir,
 	probeCodexDaemonEvidence,
 	probeCodexDaemonLiveness,
+	probeCodexDaemonProcessBinding,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
 	SUN_PATH_MAX,
@@ -1539,6 +1540,54 @@ describe("FLY-2490 bounded daemon evidence reads", () => {
 			JSON.stringify({ daemonPgid }),
 		),
 	];
+	it("binds a census PID/start tuple to the persisted socket-owning group", async () => {
+		const f = fixture();
+		try {
+			writeFileSync(f.ledger, JSON.stringify({ daemonPgid: 4321 }));
+			const deps = {
+				env: f.env,
+				isSocketLive: async () => true,
+				processGroupState: () => "alive" as const,
+				socketHolderPids: () => [123],
+				processGroupOf: () => 4321,
+				processStartIdentity: () => "start-123",
+			};
+			await expect(
+				probeCodexDaemonProcessBinding(
+					f.id,
+					{ pid: 123, startIdentity: "start-123" },
+					deps,
+				),
+			).resolves.toEqual({ bound: true, reason: "bound" });
+			await expect(
+				probeCodexDaemonProcessBinding(
+					f.id,
+					{ pid: 123, startIdentity: "reused-pid" },
+					deps,
+				),
+			).resolves.toEqual({ bound: false, reason: "process_start_mismatch" });
+			await expect(
+				probeCodexDaemonProcessBinding(
+					f.id,
+					{ pid: 124, startIdentity: "start-123" },
+					deps,
+				),
+			).resolves.toEqual({ bound: false, reason: "socket_holder_mismatch" });
+			await expect(
+				probeCodexDaemonProcessBinding(
+					f.id,
+					{ pid: 123, startIdentity: "start-123" },
+					{
+						...deps,
+						socketHolderPids: () => [999, 123],
+						processGroupOf: (pid) => (pid === 999 ? 4321 : 5),
+					},
+				),
+			).resolves.toEqual({ bound: false, reason: "process_group_mismatch" });
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
 	it.each(invalid)("rejects invalid ledger %s", async (raw) => {
 		const f = fixture();
 		try {

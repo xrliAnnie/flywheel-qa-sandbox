@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
+import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
 import { installSqlTiming } from "flywheel-config";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { CodexQuotaManualReason } from "./availability.js";
+import { findRegisteredCodexCredentialLeadTargets } from "./credential-home-roster.js";
 import type { CodexQuotaHomeObservation } from "./readiness.js";
 
 const execFileAsync = promisify(execFile);
@@ -21,6 +23,24 @@ export interface CodexQuotaHostCollectorOptions {
 	credentialIdentity?: (
 		home: string,
 	) => Promise<{ accountKey: string; chainKey: string }>;
+	residentEvidence?: (input: {
+		executionId: string;
+		home: string;
+		project: string;
+		role: string;
+		process: { pid: number; startIdentity: string };
+		commPresent: boolean;
+	}) => Promise<{ verified: boolean; reason: string }>;
+}
+
+export function createRegisteredCodexQuotaHostCollectorOptions(
+	projects: ReadonlyArray<ProjectEntry>,
+	options: Omit<CodexQuotaHostCollectorOptions, "leadTargets">,
+): CodexQuotaHostCollectorOptions {
+	return {
+		...options,
+		leadTargets: findRegisteredCodexCredentialLeadTargets(projects),
+	};
 }
 function plainFile(path: string): void {
 	const stat = lstatSync(path);
@@ -40,10 +60,61 @@ const safeId = (value: unknown): value is string =>
 /** Collect freshly on every call. A lease or registration alone is never liveness. */
 export interface CodexQuotaHostInventory {
 	complete: boolean;
+	registeredComplete: boolean;
+	inventoryDigest?: string;
+	buildSha?: string;
 	homes: CodexQuotaHomeObservation[];
 	activeUnsharedAccountKeys: string[];
 	canonicalChainActive: boolean;
+	diagnostics: CodexQuotaHostDiagnostic[];
+	unattributedReaders: CodexQuotaUnattributedReader[];
 	failureReasons?: CodexQuotaManualReason[];
+}
+
+export interface CodexQuotaHostDiagnostic {
+	reason: string;
+	scope: "global" | "registered" | "all";
+	home?: string;
+	executionId?: string;
+}
+
+export interface CodexQuotaUnattributedReader {
+	pid: number;
+	startIdentity: string | null;
+	executable: string;
+	reason: "process_home_unknown" | "process_execution_ambiguous";
+}
+
+interface ProcessObservation {
+	pid: number;
+	startIdentity: string | null;
+	executable: string;
+	executionId?: string;
+}
+
+const LSTART_RE =
+	/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/;
+
+function parseProcessLine(line: string): {
+	pid: number;
+	startIdentity: string | null;
+	command: string;
+} | null {
+	const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+	if (!match) return null;
+	const pid = Number(match[1]);
+	if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+	const remainder = match[2]!;
+	const tokens = remainder.split(/\s+/);
+	const possibleStart = tokens.slice(0, 5).join(" ");
+	if (tokens.length > 5 && LSTART_RE.test(possibleStart)) {
+		return {
+			pid,
+			startIdentity: possibleStart,
+			command: tokens.slice(5).join(" "),
+		};
+	}
+	return { pid, startIdentity: null, command: remainder };
 }
 export function createCodexQuotaHostCollector(
 	options: CodexQuotaHostCollectorOptions,
@@ -51,6 +122,10 @@ export function createCodexQuotaHostCollector(
 	return async () => {
 		const homes: CodexQuotaHomeObservation[] = [];
 		const activeUnsharedAccountKeys: string[] = [];
+		const diagnostics: CodexQuotaHostDiagnostic[] = [];
+		const unattributedReaders: CodexQuotaUnattributedReader[] = [];
+		let inventoryDigest: string | undefined;
+		let buildSha: string | undefined;
 		try {
 			for (const path of [
 				options.homesRoot,
@@ -86,17 +161,19 @@ export function createCodexQuotaHostCollector(
 				manifest.homes.length > 5000
 			)
 				throw new Error("manifest_invalid");
-			const inventory = manifest.homes
-				.map(({ home, ownership }: { home: string; ownership: string }) => ({
+			inventoryDigest = manifest.inventoryDigest;
+			buildSha = manifest.buildSha;
+			const inventory = manifest.homes.map(
+				({ home, ownership }: { home: string; ownership: string }) => ({
 					home,
 					ownership,
-				}))
-				.sort((a: { home: string }, b: { home: string }) =>
-					a.home.localeCompare(b.home),
-				);
+				}),
+			) as Array<{
+				home: string;
+				ownership: "managed" | "independent";
+			}>;
 			if (
-				manifest.inventoryDigest !==
-				createHash("sha256").update(JSON.stringify(inventory)).digest("hex")
+				manifest.inventoryDigest !== computeCodexHomeInventoryDigest(inventory)
 			)
 				throw new Error("manifest_digest_invalid");
 			const approved = new Map<string, "managed" | "independent">();
@@ -219,11 +296,15 @@ export function createCodexQuotaHostCollector(
 			const output = options.processSnapshot
 				? await options.processSnapshot()
 				: (
-						await execFileAsync("/bin/ps", ["eww", "-axo", "pid=,command="], {
-							timeout: 3000,
-							maxBuffer: 16 * 1024 * 1024,
-							encoding: "utf8",
-						})
+						await execFileAsync(
+							"/bin/ps",
+							["eww", "-axo", "pid=,lstart=,command="],
+							{
+								timeout: 3000,
+								maxBuffer: 16 * 1024 * 1024,
+								encoding: "utf8",
+							},
+						)
 					).stdout;
 			if (
 				typeof output !== "string" ||
@@ -231,26 +312,65 @@ export function createCodexQuotaHostCollector(
 				output.length > 16 * 1024 * 1024
 			)
 				throw new Error("process_authority_invalid");
-			const active = new Map<string, Set<string>>();
+			const active = new Map<string, ProcessObservation[]>();
 			for (const line of output.split("\n")) {
 				if (!line.trim()) continue;
-				if (!/^\s*\d+\s+/.test(line))
-					throw new Error("process_authority_invalid");
-				const isCodex = /(?:^|\s)(?:\S*\/)?codex(?:\s|$)/.test(line);
-				const homeMatch = [...line.matchAll(/(?:^|\s)CODEX_HOME=([^\s]+)/g)];
+				const parsed = parseProcessLine(line);
+				if (!parsed) throw new Error("process_authority_invalid");
+				const isCodex = /(?:^|\s)(?:\S*\/)?codex(?:\s|$)/.test(parsed.command);
 				if (!isCodex) continue;
-				if (homeMatch.length !== 1 || !isAbsolute(homeMatch[0]![1]!))
-					throw new Error("process_home_unknown");
-				const home = homeMatch[0]![1]!;
-				if (home !== options.canonicalHome && !approved.has(home))
-					throw new Error("unapproved_live_home");
-				const ids = [
-					...line.matchAll(/(?:^|\s)FLYWHEEL_EXEC_ID=([A-Za-z0-9_.-]+)/g),
+				const executable =
+					/(?:^|\s)((?:\S*\/)?codex)(?:\s|$)/.exec(parsed.command)?.[1] ??
+					"codex";
+				const homeMatch = [
+					...parsed.command.matchAll(/(?:^|\s)CODEX_HOME=([^\s]+)/g),
 				];
-				if (ids.length > 1) throw new Error("process_execution_ambiguous");
-				const set = active.get(home) ?? new Set<string>();
-				if (ids[0]) set.add(ids[0][1]!);
-				active.set(home, set);
+				if (homeMatch.length !== 1 || !isAbsolute(homeMatch[0]![1]!)) {
+					unattributedReaders.push({
+						pid: parsed.pid,
+						startIdentity: parsed.startIdentity,
+						executable,
+						reason: "process_home_unknown",
+					});
+					diagnostics.push({ reason: "process_home_unknown", scope: "global" });
+					continue;
+				}
+				const home = homeMatch[0]![1]!;
+				if (home !== options.canonicalHome && !approved.has(home)) {
+					diagnostics.push({
+						reason: "unapproved_live_home",
+						scope: "registered",
+						home,
+					});
+					continue;
+				}
+				const ids = [
+					...parsed.command.matchAll(
+						/(?:^|\s)FLYWHEEL_EXEC_ID=([A-Za-z0-9_.-]+)/g,
+					),
+				];
+				if (ids.length > 1) {
+					unattributedReaders.push({
+						pid: parsed.pid,
+						startIdentity: parsed.startIdentity,
+						executable,
+						reason: "process_execution_ambiguous",
+					});
+					diagnostics.push({
+						reason: "process_execution_ambiguous",
+						scope: "registered",
+						home,
+					});
+					continue;
+				}
+				const observations = active.get(home) ?? [];
+				observations.push({
+					pid: parsed.pid,
+					startIdentity: parsed.startIdentity,
+					executable,
+					...(ids[0] ? { executionId: ids[0][1]! } : {}),
+				});
+				active.set(home, observations);
 			}
 			const matched = new Set<string>();
 			for (const [home, ownership] of approved) {
@@ -274,7 +394,7 @@ export function createCodexQuotaHostCollector(
 				}
 				const processes = active.get(home);
 				let activity: CodexQuotaHomeObservation["activity"] = "drained";
-				if (processes) {
+				if (processes?.length) {
 					activity = "active";
 					if (ownership === "independent") {
 						if (!options.credentialIdentity)
@@ -298,37 +418,125 @@ export function createCodexQuotaHostCollector(
 						!leadHomes.has(home) &&
 						home !== options.canonicalHome
 					) {
+						const processExecutions = new Set(
+							processes.flatMap((process) =>
+								process.executionId ? [process.executionId] : [],
+							),
+						);
 						if (
 							!leases.length &&
 							dirname(home) === options.homesRoot &&
-							processes.size === 1 &&
-							processes.has(basename(home)) &&
+							processes.length === 1 &&
+							processExecutions.has(basename(home)) &&
 							comm.has(basename(home))
 						)
 							matched.add(basename(home));
-						else if (
+						else if (!leases.length && options.residentEvidence) {
+							let marker: { project: string; role: string } | null = null;
+							try {
+								const markerPath = join(home, ".flywheel-agent-home.json");
+								plainFile(markerPath);
+								const parsed = JSON.parse(readFileSync(markerPath, "utf8"));
+								if (!safeId(parsed?.project) || !safeId(parsed?.role)) {
+									throw new Error("resident_marker_invalid");
+								}
+								marker = { project: parsed.project, role: parsed.role };
+							} catch {
+								marker = null;
+							}
+							let verified = marker !== null;
+							const verifiedExecutions = new Set<string>();
+							if (marker) {
+								for (const process of processes) {
+									if (
+										!process.executionId ||
+										!process.startIdentity ||
+										!comm.has(process.executionId)
+									) {
+										verified = false;
+										break;
+									}
+									const evidence = await options.residentEvidence({
+										executionId: process.executionId,
+										home,
+										project: marker.project,
+										role: marker.role,
+										process: {
+											pid: process.pid,
+											startIdentity: process.startIdentity,
+										},
+										commPresent: true,
+									});
+									if (!evidence.verified) {
+										verified = false;
+										diagnostics.push({
+											reason: evidence.reason,
+											scope: "registered",
+											home,
+											executionId: process.executionId,
+										});
+										break;
+									}
+									verifiedExecutions.add(process.executionId);
+								}
+							}
+							if (verified) {
+								for (const id of verifiedExecutions) matched.add(id);
+							} else {
+								activity = "unknown";
+								diagnostics.push({
+									reason: "resident_evidence_incomplete",
+									scope: "registered",
+									home,
+								});
+							}
+						} else if (
 							!leases.length ||
-							processes.size !== leases.length ||
-							leases.some((id) => !comm.has(id) || !processes.has(id))
+							processes.length !== leases.length ||
+							leases.some((id) => !comm.has(id) || !processExecutions.has(id))
 						)
 							activity = "unknown";
 						else for (const id of leases) matched.add(id);
 					}
-				} else if (leases.length) activity = "unknown";
+				} else if (leases.length) {
+					activity = "unknown";
+					diagnostics.push({
+						reason: "lease_without_process",
+						scope: "registered",
+						home,
+					});
+				}
 				homes.push({ home, ownership, activity });
 			}
-			for (const id of comm)
-				if (!matched.has(id))
-					return {
-						complete: false,
-						homes,
-						activeUnsharedAccountKeys,
-						canonicalChainActive: true,
-					};
+			for (const id of comm) {
+				if (!matched.has(id)) {
+					diagnostics.push({
+						reason: "comm_orphan",
+						scope: "registered",
+						executionId: id,
+					});
+				}
+			}
+			const registeredComplete =
+				homes.every((home) => home.activity !== "unknown") &&
+				!diagnostics.some(
+					(diagnostic) =>
+						diagnostic.scope === "registered" || diagnostic.scope === "all",
+				);
 			return {
-				complete: homes.every((home) => home.activity !== "unknown"),
+				complete:
+					registeredComplete &&
+					!diagnostics.some(
+						(diagnostic) =>
+							diagnostic.scope === "global" || diagnostic.scope === "all",
+					),
+				registeredComplete,
+				inventoryDigest,
+				buildSha,
 				homes,
 				activeUnsharedAccountKeys,
+				diagnostics,
+				unattributedReaders,
 				canonicalChainActive:
 					active.has(options.canonicalHome) ||
 					homes.some(
@@ -337,6 +545,11 @@ export function createCodexQuotaHostCollector(
 					),
 			};
 		} catch (error) {
+			const reason =
+				error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+					? error.message
+					: "collector_failed";
+			diagnostics.push({ reason, scope: "all" });
 			const message = error instanceof Error ? error.message : "";
 			const receiptInvalid = new Set([
 				"manifest_too_large",
@@ -347,9 +560,14 @@ export function createCodexQuotaHostCollector(
 			]);
 			return {
 				complete: false,
+				registeredComplete: false,
+				...(inventoryDigest ? { inventoryDigest } : {}),
+				...(buildSha ? { buildSha } : {}),
 				homes,
 				activeUnsharedAccountKeys,
 				canonicalChainActive: true,
+				diagnostics,
+				unattributedReaders,
 				failureReasons: [
 					message === "readiness_receipt_missing"
 						? "readiness_receipt_missing"
