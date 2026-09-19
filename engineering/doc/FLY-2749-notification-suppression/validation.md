@@ -63,6 +63,8 @@ VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
 ```
 测试前按 locked workspace 依赖顺序构建了 config、core、agent-team-transport、token-usage、claude-runner、三个 event transport、edge-worker、voice-core 与 flywheel-comm。第一次 collection 失败均为 sibling `dist` 尚不存在，构建后相同命令通过；不是 assertion failure。
 
+仓库级静态门禁：`pnpm lint` 完成，仅报告未触及文件的既有 advisory；`pnpm exec biome check --diagnostic-level=error` 为零错误。`pnpm -r build` 的 24 个 workspace package 全部 PASS。
+
 统计重放：
 ```
 python3 engineering/doc/FLY-2749-notification-suppression/measure-usage.py \
