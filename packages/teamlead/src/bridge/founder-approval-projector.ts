@@ -51,6 +51,7 @@ interface WorkflowSourceStore {
 		schemaVersion: number;
 		sourceRowId?: number;
 		at: string;
+		projectedAt?: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { status: "applied" | "replayed" };
 	getWorkflowSourceDeadletter(project: string, sourceEventId: string): unknown;
@@ -64,6 +65,12 @@ interface WorkflowSourceStore {
 			alertIdentity: WorkflowEngineAlertIdentity;
 		};
 	}): undefined | { deadlettered: boolean; alertEnqueued: boolean };
+	recordShipJudgmentAutoApprovalDisposition?(input: {
+		sourceEventId: string;
+		disposition: "rejected";
+		reason: string;
+		at: string;
+	}): void;
 	getWorkflowRun(
 		runId: string,
 	): { run_id: string; issue_id: string; project_name: string } | undefined;
@@ -85,6 +92,7 @@ export interface WorkflowSourceProjectorArgs {
 		payload: WorkflowEngineAlertPayload,
 	): Promise<{ accepted: boolean }>;
 	log?: (message: string) => void;
+	now?: () => string;
 }
 
 export interface WorkflowSourceDrainResult {
@@ -202,6 +210,11 @@ async function drainWorkflowSourceEventsAsync(
 						schemaVersion: event.schema_version,
 						sourceRowId: event.row_id,
 						at: event.at,
+						...(event.source_event_id.startsWith("ship-judgment-auto:")
+							? {
+									projectedAt: (args.now ?? (() => new Date().toISOString()))(),
+								}
+							: {}),
 						...(alertIdentity ? { alertIdentity } : {}),
 					});
 					result[applied.status] += 1;
@@ -236,6 +249,27 @@ async function drainWorkflowSourceEventsAsync(
 				} catch (error) {
 					const reason = errorMessage(error);
 					if (isTerminalSourceError(reason)) {
+						if (event.source_event_id.startsWith("ship-judgment-auto:")) {
+							if (!args.store.recordShipJudgmentAutoApprovalDisposition) {
+								args.log?.(
+									`[workflow-source-projector] machine rejection sink unavailable for ${event.project}/${event.source_event_id}`,
+								);
+								break;
+							}
+							try {
+								args.store.recordShipJudgmentAutoApprovalDisposition({
+									sourceEventId: event.source_event_id,
+									disposition: "rejected",
+									reason: reason.slice(0, 200),
+									at: event.at,
+								});
+							} catch (recordError) {
+								args.log?.(
+									`[workflow-source-projector] machine rejection retry ${event.project}/${event.source_event_id}: ${errorMessage(recordError)}`,
+								);
+								break;
+							}
+						}
 						if (
 							event.kind === "founder_approval" ||
 							event.kind === "founder_feedback"

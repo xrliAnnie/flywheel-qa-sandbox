@@ -15,7 +15,6 @@ export interface SenderDeps {
 	enabled(): boolean;
 	current(): ShipJudgmentBinding | undefined;
 	now(): number;
-	legacySummary(): string;
 	signal?: AbortSignal;
 	post(
 		view: DeliveryView,
@@ -64,7 +63,7 @@ export async function sendJudgmentOpinion(
 			Promise.resolve().then<SendReceipt | ScanReceipt>(() => {
 				controller.signal.throwIfAborted();
 				if (claim.action === "scan") return deps.scan(view, controller.signal);
-				const content = renderJudgmentMessage(view, deps.legacySummary());
+				const content = renderJudgmentMessage(view);
 				return claim.action === "post"
 					? deps.post(view, content, controller.signal)
 					: deps.patch(view, claim.messageId!, content, controller.signal);

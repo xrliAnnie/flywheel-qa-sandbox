@@ -107,8 +107,7 @@ export function readEpicJudgment(
 			| undefined;
 		const historical =
 			delivery &&
-			(delivery.delivery_mode !== "dry_run" ||
-				delivery.mode_label === "history");
+			(delivery.delivery_mode === "off" || delivery.mode_label === "history");
 		const published =
 			row &&
 			delivery &&

@@ -536,13 +536,27 @@ export async function handleAutoNarrowControlApply(
 	const effective = deps.store.getLatestAutoNarrowControlEvent(
 		canonical.projectName,
 	);
+	const effectiveMode = effective?.mode ?? result.event.mode;
+	const modeCheck = deps.store.getShipJudgmentModeCheck(
+		effective?.eventId ?? result.event.eventId,
+	);
 	return {
 		code: 200,
 		body: {
 			ok: true,
-			mode: effective?.mode ?? result.event.mode,
+			mode: effectiveMode,
 			replayed: result.replayed,
 			controlEventId: result.event.eventId,
+			judgmentPolicy: "ship-judgment-v1",
+			opinionStandard: "三点试判",
+			execution:
+				effectiveMode === "auto"
+					? "三点均通过且守卫有效时自动批准"
+					: "三点判断仅展示，不自动批准",
+			modeCheck: modeCheck ?? {
+				status: "pending",
+				reason: "awaiting_first_card",
+			},
 		},
 	};
 }

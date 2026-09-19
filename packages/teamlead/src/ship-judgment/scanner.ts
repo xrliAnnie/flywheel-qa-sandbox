@@ -1,4 +1,5 @@
 import type { StateStore } from "../StateStore.js";
+import { isJudgmentEnabled } from "./contract.js";
 
 export interface JudgmentScannerDependencies {
 	store: Pick<
@@ -31,7 +32,7 @@ export class ShipJudgmentScanner {
 	enqueue(questionId: string): void {
 		if (
 			this.abort.signal.aborted ||
-			this.deps.mode() !== "dry_run" ||
+			!isJudgmentEnabled("flywheel", this.deps.mode()) ||
 			!questionId ||
 			questionId.length > 200
 		)
@@ -49,7 +50,7 @@ export class ShipJudgmentScanner {
 		if (this.abort.signal.aborted) return Promise.resolve();
 		this.active = Promise.resolve()
 			.then(async () => {
-				if (this.deps.mode() !== "dry_run") return;
+				if (!isJudgmentEnabled("flywheel", this.deps.mode())) return;
 				const questions = [
 					...new Set(
 						[...this.pending]
@@ -58,7 +59,10 @@ export class ShipJudgmentScanner {
 					),
 				].slice(0, 50);
 				for (const question of questions) {
-					if (this.abort.signal.aborted || this.deps.mode() !== "dry_run")
+					if (
+						this.abort.signal.aborted ||
+						!isJudgmentEnabled("flywheel", this.deps.mode())
+					)
 						return;
 					this.pending.delete(question);
 					try {

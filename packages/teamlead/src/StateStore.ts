@@ -98,16 +98,28 @@ import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution
 import {
 	AUTO_NARROW_ACTOR,
 	AUTO_NARROW_DECISION_SOURCE,
-	AUTO_NARROW_POLICY_VERSION,
-	autoNarrowSourceEventId,
-	autoNarrowVerdictId,
-	parseAutoNarrowSourceEnvelope,
-	type AutoNarrowSourceEnvelopeV1,
 } from "flywheel-comm/auto-narrow-contract";
+import {
+	compareShipJudgmentApprovalTargets,
+	parseShipJudgmentApprovalEnvelope,
+	SHIP_JUDGMENT_APPROVAL_ACTOR,
+	SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+	SHIP_JUDGMENT_APPROVAL_POLICY,
+	SHIP_JUDGMENT_EVIDENCE_POLICY,
+	SHIP_JUDGMENT_POLICY,
+	shipJudgmentApprovalSourceEventId,
+	shipJudgmentApprovalTargetDigest,
+	type ShipJudgmentApprovalEnvelopeV1,
+} from "flywheel-comm/ship-judgment-approval-contract";
 import {
 	RAN_REASONS,
 	RECORD_REASONS,
 } from "flywheel-comm/strength-two-contract";
+import {
+	EVIDENCE_POLICY_VERSION,
+	evidenceLedgerDigest,
+	evidenceLedgerSchema,
+} from "./ship-judgment/evidence-ledger.js";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import {
 	type RecordProbe,
@@ -119,16 +131,6 @@ import {
 } from "./strength-two/judge.js";
 import { buildShadowObservation } from "./auto-merge-shadow/observation.js";
 import { migrateAutoMergeShadowDeclarationV2 } from "./auto-merge-shadow-declaration-migration.js";
-import {
-	evaluateAutoNarrowEligibility,
-	type AutoNarrowEligibility,
-} from "./auto-narrow/eligibility.js";
-import {
-	computeAutoNarrowMetrics,
-	type AutoNarrowMetricSample,
-	type AutoNarrowMetrics,
-	type AutoNarrowOpinionReason,
-} from "./auto-narrow/opinion.js";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import {
 	deliveryContractFrozenCopy,
@@ -412,22 +414,6 @@ export const MAX_BLIND_REPLACEMENTS = 3;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
-const AUTO_NARROW_OPINION_RETRY_BASE_MS = 30_000;
-const AUTO_NARROW_OPINION_RETRY_MAX_MS = 15 * 60_000;
-const AUTO_NARROW_OPINION_MAX_ATTEMPTS = 8;
-
-function autoNarrowOpinionRetryAt(now: string, attempt: number): string {
-	const nowMs = Date.parse(now);
-	if (!Number.isFinite(nowMs)) {
-		throw new Error("auto narrow opinion retry timestamp invalid");
-	}
-	const delay = Math.min(
-		AUTO_NARROW_OPINION_RETRY_MAX_MS,
-		AUTO_NARROW_OPINION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
-	);
-	return new Date(nowMs + delay).toISOString();
-}
-
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
 export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
 export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
@@ -1981,9 +1967,40 @@ export interface DesignReviewManifest {
 	source_event_id: string;
 	expected_plan_path: string;
 	expected_blob_sha: string;
+	reviewed_commit_sha?: string;
 	is_current: boolean;
 	created_at: string;
 	delivered_at?: string;
+}
+
+export type DesignReviewApprovalProofState =
+	| "captured"
+	| "validated"
+	| "approved"
+	| "invalidated";
+
+/** Immutable reviewed-plan binding that becomes authority only after two receipts. */
+export interface DesignReviewApprovalProof {
+	proof_id: string;
+	lane: "coordinator" | "manifest";
+	project_name: string;
+	issue_id: string;
+	execution_id: string;
+	repository_identity: string;
+	review_job_request_id?: string;
+	manifest_request_id?: string;
+	manifest_revision?: number;
+	plan_path: string;
+	reviewed_commit_sha: string;
+	expected_blob_sha: string;
+	state: DesignReviewApprovalProofState;
+	captured_at: string;
+	validation_receipt_id?: string;
+	validated_at?: string;
+	verdict_receipt_id?: string;
+	approved_at?: string;
+	invalidated_at?: string;
+	invalidation_reason?: string;
 }
 
 /**
@@ -2410,6 +2427,19 @@ export interface AutoNarrowControlEventRow {
 	executedBy: string;
 	openingEventId: string | null;
 	schemaVersion: 1;
+}
+
+export interface ShipJudgmentModeCheckRow {
+	controlEventId: string;
+	mode: "dry_run" | "auto";
+	policy: string;
+	status: "pending" | "passed" | "failed" | "superseded";
+	questionId: string | null;
+	cardMessageId: string | null;
+	opinionId: string | null;
+	messageId: string | null;
+	observedAt: string | null;
+	reason: string | null;
 }
 
 export type ApplyAutoNarrowControlChangeResult =
@@ -5752,11 +5782,25 @@ export class StateStore {
 			AND n.attempt=(SELECT MAX(n2.attempt) FROM workflow_run_node n2 WHERE n2.run_id=n.run_id AND n2.node_id=n.node_id)
 			ORDER BY j.created_at DESC,j.round DESC,j.request_id DESC LIMIT 1`).get(runId, repoIdentity) as
 			{ request_id: string; execution_id: string; target_path: string | null; status: string; verdict: string | null } | undefined;
-		if (!row || row.status !== "done" || row.verdict !== "APPROVED" || !row.target_path) return undefined;
-		const manifest = this.getCurrentDesignReviewManifest(row.execution_id);
-		if (manifest && manifest.expected_plan_path !== row.target_path) return undefined;
-		return { requestId: row.request_id, path: row.target_path,
-			...(manifest ? { expectedBlobSha: manifest.expected_blob_sha } : {}) };
+		if (row) {
+			if (row.status !== "done" || row.verdict !== "APPROVED" || !row.target_path) return undefined;
+			const proof = this.getApprovedDesignReviewProofForReviewJob(row.request_id);
+			if (!proof || proof.execution_id !== row.execution_id ||
+				proof.repository_identity !== repoIdentity || proof.plan_path !== row.target_path) return undefined;
+			return { requestId: row.request_id, path: proof.plan_path,
+				expectedBlobSha: proof.expected_blob_sha };
+		}
+		const proofRow = this.db.raw.prepare(`SELECT p.* FROM design_review_approval_proof p
+			JOIN workflow_run_node n ON n.execution_id=p.execution_id
+			JOIN workflow_run r ON r.run_id=n.run_id
+			WHERE r.run_id=? AND r.project_name='flywheel' AND r.status='active'
+			AND p.lane='manifest' AND p.repository_identity=? AND p.state='approved'
+			AND n.attempt=(SELECT MAX(n2.attempt) FROM workflow_run_node n2 WHERE n2.run_id=n.run_id AND n2.node_id=n.node_id)
+			ORDER BY julianday(p.approved_at) DESC,p.proof_id DESC LIMIT 1`).get(runId, repoIdentity) as Record<string, unknown> | undefined;
+		if (!proofRow) return undefined;
+		const proof = this.rowToDesignReviewApprovalProof(proofRow);
+		return { requestId: proof.manifest_request_id!, path: proof.plan_path,
+			expectedBlobSha: proof.expected_blob_sha };
 	}
 
 	readShipJudgmentBinding(questionId: string, channelId: string): ShipJudgmentBinding | undefined {
@@ -5793,6 +5837,881 @@ export class StateStore {
 		return { projectName: "flywheel", runId: run.run_id, questionId, issueId: run.issue_id,
 			cardMessageId: holder.card_message_id, threadId: thread.thread_id,
 			manifestRevision: manifest?.current_revision ?? 0, targets };
+	}
+
+	recordShipJudgmentPolicyProvenance(input: {
+		provenanceId: string;
+		channelId: string;
+		threadId: string;
+		messageId: string;
+		authorId: string;
+		messageCreatedAt: string;
+		originalMessageDigest: string;
+		verifiedAt: string;
+		verificationReceiptId: string;
+	}): ShipJudgmentPolicyProvenanceRow {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.provenanceId) ||
+			input.channelId !== "1516209714097291335" ||
+			input.threadId !== "1550442575066955787" ||
+			input.messageId !== "1550543841961050283" ||
+			input.authorId !== "1138241636057481306" ||
+			input.messageCreatedAt !== "2026-09-18T16:27:39.635Z" ||
+			!/^[0-9a-f]{64}$/.test(input.originalMessageDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.verifiedAt) ||
+			!input.verificationReceiptId.trim()
+		) {
+			throw new Error("ship judgment policy provenance invalid");
+		}
+		const existing = this.getShipJudgmentPolicyProvenance(input.provenanceId);
+		if (existing) {
+			const expected: ShipJudgmentPolicyProvenanceRow = {
+				provenanceId: input.provenanceId,
+				policy: SHIP_JUDGMENT_APPROVAL_POLICY,
+				channelId: input.channelId,
+				threadId: input.threadId,
+				messageId: input.messageId,
+				authorId: input.authorId,
+				messageCreatedAt: input.messageCreatedAt,
+				originalMessageDigest: input.originalMessageDigest,
+				verifiedAt: input.verifiedAt,
+				verificationReceiptId: input.verificationReceiptId,
+			};
+			if (canonicalJsonString(existing) !== canonicalJsonString(expected)) {
+				throw new Error("ship judgment policy provenance replay conflict");
+			}
+			return existing;
+		}
+		this.db.raw.prepare(`INSERT INTO ship_judgment_policy_provenance
+			(provenance_id,policy,channel_id,thread_id,message_id,author_id,message_created_at,
+			 original_message_digest,verified_at,verification_receipt_id)
+			 VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+			input.provenanceId,
+			SHIP_JUDGMENT_APPROVAL_POLICY,
+			input.channelId,
+			input.threadId,
+			input.messageId,
+			input.authorId,
+			input.messageCreatedAt,
+			input.originalMessageDigest,
+			input.verifiedAt,
+			input.verificationReceiptId,
+		);
+		return this.getShipJudgmentPolicyProvenance(input.provenanceId)!;
+	}
+
+	getShipJudgmentPolicyProvenance(
+		provenanceId?: string,
+	): ShipJudgmentPolicyProvenanceRow | undefined {
+		const row = this.db.raw.prepare(
+			provenanceId
+				? "SELECT * FROM ship_judgment_policy_provenance WHERE provenance_id=?"
+				: "SELECT * FROM ship_judgment_policy_provenance ORDER BY verified_at DESC,provenance_id DESC LIMIT 1",
+		).get(...(provenanceId ? [provenanceId] : [])) as Record<string, unknown> | undefined;
+		return row
+			? {
+					provenanceId: String(row.provenance_id),
+					policy: SHIP_JUDGMENT_APPROVAL_POLICY,
+					channelId: String(row.channel_id),
+					threadId: String(row.thread_id),
+					messageId: String(row.message_id),
+					authorId: String(row.author_id),
+					messageCreatedAt: String(row.message_created_at),
+					originalMessageDigest: String(row.original_message_digest),
+					verifiedAt: String(row.verified_at),
+					verificationReceiptId: String(row.verification_receipt_id),
+				}
+			: undefined;
+	}
+
+	prepareShipJudgmentAutoApproval(
+		value: unknown,
+	): { status: "created" | "existing"; row: ShipJudgmentAutoApprovalRow } {
+		const envelope = parseShipJudgmentApprovalEnvelope(value);
+		const provenance = this.getShipJudgmentPolicyProvenance(
+			envelope.policy_provenance.id,
+		);
+		if (
+			!provenance ||
+			provenance.originalMessageDigest !==
+				envelope.policy_provenance.original_message_digest
+		) {
+			throw new Error("ship judgment policy provenance unavailable");
+		}
+		const sourceEventId = shipJudgmentApprovalSourceEventId(
+			envelope.question_id,
+		);
+		const envelopeJson = canonicalJsonString(envelope);
+		const envelopeHash = canonicalSubmissionDigest(envelope);
+		const existing = this.getShipJudgmentAutoApproval(sourceEventId);
+		if (existing) {
+			if (
+				existing.envelopeHash !== envelopeHash ||
+				existing.envelopeJson !== envelopeJson
+			) {
+				throw new Error("ship judgment auto approval replay conflict");
+			}
+			return { status: "existing", row: existing };
+		}
+		const bindingDigest = canonicalSubmissionDigest({
+			card: envelope.card,
+			primary: envelope.primary,
+			targets: envelope.targets,
+			manifest: envelope.manifest,
+		});
+		const targetsDigest = canonicalSubmissionDigest({
+			targets: envelope.targets,
+			manifest: envelope.manifest,
+		});
+		this.db.raw.prepare(`INSERT INTO ship_judgment_auto_approval
+			(source_event_id,question_id,opinion_id,input_id,evaluation_id,run_id,
+			 source_execution_id,binding_digest,targets_digest,manifest_revision,
+			 control_event_id,opening_event_id,flag_revision,policy_provenance_id,
+			 mechanical_digest,presentation_digest,envelope_json,envelope_hash,created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+			sourceEventId,
+			envelope.question_id,
+			envelope.judgment.opinion_id,
+			envelope.judgment.input_id,
+			envelope.judgment.evaluation_id,
+			envelope.run_id,
+			envelope.source_execution_id,
+			bindingDigest,
+			targetsDigest,
+			envelope.manifest.revision,
+			envelope.control.event_id,
+			envelope.control.opening_event_id,
+			envelope.control.flag_revision,
+			envelope.policy_provenance.id,
+			envelope.judgment.mechanical_digest,
+			envelope.judgment.presentation_digest,
+			envelopeJson,
+			envelopeHash,
+			envelope.decision_at,
+		);
+		this.recordShipJudgmentAutoApprovalDisposition({
+			sourceEventId,
+			disposition: "prepared",
+			reason: "eligible",
+			at: envelope.decision_at,
+		});
+		return {
+			status: "created",
+			row: this.getShipJudgmentAutoApproval(sourceEventId)!,
+		};
+	}
+
+	getShipJudgmentAutoApproval(
+		sourceEventId: string,
+	): ShipJudgmentAutoApprovalRow | undefined {
+		const row = this.db.raw.prepare(
+			"SELECT * FROM ship_judgment_auto_approval WHERE source_event_id=?",
+		).get(sourceEventId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					sourceEventId: String(row.source_event_id),
+					questionId: String(row.question_id),
+					envelopeJson: String(row.envelope_json),
+					envelopeHash: String(row.envelope_hash),
+					createdAt: String(row.created_at),
+				}
+			: undefined;
+	}
+
+	hasAppliedShipJudgmentMachineApproval(
+		questionId: string,
+		headSha: string,
+	): boolean {
+		if (!questionId.trim() || !/^[0-9a-f]{40}$/.test(headSha)) return false;
+		const sourceEventId = shipJudgmentApprovalSourceEventId(questionId);
+		const row = this.db.raw.prepare(`SELECT a.envelope_json,v.author_evidence_json,
+			v.verdict,v.founder_authored,v.question_id,v.head_sha,c.predicate,c.subject_digest
+			FROM ship_judgment_auto_approval a
+			JOIN ship_judgment_auto_approval_disposition d
+			 ON d.source_event_id=a.source_event_id AND d.disposition='applied'
+			JOIN workflow_source_receipt r
+			 ON r.project='flywheel' AND r.source_event_id=a.source_event_id AND r.claim_id IS NOT NULL
+			JOIN workflow_founder_gate_verdict v
+			 ON v.source_event_id=a.source_event_id AND v.claim_id=r.claim_id
+			JOIN workflow_claims c ON c.id=r.claim_id
+			WHERE a.source_event_id=? AND a.question_id=?
+			AND NOT EXISTS (SELECT 1 FROM workflow_claim_revocation x WHERE x.claim_id=c.id)
+			LIMIT 1`).get(sourceEventId, questionId) as Record<string, unknown> | undefined;
+		if (
+			!row ||
+			row.verdict !== "approved" ||
+			Number(row.founder_authored) !== 0 ||
+			row.question_id !== questionId ||
+			row.head_sha !== headSha ||
+			row.predicate !== "founder_approved" ||
+			row.subject_digest !== headSha
+		) {
+			return false;
+		}
+		try {
+			const envelope = parseShipJudgmentApprovalEnvelope(
+				JSON.parse(String(row.envelope_json)),
+			);
+			const evidence = JSON.parse(String(row.author_evidence_json)) as Record<
+				string,
+				unknown
+			>;
+			return (
+				envelope.question_id === questionId &&
+				envelope.primary.head_sha === headSha &&
+				evidence.kind === "ship_judgment_auto" &&
+				evidence.actor === SHIP_JUDGMENT_APPROVAL_ACTOR &&
+				evidence.decision_source ===
+					SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE &&
+				evidence.source_event_id === sourceEventId &&
+				evidence.opinion_id === envelope.judgment.opinion_id
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	hasRejectedShipJudgmentMachineApproval(questionId: string): boolean {
+		if (!questionId.trim()) return false;
+		const latest = this.db.raw.prepare(`SELECT d.disposition
+			FROM ship_judgment_auto_approval a
+			JOIN ship_judgment_auto_approval_disposition d
+			  ON d.source_event_id=a.source_event_id
+			WHERE a.question_id=?
+			ORDER BY d.at DESC,d.rowid DESC LIMIT 1`).get(questionId) as
+			| { disposition: string }
+			| undefined;
+		return latest?.disposition === "rejected";
+	}
+
+	recordShipJudgmentAutoApprovalDisposition(input: {
+		sourceEventId: string;
+		disposition: "prepared" | "source_written" | "applied" | "rejected";
+		reason: string;
+		at: string;
+	}): void {
+		if (!input.reason.trim() || !StateStore.workflowFiniteTimestamp(input.at)) {
+			throw new Error("ship judgment approval disposition invalid");
+		}
+		this.db.raw.prepare(`INSERT OR IGNORE INTO ship_judgment_auto_approval_disposition
+			(source_event_id,disposition,reason,at) VALUES (?,?,?,?)`).run(
+			input.sourceEventId,
+			input.disposition,
+			input.reason,
+			input.at,
+		);
+	}
+
+	seedShipJudgmentLegacyRetirement(at: string): number {
+		if (!StateStore.workflowFiniteTimestamp(at)) {
+			throw new Error("ship judgment retirement timestamp invalid");
+		}
+		return this.db.raw.prepare(`INSERT OR IGNORE INTO ship_judgment_legacy_retirement
+			(question_id,retirement_policy,thread_id,card_message_id,legacy_message_id,
+			 legacy_marker,legacy_state,legacy_posting_at,status,observed_at)
+			SELECT question_id,'three-point-retirement-v1',issue_thread_id,card_message_id,
+			 followup_message_id,correlation_marker,state,posting_at,'pending',?
+			FROM auto_narrow_opinion_delivery`).run(at).changes;
+	}
+
+	listShipJudgmentLegacyRetirementWork(
+		at: string,
+		limit = 20,
+	): ShipJudgmentLegacyRetirementRow[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return (this.db.raw.prepare(`SELECT * FROM ship_judgment_legacy_retirement
+			WHERE status IN ('pending','claimed')
+			AND (expires_at IS NULL OR expires_at<=?)
+			AND (retry_after IS NULL OR retry_after<=?)
+			ORDER BY observed_at,question_id LIMIT ?`).all(at, at, bounded) as Record<string, unknown>[])
+			.map((row) => this.shipJudgmentLegacyRetirementRow(row));
+	}
+
+	claimShipJudgmentLegacyRetirement(input: {
+		questionId: string;
+		owner: string;
+		at: string;
+	}): ShipJudgmentLegacyRetirementRow | undefined {
+		if (!input.owner.trim() || !StateStore.workflowFiniteTimestamp(input.at)) {
+			throw new Error("ship judgment retirement claim invalid");
+		}
+		const expiresAt = new Date(Date.parse(input.at) + 30_000).toISOString();
+		return this.db.raw.transaction(() => {
+			const current = this.db.raw.prepare(`SELECT * FROM ship_judgment_legacy_retirement
+				WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+				AND status IN ('pending','claimed') AND (expires_at IS NULL OR expires_at<=?)
+				AND (retry_after IS NULL OR retry_after<=?)`).get(
+				input.questionId,
+				input.at,
+				input.at,
+			) as Record<string, unknown> | undefined;
+			if (!current) return undefined;
+			const generation = Number(current.generation) + 1;
+			this.db.raw.prepare(`UPDATE ship_judgment_legacy_retirement
+				SET status='claimed',generation=?,lease_owner=?,expires_at=?,last_error=NULL
+				WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+				AND generation=?`).run(
+				generation,
+				input.owner,
+				expiresAt,
+				input.questionId,
+				Number(current.generation),
+			);
+			const claimed = this.db.raw.prepare(
+				"SELECT * FROM ship_judgment_legacy_retirement WHERE question_id=? AND retirement_policy='three-point-retirement-v1'",
+			).get(input.questionId) as Record<string, unknown>;
+			return this.shipJudgmentLegacyRetirementRow(claimed);
+		}).immediate();
+	}
+
+	finishShipJudgmentLegacyRetirement(input: {
+		questionId: string;
+		owner: string;
+		generation: number;
+		at: string;
+		status: "retired" | "unavailable";
+		reason: string;
+		messageId?: string;
+	}): boolean {
+		const changes = this.db.raw.prepare(`UPDATE ship_judgment_legacy_retirement
+			SET status=?,legacy_message_id=COALESCE(?,legacy_message_id),retired_at=?,
+			 lease_owner=NULL,expires_at=NULL,retry_after=NULL,last_error=?
+			WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+			AND status='claimed' AND lease_owner=? AND generation=? AND expires_at>?`).run(
+			input.status,
+			input.messageId ?? null,
+			input.at,
+			input.reason,
+			input.questionId,
+			input.owner,
+			input.generation,
+			input.at,
+		).changes;
+		return changes === 1;
+	}
+
+	deferShipJudgmentLegacyRetirement(input: {
+		questionId: string;
+		owner: string;
+		generation: number;
+		at: string;
+		reason: string;
+	}): boolean {
+		const retryAt = new Date(Date.parse(input.at) + 60_000).toISOString();
+		return this.db.raw.prepare(`UPDATE ship_judgment_legacy_retirement
+			SET status='pending',lease_owner=NULL,expires_at=NULL,retry_after=?,last_error=?
+			WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+			AND status='claimed' AND lease_owner=? AND generation=?`).run(
+			retryAt,
+			input.reason,
+			input.questionId,
+			input.owner,
+			input.generation,
+		).changes === 1;
+	}
+
+	private shipJudgmentLegacyRetirementRow(
+		row: Record<string, unknown>,
+	): ShipJudgmentLegacyRetirementRow {
+		return {
+			questionId: String(row.question_id),
+			threadId: String(row.thread_id),
+			cardMessageId: String(row.card_message_id),
+			legacyMessageId:
+				row.legacy_message_id == null ? null : String(row.legacy_message_id),
+			legacyMarker: String(row.legacy_marker),
+			legacyState: String(row.legacy_state),
+			legacyPostingAt:
+				row.legacy_posting_at == null
+					? null
+					: String(row.legacy_posting_at),
+			status: row.status as ShipJudgmentLegacyRetirementRow["status"],
+			generation: Number(row.generation),
+			leaseOwner: row.lease_owner == null ? null : String(row.lease_owner),
+		};
+	}
+
+	listPendingShipJudgmentAutoCandidates(
+		limit = 20,
+		startAfterQuestionId = "",
+	): string[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return (
+			this.db.raw.prepare(`SELECT d.question_id FROM ship_judgment_delivery d
+				JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
+				JOIN workflow_gate_holder h ON h.question_id=d.question_id
+				JOIN workflow_run r ON r.run_id=h.run_id
+				WHERE d.purpose='opinion' AND d.delivery_mode='auto' AND d.mode_label='current'
+				AND d.state='delivered' AND d.desired_id=d.posted_id AND d.message_id IS NOT NULL
+				AND d.dirty_since IS NULL AND d.latest_candidate_json IS NULL
+				AND o.overall='can' AND o.alignment='pass' AND o.conflict='pass' AND o.coverage='pass'
+				AND r.project_name='flywheel' AND r.status='active'
+				AND h.state='awaiting_review' AND h.materialization_stage='completed'
+				ORDER BY CASE WHEN d.question_id>? THEN 0 ELSE 1 END,d.question_id LIMIT ?`)
+				.all(startAfterQuestionId, bounded) as { question_id: string }[]
+		).map((row) => row.question_id);
+	}
+
+	private assertShipJudgmentApprovalEnvelopeCurrentTx(
+		envelope: ShipJudgmentApprovalEnvelopeV1,
+		at: string,
+		requirePersistedIntent = true,
+	): void {
+		const atMs = Date.parse(at);
+		if (!Number.isFinite(atMs) || new Date(atMs).toISOString() !== at) {
+			throw new Error("ship judgment approval ineligible: invalid_time");
+		}
+		const intent = this.getShipJudgmentAutoApproval(
+			shipJudgmentApprovalSourceEventId(envelope.question_id),
+		);
+		if (
+			requirePersistedIntent &&
+			(!intent || intent.envelopeHash !== canonicalSubmissionDigest(envelope) ||
+				intent.envelopeJson !== canonicalJsonString(envelope))
+		) {
+			throw new Error("ship judgment approval ineligible: intent_mismatch");
+		}
+		const flag = this.getFlagValueRow("auto_merge_narrow_gate", "flywheel");
+		const control = this.getLatestAutoNarrowControlEvent("flywheel");
+		const opening = control?.openingEventId
+			? this.getAutoNarrowControlEventById(control.openingEventId)
+			: undefined;
+		if (
+			!flag ||
+			flag.lastEffective !== "auto" ||
+			!control ||
+			control.mode !== "auto" ||
+			control.eventId !== envelope.control.event_id ||
+			control.flagRevision !== flag.revision ||
+			control.flagRevision !== envelope.control.flag_revision ||
+			control.flagChangeSeq !==
+				this.getFlagValueChangeSeq("auto_merge_narrow_gate", "flywheel") ||
+			!opening ||
+			opening.mode !== "auto" ||
+			opening.eventId !== envelope.control.opening_event_id
+		) {
+			throw new Error("ship judgment approval ineligible: control_changed");
+		}
+		const modeCheck = this.getShipJudgmentModeCheck(control.eventId);
+		if (!modeCheck || modeCheck.status !== "passed") {
+			throw new Error("ship judgment approval ineligible: mode_check_pending");
+		}
+		const legacyRetirement = this.db.raw.prepare(`SELECT status
+			FROM ship_judgment_legacy_retirement
+			WHERE question_id=? AND retirement_policy='three-point-retirement-v1'`).get(
+			envelope.question_id,
+		) as { status: string } | undefined;
+		if (
+			legacyRetirement &&
+			!["retired", "unavailable"].includes(legacyRetirement.status)
+		) {
+			throw new Error(
+				"ship judgment approval ineligible: legacy_retirement_pending",
+			);
+		}
+		const provenance = this.getShipJudgmentPolicyProvenance(
+			envelope.policy_provenance.id,
+		);
+		if (
+			!provenance ||
+			provenance.policy !== envelope.policy ||
+			provenance.originalMessageDigest !==
+				envelope.policy_provenance.original_message_digest
+		) {
+			throw new Error("ship judgment approval ineligible: policy_provenance");
+		}
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+			envelope.question_id,
+		);
+		const run = holder ? this.getWorkflowRun(holder.run_id) : undefined;
+		if (
+			!holder ||
+			!run ||
+			run.project_name !== "flywheel" ||
+			run.status !== "active" ||
+			run.run_id !== envelope.run_id ||
+			run.issue_id !== envelope.issue_id ||
+			holder.gate_node_id !== envelope.gate_node_id ||
+			holder.attempt !== envelope.attempt ||
+			holder.source_execution_id !== envelope.source_execution_id ||
+			holder.authority_mode !== "land" ||
+			holder.subject_kind !== "git_head" ||
+			holder.carrier_binding_state !== "bound" ||
+			holder.state !== "awaiting_review" ||
+			holder.materialization_stage !== "completed" ||
+			holder.card_message_id !== envelope.card.message_id
+		) {
+			throw new Error("ship judgment approval ineligible: gate_changed");
+		}
+		const binding = this.readShipJudgmentBinding(
+			envelope.question_id,
+			envelope.card.channel_id,
+		);
+		if (
+			!binding ||
+			binding.threadId !== envelope.card.thread_id ||
+			binding.cardMessageId !== envelope.card.message_id ||
+			binding.manifestRevision !== envelope.manifest.revision
+		) {
+			throw new Error("ship judgment approval ineligible: binding_changed");
+		}
+		const targets = binding.targets
+			.map((target) => ({
+				repo_identity: target.repo_identity,
+				repo_slug: target.repo_slug,
+				pr_number: target.pr_number,
+				head_sha: target.head_sha.toLowerCase(),
+			}))
+			.sort(compareShipJudgmentApprovalTargets);
+		if (
+			canonicalJsonString(targets) !== canonicalJsonString(envelope.targets) ||
+			shipJudgmentApprovalTargetDigest(targets, binding.manifestRevision) !==
+				envelope.manifest.digest ||
+			!targets.some(
+				(target) =>
+					canonicalJsonString(target) === canonicalJsonString(envelope.primary),
+			)
+		) {
+			throw new Error("ship judgment approval ineligible: targets_changed");
+		}
+		for (const target of targets) {
+			if (!this.readShipJudgmentPlanReference(run.run_id, target.repo_identity)) {
+				throw new Error("ship judgment approval ineligible: reviewed_plan_missing");
+			}
+			const founderRework = this.workflowSelectAll(
+				`SELECT 1 FROM workflow_founder_gate_verdict v
+				 JOIN workflow_run r ON r.run_id=v.run_id
+				 WHERE r.project_name='flywheel' AND v.repo_identity=?
+				 AND lower(v.head_sha)=lower(?) AND v.verdict='rework'
+				 AND v.founder_authored=1 LIMIT 1`,
+				[target.repo_identity, target.head_sha],
+			)[0];
+			if (founderRework) {
+				throw new Error("ship judgment approval ineligible: founder_rework");
+			}
+		}
+		const pendingFounder =
+			this.workflowSelectAll(
+				"SELECT 1 FROM founder_decision_convergence WHERE question_id=? AND resolved_at_ms IS NULL LIMIT 1",
+				[envelope.question_id],
+			)[0] ??
+			this.workflowSelectAll(
+				"SELECT 1 FROM founder_deferred_approval WHERE question_id=? AND consumed_at IS NULL AND invalidated_at IS NULL LIMIT 1",
+				[envelope.question_id],
+			)[0];
+		if (pendingFounder) {
+			throw new Error("ship judgment approval ineligible: founder_input_pending");
+		}
+		const row = this.db.raw.prepare(`SELECT
+			 d.delivery_mode,d.mode_label,d.state,d.desired_id,d.posted_id,d.message_id,
+			 d.visible_at,d.validated_presentation_digest,d.validated_at,d.dirty_since,
+			 d.latest_candidate_json,d.thread_id,d.card_message_id,
+			 o.input_id,o.evaluation_id,o.mechanical_json,o.mechanical_digest,
+			 o.presentation_digest,o.alignment,o.conflict,o.coverage,o.overall,o.status,
+			 o.evidence_json,o.ordinal,
+			 i.semantic_digest,i.model_snapshot_digest,i.semantic_ordinal,i.sources_json,
+			 e.result_code,e.alignment AS semantic_alignment,e.coverage AS semantic_coverage
+			 FROM ship_judgment_delivery d
+			 JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
+			 JOIN ship_judgment_input i ON i.input_id=o.input_id
+			 JOIN ship_judgment_evaluation e ON e.evaluation_id=o.evaluation_id
+			 WHERE d.purpose='opinion' AND d.question_id=?`).get(
+			envelope.question_id,
+		) as Record<string, unknown> | undefined;
+		if (
+			!row ||
+			row.delivery_mode !== "auto" ||
+			row.mode_label !== "current" ||
+			row.state !== "delivered" ||
+			row.desired_id !== envelope.judgment.opinion_id ||
+			row.posted_id !== envelope.judgment.opinion_id ||
+			row.message_id !== envelope.judgment.delivered_message_id ||
+			row.thread_id !== envelope.card.thread_id ||
+			row.card_message_id !== envelope.card.message_id ||
+			row.dirty_since !== null ||
+			row.latest_candidate_json !== null ||
+			row.validated_presentation_digest !== envelope.judgment.presentation_digest ||
+			row.presentation_digest !== envelope.judgment.presentation_digest ||
+			row.mechanical_digest !== envelope.judgment.mechanical_digest ||
+			row.input_id !== envelope.judgment.input_id ||
+			row.evaluation_id !== envelope.judgment.evaluation_id ||
+			row.semantic_digest !== envelope.judgment.semantic_digest ||
+			row.model_snapshot_digest !== envelope.judgment.model_snapshot_digest ||
+			row.result_code !== "evaluated" ||
+			row.semantic_alignment !== "pass" ||
+			row.semantic_coverage !== "pass" ||
+			row.alignment !== "pass" ||
+			row.conflict !== "pass" ||
+			row.coverage !== "pass" ||
+			row.overall !== "can" ||
+			row.status !== "complete"
+		) {
+			throw new Error("ship judgment approval ineligible: judgment_changed");
+		}
+		const latestInput = this.db.raw.prepare(
+			"SELECT input_id FROM ship_judgment_input WHERE question_id=? ORDER BY semantic_ordinal DESC LIMIT 1",
+		).get(envelope.question_id) as { input_id: string } | undefined;
+		const latestOpinion = this.db.raw.prepare(
+			"SELECT opinion_id FROM ship_judgment_opinion WHERE question_id=? ORDER BY ordinal DESC LIMIT 1",
+		).get(envelope.question_id) as { opinion_id: string } | undefined;
+		if (
+			latestInput?.input_id !== envelope.judgment.input_id ||
+			latestOpinion?.opinion_id !== envelope.judgment.opinion_id
+		) {
+			throw new Error("ship judgment approval ineligible: newer_material");
+		}
+		const evidence = evidenceLedgerSchema.parse(
+			JSON.parse(String(row.evidence_json)),
+		);
+		const sources = JSON.parse(String(row.sources_json)) as {
+			sources?: { kind?: string }[];
+		};
+		if (
+			evidence.version !== 2 ||
+			evidence.policyVersion !== EVIDENCE_POLICY_VERSION ||
+			evidence.policyVersion !== SHIP_JUDGMENT_EVIDENCE_POLICY ||
+			evidence.semantic.status !== "evaluated" ||
+			evidence.semantic.evaluationId !== envelope.judgment.evaluation_id ||
+			evidence.semantic.modelSnapshotDigest !==
+				envelope.judgment.model_snapshot_digest ||
+			evidence.alignment.verdict !== "pass" ||
+			evidence.conflict.verdict !== "pass" ||
+			evidence.coverage.verdict !== "pass" ||
+			evidence.targets.some(
+				(target) => target.a.verdict !== "pass" || target.c.verdict !== "pass",
+			) ||
+			evidenceLedgerDigest(evidence) !== envelope.judgment.evidence_digest ||
+			(sources.sources ?? []).filter((source) => source.kind === "plan").length <
+				targets.length ||
+			(sources.sources ?? []).filter((source) => source.kind === "qa").length <
+				targets.length
+		) {
+			throw new Error("ship judgment approval ineligible: evidence_incomplete");
+		}
+		const checkedAt = Date.parse(envelope.judgment.mechanical_checked_at);
+		if (
+			row.validated_at !== envelope.judgment.mechanical_checked_at ||
+			!Number.isFinite(checkedAt) ||
+			atMs < checkedAt ||
+			atMs - checkedAt > 60_000
+		) {
+			throw new Error("ship judgment approval ineligible: mechanical_stale");
+		}
+	}
+
+	private prepareShipJudgmentAutoApprovalIntentTx(
+		questionId: string,
+		at: string,
+	):
+		| { status: "not_auto" | "not_candidate" | "ineligible" }
+		| { status: "prepared"; envelope: ShipJudgmentApprovalEnvelopeV1 } {
+		const flag = this.getFlagValueRow("auto_merge_narrow_gate", "flywheel");
+		if (flag?.lastEffective !== "auto") return { status: "not_auto" };
+		const sourceEventId = shipJudgmentApprovalSourceEventId(questionId);
+		const prepared = this.getShipJudgmentAutoApproval(sourceEventId);
+		if (prepared) {
+			return {
+				status: "prepared",
+				envelope: parseShipJudgmentApprovalEnvelope(
+					JSON.parse(prepared.envelopeJson),
+				),
+			};
+		}
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(questionId);
+		const run = holder ? this.getWorkflowRun(holder.run_id) : undefined;
+		const delivery = this.db.raw.prepare(`SELECT d.*,o.input_id,o.evaluation_id,
+			o.mechanical_digest,o.mechanical_json,o.presentation_digest,o.evidence_json,
+			i.semantic_digest,i.model_snapshot_digest
+			FROM ship_judgment_delivery d JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
+			JOIN ship_judgment_input i ON i.input_id=o.input_id
+			WHERE d.purpose='opinion' AND d.question_id=?`).get(questionId) as Record<string, unknown> | undefined;
+		const thread = delivery
+			? this.db.raw.prepare(
+					"SELECT channel_id FROM chat_threads WHERE thread_id=? AND discord_missing_at IS NULL",
+				).get(delivery.thread_id) as { channel_id: string } | undefined
+			: undefined;
+		const binding = thread
+			? this.readShipJudgmentBinding(questionId, thread.channel_id)
+			: undefined;
+		const control = this.getLatestAutoNarrowControlEvent("flywheel");
+		const provenance = this.getShipJudgmentPolicyProvenance();
+		if (
+			!holder ||
+			!run ||
+			!delivery ||
+			!thread ||
+			!binding ||
+			!control?.openingEventId ||
+			!provenance ||
+			!delivery.input_id ||
+			!delivery.evaluation_id ||
+			!delivery.desired_id ||
+			!delivery.message_id ||
+			!delivery.validated_at ||
+			!delivery.evidence_json
+		) {
+			return { status: "not_candidate" };
+		}
+		const primaryBinding = this.resolveFounderGateBindingTx({
+			runId: run.run_id,
+			questionId,
+		});
+		const targets = binding.targets
+			.map((target) => ({
+				repo_identity: target.repo_identity,
+				repo_slug: target.repo_slug,
+				pr_number: target.pr_number,
+				head_sha: target.head_sha.toLowerCase(),
+			}))
+			.sort(compareShipJudgmentApprovalTargets);
+		const evidence = evidenceLedgerSchema.parse(
+			JSON.parse(String(delivery.evidence_json)),
+		);
+		const envelope = parseShipJudgmentApprovalEnvelope({
+			schema_version: 1,
+			policy: SHIP_JUDGMENT_APPROVAL_POLICY,
+			judgment_policy: SHIP_JUDGMENT_POLICY,
+			project_name: "flywheel",
+			run_id: run.run_id,
+			issue_id: run.issue_id,
+			question_id: questionId,
+			gate_node_id: holder.gate_node_id,
+			attempt: holder.attempt,
+			source_execution_id: holder.source_execution_id,
+			card: {
+				message_id: holder.card_message_id,
+				thread_id: binding.threadId,
+				channel_id: thread.channel_id,
+			},
+			primary: {
+				repo_identity: primaryBinding.repoIdentity,
+				repo_slug: primaryBinding.repoSlug,
+				pr_number: primaryBinding.prNumber,
+				head_sha: primaryBinding.headSha.toLowerCase(),
+			},
+			targets,
+			manifest: {
+				revision: binding.manifestRevision,
+				digest: shipJudgmentApprovalTargetDigest(
+					targets,
+					binding.manifestRevision,
+				),
+			},
+			judgment: {
+				opinion_id: String(delivery.desired_id),
+				input_id: String(delivery.input_id),
+				evaluation_id: String(delivery.evaluation_id),
+				semantic_digest: String(delivery.semantic_digest),
+				model_snapshot_digest: String(delivery.model_snapshot_digest),
+				evidence_policy: SHIP_JUDGMENT_EVIDENCE_POLICY,
+				evidence_digest: evidenceLedgerDigest(evidence),
+				mechanical_digest: String(delivery.mechanical_digest),
+				mechanical_checked_at: String(delivery.validated_at),
+				presentation_digest: String(delivery.presentation_digest),
+				delivered_message_id: String(delivery.message_id),
+			},
+			control: {
+				event_id: control.eventId,
+				opening_event_id: control.openingEventId,
+				flag_revision: control.flagRevision,
+			},
+			policy_provenance: {
+				id: provenance.provenanceId,
+				original_message_digest: provenance.originalMessageDigest,
+			},
+			decision_at: at,
+			response: { approved: true },
+			actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+			decision_source: SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+		});
+		try {
+			this.assertShipJudgmentApprovalEnvelopeCurrentTx(envelope, at, false);
+		} catch {
+			return { status: "ineligible" };
+		}
+		this.prepareShipJudgmentAutoApproval(envelope);
+		return { status: "prepared", envelope };
+	}
+
+	commitShipJudgmentSourceIfEligible(input: {
+		questionId: string;
+		at: string;
+		writeSource: (args: {
+			expectedOwner: string;
+			projectedThroughSourceRowId: number;
+			envelope: ShipJudgmentApprovalEnvelopeV1;
+		}) => { written: boolean; replayed: boolean };
+	}): ShipJudgmentSourceCommitResult {
+		const priorBusyTimeout = Number(
+			this.db.raw.pragma("busy_timeout", { simple: true }),
+		);
+		this.db.raw.pragma("busy_timeout = 0");
+		try {
+			// Seal the exact source payload before crossing into CommDB. If the
+			// process dies after the Comm write, the next pass reuses these bytes
+			// and the Comm idempotency key can prove a byte-identical replay.
+			const prepared = this.db.raw
+				.transaction(() =>
+					this.prepareShipJudgmentAutoApprovalIntentTx(
+						input.questionId,
+						input.at,
+					),
+				)
+				.immediate();
+			if (prepared.status !== "prepared") return prepared;
+			return this.db.raw
+				.transaction((): ShipJudgmentSourceCommitResult => {
+					const flag = this.getFlagValueRow(
+						"auto_merge_narrow_gate",
+						"flywheel",
+					);
+					if (flag?.lastEffective !== "auto") return { status: "not_auto" };
+					const sourceEventId = shipJudgmentApprovalSourceEventId(
+						input.questionId,
+					);
+					const envelope = parseShipJudgmentApprovalEnvelope(
+						JSON.parse(
+							this.getShipJudgmentAutoApproval(sourceEventId)!.envelopeJson,
+						),
+					);
+					try {
+						this.assertShipJudgmentApprovalEnvelopeCurrentTx(envelope, input.at);
+					} catch (error) {
+						this.recordShipJudgmentAutoApprovalDisposition({
+							sourceEventId,
+							disposition: "rejected",
+							reason: error instanceof Error ? error.message.slice(0, 200) : "ineligible",
+							at: input.at,
+						});
+						return { status: "ineligible" };
+					}
+					const projectedThroughSourceRowId = Number(
+						this.workflowSelectAll(
+							"SELECT last_row_id FROM workflow_source_cursor WHERE project='flywheel'",
+							[],
+						)[0]?.last_row_id ?? 0,
+					);
+					const written = input.writeSource({
+						expectedOwner: envelope.source_execution_id,
+						projectedThroughSourceRowId,
+						envelope,
+					});
+					if (!written.written) return { status: "not_candidate" };
+					this.recordShipJudgmentAutoApprovalDisposition({
+						sourceEventId,
+						disposition: "source_written",
+						reason: written.replayed ? "replayed" : "written",
+						at: input.at,
+					});
+					return {
+						status: written.replayed ? "replayed" : "written",
+						envelope,
+					};
+				})
+				.immediate();
+		} finally {
+			this.db.raw.pragma(`busy_timeout = ${priorBusyTimeout}`);
+		}
 	}
 
 	private migrateShipJudgmentLedger(): void {
@@ -5908,11 +6827,89 @@ export class StateStore {
 					history_lease_owner TEXT, history_generation INTEGER NOT NULL DEFAULT 0,
 					history_expires_at TEXT, last_error TEXT
 				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_policy_provenance (
+					provenance_id TEXT PRIMARY KEY,
+					policy TEXT NOT NULL CHECK(policy='three-point-auto-v1'),
+					channel_id TEXT NOT NULL,
+					thread_id TEXT NOT NULL,
+					message_id TEXT NOT NULL UNIQUE,
+					author_id TEXT NOT NULL,
+					message_created_at TEXT NOT NULL,
+					original_message_digest TEXT NOT NULL CHECK(length(original_message_digest)=64),
+					verified_at TEXT NOT NULL,
+					verification_receipt_id TEXT NOT NULL UNIQUE
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_auto_approval (
+					source_event_id TEXT PRIMARY KEY,
+					question_id TEXT NOT NULL UNIQUE,
+					opinion_id TEXT NOT NULL,
+					input_id TEXT NOT NULL,
+					evaluation_id TEXT NOT NULL,
+					run_id TEXT NOT NULL,
+					source_execution_id TEXT NOT NULL,
+					binding_digest TEXT NOT NULL CHECK(length(binding_digest)=64),
+					targets_digest TEXT NOT NULL CHECK(length(targets_digest)=64),
+					manifest_revision INTEGER NOT NULL CHECK(manifest_revision>=0),
+					control_event_id TEXT NOT NULL,
+					opening_event_id TEXT NOT NULL,
+					flag_revision INTEGER NOT NULL CHECK(flag_revision>0),
+					policy_provenance_id TEXT NOT NULL REFERENCES ship_judgment_policy_provenance(provenance_id),
+					mechanical_digest TEXT NOT NULL CHECK(length(mechanical_digest)=64),
+					presentation_digest TEXT NOT NULL CHECK(length(presentation_digest)=64),
+					envelope_json TEXT NOT NULL CHECK(json_valid(envelope_json) AND length(CAST(envelope_json AS BLOB))<=65536),
+					envelope_hash TEXT NOT NULL CHECK(length(envelope_hash)=64),
+					created_at TEXT NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_auto_approval_disposition (
+					source_event_id TEXT NOT NULL REFERENCES ship_judgment_auto_approval(source_event_id),
+					disposition TEXT NOT NULL CHECK(disposition IN ('prepared','source_written','applied','rejected')),
+					reason TEXT NOT NULL,
+					at TEXT NOT NULL,
+					PRIMARY KEY(source_event_id,disposition,reason)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_legacy_retirement (
+					question_id TEXT NOT NULL,
+					retirement_policy TEXT NOT NULL CHECK(retirement_policy='three-point-retirement-v1'),
+					thread_id TEXT NOT NULL,
+					card_message_id TEXT NOT NULL,
+					legacy_message_id TEXT,
+					legacy_marker TEXT NOT NULL,
+					legacy_state TEXT NOT NULL,
+					legacy_posting_at TEXT,
+					status TEXT NOT NULL CHECK(status IN ('pending','claimed','retired','unavailable')),
+					generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0),
+					lease_owner TEXT,
+					expires_at TEXT,
+					retry_after TEXT,
+					last_error TEXT,
+					retired_at TEXT,
+					observed_at TEXT NOT NULL,
+					PRIMARY KEY(question_id,retirement_policy)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_mode_check (
+					control_event_id TEXT PRIMARY KEY REFERENCES auto_narrow_control_event(event_id),
+					mode TEXT NOT NULL CHECK(mode IN ('dry_run','auto')),
+					policy TEXT NOT NULL CHECK(policy='ship-judgment-v1'),
+					status TEXT NOT NULL CHECK(status IN ('pending','passed','failed','superseded')),
+					question_id TEXT,
+					card_message_id TEXT,
+					opinion_id TEXT,
+					message_id TEXT,
+					observed_at TEXT,
+					reason TEXT
+				);
 				CREATE INDEX IF NOT EXISTS ship_judgment_input_project ON ship_judgment_input(project_name,requested_at);
 				CREATE INDEX IF NOT EXISTS ship_judgment_job_work ON ship_judgment_job(state,expires_at);
 				CREATE INDEX IF NOT EXISTS ship_judgment_opinion_question ON ship_judgment_opinion(question_id,created_at);
 				CREATE INDEX IF NOT EXISTS ship_judgment_outcome_question ON ship_judgment_outcome(question_id,decided_at);
 			`);
+			for (const name of ["policy_provenance", "auto_approval"] as const) {
+				for (const operation of ["UPDATE", "DELETE"] as const) {
+					this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ship_judgment_${name}_no_${operation.toLowerCase()}
+						BEFORE ${operation} ON ship_judgment_${name}
+						BEGIN SELECT RAISE(ABORT, 'ship_judgment_${name} is immutable'); END;`);
+				}
+			}
 			for (const name of ["input", "evaluation", "opinion", "outcome", "clarification"] as const) {
 				for (const operation of ["UPDATE", "DELETE"] as const) {
 					this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ship_judgment_${name}_no_${operation.toLowerCase()}
@@ -5940,7 +6937,21 @@ export class StateStore {
 				if(!deliveryColumns.some(existing=>existing.name===column)) this.db.raw.exec(`ALTER TABLE ship_judgment_delivery ADD COLUMN ${column} TEXT NULL`);
 			}
             if (!deliveryColumns.some(column => column.name === "delivery_mode")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'dry_run' CHECK(delivery_mode IN ('dry_run','auto','off'))");
-            if (!deliveryColumns.some(column => column.name === "mode_label")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN mode_label TEXT NOT NULL DEFAULT 'current' CHECK(mode_label IN ('current','history'))");
+			if (!deliveryColumns.some(column => column.name === "mode_label")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN mode_label TEXT NOT NULL DEFAULT 'current' CHECK(mode_label IN ('current','history'))");
+			const retirementColumns = this.db.raw.prepare("PRAGMA table_info(ship_judgment_legacy_retirement)").all() as {name:string}[];
+			if (!retirementColumns.some(column => column.name === "legacy_posting_at")) this.db.raw.exec("ALTER TABLE ship_judgment_legacy_retirement ADD COLUMN legacy_posting_at TEXT NULL");
+			this.db.raw.exec(`INSERT OR IGNORE INTO ship_judgment_legacy_retirement
+				(question_id,retirement_policy,thread_id,card_message_id,legacy_message_id,
+				 legacy_marker,legacy_state,legacy_posting_at,status,observed_at)
+				SELECT question_id,'three-point-retirement-v1',issue_thread_id,card_message_id,
+				 followup_message_id,correlation_marker,state,posting_at,'pending',
+				 strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				FROM auto_narrow_opinion_delivery`);
+			this.db.raw.exec(`INSERT OR IGNORE INTO ship_judgment_mode_check
+				(control_event_id,mode,policy,status,reason)
+				SELECT event_id,mode,'ship-judgment-v1','pending','awaiting_first_card'
+				FROM auto_narrow_control_event WHERE project_name='flywheel'
+				AND control_seq=(SELECT MAX(control_seq) FROM auto_narrow_control_event WHERE project_name='flywheel')`);
 			const columns = this.db.raw.prepare("PRAGMA table_info(auto_narrow_opinion_delivery)").all() as { name: string }[];
 			for (const column of ["legacy_freeze_requested_at", "legacy_frozen_at"] as const) {
 				if (!columns.some(existing => existing.name === column)) {
@@ -7595,6 +8606,7 @@ export class StateStore {
 				source_event_id TEXT NOT NULL,
 				expected_plan_path TEXT NOT NULL,
 				expected_blob_sha TEXT NOT NULL,
+				reviewed_commit_sha TEXT,
 				is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0,1)),
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				delivered_at TEXT,
@@ -7605,6 +8617,54 @@ export class StateStore {
 		this.db.run(
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_manifest_current
 			   ON design_review_manifest(execution_id) WHERE is_current = 1`,
+		);
+		try {
+			this.db.run(
+				"ALTER TABLE design_review_manifest ADD COLUMN reviewed_commit_sha TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS design_review_approval_proof (
+				proof_id TEXT PRIMARY KEY,
+				lane TEXT NOT NULL CHECK (lane IN ('coordinator','manifest')),
+				project_name TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				repository_identity TEXT NOT NULL,
+				review_job_request_id TEXT,
+				manifest_request_id TEXT,
+				manifest_revision INTEGER,
+				plan_path TEXT NOT NULL,
+				reviewed_commit_sha TEXT NOT NULL,
+				expected_blob_sha TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN ('captured','validated','approved','invalidated')),
+				captured_at TEXT NOT NULL,
+				validation_receipt_id TEXT UNIQUE,
+				validated_at TEXT,
+				verdict_receipt_id TEXT UNIQUE,
+				approved_at TEXT,
+				invalidated_at TEXT,
+				invalidation_reason TEXT,
+				CHECK (
+					(lane = 'coordinator' AND review_job_request_id IS NOT NULL
+					 AND manifest_request_id IS NULL AND manifest_revision IS NULL)
+					OR
+					(lane = 'manifest' AND review_job_request_id IS NULL
+					 AND manifest_request_id IS NOT NULL AND manifest_revision > 0)
+				)
+			)
+		`);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_proof_coordinator
+			   ON design_review_approval_proof(review_job_request_id)
+			 WHERE lane = 'coordinator'`,
+		);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_proof_manifest
+			   ON design_review_approval_proof(manifest_request_id, manifest_revision)
+			 WHERE lane = 'manifest'`,
 		);
 
 		// FLY-1251: exact-head, server-owned docs-only/code classification. A
@@ -9542,6 +10602,116 @@ export class StateStore {
 		return row ? this.mapAutoNarrowControlEvent(row) : undefined;
 	}
 
+	getShipJudgmentModeCheck(
+		controlEventId: string,
+	): ShipJudgmentModeCheckRow | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM ship_judgment_mode_check WHERE control_event_id=?")
+			.get(controlEventId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					controlEventId: String(row.control_event_id),
+					mode: row.mode as "dry_run" | "auto",
+					policy: String(row.policy),
+					status: row.status as ShipJudgmentModeCheckRow["status"],
+					questionId: row.question_id == null ? null : String(row.question_id),
+					cardMessageId:
+						row.card_message_id == null ? null : String(row.card_message_id),
+					opinionId: row.opinion_id == null ? null : String(row.opinion_id),
+					messageId: row.message_id == null ? null : String(row.message_id),
+					observedAt: row.observed_at == null ? null : String(row.observed_at),
+					reason: row.reason == null ? null : String(row.reason),
+				}
+			: undefined;
+	}
+
+	reconcileShipJudgmentModeCheck(at: string): ShipJudgmentModeCheckRow | undefined {
+		if (!StateStore.workflowFiniteTimestamp(at)) {
+			throw new Error("ship judgment mode check timestamp invalid");
+		}
+		return this.db.raw.transaction(() => {
+			const control = this.getLatestAutoNarrowControlEvent("flywheel");
+			if (!control) return undefined;
+			const check = this.getShipJudgmentModeCheck(control.eventId);
+			if (!check || check.status === "superseded" || check.status === "passed") {
+				return check;
+			}
+			const selected = this.db.raw.prepare(`SELECT d.question_id,d.card_message_id,h.run_id,
+				d.message_id,d.visible_at,d.posted_id AS opinion_id,o.evidence_json,h.state AS holder_state,
+				COALESCE((SELECT status FROM ship_judgment_legacy_retirement lr
+				 WHERE lr.question_id=d.question_id AND lr.retirement_policy='three-point-retirement-v1'), 'absent') AS legacy_status
+				FROM ship_judgment_delivery d
+				JOIN ship_judgment_opinion o ON o.opinion_id=d.posted_id
+				JOIN workflow_gate_holder h ON h.question_id=d.question_id
+				WHERE d.purpose='opinion' AND d.state='delivered' AND d.mode_label='current'
+				AND d.delivery_mode=? AND d.message_id IS NOT NULL AND d.visible_at>=?
+				AND (? IS NULL OR d.question_id=?)
+				ORDER BY d.visible_at,d.question_id LIMIT 1`).get(
+				control.mode,
+				control.appliedAt,
+				check.questionId,
+				check.questionId,
+			) as Record<string, unknown> | undefined;
+			if (!selected) return check;
+			if (selected.holder_state !== "awaiting_review") {
+				this.db.raw.prepare(`UPDATE ship_judgment_mode_check SET status='pending',
+					question_id=NULL,card_message_id=NULL,opinion_id=NULL,message_id=NULL,
+					observed_at=?,reason='selected_card_inactive_reselect'
+					WHERE control_event_id=? AND status IN ('pending','failed')`).run(
+					at,
+					control.eventId,
+				);
+				return this.getShipJudgmentModeCheck(control.eventId);
+			}
+			const evidence = (() => {
+				try {
+					return evidenceLedgerSchema.parse(
+						JSON.parse(String(selected.evidence_json ?? "null")),
+					);
+				} catch {
+					return undefined;
+				}
+			})();
+			const valid =
+				evidence?.policyVersion === EVIDENCE_POLICY_VERSION &&
+				!["pending", "claimed"].includes(String(selected.legacy_status));
+			const visibleAt = String(selected.visible_at);
+			const expired = Date.parse(at) - Date.parse(visibleAt) >= 120_000;
+			const status = valid ? "passed" : expired ? "failed" : "pending";
+			const reason = valid
+				? "three_point_opinion_visible"
+				: evidence?.policyVersion !== EVIDENCE_POLICY_VERSION
+					? "opinion_policy_mismatch"
+					: "legacy_retirement_pending";
+			this.db.raw.prepare(`UPDATE ship_judgment_mode_check SET status=?,question_id=?,
+				card_message_id=?,opinion_id=?,message_id=?,observed_at=?,reason=?
+				WHERE control_event_id=? AND status IN ('pending','failed')`).run(
+				status,
+				String(selected.question_id),
+				String(selected.card_message_id),
+				String(selected.opinion_id),
+				String(selected.message_id),
+				at,
+				reason,
+				control.eventId,
+			);
+			if (status === "failed") {
+				this.appendWorkflowRunEventTx({
+					runId: String(selected.run_id),
+					eventUid: `ship_judgment_mode_check_failed:${control.eventId}`,
+					kind: "ship_judgment_delivery_error",
+					payload: {
+						question_id: String(selected.question_id),
+						control_event_id: control.eventId,
+						reason,
+						policy: "ship-judgment-v1",
+					},
+				});
+			}
+			return this.getShipJudgmentModeCheck(control.eventId);
+		}).immediate();
+	}
+
 	applyAutoNarrowControlChange(args: {
 		eventId: string;
 		projectName: string;
@@ -9595,6 +10765,12 @@ export class StateStore {
 				args.founderMessageId,
 			);
 			if (replay) {
+				this.db.raw.prepare(`INSERT OR IGNORE INTO ship_judgment_mode_check
+					(control_event_id,mode,policy,status,reason)
+					VALUES (?,?,'ship-judgment-v1','pending','awaiting_first_card')`).run(
+					replay.eventId,
+					replay.mode,
+				);
 				result =
 					replay.projectName === args.projectName &&
 					replay.mode === args.mode &&
@@ -9719,6 +10895,16 @@ export class StateStore {
 				args.founderMessageId,
 			);
 			if (!event) throw new Error("auto narrow control event disappeared");
+			this.db.raw.prepare(`UPDATE ship_judgment_mode_check SET status='superseded',
+				observed_at=?,reason='newer_control_event' WHERE status IN ('pending','failed')`).run(
+				new Date(now).toISOString(),
+			);
+			this.db.raw.prepare(`INSERT INTO ship_judgment_mode_check
+				(control_event_id,mode,policy,status,reason)
+				VALUES (?,?,'ship-judgment-v1','pending','awaiting_first_card')`).run(
+				event.eventId,
+				event.mode,
+			);
 			result = { ok: true, replayed: false, event };
 		});
 		transaction.immediate();
@@ -16817,6 +18003,8 @@ export class StateStore {
 			source_event_id: row.source_event_id as string,
 			expected_plan_path: row.expected_plan_path as string,
 			expected_blob_sha: row.expected_blob_sha as string,
+			reviewed_commit_sha:
+				(row.reviewed_commit_sha as string | null) ?? undefined,
 			is_current: Number(row.is_current) === 1,
 			created_at: row.created_at as string,
 			delivered_at: (row.delivered_at as string) ?? undefined,
@@ -16850,9 +18038,12 @@ export class StateStore {
 
 	advanceDesignReviewManifest(input: {
 		executionId: string;
+		issueId: string;
 		projectName: string;
+		repositoryIdentity: string;
 		sourceEventId: string;
 		expectedPlanPath: string;
+		reviewedCommitSha: string;
 		expectedBlobSha: string;
 	}): DesignReviewManifest {
 		for (const [name, value] of Object.entries(input)) {
@@ -16861,8 +18052,9 @@ export class StateStore {
 			}
 		}
 		const blobSha = input.expectedBlobSha.toLowerCase();
-		if (!/^[a-f0-9]{40}$/.test(blobSha)) {
-			throw new Error("design review manifest expectedBlobSha must be 40 hex");
+		const commitSha = input.reviewedCommitSha.toLowerCase();
+		if (!/^[a-f0-9]{40}$/.test(blobSha) || !/^[a-f0-9]{40}$/.test(commitSha)) {
+			throw new Error("design review manifest commit/blob must be 40 hex");
 		}
 
 		let result: DesignReviewManifest | null = null;
@@ -16877,7 +18069,8 @@ export class StateStore {
 				if (
 					existing.project_name !== input.projectName ||
 					existing.expected_plan_path !== input.expectedPlanPath ||
-					existing.expected_blob_sha !== blobSha
+					existing.expected_blob_sha !== blobSha ||
+					existing.reviewed_commit_sha !== commitSha
 				) {
 					throw new Error(
 						`design review source event replay conflict: ${input.sourceEventId}`,
@@ -16902,8 +18095,8 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO design_review_manifest
 				   (execution_id, revision, request_id, project_name, source_event_id,
-				    expected_plan_path, expected_blob_sha, is_current)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+				    expected_plan_path, expected_blob_sha, reviewed_commit_sha, is_current)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 				[
 					input.executionId,
 					revision,
@@ -16912,6 +18105,7 @@ export class StateStore {
 					input.sourceEventId,
 					input.expectedPlanPath,
 					blobSha,
+					commitSha,
 				],
 			);
 			result = this.findDesignReviewManifest(
@@ -16919,6 +18113,20 @@ export class StateStore {
 				"revision",
 				revision,
 			);
+			if (!result) throw new Error("design review manifest insert vanished");
+			this.captureDesignReviewApprovalProof({
+				lane: "manifest",
+				projectName: input.projectName,
+				issueId: input.issueId,
+				executionId: input.executionId,
+				repositoryIdentity: input.repositoryIdentity,
+				manifestRequestId: result.request_id,
+				manifestRevision: result.revision,
+				planPath: input.expectedPlanPath,
+				reviewedCommitSha: commitSha,
+				expectedBlobSha: blobSha,
+				capturedAt: result.created_at,
+			});
 			inserted = true;
 		});
 		if (inserted) this.save();
@@ -16973,6 +18181,177 @@ export class StateStore {
 		const marked = this.db.getRowsModified() === 1;
 		if (marked) this.save();
 		return marked;
+	}
+
+	private rowToDesignReviewApprovalProof(
+		row: Record<string, unknown>,
+	): DesignReviewApprovalProof {
+		return {
+			proof_id: row.proof_id as string,
+			lane: row.lane as DesignReviewApprovalProof["lane"],
+			project_name: row.project_name as string,
+			issue_id: row.issue_id as string,
+			execution_id: row.execution_id as string,
+			repository_identity: row.repository_identity as string,
+			review_job_request_id:
+				(row.review_job_request_id as string | null) ?? undefined,
+			manifest_request_id:
+				(row.manifest_request_id as string | null) ?? undefined,
+			manifest_revision:
+				row.manifest_revision == null ? undefined : Number(row.manifest_revision),
+			plan_path: row.plan_path as string,
+			reviewed_commit_sha: row.reviewed_commit_sha as string,
+			expected_blob_sha: row.expected_blob_sha as string,
+			state: row.state as DesignReviewApprovalProofState,
+			captured_at: row.captured_at as string,
+			validation_receipt_id:
+				(row.validation_receipt_id as string | null) ?? undefined,
+			validated_at: (row.validated_at as string | null) ?? undefined,
+			verdict_receipt_id:
+				(row.verdict_receipt_id as string | null) ?? undefined,
+			approved_at: (row.approved_at as string | null) ?? undefined,
+			invalidated_at: (row.invalidated_at as string | null) ?? undefined,
+			invalidation_reason:
+				(row.invalidation_reason as string | null) ?? undefined,
+		};
+	}
+
+	getDesignReviewApprovalProof(proofId: string): DesignReviewApprovalProof | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM design_review_approval_proof WHERE proof_id = ?")
+			.get(proofId) as Record<string, unknown> | undefined;
+		return row ? this.rowToDesignReviewApprovalProof(row) : null;
+	}
+
+	getDesignReviewProofForReviewJob(requestId: string): DesignReviewApprovalProof | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM design_review_approval_proof WHERE lane='coordinator' AND review_job_request_id=?")
+			.get(requestId) as Record<string, unknown> | undefined;
+		return row ? this.rowToDesignReviewApprovalProof(row) : null;
+	}
+
+	getApprovedDesignReviewProofForReviewJob(requestId: string): DesignReviewApprovalProof | null {
+		const proof = this.getDesignReviewProofForReviewJob(requestId);
+		return proof?.state === "approved" ? proof : null;
+	}
+
+	getDesignReviewProofForManifest(requestId: string, revision: number): DesignReviewApprovalProof | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM design_review_approval_proof WHERE lane='manifest' AND manifest_request_id=? AND manifest_revision=?")
+			.get(requestId, revision) as Record<string, unknown> | undefined;
+		return row ? this.rowToDesignReviewApprovalProof(row) : null;
+	}
+
+	getApprovedDesignReviewProofForManifest(requestId: string, revision: number): DesignReviewApprovalProof | null {
+		const proof = this.getDesignReviewProofForManifest(requestId, revision);
+		return proof?.state === "approved" ? proof : null;
+	}
+
+	captureDesignReviewApprovalProof(input: {
+		lane: "coordinator" | "manifest";
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		repositoryIdentity: string;
+		reviewJobRequestId?: string;
+		manifestRequestId?: string;
+		manifestRevision?: number;
+		planPath: string;
+		reviewedCommitSha: string;
+		expectedBlobSha: string;
+		capturedAt: string;
+	}): DesignReviewApprovalProof {
+		const coordinator = input.lane === "coordinator";
+		if (
+			[ input.projectName, input.issueId, input.executionId, input.repositoryIdentity, input.planPath ].some((value) => !value?.trim()) ||
+			!/^[0-9a-f]{40}$/.test(input.reviewedCommitSha.toLowerCase()) ||
+			!/^[0-9a-f]{40}$/.test(input.expectedBlobSha.toLowerCase()) ||
+			!Number.isFinite(Date.parse(input.capturedAt)) ||
+			(coordinator && (!input.reviewJobRequestId || input.manifestRequestId || input.manifestRevision)) ||
+			(!coordinator && (!input.manifestRequestId || !Number.isInteger(input.manifestRevision) || (input.manifestRevision ?? 0) < 1 || input.reviewJobRequestId !== undefined))
+		) throw new Error("design review approval proof identity is invalid");
+		const existing = coordinator
+			? this.getDesignReviewProofForReviewJob(input.reviewJobRequestId!)
+			: this.getDesignReviewProofForManifest(input.manifestRequestId!, input.manifestRevision!);
+		if (existing) {
+			if (
+				existing.project_name !== input.projectName ||
+				existing.issue_id !== input.issueId ||
+				existing.execution_id !== input.executionId ||
+				existing.repository_identity !== input.repositoryIdentity ||
+				existing.plan_path !== input.planPath ||
+				existing.reviewed_commit_sha !== input.reviewedCommitSha.toLowerCase() ||
+				existing.expected_blob_sha !== input.expectedBlobSha.toLowerCase() ||
+				existing.captured_at !== input.capturedAt
+			) throw new Error("design review approval proof replay conflict");
+			return existing;
+		}
+		const proofId = randomUUID();
+		this.db.run(
+			`INSERT INTO design_review_approval_proof
+			 (proof_id,lane,project_name,issue_id,execution_id,repository_identity,
+			  review_job_request_id,manifest_request_id,manifest_revision,plan_path,
+			  reviewed_commit_sha,expected_blob_sha,state,captured_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'captured',?)`,
+			[ proofId, input.lane, input.projectName, input.issueId, input.executionId,
+			  input.repositoryIdentity, input.reviewJobRequestId ?? null,
+			  input.manifestRequestId ?? null, input.manifestRevision ?? null,
+			  input.planPath, input.reviewedCommitSha.toLowerCase(),
+			  input.expectedBlobSha.toLowerCase(), input.capturedAt ],
+		);
+		this.save();
+		return this.getDesignReviewApprovalProof(proofId)!;
+	}
+
+	validateDesignReviewApprovalProof(input: {
+		proofId: string;
+		validationReceiptId: string;
+		reviewedCommitSha: string;
+		expectedBlobSha: string;
+		validatedAt: string;
+	}): DesignReviewApprovalProof {
+		const proof = this.getDesignReviewApprovalProof(input.proofId);
+		if (!proof) throw new Error("design review approval proof missing");
+		if (proof.reviewed_commit_sha !== input.reviewedCommitSha.toLowerCase() || proof.expected_blob_sha !== input.expectedBlobSha.toLowerCase()) {
+			throw new Error("design review approval proof binding mismatch");
+		}
+		if (proof.validation_receipt_id) {
+			if (proof.validation_receipt_id !== input.validationReceiptId || proof.validated_at !== input.validatedAt) {
+				throw new Error("design review approval proof validation replay conflict");
+			}
+			return proof;
+		}
+		this.db.run(
+			"UPDATE design_review_approval_proof SET state='validated',validation_receipt_id=?,validated_at=? WHERE proof_id=? AND state='captured'",
+			[input.validationReceiptId, input.validatedAt, input.proofId],
+		);
+		if (this.db.getRowsModified() !== 1) throw new Error("design review approval proof validation raced");
+		this.save();
+		return this.getDesignReviewApprovalProof(input.proofId)!;
+	}
+
+	sealDesignReviewApprovalProof(input: {
+		proofId: string;
+		verdictReceiptId: string;
+		approvedAt: string;
+	}): { ok: true; proof: DesignReviewApprovalProof } | { ok: false; reason: "proof_missing" | "proof_not_validated" | "proof_invalidated" } {
+		const proof = this.getDesignReviewApprovalProof(input.proofId);
+		if (!proof) return { ok: false, reason: "proof_missing" };
+		if (proof.state === "invalidated") return { ok: false, reason: "proof_invalidated" };
+		if (proof.state === "approved") {
+			if (proof.verdict_receipt_id !== input.verdictReceiptId || proof.approved_at !== input.approvedAt) {
+				throw new Error("design review approval proof verdict replay conflict");
+			}
+			return { ok: true, proof };
+		}
+		if (proof.state !== "validated") return { ok: false, reason: "proof_not_validated" };
+		this.db.run(
+			"UPDATE design_review_approval_proof SET state='approved',verdict_receipt_id=?,approved_at=? WHERE proof_id=? AND state='validated'",
+			[input.verdictReceiptId, input.approvedAt, input.proofId],
+		);
+		if (this.db.getRowsModified() !== 1) throw new Error("design review approval proof seal raced");
+		this.save();
+		return { ok: true, proof: this.getDesignReviewApprovalProof(input.proofId)! };
 	}
 
 	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────
@@ -17738,11 +19117,19 @@ export class StateStore {
 		reviewerSessionGeneration?: number;
 		reviewerSessionFailureStreak?: number;
 		authorFamily?: string;
+		designPlanProof?: {
+			planPath: string;
+			reviewedCommitSha: string;
+			expectedBlobSha: string;
+			capturedAt: string;
+		};
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
 	}): { inserted: boolean; job: CodexReviewJob } {
-		this.db.run(
-			`INSERT OR IGNORE INTO codex_review_job
+		let inserted = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
 			    round, question_id, target_path, target_repo_path,
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
@@ -17769,9 +19156,24 @@ export class StateStore {
 				input.authorFamily ?? null,
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
+				],
+			);
+			inserted = this.db.getRowsModified() > 0;
+			if (inserted && input.designPlanProof) {
+				this.captureDesignReviewApprovalProof({
+					lane: "coordinator",
+					projectName: input.projectName,
+					issueId: input.issueId ?? input.executionId,
+					executionId: input.executionId,
+					repositoryIdentity: input.targetRepoIdentity ?? "__main__",
+					reviewJobRequestId: input.requestId,
+					planPath: input.designPlanProof.planPath,
+					reviewedCommitSha: input.designPlanProof.reviewedCommitSha,
+					expectedBlobSha: input.designPlanProof.expectedBlobSha,
+					capturedAt: input.designPlanProof.capturedAt,
+				});
+			}
+		});
 		this.save();
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
@@ -58743,962 +60145,6 @@ export class StateStore {
 		).map((row) => this.autoMergeShadowObservationRow(row));
 	}
 
-	private evaluateAutoNarrowCandidateTx(
-		questionId: string,
-		at: string,
-		verdictId: string,
-	): AutoNarrowCandidateEvaluation | undefined {
-		const holder = this.getWorkflowGateHolderByQuestionId(questionId);
-		if (
-			!holder ||
-			holder.gate_node_id !== "founder_gate" ||
-			holder.authority_mode !== "land" ||
-			holder.subject_kind !== "git_head" ||
-			holder.state !== "awaiting_review" ||
-			holder.materialization_stage !== "completed" ||
-			!holder.card_message_id
-		) {
-			return undefined;
-		}
-		const run = this.getWorkflowRun(holder.run_id);
-		if (!run || run.project_name !== "flywheel" || run.status !== "active") {
-			return undefined;
-		}
-		const binding = this.resolveFounderGateBindingTx({
-			runId: holder.run_id,
-			questionId,
-		});
-		const observation = this.buildAutoMergeShadowObservationTx({
-			verdictId,
-			runId: holder.run_id,
-			binding,
-			recordedAt: at,
-		});
-		const declaration = this.listAutoMergeShadowDeclarations(questionId).at(-1);
-		const hasFounderRework = Boolean(
-			this.workflowSelectAll(
-				`SELECT 1 FROM workflow_founder_gate_verdict v
-				   JOIN workflow_run r ON r.run_id = v.run_id
-				  WHERE r.project_name = ? AND v.repo_identity = ?
-				    AND lower(v.head_sha) = lower(?) AND v.verdict = 'rework'
-				    AND v.founder_authored = 1 LIMIT 1`,
-				[run.project_name, binding.repoIdentity, binding.headSha],
-			)[0],
-		);
-		const hasPendingFounderInput = Boolean(
-			this.workflowSelectAll(
-				`SELECT 1 FROM founder_decision_convergence
-				  WHERE question_id = ? AND resolved_at_ms IS NULL LIMIT 1`,
-				[questionId],
-			)[0] ??
-				this.workflowSelectAll(
-					`SELECT 1 FROM founder_deferred_approval
-					  WHERE question_id = ? AND consumed_at IS NULL
-					    AND invalidated_at IS NULL LIMIT 1`,
-					[questionId],
-				)[0],
-		);
-		const eligibility = evaluateAutoNarrowEligibility({
-			binding: {
-				runId: holder.run_id,
-				questionId,
-				gateExecutionId: holder.source_execution_id,
-				repoIdentity: binding.repoIdentity,
-				prNumber: binding.prNumber,
-				headSha: binding.headSha,
-			},
-			observation,
-			declaration,
-			hasFounderRework,
-			hasPendingFounderInput,
-		});
-		return {
-			holder,
-			binding,
-			observation,
-			...(declaration ? { declaration } : {}),
-			eligibility,
-			hasFounderRework,
-			hasPendingFounderInput,
-		};
-	}
-
-	evaluateAutoNarrowCandidate(
-		questionId: string,
-		at: string,
-	): AutoNarrowCandidateEvaluation | undefined {
-		return this.db.raw
-			.transaction(() =>
-				this.evaluateAutoNarrowCandidateTx(
-					questionId,
-					at,
-					autoNarrowVerdictId(questionId),
-				),
-			)
-			.immediate();
-	}
-
-	private autoNarrowOpinionSnapshotRow(
-		row: Record<string, unknown>,
-	): AutoNarrowOpinionSnapshotRow {
-		return {
-			opinionId: String(row.opinion_id),
-			questionId: String(row.question_id),
-			runId: String(row.run_id),
-			projectName: String(row.project_name),
-			headSha: String(row.head_sha),
-			cardMessageId: String(row.card_message_id),
-			ordinal: Number(row.ordinal),
-			capturedAt: String(row.captured_at),
-			gate1: Number(row.gate1) as 0 | 1,
-			gate2: Number(row.gate2) as 0 | 1,
-			gate3: Number(row.gate3) as 0 | 1,
-			eligible: Number(row.eligible) as 0 | 1,
-			declarationId: (row.declaration_id as string | null) ?? null,
-			machineReason: (row.machine_reason as string | null) ?? null,
-			s2BasisRecordId: (row.s2_basis_record_id as string | null) ?? null,
-			reasonCode: row.reason_code as AutoNarrowOpinionReason,
-			policyVersion: 1,
-			sampleN: Number(row.sample_n),
-			agreeN: Number(row.agree_n),
-			precisionA: Number(row.precision_a),
-			precisionB: Number(row.precision_b),
-			confidenceLower:
-				row.confidence_lower == null ? null : Number(row.confidence_lower),
-			sampleStartAt: (row.sample_start_at as string | null) ?? null,
-			sampleEndAt: (row.sample_end_at as string | null) ?? null,
-			lastEligibleHumanAt:
-				(row.last_eligible_human_at as string | null) ?? null,
-		};
-	}
-
-	listAutoNarrowOpinionSnapshots(
-		questionId: string,
-	): AutoNarrowOpinionSnapshotRow[] {
-		return this.workflowSelectAll(
-			`SELECT * FROM auto_narrow_opinion_snapshot
-			  WHERE question_id = ? ORDER BY ordinal`,
-			[questionId],
-		).map((row) => this.autoNarrowOpinionSnapshotRow(row));
-	}
-
-	private autoNarrowMetricSamplesTx(
-		projectName: string,
-		at: string,
-	): AutoNarrowMetricSample[] {
-		const verdicts = this.workflowSelectAll(
-			`SELECT v.verdict_id, v.question_id, v.run_id, v.repo_identity,
-			        v.pr_number, v.head_sha, v.verdict, v.recorded_at
-			   FROM workflow_founder_gate_verdict v
-			   JOIN workflow_run r ON r.run_id = v.run_id
-			  WHERE r.project_name = ? AND v.founder_authored = 1
-			    AND v.recorded_at <= ?
-			  ORDER BY v.recorded_at, v.verdict_id`,
-			[projectName, at],
-		);
-		const grouped = new Map<
-			string,
-			Array<{
-				verdictId: string;
-				runId: string;
-				repoIdentity: string;
-				prNumber: number;
-				headSha: string;
-				verdict: "approved" | "rework";
-				recordedAt: string;
-			}>
-		>();
-		for (const row of verdicts) {
-			const questionId = String(row.question_id);
-			const rows = grouped.get(questionId) ?? [];
-			rows.push({
-				verdictId: String(row.verdict_id),
-				runId: String(row.run_id),
-				repoIdentity: String(row.repo_identity),
-				prNumber: Number(row.pr_number),
-				headSha: String(row.head_sha),
-				verdict: row.verdict as "approved" | "rework",
-				recordedAt: String(row.recorded_at),
-			});
-			grouped.set(questionId, rows);
-		}
-		return [...grouped.entries()]
-			.map(([questionId, rows]) => ({
-				questionId,
-				first: rows[0]!,
-				actual: !rows.some((row) => row.verdict === "rework"),
-			}))
-			.sort((left, right) => right.first.recordedAt.localeCompare(left.first.recordedAt))
-			.slice(0, 200)
-			.flatMap((sample) => {
-				const coverage = this.workflowSelectAll(
-					`SELECT 1 FROM auto_merge_shadow_observation o
-					  WHERE o.verdict_id = ? AND o.run_id = ? AND o.question_id = ?
-					    AND o.repo_identity = ? AND o.pr_number = ?
-					    AND lower(o.head_sha) = lower(?) AND o.observed_at = ?
-					    AND EXISTS (
-					      SELECT 1 FROM auto_merge_shadow_declaration d
-					       WHERE d.question_id = ? AND d.run_id = ? AND d.declared_at <= ?
-					    ) LIMIT 1`,
-					[
-						sample.first.verdictId,
-						sample.first.runId,
-						sample.questionId,
-						sample.first.repoIdentity,
-						sample.first.prNumber,
-						sample.first.headSha,
-						sample.first.recordedAt,
-						sample.questionId,
-						sample.first.runId,
-						sample.first.recordedAt,
-					],
-				)[0];
-				if (!coverage) return [];
-				const prediction = this.workflowSelectAll(
-					`SELECT eligible FROM auto_narrow_opinion_snapshot
-					  WHERE project_name = ? AND question_id = ? AND captured_at <= ?
-					  ORDER BY ordinal DESC LIMIT 1`,
-					[projectName, sample.questionId, sample.first.recordedAt],
-				)[0];
-				return prediction
-					? [
-							{
-								decidedAt: sample.first.recordedAt,
-								predicted: Number(prediction.eligible) === 1,
-								actual: sample.actual,
-							},
-						]
-					: [];
-			});
-	}
-
-	private autoNarrowOpinionDeliveryRow(
-		row: Record<string, unknown>,
-	): AutoNarrowOpinionDeliveryRow {
-		return {
-			questionId: String(row.question_id),
-			issueThreadId: String(row.issue_thread_id),
-			cardMessageId: String(row.card_message_id),
-			desiredOpinionId: (row.desired_opinion_id as string | null) ?? null,
-			postedOpinionId: (row.posted_opinion_id as string | null) ?? null,
-			followupMessageId: (row.followup_message_id as string | null) ?? null,
-			generation: Number(row.generation),
-			attempt: Number(row.attempt),
-			state: row.state as AutoNarrowOpinionDeliveryRow["state"],
-			correlationMarker: String(row.correlation_marker),
-			postingAt: (row.posting_at as string | null) ?? null,
-			firstZeroScanAt: (row.first_zero_scan_at as string | null) ?? null,
-			scanFrontier: (row.scan_frontier as string | null) ?? null,
-			nextAttemptAt: (row.next_attempt_at as string | null) ?? null,
-			lastErrorCode: (row.last_error_code as string | null) ?? null,
-			reactionApplied: row.reaction_applied as AutoNarrowOpinionDeliveryRow["reactionApplied"],
-			automaticLabelPending: Number(row.automatic_label_pending) as 0 | 1,
-			legacyFreezeRequestedAt: (row.legacy_freeze_requested_at as string | null) ?? null,
-			legacyFrozenAt: (row.legacy_frozen_at as string | null) ?? null,
-		};
-	}
-
-	getAutoNarrowOpinionDelivery(
-		questionId: string,
-	): AutoNarrowOpinionDeliveryRow | undefined {
-		const row = this.workflowSelectAll(
-			"SELECT * FROM auto_narrow_opinion_delivery WHERE question_id = ?",
-			[questionId],
-		)[0];
-		return row ? this.autoNarrowOpinionDeliveryRow(row) : undefined;
-	}
-
-	/** Bridge boot only: a rollback may have rewritten the owned message while ignoring these nullable fields. */
-	invalidateAutoNarrowLegacyFreezeOnStartup(at: string): void {
-		this.db.run(`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,
-		legacy_freeze_requested_at=COALESCE(legacy_freeze_requested_at,?),legacy_frozen_at=NULL,next_attempt_at=NULL
-		WHERE legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL`, [at]);
-	}
-	requestAutoNarrowLegacyFreeze(at: string): void {
-		this.db.raw
-			.transaction(() => {
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,
- legacy_freeze_requested_at=?,legacy_frozen_at=CASE WHEN followup_message_id IS NULL AND state NOT IN ('posting','uncertain') THEN ? ELSE NULL END,
- next_attempt_at=NULL
- WHERE question_id IN (SELECT d.question_id FROM auto_narrow_opinion_delivery d
- JOIN auto_narrow_opinion_snapshot s ON s.opinion_id=d.desired_opinion_id
- WHERE s.project_name='flywheel' AND d.legacy_freeze_requested_at IS NULL AND d.legacy_frozen_at IS NULL
- ORDER BY d.question_id LIMIT 20)`,
-					[at, at],
-				);
-			})
-			.immediate();
-	}
-	listAutoNarrowLegacyFreezeWork(at: string): AutoNarrowOpinionDeliveryRow[] {
-		return this.workflowSelectAll(
-			`SELECT * FROM auto_narrow_opinion_delivery
- WHERE legacy_freeze_requested_at IS NOT NULL AND legacy_frozen_at IS NULL
- AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY question_id LIMIT 20`,
-			[at],
-		).map((row) => this.autoNarrowOpinionDeliveryRow(row));
-	}
-	beginAutoNarrowLegacyFreeze(
-		questionId: string,
-		generation: number,
-		at: string,
-	): AutoNarrowOpinionDeliveryRow | undefined {
-		return this.db.raw
-			.transaction(() => {
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,attempt=attempt+1,next_attempt_at=?
- WHERE question_id=? AND generation=? AND legacy_freeze_requested_at IS NOT NULL AND legacy_frozen_at IS NULL
- AND (next_attempt_at IS NULL OR next_attempt_at<=?)`,
-					[
-						new Date(Date.parse(at) + 30_000).toISOString(),
-						questionId,
-						generation,
-						at,
-					],
-				);
-				return this.db.getRowsModified() === 1
-					? this.getAutoNarrowOpinionDelivery(questionId)
-					: undefined;
-			})
-			.immediate();
-	}
-	finishAutoNarrowLegacyFreeze(
-		questionId: string,
-		generation: number,
-		at: string,
-		ok: boolean,
-	): boolean {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(questionId);
-				if (
-					!current ||
-					current.generation !== generation ||
-					!current.legacyFreezeRequestedAt ||
-					current.legacyFrozenAt
-				)
-					return false;
-				const delay =
-					current.attempt <= 5
-						? 60_000 * 2 ** Math.max(0, current.attempt - 1)
-						: 3_600_000;
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery SET legacy_frozen_at=?,
- state=CASE WHEN ?=1 AND followup_message_id IS NOT NULL THEN 'delivered' ELSE state END,
- next_attempt_at=?,last_error_code=?,attempt=CASE WHEN ?=1 THEN 0 ELSE attempt END
- WHERE question_id=? AND generation=?`,
-					[
-						ok ? at : null,
-						ok ? 1 : 0,
-						ok ? null : new Date(Date.parse(at) + delay).toISOString(),
-						ok ? null : "legacy_freeze_failed",
-						ok ? 1 : 0,
-						questionId,
-						generation,
-					],
-				);
-				return this.db.getRowsModified() === 1;
-			})
-			.immediate();
-	}
-	listAutoNarrowOpinionDeliveryWork(
-		limit = 20,
-		now = new Date().toISOString(),
-	): AutoNarrowOpinionDeliveryWork[] {
-		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
-		return this.workflowSelectAll(
-			`SELECT d.*, c.applied_at AS opening_at
-			   FROM auto_narrow_opinion_delivery d
-			   LEFT JOIN auto_narrow_decision_audit a ON a.question_id = d.question_id
-			   LEFT JOIN auto_narrow_control_event c ON c.event_id = a.opening_event_id
-			  WHERE d.desired_opinion_id IS NOT NULL AND d.state <> 'gone'
-			    AND d.legacy_frozen_at IS NULL
-			    AND (d.state <> 'delivered' OR d.automatic_label_pending = 1
-			         OR d.desired_opinion_id <> d.posted_opinion_id)
-			    AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
-			  ORDER BY COALESCE(d.next_attempt_at, ''), d.question_id LIMIT ?`,
-			[now, bounded],
-		).flatMap((row) => {
-			const opinion = this.workflowSelectAll(
-				"SELECT * FROM auto_narrow_opinion_snapshot WHERE opinion_id = ?",
-				[row.desired_opinion_id],
-			)[0];
-			return opinion
-				? [
-						{
-							delivery: this.autoNarrowOpinionDeliveryRow(row),
-							opinion: this.autoNarrowOpinionSnapshotRow(opinion),
-							openingAt: (row.opening_at as string | null) ?? null,
-						},
-					]
-				: [];
-		});
-	}
-
-	beginAutoNarrowOpinionDelivery(
-		questionId: string,
-		now: string,
-	): AutoNarrowOpinionDeliveryRow | undefined {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(questionId);
-				if (!current || current.state !== "pending" || current.legacyFreezeRequestedAt || current.legacyFrozenAt) return undefined;
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery
-					    SET state='posting', generation=generation+1, attempt=attempt+1,
-					        posting_at=?, last_error_code=NULL
-					  WHERE question_id=? AND generation=? AND state='pending'`,
-					[now, questionId, current.generation],
-				);
-				return this.db.getRowsModified() === 1
-					? this.getAutoNarrowOpinionDelivery(questionId)
-					: undefined;
-			})
-			.immediate();
-	}
-
-	bindAutoNarrowOpinionMessage(input: {
-		questionId: string;
-		generation: number;
-		messageId: string;
-		opinionId: string;
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery
-			    SET followup_message_id=?, posted_opinion_id=?, state='posting',
-			        first_zero_scan_at=NULL, scan_frontier=NULL,
-			        last_error_code=NULL
-			  WHERE question_id=? AND generation=? AND state='posting'`,
-			[
-				input.messageId,
-				input.opinionId,
-				input.questionId,
-				input.generation,
-			],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	markAutoNarrowOpinionReaction(input: {
-		questionId: string;
-		generation: number;
-		reaction: "eligible" | "ineligible";
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery SET reaction_applied=?
-			  WHERE question_id=? AND generation=? AND state='posting'`,
-			[input.reaction, input.questionId, input.generation],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	markAutoNarrowAutomaticLabelDelivered(input: {
-		questionId: string;
-		generation: number;
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery SET automatic_label_pending=0
-			  WHERE question_id=? AND generation=? AND state='posting'`,
-			[input.questionId, input.generation],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	finishAutoNarrowOpinionDelivery(input: {
-		questionId: string;
-		generation: number;
-		expectedReaction: "eligible" | "ineligible";
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery
-			    SET state='delivered', posting_at=NULL, next_attempt_at=NULL,
-			        attempt=0, last_error_code=NULL
-			  WHERE question_id=? AND generation=? AND state='posting'
-			    AND followup_message_id IS NOT NULL
-			    AND desired_opinion_id=posted_opinion_id
-			    AND legacy_freeze_requested_at IS NULL AND legacy_frozen_at IS NULL
-			    AND reaction_applied=? AND automatic_label_pending=0`,
-			[
-				input.questionId,
-				input.generation,
-				input.expectedReaction,
-			],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	deferAutoNarrowOpinionDelivery(input: {
-		questionId: string;
-		generation: number;
-		state: "pending" | "uncertain";
-		errorCode: string;
-		now: string;
-	}): boolean {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
-				if (
-					!current ||
-					current.generation !== input.generation ||
-					current.state !== "posting"
-				) {
-					return false;
-				}
-				const terminal = current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS;
-				const state = terminal ? "gone" : input.state;
-				const nextAttemptAt = terminal
-					? null
-					: autoNarrowOpinionRetryAt(input.now, current.attempt);
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery
-					    SET state=?,
-					        posting_at=CASE WHEN ?='uncertain' THEN posting_at ELSE NULL END,
-					        next_attempt_at=?, last_error_code=?
-					  WHERE question_id=? AND generation=? AND state='posting'`,
-					[
-						state,
-						state,
-						nextAttemptAt,
-						input.errorCode.slice(0, 64),
-						input.questionId,
-						input.generation,
-					],
-				);
-				return this.db.getRowsModified() === 1;
-			})
-			.immediate();
-	}
-
-	recordAutoNarrowOpinionRecovery(input: {
-		questionId: string;
-		kind: "found" | "none" | "ambiguous";
-		now: string;
-		frontier: string | null;
-		messageId?: string;
-		expectedGeneration?: number;
-	}): "recovered" | "waiting" | "retry" {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
-				if (
-					!current ||
- (input.expectedGeneration !== undefined && current.generation !== input.expectedGeneration) ||
-					(current.state !== "posting" && current.state !== "uncertain")
-				) {
-					return "waiting";
-				}
-				if (input.kind === "found" && input.messageId) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET followup_message_id=?, state='pending', posting_at=NULL,
-						        first_zero_scan_at=NULL, scan_frontier=NULL,
-						        next_attempt_at=NULL, last_error_code=NULL
-						  WHERE question_id=?`,
-						[input.messageId, input.questionId],
-					);
-					return "recovered";
-				}
-				if (!current.legacyFreezeRequestedAt && current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='gone', posting_at=NULL, next_attempt_at=NULL,
-						        last_error_code='recovery_exhausted'
-						  WHERE question_id=?`,
-						[input.questionId],
-					);
-					return "waiting";
-				}
-				if (input.kind !== "none") {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='uncertain', next_attempt_at=?,
-						        last_error_code='scan_ambiguous'
-						  WHERE question_id=?`,
-						[
-							autoNarrowOpinionRetryAt(input.now, current.attempt),
-							input.questionId,
-						],
-					);
-					return "waiting";
-				}
-				const firstMs = Date.parse(current.firstZeroScanAt ?? "invalid");
-				const nowMs = Date.parse(input.now);
-				if (
-					!current.firstZeroScanAt ||
-					current.scanFrontier !== input.frontier ||
-					!Number.isFinite(firstMs) ||
-					!Number.isFinite(nowMs)
-				) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='uncertain', first_zero_scan_at=?, scan_frontier=?,
-						        next_attempt_at=?, last_error_code='scan_zero_once'
-						  WHERE question_id=?`,
-						[
-							input.now,
-							input.frontier,
-							autoNarrowOpinionRetryAt(input.now, current.attempt),
-							input.questionId,
-						],
-					);
-					return "waiting";
-				}
-				if (nowMs - firstMs < AUTO_NARROW_OPINION_RETRY_BASE_MS) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='uncertain', next_attempt_at=?,
-						        last_error_code='scan_zero_once'
-						  WHERE question_id=?`,
-						[
-							new Date(
-								firstMs + AUTO_NARROW_OPINION_RETRY_BASE_MS,
-							).toISOString(),
-							input.questionId,
-						],
-					);
-					return "waiting";
-				}
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery
-					    SET state='pending', posting_at=NULL, first_zero_scan_at=NULL,
-					        scan_frontier=NULL, next_attempt_at=NULL, last_error_code=NULL
-					  WHERE question_id=?`,
-					[input.questionId],
-				);
-				return "retry";
-			})
-			.immediate();
-	}
-
-	refreshAutoNarrowOpinion(input: {
-		questionId: string;
-		issueThreadId: string;
-		mode: "off" | "dry_run" | "auto";
-		controlAppliedAt?: string;
-		at: string;
-		metrics?: AutoNarrowMetrics;
-		captureOnly?: boolean;
-	}): AutoNarrowOpinionRefreshResult {
-		if (input.mode === "off") return { status: "off" };
-		return this.db.raw
-			.transaction((): AutoNarrowOpinionRefreshResult => {
-				const candidate = this.evaluateAutoNarrowCandidateTx(
-					input.questionId,
-					input.at,
-					autoNarrowVerdictId(input.questionId),
-				);
-				if (!candidate?.holder.card_message_id) {
-					return { status: "not_candidate" };
-				}
-				const gate1 = candidate.eligibility.gate1 ? 1 : 0;
-				const gate2 = candidate.eligibility.gate2 ? 1 : 0;
-				const gate3 = candidate.eligibility.gate3 ? 1 : 0;
-				const eligible = candidate.eligibility.eligible ? 1 : 0;
-				const reasonCode: AutoNarrowOpinionReason =
-					candidate.eligibility.reasonCode;
-				const metrics =
-					input.metrics ??
-					computeAutoNarrowMetrics(
-						this.autoNarrowMetricSamplesTx("flywheel", input.at),
-					);
-				const latest = this.listAutoNarrowOpinionSnapshots(input.questionId).at(
-					-1,
-				);
-				const same =
-					latest &&
-					latest.headSha === candidate.binding.headSha &&
-					latest.cardMessageId === candidate.holder.card_message_id &&
-					latest.gate1 === gate1 &&
-					latest.gate2 === gate2 &&
-					latest.gate3 === gate3 &&
-					latest.eligible === eligible &&
-					latest.declarationId ===
-						(candidate.declaration?.declaration_id ?? null) &&
-					latest.machineReason === candidate.observation.machine_reason &&
-					latest.s2BasisRecordId === candidate.observation.s2_basis_record_id &&
-					latest.reasonCode === reasonCode &&
-					latest.sampleN === metrics.sampleN &&
-					latest.agreeN === metrics.agreeN &&
-					latest.precisionA === metrics.precisionA &&
-					latest.precisionB === metrics.precisionB &&
-					latest.confidenceLower === metrics.confidenceLower &&
-					latest.sampleStartAt === metrics.sampleStartAt &&
-					latest.sampleEndAt === metrics.sampleEndAt &&
-					latest.lastEligibleHumanAt === metrics.lastEligibleHumanAt &&
-					(!input.controlAppliedAt ||
-						latest.capturedAt >= input.controlAppliedAt);
-				if (same) {
-					if (!input.captureOnly)
-						this.ensureAutoNarrowLegacyIntentTx(latest, input.issueThreadId);
-					return { status: "unchanged", snapshot: latest };
-				}
-				const ordinal = (latest?.ordinal ?? 0) + 1;
-				const opinionId = `${input.questionId}:${ordinal}`;
-				this.db.run(
-					`INSERT INTO auto_narrow_opinion_snapshot
-					  (opinion_id, question_id, run_id, project_name, head_sha,
-					   card_message_id, ordinal, captured_at, gate1, gate2, gate3,
-					   eligible, declaration_id, machine_reason, s2_basis_record_id,
-					   reason_code, policy_version, sample_n, agree_n, precision_a,
-					   precision_b, confidence_lower, sample_start_at, sample_end_at,
-					   last_eligible_human_at)
-					 VALUES (?, ?, ?, 'flywheel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1,
-					         ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						opinionId,
-						input.questionId,
-						candidate.holder.run_id,
-						candidate.binding.headSha,
-						candidate.holder.card_message_id,
-						ordinal,
-						input.at,
-						gate1,
-						gate2,
-						gate3,
-						eligible,
-						candidate.declaration?.declaration_id ?? null,
-						candidate.observation.machine_reason,
-						candidate.observation.s2_basis_record_id,
-						reasonCode,
-						metrics.sampleN,
-						metrics.agreeN,
-						metrics.precisionA,
-						metrics.precisionB,
-						metrics.confidenceLower,
-						metrics.sampleStartAt,
-						metrics.sampleEndAt,
-						metrics.lastEligibleHumanAt,
-					],
-				);
-				const saved = this.listAutoNarrowOpinionSnapshots(input.questionId).at(
-					-1,
-				)!;
-				if (!input.captureOnly)
-					this.ensureAutoNarrowLegacyIntentTx(saved, input.issueThreadId);
-
-				return {
-					status: "created",
-					snapshot: this.listAutoNarrowOpinionSnapshots(input.questionId).at(
-						-1,
-					)!,
-				};
-			})
-			.immediate();
-	}
-
-	private ensureAutoNarrowLegacyIntentTx(
-		snapshot: AutoNarrowOpinionSnapshotRow,
-		threadId: string,
-	): void {
-		const marker = `auto-narrow-opinion:${createHash("sha256").update(snapshot.questionId).digest("hex").slice(0, 16)}`;
-		this.db.run(
-			`INSERT INTO auto_narrow_opinion_delivery
- (question_id,issue_thread_id,card_message_id,desired_opinion_id,state,correlation_marker)
- VALUES (?,?,?,?,'pending',?)
- ON CONFLICT(question_id) DO UPDATE SET
- issue_thread_id=excluded.issue_thread_id,card_message_id=excluded.card_message_id,desired_opinion_id=excluded.desired_opinion_id,
- generation=generation+CASE WHEN legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL THEN 1 ELSE 0 END,
- legacy_freeze_requested_at=NULL,legacy_frozen_at=NULL,
- state=CASE WHEN state IN ('posting','uncertain') THEN state ELSE 'pending' END,
- next_attempt_at=CASE WHEN state IN ('posting','uncertain') THEN next_attempt_at ELSE NULL END,
- last_error_code=CASE WHEN state IN ('posting','uncertain') THEN last_error_code ELSE NULL END
- WHERE desired_opinion_id<>excluded.desired_opinion_id OR issue_thread_id<>excluded.issue_thread_id
- OR card_message_id<>excluded.card_message_id OR legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL`,
-			[
-				snapshot.questionId,
-				threadId,
-				snapshot.cardMessageId,
-				snapshot.opinionId,
-				marker,
-			],
-		);
-	}
-	getAutoNarrowOpinionMetrics(at: string): AutoNarrowMetrics {
-		return this.db.raw
-			.transaction(() =>
-				computeAutoNarrowMetrics(
-					this.autoNarrowMetricSamplesTx("flywheel", at),
-				),
-			)
-			.immediate();
-	}
-
-	listPendingAutoNarrowCandidates(
-		limit = 20,
-		startAfterQuestionId?: string,
-	): string[] {
-		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
-		return this.workflowSelectAll(
-			`SELECT h.question_id FROM workflow_gate_holder h
-			   JOIN workflow_run r ON r.run_id = h.run_id
-			  WHERE r.project_name = 'flywheel' AND r.status = 'active'
-			    AND h.gate_node_id = 'founder_gate' AND h.authority_mode = 'land'
-			    AND h.subject_kind = 'git_head' AND h.state = 'awaiting_review'
-			    AND h.materialization_stage = 'completed' AND h.card_message_id IS NOT NULL
-			  ORDER BY CASE WHEN ? IS NULL OR h.question_id > ? THEN 0 ELSE 1 END,
-			           h.question_id
-			  LIMIT ?`,
-			[startAfterQuestionId ?? null, startAfterQuestionId ?? null, bounded],
-		).map((row) => String(row.question_id));
-	}
-
-	private assertAutoNarrowEnvelopeEvidenceTx(
-		envelope: AutoNarrowSourceEnvelopeV1,
-	): void {
-		const control = this.getAutoNarrowControlEventById(envelope.control.event_id);
-		const opening = this.getAutoNarrowControlEventById(
-			envelope.control.opening_event_id,
-		);
-		const declaration = this.listAutoMergeShadowDeclarations(
-			envelope.question_id,
-		).find(
-			(row) => row.declaration_id === envelope.declaration.declaration_id,
-		);
-		const latestDeclarationAtDecision = this.listAutoMergeShadowDeclarations(
-			envelope.question_id,
-		)
-			.filter((row) => row.declared_at <= envelope.decision_at)
-			.at(-1);
-		const strengthTwo = this.getStrengthTwoEvidenceRecord(
-			envelope.strength_two.basis_record_id,
-		);
-		if (
-			!control ||
-			control.projectName !== "flywheel" ||
-			control.mode !== "auto" ||
-			control.flagRevision !== envelope.control.flag_revision ||
-			control.openingEventId !== envelope.control.opening_event_id ||
-			!opening ||
-			opening.projectName !== "flywheel" ||
-			opening.mode !== "auto" ||
-			opening.appliedAt !== envelope.control.opening_at ||
-			opening.founderMessageId !== envelope.control.founder_message_id ||
-			!declaration ||
-			declaration.question_id !== envelope.question_id ||
-			declaration.run_id !== envelope.run_id ||
-			declaration.declaration_seq !== envelope.declaration.declaration_seq ||
-			declaration.declared_by !== "flywheel-eng-lead" ||
-			declaration.declared_class !== "pure_docs" ||
-			declaration.declared_at > envelope.decision_at ||
-			latestDeclarationAtDecision?.declaration_id !==
-				envelope.declaration.declaration_id ||
-			!strengthTwo ||
-			strengthTwo.run_id !== envelope.run_id ||
-			strengthTwo.target_repo_identity !== envelope.repo_identity ||
-			strengthTwo.head_sha !== envelope.head_sha ||
-			strengthTwo.ran_status !== "satisfied" ||
-			strengthTwo.ran_reason !== "ok" ||
-			strengthTwo.record_status !== "satisfied" ||
-			strengthTwo.record_reason !== "ok" ||
-			strengthTwo.verdict !== "satisfied" ||
-			strengthTwo.recorded_at > envelope.decision_at
-		) {
-			throw new Error("auto narrow source payload invalid: evidence reference");
-		}
-	}
-
-	commitAutoNarrowSourceIfEligible(input: {
-		questionId: string;
-		at: string;
-		writeSource: (args: {
-			expectedOwner: string;
-			projectedThroughSourceRowId: number;
-			envelope: AutoNarrowSourceEnvelopeV1;
-		}) => { written: boolean; replayed: boolean };
-	}): AutoNarrowSourceCommitResult {
-		const priorBusyTimeout = Number(
-			this.db.raw.pragma("busy_timeout", { simple: true }),
-		);
-		this.db.raw.pragma("busy_timeout = 0");
-		try {
-			return this.db.raw
-				.transaction((): AutoNarrowSourceCommitResult => {
-				const row = this.getFlagValueRow(
-					"auto_merge_narrow_gate",
-					"flywheel",
-				);
-				if (!row || row.raw !== "auto" || row.lastEffective !== "auto") {
-					return { status: "not_auto" };
-				}
-				const control = this.getLatestAutoNarrowControlEvent("flywheel");
-				if (
-					!control ||
-					control.mode !== "auto" ||
-					control.flagRevision !== row.revision ||
-					!control.openingEventId
-				) {
-					return { status: "not_auto" };
-				}
-				const opening = this.getAutoNarrowControlEventById(
-					control.openingEventId,
-				);
-				if (!opening || opening.mode !== "auto") return { status: "not_auto" };
-				const verdictId = autoNarrowVerdictId(input.questionId);
-				const candidate = this.evaluateAutoNarrowCandidateTx(
-					input.questionId,
-					input.at,
-					verdictId,
-				);
-				if (!candidate) return { status: "not_candidate" };
-				if (!candidate.eligibility.eligible || !candidate.declaration) {
-					return { status: "ineligible" };
-				}
-				const envelope = parseAutoNarrowSourceEnvelope({
-					schema_version: 1,
-					policy_version: AUTO_NARROW_POLICY_VERSION,
-					run_id: candidate.holder.run_id,
-					issue_id: this.getWorkflowRun(candidate.holder.run_id)?.issue_id,
-					question_id: input.questionId,
-					gate_node_id: candidate.holder.gate_node_id,
-					attempt: candidate.holder.attempt,
-					source_execution_id: candidate.holder.source_execution_id,
-					repo_identity: candidate.binding.repoIdentity,
-					repo_slug: candidate.binding.repoSlug,
-					pr_number: candidate.binding.prNumber,
-					head_sha: candidate.binding.headSha,
-					response: { approved: true },
-					actor: AUTO_NARROW_ACTOR,
-					decision_source: AUTO_NARROW_DECISION_SOURCE,
-					control: {
-						event_id: control.eventId,
-						opening_event_id: opening.eventId,
-						flag_revision: control.flagRevision,
-						opening_at: opening.appliedAt,
-						founder_message_id: opening.founderMessageId,
-					},
-					declaration: {
-						declaration_id: candidate.declaration.declaration_id,
-						declaration_seq: candidate.declaration.declaration_seq,
-					},
-					strength_two: {
-						basis_record_id: candidate.observation.s2_basis_record_id,
-					},
-					observation: candidate.observation,
-					decision_at: input.at,
-				});
-				const projectedThroughSourceRowId = Number(
-					this.workflowSelectAll(
-						"SELECT last_row_id FROM workflow_source_cursor WHERE project = 'flywheel'",
-						[],
-					)[0]?.last_row_id ?? 0,
-				);
-				const written = input.writeSource({
-					expectedOwner: candidate.holder.source_execution_id,
-					projectedThroughSourceRowId,
-					envelope,
-				});
-				if (!written.written) return { status: "not_candidate" };
-				return {
-					status: written.replayed ? "replayed" : "written",
-					envelope,
-				};
-				})
-				.immediate();
-		} finally {
-			this.db.raw.pragma(`busy_timeout = ${priorBusyTimeout}`);
-		}
-	}
-
 	private autoMergeShadowDeclarationRow(
 		row: Record<string, unknown>,
 	): AutoMergeShadowDeclarationRow {
@@ -64027,28 +64473,43 @@ export class StateStore {
 			payload.actor === AUTO_NARROW_ACTOR ||
 			payload.decision_source === AUTO_NARROW_DECISION_SOURCE ||
 			input.sourceEventId.startsWith("auto-narrow:");
-		let autoNarrowEnvelope: AutoNarrowSourceEnvelopeV1 | undefined;
 		if (carriesAutoNarrowIdentity) {
+			throw new Error(
+				"auto narrow source payload invalid: retired_policy",
+			);
+		}
+		const carriesShipJudgmentIdentity =
+			payload.actor === SHIP_JUDGMENT_APPROVAL_ACTOR ||
+			payload.decision_source === SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE ||
+			input.sourceEventId.startsWith("ship-judgment-auto:");
+		let shipJudgmentEnvelope: ShipJudgmentApprovalEnvelopeV1 | undefined;
+		if (carriesShipJudgmentIdentity) {
 			if (
 				input.kind !== "founder_approval" ||
 				input.project !== "flywheel" ||
-				payload.actor !== AUTO_NARROW_ACTOR ||
-				payload.decision_source !== AUTO_NARROW_DECISION_SOURCE
+				payload.actor !== SHIP_JUDGMENT_APPROVAL_ACTOR ||
+				payload.decision_source !== SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE
 			) {
-				throw new Error("auto narrow source payload invalid: identity");
+				throw new Error(
+					"ship judgment approval source payload invalid: identity",
+				);
 			}
 			try {
-				autoNarrowEnvelope = parseAutoNarrowSourceEnvelope(payload);
+				shipJudgmentEnvelope = parseShipJudgmentApprovalEnvelope(payload);
 			} catch (error) {
 				throw new Error(
-					`auto narrow source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
+					`ship judgment approval source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 			if (
 				input.sourceEventId !==
-				autoNarrowSourceEventId(autoNarrowEnvelope.question_id)
+					shipJudgmentApprovalSourceEventId(
+						shipJudgmentEnvelope.question_id,
+					)
 			) {
-				throw new Error("auto narrow source payload invalid: source id");
+				throw new Error(
+					"ship judgment approval source payload invalid: source id",
+				);
 			}
 		}
 
@@ -64275,19 +64736,19 @@ export class StateStore {
 				return;
 			}
 
-			const runId = autoNarrowEnvelope
-				? autoNarrowEnvelope.run_id
+			const runId = shipJudgmentEnvelope
+				? shipJudgmentEnvelope.run_id
 				: typeof payload.run_id === "string"
 					? payload.run_id
 					: "";
 			const issueId =
-				autoNarrowEnvelope?.issue_id ??
+				shipJudgmentEnvelope?.issue_id ??
 				(typeof payload.issue_id === "string" ? payload.issue_id : "");
 			const approvedHead =
-				autoNarrowEnvelope?.head_sha ??
+				shipJudgmentEnvelope?.primary.head_sha ??
 				(typeof payload.approved_head === "string" ? payload.approved_head : "");
 			const authorityId =
-				autoNarrowEnvelope?.question_id ??
+				shipJudgmentEnvelope?.question_id ??
 				(typeof payload.authority_id === "string" ? payload.authority_id : "");
 			const response = payload.response as
 				| { approved?: unknown; feedback?: unknown }
@@ -64738,7 +65199,7 @@ export class StateStore {
 			}
 
 			const decisionQuestionId =
-				autoNarrowEnvelope?.question_id ??
+				shipJudgmentEnvelope?.question_id ??
 				(typeof payload.question_id === "string" ? payload.question_id : "");
 			const decisionHolder = this.workflowSelectAll(
 				`SELECT * FROM workflow_gate_holder
@@ -64746,21 +65207,32 @@ export class StateStore {
 				    AND state IN ('materializing','awaiting_review','approved')`,
 				[decisionQuestionId, runId],
 			)[0];
-			if (autoNarrowEnvelope) {
-				this.assertAutoNarrowEnvelopeEvidenceTx(autoNarrowEnvelope);
+			if (shipJudgmentEnvelope) {
+				try {
+					this.assertShipJudgmentApprovalEnvelopeCurrentTx(
+						shipJudgmentEnvelope,
+						input.projectedAt ?? new Date().toISOString(),
+					);
+				} catch (error) {
+					throw new Error(
+						`ship judgment approval source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 				if (
 					!decisionHolder ||
-					decisionHolder.gate_node_id !== autoNarrowEnvelope.gate_node_id ||
-					Number(decisionHolder.attempt) !== autoNarrowEnvelope.attempt ||
+					decisionHolder.gate_node_id !== shipJudgmentEnvelope.gate_node_id ||
+					Number(decisionHolder.attempt) !== shipJudgmentEnvelope.attempt ||
 					decisionHolder.source_execution_id !==
-						autoNarrowEnvelope.source_execution_id ||
+						shipJudgmentEnvelope.source_execution_id ||
 					decisionHolder.authority_mode !== "land" ||
 					decisionHolder.subject_kind !== "git_head" ||
 					decisionHolder.state !== "awaiting_review" ||
 					decisionHolder.materialization_stage !== "completed" ||
-					!decisionHolder.card_message_id
+					decisionHolder.card_message_id !== shipJudgmentEnvelope.card.message_id
 				) {
-					throw new Error("auto narrow source payload invalid: gate holder");
+					throw new Error(
+						"ship judgment approval source payload invalid: gate holder",
+					);
 				}
 			}
 			const founderSubjectKind =
@@ -64808,18 +65280,19 @@ export class StateStore {
 					founderSubjectKind,
 					approvedHead,
 					JSON.stringify(
-						autoNarrowEnvelope
+						shipJudgmentEnvelope
 							? {
-									questionId: autoNarrowEnvelope.question_id,
-									actor: AUTO_NARROW_ACTOR,
-									decisionSource: AUTO_NARROW_DECISION_SOURCE,
-									controlEventId: autoNarrowEnvelope.control.event_id,
-									openingEventId:
-										autoNarrowEnvelope.control.opening_event_id,
-									declarationId:
-										autoNarrowEnvelope.declaration.declaration_id,
-									strengthTwoBasisRecordId:
-										autoNarrowEnvelope.strength_two.basis_record_id,
+									questionId: shipJudgmentEnvelope.question_id,
+									actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+									decisionSource:
+										SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+									opinionId:
+										shipJudgmentEnvelope.judgment.opinion_id,
+									policy: shipJudgmentEnvelope.policy,
+									controlEventId:
+										shipJudgmentEnvelope.control.event_id,
+									policyProvenanceId:
+										shipJudgmentEnvelope.policy_provenance.id,
 									sourceEventId: input.sourceEventId,
 								}
 							: {
@@ -64852,20 +65325,23 @@ export class StateStore {
 					binding,
 					verdict: "approved",
 					claimId,
-					founderAuthored: autoNarrowEnvelope
+					founderAuthored: shipJudgmentEnvelope
 						? 0
 						: founderIdAtCapture !== undefined && actor === founderIdAtCapture
 							? 1
 							: 0,
-					authorEvidence: autoNarrowEnvelope
+					authorEvidence: shipJudgmentEnvelope
 						? {
-								kind: "auto_narrow_gate",
-								actor: AUTO_NARROW_ACTOR,
-								decision_source: AUTO_NARROW_DECISION_SOURCE,
+								kind: "ship_judgment_auto",
+								actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+								decision_source:
+									SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
 								source_event_id: input.sourceEventId,
-								control_event_id: autoNarrowEnvelope.control.event_id,
-								opening_event_id:
-									autoNarrowEnvelope.control.opening_event_id,
+								opinion_id: shipJudgmentEnvelope.judgment.opinion_id,
+								control_event_id:
+									shipJudgmentEnvelope.control.event_id,
+								policy_provenance_id:
+									shipJudgmentEnvelope.policy_provenance.id,
 							}
 						: founderIdAtCapture
 						? {
@@ -64880,59 +65356,22 @@ export class StateStore {
 								source_event_id: input.sourceEventId,
 							},
 					recordedAt:
-						autoNarrowEnvelope?.decision_at ??
+						shipJudgmentEnvelope?.decision_at ??
 						input.at ??
 						new Date().toISOString(),
-					...(autoNarrowEnvelope
-						? {
-								frozenObservation:
-									autoNarrowEnvelope.observation as unknown as AutoMergeShadowObservationRow,
-							}
-						: {}),
 				});
-				if (autoNarrowEnvelope) {
+				if (shipJudgmentEnvelope) {
+					this.recordShipJudgmentAutoApprovalDisposition({
+						sourceEventId: input.sourceEventId,
+						disposition: "applied",
+						reason: verdict.verdict_id,
+						at: input.at ?? new Date().toISOString(),
+					});
 					this.db.run(
-						`INSERT INTO auto_narrow_decision_audit
-						  (source_event_id, question_id, verdict_id, decision_source,
-						   project_name, run_id, gate_node_id, attempt, source_execution_id,
-						   repo_identity, pr_number, head_sha, control_event_id,
-						   opening_event_id, flag_revision, declaration_id,
-						   declaration_seq, s2_basis_record_id, observation_digest,
-						   source_payload_digest, decision_at, policy_version)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[
-							input.sourceEventId,
-							autoNarrowEnvelope.question_id,
-							verdict.verdict_id,
-							AUTO_NARROW_DECISION_SOURCE,
-							input.project,
-							autoNarrowEnvelope.run_id,
-							autoNarrowEnvelope.gate_node_id,
-							autoNarrowEnvelope.attempt,
-							autoNarrowEnvelope.source_execution_id,
-							autoNarrowEnvelope.repo_identity,
-							autoNarrowEnvelope.pr_number,
-							autoNarrowEnvelope.head_sha,
-							autoNarrowEnvelope.control.event_id,
-							autoNarrowEnvelope.control.opening_event_id,
-							autoNarrowEnvelope.control.flag_revision,
-							autoNarrowEnvelope.declaration.declaration_id,
-							autoNarrowEnvelope.declaration.declaration_seq,
-							autoNarrowEnvelope.strength_two.basis_record_id,
-							canonicalSubmissionDigest(autoNarrowEnvelope.observation),
-							input.payloadDigest,
-							autoNarrowEnvelope.decision_at,
-							AUTO_NARROW_POLICY_VERSION,
-						],
-					);
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET automatic_label_pending = 1,
-						        state = CASE WHEN state IN ('posting', 'uncertain') THEN state ELSE 'pending' END,
-						        next_attempt_at = CASE WHEN state IN ('posting', 'uncertain') THEN next_attempt_at ELSE NULL END,
-						        last_error_code = CASE WHEN state IN ('posting', 'uncertain') THEN last_error_code ELSE NULL END
-						  WHERE question_id = ?`,
-						[autoNarrowEnvelope.question_id],
+						`UPDATE ship_judgment_delivery SET state='pending',generation=generation+1,
+						 lease_owner=NULL,expires_at=NULL,retry_after=NULL,presentation_state_changed_at=?
+						 WHERE purpose='opinion' AND question_id=? AND state='delivered'`,
+						[input.at ?? new Date().toISOString(), decisionQuestionId],
 					);
 				}
 			}
@@ -81994,93 +82433,46 @@ export interface AutoMergeShadowObservationRow {
 	shadow_version: 1;
 }
 
-export interface AutoNarrowCandidateEvaluation {
-	holder: WorkflowGateHolderRow;
-	binding: {
-		questionId: string;
-		gateNodeId: string;
-		attempt: number;
-		repoIdentity: string;
-		repoSlug: string;
-		prNumber: number;
-		headSha: string;
-	};
-	observation: AutoMergeShadowObservationRow;
-	declaration?: AutoMergeShadowDeclarationRow;
-	eligibility: AutoNarrowEligibility;
-	hasFounderRework: boolean;
-	hasPendingFounderInput: boolean;
+export interface ShipJudgmentPolicyProvenanceRow {
+	provenanceId: string;
+	policy: typeof SHIP_JUDGMENT_APPROVAL_POLICY;
+	channelId: string;
+	threadId: string;
+	messageId: string;
+	authorId: string;
+	messageCreatedAt: string;
+	originalMessageDigest: string;
+	verifiedAt: string;
+	verificationReceiptId: string;
 }
 
-export type AutoNarrowSourceCommitResult =
+export interface ShipJudgmentAutoApprovalRow {
+	sourceEventId: string;
+	questionId: string;
+	envelopeJson: string;
+	envelopeHash: string;
+	createdAt: string;
+}
+
+export type ShipJudgmentSourceCommitResult =
 	| { status: "not_auto" | "not_candidate" | "ineligible" }
 	| {
 			status: "written" | "replayed";
-			envelope: AutoNarrowSourceEnvelopeV1;
+			envelope: ShipJudgmentApprovalEnvelopeV1;
 	  };
 
-export interface AutoNarrowOpinionSnapshotRow {
-	opinionId: string;
+export interface ShipJudgmentLegacyRetirementRow {
 	questionId: string;
-	runId: string;
-	projectName: string;
-	headSha: string;
+	threadId: string;
 	cardMessageId: string;
-	ordinal: number;
-	capturedAt: string;
-	gate1: 0 | 1;
-	gate2: 0 | 1;
-	gate3: 0 | 1;
-	eligible: 0 | 1;
-	declarationId: string | null;
-	machineReason: string | null;
-	s2BasisRecordId: string | null;
-	reasonCode: AutoNarrowOpinionReason;
-	policyVersion: 1;
-	sampleN: number;
-	agreeN: number;
-	precisionA: number;
-	precisionB: number;
-	confidenceLower: number | null;
-	sampleStartAt: string | null;
-	sampleEndAt: string | null;
-	lastEligibleHumanAt: string | null;
-}
-
-export interface AutoNarrowOpinionDeliveryRow {
-	questionId: string;
-	issueThreadId: string;
-	cardMessageId: string;
-	desiredOpinionId: string | null;
-	postedOpinionId: string | null;
-	followupMessageId: string | null;
+	legacyMessageId: string | null;
+	legacyMarker: string;
+	legacyState: string;
+	legacyPostingAt: string | null;
+	status: "pending" | "claimed" | "retired" | "unavailable";
 	generation: number;
-	attempt: number;
-	state: "pending" | "posting" | "uncertain" | "delivered" | "gone";
-	correlationMarker: string;
-	postingAt: string | null;
-	firstZeroScanAt: string | null;
-	scanFrontier: string | null;
-	nextAttemptAt: string | null;
-	lastErrorCode: string | null;
-	reactionApplied: "none" | "eligible" | "ineligible";
-	automaticLabelPending: 0 | 1;
-	legacyFreezeRequestedAt: string | null;
-	legacyFrozenAt: string | null;
+	leaseOwner: string | null;
 }
-
-export interface AutoNarrowOpinionDeliveryWork {
-	delivery: AutoNarrowOpinionDeliveryRow;
-	opinion: AutoNarrowOpinionSnapshotRow;
-	openingAt: string | null;
-}
-
-export type AutoNarrowOpinionRefreshResult =
-	| { status: "off" | "not_candidate" }
-	| {
-			status: "created" | "unchanged";
-			snapshot: AutoNarrowOpinionSnapshotRow;
-	  };
 
 export const AUTO_MERGE_SHADOW_DECLARED_CLASSES = [
 	"pure_docs",
@@ -83293,6 +83685,8 @@ export interface WorkflowSourceEventInput {
 	sourceRowId?: number;
 	/** Frozen source timestamp; projector callers must forward it unchanged. */
 	at?: string;
+	/** Fresh projector observation time used only for currentness checks. */
+	projectedAt?: string;
 	/** Best-effort Lead target for non-blocking founder rework advisories. */
 	alertIdentity?: WorkflowEngineAlertIdentity;
 }

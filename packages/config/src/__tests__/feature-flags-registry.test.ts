@@ -57,7 +57,7 @@ const EXPECTED_WHEN_ON = {
 		"这个项目使用 DAG 流程派发时，检查任务类型是否符合当前节点，避免交给错误角色",
 	doc_flow: "要求这个项目的 Runner 随任务提交探索、调研、计划和进度文档",
 	auto_merge_narrow_gate:
-		"dry_run 给每张 ship 卡附机器意见但仍等 founder；auto 仅代批同时通过机器纯文档、人声明 pure_docs、强度二证据的卡",
+		"dry_run 与 auto 都按设计对齐、在飞冲突、QA 覆盖三点显示机器判断；auto 仅在三点全通过且既有守卫有效时自动批准",
 	runner_memory_mode:
 		"决定新 Runner 使用哪种记忆方案；off 不注入实验记忆，其余选项用于对照实验",
 	skill_framework_mode:

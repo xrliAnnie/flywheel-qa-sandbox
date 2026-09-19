@@ -52,6 +52,7 @@ export type ClaudeReviewOutcome =
 			verdict: "APPROVED" | "CHANGES_REQUESTED";
 			findings: ClaudeReviewFinding[];
 			reviewedHeadSha: string | null;
+			reviewedPlanBlobSha?: string | null;
 			repairedTrailingBrace: boolean;
 			/** Raw assistant text the verdict was parsed from (audit copy). */
 			raw: string;
@@ -268,6 +269,7 @@ export function parseClaudeReviewOutput(stdout: string): {
 	verdict: "APPROVED" | "CHANGES_REQUESTED";
 	findings: ClaudeReviewFinding[];
 	reviewedHeadSha: string | null;
+	reviewedPlanBlobSha: string | null;
 	repairedTrailingBrace: boolean;
 	raw: string;
 } | null {
@@ -330,10 +332,16 @@ export function parseClaudeReviewOutput(stdout: string): {
 		typeof obj.reviewedHeadSha === "string" && obj.reviewedHeadSha.length > 0
 			? obj.reviewedHeadSha.toLowerCase()
 			: null;
+	const reviewedPlanBlobSha =
+		typeof obj.reviewedPlanBlobSha === "string" &&
+		obj.reviewedPlanBlobSha.length > 0
+			? obj.reviewedPlanBlobSha.toLowerCase()
+			: null;
 	return {
 		verdict: verdictRaw,
 		findings,
 		reviewedHeadSha,
+		reviewedPlanBlobSha,
 		repairedTrailingBrace: candidate.repairedTrailingBrace,
 		raw: text,
 	};

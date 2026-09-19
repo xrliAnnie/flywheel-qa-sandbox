@@ -16,10 +16,38 @@ describe("reviewed plan source", () => {
 				targetPath: "engineering/doc/FLY-2399-learning/plan.md",
 			});
 			store.completeCodexReviewJob("review1", "APPROVED");
+			expect(
+				store.readShipJudgmentPlanReference("r", "__main__"),
+			).toBeUndefined();
+			const proof = store.captureDesignReviewApprovalProof({
+				lane: "coordinator",
+				projectName: "flywheel",
+				issueId: "FLY-2399",
+				executionId: "execution",
+				repositoryIdentity: "__main__",
+				reviewJobRequestId: "review1",
+				planPath: "engineering/doc/FLY-2399-learning/plan.md",
+				reviewedCommitSha: "a".repeat(40),
+				expectedBlobSha: "b".repeat(40),
+				capturedAt: "2026-09-18T18:00:00.000Z",
+			});
+			store.validateDesignReviewApprovalProof({
+				proofId: proof.proof_id,
+				validationReceiptId: "validation-review1",
+				reviewedCommitSha: "a".repeat(40),
+				expectedBlobSha: "b".repeat(40),
+				validatedAt: "2026-09-18T18:01:00.000Z",
+			});
+			store.sealDesignReviewApprovalProof({
+				proofId: proof.proof_id,
+				verdictReceiptId: "verdict-review1",
+				approvedAt: "2026-09-18T18:02:00.000Z",
+			});
 			const reference = store.readShipJudgmentPlanReference("r", "__main__");
 			expect(reference).toMatchObject({
 				requestId: "review1",
 				path: "engineering/doc/FLY-2399-learning/plan.md",
+				expectedBlobSha: "b".repeat(40),
 			});
 			const reader = {
 				readText: vi.fn(async () => ({

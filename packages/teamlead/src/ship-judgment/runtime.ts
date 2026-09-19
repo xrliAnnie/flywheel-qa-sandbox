@@ -1,7 +1,11 @@
 import { yieldToEventLoop } from "../bridge/event-loop-yield.js";
 import type { StateStore } from "../StateStore.js";
 import type { CollectionResult } from "./collect.js";
-import { canonicalDigest, type FrozenPacket } from "./contract.js";
+import {
+	canonicalDigest,
+	type FrozenPacket,
+	isJudgmentEnabled,
+} from "./contract.js";
 import { ShipJudgmentScanner } from "./scanner.js";
 import {
 	type JudgmentWorkerDependencies,
@@ -120,7 +124,7 @@ export class ShipJudgmentRuntime {
 				}
 			}
 			this.lastObservedMode = mode;
-			return mode !== "off";
+			return isJudgmentEnabled("flywheel", mode);
 		} catch {
 			this.deps.onError?.("mode_read_failed");
 			return false;
@@ -222,7 +226,7 @@ export class ShipJudgmentRuntime {
 		]);
 	}
 	private enabled(): boolean {
-		return !this.stopped && this.deps.mode() === "dry_run";
+		return !this.stopped && isJudgmentEnabled("flywheel", this.deps.mode());
 	}
 	private isCurrent(packet: FrozenPacket): boolean {
 		if (!this.enabled()) return false;

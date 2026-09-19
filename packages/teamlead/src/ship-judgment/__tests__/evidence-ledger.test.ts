@@ -45,6 +45,7 @@ function targetMaterials(): TargetMaterials {
 			round: 1,
 			status: "approved",
 			respondedAt: AT,
+			expectedBlobSha: "c".repeat(40),
 		},
 		planBlob: { blobSha: "c".repeat(40), text: "approved plan" },
 		codeReview: {
@@ -69,6 +70,7 @@ function targetMaterials(): TargetMaterials {
 			revoked: false,
 			summary: "QA passed",
 		},
+		qaReport: { id: "report-1148", observedAt: AT },
 	};
 }
 function materials(): JudgmentMaterials {
@@ -89,8 +91,18 @@ function materials(): JudgmentMaterials {
 	};
 }
 
-it("binds three independent verdicts and evidence IDs without requiring a model", () => {
-	const ledger = buildEvidenceLedger(materials(), binding);
+const semanticPass = {
+	status: "evaluated" as const,
+	evaluationId: "evaluation-pass",
+	modelSnapshotDigest: "f".repeat(64),
+	alignment: "pass" as const,
+	coverage: "pass" as const,
+};
+const build = (input: JudgmentMaterials, current = binding) =>
+	buildEvidenceLedger(input, current, semanticPass);
+
+it("binds three independent verdicts and exact source evidence", () => {
+	const ledger = build(materials());
 	expect([
 		ledger.alignment.verdict,
 		ledger.conflict.verdict,
@@ -101,8 +113,8 @@ it("binds three independent verdicts and evidence IDs without requiring a model"
 	);
 	expect(
 		ledger.evidence.find((ref) => ref.kind === "design_review")?.label,
-	).toBe("blob_unverified");
-	expect(ledger.semantic.status).toBe("not_run");
+	).toBe("approved");
+	expect(ledger.semantic.status).toBe("evaluated");
 	expect(ledger.targetsDigest).toBe(
 		targetSetDigest(
 			[
@@ -127,7 +139,7 @@ it.each([
 ] as const)("missing %s affects only %s", (key, point, missing) => {
 	const input = materials();
 	delete input.targets[0]![key];
-	const ledger = buildEvidenceLedger(input, binding);
+	const ledger = build(input);
 	expect(ledger[point].verdict).toBe("undetermined");
 	expect(ledger[point].missing).toEqual([missing]);
 	expect(ledger.conflict.verdict).toBe("pass");
@@ -139,25 +151,19 @@ it.each([
 it("requires an existing plan at head even when no manifest blob is available", () => {
 	const input = materials();
 	input.targets[0]!.planBlob!.text = "";
-	expect(buildEvidenceLedger(input, binding).alignment.missing).toEqual([
-		"plan_at_head",
-	]);
+	expect(build(input).alignment.missing).toEqual(["plan_at_head"]);
 	input.targets[0]!.planBlob!.text = "plan";
 	input.targets[0]!.designApproval!.expectedBlobSha = "f".repeat(40);
-	expect(buildEvidenceLedger(input, binding).alignment.missing).toEqual([
-		"plan_at_head",
-	]);
+	expect(build(input).alignment.missing).toEqual(["plan_at_head"]);
 });
 
 it("reports missing diff base and incomplete binary diffs explicitly", () => {
 	const input = materials();
 	input.targets[0]!.diffBaseSha = null;
-	expect(buildEvidenceLedger(input, binding).alignment.missing).toEqual([
-		"pr_diff",
-	]);
+	expect(build(input).alignment.missing).toEqual(["pr_diff"]);
 	input.targets[0]!.diffBaseSha = base;
 	input.targets[0]!.diff!.complete = false;
-	expect(buildEvidenceLedger(input, binding).alignment).toMatchObject({
+	expect(build(input).alignment).toMatchObject({
 		verdict: "undetermined",
 		reason: "diff_binary",
 		missing: ["pr_diff"],
@@ -169,7 +175,7 @@ it.each(["changes_requested", "superseded"] as const)(
 	(status) => {
 		const input = materials();
 		input.targets[0]!.designApproval!.status = status;
-		expect(buildEvidenceLedger(input, binding).alignment).toMatchObject({
+		expect(build(input).alignment).toMatchObject({
 			verdict: status === "changes_requested" ? "fail" : "undetermined",
 			reason:
 				status === "changes_requested"
@@ -188,7 +194,7 @@ it.each([
 ] as const)("preserves QA %s with its claim metadata", (reason) => {
 	const input = materials();
 	Object.assign(input.targets[0]!.qaAuthority!, { reason, verdict: "fail" });
-	const ledger = buildEvidenceLedger(input, binding);
+	const ledger = build(input);
 	expect(ledger.coverage).toMatchObject({ verdict: "fail", reason });
 	expect(ledger.evidence[ledger.coverage.refs[0]!]?.id).toBe("1148");
 });
@@ -209,24 +215,22 @@ it("aggregates targets with fail taking precedence over missing without borrowin
 			{ ...binding.targets[0]!, repo_identity: "nested" },
 		],
 	};
-	expect(buildEvidenceLedger(input, multi)).toMatchObject({
+	expect(build(input, multi)).toMatchObject({
 		alignment: { verdict: "pass" },
 		conflict: { verdict: "pass" },
 		coverage: { verdict: "undetermined" },
 	});
 	other.codeReview = { ...other.codeReview!, verdict: "CHANGES_REQUESTED" };
 	delete input.targets[0]!.designApproval;
-	expect(buildEvidenceLedger(input, multi).alignment.verdict).toBe("fail");
+	expect(build(input, multi).alignment.verdict).toBe("fail");
 	input.targets.pop();
-	expect(buildEvidenceLedger(input, multi).targets[1]!.c.missing).toContain(
-		"qa_claim",
-	);
+	expect(build(input, multi).targets[1]!.c.missing).toContain("qa_claim");
 });
 
 it("ignores material for a different exact head", () => {
 	const input = materials();
 	input.targets[0]!.headSha = "f".repeat(40);
-	const ledger = buildEvidenceLedger(input, binding);
+	const ledger = build(input);
 	expect(ledger.alignment.verdict).toBe("undetermined");
 	expect(ledger.coverage.verdict).toBe("undetermined");
 });
@@ -249,7 +253,8 @@ it("semantic evaluation can only veto and never turn missing evidence into a pas
 			status: "undetermined",
 		}),
 	).toMatchObject({
-		alignment: { verdict: "pass" },
+		alignment: { verdict: "undetermined", missing: ["input"] },
+		coverage: { verdict: "undetermined", missing: ["input"] },
 		semantic: { status: "undetermined", alignmentVeto: false },
 	});
 	const input = materials();
@@ -260,7 +265,7 @@ it("semantic evaluation can only veto and never turn missing evidence into a pas
 });
 
 it("presentation identity ignores observation clocks but includes evidence changes", () => {
-	const ledger = buildEvidenceLedger(materials(), binding);
+	const ledger = build(materials());
 	const changed = structuredClone(ledger);
 	changed.computedAt = "2026-09-14T21:00:00.000Z";
 	changed.evidence.forEach((ref) => {
@@ -272,7 +277,7 @@ it("presentation identity ignores observation clocks but includes evidence chang
 });
 
 it("validates reference bounds and target identity at the persisted boundary", () => {
-	const ledger = buildEvidenceLedger(materials(), binding);
+	const ledger = build(materials());
 	expect(
 		evidenceLedgerSchema.safeParse({ ...ledger, targets: [] }).success,
 	).toBe(false);

@@ -164,7 +164,7 @@ it("keeps observing while delivery hangs, and stop waits for abort cleanup", asy
 	const runtime = new ShipJudgmentRuntime({
 		store,
 		owner: "fixture",
-		mode: () => "auto_merge_narrow_gate",
+		mode: () => "auto",
 		collect: vi.fn(),
 		evaluate: vi.fn(),
 		material: vi.fn(),
@@ -201,7 +201,7 @@ it("keeps observing while delivery hangs, and stop waits for abort cleanup", asy
 
 it("rechecks off after yielding and clears the local latch without network dependencies", async () => {
 	const { store } = await bindingFixture();
-	let mode = "auto_merge_narrow_gate";
+	let mode = "auto";
 	const observer = store.getShipJudgmentOutcomes();
 	const verdicts = vi
 		.spyOn(observer, "observeVerdicts")
@@ -228,7 +228,7 @@ it("rechecks off after yielding and clears the local latch without network depen
 		await runtime.modeTick();
 		expect(cancellations).not.toHaveBeenCalled();
 		verdicts.mockReturnValue(0);
-		mode = "auto_merge_narrow_gate";
+		mode = "auto";
 		await runtime.modeTick();
 		await runtime.modeTick();
 		expect(cancellations).toHaveBeenCalledTimes(2);
@@ -305,7 +305,7 @@ it("uses the actual interval for local pages while a timed-out transport retains
 	const runtime = new ShipJudgmentRuntime({
 		store,
 		owner: "fixture",
-		mode: () => "auto_merge_narrow_gate",
+		mode: () => "auto",
 		collect: vi.fn(),
 		evaluate: vi.fn(),
 		material: vi.fn(),

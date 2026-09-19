@@ -18,6 +18,7 @@
 		"./ship-eligibility": "./dist/ship-eligibility.js",
 		"./strength-two-contract": "./dist/strength-two-contract.js",
 		"./auto-narrow-contract": "./dist/auto-narrow-contract.js",
+		"./ship-judgment-approval-contract": "./dist/ship-judgment-approval-contract.js",
 		"./shadow-declaration-proof": "./dist/shadow-declaration-proof.js",
 		"./evidence-run": "./dist/commands/evidence-run.js",
 		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",

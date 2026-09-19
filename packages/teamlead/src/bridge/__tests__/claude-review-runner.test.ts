@@ -165,6 +165,18 @@ describe("parseClaudeReviewOutput", () => {
 		}
 	});
 
+	it("parses the exact reviewed plan blob echo", () => {
+		const blob = "b".repeat(40);
+		const parsed = parseClaudeReviewOutput(
+			JSON.stringify({
+				verdict: "APPROVED",
+				findings: [],
+				reviewedPlanBlobSha: blob.toUpperCase(),
+			}),
+		);
+		expect(parsed?.reviewedPlanBlobSha).toBe(blob);
+	});
+
 	it("FLY-2291: replays the FLY-2269 reviewer outputs through the real CLI envelope", () => {
 		const expected = [
 			[

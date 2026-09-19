@@ -1729,10 +1729,14 @@ for step in unit_steps:
     condition = str(step.get("if", ""))
     for name in re.findall(r"matrix\.name\s*==\s*'([^']+)'", condition):
         require(name in matrix_names, f"conditional step targets absent matrix row: {name}")
-writer_mutations = [step for step in unit_steps if step.get("name") == "FLY-2453 whole-gate writer mutations"]
-require(len(writer_mutations) == 1, "writer mutation gate must appear exactly once")
-require(writer_mutations[0].get("if") == "matrix.name == 'teamlead 1 of 4'", "writer mutation gate must run in shard 1")
-require("continue-on-error" not in writer_mutations[0], "writer mutation gate must not swallow failures")
+require(
+    not any(
+        step.get("name") == "FLY-2453 whole-gate writer mutations"
+        for step in unit_steps
+        if isinstance(step, dict)
+    ),
+    "retired FLY-2453 pure-docs mutation gate must not return",
+)
 
 stub_hygiene_steps = [
     step

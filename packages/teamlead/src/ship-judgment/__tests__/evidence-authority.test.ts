@@ -72,7 +72,7 @@ function claim(
 	);
 }
 
-it("reads design approval across execution/issue aliases and binds manifest by execution, not request", async () => {
+it("reads design approval across aliases but requires the request-bound sealed proof", async () => {
 	const { store, db } = await bindingFixture();
 	try {
 		review(db, "approved", { issue: "issue-uuid" });
@@ -96,6 +96,38 @@ it("reads design approval across execution/issue aliases and binds manifest by e
 			"b".repeat(40),
 			BEFORE,
 		);
+		expect(
+			store.readShipJudgmentDesignApproval(
+				"FLY-2399",
+				["issue-uuid"],
+				"__main__",
+				AT,
+			)?.expectedBlobSha,
+		).toBeUndefined();
+		const proof = store.captureDesignReviewApprovalProof({
+			lane: "coordinator",
+			projectName: "flywheel",
+			issueId: "issue-uuid",
+			executionId: "exec-approved",
+			repositoryIdentity: "__main__",
+			reviewJobRequestId: "approved",
+			planPath: "engineering/doc/plan.md",
+			reviewedCommitSha: "a".repeat(40),
+			expectedBlobSha: "b".repeat(40),
+			capturedAt: BEFORE,
+		});
+		store.validateDesignReviewApprovalProof({
+			proofId: proof.proof_id,
+			validationReceiptId: "validation-approved",
+			reviewedCommitSha: "a".repeat(40),
+			expectedBlobSha: "b".repeat(40),
+			validatedAt: BEFORE,
+		});
+		store.sealDesignReviewApprovalProof({
+			proofId: proof.proof_id,
+			verdictReceiptId: "verdict-approved",
+			approvedAt: BEFORE,
+		});
 		expect(
 			store.readShipJudgmentDesignApproval(
 				"FLY-2399",

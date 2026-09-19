@@ -44,7 +44,11 @@ it("persists a fair fifty-card cursor and skips disabled modes, including after 
 		await resumed.tick();
 		expect(new Set(visited).size).toBe(55);
 		expect(visited).not.toContain("scan-q-54");
-		for (const value of ["off", "auto"]) {
+		mode = "auto";
+		visited.length = 0;
+		await resumed.tick();
+		expect(visited.length).toBeGreaterThan(0);
+		for (const value of ["off", "unknown"]) {
 			mode = value;
 			visited.length = 0;
 			await resumed.tick();

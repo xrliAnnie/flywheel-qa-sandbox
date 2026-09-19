@@ -24,6 +24,7 @@ import {
 import { CommDB } from "../db.js";
 import { MailboxQueue } from "../mailbox-queue.js";
 import { encodeSenderRef } from "../sender-ref.js";
+import { SHIP_JUDGMENT_APPROVAL_ACTOR } from "../ship-judgment-approval-contract.js";
 
 const EXEC = "exec-fly191";
 const LEAD = "product-lead";
@@ -188,6 +189,42 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		}
 	}
 
+	function seedRawAnswer(
+		questionId: string,
+		fromAgent: string,
+		content: string,
+	): void {
+		const raw = new Database(commDbPath);
+		const responseId = `raw-response:${questionId}`;
+		const deliveryId = `raw-delivery:${questionId}`;
+		try {
+			raw.transaction(() => {
+				raw
+					.prepare(
+						"INSERT INTO mailbox_identity (id, delivery_id, insert_projection_hash) VALUES (?, ?, ?)",
+					)
+					.run(responseId, deliveryId, "raw-test-fixture");
+				raw
+					.prepare(
+						`INSERT INTO mailbox
+					 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
+					  ref_id, created_at, expires_at, relay_state)
+					 VALUES (?, ?, ?, ?, 'runner', 'response', ?, ?,
+					         '2026-09-18T16:30:00.000Z', '2026-09-21T16:30:00.000Z',
+					         'terminal_disposed')`,
+					)
+					.run(responseId, deliveryId, fromAgent, EXEC, content, questionId);
+				raw
+					.prepare(
+						"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+					)
+					.run(questionId);
+			})();
+		} finally {
+			raw.close();
+		}
+	}
+
 	function run(prHead = HEAD) {
 		return verifyApproval({
 			execId: EXEC,
@@ -228,6 +265,26 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		});
 		return qid;
 	}
+
+	it("rejects the machine actor without its exact applied source proof", () => {
+		const qid = createGateQuestion();
+		seedRawAnswer(
+			qid,
+			SHIP_JUDGMENT_APPROVAL_ACTOR,
+			JSON.stringify({ approved: true, head_sha: HEAD }),
+		);
+		writeStateSession({
+			execution_id: EXEC,
+			status: "approved_to_ship",
+			pr_head_sha: HEAD,
+			review_question_id: qid,
+		});
+		expect(run()).toMatchObject({
+			approved: false,
+			reason: "machine_approval_proof_missing",
+			responseFrom: SHIP_JUDGMENT_APPROVAL_ACTOR,
+		});
+	});
 
 	it.each(["approved_to_ship", "completed", "failed"])(
 		"separates ship authorization from completed recovery: %s",

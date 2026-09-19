@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "ship_judgment_auto_approval",
+	"classification": "protectedAuthority"
+}

@@ -66,6 +66,7 @@ const DISCORD_SNOWFLAKE_RE = /^\d{17,20}$/;
 export function isReservedApprovalAttribution(from: string): boolean {
 	return (
 		from === "bridge-auto-narrow-gate" ||
+		from === "bridge-ship-judgment-gate" ||
 		TRUSTED_BRIDGE_APPROVAL_WRITERS.has(from) ||
 		DISCORD_SNOWFLAKE_RE.test(from)
 	);

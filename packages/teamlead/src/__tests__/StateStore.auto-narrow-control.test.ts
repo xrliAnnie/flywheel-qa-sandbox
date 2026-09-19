@@ -39,6 +39,14 @@ describe("StateStore auto narrow control", () => {
 		expect(store.getAutoNarrowControlEventByMessageId(MESSAGE)).toEqual(
 			result.ok ? result.event : undefined,
 		);
+		expect(
+			store.getShipJudgmentModeCheck("11111111-1111-4111-8111-111111111111"),
+		).toMatchObject({
+			mode: "auto",
+			policy: "ship-judgment-v1",
+			status: "pending",
+			reason: "awaiting_first_card",
+		});
 		store.close();
 	});
 
@@ -79,6 +87,9 @@ describe("StateStore auto narrow control", () => {
 			ok: true,
 			event: { openingEventId: "11111111-1111-4111-8111-111111111111" },
 		});
+		expect(
+			store.getShipJudgmentModeCheck("11111111-1111-4111-8111-111111111111"),
+		).toMatchObject({ status: "superseded" });
 
 		const stopped = store.applyAutoNarrowControlChange({
 			eventId: "33333333-3333-4333-8333-333333333333",

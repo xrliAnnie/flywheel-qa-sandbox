@@ -8,7 +8,8 @@ import {
 } from "./contract.js";
 import type { FrozenDiff } from "./git-input.js";
 
-export const EVIDENCE_POLICY_VERSION = "ship-judgment-evidence-v1";
+export const LEGACY_EVIDENCE_POLICY_VERSION = "ship-judgment-evidence-v1";
+export const EVIDENCE_POLICY_VERSION = "ship-judgment-evidence-v2";
 export const EVIDENCE_LEDGER_MIGRATION = "fly-2560-evidence-ledger-v1";
 const verdict = z.enum(["pass", "fail", "undetermined"]);
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
@@ -19,7 +20,9 @@ const missingKind = z.enum([
 	"code_review_at_head",
 	"pr_diff",
 	"plan_at_head",
+	"reviewed_plan_blob",
 	"qa_claim",
+	"qa_report",
 	"mechanical_snapshot",
 	"merge_probe",
 	"input",
@@ -111,9 +114,9 @@ export function evidenceTargetDigest(
 	});
 }
 
-export const evidenceLedgerSchema = z
+const currentEvidenceLedgerObject = z
 	.object({
-		version: z.literal(1),
+		version: z.literal(2),
 		policyVersion: z.literal(EVIDENCE_POLICY_VERSION),
 		evidence: z.array(evidenceRef).max(64),
 		targets: z.array(target).min(1).max(50),
@@ -148,30 +151,50 @@ export const evidenceLedgerSchema = z
 			.strict(),
 		computedAt: z.string().datetime(),
 	})
-	.strict()
-	.superRefine((v, ctx) => {
-		if (Buffer.byteLength(JSON.stringify(v)) > 49_152)
-			ctx.addIssue({ code: "custom", message: "ledger_budget" });
-		const points = [
-			v.alignment,
-			v.conflict,
-			v.coverage,
-			...v.targets.flatMap((t) => [t.a, t.c]),
-		];
-		if (points.some((p) => p.refs.some((ref) => ref >= v.evidence.length)))
-			ctx.addIssue({ code: "custom", message: "invalid_evidence_reference" });
-		try {
-			if (
-				evidenceTargetDigest(v.targets, v.manifestRevision) !== v.targetsDigest
-			)
-				ctx.addIssue({
-					code: "custom",
-					message: "evidence_target_digest_mismatch",
-				});
-		} catch {
-			ctx.addIssue({ code: "custom", message: "invalid_evidence_targets" });
-		}
-	});
+	.strict();
+
+function validateEvidenceLedger(
+	v: Omit<
+		z.infer<typeof currentEvidenceLedgerObject>,
+		"version" | "policyVersion"
+	> & { version: number; policyVersion: string },
+	ctx: z.RefinementCtx,
+): void {
+	if (Buffer.byteLength(JSON.stringify(v)) > 49_152)
+		ctx.addIssue({ code: "custom", message: "ledger_budget" });
+	const points = [
+		v.alignment,
+		v.conflict,
+		v.coverage,
+		...v.targets.flatMap((t) => [t.a, t.c]),
+	];
+	if (points.some((p) => p.refs.some((ref) => ref >= v.evidence.length)))
+		ctx.addIssue({ code: "custom", message: "invalid_evidence_reference" });
+	try {
+		if (evidenceTargetDigest(v.targets, v.manifestRevision) !== v.targetsDigest)
+			ctx.addIssue({
+				code: "custom",
+				message: "evidence_target_digest_mismatch",
+			});
+	} catch {
+		ctx.addIssue({ code: "custom", message: "invalid_evidence_targets" });
+	}
+}
+
+const currentEvidenceLedgerSchema = currentEvidenceLedgerObject.superRefine(
+	validateEvidenceLedger,
+);
+export const legacyEvidenceLedgerSchema = currentEvidenceLedgerObject
+	.extend({
+		version: z.literal(1),
+		policyVersion: z.literal(LEGACY_EVIDENCE_POLICY_VERSION),
+	})
+	.superRefine(validateEvidenceLedger);
+/** New writes are v2; v1 remains parseable for history and never authorizes auto. */
+export const evidenceLedgerSchema = z.union([
+	currentEvidenceLedgerSchema,
+	legacyEvidenceLedgerSchema,
+]);
 export type EvidenceLedger = z.infer<typeof evidenceLedgerSchema>;
 export type EvidencePoint = z.infer<typeof point>;
 export type EvidenceReason = z.infer<typeof reasonCode>;
@@ -311,15 +334,14 @@ export function buildEvidenceLedger(
 				a,
 				"design_review",
 				design.requestId,
-				design.status === "approved" && !design.expectedBlobSha
-					? "blob_unverified"
-					: design.status,
+				design.status,
 				design.respondedAt,
 			);
 			if (design.status === "changes_requested")
 				fail(a, "design_changes_requested");
 			else if (design.status !== "approved")
 				missing(a, "design_review", "design_superseded");
+			else if (!design.expectedBlobSha) missing(a, "reviewed_plan_blob");
 		}
 		if (
 			!m?.planBlob?.text.trim() ||
@@ -363,6 +385,11 @@ export function buildEvidenceLedger(
 		}
 		if (m?.qaReport)
 			ref(c, "qa_report", m.qaReport.id, "QA report", m.qaReport.observedAt);
+		else missing(c, "qa_report");
+		if (materials.input.status === "unavailable") {
+			missing(a, "input");
+			missing(c, "input");
+		}
 		return {
 			r: t.repo_identity,
 			p: t.pr_number,
@@ -402,7 +429,7 @@ export function buildEvidenceLedger(
 				: "mechanical_snapshot",
 		);
 	const ledger: EvidenceLedger = {
-		version: 1,
+		version: 2,
 		policyVersion: EVIDENCE_POLICY_VERSION,
 		evidence,
 		targets,
@@ -451,6 +478,10 @@ export function applySemanticEvidence(
 			};
 	if (ledger.semantic.alignmentVeto) ledger.alignment.verdict = "fail";
 	if (ledger.semantic.coverageVeto) ledger.coverage.verdict = "fail";
+	if (!semantic || semantic.status !== "evaluated") {
+		missing(ledger.alignment, "input");
+		missing(ledger.coverage, "input");
+	}
 	return evidenceLedgerSchema.parse(ledger);
 }
 

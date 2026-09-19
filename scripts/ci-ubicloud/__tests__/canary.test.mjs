@@ -15,7 +15,7 @@ const runnerExpression = githubExpression(
 );
 const sourceFixtureUrl = new URL("../fixtures/ci-source.yml", import.meta.url);
 const sourceFixtureSha256 =
-	"963154c42aa7875c3199b776d559a450978eaa3caf70d9137a497c4b285dc17b";
+	"710f6e255daa24691eaff115e89acdc8f07bcd024e324b32454971f6a53e7286";
 const canaryUrl = new URL(
 	"../../../.github/workflows/ci-ubicloud-canary.yml",
 	import.meta.url,
@@ -342,7 +342,7 @@ test("canary validator rejects security and parity regressions", () => {
 		},
 		(workflow) => {
 			delete workflow.jobs["unit-tests"].steps.find((step) =>
-				step.name?.includes("whole-gate writer mutations"),
+				step.name?.includes("FLY-1883 stub-hygiene pairing"),
 			).if;
 		},
 		(workflow) => {

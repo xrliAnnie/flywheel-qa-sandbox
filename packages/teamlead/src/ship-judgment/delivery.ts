@@ -23,6 +23,7 @@ export interface DeliveryView {
 	threadId: string;
 	cardMessageId: string;
 	marker: string;
+	mode: "dry_run" | "auto" | "off";
 	overall: OverallVerdict;
 	alignment: PointVerdict;
 	conflict: PointVerdict;
@@ -30,6 +31,7 @@ export interface DeliveryView {
 	mechanical: OpinionCandidate["mechanical"];
 	evaluation: unknown;
 	evidence?: EvidenceLedger;
+	autoApprovalApplied?: boolean;
 }
 interface DeliveryRow {
 	delivery_mode: "dry_run" | "auto" | "off";
@@ -100,7 +102,7 @@ export class ShipJudgmentDelivery {
 		this.db
 			.prepare(`UPDATE ship_judgment_delivery SET delivery_mode=?,presentation_state_changed_at=?,generation=generation+1,
  lease_owner=NULL,expires_at=NULL,retry_after=NULL,validated_at=NULL,validated_presentation_digest=NULL,
- state=CASE WHEN ?='dry_run' AND message_id IS NOT NULL AND state NOT IN ('gone','unavailable') THEN 'pending' ELSE state END
+ state=CASE WHEN ? IN ('dry_run','auto') AND message_id IS NOT NULL AND state NOT IN ('gone','unavailable') THEN 'pending' ELSE state END
  WHERE purpose='opinion' AND delivery_mode<>?`)
 			.run(mode, iso(now), mode, mode);
 	}
@@ -109,7 +111,7 @@ export class ShipJudgmentDelivery {
 		return (
 			this.db
 				.prepare(`SELECT question_id FROM ship_judgment_delivery WHERE purpose='opinion'
- AND delivery_mode<>'dry_run' AND mode_label='current' AND (message_id IS NOT NULL OR state IN ('posting','uncertain'))
+ AND delivery_mode='off' AND mode_label='current' AND (message_id IS NOT NULL OR state IN ('posting','uncertain'))
  AND state NOT IN ('gone','unavailable') AND (retry_after IS NULL OR retry_after<=?)
  AND (expires_at IS NULL OR expires_at<=?) ORDER BY COALESCE(retry_after,''),question_id LIMIT 20`)
 				.all(at, at) as { question_id: string }[]
@@ -119,7 +121,7 @@ export class ShipJudgmentDelivery {
 		id.parse(questionId);
 		this.db
 			.prepare(`UPDATE ship_judgment_delivery SET retry_after=?,last_error='history_owner_unavailable'
-		WHERE purpose='opinion' AND subject_id=? AND delivery_mode<>'dry_run' AND (expires_at IS NULL OR expires_at<=?)`)
+		WHERE purpose='opinion' AND subject_id=? AND delivery_mode='off' AND (expires_at IS NULL OR expires_at<=?)`)
 			.run(iso(now + 3_600_000), questionId, iso(now));
 	}
 	claimHistory(questionId: string, owner: string, now: number): ClaimResult {
@@ -136,7 +138,7 @@ export class ShipJudgmentDelivery {
 				if (
 					!row?.desired_id ||
 					(!row.message_id && !["posting", "uncertain"].includes(row.state)) ||
-					row.delivery_mode === "dry_run" ||
+					row.delivery_mode !== "off" ||
 					row.mode_label === "history" ||
 					["gone", "unavailable"].includes(row.state)
 				)
@@ -193,7 +195,7 @@ export class ShipJudgmentDelivery {
 				const row = this.current(claim, at);
 				if (
 					!row ||
-					row.delivery_mode === "dry_run" ||
+					row.delivery_mode !== "off" ||
 					row.message_id !== claim.messageId
 				)
 					return false;
@@ -216,29 +218,14 @@ export class ShipJudgmentDelivery {
 			.get(questionId) as { since: string | null };
 		return row.since ?? undefined;
 	}
-	legacySummary(questionId: string): string {
-		id.parse(questionId);
-		const row = this.db
-			.prepare(`SELECT s.gate1,s.gate2,s.gate3,s.sample_n,s.agree_n FROM auto_narrow_opinion_snapshot s
-		WHERE s.question_id=? ORDER BY s.ordinal DESC LIMIT 1`)
-			.get(questionId) as
-			| {
-					gate1: number;
-					gate2: number;
-					gate3: number;
-					sample_n: number;
-					agree_n: number;
-			  }
-			| undefined;
-		return row
-			? `三闸 ${row.gate1}/${row.gate2}/${row.gate3}；旧样本 ${row.sample_n}，一致 ${row.agree_n}`
-			: "暂不可得";
-	}
 	view(questionId: string, opinionId?: string): DeliveryView | undefined {
 		id.parse(questionId);
 		if (opinionId) id.parse(opinionId);
 		const row = this.db
-			.prepare(`SELECT o.*,d.thread_id,d.card_message_id,d.marker,e.result_json
+			.prepare(`SELECT o.*,d.thread_id,d.card_message_id,d.marker,d.delivery_mode,e.result_json,
+			EXISTS(SELECT 1 FROM ship_judgment_auto_approval a
+			 JOIN ship_judgment_auto_approval_disposition x ON x.source_event_id=a.source_event_id
+			 WHERE a.question_id=d.question_id AND x.disposition='applied') AS auto_approval_applied
 			FROM ship_judgment_delivery d JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
 			LEFT JOIN ship_judgment_evaluation e ON e.evaluation_id=o.evaluation_id
 			WHERE d.purpose='opinion' AND d.subject_id=? AND (? IS NULL OR o.opinion_id=?)`)
@@ -255,12 +242,14 @@ export class ShipJudgmentDelivery {
 			threadId: String(row.thread_id),
 			cardMessageId: String(row.card_message_id),
 			marker: String(row.marker),
+			mode: z.enum(["dry_run", "auto", "off"]).parse(row.delivery_mode),
 			overall: overallSchema.parse(row.overall),
 			alignment: verdictSchema.parse(row.alignment),
 			conflict: verdictSchema.parse(row.conflict),
 			coverage: verdictSchema.parse(row.coverage),
 			mechanical: opinionCandidateSchema.shape.mechanical.parse(mechanical),
 			evaluation: row.result_json ? JSON.parse(String(row.result_json)) : null,
+			autoApprovalApplied: Number(row.auto_approval_applied) === 1,
 			...(row.evidence_json
 				? {
 						evidence: evidenceLedgerSchema.parse(
@@ -288,7 +277,7 @@ export class ShipJudgmentDelivery {
 					)
 					.get(questionId) as DeliveryRow | undefined;
 				if (!row?.desired_id) return { status: "missing" };
-				if (row.delivery_mode !== "dry_run") return { status: "inactive" };
+				if (row.delivery_mode === "off") return { status: "inactive" };
 				if (row.state === "gone" || row.state === "unavailable")
 					return { status: "inactive" };
 				if (row.state === "delivered" && row.posted_id === row.desired_id)
@@ -384,7 +373,7 @@ export class ShipJudgmentDelivery {
 				const row = this.current(claim, at);
 				if (
 					!row ||
-					(row.delivery_mode !== "dry_run" && claim.action !== "scan") ||
+					(row.delivery_mode === "off" && claim.action !== "scan") ||
 					claim.action === "history"
 				)
 					return false;

@@ -383,31 +383,37 @@ describe("StateStore auto narrow schema", () => {
 				/immutable/,
 			);
 		}
-		expect(store.getAutoNarrowOpinionDelivery("q")).toMatchObject({
-			legacyFreezeRequestedAt: null,
-			legacyFrozenAt: null,
+		expect(store.seedShipJudgmentLegacyRetirement(NOW)).toBe(1);
+		expect(store.listShipJudgmentLegacyRetirementWork(NOW)).toMatchObject([
+			{
+				questionId: "q",
+				legacyState: "pending",
+				status: "pending",
+			},
+		]);
+		const claim = store.claimShipJudgmentLegacyRetirement({
+			questionId: "q",
+			owner: "retirer",
+			at: NOW,
 		});
-		db.prepare(
-			"UPDATE auto_narrow_opinion_delivery SET legacy_freeze_requested_at=?,legacy_frozen_at=? WHERE question_id='q'",
-		).run(NOW, NOW);
-		expect(store.getAutoNarrowOpinionDelivery("q")).toMatchObject({
-			legacyFreezeRequestedAt: NOW,
-			legacyFrozenAt: NOW,
-		});
-		expect(store.beginAutoNarrowOpinionDelivery("q", NOW)).toBeUndefined();
-		db.prepare(
-			"UPDATE auto_narrow_opinion_delivery SET legacy_freeze_requested_at=NULL,legacy_frozen_at=NULL WHERE question_id='q'",
-		).run();
-		expect(store.beginAutoNarrowOpinionDelivery("q", NOW)).toMatchObject({
-			state: "posting",
-		});
+		expect(claim).toMatchObject({ status: "claimed", generation: 1 });
+		expect(
+			store.finishShipJudgmentLegacyRetirement({
+				questionId: "q",
+				owner: "retirer",
+				generation: 1,
+				at: NOW,
+				status: "retired",
+				reason: "three_point_only",
+			}),
+		).toBe(true);
 		expect(
 			db
 				.prepare(
-					"UPDATE auto_narrow_opinion_delivery SET state='posting', attempt=1 WHERE question_id='q'",
+					"SELECT state,followup_message_id FROM auto_narrow_opinion_delivery WHERE question_id='q'",
 				)
-				.run().changes,
-		).toBe(1);
+				.get(),
+		).toEqual({ state: "pending", followup_message_id: null });
 		store.close();
 	});
 });

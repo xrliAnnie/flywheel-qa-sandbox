@@ -167,6 +167,12 @@ import {
 	type WorkflowEngineAlertIdentity,
 	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
+import { reconcileShipJudgmentLegacyRetirement } from "../ship-judgment/legacy-retirement.js";
+import {
+	ensureShipJudgmentPolicyProvenance,
+	SHIP_JUDGMENT_POLICY_MESSAGE_ID,
+	SHIP_JUDGMENT_POLICY_THREAD_ID,
+} from "../ship-judgment/policy-provenance.js";
 import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import { migrateFly2602WorkflowEffort } from "../workflow-effort-migration.js";
 import {
@@ -214,10 +220,7 @@ import {
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
 import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
-import {
-	reactToFounderMessage,
-	setBotOpinionReaction,
-} from "./approval-signal/founder-ack.js";
+import { reactToFounderMessage } from "./approval-signal/founder-ack.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
@@ -229,12 +232,6 @@ import {
 	handleAutoNarrowControlApply,
 	handleAutoNarrowControlStage,
 } from "./auto-narrow-control-route.js";
-import {
-	reconcileAutoNarrowGate,
-	refreshAutoNarrowOpinionTrace,
-	resolveAutoNarrowGateDeliveryContext,
-} from "./auto-narrow-gate.js";
-import { reconcileAutoNarrowOpinionDeliveries } from "./auto-narrow-opinion-delivery.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { createBetaManagementProvider } from "./beta-release-management.js";
 import { createBetaReleaseRuntime } from "./beta-release-runtime.js";
@@ -347,6 +344,7 @@ import {
 	editDiscordMessageInChannel,
 	fetchDiscordMessageFromChannel,
 	postDiscordMessageToChannel,
+	removeDiscordMessageReactionInChannel,
 } from "./discord-utils.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
@@ -813,6 +811,7 @@ import {
 } from "./session-capture.js";
 import { reconcileSessionlessWorkflowGates } from "./sessionless-founder-gate-reconciler.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
+import { reconcileShipJudgmentAutoGate } from "./ship-judgment-auto-gate.js";
 import { createShipJudgmentReadRouter } from "./ship-judgment-read-routes.js";
 import { handleShipJudgmentReference } from "./ship-judgment-reference-route.js";
 import {
@@ -11370,27 +11369,6 @@ export async function startBridge(
 								},
 								holder.question_id,
 							);
-							if (result.ok && run.project_name === "flywheel") {
-								const control = readAutoNarrowRuntimeControl(
-									flagStore,
-									run.project_name,
-								);
-								const controlAppliedAt = control.controlEventId
-									? store.getAutoNarrowControlEventById(control.controlEventId)
-											?.appliedAt
-									: undefined;
-								refreshAutoNarrowOpinionTrace({
-									store,
-									questionId: holder.question_id,
-									issueThreadId: thread.thread_id,
-									opinionControl: {
-										mode: control.mode,
-										...(controlAppliedAt ? { controlAppliedAt } : {}),
-									},
-									at: new Date().toISOString(),
-									log: (message) => console.warn(message),
-								});
-							}
 							materialized = result.ok;
 							if (result.ok)
 								shipJudgmentRuntime?.scanner.enqueue(holder.question_id);
@@ -12043,7 +12021,58 @@ export async function startBridge(
 		modelBin: () => "claude",
 		onError: (code) => console.warn(`[ship-judgment] ${code}`),
 	});
-	let autoNarrowGateScanCursor: string | undefined;
+	let shipJudgmentAutoGateScanCursor: string | undefined;
+	const shipJudgmentLegacyRetirementOwner = `bridge:${process.pid}:${randomUUID()}`;
+	const flywheelProject = projects.find(
+		(project) => project.projectName === "flywheel",
+	);
+	const legacyBotCandidates = [
+		...(flywheelProject?.leads.flatMap((lead) =>
+			lead.botToken ? [{ token: lead.botToken, userId: lead.botUserId }] : [],
+		) ?? []),
+		...(config.discordBotToken
+			? [{ token: config.discordBotToken, userId: undefined }]
+			: []),
+	].filter(
+		(candidate, index, all) =>
+			all.findIndex((other) => other.token === candidate.token) === index,
+	);
+	const resolveLegacyMessageBotToken = async (
+		questionId: string,
+		threadId: string,
+		messageId: string,
+	): Promise<string | undefined> => {
+		const readToken = legacyBotCandidates[0]?.token;
+		if (readToken) {
+			const fetched = await fetchDiscordMessageFromChannel(
+				threadId,
+				messageId,
+				readToken,
+				fetch,
+				AbortSignal.timeout(10_000),
+			);
+			if (fetched.ok) {
+				const exact = legacyBotCandidates.find(
+					(candidate) => candidate.userId === fetched.message.authorId,
+				);
+				if (exact) return exact.token;
+			}
+		}
+		const holder = store.getCurrentWorkflowGateHolderByQuestionId(questionId);
+		const run = holder ? store.getWorkflowRun(holder.run_id) : undefined;
+		const source = holder
+			? store.getSession(holder.source_execution_id)
+			: undefined;
+		if (!run || !source || run.project_name !== "flywheel") return undefined;
+		const resolved = resolveLeadForIssue(
+			projects,
+			run.project_name,
+			store.getSessionLabels(holder!.source_execution_id),
+		);
+		return resolved.matchMethod === "label"
+			? (resolved.lead.botToken ?? config.discordBotToken)
+			: undefined;
+	};
 	const epicIntakeScheduler = createEpicIntakeScheduler({
 		projects: () =>
 			config.linearApiKey
@@ -12107,123 +12136,103 @@ export async function startBridge(
 			await codexQuotaMaintenance.tick();
 		},
 		onAutoNarrowGateTick: async () => {
-			const control = readAutoNarrowRuntimeControl(flagStore, "flywheel");
-			const controlAppliedAt = control.controlEventId
-				? store.getAutoNarrowControlEventById(control.controlEventId)?.appliedAt
-				: undefined;
-			const resolveDeliveryContext = (questionId: string) =>
-				resolveAutoNarrowGateDeliveryContext({
-					store,
-					projects,
-					questionId,
-					defaultBotToken: config.discordBotToken,
-				});
-			const gateResult = reconcileAutoNarrowGate({
-				store,
-				openCommDb: (project) => new CommDB(commDbPathForProject(project)),
-				resolveDeliveryContext,
-				scanAfterQuestionId: autoNarrowGateScanCursor,
-				opinionControl: {
-					mode: control.mode,
-					...(controlAppliedAt ? { controlAppliedAt } : {}),
-				},
-				log: (message) => console.warn(message),
-			});
-			if (gateResult.cursor) autoNarrowGateScanCursor = gateResult.cursor;
-			await reconcileAutoNarrowOpinionDeliveries({
-				store,
-				mode: control.mode,
-				readMode: () =>
-					readAutoNarrowRuntimeControl(flagStore, "flywheel").mode,
-				post: async ({
-					questionId,
-					threadId,
-					cardMessageId,
-					content,
-					signal,
-				}) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) {
-						return { kind: "failed" as const };
+			const mode = readAutoNarrowRuntimeControl(flagStore, "flywheel").mode;
+			if (mode === "auto") {
+				const policyToken =
+					flywheelProject?.leads.find(
+						(lead) => lead.agentId === "flywheel-eng-lead",
+					)?.botToken ?? config.discordBotToken;
+				if (policyToken) {
+					const verifiedAt = new Date().toISOString();
+					const provenance = await ensureShipJudgmentPolicyProvenance({
+						store,
+						founderUserId: config.discordOwnerUserId ?? "",
+						verifiedAt,
+						fetchMessage: async () => {
+							const fetched = await fetchDiscordMessageFromChannel(
+								SHIP_JUDGMENT_POLICY_THREAD_ID,
+								SHIP_JUDGMENT_POLICY_MESSAGE_ID,
+								policyToken,
+								fetch,
+								AbortSignal.timeout(10_000),
+							);
+							return fetched.ok ? fetched.message : undefined;
+						},
+					});
+					if (!provenance) {
+						console.warn(
+							"[ship-judgment] exact founder policy provenance unavailable; automatic approval remains disabled",
+						);
 					}
-					const posted = await postDiscordMessageToChannel(
-						threadId,
-						content,
-						context.botToken,
-						{ origin: "automation", replyTo: cardMessageId, signal },
+				}
+			}
+			await reconcileShipJudgmentLegacyRetirement({
+				store,
+				mode,
+				owner: shipJudgmentLegacyRetirementOwner,
+				edit: async ({ work, messageId, content }) => {
+					const token = await resolveLegacyMessageBotToken(
+						work.questionId,
+						work.threadId,
+						messageId,
 					);
-					return posted.ok && posted.messageIds.length === 1
-						? { kind: "posted" as const, messageId: posted.messageIds[0]! }
-						: { kind: "uncertain" as const };
-				},
-				edit: async ({ questionId, threadId, messageId, content, signal }) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId)
-						return { ok: false };
-					return editDiscordMessageInChannel(
-						threadId,
+					if (!token) return { ok: false };
+					const edited = await editDiscordMessageInChannel(
+						work.threadId,
 						messageId,
 						content,
-						context.botToken,
-						{ origin: "automation", signal },
+						token,
+						{
+							origin: "automation",
+							signal: AbortSignal.timeout(10_000),
+						},
 					);
+					return {
+						ok: edited.ok,
+						unavailable: !edited.ok && edited.status === 404,
+					};
 				},
-				scan: ({ questionId, threadId, postedAt, correlationMarker }) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) {
-						return Promise.resolve({
-							kind: "ambiguous" as const,
-							frontier: null,
-						});
-					}
-					return scanFounderThreadForGateCard({
-						threadId,
-						botToken: context.botToken,
-						postedAt,
-						correlationMarker,
+				scan: async ({ work }) => {
+					const botToken = legacyBotCandidates[0]?.token;
+					if (!botToken) return { kind: "ambiguous" };
+					const scan = await scanFounderThreadForGateCard({
+						threadId: work.threadId,
+						botToken,
+						postedAt: work.legacyPostingAt ?? "1970-01-01T00:00:00.000Z",
+						correlationMarker: work.legacyMarker,
 					});
+					return scan.kind === "found"
+						? { kind: "found", messageId: scan.messageId }
+						: { kind: scan.kind };
 				},
-				setReaction: ({ questionId, threadId, cardMessageId, reaction }) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) {
-						return Promise.resolve(false);
-					}
-					return setBotOpinionReaction({
-						botToken: context.botToken,
-						channelId: threadId,
-						messageId: cardMessageId,
-						reaction,
-					});
-				},
-				markCard: async ({
-					questionId,
-					threadId,
-					cardMessageId,
-					banner,
-					signal,
-				}) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) return false;
-					const current = await fetchDiscordMessageFromChannel(
-						threadId,
-						cardMessageId,
-						context.botToken,
-						fetch,
-						signal,
+				clearReaction: async ({ work }) => {
+					const token = await resolveLegacyMessageBotToken(
+						work.questionId,
+						work.threadId,
+						work.cardMessageId,
 					);
-					if (!current.ok) return false;
-					if (current.message.content.includes(banner)) return true;
-					const edited = await editDiscordMessageInChannel(
-						threadId,
-						cardMessageId,
-						`${current.message.content}\n\n${banner}`,
-						context.botToken,
-						{ origin: "automation", signal },
+					if (!token) return;
+					await Promise.all(
+						["🤖", "🚫"].map((emoji) =>
+							removeDiscordMessageReactionInChannel(
+								work.threadId,
+								work.cardMessageId,
+								emoji,
+								token,
+								{ signal: AbortSignal.timeout(10_000) },
+							),
+						),
 					);
-					return edited.ok;
 				},
+			});
+			store.reconcileShipJudgmentModeCheck(new Date().toISOString());
+			const gateResult = reconcileShipJudgmentAutoGate({
+				store,
+				openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+				scanAfterQuestionId: shipJudgmentAutoGateScanCursor,
 				log: (message) => console.warn(message),
 			});
+			if (gateResult.cursor) shipJudgmentAutoGateScanCursor = gateResult.cursor;
 		},
 		onLeadPatrolTick: leadPatrolTickPass,
 		onSummaryAbsorptionTick: summaryAbsorptionPass,
@@ -13321,8 +13330,6 @@ export async function startBridge(
 	// FLY-1505 M1: the first GatePoller tick may re-wake an approved ship
 	// runner. Start it only after durable failed-attempt markers have restored
 	// their suppression state (or the drain has failed loudly and retained them).
-	if (!process.env.VITEST)
-		store.invalidateAutoNarrowLegacyFreezeOnStartup(new Date().toISOString());
 	gatePoller.start();
 	if (!process.env.VITEST) {
 		try {

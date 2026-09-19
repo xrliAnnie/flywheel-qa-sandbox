@@ -66,6 +66,7 @@ describe("FLY-1718 design review manifest delivery", () => {
 		const clean = snapshotDesignReviewPlan(session, planPath);
 		expect(clean).toEqual({
 			ok: true,
+			commitSha: git(root, ["rev-parse", "HEAD"]),
 			blobSha: git(root, ["rev-parse", `HEAD:${planPath}`]),
 		});
 
@@ -138,9 +139,12 @@ describe("FLY-1718 design review manifest delivery", () => {
 		if (!snapshot.ok) throw new Error(snapshot.message);
 		const first = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
+			issueId: "issue-1",
 			projectName: "flywheel-test",
+			repositoryIdentity: "__main__",
 			sourceEventId: "evt-1",
 			expectedPlanPath: planPath,
+			reviewedCommitSha: snapshot.commitSha,
 			expectedBlobSha: snapshot.blobSha,
 		});
 
@@ -153,9 +157,12 @@ describe("FLY-1718 design review manifest delivery", () => {
 
 		const second = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
+			issueId: "issue-1",
 			projectName: "flywheel-test",
+			repositoryIdentity: "__main__",
 			sourceEventId: "evt-2",
 			expectedPlanPath: planPath,
+			reviewedCommitSha: snapshot.commitSha,
 			expectedBlobSha: snapshot.blobSha,
 		});
 		expect(second.delivered_at).toBeUndefined();

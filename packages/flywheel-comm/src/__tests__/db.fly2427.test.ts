@@ -72,6 +72,7 @@ describe("CommDB FLY-2427 founder ship question inspection", () => {
 			resolved: false,
 			responseExists: false,
 			founderSourceEventExists: false,
+			machineSourceEventExists: false,
 			answerable: true,
 			unanswerableReasons: [],
 		});
@@ -120,4 +121,23 @@ describe("CommDB FLY-2427 founder ship question inspection", () => {
 			).toMatchObject({ founderSourceEventExists: false });
 		},
 	);
+
+	it("reports a real ship-judgment-auto source separately from founder sources", () => {
+		const id = question();
+		raw
+			.prepare(
+				`INSERT INTO workflow_source_event
+				 (project, source_event_id, kind, payload, payload_digest, schema_version, at)
+				 VALUES (?, ?, 'founder_approval', '{}', 'digest', 1, '2026-09-07T18:00:00.000Z')`,
+			)
+			.run("flywheel", `ship-judgment-auto:${id}`);
+
+		expect(db.inspectFounderShipGateQuestion(id, "flywheel")).toMatchObject({
+			founderSourceEventExists: false,
+			machineSourceEventExists: true,
+		});
+		expect(
+			db.inspectFounderShipGateQuestion(id, "other-project"),
+		).toMatchObject({ machineSourceEventExists: false });
+	});
 });

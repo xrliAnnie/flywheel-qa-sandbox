@@ -48,6 +48,7 @@ import {
 	resolveFounderId,
 } from "flywheel-comm/founder-attribution";
 import type { ShipEligibilityDecision } from "flywheel-comm/ship-eligibility";
+import { SHIP_JUDGMENT_APPROVAL_ACTOR } from "flywheel-comm/ship-judgment-approval-contract";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -243,7 +244,11 @@ function intEnv(
  */
 export function hasTrustedFounderApproval(
 	session: Session,
-	deps: { env?: Record<string, string | undefined>; dotenvPath?: string },
+	deps: {
+		env?: Record<string, string | undefined>;
+		dotenvPath?: string;
+		store?: Pick<StateStore, "hasAppliedShipJudgmentMachineApproval">;
+	},
 ): boolean {
 	const qid = session.review_question_id?.trim();
 	if (!qid || qid === "unbound") return false;
@@ -262,6 +267,12 @@ export function hasTrustedFounderApproval(
 				return false;
 			}
 			if (approved !== true) return false;
+			if (response.from_agent === SHIP_JUDGMENT_APPROVAL_ACTOR) {
+				const head = session.pr_head_sha?.trim().toLowerCase() ?? "";
+				return Boolean(
+					deps.store?.hasAppliedShipJudgmentMachineApproval(qid, head),
+				);
+			}
 			const founderId = resolveFounderId({
 				argsEnv: deps.env as NodeJS.ProcessEnv | undefined,
 				processEnv: process.env,
@@ -293,7 +304,8 @@ export function createExternalMergeReconciler(
 	const checkPr = deps.checkPrMerge ?? checkPrMergeViaGh;
 	const hasTrusted =
 		deps.hasTrustedApprovalImpl ??
-		((s: Session) => hasTrustedFounderApproval(s, { env: deps.env }));
+		((s: Session) =>
+			hasTrustedFounderApproval(s, { env: deps.env, store: deps.store }));
 
 	function env(): Record<string, string | undefined> {
 		return deps.env ?? process.env;
