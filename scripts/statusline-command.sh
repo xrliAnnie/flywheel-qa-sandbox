@@ -256,14 +256,99 @@ else
   [ "$cache_age" -gt "$CACHE_MAX_AGE" ] && refresh_cache
 fi
 
-# --- Effort level from settings ---
-effort=$(jq -r '.effortLevel // empty' "$HOME/.claude/settings.json" 2>/dev/null)
+# --- Effort level from this session -----------------------------------------
+# A global setting is not session evidence: different Lead/runner processes can
+# be launched with different --effort values. Prefer Claude's live status input,
+# then its child-process environment, then the nearest exact Claude ancestor's
+# argv for older CLIs. If none is available, say so instead of guessing.
+normalise_effort() { # <candidate> -> normalised value, or non-zero
+  local value
+  value=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$value" in
+    low|medium|high|xhigh|max|auto) printf '%s' "$value" ;;
+    *) return 1 ;;
+  esac
+}
+
+effort_candidate=$(printf '%s' "$input" | jq -r '
+  if (.effort | type) == "object" and (.effort.level | type) == "string" then
+    .effort.level
+  elif (.effort | type) == "string" then
+    .effort
+  else
+    empty
+  end' 2>/dev/null)
+effort=$(normalise_effort "$effort_candidate" 2>/dev/null) || effort=""
+
 if [ -z "$effort" ]; then
-  model_id=$(echo "$input" | jq -r '.model.id // ""')
-  if echo "$model_id" | grep -qi "opus-4-6\|opus-4\.6"; then
-    effort="medium"
-  fi
+  effort=$(normalise_effort "${CLAUDE_EFFORT:-}" 2>/dev/null) || effort=""
 fi
+
+effort_from_claude_ancestor() {
+  local pid="$PPID" depth=0 row ancestor_ppid command executable executable_base
+  local arg expect_value raw_candidate="" candidate="" normalised=""
+
+  while [ "$depth" -lt 4 ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+    row=$(ps -p "$pid" -o ppid= -o command= 2>/dev/null) || return 1
+    [ -n "$row" ] || return 1
+
+    # The last read variable receives the unsplit remainder, preserving argv as
+    # one string while discarding ps's leading padding around PPID.
+    IFS=' ' read -r ancestor_ppid command <<EOF
+$row
+EOF
+    case "$ancestor_ppid" in ''|*[!0-9]*) return 1 ;; esac
+    [ -n "$command" ] || return 1
+
+    # Word splitting is deliberate but glob expansion is not. We never eval the
+    # command; tokens are inspected as inert strings only.
+    set -f
+    # shellcheck disable=SC2086
+    set -- $command
+    set +f
+    executable=${1:-}
+    executable_base=${executable##*/}
+
+    if [ "$executable_base" = "claude" ]; then
+      # Stop at the nearest exact Claude ancestor even when it has no valid
+      # effort. Continuing could borrow an outer/parent session's flag.
+      expect_value=0
+      candidate=""
+      for arg in "$@"; do
+        raw_candidate=""
+        if [ "$expect_value" -eq 1 ]; then
+          raw_candidate="$arg"
+          expect_value=0
+        else
+          case "$arg" in
+            --effort) expect_value=1 ;;
+            --effort=*) raw_candidate=${arg#--effort=} ;;
+          esac
+        fi
+
+        [ -n "$raw_candidate" ] || continue
+        normalised=$(normalise_effort "$raw_candidate" 2>/dev/null) || continue
+        # ps flattens argv, so a valid-looking flag in prompt prose is
+        # indistinguishable from the real CLI flag. Conflicting values are
+        # therefore unknown; confidently choosing either one would be a lie.
+        [ -z "$candidate" ] || [ "$candidate" = "$normalised" ] || return 1
+        candidate="$normalised"
+      done
+      [ -n "$candidate" ] || return 1
+      printf '%s' "$candidate"
+      return 0
+    fi
+
+    pid="$ancestor_ppid"
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+if [ -z "$effort" ]; then
+  effort=$(effort_from_claude_ancestor 2>/dev/null) || effort=""
+fi
+[ -n "$effort" ] || effort="?"
 
 # === LINE 1: session info ===
 printf "${DIM}%s${RST}" "$model"
