@@ -100,3 +100,21 @@ pnpm -r build
 ```
 
 这次纠偏不扩大其它 notification 分类；`session_started` 的 ON/OFF 双态都持久化为 `model` 并到达 RuntimeRegistry。GitHub 计费墙仍是外部基础设施状态，未重跑失败 job，也未把定向绿色冒充 aggregate CI。
+
+## Exact-head CI 证据契约修订（2026-09-19）
+
+GitHub 额度恢复后，Lead 代为重跑 `35424960120`。该 run 在 `d97702f71` 完整执行，除 `Unit (teamlead 2 of 4)` 外其余实际 jobs 通过；`CI OK` 随上游失败而失败。teamlead shard 的 6 条断言归结为两个同源证据契约：
+
+- FLY-2749 的 mailbox partial-index 变化使 FLY-2139 自动 query-plan capture 中两个 temp B-tree 计数与 capture digest 过期；生成器仍证明所有热路径使用命名索引，未出现 bare scan。
+- FLY-2749 对 `flywheel-comm/src/db.ts` 新增 validated runner-stop declaration lookup 与 answered audit-only terminalization，但 FLY-2567 compatibility manifest 尚未记录这组 reviewed shared dependency bytes，后续 4 条 mutation test 因首个 stale member 连锁失败。
+
+最小修复仅同步 FLY-2139 generated evidence，以及 FLY-2567 manifest 的 `db.ts` hash 和逐项 rationale；没有修改业务代码或分类。聚焦回归：
+
+```
+pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/lead-token-savings-drift.test.ts \
+  src/__tests__/fly2139-query-plans.test.ts
+# 2 files, 19 tests PASS
+```
+
+该修订需要新的 commit、精确 HEAD code review 与 CI；不能用 `d97702f71` 的 review/CI 替代。
