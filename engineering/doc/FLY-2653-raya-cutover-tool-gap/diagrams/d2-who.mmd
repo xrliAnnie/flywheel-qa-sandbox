@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant F as Founder
+  participant L as Lead Tadashi
+  participant T as 割接工具 init
+  participant U as 更新程序 定时班车或成功的紧急部署
+  participant R as 标准 Raya Lead
+  F->>L: 授权行 cutover=90e433e8
+  L->>T: init --resume-from-failed 先 dry-run
+  T->>R: verify live 只读
+  T-->>L: 账本重建 cursor=preexisting
+  L->>L: 重投影 persona 占位
+  Note over U: 本单改 · 紧急部署成功后<br/>也顺带跑同一个 raya 段
+  U->>U: prestop 三道闸 + 安静检查
+  U->>R: 受控重启到 90e433e8
+  U-->>L: P5 回执 refused 等证据
+  L->>R: 文字探针 等回复 等 summary 轮
+  L->>T: proof collect
+  U-->>L: 下一班 P7 回执 v2 deployed

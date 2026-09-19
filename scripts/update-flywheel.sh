@@ -1015,7 +1015,19 @@ update_main() {
         log "raya shuttle: host capability absent — skipped"
       fi
       ;;
-    urgent) log "raya shuttle: skipped wake=urgent" ;;
+    urgent)
+      if [[ "${UPDATER_CYCLE_RESULT:-unknown}" == urgent_deployed ]]; then
+        if raya_host_capable; then
+          updater_raya_pass || true
+        else
+          RAYA_DEPLOY_STATE=not_configured
+          RAYA_DEPLOY_DETAIL=host-capability-absent
+          log "raya shuttle: host capability absent — skipped"
+        fi
+      else
+        log "raya shuttle: skipped wake=urgent result=${UPDATER_CYCLE_RESULT:-unknown}"
+      fi
+      ;;
     *) log "raya shuttle: skipped wake=unknown (fail closed)" ;;
   esac
   log "raya shuttle: ${RAYA_DEPLOY_STATE:-not_run} ${RAYA_DEPLOY_DETAIL:-}"

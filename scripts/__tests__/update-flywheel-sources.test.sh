@@ -347,6 +347,25 @@ fi
 
 reset_case
 printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_token migration-noop "$SHA1"
+(
+  trap - EXIT
+  eval "$PRODUCTION_RAYA_PASS_DEFINITION"
+  unset RAYA_DEPLOY_STATE RAYA_DEPLOY_DETAIL
+  update_main > "$TMP/missing-ledger-urgent.log" 2>&1
+  [[ "$UPDATER_WAKE_KIND" == urgent && "$UPDATER_CYCLE_RESULT" == urgent_deployed ]] \
+    && [[ "${RAYA_DEPLOY_STATE:-}" == not_configured && "${RAYA_DEPLOY_DETAIL:-}" == migration-ledger-absent ]] \
+    && [[ "$(rg -c migration-ledger-absent "$TMP/missing-ledger-urgent.log")" == 1 ]] \
+    && [[ ! -e "$RAYA_DEPLOY_LOCK_DIR" && ! -e "$RAYA_DEPLOY_RECEIPT" ]]
+)
+if [[ $? == 0 ]]; then
+  pass "successful urgent deploy runs the production Raya pass and missing ledger stays a no-op"
+else
+  fail "successful urgent deploy must run one side-effect-free Raya pass when its ledger is absent"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 RAYA_HOST_CAPABLE_RC=1
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(raya_count)" = 0 ] \
@@ -355,6 +374,20 @@ if [ "$rc" -eq 0 ] && [ "$(raya_count)" = 0 ] \
   pass "scheduled updater skips Raya silently on hosts without its canonical standard Lead"
 else
   fail "host capability gate ran or alerted Raya on an unrelated updater host (rc=$rc raya=$(raya_count) state=${RAYA_DEPLOY_STATE:-unset} detail=${RAYA_DEPLOY_DETAIL:-unset})"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_token host-absent "$SHA1"
+RAYA_HOST_CAPABLE_RC=1
+update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$UPDATER_CYCLE_RESULT" = urgent_deployed ] \
+  && [ "$(raya_count)" = 0 ] \
+  && [ "$RAYA_DEPLOY_STATE" = not_configured ] \
+  && [ "$RAYA_DEPLOY_DETAIL" = host-capability-absent ]; then
+  pass "successful urgent deploy still respects the Raya host capability gate"
+else
+  fail "urgent host capability gate drifted (rc=$rc result=${UPDATER_CYCLE_RESULT:-unset} raya=$(raya_count) state=${RAYA_DEPLOY_STATE:-unset} detail=${RAYA_DEPLOY_DETAIL:-unset})"
 fi
 
 reset_case
@@ -394,6 +427,18 @@ if [ "$rc" -eq 9 ] && [ "$(cat "$RAYA_CALLS")" = cycle ]; then
   pass "unknown wake kind fails closed, skips Raya, and preserves the Flywheel cycle rc"
 else
   fail "unknown wake kind ran Raya or changed rc (rc=$rc calls=$(cat "$RAYA_CALLS"))"
+fi
+
+saved_observation_record="$(declare -f updater_observation_record)"
+updater_observation_record() { printf '%s\n' "$*" > "$TMP/urgent-skip-observation"; }
+UPDATER_WAKE_KIND=urgent
+unset RAYA_DEPLOY_STATE RAYA_DEPLOY_DETAIL
+updater_observation_record_raya
+eval "$saved_observation_record"
+if grep -Fq 'raya external_repo raya-repo Raya skipped wake-out-of-scope ' "$TMP/urgent-skip-observation"; then
+  pass "skipped urgent cycles retain the wake-out-of-scope observation reason"
+else
+  fail "skipped urgent cycle observation reason drifted ($(cat "$TMP/urgent-skip-observation"))"
 fi
 
 if declare -F updater_fetch_origin_once >/dev/null 2>&1 \
@@ -563,10 +608,11 @@ SELF_SHIP_DEPLOY_CMD=stub_deploy_observe_claim update_main >/dev/null 2>&1; rc=$
 after_status="$(git -C "$FLYWHEEL_DIR" status --porcelain)"
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
   && grep -q '^call watched=0 claimed=2$' "$DEPLOY_CALLS" \
-  && [ "$(raya_count)" = 0 ] \
+  && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=urgent result=urgent_deployed$' "$RAYA_CALLS" \
   && [ -z "$before_status" ] && [ -z "$after_status" ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ]; then
-  pass "urgent batch claims before one deploy without dirtying checkout"
+  pass "urgent batch claims before one deploy, then runs one Raya pass without dirtying checkout"
 else
   fail "urgent claim/deploy drifted (rc=$rc calls=$(cat "$DEPLOY_CALLS") before=$before_status after=$after_status)"
 fi
