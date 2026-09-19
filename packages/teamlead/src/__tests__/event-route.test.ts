@@ -3007,25 +3007,26 @@ describe("Event route — EventFilter integration", () => {
 		});
 		await new Promise((r) => setTimeout(r, 150));
 
-		// The pure registration is audit-only; the actionable completion remains immediate.
-		expect(capturedEnvelopes.length).toBe(1);
-		const completedPayload = capturedEnvelopes[0]!.event;
+		// session_started carries the concrete handoff identity; completion is also immediate.
+		expect(capturedEnvelopes.length).toBe(2);
+		const completedPayload = capturedEnvelopes[1]!.event;
 		expect(completedPayload.filter_priority).toBe("high");
 		expect(completedPayload.notification_context).toContain("Chat");
 	});
 
-	it("session_started persists as audit-only without a Lead model wake", async () => {
+	it("session_started stays immediate because Lead handoff needs its execution id", async () => {
 		await postEvent({ event_id: "evt-started-audit" });
 		await new Promise((r) => setTimeout(r, 150));
 
-		expect(capturedEnvelopes).toHaveLength(0);
+		expect(capturedEnvelopes).toHaveLength(1);
+		expect(capturedEnvelopes[0]!.event.execution_id).toBe("exec-1");
 		expect(
 			(store as any).db.raw
 				.prepare(
 					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
 				)
 				.get("evt-started-audit"),
-		).toEqual({ delivery_disposition: "audit_only" });
+		).toEqual({ delivery_disposition: "model" });
 	});
 
 	it("session_failed → runtime.deliver called (high priority)", async () => {
@@ -3294,7 +3295,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		).toBeUndefined();
 	});
 
-	it("audits persisted session_started by default and restores exact delivery when disabled", async () => {
+	it("keeps persisted session_started immediate with savings enabled or disabled", async () => {
 		const postStarted = async (eventId: string, executionId: string) =>
 			fetch(`${baseUrl}/events`, {
 				method: "POST",
@@ -3318,6 +3319,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 			});
 
 		expect((await postStarted("evt-nf-on", "exec-nf-on")).status).toBe(200);
+		await new Promise((r) => setTimeout(r, 150));
 		expect(store.getSession("exec-nf-on")?.status).toBe("running");
 		expect(
 			(store as any).db.raw
@@ -3325,8 +3327,9 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
 				)
 				.get("evt-nf-on"),
-		).toEqual({ delivery_disposition: "audit_only" });
-		expect(capturedEnvelopes).toHaveLength(0);
+		).toEqual({ delivery_disposition: "model" });
+		expect(capturedEnvelopes).toHaveLength(1);
+		expect(capturedEnvelopes[0]!.event.execution_id).toBe("exec-nf-on");
 
 		expect(
 			store.applyScopedFlagValueChange({
@@ -3345,9 +3348,10 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		expect((await postStarted("evt-nf-off", "exec-nf-off")).status).toBe(200);
 		await new Promise((r) => setTimeout(r, 150));
 
-		expect(capturedEnvelopes).toHaveLength(1);
-		const payload = capturedEnvelopes[0]!.event;
+		expect(capturedEnvelopes).toHaveLength(2);
+		const payload = capturedEnvelopes[1]!.event;
 		expect(payload.event_type).toBe("session_started");
+		expect(payload.execution_id).toBe("exec-nf-off");
 		expect(payload.filter_priority).toBe("high");
 		// FLY-163: forum_channel field removed; chat_channel routes notification.
 		expect(payload.chat_channel).toBe("core-channel");

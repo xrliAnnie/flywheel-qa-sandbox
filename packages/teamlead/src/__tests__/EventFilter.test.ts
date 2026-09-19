@@ -205,7 +205,7 @@ describe("EventFilter", () => {
 });
 
 describe("routine event delivery disposition", () => {
-	it("audits session_started only after authoritative session registration", () => {
+	it("keeps session_started immediate after authoritative session registration", () => {
 		expect(
 			leadNotificationDecision(
 				"session_started",
@@ -216,8 +216,8 @@ describe("routine event delivery disposition", () => {
 				},
 			),
 		).toEqual({
-			disposition: "audit_only",
-			reason: "session_started_registered",
+			disposition: "model",
+			reason: "session_started_handoff_required",
 			policyVersion: "notification-v1",
 			proofRef: "session-event:started-1",
 		});

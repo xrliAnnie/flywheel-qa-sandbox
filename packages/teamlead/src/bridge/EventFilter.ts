@@ -326,8 +326,8 @@ export function leadNotificationDecision(
 		evidence.kind === "session_registered"
 	) {
 		return notificationDecision(
-			"audit_only",
-			"session_started_registered",
+			"model",
+			"session_started_handoff_required",
 			evidence.proofRef,
 		);
 	}

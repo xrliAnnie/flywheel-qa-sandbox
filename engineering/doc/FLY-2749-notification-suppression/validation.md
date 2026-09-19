@@ -35,7 +35,7 @@ node engineering/doc/FLY-2749-notification-suppression/verify-founder-html.mjs
 Lead 已明确豁免本次交接前托管成功要求，准许记录 DESIGN-HTML publish-failed 后 phase_design_complete + park。见 handoff.md 与 evidence/lead-closeout-decisions.json。托管/浏览器验证仍未完成；此处仅记录交接授权，不改写验证结论。
 
 ## 实现阶段证据（2026-09-18）
-- 代码根因修复沿用同一个 `lead_token_savings` 和 `audit_only`：可信普通阶段、已有 owner 的 review/PR 阶段、已注册 session start、REVIEW gate，以及具备 exact completion declaration 的 runner-stop `done` 不再进入 Lead model adapter。flag OFF/读取失败、非 REVIEW gate、普通 ASK、blocked stop、`session_failed` 和未知证据维持原 model 路径。
+- 代码根因修复沿用同一个 `lead_token_savings` 和 `audit_only`：可信普通阶段、已有 owner 的 review/PR 阶段、REVIEW gate，以及具备 exact completion declaration 的 runner-stop `done` 不再进入 Lead model adapter。flag OFF/读取失败、`session_started`、非 REVIEW gate、普通 ASK、blocked stop、`session_failed` 和未知证据维持原 model 路径。
 - CommDB canonical row 新增 additive notification decision 字段；旧行 migration 默认 `delivery_disposition='model'`。owner-fenced reclassification 仅发生在 adapter handoff 前，fresh mixed batch 中 quiet member 被移出而 urgent member照常投递。REVIEW row 保持 pending/answerable，reviewer response 后才终态化；抑制本身不写 response 或 `report_ack`。
 - consumer sweep：两个 Lead claim 入口、queue head/window、in-flight limit 与 deliverable count 都过滤 `audit_only`；runner/bridge lane 不受影响。权威 pending-question projection仍保留 REVIEW，避免静默等于回答。schema/query-plan/混合批次的定向测试覆盖这些边界。
 - 没有新建 notification relay。实现复用既有 lifecycle/disposition receipt 责任边界；`review-followups.md` 的 11 条 advisory 全部保留给 PR Follow-ups，未把未实施项写成已解决。
@@ -77,3 +77,26 @@ cmp engineering/doc/FLY-2749-notification-suppression/evidence/baseline-usage.js
 2026-09-19T05:02:16Z 的只读 live census 再确认生产 `lead_token_savings` effective=true，但生产 CommDB 尚无本分支新增 disposition columns；因此这是部署前证据。实现节点不部署、不发真机 founder/ASK/failure probe，也不伪造上线后连续 24h 输出。相同脚本的部署后 24h 对比、四类紧急事件时间戳、两 vendor model-call=0 与真实 receipt 联结由冻结 head 的 QA/上线后观察完成。
 
 按 Lead handoff，未运行 `pnpm test:packages:run` 或全量 test suite；不能把上述定向绿色表述为 aggregate CI 或生产验收。
+
+## Exact-head CI 纠偏（2026-09-19）
+
+PR #1275 的首个 exact-head run `35423909603` 在 `40c6502d4` 结束为 failure：7 个 job 成功，6 个 job 因 GitHub 账户 billing/spending limit 在零步骤失败，另 3 条实际 assertion failure 都来自旧集成测试仍要求 `session_started` 到达 RuntimeRegistry。追查证明这不是应删除的旧断言：Lead 的替身/新体交接依赖该事件在同一轮携带 issue 与新 execution id；audit history 不注入上下文，ChatThreadCreator 的频道链接也不携带 execution id 或唤醒 Lead。Lead 对问题 `28ec08bf-60cf-4315-9e8d-be2b78b78638` 裁定 `session_started` 保持 immediate，不在本单新造替代事件。
+
+红绿回执：先把 focused route 断言改成 `model`，旧实现收到 `audit_only`，1/1 FAIL；最小修复只把权威注册后的分类改为 `model:session_started_handoff_required`。随后：
+
+```
+pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/EventFilter.test.ts \
+  src/__tests__/event-route.test.ts \
+  src/__tests__/session-lifecycle.integration.test.ts \
+  src/__tests__/bridge-e2e.test.ts
+# 4 files, 138 tests PASS
+
+pnpm lint
+# PASS, zero errors; untouched-file advisories remain
+
+pnpm -r build
+# PASS, all 24 runnable workspace packages
+```
+
+这次纠偏不扩大其它 notification 分类；`session_started` 的 ON/OFF 双态都持久化为 `model` 并到达 RuntimeRegistry。GitHub 计费墙仍是外部基础设施状态，未重跑失败 job，也未把定向绿色冒充 aggregate CI。
