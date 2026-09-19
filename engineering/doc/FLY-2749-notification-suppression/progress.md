@@ -1,14 +1,14 @@
 ---
 issue: FLY-2749
 phase: implement
-phaseCursor: 1/7
-updated: 2026-09-18T23:41:14.886Z
-nextStep: "T2/T3: persist authoritative mailbox audit decisions and suppress
-  REVIEW gates before adapter handoff"
+phaseCursor: 4/7
+updated: 2026-09-19T00:13:32.016Z
+nextStep: "T6/T7: verify mailbox migrations, consumer projections, statistics
+  evidence, and aggregate gates"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
-**phase**: implement (1/7)
-**next**: T2/T3: persist authoritative mailbox audit decisions and suppress REVIEW gates before adapter handoff
+**phase**: implement (4/7)
+**next**: T6/T7: verify mailbox migrations, consumer projections, statistics evidence, and aggregate gates
