@@ -26,6 +26,10 @@ fi
 # fallback. Idempotent on the `.zshrc` path and aligned with Lead carriers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
+WATCHER_LABEL="com.flywheel.cmux-watcher"
+WATCHER_TARGET="gui/$(id -u)/${WATCHER_LABEL}"
+WATCHER_PLIST="${FLYWHEEL_CMUX_WATCHER_PLIST:-$HOME/Library/LaunchAgents/${WATCHER_LABEL}.plist}"
+
 # ── Run watcher or guard the launchd job ──
 #
 # FLY-177: under launchd, `exec` so the KeepAlive-managed PID is the real
@@ -58,12 +62,25 @@ if [[ "${FLYWHEEL_CMUX_SUPERVISED:-0}" == "1" ]]; then
     fi
     exit 0
   fi
+  LAUNCHCTL_STATE=""
+  LAUNCHCTL_RC=0
+  LAUNCHCTL_STATE=$("$SELF_DIR/lib/bounded-run.sh" 5 launchctl print "$WATCHER_TARGET" 2>/dev/null) \
+    || LAUNCHCTL_RC=$?
+  FLYWHEEL_CMUX_START_REASON="unknown"
+  FLYWHEEL_CMUX_PREVIOUS_EXIT_CODE="unknown"
+  FLYWHEEL_CMUX_PREVIOUS_TERMINATING_SIGNAL="unknown"
+  if [ "$LAUNCHCTL_RC" -eq 0 ]; then
+    VALUE=$(printf '%s\n' "$LAUNCHCTL_STATE" | awk -F' = ' '/^[[:space:]]*immediate reason = / { print $2; exit }')
+    [ -n "$VALUE" ] && FLYWHEEL_CMUX_START_REASON="$VALUE"
+    VALUE=$(printf '%s\n' "$LAUNCHCTL_STATE" | awk -F' = ' '/^[[:space:]]*last exit code = / { print $2; exit }')
+    [ -n "$VALUE" ] && FLYWHEEL_CMUX_PREVIOUS_EXIT_CODE="$VALUE"
+    VALUE=$(printf '%s\n' "$LAUNCHCTL_STATE" | awk -F' = ' '/^[[:space:]]*last terminating signal = / { print $2; exit }')
+    [ -n "$VALUE" ] && FLYWHEEL_CMUX_PREVIOUS_TERMINATING_SIGNAL="$VALUE"
+  fi
+  export FLYWHEEL_CMUX_START_REASON FLYWHEEL_CMUX_PREVIOUS_EXIT_CODE \
+    FLYWHEEL_CMUX_PREVIOUS_TERMINATING_SIGNAL
   exec "$SYNC_SCRIPT" --watch >> "$LOG" 2>&1
 fi
-
-WATCHER_LABEL="com.flywheel.cmux-watcher"
-WATCHER_TARGET="gui/$(id -u)/${WATCHER_LABEL}"
-WATCHER_PLIST="${FLYWHEEL_CMUX_WATCHER_PLIST:-$HOME/Library/LaunchAgents/${WATCHER_LABEL}.plist}"
 
 if launchctl print "$WATCHER_TARGET" >/dev/null 2>&1; then
   exit 0

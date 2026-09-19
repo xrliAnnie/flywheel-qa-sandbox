@@ -1134,14 +1134,15 @@ read_runner_tmux_exec_inventory() {
   RUNNER_TMUX_STATE="indeterminate"
   RUNNER_TMUX_EXEC_ROWS=""
   raw=$(tmux list-windows -a \
-    -F $'#{session_name}\t#{window_id}\t#{@flywheel_exec_id}' 2>/dev/null) || return 1
+    -f '#{!=:#{@flywheel_exec_id},}' \
+    -F '#{session_name}|#{window_id}|#{@flywheel_exec_id}' 2>/dev/null) || return 1
   parsed=$(printf '%s\n' "$raw" | python3 -c '
 import re,sys
 seen={}
 for line in sys.stdin.read().splitlines():
     if not line:
         continue
-    parts=line.split("\t")
+    parts=line.split("|")
     if len(parts) != 3:
         raise SystemExit(1)
     session,wid,execution_id=parts
@@ -1170,13 +1171,14 @@ read_runner_tmux_node_inventory() {
   RUNNER_NODE_TMUX_STATE="indeterminate"
   RUNNER_NODE_TMUX_ROWS=""
   raw=$(tmux list-windows -a \
-    -F $'#{session_name}\t#{window_id}\t#{window_name}\t#{@flywheel_exec_id}' 2>/dev/null) || return 1
+    -f '#{!=:#{@flywheel_exec_id},}' \
+    -F '#{session_name}|#{window_id}|#{window_name}|#{@flywheel_exec_id}' 2>/dev/null) || return 1
   parsed=$(printf '%s\n' "$raw" | python3 -c '
 import re,sys
 seen={}
 for line in sys.stdin.read().splitlines():
     if not line: continue
-    parts=line.split("\t")
+    parts=line.split("|")
     if len(parts) != 4: raise SystemExit(1)
     session,wid,title,execution_id=parts
     if not session or not re.fullmatch(r"@[0-9]+",wid): raise SystemExit(1)
@@ -1474,7 +1476,7 @@ PY
         ;;
       *) return 1 ;;
     esac
-  done < "$NODE_REGISTRY"
+  done < <(cat "$NODE_REGISTRY" 2>/dev/null || true)
   awk -F'|' -v t="$mirror_title" 'NR > 1 && $2 == t {found=1} END {exit(found ? 0 : 1)}' \
     "$CLEANUP_SNAPSHOT" 2>/dev/null && return 1
   return 0
@@ -1785,8 +1787,11 @@ terminal_teardown_source_transaction() {
   workspace_identity_matches "$ref" "$mirror_title" "$uuid" || return 1
   observed=$(tmux display-message -p -t "=${session}:${wid}" \
     '#{session_name}|#{window_id}|#{window_name}|#{@flywheel_exec_id}|#{pane_dead}' 2>/dev/null) || return 1
-  [[ "$observed" == "$session|$wid|$mirror_title|$exec_id|0" \
-      || "$observed" == "$session|$wid|$mirror_title|$exec_id|1" ]] || return 1
+  # A terminal roster row can race a still-live canonical Runner during a
+  # large registry catch-up. Exact identity is not sufficient teardown
+  # authority while its pane is alive; only remain-on-exit dead-pane evidence
+  # may advance the source-close transaction.
+  [[ "$observed" == "$session|$wid|$mirror_title|$exec_id|1" ]] || return 1
   terminal_teardown_roster_still_exact "$exec_id" "$terminal_hash" || return 1
   node_mirror_has_unique_execution_owner "$exec_id" "$mirror_title" || return 1
   [[ "$(tmux_server_generation 2>/dev/null || true)" == "$tmux_generation" \
@@ -6434,6 +6439,7 @@ recover_view_construction() {
   # and is never mutated by this cleanup.
   local requested_view="$1" wal line fields
   local version generation state nonce view source wid stage_sid placeholder stage current_generation expected_title
+  local claim_sessions generation_after_claim_census
   local generation_socket generation_pid generation_started
   wal=$(_view_wal_path "$requested_view")
   [[ -f "$wal" ]] || return 0
@@ -6511,6 +6517,20 @@ recover_view_construction() {
       _write_view_wal "$wal" "$generation" claimed_complete "$nonce" "$view" \
         "$source" "$wid" "$stage_sid" "$placeholder" || return 1
       rm -f "$wal" 2>/dev/null || return 1
+      return 0
+    fi
+    # rename-session may have succeeded immediately before the watcher died,
+    # which is why claim_intent normally preserves uncertainty. When one
+    # successful session census proves that neither the canonical name nor the
+    # nonce-derived stage exists, the WAL is the only remaining object. Re-pin
+    # the tmux generation after that census before retiring the inert marker.
+    claim_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
+    if ! printf '%s\n' "$claim_sessions" \
+        | awk -v v="$view" -v s="$stage" '$0 == v || $0 == s { found=1 } END { exit(found ? 0 : 1) }'; then
+      generation_after_claim_census=$(tmux_server_generation) || return 1
+      [[ "$generation_after_claim_census" == "$generation" ]] || return 1
+      rm -f "$wal" 2>/dev/null || return 1
+      log "[audit] retired entity-free claim_intent view WAL view=$view"
       return 0
     fi
     return 1
@@ -9228,17 +9248,29 @@ prepare_linked_view_state() {
   local phase="${1:-all}"
   case "$phase" in
     pre|all)
-      tmux_server_generation >/dev/null || return 1
-      recover_all_view_constructions || return 1
+      tmux_server_generation >/dev/null || {
+        log "WARN: linked-view state preparation failed phase=$phase step=tmux-generation"
+        return 1
+      }
+      recover_all_view_constructions || {
+        log "WARN: linked-view state preparation failed phase=$phase step=construction-recovery"
+        return 1
+      }
       # Keeper recovery consumes no cmux receipt and must precede restored
       # recovery so an escrow residue is visible without letting prepared
       # ledger consumers run first.
-      reconcile_keeper_inventory || return 1
+      reconcile_keeper_inventory || {
+        log "WARN: linked-view state preparation failed phase=$phase step=keeper-inventory"
+        return 1
+      }
       ;;
   esac
   case "$phase" in
     post|all)
-      reconcile_prepared_ledger || return 1
+      reconcile_prepared_ledger || {
+        log "WARN: linked-view state preparation failed phase=$phase step=prepared-ledger"
+        return 1
+      }
       ;;
   esac
 }
@@ -9269,7 +9301,7 @@ _cmux_log_episode_state_valid() {
   while IFS='|' read -r kind title evidence last suppressed extra || [[ -n "$kind$title$evidence$last$suppressed${extra:-}" ]]; do
     [[ -n "$kind$title$evidence$last$suppressed" && -z "${extra:-}" ]] || return 1
     case "$kind" in
-      view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred) ;;
+      view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred|cleanup-pending-ttl-reaped|watcher-started) ;;
       *) return 1 ;;
     esac
     case "$title" in *'|'*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
@@ -9309,7 +9341,7 @@ log_cmux_episode() {
     return 0
   fi
   case "$kind" in
-    view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred) ;;
+    view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred|cleanup-pending-ttl-reaped|watcher-started) ;;
     *) log "$message"; return 0 ;;
   esac
   case "$title" in ''|*'|'*|*$'\t'*|*$'\n'*|*$'\r'*) log "$message"; return 0 ;; esac
@@ -9362,14 +9394,22 @@ clear_cmux_log_episodes_for_title() {
 }
 
 gc_cmux_log_episodes() {
-  local active_titles="$1" tmp active
+  local active_titles="$1" tmp active now retention=2592000
   mutator_lease_owned_by_self || return 0
   [[ -f "$CMUX_LOG_EPISODE_STATE" ]] || return 0
   _cmux_log_episode_state_valid || return 1
   tmp=$(mktemp "${CMUX_LOG_EPISODE_STATE}.XXXX" 2>/dev/null) || return 1
   active=$(mktemp "${CMUX_LOG_EPISODE_STATE}.active.XXXX" 2>/dev/null) || { rm -f "$tmp"; return 1; }
+  now=$(date +%s) || { rm -f "$tmp" "$active"; return 1; }
   printf '%s\n' "$active_titles" | sed '/^$/d' | sort -u > "$active" || { rm -f "$tmp" "$active"; return 1; }
-  awk -F'|' 'NR == FNR { live[$1]=1; next } ($2 in live) { print }' "$active" \
+  awk -F'|' -v now="$now" -v retention="$retention" '
+    NR == FNR { live[$1]=1; next }
+    $1 == "cleanup-pending-ttl-reaped" || $1 == "watcher-started" {
+      if (now - $4 <= retention) print
+      next
+    }
+    ($2 in live) { print }
+  ' "$active" \
     "$CMUX_LOG_EPISODE_STATE" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$active"; return 1; }
   rm -f "$active"
   mv "$tmp" "$CMUX_LOG_EPISODE_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
@@ -10130,6 +10170,7 @@ cleanup_stale_workspaces() {
   local linked_sessions
   linked_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" || true)
   [[ -z "$linked_sessions" ]] && return 0
+  cleanup_owner_snapshot_load >/dev/null 2>&1 || true
 
   while read -r sess; do
     watcher_mutation_latch_clear || break
@@ -10141,7 +10182,7 @@ cleanup_stale_workspaces() {
     is_pane_alive "$agent_name" || pane_rc=$?
     if [[ "$pane_rc" == "1" ]]; then
       log "Cleaning stale: $sess (tmux window '$agent_name' gone)"
-      mark_for_cleanup "$agent_name" "$(date +%s)"
+      mark_for_cleanup "$agent_name" "$(date +%s)" reuse-owner-snapshot
     elif [[ "$pane_rc" != "0" ]]; then
       log "WARN: liveness unavailable for $agent_name; stale cleanup deferred"
     fi
@@ -10779,17 +10820,124 @@ register_hooks_on_new_sessions() {
   done < <(printf '%s\n' "$sessions")
 }
 
+CLEANUP_OWNER_SNAPSHOT_STATE="unknown"
+CLEANUP_OWNER_SNAPSHOT_TITLES=""
+CLEANUP_LEAD_SNAPSHOT_STATE="unknown"
+CLEANUP_LEAD_SNAPSHOT_TITLES=""
+
+cleanup_pending_ttl_seconds() {
+  local days="${FLYWHEEL_CMUX_CLEANUP_PENDING_TTL_DAYS:-7}"
+  case "$days" in ''|*[!0-9]*) days=7 ;; esac
+  if (( ${#days} > 3 || 10#$days < 1 || 10#$days > 365 )); then
+    days=7
+  fi
+  printf '%s\n' "$((10#$days * 86400))"
+}
+
+cleanup_owner_snapshot_load() {
+  CLEANUP_OWNER_SNAPSHOT_STATE="unknown"
+  CLEANUP_OWNER_SNAPSHOT_TITLES=""
+  CLEANUP_LEAD_SNAPSHOT_STATE="unknown"
+  CLEANUP_LEAD_SNAPSHOT_TITLES=""
+  if [[ -f "$NODE_REGISTRY" && ! -L "$NODE_REGISTRY" && -r "$NODE_REGISTRY" ]] \
+      && node_registry_valid; then
+    CLEANUP_OWNER_SNAPSHOT_TITLES=$(awk -F'|' '$11 != "-" { print $11 }' \
+      "$NODE_REGISTRY" 2>/dev/null | sort -u) || return 2
+    CLEANUP_OWNER_SNAPSHOT_STATE="ok"
+  fi
+  if [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
+    CLEANUP_LEAD_SNAPSHOT_TITLES=$(printf '%s\n' "$LEAD_ROSTER_ROWS" \
+      | awk -F'|' 'NF >= 3 && $3 != "" { print $3 }' | sort -u) || return 2
+    CLEANUP_LEAD_SNAPSHOT_STATE="ok"
+  fi
+  [[ "$CLEANUP_OWNER_SNAPSHOT_STATE" == "ok" \
+      && "$CLEANUP_LEAD_SNAPSHOT_STATE" == "ok" ]]
+}
+
+cleanup_title_format_valid() {
+  local wname="$1"
+  local LC_ALL=C
+  case "$wname" in ''|*'|'*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+  [[ ${#wname} -le 247 ]]
+}
+
+cleanup_title_admission_from_snapshot() {
+  local wname="$1"
+  cleanup_title_format_valid "$wname" || return 1
+  case "$wname" in *-realtest-*) return 1 ;; esac
+  if [[ "$CLEANUP_OWNER_SNAPSHOT_STATE" == "ok" ]] \
+      && printf '%s\n' "$CLEANUP_OWNER_SNAPSHOT_TITLES" \
+        | awk -v n="$wname" '$0 == n { found=1 } END { exit(found ? 0 : 1) }'; then
+    return 0
+  fi
+  if [[ "$CLEANUP_LEAD_SNAPSHOT_STATE" == "ok" ]] \
+      && printf '%s\n' "$CLEANUP_LEAD_SNAPSHOT_TITLES" \
+        | awk -v n="$wname" '$0 == n { found=1 } END { exit(found ? 0 : 1) }'; then
+    return 0
+  fi
+  [[ "$CLEANUP_OWNER_SNAPSHOT_STATE" == "ok" \
+      && "$CLEANUP_LEAD_SNAPSHOT_STATE" == "ok" ]] || return 2
+  return 1
+}
+
 mark_for_cleanup() {
   # Record a window name as pending cleanup with the timestamp of the exit event.
   # Idempotent: only adds if no pending entry exists for this window name.
-  local wname="$1" ts="$2" round="${CMUX_ADDITIVE_ROUND_ID:-0-0}" round_epoch round_sequence
-  [[ -z "$wname" ]] && return 0
+  local wname="$1" ts="$2" snapshot_mode="${3:-load-owner-snapshot}"
+  local round="${CMUX_ADDITIVE_ROUND_ID:-0-0}" round_epoch round_sequence admission_rc=0
+  if [[ "$snapshot_mode" != "reuse-owner-snapshot" ]]; then
+    cleanup_owner_snapshot_load >/dev/null 2>&1 || true
+  fi
+  cleanup_title_admission_from_snapshot "$wname" || admission_rc=$?
+  case "$admission_rc" in
+    0) ;;
+    1) log "Cleanup marker rejected without eligible node owner: $wname"; return 0 ;;
+    *) log "WARN: cleanup marker admission unavailable; marker not queued: $wname"; return 0 ;;
+  esac
   touch "$CLEANUP_PENDING"
   awk -F'|' -v n="$wname" '$1 == n {found=1} END {exit(found ? 0 : 1)}' "$CLEANUP_PENDING" 2>/dev/null || {
     _additive_round_id_valid "$round" || round=0-0
     round_epoch="${round%%-*}"; round_sequence="${round#*-}"
     printf '%s|%s|%s|%s\n' "$wname" "$ts" "$round_epoch" "$round_sequence" >> "$CLEANUP_PENDING"
   }
+}
+
+prune_cleanup_pending() {
+  [[ -f "$CLEANUP_PENDING" ]] || return 0
+  local now ttl tmp raw wname ts marker_round_epoch marker_round_sequence marker_extra
+  local admission_rc=0
+  now=$(date +%s) || return 1
+  ttl=$(cleanup_pending_ttl_seconds) || return 1
+  cleanup_owner_snapshot_load >/dev/null 2>&1 || true
+  tmp=$(mktemp "${CLEANUP_PENDING}.XXXX" 2>/dev/null) || return 1
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    IFS='|' read -r wname ts marker_round_epoch marker_round_sequence marker_extra < <(printf '%s\n' "$raw")
+    if ! cleanup_title_format_valid "$wname"; then
+      printf '%s\n' "$raw" >> "$tmp" || { rm -f "$tmp"; return 1; }
+      continue
+    fi
+    if [[ -z "$ts" || "$ts" == *[!0-9]* || ${#ts} -gt 18 \
+        || -n "$marker_extra" \
+        || ( -n "$marker_round_epoch" && -z "$marker_round_sequence" ) \
+        || ( -z "$marker_round_epoch" && -n "$marker_round_sequence" ) \
+        || "$marker_round_epoch$marker_round_sequence" == *[!0-9]* ]]; then
+      printf '%s\n' "$raw" >> "$tmp" || { rm -f "$tmp"; return 1; }
+      continue
+    fi
+    if (( 10#$now >= 10#$ts && 10#$now - 10#$ts >= 10#$ttl )); then
+      log_cmux_episode cleanup-pending-ttl-reaped "cleanup:${wname}" \
+        "marker=${raw}|ttl=${ttl}" \
+        "Cleanup pending TTL reaped marker-only state: $wname age=$((10#$now - 10#$ts))s" || true
+      continue
+    fi
+    admission_rc=0
+    cleanup_title_admission_from_snapshot "$wname" || admission_rc=$?
+    case "$admission_rc" in
+      0|2) printf '%s\n' "$raw" >> "$tmp" || { rm -f "$tmp"; return 1; } ;;
+      1) log "Cleanup pending pruned without eligible node owner: $wname" ;;
+    esac
+  done < "$CLEANUP_PENDING"
+  mv "$tmp" "$CLEANUP_PENDING" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
 cleanup_event_source_allowed() {
@@ -10814,6 +10962,19 @@ process_pending_cleanups() {
   #   - else if < CLEANUP_DELAY_SECONDS since exit → keep the entry
   #   - else → cleanup_workspace_for + drop the entry
   if [[ ! -f "$CLEANUP_PENDING" ]]; then
+    cleanup_snapshot_stall_observe 0 0 || true
+    return 0
+  fi
+
+  if ! watcher_mutation_latch_clear; then
+    log "WARN: cleanup-pending pre-prune skipped after mutator authority loss"
+    return 0
+  fi
+  if ! prune_cleanup_pending; then
+    log "WARN: cleanup-pending pre-prune unavailable; original queue preserved"
+  fi
+  if [[ ! -s "$CLEANUP_PENDING" ]]; then
+    rm -f "$CLEANUP_PENDING"
     cleanup_snapshot_stall_observe 0 0 || true
     return 0
   fi
@@ -10951,6 +11112,7 @@ _drain_file() {
   # acceptable: events drain within 15s of firing, and replay after crash still
   # assigns a meaningful (though slightly-late) timestamp.
   local now raw remainder="${source_file}.remaining.$$" interrupted=0
+  local cleanup_owner_snapshot_ready=0
   now=$(date +%s)
   rm -f "$remainder" 2>/dev/null || true
 
@@ -10998,7 +11160,11 @@ _drain_file() {
         [[ -z "$wname" ]] && continue
         [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
         cleanup_event_source_allowed "$session" "$wname" || continue
-        mark_for_cleanup "$wname" "$now"
+        if [[ "$cleanup_owner_snapshot_ready" -eq 0 ]]; then
+          cleanup_owner_snapshot_load >/dev/null 2>&1 || true
+          cleanup_owner_snapshot_ready=1
+        fi
+        mark_for_cleanup "$wname" "$now" reuse-owner-snapshot
         ;;
       register)
         local session="$arg1"
@@ -11031,7 +11197,11 @@ _drain_file() {
         [[ -z "$wname" ]] && continue
         [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
         cleanup_event_source_allowed "$session" "$wname" || continue
-        mark_for_cleanup "$wname" "$now"
+        if [[ "$cleanup_owner_snapshot_ready" -eq 0 ]]; then
+          cleanup_owner_snapshot_load >/dev/null 2>&1 || true
+          cleanup_owner_snapshot_ready=1
+        fi
+        mark_for_cleanup "$wname" "$now" reuse-owner-snapshot
         ;;
     esac
   done < "$source_file"
@@ -11056,12 +11226,20 @@ cleanup_stale_conservative() {
   linked_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" || true)
   [[ -z "$linked_sessions" ]] && return 0
 
-  local now
+  local now admission_rc=0
   now=$(date +%s)
   touch "$STALE_STATE"
+  cleanup_owner_snapshot_load >/dev/null 2>&1 || true
 
   while read -r sess; do
     local agent_name="${sess#"${VIEW_PREFIX}"}" pane_rc=0
+    admission_rc=0
+    cleanup_title_admission_from_snapshot "$agent_name" || admission_rc=$?
+    case "$admission_rc" in
+      0) ;;
+      1) drain_stale_state_row "$agent_name"; continue ;;
+      *) continue ;;
+    esac
     is_pane_alive "$agent_name" || pane_rc=$?
     if [[ "$pane_rc" == "1" ]]; then
       # FLY-129 Phase 5 (Codex R1 MEDIUM fix): replace `grep "^name|"` with
@@ -11074,7 +11252,7 @@ cleanup_stale_conservative() {
         echo "${agent_name}|${now}" >> "$STALE_STATE"
       elif (( now - first_stale >= CONSERVATIVE_CLEANUP_SECONDS )); then
         log "Conservative cleanup: $sess (stale for $((now - first_stale))s)"
-        mark_for_cleanup "$agent_name" "$first_stale"
+        mark_for_cleanup "$agent_name" "$first_stale" reuse-owner-snapshot
         # drain_stale_state_row uses the same awk -F'|' literal compare
         # (Phase 5). Centralizes the "remove this agent from STALE_STATE"
         # operation so a future regex-safety fix only has to land there.
@@ -12404,12 +12582,15 @@ watch_loop() {
         fi
       fi
       [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || drain_events
-      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || process_pending_cleanups
-      # FLY-685: drain close_runner's close-request markers → immediate pin removal.
-      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || process_close_requests
+      # Every fourth healthy tick repairs/rebuilds live runner views before
+      # spending time on historical cleanup markers. Event drain remains first
+      # so ordinary create hooks keep their sub-tick fast path.
       if [[ "$WATCHER_AUTHORITY_LOST" != "1" ]] && (( tick % 4 == 0 )); then
         sync_additive
       fi
+      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || process_pending_cleanups
+      # FLY-685: drain close_runner's close-request markers → immediate pin removal.
+      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || process_close_requests
       sleep_seconds=15
     else
       sleep_seconds=$(next_sleep_seconds "$CMUX_HEALTH_FAIL_COUNT")
@@ -12418,9 +12599,27 @@ watch_loop() {
   done
 }
 
+# Bound launchd-derived text again at the state-file trust boundary. The
+# wrapper is not the only way tests/operators can invoke watch_main, so the
+# durable episode must not trust its environment to be delimiter-safe.
+sanitize_watcher_start_component() {
+  local value="$1"
+  value=$(printf '%s' "$value" | LC_ALL=C tr -cd '[:print:]' | tr '|' '/')
+  value=$(printf '%s' "$value" | cut -c1-64)
+  [[ -n "$value" ]] || value="unknown"
+  printf '%s\n' "$value"
+}
+
 # FLY-129: --watch dispatcher body. Wrapped in a function so we can use `local`
 # without falling foul of the case-statement scope.
 watch_main() {
+  local start_reason previous_exit previous_signal start_target
+  start_reason=$(sanitize_watcher_start_component "${FLYWHEEL_CMUX_START_REASON:-unknown}")
+  previous_exit=$(sanitize_watcher_start_component "${FLYWHEEL_CMUX_PREVIOUS_EXIT_CODE:-unknown}")
+  previous_signal=$(sanitize_watcher_start_component "${FLYWHEEL_CMUX_PREVIOUS_TERMINATING_SIGNAL:-unknown}")
+  start_target="reason=${start_reason};exit=${previous_exit};signal=${previous_signal}"
+  log_cmux_episode watcher-started "$start_target" "$start_target" \
+    "Watcher startup evidence: $start_target" || true
   log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
   # Publish new-generation evidence immediately so restart/recovery can prove
   # the bootstrapped owner is scanning without waiting through the first 15s.
