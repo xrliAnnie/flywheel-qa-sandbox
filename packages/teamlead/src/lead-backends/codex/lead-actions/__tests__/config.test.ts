@@ -38,6 +38,27 @@ describe("parseLeadActionsConfig", () => {
 		});
 		expect(cfg.outboundMode).toBe("direct");
 		expect(cfg.bridgeUrl).toBeUndefined();
+		expect(cfg.attachmentIdentityDigest).toBeUndefined();
+	});
+
+	it("accepts the canonical attachment identity without reading the carrier claim", () => {
+		const cfg = parseLeadActionsConfig({
+			...baseEnv(),
+			FLYWHEEL_PROJECTS_FILE: "/registry/projects.json",
+			FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "PRIVATE_CLAIM",
+		});
+		expect(cfg.attachmentIdentityDigest).toBe("a".repeat(64));
+		expect(cfg).not.toHaveProperty("carrierClaim");
+	});
+
+	it("rejects malformed attachment identity digests", () => {
+		expect(() =>
+			parseLeadActionsConfig({
+				...baseEnv(),
+				FLYWHEEL_LEAD_IDENTITY_DIGEST: "short",
+			}),
+		).toThrow(/identity digest/);
 	});
 
 	it("lists ALL missing required vars at once (fail-loud)", () => {

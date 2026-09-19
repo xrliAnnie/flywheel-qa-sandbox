@@ -29,6 +29,296 @@ const knownMime = new Set([
 	"text/plain",
 	"application/json",
 ]);
+
+export type DiscordInboundAttachmentFailureReason =
+	| "scope_denied"
+	| "producer_identity_missing"
+	| "invalid_metadata"
+	| "unsupported_type"
+	| "too_large"
+	| "not_found"
+	| "fetch_unavailable"
+	| "timeout"
+	| "invalid_content"
+	| "carrier_expired"
+	| "transport_unavailable"
+	| "busy";
+
+export class DiscordInboundAttachmentError extends Error {
+	constructor(public readonly reason: DiscordInboundAttachmentFailureReason) {
+		super("discord_inbound_attachment_unavailable");
+		this.name = "DiscordInboundAttachmentError";
+	}
+}
+
+const inboundAttachmentSchema = z.object({
+	id: snowflake,
+	size: z
+		.number()
+		.int()
+		.min(0)
+		.max(25 * 1024 * 1024),
+	url: z.string().url().max(4096),
+	content_type: z.string().min(1).max(128),
+});
+const inboundMessageSchema = z.object({
+	id: snowflake,
+	channel_id: snowflake,
+	attachments: z.array(inboundAttachmentSchema).max(10),
+});
+const inboundLimits = new Map<string, number>([
+	["image/png", 5 * 1024 * 1024],
+	["image/jpeg", 5 * 1024 * 1024],
+	["image/webp", 5 * 1024 * 1024],
+	["text/plain", 32 * 1024],
+	["text/plain;charset=utf-8", 32 * 1024],
+]);
+
+function normalizeInboundMime(value: string): string | undefined {
+	const [rawType, ...parameters] = value
+		.toLowerCase()
+		.split(";")
+		.map((part) => part.trim());
+	if (!rawType) return undefined;
+	if (rawType !== "text/plain")
+		return parameters.length === 0 && inboundLimits.has(rawType)
+			? rawType
+			: undefined;
+	if (parameters.length === 0) return rawType;
+	if (
+		parameters.length === 1 &&
+		/^charset\s*=\s*(?:utf-8|utf8)$/.test(parameters[0]!)
+	)
+		return "text/plain;charset=utf-8";
+	return undefined;
+}
+
+function inboundFailure(reason: DiscordInboundAttachmentFailureReason) {
+	return new DiscordInboundAttachmentError(reason);
+}
+
+/**
+ * Receipt-bound inbound policy layered beside the legacy attachment reader.
+ * The caller owns mailbox/carrier/channel scope; this primitive owns the exact
+ * Discord lookup, allowlisted CDN transfer, and narrow MIME/byte policy.
+ */
+export async function fetchInboundDiscordAttachment(options: {
+	threadId: string;
+	messageId: string;
+	attachmentId: string;
+	botToken: string;
+	secrets: readonly string[];
+	signal: AbortSignal;
+	assertCurrent(): void | Promise<void>;
+	expected: { mimeType: string; sizeBytes: number };
+	fetchImpl?: typeof fetch;
+}): Promise<{ data: Buffer; mimeType: string }> {
+	const timeout = new AbortController();
+	const signal = AbortSignal.any([options.signal, timeout.signal]);
+	const timer = setTimeout(() => timeout.abort(), 15000);
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const current = async () => {
+		if (timeout.signal.aborted) throw inboundFailure("timeout");
+		if (options.signal.aborted) throw inboundFailure("scope_denied");
+		await options.assertCurrent();
+		if (timeout.signal.aborted) throw inboundFailure("timeout");
+		if (options.signal.aborted) throw inboundFailure("scope_denied");
+	};
+	const secret = (data: Buffer) =>
+		[...options.secrets, options.botToken].some(
+			(value) => value.length > 0 && data.includes(Buffer.from(value)),
+		);
+	async function read(
+		url: string,
+		limit: number,
+		authenticated: boolean,
+		kind: "metadata" | "content",
+		exactBytes?: number,
+	) {
+		await current();
+		let response: Response | undefined;
+		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		let rejectAbort!: (error: Error) => void;
+		const aborted = new Promise<never>((_, reject) => {
+			rejectAbort = reject;
+		});
+		void aborted.catch(() => {});
+		const abort = () => {
+			rejectAbort(
+				inboundFailure(timeout.signal.aborted ? "timeout" : "scope_denied"),
+			);
+			void reader?.cancel().catch(() => {});
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		try {
+			response = await Promise.race([
+				fetchImpl(url, {
+					method: "GET",
+					redirect: "error",
+					signal,
+					headers: authenticated
+						? { authorization: `Bot ${options.botToken}` }
+						: {},
+				}),
+				aborted,
+			]);
+			await current();
+			if (response.status === 404) throw inboundFailure("not_found");
+			if (response.status !== 200 || !response.body)
+				throw inboundFailure("fetch_unavailable");
+			const length = response.headers.get("content-length");
+			if (
+				length !== null &&
+				(!/^\d+$/.test(length) ||
+					Number(length) > limit ||
+					(exactBytes !== undefined && Number(length) !== exactBytes))
+			)
+				throw inboundFailure(
+					kind === "metadata" ? "invalid_metadata" : "invalid_content",
+				);
+			reader = response.body.getReader();
+			const chunks: Uint8Array[] = [];
+			let total = 0;
+			for (;;) {
+				const next = await Promise.race([reader.read(), aborted]);
+				if (next.done) break;
+				total += next.value.byteLength;
+				if (total > limit)
+					throw inboundFailure(
+						kind === "metadata" ? "invalid_metadata" : "invalid_content",
+					);
+				chunks.push(next.value);
+			}
+			await current();
+			const data = Buffer.concat(chunks);
+			if (exactBytes !== undefined && data.length !== exactBytes)
+				throw inboundFailure("invalid_content");
+			if (secret(data)) throw inboundFailure("invalid_content");
+			return {
+				data,
+				contentType: response.headers.get("content-type") ?? undefined,
+			};
+		} catch (error) {
+			if (error instanceof DiscordInboundAttachmentError) throw error;
+			if (timeout.signal.aborted) throw inboundFailure("timeout");
+			if (options.signal.aborted) throw inboundFailure("scope_denied");
+			throw inboundFailure("fetch_unavailable");
+		} finally {
+			signal.removeEventListener("abort", abort);
+			try {
+				await (reader ? reader.cancel() : response?.body?.cancel());
+			} catch {}
+		}
+	}
+	try {
+		snowflake.parse(options.threadId);
+		snowflake.parse(options.messageId);
+		snowflake.parse(options.attachmentId);
+		if (
+			!options.botToken ||
+			options.botToken.length > 8192 ||
+			/\s/.test(options.botToken) ||
+			!Number.isSafeInteger(options.expected.sizeBytes) ||
+			options.expected.sizeBytes < 0
+		)
+			throw inboundFailure("invalid_metadata");
+		const expectedMime = normalizeInboundMime(options.expected.mimeType);
+		if (!expectedMime) throw inboundFailure("unsupported_type");
+		const metadata = await read(
+			`https://discord.com/api/v10/channels/${options.threadId}/messages/${options.messageId}`,
+			262144,
+			true,
+			"metadata",
+		);
+		if (
+			metadata.contentType?.split(";")[0]?.trim().toLowerCase() !==
+			"application/json"
+		)
+			throw inboundFailure("invalid_metadata");
+		let message: z.infer<typeof inboundMessageSchema>;
+		try {
+			message = inboundMessageSchema.parse(
+				JSON.parse(
+					new TextDecoder("utf8", { fatal: true }).decode(metadata.data),
+				),
+			);
+		} catch {
+			throw inboundFailure("invalid_metadata");
+		}
+		if (
+			message.id !== options.messageId ||
+			message.channel_id !== options.threadId
+		)
+			throw inboundFailure("invalid_metadata");
+		const matches = message.attachments.filter(
+			(attachment) => attachment.id === options.attachmentId,
+		);
+		if (matches.length === 0) throw inboundFailure("not_found");
+		if (matches.length !== 1) throw inboundFailure("invalid_metadata");
+		const attachment = matches[0]!;
+		const declaredMime = normalizeInboundMime(attachment.content_type);
+		if (!declaredMime) throw inboundFailure("unsupported_type");
+		if (
+			attachment.size !== options.expected.sizeBytes ||
+			declaredMime !== expectedMime
+		)
+			throw inboundFailure("invalid_metadata");
+		const limit = inboundLimits.get(declaredMime)!;
+		if (
+			attachment.size > limit ||
+			(declaredMime.startsWith("image/") && attachment.size === 0)
+		)
+			throw inboundFailure("too_large");
+		const url = new URL(attachment.url);
+		const parts = url.pathname.split("/");
+		if (
+			url.protocol !== "https:" ||
+			!["cdn.discordapp.com", "media.discordapp.net"].includes(url.hostname) ||
+			url.port ||
+			url.username ||
+			url.password ||
+			url.hash ||
+			parts.length !== 5 ||
+			parts[1] !== "attachments" ||
+			parts[2] !== options.threadId ||
+			parts[3] !== options.attachmentId
+		)
+			throw inboundFailure("invalid_metadata");
+		let filename: string;
+		try {
+			filename = decodeURIComponent(parts[4]!);
+		} catch {
+			throw inboundFailure("invalid_metadata");
+		}
+		if (
+			!filename ||
+			filename === "." ||
+			filename === ".." ||
+			/[\\/]/.test(filename) ||
+			[...filename].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+		)
+			throw inboundFailure("invalid_metadata");
+		const downloaded = await read(
+			url.href,
+			limit,
+			false,
+			"content",
+			attachment.size,
+		);
+		const responseMime = downloaded.contentType
+			? normalizeInboundMime(downloaded.contentType)
+			: undefined;
+		if (!responseMime || responseMime !== declaredMime)
+			throw inboundFailure("invalid_content");
+		return { data: downloaded.data, mimeType: declaredMime };
+	} catch (error) {
+		if (error instanceof DiscordInboundAttachmentError) throw error;
+		if (timeout.signal.aborted) throw inboundFailure("timeout");
+		throw inboundFailure("invalid_metadata");
+	} finally {
+		clearTimeout(timer);
+	}
+}
 /** Bridge/parent only. Message ownership is supplied by the current canonical scope guard. */
 export async function fetchDiscordAttachment(options: {
 	threadId: string;

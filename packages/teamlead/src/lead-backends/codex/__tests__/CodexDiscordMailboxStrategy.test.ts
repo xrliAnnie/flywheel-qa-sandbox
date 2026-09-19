@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseChatDeliveryEnvelope } from "flywheel-comm/discord-chat-ingest";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexDiscordMailboxStrategy } from "../CodexDiscordMailboxStrategy.js";
@@ -112,6 +113,50 @@ describe("CodexDiscordMailboxStrategy", () => {
 				state: "QUEUED",
 			},
 		);
+	});
+
+	it("persists attachment identity and keeps the first delivery immutable on replay", () => {
+		const state = setup();
+		const first = {
+			...state.input,
+			message: {
+				...state.input.message,
+				content: "",
+				attachments: [
+					{
+						attachmentId: "423456789012345678",
+						name: "pixel.png",
+						type: "image/png",
+						sizeKb: 2,
+					},
+				],
+			},
+		};
+		expect(state.strategy.accept(first)).toBe("handled");
+		const id = "chat:lead-a:323456789012345678";
+		const original = state.queue.getById(id)!;
+		expect(parseChatDeliveryEnvelope(original.content).attachments).toEqual(
+			first.message.attachments,
+		);
+		expect(original.delivery_content).toContain(
+			'attachment_id="423456789012345678" content_state="metadata_only"',
+		);
+
+		expect(
+			state.strategy.accept({
+				...first,
+				message: {
+					...first.message,
+					attachments: [
+						{
+							...first.message.attachments[0],
+							attachmentId: "423456789012345679",
+						},
+					],
+				},
+			}),
+		).toBe("handled");
+		expect(state.queue.getById(id)).toEqual(original);
 	});
 
 	it("skips an existing inbox winner on replay", () => {

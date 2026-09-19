@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 /**
  * Real-MCP integration test for the lead-actions stdio child.
@@ -44,6 +45,8 @@ function childEnv(
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: stateDir,
 		FLYWHEEL_COMM_DB: join(stateDir, "comm.db"),
 		FLYWHEEL_CODEX_LEAD_OUTBOUND: mode,
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+		FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "test-carrier-generation",
 		...(mode === "bridge" ? { BRIDGE_URL: "http://127.0.0.1:1" } : {}),
 		...(token === undefined
 			? {}
@@ -118,6 +121,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 				"discord_send",
 				"summary_presentation",
 				"ack_batch",
+				"discord_read_attachment",
 			]);
 		},
 		20_000,
@@ -136,6 +140,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 				"discord_send",
 				"summary_presentation",
 				"ack_batch",
+				"discord_read_attachment",
 			]);
 		},
 		20_000,
@@ -154,6 +159,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 					"discord_send",
 					"summary_presentation",
 					"ack_batch",
+					"discord_read_attachment",
 				]);
 			}
 		},
@@ -349,6 +355,131 @@ describe("lead-actions MCP real-spawn integration", () => {
 				await client.close().catch(() => {});
 				await new Promise<void>((resolve) => server.close(() => resolve()));
 			}
+		},
+		20_000,
+	);
+
+	run(
+		"returns actual TXT and a near-limit native image block through a real MCP child",
+		async () => {
+			const { Client } = await import(
+				"@modelcontextprotocol/sdk/client/index.js"
+			);
+			const { StdioClientTransport } = await import(
+				"@modelcontextprotocol/sdk/client/stdio.js"
+			);
+			const text = Buffer.from("stdio-marker-中文\nsecond line");
+			const image = Buffer.alloc(5 * 1024 * 1024);
+			Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").copy(image);
+			image.writeUInt32BE(4096, 16);
+			image.writeUInt32BE(1024, 20);
+			Buffer.from("PRIVATE_IMAGE_MARKER").copy(image, 32);
+			const textAttachmentId = "333333333333333333";
+			const imageAttachmentId = "555555555555555555";
+			const sourceMessageId = "444444444444444444";
+			const requests: Array<Record<string, unknown>> = [];
+			const server = createServer((req, res) => {
+				let raw = "";
+				req.on("data", (chunk) => {
+					raw += chunk;
+				});
+				req.on("end", () => {
+					const body = JSON.parse(raw) as Record<string, unknown>;
+					requests.push(body);
+					if (body.mode === "validate") {
+						res.statusCode = 204;
+						res.end();
+						return;
+					}
+					const isImage = body.attachmentId === imageAttachmentId;
+					const data = isImage ? image : text;
+					const mimeType = isImage ? "image/png" : "text/plain;charset=utf-8";
+					res.setHeader("content-type", mimeType);
+					res.setHeader("content-length", String(data.length));
+					res.setHeader("x-flywheel-request-id", String(body.requestId));
+					res.setHeader("x-flywheel-source-message-id", sourceMessageId);
+					res.setHeader("x-flywheel-source-channel-id", "111111111111111111");
+					res.setHeader("x-flywheel-attachment-id", String(body.attachmentId));
+					res.setHeader("x-flywheel-mime-type", mimeType);
+					res.setHeader("x-flywheel-bytes", String(data.length));
+					res.setHeader(
+						"x-flywheel-sha256",
+						createHash("sha256").update(data).digest("hex"),
+					);
+					res.setHeader("x-flywheel-receipt-digest", "d".repeat(64));
+					res.end(data);
+				});
+			});
+			await new Promise<void>((resolve) =>
+				server.listen(0, "127.0.0.1", resolve),
+			);
+			const address = server.address() as { port: number };
+			const transport = new StdioClientTransport({
+				command: process.execPath,
+				args: [distMain],
+				stderr: "pipe",
+				env: {
+					...childEnv(join(dir, "attachment-state"), "test-api-token"),
+					BRIDGE_URL: `http://127.0.0.1:${address.port}`,
+				},
+			});
+			let stderr = "";
+			transport.stderr?.on("data", (chunk) => {
+				stderr += String(chunk);
+			});
+			const client = new Client({ name: "attachment-test", version: "1" });
+			try {
+				await client.connect(transport);
+				const read = (attachmentId: string) =>
+					client.callTool({
+						name: "discord_read_attachment",
+						arguments: {
+							deliveryId: `chat:mufasa-lead:${sourceMessageId}`,
+							attachmentId,
+						},
+					});
+				const textResult = await read(textAttachmentId);
+				expect(textResult.isError).not.toBe(true);
+				expect(textResult.structuredContent).toBeUndefined();
+				expect(textResult.content[1]).toEqual({
+					type: "text",
+					text: text.toString("utf8"),
+				});
+				const imageResult = await read(imageAttachmentId);
+				expect(imageResult.isError).not.toBe(true);
+				expect(imageResult.structuredContent).toBeUndefined();
+				expect(imageResult.content[1]).toEqual({
+					type: "image",
+					data: image.toString("base64"),
+					mimeType: "image/png",
+				});
+				expect(
+					createHash("sha256")
+						.update(
+							Buffer.from(
+								(imageResult.content[1] as { data: string }).data,
+								"base64",
+							),
+						)
+						.digest("hex"),
+				).toBe(createHash("sha256").update(image).digest("hex"));
+				expect(
+					Buffer.byteLength(JSON.stringify(imageResult)),
+				).toBeLessThanOrEqual(7 * 1024 * 1024);
+				expect(requests).toHaveLength(4);
+				expect(
+					requests.every(
+						(body) => body.carrierClaim === "test-carrier-generation",
+					),
+				).toBe(true);
+			} finally {
+				await client.close().catch(() => {});
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+			}
+			expect(stderr).not.toContain("test-api-token");
+			expect(stderr).not.toContain("test-carrier-generation");
+			expect(stderr).not.toContain(text.toString("utf8"));
+			expect(stderr).not.toContain("PRIVATE_IMAGE_MARKER");
 		},
 		20_000,
 	);

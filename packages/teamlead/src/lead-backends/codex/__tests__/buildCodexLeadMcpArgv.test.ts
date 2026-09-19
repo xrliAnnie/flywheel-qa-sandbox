@@ -231,6 +231,29 @@ describe("buildCodexLeadMcpArgv — FLY-304 full-access leadActions (proactive d
 		).toBe(false);
 	});
 
+	it("forwards the attachment carrier claim by name without adding a runner MCP", () => {
+		const r = buildCodexLeadMcpArgv({
+			leadActions: {
+				...leadActions,
+				env: {
+					...leadActions.env,
+					FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+				},
+				envVarNames: [
+					"BRIDGE_URL",
+					"TEAMLEAD_API_TOKEN",
+					"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID",
+				],
+			},
+		});
+		expect(r.included).toEqual(["lead_actions"]);
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN","FLYWHEEL_LEAD_CARRIER_INSTANCE_ID"]',
+		);
+		expect(r.argv.join(" ")).not.toContain("test-carrier-generation");
+		expect(r.argv.join(" ")).not.toContain("runner_actions");
+	});
+
 	it("leadActions + chrome COEXIST (full-access is not a strict allowlist)", () => {
 		const r = buildCodexLeadMcpArgv({
 			leadActions,

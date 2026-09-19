@@ -607,6 +607,7 @@ import {
 	LeaseAuditOutbox,
 } from "./lead-dual-active-scan.js";
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
+import { createLeadInboundAttachmentRouter } from "./lead-inbound-attachment.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
@@ -3492,6 +3493,10 @@ export function createBridgeApp(
 	// Discord delivery via the per-Lead bot token). Additive; registered only when
 	// apiToken is configured (reserved endpoints require it) → no-op otherwise.
 	if (config.apiToken) {
+		app.use(
+			"/api/lead-inbound/attachment",
+			createLeadInboundAttachmentRouter({ apiToken: config.apiToken }),
+		);
 		const resolveCodexLeadBotToken = buildResolveBotToken(
 			projects,
 			process.env,

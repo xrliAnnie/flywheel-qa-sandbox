@@ -111,6 +111,7 @@ import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import { tryResolveLeadAttachmentContext } from "./lead-actions/attachment-context.js";
 import {
 	assertFullAccessLeadActionsConfigGate,
 	assertFullAccessSandboxConfig,
@@ -1852,6 +1853,15 @@ export async function main(
 			stateDir,
 			commDbPath: config.commDbPath,
 			outboundMode: config.outboundMode,
+			attachmentContext: tryResolveLeadAttachmentContext({
+				projectsPath:
+					config.projectsFile ?? join(homedir(), ".flywheel", "projects.json"),
+				homeDir: homedir(),
+				projectName: config.projectName,
+				leadId: config.leadId,
+				identityDigest: config.identityDigest,
+				outboundMode: config.outboundMode,
+			}),
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
 			// FLY-676: forward the effective roundtable autoContinue (parity with headless).
 			// codex-lead-tui-home.sh writes the matching env into config.toml; the full-access
