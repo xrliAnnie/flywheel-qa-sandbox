@@ -126,6 +126,11 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 				"delivered_at",
 				"notified_at",
 				"lease_retry_count",
+				"delivery_disposition",
+				"notification_policy_version",
+				"notification_reason",
+				"notification_proof_ref",
+				"notification_decided_at",
 			]),
 		);
 		expect(
@@ -144,6 +149,7 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 	it("upgrades a legacy caller-owned connection before any statement is prepared", () => {
 		const db = new Database(":memory:");
 		createLegacyMailbox(db);
+		db.prepare("INSERT INTO mailbox DEFAULT VALUES").run();
 		const queue = new MailboxQueue(db);
 		try {
 			expect(columns(db)).toEqual(
@@ -151,8 +157,29 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 					"delivered_at",
 					"notified_at",
 					"lease_retry_count",
+					"delivery_disposition",
+					"notification_policy_version",
+					"notification_reason",
+					"notification_proof_ref",
+					"notification_decided_at",
 				]),
 			);
+			expect(
+				db
+					.prepare(
+						`SELECT delivery_disposition, notification_policy_version,
+						        notification_reason, notification_proof_ref,
+						        notification_decided_at
+						   FROM mailbox WHERE seq = 1`,
+					)
+					.get(),
+			).toEqual({
+				delivery_disposition: "model",
+				notification_policy_version: null,
+				notification_reason: null,
+				notification_proof_ref: null,
+				notification_decided_at: null,
+			});
 			expect(
 				db
 					.prepare(
@@ -209,6 +236,11 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 				"delivered_at",
 				"notified_at",
 				"lease_retry_count",
+				"delivery_disposition",
+				"notification_policy_version",
+				"notification_reason",
+				"notification_proof_ref",
+				"notification_decided_at",
 			]),
 		);
 		db.close();
