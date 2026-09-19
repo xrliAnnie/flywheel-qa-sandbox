@@ -375,7 +375,6 @@ describe("other v1 rules", () => {
 
 describe("classifyItem", () => {
 	it.each([
-		["started", [], "live"],
 		["completed", [], "done"],
 		["canceled", [], "canceled"],
 		["backlog", [], "idle"],
@@ -386,6 +385,324 @@ describe("classifyItem", () => {
 	] as const)("classifies %s with %j as %s", (type, blockers, expected) => {
 		const subject = item("EPX-1", [...blockers]);
 		subject.state.value = { name: type, type };
+		expect(classifyItem(subject)).toBe(expected);
+	});
+
+	it("uses machine evidence instead of Linear started for live classification", () => {
+		const subject = item("EPX-1");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [],
+			ledger_live_count: 0,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		} as typeof subject.session.value;
+
+		expect(classifyItem(subject)).toBe("stopped_stuck");
+
+		subject.session.value.machine_running_count = 1;
+		expect(classifyItem(subject)).toBe("live");
+	});
+
+	it.each([
+		["active", "review", false, "stopped_acceptance"],
+		["active", "pending", true, "evidence_gap"],
+		["held", "running", false, "stopped_stuck"],
+	] as const)(
+		"does not treat an unrelated fresh session as live for a %s run with a %s current attempt",
+		(runStatus, attemptState, startingRecent, expected) => {
+			const subject = item("EPX-1");
+			subject.state.value = { name: "In Progress", type: "started" };
+			subject.session.value = {
+				latest: [
+					{
+						status: "running",
+						role: "qa",
+						branch: "flywheel-EPX-1",
+						execution_id8: "unbound1",
+					},
+				],
+				ledger_live_count: 1,
+				machine_running_count: 1,
+				running_heartbeat_stale_count: 0,
+				running_heartbeat_missing_count: 0,
+			};
+			subject.run.value = [
+				{
+					run_id: "run-current",
+					status: runStatus,
+					current_node_id: "implement",
+					current_node_label: "实现",
+					label_source: "manifest",
+					template_id: "workflow-v1",
+				},
+			];
+			subject.attempt.value = [
+				{
+					state: attemptState,
+					attempt: 1,
+					ledger_open: true,
+					machine_live: attemptState === "running",
+					starting_recent: startingRecent,
+					heartbeat_state:
+						attemptState === "running" ? "fresh" : "not_applicable",
+				},
+			];
+			if (runStatus === "held") {
+				subject.signals = [
+					{
+						kind: "run_held",
+						since: NOW,
+						execution_id8: "runheld1",
+						provenance: {
+							kind: "statestore",
+							table: "workflow_run",
+							key: { run_id: "run-current" },
+						},
+						observed_at: NOW,
+					},
+				];
+			}
+
+			expect(classifyItem(subject)).toBe(expected);
+		},
+	);
+
+	it("prioritizes an explicit stuck signal over an unrelated fresh session", () => {
+		const subject = item("EPX-1");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [
+				{
+					status: "running",
+					role: "qa",
+					branch: "flywheel-EPX-1",
+					execution_id8: "unbound1",
+				},
+			],
+			ledger_live_count: 1,
+			machine_running_count: 1,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		subject.run.value = [
+			{
+				run_id: "run-current",
+				status: "held",
+				current_node_id: "land",
+				current_node_label: "落地",
+				label_source: "manifest",
+				template_id: "workflow-v1",
+			},
+		];
+		subject.attempt.value = [
+			{
+				state: "review",
+				attempt: 1,
+				ledger_open: true,
+				machine_live: false,
+				starting_recent: false,
+				heartbeat_state: "not_applicable",
+			},
+		];
+		subject.signals = [
+			{
+				kind: "run_held",
+				since: NOW,
+				execution_id8: "landheld",
+				provenance: {
+					kind: "statestore",
+					table: "workflow_run",
+					key: { run_id: "run-current" },
+				},
+				observed_at: NOW,
+			},
+		];
+
+		expect(classifyItem(subject)).toBe("stopped_stuck");
+	});
+
+	it("fails closed when either stuck-signal source is unreadable", () => {
+		const subject = item("EPX-1");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [
+				{
+					status: "completed",
+					role: "qa",
+					branch: "flywheel-EPX-1",
+					execution_id8: "done0001",
+				},
+			],
+			ledger_live_count: 0,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		subject.signal_sources.statestore = {
+			value: null,
+			missing: { reason: "statestore_error" },
+			provenance: {
+				kind: "statestore",
+				table: "sessions",
+				key: { issue_identifier: subject.identifier },
+			},
+			observed_at: NOW,
+		};
+
+		expect(classifyItem(subject)).toBe("evidence_gap");
+	});
+
+	it("requires explicit zero fresh sessions before calling an overdue pending attempt stuck", () => {
+		const subject = item("EPX-1");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [],
+			ledger_live_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		subject.run.value = [
+			{
+				run_id: "run-current",
+				status: "active",
+				current_node_id: "implement",
+				current_node_label: "实现",
+				label_source: "manifest",
+				template_id: "workflow-v1",
+			},
+		];
+		subject.attempt.value = [
+			{
+				state: "pending",
+				attempt: 1,
+				ledger_open: true,
+				machine_live: false,
+				starting_recent: false,
+				heartbeat_state: "not_applicable",
+			},
+		];
+
+		expect(classifyItem(subject)).toBe("evidence_gap");
+		subject.session.value.machine_running_count = 0;
+		expect(classifyItem(subject)).toBe("stopped_stuck");
+	});
+
+	it("keeps normal completion and heartbeat evidence gaps distinct", () => {
+		const subject = item("EPX-1");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [
+				{
+					status: "completed",
+					role: "implement",
+					branch: "flywheel-FLY-2727",
+					execution_id8: "deadbeef",
+				},
+			],
+			ledger_live_count: 0,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		} as typeof subject.session.value;
+
+		expect(classifyItem(subject)).toBe("stopped_acceptance");
+
+		subject.session.value.latest[0]!.status = "running";
+		subject.session.value.running_heartbeat_stale_count = 1;
+		expect(classifyItem(subject)).toBe("evidence_gap");
+	});
+
+	it("treats FLY-2598's held land signal as stuck despite its completed session", () => {
+		const subject = item("FLY-2598");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [
+				{
+					status: "completed",
+					role: "qa",
+					branch: "flywheel-FLY-2598",
+					execution_id8: "8575b98f",
+				},
+			],
+			ledger_live_count: 0,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		subject.run.value = [
+			{
+				run_id: "d0e72d2d",
+				status: "held",
+				current_node_id: "land",
+				current_node_label: "落地",
+				label_source: "manifest",
+				template_id: "workflow-v1",
+			},
+		];
+		subject.attempt.value = [
+			{
+				state: "pending",
+				attempt: 1,
+				ledger_open: true,
+				machine_live: false,
+				starting_recent: false,
+				heartbeat_state: "not_applicable",
+			},
+		];
+		subject.signals = [
+			{
+				kind: "run_held",
+				since: NOW,
+				execution_id8: "cfd72ba5",
+				provenance: {
+					kind: "statestore",
+					table: "workflow_run",
+					key: { run_id: "d0e72d2d" },
+				},
+				observed_at: NOW,
+			},
+		];
+
+		expect(classifyItem(subject)).toBe("stopped_stuck");
+	});
+
+	it.each([
+		["completed", "stopped_acceptance"],
+		["ship_parked", "stopped_acceptance"],
+		["awaiting_review", "stopped_acceptance"],
+		["design_done", "stopped_acceptance"],
+		["approved_to_ship", "stopped_acceptance"],
+		["approved", "stopped_acceptance"],
+		["failed", "stopped_stuck"],
+		["blocked", "stopped_stuck"],
+		["timeout", "stopped_stuck"],
+		["terminated", "stopped_stuck"],
+		["canceled", "stopped_stuck"],
+		["cancelled", "stopped_stuck"],
+		["rejected", "stopped_stuck"],
+		["deferred", "stopped_stuck"],
+		["shelved", "stopped_stuck"],
+		["unknown", "stopped_stuck"],
+		["pending", "stopped_stuck"],
+	] as const)("maps a stopped latest session %s to %s", (status, expected) => {
+		const subject = item("EPX-1");
+		subject.state.value = { name: "In Progress", type: "started" };
+		subject.session.value = {
+			latest: [
+				{
+					status,
+					role: "implement",
+					branch: null,
+					execution_id8: "deadbeef",
+				},
+			],
+			ledger_live_count: 0,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
 		expect(classifyItem(subject)).toBe(expected);
 	});
 });
@@ -416,6 +733,9 @@ describe("rootOf", () => {
 					root: "EPX-100",
 					counts: {
 						live: 0,
+						stopped_acceptance: 0,
+						stopped_stuck: 0,
+						evidence_gap: 0,
 						waiting: 0,
 						free: 0,
 						idle: 0,
@@ -491,9 +811,31 @@ it("preserves every scope.v2 root count value, missing state and ordered source 
 	);
 	expect(
 		page.header.root_counts.map((c) => ({
-			value: c.value,
+			value: c.value
+				? {
+						...c.value,
+						counts: Object.fromEntries(
+							Object.entries(c.value.counts).filter(([key]) =>
+								[
+									"live",
+									"waiting",
+									"free",
+									"idle",
+									"done",
+									"canceled",
+									"total",
+								].includes(key),
+							),
+						),
+					}
+				: null,
 			...(c.missing ? { missing: c.missing } : {}),
-			from: c.provenance.kind === "derived" ? c.provenance.from : null,
+			from:
+				c.provenance.kind === "derived"
+					? c.provenance.from.filter(
+							(path) => !/(?:session|run|attempt|signal_sources)/.test(path),
+						)
+					: null,
 		})),
 	).toEqual(expected);
 });

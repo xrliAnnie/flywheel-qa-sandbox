@@ -2559,6 +2559,9 @@ export interface EpicPageSessionValue {
 		execution_id8: string;
 	}>;
 	ledger_live_count: number;
+	machine_running_count: number;
+	running_heartbeat_stale_count: number;
+	running_heartbeat_missing_count: number;
 }
 
 export interface EpicPageRunValue {
@@ -2574,6 +2577,9 @@ export interface EpicPageAttemptValue {
 	state: string;
 	attempt: number;
 	ledger_open: boolean;
+	machine_live: boolean;
+	starting_recent: boolean;
+	heartbeat_state: "fresh" | "stale" | "missing" | "not_applicable";
 }
 
 export interface EpicPageLandValue {
@@ -16040,17 +16046,27 @@ export class StateStore {
 	getEpicPageSessionFact(
 		projectName: string,
 		keys: string[],
+		generatedAt: string,
+		stuckThresholdMinutes: number,
 	): EpicPageFactProjection<EpicPageSessionValue> {
 		const aliases = normalizeIssueKeys(keys);
 		if (aliases.length === 0) {
-			return { value: { latest: [], ledger_live_count: 0 } };
+			return {
+				value: {
+					latest: [],
+					ledger_live_count: 0,
+					machine_running_count: 0,
+					running_heartbeat_stale_count: 0,
+					running_heartbeat_missing_count: 0,
+				},
+			};
 		}
 		const aliasPlaceholders = aliases.map(() => "?").join(", ");
 		const liveStatuses = [...CMUX_LIVE_SESSION_STATUSES];
 		const livePlaceholders = liveStatuses.map(() => "?").join(", ");
 		const row = this.workflowSelectAll(
 			`WITH matched AS (
-			   SELECT execution_id, status, session_role, branch,
+			   SELECT execution_id, status, session_role, branch, heartbeat_at,
 			          COALESCE(last_activity_at, started_at) AS source_time
 			     FROM sessions
 			    WHERE project_name = ?
@@ -16059,20 +16075,51 @@ export class StateStore {
 			 ), latest AS (
 			   SELECT execution_id, status, session_role, branch, source_time
 			     FROM matched
-			    ORDER BY julianday(source_time) DESC, execution_id ASC
+			    ORDER BY CASE
+			               WHEN status = 'running' AND heartbeat_at IS NOT NULL
+			                    AND julianday(heartbeat_at) >=
+			                        julianday(?) - (? / 1440.0) THEN 0
+			               WHEN status = 'pending' AND source_time IS NULL THEN 1
+			               ELSE 2
+			             END,
+			             julianday(source_time) DESC, execution_id ASC
 			    LIMIT 1
 			 ), aggregate_fact AS (
-			   SELECT COUNT(*) AS ledger_live_count
+			   SELECT SUM(CASE WHEN status IN (${livePlaceholders}) THEN 1 ELSE 0 END)
+			            AS ledger_live_count,
+			          SUM(CASE WHEN status = 'running' AND heartbeat_at IS NOT NULL
+			                    AND julianday(heartbeat_at) >=
+			                        julianday(?) - (? / 1440.0)
+			                   THEN 1 ELSE 0 END) AS machine_running_count,
+			          SUM(CASE WHEN status = 'running' AND heartbeat_at IS NOT NULL
+			                    AND julianday(heartbeat_at) <
+			                        julianday(?) - (? / 1440.0)
+			                   THEN 1 ELSE 0 END) AS running_heartbeat_stale_count,
+			          SUM(CASE WHEN status = 'running' AND heartbeat_at IS NULL
+			                   THEN 1 ELSE 0 END) AS running_heartbeat_missing_count
 			     FROM matched
-			    WHERE status IN (${livePlaceholders})
 			 )
 			 SELECT latest.execution_id, latest.status, latest.session_role,
 			        latest.branch,
 			        strftime('%Y-%m-%dT%H:%M:%SZ', latest.source_time)
 			          AS source_updated_at,
-			        aggregate_fact.ledger_live_count
+			        aggregate_fact.ledger_live_count,
+			        aggregate_fact.machine_running_count,
+			        aggregate_fact.running_heartbeat_stale_count,
+			        aggregate_fact.running_heartbeat_missing_count
 			   FROM aggregate_fact LEFT JOIN latest ON 1 = 1`,
-			[projectName, ...aliases, ...aliases, ...liveStatuses],
+			[
+				projectName,
+				...aliases,
+				...aliases,
+				generatedAt,
+				stuckThresholdMinutes,
+				...liveStatuses,
+				generatedAt,
+				stuckThresholdMinutes,
+				generatedAt,
+				stuckThresholdMinutes,
+			],
 		)[0];
 		const latest =
 			typeof row?.execution_id === "string"
@@ -16092,6 +16139,13 @@ export class StateStore {
 			value: {
 				latest,
 				ledger_live_count: Number(row?.ledger_live_count ?? 0),
+				machine_running_count: Number(row?.machine_running_count ?? 0),
+				running_heartbeat_stale_count: Number(
+					row?.running_heartbeat_stale_count ?? 0,
+				),
+				running_heartbeat_missing_count: Number(
+					row?.running_heartbeat_missing_count ?? 0,
+				),
 			},
 			...(typeof row?.source_updated_at === "string"
 				? { source_updated_at: row.source_updated_at }
@@ -16256,16 +16310,38 @@ export class StateStore {
 	getEpicPageAttemptFact(
 		runId: string,
 		nodeId: string,
+		generatedAt: string,
+		stuckThresholdMinutes: number,
 	): EpicPageFactProjection<EpicPageAttemptValue[]> {
 		const row = this.workflowSelectAll(
-			`SELECT state, attempt,
-			        strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(ended_at, started_at))
+			`SELECT node.state, node.attempt,
+			        CASE
+			          WHEN node.state != 'running' THEN 'not_applicable'
+			          WHEN session.execution_id IS NULL OR session.status != 'running'
+			               OR session.heartbeat_at IS NULL THEN 'missing'
+			          WHEN julianday(session.heartbeat_at) >=
+			               julianday(?) - (? / 1440.0) THEN 'fresh'
+			          ELSE 'stale'
+			        END AS heartbeat_state,
+			        CASE WHEN node.state IN ('pending', 'admitted')
+			                   AND julianday(node.started_at) >=
+			                       julianday(?) - (? / 1440.0)
+			             THEN 1 ELSE 0 END AS starting_recent,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(node.ended_at, node.started_at))
 			          AS source_updated_at
-			   FROM workflow_run_node
-			  WHERE run_id = ? AND node_id = ?
-			  ORDER BY attempt DESC
+			   FROM workflow_run_node node
+			   LEFT JOIN sessions session ON session.execution_id = node.execution_id
+			  WHERE node.run_id = ? AND node.node_id = ?
+			  ORDER BY node.attempt DESC
 			  LIMIT 1`,
-			[runId, nodeId],
+			[
+				generatedAt,
+				stuckThresholdMinutes,
+				generatedAt,
+				stuckThresholdMinutes,
+				runId,
+				nodeId,
+			],
 		)[0];
 		if (!row) return { value: [] };
 		const state = String(row.state);
@@ -16279,6 +16355,14 @@ export class StateStore {
 						state === "admitted" ||
 						state === "running" ||
 						state === "review",
+					machine_live:
+						state === "running" && row.heartbeat_state === "fresh",
+					starting_recent: Number(row.starting_recent ?? 0) === 1,
+					heartbeat_state: row.heartbeat_state as
+						| "fresh"
+						| "stale"
+						| "missing"
+						| "not_applicable",
 				},
 			],
 			...(typeof row.source_updated_at === "string"
@@ -83896,6 +83980,7 @@ export function readEpicItemFacts(
 	store: StateStore,
 	projectName: string,
 	child: { uuid: string; identifier: string },
+	freshness: { generatedAt: string; stuckThresholdMinutes: number },
 ): EpicItemFacts {
 	const keys = [child.uuid, child.identifier];
 	const failed = (table: string): { ok: false; table: string } => ({
@@ -83918,7 +84003,12 @@ export function readEpicItemFacts(
 	};
 
 	const session = read("sessions", () =>
-		store.getEpicPageSessionFact(projectName, keys),
+		store.getEpicPageSessionFact(
+			projectName,
+			keys,
+			freshness.generatedAt,
+			freshness.stuckThresholdMinutes,
+		),
 	);
 	const land = read("land_operation", () =>
 		store.getEpicPageLandFact(projectName, keys),
@@ -83958,6 +84048,8 @@ export function readEpicItemFacts(
 		store.getEpicPageAttemptFact(
 			activeRun.run_id,
 			activeRun.current_node_id,
+			freshness.generatedAt,
+			freshness.stuckThresholdMinutes,
 		),
 	);
 	let authorities: PatrolLoopGateAuthority[];

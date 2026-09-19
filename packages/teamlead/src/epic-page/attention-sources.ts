@@ -18,6 +18,7 @@ import {
 	type AttentionInput,
 	validDiscordId,
 } from "./attention.js";
+import { discordThreadLinkPair } from "./discord-link.js";
 import type { Cell, MissingReason, Provenance } from "./model.js";
 
 export interface AttentionSourceDeps {
@@ -383,7 +384,8 @@ export function readChildThreads(
 				binding.status === "resolved"
 					? {
 							...base,
-							value: `https://discord.com/channels/${guild.guild_id}/${binding.thread_id}`,
+							value: discordThreadLinkPair(guild.guild_id, binding.thread_id)!
+								.web,
 						}
 					: { ...base, value: null, missing: { reason: binding.status } },
 			);

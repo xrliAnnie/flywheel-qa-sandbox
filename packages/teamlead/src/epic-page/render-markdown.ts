@@ -139,7 +139,7 @@ function renderCell(
 function executionSummary(item: EpicItem): string {
 	const execution = item.session.value?.latest[0];
 	return item.session.value
-		? `${execution ? `${execution.status}/${execution.role ?? ""}(${execution.execution_id8})` : label("page.none")} · ledger_live_count=${item.session.value.ledger_live_count}`
+		? `${execution ? `${execution.status}/${execution.role ?? ""}(${execution.execution_id8})` : label("page.none")} · ledger_live_count=${item.session.value.ledger_live_count} · machine_running_count=${item.session.value.machine_running_count ?? 0}`
 		: (item.session.missing?.reason ?? label("page.none"));
 }
 

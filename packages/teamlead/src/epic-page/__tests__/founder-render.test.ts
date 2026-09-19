@@ -2,10 +2,11 @@ import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { buildFounderView } from "../founder-view.js";
 import { generateEpicPage } from "../generate.js";
-import { resolvePointer } from "../model.js";
+import { resolvePointer, type Signal } from "../model.js";
 import { renderEpicPageHtml } from "../render-html.js";
 import {
 	EPIC_SHAPE_NOW,
+	emptyItemFacts,
 	epicShapeSnapshotV3,
 	permuteSnapshot,
 	v3ItemFacts,
@@ -27,7 +28,454 @@ function fixture() {
 	window.document.write(html);
 	return { page, html, doc: window.document };
 }
+
+function stuckSignal(kind: "run_held" | "declared_blocked" | "runner_stopped") {
+	return {
+		kind,
+		since: EPIC_SHAPE_NOW.toISOString(),
+		execution_id8: "stuck001",
+		...(kind === "runner_stopped" ? { reason: "blocked" as const } : {}),
+		provenance: {
+			kind:
+				kind === "runner_stopped"
+					? ("commdb" as const)
+					: ("statestore" as const),
+			table: kind === "run_held" ? "workflow_run" : "sessions",
+			key: { execution_id: "stuck001-full" },
+		},
+		observed_at: EPIC_SHAPE_NOW.toISOString(),
+	} satisfies Signal;
+}
+
+function itemSignals(
+	snapshot: ReturnType<typeof epicShapeSnapshotV3>,
+	index: number,
+	signals: Signal[],
+) {
+	return snapshot.items.map((item, itemIndex) => {
+		const selected = itemIndex === index ? signals : [];
+		const statestoreCount = selected.filter(
+			(signal) => signal.provenance.kind === "statestore",
+		).length;
+		return {
+			signals: selected,
+			signal_sources: {
+				statestore: {
+					value: { signals: statestoreCount },
+					provenance: {
+						kind: "statestore" as const,
+						table: "sessions",
+						key: { issue_id: item.id },
+					},
+					observed_at: EPIC_SHAPE_NOW.toISOString(),
+				},
+				commdb: {
+					value: { signals: selected.length - statestoreCount },
+					provenance: {
+						kind: "commdb" as const,
+						table: "mailbox",
+						key: { issue_identifier: item.identifier },
+					},
+					observed_at: EPIC_SHAPE_NOW.toISOString(),
+				},
+			},
+		};
+	});
+}
+
 describe("founder Epic HTML", () => {
+	it("separates stopped and truly running children from Linear In Progress", () => {
+		const snapshot = epicShapeSnapshotV3();
+		const stoppedFacts = v3ItemFacts(snapshot);
+		stoppedFacts[
+			snapshot.items.findIndex((item) => item.identifier === "EPX-1")
+		] = emptyItemFacts();
+		const stoppedPage = generateEpicPage({
+			snapshot,
+			itemFacts: stoppedFacts,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const stoppedDom = new Window().document;
+		stoppedDom.write(renderEpicPageHtml(stoppedPage, EPIC_SHAPE_NOW));
+		const stopped = stoppedDom.querySelector('[data-item="EPX-1"]')!;
+		expect(stopped.querySelector(".s")?.textContent).toBe("停着·卡住");
+		expect(stopped.querySelector(".kid-a")?.textContent).toContain(
+			"没有机器在动·卡住",
+		);
+		expect(stopped.textContent).not.toContain("在跑");
+		expect(stopped.textContent).not.toContain("还没起跑");
+
+		const livePage = generateEpicPage({
+			snapshot,
+			itemFacts: v3ItemFacts(snapshot),
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const liveDom = new Window().document;
+		liveDom.write(renderEpicPageHtml(livePage, EPIC_SHAPE_NOW));
+		expect(liveDom.querySelector('[data-item="EPX-1"] .s')?.textContent).toBe(
+			"在跑",
+		);
+	});
+
+	it("keeps an unrelated fresh session non-live without claiming no machine is moving", () => {
+		const snapshot = epicShapeSnapshotV3();
+		const facts = snapshot.items.map(() => emptyItemFacts());
+		const index = snapshot.items.findIndex(
+			(item) => item.identifier === "EPX-1",
+		);
+		facts[index]!.session.value = {
+			latest: [
+				{
+					status: "running",
+					role: "qa",
+					branch: "flywheel-EPX-1",
+					execution_id8: "unbound1",
+				},
+			],
+			ledger_live_count: 1,
+			machine_running_count: 1,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		facts[index]!.run.value = [
+			{
+				run_id: "run-current",
+				status: "active",
+				current_node_id: "founder_gate",
+				current_node_label: "Founder gate",
+				label_source: "manifest",
+				template_id: "workflow-v1",
+			},
+		];
+		facts[index]!.attempt.value = [
+			{
+				state: "review",
+				attempt: 1,
+				ledger_open: true,
+				machine_live: false,
+				starting_recent: false,
+				heartbeat_state: "not_applicable",
+			},
+		];
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: facts,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const dom = new Window().document;
+		dom.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+		const card = dom.querySelector('[data-item="EPX-1"]')!;
+
+		expect(card.getAttribute("data-class")).toBe("stopped_acceptance");
+		expect(card.querySelector(".kid-h > .s")?.textContent).toBe("停着·等验收");
+		expect(card.querySelector(".kid-a")?.textContent).toContain(
+			"当前节点停着·另有会话活着·等验收",
+		);
+		expect(card.querySelector(".kid-a")?.textContent).not.toContain("在跑");
+		expect(card.querySelector(".kid-a")?.textContent).not.toContain("卡住");
+		expect(card.querySelector(".kid-a")?.textContent).not.toContain(
+			"没有机器在动",
+		);
+
+		facts[index]!.run.value![0]!.status = "held";
+		const stuckPage = generateEpicPage({
+			snapshot,
+			itemFacts: facts,
+			itemSignals: itemSignals(snapshot, index, [stuckSignal("run_held")]),
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const stuckDom = new Window().document;
+		stuckDom.write(renderEpicPageHtml(stuckPage, EPIC_SHAPE_NOW));
+		const stuckCard = stuckDom.querySelector('[data-item="EPX-1"]')!;
+		expect(stuckCard.getAttribute("data-class")).toBe("stopped_stuck");
+		expect(stuckCard.querySelector(".kid-h > .s")?.textContent).toBe(
+			"停着·卡住",
+		);
+		expect(stuckCard.querySelector(".kid-a")?.textContent).toContain(
+			"流程被 held·请看 land 重试耗尽·卡住·另有会话活着",
+		);
+		expect(stuckCard.querySelector(".kid-a")?.textContent).not.toContain(
+			"在跑",
+		);
+		expect(stuckCard.querySelector(".kid-a")?.textContent).not.toContain(
+			"没有机器在动",
+		);
+	});
+
+	it.each([
+		["declared_blocked", "IC 已声明卡住"],
+		["runner_stopped", "runner 已停机·卡住"],
+	] as const)(
+		"renders the %s signal as the founder-visible stuck reason",
+		(kind, expected) => {
+			const snapshot = epicShapeSnapshotV3();
+			const facts = snapshot.items.map(() => emptyItemFacts());
+			const index = snapshot.items.findIndex(
+				(item) => item.identifier === "EPX-1",
+			);
+			const page = generateEpicPage({
+				snapshot,
+				itemFacts: facts,
+				itemSignals: itemSignals(snapshot, index, [stuckSignal(kind)]),
+				now: EPIC_SHAPE_NOW,
+				projectName: "example",
+				trigger: "manual",
+			});
+			const dom = new Window().document;
+			dom.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+			const progress = dom.querySelector(
+				'[data-item="EPX-1"] .kid-a',
+			)?.textContent;
+
+			expect(progress).toContain(expected);
+			expect(progress).not.toContain("心跳");
+		},
+	);
+
+	it("renders FLY-2598's held land reason and count from the final-head shape", () => {
+		const snapshot = epicShapeSnapshotV3();
+		const source = snapshot.items.find((item) => item.identifier === "EPX-1")!;
+		source.identifier = "FLY-2598";
+		source.title =
+			"Runtime recovery: provider-specific configs + correct context windows";
+		source.url = "https://linear.app/geoforge3d/issue/FLY-2598";
+		source.state = { name: "In Progress", type: "started" };
+		snapshot.items = [source];
+		snapshot.descendantIds = [source.id];
+		const facts = [emptyItemFacts()];
+		facts[0]!.session.value = {
+			latest: [
+				{
+					status: "completed",
+					role: "qa",
+					branch: "flywheel-FLY-2598",
+					execution_id8: "8575b98f",
+				},
+			],
+			ledger_live_count: 0,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		facts[0]!.run.value = [
+			{
+				run_id: "d0e72d2d",
+				status: "held",
+				current_node_id: "land",
+				current_node_label: "落地",
+				label_source: "manifest",
+				template_id: "workflow-v1",
+			},
+		];
+		facts[0]!.attempt.value = [
+			{
+				state: "pending",
+				attempt: 1,
+				ledger_open: true,
+				machine_live: false,
+				starting_recent: false,
+				heartbeat_state: "not_applicable",
+			},
+		];
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: facts,
+			itemSignals: itemSignals(snapshot, 0, [stuckSignal("run_held")]),
+			now: EPIC_SHAPE_NOW,
+			projectName: "flywheel",
+			trigger: "manual",
+		});
+		const dom = new Window().document;
+		dom.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+		const card = dom.querySelector('[data-item="FLY-2598"]')!;
+
+		expect(card.getAttribute("data-class")).toBe("stopped_stuck");
+		expect(card.querySelector(".kid-h > .s")?.textContent).toBe("停着·卡住");
+		expect(card.querySelector(".kid-a")?.textContent).toContain(
+			"流程被 held·请看 land 重试耗尽·卡住",
+		);
+		expect(card.textContent).not.toContain("心跳");
+		expect(
+			card.closest("details.epic")?.querySelector(".e-c")?.textContent,
+		).toBe("0 在跑 · 1 停着 · 0 说不准 · 0 未开始 · 共 1");
+	});
+
+	it("counts only fresh machine evidence as live, keeps stopped causes visible, and reserves 在跑 for live rows", () => {
+		const snapshot = epicShapeSnapshotV3();
+		snapshot.roots = snapshot.roots.filter(
+			(root) => root.identifier === "EPX-100",
+		);
+		snapshot.items = snapshot.items
+			.filter((item) =>
+				[1, 2, 3, 4, 5, 6].includes(Number(item.identifier.slice(4))),
+			)
+			.map((item, index) => ({
+				...item,
+				state:
+					index === 4
+						? { name: "Todo", type: "unstarted" }
+						: { name: "In Progress", type: "started" },
+				blockedBy: [],
+			}));
+		snapshot.descendantIds = snapshot.items.map((item) => item.id);
+		const facts = snapshot.items.map(() => emptyItemFacts());
+		facts[0]!.session.value = {
+			latest: [
+				{
+					status: "running",
+					role: "implement",
+					branch: null,
+					execution_id8: "live0001",
+				},
+			],
+			ledger_live_count: 1,
+			machine_running_count: 1,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
+		facts[1]!.session.value!.latest = [
+			{
+				status: "completed",
+				role: "design",
+				branch: null,
+				execution_id8: "done0001",
+			},
+		];
+		facts[3]!.session.value = {
+			latest: [
+				{
+					status: "running",
+					role: "implement",
+					branch: null,
+					execution_id8: "stale001",
+				},
+			],
+			ledger_live_count: 1,
+			machine_running_count: 0,
+			running_heartbeat_stale_count: 1,
+			running_heartbeat_missing_count: 0,
+		};
+		facts[5]!.run.value = [
+			{
+				run_id: "run-starting",
+				status: "active",
+				current_node_id: "implement",
+				current_node_label: "实现",
+				label_source: "manifest",
+				template_id: "tpl",
+			},
+		];
+		facts[5]!.attempt.value = [
+			{
+				state: "admitted",
+				attempt: 1,
+				ledger_open: true,
+				machine_live: false,
+				starting_recent: true,
+				heartbeat_state: "not_applicable",
+			},
+		];
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: facts,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const dom = new Window().document;
+		dom.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+		expect(dom.querySelector('[data-root="EPX-100"] .e-c')?.textContent).toBe(
+			"1 在跑 · 2 停着 · 2 说不准 · 1 未开始 · 共 6",
+		);
+		expect(dom.querySelector('[data-item="EPX-2"] .s')?.textContent).toBe(
+			"停着·等验收",
+		);
+		expect(dom.querySelector('[data-item="EPX-3"] .s')?.textContent).toBe(
+			"停着·卡住",
+		);
+		expect(
+			dom.querySelector('[data-item="EPX-4"] .kid-a')?.textContent,
+		).toContain("心跳过期·说不准");
+		expect(dom.querySelector('[data-item="EPX-6"] .s')?.textContent).toBe(
+			"刚起跑·说不准",
+		);
+		expect(
+			dom.querySelector('[data-item="EPX-6"] .kid-a')?.textContent,
+		).toContain("等第一次心跳");
+		expect(dom.querySelector('[data-item="EPX-6"]')?.textContent).not.toContain(
+			"停着",
+		);
+		const nonLiveCards = [
+			...dom.querySelectorAll<HTMLElement>('.kid:not([data-class="live"])'),
+		];
+		expect(new Set(nonLiveCards.map((card) => card.dataset.class))).toEqual(
+			new Set(["stopped_acceptance", "stopped_stuck", "evidence_gap", "idle"]),
+		);
+		for (const card of nonLiveCards) {
+			const context = `${card.dataset.item}/${card.dataset.class}`;
+			expect(
+				card.querySelector(".kid-h > .s")?.textContent,
+				`${context} badge`,
+			).not.toContain("在跑");
+			expect(
+				card.querySelector(".kid-a")?.textContent,
+				`${context} progress`,
+			).not.toContain("在跑");
+		}
+
+		facts[5]!.attempt.value![0]!.starting_recent = false;
+		const expiredPage = generateEpicPage({
+			snapshot,
+			itemFacts: facts,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const expiredDom = new Window().document;
+		expiredDom.write(renderEpicPageHtml(expiredPage, EPIC_SHAPE_NOW));
+		expect(
+			expiredDom.querySelector('[data-item="EPX-6"] .s')?.textContent,
+		).toBe("停着·卡住（起跑后无心跳）");
+		expect(
+			expiredDom.querySelector('[data-item="EPX-6"] .kid-a')?.textContent,
+		).toContain("起跑后从未发出心跳·卡住");
+	});
+	it("keeps an unfinished blocker visible when machine evidence says live", () => {
+		const snapshot = epicShapeSnapshotV3();
+		const live = snapshot.items.find((item) => item.identifier === "EPX-1")!;
+		live.blockedBy = [
+			{
+				id: "outside",
+				identifier: "OUT-1",
+				title: "Outside",
+				url: "https://linear.app/out",
+				stateType: "unstarted",
+				inScope: false,
+			},
+		];
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: v3ItemFacts(snapshot),
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+		const dom = new Window().document;
+		dom.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+		const child = dom.querySelector('[data-item="EPX-1"]')!;
+		expect(child.querySelector(".s-live")?.textContent).toBe("在跑");
+		expect(child.querySelector(".s-blocked")?.textContent).toBe(
+			"等 OUT-1(范围外)",
+		);
+	});
 	it("renders the exact open-root collection, collapsed, with Linear state and counts", () => {
 		const { page, html, doc } = fixture();
 		expect(
@@ -45,7 +493,7 @@ describe("founder Epic HTML", () => {
 			"In Progress",
 		);
 		expect(doc.querySelector('[data-root="EPX-200"] .e-c')?.textContent).toBe(
-			"0 在跑 · 1 未开始 · 共 1",
+			"0 在跑 · 0 停着 · 0 说不准 · 1 未开始 · 共 1",
 		);
 		expect(html).not.toContain("<table");
 	});
@@ -159,7 +607,7 @@ it("escapes hostile root and blocker text while keeping every URL inert unless L
 	expect(html).not.toContain('href="javascript:');
 });
 
-it("limits blocker badge labels without losing the full audit and shows missing live fields honestly", () => {
+it("limits blocker badges and keeps a missing-attempt live session non-live without calling it stuck", () => {
 	const { page } = fixture();
 	const item = page.items[1]!,
 		base = item.blocked_by.value![0]!;
@@ -169,7 +617,13 @@ it("limits blocker badge labels without losing the full audit and shows missing 
 		in_scope: false,
 	}));
 	page.items[0]!.attempt.value = [];
-	page.items[0]!.session.value = { latest: [], ledger_live_count: 1 };
+	page.items[0]!.session.value = {
+		latest: [],
+		ledger_live_count: 1,
+		machine_running_count: 1,
+		running_heartbeat_stale_count: 0,
+		running_heartbeat_missing_count: 0,
+	};
 	const html = renderEpicPageHtml(page, EPIC_SHAPE_NOW);
 	const window = new Window({
 		settings: { disableJavaScriptEvaluation: true },
@@ -184,7 +638,10 @@ it("limits blocker badge labels without losing the full audit and shows missing 
 	).toContain("OUT-4");
 	expect(
 		window.document.querySelector('[data-item="EPX-1"] .kid-a')!.textContent,
-	).toContain("第 不知道 次 · 会话 不知道");
+	).toContain("当前节点停着·另有会话活着·等验收");
+	expect(
+		window.document.querySelector('[data-item="EPX-1"] .kid-a')!.textContent,
+	).not.toContain("在跑");
 });
 
 it("renders the same root and child sequence after raw snapshot permutation", () => {

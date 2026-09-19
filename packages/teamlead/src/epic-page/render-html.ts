@@ -215,6 +215,7 @@ function executionSummary(item: EpicItem): string {
 			? `${latest.status}/${latest.role ?? ""}(${latest.execution_id8})`
 			: label("page.none"),
 		`ledger_live_count=${session?.ledger_live_count ?? 0}`,
+		`machine_running_count=${session?.machine_running_count ?? 0}`,
 	];
 	if (run) parts.push(`${run.current_node_label}/${run.status}`);
 	if (attempt) parts.push(`${attempt.state}#${attempt.attempt}`);
@@ -265,6 +266,18 @@ function childBadge(child: ChildView): string {
 	if (child.cls === null)
 		return label("child.unknown_type", { state: child.stateName });
 	if (child.cls === "done" || child.cls === "canceled") return child.stateName;
+	if (
+		child.cls === "stopped_stuck" &&
+		child.progress.kind === "stopped_stuck" &&
+		child.progress.reason === "no_first_heartbeat"
+	)
+		return label("child.stopped_stuck_no_heartbeat");
+	if (
+		child.cls === "evidence_gap" &&
+		child.progress.kind === "evidence_gap" &&
+		child.progress.reason === "awaiting_first_heartbeat"
+	)
+		return label("child.evidence_starting");
 	return label(`child.${child.cls}`);
 }
 function progressText(child: ChildView): string {
@@ -282,6 +295,33 @@ function progressText(child: ChildView): string {
 		return label(`progress.${value.kind}`, {
 			blockers: value.blockers.join(" / "),
 		});
+	if (value.kind === "evidence_gap")
+		return label(`progress.evidence_gap.${value.reason}`);
+	if (
+		value.kind === "stopped_acceptance" &&
+		value.reason === "other_live_session"
+	)
+		return label("progress.stopped_acceptance_other_live_session");
+	if (value.kind === "stopped_stuck" && value.reason === "run_held")
+		return label(
+			value.otherLiveSession
+				? "progress.stopped_stuck.run_held_other_live_session"
+				: "progress.stopped_stuck.run_held",
+		);
+	if (value.kind === "stopped_stuck" && value.reason === "declared_blocked")
+		return label(
+			value.otherLiveSession
+				? "progress.stopped_stuck.declared_blocked_other_live_session"
+				: "progress.stopped_stuck.declared_blocked",
+		);
+	if (value.kind === "stopped_stuck" && value.reason === "runner_stopped")
+		return label(
+			value.otherLiveSession
+				? "progress.stopped_stuck.runner_stopped_other_live_session"
+				: "progress.stopped_stuck.runner_stopped",
+		);
+	if (value.kind === "stopped_stuck" && value.reason === "no_first_heartbeat")
+		return label("progress.stopped_stuck_no_heartbeat");
 	return label(`progress.${value.kind}`);
 }
 function renderDependencyAudit(
@@ -399,7 +439,11 @@ function renderChild(
 		? renderDiscordLinkPair(url, "跳 Discord ↗", "jump", child.identifier) ||
 			`<span class="jump-off">Discord 链接不可用</span>`
 		: `<span class="jump-off">这张单还没有 thread</span>`;
-	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id mono">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span class="kid-t">${escapeHtml(child.title)}</span></div><div class="kid-a">↳ ${escapeHtml(progressText(child))} · ${thread}</div></div>`;
+	const liveBlockers =
+		child.cls === "live" && child.blockers.length > 0
+			? `<span class="s s-blocked">${escapeHtml(label("child.waiting", { blockers: blockersText(child) }))}</span>`
+			: "";
+	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span>${liveBlockers}<span class="s st-linear">${escapeHtml(child.stateName)}</span><span class="kid-id mono">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span class="kid-t">${escapeHtml(child.title)}</span></div><div class="kid-a">↳ ${escapeHtml(progressText(child))} · ${thread}</div></div>`;
 }
 
 function shortEpicTitle(title: string): string {
@@ -413,7 +457,7 @@ function countsText(epic: EpicView): string {
 		return label("counts.missing", {
 			type: epic.countsMissing?.detail ?? label("progress.unknown"),
 		});
-	return `${epic.counts.live} 在跑 · ${epic.counts.waiting + epic.counts.free + epic.counts.idle} 未开始 · 共 ${epic.counts.total}`;
+	return `${epic.counts.live} 在跑 · ${epic.counts.stopped_acceptance + epic.counts.stopped_stuck} 停着 · ${epic.counts.evidence_gap} 说不准 · ${epic.counts.waiting + epic.counts.free + epic.counts.idle} 未开始 · 共 ${epic.counts.total}`;
 }
 function renderRootProjection(
 	page: EpicPage,
@@ -669,7 +713,8 @@ function renderHtml(
   .kid-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .kid-t{font-size:12.5px}
   .s{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;white-space:nowrap}
-  .s-live{background:#e3f6e9;color:#1f7a37}.s-idle{background:#eeeef0;color:#6e6e73}.s-wait{background:#fff2dd;color:#a35c00}
+  .s-live{background:#e3f6e9;color:#1f7a37}.s-idle{background:#eeeef0;color:#6e6e73}.s-wait,.s-blocked{background:#fff2dd;color:#a35c00}
+  .s-stopped_acceptance{background:#eef1f5;color:#50545b}.s-stopped_stuck{background:#ffe8e6;color:#a62b1f}.s-evidence_gap{background:#fff2dd;color:#8a4b00}
   .kid-a{font-size:12.5px;color:#4a4a4f;margin-top:3px}
   .kid-tail{font-size:12px;color:var(--dim);padding-top:9px}
   .empty{color:var(--dim);font-size:13px;padding:10px 0}
@@ -687,7 +732,7 @@ function renderHtml(
 		view === null
 			? `<p class="scope-unavailable">${escapeHtml(label("attention.scope_unavailable"))}</p>`
 			: `
- <div class="sec">在跑的 Epic(全做完的已拿掉;状态直接照抄 Linear)</div>
+ <div class="sec">在做的 Epic(全做完的已拿掉;Linear 状态单列;在跑按机器会话)</div>
  ${view.epics.length ? view.epics.map((epic) => renderEpic(page, epic, now, dictionary)).join("") : `<p>${escapeHtml(label("epic.none"))}</p>`}
  ${view.hiddenDoneEpics && view.hiddenDoneEpics.count > 0 ? `<details class="lead-panel"><summary>已完成的 Epic</summary><div class="epic-hidden">${escapeHtml(label("epic.hidden_done", { n: view.hiddenDoneEpics.count }))}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderViewRule(view.hiddenDoneEpics.view, dictionary)}</details></div></details>` : ""}
  ${view.unattached.length ? `<details class="lead-panel"><summary>未挂 Epic 的子单</summary><section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary, now)).join("")}</section></details>` : ""}

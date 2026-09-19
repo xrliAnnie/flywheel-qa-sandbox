@@ -52,6 +52,7 @@ export interface MaterializeEpicPageDeps {
 	readItemFacts: (
 		projectName: string,
 		item: { uuid: string; identifier: string },
+		generatedAt: Date,
 	) => EpicItemFacts;
 	readSignals: (
 		projectName: string,
@@ -107,10 +108,14 @@ export async function materializeEpicPage(
 		);
 	}
 	const itemFacts = (snapshot?.items ?? []).map((item) =>
-		deps.readItemFacts(input.projectName, {
-			uuid: item.id,
-			identifier: item.identifier,
-		}),
+		deps.readItemFacts(
+			input.projectName,
+			{
+				uuid: item.id,
+				identifier: item.identifier,
+			},
+			generatedAt,
+		),
 	);
 	const itemSignals = deps.readSignals(
 		input.projectName,

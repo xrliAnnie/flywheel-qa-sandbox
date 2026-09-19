@@ -72,7 +72,13 @@ export function emptyItemFacts(): EpicItemFacts {
 	return {
 		session: {
 			ok: true,
-			value: { latest: [], ledger_live_count: 0 },
+			value: {
+				latest: [],
+				ledger_live_count: 0,
+				machine_running_count: 0,
+				running_heartbeat_stale_count: 0,
+				running_heartbeat_missing_count: 0,
+			},
 		},
 		run: { ok: true, value: [] },
 		attempt: { ok: true, value: [] },
@@ -224,12 +230,24 @@ export function v3ItemFacts(
 			};
 			facts.attempt = {
 				ok: true,
-				value: [{ state: "running", attempt: 2, ledger_open: true }],
+				value: [
+					{
+						state: "running",
+						attempt: 2,
+						ledger_open: true,
+						machine_live: true,
+						starting_recent: false,
+						heartbeat_state: "fresh",
+					},
+				],
 			};
 			facts.session = {
 				ok: true,
 				value: {
 					ledger_live_count: 1,
+					machine_running_count: 1,
+					running_heartbeat_stale_count: 0,
+					running_heartbeat_missing_count: 0,
 					latest: [
 						{
 							status: "running",

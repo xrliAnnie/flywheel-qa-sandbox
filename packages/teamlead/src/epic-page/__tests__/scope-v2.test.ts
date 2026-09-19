@@ -31,6 +31,9 @@ function generate(snapshot = epicShapeSnapshot()) {
 }
 const zero = {
 	live: 0,
+	stopped_acceptance: 0,
+	stopped_stuck: 0,
+	evidence_gap: 0,
 	waiting: 0,
 	free: 0,
 	idle: 0,
@@ -240,12 +243,22 @@ describe("counts.v1", () => {
 		items[2]!.blocked_by.value = [
 			{ ...blocker, blocker_state_type: "completed" },
 		];
+		items[0]!.session.value = {
+			latest: [],
+			ledger_live_count: 1,
+			machine_running_count: 1,
+			running_heartbeat_stale_count: 0,
+			running_heartbeat_missing_count: 0,
+		};
 		const counts = computeRootCounts(items, page.header.roots.value!);
 		expect(counts.map((result) => result.value)).toEqual([
 			{
 				root: "EPX-100",
 				counts: {
 					live: 1,
+					stopped_acceptance: 0,
+					stopped_stuck: 0,
+					evidence_gap: 0,
 					waiting: 1,
 					free: 1,
 					idle: 1,
@@ -262,6 +275,11 @@ describe("counts.v1", () => {
 			...items.flatMap((_, i) => [
 				`/items/${i}/state`,
 				`/items/${i}/blocked_by`,
+				`/items/${i}/session`,
+				`/items/${i}/run`,
+				`/items/${i}/attempt`,
+				`/items/${i}/signal_sources/statestore`,
+				`/items/${i}/signal_sources/commdb`,
 			]),
 		]);
 		expect(computeRootCounts(items, page.header.roots.value!)).toEqual(counts);

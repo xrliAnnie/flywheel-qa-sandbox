@@ -8,6 +8,7 @@ import { generateEpicPage } from "../generate.js";
 import { resolvePointer } from "../model.js";
 import {
 	EPIC_SHAPE_NOW,
+	emptyItemFacts,
 	epicShapeSnapshotV3,
 	permuteSnapshot,
 	v3ItemFacts,
@@ -277,9 +278,25 @@ it("keeps identifier order when same-state roots have conflicting live counts", 
 		})),
 	);
 	snapshot.descendantIds = snapshot.items.map((child) => child.id);
+	const itemFacts = snapshot.items.map((child) => {
+		const facts = emptyItemFacts();
+		if (child.state.type === "started") {
+			facts.session = {
+				ok: true,
+				value: {
+					latest: [],
+					ledger_live_count: 1,
+					machine_running_count: 1,
+					running_heartbeat_stale_count: 0,
+					running_heartbeat_missing_count: 0,
+				},
+			};
+		}
+		return facts;
+	});
 	const page = generateEpicPage({
 		snapshot,
-		itemFacts: v3ItemFacts(snapshot),
+		itemFacts,
 		now: EPIC_SHAPE_NOW,
 		projectName: "example",
 		trigger: "scan",
@@ -324,6 +341,30 @@ it("represents an empty known scope with an observed zero hidden count", () => {
 	expect(view.epics).toEqual([]);
 	expect(view.hiddenDoneEpics?.count).toBe(0);
 	expect(view.hiddenDoneEpics?.view.from).toEqual(["/header/roots"]);
+});
+
+it("keeps an all-stopped Epic visible instead of counting it as fully done", () => {
+	const snapshot = epicShapeSnapshotV3();
+	snapshot.roots = snapshot.roots.filter(
+		(root) => root.identifier === "EPX-100",
+	);
+	snapshot.items = snapshot.items.slice(0, 2).map((item) => ({
+		...item,
+		state: { name: "In Progress", type: "started" },
+		blockedBy: [],
+	}));
+	snapshot.descendantIds = snapshot.items.map((item) => item.id);
+	const page = generateEpicPage({
+		snapshot,
+		itemFacts: snapshot.items.map(() => emptyItemFacts()),
+		now: EPIC_SHAPE_NOW,
+		projectName: "example",
+		trigger: "scan",
+	});
+	const view = buildFounderView(page);
+	expect(view.epics.map((epic) => epic.identifier)).toEqual(["EPX-100"]);
+	expect(view.epics[0]!.counts?.stopped_stuck).toBe(2);
+	expect(view.hiddenDoneEpics?.count).toBe(0);
 });
 
 it("treats an in-scope blocker absent from items as outside (G4)", () => {

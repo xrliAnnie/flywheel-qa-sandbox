@@ -83,8 +83,8 @@ describe("hosted Epic page publisher", () => {
 		);
 		const page = pageForShipJudgmentBudget();
 		// Keep the positive fixture near the hosted limit while leaving headroom
-		// for platform-dependent URL/path serialization in Linux CI.
-		page.items[0]!.title.value = "X".repeat(298000);
+		// for the runtime-truth markup and platform-dependent URL serialization.
+		page.items[0]!.title.value = "X".repeat(293000);
 		expect(
 			Buffer.byteLength(renderEpicPageBundle(page, EPIC_SHAPE_NOW).html),
 		).toBeLessThanOrEqual(524288);

@@ -5083,6 +5083,7 @@ export function createBridgeApp(
 			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createEpicPageRouter({
 				store,
+				stuckThresholdMinutes: config.stuckThresholdMinutes,
 				projects,
 				linearApiKey: config.linearApiKey,
 				serializer: opts?.epicPageSerializer,
@@ -7110,8 +7111,11 @@ export async function startBridge(
 										?.leads.map((lead) => lead.chatChannel) ?? [],
 									generatedAt,
 								),
-							readItemFacts: (projectName, item) =>
-								readEpicItemFacts(store, projectName, item),
+							readItemFacts: (projectName, item, generatedAt) =>
+								readEpicItemFacts(store, projectName, item, {
+									generatedAt: generatedAt.toISOString(),
+									stuckThresholdMinutes: config.stuckThresholdMinutes,
+								}),
 							readSignals: (projectName, items, generatedAt) =>
 								readSignals(
 									{ stateStore: store },
@@ -11716,6 +11720,7 @@ export async function startBridge(
 	);
 	const epicResidual = createEpicResidualScan({
 		store,
+		stuckThresholdMinutes: config.stuckThresholdMinutes,
 		projects,
 		linearApiKey: config.linearApiKey,
 		runAttempt: runEpicPageRefreshAttempt,

@@ -26,6 +26,14 @@ export function discordLinkPair(url: string): DiscordLinkPair | null {
 	};
 }
 
+/** Build the canonical FLY-2639 app/web pair from exact guild and thread ids. */
+export function discordThreadLinkPair(
+	guildId: string,
+	threadId: string,
+): DiscordLinkPair | null {
+	return discordLinkPair(`https://discord.com/channels/${guildId}/${threadId}`);
+}
+
 /** HTTPS is always usable; the hosted page may enhance the primary on desktop. */
 export function renderDiscordLinkPair(
 	url: string,
