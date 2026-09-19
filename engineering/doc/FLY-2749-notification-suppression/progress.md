@@ -2,14 +2,14 @@
 issue: FLY-2749
 phase: implement
 phaseCursor: 7/7
-updated: 2026-09-19T05:06:58.469Z
-nextStep: Implementation verified. Create literal-last milestone commit, push
-  exact head, request effective code review, then open PR and complete
-  needs_review.
+updated: 2026-09-19T05:48:38.668Z
+nextStep: session_started handoff exception fixed and verified; commit
+  literal-last milestone, push, renew exact-head code review, then gate-wait for
+  CI billing recovery
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
 **phase**: implement (7/7)
-**next**: Implementation verified. Create literal-last milestone commit, push exact head, request effective code review, then open PR and complete needs_review.
+**next**: session_started handoff exception fixed and verified; commit literal-last milestone, push, renew exact-head code review, then gate-wait for CI billing recovery
