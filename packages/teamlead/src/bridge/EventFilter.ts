@@ -222,6 +222,10 @@ export type LeadNotificationEvidence =
 			proofRef: string;
 			recoveryConfirmed: true;
 			openAlert: boolean;
+	  }
+	| {
+			kind: "session_registered";
+			proofRef: string;
 	  };
 
 export interface LeadNotificationDecision {
@@ -316,6 +320,16 @@ export function leadNotificationDecision(
 					"monitoring_reestablished_confirmed",
 					evidence.proofRef,
 				);
+	}
+	if (
+		eventType === "session_started" &&
+		evidence.kind === "session_registered"
+	) {
+		return notificationDecision(
+			"audit_only",
+			"session_started_registered",
+			evidence.proofRef,
+		);
 	}
 	if (eventType !== "stage_changed" || evidence.kind !== "stage_recorded")
 		return notificationDecision("model", "unsupported_event");

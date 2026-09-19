@@ -217,6 +217,12 @@ CREATE TABLE IF NOT EXISTS mailbox (
   superseded_at TEXT,
   superseded_by TEXT,
   created_at TEXT NOT NULL,
+  delivery_disposition TEXT NOT NULL DEFAULT 'model'
+    CHECK(delivery_disposition IN ('model','audit_only')),
+  notification_policy_version TEXT,
+  notification_reason TEXT,
+  notification_proof_ref TEXT,
+  notification_decided_at TEXT,
   state TEXT NOT NULL DEFAULT 'QUEUED'
     CHECK(state IN ('QUEUED','LEASED','ACKED','DEAD')),
   claimed_by TEXT,
@@ -240,11 +246,13 @@ CREATE INDEX IF NOT EXISTS mailbox_live
   ON mailbox(to_agent, seq) WHERE state IN ('QUEUED','LEASED');
 CREATE INDEX IF NOT EXISTS mailbox_claim
   ON mailbox(to_agent, msg_class, priority, seq)
-  WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'lead';
+  WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'lead'
+    AND delivery_disposition = 'model';
 CREATE INDEX IF NOT EXISTS mailbox_lead_reclaim
   ON mailbox(to_agent, msg_class, priority, seq)
   WHERE carrier = 'inbox' AND state = 'LEASED'
-    AND recipient_kind = 'lead' AND batch_id IS NOT NULL;
+    AND recipient_kind = 'lead' AND batch_id IS NOT NULL
+    AND delivery_disposition = 'model';
 CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
   ON mailbox(claim_expires_at)
   WHERE state = 'LEASED' AND carrier = 'inbox';
@@ -276,7 +284,8 @@ CREATE INDEX IF NOT EXISTS mailbox_questions_by_recipient
 CREATE INDEX IF NOT EXISTS mailbox_questions_by_sender
   ON mailbox(from_agent, created_at) WHERE type = 'question';
 CREATE INDEX IF NOT EXISTS mailbox_deliverable_by_agent
-  ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED';
+  ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED'
+    AND (recipient_kind <> 'lead' OR delivery_disposition = 'model');
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_unique_response
   ON mailbox(ref_id) WHERE type = 'response';
 CREATE INDEX IF NOT EXISTS mailbox_ref_lookup

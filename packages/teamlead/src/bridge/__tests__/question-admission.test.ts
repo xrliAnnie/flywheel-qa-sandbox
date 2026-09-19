@@ -12,12 +12,15 @@ import {
 } from "../../StateStore.js";
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
+import { LeadInboxLoop } from "../lead-inbox-loop.js";
 import type { LeadRuntime } from "../lead-runtime.js";
+import { DEFAULT_MAILBOX_QUEUE_CONFIG } from "../mailbox-queue-config.js";
 import { QuestionAdmission } from "../question-admission.js";
 import { RuntimeRegistry } from "../runtime-registry.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
 const HEAD = "a".repeat(40);
+const ADMISSION_NOW = "2026-08-05T12:00:00.000Z";
 const menuEngineFlags = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -59,6 +62,7 @@ function harness(
 		reason: "legacy",
 	},
 	now?: () => Date,
+	leadTokenSavings: true | false | "unavailable" = true,
 ) {
 	const dbPath = join(
 		mkdtempSync(join(tmpdir(), "fly1572-admission-")),
@@ -87,6 +91,16 @@ function harness(
 		resolveCurrentWorkflowActivation: vi.fn(() => ({ kind: "none" })),
 		appendLeadEvent: vi.fn(() => 41),
 		workflowGatePresentationDisposition: vi.fn(() => gatePresentation),
+		getFlagValueRow: vi.fn((name: string) => {
+			if (name !== "lead_token_savings") return undefined;
+			if (leadTokenSavings === "unavailable") {
+				throw new Error("flag store unavailable");
+			}
+			return {
+				hasOverride: true,
+				raw: leadTokenSavings ? "1" : "0",
+			};
+		}),
 	};
 	const registry = new RuntimeRegistry();
 	registry.register(lead, {
@@ -122,6 +136,121 @@ function claim(queue: MailboxQueue) {
 }
 
 describe("QuestionAdmission mailbox claim service", () => {
+	it.each(["review_design", "review_code"])(
+		"classifies eligible %s gates as audit-only before materialization",
+		async (checkpoint) => {
+			const h = harness(
+				["Engineering"],
+				"running",
+				{ allow: true, reason: "legacy" },
+				() => new Date(ADMISSION_NOW),
+			);
+			const id = h.db.insertQuestion("exec-1", "lead-a", "review this", {
+				checkpoint,
+			});
+
+			expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+				deliver: false,
+				disposition: "audit_only",
+				auditDecision: {
+					policyVersion: "notification-v1",
+					reason: "review_gate_owned_by_reviewer",
+					proofRef: `question:${id}`,
+					decidedAt: ADMISSION_NOW,
+				},
+			});
+			expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
+			expect(h.queue.getById(id)).toMatchObject({
+				state: "LEASED",
+				source_ref: null,
+				delivery_content: null,
+			});
+		},
+	);
+
+	it.each([false, "unavailable"] as const)(
+		"keeps an eligible review gate on model delivery when the savings flag is %s",
+		async (leadTokenSavings) => {
+			const warn = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			const h = harness(
+				["Engineering"],
+				"running",
+				{ allow: true, reason: "legacy" },
+				() => new Date(ADMISSION_NOW),
+				leadTokenSavings,
+			);
+			h.db.insertQuestion("exec-1", "lead-a", "review this", {
+				checkpoint: "review_code",
+			});
+
+			expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+				deliver: true,
+			});
+			expect(h.store.appendLeadEvent).toHaveBeenCalledTimes(1);
+			warn.mockRestore();
+		},
+	);
+
+	it("keeps a quiet review answerable without a model call, then retires it on reviewer response", async () => {
+		const h = harness(
+			["Engineering"],
+			"running",
+			{ allow: true, reason: "legacy" },
+			() => new Date(ADMISSION_NOW),
+		);
+		const id = h.db.insertQuestion("exec-1", "lead-a", "review this", {
+			checkpoint: "review_code",
+		});
+		const adapter = { deliverBatch: vi.fn() };
+		const consumer = new LeadInboxLoop({
+			queue: h.queue,
+			leadId: "lead-a",
+			ownerEpoch: "owner-1",
+			adapter: adapter as never,
+			hasLiveSession: () => false,
+			handleProtocol: async () => ({ disposition: "protocol_applied" }),
+			revalidateModel: (row) => h.admission.revalidate(row),
+			now: () => new Date(ADMISSION_NOW),
+			batchIdFactory: () => "review-batch",
+			queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
+		});
+
+		expect(await consumer.tick()).toEqual({
+			ok: true,
+			protocolConsumed: 0,
+			modelConsumed: 0,
+		});
+		expect(adapter.deliverBatch).not.toHaveBeenCalled();
+		expect(h.queue.getById(id)).toMatchObject({
+			state: "QUEUED",
+			delivery_disposition: "audit_only",
+			relay_state: "open",
+			resolved_at: null,
+			acked_at: null,
+		});
+		expect(h.db.getPendingQuestions("lead-a").map(({ id }) => id)).toContain(
+			id,
+		);
+
+		expect(
+			h.db.insertResponseIfGateOpen({
+				questionId: id,
+				fromAgent: "reviewer-a",
+				content: "APPROVED",
+				expectedOwner: "exec-1",
+				expectedCheckpoint: "review_code",
+			}),
+		).toBe(true);
+		expect(h.queue.getById(id)).toMatchObject({
+			state: "ACKED",
+			delivery_disposition: "audit_only",
+			relay_state: "terminal_disposed",
+		});
+		expect(h.db.getPendingQuestions("lead-a")).toEqual([]);
+	});
+
 	it("materializes an eligible gate on its existing mailbox row", async () => {
 		const h = harness();
 		const deadline = "2026-08-06T12:00:00.000Z";
@@ -164,6 +293,62 @@ describe("QuestionAdmission mailbox claim service", () => {
 			question_id: id,
 			question_kind: "report",
 		});
+	});
+
+	it("classifies an exact completion-backed runner-stop report as audit-only", async () => {
+		const h = harness(
+			["Engineering"],
+			"running",
+			{ allow: true, reason: "legacy" },
+			() => new Date(ADMISSION_NOW),
+		);
+		const id = `rstop-${"d".repeat(32)}`;
+		const content =
+			"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1 exec=exec-1 route=- detail=completed";
+		expect(
+			h.db.recordRunnerStopDeclaration({
+				executionId: "exec-1",
+				leadId: "lead-a",
+				stateKey: `completion\0${"e".repeat(36)}\0needs_review\0-`,
+				content,
+				questionId: id,
+				derivedAtMs: Date.parse(ADMISSION_NOW),
+			}).status,
+		).toBe("sent");
+
+		expect(await h.admission.revalidate(claim(h.queue))).toMatchObject({
+			deliver: false,
+			disposition: "audit_only",
+			auditDecision: {
+				policyVersion: "notification-v1",
+				reason: "runner_stop_done_receipt",
+				proofRef: expect.stringMatching(
+					new RegExp(`^runner-stop:${id}:[0-9a-f]{64}$`),
+				),
+				decidedAt: ADMISSION_NOW,
+			},
+		});
+		expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it("keeps a declared blocked runner-stop report on model delivery", async () => {
+		const h = harness();
+		const id = `rstop-${"f".repeat(32)}`;
+		const content =
+			"RUNNER-STOPPED kind=runner_stopped reason=blocked issue=FLY-1 exec=exec-1 route=- detail=needs-help";
+		h.db.recordRunnerStopDeclaration({
+			executionId: "exec-1",
+			leadId: "lead-a",
+			stateKey: "session\0blocked",
+			content,
+			questionId: id,
+			derivedAtMs: Date.parse(ADMISSION_NOW),
+		});
+
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: true,
+		});
+		expect(h.store.appendLeadEvent).toHaveBeenCalledTimes(1);
 	});
 
 	it("permanently rejects a Lead-scope mismatch", async () => {

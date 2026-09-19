@@ -470,6 +470,17 @@ export interface PendingRunnerQuestion {
 	checkpoint: string | null;
 }
 
+export interface RunnerStopDeclarationRecord {
+	execution_id: string;
+	state_hash: string;
+	state_key: string;
+	content_hash: string;
+	content: string;
+	question_id: string;
+	derived_at_ms: number;
+	emitted_at_ms: number;
+}
+
 /**
  * FLY-887: the DAG workflow TURN — which phase-session (identified by its
  * `holder_exec_id`) currently holds the exclusive right to touch the shared
@@ -2085,6 +2096,25 @@ export class CommDB {
 			.immediate();
 	}
 
+	getRunnerStopDeclaration(
+		executionId: string,
+	): RunnerStopDeclarationRecord | undefined {
+		const row = this.db
+			.prepare(
+				`SELECT execution_id, state_hash, state_key, content_hash, content,
+				        question_id, derived_at_ms, emitted_at_ms
+				   FROM runner_stop_declarations WHERE execution_id = ?`,
+			)
+			.get(executionId) as RunnerStopDeclarationRecord | undefined;
+		if (!row) return undefined;
+		const stateHash = createHash("sha256").update(row.state_key).digest("hex");
+		const contentHash = createHash("sha256").update(row.content).digest("hex");
+		if (row.state_hash !== stateHash || row.content_hash !== contentHash) {
+			return undefined;
+		}
+		return row;
+	}
+
 	/**
 	 * FLY-245 D-b: atomically CLAIM a runner-lifecycle consent for execution.
 	 * `resolveGate` is an unconditional UPDATE (can't prevent a double-consume), so
@@ -2543,7 +2573,20 @@ export class CommDB {
 	markQuestionTerminalDisposed(questionId: string): boolean {
 		const result = this.db
 			.prepare(
-				`UPDATE mailbox SET relay_state = 'terminal_disposed'
+				`UPDATE mailbox SET relay_state = 'terminal_disposed',
+				   state = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN 'ACKED' ELSE state END,
+				   acked_at = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+				     ELSE acked_at END,
+				   claimed_by = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE claimed_by END,
+				   claim_expires_at = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE claim_expires_at END,
+				   batch_id = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE batch_id END,
+				   next_retry_at = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE next_retry_at END
 				 WHERE id = ? AND type = 'question'
 				   AND relay_state != 'terminal_disposed'`,
 			)

@@ -3698,7 +3698,7 @@ export function createEventRouter(
 					// progress can remain audit-only without fabricating delivery.
 					const stage = asString(payload.stage);
 					const inheritedDecision = Boolean(hookPayload.decision_route);
-					const stageEvidence = stageRecord
+					const notificationEvidence = stageRecord
 						? {
 								kind: "stage_recorded" as const,
 								proofRef: `stage-event:${stageRecord.row.event_id}`,
@@ -3713,19 +3713,26 @@ export function createEventRouter(
 										}
 									: {}),
 								...(["design_review", "code_review", "pr_created"].includes(
-									stage,
+									stage ?? "",
 								) && !stagePending.has("codex_trigger")
 									? { reviewOwnerRef: `runner:${session.execution_id}` }
 									: {}),
 							}
-						: undefined;
+						: event.event_type === "session_started" &&
+								!transitionRejected &&
+								session.status === "running"
+							? {
+									kind: "session_registered" as const,
+									proofRef: `session-event:${event.event_id}`,
+								}
+							: undefined;
 					const deliveryDecision =
-						tokenSavingsEnabled && stageEvidence
+						tokenSavingsEnabled && notificationEvidence
 							? [hookPayload, payload].map((part) =>
 									leadNotificationDecision(
 										event.event_type,
 										{ ...part },
-										stageEvidence,
+										notificationEvidence,
 									),
 								)
 							: [];

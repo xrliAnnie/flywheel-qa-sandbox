@@ -177,6 +177,11 @@ export interface MailboxRow {
 	superseded_at: string | null;
 	superseded_by: string | null;
 	created_at: string;
+	delivery_disposition: "model" | "audit_only";
+	notification_policy_version: string | null;
+	notification_reason: string | null;
+	notification_proof_ref: string | null;
+	notification_decided_at: string | null;
 	state: MailboxState;
 	claimed_by: string | null;
 	claim_expires_at: string | null;
@@ -225,6 +230,13 @@ export interface EnqueueMailboxInput {
 	senderRef: string;
 	priority?: MailboxPriority;
 	collapseKey?: string | null;
+}
+
+export interface MailboxAuditDecision {
+	policyVersion: string;
+	reason: string;
+	proofRef?: string | null;
+	decidedAt: string;
 }
 
 export type EnqueueMailboxResult =
@@ -355,7 +367,15 @@ function hasMailboxColumn(db: Database.Database, name: string): boolean {
 
 function addMailboxColumn(
 	db: Database.Database,
-	name: "delivered_at" | "notified_at" | "lease_retry_count",
+	name:
+		| "delivered_at"
+		| "notified_at"
+		| "lease_retry_count"
+		| "delivery_disposition"
+		| "notification_policy_version"
+		| "notification_reason"
+		| "notification_proof_ref"
+		| "notification_decided_at",
 	sql: string,
 ): void {
 	if (hasMailboxColumn(db, name)) return;
@@ -403,6 +423,31 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 			"lease_retry_count",
 			"ALTER TABLE mailbox ADD COLUMN lease_retry_count INTEGER NOT NULL DEFAULT 0",
 		);
+		addMailboxColumn(
+			db,
+			"delivery_disposition",
+			"ALTER TABLE mailbox ADD COLUMN delivery_disposition TEXT NOT NULL DEFAULT 'model' CHECK(delivery_disposition IN ('model','audit_only'))",
+		);
+		addMailboxColumn(
+			db,
+			"notification_policy_version",
+			"ALTER TABLE mailbox ADD COLUMN notification_policy_version TEXT",
+		);
+		addMailboxColumn(
+			db,
+			"notification_reason",
+			"ALTER TABLE mailbox ADD COLUMN notification_reason TEXT",
+		);
+		addMailboxColumn(
+			db,
+			"notification_proof_ref",
+			"ALTER TABLE mailbox ADD COLUMN notification_proof_ref TEXT",
+		);
+		addMailboxColumn(
+			db,
+			"notification_decided_at",
+			"ALTER TABLE mailbox ADD COLUMN notification_decided_at TEXT",
+		);
 		db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
 				ON mailbox(claim_expires_at)
 				WHERE state = 'LEASED' AND carrier = 'inbox'`);
@@ -414,6 +459,9 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 			[
 				"recipient_kind",
 				"to_agent",
+				"msg_class",
+				"carrier",
+				"state",
 				"seq",
 				"source_ref",
 				"type",
@@ -423,9 +471,25 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 				"claim_expires_at",
 				"ref_id",
 				"superseded_by",
+				"delivery_disposition",
 			].every((name) => hasMailboxColumn(db, name))
 		) {
-			db.exec(`CREATE INDEX IF NOT EXISTS mailbox_dead_scan
+			db.exec(`DROP INDEX IF EXISTS mailbox_claim;
+				DROP INDEX IF EXISTS mailbox_lead_reclaim;
+				DROP INDEX IF EXISTS mailbox_deliverable_by_agent;
+				CREATE INDEX mailbox_claim
+				ON mailbox(to_agent, msg_class, priority, seq)
+				WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'lead'
+				  AND delivery_disposition = 'model';
+				CREATE INDEX mailbox_lead_reclaim
+				ON mailbox(to_agent, msg_class, priority, seq)
+				WHERE carrier = 'inbox' AND state = 'LEASED'
+				  AND recipient_kind = 'lead' AND batch_id IS NOT NULL
+				  AND delivery_disposition = 'model';
+				CREATE INDEX mailbox_deliverable_by_agent
+				ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED'
+				  AND (recipient_kind <> 'lead' OR delivery_disposition = 'model');
+				CREATE INDEX IF NOT EXISTS mailbox_dead_scan
 				ON mailbox(recipient_kind, to_agent, seq)
 				WHERE state = 'DEAD' AND carrier = 'inbox';
 				CREATE INDEX IF NOT EXISTS mailbox_runner_inflight_by_recipient
@@ -941,6 +1005,7 @@ export class MailboxQueue {
 
 	countDeliverable(toAgent?: string): number {
 		const duePredicate = `carrier = 'inbox' AND state = 'QUEUED'
+			AND (recipient_kind <> 'lead' OR delivery_disposition = 'model')
 			AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))`;
 		const row =
 			toAgent === undefined
@@ -1067,6 +1132,82 @@ export class MailboxQueue {
 					input.batchId,
 				).changes === 1
 		);
+	}
+
+	releaseClaimForAudit(input: {
+		id: string;
+		ownerEpoch: string;
+		batchId: string;
+		decision: MailboxAuditDecision;
+	}): boolean {
+		const id = requiredText(input.id, "id");
+		const ownerEpoch = requiredText(input.ownerEpoch, "ownerEpoch");
+		const batchId = requiredText(input.batchId, "batchId");
+		const policyVersion = requiredText(
+			input.decision.policyVersion,
+			"policyVersion",
+		);
+		const reason = requiredText(input.decision.reason, "reason");
+		const proofRef = input.decision.proofRef?.trim() || null;
+		assertUtcIsoTimestamp(input.decision.decidedAt, "decidedAt");
+		return this.db
+			.transaction(() => {
+				const row = this.db
+					.prepare(
+						`SELECT id,delivery_id,ref_id FROM mailbox
+						 WHERE id = ? AND recipient_kind = 'lead' AND msg_class = 'model'
+						   AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?
+						   AND delivery_disposition = 'model'
+						   AND delivered_at IS NULL AND notified_at IS NULL`,
+					)
+					.get(id, ownerEpoch, batchId) as
+					| { id: string; delivery_id: string; ref_id: string | null }
+					| undefined;
+				if (!row) return false;
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET state = 'QUEUED', claimed_by = NULL,
+						   claim_expires_at = NULL, batch_id = NULL,
+						   delivery_disposition = 'audit_only',
+						   notification_policy_version = ?, notification_reason = ?,
+						   notification_proof_ref = ?, notification_decided_at = ?,
+						   next_retry_at = '9999-12-31T23:59:59.999Z', last_error = NULL
+						 WHERE id = ? AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?
+						   AND delivery_disposition = 'model'
+						   AND delivered_at IS NULL AND notified_at IS NULL`,
+					)
+					.run(
+						policyVersion,
+						reason,
+						proofRef,
+						input.decision.decidedAt,
+						id,
+						ownerEpoch,
+						batchId,
+					);
+				if (updated.changes !== 1) return false;
+				this.db
+					.prepare(
+						`INSERT INTO mailbox_log
+						 (event_id,message_id,subject_id,event,at,row_json)
+						 VALUES (?, ?, ?, 'processed', ?, ?)`,
+					)
+					.run(
+						`notification-audit:${row.delivery_id}:${policyVersion}`,
+						id,
+						row.ref_id ?? id,
+						input.decision.decidedAt,
+						JSON.stringify({
+							deliveryId: row.delivery_id,
+							disposition: "audit_only",
+							policyVersion,
+							reason,
+							proofRef,
+						}),
+					);
+				return true;
+			})
+			.immediate();
 	}
 
 	recordTickStarted(leadId: string, now: string): void {
@@ -1225,8 +1366,9 @@ export class MailboxQueue {
 				let rows = this.db
 					.prepare(
 						`SELECT * FROM mailbox
-					  WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
-					    AND msg_class = ? AND state = 'QUEUED' AND batch_id IS NULL
+						  WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
+						    AND msg_class = ? AND state = 'QUEUED' AND batch_id IS NULL
+						    AND delivery_disposition = 'model'
 					    AND (next_retry_at IS NULL OR next_retry_at <= ?)
 					  ORDER BY priority, seq LIMIT ?`,
 					)
@@ -1393,6 +1535,8 @@ export class MailboxQueue {
 						    AND (? IS NULL OR candidate.to_agent = ?)
 						    AND (? IS NULL OR candidate.msg_class = ?)
 						    AND candidate.state = 'QUEUED' AND candidate.batch_id IS NULL
+						    AND (candidate.recipient_kind <> 'lead'
+						      OR candidate.delivery_disposition = 'model')
 						    AND (candidate.next_retry_at IS NULL OR candidate.next_retry_at <= ?)
 						    AND (? = 'lead' OR (
 						      SELECT COUNT(DISTINCT active.batch_id) FROM mailbox AS active
@@ -1431,6 +1575,7 @@ export class MailboxQueue {
 						  WHERE recipient_kind = ? AND carrier = 'inbox'
 						    AND to_agent = ? AND from_agent = ? AND msg_class = ?
 						    AND state = 'QUEUED' AND batch_id IS NULL
+						    AND (recipient_kind <> 'lead' OR delivery_disposition = 'model')
 						    AND lease_retry_count = ? AND retry_count = ?
 						    AND ((? IS NOT NULL AND collapse_key = ?)
 						      OR (? IS NULL AND created_at >= ? AND created_at <= ?))

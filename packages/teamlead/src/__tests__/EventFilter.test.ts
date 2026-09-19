@@ -205,6 +205,27 @@ describe("EventFilter", () => {
 });
 
 describe("routine event delivery disposition", () => {
+	it("audits session_started only after authoritative session registration", () => {
+		expect(
+			leadNotificationDecision(
+				"session_started",
+				{ status: "running" },
+				{
+					kind: "session_registered",
+					proofRef: "session-event:started-1",
+				},
+			),
+		).toEqual({
+			disposition: "audit_only",
+			reason: "session_started_registered",
+			policyVersion: "notification-v1",
+			proofRef: "session-event:started-1",
+		});
+		expect(
+			leadNotificationDecision("session_started", { status: "running" }),
+		).toMatchObject({ disposition: "model", reason: "proof_missing" });
+	});
+
 	it("audits review and PR stages only with authoritative no-action proof", () => {
 		for (const stage of ["design_review", "code_review", "pr_created"]) {
 			expect(
