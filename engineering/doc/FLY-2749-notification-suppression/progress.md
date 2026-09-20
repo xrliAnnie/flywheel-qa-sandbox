@@ -2,13 +2,13 @@
 issue: FLY-2749
 phase: implement
 phaseCursor: 7/7
-updated: 2026-09-20T21:59:17.214Z
-nextStep: "Write literal-last milestone commit, request exact-head code review,
-  then push PR #1275 and complete needs_review"
+updated: 2026-09-20T22:24:13.287Z
+nextStep: Write revised literal-last milestone, push exact head, re-request code
+  review, then require exact-head CI green before needs_review completion
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
 **phase**: implement (7/7)
-**next**: Write literal-last milestone commit, request exact-head code review, then push PR #1275 and complete needs_review
+**next**: Write revised literal-last milestone, push exact head, re-request code review, then require exact-head CI green before needs_review completion
