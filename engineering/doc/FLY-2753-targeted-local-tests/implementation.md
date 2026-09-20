@@ -48,26 +48,26 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 - OTHER：仅通用父目录/文件名命中，测试其他未改脚本、模块或 manifest；无本单规则/同步器依赖。
 - META：未改运行时/打包/配置引用，未直接验证本次规则；manifest 仅增加 prebuild，不改运行时 exports/deps。
 
-- Q1: `.flywheel/agents/engineering/engineer-executor.md` (8 matches)
-- Q2: `engineer-executor.md` (11 matches)
-- Q3: `.flywheel/agents/engineering` (32 matches)
-- Q4: `.flywheel/agents/engineering/qa-executor.md` (10 matches)
-- Q5: `qa-executor.md` (32 matches)
-- Q6: `.flywheel/agents/general-executor.md` (15 matches)
-- Q7: `general-executor.md` (19 matches)
-- Q8: `.flywheel/agents` (75 matches)
-- Q9: `scripts/lib/local-verification-policy.md` (3 matches)
-- Q10: `local-verification-policy.md` (3 matches)
-- Q11: `scripts/lib` (138 matches)
-- Q12: `scripts/sync-phase-protocols.mjs` (4 matches)
-- Q13: `sync-phase-protocols.mjs` (5 matches)
-- Q14: `scripts` (873 matches)
-- Q15: `packages/teamlead/package.json` (16 matches)
-- Q16: `package.json` (134 matches)
-- Q17: `packages/teamlead` (604 matches)
-- Q18: `packages/teamlead/src/__tests__/local-verification-policy.test.ts` (2 matches)
-- Q19: `local-verification-policy.test.ts` (3 matches)
-- Q20: `packages/teamlead/src/__tests__` (111 matches)
+- Q1: `.flywheel/agents/engineering/engineer-executor.md` (10 matches)
+- Q2: `engineer-executor.md` (13 matches)
+- Q3: `.flywheel/agents/engineering` (34 matches)
+- Q4: `.flywheel/agents/engineering/qa-executor.md` (12 matches)
+- Q5: `qa-executor.md` (34 matches)
+- Q6: `.flywheel/agents/general-executor.md` (17 matches)
+- Q7: `general-executor.md` (21 matches)
+- Q8: `.flywheel/agents` (77 matches)
+- Q9: `scripts/lib/local-verification-policy.md` (5 matches)
+- Q10: `local-verification-policy.md` (5 matches)
+- Q11: `scripts/lib` (140 matches)
+- Q12: `scripts/sync-phase-protocols.mjs` (5 matches)
+- Q13: `sync-phase-protocols.mjs` (7 matches)
+- Q14: `scripts` (876 matches)
+- Q15: `packages/teamlead/package.json` (17 matches)
+- Q16: `package.json` (135 matches)
+- Q17: `packages/teamlead` (605 matches)
+- Q18: `packages/teamlead/src/__tests__/local-verification-policy.test.ts` (3 matches)
+- Q19: `local-verification-policy.test.ts` (4 matches)
+- Q20: `packages/teamlead/src/__tests__` (112 matches)
 
 <details>
 <summary>逐项匹配与排除清单</summary>
@@ -661,6 +661,7 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 | `engineering/doc/FLY-2753-targeted-local-tests/design-verification.md` | Q13 | DOC |
 | `engineering/doc/FLY-2753-targeted-local-tests/design.html` | Q14 | DOC |
 | `engineering/doc/FLY-2753-targeted-local-tests/exploration.md` | Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8 | DOC |
+| `engineering/doc/FLY-2753-targeted-local-tests/implementation.md` | Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q20 | DOC |
 | `engineering/doc/FLY-2753-targeted-local-tests/plan.md` | Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q20 | DOC |
 | `engineering/doc/FLY-2753-targeted-local-tests/research.md` | Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q14, Q15, Q16, Q17, Q18, Q19, Q20 | DOC |
 | `engineering/doc/FLY-293-cmux-stale-pin-reaper/exploration.md` | Q14, Q17 | DOC |
@@ -1209,6 +1210,7 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 | `scripts/lib/buddy-captain-preview.sh` | Q14, Q17 | META |
 | `scripts/lib/buddy-connect.sh` | Q11, Q14 | META |
 | `scripts/lib/host-config.sh` | Q14 | META |
+| `scripts/lib/local-verification-policy.md` | Q14 | KEEP（由新合同读取） |
 | `scripts/lib/qa-fly-529-fire-bridge-alert.mjs` | Q14, Q17 | META |
 | `scripts/lib/qa-multilead.sh` | Q11, Q14 | META |
 | `scripts/lib/qa-room.sh` | Q11, Q14 | META |
@@ -1275,6 +1277,7 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 | `scripts/spike-mailbox-wake.sh` | Q14 | META |
 | `scripts/spike-tmux-runner.sh` | Q14 | META |
 | `scripts/sync-gbrain-docs.sh` | Q14 | META |
+| `scripts/sync-phase-protocols.mjs` | Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q13, Q14 | KEEP（由新合同执行） |
 | `scripts/test-auto-approve.sh` | Q14 | OTHER |
 | `scripts/test-cmux-sync-hooks-integration.sh` | Q14 | OTHER |
 | `scripts/test-cmux-sync.sh` | Q14 | OTHER |
@@ -1295,3 +1298,5 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 </details>
 
 具体排除核验：`migrate-agents-path.test.ts` 自建 `# generic` / `# qa` fixture；`ConfigLoader.test.ts` 用 mock YAML；`test-pm-executor-contract.sh` 检验另一个 PM 角色；`package-onboard-smoke.test.sh` 检查 `agents/qa-executor.md`（不同文件）存在性；`script-sanity.test.sh` 检验独立 shell 安装 helper；`fly247/fly574-bash-suites.test.ts` 包装固定的未改 shell 套件；`qa-fly-1244-os-proof.mjs` 用 teamlead manifest 定位 createRequire，不消费 prebuild；均不是本次规则消费者。
+
+提交后复查：新增 source 与同步器也已进入 git grep 索引；所有新增匹配仅为本单 source、同步器、package prebuild 或记录自身，测试选择不变。三份角色先验证非空，旧命令/receipt 的 grep exit 1；逐文件剥除允许改动段后与 RED anchor 对比，其他文字逐字相同。
