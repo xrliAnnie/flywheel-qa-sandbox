@@ -30,3 +30,14 @@ http://127.0.0.1:61308/fw-reports-5e694e/r/3d736997c050fd95dd312acc2517206c/
 - 后续：处理评审、记录裁决，必要时更新并重发 HTML；提交/push 最终记录，运行精确阶段完成命令，再 park。目标澄清若未解决，必须明确交接给后继节点，不写成实施完成。
 
 修订后的 HTML 将重新提交、发布并报告，旧 URL 仅保留为 R1 历史，不代表最新设计。
+
+## R2 提交与最新交付
+
+修订提交 `7a526e2fb` 已推送。四个计划命令块通过 `bash -n`；五个实际入口文件经 `git cat-file -e HEAD:<path>` 与工作树存在性核对通过。HTML 留言脚本 14 项检查再次通过。
+
+第二轮 gate `220b6002-630e-4d22-ab37-ad91506160e5`，request `c338c95f-cfb8-45e8-b722-4bf540f0363f` accepted，当前待有效裁决。
+
+最新托管页（替代 R1 页面）：
+http://127.0.0.1:61308/fw-reports-5e694e/r/c765bc108893c4cc49d087da12a02d9e/
+
+`publishOnly=true`；HTTP 200、单一 script nonce、占位符无残留、匹配 CSP、修订内容均已核对。DESIGN-HTML ready 已报告 Lead，receipt `b05b072d-af4b-43a5-9a0c-725dd14cd4fb`。本地 Mermaid 渲染限制仍存在，按规定保留明确占位与源码。
