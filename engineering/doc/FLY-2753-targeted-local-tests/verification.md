@@ -23,8 +23,10 @@ http://127.0.0.1:61308/fw-reports-5e694e/r/3d736997c050fd95dd312acc2517206c/
 
 读取托管页：HTTP 200；`__CSP_NONCE__` 无残留；单一 script nonce；CSP 包含匹配 nonce；页面 9836 字节。已运行 `ask --report "DESIGN-HTML ready: ..."`，报告 id `eb718ab5-a0e1-48b7-a1b9-f6512e9bf141`。本地渲染失败也已单独报告。
 
-## 待裁决
+## R1 评审及修订
 
-- 设计评审 gate：`f9d65e54-60a4-4c92-ab02-534d9ee34d1a`，request `a2979284-a1a9-46d2-9092-be619d7007c8`。已 accepted；尚未取得有效 reviewVerdict，不得完成设计阶段。
-- Lead 目标澄清：`70231531-d5e3-4be0-ba98-0b1eb23397ad`。生产已有实现，但当前 sandbox 缺目标资产，不能把外部结果算成本分支验收。
+- 设计评审 gate：`f9d65e54-60a4-4c92-ab02-534d9ee34d1a`，request `a2979284-a1a9-46d2-9092-be619d7007c8`。R1 有效 verdict = CHANGES_REQUESTED，完整反馈保存在 design-review-r1.json。两项 HIGH 已按仓库证据修订：当前 config 路由的 executor 文件才是本仓实施对象；假绿守卫直接进入最终规则文字。所有 advisories 一并处理：CI 证据按目标实际任务、文件存在检查 fail-closed、限制消费者搜索范围、逐项盘点 helper/skill 残留。下一轮批准前仍不得完成设计阶段。
+- Lead 目标澄清：`70231531-d5e3-4be0-ba98-0b1eb23397ad`。当前 sandbox 有实际生效的 executor 入口，应在该授权范围继续，不等不存在的生产节点。生产三份 nodes 与同步验收仍按单独目标记录，不算作本分支成果。
 - 后续：处理评审、记录裁决，必要时更新并重发 HTML；提交/push 最终记录，运行精确阶段完成命令，再 park。目标澄清若未解决，必须明确交接给后继节点，不写成实施完成。
+
+修订后的 HTML 将重新提交、发布并报告，旧 URL 仅保留为 R1 历史，不代表最新设计。

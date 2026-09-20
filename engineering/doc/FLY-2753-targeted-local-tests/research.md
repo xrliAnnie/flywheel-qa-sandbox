@@ -3,38 +3,41 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 日期: 2026-09-20
 基于: exploration.md
 
-## 可复核证据
+## 当前仓库的权威证据
 
-所有生产源观察来自 `3d67d8350`，只读；当前 sandbox 起点 `1855f7a1a`。这是仓库内合同审计，不依赖外部产品文档或互联网建议。
-
-| 消费者/源 | 观察 | 设计影响 |
+| 源/消费者 | 实测 | 决策 |
 |---|---|---|
-| `.flywheel/agents/nodes/implement.md` 第 6 步 | `180bdaa3e^` 要求 lint、全仓 build、全量测试、PACKAGE_GATE_RECEIPT；当前源已是定向规则 | 在授权目标逐项核查，已满足就保留，不能重复重写 |
-| `.flywheel/agents/nodes/engineer.md` 第 5 步 | 同一全仓门及 RPC 例外；当前源已改 | 与 implement 保持验证含义一致 |
-| `.flywheel/agents/nodes/qa.md` 第 3 步 | 曾引用全量命令和回执；当前源已改 | QA 保留独立产品验证和红灯 FAIL |
-| `scripts/sync-phase-protocols.mjs` | 5 个 canonical 类型；9 个投影映射；只同步 BEGIN/END 块，先校验再写 | 验证条款位于块外，不要无故改生成器 |
-| `packages/teamlead/phase-protocols/{implement,qa}.md` | implement 不在普通头请求全量；QA 在冻结头 `ci-full ensure`，PASS 前必须 exit 0 | 保留原文和职责 |
-| `packages/teamlead/package.json` prebuild | 强制 `sync-phase-protocols.mjs --check` | 同步检查不可削弱；显式检查足以验证投影 |
-| `scripts/__tests__/package-gate.test.mjs` | 现有测试 `active runner handbooks require targeted local verification and CI-owned full evidence` 已覆盖三份条款 | 优先运行这个独立命名测试；不要重跑整个重型套件 |
-| `scripts/__tests__/fly2533-phase-protocol-assets.test.sh` | 包含投影漂移、损坏标记、非法参数负例，也有构建/打包下游依赖 | 仅在改动相关协议/生成器/包资产时运行，并准备其定向构建前置 |
-| `.github/workflows/ci.yml` | 当前生产存在分片和 `CI OK` / `CI Scope OK` 聚合分支 | job 数量不写死；核对实际完整任务集合与当前 head |
+| `.flywheel/config.yaml:49–84` | engineer/qa/general 的 agent_file 指向三份 executor 文件 | 以这些实际入口作为当前实现清单 |
+| `engineering/engineer-executor.md:25` | 要求全仓 build + `test:packages:run`，description 有 full-repo gates | 改验证段与对应描述，保留其他条款 |
+| `engineering/qa-executor.md:26` | 本机全量测试命令 | 改为相同定向规则，保留真实产品验证 |
+| `general-executor.md:13` | 转指 engineer 时重申全仓 build/test | 改转指说明并纳入同一验证规则 |
+| `packages/qa-framework/agents/qa-parallel-executor.md:20,155` | `pnpm test` 工具例及一键 pre-ship helper 推荐 | 只修相关验证文字，取消 runner 完成门调用全量 helper 的推荐 |
+| `scripts/pre-ship-check.sh:38–48` | 本机 build/typecheck/lint/全量包测试 | 工具逻辑本单不改；上游规则明确禁止用它满足本机完成门 |
+| `.claude/skills/flywheel-{git-workflow,tdd,context}/SKILL.md` | 本工作树生成且未跟踪的技能文件有 root pnpm test 示例 | 不编辑生成物；生效守则明确覆盖这些较宽默认命令 |
+| `packages/edge-worker/src/skill-templates/{flywheel-git-workflow,flywheel-tdd,flywheel-context}.ts` | 上述技能的跨项目模板源 | 不改变全项目默认技能；本项目验证规则覆盖，按表给出豁免，不暗称全仓已零残留 |
+| `.github/workflows/ci.yml` | `Build & Test` 执行全量包测试；另有 payload-distribution job | 全量证据使用该 head 完整任务集合，不只看一个 job |
+| `package.json` | root pnpm test = `pnpm -r test`，build/typecheck 也是递归 | 守则禁用通过别名间接运行全量 |
 
-生产源只读运行 `node scripts/sync-phase-protocols.mjs --check` 返回 `phase protocols: 9 projections checked`。这是生产源投影一致性证据，**不是 sandbox 检查通过，也不是 CI 全绿**。
+本仓不存在 `CI OK`、`CI Scope OK`、`ci-full ensure`、nodes 目录、phase-protocols 或同步器。它们不能成为本仓唯一通过条件。
 
-## 选测试的具体步骤
+## 生产源对照（只读，不是本分支成果）
 
-1. 从 PR base 与 head 的 diff 获取改动文件，按所属 `package.json` 确认真实包名。根脚本或角色文档不虚构 owning package。
-2. 查同包中直接覆盖改动的测试；用改动文件完整路径、文件名、父目录分别 `git grep -lF` 找直接消费者。保留匹配测试，逐一记录无关匹配的排除依据。文本搜索不是完整依赖图，不将零匹配当成证明。
-3. TypeScript 改动在所属包运行 `vitest related <files> --run` 辅助追踪导入关系；保留项目原有脚本必要参数。跨包接口变化继续追踪直接依赖包的相关测试和类型检查。
-4. 所有新增 `scripts/__tests__/*.test.sh` 都运行。已有相关 shell/Node 测试同样纳入；不把整个包套件当默认兜底。
-5. 记录命令、退出码、实际测试数量和 head。没有匹配项目、没有测试收集、跳过或未执行不得报绿。环境失败须据实报告，不能沿用 PACKAGE_GATE_RECEIPT 的本机全量例外判通过。
+生产 `3d67d8350` 的 `.flywheel/agents/nodes/{implement,qa,engineer}.md` 已有定向规则，但没有把零匹配/缺脚本守卫完整写进最终规则原文。`scripts/sync-phase-protocols.mjs` 同步五种 canonical 文本至九个角色块；验证段位于块外。生产 prebuild 保留 `--check`。一次只读检查返回 `phase protocols: 9 projections checked`，不可当作本仓或 CI 通过。
 
-## 持久化、兼容与回退
+如果后继获授权的是生产目标：按实际路由扩展同一规则核查，保留 `ci-full ensure` 的冻结头所有权、`CI OK` 完整证据与 `CI Scope OK` 不足以证明全量的区别。只有该目标才执行同步脚本。不得把整个节点体系复制到 sandbox。
 
-没有数据库/API/身份变更。`implement`、`qa`、`engineer`、阶段标签、执行身份、门凭据均不更名。只删除角色验证段的本机全量回执要求；`scripts/package-gate.mjs` 及 CI 的旧回执格式仍可能有消费者，不删除、不迁移。
+## 定向选择与防假绿
 
-投影同步默认 `--check`，需要更新时先改 canonical，再 `--write`，随后 `--check`。本设计并不需要改 canonical，因为其冻结头语义已正确；如实施现场有旧文本才做最小修正。回退只还原本单验证段/定向测试，成对恢复任何实际改过的 canonical/投影，复跑检查，不回滚别人的提交，不重启服务。
+1. 从 PR base/head diff 列出文件，读所属 package.json 获取真实包名及 scripts。根文档/脚本无需虚构所属包。
+2. 同包直接覆盖测试 + 直接消费方测试。按 import specifier（代码中实际导入的路径/包名）搜索相关源码和测试目录；不对 `index.ts`、`types.ts`、裸父目录做全仓无界搜索。记录选择依据与边界排除即可。
+3. TypeScript 可用所在包 `vitest related <files> --run` 辅助；跨包依赖和非导入式脚本引用另列显式测试。related 零收集不能自动通过。
+4. 实际选中包名、每个要求脚本的存在性、执行结果、收集/通过数必须有记录。`--fail-if-no-match` 防零匹配，但不能替代逐包 scripts 检查。缺少 script 时使用已存在的项目等价检查；没有等价检查则报未验证。
+5. 纯规则变更运行合同验证，明确无编译产物变化，因此 build/typecheck 不适用。新增 shell 测试必须运行。不能以“文档”为由省掉合同验证。
 
-## 仍需现场确认
+已实测 `pnpm --filter "no-such-pkg-fly2753..." --fail-if-no-match list --depth -1 --json` exit 1。评审提供的 pnpm 默认零匹配/缺 script 仍 exit 0 与脚本结构一致，因此守卫必须进入最终角色文字。
 
-sandbox 缺少目标机制且生产同 issue 已实现。Lead 的目标答复必须进交接记录；若授权目标是现有实现，则逐条验证并只补缺口。未获得目标不能宣称实施就绪/实现完成，更不能借生产只读检查关闭 sandbox 的验收项。
+## 身份、持久化与回退
+
+无稳定 ID、显示标签、数据库/API 或凭据变更。执行身份、阶段、审批与部署边界全部保留。PACKAGE_GATE_RECEIPT 在本仓目标文件不存在；若其他授权目标出现，只删除本机完成门的例外条款，不删除 CI 回执工具。
+
+回退只恢复本单验证文字及合同测试；如果实际改过生产 canonical/投影则成对回退并重跑同步检查。不改配置路由、不重启服务、不撤销其他提交。
