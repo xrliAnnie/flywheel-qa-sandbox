@@ -118,3 +118,45 @@ pnpm --filter flywheel-teamlead exec vitest run \
 ```
 
 该修订需要新的 commit、精确 HEAD code review 与 CI；不能用 `d97702f71` 的 review/CI 替代。
+
+## 与最新 main 合并后的实现复验（2026-09-20）
+
+技术同步把 `origin/main@a62456f76` 合入本分支，merge commit 为 `405c6c323`。唯一内容冲突位于 FLY-2567 compatibility manifest：保留 main 上 FLY-2737 的 rationale，同时保留本单对 `flywheel-comm/src/db.ts` 的 rationale，并按合并后的真实文件重新计算 digest `c36963153a2b16802f09cb95609ada71d24970772f01ad85837fae12824c8d40`；没有选择性丢弃任一分支的证据成员。
+
+在源代码等价头 `a419a769c` 上重新执行受影响包的定向回归：
+
+```
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/lead-token-savings-drift.test.ts \
+  src/__tests__/EventFilter.test.ts \
+  src/__tests__/event-route.test.ts
+# 3 files, 144 tests PASS
+
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-comm exec vitest run \
+  src/__tests__/mailbox-queue.test.ts \
+  src/__tests__/mailbox-queue-schema.test.ts \
+  src/__tests__/mailbox-query-plans.fly2008.test.ts
+# 3 files, 45 tests PASS
+
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/EventFilter.test.ts \
+  src/bridge/__tests__/question-admission.test.ts \
+  src/bridge/__tests__/lead-inbox-loop.test.ts \
+  src/bridge/__tests__/bootstrap-route.test.ts
+# 4 files, 94 tests PASS
+
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/event-route.test.ts \
+  src/__tests__/gate-poller.test.ts \
+  src/bridge/__tests__/lead-inbox-runtime.test.ts
+# 3 files, 178 tests PASS
+
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/session-lifecycle.integration.test.ts \
+  src/__tests__/bridge-e2e.test.ts
+# 2 files, 11 tests PASS
+```
+
+同一源代码头的静态门禁也重新执行：`pnpm lint` exit 0，仅报告仓库既有 advisory；`pnpm -r build` 的 24 个可构建 workspace package 全部 PASS。没有运行 `pnpm test:packages:run`：批准后的 handoff 明确把本节点限定为受影响包验证，且 exact-head aggregate/CI 由 QA 在冻结头请求；本节不把 472 个定向断言、lint 或 build 表述为 aggregate CI。
+
+本次实现阶段仍未部署、未做真机延迟探针、未收集上线后 24h after 输出。生产验收继续由 QA/上线后观察使用同一统计脚本完成。

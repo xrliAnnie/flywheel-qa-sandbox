@@ -15,7 +15,6 @@ TROUBLESHOOTING: https://pptr.dev/troubleshooting
     at Socket.emit (node:events:520:22)
     at endReadableNT (node:internal/streams/readable:1729:12)
     at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
-
 Generating single mermaid chart
 
 Error: Failed to launch the browser process!
@@ -33,4 +32,3 @@ TROUBLESHOOTING: https://pptr.dev/troubleshooting
     at Socket.emit (node:events:520:22)
     at endReadableNT (node:internal/streams/readable:1729:12)
     at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
-
