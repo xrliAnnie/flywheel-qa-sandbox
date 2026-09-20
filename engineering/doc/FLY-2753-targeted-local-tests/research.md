@@ -3,43 +3,38 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 日期: 2026-09-20
 基于: exploration.md
 
-## 本仓审计
+## 当前源码证据
 
-| 来源 | 实际证据 | 设计意义 |
+基线为本仓 `1855f7a1a`；设计提交不改变下列产品文件。
+
+| 文件 | 精确证据 | 处理 |
 | --- | --- | --- |
-| `CLAUDE.md`、产品体验规范、架构/参考文档 | runner 隔离执行，减少 founder 注意力负担 | 避免重复计算，不新增审批或调度层 |
-| `.flywheel/agents/engineering/engineer-executor.md:25` | 本机 `pnpm -r build` + `pnpm test:packages:run` | 旧版问题真实存在，但非题目要求的现代三文件 |
-| `.flywheel/agents/engineering/qa-executor.md:26` | QA 引用全量包测试 | 旧版独立验证也会重复执行 |
-| `.github/workflows/ci.yml:65` | CI 运行全量 package suite | 远端已有全量执行；此 sandbox 非题目所述现代 16-job 布局 |
-| `.flywheel/agents/general-executor.md` | general 摘要也写 full-repo | 披露已有相邻条款；本单不顺手改 |
+| `.flywheel/agents/engineering/engineer-executor.md:25` | `Self-verify — FULL REPO, not just changed files`；`pnpm lint` + `pnpm -r build` + `pnpm test:packages:run` + 新 shell tests | 替换整条验证规则，保留其他 work loop |
+| `.flywheel/agents/engineering/qa-executor.md:26` | `the package's own tests where relevant: pnpm test:packages:run` | 移除全量引用，保留真实行为验证 |
+| `.flywheel/agents/general-executor.md:13` | engineer 引用后有 `TDD, full-repo pnpm lint + pnpm -r build + tests` | 只换该括号里的验证摘要并投影同一规则 |
+| `.flywheel/config.yaml:50,55,84` | 指向上述真实角色路径 | 不改 routing/identity |
+| `packages/teamlead/package.json` | 有 build/typecheck/test:run，无 prebuild | 新增同步 --check 前置，不改 build 命令 |
+| `.github/workflows/ci.yml` | Build & Test 运行 `pnpm build`、typecheck、lint、`pnpm test:packages:run`；另有 payload-distribution | 现有 CI 已覆盖 teamlead 包测试；不新增 workflow |
+| `packages/teamlead/vitest.config.ts` | 默认 Vitest 发现 src 内测试，使用隔离 CommDB setup | 新合同测试放同包，纳入现有 full CI |
 
-## 现代目标布局：仅只读参考，不能混同本仓
+本仓三个目标没有 PACKAGE_GATE_RECEIPT 或 onTaskUpdate 文本：不发明待删除条款。对 PACKAGE_GATE_RECEIPT 加禁止重新成为本机交卷要求的合同保护；不全文件禁止 onTaskUpdate 诊断术语。没有现代 prompt-budget fixture，因而不创建或重设那套 baseline。未来移植到具有既有 budget anchor 的分支必须保留累计基线，不通过改 anchor 绕过上限。
 
-参考工作树初始读取 HEAD `3d67d8350`。下列路径均相对该工作树。其 FLY-2753 文档已记录实现，但本节点不继承它的测试结论、评审或 CI 结论。
+## 消费者审计
 
-- `.flywheel/agents/nodes/{implement,qa,engineer}.md`：本地验证属于 domain body。三份已使用同一选择规则，QA 的红 job 动作是 FAIL/交回作者。
-- `packages/teamlead/phase-protocols/{implement,qa}.md`：跨项目阶段协议；实现阶段通常不发 full CI 请求，QA 对冻结头使用 `ci-full ensure`。保留阶段分工，不把 Flywheel 专属 pnpm 命令塞进平台协议。
-- `scripts/sync-phase-protocols.mjs`：9 个 managed block 投影；engineer 不在映射中。先校验所有标记/来源再写，`--check` 不修复文件。故“三份语义一致”和“9 个投影同步”是两项不同检查。
-- `packages/teamlead/package.json`：prebuild 已运行同步脚本 `--check`。修改 domain body 不应改变 canonical 或 managed blocks；正常只检查即可，不必编辑生成器。
-- `scripts/__tests__/package-gate.test.mjs`：直接遍历三份手册的新合同断言；旧版 receipt 断言必须随条款修改。
-- `scripts/__tests__/fly2121-node-contract-and-setup.test.sh`：implement 的 build/test 文字合同。
-- `packages/edge-worker/src/__tests__/Blueprint.generalized-workflow.test.ts` 与 `fixtures/fly2533-phase-baseline.json`：直接锁定 domain 文本及 prompt（发给模型的实际指令文本）长度。修改须保存真实改前基线，不能抬预算掩盖增长。
-- `scripts/__tests__/fly2533-phase-protocol-assets.test.sh`：投影/打包资产护栏。无 canonical 修改时运行同步 check 足以验证该不变边界；若改动触及生成器/资产，补跑此测试。
+- 角色加载来自 `.flywheel/config.yaml`；直接 dispatch 验证为 `packages/edge-worker/src/__tests__/AgentDispatcher.test.ts`，其中既有 engineer/qa/general 路径断言。定向运行本文件，证明 routing 未变。
+- `scripts/__tests__/test-pm-executor-contract.sh` 检查 PM 而非三份验证段，排除且不修改。
+- `scripts/package-onboard-files.allow` 的 `agents/qa-executor.md` 是 shipped-generic 资产，不是本仓 `.flywheel/agents/engineering/qa-executor.md`。本单不改全局通用 prompt。
+- 新 `packages/teamlead/src/__tests__/local-verification-policy.test.ts` 直接消费 canonical、三个投影、同步器与 prebuild，因此全部用例本机定向运行。
+- 新同步器以自身位置推导仓库根目录，不依赖进程 cwd；固定三个受管路径，不接受任意文件路径或外部输入。先验证全部输入再写任何文件。
 
-## 本地选择规则的可执行含义
+## 定向测试如何选
 
-先记录比较的 base/head，以 `git diff --name-status <base>...HEAD` 枚举改动，重命名/删除也追踪旧路径。确认最近 package.json 的包名。搜索完整相对路径、文件名、父目录及实际导入/重导出关系；以 `git grep -lF` 搜索只是线索，动态拼接引用还要读测试装载逻辑。记录命中与排除理由。
+记录 diff base/head，包含删除/重命名旧路径。按文件最近的 package.json 确定包，检查包内直接覆盖变更行为的测试及跨包/脚本直接消费者。以完整相对路径、文件名、父目录进行 `git grep -lF`，再读实际装载/导入/重导出逻辑；零搜索命中不等于无测试。每个排除命中写理由。
 
-包内直接覆盖变动行为的测试，加上其他包/脚本直接消费变动的测试，都要运行。TypeScript 可用所属包的 `vitest related <files> --run` 辅助发现；零命中不自动证明无需测试。删除、动态加载或重导出需要显式指定测试文件。每个新增 `scripts/__tests__/*.test.sh` 照跑。
+TypeScript 使用所属包的 `vitest related <files> --run` 辅助选择；删除/动态加载/重导出无法解析时显式选测试。每个新增 scripts/__tests__/*.test.sh 照跑。受影响包运行可用 typecheck；导出接口/类型变动再检查下游。构建仅 affected package 与必要依赖，不扩大为本机全仓 build/tests。
 
-构建示例 `pnpm --filter "<pkg>..." build` 包括必要依赖；受影响包有 typecheck 脚本则运行，接口/类型变化再选下游 `pnpm --filter "...<pkg>" typecheck`。没有包代码变更时，说明 build/typecheck 不适用原因，不靠全仓构建补缺。
+## 同步与状态模型
 
-## 数据、身份与迁移
+canonical 新文件为 `scripts/lib/local-verification-policy.md`，只承载共同验证段。三个角色均嵌入 `FLYWHEEL_LOCAL_VERIFICATION:BEGIN/END` managed block。角色红 job 动作在 block 后保留本地语义：工程师/通用实现修复，QA FAIL/交回作者。同步器对缺源、空源、非法标记、缺/多/逆序 marker、任意目标缺失或漂移 fail closed；check 不写，write 仅替换三个合法块且二次运行零 diff。
 
-不新增数据库、API、环境开关、收据 schema、状态枚举或 phase 标识。`implement` / `qa` / `engineer` 是稳定 role 标识，不改名；“本机定向验证”是展示标签。`PACKAGE_GATE_RECEIPT` 只从手册的强制本机要求中移除，底层 CI/诊断消费者不删。
-
-新守则在后续正常指令装载时生效，已有冻结的运行快照不原地改写；不重启 runner。回滚为经审核的同范围提交回退，并重新生成/检查真正变化的投影；merge 与部署仍分离，独立 updater 负责部署。
-
-## 研究边界
-
-无需外部产品/API 研究：判断依据是当前本地源码和只读指定参考。没有访问密钥、生产数据库或写入参考工作树。现有 CI 配置存在不等于本分支 CI 已通过。基线差异必须获得明确处置，不能用缺文件导致的空 grep 宣称通过。
+无数据库、新 API、凭据、环境开关或新角色。初次 migration 为作者手动替换旧验证句、插入明确标记，再 --write；同步器不猜测迁移。已有会话快照不修改、不重启服务。正常合并与独立 updater 部署分离。回滚应整体回退条款/同步器/source/prebuild/test 对应提交，避免留下引用不存在脚本的 prebuild。
