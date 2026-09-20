@@ -2,13 +2,13 @@
 issue: FLY-2753
 phase: design
 phaseCursor: 4/5
-updated: 2026-09-20T23:32:48.686Z
-nextStep: HTML published/reported; await effective design verdict and Lead
-  target response before phase completion
+updated: 2026-09-20T23:39:59.829Z
+nextStep: "R1 changes fixed in design: actual routed executors, embedded
+  false-green guards, actual CI jobs; commit and request R2"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
 **phase**: design (4/5)
-**next**: HTML published/reported; await effective design verdict and Lead target response before phase completion
+**next**: R1 changes fixed in design: actual routed executors, embedded false-green guards, actual CI jobs; commit and request R2
