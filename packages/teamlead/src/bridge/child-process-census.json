@@ -28,8 +28,8 @@
 		},
 		{
 			"file": "packages/claude-runner/src/codex-daemon-runtime.ts",
-			"sync_child": 2,
-			"sync_marker": 2,
+			"sync_child": 3,
+			"sync_marker": 3,
 			"raw_spawn": 3,
 			"disposition": "runner_bounded_or_observed"
 		},

@@ -213,6 +213,24 @@ if [ "${FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS:-0}" = "1" ]; then
   export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:+${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES},}${runner_rules}"
 fi
 
+# FLY-2523: register this exact launcher PID before any daemon child can start.
+# flywheel-lead.sh normally acquired the same lease already; direct backend
+# invocations repeat the acquisition idempotently so they cannot bypass it.
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+  FENCE_BIN="${FLYWHEEL_CODEX_LAUNCH_FENCE_BIN:-${SCRIPT_DIR}/../../../scripts/codex-home-launch-fence.mjs}"
+  if [ ! -f "$FENCE_BIN" ] || [ -L "$FENCE_BIN" ]; then
+    log "ERROR: Codex credential launch fence missing or unsafe: $FENCE_BIN"
+    exit 78
+  fi
+  node "$FENCE_BIN" acquire \
+    --home "${CODEX_HOME:?CODEX_HOME required}" \
+    --lead "${FLYWHEEL_PROJECT_NAME}/${FLYWHEEL_LEAD_ID}" \
+    --state-root "${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}" \
+    || { log "ERROR: Codex credential launch fence refused startup"; exit 78; }
+  export FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED=1
+  export FLYWHEEL_CODEX_LAUNCH_FENCE_BIN="$FENCE_BIN"
+fi
+
 # FLY-259 ③: TUI mode — the Lead runs as the daemon-WS sidecar runtime and a
 # REAL interactive `codex resume --remote` TUI shares its thread in cmux.
 # Opt-in via FLYWHEEL_CODEX_LEAD_MODE=tui (default = FLY-224 headless,

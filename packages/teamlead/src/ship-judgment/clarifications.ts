@@ -85,7 +85,7 @@ export class ShipJudgmentClarifications {
 		const deadline = performance.now() + 25;
 		return this.db
 			.transaction(() => {
-				if (this.readMode() !== "dry_run") return 0;
+				if (!["dry_run", "auto"].includes(this.readMode())) return 0;
 				this.db
 					.prepare(
 						"INSERT OR IGNORE INTO ship_judgment_project_state(project_name) VALUES ('flywheel')",
@@ -106,7 +106,10 @@ export class ShipJudgmentClarifications {
 				}[];
 				let inspected = 0;
 				for (const row of rows) {
-					if (performance.now() >= deadline || this.readMode() !== "dry_run")
+					if (
+						performance.now() >= deadline ||
+						!["dry_run", "auto"].includes(this.readMode())
+					)
 						break;
 					this.ensure(row.outcome_id);
 					inspected++;
@@ -124,7 +127,8 @@ export class ShipJudgmentClarifications {
 
 	ensure(outcomeId: string): EnsureResult {
 		return this.db.transaction((): EnsureResult => {
-			if (this.readMode() !== "dry_run") return { status: "inactive" };
+			if (!["dry_run", "auto"].includes(this.readMode()))
+				return { status: "inactive" };
 			const pair = new ShipJudgmentLearning(this.db).pair(outcomeId);
 			if (pair.status !== "paired" || pair.relation !== "divergent")
 				return { status: "ineligible" };

@@ -1,0 +1,19 @@
+flowchart TD
+  A["班车 raya 段开始<br/>账本停在 P2"] --> G1{"闸 1 旧壳还活着吗<br/>账本记着 pid 54811"}
+  G1 -->|"9-16 旧代码 · 失败"| F["prestop-validation-failed<br/>日志里只有这一句"]
+  G1 -->|"FLY-2657 已修 · pid 已死视为自行退场"| G2{"闸 2 授权版本还在<br/>Raya 主线的历史里吗"}
+  G2 -->|"旧规则 要求正好相等<br/>主线多一个提交就失败"| F
+  G2 -->|"主线历史被改写 不含授权版本"| F
+  G2 -->|"本单改 · 授权版本是主线祖先即可<br/>仍只部署授权的那一版"| G3{"闸 3 工作区 persona<br/>等于 target 的 persona 吗"}
+  G3 -->|"现在是 9-09 旧版 · 不等"| F
+  G3 -->|"人工重投影后相等"| Q["频道安静 15 分钟检查"]
+  Q --> S["停旧壳 · 补三枚时间戳 · 发 warning"]
+  S --> R["受控重启标准 Lead 到新版本<br/>P5 · founder 用上新 Raya"]
+  R --> P["人工取证 + 一个 6h summary 轮"]
+  P --> V["再下一班 · P7 · 写 v2 回执"]
+  classDef bad fill:#ffe5e3,stroke:#ff3b30,color:#1d1d1f
+  classDef ok fill:#e6f7ea,stroke:#34c759,color:#1d1d1f
+  classDef gate fill:#fff4e0,stroke:#ff9500,color:#1d1d1f
+  class F bad
+  class R,V ok
+  class G1,G2,G3 gate

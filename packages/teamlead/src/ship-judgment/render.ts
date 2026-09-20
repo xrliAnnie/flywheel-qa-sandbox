@@ -28,12 +28,17 @@ function citation(value: unknown, point: string): string {
 	return quote ? `\n   依据：${text(quote, 100)}` : "";
 }
 
+function actionStatus(view: DeliveryView): string {
+	if (view.mode !== "auto") return "仅展示，等你决定";
+	if (view.autoApprovalApplied) return "已自动批准，等待合并";
+	return view.overall === "can"
+		? "自动模式，待批准记录"
+		: "自动模式：本卡不自动批准，等你决定";
+}
+
 /** Plain bounded Discord text, not an approval card; citations remain untrusted display data. */
-export function renderJudgmentMessage(
-	view: DeliveryView,
-	legacySummary = "暂不可得",
-): string {
-	if (view.evidence) return renderEvidenceMessage(view, legacySummary);
+export function renderJudgmentMessage(view: DeliveryView): string {
+	if (view.evidence) return renderEvidenceMessage(view);
 	const overlaps = view.mechanical.overlaps
 		.slice(0, 3)
 		.map(
@@ -49,15 +54,15 @@ export function renderJudgmentMessage(
 			"repository_configuration_changed",
 		].includes(view.mechanical.reason);
 	const content = [
-		`**机器试判：${OVERALL_LABELS[view.overall]}** · dry_run`,
+		`**三点机器判断：${OVERALL_LABELS[view.overall]}** · ${view.mode}`,
 		`① PRD / 设计对齐：${POINT_LABELS[view.alignment]}${citation(view.evaluation, "alignment")}`,
 		`② 合并与在飞文件：${POINT_LABELS[view.conflict]}${overlaps ? `\n   同改：${overlaps}` : ""}`,
 		`③ QA 用例覆盖：${POINT_LABELS[view.coverage]}${citation(view.evaluation, "coverage")}`,
 		inputUnavailable
 			? `输入不可得：${text(view.mechanical.reason.replace(/^input_unavailable:/, ""), 100)}；三项按已得证据判`
 			: `检查范围：${text(view.mechanical.scope, 100)}；${view.mechanical.checkedRepos} 仓，在飞 PR ${view.mechanical.openPrCount ?? "未取全"}。`,
-		`截至 ${view.mechanical.checkedAt} 的试判；后续检查可能待更新，仍由你批准。`,
-		`旧窄口三闸/样本统计（非本次语义得分）：${text(legacySummary, 120)}`,
+		"批准前重新检查当前版本与证据；执行状态见本卡回执。",
+		actionStatus(view),
 		`\`${text(view.marker, 220)} opinion:${text(view.opinionId, 200)}\``,
 	].join("\n");
 	if (content.length > 2000)
@@ -65,10 +70,7 @@ export function renderJudgmentMessage(
 	return content;
 }
 
-function renderEvidenceMessage(
-	view: DeliveryView,
-	legacySummary: string,
-): string {
+function renderEvidenceMessage(view: DeliveryView): string {
 	const ledger = view.evidence!,
 		summary = evidenceSummary(ledger);
 	const failed = [ledger.alignment, ledger.conflict, ledger.coverage]
@@ -77,12 +79,12 @@ function renderEvidenceMessage(
 	const title = failed
 		? `不可自动批：${failed}`
 		: view.overall === "can"
-			? "可自动批（若开自动批）"
+			? "三点均通过"
 			: view.overall === "undetermined"
 				? `缺证据：${summary.missing.join("；") || "判定输入"}`
 				: `不可自动批：${failed}`;
 	const lines = [
-		`**机器试判：${title}** · dry_run`,
+		`**三点机器判断：${title}** · ${view.mode}`,
 		`① PRD / 设计对齐：${summary.alignment}`,
 		`② 合并与在飞文件：${summary.conflict}`,
 		`③ QA 用例覆盖：${summary.coverage}`,
@@ -91,8 +93,8 @@ function renderEvidenceMessage(
 		ledger.input.status === "unavailable"
 			? `输入不可得：${text(ledger.input.reason, 80)}；三项按已得证据判`
 			: `检查范围：${text(view.mechanical.scope, 80)}；${view.mechanical.checkedRepos} 仓，在飞 PR ${view.mechanical.openPrCount ?? "未取全"}。`,
-		`截至 ${text(view.mechanical.checkedAt, 40)} 的试判；后续检查可能待更新，仍由你批准。`,
-		`旧窄口三闸/样本统计（非本次语义得分）：${text(legacySummary, 100)}`,
+		"批准前重新检查当前版本与证据；执行状态见本卡回执。",
+		actionStatus(view),
 		`\`${text(view.marker, 160)} opinion:${text(view.opinionId, 100)}\``,
 	];
 	let omitted = 0;
@@ -113,11 +115,7 @@ function renderEvidenceMessage(
 	];
 	const evidenceText = (index: number) => {
 		const ref = ledger.evidence[index]!;
-		const label =
-			ref.label === "blob_unverified"
-				? "设计评审 APPROVED（blob 未核）"
-				: ref.label;
-		return `${text(label, 70)} ${text(ref.id, 70)}`;
+		return `${text(ref.label, 70)} ${text(ref.id, 70)}`;
 	};
 	for (const index of refs("alignment")) append(1, evidenceText(index));
 	for (const index of refs("coverage")) append(3, evidenceText(index));

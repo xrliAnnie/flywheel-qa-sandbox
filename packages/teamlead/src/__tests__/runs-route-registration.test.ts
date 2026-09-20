@@ -26,6 +26,8 @@ vi.mock("flywheel-claude-runner", () => ({
 		reserve: vi.fn(() => true),
 	})),
 	RUNNER_PANE_BASE_ALLOWLIST: [],
+	probeCodexDaemonProcessBinding: vi.fn(),
+	readCodexLaunchSnapshot: vi.fn(),
 	releaseCodexAgentHomeLease: vi.fn(),
 	resolveExecutionCodexHome: vi.fn(() => ({ kind: "legacy" })),
 	scrubOrphanedCodexAgentHomes: vi.fn().mockResolvedValue(0),

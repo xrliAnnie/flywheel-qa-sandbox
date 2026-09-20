@@ -219,7 +219,7 @@ else
 fi
 
 echo "Test: FLY-1446 runner window identity merges aliases by exact window id"
-TMUX_EXEC_ROWS=$'runner-flywheel\t@8\texec-a\ncmux-alias\t@8\texec-a\nrunner-flywheel\t@9\texec-b\nrunner-other\t@10\texec-b'
+TMUX_EXEC_ROWS=$'runner-flywheel|@8|exec-a\ncmux-alias|@8|exec-a\nrunner-flywheel|@9|exec-b\nrunner-other|@10|exec-b'
 tmux() {
   [[ "$1" == "list-windows" && "$2" == "-a" ]] || return 1
   printf '%s\n' "$TMUX_EXEC_ROWS"

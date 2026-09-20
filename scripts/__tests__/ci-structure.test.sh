@@ -1286,6 +1286,35 @@ require(
     f"FLY-2444 CI command inventory drifted: {fly2444_commands}",
 )
 
+fly2404_steps = [
+    step for step in script_steps_3
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-2404 shared Codex credential truth"
+]
+require(len(fly2404_steps) == 1, "script-tests-3 must contain exactly one FLY-2404 step")
+fly2404_commands = [
+    line.strip()
+    for line in str(fly2404_steps[0].get("run", "")).splitlines()
+    if line.strip().startswith("bash ")
+]
+require(
+    fly2404_commands
+    == [
+        "bash scripts/__tests__/codex-home-link-truth.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-cycle.test.sh",
+        "bash scripts/__tests__/codex-home-launch-fence.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-process.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+        "bash scripts/__tests__/codex-home-migration-alert.test.sh",
+        "bash scripts/__tests__/codex-home-migration-overdue-mutation.test.sh",
+        "bash scripts/__tests__/codex-quota-readiness-check.test.sh",
+        "bash scripts/__tests__/codex-lead-launchd-preflight.test.sh",
+        "bash scripts/__tests__/codex-credential-cutover.test.sh",
+        "bash scripts/__tests__/codex-home-credential-sweep.test.sh",
+    ],
+    f"FLY-2404 CI command inventory drifted: {fly2404_commands}",
+)
+
 fly2146_steps = [
     step for step in script_steps_5
     if isinstance(step, dict) and step.get("name") == "Test — FLY-2146 Lead memory remote sync"
@@ -1729,10 +1758,14 @@ for step in unit_steps:
     condition = str(step.get("if", ""))
     for name in re.findall(r"matrix\.name\s*==\s*'([^']+)'", condition):
         require(name in matrix_names, f"conditional step targets absent matrix row: {name}")
-writer_mutations = [step for step in unit_steps if step.get("name") == "FLY-2453 whole-gate writer mutations"]
-require(len(writer_mutations) == 1, "writer mutation gate must appear exactly once")
-require(writer_mutations[0].get("if") == "matrix.name == 'teamlead 1 of 4'", "writer mutation gate must run in shard 1")
-require("continue-on-error" not in writer_mutations[0], "writer mutation gate must not swallow failures")
+require(
+    not any(
+        step.get("name") == "FLY-2453 whole-gate writer mutations"
+        for step in unit_steps
+        if isinstance(step, dict)
+    ),
+    "retired FLY-2453 pure-docs mutation gate must not return",
+)
 
 stub_hygiene_steps = [
     step

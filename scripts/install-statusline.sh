@@ -115,8 +115,8 @@ fi
 # with two lines and no stderr, and a shape-only gate installs it — a blank
 # statusline on every pane. The fixture below is fixed, so every value it should
 # surface is a known anchor and can be demanded.
-smoke_render() { # <script-path> -> 0 ok
-  local script="$1" home rc lines
+smoke_render() { # <script-path> [candidate|compat] -> 0 ok
+  local script="$1" mode="${2:-compat}" home rc lines
   SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fly1678-smoke.XXXXXX")"
   home="$SMOKE_DIR/home"
   mkdir -p "$home/.claude" "$SMOKE_DIR/bin"
@@ -125,7 +125,10 @@ smoke_render() { # <script-path> -> 0 ok
     chmod 0755 "$SMOKE_DIR/bin/$stub"
   done
   printf '%s' '{"oauthAccount":{"emailAddress":"smoke@example.test"}}' > "$home/.claude.json"
-  printf '%s' '{"effortLevel":"high"}' > "$home/.claude/settings.json"
+  # Deliberately contradictory: a candidate must display the session's medium,
+  # never this global xhigh. Compatibility mode is used only to verify a restored
+  # pre-FLY-2745 rollback target, whose older display contract remains runnable.
+  printf '%s' '{"effortLevel":"xhigh"}' > "$home/.claude/settings.json"
   printf '%s' '{"five_hour":{"utilization":50,"resets_at":"2030-01-01T00:00:00Z"},
 "seven_day":{"utilization":60,"resets_at":"2030-01-02T00:00:00Z"},
 "limits":[{"kind":"weekly_scoped","percent":70,"resets_at":"2030-01-02T00:00:00Z",
@@ -133,8 +136,8 @@ smoke_render() { # <script-path> -> 0 ok
     > "$home/.claude/usage-api-cache.json"
 
   rc=0
-  printf '%s' '{"model":{"display_name":"Smoke"},"workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":10}}' \
-    | env HOME="$home" PATH="$SMOKE_DIR/bin:$PATH" \
+  printf '%s' '{"model":{"display_name":"Smoke"},"workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":10},"effort":{"level":"medium"}}' \
+    | /usr/bin/env -u CLAUDE_EFFORT HOME="$home" PATH="$SMOKE_DIR/bin:$PATH" \
         /bin/bash "$script" > "$SMOKE_DIR/out" 2> "$SMOKE_DIR/err" || rc=$?
   lines=$(wc -l < "$SMOKE_DIR/out" | tr -d ' ')
 
@@ -146,18 +149,30 @@ smoke_render() { # <script-path> -> 0 ok
   elif [ -s "$SMOKE_DIR/err" ]; then
     echo "  smoke: wrote to stderr: $(head -c 300 "$SMOKE_DIR/err")" >&2; result=1
   else
-    for anchor in "Smoke" "ctx 10%" "5h " "50%" "7d " "60%" "SmokeModel" "70%"; do
+    for anchor in "Smoke" "ctx 10%" "5h " "50%" "7d " "60%"; do
       grep -qF "$anchor" "$SMOKE_DIR/out" || missing="$missing '$anchor'"
     done
+    if [ "$mode" = "candidate" ]; then
+      for anchor in "SmokeModel" "70%" "medium"; do
+        grep -qF "$anchor" "$SMOKE_DIR/out" || missing="$missing '$anchor'"
+      done
+      if grep -qF "xhigh" "$SMOKE_DIR/out"; then
+        echo "  smoke: candidate displayed global xhigh instead of session effort medium" >&2
+        result=1
+      fi
+    fi
     if [ -n "$missing" ]; then
       echo "  smoke: rendered two lines but they are missing:$missing" >&2; result=1
+      if [ "$mode" = "candidate" ]; then
+        echo "  smoke: candidate must display session effort medium" >&2
+      fi
     fi
   fi
   rm -rf "$SMOKE_DIR"; SMOKE_DIR=""
   return $result
 }
 
-smoke_render "$SOURCE" || die "source fails its smoke render (nothing was changed)"
+smoke_render "$SOURCE" candidate || die "source fails its smoke render (nothing was changed)"
 
 # Put the machine back into a state that is known-good, verified. Used by the
 # post-rename check, by the interrupted-install branch, and by the signal path.
@@ -284,7 +299,7 @@ done
 #     its final path. So the live file is syntax- and smoke-checked here too,
 #     before anything is called "already current".
 if is_plain_file "$TARGET" && cmp -s "$SOURCE" "$TARGET"; then
-  if ! /bin/bash -n "$TARGET" 2>/dev/null || ! smoke_render "$TARGET"; then
+  if ! /bin/bash -n "$TARGET" 2>/dev/null || ! smoke_render "$TARGET" candidate; then
     # Detecting this is not enough: leaving it live would contradict this
     # script's one hard guarantee. Recover through the same verified path the
     # post-rename failure uses.
@@ -309,7 +324,7 @@ STAGED=$(mktemp "$TARGET.staged.XXXXXX")
 cp "$SOURCE" "$STAGED"
 chmod 0755 "$STAGED"
 /bin/bash -n "$STAGED" 2>/dev/null || die "staged copy fails 'bash -n' (nothing was changed)"
-smoke_render "$STAGED" || die "staged copy fails its smoke render (nothing was changed)"
+smoke_render "$STAGED" candidate || die "staged copy fails its smoke render (nothing was changed)"
 
 # --- (8) commit phase: rollback point, then rename --------------------------
 had_backup=0
@@ -336,7 +351,7 @@ STAGED=""
 
 # --- (9) verify what actually landed, and roll back if it is wrong -----------
 cmp -s "$SOURCE" "$TARGET" || recover_and_die "installed bytes differ from the source"
-smoke_render "$TARGET" || recover_and_die "installed file fails its smoke render"
+smoke_render "$TARGET" candidate || recover_and_die "installed file fails its smoke render"
 
 PHASE=2
 echo "Installed $TARGET from $SOURCE"

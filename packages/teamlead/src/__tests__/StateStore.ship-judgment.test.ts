@@ -100,7 +100,7 @@ describe("ship judgment schema", () => {
 			store.close();
 		}
 	});
-	it("installs ten classified tables and ten immutable guards", async () => {
+	it("installs fifteen classified tables and fourteen immutable guards", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
 			const db = raw(store);
@@ -112,25 +112,47 @@ describe("ship judgment schema", () => {
 					.all(),
 			).toEqual(
 				[
+					"auto_approval",
+					"auto_approval_disposition",
 					"clarification",
 					"delivery",
 					"evaluation",
 					"input",
 					"job",
+					"legacy_retirement",
+					"mode_check",
 					"observation_cursor",
 					"observation_pending",
 					"opinion",
 					"outcome",
+					"policy_provenance",
 					"project_state",
 				].map((name) => ({ name: `ship_judgment_${name}` })),
 			);
 			expect(
 				db
 					.prepare(
-						"SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ship_judgment_%_no_%'",
+						"SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ship_judgment_%_no_%' ORDER BY name",
 					)
 					.all(),
-			).toHaveLength(10);
+			).toEqual(
+				[
+					"ship_judgment_auto_approval_no_delete",
+					"ship_judgment_auto_approval_no_update",
+					"ship_judgment_clarification_no_delete",
+					"ship_judgment_clarification_no_update",
+					"ship_judgment_evaluation_no_delete",
+					"ship_judgment_evaluation_no_update",
+					"ship_judgment_input_no_delete",
+					"ship_judgment_input_no_update",
+					"ship_judgment_opinion_no_delete",
+					"ship_judgment_opinion_no_update",
+					"ship_judgment_outcome_no_delete",
+					"ship_judgment_outcome_no_update",
+					"ship_judgment_policy_provenance_no_delete",
+					"ship_judgment_policy_provenance_no_update",
+				].map((name) => ({ name })),
+			);
 			expect(
 				db
 					.prepare(

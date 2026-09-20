@@ -216,11 +216,71 @@ else
   bad "active-node cap swallowed a surface"
 fi
 
+cleanup_owner_sequence=0
+seed_cleanup_owner() {
+  local mirror_title="$1"
+  cleanup_owner_sequence=$((cleanup_owner_sequence + 1))
+  printf 'cleanup-owner-%s|node:cleanup-%s|cleanup|active-windowless|1|%s|0|2|0|0|%s|%s|0\n' \
+    "$cleanup_owner_sequence" "$cleanup_owner_sequence" "$round_two" \
+    "$mirror_title" "$round_two" >> "$NODE_REGISTRY"
+}
+node_workspace_ready() { return 0; }
+
+printf 'Test: one cleanup owner snapshot serves an entire frozen event batch\n'
+owner_snapshot_original="$(declare -f cleanup_owner_snapshot_load)"
+owner_snapshot_loads=0
+eval "$(declare -f cleanup_owner_snapshot_load | sed '1s/cleanup_owner_snapshot_load/cleanup_owner_snapshot_load_real/')"
+cleanup_owner_snapshot_load() {
+  owner_snapshot_loads=$((owner_snapshot_loads + 1))
+  cleanup_owner_snapshot_load_real
+}
+seed_cleanup_owner FLY-1884-batch-one
+seed_cleanup_owner FLY-1884-batch-two
+batch_file="$SB/cleanup-events.batch"
+printf 'exited|runner-flywheel|FLY-1884-batch-one\nexited|runner-flywheel|FLY-1884-batch-two\n' > "$batch_file"
+: > "$CLEANUP_PENDING"
+_drain_file "$batch_file"
+if [[ "$owner_snapshot_loads" == 1 \
+   && "$(wc -l < "$CLEANUP_PENDING" | tr -d ' ')" == 2 ]]; then
+  ok "one validated owner snapshot admits every cleanup row in the event batch"
+else
+  bad "event batch reloaded owner registry $owner_snapshot_loads times or lost markers"
+fi
+eval "$owner_snapshot_original"
+unset -f cleanup_owner_snapshot_load_real
+
+printf 'Test: authoritative Lead roster admits cleanup without a runner exec id\n'
+LEAD_ROSTER_STATE=ok
+LEAD_ROSTER_ROWS='claude-tmux|com.flywheel.lead.growth-rafiki-lead|growth-rafiki-lead|'
+: > "$CLEANUP_PENDING"
+mark_for_cleanup growth-rafiki-lead "$(date +%s)"
+if awk -F'|' '$1 == "growth-rafiki-lead" { found=1 } END { exit(found ? 0 : 1) }' \
+    "$CLEANUP_PENDING"; then
+  ok "an exact Lead roster title remains eligible for the shared cleanup path"
+else
+  bad "Lead cleanup was incorrectly gated on runner node ownership"
+fi
+LEAD_ROSTER_STATE=indeterminate
+LEAD_ROSTER_ROWS=""
+
+printf 'Test: cleanup admission enforces the 247-byte episode-target budget\n'
+multibyte_title=$(python3 -c 'print("界" * 100, end="")')
+seed_cleanup_owner "$multibyte_title"
+: > "$CLEANUP_PENDING"
+mark_for_cleanup "$multibyte_title" "$(date +%s)"
+if [[ ! -s "$CLEANUP_PENDING" ]]; then
+  ok "a multibyte title over 247 bytes cannot enter cleanup-pending"
+else
+  bad "cleanup admission counted characters instead of bytes"
+fi
+
 : > "$CLEANUP_PENDING"
 CMUX_ADDITIVE_ROUND_ID="$round_two"
-mark_for_cleanup FLY-1884-qa-codex 100
+cleanup_marker_epoch=$(($(date +%s) - 60))
+seed_cleanup_owner FLY-1884-qa-codex
+mark_for_cleanup FLY-1884-qa-codex "$cleanup_marker_epoch"
 IFS='-' read -r round_epoch round_sequence <<< "$round_two"
-if grep -qxF "FLY-1884-qa-codex|100|$round_epoch|$round_sequence" "$CLEANUP_PENDING"; then
+if grep -qxF "FLY-1884-qa-codex|$cleanup_marker_epoch|$round_epoch|$round_sequence" "$CLEANUP_PENDING"; then
   ok "cleanup marker stores round epoch and sequence separately"
 else
   bad "cleanup marker did not preserve the production round identity"
@@ -250,12 +310,13 @@ fi
 
 FLYWHEEL_CMUX_NODE_PRESENCE=0
 DISMANTLED=""; CMUX_ADDITIVE_ROUND_ID="$round_two"
-mark_for_cleanup retired-value 100
+seed_cleanup_owner retired-value
+mark_for_cleanup retired-value "$cleanup_marker_epoch"
 retired_marker=$(cat "$CLEANUP_PENDING")
 process_pending_cleanups || true
 IFS='-' read -r round_epoch round_sequence <<< "$round_two"
 if [[ "$DISMANTLED" == retired-value && ! -e "$CLEANUP_PENDING" ]] \
-   && [[ "$retired_marker" == "retired-value|100|$round_epoch|$round_sequence" ]]; then
+   && [[ "$retired_marker" == "retired-value|$cleanup_marker_epoch|$round_epoch|$round_sequence" ]]; then
   ok "FLYWHEEL_CMUX_NODE_PRESENCE=0 cannot disable node-presence cleanup"
 else
   bad "retired node-presence value restored the old cleanup path"
@@ -263,7 +324,8 @@ fi
 
 FLYWHEEL_CMUX_NODE_PRESENCE=1
 DRAIN_FAIL=1; : > "$CLEANUP_PENDING"; CMUX_ADDITIVE_ROUND_ID="$round_two"
-mark_for_cleanup retry-on-refusal 100
+seed_cleanup_owner retry-on-refusal
+mark_for_cleanup retry-on-refusal "$cleanup_marker_epoch"
 process_pending_cleanups || true
 if grep -q '^retry-on-refusal|' "$CLEANUP_PENDING"; then
   ok "downstream cleanup refusal preserves its pending marker"

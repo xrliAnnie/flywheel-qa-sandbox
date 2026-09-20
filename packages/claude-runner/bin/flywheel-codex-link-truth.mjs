@@ -64,8 +64,14 @@ function inspectHome(home, env, registryPath) {
 	}
 	const destination = join(home, "auth.json");
 	const stat = lstatOrNull(destination);
+	const pending = lstatOrNull(join(home, ".credential-copy-pending"));
+	if (pending && (!pending.isFile() || pending.isSymbolicLink())) {
+		throw new Error("pending marker must be a plain file");
+	}
 	const already =
-		stat?.isSymbolicLink() === true && readlinkSync(destination) === truthPath;
+		stat?.isSymbolicLink() === true &&
+		readlinkSync(destination) === truthPath &&
+		pending === null;
 	return {
 		state: already ? "already" : "requires-migration",
 		profile: identity.profile,
@@ -139,6 +145,11 @@ try {
 			`[link-truth] home=${result.home} state=${result.state} reason=report-write-failed\n`,
 		);
 		process.exit(6);
+	}
+	if (env.FLYWHEEL_CODEX_LINK_STRUCTURED === "1") {
+		process.stdout.write(
+			`CODEX_HOME_LINK_RESULT ${JSON.stringify({ home: result.home, state: result.state, backupPath: result.backupPath ?? null })}\n`,
+		);
 	}
 	process.stdout.write(
 		`[link-truth] home=${result.home} state=${result.state} reason=${result.state}\n`,

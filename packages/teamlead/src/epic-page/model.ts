@@ -176,6 +176,9 @@ export interface RootCounts {
 	root: string;
 	counts: {
 		live: number;
+		stopped_acceptance: number;
+		stopped_stuck: number;
+		evidence_gap: number;
 		waiting: number;
 		free: number;
 		idle: number;
@@ -221,6 +224,9 @@ export interface EpicItem {
 			execution_id8: string;
 		}>;
 		ledger_live_count: number;
+		machine_running_count: number;
+		running_heartbeat_stale_count?: number;
+		running_heartbeat_missing_count?: number;
 	}>;
 	run: Cell<
 		Array<{
@@ -233,7 +239,14 @@ export interface EpicItem {
 		}>
 	>;
 	attempt: Cell<
-		Array<{ state: string; attempt: number; ledger_open: boolean }>
+		Array<{
+			state: string;
+			attempt: number;
+			ledger_open: boolean;
+			machine_live?: boolean;
+			starting_recent?: boolean;
+			heartbeat_state?: "fresh" | "stale" | "missing" | "not_applicable";
+		}>
 	>;
 	gates: Cell<Array<{ state: string }>>;
 	carriers: Cell<Array<{ state: string }>>;
@@ -1483,7 +1496,17 @@ export function assertEpicPage(
 			if (value.root !== page.header.roots.value![index]!.identifier)
 				fail(`${path}/value/root`, "root order mismatch");
 			const counts = requireRecord(value.counts, `${path}/value/counts`);
-			const keys = ["live", "waiting", "free", "idle", "done", "canceled"];
+			const keys = [
+				"live",
+				"stopped_acceptance",
+				"stopped_stuck",
+				"evidence_gap",
+				"waiting",
+				"free",
+				"idle",
+				"done",
+				"canceled",
+			];
 			requireExactKeys(counts, [...keys, "total"], [], `${path}/value/counts`);
 			for (const key of [...keys, "total"])
 				requireNonNegativeInteger(counts[key], `${path}/value/counts/${key}`);

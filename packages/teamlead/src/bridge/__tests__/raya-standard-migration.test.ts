@@ -14,6 +14,7 @@ interface RawMessage {
 	timestamp: string;
 	author: { id: string; bot: boolean };
 	attachments?: Array<{
+		id: string;
 		filename: string;
 		content_type?: string;
 		size: number;
@@ -138,7 +139,12 @@ describe("FLY-2445 Raya standard Lead migration chain", () => {
 			message(rayaSeed, rayaChannel, "seed"),
 			message("300000000000000002", rayaChannel, "window one"),
 			message("300000000000000003", rayaChannel, "window two", [
-				{ filename: "evidence.png", content_type: "image/png", size: 1536 },
+				{
+					id: "600000000000000001",
+					filename: "evidence.png",
+					content_type: "image/png",
+					size: 1536,
+				},
 			]),
 			message("300000000000000004", rayaChannel, "window three"),
 			message("300000000000000005", rayaChannel, "window four"),
@@ -177,8 +183,11 @@ describe("FLY-2445 Raya standard Lead migration chain", () => {
 		expect(
 			raya.queue.getById("chat:raya:300000000000000003")?.delivery_content,
 		).toContain(
-			'<attachment name="evidence.png" type="image/png" size_kb="1.5" />',
+			'<attachment name="evidence.png" type="image/png" size_kb="1.5" attachment_id="600000000000000001" content_state="metadata_only" />',
 		);
+		expect(
+			raya.queue.getById("chat:raya:300000000000000003")?.delivery_content,
+		).not.toContain("read_operation");
 
 		const restart = wireMailbox({
 			root: join(raya.cursorPath, ".."),

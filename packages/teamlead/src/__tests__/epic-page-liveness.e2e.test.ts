@@ -175,6 +175,7 @@ async function createHarness(): Promise<Harness> {
 		store,
 		projects,
 		linearApiKey: "linear-key",
+		stuckThresholdMinutes: 15,
 		resolveOwner: () => ({
 			agentId: "example-eng-lead",
 			matchMethod: "general",

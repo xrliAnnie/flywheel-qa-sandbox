@@ -1144,6 +1144,70 @@ globalThis.fetch = async () => {
 	});
 
 	describe("chat-ingest", () => {
+		it("accepts attachment ids and marks legacy three-field input unavailable", () => {
+			const run = (messageId: string, attachments: unknown[]) =>
+				runCliWithInput(
+					[
+						"chat-ingest",
+						"--db",
+						dbPath,
+						"--lead",
+						"product-lead",
+						"--chat-id",
+						"123456789012345678",
+						"--origin-channel-id",
+						"123456789012345678",
+						"--message-id",
+						messageId,
+						"--author-id",
+						"323456789012345678",
+						"--author-name",
+						"Founder",
+						"--ts",
+						"2026-09-09T04:00:00.000Z",
+						"--msg-kind",
+						"guild",
+						"--attachments-json",
+						JSON.stringify(attachments),
+						"--content-stdin",
+					],
+					"attachment only",
+					{ BRIDGE_URL: undefined, TEAMLEAD_API_TOKEN: undefined },
+				);
+
+			expect(
+				run("223456789012345678", [
+					{
+						attachmentId: "423456789012345678",
+						name: "pixel.png",
+						type: "image/png",
+						sizeKb: 2,
+					},
+				]),
+			).toMatchObject({ exitCode: 0 });
+			expect(
+				run("223456789012345679", [
+					{ name: "legacy.txt", type: "text/plain", sizeKb: 1 },
+				]),
+			).toMatchObject({ exitCode: 0 });
+
+			const db = new CommDB(dbPath);
+			try {
+				expect(
+					db.inspectMailboxDeliveryContent(
+						"chat:product-lead:223456789012345678",
+					),
+				).toContain('"attachmentId":"423456789012345678"');
+				expect(
+					db.inspectMailboxDeliveryContent(
+						"chat:product-lead:223456789012345679",
+					),
+				).toContain('"unavailableReason":"producer_identity_missing"');
+			} finally {
+				db.close();
+			}
+		});
+
 		it("accepts a platform reply reference and preserves it in the mailbox", () => {
 			const replyTo = { messageId: "444", channelId: "555" };
 			const result = runCliWithInput(

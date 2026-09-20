@@ -78,6 +78,7 @@ import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
 import { admitLeadTurn } from "./LeadRuntimeConfigHost.js";
 import { parseExplicitAliases } from "./lead-actions/alias-allowlist.js";
+import { tryResolveLeadAttachmentContext } from "./lead-actions/attachment-context.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
@@ -1082,6 +1083,7 @@ function fullAccessLeadActionsMcpConfig(
 		| "leadActionsChannelAliases"
 		| "runnerActionContext"
 		| "projectsFile"
+		| "identityDigest"
 		| "outboundMode"
 	>,
 	entry: string,
@@ -1103,6 +1105,15 @@ function fullAccessLeadActionsMcpConfig(
 		commDbPath: config.commDbPath,
 		outboundMode: config.outboundMode,
 		explicitAliases: config.leadActionsChannelAliases,
+		attachmentContext: tryResolveLeadAttachmentContext({
+			projectsPath:
+				config.projectsFile ?? join(homedir(), ".flywheel", "projects.json"),
+			homeDir: homedir(),
+			projectName: config.projectName,
+			leadId: config.leadId,
+			identityDigest: config.identityDigest,
+			outboundMode: config.outboundMode,
+		}),
 		roundtableAutoContinue,
 		runnerContext: config.runnerActionContext,
 	});

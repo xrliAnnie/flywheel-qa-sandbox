@@ -80,6 +80,29 @@ else
 fi
 chmod +x "$T1/bin/ps"
 
+T_PENDING="$TMP_ROOT/pending-link"; make_fixture "$T_PENDING"
+TRUTH_PENDING="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$T_PENDING/home/.codex/auth.json")"
+rm "$T_PENDING/home/runner/auth.json"
+ln -s "$TRUTH_PENDING" "$T_PENDING/home/runner/auth.json"
+printf 'pending\n' > "$T_PENDING/home/runner/.credential-copy-pending"
+LINK_TRUTH_PS_MODE=live run_sut "$T_PENDING" --keep-backup "$T_PENDING/home/runner" >/dev/null 2>&1
+pending_live_rc=$?
+if [ "$pending_live_rc" -eq 3 ] && [ -f "$T_PENDING/home/runner/.credential-copy-pending" ]; then
+	pass "a correct link with pending residue still requires the process fence"
+else
+	fail "pending residue bypassed the process fence: rc=$pending_live_rc"
+fi
+LINK_TRUTH_PS_MODE=empty run_sut "$T_PENDING" --keep-backup "$T_PENDING/home/runner" >/dev/null 2>&1
+pending_idle_rc=$?
+pending_backup_count="$(find "$T_PENDING/home/.flywheel/codex-credential-backups" -type f 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$pending_idle_rc" -eq 0 ] \
+		&& [ ! -e "$T_PENDING/home/runner/.credential-copy-pending" ] \
+		&& [ "$pending_backup_count" -eq 0 ]; then
+	pass "an idle correct link clears pending residue without a duplicate backup"
+else
+	fail "pending residue did not converge safely: rc=$pending_idle_rc backups=$pending_backup_count"
+fi
+
 if /bin/bash -c '[[ "$BASH_VERSION" == 3.2* ]]' 2>/dev/null; then
 	TB32="$TMP_ROOT/bash32"; make_fixture "$TB32"
 	LINK_TRUTH_SHELL=/bin/bash run_sut "$TB32" "$TB32/home/runner" > "$TB32/out" 2>&1

@@ -11,6 +11,12 @@ interface RawMsg {
 	content: string;
 	author: { id: string; bot: boolean };
 	timestamp?: string;
+	attachments?: Array<{
+		id?: string;
+		filename?: string;
+		content_type?: string;
+		size?: number;
+	}>;
 }
 
 /** Fake Discord REST: per-channel message log (chronological); serves
@@ -168,6 +174,71 @@ describe("RestPollDiscordInboundSource — baseline + poll", () => {
 		expect(got[0].timestampMs).toBe(
 			new Date("2026-07-17T02:23:05.000Z").getTime(),
 		);
+	});
+
+	it("carries attachment ids and keeps malformed Discord entries explicit", async () => {
+		const log = [msg("1", "c1", "old")];
+		const { fetchImpl } = fakeDiscord({ c1: log });
+		const got: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1"],
+			fetchImpl,
+			setTimer: () => ({ cancel: () => {} }),
+			logger: silent,
+		});
+		src.onMessage((message) => {
+			got.push(message);
+			return true;
+		});
+		await src.start();
+		log.push({
+			...msg("2", "c1", ""),
+			attachments: [
+				{
+					id: "423456789012345678",
+					filename: "pixel.png",
+					content_type: "image/png",
+					size: 2048,
+				},
+				{
+					filename: "legacy.txt",
+					content_type: "text/plain;charset=utf-8",
+					size: 8,
+				},
+				{ id: "bad", filename: "bad.bin", size: 4 },
+				{},
+			],
+		});
+
+		await src.pollOnce();
+
+		expect(got[0].attachments).toEqual([
+			{
+				attachmentId: "423456789012345678",
+				name: "pixel.png",
+				type: "image/png",
+				sizeKb: 2,
+			},
+			{
+				name: "legacy.txt",
+				type: "text/plain;charset=utf-8",
+				sizeKb: 8 / 1024,
+				unavailableReason: "producer_identity_missing",
+			},
+			{
+				name: "bad.bin",
+				type: "application/octet-stream",
+				sizeKb: 4 / 1024,
+				unavailableReason: "invalid_metadata",
+			},
+			{
+				name: "attachment",
+				type: "application/octet-stream",
+				sizeKb: 0,
+				unavailableReason: "invalid_metadata",
+			},
+		]);
 	});
 
 	it("polls multiple channels independently", async () => {

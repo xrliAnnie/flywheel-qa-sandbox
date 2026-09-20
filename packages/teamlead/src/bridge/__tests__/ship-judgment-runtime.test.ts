@@ -106,12 +106,16 @@ it.each([false, true])(
 
 			mode = "auto";
 			await runtime.modeTick();
-			await runtime.modeTick();
+			await runtime.scanner.tick();
 			expect(discord).toHaveBeenCalledTimes(botConfigured ? 2 : 0);
 			if (botConfigured)
 				expect(
-					db.prepare("SELECT mode_label FROM ship_judgment_delivery").get(),
-				).toEqual({ mode_label: "history" });
+					db
+						.prepare(
+							"SELECT mode_label,delivery_mode FROM ship_judgment_delivery",
+						)
+						.get(),
+				).toEqual({ mode_label: "current", delivery_mode: "auto" });
 			mode = "dry_run";
 			await runtime.modeTick();
 			await runtime.scanner.tick();

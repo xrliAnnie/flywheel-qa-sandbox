@@ -364,7 +364,7 @@ describe("attention rendering", () => {
 		const markdown = renderEpicPageMarkdown(document, now);
 		expect(rows(html)).toHaveLength(1);
 		expect(html.indexOf("现在要你看")).toBeLessThan(
-			html.indexOf("在跑的 Epic"),
+			html.indexOf("在做的 Epic"),
 		);
 		for (const [index, row] of rows(html).entries()) {
 			expect(

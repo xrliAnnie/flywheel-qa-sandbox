@@ -1031,7 +1031,7 @@ raya_verify_candidate() {
 }
 
 raya_prestop_prepare() {
-  local scratch="" candidate="" remote="" flywheel="" canonical="" persona="" artifact=""
+  local scratch="" candidate="" remote="" remote_head="" flywheel="" canonical="" persona="" artifact=""
   raya_legacy_stop_authorized || return 1
   raya_verify_legacy_owners || return 1
   RAYA_TARGET="$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")"
@@ -1043,7 +1043,9 @@ raya_prestop_prepare() {
     *) return 1 ;;
   esac
   raya_git_fetch_bounded || return 1
-  [[ "$(raya_git rev-parse origin/main)" == "$RAYA_TARGET" ]] || return 1
+  remote_head="$(raya_git rev-parse origin/main 2>/dev/null || true)"
+  raya_is_sha40 "$remote_head" || return 1
+  raya_git merge-base --is-ancestor "$RAYA_TARGET" "$remote_head" || return 1
   raya_git merge-base --is-ancestor "$RAYA_CHECKOUT_BEFORE" "$RAYA_TARGET" || return 1
   [[ ! -L "$RAYA_HOME/build-check" && ! -L "$scratch" && ! -L "$candidate" ]] || return 1
   mkdir -p "$RAYA_HOME/build-check" || return 1
@@ -1171,23 +1173,22 @@ raya_prepare_source() {
   (( fetch_rc == 0 )) || return 1
   RAYA_TARGET="$(raya_git rev-parse origin/main 2>/dev/null || true)"
   raya_is_sha40 "$RAYA_TARGET" || return 1
-  if [[ "$(jq -r '.mode // "migration"' "$RAYA_MIGRATION_MANIFEST")" == standard-update ]]; then
-    [[ "$RAYA_TARGET" == "$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
-  fi
   raya_git merge-base --is-ancestor "$RAYA_CHECKOUT_BEFORE" "$RAYA_TARGET" || return 1
+  flywheel_sha="$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE" 2>/dev/null || true)"
+  raya_is_sha40 "$flywheel_sha" || return 1
+  manifest_sha="$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" || return 1
+  raya_is_sha256 "$manifest_sha" || return 1
+  [[ "$flywheel_sha" == "$(jq -r .target_flywheel_sha "$RAYA_MIGRATION_MANIFEST")" \
+    && "$manifest_sha" == "$(jq -r .target_manifest_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
   [[ "$RAYA_CHECKOUT_BEFORE" == "$RAYA_TARGET" ]] || raya_git merge --ff-only "$RAYA_TARGET" --quiet || return 1
   RAYA_NEW_HEAD="$(raya_git rev-parse HEAD 2>/dev/null || true)"
   [[ "$RAYA_NEW_HEAD" == "$RAYA_TARGET" ]] || return 1
   raya_run_bounded_in_checkout "$RAYA_INSTALL_TIMEOUT_SECONDS" pnpm install --frozen-lockfile || return 1
   raya_run_bounded_in_checkout "$RAYA_BUILD_TIMEOUT_SECONDS" pnpm build || return 1
+  [[ "$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE" 2>/dev/null || true)" == "$flywheel_sha" \
+    && "$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" == "$manifest_sha" ]] || return 1
   raya_materialize_business || return 1
-  flywheel_sha="$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE" 2>/dev/null || true)"
-  raya_is_sha40 "$flywheel_sha" || return 1
-  manifest_sha="$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" || return 1
-  raya_is_sha256 "$manifest_sha" || return 1
   if [[ "$(jq -r '.mode // "migration"' "$RAYA_MIGRATION_MANIFEST")" == standard-update ]]; then
-    [[ "$flywheel_sha" == "$(jq -r .target_flywheel_sha "$RAYA_MIGRATION_MANIFEST")" \
-      && "$manifest_sha" == "$(jq -r .target_manifest_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
     raya_migrate_summary_presentation || return 1
     raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
     RAYA_PREFLIGHT_RC=$?
@@ -1195,7 +1196,7 @@ raya_prepare_source() {
     raya_standard_lead install --project raya --lead raya || return 1
     raya_standard_lead verify --stage installed "$RAYA_CANONICAL_MANIFEST" || return 1
     raya_manifest_transform P2 P5 '
-      .raya_sha = $raya | .flywheel_deployed_sha = $flywheel |
+      .target_raya_sha = $raya | .raya_sha = $raya | .flywheel_deployed_sha = $flywheel |
       .canonical_manifest_digest = $manifest |
       .artifact = {digest:$artifact,persona_digest:$persona,workspace:$workspace,state_schema_version:1} |
       .activated_at = $activated

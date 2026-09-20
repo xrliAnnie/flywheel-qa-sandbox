@@ -78,7 +78,7 @@ it.each([false, true])(
 			);
 			if (opinion.status !== "created") throw new Error(opinion.status);
 			expect(store.getShipJudgmentDelivery().view("q")?.overall).toBe(
-				model ? "recommend_reject" : "can",
+				model ? "recommend_reject" : "undetermined",
 			);
 			const delivery = store.getShipJudgmentDelivery(),
 				receipt = delivery.claim("q", CHANNEL, "sender", at + 2);
@@ -119,7 +119,7 @@ it.each([false, true])(
 			).toMatchObject({
 				status: "paired",
 				opinionId: opinion.opinionId,
-				relation: model ? "aligned" : "divergent",
+				relation: model ? "aligned" : "abstained",
 				policyVersion: EVIDENCE_POLICY_VERSION,
 				modelSnapshotDigest: model ? canonicalDigest(modelSnapshot) : null,
 			});

@@ -10,6 +10,7 @@ const AUTHORITY_FACT =
 	/workflow_founder_gate_verdict|founder_authored|listFounderGateVerdicts/;
 const ALLOWED = new Set([
 	"engineering/doc/FLY-2396-founder-gate-head-origin/retro-bind.sql",
+	"packages/flywheel-comm/src/commands/verify-approval.ts",
 	"packages/teamlead/src/StateStore.ts",
 	"packages/teamlead/src/ship-judgment/outcomes.ts",
 	"packages/teamlead/src/ship-judgment/observation-cursor.ts",
@@ -58,7 +59,7 @@ describe("FLY-2396 authorship fact isolation", () => {
 			.filter((file) => AUTHORITY_FACT.test(readFileSync(file, "utf8")))
 			.map((file) => relative(REPO_ROOT, file))
 			.sort();
-		expect(ALLOWED.size).toBe(7);
+		expect(ALLOWED.size).toBe(8);
 		expect(references).toEqual([...ALLOWED].sort());
 		for (const forbidden of [
 			"land-executor",
@@ -73,10 +74,21 @@ describe("FLY-2396 authorship fact isolation", () => {
 			"utf8",
 		);
 		expect(stateStore).toContain(
-			"lower(v.head_sha) = lower(?) AND v.verdict = 'rework'\n\t\t\t\t    AND v.founder_authored = 1 LIMIT 1",
+			"lower(v.head_sha)=lower(?) AND v.verdict='rework'\n\t\t\t\t AND v.founder_authored=1 LIMIT 1",
 		);
 		expect(stateStore).not.toMatch(
-			/founder_authored = 1[^;]+predicate[^;]+founder_approved/s,
+			/founder_authored\s*=\s*1[^;]+predicate[^;]+founder_approved/s,
+		);
+		const verifyApproval = readFileSync(
+			resolve(
+				REPO_ROOT,
+				"packages/flywheel-comm/src/commands/verify-approval.ts",
+			),
+			"utf8",
+		);
+		expect(verifyApproval).toContain("Number(proof.founder_authored) !== 0");
+		expect(verifyApproval).not.toMatch(
+			/founder_authored\)\s*===\s*1[^;]+machine_approval/s,
 		);
 	});
 });

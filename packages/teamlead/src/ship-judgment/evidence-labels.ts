@@ -6,7 +6,9 @@ export const MISSING_EVIDENCE_LABELS = {
 	code_review_at_head: "当前 head 代码评审",
 	pr_diff: "PR diff",
 	plan_at_head: "当前 head 设计文档",
+	reviewed_plan_blob: "已评审设计原文",
 	qa_claim: "QA 判决",
+	qa_report: "QA 报告原文",
 	mechanical_snapshot: "机械快照",
 	merge_probe: "合并预检",
 	input: "输入",
@@ -18,7 +20,7 @@ export function evidencePointLabel(point: EvidencePoint): string {
 }
 export function semanticLabel(semantic: EvidenceLedger["semantic"]): string {
 	if (semantic.status === "not_run") return "未跑";
-	if (semantic.status === "undetermined") return "已跑，未形成否决";
+	if (semantic.status === "undetermined") return "已跑，未形成有效判定";
 	return semantic.alignmentVeto || semantic.coverageVeto ? "不通过" : "通过";
 }
 export const evidenceSummarySchema = z

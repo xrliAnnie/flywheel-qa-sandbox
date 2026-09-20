@@ -26,6 +26,7 @@ import {
 } from "../lead-capability-read.js";
 import { LeadEventDeliveryCoordinator } from "../lead-event-delivery.js";
 import { createLeadPatrolConfiguration } from "../lead-patrol-config.js";
+import { createBridgeApp } from "../plugin.js";
 
 const carrier = vi.hoisted(() => ({
 	valid: true,
@@ -137,7 +138,6 @@ async function fixture(
 		vi.stubEnv("HOME", home);
 		vi.stubEnv("FLYWHEEL_COMM_ROOT", join(home, "comm"));
 		vi.stubEnv("FLYWHEEL_PROJECTS_FILE", projectsPath);
-		const { createBridgeApp } = await import("../plugin.js");
 		const bridgeArgs: Parameters<typeof createBridgeApp> = [
 			store,
 			[],

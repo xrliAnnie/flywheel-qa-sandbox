@@ -5,6 +5,7 @@ import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	canonicalDigest,
+	isJudgmentEnabled,
 	type OpinionCandidate,
 	repositorySlugSchema,
 } from "../ship-judgment/contract.js";
@@ -138,8 +139,9 @@ export function createShipJudgmentBridgeRuntime(deps: {
 			});
 		return inputFlight;
 	};
-	// Startup diagnostics run even when there are no cards, but off/auto do no source I/O.
-	if (deps.mode() === "dry_run") void checkInputs(inputAbort.signal);
+	// Startup diagnostics run in both active modes; off/unknown perform no source I/O.
+	if (isJudgmentEnabled("flywheel", deps.mode()))
+		void checkInputs(inputAbort.signal);
 	const context = (questionId: string) => {
 		const holder =
 			deps.store.getCurrentWorkflowGateHolderByQuestionId(questionId);
@@ -253,7 +255,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 		inputId: string | null,
 		reason: string,
 	) => {
-		if (deps.mode() !== "dry_run") return;
+		if (!isJudgmentEnabled("flywheel", deps.mode())) return;
 		const current = context(questionId);
 		if (!current) return;
 		if (
@@ -273,6 +275,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 				...(record?.evidence ? { evidence: record.evidence } : {}),
 			},
 			Date.now(),
+			deps.mode() as "dry_run" | "auto",
 		);
 	};
 	const senderOwner = `sender:${randomUUID()}`;
@@ -318,8 +321,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 									return (
 										current?.botUserId === owner.botUserId &&
 										current?.botToken === owner.botToken &&
-										deps.mode() !== "off" &&
-										(claim.purpose === "ack" || deps.mode() === "dry_run")
+										isJudgmentEnabled("flywheel", deps.mode())
 									);
 								},
 								signal,
@@ -349,7 +351,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 			if (mode !== "dry_run" && mode !== "auto" && mode !== "off") return;
 			const delivery = deps.store.getShipJudgmentDelivery();
 			delivery.setMode(mode, Date.now());
-			if (mode === "dry_run") return;
+			if (isJudgmentEnabled("flywheel", mode)) return;
 			let attempted = 0;
 			for (const questionId of delivery.historyWork()) {
 				if (signal.aborted || deps.mode() !== mode) return;
@@ -405,7 +407,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 			await sendJudgmentOpinion(questionId, current.channelId, senderOwner, {
 				delivery,
 				signal,
-				enabled: () => deps.mode() === "dry_run",
+				enabled: () => isJudgmentEnabled("flywheel", deps.mode()),
 				current: () => {
 					const next = context(questionId);
 					return next?.botUserId === credentials.botUserId &&
@@ -414,7 +416,6 @@ export function createShipJudgmentBridgeRuntime(deps: {
 						: undefined;
 				},
 				now: Date.now,
-				legacySummary: () => delivery.legacySummary(questionId),
 				post: (view, content, signal) =>
 					writeJudgmentMessage({
 						...credentials,
@@ -534,7 +535,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 			evaluateSubscription(packet, { bin: deps.modelBin(), signal }),
 		material: (inputId) => {
 			const input = deps.store.getShipJudgmentInputs().get(inputId);
-			if (input) offer(input.questionId, inputId, "three_point_dry_run");
+			if (input) offer(input.questionId, inputId, "three_point_judgment");
 		},
 		unavailable: (questionId, reason) => offer(questionId, null, reason),
 	});

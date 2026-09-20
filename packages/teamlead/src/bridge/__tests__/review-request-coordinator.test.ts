@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
@@ -862,6 +865,80 @@ describe("ReviewRequestCoordinator — codex-skip lane", () => {
 });
 
 describe("ReviewRequestCoordinator — job execution", () => {
+	it("captures, validates, and seals the exact reviewed plan bytes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2737-coordinator-proof-"));
+		try {
+			execFileSync("git", ["init", "-q"], { cwd: root });
+			execFileSync("git", ["config", "user.email", "test@example.com"], {
+				cwd: root,
+			});
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
+			writeFileSync(join(root, "plan.md"), "# reviewed plan\n");
+			execFileSync("git", ["add", "plan.md"], { cwd: root });
+			execFileSync("git", ["commit", "-q", "-m", "plan"], { cwd: root });
+			const blob = execFileSync("git", ["rev-parse", "HEAD:plan.md"], {
+				cwd: root,
+				encoding: "utf8",
+			}).trim();
+
+			const h = await makeHarness();
+			registerSession(h.store, "e1", {
+				displayPath: root,
+				bindingPath: root,
+			});
+			openGate(h.comm, "q1", "e1", "review_design");
+			h.outcomes.push({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				reviewedPlanBlobSha: blob,
+				repairedTrailingBrace: false,
+				raw: "",
+			});
+
+			const accepted = await h.coordinator.accept({
+				executionId: "e1",
+				requestId: "review-plan-proof",
+				reviewType: "design",
+				questionId: "q1",
+				planPath: "plan.md",
+			});
+			await settle();
+
+			expect(accepted).toMatchObject({ accepted: true });
+			expect(h.invocations[0]?.prompt).toContain(blob);
+			expect(
+				h.store.getApprovedDesignReviewProofForReviewJob("review-plan-proof"),
+			).toMatchObject({
+				state: "approved",
+				expected_blob_sha: blob,
+				validation_receipt_id: expect.any(String),
+				verdict_receipt_id: expect.any(String),
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a design review registered when no plan proof can be captured", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+
+		const accepted = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "review-without-plan-proof",
+			reviewType: "design",
+			questionId: "q1",
+		});
+
+		expect(accepted).toMatchObject({ accepted: true, skipped: false });
+		expect(
+			h.store.getDesignReviewProofForReviewJob("review-without-plan-proof"),
+		).toBeNull();
+	});
+
 	it("FLY-2291: persists and surfaces repaired verdict audit before delivery", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");

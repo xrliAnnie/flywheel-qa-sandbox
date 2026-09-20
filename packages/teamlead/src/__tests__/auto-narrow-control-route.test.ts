@@ -86,7 +86,14 @@ describe("auto narrow founder control route", () => {
 		);
 		expect(applied).toMatchObject({
 			code: 200,
-			body: { ok: true, mode: "auto" },
+			body: {
+				ok: true,
+				mode: "auto",
+				judgmentPolicy: "ship-judgment-v1",
+				opinionStandard: "三点试判",
+				execution: "三点均通过且守卫有效时自动批准",
+				modeCheck: { status: "pending", reason: "awaiting_first_card" },
+			},
 		});
 		expect(d.fetchDiscordMessage).toHaveBeenCalledTimes(2);
 		expect(d.authorizeLeadRequest).toHaveBeenCalledTimes(3);

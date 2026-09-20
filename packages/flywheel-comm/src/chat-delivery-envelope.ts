@@ -3,13 +3,16 @@ import { assertUtcIsoTimestamp } from "./mailbox-queue.js";
 export const CHAT_DELIVERY_ENVELOPE_PREFIX = "[discord-chat-delivery v1] ";
 const LEGACY_CHAT_ENVELOPE_PREFIX = "[discord-chat-receipt v1] ";
 const DISCORD_SNOWFLAKE = /^\d+$/;
+const DISCORD_ATTACHMENT_SNOWFLAKE = /^\d{17,20}$/;
 
 export type ChatDeliveryMessageKind = "dm" | "guild" | "roundtable";
 
 export interface ChatDeliveryAttachment {
+	attachmentId?: string;
 	name: string;
 	type: string;
 	sizeKb: number;
+	unavailableReason?: "invalid_metadata" | "producer_identity_missing";
 }
 
 export interface ChatDeliveryEnvelopeV1 {
@@ -91,23 +94,74 @@ export function normalizeChatDeliveryEnvelope(
 	if (!Array.isArray(value.attachments)) {
 		throw new Error("attachments must be an array");
 	}
-	const attachments = value.attachments.map((attachment, index) => {
-		if (!attachment || typeof attachment !== "object") {
-			throw new Error(`attachments[${index}] must be an object`);
-		}
-		const candidate = attachment as Record<string, unknown>;
+	const normalizedAttachments: ChatDeliveryAttachment[] = value.attachments.map(
+		(attachment) => {
+			const candidate =
+				attachment &&
+				typeof attachment === "object" &&
+				!Array.isArray(attachment)
+					? (attachment as Record<string, unknown>)
+					: {};
+			const nameValid =
+				typeof candidate.name === "string" && candidate.name.trim().length > 0;
+			const typeValid =
+				typeof candidate.type === "string" && candidate.type.trim().length > 0;
+			const sizeValid =
+				typeof candidate.sizeKb === "number" &&
+				Number.isFinite(candidate.sizeKb) &&
+				candidate.sizeKb >= 0;
+			const attachmentId =
+				typeof candidate.attachmentId === "string" &&
+				DISCORD_ATTACHMENT_SNOWFLAKE.test(candidate.attachmentId)
+					? candidate.attachmentId
+					: undefined;
+			const idInvalid =
+				candidate.attachmentId !== undefined && attachmentId === undefined;
+			const declaredReasonValid =
+				candidate.unavailableReason === undefined ||
+				candidate.unavailableReason === "invalid_metadata" ||
+				candidate.unavailableReason === "producer_identity_missing";
+			const metadataInvalid =
+				!nameValid ||
+				!typeValid ||
+				!sizeValid ||
+				idInvalid ||
+				!declaredReasonValid ||
+				candidate.unavailableReason === "invalid_metadata" ||
+				(attachmentId !== undefined &&
+					candidate.unavailableReason !== undefined);
+			return {
+				name: nameValid ? (candidate.name as string).trim() : "attachment",
+				type: typeValid
+					? (candidate.type as string).trim()
+					: "application/octet-stream",
+				sizeKb: sizeValid ? (candidate.sizeKb as number) : 0,
+				...(!metadataInvalid && attachmentId ? { attachmentId } : {}),
+				...(metadataInvalid
+					? { unavailableReason: "invalid_metadata" as const }
+					: !attachmentId
+						? { unavailableReason: "producer_identity_missing" as const }
+						: {}),
+			};
+		},
+	);
+	const attachmentIdCounts = new Map<string, number>();
+	for (const attachment of normalizedAttachments) {
+		if (!attachment.attachmentId) continue;
+		attachmentIdCounts.set(
+			attachment.attachmentId,
+			(attachmentIdCounts.get(attachment.attachmentId) ?? 0) + 1,
+		);
+	}
+	const attachments = normalizedAttachments.map((attachment) => {
 		if (
-			typeof candidate.sizeKb !== "number" ||
-			!Number.isFinite(candidate.sizeKb) ||
-			candidate.sizeKb < 0
+			!attachment.attachmentId ||
+			attachmentIdCounts.get(attachment.attachmentId) === 1
 		) {
-			throw new Error(`attachments[${index}].sizeKb must be non-negative`);
+			return attachment;
 		}
-		return {
-			name: requiredText(candidate.name, `attachments[${index}].name`),
-			type: requiredText(candidate.type, `attachments[${index}].type`),
-			sizeKb: candidate.sizeKb,
-		};
+		const { attachmentId: _duplicateId, ...metadata } = attachment;
+		return { ...metadata, unavailableReason: "invalid_metadata" as const };
 	});
 	const replyChannelId =
 		value.replyChannelId === undefined

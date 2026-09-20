@@ -230,6 +230,7 @@ for (const drift of [false, true]) {
 			"unknown",
 		],
 		[0, { kind: "auto_narrow_gate", source_event_id: "source" }, "auto"],
+		[0, { kind: "ship_judgment_auto", source_event_id: "source" }, "auto"],
 		[0, { kind: "operator", principal: "lead" }, "lead_proxy"],
 		[
 			1,
@@ -410,7 +411,7 @@ it.each([
 	["2026-09-11T00:00:01.000Z", null, "dry_run", "unknown"],
 	[null, null, "dry_run", "unknown"],
 	[NOW, null, "dry_run", "unknown"],
-	["2026-09-10T23:59:59.000Z", null, "auto", "inactive"],
+	["2026-09-10T23:59:59.000Z", null, "auto", "clear"],
 ] as const)(
 	"preserves refresh history %s/%s/%s as %s",
 	(changed, dirty, mode, status) => {

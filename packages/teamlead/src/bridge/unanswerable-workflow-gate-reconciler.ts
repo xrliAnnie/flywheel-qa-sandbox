@@ -15,6 +15,7 @@ const lastPassByStore = new WeakMap<object, Map<string, number>>();
 type RecoveryAlertKind = "origin_inspection_blocked" | "recovery_limit_reached";
 
 interface WorkflowGateQuestionRecoveryStore {
+	hasRejectedShipJudgmentMachineApproval(questionId: string): boolean;
 	listWorkflowGateQuestionRecoveryCandidates(
 		projectName: string,
 		limit?: number,
@@ -91,8 +92,12 @@ function defaultAlertIdentity(
 
 function shouldRecover(
 	inspection: ReturnType<RecoveryCommDb["inspectFounderShipGateQuestion"]>,
+	rejectedMachineApproval: boolean,
 ): boolean {
-	return !inspection.answerable && !inspection.founderSourceEventExists;
+	if (inspection.answerable || inspection.founderSourceEventExists)
+		return false;
+	if (inspection.machineSourceEventExists) return rejectedMachineApproval;
+	return true;
 }
 
 /**
@@ -171,7 +176,14 @@ export async function reconcileUnanswerableWorkflowGates(
 					candidate.questionId,
 					candidate.projectName,
 				);
-				if (!shouldRecover(inspection)) {
+				if (
+					!shouldRecover(
+						inspection,
+						deps.store.hasRejectedShipJudgmentMachineApproval(
+							candidate.questionId,
+						),
+					)
+				) {
 					result.skipped += 1;
 					continue;
 				}

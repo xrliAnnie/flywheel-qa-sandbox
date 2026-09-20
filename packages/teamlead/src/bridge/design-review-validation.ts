@@ -104,5 +104,30 @@ export function validateDesignReviewProjection(
 			httpStatus: 409,
 		};
 	}
+	const proof = store.getDesignReviewProofForManifest(
+		manifest.request_id,
+		manifest.revision,
+	);
+	const proofMatches =
+		proof !== null &&
+		proof.execution_id === executionId &&
+		proof.project_name === manifest.project_name &&
+		proof.plan_path === manifest.expected_plan_path &&
+		proof.expected_blob_sha === snapshot.blobSha;
+
+	// This endpoint validates the runner's projection, but it is not the
+	// independently accepted review verdict that may seal authority. Missing or
+	// mismatched proof therefore stays non-authoritative without rejecting the
+	// shared result producer. An unrelated commit may move HEAD while the exact
+	// reviewed plan blob remains unchanged.
+	if (proofMatches && proof?.state === "captured") {
+		store.validateDesignReviewApprovalProof({
+			proofId: proof.proof_id,
+			validationReceiptId: `design-review-validation:${manifest.request_id}:${manifest.revision}`,
+			reviewedCommitSha: proof.reviewed_commit_sha,
+			expectedBlobSha: snapshot.blobSha,
+			validatedAt: new Date().toISOString(),
+		});
+	}
 	return { allowed: true };
 }

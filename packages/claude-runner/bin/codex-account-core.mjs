@@ -196,6 +196,12 @@ function decodeJwtPayload(token) {
 	return payload;
 }
 
+function unregisteredProfileName(email) {
+	const local = email.split("@")[0].toLowerCase();
+	const slug = local.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+	return `account-${slug || "unknown"}`;
+}
+
 export function identifyCodexAuth(rawAuth, registry) {
 	const auth = parseJson(rawAuth, "Codex auth identity file");
 	if (!isRecord(auth) || !isRecord(auth.tokens)) {
@@ -210,12 +216,13 @@ export function identifyCodexAuth(rawAuth, registry) {
 	if (typeof email !== "string" || !EMAIL_RE.test(email)) {
 		throw new Error("Codex auth identity JWT has no valid email claim");
 	}
-	const profile = registry.profiles.find((entry) => entry.email === email);
-	if (!profile) {
-		throw new Error(
-			`unknown Codex account identity: ${redactCodexEmail(email)}`,
-		);
-	}
+	// FLY-2750: any logged-in ChatGPT account is usable. Registered accounts keep
+	// their profile name/role; an unregistered account gets a stable name derived
+	// from its email local part instead of being refused.
+	const profile = registry.profiles.find((entry) => entry.email === email) ?? {
+		name: unregisteredProfileName(email),
+		role: "manual_backup",
+	};
 	const openAiAuth = payload["https://api.openai.com/auth"];
 	const accountId =
 		isRecord(openAiAuth) &&

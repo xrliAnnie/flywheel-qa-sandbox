@@ -547,9 +547,12 @@ export function handleCodexAutoTrigger(
 		try {
 			const manifest = store.advanceDesignReviewManifest({
 				executionId: event.execution_id,
+				issueId: event.issue_id,
 				projectName: event.project_name,
+				repositoryIdentity: "__main__",
 				sourceEventId: event.event_id,
 				expectedPlanPath: persistedPlanPath,
+				reviewedCommitSha: snapshot.commitSha,
 				expectedBlobSha: snapshot.blobSha,
 			});
 			const delivered = deliverDesignReviewManifest(store, manifest);

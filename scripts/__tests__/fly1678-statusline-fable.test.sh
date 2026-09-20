@@ -19,7 +19,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/__tests__/fixtures/fly1678/harness.sh
 source "$HERE/fixtures/fly1678/harness.sh"
 
-SCRIPT="$(cd "$HERE/../.." && pwd)/scripts/statusline-command.sh"
+SCRIPT="${FLY2745_STATUSLINE_SCRIPT:-$(cd "$HERE/../.." && pwd)/scripts/statusline-command.sh}"
 SNAPSHOT="$HERE/fixtures/fly1678/cache/live-snapshot-20260810.json"
 
 echo "FLY-1678 statusline model-scoped bar"
@@ -494,5 +494,137 @@ fly1678_check "$([ "$subject_rc" -eq 0 ] && echo 0 || echo 1)" "T: exit 0" "got 
 fly1678_check "$([ "$subject_err_size" -eq 0 ] && echo 0 || echo 1)" \
   "T: jq diagnostics never leak to stderr" "stderr bytes: $subject_err_size"
 fly1678_assert_no_forbidden_calls "T"
+
+# ---------------------------------------------------------------------------
+echo
+echo "[FLY-2745] effort comes from this session, never global settings"
+
+# These cases run last because the frozen FLY-1678 baseline intentionally reads
+# settings.json. FLY-2745 changes the shared fake HOME to the contradictory value
+# xhigh, then proves every current-session source wins over it. Keeping the cases
+# last prevents that negative control from contaminating Contract B above.
+printf '%s' '{"effortLevel":"xhigh"}' > "$FLY1678_SANDBOX/home/.claude/settings.json"
+
+FLY2745_BIN="$FLY1678_SANDBOX/effort-bin"
+mkdir -p "$FLY2745_BIN"
+# These single-quoted lines are the contents of the fake ps script.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/bin/sh' \
+  'pid=""' \
+  'while [ "$#" -gt 0 ]; do' \
+  '  case "$1" in -p) pid=$2; shift 2 ;; *) shift ;; esac' \
+  'done' \
+  'case "${FLY2745_PS_MODE:-none}:$pid" in' \
+  '  direct-low:*) printf "%s\n" "1 /opt/claude --model claude-fable-5-1 --effort low" ;;' \
+  '  equals-low:*) printf "%s\n" "1 /opt/claude --model claude-fable-5-1 --effort=low" ;;' \
+  '  prompt-conflict:*) printf "%s\n" "1 /opt/claude --effort medium Fix a prompt that says --effort xhigh" ;;' \
+  '  wrapped-low:777) printf "%s\n" "1 /opt/claude --model claude-fable-5-1 --effort low" ;;' \
+  '  wrapped-low:*) printf "%s\n" "777 /bin/bash /Users/test/.claude/statusline-command.sh" ;;' \
+  '  nearest-missing:777) printf "%s\n" "888 /opt/claude --model claude-fable-5-1" ;;' \
+  '  nearest-missing:888) printf "%s\n" "1 /opt/claude --model claude-opus-5 --effort xhigh" ;;' \
+  '  nearest-missing:*) printf "%s\n" "777 /bin/bash /Users/test/.claude/statusline-command.sh" ;;' \
+  '  *) printf "%s\n" "1 /bin/bash /Users/test/.claude/statusline-command.sh" ;;' \
+  'esac' > "$FLY2745_BIN/ps"
+chmod 0755 "$FLY2745_BIN/ps"
+
+FLY2745_BASE='{"model":{"display_name":"Opus 5","id":"claude-opus-5"},"workspace":{"current_dir":"/repo/flywheel"},"context_window":{"used_percentage":42}}'
+
+fly2745_render() { # <stdin-json> <env-effort-or-__unset__> <ps-mode>
+  local input_json="$1" env_effort="$2" ps_mode="$3"
+  local home="$FLY1678_SANDBOX/home"
+  printf '%s' '{"five_hour":{"utilization":19.4,"resets_at":"2026-08-11T00:59:00Z"},"seven_day":{"utilization":4.9,"resets_at":"2026-08-14T05:59:59Z"}}' \
+    > "$home/.claude/usage-api-cache.json"
+  FLY1678_OUT="$FLY1678_SANDBOX/fly2745-out.bin"
+  FLY1678_ERR="$FLY1678_SANDBOX/fly2745-err.txt"
+
+  if [ "$env_effort" = "__unset__" ]; then
+    printf '%s' "$input_json" | /usr/bin/env -u CLAUDE_EFFORT \
+      HOME="$home" PATH="$FLY2745_BIN:$FLY1678_SHIM:$PATH" \
+      TZ=UTC LC_ALL=C FLY1678_FAKE_NOW="$FLY1678_FAKE_NOW" \
+      FLY1678_MARKER="$FLY1678_MARKER" FLY2745_PS_MODE="$ps_mode" \
+      /bin/bash "$SCRIPT" > "$FLY1678_OUT" 2> "$FLY1678_ERR"
+    FLY1678_RC=$?
+  else
+    printf '%s' "$input_json" | /usr/bin/env -u CLAUDE_EFFORT \
+      HOME="$home" PATH="$FLY2745_BIN:$FLY1678_SHIM:$PATH" \
+      TZ=UTC LC_ALL=C FLY1678_FAKE_NOW="$FLY1678_FAKE_NOW" \
+      FLY1678_MARKER="$FLY1678_MARKER" FLY2745_PS_MODE="$ps_mode" \
+      CLAUDE_EFFORT="$env_effort" \
+      /bin/bash "$SCRIPT" > "$FLY1678_OUT" 2> "$FLY1678_ERR"
+    FLY1678_RC=$?
+  fi
+}
+
+fly2745_line1_plain() {
+  python3 - "$FLY1678_OUT" <<'PY'
+import re, sys
+line = open(sys.argv[1], encoding="utf-8").read().splitlines()[0]
+sys.stdout.write(re.sub(r"\x1b\[[0-9;]*m", "", line))
+PY
+}
+
+fly2745_expect_effort() { # <label> <expected>
+  local label="$1" expected="$2" line
+  line=$(fly2745_line1_plain)
+  case "$line" in
+    "Opus 5/$expected | "*) fly1678_pass "$label: renders /$expected" ;;
+    *) fly1678_fail "$label: expected /$expected" "line1=$line" ;;
+  esac
+  case "$line" in
+    *xhigh*)
+      [ "$expected" = "xhigh" ] || fly1678_fail "$label: global xhigh leaked" "line1=$line"
+      ;;
+    *)
+      [ "$expected" = "xhigh" ] && fly1678_fail "$label: expected xhigh is missing" "line1=$line"
+      ;;
+  esac
+}
+
+# Hard acceptance 1 + source priority. This is also the required mutant killer:
+# restoring `settings.json.effortLevel` makes this render xhigh and fail.
+fly2745_render "$(printf '%s' "$FLY2745_BASE" | jq -c '.effort={level:"medium"}')" high direct-low
+fly1678_assert_clean_run "FLY2745-A stdin"
+fly2745_expect_effort "FLY2745-A stdin beats env, argv, global" medium
+
+# The inherited runner environment is explicitly replaced, so this cannot pass
+# accidentally because the harness itself was launched with CLAUDE_EFFORT.
+fly2745_render "$FLY2745_BASE" HIGH direct-low
+fly1678_assert_clean_run "FLY2745-B env"
+fly2745_expect_effort "FLY2745-B env beats argv and global, normalised" high
+
+# The wrapper command contains `.claude` but is not the Claude executable. The
+# walk must reach the nearest real Claude process and read its argv.
+fly2745_render "$FLY2745_BASE" __unset__ wrapped-low
+fly1678_assert_clean_run "FLY2745-C argv"
+fly2745_expect_effort "FLY2745-C nearest Claude argv through wrapper" low
+
+fly2745_render "$FLY2745_BASE" __unset__ none
+fly1678_assert_clean_run "FLY2745-D unknown"
+fly2745_expect_effort "FLY2745-D no session source is explicit unknown" '?'
+
+# Invalid stdin must not reach the terminal; it falls through to a valid env.
+HOSTILE_EFFORT=$(printf '%s' "$FLY2745_BASE" | jq -c '.effort={level:"\u001b[2J%s"}')
+fly2745_render "$HOSTILE_EFFORT" medium direct-low
+fly1678_assert_clean_run "FLY2745-E hostile stdin"
+fly2745_expect_effort "FLY2745-E invalid stdin falls through" medium
+fly1678_assert_no_stray_control "FLY2745-E hostile stdin"
+
+fly2745_render "$FLY2745_BASE" __unset__ equals-low
+fly1678_assert_clean_run "FLY2745-F equals argv"
+fly2745_expect_effort "FLY2745-F --effort=VALUE form" low
+
+# Once the nearest exact Claude ancestor is found, absence of a valid flag is
+# authoritative unknown. Never jump across it into a parent Claude session.
+fly2745_render "$FLY2745_BASE" __unset__ nearest-missing
+fly1678_assert_clean_run "FLY2745-G nearest missing"
+fly2745_expect_effort "FLY2745-G does not borrow parent Claude effort" '?'
+
+# Flywheel appends the prompt after Claude's real flags. Since ps flattens argv,
+# two distinct valid values cannot be disambiguated: explicit unknown is safer
+# than letting prompt prose overwrite the real session flag.
+fly2745_render "$FLY2745_BASE" __unset__ prompt-conflict
+fly1678_assert_clean_run "FLY2745-H conflicting argv"
+fly2745_expect_effort "FLY2745-H conflicting argv values are unknown" '?'
 
 fly1678_summary

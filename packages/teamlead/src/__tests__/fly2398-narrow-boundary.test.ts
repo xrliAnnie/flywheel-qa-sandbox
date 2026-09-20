@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -47,8 +47,8 @@ function sourceFiles(path: string): string[] {
 	});
 }
 
-describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
-	it("freezes the exact shadow readers, including the one protected narrow-gate core", () => {
+describe("FLY-2398 shadow audit boundary", () => {
+	it("keeps shadow facts audit-only and removes the retired narrow-gate authority", () => {
 		const references = [
 			...sourceFiles(resolve(REPO_ROOT, "packages")),
 			...sourceFiles(resolve(REPO_ROOT, "scripts")),
@@ -79,8 +79,22 @@ describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
 			resolve(REPO_ROOT, "packages/teamlead/src/StateStore.ts"),
 			"utf8",
 		);
-		expect(stateStore).toContain("evaluateAutoNarrowEligibility({");
-		expect(stateStore).toContain("commitAutoNarrowSourceIfEligible(input:");
+		expect(stateStore).not.toContain("evaluateAutoNarrowEligibility({");
+		expect(stateStore).not.toContain("commitAutoNarrowSourceIfEligible(input:");
+		expect(stateStore).toContain("commitShipJudgmentSourceIfEligible(input:");
+		const commDb = readFileSync(
+			resolve(REPO_ROOT, "packages/flywheel-comm/src/db.ts"),
+			"utf8",
+		);
+		expect(commDb).not.toContain("insertAutoNarrowApprovalWithSource(");
+		for (const retired of [
+			"packages/teamlead/src/auto-narrow/eligibility.ts",
+			"packages/teamlead/src/auto-narrow/opinion.ts",
+			"packages/teamlead/src/bridge/auto-narrow-gate.ts",
+			"packages/teamlead/src/bridge/auto-narrow-opinion-delivery.ts",
+		]) {
+			expect(existsSync(resolve(REPO_ROOT, retired))).toBe(false);
+		}
 	});
 
 	it("does not expose the shadow facts to review-hold or the founder merge guard", () => {

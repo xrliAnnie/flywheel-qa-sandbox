@@ -34,6 +34,7 @@ interface RawDiscordMessage {
 	timestamp?: string;
 	author?: { id?: string; bot?: boolean };
 	attachments?: Array<{
+		id?: string;
 		filename?: string;
 		content_type?: string;
 		size?: number;
@@ -504,24 +505,41 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 				authorId: m.author?.id ?? "",
 				authorBot: m.author?.bot === true,
 				content: m.content ?? "",
-				attachments: (m.attachments ?? [])
-					.filter(
-						(attachment) =>
-							typeof attachment.filename === "string" &&
-							attachment.filename.trim().length > 0 &&
-							typeof attachment.size === "number" &&
-							Number.isFinite(attachment.size) &&
-							attachment.size >= 0,
-					)
-					.map((attachment) => ({
-						name: attachment.filename as string,
-						type:
-							typeof attachment.content_type === "string" &&
-							attachment.content_type.trim().length > 0
-								? attachment.content_type
-								: "application/octet-stream",
-						sizeKb: (attachment.size as number) / 1024,
-					})),
+				attachments: (m.attachments ?? []).map((attachment) => {
+					const nameValid =
+						typeof attachment?.filename === "string" &&
+						attachment.filename.trim().length > 0;
+					const typeValid =
+						typeof attachment?.content_type === "string" &&
+						attachment.content_type.trim().length > 0;
+					const sizeValid =
+						typeof attachment?.size === "number" &&
+						Number.isFinite(attachment.size) &&
+						attachment.size >= 0;
+					const attachmentId =
+						typeof attachment?.id === "string" &&
+						/^\d{17,20}$/.test(attachment.id)
+							? attachment.id
+							: undefined;
+					const invalid =
+						!nameValid ||
+						!typeValid ||
+						!sizeValid ||
+						(attachment?.id !== undefined && attachmentId === undefined);
+					return {
+						name: nameValid ? attachment.filename!.trim() : "attachment",
+						type: typeValid
+							? attachment.content_type!.trim()
+							: "application/octet-stream",
+						sizeKb: sizeValid ? attachment.size! / 1024 : 0,
+						...(!invalid && attachmentId ? { attachmentId } : {}),
+						...(invalid
+							? { unavailableReason: "invalid_metadata" as const }
+							: !attachmentId
+								? { unavailableReason: "producer_identity_missing" as const }
+								: {}),
+					};
+				}),
 				...(Number.isFinite(parsedTimestamp)
 					? { timestampMs: parsedTimestamp }
 					: {}),

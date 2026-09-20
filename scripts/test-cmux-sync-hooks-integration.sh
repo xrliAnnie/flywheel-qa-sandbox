@@ -220,6 +220,36 @@ setup_session() {
   echo "$session"
 }
 
+# ── Scenario I: production runner inventory delimiter ────────────────
+#
+# tmux 3.7c rewrites literal tab bytes in -F templates to underscores.
+# Exercise the production functions against the real isolated server so the
+# broad mock suite cannot accidentally model the old format as working.  The
+# unowned a|b window proves an unrelated external title cannot poison the
+# filtered runner inventory.
+echo
+echo "── Scenario I (FLY-2656): runner inventory survives tmux 3.7c format escaping ──"
+reset_scenario "I"
+tmux new-session -d -s external-fly2656 -n 'a|b' "sleep 60" 2>/dev/null
+tmux new-session -d -s runner-fly2656 -n FLY-2656-implement "sleep 60" 2>/dev/null
+tmux set-option -w -t '=runner-fly2656:FLY-2656-implement' \
+  @flywheel_exec_id exec-fly2656 2>/dev/null
+
+inventory_exec_rc=0
+inventory_node_rc=0
+read_runner_tmux_exec_inventory || inventory_exec_rc=$?
+read_runner_tmux_node_inventory || inventory_node_rc=$?
+inventory_wid=$(tmux display-message -p -t '=runner-fly2656:FLY-2656-implement' \
+  '#{window_id}' 2>/dev/null || true)
+if [[ "$inventory_exec_rc" == 0 && "$inventory_node_rc" == 0 \
+    && "$RUNNER_TMUX_STATE" == ok && "$RUNNER_NODE_TMUX_STATE" == ok \
+    && "$RUNNER_TMUX_EXEC_ROWS" == "exec-fly2656|present|$inventory_wid" \
+    && "$RUNNER_NODE_TMUX_ROWS" == "exec-fly2656|present|$inventory_wid|FLY-2656-implement|runner-fly2656" ]]; then
+  pass "Scenario I: exact runner identity parses while an unowned a|b window is ignored"
+else
+  fail "Scenario I: inventory delimiter failed exec_rc=$inventory_exec_rc node_rc=$inventory_node_rc exec_state=$RUNNER_TMUX_STATE node_state=$RUNNER_NODE_TMUX_STATE exec=[$RUNNER_TMUX_EXEC_ROWS] node=[$RUNNER_NODE_TMUX_ROWS]"
+fi
+
 # ── Scenario A: program exits + remain-on-exit ON (production main path) ──
 
 echo

@@ -47,6 +47,141 @@ function fixture() {
 }
 
 describe("FLY-1574 Discord mailbox ingest", () => {
+	it("preserves attachment identity and exposes missing identity as unavailable metadata", () => {
+		const { args } = fixture();
+		const identified = normalizeChatDeliveryEnvelope({
+			v: 1,
+			deliveryId: `chat:${args.leadId}:${args.messageId}`,
+			priority: 1,
+			...args,
+			attachments: [
+				{
+					attachmentId: "423456789012345678",
+					name: "pixel<marker>.png",
+					type: "image/png",
+					sizeKb: 12,
+				},
+			],
+		});
+		expect(identified.attachments).toEqual([
+			{
+				attachmentId: "423456789012345678",
+				name: "pixel<marker>.png",
+				type: "image/png",
+				sizeKb: 12,
+			},
+		]);
+		const identifiedContent = renderDiscordChatContent(identified);
+		expect(identifiedContent).toContain('attachment_id="423456789012345678"');
+		expect(identifiedContent).toContain('content_state="metadata_only"');
+		expect(identifiedContent).not.toContain("read_operation");
+
+		const missing = normalizeChatDeliveryEnvelope({
+			...identified,
+			attachments: [{ name: "legacy.txt", type: "text/plain", sizeKb: 1 }],
+		});
+		expect(missing.attachments).toEqual([
+			{
+				name: "legacy.txt",
+				type: "text/plain",
+				sizeKb: 1,
+				unavailableReason: "producer_identity_missing",
+			},
+		]);
+		const missingContent = renderDiscordChatContent(missing);
+		expect(missingContent).toContain('content_state="unavailable"');
+		expect(missingContent).toContain('reason="producer_identity_missing"');
+		expect(missingContent).not.toContain("read_operation");
+	});
+
+	it("keeps malformed and duplicate attachment entries visible but unreadable", () => {
+		const { args } = fixture();
+		const duplicateId = "423456789012345679";
+		const envelope = normalizeChatDeliveryEnvelope({
+			v: 1,
+			deliveryId: `chat:${args.leadId}:${args.messageId}`,
+			priority: 1,
+			...args,
+			attachments: [
+				{
+					attachmentId: "not-a-snowflake",
+					name: "../<private>.txt",
+					type: "text/plain",
+					sizeKb: 1,
+				},
+				{
+					attachmentId: duplicateId,
+					name: "same-a.png",
+					type: "image/png",
+					sizeKb: 2,
+				},
+				{
+					attachmentId: duplicateId,
+					name: "same-b.png",
+					type: "image/png",
+					sizeKb: 3,
+				},
+				{ attachmentId: duplicateId, name: "", type: "", sizeKb: -1 },
+			],
+		});
+
+		expect(envelope.attachments).toEqual([
+			{
+				name: "../<private>.txt",
+				type: "text/plain",
+				sizeKb: 1,
+				unavailableReason: "invalid_metadata",
+			},
+			{
+				name: "same-a.png",
+				type: "image/png",
+				sizeKb: 2,
+				unavailableReason: "invalid_metadata",
+			},
+			{
+				name: "same-b.png",
+				type: "image/png",
+				sizeKb: 3,
+				unavailableReason: "invalid_metadata",
+			},
+			{
+				name: "attachment",
+				type: "application/octet-stream",
+				sizeKb: 0,
+				unavailableReason: "invalid_metadata",
+			},
+		]);
+		const content = renderDiscordChatContent(envelope);
+		expect(content).toContain('name="../&lt;private&gt;.txt"');
+		expect(content.match(/reason="invalid_metadata"/g)).toHaveLength(4);
+		expect(content).not.toContain(`attachment_id="${duplicateId}"`);
+	});
+
+	it("renders only ten attachments and explicitly marks the remainder unavailable", () => {
+		const { args } = fixture();
+		const envelope = normalizeChatDeliveryEnvelope({
+			v: 1,
+			deliveryId: `chat:${args.leadId}:${args.messageId}`,
+			priority: 1,
+			...args,
+			attachments: Array.from({ length: 11 }, (_, index) => ({
+				attachmentId: `5234567890123456${String(index).padStart(2, "0")}`,
+				name: `${index}.txt`,
+				type: "text/plain",
+				sizeKb: 1,
+			})),
+		});
+		const content = renderDiscordChatContent(envelope);
+		expect(content.match(/<attachment /g)).toHaveLength(10);
+		expect(content).toContain(
+			'<attachments_unavailable count="1" reason="attachment_limit_exceeded" />',
+		);
+		expect(content).toContain(
+			"这里仅有附件信息，未提供内容；请通过本会话已有附件读取工具获取，工具不存在则明确告知不可用。",
+		);
+		expect(content).not.toContain("10.txt");
+	});
+
 	it("atomically awards one lane and keeps the visible payload separate", () => {
 		const { dbPath, args } = fixture();
 		const first = ingestDiscordChat({ dbPath, ...args });
@@ -77,7 +212,7 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 			'the new flow doesn\'t work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out',
 		);
 		expect(row.delivery_content).toBe(
-			`<channel source="plugin:discord:discord" chat_id="123456789012345678" message_id="223456789012345678" user="Founder &lt;admin&gt; &quot;quoted&quot;" user_id="323456789012345678" ts="2026-08-10T12:00:00.000Z" delivery_id="chat:mufasa:223456789012345678">\nthe new flow doesn't work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out\n<attachment name="x&lt;y&gt;.png" type="image/png" size_kb="12" />\n</channel>`,
+			`<channel source="plugin:discord:discord" chat_id="123456789012345678" message_id="223456789012345678" user="Founder &lt;admin&gt; &quot;quoted&quot;" user_id="323456789012345678" ts="2026-08-10T12:00:00.000Z" delivery_id="chat:mufasa:223456789012345678">\nthe new flow doesn't work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out\n<attachment name="x&lt;y&gt;.png" type="image/png" size_kb="12" content_state="unavailable" reason="producer_identity_missing" />\n这里仅有附件信息，未提供内容；请通过本会话已有附件读取工具获取，工具不存在则明确告知不可用。\n</channel>`,
 		);
 
 		ingestDiscordChat({

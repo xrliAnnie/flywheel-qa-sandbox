@@ -98,10 +98,15 @@ export function renderDiscordChatContent(
 				}
 			: {}),
 	};
-	const attachments = envelope.attachments.map(
-		(attachment) =>
-			`<attachment name="${escapeXml(attachment.name)}" type="${escapeXml(attachment.type)}" size_kb="${attachment.sizeKb}" />`,
-	);
+	const visibleAttachments = envelope.attachments.slice(0, 10);
+	const attachments = visibleAttachments.map((attachment) => {
+		const contentState = attachment.attachmentId
+			? "metadata_only"
+			: "unavailable";
+		return `<attachment name="${escapeXml(attachment.name)}" type="${escapeXml(attachment.type)}" size_kb="${attachment.sizeKb}"${attachment.attachmentId ? ` attachment_id="${escapeXml(attachment.attachmentId)}"` : ""} content_state="${contentState}"${attachment.unavailableReason ? ` reason="${escapeXml(attachment.unavailableReason)}"` : ""} />`;
+	});
+	const omittedAttachmentCount =
+		envelope.attachments.length - attachments.length;
 	const body = [
 		...(envelope.origin === "voice"
 			? [
@@ -110,6 +115,16 @@ export function renderDiscordChatContent(
 			: []),
 		escapeXmlText(envelope.text),
 		...attachments,
+		...(omittedAttachmentCount > 0
+			? [
+					`<attachments_unavailable count="${omittedAttachmentCount}" reason="attachment_limit_exceeded" />`,
+				]
+			: []),
+		...(envelope.attachments.length > 0
+			? [
+					"这里仅有附件信息，未提供内容；请通过本会话已有附件读取工具获取，工具不存在则明确告知不可用。",
+				]
+			: []),
 	];
 	return `<channel ${Object.entries(attrs)
 		.map(([key, value]) => `${key}="${escapeXml(value)}"`)

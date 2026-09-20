@@ -50,6 +50,7 @@ function harness(events = [EVENT]) {
 				deadletters.add(`${input.project}:${input.sourceEventId}`);
 			},
 		),
+		recordShipJudgmentAutoApprovalDisposition: vi.fn(),
 		getWorkflowSourceCursor: vi.fn(
 			(project: string) => cursors.get(project) ?? 0,
 		),
@@ -61,6 +62,48 @@ function harness(events = [EVENT]) {
 }
 
 describe("workflow source projector", () => {
+	it("persists a machine rejection before deadlettering its stale source", async () => {
+		const event = {
+			...EVENT,
+			source_event_id: "ship-judgment-auto:question-1",
+		};
+		const { db, store } = harness([event]);
+		store.applyWorkflowSourceEvent.mockImplementation(() => {
+			throw new Error(
+				"ship judgment approval source payload invalid: control_changed",
+			);
+		});
+
+		const result = await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			now: () => "2026-07-14T00:02:00.000Z",
+			resolveAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(result).toMatchObject({ deadlettered: 1, applied: 0 });
+		expect(store.applyWorkflowSourceEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectedAt: "2026-07-14T00:02:00.000Z",
+			}),
+		);
+		expect(
+			store.recordShipJudgmentAutoApprovalDisposition,
+		).toHaveBeenCalledWith({
+			sourceEventId: event.source_event_id,
+			disposition: "rejected",
+			reason: "ship judgment approval source payload invalid: control_changed",
+			at: event.at,
+		});
+		expect(store.recordWorkflowSourceDeadletter).toHaveBeenCalledOnce();
+		expect(store.getWorkflowSourceCursor("flywheel")).toBe(1);
+	});
+
 	it.each(["founder_approval", "founder_feedback"] as const)(
 		"FLY-2561: refreshes the authoritative issue after %s projection and replay",
 		async (kind) => {

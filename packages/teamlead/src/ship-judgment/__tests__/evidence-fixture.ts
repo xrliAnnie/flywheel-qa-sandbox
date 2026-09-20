@@ -33,6 +33,7 @@ export function evidenceMaterials(
 				round: 1,
 				status: "approved",
 				respondedAt: at,
+				expectedBlobSha: "c".repeat(40),
 			},
 			planBlob: { blobSha: "c".repeat(40), text: "approved plan" },
 			codeReview: {
@@ -57,9 +58,16 @@ export function evidenceMaterials(
 				revoked: false,
 				summary: "QA passed",
 			},
+			qaReport: { id: "report-1148", observedAt: at },
 		})),
 	};
 }
 export function evidenceFixture(binding: ShipJudgmentBinding, at: string) {
-	return buildEvidenceLedger(evidenceMaterials(binding, at), binding);
+	return buildEvidenceLedger(evidenceMaterials(binding, at), binding, {
+		status: "evaluated",
+		evaluationId: "evaluation",
+		modelSnapshotDigest: "f".repeat(64),
+		alignment: "pass",
+		coverage: "pass",
+	});
 }

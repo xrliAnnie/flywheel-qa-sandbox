@@ -1,0 +1,67 @@
+FLY-2727 mutation: inserted `if (type === "started") return "live";`
+Detached scratch worktree: 3de487c534d9ebae5b9a1a5930c09aeb27ca4b02
+Command: pnpm --filter flywheel-teamlead exec vitest run src/epic-page/__tests__/founder-render.test.ts -t "separates stopped"
+Exit status: 1
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2727/.tmp-fly2727-mutation/packages/teamlead
+
+ ❯ |parallel| src/epic-page/__tests__/founder-render.test.ts (18 tests | 1 failed | 17 skipped) 176ms
+   × founder Epic HTML > separates stopped and truly running children from Linear In Progress 175ms
+     → expected '在跑' to be '停着·卡住' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/epic-page/__tests__/founder-render.test.ts > founder Epic HTML > separates stopped and truly running children from Linear In Progress
+AssertionError: expected '在跑' to be '停着·卡住' // Object.is equality
+
+Expected: "停着·卡住"
+Received: "在跑"
+
+ ❯ src/epic-page/__tests__/founder-render.test.ts:47:52
+
+     45|   stoppedDom.write(renderEpicPageHtml(stoppedPage, EPIC_SHAPE_NOW));
+     46|   const stopped = stoppedDom.querySelector('[data-item="EPX-1"]')!;
+     47|   expect(stopped.querySelector(".s")?.textContent).toBe("停着·卡住");
+       |                                                    ^
+     48|   expect(stopped.querySelector(".kid-a")?.textContent).toContain(
+     49|    "没有机器在动·卡住",
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 17 skipped (18)
+   Start at  22:45:29
+   Duration  8.14s (transform 3.46s, setup 77ms, collect 6.87s, tests 176ms, environment 0ms, prepare 143ms)
+
+ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command failed with exit code 1: vitest run src/epic-page/__tests__/founder-render.test.ts -t separates stopped
+
+---
+
+Fresh current-byte mutation replay (2026-09-18)
+Base: bc6f331e301f59e7c678f31d18d4f72790c248a3
+Post-FLY-2748 sync: 86a9971ed (the files listed below are byte-identical to base)
+Method: detached scratch worktrees with production worktree left clean
+
+1. Restore `if (type === "started") return "live";`
+   Test: founder-render `separates stopped`
+   Result: exit 1; 1 failed; expected `停着·卡住`, received `在跑`.
+
+2. Move explicit stuck handling after the unrelated-fresh-session branch
+   Tests: rules + founder-render filtered by `unrelated fresh session`
+   Result: exit 1; 3 failed / 2 passed. Held/current-stuck rows changed from
+   `stopped_stuck` to `stopped_acceptance`.
+
+3. Replace both heartbeat-only reads with
+   `COALESCE(heartbeat_at,last_activity_at)`
+   Tests: StateStore filtered by `does not let fresh last activity` and
+   `binds running attempts`
+   Result: exit 1; 2 failed. Session aggregate changed machine_running_count
+   0 -> 1 and the bound attempt changed missing/non-live -> fresh/live.
+
+4. Narrow residual suppression from `ledger_live_count` to
+   `machine_running_count`
+   Test: residual `keeps ledger-live parked work out of ready`
+   Result: exit 1; 1 failed. ready/running changed from 1/1 to 2/0.
+
+5. Fail open when a stuck-signal source is unreadable
+   Test: rules `fails closed when either stuck-signal source is unreadable`
+   Result: exit 1; 1 failed; expected `evidence_gap`, received
+   `stopped_acceptance`.

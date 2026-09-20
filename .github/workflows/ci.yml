@@ -288,12 +288,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # FLY-2453: whole-gate mutants must fail both writer and unit controls.
-      # scripts/fly-2453-narrow-gate-529.mjs is manual-only: isolated 529 evidence.
-      - name: FLY-2453 whole-gate writer mutations
-        if: matrix.name == 'teamlead 1 of 4'
-        run: node scripts/fly-2453-narrow-gate-mutations.mjs
-
       - name: Record matrix worker budget
         run: node -e "console.log(JSON.stringify({cpus:require('node:os').availableParallelism(),maxForks:process.env.VITEST_MAX_FORKS,minForks:process.env.VITEST_MIN_FORKS}))"
 
@@ -997,11 +991,19 @@ jobs:
           bash scripts/__tests__/codex-quota-summary.test.sh
 
       # FLY-2404: shared credential truth provisioning, fenced shuttle cutover,
-      # and conservative legacy-copy sweep. All three suites use fixture HOMEs,
+      # and conservative legacy-copy sweep. All five suites use fixture HOMEs,
       # fake process/Bridge authorities, and synthetic credentials only.
       - name: Test — FLY-2404 shared Codex credential truth
         run: |
           bash scripts/__tests__/codex-home-link-truth.test.sh
+          bash scripts/__tests__/codex-home-reconcile.test.sh
+          bash scripts/__tests__/codex-home-reconcile-cycle.test.sh
+          bash scripts/__tests__/codex-home-launch-fence.test.sh
+          bash scripts/__tests__/codex-home-reconcile-process.test.sh
+          bash scripts/__tests__/codex-home-reconcile-cadence.test.sh
+          bash scripts/__tests__/codex-home-migration-alert.test.sh
+          bash scripts/__tests__/codex-home-migration-overdue-mutation.test.sh
+          bash scripts/__tests__/codex-quota-readiness-check.test.sh
           bash scripts/__tests__/codex-lead-launchd-preflight.test.sh
           bash scripts/__tests__/codex-credential-cutover.test.sh
           bash scripts/__tests__/codex-home-credential-sweep.test.sh

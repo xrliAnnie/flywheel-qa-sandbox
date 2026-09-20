@@ -202,14 +202,34 @@ test("rejects live paths, symlinks resolved under live home, and same-inode hard
 	}
 });
 
-for (const scenario of [
-	"complete",
-	"no_qa",
-	"no_design",
-	"future_qa",
-	"future_design",
+for (const { scenario, alignmentMissing, coverageMissing } of [
+	{
+		scenario: "complete",
+		alignmentMissing: ["reviewed_plan_blob", "input"],
+		coverageMissing: ["input"],
+	},
+	{
+		scenario: "no_qa",
+		alignmentMissing: ["reviewed_plan_blob", "input"],
+		coverageMissing: ["qa_claim", "qa_report", "input"],
+	},
+	{
+		scenario: "no_design",
+		alignmentMissing: ["design_review", "plan_at_head", "input"],
+		coverageMissing: ["input"],
+	},
+	{
+		scenario: "future_qa",
+		alignmentMissing: ["reviewed_plan_blob", "input"],
+		coverageMissing: ["qa_claim", "qa_report", "input"],
+	},
+	{
+		scenario: "future_design",
+		alignmentMissing: ["design_review", "plan_at_head", "input"],
+		coverageMissing: ["input"],
+	},
 ])
-	test("replay uses shared as-of evidence: " + scenario, async () => {
+	test(`replay uses shared as-of evidence: ${scenario}`, async () => {
 		const { replayCards } = await import("../replay-ship-judgment-cards.mjs");
 		const db = fixture();
 		try {
@@ -284,23 +304,14 @@ for (const scenario of [
 			assert.equal(report.rows.length, 1);
 			const row = report.rows[0];
 			assert.equal(row.evidence.conflict.verdict, "pass");
-			assert.equal(
-				row.evidence.alignment.verdict,
-				["no_design", "future_design"].includes(scenario)
-					? "undetermined"
-					: "pass",
-			);
-			assert.equal(
-				row.evidence.coverage.verdict,
-				["no_qa", "future_qa"].includes(scenario) ? "undetermined" : "pass",
-			);
+			assert.equal(row.evidence.alignment.verdict, "undetermined");
+			assert.deepEqual(row.evidence.alignment.missing, alignmentMissing);
+			assert.equal(row.evidence.coverage.verdict, "undetermined");
+			assert.deepEqual(row.evidence.coverage.missing, coverageMissing);
 			assert.equal(row.postDecisionEvidence[0].observedAt, AFTER);
 			assert.equal(row.asOf, AT);
 			assert.equal(report.excluded[0].reason, "post_decision_override");
-			assert.equal(
-				report.summary.wouldApprove,
-				scenario === "complete" ? 1 : 0,
-			);
+			assert.equal(report.summary.wouldApprove, 0);
 			assert.equal(report.summary.wrongApprovals, 0);
 			if (scenario === "complete") {
 				assert.equal(row.materialProvenance[0].qaReport, "report");
@@ -311,9 +322,9 @@ for (const scenario of [
 					"UPDATE ship_judgment_outcome SET decision='rework' WHERE outcome_id='decision'",
 				).run();
 				const divergent = await replayCards(db, options);
-				assert.equal(divergent.summary.wouldApprove, 1);
-				assert.equal(divergent.summary.wrongApprovals, 1);
-				assert.equal(divergent.summary.consistency, 0);
+				assert.equal(divergent.summary.wouldApprove, 0);
+				assert.equal(divergent.summary.wrongApprovals, 0);
+				assert.equal(divergent.rows[0].relation, "abstained");
 			}
 		} finally {
 			db.close();

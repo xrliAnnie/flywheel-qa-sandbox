@@ -49,6 +49,7 @@ type EpicPageFormat = "json" | "md" | "html";
 
 export interface EpicPageRouterDeps {
 	store: StateStore;
+	stuckThresholdMinutes: number;
 	projects: ProjectEntry[];
 	linearApiKey?: string;
 	fetchSnapshot?: typeof fetchLinearActiveScopeSnapshot;
@@ -288,8 +289,11 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 											?.leads.map((l) => l.chatChannel) ?? [],
 										generatedAt,
 									),
-								readItemFacts: (projectName, item) =>
-									readEpicItemFacts(deps.store, projectName, item),
+								readItemFacts: (projectName, item, generatedAt) =>
+									readEpicItemFacts(deps.store, projectName, item, {
+										generatedAt: generatedAt.toISOString(),
+										stuckThresholdMinutes: deps.stuckThresholdMinutes,
+									}),
 								readSignals: (projectName, items, generatedAt) =>
 									readSignals(
 										{ stateStore: deps.store },

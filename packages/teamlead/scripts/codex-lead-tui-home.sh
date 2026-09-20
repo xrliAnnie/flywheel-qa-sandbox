@@ -1224,6 +1224,18 @@ finish_daemon_start() {
 }
 
 ensure_daemon() {
+  if [ "${FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED:-0}" = "1" ]; then
+    [ -n "${FLYWHEEL_LEAD_ID:-}" ] && [ -n "${FLYWHEEL_PROJECT_NAME:-}" ] \
+      || daemon_die "credential launch fence identity is unavailable"
+    [ -f "${FLYWHEEL_CODEX_LAUNCH_FENCE_BIN:-}" ] \
+      && [ ! -L "${FLYWHEEL_CODEX_LAUNCH_FENCE_BIN:-}" ] \
+      || daemon_die "credential launch fence helper is unavailable"
+    node "$FLYWHEEL_CODEX_LAUNCH_FENCE_BIN" acquire \
+      --home "$HOME_DIR" \
+      --lead "${FLYWHEEL_PROJECT_NAME}/${FLYWHEEL_LEAD_ID}" \
+      --state-root "${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}" \
+      || daemon_die "credential launch fence refused daemon start"
+  fi
   # Code review R1 MED-6: default to the STANDALONE binary inside this home —
   # the daemon requires it, and a PATH `codex` (npm install) would fail forever
   # even on a correctly provisioned home. Explicit override stays possible.

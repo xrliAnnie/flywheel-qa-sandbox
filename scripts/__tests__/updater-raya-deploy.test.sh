@@ -1172,7 +1172,7 @@ printf 'console.log("cos-v2")\n' > "$publisher/packages/cos/dist/cli.js"
 git -C "$publisher" add packages/cos/dist/cli.js
 git -C "$publisher" commit -qm update
 git -C "$publisher" push -q origin main
-followup_target="$(git -C "$publisher" rev-parse HEAD)"
+ledger_target="$(git -C "$publisher" rev-parse HEAD)"
 saved_bounded="$(declare -f raya_run_bounded_in_checkout)"
 saved_lead="$(declare -f raya_standard_lead)"
 saved_summary_migration="$(declare -f raya_migrate_summary_presentation)"
@@ -1214,6 +1214,15 @@ RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL="$saved_summary_tool"
 unset TEAMLEAD_DB_PATH SUMMARY_MIGRATION_CALLS
 raya_migrate_summary_presentation() { return 0; }
 
+if raya_begin_followup_transaction \
+  && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P2 ]] \
+  && [[ "$(jq -r .mode "$RAYA_MIGRATION_MANIFEST")" == standard-update ]] \
+  && [[ "$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$ledger_target" ]]; then
+  pass "P7 freezes the first observed Raya main in a resumable standard update ledger"
+else
+  fail "P7 must persist the first observed Raya main before standard update deployment"
+fi
+
 legacy_plist_dir="$TMP/legacy-launch-agents"
 mkdir -p "$legacy_plist_dir"
 touch "$legacy_plist_dir/com.xrli.raya.brain.plist"
@@ -1248,15 +1257,47 @@ chmod 600 "$RAYA_MIGRATION_MANIFEST"
 rm -f "$legacy_plist_dir/com.xrli.raya.brain.plist"
 unset RAYA_LEGACY_PLIST_DIR RAYA_MIGRATION_ALLOW_LEGACY_STOP
 
+printf 'console.log("cos-v3")\n' > "$publisher/packages/cos/dist/cli.js"
+git -C "$publisher" add packages/cos/dist/cli.js
+git -C "$publisher" commit -qm summary-after-ledger
+git -C "$publisher" push -q origin main
+followup_target="$(git -C "$publisher" rev-parse HEAD)"
+
+stale_pin_head_before="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
+stale_pin_pointer_before="$(readlink "$RAYA_WORKSPACE/business/current")"
+stale_pin_manifest_before="$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')"
+stale_pin_flywheel="$(jq -r .target_flywheel_sha "$RAYA_MIGRATION_MANIFEST")"
+stale_pin_version="$RAYA_WORKSPACE/.flywheel-managed/versions/$followup_target"
+printf '%040d\n' 4 > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+: > "$CALLS"
+raya_run_bounded_in_checkout() { printf 'bounded %s\n' "$*" >> "$CALLS"; return 0; }
+if ! raya_prepare_source >/dev/null 2>&1 \
+  && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$stale_pin_head_before" ]] \
+  && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$stale_pin_pointer_before" ]] \
+  && [[ "$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')" == "$stale_pin_manifest_before" ]] \
+  && [[ ! -e "$stale_pin_version" && ! -s "$CALLS" ]]; then
+  pass "stale standard update pins fail before checkout, build, or projection"
+else
+  fail "stale standard update pins must be rejected before any source or business mutation"
+fi
+git -C "$RAYA_CODE_DIR" reset --hard -q "$stale_pin_head_before"
+rm -f "$RAYA_WORKSPACE/business/current"
+ln -s "$stale_pin_pointer_before" "$RAYA_WORKSPACE/business/current"
+rm -rf "$stale_pin_version"
+printf '%s\n' "$stale_pin_flywheel" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+raya_run_bounded_in_checkout() { return 0; }
+: > "$CALLS"
+
 if raya_prepare_source \
   && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 ]] \
   && [[ "$(jq -r .mode "$RAYA_MIGRATION_MANIFEST")" == standard-update ]] \
+  && [[ "$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$followup_target" ]] \
   && [[ "$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$followup_target" ]] \
   && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$followup_target" ]] \
   && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$RAYA_WORKSPACE/.flywheel-managed/versions/$followup_target" ]]; then
-  pass "P7 starts a new resumable standard update transaction when Raya main advances"
+  pass "standard update deploys a newer Raya main and records its actual SHA"
 else
-  fail "P7 must not freeze the scheduled Raya shuttle at the first migrated SHA"
+  fail "standard update must not freeze at the first ledger target when Raya main advances"
 fi
 expected_followup_calls=$'preflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST
 expect_eq "$expected_followup_calls" "$(cat "$CALLS")" "follow-up update uses only the public standard Lead lifecycle"
@@ -1326,6 +1367,29 @@ if raya_standard_collect_proof >/dev/null 2>&1; then
   fail "proof from an earlier migration or SHA pair must not be reusable"
 else
   pass "proof is bound to the current migration and two-repository SHA pair"
+fi
+
+git -C "$publisher" reset --hard -q "$frozen_raya"
+printf 'diverged\n' > "$publisher/diverged.md"
+git -C "$publisher" add diverged.md
+git -C "$publisher" commit -qm force-pushed-main
+git -C "$publisher" push -q --force origin main
+jq '.checkpoint="P2" | .unresolved=[] | .mode="standard-update"' \
+  "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp"
+mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+standard_head_before="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
+standard_manifest_before="$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')"
+standard_pointer_before="$(readlink "$RAYA_WORKSPACE/business/current")"
+: > "$CALLS"
+if ! raya_prepare_source >/dev/null 2>&1 \
+  && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$standard_head_before" ]] \
+  && [[ "$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')" == "$standard_manifest_before" ]] \
+  && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$standard_pointer_before" ]] \
+  && [[ ! -s "$CALLS" ]]; then
+  pass "standard update rejects a force-pushed non-descendant before install or projection"
+else
+  fail "standard update must fail closed when origin/main is not a fast-forward"
 fi
 eval "$saved_bounded"
 eval "$saved_lead"

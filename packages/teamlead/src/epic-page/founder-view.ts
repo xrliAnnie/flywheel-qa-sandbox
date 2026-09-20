@@ -30,7 +30,13 @@ import {
 	type RootCounts,
 	resolvePointer,
 } from "./model.js";
-import { classifyItem, type ItemClass, rootOf } from "./rules.js";
+import {
+	classifyItem,
+	type ItemClass,
+	rootOf,
+	type StuckSignalKind,
+	stuckSignalKind,
+} from "./rules.js";
 
 export const ROOT_GROUP: Record<string, number> = {
 	started: 0,
@@ -40,10 +46,13 @@ export const ROOT_GROUP: Record<string, number> = {
 };
 export const CHILD_GROUP = {
 	live: 0,
-	waiting: 1,
-	free: 2,
-	idle: 3,
-	unknown: 4,
+	stopped_acceptance: 1,
+	stopped_stuck: 2,
+	evidence_gap: 3,
+	waiting: 4,
+	free: 5,
+	idle: 6,
+	unknown: 7,
 } as const;
 export type ViewRuleId =
 	| "view.order.v1"
@@ -61,6 +70,23 @@ export type ProgressLine =
 	| { kind: "live"; node: string; attempt?: number; status?: string }
 	| { kind: "missing"; reasons: string[] }
 	| { kind: "waiting" | "free"; blockers: string[] }
+	| {
+			kind: "stopped_stuck";
+			reason: "machine_stuck" | "no_first_heartbeat" | StuckSignalKind;
+			otherLiveSession: boolean;
+	  }
+	| {
+			kind: "stopped_acceptance";
+			reason: "no_live_session" | "other_live_session";
+	  }
+	| {
+			kind: "evidence_gap";
+			reason:
+				| "heartbeat_stale"
+				| "heartbeat_missing"
+				| "awaiting_first_heartbeat"
+				| "facts_missing";
+	  }
 	| { kind: "live_no_run" | "idle" };
 export interface ChildView {
 	itemIndex: number;
@@ -129,6 +155,41 @@ function progress(item: EpicItem, cls: ItemClass | null): ProgressLine {
 			kind: "missing",
 			reasons: [...new Set(missing.map((c) => c.missing!.reason))].sort(),
 		};
+	if (cls === "stopped_acceptance")
+		return {
+			kind: cls,
+			reason:
+				(item.session.value?.machine_running_count ?? 0) > 0
+					? "other_live_session"
+					: "no_live_session",
+		};
+	if (cls === "stopped_stuck")
+		return {
+			kind: cls,
+			reason:
+				stuckSignalKind(item) ??
+				(item.attempt.value?.[0]?.state === "pending" ||
+				item.attempt.value?.[0]?.state === "admitted" ||
+				item.session.value?.latest[0]?.status === "pending"
+					? "no_first_heartbeat"
+					: "machine_stuck"),
+			otherLiveSession: (item.session.value?.machine_running_count ?? 0) > 0,
+		};
+	if (cls === "evidence_gap") {
+		const attemptHeartbeat = item.attempt.value?.[0]?.heartbeat_state;
+		return {
+			kind: "evidence_gap",
+			reason: item.attempt.value?.[0]?.starting_recent
+				? "awaiting_first_heartbeat"
+				: (item.session.value?.running_heartbeat_stale_count ?? 0) > 0 ||
+						attemptHeartbeat === "stale"
+					? "heartbeat_stale"
+					: (item.session.value?.running_heartbeat_missing_count ?? 0) > 0 ||
+							attemptHeartbeat === "missing"
+						? "heartbeat_missing"
+						: "facts_missing",
+		};
+	}
 	if (cls === "live") {
 		const run = item.run.value![0];
 		if (!run) return { kind: "live_no_run" };
@@ -155,7 +216,7 @@ const open = (c: ChildView) => c.cls !== "done" && c.cls !== "canceled";
 function childCompare(a: ChildView, b: ChildView) {
 	const group = (c: ChildView) =>
 		c.cls === "done" || c.cls === "canceled"
-			? 5
+			? 8
 			: CHILD_GROUP[c.cls ?? "unknown"];
 	return group(a) - group(b) || compareIdentifier(a.identifier, b.identifier);
 }
@@ -247,7 +308,13 @@ export function buildFounderView(page: EpicPage): FounderView {
 				root.intake.value.work_state !== "superseded"
 			) &&
 			(counts
-				? counts.live + counts.waiting + counts.free + counts.idle
+				? counts.live +
+					counts.stopped_acceptance +
+					counts.stopped_stuck +
+					counts.evidence_gap +
+					counts.waiting +
+					counts.free +
+					counts.idle
 				: visible.length) === 0
 		) {
 			// F1 excludes childless roots, but they are not completed Epics.
@@ -266,6 +333,9 @@ export function buildFounderView(page: EpicPage): FounderView {
 			allWaitingOn:
 				counts &&
 				counts.live === 0 &&
+				counts.stopped_acceptance === 0 &&
+				counts.stopped_stuck === 0 &&
+				counts.evidence_gap === 0 &&
 				counts.free === 0 &&
 				counts.idle === 0 &&
 				counts.waiting > 0

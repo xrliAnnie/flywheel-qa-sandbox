@@ -38,6 +38,7 @@ describe("runner-enabled full-access static MCP config", () => {
 			"summary_presentation",
 			"ack_batch",
 			"directory",
+			"discord_read_attachment",
 			...RUNNER_ACTION_TOOL_NAMES,
 		]);
 		expect(cfg.envVarNames).toEqual([

@@ -1,0 +1,92 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2638 · Raya 附件内容可达</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,sans-serif;line-height:1.65}main{max-width:960px;margin:auto;padding:36px 20px 64px}header{padding:16px 4px 28px}h1{font-size:36px;line-height:1.25;margin:12px 0}h2{font-size:23px;margin:0 0 16px}.eyebrow{color:#007aff;font-weight:650;letter-spacing:.08em}.large{font-size:25px}.card{background:white;border-radius:12px;border-left:4px solid #007aff;padding:28px;margin:20px 0;box-shadow:0 1px 3px #00000010}p{margin:12px 0}label{display:block;color:#86868b;margin-top:22px}textarea{display:block;width:100%;min-height:88px;padding:12px;border:1px solid #d2d2d7;border-radius:8px;font:inherit;background:#fafafa;resize:vertical}button{border:0;border-radius:8px;background:#007aff;color:white;font:inherit;padding:9px 16px;margin:12px 8px 0 0;cursor:pointer}button:focus,textarea:focus{outline:3px solid #aad1ff}table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:12px 8px;border-bottom:1px solid #e5e5ea;vertical-align:top}th{color:#1a365d}.pending{border:1px dashed #ff9500;background:#fffaf2;border-radius:10px;padding:22px}.pending strong{color:#9b5700}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 'SF Mono',monospace;background:#f5f5f7;padding:16px;border-radius:8px}svg{width:100%;height:auto}summary{cursor:pointer;margin-top:12px}li{margin:9px 0}@media(max-width:600px){main{padding:18px 12px 36px}h1{font-size:28px}.card{padding:19px}.large{font-size:21px}td,th{padding:9px 5px}}</style></head><body><main><header><div class="eyebrow">FLY-2638 · 2026-09-18 · 设计方案</div><h1>让附件真正到达 Raya</h1><p>从「只看到文件名」到「可以打开内容」。</p></header><section class="card" id="promise"><h2>要解决什么</h2><p class="large">让 Raya 真正打开 Annie 发来的图片、读到文本；打不开时说明原因。</p><p>两次观察都只有文件名、类型和大小。它们证明最终输入缺内容，尚不能证明历史部署在哪一层出错；第二份记录是 TXT，不能推断图片被转换了。</p><label for="comment-promise">本节意见</label><textarea id="comment-promise" data-comment="promise" data-title="要解决什么" placeholder="在这里留下意见；在此浏览器自动保存"></textarea></section><section class="card" id="flow"><h2>内容怎样到达 Raya</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>收件保留身份 → Raya 请求读取 → 后台检查权限 → 工具返回正文或真正图片 → 模型取得内容。</p><p>本机图形进程权限拒绝；已按规定重试。Mermaid 源码保留，未使用远程渲染。</p></div><details><summary>查看图示源文件内容</summary><pre>flowchart TD
+ A[Annie 发送图片或文本附件] --&gt; B[标准收件保留消息与附件编号]
+ B --&gt; C[Raya 用既有工具读取指定附件]
+ C --&gt; D{后台核对载体身份和收件权限}
+ D --&gt;|允许| E[下载并校验原附件]
+ D --&gt;|不允许| H[说明不可用原因]
+ E --&gt;|成功| F[工具返回文本正文或真正图片]
+ E --&gt;|失败| H
+ F --&gt; G[Raya 实际接收图片或文本内容]
+</pre></details><p>Bridge 是负责检查权限与传送内容的后台服务。mailbox 是保存原消息身份的收件队列。这条标准路径继续使用。</p><label for="comment-flow">本节意见</label><textarea id="comment-flow" data-comment="flow" data-title="内容怎样到达 Raya" placeholder="在这里留下意见；在此浏览器自动保存"></textarea></section><section class="card" id="model"><h2>记录什么，保留什么</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>收件记录确定来源，当前权限决定可否读取，结果区分正文、真正图片与失败原因。</p><p>本机图形进程权限拒绝；已按规定重试。Mermaid 源码保留，未使用远程渲染。</p></div><details><summary>查看图示源文件内容</summary><pre>classDiagram
+ class 原始收件 {
+  接收人
+  来源频道编号
+  原消息编号
+  附件编号
+ }
+ class 授权读取 {
+  当前身份有效
+  收件记录匹配
+  频道权限有效
+ }
+ class 内容结果 {
+  类型与大小
+  内容校验值
+  文本正文或原生图片结果
+  失败原因
+ }
+ 原始收件 --&gt; 授权读取 : 精确匹配
+ 授权读取 --&gt; 内容结果 : 检查后提供
+</pre></details><table><tr><th>位置</th><th>保存的信息</th></tr><tr><td>收件记录</td><td>接收人、原频道、消息编号、附件编号与显示信息</td></tr><tr><td>读取请求</td><td>只指定这条收件及其中一个附件，不接受任意网址</td></tr><tr><td>文本结果</td><td>经过校验的正文、类型、大小及内容校验值</td></tr><tr><td>图片结果</td><td>模型工具直接返回真正图片，不把图片编码当作文字</td></tr></table><p>回复到哪个线程，不会改变附件原来属于哪条消息。凭据和下载签名链接不会交给模型。</p><label for="comment-model">本节意见</label><textarea id="comment-model" data-comment="model" data-title="记录什么，保留什么" placeholder="在这里留下意见；在此浏览器自动保存"></textarea></section><section class="card" id="tradeoffs"><h2>为什么采用这个方案</h2><p>在 Raya 已有的工具入口里增加读取附件的工具，复用后台下载器，补齐附件编号与收件授权。图片直接返回给模型，文本返回正文；不更换 Raya 载体。</p><table><tr><th>备选</th><th>没有选择的原因</th></tr><tr><td>只传下载链接</td><td>链接有时效，也未证明模型能打开</td></tr><tr><td>把所有附件塞进收件队列</td><td>增加私密内容留存、大小与重放负担</td></tr><tr><td>只返回内部句柄</td><td>句柄是系统编号；缺读取方法时，Raya 仍看不到内容</td></tr></table><p>必须用真实 Raya 验证工具结果确实包含图片像素；工具表里出现名称不能代替内容验证。</p><label for="comment-tradeoffs">本节意见</label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="为什么采用这个方案" placeholder="在这里留下意见；在此浏览器自动保存"></textarea></section><section class="card" id="acceptance"><h2>怎样证明真的可用</h2><ol><li>在 #raya 发新的良性图片和 TXT，随机标记只放在内容中，文件名不泄露答案。</li><li>图片要有原生图片工具结果；文本要有正文。Raya 仅回测试标记，避免把收件测试变成内容分析。</li><li>在已有线程中重复，确认原消息身份及回复位置保持正确。</li><li>测试超大、损坏、下载失败和越权：都必须明确说明原因。</li></ol><p>真实频道测试方案须先报 Engineering Lead，由 Lead 安排；本设计节点不会自行发送测试消息。</p><label for="comment-acceptance">本节意见</label><textarea id="comment-acceptance" data-comment="acceptance" data-title="怎样证明真的可用" placeholder="在这里留下意见；在此浏览器自动保存"></textarea></section><section class="card" id="boundary"><h2>支持范围与诚实边界</h2><p>计划支持 PNG、JPEG、WebP 图片（不超过 5 MiB，约 5.24 MB）和 UTF-8 文本（不超过 32 KiB，约 32.77 KB）。UTF-8 是包含中文在内的一种文本编码方式。其他类型、过大文件或无读取权限会明确不可用。</p><p>本页交付的是设计；继承分支已有部分实现，工具接线仍待完成，尚未完成真实 Raya 验收。本次设计节点没有部署或重启服务。收件没有附件编号时会说明入口缺少编号，不承诺重发即可修复；原来两份私人附件只作复现参考，不解释其内容。只改 Flywheel，Raya 仓库和 persona 文件保持冻结；persona 是定义 Raya 身份与行为的文件。</p><p>设计审查：第二轮已批准。Lead 已要求发送图片前检查格式标识与宽高；不合格直接返回文字错误。接近上限的文本是否被截断仍列为待验证边界。流程图本地渲染受系统权限限制，页面保留清楚标识及源码。</p><label for="comment-boundary">本节意见</label><textarea id="comment-boundary" data-comment="boundary" data-title="支持范围与诚实边界" placeholder="在这里留下意见；在此浏览器自动保存"></textarea></section><section class="card" id="comments"><h2>意见汇总</h2><p>意见仅保存在当前浏览器；复制后发给 Lead 即可。该标记用于修订反馈，不代表批准。</p><label for="comment-summary">汇总补充意见</label><textarea id="comment-summary" data-comment="summary" data-title="汇总补充意见"></textarea><button id="copy-all">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><div id="chunks"></div></section></main><script nonce="__CSP_NONCE__">const marker = '【页面意见汇总】FLY-2638';
+const prefix = 'flywheel-comments:' + location.pathname + ':';
+const fields = Array.from(document.querySelectorAll('[data-comment]'));
+const chunksNode = document.getElementById('chunks');
+const statusNode = document.getElementById('copy-status');
+let summaries = [];
+async function copyText(text) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const area = document.createElement('textarea');
+    area.value = text; area.setAttribute('readonly', '');
+    area.style.position = 'fixed'; area.style.left = '-10000px';
+    document.body.appendChild(area); area.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } finally { area.remove(); }
+    if (!copied) throw new Error('copy failed');
+  }
+}
+function splitComments(items) {
+  const result = []; let current = marker;
+  for (const item of items) {
+    const heading = '\n\n【' + item.title + '】\n';
+    let rest = Array.from(item.text);
+    while (rest.length) {
+      let room = 1800 - current.length - heading.length;
+      if (room < 2) { result.push(current); current = marker; continue; }
+      let taken = ''; let count = 0;
+      while (count < rest.length && taken.length + rest[count].length <= room) taken += rest[count++];
+      current += heading + taken; rest = rest.slice(count);
+      if (rest.length) { result.push(current); current = marker; }
+    }
+  }
+  if (current !== marker || !result.length) result.push(current);
+  return result;
+}
+function render() {
+  summaries = splitComments(fields.map(f => ({title: f.dataset.title, text: f.value.trim()})).filter(x => x.text));
+  chunksNode.replaceChildren();
+  summaries.forEach((text, index) => {
+    const pre = document.createElement('pre'); pre.textContent = text;
+    const button = document.createElement('button'); button.textContent = '复制第 ' + (index+1) + ' 段';
+    button.addEventListener('click', async () => {
+      try { await copyText(text); statusNode.textContent = '已复制第 ' + (index+1) + ' 段'; }
+      catch (_) { statusNode.textContent = '复制失败，请手动选择下面的文字。'; }
+    });
+    chunksNode.append(pre, button);
+  });
+}
+fields.forEach(field => {
+  try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; } catch (_) {}
+  field.addEventListener('input', () => {
+    try { localStorage.setItem(prefix + field.dataset.comment, field.value); }
+    catch (_) { statusNode.textContent = '浏览器未允许保存；仍可复制当前意见。'; }
+    render();
+  });
+});
+document.getElementById('copy-all').addEventListener('click', async () => {
+  try { await copyText(summaries.join('\n\n')); statusNode.textContent = '已复制全部意见；超过长度时可使用分段按钮。'; }
+  catch (_) { statusNode.textContent = '复制失败，请手动选择下方文字。'; }
+});
+render();</script></body></html>

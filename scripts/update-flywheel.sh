@@ -536,6 +536,9 @@ updater_fetch_origin() {
 updater_restart_services() {
   FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
 }
+updater_codex_home_reconcile() {
+  "$UPDATER_NODE" "${SCRIPT_DIR}/codex-home-reconcile-cycle.mjs" --source updater
+}
 updater_remote_sha() { git -C "$FLYWHEEL_DIR" rev-parse origin/main 2>/dev/null; }
 updater_host_tmux_gate() {
   local target="" gate_bin="${FLYWHEEL_HOME}/bin/host-tmux-selection-gate.sh" rc=0
@@ -945,6 +948,9 @@ UPDATER_CYCLE_RESULT=unknown
 # suppress that independent health pass.
 updater_run_launchd_then_cycle() {
   updater_launchd_pass || true
+  if ! updater_codex_home_reconcile; then
+    log "Codex home reconciliation was unavailable (non-fatal; receipts/alerts retain the obligation)"
+  fi
   updater_run_cycle
 }
 
@@ -1015,7 +1021,19 @@ update_main() {
         log "raya shuttle: host capability absent — skipped"
       fi
       ;;
-    urgent) log "raya shuttle: skipped wake=urgent" ;;
+    urgent)
+      if [[ "${UPDATER_CYCLE_RESULT:-unknown}" == urgent_deployed ]]; then
+        if raya_host_capable; then
+          updater_raya_pass || true
+        else
+          RAYA_DEPLOY_STATE=not_configured
+          RAYA_DEPLOY_DETAIL=host-capability-absent
+          log "raya shuttle: host capability absent — skipped"
+        fi
+      else
+        log "raya shuttle: skipped wake=urgent result=${UPDATER_CYCLE_RESULT:-unknown}"
+      fi
+      ;;
     *) log "raya shuttle: skipped wake=unknown (fail closed)" ;;
   esac
   log "raya shuttle: ${RAYA_DEPLOY_STATE:-not_run} ${RAYA_DEPLOY_DETAIL:-}"

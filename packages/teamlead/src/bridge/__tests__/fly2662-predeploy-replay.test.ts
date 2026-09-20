@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { canonicalSubmissionDigest } from "flywheel-config";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import {
@@ -261,6 +261,13 @@ async function pendingEvidence(input: {
 
 describe("FLY-2662 pre-deployment fixture replay", () => {
 	it("FLY-2662 replays NULL targets and :pending through reclose, dispatch, and ordered finalization", async () => {
+		// FLY-2748: the fixture lease is 24h from 2026-09-17T21:00:01Z and the land
+		// closeout audit reads the real clock, so pin Date inside the fixture window.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-09-17T21:00:01.500Z"));
+		onTestFinished(() => {
+			vi.useRealTimers();
+		});
 		expect(fixture.provenance.managedSnapshot).toBe(false);
 		expect(fixture.provenance.source).toContain("read-only sqlite queries");
 		const root = await mkdtemp(join(tmpdir(), "fly2662-predeploy-replay-"));

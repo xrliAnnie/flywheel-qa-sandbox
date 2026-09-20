@@ -1271,6 +1271,7 @@ reset_mocks() {
   FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=""
   FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES=""
   FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=""
+  unset FLYWHEEL_CMUX_CLEANUP_PENDING_TTL_DAYS
   rm -f "$PREPARED_STALL_STATE" "$CMUX_ADDITIVE_ROUND_STATE"
   rm -f "$NODE_LEDGER" "$NODE_REGISTRY" "$CLEANUP_SNAPSHOT"
   rm -rf "$NODE_STATUS_DIR"
@@ -1301,8 +1302,17 @@ reset_mocks() {
 
 seed_complete_cleanup_snapshot_after() {
   local marker_epoch="$1"
-  : > "$NODE_REGISTRY"
+  rm -f "$NODE_REGISTRY"
   printf 'snapshot|0|1|%s|complete\n' "$((marker_epoch + 1))" > "$CLEANUP_SNAPSHOT"
+}
+
+CLEANUP_OWNER_COUNTER=0
+seed_cleanup_owner() {
+  local title="$1" now
+  CLEANUP_OWNER_COUNTER=$((CLEANUP_OWNER_COUNTER + 1))
+  now=$(date +%s)
+  printf 'cleanup-exec-%s|cleanup-node-%s|alias|admitted|%s|0-0|0|0|0|0|%s|0-0|0\n' \
+    "$CLEANUP_OWNER_COUNTER" "$CLEANUP_OWNER_COUNTER" "$now" "$title" >> "$NODE_REGISTRY"
 }
 
 # Source the script (guarded — dispatcher won't run because BASH_SOURCE != $0)
@@ -1478,6 +1488,8 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: mark_for_cleanup idempotency"
 reset_mocks
+seed_cleanup_owner "worker-fly-102"
+seed_cleanup_owner "qa-fly-102"
 mark_for_cleanup "worker-fly-102" 1000
 mark_for_cleanup "worker-fly-102" 1100  # duplicate
 mark_for_cleanup "qa-fly-102" 1050
@@ -1504,6 +1516,8 @@ reset_mocks
 now=$(date +%s)
 recent=$((now - 5))      # 5s ago
 expired=$((now - 60))    # 60s ago
+seed_cleanup_owner "recent-win"
+seed_cleanup_owner "expired-win"
 mark_for_cleanup "recent-win" "$recent"
 mark_for_cleanup "expired-win" "$expired"
 seed_complete_cleanup_snapshot_after "$now"
@@ -1537,6 +1551,7 @@ echo "Test: pane restart cancels pending cleanup"
 reset_mocks
 now=$(date +%s)
 expired=$((now - 60))
+seed_cleanup_owner "restart-win"
 mark_for_cleanup "restart-win" "$expired"
 
 # Simulate pane came back alive
@@ -1604,6 +1619,7 @@ else
 fi
 
 reset_mocks
+seed_cleanup_owner "FLY-1364-qa-live"
 printf 'exited|cmux-FLY-1364-qa-live|FLY-1364-qa-live\n' > "$TMPDIR_ROOT/strict-view-exited"
 _drain_file "$TMPDIR_ROOT/strict-view-exited"
 if grep -q '^FLY-1364-qa-live|' "$CLEANUP_PENDING" 2>/dev/null; then
@@ -1617,6 +1633,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: drain_events dispatches correctly"
 reset_mocks
+seed_cleanup_owner "worker-fly-102"
 # Pre-populate event file with mixed events
 cat > "$EVENT_FILE" <<'EOF'
 create|flywheel|@42|worker-fly-102
@@ -1706,6 +1723,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: cleanup_stale_conservative — 5min threshold"
 reset_mocks
+seed_cleanup_owner "orphan-win"
 # linked session exists; its corresponding tmux window doesn't
 MOCK_TMUX_WINDOWS=""
 MOCK_TMUX_SESSIONS=$'flywheel\ncmux-orphan-win'
@@ -1746,6 +1764,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: cleanup_stale_conservative clears marker on pane-alive return"
 reset_mocks
+seed_cleanup_owner "returned-win"
 # Pane alive → marker should be cleared
 MOCK_TMUX_WINDOWS="flywheel|@1|returned-win"
 MOCK_PANE_DEAD="flywheel:returned-win=0"
@@ -1768,6 +1787,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: cleanup_stale_conservative — dead pane with window still listed"
 reset_mocks
+seed_cleanup_owner "dead-pane-win"
 # remain-on-exit: window still in list-windows, but pane is dead → should mark stale
 MOCK_TMUX_WINDOWS="flywheel|@1|dead-pane-win"
 MOCK_PANE_DEAD="flywheel:dead-pane-win=1"
@@ -1802,6 +1822,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: drain_events crash recovery replays .processing leftover"
 reset_mocks
+seed_cleanup_owner "crashed-win"
 # Simulate prior crash: .processing holds an exited event, $EVENT_FILE doesn't exist.
 printf 'exited|flywheel|crashed-win\n' > "${EVENT_FILE}.processing"
 # No windows/sessions — is_pane_alive returns false → exited will mark for cleanup
@@ -1826,6 +1847,8 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: drain_events merges leftover + fresh events"
 reset_mocks
+seed_cleanup_owner "old-win"
+seed_cleanup_owner "new-win"
 # Leftover from prior crash + fresh event arrived since
 printf 'exited|flywheel|old-win\n' > "${EVENT_FILE}.processing"
 printf 'exited|flywheel|new-win\n' > "$EVENT_FILE"
@@ -5845,6 +5868,232 @@ test_fly1272_p1_rename_output_lost_recovers_claim() {
     pass "recovery accepts only the canonical with the WAL-recorded session_id and clears WAL"
   else
     fail "session-id claim recovery failed (rc=$rc)"
+  fi
+}
+
+test_fly2656_absent_claim_intent_wal_converges_only_after_census() {
+  echo "Test: FLY-2656 — entity-free claim_intent WAL retires only after a conclusive session census"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  local view="cmux-FLY-2656-implement" wal rc=0 log_file="$TMPDIR_ROOT/fly2656-wal.log"
+  wal=$(_view_wal_path "$view")
+  _write_view_wal "$wal" "tmux-test-generation" claim_intent fly2656-absent \
+    "$view" "runner-flywheel" "@2656" '$2656' "@3656"
+  recover_view_construction "$view" 2>"$log_file" || rc=$?
+  if [[ "$rc" == 0 && ! -e "$wal" ]] \
+      && grep -qF '[audit] retired entity-free claim_intent view WAL' "$log_file"; then
+    pass "conclusive double absence retires only the inert WAL and records audit evidence"
+  else
+    fail "entity-free claim WAL did not converge rc=$rc wal=$([[ -e "$wal" ]] && echo yes || echo no) log=[$(tr '\n' ';' < "$log_file")]"
+  fi
+
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  wal=$(_view_wal_path "$view")
+  _write_view_wal "$wal" "tmux-test-generation" claim_intent fly2656-blind \
+    "$view" "runner-flywheel" "@2656" '$2656' "@3656"
+  MOCK_TMUX_LIST_FAIL="1"
+  rc=0
+  recover_view_construction "$view" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 && -e "$wal" ]]; then
+    pass "unreadable session census preserves the claim WAL fail-closed"
+  else
+    fail "unreadable census authorized WAL retirement rc=$rc wal=$([[ -e "$wal" ]] && echo yes || echo no)"
+  fi
+}
+
+test_fly2656_cleanup_admission_and_preprune() {
+  echo "Test: FLY-2656 — cleanup admission and TTL pre-prune avoid expensive probes"
+  reset_mocks
+  LEAD_ROSTER_STATE=ok
+  LEAD_ROSTER_ROWS='claude-tmux|com.flywheel.lead.growth-rafiki-lead|growth-rafiki-lead|'
+  seed_cleanup_owner "issue-1789765000000"
+  seed_cleanup_owner "FLY-2656-qa-realtest-owned"
+  mark_for_cleanup "issue-1789765000000" 100
+  mark_for_cleanup "issue-1789765000001" 101
+  mark_for_cleanup "FLY-2656-qa-realtest-owned" 102
+  mark_for_cleanup "growth-rafiki-lead" 103
+  local admitted
+  admitted=$(cat "$CLEANUP_PENDING" 2>/dev/null || true)
+  if [[ "$admitted" == $'issue-1789765000000|100|0|0\ngrowth-rafiki-lead|103|0|0' ]]; then
+    pass "node-owned and roster-owned Lead titles are admitted while ownerless issue and realtest are rejected"
+  else
+    fail "cleanup admission mismatch rows=[$admitted]"
+  fi
+
+  reset_mocks
+  LEAD_ROSTER_STATE=ok
+  LEAD_ROSTER_ROWS=""
+  seed_cleanup_owner "FLY-2656-old-owned"
+  seed_cleanup_owner "FLY-2656-young-realtest-owned"
+  test_ensure_mutator_lease || { fail "cannot acquire cleanup pre-prune fixture lease"; return; }
+  local now old probe_file="$TMPDIR_ROOT/fly2656-probes" probe_rc=0
+  now=$(date +%s); old=$((now - 604801)); : > "$probe_file"
+  printf 'FLY-2656-old-owned|%s|0|0\n' "$old" > "$CLEANUP_PENDING"
+  printf 'FLY-2656-young-realtest-owned|%s|0|0\n' "$((now - 60))" >> "$CLEANUP_PENDING"
+  printf 'FLY-2656-ownerless|%s|0|0\n' "$((now - 60))" >> "$CLEANUP_PENDING"
+  printf 'bad|not-a-number\n' >> "$CLEANUP_PENDING"
+  (
+    is_pane_alive() { printf 'pane:%s\n' "$1" >> "$probe_file"; return 1; }
+    node_cleanup_freshness_allows() { printf 'fresh:%s\n' "$1" >> "$probe_file"; return 1; }
+    cleanup_workspace_for() { printf 'cleanup:%s\n' "$1" >> "$probe_file"; return 1; }
+    process_pending_cleanups >/dev/null 2>&1
+  ) || probe_rc=$?
+  release_mutator_lease
+  if [[ "$probe_rc" == 0 \
+      && "$(cat "$CLEANUP_PENDING" 2>/dev/null || true)" == 'bad|not-a-number' \
+      && ! -s "$probe_file" \
+      && "$(awk -F'|' '$1 == "cleanup-pending-ttl-reaped" && $2 == "cleanup:FLY-2656-old-owned" { print NF }' "$CMUX_LOG_EPISODE_STATE" 2>/dev/null)" == 5 ]]; then
+    pass "TTL/fixture/ownerless rows commit out before pane, freshness, or destructive probes"
+  else
+    fail "cleanup pre-prune mismatch pending=[$(cat "$CLEANUP_PENDING" 2>/dev/null)] probes=[$(cat "$probe_file")] episodes=[$(cat "$CMUX_LOG_EPISODE_STATE" 2>/dev/null)]"
+  fi
+}
+
+test_fly2656_inventory_episode_startup_and_priority() {
+  echo "Test: FLY-2656 — inventory delimiter, lifecycle episodes, startup evidence, and fourth-tick priority"
+  local child_rc=0 trace="$TMPDIR_ROOT/fly2656-watch-order" expected
+  FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/no-maintenance" \
+    /bin/bash -c '
+      tmux() {
+        case "$*" in
+          *"#{session_name}|#{window_id}"*)
+            case "$*" in
+              *"#{window_name}"*) printf "runner-flywheel|@2656|FLY-2656-implement|exec-2656\n" ;;
+              *) printf "runner-flywheel|@2656|exec-2656\n" ;;
+            esac
+            ;;
+          *) printf "runner-flywheel_@2656_FLY-2656-implement_exec-2656\n" ;;
+        esac
+      }
+      source "$1"
+      read_runner_tmux_exec_inventory
+      read_runner_tmux_node_inventory
+      [[ "$RUNNER_TMUX_EXEC_ROWS" == "exec-2656|present|@2656" ]]
+      [[ "$RUNNER_NODE_TMUX_ROWS" == "exec-2656|present|@2656|FLY-2656-implement|runner-flywheel" ]]
+    ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1 || child_rc=$?
+  [[ "$child_rc" == 0 ]] \
+    && pass "tmux-format escape simulation requires the printable pipe inventory" \
+    || fail "runner inventory still depends on a rewritten tab format rc=$child_rc"
+
+  reset_mocks
+  test_ensure_mutator_lease || { fail "cannot acquire lifecycle episode fixture lease"; return; }
+  local now old
+  now=$(date +%s); old=$((now - 2592001))
+  log_cmux_episode cleanup-pending-ttl-reaped cleanup:old old-evidence old-message >/dev/null 2>&1
+  log_cmux_episode watcher-started 'reason=kickstart;exit=9;signal=15' start-evidence start-message >/dev/null 2>&1
+  log_cmux_episode view-invariant-mismatch active-view active-evidence active-message >/dev/null 2>&1
+  log_cmux_episode view-invariant-mismatch inactive-view inactive-evidence inactive-message >/dev/null 2>&1
+  awk -F'|' -v OFS='|' -v old="$old" '$1 == "cleanup-pending-ttl-reaped" { $4=old } { print }' \
+    "$CMUX_LOG_EPISODE_STATE" > "${CMUX_LOG_EPISODE_STATE}.tmp"
+  mv "${CMUX_LOG_EPISODE_STATE}.tmp" "$CMUX_LOG_EPISODE_STATE"
+  gc_cmux_log_episodes active-view
+  if ! grep -q '^cleanup-pending-ttl-reaped|' "$CMUX_LOG_EPISODE_STATE" \
+      && grep -q '^watcher-started|' "$CMUX_LOG_EPISODE_STATE" \
+      && grep -q '^view-invariant-mismatch|active-view|' "$CMUX_LOG_EPISODE_STATE" \
+      && ! grep -q '^view-invariant-mismatch|inactive-view|' "$CMUX_LOG_EPISODE_STATE"; then
+    pass "lifecycle rows use fixed 30-day GC while view rows retain active-title GC"
+  else
+    fail "lifecycle episode GC mismatch state=[$(cat "$CMUX_LOG_EPISODE_STATE")]"
+  fi
+  release_mutator_lease
+
+  : > "$trace"
+  TRACE_FILE="$trace" FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/no-maintenance" \
+    /bin/bash -c '
+      source "$1"
+      COUNT=0
+      watcher_backoff_sleep() { COUNT=$((COUNT + 1)); (( COUNT > 4 )) && exit 0; return 0; }
+      watcher_write_heartbeat() { :; }
+      watcher_maintenance_checkpoint() { :; }
+      watcher_begin_pass() { return 0; }
+      watcher_finish_pass() { :; }
+      cmux_health_check_or_die() { return 0; }
+      advance_attach_reap_state() { :; }
+      reopen_detector_check() { REOPEN_CACHE_STATE=done; }
+      drain_events() { printf "drain:%s\n" "$COUNT" >> "$TRACE_FILE"; }
+      sync_additive() { printf "sync:%s\n" "$COUNT" >> "$TRACE_FILE"; }
+      process_pending_cleanups() { printf "cleanup:%s\n" "$COUNT" >> "$TRACE_FILE"; }
+      process_close_requests() { printf "close:%s\n" "$COUNT" >> "$TRACE_FILE"; }
+      CMUX_HEAL_ON_RECOVERY=0
+      WATCHER_RESYNC_REQUIRED=0
+      WATCHER_AUTHORITY_LOST=0
+      watch_loop
+    ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1
+  expected=$'drain:4\nsync:4\ncleanup:4\nclose:4'
+  [[ "$(tail -n 4 "$trace")" == "$expected" ]] \
+    && pass "fourth healthy tick rebuilds live mirrors before pending cleanup" \
+    || fail "fourth-tick ordering mismatch trace=[$(tr '\n' ';' < "$trace")]"
+
+  local startup_root="$TMPDIR_ROOT/fly2656-autostart" capture="$TMPDIR_ROOT/fly2656-startup.capture"
+  mkdir -p "$startup_root/home/.flywheel/bin" "$startup_root/bin"
+  printf '%s\n' '#!/bin/bash' 'exit 0' > "$startup_root/gate"
+  printf '%s\n' '#!/bin/bash' \
+    'printf "%s|%s|%s|%s\n" "$FLYWHEEL_CMUX_START_REASON" "$FLYWHEEL_CMUX_PREVIOUS_EXIT_CODE" "$FLYWHEEL_CMUX_PREVIOUS_TERMINATING_SIGNAL" "$1" > "$FLY2656_CAPTURE"' \
+    > "$startup_root/home/.flywheel/bin/flywheel-cmux-sync"
+  printf '%s\n' '#!/bin/bash' \
+    'printf "\timmediate reason = kickstart\n\tlast exit code = 9\n\tlast terminating signal = 15\n"' \
+    > "$startup_root/bin/launchctl"
+  chmod +x "$startup_root/gate" "$startup_root/home/.flywheel/bin/flywheel-cmux-sync" \
+    "$startup_root/bin/launchctl"
+  HOME="$startup_root/home" PATH="$startup_root/bin:/usr/bin:/bin" \
+    FLYWHEEL_CMUX_SUPERVISED=1 FLYWHEEL_RESTART_STORM_GATE_BIN="$startup_root/gate" \
+    FLY2656_CAPTURE="$capture" /bin/bash "$SCRIPT_DIR/flywheel-cmux-autostart.sh"
+  local readable_capture fallback_capture
+  readable_capture=$(cat "$capture" 2>/dev/null || true)
+  printf '%s\n' '#!/bin/bash' 'exit 1' > "$startup_root/bin/launchctl"
+  chmod +x "$startup_root/bin/launchctl"
+  HOME="$startup_root/home" PATH="$startup_root/bin:/usr/bin:/bin" \
+    FLYWHEEL_CMUX_SUPERVISED=1 FLYWHEEL_RESTART_STORM_GATE_BIN="$startup_root/gate" \
+    FLY2656_CAPTURE="$capture" /bin/bash "$SCRIPT_DIR/flywheel-cmux-autostart.sh"
+  fallback_capture=$(cat "$capture" 2>/dev/null || true)
+  printf '%s\n' '#!/bin/bash' \
+    'printf "\timmediate reason = kickstart\n"' > "$startup_root/bin/launchctl"
+  chmod +x "$startup_root/bin/launchctl"
+  HOME="$startup_root/home" PATH="$startup_root/bin:/usr/bin:/bin" \
+    FLYWHEEL_CMUX_SUPERVISED=1 FLYWHEEL_RESTART_STORM_GATE_BIN="$startup_root/gate" \
+    FLY2656_CAPTURE="$capture" /bin/bash "$SCRIPT_DIR/flywheel-cmux-autostart.sh"
+  local missing_capture timeout_capture
+  missing_capture=$(cat "$capture" 2>/dev/null || true)
+  printf '%s\n' '#!/bin/bash' 'sleep 10' > "$startup_root/bin/launchctl"
+  chmod +x "$startup_root/bin/launchctl"
+  HOME="$startup_root/home" PATH="$startup_root/bin:/usr/bin:/bin" \
+    FLYWHEEL_CMUX_SUPERVISED=1 FLYWHEEL_RESTART_STORM_GATE_BIN="$startup_root/gate" \
+    FLY2656_CAPTURE="$capture" /bin/bash "$SCRIPT_DIR/flywheel-cmux-autostart.sh"
+  timeout_capture=$(cat "$capture" 2>/dev/null || true)
+  if [[ "$readable_capture" == 'kickstart|9|15|--watch' \
+      && "$fallback_capture" == 'unknown|unknown|unknown|--watch' \
+      && "$missing_capture" == 'kickstart|unknown|unknown|--watch' \
+      && "$timeout_capture" == 'unknown|unknown|unknown|--watch' ]]; then
+    pass "supervised startup carries bounded launchctl metadata and degrades nonzero/missing/timeout fields to unknown"
+  else
+    fail "startup metadata mismatch readable=[$readable_capture] fallback=[$fallback_capture] missing=[$missing_capture] timeout=[$timeout_capture]"
+  fi
+
+  local sanitized_title="$TMPDIR_ROOT/fly2656-sanitized-title" sanitized_evidence="$TMPDIR_ROOT/fly2656-sanitized-evidence"
+  FLY2656_SANITIZED_TITLE="$sanitized_title" FLY2656_SANITIZED_EVIDENCE="$sanitized_evidence" \
+    FLYWHEEL_CMUX_START_REASON=$'kick|start\nreason' \
+    FLYWHEEL_CMUX_PREVIOUS_EXIT_CODE="$(printf '9%.0s' {1..100})" \
+    FLYWHEEL_CMUX_PREVIOUS_TERMINATING_SIGNAL=$'15\tbad' \
+    /bin/bash -c '
+      source "$1"
+      log_cmux_episode() {
+        printf "%s" "$2" > "$FLY2656_SANITIZED_TITLE"
+        printf "%s" "$3" > "$FLY2656_SANITIZED_EVIDENCE"
+      }
+      watcher_write_heartbeat() { exit 0; }
+      watch_main
+    ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1
+  local sanitized_value sanitized_bytes
+  sanitized_value=$(cat "$sanitized_title" 2>/dev/null || true)
+  sanitized_bytes=$(LC_ALL=C wc -c < "$sanitized_title" 2>/dev/null | tr -d ' ')
+  if [[ -n "$sanitized_value" && "$sanitized_value" != *'|'* \
+      && "$sanitized_value" != *$'\t'* && "$sanitized_value" != *$'\n'* \
+      && "$sanitized_value" != *$'\r'* && "$sanitized_bytes" -le 218 \
+      && "$(cat "$sanitized_evidence" 2>/dev/null || true)" == "$sanitized_value" ]]; then
+    pass "direct watch_main startup evidence is delimiter-safe and component-bounded"
+  else
+    fail "direct watch_main startup evidence was not sanitized title=[$sanitized_value] bytes=[$sanitized_bytes]"
   fi
 }
 
@@ -10546,7 +10795,7 @@ test_fly1364_strict_view_probe_uncertainty_never_authorizes_cleanup() {
   topo_add_window "cmux-FLY-1364-qa-retest" "@1364" "FLY-1364-qa-retest" 1 0
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1364","title":"FLY-1364-qa-retest"}]}'
   test_ledger_upsert committed generation-liveness workspace:1364 FLY-1364-qa-retest
-  printf 'FLY-1364-qa-retest|1\n' > "$CLEANUP_PENDING"
+  printf 'FLY-1364-qa-retest|%s\n' "$(date +%s)" > "$CLEANUP_PENDING"
   MOCK_TMUX_DISPLAY_FAIL=1
   local pane_rc=0
   is_pane_alive "FLY-1364-qa-retest" || pane_rc=$?
@@ -10770,6 +11019,9 @@ test_fly1364_view_build_generation_flip_before_stage_is_read_only
 test_fly1364_view_build_generation_flip_after_stage_mutation_stops
 test_fly1272_p1_link_failure_recovers_owned_stage
 test_fly1272_p1_rename_output_lost_recovers_claim
+test_fly2656_absent_claim_intent_wal_converges_only_after_census
+test_fly2656_cleanup_admission_and_preprune
+test_fly2656_inventory_episode_startup_and_priority
 test_fly1272_p1_generation_mismatch_is_read_only
 test_fly1272_skip_rc_never_kills_watcher
 test_fly1272_p1_source_gone_collision_escrows_stage

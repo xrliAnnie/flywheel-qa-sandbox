@@ -246,6 +246,108 @@ describe("activity report evidence", () => {
 		`ACTIVITY_EVIDENCE id=${id} exec=exec-one activation=activation-one interval_start=100 interval_end=3700 source=remote_ref ref_complete=yes refs_sha256=${key} semantic_sha256=${key} coverage_since=100 reason=unchanged branch_activity=no`,
 		`ACTIVITY_RECORD ${JSON.stringify({ id, entry, sampledAtMs: 3700000, activity: "STALLED_60M", interval_start: 100, interval_end: 3700 })}`,
 	].join("\n");
+	const queueFields =
+		"queue_request=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa queue_position=3 queue_wait_seconds=65";
+	const modern = complete
+		.replace(
+			`activity_evidence=${id}`,
+			`activity_evidence=${id} ${queueFields}`,
+		)
+		.replace("branch_activity=no", `branch_activity=no ${queueFields}`);
+	it("accepts queue evidence emitted by the current snapshot", () =>
+		expect(validatePatrolReport(modern)).toEqual({ valid: true, errors: [] }));
+	it("keeps accepting legacy evidence without queue fields", () =>
+		expect(validatePatrolReport(complete)).toEqual({
+			valid: true,
+			errors: [],
+		}));
+	for (const [field, value] of [
+		[
+			"note",
+			"completed_design_session_window_rehydrated_by_shuttle_restart_closed_again",
+		],
+		[
+			"evidence_note",
+			"nudge_sent_4f356ce6:qa_parked_at_founder_gate_after_pass",
+		],
+	] as const) {
+		it(`accepts historical pane ${field} evidence`, () =>
+			expect(
+				validatePatrolReport(
+					complete.replace(
+						`activity_evidence=${id}`,
+						`activity_evidence=${id} ${field}=${value}`,
+					),
+				),
+			).toEqual({ valid: true, errors: [] }));
+	}
+	for (const field of ["note", "evidence_note"] as const) {
+		it(`rejects invalid pane ${field} tokens`, () =>
+			expect(
+				validatePatrolReport(
+					complete.replace(
+						`activity_evidence=${id}`,
+						`activity_evidence=${id} ${field}=not/a/token`,
+					),
+				).errors,
+			).toContain("invalid_pane_evidence"));
+	}
+	for (const [name, value] of [
+		[
+			"request token",
+			"queue_request=request/one queue_position=3 queue_wait_seconds=65",
+		],
+		[
+			"negative position",
+			"queue_request=request-one queue_position=-1 queue_wait_seconds=65",
+		],
+		[
+			"fractional position",
+			"queue_request=request-one queue_position=1.5 queue_wait_seconds=65",
+		],
+		[
+			"negative wait",
+			"queue_request=request-one queue_position=3 queue_wait_seconds=-1",
+		],
+		[
+			"fractional wait",
+			"queue_request=request-one queue_position=3 queue_wait_seconds=1.5",
+		],
+	] as const) {
+		it(`rejects invalid pane ${name}`, () => {
+			const verdict = validatePatrolReport(
+				complete.replace(
+					`activity_evidence=${id}`,
+					`activity_evidence=${id} ${value}`,
+				),
+			);
+			expect(verdict.errors).toContain("invalid_queue_evidence");
+		});
+		it(`rejects invalid activity ${name}`, () => {
+			const verdict = validatePatrolReport(
+				complete.replace("branch_activity=no", `branch_activity=no ${value}`),
+			);
+			expect(verdict.errors).toContain("invalid_queue_evidence");
+		});
+	}
+	it("rejects unknown fields on both machine evidence rows", () => {
+		expect(
+			validatePatrolReport(
+				complete.replace(
+					`activity_evidence=${id}`,
+					`activity_evidence=${id} surprise=yes`,
+				),
+			).errors,
+		).toContain("invalid_or_duplicate_field");
+		expect(
+			validatePatrolReport(
+				complete.replace(
+					"branch_activity=no",
+					"branch_activity=no surprise=yes",
+				),
+			).errors,
+		).toContain("invalid_or_duplicate_field");
+	});
 	it("accepts millisecond observations rendered as whole seconds", () =>
 		expect(
 			validatePatrolReport(

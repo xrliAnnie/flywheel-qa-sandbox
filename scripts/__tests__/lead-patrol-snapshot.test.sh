@@ -21,6 +21,19 @@ count_is() {
   actual="$(grep -Fc -- "$needle" "$file" || true)"
   [ "$actual" -eq "$expected" ] && pass "$label" || fail "$label (expected $expected, got $actual: $needle)"
 }
+validate_snapshot_skeleton() {
+  local source="$1" report="$2" output="$3" label="$4"
+  {
+    grep -E '^(patrol_schema=2|PANE_EVIDENCE |ACTIVITY_EVIDENCE |ACTIVITY_RECORD )' "$source"
+    printf '%s\n' 'MECHANISM_REVIEW result=none count=0'
+  } > "$report"
+  if "$ROOT/scripts/flywheel-patrol-continuity.mjs" validate-report --report "$report" > "$output" 2>&1; then
+    pass "$label"
+  else
+    sed -n '1,20p' "$output" >&2
+    fail "$label"
+  fi
+}
 episode_for_node() {
   awk -v wanted_run="$2" -v wanted_node="$3" '
     $1 == "NODE_DWELL" {
@@ -771,6 +784,11 @@ printf 'runner-flywheel:@1\t%s\t%s\n' "$PANE_STATE_HASH" "$(($(date +%s) - 3700)
 LEGACY_CONTINUITY_SHA="$(shasum -a 256 "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" | awk '{print $1}')"
 PANES_OUT="$PANES/out.txt"
 PATROL_NOW_EPOCH=2000000000 TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
+validate_snapshot_skeleton \
+  "$PANES_OUT" \
+  "$PANES/validate-report-initial.md" \
+  "$PANES/validate-report-initial.out" \
+  "current snapshot machine skeleton passes report validation"
 contains "$PANES_OUT" "pane_count=2" "Lead pane count contains only its two owned panes"
 # Exercise the shipped shebang interpreter, including macOS Bash 3.2, without -S.
 BASH32_OUT="$PANES/bash32.txt"
@@ -805,6 +823,11 @@ not_contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "ru
 # Full collector -> sidecar -> snapshot path uses immutable binding and no PR.
 PANES_HOUR="$PANES/hour.txt"
 TMUX_CALL_LOG="$PANES/hour-calls.log" PATROL_NOW_EPOCH=2000003600 run_snapshot "$PANES" "$PANES_HOUR" || fail "v2 hour snapshot"
+validate_snapshot_skeleton \
+  "$PANES_HOUR" \
+  "$PANES/validate-report-stalled.md" \
+  "$PANES/validate-report-stalled.out" \
+  "stalled snapshot machine skeleton passes report validation"
 contains "$PANES_HOUR" "schema=2 activity=STALLED_60M" "complete same ref for 3600 seconds yields a candidate"
 PANES_PUSH="$PANES/push.txt"
 TMUX_CALL_LOG="$PANES/push-calls.log" GH_REF_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb PATROL_NOW_EPOCH=2000003610 run_snapshot "$PANES" "$PANES_PUSH" || fail "v2 push snapshot"

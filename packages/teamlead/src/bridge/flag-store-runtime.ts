@@ -152,9 +152,10 @@ export function readScopedValue(
 }
 
 /**
- * FLY-2453: unlike ordinary project flags, this control never inherits a `*`
- * row. An `auto` value is authority only while its exact immutable founder
- * control receipt is present and agrees with the current scoped revision.
+ * Compatibility key: unlike ordinary project flags, this control never
+ * inherits a `*` row. Both active modes use the three-point judgment policy;
+ * `auto` adds execution authority only while its exact immutable founder
+ * control receipt agrees with the current scoped revision.
  */
 export function readAutoNarrowRuntimeControl(
 	runtime: FlagStoreRuntime,

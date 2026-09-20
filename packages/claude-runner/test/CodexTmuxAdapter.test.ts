@@ -589,19 +589,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	});
 
-	it("rejects an unknown Codex identity before GH/git credential or home writes", async () => {
+	it("FLY-2750: accepts an unregistered Codex account instead of refusing dispatch", async () => {
 		writeFileSync(
 			join(dir, "dotcodex", "auth.json"),
-			codexAuth("zombie@example.test", "acct-zombie"),
+			codexAuth("newaccount@example.test", "acct-new"),
 		);
 
-		await expect(makeAdapter().execute(ctx())).rejects.toThrow(
-			/unknown Codex/i,
-		);
-		expect(fake.ghCalls).toEqual([]);
-		expect(fake.gitConfigCalls).toEqual([]);
-		expect(existsSync(join(homesRoot, execId))).toBe(false);
-		expect(existsSync(ledgerRoot)).toBe(false);
+		await expect(makeAdapter().execute(ctx())).resolves.toMatchObject({
+			success: true,
+		});
 	});
 
 	it("FLY-2170: fresh dispatch rejects a missing founder label before credential provisioning", async () => {

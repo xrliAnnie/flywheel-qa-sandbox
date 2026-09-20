@@ -213,6 +213,20 @@ compose_codex_child_env() {
     || { fail "Codex Lead backend launcher is missing: $CODEX_LAUNCHER" 78; return $?; }
 }
 
+acquire_codex_home_launch_fence() {
+  local fence
+  fence="$(_tool_path codex-home-launch-fence.mjs)"
+  [ -f "$fence" ] && [ ! -L "$fence" ] \
+    || { fail "Codex credential launch fence is missing or unsafe: $fence" 78; return $?; }
+  node "$fence" acquire \
+    --home "$CODEX_HOME" \
+    --lead "${RUN_PROJECT}/${RUN_LEAD}" \
+    --state-root "$FLYWHEEL_STATE_DIR" \
+    || { fail "Codex credential launch fence refused ${RUN_PROJECT}/${RUN_LEAD}" 78; return $?; }
+  export FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED=1
+  export FLYWHEEL_CODEX_LAUNCH_FENCE_BIN="$fence"
+}
+
 run_manifest() {
   local manifest="$1" selector wrapper token_env project_root target_sha gate_rc persona_result
   load_common || return $?
@@ -271,6 +285,7 @@ run_manifest() {
   project_root="$(cd "$project_root" 2>/dev/null && pwd -P)" \
     || { fail "project root is missing or unreadable" 78; return $?; }
   compose_codex_child_env "$selector" "$project_root" || return $?
+  acquire_codex_home_launch_fence || return $?
   exec /bin/bash "$CODEX_LAUNCHER" "$RUN_LEAD" "$project_root" "$RUN_PROJECT"
 }
 

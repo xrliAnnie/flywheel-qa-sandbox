@@ -284,9 +284,6 @@ jobs:
         run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
       - name: Build
         run: pnpm build
-      - name: FLY-2453 whole-gate writer mutations
-        if: matrix.name == 'teamlead 1 of 4'
-        run: node scripts/fly-2453-narrow-gate-mutations.mjs
       - name: Record matrix worker budget
         run: node -e "console.log(JSON.stringify({cpus:require('node:os').availableParallelism(),maxForks:process.env.VITEST_MAX_FORKS,minForks:process.env.VITEST_MIN_FORKS}))"
       - name: Run matrix tests

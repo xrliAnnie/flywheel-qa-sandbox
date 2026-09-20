@@ -299,38 +299,12 @@ test("CI projects discover every test except the dedicated performance test", as
 	assert.ok(parallel.every((p) => !(filesMs[p] >= 2500)));
 });
 
-import { hasMutationFailures } from "../fly-2453-narrow-gate-mutations.mjs";
-
-test("mutation evidence accepts default and project reporters but requires both assertion failures", () => {
-	const mutant = { gate: "gate1", unitFailure: "blocks when machine fails" };
-	for (const label of [
-		"",
-		" serial ",
-		"|parallel| ",
-		"\u001b[32m serial \u001b[0m",
-	]) {
-		const writer = ` FAIL  ${label}src/__tests__/StateStore.auto-narrow-approval.test.ts > QA writer-level three-gate negatives > gate1 negative: denied`;
-		const unit = ` FAIL  ${label}src/auto-narrow/__tests__/eligibility.test.ts > eligibility > blocks when machine fails`;
-		assert.equal(
-			hasMutationFailures(`${writer}\n${unit}`, mutant),
-			true,
-			label,
+test("CI does not invoke the retired FLY-2453 pure-docs mutation gate", () => {
+	for (const workflow of ["ci.yml", "ci-ubicloud-canary.yml"]) {
+		const source = readFileSync(
+			new URL(`../../.github/workflows/${workflow}`, import.meta.url),
+			"utf8",
 		);
-		assert.equal(hasMutationFailures(writer, mutant), false);
-		assert.equal(hasMutationFailures(unit, mutant), false);
-		assert.equal(
-			hasMutationFailures(
-				`${writer}\n${unit}`.replaceAll("FAIL", "PASS"),
-				mutant,
-			),
-			false,
-		);
-		assert.equal(
-			hasMutationFailures(
-				`${writer}\n${unit}`.replaceAll("gate1 negative", "gate2 negative"),
-				mutant,
-			),
-			false,
-		);
+		assert.doesNotMatch(source, /fly-2453-narrow-gate-mutations\.mjs/);
 	}
 });

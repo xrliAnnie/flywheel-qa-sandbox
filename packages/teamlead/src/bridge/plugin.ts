@@ -28,6 +28,7 @@ import {
 	connectDaemonTransport,
 	parseThreadReadTurns,
 	probeCodexDaemonLiveness,
+	probeCodexDaemonProcessBinding,
 	probeCodexRolloutMtime,
 	type RunnerTuiWindowLostEvidence,
 	rawCodexBin,
@@ -35,6 +36,7 @@ import {
 	readCodexLaunchSnapshot,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
+	resolveExecutionCodexHome,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
 	withSyncOpMarker,
@@ -101,11 +103,15 @@ import {
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
-import { createCodexQuotaHostCollector } from "../codex-quota/host-readiness.js";
+import {
+	createCodexQuotaHostCollector,
+	createRegisteredCodexQuotaHostCollectorOptions,
+} from "../codex-quota/host-readiness.js";
 import { createCodexQuotaMaintenance } from "../codex-quota/maintenance.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
 import { checkCodexQuotaReadiness } from "../codex-quota/readiness.js";
+import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
 	type CodexQuotaDispatcherWiring,
@@ -167,6 +173,12 @@ import {
 	type WorkflowEngineAlertIdentity,
 	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
+import { reconcileShipJudgmentLegacyRetirement } from "../ship-judgment/legacy-retirement.js";
+import {
+	ensureShipJudgmentPolicyProvenance,
+	SHIP_JUDGMENT_POLICY_MESSAGE_ID,
+	SHIP_JUDGMENT_POLICY_THREAD_ID,
+} from "../ship-judgment/policy-provenance.js";
 import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import { migrateFly2602WorkflowEffort } from "../workflow-effort-migration.js";
 import {
@@ -214,10 +226,7 @@ import {
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
 import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
-import {
-	reactToFounderMessage,
-	setBotOpinionReaction,
-} from "./approval-signal/founder-ack.js";
+import { reactToFounderMessage } from "./approval-signal/founder-ack.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
@@ -229,12 +238,6 @@ import {
 	handleAutoNarrowControlApply,
 	handleAutoNarrowControlStage,
 } from "./auto-narrow-control-route.js";
-import {
-	reconcileAutoNarrowGate,
-	refreshAutoNarrowOpinionTrace,
-	resolveAutoNarrowGateDeliveryContext,
-} from "./auto-narrow-gate.js";
-import { reconcileAutoNarrowOpinionDeliveries } from "./auto-narrow-opinion-delivery.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { createBetaManagementProvider } from "./beta-release-management.js";
 import { createBetaReleaseRuntime } from "./beta-release-runtime.js";
@@ -277,6 +280,11 @@ import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
 } from "./codex-global-health.js";
+import {
+	createCodexHomeReconcileHealthRider,
+	isCodexHomeReconcileHealthRiderEnabled,
+	resolveCodexHomeReconcileStateRoot,
+} from "./codex-home-reconcile-rider.js";
 import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
@@ -347,6 +355,7 @@ import {
 	editDiscordMessageInChannel,
 	fetchDiscordMessageFromChannel,
 	postDiscordMessageToChannel,
+	removeDiscordMessageReactionInChannel,
 } from "./discord-utils.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
@@ -598,6 +607,7 @@ import {
 	LeaseAuditOutbox,
 } from "./lead-dual-active-scan.js";
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
+import { createLeadInboundAttachmentRouter } from "./lead-inbound-attachment.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
@@ -813,6 +823,7 @@ import {
 } from "./session-capture.js";
 import { reconcileSessionlessWorkflowGates } from "./sessionless-founder-gate-reconciler.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
+import { reconcileShipJudgmentAutoGate } from "./ship-judgment-auto-gate.js";
 import { createShipJudgmentReadRouter } from "./ship-judgment-read-routes.js";
 import { handleShipJudgmentReference } from "./ship-judgment-reference-route.js";
 import {
@@ -3482,6 +3493,10 @@ export function createBridgeApp(
 	// Discord delivery via the per-Lead bot token). Additive; registered only when
 	// apiToken is configured (reserved endpoints require it) → no-op otherwise.
 	if (config.apiToken) {
+		app.use(
+			"/api/lead-inbound/attachment",
+			createLeadInboundAttachmentRouter({ apiToken: config.apiToken }),
+		);
 		const resolveCodexLeadBotToken = buildResolveBotToken(
 			projects,
 			process.env,
@@ -5084,6 +5099,7 @@ export function createBridgeApp(
 			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 			createEpicPageRouter({
 				store,
+				stuckThresholdMinutes: config.stuckThresholdMinutes,
 				projects,
 				linearApiKey: config.linearApiKey,
 				serializer: opts?.epicPageSerializer,
@@ -7111,8 +7127,11 @@ export async function startBridge(
 										?.leads.map((lead) => lead.chatChannel) ?? [],
 									generatedAt,
 								),
-							readItemFacts: (projectName, item) =>
-								readEpicItemFacts(store, projectName, item),
+							readItemFacts: (projectName, item, generatedAt) =>
+								readEpicItemFacts(store, projectName, item, {
+									generatedAt: generatedAt.toISOString(),
+									stuckThresholdMinutes: config.stuckThresholdMinutes,
+								}),
 							readSignals: (projectName, items, generatedAt) =>
 								readSignals(
 									{ stateStore: store },
@@ -8422,32 +8441,39 @@ export async function startBridge(
 			codexQuotaAccountRegistry = loadCodexAccountRegistry();
 		return codexQuotaAccountRegistry;
 	};
-	const codexQuotaCollectHomes = createCodexQuotaHostCollector({
-		canonicalHome: codexQuotaCanonicalHome,
-		homesRoot:
-			process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
-			join(homedir(), ".flywheel", "codex-homes"),
-		commRoot: commDbRootDir(),
-		projectNames: projects.map((p) => p.projectName),
-		approvedManifestPath: join(codexQuotaStateRoot, "readiness-receipt.json"),
-		leadTargets: findResidentCodexLeadTargets(projects),
-		credentialIdentity: async (home) => {
-			const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
-			const token = JSON.parse(bytes)?.tokens?.refresh_token;
-			if (typeof token !== "string" || !token)
-				throw new Error("quota_refresh_identity_unavailable");
-			return {
-				...codexQuotaIdentityReader(getCodexQuotaAccountRegistry())(bytes),
-				chainKey: createHash("sha256").update(token).digest("hex"),
-			};
-		},
-		leadAuthorityScript: join(
-			process.env.FLYWHEEL_REPO_ROOT?.trim() ||
-				resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
-			"scripts",
-			"resident-codex-lead-recover.sh",
-		),
-	});
+	const codexQuotaCollectHomes = createCodexQuotaHostCollector(
+		createRegisteredCodexQuotaHostCollectorOptions(projects, {
+			canonicalHome: codexQuotaCanonicalHome,
+			homesRoot:
+				process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
+				join(homedir(), ".flywheel", "codex-homes"),
+			commRoot: commDbRootDir(),
+			projectNames: projects.map((p) => p.projectName),
+			approvedManifestPath: join(codexQuotaStateRoot, "readiness-receipt.json"),
+			residentEvidence: createResidentHomeEvidence({
+				getSession: (executionId) => store.getSession(executionId),
+				resolveExecutionHome: resolveExecutionCodexHome,
+				readLaunchSnapshot: readCodexLaunchSnapshot,
+				probeDaemonProcessBinding: probeCodexDaemonProcessBinding,
+			}),
+			credentialIdentity: async (home) => {
+				const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
+				const token = JSON.parse(bytes)?.tokens?.refresh_token;
+				if (typeof token !== "string" || !token)
+					throw new Error("quota_refresh_identity_unavailable");
+				return {
+					...codexQuotaIdentityReader(getCodexQuotaAccountRegistry())(bytes),
+					chainKey: createHash("sha256").update(token).digest("hex"),
+				};
+			},
+			leadAuthorityScript: join(
+				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+					resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
+				"scripts",
+				"resident-codex-lead-recover.sh",
+			),
+		}),
+	);
 	const codexQuotaAvailability = new CodexQuotaAvailability({
 		enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
 		runtimeAvailable: () => codexQuotaRuntime !== undefined,
@@ -11370,27 +11396,6 @@ export async function startBridge(
 								},
 								holder.question_id,
 							);
-							if (result.ok && run.project_name === "flywheel") {
-								const control = readAutoNarrowRuntimeControl(
-									flagStore,
-									run.project_name,
-								);
-								const controlAppliedAt = control.controlEventId
-									? store.getAutoNarrowControlEventById(control.controlEventId)
-											?.appliedAt
-									: undefined;
-								refreshAutoNarrowOpinionTrace({
-									store,
-									questionId: holder.question_id,
-									issueThreadId: thread.thread_id,
-									opinionControl: {
-										mode: control.mode,
-										...(controlAppliedAt ? { controlAppliedAt } : {}),
-									},
-									at: new Date().toISOString(),
-									log: (message) => console.warn(message),
-								});
-							}
 							materialized = result.ok;
 							if (result.ok)
 								shipJudgmentRuntime?.scanner.enqueue(holder.question_id);
@@ -11738,6 +11743,7 @@ export async function startBridge(
 	);
 	const epicResidual = createEpicResidualScan({
 		store,
+		stuckThresholdMinutes: config.stuckThresholdMinutes,
 		projects,
 		linearApiKey: config.linearApiKey,
 		runAttempt: runEpicPageRefreshAttempt,
@@ -11991,6 +11997,14 @@ export async function startBridge(
 		flywheelRoot: residentCodexLeadFlywheelRoot,
 		targets: residentCodexLeadTargets,
 	});
+	const codexHomeReconcileHealthRider = createCodexHomeReconcileHealthRider({
+		stateRoot: resolveCodexHomeReconcileStateRoot(process.env, homedir()),
+		enabled: isCodexHomeReconcileHealthRiderEnabled(process.env),
+		cycleScript: join(
+			residentCodexLeadFlywheelRoot,
+			"scripts/codex-home-reconcile-cycle.mjs",
+		),
+	});
 	const residentCodexLeadPatrols = residentCodexLeadTargets.map((target) => ({
 		target,
 		patrol: createHostResidentCodexLeadPatrol({
@@ -12043,7 +12057,58 @@ export async function startBridge(
 		modelBin: () => "claude",
 		onError: (code) => console.warn(`[ship-judgment] ${code}`),
 	});
-	let autoNarrowGateScanCursor: string | undefined;
+	let shipJudgmentAutoGateScanCursor: string | undefined;
+	const shipJudgmentLegacyRetirementOwner = `bridge:${process.pid}:${randomUUID()}`;
+	const flywheelProject = projects.find(
+		(project) => project.projectName === "flywheel",
+	);
+	const legacyBotCandidates = [
+		...(flywheelProject?.leads.flatMap((lead) =>
+			lead.botToken ? [{ token: lead.botToken, userId: lead.botUserId }] : [],
+		) ?? []),
+		...(config.discordBotToken
+			? [{ token: config.discordBotToken, userId: undefined }]
+			: []),
+	].filter(
+		(candidate, index, all) =>
+			all.findIndex((other) => other.token === candidate.token) === index,
+	);
+	const resolveLegacyMessageBotToken = async (
+		questionId: string,
+		threadId: string,
+		messageId: string,
+	): Promise<string | undefined> => {
+		const readToken = legacyBotCandidates[0]?.token;
+		if (readToken) {
+			const fetched = await fetchDiscordMessageFromChannel(
+				threadId,
+				messageId,
+				readToken,
+				fetch,
+				AbortSignal.timeout(10_000),
+			);
+			if (fetched.ok) {
+				const exact = legacyBotCandidates.find(
+					(candidate) => candidate.userId === fetched.message.authorId,
+				);
+				if (exact) return exact.token;
+			}
+		}
+		const holder = store.getCurrentWorkflowGateHolderByQuestionId(questionId);
+		const run = holder ? store.getWorkflowRun(holder.run_id) : undefined;
+		const source = holder
+			? store.getSession(holder.source_execution_id)
+			: undefined;
+		if (!run || !source || run.project_name !== "flywheel") return undefined;
+		const resolved = resolveLeadForIssue(
+			projects,
+			run.project_name,
+			store.getSessionLabels(holder!.source_execution_id),
+		);
+		return resolved.matchMethod === "label"
+			? (resolved.lead.botToken ?? config.discordBotToken)
+			: undefined;
+	};
 	const epicIntakeScheduler = createEpicIntakeScheduler({
 		projects: () =>
 			config.linearApiKey
@@ -12107,123 +12172,103 @@ export async function startBridge(
 			await codexQuotaMaintenance.tick();
 		},
 		onAutoNarrowGateTick: async () => {
-			const control = readAutoNarrowRuntimeControl(flagStore, "flywheel");
-			const controlAppliedAt = control.controlEventId
-				? store.getAutoNarrowControlEventById(control.controlEventId)?.appliedAt
-				: undefined;
-			const resolveDeliveryContext = (questionId: string) =>
-				resolveAutoNarrowGateDeliveryContext({
-					store,
-					projects,
-					questionId,
-					defaultBotToken: config.discordBotToken,
-				});
-			const gateResult = reconcileAutoNarrowGate({
-				store,
-				openCommDb: (project) => new CommDB(commDbPathForProject(project)),
-				resolveDeliveryContext,
-				scanAfterQuestionId: autoNarrowGateScanCursor,
-				opinionControl: {
-					mode: control.mode,
-					...(controlAppliedAt ? { controlAppliedAt } : {}),
-				},
-				log: (message) => console.warn(message),
-			});
-			if (gateResult.cursor) autoNarrowGateScanCursor = gateResult.cursor;
-			await reconcileAutoNarrowOpinionDeliveries({
-				store,
-				mode: control.mode,
-				readMode: () =>
-					readAutoNarrowRuntimeControl(flagStore, "flywheel").mode,
-				post: async ({
-					questionId,
-					threadId,
-					cardMessageId,
-					content,
-					signal,
-				}) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) {
-						return { kind: "failed" as const };
+			const mode = readAutoNarrowRuntimeControl(flagStore, "flywheel").mode;
+			if (mode === "auto") {
+				const policyToken =
+					flywheelProject?.leads.find(
+						(lead) => lead.agentId === "flywheel-eng-lead",
+					)?.botToken ?? config.discordBotToken;
+				if (policyToken) {
+					const verifiedAt = new Date().toISOString();
+					const provenance = await ensureShipJudgmentPolicyProvenance({
+						store,
+						founderUserId: config.discordOwnerUserId ?? "",
+						verifiedAt,
+						fetchMessage: async () => {
+							const fetched = await fetchDiscordMessageFromChannel(
+								SHIP_JUDGMENT_POLICY_THREAD_ID,
+								SHIP_JUDGMENT_POLICY_MESSAGE_ID,
+								policyToken,
+								fetch,
+								AbortSignal.timeout(10_000),
+							);
+							return fetched.ok ? fetched.message : undefined;
+						},
+					});
+					if (!provenance) {
+						console.warn(
+							"[ship-judgment] exact founder policy provenance unavailable; automatic approval remains disabled",
+						);
 					}
-					const posted = await postDiscordMessageToChannel(
-						threadId,
-						content,
-						context.botToken,
-						{ origin: "automation", replyTo: cardMessageId, signal },
+				}
+			}
+			await reconcileShipJudgmentLegacyRetirement({
+				store,
+				mode,
+				owner: shipJudgmentLegacyRetirementOwner,
+				edit: async ({ work, messageId, content }) => {
+					const token = await resolveLegacyMessageBotToken(
+						work.questionId,
+						work.threadId,
+						messageId,
 					);
-					return posted.ok && posted.messageIds.length === 1
-						? { kind: "posted" as const, messageId: posted.messageIds[0]! }
-						: { kind: "uncertain" as const };
-				},
-				edit: async ({ questionId, threadId, messageId, content, signal }) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId)
-						return { ok: false };
-					return editDiscordMessageInChannel(
-						threadId,
+					if (!token) return { ok: false };
+					const edited = await editDiscordMessageInChannel(
+						work.threadId,
 						messageId,
 						content,
-						context.botToken,
-						{ origin: "automation", signal },
+						token,
+						{
+							origin: "automation",
+							signal: AbortSignal.timeout(10_000),
+						},
 					);
+					return {
+						ok: edited.ok,
+						unavailable: !edited.ok && edited.status === 404,
+					};
 				},
-				scan: ({ questionId, threadId, postedAt, correlationMarker }) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) {
-						return Promise.resolve({
-							kind: "ambiguous" as const,
-							frontier: null,
-						});
-					}
-					return scanFounderThreadForGateCard({
-						threadId,
-						botToken: context.botToken,
-						postedAt,
-						correlationMarker,
+				scan: async ({ work }) => {
+					const botToken = legacyBotCandidates[0]?.token;
+					if (!botToken) return { kind: "ambiguous" };
+					const scan = await scanFounderThreadForGateCard({
+						threadId: work.threadId,
+						botToken,
+						postedAt: work.legacyPostingAt ?? "1970-01-01T00:00:00.000Z",
+						correlationMarker: work.legacyMarker,
 					});
+					return scan.kind === "found"
+						? { kind: "found", messageId: scan.messageId }
+						: { kind: scan.kind };
 				},
-				setReaction: ({ questionId, threadId, cardMessageId, reaction }) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) {
-						return Promise.resolve(false);
-					}
-					return setBotOpinionReaction({
-						botToken: context.botToken,
-						channelId: threadId,
-						messageId: cardMessageId,
-						reaction,
-					});
-				},
-				markCard: async ({
-					questionId,
-					threadId,
-					cardMessageId,
-					banner,
-					signal,
-				}) => {
-					const context = resolveDeliveryContext(questionId);
-					if (!context || context.issueThreadId !== threadId) return false;
-					const current = await fetchDiscordMessageFromChannel(
-						threadId,
-						cardMessageId,
-						context.botToken,
-						fetch,
-						signal,
+				clearReaction: async ({ work }) => {
+					const token = await resolveLegacyMessageBotToken(
+						work.questionId,
+						work.threadId,
+						work.cardMessageId,
 					);
-					if (!current.ok) return false;
-					if (current.message.content.includes(banner)) return true;
-					const edited = await editDiscordMessageInChannel(
-						threadId,
-						cardMessageId,
-						`${current.message.content}\n\n${banner}`,
-						context.botToken,
-						{ origin: "automation", signal },
+					if (!token) return;
+					await Promise.all(
+						["🤖", "🚫"].map((emoji) =>
+							removeDiscordMessageReactionInChannel(
+								work.threadId,
+								work.cardMessageId,
+								emoji,
+								token,
+								{ signal: AbortSignal.timeout(10_000) },
+							),
+						),
 					);
-					return edited.ok;
 				},
+			});
+			store.reconcileShipJudgmentModeCheck(new Date().toISOString());
+			const gateResult = reconcileShipJudgmentAutoGate({
+				store,
+				openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+				scanAfterQuestionId: shipJudgmentAutoGateScanCursor,
 				log: (message) => console.warn(message),
 			});
+			if (gateResult.cursor) shipJudgmentAutoGateScanCursor = gateResult.cursor;
 		},
 		onLeadPatrolTick: leadPatrolTickPass,
 		onSummaryAbsorptionTick: summaryAbsorptionPass,
@@ -12684,13 +12729,14 @@ export async function startBridge(
 			: undefined,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Always-on advisory probe; failures alert but never abort Bridge boot.
-		onHealthTick: codexHealthEnabled
-			? () => {
-					void reportCodexGlobalHealth(metaAlertNotifier, {
-						credentialProbe,
-					});
-				}
-			: undefined,
+		onHealthTick: () => {
+			if (codexHealthEnabled) {
+				void reportCodexGlobalHealth(metaAlertNotifier, {
+					credentialProbe,
+				});
+			}
+			return codexHomeReconcileHealthRider.tick();
+		},
 	});
 	// FLY-513: one-shot boot check — surfaces an already-contaminated global codex
 	// immediately at startup (the periodic probe then covers the running window).
@@ -13321,8 +13367,6 @@ export async function startBridge(
 	// FLY-1505 M1: the first GatePoller tick may re-wake an approved ship
 	// runner. Start it only after durable failed-attempt markers have restored
 	// their suppression state (or the drain has failed loudly and retained them).
-	if (!process.env.VITEST)
-		store.invalidateAutoNarrowLegacyFreezeOnStartup(new Date().toISOString());
 	gatePoller.start();
 	if (!process.env.VITEST) {
 		try {

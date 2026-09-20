@@ -45,6 +45,8 @@ it.each(["headless", "tui"])(
 				join(root, "dist/bin/verify-codex-deployment.js"),
 				"// verifier fixture\n",
 			);
+			const launchFence = join(root, "codex-home-launch-fence.mjs");
+			writeFileSync(launchFence, "// launch fence fixture\n");
 			const runtime =
 				mode === "tui" ? "codex-lead-tui-runtime" : "codex-lead-runtime";
 			writeFileSync(
@@ -70,6 +72,7 @@ it.each(["headless", "tui"])(
 				FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION: "2",
 				FLYWHEEL_CODEX_LEAD_MODE: mode,
 				FLYWHEEL_LEAD_DRY_RUN: "1",
+				FLYWHEEL_CODEX_LAUNCH_FENCE_BIN: launchFence,
 				CODEX_HOME: home,
 				FLYWHEEL_CODEX_TUI_CWD: root,
 			};
