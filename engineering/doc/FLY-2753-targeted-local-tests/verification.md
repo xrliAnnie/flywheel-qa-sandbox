@@ -52,3 +52,12 @@ http://127.0.0.1:61308/fw-reports-5e694e/r/c765bc108893c4cc49d087da12a02d9e/
 - `dependents-filter-overbroad`（LOW）：前置 `...<pkg>` 包含自身及传递依赖方，不是仅直接依赖方；实施证据须列真实选中包。
 
 按有效评审合同继续交接，不把 advisories 自行升级成门，也不在批准后悄悄更改计划范围。HTML 仅更新裁决状态及建议摘要。Lead 目标问题仍未答；实施按批准计划的当前真实路由范围推进，生产节点/同步检查未在本分支覆盖，交接必须保留该边界。
+
+## 最终 HTML 发布及完成前审计
+
+最终 HTML 内容提交 `82b529b76` 已推送后发布。最新（最终）页面：
+http://127.0.0.1:61308/fw-reports-5e694e/r/74408bf4ec4a6a14354754d87c4aa3ec/
+
+报告 receipt `2bedc10a-ef2d-4dd5-b6af-c0857f754735`，命令严格使用 `publish-only`。HTTP 200、nonce 替换、单脚本、CSP 匹配、已批准状态和建议摘要都已在托管页复核。
+
+设计交付要求审计：exploration/research/plan 及规定页首齐全；有效 R2 APPROVED 已保存；进度 5/5；HTML 已提交、推送、发布并结构化报告；本地 Mermaid 两次失败按明文 fallback 保存源码与占位；14 项留言检查通过，浏览器真实渲染未验证的限制已披露。分支变更限于本 issue 设计文档目录，未实施、派发后继、申请 ship 或合并。下一步执行 `complete --route phase_design_complete` 后 park；阶段完成不等于 issue 终结。
