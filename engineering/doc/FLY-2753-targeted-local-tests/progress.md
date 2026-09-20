@@ -1,13 +1,14 @@
 ---
 issue: FLY-2753
 phase: design
-phaseCursor: 2/6
-updated: 2026-09-20T21:45:08.498Z
-nextStep: Write bounded implementation plan and founder HTML
+phaseCursor: 3/6
+updated: 2026-09-20T21:47:12.871Z
+nextStep: Explicit design review; render and validate founder HTML
 chunks: []
-pointers: {}
+pointers:
+  plan: engineering/doc/FLY-2753-targeted-local-tests/plan.md
 ---
 
 # FLY-2753 progress
-**phase**: design (2/6)
-**next**: Write bounded implementation plan and founder HTML
+**phase**: design (3/6)
+**next**: Explicit design review; render and validate founder HTML
