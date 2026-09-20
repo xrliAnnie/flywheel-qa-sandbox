@@ -39,7 +39,7 @@ DROP INDEX IF EXISTS mailbox_log_settlement_slot;
 }
 
 export const MAILBOX_MESSAGE_PROJECTION_VERSION =
-	"mailbox_projection_delivered_on_ack_v2" as const;
+	"mailbox_projection_model_delivered_on_ack_v3" as const;
 
 export const MAILBOX_MESSAGE_PROJECTION_SELECT = `
 SELECT
@@ -50,7 +50,8 @@ SELECT
   type,
   content,
   ref_id AS parent_id,
-  CASE WHEN state = 'ACKED' THEN acked_at END AS read_at,
+  CASE WHEN state = 'ACKED' AND delivery_disposition = 'model'
+    THEN acked_at END AS read_at,
   created_at,
   expires_at,
   deadline_at,
@@ -70,7 +71,8 @@ SELECT
   COALESCE(content_type, 'text') AS content_type,
   resolved_at,
   /* ${MAILBOX_MESSAGE_PROJECTION_VERSION} */
-  CASE WHEN state = 'ACKED' THEN acked_at END AS delivered_at,
+  CASE WHEN state = 'ACKED' AND delivery_disposition = 'model'
+    THEN acked_at END AS delivered_at,
   NULL AS attachments,
   kind
 FROM mailbox`;

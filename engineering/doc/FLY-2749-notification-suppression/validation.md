@@ -160,3 +160,40 @@ VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
 同一源代码头的静态门禁也重新执行：`pnpm lint` exit 0，仅报告仓库既有 advisory；`pnpm -r build` 的 24 个可构建 workspace package 全部 PASS。没有运行 `pnpm test:packages:run`：批准后的 handoff 明确把本节点限定为受影响包验证，且 exact-head aggregate/CI 由 QA 在冻结头请求；本节不把 472 个定向断言、lint 或 build 表述为 aggregate CI。
 
 本次实现阶段仍未部署、未做真机延迟探针、未收集上线后 24h after 输出。生产验收继续由 QA/上线后观察使用同一统计脚本完成。
+
+## 精确 HEAD 评审修订（2026-09-20）
+
+`ceea9d20776fe99eae7b531c3dd848a012ed13d9` 的有效代码评审为 APPROVED，但 Lead 要求本 PR 在交接前收掉两条 advisory：review stage owner proof 不能由永远为真的 branch 状态合成；audit-only question 的业务终态不能在 compatibility view 中伪装成已投递/已读。其余六条按 `review-followups.md` 明确延期。
+
+红侧先在旧实现上证明两个缺口：
+
+```
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-teamlead exec vitest run \
+  src/__tests__/event-route.codex-trigger.test.ts \
+  src/__tests__/event-route.test.ts
+# 2 failed: 无 owner 的 code_review 仍为 audit_only；authoritative owner resolver 不存在
+
+VITEST_MAX_FORKS=1 pnpm --filter flywheel-comm exec vitest run \
+  src/__tests__/db.test.ts
+# 1 failed: audit-only terminal row 被 projection 映射出 read_at/delivered_at
+```
+
+最小修复后，owner proof 只接受同一 source event 写入的真实 CommDB reviewer instruction；missing-plan correction、codex-skip、裸 `code_review` 或读取失败均不提供 proof，因而 fail-open 到 model。mailbox projection 升级为 `mailbox_projection_model_delivered_on_ack_v3`，只为 model disposition 映射 ACK 时间；canonical audit row 仍可终态化和归档，但投递/已读证据保持空。
+
+定向绿色：
+
+```
+# 首轮红测对应回归
+# teamlead: 2 files, 132 tests PASS
+# flywheel-comm db + schema: 2 files, 98 tests PASS
+
+# 扩展受影响面
+# lead-token-savings drift + EventFilter + event-route + codex-trigger:
+#   4 files, 171 tests PASS
+# question admission + inbox loop + gate poller + inbox runtime:
+#   4 files, 142 tests PASS
+# CommDB + mailbox queue/schema/query plans:
+#   4 files, 131 tests PASS
+```
+
+按 Lead 指令本轮只运行定向测试，没有重跑本地 aggregate、lint 或全仓 build；这些全局门禁必须由修订后的精确 HEAD CI 给出，旧 `ceea9d207` 的 CI/评审不能替代新头。

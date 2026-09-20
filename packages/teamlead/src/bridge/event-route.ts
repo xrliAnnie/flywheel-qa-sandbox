@@ -346,6 +346,49 @@ function isSafePlanPath(planPath: string): boolean {
 }
 
 /**
+ * Return an event-local durable owner only after the real reviewer instruction
+ * exists. A settled correction, codex-skip marker, or bare stage transition is
+ * not review ownership and must keep the Lead model path fail-open.
+ */
+export function authoritativeReviewOwnerRef(
+	store: Pick<StateStore, "getDesignReviewManifestForSourceEvent">,
+	event: Pick<IngestEvent, "execution_id" | "event_id" | "project_name">,
+	stage: string,
+): string | undefined {
+	let instructionId: string | undefined;
+	if (stage === "design_review") {
+		const manifest = store.getDesignReviewManifestForSourceEvent(
+			event.execution_id,
+			event.event_id,
+		);
+		if (!manifest) return undefined;
+		instructionId = `design-review-manifest:${event.execution_id}:${manifest.revision}`;
+	} else if (stage === "pr_created") {
+		instructionId = `codex-trigger:${event.event_id}`;
+	} else {
+		return undefined;
+	}
+
+	const dbPath = commDbPathForProject(event.project_name);
+	if (!existsSync(dbPath)) return undefined;
+	try {
+		const commDb = CommDB.openReadonly(dbPath);
+		try {
+			const instruction = commDb.getMessageById(instructionId);
+			return instruction?.type === "instruction" &&
+				instruction.from_agent === "bridge" &&
+				instruction.to_agent === event.execution_id
+				? `mailbox:${instructionId}`
+				: undefined;
+		} finally {
+			commDb.close();
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Handle stage_changed → design_review / pr_created. Reads session
  * state (codex_skip + worktree_path + plan_path) and either writes
  * skip.json or writes a CommDB instruction to the Runner inbox.
@@ -3701,6 +3744,10 @@ export function createEventRouter(
 					// progress can remain audit-only without fabricating delivery.
 					const stage = asString(payload.stage);
 					const inheritedDecision = Boolean(hookPayload.decision_route);
+					const reviewOwnerRef =
+						stageRecord && stage
+							? authoritativeReviewOwnerRef(store, event, stage)
+							: undefined;
 					const notificationEvidence = stageRecord
 						? {
 								kind: "stage_recorded" as const,
@@ -3715,11 +3762,7 @@ export function createEventRouter(
 											actionProofRef: `stage-event:${stageRecord.row.event_id}:current-running`,
 										}
 									: {}),
-								...(["design_review", "code_review", "pr_created"].includes(
-									stage ?? "",
-								) && !stagePending.has("codex_trigger")
-									? { reviewOwnerRef: `runner:${session.execution_id}` }
-									: {}),
+								...(reviewOwnerRef ? { reviewOwnerRef } : {}),
 							}
 						: event.event_type === "session_started" &&
 								!transitionRejected &&

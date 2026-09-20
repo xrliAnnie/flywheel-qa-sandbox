@@ -3226,13 +3226,13 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 				)
 				.get(`routine-${stage}`);
 			expect(row.delivery_disposition).toBe(
-				stage === "approve" ? "model" : "audit_only",
+				stage === "approve" || stage === "code_review" ? "model" : "audit_only",
 			);
 			expect(JSON.parse(row.payload).stage).toBe(stage);
 		}
 		expect(
 			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
-		).toHaveLength(1);
+		).toHaveLength(2);
 		const response = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -3252,7 +3252,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		expect(response.status).toBe(200);
 		expect(
 			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
-		).toHaveLength(2);
+		).toHaveLength(3);
 	});
 
 	it("does not reawaken the Lead for a fresh routine stage carrying an inherited decision", async () => {

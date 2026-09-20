@@ -25,3 +25,18 @@ Issue: FLY-2749 (https://linear.app/geoforge3d/issue/FLY-2749)
 
 ## Lead 最终处置
 Lead response `0f01abd7-c1ce-4907-8c0e-9cdafb0df32d`：11 条 advisory 不挡交付，不单独开单；全部带入后续 PR 的 Follow-ups。实现体按本单范围处理 `relay-duplicates-disposition-receipt`：复用现有 `disposition-receipt`，不另起 relay。其余留记录。此处是 Lead 的后续实施指令，不把未实现项标成已修复。当前分支没有 PR，设计节点不新开 PR；实现者创建 PR 时转录本清单。
+
+## 精确 HEAD 代码评审处置（2026-09-20）
+
+`ceea9d20776fe99eae7b531c3dd848a012ed13d9` 的代码评审 `736d3dbf-7935-4f56-8b4e-906d77d25662` 得到有效 `reviewVerdict=APPROVED`，含 4 条 MEDIUM、4 条 LOW 非阻断 advisory。Lead 回执 `0f5111f4-648b-480a-9869-a9b000da7c8a` 要求本 PR 只修其中两条，并把其余六条保留在 Follow-ups；这次修订不把其他 advisory 顺手扩入范围。
+
+| findingKey | 级别 | 处置 |
+|---|---|---|
+| review-owner-proof-vacuous | MEDIUM | 本 PR 已修：只有与同一 source event 绑定的真实 reviewer instruction 才提供 owner proof；缺 plan 校正、skip、裸 `code_review` 均保持 model。增加会变红的 producer-path 断言与 exact instruction 正/负例。 |
+| audit-ack-fabricates-delivery | LOW | 本 PR 已修：audit-only question 可进入业务终态，但 compatibility projection 的 `read_at` / `delivered_at` 保持 NULL；projection 版本升级并覆盖 reopen migration。 |
+| audit-report-rows-never-terminal | MEDIUM | Follow-up：不在本次窄修订实施。 |
+| mailbox-index-rebuilt-every-open | MEDIUM | Follow-up：不在本次窄修订实施。 |
+| flag-readsites-drift | MEDIUM | Follow-up：不在本次窄修订实施。 |
+| inherited-action-resolved-by-liveness | LOW | Follow-up：不在本次窄修订实施。 |
+| runner-stop-declaration-read-unguarded | LOW | Follow-up：不在本次窄修订实施。 |
+| decision-route-guard-narrowed | LOW | Follow-up：不在本次窄修订实施。 |

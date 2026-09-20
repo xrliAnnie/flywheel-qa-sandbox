@@ -521,7 +521,7 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 		if (!projection) return;
 		if (projection.sql.includes(MAILBOX_MESSAGE_PROJECTION_VERSION)) return;
 
-		// One-time v1 -> v2 evidence migration only. Once the projection is v2,
+		// One-time legacy -> current evidence migration only. Once the projection is current,
 		// legacy-push may be a live pre-notify claim and must remain unnotified.
 		db.prepare(
 			`UPDATE mailbox SET notified_at = claim_expires_at

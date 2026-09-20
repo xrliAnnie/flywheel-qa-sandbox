@@ -28,7 +28,10 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
-import { handleCodexAutoTrigger } from "../bridge/event-route.js";
+import {
+	authoritativeReviewOwnerRef,
+	handleCodexAutoTrigger,
+} from "../bridge/event-route.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -215,6 +218,68 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			);
 		},
 	);
+
+	it("derives review ownership only from the exact durable reviewer instruction", () => {
+		const correctionEvent = {
+			event_id: "owner-correction",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review" },
+		};
+		expect(
+			handleCodexAutoTrigger(
+				store,
+				correctionEvent,
+				"design_review",
+				undefined,
+			),
+		).toBe("settled");
+		expect(
+			authoritativeReviewOwnerRef(store, correctionEvent, "design_review"),
+		).toBeUndefined();
+
+		const designEvent = {
+			...correctionEvent,
+			event_id: "owner-design",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		};
+		expect(
+			handleCodexAutoTrigger(
+				store,
+				designEvent,
+				"design_review",
+				committedPlanPath,
+			),
+		).toBe("settled");
+		expect(
+			authoritativeReviewOwnerRef(store, designEvent, "design_review"),
+		).toMatch(
+			/^mailbox:design-review-manifest:exec-codex-trigger-1:[1-9][0-9]*$/,
+		);
+
+		const codeStageEvent = {
+			...correctionEvent,
+			event_id: "owner-code-stage",
+			payload: { stage: "code_review" },
+		};
+		expect(
+			authoritativeReviewOwnerRef(store, codeStageEvent, "code_review"),
+		).toBeUndefined();
+
+		const prEvent = {
+			...correctionEvent,
+			event_id: "owner-pr",
+			payload: { stage: "pr_created" },
+		};
+		expect(
+			handleCodexAutoTrigger(store, prEvent, "pr_created", undefined),
+		).toBe("settled");
+		expect(authoritativeReviewOwnerRef(store, prEvent, "pr_created")).toBe(
+			"mailbox:codex-trigger:owner-pr",
+		);
+	});
 
 	it.each([false, true])(
 		"replays the persisted design blob after plan revision (lost delivery=%s)",

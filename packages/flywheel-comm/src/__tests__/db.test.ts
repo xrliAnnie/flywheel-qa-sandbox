@@ -103,6 +103,42 @@ describe("CommDB", () => {
 	});
 
 	describe("pending questions", () => {
+		it("terminalizes an audit-only question without projecting model delivery or read", () => {
+			const qId = db.insertQuestion("runner-1", "product-lead", "Review gate", {
+				checkpoint: "review_code",
+			});
+			(db as any).db
+				.prepare(
+					`UPDATE mailbox SET delivery_disposition = 'audit_only',
+					 notification_policy_version = 'notification-v1'
+					 WHERE id = ?`,
+				)
+				.run(qId);
+
+			expect(db.markQuestionTerminalDisposed(qId)).toBe(true);
+			const raw = (db as any).db
+				.prepare(
+					"SELECT state, acked_at, delivered_at FROM mailbox WHERE id = ?",
+				)
+				.get(qId) as {
+				state: string;
+				acked_at: string | null;
+				delivered_at: string | null;
+			};
+			const projected = (db as any).db
+				.prepare(
+					"SELECT read_at, delivered_at FROM mailbox_message_projection WHERE id = ?",
+				)
+				.get(qId) as {
+				read_at: string | null;
+				delivered_at: string | null;
+			};
+			expect(raw.state).toBe("ACKED");
+			expect(raw.acked_at).not.toBeNull();
+			expect(raw.delivered_at).toBeNull();
+			expect(projected).toEqual({ read_at: null, delivered_at: null });
+		});
+
 		it("pages pending obligations by durable kind and identity without losing equal timestamps", () => {
 			const ids = Array.from({ length: 4 }, (_, i) =>
 				db.insertQuestion(

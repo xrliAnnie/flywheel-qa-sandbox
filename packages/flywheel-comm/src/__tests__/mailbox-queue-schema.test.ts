@@ -303,7 +303,7 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 				"SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'mailbox_message_projection'",
 			)
 			.get() as { sql: string };
-		expect(view.sql).toContain("mailbox_projection_delivered_on_ack_v2");
+		expect(view.sql).toContain("mailbox_projection_model_delivered_on_ack_v3");
 		expect(view.sql).not.toContain(
 			"WHEN state = 'LEASED' THEN claim_expires_at",
 		);
