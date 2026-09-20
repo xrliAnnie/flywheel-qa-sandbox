@@ -1,14 +1,14 @@
 ---
 issue: FLY-2753
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-20T23:46:53.354Z
-nextStep: R2 APPROVED; final HTML published/reported; run phase_design_complete
-  then park (no implementation)
+phase: implement
+phaseCursor: 1/5
+updated: 2026-09-20T23:48:32.918Z
+nextStep: Audit approved sandbox scope; add RED contract; update active-role
+  verification clauses
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
-**phase**: design (5/5)
-**next**: R2 APPROVED; final HTML published/reported; run phase_design_complete then park (no implementation)
+**phase**: implement (1/5)
+**next**: Audit approved sandbox scope; add RED contract; update active-role verification clauses
