@@ -41,6 +41,11 @@ DROP INDEX IF EXISTS mailbox_log_settlement_slot;
 export const MAILBOX_MESSAGE_PROJECTION_VERSION =
 	"mailbox_projection_model_delivered_on_ack_v3" as const;
 
+export const MAILBOX_LEGACY_PUSH_BACKFILL_MARKERS = [
+	"mailbox_projection_delivered_on_ack_v2",
+	"mailbox_legacy_push_backfill_v2",
+] as const;
+
 export const MAILBOX_MESSAGE_PROJECTION_SELECT = `
 SELECT
 	seq AS rowid,
@@ -70,6 +75,7 @@ SELECT
   content_ref,
   COALESCE(content_type, 'text') AS content_type,
   resolved_at,
+  /* mailbox_legacy_push_backfill_v2 */
   /* ${MAILBOX_MESSAGE_PROJECTION_VERSION} */
   CASE WHEN state = 'ACKED' AND delivery_disposition = 'model'
     THEN acked_at END AS delivered_at,

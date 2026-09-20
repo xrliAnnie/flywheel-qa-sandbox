@@ -3255,6 +3255,52 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		).toHaveLength(3);
 	});
 
+	it("fails open to model delivery when review-owner evidence lookup throws", async () => {
+		store.upsertSession({
+			execution_id: "exec-owner-lookup-failure",
+			issue_id: "issue-owner-lookup-failure",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["PM"]),
+		});
+		vi.spyOn(store, "getDesignReviewManifestForSourceEvent").mockImplementation(
+			() => {
+				throw new Error("manifest lookup unavailable");
+			},
+		);
+
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify({
+				event_id: "owner-lookup-failure",
+				execution_id: "exec-owner-lookup-failure",
+				issue_id: "issue-owner-lookup-failure",
+				project_name: "geoforge3d",
+				event_type: "stage_changed",
+				source: "flywheel-comm",
+				payload: { stage: "design_review" },
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition FROM lead_events WHERE event_id = ?",
+				)
+				.get("owner-lookup-failure"),
+		).toEqual({ delivery_disposition: "model" });
+		expect(
+			capturedEnvelopes.some(
+				(envelope) => envelope.eventId === "owner-lookup-failure",
+			),
+		).toBe(true);
+	});
+
 	it("does not reawaken the Lead for a fresh routine stage carrying an inherited decision", async () => {
 		store.upsertSession({
 			execution_id: "exec-stale-decision",

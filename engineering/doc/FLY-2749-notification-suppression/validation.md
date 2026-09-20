@@ -197,3 +197,27 @@ VITEST_MAX_FORKS=1 pnpm --filter flywheel-comm exec vitest run \
 ```
 
 按 Lead 指令本轮只运行定向测试，没有重跑本地 aggregate、lint 或全仓 build；这些全局门禁必须由修订后的精确 HEAD CI 给出，旧 `ceea9d207` 的 CI/评审不能替代新头。
+
+## 第二轮评审修订（2026-09-20）
+
+`1a20fdfac9b5064689c03f499bbcb5e75989508e` 的代码评审为 APPROVED；Lead 仍要求本 PR 修复两条由上一轮最小改动引出的 MEDIUM。红侧证明：以当前 projection version 兼作一次性 backfill receipt 会在 v2→v3 升级时把 live pre-notify claim 的 `notified_at` 回填；StateStore manifest lookup 抛错会跳过整个 Lead event，而不是退回 model。
+
+修复把 `mailbox_legacy_push_backfill_v2` 作为独立、跨未来 view shape 版本保留的持久 marker，并把历史 `mailbox_projection_delivered_on_ack_v2` 视为等价完成 receipt。只有既无历史 receipt、也无新 marker 的真正旧 projection 才执行一次 backfill。owner resolver 的整个 StateStore+CommDB 读取边界统一捕获异常并返回 undefined，分类因此 fail-open 到 model。
+
+```
+# 红侧
+# mailbox-queue-schema: 1 failed / 12 passed（v2 upgrade 误回填 notified_at）
+# event-route: 1 failed / 105 passed（lookup throw 后 lead_events 无记录）
+
+# 最小修复绿侧
+# mailbox-queue-schema: 13/13 PASS
+# event-route: 106/106 PASS
+
+# 扩展定向回归
+# lead-token-savings drift + EventFilter + event-route + codex-trigger:
+#   4 files, 172 tests PASS
+# CommDB + mailbox queue/schema/query plans:
+#   4 files, 132 tests PASS
+```
+
+旧 head 的 review/CI 至此再次失效。最终候选需获得新的 exact-head review；Lead 要求同一最终头的 exact-head CI 全绿后才能 `complete --route needs_review --pr 1275`。本地仍不把定向测试称为 aggregate CI。

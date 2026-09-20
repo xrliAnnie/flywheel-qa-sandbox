@@ -13,6 +13,7 @@ import {
 	dropReceiptLedgerSchema,
 	installMailboxRelayInvariantTriggers,
 	installMailboxTerminalArchiveSchema,
+	MAILBOX_LEGACY_PUSH_BACKFILL_MARKERS,
 	MAILBOX_MESSAGE_PROJECTION_SELECT,
 	MAILBOX_MESSAGE_PROJECTION_VERSION,
 	MAILBOX_SCHEMA,
@@ -521,14 +522,20 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 		if (!projection) return;
 		if (projection.sql.includes(MAILBOX_MESSAGE_PROJECTION_VERSION)) return;
 
-		// One-time legacy -> current evidence migration only. Once the projection is current,
-		// legacy-push may be a live pre-notify claim and must remain unnotified.
-		db.prepare(
-			`UPDATE mailbox SET notified_at = claim_expires_at
-			  WHERE type = 'instruction' AND state = 'LEASED'
-			    AND claimed_by = 'legacy-push' AND batch_id IS NULL
-			    AND notified_at IS NULL`,
-		).run();
+		// Projection shape and one-time evidence backfill have independent versions.
+		// Every post-backfill view carries the durable marker so later shape bumps do
+		// not reinterpret a live pre-notify legacy-push claim as historical evidence.
+		const legacyPushBackfillApplied = MAILBOX_LEGACY_PUSH_BACKFILL_MARKERS.some(
+			(marker) => projection.sql.includes(marker),
+		);
+		if (!legacyPushBackfillApplied) {
+			db.prepare(
+				`UPDATE mailbox SET notified_at = claim_expires_at
+				  WHERE type = 'instruction' AND state = 'LEASED'
+				    AND claimed_by = 'legacy-push' AND batch_id IS NULL
+				    AND notified_at IS NULL`,
+			).run();
+		}
 		db.exec(`DROP VIEW mailbox_message_projection;
 			CREATE VIEW mailbox_message_projection AS
 			${MAILBOX_MESSAGE_PROJECTION_SELECT};`);

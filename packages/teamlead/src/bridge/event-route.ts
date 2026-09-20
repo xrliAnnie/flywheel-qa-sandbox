@@ -355,23 +355,23 @@ export function authoritativeReviewOwnerRef(
 	event: Pick<IngestEvent, "execution_id" | "event_id" | "project_name">,
 	stage: string,
 ): string | undefined {
-	let instructionId: string | undefined;
-	if (stage === "design_review") {
-		const manifest = store.getDesignReviewManifestForSourceEvent(
-			event.execution_id,
-			event.event_id,
-		);
-		if (!manifest) return undefined;
-		instructionId = `design-review-manifest:${event.execution_id}:${manifest.revision}`;
-	} else if (stage === "pr_created") {
-		instructionId = `codex-trigger:${event.event_id}`;
-	} else {
-		return undefined;
-	}
-
-	const dbPath = commDbPathForProject(event.project_name);
-	if (!existsSync(dbPath)) return undefined;
 	try {
+		let instructionId: string | undefined;
+		if (stage === "design_review") {
+			const manifest = store.getDesignReviewManifestForSourceEvent(
+				event.execution_id,
+				event.event_id,
+			);
+			if (!manifest) return undefined;
+			instructionId = `design-review-manifest:${event.execution_id}:${manifest.revision}`;
+		} else if (stage === "pr_created") {
+			instructionId = `codex-trigger:${event.event_id}`;
+		} else {
+			return undefined;
+		}
+
+		const dbPath = commDbPathForProject(event.project_name);
+		if (!existsSync(dbPath)) return undefined;
 		const commDb = CommDB.openReadonly(dbPath);
 		try {
 			const instruction = commDb.getMessageById(instructionId);

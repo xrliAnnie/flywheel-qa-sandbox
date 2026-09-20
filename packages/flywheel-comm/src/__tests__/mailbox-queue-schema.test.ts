@@ -343,6 +343,67 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 		verify.close();
 	});
 
+	it("upgrades the v2 projection without rearming the legacy-push backfill", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2749-v2-view-upgrade-"));
+		roots.push(root);
+		const path = join(root, "comm.db");
+		const first = new CommDB(path, true, false);
+		const id = first.insertInstruction("bridge", "lead-a", "live v2 claim");
+		first.close();
+
+		const raw = new Database(path);
+		const currentView = raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'mailbox_message_projection'",
+			)
+			.get() as { sql: string };
+		const v2View = currentView.sql
+			.replace(
+				"mailbox_projection_model_delivered_on_ack_v3",
+				"mailbox_projection_delivered_on_ack_v2",
+			)
+			.replaceAll(
+				"state = 'ACKED' AND delivery_disposition = 'model'",
+				"state = 'ACKED'",
+			);
+		expect(v2View).not.toBe(currentView.sql);
+		raw.exec("DROP VIEW mailbox_message_projection");
+		raw.exec(v2View);
+		raw
+			.prepare(
+				`UPDATE mailbox SET state = 'LEASED', claimed_by = 'legacy-push',
+				 claim_expires_at = ?, notified_at = NULL WHERE id = ?`,
+			)
+			.run("2099-01-01T00:00:00.000Z", id);
+		raw.close();
+
+		const upgraded = new CommDB(path, false, false);
+		upgraded.close();
+		const verify = new Database(path, { readonly: true });
+		expect(
+			verify.prepare("SELECT notified_at FROM mailbox WHERE id = ?").get(id),
+		).toEqual({ notified_at: null });
+		expect(
+			(
+				verify
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'mailbox_message_projection'",
+					)
+					.get() as { sql: string }
+			).sql,
+		).toContain("mailbox_projection_model_delivered_on_ack_v3");
+		expect(
+			(
+				verify
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'mailbox_message_projection'",
+					)
+					.get() as { sql: string }
+			).sql,
+		).toContain("mailbox_legacy_push_backfill_v2");
+		verify.close();
+	});
+
 	it("the lease-expiry reconciliation query uses the partial expiry index", () => {
 		const db = new Database(":memory:");
 		db.exec(MAILBOX_SCHEMA);

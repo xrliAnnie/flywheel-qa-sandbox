@@ -40,3 +40,15 @@ Lead response `0f01abd7-c1ce-4907-8c0e-9cdafb0df32d`：11 条 advisory 不挡交
 | inherited-action-resolved-by-liveness | LOW | Follow-up：不在本次窄修订实施。 |
 | runner-stop-declaration-read-unguarded | LOW | Follow-up：不在本次窄修订实施。 |
 | decision-route-guard-narrowed | LOW | Follow-up：不在本次窄修订实施。 |
+
+## 第二轮代码评审处置（2026-09-20）
+
+`1a20fdfac9b5064689c03f499bbcb5e75989508e` 的代码评审 `b7778e1c-5603-40f7-91c7-ab30619f5aa1` 再次得到有效 `reviewVerdict=APPROVED`。Lead 回执 `8c5cec74-f175-4800-b534-36f882d7a272` 指定本 PR 再修两条新 MEDIUM；新 LOW 与所有 carried follow-up 继续延期，并明确此后同类新 advisory 直接进入 Follow-ups、不再扩本单修订。
+
+| findingKey | 级别 | 处置 |
+|---|---|---|
+| projection-version-bump-refires-backfill | MEDIUM | 本 PR 已修：一次性 legacy-push backfill 使用独立持久 marker；现存 v2 marker 视为已完成 receipt，未来 view shape 版本变化也不会重新武装 backfill。新增 v2→v3、live pre-notify claim 保持 NULL 的回归。 |
+| review-owner-ref-statestore-throw-unguarded | MEDIUM | 本 PR 已修：StateStore manifest lookup 与 CommDB lookup 统一包在 fail-open 边界；任一读取抛错都返回无 proof，使事件如实走 model 并保留 Lead event。 |
+| review-owner-ref-runs-when-flag-off | LOW | Follow-up：按 Lead 裁定不在本次最终修订实施。 |
+
+Round 1 已列出的六条 carried follow-up 处置不变；没有把它们重新表述为已修复。
