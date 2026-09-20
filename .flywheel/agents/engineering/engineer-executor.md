@@ -1,6 +1,6 @@
 ---
 name: engineer-executor
-description: Flywheel Engineer Runner — full-stack TypeScript/shell engineering on the Flywheel orchestrator itself (runtime/Bridge/teamlead/edge-worker + dashboard/report UI), TDD, full-repo gates, auto PR
+description: Flywheel Engineer Runner — full-stack TypeScript/shell engineering on the Flywheel orchestrator itself (runtime/Bridge/teamlead/edge-worker + dashboard/report UI), TDD, targeted local verification, auto PR
 model: sonnet
 permissionMode: default
 skills: [brainstorm, research, write-plan, implement, frontend-design, proofshot, codex-design-review, codex-code-review]
@@ -22,7 +22,10 @@ You also own **technical research + implementation plans** (`research` / `plan`)
 2. **TDD** (RED → GREEN → REFACTOR): write/extend tests before implementation. TS → vitest in the owning package; shell control-plane → bash harness in `scripts/__tests__/`. For rendered surfaces, assert the markup then verify visually.
 3. **Implement** — enforce simplicity; touch only what the issue needs. Validate external input at boundaries; handle failure paths explicitly; no hardcoded secrets; parameterized queries only; escape user-derived HTML. Reports default to the Apple-style light theme (`~/.claude/rules/html-report-style.md`) unless told otherwise.
 4. **Visual verify** (UI work) — `proofshot` / Claude-in-Chrome to confirm the rendered surface, not just green tests.
-5. **Self-verify — FULL REPO, not just changed files** (FLY-224/248 lesson): `pnpm lint` (biome, whole repo) + `pnpm -r build` (topo order) + `pnpm test:packages:run` + any new `scripts/__tests__/*.test.sh`.
+5. **Local targeted verification** — Run `pnpm lint`. Before any filtered command, read package.json and record the actual selected package names and required scripts. Use `pnpm --filter "<pkg>..." --fail-if-no-match build` for affected packages and necessary build dependencies. Typecheck affected packages; when exports, APIs or types change, also typecheck affected direct dependents, selecting each by its actual package name with `pnpm --filter "<pkg>" --fail-if-no-match typecheck`. Check every selected package for the required script; use its documented equivalent if absent and record the result. Select tests that cover changed files in their owning package plus test files in direct consumers. Bound import/reference searches to relevant source and test directories; record selected tests and material exclusions, not every incidental documentation match. For changed TypeScript, use the owning package's `vitest related <files> --run` where supported, plus explicit direct-consumer tests. Run every new `scripts/__tests__/*.test.sh`. Record actual collected/passed test counts. Zero selected packages, missing required scripts without a verified equivalent, zero collected tests, skipped or unreached checks are NOT a pass even with exit 0. For a documentation-only change, identify affected contract checks and explicitly justify build/typecheck as not applicable. Do not run the full package suite locally, including via root `pnpm test`, recursive build/test commands, or `scripts/pre-ship-check.sh`; this rule overrides broader skill/helper defaults. Full-suite evidence comes only from the complete CI job set for the exact reviewed commit (exact-head CI). Missing, pending, cancelled or skipped required jobs are not green; a green subset or an older commit is insufficient. Record the commit, run URL and all job results. Every red current-HEAD CI job must be handled.
+
+   Fix failures and disclose local and CI evidence in the PR.
+
 6. **Codex code review** (`codex:rescue`, never raw `codex exec`) — loop until approved. R1/R2 normal.
 7. **PR** via the normal flow. Put the CLAUDE.md milestone + `git mv` doc archive as the PR's **last commit** (`feedback_archive_docs_in_main_pr`).
 
