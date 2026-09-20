@@ -1,0 +1,30 @@
+# FLY-2753 本机定向验证 — 调研
+Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实现qa-守则要求每具-runner-交卷前本机跑全量-pnpm-testpackagesrun-十几具同时跑每具-1-2)
+日期: 2026-09-20
+基于: plan.md
+
+## 设计阶段实测记录
+
+- TURN：design / epoch 1，执行 `5a74cc4f-af10-4a44-b04a-bbbc8fa7b57d`。
+- 探索/调研/计划已提交：`428a4d797`；HTML、Mermaid 源与留言验证脚本：`5420ef639`。
+- `pnpm lint` exit 0，1894 files，14 个现有警告；未修改无关文件。新增文档验证脚本另做格式检查。
+- `node engineering/doc/FLY-2753-targeted-local-tests/verify-html.mjs`：14 项检查通过，覆盖静态结构、按页面隔离的存储、恢复、存储拒绝、长文本分段、复制全部以及 clipboard 缺失/拒绝时的回退。使用实际 inline JS + Node VM 的 DOM 替身，**没有宣称真实浏览器验证通过**。
+- Mermaid 本地渲染两次均 exit 1：Chromium `bootstrap_check_in ... Permission denied (1100)`。按任务允许的降级规则保留 `flow.mmd`，HTML 使用 `DIAGRAM PENDING LOCAL RENDER`。没有远端渲染或伪造图。
+- `git diff --check` 通过。
+- 本阶段只写设计目录，没有改产品代码、守则或运行本机全量测试；build/typecheck 不适用，因为没有编译资产变更。
+
+## HTML 发布
+
+提交后的 `founder-design.html` 已通过注入 CLI 的 `publish-report --project test-slot-1 --publish-only` 发布：
+
+http://127.0.0.1:61308/fw-reports-5e694e/r/3d736997c050fd95dd312acc2517206c/
+
+返回 `reportId=3d736997c050fd95dd312acc2517206c`、`publishOnly=true`、`messageId=null`。`delivered=false` 与禁止发送频道消息的要求一致，不解释成频道投递成功。这是 slot 返回的 loopback 托管地址，不宣称手机/公网可访问。
+
+读取托管页：HTTP 200；`__CSP_NONCE__` 无残留；单一 script nonce；CSP 包含匹配 nonce；页面 9836 字节。已运行 `ask --report "DESIGN-HTML ready: ..."`，报告 id `eb718ab5-a0e1-48b7-a1b9-f6512e9bf141`。本地渲染失败也已单独报告。
+
+## 待裁决
+
+- 设计评审 gate：`f9d65e54-60a4-4c92-ab02-534d9ee34d1a`，request `a2979284-a1a9-46d2-9092-be619d7007c8`。已 accepted；尚未取得有效 reviewVerdict，不得完成设计阶段。
+- Lead 目标澄清：`70231531-d5e3-4be0-ba98-0b1eb23397ad`。生产已有实现，但当前 sandbox 缺目标资产，不能把外部结果算成本分支验收。
+- 后续：处理评审、记录裁决，必要时更新并重发 HTML；提交/push 最终记录，运行精确阶段完成命令，再 park。目标澄清若未解决，必须明确交接给后继节点，不写成实施完成。
