@@ -221,9 +221,9 @@ describe("FLY-2753 local verification policy", () => {
 		const original = readFileSync(join(root, role), "utf8");
 		assertPolicy(original, role);
 		for (const clause of required) {
-			expect(() =>
-				assertPolicy(original.replace(clause, "removed"), role),
-			).toThrow();
+			expect(() => {
+				assertPolicy(original.replaceAll(clause, "removed"), role);
+			}, clause).toThrow();
 		}
 		for (const forbidden of [
 			"pnpm test:packages:run",
