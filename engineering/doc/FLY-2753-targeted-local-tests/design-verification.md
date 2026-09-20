@@ -56,3 +56,7 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 - 新 reportId `7c269a11ec7befd8798418e0da50baeb`，URL `http://127.0.0.1:54945/fw-reports-176a2a/r/7c269a11ec7befd8798418e0da50baeb/`；HTTP 200、修订内容、无旧九投影措辞、nonce 与 CSP 对齐均验证。loopback-only 与无浏览器视觉验证限制仍成立。
 - 新 DESIGN-HTML 回执 `76b56c14-8cfe-47ec-b32f-71553452217d`，完整 R1 修订/发布报告 `965022b7-f9f3-464b-84c7-95a2cf327cc1`。
 - R2 gate `92378e0f-a721-4723-a6f8-6065de1ded82` / request `47cf7e4c-7caf-4cdf-a731-36cc8ec00ab5` 已 accepted，当前 pending；不能提前运行 phase_design_complete。
+
+## 官方发布验证补证
+
+`flywheel-comm verify-report --url http://127.0.0.1:54945/fw-reports-176a2a/r/7c269a11ec7befd8798418e0da50baeb/ --expect "首轮评审指出旧计划无法在这里执行"` 返回 `ok:true`、status 200；http / noncePlaceholder / scriptCsp / scriptNonce / expect 全为 pass，warnings=[]。明确 hasInlineSvg=false、screenshot=null，与已披露的本地渲染失败一致。此证据未证明外部可访问或浏览器视觉效果。
