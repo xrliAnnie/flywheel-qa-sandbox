@@ -46,3 +46,13 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 - 对该 URL 实际 GET 为 HTTP 200、12054 bytes、nonce placeholder=0，单一 script nonce 与发布器注入的 CSP script-src nonce 相同。
 - `DESIGN-HTML ready` 回执 `3f3caf69-a6e0-41b2-a9b0-3678b544dd32`；发布限制和验证报告回执 `b109e08b-bdae-4911-859d-125d2b41168b`。
 - 正式设计 review request `2ea030e8-53a6-486b-a95a-b4e8b2f946b8` 已 accepted；question `cbd3b8fe-bf78-410b-9c57-db00f5b43221` 当前未答。尚未运行 design completion。
+
+## R2 版本验证（取代上文旧方案当前状态）
+
+- 设计提交 `c76bfd366` 已 push；R1 为 CHANGES_REQUESTED，修订内容与 finding 映射见 design-correction.md / plan.md。
+- 三个当前 Modify 目标均已重新只读确认存在且含旧本机全量要求；这是当前分支实际待修缺陷，不沿用现代工作树的 PASS。
+- 计划中新增同步器的完整 JS 代码块通过 `node --check`；未在共享工作树实现或运行该未来脚本。
+- 修订 HTML 评论层仍通过原定向 harness；更新 structure.mmd 本地渲染及标准参数重试仍因 Chromium MachPort 权限失败，维持明确 fallback。
+- 新 reportId `7c269a11ec7befd8798418e0da50baeb`，URL `http://127.0.0.1:54945/fw-reports-176a2a/r/7c269a11ec7befd8798418e0da50baeb/`；HTTP 200、修订内容、无旧九投影措辞、nonce 与 CSP 对齐均验证。loopback-only 与无浏览器视觉验证限制仍成立。
+- 新 DESIGN-HTML 回执 `76b56c14-8cfe-47ec-b32f-71553452217d`，完整 R1 修订/发布报告 `965022b7-f9f3-464b-84c7-95a2cf327cc1`。
+- R2 gate `92378e0f-a721-4723-a6f8-6065de1ded82` / request `47cf7e4c-7caf-4cdf-a731-36cc8ec00ab5` 已 accepted，当前 pending；不能提前运行 phase_design_complete。
