@@ -1,14 +1,14 @@
 ---
 issue: FLY-2753
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-20T23:50:56.365Z
-nextStep: RED/GREEN contract complete; verify lint, bounded consumer checks,
-  review final diff
+phaseCursor: 3/5
+updated: 2026-09-20T23:53:23.760Z
+nextStep: Local verification green; push and request effective code review, then
+  milestone and PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
-**phase**: implement (2/5)
-**next**: RED/GREEN contract complete; verify lint, bounded consumer checks, review final diff
+**phase**: implement (3/5)
+**next**: Local verification green; push and request effective code review, then milestone and PR
