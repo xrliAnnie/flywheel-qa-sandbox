@@ -21,3 +21,8 @@ Lead 对问题 0f01abd7-c1ce-4907-8c0e-9cdafb0df32d 的裁定优先于计划第 
 ## 阶段边界
 完成命令成功后 park，由控制器管理下一阶段；不将设计阶段完成当作 issue 终态，不结束 resident goal。托管恢复仅按新的 Lead 指令补交付。
 本次接续未产生新的可复用角色经验；沿用既有发布失败诚实报告和明确 Lead 处置原则，不新增 memory 条目。
+
+## 2026-09-20 本次激活的交接确认
+Lead 回复 `143312aa-b385-4d4e-9711-56316dcef9fc`：本次 design activation 仅承接既有 APPROVED 设计，不重开设计、不改实现、不重复 publish；report 后直接 complete/park，让工作流推进到 implement。托管继续按原 502 裁定，恢复后另行唤醒。
+
+Lead 回复 `dd261f87-85f4-47d7-af24-63d8d8cfe855` 确认以下缺口必须交给 implement/QA：冻结 baseline 46 个源文件中 5 个原路径不存在，measure-usage.py 同 SHA 重放 fail-closed。不改 manifest、不重算替代基线；QA 从保留副本恢复 exact prefix/hash 后复验，9/18 byte-identical 记录只当历史事实。具体缺失文件及本次验证范围见 design-resume-audit.md。

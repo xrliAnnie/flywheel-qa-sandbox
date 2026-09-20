@@ -33,4 +33,4 @@ ee96313c-5a79-4233-ba3e-4107f3390119.jsonl
 
 当前 check 接口再次返回问题 `7d432b5f-12ea-4595-bef1-c7b287093cea` 与 `8625df09-5855-458f-b670-ed8d3a7a3017` 的明确裁定：停止托管重试，已提交推送 HTML 满足产出，记录 DESIGN-HTML publish-failed 后 phase_design_complete 并 park；恢复后另行唤醒 publish-only。此处沿用已有裁定，不宣称宿主已经恢复，也不把历史 502 当作本次新探测结果。
 
-本次范围澄清问题 `143312aa-b385-4d4e-9711-56316dcef9fc` 尚未回答；这是非阻断问题，不撤销上述明确交接指令。设计完成命令及 park 的结果以本次 CLI/Bridge 收据为准，本文件不预先宣称成功。没有新增可复用角色经验，不写重复 memory 条目。
+本次范围澄清问题 `143312aa-b385-4d4e-9711-56316dcef9fc` 已回答：仅承接既有 APPROVED 设计，report 后直接 complete/park。缺口报告 `dd261f87-85f4-47d7-af24-63d8d8cfe855` 也已回答：原样交接给 implement/QA，不改 manifest、不重算替代基线，QA 恢复 exact prefix/hash 后复验。两条回复已通过 check 消费；内容同步至 handoff.md。设计完成命令及 park 的结果以本次 CLI/Bridge 收据为准，本文件不预先宣称成功。没有新增可复用角色经验，不写重复 memory 条目。
