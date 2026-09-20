@@ -60,3 +60,13 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 ## 官方发布验证补证
 
 `flywheel-comm verify-report --url http://127.0.0.1:54945/fw-reports-176a2a/r/7c269a11ec7befd8798418e0da50baeb/ --expect "首轮评审指出旧计划无法在这里执行"` 返回 `ok:true`、status 200；http / noncePlaceholder / scriptCsp / scriptNonce / expect 全为 pass，warnings=[]。明确 hasInlineSvg=false、screenshot=null，与已披露的本地渲染失败一致。此证据未证明外部可访问或浏览器视觉效果。
+
+## 最终交接审计
+
+- R2 `reviewVerdict=APPROVED`、`reviewerVerdict=APPROVED`；gate `92378e0f-a721-4723-a6f8-6065de1ded82`。获批 plan.md 相对 `c76bfd366` 零 diff。
+- 2 MEDIUM + 3 LOW advisories 全量转报回执 `830c69b5-c8fc-4ff5-a42e-de35a4ada843`，详见 design-review.md；没有冒称已修复。
+- 最终 HTML 提交 `9bed0d548` 已 push；reportId `85d9c22004efbfbea5ebe52d692c880a`，URL `http://127.0.0.1:54945/fw-reports-176a2a/r/85d9c22004efbfbea5ebe52d692c880a/`。
+- 最终官方 verify-report 为 ok:true；HTTP 200、noncePlaceholder/scriptCsp/scriptNonce/expect 全 pass。交互 harness 再次 PASS；图形 fallback、无视觉证明和 loopback-only 限制不变。
+- 最终 DESIGN-HTML ready 回执 `47993b13-c86f-4816-bb62-ad42a19afaf2`；完整交接预告回执 `5723aeb8-55e1-43ca-95fe-492e3fc1ea2b`。
+- 所有设计产物均位于本 DOC-FLOW 目录；没有实现代码、守则或 CI 修改，没有生产写入、后继派发、ship 授权请求或 merge。
+- 下一动作是注入的 `complete --route phase_design_complete`，成功后 park；阶段完成不代表全 issue 已实现或 shipped。
