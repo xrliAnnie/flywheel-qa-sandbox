@@ -2,14 +2,13 @@
 issue: FLY-2749
 phase: implement
 phaseCursor: 7/7
-updated: 2026-09-20T21:53:34.825Z
-nextStep: "Merged origin/main; focused notification and compatibility suites
-  pass on merged tree. Next: exact-head implementation audit, full required
-  verification, code review, milestone-last commit, push and PR handoff."
+updated: 2026-09-20T21:59:17.214Z
+nextStep: "Write literal-last milestone commit, request exact-head code review,
+  then push PR #1275 and complete needs_review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2749 progress
 **phase**: implement (7/7)
-**next**: Merged origin/main; focused notification and compatibility suites pass on merged tree. Next: exact-head implementation audit, full required verification, code review, milestone-last commit, push and PR handoff.
+**next**: Write literal-last milestone commit, request exact-head code review, then push PR #1275 and complete needs_review
