@@ -35,3 +35,14 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 - 未运行本机 `pnpm test:packages:run` 或全仓构建。
 - 本分支不能执行缺失的 `sync-phase-protocols.mjs`；实现前基线检查会明确失败，未谎称 9 projections 通过。
 - 设计 review 与托管页的最终结果以本文件后续记录和 progress 指针为准，不继承参考分支的测试结果。
+
+
+## 发布与格式检查（2026-09-20）
+
+- `pnpm lint` exit 0：检查 1894 个文件，14 个既有 warning，未应用修复。
+- HTML 提交 `b0f773db3` 已 push。
+- 注入命令 `publish-report --project test-slot-3 --publish-only` 成功，reportId `c447441e0bd7ac6926b61b1480a743e3`；publishOnly=true、delivered=false，未发送频道消息。
+- 返回 URL：`http://127.0.0.1:54945/fw-reports-176a2a/r/c447441e0bd7ac6926b61b1480a743e3/`。这是测试发布器的 loopback URL，不能证明 founder 可远程访问；已向 Lead 单独披露。
+- 对该 URL 实际 GET 为 HTTP 200、12054 bytes、nonce placeholder=0，单一 script nonce 与发布器注入的 CSP script-src nonce 相同。
+- `DESIGN-HTML ready` 回执 `3f3caf69-a6e0-41b2-a9b0-3678b544dd32`；发布限制和验证报告回执 `b109e08b-bdae-4911-859d-125d2b41168b`。
+- 正式设计 review request `2ea030e8-53a6-486b-a95a-b4e8b2f946b8` 已 accepted；question `cbd3b8fe-bf78-410b-9c57-db00f5b43221` 当前未答。尚未运行 design completion。
