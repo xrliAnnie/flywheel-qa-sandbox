@@ -41,3 +41,14 @@ http://127.0.0.1:61308/fw-reports-5e694e/r/3d736997c050fd95dd312acc2517206c/
 http://127.0.0.1:61308/fw-reports-5e694e/r/c765bc108893c4cc49d087da12a02d9e/
 
 `publishOnly=true`；HTTP 200、单一 script nonce、占位符无残留、匹配 CSP、修订内容均已核对。DESIGN-HTML ready 已报告 Lead，receipt `b05b072d-af4b-43a5-9a0c-725dd14cd4fb`。本地 Mermaid 渲染限制仍存在，按规定保留明确占位与源码。
+
+## 最终设计裁决
+
+第二轮 `reviewVerdict=APPROVED`、`reviewerVerdict=APPROVED`，gate `220b6002-630e-4d22-ab37-ad91506160e5`，request `c338c95f-cfb8-45e8-b722-4bf540f0363f`，完整响应见 `design-review-r2.json`。原有“待裁决”文字是各轮当时记录；现以本节及 JSON 为准。
+
+三个非阻塞 advisories 已以 `ask --report` 报告 Lead：
+- `injected-skill-testcommand-still-full-suite`（MEDIUM）：评估项目级 `skills.test_command`，避免注入技能与角色规则冲突。
+- `contract-test-underasserts-4th-file-and-fail`（LOW）：加强 QA 红灯职责/helper 断言、让临时副本负例能使用同一检查函数。
+- `dependents-filter-overbroad`（LOW）：前置 `...<pkg>` 包含自身及传递依赖方，不是仅直接依赖方；实施证据须列真实选中包。
+
+按有效评审合同继续交接，不把 advisories 自行升级成门，也不在批准后悄悄更改计划范围。HTML 仅更新裁决状态及建议摘要。Lead 目标问题仍未答；实施按批准计划的当前真实路由范围推进，生产节点/同步检查未在本分支覆盖，交接必须保留该边界。
