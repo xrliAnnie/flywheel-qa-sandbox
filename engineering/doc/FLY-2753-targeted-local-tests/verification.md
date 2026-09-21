@@ -74,3 +74,11 @@ http://127.0.0.1:61308/fw-reports-5e694e/r/74408bf4ec4a6a14354754d87c4aa3ec/
 - 新 gate `11bface8-3042-49ea-8f2e-6fbfd2eb561a`，request `37382311-d376-4a1c-a602-d3b90f05c686` accepted；待有效 reviewVerdict。
 - 当前 HTML 已以 publish-only 发布： http://127.0.0.1:53682/fw-reports-de07d0/r/7c79ca7feab74e6628b8f220058cc709/ 。这是隔离 slot 的 loopback URL，不宣称公网可访问。verify-report 证明 HTTP 200、占位符替换、单脚本 nonce 与 CSP 匹配；没有发送频道消息。
 - DESIGN-HTML ready 结构化报告 receipt `80c4a6c8-4ecd-4665-80c4-4abd584e6f59`，包含渲染限制和当前评审 pending。批准后再更新最终状态并发布报告。
+
+## 本轮 R1 返回与修订证据
+
+Gate `11bface8-3042-49ea-8f2e-6fbfd2eb561a` 返回有效 CHANGES_REQUESTED；完整响应保存在 design-review-resumed-r1.json。唯一 HIGH 为 `node-test-name-pattern-false-green`：命名测试缺失时 Node 可 exit 0。本轮通过临时 fixture 复现，并把 §5 改为测试名预检 + TAP 精确非跳过成功行断言。
+
+逐字提取计划中的命令，在临时仓库 fixture 上验证六种情形：pass exit 0；renamed、comment-only、failure、skip、todo 均 exit 1。四个 shell 块通过 bash -n。初次 fixture 因宿主默认 TMPDIR 在沙箱外而失败，改成显式 /tmp 的唯一 mktemp 文件后六项通过；不修改宿主环境。
+
+同时修复两个 LOW 的文案与 grep 集合一致性。三个 MEDIUM 的未实施建议/边界在计划 §8 单独列明，不声称已完成 CI wiring、技能注入配置或自动脚本存在性守卫。本阶段仍只改设计文档。

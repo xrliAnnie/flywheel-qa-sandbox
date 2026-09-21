@@ -38,7 +38,7 @@ rg -n 'agent_file:' .flywheel/config.yaml
 | `.flywheel/agents/engineering/qa-executor.md` | 第 3 步保留真实行为验证，追加完整规则和 QA 红灯职责 |
 | `.flywheel/agents/general-executor.md` | 第 13 行去掉全仓 build/test 门重述；保留工程角色路由，追加完整规则 |
 | `packages/qa-framework/agents/qa-parallel-executor.md` | 工具示例改成包内显式测试；第 155 行一键 helper 推荐改成“按工程角色定向验证规则执行，不调用 pre-ship-check 作为本机完成门”；保留 E2E/隔离/权限条款 |
-| `scripts/__tests__/fly2753-targeted-verification-contract.test.sh` | 新增最小角色合同测试，覆盖上面真实入口，先 RED 后 GREEN |
+| `scripts/__tests__/fly2753-targeted-verification-contract.test.sh` | 已提交；复核并重跑四个入口的合同与七种负例，不恢复旧规则 |
 
 ### 必须实际进入三份守则的规则原文
 
@@ -48,8 +48,8 @@ rg -n 'agent_file:' .flywheel/config.yaml
 
 ## 2. TDD 与精确验证
 
-- [ ] 新增下述 shell 合同测试；旧守则运行应失败，记录具体失败项。该测试不执行任何包套件。
-- [ ] 按 §1 修改角色文字，再运行同一测试，应通过。
+- [ ] 读取 implementation.md 的已有 RED → GREEN 证据；复核已提交 shell 合同覆盖真实入口。该测试不执行任何包套件。
+- [ ] 对照 §1 检查已提交角色文字；只补真实差异，再运行同一测试，应通过。
 - [ ] 负例验证：仅在临时文件副本中分别放回全量条款、删除零测试守卫、把 direct-consumer 选择删掉；这些变异必须被同一断言拒绝。不要临时改共享规则或实际启动全量测试。
 - [ ] 运行所有本单新增 shell 测试、`pnpm lint`、`git diff --check`；查看最终 diff，无无关条款修改。纯文字/合同检查不涉及编译资产，build/typecheck 明确记 N/A；若实际补代码，则按规则做定向构建。
 
@@ -110,18 +110,24 @@ set -eu
 for role in implement qa engineer; do
   test -s ".flywheel/agents/nodes/$role.md"
 done
-if rg -n 'pnpm test:packages:run|PACKAGE_GATE_RECEIPT' .flywheel/agents/nodes/implement.md .flywheel/agents/nodes/qa.md .flywheel/agents/nodes/engineer.md; then
+if rg -n 'pnpm test:packages:run|PACKAGE_GATE_RECEIPT|pnpm -r build|Self-verify — FULL REPO' .flywheel/agents/nodes/implement.md .flywheel/agents/nodes/qa.md .flywheel/agents/nodes/engineer.md; then
   exit 1
 else
   result=$?
   test "$result" -eq 1
 fi
 node scripts/sync-phase-protocols.mjs --check
-node --test --test-name-pattern='active runner handbooks require targeted local verification and CI-owned full evidence' scripts/__tests__/package-gate.test.mjs
+contract_name='active runner handbooks require targeted local verification and CI-owned full evidence'
+grep -Fq -- "$contract_name" scripts/__tests__/package-gate.test.mjs
+contract_tap=$(mktemp /tmp/fly2753-contract.XXXXXX)
+trap 'rm -f "$contract_tap"' EXIT
+node --test --test-reporter=tap --test-name-pattern="$contract_name" scripts/__tests__/package-gate.test.mjs > "$contract_tap"
+cat "$contract_tap"
+grep -Eq "^ok [0-9]+ - ${contract_name}$" "$contract_tap"
 node -e 'const p=require("./packages/teamlead/package.json"); if (!p.scripts.prebuild.includes("sync-phase-protocols.mjs --check")) process.exit(1)'
 ```
 
-预期不存在旧本机全量门，九份投影一致，命名合同实际执行并通过，prebuild 仍有同步检查。合同更新必须只覆盖验证文字，不能为通过而删掉其他条款。grep 只证明旧字面量消失；再逐句核对 §1 的测试选择规则、三份角色共有语义以及 QA 的红灯职责。
+预期不存在旧本机全量门，九份投影一致，命名合同实际执行并通过，prebuild 仍有同步检查。不能只信 node 的 exit 0 或文件级 pass 计数；必须看到该精确名称的 TAP 成功行，带 SKIP/TODO 后缀不匹配，测试改名、删除、跳过或失败都不算通过。合同更新必须只覆盖验证文字，不能为通过而删掉其他条款。grep 只证明旧字面量消失；再逐句核对 §1 的测试选择规则、三份角色共有语义以及 QA 的红灯职责。
 
 不在 sandbox 新建缺失的生产机制，不移植整个分支，不修改其他任务成果。Lead 问题 pending 不阻止当前实际路由的限定修改；issue 级完整验收要明确两种目标的边界。
 
@@ -144,3 +150,13 @@ node -e 'const p=require("./packages/teamlead/package.json"); if (!p.scripts.pre
 - [ ] 将最终 founder HTML 提交、推送、publish-only，并向本轮 Lead 发结构化报告。Mermaid 本地两次渲染失败时遵守指定占位降级，明确限制。
 - [ ] 更新进度并执行 phase_design_complete，随后 park。不在设计阶段实现或调度后继。
 - [ ] 实施/QA 在各自 TURN 内核对 PR 新头；旧代码评审与旧 CI 不能作为新增文档提交后的 exact-head 证据。
+
+## 8. 本轮 R1 评审处置
+
+- HIGH `node-test-name-pattern-false-green`：§5 加测试名存在预检，并捕获 TAP 文本（逐条测试的结果格式），要求精确名称的非跳过成功行。临时 fixture 证明存在且通过才接受；改名仍 exit 0 但新守卫拒绝，失败/跳过也拒绝。不存在本机全量 fallback。
+- LOW `plan-internal-tension-new-vs-reuse-contract-test` 与 `section5-grep-literal-set-weaker-than-committed-test`：已改成复核已提交合同，并对齐四个旧条款字面量。
+- MEDIUM `contract-test-not-wired-into-ci`：如实保留当前 CI 未自动执行新 shell 合同的限制，建议 Lead 安排加入现有 job 的单一步骤。它不等于全量 CI 已包含该护栏；本阶段不更改工作流，后继本机仍必须执行。
+- MEDIUM `injected-skill-templates-still-mandate-root-pnpm-test`：评估了项目级 `skills.test_command`。本单每次改动的包/测试集合不同，没有一个固定命令能安全表达所有定向选择；置空也不能作为通过。保留角色中的明确优先规则，并将“设计按改动生成定向命令”的配置改良建议报告 Lead，不把所有 runner 固定到本单合同测试。
+- MEDIUM `fail-if-no-match-does-not-cover-missing-scripts`：确认旗标只防零包匹配。缺脚本守卫仍需逐包记录；onboard-shell / payload-endpoint 的实际行为测试入口见 `.github/workflows/ci.yml` 中 FLY-1062 对应 shell 步骤，按改动选择相关脚本。行为测试不是 build/typecheck 的自动替代；没有编译目标时须解释 N/A，有编译目标而无等价检查则报告未验证，不能按 exit 0 或 CI 任务存在就判通过。
+
+这些 MEDIUM 项是未实施的建议或已知边界，将按 reviewVerdict 合同报告 Lead；不把记录建议当作已解决或作为跳过 HIGH 的理由。
