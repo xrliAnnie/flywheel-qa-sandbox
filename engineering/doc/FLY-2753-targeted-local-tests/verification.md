@@ -88,3 +88,12 @@ Gate `11bface8-3042-49ea-8f2e-6fbfd2eb561a` 返回有效 CHANGES_REQUESTED；完
 Gate `ef0bcbf7-4147-4dd8-af81-72bacb824a27`，request `711bfb1b-b7f6-4b2a-a199-eda7d0fec169`，有效 reviewVerdict 与 reviewerVerdict 均为 APPROVED。评审确认 `00bcc4f6f` 的唯一 HIGH 已修复。完整响应见 design-review-resumed-r2.json；不再修改获批 plan。
 
 五项非阻塞 advisories 已向本轮 Lead 结构化报告：CI 未接新合同、注入技能默认命令仍冲突、缺脚本指引未进入长期守则、TAP 嵌套子测试会误红、真实测试失败时 TAP 诊断可能被清理。它们保留为已知建议，不宣称已实施，不自行升级成评审阻塞项。HTML 更新为本轮已批准，并准确披露限制。生产目标澄清仍待回答，原题生产验收不能被当前 sandbox 成果替代。
+
+## 本轮最终 HTML 发布与完成审计
+
+最终 HTML 内容提交 `3a80774c5` 已推送，再以 publish-only 发布：
+http://127.0.0.1:53682/fw-reports-de07d0/r/64e80e0a2cfaf68a3859b5ca4b6a12b5/
+
+verify-report 返回 ok=true、HTTP 200、noncePlaceholder/scriptCsp/scriptNonce/批准状态文本均 pass。DESIGN-HTML ready 报告 receipt `631f751a-72e8-4479-a997-f48cb908e935`；advisories 报告 receipt `7d5177d6-cc05-47db-a6d2-353eefceebbf`。没有发送频道消息；loopback 可访问性和本地 Mermaid 降级限制已披露。
+
+完成审计：三份上游设计文件与规定页首已保存；本轮 R2 有效 APPROVED；计划保持审批版本不变；HTML 最终状态、七节留言层及 14 项定向检查通过；既有本机 lint 和规则合同证据保留，未跑全量；HTML 已提交、推送、发布、验托管并报告；进度更新 5/5。所有本轮工作树变更限于本 issue 设计目录。下一步提交推送本记录，执行精确 phase_design_complete 路由，然后 park。此审计只证明设计交付，原题生产投影与最终 CI 仍须相应授权节点验收；不申请 ship、不实现、不调度后继、不终结 issue goal。
