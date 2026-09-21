@@ -1,15 +1,16 @@
 ---
 issue: FLY-2753
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-21T01:18:04.718Z
-nextStep: R2 effective APPROVED; final HTML 3a80774c5 published/reported. Finish
-  evidence push then complete phase_design_complete and park. Production
-  acceptance/CI and advisories handed to Lead; not issue-terminal.
+phase: implement
+phaseCursor: 2/4
+updated: 2026-09-21T01:21:19.621Z
+nextStep: Approved plan and actual routing audited; existing four-prompt
+  contract (7 negative fixtures), HTML 14 checks, and lint 1899 files passed.
+  Record consumer exclusions and new evidence, milestone last, push and request
+  fresh code review; production projection remains uncovered.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
-**phase**: design (5/5)
-**next**: R2 effective APPROVED; final HTML 3a80774c5 published/reported. Finish evidence push then complete phase_design_complete and park. Production acceptance/CI and advisories handed to Lead; not issue-terminal.
+**phase**: implement (2/4)
+**next**: Approved plan and actual routing audited; existing four-prompt contract (7 negative fixtures), HTML 14 checks, and lint 1899 files passed. Record consumer exclusions and new evidence, milestone last, push and request fresh code review; production projection remains uncovered.
