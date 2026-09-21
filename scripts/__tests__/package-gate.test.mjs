@@ -435,20 +435,34 @@ test("heavy package configs bound the worker pool without changing assertion tim
 	}
 });
 
-test("all active runner package gates state the bounded equivalent receipt route", () => {
+test("active runner handbooks require targeted local verification and CI-owned full evidence", () => {
 	for (const name of ["implement", "engineer", "qa"]) {
 		const text = readFileSync(
 			new URL(`../../.flywheel/agents/nodes/${name}.md`, import.meta.url),
 			"utf8",
 		);
-		assert.ok(text.includes("aggregate green OR"), name);
-		assert.ok(text.includes("zero assertion failures"), name);
-		assert.ok(
-			text.includes("VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run"),
+		assert.doesNotMatch(
+			text,
+			/pnpm test:packages:run|PACKAGE_GATE_RECEIPT|onTaskUpdate/,
 			name,
 		);
-		assert.ok(text.includes("PACKAGE_GATE_RECEIPT"), name);
-		assert.ok(text.includes("no Lead ruling"), name);
+		for (const required of [
+			"pnpm lint",
+			"affected package",
+			'pnpm --filter "<pkg>..." build',
+			"git grep -lF",
+			"full path, file name, and parent directory",
+			"document every excluded match",
+			"vitest related",
+			"scripts/__tests__/*.test.sh",
+			"no local full package suite",
+			"full exact-head CI",
+			"CI OK",
+			"CI Scope OK",
+			"skill defaults",
+		])
+			assert.ok(text.includes(required), `${name}: ${required}`);
+		assert.match(text, /red .*CI job/i, name);
 	}
 });
 

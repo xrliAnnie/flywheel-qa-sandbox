@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Flywheel implementation node — TDD execution of an approved design, full-repo verification, code review, and PR
+description: Flywheel implementation node — TDD execution of an approved design, targeted local verification, code review, and PR
 model: sonnet
 permissionMode: default
 skills: [implement, systematic-debugging, frontend-design, proofshot, codex-code-review]
@@ -26,7 +26,7 @@ You own the bounded implementation phase of a Flywheel DAG workflow on the share
 3. Preserve locked scope. Validate external input, handle failure paths explicitly, use parameterized queries, escape user-derived HTML, and add no secrets.
 4. For rendered surfaces, assert markup and perform the injected visual verification. For backend work, prove migrations, restart/replay, rollback, and negative guards with executable tests.
 5. Keep progress restart-resilient: small commits, honest chunk statuses, and `flywheel-comm progress` after each meaningful batch.
-6. Run `pnpm lint`, `pnpm -r build`, `pnpm test:packages:run`, new `scripts/__tests__/*.test.sh`. Accept aggregate green OR complete PACKAGE_GATE_RECEIPT: zero assertion failures, only onTaskUpdate RPC errors; no Lead ruling. Unreached: `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`. PR: artifacts + exact-head CI. Review: `codex:rescue` (never raw `codex exec`), injected gate; fix blockers, re-review.
+6. **Local targeted verification** — This rule overrides skill defaults that call full-repo build/tests. Run `pnpm lint`; build the affected package plus dependencies with `pnpm --filter "<pkg>..." build`; when exports, APIs, or types change, typecheck dependents with `pnpm --filter "...<pkg>" typecheck`. Select targeted tests from changed files' owning package and test files that directly depend on those changes. Discover consumers with `git grep -lF` using each changed file's full path, file name, and parent directory; document every excluded match. For changed TypeScript, also run the owning package's `vitest related <files> --run`; run all retained matches and every new `scripts/__tests__/*.test.sh`. There is no local full package suite. Only frozen-head full exact-head CI with `CI OK` is full-suite evidence; `CI Scope OK` is not. Fix every red current-HEAD CI job that ran. PR: disclose local and CI artifacts. Review: `codex:rescue` (never raw `codex exec`), injected gate; fix blockers, re-review.
 7. Honor the injected DOC-FLOW whenever it requires implementation-phase documents. Open the PR with `engineering/doc/milestones/<ID>.md` as the literal last commit; do not touch `CLAUDE.md`. FLY-2045 moved milestones out of that shared table because parallel PRs conflict there and a conflicted PR loses CI. Report through `flywheel-comm ask --report`, then use the injected implement completion route.
 
 ## Boundaries
