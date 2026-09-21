@@ -82,3 +82,9 @@ Gate `11bface8-3042-49ea-8f2e-6fbfd2eb561a` 返回有效 CHANGES_REQUESTED；完
 逐字提取计划中的命令，在临时仓库 fixture 上验证六种情形：pass exit 0；renamed、comment-only、failure、skip、todo 均 exit 1。四个 shell 块通过 bash -n。初次 fixture 因宿主默认 TMPDIR 在沙箱外而失败，改成显式 /tmp 的唯一 mktemp 文件后六项通过；不修改宿主环境。
 
 同时修复两个 LOW 的文案与 grep 集合一致性。三个 MEDIUM 的未实施建议/边界在计划 §8 单独列明，不声称已完成 CI wiring、技能注入配置或自动脚本存在性守卫。本阶段仍只改设计文档。
+
+## 本轮 R2 最终设计裁决
+
+Gate `ef0bcbf7-4147-4dd8-af81-72bacb824a27`，request `711bfb1b-b7f6-4b2a-a199-eda7d0fec169`，有效 reviewVerdict 与 reviewerVerdict 均为 APPROVED。评审确认 `00bcc4f6f` 的唯一 HIGH 已修复。完整响应见 design-review-resumed-r2.json；不再修改获批 plan。
+
+五项非阻塞 advisories 已向本轮 Lead 结构化报告：CI 未接新合同、注入技能默认命令仍冲突、缺脚本指引未进入长期守则、TAP 嵌套子测试会误红、真实测试失败时 TAP 诊断可能被清理。它们保留为已知建议，不宣称已实施，不自行升级成评审阻塞项。HTML 更新为本轮已批准，并准确披露限制。生产目标澄清仍待回答，原题生产验收不能被当前 sandbox 成果替代。

@@ -1,0 +1,103 @@
+{
+	"reviewVerdict": "APPROVED",
+	"reviewerVerdict": "APPROVED",
+	"requestId": "711bfb1b-b7f6-4b2a-a199-eda7d0fec169",
+	"round": 2,
+	"findings": [
+		{
+			"id": "contract-test-not-wired-into-ci",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 158,
+			"title": "新增合同测试仍未接入 CI，本轮选择披露并转交 Lead 而非修复",
+			"detail": "在冻结提交 00bcc4f6f 上复核：`rg 'fly2753|2753' .github/workflows/` 仍零命中，仓内仍无 .husky 钩子，ci.yml 对每个 shell 合同测试仍是逐条显式 `run: bash …`（无 glob 兜底，直接先例 ci.yml:233 `Test — FLY-880 PM executor role contract`）。§8 第 158 行已如实记录该限制、明确『它不等于全量 CI 已包含该护栏』并建议 Lead 安排加入现有 job 的单一步骤——这个披露本身是正确且诚实的处置，符合设计阶段不擅自扩大 scope 的纪律，故不阻塞本轮。残留风险不变：§4 列举的 exact-head CI 全套任务集合恰好不覆盖本单交付的这道护栏，三份角色文字日后被改回全量门不会被任何自动检查发现。建议 Lead 在实施单中补一步 `- name: Test — FLY-2753 targeted verification contract` / `run: bash scripts/__tests__/fly2753-targeted-verification-contract.test.sh`。",
+			"findingKey": "contract-test-not-wired-into-ci"
+		},
+		{
+			"id": "injected-skill-templates-still-mandate-root-pnpm-test",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 159,
+			"title": "注入式 skill 仍渲染 root `pnpm test`；§8 的否决理由未覆盖中性指针字符串这一选项",
+			"detail": "复核现状未变：`.flywheel/config.yaml` 仍无 `skills:` 段，`SkillInjector.ts:75` 的 `testCommand: ctx.testCommand ?? \"pnpm test\"` 生效，root package.json 的 `\"test\": \"pnpm -r test\"` 即全量递归套件，于是 `linear-issue-context.ts:28` 仍向每具 runner 注入『3. 测试全部通过（pnpm test）』，`flywheel-git-workflow.ts:51,62` 与 `flywheel-tdd.ts:52` 同样渲染成 `pnpm test`。§8 第 159 行的否决理由——『每次改动的包/测试集合不同，没有一个固定命令能安全表达所有定向选择』『置空也不能作为通过』——就其所述而言成立，且拒绝把所有 runner 钉死到本单合同测试是正确判断。未被评估的第三个选项：把 `skills.test_command` 设成一个中性指针串（例如指向工程角色的 Local targeted verification 规则），既不触碰跨项目模板、也不冒充固定命令，即可让注入文案不再字面命令 runner 跑 `pnpm -r test`，把冲突从『两份互相矛盾的强制要求』降为『一份规则 + 一个指针』。当前靠守则里 `this rule overrides broader skill/helper defaults`（含显式点名 root `pnpm test`）压制，可用但依赖 runner 正确解析优先级。建议把该选项一并报告 Lead。",
+			"findingKey": "injected-skill-templates-still-mandate-root-pnpm-test"
+		},
+		{
+			"id": "fail-if-no-match-does-not-cover-missing-scripts",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 45,
+			"title": "缺脚本等价物的答案落在 §8 而非进入三份守则的规则原文，未来 runner 读不到",
+			"detail": "本轮有实质改进：§8 第 160 行确认了旗标只防零包匹配（与我 R1 实测一致：`pnpm --filter \"@flywheel/onboard\" --fail-if-no-match typecheck` → exit 0 且仅打印 `None of the selected packages has a \"typecheck\" script`），并首次点名 onboard-shell / payload-endpoint 的实际行为测试入口在 ci.yml 的 FLY-1062 shell 步骤，还明确『行为测试不是 build/typecheck 的自动替代』『有编译目标而无等价检查则报告未验证，不能按 exit 0 或 CI 任务存在就判通过』——这些措辞正确且关闭了我 R1 指出的『无处可指』死胡同。残留问题是放置位置：plan.md:45 那段『必须实际进入三份守则的规则原文』本轮未改，仍只有 `use its documented equivalent if absent and record the result`，没有任何指向。§8 属于本 issue 的评审处置记录，只有本单实施 runner 会读；三份 handbook 才是所有未来 runner 的持久载体。`@flywheel/onboard` 与 `flywheel-payload-endpoint` 的 package.json 至今完全没有 scripts 字段，`flywheel-agent-team-transport`/`flywheel-cli`/`flywheel-inbox-mcp`/`flywheel-terminal-mcp` 缺 `test:run`，未来触碰这些包的 runner 读守则仍会卡住或按 exit 0 放行。建议把 §8 那句等价物指引压缩一句并入 §1 规则原文。",
+			"findingKey": "fail-if-no-match-does-not-cover-missing-scripts"
+		},
+		{
+			"id": "tap-guard-rejects-nested-describe-subtests",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 126,
+			"title": "§5 TAP 断言的 `^ok` 锚点对 describe() 内的子测试会误红（fail-closed）",
+			"detail": "逐字提取 plan.md:120-126 的守卫在五种 fixture 上实跑：toplevel→exit 0（正确放行）、renamed→1、skipped→1、failing→1（HIGH 已确实修复，与 verification.md 记录的六情形一致）。新增观察：若被点名的测试嵌在 `describe()` 内，Node 的 TAP reporter 会把子测试缩进四空格输出 `    ok 1 - <name>`，而顶层只有 `ok 1 - package gate`，于是 `grep -Eq \"^ok [0-9]+ - ${contract_name}$\"` 误判为失败（实测 nested→guard_exit=1，尽管该测试确实执行并通过）。方向是 fail-closed，不会造成假绿，故不阻塞。实际命中概率低：本仓 8/8 个使用 node:test 的 .mjs 文件（scripts/__tests__/fly1165-sweep-decision.test.mjs、packages/payload-endpoint/__tests__/*.test.mjs 等）全部是顶层 `test(...)`、零 `describe()`，生产 package-gate.test.mjs 大概率同风格。风险在于：一旦生产文件确实用了 describe，§5 会恒红，runner 可能为了『修绿』去放宽正则，反而把 R1 那个洞放回来。建议锚点改为 `^[[:space:]]*ok [0-9]+ - ` 形式（仍保留 `$` 尾锚以拒绝 SKIP/TODO 后缀），并在文中注明为何保留尾锚。",
+			"findingKey": "tap-guard-rejects-nested-describe-subtests"
+		},
+		{
+			"id": "tap-guard-swallows-diagnostics-on-failure",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 124,
+			"title": "`set -eu` 使 node 真失败时在 `cat` 之前中止，操作者拿不到任何 TAP 证据",
+			"detail": "plan.md:110 的 `set -eu` 下，plan.md:124 的 `node … > \"$contract_tap\"` 在命名测试真失败时返回 1，脚本立刻中止，plan.md:125 的 `cat \"$contract_tap\"` 永不执行，且 trap 随即删掉临时文件。干净复现（在 /tmp fixture 中用 failing 测试逐字跑该块并插入 MARKER）：script_exit=1、MARKER 出现 0 次、整个 stdout 为空——操作者只看到一个静默的 exit 1，无法区分是测试失败、node 崩溃还是 grep 未命中，必须手工重跑才能取证。renamed/skipped/nested 三种情形因 node 返回 0 反而能走到 cat 并打印 TAP，恰恰是最需要证据的真失败路径丢证据。这与本计划自身 plan.md:128『必须看到该精确名称的 TAP 成功行』以及通篇『记录每个任务结果』的取证纪律相左。建议改成 `node … > \"$contract_tap\" || { cat \"$contract_tap\"; exit 1; }`，或在 trap 中于非零退出时先 cat 再删。",
+			"findingKey": "tap-guard-swallows-diagnostics-on-failure"
+		}
+	],
+	"advisories": [
+		{
+			"id": "contract-test-not-wired-into-ci",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 158,
+			"title": "新增合同测试仍未接入 CI，本轮选择披露并转交 Lead 而非修复",
+			"detail": "在冻结提交 00bcc4f6f 上复核：`rg 'fly2753|2753' .github/workflows/` 仍零命中，仓内仍无 .husky 钩子，ci.yml 对每个 shell 合同测试仍是逐条显式 `run: bash …`（无 glob 兜底，直接先例 ci.yml:233 `Test — FLY-880 PM executor role contract`）。§8 第 158 行已如实记录该限制、明确『它不等于全量 CI 已包含该护栏』并建议 Lead 安排加入现有 job 的单一步骤——这个披露本身是正确且诚实的处置，符合设计阶段不擅自扩大 scope 的纪律，故不阻塞本轮。残留风险不变：§4 列举的 exact-head CI 全套任务集合恰好不覆盖本单交付的这道护栏，三份角色文字日后被改回全量门不会被任何自动检查发现。建议 Lead 在实施单中补一步 `- name: Test — FLY-2753 targeted verification contract` / `run: bash scripts/__tests__/fly2753-targeted-verification-contract.test.sh`。",
+			"findingKey": "contract-test-not-wired-into-ci"
+		},
+		{
+			"id": "injected-skill-templates-still-mandate-root-pnpm-test",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 159,
+			"title": "注入式 skill 仍渲染 root `pnpm test`；§8 的否决理由未覆盖中性指针字符串这一选项",
+			"detail": "复核现状未变：`.flywheel/config.yaml` 仍无 `skills:` 段，`SkillInjector.ts:75` 的 `testCommand: ctx.testCommand ?? \"pnpm test\"` 生效，root package.json 的 `\"test\": \"pnpm -r test\"` 即全量递归套件，于是 `linear-issue-context.ts:28` 仍向每具 runner 注入『3. 测试全部通过（pnpm test）』，`flywheel-git-workflow.ts:51,62` 与 `flywheel-tdd.ts:52` 同样渲染成 `pnpm test`。§8 第 159 行的否决理由——『每次改动的包/测试集合不同，没有一个固定命令能安全表达所有定向选择』『置空也不能作为通过』——就其所述而言成立，且拒绝把所有 runner 钉死到本单合同测试是正确判断。未被评估的第三个选项：把 `skills.test_command` 设成一个中性指针串（例如指向工程角色的 Local targeted verification 规则），既不触碰跨项目模板、也不冒充固定命令，即可让注入文案不再字面命令 runner 跑 `pnpm -r test`，把冲突从『两份互相矛盾的强制要求』降为『一份规则 + 一个指针』。当前靠守则里 `this rule overrides broader skill/helper defaults`（含显式点名 root `pnpm test`）压制，可用但依赖 runner 正确解析优先级。建议把该选项一并报告 Lead。",
+			"findingKey": "injected-skill-templates-still-mandate-root-pnpm-test"
+		},
+		{
+			"id": "fail-if-no-match-does-not-cover-missing-scripts",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 45,
+			"title": "缺脚本等价物的答案落在 §8 而非进入三份守则的规则原文，未来 runner 读不到",
+			"detail": "本轮有实质改进：§8 第 160 行确认了旗标只防零包匹配（与我 R1 实测一致：`pnpm --filter \"@flywheel/onboard\" --fail-if-no-match typecheck` → exit 0 且仅打印 `None of the selected packages has a \"typecheck\" script`），并首次点名 onboard-shell / payload-endpoint 的实际行为测试入口在 ci.yml 的 FLY-1062 shell 步骤，还明确『行为测试不是 build/typecheck 的自动替代』『有编译目标而无等价检查则报告未验证，不能按 exit 0 或 CI 任务存在就判通过』——这些措辞正确且关闭了我 R1 指出的『无处可指』死胡同。残留问题是放置位置：plan.md:45 那段『必须实际进入三份守则的规则原文』本轮未改，仍只有 `use its documented equivalent if absent and record the result`，没有任何指向。§8 属于本 issue 的评审处置记录，只有本单实施 runner 会读；三份 handbook 才是所有未来 runner 的持久载体。`@flywheel/onboard` 与 `flywheel-payload-endpoint` 的 package.json 至今完全没有 scripts 字段，`flywheel-agent-team-transport`/`flywheel-cli`/`flywheel-inbox-mcp`/`flywheel-terminal-mcp` 缺 `test:run`，未来触碰这些包的 runner 读守则仍会卡住或按 exit 0 放行。建议把 §8 那句等价物指引压缩一句并入 §1 规则原文。",
+			"findingKey": "fail-if-no-match-does-not-cover-missing-scripts"
+		},
+		{
+			"id": "tap-guard-rejects-nested-describe-subtests",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 126,
+			"title": "§5 TAP 断言的 `^ok` 锚点对 describe() 内的子测试会误红（fail-closed）",
+			"detail": "逐字提取 plan.md:120-126 的守卫在五种 fixture 上实跑：toplevel→exit 0（正确放行）、renamed→1、skipped→1、failing→1（HIGH 已确实修复，与 verification.md 记录的六情形一致）。新增观察：若被点名的测试嵌在 `describe()` 内，Node 的 TAP reporter 会把子测试缩进四空格输出 `    ok 1 - <name>`，而顶层只有 `ok 1 - package gate`，于是 `grep -Eq \"^ok [0-9]+ - ${contract_name}$\"` 误判为失败（实测 nested→guard_exit=1，尽管该测试确实执行并通过）。方向是 fail-closed，不会造成假绿，故不阻塞。实际命中概率低：本仓 8/8 个使用 node:test 的 .mjs 文件（scripts/__tests__/fly1165-sweep-decision.test.mjs、packages/payload-endpoint/__tests__/*.test.mjs 等）全部是顶层 `test(...)`、零 `describe()`，生产 package-gate.test.mjs 大概率同风格。风险在于：一旦生产文件确实用了 describe，§5 会恒红，runner 可能为了『修绿』去放宽正则，反而把 R1 那个洞放回来。建议锚点改为 `^[[:space:]]*ok [0-9]+ - ` 形式（仍保留 `$` 尾锚以拒绝 SKIP/TODO 后缀），并在文中注明为何保留尾锚。",
+			"findingKey": "tap-guard-rejects-nested-describe-subtests"
+		},
+		{
+			"id": "tap-guard-swallows-diagnostics-on-failure",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 124,
+			"title": "`set -eu` 使 node 真失败时在 `cat` 之前中止，操作者拿不到任何 TAP 证据",
+			"detail": "plan.md:110 的 `set -eu` 下，plan.md:124 的 `node … > \"$contract_tap\"` 在命名测试真失败时返回 1，脚本立刻中止，plan.md:125 的 `cat \"$contract_tap\"` 永不执行，且 trap 随即删掉临时文件。干净复现（在 /tmp fixture 中用 failing 测试逐字跑该块并插入 MARKER）：script_exit=1、MARKER 出现 0 次、整个 stdout 为空——操作者只看到一个静默的 exit 1，无法区分是测试失败、node 崩溃还是 grep 未命中，必须手工重跑才能取证。renamed/skipped/nested 三种情形因 node 返回 0 反而能走到 cat 并打印 TAP，恰恰是最需要证据的真失败路径丢证据。这与本计划自身 plan.md:128『必须看到该精确名称的 TAP 成功行』以及通篇『记录每个任务结果』的取证纪律相左。建议改成 `node … > \"$contract_tap\" || { cat \"$contract_tap\"; exit 1; }`，或在 trap 中于非零退出时先 cat 再删。",
+			"findingKey": "tap-guard-swallows-diagnostics-on-failure"
+		}
+	],
+	"settled": [],
+	"policyNote": "medium_low_findings_are_non_blocking_v1",
+	"deliveryNonce": "38e6e1f9-a706-4b3d-a168-316463a8d10b"
+}
