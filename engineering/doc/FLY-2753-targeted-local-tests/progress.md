@@ -1,16 +1,17 @@
 ---
 issue: FLY-2753
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-21T01:21:19.621Z
-nextStep: Approved plan and actual routing audited; existing four-prompt
-  contract (7 negative fixtures), HTML 14 checks, and lint 1899 files passed.
-  Record consumer exclusions and new evidence, milestone last, push and request
-  fresh code review; production projection remains uncovered.
+phaseCursor: 4/4
+updated: 2026-09-21T01:24:20.727Z
+nextStep: All author batches verified and evidence committed 035ba54b9;
+  milestone will be last commit, then push and fresh code review for final HEAD.
+  Review/PR/complete receipts remain external to keep reviewed head unchanged.
+  Production projections and full exact-head CI remain uncovered and required
+  downstream; sentinel executed.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
-**phase**: implement (2/4)
-**next**: Approved plan and actual routing audited; existing four-prompt contract (7 negative fixtures), HTML 14 checks, and lint 1899 files passed. Record consumer exclusions and new evidence, milestone last, push and request fresh code review; production projection remains uncovered.
+**phase**: implement (4/4)
+**next**: All author batches verified and evidence committed 035ba54b9; milestone will be last commit, then push and fresh code review for final HEAD. Review/PR/complete receipts remain external to keep reviewed head unchanged. Production projections and full exact-head CI remain uncovered and required downstream; sentinel executed.
