@@ -35,6 +35,7 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 | 三份角色旧门 grep | 旧全量命令、PACKAGE_GATE_RECEIPT、全仓 build 和 FULL REPO 标题零命中；不将搜索错误当零命中 |
 | 三份规则一致性/大小 | 规则文字相同；每份 prompt 小于 40000 bytes 注入上限 |
 | `git diff --check` | 通过 |
+| 设计 HTML 脚本验证 | 14 项通过；不宣称真实浏览器渲染通过 |
 
 首次 lint 发现本 issue 设计阶段两份 review JSON 的格式错误。只用 Biome 格式化该两份记录；解析后与 HEAD 的 JSON 深比较相等，裁决内容未变。没有顺手修正其他警告。
 
@@ -44,4 +45,4 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 
 ## 后续交接
 
-提交并推送后注册注入的 code review，处理有效 verdict；最后以独立 milestone 提交打开 PR。QA 在最终 head 核对现有 CI 的完整任务集合（Build & Test、FLY-1062 payload distribution 及其他所需 checks），记录 head、run URL 和每个 job 的结果。CI 尚无完整证据时不得宣称全量通过。本 implement 不自行请求 full CI、不派发 QA、不合并或部署。
+实现提交 `e40bc8810` 已推送。代码审查 gate `936dd20f-81c1-4207-833c-4b5d7b60a34d`、request `d4b07d6e-e4a9-4889-95ca-b3d0d756bed8` 已登记；截至本记录仍待裁决。进度提交也会改变审查绑定的 HEAD，因此先完成文档与独立 milestone 最后提交，再保持 HEAD 不变，取得对应有效审查后打开 PR。最终裁决与 PR 通过注入的报告/完成回执交接，不为补写回执再次改变受审提交。QA 在最终 head 核对现有 CI 的完整任务集合（Build & Test、FLY-1062 payload distribution 及其他所需 checks），记录 head、run URL 和每个 job 的结果。CI 尚无完整证据时不得宣称全量通过。本 implement 不自行请求 full CI、不派发 QA、不合并或部署。
