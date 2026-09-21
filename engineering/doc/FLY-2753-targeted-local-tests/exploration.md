@@ -34,3 +34,7 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 测试选取覆盖 owning package（改动文件所在的包）的相关测试和直接消费者测试；接口变化检查依赖方；新增 shell 测试照跑。搜索只针对相关源码/测试目录和明确的导入路径，避免对全仓短文件名匹配逐项写排除文档。包名错误、缺脚本、零测试、未执行不得记绿。作者处理红灯，QA 报 FAIL 后交回作者。
 
 不改 CI 任务、权限、审批、TURN、部署、数据库、全量测试工具或生产路径命名。helper 可保留给其他显式用途，但 runner 的本机完成门不得调用它。合入和部署仍分离，由独立 updater 在窗口部署。
+
+## 重新派发的边界确认
+
+2026-09-20 本轮从 `6b987d1b1` / PR #206 继续，当前配置仍路由 engineer、qa、general 三份 executor。实现已在保留分支上完成；本阶段只复核、更新设计交付，不改守则或实现。生产源只读 HEAD 仍为 `3d67d8350`，三份 nodes 具有定向规则；`packages/teamlead/package.json` 的 prebuild 保留同步 `--check`。生产同步器不在当前仓库，原题的生产验收仍是必需范围，不能因 sandbox 通过而豁免。新问题 `7889b4bc-48fa-48ae-99eb-e10bae2e7981` 请求 Lead 明确目标安排。

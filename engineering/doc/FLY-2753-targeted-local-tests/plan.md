@@ -7,11 +7,17 @@ Issue: FLY-2753 (https://linear.app/geoforge3d/issue/FLY-2753/守则吞吐-实�
 
 本机 = 全仓 lint + 受影响包 build/typecheck + 直接相关测试；全量 = exact-head CI；任一当前提交 job 红即处理。以下计划针对当前获授权 sandbox 的真实路由，可执行，不再以缺失生产节点作为实施前置。生产节点/投影的原题验收仍列为单独目标差异，不冒称在 sandbox 满足。
 
+## 本次重新派发：保留成果与完整验收范围
+
+本轮设计执行 `dfd18c56-9466-4361-be52-0b3cee49a4a8` 从 PR #206 的 `6b987d1b1` 继续。下列 sandbox 规则与合同测试已经由前轮实施提交，不要求重做实现或回退已完成工作；后继应复核差异并保留已有证据。新设计批准不继承旧头代码评审或 CI 结论。
+
+原题生产三份节点和投影同步验收仍是 issue 的必需范围，§5 不是可选项。当前设计可以完成，但不能以 sandbox 对应文件的检查替代原题验收或关闭 issue。执行目标差异已重新提问 Lead：`7889b4bc-48fa-48ae-99eb-e10bae2e7981`；后继必须取得相应目标授权，或者报告仍未覆盖，由 Lead 安排。禁止跨工作树写入、扩大权限或复制生产运行时到 sandbox。
+
 ## 0. 确认真实入口与文件存在（实现持 TURN）
 
 - [ ] 读取 `.flywheel/config.yaml` 的 agent_file；确认 engineer/qa/general 路由仍与下列清单一致。
 - [ ] 逐文件查版本化存在性；缺文件是失败，不能把 `git ls-files` exit 0 当存在证明。
-- [ ] 检查 Lead 对 `70231531-d5e3-4be0-ba98-0b1eb23397ad` 的答复；无答复按本授权仓真实入口执行，若指定其他目标先获取对应 TURN。
+- [ ] 检查 Lead 对 `7889b4bc-48fa-48ae-99eb-e10bae2e7981` 的答复（旧问题 `70231531-d5e3-4be0-ba98-0b1eb23397ad` 保留历史）；无答复按本授权仓真实入口执行，若指定其他目标先获取对应 TURN。
 
 ```sh
 set -eu
@@ -36,7 +42,7 @@ rg -n 'agent_file:' .flywheel/config.yaml
 
 ### 必须实际进入三份守则的规则原文
 
-> **Local targeted verification** — Run `pnpm lint`. Before any filtered command, read package.json and record the actual selected package names and required scripts. Use `pnpm --filter "<pkg>..." --fail-if-no-match build` for affected packages and necessary build dependencies; when exports, APIs or types change, typecheck affected direct dependents with `pnpm --filter "...<pkg>" --fail-if-no-match typecheck`. Check every selected package for the required script; use its documented equivalent if absent and record the result. Select tests that cover changed files in their owning package plus test files in direct consumers. Bound import/reference searches to relevant source and test directories; record selected tests and material exclusions, not every incidental documentation match. For changed TypeScript, use the owning package's `vitest related <files> --run` where supported, plus explicit direct-consumer tests. Run every new `scripts/__tests__/*.test.sh`. Record actual collected/passed test counts. Zero selected packages, missing required scripts without a verified equivalent, zero collected tests, skipped or unreached checks are NOT a pass even with exit 0. For a documentation-only change, identify affected contract checks and explicitly justify build/typecheck as not applicable. Do not run the full package suite locally, including via root `pnpm test`, recursive build/test commands, or `scripts/pre-ship-check.sh`; this rule overrides broader skill/helper defaults. Full-suite evidence comes only from the complete CI job set for the exact reviewed commit. Missing, pending, cancelled or skipped required jobs are not green; a green subset or an older commit is insufficient. Record the commit, run URL and all job results. Every red current-HEAD CI job must be handled.
+> **Local targeted verification** — Run `pnpm lint`. Before any filtered command, read package.json and record the actual selected package names and required scripts. Use `pnpm --filter "<pkg>..." --fail-if-no-match build` for affected packages and necessary build dependencies. Typecheck affected packages; when exports, APIs or types change, also typecheck affected direct dependents, selecting each by its actual package name with `pnpm --filter "<pkg>" --fail-if-no-match typecheck`. Check every selected package for the required script; use its documented equivalent if absent and record the result. Select tests that cover changed files in their owning package plus test files in direct consumers. Bound import/reference searches to relevant source and test directories; record selected tests and material exclusions, not every incidental documentation match. For changed TypeScript, use the owning package's `vitest related <files> --run` where supported, plus explicit direct-consumer tests. Run every new `scripts/__tests__/*.test.sh`. Record actual collected/passed test counts. Zero selected packages, missing required scripts without a verified equivalent, zero collected tests, skipped or unreached checks are NOT a pass even with exit 0. For a documentation-only change, identify affected contract checks and explicitly justify build/typecheck as not applicable. Do not run the full package suite locally, including via root `pnpm test`, recursive build/test commands, or `scripts/pre-ship-check.sh`; this rule overrides broader skill/helper defaults. Full-suite evidence comes only from the complete CI job set for the exact reviewed commit (exact-head CI). Missing, pending, cancelled or skipped required jobs are not green; a green subset or an older commit is insufficient. Record the commit, run URL and all job results. Every red current-HEAD CI job must be handled.
 
 作者角色结尾：`Fix failures and disclose local and CI evidence in the PR.` QA 结尾：`Any red current-HEAD CI job means FAIL; report it to the author rather than changing product code.` 保留所有原有评审、报告、产品验证、审批和部署语义。
 
@@ -47,28 +53,7 @@ rg -n 'agent_file:' .flywheel/config.yaml
 - [ ] 负例验证：仅在临时文件副本中分别放回全量条款、删除零测试守卫、把 direct-consumer 选择删掉；这些变异必须被同一断言拒绝。不要临时改共享规则或实际启动全量测试。
 - [ ] 运行所有本单新增 shell 测试、`pnpm lint`、`git diff --check`；查看最终 diff，无无关条款修改。纯文字/合同检查不涉及编译资产，build/typecheck 明确记 N/A；若实际补代码，则按规则做定向构建。
 
-建议 shell 合同主体（可抽函数用于临时文本负例，不新增测试选择运行时）：
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")/../.."
-files=(.flywheel/agents/engineering/engineer-executor.md .flywheel/agents/engineering/qa-executor.md .flywheel/agents/general-executor.md)
-for file in "${files[@]}"; do
-  test -s "$file"
-  for required in 'pnpm lint' '--fail-if-no-match' 'actual selected package names' 'Check every selected package' 'direct consumers' 'scripts/__tests__/*.test.sh' 'Zero selected packages' 'zero collected tests' 'NOT a pass' 'complete CI job set' 'exact reviewed commit' 'Every red current-HEAD CI job'; do
-    grep -Fq -- "$required" "$file"
-  done
-  if grep -Eq 'pnpm test:packages:run|PACKAGE_GATE_RECEIPT|pnpm -r build|Self-verify — FULL REPO' "$file"; then
-    printf '%s\n' "obsolete local gate in $file" >&2
-    exit 1
-  fi
-done
-grep -Fq 'targeted local verification' .flywheel/agents/engineering/engineer-executor.md
-grep -Fq 'FAIL' .flywheel/agents/engineering/qa-executor.md
-if grep -Fq '**一键检查**' packages/qa-framework/agents/qa-parallel-executor.md; then exit 1; fi
-printf '%s\n' 'FLY-2753 active-role verification contract PASS (3 roles plus helper entry)'
-```
+复用已提交的 `scripts/__tests__/fly2753-targeted-verification-contract.test.sh` 作为合同源，不再维护计划中的第二份脚本。实际脚本检查三份角色、QA 红灯完整职责句、helper 禁用全量完成门与显式包测试示例；用同一函数拒绝七种临时副本变异。前轮 RED → GREEN 证据见 implementation.md，本轮重新运行验证现状即可，不在共享分支恢复旧规则制造 RED。
 
 ```sh
 bash scripts/__tests__/fly2753-targeted-verification-contract.test.sh
@@ -110,7 +95,7 @@ gh run view <RUN_ID> --json headSha,status,conclusion,jobs,url
 
 ## 5. 原题生产三份守则及投影义务（不得冒称完成）
 
-当前仓的路由修正只证明当前部署目标，不能替代原题点名的 nodes/同步检查。Lead 若确认实施目标也包括生产源，后继在该目标的授权 TURN 下：
+当前仓的路由修正只证明当前部署目标，不能替代原题点名的 nodes/同步检查。这一验收仍必须在生产源对应的授权目标完成。后继取得该目标的授权 TURN 后：
 
 1. 核对路由与 `.flywheel/agents/nodes/{implement,qa,engineer}.md`；把相同守卫直接写入最终规则，保留各角色职责。生产已落地部分只补差异。
 2. 对 `packages/teamlead/phase-protocols/` 及 `scripts/sync-phase-protocols.mjs` 查验证规则是否在 managed block 内；本次观察位于块外，不改同步器。实际改 canonical 才 `--write`，所有情况下运行 `--check`。保留 prebuild 的 `--check`。
@@ -118,11 +103,31 @@ gh run view <RUN_ID> --json headSha,status,conclusion,jobs,url
 4. 保留生产冻结头 CI 协议：QA 用已有 `ci-full ensure`，必须相同 head exit 0；`CI Scope OK` 不足以证明全量；核对完整 `CI OK` 的来源与全部任务。
 5. 报告该授权目标的 grep、自身定向证据、投影检查和最终 CI。没有被授予该目标或文件缺失，记录未覆盖并交 Lead，不能写“原题所有投影已绿”。
 
+取得相应目标 TURN 后，在那个仓库根目录执行以下定向检查；不得在 sandbox 把缺文件当零命中通过：
+
+```sh
+set -eu
+for role in implement qa engineer; do
+  test -s ".flywheel/agents/nodes/$role.md"
+done
+if rg -n 'pnpm test:packages:run|PACKAGE_GATE_RECEIPT' .flywheel/agents/nodes/implement.md .flywheel/agents/nodes/qa.md .flywheel/agents/nodes/engineer.md; then
+  exit 1
+else
+  result=$?
+  test "$result" -eq 1
+fi
+node scripts/sync-phase-protocols.mjs --check
+node --test --test-name-pattern='active runner handbooks require targeted local verification and CI-owned full evidence' scripts/__tests__/package-gate.test.mjs
+node -e 'const p=require("./packages/teamlead/package.json"); if (!p.scripts.prebuild.includes("sync-phase-protocols.mjs --check")) process.exit(1)'
+```
+
+预期不存在旧本机全量门，九份投影一致，命名合同实际执行并通过，prebuild 仍有同步检查。合同更新必须只覆盖验证文字，不能为通过而删掉其他条款。grep 只证明旧字面量消失；再逐句核对 §1 的测试选择规则、三份角色共有语义以及 QA 的红灯职责。
+
 不在 sandbox 新建缺失的生产机制，不移植整个分支，不修改其他任务成果。Lead 问题 pending 不阻止当前实际路由的限定修改；issue 级完整验收要明确两种目标的边界。
 
 ## 6. 验收/回退
 
-| 要求 | 当前仓证据 | 生产目标证据（若纳入） |
+| 要求 | 当前仓证据 | 生产目标证据（必需，待对应目标授权） |
 |---|---|---|
 | 生效角色本机不再全量 | config 路由核对 + 三份合同测试 | nodes 三份存在 + grep/合同测试 |
 | 选择规则/零匹配/缺脚本/零收集守卫 | 守则原文必须包含，不能只留计划旁注 | 同义条款与测试 |
@@ -132,3 +137,10 @@ gh run view <RUN_ID> --json headSha,status,conclusion,jobs,url
 | 没有顺手改其他条款 | 仅 §1 文件验证段/必要合同检查 | 同样最小 diff |
 
 无数据库/身份/接口迁移。回退只还原本单验证段与测试；生产实际改过的 canonical/投影一起恢复并检查；不重启服务、不回滚别人的提交、不改变既有审批和 updater 部署边界。
+
+## 7. 重新派发的剩余步骤
+
+- [ ] 取得本轮有效 design review APPROVED；前轮 JSON 只保留历史。
+- [ ] 将最终 founder HTML 提交、推送、publish-only，并向本轮 Lead 发结构化报告。Mermaid 本地两次渲染失败时遵守指定占位降级，明确限制。
+- [ ] 更新进度并执行 phase_design_complete，随后 park。不在设计阶段实现或调度后继。
+- [ ] 实施/QA 在各自 TURN 内核对 PR 新头；旧代码评审与旧 CI 不能作为新增文档提交后的 exact-head 证据。
