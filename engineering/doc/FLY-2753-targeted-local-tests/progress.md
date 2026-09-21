@@ -1,15 +1,16 @@
 ---
 issue: FLY-2753
 phase: design
-phaseCursor: 3/5
-updated: 2026-09-21T01:03:37.507Z
-nextStep: Plan 673b5de41 ready for current execution review; local lint, prompt
-  contract and HTML checks passed. Production acceptance remains required and
-  separately authorized.
+phaseCursor: 4/5
+updated: 2026-09-21T01:04:37.717Z
+nextStep: Poll review gate 11bface8-3042-49ea-8f2e-6fbfd2eb561a (request
+  37382311-d376-4a1c-a602-d3b90f05c686); HTML published and reported. On
+  APPROVED finalize state, publish final HTML, complete phase_design_complete
+  and park.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
-**phase**: design (3/5)
-**next**: Plan 673b5de41 ready for current execution review; local lint, prompt contract and HTML checks passed. Production acceptance remains required and separately authorized.
+**phase**: design (4/5)
+**next**: Poll review gate 11bface8-3042-49ea-8f2e-6fbfd2eb561a (request 37382311-d376-4a1c-a602-d3b90f05c686); HTML published and reported. On APPROVED finalize state, publish final HTML, complete phase_design_complete and park.
