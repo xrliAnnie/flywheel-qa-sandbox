@@ -7,7 +7,12 @@
 import type { Message } from "flywheel-comm/db";
 import { CommDB } from "flywheel-comm/db";
 import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
-import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
+import type {
+	MailboxAuditDecision,
+	MailboxQueue,
+	MailboxRow,
+} from "flywheel-comm/mailbox-queue";
+import { runnerStopDoneProof } from "flywheel-comm/runner-stop-report";
 import { readContentRef } from "flywheel-comm/utils";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
@@ -18,9 +23,11 @@ import {
 } from "../StateStore.js";
 import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 import { reviewHoldReason } from "./review-hold.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 
@@ -60,16 +67,23 @@ export class QuestionAdmission {
 							.getPendingQuestions(this.opts.lead.agentId)
 							.some((row) => row.id === id)
 					: false;
-			return { question, pending };
+			const runnerStopDeclaration = question
+				? db.getRunnerStopDeclaration(question.from_agent)
+				: undefined;
+			return { question, pending, runnerStopDeclaration };
 		} finally {
 			db.close();
 		}
 	}
 
-	async revalidate(
-		row: MailboxRow,
-	): Promise<
-		{ deliver: true } | { deliver: false; disposition: string; retry?: boolean }
+	async revalidate(row: MailboxRow): Promise<
+		| { deliver: true }
+		| { deliver: false; disposition: string; retry?: boolean }
+		| {
+				deliver: false;
+				disposition: "audit_only";
+				auditDecision: MailboxAuditDecision;
+		  }
 	> {
 		if (
 			row.type !== "question" ||
@@ -92,7 +106,8 @@ export class QuestionAdmission {
 			!permanent &&
 			expiresAt - (this.opts.now?.().getTime() ?? Date.now()) >
 				RETRY_HORIZON_MS;
-		const { question, pending } = this.readQuestionSnapshot(row.id);
+		const { question, pending, runnerStopDeclaration } =
+			this.readQuestionSnapshot(row.id);
 		if (!question) {
 			return {
 				deliver: false,
@@ -130,6 +145,53 @@ export class QuestionAdmission {
 				deliver: false,
 				disposition: eligible.disposition,
 				retry: retryable(eligible.permanent),
+			};
+		}
+		if (
+			row.source_ref === null &&
+			isReviewGateCheckpoint(question.checkpoint) &&
+			storeLeadTokenSavingsEnabled(
+				{ store: this.opts.store },
+				eligible.session.project_name,
+			)
+		) {
+			return {
+				deliver: false,
+				disposition: "audit_only",
+				auditDecision: {
+					policyVersion: "notification-v1",
+					reason: "review_gate_owned_by_reviewer",
+					proofRef: `question:${question.id}`,
+					decidedAt: (this.opts.now?.() ?? new Date()).toISOString(),
+				},
+			};
+		}
+		const runnerStopProof = runnerStopDoneProof(
+			{
+				id: question.id,
+				kind: question.kind,
+				content: question.content,
+				fromAgent: question.from_agent,
+			},
+			runnerStopDeclaration,
+		);
+		if (
+			row.source_ref === null &&
+			runnerStopProof &&
+			storeLeadTokenSavingsEnabled(
+				{ store: this.opts.store },
+				eligible.session.project_name,
+			)
+		) {
+			return {
+				deliver: false,
+				disposition: "audit_only",
+				auditDecision: {
+					policyVersion: "notification-v1",
+					reason: "runner_stop_done_receipt",
+					proofRef: `runner-stop:${question.id}:${runnerStopProof.contentHash}`,
+					decidedAt: (this.opts.now?.() ?? new Date()).toISOString(),
+				},
 			};
 		}
 		if (row.source_ref !== null) return { deliver: true };

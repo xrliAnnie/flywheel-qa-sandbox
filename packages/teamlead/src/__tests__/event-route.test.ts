@@ -2734,6 +2734,20 @@ describe("Event route — structured hook payload", () => {
 		capturedEnvelopes = mock.envelopes;
 
 		store = await StateStore.create(":memory:");
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "lead_token_savings",
+				scope: "geoforge3d",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: store.getFlagValueChangeSeq(
+					"lead_token_savings",
+					"geoforge3d",
+				),
+				actor: "fixture-lead",
+				reason: "structured delivery fixture",
+			}).ok,
+		).toBe(true);
 		const config = makeConfig();
 		const app = createBridgeApp(
 			store,
@@ -2993,20 +3007,26 @@ describe("Event route — EventFilter integration", () => {
 		});
 		await new Promise((r) => setTimeout(r, 150));
 
-		// Should have 2 notifications: session_started (no thread → notify) + session_completed
+		// session_started carries the concrete handoff identity; completion is also immediate.
 		expect(capturedEnvelopes.length).toBe(2);
 		const completedPayload = capturedEnvelopes[1]!.event;
 		expect(completedPayload.filter_priority).toBe("high");
 		expect(completedPayload.notification_context).toContain("Chat");
 	});
 
-	it("session_started → runtime.deliver called (FLY-163: chat-only Chat announcement)", async () => {
-		await postEvent();
+	it("session_started stays immediate because Lead handoff needs its execution id", async () => {
+		await postEvent({ event_id: "evt-started-audit" });
 		await new Promise((r) => setTimeout(r, 150));
 
-		expect(capturedEnvelopes.length).toBe(1);
-		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("high");
-		expect(capturedEnvelopes[0]!.event.notification_context).toContain("Chat");
+		expect(capturedEnvelopes).toHaveLength(1);
+		expect(capturedEnvelopes[0]!.event.execution_id).toBe("exec-1");
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
+				)
+				.get("evt-started-audit"),
+		).toEqual({ delivery_disposition: "model" });
 	});
 
 	it("session_failed → runtime.deliver called (high priority)", async () => {
@@ -3179,6 +3199,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 			"plan",
 			"implement",
 			"test",
+			"code_review",
 			"approve",
 		]) {
 			const response = await fetch(`${baseUrl}/events`, {
@@ -3205,13 +3226,13 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 				)
 				.get(`routine-${stage}`);
 			expect(row.delivery_disposition).toBe(
-				stage === "approve" ? "model" : "audit_only",
+				stage === "approve" || stage === "code_review" ? "model" : "audit_only",
 			);
 			expect(JSON.parse(row.payload).stage).toBe(stage);
 		}
 		expect(
 			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
-		).toHaveLength(1);
+		).toHaveLength(2);
 		const response = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -3231,36 +3252,153 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		expect(response.status).toBe(200);
 		expect(
 			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
-		).toHaveLength(2);
+		).toHaveLength(3);
 	});
 
-	it("session_started event delivers to runtime for PM lead via chat_channel", async () => {
-		await fetch(`${baseUrl}/events`, {
+	it("fails open to model delivery when review-owner evidence lookup throws", async () => {
+		store.upsertSession({
+			execution_id: "exec-owner-lookup-failure",
+			issue_id: "issue-owner-lookup-failure",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["PM"]),
+		});
+		vi.spyOn(store, "getDesignReviewManifestForSourceEvent").mockImplementation(
+			() => {
+				throw new Error("manifest lookup unavailable");
+			},
+		);
+
+		const response = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 				Authorization: "Bearer ingest-secret",
 			},
 			body: JSON.stringify({
-				event_id: "evt-nf-1",
-				execution_id: "exec-nf",
-				issue_id: "issue-nf",
-				issue_identifier: "GEO-300",
+				event_id: "owner-lookup-failure",
+				execution_id: "exec-owner-lookup-failure",
+				issue_id: "issue-owner-lookup-failure",
 				project_name: "geoforge3d",
-				event_type: "session_started",
-				payload: {
-					issueIdentifier: "GEO-300",
-					issueTitle: "PM triage task",
-					issueLabels: ["PM"],
-				},
+				event_type: "stage_changed",
+				source: "flywheel-comm",
+				payload: { stage: "design_review" },
 			}),
 		});
+
+		expect(response.status).toBe(200);
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition FROM lead_events WHERE event_id = ?",
+				)
+				.get("owner-lookup-failure"),
+		).toEqual({ delivery_disposition: "model" });
+		expect(
+			capturedEnvelopes.some(
+				(envelope) => envelope.eventId === "owner-lookup-failure",
+			),
+		).toBe(true);
+	});
+
+	it("does not reawaken the Lead for a fresh routine stage carrying an inherited decision", async () => {
+		store.upsertSession({
+			execution_id: "exec-stale-decision",
+			issue_id: "issue-stale-decision",
+			project_name: "geoforge3d",
+			status: "running",
+			decision_route: "needs_review",
+			issue_labels: JSON.stringify(["PM"]),
+		});
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify({
+				event_id: "routine-inherited-decision",
+				execution_id: "exec-stale-decision",
+				issue_id: "issue-stale-decision",
+				project_name: "geoforge3d",
+				event_type: "stage_changed",
+				source: "flywheel-comm",
+				payload: { stage: "implement" },
+			}),
+		});
+		expect(response.status).toBe(200);
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
+				)
+				.get("routine-inherited-decision"),
+		).toEqual({ delivery_disposition: "audit_only" });
+		expect(
+			capturedEnvelopes.find(
+				(envelope) => envelope.eventId === "routine-inherited-decision",
+			),
+		).toBeUndefined();
+	});
+
+	it("keeps persisted session_started immediate with savings enabled or disabled", async () => {
+		const postStarted = async (eventId: string, executionId: string) =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: eventId,
+					execution_id: executionId,
+					issue_id: "issue-nf",
+					issue_identifier: "GEO-300",
+					project_name: "geoforge3d",
+					event_type: "session_started",
+					payload: {
+						issueIdentifier: "GEO-300",
+						issueTitle: "PM triage task",
+						issueLabels: ["PM"],
+					},
+				}),
+			});
+
+		expect((await postStarted("evt-nf-on", "exec-nf-on")).status).toBe(200);
+		await new Promise((r) => setTimeout(r, 150));
+		expect(store.getSession("exec-nf-on")?.status).toBe("running");
+		expect(
+			(store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
+				)
+				.get("evt-nf-on"),
+		).toEqual({ delivery_disposition: "model" });
+		expect(capturedEnvelopes).toHaveLength(1);
+		expect(capturedEnvelopes[0]!.event.execution_id).toBe("exec-nf-on");
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "lead_token_savings",
+				scope: "geoforge3d",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: store.getFlagValueChangeSeq(
+					"lead_token_savings",
+					"geoforge3d",
+				),
+				actor: "fixture-lead",
+				reason: "rollback regression",
+			}).ok,
+		).toBe(true);
+		expect((await postStarted("evt-nf-off", "exec-nf-off")).status).toBe(200);
 		await new Promise((r) => setTimeout(r, 150));
 
-		// Event should still be delivered (not skipped)
-		expect(capturedEnvelopes.length).toBeGreaterThanOrEqual(1);
-		const payload = capturedEnvelopes[0]!.event;
+		expect(capturedEnvelopes).toHaveLength(2);
+		const payload = capturedEnvelopes[1]!.event;
 		expect(payload.event_type).toBe("session_started");
+		expect(payload.execution_id).toBe("exec-nf-off");
+		expect(payload.filter_priority).toBe("high");
 		// FLY-163: forum_channel field removed; chat_channel routes notification.
 		expect(payload.chat_channel).toBe("core-channel");
 	});

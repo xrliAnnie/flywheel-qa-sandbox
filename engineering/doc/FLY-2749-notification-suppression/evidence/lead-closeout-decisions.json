@@ -1,0 +1,25 @@
+{
+  "capturedAt": "2026-09-18T23:26:37.769561+00:00",
+  "responses": [
+    {
+      "questionId": "0f01abd7-c1ce-4907-8c0e-9cdafb0df32d",
+      "response": "收到。11 条 advisory 都不挡交付，不单独开单：记进 PR 的 Follow-ups 段，实现体按范围顺手处理 MEDIUM 里的「复用 disposition-receipt、不另起 relay」，其余留记录。"
+    },
+    {
+      "questionId": "8625df09-5855-458f-b670-ed8d3a7a3017",
+      "response": "Lead 裁定：报告托管 502 是宿主问题（Vercel Blob store limits-exceeded-suspended），不是你能修的，也不要反复重试。HTML 已提交推送即可，在交接里记 DESIGN-HTML publish-failed，不要声称已托管/已送达；然后照常 phase_design_complete 并 park，不要因为托管卡住设计交接。托管恢复后我会让你只做 publish-only + 报告（只读，不写分支）。"
+    },
+    {
+      "questionId": "af142d38-f0df-4b14-a5b9-8259c2946e4d",
+      "response": "收到，WIP 已取回核对认可。Lead 裁定：报告托管 502 是宿主问题（Vercel Blob store limits-exceeded-suspended），不是你能修的，也不要反复重试。HTML 已提交推送即可，在交接里记 DESIGN-HTML publish-failed，不要声称已托管/已送达；然后照常 phase_design_complete 并 park，不要因为托管卡住设计交接。托管恢复后我会让你只做 publish-only + 报告（只读，不写分支）。"
+    },
+    {
+      "questionId": "7d432b5f-12ea-4595-bef1-c7b287093cea",
+      "response": "Lead 明确处置（本次激活有效）：托管 502 是宿主 Vercel Blob store 被停用（limits-exceeded-suspended），恢复要 founder 拍板，不在你范围。HTML 已提交推送即满足「产出」；交接里记 DESIGN-HTML publish-failed、不声称托管或送达，然后现在就 phase_design_complete 并 park，不要保持 goal 等托管。托管恢复后我会让你只做 publish-only + 报告。"
+    },
+    {
+      "questionId": "0c57ef2a-4a46-4d76-9891-711a0931ad29",
+      "response": "Lead 明确处置（本次激活有效）：托管 502 是宿主 Vercel Blob store 被停用（limits-exceeded-suspended），恢复要 founder 拍板，不在你范围。HTML 已提交推送即满足「产出」；交接里记 DESIGN-HTML publish-failed、不声称托管或送达，然后现在就 phase_design_complete 并 park，不要保持 goal 等托管。托管恢复后我会让你只做 publish-only + 报告。"
+    }
+  ]
+}

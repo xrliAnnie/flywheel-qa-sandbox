@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	EventFilter,
 	leadEventDeliveryDisposition,
+	leadNotificationDecision,
 } from "../bridge/EventFilter.js";
 import type { HookPayload } from "../bridge/hook-payload.js";
 
@@ -204,6 +205,104 @@ describe("EventFilter", () => {
 });
 
 describe("routine event delivery disposition", () => {
+	it("keeps session_started immediate after authoritative session registration", () => {
+		expect(
+			leadNotificationDecision(
+				"session_started",
+				{ status: "running" },
+				{
+					kind: "session_registered",
+					proofRef: "session-event:started-1",
+				},
+			),
+		).toEqual({
+			disposition: "model",
+			reason: "session_started_handoff_required",
+			policyVersion: "notification-v1",
+			proofRef: "session-event:started-1",
+		});
+		expect(
+			leadNotificationDecision("session_started", { status: "running" }),
+		).toMatchObject({ disposition: "model", reason: "proof_missing" });
+	});
+
+	it("audits review and PR stages only with authoritative no-action proof", () => {
+		for (const stage of ["design_review", "code_review", "pr_created"]) {
+			expect(
+				leadNotificationDecision(
+					"stage_changed",
+					{ stage, status: "awaiting_review" },
+					{
+						kind: "stage_recorded",
+						proofRef: `stage:${stage}`,
+						actionState: "none",
+						reviewOwnerRef: `review-owner:${stage}`,
+					},
+				),
+			).toEqual({
+				disposition: "audit_only",
+				reason: "routine_stage_owned",
+				policyVersion: "notification-v1",
+				proofRef: `stage:${stage}`,
+			});
+		}
+
+		expect(
+			leadNotificationDecision(
+				"stage_changed",
+				{ stage: "design_review", status: "awaiting_review" },
+				{
+					kind: "stage_recorded",
+					proofRef: "stage:design-review",
+					actionState: "none",
+				},
+			),
+		).toMatchObject({
+			disposition: "model",
+			reason: "review_owner_missing",
+		});
+	});
+
+	it("ignores an inherited decision only when the exact obligation is resolved", () => {
+		expect(
+			leadNotificationDecision(
+				"stage_changed",
+				{
+					stage: "implement",
+					status: "running",
+					decision_route: "needs_review",
+				},
+				{
+					kind: "stage_recorded",
+					proofRef: "stage:event-1",
+					actionState: "resolved",
+					actionProofRef: "decision:receipt-1",
+				},
+			),
+		).toEqual({
+			disposition: "audit_only",
+			reason: "routine_stage_inherited_resolved",
+			policyVersion: "notification-v1",
+			proofRef: "decision:receipt-1",
+		});
+
+		expect(
+			leadNotificationDecision(
+				"stage_changed",
+				{
+					stage: "implement",
+					status: "running",
+					decision_route: "needs_review",
+				},
+				{
+					kind: "stage_recorded",
+					proofRef: "stage:event-1",
+					actionState: "pending",
+				},
+			),
+		).toMatchObject({ disposition: "model", reason: "action_pending" });
+	});
+
 	it("audits only structured routine events from trusted Bridge producers", () => {
 		for (const stage of [
 			"onboard",

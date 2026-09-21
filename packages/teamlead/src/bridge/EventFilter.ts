@@ -209,24 +209,87 @@ export class EventFilter {
 	}
 }
 
-/** Source trust is supplied by the validated producer, never by message content. */
-export function leadEventDeliveryDisposition(
+export type LeadNotificationEvidence =
+	| {
+			kind: "stage_recorded";
+			proofRef: string;
+			actionState: "none" | "pending" | "resolved";
+			actionProofRef?: string;
+			reviewOwnerRef?: string;
+	  }
+	| {
+			kind: "monitoring_reestablished";
+			proofRef: string;
+			recoveryConfirmed: true;
+			openAlert: boolean;
+	  }
+	| {
+			kind: "session_registered";
+			proofRef: string;
+	  };
+
+export interface LeadNotificationDecision {
+	disposition: "model" | "audit_only";
+	reason: string;
+	policyVersion: "notification-v1";
+	proofRef?: string;
+}
+
+const ROUTINE_STAGES = new Set([
+	"onboard",
+	"brainstorm",
+	"research",
+	"plan",
+	"implement",
+	"test",
+]);
+const OWNED_REVIEW_STAGES = new Set([
+	"design_review",
+	"code_review",
+	"pr_created",
+]);
+
+function notificationDecision(
+	disposition: LeadNotificationDecision["disposition"],
+	reason: string,
+	proofRef?: string,
+): LeadNotificationDecision {
+	return {
+		disposition,
+		reason,
+		policyVersion: "notification-v1",
+		...(proofRef ? { proofRef } : {}),
+	};
+}
+
+function hasPayloadValue(
+	payload: Record<string, unknown>,
+	key: string,
+): boolean {
+	const value = payload[key];
+	return (
+		value !== undefined && value !== null && value !== false && value !== ""
+	);
+}
+
+/** Source trust is typed evidence supplied by the validated producer. */
+export function leadNotificationDecision(
 	eventType: string,
 	payload: Record<string, unknown>,
-	trustedBridge = false,
-): "model" | "audit_only" {
-	if (!trustedBridge) return "model";
-	if (
-		eventType !== "stage_changed" &&
-		eventType !== "session_monitoring_reestablished"
-	)
-		return "model";
+	evidence?: LeadNotificationEvidence,
+): LeadNotificationDecision {
+	if (!evidence) return notificationDecision("model", "proof_missing");
 	if (
 		payload.status !== undefined &&
 		payload.status !== null &&
-		payload.status !== "running"
+		payload.status !== "running" &&
+		!(
+			evidence.kind === "stage_recorded" &&
+			OWNED_REVIEW_STAGES.has(String(payload.stage)) &&
+			payload.status === "awaiting_review"
+		)
 	)
-		return "model";
+		return notificationDecision("model", "status_actionable");
 	for (const key of [
 		"last_error",
 		"error",
@@ -237,26 +300,89 @@ export function leadEventDeliveryDisposition(
 		"requires_action",
 		"action_required",
 		"checkpoint",
-		"decision_route",
 		"review",
 		"ship",
 		"messages",
 		"founder_message",
 	]) {
-		const value = payload[key];
-		if (
-			value !== undefined &&
-			value !== null &&
-			value !== false &&
-			value !== ""
-		)
-			return "model";
+		if (hasPayloadValue(payload, key))
+			return notificationDecision("model", "actionable_payload");
 	}
-	if (eventType === "session_monitoring_reestablished") return "audit_only";
-	return typeof payload.stage === "string" &&
-		["onboard", "brainstorm", "research", "plan", "implement", "test"].includes(
-			payload.stage,
-		)
-		? "audit_only"
-		: "model";
+
+	if (
+		eventType === "session_monitoring_reestablished" &&
+		evidence.kind === "monitoring_reestablished"
+	) {
+		return evidence.openAlert
+			? notificationDecision("model", "monitoring_alert_open")
+			: notificationDecision(
+					"audit_only",
+					"monitoring_reestablished_confirmed",
+					evidence.proofRef,
+				);
+	}
+	if (
+		eventType === "session_started" &&
+		evidence.kind === "session_registered"
+	) {
+		return notificationDecision(
+			"model",
+			"session_started_handoff_required",
+			evidence.proofRef,
+		);
+	}
+	if (eventType !== "stage_changed" || evidence.kind !== "stage_recorded")
+		return notificationDecision("model", "unsupported_event");
+
+	const stage = typeof payload.stage === "string" ? payload.stage : "";
+	const hasInheritedAction = hasPayloadValue(payload, "decision_route");
+	if (evidence.actionState === "pending" || hasInheritedAction) {
+		if (evidence.actionState !== "resolved" || !evidence.actionProofRef) {
+			return notificationDecision("model", "action_pending");
+		}
+	}
+	if (ROUTINE_STAGES.has(stage)) {
+		return notificationDecision(
+			"audit_only",
+			evidence.actionState === "resolved"
+				? "routine_stage_inherited_resolved"
+				: "routine_stage",
+			evidence.actionState === "resolved"
+				? evidence.actionProofRef
+				: evidence.proofRef,
+		);
+	}
+	if (OWNED_REVIEW_STAGES.has(stage)) {
+		if (!evidence.reviewOwnerRef)
+			return notificationDecision("model", "review_owner_missing");
+		return notificationDecision(
+			"audit_only",
+			"routine_stage_owned",
+			evidence.proofRef,
+		);
+	}
+	return notificationDecision("model", "stage_requires_action");
+}
+
+/** Compatibility projection for existing validated producer call sites. */
+export function leadEventDeliveryDisposition(
+	eventType: string,
+	payload: Record<string, unknown>,
+	trustedBridge = false,
+): "model" | "audit_only" {
+	if (!trustedBridge) return "model";
+	const evidence: LeadNotificationEvidence =
+		eventType === "session_monitoring_reestablished"
+			? {
+					kind: "monitoring_reestablished",
+					proofRef: "legacy:trusted-bridge",
+					recoveryConfirmed: true,
+					openAlert: false,
+				}
+			: {
+					kind: "stage_recorded",
+					proofRef: "legacy:trusted-bridge",
+					actionState: "none",
+				};
+	return leadNotificationDecision(eventType, payload, evidence).disposition;
 }

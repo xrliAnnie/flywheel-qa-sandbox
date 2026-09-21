@@ -1,0 +1,27 @@
+{
+  "monitoringGuardCounts": [
+    {
+      "disposition": "model",
+      "status": "running",
+      "guards": "",
+      "n": 76
+    },
+    {
+      "disposition": "audit_only",
+      "status": "running",
+      "guards": "",
+      "n": 119
+    },
+    {
+      "disposition": "model",
+      "status": "ship_parked",
+      "guards": "",
+      "n": 9
+    }
+  ],
+  "runnerStopReasonsTextOnly": {
+    "blocked": 108,
+    "awaiting_approval": 131,
+    "done": 49
+  }
+}

@@ -103,6 +103,7 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 			`SELECT COUNT(DISTINCT batch_id) AS count FROM mailbox
 			 WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
 			   AND state = 'LEASED' AND batch_id IS NOT NULL
+			   AND delivery_disposition = 'model'
 			   AND COALESCE(notified_at, delivered_at) IS NULL`,
 			"lead-a",
 		);
@@ -208,6 +209,7 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 			db,
 			`SELECT COUNT(*) AS count FROM mailbox
 			 WHERE carrier = 'inbox' AND state = 'QUEUED'
+			   AND (recipient_kind <> 'lead' OR delivery_disposition = 'model')
 			   AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 			   AND to_agent = ?`,
 			"lead-a",
@@ -219,6 +221,7 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 			db,
 			`SELECT COUNT(*) AS count FROM mailbox
 			 WHERE carrier = 'inbox' AND state = 'QUEUED'
+			   AND (recipient_kind <> 'lead' OR delivery_disposition = 'model')
 			   AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 		);
 		expectUses(deliverableAll, "mailbox_deliverable_by_agent");
@@ -231,6 +234,8 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 			   AND (? IS NULL OR candidate.to_agent = ?)
 			   AND (? IS NULL OR candidate.msg_class = ?)
 			   AND candidate.state = 'QUEUED' AND candidate.batch_id IS NULL
+			   AND (candidate.recipient_kind <> 'lead'
+			     OR candidate.delivery_disposition = 'model')
 			   AND (candidate.next_retry_at IS NULL OR candidate.next_retry_at <= ?)
 			   AND (? = 'lead' OR (
 			     SELECT COUNT(DISTINCT active.batch_id) FROM mailbox AS active
