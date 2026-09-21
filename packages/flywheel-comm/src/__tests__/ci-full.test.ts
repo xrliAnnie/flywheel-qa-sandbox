@@ -1,12 +1,13 @@
 import {
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CiFullCommandRunner,
@@ -29,27 +30,18 @@ const WORKFLOW = [
 	"    name: $" + `{{ ${RAW_AGGREGATE_NAME} }}`,
 	"    runs-on: ubuntu-latest",
 ].join("\n");
-const MANIFEST = {
-	schema: 1,
-	aggregate: "CI OK",
-	aggregate_scoped: "CI Scope OK",
-	always: ["Classify CI scope", "Quick Gate (build + typecheck + lint)"],
-	heavy: [
-		"Unit (teamlead 1 of 4)",
-		"Unit (teamlead 2 of 4)",
-		"Unit (teamlead 3 of 4)",
-		"Unit (teamlead 4 of 4)",
-		"Unit (observation performance)",
-		"Unit (heavy)",
-		"Unit (light)",
-		"Script Tests (onboarding + dispatch)",
-		"Script Tests (publish + release)",
-		"Script Tests (runtime + runner)",
-		"Script Tests (workflow + retention)",
-		"Script Tests (misc)",
-		"Payload Distribution",
-	],
-} as const;
+const MANIFEST = JSON.parse(
+	readFileSync(
+		resolve(import.meta.dirname, "../../../../.github/ci-required-jobs.json"),
+		"utf8",
+	),
+) as {
+	schema: number;
+	aggregate: string;
+	aggregate_scoped: string;
+	always: string[];
+	heavy: string[];
+};
 
 type Job = { name: string; status: string; conclusion: string | null };
 type RunFixture = {
@@ -277,7 +269,7 @@ describe("FLY-2681 ci-full ensure", () => {
 		};
 	}
 
-	it("returns full_green only for the exact 16-job success multiset", async () => {
+	it("returns full_green only for the exact 17-job success multiset", async () => {
 		const { runner } = fixture({ runs: [fullRun()] });
 		await expect(
 			ensureFullCi({ cwd: "/worktree", pr: PR, head: HEAD }, deps(runner)),

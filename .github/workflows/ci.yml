@@ -299,14 +299,14 @@ jobs:
         run: pnpm --filter flywheel-teamlead test:stub-hygiene
 
   script-tests:
-    name: Script Tests 1/5 — session/lifecycle (shell suites)
+    name: Script Tests 1/6 — balanced shell suites A
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
-    # FLY-2562 moves the intact FLY-2331/1663 steps to shard 5. Run
-    # 34889528445 measured 1034s here, including 174s + 152s for those steps:
-    # projected 708s (69.4% of the unchanged 1020s tripwire budget).
-    # See engineering/doc/FLY-2562-script-tests-rebalance/plan.md.
+    # FLY-2755 assigns intact named steps by successful-run p75 weight.
+    # Each shard models 565s of test work; exact-head tripwire logs must
+    # remain at usage <=70% without changing the 20m/85% guard.
+    # See engineering/doc/FLY-2755-script-tests-rebalance/plan.md.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -345,105 +345,34 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
-      # FLY-2664: the one-shot residue inventory must remain read-only while
-      # classifying real Git worktrees against a SQLite snapshot.
-      - name: Test — FLY-2664 merged worktree read-only audit
-        run: node --test scripts/__tests__/audit-merged-worktrees.test.mjs
-
-      - name: Test — FLY-2549 summary preflight with stale workspace dist
-        run: bash scripts/__tests__/restart-summary-source-preflight.test.sh
-
-      - name: Test — FLY-1707 incident replay
-        run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh
-
-      # FLY-1393: prove the operator-facing flag-truth CLI is directly
-      # executable and that its retired-switch positive control fails closed.
-      - name: Test — FLY-1393 flag truth CLI
-        run: bash scripts/__tests__/check-flag-truth.test.sh
-
-      # FLY-1436: the founder-gated cutover CLI is a root-level node:test
-      # module, so workspace Vitest jobs do not discover it.
-      - name: Test — FLY-1436 work-kind cutover CLI
-        run: node --test scripts/__tests__/workkind-cutover.test.mjs
-
-      # FLY-1759: script-tests are explicitly enumerated (no glob discovery).
-      # The first suite runs real child/sun process cleanup on Ubuntu; the
-      # second blocks any new unanchored worktree-removal command.
-      - name: Test — FLY-1759 reap-first worktree teardown
+      # FLY-1389: 529-Room repair batch — path-hygiene predicates (bash host;
+      # the TS host runs in the teamlead vitest shards), write-time guards on
+      # every global-persistence writer (converge / cmux-install /
+      # install-hooks / provisioner), converge symlink health + hygiene
+      # mount, the read-only global scanner, the managed local-marketplace
+      # entrance transaction, the resume-recovery window fix (mutation-
+      # guarded), and the test-deploy Lead-ful + --no-lead hermetic E2Es
+      # (stub claude-lead / gh / pnpm / npx-bridge / tmux; local bare
+      # sandbox remote; fake HOMEs — never a real slot).
+      - name: Test — FLY-1389 path-hygiene + 529-Room repair batch
         run: |
-          bash scripts/__tests__/test-reap-worktree-lib.test.sh
-          bash scripts/__tests__/test-worktree-removal-contract.test.sh
+          bash scripts/__tests__/path-hygiene.test.sh
+          bash scripts/__tests__/converge-flywheel-bin.test.sh
+          bash scripts/__tests__/converge-fly1389.test.sh
+          bash scripts/__tests__/fly1577-cmux-bin-closure.test.sh
+          bash scripts/__tests__/fly1577-alert-arrival.test.sh
+          bash scripts/__tests__/check-global-path-hygiene.test.sh
+          bash scripts/__tests__/install-hooks-fly1389.test.sh
+          bash scripts/__tests__/register-local-marketplace.test.sh
+          bash scripts/__tests__/v2-retirement-cleanup.test.sh
+          bash scripts/__tests__/test-deploy-fly1389.test.sh
+          bash scripts/__tests__/test-deploy-preflight-github.test.sh
 
-      # FLY-1867/2026: these hermetic suites guard both read-only browser
-      # censuses and the exact-manifest quarantine/delete safety gates. The
-      # quarantine suite uses real lsof against only its private temp tree.
-      - name: Test — FLY-1867/2026 Playwright lifecycle tools
+      - name: Test — FLY-2598 voice host configuration
         run: |
-          bash scripts/__tests__/fly-1867-playwright-orphan-census.test.sh
-          bash scripts/__tests__/fly-2026-browser-idle-census.test.sh
-          bash scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh
-
-      - name: Test — FLY-1572 mailbox migration CLI
-        run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh
-
-      # FLY-2278: byte-exact attempt-version rollback is hermetic and exercises
-      # a private SQLite fixture, including replay and drift refusal.
-      - name: Test — FLY-2278 attempt-version rollback
-        run: bash scripts/__tests__/fly2278-rollback-attempt-versions.test.sh
-
-      # FLY-1764: producer retirement is a deployment fence over real SQLite
-      # shards, including legacy schemas and the rollback-on-cleanup-failure
-      # path. It must run in the required CI lane, not only on an author host.
-      - name: Test — FLY-1764 legacy swap broadcast retirement
-        run: bash scripts/__tests__/legacy-swap-broadcast-retirement.test.sh
-
-      # FLY-1327: deterministic cycle-time analytics use real WAL backup +
-      # immutable-snapshot reads against fixture DBs. Keep the sqlite preflight
-      # adjacent so a missing CLI fails with an explicit environment diagnosis.
-      - name: Test — FLY-1327 cycle-time report
-        run: |
-          sqlite3 --version
-          pnpm test:cycle-time
-
-      # FLY-110: cmux-sync hook integration test runs against an isolated
-      # tmux server (exact -S path under its private temp root) so it cannot interfere with
-      # other CI processes. Verifies the production-critical cleanup path:
-      # pane-died (global hook) fires when a remain-on-exit pane process
-      # exits — the bug that left cmux sidebar entries hanging for 5+
-      # minutes in production until FLY-110.
-      - name: Integration test — cmux-sync hooks
-        run: bash scripts/test-cmux-sync-hooks-integration.sh
-
-      # FLY-1944: the founder-gated host cutover is hermetic here: all Homebrew,
-      # tmux, process-census, Bridge HTTP, receipt, and clock inputs use private
-      # fixtures or injected seams. Keep it in the required lane so admission
-      # budget/quiescence and exact-version preflight cannot drift unobserved.
-      - name: Test — FLY-1944 host terminal cutover brake
-        run: bash scripts/__tests__/host-terminal-cutover.test.sh
-
-      # FLY-2274: reviewed window artifacts run only against isolated
-      # LaunchAgents/process/socket/Homebrew fixtures. The real Darwin 3.5a
-      # private-socket drill is classified separately as manual-only.
-      - name: Test — FLY-2274 cutover window artifacts
-        run: |
-          bash scripts/__tests__/fly2264-supervisor-window.test.sh
-          bash scripts/__tests__/fly2264-stop-old-tmux-servers.test.sh
-          bash scripts/__tests__/fly2264-phase-b-link.test.sh
-          bash scripts/__tests__/fly2264-verify-native-cutover.test.sh
-          bash scripts/__tests__/fly2264-install-window-artifacts.test.sh
-
-      # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
-      # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
-      # processes are test-owned, so this never touches a real adapter. lsof is
-      # needed for the cwd-probe / identity-label cases (T3/T4).
-      - name: Test — Discord adapter orphan reaper (FLY-183)
-        run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
-
-      # FLY-1402: Claude CLI is last-one-wins for repeated prompt-file flags.
-      # Exercise the real launcher under isolated HOMEs across dept/CoS/
-      # companion/external + explicit legacy, then prove receipt lifecycle.
-      - name: Test — Lead rules single-bundle load chain (FLY-1402)
-        run: bash packages/teamlead/scripts/__tests__/fly1402-single-bundle.test.sh
+          pnpm --filter flywheel-teamlead... build
+          pnpm --filter flywheel-comm... build
+          node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs
 
       # FLY-1496: model resolution is authoritative-source-driven, so the thing
       # worth machining is that a launch is FAITHFUL to config — aliases
@@ -460,87 +389,121 @@ jobs:
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
 
-      # FLY-1948: all observations are injected; these suites use no live
-      # Discord channels, host Lead processes, or founder credentials.
-      - name: Test — FLY-1948 slot Discord channel evidence
-        run: |
-          pnpm --filter flywheel-comm build
-          bash scripts/__tests__/qa-discord-liveness.test.sh
-          bash scripts/__tests__/qa-529-discord-liveness.test.sh
-          bash scripts/__tests__/qa-lead-coordinates.test.sh
-          bash scripts/__tests__/qa-room-env.test.sh
-          node --test scripts/__tests__/qa-529-discord-roundtrip.test.mjs
-
-      # FLY-1830: the non-Lead launchd daemons (quota-monitor, updater,
-      # bridge-liveness-probe, daily-standup) had no owner — a label that left
-      # the domain stayed gone with its plist still on disk. The restart wave now
-      # reconciles them, and the Lead family must stay excluded (bootstrapping
-      # the FLY-398 TUI carrier would create a second listener). Hermetic: the
-      # launchctl seam is a scripted mock, so this never touches a real domain.
-      # Step seconds: ~1.
-      - name: Test — FLY-1830 non-Lead daemon convergence
-        run: |
-          bash scripts/__tests__/converge-nonlead-daemons.test.sh
-
-      # FLY-1814: explicit launchd fleet authority, bidirectional census, and
-      # operator-only repair/retirement paths. Every suite is hermetic: plist,
-      # TTY, launchctl, filesystem, and alert boundaries use fixtures/seams.
-      # Keep this separate from FLY-1830's existing single-suite contract.
-      # Step seconds: ~15 locally; comfortably inside the shard budget.
-      - name: Test — FLY-1814 launchd fleet contracts
-        run: |
-          bash scripts/__tests__/flywheel-voice-wrapper.test.sh
-          bash scripts/__tests__/install-voice-launchd.test.sh
-          bash scripts/__tests__/launchd-units-manifest.test.sh
-          bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh
-          bash scripts/__tests__/launchd-census.test.sh
-          bash scripts/__tests__/launchd-census-wiring.test.sh
-          bash scripts/__tests__/fly1814-operator-tools.test.sh
-
-      # FLY-1929: IPC-voucher watcher. Hermetic — injected clock, fake zprint,
-      # fake DiagnosticReports dir, and a fake alert script that MIRRORS the real
-      # permanent-receipt dedup (a forgetful fake would let the re-arm case pass
-      # while production silently never re-posts). Drives real sequential
-      # invocations rather than one batch fixture, because a batch fixture hides
-      # warm-up behaviour. Step seconds: ~230 locally on a loaded host.
-      - name: Test — FLY-1929 voucher watch contracts
-        run: |
-          bash scripts/__tests__/voucher-watch.test.sh
-
-      # FLY-913/2137/2204: restart/calendar guard and credential-isolation
-      # deployment guardrails. Hermetic — all credentials, calendar clients,
-      # homes, sockets, and delivery seams are private fixtures.
-      - name: Test — FLY-913/2204 restart + calendar isolation guards
-        run: |
-          python3 scripts/hooks/test-flywheel-restart-guard.py
-          bash scripts/hooks/test-restart-guard-install.sh
-          bash scripts/__tests__/test-calendar-write-sweep.test.sh
-          bash scripts/__tests__/test-install-calendar-sweep.test.sh
-          bash scripts/__tests__/fly2204-calendar-isolation-negative.test.sh
-          bash scripts/__tests__/fly2204-calendar-oauth-probe.test.sh
-          bash scripts/__tests__/fly2204-calendar-peer-proxy.test.sh
-          bash scripts/__tests__/fly2204-calendar-service-installer.test.sh
-          bash scripts/__tests__/fly2204-qa-calendar-config.test.sh
-          bash scripts/__tests__/lead-alert-strict-delivery.test.sh
-
-      - name: Test — FLY-2533 packed phase protocols
-        run: bash scripts/__tests__/fly2533-phase-protocol-assets.test.sh
-
       - name: Test — FLY-2007 phase-0 analyser contract
         run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
+
+      # FLY-1887: hard deadline + identity-fenced cleanup for global one-shot
+      # Codex calls. Hermetic fake HOME/PATH/process fixtures; never installs to
+      # or signals anything in the runner's real host state.
+      - name: Test — FLY-1887 one-shot Codex hard timeout
+        run: bash scripts/__tests__/codex-guard.test.sh
+
+      # FLY-2237: slot-only Bridge cycle — hermetic process/listener fixture
+      # covering campaign ownership, validation, TERM-only failure handling,
+      # lsof/bind proofs, interruption, and cycle/teardown exclusion.
+      - name: Test — FLY-2237 slot Bridge cycle
+        run: bash scripts/__tests__/test-cycle-bridge.test.sh
+
+      # FLY-1062 PR2: public onboard-shell (@flywheel-ai/onboard). Hermetic — a
+      # stub gated endpoint on loopback + a fixture zero-dep payload tarball +
+      # REAL npm install. Covers the full customer install chain, failure
+      # paths (zero half-baked), key rotation + update seam, the key-leak
+      # matrix, and the shell's own publish content gate. The qa-gaps suite is
+      # the QA-phase regression net for the three untested edges (protocol-error
+      # message routing, degraded update rollback, persistKey symlink refusal).
+      - name: Test — onboard-shell public install chain
+        run: |
+          bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
+          node --test packages/onboard-shell/__tests__/*.test.mjs
+          bash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh
+          bash packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh
+
+      - name: Test — FLY-2145 Lead memory private repository
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          install_dir="$RUNNER_TEMP/fly2145-gitleaks"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          mkdir -p "$install_dir"
+          curl -fsSLo "$install_dir/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          printf '%s  %s\n' "$GITLEAKS_LINUX_X64_SHA256" "$install_dir/$archive" | sha256sum -c -
+          tar -xzf "$install_dir/$archive" -C "$install_dir" gitleaks
+          test "$($install_dir/gitleaks version)" = "$GITLEAKS_VERSION"
+
+          bash scripts/__tests__/test-lead-memory-guard.test.sh
+          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" \
+            bash scripts/__tests__/test-lead-memory-hooks.test.sh
+          bash scripts/__tests__/test-lead-memory-bootstrap.test.sh
+          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" \
+            bash scripts/__tests__/test-lead-memory-scan.test.sh
+          bash scripts/__tests__/test-lead-memory-workflow.test.sh
+
+      - name: Test — FLY-2144 retired dispatch residue guard
+        run: bash scripts/__tests__/fly2144-retired-dispatch-residue.test.sh
+
+      # FLY-1708/FLY-1751: both process-birth and SessionStart(source=clear)
+      # adoption legs protect mailbox capacity. Keep their hermetic contracts
+      # in CI because script-tests enumerates shell suites instead of globbing.
+      - name: Test — Lead in-flight mailbox adoption contracts
+        run: |
+          command -v python3
+          command -v rg
+          bash scripts/__tests__/autocompact-override-retirement.test.sh
+          bash scripts/__tests__/session-ctx-usage.test.sh
+          bash scripts/__tests__/lead-session-resume-gate.test.sh
+          bash scripts/__tests__/lead-clear-session-authority.test.sh
+          bash scripts/__tests__/test-claude-lead-adopt-inflight.test.sh
+          bash scripts/__tests__/test-claude-lead-session-start-adopt.test.sh
+
+      # FLY-1189: 529-Room multi-Lead campaign harness — hermetic suite over
+      # scripts/lib/qa-multilead.sh + the test-deploy/test-teardown wiring:
+      # byte-compat baselines (FLYWHEEL_PROJECTS builder + canonical
+      # config.yaml), campaign-arg validation, atomic slot-set claim/rollback,
+      # borrowed-lock anti-reclaim, manifest-driven extra-Lead teardown, and
+      # the secret-free launch manifest. Temp lockroots + sandboxed HOME +
+      # stubbed tmux — never touches a real slot.
+      - name: Test — FLY-1189 multi-Lead campaign harness
+        run: bash scripts/__tests__/test-deploy-multilead.test.sh
+
+      - name: Test — FLY-1961 dual-vendor workspace trust
+        run: bash scripts/__tests__/test-runner-workspace-trust.sh
+
+      # FLY-1959: merge never triggers updater; only the scheduled shuttle and
+      # founder emergency tickets remain. Restart reporting still distinguishes
+      # a newly launched Lead body from an adopted pre-existing one.
+      - name: Test — FLY-1959 updater sources + body provenance contracts
+        run: |
+          bash scripts/__tests__/lead-body-evidence.test.sh
+          bash scripts/__tests__/lead-body-provenance.test.sh
+          bash scripts/__tests__/request-restart.test.sh
+          bash scripts/__tests__/updater-trigger-policy.test.sh
+
+      - name: Test — FLY-2102 startup flag freeze residue guard
+        run: bash scripts/__tests__/fly2102-flag-freeze.test.sh
+
+      # FLY-2664: the one-shot residue inventory must remain read-only while
+      # classifying real Git worktrees against a SQLite snapshot.
+      - name: Test — FLY-2664 merged worktree read-only audit
+        run: node --test scripts/__tests__/audit-merged-worktrees.test.mjs
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
   script-tests-2:
-    name: Script Tests 2/5 — fleet/setup/packaging A (shell suites)
+    name: Script Tests 2/6 — balanced shell suites B
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
-    # FLY-2598 rebalanced its intact voice steps after this shard's exact-head
-    # runtime rose from the 923s main baseline to 1139s. Those steps now run in
-    # script-tests-5; keep the unchanged FLY-1870 1020s tripwire budget here.
+    # FLY-2755 assigns intact named steps by successful-run p75 weight.
+    # Each shard models 565s of test work; exact-head tripwire logs must
+    # remain at usage <=70% without changing the 20m/85% guard.
+    # See engineering/doc/FLY-2755-script-tests-rebalance/plan.md.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -575,95 +538,101 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
-      - name: Test — FLY-1905 CI apt-install helper
-        timeout-minutes: 10
-        run: bash scripts/__tests__/ci-apt-install.test.sh
+      # FLY-2331: run the real 70s nonblocking child arm and the same fixture's
+      # 61s sync mutant under the production EventLoopGuard. The harness owns
+      # isolated HOME/state/process groups and has independent hard deadlines.
+      - name: Test — FLY-2331 Bridge async-child guard regression
+        timeout-minutes: 4
+        run: bash scripts/__tests__/fly2331-bridge-async-child.test.sh
 
-      # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
-      # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
-      # the git boundary. `scan_for_secrets fleet/` fails CI if the committed
-      # fleet/ artifact ever contains secret-like content (e.g. a hand-edited
-      # artifact bypassing fleet-capture.sh's own gate — Codex design-review).
-      - name: Test — FLY-519 fleet provisioning + zero-secret gate
+      # FLY-2444: repository-neutral Lead registration, launch, lifecycle,
+      # read-only host preflight, and packaged migration closure.
+      - name: Test — FLY-2444 generalized Lead launcher
         run: |
-          bash scripts/__tests__/fleet-sanitize.test.sh
-          bash scripts/__tests__/fleet-capture.test.sh
-          bash scripts/__tests__/provision-fleet-host.test.sh
-          bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+          bash scripts/__tests__/flywheel-lead.test.sh
+          bash scripts/__tests__/flywheel-lead-packaging.test.sh
+          bash scripts/__tests__/host-tmux-selection-gate-probe.test.sh
+          bash scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh
 
-      # FLY-2034: Belle's cutover runbook carries a credential gate that must
-      # inspect the Git index (including binary blobs), never a divergent
-      # working-tree copy. Hermetic temporary repo; no external credentials.
-      - name: Test — FLY-2034 Belle staged credential gate
-        run: bash scripts/__tests__/fly2034-onboarding-credential-gate.test.sh
-
-      # FLY-1356: skill-framework arm definitions are FROZEN artifacts — the
-      # matt-skills vendor structure + B/C prompt-variant contracts (bare arm
-      # Superpowers grep-zero with positive controls; baselines stay on A).
-      - name: Test — FLY-1356 skill-framework vendor + variant contracts
-        run: bash scripts/__tests__/skill-framework-variants.test.sh
-
-      # FLY-1609: the authoritative future-data analysis entry must keep all
-      # four arms visible, gate comparisons on the rollout epoch, and exclude
-      # sessions whose effective ponytail condition does not match their arm.
-      - name: Test — FLY-1609 four-arm analysis contract
-        run: bash scripts/__tests__/test-fly1609-design-compare.test.sh
-
-      # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
-      # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
-      # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead
-      # dist (pnpm build above): the config gate runs the REAL loader
-      # (validate-projects CLI), and the POC drives the real provisioner's
-      # Linux APPLY path end-to-end + the linux-preflight --check contract.
-      - name: Test — FLY-648 one-command setup wizard
+      - name: Test — FLY-2598 voice client coexistence
         run: |
-          bash scripts/__tests__/flywheel-setup-engine.test.sh
-          bash scripts/__tests__/flywheel-setup-config.test.sh
-          bash scripts/__tests__/flywheel-setup-bot.test.sh
-          bash scripts/__tests__/flywheel-setup-channels.test.sh
-          bash scripts/__tests__/flywheel-setup-linear.test.sh
-          bash scripts/__tests__/flywheel-setup-services.test.sh
-          bash scripts/__tests__/flywheel-setup-poc.test.sh
-          bash scripts/__tests__/flywheel-setup-resume-e2e.test.sh
+          pnpm --filter flywheel-voice-codex... build
+          node --test scripts/__tests__/fly2598-voice-coexistence.test.mjs
 
-      # FLY-1023: Buddy onboarding — step CLI over the unchanged wizard
-      # (journal v2, stdout discipline, secret-injection refusal) + the
-      # AgentCliProvider contract. Hermetic — same stub infrastructure as the
-      # FLY-648 suite; needs the built teamlead dist (real-loader gate).
-      - name: Test — FLY-1023 Buddy onboarding (step CLI + provider contract)
+      # FLY-1081: restart/update/wrapper notify-path migration off Simba —
+      # ⚠️/🚨 route via lead-alert.sh (sender seam, no legacy fallback), the
+      # routine path fail-louds instead of falling back, and a grep-zero
+      # sentinel blocks Simba-token / fallback-chain re-introduction. Hermetic —
+      # extracted real functions + fake lead-alert/curl/meta-alert, sandboxed
+      # dirs and fake transport, no network. FLY-1959's two-source updater suite
+      # replaces the deleted per-merge queue harness.
+      - name: Test — FLY-1081 notify-path migration
         run: |
-          bash scripts/__tests__/flywheel-buddy-steps.test.sh
-          bash scripts/__tests__/agent-cli-provider-contract.test.sh
-          bash scripts/__tests__/flywheel-onboard.test.sh
-          bash scripts/__tests__/flywheel-buddy.test.sh
-          bash scripts/__tests__/flywheel-buddy-github.test.sh
-          bash scripts/__tests__/flywheel-buddy-captain.test.sh
-          bash scripts/__tests__/flywheel-buddy-connect.test.sh
-          bash scripts/__tests__/buddy-escalate.test.sh
+          bash scripts/__tests__/restart-notify-routine.test.sh
+          bash scripts/__tests__/restart-services-notify.test.sh
+          bash scripts/__tests__/update-flywheel-sources.test.sh
+          python3 scripts/__tests__/shuttle-observation.test.py
+          bash scripts/__tests__/shuttle-unit-results.test.sh
+          bash scripts/__tests__/shuttle-alert-route.test.sh
+          bash scripts/__tests__/auto-narrow-rollback-precheck.test.sh
+          bash scripts/__tests__/updater-raya-deploy.test.sh
+          bash scripts/__tests__/raya-prestop.test.sh
+          bash scripts/__tests__/simba-grep-zero.test.sh
+          # QA alert: drives the REAL lead-alert.sh in the production
+          # --lead deploy call form — infra identity used, no Simba fallback.
+          bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
 
-      # FLY-1189: 529-Room multi-Lead campaign harness — hermetic suite over
-      # scripts/lib/qa-multilead.sh + the test-deploy/test-teardown wiring:
-      # byte-compat baselines (FLYWHEEL_PROJECTS builder + canonical
-      # config.yaml), campaign-arg validation, atomic slot-set claim/rollback,
-      # borrowed-lock anti-reclaim, manifest-driven extra-Lead teardown, and
-      # the secret-free launch manifest. Temp lockroots + sandboxed HOME +
-      # stubbed tmux — never touches a real slot.
-      - name: Test — FLY-1189 multi-Lead campaign harness
-        run: bash scripts/__tests__/test-deploy-multilead.test.sh
+      # FLY-913/2137/2204: restart/calendar guard and credential-isolation
+      # deployment guardrails. Hermetic — all credentials, calendar clients,
+      # homes, sockets, and delivery seams are private fixtures.
+      - name: Test — FLY-913/2204 restart + calendar isolation guards
+        run: |
+          python3 scripts/hooks/test-flywheel-restart-guard.py
+          bash scripts/hooks/test-restart-guard-install.sh
+          bash scripts/__tests__/test-calendar-write-sweep.test.sh
+          bash scripts/__tests__/test-install-calendar-sweep.test.sh
+          bash scripts/__tests__/fly2204-calendar-isolation-negative.test.sh
+          bash scripts/__tests__/fly2204-calendar-oauth-probe.test.sh
+          bash scripts/__tests__/fly2204-calendar-peer-proxy.test.sh
+          bash scripts/__tests__/fly2204-calendar-service-installer.test.sh
+          bash scripts/__tests__/fly2204-qa-calendar-config.test.sh
+          bash scripts/__tests__/lead-alert-strict-delivery.test.sh
 
-      # FLY-2237: slot-only Bridge cycle — hermetic process/listener fixture
-      # covering campaign ownership, validation, TERM-only failure handling,
-      # lsof/bind proofs, interruption, and cycle/teardown exclusion.
-      - name: Test — FLY-2237 slot Bridge cycle
-        run: bash scripts/__tests__/test-cycle-bridge.test.sh
+      # FLY-1955/2211/2357: remote-control's stale zombie pid deadlock, the
+      # launcher-to-runtime config gate, and every runner signal's durable audit
+      # fence. The home suite intentionally fails when the dist built above is
+      # absent so its shell→runtime xcheck can never be silently skipped.
+      - name: Test — FLY-1955/2211 Codex daemon mutation safety
+        run: |
+          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh
+          bash scripts/__tests__/kill-ledger.test.sh
 
-      # FLY-2270: slot-local report host API, containment, lifecycle, and
-      # mutation controls. Hermetic: loopback sockets and /tmp slot fixtures.
-      - name: Test — FLY-2270 QA report host stub
-        run: bash scripts/__tests__/qa-report-host.test.sh
+      # FLY-1330: hermetic transcript/log janitor + installer contracts. All
+      # homes, SQLite DBs, launchctl state, and destructive targets are temp
+      # fixtures; one case uses real lsof against only a held temp rollout.
+      - name: Test — FLY-1330 log janitor
+        run: bash scripts/__tests__/flywheel-log-janitor.test.sh
 
-      - name: Test — FLY-2270 slot Bridge launch boundary
-        run: bash scripts/__tests__/test-deploy-launch-boundary.test.sh
+      - name: Test — FLY-2465 isolated Codex quota contracts
+        run: |
+          bash scripts/__tests__/codex-quota-client.test.sh
+          node --test scripts/__tests__/codex-quota-client.test.mjs
+          bash scripts/__tests__/codex-quota-readiness-receipt.test.sh
+          bash scripts/__tests__/codex-quota-summary.test.sh
+
+      - name: Test — FLY-2549 summary preflight with stale workspace dist
+        run: bash scripts/__tests__/restart-summary-source-preflight.test.sh
+
+      # FLY-2139: stopped-service SQLite backup/checkpoint/VACUUM lifecycle.
+      # Hermetic HOME with three temporary databases; never touches host state.
+      - name: Test — FLY-2139 database maintenance
+        run: bash scripts/__tests__/db-maintenance.test.sh
+
+      - name: Test — FLY-2598 readonly voice preflight
+        run: node --test scripts/__tests__/fly2598-voice-preflight.test.mjs
 
       # FLY-2454: a 529 slot gets one declarative env projection, rejects an
       # unsafe Bridge before imports, and exposes a byte-stable production
@@ -674,6 +643,117 @@ jobs:
           bash scripts/__tests__/qa-slot-env-contract.test.sh
           bash scripts/__tests__/run-bridge-isolation-boot.test.sh
           bash scripts/__tests__/qa-fly-2454-fleet-snapshot.test.sh
+
+      # FLY-1393: prove the operator-facing flag-truth CLI is directly
+      # executable and that its retired-switch positive control fails closed.
+      - name: Test — FLY-1393 flag truth CLI
+        run: bash scripts/__tests__/check-flag-truth.test.sh
+
+      # FLY-1338 QA: the quick-gate structure guard reasons about the matrix filter
+      # STRINGS; this one asks pnpm what they actually resolve to on the real
+      # workspace, so "the sharded matrix still covers every packages/* package,
+      # exactly once" survives future filter edits AND package renames/additions.
+      - name: Test — FLY-1338 matrix coverage parity (QA)
+        run: bash scripts/__tests__/ci-matrix-coverage.test.sh
+
+      # FLY-1759: script-tests are explicitly enumerated (no glob discovery).
+      # The first suite runs real child/sun process cleanup on Ubuntu; the
+      # second blocks any new unanchored worktree-removal command.
+      - name: Test — FLY-1759 reap-first worktree teardown
+        run: |
+          bash scripts/__tests__/test-reap-worktree-lib.test.sh
+          bash scripts/__tests__/test-worktree-removal-contract.test.sh
+
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+  script-tests-3:
+    name: Script Tests 3/6 — balanced shell suites C
+    runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.heavy != 'skip' }}
+    # FLY-2755 assigns intact named steps by successful-run p75 weight.
+    # Each shard models 565s of test work; exact-head tripwire logs must
+    # remain at usage <=70% without changing the 20m/85% guard.
+    # See engineering/doc/FLY-2755-script-tests-rebalance/plan.md.
+    timeout-minutes: 20
+    steps:
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
+
+      # FLY-889 dependencies remain fail-closed. FLY-1905 first verifies each
+      # real binary and version; only probe failures enter the bounded installer.
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
+      # FLY-1434: the single full-fleet restart contract and quota-monitor
+      # env-change caller must stay in CI. These suites use throwaway HOMEs,
+      # repositories, launchctl/restart shims, and local logs only.
+      # FLY-2280: the admission-pause contract suite (hermetic fake HOME/curl)
+      # guards the cross-version cutover bootstrap.
+      - name: Test — FLY-1434 unified restart + quota caller
+        run: |
+          bash scripts/__tests__/setup-quota-monitor.test.sh
+          bash scripts/__tests__/restart-account-switch-runtime-preflight.test.sh
+          bash scripts/__tests__/restart-quota-monitor.test.sh
+          bash scripts/test-restart-services.sh
+          bash scripts/__tests__/restart-services-admission-pause.test.sh
+
+      # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
+      # npm install --prefix (registry fetch for the dependency union) →
+      # compat mirror → bare-import matrix → better-sqlite3 native load →
+      # packaged Bridge serves /health → Lead launcher dry-run. "Installs ≠
+      # boots" is the acceptance bar; SLOW + network.
+      - name: Test — payload real-install smoke
+        run: bash scripts/__tests__/package-onboard-smoke.test.sh
+
+      # FLY-1501: the restart-storm brake and the launchd heartbeat guard are
+      # the mechanisms that stop a production restart storm, so their contract
+      # suites must not be hand-run only. The script-tests job enumerates files
+      # explicitly and nothing enforces registration, so all three shipped
+      # unregistered — a green CI run proved nothing about them.
+      - name: Test — FLY-1501 restart brake + heartbeat guard contracts
+        run: |
+          bash scripts/__tests__/restart-storm-gate.test.sh
+          bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
+          bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
+
+      # FLY-1678: the statusline renders on every Lead and Runner pane and is
+      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
+      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
+      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
+      # AND implementation; curl/security are forbidden-call markers so CI can
+      # never touch the real usage API or Keychain). FLY-2030 PR #975 measured
+      # this complete step at 75s; FLY-2755 keeps it intact while rebalancing.
+      - name: Test — FLY-1678 statusline model-scoped bar + installer
+        run: |
+          bash scripts/__tests__/fly1678-statusline-fable.test.sh
+          bash scripts/__tests__/fly1678-install-statusline.test.sh
 
       - name: Test — FLY-2456 hermetic restart drill evidence
         run: |
@@ -706,48 +786,6 @@ jobs:
           python3 scripts/qa-fly-2456-guard-receipt.py engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md scripts/hooks/flywheel-restart-guard.py "$RUNNER_TEMP/fly2456-runbook-guard.json"
           node scripts/qa-fly-2456-drill-tools.mjs dry-run --runbook engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md --scanner scripts/hooks/flywheel-restart-guard.py --receipt "$RUNNER_TEMP/fly2456-runbook-guard.json"
 
-      - name: Test — FLY-2519 read-only Lead parity inventory
-        run: node --test scripts/__tests__/qa-codex-lead-parity.test.mjs
-
-      # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
-      # seed/verify, deterministic persistent stub, and the nine-step replay
-      # state machine. Hermetic: temporary SQLite/clone fixtures and fake
-      # Discord HTTP responses; it never starts a real room or writes GitHub.
-      - name: Test — FLY-1775 generalized-DAG 529 room
-        run: |
-          bash scripts/__tests__/test-deploy-generalized.test.sh
-          bash scripts/__tests__/fly2121-node-contract-and-setup.test.sh
-          node --test scripts/__tests__/qa-generalized-helper.test.mjs
-          node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
-          node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
-
-      # FLY-2383: the measurement contract behind the PRD 1850 §7.3 soak. These
-      # are the rules that decide whether the recorded numbers mean anything:
-      # the four-way audio classifier (bed vs voice vs silence vs unknown, with
-      # the bed/voice duck transition never reading as bed), the two orthogonal
-      # eligibility stages that keep recognition from deciding its own
-      # denominator, and the Bridge field names that separate a live candidate
-      # from a runner that is actually executing. Pure functions only; no room,
-      # no Discord, no Bridge.
-      - name: Test — FLY-2383 voice concurrency measurement contract
-        run: |
-          node --test scripts/__tests__/fly2383-voice-soak-measure.test.mjs
-          node --test scripts/__tests__/fly2383-voice-soak-calibration.test.mjs
-          node --test scripts/__tests__/fly2383-voice-soak-evidence.test.mjs
-
-      - name: Test — FLY-2446 two-Lead voice driver
-        run: node --test scripts/__tests__/fly2446-two-lead-run.test.mjs
-
-      # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
-      # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink
-      # escape + TOCTOU start-time/inode drift + restore direction lock +
-      # all-in-safe-root journal invariant). Every rejection path must exit
-      # non-zero with ZERO actions performed — this is what keeps a mis-fired
-      # SIGSTOP/mv off the 19 live production runners. Fully hermetic
-      # (descriptor fixtures + action sink; never touches a real process).
-      - name: Test — FLY-1189 fault injector safety lock
-        run: bash scripts/__tests__/qa-fly-1189-fault-inject.test.sh
-
       # FLY-1189: assertion library (episode/thread/founder-page/lead-event/
       # no-cross keyed on the real detection schema + evidence persistence to
       # the campaign root) and the scenario driver's TRAP-OWNER contract — a
@@ -759,28 +797,35 @@ jobs:
           bash scripts/__tests__/qa-fly-1189-assert.test.sh
           bash scripts/__tests__/qa-fly-1189-driver.test.sh
 
-      # FLY-1389: 529-Room repair batch — path-hygiene predicates (bash host;
-      # the TS host runs in the teamlead vitest shards), write-time guards on
-      # every global-persistence writer (converge / cmux-install /
-      # install-hooks / provisioner), converge symlink health + hygiene
-      # mount, the read-only global scanner, the managed local-marketplace
-      # entrance transaction, the resume-recovery window fix (mutation-
-      # guarded), and the test-deploy Lead-ful + --no-lead hermetic E2Es
-      # (stub claude-lead / gh / pnpm / npx-bridge / tmux; local bare
-      # sandbox remote; fake HOMEs — never a real slot).
-      - name: Test — FLY-1389 path-hygiene + 529-Room repair batch
+      # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
+      # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
+      # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead
+      # dist (pnpm build above): the config gate runs the REAL loader
+      # (validate-projects CLI), and the POC drives the real provisioner's
+      # Linux APPLY path end-to-end + the linux-preflight --check contract.
+      - name: Test — FLY-648 one-command setup wizard
         run: |
-          bash scripts/__tests__/path-hygiene.test.sh
-          bash scripts/__tests__/converge-flywheel-bin.test.sh
-          bash scripts/__tests__/converge-fly1389.test.sh
-          bash scripts/__tests__/fly1577-cmux-bin-closure.test.sh
-          bash scripts/__tests__/fly1577-alert-arrival.test.sh
-          bash scripts/__tests__/check-global-path-hygiene.test.sh
-          bash scripts/__tests__/install-hooks-fly1389.test.sh
-          bash scripts/__tests__/register-local-marketplace.test.sh
-          bash scripts/__tests__/v2-retirement-cleanup.test.sh
-          bash scripts/__tests__/test-deploy-fly1389.test.sh
-          bash scripts/__tests__/test-deploy-preflight-github.test.sh
+          bash scripts/__tests__/flywheel-setup-engine.test.sh
+          bash scripts/__tests__/flywheel-setup-config.test.sh
+          bash scripts/__tests__/flywheel-setup-bot.test.sh
+          bash scripts/__tests__/flywheel-setup-channels.test.sh
+          bash scripts/__tests__/flywheel-setup-linear.test.sh
+          bash scripts/__tests__/flywheel-setup-services.test.sh
+          bash scripts/__tests__/flywheel-setup-poc.test.sh
+          bash scripts/__tests__/flywheel-setup-resume-e2e.test.sh
+
+      - name: Test — FLY-2134 artifact freshness monitor
+        run: |
+          bash scripts/__tests__/artifact-freshness-manifest.test.sh
+          bash scripts/__tests__/artifact-freshness-check.test.sh
+          bash scripts/__tests__/bridge-liveness-probe-w4.test.sh
+
+      # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
+      # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
+      # processes are test-owned, so this never touches a real adapter. lsof is
+      # needed for the cwd-probe / identity-label cases (T3/T4).
+      - name: Test — Discord adapter orphan reaper (FLY-183)
+        run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
 
       # FLY-2216: shared resident Codex recovery remains for Mufasa/infra while
       # Raya is covered by the standard Lead migration suite above.
@@ -790,154 +835,53 @@ jobs:
           # FLY-2259: pure-shell generic Codex Lead home rule + production wiring.
           bash scripts/__tests__/codex-lead-home-rule.test.sh
 
-      # FLY-1062: npm distribution layer — hermetic suites: the packaging
-      # pipeline over a fixture mini-monorepo (assembly / dependency union /
-      # release gates with injection negatives / compat mirror / audit-table
-      # closure), every packaged-mode runtime seam BOTH sides (packaged path +
-      # verbatim-monorepo reverse-compat sentinel), and the P2 prebuilt
-      # provisioning / setup-artifact branches. Needs the built dist +
-      # node_modules/typescript (pnpm build above).
-      - name: Test — NPM packaging pipeline + packaged-mode seams
+      # FLY-1729/1743: restart preflight fetches latest origin/main under the
+      # restart lock; terminal consistency then fail-louds if a later abort
+      # leaves source HEAD split from deployed-sha. Rollback refuses destructive
+      # reset when status/reset itself fails. Hermetic local repositories and
+      # command-boundary shims only; no network or host service mutation.
+      - name: Test — FLY-1729/1743 restart update + consistency guards
         run: |
-          bash scripts/__tests__/package-onboard.test.sh
-          bash scripts/__tests__/packaged-seams.test.sh
-          bash scripts/__tests__/packaged-auto-update-wrapper.test.sh
-          bash scripts/__tests__/packaged-restart.test.sh
-          bash scripts/__tests__/gate4-allowlist-masking.test.sh
-          bash scripts/__tests__/gate4-forms-probe.test.sh
-          bash scripts/__tests__/setup-prebuilt.test.sh
-          bash scripts/__tests__/provision-prebuilt.test.sh
+          bash scripts/__tests__/restart-pull-preflight.test.sh
+          bash scripts/__tests__/restart-deploy-consistency.test.sh
 
-      # FLY-2190 S0: the host-selection gate must stay fail-closed at every
-      # carrier/restart birth and must not leak its hermetic probes into the
-      # production state root. Keep the five public shell seams together.
-      - name: Test — FLY-2190 host tmux selection S0
+      - name: Test — FLY-1707 incident replay
+        run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh
+
+      # FLY-1944: the founder-gated host cutover is hermetic here: all Homebrew,
+      # tmux, process-census, Bridge HTTP, receipt, and clock inputs use private
+      # fixtures or injected seams. Keep it in the required lane so admission
+      # budget/quiescence and exact-version preflight cannot drift unobserved.
+      - name: Test — FLY-1944 host terminal cutover brake
+        run: bash scripts/__tests__/host-terminal-cutover.test.sh
+
+      - name: Test — FLY-2446 two-Lead voice driver
+        run: node --test scripts/__tests__/fly2446-two-lead-run.test.mjs
+
+      # FLY-1830: the non-Lead launchd daemons (quota-monitor, updater,
+      # bridge-liveness-probe, daily-standup) had no owner — a label that left
+      # the domain stayed gone with its plist still on disk. The restart wave now
+      # reconciles them, and the Lead family must stay excluded (bootstrapping
+      # the FLY-398 TUI carrier would create a second listener). Hermetic: the
+      # launchctl seam is a scripted mock, so this never touches a real domain.
+      # Step seconds: ~1.
+      - name: Test — FLY-1830 non-Lead daemon convergence
         run: |
-          bash scripts/__tests__/host-tmux-selection-census.test.sh
-          bash scripts/__tests__/host-tmux-selection-gate.test.sh
-          bash scripts/__tests__/host-tmux-selection-mounts.test.sh
-          bash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh
-          bash scripts/__tests__/host-tmux-selection-s0-scope.test.sh
-
-      # FLY-2444: repository-neutral Lead registration, launch, lifecycle,
-      # read-only host preflight, and packaged migration closure.
-      - name: Test — FLY-2444 generalized Lead launcher
-        run: |
-          bash scripts/__tests__/flywheel-lead.test.sh
-          bash scripts/__tests__/flywheel-lead-packaging.test.sh
-          bash scripts/__tests__/host-tmux-selection-gate-probe.test.sh
-          bash scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh
-          bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh
-          bash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh
-
-      - name: Test — FLY-2459 Codex department capability and migration
-        run: |
-          bash scripts/__tests__/codex-runner-capability-env.test.sh
-          bash scripts/__tests__/lead-backend-migration.test.sh
-          bash scripts/__tests__/lead-backend-migration-load.test.sh
-          bash scripts/__tests__/lead-backend-migration-wave.test.sh
-
-      # FLY-1501: the restart-storm brake and the launchd heartbeat guard are
-      # the mechanisms that stop a production restart storm, so their contract
-      # suites must not be hand-run only. The script-tests job enumerates files
-      # explicitly and nothing enforces registration, so all three shipped
-      # unregistered — a green CI run proved nothing about them.
-      - name: Test — FLY-1501 restart brake + heartbeat guard contracts
-        run: |
-          bash scripts/__tests__/restart-storm-gate.test.sh
-          bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
-          bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
-
-      # FLY-1634: restart subtraction. Keep the single hard-clear verdict,
-      # marker breadcrumb, supervisor orphan fallback, and self-detach PGID
-      # contract in the required gate; this job enumerates shell suites.
-      - name: Test — FLY-1634 restart net-deletion contracts
-        run: |
-          bash scripts/__tests__/lead-body-hard-clear.test.sh
-          bash scripts/__tests__/lead-restart-controlled-wave.test.sh
-          bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh
-          bash scripts/__tests__/restart-self-detach.test.sh
-          bash scripts/__tests__/fly1783-restart-detach-contract.test.sh
-
-      # FLY-1959: merge never triggers updater; only the scheduled shuttle and
-      # founder emergency tickets remain. Restart reporting still distinguishes
-      # a newly launched Lead body from an adopted pre-existing one.
-      - name: Test — FLY-1959 updater sources + body provenance contracts
-        run: |
-          bash scripts/__tests__/lead-body-evidence.test.sh
-          bash scripts/__tests__/lead-body-provenance.test.sh
-          bash scripts/__tests__/request-restart.test.sh
-          bash scripts/__tests__/updater-trigger-policy.test.sh
-
-      # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
-      # npm install --prefix (registry fetch for the dependency union) →
-      # compat mirror → bare-import matrix → better-sqlite3 native load →
-      # packaged Bridge serves /health → Lead launcher dry-run. "Installs ≠
-      # boots" is the acceptance bar; SLOW + network.
-      - name: Test — payload real-install smoke
-        run: bash scripts/__tests__/package-onboard-smoke.test.sh
-
-      # FLY-1062 PR2: public onboard-shell (@flywheel-ai/onboard). Hermetic — a
-      # stub gated endpoint on loopback + a fixture zero-dep payload tarball +
-      # REAL npm install. Covers the full customer install chain, failure
-      # paths (zero half-baked), key rotation + update seam, the key-leak
-      # matrix, and the shell's own publish content gate. The qa-gaps suite is
-      # the QA-phase regression net for the three untested edges (protocol-error
-      # message routing, degraded update rollback, persistKey symlink refusal).
-      - name: Test — onboard-shell public install chain
-        run: |
-          bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
-          bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
-          node --test packages/onboard-shell/__tests__/*.test.mjs
-          bash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh
-          bash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh
-          bash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh
-          bash packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh
-
-      # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
-      # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
-      - name: Test — FLY-882 Discord bot token pool
-        run: bash scripts/__tests__/discord-bot-pool.test.sh
-
-      # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
-      # source release + mock codex on PATH; never touches the real global symlink).
-      - name: Test — FLY-513 global-codex repoint apply-path
-        run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
-
-      # FLY-1955/2211/2357: remote-control's stale zombie pid deadlock, the
-      # launcher-to-runtime config gate, and every runner signal's durable audit
-      # fence. The home suite intentionally fails when the dist built above is
-      # absent so its shell→runtime xcheck can never be silently skipped.
-      - name: Test — FLY-1955/2211 Codex daemon mutation safety
-        run: |
-          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh
-          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh
-          bash scripts/__tests__/kill-ledger.test.sh
-
-      # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
-      # throwaway sqlite DB and shims lsof/osascript via PATH, so it never
-      # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
-      - name: Test — FLY-697 codex-log-guard
-        run: bash scripts/__tests__/codex-log-guard.test.sh
-
-      # FLY-1330: hermetic transcript/log janitor + installer contracts. All
-      # homes, SQLite DBs, launchctl state, and destructive targets are temp
-      # fixtures; one case uses real lsof against only a held temp rollout.
-      - name: Test — FLY-1330 log janitor
-        run: bash scripts/__tests__/flywheel-log-janitor.test.sh
+          bash scripts/__tests__/converge-nonlead-daemons.test.sh
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
-  script-tests-3:
-    name: Script Tests 3/5 — fleet/setup/packaging B (shell suites)
+  script-tests-4:
+    name: Script Tests 4/6 — balanced shell suites D
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
-    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
-    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
-    # 626s (61.4%). Move only complete named steps; see the FLY-2245 research.
+    # FLY-2755 assigns intact named steps by successful-run p75 weight.
+    # Each shard models 565s of test work; exact-head tripwire logs must
+    # remain at usage <=70% without changing the 20m/85% guard.
+    # See engineering/doc/FLY-2755-script-tests-rebalance/plan.md.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -972,23 +916,41 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
-      # FLY-2139: stopped-service SQLite backup/checkpoint/VACUUM lifecycle.
-      # Hermetic HOME with three temporary databases; never touches host state.
-      - name: Test — FLY-2139 database maintenance
-        run: bash scripts/__tests__/db-maintenance.test.sh
-
-      # FLY-1887: hard deadline + identity-fenced cleanup for global one-shot
-      # Codex calls. Hermetic fake HOME/PATH/process fixtures; never installs to
-      # or signals anything in the runner's real host state.
-      - name: Test — FLY-1887 one-shot Codex hard timeout
-        run: bash scripts/__tests__/codex-guard.test.sh
-
-      - name: Test — FLY-2465 isolated Codex quota contracts
+      # FLY-1364/1482: cmux repair spans the exact-ref authority ledger,
+      # conservative cleanup, rescue-lock instrumentation, and deployed-link
+      # surface. FLY-1482 also keeps a real isolated watcher alive while
+      # teardown claims/yields the lease and verifies observable QA cleanup.
+      # These suites are hermetic on CI (private state roots and tmux
+      # sockets); the instrumentation case uses real kernel locks/processes so
+      # CI records the previously-missing green observation environment.
+      - name: Test — FLY-1364 cmux sync repair
+        env:
+          # The production-compatibility pass remains /bin/bash 3.2 on macOS;
+          # this explicit opt-in adds Linux CI's modern-Bash observation.
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
         run: |
-          bash scripts/__tests__/codex-quota-client.test.sh
-          node --test scripts/__tests__/codex-quota-client.test.mjs
-          bash scripts/__tests__/codex-quota-readiness-receipt.test.sh
-          bash scripts/__tests__/codex-quota-summary.test.sh
+          bash scripts/test-cmux-sync.sh
+          bash scripts/__tests__/fly1944-attach-protocol.test.sh
+          bash scripts/__tests__/fly1944-birth-adoption.test.sh
+          bash scripts/__tests__/fly1944-dead-view-rebuild.test.sh
+          bash scripts/__tests__/fly1944-helper-reap.test.sh
+          bash scripts/__tests__/cmux-cleanup-lifecycle.test.sh
+          bash scripts/__tests__/cmux-view-rebind.test.sh
+          bash scripts/__tests__/fly2048-cmux-convergence.test.sh
+          bash scripts/__tests__/fly1884-view-attach.test.sh
+          bash scripts/__tests__/fly1884-attach-recovery.test.sh
+          bash scripts/__tests__/fly1884-node-presence.test.sh
+          bash scripts/__tests__/tmux-server-rescue.test.sh
+          bash scripts/__tests__/tmux-server-rescue-lock.test.sh
+          bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh
+          bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
+          bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh
+          bash scripts/__tests__/test-cmux-autostart-flags.test.sh
+          bash scripts/__tests__/test-teardown-cmux-ownership.test.sh
+          bash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh
+          bash scripts/__tests__/test-teardown-lease-contract.test.sh
+          bash scripts/__tests__/qa-teardown-finalize.test.sh
+          bash scripts/__tests__/restart-cmux-watcher.test.sh
 
       # FLY-2404: shared credential truth provisioning, fenced shuttle cutover,
       # and conservative legacy-copy sweep. All five suites use fixture HOMEs,
@@ -1008,13 +970,72 @@ jobs:
           bash scripts/__tests__/codex-credential-cutover.test.sh
           bash scripts/__tests__/codex-home-credential-sweep.test.sh
 
+      - name: Test — FLY-1905 CI apt-install helper
+        timeout-minutes: 10
+        run: bash scripts/__tests__/ci-apt-install.test.sh
+
+      # FLY-1402: Claude CLI is last-one-wins for repeated prompt-file flags.
+      # Exercise the real launcher under isolated HOMEs across dept/CoS/
+      # companion/external + explicit legacy, then prove receipt lifecycle.
+      - name: Test — Lead rules single-bundle load chain (FLY-1402)
+        run: bash packages/teamlead/scripts/__tests__/fly1402-single-bundle.test.sh
+
+      # FLY-2270: slot-local report host API, containment, lifecycle, and
+      # mutation controls. Hermetic: loopback sockets and /tmp slot fixtures.
+      - name: Test — FLY-2270 QA report host stub
+        run: bash scripts/__tests__/qa-report-host.test.sh
+
+      # FLY-1634: restart subtraction. Keep the single hard-clear verdict,
+      # marker breadcrumb, supervisor orphan fallback, and self-detach PGID
+      # contract in the required gate; this job enumerates shell suites.
+      - name: Test — FLY-1634 restart net-deletion contracts
+        run: |
+          bash scripts/__tests__/lead-body-hard-clear.test.sh
+          bash scripts/__tests__/lead-restart-controlled-wave.test.sh
+          bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh
+          bash scripts/__tests__/restart-self-detach.test.sh
+          bash scripts/__tests__/fly1783-restart-detach-contract.test.sh
+
+      - name: Test — FLY-2519 read-only Lead parity inventory
+        run: node --test scripts/__tests__/qa-codex-lead-parity.test.mjs
+
+      # FLY-2403: the report boots the real StateStore schema, populates only
+      # temporary tables, and proves the SQLite query does not mutate its input.
+      - name: Test — FLY-2403 Astra/Fable design outcome report
+        run: bash scripts/__tests__/fly2403-design-model-comparison.test.sh
+
+      # FLY-2383: the measurement contract behind the PRD 1850 §7.3 soak. These
+      # are the rules that decide whether the recorded numbers mean anything:
+      # the four-way audio classifier (bed vs voice vs silence vs unknown, with
+      # the bed/voice duck transition never reading as bed), the two orthogonal
+      # eligibility stages that keep recognition from deciding its own
+      # denominator, and the Bridge field names that separate a live candidate
+      # from a runner that is actually executing. Pure functions only; no room,
+      # no Discord, no Bridge.
+      - name: Test — FLY-2383 voice concurrency measurement contract
+        run: |
+          node --test scripts/__tests__/fly2383-voice-soak-measure.test.mjs
+          node --test scripts/__tests__/fly2383-voice-soak-calibration.test.mjs
+          node --test scripts/__tests__/fly2383-voice-soak-evidence.test.mjs
+
       # FLY-1887: bounded rename rotation for Flywheel-owned logs that open per
       # append. Includes concurrency, retention, fail-open, and wiring guards.
       - name: Test — FLY-1887 bounded Flywheel logs
         run: bash scripts/__tests__/flywheel-log-rotate.test.sh
 
-      - name: Test — FLY-1961 dual-vendor workspace trust
-        run: bash scripts/__tests__/test-runner-workspace-trust.sh
+      # FLY-957: record_deployed_range must never kill deploy finalization.
+      # Hermetic — extracts the function from restart-services.sh, runs it under
+      # set -euo pipefail against a throwaway git repo + a PATH-shim node; no
+      # real ~/.flywheel, no network.
+      - name: Test — FLY-957 record_deployed_range best-effort
+        run: bash scripts/__tests__/restart-deployed-range.test.sh
+
+      - name: Test — FLY-2459 Codex department capability and migration
+        run: |
+          bash scripts/__tests__/codex-runner-capability-env.test.sh
+          bash scripts/__tests__/lead-backend-migration.test.sh
+          bash scripts/__tests__/lead-backend-migration-load.test.sh
+          bash scripts/__tests__/lead-backend-migration-wave.test.sh
 
       # FLY-1018: gemini-agent static guard. Pure grep assertions over
       # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
@@ -1065,19 +1086,6 @@ jobs:
       - name: Test — FLY-1981 runtime role auto-QA retirement
         run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
 
-      # FLY-1434: the single full-fleet restart contract and quota-monitor
-      # env-change caller must stay in CI. These suites use throwaway HOMEs,
-      # repositories, launchctl/restart shims, and local logs only.
-      # FLY-2280: the admission-pause contract suite (hermetic fake HOME/curl)
-      # guards the cross-version cutover bootstrap.
-      - name: Test — FLY-1434 unified restart + quota caller
-        run: |
-          bash scripts/__tests__/setup-quota-monitor.test.sh
-          bash scripts/__tests__/restart-account-switch-runtime-preflight.test.sh
-          bash scripts/__tests__/restart-quota-monitor.test.sh
-          bash scripts/test-restart-services.sh
-          bash scripts/__tests__/restart-services-admission-pause.test.sh
-
       # FLY-1715: runner credential tier and managed voice replacement are
       # deployment boundaries. Explicitly registered because script-tests
       # does not glob.
@@ -1086,188 +1094,70 @@ jobs:
           bash scripts/__tests__/runner-tier-token-preflight.test.sh
           bash scripts/__tests__/restart-services-voice-bridge.test.sh
 
-      # FLY-2126: the Flywheel wrapper is the credential and contract boundary
-      # for Raya's two-bot voice scenario. The suite is hermetic: fake HOME,
-      # fake slots, and a fake Raya harness; no Discord or production state.
-      - name: Test — FLY-2126 Raya voice scenario wrapper
-        run: bash scripts/__tests__/qa-raya-voice.test.sh
-
-      # FLY-2033: the meeting-artifact scheduler's alert receipt, lock/fallback,
-      # founder card, and trusted transcript-window seams are hermetic. Keep all
-      # four in one explicit step because the shell lane never globs new suites.
-      - name: Test — FLY-2033 meeting artifact closure
-        run: |
-          bash scripts/__tests__/meeting-notes-alert.test.sh
-          bash scripts/__tests__/meeting-notes-tick.test.sh
-          bash scripts/__tests__/meeting-notes-card.test.sh
-          bash scripts/__tests__/meeting-notes-window.test.sh
-
-      # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
-      # while Bridge default selection is explicit on both legacy upgrades and
-      # fresh setup. Hermetic registries/HOMEs; no production config mutation.
-      - name: Test — FLY-1726 canonical Lead identity delivery
-        run: |
-          bash scripts/__tests__/fly1726-default-lead-delivery.test.sh
-          bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh
-          bash scripts/__tests__/fly1697-v2-lease-body.test.sh
-          bash packages/teamlead/scripts/__tests__/claude-lead-comm-db-path.test.sh
-          bash packages/teamlead/scripts/__tests__/claude-lead-own-chat-channel.test.sh
-          bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh
-
-      # FLY-1708/FLY-1751: both process-birth and SessionStart(source=clear)
-      # adoption legs protect mailbox capacity. Keep their hermetic contracts
-      # in CI because script-tests enumerates shell suites instead of globbing.
-      - name: Test — Lead in-flight mailbox adoption contracts
-        run: |
-          command -v python3
-          command -v rg
-          bash scripts/__tests__/autocompact-override-retirement.test.sh
-          bash scripts/__tests__/session-ctx-usage.test.sh
-          bash scripts/__tests__/lead-session-resume-gate.test.sh
-          bash scripts/__tests__/lead-clear-session-authority.test.sh
-          bash scripts/__tests__/test-claude-lead-adopt-inflight.test.sh
-          bash scripts/__tests__/test-claude-lead-session-start-adopt.test.sh
-
-      # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
-      # contracts. Explicitly registered because script-tests does not glob.
-      - name: Test — FLY-1649 r4 migration-window hardening
-        run: |
-          bash scripts/__tests__/rollback-r4.test.sh
-          bash scripts/__tests__/r4-window.test.sh
-
-      # FLY-927: infra-alert shell path (lead-alert.sh unified-channel/sender/
-      # rate/schema alignment, external-kind hygiene, bridge-wrapper fail-loud
-      # re-route). Hermetic — stub curl via PATH, isolated FLYWHEEL_* dirs, no
-      # real network or ~/.flywheel touched. Same tool set as strict-delivery
-      # above (jq/sqlite3/shasum), so CI already has the deps.
-      - name: Test — FLY-927 infra-alert shell path
-        run: |
-          node --test scripts/__tests__/infra-bot-sensor-preflight.test.mjs
-          bash scripts/__tests__/lead-alert-fly927.test.sh
-          /bin/bash scripts/__tests__/lead-alert-version-observation.test.sh
-          /bin/bash scripts/__tests__/release-readiness-report.test.sh
-          node scripts/verify-release-readiness-report.mjs
-          bash scripts/__tests__/lead-alert-external-kind.test.sh
-          bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
-          bash scripts/__tests__/bridge-wrapper-fd-limit.test.sh
-
-      # FLY-957: record_deployed_range must never kill deploy finalization.
-      # Hermetic — extracts the function from restart-services.sh, runs it under
-      # set -euo pipefail against a throwaway git repo + a PATH-shim node; no
-      # real ~/.flywheel, no network.
-      - name: Test — FLY-957 record_deployed_range best-effort
-        run: bash scripts/__tests__/restart-deployed-range.test.sh
-
-      # FLY-1729/1743: restart preflight fetches latest origin/main under the
-      # restart lock; terminal consistency then fail-louds if a later abort
-      # leaves source HEAD split from deployed-sha. Rollback refuses destructive
-      # reset when status/reset itself fails. Hermetic local repositories and
-      # command-boundary shims only; no network or host service mutation.
-      - name: Test — FLY-1729/1743 restart update + consistency guards
-        run: |
-          bash scripts/__tests__/restart-pull-preflight.test.sh
-          bash scripts/__tests__/restart-deploy-consistency.test.sh
-
-      # FLY-1081: restart/update/wrapper notify-path migration off Simba —
-      # ⚠️/🚨 route via lead-alert.sh (sender seam, no legacy fallback), the
-      # routine path fail-louds instead of falling back, and a grep-zero
-      # sentinel blocks Simba-token / fallback-chain re-introduction. Hermetic —
-      # extracted real functions + fake lead-alert/curl/meta-alert, sandboxed
-      # dirs and fake transport, no network. FLY-1959's two-source updater suite
-      # replaces the deleted per-merge queue harness.
-      - name: Test — FLY-1081 notify-path migration
-        run: |
-          bash scripts/__tests__/restart-notify-routine.test.sh
-          bash scripts/__tests__/restart-services-notify.test.sh
-          bash scripts/__tests__/update-flywheel-sources.test.sh
-          python3 scripts/__tests__/shuttle-observation.test.py
-          bash scripts/__tests__/shuttle-unit-results.test.sh
-          bash scripts/__tests__/shuttle-alert-route.test.sh
-          bash scripts/__tests__/auto-narrow-rollback-precheck.test.sh
-          bash scripts/__tests__/updater-raya-deploy.test.sh
-          bash scripts/__tests__/raya-prestop.test.sh
-          bash scripts/__tests__/simba-grep-zero.test.sh
-          # QA alert: drives the REAL lead-alert.sh in the production
-          # --lead deploy call form — infra identity used, no Simba fallback.
-          bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
-
-      - name: Test — FLY-1861 CI cancellation and classification contracts
-        run: |
-          bash scripts/__tests__/ship-await-ci.test.sh
-          bash scripts/__tests__/ship-report-failure.test.sh
-          bash scripts/__tests__/ci-classify.test.sh
-          node --test scripts/__tests__/flywheel-snapshot-control.test.mjs
-
-      # FLY-1674: retired dispatcher/config/flag names cannot return outside
-      # exact persisted-compatibility seams.
-      - name: Test — FLY-1674 legacy-path residue guard
-        run: bash scripts/__tests__/fly1674-residue.test.sh
-
-      - name: Test — FLY-2144 retired dispatch residue guard
-        run: bash scripts/__tests__/fly2144-retired-dispatch-residue.test.sh
-
-      - name: Test — FLY-2102 startup flag freeze residue guard
-        run: bash scripts/__tests__/fly2102-flag-freeze.test.sh
-
-      # FLY-1338 QA: the structure guard above reasons about the matrix filter
-      # STRINGS; this one asks pnpm what they actually resolve to on the real
-      # workspace, so "the sharded matrix still covers every packages/* package,
-      # exactly once" survives future filter edits AND package renames/additions.
-      - name: Test — FLY-1338 matrix coverage parity (QA)
-        run: bash scripts/__tests__/ci-matrix-coverage.test.sh
-
-      - name: Test — FLY-1855 executable Lead patrol snapshot
-        run: bash scripts/__tests__/lead-patrol-snapshot.test.sh
-
       - name: Test — FLY-1945 trusted patrol helper closure
         run: bash scripts/__tests__/patrol-continuity-launcher.test.sh
 
-      # FLY-2403: the report boots the real StateStore schema, populates only
-      # temporary tables, and proves the SQLite query does not mutate its input.
-      - name: Test — FLY-2403 Astra/Fable design outcome report
-        run: bash scripts/__tests__/fly2403-design-model-comparison.test.sh
-
-      - name: Test — FLY-2570 dynamic design ratio operator
-        run: bash scripts/__tests__/design-model-split.test.sh
-
-      # FLY-1986: the Phase-0 load probe is read-only by contract. This suite
-      # mutates the probe and requires every contract to go RED, so a check that
-      # can no longer fail is itself caught. ⚠ Placed on THIS shard, not shard 1:
-      # shard 1 measured 15m55s on contemporaneous branches against a 17min
-      # tripwire (85% of the 20min cap), i.e. ~65s of headroom, while this shard
-      # measured 11m36s. Rebalancing whole named steps is the sanctioned lever.
-      - name: Test — FLY-1986 load probe contract
-        run: bash scripts/__tests__/qa-fly-1986-load-probe.test.sh
-
-      # FLY-1678: the statusline renders on every Lead and Runner pane and is
-      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
-      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
-      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
-      # AND implementation; curl/security are forbidden-call markers so CI can
-      # never touch the real usage API or Keychain). FLY-2030 PR #975 measured
-      # this complete step at 75s and moved it here to rebalance the two shards.
-      - name: Test — FLY-1678 statusline model-scoped bar + installer
-        run: |
-          bash scripts/__tests__/fly1678-statusline-fable.test.sh
-          bash scripts/__tests__/fly1678-install-statusline.test.sh
-
       - name: Test — FLY-1870 job elapsed tripwire contract
         run: bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh
+
+      # FLY-2034: Belle's cutover runbook carries a credential gate that must
+      # inspect the Git index (including binary blobs), never a divergent
+      # working-tree copy. Hermetic temporary repo; no external credentials.
+      - name: Test — FLY-2034 Belle staged credential gate
+        run: bash scripts/__tests__/fly2034-onboarding-credential-gate.test.sh
+
+      # FLY-1356: skill-framework arm definitions are FROZEN artifacts — the
+      # matt-skills vendor structure + B/C prompt-variant contracts (bare arm
+      # Superpowers grep-zero with positive controls; baselines stay on A).
+      - name: Test — FLY-1356 skill-framework vendor + variant contracts
+        run: bash scripts/__tests__/skill-framework-variants.test.sh
+
+      - name: Test — FLY-2270 slot Bridge launch boundary
+        run: bash scripts/__tests__/test-deploy-launch-boundary.test.sh
+
+      # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
+      # source release + mock codex on PATH; never touches the real global symlink).
+      - name: Test — FLY-513 global-codex repoint apply-path
+        run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
+
+      # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
+      # throwaway sqlite DB and shims lsof/osascript via PATH, so it never
+      # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
+      - name: Test — FLY-697 codex-log-guard
+        run: bash scripts/__tests__/codex-log-guard.test.sh
+
+      # FLY-1436: the founder-gated cutover CLI is a root-level node:test
+      # module, so workspace Vitest jobs do not discover it.
+      - name: Test — FLY-1436 work-kind cutover CLI
+        run: node --test scripts/__tests__/workkind-cutover.test.mjs
+
+      # FLY-1867/2026: these hermetic suites guard both read-only browser
+      # censuses and the exact-manifest quarantine/delete safety gates. The
+      # quarantine suite uses real lsof against only its private temp tree.
+      - name: Test — FLY-1867/2026 Playwright lifecycle tools
+        run: |
+          bash scripts/__tests__/fly-1867-playwright-orphan-census.test.sh
+          bash scripts/__tests__/fly-2026-browser-idle-census.test.sh
+          bash scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh
+
+      # FLY-2278: byte-exact attempt-version rollback is hermetic and exercises
+      # a private SQLite fixture, including replay and drift refusal.
+      - name: Test — FLY-2278 attempt-version rollback
+        run: bash scripts/__tests__/fly2278-rollback-attempt-versions.test.sh
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
-  script-tests-4:
-    name: Script Tests 4/5 — cmux repair + Lead memory (shell suites)
+  script-tests-5:
+    name: Script Tests 5/6 — balanced shell suites E
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
-    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
-    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
-    # 660s (64.7%), including the hermetic FLY-2145 suites. Keep this command
-    # bundle whole unless PR timing invokes the
-    # reviewed five-shard fallback in the FLY-2245 plan.
+    # FLY-2755 assigns intact named steps by successful-run p75 weight.
+    # Each shard models 565s of test work; exact-head tripwire logs must
+    # remain at usage <=70% without changing the 20m/85% guard.
+    # See engineering/doc/FLY-2755-script-tests-rebalance/plan.md.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -1302,12 +1192,33 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
-      - name: Test — FLY-2145 Lead memory private repository
+      - name: Test — FLY-1855 executable Lead patrol snapshot
+        run: bash scripts/__tests__/lead-patrol-snapshot.test.sh
+
+      # FLY-1929: IPC-voucher watcher. Hermetic — injected clock, fake zprint,
+      # fake DiagnosticReports dir, and a fake alert script that MIRRORS the real
+      # permanent-receipt dedup (a forgetful fake would let the re-arm case pass
+      # while production silently never re-posts). Drives real sequential
+      # invocations rather than one batch fixture, because a batch fixture hides
+      # warm-up behaviour. Step seconds: ~230 locally on a loaded host.
+      - name: Test — FLY-1929 voucher watch contracts
+        run: |
+          bash scripts/__tests__/voucher-watch.test.sh
+
+      # FLY-1986: the Phase-0 load probe is read-only by contract. This suite
+      # mutates the probe and requires every contract to go RED, so a check that
+      # can no longer fail is itself caught. FLY-2755 assigns the intact step by
+      # successful-run p75 weight; rebalancing whole named steps is the sanctioned
+      # capacity lever.
+      - name: Test — FLY-1986 load probe contract
+        run: bash scripts/__tests__/qa-fly-1986-load-probe.test.sh
+
+      - name: Test — FLY-2146 Lead memory remote sync
         env:
           GITLEAKS_VERSION: "8.30.1"
           GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
         run: |
-          install_dir="$RUNNER_TEMP/fly2145-gitleaks"
+          install_dir="$RUNNER_TEMP/fly2146-gitleaks"
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           mkdir -p "$install_dir"
           curl -fsSLo "$install_dir/$archive" \
@@ -1316,62 +1227,109 @@ jobs:
           tar -xzf "$install_dir/$archive" -C "$install_dir" gitleaks
           test "$($install_dir/gitleaks version)" = "$GITLEAKS_VERSION"
 
-          bash scripts/__tests__/test-lead-memory-guard.test.sh
-          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" \
-            bash scripts/__tests__/test-lead-memory-hooks.test.sh
-          bash scripts/__tests__/test-lead-memory-bootstrap.test.sh
-          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" \
-            bash scripts/__tests__/test-lead-memory-scan.test.sh
-          bash scripts/__tests__/test-lead-memory-workflow.test.sh
+          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" bash scripts/__tests__/test-lead-memory-sync.test.sh
+          bash scripts/__tests__/test-lead-memory-arrival-check.test.sh
+          bash scripts/__tests__/test-lead-memory-freshness-report.test.sh
+          bash scripts/__tests__/test-lead-memory-observe-workflow.test.sh
+          bash scripts/__tests__/test-lead-memory-retire.test.sh
 
-      # FLY-1364/1482: cmux repair spans the exact-ref authority ledger,
-      # conservative cleanup, rescue-lock instrumentation, and deployed-link
-      # surface. FLY-1482 also keeps a real isolated watcher alive while
-      # teardown claims/yields the lease and verifies observable QA cleanup.
-      # These suites are hermetic on CI (private state roots and tmux
-      # sockets); the instrumentation case uses real kernel locks/processes so
-      # CI records the previously-missing green observation environment.
-      - name: Test — FLY-1364 cmux sync repair
-        env:
-          # The production-compatibility pass remains /bin/bash 3.2 on macOS;
-          # this explicit opt-in adds Linux CI's modern-Bash observation.
-          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+      # FLY-1023: Buddy onboarding — step CLI over the unchanged wizard
+      # (journal v2, stdout discipline, secret-injection refusal) + the
+      # AgentCliProvider contract. Hermetic — same stub infrastructure as the
+      # FLY-648 suite; needs the built teamlead dist (real-loader gate).
+      - name: Test — FLY-1023 Buddy onboarding (step CLI + provider contract)
         run: |
-          bash scripts/test-cmux-sync.sh
-          bash scripts/__tests__/fly1944-attach-protocol.test.sh
-          bash scripts/__tests__/fly1944-birth-adoption.test.sh
-          bash scripts/__tests__/fly1944-dead-view-rebuild.test.sh
-          bash scripts/__tests__/fly1944-helper-reap.test.sh
-          bash scripts/__tests__/cmux-cleanup-lifecycle.test.sh
-          bash scripts/__tests__/cmux-view-rebind.test.sh
-          bash scripts/__tests__/fly2048-cmux-convergence.test.sh
-          bash scripts/__tests__/fly1884-view-attach.test.sh
-          bash scripts/__tests__/fly1884-attach-recovery.test.sh
-          bash scripts/__tests__/fly1884-node-presence.test.sh
-          bash scripts/__tests__/tmux-server-rescue.test.sh
-          bash scripts/__tests__/tmux-server-rescue-lock.test.sh
-          bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh
-          bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
-          bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh
-          bash scripts/__tests__/test-cmux-autostart-flags.test.sh
-          bash scripts/__tests__/test-teardown-cmux-ownership.test.sh
-          bash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh
-          bash scripts/__tests__/test-teardown-lease-contract.test.sh
-          bash scripts/__tests__/qa-teardown-finalize.test.sh
-          bash scripts/__tests__/restart-cmux-watcher.test.sh
+          bash scripts/__tests__/flywheel-buddy-steps.test.sh
+          bash scripts/__tests__/agent-cli-provider-contract.test.sh
+          bash scripts/__tests__/flywheel-onboard.test.sh
+          bash scripts/__tests__/flywheel-buddy.test.sh
+          bash scripts/__tests__/flywheel-buddy-github.test.sh
+          bash scripts/__tests__/flywheel-buddy-captain.test.sh
+          bash scripts/__tests__/flywheel-buddy-connect.test.sh
+          bash scripts/__tests__/buddy-escalate.test.sh
+
+      # FLY-1062: npm distribution layer — hermetic suites: the packaging
+      # pipeline over a fixture mini-monorepo (assembly / dependency union /
+      # release gates with injection negatives / compat mirror / audit-table
+      # closure), every packaged-mode runtime seam BOTH sides (packaged path +
+      # verbatim-monorepo reverse-compat sentinel), and the P2 prebuilt
+      # provisioning / setup-artifact branches. Needs the built dist +
+      # node_modules/typescript (pnpm build above).
+      - name: Test — NPM packaging pipeline + packaged-mode seams
+        run: |
+          bash scripts/__tests__/package-onboard.test.sh
+          bash scripts/__tests__/packaged-seams.test.sh
+          bash scripts/__tests__/packaged-auto-update-wrapper.test.sh
+          bash scripts/__tests__/packaged-restart.test.sh
+          bash scripts/__tests__/gate4-allowlist-masking.test.sh
+          bash scripts/__tests__/gate4-forms-probe.test.sh
+          bash scripts/__tests__/setup-prebuilt.test.sh
+          bash scripts/__tests__/provision-prebuilt.test.sh
+
+      - name: Test — FLY-1572 mailbox migration CLI
+        run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh
+
+      - name: Test — FLY-1861 CI cancellation and classification contracts
+        run: |
+          bash scripts/__tests__/ship-await-ci.test.sh
+          bash scripts/__tests__/ship-report-failure.test.sh
+          bash scripts/__tests__/ci-classify.test.sh
+          node --test scripts/__tests__/flywheel-snapshot-control.test.mjs
+
+      - name: Test — FLY-2533 packed phase protocols
+        run: bash scripts/__tests__/fly2533-phase-protocol-assets.test.sh
+
+      # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
+      # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
+      # the git boundary. `scan_for_secrets fleet/` fails CI if the committed
+      # fleet/ artifact ever contains secret-like content (e.g. a hand-edited
+      # artifact bypassing fleet-capture.sh's own gate — Codex design-review).
+      - name: Test — FLY-519 fleet provisioning + zero-secret gate
+        run: |
+          bash scripts/__tests__/fleet-sanitize.test.sh
+          bash scripts/__tests__/fleet-capture.test.sh
+          bash scripts/__tests__/provision-fleet-host.test.sh
+          bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+
+      # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
+      # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink
+      # escape + TOCTOU start-time/inode drift + restore direction lock +
+      # all-in-safe-root journal invariant). Every rejection path must exit
+      # non-zero with ZERO actions performed — this is what keeps a mis-fired
+      # SIGSTOP/mv off the 19 live production runners. Fully hermetic
+      # (descriptor fixtures + action sink; never touches a real process).
+      - name: Test — FLY-1189 fault injector safety lock
+        run: bash scripts/__tests__/qa-fly-1189-fault-inject.test.sh
+
+      # FLY-2126: the Flywheel wrapper is the credential and contract boundary
+      # for Raya's two-bot voice scenario. The suite is hermetic: fake HOME,
+      # fake slots, and a fake Raya harness; no Discord or production state.
+      - name: Test — FLY-2126 Raya voice scenario wrapper
+        run: bash scripts/__tests__/qa-raya-voice.test.sh
+
+      # FLY-1674: retired dispatcher/config/flag names cannot return outside
+      # exact persisted-compatibility seams.
+      - name: Test — FLY-1674 legacy-path residue guard
+        run: bash scripts/__tests__/fly1674-residue.test.sh
+
+      # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
+      # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
+      - name: Test — FLY-882 Discord bot token pool
+        run: bash scripts/__tests__/discord-bot-pool.test.sh
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
-  script-tests-5:
-    name: Script Tests 5/5 — Lead memory remote sync
+  script-tests-6:
+    name: Script Tests 6/6 — balanced shell suites F
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
-    # FLY-2598 moves its intact voice steps onto this shard's measured 490s
-    # baseline. Their 216s source-shard delta projects about 706s total, below
-    # the unchanged FLY-1870 1020s tripwire budget. Keep whole steps together.
+    # FLY-2755 assigns intact named steps by successful-run p75 weight.
+    # Each shard models 565s of test work; exact-head tripwire logs must
+    # remain at usage <=70% without changing the 20m/85% guard.
+    # See engineering/doc/FLY-2755-script-tests-rebalance/plan.md.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -1400,16 +1358,11 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # FLY-889 dependencies remain fail-closed. FLY-1905 first verifies each
+      # real binary and version; only probe failures enter the bounded installer.
       - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
-
-      # FLY-2331: run the real 70s nonblocking child arm and the same fixture's
-      # 61s sync mutant under the production EventLoopGuard. The harness owns
-      # isolated HOME/state/process groups and has independent hard deadlines.
-      - name: Test — FLY-2331 Bridge async-child guard regression
-        timeout-minutes: 4
-        run: bash scripts/__tests__/fly2331-bridge-async-child.test.sh
 
       # FLY-1663/FLY-2301: launchd-native lifecycle contracts are root shell
       # suites and are not discovered by package Vitest jobs. Keep the carrier,
@@ -1435,57 +1388,147 @@ jobs:
           bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
           bash scripts/__tests__/materialize-lead-manifests.test.sh
 
-      - name: Test — FLY-2146 Lead memory remote sync
-        env:
-          GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      # FLY-1814: explicit launchd fleet authority, bidirectional census, and
+      # operator-only repair/retirement paths. Every suite is hermetic: plist,
+      # TTY, launchctl, filesystem, and alert boundaries use fixtures/seams.
+      # Keep this separate from FLY-1830's existing single-suite contract.
+      # Step seconds: ~15 locally; comfortably inside the shard budget.
+      - name: Test — FLY-1814 launchd fleet contracts
         run: |
-          install_dir="$RUNNER_TEMP/fly2146-gitleaks"
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          mkdir -p "$install_dir"
-          curl -fsSLo "$install_dir/$archive" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          printf '%s  %s\n' "$GITLEAKS_LINUX_X64_SHA256" "$install_dir/$archive" | sha256sum -c -
-          tar -xzf "$install_dir/$archive" -C "$install_dir" gitleaks
-          test "$($install_dir/gitleaks version)" = "$GITLEAKS_VERSION"
+          bash scripts/__tests__/flywheel-voice-wrapper.test.sh
+          bash scripts/__tests__/install-voice-launchd.test.sh
+          bash scripts/__tests__/launchd-units-manifest.test.sh
+          bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh
+          bash scripts/__tests__/launchd-census.test.sh
+          bash scripts/__tests__/launchd-census-wiring.test.sh
+          bash scripts/__tests__/fly1814-operator-tools.test.sh
 
-          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" bash scripts/__tests__/test-lead-memory-sync.test.sh
-          bash scripts/__tests__/test-lead-memory-arrival-check.test.sh
-          bash scripts/__tests__/test-lead-memory-freshness-report.test.sh
-          bash scripts/__tests__/test-lead-memory-observe-workflow.test.sh
-          bash scripts/__tests__/test-lead-memory-retire.test.sh
-
-      - name: Test — FLY-2134 artifact freshness monitor
+      # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
+      # while Bridge default selection is explicit on both legacy upgrades and
+      # fresh setup. Hermetic registries/HOMEs; no production config mutation.
+      - name: Test — FLY-1726 canonical Lead identity delivery
         run: |
-          bash scripts/__tests__/artifact-freshness-manifest.test.sh
-          bash scripts/__tests__/artifact-freshness-check.test.sh
-          bash scripts/__tests__/bridge-liveness-probe-w4.test.sh
+          bash scripts/__tests__/fly1726-default-lead-delivery.test.sh
+          bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh
+          bash scripts/__tests__/fly1697-v2-lease-body.test.sh
+          bash packages/teamlead/scripts/__tests__/claude-lead-comm-db-path.test.sh
+          bash packages/teamlead/scripts/__tests__/claude-lead-own-chat-channel.test.sh
+          bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh
 
-      - name: Test — FLY-2598 voice host configuration
+      # FLY-2274: reviewed window artifacts run only against isolated
+      # LaunchAgents/process/socket/Homebrew fixtures. The real Darwin 3.5a
+      # private-socket drill is classified separately as manual-only.
+      - name: Test — FLY-2274 cutover window artifacts
         run: |
-          pnpm --filter flywheel-teamlead... build
-          pnpm --filter flywheel-comm... build
-          node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs
+          bash scripts/__tests__/fly2264-supervisor-window.test.sh
+          bash scripts/__tests__/fly2264-stop-old-tmux-servers.test.sh
+          bash scripts/__tests__/fly2264-phase-b-link.test.sh
+          bash scripts/__tests__/fly2264-verify-native-cutover.test.sh
+          bash scripts/__tests__/fly2264-install-window-artifacts.test.sh
 
-      - name: Test — FLY-2598 readonly voice preflight
-        run: node --test scripts/__tests__/fly2598-voice-preflight.test.mjs
+      - name: Test — FLY-2570 dynamic design ratio operator
+        run: bash scripts/__tests__/design-model-split.test.sh
 
-      - name: Test — FLY-2598 voice client coexistence
+      # FLY-1948: all observations are injected; these suites use no live
+      # Discord channels, host Lead processes, or founder credentials.
+      - name: Test — FLY-1948 slot Discord channel evidence
         run: |
-          pnpm --filter flywheel-voice-codex... build
-          node --test scripts/__tests__/fly2598-voice-coexistence.test.mjs
+          pnpm --filter flywheel-comm build
+          bash scripts/__tests__/qa-discord-liveness.test.sh
+          bash scripts/__tests__/qa-529-discord-liveness.test.sh
+          bash scripts/__tests__/qa-lead-coordinates.test.sh
+          bash scripts/__tests__/qa-room-env.test.sh
+          node --test scripts/__tests__/qa-529-discord-roundtrip.test.mjs
+
+      # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
+      # seed/verify, deterministic persistent stub, and the nine-step replay
+      # state machine. Hermetic: temporary SQLite/clone fixtures and fake
+      # Discord HTTP responses; it never starts a real room or writes GitHub.
+      - name: Test — FLY-1775 generalized-DAG 529 room
+        run: |
+          bash scripts/__tests__/test-deploy-generalized.test.sh
+          bash scripts/__tests__/fly2121-node-contract-and-setup.test.sh
+          node --test scripts/__tests__/qa-generalized-helper.test.mjs
+          node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+          node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+
+      # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
+      # contracts. Explicitly registered because script-tests does not glob.
+      - name: Test — FLY-1649 r4 migration-window hardening
+        run: |
+          bash scripts/__tests__/rollback-r4.test.sh
+          bash scripts/__tests__/r4-window.test.sh
+
+      # FLY-110: cmux-sync hook integration test runs against an isolated
+      # tmux server (exact -S path under its private temp root) so it cannot interfere with
+      # other CI processes. Verifies the production-critical cleanup path:
+      # pane-died (global hook) fires when a remain-on-exit pane process
+      # exits — the bug that left cmux sidebar entries hanging for 5+
+      # minutes in production until FLY-110.
+      - name: Integration test — cmux-sync hooks
+        run: bash scripts/test-cmux-sync-hooks-integration.sh
+
+      # FLY-2033: the meeting-artifact scheduler's alert receipt, lock/fallback,
+      # founder card, and trusted transcript-window seams are hermetic. Keep all
+      # four in one explicit step because the shell lane never globs new suites.
+      - name: Test — FLY-2033 meeting artifact closure
+        run: |
+          bash scripts/__tests__/meeting-notes-alert.test.sh
+          bash scripts/__tests__/meeting-notes-tick.test.sh
+          bash scripts/__tests__/meeting-notes-card.test.sh
+          bash scripts/__tests__/meeting-notes-window.test.sh
+
+      # FLY-927: infra-alert shell path (lead-alert.sh unified-channel/sender/
+      # rate/schema alignment, external-kind hygiene, bridge-wrapper fail-loud
+      # re-route). Hermetic — stub curl via PATH, isolated FLYWHEEL_* dirs, no
+      # real network or ~/.flywheel touched. Its jq/sqlite3/shasum dependencies
+      # are already installed by the shard setup.
+      - name: Test — FLY-927 infra-alert shell path
+        run: |
+          node --test scripts/__tests__/infra-bot-sensor-preflight.test.mjs
+          bash scripts/__tests__/lead-alert-fly927.test.sh
+          /bin/bash scripts/__tests__/lead-alert-version-observation.test.sh
+          /bin/bash scripts/__tests__/release-readiness-report.test.sh
+          node scripts/verify-release-readiness-report.mjs
+          bash scripts/__tests__/lead-alert-external-kind.test.sh
+          bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
+          bash scripts/__tests__/bridge-wrapper-fd-limit.test.sh
+
+      # FLY-2190 S0: the host-selection gate must stay fail-closed at every
+      # carrier/restart birth and must not leak its hermetic probes into the
+      # production state root. Keep the five public shell seams together.
+      - name: Test — FLY-2190 host tmux selection S0
+        run: |
+          bash scripts/__tests__/host-tmux-selection-census.test.sh
+          bash scripts/__tests__/host-tmux-selection-gate.test.sh
+          bash scripts/__tests__/host-tmux-selection-mounts.test.sh
+          bash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh
+          bash scripts/__tests__/host-tmux-selection-s0-scope.test.sh
+
+      # FLY-1764: producer retirement is a deployment fence over real SQLite
+      # shards, including legacy schemas and the rollback-on-cleanup-failure
+      # path. It must run in the required CI lane, not only on an author host.
+      - name: Test — FLY-1764 legacy swap broadcast retirement
+        run: bash scripts/__tests__/legacy-swap-broadcast-retirement.test.sh
+
+      # FLY-1609: the authoritative future-data analysis entry must keep all
+      # four arms visible, gate comparisons on the rollout epoch, and exclude
+      # sessions whose effective ponytail condition does not match their arm.
+      - name: Test — FLY-1609 four-arm analysis contract
+        run: bash scripts/__tests__/test-fly1609-design-compare.test.sh
+
+      # FLY-1327: deterministic cycle-time analytics use real WAL backup +
+      # immutable-snapshot reads against fixture DBs. Keep the sqlite preflight
+      # adjacent so a missing CLI fails with an explicit environment diagnosis.
+      - name: Test — FLY-1327 cycle-time report
+        run: |
+          sqlite3 --version
+          pnpm test:cycle-time
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
-  # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
-  # original Build & Test job above was split by FLY-1338; this payload job
-  # mapping remains byte-untouched. Hermetic: the pure endpoint handler + its
-  # in-process serve shell + the release/ops scripts + the PR2 contract-
-  # consistency rerun + the workflow structure lint + a dry-run Worker bundle.
-  # Zero vendor credentials; test traffic is loopback-only, while Wrangler may
-  # perform its own update/telemetry checks during the dry-run bundle proof.
   payload-distribution:
     name: NPM payload distribution (endpoint + release pipeline)
     runs-on: ubuntu-latest
@@ -1619,7 +1662,7 @@ jobs:
   ci-ok:
     name: ${{ contains(fromJSON('["full","docs_only","reuse"]'), needs.classify.outputs.mode) && 'CI OK' || 'CI Scope OK' }}
     runs-on: ubuntu-latest
-    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, script-tests-3, script-tests-4, script-tests-5, payload-distribution]
+    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, script-tests-3, script-tests-4, script-tests-5, script-tests-6, payload-distribution]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all jobs passed
@@ -1631,7 +1674,7 @@ jobs:
         run: |
           printf '%s\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" --arg heavy "$HEAVY" --arg mode "$MODE" '
             . as $needs
-            | ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"] as $heavy_jobs
+            | ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "script-tests-6", "payload-distribution"] as $heavy_jobs
             | ($needs["quick-gate"].result == "success")
               and ($needs.classify.result == "success")
               and (
@@ -1642,6 +1685,7 @@ jobs:
                   and ($needs["script-tests-3"].result == "success")
                   and ($needs["script-tests-4"].result == "success")
                   and ($needs["script-tests-5"].result == "success")
+                  and ($needs["script-tests-6"].result == "success")
                   and ($needs["payload-distribution"].result == "success") )
                 or
                 ( $heavy == "skip"

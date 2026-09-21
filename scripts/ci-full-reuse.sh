@@ -52,7 +52,7 @@ def valid_manifest(raw: object):
         or not isinstance(always, list)
         or not isinstance(heavy, list)
         or len(always) != 2
-        or len(heavy) != 13
+        or len(heavy) != 14
         or not all(isinstance(item, str) and item for item in always + heavy)
     ):
         return None

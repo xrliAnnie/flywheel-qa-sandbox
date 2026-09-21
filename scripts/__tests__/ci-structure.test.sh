@@ -362,6 +362,7 @@ expected_job_ids = {
     "script-tests-3",
     "script-tests-4",
     "script-tests-5",
+    "script-tests-6",
     "payload-distribution",
     "ci-ok",
 }
@@ -379,6 +380,7 @@ require(
         "script-tests-3",
         "script-tests-4",
         "script-tests-5",
+        "script-tests-6",
         "payload-distribution",
         "ci-ok",
     ],
@@ -393,6 +395,7 @@ script_tests_2 = mapping(jobs["script-tests-2"], "script-tests-2")
 script_tests_3 = mapping(jobs["script-tests-3"], "script-tests-3")
 script_tests_4 = mapping(jobs["script-tests-4"], "script-tests-4")
 script_tests_5 = mapping(jobs["script-tests-5"], "script-tests-5")
+script_tests_6 = mapping(jobs["script-tests-6"], "script-tests-6")
 payload_distribution = mapping(jobs["payload-distribution"], "payload-distribution")
 ci_ok = mapping(jobs["ci-ok"], "ci-ok")
 
@@ -409,6 +412,7 @@ for job_id, job in (
     ("script-tests-3", script_tests_3),
     ("script-tests-4", script_tests_4),
     ("script-tests-5", script_tests_5),
+    ("script-tests-6", script_tests_6),
     ("payload-distribution", payload_distribution),
 ):
     require(job.get("needs") == ["classify"], f"{job_id} must depend only on classify")
@@ -585,6 +589,7 @@ script_check_names = [
     str(script_tests_3["name"]),
     str(script_tests_4["name"]),
     str(script_tests_5["name"]),
+    str(script_tests_6["name"]),
 ]
 expected_required_jobs = {
     "schema": 1,
@@ -623,6 +628,7 @@ expected_needs = {
     "script-tests-3",
     "script-tests-4",
     "script-tests-5",
+    "script-tests-6",
     "payload-distribution",
 }
 require(
@@ -675,7 +681,7 @@ for step in ci_ok_steps:
             "",
             """printf '%s\\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" --arg heavy "$HEAVY" --arg mode "$MODE" '
               . as $needs
-              | ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"] as $heavy_jobs
+              | ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "script-tests-6", "payload-distribution"] as $heavy_jobs
               | ($needs["quick-gate"].result == "success")
                 and ($needs.classify.result == "success")
                 and (
@@ -686,6 +692,7 @@ for step in ci_ok_steps:
                     and ($needs["script-tests-3"].result == "success")
                     and ($needs["script-tests-4"].result == "success")
                     and ($needs["script-tests-5"].result == "success")
+                    and ($needs["script-tests-6"].result == "success")
                     and ($needs["payload-distribution"].result == "success") )
                   or
                   ( $heavy == "skip"
@@ -700,7 +707,7 @@ for step in ci_ok_steps:
             "ci-ok aggregate must enforce exact full and skip-mode result shapes",
         )
         jq_mutant = normalized_run.replace(
-            'and($needs["script-tests-5"].result=="success")', "", 1
+            'and($needs["script-tests-6"].result=="success")', "", 1
         )
         require(
             jq_mutant != expected_run,
@@ -716,6 +723,7 @@ heavy_job_ids = [
     "script-tests-3",
     "script-tests-4",
     "script-tests-5",
+    "script-tests-6",
     "payload-distribution",
 ]
 
@@ -762,12 +770,12 @@ for skip_mode in ("scoped", "reuse"):
         f"{skip_mode} aggregate fixture must pass",
     )
 require(
-    aggregate_status("false", "run", "full", overrides={"script-tests-5": "skipped"})
+    aggregate_status("false", "run", "full", overrides={"script-tests-6": "skipped"})
     != 0,
     "full mode must reject even one skipped required job",
 )
 require(
-    aggregate_status("false", "skip", "scoped", "skipped", {"script-tests-5": "success"})
+    aggregate_status("false", "skip", "scoped", "skipped", {"script-tests-6": "success"})
     != 0,
     "skip modes must reject partially executed heavy jobs",
 )
@@ -780,10 +788,10 @@ require(
     "docs-only mode must require no_code=true",
 )
 aggregate_mutant = aggregate_run.replace(
-    'and ($needs["script-tests-5"].result == "success")', "", 1
+    'and ($needs["script-tests-6"].result == "success")', "", 1
 )
 require(aggregate_mutant != aggregate_run, "positive control must remove one success assertion")
-mutant_results = {"script-tests-5": "failure"}
+mutant_results = {"script-tests-6": "failure"}
 require(
     aggregate_status("false", "run", "full", overrides=mutant_results) != 0,
     "real aggregate must reject a failed script shard",
@@ -836,6 +844,7 @@ timeout_floors = {
     "script-tests-3": (script_tests_3, 20),
     "script-tests-4": (script_tests_4, 20),
     "script-tests-5": (script_tests_5, 20),
+    "script-tests-6": (script_tests_6, 20),
 }
 for job_id, (job, timeout_floor) in timeout_floors.items():
     timeout = job.get("timeout-minutes")
@@ -854,7 +863,16 @@ script_steps_4 = script_tests_4.get("steps")
 require(isinstance(script_steps_4, list), "script-tests-4.steps must be a list")
 script_steps_5 = script_tests_5.get("steps")
 require(isinstance(script_steps_5, list), "script-tests-5.steps must be a list")
-all_script_steps = (script_steps, script_steps_2, script_steps_3, script_steps_4, script_steps_5)
+script_steps_6 = script_tests_6.get("steps")
+require(isinstance(script_steps_6, list), "script-tests-6.steps must be a list")
+all_script_steps = (
+    script_steps,
+    script_steps_2,
+    script_steps_3,
+    script_steps_4,
+    script_steps_5,
+    script_steps_6,
+)
 quick_steps = quick_gate.get("steps")
 require(isinstance(quick_steps, list), "quick-gate.steps must be a list")
 fly2664_steps = [
@@ -1053,75 +1071,69 @@ expected_setup = [
 ]
 expected_shard_tests = {
     "script-tests": [
-        "Test — FLY-2664 merged worktree read-only audit",
-        "Test — FLY-2549 summary preflight with stale workspace dist",
-        "Test — FLY-1707 incident replay",
-        "Test — FLY-1393 flag truth CLI",
-        "Test — FLY-1436 work-kind cutover CLI",
-        "Test — FLY-1759 reap-first worktree teardown",
-        "Test — FLY-1867/2026 Playwright lifecycle tools",
-        "Test — FLY-1572 mailbox migration CLI",
-        "Test — FLY-2278 attempt-version rollback",
-        "Test — FLY-1764 legacy swap broadcast retirement",
-        "Test — FLY-1327 cycle-time report",
-        "Integration test — cmux-sync hooks",
-        "Test — FLY-1944 host terminal cutover brake",
-        "Test — FLY-2274 cutover window artifacts",
-        "Test — Discord adapter orphan reaper (FLY-183)",
-        "Test — Lead rules single-bundle load chain (FLY-1402)",
+        "Test — FLY-1389 path-hygiene + 529-Room repair batch",
+        "Test — FLY-2598 voice host configuration",
         "Test — FLY-1496 model resolution + Lead derivation",
-        "Test — FLY-1948 slot Discord channel evidence",
-        "Test — FLY-1830 non-Lead daemon convergence",
-        "Test — FLY-1814 launchd fleet contracts",
-        "Test — FLY-1929 voucher watch contracts",
-        "Test — FLY-913/2204 restart + calendar isolation guards",
-        "Test — FLY-2533 packed phase protocols",
         "Test — FLY-2007 phase-0 analyser contract",
+        "Test — FLY-1887 one-shot Codex hard timeout",
+        "Test — FLY-2237 slot Bridge cycle",
+        "Test — onboard-shell public install chain",
+        "Test — FLY-2145 Lead memory private repository",
+        "Test — FLY-2144 retired dispatch residue guard",
+        "Test — Lead in-flight mailbox adoption contracts",
+        "Test — FLY-1189 multi-Lead campaign harness",
+        "Test — FLY-1961 dual-vendor workspace trust",
+        "Test — FLY-1959 updater sources + body provenance contracts",
+        "Test — FLY-2102 startup flag freeze residue guard",
+        "Test — FLY-2664 merged worktree read-only audit",
     ],
     "script-tests-2": [
-        "Test — FLY-1905 CI apt-install helper",
-        "Test — FLY-519 fleet provisioning + zero-secret gate",
-        "Test — FLY-2034 Belle staged credential gate",
-        "Test — FLY-1356 skill-framework vendor + variant contracts",
-        "Test — FLY-1609 four-arm analysis contract",
-        "Test — FLY-648 one-command setup wizard",
-        "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
-        "Test — FLY-1189 multi-Lead campaign harness",
-        "Test — FLY-2237 slot Bridge cycle",
-        "Test — FLY-2270 QA report host stub",
-        "Test — FLY-2270 slot Bridge launch boundary",
-        "Test — FLY-2454 slot isolation contracts",
-        "Test — FLY-2456 hermetic restart drill evidence",
-        "Test — FLY-2519 read-only Lead parity inventory",
-        "Test — FLY-1775 generalized-DAG 529 room",
-        "Test — FLY-2383 voice concurrency measurement contract",
-        "Test — FLY-2446 two-Lead voice driver",
-        "Test — FLY-1189 fault injector safety lock",
-        "Test — FLY-1189 assert library + driver trap owner",
-        "Test — FLY-1389 path-hygiene + 529-Room repair batch",
-        "Test — resident Codex recovery contracts",
-        "Test — NPM packaging pipeline + packaged-mode seams",
-        "Test — FLY-2190 host tmux selection S0",
+        "Test — FLY-2331 Bridge async-child guard regression",
         "Test — FLY-2444 generalized Lead launcher",
-        "Test — FLY-2459 Codex department capability and migration",
-        "Test — FLY-1501 restart brake + heartbeat guard contracts",
-        "Test — FLY-1634 restart net-deletion contracts",
-        "Test — FLY-1959 updater sources + body provenance contracts",
-        "Test — payload real-install smoke",
-        "Test — onboard-shell public install chain",
-        "Test — FLY-882 Discord bot token pool",
-        "Test — FLY-513 global-codex repoint apply-path",
+        "Test — FLY-2598 voice client coexistence",
+        "Test — FLY-1081 notify-path migration",
+        "Test — FLY-913/2204 restart + calendar isolation guards",
         "Test — FLY-1955/2211 Codex daemon mutation safety",
-        "Test — FLY-697 codex-log-guard",
         "Test — FLY-1330 log janitor",
+        "Test — FLY-2465 isolated Codex quota contracts",
+        "Test — FLY-2549 summary preflight with stale workspace dist",
+        "Test — FLY-2139 database maintenance",
+        "Test — FLY-2598 readonly voice preflight",
+        "Test — FLY-2454 slot isolation contracts",
+        "Test — FLY-1393 flag truth CLI",
+        "Test — FLY-1338 matrix coverage parity (QA)",
+        "Test — FLY-1759 reap-first worktree teardown",
     ],
     "script-tests-3": [
-        "Test — FLY-2139 database maintenance",
-        "Test — FLY-1887 one-shot Codex hard timeout",
-        "Test — FLY-2465 isolated Codex quota contracts",
+        "Test — FLY-1434 unified restart + quota caller",
+        "Test — payload real-install smoke",
+        "Test — FLY-1501 restart brake + heartbeat guard contracts",
+        "Test — FLY-1678 statusline model-scoped bar + installer",
+        "Test — FLY-2456 hermetic restart drill evidence",
+        "Test — FLY-1189 assert library + driver trap owner",
+        "Test — FLY-648 one-command setup wizard",
+        "Test — FLY-2134 artifact freshness monitor",
+        "Test — Discord adapter orphan reaper (FLY-183)",
+        "Test — resident Codex recovery contracts",
+        "Test — FLY-1729/1743 restart update + consistency guards",
+        "Test — FLY-1707 incident replay",
+        "Test — FLY-1944 host terminal cutover brake",
+        "Test — FLY-2446 two-Lead voice driver",
+        "Test — FLY-1830 non-Lead daemon convergence",
+    ],
+    "script-tests-4": [
+        "Test — FLY-1364 cmux sync repair",
         "Test — FLY-2404 shared Codex credential truth",
+        "Test — FLY-1905 CI apt-install helper",
+        "Test — Lead rules single-bundle load chain (FLY-1402)",
+        "Test — FLY-2270 QA report host stub",
+        "Test — FLY-1634 restart net-deletion contracts",
+        "Test — FLY-2519 read-only Lead parity inventory",
+        "Test — FLY-2403 Astra/Fable design outcome report",
+        "Test — FLY-2383 voice concurrency measurement contract",
         "Test — FLY-1887 bounded Flywheel logs",
-        "Test — FLY-1961 dual-vendor workspace trust",
+        "Test — FLY-957 record_deployed_range best-effort",
+        "Test — FLY-2459 Codex department capability and migration",
         "Test — FLY-1018 gemini-agent guard",
         "Test — FLY-880 PM executor role contract",
         "Test — FLY-2015 diagram-design role routing",
@@ -1130,42 +1142,50 @@ expected_shard_tests = {
         "Test — FLY-1461 QA executor 529 N-to-N contract",
         "Test — FLY-1463 QA executor ship-report contract",
         "Test — FLY-1981 runtime role auto-QA retirement",
-        "Test — FLY-1434 unified restart + quota caller",
         "Test — FLY-1715 runner boundary shell contracts",
-        "Test — FLY-2126 Raya voice scenario wrapper",
-        "Test — FLY-2033 meeting artifact closure",
-        "Test — FLY-1726 canonical Lead identity delivery",
-        "Test — Lead in-flight mailbox adoption contracts",
-        "Test — FLY-1649 r4 migration-window hardening",
-        "Test — FLY-927 infra-alert shell path",
-        "Test — FLY-957 record_deployed_range best-effort",
-        "Test — FLY-1729/1743 restart update + consistency guards",
-        "Test — FLY-1081 notify-path migration",
-        "Test — FLY-1861 CI cancellation and classification contracts",
-        "Test — FLY-1674 legacy-path residue guard",
-        "Test — FLY-2144 retired dispatch residue guard",
-        "Test — FLY-2102 startup flag freeze residue guard",
-        "Test — FLY-1338 matrix coverage parity (QA)",
-        "Test — FLY-1855 executable Lead patrol snapshot",
         "Test — FLY-1945 trusted patrol helper closure",
-        "Test — FLY-2403 Astra/Fable design outcome report",
-        "Test — FLY-2570 dynamic design ratio operator",
-        "Test — FLY-1986 load probe contract",
-        "Test — FLY-1678 statusline model-scoped bar + installer",
         "Test — FLY-1870 job elapsed tripwire contract",
-    ],
-    "script-tests-4": [
-        "Test — FLY-2145 Lead memory private repository",
-        "Test — FLY-1364 cmux sync repair",
+        "Test — FLY-2034 Belle staged credential gate",
+        "Test — FLY-1356 skill-framework vendor + variant contracts",
+        "Test — FLY-2270 slot Bridge launch boundary",
+        "Test — FLY-513 global-codex repoint apply-path",
+        "Test — FLY-697 codex-log-guard",
+        "Test — FLY-1436 work-kind cutover CLI",
+        "Test — FLY-1867/2026 Playwright lifecycle tools",
+        "Test — FLY-2278 attempt-version rollback",
     ],
     "script-tests-5": [
-        "Test — FLY-2331 Bridge async-child guard regression",
-        "Test — FLY-1663 launchd-native Lead lifecycle",
+        "Test — FLY-1855 executable Lead patrol snapshot",
+        "Test — FLY-1929 voucher watch contracts",
+        "Test — FLY-1986 load probe contract",
         "Test — FLY-2146 Lead memory remote sync",
-        "Test — FLY-2134 artifact freshness monitor",
-        "Test — FLY-2598 voice host configuration",
-        "Test — FLY-2598 readonly voice preflight",
-        "Test — FLY-2598 voice client coexistence",
+        "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
+        "Test — NPM packaging pipeline + packaged-mode seams",
+        "Test — FLY-1572 mailbox migration CLI",
+        "Test — FLY-1861 CI cancellation and classification contracts",
+        "Test — FLY-2533 packed phase protocols",
+        "Test — FLY-519 fleet provisioning + zero-secret gate",
+        "Test — FLY-1189 fault injector safety lock",
+        "Test — FLY-2126 Raya voice scenario wrapper",
+        "Test — FLY-1674 legacy-path residue guard",
+        "Test — FLY-882 Discord bot token pool",
+    ],
+    "script-tests-6": [
+        "Test — FLY-1663 launchd-native Lead lifecycle",
+        "Test — FLY-1814 launchd fleet contracts",
+        "Test — FLY-1726 canonical Lead identity delivery",
+        "Test — FLY-2274 cutover window artifacts",
+        "Test — FLY-2570 dynamic design ratio operator",
+        "Test — FLY-1948 slot Discord channel evidence",
+        "Test — FLY-1775 generalized-DAG 529 room",
+        "Test — FLY-1649 r4 migration-window hardening",
+        "Integration test — cmux-sync hooks",
+        "Test — FLY-2033 meeting artifact closure",
+        "Test — FLY-927 infra-alert shell path",
+        "Test — FLY-2190 host tmux selection S0",
+        "Test — FLY-1764 legacy swap broadcast retirement",
+        "Test — FLY-1609 four-arm analysis contract",
+        "Test — FLY-1327 cycle-time report",
     ],
 }
 script_shards = {
@@ -1174,13 +1194,15 @@ script_shards = {
     "script-tests-3": (script_tests_3, script_steps_3),
     "script-tests-4": (script_tests_4, script_steps_4),
     "script-tests-5": (script_tests_5, script_steps_5),
+    "script-tests-6": (script_tests_6, script_steps_6),
 }
 expected_shard_names = {
-    "script-tests": "Script Tests 1/5 — session/lifecycle (shell suites)",
-    "script-tests-2": "Script Tests 2/5 — fleet/setup/packaging A (shell suites)",
-    "script-tests-3": "Script Tests 3/5 — fleet/setup/packaging B (shell suites)",
-    "script-tests-4": "Script Tests 4/5 — cmux repair + Lead memory (shell suites)",
-    "script-tests-5": "Script Tests 5/5 — Lead memory remote sync",
+    "script-tests": "Script Tests 1/6 — balanced shell suites A",
+    "script-tests-2": "Script Tests 2/6 — balanced shell suites B",
+    "script-tests-3": "Script Tests 3/6 — balanced shell suites C",
+    "script-tests-4": "Script Tests 4/6 — balanced shell suites D",
+    "script-tests-5": "Script Tests 5/6 — balanced shell suites E",
+    "script-tests-6": "Script Tests 6/6 — balanced shell suites F",
 }
 
 all_expected_tests = [
@@ -1287,10 +1309,12 @@ require(
 )
 
 fly2404_steps = [
-    step for step in script_steps_3
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict) and step.get("name") == "Test — FLY-2404 shared Codex credential truth"
 ]
-require(len(fly2404_steps) == 1, "script-tests-3 must contain exactly one FLY-2404 step")
+require(len(fly2404_steps) == 1, "script shards must contain exactly one FLY-2404 step")
 fly2404_commands = [
     line.strip()
     for line in str(fly2404_steps[0].get("run", "")).splitlines()
@@ -1341,10 +1365,12 @@ fly2146_env = mapping(fly2146_step.get("env"), "FLY-2146 shell suite env")
 require(str(fly2146_env.get("GITLEAKS_VERSION")) == "8.30.1", "FLY-2146 must pin gitleaks 8.30.1")
 
 fly2134_steps = [
-    step for step in script_steps_5
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict) and step.get("name") == "Test — FLY-2134 artifact freshness monitor"
 ]
-require(len(fly2134_steps) == 1, "script-tests-5 must contain exactly one FLY-2134 step")
+require(len(fly2134_steps) == 1, "script shards must contain exactly one FLY-2134 step")
 fly2134_step = fly2134_steps[0]
 fly2134_commands = [
     line.strip()
@@ -1406,7 +1432,7 @@ fly1715_steps = [
 ]
 require(
     len(fly1715_steps) == 1,
-    "script-tests-2 must contain exactly one FLY-1715 runner boundary shell contracts step",
+    "script shards must contain exactly one FLY-1715 runner boundary shell contracts step",
 )
 fly1715_step = fly1715_steps[0]
 require("if" not in fly1715_step, "FLY-1715 shell contracts must not be conditional")
@@ -1492,7 +1518,7 @@ fly1830_steps = [
 ]
 require(
     len(fly1830_steps) == 1,
-    "script-tests must contain exactly one FLY-1830 non-Lead daemon convergence step",
+    "script shards must contain exactly one FLY-1830 non-Lead daemon convergence step",
 )
 fly1830_step = fly1830_steps[0]
 require("if" not in fly1830_step, "FLY-1830 convergence suite must not be conditional")
@@ -1522,7 +1548,7 @@ fly1814_steps = [
 ]
 require(
     len(fly1814_steps) == 1,
-    "script-tests must contain exactly one FLY-1814 launchd fleet contracts step",
+    "script shards must contain exactly one FLY-1814 launchd fleet contracts step",
 )
 fly1814_step = fly1814_steps[0]
 require("if" not in fly1814_step, "FLY-1814 launchd suites must not be conditional")
@@ -1549,7 +1575,12 @@ require(
     f"FLY-1814 CI command set/order drifted: {fly1814_commands}",
 )
 
-fly1948_steps = [step for step in script_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-1948 slot Discord channel evidence"]
+fly1948_steps = [
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-1948 slot Discord channel evidence"
+]
 require(len(fly1948_steps) == 1, "FLY-1948 channel evidence must run exactly once")
 fly1948_commands = [line.strip() for line in str(fly1948_steps[0].get("run", "")).splitlines() if line.strip()]
 require(fly1948_commands == [
@@ -1792,21 +1823,21 @@ require(
     "FLY-1883 stub-hygiene pairing must not swallow failures",
 )
 
-voice_driver_steps = [step for step in script_steps_2 if isinstance(step, dict) and step.get("name") == "Test — FLY-2446 two-Lead voice driver"]
-require(len(voice_driver_steps) == 1, "FLY-2446 driver must run exactly once in script-tests-2")
+voice_driver_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2446 two-Lead voice driver"]
+require(len(voice_driver_steps) == 1, "FLY-2446 driver must run exactly once across script shards")
 voice_driver_step = voice_driver_steps[0]
 require(voice_driver_step.get("run") == "node --test scripts/__tests__/fly2446-two-lead-run.test.mjs", "FLY-2446 driver command drifted")
 require("if" not in voice_driver_step and "continue-on-error" not in voice_driver_step, "FLY-2446 driver must be a mandatory hermetic gate")
-voice_preflight_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 readonly voice preflight"]
-require(len(voice_preflight_steps) == 1, "FLY-2598 readonly preflight missing from script-tests-5")
+voice_preflight_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 readonly voice preflight"]
+require(len(voice_preflight_steps) == 1, "FLY-2598 readonly preflight must run exactly once across script shards")
 require(voice_preflight_steps[0].get("run") == "node --test scripts/__tests__/fly2598-voice-preflight.test.mjs", "FLY-2598 preflight command drifted")
 require(not voice_preflight_steps[0].get("if") and not voice_preflight_steps[0].get("continue-on-error"), "FLY-2598 preflight must be mandatory")
-voice_coexist_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice client coexistence"]
-require(len(voice_coexist_steps) == 1, "FLY-2598 voice coexistence missing from script-tests-5")
+voice_coexist_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice client coexistence"]
+require(len(voice_coexist_steps) == 1, "FLY-2598 voice coexistence must run exactly once across script shards")
 require(voice_coexist_steps[0].get("run") == "pnpm --filter flywheel-voice-codex... build\nnode --test scripts/__tests__/fly2598-voice-coexistence.test.mjs\n", "FLY-2598 coexistence command drifted")
 require(not voice_coexist_steps[0].get("if") and not voice_coexist_steps[0].get("continue-on-error"), "FLY-2598 coexistence must be mandatory")
-voice_config_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice host configuration"]
-require(len(voice_config_steps) == 1, "FLY-2598 voice config test must run exactly once in script-tests-5")
+voice_config_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice host configuration"]
+require(len(voice_config_steps) == 1, "FLY-2598 voice config test must run exactly once across script shards")
 voice_config_step = voice_config_steps[0]
 require(str(voice_config_step.get("run", "")).strip().splitlines() == ["pnpm --filter flywheel-teamlead... build", "pnpm --filter flywheel-comm... build", "node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs"], "FLY-2598 voice config gate commands drifted")
 require("if" not in voice_config_step and "continue-on-error" not in voice_config_step, "FLY-2598 voice config gate must be mandatory")

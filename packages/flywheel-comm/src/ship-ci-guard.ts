@@ -76,7 +76,7 @@ function parseManifest(value: unknown): RequiredJobsManifest | undefined {
 		!Array.isArray(row.always) ||
 		!Array.isArray(row.heavy) ||
 		row.always.length !== 2 ||
-		row.heavy.length !== 13 ||
+		row.heavy.length !== 14 ||
 		![...row.always, ...row.heavy].every(
 			(name) => typeof name === "string" && name.length > 0,
 		)

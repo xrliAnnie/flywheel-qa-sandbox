@@ -27,6 +27,7 @@ const scriptShardIds = [
 	"script-tests-3",
 	"script-tests-4",
 	"script-tests-5",
+	"script-tests-6",
 ] as const;
 
 const requiredScriptShardIds = [
@@ -35,6 +36,7 @@ const requiredScriptShardIds = [
 	"script-tests-3",
 	"script-tests-4",
 	"script-tests-5",
+	"script-tests-6",
 ] as const;
 
 function hasEveryScriptShard(ids: readonly string[]): boolean {
@@ -81,6 +83,7 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 			["script-tests-3", 20],
 			["script-tests-4", 20],
 			["script-tests-5", 20],
+			["script-tests-6", 20],
 		]);
 		for (const [jobId, timeoutFloor] of timeoutFloors) {
 			const job = jobs[jobId] as Record<string, unknown> | undefined;
@@ -92,9 +95,9 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 		}
 	});
 
-	it("the redundant shard inventory includes shard 5 and detects its removal", () => {
+	it("the redundant shard inventory includes shard 6 and detects its removal", () => {
 		expect(hasEveryScriptShard(scriptShardIds)).toBe(true);
-		const mutant = scriptShardIds.filter((id) => id !== "script-tests-5");
+		const mutant = scriptShardIds.filter((id) => id !== "script-tests-6");
 		expect(hasEveryScriptShard(mutant)).toBe(false);
 	});
 

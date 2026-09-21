@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	probeShipCiGreen,
@@ -23,27 +25,18 @@ const WORKFLOW = [
 	"    name: $" + `{{ ${RAW_AGGREGATE_NAME} }}`,
 	"    runs-on: ubuntu-latest",
 ].join("\n");
-const MANIFEST = {
-	schema: 1,
-	aggregate: "CI OK",
-	aggregate_scoped: "CI Scope OK",
-	always: ["Classify CI scope", "Quick Gate (build + typecheck + lint)"],
-	heavy: [
-		"Unit (teamlead 1 of 4)",
-		"Unit (teamlead 2 of 4)",
-		"Unit (teamlead 3 of 4)",
-		"Unit (teamlead 4 of 4)",
-		"Unit (observation performance)",
-		"Unit (heavy)",
-		"Unit (light)",
-		"Script Tests (onboarding + dispatch)",
-		"Script Tests (publish + release)",
-		"Script Tests (runtime + runner)",
-		"Script Tests (workflow + retention)",
-		"Script Tests (misc)",
-		"Payload Distribution",
-	],
-} as const;
+const MANIFEST = JSON.parse(
+	readFileSync(
+		resolve(import.meta.dirname, "../../../../.github/ci-required-jobs.json"),
+		"utf8",
+	),
+) as {
+	schema: number;
+	aggregate: string;
+	aggregate_scoped: string;
+	always: string[];
+	heavy: string[];
+};
 
 type Check = {
 	bucket: string;
@@ -205,7 +198,7 @@ describe("FLY-1314/2681 ship CI guard", () => {
 		expect(run.mock.calls[1]?.[1]).not.toContain("--required");
 	});
 
-	it("accepts a latest full CI OK after exact run and 16-job proof", () => {
+	it("accepts a latest full CI OK after exact run and 17-job proof", () => {
 		const run = runner({ checks: fullChecks(), checksResult: { status: 1 } });
 		expect(probe(run)).toMatchObject({ green: true, reason: "ci_green" });
 		expect(run).toHaveBeenCalledWith(

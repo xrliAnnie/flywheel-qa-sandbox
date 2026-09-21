@@ -22,29 +22,7 @@ git -C "$REPO" config user.email ci@example.test
 git -C "$REPO" config user.name CI
 git -C "$REPO" remote add origin "$REMOTE"
 mkdir -p "$REPO/.github"
-cat >"$REPO/.github/ci-required-jobs.json" <<'JSON'
-{
-  "schema": 1,
-  "aggregate": "CI OK",
-  "aggregate_scoped": "CI Scope OK",
-  "always": ["Classify CI scope", "Quick Gate (build + typecheck + lint)"],
-  "heavy": [
-    "Unit (teamlead 1 of 4)",
-    "Unit (teamlead 2 of 4)",
-    "Unit (teamlead 3 of 4)",
-    "Unit (teamlead 4 of 4)",
-    "Unit (observation performance)",
-    "Unit (heavy)",
-    "Unit (light)",
-    "Script Tests (onboarding + dispatch)",
-    "Script Tests (publish + release)",
-    "Script Tests (runtime + runner)",
-    "Script Tests (workflow + retention)",
-    "Script Tests (misc)",
-    "Payload Distribution"
-  ]
-}
-JSON
+cp "$ROOT/.github/ci-required-jobs.json" "$REPO/.github/ci-required-jobs.json"
 cp "$REPO/.github/ci-required-jobs.json" "$TMP/good-manifest.json"
 printf 'base\n' >"$REPO/file.txt"
 git -C "$REPO" add .github/ci-required-jobs.json file.txt
@@ -106,8 +84,8 @@ case "$endpoint" in
       skipped_job) jq '.jobs[2].conclusion = "skipped"' "$GH_FIXTURES/jobs.json" ;;
       missing_aggregate) jq '.jobs |= map(select(.name != "CI OK")) | .total_count = (.jobs | length)' "$GH_FIXTURES/jobs.json" ;;
       missing_matrix) jq '.jobs |= map(select(.name != "Unit (teamlead 2 of 4)")) | .total_count = (.jobs | length)' "$GH_FIXTURES/jobs.json" ;;
-      missing_shard) jq '.jobs |= map(select(.name != "Script Tests (misc)")) | .total_count = (.jobs | length)' "$GH_FIXTURES/jobs.json" ;;
-      only_fifteen) jq '.jobs = .jobs[0:15] | .total_count = 15' "$GH_FIXTURES/jobs.json" ;;
+      missing_shard) jq '.jobs |= map(select(.name != "Script Tests 6/6 — balanced shell suites F")) | .total_count = (.jobs | length)' "$GH_FIXTURES/jobs.json" ;;
+      only_sixteen) jq '.jobs = .jobs[0:16] | .total_count = 16' "$GH_FIXTURES/jobs.json" ;;
       extra_job) jq '.jobs += [{name:"Unknown",conclusion:"success"}] | .total_count = (.jobs | length)' "$GH_FIXTURES/jobs.json" ;;
       duplicate_job) jq '.jobs[2].name = .jobs[1].name' "$GH_FIXTURES/jobs.json" ;;
       too_many_jobs) jq '.total_count = 101' "$GH_FIXTURES/jobs.json" ;;
@@ -144,7 +122,7 @@ write_fixtures() {
   local event="$1" head="$2"
   jq -n --arg tree "$TREE" '{total_count:1,artifacts:[{id:7,name:("ci-full-green-"+$tree),expired:false,created_at:"2026-09-17T20:00:00Z",workflow_run:{id:42}}]}' >"$FIXTURES/artifacts.json"
   jq -n --arg event "$event" --arg head "$head" '{id:42,path:".github/workflows/ci.yml",status:"completed",conclusion:"success",event:$event,head_sha:$head,repository:{id:123,full_name:"xrliAnnie/flywheel"},head_repository:{id:123,full_name:"xrliAnnie/flywheel"}}' >"$FIXTURES/run.json"
-  jq -n --slurpfile manifest "$TMP/good-manifest.json" '{jobs:(($manifest[0].always+$manifest[0].heavy+[$manifest[0].aggregate]) | map({name:.,conclusion:"success"})),total_count:16}' >"$FIXTURES/jobs.json"
+  jq -n --slurpfile manifest "$TMP/good-manifest.json" '{jobs:(($manifest[0].always+$manifest[0].heavy+[$manifest[0].aggregate]) | map({name:.,conclusion:"success"}))} | .total_count = (.jobs | length)' >"$FIXTURES/jobs.json"
 }
 
 run_reuse() {
@@ -189,7 +167,7 @@ else
   run_reuse good_push push push "$MERGE"
   assert_reuse "reuses a full green push run with the same tree" true 42
 
-  for scenario in run_failure wrong_path wrong_repo wrong_full_name skipped_job missing_aggregate missing_matrix missing_shard only_fifteen extra_job duplicate_job too_many_jobs expired_artifact too_many_artifacts api_failure api_timeout; do
+  for scenario in run_failure wrong_path wrong_repo wrong_full_name skipped_job missing_aggregate missing_matrix missing_shard only_sixteen extra_job duplicate_job too_many_jobs expired_artifact too_many_artifacts api_failure api_timeout; do
     run_reuse "$scenario"
     assert_reuse "$scenario fails closed" false
   done
