@@ -1,0 +1,112 @@
+{
+	"reviewVerdict": "CHANGES_REQUESTED",
+	"reviewerVerdict": "CHANGES_REQUESTED",
+	"requestId": "37382311-d376-4a1c-a602-d3b90f05c686",
+	"round": 1,
+	"findings": [
+		{
+			"id": "node-test-name-pattern-false-green",
+			"severity": "HIGH",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 120,
+			"title": "§5 步骤 3 的 node --test --test-name-pattern 会在命名测试不存在时假绿 exit 0",
+			"detail": "实测 (node v25.6.1)：`node --test --test-name-pattern='<不匹配的名字>' <file>` 退出码为 0，且被点名的测试体从未执行（用写文件副作用验证：pattern 不匹配时 RAN 文件未生成，EXIT=0）；输出仍报 `tests 1 / pass 1`（文件级计数），所以连解析 pass 计数也会被骗。只有文件本身缺失才返回 1。plan.md:120 把该命令列为 §5 生产验收的唯一机械式合同检查，而 plan.md:124 断言『命名合同实际执行并通过』——该命令无法建立此结论。一旦 package-gate.test.mjs 里的测试名被改写或该断言被删除，§5 会被记成绿灯，这正是本 issue 要消灭的失败模式，也直接违反本计划自己写进守则的『zero collected tests … are NOT a pass even with exit 0』(plan.md:45)。§5 的 grep 按 plan.md:124 自述『只证明旧字面量消失』，因此这一步失效后 §5 就只剩人工读文。修法：先断言该测试名在 `scripts/__tests__/package-gate.test.mjs` 中存在（grep -Fq 原文名），再运行；或改用 `--test-reporter=tap` 并断言确实收集到并通过了非零条被点名的断言。",
+			"findingKey": "node-test-name-pattern-false-green"
+		},
+		{
+			"id": "contract-test-not-wired-into-ci",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 82,
+			"title": "新增的 fly2753 合同测试未接入 CI，守则可无声回退",
+			"detail": "`scripts/__tests__/fly2753-targeted-verification-contract.test.sh` 已提交并在本机通过（实跑 exit 0，7 个负例全部被拒），但 `rg 'fly2753|2753' .github/workflows/` 零命中，仓内也没有 .husky 钩子，且 ci.yml 对每个 shell 合同测试都是显式逐条 `run: bash …`（无 glob 兜底）。直接先例是 ci.yml:233 `Test — FLY-880 PM executor role contract`。结果：§4 列举的 exact-head CI 全套任务集合恰好不覆盖本单交付的这道护栏，三份角色文字日后被改回全量门不会被任何自动检查发现。建议 §4 增加一行——在 `Build & Test` job 内加 `- name: Test — FLY-2753 targeted verification contract` 步骤，使守则合同与其他角色合同享有同等 CI 保护。",
+			"findingKey": "contract-test-not-wired-into-ci"
+		},
+		{
+			"id": "injected-skill-templates-still-mandate-root-pnpm-test",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 73,
+			"title": "注入式 skill 仍把 root `pnpm test`（= pnpm -r test）写成 DoD，项目级 config 有更小的修法未采用",
+			"detail": "`packages/edge-worker/src/SkillInjector.ts:75` 的默认值是 `testCommand: ctx.testCommand ?? \"pnpm test\"`，而 root package.json 的 `\"test\": \"pnpm -r test\"` 就是全量递归套件。本仓 `.flywheel/config.yaml` 顶层键只有 project/linear/runners/roles/teams/decision_layer/qa/doc_flow/founder_milestone_report/agents/checkpoints——没有 `skills:` 段，所以 `skills.test_command` 未覆盖，默认值生效。于是每具 runner 被注入的 `linear-issue-context.ts:28` 会写着『3. 测试全部通过（pnpm test）』，`flywheel-git-workflow.ts:51,62` 的 pre-PR 清单和 `flywheel-tdd.ts:52` 的 REFACTOR 阶段同样渲染成 `pnpm test`。plan.md:73-74 已意识到冲突，选择靠守则里那句 `this rule overrides broader skill/helper defaults`（含显式点名 root `pnpm test`）来压制，理由『不顺手扩到所有项目』也成立。但存在一个同样不触碰跨项目模板的项目级修法：在本仓 `.flywheel/config.yaml` 加 `skills.test_command`（Blueprint.ts:961 会读取），让注入文案本身就渲染成定向命令，消除同一 session 内两份互相矛盾的『强制要求』。建议 §3 至少把这个选项显式评估并记录取舍。",
+			"findingKey": "injected-skill-templates-still-mandate-root-pnpm-test"
+		},
+		{
+			"id": "fail-if-no-match-does-not-cover-missing-scripts",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 45,
+			"title": "--fail-if-no-match 对『包匹配上但缺脚本』fail-open；两个无脚本包没有可指的 documented equivalent",
+			"detail": "实测 pnpm 10.13.1：`pnpm --filter \"nonexistent\" --fail-if-no-match exec …` 正确 exit 1（旗标本身有效），但 `pnpm --filter \"@flywheel/onboard\" --fail-if-no-match typecheck` **exit 0**，只打印 `None of the selected packages has a \"typecheck\" script`；`pnpm --filter \"flywheel-payload-endpoint...\" --fail-if-no-match build` 同样 exit 0。即该旗标只防『零包匹配』，不防『缺脚本』——守则里那句 `Check every selected package for the required script … NOT a pass even with exit 0` 是唯一防线，纯靠 runner 自律，无机械兜底。更具体的问题：`packages/onboard-shell` (@flywheel/onboard) 与 `packages/payload-endpoint` (flywheel-payload-endpoint) 的 package.json **完全没有 scripts 字段**，`flywheel-agent-team-transport`/`flywheel-cli`/`flywheel-inbox-mcp`/`flywheel-terminal-mcp` 则缺 `test:run`。对前两个包，守则要求的『use its documented equivalent if absent』无处可指，按字面读任何改动都无法 pass。建议 §1 或 §3 直接点名这些包的等价物（ci.yml:172-207 的 FLY-1062 shell 步骤即是它们的实际测试入口），否则 runner 要么卡死要么按 exit 0 放行。",
+			"findingKey": "fail-if-no-match-does-not-cover-missing-scripts"
+		},
+		{
+			"id": "plan-internal-tension-new-vs-reuse-contract-test",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 41,
+			"title": "§1 表格第 5 行说『新增…先 RED 后 GREEN』与 §2 的『复用已提交脚本、不制造 RED』自相矛盾",
+			"detail": "plan.md:41 的动作列写『新增最小角色合同测试，覆盖上面真实入口，先 RED 后 GREEN』，但 plan.md:56 明确『复用已提交的 scripts/__tests__/fly2753-targeted-verification-contract.test.sh 作为合同源…本轮重新运行验证现状即可，不在共享分支恢复旧规则制造 RED』。该脚本确已由 e40bc8810 提交且现状 GREEN（实跑通过）。照 §1 字面执行的后继可能去把三份角色改回旧全量门以『制造 RED』，正是 §2 禁止的动作。建议把第 5 行改成『已提交，复核并重跑』。",
+			"findingKey": "plan-internal-tension-new-vs-reuse-contract-test"
+		},
+		{
+			"id": "section5-grep-literal-set-weaker-than-committed-test",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 113,
+			"title": "§5 生产 grep 只查 2 个旧字面量，弱于已提交合同测试的 4 个",
+			"detail": "plan.md:113 的生产侧 grep 只覆盖 `pnpm test:packages:run|PACKAGE_GATE_RECEIPT`，而本仓已提交的合同测试 (scripts/__tests__/fly2753-targeted-verification-contract.test.sh:44) 的黑名单是 `pnpm test:packages:run|PACKAGE_GATE_RECEIPT|pnpm -r build|Self-verify — FULL REPO`。生产三份 nodes 文件若残留 `pnpm -r build` 或 `Self-verify — FULL REPO` 形式的全量门，§5 会漏判。建议两处字面量集合对齐，避免沙箱检查比生产验收更严这种反向差异。",
+			"findingKey": "section5-grep-literal-set-weaker-than-committed-test"
+		}
+	],
+	"advisories": [
+		{
+			"id": "contract-test-not-wired-into-ci",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 82,
+			"title": "新增的 fly2753 合同测试未接入 CI，守则可无声回退",
+			"detail": "`scripts/__tests__/fly2753-targeted-verification-contract.test.sh` 已提交并在本机通过（实跑 exit 0，7 个负例全部被拒），但 `rg 'fly2753|2753' .github/workflows/` 零命中，仓内也没有 .husky 钩子，且 ci.yml 对每个 shell 合同测试都是显式逐条 `run: bash …`（无 glob 兜底）。直接先例是 ci.yml:233 `Test — FLY-880 PM executor role contract`。结果：§4 列举的 exact-head CI 全套任务集合恰好不覆盖本单交付的这道护栏，三份角色文字日后被改回全量门不会被任何自动检查发现。建议 §4 增加一行——在 `Build & Test` job 内加 `- name: Test — FLY-2753 targeted verification contract` 步骤，使守则合同与其他角色合同享有同等 CI 保护。",
+			"findingKey": "contract-test-not-wired-into-ci"
+		},
+		{
+			"id": "injected-skill-templates-still-mandate-root-pnpm-test",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 73,
+			"title": "注入式 skill 仍把 root `pnpm test`（= pnpm -r test）写成 DoD，项目级 config 有更小的修法未采用",
+			"detail": "`packages/edge-worker/src/SkillInjector.ts:75` 的默认值是 `testCommand: ctx.testCommand ?? \"pnpm test\"`，而 root package.json 的 `\"test\": \"pnpm -r test\"` 就是全量递归套件。本仓 `.flywheel/config.yaml` 顶层键只有 project/linear/runners/roles/teams/decision_layer/qa/doc_flow/founder_milestone_report/agents/checkpoints——没有 `skills:` 段，所以 `skills.test_command` 未覆盖，默认值生效。于是每具 runner 被注入的 `linear-issue-context.ts:28` 会写着『3. 测试全部通过（pnpm test）』，`flywheel-git-workflow.ts:51,62` 的 pre-PR 清单和 `flywheel-tdd.ts:52` 的 REFACTOR 阶段同样渲染成 `pnpm test`。plan.md:73-74 已意识到冲突，选择靠守则里那句 `this rule overrides broader skill/helper defaults`（含显式点名 root `pnpm test`）来压制，理由『不顺手扩到所有项目』也成立。但存在一个同样不触碰跨项目模板的项目级修法：在本仓 `.flywheel/config.yaml` 加 `skills.test_command`（Blueprint.ts:961 会读取），让注入文案本身就渲染成定向命令，消除同一 session 内两份互相矛盾的『强制要求』。建议 §3 至少把这个选项显式评估并记录取舍。",
+			"findingKey": "injected-skill-templates-still-mandate-root-pnpm-test"
+		},
+		{
+			"id": "fail-if-no-match-does-not-cover-missing-scripts",
+			"severity": "MEDIUM",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 45,
+			"title": "--fail-if-no-match 对『包匹配上但缺脚本』fail-open；两个无脚本包没有可指的 documented equivalent",
+			"detail": "实测 pnpm 10.13.1：`pnpm --filter \"nonexistent\" --fail-if-no-match exec …` 正确 exit 1（旗标本身有效），但 `pnpm --filter \"@flywheel/onboard\" --fail-if-no-match typecheck` **exit 0**，只打印 `None of the selected packages has a \"typecheck\" script`；`pnpm --filter \"flywheel-payload-endpoint...\" --fail-if-no-match build` 同样 exit 0。即该旗标只防『零包匹配』，不防『缺脚本』——守则里那句 `Check every selected package for the required script … NOT a pass even with exit 0` 是唯一防线，纯靠 runner 自律，无机械兜底。更具体的问题：`packages/onboard-shell` (@flywheel/onboard) 与 `packages/payload-endpoint` (flywheel-payload-endpoint) 的 package.json **完全没有 scripts 字段**，`flywheel-agent-team-transport`/`flywheel-cli`/`flywheel-inbox-mcp`/`flywheel-terminal-mcp` 则缺 `test:run`。对前两个包，守则要求的『use its documented equivalent if absent』无处可指，按字面读任何改动都无法 pass。建议 §1 或 §3 直接点名这些包的等价物（ci.yml:172-207 的 FLY-1062 shell 步骤即是它们的实际测试入口），否则 runner 要么卡死要么按 exit 0 放行。",
+			"findingKey": "fail-if-no-match-does-not-cover-missing-scripts"
+		},
+		{
+			"id": "plan-internal-tension-new-vs-reuse-contract-test",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 41,
+			"title": "§1 表格第 5 行说『新增…先 RED 后 GREEN』与 §2 的『复用已提交脚本、不制造 RED』自相矛盾",
+			"detail": "plan.md:41 的动作列写『新增最小角色合同测试，覆盖上面真实入口，先 RED 后 GREEN』，但 plan.md:56 明确『复用已提交的 scripts/__tests__/fly2753-targeted-verification-contract.test.sh 作为合同源…本轮重新运行验证现状即可，不在共享分支恢复旧规则制造 RED』。该脚本确已由 e40bc8810 提交且现状 GREEN（实跑通过）。照 §1 字面执行的后继可能去把三份角色改回旧全量门以『制造 RED』，正是 §2 禁止的动作。建议把第 5 行改成『已提交，复核并重跑』。",
+			"findingKey": "plan-internal-tension-new-vs-reuse-contract-test"
+		},
+		{
+			"id": "section5-grep-literal-set-weaker-than-committed-test",
+			"severity": "LOW",
+			"file": "engineering/doc/FLY-2753-targeted-local-tests/plan.md",
+			"line": 113,
+			"title": "§5 生产 grep 只查 2 个旧字面量，弱于已提交合同测试的 4 个",
+			"detail": "plan.md:113 的生产侧 grep 只覆盖 `pnpm test:packages:run|PACKAGE_GATE_RECEIPT`，而本仓已提交的合同测试 (scripts/__tests__/fly2753-targeted-verification-contract.test.sh:44) 的黑名单是 `pnpm test:packages:run|PACKAGE_GATE_RECEIPT|pnpm -r build|Self-verify — FULL REPO`。生产三份 nodes 文件若残留 `pnpm -r build` 或 `Self-verify — FULL REPO` 形式的全量门，§5 会漏判。建议两处字面量集合对齐，避免沙箱检查比生产验收更严这种反向差异。",
+			"findingKey": "section5-grep-literal-set-weaker-than-committed-test"
+		}
+	],
+	"settled": [],
+	"policyNote": "medium_low_findings_are_non_blocking_v1",
+	"deliveryNonce": "918e3642-b5e5-4aa2-8d53-d22a71f5fa00"
+}
