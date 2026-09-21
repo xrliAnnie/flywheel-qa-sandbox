@@ -61,3 +61,16 @@ http://127.0.0.1:61308/fw-reports-5e694e/r/74408bf4ec4a6a14354754d87c4aa3ec/
 报告 receipt `2bedc10a-ef2d-4dd5-b6af-c0857f754735`，命令严格使用 `publish-only`。HTTP 200、nonce 替换、单脚本、CSP 匹配、已批准状态和建议摘要都已在托管页复核。
 
 设计交付要求审计：exploration/research/plan 及规定页首齐全；有效 R2 APPROVED 已保存；进度 5/5；HTML 已提交、推送、发布并结构化报告；本地 Mermaid 两次失败按明文 fallback 保存源码与占位；14 项留言检查通过，浏览器真实渲染未验证的限制已披露。分支变更限于本 issue 设计文档目录，未实施、派发后继、申请 ship 或合并。下一步执行 `complete --route phase_design_complete` 后 park；阶段完成不等于 issue 终结。
+
+## 2026-09-20 重新派发设计验证（本节为本轮当前状态）
+
+执行 `dfd18c56-9466-4361-be52-0b3cee49a4a8`、run `7ceaee87-c0cd-4340-8a7d-00d5e5f76701`，取得 design TURN / epoch 1 后，从保留头 `6b987d1b1` / PR #206 继续。前文审批、发布、完成审计均属于前轮历史，不替代本轮 gate。
+
+- 当前设计修订 `673b5de41` 已提交并推送，只改本 issue 设计目录。原生产三份节点及投影验收明确仍是 issue 必需范围；当前 sandbox 未覆盖，已提问 Lead `7889b4bc-48fa-48ae-99eb-e10bae2e7981`。
+- 重新运行 `pnpm lint`：exit 0，1897 files，14 个现有警告。未执行本机完整包套件；文档没有编译产物变化，build/typecheck N/A。
+- 既有定向 shell 合同：四个 prompt 文件检查通过，七种负例全部拒绝。它证明文字规则与回归守卫，不证明真实 runner 行为或远端 CI。
+- HTML 验证：14 项静态/Node VM 检查通过；三份文档页首符合要求，计划四个 shell 命令块通过 `bash -n`；`git diff --check` 通过。
+- Mermaid 使用 mmdc 本地渲染，再按 `-w 1000 -b white --svgId FLY-2753-d1` 重试，两次均因 Chromium `bootstrap_check_in ... Permission denied (1100)` 失败。保留 flow.mmd 与明确的 DIAGRAM PENDING LOCAL RENDER 占位。没有远端渲染。真实浏览器外观/CSP 执行仍未验证。
+- 新 gate `11bface8-3042-49ea-8f2e-6fbfd2eb561a`，request `37382311-d376-4a1c-a602-d3b90f05c686` accepted；待有效 reviewVerdict。
+- 当前 HTML 已以 publish-only 发布： http://127.0.0.1:53682/fw-reports-de07d0/r/7c79ca7feab74e6628b8f220058cc709/ 。这是隔离 slot 的 loopback URL，不宣称公网可访问。verify-report 证明 HTTP 200、占位符替换、单脚本 nonce 与 CSP 匹配；没有发送频道消息。
+- DESIGN-HTML ready 结构化报告 receipt `80c4a6c8-4ecd-4665-80c4-4abd584e6f59`，包含渲染限制和当前评审 pending。批准后再更新最终状态并发布报告。
