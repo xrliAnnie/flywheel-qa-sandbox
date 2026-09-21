@@ -832,6 +832,43 @@ describe("workflow menu override validation", () => {
 		}
 	});
 
+	it("FLY-2763: sameVendorReviewAllowed admits a same-vendor pair only when models differ", () => {
+		const simple = loadWorkflowMenuLibrary().find(
+			(menu) => menu.shape === "simple_code",
+		)!;
+		// implement fable + qa opus (default) → both claude, different models → admitted
+		const resolved = resolveMenuOverrides(
+			simple,
+			{ implement: { model: "fable" } },
+			{ issueIdentifier: "FLY-2763", sameVendorReviewAllowed: true },
+		);
+		expect(resolved.templateOverride.nodes?.implement?.vendor).toBe("claude");
+		// identical models stay rejected even with the sanction
+		try {
+			resolveMenuOverrides(
+				simple,
+				{ implement: { model: "opus" } },
+				{ issueIdentifier: "FLY-2763", sameVendorReviewAllowed: true },
+			);
+			throw new Error("expected same-model validation failure");
+		} catch (error) {
+			expect(error).toBeInstanceOf(WorkflowMenuValidationError);
+			expect(error).toMatchObject({ code: "SAME_VENDOR_REVIEW_COMBINATION" });
+		}
+		// without the sanction the FLY-1188 refusal is byte-identical
+		try {
+			resolveMenuOverrides(
+				simple,
+				{ implement: { model: "fable" } },
+				{ issueIdentifier: "FLY-2763" },
+			);
+			throw new Error("expected same-vendor validation failure");
+		} catch (error) {
+			expect(error).toBeInstanceOf(WorkflowMenuValidationError);
+			expect(error).toMatchObject({ code: "SAME_VENDOR_REVIEW_COMBINATION" });
+		}
+	});
+
 	it("rejects a same-vendor default combination at compile time", () => {
 		const simple = structuredClone(
 			loadWorkflowMenuLibrary().find((menu) => menu.shape === "simple_code")!,

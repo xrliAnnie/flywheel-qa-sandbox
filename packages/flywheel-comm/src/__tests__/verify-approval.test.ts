@@ -106,9 +106,13 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		execution_id: string,
 		targetPrHeadSha: string,
 		status: "approved" | "skipped" | "pending",
-		families?: { author?: string; reviewer?: string },
+		families?: { author?: string; reviewer?: string; sanction?: string },
+		shape: "current" | "legacy_no_sanction_column" = "current",
 	): void {
 		const db = new Database(stateDbPath);
+		if (shape === "legacy_no_sanction_column") {
+			db.exec("DROP TABLE IF EXISTS codex_review_record");
+		}
 		db.exec(
 			`CREATE TABLE IF NOT EXISTS codex_review_record (
 				execution_id TEXT NOT NULL,
@@ -118,19 +122,34 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				project_name TEXT NOT NULL DEFAULT 'proj',
 				status TEXT NOT NULL DEFAULT 'pending',
 				author_family TEXT,
-				reviewer_family TEXT,
+				reviewer_family TEXT${
+					shape === "current" ? ",\n\t\t\t\tsame_family_sanction TEXT" : ""
+				},
 				PRIMARY KEY (execution_id, target_repo_identity, target_pr_head_sha)
 			)`,
 		);
-		db.prepare(
-			"INSERT OR REPLACE INTO codex_review_record (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, author_family, reviewer_family) VALUES (?, '__main__', ?, 'FLY-1434', 'proj', ?, ?, ?)",
-		).run(
-			execution_id,
-			targetPrHeadSha.toLowerCase(),
-			status,
-			families?.author ?? null,
-			families?.reviewer ?? null,
-		);
+		if (shape === "current") {
+			db.prepare(
+				"INSERT OR REPLACE INTO codex_review_record (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, author_family, reviewer_family, same_family_sanction) VALUES (?, '__main__', ?, 'FLY-1434', 'proj', ?, ?, ?, ?)",
+			).run(
+				execution_id,
+				targetPrHeadSha.toLowerCase(),
+				status,
+				families?.author ?? null,
+				families?.reviewer ?? null,
+				families?.sanction ?? null,
+			);
+		} else {
+			db.prepare(
+				"INSERT OR REPLACE INTO codex_review_record (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, author_family, reviewer_family) VALUES (?, '__main__', ?, 'FLY-1434', 'proj', ?, ?, ?)",
+			).run(
+				execution_id,
+				targetPrHeadSha.toLowerCase(),
+				status,
+				families?.author ?? null,
+				families?.reviewer ?? null,
+			);
+		}
 		db.close();
 	}
 
@@ -1092,6 +1111,40 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			const r = runGateOn();
 			expect(r.approved).toBe(false);
 			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
+		it("FLY-2763: claude→claude record WITH the exact sanction → approved", () => {
+			founderApprovedAs("claude-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved", {
+				author: "claude",
+				reviewer: "claude",
+				sanction: "review_same_family_allowed",
+			});
+			expect(runGateOn().approved).toBe(true);
+		});
+
+		it("FLY-2763: claude→claude record with a WRONG sanction → fail-close", () => {
+			founderApprovedAs("claude-tmux");
+			writeCodexRecord(EXEC, HEAD, "approved", {
+				author: "claude",
+				reviewer: "claude",
+				sanction: "1",
+			});
+			const r = runGateOn();
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
+		it("FLY-2763: a pre-FLY-2763 table (no sanction column) still evaluates cross-family records", () => {
+			founderApprovedAs("codex-tmux");
+			writeCodexRecord(
+				EXEC,
+				HEAD,
+				"approved",
+				{ author: "codex", reviewer: "claude" },
+				"legacy_no_sanction_column",
+			);
+			expect(runGateOn().approved).toBe(true);
 		});
 
 		it("legacy claude author (adapter_type NULL) + unstamped record → approved (historical lane)", () => {

@@ -671,7 +671,16 @@ export function resolveNodeAgentFile(
 export function resolveMenuOverrides(
 	menu: WorkflowMenuShape,
 	overridesValue: unknown,
-	context: { issueIdentifier: string },
+	context: {
+		issueIdentifier: string;
+		/**
+		 * FLY-2763: project flag `review_same_family_allowed` resolved by the
+		 * caller. When true, a QA/producer pair on the SAME vendor is admitted
+		 * as long as the two resolved models differ; identical models stay
+		 * rejected. Undefined/false keeps the FLY-1188 same-vendor refusal.
+		 */
+		sameVendorReviewAllowed?: boolean;
+	},
 ): {
 	templateOverride: WorkflowTemplateOverride;
 	receipts: Record<
@@ -702,7 +711,7 @@ export function resolveMenuOverrides(
 	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
 	const selected = new Map<
 		string,
-		{ alias: string; vendor: "claude" | "codex" }
+		{ alias: string; vendor: "claude" | "codex"; model: string }
 	>();
 	for (const node of executable) {
 		const rawOverride = overrides[node.id];
@@ -845,6 +854,7 @@ export function resolveMenuOverrides(
 		selected.set(node.id, {
 			alias: requestedModel,
 			vendor: resolved.vendor,
+			model: resolved.model,
 		});
 		if (override || automaticAssignment) {
 			nodes[node.id] = {
@@ -862,6 +872,14 @@ export function resolveMenuOverrides(
 	for (const { qa, producer } of menuReviewPairs(menu)) {
 		const qaSelection = selected.get(qa.id)!;
 		const producerSelection = selected.get(producer.id)!;
+		if (
+			qaSelection.vendor === producerSelection.vendor &&
+			context.sameVendorReviewAllowed === true &&
+			qaSelection.model !== producerSelection.model
+		) {
+			// FLY-2763 sanctioned same-vendor pair (different models) — admitted.
+			continue;
+		}
 		if (qaSelection.vendor === producerSelection.vendor) {
 			const legal = [
 				...producer

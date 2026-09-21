@@ -1937,6 +1937,8 @@ export interface CodexReviewRecord {
 	 * record fails closed. See `crossFamilyReviewSatisfied` (flywheel-config).
 	 */
 	author_family?: string;
+	/** FLY-2763: exact sanction token for a same-family (Claude↔Claude) review; NULL otherwise. */
+	same_family_sanction?: string;
 	reviewer_family?: string;
 	/** FLY-1188 §7.1: review-job binding (codex-author lane). */
 	request_id?: string;
@@ -2064,6 +2066,8 @@ export interface CodexReviewJob {
 	/** Monotonic generation incremented for every persisted failure attempt. */
 	failure_attempt_count: number;
 	author_family?: string;
+	/** FLY-2763: exact sanction token for a same-family (Claude↔Claude) review; NULL otherwise. */
+	same_family_sanction?: string;
 	created_at: string;
 	updated_at?: string;
 	/**
@@ -8765,7 +8769,13 @@ export class StateStore {
 		// stamps; NULL = pre-FLY-1188 legacy row (claude-author→codex-reviewer
 		// lane only). request_id binds a record to its review job (codex-author
 		// lane).
-		for (const col of ["author_family", "reviewer_family", "request_id"]) {
+		for (const col of [
+			"author_family",
+			"reviewer_family",
+			"request_id",
+			// FLY-2763: same-family review sanction (Codex quota outage lane)
+			"same_family_sanction",
+		]) {
 			try {
 				this.db.run(`ALTER TABLE codex_review_record ADD COLUMN ${col} TEXT`);
 			} catch {
@@ -8826,6 +8836,7 @@ export class StateStore {
 						author_family TEXT,
 						reviewer_family TEXT,
 						request_id TEXT,
+						same_family_sanction TEXT,
 						PRIMARY KEY (execution_id, target_repo_identity, target_pr_head_sha)
 					)
 				`);
@@ -8835,14 +8846,14 @@ export class StateStore {
 						issue_id, project_name, status, reviewed_target,
 						codex_thread_id, rounds, verdict_event_id, created_at,
 						approved_at, hold_notified_at, stuck_notified_at,
-						author_family, reviewer_family, request_id
+						author_family, reviewer_family, request_id, same_family_sanction
 					)
 					SELECT execution_id,
 						COALESCE(NULLIF(target_repo_identity, ''), '__main__'),
 						target_pr_head_sha, issue_id, project_name, status,
 						reviewed_target, codex_thread_id, rounds, verdict_event_id,
 						created_at, approved_at, hold_notified_at, stuck_notified_at,
-						author_family, reviewer_family, request_id
+						author_family, reviewer_family, request_id, same_family_sanction
 					FROM codex_review_record
 				`);
 				this.db.run("DROP TABLE codex_review_record");
@@ -8951,6 +8962,8 @@ export class StateStore {
 			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
 			["retired_reviewer_session_uuid", "TEXT"],
+			// FLY-2763: same-family sanction captured at request time
+			["same_family_sanction", "TEXT"],
 		] as const) {
 			if (!reviewJobColumns.includes(column)) {
 				this.db.run(
@@ -18463,6 +18476,7 @@ export class StateStore {
 			author_family: (row.author_family as string) ?? undefined,
 			reviewer_family: (row.reviewer_family as string) ?? undefined,
 			request_id: (row.request_id as string) ?? undefined,
+			same_family_sanction: (row.same_family_sanction as string) ?? undefined,
 			created_at: row.created_at as string,
 			approved_at: (row.approved_at as string) ?? undefined,
 			hold_notified_at: (row.hold_notified_at as string) ?? undefined,
@@ -18586,6 +18600,8 @@ export class StateStore {
 		reviewerFamily?: string;
 		/** FLY-1188 §7.1: review-job binding (codex-author lane). */
 		requestId?: string;
+		/** FLY-2763: exact sanction token for a same-family (Claude↔Claude) approval. */
+		sameFamilySanction?: string;
 	}): boolean {
 		const sha = input.targetPrHeadSha.toLowerCase();
 		const repoIdentity = input.targetRepoIdentity ?? "__main__";
@@ -18599,8 +18615,8 @@ export class StateStore {
 				`INSERT INTO codex_review_record
 				   (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status,
 				    reviewed_target, codex_thread_id, rounds, verdict_event_id,
-				    author_family, reviewer_family, request_id, created_at, approved_at)
-				 VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+				    author_family, reviewer_family, request_id, same_family_sanction, created_at, approved_at)
+				 VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
 				[
 					input.executionId,
 					repoIdentity,
@@ -18614,6 +18630,7 @@ export class StateStore {
 					input.authorFamily ?? null,
 					input.reviewerFamily ?? null,
 					input.requestId ?? null,
+					input.sameFamilySanction ?? null,
 				],
 			);
 			this.save();
@@ -18670,7 +18687,8 @@ export class StateStore {
 				   rounds = ?,
 				   author_family = ?,
 				   reviewer_family = ?,
-				   request_id = ?
+				   request_id = ?,
+				   same_family_sanction = ?
 				 WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?`,
 				[
 					input.verdictEventId ?? null,
@@ -18680,6 +18698,7 @@ export class StateStore {
 					input.authorFamily ?? null,
 					input.reviewerFamily ?? null,
 					input.requestId ?? null,
+					input.sameFamilySanction ?? null,
 					input.executionId,
 					repoIdentity,
 					sha,
@@ -18707,7 +18726,8 @@ export class StateStore {
 			   rounds = COALESCE(rounds, ?),
 			   author_family = COALESCE(author_family, ?),
 			   reviewer_family = COALESCE(reviewer_family, ?),
-			   request_id = COALESCE(request_id, ?)
+			   request_id = COALESCE(request_id, ?),
+			   same_family_sanction = COALESCE(same_family_sanction, ?)
 			 WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?`,
 			[
 				input.verdictEventId ?? null,
@@ -18717,6 +18737,7 @@ export class StateStore {
 				input.authorFamily ?? null,
 				input.reviewerFamily ?? null,
 				input.requestId ?? null,
+				input.sameFamilySanction ?? null,
 				input.executionId,
 				repoIdentity,
 				sha,
@@ -18811,6 +18832,7 @@ export class StateStore {
 			updated_at: (row.updated_at as string) ?? undefined,
 			responded_at: (row.responded_at as string) ?? undefined,
 			delivery_nonce: (row.delivery_nonce as string) ?? undefined,
+			same_family_sanction: (row.same_family_sanction as string) ?? undefined,
 		};
 	}
 
@@ -19201,6 +19223,8 @@ export class StateStore {
 		reviewerSessionGeneration?: number;
 		reviewerSessionFailureStreak?: number;
 		authorFamily?: string;
+		/** FLY-2763: exact sanction token when a Claude author is reviewed by Claude. */
+		sameFamilySanction?: string;
 		designPlanProof?: {
 			planPath: string;
 			reviewedCommitSha: string;
@@ -19219,8 +19243,8 @@ export class StateStore {
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
-			    created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			    same_family_sanction, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -19240,6 +19264,7 @@ export class StateStore {
 				input.authorFamily ?? null,
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
+				input.sameFamilySanction ?? null,
 				],
 			);
 			inserted = this.db.getRowsModified() > 0;
@@ -20373,6 +20398,8 @@ export class StateStore {
 			authorFamily: rec.author_family ?? null,
 			reviewerFamily: rec.reviewer_family ?? null,
 			sessionAdapterType: this.getSession(executionId)?.adapter_type ?? null,
+			// FLY-2763: same-family approval is valid only with the exact sanction.
+			sameFamilySanction: rec.same_family_sanction ?? null,
 		});
 	}
 

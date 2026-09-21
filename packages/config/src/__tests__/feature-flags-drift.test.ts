@@ -554,6 +554,18 @@ describe("feature-flag drift guard", () => {
 					"storeSkillFrameworkSplitParticipation",
 				],
 				[
+					"review_same_family_allowed",
+					"packages/teamlead/src/bridge/runs-route.ts",
+					"createRunsRouter",
+					"storeReviewSameFamilyAllowed",
+				],
+				[
+					"review_same_family_allowed",
+					"packages/teamlead/src/bridge/review-request-coordinator.ts",
+					"ReviewRequestCoordinator.accept",
+					"storeReviewSameFamilyAllowed",
+				],
+				[
 					"proofshot",
 					"packages/teamlead/src/bridge/run-infra.ts",
 					"setupRunInfrastructure",

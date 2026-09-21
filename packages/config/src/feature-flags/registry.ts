@@ -938,6 +938,35 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "review_same_family_allowed",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "review.same_family_allowed",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: false,
+		description:
+			"FLY-2763 Codex 号全灭时的应急口：允许 Claude 作者由另一个 Claude 模型做代码复审（记录盖 same_family_sanction），并允许菜单 implement 与 QA 同为 Claude（模型必须不同）。Enable: feature-flags set --name review_same_family_allowed --to on --project <project> --reason <reason>；Codex 号恢复后关掉。",
+		whenOn:
+			"Claude 写的代码由不同模型的 Claude 复审并盖章过门；Claude 实现 + Claude QA 的组合可派发。",
+		note: "关着时 FLY-1188 跨家族复审与 SAME_VENDOR_REVIEW_COMBINATION 准入逐字节不变；已盖章的历史记录不受开关影响。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/runs-route.ts",
+				"createRunsRouter",
+				"storeReviewSameFamilyAllowed",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/review-request-coordinator.ts",
+				"ReviewRequestCoordinator.accept",
+				"storeReviewSameFamilyAllowed",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "proofshot",
 		category: "feature",
 		source: "project_config",

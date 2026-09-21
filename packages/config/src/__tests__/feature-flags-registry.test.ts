@@ -65,6 +65,8 @@ const EXPECTED_WHEN_ON = {
 	skill_framework_split_participation:
 		"只在技能框架处于分流模式时生效：关闭后这个项目退出分流、固定使用 superpowers；全局强制指定某个方案时这个开关不起作用",
 	proofshot: "这个项目有界面改动时，自动要求用 ProofShot 做视觉验收",
+	review_same_family_allowed:
+		"Claude 写的代码由不同模型的 Claude 复审并盖章过门；Claude 实现 + Claude QA 的组合可派发。",
 	xiaohongshu_learning:
 		"定期读取这个项目的小红书收藏，把可执行内容整理成后续任务草稿",
 	ponytail:
@@ -82,7 +84,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(32);
+		expect(FEATURE_FLAGS).toHaveLength(33);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

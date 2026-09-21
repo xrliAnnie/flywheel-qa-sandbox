@@ -31,12 +31,29 @@ export function adapterTypeToFamily(
 export function manifestReviewFamilyOk(
 	authorResolvedFamily: string | null | undefined,
 	reviewerResolvedFamily: string | null | undefined,
+	options?: { sameFamilyAllowed?: boolean },
 ): boolean {
-	return Boolean(
-		authorResolvedFamily &&
-			reviewerResolvedFamily &&
-			authorResolvedFamily !== reviewerResolvedFamily,
-	);
+	if (!authorResolvedFamily || !reviewerResolvedFamily) return false;
+	if (authorResolvedFamily !== reviewerResolvedFamily) return true;
+	// FLY-2763: a same-family pair is admissible only under the explicit
+	// project sanction (review_same_family_allowed=on).
+	return options?.sameFamilyAllowed === true;
+}
+
+/**
+ * FLY-2763: the ONLY value a same-family approval may carry in
+ * `codex_review_record.same_family_sanction`. It is stamped by the review
+ * coordinator at request time from the project-scoped
+ * `review_same_family_allowed` flag and re-checked by BOTH gate readers
+ * (StateStore.isCodexCodeReviewApproved and flywheel-comm verify-approval).
+ * Any other value — including NULL — leaves a same-family record fail-closed.
+ */
+export const SAME_FAMILY_REVIEW_SANCTION = "review_same_family_allowed";
+
+export function sameFamilySanctionValid(
+	sanction: string | null | undefined,
+): boolean {
+	return sanction === SAME_FAMILY_REVIEW_SANCTION;
 }
 
 export interface CrossFamilyReviewInput {
@@ -48,6 +65,12 @@ export interface CrossFamilyReviewInput {
 	reviewerFamily: string | null | undefined;
 	/** sessions.adapter_type of the AUTHOR session (NULL = legacy claude). */
 	sessionAdapterType: string | null | undefined;
+	/**
+	 * FLY-2763: codex_review_record.same_family_sanction. Only
+	 * `SAME_FAMILY_REVIEW_SANCTION` lets an `approved` record with EQUAL
+	 * families satisfy the gate; absent/other values keep it fail-closed.
+	 */
+	sameFamilySanction?: string | null | undefined;
 }
 
 /**
@@ -74,7 +97,10 @@ export function crossFamilyReviewSatisfied(
 	if (input.status === "skipped") return true;
 	if (input.status !== "approved") return false;
 	if (input.authorFamily && input.reviewerFamily) {
-		return input.authorFamily !== input.reviewerFamily;
+		if (input.authorFamily !== input.reviewerFamily) return true;
+		// FLY-2763: same-family approval is valid ONLY with the exact sanction
+		// stamped at request time (Codex quota outage lane). NULL/other → false.
+		return sameFamilySanctionValid(input.sameFamilySanction);
 	}
 	// legacy record without family stamps
 	return adapterTypeToFamily(input.sessionAdapterType) === "claude";

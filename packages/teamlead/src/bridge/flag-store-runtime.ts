@@ -323,6 +323,23 @@ export function storePipelineWorkKindEnabled(
 	return readScopedBoolean(runtime, "pipeline_work_kind", projectName);
 }
 
+/** FLY-2763: same-family (Claude↔Claude) review + QA admission, project-scoped, default off. */
+export function storeReviewSameFamilyAllowed(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	try {
+		return readScopedBoolean(
+			runtime,
+			"review_same_family_allowed",
+			projectName,
+		);
+	} catch {
+		// fail-closed: an unreadable/invalid flag never sanctions a same-family review
+		return false;
+	}
+}
+
 export function storeProofshotEnabled(
 	runtime: FlagStoreRuntime,
 	projectName: string,

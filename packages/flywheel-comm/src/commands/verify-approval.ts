@@ -400,24 +400,43 @@ function verifyBoundApproval(
 			// column → codexApprovedForHead stays false (fail-closed under the
 			// gate), but must NOT corrupt the authoritative row read above.
 			try {
-				const candidates = stateDb
-					.prepare(
-						`SELECT r.status, r.author_family, r.reviewer_family,
-						        author.adapter_type AS author_adapter_type
-						   FROM codex_review_record r
-						   LEFT JOIN sessions author ON author.execution_id = r.execution_id
-						  WHERE r.project_name = ?
-						    AND r.issue_id = ?
-						    AND r.target_repo_identity = '__main__'
-						    AND lower(r.target_pr_head_sha) = ?
-						    AND r.status IN ('approved','skipped')`,
-					)
-					.all(row?.project_name, row?.issue_id, prHead) as Array<{
+				// FLY-2763: read the same-family sanction column when present; a
+				// pre-FLY-2763 database (no column) falls back to the family-only
+				// projection, which keeps same-family records fail-closed.
+				type Candidate = {
 					status?: string;
 					author_family?: string | null;
 					reviewer_family?: string | null;
 					author_adapter_type?: string | null;
-				}>;
+					same_family_sanction?: string | null;
+				};
+				const candidateSql = (withSanction: boolean) =>
+					`SELECT r.status, r.author_family, r.reviewer_family,
+					        author.adapter_type AS author_adapter_type${
+										withSanction ? ", r.same_family_sanction" : ""
+									}
+					   FROM codex_review_record r
+					   LEFT JOIN sessions author ON author.execution_id = r.execution_id
+					  WHERE r.project_name = ?
+					    AND r.issue_id = ?
+					    AND r.target_repo_identity = '__main__'
+					    AND lower(r.target_pr_head_sha) = ?
+					    AND r.status IN ('approved','skipped')`;
+				let candidates: Candidate[];
+				try {
+					candidates = stateDb
+						.prepare(candidateSql(true))
+						.all(row?.project_name, row?.issue_id, prHead) as Candidate[];
+				} catch (error) {
+					if (
+						!(error instanceof Error) ||
+						!/no such column: r\.same_family_sanction/.test(error.message)
+					)
+						throw error;
+					candidates = stateDb
+						.prepare(candidateSql(false))
+						.all(row?.project_name, row?.issue_id, prHead) as Candidate[];
+				}
 				// FLY-1434 §10: the ship execution may differ from the author
 				// execution. Query issue-scoped candidates and evaluate each
 				// record with its AUTHOR session adapter, never the shipping one.
@@ -427,6 +446,7 @@ function verifyBoundApproval(
 						authorFamily: candidate.author_family ?? null,
 						reviewerFamily: candidate.reviewer_family ?? null,
 						sessionAdapterType: candidate.author_adapter_type ?? null,
+						sameFamilySanction: candidate.same_family_sanction ?? null,
 					}),
 				);
 			} catch {

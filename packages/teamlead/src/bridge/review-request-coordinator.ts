@@ -27,7 +27,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
+import {
+	adapterTypeToFamily,
+	type RoleEffort,
+	SAME_FAMILY_REVIEW_SANCTION,
+} from "flywheel-config";
 import { defaultQuotaMonitorStatePath } from "../account-heal/quota-monitor-state.js";
 import {
 	type QuotaWitness,
@@ -45,6 +49,7 @@ import {
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
 import { snapshotDesignReviewPlan } from "./design-review-manifest.js";
+import { storeReviewSameFamilyAllowed } from "./flag-store-runtime.js";
 import { wakeQuotaDaemon as wakeDefaultQuotaDaemon } from "./quota-daemon-wake.js";
 import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
 import { classifyReviewFailure } from "./review-quota-retry.js";
@@ -713,7 +718,19 @@ export class ReviewRequestCoordinator {
 		// claude-author→codex-reviewer lane — running the Claude reviewer for
 		// a claude author would BE a same-family review.
 		const authorFamily = adapterTypeToFamily(session.adapter_type);
-		if (authorFamily === "claude") {
+		// FLY-2763: a claude-family author may use this lane ONLY under the
+		// project-scoped sanction (review_same_family_allowed=on, Codex quota
+		// outage). The sanction is frozen on the job at request time and the
+		// reviewer model is forced to differ from the author model.
+		const sameFamilySanction =
+			authorFamily === "claude" &&
+			storeReviewSameFamilyAllowed(
+				{ mode: "ready", store: this.store },
+				projectName,
+			)
+				? SAME_FAMILY_REVIEW_SANCTION
+				: undefined;
+		if (authorFamily === "claude" && !sameFamilySanction) {
 			return reject(
 				409,
 				`execution ${executionId} is a claude-family author — request-review is the non-claude lane (legacy codex review applies)`,
@@ -909,6 +926,7 @@ export class ReviewRequestCoordinator {
 				reviewType,
 				questionId,
 				authorFamily,
+				sameFamilySanction,
 			});
 			this.failReviewJob(requestId, acceptGateFailureReason(gate));
 			this.alert(
@@ -948,6 +966,7 @@ export class ReviewRequestCoordinator {
 				reuseRepoIdentity,
 				frozenHeadSha,
 				authorFamily,
+				sameFamilySanction,
 				status: "skipped",
 			});
 			if (!skipInsert.inserted) {
@@ -1091,6 +1110,7 @@ export class ReviewRequestCoordinator {
 			reviewerSessionGeneration: priorSession.generation,
 			reviewerSessionFailureStreak: priorSession.failureStreak,
 			authorFamily,
+			sameFamilySanction,
 			designPlanProof,
 		});
 		if (!insert.inserted) {
@@ -1549,7 +1569,11 @@ export class ReviewRequestCoordinator {
 				resume: roundResume,
 				cwd,
 				binary: this.deps.reviewerBinary,
-				model: this.deps.reviewerModel,
+				// FLY-2763: a sanctioned same-family job must be reviewed by a
+				// DIFFERENT Claude model than the author's.
+				model: job.same_family_sanction
+					? this.sameFamilyReviewerModel(job.execution_id)
+					: this.deps.reviewerModel,
 				// FLY-1224: forwarded on EVERY round; undefined → the runner's own
 				// DEFAULT_REVIEW_EFFORT ("xhigh") applies.
 				effort: this.deps.reviewerEffort,
@@ -2337,7 +2361,20 @@ export class ReviewRequestCoordinator {
 			authorFamily: job.author_family,
 			reviewerFamily: "claude",
 			requestId: binding.requestId,
+			// FLY-2763: carry the request-time sanction onto the head-bound record.
+			sameFamilySanction: job.same_family_sanction,
 		});
+	}
+
+	/**
+	 * FLY-2763: reviewer model for a sanctioned same-family job. The author
+	 * model comes from the execution runtime row; the reviewer is always the
+	 * OTHER heavy Claude alias (Opus author → Fable reviewer, otherwise Opus).
+	 */
+	private sameFamilyReviewerModel(executionId: string): string {
+		const authorModel =
+			this.store.getWorkflowExecutionRuntime(executionId)?.model ?? "";
+		return /opus/i.test(authorModel) ? "fable" : "opus";
 	}
 
 	private buildPrompt(
