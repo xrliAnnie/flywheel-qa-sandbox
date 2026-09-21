@@ -1,16 +1,15 @@
 ---
 issue: FLY-2753
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-21T01:13:16.011Z
-nextStep: R2 plan 00bcc4f6f pushed; poll gate
-  ef0bcbf7-4147-4dd8-af81-72bacb824a27. R1 HIGH fixed and six fixtures pass. On
-  APPROVED finalize HTML/status, publish/report, complete phase_design_complete
-  then park.
+phaseCursor: 5/5
+updated: 2026-09-21T01:18:04.718Z
+nextStep: R2 effective APPROVED; final HTML 3a80774c5 published/reported. Finish
+  evidence push then complete phase_design_complete and park. Production
+  acceptance/CI and advisories handed to Lead; not issue-terminal.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2753 progress
-**phase**: design (4/5)
-**next**: R2 plan 00bcc4f6f pushed; poll gate ef0bcbf7-4147-4dd8-af81-72bacb824a27. R1 HIGH fixed and six fixtures pass. On APPROVED finalize HTML/status, publish/report, complete phase_design_complete then park.
+**phase**: design (5/5)
+**next**: R2 effective APPROVED; final HTML 3a80774c5 published/reported. Finish evidence push then complete phase_design_complete and park. Production acceptance/CI and advisories handed to Lead; not issue-terminal.
