@@ -166,7 +166,9 @@ describe("StateStore voice-health demand projection", () => {
 			 thread_id, member_added_at, cancel_requested_at, orphan_candidates,
 			 bound_channel_ids, ?, evidence_dir, topic, requested_by, credential_tier,
 			 state, reason, daemon_boot_id, lease_token, lease_expires_at, outbound_cursor,
-			 created_at, updated_at, ended_at, ending_started_at, root_requested_at
+			 created_at, updated_at, ended_at, ending_started_at, root_requested_at,
+			 schedule_id, schedule_revision, not_before_live_at, presence_deadline_at,
+			 ready_at
 			 FROM voice_sessions WHERE session_id = ?`,
 		).run(
 			"10000000-0000-4000-8000-000000000002",
@@ -385,7 +387,8 @@ describe("StateStore voice-health demand projection", () => {
 			 bound_channel_ids, ?, evidence_dir, topic, requested_by, credential_tier,
 			 'failed', 'lease_lost', daemon_boot_id, lease_token, lease_expires_at,
 			 outbound_cursor, created_at, updated_at, updated_at, ending_started_at,
-			 root_requested_at FROM voice_sessions WHERE session_id = ?`,
+			 root_requested_at, schedule_id, schedule_revision, not_before_live_at,
+			 presence_deadline_at, ready_at FROM voice_sessions WHERE session_id = ?`,
 		).run(
 			"10000000-0000-4000-8000-000000000099",
 			"room-old-failed",

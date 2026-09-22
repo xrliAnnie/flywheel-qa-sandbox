@@ -2699,9 +2699,76 @@ export interface VoiceSessionRow {
 	leaseToken: string | null;
 	leaseExpiresAt: string | null;
 	outboundCursor: Record<string, string>;
+	scheduleId: string | null;
+	scheduleRevision: number | null;
+	notBeforeLiveAt: string | null;
+	presenceDeadlineAt: string | null;
+	readyAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 	endedAt: string | null;
+}
+
+export type VoiceScheduleState =
+	| "scheduled"
+	| "prewarming"
+	| "ready"
+	| "live"
+	| "ended"
+	| "cancelled"
+	| "failed";
+
+/**
+ * FLY-2701: a future meeting is durable Bridge to-do, not a held room. It keeps
+ * its own revision so a reschedule/cancel can fence the effects of an older one
+ * that is already in flight.
+ */
+export interface VoiceScheduleRow {
+	scheduleId: string;
+	revision: number;
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	voiceBotUserId: string;
+	meetingId: string | null;
+	topic: string | null;
+	evidenceDir: string | null;
+	scheduledAt: string;
+	prewarmAt: string;
+	readyDeadlineAt: string;
+	presenceDeadlineAt: string;
+	state: VoiceScheduleState;
+	sessionId: string | null;
+	sessionRevision: number | null;
+	lateAdmission: boolean;
+	requestedBy: string;
+	credentialTier: VoiceCredentialTier;
+	terminalReason: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface VoiceScheduleReservation {
+	scheduleId: string;
+	requestKey: string;
+	requestDigest: string;
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	voiceBotUserId: string;
+	meetingId?: string;
+	topic?: string;
+	evidenceDir?: string;
+	scheduledAt: string;
+	prewarmAt: string;
+	readyDeadlineAt: string;
+	presenceDeadlineAt: string;
+	lateAdmission?: boolean;
+	requestedBy: string;
+	credentialTier: VoiceCredentialTier;
+	createdAt: string;
 }
 
 export interface VoiceOutboundRow {
@@ -2732,6 +2799,10 @@ export interface VoiceSessionReservation {
 	requestedBy: string;
 	credentialTier: VoiceCredentialTier;
 	createdAt: string;
+	scheduleId?: string;
+	scheduleRevision?: number;
+	notBeforeLiveAt?: string;
+	presenceDeadlineAt?: string;
 }
 
 export type VoiceHealthDemandEventKind =
@@ -3558,6 +3629,13 @@ export class StateStore {
 			leaseToken: (row.lease_token as string | null) ?? null,
 			leaseExpiresAt: (row.lease_expires_at as string | null) ?? null,
 			outboundCursor: stringRecord(row.outbound_cursor),
+			scheduleId: (row.schedule_id as string | null) ?? null,
+			scheduleRevision:
+				row.schedule_revision == null ? null : Number(row.schedule_revision),
+			notBeforeLiveAt: (row.not_before_live_at as string | null) ?? null,
+			presenceDeadlineAt:
+				(row.presence_deadline_at as string | null) ?? null,
+			readyAt: (row.ready_at as string | null) ?? null,
 			createdAt: String(row.created_at),
 			updatedAt: String(row.updated_at),
 			endedAt: (row.ended_at as string | null) ?? null,
@@ -3847,6 +3925,423 @@ export class StateStore {
 		return "unknown_failure";
 	}
 
+	private voiceScheduleFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceScheduleRow | undefined {
+		if (!row) return;
+		return {
+			scheduleId: String(row.schedule_id),
+			revision: Number(row.revision),
+			projectName: String(row.project_name),
+			leadId: String(row.lead_id),
+			guildId: String(row.guild_id),
+			voiceChannelId: String(row.voice_channel_id),
+			voiceBotUserId: String(row.voice_bot_user_id),
+			meetingId: (row.meeting_id as string | null) ?? null,
+			topic: (row.topic as string | null) ?? null,
+			evidenceDir: (row.evidence_dir as string | null) ?? null,
+			scheduledAt: String(row.scheduled_at),
+			prewarmAt: String(row.prewarm_at),
+			readyDeadlineAt: String(row.ready_deadline_at),
+			presenceDeadlineAt: String(row.presence_deadline_at),
+			state: row.state as VoiceScheduleState,
+			sessionId: (row.session_id as string | null) ?? null,
+			sessionRevision:
+				row.session_revision == null ? null : Number(row.session_revision),
+			lateAdmission: Number(row.late_admission) === 1,
+			requestedBy: String(row.requested_by),
+			credentialTier: row.credential_tier as VoiceCredentialTier,
+			terminalReason: (row.terminal_reason as string | null) ?? null,
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
+		};
+	}
+
+	getVoiceSchedule(scheduleId: string): VoiceScheduleRow | undefined {
+		return this.voiceScheduleFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_schedules WHERE schedule_id = ?",
+				[scheduleId],
+			)[0],
+		);
+	}
+
+	/**
+	 * Returns the receipt of an identical earlier request, or "conflict" when the
+	 * same key arrives with a different frozen body. Callers must run this inside
+	 * the same transaction as the mutation so a replay can never see a half write.
+	 */
+	private voiceScheduleReplay(
+		requestKey: string,
+		requestDigest: string,
+	): { kind: "fresh" } | { kind: "conflict" } | { kind: "replay"; schedule: VoiceScheduleRow } {
+		const row = this.workflowSelectAll(
+			"SELECT request_digest, result_snapshot FROM voice_schedule_requests WHERE request_key = ?",
+			[requestKey],
+		)[0];
+		if (!row) return { kind: "fresh" };
+		if (String(row.request_digest) !== requestDigest) return { kind: "conflict" };
+		return {
+			kind: "replay",
+			schedule: JSON.parse(String(row.result_snapshot)) as VoiceScheduleRow,
+		};
+	}
+
+	private recordVoiceScheduleReceipt(input: {
+		requestKey: string;
+		requestDigest: string;
+		schedule: VoiceScheduleRow;
+		createdAt: string;
+	}): void {
+		this.db.run(
+			`INSERT OR REPLACE INTO voice_schedule_requests
+			 (request_key, request_digest, schedule_id, result_revision, result_snapshot, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				input.requestKey,
+				input.requestDigest,
+				input.schedule.scheduleId,
+				input.schedule.revision,
+				JSON.stringify(input.schedule),
+				input.createdAt,
+			],
+		);
+	}
+
+	createVoiceSchedule(
+		input: VoiceScheduleReservation,
+	):
+		| { status: "created" | "replayed"; schedule: VoiceScheduleRow }
+		| { status: "request_conflict" }
+		| { status: "meeting_conflict"; schedule: VoiceScheduleRow } {
+		if (!/^\d{17,20}$/.test(input.voiceBotUserId)) {
+			throw new Error("voice_bot_identity_required");
+		}
+		let result:
+			| { status: "created" | "replayed"; schedule: VoiceScheduleRow }
+			| { status: "request_conflict" }
+			| { status: "meeting_conflict"; schedule: VoiceScheduleRow } = {
+			status: "request_conflict",
+		};
+		this.db.transaction(() => {
+			const replay = this.voiceScheduleReplay(
+				input.requestKey,
+				input.requestDigest,
+			);
+			if (replay.kind === "conflict") {
+				result = { status: "request_conflict" };
+				return;
+			}
+			if (replay.kind === "replay") {
+				result = { status: "replayed", schedule: replay.schedule };
+				return;
+			}
+			if (input.meetingId) {
+				const existing = this.voiceScheduleFromRow(
+					this.workflowSelectAll(
+						`SELECT * FROM voice_schedules WHERE meeting_id = ?
+						 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+						[input.meetingId],
+					)[0],
+				);
+				if (existing) {
+					result = { status: "meeting_conflict", schedule: existing };
+					return;
+				}
+			}
+			this.db.run(
+				`INSERT INTO voice_schedules
+				 (schedule_id, revision, project_name, lead_id, guild_id, voice_channel_id,
+				  voice_bot_user_id, meeting_id, topic, evidence_dir, scheduled_at, prewarm_at,
+				  ready_deadline_at, presence_deadline_at, state, late_admission, requested_by,
+				  credential_tier, created_at, updated_at)
+				 VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)`,
+				[
+					input.scheduleId,
+					input.projectName,
+					input.leadId,
+					input.guildId,
+					input.voiceChannelId,
+					input.voiceBotUserId,
+					input.meetingId ?? null,
+					input.topic ?? null,
+					input.evidenceDir ?? null,
+					input.scheduledAt,
+					input.prewarmAt,
+					input.readyDeadlineAt,
+					input.presenceDeadlineAt,
+					input.lateAdmission ? 1 : 0,
+					input.requestedBy,
+					input.credentialTier,
+					input.createdAt,
+					input.createdAt,
+				],
+			);
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			this.recordVoiceScheduleReceipt({
+				requestKey: input.requestKey,
+				requestDigest: input.requestDigest,
+				schedule,
+				createdAt: input.createdAt,
+			});
+			result = { status: "created", schedule };
+		});
+		this.save();
+		return result;
+	}
+
+	rescheduleVoiceSchedule(input: {
+		scheduleId: string;
+		requestKey: string;
+		requestDigest: string;
+		expectedRevision: number;
+		scheduledAt: string;
+		prewarmAt: string;
+		readyDeadlineAt: string;
+		presenceDeadlineAt: string;
+		updatedAt: string;
+		lateAdmission?: boolean;
+	}):
+		| { status: "updated" | "replayed"; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+		| { status: "request_conflict" | "not_found" } {
+		let result:
+			| { status: "updated" | "replayed"; schedule: VoiceScheduleRow }
+			| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+			| { status: "request_conflict" | "not_found" } = { status: "not_found" };
+		this.db.transaction(() => {
+			const replay = this.voiceScheduleReplay(
+				input.requestKey,
+				input.requestDigest,
+			);
+			if (replay.kind === "conflict") {
+				result = { status: "request_conflict" };
+				return;
+			}
+			if (replay.kind === "replay") {
+				result = { status: "replayed", schedule: replay.schedule };
+				return;
+			}
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) {
+				result = { status: "not_found" };
+				return;
+			}
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			if (current.revision !== input.expectedRevision) {
+				result = { status: "revision_conflict", schedule: current };
+				return;
+			}
+			if (current.state === "live") {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			// A new version never inherits the old session: the old one must reach a
+			// terminal state before the new revision may allocate its own.
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET revision = revision + 1, scheduled_at = ?, prewarm_at = ?,
+				     ready_deadline_at = ?, presence_deadline_at = ?, state = 'scheduled',
+				     late_admission = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ?`,
+				[
+					input.scheduledAt,
+					input.prewarmAt,
+					input.readyDeadlineAt,
+					input.presenceDeadlineAt,
+					input.lateAdmission ? 1 : 0,
+					input.updatedAt,
+					input.scheduleId,
+					input.expectedRevision,
+				],
+			);
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			this.recordVoiceScheduleReceipt({
+				requestKey: input.requestKey,
+				requestDigest: input.requestDigest,
+				schedule,
+				createdAt: input.updatedAt,
+			});
+			result = { status: "updated", schedule };
+		});
+		this.save();
+		return result;
+	}
+
+	cancelVoiceSchedule(input: {
+		scheduleId: string;
+		requestKey: string;
+		requestDigest: string;
+		expectedRevision: number;
+		updatedAt: string;
+	}):
+		| { status: "cancelled" | "replayed"; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+		| { status: "request_conflict" | "not_found" } {
+		let result:
+			| { status: "cancelled" | "replayed"; schedule: VoiceScheduleRow }
+			| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+			| { status: "request_conflict" | "not_found" } = { status: "not_found" };
+		this.db.transaction(() => {
+			const replay = this.voiceScheduleReplay(
+				input.requestKey,
+				input.requestDigest,
+			);
+			if (replay.kind === "conflict") {
+				result = { status: "request_conflict" };
+				return;
+			}
+			if (replay.kind === "replay") {
+				result = { status: "replayed", schedule: replay.schedule };
+				return;
+			}
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) {
+				result = { status: "not_found" };
+				return;
+			}
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			if (current.revision !== input.expectedRevision) {
+				result = { status: "revision_conflict", schedule: current };
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET revision = revision + 1, state = 'cancelled',
+				     terminal_reason = 'cancelled', updated_at = ?
+				 WHERE schedule_id = ? AND revision = ?`,
+				[input.updatedAt, input.scheduleId, input.expectedRevision],
+			);
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			this.recordVoiceScheduleReceipt({
+				requestKey: input.requestKey,
+				requestDigest: input.requestDigest,
+				schedule,
+				createdAt: input.updatedAt,
+			});
+			result = { status: "cancelled", schedule };
+		});
+		this.save();
+		return result;
+	}
+
+	listDueVoiceSchedules(now: string): VoiceScheduleRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM voice_schedules
+			 WHERE state = 'scheduled' AND prewarm_at <= ?
+			 ORDER BY scheduled_at, schedule_id`,
+			[now],
+		)
+			.map((row) => this.voiceScheduleFromRow(row))
+			.filter((row): row is VoiceScheduleRow => row !== undefined);
+	}
+
+	attachVoiceScheduleSession(input: {
+		scheduleId: string;
+		expectedRevision: number;
+		sessionId: string;
+		updatedAt: string;
+	}):
+		| { status: "linked"; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+		| { status: "not_found" } {
+		let result:
+			| { status: "linked"; schedule: VoiceScheduleRow }
+			| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+			| { status: "not_found" } = { status: "not_found" };
+		this.db.transaction(() => {
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) return;
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			// One non-terminal session per schedule: an already linked revision must
+			// not be re-linked to a second room occupant.
+			if (
+				current.revision !== input.expectedRevision ||
+				current.state !== "scheduled"
+			) {
+				result = { status: "revision_conflict", schedule: current };
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET state = 'prewarming', session_id = ?, session_revision = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ? AND state = 'scheduled'`,
+				[
+					input.sessionId,
+					input.expectedRevision,
+					input.updatedAt,
+					input.scheduleId,
+					input.expectedRevision,
+				],
+			);
+			result = { status: "linked", schedule: this.getVoiceSchedule(input.scheduleId)! };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2701: the daemon reports "in the room and the model is up" before the
+	 * meeting time. Ready is not live — the session stays warming and drops all
+	 * media until the Bridge lets it go live at T.
+	 */
+	markVoiceSessionReady(input: {
+		sessionId: string;
+		scheduleRevision: number | null;
+		readyAt: string;
+	}): "ready" | "revision_conflict" | "not_found" | "state_conflict" {
+		let result: "ready" | "revision_conflict" | "not_found" | "state_conflict" =
+			"not_found";
+		this.db.transaction(() => {
+			const session = this.getVoiceSession(input.sessionId);
+			if (!session) return;
+			if (!["claimed", "warming"].includes(session.state)) {
+				result = "state_conflict";
+				return;
+			}
+			if ((session.scheduleRevision ?? null) !== (input.scheduleRevision ?? null)) {
+				result = "revision_conflict";
+				return;
+			}
+			if (session.scheduleId) {
+				const schedule = this.getVoiceSchedule(session.scheduleId);
+				if (!schedule || schedule.revision !== session.scheduleRevision) {
+					result = "revision_conflict";
+					return;
+				}
+				if (["ended", "cancelled", "failed"].includes(schedule.state)) {
+					result = "state_conflict";
+					return;
+				}
+			}
+			if (!session.readyAt) {
+				this.db.run(
+					"UPDATE voice_sessions SET ready_at = ?, updated_at = ? WHERE session_id = ? AND ready_at IS NULL",
+					[input.readyAt, input.readyAt, input.sessionId],
+				);
+				if (session.scheduleId) {
+					this.db.run(
+						`UPDATE voice_schedules SET state = 'ready', updated_at = ?
+						 WHERE schedule_id = ? AND revision = ? AND state = 'prewarming'`,
+						[input.readyAt, session.scheduleId, session.scheduleRevision],
+					);
+				}
+			}
+			result = "ready";
+		});
+		this.save();
+		return result;
+	}
+
 	reserveVoiceSession(
 		input: VoiceSessionReservation,
 	):
@@ -3892,8 +4387,9 @@ export class StateStore {
 				`INSERT INTO voice_sessions
 				 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id, voice_bot_user_id,
 				  meeting_id, evidence_dir, topic, requested_by, credential_tier, state,
+				  schedule_id, schedule_revision, not_before_live_at, presence_deadline_at,
 				  created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?)`,
 				[
 					input.sessionId,
 					input.mode,
@@ -3907,6 +4403,10 @@ export class StateStore {
 					input.topic ?? null,
 					input.requestedBy,
 					input.credentialTier,
+					input.scheduleId ?? null,
+					input.scheduleRevision ?? null,
+					input.notBeforeLiveAt ?? null,
+					input.presenceDeadlineAt ?? null,
 					input.createdAt,
 					input.createdAt,
 				],
@@ -8724,6 +9224,12 @@ export class StateStore {
 		// Additive migration: ending age must not be rejuvenated by lease/poller writes.
 		this.addColumnIfMissing("voice_sessions", "ending_started_at", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "root_requested_at", "TEXT");
+		// FLY-2701 additive migration: instant sessions keep these null.
+		this.addColumnIfMissing("voice_sessions", "schedule_id", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "schedule_revision", "INTEGER");
+		this.addColumnIfMissing("voice_sessions", "not_before_live_at", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "presence_deadline_at", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "ready_at", "TEXT");
 		// A legacy unknown root must never receive a fresh deduplication window.
 		this.db.run(
 			"UPDATE voice_sessions SET root_requested_at = created_at WHERE provisioning_step = 'root_requested' AND root_requested_at IS NULL",
@@ -8741,6 +9247,58 @@ export class StateStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_meeting
 			ON voice_sessions(meeting_id)
 			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
+		`);
+		// FLY-2701: a scheduled meeting is a durable to-do; it carries no room
+		// uniqueness of its own, so a future booking never blocks today's call.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_schedules (
+				schedule_id TEXT PRIMARY KEY,
+				revision INTEGER NOT NULL DEFAULT 1,
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				guild_id TEXT NOT NULL,
+				voice_channel_id TEXT NOT NULL,
+				voice_bot_user_id TEXT NOT NULL,
+				meeting_id TEXT,
+				topic TEXT,
+				evidence_dir TEXT,
+				scheduled_at TEXT NOT NULL,
+				prewarm_at TEXT NOT NULL,
+				ready_deadline_at TEXT NOT NULL,
+				presence_deadline_at TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'scheduled'
+					CHECK(state IN ('scheduled','prewarming','ready','live','ended','cancelled','failed')),
+				session_id TEXT,
+				session_revision INTEGER,
+				late_admission INTEGER NOT NULL DEFAULT 0,
+				requested_by TEXT NOT NULL,
+				credential_tier TEXT NOT NULL CHECK(credential_tier IN ('master','ingest')),
+				terminal_reason TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS voice_schedules_due
+			ON voice_schedules(prewarm_at, schedule_id)
+			WHERE state = 'scheduled'
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS voice_schedules_active_meeting
+			ON voice_schedules(meeting_id)
+			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
+		`);
+		// Exact request receipts: a lost response must replay the original result
+		// instead of guessing from whatever revision happens to be current now.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_schedule_requests (
+				request_key TEXT PRIMARY KEY,
+				request_digest TEXT NOT NULL,
+				schedule_id TEXT NOT NULL,
+				result_revision INTEGER NOT NULL,
+				result_snapshot TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			)
 		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS voice_outbound (
