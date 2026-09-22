@@ -739,6 +739,13 @@ export class VoiceDaemon {
 			if (!Number.isFinite(remaining) || remaining <= 0) return;
 			await this.options.sleep(remaining, this.sleepController.signal);
 		}
+		// Falling through here would issue exactly the early live this wait exists
+		// to prevent, and the Bridge's 409 would be misread as a lost lease. Say
+		// what actually happened instead.
+		throw new SessionEnded({
+			kind: "failed",
+			reason: "meeting_floor_unreachable",
+		});
 	}
 
 	/**

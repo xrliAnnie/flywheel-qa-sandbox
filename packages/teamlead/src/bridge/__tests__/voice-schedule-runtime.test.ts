@@ -47,7 +47,6 @@ function runtime(
 		now: () => now,
 		newSessionId: () => SESSION_ID,
 		provision: vi.fn(async () => {}),
-		requestWake: vi.fn(),
 		...overrides,
 	});
 }
@@ -66,23 +65,19 @@ describe("VoiceScheduleRuntime", () => {
 	it("does nothing before the frozen prewarm time", async () => {
 		schedule();
 		const provision = vi.fn(async () => {});
-		const requestWake = vi.fn();
-		await runtime("2026-09-22T08:57:59.999Z", {
-			provision,
-			requestWake,
-		}).tick();
+		await runtime("2026-09-22T08:57:59.999Z", { provision }).tick();
 		expect(provision).not.toHaveBeenCalled();
-		expect(requestWake).not.toHaveBeenCalled();
 		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
 			state: "scheduled",
 			sessionId: null,
 		});
 	});
 
-	it("reserves a prewarming session carrying the live floor and wakes the host", async () => {
+	it("reserves a prewarming session carrying the live floor and leaves it desired", async () => {
 		schedule();
-		// Provisioning ends at desired — that unclaimed row is what the wake lane
-		// consumes, so the kickstart request follows it, not this pass's intent.
+		// Provisioning ends at desired. That unclaimed row is the whole hand-off:
+		// the session runtime's wake lane owns asking launchd, because only that
+		// lane spends the per-demand launch budget.
 		const provision = vi.fn(async (sessionId: string) => {
 			store.updateVoiceProvisioning({
 				sessionId,
@@ -92,8 +87,7 @@ describe("VoiceScheduleRuntime", () => {
 				updatedAt: PREWARM_AT,
 			});
 		});
-		const requestWake = vi.fn();
-		await runtime(PREWARM_AT, { provision, requestWake }).tick();
+		await runtime(PREWARM_AT, { provision }).tick();
 		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
 			state: "prewarming",
 			sessionId: SESSION_ID,
@@ -106,8 +100,10 @@ describe("VoiceScheduleRuntime", () => {
 			notBeforeLiveAt: MEETING_AT,
 			presenceDeadlineAt: "2026-09-22T09:10:00.000Z",
 		});
-		expect(provision).toHaveBeenCalledWith(SESSION_ID);
-		expect(requestWake).toHaveBeenCalled();
+		expect(provision).toHaveBeenCalledWith(SESSION_ID, expect.anything());
+		expect(store.getDesiredVoiceSession()).toMatchObject({
+			sessionId: SESSION_ID,
+		});
 	});
 
 	it("does not start a second session for an already prewarming schedule", async () => {
@@ -157,12 +153,11 @@ describe("VoiceScheduleRuntime", () => {
 		expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
 	});
 
-	it("rescans a Bridge restart backlog instead of trusting a lost wake", async () => {
+	it("never asks launchd itself, so the launch budget stays the only brake", async () => {
 		schedule();
-		const requestWake = vi.fn();
-		// A first pass reserved and provisioned; the wake command was lost with the
-		// old Bridge process. desired is still an unclaimed to-do, so the next scan
-		// must ask again rather than assuming the host was already started.
+		// A first pass reserved and provisioned. Whatever happened to the host,
+		// the desired row survives and the budgeted wake lane retries it; this
+		// runtime must not open a second, unbudgeted kickstart path.
 		await runtime(PREWARM_AT, {
 			provision: async (sessionId) => {
 				store.updateVoiceProvisioning({
@@ -174,8 +169,13 @@ describe("VoiceScheduleRuntime", () => {
 				});
 			},
 		}).tick();
-		await runtime("2026-09-22T08:58:03.000Z", { requestWake }).tick();
-		expect(requestWake).toHaveBeenCalled();
+		await runtime("2026-09-22T08:58:03.000Z").tick();
+		expect(store.getVoiceLaunchBudget(SESSION_ID)).toMatchObject({
+			attempts: 0,
+		});
+		expect(store.getDesiredVoiceSession()).toMatchObject({
+			sessionId: SESSION_ID,
+		});
 	});
 
 	it("fails a schedule whose presence deadline passed with nothing running", async () => {
@@ -201,5 +201,27 @@ describe("VoiceScheduleRuntime", () => {
 			state: "prewarming",
 			sessionId: SESSION_ID,
 		});
+	});
+});
+
+describe("VoiceScheduleRuntime provisioning bound (FLY-2701 review R3)", () => {
+	it("gives up on a hung provisioning pass instead of freezing the lane", async () => {
+		schedule();
+		let aborted = false;
+		const engine = runtime(PREWARM_AT, {
+			provisionDeadlineMs: 10,
+			provision: (_sessionId, signal) =>
+				new Promise<void>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => {
+						aborted = true;
+						reject(new Error("aborted"));
+					});
+				}),
+		});
+
+		await expect(engine.tick()).resolves.toBeUndefined();
+		expect(aborted).toBe(true);
+		// The lane is free again: a later tick still runs.
+		await expect(engine.tick()).resolves.toBeUndefined();
 	});
 });

@@ -83,7 +83,10 @@ export function createVoiceSessionServices(input: {
 	const voiceLaunchdWaker = new VoiceLaunchdWaker({
 		verify: () =>
 			verifyVoiceOnDemandContract({
-				repoRoot: input.cwd ?? process.cwd(),
+				// The same trusted root this factory already resolved. Using the
+				// process cwd would silently fail verification for a Bridge started
+				// anywhere but FLYWHEEL_DIR, and still record an accepted wake.
+				repoRoot,
 				homeDir,
 			}),
 		wake: () => kickstartVoiceOnDemand(),
@@ -274,8 +277,8 @@ export function createVoiceSessionServices(input: {
 				fetchImpl,
 			});
 		},
-		// The waker's own coalescing is reported back so a request that was never
-		// sent cannot be counted against the session's launch budget.
+		// The waker resolves to the settled command result, so a coalesced request
+		// spends no budget and a contract fault stops the retries immediately.
 		requestWake: () => voiceLaunchdWaker.requestWake(),
 		newAttemptId: randomUUID,
 		reportPollFailure: (session) => postStatus(session, "📻 回程暂时不通"),
@@ -292,9 +295,6 @@ export function createVoiceSessionServices(input: {
 		store: input.store,
 		newSessionId: randomUUID,
 		provision,
-		requestWake: () => {
-			voiceLaunchdWaker.requestWake();
-		},
 		log: (message) => console.warn(`[voice-schedule] ${message}`),
 	});
 	return {

@@ -13,7 +13,9 @@ export interface VoiceSessionRuntimeDeps {
 	now?: () => string;
 	provision: (sessionId: string, signal: AbortSignal) => Promise<void>;
 	poll: (session: VoiceSessionRow) => Promise<void>;
-	requestWake?: (session: VoiceSessionRow) => "accepted" | "coalesced" | void;
+	requestWake?: (
+		session: VoiceSessionRow,
+	) => Promise<"coalesced" | "accepted" | "unavailable" | "failed">;
 	/** Attempt id minted per admitted wake; injected so tests stay deterministic. */
 	newAttemptId?: () => string;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
@@ -176,12 +178,14 @@ export class VoiceSessionRuntime {
 					);
 					continue;
 				}
-				let outcome: "accepted" | "failed" | "unknown" = "unknown";
+				// The outcome is the *settled* command result. A request that was
+				// coalesced away proves nothing and must not spend budget; a
+				// configuration fault stops the retries on the first observation.
+				let outcome: "accepted" | "failed" | "unavailable" | "unknown" =
+					"unknown";
 				try {
-					outcome =
-						this.deps.requestWake(session) === "coalesced"
-							? "unknown"
-							: "accepted";
+					const settled = await this.deps.requestWake(session);
+					if (settled !== "coalesced") outcome = settled;
 				} catch {
 					outcome = "failed";
 					console.warn(
@@ -192,6 +196,9 @@ export class VoiceSessionRuntime {
 					attemptId,
 					commandResult: outcome,
 					observedAt: at,
+					...(outcome === "unavailable"
+						? { failureClass: "startup_config_invalid" }
+						: {}),
 				});
 			}
 		} finally {

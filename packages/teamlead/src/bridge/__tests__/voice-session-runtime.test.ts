@@ -535,7 +535,9 @@ it.each(["missing", "unleased"] as const)(
 describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
 	function wakeRuntime(
 		now: string,
-		requestWake: (session: { sessionId: string }) => "accepted" | "coalesced",
+		requestWake: (
+			session: { sessionId: string },
+		) => Promise<"coalesced" | "accepted" | "unavailable" | "failed">,
 	) {
 		return new VoiceSessionRuntime({
 			store,
@@ -567,7 +569,7 @@ describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
 	});
 
 	it("stops asking launchd once three accepted wakes produced no claim", async () => {
-		const requestWake = vi.fn(() => "accepted" as const);
+		const requestWake = vi.fn(async () => "accepted" as const);
 		for (let index = 0; index < 5; index += 1) {
 			await wakeRuntime(
 				new Date(Date.parse(T0) + index * 60_000).toISOString(),
@@ -582,13 +584,25 @@ describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
 	});
 
 	it("does not spend budget on a coalesced request", async () => {
-		const requestWake = vi.fn(() => "coalesced" as const);
+		const requestWake = vi.fn(async () => "coalesced" as const);
 		await wakeRuntime(T0, requestWake).wakeTick();
 		expect(store.getVoiceLaunchBudget(SESSION_ID)).toMatchObject({
 			provenFailures: 0,
 		});
 		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
 			state: "desired",
+		});
+	});
+
+	it("stops on the first configuration fault instead of burning the budget", async () => {
+		const requestWake = vi.fn(async () => "unavailable" as const);
+		await wakeRuntime(T0, requestWake).wakeTick();
+		await wakeRuntime(new Date(Date.parse(T0) + 600_000).toISOString(), requestWake).wakeTick();
+		// One observation is enough: nothing retries a disabled or drifted unit.
+		expect(requestWake).toHaveBeenCalledTimes(1);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "failed",
+			reason: "startup_config_invalid",
 		});
 	});
 });

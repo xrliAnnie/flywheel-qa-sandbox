@@ -5,9 +5,9 @@ export interface VoiceScheduleRuntimeDeps {
 	now?: () => string;
 	newSessionId: () => string;
 	/** Runs the existing Discord provisioning chain for the reserved session. */
-	provision: (sessionId: string) => Promise<void>;
-	/** Bounded launchd kickstart request; never spawns the daemon directly. */
-	requestWake: () => void;
+	provision: (sessionId: string, signal?: AbortSignal) => Promise<void>;
+	/** Bound on one provisioning pass; a hung call must not freeze the lane. */
+	provisionDeadlineMs?: number;
 	scanIntervalMs?: number;
 	log?: (message: string) => void;
 }
@@ -55,20 +55,13 @@ export class VoiceScheduleRuntime {
 			for (const schedule of this.deps.store.listDueVoiceSchedules(at)) {
 				await this.prewarm(schedule, at);
 			}
-			// The wake lane is driven by desired rows, not by what this pass just
-			// did: a schedule provisioned by an earlier (now dead) Bridge is still
-			// waiting, and only an unclaimed desired row can consume the wake.
-			if (this.deps.store.getDesiredVoiceSession()) this.wake();
+			// Waking is deliberately not done here. The session runtime's wake lane
+			// already scans every desired row on its own cadence and spends the
+			// per-demand launch budget that replaced the resident storm gate; a
+			// second caller would ask launchd every 3s forever and re-create the
+			// restart storm this design exists to remove.
 		} finally {
 			this.ticking = false;
-		}
-	}
-
-	private wake(): void {
-		try {
-			this.deps.requestWake();
-		} catch {
-			this.deps.log?.("voice schedule wake request failed");
 		}
 	}
 
@@ -150,12 +143,35 @@ export class VoiceScheduleRuntime {
 			return;
 		}
 		try {
-			await this.deps.provision(sessionId);
+			await this.provisionWithDeadline(sessionId);
 		} catch {
 			// The session row survives; recovery and the next scan own the retry.
 			this.deps.log?.(`voice schedule ${current.scheduleId} provision failed`);
-			return;
 		}
-		if (this.deps.store.getDesiredVoiceSession()) this.wake();
+	}
+
+	/**
+	 * One external provisioning pass cannot be allowed to hold the whole lane:
+	 * while it hangs, every other booking and the missed-meeting reaper stop.
+	 */
+	private async provisionWithDeadline(sessionId: string): Promise<void> {
+		const controller = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => {
+				const error = new Error("voice_schedule_provision_timeout");
+				reject(error);
+				controller.abort(error);
+			}, this.deps.provisionDeadlineMs ?? 30_000);
+			timer.unref?.();
+		});
+		try {
+			await Promise.race([
+				this.deps.provision(sessionId, controller.signal),
+				deadline,
+			]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	}
 }

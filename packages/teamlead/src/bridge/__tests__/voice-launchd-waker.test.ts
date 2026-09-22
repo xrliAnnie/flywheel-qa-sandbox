@@ -49,7 +49,7 @@ describe("voice launchd waker", () => {
 				calls.push("wake");
 			},
 		});
-		expect(waker.requestWake()).toBe("accepted");
+		await expect(waker.requestWake()).resolves.toBe("accepted");
 		await vi.waitFor(() => expect(calls).toContain("wake"));
 
 		expect(run).toHaveBeenCalledWith(
@@ -74,17 +74,16 @@ describe("voice launchd waker", () => {
 			.mockResolvedValue(undefined);
 		const waker = new VoiceLaunchdWaker({ wake, now: () => now });
 
-		expect(waker.requestWake()).toBe("accepted");
-		expect(waker.requestWake()).toBe("coalesced");
+		const inFlight = waker.requestWake();
+		await expect(waker.requestWake()).resolves.toBe("coalesced");
 		expect(wake).toHaveBeenCalledTimes(1);
 		first.resolve();
-		await first.promise;
-		await Promise.resolve();
+		await expect(inFlight).resolves.toBe("accepted");
 
 		now = 2_999;
-		expect(waker.requestWake()).toBe("coalesced");
+		await expect(waker.requestWake()).resolves.toBe("coalesced");
 		now = 3_000;
-		expect(waker.requestWake()).toBe("accepted");
+		await expect(waker.requestWake()).resolves.toBe("accepted");
 		expect(wake).toHaveBeenCalledTimes(2);
 	});
 
@@ -96,10 +95,28 @@ describe("voice launchd waker", () => {
 		const log = vi.fn();
 		const waker = new VoiceLaunchdWaker({ wake, now: () => now, log });
 
-		expect(waker.requestWake()).toBe("accepted");
-		await vi.waitFor(() => expect(log).toHaveBeenCalledOnce());
+		// The reason text never reaches the caller, but the outcome does — the
+		// launch budget cannot count a failed command as an accepted one.
+		await expect(waker.requestWake()).resolves.toBe("failed");
 		expect(log).toHaveBeenCalledWith("voice launchd wake failed");
 		now = 3_000;
-		expect(waker.requestWake()).toBe("accepted");
+		await expect(waker.requestWake()).resolves.toBe("failed");
+	});
+
+	it("separates a configuration fault from a flaky command", async () => {
+		const wake = vi.fn(async () => {});
+		const log = vi.fn();
+		const waker = new VoiceLaunchdWaker({
+			wake,
+			verify: async () => {
+				throw new Error("unit disabled");
+			},
+			now: () => 0,
+			log,
+		});
+
+		await expect(waker.requestWake()).resolves.toBe("unavailable");
+		expect(wake).not.toHaveBeenCalled();
+		expect(log).toHaveBeenCalledWith("voice launchd contract unavailable");
 	});
 });
