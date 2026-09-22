@@ -274,9 +274,10 @@ export function createVoiceSessionServices(input: {
 				fetchImpl,
 			});
 		},
-		requestWake: () => {
-			voiceLaunchdWaker.requestWake();
-		},
+		// The waker's own coalescing is reported back so a request that was never
+		// sent cannot be counted against the session's launch budget.
+		requestWake: () => voiceLaunchdWaker.requestWake(),
+		newAttemptId: randomUUID,
 		reportPollFailure: (session) => postStatus(session, "📻 回程暂时不通"),
 	});
 	// FLY-2701: booked meetings live in the Bridge, so the calendar keeps

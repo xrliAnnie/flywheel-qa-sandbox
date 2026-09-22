@@ -30,6 +30,7 @@ describe("StateStore voice session schema", () => {
 			"voice_health_demand_source",
 			"voice_health_projection",
 			"voice_health_projection_cursor",
+			"voice_launch_attempts",
 			"voice_outbound",
 			"voice_schedule_requests",
 			"voice_schedules",

@@ -2855,6 +2855,11 @@ export interface VoiceHealthDemandSnapshot {
 	events: VoiceHealthDemandEvent[];
 }
 
+/** How long an accepted kickstart has to turn into a claim before it counts. */
+const VOICE_LAUNCH_STARTUP_WINDOW_MS = 60_000;
+const VOICE_LAUNCH_MAX_PROVEN_FAILURES = 3;
+const VOICE_LAUNCH_RETRY_BACKOFF_MS = 3_000;
+
 const VOICE_HEALTH_DEMAND_TRIGGER_NAMES = [
 	"voice_health_demand_sessions_insert",
 	"voice_health_demand_sessions_delete",
@@ -4229,6 +4234,166 @@ export class StateStore {
 		});
 		this.save();
 		return result;
+	}
+
+	/**
+	 * FLY-2701 launch budget. A wake is only worth sending while there is still
+	 * reason to believe a host will answer it. "Proven failure" means the command
+	 * was accepted and the session still was not claimed within the startup
+	 * window — an unknown command result proves nothing and never spends budget.
+	 */
+	getVoiceLaunchBudget(
+		sessionId: string,
+		now?: string,
+	): {
+		attempts: number;
+		provenFailures: number;
+		claimed: boolean;
+		nextAttemptAt: string | null;
+		failureClass: string | null;
+	} {
+		const session = this.getVoiceSession(sessionId);
+		const claimed = session !== undefined && session.state !== "desired";
+		const rows = this.workflowSelectAll(
+			`SELECT command_result, failure_class, requested_at, next_attempt_at, claim_observed_at
+			 FROM voice_launch_attempts WHERE session_id = ? ORDER BY requested_at, attempt_id`,
+			[sessionId],
+		);
+		const nowMs = now ? Date.parse(now) : Number.POSITIVE_INFINITY;
+		let provenFailures = 0;
+		let failureClass: string | null = null;
+		let nextAttemptAt: string | null = null;
+		for (const row of rows) {
+			const result = (row.command_result as string | null) ?? null;
+			const startupWindowClosed =
+				nowMs >=
+				Date.parse(String(row.requested_at)) + VOICE_LAUNCH_STARTUP_WINDOW_MS;
+			if (
+				result === "accepted" &&
+				!row.claim_observed_at &&
+				!claimed &&
+				startupWindowClosed
+			) {
+				provenFailures += 1;
+			}
+			if (result === "failed") provenFailures += 1;
+			if (result === "unavailable") {
+				failureClass =
+					(row.failure_class as string | null) ?? "startup_config_invalid";
+			}
+			nextAttemptAt = (row.next_attempt_at as string | null) ?? nextAttemptAt;
+		}
+		return {
+			attempts: rows.length,
+			provenFailures,
+			claimed,
+			nextAttemptAt,
+			failureClass,
+		};
+	}
+
+	/**
+	 * Decides whether one more kickstart may be sent for this session, and opens
+	 * the attempt row when it may. Returns "exhausted" when asking again would
+	 * just be a restart storm under a different name.
+	 */
+	admitVoiceLaunchAttempt(input: {
+		sessionId: string;
+		attemptId: string;
+		now: string;
+	}):
+		| { status: "admitted" }
+		| { status: "deferred"; nextAttemptAt: string }
+		| { status: "exhausted"; provenFailures: number; failureClass: string | null } {
+		let result:
+			| { status: "admitted" }
+			| { status: "deferred"; nextAttemptAt: string }
+			| {
+					status: "exhausted";
+					provenFailures: number;
+					failureClass: string | null;
+			  } = { status: "admitted" };
+		this.db.transaction(() => {
+			const budget = this.getVoiceLaunchBudget(input.sessionId, input.now);
+			// A permanent configuration fault is not retried at all: installing or
+			// enabling a unit behind the operator's back is never this code's job.
+			if (budget.failureClass) {
+				result = {
+					status: "exhausted",
+					provenFailures: budget.provenFailures,
+					failureClass: budget.failureClass,
+				};
+				return;
+			}
+			if (budget.provenFailures >= VOICE_LAUNCH_MAX_PROVEN_FAILURES) {
+				result = {
+					status: "exhausted",
+					provenFailures: budget.provenFailures,
+					failureClass: null,
+				};
+				return;
+			}
+			if (
+				budget.nextAttemptAt &&
+				Date.parse(input.now) < Date.parse(budget.nextAttemptAt)
+			) {
+				result = { status: "deferred", nextAttemptAt: budget.nextAttemptAt };
+				return;
+			}
+			this.db.run(
+				`INSERT OR IGNORE INTO voice_launch_attempts
+				 (attempt_id, session_id, requested_at, updated_at)
+				 VALUES (?, ?, ?, ?)`,
+				[input.attemptId, input.sessionId, input.now, input.now],
+			);
+			result = { status: "admitted" };
+		});
+		this.save();
+		return result;
+	}
+
+	recordVoiceLaunchResult(input: {
+		attemptId: string;
+		commandResult: "accepted" | "failed" | "unavailable" | "unknown";
+		failureClass?: string;
+		observedAt: string;
+		backoffMs?: number;
+	}): void {
+		this.db.transaction(() => {
+			// An accepted command's next attempt is measured from when the command
+			// was sent, so the retry lands exactly when the startup window that
+			// decides "proven failure" closes — not a round trip later.
+			const requestedAt = this.workflowSelectAll(
+				"SELECT requested_at FROM voice_launch_attempts WHERE attempt_id = ?",
+				[input.attemptId],
+			)[0]?.requested_at;
+			const anchorMs =
+				input.commandResult === "accepted" && requestedAt
+					? Date.parse(String(requestedAt))
+					: Date.parse(input.observedAt);
+			const backoffMs =
+				input.backoffMs ??
+				(input.commandResult === "accepted"
+					? VOICE_LAUNCH_STARTUP_WINDOW_MS
+					: VOICE_LAUNCH_RETRY_BACKOFF_MS);
+			this.db.run(
+				`UPDATE voice_launch_attempts
+				 SET command_result = ?, failure_class = ?, updated_at = ?,
+				     failed_at = CASE WHEN ? IN ('failed','unavailable') THEN ? ELSE failed_at END,
+				     next_attempt_at = ?
+				 WHERE attempt_id = ?`,
+				[
+					input.commandResult,
+					input.failureClass ?? null,
+					input.observedAt,
+					input.commandResult,
+					input.observedAt,
+					new Date(anchorMs + backoffMs).toISOString(),
+					input.attemptId,
+				],
+			);
+		});
+		this.save();
 	}
 
 	/**
@@ -9356,6 +9521,29 @@ export class StateStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_schedules_active_meeting
 			ON voice_schedules(meeting_id)
 			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
+		`);
+		// FLY-2701: bounded audit of on-demand launch attempts. It is evidence,
+		// not authority — the desired row remains the only to-do, and this table
+		// only decides when to stop asking launchd for the same session.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_launch_attempts (
+				attempt_id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				requested_at TEXT NOT NULL,
+				command_result TEXT
+					CHECK(command_result IS NULL OR command_result IN ('accepted','failed','unavailable','unknown')),
+				failure_class TEXT,
+				actual_boot_id TEXT,
+				spawn_observed_at TEXT,
+				claim_observed_at TEXT,
+				failed_at TEXT,
+				next_attempt_at TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS voice_launch_attempts_session
+			ON voice_launch_attempts(session_id, requested_at)
 		`);
 		// Exact request receipts: a lost response must replay the original result
 		// instead of guessing from whatever revision happens to be current now.

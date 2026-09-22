@@ -13,7 +13,9 @@ export interface VoiceSessionRuntimeDeps {
 	now?: () => string;
 	provision: (sessionId: string, signal: AbortSignal) => Promise<void>;
 	poll: (session: VoiceSessionRow) => Promise<void>;
-	requestWake?: (session: VoiceSessionRow) => void;
+	requestWake?: (session: VoiceSessionRow) => "accepted" | "coalesced" | void;
+	/** Attempt id minted per admitted wake; injected so tests stay deterministic. */
+	newAttemptId?: () => string;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
 	reportPollFailure?: (
 		session: VoiceSessionRow,
@@ -154,13 +156,43 @@ export class VoiceSessionRuntime {
 		this.wakeTicking = true;
 		try {
 			for (const session of this.deps.store.listVoiceSessions(["desired"])) {
+				const at = this.now();
+				const attemptId =
+					this.deps.newAttemptId?.() ?? `${session.sessionId}:${at}`;
+				// FLY-2701: an unclaimed demand is a standing to-do, but asking a
+				// host that never answers is a restart storm by another name. The
+				// budget decides when to stop asking and say so out loud.
+				const admission = this.deps.store.admitVoiceLaunchAttempt({
+					sessionId: session.sessionId,
+					attemptId,
+					now: at,
+				});
+				if (admission.status === "deferred") continue;
+				if (admission.status === "exhausted") {
+					this.deps.store.failVoiceSessionAdmission(
+						session.sessionId,
+						admission.failureClass ?? "startup_retry_exhausted",
+						at,
+					);
+					continue;
+				}
+				let outcome: "accepted" | "failed" | "unknown" = "unknown";
 				try {
-					this.deps.requestWake(session);
+					outcome =
+						this.deps.requestWake(session) === "coalesced"
+							? "unknown"
+							: "accepted";
 				} catch {
+					outcome = "failed";
 					console.warn(
 						`[voice-session] wake request ${session.sessionId} failed`,
 					);
 				}
+				this.deps.store.recordVoiceLaunchResult({
+					attemptId,
+					commandResult: outcome,
+					observedAt: at,
+				});
 			}
 		} finally {
 			this.wakeTicking = false;

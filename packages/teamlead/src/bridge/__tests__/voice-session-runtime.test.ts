@@ -531,3 +531,64 @@ it.each(["missing", "unleased"] as const)(
 		expect(reportPollFailure).toHaveBeenCalledTimes(2);
 	},
 );
+
+describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
+	function wakeRuntime(
+		now: string,
+		requestWake: (session: { sessionId: string }) => "accepted" | "coalesced",
+	) {
+		return new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => now,
+			provision: vi.fn(),
+			poll: vi.fn(),
+			requestWake,
+			newAttemptId: () => `attempt-${now}`,
+		});
+	}
+
+	beforeEach(() => {
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+		});
+	});
+
+	it("stops asking launchd once three accepted wakes produced no claim", async () => {
+		const requestWake = vi.fn(() => "accepted" as const);
+		for (let index = 0; index < 5; index += 1) {
+			await wakeRuntime(
+				new Date(Date.parse(T0) + index * 60_000).toISOString(),
+				requestWake,
+			).wakeTick();
+		}
+		expect(requestWake).toHaveBeenCalledTimes(3);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "failed",
+			reason: "startup_retry_exhausted",
+		});
+	});
+
+	it("does not spend budget on a coalesced request", async () => {
+		const requestWake = vi.fn(() => "coalesced" as const);
+		await wakeRuntime(T0, requestWake).wakeTick();
+		expect(store.getVoiceLaunchBudget(SESSION_ID)).toMatchObject({
+			provenFailures: 0,
+		});
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "desired",
+		});
+	});
+});
