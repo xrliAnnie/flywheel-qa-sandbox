@@ -332,6 +332,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	),
 	FLYWHEEL_ROUNDTABLE_SUBSCRIPTION_TTL_MS:
 		"FLY-1942 bounded subscription lifetime in milliseconds, not an on/off gate",
+	FLYWHEEL_SUPERVISOR_BOOTOUT_WAIT_ATTEMPTS:
+		"FLY-2758 bounded launchd bootout→unloaded poll count for darwin install, not an on/off gate",
+	FLYWHEEL_SUPERVISOR_BOOTSTRAP_ATTEMPTS:
+		"FLY-2758 bounded launchd bootstrap retry count for darwin install, not an on/off gate",
+	FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL:
+		"FLY-2758 launchd poll/retry interval in seconds for darwin install, not an on/off gate",
 	FLYWHEEL_AGENT_TEAM_ARGS:
 		"plumbing: eval-safe shell array emitted by agent-team-transport, not an environment flag",
 	FLYWHEEL_LEAD_CARRIER_START:

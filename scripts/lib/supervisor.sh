@@ -26,6 +26,7 @@
 SUPERVISOR_SOURCED=1
 
 _sup_err() { echo "[supervisor] ERROR: $*" >&2; }
+_sup_warn() { echo "[supervisor] WARNING: $*" >&2; }
 _sup_log() { echo "[supervisor] $*"; }
 
 # supervisor_backend — resolve the active backend.
@@ -239,8 +240,61 @@ _sup_darwin_install() {
 
   local uid; uid="$(id -u)"
   launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$uid" "$plist" || { _sup_err "bootstrap failed: $label"; return 1; }
+  # FLY-2758: bootout returns before launchd finishes tearing the service
+  # down. Bootstrapping the same label while it is still in the domain fails
+  # with EIO ("5: Input/output error") and, for a Lead, leaves no carrier
+  # loaded at all. Wait for launchd to drop the label, then bootstrap with a
+  # bounded retry; launchctl's own stderr stays visible for the caller's log.
+  _sup_darwin_wait_unloaded "gui/$uid/$label" \
+    || _sup_warn "$label still loaded after bootout wait; attempting bootstrap anyway"
+  _sup_darwin_bootstrap_retry "gui/$uid" "$plist" "$label" \
+    || { _sup_err "bootstrap failed: $label"; return 1; }
   return 0
+}
+
+# Positive-integer tuning knob with a validated fallback. Invalid values are
+# reported and replaced by the default so a typo cannot disable the wait.
+_sup_tuning() { # <env-name> <default> <pattern>
+  local name="$1" default="$2" pattern="$3" value
+  value="${!name:-}"
+  if [ -z "$value" ]; then printf '%s\n' "$default"; return 0; fi
+  if [[ "$value" =~ $pattern ]]; then printf '%s\n' "$value"; return 0; fi
+  _sup_warn "invalid $name='$value'; using default $default"
+  printf '%s\n' "$default"
+}
+
+# launchd reports a missing label with rc!=0 plus a "Could not find service"
+# line; any other non-zero probe result is treated as still loaded (fail closed).
+_sup_launchd_absent() { # <gui/uid/label>
+  local out rc=0
+  out="$(launchctl print "$1" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s\n' "$out" | grep -qiE 'could not find service|no such process'
+}
+
+_sup_darwin_wait_unloaded() { # <gui/uid/label>
+  local target="$1" attempts interval i
+  attempts="$(_sup_tuning FLYWHEEL_SUPERVISOR_BOOTOUT_WAIT_ATTEMPTS 40 '^[1-9][0-9]*$')"
+  interval="$(_sup_tuning FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL 1 '^[0-9]+$')"
+  for (( i = 1; i <= attempts; i++ )); do
+    if _sup_launchd_absent "$target"; then return 0; fi
+    [ "$i" -ge "$attempts" ] || sleep "$interval"
+  done
+  return 1
+}
+
+_sup_darwin_bootstrap_retry() { # <gui/uid> <plist> <label>
+  local domain="$1" plist="$2" label="$3" attempts interval i rc=0
+  attempts="$(_sup_tuning FLYWHEEL_SUPERVISOR_BOOTSTRAP_ATTEMPTS 5 '^[1-9][0-9]*$')"
+  interval="$(_sup_tuning FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL 1 '^[0-9]+$')"
+  for (( i = 1; i <= attempts; i++ )); do
+    rc=0
+    launchctl bootstrap "$domain" "$plist" || rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    _sup_warn "bootstrap attempt $i/$attempts failed rc=$rc for $label"
+    [ "$i" -ge "$attempts" ] || sleep "$interval"
+  done
+  return 1
 }
 
 # ── public lifecycle verbs: <name> [kind] ───────────────────────────────────

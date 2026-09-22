@@ -739,9 +739,20 @@ cat > "$TMP/lead-alert.sh" <<'SH'
 printf '%s\n' "$*" >> "$VISIBILITY_ALERT_CALLS"
 SH
 chmod +x "$TMP/lead-alert.sh"
+# The stub models launchd for the install path (FLY-2758): after `bootout` the
+# label is absent until the next `bootstrap`, so install's post-bootout wait
+# sees the label leave instead of polling a stub that never changes.
 cat > "$STATE/bin/launchctl" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >> "$LAUNCHCTL_CALLS"
+case "${1:-}" in
+  print) label="${2##*/}"
+    if [ -e "$LAUNCHCTL_CALLS.absent.$label" ]; then
+      echo "Could not find service \"$label\" in domain for user gui: $(id -u)" >&2; exit 113
+    fi ;;
+  bootout) touch "$LAUNCHCTL_CALLS.absent.${2##*/}" ;;
+  bootstrap) rm -f "$LAUNCHCTL_CALLS.absent.$(basename "${3:-}" .plist)" ;;
+esac
 exit 0
 SH
 chmod +x "$STATE/bin/launchctl"
@@ -979,10 +990,20 @@ else
 fi
 
 mkdir -p "$H/.claude/teams/demo-lead/inboxes"
+# The verification fixtures below assume a loaded job; drop any absent marker a
+# preceding stop/bootout left behind before switching to the running-job stub.
+rm -f "$LAUNCHCTL_CALLS".absent.*
 cat > "$STATE/bin/launchctl" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >> "$LAUNCHCTL_CALLS"
+case "${1:-}" in
+  bootout) touch "$LAUNCHCTL_CALLS.absent.${2##*/}" ;;
+  bootstrap) rm -f "$LAUNCHCTL_CALLS.absent.$(basename "${3:-}" .plist)" ;;
+esac
 if [ "${1:-}" = print ]; then
+  if [ -e "$LAUNCHCTL_CALLS.absent.${2##*/}" ]; then
+    echo "Could not find service \"${2##*/}\" in domain for user gui: $(id -u)" >&2; exit 113
+  fi
   printf '%s\n' 'state = running' 'pid = 4101'
   [ "${LAUNCHCTL_MODE:-}" != duplicate ] || printf '%s\n' 'pid = 4102'
 fi

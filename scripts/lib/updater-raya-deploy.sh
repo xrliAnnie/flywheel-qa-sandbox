@@ -507,6 +507,67 @@ raya_standard_lead_wait_live() {
   return 1
 }
 
+# FLY-2758: `flywheel-lead.sh install` boots the live standard Lead out before
+# it bootstraps the rendered plist. When bootstrap then fails, the only
+# conversational carrier is gone (the legacy brain/voice owners were retired at
+# P2). Observe that and put the standard Lead back through the same public verb
+# so a failed cutover never leaves Raya with nobody loaded. Sets
+# RAYA_RESTORE_STATE to not_needed | restored | not_restored.
+RAYA_STANDARD_LEAD_LABEL="com.flywheel.lead.raya-raya"
+# launchd's own answer to "is a carrier loaded": exactly one running pid for
+# the standard Lead label. The full `verify --stage live` also needs a healthy
+# Bridge, an API token and an inbox nudge, so it alone must not decide OFFLINE.
+raya_standard_lead_loaded() {
+  local out=""
+  out="$(launchctl print "gui/$(id -u)/$RAYA_STANDARD_LEAD_LABEL" 2>/dev/null)" || return 1
+  [[ "$(grep -cE '^[[:space:]]*state = running[[:space:]]*$' <<<"$out")" == 1 ]] \
+    && grep -qE '^[[:space:]]*pid = [1-9][0-9]*[[:space:]]*$' <<<"$out"
+}
+
+# Sets RAYA_RESTORE_STATE to one of:
+#   not_needed      install failed before unloading the Lead; live verify passes
+#   loaded_not_live launchd shows the Lead running but live verify fails
+#                   (Bridge/pump side); no carrier churn, not an outage
+#   restored        the Lead was gone, the public install brought it back live
+#   not_restored    launchd shows no standard Lead after the restore attempt
+raya_recover_standard_lead_after_install_failure() {
+  RAYA_RESTORE_STATE=not_restored
+  if raya_standard_lead verify --stage live "$RAYA_CANONICAL_MANIFEST"; then
+    RAYA_RESTORE_STATE=not_needed
+    raya_log "install failed before unloading the standard Lead; it is still live"
+    return 0
+  fi
+  if raya_standard_lead_loaded; then
+    RAYA_RESTORE_STATE=loaded_not_live
+    raya_log "standard Lead is loaded in launchd but not live after the failed install; leaving it in place"
+    return 0
+  fi
+  raya_log "standard Lead is not loaded after a failed install; restoring it"
+  if raya_standard_lead install --project raya --lead raya && raya_standard_lead_wait_live; then
+    RAYA_RESTORE_STATE=restored
+    raya_log "standard Lead restored and live after the failed install"
+    return 0
+  fi
+  if raya_standard_lead_loaded; then
+    RAYA_RESTORE_STATE=loaded_not_live
+    raya_log "standard Lead is loaded in launchd after the restore install but not yet live"
+    return 0
+  fi
+  raya_log "standard Lead could NOT be restored after the failed install; launchd has no carrier loaded"
+  return 1
+}
+
+# The standard-update arm of raya_prepare_source restarts the Lead through the
+# same public verb and needs the same recovery when its install fails.
+raya_standard_update_install() {
+  raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
+  RAYA_PREFLIGHT_RC=$?
+  (( RAYA_PREFLIGHT_RC == 0 )) || return 1
+  raya_standard_lead install --project raya --lead raya \
+    || { raya_recover_standard_lead_after_install_failure || true; return 1; }
+  raya_standard_lead verify --stage installed "$RAYA_CANONICAL_MANIFEST" || return 1
+}
+
 raya_standard_cutover() {
   local checkpoint="" stopped_at="" cursor="" input="" receipt="" activated="" installed=""
   raya_manifest_base_valid || return 1
@@ -543,7 +604,8 @@ raya_standard_cutover() {
               RAYA_DEPLOY_DETAIL=awaiting_standard_lead_pre_restart
               return 1
             fi
-            raya_standard_lead install --project raya --lead raya || return 1
+            raya_standard_lead install --project raya --lead raya \
+              || { raya_recover_standard_lead_after_install_failure || true; return 1; }
             installed="$(raya_now_iso)" || return 1
             raya_manifest_transform P4b P4b '.lead_restart_installed_at = $installed' \
               --arg installed "$installed" || return 1
@@ -580,7 +642,8 @@ raya_standard_cutover() {
           raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
           RAYA_PREFLIGHT_RC=$?
           (( RAYA_PREFLIGHT_RC == 0 )) || return 1
-          raya_standard_lead install --project raya --lead raya || return 1
+          raya_standard_lead install --project raya --lead raya \
+            || { raya_recover_standard_lead_after_install_failure || true; return 1; }
           raya_standard_lead verify --stage installed "$RAYA_CANONICAL_MANIFEST" || return 1
           activated="$(raya_now_iso)" || return 1
           raya_manifest_transform P4b P5 '.activated_at = $activated' --arg activated "$activated" || return 1
@@ -1190,11 +1253,7 @@ raya_prepare_source() {
   raya_materialize_business || return 1
   if [[ "$(jq -r '.mode // "migration"' "$RAYA_MIGRATION_MANIFEST")" == standard-update ]]; then
     raya_migrate_summary_presentation || return 1
-    raya_standard_lead preflight "$RAYA_CANONICAL_MANIFEST"
-    RAYA_PREFLIGHT_RC=$?
-    (( RAYA_PREFLIGHT_RC == 0 )) || return 1
-    raya_standard_lead install --project raya --lead raya || return 1
-    raya_standard_lead verify --stage installed "$RAYA_CANONICAL_MANIFEST" || return 1
+    raya_standard_update_install || return 1
     raya_manifest_transform P2 P5 '
       .target_raya_sha = $raya | .raya_sha = $raya | .flywheel_deployed_sha = $flywheel |
       .canonical_manifest_digest = $manifest |
@@ -1244,11 +1303,28 @@ raya_migrate_summary_presentation() {
 }
 
 raya_fail() {
-  local detail="$1" rc="${2:-1}"
+  local detail="$1" rc="${2:-1}" body="" alert_class=raya-standard-deploy-failed
+  body="$detail"
+  # FLY-2758: say what the failure left running. The receipt stays `failed`
+  # (a restored Lead runs the freshly materialized artifact, nothing was rolled
+  # back); the alert body carries the carrier state, and an unloaded carrier
+  # pages under its own class so daily dedup of routine failures cannot
+  # swallow the outage.
+  case "${RAYA_RESTORE_STATE:-}" in
+    not_needed) body="$detail; standard Lead was never unloaded and is still live" ;;
+    loaded_not_live)
+      body="$detail; standard Lead is loaded in launchd but did not pass live verify (check Bridge health and the inbox pump); not treated as an outage" ;;
+    restored)
+      body="$detail; standard Lead restored and live — Raya remains conversational; the shuttle retries next window" ;;
+    not_restored)
+      alert_class=raya-standard-lead-offline
+      body="$detail; standard Lead is NOT loaded in launchd — Raya is OFFLINE; run flywheel-lead.sh install --project raya --lead raya" ;;
+  esac
   RAYA_DEPLOY_STATE=failed
   RAYA_DEPLOY_DETAIL="$detail"
+  [[ -z "${RAYA_RESTORE_STATE:-}" ]] || raya_log "deploy failed; recovery state: $RAYA_RESTORE_STATE; detail: $detail"
   raya_write_standard_receipt failed "$detail" >/dev/null 2>&1 || true
-  raya_alert severe raya-standard-deploy-failed "Raya deploy failed" "$detail"
+  raya_alert severe "$alert_class" "Raya deploy failed" "$body"
   raya_lock_release
   return "$rc"
 }
@@ -1356,6 +1432,7 @@ updater_raya_pass() {
   RAYA_DEPLOY_DETAIL=""
   RAYA_LOCK_OWNED=0
   RAYA_PREFLIGHT_RC=""
+  RAYA_RESTORE_STATE=""
   if ! raya_host_capable; then
     RAYA_DEPLOY_STATE=not_configured
     RAYA_DEPLOY_DETAIL=canonical-standard-lead-absent

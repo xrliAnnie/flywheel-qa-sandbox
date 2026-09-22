@@ -147,6 +147,16 @@ stub() {
 
 calls() { cat "$1/calls.log" 2>/dev/null || true; }
 
+# launchctl stub body that models launchd well enough for the darwin install
+# path (FLY-2758): after `bootout` the label reports "Could not find service"
+# until the next `bootstrap`, so the post-bootout wait returns immediately.
+LAUNCHCTL_STUB_BODY='case "${1:-}" in
+  print) if [ -e "$0.absent" ]; then echo "Could not find service" >&2; exit 113; fi; exit 0 ;;
+  bootout) touch "$0.absent"; exit 0 ;;
+  bootstrap) rm -f "$0.absent"; exit 0 ;;
+esac
+exit 0'
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S1/S2 · flywheel-bridge-wrapper.sh exec branch
 # The wrapper is run WITHOUT lib/bridge-port.sh in the tree (degraded preflight
@@ -448,7 +458,7 @@ fi
 # S11/S12 · supervisor.sh darwin REAL install opt-in
 # ─────────────────────────────────────────────────────────────────────────────
 H="$SANDBOX/s11-home"; mk_home "$H"
-stub "$H" launchctl 'exit 0'
+stub "$H" launchctl "$LAUNCHCTL_STUB_BODY"
 LDIR="$SANDBOX/s11-launchd"
 SPEC='{"name":"bridge","kind":"service","exec":"/bin/bash /x/wrapper.sh","keepAlive":true,"stdout":"/tmp/x.log"}'
 out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \
@@ -468,7 +478,7 @@ fi
 
 # timer spec renders StartCalendarInterval
 H="$SANDBOX/s11b-home"; mk_home "$H"
-stub "$H" launchctl 'exit 0'
+stub "$H" launchctl "$LAUNCHCTL_STUB_BODY"
 LDIR="$SANDBOX/s11b-launchd"
 SPEC='{"name":"daily-standup","kind":"timer","exec":"/bin/bash /x/standup.sh","schedule":[{"hour":3,"minute":0}]}'
 out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \
@@ -486,7 +496,7 @@ fi
 
 # interval timer spec renders StartInterval and stays non-KeepAlive
 H="$SANDBOX/s11c-home"; mk_home "$H"
-stub "$H" launchctl 'exit 0'
+stub "$H" launchctl "$LAUNCHCTL_STUB_BODY"
 LDIR="$SANDBOX/s11c-launchd"
 SPEC='{"name":"interval-worker","kind":"timer","exec":"/bin/bash /x/interval-worker-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
 out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \
@@ -503,7 +513,7 @@ else
 fi
 
 H="$SANDBOX/s12-home"; mk_home "$H"
-stub "$H" launchctl 'exit 0'
+stub "$H" launchctl "$LAUNCHCTL_STUB_BODY"
 LDIR="$SANDBOX/s12-launchd"
 SPEC='{"name":"bridge","kind":"service","exec":"/bin/bash /x/wrapper.sh","keepAlive":true}'
 out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \

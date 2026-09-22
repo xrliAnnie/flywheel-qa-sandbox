@@ -1108,6 +1108,176 @@ else
   fail "P4b readiness resume must only recheck live state"
 fi
 
+# FLY-2758: a failed controlled install must never leave Raya without a carrier.
+# The install verb boots the live Lead out before bootstrap, so a bootstrap
+# failure (EIO) unloads the only conversational carrier. The cutover must
+# observe that, restore the standard Lead through the same public verb, wait
+# for live readiness, and report which of the three outcomes happened.
+prepare_preexisting_p2() {
+  write_p2_manifest
+  jq '.cursor.status="preexisting"' "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp" \
+    && mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+}
+restore_prefix=$'quiesce\nwindow-probe P3 unactivated\nseed-boundary\nvalidate-preexisting\nvalidate-preexisting'
+# launchd's answer for the standard Lead label, independent of the live verify.
+saved_launchctl="$(declare -f launchctl 2>/dev/null || true)"
+launchd_absent() { launchctl() { printf 'Could not find service\n' >&2; return 113; }; }
+launchd_running() { launchctl() { printf '%s\n' 'state = running' 'pid = 4321'; }; }
+launchd_absent
+
+# (a) install fails, the Lead is gone, the restore install succeeds and the
+# second post-restore live probe passes.
+: > "$CALLS"
+lead_install_count=0
+post_restore_live=0
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  case "$1" in
+    install)
+      lead_install_count=$((lead_install_count + 1))
+      (( lead_install_count >= 2 )) ;;
+    verify)
+      [[ "${3:-}" == live ]] || return 0
+      case "$lead_install_count" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) post_restore_live=$((post_restore_live + 1)); (( post_restore_live >= 2 )) ;;
+      esac ;;
+  esac
+}
+raya_wait() { printf 'wait %s\n' "$1" >> "$CALLS"; }
+prepare_preexisting_p2
+RAYA_RESTORE_STATE=""
+if raya_standard_cutover >/dev/null 2>&1; then
+  fail "failed install must not advance the cutover"
+else
+  pass "failed install stops the cutover"
+fi
+expected_calls="$restore_prefix"$'\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\nwait 2\nverify --stage live '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_calls" "$(cat "$CALLS")" "failed install re-probes live, restores through install, and waits for readiness"
+expect_eq "restored" "${RAYA_RESTORE_STATE:-}" "restore outcome is recorded as restored"
+if jq -e '.checkpoint == "P4b" and .lead_restart_installed_at == null' "$RAYA_MIGRATION_MANIFEST" >/dev/null; then
+  pass "restored Lead leaves P4b uninstalled so the next shuttle retries the controlled install"
+else
+  fail "restore must not persist lead_restart_installed_at for a failed install"
+fi
+raya_standard_lead() { printf '%s\n' "$*" >> "$CALLS"; return 0; }
+: > "$CALLS"
+if raya_standard_cutover && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 ]] \
+  && [[ "$(rg -c '^install --project raya --lead raya$' "$CALLS")" == 1 ]]; then
+  pass "the next shuttle after a restore completes P4b with exactly one install"
+else
+  fail "the next shuttle after a restore must run the normal controlled install once"
+fi
+
+# (b) install fails and the restore install also fails: no readiness wait, the
+# outcome is not_restored so the alert can say Raya is offline.
+: > "$CALLS"
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  case "$1" in
+    install) return 1 ;;
+    verify) [[ "${3:-}" != live ]] || [[ ! "$(cat "$CALLS")" =~ install ]] ;;
+  esac
+}
+raya_wait() { printf 'wait %s\n' "$1" >> "$CALLS"; }
+prepare_preexisting_p2
+RAYA_RESTORE_STATE=""
+raya_standard_cutover >/dev/null 2>&1 && fail "failed restore must not advance the cutover"
+expected_calls="$restore_prefix"$'\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya'
+expect_eq "$expected_calls" "$(cat "$CALLS")" "failed restore stops after the restore install without a readiness wait"
+expect_eq "not_restored" "${RAYA_RESTORE_STATE:-}" "restore outcome is recorded as not_restored"
+
+# (c) install fails before touching launchd (the Lead is still live): no
+# restore install, outcome not_needed.
+: > "$CALLS"
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  [[ "$1" != install ]]
+}
+prepare_preexisting_p2
+RAYA_RESTORE_STATE=""
+raya_standard_cutover >/dev/null 2>&1 && fail "failed install must not advance even when the Lead stayed live"
+expected_calls="$restore_prefix"$'\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_calls" "$(cat "$CALLS")" "a still-live Lead after a failed install is left alone"
+expect_eq "not_needed" "${RAYA_RESTORE_STATE:-}" "restore outcome is recorded as not_needed"
+
+# (d) the fresh (seeded cursor) arm takes the same recovery path.
+: > "$CALLS"
+lead_install_count=0
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  case "$1" in
+    install) lead_install_count=$((lead_install_count + 1)); (( lead_install_count >= 2 )) ;;
+    verify) [[ "${3:-}" != live ]] || (( lead_install_count != 1 )) ;;
+    *) return 0 ;;
+  esac
+}
+raya_wait() { return 0; }
+write_p2_manifest
+RAYA_RESTORE_STATE=""
+raya_standard_cutover >/dev/null 2>&1 && fail "fresh-arm failed install must not advance the cutover"
+expected_calls=$'quiesce\nwindow-probe P3 unactivated\nseed-boundary\npreflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_calls" "$(cat "$CALLS")" "fresh-arm failed install restores the standard Lead the same way"
+expect_eq "restored" "${RAYA_RESTORE_STATE:-}" "fresh-arm restore outcome is recorded"
+expect_eq "P4b" "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" "fresh-arm failed install stays at P4b"
+
+# (e) install fails, live verify fails, but launchd still shows the Lead
+# running (Bridge/pump side failure): no restore churn, not an outage.
+: > "$CALLS"
+launchd_running
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  case "$1" in
+    install) return 1 ;;
+    verify) [[ "${3:-}" != live ]] || [[ ! "$(cat "$CALLS")" =~ install ]] ;;
+  esac
+}
+prepare_preexisting_p2
+RAYA_RESTORE_STATE=""
+raya_standard_cutover >/dev/null 2>&1 && fail "loaded-but-not-live must not advance the cutover"
+expected_calls="$restore_prefix"$'\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_calls" "$(cat "$CALLS")" "a loaded Lead that fails live verify is left in place without a restore install"
+expect_eq "loaded_not_live" "${RAYA_RESTORE_STATE:-}" "restore outcome is recorded as loaded_not_live"
+
+# (f) the standard-update arm restarts the Lead through the same verb and
+# takes the same recovery path (R1 review: third install site).
+: > "$CALLS"
+launchd_absent
+lead_install_count=0
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  case "$1" in
+    install) lead_install_count=$((lead_install_count + 1)); (( lead_install_count >= 2 )) ;;
+    verify) [[ "${3:-}" != live ]] || (( lead_install_count != 1 )) ;;
+    *) return 0 ;;
+  esac
+}
+raya_wait() { return 0; }
+RAYA_RESTORE_STATE=""
+raya_standard_update_install >/dev/null 2>&1 && fail "standard-update install failure must return non-zero"
+expected_calls=$'preflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_calls" "$(cat "$CALLS")" "standard-update install failure restores the standard Lead"
+expect_eq "restored" "${RAYA_RESTORE_STATE:-}" "standard-update restore outcome is recorded"
+: > "$CALLS"
+raya_standard_lead() { printf '%s\n' "$*" >> "$CALLS"; return 0; }
+if raya_standard_update_install >/dev/null 2>&1; then pass "standard-update install success keeps preflight → install → installed verify"; else
+  fail "standard-update install success path must return zero"
+fi
+expect_eq $'preflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST \
+  "$(cat "$CALLS")" "standard-update install success calls only the public lifecycle"
+
+# Restore the stub shape the following fixtures were written against.
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  [[ "$1" != install ]]
+}
+raya_wait() { return 0; }
+lead_install_count=0
+RAYA_RESTORE_STATE=""
+if [[ -n "$saved_launchctl" ]]; then eval "$saved_launchctl"; else unset -f launchctl; fi
+
 : > "$CALLS"
 write_p2_manifest '["message-unknown-side-effect"]'
 if raya_standard_cutover >/dev/null 2>&1; then
@@ -1526,6 +1696,45 @@ fi
 if [[ $? == 0 ]]; then pass "pre-restart Lead blip waits without a severe alert"; else
   fail "pre-restart Lead blip must remain retryable without paging"
 fi
+
+# FLY-2758: the failure receipt stays `failed`, but the alert must say what
+# the failure left running, and an unloaded carrier pages under its own alert
+# class so daily dedup of routine failures cannot swallow the outage.
+for restore_case in restored not_restored not_needed loaded_not_live; do
+  (
+    trap - EXIT
+    write_p2_manifest
+    jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+    raya_process_start() { printf 'fixture-start\n'; }
+    raya_prepare_source() { return 0; }
+    raya_standard_cutover() { RAYA_RESTORE_STATE="$restore_case"; return 1; }
+    raya_alert() { printf '%s|%s|%s\n' "$1" "$2" "$4" > "$TMP/restore-alert-$restore_case"; }
+    updater_raya_pass > "$TMP/restore-pass-$restore_case.out" 2>&1
+    alert="$(cat "$TMP/restore-alert-$restore_case" 2>/dev/null || true)"
+    outcome="$(jq -r .outcome "$RAYA_DEPLOY_RECEIPT" 2>/dev/null || true)"
+    failure="$(jq -r .failure "$RAYA_DEPLOY_RECEIPT" 2>/dev/null || true)"
+    deployed="$(jq -r .deployed_sha "$RAYA_DEPLOY_RECEIPT" 2>/dev/null || true)"
+    [[ "$failure" == cutover-failed && "$deployed" == null && "$RAYA_DEPLOY_DETAIL" == cutover-failed ]] || exit 1
+    [[ "$RAYA_DEPLOY_STATE" == failed && "$outcome" == failed ]] || exit 1
+    case "$restore_case" in
+      restored)
+        [[ "$alert" == severe\|raya-standard-deploy-failed\|cutover-failed\;* ]] || exit 1
+        [[ "$alert" == *"restored and live"* && "$alert" == *conversational* ]] || exit 1 ;;
+      not_restored)
+        [[ "$alert" == severe\|raya-standard-lead-offline\|cutover-failed\;* ]] || exit 1
+        [[ "$alert" == *"Raya is OFFLINE"* && "$alert" == *"flywheel-lead.sh install --project raya --lead raya"* ]] || exit 1 ;;
+      not_needed)
+        [[ "$alert" == severe\|raya-standard-deploy-failed\|cutover-failed\;* ]] || exit 1
+        [[ "$alert" == *"still live"* ]] || exit 1 ;;
+      loaded_not_live)
+        [[ "$alert" == severe\|raya-standard-deploy-failed\|cutover-failed\;* ]] || exit 1
+        [[ "$alert" == *"loaded in launchd"* && "$alert" == *"not treated as an outage"* ]] || exit 1 ;;
+    esac
+  )
+  if [[ $? == 0 ]]; then pass "cutover failure with restore=$restore_case writes the matching receipt and alert"; else
+    fail "cutover failure with restore=$restore_case must report the carrier state (alert=$(cat "$TMP/restore-alert-$restore_case" 2>/dev/null); pass=$(tail -5 "$TMP/restore-pass-$restore_case.out" 2>/dev/null))"
+  fi
+done
 
 printf 'Results: %s passed, %s failed\n' "$PASSED" "$FAILED"
 (( FAILED == 0 ))

@@ -145,6 +145,124 @@ else
   fail "S7 darwin lifecycle calls: $(cat "$CALLS")"
 fi
 
+# ── S8–S11: darwin real install must not bootstrap a label launchd is still
+# tearing down (FLY-2758: bootout → immediate bootstrap returned EIO and left
+# Raya with no carrier). A stateful launchctl stub models launchd: after
+# `bootout` the label stays visible for TEARDOWN_TICKS `print` calls, then
+# reports "Could not find service"; `bootstrap` fails with EIO while the label
+# is still present.
+LD_STUB="$SANDBOX/ld-stubbin"; mkdir -p "$LD_STUB"
+LD_STATE="$SANDBOX/ld-state"; mkdir -p "$LD_STATE"
+cat > "$LD_STUB/launchctl" <<'EOF'
+#!/bin/bash
+echo "launchctl $*" >> "$LD_CALLS"
+verb="$1"
+case "$verb" in
+  print)
+    label="${2##*/}"
+    if [ -e "$LD_STATE/absent.$label" ]; then
+      echo "Could not find service \"$label\" in domain for user gui: $(id -u)" >&2
+      exit 113
+    fi
+    if [ -e "$LD_STATE/teardown.$label" ]; then
+      left="$(cat "$LD_STATE/teardown.$label")"
+      if [ "$left" -le 1 ]; then
+        rm -f "$LD_STATE/teardown.$label"; touch "$LD_STATE/absent.$label"
+        echo "Could not find service \"$label\" in domain for user gui: $(id -u)" >&2
+        exit 113
+      fi
+      echo $((left - 1)) > "$LD_STATE/teardown.$label"
+    fi
+    printf '%s\n' "$label = {" '	state = running' '	pid = 4321' '}'
+    exit 0 ;;
+  bootout)
+    label="${2##*/}"
+    ticks="$(cat "$LD_STATE/teardown_ticks" 2>/dev/null || echo 0)"
+    if [ "$ticks" -gt 0 ]; then echo "$ticks" > "$LD_STATE/teardown.$label"; else touch "$LD_STATE/absent.$label"; fi
+    exit 0 ;;
+  bootstrap)
+    label="$(basename "$3" .plist)"
+    if [ -e "$LD_STATE/bootstrap_fail_always" ]; then
+      echo "Bootstrap failed: 5: Input/output error" >&2; exit 5
+    fi
+    if [ ! -e "$LD_STATE/absent.$label" ] && [ ! -e "$LD_STATE/bootstrap_ignore_presence" ]; then
+      echo "Bootstrap failed: 5: Input/output error" >&2; exit 5
+    fi
+    rm -f "$LD_STATE/absent.$label" "$LD_STATE/teardown.$label"
+    exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$LD_STUB/launchctl"
+LD_CALLS="$SANDBOX/ld-calls.log"
+LD_DIR="$SANDBOX/ld-launchd"
+ld_install() { # <spec> [env assignments...]
+  local spec="$1"; shift
+  env "$@" LD_CALLS="$LD_CALLS" LD_STATE="$LD_STATE" \
+      FLYWHEEL_SUPERVISOR_BACKEND=launchd FLYWHEEL_LAUNCHD_DIR="$LD_DIR" \
+      FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1 \
+      FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL=0 \
+      PATH="$LD_STUB:$PATH" HOME="$HOME" \
+      bash -c 'set -uo pipefail; source "'"$LIB"'" || exit 97; supervisor_install "$1"' _ "$spec"
+}
+ld_reset() { rm -rf "$LD_STATE"; mkdir -p "$LD_STATE"; : > "$LD_CALLS"; }
+LD_SPEC='{"name":"lead.demo-demo","kind":"service","exec":"/bin/bash /x/flywheel-lead.sh /x/manifest.json","keepAlive":true,"throttleInterval":30,"stdout":"/tmp/lead.log"}'
+LD_LABEL="com.flywheel.lead.demo-demo"
+
+# S8: label lingers for two polls after bootout; bootstrap happens exactly once,
+# only after launchd reports the label gone, and never sees EIO.
+ld_reset; echo 2 > "$LD_STATE/teardown_ticks"
+S8_ERR="$(ld_install "$LD_SPEC" 2>&1 >/dev/null)"; S8_RC=$?
+S8_EXPECTED="launchctl bootout gui/$(id -u)/$LD_LABEL
+launchctl print gui/$(id -u)/$LD_LABEL
+launchctl print gui/$(id -u)/$LD_LABEL
+launchctl bootstrap gui/$(id -u) $LD_DIR/$LD_LABEL.plist"
+if [ "$S8_RC" -eq 0 ] && [ "$(cat "$LD_CALLS")" = "$S8_EXPECTED" ] \
+   && ! grep -q "Input/output error" <<<"$S8_ERR"; then
+  pass "S8 darwin install waits for launchd to drop the label before bootstrap"
+else
+  fail "S8 rc=$S8_RC calls=[$(cat "$LD_CALLS")] err=[$S8_ERR]"
+fi
+
+# S9: the label never leaves; the wait is bounded, warns, and still hands the
+# decision to bootstrap instead of failing without an attempt.
+ld_reset; echo 99 > "$LD_STATE/teardown_ticks"; touch "$LD_STATE/bootstrap_ignore_presence"
+S9_ERR="$(ld_install "$LD_SPEC" FLYWHEEL_SUPERVISOR_BOOTOUT_WAIT_ATTEMPTS=3 2>&1 >/dev/null)"; S9_RC=$?
+if [ "$S9_RC" -eq 0 ] \
+   && [ "$(grep -c "^launchctl print " "$LD_CALLS")" -eq 3 ] \
+   && [ "$(grep -c "^launchctl bootstrap " "$LD_CALLS")" -eq 1 ] \
+   && grep -q "still loaded after bootout" <<<"$S9_ERR"; then
+  pass "S9 darwin install bounds the post-bootout wait and still attempts bootstrap"
+else
+  fail "S9 rc=$S9_RC calls=[$(cat "$LD_CALLS")] err=[$S9_ERR]"
+fi
+
+# S10: bootstrap keeps failing; retries are bounded and the error text callers
+# already match on ("bootstrap failed: <label>") is preserved.
+ld_reset; touch "$LD_STATE/bootstrap_fail_always"
+S10_ERR="$(ld_install "$LD_SPEC" FLYWHEEL_SUPERVISOR_BOOTSTRAP_ATTEMPTS=3 2>&1 >/dev/null)"; S10_RC=$?
+if [ "$S10_RC" -ne 0 ] \
+   && [ "$(grep -c "^launchctl bootstrap " "$LD_CALLS")" -eq 3 ] \
+   && grep -q "bootstrap failed: $LD_LABEL" <<<"$S10_ERR" \
+   && grep -q "Input/output error" <<<"$S10_ERR"; then
+  pass "S10 darwin install retries bootstrap a bounded number of times"
+else
+  fail "S10 rc=$S10_RC calls=[$(cat "$LD_CALLS")] err=[$S10_ERR]"
+fi
+
+# S11: invalid tuning values fall back to defaults (label already gone, so the
+# defaults finish immediately) and are reported rather than silently accepted.
+ld_reset
+S11_ERR="$(ld_install "$LD_SPEC" FLYWHEEL_SUPERVISOR_BOOTOUT_WAIT_ATTEMPTS=abc FLYWHEEL_SUPERVISOR_BOOTSTRAP_ATTEMPTS=0 2>&1 >/dev/null)"; S11_RC=$?
+if [ "$S11_RC" -eq 0 ] \
+   && [ "$(grep -c "^launchctl bootstrap " "$LD_CALLS")" -eq 1 ] \
+   && grep -q "FLYWHEEL_SUPERVISOR_BOOTOUT_WAIT_ATTEMPTS" <<<"$S11_ERR" \
+   && grep -q "FLYWHEEL_SUPERVISOR_BOOTSTRAP_ATTEMPTS" <<<"$S11_ERR"; then
+  pass "S11 darwin install rejects invalid wait tuning and keeps the defaults"
+else
+  fail "S11 rc=$S11_RC calls=[$(cat "$LD_CALLS")] err=[$S11_ERR]"
+fi
+
 echo ""
 echo "================================="
 echo "supervisor.test: $PASSED passed, $FAILED failed"
