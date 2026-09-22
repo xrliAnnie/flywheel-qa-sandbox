@@ -1,0 +1,29 @@
+{
+  "at": "2026-09-20T21:50:48.300537+00:00",
+  "attempts": [
+    {
+      "diagram": "flow",
+      "attempt": 1,
+      "exit": 1,
+      "error": "\nError: Failed to launch the browser process!\n[0920/145047.581577:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0920/145047.593483:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0920/145047.599527:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.85043: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "diagram": "flow",
+      "attempt": 2,
+      "exit": 1,
+      "error": "\nError: Failed to launch the browser process!\n[0920/145047.827874:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0920/145047.828989:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0920/145047.830358:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.85059: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "diagram": "model",
+      "attempt": 1,
+      "exit": 1,
+      "error": "\nError: Failed to launch the browser process!\n[0920/145048.056762:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0920/145048.057847:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0920/145048.059112:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.85104: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "diagram": "model",
+      "attempt": 2,
+      "exit": 1,
+      "error": "\nError: Failed to launch the browser process!\n[0920/145048.293349:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0920/145048.294402:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0920/145048.295541:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.85108: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    }
+  ]
+}

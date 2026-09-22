@@ -1,3 +1,4 @@
+import { isRealtimeV2Voice } from "flywheel-teamlead/realtime-voices";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 
 export const VOICE_SESSION_UUID =
@@ -22,7 +23,7 @@ export function parseVoiceProjection(
 		!/^[a-zA-Z0-9_-]+$/u.test(row.projectName) ||
 		!text(row.leadId) ||
 		!text(row.displayName) ||
-		!text(row.realtimeVoice) ||
+		!isRealtimeV2Voice(row.realtimeVoice) ||
 		!["meeting", "rg"].includes(String(row.mode)) ||
 		![
 			row.guildId,

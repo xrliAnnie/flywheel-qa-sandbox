@@ -150,6 +150,26 @@
 		"boot": "mustBeAbsent"
 	},
 	{
+		"name": "FLYWHEEL_VOICE_HOST_CONFIG",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{
+		"name": "FLYWHEEL_MEETING_NOTES_CONFIG",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{
+		"name": "FLYWHEEL_VOICE_STATE_DIR",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{
+		"name": "FLYWHEEL_VOICE_CODEX_HOME",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{
 		"name": "FLYWHEEL_BRIDGE_LOG_PATH",
 		"disposition": "clear",
 		"boot": "mustBeUnderRootIfSet"

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 
 export interface VoiceProjectRow {
 	projectName: string;
@@ -17,6 +17,7 @@ export interface VoiceBotBinding {
 }
 
 export interface VoiceDaemonConfig {
+	buildSha: string | null;
 	realtimeApiKey: string;
 	apiToken: string;
 	bridgeUrl: string;
@@ -26,6 +27,7 @@ export interface VoiceDaemonConfig {
 	codexHome: string;
 	codexBin: string;
 	commCliPath: string;
+	commDbPath?: string;
 	projectsPath: string;
 	idleHttpTimeoutMs: number;
 	leaseHttpTimeoutMs: number;
@@ -119,6 +121,16 @@ export function loadVoiceDaemonConfig(
 	const flywheelDir = env.FLYWHEEL_DIR ?? join(homeDir, "Dev", "flywheel");
 	const stateDir = env.FLYWHEEL_STATE_DIR ?? join(homeDir, ".flywheel");
 	const voiceRoot = env.FLYWHEEL_VOICE_STATE_DIR ?? join(stateDir, "voice");
+	const commDbPath = env.FLYWHEEL_COMM_DB?.trim();
+	const buildSha = env.FLYWHEEL_VOICE_BUILD_SHA?.trim() || null;
+	if (buildSha && !/^[0-9a-f]{40}$/u.test(buildSha)) {
+		throw new Error(
+			"FLYWHEEL_VOICE_BUILD_SHA must be a full lowercase git SHA",
+		);
+	}
+	if (commDbPath && (!isAbsolute(commDbPath) || resolve(commDbPath) === sep)) {
+		throw new Error("FLYWHEEL_COMM_DB must be an absolute non-root path");
+	}
 	const leaseTtlMs = integer(env, "FLYWHEEL_VOICE_LEASE_TTL_MS", 15_000);
 	const leaseRenewMs = integer(env, "FLYWHEEL_VOICE_LEASE_RENEW_MS", 4_000);
 	const leaseHttpTimeoutMs = integer(
@@ -131,7 +143,13 @@ export function loadVoiceDaemonConfig(
 			"voice lease renew plus HTTP timeout must be less than half the lease TTL",
 		);
 	}
+	if (leaseRenewMs + 3 * leaseHttpTimeoutMs >= leaseTtlMs) {
+		throw new Error(
+			"voice lease must reserve time for the health retry and fencing margin",
+		);
+	}
 	return {
+		buildSha,
 		apiToken,
 		realtimeApiKey,
 		bridgeUrl,
@@ -148,6 +166,7 @@ export function loadVoiceDaemonConfig(
 		commCliPath:
 			env.FLYWHEEL_COMM_CLI ??
 			join(flywheelDir, "packages", "flywheel-comm", "dist", "index.js"),
+		...(commDbPath ? { commDbPath } : {}),
 		projectsPath: env.FLYWHEEL_PROJECTS_FILE ?? join(stateDir, "projects.json"),
 		idleHttpTimeoutMs: integer(
 			env,
@@ -159,7 +178,7 @@ export function loadVoiceDaemonConfig(
 		leaseRenewMs,
 		leaseMissMax: integer(env, "FLYWHEEL_VOICE_LEASE_MISS_MAX", 2),
 		presenceGraceMs: integer(env, "FLYWHEEL_VOICE_PRESENCE_GRACE_MS", 120_000),
-		speechChunkTokens: integer(env, "FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS", 600),
+		speechChunkTokens: integer(env, "FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS", 80),
 		confirmationMs: integer(env, "FLYWHEEL_VOICE_CONFIRMATION_MS", 15_000),
 		discordTimeoutMs: integer(env, "FLYWHEEL_VOICE_DISCORD_TIMEOUT_MS", 10_000),
 		mirrorRetries: integer(env, "FLYWHEEL_VOICE_MIRROR_ATTEMPTS", 2) - 1,
@@ -171,6 +190,17 @@ export function loadVoiceDaemonConfig(
 		ingestRetries: integer(env, "FLYWHEEL_VOICE_INGEST_ATTEMPTS", 2) - 1,
 		deliveryRetryMs: integer(env, "FLYWHEEL_VOICE_DELIVERY_RETRY_MS", 500),
 	};
+}
+
+export function resolveVoiceCommDbPath(
+	config: Pick<VoiceDaemonConfig, "commDbPath">,
+	projectName: string,
+	homeDir: string,
+): string {
+	return (
+		config.commDbPath ??
+		join(homeDir, ".flywheel", "comm", projectName, "comm.db")
+	);
 }
 
 export function loadVoiceProjects(

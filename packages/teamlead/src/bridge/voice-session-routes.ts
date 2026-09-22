@@ -1,4 +1,5 @@
 import express, { type RequestHandler } from "express";
+import { parseReceiveHealth, type ReceiveHealth } from "flywheel-voice-core";
 import type {
 	StateStore,
 	VoiceCredentialTier,
@@ -19,6 +20,7 @@ export class VoiceSessionHttpError extends Error {
 export interface VoiceSessionRouterDeps {
 	store: StateStore;
 	leaseTtlMs: number;
+	leaseRenewMs: number;
 	now?: () => string;
 	resolveStart: (
 		body: unknown,
@@ -58,7 +60,36 @@ function param(value: string | string[] | undefined): string {
 	return typeof value === "string" ? value : "";
 }
 
-function sessionBody(session: VoiceSessionRow): Record<string, unknown> {
+function renewReceiveHealth(body: unknown): ReceiveHealth | undefined {
+	if (body === undefined) return;
+	if (!body || typeof body !== "object" || Array.isArray(body))
+		throw new Error("voice_receive_health_invalid");
+	const keys = Object.keys(body);
+	if (keys.length === 0) return;
+	if (keys.length !== 1 || keys[0] !== "receiveHealth")
+		throw new Error("voice_receive_health_invalid");
+	return parseReceiveHealth(
+		(body as { receiveHealth?: unknown }).receiveHealth,
+	);
+}
+
+function sessionBody(
+	session: VoiceSessionRow,
+	now: string,
+	leaseRenewMs: number,
+): Record<string, unknown> {
+	const observedAt = session.receiveHealthObservedAt;
+	const observedAgeMs = observedAt
+		? Date.parse(now) - Date.parse(observedAt)
+		: Number.POSITIVE_INFINITY;
+	const healthFresh =
+		new Set(["claimed", "warming", "live", "ending"]).has(session.state) &&
+		Boolean(
+			session.leaseExpiresAt &&
+				Date.parse(session.leaseExpiresAt) > Date.parse(now),
+		) &&
+		observedAgeMs >= 0 &&
+		observedAgeMs <= 3 * leaseRenewMs;
 	return {
 		sessionId: session.sessionId,
 		mode: session.mode,
@@ -74,6 +105,14 @@ function sessionBody(session: VoiceSessionRow): Record<string, unknown> {
 		createdAt: session.createdAt,
 		updatedAt: session.updatedAt,
 		endedAt: session.endedAt,
+		receiveHealth:
+			session.receiveHealth && observedAt
+				? {
+						...session.receiveHealth,
+						observedAt,
+						fresh: healthFresh,
+					}
+				: null,
 	};
 }
 
@@ -139,7 +178,10 @@ export function createVoiceSessionRouter(
 
 	router.get("/desired", masterOnly(), (_req, res) => {
 		const session = deps.store.getDesiredVoiceSession();
-		res.json({ session: session ? sessionBody(session) : null });
+		const at = now();
+		res.json({
+			session: session ? sessionBody(session, at, deps.leaseRenewMs) : null,
+		});
 	});
 
 	router.get("/by-meeting/:meetingId", (req, res) => {
@@ -150,7 +192,7 @@ export function createVoiceSessionRouter(
 			res.status(404).json({ error: "voice_session_not_found" });
 			return;
 		}
-		res.json(sessionBody(session));
+		res.json(sessionBody(session, now(), deps.leaseRenewMs));
 	});
 
 	router.get("/:sessionId", (req, res) => {
@@ -159,7 +201,7 @@ export function createVoiceSessionRouter(
 			res.status(404).json({ error: "voice_session_not_found" });
 			return;
 		}
-		res.json(sessionBody(session));
+		res.json(sessionBody(session, now(), deps.leaseRenewMs));
 	});
 
 	router.post("/:sessionId/stop", (req, res) => {
@@ -219,6 +261,13 @@ export function createVoiceSessionRouter(
 	});
 
 	router.post("/:sessionId/renew", masterOnly(), async (req, res) => {
+		let receiveHealth: ReceiveHealth | undefined;
+		try {
+			receiveHealth = renewReceiveHealth(req.body);
+		} catch {
+			res.status(400).json({ error: "voice_receive_health_invalid" });
+			return;
+		}
 		const candidate = deps.store.getActiveVoiceLease(
 			param(req.params.sessionId),
 			lease(req),
@@ -242,9 +291,14 @@ export function createVoiceSessionRouter(
 			leaseToken: lease(req),
 			now: now(),
 			leaseTtlMs: deps.leaseTtlMs,
+			receiveHealth,
 		});
 		if (!renewed) {
 			res.status(409).json(LEASE_CONFLICT);
+			return;
+		}
+		if (renewed.healthSequenceConflict) {
+			res.status(400).json({ error: "health_sequence_conflict" });
 			return;
 		}
 		res.json({ ...renewed, leaseTtlMs: deps.leaseTtlMs });

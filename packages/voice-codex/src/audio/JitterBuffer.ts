@@ -5,7 +5,7 @@ interface JitterBufferOptions {
 }
 
 export class JitterBuffer {
-	private readonly frames: Buffer[] = [];
+	private readonly frames: Array<{ frame: Buffer; metadata: unknown }> = [];
 	private playing = false;
 	readonly silence: Buffer;
 	droppedOverflow = 0;
@@ -25,10 +25,14 @@ export class JitterBuffer {
 	}
 
 	push(frame: Buffer): void {
+		this.pushTagged(frame, undefined);
+	}
+
+	pushTagged(frame: Buffer, metadata: unknown): void {
 		if (frame.length !== this.options.frameBytes) {
 			throw new Error(`jitter frame must be ${this.options.frameBytes} bytes`);
 		}
-		this.frames.push(Buffer.from(frame));
+		this.frames.push({ frame: Buffer.from(frame), metadata });
 		while (this.frames.length > this.options.maxFrames) {
 			this.frames.shift();
 			this.droppedOverflow += 1;
@@ -36,16 +40,20 @@ export class JitterBuffer {
 	}
 
 	take(): Buffer {
+		return this.takeTagged().frame;
+	}
+
+	takeTagged(): { frame: Buffer; metadata: unknown } {
 		if (!this.playing) {
 			if (this.frames.length < this.options.prebufferFrames) {
-				return Buffer.from(this.silence);
+				return { frame: Buffer.from(this.silence), metadata: undefined };
 			}
 			this.playing = true;
 		}
-		const frame = this.frames.shift();
-		if (frame) return frame;
+		const tagged = this.frames.shift();
+		if (tagged) return tagged;
 		this.playing = false;
-		return Buffer.from(this.silence);
+		return { frame: Buffer.from(this.silence), metadata: undefined };
 	}
 
 	depth(): number {

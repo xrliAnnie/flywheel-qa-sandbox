@@ -203,6 +203,79 @@ for (const [name, schema] of Object.entries(runnerInputs))
 		{ result: object(runnerOutputs[name]!), ...receipt },
 	);
 
+const voiceHealth = object({
+	version: z.literal(1),
+	sequence: z.number().int().positive(),
+	state: z.enum(["unknown", "receiving", "degraded"]),
+	reason: z.enum([
+		"awaiting_audio",
+		"dave_decrypt",
+		"opus_decode",
+		"receive_packet",
+		"receive_no_pcm",
+		"retry_exhausted",
+		"audio_observed",
+	]),
+	failures: z.number().int().nonnegative(),
+	retries: z.number().int().nonnegative(),
+	lastPcmAt: z.string().datetime().nullable(),
+	observedAt: z.string().datetime(),
+	fresh: z.boolean(),
+});
+const voiceSession = {
+	sessionId: z.string().uuid(),
+	mode: z.enum(["rg", "meeting"]),
+	state: id,
+	threadId: id.nullable(),
+	receiveHealth: voiceHealth.nullable(),
+};
+const voiceStartInput = object({
+	mode: z.enum(["rg", "meeting"]),
+	topic: z.string().min(1).max(200).optional(),
+	meetingId: z.string().uuid().optional(),
+}).superRefine((value, context) => {
+	if (value.mode === "rg" && value.meetingId !== undefined) {
+		context.addIssue({
+			code: "custom",
+			message: "meetingId is valid only for meeting mode",
+		});
+	}
+});
+add(
+	"voice.session.start",
+	"P02",
+	"write",
+	"bridge",
+	{},
+	{
+		result: object({
+			sessionId: z.string().uuid(),
+			threadId: id.nullable(),
+			mode: z.enum(["rg", "meeting"]),
+			state: id,
+			accepted: z.literal(true),
+		}),
+		...receipt,
+	},
+	voiceStartInput,
+);
+add(
+	"voice.session.status",
+	"P02",
+	"read",
+	"bridge",
+	{ sessionId: z.string().uuid() },
+	{ result: object(voiceSession), ...receipt },
+);
+add(
+	"voice.session.stop",
+	"P02",
+	"write",
+	"bridge",
+	{ sessionId: z.string().uuid() },
+	{ result: object({ sessionId: z.string().uuid(), state: id }), ...receipt },
+);
+
 add(
 	"discord.thread.resolve",
 	"P02",

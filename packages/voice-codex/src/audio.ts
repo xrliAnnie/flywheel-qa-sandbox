@@ -102,13 +102,22 @@ export class WaitingMouth {
 	private readonly bed = new BoxBBed();
 	private timer?: ReturnType<typeof setInterval>;
 	private queued = Buffer.alloc(0);
+	private queuedOffset = 0;
 	private waiting = false;
 	private bedEnabled = true;
+	private writeBlocked = false;
+	private pendingSpeech?: {
+		id: string;
+		resolve(): void;
+		reject(error: Error): void;
+	};
 
 	constructor(
 		private readonly options: {
 			player: { play(resource: unknown): void; stop(): void };
 			createResource(source: RawSource): unknown;
+			assertLease?(): void;
+			onError?(error: Error): void;
 			setIntervalFn?: typeof setInterval;
 			clearIntervalFn?: typeof clearInterval;
 		},
@@ -126,20 +135,39 @@ export class WaitingMouth {
 		this.timer.unref?.();
 	}
 
-	feed(chunk: Buffer): void {
-		if (chunk.length === 0 || chunk.length % 2 !== 0) return;
-		this.queued = Buffer.concat([this.queued, chunk]);
+	playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void> {
+		if (
+			!speechId ||
+			pcm24Mono.length === 0 ||
+			pcm24Mono.length % 2 !== 0 ||
+			this.pendingSpeech ||
+			this.queuedOffset < this.queued.length
+		) {
+			return Promise.reject(new Error("speech_playback_invalid"));
+		}
+		const remaining = pcm24Mono.length % 960;
+		this.queued = Buffer.from(
+			remaining > 0
+				? Buffer.concat([pcm24Mono, Buffer.alloc(960 - remaining)])
+				: pcm24Mono,
+		);
+		this.queuedOffset = 0;
+		return new Promise<void>((resolve, reject) => {
+			this.pendingSpeech = { id: speechId, resolve, reject };
+		});
+	}
+
+	cancelSpeech(speechId: string): void {
+		if (this.pendingSpeech?.id !== speechId) return;
+		this.flush();
 	}
 
 	flush(): void {
 		this.queued = Buffer.alloc(0);
-	}
-
-	finish(): void {
-		const remaining = this.queued.length % 960;
-		if (remaining > 0) {
-			this.queued = Buffer.concat([this.queued, Buffer.alloc(960 - remaining)]);
-		}
+		this.queuedOffset = 0;
+		const pending = this.pendingSpeech;
+		this.pendingSpeech = undefined;
+		pending?.reject(new Error("speech_playback_stopped"));
 	}
 
 	setWaiting(waiting: boolean): void {
@@ -161,19 +189,43 @@ export class WaitingMouth {
 	}
 
 	private tick(): void {
+		if (this.writeBlocked) return;
+		try {
+			this.options.assertLease?.();
+		} catch (error) {
+			this.stop();
+			this.options.onError?.(error as Error);
+			return;
+		}
 		const pcm24FrameBytes = 960;
 		let output: Buffer;
-		if (this.queued.length >= pcm24FrameBytes) {
+		if (this.queued.length - this.queuedOffset >= pcm24FrameBytes) {
 			output = upsample24kMonoTo48kStereo(
-				this.queued.subarray(0, pcm24FrameBytes),
+				this.queued.subarray(
+					this.queuedOffset,
+					this.queuedOffset + pcm24FrameBytes,
+				),
 			);
-			this.queued = Buffer.from(this.queued.subarray(pcm24FrameBytes));
+			this.queuedOffset += pcm24FrameBytes;
 		} else {
 			output =
 				this.waiting && this.bedEnabled
 					? this.bed.next(960)
 					: Buffer.alloc(3_840);
 		}
-		this.stream.write(output);
+		const accepted = this.stream.write(output);
+		if (!accepted) {
+			this.writeBlocked = true;
+			this.stream.once("drain", () => {
+				this.writeBlocked = false;
+			});
+		}
+		if (this.queuedOffset === this.queued.length && this.pendingSpeech) {
+			const pending = this.pendingSpeech;
+			this.pendingSpeech = undefined;
+			this.queued = Buffer.alloc(0);
+			this.queuedOffset = 0;
+			pending.resolve();
+		}
 	}
 }

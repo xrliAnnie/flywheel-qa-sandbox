@@ -1,0 +1,45 @@
+{
+  "observedAt": "2026-09-20T21:49:24.941440+00:00",
+  "baseline": "177c539ea617714fc45d10d89f57fed5af77a0be",
+  "sessionId": "06b5d80d-b94c-40c5-b0bd-19eb24327f43",
+  "source": "/tmp/flywheel-test-slot-2/state/voice/sessions/06b5d80d-b94c-40c5-b0bd-19eb24327f43/events.jsonl",
+  "sha256": "dfe252a4829309c743d7b5d1769fad13f7ca754dc8a41446c687a427e0ae553c",
+  "counts": {
+    "voice_receive_runtime": 1,
+    "discord_connection_state": 1,
+    "session_starting": 1,
+    "session_live": 1,
+    "discord_dave_diagnostic_unknown": 8,
+    "discord_dave_transitioned": 1,
+    "uplink_clock_dropped": 95,
+    "discord_receive_health": 1,
+    "uplink_gate_utterance": 3,
+    "session_ended": 1
+  },
+  "utteranceFramesPassed": [
+    98,
+    105,
+    77
+  ],
+  "framesPassedTotal": 280,
+  "liveSeconds": 37.823,
+  "verificationReceiptFramesPassed": 0,
+  "verificationMismatch": "verify reads nonexistent session.receiveHealth.framesPassed; authoritative gate rows sum to 280; neither proves upstream consumption",
+  "qaReportUrl": "https://fw-reports-356a6d.vercel.app/r/e1b940aee418e126570ff18984c95a98/",
+  "qaReportHttp": 200,
+  "qaReportSha256": "6553a7c7117d030082d4ae3d44cb5eb8f673c7d16c2a0054572d7dd04341fbfd",
+  "qaReportedOnly": {
+    "appServerVersion": "0.153.2",
+    "humanAppendNotifications": 979,
+    "directProbeAudioSeconds": 3.91,
+    "directProbeTranscriptSeconds": 6.7,
+    "directProbeAudioDeltaCount": 44
+  },
+  "claim": "1353 FAIL",
+  "limitations": [
+    "No fresh API or room execution by design",
+    "Original upstream internal code cause not independently reproduced",
+    "QA report proposal to split defect superseded by current user mandate"
+  ],
+  "leadChoiceQuestion": "f13f1be8-815b-4214-b2f4-cf40e4b395a1"
+}

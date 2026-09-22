@@ -22,8 +22,10 @@ agent=qa-lead
 project="test-slot-${SLOT}"
 label="com.flywheel.qa.lead.slot-${SLOT}.${agent}"
 home="$SLOT_DIR/cdxh/${agent}"
-state="$SLOT_DIR/q/${SLOT}/state/codex-lead/${project}__${agent}-$(printf '%s\037%s' "$project" "$agent" | od -An -v -tx1 | tr -d ' \n')"
+identity_hash="$(printf '%s\037%s' "$project" "$agent" | shasum -a 256 | awk '{print substr($1, 1, 16)}')"
+state="$SLOT_DIR/q/${SLOT}/c/${identity_hash}"
 tmux_socket="$SLOT_DIR/tmux-$(id -u)/default"
+tmux_bin="/usr/bin/true"
 manifest="$SLOT_DIR/launch-manifest.json"
 mkdir -p "$home" "$state" "$(dirname "$tmux_socket")"
 python3 - "$tmux_socket" <<'PY'
@@ -36,10 +38,11 @@ sock.close()
 PY
 jq -n --arg carrier launchd-codex-tui --arg main "$label" \
   --arg label "$label" --arg project "$project" --arg agent "$agent" \
-  --arg state "$state" --arg home "$home" --arg socket "$tmux_socket" '
+  --arg state "$state" --arg home "$home" --arg socket "$tmux_socket" \
+  --arg tmuxBin "$tmux_bin" '
   {leadCarrier:$carrier,mainLeadLabel:$main,codexLead:{label:$label,
     projectName:$project,agentId:$agent,stateDir:$state,codexHome:$home,
-    tmuxSocket:$socket,tuiWindow:"present"}}
+    tmuxSocket:$socket,tmuxBin:$tmuxBin,tuiWindow:"present"}}
 ' > "$manifest"
 chmod 600 "$manifest"
 
@@ -62,6 +65,16 @@ export FLYWHEEL_QA_LAUNCHCTL="$launchctl_stub"
 export FLYWHEEL_QA_TMUX="$tmux_stub"
 export FLY2301_MUTATION_LOG="$mutation_log"
 
+baseline_evidence="$TMP/evidence-baseline"
+mkdir -p "$baseline_evidence"
+"$drill" "$SLOT" crash "$baseline_evidence" >/dev/null 2>&1 || true
+if [[ -s "$mutation_log" ]]; then
+  pass "drill CLI accepts the canonical short state coordinate before lifecycle checks"
+else
+  fail "drill CLI accepts the canonical short state coordinate before lifecycle checks"
+fi
+: > "$mutation_log"
+
 invalid_ok=1
 case_number=0
 run_invalid() {
@@ -76,10 +89,11 @@ run_invalid() {
   fi
   jq -n --arg carrier launchd-codex-tui --arg main "$label" \
     --arg label "$label" --arg project "$project" --arg agent "$agent" \
-    --arg state "$state" --arg home "$home" --arg socket "$tmux_socket" '
+    --arg state "$state" --arg home "$home" --arg socket "$tmux_socket" \
+    --arg tmuxBin "$tmux_bin" '
     {leadCarrier:$carrier,mainLeadLabel:$main,codexLead:{label:$label,
       projectName:$project,agentId:$agent,stateDir:$state,codexHome:$home,
-      tmuxSocket:$socket,tuiWindow:"present"}}
+      tmuxSocket:$socket,tmuxBin:$tmuxBin,tuiWindow:"present"}}
   ' > "$manifest"
 }
 

@@ -1,7 +1,7 @@
 {
   "reworkBase": "7c33f205abd25ff19c3ec203cc20a697b3dc0810",
   "legacyRevision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-  "meaning": "Current merged upstream semantics before FLY-2567 savings, including unrelated upstream patrol changes. Source hashes only, not passing regression receipts.",
+  "meaning": "Current merged upstream semantics before FLY-2567 savings, including unrelated upstream patrol changes and explicitly reviewed duties shared by both token-savings modes. Source hashes only, not passing regression receipts.",
   "sources": [
     {
       "path": "packages/teamlead/src/bridge/bootstrap-generator.ts",
@@ -41,9 +41,9 @@
     },
     {
       "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
-      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 41606,
-      "sha256": "aa12792bd8d00307dbeb10a73ca9539bbc34a45e9fc4c7ce4abad8d1be9b6457"
+      "revision": "41947cec9e157d9be5faf0eae8260bc3272d2def",
+      "bytes": 42534,
+      "sha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df"
     },
     {
       "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",

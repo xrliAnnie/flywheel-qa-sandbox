@@ -27,6 +27,7 @@ const state = vi.hoisted(() => ({
 	parent: undefined as LeadCapabilityParentOptions | undefined,
 	parentFailure: false,
 	identity: "1".repeat(64),
+	voiceEnabled: false,
 }));
 const authority = vi.hoisted(() => ({
 	enabled: false,
@@ -54,6 +55,7 @@ vi.mock("../runtime-context.js", () => ({
 					codexCapabilityBundleVersion: 2,
 					canSpawnRunners: true,
 					codexRunnerActions: true,
+					codexVoiceActions: state.voiceEnabled,
 				},
 				identity: {
 					projectName: "flywheel",
@@ -142,12 +144,14 @@ afterEach(() => {
 	state.parent = undefined;
 	state.parentFailure = false;
 	state.identity = "1".repeat(64);
+	state.voiceEnabled = false;
 });
 
 it.each([false, true, "identity"] as const)(
 	"connects the public manifest and outbound path to the parent, failure=%s",
 	async (failure) => {
 		const options = fixture();
+		state.voiceEnabled = failure === false;
 		state.parentFailure = failure === true;
 		let preparedChecks = 0;
 		const parent = {
@@ -196,6 +200,13 @@ it.each([false, true, "identity"] as const)(
 		if (failure) await expect(pending).rejects.toThrow("parent_start_failed");
 		else {
 			const session = await pending;
+			expect(state.parent?.manifest.operationIds).toEqual(
+				expect.arrayContaining([
+					"voice.session.start",
+					"voice.session.status",
+					"voice.session.stop",
+				]),
+			);
 			await session.close();
 		}
 		// Exercise the real parent-facing MCP consumer, not only the producer shape.

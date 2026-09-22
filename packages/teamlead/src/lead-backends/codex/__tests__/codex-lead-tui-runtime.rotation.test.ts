@@ -1137,7 +1137,7 @@ it("reads fresh tuning at resume after generation construction", async () => {
 		reasoningEffort: "high",
 	});
 	await gen.start();
-	expect(h.readTuning).toHaveBeenCalled();
+	expect(h.readTuning).toHaveBeenCalledWith(h.config);
 	const request = h.requests.find((r) => r.method === "thread/resume");
 	expect(request?.params.model).toBe("gpt-5.6-sol");
 	expect(request?.params.config.model_reasoning_effort).toBe("high");

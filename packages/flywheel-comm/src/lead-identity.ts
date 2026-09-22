@@ -122,6 +122,7 @@ function sha256(value: string): string {
  */
 function v1IdentityDigest(
 	fields: Omit<CanonicalLeadIdentity, "projectsDigest" | "identityDigest">,
+	codexVoiceActions?: boolean,
 ): string {
 	const {
 		model: _model,
@@ -129,7 +130,12 @@ function v1IdentityDigest(
 		modelContextWindow: _modelContextWindow,
 		...v1Fields
 	} = fields;
-	return sha256(JSON.stringify(v1Fields));
+	return sha256(
+		JSON.stringify({
+			...v1Fields,
+			...(codexVoiceActions === true ? { codexVoiceActions: true } : {}),
+		}),
+	);
 }
 
 function errorMessage(error: unknown): string {
@@ -487,7 +493,7 @@ export function compileLeadIdentityRows(
 			}
 			seenStateDirs.set(pathIdentity, location);
 
-			const identityDigest = v1IdentityDigest(fields);
+			const identityDigest = v1IdentityDigest(fields, lead.codexVoiceActions);
 			rows.push({
 				project,
 				lead,
@@ -531,7 +537,10 @@ export function compileLeadIdentityRows(
 			row.identity = {
 				...assignedFields,
 				projectsDigest,
-				identityDigest: v1IdentityDigest(assignedFields),
+				identityDigest: v1IdentityDigest(
+					assignedFields,
+					row.lead.codexVoiceActions,
+				),
 			};
 		}
 	}

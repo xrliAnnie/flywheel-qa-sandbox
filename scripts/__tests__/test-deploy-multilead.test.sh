@@ -661,6 +661,42 @@ fi
 unset TEST_BOT_TOKEN_3
 [[ "$L1_OK" == "1" ]] && pass "L1: launch manifest records SHA without secrets"
 
+# ── L2: slot-local summary receipt is bound to the final registry ─────────
+L2_ROOT="$TMP/summary-slot"
+L2_HOME="$L2_ROOT/identity-home"
+L2_PROJECTS="$L2_ROOT/flywheel-projects.json"
+L2_RECEIPT="$L2_HOME/.flywheel/state/summary-registry/migration-receipt.json"
+mkdir -p "$L2_HOME/.flywheel" "$L2_ROOT/project"
+printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-09-18T00:00:00Z"}' \
+  > "$L2_HOME/.flywheel/summary-config.json"
+cat > "$L2_PROJECTS" <<JSON
+[{"projectName":"test-slot-2","projectRoot":"$L2_ROOT/project","voiceRoom":{"guildId":"123456789012345671","voiceChannelId":"123456789012345672"},"leads":[{"agentId":"flywheel-test-2","summaryRole":"exempt","chatChannel":"123456789012345673","botUserId":"123456789012345674","botTokenEnv":"TEST_BOT_TOKEN_2","discordStateDir":"$L2_ROOT/discord-state","match":{"labels":["*"]},"voiceModes":{"meeting":true,"rg":true}}]}]
+JSON
+L2_OK=1
+if ! type qa_multilead_mint_summary_receipt >/dev/null 2>&1; then
+  L2_OK=0
+  fail "L2: slot summary receipt helper is missing"
+elif ! L2_ACTUAL_RECEIPT="$(qa_multilead_mint_summary_receipt \
+    "$(dirname "$SCRIPT_DIR")" "$L2_PROJECTS" "$L2_HOME" "$(command -v node)")"; then
+  L2_OK=0
+  fail "L2: slot summary receipt mint failed"
+elif [[ "$L2_ACTUAL_RECEIPT" != "$L2_RECEIPT" || ! -f "$L2_RECEIPT" ]]; then
+  L2_OK=0
+  fail "L2: slot summary receipt path drifted"
+else
+  L2_FINAL_SHA=$(node -e 'const {createHash}=require("node:crypto"),{readFileSync}=require("node:fs"); process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))' "$L2_PROJECTS")
+  jq -e --arg sha "$L2_FINAL_SHA" \
+    '.postImageSha256 == $sha and .granularity == "per-lead" and
+     (.assignments == [{projectName:"test-slot-2",leadId:"flywheel-test-2",summaryRole:"exempt"}])' \
+    "$L2_RECEIPT" >/dev/null 2>&1 \
+    || { L2_OK=0; fail "L2: receipt is not bound to the final registry bytes"; }
+  jq -e '.[0].voiceRoom.voiceChannelId == "123456789012345672" and
+      .[0].leads[0].voiceModes == {meeting:true,rg:true}' \
+    "$L2_PROJECTS" >/dev/null 2>&1 \
+    || { L2_OK=0; fail "L2: summary migration lost final voice fixture fields"; }
+fi
+[[ "$L2_OK" == "1" ]] && pass "L2: slot receipt verifies the final voice-enabled registry"
+
 # ── S1: test-deploy.sh wiring sentinels ──
 S1_OK=1
 DEPLOY="${SCRIPT_DIR}/test-deploy.sh"
@@ -713,6 +749,8 @@ grep -q 'QA_SUMMARY_CONFIG_HOME="${SLOT_DIR}/identity-home"' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2030 S1: QA summary config must live under the slot"; }
 grep -q 'summary-config.json' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2030 S1: test-deploy must materialize summary config"; }
+grep -q 'qa_multilead_mint_summary_receipt' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2655 S1: test-deploy must mint a slot summary receipt"; }
 if [ "$(grep -c 'FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}"' "$DEPLOY")" -ne 3 ]; then
   S1_OK=0
   fail "FLY-2030 S1: every QA Bridge start branch must receive the slot summary config home"

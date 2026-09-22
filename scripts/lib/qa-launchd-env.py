@@ -72,6 +72,21 @@ def validate_assignments(raw: list[str]) -> list[tuple[str, str]]:
     return result
 
 
+def resolve_owned(assignments: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    values = dict(assignments)
+    raw_state_dir = values.get("FLYWHEEL_STATE_DIR")
+    if raw_state_dir is None:
+        return assignments
+    state_dir = Path(raw_state_dir)
+    if not state_dir.is_absolute() or state_dir.parent.name != "q":
+        die("FLYWHEEL_STATE_DIR")
+    summary_home = state_dir.parent.parent / "identity-home"
+    return [
+        *assignments,
+        ("FLYWHEEL_SUMMARY_CONFIG_HOME", str(summary_home)),
+    ]
+
+
 def write_atomic(output: Path, assignments: list[tuple[str, str]]) -> None:
     parent = output.parent
     try:
@@ -111,7 +126,7 @@ def write_atomic(output: Path, assignments: list[tuple[str, str]]) -> None:
 
 def main(argv: list[str]) -> int:
     output, raw_assignments = parse_args(argv)
-    assignments = validate_assignments(raw_assignments)
+    assignments = resolve_owned(validate_assignments(raw_assignments))
     if output is not None:
         write_atomic(output, assignments)
     return 0

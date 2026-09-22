@@ -40,7 +40,7 @@ stat -f '%Lp %N' "$HOME/.flywheel/voice-host.json"
 ```
 prepare 创建全新的0700目录（不要预先创建 `$VOICE_ACT_DIR`），输出 id/status、scope、hash、receiptPath，不输出原始配置或凭据；Lead 核所有现有项目同房、全部现有 Lead meeting=true、仅 raya/raya rg=true、其他字段未变；保留已有合法 realtimeVoice，缺席设 marin。apply 自动重取同一 cfglock，检查所有前像，原子替换；任一冲突停止，不重试覆盖。验收：schema通过、summary verify `ok:true`、receipt hash不变、voice-host 600。这里不调用 register/migrate，也不增删 Lead。
 
-## 2. 专用 API 运行目录
+## 2. OpenAI Realtime 凭据与本地边界
 先核 wrapper 真正读取的 `${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/.env`，不能用当前交互 shell 的 key 存在性代替。当前设计只读探测已看到 `export OPENAI_API_KEY=...`，但激活时必须重新执行下面的 clean-source 检查。只输出布尔及模式，不输出值或整份环境。
 ```sh
 stat -f '%Lp %N' "$HOME/.flywheel/.env"
@@ -58,25 +58,9 @@ fi
 BASH
 ```
 若主机配置使用非默认 state dir，上述 path 必须跟实际 plist/wrapper 解析值一致。env 文件须为本人拥有的普通文件、0600。若 clean-source 返回 false：Lead 在本机受信终端编辑这个文件，加入一条 `export OPENAI_API_KEY='<平台 key>'`（示例占位符不得写入），使用真实平台 key，保持其他配置不变并 chmod 600；用安全本地输入取得 key，禁止通过聊天、argv、终端回显或 Git 传值。若已有非空 key 则保留，不轮换。再次 clean-source 通过才继续；没有 key 则明确记未执行并停止激活。这是凭据 provisioning 步骤，设计 Runner 没有执行它。
-```sh
-node --input-type=module <<'JS'
-import { mkdirSync, existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-const dir=join(homedir(),'.flywheel','voice','codex-home');
-const content='forced_login_method = "api"\ncli_auth_credentials_store = "ephemeral"\n';
-if(existsSync(dir) && (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory())) throw Error('voice_home_unsafe');
-mkdirSync(dir,{recursive:true,mode:0o700});
-if((lstatSync(dir).mode & 0o777)!==0o700) throw Error('voice_home_mode');
-const cfg=join(dir,'config.toml');
-if(existsSync(cfg)) {
-  if(lstatSync(cfg).isSymbolicLink() || readFileSync(cfg,'utf8')!==content || (lstatSync(cfg).mode&0o777)!==0o600) throw Error('voice_home_config_conflict');
-} else writeFileSync(cfg,content,{mode:0o600,flag:'wx'});
-console.log('voice home ready; no credential copied');
-JS
-codex --version
-```
-遇现有文件不覆盖，也不 logout/轮换全局或 Lead 账号。实际认证是每次前台 API login/read 的 type=apiKey；home准备不代表已认证。账号余额由 founder 看；401/模型拒绝/余额失败记真实失败，不引用订阅 quota。
+
+voice daemon 现在直接连接固定的 OpenAI Realtime endpoint；它不再为声音前台启动 Codex app-server，也不依赖声音专用 CODEX_HOME。旧 home 与兼容环境项保留，不能据此推断旧适配层仍在使用。`scripts/check-voice-api-auth-local.mjs` 只用 fake key 和本地 WebSocket 验证 header、禁止 redirect、错误脱敏与不落盘；离线通过不证明真实 API、key、额度或模型可用。真人入房前必须另做一次 QA 所有的最小真实协议预检，看到同一 session 的 created、updated、输入终结、输出回读校验与 PCM 放行证据；失败就停在实现，不邀请 founder 听沉默。
+既有声音专用 Codex home 如已存在则保留，不覆盖、不删除，也不 logout/轮换全局或 Lead 账号；它只是兼容项，不参与 direct Realtime 认证，`codex --version` 也不再是 voice 前台准入条件。账号余额由 founder 看；401/模型拒绝/余额失败记真实失败，不引用订阅 quota。
 
 ## 3. 让运行进程消费新配置
 Bridge projects/voice-host 在启动时读取，voice daemon同样如此。必须由 Lead 把配置生效请求交既有独立 updater 的已授权窗口；验部署收据、Bridge build identity/启动时间、目标配置 digest。未收到载入新配置的证据，不启动首场。单纯文件 hash 或 CLI --check-config 不证明 Bridge 已载入。
@@ -143,6 +127,8 @@ node packages/flywheel-comm/dist/index.js voice-session status --session "$VOICE
 
 DB只做readonly参数化SELECT或使用受管snapshot；要复制 live teamlead.db/comm.db必须 `node scripts/flywheel-snapshot-control.mjs runner ...`，遵循该命令help和本exec目录/2GB限制，不cp。停止/关闭句柄再交接。
 这是本单运维首场，meetingId可能空；原2446完整经Raya adapter两种harness会议不能拿这场替代。
+
+FLY-2655 后的同场取证还必须从本 session 的 `uplink_gate_utterance` 按唯一 `utteranceId` 汇总 framesPassed，并串起 `realtime_session_updated`、每个 input terminal、Lead ingest/消费收据、每段 output validated 与 `realtime_playback_submitted`。缺任一段写 unknown；队列提交或 receipt confirmed 都不等于人耳听到。旧证据只有 openAtMs 时按 `(openAtMs,ts,mode)` 去重；缺 openAtMs 的正帧行不能记成 0 或成功。
 
 ## 7. RG单独验收
 仅当Raya载体、权限、API接线已就绪：

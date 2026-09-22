@@ -1,0 +1,57 @@
+{
+  "observedAt": "2026-09-17T19:34:08.723746+00:00",
+  "sessionId": "5142f2ab-16ed-48f6-bef5-c08d3740dd23",
+  "source": "voice session events.jsonl, read-only filtered projection",
+  "events": [
+    {
+      "ts": "2026-09-16T23:31:12.203Z",
+      "kind": "session_starting",
+      "bootId": "32a11736-1254-4177-a42e-2462a85b7e45"
+    },
+    {
+      "ts": "2026-09-16T23:31:59.053Z",
+      "kind": "session_live",
+      "bootId": "32a11736-1254-4177-a42e-2462a85b7e45"
+    },
+    {
+      "ts": "2026-09-16T23:31:59.516Z",
+      "kind": "uplink_clock_dropped"
+    },
+    {
+      "ts": "2026-09-16T23:31:59.704Z",
+      "kind": "uplink_clock_dropped"
+    },
+    {
+      "ts": "2026-09-16T23:32:04.126Z",
+      "kind": "uplink_clock_dropped"
+    },
+    {
+      "ts": "2026-09-16T23:32:11.292Z",
+      "kind": "uplink_gate_utterance",
+      "mode": "gated",
+      "opened": false,
+      "framesTotal": 25,
+      "framesSilenced": 25,
+      "framesPassed": 0,
+      "maxProb": 0.017091989517211914,
+      "minSpeechMs": 200,
+      "threshold": 0.5,
+      "endedWithScoreInFlight": false,
+      "heldMs": 0,
+      "scoreCount": 15,
+      "scoreMsP50": 0.515,
+      "scoreMsP99": 0.972
+    },
+    {
+      "ts": "2026-09-16T23:32:11.514Z",
+      "kind": "session_interrupted",
+      "bootId": "32a11736-1254-4177-a42e-2462a85b7e45",
+      "reason": "discord_audio:Failed to decrypt: DecryptionFailed(UnencryptedWhenPassthroughDisabled)"
+    }
+  ],
+  "limitations": [
+    "local lifecycle timestamps differ from issue Bridge timestamps; no claim they represent same observation clock",
+    "no transition or per-packet evidence",
+    "25 gate frames all silenced; no human speech transcription or hearing proof"
+  ]
+}

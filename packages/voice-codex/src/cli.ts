@@ -3,10 +3,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import {
-	CodexLeadProcess,
-	spawnCodexAppServer,
-} from "flywheel-teamlead/codex-process";
 import { acquireProcessLifetimeFileLock } from "flywheel-teamlead/process-lock";
 import { createDiscordDeps } from "flywheel-voice-bridge";
 import { DiscordMirrorClient, FlywheelCommDelivery } from "./adapters.js";
@@ -15,12 +11,11 @@ import {
 	BridgeVoiceClient,
 	type VoiceSessionProjection,
 } from "./bridge-client.js";
-import { assertVoiceCodexHome } from "./codex-home.js";
 import {
 	loadVoiceDaemonConfig,
 	loadVoiceProjects,
 	resolveLeadVoiceToken,
-	voiceCodexEnv,
+	resolveVoiceCommDbPath,
 } from "./config.js";
 import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
 import { VoiceDelivery } from "./delivery.js";
@@ -36,6 +31,10 @@ import { SessionJournal } from "./journal.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
 import { parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
+import {
+	VOICE_CODEX_RECEIVE_POLICY,
+	voiceReceiveRuntimeEvidence,
+} from "./receive-health.js";
 import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
@@ -76,7 +75,6 @@ function evidencePath(
 export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
 	const projects = loadVoiceProjects(config);
-	assertVoiceCodexHome(config.codexHome);
 	if (process.argv.length === 3 && process.argv[2] === "--check-config") {
 		console.log(`[voice] config ok: ${projects.length} project(s)`);
 		return;
@@ -104,7 +102,20 @@ export async function main(): Promise<void> {
 		return;
 	}
 
-	const discordDeps = await createDiscordDeps();
+	const discordDeps = await createDiscordDeps(VOICE_CODEX_RECEIVE_POLICY);
+	if (!discordDeps.receiveRuntime) {
+		throw new Error("voice_receive_runtime_unavailable");
+	}
+	const receiveRuntime = discordDeps.receiveRuntime;
+	console.log(
+		`[voice] receive runtime ${JSON.stringify(
+			voiceReceiveRuntimeEvidence({
+				observedAt: new Date().toISOString(),
+				buildSha: config.buildSha,
+				runtime: receiveRuntime,
+			}),
+		)}`,
+	);
 	const bridge = new BridgeVoiceClient({
 		baseUrl: config.bridgeUrl,
 		token: config.apiToken,
@@ -151,12 +162,10 @@ export async function main(): Promise<void> {
 		});
 		const comm = new FlywheelCommDelivery({
 			cliPath: config.commCliPath,
-			dbPath: join(
-				homedir(),
-				".flywheel",
-				"comm",
+			dbPath: resolveVoiceCommDbPath(
+				config,
 				saved.projection.projectName,
-				"comm.db",
+				homedir(),
 			),
 			founderUserId: saved.projection.founderUserId,
 		});
@@ -200,6 +209,13 @@ export async function main(): Promise<void> {
 		const evidence = new EvidenceLog(
 			evidencePath(config.voiceRoot, context.sessionId, context.projection),
 		);
+		evidence.append(
+			voiceReceiveRuntimeEvidence({
+				observedAt: new Date().toISOString(),
+				buildSha: config.buildSha,
+				runtime: receiveRuntime,
+			}),
+		);
 		let room: DiscordVoiceRoom | undefined;
 		const saved: SavedVoiceSession = {
 			sessionId: context.sessionId,
@@ -224,39 +240,31 @@ export async function main(): Promise<void> {
 			projection: context.projection,
 			delivery,
 			createFrontend: (handlers) => {
-				const codexProcess = new CodexLeadProcess({
-					experimentalApi: true,
-					maxStderrBytes: 0,
-					logger: {
-						warn: () => console.warn("[voice] app-server protocol warning"),
-						error: () => console.error("[voice] app-server protocol error"),
-					},
-					spawnChild: () => {
-						assertVoiceCodexHome(config.codexHome);
-						return spawnCodexAppServer({
-							codexBin: config.codexBin,
-							mcpArgv: [],
-							featureArgv: ["--enable", "realtime_conversation"],
-							codexHome: config.codexHome,
-							baseEnv: voiceCodexEnv(process.env),
-						});
-					},
-					clientInfo: { name: "flywheel-voice", version: "0.1.0" },
-				});
-				codexProcess.on("exit", () => handlers.onClosed("codex_process_exit"));
 				return new RealtimeFrontend({
 					apiKey: config.realtimeApiKey,
-					process: codexProcess,
-					cwd: scratch,
 					voice: context.projection.realtimeVoice,
 					displayName: context.projection.displayName,
+					minimumSessionLifetimeMs: config.presenceGraceMs + 25_000,
+					onEvidence: (record) =>
+						evidence.appendBuffered({
+							ts: new Date().toISOString(),
+							transport: "openai_realtime_direct",
+							modelAlias: "gpt-realtime-1.5",
+							voiceSessionId: context.sessionId,
+							frontendGeneration: 1,
+							buildSha: config.buildSha,
+							...record,
+						}),
 					...handlers,
 				});
 			},
 			createRoom: (handlers) => {
 				room = new DiscordVoiceRoom({
 					onDiagnostic: (record) =>
-						evidence.append({ ts: new Date().toISOString(), ...record }),
+						evidence.appendBuffered({
+							ts: new Date().toISOString(),
+							...record,
+						}),
 					deps: discordDeps,
 					token,
 					expectedBotUserId: context.projection.voiceBotUserId,
@@ -275,13 +283,16 @@ export async function main(): Promise<void> {
 					context.projection.mode === "meeting"
 						? "meeting_container"
 						: "session";
-				evidence.append({
+				const record = {
 					ts,
 					kind: `${prefix}_${state === "ready" ? "starting" : state}`,
 					meetingId: context.projection.meetingId,
 					bootId: daemonBootId,
 					...(reason ? { reason } : {}),
-				});
+				};
+				if (state === "ended" || state === "interrupted")
+					evidence.append(record);
+				else evidence.appendBuffered(record);
 				if (
 					context.projection.mode === "meeting" &&
 					context.projection.evidenceDir &&
@@ -297,7 +308,7 @@ export async function main(): Promise<void> {
 					});
 				}
 			},
-			evidence: (record) => evidence.append(record),
+			evidence: (record) => evidence.appendBuffered(record),
 			confirmationMs: config.confirmationMs,
 			assertLease: () => context.lease.assert(),
 			postStatus: async (text) => {

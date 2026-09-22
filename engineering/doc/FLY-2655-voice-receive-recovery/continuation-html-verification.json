@@ -1,0 +1,21 @@
+{
+  "at": "2026-09-18T23:35:44.409Z",
+  "htmlBytes": 15827,
+  "sections": 8,
+  "nonceBlocks": 1,
+  "externalAssets": 0,
+  "inlineHandlers": 0,
+  "mermaidPending": 2,
+  "tests": [
+    "all cards have comments",
+    "path-scoped storage load/save",
+    "storage throws safe",
+    "live summary",
+    "long Unicode chunking <=1750",
+    "HTML injection inert",
+    "clipboard rejection fallback",
+    "clipboard missing fallback"
+  ],
+  "result": "PASS",
+  "scope": "DOM/controller verification only; no browser visual or hosted CSP execution proof"
+}

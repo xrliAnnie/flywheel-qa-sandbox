@@ -171,6 +171,14 @@ trap -p EXIT`,
 		expect(rules).toContain('"taskCategory":"<task_category>"');
 		expect(rules).toContain("strictly non-code");
 		expect(rules).toContain("fail loud with HTTP 400");
+		expect(rules).toContain("自身语音会话（显式能力）");
+		for (const operationId of [
+			"voice.session.start",
+			"voice.session.status",
+			"voice.session.stop",
+		])
+			expect(rules).toContain(operationId);
+		expect(rules).toContain("不要恢复旧 CoS voiceIntent");
 
 		const syntheticFutureLead = runBundle(
 			"dept",

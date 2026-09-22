@@ -30,6 +30,7 @@ describe("StateStore voice session schema", () => {
 			"voice_health_demand_source",
 			"voice_health_projection",
 			"voice_health_projection_cursor",
+			"voice_intents",
 			"voice_outbound",
 			"voice_sessions",
 		]);
@@ -43,6 +44,18 @@ describe("StateStore voice session schema", () => {
 			"voice_sessions_active_room",
 		]);
 		expect(indexes.every(({ sql }) => sql.includes("state NOT IN"))).toBe(true);
+		const columns = db
+			.prepare("PRAGMA table_info(voice_sessions)")
+			.all()
+			.map((row) => (row as { name: string }).name);
+		expect(columns).toEqual(
+			expect.arrayContaining([
+				"receive_health",
+				"receive_health_observed_at",
+				"receive_health_boot_id",
+				"receive_card_digest",
+			]),
+		);
 		db.close();
 	});
 

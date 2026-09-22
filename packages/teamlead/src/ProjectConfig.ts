@@ -211,6 +211,8 @@ export interface LeadConfig {
 	codexProfile?: "companion" | "write-capable" | "full-access";
 	/** FLY-2519: explicit adoption; runtime confinement is a separate startup gate. */
 	codexCapabilityBundleVersion?: 2;
+	/** Explicit opt-in for model-callable, self-scoped voice session operations. */
+	codexVoiceActions?: boolean;
 	/**
 	 * FLY-2216: explicit opt-in for the shared resident Codex Lead business-
 	 * liveness patrol. Absent / false leaves the Lead's runtime byte path
@@ -710,6 +712,14 @@ export function parseAndValidateProjects(
 						);
 					}
 				}
+			}
+			if (
+				lead.codexVoiceActions !== undefined &&
+				typeof lead.codexVoiceActions !== "boolean"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].codexVoiceActions: must be a boolean`,
+				);
 			}
 			if (
 				lead.realtimeVoice !== undefined &&

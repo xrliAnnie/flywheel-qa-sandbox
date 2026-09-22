@@ -4,6 +4,9 @@
  * imports keep every other module unit-testable without the SDKs, and the
  * real glue is exercised by the PR-1 real-machine loop, not unit tests).
  */
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import type { PlayerLike, ResourceSource } from "../audio/LeadSpeaker.js";
 import type { VoiceConnHandle } from "../audio/VoiceConnSupervisor.js";
@@ -12,6 +15,8 @@ import type { VoiceJoinOpts } from "./BotRegistry.js";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export interface DiscordDeps {
+	/** Exact versions and receive policy loaded by this glue entrypoint. */
+	receiveRuntime?: DiscordReceiveRuntimeDiagnostic;
 	createClient: () => any;
 	joinVoice: (client: any, opts: VoiceJoinOpts) => Promise<any>;
 	/** bind an EarsReceiver subscribe fn (Manual end behavior) to a connection. */
@@ -142,15 +147,209 @@ export interface DiscordDeps {
 	 * (state-transition log + error listener + rejoin). Optional so test
 	 * fakes without it keep compiling; wiring guards with ?. */
 	voiceConnHandle?: (conn: any) => VoiceConnHandle;
+	/** DAVE/receiver diagnostics exposed without leaking raw SDK debug text. */
+	receiveEvents?: (conn: any) => {
+		onTransition(cb: (transitionId: number) => void): () => void;
+		onDiagnostic(cb: (event: DiscordReceiveDiagnostic) => void): () => void;
+		isSpeaking(userId: string): boolean;
+	};
 }
 
-export async function createDiscordDeps(): Promise<DiscordDeps> {
+export interface DiscordReceivePolicy {
+	daveEncryption: boolean;
+	decryptionFailureTolerance: number;
+	debug?: boolean;
+}
+
+export interface DiscordReceiveRuntimeDiagnostic {
+	voiceVersion: string;
+	daveyVersion: string;
+	nodeVersion: string;
+	arch: string;
+	daveEncryption: boolean;
+	decryptionFailureTolerance: number;
+	debug: boolean;
+}
+
+function installedPackageVersion(packageName: string): string {
+	const require = createRequire(import.meta.url);
+	let current = dirname(require.resolve(packageName));
+	for (;;) {
+		try {
+			const manifest = JSON.parse(
+				readFileSync(join(current, "package.json"), "utf8"),
+			) as { name?: unknown; version?: unknown };
+			if (
+				manifest.name === packageName &&
+				typeof manifest.version === "string" &&
+				manifest.version.length > 0
+			) {
+				return manifest.version;
+			}
+		} catch {
+			// Continue toward the package root; fail closed if none is found.
+		}
+		const parent = dirname(current);
+		if (parent === current)
+			throw new Error(`package_version_unavailable:${packageName}`);
+		current = parent;
+	}
+}
+
+export function loadDiscordReceiveRuntimeDiagnostic(
+	policy: DiscordReceivePolicy,
+): DiscordReceiveRuntimeDiagnostic {
+	if (
+		!Number.isSafeInteger(policy.decryptionFailureTolerance) ||
+		policy.decryptionFailureTolerance < 0
+	) {
+		throw new Error("invalid_decryption_failure_tolerance");
+	}
+	return {
+		voiceVersion: installedPackageVersion("@discordjs/voice"),
+		daveyVersion: installedPackageVersion("@snazzah/davey"),
+		nodeVersion: process.version,
+		arch: process.arch,
+		daveEncryption: policy.daveEncryption,
+		decryptionFailureTolerance: policy.decryptionFailureTolerance,
+		debug: policy.debug === true,
+	};
+}
+
+export type DiscordReceiveDiagnostic =
+	| {
+			kind: "transition_preparing";
+			transitionId: number;
+			protocolVersion: number;
+	  }
+	| {
+			kind: "transition_executed";
+			transitionId: number;
+			fromVersion: number;
+			toVersion: number;
+	  }
+	| { kind: "decrypt_failures"; consecutiveFailures: number }
+	| { kind: "decrypt_reinitializing"; reinitializing: true }
+	| { kind: "session_security"; encrypted: boolean }
+	| { kind: "transition_invalidated"; transitionId: number }
+	| { kind: "decrypt_pending_transitions"; pendingTransitions: number }
+	| {
+			kind: "session_protocol";
+			protocolVersion: number;
+			reinitialized: boolean;
+	  }
+	| { kind: "unknown" };
+
+export function buildVoiceJoinOptions(
+	opts: VoiceJoinOpts,
+	adapterCreator: unknown,
+	clientUserId: string | undefined,
+	policy?: DiscordReceivePolicy,
+): Record<string, unknown> {
+	if (
+		policy &&
+		(!Number.isSafeInteger(policy.decryptionFailureTolerance) ||
+			policy.decryptionFailureTolerance < 0)
+	) {
+		throw new Error("invalid_decryption_failure_tolerance");
+	}
+	return {
+		guildId: opts.guildId,
+		channelId: opts.channelId,
+		adapterCreator,
+		selfMute: opts.selfMute,
+		selfDeaf: opts.selfDeaf,
+		group: clientUserId ?? "default",
+		...(policy
+			? {
+					daveEncryption: policy.daveEncryption,
+					decryptionFailureTolerance: policy.decryptionFailureTolerance,
+					debug: policy.debug,
+				}
+			: {}),
+	};
+}
+
+export function parseDiscordReceiveDiagnostic(
+	message: string,
+): DiscordReceiveDiagnostic {
+	let match = message.match(
+		/^\[NW\] \[DAVE\] Preparing for transition \((\d+), v(\d+)\)$/u,
+	);
+	if (match) {
+		return {
+			kind: "transition_preparing",
+			transitionId: Number(match[1]),
+			protocolVersion: Number(match[2]),
+		};
+	}
+	match = message.match(
+		/^\[NW\] \[DAVE\] Transition executed \(v(\d+) -> v(\d+), id: (\d+)\)$/u,
+	);
+	if (match) {
+		return {
+			kind: "transition_executed",
+			fromVersion: Number(match[1]),
+			toVersion: Number(match[2]),
+			transitionId: Number(match[3]),
+		};
+	}
+	match = message.match(
+		/^\[NW\] \[DAVE\] Failed to decrypt a packet \((\d+) consecutive fails\)$/u,
+	);
+	if (match) {
+		return { kind: "decrypt_failures", consecutiveFailures: Number(match[1]) };
+	}
+	if (
+		message ===
+		"[NW] [DAVE] Failed to decrypt a packet (reinitializing session)"
+	) {
+		return { kind: "decrypt_reinitializing", reinitializing: true };
+	}
+	if (message === "[NW] [DAVE] Session downgraded") {
+		return { kind: "session_security", encrypted: false };
+	}
+	if (message === "[NW] [DAVE] Session upgraded") {
+		return { kind: "session_security", encrypted: true };
+	}
+	match = message.match(/^\[NW\] \[DAVE\] Invalidating transition (\d+)$/u);
+	if (match) {
+		return { kind: "transition_invalidated", transitionId: Number(match[1]) };
+	}
+	match = message.match(
+		/^\[NW\] \[DAVE\] Failed to decrypt a packet \((\d+) pending transition\[s\]\)$/u,
+	);
+	if (match) {
+		return {
+			kind: "decrypt_pending_transitions",
+			pendingTransitions: Number(match[1]),
+		};
+	}
+	match = message.match(
+		/^\[NW\] \[DAVE\] Session (re)?initialized for protocol version (\d+)$/u,
+	);
+	if (match) {
+		return {
+			kind: "session_protocol",
+			protocolVersion: Number(match[2]),
+			reinitialized: match[1] === "re",
+		};
+	}
+	return { kind: "unknown" };
+}
+
+export async function createDiscordDeps(
+	receivePolicy?: DiscordReceivePolicy,
+): Promise<DiscordDeps> {
 	const { Client, GatewayIntentBits } = await import("discord.js");
 	const voice = await import("@discordjs/voice");
 	const prismModule = await import("prism-media");
 	const prism: any = (prismModule as any).default ?? prismModule;
 
 	return {
+		...(receivePolicy
+			? { receiveRuntime: loadDiscordReceiveRuntimeDiagnostic(receivePolicy) }
+			: {}),
 		createClient: () =>
 			new Client({
 				intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -160,19 +359,17 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 		// clientReady before this runs.
 		joinVoice: async (client: any, opts: VoiceJoinOpts) => {
 			const guild = await client.guilds.fetch(opts.guildId);
-			const conn = voice.joinVoiceChannel({
-				guildId: opts.guildId,
-				channelId: opts.channelId,
-				adapterCreator: guild.voiceAdapterCreator,
-				selfMute: opts.selfMute,
-				selfDeaf: opts.selfDeaf,
-				// @discordjs/voice keys its connection registry by (group, guildId)
-				// with group defaulting to "default" — N bots in ONE process joining
-				// the SAME guild would clobber each other's connection (found on the
-				// PR-1 real-machine loop: ears went silent the moment the speaker
-				// joined). Group by bot user id = the multi-client-per-process form.
-				group: client.user?.id ?? "default",
-			});
+			// @discordjs/voice keys its connection registry by (group, guildId).
+			// Group by bot id so multiple bot clients in one process cannot clobber
+			// each other's connections.
+			const conn = voice.joinVoiceChannel(
+				buildVoiceJoinOptions(
+					opts,
+					guild.voiceAdapterCreator,
+					client.user?.id,
+					receivePolicy,
+				) as any,
+			);
 			await voice.entersState(conn, voice.VoiceConnectionStatus.Ready, 15_000);
 			return conn;
 		},
@@ -383,6 +580,21 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 				conn.on("error", cb);
 				return () => conn.off("error", cb);
 			},
+		}),
+
+		receiveEvents: (conn: any) => ({
+			onTransition: (cb) => {
+				conn.on("transitioned", cb);
+				return () => conn.off("transitioned", cb);
+			},
+			onDiagnostic: (cb) => {
+				const handler = (message: string) =>
+					cb(parseDiscordReceiveDiagnostic(message));
+				conn.on("debug", handler);
+				return () => conn.off("debug", handler);
+			},
+			isSpeaking: (userId) =>
+				conn.receiver?.speaking?.users?.has(userId) === true,
 		}),
 
 		moveMember: async (

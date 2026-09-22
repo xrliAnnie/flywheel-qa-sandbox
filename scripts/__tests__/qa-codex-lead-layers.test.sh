@@ -223,6 +223,9 @@ layer_state_root="$TMP/q/7"
 layer_codex_bin="$layer_codex_home/packages/standalone/current/codex"
 layer_comm_db="$layer_home/.flywheel/comm/test-slot-7/comm.db"
 layer_prompt_files="$layer_identity,$ROOT/packages/teamlead/lead-rules-base/companion-safety-contract.md"
+expected_state=$(qa_launchd_codex_state_dir "$layer_state_root" test-slot-7 qa-lead)
+expected_state_dirs=$(qa_launchd_codex_state_dirs_add \
+  '{}' test-slot-7 qa-lead "$expected_state")
 python3 "$renderer" --output "$layer_env" \
   'TEST_BOT_TOKEN_7=layer-token' \
   'DISCORD_GUILD_ID=guild-7' 'BRIDGE_URL=http://localhost:4242' \
@@ -237,13 +240,17 @@ python3 "$renderer" --output "$layer_env" \
   "CODEX_HOME=$layer_codex_home" "FLYWHEEL_CODEX_BIN=$layer_codex_bin" \
   'FLYWHEEL_CODEX_LEAD_MODE=tui' "FLYWHEEL_CODEX_TUI_CWD=$layer_workspace" \
   'FLYWHEEL_CODEX_LEAD_OUTBOUND=direct' \
+  "FLYWHEEL_CODEX_LEAD_STATE_DIRS=$expected_state_dirs" \
   "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=$layer_prompt_files"
 launcher_dump=$(env -i HOME="$layer_home" PATH="$PATH" FLYWHEEL_DIR="$fake_repo" FLYWHEEL_LEAD_DRY_RUN=1 \
   /bin/bash -c 'set -a; source "$1"; set +a; exec /bin/bash "$2" qa-lead "$3" test-slot-7' \
   _ "$layer_env" "$fake_repo/packages/teamlead/scripts/codex-lead.sh" "$layer_workspace" \
   2>"$TMP/launcher.err" | tail -1)
-expected_state=$(qa_launchd_codex_state_dir "$layer_state_root" test-slot-7 qa-lead)
-if jq -e --arg projects "$layer_projects" --arg state "$expected_state" \
+expected_socket_bytes=$(LC_ALL=C printf '%s' "${expected_state}/lead-inbox.sock" \
+  | wc -c | tr -d ' ')
+if [[ "$expected_state" =~ /q/7/c/[0-9a-f]{16}$ ]] \
+    && (( expected_socket_bytes <= 100 )) \
+    && jq -e --arg projects "$layer_projects" --arg state "$expected_state" \
     --arg home "$layer_codex_home" --arg workspace "$layer_workspace" \
     --arg prompt "$layer_prompt_files" '
     .FLYWHEEL_PROJECTS_FILE == $projects and .FLYWHEEL_CODEX_LEAD_STATE_DIR == $state and
@@ -280,7 +287,8 @@ FLYWHEEL_LEAD_ACTIONS_NODE_BIN=/usr/bin/node
 FLYWHEEL_LEAD_ACTIONS_STATE_DIR=${expected_state}
 EOF
 )
-if [[ -z "$companion_profile" && "$full_profile" == "$expected_full_profile" ]] \
+if [[ -z "$companion_profile" && "$full_profile" == "$expected_full_profile" \
+    && "$(jq -r '.["test-slot-7"]["qa-lead"]' <<<"$expected_state_dirs")" == "$expected_state" ]] \
     && ! qa_codex_profile_assignments write-capable "$ROOT" "$expected_state" /usr/bin/node \
       >/dev/null 2>&1; then
   pass "Codex profile projector emits exactly the five full-access assignments"

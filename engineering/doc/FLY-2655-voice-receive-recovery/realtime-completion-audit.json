@@ -1,0 +1,16 @@
+{
+  "at": "2026-09-20T22:36:58.678364+00:00",
+  "phase": "design",
+  "reviewVerdict": "APPROVED",
+  "reviewRequest": "508b90a8-5c0e-409f-b9fe-0a5f0818417f",
+  "reviewedBytesUnchanged": true,
+  "baselineAncestorPreserved": true,
+  "committedChangesDocsOnly": true,
+  "hostedMatchesCommittedHtml": true,
+  "commentControllerChecks": "PASS, DOM only",
+  "diagrams": "two explicit pending placeholders after local failure, source and failure receipts retained",
+  "leadUrlReportQuestion": "89d096fd-0fe6-4130-bca6-cc170da4f17e",
+  "implementationOrLiveQaPerformed": false,
+  "humanQaVerdict": "prior FAIL unchanged",
+  "remaining": "commit/push delivery receipts, exact phase_design_complete then park"
+}

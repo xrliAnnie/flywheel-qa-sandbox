@@ -50,6 +50,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 coordinates=$(python3 - "$manifest" "$manifest_snapshot" "$slot" "$slot_dir" <<'PY'
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -90,10 +91,8 @@ label = f"com.flywheel.qa.lead.slot-{slot_text}.{agent}"
 home = slot_dir / "cdxh" / agent
 tmux_socket = slot_dir / f"tmux-{os.getuid()}" / "default"
 tmux_bin = Path(row["tmuxBin"])
-identity_hex = (project + "\x1f" + agent).encode().hex()
-safe_project = re.sub(r"[^A-Za-z0-9_-]", "_", project)
-safe_agent = re.sub(r"[^A-Za-z0-9_-]", "_", agent)
-state = slot_dir / "q" / slot_text / "state/codex-lead" / f"{safe_project}__{safe_agent}-{identity_hex}"
+identity_hash = hashlib.sha256((project + "\x1f" + agent).encode()).hexdigest()[:16]
+state = slot_dir / "q" / slot_text / "c" / identity_hash
 expected = {
     "label": label,
     "projectName": project,

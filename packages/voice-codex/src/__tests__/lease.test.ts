@@ -1,5 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { BridgeVoiceClient, VoiceLease } from "../bridge-client.js";
+import {
+	BridgeVoiceClient,
+	type BridgeVoiceHttpError,
+	VoiceLease,
+} from "../bridge-client.js";
+
+const degradedHealth = {
+	version: 1,
+	sequence: 2,
+	state: "degraded",
+	reason: "dave_decrypt",
+	failures: 1,
+	retries: 1,
+	lastPcmAt: null,
+} as const;
 
 describe("VoiceLease", () => {
 	it("uses the request-send monotonic instant and fences every later side effect", () => {
@@ -78,6 +92,77 @@ describe("BridgeVoiceClient", () => {
 		expect(recovered.state).toBe("live");
 		expect(recovered.lease.deadline).toBe(13_500);
 		expect(() => recovered.lease.assert()).not.toThrow();
+	});
+
+	it("retries a health-bearing renew once without a body after a 400", async () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		let mono = 100;
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockImplementationOnce(async () => {
+				mono = 500;
+				return new Response(JSON.stringify({ reason: "unknown_field" }), {
+					status: 400,
+				});
+			})
+			.mockImplementationOnce(async () => {
+				mono = 800;
+				return new Response(
+					JSON.stringify({
+						state: "live",
+						leaseTtlMs: 15_000,
+						leaseExpiresAt: "2026-09-09T00:00:15.000Z",
+					}),
+					{ status: 200 },
+				);
+			});
+		const client = new BridgeVoiceClient({
+			baseUrl: "http://127.0.0.1:9876",
+			token: "master",
+			httpTimeoutMs: 2_000,
+			fetchImpl,
+			monoNow: () => mono,
+		});
+		const lease = new VoiceLease(() => mono);
+		lease.install(0, 15_000, 2_000);
+
+		await expect(
+			client.renew("session-a", "lease-a", lease, degradedHealth),
+		).resolves.toMatchObject({ state: "live" });
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+			body: JSON.stringify({ receiveHealth: degradedHealth }),
+		});
+		expect(fetchImpl.mock.calls[1]?.[1]).not.toHaveProperty("body");
+		expect(lease.deadline).toBe(13_500);
+		expect(warning).toHaveBeenCalledOnce();
+		expect(warning).toHaveBeenCalledWith("health_publish_failed");
+		warning.mockRestore();
+	});
+
+	it("does not retry a health-bearing renew after a 409", async () => {
+		const fetchImpl = vi.fn<typeof fetch>(
+			async () =>
+				new Response(JSON.stringify({ reason: "lease_fenced" }), {
+					status: 409,
+				}),
+		);
+		const client = new BridgeVoiceClient({
+			baseUrl: "http://127.0.0.1:9876",
+			token: "master",
+			httpTimeoutMs: 2_000,
+			fetchImpl,
+			monoNow: () => 100,
+		});
+		const lease = new VoiceLease(() => 100);
+		lease.install(0, 15_000, 2_000);
+
+		await expect(
+			client.renew("session-a", "lease-a", lease, degradedHealth),
+		).rejects.toEqual(
+			expect.objectContaining<Partial<BridgeVoiceHttpError>>({ status: 409 }),
+		);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
 	});
 });
 

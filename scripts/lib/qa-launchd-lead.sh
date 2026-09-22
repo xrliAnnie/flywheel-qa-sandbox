@@ -581,18 +581,25 @@ PY
 }
 
 qa_launchd_codex_state_dir() {
-  local state_root="$1" project="$2" lead="$3" safe_project safe_lead identity_hex
+  local state_root="$1" project="$2" lead="$3" identity_hash state_dir socket_bytes
   qa_launchd_require_absolute "$state_root" || return 1
   [[ "$state_root" != *$'\n'* && "$state_root" != *$'\r'* ]] || return 1
   [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
     || { qa_launchd_err "invalid project name"; return 1; }
   [[ "$lead" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
     || { qa_launchd_err "invalid lead id"; return 1; }
-  safe_project=$(printf '%s' "$project" | tr -c 'a-zA-Z0-9_-' '_')
-  safe_lead=$(printf '%s' "$lead" | tr -c 'a-zA-Z0-9_-' '_')
-  identity_hex=$(printf '%s\037%s' "$project" "$lead" | od -An -v -tx1 | tr -d ' \n')
-  printf '%s/state/codex-lead/%s__%s-%s\n' \
-    "${state_root%/}" "$safe_project" "$safe_lead" "$identity_hex"
+  identity_hash=$(printf '%s\037%s' "$project" "$lead" \
+    | shasum -a 256 | awk '{print substr($1, 1, 16)}') || return 1
+  [[ "$identity_hash" =~ ^[0-9a-f]{16}$ ]] || return 1
+  state_dir="${state_root%/}/c/${identity_hash}"
+  socket_bytes=$(LC_ALL=C printf '%s' "${state_dir}/lead-inbox.sock" \
+    | wc -c | tr -d ' ')
+  [[ "$socket_bytes" =~ ^[0-9]+$ ]] || return 1
+  if (( socket_bytes > 100 )); then
+    qa_launchd_err "Codex Lead socket path exceeds 100 bytes: ${socket_bytes}"
+    return 1
+  fi
+  printf '%s\n' "$state_dir"
 }
 
 qa_launchd_codex_state_dirs_add() {

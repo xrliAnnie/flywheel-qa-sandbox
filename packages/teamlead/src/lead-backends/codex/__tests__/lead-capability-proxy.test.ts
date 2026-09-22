@@ -42,9 +42,12 @@ const result = {
 		observedAt: "2026-09-13T00:00:00.000Z",
 	},
 };
-async function connected(requestClient = vi.fn(async () => result)) {
+async function connected(
+	requestClient = vi.fn(async () => result),
+	selectedManifest = manifest,
+) {
 	const server = createLeadCapabilityProxy({
-		manifest,
+		manifest: selectedManifest,
 		socketPath: "/tmp/activation/broker.sock",
 		requestClient,
 	});
@@ -71,6 +74,42 @@ describe("native lead capability MCP proxy", () => {
 			expect(schema).toContain("threadId");
 			expect(schema).toContain("maximum");
 			expect(schema).not.toContain("discord.thread.reply");
+		} finally {
+			await f.close();
+		}
+	});
+	it("projects all opted-in voice operations through the single lead_operation tool", async () => {
+		const operations = [
+			getLeadCapability("voice.session.start")!,
+			getLeadCapability("voice.session.status")!,
+			getLeadCapability("voice.session.stop")!,
+		];
+		const voiceManifest = createLeadCapabilityManifest({
+			projectName: "raya",
+			leadId: "raya",
+			identityDigest: "b".repeat(64),
+			backend: "codex-app-server",
+			profile: "full-access",
+			activationId: "voice-activation",
+			sourceRevision: "voice-head",
+			operations,
+			ruleSources: [],
+			skillSources: [],
+			integrations: [],
+		});
+		const f = await connected(
+			vi.fn(async () => result),
+			voiceManifest,
+		);
+		try {
+			const tools = (await f.client.listTools()).tools;
+			expect(tools.map((tool) => tool.name)).toEqual(["lead_operation"]);
+			const schema = JSON.stringify(tools[0]!.inputSchema);
+			for (const operation of operations)
+				expect(schema).toContain(operation.operationId);
+			expect(voiceManifest.operationIds).toEqual(
+				operations.map((operation) => operation.operationId),
+			);
 		} finally {
 			await f.close();
 		}

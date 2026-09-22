@@ -28,6 +28,7 @@ import {
 	createRunnerBridgeHandlers,
 	createTerminalInputHandlers,
 } from "./handlers/bridge-read.js";
+import { createBridgeVoiceHandlers } from "./handlers/bridge-voice.js";
 import { createGithubReadProviderHandlers } from "./handlers/github-provider.js";
 import { createLinearProviderSession } from "./handlers/linear-provider.js";
 import { createReportDeliverHandlers } from "./handlers/report-deliver.js";
@@ -327,6 +328,7 @@ export async function startLeadRuntimeProviders(
 			createBridgeReadHandlers(common),
 			createMemoryBridgeHandlers(common),
 			createBridgeDiscordHandlers(common),
+			createBridgeVoiceHandlers(common),
 			createBridgeAttachmentHandlers({ ...common, store: options.artifacts }),
 			createGithubReadProviderHandlers({ ...common, client: github.client }),
 			createGithubBridgeHandlers(common),

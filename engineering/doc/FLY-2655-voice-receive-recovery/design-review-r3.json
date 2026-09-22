@@ -1,0 +1,153 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "5e8c836e-6a1e-4d8a-9d89-0b0952692872",
+  "round": 3,
+  "findings": [
+    {
+      "id": "test-deploy-expect-head-requires-generalized",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 285,
+      "title": "The §7.2 test-deploy command hard-errors: --expect-head requires --generalized, and the built-checkout/health-SHA fence it implies is generalized-only",
+      "detail": "§7.2's first command is `scripts/test-deploy.sh 2 --expect-head <implementation-head> --voice-fixture <…>` with no `--generalized`. `scripts/test-deploy.sh:292-295` rejects that combination outright (`ERROR: --expect-head requires --generalized`, exit 1), so the printed shape cannot run even after D2 adds `--voice-fixture`. The deeper point is that the whole head-binding apparatus is generalized-only: `SCRIPT_REPO_HEAD` and `qa_generalized_validate_expected_head` sit inside the `GENERALIZED == 1` block at `:254-262`, and the `/health` identity assertion `.buildMode == \"built\" and .buildSha == $sha and .artifactBuildSha == $sha` at `:2332-2340` is likewise generalized-only. §7.2 meanwhile stipulates a plain slot with a real Lead (\"只允许普通slot有真实Lead模式\"). The redundancy in D2 item 2 (prepare independently verifies expectedHead + Bridge health SHA + artifact hashes) does keep the gate from being mechanism-less — `resolveBridgeBuildIdentity` (bridge/build-identity.ts) reads `build-identity.json` regardless of lane, so a plain slot can still report a buildSha — but D2 item 1's task list mentions only `--voice-fixture`, so nothing in the plan closes this. Decide and state the lane: either add `--generalized` (it requires `--mode slot`, which is compatible) and accept that lane's different flag surface, or make D2 explicitly lift the expect-head fence and the health identity assertion onto the plain lane. Note the plain and generalized lanes differ in more than the fence (e.g. chat-thread flags are not set on plain slots), so the choice needs to be deliberate rather than implied.",
+      "failure_scenario": "QA runs the §7.2 command verbatim, gets `ERROR: --expect-head requires --generalized`, and takes the obvious unblock — dropping `--expect-head`. The slot then comes up with no head fence and no built-checkout assertion, so the Bridge may be running main's bytes while the founder session report claims the implementation head. That is exactly the evidence row §7.2 itself marks as failing: \"只有git HEAD或锁文件，无实际加载证明\" — except it now passes silently.",
+      "findingKey": "test-deploy-expect-head-requires-generalized"
+    },
+    {
+      "id": "qa-voice-channel-allowlist-has-no-enforcement",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 261,
+      "title": "§7.2 credits qaVoiceChannelIds as an isolation control, but the key is inert outside the QA driver the section retires",
+      "detail": "§7.2 has D2 write `qaVoiceChannelIds=[1542708795720081408]` into the slot-private voice-host config and frames it as the room authorization boundary (\"不把空生产配置当授权或自动回填所有频道\"). Verified: `~/.flywheel/voice-host.json` is indeed `{schemaVersion:1}` and both allowlists default to `[]` (voice-host-config.ts:26-33) — that premise is right. But `qaVoiceChannelIds` is parsed and snowflake-validated and then never read by any server-side path: `voice-session-services.ts` consumes only `voiceHost.qaAllowUserIds` (:191) and `voice-session-start.ts` only `voiceHost.evidenceRoots` (:237). The single enforcement site in the repo is `scripts/qa/fly2446-two-lead-run.mjs:73` (`t.qaVoiceChannelIds.includes(t.voiceChannelId)`) — the very driver §7.2 retires as unusable. So unless the new `fly2655-voice-room.mjs` re-implements that assertion, the only thing binding the room is whatever the fixture wrote into the slot registry's `voiceRoom` (validated against the session at voice-session-start.ts:254-255 and services.ts:75-76). This matters because production and QA share a guild: every project in `~/.flywheel/projects.json` has `voiceRoom = {guildId: 1485787271192907816, voiceChannelId: 1485787273193853170}`, and the QA Testing category `1493080958889496760` is in that same guild `1485787271192907816`. D2 item 6 does list \"生产bot/房\" as fail-closed, but names no source for knowing which room is production — and the slot is explicitly forbidden from reading production config. The positive slot-local allowlist is the right mechanism; the plan just needs to say the new script must assert `session.voiceChannelId ∈ qaVoiceChannelIds` before start, with a red test.",
+      "failure_scenario": "The reviewed fixture carries a stale or mistyped voiceChannelId that resolves to the production room 1485787273193853170. Nothing rejects it: the slot allowlist is inert, the slot cannot see production config to denylist the room, and the slot StateStore's unique active-room index cannot see the production row. The test bot joins the production voice channel alongside the production bot and starts capturing whatever the founder says there into a QA Realtime session.",
+      "findingKey": "qa-voice-channel-allowlist-has-no-enforcement"
+    },
+    {
+      "id": "slot-bridge-founder-id-not-in-prepare-checks",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 263,
+      "title": "prepare does not verify the slot Bridge's discordOwnerUserId, so a missing founder id surfaces only after the founder is already in the room",
+      "detail": "§7.2 requires \"founder身份与slot Bridge的discordOwnerUserId一致\", and the whole section is built on prepare catching everything before the founder is summoned (\"prepare证据齐全后，QA…请Lead叫founder进房\"). But the slot Bridge only gets that id by inheriting it: `scripts/test-deploy.sh:2176/2209/2251` pass `DISCORD_OWNER_USER_ID=\"${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}\"` from the caller environment, and §7.2 item 4 otherwise insists the launcher must not inherit caller env at all. If it lands empty, `voice-session-services.ts:163-169` throws `503 voice_unavailable / founder_id_unset` on every `voice-session start`, and `projectSession` would project an empty `founderUserId` (:190). Neither D2 item 2's prepare checklist (head, clean source, room-info/health SHA, artifact hashes, PID/start identity) nor item 6's fail-closed list (缺坐标、symlink逃逸、旧产物、非TEST token、生产bot/房、slot占用) covers it. Name `DISCORD_OWNER_USER_ID` (or `QA1189_OWNER_OVERRIDE`) as a required voice-fixture input to test-deploy, and have prepare assert the slot Bridge's resolved owner is non-empty and equals the registered founder before any Lead hand-off.",
+      "failure_scenario": "The QA runner sanitizes its own environment per item 4's no-inherit rule, so test-deploy passes an empty DISCORD_OWNER_USER_ID to the slot Bridge. prepare passes — it never looks at the owner. The Lead summons the founder, she joins voice-test-2, and the first `voice-session start` returns 503 founder_id_unset. Her time is spent on a preventable prep failure, which is exactly what §7.2's prepare-before-summon ordering exists to avoid.",
+      "findingKey": "slot-bridge-founder-id-not-in-prepare-checks"
+    },
+    {
+      "id": "room-has-no-connection-fatal-channel",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 76,
+      "title": "Still open (acknowledged, deferred to implementation): §3.2's connection-level fatal channel does not exist in DiscordVoiceRoom",
+      "detail": "Unchanged in R3 — §3 was not touched this round, and review-disposition.md routes this to implementation rather than reworking the design, which is a legitimate disposition for a MEDIUM. Restating for ledger stability: §3.2 asserts \"身份、token、lease、frontend 和连接级 error 在独立通道保持致命语义\" and the table row \"未知连接致命错误 → 既有 failed/结束清理\", but `discord-room.ts:18-32` builds `RoomDeps` from picks that exclude both `connectionEvents` and `voiceConnHandle`, and the class registers no connection listener. Now that every current-capture `opus.on(\"error\")` is degraded, nothing in the room observes voice-connection loss; the SDK's teardown path calls `stream.destroy()` with no argument (dist/index.js:2277), emitting `close`, not `error`. Impact stays bounded by `session.ts:204-210` (`founderPresence(false)` → ended), text-stop, and lease-expiry sweep. The handoff note captures this correctly; the residual ask is only that §3.1's \"若需要连接监听补齐\" become a decision — build the listener, or state that connection loss is covered solely by presence/text-stop/lease so QA does not test a route that was never built.",
+      "failure_scenario": "The voice UDP/WS connection dies while the gateway stays up. No error reaches any capture, so neither the new degraded path nor any fatal path fires; the retry loop re-subscribes on the dead connection, drains its budget through receive_no_pcm into retry_exhausted, and the session sits live until the founder leaves — while QA, reading §3.2, records it as a failure of the fatal channel rather than its absence.",
+      "findingKey": "room-has-no-connection-fatal-channel"
+    },
+    {
+      "id": "assert-lease-in-callbacks-can-crash-the-daemon",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 60,
+      "title": "Still open (acknowledged, deferred to implementation): assertLease() in stream/timer callbacks must not escape as an uncaughtException",
+      "detail": "Unchanged in R3; review-disposition.md carries it to implementation with the right framing (\"必须转成有序fence/cleanup，不能冒出uncaughtException；中途失权要验证daemon仍可报告\"). Restating for ledger stability: §3.3's \"Room options 增 assertLease()… 所有重试/数据转发调用它\" names exactly the two contexts where a synchronous throw cannot be caught by a caller — a `decoder.on(\"data\")` listener and a `setTimeout` retry callback — and `VoiceLease.assert()` throws `Error(\"voice_lease_fenced\")` synchronously (bridge-client.ts:54-59). The seam itself is sound: `cli.ts:268` already passes `assertLease: () => context.lease.assert()` to the session, so reusing it in the room is clean. The paragraph's \"不能漏出到进程 unhandled\" rule is scoped to the synchronous construction path immediately preceding, so the new sentence is not obviously covered. Worth a §6-A case that fences the lease mid-capture and asserts the daemon survives to report.",
+      "failure_scenario": "Lease renew misses its window while the founder is speaking. The next decoded PCM chunk arrives, the data listener calls assertLease(), voice_lease_fenced escapes the EventEmitter, Node raises uncaughtException, and the voice daemon exits — killing playback, the outbound poller and the evidence log instead of performing the orderly fenced shutdown the design specifies.",
+      "findingKey": "assert-lease-in-callbacks-can-crash-the-daemon"
+    },
+    {
+      "id": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 110,
+      "title": "Still open (acknowledged, deferred): the in-call 400 fallback needs renewMs + 3×httpTimeoutMs < ttlMs, which config.ts:96 does not enforce",
+      "detail": "Unchanged in R3; the disposition records the inequality correctly. Restating for ledger stability: `config.ts:96` enforces `leaseRenewMs + leaseHttpTimeoutMs < leaseTtlMs/2`, an invariant written for one HTTP round trip per renew cycle. §4.2's in-call fallback makes the worst case `leaseRenewMs + 2×leaseHttpTimeoutMs` against a local deadline of `leaseTtlMs - leaseHttpTimeoutMs` (`lease.install` at bridge-client.ts:45), so the real requirement is `leaseRenewMs + 3×leaseHttpTimeoutMs < leaseTtlMs`. The existing guard implies that only while `leaseHttpTimeoutMs ≤ leaseRenewMs`, true at the defaults (2000 ≤ 4000) but not for every legal override. The rest of §4.2's fix is precise — \"使用这次请求的sentAt安装lease\" is exactly right, since reusing the first attempt's sentAt would over-credit the deadline.",
+      "failure_scenario": "An operator sets FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS=5000 with FLYWHEEL_VOICE_LEASE_RENEW_MS=1000 and the default 15s TTL. config.ts:96 passes (6000 < 7500). A health-validation 400 triggers the fallback; the cycle costs up to 11000ms against a 10000ms local deadline, lease.install throws voice_lease_fenced, authorityLost matches, and the session ends lease_lost — the outcome §4.2 says a display-encoding bug must never cause.",
+      "findingKey": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle"
+    },
+    {
+      "id": "null-health-terminal-rows-keep-the-requested-card-forever",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 125,
+      "title": "Still open (acknowledged, deferred): sessions that die before their first health report keep the \"已请求\" root card permanently",
+      "detail": "Unchanged in R3; the disposition states the right mitigation (\"GET sessionBody是状态权威，不能把静态根卡当作存活证明\"). Restating for ledger stability: §4.3's scan predicate (`receive_health_observed_at` non-null and root exists) is a sound anti-backfill guard, but it reverses the earlier requirement that terminal rows be projected. A session that reaches a terminal state before any health snapshot — failure during claim/warming, `lead_bot_identity_mismatch`, a frontend start failure — has a null observed_at forever, is never scanned, and leaves the root message reading `📻 语音会话已请求` (voice-session-provisioner.ts:98). Worth one sentence in §4.3 recording this as an accepted limit plus the observable that replaces it, so a later reader does not diagnose it as a projector bug.",
+      "failure_scenario": "A session fails during warming with lead_bot_identity_mismatch before the room starts, so no health snapshot is ever sent. The projector never selects the row; the channel keeps a card saying the voice session has been requested with no sign it died, and a reader treats the stale card as a card-projection defect rather than the documented scan boundary.",
+      "findingKey": "null-health-terminal-rows-keep-the-requested-card-forever"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "test-deploy-expect-head-requires-generalized",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 285,
+      "title": "The §7.2 test-deploy command hard-errors: --expect-head requires --generalized, and the built-checkout/health-SHA fence it implies is generalized-only",
+      "detail": "§7.2's first command is `scripts/test-deploy.sh 2 --expect-head <implementation-head> --voice-fixture <…>` with no `--generalized`. `scripts/test-deploy.sh:292-295` rejects that combination outright (`ERROR: --expect-head requires --generalized`, exit 1), so the printed shape cannot run even after D2 adds `--voice-fixture`. The deeper point is that the whole head-binding apparatus is generalized-only: `SCRIPT_REPO_HEAD` and `qa_generalized_validate_expected_head` sit inside the `GENERALIZED == 1` block at `:254-262`, and the `/health` identity assertion `.buildMode == \"built\" and .buildSha == $sha and .artifactBuildSha == $sha` at `:2332-2340` is likewise generalized-only. §7.2 meanwhile stipulates a plain slot with a real Lead (\"只允许普通slot有真实Lead模式\"). The redundancy in D2 item 2 (prepare independently verifies expectedHead + Bridge health SHA + artifact hashes) does keep the gate from being mechanism-less — `resolveBridgeBuildIdentity` (bridge/build-identity.ts) reads `build-identity.json` regardless of lane, so a plain slot can still report a buildSha — but D2 item 1's task list mentions only `--voice-fixture`, so nothing in the plan closes this. Decide and state the lane: either add `--generalized` (it requires `--mode slot`, which is compatible) and accept that lane's different flag surface, or make D2 explicitly lift the expect-head fence and the health identity assertion onto the plain lane. Note the plain and generalized lanes differ in more than the fence (e.g. chat-thread flags are not set on plain slots), so the choice needs to be deliberate rather than implied.",
+      "failure_scenario": "QA runs the §7.2 command verbatim, gets `ERROR: --expect-head requires --generalized`, and takes the obvious unblock — dropping `--expect-head`. The slot then comes up with no head fence and no built-checkout assertion, so the Bridge may be running main's bytes while the founder session report claims the implementation head. That is exactly the evidence row §7.2 itself marks as failing: \"只有git HEAD或锁文件，无实际加载证明\" — except it now passes silently.",
+      "findingKey": "test-deploy-expect-head-requires-generalized"
+    },
+    {
+      "id": "qa-voice-channel-allowlist-has-no-enforcement",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 261,
+      "title": "§7.2 credits qaVoiceChannelIds as an isolation control, but the key is inert outside the QA driver the section retires",
+      "detail": "§7.2 has D2 write `qaVoiceChannelIds=[1542708795720081408]` into the slot-private voice-host config and frames it as the room authorization boundary (\"不把空生产配置当授权或自动回填所有频道\"). Verified: `~/.flywheel/voice-host.json` is indeed `{schemaVersion:1}` and both allowlists default to `[]` (voice-host-config.ts:26-33) — that premise is right. But `qaVoiceChannelIds` is parsed and snowflake-validated and then never read by any server-side path: `voice-session-services.ts` consumes only `voiceHost.qaAllowUserIds` (:191) and `voice-session-start.ts` only `voiceHost.evidenceRoots` (:237). The single enforcement site in the repo is `scripts/qa/fly2446-two-lead-run.mjs:73` (`t.qaVoiceChannelIds.includes(t.voiceChannelId)`) — the very driver §7.2 retires as unusable. So unless the new `fly2655-voice-room.mjs` re-implements that assertion, the only thing binding the room is whatever the fixture wrote into the slot registry's `voiceRoom` (validated against the session at voice-session-start.ts:254-255 and services.ts:75-76). This matters because production and QA share a guild: every project in `~/.flywheel/projects.json` has `voiceRoom = {guildId: 1485787271192907816, voiceChannelId: 1485787273193853170}`, and the QA Testing category `1493080958889496760` is in that same guild `1485787271192907816`. D2 item 6 does list \"生产bot/房\" as fail-closed, but names no source for knowing which room is production — and the slot is explicitly forbidden from reading production config. The positive slot-local allowlist is the right mechanism; the plan just needs to say the new script must assert `session.voiceChannelId ∈ qaVoiceChannelIds` before start, with a red test.",
+      "failure_scenario": "The reviewed fixture carries a stale or mistyped voiceChannelId that resolves to the production room 1485787273193853170. Nothing rejects it: the slot allowlist is inert, the slot cannot see production config to denylist the room, and the slot StateStore's unique active-room index cannot see the production row. The test bot joins the production voice channel alongside the production bot and starts capturing whatever the founder says there into a QA Realtime session.",
+      "findingKey": "qa-voice-channel-allowlist-has-no-enforcement"
+    },
+    {
+      "id": "slot-bridge-founder-id-not-in-prepare-checks",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 263,
+      "title": "prepare does not verify the slot Bridge's discordOwnerUserId, so a missing founder id surfaces only after the founder is already in the room",
+      "detail": "§7.2 requires \"founder身份与slot Bridge的discordOwnerUserId一致\", and the whole section is built on prepare catching everything before the founder is summoned (\"prepare证据齐全后，QA…请Lead叫founder进房\"). But the slot Bridge only gets that id by inheriting it: `scripts/test-deploy.sh:2176/2209/2251` pass `DISCORD_OWNER_USER_ID=\"${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}\"` from the caller environment, and §7.2 item 4 otherwise insists the launcher must not inherit caller env at all. If it lands empty, `voice-session-services.ts:163-169` throws `503 voice_unavailable / founder_id_unset` on every `voice-session start`, and `projectSession` would project an empty `founderUserId` (:190). Neither D2 item 2's prepare checklist (head, clean source, room-info/health SHA, artifact hashes, PID/start identity) nor item 6's fail-closed list (缺坐标、symlink逃逸、旧产物、非TEST token、生产bot/房、slot占用) covers it. Name `DISCORD_OWNER_USER_ID` (or `QA1189_OWNER_OVERRIDE`) as a required voice-fixture input to test-deploy, and have prepare assert the slot Bridge's resolved owner is non-empty and equals the registered founder before any Lead hand-off.",
+      "failure_scenario": "The QA runner sanitizes its own environment per item 4's no-inherit rule, so test-deploy passes an empty DISCORD_OWNER_USER_ID to the slot Bridge. prepare passes — it never looks at the owner. The Lead summons the founder, she joins voice-test-2, and the first `voice-session start` returns 503 founder_id_unset. Her time is spent on a preventable prep failure, which is exactly what §7.2's prepare-before-summon ordering exists to avoid.",
+      "findingKey": "slot-bridge-founder-id-not-in-prepare-checks"
+    },
+    {
+      "id": "room-has-no-connection-fatal-channel",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 76,
+      "title": "Still open (acknowledged, deferred to implementation): §3.2's connection-level fatal channel does not exist in DiscordVoiceRoom",
+      "detail": "Unchanged in R3 — §3 was not touched this round, and review-disposition.md routes this to implementation rather than reworking the design, which is a legitimate disposition for a MEDIUM. Restating for ledger stability: §3.2 asserts \"身份、token、lease、frontend 和连接级 error 在独立通道保持致命语义\" and the table row \"未知连接致命错误 → 既有 failed/结束清理\", but `discord-room.ts:18-32` builds `RoomDeps` from picks that exclude both `connectionEvents` and `voiceConnHandle`, and the class registers no connection listener. Now that every current-capture `opus.on(\"error\")` is degraded, nothing in the room observes voice-connection loss; the SDK's teardown path calls `stream.destroy()` with no argument (dist/index.js:2277), emitting `close`, not `error`. Impact stays bounded by `session.ts:204-210` (`founderPresence(false)` → ended), text-stop, and lease-expiry sweep. The handoff note captures this correctly; the residual ask is only that §3.1's \"若需要连接监听补齐\" become a decision — build the listener, or state that connection loss is covered solely by presence/text-stop/lease so QA does not test a route that was never built.",
+      "failure_scenario": "The voice UDP/WS connection dies while the gateway stays up. No error reaches any capture, so neither the new degraded path nor any fatal path fires; the retry loop re-subscribes on the dead connection, drains its budget through receive_no_pcm into retry_exhausted, and the session sits live until the founder leaves — while QA, reading §3.2, records it as a failure of the fatal channel rather than its absence.",
+      "findingKey": "room-has-no-connection-fatal-channel"
+    },
+    {
+      "id": "assert-lease-in-callbacks-can-crash-the-daemon",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 60,
+      "title": "Still open (acknowledged, deferred to implementation): assertLease() in stream/timer callbacks must not escape as an uncaughtException",
+      "detail": "Unchanged in R3; review-disposition.md carries it to implementation with the right framing (\"必须转成有序fence/cleanup，不能冒出uncaughtException；中途失权要验证daemon仍可报告\"). Restating for ledger stability: §3.3's \"Room options 增 assertLease()… 所有重试/数据转发调用它\" names exactly the two contexts where a synchronous throw cannot be caught by a caller — a `decoder.on(\"data\")` listener and a `setTimeout` retry callback — and `VoiceLease.assert()` throws `Error(\"voice_lease_fenced\")` synchronously (bridge-client.ts:54-59). The seam itself is sound: `cli.ts:268` already passes `assertLease: () => context.lease.assert()` to the session, so reusing it in the room is clean. The paragraph's \"不能漏出到进程 unhandled\" rule is scoped to the synchronous construction path immediately preceding, so the new sentence is not obviously covered. Worth a §6-A case that fences the lease mid-capture and asserts the daemon survives to report.",
+      "failure_scenario": "Lease renew misses its window while the founder is speaking. The next decoded PCM chunk arrives, the data listener calls assertLease(), voice_lease_fenced escapes the EventEmitter, Node raises uncaughtException, and the voice daemon exits — killing playback, the outbound poller and the evidence log instead of performing the orderly fenced shutdown the design specifies.",
+      "findingKey": "assert-lease-in-callbacks-can-crash-the-daemon"
+    },
+    {
+      "id": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 110,
+      "title": "Still open (acknowledged, deferred): the in-call 400 fallback needs renewMs + 3×httpTimeoutMs < ttlMs, which config.ts:96 does not enforce",
+      "detail": "Unchanged in R3; the disposition records the inequality correctly. Restating for ledger stability: `config.ts:96` enforces `leaseRenewMs + leaseHttpTimeoutMs < leaseTtlMs/2`, an invariant written for one HTTP round trip per renew cycle. §4.2's in-call fallback makes the worst case `leaseRenewMs + 2×leaseHttpTimeoutMs` against a local deadline of `leaseTtlMs - leaseHttpTimeoutMs` (`lease.install` at bridge-client.ts:45), so the real requirement is `leaseRenewMs + 3×leaseHttpTimeoutMs < leaseTtlMs`. The existing guard implies that only while `leaseHttpTimeoutMs ≤ leaseRenewMs`, true at the defaults (2000 ≤ 4000) but not for every legal override. The rest of §4.2's fix is precise — \"使用这次请求的sentAt安装lease\" is exactly right, since reusing the first attempt's sentAt would over-credit the deadline.",
+      "failure_scenario": "An operator sets FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS=5000 with FLYWHEEL_VOICE_LEASE_RENEW_MS=1000 and the default 15s TTL. config.ts:96 passes (6000 < 7500). A health-validation 400 triggers the fallback; the cycle costs up to 11000ms against a 10000ms local deadline, lease.install throws voice_lease_fenced, authorityLost matches, and the session ends lease_lost — the outcome §4.2 says a display-encoding bug must never cause.",
+      "findingKey": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle"
+    },
+    {
+      "id": "null-health-terminal-rows-keep-the-requested-card-forever",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 125,
+      "title": "Still open (acknowledged, deferred): sessions that die before their first health report keep the \"已请求\" root card permanently",
+      "detail": "Unchanged in R3; the disposition states the right mitigation (\"GET sessionBody是状态权威，不能把静态根卡当作存活证明\"). Restating for ledger stability: §4.3's scan predicate (`receive_health_observed_at` non-null and root exists) is a sound anti-backfill guard, but it reverses the earlier requirement that terminal rows be projected. A session that reaches a terminal state before any health snapshot — failure during claim/warming, `lead_bot_identity_mismatch`, a frontend start failure — has a null observed_at forever, is never scanned, and leaves the root message reading `📻 语音会话已请求` (voice-session-provisioner.ts:98). Worth one sentence in §4.3 recording this as an accepted limit plus the observable that replaces it, so a later reader does not diagnose it as a projector bug.",
+      "failure_scenario": "A session fails during warming with lead_bot_identity_mismatch before the room starts, so no health snapshot is ever sent. The projector never selects the row; the channel keeps a card saying the voice session has been requested with no sign it died, and a reader treats the stale card as a card-projection defect rather than the documented scan boundary.",
+      "findingKey": "null-health-terminal-rows-keep-the-requested-card-forever"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "707de27a-e2bf-4335-afb9-c88fb6c47c73"
+}

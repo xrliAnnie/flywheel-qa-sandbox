@@ -54,8 +54,9 @@ const SECRET_SHAPED_KEY = /TOKEN|SECRET|KEY/i;
  * FLY-398 (Codex R1 HIGH-2) — assert the full-access config.toml SANDBOX shape against
  * the runtime-VALIDATED project root. The lead_actions gate validates the MCP block; this
  * validates the workspace-write sandbox itself so config drift cannot pass just because
- * the MCP block is correct. The `writable_roots` MUST equal exactly `[expectedWritableRoot]`
- * (the runtime's realpath-validated `fullAccessProjectRoot`) — otherwise a stale/overridden
+ * the MCP block is correct. The sole `writable_roots` entry MUST equal
+ * `expectedWritableRoot` (the runtime's realpath-validated `fullAccessProjectRoot`), apart
+ * from macOS's fixed `/tmp` → `/private/tmp` spelling — otherwise a stale/overridden
  * `FLYWHEEL_CODEX_TUI_CWD` could point the daemon's writable root at an unvalidated path
  * (e.g. a control-plane dir) while the parser still accepted the validated project dir.
  * Throws `ConfigGateError` on ANY drift (fail-closed before the daemon starts).
@@ -101,11 +102,19 @@ export function assertFullAccessSandboxConfig(
 		);
 	}
 	const roots = swwObj.writable_roots;
-	if (
-		!Array.isArray(roots) ||
-		roots.length !== 1 ||
-		roots[0] !== expectedWritableRoot
-	) {
+	const writableRoot =
+		Array.isArray(roots) && roots.length === 1 && typeof roots[0] === "string"
+			? roots[0]
+			: undefined;
+	const writableRootMatches =
+		writableRoot === expectedWritableRoot ||
+		(process.platform === "darwin" &&
+			writableRoot !== undefined &&
+			(writableRoot.startsWith("/tmp/")
+				? `/private${writableRoot}` === expectedWritableRoot
+				: expectedWritableRoot.startsWith("/tmp/") &&
+					`/private${expectedWritableRoot}` === writableRoot));
+	if (!Array.isArray(roots) || roots.length !== 1 || !writableRootMatches) {
 		throw new ConfigGateError(
 			`full-access config.toml sandbox_workspace_write.writable_roots must be exactly [${JSON.stringify(expectedWritableRoot)}] (the runtime-validated project root) — got ${JSON.stringify(roots)}. A drift means FLYWHEEL_CODEX_TUI_CWD diverged from the validated FLYWHEEL_CODEX_LEAD_PROJECT_DIR (Codex R1 HIGH-2).`,
 		);

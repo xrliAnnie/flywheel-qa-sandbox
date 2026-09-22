@@ -124,6 +124,31 @@ else
   fail "Codex launchd plist byte baseline"
 fi
 
+# FLY-2655: the Codex plist intentionally owns only carrier coordinates. The
+# slot env resolver must derive the protected summary home from its canonical
+# state coordinate instead of accepting FLYWHEEL_SUMMARY_CONFIG_HOME as a raw
+# assignment or leaving the runtime to fall back to the operator HOME.
+codex_env_renderer="$ROOT/scripts/lib/qa-launchd-env.py"
+codex_env_state="$MINT_SLOT/q/7"
+codex_env_file="$codex_env_state/.env"
+mkdir -p "$codex_env_state"
+if printf '%s\0' \
+    "FLYWHEEL_STATE_DIR=$codex_env_state" \
+    "FLYWHEEL_PROJECTS_FILE=$codex_env_state/projects.json" \
+    'SAFE_VALUE=slot' \
+    | python3 "$codex_env_renderer" --output "$codex_env_file" \
+  && (set -a; source "$codex_env_file"; set +a
+      [[ "$FLYWHEEL_SUMMARY_CONFIG_HOME" == "$MINT_SLOT/identity-home" ]]) \
+  && ! printf '%s\0' \
+      "FLYWHEEL_STATE_DIR=$codex_env_state" \
+      "FLYWHEEL_PROJECTS_FILE=$codex_env_state/projects.json" \
+      "FLYWHEEL_SUMMARY_CONFIG_HOME=$MINT_SLOT/identity-home" \
+      | python3 "$codex_env_renderer" --check >/dev/null 2>&1; then
+  pass "Codex slot env resolver emits summary home while rejecting raw ownership"
+else
+  fail "Codex slot env resolver summary-home projection"
+fi
+
 renderer="$ROOT/scripts/lib/qa-codex-lead-render.py"
 template="$ROOT/scripts/lib/qa-codex-lead-wrapper.template.sh"
 rendered_wrapper="$TMP/runtime/rendered-codex-wrapper.sh"
@@ -592,19 +617,39 @@ else
 fi
 
 state_path=$(qa_launchd_codex_state_dir /tmp/flywheel-test-slot-7/q/7 test-slot-7 qa-lead)
-if [[ "$state_path" == '/tmp/flywheel-test-slot-7/q/7/state/codex-lead/test-slot-7__qa-lead-746573742d736c6f742d371f71612d6c656164' ]]; then
-  pass "Codex state path matches the launcher's injective identity encoding"
+state_socket="${state_path}/lead-inbox.sock"
+state_socket_bytes=$(LC_ALL=C printf '%s' "$state_socket" | wc -c | tr -d ' ')
+if [[ "$state_path" =~ ^/tmp/flywheel-test-slot-7/q/7/c/[0-9a-f]{16}$ ]] \
+    && (( state_socket_bytes <= 100 )); then
+  pass "Codex slot state path is deterministic and socket-budgeted"
 else
-  fail "Codex state path identity encoding"
+  fail "Codex slot state path budget: path=${state_path} socketBytes=${state_socket_bytes}"
 fi
 
 state_dirs=$(qa_launchd_codex_state_dirs_add '{}' test-slot-7 qa-lead "$state_path")
-if [[ "$(jq -r '.["test-slot-7"]["qa-lead"]' <<<"$state_dirs")" == "$state_path" ]] \
+mapped_state=$(FLYWHEEL_CODEX_LEAD_STATE_DIRS="$state_dirs" \
+  FLYWHEEL_STATE_DIR="$TMP/unused-production-fallback" \
+  bash "$ROOT/packages/teamlead/scripts/codex-lead.sh" \
+    --print-state-dir qa-lead test-slot-7 2>/dev/null || true)
+if [[ "$(jq -r '.["test-slot-7"]["qa-lead"]' <<<"$state_dirs")" == "$state_path" \
+    && "$mapped_state" == "$state_path" ]] \
     && ! qa_launchd_codex_state_dirs_add "$state_dirs" test-slot-7 qa-lead relative/path \
       >/dev/null 2>&1; then
-  pass "slot Codex state map carries the Lead listening directory to Bridge"
+  pass "slot Codex state map carries one listening directory to Lead and Bridge"
 else
-  fail "slot Codex Bridge state-directory map"
+  fail "slot Codex Lead/Bridge state-directory map"
+fi
+
+max_project=$(printf 'p%.0s' {1..61})
+max_lead=$(printf 'l%.0s' {1..61})
+max_state_path=$(qa_launchd_codex_state_dir \
+  /private/tmp/flywheel-test-slot-999/q/999 "$max_project" "$max_lead")
+max_socket_bytes=$(LC_ALL=C printf '%s' "${max_state_path}/lead-inbox.sock" \
+  | wc -c | tr -d ' ')
+if (( max_socket_bytes <= 100 )); then
+  pass "longest legal project/Lead tuple stays within the 100-byte socket budget"
+else
+  fail "longest legal project/Lead tuple exceeds socket budget (${max_socket_bytes})"
 fi
 
 if [ "$(qa_launchd_lead_start "$label" "$plist")" = 4242 ] \

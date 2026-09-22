@@ -1,0 +1,319 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "6ea79df4-c7a1-48d7-9db0-a0a701c2cf8b",
+  "round": 1,
+  "findings": [
+    {
+      "id": "capability-start-post-reserve-failure-reported-as-rejected",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-voice.ts",
+      "line": 270,
+      "title": "reserve 之后的 provisioning 失败被报成 rejected/voice_scope_denied，违背 plan §5.2 的 unknown 语义",
+      "detail": "reserveVoiceSessionIntent 已在同一事务里提交 session 与 intent 之后，provisionSession 可能抛非 VoiceSessionHttpError 的错误（provisioner 的 root_post_unknown、thread_create_failed、Discord 超时或 self_filter_unverified），provisioning 后的 assertSourceCurrent() 也可能抛错。catch 分支把这两类都映射成 HTTP 403 rejected/voice_scope_denied。broker 因此把 dispatched 迁到终态 rejected，reconcile 和 /voice-receipt 都不会再运行。但 VoiceSessionRuntime.listRecoverableVoiceProvisioning 会在 provisioningStaleMs（120s）后重新驱动这条 provisioning 行，于是 bot 进房、thread 出现，而模型已按规则向 founder 报了「语音入口尚未启用」。另外，provisioner 把会话标为 failed 时，这里仍返回 succeeded、accepted:true；通用路由对同一情况返回 503。plan §5.2 明确要求「provision 不确定时结果 unknown/pending」。建议：reserve 之后的非 HTTP 错误一律返回 status unknown，让 broker 走 receipt reconcile；state=failed 时带 reason 返回 rejected，并补路由级测试。",
+      "findingKey": "capability-start-post-reserve-failure-reported-as-rejected"
+    },
+    {
+      "id": "qa-voice-channel-allowlist-has-no-enforcement",
+      "severity": "MEDIUM",
+      "file": "scripts/lib/fly2655-voice-fixture.mjs",
+      "line": 165,
+      "title": "R3 advisory 仍未闭合：QA 房 allowlist 与 QA Testing 分类检查都是同源自证",
+      "detail": "install 直接用 fixture.voiceChannelId 生成 qaVoiceChannelIds:[fixture.voiceChannelId]，所以 fly2655-voice-room.mjs:155-158 的 includes 检查恒为真。validateDiscordVoiceTarget:176 比对的 qaCategoryId 同样来自 fixture（fixture.mjs:75）。代码里没有任何地方固定 QA Testing 分类 1493080958889496760。plan §7.2 D2 第 6 项明确写了「经 Discord GET 确认 type=2 和 QA Testing 分类」以及「不得从用户任意 room 值自动生成白名单来通过检查」。现在剩下的防线只有硬编码的生产 General ID，以及房间不在生产 registry 的 voiceRoom 里。如果 fixture 写成同一 guild 里另一个人类在用的语音频道并配上它真实的 parent，全部检查都会通过，测试 bot 会进入那个房间跑 realtime。建议：把 QA 分类固定为受审常量或独立受审来源，allowlist 不从 room 值派生，并补对应负向测试。",
+      "findingKey": "qa-voice-channel-allowlist-has-no-enforcement"
+    },
+    {
+      "id": "voice-room-loadslot-rejects-migrated-registry",
+      "severity": "MEDIUM",
+      "file": "scripts/qa/fly2655-voice-room.mjs",
+      "line": 509,
+      "title": "loadSlot 对真实 --voice-fixture slot 恒 fail-closed，§7.2 真人硬门禁无法执行",
+      "detail": "test-deploy.sh:1606-1615 每次都会 mint summary receipt。summary-registry-migration.ts:333 用 JSON.stringify(candidate,null,2) 无条件 rename 覆盖 flywheel-projects.json，得到的是 pretty JSON；而 Bridge 的 env 是 jq -c 生成的紧凑 JSON。因此 :509 的 launchEnv.FLYWHEEL_PROJECTS===projectsJson 恒为 false。:513 比对的 projectsSha256 是 install 阶段、迁移之前计算的（fixture.mjs:191），也恒不等。prepare/start/stop/verify 都会先调用 loadSlot，四个子命令全部失败。单测 fly2655-voice-room.test.mjs:170-185 写入的是与 env 字节相同的紧凑 registry，没有模拟迁移器，所以 12/12 通过（我已复跑确认）。plan §10 只写了「实际 slot 仍有身份/receipt 启动阻断」，没有指出这个确定性阻断。建议：改为按解析后的规范化 JSON 比较，digest 绑定迁移后的字节，并补一条经过迁移器的测试。",
+      "findingKey": "voice-room-loadslot-rejects-migrated-registry"
+    },
+    {
+      "id": "dept-rule-forbids-shell-voice-for-all-dept-leads",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/lead-rules-base/department-lead-rules.md",
+      "line": 187,
+      "title": "新增的 dept 规则无条件禁止 shell 和 voice master API，会波及 Claude dept Lead 的运维路径",
+      "detail": "claude-lead.sh:2660/2739 会给所有非 cos 的 Claude Lead 装载 department-lead-rules.md，包括 Engineering Lead；legacy-token-savings 副本第 292 行也有同样文字。新段落写着「只从当前 capability manifest 判断语音能力；不要调用 shell、旧 huddle 入口或通用 voice master API」，还写「缺少这些 operation 表示当前席位未获授权」。Claude Lead 没有 capability manifest，按这条规则会拒绝执行 FLY-2598 host-runbook 里由 Engineering Lead 负责的 flywheel-comm voice-session start/stop。这与 plan §5.3「legacy CLI 继续是运维和兼容工具」、§8「当前会话按 Lead 运维 stop 结束」、§7「生产 General 部署后按 2598 runbook 复核」都冲突。建议：把禁令限定为 capability-v2 Codex Lead 处理 founder 自身语音意图时生效，或放进 codex 专属规则文件。",
+      "findingKey": "dept-rule-forbids-shell-voice-for-all-dept-leads"
+    },
+    {
+      "id": "startup-dave-version-diagnostic-missing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 49,
+      "title": "plan §3.1 承诺的启动 DAVE 版本/策略诊断没有实现，§7.1 第 4 行与 §7.2 证据行缺少产出来源",
+      "detail": "§3.1 要求 glue 在启动时记录 voice/davey 版本、Node/arch、DAVE configured=true 和容错数这些固定字段。在 packages/voice-bridge/src、packages/voice-codex/src、scripts/qa 里 git grep davey、generateDependencyReport、process.arch 都没有结果。§7.1 的假说行「已部署字节与 0.19.2 锁文件不同」要求「实际 daemon loader 同入口记录包版本/部署 SHA/策略」，§7.2 证据表第一行要求「DAVE 版本/策略」。这两项现在都没有运行时来源，QA 只能拿锁文件推断，而这正是计划自己列明的不通过条件。§10 也没有披露这个缺口。补充一点：0.19.2 在顶层 require davey，缺库时会直接启动失败，所以「静默无 DAVE 进房」这一半天然 fail-closed，缺的只是诊断记录。",
+      "findingKey": "startup-dave-version-diagnostic-missing"
+    },
+    {
+      "id": "a-group-red-green-matrix-not-met",
+      "severity": "MEDIUM",
+      "file": "packages/voice-codex/src/__tests__/discord-room.test.ts",
+      "line": 161,
+      "title": "§6 A 组「断言语义不可减少」的清单大部分没有对应测试",
+      "detail": "plan 第 173-177 行要求覆盖这些场景：老 generation 的 data/error 回调；同步 subscribe/createDecoder 抛错；stop、fence、leave 与 timer 的竞态；VAD 和队列残片不再发送；迟到的 final 不能错误归属给新用户；10 帧之后 30 秒内再次失败不重置额度；close 不到达的 1s 路径；身份、lease、frontend、connection 错误仍然 fatal；room 级 receive_no_pcm watchdog。discord-room.test.ts 只新增了 3 条接收测试：连续发言重订阅、短句重置、cooldown 后 probation。receive-health.test.ts 只覆盖纯 tracker。voice-codex 204/204 绿灯并不证明上述语义成立，但 §10 表述为实现 5/5 完成。建议在交接给代码复审和 QA 时列出这些缺失用例并补齐。",
+      "findingKey": "a-group-red-green-matrix-not-met"
+    },
+    {
+      "id": "implementation-changes-outside-plan-scope",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/lead-actions/mcp-config.ts",
+      "line": 98,
+      "title": "实现包含 plan 未登记的生产路径改动，其中一项放宽了 fail-closed 安全门",
+      "detail": "一共三处。(a) 5c2b6911c 把 assertFullAccessSandboxConfig 的 writable_roots 检查从精确相等改成 realpath 相等，对所有生产 full-access Codex Lead 生效，放宽了 FLY-398 R1 HIGH-2 的门禁；配置路径里只要带一个当前指向项目根的 symlink 就能通过。(b) voice-session-start.ts:231 删除了直接 meeting 的 evidence_dir_rejected，通用 master/ingest 路由现在可以不带 evidenceDir 开 meeting。(c) lead-runtime-tuning.ts 在生产 NativeLeadRuntimeConfig 路径上改为从 projectsFile 或 FLYWHEEL_SUMMARY_CONFIG_HOME 推导 home，当 env 为空串时 home 为空，projects 路径会变成相对路径。这三处都不在 §6 文件清单和 §8 回滚说明里。建议：(a) 收窄到固定的 /tmp↔/private/tmp 别名或保持精确相等；三处都写入 plan 并配测试。",
+      "findingKey": "implementation-changes-outside-plan-scope"
+    },
+    {
+      "id": "voice-room-harness-plan-d2-gaps",
+      "severity": "MEDIUM",
+      "file": "scripts/qa/fly2655-voice-room.mjs",
+      "line": 341,
+      "title": "QA launcher 未兑现 D2 第 3、4、6 项和收尾合同的多项证明",
+      "detail": "具体缺口如下。① 自己计算 FLYWHEEL_COMM_DB，但从不与 fixtureReceipt.commDbPath、Lead 的 FLYWHEEL_COMM_DB 或子进程实际的 --db 比对，plan 要求的「真实子进程命令验证 --db」缺失；test-deploy.sh 里的 VOICE_FIXTURE_COMM_DB 赋值后从未使用。② trusted() 只校验被读取的文件；state/voice（voice.lock 所在）、state/comm、evidenceRoot 的 mkdirSync，以及 voice-daemon.log 的 openSync（没有 O_NOFOLLOW）都没有防 symlink。如果存在 state/voice 指向 ~/.flywheel/voice 的同用户 symlink，就会去争生产的 voice.lock。③ stop 在 Bridge stop 失败或 60s 内没有终态时直接抛错，没有精确子进程兜底，没有 bot 离房核验，也不等待 codex app-server 孙进程退出，只 waitForProcessExit 5s。④ 只有按 guild+channel 的房间租约，没有按 bot 的占用检查，无法防止同一 TEST bot 被 --extra-lead 借用。⑤ allowlist 不匹配、type≠2、非 TEST token、空 founder、陈旧产物、stop 幂等这些负向用例都没有测试；test-deploy 对 --voice-fixture 的拒绝只做了源码正则匹配，没有实际执行。以上全部 fail-closed，不会触及生产，但 plan 要求的证明不存在。",
+      "findingKey": "voice-room-harness-plan-d2-gaps"
+    },
+    {
+      "id": "bounded-resubscribe-is-inert-against-a-wedged-dave-session",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 92,
+      "title": "（沿用上轮 advisory，仍然成立）有界重订阅对 wedged DAVE 状态无效",
+      "detail": "已对照安装的 @discordjs/voice 0.19.2 源码（dist/index.js:948-970）核实：DAVESession.decrypt 在 consecutiveFailures>tolerance 且 lastTransitionId 为 falsy 时直接 throw，throw 之前不重置 consecutiveFailures。因此重订阅之后第一个坏包就会立刻再次 destroy 流，250/1000/3000 的退避对这类故障没有作用。plan 已正确规定持续失败时真人组一判 FAIL；Lead 已把有界连接重建列入 FLY-2742。在该跟进落地前，本单的恢复路径对原场故障类别可能无效，QA 必须按 FAIL 处理，不能记绿。",
+      "findingKey": "bounded-resubscribe-is-inert-against-a-wedged-dave-session"
+    },
+    {
+      "id": "start-resolver-binds-to-meeting-owner-not-caller",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-voice.ts",
+      "line": 171,
+      "title": "（沿用上轮 advisory，仍然成立）模型传入 meetingId 时，会先用会议 owner 身份跑 preflight 再比对调用方",
+      "detail": "startBody 只包含 {meetingId,requestedBy}。resolver 在 voice-session-start.ts:155-189 按 meeting.leadId 解析 project/lead，并用那个 Lead 的 bot token 执行 Discord GET 和 self-filter 探测，然后才在 :182-187 比对 reservation.leadId 与调用方是否一致。越权最终会被拒绝，但此前已经产生了跨 Lead 的副作用。已登记在 FLY-2742。",
+      "findingKey": "start-resolver-binds-to-meeting-owner-not-caller"
+    },
+    {
+      "id": "meeting-mode-default-open-under-voice-opt-in",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/voice-session-start.ts",
+      "line": 96,
+      "title": "（沿用上轮 advisory，并且被本实现进一步放宽）meeting 模式默认开放",
+      "detail": "modeEnabled 只在 voiceModes.meeting===false 时拒绝 meeting，resolve.ts 也只看 codexVoiceActions。所以授予 codexVoiceActions 的同时就隐式授予了模型发起 meeting 的能力。本实现又删掉了直接 meeting 缺 evidenceDir 的 400，模型发起的无 meetingId meeting 现在没有任何额外门槛。已登记在 FLY-2742；PR 的 follow-ups 需要写明这是双重放宽。",
+      "findingKey": "meeting-mode-default-open-under-voice-opt-in"
+    },
+    {
+      "id": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off",
+      "severity": "LOW",
+      "file": "packages/voice-codex/src/receive-health.ts",
+      "line": 9,
+      "title": "生产所有会话硬开 debug:true（plan 写的是「可启」）；脱敏已核实，但诊断量没有上限",
+      "detail": "已核实 glue 只做锚定正则抽取，未匹配的一律变成 {kind:unknown}，原文不出 glue。0.19.2 的 [WS] << / >> 和 state change JSON 里含 IDENTIFY token 与 secret_key，这些字符串仍会在进程内生成。每条未匹配的 WS 帧、每个解密失败包都会写一条 evidence（appendBuffered，不 fsync）。建议改为显式开关或限时开启，与 FLY-2742 一并处理。",
+      "findingKey": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off"
+    },
+    {
+      "id": "stale-health-card-renders-awaiting-not-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/voice-session-card.ts",
+      "line": 37,
+      "title": "健康状态过期时卡片显示「等待你说话」，而不是 plan §4.3 要求的「未知」",
+      "detail": "healthIsFresh 为 false 时会回落到默认文案「等待你说话」，voice-session-card.test.ts:80-87 把这个行为固定了下来。daemon 停止上报时，实际可能处于 degraded，founder 却被提示直接说话。",
+      "findingKey": "stale-health-card-renders-awaiting-not-unknown"
+    },
+    {
+      "id": "receiving-threshold-counts-frames-across-captures",
+      "severity": "LOW",
+      "file": "packages/voice-codex/src/receive-health.ts",
+      "line": 76,
+      "title": "判定 receiving 的 10 帧跨 capture 累计",
+      "detail": "consecutivePcmFrames 只在失败时清零，capture 正常结束时不清零。几段很短的 capture 累计满 10 帧就会翻成 receiving，而 plan 表格写的是「当前 capture 产出连续 10 个完整 20ms PCM 帧」。",
+      "findingKey": "receiving-threshold-counts-frames-across-captures"
+    },
+    {
+      "id": "voice-comm-db-override-uses-generic-env-name",
+      "severity": "LOW",
+      "file": "packages/voice-codex/src/config.ts",
+      "line": 90,
+      "title": "voice daemon 用通用的 FLYWHEEL_COMM_DB 作为全项目覆盖",
+      "detail": "plan §7.2 第 3 项要求的是「config 加入可选显式 commDbPath」。实现直接读取 Lead 启动器也在用的通用变量 FLYWHEEL_COMM_DB，一旦设置就对所有项目生效。生产 wrapper 会以 set -a 方式 source ~/.flywheel/.env；我核对过该文件目前没有这个键，风险是潜在的。建议改用 voice 专属的变量名。",
+      "findingKey": "voice-comm-db-override-uses-generic-env-name"
+    },
+    {
+      "id": "d-commands-omit-voice-core-and-harness-suites",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 215,
+      "title": "§6 D 的命令集漏掉了部分已改动的测试套件",
+      "detail": "D 组命令只 build voice-core，没有运行新增的 voice-core src/__tests__/receive-health.test.ts。voice-session-start.test.ts、StateStore.voice-session-schema.test.ts、fly2655-retention-protection.test.ts、node --test scripts/__tests__/fly2655-voice-room.test.mjs，以及改过的 shell 测试也都没有列入。我在本头逐一跑过这些：voice-codex 23 文件 204/204；teamlead 定向 17 文件 206/206；voice-core 10/10；voice-bridge wiring 16/16；voice-room 12/12。全部通过，但计划的命令本身不会运行它们。",
+      "findingKey": "d-commands-omit-voice-core-and-harness-suites"
+    },
+    {
+      "id": "plan-header-status-self-asserts-approval",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 6,
+      "title": "文件头 Status 仍写 APPROVED（R3），但正文在 R3 之后又追加了 §9、§10",
+      "detail": "当前修订正在接受新一轮复审，文件头应标为待审或写明对应的修订版本，避免读者把 R3 的批准套用到后加的交接内容上。",
+      "findingKey": "plan-header-status-self-asserts-approval"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "capability-start-post-reserve-failure-reported-as-rejected",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-voice.ts",
+      "line": 270,
+      "title": "reserve 之后的 provisioning 失败被报成 rejected/voice_scope_denied，违背 plan §5.2 的 unknown 语义",
+      "detail": "reserveVoiceSessionIntent 已在同一事务里提交 session 与 intent 之后，provisionSession 可能抛非 VoiceSessionHttpError 的错误（provisioner 的 root_post_unknown、thread_create_failed、Discord 超时或 self_filter_unverified），provisioning 后的 assertSourceCurrent() 也可能抛错。catch 分支把这两类都映射成 HTTP 403 rejected/voice_scope_denied。broker 因此把 dispatched 迁到终态 rejected，reconcile 和 /voice-receipt 都不会再运行。但 VoiceSessionRuntime.listRecoverableVoiceProvisioning 会在 provisioningStaleMs（120s）后重新驱动这条 provisioning 行，于是 bot 进房、thread 出现，而模型已按规则向 founder 报了「语音入口尚未启用」。另外，provisioner 把会话标为 failed 时，这里仍返回 succeeded、accepted:true；通用路由对同一情况返回 503。plan §5.2 明确要求「provision 不确定时结果 unknown/pending」。建议：reserve 之后的非 HTTP 错误一律返回 status unknown，让 broker 走 receipt reconcile；state=failed 时带 reason 返回 rejected，并补路由级测试。",
+      "findingKey": "capability-start-post-reserve-failure-reported-as-rejected"
+    },
+    {
+      "id": "qa-voice-channel-allowlist-has-no-enforcement",
+      "severity": "MEDIUM",
+      "file": "scripts/lib/fly2655-voice-fixture.mjs",
+      "line": 165,
+      "title": "R3 advisory 仍未闭合：QA 房 allowlist 与 QA Testing 分类检查都是同源自证",
+      "detail": "install 直接用 fixture.voiceChannelId 生成 qaVoiceChannelIds:[fixture.voiceChannelId]，所以 fly2655-voice-room.mjs:155-158 的 includes 检查恒为真。validateDiscordVoiceTarget:176 比对的 qaCategoryId 同样来自 fixture（fixture.mjs:75）。代码里没有任何地方固定 QA Testing 分类 1493080958889496760。plan §7.2 D2 第 6 项明确写了「经 Discord GET 确认 type=2 和 QA Testing 分类」以及「不得从用户任意 room 值自动生成白名单来通过检查」。现在剩下的防线只有硬编码的生产 General ID，以及房间不在生产 registry 的 voiceRoom 里。如果 fixture 写成同一 guild 里另一个人类在用的语音频道并配上它真实的 parent，全部检查都会通过，测试 bot 会进入那个房间跑 realtime。建议：把 QA 分类固定为受审常量或独立受审来源，allowlist 不从 room 值派生，并补对应负向测试。",
+      "findingKey": "qa-voice-channel-allowlist-has-no-enforcement"
+    },
+    {
+      "id": "voice-room-loadslot-rejects-migrated-registry",
+      "severity": "MEDIUM",
+      "file": "scripts/qa/fly2655-voice-room.mjs",
+      "line": 509,
+      "title": "loadSlot 对真实 --voice-fixture slot 恒 fail-closed，§7.2 真人硬门禁无法执行",
+      "detail": "test-deploy.sh:1606-1615 每次都会 mint summary receipt。summary-registry-migration.ts:333 用 JSON.stringify(candidate,null,2) 无条件 rename 覆盖 flywheel-projects.json，得到的是 pretty JSON；而 Bridge 的 env 是 jq -c 生成的紧凑 JSON。因此 :509 的 launchEnv.FLYWHEEL_PROJECTS===projectsJson 恒为 false。:513 比对的 projectsSha256 是 install 阶段、迁移之前计算的（fixture.mjs:191），也恒不等。prepare/start/stop/verify 都会先调用 loadSlot，四个子命令全部失败。单测 fly2655-voice-room.test.mjs:170-185 写入的是与 env 字节相同的紧凑 registry，没有模拟迁移器，所以 12/12 通过（我已复跑确认）。plan §10 只写了「实际 slot 仍有身份/receipt 启动阻断」，没有指出这个确定性阻断。建议：改为按解析后的规范化 JSON 比较，digest 绑定迁移后的字节，并补一条经过迁移器的测试。",
+      "findingKey": "voice-room-loadslot-rejects-migrated-registry"
+    },
+    {
+      "id": "dept-rule-forbids-shell-voice-for-all-dept-leads",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/lead-rules-base/department-lead-rules.md",
+      "line": 187,
+      "title": "新增的 dept 规则无条件禁止 shell 和 voice master API，会波及 Claude dept Lead 的运维路径",
+      "detail": "claude-lead.sh:2660/2739 会给所有非 cos 的 Claude Lead 装载 department-lead-rules.md，包括 Engineering Lead；legacy-token-savings 副本第 292 行也有同样文字。新段落写着「只从当前 capability manifest 判断语音能力；不要调用 shell、旧 huddle 入口或通用 voice master API」，还写「缺少这些 operation 表示当前席位未获授权」。Claude Lead 没有 capability manifest，按这条规则会拒绝执行 FLY-2598 host-runbook 里由 Engineering Lead 负责的 flywheel-comm voice-session start/stop。这与 plan §5.3「legacy CLI 继续是运维和兼容工具」、§8「当前会话按 Lead 运维 stop 结束」、§7「生产 General 部署后按 2598 runbook 复核」都冲突。建议：把禁令限定为 capability-v2 Codex Lead 处理 founder 自身语音意图时生效，或放进 codex 专属规则文件。",
+      "findingKey": "dept-rule-forbids-shell-voice-for-all-dept-leads"
+    },
+    {
+      "id": "startup-dave-version-diagnostic-missing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 49,
+      "title": "plan §3.1 承诺的启动 DAVE 版本/策略诊断没有实现，§7.1 第 4 行与 §7.2 证据行缺少产出来源",
+      "detail": "§3.1 要求 glue 在启动时记录 voice/davey 版本、Node/arch、DAVE configured=true 和容错数这些固定字段。在 packages/voice-bridge/src、packages/voice-codex/src、scripts/qa 里 git grep davey、generateDependencyReport、process.arch 都没有结果。§7.1 的假说行「已部署字节与 0.19.2 锁文件不同」要求「实际 daemon loader 同入口记录包版本/部署 SHA/策略」，§7.2 证据表第一行要求「DAVE 版本/策略」。这两项现在都没有运行时来源，QA 只能拿锁文件推断，而这正是计划自己列明的不通过条件。§10 也没有披露这个缺口。补充一点：0.19.2 在顶层 require davey，缺库时会直接启动失败，所以「静默无 DAVE 进房」这一半天然 fail-closed，缺的只是诊断记录。",
+      "findingKey": "startup-dave-version-diagnostic-missing"
+    },
+    {
+      "id": "a-group-red-green-matrix-not-met",
+      "severity": "MEDIUM",
+      "file": "packages/voice-codex/src/__tests__/discord-room.test.ts",
+      "line": 161,
+      "title": "§6 A 组「断言语义不可减少」的清单大部分没有对应测试",
+      "detail": "plan 第 173-177 行要求覆盖这些场景：老 generation 的 data/error 回调；同步 subscribe/createDecoder 抛错；stop、fence、leave 与 timer 的竞态；VAD 和队列残片不再发送；迟到的 final 不能错误归属给新用户；10 帧之后 30 秒内再次失败不重置额度；close 不到达的 1s 路径；身份、lease、frontend、connection 错误仍然 fatal；room 级 receive_no_pcm watchdog。discord-room.test.ts 只新增了 3 条接收测试：连续发言重订阅、短句重置、cooldown 后 probation。receive-health.test.ts 只覆盖纯 tracker。voice-codex 204/204 绿灯并不证明上述语义成立，但 §10 表述为实现 5/5 完成。建议在交接给代码复审和 QA 时列出这些缺失用例并补齐。",
+      "findingKey": "a-group-red-green-matrix-not-met"
+    },
+    {
+      "id": "implementation-changes-outside-plan-scope",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/lead-backends/codex/lead-actions/mcp-config.ts",
+      "line": 98,
+      "title": "实现包含 plan 未登记的生产路径改动，其中一项放宽了 fail-closed 安全门",
+      "detail": "一共三处。(a) 5c2b6911c 把 assertFullAccessSandboxConfig 的 writable_roots 检查从精确相等改成 realpath 相等，对所有生产 full-access Codex Lead 生效，放宽了 FLY-398 R1 HIGH-2 的门禁；配置路径里只要带一个当前指向项目根的 symlink 就能通过。(b) voice-session-start.ts:231 删除了直接 meeting 的 evidence_dir_rejected，通用 master/ingest 路由现在可以不带 evidenceDir 开 meeting。(c) lead-runtime-tuning.ts 在生产 NativeLeadRuntimeConfig 路径上改为从 projectsFile 或 FLYWHEEL_SUMMARY_CONFIG_HOME 推导 home，当 env 为空串时 home 为空，projects 路径会变成相对路径。这三处都不在 §6 文件清单和 §8 回滚说明里。建议：(a) 收窄到固定的 /tmp↔/private/tmp 别名或保持精确相等；三处都写入 plan 并配测试。",
+      "findingKey": "implementation-changes-outside-plan-scope"
+    },
+    {
+      "id": "voice-room-harness-plan-d2-gaps",
+      "severity": "MEDIUM",
+      "file": "scripts/qa/fly2655-voice-room.mjs",
+      "line": 341,
+      "title": "QA launcher 未兑现 D2 第 3、4、6 项和收尾合同的多项证明",
+      "detail": "具体缺口如下。① 自己计算 FLYWHEEL_COMM_DB，但从不与 fixtureReceipt.commDbPath、Lead 的 FLYWHEEL_COMM_DB 或子进程实际的 --db 比对，plan 要求的「真实子进程命令验证 --db」缺失；test-deploy.sh 里的 VOICE_FIXTURE_COMM_DB 赋值后从未使用。② trusted() 只校验被读取的文件；state/voice（voice.lock 所在）、state/comm、evidenceRoot 的 mkdirSync，以及 voice-daemon.log 的 openSync（没有 O_NOFOLLOW）都没有防 symlink。如果存在 state/voice 指向 ~/.flywheel/voice 的同用户 symlink，就会去争生产的 voice.lock。③ stop 在 Bridge stop 失败或 60s 内没有终态时直接抛错，没有精确子进程兜底，没有 bot 离房核验，也不等待 codex app-server 孙进程退出，只 waitForProcessExit 5s。④ 只有按 guild+channel 的房间租约，没有按 bot 的占用检查，无法防止同一 TEST bot 被 --extra-lead 借用。⑤ allowlist 不匹配、type≠2、非 TEST token、空 founder、陈旧产物、stop 幂等这些负向用例都没有测试；test-deploy 对 --voice-fixture 的拒绝只做了源码正则匹配，没有实际执行。以上全部 fail-closed，不会触及生产，但 plan 要求的证明不存在。",
+      "findingKey": "voice-room-harness-plan-d2-gaps"
+    },
+    {
+      "id": "bounded-resubscribe-is-inert-against-a-wedged-dave-session",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 92,
+      "title": "（沿用上轮 advisory，仍然成立）有界重订阅对 wedged DAVE 状态无效",
+      "detail": "已对照安装的 @discordjs/voice 0.19.2 源码（dist/index.js:948-970）核实：DAVESession.decrypt 在 consecutiveFailures>tolerance 且 lastTransitionId 为 falsy 时直接 throw，throw 之前不重置 consecutiveFailures。因此重订阅之后第一个坏包就会立刻再次 destroy 流，250/1000/3000 的退避对这类故障没有作用。plan 已正确规定持续失败时真人组一判 FAIL；Lead 已把有界连接重建列入 FLY-2742。在该跟进落地前，本单的恢复路径对原场故障类别可能无效，QA 必须按 FAIL 处理，不能记绿。",
+      "findingKey": "bounded-resubscribe-is-inert-against-a-wedged-dave-session"
+    },
+    {
+      "id": "start-resolver-binds-to-meeting-owner-not-caller",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/lead-capability-voice.ts",
+      "line": 171,
+      "title": "（沿用上轮 advisory，仍然成立）模型传入 meetingId 时，会先用会议 owner 身份跑 preflight 再比对调用方",
+      "detail": "startBody 只包含 {meetingId,requestedBy}。resolver 在 voice-session-start.ts:155-189 按 meeting.leadId 解析 project/lead，并用那个 Lead 的 bot token 执行 Discord GET 和 self-filter 探测，然后才在 :182-187 比对 reservation.leadId 与调用方是否一致。越权最终会被拒绝，但此前已经产生了跨 Lead 的副作用。已登记在 FLY-2742。",
+      "findingKey": "start-resolver-binds-to-meeting-owner-not-caller"
+    },
+    {
+      "id": "meeting-mode-default-open-under-voice-opt-in",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/voice-session-start.ts",
+      "line": 96,
+      "title": "（沿用上轮 advisory，并且被本实现进一步放宽）meeting 模式默认开放",
+      "detail": "modeEnabled 只在 voiceModes.meeting===false 时拒绝 meeting，resolve.ts 也只看 codexVoiceActions。所以授予 codexVoiceActions 的同时就隐式授予了模型发起 meeting 的能力。本实现又删掉了直接 meeting 缺 evidenceDir 的 400，模型发起的无 meetingId meeting 现在没有任何额外门槛。已登记在 FLY-2742；PR 的 follow-ups 需要写明这是双重放宽。",
+      "findingKey": "meeting-mode-default-open-under-voice-opt-in"
+    },
+    {
+      "id": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off",
+      "severity": "LOW",
+      "file": "packages/voice-codex/src/receive-health.ts",
+      "line": 9,
+      "title": "生产所有会话硬开 debug:true（plan 写的是「可启」）；脱敏已核实，但诊断量没有上限",
+      "detail": "已核实 glue 只做锚定正则抽取，未匹配的一律变成 {kind:unknown}，原文不出 glue。0.19.2 的 [WS] << / >> 和 state change JSON 里含 IDENTIFY token 与 secret_key，这些字符串仍会在进程内生成。每条未匹配的 WS 帧、每个解密失败包都会写一条 evidence（appendBuffered，不 fsync）。建议改为显式开关或限时开启，与 FLY-2742 一并处理。",
+      "findingKey": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off"
+    },
+    {
+      "id": "stale-health-card-renders-awaiting-not-unknown",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/voice-session-card.ts",
+      "line": 37,
+      "title": "健康状态过期时卡片显示「等待你说话」，而不是 plan §4.3 要求的「未知」",
+      "detail": "healthIsFresh 为 false 时会回落到默认文案「等待你说话」，voice-session-card.test.ts:80-87 把这个行为固定了下来。daemon 停止上报时，实际可能处于 degraded，founder 却被提示直接说话。",
+      "findingKey": "stale-health-card-renders-awaiting-not-unknown"
+    },
+    {
+      "id": "receiving-threshold-counts-frames-across-captures",
+      "severity": "LOW",
+      "file": "packages/voice-codex/src/receive-health.ts",
+      "line": 76,
+      "title": "判定 receiving 的 10 帧跨 capture 累计",
+      "detail": "consecutivePcmFrames 只在失败时清零，capture 正常结束时不清零。几段很短的 capture 累计满 10 帧就会翻成 receiving，而 plan 表格写的是「当前 capture 产出连续 10 个完整 20ms PCM 帧」。",
+      "findingKey": "receiving-threshold-counts-frames-across-captures"
+    },
+    {
+      "id": "voice-comm-db-override-uses-generic-env-name",
+      "severity": "LOW",
+      "file": "packages/voice-codex/src/config.ts",
+      "line": 90,
+      "title": "voice daemon 用通用的 FLYWHEEL_COMM_DB 作为全项目覆盖",
+      "detail": "plan §7.2 第 3 项要求的是「config 加入可选显式 commDbPath」。实现直接读取 Lead 启动器也在用的通用变量 FLYWHEEL_COMM_DB，一旦设置就对所有项目生效。生产 wrapper 会以 set -a 方式 source ~/.flywheel/.env；我核对过该文件目前没有这个键，风险是潜在的。建议改用 voice 专属的变量名。",
+      "findingKey": "voice-comm-db-override-uses-generic-env-name"
+    },
+    {
+      "id": "d-commands-omit-voice-core-and-harness-suites",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 215,
+      "title": "§6 D 的命令集漏掉了部分已改动的测试套件",
+      "detail": "D 组命令只 build voice-core，没有运行新增的 voice-core src/__tests__/receive-health.test.ts。voice-session-start.test.ts、StateStore.voice-session-schema.test.ts、fly2655-retention-protection.test.ts、node --test scripts/__tests__/fly2655-voice-room.test.mjs，以及改过的 shell 测试也都没有列入。我在本头逐一跑过这些：voice-codex 23 文件 204/204；teamlead 定向 17 文件 206/206；voice-core 10/10；voice-bridge wiring 16/16；voice-room 12/12。全部通过，但计划的命令本身不会运行它们。",
+      "findingKey": "d-commands-omit-voice-core-and-harness-suites"
+    },
+    {
+      "id": "plan-header-status-self-asserts-approval",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 6,
+      "title": "文件头 Status 仍写 APPROVED（R3），但正文在 R3 之后又追加了 §9、§10",
+      "detail": "当前修订正在接受新一轮复审，文件头应标为待审或写明对应的修订版本，避免读者把 R3 的批准套用到后加的交接内容上。",
+      "findingKey": "plan-header-status-self-asserts-approval"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "36ad41dd-c613-422c-a8ba-dbcfe71b21f1"
+}

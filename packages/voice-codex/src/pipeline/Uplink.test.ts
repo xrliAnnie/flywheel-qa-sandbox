@@ -30,6 +30,38 @@ function stereoFrame(value: number): Buffer {
 }
 
 describe("Uplink", () => {
+	it("keeps owner and utterance metadata on the same queued frame", () => {
+		const sent: Array<{
+			frame: Buffer;
+			meta: { ownerUserId: string | null; utteranceId: string | null };
+		}> = [];
+		const uplink = new Uplink({
+			appendAudio: (frame, _generation, meta) => {
+				sent.push({ frame: Buffer.from(frame), meta });
+				return "sent";
+			},
+			createUtteranceId: () => "utterance-1",
+			sessionGeneration: 1,
+			prebufferFrames: 1,
+			maxQueueFrames: 4,
+			record: () => {},
+		});
+		uplink.speakingStart("founder", true);
+		uplink.pushPcm48Stereo("founder", stereoFrame(2_000));
+		uplink.tick();
+		uplink.speakingEnd("founder");
+		uplink.tick();
+
+		expect(sent[0]?.meta).toEqual({
+			ownerUserId: "founder",
+			utteranceId: "utterance-1",
+		});
+		expect(sent[1]?.meta).toEqual({
+			ownerUserId: null,
+			utteranceId: null,
+		});
+	});
+
 	it("D-GATE4 preserves passthrough bytes without invoking inference", () => {
 		const baselineSent: Buffer[] = [];
 		const gatedSent: Buffer[] = [];
@@ -143,6 +175,31 @@ describe("Uplink", () => {
 		).not.toThrow();
 	});
 
+	it("cancels a broken capture without reopening its partial utterance", () => {
+		const speechGate = new UplinkSpeechGate({
+			score: vi.fn(async () => ({ probability: 0.9, next: {} })),
+			initialState: () => ({}),
+			minSpeechMs: 100,
+			threshold: 0.5,
+		});
+		const uplink = new Uplink({
+			appendAudio: () => "sent",
+			sessionGeneration: 1,
+			prebufferFrames: 1,
+			maxQueueFrames: 16,
+			record: () => {},
+			speechGate,
+		});
+		uplink.speakingStart("founder", true);
+		uplink.beginUtterance("gated", 0);
+
+		uplink.cancelUtterance();
+		uplink.setMicOpen(false);
+		uplink.setMicOpen(true);
+
+		expect(speechGate.mode).toBeNull();
+	});
+
 	it.each([
 		{
 			name: "next epoch starts before an empty tick",
@@ -222,7 +279,11 @@ describe("Uplink", () => {
 			minSpeechMs: 100,
 			threshold: 0.5,
 		});
-		const summaries: Array<{ opened: boolean; framesSilenced: number }> = [];
+		const summaries: Array<{
+			opened: boolean;
+			framesSilenced: number;
+			utteranceId: string | null;
+		}> = [];
 		const sent: Buffer[] = [];
 		const uplink = new Uplink({
 			appendAudio: (frame) => {
@@ -232,6 +293,7 @@ describe("Uplink", () => {
 			sessionGeneration: 1,
 			prebufferFrames: 1,
 			maxQueueFrames: 16,
+			createUtteranceId: () => "utterance-negative",
 			record: () => {},
 			speechGate,
 			onGateSummary: (summary) => summaries.push(summary),
@@ -250,7 +312,11 @@ describe("Uplink", () => {
 
 		expect(sent.every((frame) => frame.every((byte) => byte === 0))).toBe(true);
 		expect(summaries).toEqual([
-			expect.objectContaining({ opened: false, framesSilenced: 14 }),
+			expect.objectContaining({
+				opened: false,
+				framesSilenced: 14,
+				utteranceId: "utterance-negative",
+			}),
 		]);
 	});
 

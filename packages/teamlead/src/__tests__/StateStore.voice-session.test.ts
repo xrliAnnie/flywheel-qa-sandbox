@@ -42,6 +42,200 @@ function reservation(overrides: Record<string, unknown> = {}) {
 }
 
 describe("StateStore voice sessions", () => {
+	it("atomically binds durable Lead voice intents to one scoped session", () => {
+		const first = store.reserveVoiceSessionIntent({
+			projectName: "flywheel",
+			leadId: "lead-a",
+			requestId: "request-a",
+			operationId: "voice.session.start",
+			inputDigest: "digest-a",
+			reservation: reservation(),
+		});
+		expect(first).toMatchObject({ status: "inserted" });
+		expect(
+			store.reserveVoiceSessionIntent({
+				projectName: "flywheel",
+				leadId: "lead-a",
+				requestId: "request-a",
+				operationId: "voice.session.start",
+				inputDigest: "digest-a",
+				reservation: reservation({
+					sessionId: "10000000-0000-4000-8000-000000000099",
+				}),
+			}),
+		).toMatchObject({
+			status: "replayed",
+			session: { sessionId: reservation().sessionId },
+		});
+		expect(
+			store.reserveVoiceSessionIntent({
+				projectName: "flywheel",
+				leadId: "lead-a",
+				requestId: "request-a",
+				operationId: "voice.session.start",
+				inputDigest: "changed",
+				reservation: reservation(),
+			}),
+		).toEqual({ status: "intent_conflict" });
+		expect(
+			store.reserveVoiceSessionIntent({
+				projectName: "flywheel",
+				leadId: "lead-a",
+				requestId: "request-b",
+				operationId: "voice.session.start",
+				inputDigest: "digest-b",
+				reservation: reservation({
+					sessionId: "10000000-0000-4000-8000-000000000002",
+				}),
+			}),
+		).toMatchObject({
+			status: "bound_active",
+			session: { sessionId: reservation().sessionId },
+		});
+		const stopped = store.stopVoiceSessionIntent({
+			projectName: "flywheel",
+			leadId: "lead-a",
+			requestId: "request-stop",
+			operationId: "voice.session.stop",
+			inputDigest: "digest-stop",
+			sessionId: reservation().sessionId,
+			now: "2026-09-08T20:00:01.000Z",
+		});
+		expect(stopped).toEqual({ status: "stopped", state: "cancel_requested" });
+		expect(
+			store.stopVoiceSessionIntent({
+				projectName: "flywheel",
+				leadId: "lead-a",
+				requestId: "request-stop",
+				operationId: "voice.session.stop",
+				inputDigest: "digest-stop",
+				sessionId: reservation().sessionId,
+				now: "2026-09-08T20:00:02.000Z",
+			}),
+		).toEqual({ status: "replayed", state: "cancel_requested" });
+	});
+
+	it("rolls back the session reservation when durable intent insertion fails", () => {
+		const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		db.exec(`CREATE TRIGGER reject_voice_intent
+			BEFORE INSERT ON voice_intents
+			BEGIN SELECT RAISE(ABORT, 'injected voice intent failure'); END`);
+		expect(() =>
+			store.reserveVoiceSessionIntent({
+				projectName: "flywheel",
+				leadId: "lead-a",
+				requestId: "request-a",
+				operationId: "voice.session.start",
+				inputDigest: "digest-a",
+				reservation: reservation(),
+			}),
+		).toThrow(/injected voice intent failure/);
+		expect(store.getVoiceSession(reservation().sessionId)).toBeUndefined();
+		expect(
+			store.getVoiceIntent("flywheel", "lead-a", "request-a"),
+		).toBeUndefined();
+	});
+
+	it("stores monotonic receive health with idempotent and stale renew semantics", () => {
+		const { sessionId } = reservation();
+		store.reserveVoiceSession(reservation());
+		store.updateVoiceProvisioning({
+			sessionId,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+			rootMessageId: "100000000000000011",
+		});
+		const claim = store.claimVoiceSession({
+			sessionId,
+			daemonBootId: "boot-a",
+			now: T0,
+			leaseTtlMs: 15_000,
+		})!;
+		const receiveHealth = {
+			version: 1,
+			sequence: 2,
+			state: "degraded",
+			reason: "dave_decrypt",
+			failures: 1,
+			retries: 1,
+			lastPcmAt: null,
+		} as const;
+		const accepted = store.renewVoiceSession({
+			sessionId,
+			leaseToken: claim.leaseToken,
+			now: "2026-09-08T20:00:01.000Z",
+			leaseTtlMs: 15_000,
+			receiveHealth,
+		});
+		expect(accepted).toMatchObject({ acceptedHealthSequence: 2 });
+		expect(store.getVoiceSession(sessionId)).toMatchObject({
+			receiveHealth,
+			receiveHealthObservedAt: "2026-09-08T20:00:01.000Z",
+			receiveHealthBootId: "boot-a",
+		});
+
+		const duplicate = store.renewVoiceSession({
+			sessionId,
+			leaseToken: claim.leaseToken,
+			now: "2026-09-08T20:00:02.000Z",
+			leaseTtlMs: 15_000,
+			receiveHealth,
+		});
+		expect(duplicate).toMatchObject({ acceptedHealthSequence: 2 });
+		expect(store.getVoiceSession(sessionId)?.receiveHealthObservedAt).toBe(
+			"2026-09-08T20:00:02.000Z",
+		);
+
+		const stale = store.renewVoiceSession({
+			sessionId,
+			leaseToken: claim.leaseToken,
+			now: "2026-09-08T20:00:03.000Z",
+			leaseTtlMs: 15_000,
+			receiveHealth: { ...receiveHealth, sequence: 1 },
+		});
+		expect(stale).toMatchObject({ acceptedHealthSequence: 2 });
+		expect(store.getVoiceSession(sessionId)?.receiveHealthObservedAt).toBe(
+			"2026-09-08T20:00:02.000Z",
+		);
+
+		const beforeConflict = store.getVoiceSession(sessionId)?.leaseExpiresAt;
+		const conflict = store.renewVoiceSession({
+			sessionId,
+			leaseToken: claim.leaseToken,
+			now: "2026-09-08T20:00:04.000Z",
+			leaseTtlMs: 15_000,
+			receiveHealth: { ...receiveHealth, failures: 2 },
+		});
+		expect(conflict).toMatchObject({ healthSequenceConflict: true });
+		expect(store.getVoiceSession(sessionId)?.leaseExpiresAt).toBe(
+			beforeConflict,
+		);
+		const staleCardSnapshot = store.getVoiceSession(sessionId)!;
+		expect(
+			store.setVoiceSessionState({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				state: "warming",
+				now: "2026-09-08T20:00:04.500Z",
+			}),
+		).toBe(true);
+		expect(
+			store.markVoiceSessionCardProjected(staleCardSnapshot, "stale-digest"),
+		).toBe(false);
+		const currentCardSnapshot = store.getVoiceSession(sessionId)!;
+		expect(
+			store.markVoiceSessionCardProjected(
+				currentCardSnapshot,
+				"current-digest",
+			),
+		).toBe(true);
+		expect(store.getVoiceSession(sessionId)?.receiveCardDigest).toBe(
+			"current-digest",
+		);
+	});
+
 	it("restarts into the idle loop after Bridge sweeps a crashed daemon session", async () => {
 		const { sessionId } = reservation();
 		store.reserveVoiceSession(reservation());
@@ -492,6 +686,8 @@ it("preserves a cancelled receipt without advancing state or accepting a stale o
 it.each([
 	{ reason: "she-left", elapsedMs: 2_000, accepted: true },
 	{ reason: "voice-stop", elapsedMs: 2_000, accepted: true },
+	{ reason: "realtime_session_expiring", elapsedMs: 2_000, accepted: true },
+	{ reason: "realtime_capacity", elapsedMs: 2_000, accepted: true },
 	{ reason: "text-stop", elapsedMs: 2_000, accepted: false },
 	{ reason: "unknown", elapsedMs: 2_000, accepted: false },
 	{ reason: "voice-stop", elapsedMs: 15_000, accepted: false },

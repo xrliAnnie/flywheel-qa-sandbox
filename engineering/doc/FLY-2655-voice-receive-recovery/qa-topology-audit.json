@@ -1,0 +1,45 @@
+{
+  "issue": "FLY-2655",
+  "issueUpdatedAt": "2026-09-17T19:44:10.969Z",
+  "founderMessageId": "1550230431658541137",
+  "leadInstructionId": "3954adaf-8f3f-4a57-b10d-11067d3c6593",
+  "observedAt": "2026-09-17T19:48Z/2026-09-17T19:54Z",
+  "sources": [
+    "read-only Linear issue query",
+    "read-only test-slots.json projection",
+    "read-only voice-host.json projection",
+    "Discord GET guild channels with test bot"
+  ],
+  "guildId": "1485787271192907816",
+  "candidate": {
+    "slot": 2,
+    "botId": "1493072948683341976",
+    "tokenEnvName": "TEST_BOT_TOKEN_2",
+    "textChannelId": "1493080993173737583",
+    "voiceChannelId": "1542708795720081408",
+    "voiceChannelName": "voice-test-2",
+    "type": 2,
+    "parentId": "1493080958889496760"
+  },
+  "productionVoiceHost": {
+    "keys": [
+      "schemaVersion"
+    ],
+    "qaVoiceChannelIdsPresent": false,
+    "qaAllowUserIdsPresent": false
+  },
+  "notProven": [
+    "slot currently unclaimed",
+    "bot Connect/Speak/View permissions",
+    "self-filter runtime",
+    "branch voice process readiness",
+    "founder real audio acceptance"
+  ],
+  "runtimeMutations": [],
+  "review": {
+    "round": 3,
+    "questionId": "42655ad9-f6c8-4780-925f-8ba2f3b64d9c",
+    "requestId": "5e8c836e-6a1e-4d8a-9d89-0b0952692872",
+    "head": "0d0b9ad89"
+  }
+}

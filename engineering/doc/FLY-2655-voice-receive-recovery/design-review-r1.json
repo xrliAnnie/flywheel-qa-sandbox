@@ -1,0 +1,163 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "2d286aa9-863c-4d60-a1bb-e8172c00fa95",
+  "round": 1,
+  "findings": [
+    {
+      "id": "voice-ops-populate-missing-operation-ids",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 137,
+      "title": "Gating the three voice ops the P01 way puts them in missingOperationIds, which hard-fails every capability-v2 Lead runtime",
+      "detail": "§5.1 says the three voice operations join LEAD_CAPABILITY_CATALOG and that resolveLeadCapabilities filters them out unless `codexVoiceActions` is explicitly true. But `resolve.ts:63` derives `missingOperationIds` as *every non-reserved catalog op not in `available`*, and `runtime-factory.ts:116` does `if (!resolved || resolved.missingOperationIds.length) throw new Error(\"runtime_capabilities_incomplete\")`. The existing P01 runner ops prove the mechanism: when `runnerEnabled === false` they are excluded from `operations` and therefore land in `missingOperationIds`. So a literal implementation of §5.1 means any capability-v2 Lead *without* the opt-in cannot start its runtime — and §5.3's own activation order is `FLY-2496/2657 cutover (v2 activation) → founder approval → set codexVoiceActions=true`, i.e. Raya's first v2 activation happens while the flag is still false and would abort with runtime_capabilities_incomplete. `startDefaultLeadCapabilityParent` is on both production Codex paths (`capability-tui-runtime.ts`, `codex-lead-runtime.ts`), so this is not a test-only path. The plan needs an explicit rule that gated-off voice ops are excluded from `missingOperationIds` (not just from `operations`), plus a §6-C assertion that a non-opted-in v2 Lead still boots.",
+      "failure_scenario": "Raya is cut over to codexCapabilityBundleVersion=2 per §5.3 step 1 with codexVoiceActions still absent/false. resolveLeadCapabilities returns operations without voice.session.{start,status,stop} but missingOperationIds = those three. startLeadRuntimeParent throws runtime_capabilities_incomplete and the Lead never comes up — a self-inflicted outage on the very cutover the plan depends on, before any voice code is exercised.",
+      "findingKey": "voice-ops-populate-missing-operation-ids"
+    },
+    {
+      "id": "voice-rules-in-cos-file-never-loaded-by-dept-lead",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 153,
+      "title": "§5.3 puts the voice-entry rules in cos-lead-rules.md, which no capability-v2 Lead can ever load",
+      "detail": "`rule-sources.ts:258` loads `base/cos-lead-rules.md` only when `options.role === \"cos\"`; the else-branch (dept) loads `department-lead-rules.md`. Meanwhile `lead-identity.ts:288-292` throws `identity_capability_bundle_invalid` unless `canonicalRole(project, lead) === \"dept\"` whenever `codexCapabilityBundleVersion` is set, and `resolve.ts:25` re-asserts `row.identity.role !== \"dept\" → throw`. So capability-v2 and role=cos are mutually exclusive by construction: the file §5.3 targets is unreachable for exactly the Leads that will have the new operations. Raya would receive the three ops in her manifest but never the discovery/usage contract, so the §7 group-two acceptance (\"founder says 语音 in #raya → Raya calls voice.session.start in that same turn\") has no instruction backing it. The rule text belongs in `department-lead-rules.md` (and the §6-C \"规则装配 snapshot\" assertion must assert the dept bundle, not the cos one). §6-C line 195 repeats the same wrong path.",
+      "failure_scenario": "codexVoiceActions=true is granted to raya/raya and the manifest exposes the three ops. Founder types 语音 in #raya. Raya's assembled rule bundle contains department-lead-rules.md and never cos-lead-rules.md, so nothing tells her to query the manifest for voice operations or to preserve a durable requestId; she answers in text or asks an engineering Lead to start it, and group two fails for a reason unrelated to the capability plumbing.",
+      "findingKey": "voice-rules-in-cos-file-never-loaded-by-dept-lead"
+    },
+    {
+      "id": "receive-error-prefix-whitelist-leaves-transport-decrypt-fatal",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 76,
+      "title": "Classifying receive-stream errors by message prefix leaves the transport-layer AEAD/parse family on the fatal path — the exact failure FLY-2655 must survive",
+      "detail": "§3.2 whitelists only `DecryptionFailed(` and `Failed to decrypt:` and rules that \"无法分类的 Opus 错误保留 fatal 路径\". In @discordjs/voice@0.19.2 there are exactly two producers of a destroy on a receive subscription: `VoiceReceiver.onUdpMessage`'s catch (`dist/index.js:2141`, `stream.destroy(error)`) and connection teardown (`dist/index.js:2277`, `stream.destroy()` with no argument, which emits `close`, not `error`). Therefore *every* error delivered to the capture's `opus.on(\"error\")` is by construction a receive-path packet failure — and that same catch also carries non-DAVE errors that match neither prefix: `decipheriv.final()` throwing \"Unsupported state or unable to authenticate data\" from the `aead_aes256_gcm_rtpsize` branch (`dist/index.js:2062-2066`), `new Error(\"Failed to parse packet\")` (`:2094`), `RangeError: Unsupported decryption method: …` (`:2079`), and RTP header/padding RangeErrors. Under the plan those all keep hitting `session.ts:105-109` → `finish({kind:\"failed\", reason:\"discord_audio:…\"})`, so a single corrupt/misordered RTP packet still kills a live session. Classification should be by arrival channel (any error on the *current* capture's Opus stream is a receive failure), with the message used only to choose the reason label; `dave_decrypt` vs a new `receive_packet` label, not fatal-by-default. The decoder's own error channel stays separate as the plan already has it.",
+      "failure_scenario": "Founder speaks; one RTP packet arrives with a bad auth tag (or after a key rotation). onUdpMessage catches the Node crypto error \"Unsupported state or unable to authenticate data\" and destroys the receive stream. The new classifier matches neither whitelisted prefix, routes it to the fatal path, and the session ends `failed: discord_audio:Unsupported state or unable to authenticate data` — identical to the FLY-2598 symptom this design exists to remove, with the receive-health state machine never entering degraded.",
+      "findingKey": "receive-error-prefix-whitelist-leaves-transport-decrypt-fatal"
+    },
+    {
+      "id": "resubscribe-does-not-reset-dave-session-state",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 86,
+      "title": "Re-subscription cannot recover the dave_decrypt family; the 250/1000/3000 budget and the probation path are structurally unreachable while failures are consecutive",
+      "detail": "`DAVESession.decrypt` (dist/index.js:948-970) only rethrows when `consecutiveFailures > failureTolerance` AND `lastTransitionId` is falsy, and it does **not** reset `consecutiveFailures` when it throws — the counter is cleared only by a *successful* decrypt. The DAVESession object lives on `networking.state.dave` and is completely untouched by `receiver.subscribe()`, so the plan's recovery (destroy capture → wait for close → re-subscribe) restores nothing about the session that threw. If failures stay consecutive, the very next packet after each re-subscribe increments 37→38→… and throws again, so all three retries plus their backoffs are consumed in roughly 4.25s, `receiving/audio_observed` and the post-cooldown probation never fire, and the session sits in degraded/retry_exhausted for its whole life. (The new original-session-evidence — framesTotal=25 decoded through the VAD — shows decrypt did succeed at some point, so intermittent failures *are* recoverable; the persistent case is not.) The plan should say this explicitly so §7 can distinguish \"recovery attempted and failed\" from \"the recovery path was never reachable\", and so the backoff constants are not later mistaken for tunable levers. It is also a strong discriminator for §7.1: the app-visible throw is only possible before any DAVE transition has executed, which directly favours hypothesis 3.",
+      "failure_scenario": "Real RG session, persistent DAVE decrypt failure. Health goes degraded/dave_decrypt at t=0; retries at +250ms, +1.25s, +4.25s each die on their first packet; retry_exhausted; 30s cooldown; one probation dies the same way. QA reads the card as \"bounded recovery ran and the fix works, audio just isn't there\" when in fact no recovery mechanism in the design could ever have applied.",
+      "findingKey": "resubscribe-does-not-reset-dave-session-state"
+    },
+    {
+      "id": "tools-list-three-items-acceptance-is-unmeetable",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 157,
+      "title": "\"验实际模型 tools/list 三项可见\" cannot be satisfied — the proxy exposes one lead_operation tool with oneOf variants",
+      "detail": "`lead-capability-proxy.ts:155-178` returns a ListTools response containing a single tool named `lead_operation` whose `inputSchema` is `{type:\"object\", oneOf: schemas}` over all manifest operations, plus separately-named tools *only* for `RUNNER_ACTION_TOOL_NAMES`. The three voice ops will therefore appear as three new `oneOf` variants inside `lead_operation`, never as three entries in `tools/list`. The §5.3 activation gate and the §6-C item on line 198 both phrase the check as \"three items visible in tools/list\", which will read as a failed activation to whoever runs it. Restate the criterion as: `lead_operation`'s oneOf contains the three `operationId` literals, and `manifest.operationIds` contains all three.",
+      "failure_scenario": "After the founder-approved grant, the Lead runs the §5.3 verification step, sees `tools/list` return `lead_operation` (and runner tools) with no voice.* names, and reports the activation as failed / the capability as not deployed — blocking group two on a measurement error rather than a real gap.",
+      "findingKey": "tools-list-three-items-acceptance-is-unmeetable"
+    },
+    {
+      "id": "card-patch-shares-the-serial-voice-runtime-tick",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 117,
+      "title": "§4.3 requires card failures not to block outbound poll, but places the PATCH inside the same serial 3s tick that does the polling",
+      "detail": "`VoiceSessionRuntime.tick()` iterates active sessions serially with `await this.deps.poll(session)` and is guarded by `this.ticking` so an overrun tick is skipped rather than overlapped; `plugin.ts:11875` sets `pollIntervalMs: 3_000`. Adding a per-session card PATCH with a ≤2s timeout into that same loop means two sessions with an unreachable root message consume 4s of a 3s budget, and the next tick — including every session's outbound poll — is dropped. The plan states the requirement (\"卡片失败不阻断独立 outbound poll\", and §6-B line 189 \"卡片超时不饿死 playback/renew\") but the chosen placement contradicts it. Specify the mechanism: card projection on its own timer, or fire-and-forget with a per-session in-flight guard so the tick never awaits it.",
+      "failure_scenario": "Two live sessions whose root messages return 404 (founder deleted them). Each tick spends 2s per session on the card PATCH, ticks start overrunning the 3s interval, and `deps.poll` — which drains voice_outbound to the Lead — is starved, so the founder's speech stops producing replies for reasons that have nothing to do with audio.",
+      "findingKey": "card-patch-shares-the-serial-voice-runtime-tick"
+    },
+    {
+      "id": "health-400-fallback-must-not-burn-the-missed-counter",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 106,
+      "title": "The renew-body 400 fallback needs to be an in-call retry; otherwise each rejected health renew still increments `missed` toward lease_lost",
+      "detail": "`daemon.ts:196-200` treats any renew rejection that is not 409/fenced as a miss: `if (authorityLost(error) || ++this.missed >= leaseMissMax) finish({kind:\"failed\", reason:\"lease_lost\"})`. §4.2 correctly requires that a self-inflicted health-validation 400 must not kill a playable session, but as written (\"遇自身 400 后改为无 health 续租\") it is ambiguous between (a) catching the 400 and immediately re-issuing the same renew without the health body, and (b) merely dropping health on the *next* scheduled renew 4s later. Only (a) keeps `missed` at zero. With `leaseRenewMs=4000` and `leaseTtlMs=15000`, option (b) burns a miss per renew until the fallback engages, so a health encoding bug plus one ordinary network blip can still reach leaseMissMax. Say explicitly that the 400 path retries in-call and does not increment `missed`, and add that to the §6-B assertion on line 189.",
+      "failure_scenario": "A receive-health serialization bug makes every renew body invalid. Bridge answers 400 on each 4s renew; the daemon drops health only on the following attempt, so at least one `missed` is recorded per cycle. A single transient fetch failure then pushes `missed` past leaseMissMax and the session ends `failed: lease_lost` — the exact outcome §4.2 says a display-encoding bug must never cause.",
+      "findingKey": "health-400-fallback-must-not-burn-the-missed-counter"
+    },
+    {
+      "id": "tolerance-36-is-already-the-installed-default",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 40,
+      "title": "The explicit receivePolicy pins values that are already the defaults — say so, so it is not credited as part of the fix",
+      "detail": "In the installed 0.19.2 bytes, `DEFAULT_DECRYPTION_FAILURE_TOLERANCE = 36` (dist/index.js:691, consumed at :745) and `CreateVoiceConnectionOptions.daveEncryption` \"Defaults to true\" (dist/index.d.ts:1820-1823). So `{daveEncryption: true, decryptionFailureTolerance: 36}` changes zero runtime behaviour today; its value is purely as a regression pin against upstream default drift (the published typedoc still says 24, which is the drift the pin defends against). research.md line 39/42 records the 36, but plan.md never states that the policy is behaviour-neutral, so a reader of the plan alone may score §3.1 as part of the receive fix. One sentence in §3.1 saying \"pins the current 0.19.2 defaults; no behaviour change, guards against upstream drift\" removes the ambiguity — and matches the §6-A 36/37 fixture, which is testing the pin, not a new threshold.",
+      "failure_scenario": "A reviewer or QA reading only plan.md treats the explicit tolerance as a mitigation, sees a session survive longer for unrelated reasons, and credits §3.1 with an effect it cannot have — or conversely, a future upstream bump to the default is not caught because nobody knows the value was meant as a pin.",
+      "findingKey": "tolerance-36-is-already-the-installed-default"
+    },
+    {
+      "id": "voice-codex-has-no-direct-davey-dependency",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 8,
+      "title": "The davey premise holds only through voice-bridge / @discordjs/voice; voice-codex itself cannot import @snazzah/davey",
+      "detail": "`packages/voice-codex/package.json` declares `@discordjs/voice` but not `@snazzah/davey`; only `packages/voice-bridge/package.json:24` declares it directly, and `pnpm-lock.yaml:4708-4710` additionally resolves it as a dependency of `@discordjs/voice@0.19.2` itself. So the §1 premise correction (\"pnpm-lock 已带 davey 0.1.12\") is true, and §3.1's \"不添加重复 davey 依赖\" is the right call — but under pnpm's strict node_modules layout a direct `import \"@snazzah/davey\"` from voice-codex would not resolve. Since §3.1 and §7.1 read versions only through the glue in voice-bridge (which does declare it), the design is fine as written; the plan should just say which package the version/diagnostic read runs from, because §6-A's \"安装分支探针纳入 lock-version fixture\" ran from the main checkout root, where resolution differs from a voice-codex-local import.",
+      "failure_scenario": "An implementer reads \"pnpm-lock 已带 davey\" and adds a davey version read (or the §7.1 debug-event decoder) inside packages/voice-codex rather than in the voice-bridge glue; it typechecks against the hoisted main-checkout layout and fails at runtime with ERR_MODULE_NOT_FOUND on a clean worktree install.",
+      "findingKey": "voice-codex-has-no-direct-davey-dependency"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "resubscribe-does-not-reset-dave-session-state",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 86,
+      "title": "Re-subscription cannot recover the dave_decrypt family; the 250/1000/3000 budget and the probation path are structurally unreachable while failures are consecutive",
+      "detail": "`DAVESession.decrypt` (dist/index.js:948-970) only rethrows when `consecutiveFailures > failureTolerance` AND `lastTransitionId` is falsy, and it does **not** reset `consecutiveFailures` when it throws — the counter is cleared only by a *successful* decrypt. The DAVESession object lives on `networking.state.dave` and is completely untouched by `receiver.subscribe()`, so the plan's recovery (destroy capture → wait for close → re-subscribe) restores nothing about the session that threw. If failures stay consecutive, the very next packet after each re-subscribe increments 37→38→… and throws again, so all three retries plus their backoffs are consumed in roughly 4.25s, `receiving/audio_observed` and the post-cooldown probation never fire, and the session sits in degraded/retry_exhausted for its whole life. (The new original-session-evidence — framesTotal=25 decoded through the VAD — shows decrypt did succeed at some point, so intermittent failures *are* recoverable; the persistent case is not.) The plan should say this explicitly so §7 can distinguish \"recovery attempted and failed\" from \"the recovery path was never reachable\", and so the backoff constants are not later mistaken for tunable levers. It is also a strong discriminator for §7.1: the app-visible throw is only possible before any DAVE transition has executed, which directly favours hypothesis 3.",
+      "failure_scenario": "Real RG session, persistent DAVE decrypt failure. Health goes degraded/dave_decrypt at t=0; retries at +250ms, +1.25s, +4.25s each die on their first packet; retry_exhausted; 30s cooldown; one probation dies the same way. QA reads the card as \"bounded recovery ran and the fix works, audio just isn't there\" when in fact no recovery mechanism in the design could ever have applied.",
+      "findingKey": "resubscribe-does-not-reset-dave-session-state"
+    },
+    {
+      "id": "tools-list-three-items-acceptance-is-unmeetable",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 157,
+      "title": "\"验实际模型 tools/list 三项可见\" cannot be satisfied — the proxy exposes one lead_operation tool with oneOf variants",
+      "detail": "`lead-capability-proxy.ts:155-178` returns a ListTools response containing a single tool named `lead_operation` whose `inputSchema` is `{type:\"object\", oneOf: schemas}` over all manifest operations, plus separately-named tools *only* for `RUNNER_ACTION_TOOL_NAMES`. The three voice ops will therefore appear as three new `oneOf` variants inside `lead_operation`, never as three entries in `tools/list`. The §5.3 activation gate and the §6-C item on line 198 both phrase the check as \"three items visible in tools/list\", which will read as a failed activation to whoever runs it. Restate the criterion as: `lead_operation`'s oneOf contains the three `operationId` literals, and `manifest.operationIds` contains all three.",
+      "failure_scenario": "After the founder-approved grant, the Lead runs the §5.3 verification step, sees `tools/list` return `lead_operation` (and runner tools) with no voice.* names, and reports the activation as failed / the capability as not deployed — blocking group two on a measurement error rather than a real gap.",
+      "findingKey": "tools-list-three-items-acceptance-is-unmeetable"
+    },
+    {
+      "id": "card-patch-shares-the-serial-voice-runtime-tick",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 117,
+      "title": "§4.3 requires card failures not to block outbound poll, but places the PATCH inside the same serial 3s tick that does the polling",
+      "detail": "`VoiceSessionRuntime.tick()` iterates active sessions serially with `await this.deps.poll(session)` and is guarded by `this.ticking` so an overrun tick is skipped rather than overlapped; `plugin.ts:11875` sets `pollIntervalMs: 3_000`. Adding a per-session card PATCH with a ≤2s timeout into that same loop means two sessions with an unreachable root message consume 4s of a 3s budget, and the next tick — including every session's outbound poll — is dropped. The plan states the requirement (\"卡片失败不阻断独立 outbound poll\", and §6-B line 189 \"卡片超时不饿死 playback/renew\") but the chosen placement contradicts it. Specify the mechanism: card projection on its own timer, or fire-and-forget with a per-session in-flight guard so the tick never awaits it.",
+      "failure_scenario": "Two live sessions whose root messages return 404 (founder deleted them). Each tick spends 2s per session on the card PATCH, ticks start overrunning the 3s interval, and `deps.poll` — which drains voice_outbound to the Lead — is starved, so the founder's speech stops producing replies for reasons that have nothing to do with audio.",
+      "findingKey": "card-patch-shares-the-serial-voice-runtime-tick"
+    },
+    {
+      "id": "health-400-fallback-must-not-burn-the-missed-counter",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 106,
+      "title": "The renew-body 400 fallback needs to be an in-call retry; otherwise each rejected health renew still increments `missed` toward lease_lost",
+      "detail": "`daemon.ts:196-200` treats any renew rejection that is not 409/fenced as a miss: `if (authorityLost(error) || ++this.missed >= leaseMissMax) finish({kind:\"failed\", reason:\"lease_lost\"})`. §4.2 correctly requires that a self-inflicted health-validation 400 must not kill a playable session, but as written (\"遇自身 400 后改为无 health 续租\") it is ambiguous between (a) catching the 400 and immediately re-issuing the same renew without the health body, and (b) merely dropping health on the *next* scheduled renew 4s later. Only (a) keeps `missed` at zero. With `leaseRenewMs=4000` and `leaseTtlMs=15000`, option (b) burns a miss per renew until the fallback engages, so a health encoding bug plus one ordinary network blip can still reach leaseMissMax. Say explicitly that the 400 path retries in-call and does not increment `missed`, and add that to the §6-B assertion on line 189.",
+      "failure_scenario": "A receive-health serialization bug makes every renew body invalid. Bridge answers 400 on each 4s renew; the daemon drops health only on the following attempt, so at least one `missed` is recorded per cycle. A single transient fetch failure then pushes `missed` past leaseMissMax and the session ends `failed: lease_lost` — the exact outcome §4.2 says a display-encoding bug must never cause.",
+      "findingKey": "health-400-fallback-must-not-burn-the-missed-counter"
+    },
+    {
+      "id": "tolerance-36-is-already-the-installed-default",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 40,
+      "title": "The explicit receivePolicy pins values that are already the defaults — say so, so it is not credited as part of the fix",
+      "detail": "In the installed 0.19.2 bytes, `DEFAULT_DECRYPTION_FAILURE_TOLERANCE = 36` (dist/index.js:691, consumed at :745) and `CreateVoiceConnectionOptions.daveEncryption` \"Defaults to true\" (dist/index.d.ts:1820-1823). So `{daveEncryption: true, decryptionFailureTolerance: 36}` changes zero runtime behaviour today; its value is purely as a regression pin against upstream default drift (the published typedoc still says 24, which is the drift the pin defends against). research.md line 39/42 records the 36, but plan.md never states that the policy is behaviour-neutral, so a reader of the plan alone may score §3.1 as part of the receive fix. One sentence in §3.1 saying \"pins the current 0.19.2 defaults; no behaviour change, guards against upstream drift\" removes the ambiguity — and matches the §6-A 36/37 fixture, which is testing the pin, not a new threshold.",
+      "failure_scenario": "A reviewer or QA reading only plan.md treats the explicit tolerance as a mitigation, sees a session survive longer for unrelated reasons, and credits §3.1 with an effect it cannot have — or conversely, a future upstream bump to the default is not caught because nobody knows the value was meant as a pin.",
+      "findingKey": "tolerance-36-is-already-the-installed-default"
+    },
+    {
+      "id": "voice-codex-has-no-direct-davey-dependency",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 8,
+      "title": "The davey premise holds only through voice-bridge / @discordjs/voice; voice-codex itself cannot import @snazzah/davey",
+      "detail": "`packages/voice-codex/package.json` declares `@discordjs/voice` but not `@snazzah/davey`; only `packages/voice-bridge/package.json:24` declares it directly, and `pnpm-lock.yaml:4708-4710` additionally resolves it as a dependency of `@discordjs/voice@0.19.2` itself. So the §1 premise correction (\"pnpm-lock 已带 davey 0.1.12\") is true, and §3.1's \"不添加重复 davey 依赖\" is the right call — but under pnpm's strict node_modules layout a direct `import \"@snazzah/davey\"` from voice-codex would not resolve. Since §3.1 and §7.1 read versions only through the glue in voice-bridge (which does declare it), the design is fine as written; the plan should just say which package the version/diagnostic read runs from, because §6-A's \"安装分支探针纳入 lock-version fixture\" ran from the main checkout root, where resolution differs from a voice-codex-local import.",
+      "failure_scenario": "An implementer reads \"pnpm-lock 已带 davey\" and adds a davey version read (or the §7.1 debug-event decoder) inside packages/voice-codex rather than in the voice-bridge glue; it typechecks against the hoisted main-checkout layout and fails at runtime with ERR_MODULE_NOT_FOUND on a clean worktree install.",
+      "findingKey": "voice-codex-has-no-direct-davey-dependency"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "f308f7c4-d4ca-446c-a1ea-bce6a5dd46e2"
+}

@@ -1,3 +1,4 @@
+import type { ReceiveHealth } from "flywheel-voice-core";
 import type {
 	VoiceBridgeRequestDiagnostic,
 	VoiceOutboundItem,
@@ -18,10 +19,18 @@ import type {
 	SavedVoiceSession,
 	VoiceRecoveryRecord,
 } from "./session-state.js";
-import { chunkForSpeech } from "./speech.js";
+import { type PreparedSpeech, prepareReplySpeech } from "./speech.js";
 
 export type VoiceEnd =
-	| { kind: "ended"; reason: "she-left" | "text-stop" | "voice-stop" }
+	| {
+			kind: "ended";
+			reason:
+				| "she-left"
+				| "text-stop"
+				| "voice-stop"
+				| "realtime_session_expiring"
+				| "realtime_capacity";
+	  }
 	| { kind: "failed"; reason: string };
 
 export type VoiceDaemonIterationResult =
@@ -43,12 +52,16 @@ export type VoiceDaemonIterationResult =
 	  };
 
 export interface ActiveVoiceSession {
+	receiveHealth(): ReceiveHealth | undefined;
 	start(): Promise<{ founderPresent: boolean }>;
 	waitForFounder(timeoutMs: number): Promise<boolean>;
 	markLive(): Promise<void>;
 	waitForEnd(): Promise<VoiceEnd>;
 	requestEnd(outcome: VoiceEnd): void;
-	speak(text: string): Promise<"confirmed" | "unconfirmed" | "failed">;
+	speak(
+		speech: PreparedSpeech,
+	): Promise<"confirmed" | "unconfirmed" | "failed">;
+	notify?(text: string): void | Promise<void>;
 	stop(outcome?: VoiceEnd): Promise<void>;
 }
 
@@ -67,6 +80,7 @@ interface VoiceDaemonBridge {
 		sessionId: string,
 		leaseToken: string,
 		lease: VoiceLease,
+		receiveHealth?: ReceiveHealth,
 	): Promise<{
 		state: string;
 		leaseExpiresAt: string;
@@ -196,11 +210,11 @@ class SessionLifetime {
 
 	constructor(
 		private readonly context: VoiceSessionContext,
-		session: ActiveVoiceSession,
+		private readonly session: ActiveVoiceSession,
 		private readonly options: VoiceDaemonOptions,
 		private readonly onRenewProgress?: (observedAt: string) => void,
 	) {
-		void session.waitForEnd().then((outcome) => this.finish(outcome));
+		void this.session.waitForEnd().then((outcome) => this.finish(outcome));
 		this.armDeadline();
 		this.scheduleRenew();
 	}
@@ -241,6 +255,7 @@ class SessionLifetime {
 				this.context.sessionId,
 				this.context.leaseToken,
 				this.context.lease,
+				this.session.receiveHealth(),
 			);
 			if (this.disposed || this.outcome) return;
 			this.missed = 0;
@@ -750,15 +765,22 @@ export class VoiceDaemon {
 				if (error instanceof SessionEnded || authorityLost(error)) throw error;
 				continue;
 			}
+			const speeches = prepareReplySpeech(
+				item.text,
+				this.options.timing.speechChunkTokens,
+			);
 			let status: "confirmed" | "unconfirmed" | "failed" | "dropped" =
-				"confirmed";
+				speeches.length === 0 ? "dropped" : "confirmed";
 			try {
-				for (const chunk of chunkForSpeech(
-					item.text,
-					this.options.timing.speechChunkTokens,
-				)) {
+				if (speeches.length === 0) {
 					context.lease.assert();
-					const spoken = await lifetime.wait(() => session.speak(chunk));
+					await lifetime.wait(() =>
+						Promise.resolve(session.notify?.("📻 没有可朗读内容，请看文字")),
+					);
+				}
+				for (const speech of speeches) {
+					context.lease.assert();
+					const spoken = await lifetime.wait(() => session.speak(speech));
 					if (spoken === "failed") status = "failed";
 					else if (spoken === "unconfirmed" && status === "confirmed") {
 						status = "unconfirmed";
@@ -766,7 +788,7 @@ export class VoiceDaemon {
 				}
 			} catch (error) {
 				if (error instanceof SessionEnded || authorityLost(error)) throw error;
-				status = "failed";
+				status = speeches.length === 0 ? "dropped" : "failed";
 			}
 			for (let receiptAttempt = 0; receiptAttempt < 2; receiptAttempt += 1) {
 				try {

@@ -1,0 +1,15 @@
+{
+  "at": "2026-09-20T21:54:04.768565+00:00",
+  "checks": {
+    "exploration.md_frontmatter": true,
+    "research.md_frontmatter": true,
+    "plan.md_frontmatter": true,
+    "design-correction.md_frontmatter": true,
+    "baseline_preserved": true,
+    "design_only": true,
+    "raw_evidence_hash_verified": true,
+    "raw_frames_280": true,
+    "test_command_path_exists": true
+  },
+  "scope": "design artifact audit only; review and publication pending; implementation/real-room acceptance not claimed"
+}

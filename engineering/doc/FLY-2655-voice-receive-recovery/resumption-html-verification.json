@@ -1,0 +1,16 @@
+{
+  "at": "2026-09-18T16:41:03.238Z",
+  "result": "PASS",
+  "sections": 8,
+  "scripts": 1,
+  "tests": [
+    "section comments",
+    "path-scoped storage",
+    "storage exceptions",
+    "live summary",
+    "unicode chunk length and marker",
+    "inert comment text",
+    "clipboard success and missing/rejected fallback"
+  ],
+  "scope": "Static structure and VM controller verification; no browser visual or CSP execution proof"
+}

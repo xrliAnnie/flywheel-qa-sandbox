@@ -57,6 +57,10 @@ import { VALID_STAGES } from "./bridge/stage-utils.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { makeGateAuthorityView } from "./bridge/approval-signal/gate-authority-view.js";
 import {
+	parseReceiveHealth,
+	type ReceiveHealth,
+} from "flywheel-voice-core";
+import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -2668,6 +2672,11 @@ export type VoiceOutboundPhase =
 	| "failed"
 	| "dropped"
 	| "ambiguous";
+export type VoiceStopState =
+	| "cancel_requested"
+	| "cancelled"
+	| "ending"
+	| VoiceSessionState;
 
 export interface VoiceSessionRow {
 	sessionId: string;
@@ -2698,6 +2707,10 @@ export interface VoiceSessionRow {
 	daemonBootId: string | null;
 	leaseToken: string | null;
 	leaseExpiresAt: string | null;
+	receiveHealth: ReceiveHealth | null;
+	receiveHealthObservedAt: string | null;
+	receiveHealthBootId: string | null;
+	receiveCardDigest: string | null;
 	outboundCursor: Record<string, string>;
 	createdAt: string;
 	updatedAt: string;
@@ -2716,6 +2729,17 @@ export interface VoiceOutboundRow {
 	attemptToken: string | null;
 	claimedAt: string | null;
 	finishedAt: string | null;
+}
+
+export interface VoiceIntentRow {
+	projectName: string;
+	leadId: string;
+	requestId: string;
+	operationId: string;
+	inputDigest: string;
+	sessionId: string | null;
+	resultState: string;
+	createdAt: string;
 }
 
 export interface VoiceSessionReservation {
@@ -3528,6 +3552,14 @@ export class StateStore {
 				return {};
 			}
 		};
+		const receiveHealth = (value: unknown): ReceiveHealth | null => {
+			if (typeof value !== "string") return null;
+			try {
+				return parseReceiveHealth(JSON.parse(value));
+			} catch {
+				return null;
+			}
+		};
 		return {
 			sessionId: String(row.session_id),
 			mode: row.mode as VoiceSessionMode,
@@ -3557,6 +3589,12 @@ export class StateStore {
 			daemonBootId: (row.daemon_boot_id as string | null) ?? null,
 			leaseToken: (row.lease_token as string | null) ?? null,
 			leaseExpiresAt: (row.lease_expires_at as string | null) ?? null,
+			receiveHealth: receiveHealth(row.receive_health),
+			receiveHealthObservedAt:
+				(row.receive_health_observed_at as string | null) ?? null,
+			receiveHealthBootId:
+				(row.receive_health_boot_id as string | null) ?? null,
+			receiveCardDigest: (row.receive_card_digest as string | null) ?? null,
 			outboundCursor: stringRecord(row.outbound_cursor),
 			createdAt: String(row.created_at),
 			updatedAt: String(row.updated_at),
@@ -3616,6 +3654,50 @@ export class StateStore {
 		)
 			.map((row) => this.voiceSessionFromRow(row))
 			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	listVoiceSessionCardCandidates(
+		afterSessionId: string,
+		limit: number,
+	): VoiceSessionRow[] {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 25)
+			throw new Error("voice_card_limit_invalid");
+		return this.workflowSelectAll(
+			`SELECT * FROM voice_sessions
+			 WHERE session_id > ? AND root_message_id IS NOT NULL
+			 AND receive_health_observed_at IS NOT NULL
+			 ORDER BY session_id LIMIT ?`,
+			[afterSessionId, limit],
+		)
+			.map((row) => this.voiceSessionFromRow(row))
+			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	markVoiceSessionCardProjected(
+		snapshot: VoiceSessionRow,
+		digest: string,
+	): boolean {
+		this.db.run(
+			`UPDATE voice_sessions SET receive_card_digest = ?
+			 WHERE session_id = ? AND state = ? AND reason IS ?
+			 AND root_message_id = ? AND receive_health IS ?
+			 AND receive_health_observed_at IS ? AND lease_expires_at IS ?`,
+			[
+				digest,
+				snapshot.sessionId,
+				snapshot.state,
+				snapshot.reason,
+				snapshot.rootMessageId,
+				snapshot.receiveHealth
+					? JSON.stringify(snapshot.receiveHealth)
+					: null,
+				snapshot.receiveHealthObservedAt,
+				snapshot.leaseExpiresAt,
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
 	}
 
 	/**
@@ -3920,6 +4002,148 @@ export class StateStore {
 		return result;
 	}
 
+	getVoiceIntent(
+		projectName: string,
+		leadId: string,
+		requestId: string,
+	): VoiceIntentRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM voice_intents
+			 WHERE project_name = ? AND lead_id = ? AND request_id = ?`,
+			[projectName, leadId, requestId],
+		)[0];
+		if (!row) return;
+		return {
+			projectName: String(row.project_name),
+			leadId: String(row.lead_id),
+			requestId: String(row.request_id),
+			operationId: String(row.operation_id),
+			inputDigest: String(row.input_digest),
+			sessionId: (row.session_id as string | null) ?? null,
+			resultState: String(row.result_state),
+			createdAt: String(row.created_at),
+		};
+	}
+
+	reserveVoiceSessionIntent(input: {
+		projectName: string;
+		leadId: string;
+		requestId: string;
+		operationId: "voice.session.start";
+		inputDigest: string;
+		reservation: VoiceSessionReservation;
+	}):
+		| { status: "inserted" | "replayed" | "bound_active"; session: VoiceSessionRow }
+		| { status: "intent_conflict" | "session_active" } {
+		let result:
+			| {
+					status: "inserted" | "replayed" | "bound_active";
+					session: VoiceSessionRow;
+			  }
+			| { status: "intent_conflict" | "session_active" } = {
+			status: "session_active",
+		};
+		this.db.transaction(() => {
+			const prior = this.getVoiceIntent(
+				input.projectName,
+				input.leadId,
+				input.requestId,
+			);
+			if (prior) {
+				if (
+					prior.operationId !== input.operationId ||
+					prior.inputDigest !== input.inputDigest ||
+					!prior.sessionId
+				) {
+					result = { status: "intent_conflict" };
+					return;
+				}
+				const session = this.getVoiceSession(prior.sessionId);
+				result = session
+					? { status: "replayed", session }
+					: { status: "intent_conflict" };
+				return;
+			}
+			const reservation = input.reservation;
+			if (
+				reservation.projectName !== input.projectName ||
+				reservation.leadId !== input.leadId
+			) {
+				result = { status: "intent_conflict" };
+				return;
+			}
+			const active = this.voiceSessionFromRow(
+				this.workflowSelectAll(
+					`SELECT * FROM voice_sessions WHERE voice_channel_id = ?
+					 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+					[reservation.voiceChannelId],
+				)[0],
+			);
+			let session = active;
+			let status: "inserted" | "bound_active" = "bound_active";
+			if (active) {
+				const same =
+					active.state !== "ending" &&
+					active.mode === reservation.mode &&
+					active.projectName === reservation.projectName &&
+					active.leadId === reservation.leadId &&
+					active.guildId === reservation.guildId &&
+					active.voiceChannelId === reservation.voiceChannelId &&
+					active.voiceBotUserId === reservation.voiceBotUserId &&
+					active.meetingId === (reservation.meetingId ?? null);
+				if (!same) {
+					result = { status: "session_active" };
+					return;
+				}
+			} else {
+				this.db.run(
+					`INSERT INTO voice_sessions
+					 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id, voice_bot_user_id,
+					  meeting_id, evidence_dir, topic, requested_by, credential_tier, state,
+					  created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
+					[
+						reservation.sessionId,
+						reservation.mode,
+						reservation.projectName,
+						reservation.leadId,
+						reservation.guildId,
+						reservation.voiceChannelId,
+						reservation.voiceBotUserId,
+						reservation.meetingId ?? null,
+						reservation.evidenceDir ?? null,
+						reservation.topic ?? null,
+						reservation.requestedBy,
+						reservation.credentialTier,
+						reservation.createdAt,
+						reservation.createdAt,
+					],
+				);
+				session = this.getVoiceSession(reservation.sessionId)!;
+				status = "inserted";
+			}
+			this.db.run(
+				`INSERT INTO voice_intents
+				 (project_name, lead_id, request_id, operation_id, input_digest,
+				  session_id, result_state, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.projectName,
+					input.leadId,
+					input.requestId,
+					input.operationId,
+					input.inputDigest,
+					session!.sessionId,
+					session!.state,
+					reservation.createdAt,
+				],
+			);
+			result = { status, session: session! };
+		});
+		if ("session" in result) this.save();
+		return result;
+	}
+
 	updateVoiceProvisioning(input: {
 		sessionId: string;
 		expectedStep: VoiceProvisioningStep;
@@ -4074,7 +4298,9 @@ export class StateStore {
 			).toISOString();
 			this.db.run(
 				`UPDATE voice_sessions SET state = 'claimed', daemon_boot_id = ?,
-				 lease_token = ?, lease_expires_at = ?, updated_at = ?
+				 lease_token = ?, lease_expires_at = ?, updated_at = ?,
+				 receive_health = NULL, receive_health_observed_at = NULL,
+				 receive_health_boot_id = NULL, receive_card_digest = NULL
 				 WHERE session_id = ? AND state = 'desired'`,
 				[
 					input.daemonBootId,
@@ -4100,8 +4326,27 @@ export class StateStore {
 		leaseToken: string;
 		now: string;
 		leaseTtlMs: number;
-	}): { state: VoiceSessionState; leaseExpiresAt: string } | undefined {
-		let result: { state: VoiceSessionState; leaseExpiresAt: string } | undefined;
+		receiveHealth?: unknown;
+	}):
+		| {
+				state: VoiceSessionState;
+				leaseExpiresAt: string;
+				acceptedHealthSequence: number | null;
+				healthSequenceConflict?: true;
+		  }
+		| undefined {
+		const receiveHealth =
+			input.receiveHealth === undefined
+				? undefined
+				: parseReceiveHealth(input.receiveHealth);
+		let result:
+			| {
+					state: VoiceSessionState;
+					leaseExpiresAt: string;
+					acceptedHealthSequence: number | null;
+					healthSequenceConflict?: true;
+			  }
+			| undefined;
 		this.db.transaction(() => {
 			const current = this.getVoiceSession(input.sessionId);
 			if (
@@ -4114,15 +4359,57 @@ export class StateStore {
 				)
 			)
 				return;
+			const previousHealth =
+				current.receiveHealthBootId === current.daemonBootId
+					? current.receiveHealth
+					: null;
+			if (
+				receiveHealth &&
+				previousHealth &&
+				receiveHealth.sequence === previousHealth.sequence &&
+				JSON.stringify(receiveHealth) !== JSON.stringify(previousHealth)
+			) {
+				result = {
+					state: current.state,
+					leaseExpiresAt: current.leaseExpiresAt,
+					acceptedHealthSequence: previousHealth.sequence,
+					healthSequenceConflict: true,
+				};
+				return;
+			}
 			const leaseExpiresAt = new Date(
 				Date.parse(input.now) + input.leaseTtlMs,
 			).toISOString();
+			const acceptsHealth =
+				receiveHealth &&
+				(!previousHealth || receiveHealth.sequence >= previousHealth.sequence);
 			this.db.run(
-				`UPDATE voice_sessions SET lease_expires_at = ?, updated_at = ?
+				`UPDATE voice_sessions SET lease_expires_at = ?, updated_at = ?,
+				 receive_health = CASE WHEN ? THEN ? ELSE receive_health END,
+				 receive_health_observed_at = CASE WHEN ? THEN ? ELSE receive_health_observed_at END,
+				 receive_health_boot_id = CASE WHEN ? THEN ? ELSE receive_health_boot_id END
 				 WHERE session_id = ? AND lease_token = ?`,
-				[leaseExpiresAt, input.now, input.sessionId, input.leaseToken],
+				[
+					leaseExpiresAt,
+					input.now,
+					acceptsHealth ? 1 : 0,
+					receiveHealth ? JSON.stringify(receiveHealth) : null,
+					acceptsHealth ? 1 : 0,
+					input.now,
+					acceptsHealth ? 1 : 0,
+					current.daemonBootId,
+					input.sessionId,
+					input.leaseToken,
+				],
 			);
-			result = { state: current.state, leaseExpiresAt };
+			result = {
+				state: current.state,
+				leaseExpiresAt,
+				acceptedHealthSequence:
+					acceptsHealth && receiveHealth
+						? receiveHealth.sequence
+						: (previousHealth?.sequence ?? null),
+			};
 		});
 		if (result) this.save();
 		return result;
@@ -4151,16 +4438,22 @@ export class StateStore {
 				!current.leaseExpiresAt ||
 				Date.parse(current.leaseExpiresAt) <= Date.parse(input.now);
 			if (expired && input.state !== "failed") return;
-			// Local departure/voice command is the daemon's terminal intent; text stop
-			// still requires the Bridge-owned transition through ending.
+			const daemonEndReasons = new Set([
+				"she-left",
+				"voice-stop",
+				"realtime_session_expiring",
+				"realtime_capacity",
+			]);
+			// Local departure/voice command and a normal Realtime terminal are the
+			// daemon's terminal intent; text stop still transitions through ending.
 			if (
 				current.state === "live" && input.state === "ended" &&
-				!new Set(["she-left", "voice-stop"]).has(input.reason ?? "")
+				!daemonEndReasons.has(input.reason ?? "")
 			) return;
 			if (new Set(["ended", "failed"]).has(input.state) && !input.reason) return;
 			if (
 				input.state === "ended" &&
-				!new Set(["she-left", "text-stop", "voice-stop"]).has(input.reason!)
+				!new Set([...daemonEndReasons, "text-stop"]).has(input.reason!)
 			)
 				return;
 			this.db.run(
@@ -4190,43 +4483,118 @@ export class StateStore {
 	stopVoiceSession(
 		sessionId: string,
 		now: string,
-	): "cancel_requested" | "cancelled" | "ending" | VoiceSessionState | undefined {
-		let result: ReturnType<StateStore["stopVoiceSession"]>;
+	): VoiceStopState | undefined {
+		let result: VoiceStopState | undefined;
 		this.db.transaction(() => {
-			const current = this.getVoiceSession(sessionId);
-			if (!current) return;
-			if (current.state === "provisioning") {
-				this.db.run(
-					`UPDATE voice_sessions SET cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
-					 WHERE session_id = ? AND state = 'provisioning'`,
-					[now, now, sessionId],
-				);
-				result = "cancel_requested";
-				return;
-			}
-			if (current.state === "desired") {
-				this.db.run(
-					`UPDATE voice_sessions SET state = 'cancelled', reason = 'text-stop',
-					 updated_at = ?, ended_at = ? WHERE session_id = ? AND state = 'desired'`,
-					[now, now, sessionId],
-				);
-				this.settleVoiceOutboundTx(sessionId, now);
-				result = "cancelled";
-				return;
-			}
-			if (new Set<VoiceSessionState>(["claimed", "warming", "live"]).has(current.state)) {
-				this.db.run(
-					`UPDATE voice_sessions SET state = 'ending', reason = 'text-stop', updated_at = ?, ending_started_at = ?
-					 WHERE session_id = ? AND state = ?`,
-					[now, now, sessionId, current.state],
-				);
-				result = "ending";
-				return;
-			}
-			result = current.state;
+			result = this.stopVoiceSessionTx(sessionId, now);
 		});
 		if (result) this.save();
 		return result;
+	}
+
+	stopVoiceSessionIntent(input: {
+		projectName: string;
+		leadId: string;
+		requestId: string;
+		operationId: "voice.session.stop";
+		inputDigest: string;
+		sessionId: string;
+		now: string;
+	}):
+		| { status: "stopped" | "replayed"; state: VoiceStopState }
+		| { status: "intent_conflict" | "scope_denied" | "not_found" } {
+		let result:
+			| { status: "stopped" | "replayed"; state: VoiceStopState }
+			| { status: "intent_conflict" | "scope_denied" | "not_found" } = {
+			status: "not_found",
+		};
+		this.db.transaction(() => {
+			const prior = this.getVoiceIntent(
+				input.projectName,
+				input.leadId,
+				input.requestId,
+			);
+			if (prior) {
+				if (
+					prior.operationId !== input.operationId ||
+					prior.inputDigest !== input.inputDigest ||
+					prior.sessionId !== input.sessionId
+				) {
+					result = { status: "intent_conflict" };
+					return;
+				}
+				result = { status: "replayed", state: prior.resultState as VoiceStopState };
+				return;
+			}
+			const session = this.getVoiceSession(input.sessionId);
+			if (!session) return;
+			if (
+				session.projectName !== input.projectName ||
+				session.leadId !== input.leadId
+			) {
+				result = { status: "scope_denied" };
+				return;
+			}
+			const state = this.stopVoiceSessionTx(input.sessionId, input.now);
+			if (!state) return;
+			this.db.run(
+				`INSERT INTO voice_intents
+				 (project_name, lead_id, request_id, operation_id, input_digest,
+				  session_id, result_state, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.projectName,
+					input.leadId,
+					input.requestId,
+					input.operationId,
+					input.inputDigest,
+					input.sessionId,
+					state,
+					input.now,
+				],
+			);
+			result = { status: "stopped", state };
+		});
+		if ("state" in result) this.save();
+		return result;
+	}
+
+	private stopVoiceSessionTx(
+		sessionId: string,
+		now: string,
+	): VoiceStopState | undefined {
+		const current = this.getVoiceSession(sessionId);
+		if (!current) return;
+		if (current.state === "provisioning") {
+			this.db.run(
+				`UPDATE voice_sessions SET cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
+				 WHERE session_id = ? AND state = 'provisioning'`,
+				[now, now, sessionId],
+			);
+			return "cancel_requested";
+		}
+		if (current.state === "desired") {
+			this.db.run(
+				`UPDATE voice_sessions SET state = 'cancelled', reason = 'text-stop',
+				 updated_at = ?, ended_at = ? WHERE session_id = ? AND state = 'desired'`,
+				[now, now, sessionId],
+			);
+			this.settleVoiceOutboundTx(sessionId, now);
+			return "cancelled";
+		}
+		if (
+			new Set<VoiceSessionState>(["claimed", "warming", "live"]).has(
+				current.state,
+			)
+		) {
+			this.db.run(
+				`UPDATE voice_sessions SET state = 'ending', reason = 'text-stop', updated_at = ?, ending_started_at = ?
+				 WHERE session_id = ? AND state = ?`,
+				[now, now, sessionId, current.state],
+			);
+			return "ending";
+		}
+		return current.state;
 	}
 
 	getActiveVoiceLease(
@@ -8713,6 +9081,10 @@ export class StateStore {
 				daemon_boot_id TEXT,
 				lease_token TEXT,
 				lease_expires_at TEXT,
+				receive_health TEXT,
+				receive_health_observed_at TEXT,
+				receive_health_boot_id TEXT,
+				receive_card_digest TEXT,
 				outbound_cursor TEXT NOT NULL DEFAULT '{}',
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
@@ -8724,6 +9096,14 @@ export class StateStore {
 		// Additive migration: ending age must not be rejuvenated by lease/poller writes.
 		this.addColumnIfMissing("voice_sessions", "ending_started_at", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "root_requested_at", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "receive_health", "TEXT");
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"receive_health_observed_at",
+			"TEXT",
+		);
+		this.addColumnIfMissing("voice_sessions", "receive_health_boot_id", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "receive_card_digest", "TEXT");
 		// A legacy unknown root must never receive a fresh deduplication window.
 		this.db.run(
 			"UPDATE voice_sessions SET root_requested_at = created_at WHERE provisioning_step = 'root_requested' AND root_requested_at IS NULL",
@@ -8742,6 +9122,23 @@ export class StateStore {
 			ON voice_sessions(meeting_id)
 			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_intents (
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				request_id TEXT NOT NULL,
+				operation_id TEXT NOT NULL,
+				input_digest TEXT NOT NULL,
+				session_id TEXT,
+				result_state TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY(project_name, lead_id, request_id),
+				FOREIGN KEY(session_id) REFERENCES voice_sessions(session_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS voice_intents_session ON voice_intents(session_id)",
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS voice_outbound (
 				seq INTEGER PRIMARY KEY AUTOINCREMENT,

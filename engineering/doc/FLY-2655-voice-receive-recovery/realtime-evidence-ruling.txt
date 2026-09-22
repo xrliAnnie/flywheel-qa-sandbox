@@ -1,0 +1,1 @@
+认可：verify 读错字段（receiveHealth 无 framesPassed）改为读本 session 原始 gate 记录，并保留上游接收/输出独立证据；仍 FAIL、不把上传当听懂。写进设计。

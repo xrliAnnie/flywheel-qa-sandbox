@@ -1187,6 +1187,7 @@ expected_shard_tests = {
         "Test — FLY-1764 legacy swap broadcast retirement",
         "Test — FLY-1609 four-arm analysis contract",
         "Test — FLY-1327 cycle-time report",
+        "Test — FLY-2655 isolated 529 voice room",
     ],
 }
 script_shards = {
@@ -1867,6 +1868,10 @@ require(len(voice_config_steps) == 1, "FLY-2598 voice config test must run exact
 voice_config_step = voice_config_steps[0]
 require(str(voice_config_step.get("run", "")).strip().splitlines() == ["pnpm --filter flywheel-teamlead... build", "pnpm --filter flywheel-comm... build", "node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs"], "FLY-2598 voice config gate commands drifted")
 require("if" not in voice_config_step and "continue-on-error" not in voice_config_step, "FLY-2598 voice config gate must be mandatory")
+voice_2655_steps = [step for step in script_steps_6 if isinstance(step, dict) and step.get("name") == "Test — FLY-2655 isolated 529 voice room"]
+require(len(voice_2655_steps) == 1, "FLY-2655 voice room test must run exactly once in script-tests-6")
+require(voice_2655_steps[0].get("run") == "node --test scripts/__tests__/fly2655-voice-room.test.mjs", "FLY-2655 voice room command drifted")
+require("if" not in voice_2655_steps[0] and "continue-on-error" not in voice_2655_steps[0], "FLY-2655 voice room gate must be mandatory")
 
 print("PASS: FLY-1338 CI structure contract")
 PY

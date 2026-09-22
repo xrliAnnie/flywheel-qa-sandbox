@@ -104,6 +104,14 @@ export {
 	type SpawnOptions,
 	TimeoutError,
 } from "./process.js";
+export {
+	parseReceiveHealth,
+	RECEIVE_REASONS,
+	RECEIVE_STATES,
+	type ReceiveHealth,
+	type ReceiveReason,
+	type ReceiveState,
+} from "./receive-health.js";
 // secret red line (FLY-1065) — every transcript exit passes through this
 export { scrubTranscript } from "./scrub.js";
 export {

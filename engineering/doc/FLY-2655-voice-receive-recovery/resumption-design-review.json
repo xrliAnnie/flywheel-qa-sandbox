@@ -1,0 +1,139 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "3e7a6844-26c1-4acd-b503-a07b19025545",
+  "round": 1,
+  "findings": [
+    {
+      "id": "meeting-mode-default-open-under-voice-opt-in",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 143,
+      "title": "Plan asserts \"显式 opt-in，不得默认放开\" but the meeting mode it builds on is opt-OUT",
+      "detail": "§5.1 says Bridge lead-capability-voice \"检查 raw opt-in 与 voiceModes\", and §1 records the Lead ruling \"新能力显式 opt-in ... 不得默认放开\". The voiceModes gate the design reuses is packages/teamlead/src/bridge/voice-session-start.ts:95-102 `modeEnabled()`: rg requires `voiceModes?.rg === true`, but meeting is refused only when `voiceModes?.meeting === false`. Undefined/absent voiceModes therefore ENABLES meeting. resolveLeadCapabilities (packages/teamlead/src/lead-capabilities/resolve.ts:55) gates the three operations on `codexVoiceActions === true` only — it never consults voiceModes — so an operator who grants codexVoiceActions intending \"RG only\" silently also grants model-initiated meeting sessions. Failure scenario: a Lead row is set to `{codexVoiceActions: true, voiceModes: {rg: true}}` (meeting unset). The model calls voice.session.start{mode:'meeting'}; resolve exposes the op, scope() passes (only codexVoiceActions checked), modeEnabled passes because `undefined === false` is false, and a meeting-mode voice session is provisioned that the operator never approved. The plan should either require `voiceModes.meeting === true` for the capability path or state explicitly that granting codexVoiceActions grants both modes.",
+      "findingKey": "meeting-mode-default-open-under-voice-opt-in"
+    },
+    {
+      "id": "start-resolver-binds-to-meeting-owner-not-caller",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 135,
+      "title": "§5.1 claims \"start 只为自身 project/lead 解析\", but a model-supplied meetingId resolves the project/lead from the meeting record before any ownership check",
+      "detail": "The plan's start input accepts `meetingId?:uuid` and §5.1 asserts resolution is caller-bound. The shared resolver it reuses is not: packages/teamlead/src/bridge/voice-session-start.ts:155-189 takes the `\"meetingId\" in request` branch, loads the trusted current meeting, and resolves project/lead via `resolveLeadByAgentIdAcrossRegistry(deps.projects, meeting.leadId)` — i.e. from the MEETING's owner, not the caller. Only after `await deps.preflight(...)` does the caller-side comparison happen (lead-capability-voice.ts:181-186 `reservation.leadId !== request.leadId` → denied), and preflight is not side-effect-free: preflightVoiceSession issues Discord GETs with the OTHER Lead's bot token (voice-session-preflight.ts:110-116) and probeVoiceSelfFilter opens the other Lead's inbox unix socket (voice-self-filter-probe.ts:16-74). Failure scenario: Raya (codexVoiceActions=true) has its model emit voice.session.start{mode:'meeting', meetingId:<the live meeting owned by Tadashi>}. The session is correctly denied, but only after Flywheel has burned Tadashi's bot Discord rate budget on identity/member/role/channel GETs and poked Tadashi's self-filter socket — an untrusted-model-triggered cross-Lead action the plan never contemplates. The design should require the meeting record's leadId to equal the caller's leadId BEFORE invoking the shared resolver.",
+      "findingKey": "start-resolver-binds-to-meeting-owner-not-caller"
+    },
+    {
+      "id": "d-evidence-commands-silently-skip-most-changed-teamlead-suites",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 218,
+      "title": "§6 D's teamlead command names a test file that does not exist and vitest exits 0 without running it; the named command set also omits most C-group suites",
+      "detail": "Verified by running the plan's exact command in this worktree at plan blob f1ebd297: `pnpm --filter flywheel-teamlead exec vitest run <6 positionals>` → `Test Files 5 passed (5)`, `EXIT=0`. Six paths were supplied but only five collected — `src/lead-capabilities/__tests__/voice.test.ts` (line 218, restated at line 226 as a file B/C must create) does not exist; the real file is `src/lead-capabilities/__tests__/bridge-voice.test.ts`. vitest does NOT error on a positional that matches nothing as long as other positionals match, so QA following the plan literally reports a clean exit 0 while the C-group suite never ran — the exact false-green class recorded in project memory for `pnpm --filter` name typos. Compounding this: the §6 C checklist requires assertions about `operations`/`missingOperationIds` under opt-in false, catalog/deployment/manifest wiring, the MCP `lead_operation.oneOf` tools/list shape, and the dept rules bundle — those live in `lead-capabilities/__tests__/{resolve,catalog,runtime-factory,deployment}.test.ts`, `lead-backends/codex/__tests__/lead-capability-proxy.test.ts`, `lead-backends/codex/lead-actions/__tests__/mcp-config.test.ts`, `__tests__/lead-rules-bundle.test.ts` and `__tests__/lead-runtime-tuning.test.ts`, none of which appear in the D block, and the block contains no `pnpm --filter flywheel-teamlead test:run`. Failure scenario: QA runs §6 D verbatim, records \"all green, exit 0\", and ships with the majority of the C-group acceptance assertions never executed. Fix the filename and either enumerate the remaining suites or run the whole package.",
+      "findingKey": "d-evidence-commands-silently-skip-most-changed-teamlead-suites"
+    },
+    {
+      "id": "bounded-resubscribe-is-inert-against-a-wedged-dave-session",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 92,
+      "title": "The chosen recovery lever provably cannot recover the exact failure class that produced FLY-2655, and the one lever that could (bounded connection re-establish) is excluded without analysis",
+      "detail": "Confirmed against the pinned SDK (@discordjs/voice 0.19.2 dist/index.js). The hard receive failure is DAVESession.decrypt line 955-969: on decrypt throw it increments `consecutiveFailures`; once `consecutiveFailures > failureTolerance` AND `lastTransitionId` is falsy it rethrows, which propagates through parsePacket → VoiceReceiver.onUdpMessage → `stream.destroy(error)`. `consecutiveFailures` is reset ONLY by a successful decrypt or by `recoverFromInvalidTransition` (which is unreachable in this branch, since it requires a truthy lastTransitionId), and both it and the DAVESession live on the Networking instance — which is recreated only by `configureNetworking()`, i.e. a connection re-establish (VoiceConnection line 2355-2370). §3.3 already states re-subscribe does not reset `networking.state.dave`; the consequence is stronger than the plan says: every re-subscribe dies on its first bad packet, so the 250/1000/3000ms budget + 30s cooldown + probation can never change the outcome for a wedged session, and pinning tolerance at 36 (the true 0.19.2 default, correctly identified) does not help either. Meanwhile the glue already exposes `voiceConnHandle.rejoin()` (discordWiring.ts:465-472), and §3.1 forbids \"应用层无限 rejoin\" without evaluating a single budgeted reconnect — the only in-app action that would clear the wedge. Failure scenario: the original FLY-2655 symptom reproduces; the session now stays live and degraded instead of failing, but reception never returns, §7 group one FAILs, and the issue's stated goal (\"通过有界重新订阅恢复接收\") is unmet by construction. The plan should either justify excluding a one-shot bounded reconnect or record it as the designated next lever.",
+      "findingKey": "bounded-resubscribe-is-inert-against-a-wedged-dave-session"
+    },
+    {
+      "id": "dave-diagnostic-allowlist-cannot-separate-the-7-1-hypotheses",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 247,
+      "title": "§7.1 mandates a four-row verified/disproved matrix that its own debug allowlist cannot produce",
+      "detail": "§7.1 (line 242) limits the glue to extracting `DAVE preparing/executed transition` ids/versions, the consecutive-failure count, and the reinitializing boolean; everything else only bumps `unknownDiagnosticCount`. The implemented allowlist (packages/voice-bridge/src/bots/discordWiring.ts parseDiscordReceiveDiagnostic) matches exactly those four patterns. But the DAVESession messages that actually separate the hypotheses are not in the set: `Session downgraded` / `Session upgraded` (index.js:826/830) is the direct evidence for row 2 \"某客户端非 DAVE/协商降级\"; `Invalidating transition <id>` (index.js:857) is the only way to tell the self-healing `recoverFromInvalidTransition` branch from the fatal rethrow branch; `Failed to decrypt a packet (<n> pending transition[s])` (index.js:966) distinguishes suppressed-during-transition failures from counted ones and is central to row 1 and row 3; `Session initialized/reinitialized for protocol version <n>` (index.js:772/775) establishes whether DAVE ever became ready before first PCM (row 3). Failure scenario: the next real session reproduces the fault, QA captures the JSONL exactly as §7.1 specifies, and every one of the four rows must still be written `unresolved` because the discriminating strings were all counted as `unknown` — the root-cause gate the plan sets for itself cannot be closed by the instrumentation the plan specifies. Add these four anchored patterns (numeric/boolean fields only) to the allowlist.",
+      "findingKey": "dave-diagnostic-allowlist-cannot-separate-the-7-1-hypotheses"
+    },
+    {
+      "id": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 242,
+      "title": "§7.1 enables SDK `debug:true` without declaring it default-off or time-boxed, and that stream carries the voice gateway token",
+      "detail": "Setting `debug: true` on joinVoiceChannel turns on debug for the whole VoiceConnection, not just DAVE: VoiceWebSocket emits `>> ${stringified}` for every outgoing payload (index.js:1227) and `<< ${event.data}` for every inbound one (index.js:1200), which Networking and VoiceConnection re-emit as `[NW] [WS] ...` (index.js:1685, 2456). The outgoing Identify payload contains the voice connection `token` and `session_id`. The plan's containment is correct as far as it goes (\"不能把整段文字传出 glue，未匹配记录只增加 unknownDiagnosticCount\", plus a token-like-fixture test), and today only one listener exists (discordWiring.ts:491-495) which parses via allowlist — but the plan never states that `debug` must default to false, must be enabled only for a bounded diagnostic window, and that no second `conn.on(\"debug\")` consumer may ever be added. The shipped policy in packages/voice-codex/src/receive-health.ts hardcodes `debug: true` permanently. Failure scenario: a later change adds routine logging or an evidence dump on the connection's `debug` event (a natural next step for §7.1 forensics), and live voice gateway tokens land in the daemon log or the founder-visible evidence file. Make `debug` an explicit, revocable, default-off diagnostic switch and state the single-consumer invariant.",
+      "findingKey": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off"
+    },
+    {
+      "id": "identity-digest-does-not-bind-codex-voice-actions",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 141,
+      "title": "§5.1's claim that 编译身份摘要 reads the same raw codexVoiceActions value is not true of the v1 identity digest",
+      "detail": "§5.1 lists \"编译身份摘要\" among the consumers that \"均读取同一 raw 值\" (the plan hedges this in §6 C with \"若已全字段摘要\"). In fact `codexVoiceActions` appears nowhere in packages/flywheel-comm/src/ — `v1IdentityDigest` (lead-identity.ts:118-126) hashes a fixed projection, so flipping the flag does not change `identityDigest`. Authorization is still safe because captureLeadCapabilityScope re-reads the live registry each request (lead-capability-scope.ts:27-47 + `row.lead.codexVoiceActions !== true`), so revocation takes effect immediately; but the converse also holds — the grant takes effect on a running Lead process without the \"受管重编译/激活\" step §5.3 describes, and `identityDigest` is not the binding the plan implies it is. Failure scenario: an operator flips codexVoiceActions=true on disk intending the change to be inert until the managed re-activation; the Bridge starts honouring voice operations on the next request from any already-running carrier whose identityDigest still matches. Correct the sentence, or add the flag to the digest under a coordinated schema-version migration.",
+      "findingKey": "identity-digest-does-not-bind-codex-voice-actions"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "meeting-mode-default-open-under-voice-opt-in",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 143,
+      "title": "Plan asserts \"显式 opt-in，不得默认放开\" but the meeting mode it builds on is opt-OUT",
+      "detail": "§5.1 says Bridge lead-capability-voice \"检查 raw opt-in 与 voiceModes\", and §1 records the Lead ruling \"新能力显式 opt-in ... 不得默认放开\". The voiceModes gate the design reuses is packages/teamlead/src/bridge/voice-session-start.ts:95-102 `modeEnabled()`: rg requires `voiceModes?.rg === true`, but meeting is refused only when `voiceModes?.meeting === false`. Undefined/absent voiceModes therefore ENABLES meeting. resolveLeadCapabilities (packages/teamlead/src/lead-capabilities/resolve.ts:55) gates the three operations on `codexVoiceActions === true` only — it never consults voiceModes — so an operator who grants codexVoiceActions intending \"RG only\" silently also grants model-initiated meeting sessions. Failure scenario: a Lead row is set to `{codexVoiceActions: true, voiceModes: {rg: true}}` (meeting unset). The model calls voice.session.start{mode:'meeting'}; resolve exposes the op, scope() passes (only codexVoiceActions checked), modeEnabled passes because `undefined === false` is false, and a meeting-mode voice session is provisioned that the operator never approved. The plan should either require `voiceModes.meeting === true` for the capability path or state explicitly that granting codexVoiceActions grants both modes.",
+      "findingKey": "meeting-mode-default-open-under-voice-opt-in"
+    },
+    {
+      "id": "start-resolver-binds-to-meeting-owner-not-caller",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 135,
+      "title": "§5.1 claims \"start 只为自身 project/lead 解析\", but a model-supplied meetingId resolves the project/lead from the meeting record before any ownership check",
+      "detail": "The plan's start input accepts `meetingId?:uuid` and §5.1 asserts resolution is caller-bound. The shared resolver it reuses is not: packages/teamlead/src/bridge/voice-session-start.ts:155-189 takes the `\"meetingId\" in request` branch, loads the trusted current meeting, and resolves project/lead via `resolveLeadByAgentIdAcrossRegistry(deps.projects, meeting.leadId)` — i.e. from the MEETING's owner, not the caller. Only after `await deps.preflight(...)` does the caller-side comparison happen (lead-capability-voice.ts:181-186 `reservation.leadId !== request.leadId` → denied), and preflight is not side-effect-free: preflightVoiceSession issues Discord GETs with the OTHER Lead's bot token (voice-session-preflight.ts:110-116) and probeVoiceSelfFilter opens the other Lead's inbox unix socket (voice-self-filter-probe.ts:16-74). Failure scenario: Raya (codexVoiceActions=true) has its model emit voice.session.start{mode:'meeting', meetingId:<the live meeting owned by Tadashi>}. The session is correctly denied, but only after Flywheel has burned Tadashi's bot Discord rate budget on identity/member/role/channel GETs and poked Tadashi's self-filter socket — an untrusted-model-triggered cross-Lead action the plan never contemplates. The design should require the meeting record's leadId to equal the caller's leadId BEFORE invoking the shared resolver.",
+      "findingKey": "start-resolver-binds-to-meeting-owner-not-caller"
+    },
+    {
+      "id": "d-evidence-commands-silently-skip-most-changed-teamlead-suites",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 218,
+      "title": "§6 D's teamlead command names a test file that does not exist and vitest exits 0 without running it; the named command set also omits most C-group suites",
+      "detail": "Verified by running the plan's exact command in this worktree at plan blob f1ebd297: `pnpm --filter flywheel-teamlead exec vitest run <6 positionals>` → `Test Files 5 passed (5)`, `EXIT=0`. Six paths were supplied but only five collected — `src/lead-capabilities/__tests__/voice.test.ts` (line 218, restated at line 226 as a file B/C must create) does not exist; the real file is `src/lead-capabilities/__tests__/bridge-voice.test.ts`. vitest does NOT error on a positional that matches nothing as long as other positionals match, so QA following the plan literally reports a clean exit 0 while the C-group suite never ran — the exact false-green class recorded in project memory for `pnpm --filter` name typos. Compounding this: the §6 C checklist requires assertions about `operations`/`missingOperationIds` under opt-in false, catalog/deployment/manifest wiring, the MCP `lead_operation.oneOf` tools/list shape, and the dept rules bundle — those live in `lead-capabilities/__tests__/{resolve,catalog,runtime-factory,deployment}.test.ts`, `lead-backends/codex/__tests__/lead-capability-proxy.test.ts`, `lead-backends/codex/lead-actions/__tests__/mcp-config.test.ts`, `__tests__/lead-rules-bundle.test.ts` and `__tests__/lead-runtime-tuning.test.ts`, none of which appear in the D block, and the block contains no `pnpm --filter flywheel-teamlead test:run`. Failure scenario: QA runs §6 D verbatim, records \"all green, exit 0\", and ships with the majority of the C-group acceptance assertions never executed. Fix the filename and either enumerate the remaining suites or run the whole package.",
+      "findingKey": "d-evidence-commands-silently-skip-most-changed-teamlead-suites"
+    },
+    {
+      "id": "bounded-resubscribe-is-inert-against-a-wedged-dave-session",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 92,
+      "title": "The chosen recovery lever provably cannot recover the exact failure class that produced FLY-2655, and the one lever that could (bounded connection re-establish) is excluded without analysis",
+      "detail": "Confirmed against the pinned SDK (@discordjs/voice 0.19.2 dist/index.js). The hard receive failure is DAVESession.decrypt line 955-969: on decrypt throw it increments `consecutiveFailures`; once `consecutiveFailures > failureTolerance` AND `lastTransitionId` is falsy it rethrows, which propagates through parsePacket → VoiceReceiver.onUdpMessage → `stream.destroy(error)`. `consecutiveFailures` is reset ONLY by a successful decrypt or by `recoverFromInvalidTransition` (which is unreachable in this branch, since it requires a truthy lastTransitionId), and both it and the DAVESession live on the Networking instance — which is recreated only by `configureNetworking()`, i.e. a connection re-establish (VoiceConnection line 2355-2370). §3.3 already states re-subscribe does not reset `networking.state.dave`; the consequence is stronger than the plan says: every re-subscribe dies on its first bad packet, so the 250/1000/3000ms budget + 30s cooldown + probation can never change the outcome for a wedged session, and pinning tolerance at 36 (the true 0.19.2 default, correctly identified) does not help either. Meanwhile the glue already exposes `voiceConnHandle.rejoin()` (discordWiring.ts:465-472), and §3.1 forbids \"应用层无限 rejoin\" without evaluating a single budgeted reconnect — the only in-app action that would clear the wedge. Failure scenario: the original FLY-2655 symptom reproduces; the session now stays live and degraded instead of failing, but reception never returns, §7 group one FAILs, and the issue's stated goal (\"通过有界重新订阅恢复接收\") is unmet by construction. The plan should either justify excluding a one-shot bounded reconnect or record it as the designated next lever.",
+      "findingKey": "bounded-resubscribe-is-inert-against-a-wedged-dave-session"
+    },
+    {
+      "id": "dave-diagnostic-allowlist-cannot-separate-the-7-1-hypotheses",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 247,
+      "title": "§7.1 mandates a four-row verified/disproved matrix that its own debug allowlist cannot produce",
+      "detail": "§7.1 (line 242) limits the glue to extracting `DAVE preparing/executed transition` ids/versions, the consecutive-failure count, and the reinitializing boolean; everything else only bumps `unknownDiagnosticCount`. The implemented allowlist (packages/voice-bridge/src/bots/discordWiring.ts parseDiscordReceiveDiagnostic) matches exactly those four patterns. But the DAVESession messages that actually separate the hypotheses are not in the set: `Session downgraded` / `Session upgraded` (index.js:826/830) is the direct evidence for row 2 \"某客户端非 DAVE/协商降级\"; `Invalidating transition <id>` (index.js:857) is the only way to tell the self-healing `recoverFromInvalidTransition` branch from the fatal rethrow branch; `Failed to decrypt a packet (<n> pending transition[s])` (index.js:966) distinguishes suppressed-during-transition failures from counted ones and is central to row 1 and row 3; `Session initialized/reinitialized for protocol version <n>` (index.js:772/775) establishes whether DAVE ever became ready before first PCM (row 3). Failure scenario: the next real session reproduces the fault, QA captures the JSONL exactly as §7.1 specifies, and every one of the four rows must still be written `unresolved` because the discriminating strings were all counted as `unknown` — the root-cause gate the plan sets for itself cannot be closed by the instrumentation the plan specifies. Add these four anchored patterns (numeric/boolean fields only) to the allowlist.",
+      "findingKey": "dave-diagnostic-allowlist-cannot-separate-the-7-1-hypotheses"
+    },
+    {
+      "id": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 242,
+      "title": "§7.1 enables SDK `debug:true` without declaring it default-off or time-boxed, and that stream carries the voice gateway token",
+      "detail": "Setting `debug: true` on joinVoiceChannel turns on debug for the whole VoiceConnection, not just DAVE: VoiceWebSocket emits `>> ${stringified}` for every outgoing payload (index.js:1227) and `<< ${event.data}` for every inbound one (index.js:1200), which Networking and VoiceConnection re-emit as `[NW] [WS] ...` (index.js:1685, 2456). The outgoing Identify payload contains the voice connection `token` and `session_id`. The plan's containment is correct as far as it goes (\"不能把整段文字传出 glue，未匹配记录只增加 unknownDiagnosticCount\", plus a token-like-fixture test), and today only one listener exists (discordWiring.ts:491-495) which parses via allowlist — but the plan never states that `debug` must default to false, must be enabled only for a bounded diagnostic window, and that no second `conn.on(\"debug\")` consumer may ever be added. The shipped policy in packages/voice-codex/src/receive-health.ts hardcodes `debug: true` permanently. Failure scenario: a later change adds routine logging or an evidence dump on the connection's `debug` event (a natural next step for §7.1 forensics), and live voice gateway tokens land in the daemon log or the founder-visible evidence file. Make `debug` an explicit, revocable, default-off diagnostic switch and state the single-consumer invariant.",
+      "findingKey": "sdk-debug-carries-the-voice-identify-token-and-is-not-declared-default-off"
+    },
+    {
+      "id": "identity-digest-does-not-bind-codex-voice-actions",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 141,
+      "title": "§5.1's claim that 编译身份摘要 reads the same raw codexVoiceActions value is not true of the v1 identity digest",
+      "detail": "§5.1 lists \"编译身份摘要\" among the consumers that \"均读取同一 raw 值\" (the plan hedges this in §6 C with \"若已全字段摘要\"). In fact `codexVoiceActions` appears nowhere in packages/flywheel-comm/src/ — `v1IdentityDigest` (lead-identity.ts:118-126) hashes a fixed projection, so flipping the flag does not change `identityDigest`. Authorization is still safe because captureLeadCapabilityScope re-reads the live registry each request (lead-capability-scope.ts:27-47 + `row.lead.codexVoiceActions !== true`), so revocation takes effect immediately; but the converse also holds — the grant takes effect on a running Lead process without the \"受管重编译/激活\" step §5.3 describes, and `identityDigest` is not the binding the plan implies it is. Failure scenario: an operator flips codexVoiceActions=true on disk intending the change to be inert until the managed re-activation; the Bridge starts honouring voice operations on the next request from any already-running carrier whose identityDigest still matches. Correct the sentence, or add the flag to the digest under a coordinated schema-version migration.",
+      "findingKey": "identity-digest-does-not-bind-codex-voice-actions"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "cc9b58f4-09e0-4cf4-aa73-ab1f672d54aa"
+}

@@ -1,163 +1,139 @@
 #!/usr/bin/env node
-// Offline protocol receipt: fake key, isolated home, no thread/realtime requests.
+// Offline direct-Realtime protocol receipt. The fixture key never reaches the network.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import {
-	existsSync,
-	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
-	writeFileSync,
+	statSync,
 } from "node:fs";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	CodexLeadProcess,
-	spawnCodexAppServer,
-} from "../packages/teamlead/dist/codex-process.js";
-import {
-	assertVoiceCodexHome,
-	VOICE_CODEX_HOME_CONFIG,
-} from "../packages/voice-codex/dist/codex-home.js";
-import { voiceCodexEnv } from "../packages/voice-codex/dist/config.js";
 import { RealtimeFrontend } from "../packages/voice-codex/dist/realtime.js";
+import { OPENAI_REALTIME_URL } from "../packages/voice-codex/dist/realtime-transport.js";
 
-const bin = process.argv[2] ?? "codex";
-const version = execFileSync(bin, ["--version"], {
-	encoding: "utf8",
-	timeout: 5_000,
-}).trim();
-assert.equal(
-	version,
-	"codex-cli 0.153.2",
-	"local receipt requires the approved binary version",
+const requireFromVoiceCodex = createRequire(
+	new URL("../packages/voice-codex/package.json", import.meta.url),
 );
+const wsModule = requireFromVoiceCodex("ws");
+const WebSocket = wsModule.WebSocket ?? wsModule;
+const { WebSocketServer } = wsModule;
+const fixtureKey = "sk-voice-local-fixture-not-a-real-key";
 const root = mkdtempSync(join(tmpdir(), "voice-api-auth-local-"));
-const home = join(root, "codex-home");
-mkdirSync(home, { mode: 0o700 });
-writeFileSync(join(home, "config.toml"), VOICE_CODEX_HOME_CONFIG, {
-	mode: 0o600,
-});
-const env = voiceCodexEnv({
-	HOME: root,
-	PATH: process.env.PATH,
-	HTTPS_PROXY: "http://127.0.0.1:9",
-	HTTP_PROXY: "http://127.0.0.1:9",
-	ALL_PROXY: "http://127.0.0.1:9",
-	OPENAI_API_KEY: "must-not-reach-child",
-	TEAMLEAD_API_TOKEN: "must-not-reach-child",
-	DISCORD_BOT_TOKEN: "must-not-reach-child",
-});
-assert.equal(env.OPENAI_API_KEY, undefined);
-assert.equal(env.TEAMLEAD_API_TOKEN, undefined);
-assert.equal(env.DISCORD_BOT_TOKEN, undefined);
-const shim = join(root, "checked-codex");
-const quotedBin = `'${bin.replaceAll("'", "'\"'\"'")}'`;
-writeFileSync(
-	shim,
-	`#!/bin/sh
-for name in OPENAI_API_KEY TEAMLEAD_API_TOKEN DISCORD_BOT_TOKEN LINEAR_API_KEY LEAD_TOKEN GH_TOKEN; do
-  if /usr/bin/printenv "$name" >/dev/null 2>&1; then exit 93; fi
-done
-exec ${quotedBin} "$@"
-`,
-	{ mode: 0o700 },
-);
-function client() {
-	return new CodexLeadProcess({
-		experimentalApi: true,
-		requestTimeoutMs: 5_000,
-		maxStderrBytes: 0,
-		logger: { warn() {}, error() {} },
-		spawnChild: () =>
-			spawnCodexAppServer({
-				codexBin: shim,
-				codexHome: home,
-				mcpArgv: [],
-				baseEnv: env,
+const http = createServer();
+const wss = new WebSocketServer({ server: http });
+let authorization;
+let update;
+let upstream;
+wss.on("connection", (socket, request) => {
+	upstream = socket;
+	authorization = request.headers.authorization;
+	socket.send(
+		JSON.stringify({
+			type: "session.created",
+			session: { id: "offline-session", model: "gpt-realtime-1.5" },
+		}),
+	);
+	socket.on("message", (data) => {
+		const event = JSON.parse(data.toString());
+		if (event.type !== "session.update") return;
+		update = event;
+		socket.send(
+			JSON.stringify({
+				type: "session.updated",
+				session: {
+					id: "offline-session",
+					model: "gpt-realtime-1.5",
+					...event.session,
+				},
 			}),
+		);
 	});
-}
-const first = client();
-const second = client();
-let interceptedThread = false;
+});
+
+let requestedUrl;
+let socketOptions;
+let closed;
 try {
-	assertVoiceCodexHome(home);
+	http.listen(0, "127.0.0.1");
+	await once(http, "listening");
+	const address = http.address();
+	assert(address && typeof address !== "string");
+	const localUrl = `ws://127.0.0.1:${address.port}`;
 	const frontend = new RealtimeFrontend({
-		apiKey: "sk-voice-local-fixture-not-a-real-key",
-		cwd: root,
+		apiKey: fixtureKey,
 		voice: "marin",
-		displayName: "local-fixture",
-		process: {
-			start: () => first.start(),
-			request: (method, params) => first.request(method, params),
-			notify: (method, params) => first.notify(method, params),
-			on: (event, callback) => first.on(event, callback),
-			stop: () => first.stop(),
-			startThreadWithResult: async () => {
-				interceptedThread = true;
-				throw new Error("local_probe_complete");
-			},
+		displayName: "offline-fixture",
+		minimumSessionLifetimeMs: 0,
+		socketFactory: (url, options) => {
+			requestedUrl = url;
+			socketOptions = options;
+			return new WebSocket(localUrl, options);
 		},
 		onTranscript() {},
-		onAudio() {},
-		onClosed() {},
-		onFrontendDelegation() {},
+		onSpeechAudioReady() {},
+		onSpeechResult() {},
+		onClosed(outcome) {
+			closed?.(outcome);
+		},
 	});
-	await assert.rejects(frontend.start(), /^Error: realtime_thread_start$/);
-	assert.equal(
-		interceptedThread,
-		true,
-		"API auth must finish before the intercepted thread request",
+	await frontend.start();
+	assert.equal(requestedUrl, OPENAI_REALTIME_URL);
+	assert.deepEqual(socketOptions.headers, {
+		Authorization: `Bearer ${fixtureKey}`,
+	});
+	assert.equal(socketOptions.followRedirects, false);
+	assert.equal(authorization, `Bearer ${fixtureKey}`);
+	assert.equal(update.type, "session.update");
+	assert.equal(Object.hasOwn(update.session, "model"), false);
+	const closedReceipt = new Promise((resolve) => {
+		closed = resolve;
+	});
+	upstream.send(
+		JSON.stringify({
+			type: "error",
+			error: { message: fixtureKey },
+		}),
 	);
-	assert.equal(
-		existsSync(join(home, "auth.json")),
-		false,
-		"ephemeral login must not write an auth file",
-	);
+	const outcome = await closedReceipt;
+	assert.deepEqual(outcome, { kind: "failed", reason: "realtime_protocol" });
+	assert.equal(JSON.stringify(outcome).includes(fixtureKey), false);
 	await frontend.stop();
-	await second.start();
-	const afterRestart = await second.request("account/read", {
-		refreshToken: false,
-	});
-	assert.equal(afterRestart.error, undefined);
-	assert.equal(
-		afterRestart.result?.account,
-		null,
-		"a new process must not inherit the first key",
-	);
-	assertVoiceCodexHome(home);
+
 	const inspect = (directory) => {
 		for (const entry of readdirSync(directory, { withFileTypes: true })) {
 			const path = join(directory, entry.name);
 			if (entry.isDirectory()) inspect(path);
-			else if (entry.isFile())
+			else if (entry.isFile() && statSync(path).size > 0) {
 				assert.equal(
-					readFileSync(path).includes(
-						Buffer.from("sk-voice-local-fixture-not-a-real-key"),
-					),
+					readFileSync(path).includes(Buffer.from(fixtureKey)),
 					false,
-					"fixture credential must not persist anywhere in the temporary home",
+					"fixture credential must not persist",
 				);
+			}
 		}
 	};
-	inspect(home);
+	inspect(root);
 	console.log(
 		JSON.stringify({
-			version,
-			apiAuthReceipt: true,
-			threadRequests: 0,
-			realtimeRequests: 0,
+			transport: "openai_realtime_direct",
+			offlineProtocolReceipt: true,
+			fixedEndpoint: true,
+			redirectsDisabled: true,
+			apiRequests: 0,
+			codexProcesses: 0,
 			persistedAuth: false,
 			credentialBytesPersisted: false,
-			actualChildEnvClean: true,
-			restartUnauthenticated: true,
+			errorRedacted: true,
 		}),
 	);
 } finally {
-	await first.stop();
-	await second.stop();
+	for (const client of wss.clients) client.terminate();
+	await new Promise((resolve) => wss.close(resolve));
+	await new Promise((resolve) => http.close(resolve));
 	rmSync(root, { recursive: true, force: true });
 }

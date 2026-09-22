@@ -35,6 +35,7 @@ export interface UplinkGateDegradedEvent {
 export interface UplinkGateFrame {
 	frame: Buffer;
 	speech: boolean;
+	metadata?: unknown;
 }
 
 export interface UplinkGateSummary {
@@ -73,6 +74,7 @@ interface UplinkSpeechGateOptions {
 
 interface DelayedFrame {
 	frame: Buffer;
+	metadata?: unknown;
 	requiredChunk: number;
 	backfilled: boolean;
 }
@@ -252,7 +254,7 @@ export class UplinkSpeechGate {
 		}
 	}
 
-	push(frame: Buffer, _atMs: number): void {
+	push(frame: Buffer, _atMs: number, metadata?: unknown): void {
 		const chain = this.chain;
 		if (!chain) throw new Error("uplink speech gate has no active chain");
 		if (chain.endedAtMs !== undefined) {
@@ -260,7 +262,7 @@ export class UplinkSpeechGate {
 		}
 		chain.framesTotal += 1;
 		if (chain.mode === "passthrough" || chain.degraded !== undefined) {
-			this.emitFrame(chain, frame, true);
+			this.emitFrame(chain, frame, true, metadata);
 			return;
 		}
 		const samples = downsampleFrame(frame, chain.resampleHistory);
@@ -269,6 +271,7 @@ export class UplinkSpeechGate {
 			chain.nextChunk * SILERO_CHUNK_SAMPLES + chain.sampleResidue.length;
 		chain.delay.push({
 			frame,
+			metadata,
 			requiredChunk: Math.floor((sampleEnd - 1) / SILERO_CHUNK_SAMPLES),
 			backfilled: false,
 		});
@@ -341,6 +344,7 @@ export class UplinkSpeechGate {
 					active.degraded !== undefined ||
 						delayed.backfilled ||
 						committed === true,
+					delayed.metadata,
 				);
 			}
 		}
@@ -447,7 +451,12 @@ export class UplinkSpeechGate {
 			chain.degraded !== undefined ||
 			chain.opened;
 		for (const delayed of chain.delay) {
-			this.emitFrame(chain, delayed.frame, speech || delayed.backfilled);
+			this.emitFrame(
+				chain,
+				delayed.frame,
+				speech || delayed.backfilled,
+				delayed.metadata,
+			);
 		}
 		const heldMs =
 			chain.endedAtMs !== undefined && chain.endedWithScoreInFlight
@@ -492,8 +501,13 @@ export class UplinkSpeechGate {
 		this.chain = null;
 	}
 
-	private emitFrame(chain: Chain, frame: Buffer, speech: boolean): void {
-		this.ready.push({ frame, speech });
+	private emitFrame(
+		chain: Chain,
+		frame: Buffer,
+		speech: boolean,
+		metadata?: unknown,
+	): void {
+		this.ready.push({ frame, speech, metadata });
 		if (speech) chain.framesPassed += 1;
 		else chain.framesSilenced += 1;
 	}
@@ -506,7 +520,7 @@ export class UplinkSpeechGate {
 		chain.degraded = reason;
 		chain.framesSilencedBeforeDegrade = chain.framesSilenced;
 		for (const delayed of chain.delay.splice(0)) {
-			this.emitFrame(chain, delayed.frame, true);
+			this.emitFrame(chain, delayed.frame, true, delayed.metadata);
 		}
 		this.transientFailures += 1;
 		const sessionPermanent = this.transientFailures >= 3;

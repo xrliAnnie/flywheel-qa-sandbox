@@ -62,6 +62,7 @@ async function start() {
 		createVoiceSessionRouter({
 			store,
 			leaseTtlMs: 15_000,
+			leaseRenewMs: 4_000,
 			now: () => NOW,
 			newSessionId: () => SESSION_ID,
 			resolveStart: (_body, credentialTier) => ({
@@ -245,6 +246,122 @@ describe("voice session routes", () => {
 				body: { attemptToken, status: "confirmed" },
 			}),
 		).toMatchObject({ status: 200, body: { status: "confirmed" } });
+	});
+
+	it.each([
+		["realtime_session_expiring", "live"],
+		["realtime_session_expiring", "ending"],
+		["realtime_capacity", "live"],
+		["realtime_capacity", "ending"],
+	] as const)(
+		"accepts the daemon normal-end reason %s from %s",
+		async (reason, terminalFrom) => {
+			const { base } = await start();
+			await call(base, "", {
+				method: "POST",
+				token: INGEST,
+				body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+			});
+			const claimed = await call(base, `/${SESSION_ID}/claim`, {
+				method: "POST",
+				token: MASTER,
+				body: { daemonBootId: "boot-a" },
+			});
+			const lease = (claimed.body as { leaseToken: string }).leaseToken;
+			for (const state of ["warming", "live"] as const) {
+				expect(
+					await call(base, `/${SESSION_ID}/state`, {
+						method: "POST",
+						token: MASTER,
+						lease,
+						body: { state },
+					}),
+				).toMatchObject({ status: 200, body: { state } });
+			}
+			if (terminalFrom === "ending") {
+				expect(
+					await call(base, `/${SESSION_ID}/stop`, {
+						method: "POST",
+						token: INGEST,
+					}),
+				).toMatchObject({ status: 200, body: { state: "ending" } });
+			}
+			expect(
+				await call(base, `/${SESSION_ID}/state`, {
+					method: "POST",
+					token: MASTER,
+					lease,
+					body: { state: "ended", reason },
+				}),
+			).toMatchObject({ status: 200, body: { state: "ended" } });
+			expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+				state: "ended",
+				reason,
+			});
+		},
+	);
+
+	it("validates receive health and rejects a same-sequence conflict", async () => {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claimed = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		const lease = (claimed.body as { leaseToken: string }).leaseToken;
+		const receiveHealth = {
+			version: 1,
+			sequence: 2,
+			state: "degraded",
+			reason: "dave_decrypt",
+			failures: 1,
+			retries: 1,
+			lastPcmAt: null,
+		};
+		expect(
+			await call(base, `/${SESSION_ID}/renew`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { receiveHealth },
+			}),
+		).toMatchObject({
+			status: 200,
+			body: { acceptedHealthSequence: 2 },
+		});
+		expect(await call(base, `/${SESSION_ID}`, { token: INGEST })).toMatchObject(
+			{
+				status: 200,
+				body: {
+					receiveHealth: {
+						...receiveHealth,
+						observedAt: NOW,
+						fresh: true,
+					},
+				},
+			},
+		);
+		expect(
+			await call(base, `/${SESSION_ID}/renew`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { receiveHealth: { ...receiveHealth, failures: 2 } },
+			}),
+		).toEqual({ status: 400, body: { error: "health_sequence_conflict" } });
+		expect(
+			await call(base, `/${SESSION_ID}/renew`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { receiveHealth: { ...receiveHealth, extra: true } },
+			}),
+		).toEqual({ status: 400, body: { error: "voice_receive_health_invalid" } });
 	});
 
 	it("reports terminal abandoned speech after the ledger transition", async () => {

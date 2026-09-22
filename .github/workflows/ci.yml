@@ -1537,6 +1537,9 @@ jobs:
           sqlite3 --version
           pnpm test:cycle-time
 
+      - name: Test — FLY-2655 isolated 529 voice room
+        run: node --test scripts/__tests__/fly2655-voice-room.test.mjs
+
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"

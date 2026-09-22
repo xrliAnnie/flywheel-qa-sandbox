@@ -1,0 +1,93 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "104498bf-bfd8-4f6b-b50b-b3c3c16a865a",
+  "round": 2,
+  "findings": [
+    {
+      "id": "room-has-no-connection-fatal-channel",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 76,
+      "title": "§3.2 leans on a connection-level fatal channel that DiscordVoiceRoom does not have, and this round removed the only accidental substitute",
+      "detail": "The R1 HIGH is correctly fixed — classification is now by arrival channel (\"当前 capture 的 opus.on(error) 一律是接收包失败\"), with `receive_packet` added to ReceiveReason and §6-A extended to AEAD/parse/RangeError cases. That is the right call and it matches the SDK: `dist/index.js:2141` is the only producer of an errored destroy on a receive subscription, and connection teardown at `:2277` calls `stream.destroy()` with no argument (emits `close`, not `error`). But §3.2 now also asserts \"身份、token、lease、frontend 和连接级 error 在独立通道保持致命语义\", and the table row still reads \"未知连接致命错误 → 既有 failed/结束清理\". There is no such existing channel in this room: `discord-room.ts:18-32` builds `RoomDeps` from twelve picks that exclude both `connectionEvents` and `voiceConnHandle`, and the class registers no connection error/stateChange listener anywhere. Before this round `opus.on(\"error\")` → `fail` → `onError` → `session.ts:105-109` was the de facto (accidental) receive-side termination route; now that it is fully degraded, nothing in the room observes voice-connection loss at all, and §3.1 only hedges (\"若需要连接监听补齐\"). The consequence is bounded — `session.ts:204-210` ends the session on `founderPresence(false)` via the separate gateway connection, text-stop still works, and `sweepVoiceSessions` fences on lease expiry — so this is not ship-blocking. Make the connection listener mandatory in §3.1/§6-A, or say plainly that connection loss is covered only by presence/text-stop/lease and delete the \"既有 failed/结束清理\" claim, so QA does not test for a route that was never built.",
+      "failure_scenario": "The voice UDP/WS connection is destroyed mid-session while the gateway stays up. Receive streams get `destroy()` with no error, so the new degraded path never fires and no fatal path fires either. The retry loop sees \"上个 opus close 已观察到\", re-subscribes on the dead connection, gets no packets, burns the budget through `receive_no_pcm` into `retry_exhausted`, and the session sits `live` with a degraded card until the founder happens to leave the channel — while QA, reading §3.2, records the outcome as a failure of the fatal channel rather than its absence.",
+      "findingKey": "room-has-no-connection-fatal-channel"
+    },
+    {
+      "id": "assert-lease-in-callbacks-can-crash-the-daemon",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 60,
+      "title": "New §3.3 assertLease() rule needs an explicit no-throw-from-listener guard",
+      "detail": "This round added to §3.3: \"Room options 增 assertLease()，cli 从当前 context.lease.assert 传入，所有重试/数据转发调用它.\" The seam is real and correctly identified — `cli.ts:268` already passes `assertLease: () => context.lease.assert()` to the session, so wiring the same closure into the room is clean. But `VoiceLease.assert()` throws `new Error(\"voice_lease_fenced\")` synchronously (`bridge-client.ts:54-59`), and the two call sites the sentence names are exactly the two where a synchronous throw cannot be caught by a caller: a `decoder.on(\"data\", …)` listener and a `setTimeout` retry callback. An EventEmitter listener or timer callback that throws surfaces as `uncaughtException` and takes down the whole voice daemon — the opposite of the plan's goal of keeping a degraded session playable. The paragraph's existing \"不能漏出到进程 unhandled\" rule is scoped to the synchronous subscribe/createDecoder/pipe construction path immediately before it, so it does not obviously extend to the new sentence. State it directly: in stream/timer callbacks assertLease must be invoked inside a try and converted into the existing fatal/cleanup route, never allowed to propagate out of the listener; and add a §6-A case that fences the lease mid-capture and asserts the daemon survives to report rather than crashing.",
+      "failure_scenario": "Lease renew misses its window while the founder is speaking. The next decoded PCM chunk arrives, the data listener calls assertLease(), `voice_lease_fenced` throws out of the EventEmitter, Node raises uncaughtException and the voice daemon process exits — killing playback, the outbound poller and the evidence log, instead of the orderly fenced shutdown the design specifies.",
+      "findingKey": "assert-lease-in-callbacks-can-crash-the-daemon"
+    },
+    {
+      "id": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 110,
+      "title": "The in-call 400 fallback invalidates the config.ts:96 lease invariant when leaseHttpTimeoutMs exceeds leaseRenewMs",
+      "detail": "The R1 MEDIUM is fixed exactly as asked — §4.2 now specifies an in-call retry (\"在同一次调用内部捕获400 … 立即只重试一次无health的renew，使用这次请求的sentAt安装lease\"), and \"使用这次请求的sentAt\" is precisely right: `bridge-client.ts:130-141` captures `sentAt` before the request and `lease.install(sentAt, ttl, httpTimeout)` sets `deadlineMs = sentAt + ttl - httpTimeout` (`:45`), so reusing the first attempt's sentAt would over-credit the deadline. The residual is that `config.ts:96` enforces `leaseRenewMs + leaseHttpTimeoutMs < leaseTtlMs/2`, an invariant written for one HTTP round trip per renew cycle. With the fallback the worst case becomes `leaseRenewMs + 2×leaseHttpTimeoutMs` measured against a local deadline of `leaseTtlMs - leaseHttpTimeoutMs`, i.e. the real requirement is `leaseRenewMs + 3×leaseHttpTimeoutMs < leaseTtlMs`. The existing guard implies that only while `leaseHttpTimeoutMs ≤ leaseRenewMs`, which holds at the defaults (2000 ≤ 4000) but not for every legal override. Either state the required inequality in §4.2 or tighten the config assertion alongside the change.",
+      "failure_scenario": "An operator sets FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS=5000 and FLYWHEEL_VOICE_LEASE_RENEW_MS=1000 with the default 15s TTL. config.ts:96 passes (6000 < 7500). A health-validation 400 then triggers the fallback: the cycle costs up to 1000 + 10000 = 11000ms against a local deadline of 10000ms, so `lease.install` throws voice_lease_fenced, `authorityLost` matches, and the session ends `lease_lost` — the exact outcome §4.2 says a display-encoding bug must never cause.",
+      "findingKey": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle"
+    },
+    {
+      "id": "null-health-terminal-rows-keep-the-requested-card-forever",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 125,
+      "title": "New CardProjector eligibility rule silently drops terminal cards for sessions that never published health",
+      "detail": "The R1 MEDIUM on tick starvation is well fixed — §4.3 now uses an independent CardProjector timer with its own in-flight guard, concurrency 1, a 25-row cursor bound and abort-on-stop, and states that `VoiceSessionRuntime.tick` never awaits card work. `VoiceSessionRuntime` already exposes matching `start()`/`stop()` (`voice-session-runtime.ts:161-181`) and `createVoiceSessionServices` is the natural owner, so the seam exists. The new eligibility rule (\"扫描资格明确限定 receive_health_observed_at 非null且root存在\") is a sensible anti-backfill guard, but it silently reverses the earlier requirement that terminal rows be projected: any session that reaches a terminal state before its first health report — a failure during claim/warming, `lead_bot_identity_mismatch`, a frontend start failure, or an old daemon — has `receive_health_observed_at` null forever and is never scanned, so its root message keeps reading `📻 语音会话已请求` (voice-session-provisioner.ts:98) indefinitely. That is defensible, but it should be written as an accepted limit with the observable that replaces it (thread status post / GET sessionBody), not left as a silent consequence of the scan predicate.",
+      "failure_scenario": "A session fails during warming with lead_bot_identity_mismatch before the room ever starts, so no receive-health snapshot is ever sent. The projector never selects the row; the founder's channel keeps a root card saying the voice session has been requested, with no indication it died, and a later reader treats the stale card as a card-projection bug rather than the documented scan boundary.",
+      "findingKey": "null-health-terminal-rows-keep-the-requested-card-forever"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "room-has-no-connection-fatal-channel",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 76,
+      "title": "§3.2 leans on a connection-level fatal channel that DiscordVoiceRoom does not have, and this round removed the only accidental substitute",
+      "detail": "The R1 HIGH is correctly fixed — classification is now by arrival channel (\"当前 capture 的 opus.on(error) 一律是接收包失败\"), with `receive_packet` added to ReceiveReason and §6-A extended to AEAD/parse/RangeError cases. That is the right call and it matches the SDK: `dist/index.js:2141` is the only producer of an errored destroy on a receive subscription, and connection teardown at `:2277` calls `stream.destroy()` with no argument (emits `close`, not `error`). But §3.2 now also asserts \"身份、token、lease、frontend 和连接级 error 在独立通道保持致命语义\", and the table row still reads \"未知连接致命错误 → 既有 failed/结束清理\". There is no such existing channel in this room: `discord-room.ts:18-32` builds `RoomDeps` from twelve picks that exclude both `connectionEvents` and `voiceConnHandle`, and the class registers no connection error/stateChange listener anywhere. Before this round `opus.on(\"error\")` → `fail` → `onError` → `session.ts:105-109` was the de facto (accidental) receive-side termination route; now that it is fully degraded, nothing in the room observes voice-connection loss at all, and §3.1 only hedges (\"若需要连接监听补齐\"). The consequence is bounded — `session.ts:204-210` ends the session on `founderPresence(false)` via the separate gateway connection, text-stop still works, and `sweepVoiceSessions` fences on lease expiry — so this is not ship-blocking. Make the connection listener mandatory in §3.1/§6-A, or say plainly that connection loss is covered only by presence/text-stop/lease and delete the \"既有 failed/结束清理\" claim, so QA does not test for a route that was never built.",
+      "failure_scenario": "The voice UDP/WS connection is destroyed mid-session while the gateway stays up. Receive streams get `destroy()` with no error, so the new degraded path never fires and no fatal path fires either. The retry loop sees \"上个 opus close 已观察到\", re-subscribes on the dead connection, gets no packets, burns the budget through `receive_no_pcm` into `retry_exhausted`, and the session sits `live` with a degraded card until the founder happens to leave the channel — while QA, reading §3.2, records the outcome as a failure of the fatal channel rather than its absence.",
+      "findingKey": "room-has-no-connection-fatal-channel"
+    },
+    {
+      "id": "assert-lease-in-callbacks-can-crash-the-daemon",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 60,
+      "title": "New §3.3 assertLease() rule needs an explicit no-throw-from-listener guard",
+      "detail": "This round added to §3.3: \"Room options 增 assertLease()，cli 从当前 context.lease.assert 传入，所有重试/数据转发调用它.\" The seam is real and correctly identified — `cli.ts:268` already passes `assertLease: () => context.lease.assert()` to the session, so wiring the same closure into the room is clean. But `VoiceLease.assert()` throws `new Error(\"voice_lease_fenced\")` synchronously (`bridge-client.ts:54-59`), and the two call sites the sentence names are exactly the two where a synchronous throw cannot be caught by a caller: a `decoder.on(\"data\", …)` listener and a `setTimeout` retry callback. An EventEmitter listener or timer callback that throws surfaces as `uncaughtException` and takes down the whole voice daemon — the opposite of the plan's goal of keeping a degraded session playable. The paragraph's existing \"不能漏出到进程 unhandled\" rule is scoped to the synchronous subscribe/createDecoder/pipe construction path immediately before it, so it does not obviously extend to the new sentence. State it directly: in stream/timer callbacks assertLease must be invoked inside a try and converted into the existing fatal/cleanup route, never allowed to propagate out of the listener; and add a §6-A case that fences the lease mid-capture and asserts the daemon survives to report rather than crashing.",
+      "failure_scenario": "Lease renew misses its window while the founder is speaking. The next decoded PCM chunk arrives, the data listener calls assertLease(), `voice_lease_fenced` throws out of the EventEmitter, Node raises uncaughtException and the voice daemon process exits — killing playback, the outbound poller and the evidence log, instead of the orderly fenced shutdown the design specifies.",
+      "findingKey": "assert-lease-in-callbacks-can-crash-the-daemon"
+    },
+    {
+      "id": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 110,
+      "title": "The in-call 400 fallback invalidates the config.ts:96 lease invariant when leaseHttpTimeoutMs exceeds leaseRenewMs",
+      "detail": "The R1 MEDIUM is fixed exactly as asked — §4.2 now specifies an in-call retry (\"在同一次调用内部捕获400 … 立即只重试一次无health的renew，使用这次请求的sentAt安装lease\"), and \"使用这次请求的sentAt\" is precisely right: `bridge-client.ts:130-141` captures `sentAt` before the request and `lease.install(sentAt, ttl, httpTimeout)` sets `deadlineMs = sentAt + ttl - httpTimeout` (`:45`), so reusing the first attempt's sentAt would over-credit the deadline. The residual is that `config.ts:96` enforces `leaseRenewMs + leaseHttpTimeoutMs < leaseTtlMs/2`, an invariant written for one HTTP round trip per renew cycle. With the fallback the worst case becomes `leaseRenewMs + 2×leaseHttpTimeoutMs` measured against a local deadline of `leaseTtlMs - leaseHttpTimeoutMs`, i.e. the real requirement is `leaseRenewMs + 3×leaseHttpTimeoutMs < leaseTtlMs`. The existing guard implies that only while `leaseHttpTimeoutMs ≤ leaseRenewMs`, which holds at the defaults (2000 ≤ 4000) but not for every legal override. Either state the required inequality in §4.2 or tighten the config assertion alongside the change.",
+      "failure_scenario": "An operator sets FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS=5000 and FLYWHEEL_VOICE_LEASE_RENEW_MS=1000 with the default 15s TTL. config.ts:96 passes (6000 < 7500). A health-validation 400 then triggers the fallback: the cycle costs up to 1000 + 10000 = 11000ms against a local deadline of 10000ms, so `lease.install` throws voice_lease_fenced, `authorityLost` matches, and the session ends `lease_lost` — the exact outcome §4.2 says a display-encoding bug must never cause.",
+      "findingKey": "renew-fallback-doubles-worst-case-http-inside-one-lease-cycle"
+    },
+    {
+      "id": "null-health-terminal-rows-keep-the-requested-card-forever",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2655-voice-receive-recovery/plan.md",
+      "line": 125,
+      "title": "New CardProjector eligibility rule silently drops terminal cards for sessions that never published health",
+      "detail": "The R1 MEDIUM on tick starvation is well fixed — §4.3 now uses an independent CardProjector timer with its own in-flight guard, concurrency 1, a 25-row cursor bound and abort-on-stop, and states that `VoiceSessionRuntime.tick` never awaits card work. `VoiceSessionRuntime` already exposes matching `start()`/`stop()` (`voice-session-runtime.ts:161-181`) and `createVoiceSessionServices` is the natural owner, so the seam exists. The new eligibility rule (\"扫描资格明确限定 receive_health_observed_at 非null且root存在\") is a sensible anti-backfill guard, but it silently reverses the earlier requirement that terminal rows be projected: any session that reaches a terminal state before its first health report — a failure during claim/warming, `lead_bot_identity_mismatch`, a frontend start failure, or an old daemon — has `receive_health_observed_at` null forever and is never scanned, so its root message keeps reading `📻 语音会话已请求` (voice-session-provisioner.ts:98) indefinitely. That is defensible, but it should be written as an accepted limit with the observable that replaces it (thread status post / GET sessionBody), not left as a silent consequence of the scan predicate.",
+      "failure_scenario": "A session fails during warming with lead_bot_identity_mismatch before the room ever starts, so no receive-health snapshot is ever sent. The projector never selects the row; the founder's channel keeps a root card saying the voice session has been requested, with no indication it died, and a later reader treats the stale card as a card-projection bug rather than the documented scan boundary.",
+      "findingKey": "null-health-terminal-rows-keep-the-requested-card-forever"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "76a4f793-4b73-4519-a27f-95311630fa03"
+}

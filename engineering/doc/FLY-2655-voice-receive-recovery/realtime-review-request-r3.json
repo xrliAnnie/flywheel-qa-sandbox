@@ -1,0 +1,12 @@
+{
+  "at": "2026-09-20T22:27:07.521844+00:00",
+  "executionId": "87f166c8-c9c4-4043-bd4e-7130997fdccf",
+  "questionId": "1e7e6c09-a3ae-423c-b952-183e8235892e",
+  "requestId": "508b90a8-5c0e-409f-b9fe-0a5f0818417f",
+  "accepted": true,
+  "designCommit": "c1fc022f2",
+  "planSha256": "2163ea0918231d5ae8dddb5d6c1e048e3732451c1cf9ff791ae98a57a4b302d2",
+  "correctionSha256": "da6b77517031e4066523dbdb0f765a913b72108708556baed7ed7db3dfd50a17",
+  "previousVerdict": "CHANGES_REQUESTED",
+  "previousReview": "realtime-design-review-r2.json"
+}

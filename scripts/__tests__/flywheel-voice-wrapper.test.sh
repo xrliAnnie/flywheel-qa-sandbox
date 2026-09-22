@@ -27,6 +27,7 @@ check_wrapper "host config" 'host_config_load'
 check_wrapper "dotenv export" '^set -a'
 check_wrapper "host gate" 'HOST_TMUX_GATE_BIN.*gate voice'
 check_wrapper "host receipt verification" 'HOST_TMUX_GATE_BIN.*verify voice'
+check_wrapper "build identity export" 'export FLYWHEEL_VOICE_BUILD_SHA='
 check_wrapper "restart storm gate" 'RESTART_STORM_GATE_BIN.*gate voice'
 check_wrapper "pid guard" 'voice\.pid'
 check_wrapper "built daemon exec" '^exec node packages/voice-codex/dist/cli\.js'
@@ -85,6 +86,7 @@ chmod +x "$ROOT/meta-alert" "$ROOT/repo/scripts/lib/bounded-run.sh"
 chmod +x "$ROOT/host-gate" "$ROOT/restart-gate" "$ROOT/home/.local/bin/node"
 : > "$ROOT/repo/packages/voice-codex/dist/cli.js"
 printf 'TEAMLEAD_API_TOKEN=test-only\nexport OPENAI_API_KEY=test-api-only\n' > "$ROOT/state/.env"
+printf '%040d\n' 0 | tr '0' 'a' > "$ROOT/state/deployed-sha"
 
 # Adversarial inherited host settings must never reach a wrapper subprocess.
 # These are all fixtures: even the RED regression cannot touch production.
@@ -126,6 +128,7 @@ host_config_load() {
 EOF
 : > "$ROOT/configured-repo/packages/voice-codex/dist/cli.js"
 printf 'TEAMLEAD_API_TOKEN=test-only\nexport OPENAI_API_KEY=test-api-only\n' > "$ROOT/configured-state/.env"
+printf '%040d\n' 0 | tr '0' 'b' > "$ROOT/configured-state/deployed-sha"
 : > "$ROOT/node-calls"
 if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
   FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \

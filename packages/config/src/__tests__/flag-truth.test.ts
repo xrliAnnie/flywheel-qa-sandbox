@@ -463,6 +463,15 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("classifies the FLY-2655 voice build SHA as per-invocation identity", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_VOICE_BUILD_SHA).toMatch(
+			/FLY-2655.*per-invocation build identity/i,
+		);
+		expect(
+			FEATURE_FLAGS.some((flag) => flag.envVar === "FLYWHEEL_VOICE_BUILD_SHA"),
+		).toBe(false);
+	});
+
 	it("registers the FLY-1608 complete marker path as non-flag plumbing", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_COMPLETE_MARKER_DIR).toMatch(
 			/plumbing.*marker dir/i,

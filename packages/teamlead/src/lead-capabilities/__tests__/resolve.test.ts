@@ -60,6 +60,34 @@ describe("current Lead capability projection", () => {
 			),
 		).toEqual([]);
 	});
+	it("keeps voice operations absent from both available and missing until opt-in", () => {
+		const voiceIds = [
+			"voice.session.start",
+			"voice.session.status",
+			"voice.session.stop",
+		];
+		const unconfigured = resolve(row(), ["bridge"], voiceIds)!;
+		expect(
+			unconfigured.operations.filter((op) => voiceIds.includes(op.operationId)),
+		).toEqual([]);
+		expect(
+			unconfigured.missingOperationIds.filter((id) => voiceIds.includes(id)),
+		).toEqual([]);
+		const enabled = resolve(
+			row({ codexVoiceActions: true }),
+			["bridge"],
+			voiceIds,
+		)!;
+		expect(
+			enabled.operations
+				.filter((op) => voiceIds.includes(op.operationId))
+				.map((op) => op.operationId),
+		).toEqual(voiceIds);
+		expect(
+			resolve(row({ codexVoiceActions: true }), ["bridge"], [])!
+				.missingOperationIds,
+		).toEqual(expect.arrayContaining(voiceIds));
+	});
 	it("keeps old rows unadopted and never turns reserved handlers into available operations", () => {
 		expect(
 			resolve(row({ codexCapabilityBundleVersion: undefined })),

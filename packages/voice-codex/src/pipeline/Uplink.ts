@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { FrameQueue } from "../audio/FrameQueue.js";
 import { JitterBuffer } from "../audio/JitterBuffer.js";
 import { Downmix48to24 } from "../audio/Resample.js";
@@ -17,8 +18,18 @@ type AppendOutcome =
 	| "dropped:stale-generation"
 	| "dropped:closed";
 
+export interface UplinkFrameMetadata {
+	ownerUserId: string | null;
+	utteranceId: string | null;
+}
+
 interface UplinkOptions {
-	appendAudio(frame: Buffer, sessionGeneration: number): AppendOutcome;
+	appendAudio(
+		frame: Buffer,
+		sessionGeneration: number,
+		metadata: UplinkFrameMetadata,
+	): AppendOutcome;
+	createUtteranceId?(): string;
 	sessionGeneration: number;
 	prebufferFrames: number;
 	maxQueueFrames: number;
@@ -29,11 +40,14 @@ interface UplinkOptions {
 		UplinkSpeechGate,
 		"begin" | "push" | "end" | "cancel" | "takeDue" | "takeCompleted"
 	>;
-	onGateSummary?(summary: UplinkGateSummary): void;
+	onGateSummary?(
+		summary: UplinkGateSummary & { utteranceId: string | null },
+	): void;
 }
 
 export class Uplink {
 	private activeOwner: string | null = null;
+	private activeUtteranceId: string | null = null;
 	private downmix = new Downmix48to24();
 	private readonly voiceFrames = new FrameQueue(PCM48_STEREO_FRAME_BYTES);
 	private readonly frames = new FrameQueue(PCM24_MONO_SILENCE.length);
@@ -72,6 +86,11 @@ export class Uplink {
 		this.activeGateMode = null;
 	}
 
+	cancelUtterance(): void {
+		this.options.speechGate?.cancel();
+		this.activeGateMode = null;
+	}
+
 	speakingStart(userId: string, authorized: boolean): void {
 		if (!authorized) {
 			this.droppedUnauthorized += 1;
@@ -79,6 +98,8 @@ export class Uplink {
 		}
 		if (this.activeOwner === null) {
 			this.activeOwner = userId;
+			this.activeUtteranceId =
+				this.options.createUtteranceId?.() ?? randomUUID();
 			this.downmix = new Downmix48to24();
 			this.voiceFrames.flush();
 			this.frames.flush();
@@ -88,6 +109,7 @@ export class Uplink {
 	speakingEnd(userId: string): void {
 		if (this.activeOwner !== userId) return;
 		this.activeOwner = null;
+		this.activeUtteranceId = null;
 		this.voiceFrames.flush();
 		this.frames.flush();
 	}
@@ -110,10 +132,10 @@ export class Uplink {
 			this.options.onVoiceFrame?.(frame, (this.options.now ?? Date.now)());
 			if (this.options.speechGate) {
 				const atMs = (this.options.now ?? Date.now)();
-				this.options.speechGate.push(frame, atMs);
+				this.options.speechGate.push(frame, atMs, this.currentMetadata());
 				this.drainSpeechGate(atMs);
 			} else {
-				this.enqueueFrame(frame, true);
+				this.enqueueFrame(frame, true, this.currentMetadata());
 			}
 		}
 	}
@@ -144,12 +166,16 @@ export class Uplink {
 
 	tick(): AppendOutcome {
 		this.drainSpeechGate((this.options.now ?? Date.now)());
-		const frame = this.micOpen
-			? this.jitter.take()
-			: Buffer.from(PCM24_MONO_SILENCE);
+		const tagged = this.micOpen
+			? this.jitter.takeTagged()
+			: { frame: Buffer.from(PCM24_MONO_SILENCE), metadata: undefined };
+		const metadata = this.isMetadata(tagged.metadata)
+			? tagged.metadata
+			: { ownerUserId: null, utteranceId: null };
 		const outcome = this.options.appendAudio(
-			frame,
+			tagged.frame,
 			this.options.sessionGeneration,
+			metadata,
 		);
 		this.options.record({ direction: "uplink", outcome });
 		return outcome;
@@ -159,20 +185,54 @@ export class Uplink {
 		const gate = this.options.speechGate;
 		if (!gate) return;
 		for (const decision of gate.takeDue(atMs)) {
-			this.enqueueFrame(decision.frame, decision.speech);
+			this.enqueueFrame(
+				decision.frame,
+				decision.speech,
+				this.isMetadata(decision.metadata)
+					? decision.metadata
+					: { ownerUserId: null, utteranceId: null },
+			);
 		}
 		for (const summary of gate.takeCompleted()) {
-			this.options.onGateSummary?.(summary);
+			this.options.onGateSummary?.({
+				...summary,
+				utteranceId: this.activeUtteranceId,
+			});
 		}
 	}
 
-	private enqueueFrame(frame: Buffer, speech: boolean): void {
+	private enqueueFrame(
+		frame: Buffer,
+		speech: boolean,
+		metadata: UplinkFrameMetadata,
+	): void {
 		const pcm24 = speech
 			? this.downmix.push(frame)
 			: Buffer.from(PCM24_MONO_SILENCE);
 		this.frames.push(pcm24);
 		for (let ready = this.frames.take(); ready; ready = this.frames.take()) {
-			this.jitter.push(ready);
+			this.jitter.pushTagged(
+				ready,
+				speech ? metadata : { ownerUserId: null, utteranceId: null },
+			);
 		}
+	}
+
+	private currentMetadata(): UplinkFrameMetadata {
+		return {
+			ownerUserId: this.activeOwner,
+			utteranceId: this.activeUtteranceId,
+		};
+	}
+
+	private isMetadata(value: unknown): value is UplinkFrameMetadata {
+		if (!value || typeof value !== "object") return false;
+		const candidate = value as Partial<UplinkFrameMetadata>;
+		return (
+			(candidate.ownerUserId === null ||
+				typeof candidate.ownerUserId === "string") &&
+			(candidate.utteranceId === null ||
+				typeof candidate.utteranceId === "string")
+		);
 	}
 }

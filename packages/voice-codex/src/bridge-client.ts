@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ReceiveHealth } from "flywheel-voice-core";
 import { validateVoiceBridgeUrl } from "./config.js";
 
 export interface VoiceSessionProjection {
@@ -316,19 +317,46 @@ export class BridgeVoiceClient {
 		sessionId: string,
 		leaseToken: string,
 		lease: VoiceLease,
+		receiveHealth?: ReceiveHealth,
 	): Promise<{ state: string; leaseExpiresAt: string }> {
 		lease.assert();
-		const sentAt = this.monoNow();
-		const body = await this.request<{
+		let sentAt = this.monoNow();
+		let body: {
 			state: string;
 			leaseTtlMs: number;
 			leaseExpiresAt: string;
-		}>(`/api/voice/sessions/${encodeURIComponent(sessionId)}/renew`, {
-			operation: "renew",
-			routeTemplate: "/api/voice/sessions/:sessionId/renew",
-			method: "POST",
-			leaseToken,
-		});
+		};
+		try {
+			body = await this.request(
+				`/api/voice/sessions/${encodeURIComponent(sessionId)}/renew`,
+				{
+					operation: "renew",
+					routeTemplate: "/api/voice/sessions/:sessionId/renew",
+					method: "POST",
+					leaseToken,
+					...(receiveHealth ? { body: { receiveHealth } } : {}),
+				},
+			);
+		} catch (error) {
+			if (
+				!receiveHealth ||
+				!(error instanceof BridgeVoiceHttpError) ||
+				error.status !== 400
+			)
+				throw error;
+			console.warn("health_publish_failed");
+			lease.assert();
+			sentAt = this.monoNow();
+			body = await this.request(
+				`/api/voice/sessions/${encodeURIComponent(sessionId)}/renew`,
+				{
+					operation: "renew",
+					routeTemplate: "/api/voice/sessions/:sessionId/renew",
+					method: "POST",
+					leaseToken,
+				},
+			);
+		}
 		lease.install(sentAt, body.leaseTtlMs, this.httpTimeoutMs);
 		return { state: body.state, leaseExpiresAt: body.leaseExpiresAt };
 	}

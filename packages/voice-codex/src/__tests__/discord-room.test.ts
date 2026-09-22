@@ -127,6 +127,11 @@ describe("DiscordVoiceRoom", () => {
 			await vi.advanceTimersByTimeAsync(40);
 			expect(onAudio).toHaveBeenCalledTimes(2);
 			expect(onAudio.mock.calls[0]?.[0]).toEqual(Buffer.alloc(960));
+			expect(onAudio.mock.calls[0]?.[1]).toEqual({
+				ownerName: null,
+				ownerUserId: null,
+				utteranceId: null,
+			});
 			speaking.get("start")?.("stranger");
 			expect(subscribe).not.toHaveBeenCalled();
 			speaking.get("start")?.("founder");
@@ -137,6 +142,17 @@ describe("DiscordVoiceRoom", () => {
 			expect(
 				onAudio.mock.calls.some(([frame]) => frame.readInt16LE(0) === 2_500),
 			).toBe(probability === 1);
+			if (probability === 1) {
+				expect(
+					onAudio.mock.calls.some(
+						([frame, metadata]) =>
+							frame.readInt16LE(0) === 2_500 &&
+							metadata.ownerUserId === "founder" &&
+							metadata.ownerName === "Annie" &&
+							typeof metadata.utteranceId === "string",
+					),
+				).toBe(true);
+			}
 			expect(room.speaker()).toMatchObject({ userId: "founder" });
 			speaking.get("end")?.("founder");
 			await vi.advanceTimersByTimeAsync(1_000);
@@ -157,4 +173,246 @@ describe("DiscordVoiceRoom", () => {
 			expect(client.destroy).toHaveBeenCalled();
 		},
 	);
+
+	it("degrades and resubscribes the same continuous speaker without ending the room", async () => {
+		vi.useFakeTimers();
+		const speaking = new Map<string, (userId: string) => void>();
+		const firstOpus = new PassThrough();
+		const secondOpus = new PassThrough();
+		const firstDecoder = new PassThrough();
+		const secondDecoder = new PassThrough();
+		const subscribe = vi
+			.fn<(userId: string) => NodeJS.ReadableStream>()
+			.mockReturnValueOnce(firstOpus)
+			.mockReturnValueOnce(secondOpus);
+		const createDecoder = vi
+			.fn<() => NodeJS.ReadWriteStream>()
+			.mockReturnValueOnce(firstDecoder)
+			.mockReturnValueOnce(secondDecoder);
+		const onError = vi.fn();
+		const health: Array<{ state: string; reason: string }> = [];
+		const client = {
+			user: { id: "voice-bot" },
+			login: vi.fn(async () => {}),
+			isReady: () => true,
+			once: vi.fn(),
+			destroy: vi.fn(async () => {}),
+		};
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => client,
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => subscribe,
+				createDecoder,
+				createPlayer: () => ({ play: vi.fn(), stop: vi.fn(), on: vi.fn() }),
+				createResource: vi.fn(),
+				speakingEvents: () => ({
+					on: (event, callback) => speaking.set(event, callback),
+				}),
+				receiveEvents: () => ({
+					onTransition: () => () => {},
+					onDiagnostic: () => () => {},
+					isSpeaking: (userId) => userId === "founder",
+				}),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			onAudio: vi.fn(),
+			onFounderPresence: vi.fn(),
+			onReceiveHealth: (snapshot) => health.push(snapshot),
+			onError,
+		});
+
+		await room.start();
+		speaking.get("start")?.("founder");
+		firstOpus.emit(
+			"error",
+			new Error(
+				"Failed to decrypt: DecryptionFailed(UnencryptedWhenPassthroughDisabled)",
+			),
+		);
+		await vi.advanceTimersByTimeAsync(250);
+		expect(subscribe).toHaveBeenCalledTimes(2);
+		for (let frame = 0; frame < 10; frame += 1) {
+			secondOpus.write(Buffer.alloc(3_840));
+		}
+		expect(health).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ state: "degraded", reason: "dave_decrypt" }),
+				expect.objectContaining({
+					state: "receiving",
+					reason: "audio_observed",
+				}),
+			]),
+		);
+		expect(onError).not.toHaveBeenCalled();
+		await room.stop();
+	});
+
+	it("restores the first retry delay after 30 seconds without receive failures across short utterances", async () => {
+		vi.useFakeTimers();
+		const speaking = new Map<string, (userId: string) => void>();
+		const speakingUsers = new Set<string>();
+		const opuses = Array.from({ length: 4 }, () => new PassThrough());
+		const decoders = Array.from({ length: 4 }, () => new PassThrough());
+		const subscribe = vi
+			.fn<(userId: string) => NodeJS.ReadableStream>()
+			.mockImplementation(() => opuses[subscribe.mock.calls.length - 1]!);
+		const createDecoder = vi
+			.fn<() => NodeJS.ReadWriteStream>()
+			.mockImplementation(() => decoders[createDecoder.mock.calls.length - 1]!);
+		const client = {
+			user: { id: "voice-bot" },
+			login: vi.fn(async () => {}),
+			isReady: () => true,
+			once: vi.fn(),
+			destroy: vi.fn(async () => {}),
+		};
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => client,
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => subscribe,
+				createDecoder,
+				createPlayer: () => ({ play: vi.fn(), stop: vi.fn(), on: vi.fn() }),
+				createResource: vi.fn(),
+				speakingEvents: () => ({
+					on: (event, callback) => speaking.set(event, callback),
+				}),
+				receiveEvents: () => ({
+					onTransition: () => () => {},
+					onDiagnostic: () => () => {},
+					isSpeaking: (userId) => speakingUsers.has(userId),
+				}),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			onAudio: vi.fn(),
+			onFounderPresence: vi.fn(),
+			onError: vi.fn(),
+		});
+
+		await room.start();
+		speakingUsers.add("founder");
+		speaking.get("start")?.("founder");
+		opuses[0]?.emit("error", new Error("packet failure"));
+		await vi.advanceTimersByTimeAsync(250);
+		for (let frame = 0; frame < 10; frame += 1) {
+			opuses[1]?.write(Buffer.alloc(3_840));
+		}
+		speakingUsers.delete("founder");
+		speaking.get("end")?.("founder");
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		speakingUsers.add("founder");
+		speaking.get("start")?.("founder");
+		opuses[2]?.emit("error", new Error("packet failure"));
+		await vi.advanceTimersByTimeAsync(250);
+		expect(subscribe).toHaveBeenCalledTimes(4);
+		await room.stop();
+	});
+
+	it("uses a new admitted speaker for the single post-cooldown probation", async () => {
+		vi.useFakeTimers();
+		const speaking = new Map<string, (userId: string) => void>();
+		const speakingUsers = new Set<string>();
+		const opuses = Array.from({ length: 5 }, () => new PassThrough());
+		const decoders = Array.from({ length: 5 }, () => new PassThrough());
+		const subscribe = vi
+			.fn<(userId: string) => NodeJS.ReadableStream>()
+			.mockImplementation(() => opuses[subscribe.mock.calls.length - 1]!);
+		const createDecoder = vi
+			.fn<() => NodeJS.ReadWriteStream>()
+			.mockImplementation(() => decoders[createDecoder.mock.calls.length - 1]!);
+		const client = {
+			user: { id: "voice-bot" },
+			login: vi.fn(async () => {}),
+			isReady: () => true,
+			once: vi.fn(),
+			destroy: vi.fn(async () => {}),
+		};
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => client,
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => subscribe,
+				createDecoder,
+				createPlayer: () => ({ play: vi.fn(), stop: vi.fn(), on: vi.fn() }),
+				createResource: vi.fn(),
+				speakingEvents: () => ({
+					on: (event, callback) => speaking.set(event, callback),
+				}),
+				receiveEvents: () => ({
+					onTransition: () => () => {},
+					onDiagnostic: () => () => {},
+					isSpeaking: (userId) => speakingUsers.has(userId),
+				}),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: ["qa"],
+			onAudio: vi.fn(),
+			onFounderPresence: vi.fn(),
+			onError: vi.fn(),
+		});
+
+		await room.start();
+		speakingUsers.add("founder");
+		speaking.get("start")?.("founder");
+		for (const [index, delay] of [250, 1_000, 3_000].entries()) {
+			opuses[index]?.emit("error", new Error("packet failure"));
+			await vi.advanceTimersByTimeAsync(delay);
+		}
+		opuses[3]?.emit("error", new Error("packet failure"));
+		await vi.advanceTimersByTimeAsync(1);
+		speakingUsers.delete("founder");
+		speakingUsers.add("qa");
+		speaking.get("start")?.("qa");
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		expect(subscribe).toHaveBeenCalledTimes(5);
+		expect(subscribe).toHaveBeenLastCalledWith("qa");
+		await room.stop();
+	});
 });

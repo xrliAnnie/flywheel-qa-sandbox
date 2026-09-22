@@ -367,6 +367,7 @@ describe("VoiceDaemon health observations", () => {
 				throw new Error("runtime primary raw secret");
 			}),
 			waitForFounder: vi.fn(async () => true),
+			receiveHealth: vi.fn(() => undefined),
 			markLive: vi.fn(async () => {}),
 			waitForEnd: vi.fn(() => new Promise(() => {})),
 			requestEnd: vi.fn(),
@@ -423,6 +424,7 @@ describe("VoiceDaemon health observations", () => {
 		const runtime: ActiveVoiceSession = {
 			start: vi.fn(async () => ({ founderPresent: true })),
 			waitForFounder: vi.fn(async () => true),
+			receiveHealth: vi.fn(() => undefined),
 			markLive: vi.fn(async () => {}),
 			waitForEnd: vi.fn(() => new Promise(() => {})),
 			requestEnd: vi.fn(),
@@ -482,6 +484,7 @@ describe("VoiceDaemon health observations", () => {
 		const runtime: ActiveVoiceSession = {
 			start: vi.fn(async () => ({ founderPresent: true })),
 			waitForFounder: vi.fn(async () => true),
+			receiveHealth: vi.fn(() => undefined),
 			markLive: vi.fn(async () => {}),
 			waitForEnd: vi.fn(() => new Promise(() => {})),
 			requestEnd: vi.fn(),
@@ -590,6 +593,7 @@ describe("VoiceDaemon health observations", () => {
 			const runtime: ActiveVoiceSession = {
 				start: vi.fn(async () => ({ founderPresent: true })),
 				waitForFounder: vi.fn(async () => true),
+				receiveHealth: vi.fn(() => undefined),
 				markLive: vi.fn(async () => {}),
 				waitForEnd: vi.fn(() => ended),
 				requestEnd: vi.fn(),
@@ -664,6 +668,7 @@ describe("VoiceDaemon health observations", () => {
 			const runtime: ActiveVoiceSession = {
 				start: vi.fn(async () => ({ founderPresent: true })),
 				waitForFounder: vi.fn(async () => true),
+				receiveHealth: vi.fn(() => undefined),
 				markLive: vi.fn(() => markedLive),
 				waitForEnd: vi.fn(() => ended),
 				requestEnd: vi.fn(),
@@ -742,6 +747,7 @@ describe("VoiceDaemon health observations", () => {
 				const runtime: ActiveVoiceSession = {
 					start: vi.fn(async () => ({ founderPresent: true })),
 					waitForFounder: vi.fn(async () => true),
+					receiveHealth: vi.fn(() => undefined),
 					markLive: vi.fn(async () => {}),
 					waitForEnd: vi.fn(() => new Promise(() => {})),
 					requestEnd: vi.fn(),

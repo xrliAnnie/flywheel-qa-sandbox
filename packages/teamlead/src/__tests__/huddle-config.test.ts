@@ -95,6 +95,7 @@ describe("generic realtime voice registry fields", () => {
 		const unchanged = parseAndValidateProjects([entry()])[0]!.leads[0]!;
 		expect("voiceModes" in unchanged).toBe(false);
 		expect("realtimeVoice" in unchanged).toBe(false);
+		expect("codexVoiceActions" in unchanged).toBe(false);
 		expect(REALTIME_V2_VOICES).toEqual([
 			"alloy",
 			"ash",
@@ -120,6 +121,21 @@ describe("generic realtime voice registry fields", () => {
 					}),
 				]),
 			).not.toThrow();
+		}
+	});
+
+	it("preserves only an explicit boolean standard-Lead voice action opt-in", () => {
+		expect(
+			parseAndValidateProjects([
+				entry({ leads: [lead({ codexVoiceActions: true })] }),
+			])[0]!.leads[0],
+		).toHaveProperty("codexVoiceActions", true);
+		for (const codexVoiceActions of ["true", 1, null, {}]) {
+			expect(() =>
+				parseAndValidateProjects([
+					entry({ leads: [lead({ codexVoiceActions })] }),
+				]),
+			).toThrow(/codexVoiceActions/);
 		}
 	});
 

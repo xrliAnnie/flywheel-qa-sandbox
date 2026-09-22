@@ -1,0 +1,83 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2655 · 让 Raya 真正听见并回复</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.7 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:36px 22px 64px}header{padding:12px 0 18px}h1{font-size:clamp(30px,5vw,44px);line-height:1.22;letter-spacing:-1px;max-width:760px;margin:12px 0}h2{font-size:23px;line-height:1.4;margin:0 0 18px}p{margin:12px 0}.eyebrow{color:#0066cc;font-size:13px;font-weight:650;letter-spacing:1px}.intro{font-size:21px;color:#515154}.badge{display:inline-block;background:#fff1d6;color:#775100;border-radius:18px;font-size:13px;padding:5px 13px}.card{background:#fff;border-radius:14px;padding:28px;margin:22px 0;border:1px solid #e7e7eb;box-shadow:0 2px 8px #00000004}.pending{border:1px dashed #d9a340;border-radius:10px;background:#fffaf0;padding:20px}.pending strong{font-size:13px;letter-spacing:.3px;color:#795300}.small{font-size:13px;color:#68686d}table{width:100%;border-collapse:collapse;font-size:15px}th,td{text-align:left;vertical-align:top;padding:12px 10px;border-bottom:1px solid #e9e9ed}th{color:#515154;background:#f5f5f7}td:first-child{width:25%;font-weight:600}.table-wrap{overflow:auto}label{display:block;font-size:13px;color:#68686d;margin:24px 0 8px}textarea{width:100%;display:block;resize:vertical;min-height:72px;border:1px solid #c9c9ce;border-radius:8px;padding:12px;background:#fafafa;font:15px/1.5 -apple-system,system-ui,sans-serif;color:#1d1d1f}button{border:0;border-radius:8px;background:#0071e3;color:#fff;padding:10px 15px;font:600 14px -apple-system,system-ui,sans-serif;cursor:pointer;margin:10px 10px 8px 0}button:focus-visible,textarea:focus-visible{outline:3px solid #80bcff;outline-offset:2px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;background:#f5f5f7;border-radius:8px;padding:15px}details{margin-top:14px}summary{cursor:pointer;font-size:13px;color:#515154}.copy-chunk{margin:14px 0}.copy-chunk textarea{background:#fff}svg{max-width:100%;height:auto}a{color:#0066cc}@media(max-width:600px){main{padding:22px 12px 44px}.card{padding:22px 16px}h2{font-size:21px}th,td{padding:10px 7px}.intro{font-size:18px}}</style></head><body><main><header><div class="eyebrow">FLY-2655 · DESIGN · 2026-09-20</div><h1>声音已经收到了，<br>这次要让你真的听见回答。</h1><p class="intro">保留已修好的收音，换掉卡住的语音转接层，仍由原 Raya 回答。</p><span class="badge">设计评审 R3 已通过 · 真人QA仍未通过</span></header><section class="card" aria-labelledby="h-flow"><h2 id="h-flow">01 · 修复后的完整对话</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>声音先转成文字交给原 Raya 回答，再把这条回答读给你听；语音服务不能自己回答。</p><p class="small">本机图形进程被权限拒绝；已用标准参数重试一次。图形描述源码保留如下。</p></div><details><summary>查看 Mermaid 源码（用文字描述图形的格式）</summary><pre>flowchart TB
+    F[&quot;你在测试语音房说话&quot;] --&gt; D[&quot;保留已修好的加密收音&quot;]
+    D --&gt; S[&quot;直连 OpenAI · 只把声音转成文字&quot;]
+    S --&gt; L[&quot;原来的 Raya Lead 收到文字并回答&quot;]
+    L --&gt; G[&quot;只接受这一次 Lead 回复的朗读请求&quot;]
+    G --&gt; T[&quot;OpenAI 把指定文字读成声音&quot;]
+    T --&gt; P[&quot;同一个测试机器人播放 · 你亲耳确认&quot;]
+    S -. &quot;不会自己回答或操作工具&quot; .-&gt; G
+    P --&gt; Q[&quot;随身与会议各测 · 超过60秒 · 多句加停顿&quot;]
+</pre></details><p>保留已修好的 Discord 加密收音。声音前台改为直连 OpenAI 的 Realtime 服务，也就是持续接收声音、返回转写和朗读音频的连接。原来的 Raya 仍负责思考和行动。</p><label for="c-flow">对「01 · 修复后的完整对话」的意见</label><textarea id="c-flow" data-comment="flow" data-title="01 · 修复后的完整对话" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-facts"><h2 id="h-facts">02 · 上次失败，证据已经分清</h2><div class="table-wrap"><table><thead><tr><th>环节</th><th>已看到的证据</th></tr></thead><tbody><tr><td>你的声音进来了</td><td>上次你说的三段话分别通过98、105、77帧，合计280帧；没有再出现解密失败。帧是系统分段处理的一小块声音。</td></tr><tr><td>回答没有回来</td><td>三段话没有转写、没有回复音频，38秒后你离房。这场仍是失败。</td></tr><tr><td>断点在哪里</td><td>QA报告确认：中间的 Codex app-server 收到上传，却没有继续送出声音。它是原先在语音进程与OpenAI之间转换消息的程序。同一密钥和合成语音绕过它后，已有转写和44段回复音频。</td></tr><tr><td>数字也要修准</td><td>旧QA汇总读错了字段，把280帧写成0；新取证直接读本场声音记录。但280帧只证明本地放行，不能证明助理听懂。</td></tr></tbody></table></div><p class="small">本轮设计重新读取了原场证据和QA报告；没有新跑真人测试。原场具体加密错误诱因仍保留待核。</p><label for="c-facts">对「02 · 上次失败，证据已经分清」的意见</label><textarea id="c-facts" data-comment="facts" data-title="02 · 上次失败，证据已经分清" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-recovery"><h2 id="h-recovery">03 · 能接通，更要能知道哪里断了</h2><p>收到服务端实际采用的配置后才算连接就绪。每句话记清：声音已上传、完整转写已返回、原助理已收到、回复已生成、音频已播放。少哪一步就停在哪一步，不把前一步当成后一步。</p><p>听写为空或听不清时，跳过这一句并继续接下一句；一段朗读失败则保留文字并提示。只有连接断开或播放管道无法安全继续时才结束房间，不无限重试或把旧半句话再播一遍。安静时没有待处理话语，则不会因为没有新事件误报。</p><p>已有收音故障隔离继续保留；发生临时解密错误时显示告警并有限重试。持续听不到人，验收仍不通过。</p><label for="c-recovery">对「03 · 能接通，更要能知道哪里断了」的意见</label><textarea id="c-recovery" data-comment="recovery" data-title="03 · 能接通，更要能知道哪里断了" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-model"><h2 id="h-model">04 · 每句话和每次回复都有自己的编号</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>场次固定助理与机器人；语音连接、输入话语、朗读请求各自有编号，重复或迟到的消息不再播放。</p><p class="small">本机图形进程被权限拒绝；已用标准参数重试一次。图形描述源码保留如下。</p></div><details><summary>查看 Mermaid 源码（用文字描述图形的格式）</summary><pre>classDiagram
+    class 房内会话 {
+        sessionId 唯一场次
+        buildSha 被测版本
+        leadId 原助理
+        botUserId 固定机器人
+    }
+    class 语音服务连接 {
+        generation 本次连接
+        openaiSessionId 服务回执
+        ready 已核有效配置
+    }
+    class 输入话语 {
+        itemId 服务话语编号
+        contentIndex 内容编号
+        final 完整转写
+    }
+    class 朗读请求 {
+        speechId 本次Lead文字
+        responseId 服务回复编号
+        audio 非空音频
+        done 成功生成
+    }
+    房内会话 &quot;1&quot; --&gt; &quot;1&quot; 语音服务连接
+    语音服务连接 &quot;1&quot; --&gt; &quot;多&quot; 输入话语 : 去重后投递
+    语音服务连接 &quot;1&quot; --&gt; &quot;多&quot; 朗读请求 : 同时只读一条
+</pre></details><p>场次编号确定这是谁的房间；话语编号避免同一句话投递两次；朗读编号只允许当前那条助理回复进入扬声器。重复消息、旧连接和其他回复全部拦住。</p><label for="c-model">对「04 · 每句话和每次回复都有自己的编号」的意见</label><textarea id="c-model" data-comment="model" data-title="04 · 每句话和每次回复都有自己的编号" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-choices"><h2 id="h-choices">05 · 选择直连，只换声音前台</h2><div class="table-wrap"><table><thead><tr><th>方案</th><th>决定与代价</th></tr></thead><tbody><tr><td>采用：前台直连</td><td>Lead已批准固定使用gpt-realtime-1.5。保留收音修复、原助理、测试隔离和投递链。代价是自己管连接配置、消息编号、超时和清理。</td></tr><tr><td>不采用：换调用参数</td><td>目前没有已经证实可工作的参数组合，不能凭猜测再让你测沉默。</td></tr><tr><td>不采用：更换全舰Codex</td><td>没有已验可用版本，且会影响其他助理和任务。本轮不改版本。</td></tr></tbody></table></div><p>只允许朗读原助理发来的文字。先把链接、装饰符号和敏感内容转换成明确的可朗读文字，再按句切成最多80字的小段。完整朗读核对只允许有限的标点与数字读法差异，否定词或数值变化不放行。生成与播放分别计时；这段没能朗读会明确提示看文字，不能算音频测试通过。你在语音里说“替我回答”或伪装内部标记，都不会给语音前台独立回答或执行操作的权力。密钥沿用现有受管来源，留在内存，不写进文件或报告。</p><label for="c-choices">对「05 · 选择直连，只换声音前台」的意见</label><textarea id="c-choices" data-comment="choices" data-title="05 · 选择直连，只换声音前台" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-acceptance"><h2 id="h-acceptance">06 · 先在测试房让你亲耳听到</h2><p><strong>先做机器预检。</strong> 新适配器能真实收到转写、把指定文字生成音频，再由Lead叫你进529测试房。机器预检不算真人验收。</p><p><strong>再做你的对话。</strong> 随身模式和会议模式各测一场：你本人真说话，原助理收到并回复，你亲耳听见；每场持续至少60秒，覆盖至少三句短话和中间停顿，并有本场转写、消息镜像和回复音频证据。你没到场就等待，不用录音代替。</p><p><strong>自主开场仍保留。</strong> Raya完成标准载体割接并获准启用能力后，再验你在 #raya 说“语音”即可开场。割接就是把原助理迁到已核准的标准运行环境；这一组没有被删掉。</p><p>测试用slot 2原有测试Lead自己的机器人和独立进程，与生产共存。slot是独立测试环境。本设计不动它；QA接手先保存旧证据，再核归属和当前构建。不会把生产Raya机器人从房里挤走，也不改生产注册表或凭据。</p><label for="c-acceptance">对「06 · 先在测试房让你亲耳听到」的意见</label><textarea id="c-acceptance" data-comment="acceptance" data-title="06 · 先在测试房让你亲耳听到" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-boundary"><h2 id="h-boundary">07 · 现在交付的是设计，成功仍要你验证</h2><p>本轮在保留分支上补充直连实施计划和取证修正，按流程取得设计评审后交接。上次真人QA仍是失败；新适配器还没有实现，也没有新的真人通过证据。</p><p>后继实现完成代码复审和当前版本的自动检查，QA再做合入前真人验证。只有你真的听见原助理回答才算通过；这项工作留在本PR内修完，不拆单。获准合入后由Lead发紧急重启票，独立更新器执行，不等午夜。</p><p class="small">两张Mermaid图的本地渲染均尝试两次，图形进程被系统权限拒绝，故显示明确待渲染标记并保留图形源码；未使用远程渲染或外部资源。</p><label for="c-boundary">对「07 · 现在交付的是设计，成功仍要你验证」的意见</label><textarea id="c-boundary" data-comment="boundary" data-title="07 · 现在交付的是设计，成功仍要你验证" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section><section class="card" aria-labelledby="h-overall"><h2 id="h-overall">08 · 页面意见汇总</h2><p>逐段填写意见后，下面会实时汇总。复制给 Lead 即可；意见标记只表示修改反馈，不是审批通过。</p><button id="copy-all" type="button">复制全部意见</button><span id="copy-status" role="status" aria-live="polite"></span><div id="chunks"></div><label for="c-overall">对「08 · 页面意见汇总」的意见</label><textarea id="c-overall" data-comment="overall" data-title="08 · 页面意见汇总" rows="2" placeholder="意见自动保存在当前浏览器"></textarea></section></main><script nonce="__CSP_NONCE__">(() => {
+  const marker = '【页面意见汇总】FLY-2655';
+  const prefix = 'flywheel-report:' + location.pathname + ':FLY-2655:';
+  const inputs = Array.from(document.querySelectorAll('[data-comment]'));
+  const chunksNode = document.getElementById('chunks');
+  const statusNode = document.getElementById('copy-status');
+  let chunks = [];
+  function fallback(text) {
+    const box = document.createElement('textarea');
+    box.value = text; box.style.position = 'fixed'; box.style.left = '-9999px';
+    document.body.appendChild(box); box.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    box.remove(); return ok;
+  }
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+      statusNode.textContent = '已复制';
+    } catch (_) { statusNode.textContent = fallback(text) ? '已复制' : '复制未成功，请选中下方文字手动复制'; }
+  }
+  function aggregate() {
+    const entries = inputs.filter(input => input.value.trim()).map(input => input.dataset.title + '\n' + input.value.trim());
+    const characters = Array.from(entries.join('\n\n'));
+    const capacity = 1750 - Array.from(marker).length - 1;
+    chunks = [];
+    for (let i = 0; i < characters.length; i += capacity) chunks.push(marker + '\n' + characters.slice(i, i + capacity).join(''));
+    if (!chunks.length) chunks.push(marker + '\n（尚无意见）');
+    chunksNode.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const wrap = document.createElement('div'); wrap.className = 'copy-chunk';
+      const label = document.createElement('label'); label.textContent = '可复制意见 ' + (index + 1) + ' / ' + chunks.length;
+      const box = document.createElement('textarea'); box.readOnly = true; box.rows = 5; box.value = chunk; box.id = 'chunk-' + index; label.htmlFor = box.id;
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (index + 1) + ' 段'; button.addEventListener('click', () => copy(chunk));
+      wrap.append(label, box, button); chunksNode.appendChild(wrap);
+    });
+  }
+  inputs.forEach(input => {
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; } catch (_) {}
+    input.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + input.dataset.comment, input.value); } catch (_) {}
+      aggregate();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\n\n')));
+  aggregate();
+})();</script></body></html>

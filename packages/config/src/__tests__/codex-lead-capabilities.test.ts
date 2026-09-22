@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest";
 import { resolveCodexLeadCapabilities } from "../codex-lead-capabilities.js";
 
 describe("explicit Codex runner capabilities", () => {
+	it("requires bundle v2 for the separate voice action opt-in", () => {
+		expect(
+			resolveCodexLeadCapabilities({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexVoiceActions: true,
+			}),
+		).toMatchObject({ eligible: false });
+		expect(
+			resolveCodexLeadCapabilities({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexCapabilityBundleVersion: 2,
+				codexVoiceActions: true,
+			}),
+		).toMatchObject({ eligible: true, voiceActionsEnabled: true });
+	});
 	it.each([
 		{ backend: "claude-code" },
 		{ backend: undefined },

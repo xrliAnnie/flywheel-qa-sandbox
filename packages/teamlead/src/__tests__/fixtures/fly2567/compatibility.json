@@ -5,15 +5,15 @@
 	"pairs": [
 		{
 			"id": "department-lead-rules.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2655 adds the same manifest-only voice session start, status and stop duty to ON and OFF; both modes reject shell, legacy huddle and caller-supplied authority fields, preserve request identity on replay, and do not claim real audio success from request acceptance.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
-					"sha256": "69c8d71009bb85bcbe9a9b76122b585ecf8e60fa8b33470530eb1dfda57813ce"
+					"sha256": "de131c6c8b5c463629610424eca9d5fa16e393f2d914cf64b09b247472f4dfdc"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/department-lead-rules.md",
-					"sha256": "aa12792bd8d00307dbeb10a73ca9539bbc34a45e9fc4c7ce4abad8d1be9b6457"
+					"sha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df"
 				}
 			]
 		},

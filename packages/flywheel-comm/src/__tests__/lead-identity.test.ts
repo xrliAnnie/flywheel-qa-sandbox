@@ -89,6 +89,38 @@ describe("FLY-1726 canonical Lead identity", () => {
 		}
 	});
 
+	it("binds the codexVoiceActions opt-in to the v1 identity digest", () => {
+		const registry = [
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [
+					lead("voice-lead", {
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						canSpawnRunners: false,
+						codexCapabilityBundleVersion: 2,
+					}),
+				],
+			},
+		];
+		const base = compileLeadIdentityRows(registry, { homeDir: dir })[0]!
+			.identity;
+		const disabledRegistry = structuredClone(registry);
+		disabledRegistry[0]!.leads[0]!.codexVoiceActions = false;
+		const disabled = compileLeadIdentityRows(disabledRegistry, {
+			homeDir: dir,
+		})[0]!.identity;
+		const enabledRegistry = structuredClone(registry);
+		enabledRegistry[0]!.leads[0]!.codexVoiceActions = true;
+		const enabled = compileLeadIdentityRows(enabledRegistry, {
+			homeDir: dir,
+		})[0]!.identity;
+
+		expect(disabled.identityDigest).toBe(base.identityDigest);
+		expect(enabled.identityDigest).not.toBe(base.identityDigest);
+	});
+
 	it("resolves every runtime identity face from one exact registry row", () => {
 		write([
 			{

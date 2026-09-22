@@ -109,6 +109,12 @@ HOST_TMUX_TARGET_SHA="$(/usr/bin/git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 
 if [[ -z "$HOST_TMUX_TARGET_SHA" && -f "${FLYWHEEL_STATE_DIR}/deployed-sha" ]]; then
   HOST_TMUX_TARGET_SHA="$(/bin/cat "${FLYWHEEL_STATE_DIR}/deployed-sha" 2>/dev/null || true)"
 fi
+if [[ ! "$HOST_TMUX_TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  fail_loud voice_build_identity_invalid "Voice build identity unavailable" \
+    "The voice daemon could not bind startup to a full deployed git SHA."
+  exit 0
+fi
+export FLYWHEEL_VOICE_BUILD_SHA="$HOST_TMUX_TARGET_SHA"
 HOST_TMUX_GATE_RC=0
 FLYWHEEL_HOST_TMUX_TARGET_SHA="$HOST_TMUX_TARGET_SHA" \
 FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="keepalive:voice" \

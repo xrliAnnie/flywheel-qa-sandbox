@@ -33,6 +33,7 @@ function active(
 	overrides: Partial<ActiveVoiceSession> = {},
 ): ActiveVoiceSession {
 	return {
+		receiveHealth: vi.fn(() => undefined),
 		start: vi.fn(async () => ({ founderPresent: true })),
 		waitForFounder: vi.fn(async () => true),
 		markLive: vi.fn(async () => {}),
@@ -47,6 +48,7 @@ function active(
 		),
 		requestEnd: vi.fn(),
 		speak: vi.fn(async () => "confirmed" as const),
+		notify: vi.fn(),
 		stop: vi.fn(async () => {}),
 		...overrides,
 	};
@@ -113,7 +115,9 @@ describe("VoiceDaemon", () => {
 		expect(calls).toContain("state.warming");
 		expect(calls).toContain("state.live");
 		expect(calls).toContain("state.ended");
-		expect(runtime.speak).toHaveBeenCalledWith("你好");
+		expect(runtime.speak).toHaveBeenCalledWith(
+			expect.objectContaining({ spokenText: "你好" }),
+		);
 		expect(bridge.receipt).toHaveBeenCalledWith(
 			SESSION_ID,
 			1,
@@ -429,7 +433,17 @@ describe("VoiceDaemon", () => {
 	});
 
 	it("renews the lease while a spoken reply waits for confirmation", async () => {
+		const receiveHealth = {
+			version: 1 as const,
+			sequence: 2,
+			state: "degraded" as const,
+			reason: "dave_decrypt" as const,
+			failures: 1,
+			retries: 0,
+			lastPcmAt: null,
+		};
 		const runtime = active({
+			receiveHealth: vi.fn(() => receiveHealth),
 			speak: vi.fn(
 				() =>
 					new Promise((resolve) => setTimeout(() => resolve("confirmed"), 10)),
@@ -473,7 +487,12 @@ describe("VoiceDaemon", () => {
 			sessionId: SESSION_ID,
 			reason: "voice-stop",
 		});
-		expect(bridge.renew).toHaveBeenCalled();
+		expect(bridge.renew).toHaveBeenCalledWith(
+			SESSION_ID,
+			"lease",
+			expect.any(VoiceLease),
+			receiveHealth,
+		);
 	});
 
 	it("retries an ambiguous outbound receipt with the same attempt token", async () => {
@@ -749,6 +768,34 @@ function lifetimeFixture() {
 }
 
 describe("VoiceDaemon session lifetime", () => {
+	it("receipts a claimed reply as dropped when speech projection is empty", async () => {
+		const fixture = lifetimeFixture();
+		fixture.bridge.outbound
+			.mockResolvedValueOnce([{ seq: 1, messageId: "1", text: "🙂" }])
+			.mockResolvedValue([]);
+		const running = fixture.daemon.runOnce();
+		await vi.waitFor(() =>
+			expect(fixture.bridge.receipt).toHaveBeenCalledWith(
+				SESSION_ID,
+				1,
+				"lease",
+				expect.any(VoiceLease),
+				"attempt",
+				"dropped",
+			),
+		);
+		expect(fixture.runtime.speak).not.toHaveBeenCalled();
+		expect(fixture.runtime.notify).toHaveBeenCalledWith(
+			"📻 没有可朗读内容，请看文字",
+		);
+		fixture.ended.resolve({ kind: "ended", reason: "voice-stop" });
+		expect(await running).toEqual({
+			kind: "session_ended",
+			sessionId: SESSION_ID,
+			reason: "voice-stop",
+		});
+	});
+
 	it("classifies an explicit daemon shutdown separately from session failure", async () => {
 		vi.useFakeTimers();
 		try {

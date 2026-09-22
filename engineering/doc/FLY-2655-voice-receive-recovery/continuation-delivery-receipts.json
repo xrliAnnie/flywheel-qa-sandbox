@@ -1,0 +1,10 @@
+{
+  "at": "2026-09-18T23:37:44.652722+00:00",
+  "reviewAdvisoryReportId": "6249efda-b616-43ff-9a55-8ca3b5124833",
+  "publishFailedReportId": "682a9bff-9f5b-409c-aad2-615e057cbe0b",
+  "leadResponses": {
+    "6249efda-b616-43ff-9a55-8ca3b5124833": "loadSlot migrated-registry issue highest priority within this issue; post-reserve error, missing startup diagnostic, undocumented production changes fix if within diff otherwise PR Follow-ups; all others PR Follow-ups, no new issues; hosting suspended, one publish attempt, on failure phase_design_complete and park",
+    "682a9bff-9f5b-409c-aad2-615e057cbe0b": "hosting suspended; do not retry; phase_design_complete and park"
+  },
+  "hostedVerification": "NOT PERFORMED: no hosted URL; old URLs are historical and do not represent current delivery"
+}

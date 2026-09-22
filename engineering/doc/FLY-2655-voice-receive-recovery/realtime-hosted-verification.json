@@ -1,0 +1,15 @@
+{
+  "at": "2026-09-20T22:36:00.738794+00:00",
+  "url": "https://fw-reports-356a6d.vercel.app/r/d1cf8f7000319b2af7e8db837ae5f147/",
+  "httpStatus": 200,
+  "sourceSha256": "055c71fb08844e429e92d6210885f3766f1f086dd9c3be3b4d6cbc5d21e8147d",
+  "hostedSha256": "2b4f7224dde8a1945f62fbb96fc40644d42812ca04b73e1218816ac1ae2615d2",
+  "sourceMatchesAfterNonceCspAndNoindex": true,
+  "transformEvidence": "report-registry.ts injectHeadMeta adds newline plus noindex plus newline plus CSP at head.start",
+  "noncePlaceholderRemaining": false,
+  "nonceMatchesAllCsp": true,
+  "scripts": 1,
+  "externalAssets": [],
+  "inlineHandlers": [],
+  "scope": "HTTP/source/CSP only; browser visual and actual CSP execution unverified; two Mermaid placeholders after local permission failures"
+}

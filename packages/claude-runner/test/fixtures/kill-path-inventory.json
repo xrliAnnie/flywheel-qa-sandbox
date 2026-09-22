@@ -4080,6 +4080,24 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(child.pid, \"SIGTERM\");#1",
+		"path": "scripts/qa/fly2655-voice-room.mjs",
+		"code": "process.kill(child.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/qa/fly2655-voice-room.mjs",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(run.pid, \"SIGTERM\");#1",
+		"path": "scripts/qa/fly2655-voice-room.mjs",
+		"code": "process.kill(run.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/r4/r4-window.sh:for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && alive=1; done#1",
 		"path": "scripts/r4/r4-window.sh",
 		"code": "for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && alive=1; done",

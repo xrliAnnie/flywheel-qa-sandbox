@@ -121,6 +121,82 @@ qa_multilead_build_projects() {
   '
 }
 
+# Mint the FLY-2030 activation receipt from the exact final slot registry.
+# Args: repoRoot projectsFile summaryConfigHome nodeBin
+qa_multilead_mint_summary_receipt() {
+	local repo_root="$1" projects_file="$2" summary_home="$3" node_bin="$4"
+	local receipt_dir receipt_file assignments_file assignments_tmp expected_sha
+	local comm_cli validator migration node_dir
+	[[ "$repo_root" == /* && -d "$repo_root" && ! -L "$repo_root" ]] || return 1
+	[[ "$projects_file" == /* && -f "$projects_file" && ! -L "$projects_file" ]] || return 1
+	[[ "$summary_home" == /* && -d "$summary_home" && ! -L "$summary_home" ]] || return 1
+	[[ "$node_bin" == /* && -x "$node_bin" ]] || return 1
+	[[ -f "$summary_home/.flywheel/summary-config.json" \
+		&& ! -L "$summary_home/.flywheel/summary-config.json" ]] || return 1
+
+	comm_cli="$repo_root/packages/flywheel-comm/dist/index.js"
+	validator="$repo_root/packages/teamlead/dist/bin/validate-projects.js"
+	migration="$repo_root/scripts/migrate-summary-registry.sh"
+	[[ -f "$comm_cli" && ! -L "$comm_cli" \
+		&& -f "$validator" \
+		&& -f "$migration" && ! -L "$migration" ]] || return 1
+
+	receipt_dir="$summary_home/.flywheel/state/summary-registry"
+	receipt_file="$receipt_dir/migration-receipt.json"
+	assignments_file="$receipt_dir/assignments.json"
+	assignments_tmp="$assignments_file.tmp.$$"
+	mkdir -p "$receipt_dir" || return 1
+	chmod 700 "$summary_home/.flywheel/state" "$receipt_dir" || return 1
+	if ! (umask 077; jq -e '
+		{
+			assignments: [
+				.[] as $project
+				| $project.leads[]
+				| {
+					projectName: $project.projectName,
+					leadId: .agentId,
+					summaryRole: .summaryRole
+				}
+			],
+			projectAggregators: [
+				.[]
+				| select(.summaryAggregatorLeadId != null)
+				| {
+					projectName: .projectName,
+					leadId: .summaryAggregatorLeadId
+				}
+			]
+		}
+	' "$projects_file" > "$assignments_tmp"); then
+		rm -f "$assignments_tmp"
+		return 1
+	fi
+	mv "$assignments_tmp" "$assignments_file" || return 1
+	chmod 600 "$assignments_file" || return 1
+	expected_sha=$("$node_bin" -e '
+		const { createHash } = require("node:crypto");
+		const { readFileSync } = require("node:fs");
+		process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"));
+	' "$projects_file") || return 1
+	[[ "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || return 1
+	node_dir="${node_bin%/*}"
+	[[ -n "$node_dir" ]] || node_dir="/"
+	if ! HOME="$summary_home" PATH="$node_dir:${PATH:-/usr/bin:/bin}" \
+		FLYWHEEL_COMM_CLI="$comm_cli" \
+		FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$validator" \
+		bash "$migration" "$projects_file" "$assignments_file" \
+			"$receipt_file" "$expected_sha" >/dev/null; then
+		return 1
+	fi
+	if ! HOME="$summary_home" FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$validator" \
+		"$node_bin" "$comm_cli" summary-registry verify-activation \
+			--projects-file "$projects_file" --receipt-file "$receipt_file" \
+			>/dev/null; then
+		return 1
+	fi
+	printf '%s\n' "$receipt_file"
+}
+
 # ── Canonical sandbox config.yaml ──────────────────────────────────────────
 # Args: projectName [generalized] [claude|codex]
 qa_multilead_config_yaml() {

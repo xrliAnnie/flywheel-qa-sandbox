@@ -56,6 +56,7 @@ export const LEAD_DEPLOYMENT_ENTRIES = [
 	"lead-capabilities/credential-paths.js",
 	"lead-capabilities/automatic-outbound.js",
 	"lead-capabilities/handlers/bridge-read.js",
+	"lead-capabilities/handlers/bridge-voice.js",
 	"lead-capabilities/handlers/github.js",
 	"lead-capabilities/handlers/github-provider.js",
 	"lead-capabilities/github-client.js",

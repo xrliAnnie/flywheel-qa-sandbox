@@ -1,0 +1,11 @@
+{
+  "probe": "installed-library control flow with fake inner decrypt; NOT live Discord reproduction",
+  "time": "2026-09-17T19:15:29.373Z",
+  "voiceVersion": "0.19.2",
+  "daveyVersion": "0.1.12",
+  "sourceSha256": "a0e4c74c2e2992a0db38823bc495f95a6aacfd88e7d356a743d5889cf06442ec",
+  "defaultSourceTolerance": 36,
+  "ignored": 36,
+  "thrownAt": 37,
+  "dependencyReport": "--------------------------------------------------\nCore Dependencies\n- @discordjs/voice: 0.19.2\n- prism-media: 1.3.5\n\nOpus Libraries\n- @discordjs/opus: not found\n- opusscript: 0.0.8\n\nEncryption Libraries\n- native crypto support for aes-256-gcm: yes\n- sodium-native: not found\n- sodium: not found\n- libsodium-wrappers: not found\n- @stablelib/xchacha20poly1305: not found\n- @noble/ciphers: not found\n\nDAVE Libraries\n- @snazzah/davey: 0.1.12\n\nFFmpeg\n- version: 8.1.1\n- libopus: yes\n--------------------------------------------------"
+}

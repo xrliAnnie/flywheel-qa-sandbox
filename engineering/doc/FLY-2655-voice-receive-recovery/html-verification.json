@@ -1,0 +1,28 @@
+{
+  "at": "2026-09-17T20:02:32.888Z",
+  "htmlBytes": 15329,
+  "sections": 8,
+  "nonceBlocks": 1,
+  "externalAssets": 0,
+  "inlineHandlers": 0,
+  "mermaidPending": 2,
+  "tests": [
+    "all cards have comments",
+    "path-scoped storage load/save",
+    "storage throws safe",
+    "live summary",
+    "long Unicode chunking <=1750",
+    "HTML injection inert",
+    "clipboard rejection fallback",
+    "clipboard missing fallback"
+  ],
+  "result": "PASS",
+  "scope": "DOM/controller verification only; no browser visual or hosted CSP execution proof",
+  "browserObservation": {
+    "tool": "chrome-devtools/list_pages",
+    "attempts": 2,
+    "result": "both timed out after 300 seconds",
+    "visualQA": "unverified",
+    "action": "no browser or service restart performed"
+  }
+}

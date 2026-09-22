@@ -1,0 +1,26 @@
+classDiagram
+    class 房内会话 {
+        sessionId 唯一场次
+        buildSha 被测版本
+        leadId 原助理
+        botUserId 固定机器人
+    }
+    class 语音服务连接 {
+        generation 本次连接
+        openaiSessionId 服务回执
+        ready 已核有效配置
+    }
+    class 输入话语 {
+        itemId 服务话语编号
+        contentIndex 内容编号
+        final 完整转写
+    }
+    class 朗读请求 {
+        speechId 本次Lead文字
+        responseId 服务回复编号
+        audio 非空音频
+        done 成功生成
+    }
+    房内会话 "1" --> "1" 语音服务连接
+    语音服务连接 "1" --> "多" 输入话语 : 去重后投递
+    语音服务连接 "1" --> "多" 朗读请求 : 同时只读一条

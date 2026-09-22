@@ -183,6 +183,30 @@ describe("voice session start resolver", () => {
 			}),
 		);
 	});
+	it("allows a trusted direct meeting without a meeting record or caller evidence path", async () => {
+		const preflight = vi.fn();
+		const { resolve } = resolver({ preflight });
+		await expect(
+			resolve(
+				{ mode: "meeting", projectName: "raya", leadId: "raya" },
+				"master",
+			),
+		).resolves.toEqual({
+			sessionId: SESSION_ID,
+			mode: "meeting",
+			projectName: "raya",
+			leadId: "raya",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000002",
+			voiceBotUserId: "100000000000000005",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: NOW,
+		});
+		expect(preflight).toHaveBeenCalledWith(
+			expect.not.objectContaining({ evidenceDir: expect.anything() }),
+		);
+	});
 
 	it("fails closed for invalid current meeting state and ambiguous global lead", async () => {
 		await expect(

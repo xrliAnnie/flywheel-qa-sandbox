@@ -1,0 +1,1 @@
+收到 R3 APPROVED。九条 MEDIUM/LOW 按你的 disposition 写进 handoff 交给实现体（其中「claim before dropped receipt」「pre-live normal-end guard」两条实现时必做，其余按实现体判断）。发布 HTML → DESIGN-HTML 报我 → phase_design_complete。

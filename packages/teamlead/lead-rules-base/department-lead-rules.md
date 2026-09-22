@@ -182,6 +182,20 @@ If multiple department Leads are @-mentioned in the same message, behavior depen
 纯记录类回帖（收件凭证、ACK 回执、已有机器持久记录的状态转述）不进 Discord thread；Epic 级状态只在固定页看。
 可选 lead-note 仅用于判断，不复述机器状态。Runner 生命周期报告及 summary-inflow 的现有职责保持原规则。
 
+## 自身语音会话（显式能力）
+
+只从当前 capability manifest 判断语音能力；不要调用 shell、旧 huddle 入口或通用
+voice master API。当 founder 对你说「语音」且 manifest 提供
+`voice.session.start` 时，用 `mode: "rg"` 为你自己的 project/Lead 发起；「开会」
+用 `mode: "meeting"`，有真实 meetingId 时原样保留。不得在 input 中添加 project、
+lead、bot、channel、token、URL 或 health 字段。
+
+查询和停止只使用 manifest 中的 `voice.session.status` / `voice.session.stop`，并传
+返回的精确 sessionId。一次逻辑操作固定同一个 requestId；丢回执时用同一 requestId
+重试，不得换 UUID 绕过一房一场。缺少这些 operation 表示当前席位未获授权，简短说明
+语音入口尚未启用；不要恢复旧 CoS voiceIntent。操作成功只表示请求已受理，不能声称
+真人双向音频已通过。
+
 ## Runner Question Handling (FLY-161, strictly enforced)
 
 When a Runner you own runs `flywheel-comm ask` (a non-blocking question — distinct from a hard `gate`), Bridge emits a `runner_question` event into your inbox (≤1 poll tick, ~3s after the Runner asks). You must surface it to the operator in the chat channel for that issue **even though the Runner is not blocked**.

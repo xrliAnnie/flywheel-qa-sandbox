@@ -1,0 +1,81 @@
+{
+  "at": "2026-09-18T16:39:51.177849+00:00",
+  "attempts": [
+    {
+      "diagram": "flow",
+      "attempt": 1,
+      "command": [
+        "mmdc",
+        "-i",
+        "engineering/doc/FLY-2655-voice-receive-recovery/flow.mmd",
+        "-o",
+        "engineering/doc/FLY-2655-voice-receive-recovery/flow.svg",
+        "-w",
+        "1000",
+        "-b",
+        "white",
+        "--svgId",
+        "FLY-2655-d1"
+      ],
+      "exitCode": 1,
+      "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0918/093950.611812:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0918/093950.622020:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0918/093950.627508:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.64059: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "diagram": "flow",
+      "attempt": 2,
+      "command": [
+        "mmdc",
+        "-i",
+        "engineering/doc/FLY-2655-voice-receive-recovery/flow.mmd",
+        "-o",
+        "engineering/doc/FLY-2655-voice-receive-recovery/flow.svg",
+        "-w",
+        "1000",
+        "-b",
+        "white",
+        "--svgId",
+        "FLY-2655-d1"
+      ],
+      "exitCode": 1,
+      "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0918/093950.807839:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0918/093950.808870:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0918/093950.809896:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.64156: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "diagram": "model",
+      "attempt": 1,
+      "command": [
+        "mmdc",
+        "-i",
+        "engineering/doc/FLY-2655-voice-receive-recovery/model.mmd",
+        "-o",
+        "engineering/doc/FLY-2655-voice-receive-recovery/model.svg",
+        "-w",
+        "1000",
+        "-b",
+        "white",
+        "--svgId",
+        "FLY-2655-d2"
+      ],
+      "exitCode": 1,
+      "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0918/093950.982807:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0918/093950.983669:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0918/093950.984605:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.64229: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    },
+    {
+      "diagram": "model",
+      "attempt": 2,
+      "command": [
+        "mmdc",
+        "-i",
+        "engineering/doc/FLY-2655-voice-receive-recovery/model.mmd",
+        "-o",
+        "engineering/doc/FLY-2655-voice-receive-recovery/model.svg",
+        "-w",
+        "1000",
+        "-b",
+        "white",
+        "--svgId",
+        "FLY-2655-d2"
+      ],
+      "exitCode": 1,
+      "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0918/093951.171719:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0918/093951.172606:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0918/093951.173475:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.64283: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+    }
+  ]
+}

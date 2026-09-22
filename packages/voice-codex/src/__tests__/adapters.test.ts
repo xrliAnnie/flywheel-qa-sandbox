@@ -62,7 +62,7 @@ describe("FlywheelCommDelivery", () => {
 			});
 		const delivery = new FlywheelCommDelivery({
 			cliPath: "/comm.js",
-			dbPath: "/comm.db",
+			dbPath: "/tmp/flywheel-test-slot-2/state/comm/test-slot-2/comm.db",
 			founderUserId: "founder",
 			run,
 		});
@@ -80,6 +80,9 @@ describe("FlywheelCommDelivery", () => {
 		expect(run.mock.calls[0]?.[0]).not.toContain("hello");
 		expect(run.mock.calls[0]?.[1]).toBe("hello");
 		const args = run.mock.calls[0]?.[0] as string[];
+		expect(args[args.indexOf("--db") + 1]).toBe(
+			"/tmp/flywheel-test-slot-2/state/comm/test-slot-2/comm.db",
+		);
 		expect(args[args.indexOf("--author-id") + 1]).toBe("qa");
 		expect(args[args.indexOf("--founder-id") + 1]).toBe("founder");
 		expect(await delivery.read("chat:raya:223456789012345678")).toEqual({
@@ -88,5 +91,9 @@ describe("FlywheelCommDelivery", () => {
 			authorId: "founder",
 			text: "hello",
 		});
+		const readArgs = run.mock.calls[1]?.[0] as string[];
+		expect(readArgs[readArgs.indexOf("--db") + 1]).toBe(
+			"/tmp/flywheel-test-slot-2/state/comm/test-slot-2/comm.db",
+		);
 	});
 });

@@ -76,11 +76,15 @@ trap cleanup EXIT
 # Fake repo: real test-deploy/test-teardown + real libs + stub claude-lead.
 FR="$SB/repo"
 mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
+  "$FR/packages/teamlead/dist/bin" \
   "$FR/packages/flywheel-comm" "$FR/packages/inbox-mcp" \
   "$FR/packages/edge-worker/dist" \
   "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release"
 cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" \
-  "${SCRIPT_DIR}/test-cycle-bridge.sh" "$FR/scripts/"
+  "${SCRIPT_DIR}/test-cycle-bridge.sh" \
+  "${SCRIPT_DIR}/migrate-summary-registry.sh" \
+  "${SCRIPT_DIR}/flywheel-config-lock.sh" \
+  "${SCRIPT_DIR}/flywheel-config-lock.py" "$FR/scripts/"
 cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-multilead.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
@@ -210,6 +214,8 @@ cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lib/canonical-lead-identity.sh" \
   "$FR/packages/teamlead/scripts/lib/canonical-lead-identity.sh"
 ln -s "${SCRIPT_DIR}/../packages/flywheel-comm/dist" \
   "$FR/packages/flywheel-comm/dist"
+ln -s "${SCRIPT_DIR}/../packages/teamlead/dist/bin/validate-projects.js" \
+  "$FR/packages/teamlead/dist/bin/validate-projects.js"
 ln -s "${SCRIPT_DIR}/../packages/flywheel-comm/node_modules/better-sqlite3" \
   "$FR/packages/flywheel-comm/node_modules/better-sqlite3"
 ln -s "${SCRIPT_DIR}/../packages/inbox-mcp/node_modules/better-sqlite3" \
@@ -869,16 +875,16 @@ make_slots_json() {  # slots 30..35 carry real fixture values
           channelId: ("dchan-\(.)"), role: "lead"
         })
         + [ { id: 30, bridgePort: ($leadPort + 2), botName: "flywheel-test-30",
-              tokenEnvVar: "TEST_BOT_TOKEN_30", botAppId: "3030",
+              tokenEnvVar: "TEST_BOT_TOKEN_30", botAppId: "30303030303030303",
               channelId: "30303030303030304", role: "ops", identitySource: "ops-lead" },
             { id: 31, bridgePort: $leadPort, botName: "flywheel-test-31",
-              tokenEnvVar: "TEST_BOT_TOKEN_31", botAppId: "3131",
+              tokenEnvVar: "TEST_BOT_TOKEN_31", botAppId: "31313131313131313",
               channelId: "31313131313131314", role: "lead", identitySource: "product-lead" },
             { id: 32, bridgePort: $noLeadPort, botName: "flywheel-test-32",
-              tokenEnvVar: "TEST_BOT_TOKEN_32", botAppId: "3232",
+              tokenEnvVar: "TEST_BOT_TOKEN_32", botAppId: "32323232323232323",
               channelId: "32323232323232324", role: "lead", identitySource: "product-lead" },
             { id: 33, bridgePort: ($leadPort + 3), botName: "flywheel-test-33",
-              tokenEnvVar: "TEST_BOT_TOKEN_33", botAppId: "3333",
+              tokenEnvVar: "TEST_BOT_TOKEN_33", botAppId: "33333333333333333",
               channelId: "33333333333333334", role: "lead", identitySource: "product-lead" },
             { id: 34, bridgePort: ($leadPort + 4), botName: "flywheel-test-34",
               tokenEnvVar: "TEST_BOT_TOKEN_34", botAppId: "34343434343434343",
@@ -1837,7 +1843,7 @@ if TEST_CODEX_LEAD_OUTBOUND_MODE=bridge \
       .codexLead.tuiWindow == "present" and .codexLead.agentId == "flywheel-test-34" and
       .codexLead.projectName == "test-slot-34" and
       (.codexLead.codexHome | startswith($slot + "/cdxh/")) and
-      (.codexLead.stateDir | startswith($slot + "/q/34/"))
+      (.codexLead.stateDir | startswith($slot + "/q/34/c/"))
     ' >/dev/null 2>&1 <<<"$CX_JSON" \
     || { CX_OK=0; fail "CX: Codex-shaped deploy JSON contract"; }
   jq -e --arg label "$CX_LABEL" --arg home "$CX_HOME" --arg state "$CX_STATE" '
@@ -1869,10 +1875,11 @@ PY
   [[ "$($REAL_TMUX -S "$CX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}')" == \
       "test-slot-34-flywheel-test-34" ]] \
     || { CX_OK=0; fail "CX: main Codex TUI window is not unique on the private socket"; }
-  jq -e '.FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
+  jq -e --arg state "$CX_STATE" '.FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
       .FLYWHEEL_LEAD_BACKEND == "codex-app-server" and
       .FLYWHEEL_LEAD_ID == "flywheel-test-34" and
       .FLYWHEEL_PROJECT_NAME == "test-slot-34" and
+      .FLYWHEEL_CODEX_LEAD_STATE_DIR == $state and
       .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
       .DISCORD_BOT_TOKEN == "[present]"' \
     "$CX_SLOT_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
@@ -1884,6 +1891,25 @@ PY
         && "$FLYWHEEL_COMM_DB" != "$FH1/.flywheel/comm/"* ]]); then
     CX_OK=0
     fail "CX: Codex CommDB is not isolated beneath the slot"
+  fi
+  if ! (unset FLYWHEEL_SUMMARY_CONFIG_HOME
+      # shellcheck disable=SC1090
+      source "$CX_SLOT_DIR/q/34/.env"
+      [[ "$FLYWHEEL_SUMMARY_CONFIG_HOME" == "$CX_SLOT_DIR/identity-home" ]]); then
+    CX_OK=0
+    fail "CX/FLY-2655: Codex resolver did not emit the slot summary home"
+  fi
+  CX_SUMMARY_RECEIPT="$CX_SLOT_DIR/identity-home/.flywheel/state/summary-registry/migration-receipt.json"
+  if [[ ! -f "$CX_SUMMARY_RECEIPT" ]] \
+      || ! cmp -s "$CX_SLOT_DIR/flywheel-projects.json" "$CX_SLOT_DIR/q/34/projects.json" \
+      || ! HOME="$CX_SLOT_DIR/identity-home" \
+        FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$FR/packages/teamlead/dist/bin/validate-projects.js" \
+        "$FLY1389_REAL_NODE" "$FR/packages/flywheel-comm/dist/index.js" \
+          summary-registry verify-activation \
+          --projects-file "$CX_SLOT_DIR/q/34/projects.json" \
+          --receipt-file "$CX_SUMMARY_RECEIPT" >/dev/null; then
+    CX_OK=0
+    fail "CX/FLY-2655: final slot registry and migration receipt are not byte-bound"
   fi
 
   CX_EVIDENCE="$SB/cx-evidence"

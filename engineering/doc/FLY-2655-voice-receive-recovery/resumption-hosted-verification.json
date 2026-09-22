@@ -1,0 +1,14 @@
+{
+  "at": "2026-09-18T16:59:31.099248+00:00",
+  "url": "https://fw-reports-42fba7.vercel.app/r/7a88857d4f9f96bca111b88d6932902f/",
+  "httpStatus": 200,
+  "sourceSha256": "07799e58b88230daf3e1b9fe2a76566058b5acb3467e758ce5541137bdf99d00",
+  "hostedSha256": "3c0cc173011ab5104e7787dc47adb96dd082afea652430d9485ef7d04689e571",
+  "sourceMatchesAfterNonceCspAndNoindex": true,
+  "noncePlaceholderRemaining": false,
+  "nonceMatchesAllCsp": true,
+  "scripts": 1,
+  "externalAssets": [],
+  "inlineHandlers": [],
+  "scope": "HTTP/source/CSP verification; browser visual and actual CSP execution unverified; local Mermaid rendering remains permission-denied"
+}

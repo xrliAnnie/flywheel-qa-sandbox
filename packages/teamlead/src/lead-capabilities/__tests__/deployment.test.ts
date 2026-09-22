@@ -20,6 +20,12 @@ import {
 	verifyLeadDeployment,
 } from "../deployment.js";
 
+it("pins the parent-side voice handler in the deployment receipt", () => {
+	expect(LEAD_DEPLOYMENT_ENTRIES).toContain(
+		"lead-capabilities/handlers/bridge-voice.js",
+	);
+});
+
 it("binds actual checkout HEAD to deployed-sha and hashes fixed dist entries", () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "lead-deploy-")));
 	try {

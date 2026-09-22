@@ -3,6 +3,12 @@ import { resolveCodexLeadCapabilities } from "flywheel-config";
 import { RUNNER_ACTION_TOOL_NAMES } from "../lead-backends/codex/runner-action-names.js";
 import { getLeadCapability, LEAD_CAPABILITY_CATALOG } from "./catalog.js";
 
+const VOICE_OPERATION_IDS = new Set([
+	"voice.session.start",
+	"voice.session.status",
+	"voice.session.stop",
+]);
+
 /** Trusted configuration inputs, never fields accepted from a model operation. */
 export interface LeadCapabilityResolutionInput {
 	row: CompiledLeadIdentityRow;
@@ -46,6 +52,8 @@ export function resolveLeadCapabilities(input: LeadCapabilityResolutionInput) {
 	const operations = LEAD_CAPABILITY_CATALOG.filter(
 		(op) =>
 			op.classification !== "reserved" &&
+			(!VOICE_OPERATION_IDS.has(op.operationId) ||
+				row.lead.codexVoiceActions === true) &&
 			(op.parityId !== "P01" || runnerEnabled) &&
 			(!!op.unconditionalDenial ||
 				(handlers.has(op.operationId) &&
@@ -62,7 +70,10 @@ export function resolveLeadCapabilities(input: LeadCapabilityResolutionInput) {
 		),
 		missingOperationIds: LEAD_CAPABILITY_CATALOG.filter(
 			(op) =>
-				op.classification !== "reserved" && !available.has(op.operationId),
+				op.classification !== "reserved" &&
+				(!VOICE_OPERATION_IDS.has(op.operationId) ||
+					row.lead.codexVoiceActions === true) &&
+				!available.has(op.operationId),
 		).map((op) => op.operationId),
 		runnerActionToolNames: runnerEnabled ? [...RUNNER_ACTION_TOOL_NAMES] : [],
 		adoptedMenuShapes: runnerEnabled

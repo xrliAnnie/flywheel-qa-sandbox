@@ -1,3 +1,11 @@
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	assertFullAccessLeadActionsConfigGate,
@@ -203,6 +211,44 @@ describe("assertFullAccessSandboxConfig (FLY-398 Codex R1 HIGH-2 — writable_ro
 		expect(() =>
 			assertFullAccessSandboxConfig(goodSandboxToml(), ROOT),
 		).not.toThrow();
+	});
+
+	it("accepts /tmp and /private/tmp spellings of the same QA slot workspace", () => {
+		const slotAlias = mkdtempSync("/tmp/flywheel-test-slot-");
+		const workspaceAlias = join(slotAlias, "lead-workspace");
+		mkdirSync(workspaceAlias);
+		try {
+			const validatedWorkspace = realpathSync(workspaceAlias);
+			if (process.platform === "darwin") {
+				expect(validatedWorkspace).toMatch(/^\/private\/tmp\//);
+			}
+			expect(() =>
+				assertFullAccessSandboxConfig(
+					goodSandboxToml(workspaceAlias),
+					validatedWorkspace,
+				),
+			).not.toThrow();
+		} finally {
+			rmSync(slotAlias, { recursive: true, force: true });
+		}
+	});
+
+	it("REJECTS an arbitrary symlink even when it resolves to the validated root", () => {
+		const root = mkdtempSync(join(process.cwd(), ".mcp-config-test-"));
+		const workspace = join(root, "lead-workspace");
+		const workspaceAlias = join(root, "lead-workspace-link");
+		mkdirSync(workspace);
+		symlinkSync(workspace, workspaceAlias);
+		try {
+			expect(() =>
+				assertFullAccessSandboxConfig(
+					goodSandboxToml(workspaceAlias),
+					realpathSync(workspace),
+				),
+			).toThrow(/writable_roots must be exactly/);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("REJECTS writable_roots pointing at a different (unvalidated) path", () => {

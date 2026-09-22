@@ -1,0 +1,36 @@
+{
+  "at": "2026-09-18T23:18:17.256143+00:00",
+  "execId": "7c77328d-3a37-4a25-96ec-e873d9e968f2",
+  "runId": "b15740cb-ea84-47fb-82f1-587d33f2cb74",
+  "turnEpoch": 22,
+  "questionId": "237a872c-918f-41cb-8fe7-86e6c2ed6e81",
+  "requestId": "6ea79df4-c7a1-48d7-9db0-a0a701c2cf8b",
+  "reviewedHead": "630a555b5",
+  "status": "APPROVED",
+  "inheritedHead": "bc28daf6da6d7f8aa82508c9bd139b7cc2acc65f",
+  "mainMerged": "d8b3f3cd571587a1a798eede565076c7db3b91b2",
+  "backupCommit": "117e962e492a1f87d7ddf9df5fa8b7802b847170",
+  "backupDisposition": "7 files verified; only 4 snowflake fixture corrections differ",
+  "verification": {
+    "voiceRoom": {
+      "command": "node --test scripts/__tests__/fly2655-voice-room.test.mjs",
+      "exitCode": 0,
+      "passed": 12,
+      "includes": "real loadSlot /tmp and /private/tmp fixture; no Discord room start"
+    },
+    "vitest": {
+      "command": "pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/fly2662-predeploy-replay.test.ts --maxWorkers=1 --minWorkers=1",
+      "exitCode": 254,
+      "result": "not executed: Command vitest not found"
+    },
+    "previousCi": {
+      "runId": 35396358102,
+      "conclusion": "failure",
+      "failures": [
+        "teamlead 4/4 fly2662-predeploy-replay date lease; source fix merged from main",
+        "scripts 3/5 capacity tripwire elapsed1069 budget1020 cap1200"
+      ]
+    }
+  },
+  "advisoriesCount": 17
+}

@@ -87,8 +87,14 @@ export {
 	type VoiceJoinOpts,
 } from "./bots/BotRegistry.js";
 export {
+	buildVoiceJoinOptions,
 	createDiscordDeps,
 	type DiscordDeps,
+	type DiscordReceiveDiagnostic,
+	type DiscordReceivePolicy,
+	type DiscordReceiveRuntimeDiagnostic,
+	loadDiscordReceiveRuntimeDiagnostic,
+	parseDiscordReceiveDiagnostic,
 } from "./bots/discordWiring.js";
 // ---- FLY-1160 resident brain loopback port ----
 export {

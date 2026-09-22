@@ -25,7 +25,7 @@ describe("Downmix48to24", () => {
 });
 
 describe("WaitingMouth", () => {
-	it("drains a final partial frame with silence padding", () => {
+	it("resolves a speech id only after its final paced frame is submitted", async () => {
 		let tick!: () => void;
 		const frames: Buffer[] = [];
 		const mouth = new WaitingMouth({
@@ -41,16 +41,78 @@ describe("WaitingMouth", () => {
 			clearIntervalFn: vi.fn(),
 		});
 		mouth.start();
-		mouth.feed(pcm16([123, 123, 123]));
-		mouth.finish();
+		let completed = false;
+		const played = mouth
+			.playSpeech("speech-1", pcm16(Array(500).fill(321)))
+			.then(() => {
+				completed = true;
+			});
 		tick();
+		await Promise.resolve();
+		expect(frames).toHaveLength(1);
+		expect(completed).toBe(false);
+		tick();
+		await played;
+		expect(frames).toHaveLength(2);
+		expect(frames[1]?.subarray(160).every((value) => value === 0)).toBe(true);
+		mouth.stop();
+	});
+
+	it("stops queued playback before writing when the lease fence trips", async () => {
+		let tick!: () => void;
+		const onError = vi.fn();
+		const player = { play: vi.fn(), stop: vi.fn() };
+		const mouth = new WaitingMouth({
+			player,
+			createResource: (source) => source,
+			assertLease: () => {
+				throw new Error("lease_lost");
+			},
+			onError,
+			setIntervalFn: (callback) => {
+				tick = callback;
+				return 1 as unknown as NodeJS.Timeout;
+			},
+			clearIntervalFn: vi.fn(),
+		});
+		mouth.start();
+		const played = mouth.playSpeech("speech-fenced", Buffer.alloc(960));
+		tick();
+		await expect(played).rejects.toThrow("speech_playback_stopped");
+		expect(onError).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "lease_lost",
+			}),
+		);
+		expect(player.stop).toHaveBeenCalledOnce();
+	});
+
+	it("drains a final partial frame with silence padding", async () => {
+		let tick!: () => void;
+		const frames: Buffer[] = [];
+		const mouth = new WaitingMouth({
+			player: { play: vi.fn(), stop: vi.fn() },
+			createResource: (source) => {
+				source.stream.on("data", (chunk: Buffer) => frames.push(chunk));
+				return source;
+			},
+			setIntervalFn: (callback) => {
+				tick = callback;
+				return 1 as unknown as NodeJS.Timeout;
+			},
+			clearIntervalFn: vi.fn(),
+		});
+		mouth.start();
+		const played = mouth.playSpeech("speech-partial", pcm16([123, 123, 123]));
+		tick();
+		await played;
 		mouth.stop();
 		expect(frames[0]).toHaveLength(3_840);
 		expect(frames[0]?.readInt16LE(0)).toBe(123);
 		expect(frames[0]?.subarray(24).every((value) => value === 0)).toBe(true);
 	});
 
-	it("preserves every frame when generation gets more than five seconds ahead", () => {
+	it("preserves every frame when generation gets more than five seconds ahead", async () => {
 		let tick!: () => void;
 		const frames: Buffer[] = [];
 		const mouth = new WaitingMouth({
@@ -66,10 +128,16 @@ describe("WaitingMouth", () => {
 			clearIntervalFn: vi.fn(),
 		});
 		mouth.start();
-		for (let frame = 1; frame <= 260; frame += 1) {
-			mouth.feed(pcm16(Array(480).fill(frame)));
-		}
+		const played = mouth.playSpeech(
+			"speech-long",
+			Buffer.concat(
+				Array.from({ length: 260 }, (_, index) =>
+					pcm16(Array(480).fill(index + 1)),
+				),
+			),
+		);
 		for (let frame = 1; frame <= 260; frame += 1) tick();
+		await played;
 		mouth.stop();
 		expect(frames).toHaveLength(260);
 		expect(frames.map((frame) => frame.readInt16LE(0))).toEqual(

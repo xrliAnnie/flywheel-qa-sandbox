@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { compileLeadIdentityRows } from "flywheel-comm/lead-identity";
 import { readRegularFileNoFollow } from "flywheel-comm/lead-registry-file-io";
 import { readSummaryGranularity } from "flywheel-comm/summary-config";
@@ -11,6 +11,11 @@ import {
 } from "flywheel-config";
 import { validateProjectsText } from "./bin/validate-projects.js";
 import type { CodexLeadRuntimeConfig } from "./lead-backends/codex/codex-lead-runtime.js";
+
+function projectsRegistryHome(projectsPath: string): string {
+	const parent = dirname(projectsPath);
+	return basename(parent) === ".flywheel" ? dirname(parent) : parent;
+}
 
 /** Read immediately before start/resume; inherited launch tuning is never a fallback. */
 export function readLeadRuntimeSource(
@@ -24,9 +29,20 @@ export function readLeadRuntimeSource(
 		| "botUserId"
 		| "modelContextWindow"
 	>,
-	options: { home?: string; receiptPath?: string } = {},
+	options: {
+		home?: string;
+		receiptPath?: string;
+		env?: Pick<NodeJS.ProcessEnv, "FLYWHEEL_SUMMARY_CONFIG_HOME">;
+	} = {},
 ) {
-	const home = options.home ?? homedir();
+	const summaryConfigHome =
+		(options.env ?? process.env).FLYWHEEL_SUMMARY_CONFIG_HOME?.trim() ||
+		undefined;
+	const home =
+		summaryConfigHome ??
+		(config.projectsFile
+			? projectsRegistryHome(config.projectsFile)
+			: (options.home ?? homedir()));
 	const projectsPath =
 		config.projectsFile ?? join(home, ".flywheel/projects.json");
 	const receiptPath =

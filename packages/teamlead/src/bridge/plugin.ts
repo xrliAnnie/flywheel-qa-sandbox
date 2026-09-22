@@ -1750,6 +1750,8 @@ export interface BridgeAppOptions {
 		dutyWritePath?: () => "configured" | "unconfigured";
 	};
 	voiceSessionRouter?: express.Router;
+	leadVoiceCapabilityRouter?: express.Router;
+	leadVoiceCapabilityReceiptRouter?: express.Router;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -5744,6 +5746,20 @@ export function createBridgeApp(
 			opts.voiceSessionRouter,
 		);
 	}
+	if (opts?.leadVoiceCapabilityRouter && config.apiToken) {
+		app.use(
+			"/api/lead-capabilities/voice",
+			tokenAuthMiddleware(config.apiToken, undefined),
+			opts.leadVoiceCapabilityRouter,
+		);
+	}
+	if (opts?.leadVoiceCapabilityReceiptRouter && config.apiToken) {
+		app.use(
+			"/api/lead-capabilities/voice-receipt",
+			tokenAuthMiddleware(config.apiToken, undefined),
+			opts.leadVoiceCapabilityReceiptRouter,
+		);
+	}
 
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
@@ -9434,6 +9450,9 @@ export async function startBridge(
 			},
 			flagScanRoute: flagScanRouteHolder,
 			voiceSessionRouter: voiceSessionServices.router,
+			leadVoiceCapabilityRouter: voiceSessionServices.leadCapabilityRouter,
+			leadVoiceCapabilityReceiptRouter:
+				voiceSessionServices.leadCapabilityReceiptRouter,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
@@ -9445,6 +9464,7 @@ export async function startBridge(
 
 	const server = app.listen(config.port, config.host);
 	voiceSessionServices.runtime.start();
+	voiceSessionServices.cardProjector.start();
 
 	await new Promise<void>((resolve, reject) => {
 		server.once("listening", resolve);
@@ -15188,6 +15208,7 @@ export async function startBridge(
 		await processResources.stop();
 		await betaReleaseRuntime.stop();
 		voiceSessionServices.runtime.stop();
+		voiceSessionServices.cardProjector.stop();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.

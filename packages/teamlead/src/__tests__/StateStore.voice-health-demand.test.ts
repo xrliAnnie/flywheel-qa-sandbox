@@ -165,7 +165,9 @@ describe("StateStore voice-health demand projection", () => {
 			 provisioning_step, provisioner_epoch, provisioning_nonce, root_message_id,
 			 thread_id, member_added_at, cancel_requested_at, orphan_candidates,
 			 bound_channel_ids, ?, evidence_dir, topic, requested_by, credential_tier,
-			 state, reason, daemon_boot_id, lease_token, lease_expires_at, outbound_cursor,
+			 state, reason, daemon_boot_id, lease_token, lease_expires_at,
+			 receive_health, receive_health_observed_at, receive_health_boot_id,
+			 receive_card_digest, outbound_cursor,
 			 created_at, updated_at, ended_at, ending_started_at, root_requested_at
 			 FROM voice_sessions WHERE session_id = ?`,
 		).run(
@@ -384,6 +386,8 @@ describe("StateStore voice-health demand projection", () => {
 			 thread_id, member_added_at, cancel_requested_at, orphan_candidates,
 			 bound_channel_ids, ?, evidence_dir, topic, requested_by, credential_tier,
 			 'failed', 'lease_lost', daemon_boot_id, lease_token, lease_expires_at,
+			 receive_health, receive_health_observed_at, receive_health_boot_id,
+			 receive_card_digest,
 			 outbound_cursor, created_at, updated_at, updated_at, ending_started_at,
 			 root_requested_at FROM voice_sessions WHERE session_id = ?`,
 		).run(

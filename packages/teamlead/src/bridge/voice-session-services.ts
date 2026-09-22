@@ -2,13 +2,19 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import type express from "express";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
-import { postDiscordMessageToChannel } from "./discord-utils.js";
+import {
+	editDiscordMessageInChannel,
+	postDiscordMessageToChannel,
+} from "./discord-utils.js";
+import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
 import type { BridgeConfig } from "./types.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
 import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
+import { VoiceSessionCardProjector } from "./voice-session-card.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
 import {
@@ -37,6 +43,9 @@ export function createVoiceSessionServices(input: {
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	runtime: VoiceSessionRuntime;
+	cardProjector: VoiceSessionCardProjector;
+	leadCapabilityRouter: express.Router;
+	leadCapabilityReceiptRouter: express.Router;
 } {
 	const env = input.env ?? process.env;
 	const homeDir = input.homeDir ?? homedir();
@@ -244,10 +253,41 @@ export function createVoiceSessionServices(input: {
 		},
 		reportPollFailure: (session) => postStatus(session, "📻 回程暂时不通"),
 	});
+	const cardProjector = new VoiceSessionCardProjector({
+		store: input.store,
+		leaseRenewMs: timing.leaseRenewMs,
+		validateSession,
+		patch: async (session, content, signal) => {
+			if (!session.rootMessageId) throw new Error("voice_card_root_missing");
+			const { lead, token } = resolve(session);
+			const result = await editDiscordMessageInChannel(
+				lead.chatChannel,
+				session.rootMessageId,
+				content,
+				token,
+				{ origin: "lead_authored", signal },
+				fetchImpl,
+			);
+			if (!result.ok)
+				throw new Error(
+					`voice_card_patch_failed_${result.status ?? "network"}`,
+				);
+		},
+	});
+	const leadCapabilityRouters = createLeadCapabilityVoiceRouter({
+		store: input.store,
+		leaseRenewMs: timing.leaseRenewMs,
+		resolveStart,
+		provisionSession: provision,
+		projectsPath: env.FLYWHEEL_PROJECTS_FILE,
+		homeDir,
+		env: { ...env },
+	});
 	return {
 		router: createVoiceSessionRouter({
 			store: input.store,
 			leaseTtlMs: timing.leaseTtlMs,
+			leaseRenewMs: timing.leaseRenewMs,
 			resolveStart,
 			provisionSession: provision,
 			reportAbandoned: (session, count) =>
@@ -256,5 +296,8 @@ export function createVoiceSessionServices(input: {
 			validateSession,
 		}),
 		runtime,
+		cardProjector,
+		leadCapabilityRouter: leadCapabilityRouters.operationRouter,
+		leadCapabilityReceiptRouter: leadCapabilityRouters.receiptRouter,
 	};
 }

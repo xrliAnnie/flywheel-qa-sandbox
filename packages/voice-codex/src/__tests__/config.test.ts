@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	loadVoiceDaemonConfig,
 	resolveLeadVoiceToken,
+	resolveVoiceCommDbPath,
 	voiceCodexEnv,
 } from "../config.js";
 
@@ -104,6 +105,21 @@ describe("voice daemon config", () => {
 		).toThrow(/half the lease TTL/);
 	});
 
+	it("reserves enough lease time for a health retry and fencing margin", () => {
+		expect(() =>
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_LEASE_TTL_MS: "15000",
+					FLYWHEEL_VOICE_LEASE_RENEW_MS: "2000",
+					FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: "4500",
+				},
+				"/Users/tester",
+			),
+		).toThrow(/health retry/);
+	});
+
 	it.each([undefined, "", "  "])(
 		"requires a nonempty parent API key: %s",
 		(key) => {
@@ -118,11 +134,17 @@ describe("voice daemon config", () => {
 
 	it("uses bounded delivery retry defaults", () => {
 		const config = loadVoiceDaemonConfig(
-			{ TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" },
+			{
+				TEAMLEAD_API_TOKEN: "master",
+				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_VOICE_BUILD_SHA: "a".repeat(40),
+			},
 			"/Users/tester",
 		);
 		expect(config).toMatchObject({
 			realtimeApiKey: "api-key",
+			buildSha: "a".repeat(40),
+			speechChunkTokens: 80,
 			bridgeUrl: "http://127.0.0.1:9876",
 			idleHttpTimeoutMs: 2_000,
 			leaseHttpTimeoutMs: 2_000,
@@ -134,6 +156,52 @@ describe("voice daemon config", () => {
 			voiceHealthHelperPath:
 				"/Users/tester/Dev/flywheel/scripts/lib/voice-health.py",
 		});
+	});
+
+	it("rejects a malformed voice build identity", () => {
+		expect(() =>
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_BUILD_SHA: "not-a-sha",
+				},
+				"/Users/tester",
+			),
+		).toThrow("FLYWHEEL_VOICE_BUILD_SHA");
+	});
+
+	it("uses an explicit isolated CommDB path and preserves the production default", () => {
+		const isolated = loadVoiceDaemonConfig(
+			{
+				TEAMLEAD_API_TOKEN: "master",
+				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_COMM_DB: "/private/tmp/voice-slot/comm.db",
+			},
+			"/Users/tester",
+		);
+		expect(resolveVoiceCommDbPath(isolated, "raya", "/Users/tester")).toBe(
+			"/private/tmp/voice-slot/comm.db",
+		);
+		const standard = loadVoiceDaemonConfig(
+			{ TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" },
+			"/Users/tester",
+		);
+		expect(resolveVoiceCommDbPath(standard, "raya", "/Users/tester")).toBe(
+			"/Users/tester/.flywheel/comm/raya/comm.db",
+		);
+		for (const commDbPath of ["relative/comm.db", "/"]) {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{
+						TEAMLEAD_API_TOKEN: "master",
+						OPENAI_API_KEY: "api-key",
+						FLYWHEEL_COMM_DB: commDbPath,
+					},
+					"/Users/tester",
+				),
+			).toThrow(/FLYWHEEL_COMM_DB/);
+		}
 	});
 
 	it("derives health paths only from trusted Flywheel roots, never the voice subdirectory", () => {
@@ -213,7 +281,7 @@ describe("voice daemon config", () => {
 		},
 	);
 
-	it("builds a positive environment allowlist for the no-tool Codex frontend", () => {
+	it("keeps the legacy Codex environment helper credential-free for compatibility", () => {
 		expect(
 			voiceCodexEnv({
 				HOME: "/Users/tester",

@@ -5,12 +5,14 @@ export type CodexLeadCapabilityInput = {
 	external?: boolean;
 	canSpawnRunners?: boolean;
 	codexRunnerActions?: boolean;
+	codexVoiceActions?: boolean;
 	codexCapabilityBundleVersion?: 2;
 };
 
 export type CodexLeadCapability = {
 	eligible: boolean;
 	runnerActionsEnabled: boolean;
+	voiceActionsEnabled?: true;
 	/** Absent on legacy rows; adoption is not proof of runtime readiness. */
 	capabilityBundleVersion?: 2;
 	reason: string | null;
@@ -32,6 +34,18 @@ export function resolveCodexLeadCapabilities(
 		return refuse("codexCapabilityBundleVersion must be 2 when present");
 	}
 	if (
+		input.codexVoiceActions !== undefined &&
+		typeof input.codexVoiceActions !== "boolean"
+	) {
+		return refuse("codexVoiceActions must be a boolean");
+	}
+	if (
+		input.codexVoiceActions === true &&
+		input.codexCapabilityBundleVersion !== 2
+	) {
+		return refuse("codexVoiceActions requires codexCapabilityBundleVersion 2");
+	}
+	if (
 		input.codexCapabilityBundleVersion === 2 &&
 		(input.backend !== "codex-app-server" ||
 			input.codexProfile !== "full-access" ||
@@ -45,6 +59,10 @@ export function resolveCodexLeadCapabilities(
 	const bundle =
 		input.codexCapabilityBundleVersion === 2
 			? { capabilityBundleVersion: 2 as const }
+			: {};
+	const voiceActions =
+		input.codexVoiceActions === true
+			? { voiceActionsEnabled: true as const }
 			: {};
 	if (
 		input.codexRunnerActions !== undefined &&
@@ -83,6 +101,7 @@ export function resolveCodexLeadCapabilities(
 		return {
 			eligible: true,
 			...bundle,
+			...voiceActions,
 			runnerActionsEnabled: input.backend === "codex-app-server",
 			reason: null,
 		};
@@ -100,6 +119,7 @@ export function resolveCodexLeadCapabilities(
 		eligible: true,
 		runnerActionsEnabled: false,
 		...bundle,
+		...voiceActions,
 		reason: null,
 	};
 }

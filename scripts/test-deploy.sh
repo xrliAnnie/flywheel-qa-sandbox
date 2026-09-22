@@ -3,7 +3,8 @@
 #
 # Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
 #        [--alerts [--codex-home-reconcile]]
-#        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]]
+#        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]
+#          [--voice-fixture <public-json>]]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
 #   --digest <id>  FLY-727: mount the daily-digest route on the slot Bridge
@@ -192,6 +193,7 @@ GENERALIZED=0             # FLY-1775: generalized workflow flags/config/bindings
 CODEX_RUNNER=0            # FLY-2211: opt-in real codex-tmux worker for restart drills.
 STUB_RUNNER=0             # FLY-1775: deterministic persistent claude stub for the 9-step drill.
 EXPECT_HEAD=""            # FLY-1775: optional script-repository HEAD fence.
+VOICE_FIXTURE=""          # FLY-2655: opt-in isolated 529 voice-room coordinates.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -240,6 +242,10 @@ while [[ $# -gt 0 ]]; do
       EXPECT_HEAD="${2:?--expect-head requires a full SHA}"; shift 2 ;;
     --expect-head=*)
       EXPECT_HEAD="${1#*=}"; shift ;;
+    --voice-fixture)
+      VOICE_FIXTURE="${2:?--voice-fixture requires a JSON path}"; shift 2 ;;
+    --voice-fixture=*)
+      VOICE_FIXTURE="${1#*=}"; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -301,6 +307,26 @@ esac
 if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" ]]; then
   echo "ERROR: --expect-head requires --generalized" >&2
   exit 1
+fi
+if [[ -n "$VOICE_FIXTURE" ]]; then
+  [[ "$GENERALIZED" == "1" && "$MODE" == "slot" ]] || {
+    echo "ERROR: --voice-fixture requires --generalized --mode slot." >&2
+    exit 1
+  }
+  [[ "$NO_LEAD" == "0" && "$STUB_RUNNER" == "0" ]] || {
+    echo "ERROR: --voice-fixture requires a real Lead (no --no-lead or --stub-runner)." >&2
+    exit 1
+  }
+  [[ -n "$EXPECT_HEAD" ]] || {
+    echo "ERROR: --voice-fixture requires --expect-head." >&2
+    exit 1
+  }
+  (( ${#EXTRA_LEAD_SPECS[@]} == 0 )) || {
+    echo "ERROR: --voice-fixture does not borrow extra Lead bots." >&2
+    exit 1
+  }
+  node "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" validate \
+    --fixture "$VOICE_FIXTURE" >/dev/null || exit 1
 fi
 
 # Generalized master entry always requires a token, independently of the
@@ -523,7 +549,6 @@ trap release_preflight_lock EXIT
   if [[ "$GENERALIZED" == "1" ]]; then
     pnpm --filter flywheel-config build || exit 16
   fi
-
   # 3. Rebuild edge-worker dist so scripts/run-bridge.ts → dist/WorktreeManager.js
   #    picks up the FLYWHEEL_RUNNER_START_POINT env fallback. Without this,
   #    /api/runs/start spawns Runners against stale origin/main dist.
@@ -547,6 +572,11 @@ trap release_preflight_lock EXIT
   #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
   pnpm --filter flywheel-comm build || exit 18
   pnpm --filter flywheel-teamlead build || exit 15
+  if [[ -n "$VOICE_FIXTURE" ]]; then
+    pnpm --filter flywheel-voice-core build || exit 19
+    pnpm --filter flywheel-voice-bridge build || exit 19
+    pnpm --filter flywheel-voice-codex build || exit 19
+  fi
 
   # 6. Assert the env fallback actually landed in the built artifact. Cheaper
   #    than rerunning unit tests under the lock, and it catches the case where
@@ -1518,6 +1548,51 @@ if [[ "$ALERTS" == "1" ]]; then
   fi
 fi
 
+# FLY-2655: install the reviewed public voice coordinates into the one final
+# registry before either the Lead identity or Bridge is compiled. The helper
+# writes only slot-private 0600/0700 configuration and leaves codexVoiceActions
+# absent, so this enables direct QA lifecycle commands without activating the
+# model-facing Lead capability.
+VOICE_FIXTURE_RECEIPT=""
+VOICE_FIXTURE_FOUNDER_USER_ID=""
+if [[ -n "$VOICE_FIXTURE" ]]; then
+  _voice_projects_input="${SLOT_DIR}/voice-projects-input.json"
+  (umask 077; printf '%s\n' "$FLYWHEEL_PROJECTS" > "$_voice_projects_input")
+  FLYWHEEL_PROJECTS=$(node "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" install \
+    --fixture "$VOICE_FIXTURE" --projects "$_voice_projects_input" \
+    --slot-dir "$SLOT_DIR" --project "$TEST_PROJECT_NAME" --lead "$AGENT_ID" \
+    --bot-user "$BOT_ID" --bot-token-env "$BOT_TOKEN_ENV") \
+    || campaign_abort "voice fixture installation failed"
+  rm -f "$_voice_projects_input"
+  VOICE_FIXTURE_RECEIPT="${SLOT_DIR}/voice-fixture.json"
+  VOICE_FIXTURE_FOUNDER_USER_ID=$(jq -er '.fixture.founderUserId' "$VOICE_FIXTURE_RECEIPT") \
+    || campaign_abort "voice fixture founder identity missing"
+  QA1189_OWNER_OVERRIDE="$VOICE_FIXTURE_FOUNDER_USER_ID"
+  VOICE_FIXTURE_COMM_DB=$(jq -er '.commDbPath' "$VOICE_FIXTURE_RECEIPT") || exit 1
+  VOICE_FIXTURE_HOST=$(jq -er '.voiceHostPath' "$VOICE_FIXTURE_RECEIPT") || exit 1
+  VOICE_FIXTURE_NOTES=$(jq -er '.meetingNotesPath' "$VOICE_FIXTURE_RECEIPT") || exit 1
+  VOICE_FIXTURE_ROOT=$(jq -er '.voiceRoot' "$VOICE_FIXTURE_RECEIPT") || exit 1
+  VOICE_FIXTURE_CODEX_HOME=$(jq -er '.codexHome' "$VOICE_FIXTURE_RECEIPT") || exit 1
+  BRIDGE_EXTRA_ENV+=(
+    "FLYWHEEL_VOICE_HOST_CONFIG=${VOICE_FIXTURE_HOST}"
+    "FLYWHEEL_MEETING_NOTES_CONFIG=${VOICE_FIXTURE_NOTES}"
+    "FLYWHEEL_VOICE_STATE_DIR=${VOICE_FIXTURE_ROOT}"
+    "FLYWHEEL_VOICE_CODEX_HOME=${VOICE_FIXTURE_CODEX_HOME}"
+  )
+  LEAD_EXTRA_ENV+=(
+    "DISCORD_OWNER_USER_ID=${VOICE_FIXTURE_FOUNDER_USER_ID}"
+    "FLYWHEEL_VOICE_HOST_CONFIG=${VOICE_FIXTURE_HOST}"
+    "FLYWHEEL_MEETING_NOTES_CONFIG=${VOICE_FIXTURE_NOTES}"
+    "FLYWHEEL_VOICE_STATE_DIR=${VOICE_FIXTURE_ROOT}"
+    "FLYWHEEL_VOICE_CODEX_HOME=${VOICE_FIXTURE_CODEX_HOME}"
+    "OPENAI_API_KEY="
+  )
+  # The launcher reads the existing managed ~/.flywheel/.env source directly;
+  # do not duplicate the realtime key into Bridge's slot secretEnvironment.
+  BRIDGE_ENV_UNSET_ARGS+=(-u OPENAI_API_KEY)
+  log "voice fixture installed: QA room and user allowlists are slot-private"
+fi
+
 # Launch specs are intentionally single-line for every environment value.
 # Compact the already-validated JSON once, before both the file and live-env
 # projections, so initial launch and cycle replay remain byte-identical.
@@ -1538,6 +1613,22 @@ FLYWHEEL_PROJECTS_FILE="${SLOT_DIR}/flywheel-projects.json"
 echo "$FLYWHEEL_PROJECTS" > "$FLYWHEEL_PROJECTS_FILE"
 chmod 600 "$FLYWHEEL_PROJECTS_FILE"
 log "Wrote ${FLYWHEEL_PROJECTS_FILE}"
+QA_SUMMARY_MIGRATION_RECEIPT=$(qa_multilead_mint_summary_receipt \
+  "$REPO_ROOT" "$FLYWHEEL_PROJECTS_FILE" "$QA_SUMMARY_CONFIG_HOME" \
+  "$QA_SLOT_BRIDGE_NODE") \
+  || campaign_abort "slot summary registry receipt mint failed"
+if [[ -n "$VOICE_FIXTURE_RECEIPT" ]]; then
+  node "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" finalize \
+    --receipt "$VOICE_FIXTURE_RECEIPT" \
+    --projects "$FLYWHEEL_PROJECTS_FILE" >/dev/null \
+    || campaign_abort "voice fixture final registry binding failed"
+fi
+# The canonical migrator rewrites the registry and binds its receipt to those
+# exact bytes. Keep Bridge's inline JSON compact, while every Lead receives an
+# exact file copy below so activation verification sees the same post-image.
+FLYWHEEL_PROJECTS=$(jq -c . "$FLYWHEEL_PROJECTS_FILE") \
+  || campaign_abort "failed to reload migrated FLYWHEEL_PROJECTS"
+log "Minted ${QA_SUMMARY_MIGRATION_RECEIPT} from final slot registry"
 
 # FLY-1775 pit 5: GET visibility does not prove Send Messages. In a
 # generalized --alerts room, exercise every bot that the scrubbed Bridge send
@@ -1582,7 +1673,7 @@ qa_slot_start_lead() {
   local manifest="${runtime}/manifest.json" plist="${runtime}/lead.plist"
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
   local lead_row mcp_exclude backend codex_profile lead_chat_channel
-  local codex_home codex_bin codex_state codex_wrapper codex_comm_db
+  local codex_home codex_bin codex_state codex_state_dirs codex_wrapper codex_comm_db
   local profile_assignments profile_assignment coordinate_bot coordinate_started
   local coordinate_args=()
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
@@ -1630,6 +1721,8 @@ qa_slot_start_lead() {
     codex_bin="${codex_home}/packages/standalone/current/codex"
     codex_state=$(qa_launchd_codex_state_dir "$state" "$TEST_PROJECT_NAME" "$agent") \
       || return 1
+    codex_state_dirs=$(qa_launchd_codex_state_dirs_add \
+      '{}' "$TEST_PROJECT_NAME" "$agent" "$codex_state") || return 1
     codex_wrapper="${runtime}/codex-lead-wrapper.sh"
     codex_comm_db="${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db"
     codex_assignments=(
@@ -1640,6 +1733,7 @@ qa_slot_start_lead() {
       "FLYWHEEL_CODEX_LEAD_MODE=tui"
       "FLYWHEEL_CODEX_TUI_CWD=${workspace}"
       "FLYWHEEL_CODEX_LEAD_OUTBOUND=${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}"
+      "FLYWHEEL_CODEX_LEAD_STATE_DIRS=${codex_state_dirs}"
       "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=${identity},${REPO_ROOT}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
     )
     profile_assignments=$(qa_codex_profile_assignments "$codex_profile" \
@@ -1675,8 +1769,8 @@ qa_slot_start_lead() {
   fi
   mkdir -p "$runtime" "$state" "$workspace" || return 1
   chmod 700 "$runtime" "$state"
-  printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects"
-  chmod 600 "$projects"
+  cp "$FLYWHEEL_PROJECTS_FILE" "$projects" || return 1
+  chmod 600 "$projects" || return 1
   coordinate_bot=$(jq -er --argjson slot "$carrier_slot" \
     '.slots[] | select(.id == $slot) | .botAppId' "$SLOTS_FILE") || return 1
   lead_chat_channel=$(jq -er '.chatChannel' <<<"$lead_row") || return 1
@@ -2427,14 +2521,16 @@ if [[ "$GENERALIZED" == "1" ]]; then
 	--arg summaryConfigHome "$QA_SUMMARY_CONFIG_HOME" \
     --arg flywheelRepo "$REPO_ROOT" \
     --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg voiceFixtureReceipt "$VOICE_FIXTURE_RECEIPT" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
       mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,lead:$lead,
       dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
       flywheelProjectsFile:$flywheelProjectsFile,
-	  summaryConfigHome:$summaryConfigHome,
+      summaryConfigHome:$summaryConfigHome,
       apiTokenPath:$apiTokenPath,
-      bridgeLog:$bridgeLog}' > "$_room_tmp" \
+      bridgeLog:$bridgeLog} +
+      (if $voiceFixtureReceipt == "" then {} else {voiceFixtureReceipt:$voiceFixtureReceipt} end)' > "$_room_tmp" \
     || { rm -f "$_room_tmp"; exit 1; }
   chmod 600 "$_room_tmp"
   mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
@@ -2534,6 +2630,14 @@ if [[ "$GENERALIZED" == "1" ]]; then
   "roomInfo": "${GENERALIZED_ROOM_INFO}"
 EOF
 )
+fi
+if [[ -n "$VOICE_FIXTURE_RECEIPT" ]]; then
+  GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF
+,
+  "voiceFixtureReceipt": "${VOICE_FIXTURE_RECEIPT}",
+  "voiceLauncher": "${SCRIPT_DIR}/qa/fly2655-voice-room.mjs"
+EOF
+)"
 fi
 if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
   GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF

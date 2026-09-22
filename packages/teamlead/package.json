@@ -34,6 +34,10 @@
 			"types": "./dist/process-lock.d.ts",
 			"import": "./dist/process-lock.js"
 		},
+		"./realtime-voices": {
+			"types": "./dist/realtime-voices.d.ts",
+			"import": "./dist/realtime-voices.js"
+		},
 		"./cos-ports/voice-intent": {
 			"types": "./dist/cos-ports/voice-intent.d.ts",
 			"import": "./dist/cos-ports/voice-intent.js"

@@ -228,9 +228,10 @@ export function createVoiceStartResolver(
 				"voice_room_conflict",
 			);
 		}
-		if (mode === "meeting" && !evidenceDir) {
-			throw new VoiceSessionHttpError(400, "evidence_dir_rejected");
-		}
+		// A trusted direct meeting (including the standard Lead capability) uses
+		// the voice daemon's session evidence root. A meeting record still binds
+		// its canonical meeting evidence directory, and an explicitly supplied
+		// directory remains subject to the host allowlist below.
 		if (evidenceDir) {
 			evidenceDir = canonicalEvidenceDir(
 				evidenceDir,

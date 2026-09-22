@@ -62,6 +62,32 @@ describe("lead capability catalog", () => {
 			}).success,
 		).toBe(false);
 	});
+	it("defines strict self-scoped voice operation contracts", () => {
+		const start = getLeadCapability("voice.session.start")!;
+		expect(start.classification).toBe("write");
+		expect(start.credentialConsumer).toBe("bridge");
+		expect(
+			start.inputSchema.safeParse({ mode: "rg", topic: "聊一下" }).success,
+		).toBe(true);
+		expect(
+			start.inputSchema.safeParse({
+				mode: "meeting",
+				meetingId: "123e4567-e89b-42d3-a456-426614174000",
+			}).success,
+		).toBe(true);
+		for (const input of [
+			{ mode: "rg", meetingId: "123e4567-e89b-42d3-a456-426614174000" },
+			{ mode: "rg", projectName: "foreign" },
+			{ mode: "rg", token: "secret" },
+			{ mode: "rg", topic: "x".repeat(201) },
+		])
+			expect(start.inputSchema.safeParse(input).success).toBe(false);
+		expect(
+			getLeadCapability("voice.session.status")!.inputSchema.safeParse({
+				sessionId: "123e4567-e89b-42d3-a456-426614174000",
+			}).success,
+		).toBe(true);
+	});
 });
 
 it("rejects control characters in identifiers and message text", () => {

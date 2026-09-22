@@ -7,7 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
 import { compileSummaryAssignments } from "flywheel-comm/summary-assignment";
 import { readSummaryGranularity } from "flywheel-comm/summary-config";
@@ -24,10 +24,19 @@ afterEach(() => {
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
 });
-function fixture() {
-	const home = mkdtempSync(join(tmpdir(), "lead-config-write-"));
-	roots.push(home);
-	mkdirSync(join(home, ".flywheel"));
+function fixture(
+	layout: {
+		summaryHome?: "identity-home" | "root";
+		projectsLocation?: "flywheel" | "root";
+		receiptLocation?: "default" | "explicit";
+		omitProjectsFile?: boolean;
+	} = {},
+) {
+	const root = mkdtempSync(join(tmpdir(), "lead-config-write-"));
+	roots.push(root);
+	const home =
+		layout.summaryHome === "identity-home" ? join(root, "identity-home") : root;
+	mkdirSync(join(home, ".flywheel"), { recursive: true });
 	writeFileSync(
 		join(home, ".flywheel/summary-config.json"),
 		JSON.stringify({
@@ -36,8 +45,15 @@ function fixture() {
 			setAt: "2026-09-16T00:00:00Z",
 		}),
 	);
-	const projectsPath = join(home, "projects.json"),
-		receiptPath = join(home, "receipt.json");
+	const projectsPath =
+		layout.projectsLocation === "flywheel"
+			? join(home, ".flywheel/projects.json")
+			: join(root, "projects.json");
+	const receiptPath =
+		layout.receiptLocation === "default"
+			? join(home, ".flywheel/state/summary-registry/migration-receipt.json")
+			: join(root, "receipt.json");
+	mkdirSync(dirname(receiptPath), { recursive: true });
 	const raw = [
 		{
 			projectName: "raya",
@@ -88,7 +104,7 @@ function fixture() {
 		homeDir: home,
 	}).identity;
 	const config = {
-		projectsFile: projectsPath,
+		...(layout.omitProjectsFile ? {} : { projectsFile: projectsPath }),
 		projectName: "raya",
 		leadId: "raya",
 		leadKey: identity.leadKey,
@@ -97,12 +113,61 @@ function fixture() {
 		modelContextWindow: identity.modelContextWindow,
 	};
 	return {
+		root,
+		home,
 		config,
 		options: { home, receiptPath },
 		raw,
 		save: () => writeFileSync(projectsPath, JSON.stringify(raw)),
 	};
 }
+
+it("reads the slot receipt from FLYWHEEL_SUMMARY_CONFIG_HOME before the process home", () => {
+	const f = fixture({
+		summaryHome: "identity-home",
+		receiptLocation: "default",
+	});
+	expect(
+		readLeadRuntimeTuning(f.config, {
+			home: join(f.root, "wrong-process-home"),
+			env: {
+				FLYWHEEL_SUMMARY_CONFIG_HOME: f.home,
+			},
+		}),
+	).toMatchObject({ model: "gpt-6-astra", reasoningEffort: "low" });
+});
+
+it("ignores an empty FLYWHEEL_SUMMARY_CONFIG_HOME instead of reading relative state", () => {
+	const f = fixture({ receiptLocation: "default" });
+	expect(
+		readLeadRuntimeTuning(f.config, {
+			home: join(f.root, "wrong-process-home"),
+			env: { FLYWHEEL_SUMMARY_CONFIG_HOME: "   " },
+		}),
+	).toMatchObject({ model: "gpt-6-astra", reasoningEffort: "low" });
+});
+
+it("derives the summary receipt home from an explicit projects registry", () => {
+	const f = fixture({ receiptLocation: "default" });
+	expect(
+		readLeadRuntimeTuning(f.config, {
+			home: join(f.root, "wrong-process-home"),
+			env: {},
+		}),
+	).toMatchObject({ model: "gpt-6-astra", reasoningEffort: "low" });
+});
+
+it("keeps the production homedir layout when neither scoped source is configured", () => {
+	const f = fixture({
+		projectsLocation: "flywheel",
+		receiptLocation: "default",
+		omitProjectsFile: true,
+	});
+	expect(readLeadRuntimeTuning(f.config, { home: f.home })).toMatchObject({
+		model: "gpt-6-astra",
+		reasoningEffort: "low",
+	});
+});
 it("reads new registry tuning with the unchanged FLY-2602 receipt, never launch values", () => {
 	const f = fixture();
 	expect(readLeadRuntimeTuning(f.config, f.options)).toMatchObject({
