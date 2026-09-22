@@ -49,6 +49,7 @@ import {
 import {
 	type AccountUsageResult,
 	fetchAccountUsage,
+	findModelScopedQuota,
 } from "./quota-usage-api.js";
 
 export interface QuotaGuardCliDeps {
@@ -873,11 +874,14 @@ export async function runQuotaGuardCli(
 		log("FLYWHEEL_LOCK_LEASE_LOST quota projection fenced");
 		return 39;
 	}
+	const fable = findModelScopedQuota(usage.ok.raw, "Fable");
 	const projection = recordObservationInStore(storePath, name, {
 		fiveHPct: usage.ok.fiveH.pct,
 		sevenDPct: usage.ok.sevenD.pct,
 		fiveHResetAt: usage.ok.fiveH.resetsAt,
 		sevenDResetAt: usage.ok.sevenD.resetsAt,
+		fableSevenDPct: fable?.pct ?? null,
+		fableSevenDResetAt: fable?.resetsAt ?? null,
 		observedAt: new Date(observedAtMs).toISOString(),
 	});
 	if (projection !== "updated" && projection !== "older_observation") {

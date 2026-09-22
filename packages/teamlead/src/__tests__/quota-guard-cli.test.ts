@@ -48,7 +48,11 @@ function usage(
 	sevenDPct: number,
 	// `null` means the window has not opened yet (FLY-1366), so default only on
 	// `undefined` — `??` would swap an explicit null back to a timestamp.
-	resets: { five?: string | null; seven?: string | null } = {},
+	resets: {
+		five?: string | null;
+		seven?: string | null;
+		fable?: { pct: number; reset: string | null };
+	} = {},
 ): AccountUsageResult {
 	const five = resets.five === undefined ? FIVE_RESET : resets.five;
 	const seven = resets.seven === undefined ? WEEK_RESET : resets.seven;
@@ -57,6 +61,17 @@ function usage(
 			raw: {
 				five_hour: { utilization: fiveHPct, resets_at: five },
 				seven_day: { utilization: sevenDPct, resets_at: seven },
+				...(resets.fable
+					? {
+							limits: [
+								{
+									percent: resets.fable.pct,
+									resets_at: resets.fable.reset,
+									scope: { model: { display_name: "Fable" } },
+								},
+							],
+						}
+					: {}),
 			},
 			fiveH: { pct: fiveHPct, resetsAt: five },
 			sevenD: { pct: sevenDPct, resetsAt: seven },
@@ -909,6 +924,22 @@ describe("runQuotaGuardCli", () => {
 			lastObservedAt: new Date(guardObservedAt).toISOString(),
 			observedSevenDPct: 100,
 			quotaExhaustedUntil: WEEK_RESET,
+		});
+	});
+
+	it("persists the Fable-scoped weekly reading from the guard probe", async () => {
+		const code = await run(
+			usage(34, 100, {
+				fable: { pct: 28, reset: "2026-07-18T07:00:00.000Z" },
+			}),
+		);
+
+		expect(code).toBe(32);
+		expect(
+			readStore(storePath).accounts.find((entry) => entry.name === "business"),
+		).toMatchObject({
+			observedFableSevenDPct: 28,
+			fableWeeklyResetAt: "2026-07-18T07:00:00.000Z",
 		});
 	});
 

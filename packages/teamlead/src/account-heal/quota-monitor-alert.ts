@@ -58,7 +58,7 @@ type RoutingPolicy = {
 
 const ROUTING = {
 	account_switched: {
-		mention: true,
+		mention: false,
 		severe: false,
 		primaryChannel: "notify",
 		primaryStyle: "plain",

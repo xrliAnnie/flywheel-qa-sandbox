@@ -33,6 +33,134 @@ afterEach(() => {
 	while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true });
 });
 
+function writeCodexAccountStore(value: unknown): string {
+	const dir = mkdtempSync(join(tmpdir(), "fly2688-codex-capacity-"));
+	scratch.push(dir);
+	const path = join(dir, "codex-accounts.json");
+	writeFileSync(path, JSON.stringify(value));
+	return path;
+}
+
+describe("FLY-2688 — Codex quota projection", () => {
+	const base = {
+		now: () => Date.parse("2026-09-21T12:00:00.000Z"),
+		readMemoryFreePct: async () => ({
+			freePct: 40,
+			observedAt: "2026-09-21T12:00:00.000Z",
+		}),
+		store: {
+			getActiveSessions: () => [] as never,
+			getFleetPressureHold: () => undefined,
+			getAdmissionPause: () => undefined,
+		},
+	};
+
+	it("projects real readings, exhaustion and recovery from the Codex store", async () => {
+		const snapshot = await buildCapacitySnapshot({
+			...base,
+			accountStorePath: missingAccountStorePath(),
+			codexAccountStorePath: writeCodexAccountStore({
+				version: 1,
+				generatedAt: "2026-09-21T11:50:00.000Z",
+				activeAccount: "personal",
+				accounts: [
+					{
+						name: "personal",
+						registeredProfile: "personal",
+						observedAt: "2026-09-21T11:50:00.000Z",
+						authHealth: "valid",
+						note: null,
+						planType: "pro",
+						fiveH: {
+							usedPercent: 100,
+							windowMinutes: 300,
+							resetAt: "2026-09-21T15:00:00.000Z",
+						},
+						weekly: {
+							usedPercent: 100,
+							windowMinutes: 10080,
+							resetAt: "2026-09-23T15:00:00.000Z",
+						},
+						credits: {
+							known: true,
+							hasCredits: false,
+							unlimited: false,
+							balance: "0",
+						},
+						resetCredits: { known: true, value: null },
+						unclassifiedWindows: 0,
+					},
+					{
+						name: "shopping",
+						registeredProfile: null,
+						observedAt: null,
+						authHealth: "in_use_unshared",
+						note: "in_use_unshared",
+						planType: null,
+						fiveH: null,
+						weekly: null,
+						credits: {
+							known: false,
+							hasCredits: null,
+							unlimited: null,
+							balance: null,
+						},
+						resetCredits: { known: false, value: null },
+						unclassifiedWindows: 0,
+					},
+				],
+			}),
+			quotaConfigPath: join(tmpdir(), "fly2688-missing-quota-config.json"),
+		});
+
+		expect(snapshot.quota.codex.source).toBe("codex-accounts.json");
+		expect(snapshot.quota.codex.activeAccount).toBe("personal");
+		expect(snapshot.quota.codex.unavailable).toEqual([]);
+		expect(snapshot.quota.codex.accounts?.[0]).toMatchObject({
+			name: "personal",
+			active: true,
+			planType: "pro",
+			fiveHPct: 100,
+			weeklyPct: 100,
+			exhausted: true,
+			recoveryAt: "2026-09-23T15:00:00.000Z",
+			authUnusable: false,
+			ageMinutes: 10,
+			stale: false,
+		});
+		expect(snapshot.quota.codex.accounts?.[1]).toMatchObject({
+			name: "shopping",
+			active: false,
+			weeklyPct: null,
+			exhausted: false,
+			recoveryAt: null,
+			observedAt: null,
+			ageMinutes: null,
+			stale: null,
+			note: "in_use_unshared",
+		});
+		expect(JSON.stringify(snapshot)).not.toContain("@");
+	});
+
+	it("keeps the no-source shape when the Codex store is absent or invalid", async () => {
+		for (const codexAccountStorePath of [
+			join(mkdtempSync(join(tmpdir(), "fly2688-absent-")), "codex.json"),
+			writeCodexAccountStore({ version: 2 }),
+		]) {
+			const snapshot = await buildCapacitySnapshot({
+				...base,
+				accountStorePath: missingAccountStorePath(),
+				codexAccountStorePath,
+				quotaConfigPath: join(tmpdir(), "fly2688-missing-quota-config.json"),
+			});
+			expect(snapshot.quota.codex).toEqual({
+				source: null,
+				unavailable: ["structural: codex_no_usage_api"],
+			});
+		}
+	});
+});
+
 describe("buildCapacitySnapshot", () => {
 	it("combines current machine, brake, runner, and sanitized quota facts", async () => {
 		const accountStorePath = writeAccountStore({

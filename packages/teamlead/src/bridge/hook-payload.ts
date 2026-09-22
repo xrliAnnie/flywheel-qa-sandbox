@@ -6,13 +6,16 @@ import {
 	truncateCodePointsFromEnd,
 } from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
-import { formatAccountQuotaBlock } from "../account-heal/account-switch-notification.js";
 import { label } from "../epic-page/labels.js";
 import {
 	assertEpicResidualFact,
 	type EpicResidualFact,
 } from "../epic-page/residual.js";
 import { WORKFLOW_RUN_NODE_STATES } from "../workflow-ledger-states.js";
+import {
+	buildAccountQuotaView,
+	formatAccountQuotaTickLines,
+} from "./account-quota-view.js";
 import {
 	type CapacitySnapshot,
 	canonicalCapacityToken,
@@ -758,12 +761,6 @@ function capacityNumber(
 	return value;
 }
 
-function capacityPct(value: unknown): number | null {
-	return value === null
-		? null
-		: Math.round(capacityNumber(value, { max: 100 }));
-}
-
 function roundedCapacityNumber(
 	value: unknown,
 	opts: { max?: number; integer?: boolean } = {},
@@ -782,10 +779,6 @@ function capacityInstant(value: unknown): string {
 	return new Date(instant).toISOString();
 }
 
-function capacityNullableInstant(value: unknown): string | null {
-	return value === null ? null : capacityInstant(value);
-}
-
 function capacityUnavailableToken(value: unknown): string {
 	if (!isCapacityUnavailableToken(value)) {
 		throw new Error("invalid capacity unavailable token");
@@ -802,12 +795,6 @@ function capacityUnavailableList(value: unknown): string[] {
 		throw new Error("duplicate capacity unavailable token");
 	}
 	return tokens;
-}
-
-function capacityUnavailableSummary(value: unknown): string {
-	const tokens = capacityUnavailableList(value);
-	const hidden = tokens.length - 2;
-	return `${tokens.slice(0, 2).join("; ")}${hidden > 0 ? `; +${hidden}` : ""}`;
 }
 
 function capacityUnavailable(value: unknown): string {
@@ -955,101 +942,14 @@ function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 		runners = `${running} · 停车 ${parked}`;
 	}
 
-	const claudeQuota = capacity.quota.claude;
-	if (
-		claudeQuota.source !== "claude-accounts.json" ||
-		!Array.isArray(claudeQuota.accounts)
-	) {
-		throw new Error("invalid Claude quota cell");
-	}
-	capacityNumber(claudeQuota.staleAfterMinutes);
-	const claudeUnavailable =
-		claudeQuota.unavailable === undefined
-			? undefined
-			: capacityUnavailableSummary(claudeQuota.unavailable);
-	let claude: string;
-	if (claudeUnavailable !== undefined && claudeQuota.accounts.length === 0) {
-		claude = `?(${claudeUnavailable})`;
-	} else {
-		const names = new Set<string>();
-		let activeName: string | null = null;
-		const accounts = claudeQuota.accounts.map((account) => {
-			if (
-				typeof account.name !== "string" ||
-				!PATROL_TOKEN_GRAMMAR.test(account.name) ||
-				names.has(account.name) ||
-				typeof account.active !== "boolean" ||
-				typeof account.authUnusable !== "boolean"
-			) {
-				throw new Error("invalid Claude account");
-			}
-			names.add(account.name);
-			if (account.active) {
-				if (activeName !== null) throw new Error("multiple active accounts");
-				activeName = account.name;
-			}
-			const fiveHPct = capacityPct(account.fiveHPct);
-			const sevenDPct = capacityPct(account.sevenDPct);
-			capacityNullableInstant(account.weeklyResetAt);
-			capacityNullableInstant(account.exhaustedUntil);
-			let age: string;
-			if (account.observedAt === null) {
-				if (account.ageMinutes !== null || account.stale !== null) {
-					throw new Error("invalid unobserved account");
-				}
-				age = "未观测";
-			} else {
-				capacityInstant(account.observedAt);
-				const ageMinutes = roundedCapacityNumber(account.ageMinutes);
-				if (typeof account.stale !== "boolean") {
-					throw new Error("invalid account staleness");
-				}
-				age = `${ageMinutes}m 前`;
-			}
-			return [
-				formatAccountQuotaBlock({
-					name: `${account.active ? "★" : ""}${canonicalPatrolToken(account.name)}`,
-					retiresAt: account.retiresAt,
-					usage: {
-						fiveH: { pct: fiveHPct, resetsAt: "unknown" },
-						sevenD: {
-							pct: sevenDPct,
-							resetsAt: account.weeklyResetAt ?? "unknown",
-						},
-					},
-				}),
-				`观测：${age}${account.stale ? " (stale)" : ""}`,
-			].join("\n");
-		});
-		if (
-			(claudeQuota.activeAccount !== null &&
-				typeof claudeQuota.activeAccount !== "string") ||
-			claudeQuota.activeAccount !== activeName
-		) {
-			throw new Error("invalid active account");
-		}
-		claude = accounts.length === 0 ? "无账号" : accounts.join("\n\n");
-		if (claudeUnavailable !== undefined) {
-			claude += `\n⚠️(${claudeUnavailable})`;
-		}
-	}
-	if (capacity.quota.codex.source !== null) {
-		throw new Error("invalid Codex quota cell");
-	}
-	const codexUnavailable = capacityUnavailableList(
-		capacity.quota.codex.unavailable,
+	const quotaLines = formatAccountQuotaTickLines(
+		buildAccountQuotaView(capacity),
 	);
-	if (
-		codexUnavailable.length !== 1 ||
-		codexUnavailable[0] !== "structural: codex_no_usage_api"
-	) {
-		throw new Error("invalid Codex quota cell");
-	}
 
 	return [
 		`容量(Bridge 采样 · 判断输入,不是闸门;快照 ${generatedAt}):`,
 		`- Data 可用 ${disk} | 内存 free ${memory}| 负载 ${load}| 手刹=${pressureHold} | 部署暂停=${admissionPause} | 在跑 ${runners}`,
-		`- 额度 Claude\n${claude}\n- Codex 无数值源`,
+		...quotaLines,
 	];
 }
 

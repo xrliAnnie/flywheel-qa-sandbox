@@ -19,6 +19,8 @@ export interface CodexQuotaReadOptions {
 	accountMatches: (account: unknown) => boolean;
 	now?: () => number;
 	signal?: AbortSignal;
+	/** FLY-2688: hands the raw `account/rateLimits/read` result to a richer parser. */
+	captureResult?: (result: unknown) => void;
 }
 export interface CodexQuotaReadResult {
 	observation: CodexQuotaObservation;
@@ -120,6 +122,7 @@ export async function readCodexQuota(
 					return;
 				}
 				if (expected === 3) {
+					options.captureResult?.(message.result);
 					Object.assign(
 						observation,
 						parseCodexRateLimits(message.result, options.limitId, now()),

@@ -1485,6 +1485,7 @@ it("renders each retirement capacity account as a separate aligned quota block",
 	expect(body).toMatch(/5h +9% +91% +n\/a/);
 	expect(body).toMatch(/7d +30% +70% +09-16 Wed 09:00/);
 	expect(body).toMatch(/shopping\*\*\n```text/);
+	expect(body).not.toContain("到期 09-20");
 	expect(body).not.toMatch(/personal[^\n]*shopping/);
 	expect(body).toContain("120m 前");
 });

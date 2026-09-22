@@ -1,0 +1,124 @@
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+	type CodexAccountQuotaStore,
+	defaultCodexAccountQuotaStorePath,
+	readCodexAccountQuotaStore,
+	writeCodexAccountQuotaStore,
+} from "../codex-account-quota-store.js";
+
+function store(): CodexAccountQuotaStore {
+	return {
+		version: 1,
+		generatedAt: "2026-09-21T00:00:00.000Z",
+		activeAccount: "personal",
+		accounts: [
+			{
+				name: "personal",
+				registeredProfile: "personal",
+				observedAt: "2026-09-21T00:00:00.000Z",
+				authHealth: "valid",
+				note: null,
+				planType: "pro",
+				fiveH: {
+					usedPercent: 10,
+					windowMinutes: 300,
+					resetAt: "2026-09-21T03:00:00.000Z",
+				},
+				weekly: {
+					usedPercent: 100,
+					windowMinutes: 10080,
+					resetAt: "2026-09-24T00:00:00.000Z",
+				},
+				credits: {
+					known: true,
+					hasCredits: false,
+					unlimited: false,
+					balance: "0",
+				},
+				resetCredits: { known: true, value: null },
+				unclassifiedWindows: 0,
+			},
+			{
+				name: "shopping",
+				registeredProfile: null,
+				observedAt: null,
+				authHealth: "in_use_unshared",
+				note: "in_use_unshared",
+				planType: null,
+				fiveH: null,
+				weekly: null,
+				credits: {
+					known: false,
+					hasCredits: null,
+					unlimited: null,
+					balance: null,
+				},
+				resetCredits: { known: false, value: null },
+				unclassifiedWindows: 0,
+			},
+		],
+	};
+}
+
+describe("FLY-2688 — Codex account quota store", () => {
+	it("round-trips readings and writes owner-only", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2688-store-"));
+		const path = join(dir, "codex-accounts.json");
+		writeCodexAccountQuotaStore(path, store());
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+		expect(readCodexAccountQuotaStore(path)).toEqual(store());
+		expect(readFileSync(path, "utf8")).not.toContain("id_token");
+	});
+
+	it("returns null for a missing, unparseable or schema-invalid store", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2688-store-"));
+		expect(readCodexAccountQuotaStore(join(dir, "absent.json"))).toBeNull();
+
+		const broken = join(dir, "broken.json");
+		writeFileSync(broken, "{not json");
+		expect(readCodexAccountQuotaStore(broken)).toBeNull();
+
+		const invalid = join(dir, "invalid.json");
+		writeFileSync(
+			invalid,
+			JSON.stringify({ ...store(), version: 2 } satisfies Record<
+				string,
+				unknown
+			>),
+		);
+		expect(readCodexAccountQuotaStore(invalid)).toBeNull();
+
+		const badName = join(dir, "bad-name.json");
+		const withBadName = store();
+		withBadName.accounts[0]!.name = "../escape";
+		writeFileSync(badName, JSON.stringify(withBadName));
+		expect(readCodexAccountQuotaStore(badName)).toBeNull();
+
+		const duplicate = join(dir, "duplicate.json");
+		const withDuplicate = store();
+		withDuplicate.accounts[1]!.name = "personal";
+		writeFileSync(duplicate, JSON.stringify(withDuplicate));
+		expect(readCodexAccountQuotaStore(duplicate)).toBeNull();
+
+		const danglingActive = join(dir, "dangling.json");
+		const withDangling = store();
+		withDangling.activeAccount = "nobody";
+		writeFileSync(danglingActive, JSON.stringify(withDangling));
+		expect(readCodexAccountQuotaStore(danglingActive)).toBeNull();
+	});
+
+	it("defaults under the Flywheel state dir", () => {
+		expect(
+			defaultCodexAccountQuotaStorePath(
+				{ FLYWHEEL_STATE_DIR: "/state/dir" },
+				"/home/user",
+			),
+		).toBe("/state/dir/codex-quota/codex-accounts.json");
+		expect(defaultCodexAccountQuotaStorePath({}, "/home/user")).toBe(
+			"/home/user/.flywheel/codex-quota/codex-accounts.json",
+		);
+	});
+});

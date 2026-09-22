@@ -114,3 +114,14 @@ export function persistCodexCandidateCredential(options: {
 	expectedProfileDigest: string;
 	accountLease: CodexAccountLease;
 }): CodexCandidatePersistResult;
+
+export function persistCodexProfileQuotaRefresh(options: {
+	profilesRoot: string;
+	/** Profile slot directory name under `profilesRoot`; need not be registered. */
+	profileDir: string;
+	registry: CodexAccountRegistry;
+	accountKey: string;
+	finalAuthPath: string;
+	expectedProfileDigest: string;
+	accountLease: CodexAccountLease;
+}): CodexCandidatePersistResult;

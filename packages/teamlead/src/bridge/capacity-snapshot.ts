@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
 	DATA_VOLUME_PATH,
 	GB_BYTES,
@@ -10,10 +11,20 @@ import {
 	defaultStorePath,
 	readStoreStrict,
 } from "../account-heal/account-store.js";
+import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import {
 	defaultQuotaMonitorConfigPath,
 	loadQuotaMonitorConfig,
 } from "../account-heal/quota-monitor-config.js";
+import {
+	type PoolSubscriptionTier,
+	readPoolSubscriptionTier,
+} from "../account-heal/quota-monitor-credentials.js";
+import {
+	type CodexAccountReading,
+	defaultCodexAccountQuotaStorePath,
+	readCodexAccountQuotaStore,
+} from "../codex-quota/codex-account-quota-store.js";
 import type { StateStore } from "../StateStore.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import {
@@ -121,12 +132,16 @@ export interface CapacitySnapshot {
 			accounts: Array<{
 				name: string;
 				active: boolean;
+				subscriptionTier?: PoolSubscriptionTier;
 				fiveHPct: number | null;
 				sevenDPct: number | null;
+				fableSevenDPct?: number | null;
 				observedAt: string | null;
 				ageMinutes: number | null;
 				stale: boolean | null;
+				fiveHResetAt?: string | null;
 				weeklyResetAt: string | null;
+				fableWeeklyResetAt?: string | null;
 				retiresAt?: string;
 				exhaustedUntil: string | null;
 				authUnusable: boolean;
@@ -134,9 +149,85 @@ export interface CapacitySnapshot {
 			unavailable?: CapacityUnavailable;
 		};
 		codex: {
-			source: null;
+			source: "codex-accounts.json" | null;
+			/** Present only with a readable Codex store; absent keeps the no-source shape. */
+			activeAccount?: string | null;
+			staleAfterMinutes?: number;
+			accounts?: CodexAccountProjection[];
 			unavailable: CapacityUnavailable;
 		};
+	};
+}
+
+export interface CodexAccountProjection {
+	name: string;
+	active: boolean;
+	registeredProfile: string | null;
+	planType: string | null;
+	fiveHPct: number | null;
+	weeklyPct: number | null;
+	fiveHResetAt: string | null;
+	weeklyResetAt: string | null;
+	credits: CodexAccountReading["credits"];
+	resetCredits: CodexAccountReading["resetCredits"];
+	observedAt: string | null;
+	ageMinutes: number | null;
+	stale: boolean | null;
+	/** Any window at 100%; the page marks these rows red. */
+	exhausted: boolean;
+	/** Latest reset among exhausted windows; null when unknown or not exhausted. */
+	recoveryAt: string | null;
+	authUnusable: boolean;
+	note: string | null;
+	unclassifiedWindows: number;
+}
+
+function projectCodexAccount(
+	reading: CodexAccountReading,
+	input: {
+		activeAccount: string | null;
+		nowMs: number;
+		staleAfterMinutes: number;
+	},
+): CodexAccountProjection {
+	const windows = [reading.fiveH, reading.weekly].filter(
+		(window): window is NonNullable<typeof window> => window !== null,
+	);
+	const exhaustedResets = windows
+		.filter((window) => window.usedPercent === 100)
+		.map((window) => window.resetAt);
+	const exhausted = exhaustedResets.length > 0;
+	const recoveryAt =
+		exhausted && exhaustedResets.every((reset) => reset !== null)
+			? new Date(
+					Math.max(...exhaustedResets.map((reset) => Date.parse(reset!))),
+				).toISOString()
+			: null;
+	const observedMs =
+		reading.observedAt === null ? null : Date.parse(reading.observedAt);
+	const ageMinutes =
+		observedMs === null
+			? null
+			: Math.max(0, Math.round((input.nowMs - observedMs) / 60_000));
+	return {
+		name: reading.name,
+		active: reading.name === input.activeAccount,
+		registeredProfile: reading.registeredProfile,
+		planType: reading.planType,
+		fiveHPct: reading.fiveH?.usedPercent ?? null,
+		weeklyPct: reading.weekly?.usedPercent ?? null,
+		fiveHResetAt: reading.fiveH?.resetAt ?? null,
+		weeklyResetAt: reading.weekly?.resetAt ?? null,
+		credits: reading.credits,
+		resetCredits: reading.resetCredits,
+		observedAt: reading.observedAt,
+		ageMinutes,
+		stale: ageMinutes === null ? null : ageMinutes > input.staleAfterMinutes,
+		exhausted,
+		recoveryAt,
+		authUnusable: ["refresh_invalid", "missing"].includes(reading.authHealth),
+		note: reading.note,
+		unclassifiedWindows: reading.unclassifiedWindows,
 	};
 }
 
@@ -149,6 +240,8 @@ export interface CapacitySnapshotDeps {
 	readMemoryFreePct: () => Promise<MemoryFreePctReading>;
 	readDataDisk?: typeof readSharedDataDisk;
 	accountStorePath?: string;
+	codexAccountStorePath?: string;
+	claudeProfilesDir?: string;
 	quotaConfigPath?: string;
 	now?: () => number;
 }
@@ -346,8 +439,19 @@ export async function buildCapacitySnapshot(
 	}
 
 	const accountStorePath = deps.accountStorePath ?? defaultStorePath();
+	const claudeProfilesDir =
+		deps.claudeProfilesDir ??
+		(deps.accountStorePath === undefined
+			? defaultMachinePoolDir()
+			: join(dirname(accountStorePath), "claude-profiles"));
+	const codexAccountStorePath =
+		deps.codexAccountStorePath ??
+		(deps.accountStorePath === undefined
+			? defaultCodexAccountQuotaStorePath()
+			: join(dirname(accountStorePath), "codex-accounts.json"));
 	const quotaConfigPath =
 		deps.quotaConfigPath ?? defaultQuotaMonitorConfigPath();
+	const codexStore = readCodexAccountQuotaStore(codexAccountStorePath);
 	const staleAfterMinutes =
 		loadQuotaMonitorConfig(quotaConfigPath).config.candidateSweepMinutes * 2;
 	let accountStore: ReturnType<typeof readStoreStrict> = null;
@@ -403,6 +507,10 @@ export async function buildCapacitySnapshot(
 		}
 	}
 	const accounts = accountEntries.map((account) => {
+		const subscriptionTier = readPoolSubscriptionTier(
+			claudeProfilesDir,
+			account.name,
+		);
 		const accountObservedAt = validObservationInstant(
 			account.lastObservedAt,
 			nowMs,
@@ -413,16 +521,26 @@ export async function buildCapacitySnapshot(
 			observedMs === null ? null : Math.max(0, (nowMs - observedMs) / 60_000);
 		return {
 			name: account.name,
+			...(subscriptionTier === null ? {} : { subscriptionTier }),
 			...(Number.isFinite(retirementMs(account.retiresAt))
 				? { retiresAt: new Date(retirementMs(account.retiresAt)).toISOString() }
 				: {}),
 			active: account.name === activeAccount,
 			fiveHPct: validPct(account.observedFiveHPct),
 			sevenDPct: validPct(account.observedSevenDPct),
+			...(account.observedFableSevenDPct === undefined
+				? {}
+				: { fableSevenDPct: validPct(account.observedFableSevenDPct) }),
 			observedAt: accountObservedAt,
 			ageMinutes,
 			stale: ageMinutes === null ? null : ageMinutes > staleAfterMinutes,
+			...(account.fiveHResetAt === undefined
+				? {}
+				: { fiveHResetAt: validInstant(account.fiveHResetAt) }),
 			weeklyResetAt: validInstant(account.weeklyResetAt),
+			...(account.fableWeeklyResetAt === undefined
+				? {}
+				: { fableWeeklyResetAt: validInstant(account.fableWeeklyResetAt) }),
 			exhaustedUntil: validInstant(account.quotaExhaustedUntil),
 			authUnusable:
 				account.authExpired === true ||
@@ -530,10 +648,24 @@ export async function buildCapacitySnapshot(
 					? {}
 					: { unavailable: claudeUnavailable }),
 			},
-			codex: {
-				source: null,
-				unavailable: ["structural: codex_no_usage_api"],
-			},
+			codex: codexStore
+				? {
+						source: "codex-accounts.json" as const,
+						activeAccount: codexStore.activeAccount,
+						staleAfterMinutes,
+						accounts: codexStore.accounts.map((reading) =>
+							projectCodexAccount(reading, {
+								activeAccount: codexStore.activeAccount,
+								nowMs,
+								staleAfterMinutes,
+							}),
+						),
+						unavailable: [],
+					}
+				: {
+						source: null,
+						unavailable: ["structural: codex_no_usage_api"],
+					},
 		},
 	};
 }

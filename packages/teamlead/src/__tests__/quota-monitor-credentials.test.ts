@@ -14,6 +14,7 @@ import {
 	readKeychainMonitorCredential,
 	readPoolMonitorCredential,
 	readPoolProfileIdentity,
+	readPoolSubscriptionTier,
 	resolvePoolProfileIdentity,
 } from "../account-heal/quota-monitor-credentials.js";
 
@@ -104,6 +105,40 @@ describe("quota monitor credential readers", () => {
 			join(business, ".credentials.json"),
 		);
 		expect(readPoolMonitorCredential(poolDir, "business")).toBeNull();
+	});
+
+	it("reads only validated subscription tier metadata from a regular pooled credential", () => {
+		const school = join(poolDir, "school");
+		mkdirSync(school);
+		writeFileSync(
+			join(school, ".credentials.json"),
+			JSON.stringify({
+				claudeAiOauth: {
+					accessToken: SECRET,
+					subscriptionType: "max",
+					rateLimitTier: "default_claude_max_20x",
+				},
+			}),
+			{ mode: 0o600 },
+		);
+
+		expect(readPoolSubscriptionTier(poolDir, "school")).toEqual({
+			subscriptionType: "max",
+			rateLimitTier: "default_claude_max_20x",
+		});
+
+		writeFileSync(
+			join(school, ".credentials.json"),
+			JSON.stringify({
+				claudeAiOauth: {
+					accessToken: SECRET,
+					subscriptionType: "max\nforged",
+					rateLimitTier: "default_claude_max_20x",
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		expect(readPoolSubscriptionTier(poolDir, "school")).toBeNull();
 	});
 
 	it("reads .active only as a regular valid profile-name file", () => {

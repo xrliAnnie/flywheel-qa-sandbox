@@ -786,6 +786,8 @@ describe("pollOnce", () => {
 					sevenDPct: 20,
 					fiveHResetAt: FIVE_RESET,
 					sevenDResetAt: WEEK_RESET,
+					fableSevenDPct: null,
+					fableSevenDResetAt: null,
 					observedAt: new Date(NOW).toISOString(),
 				},
 			},
@@ -805,6 +807,24 @@ describe("pollOnce", () => {
 		expect(h.persisted).toHaveLength(0);
 		expect(h.recordObservation).not.toHaveBeenCalled();
 		expect(h.switchImpl).not.toHaveBeenCalled();
+	});
+
+	it("persists the Fable-scoped weekly reading from the same usage response", async () => {
+		h.fetchUsage.mockResolvedValueOnce(
+			usage(40, 20, {
+				fable: { pct: 37, reset: "2026-07-18T07:00:00.000Z" },
+			}),
+		);
+
+		expect((await pollOnce(h.deps)).outcome).toBe("observed");
+		expect(h.observations).toContainEqual({
+			name: "shopping",
+			expectedGeneration: 4,
+			observation: expect.objectContaining({
+				fableSevenDPct: 37,
+				fableSevenDResetAt: "2026-07-18T07:00:00.000Z",
+			}),
+		});
 	});
 
 	it("never refreshes an expired or unauthorized active credential and emits quota_read_blind outside the lock", async () => {

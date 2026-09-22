@@ -148,7 +148,7 @@ describe("sendQuotaMonitorAlert", () => {
 		expect(execFile).not.toHaveBeenCalled();
 	});
 
-	it("routes a complete account switch notice to notification with the founder mention", async () => {
+	it("routes a complete account switch notice to notification without pinging the founder", async () => {
 		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
 		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-channel";
 		const founderUserId = "1".repeat(18);
@@ -172,13 +172,8 @@ describe("sendQuotaMonitorAlert", () => {
 
 		expect(execFile).toHaveBeenCalledTimes(1);
 		const call = execFile.mock.calls[0];
-		expect(call?.[1]).toEqual(
-			expect.arrayContaining([
-				"--mention-user",
-				founderUserId,
-				"--plain-message",
-			]),
-		);
+		expect(call?.[1]).toContain("--plain-message");
+		expect(call?.[1]).not.toContain("--mention-user");
 		const bodyIndex = call?.[1].indexOf("--body") ?? -1;
 		expect(call?.[1][bodyIndex + 1]).toBe(body);
 		expect(call?.[2]).toEqual(

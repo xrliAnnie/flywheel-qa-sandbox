@@ -85,7 +85,11 @@ import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import { WorktreeManager } from "flywheel-edge-worker";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
-import { accountPoolConfigured } from "../account-heal/account-store.js";
+import {
+	accountPoolConfigured,
+	defaultStorePath,
+	readStoreStrict,
+} from "../account-heal/account-store.js";
 import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
 import {
 	claudeProfileBinPath,
@@ -103,6 +107,12 @@ import {
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
+import {
+	defaultCodexAccountQuotaStorePath,
+	readCodexAccountQuotaStore,
+	writeCodexAccountQuotaStore,
+} from "../codex-quota/codex-account-quota-store.js";
+import { observeCodexAccounts } from "../codex-quota/codex-accounts-observer.js";
 import {
 	createCodexQuotaHostCollector,
 	createRegisteredCodexQuotaHostCollectorOptions,
@@ -205,6 +215,10 @@ import {
 	createDiscordOps,
 } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
+import {
+	buildAccountQuotaView,
+	renderAccountsPageHtml,
+} from "./account-quota-view.js";
 import { createAccountSwitchConsumer } from "./account-switch-consumer.js";
 import { createAccountSwitchRouter } from "./account-switch-route.js";
 import { createActionRouter } from "./actions.js";
@@ -1579,6 +1593,8 @@ export interface BridgeAppOptions {
 		runtime?: CodexQuotaRuntime;
 		rootKey: string;
 		canRecover: (incidentId: string) => Promise<boolean>;
+		/** FLY-2688: on-demand Codex account readings; never scheduled. */
+		refreshAccountQuota?: () => Promise<void>;
 	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
@@ -1834,6 +1850,8 @@ function makeCapacitySnapshotDeps(
 			config.capacityProbes?.readMemoryFreePct ?? readMemoryFreePct,
 		readDataDisk: config.capacityProbes?.readDataDisk,
 		accountStorePath: config.capacityProbes?.accountStorePath,
+		codexAccountStorePath: config.capacityProbes?.codexAccountStorePath,
+		claudeProfilesDir: config.capacityProbes?.claudeProfilesDir,
 		quotaConfigPath: config.capacityProbes?.quotaConfigPath,
 	};
 }
@@ -1930,6 +1948,47 @@ export function createBridgeApp(
 			async (_req, res) => res.json(await buildCapacitySnapshot(capacityDeps)),
 		);
 		app.get(
+			"/api/accounts-page.html",
+			tokenAuthMiddleware(config.apiToken),
+			async (req, res) => {
+				try {
+					// FLY-2688: probing six Codex homes is on-demand only. The
+					// account_switched notification path (5s budget) never asks
+					// for it and renders the last stored readings instead.
+					if (req.query.refresh === "1") {
+						try {
+							await opts?.codexQuota?.refreshAccountQuota?.();
+						} catch (error) {
+							console.warn(
+								"[Bridge] Codex account quota refresh failed",
+								error instanceof Error ? error.message : String(error),
+							);
+						}
+					}
+					const snapshot = await buildCapacitySnapshot(capacityDeps);
+					const accountStore = readStoreStrict(
+						capacityDeps.accountStorePath ?? defaultStorePath(),
+					);
+					const claudeEmails = Object.fromEntries(
+						(accountStore?.accounts ?? []).flatMap((account) =>
+							account.identity?.email
+								? [[account.name, account.identity.email] as const]
+								: [],
+						),
+					);
+					const html = renderAccountsPageHtml(
+						buildAccountQuotaView(snapshot, { claudeEmails }),
+					);
+					res.type("html").send(html);
+				} catch {
+					res
+						.status(503)
+						.type("text")
+						.send("account quota snapshot unavailable");
+				}
+			},
+		);
+		app.get(
 			"/api/sessions/:executionId/snapshot-owner",
 			tokenAuthMiddleware(config.apiToken),
 			(req, res) => {
@@ -1964,6 +2023,12 @@ export function createBridgeApp(
 			res.status(503).json({
 				error: "capacity API requires TEAMLEAD_API_TOKEN",
 			});
+		});
+		app.use("/api/accounts-page.html", (_req, res) => {
+			res
+				.status(503)
+				.type("text")
+				.send("accounts page requires TEAMLEAD_API_TOKEN");
 		});
 		app.use("/api/sessions/:executionId/snapshot-owner", (_req, res) => {
 			res.status(503).json({
@@ -8604,6 +8669,44 @@ export async function startBridge(
 	);
 	await codexQuotaMaintenance.bootstrap();
 
+	// FLY-2688: on-demand Codex account readings for the account quota page.
+	// Single-flight, never scheduled, and skipped entirely for accounts a live
+	// Codex process is using — one refresh token cannot be shared.
+	// Same path the capacity snapshot reads by default; derived once so the
+	// writer and the reader cannot drift.
+	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
+	let codexAccountQuotaRefresh: Promise<void> | undefined;
+	const refreshCodexAccountQuota = (): Promise<void> => {
+		codexAccountQuotaRefresh ??= (async () => {
+			// Hard ceiling above the observer's own round deadline so a wedged
+			// app-server cannot hold the request open.
+			const abort = new AbortController();
+			const ceiling = setTimeout(() => abort.abort(), 90_000);
+			try {
+				const runtime = codexQuotaRuntime;
+				if (!runtime) throw new Error("codex_quota_runtime_unavailable");
+				const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
+				const store = await observeCodexAccounts({
+					profilesRoot: join(canonicalHome, "profiles"),
+					canonicalAuthPath: join(canonicalHome, "auth.json"),
+					workspaceRoot: join(codexQuotaStateRoot, "accounts-page-candidates"),
+					binary: rawCodexBin(),
+					registry: getCodexQuotaAccountRegistry(),
+					limitId: "codex",
+					previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+					signal: abort.signal,
+					// Re-read per slot: a Lead can launch mid-round.
+					refreshInUse: () => runtime.accountInUseGuard(),
+				});
+				writeCodexAccountQuotaStore(codexAccountQuotaStorePath, store);
+			} finally {
+				clearTimeout(ceiling);
+				codexAccountQuotaRefresh = undefined;
+			}
+		})();
+		return codexAccountQuotaRefresh;
+	};
+
 	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
 		if (dispatcher)
 			wireCodexQuotaDispatcher(
@@ -8989,6 +9092,7 @@ export async function startBridge(
 				runtime: codexQuotaRuntime,
 				rootKey: codexQuotaRootKey,
 				canRecover: codexQuotaCanRecover,
+				refreshAccountQuota: refreshCodexAccountQuota,
 			},
 			vercelToken,
 			reportBlobStore,

@@ -47,9 +47,10 @@ import type {
 	QuotaMonitorState,
 } from "./quota-monitor-state.js";
 import type { QuotaPaneSnapshot } from "./quota-revive-scan.js";
-import type {
-	AccountUsageResult,
-	ValidatedUsagePayload,
+import {
+	type AccountUsageResult,
+	findModelScopedQuota,
+	type ValidatedUsagePayload,
 } from "./quota-usage-api.js";
 import type { QuotaWitnessReadResult } from "./quota-witness.js";
 import type {
@@ -210,11 +211,14 @@ function toObservation(
 	usage: SuccessfulUsage,
 	observedAtMs: number,
 ): AccountQuotaObservation {
+	const fable = findModelScopedQuota(usage.raw, "Fable");
 	return {
 		fiveHPct: usage.fiveH.pct,
 		sevenDPct: usage.sevenD.pct,
 		fiveHResetAt: usage.fiveH.resetsAt,
 		sevenDResetAt: usage.sevenD.resetsAt,
+		fableSevenDPct: fable?.pct ?? null,
+		fableSevenDResetAt: fable?.resetsAt ?? null,
 		observedAt: new Date(observedAtMs).toISOString(),
 	};
 }

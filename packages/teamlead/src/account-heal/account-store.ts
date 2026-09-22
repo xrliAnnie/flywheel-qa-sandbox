@@ -68,12 +68,18 @@ export interface AccountEntry {
 	switchCooldownUntil?: string;
 	/** ISO instant of this account's weekly reset; null = unknown. */
 	weeklyResetAt: string | null;
+	/** Last observed rolling 5-hour reset; null = unopened/unknown. */
+	fiveHResetAt?: string | null;
 	/** ISO instant when the quota daemon/guard last observed both usage windows. */
 	lastObservedAt?: string;
 	/** Last observed rolling 5-hour usage percentage. */
 	observedFiveHPct?: number;
 	/** Last observed rolling 7-day usage percentage. */
 	observedSevenDPct?: number;
+	/** Last observed Fable-specific rolling 7-day usage percentage. */
+	observedFableSevenDPct?: number | null;
+	/** Last observed Fable-specific weekly reset; null = unavailable. */
+	fableWeeklyResetAt?: string | null;
 	/** Auth-expiry family (M3) — not a quota-switch target while true. */
 	authExpired?: boolean;
 	refreshTokenInvalid?: boolean;
@@ -160,6 +166,10 @@ export interface AccountQuotaObservation {
 	/** `null` when the window has not opened yet (FLY-1366). */
 	fiveHResetAt: string | null;
 	sevenDResetAt: string | null;
+	/** Optional for legacy callers; production readers always project it. */
+	fableSevenDPct?: number | null;
+	/** Optional for legacy callers; production readers always project it. */
+	fableSevenDResetAt?: string | null;
 	observedAt: string;
 }
 
@@ -689,9 +699,16 @@ export function applyObservation(
 		weeklyResetAt: Number.isNaN(parsedWeeklyReset)
 			? entry.weeklyResetAt
 			: observation.sevenDResetAt,
+		fiveHResetAt: observation.fiveHResetAt,
 		lastObservedAt: observation.observedAt,
 		observedFiveHPct: observation.fiveHPct,
 		observedSevenDPct: observation.sevenDPct,
+		...(observation.fableSevenDPct === undefined
+			? {}
+			: { observedFableSevenDPct: observation.fableSevenDPct }),
+		...(observation.fableSevenDResetAt === undefined
+			? {}
+			: { fableWeeklyResetAt: observation.fableSevenDResetAt }),
 	};
 }
 
@@ -716,6 +733,18 @@ export function readStoreStrict(path: string): AccountStore | null {
 						typeof entry.quotaExhaustedUntil !== "string") ||
 					(entry.weeklyResetAt !== null &&
 						typeof entry.weeklyResetAt !== "string") ||
+					(entry.fiveHResetAt !== undefined &&
+						entry.fiveHResetAt !== null &&
+						typeof entry.fiveHResetAt !== "string") ||
+					(entry.observedFableSevenDPct !== undefined &&
+						entry.observedFableSevenDPct !== null &&
+						(typeof entry.observedFableSevenDPct !== "number" ||
+							!Number.isFinite(entry.observedFableSevenDPct) ||
+							entry.observedFableSevenDPct < 0 ||
+							entry.observedFableSevenDPct > 100)) ||
+					(entry.fableWeeklyResetAt !== undefined &&
+						entry.fableWeeklyResetAt !== null &&
+						typeof entry.fableWeeklyResetAt !== "string") ||
 					(entry.switchCooldownUntil !== undefined &&
 						typeof entry.switchCooldownUntil !== "string") ||
 					(entry.unavailable !== undefined &&

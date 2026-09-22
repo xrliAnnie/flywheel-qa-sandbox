@@ -27,6 +27,13 @@ export interface PoolMonitorCredentialSnapshot extends MonitorCredential {
 	rawDigest: string;
 }
 
+export interface PoolSubscriptionTier {
+	subscriptionType: string;
+	rateLimitTier: string | null;
+}
+
+const SUBSCRIPTION_TIER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 function parseMonitorCredential(raw: string): MonitorCredential | null {
 	try {
 		const parsed = JSON.parse(raw) as {
@@ -127,6 +134,55 @@ export function readPoolMonitorCredentialSnapshot(
 				...credential,
 				rawDigest: createHash("sha256").update(raw).digest("hex"),
 			};
+}
+
+/**
+ * Read only the non-secret subscription labels from one pooled credential.
+ * Invalid, missing, or symlinked material is unknown; callers must not infer a
+ * tier from the account name or any manual baseline.
+ */
+export function readPoolSubscriptionTier(
+	poolDir: string,
+	name: string,
+): PoolSubscriptionTier | null {
+	if (!PROFILE_NAME.test(name)) return null;
+	try {
+		const profileStat = lstatSync(join(poolDir, name));
+		if (!profileStat.isDirectory() || profileStat.isSymbolicLink()) return null;
+		const raw = readRegularFile(join(poolDir, name, ".credentials.json"));
+		if (raw === null) return null;
+		const parsed: unknown = JSON.parse(raw);
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			Array.isArray(parsed)
+		) {
+			return null;
+		}
+		const oauth = (parsed as Record<string, unknown>).claudeAiOauth;
+		if (typeof oauth !== "object" || oauth === null || Array.isArray(oauth)) {
+			return null;
+		}
+		const subscriptionType = (oauth as Record<string, unknown>)
+			.subscriptionType;
+		const rateLimitTier = (oauth as Record<string, unknown>).rateLimitTier;
+		if (
+			typeof subscriptionType !== "string" ||
+			!SUBSCRIPTION_TIER_TOKEN.test(subscriptionType) ||
+			(rateLimitTier !== undefined &&
+				rateLimitTier !== null &&
+				(typeof rateLimitTier !== "string" ||
+					!SUBSCRIPTION_TIER_TOKEN.test(rateLimitTier)))
+		) {
+			return null;
+		}
+		return {
+			subscriptionType,
+			rateLimitTier: typeof rateLimitTier === "string" ? rateLimitTier : null,
+		};
+	} catch {
+		return null;
+	}
 }
 
 export function readActiveProfileName(poolDir: string): string | null {

@@ -1297,6 +1297,51 @@ SQL
   [ "$changed" = "1" ]
 }
 
+# FLY-2688 rework: every successful Claude switch notification carries the
+# current account page. This runs only after the event delivery lease is ours,
+# so a replay with the same switch signature returns from the receipt gate
+# above without republishing the same snapshot. `--publish-only` keeps the page
+# inside this one ordinary notification instead of posting a second report
+# message. Page generation/hosting is deliberately degradable: switching has
+# already committed, and a failure is rendered truthfully in the notice.
+append_accounts_page_status() {
+  local cli output url reason
+  cli="${FLYWHEEL_COMM_CLI:-${SCRIPT_DIR}/../packages/flywheel-comm/dist/index.js}"
+  if [ ! -f "$cli" ]; then
+    reason="accounts-page CLI unavailable"
+  elif output=$(node "$cli" accounts-page --project "$PROJECT_NAME" --publish-only --timeout-ms 5000 2>&1); then
+    url=$(printf '%s\n' "$output" \
+      | jq -Rr 'fromjson? | select(.url? | type == "string") | .url' \
+      | tail -n 1)
+    case "$url" in
+      http://*|https://*)
+        BODY="${BODY}"$'\n\n'"账号页：${url}"
+        return
+        ;;
+      *) reason="publish-report returned no hosted URL" ;;
+    esac
+  else
+    reason=$(printf '%s\n' "$output" \
+      | jq -Rr 'fromjson? | .error? // empty' 2>/dev/null \
+      | tail -n 1)
+    if [ -z "$reason" ]; then
+      reason=$(printf '%s\n' "$output" | awk 'NF' | tail -n 1)
+    fi
+    [ -n "$reason" ] || reason="accounts-page command failed"
+  fi
+  reason=${reason//$'\r'/ }
+  reason=${reason//$'\n'/ }
+  if printf '%s' "$reason" | grep -Eiq 'timeout|timed out'; then
+    reason="timeout"
+  fi
+  reason=${reason:0:240}
+  BODY="${BODY}"$'\n\n'"账号页本次未生成：${reason}"
+}
+
+if [ "$KIND" = "account_switched" ]; then
+  append_accounts_page_status
+fi
+
 # ── Build Discord message payload ──────────────────────────
 case "$SEVERITY" in
   severe)  EMOJI="🚨" ;;

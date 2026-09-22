@@ -13,6 +13,7 @@ function usage(
 	fiveHPct: number,
 	sevenDPct: number,
 	sevenDReset: string | null,
+	fable?: { pct: number; reset: string | null },
 ): Extract<AccountUsageResult, { ok: unknown }> {
 	return {
 		ok: {
@@ -25,6 +26,17 @@ function usage(
 					utilization: sevenDPct,
 					resets_at: sevenDReset,
 				},
+				...(fable
+					? {
+							limits: [
+								{
+									percent: fable.pct,
+									resets_at: fable.reset,
+									scope: { model: { display_name: "Fable" } },
+								},
+							],
+						}
+					: {}),
 			},
 			fiveH: {
 				pct: fiveHPct,
@@ -151,6 +163,28 @@ describe("verifyAndRankCandidates", () => {
 
 		expect(result.ranked).toEqual(["personal", "business", "school"]);
 		expect(h.verifyCandidate).toHaveBeenCalledTimes(3);
+	});
+
+	it("records the Fable-scoped weekly reading while verifying a candidate", async () => {
+		const h = harness();
+		h.usages.set(
+			"secret-business",
+			usage(10, 20, "2026-09-02T17:00:00.000Z", {
+				pct: 31,
+				reset: "2026-09-03T17:00:00.000Z",
+			}),
+		);
+
+		await verifyAndRankCandidates(h.deps, h.snapshot);
+
+		expect(h.deps.recordObservation).toHaveBeenCalledWith(
+			"business",
+			expect.objectContaining({
+				fableSevenDPct: 31,
+				fableSevenDResetAt: "2026-09-03T17:00:00.000Z",
+			}),
+			7,
+		);
 	});
 
 	it("never admits an explicitly requested stale candidate through a legacy freshness bypass", async () => {

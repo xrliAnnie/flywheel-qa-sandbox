@@ -1,0 +1,212 @@
+/**
+ * FLY-2688 — durable store for real Codex per-account quota readings.
+ *
+ * Mirrors the Claude account store contract: an atomically written JSON file
+ * holding only non-sensitive readings. No token, id_token or email ever lands
+ * here — the page renders slot aliases and the capacity snapshot projects this
+ * file verbatim.
+ */
+
+import {
+	closeSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import type {
+	CodexCreditsDetail,
+	CodexRateLimitWindow,
+	CodexResetCreditsDetail,
+} from "./rate-limit-detail.js";
+
+export const CODEX_ACCOUNT_SLOT_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+const MAX_STORE_BYTES = 256 * 1024;
+const MAX_ACCOUNTS = 64;
+
+export type CodexAccountAuthHealth =
+	| "valid"
+	| "refresh_invalid"
+	| "in_use_unshared"
+	| "recovery_uncertain"
+	| "missing"
+	| "unknown";
+
+export interface CodexAccountReading {
+	/** Profile slot directory name under `<codex home>/profiles`. */
+	name: string;
+	/** Registry profile name when the account is registered; null otherwise. */
+	registeredProfile: string | null;
+	observedAt: string | null;
+	authHealth: CodexAccountAuthHealth;
+	/** Machine token explaining a missing reading (`deadline`, `read_failed`, …). */
+	note: string | null;
+	planType: string | null;
+	fiveH: CodexRateLimitWindow | null;
+	weekly: CodexRateLimitWindow | null;
+	credits: CodexCreditsDetail;
+	resetCredits: CodexResetCreditsDetail;
+	unclassifiedWindows: number;
+}
+
+export interface CodexAccountQuotaStore {
+	version: 1;
+	generatedAt: string;
+	/** Slot whose identity equals the canonical Codex home; null when unprovable. */
+	activeAccount: string | null;
+	accounts: CodexAccountReading[];
+}
+
+const AUTH_HEALTH: readonly CodexAccountAuthHealth[] = [
+	"valid",
+	"refresh_invalid",
+	"in_use_unshared",
+	"recovery_uncertain",
+	"missing",
+	"unknown",
+];
+
+const record = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+function instant(value: unknown): boolean {
+	return (
+		typeof value === "string" &&
+		Number.isFinite(Date.parse(value)) &&
+		new Date(Date.parse(value)).toISOString() === value
+	);
+}
+
+function text(value: unknown, max: number): boolean {
+	return typeof value === "string" && value.length > 0 && value.length <= max;
+}
+
+function validWindow(value: unknown): boolean {
+	if (value === null) return true;
+	if (!record(value)) return false;
+	return (
+		Number.isInteger(value.usedPercent) &&
+		(value.usedPercent as number) >= 0 &&
+		(value.usedPercent as number) <= 100 &&
+		Number.isInteger(value.windowMinutes) &&
+		(value.windowMinutes as number) > 0 &&
+		(value.resetAt === null || instant(value.resetAt))
+	);
+}
+
+function validCredits(value: unknown): boolean {
+	if (!record(value)) return false;
+	const flag = (raw: unknown) => raw === null || typeof raw === "boolean";
+	return (
+		typeof value.known === "boolean" &&
+		flag(value.hasCredits) &&
+		flag(value.unlimited) &&
+		(value.balance === null || text(value.balance, 32))
+	);
+}
+
+function validResetCredits(value: unknown): boolean {
+	return (
+		record(value) &&
+		typeof value.known === "boolean" &&
+		(value.value === null || text(value.value, 32))
+	);
+}
+
+function validReading(value: unknown): value is CodexAccountReading {
+	if (!record(value)) return false;
+	return (
+		typeof value.name === "string" &&
+		CODEX_ACCOUNT_SLOT_NAME.test(value.name) &&
+		(value.registeredProfile === null ||
+			(typeof value.registeredProfile === "string" &&
+				CODEX_ACCOUNT_SLOT_NAME.test(value.registeredProfile))) &&
+		(value.observedAt === null || instant(value.observedAt)) &&
+		AUTH_HEALTH.includes(value.authHealth as CodexAccountAuthHealth) &&
+		(value.note === null || text(value.note, 128)) &&
+		(value.planType === null || text(value.planType, 64)) &&
+		validWindow(value.fiveH) &&
+		validWindow(value.weekly) &&
+		validCredits(value.credits) &&
+		validResetCredits(value.resetCredits) &&
+		Number.isInteger(value.unclassifiedWindows) &&
+		(value.unclassifiedWindows as number) >= 0
+	);
+}
+
+export function defaultCodexAccountQuotaStorePath(
+	env: Record<string, string | undefined> = process.env,
+	home: string = homedir(),
+): string {
+	const stateDir = env.FLYWHEEL_STATE_DIR?.trim() || join(home, ".flywheel");
+	return join(stateDir, "codex-quota", "codex-accounts.json");
+}
+
+export function readCodexAccountQuotaStore(
+	path: string,
+): CodexAccountQuotaStore | null {
+	let raw: string;
+	try {
+		raw = readFileSync(path, "utf8");
+	} catch {
+		return null;
+	}
+	if (raw.length > MAX_STORE_BYTES) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (
+		!record(parsed) ||
+		parsed.version !== 1 ||
+		!instant(parsed.generatedAt) ||
+		!Array.isArray(parsed.accounts) ||
+		parsed.accounts.length > MAX_ACCOUNTS ||
+		!parsed.accounts.every(validReading)
+	) {
+		return null;
+	}
+	const names = (parsed.accounts as CodexAccountReading[]).map(
+		(account) => account.name,
+	);
+	if (new Set(names).size !== names.length) return null;
+	const active = parsed.activeAccount;
+	if (
+		active !== null &&
+		(typeof active !== "string" || !names.includes(active))
+	)
+		return null;
+	return parsed as unknown as CodexAccountQuotaStore;
+}
+
+export function writeCodexAccountQuotaStore(
+	path: string,
+	store: CodexAccountQuotaStore,
+): void {
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const temp = `${path}.tmp-${process.pid}`;
+	const handle = openSync(temp, "w", 0o600);
+	try {
+		writeSync(handle, `${JSON.stringify(store, null, 2)}\n`);
+		fsyncSync(handle);
+	} finally {
+		closeSync(handle);
+	}
+	try {
+		renameSync(temp, path);
+	} catch (error) {
+		try {
+			unlinkSync(temp);
+		} catch {
+			/* the temp file is already gone */
+		}
+		throw error;
+	}
+}

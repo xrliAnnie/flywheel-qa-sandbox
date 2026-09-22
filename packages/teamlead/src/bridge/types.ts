@@ -41,6 +41,8 @@ export interface BridgeConfig {
 		readMemoryFreePct?: () => Promise<MemoryFreePctReading>;
 		readDataDisk?: typeof readDataDisk;
 		accountStorePath?: string;
+		codexAccountStorePath?: string;
+		claudeProfilesDir?: string;
 		quotaConfigPath?: string;
 	};
 	/** FLY-91: Enable per-issue chat thread creation in chatChannel. */

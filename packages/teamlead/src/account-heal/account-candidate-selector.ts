@@ -10,7 +10,10 @@ import {
 	isSwitchCooldownActive,
 } from "./account-store.js";
 import type { FreshnessVerdict } from "./freshness.js";
-import type { AccountUsageResult } from "./quota-usage-api.js";
+import {
+	type AccountUsageResult,
+	findModelScopedQuota,
+} from "./quota-usage-api.js";
 
 export interface CandidateCredential {
 	accessToken: string;
@@ -279,6 +282,7 @@ export async function verifyAndRankCandidates(
 			});
 			continue;
 		}
+		const fable = findModelScopedQuota(usage.ok.raw, "Fable");
 		await deps.recordObservation(
 			name,
 			{
@@ -286,6 +290,8 @@ export async function verifyAndRankCandidates(
 				sevenDPct: usage.ok.sevenD.pct,
 				fiveHResetAt: usage.ok.fiveH.resetsAt,
 				sevenDResetAt: usage.ok.sevenD.resetsAt,
+				fableSevenDPct: fable?.pct ?? null,
+				fableSevenDResetAt: fable?.resetsAt ?? null,
 				observedAt: verifiedAt,
 			},
 			snapshot.store.generation,

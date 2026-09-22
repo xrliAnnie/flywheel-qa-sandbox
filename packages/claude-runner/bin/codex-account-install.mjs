@@ -537,6 +537,110 @@ export function persistCodexCandidateCredential(options) {
 		return result;
 	}
 }
+/**
+ * FLY-2688 — persist a refresh-token rotation that happened while READING an
+ * account's quota back into that same profile slot.
+ *
+ * Unlike `persistCodexCandidateCredential` (the failover path, which owns the
+ * canonical pool and is restricted to the registered pool profiles), this one
+ * carries no profile-name list: the only identity it accepts is the account
+ * that already owns the slot, proven before and after. That keeps it correct
+ * for accounts the registry does not list, and keeps working unchanged when
+ * FLY-2762 widens the registry to N accounts.
+ */
+export function persistCodexProfileQuotaRefresh(options) {
+	const {
+		profilesRoot,
+		profileDir,
+		registry,
+		accountKey,
+		finalAuthPath,
+		expectedProfileDigest,
+		accountLease,
+	} = options;
+	const result = {
+		status: "recovery_uncertain",
+		profilePersisted: false,
+		recoveryMaterialPath: finalAuthPath,
+	};
+	try {
+		validateLease(accountLease, profilesRoot, accountKey);
+		const pending = accountLease.orphanRecovery;
+		if (
+			!pending ||
+			resolve(pending.authPath) !== resolve(finalAuthPath) ||
+			pending.originalAuthDigest !== expectedProfileDigest
+		)
+			return result;
+		if (
+			!pending.process ||
+			pending.process.state === "starting" ||
+			(pending.process.pid !== undefined &&
+				(!Number.isSafeInteger(pending.process.pid) || pending.process.pid < 1))
+		) {
+			result.status = "process_not_drained";
+			return result;
+		}
+		try {
+			assertCodexCandidateDrained(accountLease);
+		} catch {
+			result.status = "process_not_drained";
+			return result;
+		}
+		if (
+			typeof profileDir !== "string" ||
+			!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profileDir)
+		) {
+			result.status = "identity_mismatch";
+			return result;
+		}
+		const slotDir = join(profilesRoot, profileDir);
+		if (resolve(slotDir) !== resolve(join(resolve(profilesRoot), profileDir))) {
+			result.status = "identity_mismatch";
+			return result;
+		}
+		safeDir(profilesRoot);
+		safeDir(slotDir);
+		safeDir(dirname(finalAuthPath));
+		const raw = safeRead(finalAuthPath);
+		if (
+			codexInstallAccountKey(identifyCodexAuth(raw, registry)) !== accountKey
+		) {
+			result.status = "identity_mismatch";
+			return result;
+		}
+		const profilePath = join(slotDir, "auth.json");
+		const existing = safeRead(profilePath);
+		const existingDigest = digest(existing);
+		const finalDigest = digest(raw);
+		if (
+			existingDigest !== expectedProfileDigest &&
+			existingDigest !== finalDigest
+		) {
+			result.status = "candidate_conflict";
+			return result;
+		}
+		if (
+			codexInstallAccountKey(identifyCodexAuth(existing, registry)) !==
+			accountKey
+		) {
+			result.status = "identity_mismatch";
+			return result;
+		}
+		accountLease.assertHeld();
+		if (digest(safeRead(profilePath)) !== existingDigest) {
+			result.status = "candidate_conflict";
+			return result;
+		}
+		if (existingDigest !== finalDigest) atomicWrite(profilePath, raw);
+		result.profilePersisted = true;
+		resolveCodexCandidateRecovery(accountLease, profilePath);
+		result.status = "persisted";
+		return result;
+	} catch {
+		return result;
+	}
+}
 export function recoverCodexCandidateCredential(options) {
 	let lease;
 	try {

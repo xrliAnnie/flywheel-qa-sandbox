@@ -520,6 +520,8 @@ describe("quota observation projection", () => {
 		sevenDPct: 50,
 		fiveHResetAt: "2026-07-04T01:00:00Z",
 		sevenDResetAt: "2026-07-08T14:00:00Z",
+		fableSevenDPct: 12,
+		fableSevenDResetAt: "2026-07-09T14:00:00Z",
 		observedAt,
 		...over,
 	});
@@ -536,6 +538,9 @@ describe("quota observation projection", () => {
 			lastObservedAt: observedAt,
 			observedFiveHPct: 100,
 			observedSevenDPct: 100,
+			fiveHResetAt: "2026-07-04T01:00:00Z",
+			observedFableSevenDPct: 12,
+			fableWeeklyResetAt: "2026-07-09T14:00:00Z",
 			authExpired: true,
 			refreshTokenInvalid: true,
 		});
@@ -680,6 +685,8 @@ describe("recordObservationInStore", () => {
 		sevenDPct: 100,
 		fiveHResetAt: "2026-07-04T01:00:00Z",
 		sevenDResetAt: "2026-07-08T14:00:00Z",
+		fableSevenDPct: 18,
+		fableSevenDResetAt: "2026-07-09T14:00:00Z",
 		observedAt,
 	};
 
@@ -707,6 +714,9 @@ describe("recordObservationInStore", () => {
 			lastObservedAt: observedAt,
 			observedFiveHPct: 42,
 			observedSevenDPct: 100,
+			fiveHResetAt: observation.fiveHResetAt,
+			observedFableSevenDPct: 18,
+			fableWeeklyResetAt: observation.fableSevenDResetAt,
 		});
 	});
 

@@ -106,6 +106,28 @@ export class CodexQuotaRuntime {
 			).accountKey === accountKey
 		);
 	}
+	/**
+	 * FLY-2688 — read-only "another live process holds these credentials" test.
+	 * Fails closed as `"unknown"` when the host inventory cannot be read: the
+	 * account page still skips the probe, but the page says the occupancy is
+	 * unknown rather than claiming every account is busy.
+	 */
+	async accountInUseGuard(): Promise<
+		(accountKey: string) => boolean | "unknown"
+	> {
+		try {
+			await this.readinessResult();
+		} catch {
+			return () => "unknown";
+		}
+		return (accountKey) => {
+			try {
+				return this.candidateInUse(accountKey);
+			} catch {
+				return "unknown";
+			}
+		};
+	}
 	private async requireReadiness() {
 		if (!(await this.readiness())) throw new Error("quota_readiness_failed");
 	}

@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CapacitySnapshot } from "../bridge/capacity-snapshot.js";
 import { formatPatrolTick } from "../bridge/hook-payload.js";
@@ -46,20 +46,69 @@ function writeRawAccountStore(value: string): string {
 	return path;
 }
 
+function writeProfileSubscription(
+	accountStorePath: string,
+	name: string,
+	value: { subscriptionType: string; rateLimitTier?: string },
+): string {
+	const profilesDir = join(dirname(accountStorePath), "claude-profiles");
+	const profileDir = join(profilesDir, name);
+	mkdirSync(profileDir, { recursive: true });
+	writeFileSync(
+		join(profileDir, ".credentials.json"),
+		JSON.stringify({
+			claudeAiOauth: {
+				accessToken: "secret-must-not-reach-snapshot",
+				...value,
+			},
+		}),
+		{ mode: 0o600 },
+	);
+	return profilesDir;
+}
+
 async function start(
 	config: BridgeConfig,
 	seed?: (store: StateStore) => void,
+	path = "/api/capacity",
+	refreshAccountQuota?: () => Promise<void>,
 ): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	seed?.(store);
-	const app = createBridgeApp(store, [], config);
+	const app = createBridgeApp(
+		store,
+		[],
+		config,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		refreshAccountQuota
+			? {
+					codexQuota: {
+						rootKey: "test-root",
+						canRecover: async () => false,
+						refreshAccountQuota,
+					},
+				}
+			: undefined,
+	);
 	const server = app.listen(0, "127.0.0.1");
 	servers.push(server);
 	await new Promise<void>((resolve) => server.once("listening", resolve));
 	const address = server.address();
 	const port = typeof address === "object" && address ? address.port : 0;
-	return `http://127.0.0.1:${port}/api/capacity`;
+	return `http://127.0.0.1:${port}${path}`;
 }
 
 function patrolEnvelope(capacity: CapacitySnapshot): LeadEventEnvelope {
@@ -291,5 +340,199 @@ describe("GET /api/capacity", () => {
 			accounts: [],
 			unavailable: ["transient: account_store_unreadable"],
 		});
+	});
+});
+
+describe("GET /api/accounts-page.html", () => {
+	it("is master-token protected and renders only the alias without changing the capacity JSON contract", async () => {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: "shopping",
+			accounts: [
+				{
+					name: "shopping",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: "2026-09-22T16:00:00.000Z",
+					fiveHResetAt: "2026-09-18T02:00:00.000Z",
+					lastObservedAt: "2026-09-18T00:40:00.000Z",
+					observedFiveHPct: 10,
+					observedSevenDPct: 24,
+					observedFableSevenDPct: 79,
+					fableWeeklyResetAt: "2026-09-22T16:00:00.000Z",
+					identity: {
+						email: "shop<owner>@example.com",
+						setAt: "2026-09-17T00:00:00.000Z",
+					},
+				},
+			],
+		});
+		const claudeProfilesDir = writeProfileSubscription(
+			accountStorePath,
+			"shopping",
+			{
+				subscriptionType: "max",
+				rateLimitTier: "default_claude_max_20x",
+			},
+		);
+		const config = makeConfig({
+			apiToken: "master-token",
+			capacityProbes: {
+				accountStorePath,
+				claudeProfilesDir,
+				readMemoryFreePct: async () => ({
+					freePct: 50,
+					observedAt: "2026-09-18T00:40:00.000Z",
+				}),
+			},
+		});
+		const pageUrl = await start(config, undefined, "/api/accounts-page.html");
+
+		expect((await fetch(pageUrl)).status).toBe(401);
+		const response = await fetch(pageUrl, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toContain("text/html");
+		const html = await response.text();
+		expect(html).toContain("账号额度一览");
+		expect(html).not.toContain("shop&lt;owner&gt;@example.com");
+		expect(html).not.toContain("@example.com");
+		expect(html).toContain('<td class="identity">shopping');
+		expect(html).not.toContain('<span class="active">');
+		expect(html).toContain("weekly");
+		expect(html).toContain("fable");
+		expect(html).toContain("订阅档位：Max 20x");
+		expect(html).toContain("订阅档位：未知");
+		expect(html).toContain("无数值源");
+
+		const capacityUrl = pageUrl.replace(
+			"/api/accounts-page.html",
+			"/api/capacity",
+		);
+		const capacityText = await (
+			await fetch(capacityUrl, {
+				headers: { Authorization: "Bearer master-token" },
+			})
+		).text();
+		expect(capacityText).not.toContain("shop<owner>@example.com");
+		expect(capacityText).not.toContain("secret-must-not-reach-snapshot");
+	});
+});
+
+describe("FLY-2688 — on-demand Codex refresh", () => {
+	function pageConfig(codexAccountStorePath?: string): BridgeConfig {
+		return makeConfig({
+			apiToken: "master-token",
+			capacityProbes: {
+				accountStorePath: writeAccountStore({
+					generation: 1,
+					activeAccount: null,
+					accounts: [],
+				}),
+				...(codexAccountStorePath ? { codexAccountStorePath } : {}),
+				readMemoryFreePct: async () => ({
+					freePct: 50,
+					observedAt: "2026-09-18T00:40:00.000Z",
+				}),
+			},
+		});
+	}
+
+	it("probes only when the caller asks for a refresh", async () => {
+		let refreshes = 0;
+		const url = await start(
+			pageConfig(),
+			undefined,
+			"/api/accounts-page.html",
+			async () => {
+				refreshes += 1;
+			},
+		);
+
+		const plain = await fetch(url, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(plain.status).toBe(200);
+		expect(refreshes).toBe(0);
+
+		const refreshed = await fetch(`${url}?refresh=1`, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(refreshed.status).toBe(200);
+		expect(refreshes).toBe(1);
+	});
+
+	it("still renders the page when the refresh fails", async () => {
+		const url = await start(
+			pageConfig(),
+			undefined,
+			"/api/accounts-page.html",
+			async () => {
+				throw new Error("probe exploded");
+			},
+		);
+		const response = await fetch(`${url}?refresh=1`, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("账号额度一览");
+	});
+
+	it("renders machine Codex readings written by the observer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2688-route-codex-"));
+		scratch.push(dir);
+		const codexAccountStorePath = join(dir, "codex-accounts.json");
+		writeFileSync(
+			codexAccountStorePath,
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-18T00:40:00.000Z",
+				activeAccount: "personal2",
+				accounts: [
+					{
+						name: "personal2",
+						registeredProfile: null,
+						observedAt: "2026-09-18T00:40:00.000Z",
+						authHealth: "valid",
+						note: null,
+						planType: "free",
+						fiveH: {
+							usedPercent: 100,
+							windowMinutes: 300,
+							resetAt: "2026-09-18T05:00:00.000Z",
+						},
+						weekly: {
+							usedPercent: 100,
+							windowMinutes: 10080,
+							resetAt: "2026-09-19T05:00:00.000Z",
+						},
+						credits: {
+							known: true,
+							hasCredits: false,
+							unlimited: false,
+							balance: "0",
+						},
+						resetCredits: { known: false, value: null },
+						unclassifiedWindows: 0,
+					},
+				],
+			}),
+		);
+		const url = await start(
+			pageConfig(codexAccountStorePath),
+			undefined,
+			"/api/accounts-page.html",
+		);
+		const html = await (
+			await fetch(url, { headers: { Authorization: "Bearer master-token" } })
+		).text();
+
+		expect(html).toContain("机器读数 · account/rateLimits/read");
+		expect(html).toContain("credits / 重置兑换");
+		expect(html).toContain("余额 0 · 重置兑换未暴露");
+		expect(html).toContain('<td class="identity">personal2');
+		expect(html).toContain("打满 · 恢复 09-18 22:00 PT");
+		expect(html).toContain("exhausted-account");
+		expect(html).not.toContain("无数值源");
 	});
 });

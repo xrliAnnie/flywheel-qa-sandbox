@@ -10,6 +10,7 @@ import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
 } from "./commands/account-rotation-notify.js";
+import { runAccountsPage } from "./commands/accounts-page.js";
 import { ackEvent } from "./commands/ack-event.js";
 import { adoptInflight } from "./commands/adopt-inflight.js";
 import { runAlertTicketCommand } from "./commands/alert-ticket.js";
@@ -201,6 +202,10 @@ Commands:
             [--no-screenshot] [--kind token_report --expected-date YYYY-MM-DD].
             Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN. Always prints a one-line
             JSON envelope to stdout.
+  accounts-page   Fetch the current capacity-backed account quota HTML and publish it
+            on demand. Flags: [--project <name>] [--channel <id>] [--out <file>]
+            [--bridge-url <url>] [--publish-only] [--timeout-ms <1..10000>].
+            Requires TEAMLEAD_API_TOKEN.
   verify-report   Verify a hosted HTML report. Default is browser-free HTTP/CSP
             validation; screenshot is opt-in and process-group bounded. Flags:
             --url <http(s)://url> [--expect <substring>]
@@ -468,6 +473,9 @@ async function main(): Promise<void> {
 			break;
 		case "publish-report":
 			await runPublishReport(commandArgs);
+			break;
+		case "accounts-page":
+			await runAccountsPage(commandArgs);
 			break;
 		case "verify-report":
 			await runVerifyReport(commandArgs);
