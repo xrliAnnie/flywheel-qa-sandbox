@@ -65,6 +65,14 @@ do not subtract GitHub-hosted free allowance from the GitHub baseline.
   expression is the scoped `${{ github.token }}` in `classify`. The canary's
   `UBICLOUD_CANARY_PROBE` is a new, random, no-production-authority test secret,
   not evidence that every production secret is compatible.
+- `.github/workflows/ship-on-comment.yml` is **not** secret-free: `prepare`
+  reads `FLYWHEEL_LAND_TICKET_PUBLIC_KEY_B64` and `merge` uses
+  `secrets.SHIP_PAT || secrets.GITHUB_TOKEN` under `contents: write` /
+  `actions: write` / `pull-requests: write` to squash-merge into protected
+  `main`. Moving that workflow to a third-party runner relocates a repo-write
+  PAT and the Ed25519 land-ticket verification onto Ubicloud VMs. That is why it
+  is governed by its own `SHIP_RUNNER` variable (see below) instead of
+  `CI_RUNNER`, and why setting `CI_RUNNER` alone never moves the ship path.
 - The frozen PR-A source fixture is a committed full copy of `ci.yml` at
   `f0175458414f20f6f82ca7ea12cd6a6f64899eb3`; this keeps parity checks valid in
   Quick Gate's depth-1 checkout. It is intentionally a historical canary
@@ -152,17 +160,50 @@ FLY-2681 offers a legitimate **same-head full-CI retrigger** on the Ubicloud
 path. If same-head retrigger is absent, this advisory remains unverified and PR
 B must not claim the three-provider comparison is complete.
 
-PR B changes only each existing runner literal to
-`${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}`. After it ships, the Lead owns
-all repository-variable writes and must read each value back:
+FLY-2746 changes every job runner in `ci.yml` to
+`${{ vars.CI_RUNNER || 'ubuntu-latest' }}` and every job runner in
+`ship-on-comment.yml` to `${{ vars.SHIP_RUNNER || 'ubuntu-latest' }}`. The two
+knobs are deliberately separate: `issue_comment` workflows only load from the
+default branch, so the ship path cannot be exercised on a new runner before it
+merges, and no `ci.yml` job proves the ship path's hard dependencies (a real
+`gh`, `jq`, `timeout`, and `actions/github-script@v7`) on Ubicloud. A missing
+`gh` inside `scripts/ship-await-ci.sh` is swallowed by `2>/dev/null` and
+surfaces only as a 1500 s `await_ci_timeout` that also burns the land ticket.
+Set `SHIP_RUNNER` only after one receipt exists of `gh --version`,
+`jq --version`, `timeout --version` and one `actions/github-script@v7` step
+succeeding on the target Ubicloud label (a `workflow_dispatch` smoke job on
+`main` is the cheapest way). Until then `SHIP_RUNNER` stays unset and ship
+keeps running on `ubuntu-latest`. After it ships, the Lead owns all
+repository-variable writes and must read each value back:
 
 ```sh
-gh variable set CI_RUNNER_LABEL --repo xrliAnnie/flywheel --body ubicloud-standard-2
-test "$(gh variable get CI_RUNNER_LABEL --repo xrliAnnie/flywheel)" = ubicloud-standard-2
+gh variable set CI_RUNNER --repo xrliAnnie/flywheel --body ubicloud-standard-2
+test "$(gh variable get CI_RUNNER --repo xrliAnnie/flywheel)" = ubicloud-standard-2
 
-# One-step rollback for future scheduling; cancel old affected runs and create a new event.
-gh variable set CI_RUNNER_LABEL --repo xrliAnnie/flywheel --body ubuntu-latest
-test "$(gh variable get CI_RUNNER_LABEL --repo xrliAnnie/flywheel)" = ubuntu-latest
+# Rollback affects only future scheduling: delete the variable, then fail loudly
+# unless the repository variable list proves it is absent.
+gh variable delete CI_RUNNER --repo xrliAnnie/flywheel
+repo_variables="$(gh variable list --repo xrliAnnie/flywheel --json name --jq '.[].name')"
+if printf '%s\n' "$repo_variables" | grep -Fxq CI_RUNNER; then
+  printf '%s\n' 'CI_RUNNER still exists after rollback' >&2
+  exit 1
+fi
+
+# A queued job already bound to Ubicloud does not change runners. Cancel every
+# queued run that contains such a job, then create a fresh PR/labeled event;
+# never use rerun as rollback evidence.
+gh run list --repo xrliAnnie/flywheel --status queued --limit 100 \
+  --json databaseId --jq '.[].databaseId' |
+while IFS= read -r queued_run_id; do
+  queued_ubicloud_jobs="$(
+    gh api --paginate \
+      "repos/xrliAnnie/flywheel/actions/runs/$queued_run_id/jobs?filter=all&per_page=100" \
+      --jq '[.jobs[] | select(.status == "queued" and (.labels | index("ubicloud-standard-2")))] | length'
+  )"
+  if [ "$queued_ubicloud_jobs" -gt 0 ]; then
+    gh run cancel "$queued_run_id" --repo xrliAnnie/flywheel
+  fi
+done
 ```
 
 Missing/empty must resolve to `ubuntu-latest`; unknown nonempty values are an
@@ -170,7 +211,8 @@ operator error and do not silently fall back. Required check names, merge/ship
 gates, and branch protection remain unchanged. Record real full `CI OK` on the
 same head for default GitHub, Ubicloud, and rollback GitHub before a production
 trial. `CI Scope OK`, a reused green run, or a rerun that did not reread the
-variable is not acceptance evidence.
+variable is not acceptance evidence. The rollback receipt must come from the
+fresh event after queued Ubicloud runs were cancelled.
 
 ## Atomic REST receipt collection
 

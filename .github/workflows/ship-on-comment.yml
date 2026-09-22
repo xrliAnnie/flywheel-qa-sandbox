@@ -14,7 +14,7 @@ permissions:
 jobs:
   prepare:
     name: "🧪 Exact-head preparation"
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SHIP_RUNNER || 'ubuntu-latest' }}
     concurrency:
       group: ship-prepare-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -207,7 +207,7 @@ jobs:
     name: "✅ Serialized exact-head merge"
     needs: prepare
     if: needs.prepare.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SHIP_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     concurrency:
       group: ship-merge-${{ github.repository }}
@@ -278,7 +278,7 @@ jobs:
     name: "❌ Report ship failure"
     needs: [prepare, merge]
     if: always() && (needs.prepare.result == 'failure' || needs.merge.result == 'failure' || needs.prepare.result == 'cancelled' || needs.merge.result == 'cancelled')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SHIP_RUNNER || 'ubuntu-latest' }}
     steps:
     - uses: actions/github-script@v7
       env:

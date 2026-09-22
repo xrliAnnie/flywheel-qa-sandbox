@@ -29,7 +29,7 @@ jobs:
   # exact-PR baseline under the same base SHA. Every uncertainty runs full CI.
   classify:
     name: Classify CI scope
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
       actions: read
@@ -81,7 +81,7 @@ jobs:
 
   quick-gate:
     name: Quick Gate (build + typecheck + lint)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -232,7 +232,7 @@ jobs:
       # The teamlead helper raises only its parallel project to two forks.
       VITEST_MAX_FORKS: "1"
       VITEST_MIN_FORKS: "1"
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     timeout-minutes: 25
@@ -300,7 +300,7 @@ jobs:
 
   script-tests:
     name: Script Tests 1/6 — balanced shell suites A
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     # FLY-2755 assigns intact named steps by successful-run p75 weight.
@@ -497,7 +497,7 @@ jobs:
 
   script-tests-2:
     name: Script Tests 2/6 — balanced shell suites B
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     # FLY-2755 assigns intact named steps by successful-run p75 weight.
@@ -670,7 +670,7 @@ jobs:
 
   script-tests-3:
     name: Script Tests 3/6 — balanced shell suites C
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     # FLY-2755 assigns intact named steps by successful-run p75 weight.
@@ -875,7 +875,7 @@ jobs:
 
   script-tests-4:
     name: Script Tests 4/6 — balanced shell suites D
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     # FLY-2755 assigns intact named steps by successful-run p75 weight.
@@ -1154,7 +1154,7 @@ jobs:
 
   script-tests-5:
     name: Script Tests 5/6 — balanced shell suites E
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     # FLY-2755 assigns intact named steps by successful-run p75 weight.
@@ -1326,7 +1326,7 @@ jobs:
 
   script-tests-6:
     name: Script Tests 6/6 — balanced shell suites F
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     # FLY-2755 assigns intact named steps by successful-run p75 weight.
@@ -1534,7 +1534,7 @@ jobs:
 
   payload-distribution:
     name: NPM payload distribution (endpoint + release pipeline)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify]
     if: ${{ needs.classify.outputs.heavy != 'skip' }}
     timeout-minutes: 15
@@ -1664,7 +1664,7 @@ jobs:
 
   ci-ok:
     name: ${{ contains(fromJSON('["full","docs_only","reuse"]'), needs.classify.outputs.mode) && 'CI OK' || 'CI Scope OK' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, script-tests-3, script-tests-4, script-tests-5, script-tests-6, payload-distribution]
     if: ${{ always() && !cancelled() }}
     steps:
