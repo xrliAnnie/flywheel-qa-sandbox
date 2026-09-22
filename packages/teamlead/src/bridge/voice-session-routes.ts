@@ -250,6 +250,50 @@ export function createVoiceSessionRouter(
 		res.json({ ...renewed, leaseTtlMs: deps.leaseTtlMs });
 	});
 
+	// FLY-2701: a prewarmed meeting reports "in the room, model up" before its
+	// time. Ready is not live — the session stays warming and the Bridge alone
+	// decides when the meeting starts.
+	router.post("/:sessionId/ready", masterOnly(), (req, res) => {
+		const scheduleRevision = req.body?.scheduleRevision ?? null;
+		if (
+			scheduleRevision !== null &&
+			(!Number.isSafeInteger(scheduleRevision) || scheduleRevision < 1)
+		) {
+			res.status(400).json({ error: "voice_schedule_revision_invalid" });
+			return;
+		}
+		const session = deps.store.getActiveVoiceLease(
+			param(req.params.sessionId),
+			lease(req),
+			now(),
+		);
+		if (!session) {
+			res.status(409).json(LEASE_CONFLICT);
+			return;
+		}
+		const result = deps.store.markVoiceSessionReady({
+			sessionId: param(req.params.sessionId),
+			scheduleRevision,
+			readyAt: now(),
+		});
+		if (result === "not_found") {
+			res.status(404).json({ error: "voice_session_not_found" });
+			return;
+		}
+		if (result !== "ready") {
+			res.status(409).json({ error: `voice_${result}` });
+			return;
+		}
+		const updated = deps.store.getVoiceSession(param(req.params.sessionId))!;
+		res.json({
+			status: "ready",
+			state: updated.state,
+			readyAt: updated.readyAt,
+			notBeforeLiveAt: updated.notBeforeLiveAt,
+			presenceDeadlineAt: updated.presenceDeadlineAt,
+		});
+	});
+
 	router.post("/:sessionId/state", masterOnly(), async (req, res) => {
 		const requestedState = req.body?.state;
 		const abandonedCount = req.body?.abandonedCount;

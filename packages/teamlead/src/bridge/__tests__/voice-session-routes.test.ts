@@ -365,3 +365,80 @@ it("returns pinned status without projecting a terminal session against registry
 	expect(projectSession).not.toHaveBeenCalled();
 	expect(validateSession).not.toHaveBeenCalled();
 });
+
+describe("voice session ready receipt (FLY-2701)", () => {
+	async function claimed() {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claim = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		return {
+			base,
+			leaseToken: (claim.body as { leaseToken: string }).leaseToken,
+		};
+	}
+
+	it("records ready under the session lease and stays warming", async () => {
+		const { base, leaseToken } = await claimed();
+		const response = await call(base, `/${SESSION_ID}/ready`, {
+			method: "POST",
+			token: MASTER,
+			lease: leaseToken,
+			body: { scheduleRevision: null },
+		});
+		expect(response).toMatchObject({ status: 200, body: { status: "ready" } });
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "claimed",
+			readyAt: NOW,
+		});
+	});
+
+	it("refuses a ready receipt without the current lease", async () => {
+		const { base } = await claimed();
+		expect(
+			(
+				await call(base, `/${SESSION_ID}/ready`, {
+					method: "POST",
+					token: MASTER,
+					lease: "not-the-lease",
+					body: { scheduleRevision: null },
+				})
+			).status,
+		).toBe(409);
+	});
+
+	it("keeps the daemon-only surface closed to the ingest tier", async () => {
+		const { base, leaseToken } = await claimed();
+		expect(
+			(
+				await call(base, `/${SESSION_ID}/ready`, {
+					method: "POST",
+					token: INGEST,
+					lease: leaseToken,
+					body: { scheduleRevision: null },
+				})
+			).status,
+		).toBe(403);
+	});
+
+	it("rejects a malformed schedule revision instead of guessing", async () => {
+		const { base, leaseToken } = await claimed();
+		expect(
+			(
+				await call(base, `/${SESSION_ID}/ready`, {
+					method: "POST",
+					token: MASTER,
+					lease: leaseToken,
+					body: { scheduleRevision: "1" },
+				})
+			).status,
+		).toBe(400);
+	});
+});

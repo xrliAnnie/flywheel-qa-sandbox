@@ -303,3 +303,167 @@ describe("StateStore voice schedules", () => {
 		});
 	});
 });
+
+describe("StateStore scheduled live floor", () => {
+	function claimed(): string {
+		store.createVoiceSchedule(reservation());
+		store.reserveVoiceSession({
+			sessionId: SESSION_ID,
+			mode: "meeting",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceBotUserId: "100000000000000005",
+			voiceChannelId: "100000000000000002",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: T0,
+			scheduleId: SCHEDULE_ID,
+			scheduleRevision: 1,
+			notBeforeLiveAt: MEETING_AT,
+			presenceDeadlineAt: "2026-09-22T09:10:00.000Z",
+		});
+		store.attachVoiceScheduleSession({
+			scheduleId: SCHEDULE_ID,
+			expectedRevision: 1,
+			sessionId: SESSION_ID,
+			updatedAt: PREWARM_AT,
+		});
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: PREWARM_AT,
+		});
+		const lease = store.claimVoiceSession({
+			sessionId: SESSION_ID,
+			daemonBootId: "boot-1",
+			now: PREWARM_AT,
+			// A prewarmed session waits for the meeting time, so its lease must
+			// outlive the whole lead rather than expiring before T.
+			leaseTtlMs: 30 * 60_000,
+		})!;
+		store.setVoiceSessionState({
+			sessionId: SESSION_ID,
+			leaseToken: lease.leaseToken,
+			state: "warming",
+			now: PREWARM_AT,
+		});
+		return lease.leaseToken;
+	}
+
+	it("refuses live before the meeting time and admits it at T once ready", () => {
+		const leaseToken = claimed();
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken,
+				state: "live",
+				now: PREWARM_AT,
+			}),
+		).toBe(false);
+		store.markVoiceSessionReady({
+			sessionId: SESSION_ID,
+			scheduleRevision: 1,
+			readyAt: PREWARM_AT,
+		});
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken,
+				state: "live",
+				now: "2026-09-22T08:59:59.999Z",
+			}),
+		).toBe(false);
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken,
+				state: "live",
+				now: MEETING_AT,
+			}),
+		).toBe(true);
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "live",
+		});
+	});
+
+	it("refuses live at T when the session never reported ready", () => {
+		const leaseToken = claimed();
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken,
+				state: "live",
+				now: MEETING_AT,
+			}),
+		).toBe(false);
+	});
+
+	it("refuses live when the schedule moved under the running session", () => {
+		const leaseToken = claimed();
+		store.markVoiceSessionReady({
+			sessionId: SESSION_ID,
+			scheduleRevision: 1,
+			readyAt: PREWARM_AT,
+		});
+		store.cancelVoiceSchedule({
+			scheduleId: SCHEDULE_ID,
+			requestKey: "master:founder:cancel-live",
+			requestDigest: "digest-cancel-live",
+			expectedRevision: 1,
+			updatedAt: PREWARM_AT,
+		});
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken,
+				state: "live",
+				now: MEETING_AT,
+			}),
+		).toBe(false);
+	});
+
+	it("leaves an instant session's live transition exactly as it is today", () => {
+		store.reserveVoiceSession({
+			sessionId: SESSION_ID,
+			mode: "rg",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceBotUserId: "100000000000000005",
+			voiceChannelId: "100000000000000002",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: T0,
+		});
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+		});
+		const lease = store.claimVoiceSession({
+			sessionId: SESSION_ID,
+			daemonBootId: "boot-1",
+			now: T0,
+			leaseTtlMs: 15_000,
+		})!;
+		store.setVoiceSessionState({
+			sessionId: SESSION_ID,
+			leaseToken: lease.leaseToken,
+			state: "warming",
+			now: T0,
+		});
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken: lease.leaseToken,
+				state: "live",
+				now: T0,
+			}),
+		).toBe(true);
+	});
+});

@@ -4231,6 +4231,32 @@ export class StateStore {
 		return result;
 	}
 
+	/**
+	 * Terminal failure for a booking that can no longer be honoured (its meeting
+	 * window passed, or the launch budget ran out). It never revives a schedule
+	 * and never invents a session.
+	 */
+	failVoiceSchedule(input: {
+		scheduleId: string;
+		expectedRevision: number;
+		reason: string;
+		updatedAt: string;
+	}): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET state = 'failed', terminal_reason = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ?
+				   AND state NOT IN ('ended','cancelled','failed')`,
+				[input.reason, input.updatedAt, input.scheduleId, input.expectedRevision],
+			);
+			changed = this.db.getRowsModified() === 1;
+		});
+		if (changed) this.save();
+		return changed;
+	}
+
 	listDueVoiceSchedules(now: string): VoiceScheduleRow[] {
 		return this.workflowSelectAll(
 			`SELECT * FROM voice_schedules
@@ -4663,6 +4689,22 @@ export class StateStore {
 				!new Set(["she-left", "text-stop", "voice-stop"]).has(input.reason!)
 			)
 				return;
+			// FLY-2701: a prewarmed meeting sits in the room, ready and mute, until
+			// its own time. Going live early would put a bot on an open mic before
+			// the meeting exists, so the floor is checked here, not in the daemon.
+			if (input.state === "live" && current.notBeforeLiveAt) {
+				if (!current.readyAt) return;
+				if (Date.parse(input.now) < Date.parse(current.notBeforeLiveAt)) return;
+				if (current.scheduleId) {
+					const schedule = this.getVoiceSchedule(current.scheduleId);
+					if (
+						!schedule ||
+						schedule.revision !== current.scheduleRevision ||
+						["ended", "cancelled", "failed"].includes(schedule.state)
+					)
+						return;
+				}
+			}
 			this.db.run(
 				`UPDATE voice_sessions SET state = ?, reason = ?, updated_at = ?,
 				 ended_at = CASE WHEN ? IN ('ended','failed') THEN ? ELSE ended_at END
@@ -4681,6 +4723,33 @@ export class StateStore {
 			changed = this.db.getRowsModified() === 1;
 			if (changed && new Set(["ended", "failed"]).has(input.state)) {
 				this.settleVoiceOutboundTx(input.sessionId, input.now);
+			}
+			if (changed && current.scheduleId) {
+				const scheduleState =
+					input.state === "live"
+						? "live"
+						: input.state === "ended"
+							? "ended"
+							: input.state === "failed"
+								? "failed"
+								: undefined;
+				if (scheduleState) {
+					this.db.run(
+						`UPDATE voice_schedules
+						 SET state = ?, terminal_reason = CASE WHEN ? IN ('ended','failed') THEN ? ELSE terminal_reason END,
+						     updated_at = ?
+						 WHERE schedule_id = ? AND revision = ?
+						   AND state NOT IN ('ended','cancelled','failed')`,
+						[
+							scheduleState,
+							scheduleState,
+							input.reason ?? null,
+							input.now,
+							current.scheduleId,
+							current.scheduleRevision,
+						],
+					);
+				}
 			}
 		});
 		if (changed) this.save();
