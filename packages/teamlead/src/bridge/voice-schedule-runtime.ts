@@ -8,6 +8,7 @@ export interface VoiceScheduleRuntimeDeps {
 	provision: (sessionId: string) => Promise<void>;
 	/** Bounded launchd kickstart request; never spawns the daemon directly. */
 	requestWake: () => void;
+	scanIntervalMs?: number;
 	log?: (message: string) => void;
 }
 
@@ -21,10 +22,28 @@ const TERMINAL_SESSION_STATES = new Set(["ended", "cancelled", "failed"]);
  */
 export class VoiceScheduleRuntime {
 	private ticking = false;
+	private timer?: ReturnType<typeof setInterval>;
 	private readonly now: () => string;
 
 	constructor(private readonly deps: VoiceScheduleRuntimeDeps) {
 		this.now = deps.now ?? (() => new Date().toISOString());
+	}
+
+	/** Runs immediately on Bridge start so a restart re-scans the backlog. */
+	start(): void {
+		if (this.timer) return;
+		const run = () =>
+			void this.tick().catch(() =>
+				this.deps.log?.("voice schedule tick failed"),
+			);
+		run();
+		this.timer = setInterval(run, this.deps.scanIntervalMs ?? 3_000);
+		this.timer.unref?.();
+	}
+
+	stop(): void {
+		if (this.timer) clearInterval(this.timer);
+		this.timer = undefined;
 	}
 
 	async tick(): Promise<void> {

@@ -80,6 +80,12 @@ interface VoiceDaemonBridge {
 		leaseExpiresAt: string;
 		lease: VoiceLease;
 	}>;
+	ready(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		scheduleRevision: number | null,
+	): Promise<void>;
 	setState(
 		sessionId: string,
 		leaseToken: string,
@@ -553,11 +559,27 @@ export class VoiceDaemon {
 			);
 			context.lease.assert();
 			const started = await lifetime.wait(() => session.start());
+			// FLY-2701: a booked meeting reports ready as soon as the room and the
+			// model are up, then waits — mute — for its own time.
+			const notBeforeLiveAt = context.projection.notBeforeLiveAt;
+			if (notBeforeLiveAt) {
+				await lifetime.wait(() =>
+					this.options.bridge.ready(
+						context.sessionId,
+						context.leaseToken,
+						context.lease,
+						context.projection.scheduleRevision ?? null,
+					),
+				);
+				await lifetime.wait(() => this.waitUntil(notBeforeLiveAt));
+			}
+			// Founder presence: she is the meeting. The absolute deadline from the
+			// schedule wins over the local grace so an early start never shortens
+			// how long the bot waits for her.
+			const presenceWaitMs = this.presenceWaitMs(context);
 			const founderPresent =
 				started.founderPresent ||
-				(await lifetime.wait(() =>
-					session.waitForFounder(this.options.timing.presenceGraceMs),
-				));
+				(await lifetime.wait(() => session.waitForFounder(presenceWaitMs)));
 			if (!founderPresent) {
 				outcome = { kind: "failed", reason: "no_human" };
 			} else {
@@ -689,6 +711,26 @@ export class VoiceDaemon {
 		}
 		if (terminalConfirmed) this.options.stateStore.remove(context.sessionId);
 		return result;
+	}
+
+	/** Sleeps until an absolute instant, in bounded steps the lease can fence. */
+	private waitUntil(instant: string): Promise<void> {
+		const remaining = Date.parse(instant) - Date.parse(this.nowIso());
+		if (!Number.isFinite(remaining) || remaining <= 0) return Promise.resolve();
+		return this.options.sleep(remaining, this.sleepController.signal);
+	}
+
+	/**
+	 * A scheduled meeting carries an absolute presence deadline; an instant
+	 * session keeps the configured grace. Never less than a moment, so a clock
+	 * that jumped forward cannot turn the wait into an instant no_human.
+	 */
+	private presenceWaitMs(context: VoiceSessionContext): number {
+		const deadline = context.projection.presenceDeadlineAt;
+		if (!deadline) return this.options.timing.presenceGraceMs;
+		const remaining = Date.parse(deadline) - Date.parse(this.nowIso());
+		if (!Number.isFinite(remaining)) return this.options.timing.presenceGraceMs;
+		return Math.max(remaining, 0);
 	}
 
 	private nowIso(): string {

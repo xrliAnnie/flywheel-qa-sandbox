@@ -90,6 +90,10 @@ export interface BridgeConfig {
 		provisioningStaleMs: number;
 		endingTimeoutMs: number;
 		pollIntervalMs: number;
+		/** FLY-2701: how early a booked meeting starts warming (60s..300s). */
+		prewarmLeadMs?: number;
+		/** How long the bot waits in the room for the founder before giving up. */
+		presenceGraceMs?: number;
 	};
 }
 

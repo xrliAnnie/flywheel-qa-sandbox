@@ -479,3 +479,121 @@ it("preserves scrubbed evidence and requests repetition when user attribution is
 	expect(delivery.capture).not.toHaveBeenCalled();
 	await session.stop();
 });
+
+describe("GenericVoiceSession prewarm gate (FLY-2701)", () => {
+	function prewarmed() {
+		let frontendHandlers!: Parameters<
+			ConstructorParameters<typeof GenericVoiceSession>[0]["createFrontend"]
+		>[0];
+		let roomHandlers!: Parameters<
+			ConstructorParameters<typeof GenericVoiceSession>[0]["createRoom"]
+		>[0];
+		const appendAudio = vi.fn();
+		const feedOutputAudio = vi.fn();
+		const capture = vi.fn(async () => true);
+		const evidence = vi.fn();
+		const session = new GenericVoiceSession({
+			projection: {
+				...projection,
+				notBeforeLiveAt: "2026-09-22T09:00:00.000Z",
+			},
+			delivery: { capture },
+			createFrontend: (handlers) => {
+				frontendHandlers = handlers;
+				return {
+					start: vi.fn(async () => {}),
+					appendAudio,
+					appendSpeech: vi.fn(async () => {}),
+					stop: vi.fn(async () => {}),
+				};
+			},
+			createRoom: (handlers) => {
+				roomHandlers = handlers;
+				return {
+					start: vi.fn(async () => ({ founderPresent: true })),
+					speaker: vi.fn(() => ({ userId: "founder", name: "Annie" })),
+					feedOutputAudio,
+					finishOutputAudio: vi.fn(),
+					flushOutputAudio: vi.fn(),
+					status: vi.fn(async () => {}),
+					stop: vi.fn(async () => {}),
+				};
+			},
+			lifecycle: vi.fn(),
+			evidence,
+			confirmationMs: 100,
+		});
+		return {
+			session,
+			appendAudio,
+			feedOutputAudio,
+			capture,
+			evidence,
+			frontend: () => frontendHandlers,
+			room: () => roomHandlers,
+		};
+	}
+
+	it("holds every byte of media while it waits in the room for the meeting time", async () => {
+		const fixture = prewarmed();
+		await fixture.session.start();
+		fixture.room().onAudio(Buffer.alloc(960));
+		fixture.frontend().onAudio(Buffer.alloc(960));
+		fixture.frontend().onTranscript({ role: "user", text: "开会前的闲聊" });
+		fixture.frontend().onTranscript({ role: "assistant", text: "早到的自言" });
+		expect(fixture.appendAudio).not.toHaveBeenCalled();
+		expect(fixture.feedOutputAudio).not.toHaveBeenCalled();
+		expect(fixture.capture).not.toHaveBeenCalled();
+		expect(fixture.evidence).not.toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "realtime_transcript" }),
+		);
+		await fixture.session.stop();
+	});
+
+	it("opens the microphone only once the meeting actually starts", async () => {
+		const fixture = prewarmed();
+		await fixture.session.start();
+		await fixture.session.markLive();
+		fixture.room().onAudio(Buffer.alloc(960));
+		fixture.frontend().onAudio(Buffer.alloc(960));
+		expect(fixture.appendAudio).toHaveBeenCalledTimes(1);
+		expect(fixture.feedOutputAudio).toHaveBeenCalledTimes(1);
+		await fixture.session.stop();
+	});
+
+	it("leaves an instant session unchanged: audio flows as soon as the room is up", async () => {
+		let roomHandlers!: Parameters<
+			ConstructorParameters<typeof GenericVoiceSession>[0]["createRoom"]
+		>[0];
+		const appendAudio = vi.fn();
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => ({
+				start: vi.fn(async () => {}),
+				appendAudio,
+				appendSpeech: vi.fn(async () => {}),
+				stop: vi.fn(async () => {}),
+			}),
+			createRoom: (handlers) => {
+				roomHandlers = handlers;
+				return {
+					start: vi.fn(async () => ({ founderPresent: true })),
+					speaker: vi.fn(() => ({ userId: "founder", name: "Annie" })),
+					feedOutputAudio: vi.fn(),
+					finishOutputAudio: vi.fn(),
+					flushOutputAudio: vi.fn(),
+					status: vi.fn(async () => {}),
+					stop: vi.fn(async () => {}),
+				};
+			},
+			lifecycle: vi.fn(),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+		});
+		await session.start();
+		roomHandlers.onAudio(Buffer.alloc(960));
+		expect(appendAudio).toHaveBeenCalledTimes(1);
+		await session.stop();
+	});
+});

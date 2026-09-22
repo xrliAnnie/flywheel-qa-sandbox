@@ -13,6 +13,11 @@ import {
 	VoiceLaunchdWaker,
 	verifyVoiceOnDemandContract,
 } from "./voice-launchd-waker.js";
+import {
+	createVoiceScheduleRouter,
+	resolveVoicePrewarmLeadMs,
+} from "./voice-schedule-routes.js";
+import { VoiceScheduleRuntime } from "./voice-schedule-runtime.js";
 import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
@@ -41,7 +46,9 @@ export function createVoiceSessionServices(input: {
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
+	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
 	runtime: VoiceSessionRuntime;
+	scheduleRuntime: VoiceScheduleRuntime;
 } {
 	const env = input.env ?? process.env;
 	const homeDir = input.homeDir ?? homedir();
@@ -220,6 +227,17 @@ export function createVoiceSessionServices(input: {
 			qaAllowUserIds: voiceHost.qaAllowUserIds,
 			evidenceDir: session.evidenceDir,
 			meetingId: session.meetingId,
+			// FLY-2701: only a booked meeting carries a live floor. Instant
+			// sessions keep exactly the projection they have today.
+			...(session.notBeforeLiveAt
+				? { notBeforeLiveAt: session.notBeforeLiveAt }
+				: {}),
+			...(session.presenceDeadlineAt
+				? { presenceDeadlineAt: session.presenceDeadlineAt }
+				: {}),
+			...(session.scheduleRevision != null
+				? { scheduleRevision: session.scheduleRevision }
+				: {}),
 		};
 	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
@@ -261,7 +279,54 @@ export function createVoiceSessionServices(input: {
 		},
 		reportPollFailure: (session) => postStatus(session, "📻 回程暂时不通"),
 	});
+	// FLY-2701: booked meetings live in the Bridge, so the calendar keeps
+	// running while no voice process exists. The prewarm lead and the founder
+	// presence window are deployment configuration, never request fields.
+	const prewarmLeadMs = resolveVoicePrewarmLeadMs(
+		input.config.voiceSessionTiming?.prewarmLeadMs,
+	);
+	const presenceGraceMs =
+		input.config.voiceSessionTiming?.presenceGraceMs ?? 600_000;
+	const scheduleRuntime = new VoiceScheduleRuntime({
+		store: input.store,
+		newSessionId: randomUUID,
+		provision,
+		requestWake: () => {
+			voiceLaunchdWaker.requestWake();
+		},
+		log: (message) => console.warn(`[voice-schedule] ${message}`),
+	});
 	return {
+		scheduleRuntime,
+		scheduleRouter: createVoiceScheduleRouter({
+			store: input.store,
+			prewarmLeadMs,
+			presenceGraceMs,
+			newScheduleId: randomUUID,
+			resolveBinding: async ({ projectName, leadId, evidenceDir, topic }) => {
+				// Reuse the instant-start resolver so a schedule can never bind an
+				// identity, room, or evidence root the live path would refuse.
+				const reservation = await resolveStart(
+					{
+						mode: "meeting",
+						projectName,
+						leadId,
+						evidenceDir,
+						...(topic ? { topic } : {}),
+					},
+					"master",
+				);
+				return {
+					projectName: reservation.projectName,
+					leadId: reservation.leadId,
+					guildId: reservation.guildId,
+					voiceChannelId: reservation.voiceChannelId,
+					voiceBotUserId: reservation.voiceBotUserId,
+					evidenceDir: reservation.evidenceDir!,
+					...(reservation.topic ? { topic: reservation.topic } : {}),
+				};
+			},
+		}),
 		router: createVoiceSessionRouter({
 			store: input.store,
 			leaseTtlMs: timing.leaseTtlMs,

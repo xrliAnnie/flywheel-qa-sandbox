@@ -90,7 +90,11 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.now = options.now ?? (() => new Date());
 		this.frontend = options.createFrontend({
 			onTranscript: (input) => this.transcript(input),
-			onAudio: (frame) => this.guarded(() => this.room.feedOutputAudio(frame)),
+			onAudio: (frame) =>
+				this.guarded(() => {
+					if (this.prewarmGated()) return;
+					this.room.feedOutputAudio(frame);
+				}),
 			onClosed: (reason) => this.finish({ kind: "failed", reason }),
 			onFrontendDelegation: ({ itemId }) =>
 				this.options.evidence({
@@ -100,7 +104,11 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				}),
 		});
 		this.room = options.createRoom({
-			onAudio: (frame) => this.guarded(() => this.frontend.appendAudio(frame)),
+			onAudio: (frame) =>
+				this.guarded(() => {
+					if (this.prewarmGated()) return;
+					this.frontend.appendAudio(frame);
+				}),
 			onFounderPresence: (present) => this.founderPresence(present),
 			onError: (error) =>
 				this.finish({
@@ -144,6 +152,15 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		} finally {
 			if (timer) clearTimeout(timer);
 		}
+	}
+
+	/**
+	 * FLY-2701: a prewarmed meeting sits in the room before its time. Nothing
+	 * spoken there belongs to the meeting, so no audio crosses in either
+	 * direction and nothing is transcribed, captured or buffered until T.
+	 */
+	private prewarmGated(): boolean {
+		return !this.live && this.options.projection.notBeforeLiveAt != null;
 	}
 
 	async markLive(): Promise<void> {
@@ -213,7 +230,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		role: "user" | "assistant";
 		text: string;
 	}): void {
-		if (this.stopping || !this.admitted) return;
+		if (this.stopping || !this.admitted || this.prewarmGated()) return;
 		if (input.role === "assistant") {
 			this.room.finishOutputAudio();
 			const safeText = Array.from(scrubTranscript(input.text).trim())
