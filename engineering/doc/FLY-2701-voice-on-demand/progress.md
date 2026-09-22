@@ -1,9 +1,9 @@
 ---
 issue: FLY-2701
 phase: implement
-phaseCursor: 1/7
-updated: 2026-09-22T05:37:56.289Z
-nextStep: "Slice B: voice_schedules StateStore + schedule routes/runtime (prewarm lead)"
+phaseCursor: 2/7
+updated: 2026-09-22T05:43:05.215Z
+nextStep: "Slice B2: /api/voice/schedules routes"
 chunks: []
 pointers: {}
 handoff: Dependency-independent on-demand lifecycle is commit 74be58453; do not
@@ -12,7 +12,7 @@ handoff: Dependency-independent on-demand lifecycle is commit 74be58453; do not
 ---
 
 # FLY-2701 progress
-**phase**: implement (1/7)
-**next**: Slice B: voice_schedules StateStore + schedule routes/runtime (prewarm lead)
+**phase**: implement (2/7)
+**next**: Slice B2: /api/voice/schedules routes
 
 **handoff**: Dependency-independent on-demand lifecycle is commit 74be58453; do not redo idle exit, wake lane, dormant launchd, installer, wrapper, or focused regressions.
