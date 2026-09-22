@@ -916,7 +916,8 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
-      # FLY-1364/1482: cmux repair spans the exact-ref authority ledger,
+      # FLY-1364/1482/2643: cmux repair and agent visibility span the
+      # exact-ref authority ledger,
       # conservative cleanup, rescue-lock instrumentation, and deployed-link
       # surface. FLY-1482 also keeps a real isolated watcher alive while
       # teardown claims/yields the lease and verifies observable QA cleanup.
@@ -951,6 +952,8 @@ jobs:
           bash scripts/__tests__/test-teardown-lease-contract.test.sh
           bash scripts/__tests__/qa-teardown-finalize.test.sh
           bash scripts/__tests__/restart-cmux-watcher.test.sh
+          bash scripts/__tests__/agent-visibility-rules.test.sh
+          bash scripts/__tests__/agent-visibility.test.sh
 
       # FLY-2404: shared credential truth provisioning, fenced shuttle cutover,
       # and conservative legacy-copy sweep. All five suites use fixture HOMEs,

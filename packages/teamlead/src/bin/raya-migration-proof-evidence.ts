@@ -3,6 +3,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { installSqlTiming } from "flywheel-config";
 import {
+	legacyTuiBindingExpectation,
+	verifyAgentTuiBinding,
+} from "../lead-backends/codex/agent-tui-binding.js";
+import {
 	discordJson,
 	discordMessage,
 	type MigrationIO,
@@ -155,27 +159,19 @@ export async function readTuiEvidence(input: {
 		!Number.isSafeInteger(Number(pane[2]))
 	)
 		throw new Error("tui-pane-invalid");
-	// tmux serializes the launch command as shell-quoted argv. Decode only;
-	// never execute the command collected from the pane.
-	const argv: unknown = JSON.parse(
-		await input.io.run("python3", [
-			"-c",
-			"import json,shlex,sys; print(json.dumps(shlex.split(sys.argv[1])))",
-			pane[3]!,
-		]),
-	);
-	if (!Array.isArray(argv) || argv.length !== 1 || typeof argv[0] !== "string")
-		throw new Error("tui-thread-binding-invalid");
-	const command = argv[0];
-	if (
-		!command.startsWith(`CODEX_HOME="${codexHome}" `) ||
-		!command.includes(
-			` --remote "unix://${codexHome}/app-server-control/app-server-control.sock" `,
-		) ||
-		!command.includes(` -C "${input.workspace}" `) ||
-		!command.endsWith(` ${input.threadId}`)
-	)
-		throw new Error("tui-thread-binding-invalid");
+	// Shared non-executing parser validates the whole remote-resume argv grammar.
+	// Permissions come from the app-server-owned thread; Codex 0.154 rejects
+	// client-side sandbox and approval overrides for remote tasks.
+	const binding = verifyAgentTuiBinding(pane[3]!, {
+		kind: "legacy",
+		...legacyTuiBindingExpectation({
+			codexHome,
+			cwd: input.workspace,
+			threadId: input.threadId,
+			codexBin: false,
+		}),
+	});
+	if (!binding.ok) throw new Error("tui-thread-binding-invalid");
 	const started = Date.parse(
 		(await input.io.run("ps", ["-o", "lstart=", "-p", pane[2]!])).trim(),
 	);

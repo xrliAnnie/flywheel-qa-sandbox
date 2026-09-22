@@ -137,6 +137,7 @@ REBIND_CONTROL_STATE="${REBIND_CONTROL_STATE:-$HOME/.flywheel/state/cmux-rebind-
 FLYWHEEL_ENV_FILE="${FLYWHEEL_ENV_FILE:-$HOME/.flywheel/.env}"
 FLYWHEEL_LEAD_PLIST_DIR="${FLYWHEEL_LEAD_PLIST_DIR:-$HOME/Library/LaunchAgents}"
 FLYWHEEL_MANIFEST_DIR="${FLYWHEEL_MANIFEST_DIR:-$HOME/.flywheel/manifests}"
+FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-$HOME/.flywheel/projects.json}"
 # FLY-1446 E2: newline-delimited `view|source|window_id` identities whose
 # well-formed construction WAL hit a proven canonical-name collision in the
 # current reconciliation round. Bash 3.2 has no associative arrays.
@@ -606,6 +607,17 @@ classify_lead_carrier() {
   esac
 }
 
+intended_lead_carrier() {
+  case "$1" in
+    flywheel-lead-wrapper-v2.sh) printf 'claude-private\n' ;;
+    flywheel-lead.sh|\
+    flywheel-codex-lead-wrapper-mufasa-tui.sh|\
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|\
+    flywheel-codex-lead-wrapper-codex-infra-bot.sh) printf 'codex-tui-cmux\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
 lead_job_loaded() {
   launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1
 }
@@ -650,61 +662,104 @@ PY
 LEAD_ROSTER_STATE="indeterminate"
 LEAD_ROSTER_ROWS=""
 LEAD_ROSTER_REASONS=""
+lead_registry_rows() {
+  python3 - "$FLYWHEEL_PROJECTS_FILE" <<'PY'
+import json,re,sys
+safe=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        data=json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+if not isinstance(data,list):
+    raise SystemExit(1)
+rows=[]
+for project in data:
+    if not isinstance(project,dict): raise SystemExit(1)
+    name=project.get("projectName")
+    leads=project.get("leads", [])
+    if not isinstance(name,str) or not safe.fullmatch(name) or not isinstance(leads,list):
+        raise SystemExit(1)
+    for lead in leads:
+        agent=lead.get("agentId") if isinstance(lead,dict) else None
+        if not isinstance(agent,str) or not safe.fullmatch(agent): raise SystemExit(1)
+        rows.append((name,agent))
+if len(rows) != len(set(rows)): raise SystemExit(1)
+for project,lead in sorted(rows): print(f"{project}|{lead}")
+PY
+}
+
 derive_lead_roster() {
-  # Rows: carrier|launchd-label|expected-title|private-socket. No row is published until
-  # every loaded job has been parsed and classified successfully.
-  local plist label slug wrapper manifest fields project lead backend socket carrier title rows="" canonical_socket
+  # Rows: carrier|launchd-label|expected-title|private-socket|intended-carrier.
+  # The registry is the expected set; lifecycle artifacts are a left join and
+  # cannot erase an unloaded or not-yet-materialized Lead from fleet coverage.
+  local registry plist label slug wrapper manifest fields project lead manifest_project manifest_lead
+  local backend socket carrier intended title rows="" canonical_socket expected_titles=""
   LEAD_ROSTER_STATE="indeterminate"
   LEAD_ROSTER_ROWS=""
   LEAD_ROSTER_REASONS=""
+  registry=$(lead_registry_rows 2>/dev/null) || {
+    LEAD_ROSTER_REASONS="roster-authority-unavailable: invalid Lead registry"
+    return 1
+  }
+  while IFS='|' read -r project lead; do
+    [[ -n "$project$lead" ]] || continue
+    title="${project}-${lead}"
+    label="com.flywheel.lead.${title}"
+    expected_titles+="${expected_titles:+$'\n'}${title}"
+    plist="$FLYWHEEL_LEAD_PLIST_DIR/${label}.plist"
+    manifest="$FLYWHEEL_MANIFEST_DIR/${title}.json"
+    if [[ ! -f "$plist" || -L "$plist" ]]; then
+      rows+="${rows:+$'\n'}missing-lifecycle|${label}|${title}||unknown"
+      continue
+    fi
+    wrapper=$(lead_plist_wrapper_basename "$plist" 2>/dev/null) || {
+      rows+="${rows:+$'\n'}config-drift|${label}|${title}||unknown"
+      continue
+    }
+    intended=$(intended_lead_carrier "$wrapper")
+    if [[ ! -f "$manifest" || -L "$manifest" ]]; then
+      rows+="${rows:+$'\n'}config-drift|${label}|${title}||${intended}"
+      continue
+    fi
+    fields=$(lead_manifest_fields "$manifest" 2>/dev/null) || {
+      rows+="${rows:+$'\n'}config-drift|${label}|${title}||${intended}"
+      continue
+    }
+    IFS='|' read -r manifest_project manifest_lead backend socket < <(printf '%s\n' "$fields")
+    if [[ "$manifest_project" != "$project" || "$manifest_lead" != "$lead" ]]; then
+      rows+="${rows:+$'\n'}config-drift|${label}|${title}||${intended}"
+      continue
+    fi
+    carrier=$(classify_lead_carrier "$wrapper" "$backend") || carrier=config-drift
+    if [[ "$carrier" == "claude-private" ]]; then
+      if [[ "$CMUX_LEAD_ADDRESS_AVAILABLE" != "1" ]]; then
+        carrier=config-drift
+      else
+        canonical_socket=$(derive_lead_socket "${project}/${lead}" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}" 2>/dev/null || true)
+        [[ -n "$canonical_socket" && "$socket" == "$canonical_socket" ]] || carrier=config-drift
+      fi
+    else
+      socket=""
+    fi
+    if ! lead_job_loaded "$label"; then
+      carrier=missing-lifecycle
+      socket=""
+    fi
+    rows+="${rows:+$'\n'}${carrier}|${label}|${title}|${socket}|${intended}"
+  done < <(printf '%s\n' "$registry")
+
   for plist in "$FLYWHEEL_LEAD_PLIST_DIR"/com.flywheel.lead.*.plist; do
     [[ -f "$plist" ]] || continue
     label=$(basename "$plist" .plist)
     lead_job_loaded "$label" || continue
     slug=${label#com.flywheel.lead.}
-    wrapper=$(lead_plist_wrapper_basename "$plist") || {
-      LEAD_ROSTER_REASONS="roster-authority-unavailable: invalid plist $slug"
-      return 1
-    }
-    manifest="$FLYWHEEL_MANIFEST_DIR/${slug}.json"
-    [[ -f "$manifest" ]] || {
-      LEAD_ROSTER_REASONS="roster-authority-unavailable: missing manifest $slug"
-      return 1
-    }
-    fields=$(lead_manifest_fields "$manifest" 2>/dev/null) || {
-      LEAD_ROSTER_REASONS="roster-authority-unavailable: invalid manifest $slug"
-      return 1
-    }
-    IFS='|' read -r project lead backend socket < <(printf '%s\n' "$fields")
-    title="${project}-${lead}"
-    # The launchd label and manifest identity must describe the same slot.
-    [[ "$slug" == "$title" ]] || {
-      LEAD_ROSTER_REASONS="roster-authority-unavailable: manifest identity mismatch $slug"
-      return 1
-    }
-    carrier=$(classify_lead_carrier "$wrapper" "$backend") || {
-      LEAD_ROSTER_REASONS="roster-authority-unavailable: carrier classification failed $slug"
-      return 1
-    }
-    if [[ "$carrier" == "claude-private" ]]; then
-      [[ "$CMUX_LEAD_ADDRESS_AVAILABLE" == "1" ]] || {
-        LEAD_ROSTER_REASONS="roster-authority-unavailable: Lead address helper missing"
-        return 1
-      }
-      canonical_socket=$(derive_lead_socket "${project}/${lead}" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}") || {
-        LEAD_ROSTER_REASONS="roster-authority-unavailable: cannot derive private socket $slug"
-        return 1
-      }
-      [[ "$socket" == "$canonical_socket" ]] || {
-        LEAD_ROSTER_REASONS="roster-authority-unavailable: noncanonical private socket $slug"
-        return 1
-      }
-    else
-      socket=""
-    fi
-    rows+="${rows:+$'\n'}${carrier}|${label}|${title}|${socket}"
+    printf '%s\n' "$expected_titles" | grep -qxF "$slug" && continue
+    wrapper=$(lead_plist_wrapper_basename "$plist" 2>/dev/null || true)
+    intended=$(intended_lead_carrier "$wrapper")
+    rows+="${rows:+$'\n'}config-drift|${label}|${slug}||${intended}"
   done
-  LEAD_ROSTER_ROWS="$rows"
+  LEAD_ROSTER_ROWS=$(printf '%s\n' "$rows" | sed '/^$/d' | sort)
   LEAD_ROSTER_STATE="ok"
 }
 
@@ -731,13 +786,13 @@ read_roster_tmux_inventory() {
   tmp=$(mktemp) || return 1
   while IFS= read -r session; do
     rows=$(tmux list-windows -t "$session" \
-      -F '#{session_name}|#{window_id}|#{window_name}' 2>/dev/null) || {
+      -F '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}' 2>/dev/null) || {
       rm -f "$tmp"; return 1;
     }
-    while IFS='|' read -r observed_session wid title extra; do
-      [[ -n "$observed_session$wid$title${extra:-}" ]] || continue
+    while IFS='|' read -r observed_session wid title dead extra; do
+      [[ -n "$observed_session$wid$title$dead${extra:-}" ]] || continue
       if [[ -n "${extra:-}" || "$observed_session" != "$session" \
-          || -z "$title" ]]; then
+          || -z "$title" || ( "$dead" != 0 && "$dead" != 1 ) ]]; then
         rm -f "$tmp"
         return 1
       fi
@@ -749,7 +804,7 @@ read_roster_tmux_inventory() {
         ;;
       esac
       case "$title" in zsh|bash) continue ;; esac
-      printf '%s|%s|%s\n' "$observed_session" "$wid" "$title" >> "$tmp" || {
+      printf '%s|%s|%s|%s\n' "$observed_session" "$wid" "$title" "$dead" >> "$tmp" || {
         rm -f "$tmp"; return 1;
       }
     done < <(printf '%s\n' "$rows")
@@ -826,7 +881,7 @@ roster_rearm_absent_subjects() {
 }
 
 reconcile_lead_roster() {
-  local carrier label title socket current_missing="" current_config="" legacy_expected=0
+  local carrier label title socket intended current_missing="" current_config="" legacy_expected=0 private_rows
   if ! derive_lead_roster || [[ "$LEAD_ROSTER_STATE" != "ok" ]]; then
     roster_alert_unhealthy roster-derive-failed lead-roster \
       "cmux Lead roster derivation failed" \
@@ -834,22 +889,31 @@ reconcile_lead_roster() {
     return 0
   fi
   roster_mark_healthy roster-derive-failed lead-roster
-  while IFS='|' read -r carrier label title socket; do
+  while IFS='|' read -r carrier label title socket intended; do
     [[ -n "$carrier$title" ]] || continue
     if [[ "$carrier" == "config-drift" ]]; then
       current_config+="${current_config:+$'\n'}${label}"
       roster_alert_unhealthy config-drift "$label" \
         "cmux Lead carrier config drift" \
-        "Loaded Lead $label is outside the closed windowed carrier matrix; wrapper/backend configuration must be repaired."
+        "Lead slot $label is outside the closed windowed carrier matrix; lifecycle, wrapper, manifest, or backend configuration must be repaired."
+    elif [[ "$carrier" == "missing-lifecycle" ]]; then
+      roster_mark_healthy config-drift "$label"
+      current_missing+="${current_missing:+$'\n'}${title}"
+      roster_alert_unhealthy lead-window-missing "$title" \
+        "cmux Lead window missing" \
+        "Expected Lead $label is registered but has no loaded canonical lifecycle/window; it is not online."
     else
       roster_mark_healthy config-drift "$label"
     fi
   done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
   roster_rearm_absent_subjects config-drift "$current_config"
 
-  while IFS='|' read -r carrier label title socket; do
+  while IFS='|' read -r carrier label title socket intended; do
     if [[ "$carrier" == "claude-private" ]]; then
-      if tmux -S "$socket" has-session -t '=main' >/dev/null 2>&1; then
+      private_rows=$(tmux -S "$socket" list-panes -t '=main:=main' \
+        -F '#{session_name}|#{window_name}|#{pane_dead}' 2>/dev/null || true)
+      if printf '%s\n' "$private_rows" \
+          | awk -F'|' 'NF == 3 && $1 == "main" && $2 == "main" && $3 == "0" { found=1 } END { exit(found ? 0 : 1) }'; then
         roster_mark_healthy lead-window-missing "$title"
       else
         current_missing+="${current_missing:+$'\n'}${title}"
@@ -876,10 +940,10 @@ reconcile_lead_roster() {
   else
     roster_mark_healthy roster-blind lead-tmux
   fi
-  while IFS='|' read -r carrier label title socket; do
+  while IFS='|' read -r carrier label title socket intended; do
     [[ "$carrier" == "claude-tmux" || "$carrier" == "codex-tui-cmux" ]] || continue
     if printf '%s\n' "$ROSTER_TMUX_WINDOWS" \
-        | awk -F'|' -v t="$title" '$1 == "flywheel" && $3 == t { found=1 } END { exit(found ? 0 : 1) }'; then
+        | awk -F'|' -v t="$title" '$1 == "flywheel" && $3 == t && $4 == "0" { found=1 } END { exit(found ? 0 : 1) }'; then
       roster_mark_healthy lead-window-missing "$title"
     else
       current_missing+="${current_missing:+$'\n'}${title}"
@@ -5327,14 +5391,73 @@ for w in json.load(sys.stdin).get("workspaces", []):
   _v2_lead_heal_surface "$generation" "$ref" "$title" "$socket" "$create_command" || return 1
 }
 
+# A Codex Lead runs in the shared flywheel tmux server, so its cmux surface
+# must attach through the same exact-one-window linked session used by Runner
+# views. Unlike the private Claude carrier above, a same-title cmux workspace
+# is not enough: without cmux-<title>, its attach command exits immediately.
+ensure_codex_tui_lead_workspace() {
+  local title="$1" rows source wid observed_title alive_rc=0 live_count=0
+  local live_source="" live_wid="" view_session="${VIEW_PREFIX}${title}"
+  local workspace_rc=0 generation refs ref ref_count
+
+  rows=$(get_tmux_agent_windows) || return 1
+  while IFS='|' read -r source wid observed_title; do
+    [[ "$source" == "$FLYWHEEL_SESSION" && "$observed_title" == "$title" ]] || continue
+    alive_rc=0
+    window_source_pane_alive "$source" "$wid" || alive_rc=$?
+    case "$alive_rc" in
+      0)
+        live_count=$((live_count + 1))
+        live_source="$source"
+        live_wid="$wid"
+        ;;
+      1) ;;
+      *) return 1 ;;
+    esac
+  done < <(printf '%s\n' "$rows")
+  [[ "$live_count" == 1 && -n "$live_source" && -n "$live_wid" ]] || return 1
+
+  recover_view_construction "$view_session" || return 1
+  if ! linked_session_exists "$view_session"; then
+    create_or_replace_view_session "$live_source" "$live_wid" "$title" || return 1
+  fi
+  _linked_view_matches "$view_session" "$live_wid" "$live_source" "" "$title" || return 1
+
+  workspace_exists_for "$title" || workspace_rc=$?
+  case "$workspace_rc" in
+    0)
+      # An existing exact-title surface may predate its linked session. Reuse
+      # the normal guarded stock/birth adoption path to mint the receipt; it
+      # refuses foreign or ambiguous workspaces rather than fabricating a pass.
+      reconcile_workspace_titles "$live_source|$live_wid|$title"
+      ;;
+    1)
+      create_workspace_for_window "$live_source" "$live_wid" "$title"
+      ;;
+    *) return 1 ;;
+  esac
+
+  # Both adoption and create helpers are deliberately best-effort so the
+  # long-running watcher survives transient cmux failures. This carrier gate
+  # must be stricter: do not report convergence until one exact workspace ref
+  # has a committed receipt in the current cmux generation.
+  generation=$(cmux_socket_identity) || return 1
+  [[ -n "$generation" ]] || return 1
+  refs=$(workspace_refs_for "$title") || return 1
+  ref_count=$(printf '%s\n' "$refs" | grep -c . || true)
+  [[ "$ref_count" == 1 ]] || return 1
+  ref=$(printf '%s\n' "$refs" | head -1)
+  ledger_committed_ref "$generation" "$ref" "$title"
+}
+
 reconcile_v2_lead_workspaces() {
-  local carrier _label title socket count previous streak retry_limit threshold
+  local carrier _label title socket _intended count previous streak retry_limit threshold
   local expected=0 attached=0 current="" missing="" next_streaks="" alert_subjects=""
   [[ "$LEAD_ROSTER_STATE" == "ok" ]] || return 0
 
   retry_limit=$(_attach_retry_limit)
   threshold=$((10#$retry_limit + 1))
-  while IFS='|' read -r carrier _label title socket; do
+  while IFS='|' read -r carrier _label title socket _intended; do
     [[ "$carrier" == "claude-private" ]] || continue
     expected=$((expected + 1))
     current+="${current:+$'\n'}${title}"
@@ -5369,11 +5492,18 @@ reconcile_v2_lead_workspaces() {
       "The v2 Lead pane is not attached to a live private tmux server: expected=$expected attached=$attached missing=$missing."
   done < <(printf '%s\n' "$alert_subjects")
 
-  while IFS='|' read -r carrier _label title socket; do
-    [[ "$carrier" == "claude-private" ]] || continue
+  while IFS='|' read -r carrier _label title socket _intended; do
     watcher_mutation_latch_clear || return 0
-    ensure_v2_lead_workspace "$title" "$socket" \
-      || log "WARN: v2 Lead workspace reconcile deferred title=$title"
+    case "$carrier" in
+      claude-private)
+        ensure_v2_lead_workspace "$title" "$socket" \
+          || log "WARN: v2 Lead workspace reconcile deferred title=$title"
+        ;;
+      codex-tui-cmux)
+        ensure_codex_tui_lead_workspace "$title" \
+          || log "WARN: Codex TUI Lead workspace reconcile deferred title=$title"
+        ;;
+    esac
   done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
   return 0
 }
@@ -6430,6 +6560,35 @@ _retire_create_intent_stage() {
   return 0
 }
 
+_claim_intent_is_abandoned() {
+  # A claim_intent is the sole rename boundary where both names can be absent
+  # after a crash. Retire it only when one generation-pinned tmux inventory
+  # proves that neither canonical/stage session nor the shared window object
+  # survives anywhere. Inventory uncertainty remains fail-closed.
+  local generation="$1" view="$2" stage="$3" source="$4" wid="$5"
+  local current sessions session windows
+  case "$source" in "$FLYWHEEL_SESSION"|runner-*) ;; *) return 1 ;; esac
+  case "$wid" in
+    @*) case "${wid#@}" in ''|*[!0-9]*) return 1 ;; esac ;;
+    *) return 1 ;;
+  esac
+  current=$(tmux_server_generation) || return 2
+  [[ "$current" == "$generation" ]] || return 2
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
+  if printf '%s\n' "$sessions" | grep -qxF "$view" \
+      || printf '%s\n' "$sessions" | grep -qxF "$stage"; then
+    return 1
+  fi
+  while IFS= read -r session; do
+    [[ -n "$session" ]] || continue
+    windows=$(tmux list-windows -t "=$session" -F '#{window_id}' 2>/dev/null) || return 2
+    printf '%s\n' "$windows" | grep -qxF "$wid" && return 1
+  done < <(printf '%s\n' "$sessions")
+  current=$(tmux_server_generation) || return 2
+  [[ "$current" == "$generation" ]] || return 2
+  return 0
+}
+
 recover_view_construction() {
   # Reconcile one WAL against the current tmux generation and topology. Any
   # malformed/ambiguous record is preserved and authorizes zero mutation.
@@ -6439,8 +6598,7 @@ recover_view_construction() {
   # and is never mutated by this cleanup.
   local requested_view="$1" wal line fields
   local version generation state nonce view source wid stage_sid placeholder stage current_generation expected_title
-  local claim_sessions generation_after_claim_census
-  local generation_socket generation_pid generation_started
+  local generation_socket generation_pid generation_started abandoned_rc
   wal=$(_view_wal_path "$requested_view")
   [[ -f "$wal" ]] || return 0
   [[ "$(wc -l < "$wal" 2>/dev/null | tr -d ' ')" == "1" ]] || { log "WARN: malformed view WAL: $wal"; return 1; }
@@ -6519,19 +6677,16 @@ recover_view_construction() {
       rm -f "$wal" 2>/dev/null || return 1
       return 0
     fi
-    # rename-session may have succeeded immediately before the watcher died,
-    # which is why claim_intent normally preserves uncertainty. When one
-    # successful session census proves that neither the canonical name nor the
-    # nonce-derived stage exists, the WAL is the only remaining object. Re-pin
-    # the tmux generation after that census before retiring the inert marker.
-    claim_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
-    if ! printf '%s\n' "$claim_sessions" \
-        | awk -v v="$view" -v s="$stage" '$0 == v || $0 == s { found=1 } END { exit(found ? 0 : 1) }'; then
-      generation_after_claim_census=$(tmux_server_generation) || return 1
-      [[ "$generation_after_claim_census" == "$generation" ]] || return 1
+    abandoned_rc=0
+    _claim_intent_is_abandoned "$generation" "$view" "$stage" "$source" "$wid" \
+      || abandoned_rc=$?
+    if [[ "$abandoned_rc" -eq 0 ]]; then
+      log "[audit] retired entity-free claim_intent view WAL view=$view stage=$stage source=$source wid=$wid generation=$generation"
       rm -f "$wal" 2>/dev/null || return 1
-      log "[audit] retired entity-free claim_intent view WAL view=$view"
       return 0
+    fi
+    if [[ "$abandoned_rc" -eq 2 ]]; then
+      log "WARN: claim_intent abandonment proof inconclusive; preserving WAL view=$view stage=$stage source=$source wid=$wid"
     fi
     return 1
   fi
@@ -7186,7 +7341,7 @@ _restored_title_in_lead_roster() {
   derive_lead_roster || return 2
   [[ "$LEAD_ROSTER_STATE" == "ok" ]] || return 2
   count=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' -v t="$title" \
-    '$1 != "claude-private" && $3 == t { n++ } END { print n+0 }')
+    '$1 != "claude-private" && $5 != "claude-private" && $3 == t { n++ } END { print n+0 }')
   [[ "$count" == "1" ]]
 }
 
@@ -7202,6 +7357,7 @@ _restored_candidate_probe() {
   local kind="$1" generation="$2" ref="$3" title="$4" expected="${5:-}"
   local current raw canonical candidates candidate_count candidate_kind candidate_ref pinned selected number
   local evidence raw_title surface snapshot live_rows live_count any_count
+  local linked_state=absent linked_rc=0
   RESTORED_PROBE_FINGERPRINT="" RESTORED_PROBE_SOURCE="" RESTORED_PROBE_WID=""
   RESTORED_PROBE_RAW_TITLE="" RESTORED_PROBE_SURFACE=""
   current=$(cmux_socket_identity) || return 2
@@ -7225,7 +7381,6 @@ _restored_candidate_probe() {
   # state. Focus and pin changes must not reset the two-pass stability latch.
   evidence="$candidate_kind|$candidate_ref|$number"
   surface=$(workspace_single_surface_title "$ref") || return 2
-  linked_session_exists "${VIEW_PREFIX}${title}" && return 1
   snapshot=$(strict_agent_window_snapshot) || return 2
   live_rows=$(printf '%s\n' "$snapshot" | awk -F'|' -v t="$title" '$3 == t && $4 == "0" { print }')
   live_count=$(printf '%s\n' "$live_rows" | grep -c . || true)
@@ -7243,6 +7398,16 @@ _restored_candidate_probe() {
       ;;
     *) return 1 ;;
   esac
+  if linked_session_exists "${VIEW_PREFIX}${title}"; then
+    linked_rc=0
+    ops_rebuild_authorizes_linked_restored "$kind" "$generation" "$ref" "$title" \
+      "$RESTORED_PROBE_SOURCE" "$RESTORED_PROBE_WID" || linked_rc=$?
+    case "$linked_rc" in
+      0) linked_state=ops-unattached ;;
+      1) return 1 ;;
+      *) return 2 ;;
+    esac
+  fi
   if [[ "$kind" == "W1p" ]]; then
     [[ "$surface" != "$title" && "$surface" != "$raw_title" ]] || return 1
   else
@@ -7253,7 +7418,7 @@ _restored_candidate_probe() {
   RESTORED_PROBE_RAW_TITLE="$raw_title"
   RESTORED_PROBE_SURFACE="$surface"
   RESTORED_PROBE_FINGERPRINT=$(_cmux_alert_hash \
-    "$kind|$generation|$ref|$title|$raw_title|$surface|$RESTORED_PROBE_SOURCE|$RESTORED_PROBE_WID|$evidence")
+    "$kind|$generation|$ref|$title|$raw_title|$surface|$RESTORED_PROBE_SOURCE|$RESTORED_PROBE_WID|$linked_state|$evidence")
   [[ -z "$expected" || "$RESTORED_PROBE_FINGERPRINT" == "$expected" ]]
 }
 
@@ -7549,7 +7714,7 @@ adopt_restored_workspaces() {
         fi
       done < <(printf '%s\n' "$snapshot")
       if derive_lead_roster && [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
-        while IFS='|' read -r roster_adapter roster_label roster_title _roster_socket; do
+        while IFS='|' read -r roster_adapter roster_label roster_title _roster_socket _roster_intended; do
           [[ -n "$roster_adapter$roster_label$roster_title" && -n "$roster_title" ]] || continue
           [[ "$roster_adapter" != "claude-private" ]] || continue
           if printf '%s\n' "$snapshot" | awk -F'|' -v t="$roster_title" \
@@ -7563,7 +7728,7 @@ adopt_restored_workspaces() {
     dead)
       if derive_lead_roster && [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
         candidate_titles=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' \
-          '$1 != "claude-private" && NF >= 3 { print $3 }' | sort -u)
+          '$1 != "claude-private" && $5 != "claude-private" && NF >= 3 { print $3 }' | sort -u)
       else
         # Dead-title discovery is optional. A partial Lead manifest must not
         # defer reconciliation for every unrelated title on every pass.
@@ -11721,7 +11886,7 @@ resolve_rebuild_targets() {
     [[ -n "$title" ]] || continue
     printf '%s\n' "$known" | grep -qxF "$title" || return 1
     roster_row=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
-    IFS='|' read -r roster_carrier _ _ roster_socket < <(printf '%s\n' "$roster_row")
+    IFS='|' read -r roster_carrier _ _ roster_socket _ < <(printf '%s\n' "$roster_row")
     if [[ "$roster_carrier" == "claude-private" ]]; then
       canonical=$(build_lead_attach_command "$roster_socket") || return 2
       candidate_rows=$(workspace_title_candidates "$raw" "$title" "$canonical") || return 2
@@ -11801,17 +11966,48 @@ ops_rebuild_authorizes_create() {
     '$1 == t && $3 == s && $4 == w { found=1 } END { exit(found ? 0 : 1) }'
 }
 
+# QA3 found a W1 restored workspace after the ordinary reconciler had already
+# repaired its exact linked tmux view. Resident adoption must still preserve
+# any linked session, but the audited ops path may replace the stale workspace
+# when the view is provably this target and no cmux client is using it. The
+# restored fingerprint and final close guard re-run this proof immediately
+# before the destructive workspace close.
+ops_rebuild_authorizes_linked_restored() {
+  local kind="$1" generation="$2" ref="$3" title="$4" source="$5" wid="$6"
+  local active_title active_requested active_source active_wid active_ref active_class active_generation
+  local clients
+  [[ "$kind" == W1 ]] || return 1
+  [[ "$MUTATOR_LEASE_MODE" == ops_rebuild ]] || return 1
+  mutator_lease_owned_by_self || return 1
+  IFS='|' read -r active_title active_requested active_source active_wid active_ref \
+    active_class active_generation < <(printf '%s\n' "${OPS_REBUILD_ACTIVE_TARGET:-}")
+  [[ "$active_title" == "$title" && "$active_source" == "$source" \
+      && "$active_wid" == "$wid" && "$active_ref" == "$ref" \
+      && "$active_class" == "$kind" && "$active_generation" == "$generation" ]] || return 1
+  printf '%s\n' "${OPS_REBUILD_TARGETS:-}" | grep -qxF "${OPS_REBUILD_ACTIVE_TARGET:-}" || return 1
+  _linked_view_matches "${VIEW_PREFIX}${title}" "$wid" "$source" "" "$title" || return 1
+  clients=$(view_session_client_count "${VIEW_PREFIX}${title}") || return 2
+  [[ "$clients" == 0 ]]
+}
+
 VERIFY_SIDEBAR_REPORT=""
 VERIFY_SIDEBAR_EVIDENCE=""
+VERIFY_AGENT_VISIBLE_SUBJECT_EVIDENCE=""
 
 _verify_sidebar_once() {
-  local targets="$1" authority_mode="${2:-global}" cmux_generation tmux_generation raw canonical_json
+  local targets="$1" authority_mode="${2:-global}" proof_mode="${3:-interactive}"
+  local cmux_generation tmux_generation raw canonical_json
   local agent_snapshot restored_snapshot roster_snapshot authority_snapshot="" births birth_target_b64
   local ledger_bytes="" title source_rows live_count source wid canonical_raw row_shape named_count mapped_count ref
-  local report="" evidence="" failures=0 view pane_source pane_view source_name source_dead view_name view_dead view_matches
+  local report="" evidence="" failures=0 probe_unavailable=0
+  local view pane_source pane_view source_name source_dead view_name view_dead view_matches
   local source_pid view_pid clients receipt receipt_uuid birth_uuid rows_count marker_count current_cmux current_tmux
-  local surface_ref screen screen_last render_state title_failures_before roster_count
+  local surface_ref screen render_state title_failures_before roster_count
   local roster_row roster_carrier roster_socket pane_private private_client_rows
+  # Fleet admission does not require the tab to be selected, but it does require
+  # the managed cmux surface to have an attached tmux client and a readable,
+  # non-empty render. A durable row/receipt alone can describe a bare shell.
+  [[ "$proof_mode" == interactive || "$proof_mode" == durable ]] || return 2
   cmux_generation=$(cmux_socket_identity) || return 2
   [[ -n "$cmux_generation" ]] || return 2
   tmux_generation=$(tmux_server_generation) || return 2
@@ -11861,7 +12057,7 @@ print(json.dumps(data, sort_keys=True, separators=(",", ":")))
     title_failures_before=$failures
     roster_count=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
     roster_row=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
-    IFS='|' read -r roster_carrier _ _ roster_socket < <(printf '%s\n' "$roster_row")
+    IFS='|' read -r roster_carrier _ _ roster_socket _ < <(printf '%s\n' "$roster_row")
     if [[ "$roster_carrier" == "claude-private" ]]; then
       canonical_raw=$(build_lead_attach_command "$roster_socket") || return 2
       birth_target_b64=$(printf '%s' "$roster_socket" | base64 | tr -d '\n') || return 2
@@ -11896,14 +12092,16 @@ print(json.dumps(data, sort_keys=True, separators=(",", ":")))
       if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
         surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
         if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
-          screen_last=$(printf '%s\n' "$screen" | awk 'NF{line=$0} END{print line}' | sed 's/[[:space:]]*$//')
-          render_state="nonbare"
-          case "$screen_last" in
-            ''|*'%'|*'$'|*'#') render_state="bare" ;;
-          esac
+          if printf '%s\n' "$screen" | grep -q '[^[:space:]]'; then
+            render_state="nonempty"
+          else
+            render_state="empty"
+          fi
+        elif [[ "$proof_mode" == durable ]]; then
+          probe_unavailable=1
         fi
       fi
-      if [[ "$render_state" != "nonbare" ]]; then
+      if [[ "$render_state" != "nonempty" ]]; then
         report+="${report:+$'\n'}FAIL $title rule=v2-render observed=$render_state"
         failures=$((failures + 1))
       fi
@@ -11982,18 +12180,17 @@ print(json.dumps(data, sort_keys=True, separators=(",", ":")))
       if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
         surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
         if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
-          screen_last=$(printf '%s\n' "$screen" | awk 'NF{line=$0} END{print line}' | sed 's/[[:space:]]*$//')
-          render_state="nonbare"
-          case "$screen_last" in
-            ''|*'%'|*'$'|*'#')
-              render_state="bare"
-              report+="${report:+$'\n'}FAIL $title rule=render observed=bare-or-empty"
-              failures=$((failures + 1))
-              ;;
-          esac
+          if printf '%s\n' "$screen" | grep -q '[^[:space:]]'; then
+            render_state="nonempty"
+          else
+            render_state="empty"
+            report+="${report:+$'\n'}FAIL $title rule=render observed=empty"
+            failures=$((failures + 1))
+          fi
         else
           report+="${report:+$'\n'}FAIL $title rule=render observed=unavailable"
           failures=$((failures + 1))
+          [[ "$proof_mode" != durable ]] || probe_unavailable=1
         fi
       fi
       receipt=$(ledger_candidate_receipt_state "$cmux_generation" "$ref" "$title") || receipt=conflict
@@ -12067,8 +12264,86 @@ $VERIFY_SIDEBAR_CAVEATS
 $ledger_bytes
 $restored_snapshot
 $evidence"
+  # FLY-2643: public stability compares a single-subject projection, never the
+  # global JSON/window inventory. Complete inputs were already parsed above, so
+  # duplicate ownership still fails while unrelated Runner churn is excluded.
+  VERIFY_AGENT_VISIBLE_SUBJECT_EVIDENCE="$cmux_generation
+$tmux_generation
+$authority_snapshot
+$roster_snapshot
+$VERIFY_SIDEBAR_CAVEATS
+$evidence"
+  [[ "$probe_unavailable" -eq 0 ]] || return 2
   [[ "$failures" -eq 0 ]] && return 0
   return 1
+}
+
+run_verify_agent_visible() {
+  local target="" json=0 rc=0 first_rc=0 second_rc=0 status
+  local first_evidence="" first_report="" second_evidence="" second_report=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        [[ $# -ge 2 && -z "$target" ]] || { rc=64; break; }
+        target="$2"; shift 2
+        _ops_title_valid "$target" \
+          && [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+          || { rc=64; break; }
+        ;;
+      --json) [[ "$json" == 0 ]] || { rc=64; break; }; json=1; shift ;;
+      *) rc=64; break ;;
+    esac
+  done
+  [[ "$rc" != 0 || -n "$target" ]] || rc=64
+  VERIFY_SIDEBAR_REASONS=""
+  VERIFY_SIDEBAR_CAVEATS=""
+  if [[ "$rc" == 0 ]]; then
+    _verify_sidebar_once "$target" target durable || first_rc=$?
+    first_evidence="$VERIFY_AGENT_VISIBLE_SUBJECT_EVIDENCE"
+    first_report="$VERIFY_SIDEBAR_REPORT"
+    if [[ "$first_rc" == 2 ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "probe_unavailable"
+    elif [[ -n "$VERIFY_SIDEBAR_CAVEATS" || "$first_report" == *"WARN "* ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "ownership_unproven"
+    elif [[ "$first_report" == *"PASS $target absent"* ]]; then
+      rc=1; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "missing_surface"
+    elif [[ "$first_rc" == 1 ]]; then
+      rc=1; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "surface_mismatch"
+    elif [[ "$first_report" != *"PASS $target live"* ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "verdict_unrecognized"
+    fi
+  fi
+  if [[ "$rc" == 0 ]]; then
+    sleep 5
+    VERIFY_SIDEBAR_REASONS=""
+    VERIFY_SIDEBAR_CAVEATS=""
+    _verify_sidebar_once "$target" target durable || second_rc=$?
+    second_evidence="$VERIFY_AGENT_VISIBLE_SUBJECT_EVIDENCE"
+    second_report="$VERIFY_SIDEBAR_REPORT"
+    if [[ "$second_rc" == 2 ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "probe_unavailable"
+    elif [[ -n "$VERIFY_SIDEBAR_CAVEATS" || "$second_report" == *"WARN "* ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "ownership_unproven"
+    elif [[ "$second_report" == *"PASS $target absent"* ]]; then
+      rc=1; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "missing_surface"
+    elif [[ "$second_rc" == 1 ]]; then
+      rc=1; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "surface_mismatch"
+    elif [[ "$second_report" != *"PASS $target live"* ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "verdict_unrecognized"
+    elif [[ "$first_evidence" != "$second_evidence" || "$first_report" != "$second_report" ]]; then
+      rc=2; _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "subject_drift"
+    fi
+  fi
+  case "$rc" in 0) status=pass ;; 1) status=fail ;; 2) status=inconclusive ;; 64) status=usage ;; esac
+  if [[ "$json" == 1 ]]; then
+    python3 -c 'import json,sys; print(json.dumps({"schemaVersion":1,"status":sys.argv[1],"target":sys.argv[2],"reasons":[x for x in sys.argv[3].splitlines() if x],"report":[x for x in sys.argv[4].splitlines() if x]},sort_keys=True))' \
+      "$status" "$target" "$VERIFY_SIDEBAR_REASONS" "${second_report:-$first_report}"
+  elif [[ "$rc" == 64 ]]; then
+    printf 'usage: flywheel-cmux-sync --verify-agent-visible --target TITLE [--json]\n' >&2
+  else
+    printf '%s\n' "${second_report:-$first_report}"
+  fi
+  return "$rc"
 }
 
 verify_sidebar_targets() {
@@ -13906,6 +14181,10 @@ case "${1:-}" in
     shift
     run_verify_sidebar "$@"
     ;;
+  --verify-agent-visible)
+    shift
+    run_verify_agent_visible "$@"
+    ;;
   --probe-lease)
     # Read-only migration gate: absent passes; a live owner waits within the
     # configured budget; malformed/stale-present state fails closed and is
@@ -13913,7 +14192,7 @@ case "${1:-}" in
     probe_mutator_lease
     ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--converge-runners|--rebuild-views|--verify-sidebar]"
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--converge-runners|--rebuild-views|--verify-sidebar|--verify-agent-visible]"
     echo "  --once              Full sync with aggressive cleanup; fails if another mutator is active."
     echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
     echo "  --refresh           tmux-only linked session repair. Safe from anywhere."
@@ -13926,6 +14205,7 @@ case "${1:-}" in
     echo "  --rebuild-views     FLY-1596: audited rebuild; requires --all-leads or repeated --target T[=workspace:N]."
     echo "                      Add --execute to mutate; add --handover to make the resident watcher yield."
     echo "  --verify-sidebar    FLY-1596: read-only terminal-state judge; accepts repeated --target T and --json."
+    echo "  --verify-agent-visible  FLY-2643: read-only stable single-subject visibility gate."
     exit 1
     ;;
 esac

@@ -342,6 +342,18 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: onboarding service endpoint override, not an on/off gate",
 	FLYWHEEL_PATROL_CONFIG:
 		"path override for the hot-read patrol timing config (FLY-1687), not an on/off gate",
+	FLYWHEEL_AGENT_VISIBILITY_VERIFIER:
+		"FLY-2643 plumbing: packaged agent-visibility verifier path override for hermetic install, restart, and patrol tests, not an on/off gate",
+	FLYWHEEL_LEAD_VISIBILITY_MAX_ATTEMPTS:
+		"FLY-2643 numeric tuning: bounded Lead install visibility-probe attempts, not an on/off gate",
+	FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:
+		"FLY-2643 internal recursion marker for one bounded restart-wave visibility probe, not an operator toggle",
+	FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS:
+		"FLY-2643 numeric tuning: bounded restart-wave visibility-probe attempts, not an on/off gate",
+	FLYWHEEL_RESTART_VISIBILITY_VERIFIER:
+		"FLY-2643 plumbing: packaged restart-wave visibility verifier path override for hermetic tests, not an on/off gate",
+	FLYWHEEL_VISIBILITY_SAMPLE_SECONDS:
+		"FLY-2643 numeric tuning: observation interval for stable agent-visibility identity sampling, not an on/off gate",
 	FLYWHEEL_MEETING_NOTES_CONFIG:
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:

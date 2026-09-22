@@ -101,6 +101,7 @@ migrate-summary-registry.sh
 flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
 resident-codex-lead-recover.sh
+verify-agent-visibility.sh
 codex-home-link-truth.sh
 codex-home-reconcile.mjs
 codex-home-reconcile-cycle.mjs
@@ -150,6 +151,7 @@ lib/flywheel-log.sh
 lib/tmux-server-rescue.sh
 lib/lead-body-evidence.sh
 lib/bounded-run.sh
+lib/agent-visibility.sh
 lib/codex-quota-summary.mjs
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh

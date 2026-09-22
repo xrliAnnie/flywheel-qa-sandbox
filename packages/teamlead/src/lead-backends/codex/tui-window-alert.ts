@@ -7,8 +7,8 @@
  * ordinary Lead, but roster-opted resident Codex Leads MUST stay founder-visible:
  * a silently-missing pane is exactly the FLY-871 incident shape, and the runtime
  * had ZERO alert wiring (R-10.4-1). This guard watches the
- * runtime's own liveness cadence and, after K consecutive failures to (re)create
- * the window, fires ONE alert per episode via `scripts/lead-alert.sh` — the
+ * runtime's own liveness cadence and, after K consecutive failed visibility
+ * proofs, fires ONE alert per episode via `scripts/lead-alert.sh` — the
  * FLY-83 Discord-independent path (works even when the Bridge is down; claims.db
  * cross-process dedup). It never touches the Lead's service loop.
  *
@@ -47,9 +47,10 @@ import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.j
  * LeadAlertNotifier.ts's AlertEventType union (shared type face, no drift). */
 export const TUI_WINDOW_ALERT_KIND = "tui_window_lost";
 
-/** ~3 minutes at the 20s liveness cadence — long enough that a transient tmux
- * hiccup or a normal single-tick rebuild never trips it. */
-export const DEFAULT_TUI_WINDOW_ALERT_THRESHOLD = 9;
+/** Three consecutive failed stability proofs trigger the same episode alert
+ * that accompanies runtime retry backoff. A transient single failure remains
+ * quiet, while the one-second production death loop becomes visible quickly. */
+export const DEFAULT_TUI_WINDOW_ALERT_THRESHOLD = 3;
 
 /** Basename of the per-episode latch file inside the Lead's state dir. */
 export const TUI_WINDOW_EPISODE_FILE = "tui-window-lost-episode.json";
@@ -112,8 +113,8 @@ export class TuiWindowAlertGuard {
 
 	/**
 	 * Feed one liveness-tick outcome.
-	 *   healthy === true  → the TUI window is up (or was just (re)created).
-	 *   healthy === false → it could not be (re)created, or it died.
+	 *   healthy === true  → the TUI passed the stable live-model proof.
+	 *   healthy === false → create failed, the proof failed, or the pane died.
 	 */
 	record(healthy: boolean): void {
 		if (healthy) {
@@ -176,7 +177,7 @@ export class TuiWindowAlertGuard {
 			"--title",
 			`Codex Lead ${this.config.projectName}/${this.config.leadId} TUI window not visible`,
 			"--body",
-			`The windowed codex resume --remote pane could not be (re)created after ${this.threshold} consecutive liveness checks (~${minutes} min). The founder-visible cmux tab may be missing. Bring-up check: verify-windowed-lead.sh ${this.config.projectName} ${this.config.leadId}`,
+			`The windowed codex resume --remote pane failed ${this.threshold} consecutive visibility proofs (~${minutes} min) and entered retry backoff. The founder-visible cmux tab may be missing. Bring-up check: verify-windowed-lead.sh ${this.config.projectName} ${this.config.leadId}`,
 			"--signature",
 			signature,
 		];

@@ -1,4 +1,3 @@
-import { LEAD_PERMISSION_PROFILE } from "../../lead-capabilities/permission-profile.js";
 /**
  * FLY-259 PR-C — tui-window: ensure the founder-facing tmux window running the
  * REAL interactive `codex resume --remote` TUI against the Lead's shared
@@ -11,19 +10,19 @@ import { LEAD_PERMISSION_PROFILE } from "../../lead-capabilities/permission-prof
  * create the window. Window name is EXACTLY `<project>-<leadId>` (FLY-169
  * MANAGED-title hard contract; backend info never goes into the title).
  *
- * The TUI command carries the R4 HIGH-4 command-line layer of the multi-pin:
- * `-s read-only` + `-c approval_policy="never"` explicitly on EVERY launch —
- * config.toml (codex-lead-tui-home.sh) and the sidecar's thread-params re-pin
- * are the other layers. `-C <cwd>` kills the resume cwd-menu; the trusted
- * project entry in config.toml kills the trust-menu (both spike-verified —
- * zero boot menus).
+ * A remote resume inherits permissions from the app-server-owned thread and
+ * config.toml. Codex 0.154 rejects client-side `-s`, `approval_policy`, and
+ * `default_permissions` overrides for remote tasks, so the founder TUI passes
+ * none of them. `-C <cwd>` kills the resume cwd-menu; the trusted project entry
+ * in config.toml kills the trust-menu (both spike-verified — zero boot menus).
  *
  * Observation only + fail-open: ensure failures cost visibility, never the
  * Lead (the sidecar keeps serving Discord; it re-ensures on its own cadence —
  * PR-D). All side effects injected for tests.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { basename } from "node:path";
 import {
 	buildTmuxServerBirthEnvironment,
 	withSyncOpMarker,
@@ -41,6 +40,7 @@ export interface TuiCapabilityModelEnv {
 }
 
 export const TUI_TMUX_SESSION = "flywheel";
+const TUI_TMUX_FIELD_SEPARATOR = "|";
 
 export interface TuiWindowSpec {
 	projectName: string;
@@ -54,10 +54,8 @@ export interface TuiWindowSpec {
 	cwd: string;
 	/** codex binary (default "codex"). */
 	codexBin?: string;
-	/** FLY-398: when true (a windowed FULL-ACCESS TUI Lead, = Claude-equal), the
-	 * founder TUI must share the thread's `workspace-write` sandbox, so emit
-	 * `-s workspace-write` instead of the `-s read-only` pin (pin ③ of the five-pin
-	 * flip). Default/undefined keeps the `-s read-only` companion pin. */
+	/** FLY-398 compatibility field. The app-server-owned remote thread already
+	 * carries this permission tier; the TUI command must not override it. */
 	fullAccess?: boolean;
 	/** FLY-1309 generation capability, inherited by the founder TUI shell. */
 	carrierInstanceId?: string;
@@ -133,10 +131,6 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 			quote(`unix://${sock}`),
 			"-C",
 			quote(spec.cwd),
-			"-c",
-			quote('approval_policy="never"'),
-			"-c",
-			quote(`default_permissions=${JSON.stringify(LEAD_PERMISSION_PROFILE)}`),
 			quote(spec.threadId),
 		].join(" ");
 	}
@@ -146,13 +140,6 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 		"resume",
 		`--remote "unix://${sock}"`,
 		`-C "${spec.cwd}"`,
-		// R4 HIGH-4 command-line pin layer (config.toml + thread params are the others).
-		// FLY-398 (pin ③): a windowed FULL-ACCESS TUI Lead shares the thread's
-		// workspace-write sandbox → emit `-s workspace-write` so the founder TUI client
-		// matches the daemon/sidecar (a `-s read-only` here would downgrade the founder
-		// pane below the thread's actual sandbox).
-		...(spec.fullAccess ? ["-s workspace-write"] : ["-s read-only"]),
-		`-c 'approval_policy="never"'`,
 		spec.threadId,
 	].join(" ");
 }
@@ -203,6 +190,17 @@ export function ensureTuiWindow(
 	const exec = deps.exec ?? defaultExec;
 	const log = deps.log ?? (() => {});
 	const windowName = `${spec.projectName}-${spec.leadId}`;
+	const legacyCarrierEnv =
+		spec.carrierInstanceId && !spec.capabilityModelEnv
+			? [
+					"-e",
+					`FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=${spec.carrierInstanceId}`,
+					"-e",
+					`FLYWHEEL_LEAD_ID=${spec.leadId}`,
+					"-e",
+					`FLYWHEEL_PROJECT_NAME=${spec.projectName}`,
+				]
+			: [];
 	try {
 		if (!exec("tmux", ["-V"]).ok) {
 			log(`tui-window: tmux unavailable — skipping (${windowName})`);
@@ -212,6 +210,7 @@ export function ensureTuiWindow(
 			env: buildTmuxServerBirthEnvironment(),
 		});
 		exec("tmux", ["kill-window", "-t", `=${TUI_TMUX_SESSION}:=${windowName}`]);
+		const target = `=${TUI_TMUX_SESSION}:=${windowName}`;
 		const created = exec("tmux", [
 			"new-window",
 			"-d",
@@ -219,17 +218,6 @@ export function ensureTuiWindow(
 			`=${TUI_TMUX_SESSION}`,
 			"-n",
 			windowName,
-			...(spec.carrierInstanceId && !spec.capabilityModelEnv
-				? [
-						"-e",
-						`FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=${spec.carrierInstanceId}`,
-						"-e",
-						`FLYWHEEL_LEAD_ID=${spec.leadId}`,
-						"-e",
-						`FLYWHEEL_PROJECT_NAME=${spec.projectName}`,
-					]
-				: []),
-			buildTuiCommand(spec),
 		]);
 		if (!created.ok) {
 			log(
@@ -237,12 +225,353 @@ export function ensureTuiWindow(
 			);
 			return false;
 		}
-		log(`tui-window: real TUI up (${windowName}, thread ${spec.threadId})`);
+		// Scope exit retention to this exact window. Creating the shell first lets
+		// us arm remain-on-exit before the real TUI starts, so a sub-second resume
+		// failure still leaves an exit code and terminal tail for diagnosis.
+		const retained = exec("tmux", [
+			"set-window-option",
+			"-t",
+			target,
+			"remain-on-exit",
+			"on",
+		]);
+		const launched = retained.ok
+			? exec("tmux", [
+					"respawn-pane",
+					"-k",
+					"-t",
+					target,
+					...legacyCarrierEnv,
+					buildTuiCommand(spec),
+				])
+			: { ok: false };
+		if (!retained.ok || !launched.ok) {
+			exec("tmux", ["kill-window", "-t", target]);
+			log(
+				`tui-window: retained launch failed (non-fatal, Lead unaffected): ${windowName}`,
+			);
+			return false;
+		}
+		log(
+			`tui-window: window_created_unverified (${windowName}, thread ${spec.threadId})`,
+		);
 		return true;
 	} catch (err) {
 		log(`tui-window: ensure failed (non-fatal): ${(err as Error).message}`);
 		return false;
 	}
+}
+
+export interface TuiWindowIdentity {
+	windowName: string;
+	paneId: string;
+	panePid: number;
+	startCommand: string;
+	currentCommand: string;
+	modelAlive: boolean;
+}
+
+type TuiExecOut = (cmd: string, args: string[]) => string | undefined;
+
+function defaultExecOut(cmd: string, args: string[]): string | undefined {
+	try {
+		const subcommand = args.find((arg) => !arg.startsWith("-")) ?? cmd;
+		const r = withSyncOpMarker(`codex-tui:${subcommand}`, () =>
+			spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 }),
+		);
+		return r.status === 0 ? r.stdout.trim() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function parseTuiWindowIdentity(
+	spec: Pick<TuiWindowSpec, "projectName" | "leadId" | "codexBin">,
+	out: string | undefined,
+): TuiWindowIdentity | null {
+	const windowName = `${spec.projectName}-${spec.leadId}`;
+	if (!out) return null;
+	const fields = out.trim().split(TUI_TMUX_FIELD_SEPARATOR);
+	if (fields.length !== 6) return null;
+	const [
+		actualName,
+		paneDead,
+		paneId,
+		panePidRaw,
+		startCommand,
+		currentCommand,
+	] = fields;
+	if (
+		actualName !== windowName ||
+		paneDead !== "0" ||
+		!/^%[1-9][0-9]*$/.test(paneId ?? "") ||
+		!/^[1-9][0-9]*$/.test(panePidRaw ?? "") ||
+		!startCommand ||
+		!currentCommand
+	)
+		return null;
+	const expectedCommand = basename(spec.codexBin ?? "codex");
+	return {
+		windowName,
+		paneId: paneId!,
+		panePid: Number(panePidRaw),
+		startCommand,
+		currentCommand,
+		modelAlive: basename(currentCommand) === expectedCommand,
+	};
+}
+
+function tuiIdentityArgs(windowName: string): string[] {
+	return [
+		"display-message",
+		"-p",
+		"-t",
+		`=${TUI_TMUX_SESSION}:=${windowName}`,
+		"#{window_name}|#{pane_dead}|#{pane_id}|#{pane_pid}|#{pane_start_command}|#{pane_current_command}",
+	];
+}
+
+/**
+ * Read the exact pane tuple used by the asynchronous stability proof. A live
+ * tmux pane is returned even while its child is still starting; modelAlive is
+ * separate so the second sample can require the real Codex process instead of
+ * mistaking the wrapper shell for the TUI.
+ */
+export function readTuiWindowIdentity(
+	spec: Pick<TuiWindowSpec, "projectName" | "leadId" | "codexBin">,
+	deps: { execOut?: TuiExecOut } = {},
+): TuiWindowIdentity | null {
+	const windowName = `${spec.projectName}-${spec.leadId}`;
+	return parseTuiWindowIdentity(
+		spec,
+		(deps.execOut ?? defaultExecOut)("tmux", tuiIdentityArgs(windowName)),
+	);
+}
+
+/** Async variant used by the five-second proof so tmux process I/O never
+ * blocks the runtime event loop. */
+export async function readTuiWindowIdentityAsync(
+	spec: Pick<TuiWindowSpec, "projectName" | "leadId" | "codexBin">,
+	deps: {
+		execOut?: (cmd: string, args: string[]) => Promise<string | undefined>;
+	} = {},
+): Promise<TuiWindowIdentity | null> {
+	const windowName = `${spec.projectName}-${spec.leadId}`;
+	const execOut =
+		deps.execOut ??
+		((cmd: string, args: string[]) =>
+			new Promise<string | undefined>((resolve) => {
+				execFile(
+					cmd,
+					args,
+					{ encoding: "utf8", timeout: 5_000 },
+					(error, stdout) => resolve(error ? undefined : stdout.trim()),
+				);
+			}));
+	return parseTuiWindowIdentity(
+		spec,
+		await execOut("tmux", tuiIdentityArgs(windowName)),
+	);
+}
+
+function sameTuiPaneTuple(
+	first: TuiWindowIdentity,
+	second: TuiWindowIdentity,
+): boolean {
+	return (
+		first.windowName === second.windowName &&
+		first.paneId === second.paneId &&
+		first.panePid === second.panePid &&
+		first.startCommand === second.startCommand
+	);
+}
+
+export const TUI_VISIBILITY_STABILITY_MS = 5_000;
+
+export const TUI_INSTANT_DEATH_THRESHOLD = 3;
+export const TUI_RETRY_BACKOFF_BASE_MS = 60_000;
+export const TUI_RETRY_BACKOFF_MAX_MS = 15 * 60_000;
+
+/** Process-scoped retry policy for windows that repeatedly die before the
+ * five-second stability proof. Ordinary single failures retain the 20-second
+ * recovery cadence; the third and later failures use bounded exponential
+ * backoff so a broken resume cannot churn tmux forever. */
+export class TuiWindowRetryBackoff {
+	private consecutiveFailures = 0;
+	private retryNotBefore = 0;
+
+	canAttempt(now = Date.now()): boolean {
+		return now >= this.retryNotBefore;
+	}
+
+	recordFailure(now = Date.now()): number {
+		this.consecutiveFailures += 1;
+		if (this.consecutiveFailures < TUI_INSTANT_DEATH_THRESHOLD) return 0;
+		const exponent = this.consecutiveFailures - TUI_INSTANT_DEATH_THRESHOLD;
+		const delay = Math.min(
+			TUI_RETRY_BACKOFF_BASE_MS * 2 ** exponent,
+			TUI_RETRY_BACKOFF_MAX_MS,
+		);
+		this.retryNotBefore = now + delay;
+		return delay;
+	}
+
+	recordHealthy(): void {
+		this.consecutiveFailures = 0;
+		this.retryNotBefore = 0;
+	}
+}
+
+export interface TuiWindowExitEvidence {
+	windowName: string;
+	paneId: string;
+	exitStatus: number | null;
+	terminalTail: string[];
+}
+
+const EXIT_TAIL_LINES = 20;
+const EXIT_TAIL_LINE_BYTES = 240;
+// biome-ignore lint/complexity/useRegexLiterals: a constructor keeps escaped control characters out of the source regex literal.
+const ANSI_CSI_SEQUENCE = new RegExp("\\u001b\\[[0-?]*[ -/]*[@-~]", "g");
+// biome-ignore lint/complexity/useRegexLiterals: a constructor keeps escaped control characters out of the source regex literal.
+const UNSAFE_CONTROL_CHARACTERS = new RegExp(
+	"[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]",
+	"g",
+);
+
+function sanitizeTerminalTail(raw: string): string[] {
+	return raw
+		.replace(ANSI_CSI_SEQUENCE, "")
+		.split(/\r?\n/)
+		.map((line) =>
+			line
+				.replace(UNSAFE_CONTROL_CHARACTERS, "")
+				.replace(/Bearer\s+\S+/gi, "[redacted]")
+				.replace(
+					/\b([A-Za-z0-9_-]*(?:token|secret|authorization|api[_-]?key)[A-Za-z0-9_-]*)\s*[:=]\s*\S.*/gi,
+					"$1=[redacted]",
+				)
+				.slice(0, EXIT_TAIL_LINE_BYTES),
+		)
+		.filter((line) => line.trim().length > 0)
+		.slice(-EXIT_TAIL_LINES);
+}
+
+/** Read exit-only evidence from the exact retained pane. No pane command or
+ * environment is logged; terminal output is bounded, control-stripped and
+ * redacted before it leaves this boundary. */
+export async function readTuiWindowExitEvidenceAsync(
+	spec: Pick<TuiWindowSpec, "projectName" | "leadId">,
+	deps: {
+		execOut?: (cmd: string, args: string[]) => Promise<string | undefined>;
+	} = {},
+): Promise<TuiWindowExitEvidence | null> {
+	const windowName = `${spec.projectName}-${spec.leadId}`;
+	const target = `=${TUI_TMUX_SESSION}:=${windowName}`;
+	const execOut =
+		deps.execOut ??
+		((cmd: string, args: string[]) =>
+			new Promise<string | undefined>((resolve) => {
+				execFile(
+					cmd,
+					args,
+					{ encoding: "utf8", timeout: 5_000 },
+					(error, stdout) => resolve(error ? undefined : stdout),
+				);
+			}));
+	const pane = (
+		await execOut("tmux", [
+			"display-message",
+			"-p",
+			"-t",
+			target,
+			"#{window_name}|#{pane_dead}|#{pane_id}|#{pane_dead_status}",
+		])
+	)?.trim();
+	if (!pane) return null;
+	const [actualName, dead, paneId, exitStatusRaw] = pane.split(
+		TUI_TMUX_FIELD_SEPARATOR,
+	);
+	if (
+		actualName !== windowName ||
+		dead !== "1" ||
+		!/^%[1-9][0-9]*$/.test(paneId ?? "")
+	)
+		return null;
+	const rawTail =
+		(await execOut("tmux", [
+			"capture-pane",
+			"-p",
+			"-J",
+			"-S",
+			`-${EXIT_TAIL_LINES}`,
+			"-t",
+			target,
+		])) ?? "";
+	return {
+		windowName,
+		paneId: paneId!,
+		exitStatus: /^-?[0-9]+$/.test(exitStatusRaw ?? "")
+			? Number(exitStatusRaw)
+			: null,
+		terminalTail: sanitizeTerminalTail(rawTail),
+	};
+}
+
+/**
+ * Prove that the created pane kept the same identity for five seconds and now
+ * owns a live Codex model process. The caller owns generation/thread fencing;
+ * cancel resolves fail-closed so an obsolete callback cannot become healthy.
+ */
+export function beginTuiWindowVisibilityProof(
+	spec: Pick<TuiWindowSpec, "projectName" | "leadId" | "codexBin">,
+	first: TuiWindowIdentity,
+	deps: {
+		readIdentity?: () =>
+			| TuiWindowIdentity
+			| null
+			| Promise<TuiWindowIdentity | null>;
+		setTimeoutFn?: (
+			fn: () => void,
+			ms: number,
+		) => ReturnType<typeof setTimeout>;
+		clearTimeoutFn?: (timer: ReturnType<typeof setTimeout>) => void;
+	} = {},
+): {
+	promise: Promise<TuiWindowIdentity | null>;
+	cancel(): void;
+} {
+	const readIdentity =
+		deps.readIdentity ?? (() => readTuiWindowIdentityAsync(spec));
+	const setTimeoutFn = deps.setTimeoutFn ?? setTimeout;
+	const clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout;
+	let settled = false;
+	let resolveProof!: (identity: TuiWindowIdentity | null) => void;
+	const promise = new Promise<TuiWindowIdentity | null>((resolve) => {
+		resolveProof = resolve;
+	});
+	const settle = (identity: TuiWindowIdentity | null) => {
+		if (settled) return;
+		settled = true;
+		resolveProof(identity);
+	};
+	const timer = setTimeoutFn(() => {
+		void Promise.resolve(readIdentity())
+			.then((second) =>
+				settle(
+					second?.modelAlive && sameTuiPaneTuple(first, second) ? second : null,
+				),
+			)
+			.catch(() => settle(null));
+	}, TUI_VISIBILITY_STABILITY_MS);
+	return {
+		promise,
+		cancel() {
+			if (settled) return;
+			clearTimeoutFn(timer);
+			settle(null);
+		},
+	};
 }
 
 /** ID-scoped liveness probe for the TUI window (PR-D's death-detection input;
@@ -255,19 +584,7 @@ export function isTuiWindowAlive(
 	} = {},
 ): boolean {
 	const windowName = `${spec.projectName}-${spec.leadId}`;
-	const execOut =
-		deps.execOut ??
-		((cmd: string, args: string[]) => {
-			try {
-				const subcommand = args.find((arg) => !arg.startsWith("-")) ?? cmd;
-				const r = withSyncOpMarker(`codex-tui:${subcommand}`, () =>
-					spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 }),
-				);
-				return r.status === 0 ? r.stdout.trim() : undefined;
-			} catch {
-				return undefined;
-			}
-		});
+	const execOut = deps.execOut ?? defaultExecOut;
 	const out = execOut("tmux", [
 		"display-message",
 		"-p",

@@ -1506,6 +1506,12 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/lead-backends/codex/tui-window.ts:exec(\"tmux\", [\"kill-window\", \"-t\", target]);#1",
+		"path": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
+		"code": "exec(\"tmux\", [\"kill-window\", \"-t\", target]);",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/teamlead/src/lead-capabilities/__tests__/browser-transport.test.ts:process.kill(orphan, \"SIGKILL\");#1",
 		"path": "packages/teamlead/src/lead-capabilities/__tests__/browser-transport.test.ts",
 		"code": "process.kill(orphan, \"SIGKILL\");",

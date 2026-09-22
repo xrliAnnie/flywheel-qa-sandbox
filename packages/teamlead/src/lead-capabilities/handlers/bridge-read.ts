@@ -11,6 +11,7 @@ import {
 import { getLeadCapability } from "../catalog.js";
 import { PatrolArtifactProjection } from "../patrol-artifacts.js";
 import { prefetchPatrolGithubFacts } from "../patrol-github-facts.js";
+import { PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS } from "../patrol-timeouts.js";
 import { createLeadCapabilityContext } from "../runtime-context.js";
 
 const operations = [
@@ -269,7 +270,12 @@ function createBridgeHandlers(
 					signal.addEventListener("abort", onAbort, { once: true });
 					if (signal.aborted) onAbort();
 				});
-				const timer = setTimeout(() => controller.abort(), 15000);
+				const timer = setTimeout(
+					() => controller.abort(),
+					operationId === "patrol.snapshot"
+						? PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS
+						: 15_000,
+				);
 				const work = async (): Promise<HandlerOutcome> => {
 					let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 					let responseBody: ReadableStream<Uint8Array> | null = null;

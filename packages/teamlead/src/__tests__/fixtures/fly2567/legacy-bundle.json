@@ -1,8 +1,8 @@
 {
 	"revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution, the FLY-2597 shared attention/quiet receipt patch, the FLY-2619 shared summary-duty contract, the FLY-2632 content-bound approval carryover clarification, the FLY-2634 activity-gated summary-duty contract, and the FLY-2702 package-gate WAITING evidence contract; all other historical rule bytes preserved.",
-	"bodyBytes": 238354,
-	"sha256": "a2a897c35eed91e55c713895db50b5e980b383e27f9db6a3e4de10d84eba975f",
+	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution, the FLY-2597 shared attention/quiet receipt patch, the FLY-2619 shared summary-duty contract, the FLY-2632 content-bound approval carryover clarification, the FLY-2634 activity-gated summary-duty contract, the FLY-2643 visible-TUI patrol contract, and the FLY-2702 package-gate WAITING evidence contract; all other historical rule bytes preserved.",
+	"bodyBytes": 238817,
+	"sha256": "93dbb585a7533dbcc9e2eac411763d4bc8c4208216ed2b86385e0e2cce7d94db",
 	"intakeOverlay": {
 		"approvedSectionSha256": "24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6",
 		"beforeSourceSha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",

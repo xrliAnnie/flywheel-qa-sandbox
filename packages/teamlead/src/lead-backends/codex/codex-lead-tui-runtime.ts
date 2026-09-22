@@ -132,10 +132,15 @@ import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
 import {
+	beginTuiWindowVisibilityProof,
 	ensureTuiWindow,
 	isTuiWindowAlive,
 	killTuiWindow,
+	readTuiWindowExitEvidenceAsync,
+	readTuiWindowIdentity,
 	SAFE_ID,
+	type TuiWindowIdentity,
+	TuiWindowRetryBackoff,
 	type TuiWindowSpec,
 } from "./tui-window.js";
 import { createTuiWindowAlertGuard } from "./tui-window-alert.js";
@@ -623,6 +628,16 @@ export function buildTuiGeneration(
 	// a live founder session.
 	let ownedTuiThreadId: string | undefined;
 	let ownedTuiSocketPath: string | undefined;
+	let stableTuiVisibility:
+		| {
+				threadId: string;
+				socketPath: string;
+				carrierInstanceId: string;
+				identity: TuiWindowIdentity;
+		  }
+		| undefined;
+	const tuiRetryBackoff = new TuiWindowRetryBackoff();
+	let tuiRetryBinding: string | undefined;
 	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
 	// the per-generation closure) so its consecutive-failure count + episode latch
 	// survive generation rebuilds. It is non-null only for a roster opt-in target
@@ -651,6 +666,16 @@ export function buildTuiGeneration(
 		let sender: OutboundSender | null = null;
 		let tuiSpec: TuiWindowSpec | null = null;
 		let livenessTimer: ReturnType<typeof setInterval> | null = null;
+		let visibilityEpoch = 0;
+		let pendingVisibility:
+			| {
+					epoch: number;
+					threadId: string;
+					socketPath: string;
+					carrierInstanceId: string;
+					cancel(): void;
+			  }
+			| undefined;
 		let stopped = false;
 		let ledger: RotationLedger | null = null;
 		const ledgerPath = join(config.stateDir, "thread-rotation.json");
@@ -779,6 +804,121 @@ export function buildTuiGeneration(
 			}
 		};
 
+		const tuiSocketPath = (spec: TuiWindowSpec): string =>
+			spec.capabilitySocketPath ??
+			`${spec.codexHome}/app-server-control/app-server-control.sock`;
+		const tuiCarrierInstanceId = (spec: TuiWindowSpec): string =>
+			spec.carrierInstanceId ?? "legacy";
+		const bindingMatches = (
+			binding: {
+				threadId: string;
+				socketPath: string;
+				carrierInstanceId: string;
+			},
+			spec: TuiWindowSpec,
+		): boolean =>
+			binding.threadId === spec.threadId &&
+			binding.socketPath === tuiSocketPath(spec) &&
+			binding.carrierInstanceId === tuiCarrierInstanceId(spec);
+		const retryBindingFor = (spec: TuiWindowSpec): string =>
+			`${spec.threadId}\0${tuiSocketPath(spec)}\0${tuiCarrierInstanceId(spec)}`;
+		const prepareRetryBinding = (spec: TuiWindowSpec) => {
+			const binding = retryBindingFor(spec);
+			if (binding === tuiRetryBinding) return;
+			tuiRetryBinding = binding;
+			tuiRetryBackoff.recordHealthy();
+		};
+		const recordTuiFailure = (spec: TuiWindowSpec) => {
+			const delay = tuiRetryBackoff.recordFailure();
+			tuiWindowAlertGuard?.record(false);
+			if (delay > 0)
+				logger.warn(
+					`tui-window: unstable resume; retry_backoff_ms=${delay} (${spec.projectName}-${spec.leadId}, thread ${spec.threadId})`,
+				);
+		};
+		const logExitEvidence = (spec: TuiWindowSpec) => {
+			void readTuiWindowExitEvidenceAsync(spec)
+				.then((evidence) => {
+					if (!evidence) return;
+					logger.warn(
+						`tui-window: retained_exit window=${evidence.windowName} pane=${evidence.paneId} status=${evidence.exitStatus ?? "unknown"} tail=${JSON.stringify(evidence.terminalTail)}`,
+					);
+				})
+				.catch((error) =>
+					logger.warn(
+						`tui-window: exit evidence unavailable: ${(error as Error).message}`,
+					),
+				);
+		};
+		const samePaneTuple = (
+			left: TuiWindowIdentity,
+			right: TuiWindowIdentity,
+		): boolean =>
+			left.windowName === right.windowName &&
+			left.paneId === right.paneId &&
+			left.panePid === right.panePid &&
+			left.startCommand === right.startCommand;
+		const cancelPendingVisibility = () => {
+			const pending = pendingVisibility;
+			if (!pending) return;
+			pendingVisibility = undefined;
+			visibilityEpoch += 1;
+			pending.cancel();
+		};
+		const currentStableTuiIdentity = (): TuiWindowIdentity | null => {
+			if (!tuiSpec || !stableTuiVisibility) return null;
+			if (!bindingMatches(stableTuiVisibility, tuiSpec)) return null;
+			const current = readTuiWindowIdentity(tuiSpec);
+			if (
+				!current ||
+				!current.modelAlive ||
+				!samePaneTuple(stableTuiVisibility.identity, current)
+			) {
+				stableTuiVisibility = undefined;
+				return null;
+			}
+			return current;
+		};
+		const startVisibilityProof = (first: TuiWindowIdentity) => {
+			if (!tuiSpec) return;
+			cancelPendingVisibility();
+			const spec = tuiSpec;
+			const binding = {
+				threadId: spec.threadId,
+				socketPath: tuiSocketPath(spec),
+				carrierInstanceId: tuiCarrierInstanceId(spec),
+			};
+			const epoch = ++visibilityEpoch;
+			const proof = beginTuiWindowVisibilityProof(spec, first);
+			pendingVisibility = { ...binding, epoch, cancel: proof.cancel };
+			void proof.promise.then((identity) => {
+				if (
+					stopped ||
+					rotationFenceHeld ||
+					pendingVisibility?.epoch !== epoch ||
+					!tuiSpec ||
+					!bindingMatches(binding, tuiSpec)
+				)
+					return;
+				pendingVisibility = undefined;
+				if (identity) {
+					stableTuiVisibility = { ...binding, identity };
+					tuiRetryBackoff.recordHealthy();
+					logger.info(
+						`tui-window: real TUI up (${identity.windowName}, thread ${binding.threadId})`,
+					);
+					tuiWindowAlertGuard?.record(true);
+					settleReadiness(true);
+				} else {
+					if (stableTuiVisibility && bindingMatches(stableTuiVisibility, spec))
+						stableTuiVisibility = undefined;
+					recordTuiFailure(spec);
+					logExitEvidence(spec);
+					settleReadiness(false);
+				}
+			});
+		};
+
 		// Single TUI-health entry, used by wire() and the liveness cadence (review
 		// R2 HIGH-2 + R4 MED-1). Ownership-aware:
 		//   - ownedTuiThreadId !== this thread → UNCONDITIONAL ensure (PR-C
@@ -790,16 +930,30 @@ export function buildTuiGeneration(
 		//     window actually died (never flap a healthy session on rebuild).
 		const ensureTuiHealthy = () => {
 			if (stopped || !tuiSpec) return false;
-			if (rotationFenceHeld) return isTuiWindowAlive(tuiSpec);
+			prepareRetryBinding(tuiSpec);
+			if (rotationFenceHeld) {
+				cancelPendingVisibility();
+				return false;
+			}
+			if (currentStableTuiIdentity()) {
+				tuiRetryBackoff.recordHealthy();
+				tuiWindowAlertGuard?.record(true);
+				return true;
+			}
+			if (pendingVisibility) {
+				if (bindingMatches(pendingVisibility, tuiSpec)) return false;
+				cancelPendingVisibility();
+			}
+			if (!tuiRetryBackoff.canAttempt()) return false;
 			// Derive one health signal per tick and feed the silent-no-pane guard
 			// (W2). healthy=false unifies "create failed" and "died, re-create
 			// failed"; a genuinely alive owned window is healthy without a rebuild.
-			let healthy: boolean;
+			let created = false;
 			if (
 				ownedTuiThreadId !== tuiSpec.threadId ||
 				ownedTuiSocketPath !== tuiSpec.capabilitySocketPath
 			) {
-				const created = ensureTuiWindow(tuiSpec, {
+				created = ensureTuiWindow(tuiSpec, {
 					log: (m) => logger.warn(m),
 				});
 				if (created) {
@@ -807,14 +961,26 @@ export function buildTuiGeneration(
 					ownedTuiThreadId = tuiSpec.threadId;
 					ownedTuiSocketPath = tuiSpec.capabilitySocketPath;
 				}
-				healthy = created;
-			} else if (isTuiWindowAlive(tuiSpec)) {
-				healthy = true;
-			} else {
-				healthy = ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
+			} else if (!readTuiWindowIdentity(tuiSpec)) {
+				if (isTuiWindowAlive(tuiSpec)) {
+					recordTuiFailure(tuiSpec);
+					return false;
+				}
+				created = ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
+				if (created) deps.onWindowOwned?.();
 			}
-			tuiWindowAlertGuard?.record(healthy);
-			return healthy && isTuiWindowAlive(tuiSpec);
+			if (!created && !isTuiWindowAlive(tuiSpec)) {
+				recordTuiFailure(tuiSpec);
+				return false;
+			}
+			const first = readTuiWindowIdentity(tuiSpec);
+			if (!first) {
+				recordTuiFailure(tuiSpec);
+				logExitEvidence(tuiSpec);
+				return false;
+			}
+			startVisibilityProof(first);
+			return false;
 		};
 		const attemptRotation = async (router: LeadInputRouter) => {
 			if (
@@ -840,6 +1006,7 @@ export function buildTuiGeneration(
 				return;
 			attemptInFlight = true;
 			rotationFenceHeld = true;
+			cancelPendingVisibility();
 			router.pause();
 			const from = ledger.currentThreadId;
 			let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -929,6 +1096,7 @@ export function buildTuiGeneration(
 				rotationTimer = null;
 				if (livenessTimer) clearInterval(livenessTimer);
 				livenessTimer = null;
+				cancelPendingVisibility();
 				residencyLifecycle?.generationLost();
 				try {
 					await runtime?.stop();
@@ -1611,9 +1779,8 @@ export function buildTuiGeneration(
 							codexBin: capabilityV2
 								? capabilityParent!.codexPath
 								: config.codexBin,
-							// FLY-398 (pin ③): a full-access TUI Lead shares the thread's
-							// workspace-write sandbox → the founder resume pane passes
-							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
+							// FLY-398 compatibility identity. The remote thread owns its
+							// permission tier; Codex 0.154 rejects TUI-side overrides.
 							fullAccess: config.codexProfile === "full-access",
 							...(capabilityV2
 								? {
@@ -1680,11 +1847,7 @@ export function buildTuiGeneration(
 								// (CodexLeadRuntime orders recover() before startGateway()).
 								await ownership.start();
 								gatewayReady = true;
-								settleReadiness(
-									!!tuiSpec &&
-										ownedTuiThreadId === tuiSpec.threadId &&
-										isTuiWindowAlive(tuiSpec),
-								);
+								settleReadiness(!!currentStableTuiIdentity());
 								residencyLifecycle?.online();
 							},
 							stopGateway: async () => {

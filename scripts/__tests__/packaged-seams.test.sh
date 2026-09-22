@@ -377,7 +377,8 @@ for f in flywheel-lead.sh flywheel-lead-wrapper-v2.sh \
   flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
   flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh \
   flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh \
-  restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
+  verify-agent-visibility.sh restart-storm-gate.py host-tmux-selection-gate.sh \
+  lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh \
   lib/lead-host-tmux-gate.sh lib/codex-quota-summary.mjs; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done

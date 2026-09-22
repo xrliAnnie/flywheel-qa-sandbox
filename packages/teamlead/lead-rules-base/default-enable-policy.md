@@ -13,6 +13,10 @@ default — not dormant.** When a capability lands behind a per-project opt-in,
 turning it on for your project is **part of shipping it**, not a separate
 follow-up that gets forgotten.
 
+Agent carriers have a separate non-optional baseline: see
+`visible-tui-default.md`. A production Lead or active Runner without a current,
+attachable cmux TUI is a defect and is not online; this is not a feature flag.
+
 Opt-ins come in two shapes; both count:
 
 - **Project-scoped flag-store opt-ins** — set them through the governed Bridge

@@ -1500,6 +1500,8 @@ expected_fly1364_commands = [
     "bash scripts/__tests__/test-teardown-lease-contract.test.sh",
     "bash scripts/__tests__/qa-teardown-finalize.test.sh",
     "bash scripts/__tests__/restart-cmux-watcher.test.sh",
+    "bash scripts/__tests__/agent-visibility-rules.test.sh",
+    "bash scripts/__tests__/agent-visibility.test.sh",
 ]
 require(
     fly1364_commands == expected_fly1364_commands,

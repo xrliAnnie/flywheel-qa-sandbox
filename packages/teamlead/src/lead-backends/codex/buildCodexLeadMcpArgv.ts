@@ -191,7 +191,12 @@ export function buildCodexLeadMcpArgv(
 				enabledTools: ["lead_operation"],
 				defaultToolsApprovalMode: "approve",
 				toolTimeoutSec:
-					Math.ceil(leadOperationTimeoutMs("git.feature.push") / 1000) + 5,
+					Math.ceil(
+						Math.max(
+							leadOperationTimeoutMs("git.feature.push"),
+							leadOperationTimeoutMs("patrol.snapshot"),
+						) / 1000,
+					) + 5,
 			},
 			{
 				name: CHROME_SERVER_NAME,

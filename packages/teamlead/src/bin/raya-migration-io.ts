@@ -22,6 +22,8 @@ export interface MigrationIO {
 	now(): number;
 }
 
+export const LEAD_LIVE_VERIFY_TIMEOUT_MS = 120_000;
+
 export const migrationIO: MigrationIO = {
 	fetch: globalThis.fetch,
 	now: Date.now,

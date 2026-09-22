@@ -31,7 +31,7 @@ it("reads real tmux quoting and printable separators without locale on an isolat
 	const environment = { ...process.env };
 	for (const key of Object.keys(environment))
 		if (key === "LANG" || key.startsWith("LC_")) delete environment[key];
-	const command = `CODEX_HOME="${home}/.codex-raya" "${codex}" resume --remote "unix://${home}/.codex-raya/app-server-control/app-server-control.sock" -C "${workspace}" -s workspace-write thread-current`;
+	const command = `CODEX_HOME="${home}/.codex-raya" "${codex}" resume --remote "unix://${home}/.codex-raya/app-server-control/app-server-control.sock" -C "${workspace}" thread-current`;
 	const tmux = (args: string[]) =>
 		execFileSync("tmux", ["-S", socket, ...args], {
 			encoding: "utf8",
@@ -248,7 +248,7 @@ it("binds the exact live TUI pane to the current thread, home, workspace and pro
 				: file === "ps"
 					? start
 					: file === "tmux"
-						? `${window}|${dead}|123|${JSON.stringify(`CODEX_HOME="/fixture/.codex-raya" codex resume --remote "unix:///fixture/.codex-raya/app-server-control/app-server-control.sock" -C "/fixture/workspace" -s workspace-write ${thread}`)}${extra}`
+						? `${window}|${dead}|123|${JSON.stringify(`CODEX_HOME="/fixture/.codex-raya" codex resume --remote "unix:///fixture/.codex-raya/app-server-control/app-server-control.sock" -C "/fixture/workspace" ${thread}`)}${extra}`
 						: "PASS",
 	};
 	const input = {

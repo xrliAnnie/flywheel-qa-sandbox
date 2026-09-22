@@ -5,15 +5,19 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	beginTuiWindowVisibilityProof,
 	buildTuiCommand,
 	ensureTuiWindow,
 	isTuiWindowAlive,
 	killTuiWindow,
+	readTuiWindowExitEvidenceAsync,
+	readTuiWindowIdentity,
+	TuiWindowRetryBackoff,
 	type TuiWindowSpec,
 } from "../tui-window.js";
 
@@ -25,8 +29,41 @@ const SPEC: TuiWindowSpec = {
 	cwd: "/Users/x/Dev/growth",
 };
 
+const HAS_TMUX = (() => {
+	try {
+		execFileSync("tmux", ["-V"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+})();
+
+function withoutTmuxClientLocale(): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	delete env.TMUX;
+	delete env.LANG;
+	delete env.LC_ALL;
+	delete env.LC_CTYPE;
+	return env;
+}
+
+/**
+ * Real-tmux exit evidence budget: the child exits after one second, but a
+ * loaded CI host may need several more seconds before tmux reports both
+ * `pane_dead` and `pane_dead_status`. A fixed 30-sample loop (~3.4 s) failed on
+ * CI with `qa-tui 1` (dead, status not yet ready) while passing locally.
+ */
+const EXIT_EVIDENCE_POLL_BUDGET_MS = 20_000;
+
+function runIsolatedTmux(socket: string, args: string[]): string {
+	return execFileSync("tmux", ["-S", socket, ...args], {
+		encoding: "utf8",
+		env: withoutTmuxClientLocale(),
+	});
+}
+
 describe("buildTuiCommand", () => {
-	it("carries the full R4 HIGH-4 command-line pin layer + remote socket + cwd + thread", () => {
+	it("lets the remote thread own permissions while carrying socket, cwd, and thread", () => {
 		const cmd = buildTuiCommand(SPEC);
 		expect(cmd).toContain('CODEX_HOME="/Users/x/.codex-mufasa-tui"');
 		expect(cmd).toContain("codex resume");
@@ -34,25 +71,23 @@ describe("buildTuiCommand", () => {
 			'--remote "unix:///Users/x/.codex-mufasa-tui/app-server-control/app-server-control.sock"',
 		);
 		expect(cmd).toContain('-C "/Users/x/Dev/growth"'); // kills the cwd menu
-		expect(cmd).toContain("-s read-only"); // pin layer
-		expect(cmd).toContain(`-c 'approval_policy="never"'`); // pin layer
+		expect(cmd).not.toMatch(/(?:^|\s)-s\s/);
+		expect(cmd).not.toContain("approval_policy");
 		expect(cmd.trim().endsWith("019eb-thread-id")).toBe(true);
 	});
 
-	it("FLY-398 fullAccess: emits -s workspace-write (windowed full-access TUI), never -s read-only", () => {
+	it("fullAccess remote resume also inherits permissions without CLI overrides", () => {
 		const cmd = buildTuiCommand({ ...SPEC, fullAccess: true });
-		expect(cmd).toContain("-s workspace-write");
-		expect(cmd).not.toContain("-s read-only");
-		expect(cmd).toContain(`-c 'approval_policy="never"'`); // still pinned
+		expect(cmd).not.toMatch(/(?:^|\s)-s\s/);
+		expect(cmd).not.toContain("approval_policy");
 		expect(cmd).toContain("codex resume");
 		expect(cmd.trim().endsWith("019eb-thread-id")).toBe(true);
 	});
 
-	it("FLY-398 fullAccess=false/undefined keeps -s read-only (byte-compat)", () => {
-		expect(buildTuiCommand({ ...SPEC, fullAccess: false })).toContain(
-			"-s read-only",
+	it("fullAccess does not change the remote resume command", () => {
+		expect(buildTuiCommand({ ...SPEC, fullAccess: false })).toBe(
+			buildTuiCommand({ ...SPEC, fullAccess: true }),
 		);
-		expect(buildTuiCommand(SPEC)).not.toContain("-s workspace-write");
 	});
 
 	it("keeps the carrier capability out of the founder TUI shell command", () => {
@@ -102,6 +137,20 @@ function makeEnsure(overrides: {
 }
 
 describe("ensureTuiWindow", () => {
+	it("reports creation as unverified and never claims the real TUI is healthy", () => {
+		const logs: string[] = [];
+		expect(
+			ensureTuiWindow(SPEC, {
+				exec: () => ({ ok: true }),
+				log: (message) => logs.push(message),
+			}),
+		).toBe(true);
+		expect(logs).toContain(
+			"tui-window: window_created_unverified (growth-mufasa-lead, thread 019eb-thread-id)",
+		);
+		expect(logs.join("\n")).not.toContain("real TUI up");
+	});
+
 	it("creates the tmux server with only canonical coordinates, never inherited identity or secrets", () => {
 		let birthEnv: NodeJS.ProcessEnv | undefined;
 		ensureTuiWindow(SPEC, {
@@ -152,21 +201,34 @@ describe("ensureTuiWindow", () => {
 		expect(nw?.[1]).toBe("new-window");
 		const nameIdx = nw?.indexOf("-n") ?? -1;
 		expect(nw?.[nameIdx + 1]).toBe("growth-mufasa-lead"); // FLY-169 title contract
-		expect(nw?.[nw.length - 1]).toContain("codex resume");
+		expect(calls[4]).toEqual([
+			"tmux",
+			"set-window-option",
+			"-t",
+			"=flywheel:=growth-mufasa-lead",
+			"remain-on-exit",
+			"on",
+		]);
+		expect(calls[5]?.[1]).toBe("respawn-pane");
+		expect(calls[5]?.at(-1)).toContain("codex resume");
 	});
 
-	it("injects the carrier capability through tmux window env without exposing it in pane argv", () => {
+	it("injects the carrier capability into the respawned TUI environment without exposing it in pane argv", () => {
 		const raw = "generation_capability";
 		const { calls } = makeEnsure({
 			spec: { ...SPEC, carrierInstanceId: raw },
 		});
 		const nw = calls[3] ?? [];
-		expect(nw).toContain(
+		const respawn = calls[5] ?? [];
+		expect(nw).not.toContain(
 			"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=generation_capability",
 		);
-		expect(nw).toContain("FLYWHEEL_LEAD_ID=mufasa-lead");
-		expect(nw).toContain("FLYWHEEL_PROJECT_NAME=growth");
-		expect(nw.at(-1)).not.toContain(raw);
+		expect(respawn).toContain(
+			"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=generation_capability",
+		);
+		expect(respawn).toContain("FLYWHEEL_LEAD_ID=mufasa-lead");
+		expect(respawn).toContain("FLYWHEEL_PROJECT_NAME=growth");
+		expect(respawn.at(-1)).not.toContain(raw);
 	});
 
 	it("tmux unavailable → only the probe runs (Lead unaffected)", () => {
@@ -180,6 +242,349 @@ describe("ensureTuiWindow", () => {
 		expect(() => makeEnsure({ execThrows: true })).not.toThrow();
 		expect(makeEnsure({ execThrows: true }).result).toBe(false);
 	});
+
+	it.runIf(HAS_TMUX)(
+		"real tmux preserves a one-second TUI child exit code under remain-on-exit",
+		() => {
+			const root = mkdtempSync(join(tmpdir(), "fly2643-tui-exit-"));
+			const socket = join(root, "tmux.sock");
+			const codex = join(root, "codex");
+			writeFileSync(codex, "#!/bin/sh\nsleep 1\nexit 42\n", { mode: 0o700 });
+			chmodSync(codex, 0o700);
+			try {
+				execFileSync("tmux", [
+					"-S",
+					socket,
+					"-f",
+					"/dev/null",
+					"new-session",
+					"-d",
+					"-s",
+					"fly2643",
+				]);
+				execFileSync("tmux", [
+					"-S",
+					socket,
+					"set-window-option",
+					"-g",
+					"remain-on-exit",
+					"on",
+				]);
+				execFileSync("tmux", [
+					"-S",
+					socket,
+					"new-window",
+					"-d",
+					"-t",
+					"=fly2643",
+					"-n",
+					"qa-tui",
+					buildTuiCommand({
+						...SPEC,
+						codexBin: codex,
+						codexHome: root,
+						cwd: root,
+					}),
+				]);
+				// tmux marks `pane_dead` on pty EOF and fills `pane_dead_status` on
+				// SIGCHLD; both trail the one-second child on a loaded CI host, so
+				// poll against a generous deadline instead of a fixed sample count.
+				// The assertion stays exact: the retained pane must carry code 42.
+				let paneState = "";
+				const deadline = Date.now() + EXIT_EVIDENCE_POLL_BUDGET_MS;
+				while (true) {
+					paneState = execFileSync(
+						"tmux",
+						[
+							"-S",
+							socket,
+							"display-message",
+							"-p",
+							"-t",
+							"=fly2643:=qa-tui",
+							"#{window_name} #{pane_dead} #{pane_dead_status}",
+						],
+						{ encoding: "utf8" },
+					).trim();
+					if (paneState === "qa-tui 1 42" || Date.now() >= deadline) break;
+					execFileSync("/bin/sleep", ["0.1"]);
+				}
+				expect(paneState).toBe("qa-tui 1 42");
+			} finally {
+				try {
+					execFileSync("tmux", ["-S", socket, "kill-server"], {
+						stdio: "ignore",
+					});
+				} catch {}
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+		EXIT_EVIDENCE_POLL_BUDGET_MS + 10_000,
+	);
+});
+
+describe("dead TUI evidence and retry backoff", () => {
+	it("reads only an exact dead pane, preserves its exit code, and redacts a bounded tail", async () => {
+		const bearerToken = "eyJhbGciOiJIUzI1NiJ9.SECRETPAYLOAD";
+		const outputs = [
+			"growth-mufasa-lead|1|%9|42",
+			[
+				"OpenAI Codex",
+				"API_TOKEN=super-secret",
+				`Authorization: Bearer ${bearerToken}`,
+				"Resuming session…",
+			].join("\n"),
+		];
+		const evidence = await readTuiWindowExitEvidenceAsync(SPEC, {
+			execOut: async () => outputs.shift(),
+		});
+		expect(evidence).toEqual({
+			windowName: "growth-mufasa-lead",
+			paneId: "%9",
+			exitStatus: 42,
+			terminalTail: [
+				"OpenAI Codex",
+				"API_TOKEN=[redacted]",
+				"Authorization=[redacted]",
+				"Resuming session…",
+			],
+		});
+		expect(JSON.stringify(evidence?.terminalTail)).not.toContain(bearerToken);
+	});
+
+	it("backs off after three consecutive failed stability proofs and resets only on health", () => {
+		const retry = new TuiWindowRetryBackoff();
+		expect(retry.recordFailure(0)).toBe(0);
+		expect(retry.recordFailure(20_000)).toBe(0);
+		expect(retry.recordFailure(40_000)).toBe(60_000);
+		expect(retry.canAttempt(99_999)).toBe(false);
+		expect(retry.canAttempt(100_000)).toBe(true);
+		expect(retry.recordFailure(100_000)).toBe(120_000);
+		retry.recordHealthy();
+		expect(retry.canAttempt(100_001)).toBe(true);
+		expect(retry.recordFailure(100_001)).toBe(0);
+	});
+});
+
+describe("stable TUI visibility proof", () => {
+	const live =
+		"growth-mufasa-lead|0|%12|4312|codex resume --remote unix:///tmp/sock|codex";
+
+	it.runIf(HAS_TMUX)(
+		"parses the production pane with no tmux client locale even though tmux 3.7c rewrites tabs",
+		() => {
+			const root = mkdtempSync(join(tmpdir(), "fly2643-tui-locale-"));
+			const socket = join(root, "tmux.sock");
+			try {
+				runIsolatedTmux(socket, [
+					"-f",
+					"/dev/null",
+					"new-session",
+					"-d",
+					"-s",
+					"flywheel",
+					"-n",
+					"keeper",
+					"/bin/sleep",
+					"120",
+				]);
+				runIsolatedTmux(socket, [
+					"new-window",
+					"-d",
+					"-t",
+					"=flywheel",
+					"-n",
+					"growth-mufasa-lead",
+					"/bin/sleep",
+					"120",
+				]);
+				const target = "=flywheel:=growth-mufasa-lead";
+				const legacyTabSample = runIsolatedTmux(socket, [
+					"display-message",
+					"-p",
+					"-t",
+					target,
+					"#{window_name}\t#{pane_dead}\t#{pane_id}",
+				]).trim();
+				expect(legacyTabSample).not.toContain("\t");
+				expect(legacyTabSample).toMatch(/^growth-mufasa-lead_0_%[0-9]+$/);
+
+				const identity = readTuiWindowIdentity(
+					{ ...SPEC, codexBin: "/bin/sleep" },
+					{
+						execOut: (_cmd, args) => runIsolatedTmux(socket, args),
+					},
+				);
+				expect(identity).toMatchObject({
+					windowName: "growth-mufasa-lead",
+					modelAlive: true,
+					currentCommand: "sleep",
+				});
+			} finally {
+				try {
+					runIsolatedTmux(socket, ["kill-server"]);
+				} catch {}
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("parses an exact live pane identity and rejects dead or non-model panes", () => {
+		expect(readTuiWindowIdentity(SPEC, { execOut: () => live })).toEqual({
+			windowName: "growth-mufasa-lead",
+			paneId: "%12",
+			panePid: 4312,
+			startCommand: "codex resume --remote unix:///tmp/sock",
+			currentCommand: "codex",
+			modelAlive: true,
+		});
+		expect(
+			readTuiWindowIdentity(SPEC, {
+				execOut: () => live.replace("|0|", "|1|"),
+			}),
+		).toBeNull();
+		expect(
+			readTuiWindowIdentity(SPEC, {
+				execOut: () => live.replace(/codex$/, "zsh"),
+			}),
+		).toMatchObject({ modelAlive: false });
+	});
+
+	it("requires the same pane tuple and a live model after five seconds", async () => {
+		let callback: (() => void) | undefined;
+		let cleared = false;
+		const samples = [
+			readTuiWindowIdentity(SPEC, { execOut: () => live }),
+			readTuiWindowIdentity(SPEC, { execOut: () => live }),
+		];
+		const proof = beginTuiWindowVisibilityProof(SPEC, samples[0]!, {
+			readIdentity: () => samples[1]!,
+			setTimeoutFn: (fn, ms) => {
+				expect(ms).toBe(5_000);
+				callback = fn;
+				return 7 as unknown as ReturnType<typeof setTimeout>;
+			},
+			clearTimeoutFn: () => {
+				cleared = true;
+			},
+		});
+		let settled = false;
+		void proof.promise.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		callback?.();
+		await expect(proof.promise).resolves.toEqual(samples[1]);
+		expect(cleared).toBe(false);
+	});
+
+	it("never proves a pane that dies or changes identity, and cancellation is final", async () => {
+		const first = readTuiWindowIdentity(SPEC, { execOut: () => live })!;
+		const callbacks: Array<() => void> = [];
+		const make = (
+			readIdentity: () => ReturnType<typeof readTuiWindowIdentity>,
+		) =>
+			beginTuiWindowVisibilityProof(SPEC, first, {
+				readIdentity,
+				setTimeoutFn: (fn) => {
+					callbacks.push(fn);
+					return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+				},
+				clearTimeoutFn: () => {},
+			});
+		const dead = make(() => null);
+		callbacks.shift()?.();
+		await expect(dead.promise).resolves.toBeNull();
+
+		const changed = make(() => ({ ...first, panePid: first.panePid + 1 }));
+		callbacks.shift()?.();
+		await expect(changed.promise).resolves.toBeNull();
+
+		const cancelled = make(() => first);
+		cancelled.cancel();
+		callbacks.shift()?.();
+		await expect(cancelled.promise).resolves.toBeNull();
+	});
+
+	it("never proves the same live pane after its Codex model body exits", async () => {
+		const first = readTuiWindowIdentity(SPEC, { execOut: () => live })!;
+		let callback: (() => void) | undefined;
+		const proof = beginTuiWindowVisibilityProof(SPEC, first, {
+			readIdentity: () => ({
+				...first,
+				currentCommand: "zsh",
+				modelAlive: false,
+			}),
+			setTimeoutFn: (fn) => {
+				callback = fn;
+				return 1 as unknown as ReturnType<typeof setTimeout>;
+			},
+			clearTimeoutFn: () => {},
+		});
+		callback?.();
+		await expect(proof.promise).resolves.toBeNull();
+	});
+});
+
+describe("real tmux exit evidence without a client locale", () => {
+	it.runIf(HAS_TMUX)(
+		"reads a retained dead pane through the same printable protocol",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "fly2643-tui-dead-locale-"));
+			const socket = join(root, "tmux.sock");
+			try {
+				runIsolatedTmux(socket, [
+					"-f",
+					"/dev/null",
+					"new-session",
+					"-d",
+					"-s",
+					"flywheel",
+					"-n",
+					"keeper",
+					"/bin/sleep 120",
+				]);
+				runIsolatedTmux(socket, ["set-option", "-g", "remain-on-exit", "on"]);
+				runIsolatedTmux(socket, [
+					"new-window",
+					"-d",
+					"-t",
+					"=flywheel",
+					"-n",
+					"growth-mufasa-lead",
+					"/bin/sh -c 'exit 42'",
+				]);
+				const target = "=flywheel:=growth-mufasa-lead";
+				let dead = "";
+				for (let attempt = 0; attempt < 30; attempt += 1) {
+					dead = runIsolatedTmux(socket, [
+						"display-message",
+						"-p",
+						"-t",
+						target,
+						"#{pane_dead} #{pane_dead_status}",
+					]).trim();
+					if (dead === "1 42") break;
+					execFileSync("/bin/sleep", ["0.05"]);
+				}
+				expect(dead).toBe("1 42");
+
+				const evidence = await readTuiWindowExitEvidenceAsync(SPEC, {
+					execOut: async (_cmd, args) => runIsolatedTmux(socket, args),
+				});
+				expect(evidence).toMatchObject({
+					windowName: "growth-mufasa-lead",
+					exitStatus: 42,
+				});
+			} finally {
+				try {
+					runIsolatedTmux(socket, ["kill-server"]);
+				} catch {}
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("isTuiWindowAlive (identity echo — #248 smoke finding)", () => {
@@ -245,7 +650,7 @@ describe("v2 visible process boundary", () => {
 		leadId: SPEC.leadId,
 		activationId: "activation-1",
 	};
-	it("uses the parent socket and named permissions for the founder client", () => {
+	it("uses the parent socket without overriding remote thread permissions", () => {
 		const command = buildTuiCommand({
 			...SPEC,
 			capabilityModelEnv: { pins, env: {} },
@@ -253,7 +658,8 @@ describe("v2 visible process boundary", () => {
 		});
 		expect(command).toContain("unix:///tmp/owned/app.sock");
 		expect(command).not.toContain("app-server-control");
-		expect(command).toContain('default_permissions="flywheel-lead-v2"');
+		expect(command).not.toContain("approval_policy");
+		expect(command).not.toContain("default_permissions");
 		expect(() =>
 			buildTuiCommand({ ...SPEC, capabilitySocketPath: "/tmp/owned/app.sock" }),
 		).toThrow("invalid capability socket");

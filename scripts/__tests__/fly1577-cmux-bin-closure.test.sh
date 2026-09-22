@@ -67,7 +67,7 @@ pad() {  # <prefix> — filler that clears FLY-954's 1024B sanity floor with
   while [ "$i" -le 60 ]; do echo "$1 line $i placeholder padding text >/dev/null"; i=$((i+1)); done
 }
 
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh verify-agent-visibility.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
 
 # ── fake repos ───────────────────────────────────────────────────────────────
 # The canonical flywheel-cmux-sync.sh IS the positive-control recorder. It has
@@ -77,7 +77,8 @@ COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wra
 # and "sync did not run" would pass for the wrong reason.
 make_fake_repo() {  # <dir> <gitshape: dir|file>
   local fr="$1" shape="$2" f
-  mkdir -p "$fr/scripts/lib" "$fr/packages/agent-team-transport/dist/bin"
+  mkdir -p "$fr/scripts/lib" "$fr/packages/agent-team-transport/dist/bin" \
+    "$fr/packages/teamlead/dist/bin"
   for f in lib/script-sanity.sh lib/path-hygiene.sh lib/tmux-server-rescue.sh \
            lib/bounded-run.sh meta-alert.sh converge-flywheel-bin.sh \
            flywheel-cmux-autostart.sh lead-patrol-snapshot.sh \
@@ -86,6 +87,8 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
   done
   { echo "#!/usr/bin/env node"; pad "console.log('cli'); //"; } \
     > "$fr/packages/agent-team-transport/dist/bin/agent-team-transport-cli.js"
+  { echo "#!/usr/bin/env node"; pad "console.log('binding'); //"; } \
+    > "$fr/packages/teamlead/dist/bin/verify-agent-tui-binding.js"
   reset_repo_sources "$fr"
   if [ "$shape" = "dir" ]; then mkdir -p "$fr/.git"
   else echo "gitdir: /main/.git/worktrees/x" > "$fr/.git"; fi
@@ -102,8 +105,10 @@ reset_repo_sources() {  # <repo>
       resident-codex-lead-recover.sh \
       flywheel-codex-lead-wrapper-codex-infra-bot.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
+      verify-agent-visibility.sh \
       flywheel-bridge-wrapper.sh restart-services.sh \
       host-tmux-selection-gate.sh \
+      lib/agent-visibility.sh \
       lib/lead-address.sh lib/lead-host-tmux-gate.sh \
       lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs; do
     { echo '#!/bin/bash'; pad "echo repo-$f"; } > "$fr/scripts/$f"
@@ -148,6 +153,7 @@ seed_copy_state() {  # <state-dir> <repo> — converged copy lane, mode 555
   ln -sfn "$repo/scripts/lead-patrol-snapshot.sh" "$st/bin/flywheel-patrol-snapshot"
   ln -sfn "$repo/scripts/flywheel-node-dwell-control.mjs" "$st/bin/flywheel-node-dwell-control"
   ln -sfn "$repo/scripts/flywheel-patrol-continuity.mjs" "$st/bin/flywheel-patrol-continuity"
+  ln -sfn "$repo/packages/teamlead/dist/bin/verify-agent-tui-binding.js" "$st/bin/verify-agent-tui-binding"
 }
 
 new_state() {  # <name> <repo> → echoes a fresh state dir seeded to copy steady state

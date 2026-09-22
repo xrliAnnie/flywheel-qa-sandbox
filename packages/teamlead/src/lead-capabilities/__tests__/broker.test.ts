@@ -8,6 +8,7 @@ import {
 	type LeadOperationHandler,
 	leadOperationInputDigest,
 } from "../broker.js";
+import { PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS } from "../patrol-timeouts.js";
 
 const request = {
 	schemaVersion: 1,
@@ -196,6 +197,47 @@ describe("trusted operation broker engine", () => {
 		expect(signal?.aborted).toBe(true);
 		await broker.execute(request);
 		expect(call).toHaveBeenCalledTimes(1);
+	});
+	it("keeps patrol snapshots alive through the handler budget before the broker aborts", async () => {
+		vi.useFakeTimers();
+		const store = new SqliteJournalStore(":memory:");
+		stores.push(store);
+		let signal: AbortSignal | undefined;
+		const operationId = "patrol.snapshot";
+		const broker = new LeadCapabilityBroker({
+			projectName: "flywheel",
+			leadId: "product",
+			activationId: "a1",
+			receipts: store.operationReceipts,
+			allowedOperationIds: () => new Set([operationId]),
+			assertCurrent: async () => {},
+			handlers: new Map([
+				[
+					operationId,
+					{
+						authorize: async () => {},
+						execute: async (_input, context) => {
+							signal = context.signal;
+							return await new Promise<never>(() => {});
+						},
+					},
+				],
+			]),
+			secrets: [],
+		});
+		const pending = broker.execute({
+			...request,
+			operationId,
+			input: { tickId: "1" },
+		});
+		await vi.advanceTimersByTimeAsync(PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS);
+		expect(signal?.aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(await pending).toMatchObject({
+			status: "rejected",
+			errorCode: "operation_timeout",
+		});
+		expect(signal?.aborted).toBe(true);
 	});
 	it("uses only explicit read-only reconciliation for unknown receipts", async () => {
 		const reconcile = vi.fn(async () => ({

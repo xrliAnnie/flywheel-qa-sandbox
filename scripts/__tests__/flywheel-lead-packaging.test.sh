@@ -21,6 +21,10 @@ flywheel-config-lock.py
 migrate-summary-registry.sh
 lib/raya-standard-migration.sh
 lib/lead-host-tmux-gate.sh
+verify-agent-visibility.sh
+lib/agent-visibility.sh
+lib/bounded-run.sh
+lib/lead-address.sh
 lib/codex-quota-summary.mjs"
 SCRIPT_CLOSURE_OK=1
 while IFS= read -r file; do
@@ -60,6 +64,14 @@ if [ "$CONVERGE_OK" -eq 1 ] \
   pass "monorepo and prebuilt convergence both own launcher and host-gate helper"
 else
   fail "converge-flywheel-bin does not own the Lead closure in both modes"
+fi
+
+if grep -Fq 'verify-agent-tui-binding)' "$REPO_ROOT/scripts/converge-flywheel-bin.sh" \
+  && grep -E 'symlink_strict_name\(\).*verify-agent-tui-binding' "$REPO_ROOT/scripts/converge-flywheel-bin.sh" >/dev/null \
+  && grep -E 'for name in .*verify-agent-tui-binding' "$REPO_ROOT/scripts/converge-flywheel-bin.sh" >/dev/null; then
+  pass "converge-flywheel-bin installs the TUI binding verifier from the deployed TeamLead build"
+else
+  fail "installed visibility verifier has no managed TUI binding helper"
 fi
 
 if [ -f "$REPO_ROOT/packages/teamlead/dist/bin/seed-lead-inbound-cursor.js" ] \

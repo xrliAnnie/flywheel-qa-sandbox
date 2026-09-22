@@ -45,7 +45,7 @@ it("builds exactly two credential-free v2 facades with manifest-selected tools a
 		'mcp_servers.chrome_devtools.enabled_tools=["list_pages"]',
 	);
 	expect(result.argv).toContain(
-		"mcp_servers.lead_actions.tool_timeout_sec=185",
+		"mcp_servers.lead_actions.tool_timeout_sec=305",
 	);
 	expect(result.argv).toContain(
 		"mcp_servers.chrome_devtools.tool_timeout_sec=20",

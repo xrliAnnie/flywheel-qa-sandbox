@@ -41,7 +41,9 @@ TMPDIR_ROOT=$(mktemp -d)
 TMUX_INT_SOCKET=""
 export FLYWHEEL_LEAD_PLIST_DIR="$TMPDIR_ROOT/lead-plists"
 export FLYWHEEL_MANIFEST_DIR="$TMPDIR_ROOT/manifests"
+export FLYWHEEL_PROJECTS_FILE="$TMPDIR_ROOT/projects.json"
 mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+printf '[]\n' > "$FLYWHEEL_PROJECTS_FILE"
 cleanup_test_state() {
   if [[ -n "$TMUX_INT_SOCKET" ]] && command -v tmux >/dev/null 2>&1; then
     command tmux -S "$TMUX_INT_SOCKET" kill-server 2>/dev/null || true
@@ -5871,6 +5873,41 @@ test_fly1272_p1_rename_output_lost_recovers_claim() {
   fi
 }
 
+test_fly2643_abandoned_claim_intent_does_not_stop_wal_sweep() {
+  echo "Test: FLY-2643 QA4 — an orphan claim_intent is retired without stopping the WAL sweep"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  # Production still has an unrelated tmux server/session, but both the
+  # original Raya source window and fwstage-1789680364 are gone.
+  topo_add_session "unrelated" '$99'
+  topo_add_window "unrelated" "@99" "founder-shell" 1 0
+
+  local abandoned_view="cmux-flywheel-codex-raya" abandoned_wal
+  local later_view later_wal index=0 rc=0
+  abandoned_wal=$(_view_wal_path "$abandoned_view")
+  _write_view_wal "$abandoned_wal" "tmux-test-generation" claim_intent 1789680364 \
+    "$abandoned_view" "flywheel" "@2276" '$71' "@2277"
+
+  # The glob sweep is lexical. Pick a valid stale WAL that sorts after the
+  # orphan so this one assertion proves recovery continued past it.
+  while true; do
+    index=$((index + 1))
+    later_view="cmux-FLY-2643-after-abandoned-${index}"
+    later_wal=$(_view_wal_path "$later_view")
+    [[ "$(basename "$later_wal")" > "$(basename "$abandoned_wal")" ]] && break
+  done
+  _write_view_wal "$later_wal" "old-generation" create_intent later \
+    "$later_view" "runner-flywheel" "@999" "" ""
+
+  recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && ! -e "$abandoned_wal" && ! -e "$later_wal" ]]; then
+    pass "the abandoned current-generation claim is audited and unrelated WAL recovery continues"
+  else
+    fail "abandoned claim wedged recovery rc=$rc abandoned=$([[ -e "$abandoned_wal" ]] && echo present || echo gone) later=$([[ -e "$later_wal" ]] && echo present || echo gone)"
+  fi
+}
+
 test_fly2656_absent_claim_intent_wal_converges_only_after_census() {
   echo "Test: FLY-2656 — entity-free claim_intent WAL retires only after a conclusive session census"
   reset_mocks
@@ -8027,6 +8064,36 @@ workspace:1597;;surface:2;;terminal;;true;;$runner"
   fi
 }
 
+test_fly2643_w1dead_excludes_private_intent_after_roster_drift() {
+  echo "Test: FLY-2643 review — private Lead intent never enters W1-dead cleanup"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1
+  local title="flywheel-eng-lead" generation="cmux-generation-1" ref="workspace:2643"
+  local original_derive probe_rc=0 adopt_rc=0 marker
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="config-drift|com.flywheel.lead.flywheel-eng-lead|flywheel-eng-lead|/tmp/private.sock|claude-private"
+  }
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:2643","title":"flywheel-eng-lead"}]}'
+  MOCK_CMUX_SURFACES="workspace:2643;;surface:1;;terminal;;true;;$title"
+  test_ensure_mutator_lease || { eval "$original_derive"; fail "cannot acquire fixture mutator lease"; return; }
+
+  _restored_candidate_probe W1dead "$generation" "$ref" "$title" || probe_rc=$?
+  adopt_restored_workspaces dead discover-only || adopt_rc=$?
+  marker=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+
+  release_mutator_lease
+  eval "$original_derive"
+  if [[ "$probe_rc" -eq 1 && "$adopt_rc" -eq 0 && -z "$marker" ]]; then
+    pass "effective config drift retains private intent and has zero destructive W1-dead authority"
+  else
+    fail "private intent entered W1dead probe_rc=$probe_rc adopt_rc=$adopt_rc marker=[$marker]"
+  fi
+}
+
 test_fly1596_all_normal_receipt_consumers_skip_restored_inflight() {
   echo "Test: FLY-1596 Fix 2 — all normal receipt consumers skip restored in-flight tuples"
   reset_mocks
@@ -8152,6 +8219,90 @@ print(json.dumps({"workspaces":[{"ref":"workspace:1596","id":sys.argv[1],"title"
   topo_add_window "cmux-$title" '@42' "$title" 1 0
   MOCK_TMUX_CLIENTS="cmux-$title=1"
   test_ledger_upsert committed "$generation" workspace:1596 "$title" "$workspace_uuid"
+}
+
+test_fly2643_agent_visibility_rejects_detached_or_unreadable_tabs() {
+  echo "Test: FLY-2643 visibility gate rejects detached or unreadable durable tabs"
+  local title="FLY-2643-implement" runner_detached_rc=0 runner_unreadable_rc=0
+  local runner_detached_json runner_unreadable_json
+  local lead_title="growth-rafiki-lead" lead_socket lead_detached_rc=0 lead_unreadable_rc=0
+  local lead_detached_json lead_unreadable_json
+  local saved_derive saved_loaded saved_wrapper
+
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+
+  _fly1596_setup_healthy_sidebar_fixture "$title"
+  MOCK_TMUX_CLIENTS="cmux-$title=0"
+  runner_detached_json=$(run_verify_agent_visible --target "$title" --json) || runner_detached_rc=$?
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture "$title"
+  MOCK_CMUX_READSCREEN_FAIL=1
+  runner_unreadable_json=$(run_verify_agent_visible --target "$title" --json) || runner_unreadable_rc=$?
+  release_mutator_lease
+
+  lead_socket=$(derive_lead_socket "growth/rafiki-lead" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}")
+  _fly1596_setup_healthy_sidebar_fixture "$lead_title" flywheel "$lead_socket"
+  MOCK_PRIVATE_TMUX_SOCKET="$lead_socket"
+  MOCK_PRIVATE_TMUX_CLIENTS=0
+  saved_loaded=$(declare -f lead_job_loaded)
+  saved_wrapper=$(declare -f lead_plist_wrapper_basename)
+  lead_job_loaded() { return 0; }
+  lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead-wrapper-v2.sh; }
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${lead_title}.plist"
+  printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' \
+    "$lead_socket" > "$FLYWHEEL_MANIFEST_DIR/${lead_title}.json"
+  lead_detached_json=$(run_verify_agent_visible --target "$lead_title" --json) || lead_detached_rc=$?
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture "$lead_title" flywheel "$lead_socket"
+  MOCK_PRIVATE_TMUX_SOCKET="$lead_socket"
+  MOCK_PRIVATE_TMUX_CLIENTS=1
+  MOCK_CMUX_READSCREEN_FAIL=1
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${lead_title}.plist"
+  printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' \
+    "$lead_socket" > "$FLYWHEEL_MANIFEST_DIR/${lead_title}.json"
+  lead_unreadable_json=$(run_verify_agent_visible --target "$lead_title" --json) || lead_unreadable_rc=$?
+
+  eval "$saved_wrapper"
+  eval "$saved_loaded"
+  eval "$saved_derive"
+  release_mutator_lease
+  if [[ "$runner_detached_rc" -eq 1 && "$runner_unreadable_rc" -eq 2 \
+      && "$lead_detached_rc" -eq 1 && "$lead_unreadable_rc" -eq 2 ]] \
+      && jq -e '.status == "fail" and (.reasons == ["surface_mismatch"]) and (.report | any(contains("rule=client-count observed=0")))' \
+        <<<"$runner_detached_json" >/dev/null \
+      && jq -e '.status == "inconclusive" and (.reasons == ["probe_unavailable"]) and (.report | any(contains("rule=render observed=unavailable")))' \
+        <<<"$runner_unreadable_json" >/dev/null \
+      && jq -e '.status == "fail" and (.reasons == ["surface_mismatch"]) and (.report | any(contains("rule=v2-client-count observed=0")))' \
+        <<<"$lead_detached_json" >/dev/null \
+      && jq -e '.status == "inconclusive" and (.reasons == ["probe_unavailable"]) and (.report | any(contains("rule=v2-render observed=unavailable")))' \
+        <<<"$lead_unreadable_json" >/dev/null; then
+    pass "fleet visibility requires attached clients and readable nonempty Lead/Runner surfaces"
+  else
+    fail "durable visibility contract mismatch runner_detached=$runner_detached_rc runner_unreadable=$runner_unreadable_rc lead_detached=$lead_detached_rc lead_unreadable=$lead_unreadable_rc runner_detached_json=[$runner_detached_json] runner_unreadable_json=[$runner_unreadable_json] lead_detached_json=[$lead_detached_json] lead_unreadable_json=[$lead_unreadable_json]"
+  fi
+}
+
+test_fly2643_agent_visibility_accepts_healthy_durable_tab() {
+  echo "Test: FLY-2643 visibility gate accepts a healthy durable Runner tab"
+  local title="FLY-2643-implement" rc=0 output saved_derive
+
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+  _fly1596_setup_healthy_sidebar_fixture "$title"
+  output=$(run_verify_agent_visible --target "$title" --json) || rc=$?
+  eval "$saved_derive"
+  release_mutator_lease
+
+  if [[ "$rc" -eq 0 ]] \
+      && jq -e '.status == "pass" and (.reasons == []) and (.report | any(contains("PASS FLY-2643-implement live")))' \
+        <<<"$output" >/dev/null; then
+    pass "healthy durable target survives the two-sample client/render visibility proof"
+  else
+    fail "healthy durable target did not pass rc=$rc output=[$output]"
+  fi
 }
 
 test_fly1596_sidebar_judge_passes_only_complete_live_terminal_state() {
@@ -8321,7 +8472,7 @@ import json,sys
 d=json.load(sys.stdin)
 assert d["status"] == "pass" and d["exit_code"] == 0
 assert d["reasons"] == []
-assert d["caveats"] == ["roster-authority-unavailable: missing manifest flywheel-codex-infra-bot-lead"]
+assert d["caveats"] == []
 '; then
     json_ok=1
   fi
@@ -8374,10 +8525,10 @@ assert d["caveats"] == ["roster-authority-unavailable: missing manifest flywheel
   release_mutator_lease
   if [[ "$text_rc" -eq 0 && "$json_rc" -eq 0 && "$json_ok" -eq 1 \
       && "$text_output" == *"PASS $title"* \
-      && "$text_output" == *"CAVEAT roster-authority-unavailable: missing manifest $unrelated"* \
+      && "$text_output" != *"$unrelated"* \
       && "$absent_rc" -eq 1 && "$absent_output" == *'rule=v2-row expected=one-named observed=named:0,mapped:0'* \
       && "$own_rc" -eq 2 && "$own_output" == *"target-authority-unavailable: missing manifest $title"* \
-      && "$global_rc" -eq 2 && "$global_output" == *"roster-authority-unavailable: missing manifest $unrelated"* \
+      && "$global_rc" -eq 1 && "$global_output" == *"FAIL $unrelated rule=roster-lead-absent"* \
       && "$drift_rc" -eq 2 && "$drift_output" == *'snapshot-drift'* ]]; then
     pass "the five-cell target/global authority matrix is fail-closed without unrelated-roster coupling"
   else
@@ -8461,8 +8612,8 @@ test_fly1596_sidebar_judge_rejects_each_false_pass_family() {
 }
 
 test_fly1596_sidebar_judge_covers_stale_markers_render_and_roster_drift() {
-  echo "Test: FLY-1596 Fix 4 — stale markers, bare render, and roster drift cannot false-pass"
-  local title="FLY-1596-implement" title_b64 orig_b64 fingerprint epoch rc=0 stale bare drift dead
+  echo "Test: FLY-1596 Fix 4 — stale markers, empty render, and roster drift cannot false-pass"
+  local title="FLY-1596-implement" title_b64 orig_b64 fingerprint epoch rc=0 stale empty drift dead
   local saved_roster calls="$TMPDIR_ROOT/fly1596-roster-calls"
 
   _fly1596_setup_healthy_sidebar_fixture
@@ -8475,8 +8626,8 @@ test_fly1596_sidebar_judge_covers_stale_markers_render_and_roster_drift() {
   release_mutator_lease
 
   _fly1596_setup_healthy_sidebar_fixture
-  MOCK_CMUX_READSCREEN='user@host ~ %'
-  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; bare=$rc
+  MOCK_CMUX_READSCREEN='   '
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; empty=$rc
   release_mutator_lease
 
   _fly1596_setup_healthy_sidebar_fixture
@@ -8511,10 +8662,10 @@ test_fly1596_sidebar_judge_covers_stale_markers_render_and_roster_drift() {
   rc=0; verify_sidebar_targets FLY-1596-dead >/dev/null 2>&1 || rc=$?; dead=$rc
   eval "$saved_roster"
 
-  if [[ "$stale" == 1 && "$bare" == 1 && "$drift" == 2 && "$dead" == 1 ]]; then
-    pass "current/stale/dead restored markers fail, bare shells fail, and same-generation roster drift is inconclusive"
+  if [[ "$stale" == 1 && "$empty" == 1 && "$drift" == 2 && "$dead" == 1 ]]; then
+    pass "current/stale/dead restored markers fail, empty renders fail, and same-generation roster drift is inconclusive"
   else
-    fail "expanded sidebar judge mismatch stale=$stale bare=$bare drift=$drift dead=$dead"
+    fail "expanded sidebar judge mismatch stale=$stale empty=$empty drift=$drift dead=$dead"
   fi
 }
 
@@ -8713,6 +8864,68 @@ test_fly1596_rebuild_executes_grouped_to_verified_a1_and_preserves_out_of_scope_
     fail "ops grouped convergence mismatch rc=$rc verify=[$VERIFY_SIDEBAR_REPORT] inventory_generation=[$inventory_generation] expected_inventory_generation=[$expected_inventory_generation] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] report=[$OPS_REBUILD_REPORT_PATH] ops=[$MOCK_CMUX_OPS]"
   fi
   unset FLYWHEEL_CMUX_OPS_REPROBE_SECONDS
+}
+
+test_fly2643_ops_rebuild_converges_codex_lead_with_preexisting_linked_session() {
+  echo "Test: FLY-2643 QA4 — ops rebuild replaces exited, unreceipted Codex Lead stock"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_CMUX_MUTATE_SURFACES=1; MOCK_SOCK_IDENT=cmux-generation-1
+  FLYWHEEL_CMUX_OPS_REPROBE_SECONDS=0
+  local title=flywheel-codex-infra-bot-lead generation=cmux-generation-1
+  local workspace_uuid="00000000-0000-4000-8000-000000000018"
+  local saved_loaded saved_wrapper rc=0 final_ref final_receipt close_count create_count committed=0
+  saved_loaded=$(declare -f lead_job_loaded)
+  saved_wrapper=$(declare -f lead_plist_wrapper_basename)
+  lead_job_loaded() { return 0; }
+  lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead.sh; }
+
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  printf '[{"projectName":"flywheel","leads":[{"agentId":"codex-infra-bot-lead"}]}]\n' \
+    > "$FLYWHEEL_PROJECTS_FILE"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
+  printf '%s\n' '{"projectName":"flywheel","leadId":"codex-infra-bot-lead","leadBackend":{"backendId":"codex-app-server"}}' \
+    > "$FLYWHEEL_MANIFEST_DIR/${title}.json"
+
+  topo_add_session flywheel '$1'
+  topo_add_window flywheel '@7279' "$title" 1 0
+  topo_add_session "cmux-$title" '$2' "" flywheel 0
+  topo_add_window "cmux-$title" '@7279' "$title" 1 0
+  MOCK_CMUX_WORKSPACES_JSON=$(printf '{"workspaces":[{"ref":"workspace:18","id":"%s","title":"%s"}]}' \
+    "$workspace_uuid" "$title")
+  MOCK_CMUX_SURFACES="workspace:18;;surface:18;;terminal;;true;;~"
+  MOCK_CMUX_READSCREEN='[exited]'
+  # Two pre-verification reads, four adoption guards, and the create baseline
+  # all observe the repaired-but-unattached view. The new workspace attaches
+  # before create verification and the final terminal-state judge.
+  MOCK_TMUX_CLIENTS="cmux-$title=0,0,0,0,0,0,0,1"
+  release_mutator_lease
+
+  run_rebuild_views --target "$title=workspace:18" --execute >/dev/null 2>&1 || rc=$?
+  final_ref=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+rows=json.load(sys.stdin).get("workspaces", [])
+print(rows[0].get("ref", "") if len(rows) == 1 else "")
+')
+  final_receipt=$(awk -F'|' -v g="$generation" -v r="$final_ref" -v t="$title" \
+    '$1 == "committed" && $2 == g && $3 == r && $4 == t { print }' "$VIEW_LEDGER" 2>/dev/null || true)
+  ledger_committed_ref "$generation" "$final_ref" "$title" && committed=1
+  close_count=$(grep -c '^close-workspace --workspace workspace:18$' <<< "$MOCK_CMUX_OPS" || true)
+  create_count=$(grep -c '^new-workspace --command ' <<< "$MOCK_CMUX_OPS" || true)
+
+  eval "$saved_wrapper"
+  eval "$saved_loaded"
+  unset FLYWHEEL_CMUX_OPS_REPROBE_SECONDS
+  if [[ "$rc" -eq 0 && "$final_ref" != workspace:18 && -n "$final_receipt" && "$committed" == 1 \
+      && "$close_count" == 1 && "$create_count" == 1 \
+      && -z "$MOCK_KILL_CALLS" \
+      && "$OPS_REBUILD_RESULTS" == *"$title|W1|"*'|adopt-W1+create|PASS' \
+      && "$VERIFY_SIDEBAR_REPORT" == *"PASS $title live"* ]]; then
+    pass "the leased rebuild replaces exited stock, commits the new receipt, and never kills the watcher"
+  else
+    fail "Codex Lead W1 rebuild mismatch rc=$rc final_ref=[$final_ref] receipt=[$final_receipt] committed=$committed close=$close_count create=$create_count kills=[$MOCK_KILL_CALLS] results=[$OPS_REBUILD_RESULTS] verify=[$VERIFY_SIDEBAR_REPORT] ops=[$MOCK_CMUX_OPS]"
+  fi
 }
 
 test_fly1596_handover_yields_then_revalidates_before_mutation() {
@@ -11019,6 +11232,7 @@ test_fly1364_view_build_generation_flip_before_stage_is_read_only
 test_fly1364_view_build_generation_flip_after_stage_mutation_stops
 test_fly1272_p1_link_failure_recovers_owned_stage
 test_fly1272_p1_rename_output_lost_recovers_claim
+test_fly2643_abandoned_claim_intent_does_not_stop_wal_sweep
 test_fly2656_absent_claim_intent_wal_converges_only_after_census
 test_fly2656_cleanup_admission_and_preprune
 test_fly2656_inventory_episode_startup_and_priority
@@ -11050,9 +11264,12 @@ test_fly1596_one_restored_action_failure_does_not_abort_later_markers
 test_fly1596_flag_off_aborts_synthetic_receipt_without_close
 test_fly1596_w1p_promotes_then_closes_drifted_prepared_row
 test_fly1596_w1dead_is_roster_only_and_leaves_runner_stock
+test_fly2643_w1dead_excludes_private_intent_after_roster_drift
 test_fly1596_all_normal_receipt_consumers_skip_restored_inflight
 test_fly1596_recovery_decision_table_is_total_and_preserves_phase_invariants
 test_fly1596_adoption_budget_meets_five_minute_restart_bound
+test_fly2643_agent_visibility_accepts_healthy_durable_tab
+test_fly2643_agent_visibility_rejects_detached_or_unreadable_tabs
 test_fly1596_sidebar_judge_passes_only_complete_live_terminal_state
 test_fly1944_sidebar_judge_marks_birthless_identity_unattributable
 test_fly1596_sidebar_judge_ignores_live_screen_bytes_for_snapshot_stability
@@ -11071,6 +11288,7 @@ test_fly1596_ops_mode_is_a_known_mutator_everywhere
 test_fly1596_ops_create_bypass_is_exact_and_lease_bound
 test_fly1596_rebuild_dry_run_and_exact_ref_are_read_only
 test_fly1596_rebuild_executes_grouped_to_verified_a1_and_preserves_out_of_scope_marker
+test_fly2643_ops_rebuild_converges_codex_lead_with_preexisting_linked_session
 test_fly1596_handover_yields_then_revalidates_before_mutation
 test_fly1596_log_episodes_are_bounded_stateful_and_reversible
 test_fly1272_p2_foreign_same_title_is_untouched

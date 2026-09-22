@@ -59,6 +59,12 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
 
 1. **名册核对(ground truth)** — run:
    `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
+   先核当前 Lead 自身载体并输出
+   `LEAD_VISIBILITY project=<project> lead=<lead> status=<pass|fail|inconclusive> reasons=<codes>`。
+   缺窗口、空壳、死 pane、错身份是 FINDING；不可探测是必须留账的 UNAVAILABLE，均
+   不得省略为“零异常”。Runner 的 active/phase-held 行即使 target 为 pending/空值也
+   必须保留，窗口还须绑定 exact execution，不能只按标题通过。本步骤不授权读取其他
+   Lead scrollback，也不授权 kill/rebuild。
    脚本先只读全 registry owner index 做 target cardinality 预检，再从当前项目
    `comm.sessions.lead_id = LEAD_ID` 物化名下 target；只有 index 完整且 target 唯一时，
    才执行一次 `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`

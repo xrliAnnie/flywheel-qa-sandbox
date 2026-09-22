@@ -9,6 +9,7 @@ import {
 	atomicJson,
 	digest,
 	discordJson,
+	LEAD_LIVE_VERIFY_TIMEOUT_MS,
 	type MigrationIO,
 	migrationIO,
 	readPrivate,
@@ -145,13 +146,11 @@ export async function collectMigrationProof(input: {
 		await io.run("bash", ["-c", frozenCheck, "_", flywheelDir, home]);
 		const launcher = join(root, "bin/flywheel-lead.sh");
 		await io.run("bash", [launcher, "preflight", canonicalPath]);
-		await io.run("bash", [
-			launcher,
-			"verify",
-			"--stage",
-			"live",
-			canonicalPath,
-		]);
+		await io.run(
+			"bash",
+			[launcher, "verify", "--stage", "live", canonicalPath],
+			LEAD_LIVE_VERIFY_TIMEOUT_MS,
+		);
 		const state = (
 			await io.run("bash", [
 				join(flywheelDir, "packages/teamlead/scripts/codex-lead.sh"),
@@ -402,13 +401,11 @@ export async function collectMigrationProof(input: {
 				merged,
 			]);
 			await io.run("bash", ["-c", frozenCheck, "_", flywheelDir, home]);
-			await io.run("bash", [
-				launcher,
-				"verify",
-				"--stage",
-				"live",
-				canonicalPath,
-			]);
+			await io.run(
+				"bash",
+				[launcher, "verify", "--stage", "live", canonicalPath],
+				LEAD_LIVE_VERIFY_TIMEOUT_MS,
+			);
 			const finalTui = await readTuiEvidence({
 				home,
 				flywheelDir,

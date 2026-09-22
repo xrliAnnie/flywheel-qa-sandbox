@@ -26,7 +26,8 @@ trap 'rm -rf "$RSB" "$SB"' EXIT
 make_fake_repo() {  # <dir> <gitshape: dir|file>
   local fr="$1" shape="$2"
   mkdir -p "$fr/scripts/lib" \
-    "$fr/packages/agent-team-transport/dist/bin"
+    "$fr/packages/agent-team-transport/dist/bin" \
+    "$fr/packages/teamlead/dist/bin"
   cp "$REAL_REPO_ROOT/scripts/lib/script-sanity.sh" "$fr/scripts/lib/"
   cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$fr/scripts/lib/"
   cp "$REAL_REPO_ROOT/scripts/lib/tmux-server-rescue.sh" "$fr/scripts/lib/" 2>/dev/null || \
@@ -38,6 +39,7 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
       resident-codex-lead-recover.sh \
       flywheel-codex-lead-wrapper-codex-infra-bot.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
+      verify-agent-visibility.sh lib/agent-visibility.sh \
       flywheel-bridge-wrapper.sh restart-services.sh \
       host-tmux-selection-gate.sh \
       flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh \
@@ -59,6 +61,8 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
   # redirect => mode 0644, so S1 also exercises the auto-chmod leg.
   { echo "#!/usr/bin/env node"; i=1; while [ "$i" -le 80 ]; do echo "console.log('cli-line-$i');"; i=$((i+1)); done; } \
     > "$fr/packages/agent-team-transport/dist/bin/agent-team-transport-cli.js"
+  { echo "#!/usr/bin/env node"; i=1; while [ "$i" -le 80 ]; do echo "console.log('binding-line-$i');"; i=$((i+1)); done; } \
+    > "$fr/packages/teamlead/dist/bin/verify-agent-tui-binding.js"
   if [ "$shape" = "dir" ]; then mkdir -p "$fr/.git"; else echo "gitdir: /main/.git/worktrees/x" > "$fr/.git"; fi
 }
 
@@ -86,9 +90,10 @@ seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
            resident-codex-lead-recover.sh \
            flywheel-codex-lead-wrapper-codex-infra-bot.sh \
            flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
+           verify-agent-visibility.sh \
            flywheel-bridge-wrapper.sh restart-services.sh \
            restart-storm-gate.py host-tmux-selection-gate.sh \
-           lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh \
+           lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh \
            lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs; do
     cp "$2/scripts/$f" "$1/bin/$f"
   done
@@ -96,6 +101,7 @@ seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
   ln -sfn "$2/scripts/lead-patrol-snapshot.sh" "$1/bin/flywheel-patrol-snapshot"
   ln -sfn "$2/scripts/flywheel-node-dwell-control.mjs" "$1/bin/flywheel-node-dwell-control"
   ln -sfn "$2/scripts/flywheel-patrol-continuity.mjs" "$1/bin/flywheel-patrol-continuity"
+  ln -sfn "$2/packages/teamlead/dist/bin/verify-agent-tui-binding.js" "$1/bin/verify-agent-tui-binding"
 }
 
 run_conv() {  # <repo> <state-dir> [extra env pairs...] → rc; out in $SB/out.log

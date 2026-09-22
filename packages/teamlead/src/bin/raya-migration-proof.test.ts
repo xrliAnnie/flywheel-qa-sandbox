@@ -14,6 +14,7 @@ import { afterEach, expect, it } from "vitest";
 import {
 	digest,
 	discordSnowflake,
+	LEAD_LIVE_VERIFY_TIMEOUT_MS,
 	type MigrationIO,
 } from "./raya-migration-io.js";
 import { collectMigrationProof } from "./raya-migration-proof.js";
@@ -149,9 +150,15 @@ function fixture() {
 		drift = false,
 		paneDrift = false,
 		panePid = 123;
+	const runCalls: Array<{
+		command: string;
+		args: string[];
+		timeoutMs: number | undefined;
+	}> = [];
 	const io: MigrationIO = {
 		now: () => time + 7 * 3600_000,
-		run: async (command, args) => {
+		run: async (command, args, timeoutMs) => {
+			runCalls.push({ command, args, timeoutMs });
 			if (command === "python3")
 				return execFileSync(command, args, { encoding: "utf8" });
 			if (command === "launchctl") {
@@ -172,7 +179,7 @@ function fixture() {
 						: "2026-09-12T23:59:59Z"
 					: "codex-lead-tui-runtime";
 			if (command === "tmux")
-				return `raya-raya|0|${panePid}|${JSON.stringify(`CODEX_HOME="${home}/.codex-raya" codex resume --remote "unix://${home}/.codex-raya/app-server-control/app-server-control.sock" -C "${workspace}" -s workspace-write thread-current`)}`;
+				return `raya-raya|0|${panePid}|${JSON.stringify(`CODEX_HOME="${home}/.codex-raya" codex resume --remote "unix://${home}/.codex-raya/app-server-control/app-server-control.sock" -C "${workspace}" thread-current`)}`;
 			if (args.includes("--print-state-dir")) return state;
 			if (args.includes("lead-identity"))
 				return JSON.stringify({
@@ -240,6 +247,7 @@ function fixture() {
 		proof,
 		manifest,
 		io,
+		runCalls,
 		textId,
 		enableLegacy: (value = "enabled") => {
 			disabled = value;
@@ -268,6 +276,18 @@ function fixture() {
 it("collects a proof accepted by the real P6 shell validators with a stable activation anchor", async () => {
 	const f = fixture();
 	await f.run();
+	const liveVerifyCalls = f.runCalls.filter(
+		(call) =>
+			call.command === "bash" &&
+			call.args.includes("verify") &&
+			call.args.includes("live"),
+	);
+	expect(LEAD_LIVE_VERIFY_TIMEOUT_MS).toBeGreaterThan(75_000);
+	expect(liveVerifyCalls).toHaveLength(2);
+	expect(liveVerifyCalls.map((call) => call.timeoutMs)).toEqual([
+		LEAD_LIVE_VERIFY_TIMEOUT_MS,
+		LEAD_LIVE_VERIFY_TIMEOUT_MS,
+	]);
 	const proof = JSON.parse(readFileSync(f.proof, "utf8"));
 	expect(proof.lead.activation_id).toBe(`fixture-migration:${at}`);
 	expect(proof.lead.pane_pid).toBe(123);

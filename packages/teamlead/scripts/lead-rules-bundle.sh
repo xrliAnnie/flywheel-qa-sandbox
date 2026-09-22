@@ -438,6 +438,12 @@ compute_lead_rule_bundle() {
   fi
 
   # ── Universal governance (claude-lead.sh:1581-1617) ──
+  # FLY-2643: every internal production Lead has a founder-visible, attachable
+  # TUI. Companion/external personas retain their deliberately narrow prompt
+  # surfaces; the host visibility gate still applies independently.
+  if [ "$role" != "companion" ]; then
+    _lrb_emit "${base}/visible-tui-default.md" "$governance_required" || return 10
+  fi
   # Founder-local time is universal for companion + cos + dept. It is a short
   # time-interpretation contract, not an engineering-role rule.
   _lrb_emit "${base}/founder-local-time.md" 0 || return 10

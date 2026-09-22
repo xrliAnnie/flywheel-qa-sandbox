@@ -23,9 +23,12 @@ export CMUX_FLAG_STATE="$TMP/cmux-flags"
 export LEDGER_CONFLICT_STATE="$TMP/ledger-conflicts"
 export ROSTER_EPISODE_STATE="$TMP/roster-episodes"
 export FLYWHEEL_ENV_FILE="$TMP/home/.flywheel/.env"
+export FLYWHEEL_PROJECTS_FILE="$TMP/home/.flywheel/projects.json"
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMP/maintenance"
 export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
 mkdir -p "$HOME/.flywheel/manifests" "$HOME/Library/LaunchAgents"
+printf '%s\n' '[{"projectName":"demo","leads":[{"agentId":"ops-lead"}]}]' \
+  > "$FLYWHEEL_PROJECTS_FILE"
 
 for writable_path in \
   "$HOME" "$FLYWHEEL_STATE_DIR" "$VIEW_WAL_DIR" "$VIEW_LEDGER" \
@@ -70,22 +73,78 @@ printf '%s\n' \
 lead_job_loaded() { return 0; }
 lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead-wrapper-v2.sh; }
 if derive_lead_roster \
-    && grep -qxF "claude-private|com.flywheel.lead.demo-ops-lead|demo-ops-lead|$socket" \
-      <<< "$LEAD_ROSTER_ROWS"; then
+		&& grep -qxF "claude-private|com.flywheel.lead.demo-ops-lead|demo-ops-lead|$socket|claude-private" \
+			<<< "$LEAD_ROSTER_ROWS"; then
   pass "authoritative Lead roster carries the private socket address"
 else
   fail "v2 authoritative roster row: state=$LEAD_ROSTER_STATE rows=[$LEAD_ROSTER_ROWS]"
+fi
+
+# A Codex TUI Lead already has the canonical source pane and a cmux workspace,
+# but QA2 proved that the workspace is useless when cmux-<lead> was never
+# linked and no title receipt was minted. Exercise the real tmux link topology
+# on an isolated server while stubbing only the cmux workspace/receipt seam.
+REAL_TMUX_BIN="$(command -v tmux)"
+if (
+  set -uo pipefail
+  REAL_TMUX_DIR="$TMP/codex-linked-tmux"
+  mkdir -p "$REAL_TMUX_DIR"
+  unset TMUX
+  export TMUX_TMPDIR="$REAL_TMUX_DIR"
+  export FLYWHEEL_CMUX_TMUX_GENERATION=isolated-generation
+  tmux() { env -u TMUX TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" "$@"; }
+  trap 'tmux kill-server >/dev/null 2>&1 || true' EXIT
+  tmux -f /dev/null new-session -d -s flywheel -n demo-ops-lead '/bin/sleep 120'
+
+  LEAD_ROSTER_STATE=ok
+  LEAD_ROSTER_ROWS='codex-tui-cmux|com.flywheel.lead.demo-ops-lead|demo-ops-lead|'
+  V2_LEAD_ATTACH_MISSING_STREAKS=""
+  watcher_mutation_latch_clear() { return 0; }
+  roster_rearm_absent_subjects() { :; }
+  workspace_exists_for() { return 0; }
+  workspace_refs_for() {
+    [[ "$1" == demo-ops-lead ]] || return 1
+    printf 'workspace:2643\n'
+  }
+  cmux_socket_identity() { printf 'isolated-generation\n'; }
+  reconcile_workspace_titles() { :; }
+
+  if ensure_codex_tui_lead_workspace demo-ops-lead; then
+    exit 1
+  fi
+  reconcile_workspace_titles() {
+    [[ "$1" == flywheel\|@*\|demo-ops-lead ]] || return 1
+    printf 'committed|isolated-generation|workspace:2643|demo-ops-lead\n' > "$VIEW_LEDGER"
+  }
+
+  reconcile_v2_lead_workspaces >/dev/null 2>"$TMP/codex-linked-reconcile.log"
+  linked_session_exists cmux-demo-ops-lead
+  [[ "$(tmux display-message -p -t '=cmux-demo-ops-lead:' \
+      '#{window_name}|#{pane_dead}|#{@flywheel_cmux_owner}')" \
+      == 'demo-ops-lead|0|flywheel' ]]
+  grep -qxF 'committed|isolated-generation|workspace:2643|demo-ops-lead' "$VIEW_LEDGER" 2>/dev/null
+); then
+  pass "Codex TUI roster reconciliation links the real pane and receipts its existing cmux workspace"
+else
+  fail "Codex TUI roster left an existing cmux workspace without a linked pane/receipt: [$(cat "$TMP/codex-linked-reconcile.log" 2>/dev/null)]"
 fi
 
 rm -f "$ROSTER_EPISODE_STATE"
 read_roster_tmux_inventory() { return 1; }
 tmux() {
   [[ "$1" == "-S" && "$2" == "$socket" ]] || return 1
-  case "$3" in has-session|list-clients) return 0 ;; *) return 1 ;; esac
+  case "$3" in
+    list-panes)
+      printf '%s\n' 'main|main|0' 'main|main|1'
+      return 0
+      ;;
+    has-session|list-clients) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 reconcile_lead_roster
 if ! grep -qE '^(roster-blind|lead-window-missing)\|' "$ROSTER_EPISODE_STATE" 2>/dev/null; then
-  pass "private Lead health is independent of the shared tmux inventory"
+  pass "private Lead health accepts one live main pane beside a retained dead pane"
 else
   fail "v2 health was coupled to shared tmux: [$(cat "$ROSTER_EPISODE_STATE")]"
 fi

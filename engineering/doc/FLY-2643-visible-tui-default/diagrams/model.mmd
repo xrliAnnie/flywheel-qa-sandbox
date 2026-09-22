@@ -1,0 +1,25 @@
+classDiagram
+ class AgentIdentity {
+  project
+  leadId_or_executionId
+  current_activation
+ }
+ class RealTerminal {
+  socket_and_session
+  window_and_pane
+  process_start_and_thread
+ }
+ class VisibleConnection {
+  cmux_workspace
+  surface_and_client
+  current_generation
+ }
+ class Observation {
+  time
+  pass_fail_inconclusive
+  reasons
+ }
+ AgentIdentity "1" --> "1" RealTerminal : 精确对应
+ RealTerminal "1" --> "1" VisibleConnection : 真实连接
+ Observation --> AgentIdentity : 当场复核
+ Observation --> VisibleConnection : 当场复核

@@ -2896,6 +2896,20 @@ if [ "$IS_COS_ROLE" != true ] && [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTE
   log "Appending base runner-patrol rules: ${BASE_PATROL_RULES}"
 fi
 
+# ── FLY-2643: founder-visible TUI is the default carrier contract ──
+# Internal CoS/department/infra Leads load the hard rule. Companion and external
+# personas keep their intentionally narrow prompt surfaces; host verification is
+# independent and does not grant them a production visibility exemption.
+BASE_VISIBLE_TUI_RULES="${BASE_RULES_DIR}/visible-tui-default.md"
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ]; then
+  if [ ! -f "$BASE_VISIBLE_TUI_RULES" ] || [ ! -r "$BASE_VISIBLE_TUI_RULES" ]; then
+    echo "[lead] ERROR: required visible-TUI rule is missing: ${BASE_VISIBLE_TUI_RULES}"
+    exit 1
+  fi
+  rules_bundle_add "$BASE_VISIBLE_TUI_RULES" base
+  log "Appending visible-TUI default rules: ${BASE_VISIBLE_TUI_RULES}"
+fi
+
 # ── FLY-1319: founder-local time (universal companion + cos + dept) ──
 # External customer-facing agents intentionally keep their narrower contract.
 BASE_FOUNDER_LOCAL_TIME_RULES="${BASE_RULES_DIR}/founder-local-time.md"

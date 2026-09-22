@@ -13,7 +13,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { initializeMigration } from "./raya-migration-init.js";
-import type { MigrationIO } from "./raya-migration-io.js";
+import {
+	LEAD_LIVE_VERIFY_TIMEOUT_MS,
+	type MigrationIO,
+} from "./raya-migration-io.js";
 import { runMigrationManifest } from "./raya-migration-manifest.js";
 
 const roots: string[] = [];
@@ -86,6 +89,11 @@ function fixture() {
 			EnvironmentVariables: { RAYA_ENV_FILE: join(root, "raya/raya.env") },
 		});
 	const commands: string[] = [];
+	const runCalls: Array<{
+		file: string;
+		args: string[];
+		timeoutMs: number | undefined;
+	}> = [];
 	let posts = 0;
 	let nudge = 202;
 	let postStatus = 200;
@@ -96,8 +104,9 @@ function fixture() {
 	const messages: unknown[] = [];
 	const io: MigrationIO = {
 		now: () => Date.parse("2026-09-13T00:00:00Z"),
-		run: async (file, args) => {
+		run: async (file, args, timeoutMs) => {
 			commands.push(`${file} ${args.join(" ")}`);
+			runCalls.push({ file, args, timeoutMs });
 			if (file === "plutil") return readFileSync(args.at(-1)!, "utf8");
 			if (file === "launchctl") {
 				const label = args.at(-1)!.split("/").at(-1)!;
@@ -154,6 +163,7 @@ function fixture() {
 		put,
 		io,
 		commands,
+		runCalls,
 		posts: () => posts,
 		setNudge: (value: number) => {
 			nudge = value;
@@ -257,6 +267,11 @@ describe("H3 migration initialization", () => {
 		expect(f.commands).toContain(
 			`bash ${join(f.root, "bin/flywheel-lead.sh")} verify --stage live ${join(f.root, "manifests/raya-raya.json")}`,
 		);
+		expect(
+			f.runCalls.find(
+				(call) => call.file === "bash" && call.args.includes("verify"),
+			)?.timeoutMs,
+		).toBe(LEAD_LIVE_VERIFY_TIMEOUT_MS);
 	});
 	it("rebuilds from a missing owner and a loaded but not running owner", async () => {
 		const f = fixture();

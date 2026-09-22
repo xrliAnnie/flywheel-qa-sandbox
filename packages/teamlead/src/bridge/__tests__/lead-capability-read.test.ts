@@ -1026,6 +1026,7 @@ it.each([false, true])(
 
 it("mounts actual patrol snapshot and judgment services with scoped HTTP replay and drain guards", async () => {
 	const f = await fixture(false, false, true);
+	const timerSpy = vi.spyOn(globalThis, "setTimeout");
 	const snapshot = {
 		operationId: "patrol.snapshot",
 		requestId: randomUUID(),
@@ -1042,6 +1043,9 @@ it("mounts actual patrol snapshot and judgment services with scoped HTTP replay 
 		);
 		const first = await f.request({ tickId: "1" }, "test-token", snapshot);
 		expect(first.status).toBe(200);
+		expect(
+			timerSpy.mock.calls.some(([, timeoutMs]) => timeoutMs === 275_000),
+		).toBe(true);
 		expect(first.body.data.text).toContain("project: flywheel\nlead: eng");
 		expect(
 			await f.request({ tickId: "1" }, "test-token", snapshot, undefined, true),
@@ -1089,6 +1093,7 @@ it("mounts actual patrol snapshot and judgment services with scoped HTTP replay 
 			).status,
 		).toBe(403);
 	} finally {
+		timerSpy.mockRestore();
 		await f.close();
 	}
 }, 20000);

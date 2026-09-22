@@ -12,7 +12,11 @@ export ROSTER_EPISODE_STATE="$SB/roster-episodes"
 export FLYWHEEL_CMUX_ATTACH_RETRIES=4
 export FLYWHEEL_CMUX_ALERT_BIN=/usr/bin/true
 export FLYWHEEL_CMUX_LEAD_ATTACH_BIN="$SB/lead-attach"
-mkdir -p "$HOME" "$SB/bin"
+export FLYWHEEL_PROJECTS_FILE="$SB/projects.json"
+export FLYWHEEL_LEAD_PLIST_DIR="$SB/plists"
+export FLYWHEEL_MANIFEST_DIR="$SB/manifests"
+mkdir -p "$HOME" "$SB/bin" "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+printf '[]\n' > "$FLYWHEEL_PROJECTS_FILE"
 printf '#!/bin/sh\nexit 0\n' >"$FLYWHEEL_CMUX_LEAD_ATTACH_BIN"
 chmod +x "$FLYWHEEL_CMUX_LEAD_ATTACH_BIN"
 
@@ -73,6 +77,49 @@ episode_state() {
   awk -F'|' -v kind="$1" -v subject="$2" \
     '$1 == kind && $2 == subject { print $4; exit }' "$ROSTER_EPISODE_STATE" 2>/dev/null
 }
+
+echo 'Test: expected registry is left-joined with loaded carrier truth'
+cat > "$FLYWHEEL_PROJECTS_FILE" <<'JSON'
+[{"projectName":"demo","leads":[{"agentId":"alpha"},{"agentId":"beta"},{"agentId":"gamma"}]}]
+JSON
+: > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.demo-alpha.plist"
+: > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.demo-gamma.plist"
+printf '%s\n' '{"projectName":"demo","leadId":"alpha","leadBackend":{"backendId":"codex-app-server"}}' \
+  > "$FLYWHEEL_MANIFEST_DIR/demo-alpha.json"
+lead_job_loaded() { [[ "$1" != com.flywheel.lead.demo-beta ]]; }
+lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead.sh; }
+read_roster_tmux_inventory() {
+  ROSTER_TMUX_STATE=ok_nonempty
+  ROSTER_TMUX_WINDOWS='flywheel|@1|demo-alpha|0'
+}
+ALERTS=""
+derive_lead_roster
+reconcile_lead_roster
+if [[ "$LEAD_ROSTER_ROWS" == *'codex-tui-cmux|com.flywheel.lead.demo-alpha|demo-alpha|'* \
+  && "$LEAD_ROSTER_ROWS" == *'missing-lifecycle|com.flywheel.lead.demo-beta|demo-beta|'* \
+  && "$LEAD_ROSTER_ROWS" == *'config-drift|com.flywheel.lead.demo-gamma|demo-gamma|'* \
+  && "$(alert_count 'cmux_cleanup|lead-window-missing|demo-beta|e1')" == 1 \
+  && "$(alert_count 'cmux_cleanup|config-drift|com.flywheel.lead.demo-gamma|e1')" == 1 \
+  && "$(alert_count 'lead-attach-missing|demo-beta')" == 0 ]]; then
+  pass 'unloaded and missing-manifest Leads stay in coverage with neutral shared-window findings'
+else
+  fail "registry left join drifted rows=[$LEAD_ROSTER_ROWS] alerts=[$ALERTS]"
+fi
+
+python3 - "$FLYWHEEL_PROJECTS_FILE" <<'PY'
+import json,sys
+path=sys.argv[1]
+data=json.load(open(path))
+data.append({"projectName":"empty-project"})
+open(path,"w").write(json.dumps(data))
+PY
+derive_lead_roster
+if [[ "$LEAD_ROSTER_STATE" == ok \
+  && "$LEAD_ROSTER_ROWS" == *'codex-tui-cmux|com.flywheel.lead.demo-alpha|demo-alpha|'* ]]; then
+  pass 'project entries without a leads key contribute an empty Lead set'
+else
+  fail "project without leads poisoned the fleet roster state=$LEAD_ROSTER_STATE rows=[$LEAD_ROSTER_ROWS]"
+fi
 
 echo 'Test: persisted bare retry exhaustion reaches the v2 alert branch'
 now="$(date +%s)"

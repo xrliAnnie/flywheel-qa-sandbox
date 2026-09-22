@@ -12,6 +12,7 @@ import type { MemoryService } from "flywheel-edge-worker";
 import { z } from "zod";
 import { DepartmentRegistry } from "../department-registry.js";
 import { getLeadCapability } from "../lead-capabilities/catalog.js";
+import { PATROL_SNAPSHOT_SERVER_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
 import type { OperationReceiptStore } from "../lead-capabilities/receipts.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { commDbPathForProject } from "./commdb-path.js";
@@ -162,7 +163,12 @@ export function createLeadCapabilityReadRouter(
 			};
 		req.once("aborted", abort);
 		res.once("close", onClose);
-		const timer = setTimeout(abort, 15000);
+		const timer = setTimeout(
+			abort,
+			body.operationId === "patrol.snapshot"
+				? PATROL_SNAPSHOT_SERVER_TIMEOUT_MS
+				: 15_000,
+		);
 		try {
 			const env = options.env ?? process.env,
 				home = options.homeDir ?? env.HOME ?? homedir(),

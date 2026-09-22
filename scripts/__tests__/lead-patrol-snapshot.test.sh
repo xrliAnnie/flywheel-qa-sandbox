@@ -61,6 +61,9 @@ SANITY_FLOOR="$(awk -F= '$1 == "FLYWHEEL_SCRIPT_MIN_BYTES" {print $2; exit}' "$R
 grep -Fq 'GIT_OPTIONAL_LOCKS=0 git -C "$RAYA_PATROL_CODE_DIR"' "$SCRIPT" \
   && pass "Raya checkout inspection disables optional Git locks" \
   || fail "Raya checkout inspection must remain read-only"
+grep -Fq '"$BOUNDED_RUN" "$AV_VISIBLE_TIMEOUT_SECONDS" "$LEAD_VISIBILITY_VERIFIER"' "$SCRIPT" \
+  && pass "STEP 1 leaves headroom outside the measured cmux visibility tail" \
+  || fail "STEP 1 must consume the shared outer visibility budget"
 [ "$(grep -c '^RAYA_SHUTTLE_STALE_SECONDS=' "$SCRIPT" || true)" -eq 1 ] \
   && pass "Raya shuttle freshness threshold has one source of truth" \
   || fail "Raya shuttle freshness threshold must be defined exactly once"
@@ -167,7 +170,30 @@ process.stdout.write(`${JSON.stringify({
   },
 })}\n`);
 SH
-  chmod 0755 "$dir/bin/tmux" "$dir/bin/gh" "$dir/bin/flywheel-snapshot-control"
+  cat > "$dir/bin/verify-agent-visibility" <<'SH'
+#!/bin/bash
+project=""; lead=""; level=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project) project="$2"; shift 2 ;;
+    --lead) lead="$2"; shift 2 ;;
+    --level) level="$2"; shift 2 ;;
+    --json) shift ;;
+    *) exit 64 ;;
+  esac
+done
+case "${PATROL_VISIBILITY_MODE:-pass}" in
+  pass) status=pass; reason=""; rc=0 ;;
+  fail) status=fail; reason=missing_window; rc=1 ;;
+  *) status=inconclusive; reason=probe_unavailable; rc=2 ;;
+esac
+jq -nc --arg project "$project" --arg lead "$lead" --arg level "$level" \
+  --arg status "$status" --arg reason "$reason" \
+  '{schemaVersion:1,subject:{kind:"lead",project:$project,leadId:$lead},level:$level,status:$status,reasons:(if $reason == "" then [] else [$reason] end)}'
+exit "$rc"
+SH
+  chmod 0755 "$dir/bin/tmux" "$dir/bin/gh" "$dir/bin/flywheel-snapshot-control" \
+    "$dir/bin/verify-agent-visibility"
 }
 
 run_snapshot() {
@@ -187,6 +213,8 @@ run_snapshot() {
   DISK_AVAIL_BYTES="${DISK_AVAIL_BYTES:-}" \
   FAKE_DISK_UNAVAILABLE="${FAKE_DISK_UNAVAILABLE:-}" \
   PATROL_NOW_EPOCH="${PATROL_NOW_EPOCH:-}" \
+  PATROL_VISIBILITY_MODE="${PATROL_VISIBILITY_MODE:-pass}" \
+  FLYWHEEL_PATROL_VISIBILITY_VERIFIER="$dir/bin/verify-agent-visibility" \
   TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
   TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
     "${PATROL_TEST_BASH:-bash}" "$executable" --project flywheel --lead "$lead_id" ${parent_args[@]+"${parent_args[@]}"} > "$out" 2>&1
@@ -978,6 +1006,40 @@ MISSING_PANE_OUT="$MISSING_PANE/out.txt"
 TMUX_CALL_LOG="$MISSING_PANE/tmux-calls.log" run_snapshot "$MISSING_PANE" "$MISSING_PANE_OUT" || fail "missing owned pane still publishes report"
 contains "$MISSING_PANE_OUT" "ROSTER_EVIDENCE target=runner-flywheel:@99 exec=exec-missing-pane live_panes=0 findings=MISSING_PANE" "owned roster row without a pane is visible"
 count_is "$MISSING_PANE_OUT" "PANE_EVIDENCE " 0 "missing pane cannot be captured"
+
+PENDING_RUNNER="$TMP/pending-runner"
+make_case "$PENDING_RUNNER"
+cp "$PANES/bin/tmux" "$PENDING_RUNNER/bin/tmux"
+sqlite3 "$PENDING_RUNNER/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pending-pane','runner-flywheel:pending','flywheel','FLY-300','flywheel-eng-lead','running','codex'),
+ ('exec-empty-pane','','flywheel','FLY-301','flywheel-eng-lead','running','codex');
+SQL
+PENDING_RUNNER_OUT="$PENDING_RUNNER/out.txt"
+run_snapshot "$PENDING_RUNNER" "$PENDING_RUNNER_OUT" || fail "pending Runner snapshot exits zero"
+contains "$PENDING_RUNNER_OUT" "ROSTER_EVIDENCE target=runner-flywheel:pending exec=exec-pending-pane live_panes=0 findings=TARGET_PENDING" "pending Runner target remains visible"
+contains "$PENDING_RUNNER_OUT" "ROSTER_EVIDENCE target=unbound exec=exec-empty-pane live_panes=0 findings=TARGET_PENDING" "empty active Runner target remains visible"
+contains "$PENDING_RUNNER_OUT" "STEP 1: FINDING-CANDIDATE" "pending Runner targets cannot be reported healthy"
+
+sqlite3 "$PENDING_RUNNER/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-ownerless-unbound','','flywheel','FLY-302',NULL,'running','codex');
+SQL
+PENDING_OWNERLESS_OUT="$PENDING_RUNNER/ownerless.txt"
+run_snapshot "$PENDING_RUNNER" "$PENDING_OWNERLESS_OUT" || fail "ownerless pending Runner snapshot exits zero"
+contains "$PENDING_OWNERLESS_OUT" "ROSTER_EVIDENCE target=runner-flywheel:pending exec=exec-pending-pane live_panes=0 findings=TARGET_PENDING" "ownerless pending session does not suppress attributable Runner findings"
+not_contains "$PENDING_OWNERLESS_OUT" "UNAVAILABLE(structural: owner_index_incomplete)" "ownerless unbound session does not blind every department owner index"
+
+SELF_VISIBILITY="$TMP/self-visibility"
+make_case "$SELF_VISIBILITY"
+SELF_VISIBILITY_FAIL_OUT="$SELF_VISIBILITY/fail.txt"
+PATROL_VISIBILITY_MODE=fail run_snapshot "$SELF_VISIBILITY" "$SELF_VISIBILITY_FAIL_OUT" || fail "missing Lead visibility still publishes report"
+contains "$SELF_VISIBILITY_FAIL_OUT" "LEAD_VISIBILITY project=flywheel lead=flywheel-eng-lead status=fail reasons=missing_window" "STEP 1 carries current Lead visibility evidence"
+contains "$SELF_VISIBILITY_FAIL_OUT" "STEP 1: FINDING-CANDIDATE" "missing current Lead window is a finding"
+SELF_VISIBILITY_UNKNOWN_OUT="$SELF_VISIBILITY/unknown.txt"
+PATROL_VISIBILITY_MODE=inconclusive run_snapshot "$SELF_VISIBILITY" "$SELF_VISIBILITY_UNKNOWN_OUT" || fail "unproven Lead visibility still publishes report"
+contains "$SELF_VISIBILITY_UNKNOWN_OUT" "LEAD_VISIBILITY project=flywheel lead=flywheel-eng-lead status=inconclusive reasons=probe_unavailable" "STEP 1 names Lead visibility coverage gaps"
+contains "$SELF_VISIBILITY_UNKNOWN_OUT" "STEP 1: UNAVAILABLE(structural: lead_visibility_unproven)" "unproven current Lead visibility is unavailable, never pass"
 
 BLANK_OWNER="$TMP/blank-owner"
 make_case "$BLANK_OWNER"

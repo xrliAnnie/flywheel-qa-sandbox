@@ -3,7 +3,23 @@ import { isAbsolute, normalize } from "node:path";
 
 /** Parent-owned execution policy; model inputs cannot extend a deadline. */
 export function leadOperationTimeoutMs(operationId: string): number {
-	return operationId === "git.feature.push" ? 180000 : 15000;
+	if (operationId === "git.feature.push") return 180_000;
+	if (operationId === "patrol.snapshot") return 300_000;
+	return 15_000;
+}
+
+/** Let the broker settle its receipt before its server-side socket is closed. */
+export function leadOperationServerSocketTimeoutMs(
+	operationId: string,
+): number {
+	return leadOperationTimeoutMs(operationId) + 1_000;
+}
+
+/** The caller owns the outermost transport deadline. */
+export function leadOperationClientSocketTimeoutMs(
+	operationId: string,
+): number {
+	return leadOperationServerSocketTimeoutMs(operationId) + 1_000;
 }
 
 /** Text ingress permits 512 KiB of UTF-8 plus worst-case JSON escaping and envelope. */
@@ -126,7 +142,7 @@ export async function requestLeadOperation(
 		};
 		const timer = setTimeout(
 			() => fail("broker_response_timeout"),
-			leadOperationTimeoutMs(request.operationId) + 1000,
+			leadOperationClientSocketTimeoutMs(request.operationId),
 		);
 		socket.on("connect", () => socket.write(`${frame}\n`));
 		socket.on("error", () => fail("broker_connection_failed"));

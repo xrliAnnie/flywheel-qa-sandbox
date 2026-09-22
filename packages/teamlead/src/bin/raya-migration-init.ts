@@ -12,6 +12,7 @@ import {
 	digest,
 	discordJson,
 	ensureDiscordProbe,
+	LEAD_LIVE_VERIFY_TIMEOUT_MS,
 	type MigrationIO,
 	readPrivate,
 	withRayaDeployLock,
@@ -327,7 +328,7 @@ export async function initializeMigration(
 					"live",
 					join(root, "manifests/raya-raya.json"),
 				],
-				30_000,
+				LEAD_LIVE_VERIFY_TIMEOUT_MS,
 			);
 			cursorStatus = "preexisting";
 		}

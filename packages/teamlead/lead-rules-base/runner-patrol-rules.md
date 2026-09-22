@@ -33,6 +33,9 @@ checkout 或旧部署取配方。legacy prompt-file 模式使用实际加载的�
   `comm.sessions.lead_id = LEAD_ID`、status=`running|blocked` 确认唯一 target，再与
   canonical `runner-*` pane 元数据求交。不得全机 capture 后过滤。owner 缺失或歧义
   fail closed；无主 pane 属 Bridge orphan sweeper/Claw，不扩大本 Lead 可见面。
+- STEP 1 对本 Lead 与每个仍在执行/phase-held 的名下 Runner 都要核验可见 TUI
+  窗口存在且身份唯一、可接入。缺窗、空壳、死 pane、错 execution 或探测不可用都
+  不能静默算健康；按同版本 runbook 输出 `LEAD_VISIBILITY` / Runner finding 事实。
 - 每 tick 先读上一报告，再运行一次受管 flywheel-patrol-snapshot；复用唯一 REPORT_PATH。
   六个 numeric STEP + 一个命名 STEP DWELL 都须定稿 OK/FINDING/UNAVAILABLE。
   STEP 1 名册，2 每个名下 pane 的全 scrollback 与有界动作，3 TURN/engine 交接账，

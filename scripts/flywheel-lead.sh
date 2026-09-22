@@ -797,6 +797,93 @@ assert_lifecycle_carrier() {
   fi
 }
 
+LEAD_VISIBILITY_DETAIL="not_checked"
+AGENT_VISIBILITY_VERIFIER=""
+
+resolve_agent_visibility_verifier() {
+  local verifier="${FLYWHEEL_AGENT_VISIBILITY_VERIFIER:-${FLYWHEEL_BIN_DIR}/verify-agent-visibility.sh}"
+  if [ -z "${FLYWHEEL_AGENT_VISIBILITY_VERIFIER:-}" ] \
+    && { [ ! -x "$verifier" ] || [ -L "$verifier" ]; }; then
+    verifier="${FLYWHEEL_DIR}/scripts/verify-agent-visibility.sh"
+  fi
+  [ -x "$verifier" ] && [ ! -L "$verifier" ] \
+    || { LEAD_VISIBILITY_DETAIL="verifier_unavailable:${verifier}"; return 2; }
+  AGENT_VISIBILITY_VERIFIER="$verifier"
+}
+
+verify_lead_visible_once() {
+  local project="$1" lead="$2" timeout_seconds="${3:-0}"
+  local verifier bounded output="" probe_rc=0 status="" reasons=""
+  resolve_agent_visibility_verifier || return 2
+  verifier="$AGENT_VISIBILITY_VERIFIER"
+  if [ "$timeout_seconds" -gt 0 ]; then
+    bounded="${FLYWHEEL_BIN_DIR}/lib/bounded-run.sh"
+    [ -x "$bounded" ] && [ ! -L "$bounded" ] \
+      || bounded="${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh"
+    if [ ! -x "$bounded" ] || [ -L "$bounded" ]; then
+      LEAD_VISIBILITY_DETAIL="bounded_runner_unavailable:${bounded}"
+      return 2
+    fi
+    output="$("$bounded" "$timeout_seconds" "$verifier" \
+      --project "$project" --lead "$lead" --level visible --json)" || probe_rc=$?
+  else
+    output="$("$verifier" --project "$project" --lead "$lead" \
+      --level visible --json)" || probe_rc=$?
+  fi
+  status="$(jq -er --arg project "$project" --arg lead "$lead" \
+    'select(.schemaVersion == 1 and .subject.kind == "lead" and .subject.project == $project and .subject.leadId == $lead and .level == "visible") | .status' \
+    <<<"$output" 2>/dev/null || true)"
+  reasons="$(jq -r '[.reasons[]? | select(type == "string")] | join(",")' \
+    <<<"$output" 2>/dev/null || true)"
+  LEAD_VISIBILITY_DETAIL="status=${status:-invalid};reasons=${reasons:-none};rc=${probe_rc}"
+  case "$probe_rc:$status" in
+    0:pass) return 0 ;;
+    1:fail) return 1 ;;
+    2:inconclusive|124:*) return 2 ;;
+    *) LEAD_VISIBILITY_DETAIL="invalid_verifier_response;rc=${probe_rc}"; return 2 ;;
+  esac
+}
+
+alert_lead_visibility_unverified() {
+  local project="$1" lead="$2" detail="$3"
+  local alert_bin="${FLYWHEEL_LEAD_ALERT_BIN:-${FLYWHEEL_BIN_DIR}/lead-alert.sh}"
+  [ -x "$alert_bin" ] && [ ! -L "$alert_bin" ] \
+    || alert_bin="${FLYWHEEL_DIR}/scripts/lead-alert.sh"
+  if [ ! -x "$alert_bin" ] || [ -L "$alert_bin" ]; then
+    log "WARNING: visibility alert helper is missing or unsafe: $alert_bin"
+    return 0
+  fi
+  "$alert_bin" --project "$project" --lead "$lead" \
+    --kind tui_window_lost --severity severe \
+    --title "Lead visible TUI is unverified" \
+    --body "installed_but_visibility_unverified: ${project}/${lead}; ${detail}" 1>&2 || true
+}
+
+wait_for_lead_visibility() {
+  local project="$1" lead="$2" deadline remaining attempts=0 max_attempts=0 probe_rc=0
+  deadline=$((SECONDS + 270))
+  # Test seams are honored only with an explicitly injected verifier. Production
+  # always owns the full 270-second convergence budget.
+  if [ -n "${FLYWHEEL_AGENT_VISIBILITY_VERIFIER:-}" ]; then
+    max_attempts="${FLYWHEEL_LEAD_VISIBILITY_MAX_ATTEMPTS:-0}"
+    case "$max_attempts" in ''|*[!0-9]*) max_attempts=0 ;; esac
+  fi
+  while :; do
+    remaining=$((deadline - SECONDS))
+    (( remaining > 1 )) || { LEAD_VISIBILITY_DETAIL="deadline_exhausted;${LEAD_VISIBILITY_DETAIL}"; return 1; }
+    attempts=$((attempts + 1))
+    probe_rc=0
+    verify_lead_visible_once "$project" "$lead" "$((remaining - 1))" || probe_rc=$?
+    [ "$probe_rc" -eq 0 ] && return 0
+    if (( max_attempts > 0 && attempts >= max_attempts )); then
+      return 1
+    fi
+    remaining=$((deadline - SECONDS))
+    (( remaining > 2 )) || { LEAD_VISIBILITY_DETAIL="deadline_exhausted;${LEAD_VISIBILITY_DETAIL}"; return 1; }
+    sleep 2
+  done
+}
+
 install_lead() {
   load_common paths-only || return $?
   load_supervisor || return $?
@@ -820,7 +907,12 @@ install_lead() {
   FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1 supervisor_install "$spec" || return $?
   plist_matches_lifecycle_target "$LIFECYCLE_PLIST" \
     || { fail "installed plist does not match the requested Lead carrier" 70; return $?; }
-  log "installed ${LIFECYCLE_LABEL}; run preflight and verify before live traffic"
+  if ! wait_for_lead_visibility "$LIFECYCLE_PROJECT" "$LIFECYCLE_LEAD"; then
+    alert_lead_visibility_unverified "$LIFECYCLE_PROJECT" "$LIFECYCLE_LEAD" "$LEAD_VISIBILITY_DETAIL"
+    fail "installed_but_visibility_unverified: ${LIFECYCLE_LABEL}; ${LEAD_VISIBILITY_DETAIL}" 78
+    return $?
+  fi
+  log "installed ${LIFECYCLE_LABEL}; visible TUI verified"
 }
 
 stop_lead() {
@@ -933,33 +1025,40 @@ verify_lead() {
     404) verify_fail 6 "registration succeeded; Bridge has not restarted, so the Lead inbox pump is absent"; return 1 ;;
     *) verify_fail 6 "Lead inbox nudge returned HTTP $nudge_status"; return 1 ;;
   esac
+  local visibility_rc=0
+  verify_lead_visible_once "$RUN_PROJECT" "$RUN_LEAD" || visibility_rc=$?
+  if [ "$visibility_rc" -ne 0 ]; then
+    verify_fail 7 "visible TUI: $LEAD_VISIBILITY_DETAIL"
+    return 1
+  fi
+  verify_pass 7 "visible TUI project=$RUN_PROJECT lead=$RUN_LEAD"
   [ "$stage" != "installed" ] || return 0
 
   local launch_output pid_count pid label state_dir codex_launcher inbox_dir
   label="com.flywheel.lead.${RUN_PROJECT}-${RUN_LEAD}"
   launch_output="$(launchctl print "gui/$(id -u)/${label}" 2>&1)" \
-    || { verify_fail 7 "launchd job is not loaded: $label"; return 1; }
+    || { verify_fail 8 "launchd job is not loaded: $label"; return 1; }
   pid_count="$(grep -Ec '^[[:space:]]*pid = [0-9]+[[:space:]]*$' <<<"$launch_output" || true)"
   if [ "$(grep -Ec '^[[:space:]]*state = running[[:space:]]*$' <<<"$launch_output" || true)" -ne 1 ] \
     || [ "$pid_count" -ne 1 ]; then
-    verify_fail 7 "launchd must report state=running and exactly one pid"
+    verify_fail 8 "launchd must report state=running and exactly one pid"
     return 1
   fi
   pid="$(awk -F '= ' '/^[[:space:]]*pid = [0-9]+[[:space:]]*$/ { gsub(/[[:space:]]/, "", $2); print $2 }' <<<"$launch_output")"
-  verify_pass 7 "launchd running pid=$pid"
+  verify_pass 8 "launchd running pid=$pid"
 
   if [ "$RUN_BACKEND" = "codex-app-server" ]; then
     codex_launcher="${FLYWHEEL_TEAMLEAD_ROOT}/scripts/codex-lead.sh"
     state_dir="$(FLYWHEEL_STATE_DIR="$FLYWHEEL_STATE_DIR" /bin/bash "$codex_launcher" \
       --print-state-dir "$RUN_LEAD" "$RUN_PROJECT" 2>/dev/null || true)"
     [ -n "$state_dir" ] && [ -S "$state_dir/lead-inbox.sock" ] \
-      || { verify_fail 8 "Codex inbox socket is absent"; return 1; }
-    verify_pass 8 "Codex inbox socket $state_dir/lead-inbox.sock"
+      || { verify_fail 9 "Codex inbox socket is absent"; return 1; }
+    verify_pass 9 "Codex inbox socket $state_dir/lead-inbox.sock"
   else
     inbox_dir="${HOME}/.claude/teams/${RUN_LEAD}/inboxes"
     [ -d "$inbox_dir" ] && [ ! -L "$inbox_dir" ] \
-      || { verify_fail 8 "Claude inbox directory is absent or unsafe: $inbox_dir"; return 1; }
-    verify_pass 8 "Claude inbox $inbox_dir"
+      || { verify_fail 9 "Claude inbox directory is absent or unsafe: $inbox_dir"; return 1; }
+    verify_pass 9 "Claude inbox $inbox_dir"
   fi
   [ -n "$message_id" ] || return 0
 
@@ -967,26 +1066,26 @@ verify_lead() {
   delivery_id="chat:${RUN_LEAD}:${message_id}"
   message_status="$(node "$FLYWHEEL_COMM_CLI" message-status "$delivery_id" \
     --db "${HOME}/.flywheel/comm/${RUN_PROJECT}/comm.db" --json 2>&1)" \
-    || { verify_fail 9 "mailbox delivery is absent: $delivery_id ($message_status)"; return 1; }
+    || { verify_fail 10 "mailbox delivery is absent: $delivery_id ($message_status)"; return 1; }
   delivered_at="$(jq -er '.stamps.delivered_at | select(type == "string" and length > 0)' \
     <<<"$message_status" 2>/dev/null || true)"
   if [ "$(jq -r '.state // ""' <<<"$message_status" 2>/dev/null)" != "ACKED" ] \
     || [ -z "$delivered_at" ]; then
-    verify_fail 9 "mailbox delivery is not ACKED: $delivery_id"
+    verify_fail 10 "mailbox delivery is not ACKED: $delivery_id"
     return 1
   fi
-  verify_pass 9 "mailbox state=ACKED delivered_at=$delivered_at delivery_id=$delivery_id"
+  verify_pass 10 "mailbox state=ACKED delivered_at=$delivered_at delivery_id=$delivery_id"
 
   if [ "$RUN_BACKEND" = "codex-app-server" ]; then
     local inspector inspector_output entry_id idempotency_key outbound_message_id
     inspector="${FLYWHEEL_TEAMLEAD_ROOT}/dist/bin/inspect-lead-outbound.js"
     [ -f "$inspector" ] && [ ! -L "$inspector" ] \
-      || { verify_fail 10 "Codex outbound inspector is missing or unsafe: $inspector"; return 1; }
+      || { verify_fail 11 "Codex outbound inspector is missing or unsafe: $inspector"; return 1; }
     inspector_output="$(node "$inspector" \
       --state-dir "$state_dir" \
       --delivery-id "$delivery_id" \
       --dedup-db "${HOME}/.flywheel/codex-lead-outbound-dedup.db" 2>&1)" \
-      || { verify_fail 10 "Codex outbound evidence: $inspector_output"; return 1; }
+      || { verify_fail 11 "Codex outbound evidence: $inspector_output"; return 1; }
     entry_id="$(jq -er '.entryId | select(type == "string" and length > 0)' \
       <<<"$inspector_output" 2>/dev/null || true)"
     idempotency_key="$(jq -er '.idempotencyKey | select(type == "string" and length > 0)' \
@@ -994,10 +1093,10 @@ verify_lead() {
     outbound_message_id="$(jq -er '.messageId | select(type == "string" and length > 0)' \
       <<<"$inspector_output" 2>/dev/null || true)"
     if [ -z "$entry_id" ] || [ -z "$idempotency_key" ] || [ -z "$outbound_message_id" ]; then
-      verify_fail 10 "Codex outbound inspector returned an incomplete receipt: $inspector_output"
+      verify_fail 11 "Codex outbound inspector returned an incomplete receipt: $inspector_output"
       return 1
     fi
-    verify_pass 10 "Codex outbound delivery_id=$delivery_id entry_id=$entry_id idempotency_key=$idempotency_key message_id=$outbound_message_id"
+    verify_pass 11 "Codex outbound delivery_id=$delivery_id entry_id=$entry_id idempotency_key=$idempotency_key message_id=$outbound_message_id"
   fi
   return 0
 }

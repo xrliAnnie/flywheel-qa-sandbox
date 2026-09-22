@@ -18,8 +18,27 @@ import { SqliteJournalStore } from "../SqliteJournalStore.js";
 const mocks = vi.hoisted(() => ({
 	alive: true,
 	killOk: true,
+	proofMode: "immediate" as "immediate" | "manual",
+	identity: {
+		windowName: "test-test",
+		paneId: "%7",
+		panePid: 7007,
+		startCommand: "codex resume --remote unix:///tmp/unit.sock",
+		currentCommand: "codex",
+		modelAlive: true,
+	},
+	proofs: [] as Array<{
+		resolve: (value: typeof mocks.identity | null) => void;
+		cancel: ReturnType<typeof vi.fn>;
+	}>,
 	create: vi.fn(),
 	kill: vi.fn(),
+	readExitEvidence: vi.fn(async () => ({
+		windowName: "test-test",
+		paneId: "%7",
+		exitStatus: 17,
+		terminalTail: ["Resuming session…"],
+	})),
 	router: null as LeadInputRouter | null,
 	gatewayStart: vi.fn(async () => {}),
 	gatewayStop: vi.fn(async () => {}),
@@ -36,6 +55,27 @@ vi.mock("../tui-window.js", async (importOriginal) => ({
 		return true;
 	},
 	isTuiWindowAlive: () => mocks.alive,
+	readTuiWindowIdentity: () => (mocks.alive ? { ...mocks.identity } : null),
+	readTuiWindowExitEvidenceAsync: mocks.readExitEvidence,
+	beginTuiWindowVisibilityProof: () => {
+		if (mocks.proofMode === "immediate")
+			return {
+				promise: Promise.resolve(mocks.alive ? { ...mocks.identity } : null),
+				cancel: vi.fn(),
+			};
+		let resolve!: (value: typeof mocks.identity | null) => void;
+		let settled = false;
+		const promise = new Promise<typeof mocks.identity | null>((done) => {
+			resolve = (value) => {
+				if (settled) return;
+				settled = true;
+				done(value);
+			};
+		});
+		const cancel = vi.fn(() => resolve(null));
+		mocks.proofs.push({ resolve, cancel });
+		return { promise, cancel };
+	},
 	killTuiWindow: () => {
 		mocks.kill();
 		if (mocks.killOk) mocks.alive = false;
@@ -91,9 +131,12 @@ beforeEach(async () => {
 	initializeFlagStore(flagStore, {});
 	mocks.alive = true;
 	mocks.killOk = true;
+	mocks.proofMode = "immediate";
+	mocks.proofs.splice(0);
 	mocks.router = null;
 	mocks.create.mockClear();
 	mocks.kill.mockClear();
+	mocks.readExitEvidence.mockClear();
 	mocks.gatewayStart.mockReset().mockResolvedValue();
 	mocks.gatewayStop.mockClear();
 });
@@ -194,98 +237,99 @@ function harness(
 	};
 	let emit: (method: string, params: unknown) => void = () => {};
 	const rebuild = vi.fn(() => true);
+	const onWindowOwned = vi.fn();
 	const readTuning = vi.fn(() => ({
 		model: "gpt-6-astra",
 		reasoningEffort: "high" as const,
 	}));
+	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 	const personaObservations: Array<{
 		stage: "verified" | "ready";
 		threadId: string;
 		baseInstructions: string;
 	}> = [];
 	const verifyColdProof = vi.fn();
-	const make = buildTuiGeneration(
-		config,
-		{ info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-		{
-			requestRebuild: rebuild,
-			readTuning,
-			createSender: () => ({
-				enqueue: async () => "outbox",
-				deliver: async () => {},
-			}),
-			preflight: async () => {},
-			...(options.persona
-				? {
-						verifyPersona: async () => options.persona!,
-						verifyColdProof,
-						recordPersonaObservation: (
-							stage: "verified" | "ready",
-							persona: VerifiedPersona,
-							threadId: string,
-						) => {
-							personaObservations.push({
-								stage,
-								threadId,
-								baseInstructions: persona.baseInstructions,
-							});
-						},
-					}
-				: {}),
-			connectDaemon: async () => {
-				const handlers = new Map<string, Array<(value?: unknown) => void>>();
-				const fire = (event: string, value?: unknown) => {
-					for (const cb of handlers.get(event) ?? []) cb(value);
-				};
-				emit = (method, params) =>
-					fire("message", JSON.stringify({ method, params }));
-				return {
-					send(raw: string) {
-						const msg = JSON.parse(raw);
-						requests.push(msg);
-						if (msg.id !== undefined)
-							void Promise.resolve().then(async () => {
-								try {
-									fire(
-										"message",
-										JSON.stringify({
-											id: msg.id,
-											result: await respond(msg.method, msg.params),
-										}),
-									);
-									if (msg.method === "turn/start")
-										emit("turn/completed", {
-											turn: { id: "turn-unit", status: "completed" },
-										});
-								} catch {
-									fire(
-										"message",
-										JSON.stringify({
-											id: msg.id,
-											error: { code: -1, message: "injected failure" },
-										}),
-									);
-								}
-							});
+	const make = buildTuiGeneration(config, logger, {
+		onWindowOwned,
+		requestRebuild: rebuild,
+		readTuning,
+		createSender: () => ({
+			enqueue: async () => "outbox",
+			deliver: async () => {},
+		}),
+		preflight: async () => {},
+		...(options.persona
+			? {
+					verifyPersona: async () => options.persona!,
+					verifyColdProof,
+					recordPersonaObservation: (
+						stage: "verified" | "ready",
+						persona: VerifiedPersona,
+						threadId: string,
+					) => {
+						personaObservations.push({
+							stage,
+							threadId,
+							baseInstructions: persona.baseInstructions,
+						});
 					},
-					close() {
-						fire("close");
-					},
-					terminate() {
-						fire("close");
-					},
-					on(event: string, cb: (value?: unknown) => void) {
-						handlers.set(event, [...(handlers.get(event) ?? []), cb]);
-					},
-				} as never;
-			},
+				}
+			: {}),
+		connectDaemon: async () => {
+			const handlers = new Map<string, Array<(value?: unknown) => void>>();
+			const fire = (event: string, value?: unknown) => {
+				for (const cb of handlers.get(event) ?? []) cb(value);
+			};
+			emit = (method, params) =>
+				fire("message", JSON.stringify({ method, params }));
+			return {
+				send(raw: string) {
+					const msg = JSON.parse(raw);
+					requests.push(msg);
+					if (msg.id !== undefined)
+						void Promise.resolve().then(async () => {
+							try {
+								fire(
+									"message",
+									JSON.stringify({
+										id: msg.id,
+										result: await respond(msg.method, msg.params),
+									}),
+								);
+								if (msg.method === "turn/start")
+									emit("turn/completed", {
+										turn: { id: "turn-unit", status: "completed" },
+									});
+							} catch {
+								fire(
+									"message",
+									JSON.stringify({
+										id: msg.id,
+										error: { code: -1, message: "injected failure" },
+									}),
+								);
+							}
+						});
+				},
+				close() {
+					fire("close");
+				},
+				terminate() {
+					fire("close");
+				},
+				on(event: string, cb: (value?: unknown) => void) {
+					handlers.set(event, [...(handlers.get(event) ?? []), cb]);
+				},
+			} as never;
 		},
-	);
+	});
 	return {
 		config,
+		logger,
 		path,
 		requests,
 		rebuild,
+		onWindowOwned,
 		readTuning,
 		personaObservations,
 		verifyColdProof,
@@ -310,6 +354,126 @@ function harness(
 				: [],
 	};
 }
+
+describe("TUI stable visibility proof", () => {
+	it("does not publish healthy or rotation readiness until the five-second proof resolves", async () => {
+		mocks.proofMode = "manual";
+		const h = harness({
+			ledger: {
+				...baseLedger(),
+				readinessPending: {
+					to: OLD,
+					requestedAt: iso(NOW),
+					degradedAt: null,
+				},
+			},
+		});
+		await h.make().start();
+		expect(mocks.proofs).toHaveLength(1);
+		expect(h.onWindowOwned).toHaveBeenCalledTimes(1);
+		expect(h.receipts().some((r) => r.event === "rotation_ready")).toBe(false);
+		expect(
+			h.logger.info.mock.calls.some(([message]) =>
+				String(message).includes("real TUI up"),
+			),
+		).toBe(false);
+
+		mocks.proofs[0]!.resolve({ ...mocks.identity });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(h.receipts()).toContainEqual(
+			expect.objectContaining({ event: "rotation_ready", to: OLD }),
+		);
+		expect(h.logger.info).toHaveBeenCalledWith(
+			"tui-window: real TUI up (test-test, thread 019eaf5d-a5b7-7a72-b73f-cd1063892aa1)",
+		);
+	});
+
+	it("a pane that dies during proof never becomes healthy", async () => {
+		mocks.proofMode = "manual";
+		const h = harness({
+			ledger: {
+				...baseLedger(),
+				readinessPending: {
+					to: OLD,
+					requestedAt: iso(NOW),
+					degradedAt: null,
+				},
+			},
+		});
+		await h.make().start();
+		mocks.alive = false;
+		mocks.proofs[0]!.resolve(null);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(h.receipts().some((r) => r.event === "rotation_ready")).toBe(false);
+		expect(
+			h.logger.info.mock.calls.some(([message]) =>
+				String(message).includes("real TUI up"),
+			),
+		).toBe(false);
+		expect(mocks.readExitEvidence).toHaveBeenCalledTimes(1);
+		expect(h.logger.warn).toHaveBeenCalledWith(
+			'tui-window: retained_exit window=test-test pane=%7 status=17 tail=["Resuming session…"]',
+		);
+	});
+
+	it("backs off after three instant deaths instead of rebuilding every twenty seconds", async () => {
+		mocks.proofMode = "manual";
+		const h = harness();
+		await h.make().start();
+		for (let failure = 0; failure < 3; failure += 1) {
+			mocks.alive = false;
+			mocks.proofs[failure]!.resolve(null);
+			await Promise.resolve();
+			await Promise.resolve();
+			if (failure < 2) await vi.advanceTimersByTimeAsync(20_000);
+		}
+		expect(mocks.create).toHaveBeenCalledTimes(3);
+		expect(h.logger.warn).toHaveBeenCalledWith(
+			expect.stringContaining("retry_backoff_ms=60000"),
+		);
+
+		await vi.advanceTimersByTimeAsync(40_000);
+		expect(mocks.create).toHaveBeenCalledTimes(3);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(mocks.create).toHaveBeenCalledTimes(4);
+	});
+
+	it("generation stop cancels a pending proof and fences its late callback", async () => {
+		mocks.proofMode = "manual";
+		const h = harness();
+		const generation = h.make();
+		await generation.start();
+		expect(mocks.proofs).toHaveLength(1);
+		await generation.stop();
+		expect(mocks.proofs[0]!.cancel).toHaveBeenCalledTimes(1);
+		mocks.proofs[0]!.resolve({ ...mocks.identity });
+		await Promise.resolve();
+		expect(
+			h.logger.info.mock.calls.some(([message]) =>
+				String(message).includes("real TUI up"),
+			),
+		).toBe(false);
+	});
+
+	it("rotation fencing cancels a pending proof before killing the pane", async () => {
+		mocks.proofMode = "manual";
+		const h = harness();
+		await h.make().start();
+		expect(mocks.proofs).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(rotation.ROTATION_QUIET_MS);
+		expect(mocks.proofs[0]!.cancel).toHaveBeenCalledTimes(1);
+		expect(mocks.kill).toHaveBeenCalledTimes(1);
+		mocks.proofs[0]!.resolve({ ...mocks.identity });
+		await Promise.resolve();
+		expect(
+			h.logger.info.mock.calls.some(([message]) =>
+				String(message).includes("real TUI up"),
+			),
+		).toBe(false);
+	});
+});
 
 describe("FLY-2696 verified persona generation", () => {
 	const persona: VerifiedPersona = {
