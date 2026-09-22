@@ -12,6 +12,7 @@ import {
 } from "./attention-presentation.js";
 import { AuditDictionary, judgmentSummary } from "./audit-dictionary.js";
 import { AuditSidecar } from "./audit-sidecar.js";
+import { renderDiscordLinkPair } from "./discord-link.js";
 import {
 	buildFounderView,
 	type ChildView,
@@ -27,6 +28,10 @@ export interface EpicOptionalRows {
 	judgmentRows?: number;
 	historyRows?: number;
 }
+
+const DISCORD_LINK_UPGRADE_SCRIPT =
+	'(()=>{let u=navigator.userAgent;if(/Android|iP|Mobile/i.test(u)||u.includes("Macintosh")&&navigator.maxTouchPoints>1||!/(Chrome|Safari)\\//.test(u))return;for(let a of document.querySelectorAll("[data-discord-app]"))a.href=a.href.replace("https://discord.com/channels/","discord://-/channels/")})();';
+
 class RenderAudit extends AuditDictionary {
 	appendix: string[] = [];
 	judgmentCount = 0;
@@ -58,6 +63,7 @@ const FOUNDER_DECIDED_RULES = new Set([
 	"ready.v1",
 	"dependents.v1",
 ]);
+const SHUTTLE_CYCLE_MS = 12 * 60 * 60_000;
 
 function relativeTime(iso: string, now: Date): string {
 	const minutes = Math.max(
@@ -65,6 +71,22 @@ function relativeTime(iso: string, now: Date): string {
 		Math.floor((now.getTime() - Date.parse(iso)) / 60_000),
 	);
 	return label("time.minutes_ago", { n: minutes });
+}
+
+function shuttleDriftAge(driftSince: string | null, now: Date): string {
+	if (driftSince === null) return "落后时间未知";
+	const hours = Math.max(
+		0,
+		Math.floor((now.getTime() - Date.parse(driftSince)) / 3_600_000),
+	);
+	return `已确认至少落后 ${hours} 小时`;
+}
+
+function shuttleSourceIsStale(observedAt: string | null, now: Date): boolean {
+	return (
+		observedAt === null ||
+		now.getTime() - Date.parse(observedAt) > SHUTTLE_CYCLE_MS
+	);
 }
 
 function rawCellValue(cell: Cell<unknown>): unknown {
@@ -193,6 +215,7 @@ function executionSummary(item: EpicItem): string {
 			? `${latest.status}/${latest.role ?? ""}(${latest.execution_id8})`
 			: label("page.none"),
 		`ledger_live_count=${session?.ledger_live_count ?? 0}`,
+		`machine_running_count=${session?.machine_running_count ?? 0}`,
 	];
 	if (run) parts.push(`${run.current_node_label}/${run.status}`);
 	if (attempt) parts.push(`${attempt.state}#${attempt.attempt}`);
@@ -243,6 +266,18 @@ function childBadge(child: ChildView): string {
 	if (child.cls === null)
 		return label("child.unknown_type", { state: child.stateName });
 	if (child.cls === "done" || child.cls === "canceled") return child.stateName;
+	if (
+		child.cls === "stopped_stuck" &&
+		child.progress.kind === "stopped_stuck" &&
+		child.progress.reason === "no_first_heartbeat"
+	)
+		return label("child.stopped_stuck_no_heartbeat");
+	if (
+		child.cls === "evidence_gap" &&
+		child.progress.kind === "evidence_gap" &&
+		child.progress.reason === "awaiting_first_heartbeat"
+	)
+		return label("child.evidence_starting");
 	return label(`child.${child.cls}`);
 }
 function progressText(child: ChildView): string {
@@ -260,6 +295,33 @@ function progressText(child: ChildView): string {
 		return label(`progress.${value.kind}`, {
 			blockers: value.blockers.join(" / "),
 		});
+	if (value.kind === "evidence_gap")
+		return label(`progress.evidence_gap.${value.reason}`);
+	if (
+		value.kind === "stopped_acceptance" &&
+		value.reason === "other_live_session"
+	)
+		return label("progress.stopped_acceptance_other_live_session");
+	if (value.kind === "stopped_stuck" && value.reason === "run_held")
+		return label(
+			value.otherLiveSession
+				? "progress.stopped_stuck.run_held_other_live_session"
+				: "progress.stopped_stuck.run_held",
+		);
+	if (value.kind === "stopped_stuck" && value.reason === "declared_blocked")
+		return label(
+			value.otherLiveSession
+				? "progress.stopped_stuck.declared_blocked_other_live_session"
+				: "progress.stopped_stuck.declared_blocked",
+		);
+	if (value.kind === "stopped_stuck" && value.reason === "runner_stopped")
+		return label(
+			value.otherLiveSession
+				? "progress.stopped_stuck.runner_stopped_other_live_session"
+				: "progress.stopped_stuck.runner_stopped",
+		);
+	if (value.kind === "stopped_stuck" && value.reason === "no_first_heartbeat")
+		return label("progress.stopped_stuck_no_heartbeat");
 	return label(`progress.${value.kind}`);
 }
 function renderDependencyAudit(
@@ -373,14 +435,15 @@ function renderChild(
 			),
 	);
 	const url = item.thread_url?.value;
-	const thread =
-		url &&
-		/^https:\/\/discord\.com\/channels\/[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/.test(
-			url,
-		)
-			? `<a class="jump" href="${escapeHtml(url)}">跳 Discord ↗</a>`
-			: `<span class="jump-off">这张单还没有 thread</span>`;
-	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id mono">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span class="kid-t">${escapeHtml(child.title)}</span></div><div class="kid-a">↳ ${escapeHtml(progressText(child))} · ${thread}</div></div>`;
+	const thread = url
+		? renderDiscordLinkPair(url, "跳 Discord ↗", "jump", child.identifier) ||
+			`<span class="jump-off">Discord 链接不可用</span>`
+		: `<span class="jump-off">这张单还没有 thread</span>`;
+	const liveBlockers =
+		child.cls === "live" && child.blockers.length > 0
+			? `<span class="s s-blocked">${escapeHtml(label("child.waiting", { blockers: blockersText(child) }))}</span>`
+			: "";
+	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span>${liveBlockers}<span class="s st-linear">${escapeHtml(child.stateName)}</span><span class="kid-id mono">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span class="kid-t">${escapeHtml(child.title)}</span></div><div class="kid-a">↳ ${escapeHtml(progressText(child))} · ${thread}</div></div>`;
 }
 
 function shortEpicTitle(title: string): string {
@@ -394,7 +457,7 @@ function countsText(epic: EpicView): string {
 		return label("counts.missing", {
 			type: epic.countsMissing?.detail ?? label("progress.unknown"),
 		});
-	return `${epic.counts.live} 在跑 · ${epic.counts.waiting + epic.counts.free + epic.counts.idle} 未开始 · 共 ${epic.counts.total}`;
+	return `${epic.counts.live} 在跑 · ${epic.counts.stopped_acceptance + epic.counts.stopped_stuck} 停着 · ${epic.counts.evidence_gap} 说不准 · ${epic.counts.waiting + epic.counts.free + epic.counts.idle} 未开始 · 共 ${epic.counts.total}`;
 }
 function renderRootProjection(
 	page: EpicPage,
@@ -444,17 +507,33 @@ function renderAttention(
 	now: Date,
 	dictionary: RenderAudit,
 ): string {
+	const deploymentRows = (page.deployment?.value?.units ?? []).filter(
+		(unit) => unit.episodeId !== null && unit.founderAware,
+	);
+	const renderDeploymentRows = () =>
+		deploymentRows
+			.map(
+				(unit) =>
+					`<article class="u-row" data-shuttle-founder="${escapeHtml(unit.unitId)}"><div class="u-l"><span class="u-kind k-gate">需要你知道，Lead 处理中</span><span class="mono">${escapeHtml(unit.projectName)}</span><span class="u-t">${escapeHtml(unit.displayName)}</span></div><div class="u-act">▶ ${escapeHtml(unit.reasonDisplay)}</div><div class="u-r"><span class="u-since">${escapeHtml(unit.behindCommits === null ? "落后提交数未知" : `落后 ${unit.behindCommits} 个提交`)}</span><span>${escapeHtml(shuttleDriftAge(unit.driftSince, now))}</span><span>${escapeHtml(`日志 ${unit.logRef}`)}</span></div></article>`,
+			)
+			.join("");
 	if (page.schema_version === 1)
-		return `<section data-attention-section><h2 class="sec">⚡ 现在要你看</h2><p>${escapeHtml(label("attention.legacy"))}</p></section>`;
+		return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${deploymentRows.length} 件</h2><div class="urgent">${renderDeploymentRows()}</div><p>${escapeHtml(label("attention.legacy"))}</p></section>`;
 	const rows = attentionAudience(page, true);
-	return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${rows.length} 件</h2><div class="urgent">${rows
+	return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${rows.length + deploymentRows.length} 件</h2><div class="urgent">${renderDeploymentRows()}${rows
 		.map(({ item, olderQuestions }) => {
 			dictionary.appendix.push(
 				`<details class="attention-sources"><summary>${escapeHtml(label("attention.sources", { n: item.sources.length }))}</summary><ul>${item.sources.map((source) => `<li>${escapeHtml(attentionSourceText(source, now))}</li>`).join("")}</ul></details>`,
 			);
 			const link = attentionLink(page, item);
 			const where = link.url
-				? `<a class="jump" href="${escapeHtml(link.url)}">跳 Discord ↗</a>`
+				? renderDiscordLinkPair(
+						link.url,
+						"跳 Discord ↗",
+						"jump",
+						item.identifier.value ?? label("attention.unknown"),
+					) ||
+					`<span class="jump-off" aria-disabled="true">Discord 链接不可用</span>`
 				: `<span class="jump-off" aria-disabled="true" title="${escapeHtml(attentionMissing(link.reason))}">这张单还没有 thread</span>`;
 			const question = item.sources.every(
 				(source) => source.fact.value?.kind === "question",
@@ -463,7 +542,132 @@ function renderAttention(
 		})
 		.join(
 			"",
-		)}</div><p class="note attention-status">${escapeHtml(attentionSummary(page, rows.length))}</p></section>`;
+		)}</div><p class="note attention-status">${escapeHtml(attentionSummary(page, rows.length + deploymentRows.length))}</p></section>`;
+}
+
+function renderDeployment(page: EpicPage, now: Date): string {
+	const deployment = page.deployment?.value;
+	if (!deployment)
+		return '<section data-shuttle-status><h2 class="sec">班车状态</h2><p class="note">班车状态尚未采集（旧页面不代表健康）。</p></section>';
+	const stale = shuttleSourceIsStale(deployment.observedAt, now);
+	const activeIds = new Set(deployment.activeIncidents);
+	const active = deployment.units.filter((unit) => activeIds.has(unit.unitId));
+	const hasExpectedSkips = deployment.units.some(
+		(unit) => unit.outcome === "skipped" && unit.expected,
+	);
+	const source =
+		deployment.sourceStatus === "unavailable"
+			? "状态来源不可用；以下为最后一次成功投影，不视为当前健康。"
+			: stale
+				? "班车停跑/读数过期；超过一个班次没有新记录，不视为当前健康。"
+				: deployment.sourceStatus === "truncated"
+					? `状态已截断（展示 ${deployment.retained}/${deployment.total}）。`
+					: `已采集 ${deployment.total} 个部署单元。`;
+	const body = active.length
+		? active
+				.map(
+					(unit) =>
+						`<article class="u-row" data-shuttle-unit="${escapeHtml(unit.unitId)}"><div class="u-l"><span class="u-kind k-gate">${escapeHtml(`${unit.outcome}:${unit.reason}`)}</span><span class="mono">${escapeHtml(unit.projectName)}</span><span class="u-t">${escapeHtml(unit.displayName)}</span></div><div class="u-act">${escapeHtml(unit.reasonDisplay)}</div><div class="u-r"><span>${escapeHtml(unit.behindCommits === null ? "落后提交数未知" : `落后 ${unit.behindCommits} 个提交`)}</span><span>${escapeHtml(shuttleDriftAge(unit.driftSince, now))}</span><span>${escapeHtml(`连续 ${unit.consecutiveScheduledBad} 班`)}</span><span>${escapeHtml(`告警 ${unit.deliveryState ?? "待记录"}`)}</span><span>${escapeHtml(`日志 ${unit.logRef}`)}</span></div></article>`,
+				)
+				.join("")
+		: deployment.sourceStatus === "unavailable"
+			? "<p data-shuttle-unknown>无法判定当前班车是否健康。</p>"
+			: stale
+				? "<p data-shuttle-stale>班车停跑/读数过期。</p>"
+				: hasExpectedSkips
+					? "<p data-shuttle-unverified>部分单元本班未验证；未发现新异常，但不能声明全部正常。</p>"
+					: "<p data-shuttle-healthy>班车全部单元正常。</p>";
+	return `<section data-shuttle-status><h2 class="sec">班车状态</h2><p class="note">${escapeHtml(source)}</p><div class="urgent">${body}</div></section>`;
+}
+
+const VOICE_HEALTH_STALE_MS = 90_000;
+const VOICE_REASON_TEXT = {
+	bridge_connect_failed: "无法连接本机 Bridge",
+	bridge_timeout_headers: "Bridge 响应头超时",
+	bridge_timeout_body: "Bridge 响应体超时",
+	bridge_auth_rejected: "Bridge 拒绝认证",
+	bridge_http_error: "Bridge 返回错误",
+	bridge_protocol_invalid: "Bridge 响应格式无效",
+	startup_config_invalid: "启动配置无效",
+	startup_lock_unavailable: "启动锁不可用",
+	startup_not_ready: "启动后未就绪",
+	session_create_failed: "语音会话创建失败",
+	session_runtime_failed: "语音会话运行失败",
+	lease_lost: "语音租约丢失",
+	heartbeat_stale: "语音心跳过期",
+	health_observation_unavailable: "健康记录不可用",
+	demand_source_unavailable: "会话需求来源不可用",
+	unknown_failure: "未知语音故障",
+} as const;
+
+function renderVoiceHealth(page: EpicPage, now: Date): string {
+	if (page.key.project_name !== "flywheel") return "";
+	const health = page.voiceHealth?.value;
+	if (!health)
+		return '<section data-voice-health data-voice-health-unknown><h2 class="sec">语音健康</h2><p class="note">语音健康尚未采集（旧页面不代表健康）。</p></section>';
+	const observed = health.observedAt
+		? Date.parse(health.observedAt)
+		: Number.NaN;
+	const stale =
+		!Number.isFinite(observed) ||
+		now.getTime() - observed > VOICE_HEALTH_STALE_MS;
+	const lastSuccess = health.lastIterationSuccessAt
+		? `最近完整成功：${health.lastIterationSuccessAt}。`
+		: "尚无完整成功记录。";
+	// FLY-2693 review R5: an unavailable source, an unknown state or a stale
+	// reading is a caveat on the incident list, never a reason to hide it. The
+	// projection deliberately retains active incidents through those states and
+	// the JSON still carries them, so both human surfaces keep rendering them
+	// (same contract as renderDeployment).
+	const caveat =
+		health.sourceStatus === "unavailable"
+			? "unavailable"
+			: stale
+				? "stale"
+				: health.status === "unknown" || health.demandState === "unknown"
+					? "unknown"
+					: health.sourceStatus === "truncated"
+						? "truncated"
+						: null;
+	const caveatText =
+		caveat === "unavailable"
+			? "状态来源不可用；以下为最后一次成功投影，不视为当前健康。"
+			: caveat === "stale"
+				? "语音读数过期；以下为最后一次读数，不视为当前健康。"
+				: caveat === "unknown"
+					? "无法确认当前语音健康。"
+					: caveat === "truncated"
+						? "活动故障列表已截断，仅展示最早的一部分。"
+						: "";
+	const caveatAttr = caveat
+		? ` data-voice-health-caveat="${escapeHtml(caveat)}"`
+		: "";
+	if (health.activeIncidents.length > 0) {
+		const incidents = health.activeIncidents
+			.map(
+				(incident) =>
+					`<article class="u-row"><div class="u-l"><span class="u-kind k-gate">语音不可用</span><span class="u-t">${escapeHtml(VOICE_REASON_TEXT[incident.reasonClass])}</span></div><div class="u-r"><span>${escapeHtml(`自 ${incident.openedAt}`)}</span><span>${escapeHtml(`告警 ${incident.deliveryState ?? "待记录"}`)}</span></div></article>`,
+			)
+			.join("");
+		const note = caveatText
+			? `${escapeHtml(caveatText)} 有会话需求，语音不可用。连续失败 ${health.failureStreak} 次。${escapeHtml(lastSuccess)}`
+			: `有会话需求，语音不可用。连续失败 ${health.failureStreak} 次。${escapeHtml(lastSuccess)}`;
+		return `<section data-voice-health data-voice-health-unhealthy${caveatAttr}><h2 class="sec">语音健康</h2><p class="note">${note}</p><div class="urgent">${incidents}</div></section>`;
+	}
+	if (caveat === "unavailable" || caveat === "stale" || caveat === "unknown") {
+		const detail =
+			caveat === "stale"
+				? "语音读数过期；无法确认当前语音健康。"
+				: "无法确认当前语音健康。";
+		return `<section data-voice-health data-voice-health-unknown${caveatAttr}><h2 class="sec">语音健康</h2><p class="note">${escapeHtml(detail)} ${escapeHtml(lastSuccess)}</p></section>`;
+	}
+	if (health.demandState === "none" && health.status === "dormant")
+		return `<section data-voice-health data-voice-health-dormant><h2 class="sec">语音健康</h2><p class="note">无会话需求，正常休眠。${escapeHtml(lastSuccess)}</p></section>`;
+	if (health.status === "unhealthy")
+		return `<section data-voice-health data-voice-health-unhealthy${caveatAttr}><h2 class="sec">语音健康</h2><p class="note">${caveatText ? `${escapeHtml(caveatText)} ` : ""}有会话需求，语音不可用。连续失败 ${health.failureStreak} 次。${escapeHtml(lastSuccess)}</p></section>`;
+	if (health.status === "starting")
+		return `<section data-voice-health data-voice-health-starting><h2 class="sec">语音健康</h2><p class="note">有会话需求，语音正在启动或等待 live。${escapeHtml(lastSuccess)}</p></section>`;
+	return `<section data-voice-health data-voice-health-healthy><h2 class="sec">语音健康</h2><p class="note">有会话需求，语音健康正常。${escapeHtml(lastSuccess)}</p></section>`;
 }
 
 function renderLeadAttention(page: EpicPage, now: Date): string {
@@ -473,18 +677,20 @@ function renderLeadAttention(page: EpicPage, now: Date): string {
 	return `<details class="lead-panel" data-lead-attention><summary>${escapeHtml(label("section.waiting_lead"))}（${rows.length}）</summary>${rows
 		.map(({ item, olderQuestions }) => {
 			const link = attentionLink(page, item);
-			const title = escapeHtml(
-				[
-					item.identifier.value ?? label("attention.unknown"),
-					item.title.value ?? label("attention.unknown"),
-				].join(" · "),
-			);
+			const title = [
+				item.identifier.value ?? label("attention.unknown"),
+				item.title.value ?? label("attention.unknown"),
+			].join(" · ");
 			const diagnostic = item.sources.some(
 				(source) => source.fact.value?.kind !== "lead_question",
 			)
 				? ` · ${escapeHtml(item.kind.value ?? label("attention.unknown"))} · ${escapeHtml(item.action.value ?? label("attention.unknown"))}`
 				: "";
-			return `<p data-lead-question>${diagnostic}${link.url ? `<a href="${escapeHtml(link.url)}">${title}</a>` : title} · ${escapeHtml(attentionWait(item.since, now))}${olderQuestions ? ` · ${escapeHtml(label("attention.older_questions", { n: olderQuestions }))}` : ""}</p>`;
+			const destination = link.url
+				? renderDiscordLinkPair(link.url, title, undefined, title) ||
+					`${escapeHtml(title)} · Discord 链接不可用`
+				: escapeHtml(title);
+			return `<p data-lead-question>${diagnostic}${destination} · ${escapeHtml(attentionWait(item.since, now))}${olderQuestions ? ` · ${escapeHtml(label("attention.older_questions", { n: olderQuestions }))}` : ""}</p>`;
 		})
 		.join("")}</details>`;
 }
@@ -574,6 +780,7 @@ function renderHtml(
   .u-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .u-since{font-size:12px;color:var(--dim)}
   .jump{font-size:12px;padding:3px 9px;border-radius:7px;border:1px solid var(--blue);color:var(--blue);text-decoration:none}
+  .discord-links{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}[data-discord-fallback]{font-size:11px;color:var(--dim)}
   .jump-off{font-size:12px;padding:3px 9px;border-radius:7px;border:1px dashed #c7c7cc;color:#a1a1a6;background:#fafafa;cursor:not-allowed}
   .epic{background:#fff;border-radius:10px;border:1px solid var(--line);border-left:4px solid var(--green);margin-bottom:8px;overflow:hidden}
   .epic.e-idle{border-left-color:var(--dim)}
@@ -596,7 +803,8 @@ function renderHtml(
   .kid-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .kid-t{font-size:12.5px}
   .s{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;white-space:nowrap}
-  .s-live{background:#e3f6e9;color:#1f7a37}.s-idle{background:#eeeef0;color:#6e6e73}.s-wait{background:#fff2dd;color:#a35c00}
+  .s-live{background:#e3f6e9;color:#1f7a37}.s-idle{background:#eeeef0;color:#6e6e73}.s-wait,.s-blocked{background:#fff2dd;color:#a35c00}
+  .s-stopped_acceptance{background:#eef1f5;color:#50545b}.s-stopped_stuck{background:#ffe8e6;color:#a62b1f}.s-evidence_gap{background:#fff2dd;color:#8a4b00}
   .kid-a{font-size:12.5px;color:#4a4a4f;margin-top:3px}
   .kid-tail{font-size:12px;color:var(--dim);padding-top:9px}
   .empty{color:var(--dim);font-size:13px;padding:10px 0}
@@ -606,14 +814,16 @@ function renderHtml(
 </style>
 </head>
 <body><main><div class="mock">
-	<div class="mock-bar" data-generated-at="${escapeHtml(page.generated_at)}">🔒 一个固定链接 · 手机能开 · 系统自己刷新 · ${escapeHtml(page.generated_at)} · <span data-opened-age>${escapeHtml(relativeTime(page.generated_at, now))}</span></div>
+	<div class="mock-bar" data-generated-at="${escapeHtml(page.generated_at)}">🔒 一个固定链接 · 手机能开 · 按需刷新 · 页面快照截至 ${escapeHtml(page.generated_at)} · <span data-opened-age>${escapeHtml(relativeTime(page.generated_at, now))}</span></div>
 	<div class="m-h"><h1 class="m-t">${escapeHtml(page.key.project_name)} · 现在在做什么</h1><div class="note">全部默认收起,点开才展开</div></div>
 	${renderAttention(page, now, dictionary)}
+	${renderDeployment(page, now)}
+	${renderVoiceHealth(page, now)}
 	${
 		view === null
 			? `<p class="scope-unavailable">${escapeHtml(label("attention.scope_unavailable"))}</p>`
 			: `
- <div class="sec">在跑的 Epic(全做完的已拿掉;状态直接照抄 Linear)</div>
+ <div class="sec">在做的 Epic(全做完的已拿掉;Linear 状态单列;在跑按机器会话)</div>
  ${view.epics.length ? view.epics.map((epic) => renderEpic(page, epic, now, dictionary)).join("") : `<p>${escapeHtml(label("epic.none"))}</p>`}
  ${view.hiddenDoneEpics && view.hiddenDoneEpics.count > 0 ? `<details class="lead-panel"><summary>已完成的 Epic</summary><div class="epic-hidden">${escapeHtml(label("epic.hidden_done", { n: view.hiddenDoneEpics.count }))}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderViewRule(view.hiddenDoneEpics.view, dictionary)}</details></div></details>` : ""}
  ${view.unattached.length ? `<details class="lead-panel"><summary>未挂 Epic 的子单</summary><section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary, now)).join("")}</section></details>` : ""}
@@ -643,5 +853,5 @@ function renderHtml(
 </details>
 ${renderJudgmentHistory(page, dictionary)}
 ${dictionary.omittedJudgments ? "<p>机器意见摘要已缩减；完整依据见审计附件。</p>" : ""}
-${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</div></main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
+${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</div></main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${DISCORD_LINK_UPGRADE_SCRIPT}${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

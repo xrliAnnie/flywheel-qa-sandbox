@@ -199,6 +199,7 @@ trap -p EXIT`,
 			"doc-flow-rules.md",
 			"xiaohongshu-memory-rules.md",
 			"runner-patrol-rules.md",
+			"visible-tui-default.md",
 			"founder-local-time.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
@@ -268,6 +269,7 @@ trap -p EXIT`,
 		expect(status).toBe(0);
 		expect(names(lines)).toEqual([
 			"cos-lead-rules.md",
+			"visible-tui-default.md",
 			"founder-local-time.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
@@ -352,7 +354,9 @@ trap -p EXIT`,
 		});
 
 		it("governance_required=1 + missing founder-only-authority → rc 10 (Codex full-access fail-closed)", () => {
-			// dept needs founder-only-authority; an empty base has none.
+			// Keep the earlier required visibility contract present so this case
+			// reaches the specific founder-authority failure it names.
+			writeFileSync(join(emptyBase, "visible-tui-default.md"), "x");
 			const { status, stderr } = runBundle("dept", emptyBase, "mailbox", "1");
 			expect(status).toBe(10);
 			expect(stderr).toContain("MISSING_REQUIRED:");
@@ -493,12 +497,14 @@ exit 0
 				"DISCORD_EXPECTED_BOT_USER_ID",
 				"FLYWHEEL_LEAD_IDENTITY_DIGEST",
 				"FLYWHEEL_CANONICAL_IDENTITY_RESOLVED",
+				"CODEX_HOME",
 			]) {
 				delete env[name];
 			}
 			return {
 				...env,
 				HOME: home,
+				CODEX_HOME: home,
 				PATH: `${shimDir}:${process.env.PATH}`,
 				FLYWHEEL_COMM_CLI: join(
 					SCRIPTS,

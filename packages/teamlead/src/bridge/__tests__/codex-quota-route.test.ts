@@ -15,6 +15,104 @@ afterEach(async () => {
 });
 
 describe("Codex review quota routes", () => {
+	it("keeps healthy reviews ready while only the quota-affected binding becomes manual_required", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		store.upsertSession({
+			execution_id: "manual-parent",
+			project_name: "fixture",
+			issue_id: "FLY-MANUAL",
+			status: "running",
+			adapter_type: "claude",
+		});
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			profile: "business",
+			accountKey: "business-key",
+			generation: 1,
+		});
+		store.codexQuotaAvailability = () => ({
+			mode: "manual",
+			reasons: ["readiness_receipt_missing"],
+			revision: 2,
+			checkedAt: "2026-09-11T18:45:00.000Z",
+		});
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/codex/quota",
+			createCodexQuotaRouter({
+				store,
+				ingestToken: "token",
+				credential: async () => ({
+					rootKey: "root",
+					profile: "business",
+					accountKey: "business-key",
+					generation: 1,
+					authDigest: "a".repeat(64),
+				}),
+			}),
+		);
+		const server = await new Promise<Server>((resolve) => {
+			const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
+		});
+		servers.push(server);
+		const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/codex/quota`;
+		const post = (path: string, body: Record<string, unknown>) =>
+			fetch(`${base}/${path}`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer token",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					executionId: "manual-parent",
+					projectName: "fixture",
+					...body,
+				}),
+			});
+		const bind = async (invocationId: string) =>
+			(await (
+				await post("bind", {
+					invocationId,
+					model: "gpt-6-astra",
+					purpose: "review",
+					authDigest: "a".repeat(64),
+				})
+			).json()) as { binding: { bindingId: string }; state: string };
+		const affected = await bind("affected");
+		const healthy = await bind("healthy");
+		expect(affected.state).toBe("ready");
+		expect(healthy.state).toBe("ready");
+		expect(
+			(
+				await post("observe", {
+					signal: {
+						version: 1,
+						vendor: "codex",
+						source: "review_exec",
+						sourceEventId: "quota-affected",
+						bindingId: affected.binding.bindingId,
+						evidence: "usageLimitExceeded",
+						observedAt: "2026-09-11T18:45:00.000Z",
+					},
+				})
+			).status,
+		).toBe(200);
+		const status = async (bindingId: string) =>
+			(await (
+				await fetch(
+					`${base}/status?executionId=manual-parent&projectName=fixture&bindingId=${bindingId}`,
+					{ headers: { authorization: "Bearer token" } },
+				)
+			).json()) as { state: string };
+		expect((await status(affected.binding.bindingId)).state).toBe(
+			"manual_required",
+		);
+		expect((await status(healthy.binding.bindingId)).state).toBe("ready");
+		expect(store.codexQuota.listIncidents()).toHaveLength(0);
+	});
+
 	it.each(["direct", "bridge"])(
 		"%s binds actual digest under a Claude parent and observes only typed Codex review quota",
 		async (mount) => {

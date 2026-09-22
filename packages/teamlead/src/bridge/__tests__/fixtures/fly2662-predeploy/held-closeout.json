@@ -1,0 +1,126 @@
+{
+	"provenance": {
+		"managedSnapshot": false,
+		"source": "read-only sqlite queries against the deployed teamlead.db and comm.db",
+		"capturedOn": "2026-09-17",
+		"sanitization": "execution, operation, run, issue, pull-request, path, branch, and commit identities are de-identified; nullability, states, retry counters, and row relationships are preserved",
+		"purpose": "Replay the pre-deployment in-flight shapes that FLY-2616 reconstruction fixtures missed"
+	},
+	"pendingWindow": {
+		"stateSession": {
+			"execution_id": "exec-fixture-pending-window",
+			"issue_id": "FLY-9001",
+			"project_name": "flywheel",
+			"status": "completed",
+			"adapter_type": "codex-tmux"
+		},
+		"landOperation": {
+			"operation_id": "land:fixture-pending-window",
+			"run_id": "run-fixture-pending-window",
+			"issue_id": "FLY-9001",
+			"project_name": "flywheel",
+			"pr_number": 9001,
+			"approved_head": "1111111111111111111111111111111111111111",
+			"state": "held",
+			"generation": 174,
+			"current_step": "notification:finalization_partial",
+			"merge_confirmed_at": "2026-09-16T20:26:14.358Z",
+			"last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
+			"retry_count": 9,
+			"resume_generation": 0,
+			"closeout_targets_json": null,
+			"closeout_targets_digest": null,
+			"closeout_targets_version": null,
+			"closeout_attribution_digest": null,
+			"closeout_targets_observed_at": null
+		},
+		"workflowRun": {
+			"run_id": "run-fixture-pending-window",
+			"issue_id": "FLY-9001",
+			"status": "held",
+			"current_node_id": "land",
+			"engine_owned": 1,
+			"workflow_snapshot_present": true
+		},
+		"workflowRunNode": {
+			"node_id": "land",
+			"attempt": 1,
+			"status": "pending",
+			"execution_id": "exec-fixture-pending-window"
+		},
+		"workflowSideEffect": {
+			"node_id": "land",
+			"attempt": 1,
+			"kind": "dispatch",
+			"state": "intent_recorded",
+			"launch_ordinal": 1
+		},
+		"commSession": {
+			"execution_id": "exec-fixture-pending-window",
+			"tmux_window": "runner-flywheel:pending",
+			"project_name": "flywheel",
+			"issue_id": "FLY-9001",
+			"lead_id": "fixture-lead",
+			"started_at": "2026-09-16T19:30:00.000Z",
+			"ended_at": null,
+			"status": "running",
+			"vendor": "codex",
+			"phase_keep_alive": 1
+		}
+	},
+	"nullTargets": {
+		"stateSession": {
+			"execution_id": "exec-fixture-null-targets",
+			"issue_id": "FLY-9002",
+			"issue_identifier": "FLY-9002",
+			"project_name": "flywheel",
+			"status": "completed",
+			"adapter_type": "codex-tmux",
+			"worktree_binding_path": "$SANDBOX_PARENT/flywheel-FLY-9002",
+			"worktree_binding_branch": "flywheel-FLY-9002",
+			"worktree_binding_generation": "generation-predeploy",
+			"worktree_binding_locked_at": "2026-09-16T03:59:24.000Z"
+		},
+		"landOperation": {
+			"operation_id": "land:fixture-null-targets",
+			"run_id": "run-fixture-null-targets",
+			"issue_id": "FLY-9002",
+			"project_name": "flywheel",
+			"pr_number": 9002,
+			"approved_head": "2222222222222222222222222222222222222222",
+			"state": "held",
+			"generation": 175,
+			"current_step": "notification:finalization_partial",
+			"merge_confirmed_at": "2026-09-17T02:11:18.371Z",
+			"last_error": "closeout_only_run_not_active",
+			"retry_count": 0,
+			"resume_generation": 1,
+			"closeout_targets_json": null,
+			"closeout_targets_digest": null,
+			"closeout_targets_version": null,
+			"closeout_attribution_digest": null,
+			"closeout_targets_observed_at": null
+		},
+		"workflowRun": {
+			"run_id": "run-fixture-null-targets",
+			"issue_id": "FLY-9002",
+			"status": "held",
+			"current_node_id": "land",
+			"engine_owned": 1,
+			"workflow_snapshot_present": true
+		},
+		"workflowRunNode": {
+			"node_id": "land",
+			"attempt": 3,
+			"status": "pending",
+			"execution_id": "exec-fixture-null-targets"
+		},
+		"workflowSideEffect": {
+			"node_id": "land",
+			"attempt": 3,
+			"kind": "dispatch",
+			"state": "intent_recorded",
+			"launch_ordinal": 1
+		}
+	}
+}

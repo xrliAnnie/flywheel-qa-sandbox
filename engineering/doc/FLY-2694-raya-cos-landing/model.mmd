@@ -1,0 +1,34 @@
+flowchart LR
+    subgraph PKG["packages/raya-cos/ (新增,纯增量)"]
+        direction TB
+        SRC["src/ 120 个上游 .ts<br/>字节不改"]
+        GUARD["src/package-contract.test.ts<br/>新增守卫"]
+        PJ["package.json<br/>name flywheel-raya-cos<br/>test:run = vitest run<br/>零 dependencies"]
+        TS["tsconfig.json<br/>extends base<br/>noUncheckedIndexedAccess=false"]
+        RM["README.md<br/>来源说明"]
+    end
+    LOCK["pnpm-lock.yaml<br/>+1 importer"]
+    CIY[".github/workflows/ci.yml<br/>quick-gate 一行"]
+    DIST["scripts/__tests__/<br/>raya-cos-cli-dist.test.mjs"]
+
+    WS["workspace<br/>packages/* 自动纳入"]
+    LIGHT["CI light shard<br/>按 test:run 认包"]
+    GATE["package-gate<br/>按 test:run 认包"]
+    QG["quick-gate<br/>root Node suites"]
+    S2["S2 宿主 shim<br/>raya-cos.sh(不在本单)"]
+
+    PJ --> WS
+    PJ --> LIGHT
+    PJ --> GATE
+    CIY --> QG --> DIST
+    DIST -.->|"跑构建产物 dist/cli.js"| PKG
+    PKG -.->|"未来由 S2 调用"| S2
+
+    classDef add fill:#e9f9ee,stroke:#34c759,color:#1d1d1f
+    classDef mod fill:#fff4e5,stroke:#ff9500,color:#1d1d1f
+    classDef sys fill:#ffffff,stroke:#007aff,color:#1d1d1f
+    classDef future fill:#f2f2f7,stroke:#86868b,color:#5c5c61,stroke-dasharray:4 3
+    class SRC,GUARD,PJ,TS,RM,DIST add
+    class LOCK,CIY mod
+    class WS,LIGHT,GATE,QG sys
+    class S2 future

@@ -29,6 +29,8 @@ export interface LeadActionsConfig {
 	outboundMode: "direct" | "bridge";
 	/** Canonical Bridge endpoint when outboundMode is "bridge". */
 	bridgeUrl?: string;
+	/** Canonical v1 identity; the raw carrier claim remains env-only. */
+	attachmentIdentityDigest?: string;
 	/** Per-channel send cap per window (loop-safety). */
 	rateMaxPerWindow: number;
 	/** Rate-limit window length (ms). */
@@ -76,6 +78,15 @@ export function parseLeadActionsConfig(
 		outboundMode === "bridge"
 			? req("BRIDGE_URL")
 			: (env.BRIDGE_URL?.trim() ?? "");
+	const attachmentIdentityDigest =
+		outboundMode === "bridge"
+			? env.FLYWHEEL_LEAD_IDENTITY_DIGEST?.trim()
+			: undefined;
+	if (
+		attachmentIdentityDigest !== undefined &&
+		!/^[a-f0-9]{64}$/.test(attachmentIdentityDigest)
+	)
+		throw new Error("lead-actions: invalid attachment identity digest");
 	if (missing.length > 0) {
 		throw new Error(
 			`lead-actions: missing required env: ${missing.join(", ")}`,
@@ -101,6 +112,7 @@ export function parseLeadActionsConfig(
 		commDbPath,
 		outboundMode,
 		bridgeUrl: bridgeUrl ? bridgeUrl.replace(/\/+$/u, "") : undefined,
+		...(attachmentIdentityDigest ? { attachmentIdentityDigest } : {}),
 		rateMaxPerWindow: posIntEnv(env.FLYWHEEL_LEAD_ACTIONS_RATE_MAX, 5),
 		rateWindowMs: posIntEnv(env.FLYWHEEL_LEAD_ACTIONS_RATE_WINDOW_MS, 60_000),
 		idempotencyTtlMs: posIntEnv(

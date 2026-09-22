@@ -1,4 +1,5 @@
 import { canonicalJsonString } from "flywheel-config";
+import { discordThreadLinkPair } from "./discord-link.js";
 import type { Cell, MissingReason, RuleId } from "./model.js";
 import { EpicPageSchemaError } from "./schema-error.js";
 
@@ -209,18 +210,23 @@ function derivedItem(
 							!validDiscordId(thread.channel_id)
 						? "invalid_discord_id"
 						: null;
+	const linkPair = linkMissing
+		? null
+		: discordThreadLinkPair(guild.value!, thread!.thread_id);
 	return {
 		...candidate,
 		kind: derived(primary.kind, facts, at),
 		action: derived(primary.action, facts, at),
 		since,
-		thread_url: linkMissing
-			? derived<string>(null, linkSources, at, linkMissing)
-			: derived(
-					`https://discord.com/channels/${guild.value}/${thread!.thread_id}`,
-					linkSources,
-					at,
-				),
+		thread_url:
+			linkMissing || !linkPair
+				? derived<string>(
+						null,
+						linkSources,
+						at,
+						linkMissing ?? "invalid_discord_id",
+					)
+				: derived(linkPair.web, linkSources, at),
 	};
 }
 export function rebuildAttention(

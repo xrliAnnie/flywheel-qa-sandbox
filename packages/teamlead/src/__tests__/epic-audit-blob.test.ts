@@ -13,7 +13,7 @@ function fixture() {
 	const objects = new Map<string, string | Buffer>([
 		[
 			`r/${token}/index.html`,
-			`<a href="${previous}/index.audit.json">audit</a>`,
+			`<footer data-previous-audit="${obsolete}"><a href="${previous}/index.audit.json">audit</a></footer>`,
 		],
 		...[previous, obsolete].map(
 			(h) => [`r/${token}/${h}/index.audit.json`, "old"] as [string, string],
@@ -43,7 +43,7 @@ function fixture() {
 		hasMore: false,
 	}));
 	const store = new VercelBlobReportStore("secret", { put, get, del, list });
-	return { store, objects, put, get, del };
+	return { store, objects, put, get, del, list };
 }
 it("writes audit before HTML and keeps only current and actual previous remote audit after restart", async () => {
 	const f = fixture();
@@ -60,6 +60,7 @@ it("writes audit before HTML and keeps only current and actual previous remote a
 	]);
 	expect(f.objects.has(`r/${token}/${previous}/index.audit.json`)).toBe(true);
 	expect(f.objects.has(`r/${token}/${obsolete}/index.audit.json`)).toBe(false);
+	expect(f.list).not.toHaveBeenCalled();
 	expect(f.objects.get(`r/${token}/index.html`)).toContain(
 		`data-previous-audit="${previous}"`,
 	);
@@ -116,6 +117,32 @@ it("does not prune the previous audit on an identical publication retry", async 
 		})
 	).afterCommit?.();
 	expect(f.objects.has(`r/${token}/${previous}/index.audit.json`)).toBe(true);
+	expect(f.list).not.toHaveBeenCalled();
+});
+it("preserves both reachable audits when content returns from A to B to A", async () => {
+	const f = fixture();
+	const jsonB = '{"entries":[{"version":"b"}]}';
+	const hashB = createHash("sha256").update(jsonB).digest("hex");
+	const htmlB = html.replaceAll(hash, hashB);
+	for (const audit of [
+		{ json, sha256: hash, page: html },
+		{ json: jsonB, sha256: hashB, page: htmlB },
+		{ json, sha256: hash, page: html },
+	]) {
+		await (
+			await f.store.putEpicPage(token, audit.page, {
+				json: audit.json,
+				sha256: audit.sha256,
+				verifyGateway: async () => true,
+			})
+		).afterCommit?.();
+	}
+	expect(f.objects.has(`r/${token}/${hash}/index.audit.json`)).toBe(true);
+	expect(f.objects.has(`r/${token}/${hashB}/index.audit.json`)).toBe(true);
+	expect(f.objects.get(`r/${token}/index.html`)).toContain(
+		`data-previous-audit="${hashB}"`,
+	);
+	expect(f.list).not.toHaveBeenCalled();
 });
 it("fails closed when current HTML cannot be read", async () => {
 	const f = fixture();
@@ -155,6 +182,7 @@ it("preserves previous HTML and audits on HTML upload failure, then converges on
 	).afterCommit?.();
 	expect(f.objects.has(`r/${token}/${previous}/index.audit.json`)).toBe(true);
 	expect(f.objects.has(`r/${token}/${obsolete}/index.audit.json`)).toBe(false);
+	expect(f.list).not.toHaveBeenCalled();
 });
 it("expires audit objects together with their token at the report TTL", async () => {
 	const f = fixture();
@@ -201,4 +229,5 @@ it("reads the previous audit from gzip HTML and keeps audit JSON uncompressed", 
 		gunzipSync(f.objects.get(`r/${token}/index.html`) as Buffer).toString(),
 	).toContain(`data-previous-audit="${previous}"`);
 	expect(f.objects.get(`r/${token}/${hash}/index.audit.json`)).toBe(json);
+	expect(f.list).not.toHaveBeenCalled();
 });

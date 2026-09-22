@@ -91,6 +91,8 @@ export function evaluateShippedHuskEvidence(
 		operation.state !== "running" ||
 		operation.superseded_at !== null ||
 		operation.owner_id !== input.claim.ownerId ||
+		!input.claim.ownerInstanceId ||
+		operation.owner_instance_id !== input.claim.ownerInstanceId ||
 		operation.generation !== input.claim.generation ||
 		operation.operation_id !== input.claim.operationId ||
 		operation.merge_confirmed_at === null ||
@@ -305,6 +307,7 @@ export async function forceShippedHusks(
 		store.recordLandOperationStep({
 			operationId: input.operationId,
 			ownerId: input.claim.ownerId,
+			ownerInstanceId: input.claim.ownerInstanceId,
 			generation: input.claim.generation,
 			step: `aux:husk_force_cleared:${session.execution_id}:${createHash("sha256").update(intentId).digest("hex").slice(0, 16)}`,
 			receipt: { intentId, tmuxWindow },

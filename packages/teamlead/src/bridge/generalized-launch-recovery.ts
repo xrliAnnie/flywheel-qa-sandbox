@@ -18,27 +18,118 @@ interface GeneralizedLaunchProbeDeps {
 	discover?: (executionId: string) => Promise<RunnerTmuxTargetDiscovery>;
 	/** Does ANY process on this host reference the execution id? */
 	hasHostProcess?: (executionId: string) => Promise<boolean>;
+	probeHostProcess?: (
+		executionId: string,
+	) => Promise<HostProcessByExecutionIdProbe>;
 	/** Terminal-session callers may combine three independent absence proofs. */
 	allowMissingTargetHostAbsence?: boolean;
 }
 
-/** `pgrep -f <executionId>`: exit 0 = at least one match. Errors (incl. exit 1
- * = no match) resolve false-vs-true conservatively: only a clean "no match"
- * proves absence; spawn failures return true so the verdict stays "unknown". */
+export type HostProcessByExecutionIdProbe =
+	| { verdict: "live"; source: "pgrep" | "process-environment" }
+	| { verdict: "absent"; source: "process-environment" }
+	| {
+			verdict: "unknown";
+			source: "pgrep" | "process-environment";
+			reason: string;
+	  };
+
+/** Read argv and the full host process environment without logging either.
+ * Only clean absence from both sensors proves absence; any sensor failure
+ * stays conservative through the boolean compatibility wrapper. */
 export function hasHostProcessByExecutionId(
 	executionId: string,
 ): Promise<boolean> {
+	return probeHostProcessByExecutionId(executionId).then(
+		(result) => result.verdict !== "absent",
+	);
+}
+
+/** Closeout-only tri-state host probe. Sensor failures remain unknown rather
+ * than being reported as a live process; the legacy boolean wrapper above
+ * still maps unknown to true for its conservative existing callers. */
+export function probeHostProcessByExecutionId(
+	executionId: string,
+): Promise<HostProcessByExecutionIdProbe> {
 	return new Promise((resolve) => {
+		if (!/^[A-Za-z0-9_.:-]+$/.test(executionId)) {
+			resolve({
+				verdict: "unknown",
+				source: "process-environment",
+				reason: "invalid_execution_id",
+			});
+			return;
+		}
 		try {
 			execFile("pgrep", ["-f", executionId], { timeout: 5_000 }, (error) => {
-				if (!error) return resolve(true); // matches exist
+				if (!error) return resolve({ verdict: "live", source: "pgrep" });
 				const code = (error as { code?: number | string }).code;
-				resolve(code !== 1); // 1 = clean no-match → false; anything else → true
+				if (code !== 1) {
+					resolve({
+						verdict: "unknown",
+						source: "pgrep",
+						reason: `pgrep_failed:${String(code ?? "unknown")}`,
+					});
+					return;
+				}
+				// Codex's resident daemon/TUI carries the execution identity only in
+				// its environment. pgrep inspects argv, so a clean pgrep miss is not
+				// absence until the bounded host process snapshot also has no exact
+				// FLYWHEEL_EXEC_ID marker. The snapshot is never logged.
+				execFile(
+					"/bin/ps",
+					["eww", "-axo", "pid=,command="],
+					{
+						timeout: 5_000,
+						maxBuffer: 16 * 1024 * 1024,
+						encoding: "utf8",
+					},
+					(psError, stdout) => {
+						if (psError || typeof stdout !== "string") {
+							const psCode = (psError as { code?: number | string } | null)
+								?.code;
+							resolve({
+								verdict: "unknown",
+								source: "process-environment",
+								reason: `process_snapshot_failed:${String(psCode ?? "unknown")}`,
+							});
+							return;
+						}
+						const marker = `FLYWHEEL_EXEC_ID=${executionId}`;
+						const live = stdout
+							.split("\n")
+							.some((line) =>
+								line.split(/\s+/).some((field) => field === marker),
+							);
+						resolve(
+							live
+								? { verdict: "live", source: "process-environment" }
+								: { verdict: "absent", source: "process-environment" },
+						);
+					},
+				);
 			});
 		} catch {
-			resolve(true);
+			resolve({
+				verdict: "unknown",
+				source: "pgrep",
+				reason: "pgrep_spawn_failed",
+			});
 		}
 	});
+}
+
+async function hostProcessVerdict(
+	executionId: string,
+	deps: GeneralizedLaunchProbeDeps,
+): Promise<HostProcessByExecutionIdProbe> {
+	if (deps.probeHostProcess) return deps.probeHostProcess(executionId);
+	if (deps.hasHostProcess) {
+		return (await deps.hasHostProcess(executionId))
+			? { verdict: "live", source: "pgrep" }
+			: { verdict: "absent", source: "process-environment" };
+	}
+	return probeHostProcessByExecutionId(executionId);
 }
 
 /**
@@ -69,10 +160,8 @@ export async function probeGeneralizedLaunchLiveness(
 			return "unknown";
 		}
 		if (discovery.kind !== "missing") return "unknown";
-		const hasProcess = await (
-			deps.hasHostProcess ?? hasHostProcessByExecutionId
-		)(executionId);
-		return hasProcess ? "unknown" : "dead";
+		const host = await hostProcessVerdict(executionId, deps);
+		return host.verdict === "absent" ? "dead" : "unknown";
 	}
 	if (lookup.target.tmuxWindow.endsWith(":pending")) {
 		// 2026-07-24 incident (founder-directed hotfix): a runner that dies
@@ -96,10 +185,8 @@ export async function probeGeneralizedLaunchLiveness(
 		if (discovery.kind !== "missing") return "unknown";
 		// If neither discovery nor the host process table finds the execution,
 		// the runner cannot be alive. Any matching process stays unknown.
-		const hasProcess = await (
-			deps.hasHostProcess ?? hasHostProcessByExecutionId
-		)(executionId);
-		return hasProcess ? "unknown" : "dead";
+		const host = await hostProcessVerdict(executionId, deps);
+		return host.verdict === "absent" ? "dead" : "unknown";
 	}
 	const state = await (deps.probe ?? probeRunnerProcessLiveness)(
 		lookup.target.tmuxWindow,

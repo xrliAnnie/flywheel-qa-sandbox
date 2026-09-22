@@ -18,9 +18,18 @@ function runSuite(relPath: string): void {
 			stdio: "pipe",
 			timeout: 300_000,
 			encoding: "utf8",
+			// These shell suites own a sandboxed HOME and seed
+			// $HOME/.flywheel themselves. The global Vitest setup points
+			// FLYWHEEL_STATE_DIR at a different per-test root, which would make
+			// fleet ignore those fixtures.
 			// Vitest exports C.UTF-8, which macOS perl rejects (locale panic
 			// inside shasum). Normalize the child locale (code-review R2-LOW).
-			env: { ...process.env, LANG: "C", LC_ALL: "C" },
+			env: {
+				...process.env,
+				FLYWHEEL_STATE_DIR: "",
+				LANG: "C",
+				LC_ALL: "C",
+			},
 		});
 	} catch (err) {
 		const e = err as { stdout?: string; stderr?: string };

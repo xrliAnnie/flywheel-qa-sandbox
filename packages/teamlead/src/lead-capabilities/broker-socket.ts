@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, normalize } from "node:path";
 import {
 	leadOperationRequestBytes,
-	leadOperationTimeoutMs,
+	leadOperationServerSocketTimeoutMs,
 	MAX_LEAD_OPERATION_FRAME_BYTES,
 } from "flywheel-comm/lead-operation-client";
 
@@ -134,7 +134,7 @@ export class LeadCapabilitySocket {
 				reply(rejection("request_too_large"));
 				return;
 			}
-			connection.setTimeout(leadOperationTimeoutMs(operationId) + 1000);
+			connection.setTimeout(leadOperationServerSocketTimeoutMs(operationId));
 			void Promise.resolve()
 				.then(() => this.options.dispatch(request))
 				.then(reply, () =>

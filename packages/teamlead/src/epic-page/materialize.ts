@@ -26,6 +26,10 @@ import type { EpicPageItemSignals } from "./signals.js";
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
+	readDeployment?: (projectName: string) => GenerateEpicPageInput["deployment"];
+	readVoiceHealth?: (
+		projectName: string,
+	) => GenerateEpicPageInput["voiceHealth"];
 	readIntakes?: (projectName: string) => GenerateEpicPageInput["intakes"];
 	readChildThreads?: (
 		projectName: string,
@@ -51,6 +55,7 @@ export interface MaterializeEpicPageDeps {
 	readItemFacts: (
 		projectName: string,
 		item: { uuid: string; identifier: string },
+		generatedAt: Date,
 	) => EpicItemFacts;
 	readSignals: (
 		projectName: string,
@@ -106,10 +111,14 @@ export async function materializeEpicPage(
 		);
 	}
 	const itemFacts = (snapshot?.items ?? []).map((item) =>
-		deps.readItemFacts(input.projectName, {
-			uuid: item.id,
-			identifier: item.identifier,
-		}),
+		deps.readItemFacts(
+			input.projectName,
+			{
+				uuid: item.id,
+				identifier: item.identifier,
+			},
+			generatedAt,
+		),
 	);
 	const itemSignals = deps.readSignals(
 		input.projectName,
@@ -132,6 +141,8 @@ export async function materializeEpicPage(
 			? deps.readShipJudgmentHistory?.(generatedAt.toISOString())
 			: undefined;
 	const candidate = deps.generatePage({
+		deployment: deps.readDeployment?.(input.projectName),
+		voiceHealth: deps.readVoiceHealth?.(input.projectName),
 		...(shipJudgmentHistory ? { shipJudgmentHistory } : {}),
 		childThreads: deps.readChildThreads?.(
 			input.projectName,

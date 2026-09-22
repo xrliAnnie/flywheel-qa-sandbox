@@ -282,6 +282,59 @@ describe("FLY-1726 canonical Lead identity", () => {
 		expect(after.projectsDigest).not.toBe(before.projectsDigest);
 	});
 
+	it("keeps identityDigest stable when projectRepo and personaProjection are added", () => {
+		const rayaLead = lead("raya", {
+			backend: "codex-app-server",
+			codexProfile: "full-access",
+			canSpawnRunners: false,
+		});
+		const base = {
+			projectName: "raya",
+			projectRoot: dir,
+			leads: [rayaLead],
+		};
+		const before = compileLeadIdentityRows([base], { homeDir: dir })[0]!
+			.identity;
+		const projection = {
+			schemaVersion: 1,
+			enabled: true,
+			leadId: "raya",
+			repo: "xrliAnnie/raya",
+			path: ".lead/raya/identity.md",
+			pin: {
+				commit: "a".repeat(40),
+				personaBlobDigest: "b".repeat(64),
+				approval: {
+					channelId: "12345678901234567",
+					messageId: "22345678901234567",
+					contentSha256: "c".repeat(64),
+				},
+			},
+			lastKnownGood: {
+				commit: "d".repeat(40),
+				personaBlobDigest: "e".repeat(64),
+				approval: {
+					channelId: "12345678901234567",
+					messageId: "32345678901234567",
+					contentSha256: "f".repeat(64),
+				},
+			},
+		};
+		const after = compileLeadIdentityRows(
+			[
+				{
+					...base,
+					projectRepo: "xrliAnnie/raya",
+					personaProjection: projection,
+				},
+			],
+			{ homeDir: dir },
+		)[0]!;
+		expect(after.identity.identityDigest).toBe(before.identityDigest);
+		expect(after.project.projectRepo).toBe("xrliAnnie/raya");
+		expect(after.project.personaProjection).toEqual(projection);
+	});
+
 	it.each([
 		[
 			"identity_row_missing",

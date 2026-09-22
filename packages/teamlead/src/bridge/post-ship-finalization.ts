@@ -18,6 +18,7 @@
  * errors — the orchestrator itself never throws.
  */
 
+import { lstat, realpath, stat } from "node:fs/promises";
 import { CommDB } from "flywheel-comm/db";
 import { canonicalSubmissionDigest, phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -328,6 +329,7 @@ interface PostShipCommonOpts {
 	landOperation?: {
 		operationId: string;
 		ownerId: string;
+		ownerInstanceId?: string;
 		generation: number;
 	};
 	/** Server-constructed proof that this operation's exact PR landed on main. */
@@ -484,6 +486,8 @@ export interface PostShipDeps {
 		projectName: string;
 		/** R4#3: the post-ship DAG already holds the canonical issue mutex. */
 		alreadyLocked?: boolean;
+		/** Land physical pass: preserve records until worktrees are settled. */
+		deferRecordFinalization?: boolean;
 	}) => Promise<
 		| {
 				outcome:
@@ -596,6 +600,7 @@ export async function settleLandOperationWorktrees(
 	if (
 		!operation ||
 		operation.owner_id !== claim.ownerId ||
+		(operation.owner_instance_id ?? null) !== (claim.ownerInstanceId ?? null) ||
 		operation.generation !== claim.generation ||
 		operation.issue_id !== opts.issueId ||
 		operation.project_name !== opts.projectName ||
@@ -607,6 +612,13 @@ export async function settleLandOperationWorktrees(
 			attestations: [],
 		};
 	}
+	if (!store.isCurrentLandCloseoutAttribution(operation)) {
+		return {
+			complete: false,
+			reason: "land_closeout_attribution_changed",
+			attestations: [],
+		};
+	}
 	const parsed = readLandTargetSnapshot(operation);
 	if (!parsed.ok) {
 		return { complete: false, reason: parsed.reason, attestations: [] };
@@ -614,6 +626,7 @@ export async function settleLandOperationWorktrees(
 	const operationAudit: LandOperationAuditIdentity = {
 		operationId: claim.operationId,
 		ownerId: claim.ownerId,
+		ownerInstanceId: claim.ownerInstanceId,
 		generation: claim.generation,
 		runId: opts.runId ?? null,
 		sourceExecutionId: postShipExecutionId(opts) ?? null,
@@ -634,6 +647,68 @@ export async function settleLandOperationWorktrees(
 				return {
 					complete: false,
 					reason: `worktree_not_applicable_receipt_failed:${receipt.reason}`,
+					attestations,
+				};
+			}
+			continue;
+		}
+		if (target.kind === "verified_absent_worktree") {
+			const errorCode = (error: unknown): string =>
+				typeof error === "object" && error !== null && "code" in error
+					? String((error as { code?: unknown }).code ?? "UNKNOWN")
+					: "UNKNOWN";
+			const confirmAbsent = async (): Promise<string | undefined> => {
+				try {
+					await lstat(target.path);
+					return "legacy_absent_worktree_reappeared";
+				} catch (error) {
+					if (errorCode(error) !== "ENOENT") {
+						return `legacy_absent_worktree_unreadable:${errorCode(error)}`;
+					}
+				}
+				try {
+					const [canonicalParent, canonicalRoot, parent] = await Promise.all([
+						realpath(target.parentIdentity.path),
+						realpath(target.projectRoot),
+						stat(target.parentIdentity.path),
+					]);
+					if (
+						canonicalParent !== target.parentIdentity.path ||
+						canonicalRoot !== target.projectRoot ||
+						Number(parent.dev) !== target.parentIdentity.dev ||
+						Number(parent.ino) !== target.parentIdentity.ino
+					) {
+						return "legacy_absent_worktree_parent_changed";
+					}
+				} catch (error) {
+					return `legacy_absent_worktree_parent_unreadable:${errorCode(error)}`;
+				}
+				try {
+					await lstat(target.path);
+					return "legacy_absent_worktree_reappeared";
+				} catch (error) {
+					return errorCode(error) === "ENOENT"
+						? undefined
+						: `legacy_absent_worktree_unreadable:${errorCode(error)}`;
+				}
+			};
+			const refusal = await confirmAbsent();
+			if (refusal) {
+				return { complete: false, reason: refusal, attestations };
+			}
+			const receipt = recordLandCloseoutAudit(store, operationAudit, {
+				evidenceId: `worktree-legacy-absent:${canonicalSubmissionDigest(target)}`,
+				eventKind: "worktree_cleanup_absent",
+				receipt: {
+					issueId: opts.issueId,
+					projectName: opts.projectName,
+					target,
+				},
+			});
+			if (!receipt.ok) {
+				return {
+					complete: false,
+					reason: `worktree_absence_receipt_failed:${receipt.reason}`,
 					attestations,
 				};
 			}
@@ -1143,6 +1218,7 @@ async function runPostShipFinalizationInner(
 				claim: {
 					operationId: context.operationId,
 					ownerId: context.ownerId,
+					ownerInstanceId: context.ownerInstanceId,
 					generation: context.generation,
 				},
 			},
@@ -1296,8 +1372,14 @@ async function runPostShipFinalizationInner(
 			`[post-ship] CommDB finalization incomplete for ${finalizationAnchor} — thread archive + Linear Done deferred`,
 		);
 	}
-	if (deps.issueCloseout) {
-		const closeoutRes = await deps
+	type IssueCloseoutResult = Awaited<
+		ReturnType<NonNullable<PostShipDeps["issueCloseout"]>>
+	>;
+	const runIssueCloseout = async (
+		deferRecordFinalization: boolean,
+	): Promise<IssueCloseoutResult> => {
+		if (!deps.issueCloseout) return undefined;
+		return deps
 			.issueCloseout({
 				executionId: sourceExecutionId,
 				runId: opts.runId,
@@ -1307,6 +1389,7 @@ async function runPostShipFinalizationInner(
 				projectName: opts.projectName,
 				// R4#3: the whole DAG already holds the canonical issue mutex.
 				alreadyLocked: dagLocked,
+				deferRecordFinalization,
 			})
 			.catch((err) => {
 				console.error(
@@ -1315,11 +1398,29 @@ async function runPostShipFinalizationInner(
 				);
 				return { outcome: "blocked" as const, cause: undefined };
 			});
+	};
+	const applyIssueCloseoutResult = (
+		closeoutRes: IssueCloseoutResult,
+		physicalPass: boolean,
+	): void => {
 		if (
 			closeoutRes?.outcome !== "complete" &&
 			closeoutRes?.outcome !== "completed"
 		) {
 			closeoutCause ??= closeoutRes?.cause;
+		}
+		if (
+			physicalPass &&
+			closeoutRes &&
+			closeoutRes.outcome !== "complete" &&
+			closeoutRes.outcome !== "completed"
+		) {
+			closeoutBlocked = true;
+			closeoutCause ??= closeoutRes.cause ?? "nodes_not_confirmed_gone";
+			console.warn(
+				`[post-ship] physical closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — worktree and records remain untouched`,
+			);
+			return;
 		}
 		if (
 			closeoutRes &&
@@ -1340,6 +1441,9 @@ async function runPostShipFinalizationInner(
 				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId}${closeoutRes.cause ? ` (${closeoutRes.cause})` : ""} — diagnostic retained; terminal closeout remains eligible`,
 			);
 		}
+	};
+	if (deps.issueCloseout) {
+		applyIssueCloseoutResult(await runIssueCloseout(landManaged), landManaged);
 	}
 	let worktreeRemoved = !resumable;
 	let worktreeFailureReason: string | undefined;
@@ -1367,6 +1471,14 @@ async function runPostShipFinalizationInner(
 					worktreeFailureFromSkippedReason(attestation?.skippedReason);
 			}
 		}
+	}
+	if (
+		landManaged &&
+		worktreeRemoved &&
+		!closeoutBlocked &&
+		deps.issueCloseout
+	) {
+		applyIssueCloseoutResult(await runIssueCloseout(false), false);
 	}
 
 	// ── Resolve lead + thread ONCE, reused by notifier AND archiver ──
@@ -1489,6 +1601,7 @@ async function runPostShipFinalizationInner(
 			terminalNotified = store.recordLandOperationStep({
 				operationId: context.operationId,
 				ownerId: context.ownerId,
+				ownerInstanceId: context.ownerInstanceId,
 				generation: context.generation,
 				step: "terminal_notified",
 				receipt: terminalReceipt,
@@ -1521,6 +1634,7 @@ async function runPostShipFinalizationInner(
 				const recorded = store.recordLandOperationStep({
 					operationId: context.operationId,
 					ownerId: context.ownerId,
+					ownerInstanceId: context.ownerInstanceId,
 					generation: context.generation,
 					step: "terminal_notified",
 					receipt: terminalReceipt,
@@ -1634,6 +1748,7 @@ async function runPostShipFinalizationInner(
 				const recorded = store.recordLandOperationStep({
 					operationId: context.operationId,
 					ownerId: context.ownerId,
+					ownerInstanceId: context.ownerInstanceId,
 					generation: context.generation,
 					step: "archive_waiver_notified",
 					receipt: waiverReceipt,

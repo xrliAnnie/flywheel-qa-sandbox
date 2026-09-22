@@ -663,4 +663,70 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 			}),
 		).toEqual({ finalized: false, reason: "founder_wake_pending" });
 	});
+
+	it("FLY-2662: closeout identity epoch rejects ABA, delete/reinsert, and declaration churn", () => {
+		expect(db.getSessionCloseoutIdentity("exec-epoch")).toMatchObject({
+			version: 2,
+			revision: "epoch:0",
+		});
+		db.registerSession(
+			"exec-epoch",
+			"runner-flywheel:@1",
+			"proj",
+			"FLY-2662",
+			"lead",
+			"codex",
+		);
+		const first = db.getSessionCloseoutIdentity("exec-epoch");
+		expect(first.revision).toBe("epoch:1");
+		const raw = (
+			db as unknown as {
+				db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
+			}
+		).db;
+
+		raw
+			.prepare("UPDATE sessions SET tmux_window = ? WHERE execution_id = ?")
+			.run("runner-flywheel:@2", "exec-epoch");
+		raw
+			.prepare("UPDATE sessions SET tmux_window = ? WHERE execution_id = ?")
+			.run("runner-flywheel:@1", "exec-epoch");
+		const afterAba = db.getSessionCloseoutIdentity("exec-epoch");
+		expect(afterAba.contentDigest).toBe(first.contentDigest);
+		expect(afterAba.revision).toBe("epoch:3");
+
+		raw
+			.prepare(
+				"UPDATE sessions SET vendor = ?, phase_keep_alive = 1 WHERE execution_id = ?",
+			)
+			.run("claude-code", "exec-epoch");
+		expect(db.getSessionCloseoutIdentity("exec-epoch").revision).toBe(
+			"epoch:3",
+		);
+
+		db.upsertDeclaredState("exec-epoch", "parked", "phase complete", 1, null);
+		expect(db.getSessionCloseoutIdentity("exec-epoch").revision).toBe(
+			"epoch:4",
+		);
+		db.clearDeclaredState("exec-epoch");
+		expect(db.getSessionCloseoutIdentity("exec-epoch").revision).toBe(
+			"epoch:5",
+		);
+
+		db.finalizeSession("exec-epoch");
+		expect(db.getSessionCloseoutIdentity("exec-epoch").revision).toBe(
+			"epoch:6",
+		);
+		db.registerSession(
+			"exec-epoch",
+			"runner-flywheel:@1",
+			"proj",
+			"FLY-2662",
+			"lead",
+			"codex",
+		);
+		expect(db.getSessionCloseoutIdentity("exec-epoch").revision).toBe(
+			"epoch:7",
+		);
+	});
 });

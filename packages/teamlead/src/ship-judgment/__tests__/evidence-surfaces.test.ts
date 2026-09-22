@@ -17,13 +17,63 @@ it("carries three labels and precise missing evidence into Epic and history, wit
 		const binding = store.readShipJudgmentBinding("q", CHANNEL)!;
 		const materials = evidenceMaterials(binding, NOW);
 		delete materials.targets[0]!.qaAuthority;
-		const evidence = buildEvidenceLedger(materials, binding);
+		const model = {
+			model: "fixture",
+			effort: "high",
+			configuration_digest: "c".repeat(64),
+		};
+		const frozen = store.getShipJudgmentInputs().freeze(
+			{
+				questionId: "q",
+				channelId: CHANNEL,
+				bindingDigest: canonicalDigest(binding),
+				targets: [
+					{
+						repo_identity: "__main__",
+						pr_number: 2399,
+						head_sha: binding.targets[0]!.head_sha,
+						diff_base_sha: "b".repeat(40),
+					},
+				],
+				sources: [],
+				files: [],
+				requirements: [],
+				prompt: "fixture",
+				model,
+			},
+			NOW,
+		);
+		if (frozen.status !== "created") throw new Error(frozen.status);
+		const jobs = store.getShipJudgmentJobs();
+		const job = jobs.claim(frozen.inputId, "worker", Date.parse(NOW));
+		if (job.status !== "claimed") throw new Error(job.status);
+		jobs.markSpawned(job, Date.parse(NOW));
+		jobs.finish(
+			job,
+			{
+				alignment: "pass",
+				coverage: "pass",
+				result: {},
+				resultCode: "evaluated",
+				durationMs: 1,
+				usage: null,
+				costUsd: null,
+			},
+			Date.parse(NOW) + 1,
+		);
+		const evidence = buildEvidenceLedger(materials, binding, {
+			status: "evaluated",
+			evaluationId: "surface-evaluation",
+			modelSnapshotDigest: "f".repeat(64),
+			alignment: "pass",
+			coverage: "pass",
+		});
 		store.getShipJudgmentOpinions().offer(
 			{
 				questionId: "q",
 				channelId: CHANNEL,
 				bindingDigest: canonicalDigest(binding),
-				inputId: null,
+				inputId: frozen.inputId,
 				reason: "evidence_only",
 				mechanical: materials.mechanical,
 				evidence,

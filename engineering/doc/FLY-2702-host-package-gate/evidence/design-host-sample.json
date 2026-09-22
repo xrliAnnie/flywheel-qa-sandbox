@@ -1,0 +1,7 @@
+{
+  "sampledAt": "2026-09-18T00:56:56.587643+00:00",
+  "purpose": "design only; not acceptance before/after",
+  "psStatus": "unavailable",
+  "reason": "PermissionError: [Errno 1] Operation not permitted: ps",
+  "historicalEvidence": "Lead issue observations 2026-09-17 22:49Z and 23:08Z; not independently remeasured"
+}

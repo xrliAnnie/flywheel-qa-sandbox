@@ -59,6 +59,12 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
 
 1. **名册核对(ground truth)** — run:
    `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
+   先核当前 Lead 自身载体并输出
+   `LEAD_VISIBILITY project=<project> lead=<lead> status=<pass|fail|inconclusive> reasons=<codes>`。
+   缺窗口、空壳、死 pane、错身份是 FINDING；不可探测是必须留账的 UNAVAILABLE，均
+   不得省略为“零异常”。Runner 的 active/phase-held 行即使 target 为 pending/空值也
+   必须保留，窗口还须绑定 exact execution，不能只按标题通过。本步骤不授权读取其他
+   Lead scrollback，也不授权 kill/rebuild。
    脚本先只读全 registry owner index 做 target cardinality 预检，再从当前项目
    `comm.sessions.lead_id = LEAD_ID` 物化名下 target；只有 index 完整且 target 唯一时，
    才执行一次 `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`
@@ -97,7 +103,7 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
      `last_change_epoch` 只锚真实状态跃迁或该身份的远端 head 推进；初次采样是 baseline。
      渲染行 hash、spinner、poll、重复 stage、park 续期、报告重排或 result 修改均不刷新。
      旧 TSV 不迁移 epoch。`state_sha256` 仅用于渲染诊断，不能判停滞。
-     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待或有未到期 expires_at 的 long_task 声明为 WAITING，
+     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待、未到期 expires_at 的 long_task 声明，或 collector 以当前 execution/activation/TURN/worktree、grant/binding 时间、live owner lock 与 supervisor 进程核验的 `package_gate_queue` 均为 WAITING。队列证据写入 `queue_request`/`queue_position`/`queue_wait_seconds`；它只移除 STALLED，不得遮蔽 LIMIT_LIVE、INTERACTIVE_MENU、PANE_DEAD、capture/hash finding；
      source 不完整为 UNKNOWN，只有完整连续观测满 3600 秒才可生成候选。
      任何 exact 同期 push receipt 都能证伪：作者/committer 时间和 PR updated_at 不算 push。
      当前 head 改变以及最近 3600 秒内已验证推进为 ACTIVE；保留活动的观察区间。
@@ -1012,4 +1018,3 @@ COMMIT;
 system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= tmux`, never used alone. The tick
 is the scheduled trigger; the existing inbox-batch and task-boundary cadence
 remains an event-driven supplement. The Lead must not create another timer.
-

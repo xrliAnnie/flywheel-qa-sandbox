@@ -2077,12 +2077,22 @@ describe("StateStore land lifecycle ledger", () => {
 			"thread-operation-archive",
 			compensation,
 		);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("UPDATE chat_threads SET archived_at = NULL WHERE thread_id = ?", [
+			"thread-operation-archive",
+		]);
 		expect(store.recordLandOperationStep(authorized)).toEqual({
 			ok: true,
 			idempotentReplay: true,
 		});
 		expect(
 			store.getChatThreadCompensationPending("thread-operation-archive"),
+		).toEqual(compensation);
+		expect(
+			store.getChatThreadArchivedAt("thread-operation-archive"),
 		).toBeNull();
 		store.close();
 	});
@@ -2139,7 +2149,7 @@ describe("StateStore land lifecycle ledger", () => {
 		).db.run(
 			`UPDATE land_operation
 			    SET retry_count = 5, retry_epoch_key = '3:cleanup_requested',
-			        last_error = 'retry_exhausted:linear_lookup_failed_retryable'
+			        last_error = 'retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending'
 			  WHERE operation_id = ?`,
 			[operation.operation_id],
 		);
@@ -2150,7 +2160,8 @@ describe("StateStore land lifecycle ledger", () => {
 			attempt: 1,
 			executionId: "land-exec",
 			operationId: operation.operation_id,
-			reason: "retry_exhausted:linear_lookup_failed_retryable",
+			reason:
+				"retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
 			now: "2026-07-21T20:00:03.000Z",
 			alertIdentity: {
 				leadId: "flywheel-eng-lead",
@@ -2180,6 +2191,12 @@ describe("StateStore land lifecycle ledger", () => {
 				},
 			},
 		});
+		const alertBody = store.getWorkflowAlertOutbox(event!.event_uid)?.payload
+			.body;
+		expect(alertBody).toContain("flywheel-comm land reclose");
+		expect(alertBody).not.toContain(
+			`POST /api/lifecycle/land/${operation.operation_id}/resume`,
+		);
 		expect(
 			store.holdWorkflowLandNode({
 				runId: "run-held",
@@ -2187,7 +2204,8 @@ describe("StateStore land lifecycle ledger", () => {
 				attempt: 1,
 				executionId: "land-exec",
 				operationId: operation.operation_id,
-				reason: "retry_exhausted:linear_lookup_failed_retryable",
+				reason:
+					"retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
 				now: "2026-07-21T20:00:04.000Z",
 			}),
 		).toEqual({ ok: true, idempotentReplay: true });
@@ -2541,6 +2559,166 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("FLY-2662 atomically attaches a migrated target revision while reclosing the exact held run", async () => {
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-fixture-null-targets",
+			issueId: "FLY-9002",
+			projectName: "flywheel",
+			snapshotJson: landSnapshot(),
+			claimsReadEnrolled: true,
+		});
+		const db = (
+			store as unknown as {
+				db: {
+					run(sql: string, params?: unknown[]): void;
+					raw: { prepare(sql: string): { all(): unknown[] } };
+				};
+			}
+		).db;
+		db.run(
+			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land', status = 'held' WHERE run_id = 'run-fixture-null-targets'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-fixture-null-targets",
+			nodeId: "land",
+			attempt: 3,
+			state: "pending",
+			executionId: "exec-fixture-null-targets",
+		});
+		db.run(
+			`INSERT INTO workflow_side_effect_ledger
+			   (run_id,node_id,attempt,kind,launch_ordinal,execution_id,state,
+			    created_at,updated_at,committed_at)
+			 VALUES ('run-fixture-null-targets','land',3,'dispatch',1,
+			         'exec-fixture-null-targets','intent_recorded',?,?,NULL)`,
+			["2026-09-17T02:11:18.371Z", "2026-09-17T02:11:18.371Z"],
+		);
+		const operation = store.ensureLandOperation({
+			runId: "run-fixture-null-targets",
+			issueId: "FLY-9002",
+			projectName: "flywheel",
+			prNumber: 9002,
+			approvedHead: "2".repeat(40),
+			now: "2026-09-17T02:11:18.371Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "predeploy-worker",
+			now: "2026-09-17T02:11:19.000Z",
+			leaseExpiresAt: "2026-09-17T02:12:19.000Z",
+		})!;
+		const mergeSha = "3".repeat(40);
+		expect(
+			store.recordLandOperationStep({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "merge_confirmed",
+				receipt: { headSha: "2".repeat(40), mergeSha },
+				now: "2026-09-17T02:11:20.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		store.setLandOperationDisposition({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			state: "held",
+			error: "closeout_only_run_not_active",
+			now: "2026-09-17T02:11:21.000Z",
+		});
+		const targetSnapshot = {
+			version: 2,
+			project: "flywheel",
+			issueUuid: "FLY-9002",
+			runId: "run-fixture-null-targets",
+			targets: [
+				{
+					kind: "worktree_not_applicable",
+					executionId: "exec-fixture-null-targets",
+					reason: "pinned_engine_execution",
+					nodeType: "land",
+					dispatchReceipt: "fixture-dispatch",
+				},
+			],
+		};
+		const attribution = store.getCloseoutAttributionSnapshot({
+			projectName: "flywheel",
+			issueId: "FLY-9002",
+			runId: "run-fixture-null-targets",
+		});
+		const verifiedTargets = {
+			json: canonicalJsonString(targetSnapshot),
+			digest: canonicalSubmissionDigest(targetSnapshot),
+			version: 2 as const,
+			attributionDigest: attribution.digest,
+			attributionEpoch: attribution.epoch,
+			observedAt: "2026-09-17T20:45:00.000Z",
+		};
+
+		const resumed = store.resumeHeldLandOperation({
+			operationId: operation.operation_id,
+			actor: "authenticated-reclose-peer",
+			reason: "retry pre-deployment closeout",
+			now: "2026-09-17T20:45:00.000Z",
+			expectedPrDisposition: "merged",
+			expectedHeadSha: "2".repeat(40),
+			expectedMergeSha: mergeSha,
+			mode: "closeout_only",
+			expectedResumeGeneration: 0,
+			expectedApprovedHead: "2".repeat(40),
+			requestId: "11111111-1111-4111-8111-111111111111",
+			verifiedTargets,
+			targetSource: "reclose_migration",
+		});
+
+		expect(resumed).toMatchObject({
+			ok: true,
+			operation: {
+				state: "partial",
+				resume_generation: 1,
+				closeout_targets_version: 2,
+				closeout_targets_revision: 1,
+				closeout_targets_source: "reclose_migration",
+			},
+		});
+		expect(store.getWorkflowRun("run-fixture-null-targets")?.status).toBe(
+			"active",
+		);
+		expect(
+			db.raw.prepare("SELECT * FROM land_closeout_target_revision").all(),
+		).toHaveLength(1);
+		for (const changed of [
+			{ actor: "different-peer" },
+			{ reason: "different reason" },
+			{ expectedMergeSha: "4".repeat(40) },
+		]) {
+			expect(
+				store.resumeHeldLandOperation({
+					operationId: operation.operation_id,
+					actor: "authenticated-reclose-peer",
+					reason: "retry pre-deployment closeout",
+					now: "2026-09-17T20:45:01.000Z",
+					expectedPrDisposition: "merged",
+					expectedHeadSha: "2".repeat(40),
+					expectedMergeSha: mergeSha,
+					mode: "closeout_only",
+					expectedResumeGeneration: 0,
+					expectedApprovedHead: "2".repeat(40),
+					requestId: "11111111-1111-4111-8111-111111111111",
+					...changed,
+				}),
+			).toEqual({
+				ok: false,
+				reason: "resume_refused:request_id_conflict",
+			});
+		}
+		expect(
+			db.raw.prepare("SELECT * FROM land_closeout_target_revision").all(),
+		).toHaveLength(1);
+		store.close();
+	});
+
 	it("creates the land retry and Linear Done columns with byte-compatible defaults", async () => {
 		const store = await StateStore.create(":memory:");
 		const db = (
@@ -2571,6 +2749,8 @@ describe("StateStore land lifecycle ledger", () => {
 			"linear_done_retry_count",
 			"linear_done_next_attempt_at",
 			"linear_done_last_attempt_at",
+			"closeout_targets_revision",
+			"closeout_targets_source",
 		]) {
 			expect(columns.has(column), `missing ${column}`).toBe(true);
 		}
@@ -2589,6 +2769,8 @@ describe("StateStore land lifecycle ledger", () => {
 			retry_count: 0,
 			retry_epoch_key: null,
 			next_attempt_at: null,
+			closeout_targets_revision: 0,
+			closeout_targets_source: null,
 			linear_done_disposition: null,
 			linear_done_deferred_at: null,
 			linear_done_settled_at: null,

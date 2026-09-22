@@ -118,11 +118,13 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 		);
 		const gateOpen = prompt.indexOf("gate approve_to_ship", approveSection);
 		expect(ciPrecondition).toBeGreaterThanOrEqual(0);
-		expect(prompt).toContain("gh pr checks <NUMBER>");
-		expect(prompt).not.toContain("gh pr checks <NUMBER> --required");
-		expect(prompt).not.toContain("gh pr checks <NUMBER> --watch");
-		expect(prompt).toContain("Exit 8 means checks are still pending");
-		expect(prompt).toContain("re-run the short probe on the next turn or wake");
+		expect(prompt).toContain(
+			"ci-full ensure --pr <NUMBER> --head $(git rev-parse HEAD) --json",
+		);
+		expect(prompt).not.toContain("gh pr checks <NUMBER>");
+		expect(prompt).toContain("Exit 8 means full CI is requested or running");
+		expect(prompt).toContain("re-run ci-full ensure on the next turn or wake");
+		expect(prompt).toContain("Exit 1 or 2 is a real precondition failure");
 		expect(prompt).toContain("do NOT open the approve gate");
 		expect(ciPrecondition).toBeLessThan(gateOpen);
 		expect(prompt).toContain(

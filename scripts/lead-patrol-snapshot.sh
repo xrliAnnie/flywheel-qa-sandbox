@@ -7,6 +7,13 @@ set -uo pipefail
 umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOUNDED_RUN="$SCRIPT_DIR/lib/bounded-run.sh"
+VISIBILITY_BUDGET_OK=0
+if [ -r "$SCRIPT_DIR/lib/agent-visibility.sh" ] \
+  && [ ! -L "$SCRIPT_DIR/lib/agent-visibility.sh" ]; then
+  # shellcheck source=lib/agent-visibility.sh
+  source "$SCRIPT_DIR/lib/agent-visibility.sh"
+  av_configure_visibility_budgets && VISIBILITY_BUDGET_OK=1
+fi
 case "$(basename "${BASH_SOURCE[0]}")" in
   lead-patrol-snapshot.sh) DWELL_CONTROL="$SCRIPT_DIR/flywheel-node-dwell-control.mjs" ;;
   flywheel-patrol-snapshot) DWELL_CONTROL="$SCRIPT_DIR/flywheel-node-dwell-control" ;;
@@ -297,11 +304,9 @@ run_comm_index() { # <output-var> <db>
 .bail on
 .timeout 3000
 .mode tabs
-SELECT tmux_window, project_name, execution_id, coalesce(lead_id,'')
+SELECT coalesce(nullif(tmux_window,''),'__UNBOUND__'), project_name, execution_id, coalesce(lead_id,'')
 FROM sessions
 WHERE status IN ('running','blocked')
-  AND tmux_window <> ''
-  AND tmux_window NOT LIKE '%:pending'
 ORDER BY tmux_window, execution_id
 LIMIT 2000;
 SQL
@@ -368,24 +373,31 @@ else
   OWNER_INDEX_COMPLETE=0
 fi
 
-# A bound active target without a Lead is not an orphan finding. It means the
-# owner index itself is incomplete, so no department Lead may infer ownership.
-if printf '%s\n' "$OWNER_INDEX" | awk -F '\t' 'NF && $1 != "" && $4 == "" {found=1} END {exit !found}'; then
+# A live target with no Lead makes ownership incomplete. A newly dispatched
+# execution that still has no target cannot be attributed to any department;
+# retain it in the index for fleet-level accounting without blinding every
+# department Lead's already attributable Runner facts.
+if printf '%s\n' "$OWNER_INDEX" | awk -F '\t' \
+  'NF && $4 == "" && $1 != "__UNBOUND__" && $1 !~ /:pending$/ {found=1} END {exit !found}'; then
   OWNER_INDEX_COMPLETE=0
 fi
 
 if [ "$OWNER_INDEX_COMPLETE" -eq 1 ]; then
   OWNED_CLAIMS="$(printf '%s\n' "$OWNER_INDEX" | awk -F '\t' -v project="$PROJECT_NAME" -v lead="$LEAD_ID" '
-    $1 != "" && $2 == project && $4 == lead && !seen[$1]++ { print }
+    $2 == project && $4 == lead && ($1 == "__UNBOUND__" || $1 ~ /:pending$/ || !seen[$1]++) { print }
   ')"
   while IFS=$'\t' read -r target _claim_project execution_id _claim_lead; do
     [ -n "$target" ] || continue
+    if [ "$target" = __UNBOUND__ ] || [[ "$target" == *:pending ]]; then
+      OWNED_TARGET_ROWS="${OWNED_TARGET_ROWS}${OWNED_TARGET_ROWS:+$'\n'}${target}"$'\t'"${execution_id}"$'\t'"pending"
+      continue
+    fi
     target_claims="$(printf '%s\n' "$OWNER_INDEX" | awk -F '\t' -v target="$target" '$1 == target {n++} END {print n+0}')"
     if [ "$target_claims" -ne 1 ]; then
       AMBIGUOUS_TARGET_COUNT=$((AMBIGUOUS_TARGET_COUNT + 1))
       continue
     fi
-    OWNED_TARGET_ROWS="${OWNED_TARGET_ROWS}${OWNED_TARGET_ROWS:+$'\n'}${target}"$'\t'"${execution_id}"
+    OWNED_TARGET_ROWS="${OWNED_TARGET_ROWS}${OWNED_TARGET_ROWS:+$'\n'}${target}"$'\t'"${execution_id}"$'\t'"bound"
   done <<< "$OWNED_CLAIMS"
 else
   STEP1_STATUS="UNAVAILABLE($OWNER_INDEX_ERROR_TOKEN)"
@@ -407,8 +419,16 @@ if [ "$OWNER_INDEX_COMPLETE" -eq 1 ]; then
       CANONICAL_PANES="$(printf '%s\n' "$PANE_LIST_RAW" | awk -F '\t' '
         $2 ~ /^runner-/ && $4 ~ /^[A-Z][A-Z0-9]*-[0-9]+($|[-_:])/ { print }
       ')"
-      while IFS=$'\t' read -r target execution_id; do
+      while IFS=$'\t' read -r target execution_id binding_state; do
         [ -n "$target" ] || continue
+        if [ "$binding_state" = pending ]; then
+          display_target="$target"
+          [ "$target" != __UNBOUND__ ] || display_target=unbound
+          roster_fact="ROSTER_EVIDENCE target=$display_target exec=$execution_id live_panes=0 findings=TARGET_PENDING"
+          STEP1_STATUS="FINDING-CANDIDATE"
+          STEP1_FACTS="${STEP1_FACTS}${STEP1_FACTS:+$'\n'}$roster_fact"
+          continue
+        fi
         target_panes="$(printf '%s\n' "$CANONICAL_PANES" | awk -F '\t' -v target="$target" '$3 == target {print}')"
         live_count="$(printf '%s\n' "$target_panes" | awk 'NF {n++} END {print n+0}')"
         roster_fact="ROSTER_EVIDENCE target=$target exec=$execution_id live_panes=$live_count"
@@ -436,6 +456,49 @@ if [ "$OWNER_INDEX_COMPLETE" -eq 1 ]; then
     STEP2_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
   fi
 fi
+
+# FLY-2643: every department patrol proves only its own Lead carrier/surface.
+# Fleet-wide roster findings remain owned by the existing cmux watcher; this
+# snapshot never reads another Lead's pane or scrollback.
+LEAD_VISIBILITY_VERIFIER="${FLYWHEEL_PATROL_VISIBILITY_VERIFIER:-$SCRIPT_DIR/verify-agent-visibility.sh}"
+LEAD_VISIBILITY_OUTPUT=""
+LEAD_VISIBILITY_RC=2
+LEAD_VISIBILITY_STATUS=inconclusive
+LEAD_VISIBILITY_REASONS=visibility_budget_invalid
+if [ "$VISIBILITY_BUDGET_OK" = 1 ] \
+  && [ -x "$BOUNDED_RUN" ] && [ ! -L "$BOUNDED_RUN" ] \
+  && [ -x "$LEAD_VISIBILITY_VERIFIER" ] && [ ! -L "$LEAD_VISIBILITY_VERIFIER" ]; then
+  LEAD_VISIBILITY_RC=0
+  LEAD_VISIBILITY_OUTPUT="$("$BOUNDED_RUN" "$AV_VISIBLE_TIMEOUT_SECONDS" "$LEAD_VISIBILITY_VERIFIER" \
+    --project "$PROJECT_NAME" --lead "$LEAD_ID" --level visible --json)" || LEAD_VISIBILITY_RC=$?
+  LEAD_VISIBILITY_STATUS="$(jq -er --arg project "$PROJECT_NAME" --arg lead "$LEAD_ID" '
+    select(.schemaVersion == 1 and .subject.kind == "lead" and
+      .subject.project == $project and .subject.leadId == $lead and .level == "visible") |
+    .status | select(. == "pass" or . == "fail" or . == "inconclusive")
+  ' <<< "$LEAD_VISIBILITY_OUTPUT" 2>/dev/null || true)"
+  LEAD_VISIBILITY_REASONS="$(jq -r '
+    [.reasons[]? | select(type == "string") | gsub("[^A-Za-z0-9._-]"; "_")] |
+    if length == 0 then "none" else join(",") end
+  ' <<< "$LEAD_VISIBILITY_OUTPUT" 2>/dev/null || true)"
+  if [ -z "$LEAD_VISIBILITY_STATUS" ]; then
+    LEAD_VISIBILITY_STATUS=inconclusive
+    LEAD_VISIBILITY_REASONS=invalid_verifier_response
+  fi
+  case "$LEAD_VISIBILITY_RC:$LEAD_VISIBILITY_STATUS" in
+    0:pass|1:fail|2:inconclusive) ;;
+    *) LEAD_VISIBILITY_STATUS=inconclusive; LEAD_VISIBILITY_REASONS=invalid_verifier_response ;;
+  esac
+fi
+STEP1_FACTS="${STEP1_FACTS}${STEP1_FACTS:+$'\n'}LEAD_VISIBILITY project=$PROJECT_NAME lead=$LEAD_ID status=$LEAD_VISIBILITY_STATUS reasons=${LEAD_VISIBILITY_REASONS:-none}"
+case "$LEAD_VISIBILITY_STATUS" in
+  fail) STEP1_STATUS="FINDING-CANDIDATE" ;;
+  inconclusive)
+    case "$STEP1_STATUS" in
+      FINDING-CANDIDATE) ;;
+      *) STEP1_STATUS="UNAVAILABLE(structural: lead_visibility_unproven)" ;;
+    esac
+    ;;
+esac
 
 if [ -n "$RUNNER_PANES" ]; then
   STEP1_FACTS="${STEP1_FACTS:-(none)}
@@ -527,11 +590,14 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   semantic_hash="unavailable"
   activity_key="$(sha256_text "$PROJECT_NAME:$LEAD_ID:$execution_id")"
   continuity_reason="helper_unavailable"
+  queue_request="unavailable"
+  queue_position=0
+  queue_wait_seconds=0
   last_change_epoch=0
   if [ "$CONTINUITY_OK" -eq 1 ]; then
-    activity_row="$(jq -er --arg exec "$execution_id" '.facts[$exec] | select(. != null) | [.activity,.last_change_epoch,.last_change_basis,(.entry.semanticDigest // "unavailable"),.key,.reason] | @tsv' "$CONTINUITY_FACTS" 2>/dev/null || true)"
+    activity_row="$(jq -er --arg exec "$execution_id" '.facts[$exec] | select(. != null) | [.activity,.last_change_epoch,.last_change_basis,(.entry.semanticDigest // "unavailable"),.key,.reason,(.entry.queueEvidence.requestId // "unavailable"),(.entry.queueEvidence.position // 0),((.entry.queueEvidence.waitMs // 0) / 1000 | floor)] | @tsv' "$CONTINUITY_FACTS" 2>/dev/null || true)"
     if [ -n "$activity_row" ]; then
-      IFS=$'\t' read -r activity last_change_epoch last_change_basis semantic_hash activity_key continuity_reason <<< "$activity_row"
+      IFS=$'\t' read -r activity last_change_epoch last_change_basis semantic_hash activity_key continuity_reason queue_request queue_position queue_wait_seconds <<< "$activity_row"
     fi
   fi
   case "$activity" in
@@ -557,7 +623,7 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
       *) STEP2_STATUS="FINDING-CANDIDATE" ;;
     esac
   fi
-  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result schema=2 activity=$activity semantic_sha256=$semantic_hash last_change_basis=$last_change_basis last_checked_epoch=$NOW_EPOCH activity_evidence=$activity_key"
+  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result schema=2 activity=$activity semantic_sha256=$semantic_hash last_change_basis=$last_change_basis last_checked_epoch=$NOW_EPOCH activity_evidence=$activity_key queue_request=$queue_request queue_position=$queue_position queue_wait_seconds=$queue_wait_seconds"
   STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}$evidence"
 done <<< "$RUNNER_PANES"
 

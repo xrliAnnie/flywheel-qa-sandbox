@@ -12,8 +12,9 @@
 #      against real npm during design review, Codex R1#4);
 #   3. third-party dependency UNION generated programmatically into the payload
 #      package.json — any version conflict FAILS the build (align by hand);
-#   4. run-bridge entry compiled to dist/run-bridge.js (imports rewritten from
-#      ../packages/<dir>/dist → ../node_modules/<name>/dist, types stripped);
+#   4. run-bridge entry compiled to dist/run-bridge.js and curated runtime
+#      scripts rewritten from relative packages/<dir>/dist imports to the
+#      embedded node_modules/<name>/dist tree (bridge types stripped);
 #   5. `.flywheel-prebuilt` sentinel (content = version) plus immutable
 #      `.flywheel-build-sha` source identity at the tree root — packaged-mode
 #      branches key off the sentinel and carrier receipts bind the source SHA;
@@ -100,10 +101,16 @@ migrate-summary-registry.sh
 flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
 resident-codex-lead-recover.sh
+verify-agent-visibility.sh
 codex-home-link-truth.sh
+codex-home-reconcile.mjs
+codex-home-reconcile-cycle.mjs
+codex-home-launch-fence.mjs
+lib/codex-home-reconcile-process.mjs
 codex-credential-cutover.sh
 codex-home-credential-sweep.mjs
 codex-quota-readiness-receipt.mjs
+config/codex-quota-home-policy.json
 flywheel-lead-attach.sh
 flywheel-view-attach.sh
 flywheel-node-status.sh
@@ -112,6 +119,11 @@ host-tmux-selection-gate.sh
 lead-patrol-snapshot.sh
 flywheel-node-dwell-control.mjs
 flywheel-patrol-continuity.mjs
+package-gate.mjs
+package-gate-worker.mjs
+package-gate-host.py
+package-gate-reporter.mjs
+lib/package-gate-core.mjs
 lead-alert.sh
 meta-alert.sh
 update-flywheel.sh
@@ -139,6 +151,7 @@ lib/flywheel-log.sh
 lib/tmux-server-rescue.sh
 lib/lead-body-evidence.sh
 lib/bounded-run.sh
+lib/agent-visibility.sh
 lib/codex-quota-summary.mjs
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh
@@ -566,6 +579,54 @@ console.log(`vendored ${dep} closure (${seen.size} pkgs) into ${destNM}`);
 EOF
 }
 
+# po_rewrite_curated_package_imports <repo-root> <tree-out-dir>
+# Curated scripts run directly from payload/scripts before the compatibility
+# mirror is guaranteed to exist. Rewrite their monorepo-relative workspace
+# imports to the embedded package tree and fail closed on an unknown/unshipped
+# workspace package.
+po_rewrite_curated_package_imports() {
+  local root="$1" tree="$2"
+  node - "$root" "$tree" "$PO_PACKAGES" <<'EOF' || return 1
+const fs = require("node:fs");
+const path = require("node:path");
+const [root, tree, packageList] = process.argv.slice(2);
+const shipped = new Set(packageList.trim().split(/\s+/).filter(Boolean));
+
+function filesUnder(dir) {
+	const result = [];
+	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		const file = path.join(dir, entry.name);
+		if (entry.isDirectory()) result.push(...filesUnder(file));
+		else if (/\.(?:c?js|mjs)$/.test(entry.name)) result.push(file);
+	}
+	return result;
+}
+
+for (const file of filesUnder(path.join(tree, "scripts"))) {
+	let code = fs.readFileSync(file, "utf8");
+	code = code.replace(
+		/(["'])((?:\.\.\/)+)packages\/([a-z0-9-]+)\/(dist\/[^"'\r\n]+)\1/g,
+		(match, quote, parents, dir, rest) => {
+			if (!shipped.has(dir)) {
+				throw new Error(`curated script imports unshipped package dir: ${dir} (${file})`);
+			}
+			const manifest = path.join(root, "packages", dir, "package.json");
+			if (!fs.existsSync(manifest)) {
+				throw new Error(`curated script imports unknown package dir: ${dir} (${file})`);
+			}
+			const name = JSON.parse(fs.readFileSync(manifest, "utf8")).name;
+			if (!name) throw new Error(`package has no npm name: ${dir}`);
+			return `${quote}${parents}node_modules/${name}/${rest}${quote}`;
+		},
+	);
+	if (/(["'])(?:\.\.\/)+packages\/[a-z0-9-]+\/dist\//.test(code)) {
+		throw new Error(`curated script has an unrewritten workspace import: ${file}`);
+	}
+	fs.writeFileSync(file, code);
+}
+EOF
+}
+
 # po_copy_curated_scripts <repo-root> <tree-out-dir>
 # The one assembler for the curated scripts subtree. Tests call this same
 # function when constructing a packaged fixture, so a repository-only hand
@@ -587,6 +648,7 @@ po_copy_curated_scripts() {
     mkdir -p "$tree/scripts/$(dirname "$d")"
     cp -Rp "$root/scripts/$d" "$tree/scripts/$d" || return 1
   done <<<"$PO_SCRIPT_DIRS"
+  po_rewrite_curated_package_imports "$root" "$tree" || return 1
 }
 
 # ── assembly ────────────────────────────────────────────────────────────────

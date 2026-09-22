@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -45,6 +45,12 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	store.close();
 	rmSync(root, { recursive: true });
+});
+
+it("isolates the default voice health state root under Vitest", () => {
+	expect(process.env.FLYWHEEL_STATE_DIR).toBeTruthy();
+	expect(process.env.FLYWHEEL_STATE_DIR).not.toBe(join(homedir(), ".flywheel"));
+	expect(process.env.FLYWHEEL_STATE_DIR?.startsWith(tmpdir())).toBe(true);
 });
 
 it("passes the runtime deadline into the actual provisioner fetch", async () => {
@@ -228,6 +234,42 @@ it("projects the persisted tuple and permits token rotation with unchanged bot i
 		voiceChannelId: "100000000000000002",
 		voiceBotUserId: "100000000000000005",
 	});
+});
+
+it("projects authoritative demand into the durable voice health store", async () => {
+	const now = new Date().toISOString();
+	const db = new Database(join(root, "teamlead.db"));
+	db.prepare(
+		"UPDATE voice_sessions SET created_at = ?, updated_at = ? WHERE session_id = ?",
+	).run(now, now, SESSION_ID);
+	db.close();
+	const stateRoot = join(root, "health-state");
+	const { runtime } = createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [configuredProject()],
+		env: {
+			LEAD_TOKEN: "test-token",
+			FLYWHEEL_STATE_DIR: stateRoot,
+		},
+		homeDir: root,
+		cwd: root,
+		config: { discordOwnerUserId: "founder" } as BridgeConfig,
+		fetchImpl: vi.fn(),
+	});
+
+	await runtime.tick();
+	const health = new Database(
+		join(stateRoot, "state", "voice-health", "observations.sqlite"),
+		{ readonly: true },
+	);
+	const demand = health
+		.prepare(
+			"SELECT demand_state AS state, demand_event_cursor AS cursor FROM health",
+		)
+		.get() as { state: string; cursor: number };
+	health.close();
+	expect(demand).toEqual({ state: "required", cursor: 1 });
 });
 
 it.each(["provisioning", "desired", "claimed", "warming", "live", "ending"])(

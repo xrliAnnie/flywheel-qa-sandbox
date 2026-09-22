@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -9,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
 import { afterEach, expect, it } from "vitest";
 import { createCodexQuotaHostCollector } from "../host-readiness.js";
 
@@ -21,9 +21,9 @@ function receipt(homes: { home: string; ownership: string }[]) {
 	return {
 		schemaVersion: 1,
 		buildSha: "a".repeat(40),
-		inventoryDigest: createHash("sha256")
-			.update(JSON.stringify(homes))
-			.digest("hex"),
+		inventoryDigest: computeCodexHomeInventoryDigest(
+			homes as Array<{ home: string; ownership: "managed" | "independent" }>,
+		),
 		homes: homes.map((home) => ({
 			...home,
 			credentialShared: home.ownership === "managed",
@@ -111,9 +111,10 @@ it("never trusts missing manifests or unowned live homes", async () => {
 		false,
 	);
 	rmSync(f.options.approvedManifestPath);
-	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
-		false,
-	);
+	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
+		complete: false,
+		failureReasons: ["readiness_receipt_missing"],
+	});
 });
 it("rejects unapproved lease homes even without a live CommDB row", async () => {
 	const f = fixture();
@@ -153,9 +154,10 @@ it("rejects deployment receipt inventory tampering", async () => {
 	);
 	receipt.inventoryDigest = "bad";
 	writeFileSync(f.options.approvedManifestPath, JSON.stringify(receipt));
-	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
-		false,
-	);
+	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
+		complete: false,
+		failureReasons: ["readiness_receipt_invalid"],
+	});
 });
 it("allows an approved legacy execution home using exact CommDB and process identity without inventing a keyed lease", async () => {
 	const f = fixture();
@@ -212,5 +214,71 @@ it("reports direct canonical readers even when canonical is not an enrolled mana
 	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
 		complete: true,
 		canonicalChainActive: false,
+	});
+});
+
+it("uses strict resident evidence for a keyed active home without a lease", async () => {
+	const f = fixture();
+	writeFileSync(
+		join(f.home, ".flywheel-agent-home.json"),
+		JSON.stringify({ project: "project", role: "implement" }),
+	);
+	const db = new Database(join(f.options.commRoot, "project", "comm.db"));
+	db.prepare("INSERT INTO sessions VALUES(?,?,?,?,?)").run(
+		"exec",
+		"codex",
+		"running",
+		null,
+		0,
+	);
+	db.close();
+	f.setProcesses(
+		`12 Thu Sep 18 01:00:00 2026 /bin/codex app-server CODEX_HOME=${f.home} FLYWHEEL_EXEC_ID=exec`,
+	);
+	let verified = true;
+	const collect = createCodexQuotaHostCollector({
+		...f.options,
+		residentEvidence: async (input) => {
+			expect(input).toMatchObject({
+				executionId: "exec",
+				project: "project",
+				role: "implement",
+				process: { pid: 12, startIdentity: "Thu Sep 18 01:00:00 2026" },
+			});
+			return {
+				verified,
+				reason: verified ? "verified" : "socket_holder_mismatch",
+			};
+		},
+	});
+	expect(await collect()).toMatchObject({
+		complete: true,
+		registeredComplete: true,
+		homes: [{ activity: "active" }],
+	});
+	verified = false;
+	expect(await collect()).toMatchObject({
+		complete: false,
+		registeredComplete: false,
+		homes: [{ activity: "unknown" }],
+	});
+});
+
+it("preserves an unattributed desktop reader as global unknown", async () => {
+	const f = fixture();
+	f.setProcesses(
+		"77 Thu Sep 18 01:00:00 2026 /Applications/ChatGPT.app/Contents/Resources/codex app-server",
+	);
+	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
+		complete: false,
+		registeredComplete: true,
+		diagnostics: [{ reason: "process_home_unknown", scope: "global" }],
+		unattributedReaders: [
+			{
+				pid: 77,
+				startIdentity: "Thu Sep 18 01:00:00 2026",
+				reason: "process_home_unknown",
+			},
+		],
 	});
 });

@@ -35,7 +35,10 @@ export type EpicPagePublishOutcome =
 	| "transient: publish_failed:publication";
 
 export interface EpicPagePublisher {
-	publishHosted(page: EpicPage): Promise<EpicPagePublishOutcome>;
+	publishHosted(
+		page: EpicPage,
+		options?: { force?: boolean },
+	): Promise<EpicPagePublishOutcome>;
 }
 
 export interface EpicPagePublisherDeps {
@@ -66,7 +69,7 @@ export function createEpicPagePublisher(
 	const renderBundle = (page: EpicPage): EpicPageBundle =>
 		renderEpicPageBudgetBundle(page, now());
 	return {
-		async publishHosted(page): Promise<EpicPagePublishOutcome> {
+		async publishHosted(page, options = {}): Promise<EpicPagePublishOutcome> {
 			const version = page.freshness.current.value?.version;
 			if (!version) throw new Error("epic_page_current_version_missing");
 			if (deps.hostOverride) {
@@ -106,6 +109,7 @@ export function createEpicPagePublisher(
 					const age =
 						now().getTime() - Date.parse(publication?.last_published_at ?? "");
 					if (
+						!options.force &&
 						publication?.published &&
 						publication.last_content_digest === digest &&
 						publication.last_hosting_key === binding.hostingKey &&

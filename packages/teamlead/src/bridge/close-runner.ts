@@ -100,6 +100,13 @@ export interface CloseRunnerOpts {
 	 */
 	finalizeDone?: boolean;
 	/**
+	 * Land closeout physical pass: terminate/prove the runner gone but preserve
+	 * CommDB and StateStore records until the frozen worktree set is settled.
+	 * Only lifecycle-closeout may set this; all ordinary callers retain the
+	 * existing atomic communication finalization behavior.
+	 */
+	deferCommunicationFinalization?: boolean;
+	/**
 	 * FLY-1185 (Codex R1#13): issue-terminal authority override. Set ONLY by
 	 * the lifecycle-closeout executor when the ISSUE is terminal (shipped /
 	 * canceled / founder-parked): a residual live husk whose status is outside
@@ -664,6 +671,14 @@ async function closeRunnerInner(
 				},
 			});
 			markDetectionClearingSafe(store, opts.executionId);
+			if (opts.deferCommunicationFinalization) {
+				return {
+					closed: true,
+					physicalGone: true,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+				};
+			}
 			const finalized = finalizeCommunications();
 			if (!finalized.ok) {
 				return {
@@ -718,6 +733,15 @@ async function closeRunnerInner(
 		// episodes (CLEARING) so half-torn-down state cannot spam the Lead. Only
 		// on success paths; best-effort (a marking failure must not block close).
 		markDetectionClearingSafe(store, opts.executionId);
+		if (opts.deferCommunicationFinalization) {
+			return {
+				closed: true,
+				alreadyGone: true,
+				physicalGone: true,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+			};
+		}
 		// FLY-1238: retire every unresolved gate in the same transaction that
 		// deletes the CommDB session. Archival is forbidden until this succeeds;
 		// otherwise a zombie gate could still consume founder speech.
@@ -895,10 +919,14 @@ async function closeRunnerInner(
 		opts.projectName,
 	);
 	const pendingIdentity = target.tmuxWindow.endsWith(":pending");
+	// Pre-deployment sessions can remain `running` in CommDB after their
+	// authoritative StateStore session became close-eligible. The placeholder
+	// identity is not death evidence, but it must not prevent us from gathering
+	// execution-wide daemon/window/marker/host evidence. Only the explicit
+	// `dead` result below authorizes identity deletion; alive/unknown stays
+	// fail-closed.
 	const pendingRunnerLiveness =
-		!res.killed &&
-		pendingIdentity &&
-		(terminalCommDbEvidence || authoritativeCrashStatus !== undefined)
+		!res.killed && pendingIdentity
 			? await probeRunExecutionLiveness(
 					session,
 					opts.executionId,
@@ -929,7 +957,9 @@ async function closeRunnerInner(
 		const lost = await authorityLostReason();
 		if (lost) return abortAuthorityLost("pre_commdb_finalize", lost);
 	}
-	if (commDbCanFinalize) {
+	if (opts.deferCommunicationFinalization && commDbCanFinalize) {
+		commDbFinalized = false;
+	} else if (commDbCanFinalize) {
 		const finalized = finalizeCommunications(
 			canFinalizeCommunicationsOnly
 				? {
@@ -963,7 +993,9 @@ async function closeRunnerInner(
 
 	return {
 		closed: res.killed,
-		...(!res.killed && { physicalGone: runnerDeathProven }),
+		...((!res.killed || opts.deferCommunicationFinalization) && {
+			physicalGone: res.killed || runnerDeathProven,
+		}),
 		...(runnerDeathProven && { runnerDeathProven: true as const }),
 		commDbFinalized,
 		retiredGateCount,

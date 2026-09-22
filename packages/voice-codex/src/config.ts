@@ -21,10 +21,13 @@ export interface VoiceDaemonConfig {
 	apiToken: string;
 	bridgeUrl: string;
 	voiceRoot: string;
+	healthStateRoot: string;
+	voiceHealthHelperPath: string;
 	codexHome: string;
 	codexBin: string;
 	commCliPath: string;
 	projectsPath: string;
+	idleHttpTimeoutMs: number;
 	leaseHttpTimeoutMs: number;
 	idlePollMs: number;
 	idleExitMs: number;
@@ -38,6 +41,33 @@ export interface VoiceDaemonConfig {
 	mirrorRetryWindowMs: number;
 	ingestRetries: number;
 	deliveryRetryMs: number;
+}
+
+export function validateVoiceBridgeUrl(value: string): string {
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		throw new Error("voice_bridge_url_invalid");
+	}
+	const hostname = parsed.hostname.toLowerCase();
+	const loopback =
+		hostname === "localhost" ||
+		hostname === "[::1]" ||
+		/^127(?:\.[0-9]{1,3}){3}$/u.test(hostname);
+	if (
+		!(["http:", "https:"] as const).includes(
+			parsed.protocol as "http:" | "https:",
+		) ||
+		parsed.username !== "" ||
+		parsed.password !== "" ||
+		parsed.search !== "" ||
+		parsed.hash !== "" ||
+		!loopback
+	) {
+		throw new Error("voice_bridge_url_invalid");
+	}
+	return parsed.toString().replace(/\/+$/u, "");
 }
 
 function integer(
@@ -80,6 +110,9 @@ export function loadVoiceDaemonConfig(
 	env: Readonly<Record<string, string | undefined>> = process.env,
 	homeDir: string,
 ): VoiceDaemonConfig {
+	const bridgeUrl = validateVoiceBridgeUrl(
+		env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL ?? "http://127.0.0.1:9876",
+	);
 	const apiToken = env.TEAMLEAD_API_TOKEN?.trim();
 	if (!apiToken) throw new Error("TEAMLEAD_API_TOKEN is required");
 	const realtimeApiKey = env.OPENAI_API_KEY?.trim();
@@ -102,14 +135,26 @@ export function loadVoiceDaemonConfig(
 	return {
 		apiToken,
 		realtimeApiKey,
-		bridgeUrl: env.BRIDGE_URL ?? "http://127.0.0.1:9876",
+		bridgeUrl,
 		voiceRoot,
+		healthStateRoot: stateDir,
+		voiceHealthHelperPath: join(
+			flywheelDir,
+			"scripts",
+			"lib",
+			"voice-health.py",
+		),
 		codexHome: env.FLYWHEEL_VOICE_CODEX_HOME ?? join(voiceRoot, "codex-home"),
 		codexBin: env.FLYWHEEL_CODEX_BIN ?? "codex",
 		commCliPath:
 			env.FLYWHEEL_COMM_CLI ??
 			join(flywheelDir, "packages", "flywheel-comm", "dist", "index.js"),
 		projectsPath: env.FLYWHEEL_PROJECTS_FILE ?? join(stateDir, "projects.json"),
+		idleHttpTimeoutMs: integer(
+			env,
+			"FLYWHEEL_VOICE_IDLE_HTTP_TIMEOUT_MS",
+			2_000,
+		),
 		leaseHttpTimeoutMs,
 		idlePollMs: integer(env, "FLYWHEEL_VOICE_IDLE_POLL_MS", 5_000),
 		idleExitMs: integer(env, "FLYWHEEL_VOICE_IDLE_EXIT_MS", 120_000),

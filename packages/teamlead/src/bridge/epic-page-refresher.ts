@@ -44,7 +44,10 @@ export function createEpicPageSerializer(): EpicPageSerializer {
 	};
 }
 
-export type EpicPageAttemptInput = Omit<MaterializeEpicPageInput, "version">;
+export type EpicPageAttemptInput = Omit<MaterializeEpicPageInput, "version"> & {
+	/** Explicit operator intent; valid only for a manual attempt. */
+	publishHosted?: boolean;
+};
 
 type MaterializedEpicPage = {
 	page: EpicPage;
@@ -97,11 +100,8 @@ function failureToken(error: unknown): string {
 	return "transient: epic_scan_failed";
 }
 
-function isHostedOutcome(outcome: string): boolean {
-	return (
-		outcome.startsWith("ok:") ||
-		/^ok_unpublished:\d+:unchanged_digest$/.test(outcome)
-	);
+function isLocalRefreshSuccess(outcome: string): boolean {
+	return outcome.startsWith("ok:") || outcome.startsWith("ok_unpublished:");
 }
 
 export function runEpicPageAttempt(
@@ -128,10 +128,10 @@ export function runEpicPageAttempt(
 		let settled = false;
 		const settle = (outcome: string): void => {
 			if (settled) throw new Error("epic_page_attempt_already_settled");
-			if (deps.retryStore && (intakeOnly || isHostedOutcome(outcome))) {
+			if (deps.retryStore && (intakeOnly || isLocalRefreshSuccess(outcome))) {
 				const retry = deps.retryStore.recordEpicIntakeRefreshResult(
 					input.projectName,
-					isHostedOutcome(outcome),
+					isLocalRefreshSuccess(outcome),
 					attemptedAt,
 				);
 				if (intakeOnly && retry.notRefreshable)
@@ -154,7 +154,8 @@ export function runEpicPageAttempt(
 		const version = deps.store.getNextEpicPageVersion(input.projectName);
 		let materialized: MaterializedEpicPage;
 		try {
-			materialized = await deps.materialize({ ...input, version });
+			const { publishHosted: _publishHosted, ...materializeInput } = input;
+			materialized = await deps.materialize({ ...materializeInput, version });
 		} catch (error) {
 			const token = failureToken(error);
 			settle(token);
@@ -178,21 +179,27 @@ export function runEpicPageAttempt(
 		let outcome:
 			| EpicPagePublishOutcome
 			| `ok_unpublished:${number}:manual`
+			| `ok_unpublished:${number}:event`
+			| `ok_unpublished:${number}:scan`
 			| "transient: epic_scan_failed";
-		if (input.trigger === "manual") {
+		if (input.trigger === "manual" && input.publishHosted !== true) {
 			outcome = `ok_unpublished:${version}:manual`;
+		} else if (input.trigger !== "manual") {
+			outcome = `ok_unpublished:${version}:${input.trigger}`;
 		} else {
 			try {
 				if (!deps.publisher) throw new Error("epic_page_publisher_missing");
-				outcome = await deps.publisher.publishHosted(materialized.page);
+				outcome = await deps.publisher.publishHosted(materialized.page, {
+					force: true,
+				});
 			} catch {
 				outcome = "transient: epic_scan_failed";
 			}
 		}
 		settle(outcome);
-		if (isHostedOutcome(outcome)) {
-			// A full published snapshot also proves intentional omission. The store's
-			// compare-and-set preserves rows changed after we captured these revisions.
+		if (isLocalRefreshSuccess(outcome)) {
+			// page_dirty means the intake was included in a successful local
+			// materialization. The compare-and-set preserves rows changed afterward.
 			deps.intakeStore?.clearPublishedEpicIntakes(dirtyIntakes);
 		}
 

@@ -44,8 +44,14 @@ export interface DiscordInboundMessage {
 	/** Whether the author is a bot (any bot, incl. this Lead or other Leads). */
 	authorBot: boolean;
 	content: string;
-	/** Attachment metadata copied from Discord without downloading user content. */
-	attachments?: Array<{ name: string; type: string; sizeKb: number }>;
+	/** Attachment identity + metadata copied from Discord without downloading content. */
+	attachments?: Array<{
+		attachmentId?: string;
+		name: string;
+		type: string;
+		sizeKb: number;
+		unavailableReason?: "invalid_metadata" | "producer_identity_missing";
+	}>;
 	/** Discord's message send instant. Missing sources fall back to the snowflake. */
 	timestampMs?: number;
 	/** FLY-267: ids of users explicitly @-mentioned (Discord `mentions[].id`).

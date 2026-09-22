@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "session_identity_epoch",
+	"classification": "protectedCurrentOrAuthority"
+}

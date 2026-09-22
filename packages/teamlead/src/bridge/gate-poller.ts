@@ -23,6 +23,7 @@
 import { createHash } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
+import { runnerStopDoneProof } from "flywheel-comm/runner-stop-report";
 import { readContentRef } from "flywheel-comm/utils";
 // FLY-927: gate patrol wake primitive.
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
@@ -56,6 +57,7 @@ import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-
 import { getChannelName, resolveChatThreadId } from "./chat-thread-utils.js";
 import { listGuildActiveThreads } from "./discord-guild-active-threads.js";
 import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
+import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
 import { drainFounderActionLedger } from "./founder-action-drain.js";
 import {
 	isDiscordSnowflake,
@@ -1737,6 +1739,56 @@ export class GatePoller {
 				console.warn(
 					`[GatePoller] skipping gate_question qid=${question.id}: source session ${session.execution_id} resolves to a different Lead (current iteration: ${lead.agentId})`,
 				);
+				return;
+			}
+		}
+
+		// The canonical mailbox admission path persists the audit decision under
+		// the Lead inbox owner fence. This legacy poller must not race that path
+		// by materializing or directly dispatching the reviewer-owned gate first.
+		// OFF or an unreadable flag preserves the historical model delivery.
+		if (
+			isGate &&
+			isReviewGateCheckpoint(question.checkpoint) &&
+			storeLeadTokenSavingsEnabled(
+				{ store: this.config.store },
+				session.project_name,
+			)
+		) {
+			return;
+		}
+		if (
+			!isGate &&
+			question.kind === "report" &&
+			storeLeadTokenSavingsEnabled(
+				{ store: this.config.store },
+				session.project_name,
+			)
+		) {
+			let declaration:
+				| ReturnType<CommDB["getRunnerStopDeclaration"]>
+				| undefined;
+			try {
+				const commDb = CommDB.openReadonly(dbPath);
+				try {
+					declaration = commDb.getRunnerStopDeclaration(question.from_agent);
+				} finally {
+					commDb.close();
+				}
+			} catch {
+				declaration = undefined;
+			}
+			if (
+				runnerStopDoneProof(
+					{
+						id: question.id,
+						kind: question.kind,
+						content: question.content,
+						fromAgent: question.from_agent,
+					},
+					declaration,
+				)
+			) {
 				return;
 			}
 		}

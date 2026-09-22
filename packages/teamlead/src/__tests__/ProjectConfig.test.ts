@@ -42,6 +42,46 @@ describe("LeadConfig type", () => {
 		expect(entry.leads[0]!.agentId).toBe("eng-lead");
 	});
 
+	it("keeps malformed Raya persona opt-in row-local", () => {
+		const projects = parseAndValidateProjects([
+			{
+				projectName: "flywheel",
+				projectRoot: "/tmp/flywheel",
+				projectRepo: "xrliAnnie/flywheel",
+				leads: [
+					{
+						agentId: "flywheel-eng-lead",
+						summaryRole: "producer",
+						chatChannel: "chat",
+						match: { labels: ["eng"] },
+					},
+				],
+			},
+			{
+				projectName: "raya",
+				projectRoot: "/tmp/raya",
+				projectRepo: "xrliAnnie/raya",
+				personaProjection: { enabled: false },
+				leads: [
+					{
+						agentId: "raya",
+						summaryRole: "recipient",
+						chatChannel: "raya-chat",
+						match: { labels: ["raya"] },
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						canSpawnRunners: false,
+					},
+				],
+			},
+		]);
+		expect(projects[0]!.invalidPersonaProjection).toBeUndefined();
+		expect(projects[1]!.personaProjection).toBeUndefined();
+		expect(projects[1]!.invalidPersonaProjection).toContain(
+			"personaProjection",
+		);
+	});
+
 	it("LeadConfig exposes registry-owned Discord identity fields", () => {
 		const lead: LeadConfig = {
 			agentId: "eng-lead",

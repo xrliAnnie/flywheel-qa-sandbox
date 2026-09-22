@@ -17,6 +17,7 @@ import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
+import { runCiFullCommand } from "./commands/ci-full.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
 import { emitCodexReviewResult } from "./commands/codex-review-result.js";
@@ -46,6 +47,7 @@ import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { runOncallDraftCommand } from "./commands/oncall-draft.js";
 import { pending } from "./commands/pending.js";
+import { runPersonaProject } from "./commands/persona-project.js";
 import { progress } from "./commands/progress.js";
 import {
 	type PublishReportArgs,
@@ -124,6 +126,7 @@ Commands:
             ("DONE: …") — the Lead still gets it, but founder thread replies
             can never bind to it.
   check     Check if a question has been answered
+  ci-full   Idempotently ensure full CI for one exact PR head
   ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
             MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
   alert-ticket  Claw duty actions: lookup|ack|handoff|resolve|outstanding|board. Uses only
@@ -184,7 +187,7 @@ Commands:
             --rerun-spec <path.json> [--local-copy <path>] [--record-id <uuid>]
   shadow-declare  Record one Lead-authenticated shadow class declaration.
             --question <qid> --class pure_docs|config_only|single_point_change|other_code
-            --message-ref <Discord URL|channelId/messageId> [--declaration-id <uuid-v4>]
+            [--declaration-id <uuid-v4>] (direct to Bridge; do not post to Discord)
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for an explicit execution/head (FLY-827; requires --exec-id and --pr-head)
@@ -238,6 +241,8 @@ Commands:
             Uses FLYWHEEL_BRIDGE_URL and TEAMLEAD_API_TOKEN.
   lead-note   Set, show or clear a role-declared judgment beside machine facts.
               set | show | clear --project <project> --issue <ID> [--role <role>] [--text <text>].
+  persona-project  Project the exact authorized Raya persona before runtime start.
+              --project raya --lead raya [--projects-file <path>] [--bridge-url <url>].
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
@@ -302,9 +307,14 @@ async function main(): Promise<void> {
 	// Parse global options from remaining args
 	const commandArgs = args.slice(1);
 	if (
-		!["gate", "request-review", "qa-result", "complete", "stage"].includes(
-			command,
-		)
+		![
+			"gate",
+			"request-review",
+			"qa-result",
+			"complete",
+			"stage",
+			"ci-full",
+		].includes(command)
 	) {
 		await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID);
 	}
@@ -315,6 +325,9 @@ async function main(): Promise<void> {
 			break;
 		case "check":
 			runCheck(commandArgs);
+			break;
+		case "ci-full":
+			process.exitCode = await runCiFullCommand(commandArgs);
 			break;
 		case "ack-event":
 			await runAckEvent(commandArgs);
@@ -488,6 +501,9 @@ async function main(): Promise<void> {
 			break;
 		case "lead-note":
 			process.exitCode = await runLeadNote(commandArgs);
+			break;
+		case "persona-project":
+			process.exitCode = await runPersonaProject(commandArgs);
 			break;
 		case "release-bug-tag":
 			process.exitCode = await runReleaseBugTag(commandArgs);

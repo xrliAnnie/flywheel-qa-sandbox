@@ -31,7 +31,9 @@ export const OVERALL_LABELS: Record<OverallVerdict, string> = {
 };
 
 export function isJudgmentEnabled(project: string, mode: string): boolean {
-	return project === JUDGMENT_PROJECT && mode === "dry_run";
+	return (
+		project === JUDGMENT_PROJECT && (mode === "dry_run" || mode === "auto")
+	);
 }
 
 export function aggregateJudgment(

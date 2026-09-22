@@ -930,6 +930,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh:[ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null || exit 1#1",
+		"path": "packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh",
+		"code": "[ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null || exit 1",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/scripts/claude-lead.sh:if [ -n \"${CLAUDE_CHILD_PID:-}\" ] && kill -0 \"$CLAUDE_CHILD_PID\" 2>/dev/null; then#1",
 		"path": "packages/teamlead/scripts/claude-lead.sh",
 		"code": "if [ -n \"${CLAUDE_CHILD_PID:-}\" ] && kill -0 \"$CLAUDE_CHILD_PID\" 2>/dev/null; then",
@@ -1011,6 +1017,12 @@
 		"key": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts:process.kill(pid, 0);#1",
 		"path": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts",
 		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/package-gate-queue.test.ts:for (const child of children) child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/package-gate-queue.test.ts",
+		"code": "for (const child of children) child.kill(\"SIGKILL\");",
 		"classification": "qa-only"
 	},
 	{
@@ -1233,6 +1245,12 @@
 		"key": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts:tmux([\"kill-session\", \"-t\", SESSION]);#3",
 		"path": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts",
 		"code": "tmux([\"kill-session\", \"-t\", SESSION]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/voice-health-startup-spool-reader.test.ts:process.kill(claim.handle.helperPid!, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/__tests__/voice-health-startup-spool-reader.test.ts",
+		"code": "process.kill(claim.handle.helperPid!, \"SIGKILL\");",
 		"classification": "qa-only"
 	},
 	{
@@ -1491,6 +1509,12 @@
 		"key": "packages/teamlead/src/lead-backends/codex/tui-window.ts:exec(\"tmux\", [\"kill-window\", \"-t\", `=${TUI_TMUX_SESSION}:=${windowName}`]);#2",
 		"path": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
 		"code": "exec(\"tmux\", [\"kill-window\", \"-t\", `=${TUI_TMUX_SESSION}:=${windowName}`]);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/tui-window.ts:exec(\"tmux\", [\"kill-window\", \"-t\", target]);#1",
+		"path": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
+		"code": "exec(\"tmux\", [\"kill-window\", \"-t\", target]);",
 		"classification": "out-of-scope"
 	},
 	{
@@ -1944,6 +1968,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/codex-home-reconcile-cycle.test.sh:kill -0 \"$1\" >/dev/null 2>&1 && exit 0#1",
+		"path": "scripts/__tests__/codex-home-reconcile-cycle.test.sh",
+		"code": "kill -0 \"$1\" >/dev/null 2>&1 && exit 0",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-home-reconcile-process.test.sh:kill -0 \"$1\" >/dev/null 2>&1 && exit 0#1",
+		"path": "scripts/__tests__/codex-home-reconcile-process.test.sh",
+		"code": "kill -0 \"$1\" >/dev/null 2>&1 && exit 0",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/customer-e2e-acceptance.test.sh:kill -0 \"$SERVER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/customer-e2e-acceptance.test.sh",
 		"code": "kill -0 \"$SERVER_PID\" 2>/dev/null || break",
@@ -2235,6 +2271,42 @@
 		"key": "scripts/__tests__/flywheel-log-rotate.test.sh:kill -0 \"$PRODUCER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/flywheel-log-rotate.test.sh",
 		"code": "kill -0 \"$PRODUCER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:a.child.kill(\"SIGKILL\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "a.child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:a.child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "a.child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:b.child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "b.child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:child.kill(\"SIGKILL\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:process.kill(-a.child.pid, \"SIGKILL\");#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "process.kill(-a.child.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-gate-host.test.mjs:process.kill(started.residualPid, 0);#1",
+		"path": "scripts/__tests__/package-gate-host.test.mjs",
+		"code": "process.kill(started.residualPid, 0);",
 		"classification": "qa-only"
 	},
 	{
@@ -3096,6 +3168,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/updater-raya-deploy.test.sh:kill -0 \"$ghost_pid\" 2>/dev/null || exit 1#1",
+		"path": "scripts/__tests__/updater-raya-deploy.test.sh",
+		"code": "kill -0 \"$ghost_pid\" 2>/dev/null || exit 1",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/codex-tui-nudge-probe.sh:kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\#1",
 		"path": "scripts/codex-tui-nudge-probe.sh",
 		"code": "kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\",
@@ -3498,6 +3576,24 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "scripts/lib/codex-home-reconcile-process.mjs:process.kill(-pgid, 0);#1",
+		"path": "scripts/lib/codex-home-reconcile-process.mjs",
+		"code": "process.kill(-pgid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/codex-home-reconcile-process.mjs:process.kill(-pgid, signal);#1",
+		"path": "scripts/lib/codex-home-reconcile-process.mjs",
+		"code": "process.kill(-pgid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/codex-home-reconcile-process.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/lib/codex-home-reconcile-process.mjs",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "scripts/lib/codex-quota-client.mjs:activeChild?.kill(signal);#1",
 		"path": "scripts/lib/codex-quota-client.mjs",
 		"code": "activeChild?.kill(signal);",
@@ -3762,9 +3858,33 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "scripts/lib/updater-raya-deploy.sh:kill -0 \"$pid\" 2>/dev/null || return 0#1",
+		"path": "scripts/lib/updater-raya-deploy.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 0",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "scripts/linux-preflight.sh:( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &#1",
 		"path": "scripts/linux-preflight.sh",
 		"code": "( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/package-gate-host.py:launcher.kill()#1",
+		"path": "scripts/package-gate-host.py",
+		"code": "launcher.kill()",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/package-gate-host.py:launcher.kill()#2",
+		"path": "scripts/package-gate-host.py",
+		"code": "launcher.kill()",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/package-gate-host.py:launcher.kill()#3",
+		"path": "scripts/package-gate-host.py",
+		"code": "launcher.kill()",
 		"classification": "out-of-scope"
 	},
 	{
@@ -3921,6 +4041,12 @@
 		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:print) kill -0 \"$DAEMON_PID\" 2>/dev/null ;;#1",
 		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
 		"code": "print) kill -0 \"$DAEMON_PID\" 2>/dev/null ;;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-2523-529-alerts.sh:|| ! kill -0 \"$slot_pid\" 2>/dev/null; then#1",
+		"path": "scripts/qa-fly-2523-529-alerts.sh",
+		"code": "|| ! kill -0 \"$slot_pid\" 2>/dev/null; then",
 		"classification": "qa-only"
 	},
 	{

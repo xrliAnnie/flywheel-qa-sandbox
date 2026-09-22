@@ -23,6 +23,8 @@ it.each([
 		try {
 			const binding = store.readShipJudgmentBinding("q", CHANNEL)!;
 			const target = evidenceMaterials(binding, NOW).targets[0]!;
+			const qaToken = "a".repeat(32);
+			target.qaAuthority!.summary = `QA report: https://reports.vercel.app/r/${qaToken}/`;
 			vi.spyOn(store, "readShipJudgmentDesignApproval").mockReturnValue(
 				scenario === "no_design" ? undefined : target.designApproval,
 			);
@@ -84,8 +86,8 @@ it.each([
 						store,
 						linearApiKey: "fixture",
 						planRepoIdentity: "__main__",
-						registry: { readReportHtml: () => "" },
-						hosting: {},
+						registry: { readReportHtml: () => "<h1>QA passed</h1>" },
+						hosting: { vercelProjectName: "reports" },
 					},
 					repositories,
 					refresh: {
@@ -118,16 +120,31 @@ it.each([
 			expect(result.collection.status).toBe("undetermined");
 			expect(result.materials).toBeDefined();
 			const ledger = buildEvidenceLedger(result.materials, binding);
-			expect(ledger.coverage.verdict).toBe(
-				scenario === "no_qa" ? "undetermined" : "pass",
+			const targetLedger = ledger.targets[0]!;
+			const unavailable = [
+				"no_snapshot",
+				"git_failure",
+				"diff_budget",
+				"partial_snapshot",
+				"refresh_throw",
+				"expired_snapshot",
+			].includes(scenario);
+			expect(targetLedger.c.verdict).toBe(
+				scenario === "no_qa" || unavailable ? "undetermined" : "pass",
 			);
-			expect(ledger.alignment.verdict).toBe(
-				["no_design", "no_snapshot", "git_failure", "diff_budget"].includes(
-					scenario,
-				)
-					? "undetermined"
-					: "pass",
+			expect(targetLedger.a.verdict).toBe(
+				scenario === "no_design" || unavailable ? "undetermined" : "pass",
 			);
+			// The independent authority material remains inspectable, but a
+			// collection without a completed semantic evaluation cannot authorize.
+			expect(ledger.alignment).toMatchObject({
+				verdict: "undetermined",
+				missing: expect.arrayContaining(["input"]),
+			});
+			expect(ledger.coverage).toMatchObject({
+				verdict: "undetermined",
+				missing: expect.arrayContaining(["input"]),
+			});
 			expect(ledger.conflict.verdict).toBe(
 				[
 					"no_snapshot",
@@ -155,12 +172,12 @@ it.each([
 					reason: "mechanical_snapshot_changed_or_expired",
 				});
 			if (scenario === "no_design")
-				expect(ledger.alignment.missing).toEqual([
+				expect(targetLedger.a.missing).toEqual([
 					"design_review",
 					"plan_at_head",
 				]);
 			if (scenario === "diff_budget") {
-				expect(ledger.alignment.missing).toEqual(["pr_diff"]);
+				expect(targetLedger.a.missing).toEqual(["pr_diff", "input"]);
 				expect(result.materials.targets[0]!.planBlob).toBeDefined();
 				expect(ledger.input).toEqual({
 					status: "unavailable",
@@ -168,7 +185,7 @@ it.each([
 				});
 			}
 			if (scenario === "no_qa")
-				expect(ledger.coverage.missing).toEqual(["qa_claim"]);
+				expect(targetLedger.c.missing).toEqual(["qa_claim", "qa_report"]);
 		} finally {
 			store.close();
 		}

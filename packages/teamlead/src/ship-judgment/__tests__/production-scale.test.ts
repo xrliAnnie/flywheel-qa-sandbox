@@ -59,6 +59,7 @@ it.each([false, true])(
 			git("add", ".");
 			git("commit", "-m", "fix");
 			const head = git("rev-parse", "HEAD");
+			const planBlobSha = git("rev-parse", `${head}:engineering/doc/plan.md`);
 			const binding = { ...store.readShipJudgmentBinding("q", CHANNEL)! };
 			binding.targets = binding.targets.map((target) => ({
 				...target,
@@ -66,6 +67,9 @@ it.each([false, true])(
 			}));
 			vi.spyOn(store, "readShipJudgmentBinding").mockReturnValue(binding);
 			const material = evidenceMaterials(binding, NOW).targets[0]!;
+			material.designApproval!.expectedBlobSha = planBlobSha;
+			const qaToken = "a".repeat(32);
+			material.qaAuthority!.summary = `QA report: https://reports.vercel.app/r/${qaToken}/`;
 			vi.spyOn(store, "readShipJudgmentDesignApproval").mockReturnValue(
 				material.designApproval,
 			);
@@ -155,8 +159,8 @@ it.each([false, true])(
 						store,
 						linearApiKey: "fixture",
 						planRepoIdentity: "__main__",
-						registry: { readReportHtml: () => "" },
-						hosting: {},
+						registry: { readReportHtml: () => "<h1>QA passed</h1>" },
+						hosting: { vercelProjectName: "reports" },
 					},
 					repositories,
 					refresh,
@@ -209,15 +213,35 @@ it.each([false, true])(
 				},
 				new AbortController().signal,
 			);
-			const ledger = buildEvidenceLedger(result.materials, binding);
+			const ledger = buildEvidenceLedger(result.materials, binding, {
+				status: "evaluated",
+				evaluationId: "production-scale-evaluation",
+				modelSnapshotDigest: "f".repeat(64),
+				alignment: "pass",
+				coverage: "pass",
+			});
 			expect(result.materials.targets[0]?.diff?.files).toEqual([
 				{ path: "fix.ts", status: "M" },
 			]);
 			expect(result.materials.targets[0]?.planBlob?.text).toContain(
 				"approved plan",
 			);
-			expect(ledger.alignment.verdict).toBe("pass");
-			expect(ledger.coverage.verdict).toBe("pass");
+			expect(ledger.targets[0]).toMatchObject({
+				a: {
+					verdict: inventoryFails ? "undetermined" : "pass",
+					missing: inventoryFails ? ["input"] : [],
+				},
+				c: {
+					verdict: inventoryFails ? "undetermined" : "pass",
+					missing: inventoryFails ? ["input"] : [],
+				},
+			});
+			expect(ledger.alignment.verdict).toBe(
+				inventoryFails ? "undetermined" : "pass",
+			);
+			expect(ledger.coverage.verdict).toBe(
+				inventoryFails ? "undetermined" : "pass",
+			);
 			expect(ledger.conflict.verdict).toBe(
 				inventoryFails ? "undetermined" : "pass",
 			);
@@ -227,6 +251,7 @@ it.each([false, true])(
 				threadId: binding.threadId,
 				cardMessageId: binding.cardMessageId,
 				marker: "ship-judgment:q",
+				mode: "dry_run",
 				overall: aggregateJudgment(
 					ledger.alignment.verdict,
 					ledger.conflict.verdict,
@@ -244,7 +269,8 @@ it.each([false, true])(
 				expect(ledger.input.status).toBe("unavailable");
 				expect(message).toContain("② 合并与在飞文件：缺 机械快照");
 			} else {
-				expect(message).toContain("可自动批");
+				expect(message).toContain("三点均通过");
+				expect(message).toContain("仅展示，等你决定");
 				expect(cache.read(now)?.prs).toHaveLength(42);
 				expect(cache.read(now)?.prs[0]?.files).toHaveLength(370);
 				expect(requests).toHaveLength(93);

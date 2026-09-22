@@ -105,8 +105,19 @@ const HISTORICAL_STORE_ROW_TOKENS: ReadonlySet<string> = new Set([
 	"auto_qa_killswitch",
 ]);
 
+function flagNameCandidateSources(input: readonly ScanSource[]): ScanSource[] {
+	// The repository-wide input grows with every package while the tests below
+	// keep fixed timeouts. If this candidate scan outgrows them again, narrow
+	// the input to relevant packages instead of raising the timeout.
+	return input.filter((source) => source.text.includes("FLYWHEEL"));
+}
+
 function scannedNames(input: readonly ScanSource[]): Set<string> {
-	return new Set(scanSources(input).rawCodeHits.map((hit) => hit.name));
+	return new Set(
+		scanSources(flagNameCandidateSources(input)).rawCodeHits.map(
+			(hit) => hit.name,
+		),
+	);
 }
 
 function exactRetiredTokens(text: string): string[] {
@@ -501,6 +512,37 @@ describe("FLY-1981 final governance ledgers", () => {
 		]);
 		expect(found.has("FLYWHEEL_AUTO_QA")).toBe(true);
 		expect(found.has("FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS")).toBe(true);
+	});
+
+	it("filters out only files that cannot contain a Flywheel flag name", () => {
+		const input: ScanSource[] = [
+			{
+				file: "packages/example/src/exact.ts",
+				text: 'const enabled = process.env.FLYWHEEL_AUTO_QA === "1";',
+			},
+			{
+				file: "packages/example/src/concatenated.ts",
+				text: 'const name = "FLYWHEEL" + "_AUTO_QA";',
+			},
+			{
+				file: "packages/example/src/unrelated.ts",
+				text: 'const name = "OTHER_AUTO_QA";',
+			},
+		];
+		const candidates = flagNameCandidateSources(input);
+
+		expect(candidates.map(({ file }) => file)).toEqual([
+			"packages/example/src/exact.ts",
+			"packages/example/src/concatenated.ts",
+		]);
+		// Constructed names are intentionally outside the exact-name matcher,
+		// but their files stay in the candidate set so future matcher support is
+		// not silently hidden by this performance filter.
+		const filteredNames = scannedNames(input);
+		expect(filteredNames).toEqual(new Set(["FLYWHEEL_AUTO_QA"]));
+		expect(filteredNames).toEqual(
+			new Set(scanSources(input).rawCodeHits.map((hit) => hit.name)),
+		);
 	});
 
 	it("preserves the launcher-derived lead-core mention plumbing without reviving a flag", () => {

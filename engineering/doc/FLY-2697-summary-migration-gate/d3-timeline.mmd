@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant F as founder
+    participant O as 运维(activation owner)
+    participant W as wrapper(本单)
+    participant D as 生产库
+    participant B as Bridge / 新 persona
+    Note over W,D: 阶段 A · A4:代码合入部署,wrapper 无人调用,库无行级变化
+    F->>O: 卡 1:合并本单 PR(只授权合并代码)
+    Note over O,B: 阶段 B · 围栏窗口(不属于本单,每一步要 founder 逐实例授权)
+    O->>W: preflight(只读)
+    W-->>O: authorizedPayloadDigest = 这一刻的数据库/工具/工作区快照摘要
+    O->>F: 请求执行授权,消息正文包含该摘要
+    F-->>O: 授权(Discord 消息)
+    O->>W: execute(带授权引用 + 摘要)
+    W->>D: 只读比对摘要 → 读写跑迁移 → 只读复验
+    W-->>O: m0-receipt.json + m0-dispositions.jsonl(0600)
+    O->>B: B4:投影新人设、启动
+    B->>D: begin() → 200(不再是 409)
+    Note over F,B: 之后:persona 可回滚,但数据迁移不可逆(这是 Epic 的第一个不可逆点)

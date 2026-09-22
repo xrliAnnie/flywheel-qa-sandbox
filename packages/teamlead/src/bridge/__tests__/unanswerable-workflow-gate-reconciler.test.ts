@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { describe, expect, it, vi } from "vitest";
 import type {
 	WorkflowGateOriginInspectionReceipt,
@@ -6,6 +10,40 @@ import type {
 import { reconcileUnanswerableWorkflowGates } from "../unanswerable-workflow-gate-reconciler.js";
 
 const HEAD = "a".repeat(40);
+
+function realMachineQuestion(): {
+	dir: string;
+	path: string;
+	questionId: string;
+} {
+	const dir = mkdtempSync(join(tmpdir(), "fly2737-machine-recovery-"));
+	const path = join(dir, "comm.db");
+	const db = new CommDB(path);
+	const questionId = db.insertQuestion("exec-machine", "lead", "ship?", {
+		checkpoint: "approve_to_ship",
+	});
+	const raw = (
+		db as unknown as {
+			db: {
+				prepare(sql: string): { run(...values: unknown[]): unknown };
+			};
+		}
+	).db;
+	raw
+		.prepare(
+			"UPDATE mailbox SET relay_state='terminal_disposed', resolved_at=? WHERE id=?",
+		)
+		.run("2026-09-07T18:00:00.000Z", questionId);
+	raw
+		.prepare(
+			`INSERT INTO workflow_source_event
+			 (project,source_event_id,kind,payload,payload_digest,schema_version,at)
+			 VALUES ('flywheel',?,'founder_approval','{}','digest',1,'2026-09-07T18:00:00.000Z')`,
+		)
+		.run(`ship-judgment-auto:${questionId}`);
+	db.close();
+	return { dir, path, questionId };
+}
 
 function candidate(
 	questionId: string,
@@ -49,6 +87,7 @@ function receipt(questionId: string): WorkflowGateOriginInspectionReceipt {
 function inspection(input: {
 	answerable?: boolean;
 	source?: boolean;
+	machineSource?: boolean;
 	reasons?: string[];
 }) {
 	return {
@@ -59,6 +98,7 @@ function inspection(input: {
 		resolved: false,
 		responseExists: input.reasons?.includes("response_exists") ?? false,
 		founderSourceEventExists: input.source ?? false,
+		machineSourceEventExists: input.machineSource ?? false,
 		answerable: input.answerable ?? false,
 		unanswerableReasons: input.reasons ?? ["terminal_disposed"],
 	};
@@ -85,6 +125,7 @@ function fixture(candidates: WorkflowGateQuestionRecoveryCandidate[]) {
 		receipt: receipt(questionId),
 	}));
 	const store = {
+		hasRejectedShipJudgmentMachineApproval: vi.fn(() => false),
 		listWorkflowGateQuestionRecoveryCandidates,
 		recoverUnanswerableWorkflowGate,
 		recordWorkflowGateQuestionRecoveryAlert,
@@ -102,6 +143,47 @@ function fixture(candidates: WorkflowGateQuestionRecoveryCandidate[]) {
 }
 
 describe("unanswerable workflow gate reconciler", () => {
+	it("recovers a terminal machine answer whose projected approval was rejected", async () => {
+		const real = realMachineQuestion();
+		try {
+			const f = fixture([candidate(real.questionId)]);
+			f.store.hasRejectedShipJudgmentMachineApproval.mockReturnValue(true);
+			const result = await reconcileUnanswerableWorkflowGates({
+				enabled: true,
+				projectName: "flywheel",
+				commDbPath: real.path,
+				store: f.store,
+				inspectOrigin: f.inspectOrigin,
+				now: () => "2026-09-07T19:00:00.000Z",
+				minIntervalMs: 1,
+			});
+			expect(result).toMatchObject({ recovered: 1, failed: 0 });
+			expect(f.recoverUnanswerableWorkflowGate).toHaveBeenCalledTimes(1);
+		} finally {
+			rmSync(real.dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not recover an in-flight machine source that has not been rejected", async () => {
+		const real = realMachineQuestion();
+		try {
+			const f = fixture([candidate(real.questionId)]);
+			const result = await reconcileUnanswerableWorkflowGates({
+				enabled: true,
+				projectName: "flywheel",
+				commDbPath: real.path,
+				store: f.store,
+				inspectOrigin: f.inspectOrigin,
+				now: () => "2026-09-07T19:00:00.000Z",
+				minIntervalMs: 1,
+			});
+			expect(result).toMatchObject({ recovered: 0, skipped: 1, failed: 0 });
+			expect(f.recoverUnanswerableWorkflowGate).not.toHaveBeenCalled();
+		} finally {
+			rmSync(real.dir, { recursive: true, force: true });
+		}
+	});
+
 	it("returns before every recovery seam when the project kill switch is off", async () => {
 		const f = fixture([candidate("broken")]);
 		await expect(

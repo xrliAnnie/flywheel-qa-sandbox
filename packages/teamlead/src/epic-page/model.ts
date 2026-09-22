@@ -32,6 +32,8 @@ export const RULE_IDS = [
 	"freshness.v1",
 	"signals.v1",
 	"attention.v1",
+	"deployment.v1",
+	"voice-health.v1",
 	"lead_note_fade.v1",
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
@@ -63,6 +65,7 @@ export const MISSING_REASONS = [
 	"source_truncated",
 	"epic_scope_unavailable",
 	"legacy_attention_unavailable",
+	"shuttle_observation_unavailable",
 ] as const;
 export type MissingReason = (typeof MISSING_REASONS)[number];
 
@@ -99,6 +102,8 @@ export const REFRESH_REASONS = [
 	"dependency_changed",
 	"lead_note_changed",
 	"ship_judgment_history",
+	"deployment_changed",
+	"voice_health_changed",
 	"scan",
 	"manual",
 ] as const;
@@ -173,6 +178,9 @@ export interface RootCounts {
 	root: string;
 	counts: {
 		live: number;
+		stopped_acceptance: number;
+		stopped_stuck: number;
+		evidence_gap: number;
 		waiting: number;
 		free: number;
 		idle: number;
@@ -218,6 +226,9 @@ export interface EpicItem {
 			execution_id8: string;
 		}>;
 		ledger_live_count: number;
+		machine_running_count: number;
+		running_heartbeat_stale_count?: number;
+		running_heartbeat_missing_count?: number;
 	}>;
 	run: Cell<
 		Array<{
@@ -230,7 +241,14 @@ export interface EpicItem {
 		}>
 	>;
 	attempt: Cell<
-		Array<{ state: string; attempt: number; ledger_open: boolean }>
+		Array<{
+			state: string;
+			attempt: number;
+			ledger_open: boolean;
+			machine_live?: boolean;
+			starting_recent?: boolean;
+			heartbeat_state?: "fresh" | "stale" | "missing" | "not_applicable";
+		}>
 	>;
 	gates: Cell<Array<{ state: string }>>;
 	carriers: Cell<Array<{ state: string }>>;
@@ -278,8 +296,102 @@ export interface EpicIntakeValue {
 	work_state: "pending" | "complete" | "needs_founder" | "superseded";
 }
 
+export interface ShuttleDeploymentUnit {
+	unitId: string;
+	projectName: string;
+	displayName: string;
+	outcome: "deployed" | "up_to_date" | "skipped" | "failed";
+	reason: string;
+	reasonDisplay: string;
+	expected: boolean;
+	observedAt: string;
+	episodeId: string | null;
+	episodeOpenedAt: string | null;
+	consecutiveScheduledBad: number;
+	founderAware: boolean;
+	behindCommits: number | null;
+	driftSince: string | null;
+	logRef: string;
+	deliveryState: string | null;
+}
+
+export interface ShuttleDeploymentView {
+	schemaVersion: 1;
+	sourceStatus: "complete" | "truncated" | "unavailable";
+	observedAt: string | null;
+	retained: number;
+	total: number;
+	units: ShuttleDeploymentUnit[];
+	activeIncidents: string[];
+}
+
+export type VoiceHealthReasonClass =
+	| "bridge_connect_failed"
+	| "bridge_timeout_headers"
+	| "bridge_timeout_body"
+	| "bridge_auth_rejected"
+	| "bridge_http_error"
+	| "bridge_protocol_invalid"
+	| "startup_config_invalid"
+	| "startup_lock_unavailable"
+	| "startup_not_ready"
+	| "session_create_failed"
+	| "session_runtime_failed"
+	| "lease_lost"
+	| "heartbeat_stale"
+	| "health_observation_unavailable"
+	| "demand_source_unavailable"
+	| "unknown_failure";
+
+export interface VoiceHealthIncidentView {
+	scope: "poll_dependency" | "session_unavailable";
+	openedAt: string;
+	reasonClass: VoiceHealthReasonClass;
+	threshold:
+		| "three_consecutive_failures"
+		| "first_failure_60s"
+		| "first_session_failure"
+		| "terminal_session_failure"
+		| "startup_failure";
+	deliveryState:
+		| "pending"
+		| "sent"
+		| "queued_transient"
+		| "delivery_unknown"
+		| "dead_lettered"
+		| "config_error"
+		| "cancelled_recovered"
+		| null;
+}
+
+export const MAX_VOICE_HEALTH_ACTIVE_INCIDENTS = 32;
+
+export interface VoiceHealthView {
+	schemaVersion: 1;
+	sourceStatus: "complete" | "truncated" | "unavailable";
+	observedAt: string | null;
+	status: "dormant" | "starting" | "healthy" | "unhealthy" | "unknown";
+	demandState: "none" | "required" | "unknown";
+	phase:
+		| "dormant"
+		| "idle"
+		| "failed_retrying"
+		| "active"
+		| "session_ended"
+		| "session_failed"
+		| "startup_failed"
+		| "stopped"
+		| "unknown";
+	lastIterationSuccessAt: string | null;
+	lastProgressAt: string | null;
+	failureStreak: number;
+	activeIncidents: VoiceHealthIncidentView[];
+}
+
 interface EpicPageBase {
 	ship_judgment_history?: Cell<EpicHistory>;
+	deployment?: Cell<ShuttleDeploymentView>;
+	voiceHealth?: Cell<VoiceHealthView>;
 	lead_note_policy?: Cell<{ fade_after_days: number }>;
 	key: {
 		project_name: string;
@@ -671,7 +783,7 @@ function assertFreshness(
 	const expectedTables: Record<string, string> = {
 		current: "epic_page",
 		last_generated: "epic_page_refresh",
-		last_published: "epic_page_refresh",
+		last_published: "epic_page_publication",
 		publish_failures: "epic_page_refresh",
 		last_failure: "epic_page_refresh",
 		last_publish_failure: "epic_page_refresh",
@@ -914,9 +1026,281 @@ export function assertEpicPage(
 				? ["discord", "attention_sources", "attention", "epic_scope"]
 				: []),
 		],
-		["lead_note_policy", "ship_judgment_history"],
+		["lead_note_policy", "ship_judgment_history", "deployment", "voiceHealth"],
 		"",
 	);
+	if (root.deployment !== undefined) {
+		assertCell(root.deployment, "/deployment", root);
+		const cell = root.deployment as Cell<ShuttleDeploymentView>;
+		if (
+			cell.provenance.kind !== "statestore" ||
+			cell.provenance.table !== "shuttle_unit_projection"
+		) {
+			fail("/deployment/provenance", "expected shuttle_unit_projection source");
+		}
+		const value = requireRecord(cell.value, "/deployment/value");
+		requireExactKeys(
+			value,
+			[
+				"schemaVersion",
+				"sourceStatus",
+				"observedAt",
+				"retained",
+				"total",
+				"units",
+				"activeIncidents",
+			],
+			[],
+			"/deployment/value",
+		);
+		if (value.schemaVersion !== 1)
+			fail("/deployment/value/schemaVersion", "expected 1");
+		if (
+			!new Set(["complete", "truncated", "unavailable"]).has(
+				String(value.sourceStatus),
+			)
+		)
+			fail("/deployment/value/sourceStatus", "unsupported status");
+		if (value.observedAt !== null)
+			requireTimestamp(value.observedAt, "/deployment/value/observedAt");
+		const retained = requireNonNegativeInteger(
+			value.retained,
+			"/deployment/value/retained",
+		);
+		const total = requireNonNegativeInteger(
+			value.total,
+			"/deployment/value/total",
+		);
+		if (total < retained)
+			fail("/deployment/value/total", "must be at least retained");
+		if (!Array.isArray(value.units))
+			fail("/deployment/value/units", "expected array");
+		if (value.units.length !== retained)
+			fail("/deployment/value/retained", "must equal units length");
+		const unitIds = new Set<string>();
+		for (const [index, rawUnit] of value.units.entries()) {
+			const path = `/deployment/value/units/${index}`;
+			const unit = requireRecord(rawUnit, path);
+			requireExactKeys(
+				unit,
+				[
+					"unitId",
+					"projectName",
+					"displayName",
+					"outcome",
+					"reason",
+					"reasonDisplay",
+					"expected",
+					"observedAt",
+					"episodeId",
+					"episodeOpenedAt",
+					"consecutiveScheduledBad",
+					"founderAware",
+					"behindCommits",
+					"driftSince",
+					"logRef",
+					"deliveryState",
+				],
+				[],
+				path,
+			);
+			for (const key of [
+				"unitId",
+				"projectName",
+				"displayName",
+				"reason",
+				"reasonDisplay",
+				"logRef",
+			] as const)
+				requireNonEmptyString(unit[key], `${path}/${key}`);
+			if (unitIds.has(String(unit.unitId)))
+				fail(`${path}/unitId`, "duplicate unit");
+			unitIds.add(String(unit.unitId));
+			if (
+				!new Set(["deployed", "up_to_date", "skipped", "failed"]).has(
+					String(unit.outcome),
+				)
+			)
+				fail(`${path}/outcome`, "unsupported outcome");
+			if (typeof unit.expected !== "boolean")
+				fail(`${path}/expected`, "expected boolean");
+			if (typeof unit.founderAware !== "boolean")
+				fail(`${path}/founderAware`, "expected boolean");
+			requireTimestamp(unit.observedAt, `${path}/observedAt`);
+			requireNonNegativeInteger(
+				unit.consecutiveScheduledBad,
+				`${path}/consecutiveScheduledBad`,
+			);
+			if (unit.behindCommits !== null)
+				requireNonNegativeInteger(unit.behindCommits, `${path}/behindCommits`);
+			for (const key of ["episodeOpenedAt", "driftSince"] as const) {
+				if (unit[key] !== null) requireTimestamp(unit[key], `${path}/${key}`);
+			}
+			for (const key of ["episodeId", "deliveryState"] as const) {
+				if (unit[key] !== null)
+					requireNonEmptyString(unit[key], `${path}/${key}`);
+			}
+		}
+		if (!Array.isArray(value.activeIncidents))
+			fail("/deployment/value/activeIncidents", "expected array");
+		const expectedActive = value.units
+			.filter((unit) => unit.episodeId !== null)
+			.map((unit) => unit.unitId)
+			.sort();
+		const actualActive = value.activeIncidents.map((unitId, index) =>
+			requireNonEmptyString(
+				unitId,
+				`/deployment/value/activeIncidents/${index}`,
+			),
+		);
+		if (
+			canonicalJsonString(actualActive) !== canonicalJsonString(expectedActive)
+		)
+			fail(
+				"/deployment/value/activeIncidents",
+				"must match active unit episodes",
+			);
+	}
+	if (root.voiceHealth !== undefined) {
+		assertCell(root.voiceHealth, "/voiceHealth", root);
+		const cell = root.voiceHealth as Cell<VoiceHealthView>;
+		if (
+			cell.provenance.kind !== "statestore" ||
+			cell.provenance.table !== "voice_health_projection"
+		) {
+			fail(
+				"/voiceHealth/provenance",
+				"expected voice_health_projection source",
+			);
+		}
+		const value = requireRecord(cell.value, "/voiceHealth/value");
+		requireExactKeys(
+			value,
+			[
+				"schemaVersion",
+				"sourceStatus",
+				"observedAt",
+				"status",
+				"demandState",
+				"phase",
+				"lastIterationSuccessAt",
+				"lastProgressAt",
+				"failureStreak",
+				"activeIncidents",
+			],
+			[],
+			"/voiceHealth/value",
+		);
+		if (value.schemaVersion !== 1)
+			fail("/voiceHealth/value/schemaVersion", "expected 1");
+		if (
+			!new Set(["complete", "truncated", "unavailable"]).has(
+				String(value.sourceStatus),
+			)
+		)
+			fail("/voiceHealth/value/sourceStatus", "unsupported status");
+		if (
+			!new Set(["dormant", "starting", "healthy", "unhealthy", "unknown"]).has(
+				String(value.status),
+			)
+		)
+			fail("/voiceHealth/value/status", "unsupported status");
+		if (
+			!new Set(["none", "required", "unknown"]).has(String(value.demandState))
+		)
+			fail("/voiceHealth/value/demandState", "unsupported state");
+		if (
+			!new Set([
+				"dormant",
+				"idle",
+				"failed_retrying",
+				"active",
+				"session_ended",
+				"session_failed",
+				"startup_failed",
+				"stopped",
+				"unknown",
+			]).has(String(value.phase))
+		)
+			fail("/voiceHealth/value/phase", "unsupported phase");
+		for (const key of [
+			"observedAt",
+			"lastIterationSuccessAt",
+			"lastProgressAt",
+		] as const) {
+			if (value[key] !== null)
+				requireTimestamp(value[key], `/voiceHealth/value/${key}`);
+		}
+		requireNonNegativeInteger(
+			value.failureStreak,
+			"/voiceHealth/value/failureStreak",
+		);
+		if (
+			!Array.isArray(value.activeIncidents) ||
+			value.activeIncidents.length > MAX_VOICE_HEALTH_ACTIVE_INCIDENTS
+		)
+			fail("/voiceHealth/value/activeIncidents", "expected bounded array");
+		const reasonClasses = new Set([
+			"bridge_connect_failed",
+			"bridge_timeout_headers",
+			"bridge_timeout_body",
+			"bridge_auth_rejected",
+			"bridge_http_error",
+			"bridge_protocol_invalid",
+			"startup_config_invalid",
+			"startup_lock_unavailable",
+			"startup_not_ready",
+			"session_create_failed",
+			"session_runtime_failed",
+			"lease_lost",
+			"heartbeat_stale",
+			"health_observation_unavailable",
+			"demand_source_unavailable",
+			"unknown_failure",
+		]);
+		const thresholds = new Set([
+			"three_consecutive_failures",
+			"first_failure_60s",
+			"first_session_failure",
+			"terminal_session_failure",
+			"startup_failure",
+		]);
+		const deliveryStates = new Set([
+			"pending",
+			"sent",
+			"queued_transient",
+			"delivery_unknown",
+			"dead_lettered",
+			"config_error",
+			"cancelled_recovered",
+		]);
+		for (const [index, rawIncident] of value.activeIncidents.entries()) {
+			const path = `/voiceHealth/value/activeIncidents/${index}`;
+			const incident = requireRecord(rawIncident, path);
+			requireExactKeys(
+				incident,
+				["scope", "openedAt", "reasonClass", "threshold", "deliveryState"],
+				[],
+				path,
+			);
+			if (
+				!new Set(["poll_dependency", "session_unavailable"]).has(
+					String(incident.scope),
+				)
+			)
+				fail(`${path}/scope`, "unsupported scope");
+			requireTimestamp(incident.openedAt, `${path}/openedAt`);
+			if (!reasonClasses.has(String(incident.reasonClass)))
+				fail(`${path}/reasonClass`, "unsupported reason class");
+			if (!thresholds.has(String(incident.threshold)))
+				fail(`${path}/threshold`, "unsupported threshold");
+			if (
+				incident.deliveryState !== null &&
+				!deliveryStates.has(String(incident.deliveryState))
+			)
+				fail(`${path}/deliveryState`, "unsupported delivery state");
+		}
+	}
 	if (root.ship_judgment_history !== undefined) {
 		assertCell(root.ship_judgment_history, "/ship_judgment_history", root);
 		const cell = root.ship_judgment_history as Cell<EpicHistory>;
@@ -1318,7 +1702,17 @@ export function assertEpicPage(
 			if (value.root !== page.header.roots.value![index]!.identifier)
 				fail(`${path}/value/root`, "root order mismatch");
 			const counts = requireRecord(value.counts, `${path}/value/counts`);
-			const keys = ["live", "waiting", "free", "idle", "done", "canceled"];
+			const keys = [
+				"live",
+				"stopped_acceptance",
+				"stopped_stuck",
+				"evidence_gap",
+				"waiting",
+				"free",
+				"idle",
+				"done",
+				"canceled",
+			];
 			requireExactKeys(counts, [...keys, "total"], [], `${path}/value/counts`);
 			for (const key of [...keys, "total"])
 				requireNonNegativeInteger(counts[key], `${path}/value/counts/${key}`);

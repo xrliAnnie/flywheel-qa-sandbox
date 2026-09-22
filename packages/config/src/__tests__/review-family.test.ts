@@ -3,6 +3,8 @@ import {
 	adapterTypeToFamily,
 	crossFamilyReviewSatisfied,
 	manifestReviewFamilyOk,
+	SAME_FAMILY_REVIEW_SANCTION,
+	sameFamilySanctionValid,
 } from "../review-family.js";
 
 // ── FLY-1188 §7.3: family-aware review authority (shared pure rule) ──
@@ -175,5 +177,95 @@ describe("manifestReviewFamilyOk", () => {
 		expect(manifestReviewFamilyOk("codex", "codex")).toBe(false);
 		expect(manifestReviewFamilyOk("", "claude")).toBe(false);
 		expect(manifestReviewFamilyOk("claude", undefined)).toBe(false);
+	});
+});
+
+// ── FLY-2763: same-family sanction (Codex quota outage lane) ──
+
+describe("FLY-2763 same-family sanction", () => {
+	it("approved + equal families + exact sanction → true", () => {
+		expect(
+			crossFamilyReviewSatisfied({
+				status: "approved",
+				authorFamily: "claude",
+				reviewerFamily: "claude",
+				sessionAdapterType: "claude-tmux",
+				sameFamilySanction: SAME_FAMILY_REVIEW_SANCTION,
+			}),
+		).toBe(true);
+	});
+
+	it("approved + equal families WITHOUT sanction stays fail-closed (mutant guard)", () => {
+		for (const sanction of [
+			undefined,
+			null,
+			"",
+			"yes",
+			"1",
+			"review_same_family_allowed ",
+		]) {
+			expect(
+				crossFamilyReviewSatisfied({
+					status: "approved",
+					authorFamily: "claude",
+					reviewerFamily: "claude",
+					sessionAdapterType: "claude-tmux",
+					sameFamilySanction: sanction,
+				}),
+			).toBe(false);
+		}
+	});
+
+	it("sanction never rescues a non-approved or codex-author-unstamped record", () => {
+		expect(
+			crossFamilyReviewSatisfied({
+				status: "pending",
+				authorFamily: "claude",
+				reviewerFamily: "claude",
+				sessionAdapterType: "claude-tmux",
+				sameFamilySanction: SAME_FAMILY_REVIEW_SANCTION,
+			}),
+		).toBe(false);
+		expect(
+			crossFamilyReviewSatisfied({
+				status: "approved",
+				authorFamily: null,
+				reviewerFamily: null,
+				sessionAdapterType: "codex-tmux",
+				sameFamilySanction: SAME_FAMILY_REVIEW_SANCTION,
+			}),
+		).toBe(false);
+	});
+
+	it("cross-family approval is unaffected by the sanction field", () => {
+		expect(
+			crossFamilyReviewSatisfied({
+				status: "approved",
+				authorFamily: "codex",
+				reviewerFamily: "claude",
+				sessionAdapterType: "codex-tmux",
+				sameFamilySanction: null,
+			}),
+		).toBe(true);
+	});
+
+	it("manifestReviewFamilyOk: same family only with sameFamilyAllowed", () => {
+		expect(manifestReviewFamilyOk("claude", "claude")).toBe(false);
+		expect(manifestReviewFamilyOk("claude", "claude", {})).toBe(false);
+		expect(
+			manifestReviewFamilyOk("claude", "claude", { sameFamilyAllowed: true }),
+		).toBe(true);
+		expect(
+			manifestReviewFamilyOk("codex", "claude", { sameFamilyAllowed: false }),
+		).toBe(true);
+		expect(
+			manifestReviewFamilyOk(null, "claude", { sameFamilyAllowed: true }),
+		).toBe(false);
+	});
+
+	it("sameFamilySanctionValid is exact-match only", () => {
+		expect(sameFamilySanctionValid(SAME_FAMILY_REVIEW_SANCTION)).toBe(true);
+		expect(sameFamilySanctionValid("REVIEW_SAME_FAMILY_ALLOWED")).toBe(false);
+		expect(sameFamilySanctionValid(null)).toBe(false);
 	});
 });

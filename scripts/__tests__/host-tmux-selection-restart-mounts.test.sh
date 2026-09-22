@@ -91,7 +91,17 @@ preflight_merge_line="$(rg -n 'merge --ff-only --quiet "\$target_sha"' "$RESTART
 lead_gate_line="$(rg -n 'restart_host_tmux_gate "\$host_tmux_target_sha" restart-lead-wave' "$RESTART" | head -1 | cut -d: -f1)"
 lead_census_line="$(rg -n '^[[:space:]]*if ! restart_host_tmux_census "\$candidates_file"; then$' "$RESTART" | head -1 | cut -d: -f1)"
 candidate_line="$(rg -n '^[[:space:]]*lead_restart_collect_candidates ' "$RESTART" | head -1 | cut -d: -f1)"
-candidate_consume_line="$(rg -n '^[[:space:]]*done < "\$candidates_file"$' "$RESTART" | head -1 | cut -d: -f1)"
+# Visibility helpers also iterate a candidates_file before do_restart_all_leads.
+# Select the first candidate-consumption loop after the census call, then prove
+# it is not the helper loop so another lexical collision cannot silently pass.
+candidate_consume_line="$(awk -v census="$lead_census_line" '
+  NR > census && /^[[:space:]]*done < "\$candidates_file"$/ { print NR; exit }
+' "$RESTART")"
+visibility_helper_consume_line="$(awk '
+  /^restart_lead_visibility_round\(\)/ { in_visibility_round=1 }
+  in_visibility_round && /^[[:space:]]*done < "\$candidates_file"$/ { print NR; exit }
+  in_visibility_round && /^}/ { exit }
+' "$RESTART")"
 
 if [[ "$preflight_gate_line" =~ ^[0-9]+$ && "$preflight_merge_line" =~ ^[0-9]+$ \
   && "$preflight_gate_line" -lt "$preflight_merge_line" ]]; then
@@ -102,9 +112,11 @@ fi
 
 if [[ "$lead_gate_line" =~ ^[0-9]+$ && "$lead_census_line" =~ ^[0-9]+$ \
   && "$candidate_line" =~ ^[0-9]+$ && "$candidate_consume_line" =~ ^[0-9]+$ \
+  && "$visibility_helper_consume_line" =~ ^[0-9]+$ \
   && "$lead_gate_line" -lt "$candidate_line" \
   && "$candidate_line" -lt "$lead_census_line" \
-  && "$lead_census_line" -lt "$candidate_consume_line" ]]; then
+  && "$lead_census_line" -lt "$candidate_consume_line" \
+  && "$candidate_consume_line" -ne "$visibility_helper_consume_line" ]]; then
   pass "loaded candidate authority feeds census before Lead consumption"
 else
   fail "Lead wave gate/candidate/census ordering is incomplete"

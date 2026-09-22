@@ -25,6 +25,11 @@ if [ -x "$LAUNCHER" ] \
 else
   fail "flywheel-lead.sh must expose register/import-cos-context/run/preflight/recover"
 fi
+if grep -Fq 'deadline=$((SECONDS + 270))' "$LAUNCHER"; then
+  pass "install visibility convergence outlives the measured cmux proof tail"
+else
+  fail "install visibility convergence must outlive the 250s public verifier bound"
+fi
 
 H="$TMP/home"
 STATE="$H/.flywheel"
@@ -80,7 +85,13 @@ cat >"$STATE/bin/tmux" <<'SH'
 #!/bin/bash
 exit 0
 SH
-chmod +x "$STATE/bin/host-tmux-selection-gate.sh" "$STATE/bin/tmux"
+cat >"$STATE/bin/fence-ps" <<'SH'
+#!/bin/bash
+printf '%s\n' 'Thu Sep 18 05:00:00 2026'
+SH
+chmod +x "$STATE/bin/host-tmux-selection-gate.sh" "$STATE/bin/tmux" \
+  "$STATE/bin/fence-ps"
+export FLYWHEEL_CODEX_FENCE_PS_BIN="$STATE/bin/fence-ps"
 
 projects_before_dry_run="$(shasum -a 256 "$STATE/projects.json" | awk '{print $1}')"
 receipt_before_dry_run="$(shasum -a 256 "$STATE/state/summary-registry/migration-receipt.json" | awk '{print $1}')"
@@ -298,6 +309,7 @@ const names = [
   "FLYWHEEL_LEAD_ACTIONS_NODE_BIN", "FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
   "FLYWHEEL_CODEX_LEAD_STATE_DIR", "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES",
   "FLYWHEEL_CODEX_LEAD_OUTBOUND", "FLYWHEEL_BRIDGE_URL", "FLYWHEEL_API_TOKEN",
+  "FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED", "FLYWHEEL_RAYA_PERSONA_GENERATION_ID",
   "FLYWHEEL_ROOT", "FLYWHEEL_TEAMLEAD_ROOT"
 ];
 const out = Object.fromEntries(names.map((name) => [name, process.env[name] ?? null]));
@@ -329,6 +341,8 @@ FLYWHEEL_ROUNDTABLE_GUILD_ID=forbidden-guild
 FLYWHEEL_LEAD_CORE_CHANNEL_ID=forbidden-core-channel
 FLYWHEEL_LEAD_MENTION_PATTERNS=forbidden-mention
 FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=1
+FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED=1
+FLYWHEEL_RAYA_PERSONA_GENERATION_ID=ffffffffffffffffffffffffffffffff
 FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1
 ENV
 
@@ -347,6 +361,7 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   >"$TMP/codex-run.out" 2>"$TMP/codex-run.err" \
   && [ "$(grep -c '^lead-registry selector ' "$CLI_CALLS" || true)" -eq 1 ] \
   && [ "$(grep -c '^lead-identity resolve ' "$CLI_CALLS" || true)" -eq 1 ] \
+  && [ "$(grep -c '^persona-project ' "$CLI_CALLS" || true)" -eq 0 ] \
   && [ "$(grep -cFx 'gate codex-generic' "$HOST_GATE_CALLS" || true)" -eq 1 ] \
   && [ "$(grep -cFx 'verify codex-generic' "$HOST_GATE_CALLS" || true)" -eq 1 ] \
   && jq -e --arg projects "$STATE/projects.json" --arg project "$CODEX_PROJECT_CANON" \
@@ -375,6 +390,8 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
       .FLYWHEEL_LEAD_ACTIONS_STATE_DIR == .FLYWHEEL_CODEX_LEAD_STATE_DIR and
       .FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES == ($project + "/.lead/demo-codex/identity.md") and
       .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
+	  .FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED == null and
+	  .FLYWHEEL_RAYA_PERSONA_GENERATION_ID == null and
       .FLYWHEEL_BRIDGE_URL == "http://localhost:9876" and
       .FLYWHEEL_API_TOKEN == "api-token" and
       .FLYWHEEL_ROOT == $repo and .FLYWHEEL_TEAMLEAD_ROOT == $teamlead
@@ -575,6 +592,7 @@ fi
 RAYA_PROJECT="$H/Dev/raya-outside"
 mkdir -p "$RAYA_PROJECT/.lead/raya"
 printf '%s\n' '# Raya Codex Lead' >"$RAYA_PROJECT/.lead/raya/identity.md"
+RAYA_PROJECT_CANON="$(cd "$RAYA_PROJECT" && pwd -P)"
 if ! HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \
   FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
@@ -677,8 +695,50 @@ cp "$LAUNCHER" "$STATE/bin/flywheel-lead.sh"
 chmod +x "$STATE/bin/flywheel-lead.sh"
 LAUNCHD_DIR="$H/Library/LaunchAgents"
 LAUNCHCTL_CALLS="$TMP/launchctl.calls"
+VISIBILITY_CALLS="$TMP/visibility.calls"
+VISIBILITY_ALERT_CALLS="$TMP/visibility-alert.calls"
 mkdir -p "$LAUNCHD_DIR"
 : > "$LAUNCHCTL_CALLS"
+: > "$VISIBILITY_CALLS"
+: > "$VISIBILITY_ALERT_CALLS"
+cat > "$TMP/verify-agent-visibility.sh" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$VISIBILITY_CALLS"
+project=""; lead=""; level=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project) project="$2"; shift 2 ;;
+    --lead) lead="$2"; shift 2 ;;
+    --level) level="$2"; shift 2 ;;
+    --json) shift ;;
+    *) exit 64 ;;
+  esac
+done
+case "${VERIFY_VISIBILITY_MODE:-pass}" in
+  pass)
+    jq -nc --arg project "$project" --arg lead "$lead" --arg level "$level" \
+      '{schemaVersion:1,status:"pass",subject:{kind:"lead",project:$project,leadId:$lead},level:$level,reasons:[]}'
+    exit 0
+    ;;
+  fail)
+    jq -nc --arg project "$project" --arg lead "$lead" --arg level "$level" \
+      '{schemaVersion:1,status:"fail",subject:{kind:"lead",project:$project,leadId:$lead},level:$level,reasons:["missing_window"]}'
+    exit 1
+    ;;
+  inconclusive)
+    jq -nc --arg project "$project" --arg lead "$lead" --arg level "$level" \
+      '{schemaVersion:1,status:"inconclusive",subject:{kind:"lead",project:$project,leadId:$lead},level:$level,reasons:["probe_unavailable"]}'
+    exit 2
+    ;;
+  *) exit 64 ;;
+esac
+SH
+chmod +x "$TMP/verify-agent-visibility.sh"
+cat > "$TMP/lead-alert.sh" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$VISIBILITY_ALERT_CALLS"
+SH
+chmod +x "$TMP/lead-alert.sh"
 cat > "$STATE/bin/launchctl" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >> "$LAUNCHCTL_CALLS"
@@ -703,6 +763,10 @@ run_lifecycle() {
     FLYWHEEL_TEAMLEAD_ROOT="$REPO_ROOT/packages/teamlead" \
     FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
     FLYWHEEL_SUPERVISOR_BACKEND=launchd FLYWHEEL_LAUNCHD_DIR="$LAUNCHD_DIR" \
+    FLYWHEEL_AGENT_VISIBILITY_VERIFIER="$TMP/verify-agent-visibility.sh" \
+    FLYWHEEL_LEAD_ALERT_BIN="$TMP/lead-alert.sh" \
+    FLYWHEEL_LEAD_VISIBILITY_MAX_ATTEMPTS="${FLYWHEEL_LEAD_VISIBILITY_MAX_ATTEMPTS:-1}" \
+    VISIBILITY_CALLS="$VISIBILITY_CALLS" VISIBILITY_ALERT_CALLS="$VISIBILITY_ALERT_CALLS" \
     LAUNCHCTL_CALLS="$LAUNCHCTL_CALLS" \
     "$LAUNCHER" "$@"
 }
@@ -729,6 +793,22 @@ if run_lifecycle install --project codex-demo --lead demo-codex \
   pass "install preflights and renders the exact generalized Codex carrier"
 else
   fail "Codex install shape failed: $(cat "$TMP/install-codex.err")"
+fi
+
+: > "$VISIBILITY_CALLS"
+: > "$VISIBILITY_ALERT_CALLS"
+if VERIFY_VISIBILITY_MODE=fail run_lifecycle install --project codex-demo --lead demo-codex \
+  >"$TMP/install-visibility-fail.out" 2>"$TMP/install-visibility-fail.err"; then
+  fail "install must not declare a Lead online without a visible TUI"
+elif [ "$?" -eq 78 ] \
+  && [ -f "$CODEX_PLIST" ] \
+  && [ "$(wc -l < "$VISIBILITY_CALLS" | tr -d ' ')" -eq 1 ] \
+  && grep -Fq -- '--project codex-demo --lead demo-codex --level visible --json' "$VISIBILITY_CALLS" \
+  && grep -Fq 'installed_but_visibility_unverified' "$TMP/install-visibility-fail.err" \
+  && grep -Fq -- '--kind tui_window_lost' "$VISIBILITY_ALERT_CALLS"; then
+  pass "install leaves the job installed but fails closed when visible TUI proof is absent"
+else
+  fail "install visibility gate returned the wrong result: $(cat "$TMP/install-visibility-fail.err")"
 fi
 
 projects_before_stop="$(shasum -a 256 "$STATE/projects.json" | awk '{print $1}')"
@@ -850,6 +930,8 @@ run_verify() {
     FLYWHEEL_TEAMLEAD_ROOT="$REPO_ROOT/packages/teamlead" \
     FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
     FLYWHEEL_SUPERVISOR_BACKEND=launchd FLYWHEEL_LAUNCHD_DIR="$LAUNCHD_DIR" \
+    FLYWHEEL_AGENT_VISIBILITY_VERIFIER="$TMP/verify-agent-visibility.sh" \
+    VISIBILITY_CALLS="$VISIBILITY_CALLS" VERIFY_VISIBILITY_MODE="${VERIFY_VISIBILITY_MODE:-pass}" \
     REAL_CLI="$CLI" VERIFY_CURL_CALLS="$VERIFY_CURL_CALLS" \
     LAUNCHCTL_CALLS="$LAUNCHCTL_CALLS" \
     "$LAUNCHER" verify "$@"
@@ -868,10 +950,22 @@ fi
 if VERIFY_NUDGE_STATUS=202 run_verify --stage installed "$manifest" \
   > "$TMP/verify-installed.out" 2> "$TMP/verify-installed.err" \
   && grep -Fq 'PASS #5 Bridge health buildSha=fixture-build-sha' "$TMP/verify-installed.out" \
-  && grep -Fq 'PASS #6 Lead inbox pump mounted' "$TMP/verify-installed.out"; then
-  pass "installed verification distinguishes Bridge health from pump mounting"
+  && grep -Fq 'PASS #6 Lead inbox pump mounted' "$TMP/verify-installed.out" \
+  && grep -Fq 'PASS #7 visible TUI' "$TMP/verify-installed.out"; then
+  pass "installed verification requires Bridge pump and visible TUI proof"
 else
   fail "installed verification contract failed: $(cat "$TMP/verify-installed.err")"
+fi
+
+if VERIFY_NUDGE_STATUS=202 VERIFY_VISIBILITY_MODE=fail run_verify --stage installed "$manifest" \
+  > "$TMP/verify-installed-invisible.out" 2> "$TMP/verify-installed-invisible.err"; then
+  fail "installed verification must reject a missing visible TUI"
+elif [ "$?" -eq 1 ] \
+  && grep -Fq 'FAIL #7 visible TUI: status=fail;reasons=missing_window;rc=1' \
+    "$TMP/verify-installed-invisible.err"; then
+  pass "installed verification fails closed on a missing visible TUI"
+else
+  fail "installed visibility failure returned the wrong result: $(cat "$TMP/verify-installed-invisible.err")"
 fi
 
 if VERIFY_NUDGE_STATUS=404 run_verify --stage installed "$manifest" \
@@ -897,9 +991,10 @@ SH
 chmod +x "$STATE/bin/launchctl"
 if VERIFY_NUDGE_STATUS=202 run_verify --stage live --message-id 323456789012345678 "$manifest" \
   > "$TMP/verify-claude-live.out" 2> "$TMP/verify-claude-live.err" \
-  && grep -Fq 'PASS #7 launchd running pid=4101' "$TMP/verify-claude-live.out" \
-  && grep -Fq 'PASS #8 Claude inbox' "$TMP/verify-claude-live.out" \
-  && grep -Fq 'PASS #9 mailbox state=ACKED delivered_at=2026-09-08T00:00:01.000Z' \
+  && grep -Fq 'PASS #7 visible TUI' "$TMP/verify-claude-live.out" \
+  && grep -Fq 'PASS #8 launchd running pid=4101' "$TMP/verify-claude-live.out" \
+  && grep -Fq 'PASS #9 Claude inbox' "$TMP/verify-claude-live.out" \
+  && grep -Fq 'PASS #10 mailbox state=ACKED delivered_at=2026-09-08T00:00:01.000Z' \
     "$TMP/verify-claude-live.out"; then
   pass "live Claude verification proves one process, inbox, and ACKED mailbox delivery"
 else
@@ -909,7 +1004,7 @@ fi
 if LAUNCHCTL_MODE=duplicate VERIFY_NUDGE_STATUS=202 run_verify --stage live "$manifest" \
   > "$TMP/verify-duplicate-pid.out" 2> "$TMP/verify-duplicate-pid.err"; then
   fail "live verification must reject multiple launchd pids"
-elif [ "$?" -eq 1 ] && grep -Fq 'FAIL #7' "$TMP/verify-duplicate-pid.err"; then
+elif [ "$?" -eq 1 ] && grep -Fq 'FAIL #8' "$TMP/verify-duplicate-pid.err"; then
   pass "live verification rejects a non-unique Lead process"
 else
   fail "duplicate pid verification returned the wrong result: $(cat "$TMP/verify-duplicate-pid.err")"
@@ -970,9 +1065,9 @@ VERIFY_NUDGE_STATUS=202 run_verify --stage live --message-id 423456789012345678 
 kill "$socket_pid" 2>/dev/null || true
 wait "$socket_pid" 2>/dev/null || true
 if [ "$CODEX_VERIFY_RC" -eq 0 ] \
-  && grep -Fq 'PASS #8 Codex inbox socket' "$TMP/verify-codex-live.out" \
-  && grep -Fq 'PASS #9 mailbox state=ACKED' "$TMP/verify-codex-live.out" \
-  && grep -Fq 'PASS #10 Codex outbound delivery_id=chat:demo-codex:423456789012345678 entry_id=entry-for-message idempotency_key=entry-for-message:out message_id=523456789012345678' \
+  && grep -Fq 'PASS #9 Codex inbox socket' "$TMP/verify-codex-live.out" \
+  && grep -Fq 'PASS #10 mailbox state=ACKED' "$TMP/verify-codex-live.out" \
+  && grep -Fq 'PASS #11 Codex outbound delivery_id=chat:demo-codex:423456789012345678 entry_id=entry-for-message idempotency_key=entry-for-message:out message_id=523456789012345678' \
     "$TMP/verify-codex-live.out" \
   && [ ! -s "$TMP/verify-codex-live.err" ]; then
   pass "Codex live verification proves the exact message through Lead and Bridge outbound ledgers"
@@ -1148,6 +1243,27 @@ for optin in false true; do
   done
 done
 cp "$TMP/projects-before-optin.json" "$STATE/projects.json"
+
+# FLY-2696: the execution seam invokes the projector only for exact Raya. This
+# dormant fixture has no contract, so the CLI must return skipped and the child
+# still launches without any projection write or Bridge activation read.
+persona_calls_before="$(grep -c '^persona-project ' "$CLI_CALLS" || true)"
+rm -f "$CODEX_CAPTURE"
+if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
+  FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$TMP/cli-wrapper.mjs" \
+  FLYWHEEL_TEAMLEAD_ROOT="$TEAMLEAD_FIXTURE" \
+  FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
+  FLYWHEEL_LEAD_DRY_RUN=1 REAL_CLI="$CLI" CLI_CALLS="$CLI_CALLS" \
+  CODEX_CAPTURE="$CODEX_CAPTURE" HOST_GATE_CALLS="$HOST_GATE_CALLS" \
+  "$LAUNCHER" run "$raya_manifest" >"$TMP/raya-run.out" 2>"$TMP/raya-run.err" \
+  && [ "$(grep -c '^persona-project ' "$CLI_CALLS" || true)" -eq "$((persona_calls_before + 1))" ] \
+  && grep -Fq "persona-project --project raya --lead raya --projects-file $STATE/projects.json" "$CLI_CALLS" \
+  && jq -e --arg prompt "$RAYA_PROJECT_CANON/.lead/raya/identity.md" \
+    '.FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES == $prompt' "$CODEX_CAPTURE" >/dev/null; then
+  pass "FLY-2696: exact dormant Raya crosses the local projector seam once and still launches unchanged"
+else
+  fail "FLY-2696: exact dormant Raya projector seam failed: $(cat "$TMP/raya-run.err")"
+fi
 
 echo ""
 echo "[flywheel-lead] passed=$PASSED failed=$FAILED"

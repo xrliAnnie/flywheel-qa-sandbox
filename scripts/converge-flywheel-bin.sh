@@ -78,7 +78,7 @@ fi
 # No installer writes either file into bin, and both are plain files — so the
 # copy lane, not the symlink lane (see symlink_strict_name below for the shapes
 # that must NOT be copied).
-FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
+FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh verify-agent-visibility.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
 # FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
 # restart-services.sh — it is monorepo deploy machinery. There its absence is
 # the EXPECTED shape, not an integrity incident; without this branch every
@@ -89,7 +89,7 @@ FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-
 # in package-onboard.sh's PO_SCRIPT_FILES whitelist and packaged-seams.test.sh
 # S0 asserts the closure is executable there — so they stay in both branches.)
 if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
-  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
+  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh verify-agent-visibility.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
 fi
 
 log() { echo "[converge-bin] $*"; }
@@ -293,6 +293,13 @@ symlink_source_for() {
     flywheel-patrol-snapshot) echo "$REPO_ROOT/scripts/lead-patrol-snapshot.sh" ;;
     flywheel-node-dwell-control) echo "$REPO_ROOT/scripts/flywheel-node-dwell-control.mjs" ;;
     flywheel-patrol-continuity) echo "$REPO_ROOT/scripts/flywheel-patrol-continuity.mjs" ;;
+    verify-agent-tui-binding)
+      if [ -f "$REPO_ROOT/packages/teamlead/dist/bin/verify-agent-tui-binding.js" ]; then
+        echo "$REPO_ROOT/packages/teamlead/dist/bin/verify-agent-tui-binding.js"
+      else
+        echo "$REPO_ROOT/node_modules/flywheel-teamlead/dist/bin/verify-agent-tui-binding.js"
+      fi
+      ;;
     *) echo "" ;;
   esac
 }
@@ -313,7 +320,7 @@ symlink_source_for() {
 # verbatim (absence is the installer's business, and their rc contract is
 # unchanged) — widening the regime to them is a far larger blast radius than
 # this incident justifies.
-symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot|flywheel-node-dwell-control|flywheel-patrol-continuity) return 0 ;; *) return 1 ;; esac; }
+symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot|flywheel-node-dwell-control|flywheel-patrol-continuity|verify-agent-tui-binding) return 0 ;; *) return 1 ;; esac; }
 
 # Keep every existing meta-alert.sh title/body byte-for-byte. The patrol
 # snapshot shares the strict mechanics but is a generic managed executable,
@@ -379,7 +386,7 @@ symlink_source_ready() { # <name> <source> — sane, shebang-bearing, executable
 }
 
 if ! is_temp_or_worktree_root "$REPO_ROOT"; then
-  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot flywheel-node-dwell-control flywheel-patrol-continuity; do
+  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot flywheel-node-dwell-control flywheel-patrol-continuity verify-agent-tui-binding; do
     link="$BIN_DIR/$name"
     src="$(symlink_source_for "$name")"
 

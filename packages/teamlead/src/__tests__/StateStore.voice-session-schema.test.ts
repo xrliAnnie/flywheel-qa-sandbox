@@ -25,7 +25,14 @@ describe("StateStore voice session schema", () => {
 			)
 			.all()
 			.map((row) => (row as { name: string }).name);
-		expect(names).toEqual(["voice_outbound", "voice_sessions"]);
+		expect(names).toEqual([
+			"voice_health_demand_events",
+			"voice_health_demand_source",
+			"voice_health_projection",
+			"voice_health_projection_cursor",
+			"voice_outbound",
+			"voice_sessions",
+		]);
 		const indexes = db
 			.prepare(
 				"SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='voice_sessions' AND sql IS NOT NULL ORDER BY name",
@@ -96,6 +103,15 @@ it.each(["root_requested", "ending"])(
 		});
 		original.close();
 		const legacy = new Database(path);
+		// Reconstruct the pre-FLY-2693 schema before removing legacy columns;
+		// SQLite correctly refuses to orphan a trigger that references them.
+		legacy.exec(`
+			DROP TRIGGER voice_health_demand_sessions_insert;
+			DROP TRIGGER voice_health_demand_sessions_delete;
+			DROP TRIGGER voice_health_demand_sessions_update;
+			DROP TABLE voice_health_demand_events;
+			DROP TABLE voice_health_demand_source;
+		`);
 		legacy.exec("ALTER TABLE voice_sessions DROP COLUMN ending_started_at");
 		legacy.exec("ALTER TABLE voice_sessions DROP COLUMN root_requested_at");
 		legacy

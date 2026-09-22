@@ -220,6 +220,43 @@ describe("GatePoller (FLY-161)", () => {
 		}
 	});
 
+	it("does not revive an eligible REVIEW gate through the legacy runtime path", async () => {
+		insertSession("exec-review", { status: "running", labels: ["product"] });
+		const qid = insertQuestion({
+			execId: "exec-review",
+			leadId: "product-lead",
+			content: "Review PR #1204",
+			checkpoint: "review_code",
+		});
+		const poller = makePoller();
+
+		await runPoll(poller);
+		await runPoll(poller);
+
+		expect(runtime.captured).toHaveLength(0);
+		expect(store.countLeadEvents("product-lead", "gate_question")).toBe(0);
+		expect(pendingFor("product-lead")).toEqual([
+			expect.objectContaining({ id: qid, checkpoint: "review_code" }),
+		]);
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "lead_token_savings",
+				scope: PROJECT_NAME,
+				rawTo: "0",
+				op: "set",
+				expectedChangeSeq: store.getFlagValueChangeSeq(
+					"lead_token_savings",
+					PROJECT_NAME,
+				),
+				actor: "fixture-lead",
+				reason: "rollback control",
+			}).ok,
+		).toBe(true);
+		await runPoll(poller);
+		expect(runtime.captured).toHaveLength(1);
+	});
+
 	it("Case 2: emits runner_question for pending question without checkpoint", async () => {
 		insertSession("exec-2", { status: "running", labels: ["product"] });
 		const qid = insertQuestion({
@@ -259,6 +296,37 @@ describe("GatePoller (FLY-161)", () => {
 			question_id: qid,
 			question_kind: "report",
 		});
+	});
+
+	it("does not revive a completion-backed runner-stop through the legacy runtime", async () => {
+		insertSession("exec-stop", {
+			status: "running",
+			labels: ["product"],
+		});
+		const id = `rstop-${"a".repeat(32)}`;
+		const content =
+			"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-stop route=- detail=parked";
+		const db = new CommDB(dbPath);
+		try {
+			db.recordRunnerStopDeclaration({
+				executionId: "exec-stop",
+				leadId: "product-lead",
+				stateKey: "declared\0parked",
+				content,
+				questionId: id,
+				derivedAtMs: Date.now(),
+			});
+		} finally {
+			db.close();
+		}
+
+		await runPoll(makePoller());
+
+		expect(runtime.captured).toHaveLength(0);
+		expect(store.countLeadEvents("product-lead", "runner_question")).toBe(0);
+		expect(pendingFor("product-lead")).toEqual([
+			expect.objectContaining({ id, kind: "report" }),
+		]);
 	});
 
 	it("Case 3: partitions mixed pending questions by checkpoint presence", async () => {

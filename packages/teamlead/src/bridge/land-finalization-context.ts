@@ -31,11 +31,12 @@ export function prepareLandFinalization(
 	const context = resolveLandFinalizationContext(store, operation);
 	if (context.kind === "unresolved")
 		return { ok: false, reason: context.reason };
-	if (!operation.owner_id)
+	if (!operation.owner_id || !operation.owner_instance_id)
 		return { ok: false, reason: "land_claim_unavailable" };
 	const landOperation = {
 		operationId: operation.operation_id,
 		ownerId: operation.owner_id,
+		ownerInstanceId: operation.owner_instance_id,
 		generation: operation.generation,
 	};
 	const proofStep = store
@@ -97,6 +98,7 @@ export function prepareLandFinalization(
 			operationContext: {
 				operationId: context.operationId,
 				ownerId: operation.owner_id,
+				ownerInstanceId: operation.owner_instance_id,
 				generation: operation.generation,
 				runId: context.runId,
 				sourceExecutionId: context.sourceExecutionId,

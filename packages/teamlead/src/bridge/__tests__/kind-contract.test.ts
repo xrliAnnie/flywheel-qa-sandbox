@@ -74,11 +74,14 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"model_cap_switched",
 	"model_cap_unknown",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
 	"flag_scan_handoff",
 	"flag_scan_no_clock",
+	"shuttle_unit_unhealthy",
+	"voice_daemon_unhealthy",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 

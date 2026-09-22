@@ -30,7 +30,17 @@ interface ReviewRow {
 
 /** Read-only shared queries for online collection and a caller-owned offline snapshot. */
 export class EvidenceAuthorityReader {
-	constructor(private readonly db: Database.Database) {}
+	private readonly hasDesignReviewApprovalProof: boolean;
+
+	constructor(private readonly db: Database.Database) {
+		this.hasDesignReviewApprovalProof = Boolean(
+			db
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type='table' AND name='design_review_approval_proof' LIMIT 1",
+				)
+				.get(),
+		);
+	}
 
 	aliases(runId: string): string[] {
 		return (
@@ -67,12 +77,20 @@ export class EvidenceAuthorityReader {
 				: answered && row.verdict === "CHANGES_REQUESTED"
 					? "changes_requested"
 					: "superseded";
-		const manifest = this.db
-			.prepare(`SELECT expected_blob_sha FROM design_review_manifest WHERE execution_id=?
-			AND expected_plan_path=? AND is_current=1 AND julianday(created_at)<=julianday(?) LIMIT 1`)
-			.get(row.execution_id, row.target_path, asOf) as
-			| { expected_blob_sha: string }
-			| undefined;
+		const proof = this.hasDesignReviewApprovalProof
+			? (this.db
+					.prepare(`SELECT expected_blob_sha FROM design_review_approval_proof
+			WHERE lane='coordinator' AND review_job_request_id=? AND execution_id=?
+			AND repository_identity=? AND plan_path=? AND state='approved'
+			AND julianday(approved_at)<=julianday(?) LIMIT 1`)
+					.get(
+						row.request_id,
+						row.execution_id,
+						repoIdentity,
+						row.target_path,
+						asOf,
+					) as { expected_blob_sha: string } | undefined)
+			: undefined;
 		return {
 			requestId: row.request_id,
 			executionId: row.execution_id,
@@ -80,7 +98,7 @@ export class EvidenceAuthorityReader {
 			round: row.round,
 			status,
 			respondedAt: iso(answered ? row.responded_at! : row.created_at),
-			...(manifest ? { expectedBlobSha: manifest.expected_blob_sha } : {}),
+			...(proof ? { expectedBlobSha: proof.expected_blob_sha } : {}),
 		};
 	}
 

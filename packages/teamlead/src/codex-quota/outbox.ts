@@ -6,6 +6,28 @@ import type {
 	AlertPayload,
 } from "../LeadAlertNotifier.js";
 import type { StateStore } from "../StateStore.js";
+import {
+	type CodexQuotaManualReason,
+	formatCodexQuotaManualReason,
+} from "./availability.js";
+import {
+	type CodexSwitchNotificationSnapshot,
+	formatCodexSwitchNotification,
+	parseCodexSwitchNotificationSnapshot,
+} from "./switch-notification.js";
+
+const MANUAL_REASONS = new Set<CodexQuotaManualReason>([
+	"flag_disabled",
+	"readiness_receipt_missing",
+	"readiness_receipt_invalid",
+	"authority_unavailable",
+	"credential_not_shared",
+	"canonical_unavailable",
+	"runtime_unavailable",
+	"readiness_unchecked",
+	"manual_handoff",
+	"legacy_capacity_evidence_missing",
+]);
 export interface CodexQuotaOutboxOptions {
 	store: StateStore;
 	send(payload: AlertPayload, attempt: AlertAttemptOptions): Promise<unknown>;
@@ -16,6 +38,7 @@ export interface CodexQuotaOutboxOptions {
 		content: string,
 	): DurableQueueReceipt;
 	now?: () => number;
+	timezone?: () => string;
 }
 /** The existing notifier owns Discord retries; claims never substitute for its receipt. */
 export function createCodexQuotaOutboxDelivery(
@@ -117,9 +140,88 @@ export function createCodexQuotaOutboxDelivery(
 				(options.now ?? Date.now)(),
 			);
 			if (!claim) continue;
+			if (row.kind === "automation_disabled") {
+				let reasons: CodexQuotaManualReason[] = [];
+				let legacy:
+					| {
+							totalCount: number;
+							manualCount: number;
+							guardedCount: number;
+							skippedCount: number;
+							failedCount: number;
+					  }
+					| undefined;
+				try {
+					const data = JSON.parse(String(row.payload_json)) as Record<
+						string,
+						unknown
+					>;
+					if (
+						data.scope === "legacy_batch" &&
+						[
+							"totalCount",
+							"manualCount",
+							"guardedCount",
+							"skippedCount",
+							"failedCount",
+						].every(
+							(key) =>
+								typeof data[key] === "number" &&
+								Number.isInteger(data[key]) &&
+								Number(data[key]) >= 0,
+						)
+					)
+						legacy = {
+							totalCount: Number(data.totalCount),
+							manualCount: Number(data.manualCount),
+							guardedCount: Number(data.guardedCount),
+							skippedCount: Number(data.skippedCount),
+							failedCount: Number(data.failedCount),
+						};
+					if (Array.isArray(data.reasons))
+						reasons = data.reasons.filter(
+							(reason): reason is CodexQuotaManualReason =>
+								typeof reason === "string" &&
+								MANUAL_REASONS.has(reason as CodexQuotaManualReason),
+						);
+				} catch {
+					// A malformed durable row remains pending for operator repair.
+				}
+				if (!reasons.length && !legacy) continue;
+				const body = legacy
+					? `⚙️ 自动切号关着：已核对 ${legacy.totalCount} 条历史记录，其中 ${legacy.manualCount} 条已交手工，${legacy.guardedCount} 条仍有当前容量或安装保护，${legacy.skippedCount} 条已跳过${legacy.failedCount ? `（${legacy.failedCount} 条因迁移上限或连续失败）` : ""}。已交手工的当前 generation 不会因首次开旗自动接管；手工切号进入新 generation 后才按新事件重新判断。`
+					: `⚙️ 自动切号关着：${reasons
+							.map(formatCodexQuotaManualReason)
+							.join("；")}。需要手工切号。`;
+				const payload: AlertPayload = {
+					leadId: "codex-quota",
+					projectName: "machine",
+					eventId,
+					eventType: "codex_quota_automation_disabled",
+					title: "Codex 自动切号关着",
+					body,
+					severity: "info",
+					deliveryStyle: "plain",
+				};
+				try {
+					await options.send(payload, {
+						replayAfterAmbiguousAttempt: claim.replay,
+					});
+				} catch {
+					continue;
+				}
+				const delivered = options.store.getAlertDeliveryReceipt(eventId);
+				if (delivered)
+					options.store.codexQuota.markOutboxDelivered(
+						eventId,
+						`${delivered.outcome}:${delivered.recorded_at}`,
+					);
+				continue;
+			}
 			const incidentId = String(row.incident_id);
 			const incident = options.store.codexQuota.getIncident(incidentId);
 			let reason = "quota_incident";
+			let notificationJson: string | null = null;
 			try {
 				const data = JSON.parse(String(row.payload_json));
 				if (
@@ -127,6 +229,8 @@ export function createCodexQuotaOutboxDelivery(
 					/^[a-z_]{1,80}$/.test(data.reason)
 				)
 					reason = data.reason;
+				if (typeof data.notification === "string")
+					notificationJson = data.notification;
 			} catch {}
 			let sourceProfile = "unknown";
 			let reset = "unknown";
@@ -148,6 +252,46 @@ export function createCodexQuotaOutboxDelivery(
 			)
 				? String(incident?.target_profile)
 				: "none";
+			const material =
+				options.store.codexQuota.getInstallationMaterial(incidentId);
+			let notificationSnapshot: CodexSwitchNotificationSnapshot | null = null;
+			try {
+				notificationSnapshot = parseCodexSwitchNotificationSnapshot(
+					notificationJson === null ? null : JSON.parse(notificationJson),
+				);
+			} catch {
+				// A malformed historical snapshot degrades to explicit n/a cells.
+			}
+			if (
+				!material ||
+				notificationSnapshot?.to.profile !== material.profile ||
+				notificationSnapshot.to.accountKey !== material.accountKey
+			)
+				notificationSnapshot = null;
+			if (!notificationSnapshot && notification) {
+				notificationSnapshot = {
+					version: 1,
+					from: {
+						profile: sourceProfile,
+						accountKey: "unknown",
+						email: null,
+						windows: [],
+					},
+					to: {
+						profile: targetProfile,
+						accountKey: "unknown",
+						email: null,
+						windows: [],
+					},
+				};
+			}
+			let timezone = "America/Los_Angeles";
+			try {
+				timezone = options.timezone?.() ?? timezone;
+				new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+			} catch {
+				timezone = "America/Los_Angeles";
+			}
 			const details = `Trigger=usageLimited from=${sourceProfile} reset=${reset} to=${targetProfile} affected_runs=${runs.length} restarted_runs=${runs.filter((target) => target.state === "recovered").length}`;
 			const payload: AlertPayload = {
 				leadId: "codex-quota",
@@ -166,9 +310,9 @@ export function createCodexQuotaOutboxDelivery(
 				body: founder
 					? `Codex fleet remains paused (${reason}). No blind replacement is allowed. Check account resets or add credits. ${details}`
 					: notification
-						? `Codex automatic account switch (${reason}). ${details}`
+						? formatCodexSwitchNotification(notificationSnapshot!, timezone)
 						: `Codex incident ${incidentId}: ${reason}. Recovery is tracked by the fleet coordinator.`,
-				severity: founder ? "severe" : "warning",
+				severity: founder ? "severe" : notification ? "info" : "warning",
 				metadata: {
 					codexQuota: {
 						vendor: "codex",
@@ -177,6 +321,7 @@ export function createCodexQuotaOutboxDelivery(
 					},
 				},
 				...(founder ? { mentionUserId: options.founderUserId } : {}),
+				...(notification ? { deliveryStyle: "plain" as const } : {}),
 			};
 			try {
 				await options.send(payload, {

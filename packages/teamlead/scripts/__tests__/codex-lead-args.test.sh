@@ -60,13 +60,18 @@ if [ "$code" -ne 0 ] && printf '%s' "$r" | grep -qi "registry-owned"; then
 else fail "--bot-token-env should be rejected as a second identity source (got: $r)"; fi
 
 # FLY-2444 D7/D12/D13: exercise the post-resolve launcher through a hermetic
-# copy that stubs only identity, home operations, and the final runtime exec.
+# copy that stubs only identity, the launch fence, home operations, and the
+# final runtime exec.
 HARNESS="$TMP/harness"
 HARNESS_SCRIPT="$HARNESS/scripts/codex-lead.sh"
+HARNESS_FENCE="$HARNESS/scripts/codex-home-launch-fence.mjs"
 CALLS="$TMP/home-calls"
 CAPTURE="$TMP/runtime-env.json"
 mkdir -p "$HARNESS/scripts/lib" "$HARNESS/dist/lead-backends/codex" "$TMP/home"
 cp "$CODEX_LEAD" "$HARNESS_SCRIPT"
+cat >"$HARNESS_FENCE" <<'JS'
+process.exit(process.argv[2] === "acquire" ? 0 : 64);
+JS
 cat >"$HARNESS/scripts/lib/canonical-lead-identity.sh" <<'SH'
 canonical_lead_identity_resolve() {
   export FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS="${STUB_RUNNER_ACTIONS:-0}"
@@ -102,6 +107,7 @@ run_harness() {
   HOME_CALLS="$CALLS" \
   CAPTURE_FILE="$CAPTURE" \
   CODEX_HOME="$TMP/codex-home" \
+  FLYWHEEL_CODEX_LAUNCH_FENCE_BIN="$HARNESS_FENCE" \
   FLYWHEEL_STATE_DIR="$TMP/flywheel-state" \
   FLYWHEEL_CODEX_LEAD_MODE=tui \
   FLYWHEEL_CODEX_TUI_CWD="$TMP/project" \

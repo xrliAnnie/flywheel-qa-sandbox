@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
@@ -123,6 +126,7 @@ interface Harness {
 		prompt: string;
 		cwd: string;
 		effort?: string;
+		model?: string;
 	}>;
 	/** FLY-1257 HIGH-1: capture of markGateAnswered(questionId, executionId). */
 	gateAnswers: Array<{ questionId: string; executionId: string }>;
@@ -192,6 +196,7 @@ async function makeHarness(
 				prompt: inv.prompt,
 				cwd: inv.cwd,
 				effort: inv.effort,
+				model: inv.model,
 			};
 			invocations.push(invocation);
 			if (harnessOpts.reviewRound) {
@@ -862,6 +867,80 @@ describe("ReviewRequestCoordinator — codex-skip lane", () => {
 });
 
 describe("ReviewRequestCoordinator — job execution", () => {
+	it("captures, validates, and seals the exact reviewed plan bytes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2737-coordinator-proof-"));
+		try {
+			execFileSync("git", ["init", "-q"], { cwd: root });
+			execFileSync("git", ["config", "user.email", "test@example.com"], {
+				cwd: root,
+			});
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
+			writeFileSync(join(root, "plan.md"), "# reviewed plan\n");
+			execFileSync("git", ["add", "plan.md"], { cwd: root });
+			execFileSync("git", ["commit", "-q", "-m", "plan"], { cwd: root });
+			const blob = execFileSync("git", ["rev-parse", "HEAD:plan.md"], {
+				cwd: root,
+				encoding: "utf8",
+			}).trim();
+
+			const h = await makeHarness();
+			registerSession(h.store, "e1", {
+				displayPath: root,
+				bindingPath: root,
+			});
+			openGate(h.comm, "q1", "e1", "review_design");
+			h.outcomes.push({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				reviewedPlanBlobSha: blob,
+				repairedTrailingBrace: false,
+				raw: "",
+			});
+
+			const accepted = await h.coordinator.accept({
+				executionId: "e1",
+				requestId: "review-plan-proof",
+				reviewType: "design",
+				questionId: "q1",
+				planPath: "plan.md",
+			});
+			await settle();
+
+			expect(accepted).toMatchObject({ accepted: true });
+			expect(h.invocations[0]?.prompt).toContain(blob);
+			expect(
+				h.store.getApprovedDesignReviewProofForReviewJob("review-plan-proof"),
+			).toMatchObject({
+				state: "approved",
+				expected_blob_sha: blob,
+				validation_receipt_id: expect.any(String),
+				verdict_receipt_id: expect.any(String),
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a design review registered when no plan proof can be captured", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+
+		const accepted = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "review-without-plan-proof",
+			reviewType: "design",
+			questionId: "q1",
+		});
+
+		expect(accepted).toMatchObject({ accepted: true, skipped: false });
+		expect(
+			h.store.getDesignReviewProofForReviewJob("review-without-plan-proof"),
+		).toBeNull();
+	});
+
 	it("FLY-2291: persists and surfaces repaired verdict audit before delivery", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -4421,6 +4500,89 @@ describe("R12 HIGH-3 — claude authors cannot enter the Claude reviewer lane", 
 		expect(r).toMatchObject({ accepted: false, httpStatus: 409 });
 		await settle();
 		expect(h.invocations).toHaveLength(0);
+	});
+});
+
+describe("FLY-2763 — sanctioned same-family lane (review_same_family_allowed)", () => {
+	function enableSameFamily(h: Harness) {
+		const ok = h.store.applyScopedFlagValueChange({
+			name: "review_same_family_allowed",
+			scope: "proj",
+			op: "set",
+			rawTo: "1",
+			expectedChangeSeq: h.store.getFlagValueChangeSeq(
+				"review_same_family_allowed",
+				"proj",
+			),
+			actor: "test",
+			reason: "FLY-2763 fixture",
+		}).ok;
+		expect(ok).toBe(true);
+	}
+
+	it("flag on: claude-tmux author is accepted, the job carries the sanction, the reviewer is a different Claude model, and the APPROVED record satisfies the gate", async () => {
+		const h = await makeHarness();
+		enableSameFamily(h);
+		registerSession(h.store, "e1", { adapterType: "claude-tmux" });
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		const r = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		expect(r).toMatchObject({ accepted: true });
+		expect(h.store.getCodexReviewJob("r1")?.same_family_sanction).toBe(
+			"review_same_family_allowed",
+		);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		// no execution-runtime row → author model unknown → Opus reviewer
+		expect(h.invocations[0]?.model).toBe("opus");
+		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
+		expect(
+			h.store.getCodexReviewRecord("e1", "__main__", HEAD)
+				?.same_family_sanction,
+		).toBe("review_same_family_allowed");
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
+	});
+
+	it("flag off: claude-tmux author still gets the R12 HIGH-3 409 and nothing is stamped", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1", { adapterType: "claude-tmux" });
+		openGate(h.comm, "q1");
+		const r = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		expect(r).toMatchObject({ accepted: false, httpStatus: 409 });
+		expect(h.store.getCodexReviewJob("r1")).toBeFalsy();
+	});
+
+	it("flag on does NOT touch the codex-author lane (no sanction stamped)", async () => {
+		const h = await makeHarness();
+		enableSameFamily(h);
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		const r = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		expect(r).toMatchObject({ accepted: true });
+		expect(
+			h.store.getCodexReviewJob("r1")?.same_family_sanction,
+		).toBeUndefined();
 	});
 });
 

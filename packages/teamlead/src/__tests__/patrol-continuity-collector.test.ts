@@ -1,12 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { evaluateContinuity } from "../patrol-continuity.js";
 import { collectPatrolObservations } from "../patrol-continuity-collector.js";
 
@@ -28,9 +28,9 @@ function collectorFixture() {
 		comm = new Database(commDbPath);
 	state.exec(`CREATE TABLE sessions(execution_id TEXT,project_name TEXT,status TEXT,session_stage TEXT,worktree_binding_path TEXT,worktree_binding_branch TEXT,worktree_binding_generation TEXT,repo_baseline_set_json TEXT,repo_baseline_set_digest TEXT);
  CREATE TABLE workflow_run(run_id TEXT,project_name TEXT,issue_id TEXT);
- CREATE TABLE workflow_execution_binding(activation_id TEXT,execution_id TEXT,run_id TEXT,node_id TEXT,attempt INTEGER);
+ CREATE TABLE workflow_execution_binding(activation_id TEXT,execution_id TEXT,run_id TEXT,node_id TEXT,attempt INTEGER,bound_at TEXT);
  CREATE TABLE workflow_run_node(run_id TEXT,node_id TEXT,attempt INTEGER,state TEXT,execution_id TEXT);
- CREATE TABLE workflow_activation_turn(activation_id TEXT,execution_id TEXT,issue_id TEXT,epoch INTEGER);
+ CREATE TABLE workflow_activation_turn(activation_id TEXT,execution_id TEXT,issue_id TEXT,epoch INTEGER,granted_at TEXT);
  CREATE TABLE workflow_node_pr_binding(run_id TEXT,node_id TEXT,attempt INTEGER,pr_number INTEGER,target_repo_identity TEXT,probe_repo_slug TEXT,target_repo_path TEXT,worktree_binding_generation TEXT);
  CREATE TABLE session_events(id INTEGER PRIMARY KEY,execution_id TEXT,event_type TEXT,payload TEXT,ts TEXT);
  CREATE TABLE workflow_run_event(seq INTEGER,run_id TEXT,node_id TEXT,execution_id TEXT,kind TEXT,payload TEXT,at TEXT);`);
@@ -56,14 +56,27 @@ function collectorFixture() {
 		.prepare("INSERT INTO workflow_run VALUES(?,?,?)")
 		.run(runId, "flywheel", "issue-1945");
 	state
-		.prepare("INSERT INTO workflow_execution_binding VALUES(?,?,?,?,?)")
-		.run(activationId, executionId, runId, "implement", 1);
+		.prepare("INSERT INTO workflow_execution_binding VALUES(?,?,?,?,?,?)")
+		.run(
+			activationId,
+			executionId,
+			runId,
+			"implement",
+			1,
+			new Date(1789400000000 - 10_000).toISOString(),
+		);
 	state
 		.prepare("INSERT INTO workflow_run_node VALUES(?,?,?,?,?)")
 		.run(runId, "implement", 1, "running", executionId);
 	state
-		.prepare("INSERT INTO workflow_activation_turn VALUES(?,?,?,?)")
-		.run(activationId, executionId, "issue-1945", 1);
+		.prepare("INSERT INTO workflow_activation_turn VALUES(?,?,?,?,?)")
+		.run(
+			activationId,
+			executionId,
+			"issue-1945",
+			1,
+			new Date(1789400000000 - 8_000).toISOString(),
+		);
 	comm
 		.prepare("INSERT INTO sessions VALUES(?,?,?,?,?)")
 		.run(executionId, "flywheel", "flywheel-eng-lead", "running", "issue-1945");
@@ -85,6 +98,7 @@ function collectorFixture() {
 			executionIds: [executionId],
 			nowMs: 1789400000000,
 			gh: async () => JSON.stringify({ object: { sha: "a".repeat(40) } }),
+			packageGateQueueReader: () => ({ status: "absent" as const }),
 		},
 	};
 }
@@ -165,6 +179,103 @@ describe("read-only patrol collector", () => {
 		const [row] = await collectPatrolObservations(f.input);
 		expect(row.canAttributeRemote).toBe(false);
 		expect(row.semanticState.effectiveWait?.kind).toBe("phase");
+	});
+	it("binds a live queued request to the exact activation and returns WAITING immediately", async () => {
+		const f = collectorFixture();
+		f.state.close();
+		f.comm.close();
+		const reader = vi.fn(() => ({
+			status: "queued-valid" as const,
+			evidence: {
+				requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				status: "queued" as const,
+				seq: 9,
+				position: 2,
+				enqueuedAt: new Date(f.input.nowMs - 4_000).toISOString(),
+				observedAt: new Date(f.input.nowMs).toISOString(),
+				revision: 11,
+				waitMs: 4_000,
+			},
+		}));
+		const [row] = await collectPatrolObservations({
+			...f.input,
+			packageGateQueueReader: reader,
+		});
+		expect(reader).toHaveBeenCalledWith({
+			executionId,
+			worktreePath: dirname(f.input.projectsFile),
+			activationBoundaryMs: f.input.nowMs - 8_000,
+			nowMs: f.input.nowMs,
+		});
+		expect(row.semanticState.effectiveWait).toEqual({
+			kind: "package_gate_queue",
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		});
+		expect(row.queueEvidence).toMatchObject({ seq: 9, position: 2 });
+		expect(evaluateContinuity(undefined, row)).toMatchObject({
+			activity: "WAITING",
+			reason: "package_gate_queue",
+		});
+	});
+	it("fails closed when a relevant queue cannot be verified or changes during remote probe", async () => {
+		const f = collectorFixture();
+		f.state.close();
+		f.comm.close();
+		const [unknown] = await collectPatrolObservations({
+			...f.input,
+			packageGateQueueReader: () => ({
+				status: "unknown",
+				reason: "queue_owner_identity_invalid",
+			}),
+		});
+		expect(unknown).toMatchObject({
+			sourcesComplete: false,
+			reason: "queue_owner_identity_invalid",
+		});
+		let calls = 0;
+		const [raced] = await collectPatrolObservations({
+			...f.input,
+			packageGateQueueReader: () =>
+				calls++ === 0
+					? {
+							status: "queued-valid" as const,
+							evidence: {
+								requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+								status: "queued" as const,
+								seq: 1,
+								position: 1,
+								enqueuedAt: new Date(f.input.nowMs - 1000).toISOString(),
+								observedAt: new Date(f.input.nowMs).toISOString(),
+								revision: 1,
+								waitMs: 1000,
+							},
+						}
+					: { status: "unrelated" as const },
+		});
+		expect(raced).toMatchObject({
+			sourcesComplete: false,
+			ownershipComplete: false,
+			reason: "identity_changed_during_probe",
+		});
+	});
+	it("keeps continuity coverage when the host queue ledger is globally unreadable", async () => {
+		const f = collectorFixture();
+		f.state.close();
+		f.comm.close();
+		const [baseline] = await collectPatrolObservations(f.input);
+		const previous = evaluateContinuity(undefined, baseline).entry;
+		const [sample] = await collectPatrolObservations({
+			...f.input,
+			nowMs: f.input.nowMs + 60 * 60 * 1000,
+			packageGateQueueReader: () => ({
+				status: "unknown",
+				reason: "queue_database_unreadable",
+			}),
+		});
+		expect(sample.sourcesComplete).toBe(true);
+		expect(evaluateContinuity(previous, sample)).toMatchObject({
+			activity: "STALLED_60M",
+		});
 	});
 });
 

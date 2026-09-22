@@ -299,7 +299,7 @@ start_body() {
   fi
   BODY_PID=$!
   local i=0
-  while [ "$i" -lt 200 ] && [ ! -s "$HOME_DIR/fly1697-child.env" ]; do
+  while [ "$i" -lt 600 ] && [ ! -s "$HOME_DIR/fly1697-child.env" ]; do
     kill -0 "$BODY_PID" 2>/dev/null || break
     sleep 0.05
     i=$((i + 1))

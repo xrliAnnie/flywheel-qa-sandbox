@@ -2,7 +2,10 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { parseDiscordChatRoute } from "flywheel-comm/discord-chat-ingest";
+import {
+	parseChatDeliveryEnvelope,
+	parseDiscordChatRoute,
+} from "flywheel-comm/discord-chat-ingest";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -44,6 +47,7 @@ interface RawMsg {
 	content?: string;
 	author?: { id?: string; bot?: boolean };
 	attachments?: Array<{
+		id?: string;
 		filename?: string;
 		content_type?: string;
 		size?: number;
@@ -1992,6 +1996,15 @@ describe("FLY-1392 v2 founder ingress", () => {
 			content: "first question",
 			channel_id: THREAD,
 			author: { id: OWNER },
+			attachments: [
+				{
+					id: "523456789012345678",
+					filename: "pixel.png",
+					content_type: "image/png",
+					size: 2048,
+				},
+				{},
+			],
 		};
 		const handoff = vi.fn(async () => true);
 		const nudgeLeadInbox = vi.fn();
@@ -2025,6 +2038,20 @@ describe("FLY-1392 v2 founder ingress", () => {
 		try {
 			const row = queue.getById(`chat:test-lead:${message.id}`);
 			expect(row).toBeDefined();
+			expect(parseChatDeliveryEnvelope(row!.content).attachments).toEqual([
+				{
+					attachmentId: "523456789012345678",
+					name: "pixel.png",
+					type: "image/png",
+					sizeKb: 2,
+				},
+				{
+					name: "attachment",
+					type: "application/octet-stream",
+					sizeKb: 0,
+					unavailableReason: "invalid_metadata",
+				},
+			]);
 			expect(parseDiscordChatRoute(row!.content)).toEqual({
 				replyChannelId: THREAD,
 			});

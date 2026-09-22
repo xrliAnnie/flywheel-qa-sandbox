@@ -10,6 +10,7 @@ import {
 } from "../shipped-husk-escalation.js";
 
 const NOW = Date.parse("2026-08-22T18:00:00.000Z");
+const OWNER_INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
 
 function session(overrides: Partial<Session> = {}): Session {
 	return {
@@ -36,6 +37,7 @@ function operation(
 		approved_head: "a".repeat(40),
 		state: "running",
 		owner_id: "land-worker",
+		owner_instance_id: OWNER_INSTANCE_ID,
 		lease_expires_at: "2026-08-22T18:10:00.000Z",
 		generation: 4,
 		ship_attempt: 0,
@@ -66,6 +68,7 @@ function operation(
 const CLAIM: LandOperationClaim = {
 	operationId: "land-1",
 	ownerId: "land-worker",
+	ownerInstanceId: OWNER_INSTANCE_ID,
 	generation: 4,
 };
 
@@ -238,6 +241,10 @@ describe("forceShippedHusks", () => {
 		const claim = store.claimLandOperation({
 			operationId: operation.operation_id,
 			ownerId: "second-pass",
+			ownerInstanceId: OWNER_INSTANCE_ID,
+			ownerPid: 12345,
+			ownerProcessStart: "fixture-process-start",
+			ownerHostBootId: "fixture-host-boot",
 			now: "2026-08-22T17:59:00.000Z",
 			leaseExpiresAt: "2026-08-22T18:10:00.000Z",
 		})!;
@@ -498,6 +505,10 @@ describe("forceShippedHusks", () => {
 		const nextClaim = store.claimLandOperation({
 			operationId,
 			ownerId: "third-pass",
+			ownerInstanceId: "22222222-2222-4222-8222-222222222222",
+			ownerPid: 12346,
+			ownerProcessStart: "fixture-process-start-2",
+			ownerHostBootId: "fixture-host-boot",
 			now: "2026-08-22T18:00:02.000Z",
 			leaseExpiresAt: "2026-08-22T18:10:00.000Z",
 		})!;

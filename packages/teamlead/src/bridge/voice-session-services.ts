@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import type { BridgeConfig } from "./types.js";
+import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
 import {
 	kickstartVoiceOnDemand,
 	VoiceLaunchdWaker,
@@ -58,6 +60,19 @@ export function createVoiceSessionServices(input: {
 		pollIntervalMs: 3_000,
 	};
 	const fetchImpl = input.fetchImpl ?? fetch;
+	const repoRoot =
+		env.FLYWHEEL_REPO_ROOT?.trim() ||
+		resolvePath(
+			dirname(fileURLToPath(import.meta.url)),
+			"..",
+			"..",
+			"..",
+			"..",
+		);
+	const recordDemand = createVoiceHealthDemandRecorder({
+		helperPath: join(repoRoot, "scripts", "lib", "voice-health.py"),
+		stateRoot: env.FLYWHEEL_STATE_DIR?.trim() || join(homeDir, ".flywheel"),
+	});
 	const voiceLaunchdWaker = new VoiceLaunchdWaker({
 		verify: () =>
 			verifyVoiceOnDemandContract({
@@ -222,6 +237,7 @@ export function createVoiceSessionServices(input: {
 	const runtime = new VoiceSessionRuntime({
 		store: input.store,
 		timing,
+		recordDemand,
 		validateSession,
 		provision,
 		poll: async (session) => {

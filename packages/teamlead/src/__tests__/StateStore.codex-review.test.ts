@@ -1108,6 +1108,7 @@ describe("StateStore — FLY-1188 family-aware review authority", () => {
 			reviewer?: string;
 			requestId?: string;
 			eventId?: string;
+			sanction?: string;
 		},
 	) {
 		return store.recordCodexReviewApproved({
@@ -1119,6 +1120,7 @@ describe("StateStore — FLY-1188 family-aware review authority", () => {
 			...(families?.author && { authorFamily: families.author }),
 			...(families?.reviewer && { reviewerFamily: families.reviewer }),
 			...(families?.requestId && { requestId: families.requestId }),
+			...(families?.sanction && { sameFamilySanction: families.sanction }),
 		});
 	}
 
@@ -1219,6 +1221,51 @@ describe("StateStore — FLY-1188 family-aware review authority", () => {
 		expect(rec?.reviewer_family).toBe("claude");
 		expect(rec?.request_id).toBe("req-valid");
 		expect(store.isCodexCodeReviewApproved("exec-recover", SHA)).toBe(true);
+	});
+
+	it("FLY-2763: claude/claude approval WITH the exact sanction satisfies the gate and persists the stamp", () => {
+		registerSession("exec-sanctioned", "claude-tmux");
+		expect(
+			approve("exec-sanctioned", {
+				author: "claude",
+				reviewer: "claude",
+				sanction: "review_same_family_allowed",
+			}),
+		).toBe(true);
+		expect(store.isCodexCodeReviewApproved("exec-sanctioned", SHA)).toBe(true);
+		expect(
+			store.getCodexReviewRecord("exec-sanctioned", "__main__", SHA)
+				?.same_family_sanction,
+		).toBe("review_same_family_allowed");
+	});
+
+	it("FLY-2763: claude/claude approval with a WRONG sanction stays fail-closed (mutant guard)", () => {
+		registerSession("exec-bad-sanction", "claude-tmux");
+		expect(
+			approve("exec-bad-sanction", {
+				author: "claude",
+				reviewer: "claude",
+				sanction: "yes",
+			}),
+		).toBe(false);
+		expect(store.isCodexCodeReviewApproved("exec-bad-sanction", SHA)).toBe(
+			false,
+		);
+	});
+
+	it("FLY-2763: the review job carries the request-time sanction", () => {
+		store.insertCodexReviewJob({
+			requestId: "r-sanction",
+			executionId: "exec-sanctioned",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q-sanction",
+			authorFamily: "claude",
+			sameFamilySanction: "review_same_family_allowed",
+		});
+		expect(store.getCodexReviewJob("r-sanction")?.same_family_sanction).toBe(
+			"review_same_family_allowed",
+		);
 	});
 
 	it("legacy caller WITHOUT families does not wipe existing stamps (NULL preserves)", () => {

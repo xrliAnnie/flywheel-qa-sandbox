@@ -47,7 +47,11 @@ export class ShipJudgmentOpinions {
 	) {}
 
 	/** Called with a freshly revalidated mechanical snapshot, including when promoting a pending candidate. */
-	offer(value: unknown, now: number): OfferResult {
+	offer(
+		value: unknown,
+		now: number,
+		mode: "dry_run" | "auto" = "dry_run",
+	): OfferResult {
 		const candidate = opinionCandidateSchema.parse(value);
 		const at = new Date(now).toISOString();
 		const age = now - Date.parse(candidate.mechanical.checkedAt);
@@ -195,14 +199,15 @@ export class ShipJudgmentOpinions {
 					return { status: "unchanged" };
 				}
 				this.db
-					.prepare(`INSERT OR IGNORE INTO ship_judgment_delivery(purpose,subject_id,question_id,thread_id,card_message_id,state,marker)
-				VALUES ('opinion',?,?,?,?, 'pending',?)`)
+					.prepare(`INSERT OR IGNORE INTO ship_judgment_delivery(purpose,subject_id,question_id,thread_id,card_message_id,state,marker,delivery_mode)
+				VALUES ('opinion',?,?,?,?, 'pending',?,?)`)
 					.run(
 						candidate.questionId,
 						candidate.questionId,
 						binding.threadId,
 						binding.cardMessageId,
 						`ship-judgment:${candidate.questionId}`,
+						mode,
 					);
 				const recent = this.db
 					.prepare(

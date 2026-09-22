@@ -55,6 +55,9 @@ source "${SCRIPT_DIR}/launchd-census.sh"
 # shellcheck source=lib/updater-raya-deploy.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/updater-raya-deploy.sh"
+# shellcheck source=lib/shuttle-observation.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/shuttle-observation.sh"
 # launchd-census is a shared entrypoint and sources .env for standalone use.
 # Re-pin afterward so no direct path override can diverge this consumer from
 # the plist and founder producer in production.
@@ -96,6 +99,18 @@ updater_alert_scheduled() { # $1=class $2=body
   severe_alert "$(updater_scheduled_signature "$1")" "$2"
 }
 
+updater_alert_observation() { # $1=class $2=body
+  local class="$1" body="$2"
+  local alert_args=(
+    --project flywheel --lead updater
+    --kind deploy_degraded --severity warning
+    --title "Shuttle observation degraded" --body "$body"
+    --signature "$(updater_scheduled_signature "$class")"
+  )
+  log "WARNING: Shuttle observation degraded: $body"
+  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
+}
+
 raya_alert_dispatch() { # $1=severity $2=class $3=requested title $4=body
   local severity="$1" class="$2" body="$4" kind="" title="" level=""
   local alert_args=()
@@ -115,6 +130,272 @@ raya_alert_dispatch() { # $1=severity $2=class $3=requested title $4=body
     alert_args+=(--mention-user "$FLYWHEEL_FOUNDER_USER_ID")
   fi
   "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
+}
+
+UPDATER_OBSERVATION_STATE=not_started
+UPDATER_OBSERVATION_FINALIZED=0
+UPDATER_OBSERVATION_ERROR=0
+UPDATER_AGGREGATE_RESULT=observation_incomplete
+UPDATER_AGGREGATE_COUNTS='{}'
+UPDATER_TARGET_SHA=""
+UPDATER_BEHIND_COMMITS=""
+
+updater_observation_record() { # project kind owner display outcome reason evidence log deployed target behind drift
+  [[ "$UPDATER_OBSERVATION_STATE" == active ]] || return 0
+  local receipt_dir="" receipt="" rc=0
+  receipt_dir="$(shuttle_observation_state_root)/runtime"
+  mkdir -p "$receipt_dir" 2>/dev/null || rc=$?
+  if (( rc == 0 )); then
+    chmod 700 "$receipt_dir" 2>/dev/null || rc=$?
+  fi
+  if (( rc == 0 )); then
+    receipt="$(mktemp "$receipt_dir/record.XXXXXX")" || rc=$?
+  fi
+  if (( rc == 0 )); then
+    shuttle_observation_record_values "$SHUTTLE_OBSERVATION_CYCLE_ID" "$@" "$receipt" || rc=$?
+  fi
+  [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+  if (( rc != 0 )); then
+    UPDATER_OBSERVATION_ERROR=1
+    log "WARNING: shuttle observation result write failed (rc=$rc)"
+    updater_alert_observation observation-write-failed \
+      "Shuttle deployment observation could not record a unit result (rc=$rc). Deployment semantics were not changed; inspect flywheel-updater.log and the fixed page will remain unavailable." || true
+  fi
+  return 0
+}
+
+updater_observation_begin() {
+  local runtime_dir="" candidates="" inventory="" receipt="" inventory_rc=0 rc=0
+  runtime_dir="$(shuttle_observation_state_root)/runtime"
+  mkdir -p "$runtime_dir" 2>/dev/null || rc=$?
+  if (( rc == 0 )); then chmod 700 "$runtime_dir" 2>/dev/null || rc=$?; fi
+  if (( rc == 0 )); then candidates="$(mktemp "$runtime_dir/candidates.XXXXXX")" || rc=$?; fi
+  if (( rc == 0 )); then inventory="$(mktemp "$runtime_dir/inventory.XXXXXX")" || rc=$?; fi
+  if (( rc == 0 )); then receipt="$(mktemp "$runtime_dir/begin.XXXXXX")" || rc=$?; fi
+  if (( rc == 0 )) && declare -F lead_restart_collect_candidates >/dev/null 2>&1; then
+    lead_restart_collect_candidates \
+      "$FLYWHEEL_HOME/manifests" "$HOME/Library/LaunchAgents" \
+      "$FLYWHEEL_HOME/projects.json" "$candidates" >/dev/null 2>&1 || inventory_rc=$?
+  fi
+  if (( rc == 0 )) && ! shuttle_observation_build_inventory \
+      "$FLYWHEEL_HOME/projects.json" "$inventory" "$candidates"; then
+    rc=$?
+    (( rc == 0 )) && rc=2
+  fi
+  if (( rc == 0 )) && ! shuttle_observation_begin "$UPDATER_WAKE_KIND" "$inventory" "$receipt"; then
+    rc=$?
+    (( rc == 0 )) && rc=2
+  fi
+  [[ -z "$candidates" ]] || rm -f -- "$candidates" 2>/dev/null || true
+  [[ -z "$inventory" ]] || rm -f -- "$inventory" 2>/dev/null || true
+  [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+  if (( rc != 0 )); then
+    UPDATER_OBSERVATION_STATE=incomplete
+    updater_alert_observation observation-init-failed \
+      "Shuttle deployment observation initialization failed (rc=$rc). The deployment cycle will continue unchanged, but per-unit status is unavailable." || true
+    return 0
+  fi
+  UPDATER_OBSERVATION_STATE=active
+  UPDATER_OBSERVATION_FINALIZED=0
+  UPDATER_OBSERVATION_ERROR=0
+  SHUTTLE_OBSERVATION_ERROR_FILE="$(shuttle_observation_state_root)/runtime/error-${SHUTTLE_OBSERVATION_CYCLE_ID}"
+  rm -f -- "$SHUTTLE_OBSERVATION_ERROR_FILE" 2>/dev/null || true
+  export SHUTTLE_OBSERVATION_ERROR_FILE
+  if (( inventory_rc == 0 )); then
+    updater_observation_record flywheel inventory deployment-inventory \
+      "Deployment inventory" up_to_date up-to-date inventory-snapshot \
+      flywheel-updater.log#inventory "" "" "" unknown
+  else
+    updater_observation_record flywheel inventory deployment-inventory \
+      "Deployment inventory" failed inventory-unavailable inventory-snapshot \
+      flywheel-updater.log#inventory "" "" "" unknown
+  fi
+}
+
+updater_observation_record_core() {
+  local outcome=failed reason=unclassified-result deployed="" target="$UPDATER_TARGET_SHA"
+  local behind="$UPDATER_BEHIND_COMMITS"
+  if [[ -z "$target" ]]; then
+    target="$(deployed_sha 2>/dev/null || true)"
+    [[ "$target" =~ ^[0-9a-f]{40}$ ]] || target=""
+  fi
+  case "${UPDATER_CYCLE_RESULT:-unknown}" in
+    scheduled_deployed|urgent_deployed)
+      outcome=deployed; reason=deployed; deployed="$target" ;;
+    scheduled_current)
+      outcome=up_to_date; reason=up-to-date; deployed="$target"; behind=0 ;;
+    fetch_failed) outcome=failed; reason=fetch-failed ;;
+    scheduled_failed|urgent_failed) outcome=failed; reason=deploy-failed ;;
+    *) outcome=skipped; reason=upstream-step-failed ;;
+  esac
+  updater_observation_record flywheel core_repo flywheel "Flywheel core" \
+    "$outcome" "$reason" deployed-sha flywheel-updater.log#core \
+    "$deployed" "$target" "$behind" unknown
+}
+
+updater_observation_fill_downstream() {
+  [[ "$UPDATER_OBSERVATION_STATE" == active ]] || return 0
+  local reason=upstream-step-failed receipt="" rc=0
+  case "${UPDATER_CYCLE_RESULT:-unknown}" in
+    scheduled_current) reason=not-in-deploy-wave ;;
+    scheduled_deployed|urgent_deployed) return 0 ;;
+  esac
+  receipt="$(mktemp "$(shuttle_observation_state_root)/runtime/fill.XXXXXX")" || rc=$?
+  if (( rc == 0 )); then
+    shuttle_observation_fill "$SHUTTLE_OBSERVATION_CYCLE_ID" "$reason" project_repo lead >"$receipt" || rc=$?
+  fi
+  [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+  if (( rc != 0 )); then
+    UPDATER_OBSERVATION_ERROR=1
+    log "WARNING: shuttle downstream result fill failed (rc=$rc)"
+  fi
+}
+
+updater_observation_record_raya() {
+  local state="${RAYA_DEPLOY_STATE:-not_run}" detail="${RAYA_DEPLOY_DETAIL:-}"
+  local outcome=failed reason=unclassified-result deployed="" target="" behind=""
+  case "$state" in
+    deployed) outcome=deployed; reason=deployed ;;
+    prestop-failed) outcome=failed; reason=prestop-validation-failed ;;
+    not_configured)
+      outcome=skipped
+      case "$detail" in
+        host-capability-absent|canonical-standard-lead-absent|migration-ledger-absent) reason="$detail" ;;
+        *) reason=unclassified-result; outcome=failed ;;
+      esac
+      ;;
+    locked) outcome=skipped; reason=unit-lock-held ;;
+    awaiting_rebind|awaiting_proof|awaiting_reconciliation)
+      outcome=skipped
+      case "$detail" in
+        awaiting_pre_activation_rebind) reason=awaiting-pre-activation-rebind ;;
+        awaiting_rebind) reason=awaiting-rebind ;;
+        awaiting_rebind_proof) reason=awaiting-rebind-proof ;;
+        awaiting-pre-activation-rebind|awaiting-rebind|awaiting-rebind-proof|p5-awaiting-real-p6-evidence|p3-unresolved-window) reason="$detail" ;;
+        *) reason=unclassified-result; outcome=failed ;;
+      esac
+      ;;
+    not_run)
+      if [[ "${UPDATER_WAKE_KIND:-unknown}" == urgent ]]; then
+        outcome=skipped; reason=wake-out-of-scope
+      else
+        outcome=failed; reason=unclassified-result
+      fi
+      ;;
+    *)
+      case "$detail" in
+        source-prepare-failed|cutover-failed|proof-invalid|finalize-failed)
+          outcome=failed; reason="$detail" ;;
+      esac
+      ;;
+  esac
+  if [[ -f "${RAYA_DEPLOYED_SHA_FILE:-}" ]]; then
+    deployed="$(sed -n '1p' "$RAYA_DEPLOYED_SHA_FILE" 2>/dev/null || true)"
+  fi
+  [[ "$deployed" =~ ^[0-9a-f]{40}$ ]] || deployed=""
+  if [[ -d "${RAYA_CODE_DIR:-}" ]]; then
+    target="$(git -C "$RAYA_CODE_DIR" rev-parse --verify refs/remotes/origin/main 2>/dev/null || true)"
+  fi
+  [[ "$target" =~ ^[0-9a-f]{40}$ ]] || target=""
+  if [[ -n "$deployed" && -n "$target" && -d "${RAYA_CODE_DIR:-}" ]]; then
+    behind="$(git -C "$RAYA_CODE_DIR" rev-list --count "${deployed}..${target}" 2>/dev/null || true)"
+    [[ "$behind" =~ ^[0-9]+$ ]] || behind=""
+  fi
+  updater_observation_record raya external_repo raya-repo Raya \
+    "$outcome" "$reason" "raya:${state}" flywheel-updater.log#raya \
+    "$deployed" "$target" "$behind" "$([[ -n "$behind" ]] && printf first_observed_behind || printf unknown)"
+}
+
+updater_observation_finish() {
+  [[ "$UPDATER_OBSERVATION_STATE" == active && "$UPDATER_OBSERVATION_FINALIZED" == 0 ]] || return 0
+  local receipt="" rc=0
+  receipt="$(mktemp "$(shuttle_observation_state_root)/runtime/finish.XXXXXX")" || rc=$?
+  if (( rc == 0 )); then
+    shuttle_observation_finish "$SHUTTLE_OBSERVATION_CYCLE_ID" \
+      "${UPDATER_CYCLE_RESULT:-unknown}" >"$receipt" || rc=$?
+  fi
+  if [[ -n "${SHUTTLE_OBSERVATION_ERROR_FILE:-}" && -f "$SHUTTLE_OBSERVATION_ERROR_FILE" ]]; then
+    UPDATER_OBSERVATION_ERROR=1
+  fi
+  if (( rc == 0 )); then
+    UPDATER_AGGREGATE_RESULT="$(jq -er .result "$receipt")" || rc=$?
+    UPDATER_AGGREGATE_COUNTS="$(jq -c .counts "$receipt")" || rc=$?
+  fi
+  [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+  UPDATER_OBSERVATION_FINALIZED=1
+  if (( rc != 0 || UPDATER_OBSERVATION_ERROR != 0 )); then
+    UPDATER_OBSERVATION_STATE=incomplete
+    UPDATER_AGGREGATE_RESULT=observation_incomplete
+    UPDATER_AGGREGATE_COUNTS='{}'
+    updater_alert_observation observation-finish-failed \
+      "Shuttle deployment observation finalization failed (rc=$rc). Deployment semantics were not changed; the aggregate is observation_incomplete." || true
+  fi
+  return 0
+}
+
+updater_observation_dispatch() {
+  [[ "$UPDATER_OBSERVATION_FINALIZED" == 1 ]] || return 0
+  [[ "$UPDATER_OBSERVATION_STATE" == active || "$UPDATER_OBSERVATION_STATE" == incomplete ]] || return 0
+  [[ -n "${SHUTTLE_OBSERVATION_CYCLE_ID:-}" ]] || return 0
+  local receipt="" rc=0 project="" batch="" batch_id="" origin="" alert_result=""
+  local state="" channel="" message="" binding="" alert_bin=""
+  local copy_projects=()
+  receipt="$(mktemp "$(shuttle_observation_state_root)/runtime/dispatch.XXXXXX")" || rc=$?
+  if (( rc == 0 )) && [[ -f "$FLYWHEEL_HOME/projects.json" ]]; then
+    while IFS= read -r project; do
+      [[ -z "$project" ]] || copy_projects+=("$project")
+    done < <(jq -r '.[] | select(.shuttleEngineeringLeadId != null) | .projectName' \
+      "$FLYWHEEL_HOME/projects.json" 2>/dev/null || true)
+  fi
+  if (( rc == 0 )); then
+    shuttle_observation_prepare_dispatch "$SHUTTLE_OBSERVATION_CYCLE_ID" \
+      ${copy_projects[@]+"${copy_projects[@]}"} >"$receipt" || rc=$?
+  fi
+  if (( rc != 0 )); then
+    [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+    UPDATER_OBSERVATION_ERROR=1
+    log "WARNING: shuttle notification dispatch preparation failed (rc=$rc)"
+    updater_alert_observation observation-dispatch-failed \
+      "Shuttle unit failures were recorded, but notification intents could not be prepared (rc=$rc). Inspect the fixed page and flywheel-updater.log." || true
+    return 0
+  fi
+  alert_bin="${SHUTTLE_LEAD_ALERT_BIN:-$FLYWHEEL_DIR/scripts/lead-alert.sh}"
+  while IFS= read -r batch; do
+    [[ -n "$batch" ]] || continue
+    batch_id="$(printf '%s' "$batch" | jq -er .batchId 2>/dev/null || true)"
+    origin="$(printf '%s' "$batch" | jq -er .originProject 2>/dev/null || true)"
+    state=delivery_unknown; channel=""; message=""; binding=""; alert_result=""
+    if [[ "$batch_id" =~ ^[0-9a-f]{64}$ && -n "$origin" && -x "$alert_bin" ]]; then
+      alert_result="$("$alert_bin" --project "$origin" --lead updater \
+        --kind shuttle_unit_unhealthy --severity warning \
+        --shuttle-intent "$batch_id" --strict-delivery || true)"
+      state="${alert_result%% *}"
+      for field in $alert_result; do
+        case "$field" in
+          channel_id=*) channel="${field#channel_id=}" ;;
+          message_id=*) message="${field#message_id=}" ;;
+          binding_digest=*) binding="${field#binding_digest=}" ;;
+        esac
+      done
+      case "$state" in
+        sent)
+          if [[ ! "$message" =~ ^[0-9]{17,20}$ || ! "$channel" =~ ^[0-9]{17,20}$ ]]; then
+            state=delivery_unknown
+          fi
+          ;;
+        queued_transient|delivery_unknown|dead_lettered|config_error) ;;
+        *) state=delivery_unknown ;;
+      esac
+    else
+      state=config_error
+    fi
+    if ! shuttle_observation_delivery "$batch_id" "$state" "$message" "$channel" "$binding" >/dev/null; then
+      UPDATER_OBSERVATION_ERROR=1
+      log "WARNING: shuttle delivery receipt write failed intent=${batch_id:0:12} state=$state"
+    fi
+  done < <(jq -c '.batches[]?' "$receipt")
+  rm -f -- "$receipt" 2>/dev/null || true
+  return 0
 }
 
 # A token has already left QueueDirectories when this helper is called. Expose
@@ -254,6 +535,9 @@ updater_fetch_origin() {
 }
 updater_restart_services() {
   FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
+}
+updater_codex_home_reconcile() {
+  "$UPDATER_NODE" "${SCRIPT_DIR}/codex-home-reconcile-cycle.mjs" --source updater
 }
 updater_remote_sha() { git -C "$FLYWHEEL_DIR" rev-parse origin/main 2>/dev/null; }
 updater_host_tmux_gate() {
@@ -459,6 +743,7 @@ updater_cleanup() {
       ;;
   esac
   raya_lock_release || true
+  updater_observation_finish || true
   updater_lock_release
 }
 
@@ -484,14 +769,15 @@ updater_run_cycle() {
   local had_consumed_indeterminate=0
   local shape_valid=() valid=()
 
-  UPDATER_WAKE_KIND=unknown
-  UPDATER_CYCLE_RESULT=unknown
+UPDATER_WAKE_KIND=unknown
+UPDATER_CYCLE_RESULT=unknown
   updater_snapshot_tokens
   if (( ${#UPDATER_SNAPSHOT[@]} == 0 )); then
     UPDATER_WAKE_KIND=scheduled
   else
     UPDATER_WAKE_KIND=urgent
   fi
+  updater_observation_begin
   UPDATER_CLAIM_DIR="$(mktemp -d "${FLYWHEEL_HOME}/.urgent-claim.XXXXXX")" || {
     UPDATER_CYCLE_RESULT=claim_dir_failed
     updater_alert_scheduled claim-dir-failed "Updater could not create its same-filesystem claim directory. No restart was attempted."
@@ -636,6 +922,9 @@ updater_run_cycle() {
     updater_alert_scheduled probe-failed "Scheduled updater fetched origin/main but could not resolve its SHA; no restart was attempted."
     return 2
   }
+  UPDATER_TARGET_SHA="$remote"
+  UPDATER_BEHIND_COMMITS="$(git -C "$FLYWHEEL_DIR" rev-list --count "$(deployed_sha)..${remote}" 2>/dev/null || true)"
+  [[ "$UPDATER_BEHIND_COMMITS" =~ ^[0-9]+$ ]] || UPDATER_BEHIND_COMMITS=""
   if [[ "$(deployed_sha)" == "$remote" ]]; then
     log "scheduled shuttle: deployed-sha already matches origin/main (${remote:0:7})"
     UPDATER_CYCLE_RESULT=scheduled_current
@@ -659,13 +948,23 @@ updater_run_cycle() {
 # suppress that independent health pass.
 updater_run_launchd_then_cycle() {
   updater_launchd_pass || true
+  if ! updater_codex_home_reconcile; then
+    log "Codex home reconciliation was unavailable (non-fatal; receipts/alerts retain the obligation)"
+  fi
   updater_run_cycle
 }
 
 update_main() {
-  local lock_rc=0
+  local lock_rc=0 aggregate_counts=""
   UPDATER_WAKE_KIND=unknown
   UPDATER_CYCLE_RESULT=unknown
+  UPDATER_OBSERVATION_STATE=not_started
+  UPDATER_OBSERVATION_FINALIZED=0
+  UPDATER_OBSERVATION_ERROR=0
+  UPDATER_AGGREGATE_RESULT=observation_incomplete
+  UPDATER_AGGREGATE_COUNTS='{}'
+  UPDATER_TARGET_SHA=""
+  UPDATER_BEHIND_COMMITS=""
   if ! updater_init_dirs; then
     log "could not initialize updater state directories"
     updater_alert_scheduled init-failed \
@@ -710,7 +1009,8 @@ update_main() {
   fi
   updater_run_launchd_then_cycle
   rc=$?
-  log "updater cycle: wake=${UPDATER_WAKE_KIND:-unknown} result=${UPDATER_CYCLE_RESULT:-unknown}"
+  updater_observation_record_core
+  updater_observation_fill_downstream
   case "${UPDATER_WAKE_KIND:-unknown}" in
     scheduled)
       if raya_host_capable; then
@@ -721,10 +1021,28 @@ update_main() {
         log "raya shuttle: host capability absent — skipped"
       fi
       ;;
-    urgent) log "raya shuttle: skipped wake=urgent" ;;
+    urgent)
+      if [[ "${UPDATER_CYCLE_RESULT:-unknown}" == urgent_deployed ]]; then
+        if raya_host_capable; then
+          updater_raya_pass || true
+        else
+          RAYA_DEPLOY_STATE=not_configured
+          RAYA_DEPLOY_DETAIL=host-capability-absent
+          log "raya shuttle: host capability absent — skipped"
+        fi
+      else
+        log "raya shuttle: skipped wake=urgent result=${UPDATER_CYCLE_RESULT:-unknown}"
+      fi
+      ;;
     *) log "raya shuttle: skipped wake=unknown (fail closed)" ;;
   esac
   log "raya shuttle: ${RAYA_DEPLOY_STATE:-not_run} ${RAYA_DEPLOY_DETAIL:-}"
+  updater_observation_record_raya
+  updater_observation_finish
+  updater_observation_dispatch
+  aggregate_counts="${UPDATER_AGGREGATE_COUNTS:-}"
+  [[ -n "$aggregate_counts" ]] || aggregate_counts='{}'
+  log "updater cycle: wake=${UPDATER_WAKE_KIND:-unknown} legacyResult=${UPDATER_CYCLE_RESULT:-unknown} result=${UPDATER_AGGREGATE_RESULT:-observation_incomplete} counts=${aggregate_counts}"
   updater_cleanup
 
   if [[ -n "$previous_exit" ]]; then eval "$previous_exit"; else trap - EXIT; fi

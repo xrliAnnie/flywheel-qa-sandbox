@@ -68,6 +68,13 @@ export interface LifecycleRoutesDeps {
 	) => Promise<ClosureReport | { rejected: true; reason: string }>;
 	/** Fail-closed guard — routes refuse when the api token is not configured. */
 	apiTokenConfigured: boolean;
+	/** Codex-only closeout authority derived from the private carrier context. */
+	authorizeRecloseHttp?: (header: unknown) => {
+		actor: string;
+		projectName: string;
+		leadId: string;
+		assertCurrent(): void;
+	};
 	sweepFn?: typeof sweepProjectLifecycle;
 	land?: {
 		enabled(): boolean;
@@ -85,6 +92,7 @@ export interface LifecycleRoutesDeps {
 			expectedResumeGeneration?: number;
 			expectedApprovedHead?: string;
 			requestId?: string;
+			authorityCheck?: () => void | Promise<void>;
 		}): Promise<
 			| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
 			| { ok: false; reason: string }
@@ -309,9 +317,38 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 			res.status(503).json({ error: "land_node_disabled" });
 			return;
 		}
+		let recloseAuthority:
+			| {
+					actor: string;
+					projectName: string;
+					leadId: string;
+					assertCurrent(): void;
+			  }
+			| undefined;
+		if (mode === "closeout_only") {
+			try {
+				recloseAuthority = deps.authorizeRecloseHttp?.(
+					req.headers["x-flywheel-lead-context"],
+				);
+				if (!recloseAuthority) throw Error();
+			} catch {
+				res.status(403).json({
+					error: "claude_reclose_peer_transport_required",
+				});
+				return;
+			}
+			const operation = deps.store.getLandOperation(req.params.operationId);
+			if (
+				!operation ||
+				operation.project_name !== recloseAuthority.projectName
+			) {
+				res.status(403).json({ error: "reclose_lead_scope_mismatch" });
+				return;
+			}
+		}
 		const actor =
 			mode === "closeout_only"
-				? "authenticated-master"
+				? recloseAuthority!.actor
 				: typeof req.body?.actor === "string"
 					? req.body.actor.trim()
 					: "";
@@ -341,6 +378,7 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 			return;
 		}
 		try {
+			recloseAuthority?.assertCurrent();
 			const resumed = await deps.land.resume({
 				operationId: req.params.operationId,
 				actor,
@@ -351,6 +389,7 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 							expectedResumeGeneration,
 							expectedApprovedHead,
 							requestId,
+							authorityCheck: () => recloseAuthority!.assertCurrent(),
 						}
 					: {}),
 			});

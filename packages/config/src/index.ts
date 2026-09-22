@@ -275,6 +275,17 @@ export {
 	resetPatrolConfigCachesForTests,
 } from "./patrol-config.js";
 export type {
+	ParsedPersonaProjection,
+	PersonaApprovalRef,
+	PersonaPin,
+	PersonaProjection,
+	PersonaProjectionContext,
+} from "./persona-projection.js";
+export {
+	parsePersonaProjection,
+	resolvePersonaStateRoot,
+} from "./persona-projection.js";
+export type {
 	DesignBackend,
 	WorkflowDispatchVendor,
 	WorkflowPhaseRole,
@@ -371,6 +382,8 @@ export {
 	type CrossFamilyReviewInput,
 	crossFamilyReviewSatisfied,
 	manifestReviewFamilyOk,
+	SAME_FAMILY_REVIEW_SANCTION,
+	sameFamilySanctionValid,
 } from "./review-family.js";
 export type {
 	RotatingStdioEnvOptions,

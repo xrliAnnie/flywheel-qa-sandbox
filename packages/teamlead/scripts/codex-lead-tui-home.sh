@@ -1129,22 +1129,150 @@ assert_recovery_shape() {
   [ "$HOME_UPDATER_COUNT" -eq 1 ]
 }
 
+PERSONA_COLD_REQUIRED=0
+PERSONA_COLD_GENERATION=""
+PERSONA_OLD_PID=""
+PERSONA_OLD_START=""
+
+wait_persona_old_daemon_absent() {
+  local i current
+  [ -n "$PERSONA_OLD_PID" ] || return 0
+  for ((i = 0; i < 50; i++)); do
+    if probe_ps_field "$PERSONA_OLD_PID" lstart; then
+      current="$(trim "$PROBE_VALUE")"
+      [ "$current" != "$PERSONA_OLD_START" ] && return 0
+      fly1955_sleep 0.2
+    else
+      [ "$?" -eq 1 ] && return 0
+      return 1
+    fi
+  done
+  return 1
+}
+
+write_persona_cold_proof() {
+  local sock="$1" pid start proof lsof_bin
+  read_daemon_pid_record || return 1
+  pid="$PID_RECORD_PID"
+  start="$PID_RECORD_START"
+  if probe_ps_field "$pid" state; then
+    case "$(trim "$PROBE_VALUE")" in Z*) return 1 ;; esac
+  else
+    return 1
+  fi
+  if probe_ps_field "$pid" lstart; then
+    [ "$(trim "$PROBE_VALUE")" = "$start" ] || return 1
+  else
+    return 1
+  fi
+  [ -S "$sock" ] || return 1
+  lsof_bin="$(command -v lsof 2>/dev/null || true)"
+  [ -n "$lsof_bin" ] || [ ! -x /usr/sbin/lsof ] || lsof_bin=/usr/sbin/lsof
+  [ -n "$lsof_bin" ] || return 1
+  "$lsof_bin" -a -p "$pid" -U "$sock" 2>/dev/null | command grep -F -- "$sock" >/dev/null \
+    || return 1
+  if [ -n "$PERSONA_OLD_PID" ] \
+    && [ "$pid" = "$PERSONA_OLD_PID" ] \
+    && [ "$start" = "$PERSONA_OLD_START" ]; then
+    return 1
+  fi
+  proof="$HOME_DIR/.flywheel-raya-persona-cold-proof.json"
+  python3 - "$proof" "$PERSONA_COLD_GENERATION" "$pid" "$start" "$sock" <<'PY'
+import datetime, json, os, sys, tempfile
+path, generation, pid, started, sock = sys.argv[1:]
+parent = os.path.dirname(path)
+os.makedirs(parent, mode=0o700, exist_ok=True)
+payload = {
+    "schemaVersion": 1,
+    "generationId": generation,
+    "pid": int(pid),
+    "processStartTime": started,
+    "socketPath": sock,
+    "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+fd, tmp = tempfile.mkstemp(prefix=".flywheel-raya-persona-cold-proof.", dir=parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    directory = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
+
+finish_daemon_start() {
+  local sock="$1" message="$2"
+  if [ "$PERSONA_COLD_REQUIRED" -eq 1 ]; then
+    write_persona_cold_proof "$sock" \
+      || daemon_die "persona cold daemon proof failed (pid/socket identity incomplete)"
+  fi
+  clear_daemon_failcount
+  log "$message"
+}
+
 ensure_daemon() {
+  if [ "${FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED:-0}" = "1" ]; then
+    [ -n "${FLYWHEEL_LEAD_ID:-}" ] && [ -n "${FLYWHEEL_PROJECT_NAME:-}" ] \
+      || daemon_die "credential launch fence identity is unavailable"
+    [ -f "${FLYWHEEL_CODEX_LAUNCH_FENCE_BIN:-}" ] \
+      && [ ! -L "${FLYWHEEL_CODEX_LAUNCH_FENCE_BIN:-}" ] \
+      || daemon_die "credential launch fence helper is unavailable"
+    node "$FLYWHEEL_CODEX_LAUNCH_FENCE_BIN" acquire \
+      --home "$HOME_DIR" \
+      --lead "${FLYWHEEL_PROJECT_NAME}/${FLYWHEEL_LEAD_ID}" \
+      --state-root "${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}" \
+      || daemon_die "credential launch fence refused daemon start"
+  fi
   # Code review R1 MED-6: default to the STANDALONE binary inside this home —
   # the daemon requires it, and a PATH `codex` (npm install) would fail forever
   # even on a correctly provisioned home. Explicit override stays possible.
   local codex_bin="${FLYWHEEL_CODEX_BIN:-$HOME_DIR/packages/standalone/current/codex}"
   [ -x "$codex_bin" ] || daemon_die "codex binary not executable: $codex_bin (standalone install missing? see ensure-home)"
+  local sock="$HOME_DIR/app-server-control/app-server-control.sock"
+  PERSONA_COLD_REQUIRED=0
+  PERSONA_COLD_GENERATION=""
+  PERSONA_OLD_PID=""
+  PERSONA_OLD_START=""
+  if [ "${FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED:-}" = "1" ]; then
+    [[ "${FLYWHEEL_RAYA_PERSONA_GENERATION_ID:-}" =~ ^[a-f0-9]{32}$ ]] \
+      || daemon_die "persona cold daemon generation id is invalid"
+    PERSONA_COLD_REQUIRED=1
+    PERSONA_COLD_GENERATION="$FLYWHEEL_RAYA_PERSONA_GENERATION_ID"
+    if read_daemon_pid_record && probe_ps_field "$PID_RECORD_PID" lstart \
+      && [ "$(trim "$PROBE_VALUE")" = "$PID_RECORD_START" ]; then
+      PERSONA_OLD_PID="$PID_RECORD_PID"
+      PERSONA_OLD_START="$PID_RECORD_START"
+    fi
+    if [ -S "$sock" ] || [ -n "$PERSONA_OLD_PID" ]; then
+      CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control stop --json >/dev/null 2>&1 \
+        || daemon_die "persona cold daemon stop failed"
+      wait_persona_old_daemon_absent \
+        || daemon_die "persona cold daemon retained the previous process identity"
+      [ ! -S "$sock" ] || daemon_die "persona cold daemon retained the previous control socket"
+    fi
+    log "proved the prior persona daemon absent before cold start"
   # FLY-398 (pin ⑤): full-access needs stop-before-start — a stale read-only
   # daemon would keep its old read-only sandbox/config/MCP and never re-read the
   # rewritten workspace-write config (a flip would silently keep Mufasa read-only).
-  if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
+  elif [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
     CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control stop --json >/dev/null 2>&1 || true
     log "stopped any running daemon so it re-reads the full-access config"
   fi
   # `remote-control start` is idempotent (spike-verified: already-running →
   # status connected). Fail-loud otherwise — the supervisor retries with backoff.
-  local sock="$HOME_DIR/app-server-control/app-server-control.sock"
   snapshot_auth_log
   # Codex's updater runs install.sh, whose default BIN_DIR is the real
   # $HOME/.local/bin. Keep its visible command inside this Lead home so a Lead
@@ -1152,8 +1280,7 @@ ensure_daemon() {
   if CODEX_INSTALL_DIR="$HOME_DIR/.local/bin" CODEX_HOME="$HOME_DIR" \
     "$codex_bin" remote-control start --json; then
     [ -S "$sock" ] || daemon_die "daemon reported started but control socket missing: $sock"
-    clear_daemon_failcount
-    log "daemon OK: $sock"
+    finish_daemon_start "$sock" "daemon OK: $sock"
     return 0
   fi
 
@@ -1180,8 +1307,7 @@ ensure_daemon() {
       "$codex_bin" remote-control start --json; then
       [ -S "$sock" ] || daemon_die \
         "daemon reported started after refresh-race retry but control socket missing: $sock"
-      clear_daemon_failcount
-      log "daemon OK after one benign refresh-race retry: $sock"
+      finish_daemon_start "$sock" "daemon OK after one benign refresh-race retry: $sock"
       return 0
     fi
     daemon_die \
@@ -1221,8 +1347,7 @@ ensure_daemon() {
           emit_zombie_alert stuck "The control socket recovered, but updater/daemon postconditions are incomplete."
         fi
       fi
-      clear_daemon_failcount
-      log "daemon OK: $sock"
+      finish_daemon_start "$sock" "daemon OK: $sock"
       return 0
       ;;
     *) daemon_die "internal error: unknown stale-daemon recovery outcome '$REAP_OUTCOME'" ;;

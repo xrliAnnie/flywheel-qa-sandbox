@@ -13,7 +13,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { initializeMigration } from "./raya-migration-init.js";
-import type { MigrationIO } from "./raya-migration-io.js";
+import {
+	LEAD_LIVE_VERIFY_TIMEOUT_MS,
+	type MigrationIO,
+} from "./raya-migration-io.js";
 import { runMigrationManifest } from "./raya-migration-manifest.js";
 
 const roots: string[] = [];
@@ -86,19 +89,38 @@ function fixture() {
 			EnvironmentVariables: { RAYA_ENV_FILE: join(root, "raya/raya.env") },
 		});
 	const commands: string[] = [];
+	const runCalls: Array<{
+		file: string;
+		args: string[];
+		timeoutMs: number | undefined;
+	}> = [];
 	let posts = 0;
 	let nudge = 202;
 	let postStatus = 200;
 	let losePost = false;
+	let liveVerify = true;
+	let liveVerifyError: Error | null = null;
+	const legacyLaunchctl = new Map<string, string | Error>();
 	const messages: unknown[] = [];
 	const io: MigrationIO = {
 		now: () => Date.parse("2026-09-13T00:00:00Z"),
-		run: async (file, args) => {
+		run: async (file, args, timeoutMs) => {
 			commands.push(`${file} ${args.join(" ")}`);
+			runCalls.push({ file, args, timeoutMs });
 			if (file === "plutil") return readFileSync(args.at(-1)!, "utf8");
-			if (file === "launchctl") return "state = running\npid = 1234\n";
+			if (file === "launchctl") {
+				const label = args.at(-1)!.split("/").at(-1)!;
+				const result = legacyLaunchctl.get(label);
+				if (result instanceof Error) throw result;
+				return result ?? "state = running\npid = 1234\n";
+			}
 			if (file === "ps") return "Sun Sep 13 00:00:00 2026";
 			if (args.includes("--print-state-dir")) return state;
+			if (file === "bash" && args.includes("verify")) {
+				if (liveVerifyError) throw liveVerifyError;
+				if (!liveVerify) throw new Error("standard Lead is not live");
+				return "PASS #7 launchd running pid=67031";
+			}
 			throw new Error("unexpected command");
 		},
 		fetch: async (url, init) => {
@@ -141,6 +163,7 @@ function fixture() {
 		put,
 		io,
 		commands,
+		runCalls,
 		posts: () => posts,
 		setNudge: (value: number) => {
 			nudge = value;
@@ -150,6 +173,15 @@ function fixture() {
 		},
 		lose: () => {
 			losePost = true;
+		},
+		failLiveVerify: () => {
+			liveVerify = false;
+		},
+		failLiveVerifyWith: (error: Error) => {
+			liveVerifyError = error;
+		},
+		setLegacyLaunchctl: (app: "brain" | "voice", result: string | Error) => {
+			legacyLaunchctl.set(`com.xrli.raya.${app}`, result);
 		},
 		input: {
 			home,
@@ -217,6 +249,98 @@ describe("H3 migration initialization", () => {
 		await expect(
 			initializeMigration({ ...f.input, resumeFromFailed: true }),
 		).rejects.toThrow("migration-already-initialized");
+		expect(readFileSync(f.file, "utf8")).toBe(before);
+	});
+	it("reuses a preexisting cursor only when the public standard Lead is live", async () => {
+		const f = fixture();
+		await initializeMigration(f.input);
+		f.put(join(f.state, "inbound-cursor.json"), {
+			[channel]: "623456789012345678",
+		});
+		await initializeMigration({ ...f.input, resumeFromFailed: true });
+		const ledger = JSON.parse(readFileSync(f.file, "utf8"));
+		expect(ledger.cursor).toMatchObject({
+			path: join(f.state, "inbound-cursor.json"),
+			status: "preexisting",
+			sha256: null,
+		});
+		expect(f.commands).toContain(
+			`bash ${join(f.root, "bin/flywheel-lead.sh")} verify --stage live ${join(f.root, "manifests/raya-raya.json")}`,
+		);
+		expect(
+			f.runCalls.find(
+				(call) => call.file === "bash" && call.args.includes("verify"),
+			)?.timeoutMs,
+		).toBe(LEAD_LIVE_VERIFY_TIMEOUT_MS);
+	});
+	it("rebuilds from a missing owner and a loaded but not running owner", async () => {
+		const f = fixture();
+		await initializeMigration(f.input);
+		const missing = Object.assign(new Error("launchctl failed"), {
+			stderr: "Could not find service com.xrli.raya.brain",
+		});
+		f.setLegacyLaunchctl("brain", missing);
+		f.setLegacyLaunchctl("voice", "state = not running\n");
+		f.put(join(f.state, "inbound-cursor.json"), {
+			[channel]: "623456789012345678",
+		});
+
+		await initializeMigration({ ...f.input, resumeFromFailed: true });
+
+		const ledger = JSON.parse(readFileSync(f.file, "utf8"));
+		expect(ledger.cursor.status).toBe("preexisting");
+		expect(ledger.legacy_owner).toEqual([
+			expect.objectContaining({
+				label: "com.xrli.raya.brain",
+				loaded: false,
+				pid: null,
+				start: null,
+			}),
+			expect.objectContaining({
+				label: "com.xrli.raya.voice",
+				loaded: true,
+				pid: null,
+				start: null,
+			}),
+		]);
+	});
+	it("keeps a preexisting cursor exclusive to explicit failed-resume recovery", async () => {
+		const f = fixture();
+		f.put(join(f.state, "inbound-cursor.json"), {
+			[channel]: "623456789012345678",
+		});
+		await expect(initializeMigration(f.input)).rejects.toThrow(
+			"cursor-already-exists",
+		);
+		expect(existsSync(f.file)).toBe(false);
+	});
+	it("preserves the failed ledger when public live verification rejects cursor reuse", async () => {
+		const f = fixture();
+		await initializeMigration(f.input);
+		const before = readFileSync(f.file, "utf8");
+		f.put(join(f.state, "inbound-cursor.json"), {
+			[channel]: "623456789012345678",
+		});
+		f.failLiveVerify();
+		await expect(
+			initializeMigration({ ...f.input, resumeFromFailed: true }),
+		).rejects.toThrow();
+		expect(readFileSync(f.file, "utf8")).toBe(before);
+	});
+	it("does not swallow an ENOENT from public live verification", async () => {
+		const f = fixture();
+		await initializeMigration(f.input);
+		const before = readFileSync(f.file, "utf8");
+		f.put(join(f.state, "inbound-cursor.json"), {
+			[channel]: "623456789012345678",
+		});
+		const missingBash = Object.assign(new Error("spawn bash ENOENT"), {
+			code: "ENOENT",
+		});
+		f.failLiveVerifyWith(missingBash);
+		await expect(
+			initializeMigration({ ...f.input, resumeFromFailed: true }),
+		).rejects.toBe(missingBash);
 		expect(readFileSync(f.file, "utf8")).toBe(before);
 	});
 	it("accepts the uncreated standard Lead state directory without creating it before install", async () => {

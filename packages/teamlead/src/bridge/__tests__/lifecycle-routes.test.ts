@@ -25,12 +25,13 @@ async function request(
 	server: Server,
 	path: string,
 	body: unknown,
+	headers: Record<string, string> = {},
 ): Promise<{ status: number; body: Record<string, unknown> }> {
 	const addr = server.address();
 	if (!addr || typeof addr === "string") throw new Error("server not bound");
 	const res = await fetch(`http://127.0.0.1:${addr.port}${path}`, {
 		method: "POST",
-		headers: { "content-type": "application/json" },
+		headers: { "content-type": "application/json", ...headers },
 		body: JSON.stringify(body),
 	});
 	return {
@@ -336,21 +337,32 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 
 	it("land reclose: derives the actor from authenticated authority and validates the exact tuple", async () => {
 		const kick = vi.fn();
+		const operation = {
+			...store.ensureLandOperation({
+				issueId: UUID,
+				projectName: "proj",
+				prNumber: 2616,
+				approvedHead: "a".repeat(40),
+				now: "2026-09-16T03:34:00.000Z",
+			}),
+			state: "partial" as const,
+		};
 		const resume = vi.fn(async () => ({
 			ok: true as const,
-			operation: {
-				...store.ensureLandOperation({
-					issueId: UUID,
-					projectName: "proj",
-					prNumber: 2616,
-					approvedHead: "a".repeat(40),
-					now: "2026-09-16T03:34:00.000Z",
-				}),
-				state: "partial" as const,
-			},
+			operation,
 		}));
+		const assertCurrent = vi.fn();
 		serve(
 			makeDeps({
+				authorizeRecloseHttp: (header) => {
+					if (header !== "codex-carrier") throw new Error("unauthorized");
+					return {
+						actor: "authenticated-reclose-carrier:server-derived",
+						projectName: "proj",
+						leadId: "proj-lead",
+						assertCurrent,
+					};
+				},
 				land: {
 					enabled: () => true,
 					createIntent: vi.fn(),
@@ -359,33 +371,58 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 				},
 			}),
 		);
-		const path = "/api/lifecycle/land/land%3Aone/resume";
-		const invalid = await request(server, path, {
-			mode: "closeout_only",
-			reason: "retry closeout",
-		});
+		const path = `/api/lifecycle/land/${encodeURIComponent(operation.operation_id)}/resume`;
+		const invalid = await request(
+			server,
+			path,
+			{
+				mode: "closeout_only",
+				reason: "retry closeout",
+			},
+			{ "x-flywheel-lead-context": "codex-carrier" },
+		);
 		expect(invalid.status).toBe(400);
 		expect(resume).not.toHaveBeenCalled();
+		const bearerOnly = await request(server, path, {
+			mode: "closeout_only",
+			reason: "retry closeout",
+			expectedResumeGeneration: 3,
+			expectedApprovedHead: "a".repeat(40),
+			requestId: "11111111-1111-4111-8111-111111111111",
+		});
+		expect(bearerOnly).toEqual({
+			status: 403,
+			body: { error: "claude_reclose_peer_transport_required" },
+		});
 
-		const accepted = await request(server, path, {
-			mode: "closeout_only",
-			actor: "untrusted-body-actor",
-			reason: "retry closeout",
-			expectedResumeGeneration: 3,
-			expectedApprovedHead: "a".repeat(40),
-			requestId: "11111111-1111-4111-8111-111111111111",
-		});
+		const accepted = await request(
+			server,
+			path,
+			{
+				mode: "closeout_only",
+				actor: "untrusted-body-actor",
+				reason: "retry closeout",
+				expectedResumeGeneration: 3,
+				expectedApprovedHead: "a".repeat(40),
+				requestId: "11111111-1111-4111-8111-111111111111",
+			},
+			{ "x-flywheel-lead-context": "codex-carrier" },
+		);
 		expect(accepted.status).toBe(200);
-		expect(resume).toHaveBeenCalledWith({
-			operationId: "land:one",
-			actor: "authenticated-master",
-			reason: "retry closeout",
-			mode: "closeout_only",
-			expectedResumeGeneration: 3,
-			expectedApprovedHead: "a".repeat(40),
-			requestId: "11111111-1111-4111-8111-111111111111",
-		});
-		expect(kick).toHaveBeenCalledWith("land:one");
+		expect(resume).toHaveBeenCalledWith(
+			expect.objectContaining({
+				operationId: operation.operation_id,
+				actor: "authenticated-reclose-carrier:server-derived",
+				reason: "retry closeout",
+				mode: "closeout_only",
+				expectedResumeGeneration: 3,
+				expectedApprovedHead: "a".repeat(40),
+				requestId: "11111111-1111-4111-8111-111111111111",
+				authorityCheck: expect.any(Function),
+			}),
+		);
+		expect(assertCurrent).toHaveBeenCalledOnce();
+		expect(kick).toHaveBeenCalledWith(operation.operation_id);
 	});
 
 	it("park: delegates to the ATOMIC parkFn (mutex-held tombstone + closeout)", async () => {

@@ -1,0 +1,3 @@
+[2026-09-17 12:06:23] [flywheel-updater] updater cycle: wake=scheduled result=scheduled_deployed
+[flywheel-updater] raya: prestop-failed prestop-validation-failed
+[2026-09-17 12:06:23] [flywheel-updater] raya shuttle: prestop-failed prestop-validation-failed

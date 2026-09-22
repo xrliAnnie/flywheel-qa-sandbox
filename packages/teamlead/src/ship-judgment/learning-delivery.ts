@@ -204,7 +204,7 @@ export class LearningDelivery {
 				if (
 					purpose === "clarification" &&
 					action === "post" &&
-					this.mode() !== "dry_run"
+					!["dry_run", "auto"].includes(this.mode())
 				)
 					return { status: "inactive" } as const;
 				const posts = (JSON.parse(row.post_reserved_times) as number[]).filter(

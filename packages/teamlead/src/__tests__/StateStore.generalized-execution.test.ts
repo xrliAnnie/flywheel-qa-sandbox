@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
-import { canonicalSubmissionDigest } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	getModelConfigSnapshot,
+} from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 import {
@@ -1011,6 +1014,114 @@ describe("generalized execution admission and terminal contracts", () => {
 				env: enabled,
 			}),
 		).toEqual({ ok: false, reason: "same_vendor_review" });
+		store.close();
+	});
+
+	it("FLY-2763 R2: same-vendor review admission is sanctioned when the project flag is on AND the models differ", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = mkdtempSync(join(tmpdir(), "flywheel-same-family-"));
+		cleanups.push(root);
+		installSelfHostedWorkflowAgentProject(root);
+		installWorkflowDomainAgentFixture(root, "qa");
+		const seed = pinLegacyWorkflowSeedAgents(
+			structuredClone(
+				legacyWorkflowSeeds().find(
+					(candidate) => candidate.templateId === "tpl_product_v1",
+				)!,
+			),
+		);
+		seed.templateId = "tpl_product_same_family";
+		const produceNode = seed.manifest.nodes.find(
+			(node) => node.id === "produce",
+		)!;
+		const reviewNode = seed.manifest.nodes.find(
+			(node) => node.id === "review",
+		)!;
+		const snapshot = getModelConfigSnapshot();
+		const produceEntry = snapshot.getModelRegistryEntry(produceNode.model!)!;
+		const alternate = snapshot.registry.find(
+			(entry) =>
+				entry.runtimeVendor === produceEntry.runtimeVendor &&
+				entry.surfaces.includes("workflow") &&
+				entry.id !== produceEntry.id,
+		);
+		expect(alternate).toBeDefined();
+		reviewNode.vendor = produceEntry.runtimeVendor;
+		reviewNode.model = alternate!.id;
+		seed.contentHash = workflowSeedContentHash(seed);
+		store.importWorkflowTemplateSeed(seed, enabled);
+		const flagged = store.applyScopedFlagValueChange({
+			name: "review_same_family_allowed",
+			scope: "flywheel",
+			op: "set",
+			rawTo: "1",
+			expectedChangeSeq: store.getFlagValueChangeSeq(
+				"review_same_family_allowed",
+				"flywheel",
+			),
+			actor: "test",
+			reason: "FLY-2763 R2 admission test",
+		});
+		expect(flagged.ok).toBe(true);
+		store.materializeWorkflowRun({
+			runId: "same-family-run",
+			issueId: "FLY-Y",
+			projectName: "flywheel",
+			taskCategory: "product",
+			templateId: seed.templateId,
+			claimsReadEnrolled: false,
+			actor: "lead",
+			canonicalRoot: root,
+			env: enabled,
+			startReservation: {
+				idempotencyKey: "same-family-start",
+				selectionDigest: "selection",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "research",
+				createdAt: "2026-07-15T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "same-family-run",
+			nodeId: "research",
+			attempt: 1,
+			state: "running",
+			executionId: "research",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "same-family-run",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "research",
+				outcome: "node_done",
+				successorExecutionId: "produce",
+			}).ok,
+		).toBe(true);
+		expect(
+			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "same-family-run",
+				nodeId: "produce",
+				attempt: 1,
+				executionId: "produce",
+				outcome: "node_done",
+				successorExecutionId: "review",
+			}).ok,
+		).toBe(true);
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "same-family-run",
+			nodeId: "review",
+			executionId: "review",
+			attempt: 1,
+			now: "2026-07-15T00:04:00.000Z",
+			expiresAt: "2026-07-15T01:10:00.000Z",
+			absoluteDeadlineAt: "2026-07-16T00:10:00.000Z",
+			env: enabled,
+		});
+		expect(admitted.ok).toBe(true);
 		store.close();
 	});
 

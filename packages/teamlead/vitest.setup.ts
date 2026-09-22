@@ -7,11 +7,10 @@
  * session-completion / pre-register paths leak rows into the live comm.db —
  * leaked gate questions then time out and spam the Lead.
  *
- * `FLYWHEEL_COMM_DIR` (honored by `commDbRootDir()`) is the narrow override that
- * redirects ONLY the comm.db root (not HOME / templates / static assets). A
- * FRESH temp dir PER TEST keeps each test's comm.db clean — no cross-test
- * contamination and no writes to the live Bridge comm.db. Prod (real run, not
- * vitest) is byte-compatible (env unset → default path).
+ * `FLYWHEEL_COMM_DIR` redirects comm.db, while `FLYWHEEL_STATE_DIR` redirects
+ * stateful Bridge helpers such as voice health. A FRESH temp dir PER TEST keeps
+ * both stores clean — no cross-test contamination and no writes to live Bridge
+ * state. Prod (real run, not vitest) is byte-compatible (env unset → defaults).
  *
  * Tests that need a specific comm.db path must compute it via
  * `commDbPathForProject(project)` (the shared helper), NOT a hardcoded
@@ -30,6 +29,7 @@ import { beforeEach } from "vitest";
 beforeEach(() => {
 	const isolatedRoot = mkdtempSync(join(tmpdir(), "flywheel-tl-test-comm-"));
 	process.env.FLYWHEEL_COMM_DIR = isolatedRoot;
+	process.env.FLYWHEEL_STATE_DIR = join(isolatedRoot, "state");
 	process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR = join(
 		isolatedRoot,
 		"loop-diagnostics",

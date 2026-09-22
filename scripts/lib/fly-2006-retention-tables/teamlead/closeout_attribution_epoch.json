@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "closeout_attribution_epoch",
+	"classification": "protectedCurrentOrReference"
+}

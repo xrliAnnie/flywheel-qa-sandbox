@@ -122,6 +122,22 @@ INJ
   tail -n +2 "$REPO/scripts/statusline-command.sh"; } > "$INJECT"
 chmod 0755 "$INJECT"
 
+# A renderer that preserves every current content anchor but deliberately restores
+# the FLY-2745 bug: it ignores the session and displays global effortLevel. The
+# installer must reject it even though it renders two otherwise healthy lines.
+GLOBAL_LIAR="$WORK/global-effort-liar.sh"
+awk '
+  /^# --- Effort level from this session/ {
+    print "# --- FLY-2745 mutant: effort from global settings ---"
+    print "effort=$(jq -r '\'' .effortLevel // empty '\'' \"$HOME/.claude/settings.json\" 2>/dev/null)"
+    skipping=1
+    next
+  }
+  skipping && /^# === LINE 1:/ { skipping=0 }
+  !skipping { print }
+' "$REPO/scripts/statusline-command.sh" > "$GLOBAL_LIAR"
+chmod 0755 "$GLOBAL_LIAR"
+
 
 # ---------------------------------------------------------------------------
 echo "[1] refuses to install global config from an untrusted checkout"
@@ -253,6 +269,17 @@ check "$(cmp -s "$PRIOR_FILE" "$H/.claude/statusline-command.sh" && echo 0 || ec
 check "$([ "$(cksum < "$H/.claude/statusline-command.sh.bak")" = "$BAK_BEFORE" ] && echo 0 || echo 1)" \
   "8: backup not advanced — a runtime-bad source never reaches the commit phase"
 
+echo "  8b: a healthy-looking renderer that reads global effort is caught"
+CO_LIAR=$(make_checkout co-global-liar "$GLOBAL_LIAR")
+H=$(make_home home-global-liar)
+CLAUDE_EFFORT=xhigh run_install "$CO_LIAR" "$H"
+check "$([ "$RC" -ne 0 ] && echo 0 || echo 1)" \
+  "8b: global-effort liar is refused" "rc=$RC log=$(cat "$OUT")"
+check "$(grep -q "session effort" "$OUT" && echo 0 || echo 1)" \
+  "8b: diagnostic names the missing session effort" "log: $(cat "$OUT")"
+check "$([ ! -e "$H/.claude/statusline-command.sh" ] && echo 0 || echo 1)" \
+  "8b: lying renderer is never installed"
+
 # ---------------------------------------------------------------------------
 echo
 echo "[9] REAL post-rename failure -> automatic, verified rollback"
@@ -278,6 +305,17 @@ check "$(cmp -s "$PRIOR_FILE" "$H/.claude/statusline-command.sh" && echo 0 || ec
 check "$(cmp -s "$PRIOR_FILE" "$H/.claude/statusline-command.sh.bak" && echo 0 || echo 1)" \
   "9a: the rollback point itself still holds the pre-install version"
 check "$(no_residue "$H/.claude" && echo 0 || echo 1)" "9a: no staged/restore temp residue"
+
+echo "  9d: a frozen pre-FLY-1678 statusline remains a valid rollback target"
+H=$(make_home home-inject-legacy)
+LEGACY_PRIOR="$HERE/fixtures/fly1678/baseline-statusline-command.sh"
+cp "$LEGACY_PRIOR" "$H/.claude/statusline-command.sh"; chmod 0755 "$H/.claude/statusline-command.sh"
+run_install "$CO_INJ" "$H"
+check "$([ "$RC" -ne 0 ] && echo 0 || echo 1)" "9d: install attempt exits non-zero" "rc=$RC"
+check "$(grep -q "Rolled back" "$OUT" && echo 0 || echo 1)" \
+  "9d: legacy prior is accepted by compatibility smoke" "log: $(cat "$OUT")"
+check "$(cmp -s "$LEGACY_PRIOR" "$H/.claude/statusline-command.sh" && echo 0 || echo 1)" \
+  "9d: exact legacy bytes are live again"
 
 echo "  9b: clean install (nothing to roll back to)"
 H=$(make_home home-inject-clean)

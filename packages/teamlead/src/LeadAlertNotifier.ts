@@ -231,6 +231,12 @@ export const ALERT_EVENT_TYPES = [
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"deploy_failed",
 	"deploy_degraded",
+	// FLY-2669: per-unit shuttle failures are plain engineering notices. The
+	// durable observation ledger owns incidents; this kind opens no ticket/ARC.
+	"shuttle_unit_unhealthy",
+	// FLY-2693: source-owned voice health episodes use the same engineering
+	// channel, but their own helper ledger owns claims, retry, and recovery.
+	"voice_daemon_unhealthy",
 	// FLY-1256/FLY-1182: emitted by the external quota monitor. Successful,
 	// transient-unknown, and confirmation notices are root-only informational;
 	// conflict/persistent-unknown/malformed/choice and legacy failures ticket.
@@ -248,6 +254,7 @@ export const ALERT_EVENT_TYPES = [
 	"model_bench_malformed",
 	"quota_choice",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"quota_no_target",
 	"quota_blocked_recovered",
 	"quota_read_blind",
@@ -364,6 +371,9 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-2033: fail-loud meeting issue/notes/card reconciliation.
 	"meeting_notes_failed",
 	"host_voucher_incident",
+	// FLY-2523: an approved Codex credential home remains unsatisfied past its
+	// durable enrollment deadline. Shell-emitted to the fixed engineering route.
+	"codex_home_migration_overdue",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
 	 * skipped it. A REAL notification is being held back, so someone has to be
@@ -383,11 +393,14 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"model_cap_switched",
 	"model_cap_unknown",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
 	"flag_scan_no_clock",
 	"flag_scan_handoff",
+	"shuttle_unit_unhealthy",
+	"voice_daemon_unhealthy",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {
@@ -399,6 +412,7 @@ const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switched",
 	"account_switch_degraded",
 	"quota_switch_confirmation",
+	"codex_quota_automation_disabled",
 ]);
 
 function hasValidDeliveryStyle(
@@ -616,6 +630,10 @@ export interface AlertPayload {
 	 */
 	episodeId?: string;
 	sourceFingerprint?: string;
+	/** FLY-2669 durable shuttle dispatch identity carried through retry queue. */
+	shuttleBatchId?: string;
+	shuttleRouteKey?: "primary" | "project_copy";
+	shuttleBindingDigest?: string;
 }
 
 export interface AlertAttemptOptions {
@@ -744,6 +762,14 @@ export interface LeadAlertNotifierConfig {
 	 * over; false = proven live; null = unknown, so delivery must fail open.
 	 */
 	replayFreshnessProbe?: (input: ReplayFreshnessInput) => boolean | null;
+	/** Records the terminal outcome of a queued shuttle alert in its source ledger. */
+	shuttleDeliveryRecorder?: (input: {
+		batchId: string;
+		state: "sent" | "dead_lettered" | "delivery_unknown";
+		channelId?: string;
+		messageId?: string;
+		bindingDigest?: string;
+	}) => void;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -808,6 +834,7 @@ export class LeadAlertNotifier {
 		input: ReplayFreshnessInput,
 	) => boolean | null;
 	private deliveryEnabled: () => boolean;
+	private shuttleDeliveryRecorder?: LeadAlertNotifierConfig["shuttleDeliveryRecorder"];
 
 	private withDeliveryReceipt(
 		payload: AlertPayload,
@@ -831,11 +858,34 @@ export class LeadAlertNotifier {
 		return result;
 	}
 
+	private recordShuttleQueueDelivery(
+		payload: AlertPayload,
+		state: "sent" | "dead_lettered" | "delivery_unknown",
+		channelId?: string,
+		messageId?: string,
+	): void {
+		if (!payload.shuttleBatchId || !this.shuttleDeliveryRecorder) return;
+		try {
+			this.shuttleDeliveryRecorder({
+				batchId: payload.shuttleBatchId,
+				state,
+				channelId,
+				messageId,
+				bindingDigest: payload.shuttleBindingDigest,
+			});
+		} catch (error) {
+			this.logger(
+				`shuttle delivery receipt write failed batch=${payload.shuttleBatchId}: ${(error as Error).message}`,
+			);
+		}
+	}
+
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
 		this.readinessSubject = config.readinessSubject ?? null;
 		this.projects = config.projects;
 		this.deliveryEnabled = config.deliveryEnabled ?? (() => true);
+		this.shuttleDeliveryRecorder = config.shuttleDeliveryRecorder;
 		this.fetchFn = config.fetchFn ?? (globalThis.fetch as FetchLike);
 		this.queueDir =
 			config.queueDir ?? join(homedir(), ".flywheel", "alert-queue");
@@ -1446,6 +1496,12 @@ export class LeadAlertNotifier {
 				}
 				const sentResult = await this.postAlertWithSendChain(parsed, channel);
 				if (sentResult.ok) {
+					this.recordShuttleQueueDelivery(
+						parsed,
+						sentResult.messageId ? "sent" : "delivery_unknown",
+						channel,
+						sentResult.messageId,
+					);
 					this.markEpisodeTerminal(parsed, "delivered");
 					unlinkSync(path);
 					sent++;
@@ -1483,7 +1539,12 @@ export class LeadAlertNotifier {
 				continue;
 			}
 			const { lead, project } = resolved;
-			const channel = this.resolveChannel(lead, project);
+			const channel =
+				parsed.eventType === "shuttle_unit_unhealthy" &&
+				typeof parsed.deliveryChannelId === "string" &&
+				/^\d{17,20}$/.test(parsed.deliveryChannelId)
+					? parsed.deliveryChannelId
+					: this.resolveChannel(lead, project);
 			if (!channel) {
 				// Config problem — permanent. Dead-letter, don't spin.
 				this.moveQueueFileToDeadLetter(file, "no-channel");
@@ -1499,6 +1560,12 @@ export class LeadAlertNotifier {
 			}
 			const outcome = await this.postMessage(channel, token, parsed);
 			if (outcome.ok) {
+				this.recordShuttleQueueDelivery(
+					parsed,
+					outcome.messageId ? "sent" : "delivery_unknown",
+					channel,
+					outcome.messageId,
+				);
 				this.markEpisodeTerminal(parsed, "delivered");
 				unlinkSync(path);
 				sent++;
@@ -1570,7 +1637,16 @@ export class LeadAlertNotifier {
 		try {
 			const parsed = JSON.parse(readFileSync(src, "utf8")) as AlertPayload & {
 				queuedAt?: string;
+				deliveryChannelId?: unknown;
 			};
+			this.recordShuttleQueueDelivery(
+				parsed,
+				"dead_lettered",
+				typeof parsed.deliveryChannelId === "string" &&
+					/^\d{17,20}$/.test(parsed.deliveryChannelId)
+					? parsed.deliveryChannelId
+					: undefined,
+			);
 			this.markEpisodeTerminal(parsed, "dead_lettered", reason);
 		} catch {
 			// Malformed queue entries have no trustworthy episode identity.
@@ -1779,9 +1855,10 @@ export class LeadAlertNotifier {
 					transient: isTransientStatus(res.status),
 				};
 			}
-			// FLY-368: parse the posted message id ONLY in unified mode (so the
-			// legacy path is byte-identical and never depends on response parsing).
-			if (this.unifiedAlert) {
+			// FLY-368: legacy alerts stay byte-identical. The FLY-2669 shuttle kind
+			// is the sole exception because its source ledger requires the concrete
+			// Discord receipt after an eventual queue drain.
+			if (this.unifiedAlert || payload.eventType === "shuttle_unit_unhealthy") {
 				try {
 					const body =
 						(await (

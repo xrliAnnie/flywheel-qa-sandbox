@@ -99,6 +99,18 @@ fi
 # shellcheck source=lib/legacy-swap-broadcast-retirement.sh
 source "${FLYWHEEL_DIR}/scripts/lib/legacy-swap-broadcast-retirement.sh"
 
+# FLY-2669: only updater-owned cycles carry this identity. Source the immutable
+# observer bundle chosen before the ff-merge, never a second scheduler or writer.
+SHUTTLE_OBSERVATION_LIB_READY=0
+if [[ -n "${SHUTTLE_OBSERVATION_CYCLE_ID:-}" \
+  && -n "${SHUTTLE_OBSERVER_BUNDLE_DIR:-}" \
+  && -f "${SHUTTLE_OBSERVER_BUNDLE_DIR}/shuttle-observation.sh" \
+  && ! -L "${SHUTTLE_OBSERVER_BUNDLE_DIR}/shuttle-observation.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${SHUTTLE_OBSERVER_BUNDLE_DIR}/shuttle-observation.sh"
+    SHUTTLE_OBSERVATION_LIB_READY=1
+fi
+
 # FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
 # Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
 # commit in the range as source=fallback-git-log (inferred). merge_sha = the
@@ -193,6 +205,30 @@ fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
+}
+
+restart_shuttle_record() { # project kind owner display outcome reason evidence [deployed target behind drift]
+    [[ "$SHUTTLE_OBSERVATION_LIB_READY" == 1 \
+      && -n "${SHUTTLE_OBSERVATION_CYCLE_ID:-}" \
+      && "${SHUTTLE_OBSERVATION_RECORDING:-forward}" != rollback ]] || return 0
+    local project="$1" kind="$2" owner="$3" display="$4" outcome="$5" reason="$6" evidence="$7"
+    local deployed="${8:-}" target="${9:-}" behind="${10:-}" drift="${11:-unknown}"
+    local receipt="" rc=0
+    receipt="$(mktemp "$(shuttle_observation_state_root)/runtime/restart-record.XXXXXX")" || rc=$?
+    if (( rc == 0 )); then
+        shuttle_observation_record_values "$SHUTTLE_OBSERVATION_CYCLE_ID" \
+          "$project" "$kind" "$owner" "$display" "$outcome" "$reason" \
+          "$evidence" flywheel-updater.log#restart "$deployed" "$target" "$behind" "$drift" \
+          "$receipt" >/dev/null 2>&1 || rc=$?
+    fi
+    [[ -z "$receipt" ]] || rm -f -- "$receipt" 2>/dev/null || true
+    if (( rc != 0 )); then
+        log "ERROR: shuttle observation write failed project=$project kind=$kind owner=$owner rc=$rc" >&2
+        if [[ -n "${SHUTTLE_OBSERVATION_ERROR_FILE:-}" ]]; then
+            printf 'record_failed\n' >>"$SHUTTLE_OBSERVATION_ERROR_FILE" 2>/dev/null || true
+        fi
+    fi
+    return 0
 }
 
 # FLY-2030: the new required summary assignment schema/rule bundle may activate
@@ -1356,8 +1392,11 @@ resolve_main_repo() {
 
 # Check all project repos from manifests for .lead/ changes.
 # Sets global: project_lead_changed=true/false
-# Writes to: PROJECT_SHA_UPDATES_FILE (one "projectName=sha" per line)
+# Writes to: PROJECT_SHA_UPDATES_FILE (project name, baseline SHA, target SHA TSV)
 check_project_lead_changes() {
+    if ! declare -F restart_shuttle_record >/dev/null 2>&1; then
+        restart_shuttle_record() { :; }
+    fi
     project_lead_changed=false
     : > "$PROJECT_SHA_UPDATES_FILE"  # truncate
 
@@ -1367,11 +1406,18 @@ check_project_lead_changes() {
 
     if (( ${#manifests[@]} == 0 )); then
         log "No manifests found, skipping project repo check"
+        if [[ -f "${HOME}/.flywheel/projects.json" ]]; then
+            while IFS= read -r pname; do
+                [[ -n "$pname" ]] || continue
+                restart_shuttle_record "$pname" project_repo "$pname" \
+                  "$pname Lead config" failed ref-unresolved project-manifest-missing
+            done < <(jq -r '.[].projectName // empty' "${HOME}/.flywheel/projects.json" 2>/dev/null || true)
+        fi
         return
     fi
 
     # Collect unique project repos (try each manifest's projectDir until one works)
-    local seen_names=""
+    local seen_names="" all_names=""
     local project_names=()
     local project_dirs=()
 
@@ -1379,6 +1425,10 @@ check_project_lead_changes() {
         local pname pdir
         pname=$(jq -r '.projectName' "$mf")
         pdir=$(jq -r '.projectDir' "$mf")
+        # Raya's manifest projectDir is its Lead workspace, not the separately
+        # observed deployable checkout. It has no project_repo check duty.
+        [[ "$pname" == "raya" ]] && continue
+        case " $all_names " in *" $pname "*) ;; *) all_names="$all_names $pname" ;; esac
 
         # Skip if already seen this project
         case " $seen_names " in
@@ -1391,6 +1441,17 @@ check_project_lead_changes() {
             project_dirs+=("$main_repo")
             seen_names="$seen_names $pname"
         fi
+    done
+
+    local unresolved_name
+    for unresolved_name in $all_names; do
+        case " $seen_names " in
+            *" $unresolved_name "*) ;;
+            *)
+                restart_shuttle_record "$unresolved_name" project_repo "$unresolved_name" \
+                  "$unresolved_name Lead config" failed ref-unresolved project-repo-unresolved
+                ;;
+        esac
     done
 
     # Check each unique project
@@ -1406,6 +1467,8 @@ check_project_lead_changes() {
         if [[ "$DRY_RUN" != "true" ]]; then
             git -C "$repo" fetch origin main --quiet 2>/dev/null || {
                 log "WARNING: Failed to fetch project $pname (${repo}), skipping"
+                restart_shuttle_record "$pname" project_repo "$pname" \
+                  "$pname Lead config" failed fetch-failed project-fetch
                 continue
             }
         fi
@@ -1413,13 +1476,15 @@ check_project_lead_changes() {
         local current_sha
         current_sha=$(git -C "$repo" rev-parse origin/main 2>/dev/null) || {
             log "WARNING: Cannot resolve origin/main for project $pname, skipping"
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" failed ref-unresolved project-origin-main
             continue
         }
 
-        # Store for later SHA update (tab-separated, one per line)
-        printf '%s\t%s\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
-
         if [[ "$stored_sha" == "$current_sha" ]]; then
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" up_to_date up-to-date project-sha \
+              "$current_sha" "$current_sha" 0 unknown
             continue
         fi
 
@@ -1428,6 +1493,9 @@ check_project_lead_changes() {
             log "Project $pname: first run, recording SHA ${current_sha:0:7} (no restart forced)"
             mkdir -p "$PROJECT_SHA_DIR"
             echo "$current_sha" > "$sha_file"
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" skipped baseline-initialized project-sha \
+              "" "$current_sha" "" unknown
             continue
         fi
 
@@ -1440,6 +1508,7 @@ check_project_lead_changes() {
         if [[ "$diff_ok" == "false" ]]; then
             log "WARNING: git diff failed for project $pname (${stored_sha:0:7}→${current_sha:0:7}), treating as changed (fail-safe)"
             project_lead_changed=true
+            printf '%s\t%s\tdeployed\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
         elif [[ -n "$lead_changes" ]]; then
             local change_count
             change_count=$(echo "$lead_changes" | wc -l | tr -d ' ')
@@ -1449,18 +1518,33 @@ check_project_lead_changes() {
                 echo "$lead_changes" | head -10
             fi
             project_lead_changed=true
+            printf '%s\t%s\tdeployed\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
+        else
+            printf '%s\t%s\tup_to_date\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
         fi
     done
 }
 
 # Update project deployed SHAs after successful restart.
 update_project_shas() {
+    if ! declare -F restart_shuttle_record >/dev/null 2>&1; then
+        restart_shuttle_record() { :; }
+    fi
     [[ ! -s "$PROJECT_SHA_UPDATES_FILE" ]] && return
     mkdir -p "$PROJECT_SHA_DIR"
-    while IFS=$'\t' read -r pname sha; do
+    while IFS=$'\t' read -r pname sha disposition; do
         [[ -z "$pname" || -z "$sha" ]] && continue
         echo "$sha" > "${PROJECT_SHA_DIR}/${pname}"
         log "Project $pname: deployed-sha updated to ${sha:0:7}"
+        if [[ "$disposition" == deployed ]]; then
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" deployed deployed project-lead-change \
+              "$sha" "$sha" 0 unknown
+        else
+            restart_shuttle_record "$pname" project_repo "$pname" \
+              "$pname Lead config" up_to_date up-to-date project-lead-check \
+              "$sha" "$sha" 0 unknown
+        fi
     done < "$PROJECT_SHA_UPDATES_FILE"
 }
 
@@ -1470,6 +1554,7 @@ PROJECT_SHA_UPDATES_FILE=""
 LEAD_RESTART_NAMES_FILE=""
 LEAD_BODY_OBSERVATIONS_FILE=""
 LEAD_VERIFY_TIMINGS_FILE=""
+LEAD_RESTART_VISIBILITY_CANDIDATES_FILE=""
 RESTART_TRANSIENT_FILES=""
 
 register_restart_transient_file() {
@@ -1853,6 +1938,12 @@ if LEAD_VERIFY_TIMINGS_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-verify-timin
 else
     log "ERROR: cannot allocate Lead verification timing sidecar; timing evidence will be unknown"
     LEAD_VERIFY_TIMINGS_FILE=""
+fi
+if LEAD_RESTART_VISIBILITY_CANDIDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-visibility-candidates-XXXXXX"); then
+    register_restart_transient_file "$LEAD_RESTART_VISIBILITY_CANDIDATES_FILE"
+else
+    log "ERROR: cannot allocate Lead visibility candidate sidecar; final visibility will be unproven"
+    LEAD_RESTART_VISIBILITY_CANDIDATES_FILE=""
 fi
 
 preflight_pull_latest_main || exit 1
@@ -2283,6 +2374,27 @@ restart_lead_recover_job_after_failure() {
     return 1
 }
 
+codex_home_reconcile_restart_window() {
+    local home_id="${1:-}"
+    local cycle="${FLYWHEEL_CODEX_RECONCILE_CYCLE_BIN:-${FLYWHEEL_DIR}/scripts/codex-home-reconcile-cycle.mjs}"
+    local args=(--source restart-window)
+    [[ -z "$home_id" ]] || args+=(--home-id "$home_id")
+    if [[ ! -f "$cycle" || -L "$cycle" ]]; then
+        log "WARNING: Codex home reconcile cycle is missing or unsafe: $cycle"
+        return 0
+    fi
+    local rc=0
+    node "$cycle" "${args[@]}" || rc=$?
+    if (( rc != 0 )); then
+        log "WARNING: Codex home reconciliation was unavailable in the restart window${home_id:+ for $home_id}; receipts/alerts retain the obligation"
+        if (( rc == 75 )); then
+            log "ERROR: Codex home reconcile child exit is unproven; refusing to reopen this restart window"
+            return 75
+        fi
+    fi
+    return 0
+}
+
 # Returns: 0=success, 1=error
 # Args: <manifest_path>  (caller passes the manifest directly, no re-globbing)
 restart_lead() {
@@ -2506,6 +2618,16 @@ restart_lead() {
         fi
         rm -f "$pid_file"
 
+        if [[ "$canonical_backend" == "codex-app-server" ]]; then
+            if ! codex_home_reconcile_restart_window "${project_name}/${lead_id}"; then
+                log "ERROR: Lead $lead_id remains offline because Codex home reconciliation exit is unproven"
+                restart_lead_recover_job_after_failure \
+                    "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" \
+                    "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root" || true
+                return 1
+            fi
+        fi
+
         if ! lead_restart_arm_controlled_wave \
           "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root"; then
             log "ERROR: Lead $lead_id controlled restart gate arm failed (${LEAD_RESTART_GATE_FAILURE_REASON})"
@@ -2612,10 +2734,363 @@ _dral_sleep() {
     sleep "$1"
 }
 
+LEAD_VISIBILITY_CONFIRMED_COUNT=0
+LEAD_VISIBILITY_UNPROVEN_COUNT=0
+LEAD_VISIBILITY_CONFIRMED_NAMES=""
+LEAD_VISIBILITY_UNPROVEN_NAMES=""
+LEAD_VISIBILITY_CMUX_UNAVAILABLE=0
+
+restart_lead_visibility_detail_identity() {
+    local detail="$1" identity=""
+    case "$detail" in
+        *';identity='*) identity="${detail##*;identity=}" ;;
+        *) return 1 ;;
+    esac
+    [[ -n "$identity" && "$identity" != none ]] || return 1
+    printf '%s\n' "$identity"
+}
+
+# Collapse a host-wide cmux absence before spawning one expensive visible
+# probe per Lead. A missing socket is determinate absence and returns
+# immediately; a present socket gets one bounded ping. Unknown preflight
+# failures fall through to the per-subject verifier rather than manufacturing
+# a fleet-wide absence verdict. Custom verifier fixtures bypass the production
+# preflight unless they also provide the explicit preflight seam.
+restart_lead_cmux_preflight() {
+    local seam="${FLYWHEEL_RESTART_CMUX_PREFLIGHT:-}"
+    local socket="${CMUX_SOCKET_PATH:-/tmp/cmux.sock}"
+    local bounded cmux_cli output="" rc=0
+    if [[ -n "$seam" ]]; then
+        [[ -x "$seam" && ! -L "$seam" ]] || return 2
+        "$seam"
+        return $?
+    fi
+    [[ -z "${FLYWHEEL_RESTART_VISIBILITY_VERIFIER:-}" ]] || return 0
+    [[ -S "$socket" ]] || return 1
+    bounded="${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/lib/bounded-run.sh}"
+    if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-}" ]] \
+      && [[ ! -x "$bounded" || -L "$bounded" ]]; then
+        bounded="${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh"
+    fi
+    [[ -x "$bounded" && ! -L "$bounded" ]] || return 2
+    cmux_cli="${FLYWHEEL_RESTART_CMUX_BIN:-$(command -v cmux 2>/dev/null || true)}"
+    [[ -n "$cmux_cli" && -x "$cmux_cli" ]] || return 2
+    output="$("$bounded" 5 "$cmux_cli" --socket "$socket" ping 2>/dev/null)" || rc=$?
+    [[ "$rc" -eq 0 && "$output" == *PONG* ]] && return 0
+    [[ -S "$socket" ]] || return 1
+    return 2
+}
+
+restart_lead_visibility_worker() {
+    local project="$1" lead="$2" key="$3" deadline="$4" results_file="$5" level="${6:-visible}"
+    local verifier bounded remaining output="" probe_rc=0
+    local status="" reasons="" identity="" verdict="visibility_unproven" detail="not_checked"
+    case "$level" in carrier|visible) ;; *)
+        printf 'visibility_unproven\t%s\tinvalid_probe_level\n' "$key" >> "$results_file"
+        return 0
+        ;;
+    esac
+    verifier="${FLYWHEEL_RESTART_VISIBILITY_VERIFIER:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/verify-agent-visibility.sh}"
+    if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_VERIFIER:-}" ]] \
+      && [[ ! -x "$verifier" || -L "$verifier" ]]; then
+        verifier="${FLYWHEEL_DIR}/scripts/verify-agent-visibility.sh"
+    fi
+    bounded="${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/lib/bounded-run.sh}"
+    if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-}" ]] \
+      && [[ ! -x "$bounded" || -L "$bounded" ]]; then
+        bounded="${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh"
+    fi
+    if [[ ! -x "$verifier" || -L "$verifier" ]]; then
+        printf 'visibility_unproven\t%s\tverifier_unavailable\n' "$key" >> "$results_file"
+        return 0
+    fi
+    if [[ ! -x "$bounded" || -L "$bounded" ]]; then
+        printf 'visibility_unproven\t%s\tbounded_runner_unavailable\n' "$key" >> "$results_file"
+        return 0
+    fi
+    remaining=$((deadline - SECONDS))
+    if (( remaining <= 1 )); then
+        printf 'visibility_unproven\t%s\tdeadline_exhausted\n' "$key" >> "$results_file"
+        return 0
+    fi
+    output="$("$bounded" "$((remaining - 1))" "$verifier" \
+      --project "$project" --lead "$lead" --level "$level" --json)" || probe_rc=$?
+    status="$(jq -er --arg project "$project" --arg lead "$lead" \
+      --arg level "$level" \
+      'select(.schemaVersion == 1 and .subject.kind == "lead" and .subject.project == $project and .subject.leadId == $lead and .level == $level) | .status' \
+      <<<"$output" 2>/dev/null || true)"
+    identity="$(jq -erS --arg project "$project" --arg lead "$lead" \
+      --arg level "$level" \
+      'select(.schemaVersion == 1 and .subject.kind == "lead" and .subject.project == $project and .subject.leadId == $lead and .level == $level) |
+       .identity | select(type == "object") | to_entries | sort_by(.key) | from_entries | tojson | @base64' \
+      <<<"$output" 2>/dev/null || true)"
+    reasons="$(jq -r '[.reasons[]? | select(type == "string")] | join(",")' \
+      <<<"$output" 2>/dev/null || true)"
+    detail="status=${status:-invalid};reasons=${reasons:-none};rc=${probe_rc};identity=${identity:-none}"
+    case "$probe_rc:$status" in
+        0:pass)
+            if [[ -n "$identity" ]]; then verdict=pass
+            else verdict=visibility_unproven; detail="invalid_identity;rc=${probe_rc};identity=none"
+            fi
+            ;;
+        1:fail) verdict=visibility_failed ;;
+        2:inconclusive|124:*) verdict=visibility_unproven ;;
+        *) verdict=visibility_unproven; detail="invalid_verifier_response;rc=${probe_rc}" ;;
+    esac
+    printf '%s\t%s\t%s\n' "$verdict" "$key" "$detail" >> "$results_file"
+    return 0
+}
+
+restart_lead_visibility_round() {
+    local candidates_file="$1" deadline="$2" results_file="$3" level="${4:-visible}" parallelism=4
+    local project lead key expected_identity extra pid
+    local -a pids=()
+    : > "$results_file"
+    while IFS=$'\t' read -r project lead key expected_identity extra; do
+        [[ -n "$project" && -n "$lead" && -n "$key" && -z "$extra" ]] || continue
+        restart_lead_visibility_worker "$project" "$lead" "$key" "$deadline" "$results_file" "$level" &
+        pids+=("$!")
+        if (( ${#pids[@]} == parallelism )); then
+            for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid" || true; done
+            pids=()
+        fi
+    done < "$candidates_file"
+    for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid" || true; done
+}
+
+restart_lead_visibility_barrier() {
+    local candidates_file="$1" pending_file="" round_file="" latest_file="" success_file="" next_file=""
+    local deadline candidate_count=0 rounds=0 max_rounds=0 remaining revalidation_reserve=0 cmux_preflight_rc=0
+    local project lead key expected_identity actual_identity extra kind detail result_line
+    LEAD_VISIBILITY_CONFIRMED_COUNT=0
+    LEAD_VISIBILITY_UNPROVEN_COUNT=0
+    LEAD_VISIBILITY_CONFIRMED_NAMES=""
+    LEAD_VISIBILITY_UNPROVEN_NAMES=""
+    LEAD_VISIBILITY_CMUX_UNAVAILABLE=0
+    [[ -f "$candidates_file" && ! -L "$candidates_file" ]] || {
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="candidate_inventory_unavailable"
+        record_lead_restart_detail visibility_unproven candidate_inventory_unavailable
+        return 0
+    }
+    [[ -s "$candidates_file" ]] || return 0
+    pending_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-visibility-pending-XXXXXX")" || {
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="result_allocation_failed"
+        record_lead_restart_detail visibility_unproven result_allocation_failed
+        return 0
+    }
+    round_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-visibility-round-XXXXXX")" || {
+        rm -f "$pending_file"
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="result_allocation_failed"
+        record_lead_restart_detail visibility_unproven result_allocation_failed
+        return 0
+    }
+    latest_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-visibility-latest-XXXXXX")" || {
+        rm -f "$pending_file" "$round_file"
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="result_allocation_failed"
+        record_lead_restart_detail visibility_unproven result_allocation_failed
+        return 0
+    }
+    success_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-visibility-success-XXXXXX")" || {
+        rm -f "$pending_file" "$round_file" "$latest_file"
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="result_allocation_failed"
+        record_lead_restart_detail visibility_unproven result_allocation_failed
+        return 0
+    }
+    next_file="${pending_file}.next"
+    register_restart_transient_file "$pending_file" || true
+    register_restart_transient_file "$round_file" || true
+    register_restart_transient_file "$latest_file" || true
+    register_restart_transient_file "$success_file" || true
+    register_restart_transient_file "$next_file" || true
+    awk -F '\t' 'NF == 3 && $1 != "" && $2 != "" && $3 != "" && !seen[$3]++ { print }' \
+      "$candidates_file" > "$pending_file"
+    candidate_count=$(wc -l < "$pending_file" | tr -d ' ')
+    if (( candidate_count == 0 )); then
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="candidate_inventory_invalid"
+        record_lead_restart_detail visibility_unproven candidate_inventory_invalid
+        return 0
+    fi
+    restart_lead_cmux_preflight || cmux_preflight_rc=$?
+    if [[ "$cmux_preflight_rc" -eq 1 ]]; then
+        LEAD_VISIBILITY_CMUX_UNAVAILABLE=1
+        LEAD_VISIBILITY_UNPROVEN_COUNT=1
+        LEAD_VISIBILITY_UNPROVEN_NAMES="cmux_app_unavailable"
+        record_lead_restart_detail visibility_unproven cmux_app_unavailable
+        rm -f "$pending_file" "$round_file" "$latest_file" "$success_file" "$next_file"
+        log "Lead visibility barrier: candidates=${candidate_count} cmux=absent confirmed_missing=0 unproven=1" >&2
+        return 0
+    fi
+    if [[ "$cmux_preflight_rc" -ne 0 ]]; then
+        log "WARNING: cmux visibility preflight was inconclusive; continuing bounded per-Lead probes" >&2
+    fi
+    if [[ -n "${FLYWHEEL_RESTART_VISIBILITY_VERIFIER:-}" ]]; then
+        max_rounds="${FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS:-0}"
+        [[ "$max_rounds" =~ ^[0-9]+$ ]] || max_rounds=0
+    fi
+    # A carrier revalidation takes about 6s per batch of four on the measured
+    # host. Reserve 8s per batch plus cleanup headroom before considering any
+    # retry of an inconclusive full-visibility probe.
+    revalidation_reserve=$(( ((candidate_count + 3) / 4) * 8 + 5 ))
+    # Seventeen Leads run in five four-wide batches. The measured real-host
+    # visibility p95 is 158s and the child budget is 240s, so a 1320s fleet
+    # budget lets every batch finish
+    # once and still reserves the final cheap carrier revalidation.
+    deadline=$((SECONDS + 1320))
+    while [[ -s "$pending_file" ]]; do
+        rounds=$((rounds + 1))
+        restart_lead_visibility_round "$pending_file" "$deadline" "$round_file"
+        cat "$round_file" >> "$latest_file"
+        : > "$next_file"
+        while IFS=$'\t' read -r kind key detail extra; do
+            [[ -n "$kind" && -n "$key" && -z "$extra" ]] || continue
+            case "$kind" in
+                pass)
+                    actual_identity=$(restart_lead_visibility_detail_identity "$detail" || true)
+                    if [[ -n "$actual_identity" ]]; then
+                        awk -F '\t' -v key="$key" -v identity="$actual_identity" \
+                          '$3 == key { print $1 "\t" $2 "\t" $3 "\t" identity; exit }' \
+                          "$pending_file" >> "$success_file"
+                    else
+                        awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
+                    fi
+                    ;;
+                visibility_failed)
+                    # The verifier's two samples prove the current observation,
+                    # not that a freshly restarted Lead has finished booting.
+                    # Keep retrying within the fleet deadline; a final stable
+                    # failure remains a failure, while later convergence may
+                    # replace it with a pass and enter final revalidation.
+                    awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
+                    ;;
+                *)
+                    awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
+                    ;;
+            esac
+        done < "$round_file"
+        mv "$next_file" "$pending_file"
+        [[ -s "$pending_file" ]] || break
+        if (( max_rounds > 0 && rounds >= max_rounds )); then break; fi
+        remaining=$((deadline - SECONDS))
+        # A retry may consume the full 250s public-verifier bound. Start one
+        # only when it cannot steal the carrier revalidation reservation.
+        (( remaining > revalidation_reserve + 262 )) || break
+        sleep 2
+    done
+    # Revalidate every provisional success in one final fleet round. An early
+    # pass may not outlive later batches and therefore cannot be committed as
+    # the final online set without a current identity sample. The first round
+    # already proved cmux visibility; repeating that composite probe for all
+    # 17 Leads would needlessly consume the fleet budget. Carrier level retains the
+    # delayed identity/pane/body resample without repeating the cmux probe.
+    if [[ -s "$success_file" ]]; then
+        remaining=$((deadline - SECONDS))
+        if (( remaining > 1 )); then
+            restart_lead_visibility_round "$success_file" "$deadline" "$round_file" carrier
+            : > "$next_file"
+            while IFS=$'\t' read -r kind key detail extra; do
+                [[ -n "$kind" && -n "$key" && -z "$extra" ]] || continue
+                if [[ "$kind" == pass ]]; then
+                    expected_identity=$(awk -F '\t' -v key="$key" '$3 == key { print $4; exit }' "$success_file")
+                    actual_identity=$(restart_lead_visibility_detail_identity "$detail" || true)
+                    if [[ -n "$expected_identity" && "$actual_identity" == "$expected_identity" ]]; then
+                        printf '%s\t%s\t%s\n' "$kind" "$key" "$detail" >> "$next_file"
+                    else
+                        printf 'visibility_unproven\t%s\tidentity_drift\n' "$key" >> "$next_file"
+                    fi
+                else
+                    printf '%s\t%s\t%s\n' "$kind" "$key" "$detail" >> "$next_file"
+                fi
+            done < "$round_file"
+            cat "$next_file" >> "$latest_file"
+        else
+            while IFS=$'\t' read -r project lead key expected_identity extra; do
+                [[ -n "$key" ]] && printf 'visibility_unproven\t%s\tfinal_revalidation_deadline\n' "$key" >> "$latest_file"
+            done < "$success_file"
+        fi
+    fi
+    while IFS=$'\t' read -r project lead key extra; do
+        [[ -n "$key" ]] || continue
+        result_line=$(awk -F '\t' -v key="$key" '
+          $2 == key {
+            line=$0
+            if ($1 == "visibility_failed") confirmed=$0
+            else if ($1 == "pass") confirmed=""
+          }
+          END {
+            split(line, fields, "\t")
+            print (fields[1] == "visibility_unproven" && confirmed != "" ? confirmed : line)
+          }' "$latest_file")
+        if [[ -z "$result_line" ]]; then
+            kind=visibility_unproven
+            detail=worker_result_missing
+        else
+            IFS=$'\t' read -r kind _ detail extra <<< "$result_line"
+        fi
+        case "$kind" in
+            pass) ;;
+            visibility_failed)
+                LEAD_VISIBILITY_CONFIRMED_COUNT=$((LEAD_VISIBILITY_CONFIRMED_COUNT + 1))
+                LEAD_VISIBILITY_CONFIRMED_NAMES="${LEAD_VISIBILITY_CONFIRMED_NAMES}${LEAD_VISIBILITY_CONFIRMED_NAMES:+, }${key}"
+                record_lead_restart_detail visibility_failed "$key"
+                ;;
+            visibility_unproven)
+                LEAD_VISIBILITY_UNPROVEN_COUNT=$((LEAD_VISIBILITY_UNPROVEN_COUNT + 1))
+                LEAD_VISIBILITY_UNPROVEN_NAMES="${LEAD_VISIBILITY_UNPROVEN_NAMES}${LEAD_VISIBILITY_UNPROVEN_NAMES:+, }${key}"
+                record_lead_restart_detail visibility_unproven "$key"
+                ;;
+        esac
+    done < <(awk -F '\t' 'NF == 3 && !seen[$3]++ { print }' "$candidates_file")
+    rm -f "$pending_file" "$round_file" "$latest_file" "$success_file" "$next_file"
+    log "Lead visibility barrier: candidates=${candidate_count} confirmed_missing=${LEAD_VISIBILITY_CONFIRMED_COUNT} unproven=${LEAD_VISIBILITY_UNPROVEN_COUNT}" >&2
+    return 0
+}
+
+merge_lead_visibility_failures() {
+    local merged="${1:-0}" key
+    [[ "$merged" =~ ^[0-9]+$ ]] || merged=0
+    [[ -n "${LEAD_RESTART_NAMES_FILE:-}" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
+        printf '%s\n' "$((merged + LEAD_VISIBILITY_CONFIRMED_COUNT + LEAD_VISIBILITY_UNPROVEN_COUNT))"
+        return 0
+    }
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        if ! awk -F '\t' -v key="$key" '$1 == "failed" && $2 == key { found=1 } END { exit(found ? 0 : 1) }' \
+          "$LEAD_RESTART_NAMES_FILE"; then
+            record_lead_restart_detail failed "$key"
+            merged=$((merged + 1))
+        fi
+    done < <(awk -F '\t' '$1 == "visibility_failed" || $1 == "visibility_unproven" { if (!seen[$2]++) print $2 }' \
+      "$LEAD_RESTART_NAMES_FILE")
+    printf '%s\n' "$merged"
+}
+
+lead_restart_retry_marker_should_clear() {
+    local leads_failed="${1:-}" carrier_failed="${2:-}"
+    [[ "$leads_failed" =~ ^[0-9]+$ && "$carrier_failed" =~ ^[0-9]+$ ]] || return 1
+    (( leads_failed == 0 )) && return 0
+    (( LEAD_VISIBILITY_CMUX_UNAVAILABLE == 1 \
+      && leads_failed == 1 \
+      && carrier_failed == 0 \
+      && LEAD_VISIBILITY_CONFIRMED_COUNT == 0 \
+      && LEAD_VISIBILITY_UNPROVEN_COUNT == 1 ))
+}
+
 # Restart all Leads in explicit stagger|immediate mode.
 # Outputs "skipped:N failed:M total:K" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
 do_restart_all_leads() {
+    # Source-only unit harnesses extract this function without the updater
+    # observer. Preserve their original behavior while production uses the
+    # bundle-backed implementation defined above.
+    if ! declare -F restart_shuttle_record >/dev/null 2>&1; then
+        restart_shuttle_record() { :; }
+    fi
     local mode="${1:-}"
     local batch_size=4 pause_secs=60
     local skipped=0
@@ -2638,6 +3113,9 @@ do_restart_all_leads() {
     fi
     if [[ -n "${LEAD_VERIFY_TIMINGS_FILE:-}" ]]; then
         { : > "$LEAD_VERIFY_TIMINGS_FILE"; } 2>/dev/null || true
+    fi
+    if [[ -n "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}" ]]; then
+        { : > "$LEAD_RESTART_VISIBILITY_CANDIDATES_FILE"; } 2>/dev/null || true
     fi
 
     # FLY-954: converge <state>/bin BEFORE kickstarting any Lead — kickstarting
@@ -2759,16 +3237,26 @@ do_restart_all_leads() {
         case "$classification" in
             skip-test)
                 log "Skipping test-slot Lead candidate (lifecycle-owned, not deploy-blocking): key=$key sources=$sources" >&2
+                restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                  skipped test-slot lead-candidate
                 ;;
             restart)
+                if [[ -n "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}" ]]; then
+                    { printf '%s\t%s\t%s\n' "$pn" "$lid" "$key" \
+                        >> "$LEAD_RESTART_VISIBILITY_CANDIDATES_FILE"; } 2>/dev/null || true
+                fi
                 if [[ -n "$migration_activated_key" && "$key" == "$migration_activated_key" ]]; then
                     log "Migration activation already verified in this wave: $key" >&2
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      deployed deployed migration-verify
                     continue
                 fi
                 if [[ "$mf" == "-" || ! -f "$mf" ]]; then
                     log "ERROR: restart candidate $key has no readable manifest" >&2
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed config-drift manifest-missing
                     continue
                 fi
                 if [[ "$mode" == "stagger" && "$restart_attempts" -gt 0 ]] \
@@ -2781,11 +3269,15 @@ do_restart_all_leads() {
                 if (( rc != 0 )); then
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed lead-verify-failed lead-verify
                 else
                     record_successful_lead_verify_timing \
                       "$key" "$VERIFIED_LEAD_ELAPSED_SECONDS"
                     record_successful_lead_body_observation \
                       "$key" "$pn" "$lid" "$VERIFIED_LEAD_PID" "$VERIFIED_LEAD_START"
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      deployed deployed lead-verify
                 fi
                 ;;
             pending-install)
@@ -2794,6 +3286,8 @@ do_restart_all_leads() {
                     "Lead $key 已注册但尚未安装，本次跳过重启，等待所属安装流程。"
                 skipped=$((skipped + 1))
                 record_lead_restart_detail skipped "$key"
+                restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                  skipped pending-install lead-candidate
                 ;;
             manifestless)
                 log "WARNING: loaded/running Lead $key has no manifest — visible but not restarted (sources=$sources)" >&2
@@ -2801,6 +3295,8 @@ do_restart_all_leads() {
                     "Lead $key 已加载但没有 manifest，本次未重启；请补齐 carrier 配置后再收敛。"
                 skipped=$((skipped + 1))
                 record_lead_restart_detail skipped "$key"
+                restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                  skipped manifestless lead-candidate
                 ;;
             probe-error|config-drift|*)
                 log "ERROR: Lead candidate $key cannot be assigned safe restart authority (class=$classification project=$pn lead=$lid sources=$sources)" >&2
@@ -2808,6 +3304,13 @@ do_restart_all_leads() {
                     "Lead $key 无法从 manifest/loaded plist/process 与 projects.json 得到唯一一致身份，本次拒绝重启。"
                 failed=$((failed + 1))
                 record_lead_restart_detail failed "$key"
+                if [[ "$classification" == probe-error ]]; then
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed probe-error lead-candidate
+                else
+                    restart_shuttle_record "$pn" lead "$pn:$lid" "$pn/$lid" \
+                      failed config-drift lead-candidate
+                fi
                 ;;
         esac
     done < "$candidates_file"
@@ -2935,13 +3438,15 @@ rollback_and_restart() {
             fi
             start_bridge
         fi
-        local rb_leads_failed=0
+        local rb_leads_failed=0 rb_carrier_failed=0
         if [[ "$restart_all_leads" == "true" ]]; then
             # FLY-270 (R1#4): parse the Lead-restart result instead of discarding
             # it. A rolled-back-but-NOT-recovered Eng Lead must be surfaced as a
             # severe alert, never conflated with "code rolled back" success.
-            local rb_lead_result
+            local rb_lead_result previous_shuttle_recording="${SHUTTLE_OBSERVATION_RECORDING:-forward}"
+            SHUTTLE_OBSERVATION_RECORDING=rollback
             rb_lead_result=$(do_restart_all_leads immediate)
+            SHUTTLE_OBSERVATION_RECORDING="$previous_shuttle_recording"
             rb_leads_failed=$(rn_parse_count failed "$rb_lead_result")
             if [[ "$rb_leads_failed" == "invalid" ]]; then
                 alert_severe "rollback-lead-result-unreadable" "Flywheel deploy failed" \
@@ -2949,8 +3454,11 @@ rollback_and_restart() {
                 RESTART_TERMINAL_REPORTED=true
                 return 1
             fi
+            rb_carrier_failed="$rb_leads_failed"
             # FLY-98: trigger cmux refresh after rollback restart
             trigger_cmux_refresh
+            restart_lead_visibility_barrier "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}"
+            rb_leads_failed=$(merge_lead_visibility_failures "$rb_leads_failed")
         fi
         if [[ "$restart_bridge" == "true" ]]; then
             resume_admission_best_effort
@@ -2969,7 +3477,7 @@ rollback_and_restart() {
         fi
         if (( rb_leads_failed > 0 )); then
             alert_severe "rollback-leads-failed" "Flywheel deploy failed" \
-                "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 ${rb_leads_failed} 个 Lead（含 Eng Lead？）未恢复——KeepAlive 重拉不了坏 token/manifest/config。需要手动开 terminal 检查。"
+                "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 Lead 未完整恢复：carrier/token/config failures=${rb_carrier_failed}; visible-window missing=${LEAD_VISIBILITY_CONFIRMED_COUNT}; visibility-unproven=${LEAD_VISIBILITY_UNPROVEN_COUNT}。需要手动开 terminal 检查。"
             RESTART_TERMINAL_REPORTED=true
         else
             alert_warning "update-rolled-back" "Flywheel update rolled back" \
@@ -3113,6 +3621,21 @@ deploy_and_verify() {
         log "Build skipped (no build-relevant code delta)"
     fi
 
+    # FLY-2523: this existing stopped/build window is a high-value opportunity
+    # for managed homes. The operation remains fail-closed per home and never
+    # changes restart success; durable receipts and overdue alerts own follow-up.
+    if ! codex_home_reconcile_restart_window; then
+        log "ERROR: deployment restart window cannot continue while a Codex home reconcile child may still write"
+        if [[ "$restart_bridge" == "true" ]]; then
+            resume_admission_best_effort
+        fi
+        alert_severe "deploy-codex-home-reconcile-exit-unproven" \
+            "Flywheel deploy stopped: Codex home reconciliation exit unproven" \
+            "The stopped-window Codex home reconciliation child could not be proven terminated. Its migration fence remains authoritative; deployed-sha was not advanced, the ordinary deploy admission brake was released, and the restart requires operator inspection before retry."
+        RESTART_TERMINAL_REPORTED=true
+        return 1
+    fi
+
     # FLY-1764: the old Bridge is stopped and the freshly built bytes no longer
     # produce per-Lead swap-broadcast rows. Retire every live legacy row across
     # the on-disk CommDB universe and prove the postcondition before the new
@@ -3237,6 +3760,8 @@ deploy_and_verify() {
     # Step 4: Restart Leads (after Bridge is confirmed healthy)
     local leads_skipped=0
     local leads_failed=0
+    local leads_carrier_failed=0
+    local leads_carrier_failed_names_raw=""
     local leads_total=0
     local lead_counts_known=true
     local lead_result_state="known"
@@ -3256,6 +3781,8 @@ deploy_and_verify() {
         else
             leads_skipped="$parsed_skipped"
             leads_failed="$parsed_failed"
+            leads_carrier_failed="$parsed_failed"
+            leads_carrier_failed_names_raw=$(lead_restart_details_csv failed)
             leads_total="$parsed_total"
             lead_result_detail=$(lead_restart_wave_error)
             if [[ -n "$lead_result_detail" ]]; then
@@ -3275,6 +3802,8 @@ deploy_and_verify() {
     # FLY-98: trigger cmux refresh after watcher restart outcome capture.
     if [[ "$restart_all_leads" == "true" ]]; then
         trigger_cmux_refresh
+        restart_lead_visibility_barrier "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}"
+        leads_failed=$(merge_lead_visibility_failures "$leads_failed")
     fi
 
     # Step 5: Record code deployment truth independently of Lead health.
@@ -3334,6 +3863,12 @@ deploy_and_verify() {
         # Preserve the historical retry-marker contract: failed=0 clears even
         # for skipped-only runs. Unknown counts retain the marker.
         if (( leads_failed == 0 )); then
+            rm -f "$PLUGIN_RESTART_PENDING"
+        elif declare -F lead_restart_retry_marker_should_clear >/dev/null 2>&1 \
+          && lead_restart_retry_marker_should_clear "$leads_failed" "$leads_carrier_failed"; then
+            # A host-wide cmux absence is reported as one bounded degraded
+            # episode, but it must not turn the plugin retry marker into an
+            # endless full-fleet restart loop while launchd Leads are healthy.
             rm -f "$PLUGIN_RESTART_PENDING"
         fi
     else
@@ -3397,11 +3932,21 @@ deploy_and_verify() {
         tail_signature="leads-no-candidates"
         tail_detail="未发现可重启 Lead 候选，舰队上线状态未知"
     elif (( leads_failed > 0 || leads_skipped > 0 )); then
-        if (( leads_failed > 0 )); then
+        if (( leads_carrier_failed > 0 )); then
             tail_signature="leads-partial-failed"
-            tail_detail="失败: ${failed_names}"
-        else
+            tail_detail="carrier/token/config failures: $(rn_normalize_lead_names "$leads_carrier_failed" "$leads_carrier_failed_names_raw")"
+        elif (( leads_skipped > 0 )); then
             tail_signature="leads-skipped-no-manifest"
+        fi
+        if (( LEAD_VISIBILITY_CONFIRMED_COUNT > 0 )); then
+            [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
+            tail_detail="${tail_detail}visible-window missing: ${LEAD_VISIBILITY_CONFIRMED_NAMES}"
+            [[ -n "$tail_signature" ]] || tail_signature="leads-visibility-missing"
+        fi
+        if (( LEAD_VISIBILITY_UNPROVEN_COUNT > 0 )); then
+            [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
+            tail_detail="${tail_detail}visibility-unproven: ${LEAD_VISIBILITY_UNPROVEN_NAMES}"
+            [[ -n "$tail_signature" ]] || tail_signature="leads-visibility-unproven"
         fi
         if (( leads_skipped > 0 )); then
             [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"

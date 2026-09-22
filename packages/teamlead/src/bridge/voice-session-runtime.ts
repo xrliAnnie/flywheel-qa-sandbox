@@ -1,4 +1,8 @@
-import type { StateStore, VoiceSessionRow } from "../StateStore.js";
+import type {
+	StateStore,
+	VoiceHealthDemandSnapshot,
+	VoiceSessionRow,
+} from "../StateStore.js";
 import type { BridgeConfig } from "./types.js";
 
 type VoiceSessionTiming = NonNullable<BridgeConfig["voiceSessionTiming"]>;
@@ -15,6 +19,7 @@ export interface VoiceSessionRuntimeDeps {
 		session: VoiceSessionRow,
 		reason: string,
 	) => void | Promise<void>;
+	recordDemand?: (snapshot: VoiceHealthDemandSnapshot) => Promise<void>;
 }
 
 export class VoiceSessionRuntime {
@@ -27,6 +32,10 @@ export class VoiceSessionRuntime {
 		string,
 		{ reason: string; nextAt: number; delayMs: number }
 	>();
+	private demandCursor = 0;
+	private demandSourceId?: string;
+	private lastDemandProjectionKey?: string;
+	private lastDemandProjectionAtMs?: number;
 
 	constructor(private readonly deps: VoiceSessionRuntimeDeps) {
 		this.now = deps.now ?? (() => new Date().toISOString());
@@ -134,6 +143,7 @@ export class VoiceSessionRuntime {
 				if (!activeSessionIds.has(sessionId))
 					this.pollFailures.delete(sessionId);
 			}
+			await this.projectVoiceDemand();
 		} finally {
 			this.ticking = false;
 		}
@@ -154,6 +164,58 @@ export class VoiceSessionRuntime {
 			}
 		} finally {
 			this.wakeTicking = false;
+		}
+	}
+
+	private async projectVoiceDemand(): Promise<void> {
+		if (!this.deps.recordDemand) return;
+		let snapshot = this.deps.store.getVoiceDemandSnapshot(this.demandCursor);
+		if (
+			this.demandSourceId !== undefined &&
+			this.demandSourceId !== snapshot.demandSourceId
+		) {
+			this.demandCursor = 0;
+			this.lastDemandProjectionKey = undefined;
+			this.lastDemandProjectionAtMs = undefined;
+			snapshot = this.deps.store.getVoiceDemandSnapshot(0);
+		}
+		this.demandSourceId = snapshot.demandSourceId;
+		const projectionKey = [
+			snapshot.demandSourceId,
+			snapshot.revision,
+			snapshot.digest,
+			snapshot.state,
+			snapshot.sourceStatus,
+		].join(":");
+		const projectionAtMs = Date.parse(this.now());
+		const unchangedWithinRefreshWindow =
+			snapshot.events.length === 0 &&
+			!snapshot.hasMore &&
+			projectionKey === this.lastDemandProjectionKey &&
+			this.lastDemandProjectionAtMs !== undefined &&
+			Number.isFinite(projectionAtMs) &&
+			projectionAtMs - this.lastDemandProjectionAtMs < 20_000;
+		if (unchangedWithinRefreshWindow) {
+			return;
+		}
+		try {
+			// FLY-2693 review R5: the snapshot's row/source timestamps describe the
+			// data, not this observation. The helper stamps demand_observed_at and
+			// the change row from observedAt, and the fixed page's 90s stale gate
+			// reads that value, so it must be the Bridge observation clock or a
+			// dormant host reads as stale forever.
+			await this.deps.recordDemand({ ...snapshot, observedAt: this.now() });
+		} catch {
+			// Helper failures are externally supplied and may contain paths/tokens.
+			// Keep stderr on the closed diagnostic contract; the adapter records the
+			// bounded health_store failure separately.
+			console.warn("[voice-session] demand projection failed");
+			return;
+		}
+		this.demandCursor = snapshot.nextCursor;
+		if (!snapshot.hasMore) {
+			this.lastDemandProjectionKey = projectionKey;
+			this.lastDemandProjectionAtMs = projectionAtMs;
 		}
 	}
 

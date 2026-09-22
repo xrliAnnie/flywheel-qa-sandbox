@@ -240,54 +240,65 @@ describe("runEpicPageAttempt", () => {
 		return { store, materialize, publisher, page, receipt };
 	}
 
-	it.each([
-		"ok:4",
-		"ok_unpublished:4:unchanged_digest",
-		"transient: publish_failed:blob",
-		"ok_unpublished:4:skipped_hosting_not_configured",
-	])(
-		"settles intake dirty state only with hosted evidence: %s",
-		async (outcome) => {
-			const deps = base();
-			const row = {
-				eventUid: "intake",
-				active: true,
-				pageDirty: true,
-			} as never;
-			const intakeStore = {
-				listEpicIntakes: vi.fn(() => [row]),
-				clearPublishedEpicIntakes: vi.fn(),
-			};
-			Object.assign(deps.page, {
-				header: {
-					roots: { value: [{ intake: { value: { event_uid: "intake" } } }] },
-				},
-			});
-			deps.publisher.publishHosted.mockResolvedValue(outcome as "ok:4");
-			await runEpicPageAttempt(
-				{
-					...deps,
-					intakeStore,
-					materialize: deps.materialize as never,
-					serializer: createEpicPageSerializer(),
-				},
-				{
-					projectName: "example",
-					apiKey: "test",
-					binding: { team: "EPX" },
-					trigger: "event",
-					reasons: ["epic_intake"],
-				},
-			);
-			if (outcome === "ok:4" || outcome.endsWith(":unchanged_digest"))
-				expect(intakeStore.clearPublishedEpicIntakes).toHaveBeenCalledWith([
-					row,
-				]);
-			else expect(intakeStore.clearPublishedEpicIntakes).not.toHaveBeenCalled();
-		},
-	);
+	it("settles intake dirty state and retry success from local materialization", async () => {
+		const deps = base();
+		const row = {
+			eventUid: "intake",
+			active: true,
+			pageDirty: true,
+		} as never;
+		const intakeStore = {
+			listEpicIntakes: vi.fn(() => [row]),
+			clearPublishedEpicIntakes: vi.fn(),
+		};
+		const retryStore = {
+			getEpicIntakeRefreshState: vi.fn(() => ({
+				failures: 2,
+				retryAt: null,
+				notRefreshable: false,
+			})),
+			recordEpicIntakeRefreshResult: vi.fn(() => ({
+				failures: 0,
+				retryAt: null,
+				notRefreshable: false,
+			})),
+		};
+		Object.assign(deps.page, {
+			header: {
+				roots: { value: [{ intake: { value: { event_uid: "intake" } } }] },
+			},
+		});
+		const result = await runEpicPageAttempt(
+			{
+				...deps,
+				intakeStore,
+				retryStore,
+				materialize: deps.materialize as never,
+				serializer: createEpicPageSerializer(),
+				now: () => new Date("2026-09-03T04:00:00.000Z"),
+			},
+			{
+				projectName: "example",
+				apiKey: "test",
+				binding: { team: "EPX" },
+				trigger: "event",
+				reasons: ["epic_intake"],
+			},
+		);
+		expect(result).toMatchObject({
+			kind: "materialized",
+			outcome: "ok_unpublished:4:event",
+		});
+		expect(retryStore.recordEpicIntakeRefreshResult).toHaveBeenCalledWith(
+			"example",
+			true,
+			"2026-09-03T04:00:00.000Z",
+		);
+		expect(intakeStore.clearPublishedEpicIntakes).toHaveBeenCalledWith([row]);
+		expect(deps.publisher.publishHosted).not.toHaveBeenCalled();
+	});
 
-	it("materializes once, writes one receipt, publishes, and settles once", async () => {
+	it("materializes an event locally, writes one receipt, and never publishes", async () => {
 		const deps = base();
 		const result = await runEpicPageAttempt(
 			{
@@ -304,14 +315,17 @@ describe("runEpicPageAttempt", () => {
 			},
 		);
 
-		expect(result).toMatchObject({ kind: "materialized", outcome: "ok:4" });
+		expect(result).toMatchObject({
+			kind: "materialized",
+			outcome: "ok_unpublished:4:event",
+		});
 		expect(deps.materialize).toHaveBeenCalledOnce();
 		expect(deps.store.insertEpicPageRenderReceipt).toHaveBeenCalledOnce();
-		expect(deps.publisher.publishHosted).toHaveBeenCalledOnce();
+		expect(deps.publisher.publishHosted).not.toHaveBeenCalled();
 		expect(deps.store.insertEpicPageRefresh).toHaveBeenCalledOnce();
 	});
 
-	it("publishes and records one ok outcome for a scan attempt", async () => {
+	it("materializes and records a scan without publishing", async () => {
 		const deps = base();
 		const result = await runEpicPageAttempt(
 			{
@@ -328,14 +342,17 @@ describe("runEpicPageAttempt", () => {
 			},
 		);
 
-		expect(result).toMatchObject({ kind: "materialized", outcome: "ok:4" });
-		expect(deps.publisher.publishHosted).toHaveBeenCalledOnce();
+		expect(result).toMatchObject({
+			kind: "materialized",
+			outcome: "ok_unpublished:4:scan",
+		});
+		expect(deps.publisher.publishHosted).not.toHaveBeenCalled();
 		expect(deps.store.insertEpicPageRefresh).toHaveBeenCalledOnce();
 		expect(deps.store.insertEpicPageRefresh).toHaveBeenCalledWith(
 			expect.objectContaining({
 				trigger: "scan",
 				reasons: ["scan"],
-				outcome: "ok:4",
+				outcome: "ok_unpublished:4:scan",
 			}),
 		);
 	});
@@ -430,5 +447,29 @@ describe("runEpicPageAttempt", () => {
 		expect(deps.store.insertEpicPageRefresh).toHaveBeenCalledWith(
 			expect.objectContaining({ outcome: "ok_unpublished:4:manual" }),
 		);
+	});
+
+	it("explicit manual publish invokes the hosted publisher with force", async () => {
+		const deps = base();
+		const result = await runEpicPageAttempt(
+			{
+				...deps,
+				serializer: createEpicPageSerializer(),
+				now: () => new Date("2026-09-03T04:00:00.000Z"),
+			},
+			{
+				projectName: "example",
+				binding: projects[0]!.linear!,
+				apiKey: "linear-key",
+				trigger: "manual",
+				reasons: ["manual"],
+				publishHosted: true,
+			},
+		);
+
+		expect(result).toMatchObject({ kind: "materialized", outcome: "ok:4" });
+		expect(deps.publisher.publishHosted).toHaveBeenCalledWith(deps.page, {
+			force: true,
+		});
 	});
 });

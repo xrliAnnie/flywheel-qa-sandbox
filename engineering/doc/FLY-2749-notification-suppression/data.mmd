@@ -1,0 +1,20 @@
+erDiagram
+  SOURCE ||--|| DECISION : "原身份关联"
+  DECISION ||--o| RELAY : "需要公告时"
+  SOURCE ||--o| QUESTION : "需要回答时"
+  SOURCE {
+    string sourceId "原事件或问题编号"
+    string leadId "所属负责人"
+  }
+  DECISION {
+    string disposition "模型或仅审计"
+    string proofRef "无待办证明"
+  }
+  RELAY {
+    string state "待发 已发 失败 不确定"
+    string messageId "真实消息编号"
+  }
+  QUESTION {
+    string state "保持原待答状态"
+    string reviewer "审核仍由原审核者负责"
+  }

@@ -17,7 +17,12 @@ import { expect, it, vi } from "vitest";
 import {
 	executeLeadPatrolSnapshot,
 	PATROL_HELPER_SOURCES,
+	PATROL_SNAPSHOT_TIMEOUT_MS,
 } from "../lead-patrol-snapshot.js";
+
+it("keeps the Bridge patrol budget above the bounded visible-surface probe", () => {
+	expect(PATROL_SNAPSHOT_TIMEOUT_MS).toBeGreaterThan(250_000);
+});
 
 it("runs the actual fixed helper in isolated paths and verifies its report without database creation", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "patrol-exec-")));

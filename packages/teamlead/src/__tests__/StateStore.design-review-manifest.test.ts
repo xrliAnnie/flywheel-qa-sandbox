@@ -13,37 +13,52 @@ describe("FLY-1718 design review manifest", () => {
 	it("advances one current revision and deduplicates a source event replay", () => {
 		const first = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
+			issueId: "FLY-2737",
 			projectName: "flywheel",
+			repositoryIdentity: "__main__",
 			sourceEventId: "evt-1",
 			expectedPlanPath: "engineering/doc/FLY-1/plan.md",
+			reviewedCommitSha: "c".repeat(40),
 			expectedBlobSha: "a".repeat(40),
 		});
 		const replay = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
+			issueId: "FLY-2737",
 			projectName: "flywheel",
+			repositoryIdentity: "__main__",
 			sourceEventId: "evt-1",
 			expectedPlanPath: "engineering/doc/FLY-1/plan.md",
+			reviewedCommitSha: "c".repeat(40),
 			expectedBlobSha: "a".repeat(40),
 		});
 
 		expect(first.revision).toBe(1);
 		expect(replay).toEqual(first);
 		expect(store.getCurrentDesignReviewManifest("exec-1")).toEqual(first);
+		expect(
+			store.getDesignReviewProofForManifest(first.request_id, first.revision),
+		).toMatchObject({ state: "captured", reviewed_commit_sha: "c".repeat(40) });
 	});
 
 	it("makes a re-stage the sole current request and tracks delivery receipt", () => {
 		const first = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
+			issueId: "FLY-2737",
 			projectName: "flywheel",
+			repositoryIdentity: "__main__",
 			sourceEventId: "evt-1",
 			expectedPlanPath: "engineering/doc/FLY-1/plan-a.md",
+			reviewedCommitSha: "c".repeat(40),
 			expectedBlobSha: "a".repeat(40),
 		});
 		const second = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
+			issueId: "FLY-2737",
 			projectName: "flywheel",
+			repositoryIdentity: "__main__",
 			sourceEventId: "evt-2",
 			expectedPlanPath: "engineering/doc/FLY-1/plan-b.md",
+			reviewedCommitSha: "d".repeat(40),
 			expectedBlobSha: "b".repeat(40),
 		});
 

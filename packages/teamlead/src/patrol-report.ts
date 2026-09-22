@@ -3,7 +3,16 @@ type Fields = Record<string, string>;
 const HEX = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const NONNEGATIVE_INTEGER = /^(?:0|[1-9][0-9]*)$/;
 const STEP = /^(?:[1-6]|DWELL)$/;
+const PANE_EVIDENCE_FIELDS =
+	"pane target owner exec capture_sha256 lines bytes state_sha256 last_change_epoch findings action result schema activity semantic_sha256 last_change_basis last_checked_epoch activity_evidence queue_request queue_position queue_wait_seconds note evidence_note".split(
+		" ",
+	);
+const ACTIVITY_EVIDENCE_FIELDS =
+	"id exec activation interval_start interval_end source ref_complete refs_sha256 semantic_sha256 coverage_since reason branch_activity queue_request queue_position queue_wait_seconds".split(
+		" ",
+	);
 const FINDING_FIELDS =
 	"id category step bridge_problem result evidence owner next epic epic_marker disposition repair_issue repair_receipt disposition_ref".split(
 		" ",
@@ -26,6 +35,21 @@ function prose(v: unknown): v is string {
 		typeof v === "string" &&
 		[...v.trim()].length >= 10 &&
 		!/\b(?:TODO|TBD|UNSET)\b/i.test(v)
+	);
+}
+function validQueueEvidence(fields: Fields): boolean {
+	return (
+		(!Object.hasOwn(fields, "queue_request") ||
+			TOKEN.test(fields.queue_request ?? "")) &&
+		(!Object.hasOwn(fields, "queue_position") ||
+			NONNEGATIVE_INTEGER.test(fields.queue_position ?? "")) &&
+		(!Object.hasOwn(fields, "queue_wait_seconds") ||
+			NONNEGATIVE_INTEGER.test(fields.queue_wait_seconds ?? ""))
+	);
+}
+function validPaneAnnotations(fields: Fields): boolean {
+	return ["note", "evidence_note"].every(
+		(key) => !Object.hasOwn(fields, key) || TOKEN.test(fields[key] ?? ""),
 	);
 }
 // JSON.parse validates syntax; this additional scan rejects ambiguous repeated keys,
@@ -97,14 +121,13 @@ export function validatePatrolReport(text: string): {
 			schemas++;
 			if (line !== "patrol_schema=2") fail("report_schema_mismatch");
 		} else if (line.startsWith("PANE_EVIDENCE")) {
-			panes.push(fields(line));
+			const p = fields(line, PANE_EVIDENCE_FIELDS);
+			if (!validQueueEvidence(p)) fail("invalid_queue_evidence");
+			if (!validPaneAnnotations(p)) fail("invalid_pane_evidence");
+			panes.push(p);
 		} else if (line.startsWith("ACTIVITY_EVIDENCE")) {
-			const a = fields(
-				line,
-				"id exec activation interval_start interval_end source ref_complete refs_sha256 semantic_sha256 coverage_since reason branch_activity".split(
-					" ",
-				),
-			);
+			const a = fields(line, ACTIVITY_EVIDENCE_FIELDS);
+			if (!validQueueEvidence(a)) fail("invalid_queue_evidence");
 			if (!HEX.test(a.id ?? "") || activities.has(a.id ?? ""))
 				fail("invalid_activity_identity");
 			activities.set(a.id ?? "", a);

@@ -19,11 +19,11 @@ describe("ship judgment contract", () => {
 		expect(aggregateJudgment("fail", "fail", "pass")).toBe("recommend_reject");
 		expect(aggregateJudgment("pass", "pass", "fail")).toBe("recommend_reject");
 	});
-	it("only enables Flywheel dry_run and never treats a judgment as auto authority", () => {
+	it("enables the same Flywheel judgment in dry_run and auto only", () => {
 		for (const project of ["flywheel", "raya", "Flywheel"]) {
 			for (const mode of ["off", "dry_run", "auto", "unknown"]) {
 				expect(isJudgmentEnabled(project, mode)).toBe(
-					project === "flywheel" && mode === "dry_run",
+					project === "flywheel" && ["dry_run", "auto"].includes(mode),
 				);
 			}
 		}

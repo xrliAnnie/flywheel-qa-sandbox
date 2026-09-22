@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+// Historical wire/storage vocabulary only. Current active execution uses the
+// ship-judgment three-point policy; legacy envelopes remain parseable for audit.
 export const AUTO_NARROW_FLAG_NAME = "auto_merge_narrow_gate" as const;
 export const AUTO_NARROW_MODES = ["off", "dry_run", "auto"] as const;
 export type AutoNarrowMode = (typeof AUTO_NARROW_MODES)[number];

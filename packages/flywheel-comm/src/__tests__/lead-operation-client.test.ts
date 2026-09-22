@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { requestLeadOperation } from "../lead-operation-client.js";
+import {
+	leadOperationClientSocketTimeoutMs,
+	leadOperationServerSocketTimeoutMs,
+	leadOperationTimeoutMs,
+	requestLeadOperation,
+} from "../lead-operation-client.js";
 
 const request = {
 	schemaVersion: 1 as const,
@@ -40,6 +45,11 @@ async function fixture(reply: (body: string) => string | null) {
 	return { path, calls: () => calls };
 }
 describe("result-only Lead broker client", () => {
+	it("nests patrol broker and socket deadlines outside the handler budget", () => {
+		expect(leadOperationTimeoutMs("patrol.snapshot")).toBe(300_000);
+		expect(leadOperationServerSocketTimeoutMs("patrol.snapshot")).toBe(301_000);
+		expect(leadOperationClientSocketTimeoutMs("patrol.snapshot")).toBe(302_000);
+	});
 	it("sends the same exact request key and validates the correlated result", async () => {
 		const endpoint = await fixture((body) => {
 			expect(JSON.parse(body)).toEqual(request);

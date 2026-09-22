@@ -4,7 +4,7 @@ import { applySemanticEvidence } from "../evidence-ledger.js";
 import { bindingFixture, CHANNEL, NOW } from "./binding-fixture.js";
 import { evidenceFixture } from "./evidence-fixture.js";
 
-it("an evaluated but undetermined model result leaves evidence passing and exposes an undetermined semantic status", async () => {
+it("an evaluated but undetermined model result keeps the opinion fail-closed", async () => {
 	const { store } = await bindingFixture();
 	try {
 		const binding = store.readShipJudgmentBinding("q", CHANNEL)!;
@@ -73,7 +73,7 @@ it("an evaluated but undetermined model result leaves evidence passing and expos
 			at + 2,
 		);
 		expect(store.getShipJudgmentDelivery().view("q")).toMatchObject({
-			overall: "can",
+			overall: "undetermined",
 			evidence: { semantic: { status: "undetermined", alignmentVeto: false } },
 		});
 	} finally {
@@ -114,10 +114,16 @@ it("persists evidence-only passing opinions, exposes the ledger in delivery, and
 					"SELECT input_id,evaluation_id,overall FROM ship_judgment_opinion",
 				)
 				.get(),
-		).toEqual({ input_id: null, evaluation_id: null, overall: "can" });
-		expect(store.getShipJudgmentDelivery().view("q")?.evidence).toEqual(
-			evidence,
-		);
+		).toEqual({
+			input_id: null,
+			evaluation_id: null,
+			overall: "undetermined",
+		});
+		expect(store.getShipJudgmentDelivery().view("q")?.evidence).toMatchObject({
+			alignment: { verdict: "undetermined", missing: ["input"] },
+			coverage: { verdict: "undetermined", missing: ["input"] },
+			semantic: { status: "not_run" },
+		});
 		const refreshed = structuredClone(candidate);
 		refreshed.evidence.computedAt = "2026-09-11T00:00:01.000Z";
 		refreshed.evidence.evidence.forEach((ref) => {
@@ -210,7 +216,7 @@ it("uses only the persisted model evaluation for veto, never caller-provided sem
 			Date.parse(NOW),
 		);
 		expect(store.getShipJudgmentDelivery().view("q")).toMatchObject({
-			overall: "can",
+			overall: "undetermined",
 			evidence: { semantic: { status: "not_run" } },
 		});
 	} finally {

@@ -183,12 +183,59 @@ describe("summarizeEpicResidual", () => {
 		).toThrow(EpicResidualSessionUnreadableError);
 	});
 
-	it("removes ledger-live items from ready and counts them as running", () => {
+	it("removes machine-live items from ready and counts them as running", () => {
 		const snapshot = epicShapeSnapshot();
 		const itemFacts = snapshot.items.map(() => emptyItemFacts());
 		itemFacts[0]!.session = {
 			ok: true,
-			value: { latest: [], ledger_live_count: 1 },
+			value: {
+				latest: [],
+				ledger_live_count: 1,
+				machine_running_count: 1,
+				running_heartbeat_stale_count: 0,
+				running_heartbeat_missing_count: 0,
+			},
+		};
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "scan",
+		});
+
+		const fact = summarizeEpicResidual({
+			materialized: { page, snapshot },
+			leadId: "example-eng-lead",
+			resolveOwner: () => GENERAL_OWNER,
+			trigger: "roster",
+		});
+
+		expect(fact).toMatchObject({ ready: 1, running: 1, blocked: 3 });
+		expect(fact.readyForLead).toEqual([
+			{ identifier: "EPX-5", priority: 0, ownership: "general" },
+		]);
+	});
+
+	it("keeps ledger-live parked work out of ready when no machine heartbeat is fresh", () => {
+		const snapshot = epicShapeSnapshot();
+		const itemFacts = snapshot.items.map(() => emptyItemFacts());
+		itemFacts[0]!.session = {
+			ok: true,
+			value: {
+				latest: [
+					{
+						status: "ship_parked",
+						role: "qa",
+						branch: "flywheel-EPX-1",
+						execution_id8: "parked01",
+					},
+				],
+				ledger_live_count: 1,
+				machine_running_count: 0,
+				running_heartbeat_stale_count: 0,
+				running_heartbeat_missing_count: 0,
+			},
 		};
 		const page = generateEpicPage({
 			snapshot,

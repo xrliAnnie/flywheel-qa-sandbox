@@ -54,9 +54,9 @@ INVENTORY_MODE=linked
 tmux() {
   [[ "$1" == list-windows ]] || return 1
   if [[ "$INVENTORY_MODE" == linked ]]; then
-    printf 'runner-fly-2207\t@7\tFLY-2207-runner\texec-2207\ncmux-FLY-2207-runner\t@7\tFLY-2207-runner\texec-2207\n'
+    printf 'runner-fly-2207|@7|FLY-2207-runner|exec-2207\ncmux-FLY-2207-runner|@7|FLY-2207-runner|exec-2207\n'
   else
-    printf 'runner-fly-2207\t@7\tFLY-2207-runner\texec-2207\nrunner-retry\t@8\tFLY-2207-runner\texec-2207\n'
+    printf 'runner-fly-2207|@7|FLY-2207-runner|exec-2207\nrunner-retry|@8|FLY-2207-runner|exec-2207\n'
   fi
 }
 read_runner_tmux_node_inventory
@@ -114,7 +114,7 @@ else
 fi
 unset -f date
 
-printf 'Test: exact terminal evidence tears down a live lingering source on round three\n'
+printf 'Test: catch-up never tears down a live canonical runner; a dead pane still converges\n'
 EXEC_ID='exec-2207'
 TERMINAL_ROW="$EXEC_ID|node-1|FLY-2207|implement|completed|codex|-|done|-|needs_review|1|-"
 RUNNER_EXPECTED_STATE=ok
@@ -126,6 +126,7 @@ RUNNER_NODE_TMUX_ROWS="$EXEC_ID|present|@7|FLY-2207-runner|runner-fly-2207"
 FLYWHEEL_CMUX_TMUX_GENERATION='tmux-generation'
 VIEW_UUID='11111111-1111-4111-8111-111111111111'
 SOURCE_GONE=0
+PANE_DEAD=0
 KILLS=0
 fetch_active_runner_roster() { RUNNER_EXPECTED_STATE=ok; RUNNER_ACTIVE_ROWS=""; }
 fetch_recent_terminal_runner_roster() { RUNNER_TERMINAL_STATE=ok; RUNNER_TERMINAL_ROWS="$TERMINAL_ROW"; }
@@ -146,7 +147,7 @@ tmux() {
   case "$1" in
     display-message)
       [[ "$SOURCE_GONE" == 0 ]] || return 1
-      printf 'runner-fly-2207|@7|FLY-2207-runner|exec-2207|0\n'
+      printf 'runner-fly-2207|@7|FLY-2207-runner|exec-2207|%s\n' "$PANE_DEAD"
       ;;
     kill-window)
       KILLS=$((KILLS + 1)); SOURCE_GONE=1
@@ -161,11 +162,20 @@ tmux() {
 
 for sequence in 1 2 3; do
   CMUX_ADDITIVE_ROUND_ID="300-$sequence"
-  terminal_teardown_observe "$EXEC_ID" "$TERMINAL_ROW" 'FLY-2207-runner'
+  terminal_teardown_observe "$EXEC_ID" "$TERMINAL_ROW" 'FLY-2207-runner' || true
 done
+if [[ "$KILLS" == 0 && "$SOURCE_GONE" == 0 && ! -e "$CLOSE_REQUEST_FILE" ]]; then
+  pass 'three catch-up rounds preserve a canonical runner whose pane_dead is zero'
+else
+  fail "live catch-up mutated canonical runner kills=$KILLS source_gone=$SOURCE_GONE marker=$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null || true)"
+fi
+
+PANE_DEAD=1
+CMUX_ADDITIVE_ROUND_ID=300-4
+terminal_teardown_observe "$EXEC_ID" "$TERMINAL_ROW" 'FLY-2207-runner' || true
 if [[ "$KILLS" == 1 && "$SOURCE_GONE" == 1 \
     && "$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null)" == 'FLY-2207-runner' ]]; then
-  pass 'pane_dead=0 does not cancel terminal teardown; exact source and marker complete'
+  pass 'pane_dead=1 retains the exact source teardown and close-marker convergence path'
 else
   fail "terminal transaction kills=$KILLS source_gone=$SOURCE_GONE marker=$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null || true)"
 fi

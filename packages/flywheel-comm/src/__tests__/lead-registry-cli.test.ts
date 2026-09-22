@@ -350,6 +350,7 @@ describe("flywheel-comm lead-registry", () => {
 					{
 						projectName: "raya",
 						projectRoot: "/tmp/raya",
+						projectRepo: "xrliAnnie/raya",
 						generalChannel: "10000000000000001",
 						leads: [
 							{
@@ -395,6 +396,7 @@ describe("flywheel-comm lead-registry", () => {
 				projectName: "raya",
 				leadId: "raya-product-lead",
 				projectRoot: "/tmp/raya",
+				projectRepo: "xrliAnnie/raya",
 				chatChannel: "20000000000000001",
 				generalChannel: "10000000000000001",
 				backend: "codex-app-server",
@@ -413,6 +415,152 @@ describe("flywheel-comm lead-registry", () => {
 			});
 		},
 	);
+
+	it("selector emits projectRepo and a valid opt-in only for its exact Lead", () => {
+		const dir = tempDir();
+		const projectsPath = join(dir, "projects.json");
+		const projection = {
+			schemaVersion: 1,
+			enabled: true,
+			leadId: "raya",
+			repo: "xrliAnnie/raya",
+			path: ".lead/raya/identity.md",
+			pin: {
+				commit: "a".repeat(40),
+				personaBlobDigest: "b".repeat(64),
+				approval: {
+					channelId: "12345678901234567",
+					messageId: "22345678901234567",
+					contentSha256: "c".repeat(64),
+				},
+			},
+			lastKnownGood: {
+				commit: "d".repeat(40),
+				personaBlobDigest: "e".repeat(64),
+				approval: {
+					channelId: "12345678901234567",
+					messageId: "32345678901234567",
+					contentSha256: "f".repeat(64),
+				},
+			},
+		};
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "raya",
+					projectRoot: "/tmp/raya",
+					projectRepo: "xrliAnnie/raya",
+					personaProjection: projection,
+					leads: [
+						{
+							agentId: "raya",
+							summaryRole: "recipient",
+							chatChannel: "42345678901234567",
+							match: { labels: ["raya"] },
+							backend: "codex-app-server",
+							codexProfile: "full-access",
+							canSpawnRunners: false,
+						},
+					],
+				},
+			]),
+		);
+		const stdout: string[] = [];
+		expect(
+			runLeadRegistryCommand(
+				[
+					"selector",
+					"--project",
+					"raya",
+					"--lead",
+					"raya",
+					"--projects-file",
+					projectsPath,
+				],
+				{ homeDir: dir, stdout: (line) => stdout.push(line) },
+			),
+		).toBe(0);
+		const selected = JSON.parse(stdout[0]!);
+		expect(selected.projectRepo).toBe("xrliAnnie/raya");
+		expect(selected.personaProjection).toEqual(projection);
+		expect(selected.personaProjectionContractDigest).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it("isolates a malformed Raya opt-in until raya/raya is selected", () => {
+		const dir = tempDir();
+		const projectsPath = join(dir, "projects.json");
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					projectRoot: "/tmp/flywheel",
+					projectRepo: "xrliAnnie/flywheel",
+					leads: [
+						{
+							agentId: "flywheel-eng-lead",
+							summaryRole: "producer",
+							chatChannel: "12345678901234567",
+							match: { labels: ["eng"] },
+						},
+					],
+				},
+				{
+					projectName: "raya",
+					projectRoot: "/tmp/raya",
+					projectRepo: "xrliAnnie/raya",
+					personaProjection: { enabled: false },
+					leads: [
+						{
+							agentId: "raya",
+							summaryRole: "recipient",
+							chatChannel: "22345678901234567",
+							match: { labels: ["raya"] },
+							backend: "codex-app-server",
+							codexProfile: "full-access",
+							canSpawnRunners: false,
+						},
+					],
+				},
+			]),
+		);
+		const flywheelOutput: string[] = [];
+		expect(
+			runLeadRegistryCommand(
+				[
+					"selector",
+					"--project",
+					"flywheel",
+					"--lead",
+					"flywheel-eng-lead",
+					"--projects-file",
+					projectsPath,
+				],
+				{ homeDir: dir, stdout: (line) => flywheelOutput.push(line) },
+			),
+		).toBe(0);
+		expect(JSON.parse(flywheelOutput[0]!).personaProjection).toBeUndefined();
+
+		const stderr: string[] = [];
+		expect(
+			runLeadRegistryCommand(
+				[
+					"selector",
+					"--project",
+					"raya",
+					"--lead",
+					"raya",
+					"--projects-file",
+					projectsPath,
+				],
+				{ homeDir: dir, stderr: (line) => stderr.push(line) },
+			),
+		).toBe(78);
+		expect(stderr.join("\n")).toContain(
+			"lead_registry_persona_projection_invalid",
+		);
+	});
 
 	it("adds a Lead and remints the activation receipt in one locked transaction", () => {
 		const f = fixture();

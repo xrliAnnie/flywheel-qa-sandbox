@@ -3,6 +3,7 @@ import type { StateStore } from "../StateStore.js";
 export interface LandOperationAuditIdentity {
 	operationId: string;
 	ownerId: string;
+	ownerInstanceId?: string;
 	generation: number;
 	runId?: string | null;
 	sourceExecutionId?: string | null;
@@ -34,6 +35,7 @@ export function recordLandCloseoutAudit(
 	return store.recordLandOperationStep({
 		operationId: identity.operationId,
 		ownerId: identity.ownerId,
+		ownerInstanceId: identity.ownerInstanceId,
 		generation: identity.generation,
 		step: [
 			"aux:closeout_audit",

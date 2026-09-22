@@ -1,0 +1,209 @@
+{
+	"schemaVersion": 1,
+	"reasons": {
+		"deployed": {
+			"outcome": "deployed",
+			"expected": false,
+			"evaluated": true,
+			"display": "已部署"
+		},
+		"up-to-date": {
+			"outcome": "up_to_date",
+			"expected": false,
+			"evaluated": true,
+			"display": "已是最新"
+		},
+		"prestop-validation-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "停止前校验失败"
+		},
+		"source-prepare-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "源码准备失败"
+		},
+		"fetch-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "拉取失败"
+		},
+		"ref-unresolved": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "目标版本不可解析"
+		},
+		"cutover-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "切换失败"
+		},
+		"proof-invalid": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "部署证明无效"
+		},
+		"finalize-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "收尾失败"
+		},
+		"lead-verify-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "Lead 校验失败"
+		},
+		"deploy-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "部署失败"
+		},
+		"config-drift": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "配置漂移"
+		},
+		"probe-error": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": true,
+			"display": "探测失败"
+		},
+		"unclassified-result": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": false,
+			"display": "结果无法分类"
+		},
+		"unit-result-missing": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": false,
+			"display": "缺少单元结果"
+		},
+		"inventory-unavailable": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": false,
+			"display": "部署名册不可用"
+		},
+		"observation-write-failed": {
+			"outcome": "failed",
+			"expected": false,
+			"evaluated": false,
+			"display": "观察记录失败"
+		},
+		"host-capability-absent": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "主机能力缺失"
+		},
+		"canonical-standard-lead-absent": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "标准 Lead 缺失"
+		},
+		"migration-ledger-absent": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "迁移账本缺失"
+		},
+		"awaiting-pre-activation-rebind": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": true,
+			"display": "等待部署前重绑定"
+		},
+		"awaiting-rebind": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": true,
+			"display": "等待重绑定"
+		},
+		"awaiting-rebind-proof": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": true,
+			"display": "等待重绑定证明"
+		},
+		"p5-awaiting-real-p6-evidence": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": true,
+			"display": "等待真实 P6 证明"
+		},
+		"p3-unresolved-window": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": true,
+			"display": "等待冲突窗口收敛"
+		},
+		"unit-lock-held": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "单元锁被占用"
+		},
+		"manifestless": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "缺少部署清单"
+		},
+		"pending-install": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "等待安装"
+		},
+		"upstream-step-failed": {
+			"outcome": "skipped",
+			"expected": false,
+			"evaluated": false,
+			"display": "上游步骤失败"
+		},
+		"wake-out-of-scope": {
+			"outcome": "skipped",
+			"expected": true,
+			"evaluated": false,
+			"display": "本轮唤醒不覆盖"
+		},
+		"test-slot": {
+			"outcome": "skipped",
+			"expected": true,
+			"evaluated": false,
+			"display": "测试座位不部署"
+		},
+		"not-in-deploy-wave": {
+			"outcome": "skipped",
+			"expected": true,
+			"evaluated": false,
+			"display": "本轮无部署波次"
+		},
+		"no-restart-required": {
+			"outcome": "skipped",
+			"expected": true,
+			"evaluated": false,
+			"display": "无需重启"
+		},
+		"baseline-initialized": {
+			"outcome": "skipped",
+			"expected": true,
+			"evaluated": false,
+			"display": "已建立基线"
+		}
+	}
+}

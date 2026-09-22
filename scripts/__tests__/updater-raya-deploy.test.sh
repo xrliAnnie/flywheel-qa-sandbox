@@ -35,6 +35,9 @@ mkdir -p "$(dirname "$RAYA_CANONICAL_MANIFEST")" "$(dirname "$RAYA_MIGRATION_MAN
 # shellcheck source=/dev/null
 source "$ROOT/scripts/lib/updater-raya-deploy.sh"
 raya_configure_runtime_paths
+# The sandbox cannot enumerate the host process table. Individual census
+# fixtures replace this with the exact process snapshot they exercise.
+raya_process_snapshot() { return 0; }
 
 write_canonical() {
   jq -n --arg root "$HOME/Dev/raya-lead-workspace" '{
@@ -134,6 +137,7 @@ fi
 (
   trap - EXIT
   export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  raya_alert() { printf '%s\n' "$*" >> "$TMP/normal-cutover-alerts"; }
   mkdir -p "$RAYA_LEGACY_PLIST_DIR"
   python3 - "$RAYA_LEGACY_PLIST_DIR" "$RAYA_CODE_DIR" "$RAYA_HOME" "$(command -v node)" <<'PY'
 import os, plistlib, sys
@@ -176,6 +180,7 @@ rm -f "$RAYA_MIGRATION_MANIFEST"
   export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
   write_p2_manifest
   raya_process_start() { printf '%s\n' 'Sun Sep 13 10:00:00 2026'; }
+  raya_legacy_process_matches() { return 0; }
   for app in brain voice; do
     label="com.xrli.raya.$app"
     digest="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/$label.plist")"
@@ -220,13 +225,10 @@ rm -f "$RAYA_MIGRATION_MANIFEST"
   # the recorded executable/argv/cwd/env tuple, not CLI file existence.
   [[ ! -e "$RAYA_CODE_DIR/apps/brain/dist/cli.js" && ! -e "$RAYA_CODE_DIR/apps/voice/dist/cli.js" ]] || exit 1
   raya_verify_legacy_owners || exit 1
-  for mutation in '.legacy_owner[0].plist_sha256=("b"*64)' \
-    '.legacy_owner[0].pid=1' '.legacy_owner[0].start="different process birth"'; do
-    jq "$mutation" "$TMP/resume-initial.json" > "$RAYA_MIGRATION_MANIFEST"
-    raya_verify_legacy_owners >/dev/null 2>&1 && exit 1
-    raya_ensure_legacy_quiesced >/dev/null 2>&1 && exit 1
-    [[ ! -e "$TMP/resume-bootouts" ]] || exit 1
-  done
+  jq '.legacy_owner[0].plist_sha256=("b"*64)' "$TMP/resume-initial.json" > "$RAYA_MIGRATION_MANIFEST"
+  raya_verify_legacy_owners >/dev/null 2>&1 && exit 1
+  raya_ensure_legacy_quiesced >/dev/null 2>&1 && exit 1
+  [[ ! -e "$TMP/resume-bootouts" ]] || exit 1
   cat "$TMP/resume-initial.json" > "$RAYA_MIGRATION_MANIFEST"
   # Simulate login with ignored build output surviving the source ff.
   mkdir -p "$RAYA_CODE_DIR/apps/brain/dist"
@@ -276,12 +278,476 @@ PYREBOOT
   raya_verify_legacy_retired || exit 1
   jq -e '(.old_stopped_at | type == "string") and
     ([.legacy_owner[] | .stopped_at_ms >= .stop_started_at_ms] | all)' \
-    "$RAYA_MIGRATION_MANIFEST" >/dev/null
+    "$RAYA_MIGRATION_MANIFEST" >/dev/null || exit 1
+  [[ ! -e "$TMP/normal-cutover-alerts" ]]
 )
 if [[ $? == 0 ]]; then
   pass "partial legacy stop resumes voice without repeating brain and persists per-job stop times"
 else
   fail "partial legacy stop must persist intent and resume only the unfinished job"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# A launchd restart can give the real legacy job a new PID after the ledger was
+# written. The current service PID plus its exact argv is authoritative: it
+# must take the normal disable/bootout path and refresh the stop identity.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  write_p2_manifest
+  brain_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.brain.plist")"
+  voice_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.voice.plist")"
+  raya_manifest_transform P2 P2 '.legacy_owner = [
+    {label:"com.xrli.raya.brain",plist_sha256:$brain,loaded:true,pid:99,start:"old-brain-start"},
+    {label:"com.xrli.raya.voice",plist_sha256:$voice,loaded:false,pid:null,start:null}
+  ]' --arg brain "$brain_hash" --arg voice "$voice_hash" || exit 1
+  touch "$TMP/com.xrli.raya.brain.restarted"
+  launchctl() {
+    local app label
+    case "$1" in
+      print)
+        label="${2##*/}"
+        if [[ "$label" == com.xrli.raya.brain && -e "$TMP/$label.restarted" ]]; then
+          printf 'pid = 1671\n'
+        else
+          printf 'Could not find service\n' >&2
+          return 1
+        fi ;;
+      disable) label="${2##*/}"; touch "$TMP/$label.restarted-disabled" ;;
+      print-disabled)
+        printf 'disabled services = {\n'
+        for app in brain voice; do
+          label="com.xrli.raya.$app"
+          [[ ! -e "$TMP/$label.restarted-disabled" ]] || printf '"%s" => disabled\n' "$label"
+        done
+        printf '}\n' ;;
+      bootout)
+        label="${3##*/}"; label="${label%.plist}"
+        printf '%s\n' "$label" >> "$TMP/restarted-bootouts"
+        rm "$TMP/$label.restarted" ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_process_start() { [[ "$1" == 1671 ]] && printf '%s\n' 'current-brain-start'; }
+  raya_process_command() {
+    [[ "$1" == 1671 ]] && printf '%s %s run\n' \
+      "$(command -v node)" "$RAYA_CODE_DIR/apps/brain/dist/cli.js"
+  }
+  raya_process_snapshot() {
+    [[ -e "$TMP/com.xrli.raya.brain.restarted" ]] && printf '%s %s %s run\n' \
+      1671 "$(command -v node)" "$RAYA_CODE_DIR/apps/brain/dist/cli.js"
+    return 0
+  }
+  raya_alert() { printf '%s\n' "$*" >> "$TMP/restarted-owner-alerts"; }
+  before="$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")"
+  raya_verify_legacy_owners || exit 1
+  [[ "$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")" == "$before" ]] || exit 1
+  raya_ensure_legacy_quiesced || exit 1
+  raya_verify_legacy_retired || exit 1
+  [[ "$(cat "$TMP/restarted-bootouts")" == com.xrli.raya.brain ]] || exit 1
+  jq -e '(.legacy_owner[] | select(.label == "com.xrli.raya.brain") |
+      .pid == 1671 and .start == "current-brain-start" and
+      (.stop_started_at_ms | type == "number") and
+      (.disabled_at_ms | type == "number") and (.stopped_at_ms | type == "number")) and
+    (.legacy_owner[] | select(.label == "com.xrli.raya.voice") |
+      (.stopped_at_ms | type == "number"))' "$RAYA_MIGRATION_MANIFEST" >/dev/null || exit 1
+  [[ "$(wc -l < "$TMP/restarted-owner-alerts" | tr -d ' ')" == 1 ]]
+)
+if [[ $? == 0 ]]; then
+  pass "restarted live legacy owner uses launchd PID and exact command before normal prestop"
+else
+  fail "restarted live legacy owner must not be mistaken for a stale ledger PID"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# A live service label is not sufficient authority when that PID runs a
+# foreign command. Verification and quiesce must both stay fail-closed.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  write_p2_manifest
+  for app in brain voice; do
+    label="com.xrli.raya.$app"
+    digest="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/$label.plist")"
+    raya_manifest_transform P2 P2 \
+      '.legacy_owner += [{label:$label,plist_sha256:$digest,loaded:true,pid:99,start:"old-start"}]' \
+      --arg label "$label" --arg digest "$digest" || exit 1
+  done
+  launchctl() {
+    case "$1" in
+      print) printf 'pid = 1671\n' ;;
+      disable|bootout) touch "$TMP/foreign-live-mutation" ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_process_start() { printf '%s\n' current-start; }
+  raya_process_command() { printf '%s\n' '/usr/bin/python3 /tmp/foreign.py'; }
+  before="$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")"
+  raya_verify_legacy_owners >/dev/null 2>&1 && exit 1
+  raya_ensure_legacy_quiesced >/dev/null 2>&1 && exit 1
+  [[ "$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")" == "$before" && ! -e "$TMP/foreign-live-mutation" ]]
+)
+if [[ $? == 0 ]]; then
+  pass "live legacy label rejects a foreign current process without side effects"
+else
+  fail "launchd PID must match the expected legacy command before prestop"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# A ledger can outlive both legacy jobs. Missing launchd ownership is safe only
+# when the recorded PID is gone or has a different process birth, and prestop
+# verification must remain read-only until quiesce makes the stop durable.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  write_p2_manifest
+  sh -c 'exit 0' & dead_pid=$!
+  wait "$dead_pid"
+  brain_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.brain.plist")"
+  voice_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.voice.plist")"
+  raya_manifest_transform P2 P2 '.legacy_owner = [
+    {label:"com.xrli.raya.brain",plist_sha256:$brain,loaded:true,pid:$dead,start:"recorded-brain-start"},
+    {label:"com.xrli.raya.voice",plist_sha256:$voice,loaded:true,pid:$reused,start:"recorded-voice-start"}
+  ]' --arg brain "$brain_hash" --arg voice "$voice_hash" \
+    --argjson dead "$dead_pid" --argjson reused "$$" || exit 1
+  launchctl() {
+    local app label
+    case "$1" in
+      print) printf 'Could not find service\n' >&2; return 1 ;;
+      disable) label="${2##*/}"; touch "$TMP/$label.stale-disabled" ;;
+      print-disabled)
+        printf 'disabled services = {\n'
+        for app in brain voice; do
+          label="com.xrli.raya.$app"
+          [[ ! -e "$TMP/$label.stale-disabled" ]] || printf '"%s" => disabled\n' "$label"
+        done
+        printf '}\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_process_start() {
+    [[ "$1" == "$$" ]] && printf '%s\n' 'current-reused-process-start'
+  }
+  raya_alert() { printf '%s\n' "$*" >> "$TMP/stale-owner-alerts"; }
+  before="$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")"
+  raya_verify_legacy_owners || exit 1
+  [[ "$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")" == "$before" ]] || exit 1
+  raya_verify_legacy_owners || exit 1
+  [[ "$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")" == "$before" ]] || exit 1
+  raya_ensure_legacy_quiesced || exit 1
+  raya_verify_legacy_retired || exit 1
+  jq -e 'all(.legacy_owner[];
+    (.stop_started_at_ms | type == "number") and
+    .stop_started_at_ms == .disabled_at_ms and
+    .disabled_at_ms == .stopped_at_ms)' "$RAYA_MIGRATION_MANIFEST" >/dev/null || exit 1
+  [[ "$(wc -l < "$TMP/stale-owner-alerts" | tr -d ' ')" == 2 ]] || exit 1
+  [[ "$(rg -c '^warning ' "$TMP/stale-owner-alerts")" == 2 ]]
+)
+if [[ $? == 0 ]]; then
+  pass "missing legacy services accept dead or reused PIDs, stay read-only through prestop, then retire durably"
+else
+  fail "missing legacy services must distinguish dead/reused PIDs and defer writes until quiesce"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# The production handoff can arrive with brain already booted out + disabled
+# while voice remains loaded after a clean exit. Neither shape has a live PID;
+# prestop must accept both, avoid repeating brain mutations, and boot out voice.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  write_p2_manifest
+  sh -c 'exit 0' & dead_pid=$!
+  wait "$dead_pid"
+  brain_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.brain.plist")"
+  voice_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.voice.plist")"
+  raya_manifest_transform P2 P2 '.legacy_owner = [
+    {label:"com.xrli.raya.brain",plist_sha256:$brain,loaded:true,pid:$dead,start:"recorded-brain-start"},
+    {label:"com.xrli.raya.voice",plist_sha256:$voice,loaded:true,pid:null,start:null}
+  ]' --arg brain "$brain_hash" --arg voice "$voice_hash" --argjson dead "$dead_pid" || exit 1
+  launchctl() {
+    local label
+    case "$1" in
+      print)
+        label="${2##*/}"
+        if [[ "$label" == com.xrli.raya.voice && ! -e "$TMP/$label.exact-booted-out" ]]; then
+          printf 'gui/501/%s = {\n\tstate = not running\n}\n' "$label"
+        else
+          printf 'Bad request.\nCould not find service "%s" in domain for user gui: 501\n' "$label" >&2
+          return 1
+        fi ;;
+      disable)
+        label="${2##*/}"
+        printf '%s\n' "$label" >> "$TMP/exact-shape-disables"
+        touch "$TMP/$label.exact-disabled" ;;
+      print-disabled)
+        printf 'disabled services = {\n"com.xrli.raya.brain" => disabled\n'
+        [[ ! -e "$TMP/com.xrli.raya.voice.exact-disabled" ]] \
+          || printf '"com.xrli.raya.voice" => disabled\n'
+        printf '}\n' ;;
+      bootout)
+        label="${3##*/}"; label="${label%.plist}"
+        printf '%s\n' "$label" >> "$TMP/exact-shape-bootouts"
+        touch "$TMP/$label.exact-booted-out" ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_process_start() { return 1; }
+  raya_alert() { printf '%s\n' "$*" >> "$TMP/exact-shape-alerts"; }
+  before="$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")"
+  raya_verify_legacy_owners || exit 1
+  [[ "$(raya_sha256 "$RAYA_MIGRATION_MANIFEST")" == "$before" ]] || exit 1
+  raya_ensure_legacy_quiesced || exit 1
+  raya_verify_legacy_retired || exit 1
+  [[ "$(cat "$TMP/exact-shape-disables")" == com.xrli.raya.voice ]] || exit 1
+  [[ "$(cat "$TMP/exact-shape-bootouts")" == com.xrli.raya.voice ]] || exit 1
+  jq -e 'all(.legacy_owner[];
+    (.stop_started_at_ms | type == "number") and
+    (.disabled_at_ms | type == "number") and
+    (.stopped_at_ms | type == "number"))' "$RAYA_MIGRATION_MANIFEST" >/dev/null || exit 1
+  [[ "$(rg -c '^warning ' "$TMP/exact-shape-alerts")" == 2 ]]
+)
+if [[ $? == 0 ]]; then
+  pass "pre-disabled missing brain and loaded-not-running voice retire without repeated brain mutation"
+else
+  fail "the exact production handoff must tolerate both non-running launchd shapes"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# A still-live recorded owner and an unreadable process birth are both
+# indeterminate: neither may be treated as a self-retired legacy shell.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  write_p2_manifest
+  brain_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.brain.plist")"
+  voice_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.voice.plist")"
+  raya_manifest_transform P2 P2 '.legacy_owner = [
+    {label:"com.xrli.raya.brain",plist_sha256:$brain,loaded:true,pid:$pid,start:"recorded-start"},
+    {label:"com.xrli.raya.voice",plist_sha256:$voice,loaded:true,pid:$pid,start:"recorded-start"}
+  ]' --arg brain "$brain_hash" --arg voice "$voice_hash" --argjson pid "$$" || exit 1
+  launchctl() { printf 'Could not find service\n' >&2; return 1; }
+  raya_process_start() { printf '%s\n' recorded-start; }
+  raya_verify_legacy_owners >/dev/null 2>&1 && exit 1
+  raya_process_start() { return 1; }
+  raya_verify_legacy_owners >/dev/null 2>&1 && exit 1
+  raya_process_start() { printf '%s\n' reused-start; }
+  raya_verify_legacy_owners
+)
+if [[ $? == 0 ]]; then
+  pass "missing legacy service rejects a still-live or indeterminate recorded owner"
+else
+  fail "missing legacy service must fail closed unless PID identity proves the old owner exited"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# Fresh resume inspection records an already-missing owner with pid=null. That
+# canonical production path must not be forced through the stale-PID helper.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  write_p2_manifest
+  for app in brain voice; do
+    label="com.xrli.raya.$app"
+    digest="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/$label.plist")"
+    raya_manifest_transform P2 P2 \
+      '.legacy_owner += [{label:$label,plist_sha256:$digest,loaded:false,pid:null,start:null}]' \
+      --arg label "$label" --arg digest "$digest" || exit 1
+  done
+  launchctl() {
+    local app label
+    case "$1" in
+      print) printf 'Could not find service\n' >&2; return 1 ;;
+      disable) label="${2##*/}"; touch "$TMP/$label.null-disabled" ;;
+      print-disabled)
+        printf 'disabled services = {\n'
+        for app in brain voice; do
+          label="com.xrli.raya.$app"
+          [[ ! -e "$TMP/$label.null-disabled" ]] || printf '"%s" => disabled\n' "$label"
+        done
+        printf '}\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_alert() { printf '%s\n' "$*" >> "$TMP/null-owner-alerts"; }
+  raya_verify_legacy_owners || exit 1
+  raya_ensure_legacy_quiesced || exit 1
+  raya_verify_legacy_retired || exit 1
+  jq -e 'all(.legacy_owner[]; .stop_started_at_ms == .disabled_at_ms and
+    .disabled_at_ms == .stopped_at_ms)' "$RAYA_MIGRATION_MANIFEST" >/dev/null
+)
+if [[ $? == 0 ]]; then
+  pass "pid-null missing owners complete quiesce without stale-PID evidence"
+else
+  fail "pid-null missing owners must remain the canonical resume path"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# A launchd job and its ledger identity can both disappear while another
+# byte-identical legacy writer remains alive outside either owner record. Every
+# prestop/retirement gate must find that process and fail before recording a
+# completed stop, for both the stale-PID and fresh pid=null ledger shapes.
+(
+  trap - EXIT
+  export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
+  brain_cli="$RAYA_CODE_DIR/apps/brain/dist/cli.js"
+  brain_backup="$TMP/brain-cli-before-unmanaged"
+  brain_existed=0
+  if [[ -e "$brain_cli" ]]; then
+    cp "$brain_cli" "$brain_backup" || exit 1
+    brain_existed=1
+  fi
+  mkdir -p "$(dirname "$brain_cli")"
+  printf '%s\n' 'setInterval(() => {}, 1000);' > "$brain_cli"
+  "$(command -v node)" "$brain_cli" run &
+  ghost_pid=$!
+  cleanup_unmanaged_legacy() {
+    kill "$ghost_pid" >/dev/null 2>&1 || true
+    wait "$ghost_pid" >/dev/null 2>&1 || true
+    if [[ "$brain_existed" == 1 ]]; then
+      cp "$brain_backup" "$brain_cli"
+    else
+      rm -f "$brain_cli"
+    fi
+  }
+  trap cleanup_unmanaged_legacy EXIT
+  kill -0 "$ghost_pid" 2>/dev/null || exit 1
+
+  sh -c 'exit 0' & dead_pid=$!
+  wait "$dead_pid"
+  brain_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.brain.plist")"
+  voice_hash="$(raya_sha256 "$RAYA_LEGACY_PLIST_DIR/com.xrli.raya.voice.plist")"
+  launchctl() {
+    local label
+    case "$1" in
+      print) printf 'Could not find service\n' >&2; return 1 ;;
+      disable) touch "$TMP/unmanaged-legacy-mutation" ;;
+      print-disabled)
+        printf 'disabled services = {\n'
+        printf '"com.xrli.raya.brain" => disabled\n'
+        printf '"com.xrli.raya.voice" => disabled\n}\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_process_snapshot() {
+    printf '%s %s %s run\n' "$ghost_pid" "$(command -v node)" "$brain_cli"
+  }
+
+  failed=0
+  for ledger_shape in dead null; do
+    write_p2_manifest
+    if [[ "$ledger_shape" == dead ]]; then
+      raya_manifest_transform P2 P2 '.legacy_owner = [
+        {label:"com.xrli.raya.brain",plist_sha256:$brain,loaded:true,pid:$dead,start:"recorded-brain-start"},
+        {label:"com.xrli.raya.voice",plist_sha256:$voice,loaded:false,pid:null,start:null}
+      ]' --arg brain "$brain_hash" --arg voice "$voice_hash" \
+        --argjson dead "$dead_pid" || exit 1
+    else
+      raya_manifest_transform P2 P2 '.legacy_owner = [
+        {label:"com.xrli.raya.brain",plist_sha256:$brain,loaded:false,pid:null,start:null},
+        {label:"com.xrli.raya.voice",plist_sha256:$voice,loaded:false,pid:null,start:null}
+      ]' --arg brain "$brain_hash" --arg voice "$voice_hash" || exit 1
+    fi
+    cp "$RAYA_MIGRATION_MANIFEST" "$TMP/unmanaged-$ledger_shape-initial.json"
+
+    raya_verify_legacy_owners >/dev/null 2>&1 && failed=1
+    cat "$TMP/unmanaged-$ledger_shape-initial.json" > "$RAYA_MIGRATION_MANIFEST"
+    raya_quiesce_legacy_owner >/dev/null 2>&1 && failed=1
+    jq -e 'all(.legacy_owner[]; .stopped_at_ms == null)' \
+      "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || failed=1
+    [[ ! -e "$TMP/unmanaged-legacy-mutation" ]] || failed=1
+
+    jq '(.legacy_owner[]) |=
+      (.stop_started_at_ms = 1 | .disabled_at_ms = 1 | .stopped_at_ms = 1)' \
+      "$TMP/unmanaged-$ledger_shape-initial.json" > "$RAYA_MIGRATION_MANIFEST"
+    chmod 600 "$RAYA_MIGRATION_MANIFEST"
+    raya_verify_legacy_retired >/dev/null 2>&1 && failed=1
+  done
+  exit "$failed"
+)
+if [[ $? == 0 ]]; then
+  pass "unmanaged legacy look-alike fails every retirement gate without ledger mutation"
+else
+  fail "unmanaged legacy look-alike must remain visible outside launchd and the ledger"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST" "$TMP/unmanaged-legacy-mutation"
+
+# Once both legacy jobs are durably retired, the recurring gate must not
+# depend on a plist or its versioned Homebrew node path surviving forever.
+# It must still obtain positive evidence from the full process census and
+# launchd, and fail closed whenever either probe is unavailable.
+(
+  trap - EXIT
+  source_plist_dir="$TMP/authorization-plists"
+  export RAYA_LEGACY_PLIST_DIR="$TMP/retired-artifact-plists"
+  mkdir -p "$RAYA_LEGACY_PLIST_DIR"
+  write_p2_manifest
+  jq '.legacy_owner = [
+    {label:"com.xrli.raya.brain",disabled_at_ms:1,stopped_at_ms:1},
+    {label:"com.xrli.raya.voice",disabled_at_ms:1,stopped_at_ms:1}
+  ]' "$RAYA_MIGRATION_MANIFEST" > "$TMP/retired-artifact-manifest.json"
+  mv "$TMP/retired-artifact-manifest.json" "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+  launchctl() {
+    case "$1" in
+      print-disabled)
+        printf 'disabled services = {\n'
+        printf '"com.xrli.raya.brain" => disabled\n'
+        printf '"com.xrli.raya.voice" => disabled\n}\n' ;;
+      print) printf 'Could not find service\n' >&2; return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_process_snapshot() { return 0; }
+
+  # (a) Retirement stays verifiable after the old plists are deleted.
+  raya_verify_legacy_retired || exit 1
+
+  # (b) A surviving plist may point at a Homebrew keg removed by an upgrade.
+  for app in brain voice; do
+    label="com.xrli.raya.$app"
+    cp "$source_plist_dir/$label.plist" "$RAYA_LEGACY_PLIST_DIR/$label.plist" || exit 1
+    python3 - "$RAYA_LEGACY_PLIST_DIR/$label.plist" "$TMP/removed-keg/bin/node" <<'PY'
+import plistlib, sys
+path, removed_node = sys.argv[1:]
+with open(path, "rb") as handle:
+    value = plistlib.load(handle)
+value["ProgramArguments"][0] = removed_node
+with open(path, "wb") as handle:
+    plistlib.dump(value, handle)
+PY
+  done
+  raya_verify_legacy_retired || exit 1
+
+  # (c) Missing artifacts never hide an unmanaged legacy-shaped writer.
+  rm -f "$RAYA_LEGACY_PLIST_DIR"/*.plist
+  raya_process_snapshot() {
+    printf '9876 %s %s run\n' "$TMP/removed-keg/bin/node" \
+      "$RAYA_CODE_DIR/apps/brain/dist/cli.js"
+  }
+  raya_verify_legacy_retired >/dev/null 2>&1 && exit 1
+
+  # (d) Unavailable ps or launchctl evidence must remain fail-closed.
+  raya_process_snapshot() { return 71; }
+  raya_verify_legacy_retired >/dev/null 2>&1 && exit 1
+  raya_process_snapshot() { return 0; }
+  launchctl() {
+    case "$1" in
+      print-disabled)
+        printf 'disabled services = {\n'
+        printf '"com.xrli.raya.brain" => disabled\n'
+        printf '"com.xrli.raya.voice" => disabled\n}\n' ;;
+      print) printf 'launchctl probe unavailable\n' >&2; return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  raya_verify_legacy_retired >/dev/null 2>&1 && exit 1
+  exit 0
+)
+if [[ $? == 0 ]]; then
+  pass "retired gate ignores ephemeral artifacts but requires clear process and launchd probes"
+else
+  fail "retired gate must survive artifact cleanup without reopening unmanaged-owner fail-open"
 fi
 rm -f "$RAYA_MIGRATION_MANIFEST"
 
@@ -473,9 +939,35 @@ CALLS="$TMP/calls"
 : > "$CALLS"
 saved_quiesce="$(declare -f raya_quiesce_legacy_owner)"
 raya_quiesce_legacy_owner() { printf '%s\n' quiesce >> "$CALLS"; }
-raya_emit_window_probe() { printf '%s\n' window-probe >> "$CALLS"; }
+raya_emit_window_probe() {
+  local checkpoint="" activation_state=""
+  checkpoint="$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" || return 1
+  activation_state="$(jq -r 'if (.activated_at | type == "string" and length > 0) then "activated" else "unactivated" end' \
+    "$RAYA_MIGRATION_MANIFEST")" || return 1
+  printf 'window-probe %s %s\n' "$checkpoint" "$activation_state" >> "$CALLS"
+  if [[ "$checkpoint" == P3 ]]; then
+    raya_manifest_transform P3 P3 '.cutover_probe = {
+      intent:{nonce:"seed-nonce",at:"2026-09-13T00:00:00Z"},
+      message_id:"12345678901234567"
+    }'
+  else
+    jq -e '.checkpoint == "P4b" and .cursor.status == "preexisting" and
+      (.activated_at | type == "string" and length > 0) and
+      .seed_probe.intent.nonce == "seed-nonce" and .cutover_probe == null' \
+      "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+    raya_manifest_transform P4b P4b '.cutover_probe = {
+      intent:{nonce:"activation-nonce",at:.activated_at},
+      message_id:"22345678901234567"
+    }'
+  fi
+}
 raya_compute_seed_boundary() { printf '%s\n' seed-boundary >> "$CALLS"; }
 raya_standard_seed_inbound_cursor() {
+  if [[ "${3:-}" == preexisting ]]; then
+    printf '%s\n' validate-preexisting >> "$CALLS"
+    printf '%s\n' '{"status":"preexisting","migrationId":"fly-2445-test","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","seedSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","channels":1}'
+    return
+  fi
   printf '{}\n' > "$1"; chmod 600 "$1"
   local digest; digest="$(shasum -a 256 "$1" | awk '{print $1}')"
   printf '%s\n' "{\"status\":\"seeded\",\"migrationId\":\"fly-2445-test\",\"sha256\":\"$digest\",\"channels\":1}"
@@ -487,8 +979,134 @@ if raya_standard_cutover; then pass "runs P3-P5 through the standard Lead lifecy
   fail "runs P3-P5 through the standard Lead lifecycle"
 fi
 expect_eq "P5" "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" "successful install advances the durable checkpoint to P5"
-expected_calls=$'quiesce\nwindow-probe\nseed-boundary\npreflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST
+expected_calls=$'quiesce\nwindow-probe P3 unactivated\nseed-boundary\npreflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST
 expect_eq "$expected_calls" "$(cat "$CALLS")" "cutover orders quiesce, seed fence, preflight, install, verify"
+
+: > "$CALLS"
+post_install_live_attempts=0
+lead_installed=0
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  if [[ "$1" == install ]]; then lead_installed=1; return 0; fi
+  if [[ "$1" == verify && "$3" == live && "$lead_installed" == 1 ]]; then
+    post_install_live_attempts=$((post_install_live_attempts + 1))
+    (( post_install_live_attempts >= 3 ))
+  fi
+}
+raya_wait() { printf 'wait %s\n' "$1" >> "$CALLS"; }
+write_p2_manifest
+jq '.cursor.status="preexisting"' "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp" \
+  && mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+if raya_standard_cutover; then
+  pass "preexisting cursor advances P3-P5 through a verified Lead restart"
+else
+  fail "preexisting cursor must revalidate and restart the live Lead"
+fi
+expected_calls=$'quiesce\nwindow-probe P3 unactivated\nseed-boundary\nvalidate-preexisting\nvalidate-preexisting\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\nwait 2\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\nwait 2\nverify --stage live '$RAYA_CANONICAL_MANIFEST$'\nwindow-probe P4b activated'
+expect_eq "$expected_calls" "$(cat "$CALLS")" "preexisting cutover waits for the restarted Lead to become live"
+if jq -e '.checkpoint == "P5" and .cursor.status == "preexisting" and
+  .cursor.sha256 == ("b" * 64) and .cursor.observed_sha256 == ("a" * 64) and
+  (.lead_restart_installed_at | type == "string" and length > 0) and
+  (.activated_at | type == "string" and length > 0) and
+  .seed_probe.intent.nonce == "seed-nonce" and
+  .cutover_probe.intent.nonce == "activation-nonce"' \
+  "$RAYA_MIGRATION_MANIFEST" >/dev/null; then
+  pass "preexisting cursor retains boundary and observed live digests"
+else
+  fail "preexisting cursor receipt must separate boundary from live observation"
+fi
+
+: > "$CALLS"
+pre_restart_verify_attempts=0
+lead_install_count=0
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  if [[ "$1" == verify && "${3:-}" == live ]]; then
+    if [[ "$lead_install_count" == 0 ]]; then
+      pre_restart_verify_attempts=$((pre_restart_verify_attempts + 1))
+      (( pre_restart_verify_attempts >= 2 ))
+      return
+    fi
+    return 0
+  fi
+  if [[ "$1" == install ]]; then
+    lead_install_count=$((lead_install_count + 1))
+  fi
+}
+raya_wait() { return 0; }
+write_p2_manifest
+jq '.cursor.status="preexisting"' "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp" \
+  && mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+RAYA_DEPLOY_DETAIL=""
+if raya_standard_cutover >/dev/null 2>&1; then
+  fail "pre-restart live probe failure must defer before install"
+elif jq -e '.checkpoint == "P4b" and .lead_restart_installed_at == null' \
+  "$RAYA_MIGRATION_MANIFEST" >/dev/null \
+  && [[ "$RAYA_DEPLOY_DETAIL" == awaiting_standard_lead_pre_restart \
+    && "$lead_install_count" == 0 ]]; then
+  pass "pre-restart live probe failure stays retryable without installing"
+else
+  fail "pre-restart live probe failure must preserve an uninstalled P4b retry"
+fi
+RAYA_DEPLOY_DETAIL=""
+if raya_standard_cutover \
+  && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 \
+    && "$lead_install_count" == 1 ]]; then
+  pass "pre-restart live probe retry installs exactly once after recovery"
+else
+  fail "recovered pre-restart live probe must resume with one install"
+fi
+
+(
+  trap - EXIT
+  attempts=0
+  waits=0
+  raya_standard_lead() { attempts=$((attempts + 1)); return 1; }
+  raya_wait() { waits=$((waits + 1)); }
+  raya_standard_lead_wait_live && exit 1
+  [[ "$attempts" == 30 && "$waits" == 29 ]]
+)
+if [[ $? == 0 ]]; then
+  pass "standard Lead live readiness wait is bounded to 30 attempts"
+else
+  fail "standard Lead live readiness must retry without an unbounded wait"
+fi
+
+: > "$CALLS"
+lead_install_count=0
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  if [[ "$1" == install ]]; then
+    lead_install_count=$((lead_install_count + 1))
+    return 0
+  fi
+  [[ "$lead_install_count" == 0 ]]
+}
+raya_wait() { return 0; }
+write_p2_manifest
+jq '.cursor.status="preexisting"' "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp" \
+  && mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+raya_standard_cutover >/dev/null 2>&1 && fail "exhausted Lead readiness must remain at P4b"
+if jq -e '.checkpoint == "P4b" and (.lead_restart_installed_at | type == "string")' \
+  "$RAYA_MIGRATION_MANIFEST" >/dev/null && [[ "$lead_install_count" == 1 ]]; then
+  pass "exhausted Lead readiness persists the completed install"
+else
+  fail "Lead readiness retry must remember that install already completed"
+fi
+raya_standard_lead() {
+  printf '%s\n' "$*" >> "$CALLS"
+  [[ "$1" != install ]]
+}
+if raya_standard_cutover \
+  && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 ]] \
+  && [[ "$(rg -c '^install --project raya --lead raya$' "$CALLS")" == 1 ]]; then
+  pass "P4b readiness resume never repeats the completed Lead install"
+else
+  fail "P4b readiness resume must only recheck live state"
+fi
 
 : > "$CALLS"
 write_p2_manifest '["message-unknown-side-effect"]'
@@ -502,7 +1120,7 @@ write_p2_manifest
 : > "$CALLS"
 raya_compute_seed_boundary() { return 1; }
 if ! raya_standard_cutover && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P3 ]] \
-  && [[ "$(cat "$CALLS")" == $'quiesce\nwindow-probe' ]]; then
+  && [[ "$(cat "$CALLS")" == $'quiesce\nwindow-probe P3 unactivated' ]]; then
   pass "unresolved seed boundary stops at P3 before install"
 else
   fail "unresolved seed boundary must stop before install"
@@ -554,7 +1172,7 @@ printf 'console.log("cos-v2")\n' > "$publisher/packages/cos/dist/cli.js"
 git -C "$publisher" add packages/cos/dist/cli.js
 git -C "$publisher" commit -qm update
 git -C "$publisher" push -q origin main
-followup_target="$(git -C "$publisher" rev-parse HEAD)"
+ledger_target="$(git -C "$publisher" rev-parse HEAD)"
 saved_bounded="$(declare -f raya_run_bounded_in_checkout)"
 saved_lead="$(declare -f raya_standard_lead)"
 saved_summary_migration="$(declare -f raya_migrate_summary_presentation)"
@@ -596,6 +1214,15 @@ RAYA_SUMMARY_PRESENTATION_MIGRATION_TOOL="$saved_summary_tool"
 unset TEAMLEAD_DB_PATH SUMMARY_MIGRATION_CALLS
 raya_migrate_summary_presentation() { return 0; }
 
+if raya_begin_followup_transaction \
+  && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P2 ]] \
+  && [[ "$(jq -r .mode "$RAYA_MIGRATION_MANIFEST")" == standard-update ]] \
+  && [[ "$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$ledger_target" ]]; then
+  pass "P7 freezes the first observed Raya main in a resumable standard update ledger"
+else
+  fail "P7 must persist the first observed Raya main before standard update deployment"
+fi
+
 legacy_plist_dir="$TMP/legacy-launch-agents"
 mkdir -p "$legacy_plist_dir"
 touch "$legacy_plist_dir/com.xrli.raya.brain.plist"
@@ -630,15 +1257,47 @@ chmod 600 "$RAYA_MIGRATION_MANIFEST"
 rm -f "$legacy_plist_dir/com.xrli.raya.brain.plist"
 unset RAYA_LEGACY_PLIST_DIR RAYA_MIGRATION_ALLOW_LEGACY_STOP
 
+printf 'console.log("cos-v3")\n' > "$publisher/packages/cos/dist/cli.js"
+git -C "$publisher" add packages/cos/dist/cli.js
+git -C "$publisher" commit -qm summary-after-ledger
+git -C "$publisher" push -q origin main
+followup_target="$(git -C "$publisher" rev-parse HEAD)"
+
+stale_pin_head_before="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
+stale_pin_pointer_before="$(readlink "$RAYA_WORKSPACE/business/current")"
+stale_pin_manifest_before="$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')"
+stale_pin_flywheel="$(jq -r .target_flywheel_sha "$RAYA_MIGRATION_MANIFEST")"
+stale_pin_version="$RAYA_WORKSPACE/.flywheel-managed/versions/$followup_target"
+printf '%040d\n' 4 > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+: > "$CALLS"
+raya_run_bounded_in_checkout() { printf 'bounded %s\n' "$*" >> "$CALLS"; return 0; }
+if ! raya_prepare_source >/dev/null 2>&1 \
+  && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$stale_pin_head_before" ]] \
+  && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$stale_pin_pointer_before" ]] \
+  && [[ "$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')" == "$stale_pin_manifest_before" ]] \
+  && [[ ! -e "$stale_pin_version" && ! -s "$CALLS" ]]; then
+  pass "stale standard update pins fail before checkout, build, or projection"
+else
+  fail "stale standard update pins must be rejected before any source or business mutation"
+fi
+git -C "$RAYA_CODE_DIR" reset --hard -q "$stale_pin_head_before"
+rm -f "$RAYA_WORKSPACE/business/current"
+ln -s "$stale_pin_pointer_before" "$RAYA_WORKSPACE/business/current"
+rm -rf "$stale_pin_version"
+printf '%s\n' "$stale_pin_flywheel" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+raya_run_bounded_in_checkout() { return 0; }
+: > "$CALLS"
+
 if raya_prepare_source \
   && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 ]] \
   && [[ "$(jq -r .mode "$RAYA_MIGRATION_MANIFEST")" == standard-update ]] \
+  && [[ "$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$followup_target" ]] \
   && [[ "$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$followup_target" ]] \
   && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$followup_target" ]] \
   && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$RAYA_WORKSPACE/.flywheel-managed/versions/$followup_target" ]]; then
-  pass "P7 starts a new resumable standard update transaction when Raya main advances"
+  pass "standard update deploys a newer Raya main and records its actual SHA"
 else
-  fail "P7 must not freeze the scheduled Raya shuttle at the first migrated SHA"
+  fail "standard update must not freeze at the first ledger target when Raya main advances"
 fi
 expected_followup_calls=$'preflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST
 expect_eq "$expected_followup_calls" "$(cat "$CALLS")" "follow-up update uses only the public standard Lead lifecycle"
@@ -708,6 +1367,29 @@ if raya_standard_collect_proof >/dev/null 2>&1; then
   fail "proof from an earlier migration or SHA pair must not be reusable"
 else
   pass "proof is bound to the current migration and two-repository SHA pair"
+fi
+
+git -C "$publisher" reset --hard -q "$frozen_raya"
+printf 'diverged\n' > "$publisher/diverged.md"
+git -C "$publisher" add diverged.md
+git -C "$publisher" commit -qm force-pushed-main
+git -C "$publisher" push -q --force origin main
+jq '.checkpoint="P2" | .unresolved=[] | .mode="standard-update"' \
+  "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp"
+mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+standard_head_before="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
+standard_manifest_before="$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')"
+standard_pointer_before="$(readlink "$RAYA_WORKSPACE/business/current")"
+: > "$CALLS"
+if ! raya_prepare_source >/dev/null 2>&1 \
+  && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$standard_head_before" ]] \
+  && [[ "$(shasum -a 256 "$RAYA_MIGRATION_MANIFEST" | awk '{print $1}')" == "$standard_manifest_before" ]] \
+  && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$standard_pointer_before" ]] \
+  && [[ ! -s "$CALLS" ]]; then
+  pass "standard update rejects a force-pushed non-descendant before install or projection"
+else
+  fail "standard update must fail closed when origin/main is not a fast-forward"
 fi
 eval "$saved_bounded"
 eval "$saved_lead"
@@ -824,6 +1506,25 @@ fi
 )
 if [[ $? == 0 ]]; then pass "pre-stop deferral keeps its state without a severe alert"; else
   fail "pre-stop deferral must not be a severe deploy failure"
+fi
+(
+  trap - EXIT
+  write_p2_manifest
+  jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+  raya_process_start() { printf 'fixture-start\n'; }
+  raya_prepare_source() { return 0; }
+  raya_standard_cutover() {
+    RAYA_DEPLOY_DETAIL=awaiting_standard_lead_pre_restart
+    return 1
+  }
+  raya_alert() { touch "$TMP/pre-restart-unexpected-alert"; }
+  updater_raya_pass >/dev/null 2>&1
+  [[ "$RAYA_DEPLOY_STATE" == awaiting_lead \
+    && "$RAYA_DEPLOY_DETAIL" == awaiting_standard_lead_pre_restart \
+    && ! -e "$TMP/pre-restart-unexpected-alert" ]]
+)
+if [[ $? == 0 ]]; then pass "pre-restart Lead blip waits without a severe alert"; else
+  fail "pre-restart Lead blip must remain retryable without paging"
 fi
 
 printf 'Results: %s passed, %s failed\n' "$PASSED" "$FAILED"

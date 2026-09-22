@@ -1,0 +1,21 @@
+{
+  "checkedAt": "2026-09-18T01:17:49.589Z",
+  "artifact": "engineering/doc/FLY-2702-host-package-gate/design.html",
+  "bytes": 13039,
+  "commentInputs": 10,
+  "checks": [
+    "one nonced inline script",
+    "no external assets or inline handlers or own CSP",
+    "all cards commentable",
+    "pathname isolation",
+    "save reload",
+    "long comment chunks marker/title and <=1800",
+    "clipboard success/unavailable/rejection fallback",
+    "storage denied remains usable",
+    "derived content written as text"
+  ],
+  "result": "passed",
+  "scope": "Node VM controller and source checks, not browser rendering or hosted CSP execution",
+  "browserQA": "unavailable: MCP tool requires approval but approval policy is never",
+  "diagram": "two local mmdc failures; visible pending placeholder and source retained"
+}

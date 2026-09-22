@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { injectHeadMeta } from "../bridge/report-registry.js";
+import { renderDiscordLinkPair } from "../epic-page/discord-link.js";
 import { canonicalDigest, OVERALL_LABELS, overallSchema } from "./contract.js";
 export const HISTORY_TEMPLATE_VERSION = "ship-judgment-history-v1";
 const utc = z
@@ -104,7 +105,11 @@ function renderRow(row: HistoryRow) {
 		row.authorship !== "auto"
 			? "（作者未核验）"
 			: "";
-	const html = `<tr data-audit="${escapeHistoryHtml(audit)}"><td>${bounded(row.issue, 180)}${row.cardUrl ? ` <a href="${escapeHistoryHtml(row.cardUrl)}" rel="noreferrer">原卡</a>` : "（原卡链接缺失）"}</td><td>${sources[row.source]}：${row.overall ? OVERALL_LABELS[row.overall] : "暂无意见"}</td><td>${decision}${attribution} ${clarifications[row.clarification]}</td><td>${bounded(row.summary, 560)}<br><small>审计 ${escapeHistoryHtml(audit)}</small></td></tr>`;
+	const card = row.cardUrl
+		? renderDiscordLinkPair(row.cardUrl, "原卡", undefined, row.issue) ||
+			"（原卡链接不可用）"
+		: "（原卡链接缺失）";
+	const html = `<tr data-audit="${escapeHistoryHtml(audit)}"><td>${bounded(row.issue, 180)} ${card}</td><td>${sources[row.source]}：${row.overall ? OVERALL_LABELS[row.overall] : "暂无意见"}</td><td>${decision}${attribution} ${clarifications[row.clarification]}</td><td>${bounded(row.summary, 560)}<br><small>审计 ${escapeHistoryHtml(audit)}</small></td></tr>`;
 	if (Buffer.byteLength(html) > 2048)
 		throw new Error("history_row_budget_exceeded");
 	return html;

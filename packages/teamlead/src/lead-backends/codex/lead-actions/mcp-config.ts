@@ -1,5 +1,7 @@
 /** FLY-398 — full-access lead-actions MCP config + fail-closed gates (pure). */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import {
 	NONSECRET_RUNNER_KEY_NAMES,
@@ -11,6 +13,10 @@ import {
 	RUNNER_ACTION_TOOL_NAMES,
 	RUNNER_CARRIER_ENV_NAMES,
 } from "../runner-action-names.js";
+import {
+	type LeadAttachmentContext,
+	tryResolveLeadAttachmentContext,
+} from "./attachment-context.js";
 
 /** The MCP server name as it appears in config.toml / the tool-name prefix. */
 export const LEAD_ACTIONS_MCP_SERVER_NAME = "lead_actions";
@@ -22,6 +28,7 @@ export const LEAD_ACTIONS_TOOLS: readonly string[] = [
 	"summary_presentation",
 	"ack_batch",
 	"directory",
+	"discord_read_attachment",
 ];
 
 /** Keys that must NEVER appear as literal MCP-server env values. */
@@ -146,6 +153,7 @@ export interface BuildFullAccessLeadActionsMcpOptions {
 	stateDir: string;
 	commDbPath: string;
 	outboundMode: "direct" | "bridge";
+	attachmentContext?: LeadAttachmentContext;
 	explicitAliases?: string;
 	/** FLY-676 — EFFECTIVE roundtable autoContinue (runtime-computed). When true, the child
 	 * fail-soft refuses proactive discord_send(target="roundtable") (FLY-680). Non-secret. */
@@ -158,10 +166,32 @@ export interface BuildFullAccessLeadActionsMcpOptions {
 export function buildFullAccessLeadActionsMcpServerConfig(
 	opts: BuildFullAccessLeadActionsMcpOptions,
 ): LeadActionsFullAccessMcpServerConfig {
+	const projectsFile = opts.projectsFile?.trim() || undefined;
+	if (
+		opts.attachmentContext &&
+		(opts.outboundMode !== "bridge" ||
+			opts.attachmentContext.projectName !== opts.projectName ||
+			opts.attachmentContext.leadId !== opts.leadId ||
+			!/^[a-f0-9]{64}$/.test(opts.attachmentContext.identityDigest) ||
+			(projectsFile !== undefined &&
+				projectsFile !== opts.attachmentContext.projectsPath))
+	)
+		throw new Error(
+			"attachment MCP context conflicts with canonical coordinates",
+		);
 	const env: Record<string, string> = {
-		...(opts.projectsFile ? { FLYWHEEL_PROJECTS_FILE: opts.projectsFile } : {}),
+		...(opts.attachmentContext
+			? { FLYWHEEL_PROJECTS_FILE: opts.attachmentContext.projectsPath }
+			: projectsFile
+				? { FLYWHEEL_PROJECTS_FILE: projectsFile }
+				: {}),
 		FLYWHEEL_LEAD_ID: opts.leadId,
 		FLYWHEEL_PROJECT_NAME: opts.projectName,
+		...(opts.attachmentContext
+			? {
+					FLYWHEEL_LEAD_IDENTITY_DIGEST: opts.attachmentContext.identityDigest,
+				}
+			: {}),
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: opts.chatChannelId,
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: opts.crossDeptChannelIds.join(","),
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: opts.stateDir,
@@ -198,7 +228,10 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		args: [opts.mainJsPath],
 		env,
 		envVarNames: [
-			...leadActionCredentialNames(opts.outboundMode, !!opts.runnerContext),
+			...new Set([
+				...leadActionCredentialNames(opts.outboundMode, !!opts.runnerContext),
+				...(opts.attachmentContext ? RUNNER_CARRIER_ENV_NAMES : []),
+			]),
 			"FLYWHEEL_LEAD_SUMMARY_ROLE",
 			"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
 			"FLYWHEEL_SUMMARY_GRANULARITY",
@@ -390,12 +423,30 @@ export function fullAccessLeadActionsConfigFromEnv(
 		if (!value) throw new Error(`missing ${key}`);
 		return value;
 	};
+	const outboundMode =
+		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct";
+	const projectsFile =
+		env.FLYWHEEL_PROJECTS_FILE?.trim() ||
+		join(homedir(), ".flywheel", "projects.json");
+	const leadId = required("FLYWHEEL_LEAD_ID");
+	const projectName = required("FLYWHEEL_PROJECT_NAME");
+	const identityDigest = env.FLYWHEEL_LEAD_IDENTITY_DIGEST?.trim();
+	const attachmentContext = identityDigest
+		? tryResolveLeadAttachmentContext({
+				projectsPath: projectsFile,
+				homeDir: homedir(),
+				projectName,
+				leadId,
+				identityDigest,
+				outboundMode,
+			})
+		: undefined;
 	return buildFullAccessLeadActionsMcpServerConfig({
 		projectsFile: env.FLYWHEEL_PROJECTS_FILE,
 		nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
 		mainJsPath: required("FLYWHEEL_LEAD_ACTIONS_MAIN_JS"),
-		leadId: required("FLYWHEEL_LEAD_ID"),
-		projectName: required("FLYWHEEL_PROJECT_NAME"),
+		leadId,
+		projectName,
 		chatChannelId: required("FLYWHEEL_LEAD_CHAT_CHANNEL_ID"),
 		crossDeptChannelIds: (env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS ?? "")
 			.split(",")
@@ -403,8 +454,8 @@ export function fullAccessLeadActionsConfigFromEnv(
 			.filter(Boolean),
 		stateDir: required("FLYWHEEL_LEAD_ACTIONS_STATE_DIR"),
 		commDbPath: required("FLYWHEEL_COMM_DB"),
-		outboundMode:
-			env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct",
+		outboundMode,
+		attachmentContext,
 		explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
 		roundtableAutoContinue:
 			env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE === "1",

@@ -9,6 +9,7 @@ import {
 	validAttentionSince,
 	validDiscordId,
 } from "./attention.js";
+import { discordThreadLinkPair } from "./discord-link.js";
 import { label } from "./labels.js";
 import type { Cell, EpicPageV2, MissingReason } from "./model.js";
 
@@ -159,7 +160,11 @@ export function attentionLink(
 			url: null,
 			reason: item.thread_url.missing?.reason ?? "no_thread_binding",
 		};
-	const expected = `https://discord.com/channels/${guild.value}/${item.thread.value.thread_id}`;
+	const expected = discordThreadLinkPair(
+		guild.value,
+		item.thread.value.thread_id,
+	)?.web;
+	if (!expected) return { url: null, reason: "invalid_discord_id" };
 	return item.thread_url.value === expected
 		? { url: expected }
 		: { url: null, reason: "invalid_discord_id" };

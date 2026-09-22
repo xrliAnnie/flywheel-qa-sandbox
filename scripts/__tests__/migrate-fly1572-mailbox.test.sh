@@ -6,11 +6,35 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
+report_migration_result() {
+	local result_rc="$1" result_output="$2" stderr_path="$3"
+	if [[ -s "$stderr_path" ]]; then
+		sed 's/^/[migrate-fly1572-mailbox stderr] /' "$stderr_path" >&2
+	fi
+	if [[ "$result_rc" -ne 0 ]]; then
+		printf '%s\n' "$result_output" |
+			sed 's/^/[migrate-fly1572-mailbox stdout] /' >&2
+		return "$result_rc"
+	fi
+	return 0
+}
+
 FLYWHEEL_HOME="$TEST_ROOT/flywheel"
 COMM_DIR="$FLYWHEEL_HOME/comm/test"
 COMM_DB="$COMM_DIR/comm.db"
 mkdir -p "$COMM_DIR"
 sqlite3 "$COMM_DB" "CREATE TABLE messages (id TEXT); CREATE TABLE lead_inbox (id TEXT);"
+
+# Failure evidence must survive a non-zero migration exit. This unit-sized
+# control keeps the reporting helper honest without requiring a broken DB run.
+REPORT_FIXTURE="$TEST_ROOT/report-fixture.stderr"
+printf '%s\n' '[slow-sql] fixture failure detail' >"$REPORT_FIXTURE"
+REPORT_RC=0
+REPORT_EVIDENCE="$(report_migration_result 23 '{"partial":true}' "$REPORT_FIXTURE" 2>&1)" || REPORT_RC=$?
+test "$REPORT_RC" -eq 23
+grep -Fq '[migrate-fly1572-mailbox stderr] [slow-sql] fixture failure detail' <<<"$REPORT_EVIDENCE"
+grep -Fq '[migrate-fly1572-mailbox stdout] {"partial":true}' <<<"$REPORT_EVIDENCE"
+
 cp "$COMM_DB" "$COMM_DB.pre-fly1572-test"
 mkdir -p "$COMM_DIR/.fly1572-staging"
 cp "$COMM_DB" "$COMM_DIR/.fly1572-staging/comm.db"
@@ -236,13 +260,18 @@ DB_PATH="$MIGRATED_DB" INTENT_PATH="$MIGRATED_INTENT" pnpm exec tsx -e '
 	}));
 '
 
+MIGRATED_STDERR="$TEST_ROOT/migrated-success.stderr"
 MIGRATED_RC=0
 MIGRATED_OUTPUT="$({
 	cd "$REPO_ROOT"
+	MIGRATED_COMMAND_RC=0
 	pnpm exec tsx scripts/migrate-fly1572-mailbox.ts \
-		--confirm-quiesced --db "$MIGRATED_DB" 2>&1
-})" || MIGRATED_RC=$?
-test "$MIGRATED_RC" -eq 0
+		--confirm-quiesced --db "$MIGRATED_DB" || MIGRATED_COMMAND_RC=$?
+	printf '%s\n' '[slow-sql] {"fixture":"successful diagnostic stays off JSON stdout"}' >&2
+	exit "$MIGRATED_COMMAND_RC"
+} 2>"$MIGRATED_STDERR")" || MIGRATED_RC=$?
+report_migration_result "$MIGRATED_RC" "$MIGRATED_OUTPUT" "$MIGRATED_STDERR" || exit "$MIGRATED_RC"
+grep -Fq '"fixture":"successful diagnostic stays off JSON stdout"' "$MIGRATED_STDERR"
 jq -e --arg path "$MIGRATED_DB" \
 	'.inventory[] | select(.path == $path and .state == "migrated" and .intent.phase == "done")' \
 	<<<"$MIGRATED_OUTPUT" >/dev/null

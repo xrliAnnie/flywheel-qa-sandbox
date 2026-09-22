@@ -229,8 +229,9 @@ voice_cli_out="$(env -i PATH="$PATH" HOME="$SANDBOX/voice-home" \
   CODEX_HOME="$SANDBOX/voice-codex-home" node \
   "$PKG_ROOT/packages/voice-codex/dist/cli.js" --check-config 2>&1)"
 voice_cli_rc=$?
-if [ "$voice_cli_rc" -eq 1 ] && grep -q '^\[voice\] fatal: TEAMLEAD_API_TOKEN is required$' <<<"$voice_cli_out"; then
-  pass "②i installed generic voice CLI loads and rejects absent credentials"
+if [ "$voice_cli_rc" -eq 1 ] \
+   && [ "$voice_cli_out" = '[voice] fatal reasonClass=startup_not_ready operation=startup' ]; then
+  pass "②i installed generic voice CLI loads and rejects absent credentials without leaking config text"
 else
   fail "②i voice CLI import/config boundary failed: rc=$voice_cli_rc output=$voice_cli_out"
 fi
@@ -543,7 +544,51 @@ else
   fail "④f packaged Raya register/preflight failed: register=$GEN_RAYA_REGISTER_RC preflight=$GEN_RAYA_PREFLIGHT_RC $(tail -8 "$SANDBOX/generalized-raya-register.err" "$SANDBOX/generalized-raya-preflight.err" 2>/dev/null | tr '\n' ' ')"
 fi
 
-# ── ④g internal summary transport stays dormant for packaged customers ─────
+# ── ④g packaged persona projection stays dormant without explicit opt-in ───
+cat > "$GEN_STATE/bin/gh" <<SH
+#!/bin/bash
+printf '%s\n' "\$*" >> "$SANDBOX/generalized-raya-gh.calls"
+exit 97
+SH
+chmod +x "$GEN_STATE/bin/gh"
+GEN_RAYA_PERSONA_STATE="$GEN_STATE/state/lead-persona/raya/raya"
+GEN_RAYA_IDENTITY="$GEN_RAYA_ROOT/.lead/raya/identity.md"
+GEN_RAYA_IDENTITY_BEFORE="$(python3 - "$GEN_RAYA_IDENTITY" <<'PY'
+import hashlib, os, stat, sys
+path = sys.argv[1]
+info = os.stat(path)
+with open(path, "rb") as handle:
+    digest = hashlib.sha256(handle.read()).hexdigest()
+print(f"{digest}:{stat.S_IMODE(info.st_mode):o}:{info.st_mtime_ns}")
+PY
+)"
+GEN_RAYA_RUN_RC=0
+FLYWHEEL_LEAD_DRY_RUN=1 run_generalized "$GEN_LAUNCHER" run \
+  "$GEN_STATE/manifests/raya-raya.json" \
+  > "$SANDBOX/generalized-raya-run.out" \
+  2> "$SANDBOX/generalized-raya-run.err" || GEN_RAYA_RUN_RC=$?
+GEN_RAYA_IDENTITY_AFTER="$(python3 - "$GEN_RAYA_IDENTITY" <<'PY'
+import hashlib, os, stat, sys
+path = sys.argv[1]
+info = os.stat(path)
+with open(path, "rb") as handle:
+    digest = hashlib.sha256(handle.read()).hexdigest()
+print(f"{digest}:{stat.S_IMODE(info.st_mode):o}:{info.st_mtime_ns}")
+PY
+)"
+if [ "$GEN_RAYA_RUN_RC" -eq 0 ] \
+  && grep -q 'Raya persona projection: {"status":"skipped","reason":"not_enrolled"}' \
+    "$SANDBOX/generalized-raya-run.out" \
+  && grep -q 'CODEX LEAD DRY RUN' "$SANDBOX/generalized-raya-run.out" \
+  && [ ! -e "$SANDBOX/generalized-raya-gh.calls" ] \
+  && [ ! -e "$GEN_RAYA_PERSONA_STATE" ] \
+  && [ "$GEN_RAYA_IDENTITY_BEFORE" = "$GEN_RAYA_IDENTITY_AFTER" ]; then
+  pass "④g packaged dormant Raya skips repo access and preserves persona state"
+else
+  fail "④g packaged dormant Raya projection was not zero-write: rc=$GEN_RAYA_RUN_RC $(tail -8 "$SANDBOX/generalized-raya-run.out" "$SANDBOX/generalized-raya-run.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── ④h internal summary transport stays dormant for packaged customers ─────
 # The release allowlist deliberately registers Raya's repository names because
 # flywheel-comm is shipped as one compiled package. Customer setup assigns this
 # fixture an explicit exempt role: even with otherwise plausible selectors, the
@@ -568,9 +613,9 @@ summary_merge_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
 if grep -q "summary_duty_required" <<<"$summary_out" \
    && grep -q "summary_merge_authority_required" <<<"$summary_merge_out" \
    && [ ! -e "$SANDBOX/summary-gh.log" ]; then
-  pass "④g packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
+  pass "④h packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
 else
-  fail "④g packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
+  fail "④h packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
 fi
 
 echo ""

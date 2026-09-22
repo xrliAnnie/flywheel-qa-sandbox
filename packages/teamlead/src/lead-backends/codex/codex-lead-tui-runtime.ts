@@ -51,6 +51,10 @@ import {
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import {
+	canonicalSubmissionDigest,
+	resolvePersonaStateRoot,
+} from "flywheel-config";
 import { storeCodexLeadThreadRotationEnabled } from "../../bridge/flag-store-runtime.js";
 import { loadProjects, type ProjectEntry } from "../../ProjectConfig.js";
 import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.js";
@@ -107,6 +111,7 @@ import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import { tryResolveLeadAttachmentContext } from "./lead-actions/attachment-context.js";
 import {
 	assertFullAccessLeadActionsConfigGate,
 	assertFullAccessSandboxConfig,
@@ -114,16 +119,28 @@ import {
 } from "./lead-actions/mcp-config.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
+import {
+	type PersonaColdProof,
+	type VerifiedPersona,
+	verifyPersonaColdProof,
+	verifyPersonaStartup,
+	writePersonaObservationReceipt,
+} from "./persona-startup-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { ResidentCodexLeadLifecycleObserver } from "./resident-codex-lead-lifecycle.js";
 import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
 import {
+	beginTuiWindowVisibilityProof,
 	ensureTuiWindow,
 	isTuiWindowAlive,
 	killTuiWindow,
+	readTuiWindowExitEvidenceAsync,
+	readTuiWindowIdentity,
 	SAFE_ID,
+	type TuiWindowIdentity,
+	TuiWindowRetryBackoff,
 	type TuiWindowSpec,
 } from "./tui-window.js";
 import { createTuiWindowAlertGuard } from "./tui-window-alert.js";
@@ -246,8 +263,24 @@ export function buildTuiDaemonEnv(opts: {
 	projectName?: string;
 	/** Trusted parent pins only; never inferred from a model-provided env marker. */
 	capabilityModelEnv?: LeadModelEnvPins;
+	/** Set only after the exact Raya opt-in startup gate succeeds. */
+	personaColdRequired?: boolean;
+	personaGenerationId?: string;
 }): NodeJS.ProcessEnv {
-	const { profile, env, codexHome, botToken } = opts;
+	const { profile, codexHome, botToken } = opts;
+	const env = { ...opts.env };
+	delete env.FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED;
+	delete env.FLYWHEEL_RAYA_PERSONA_GENERATION_ID;
+	if (opts.personaColdRequired) {
+		if (
+			profile !== "full-access" ||
+			!/^[a-f0-9]{32}$/.test(opts.personaGenerationId ?? "")
+		) {
+			throw new Error(
+				"persona cold daemon generation requires full-access and a valid generation id",
+			);
+		}
+	}
 	if (opts.capabilityModelEnv) {
 		if (profile !== "full-access")
 			throw new Error("capability model env requires full-access profile");
@@ -293,6 +326,12 @@ export function buildTuiDaemonEnv(opts: {
 			// script's ensure-daemon does stop-before-start (no stale read-only daemon
 			// survives the flip — Codex R1 HIGH-1). Non-secret.
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+			...(opts.personaColdRequired
+				? {
+						FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED: "1",
+						FLYWHEEL_RAYA_PERSONA_GENERATION_ID: opts.personaGenerationId!,
+					}
+				: {}),
 			...carrierEnv,
 		};
 	}
@@ -552,6 +591,14 @@ export interface TuiGenerationDeps {
 	connectDaemon?: typeof connectDaemonWs;
 	createSender?: (config: CodexLeadTuiRuntimeConfig) => OutboundSender;
 	preflight?: typeof runOutboundPreflight;
+	verifyPersona?: () => Promise<VerifiedPersona | null>;
+	verifyColdProof?: (persona: VerifiedPersona) => Promise<void> | void;
+	recordPersonaObservation?: (
+		stage: "verified" | "ready",
+		persona: VerifiedPersona,
+		threadId: string,
+		threadRpcAckAt: string,
+	) => Promise<void> | void;
 }
 
 export function buildTuiGeneration(
@@ -581,6 +628,16 @@ export function buildTuiGeneration(
 	// a live founder session.
 	let ownedTuiThreadId: string | undefined;
 	let ownedTuiSocketPath: string | undefined;
+	let stableTuiVisibility:
+		| {
+				threadId: string;
+				socketPath: string;
+				carrierInstanceId: string;
+				identity: TuiWindowIdentity;
+		  }
+		| undefined;
+	const tuiRetryBackoff = new TuiWindowRetryBackoff();
+	let tuiRetryBinding: string | undefined;
 	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
 	// the per-generation closure) so its consecutive-failure count + episode latch
 	// survive generation rebuilds. It is non-null only for a roster opt-in target
@@ -595,6 +652,7 @@ export function buildTuiGeneration(
 		log: (m) => logger.warn(m),
 	});
 	return () => {
+		let activeVerifiedPersona: VerifiedPersona | null = null;
 		let threadRotationEnabled = false;
 		let runtime: CodexLeadRuntime | null = null;
 		let proc: CodexLeadProcess | null = null;
@@ -608,6 +666,16 @@ export function buildTuiGeneration(
 		let sender: OutboundSender | null = null;
 		let tuiSpec: TuiWindowSpec | null = null;
 		let livenessTimer: ReturnType<typeof setInterval> | null = null;
+		let visibilityEpoch = 0;
+		let pendingVisibility:
+			| {
+					epoch: number;
+					threadId: string;
+					socketPath: string;
+					carrierInstanceId: string;
+					cancel(): void;
+			  }
+			| undefined;
 		let stopped = false;
 		let ledger: RotationLedger | null = null;
 		const ledgerPath = join(config.stateDir, "thread-rotation.json");
@@ -619,6 +687,22 @@ export function buildTuiGeneration(
 		let lastActivityAt = Date.now();
 		let gatewayReady = false;
 		let rotationTimer: ReturnType<typeof setInterval> | null = null;
+		const markPersonaReady = async (threadId: string): Promise<void> => {
+			if (!activeVerifiedPersona) return;
+			const threadRpcAckAt = new Date().toISOString();
+			await deps.recordPersonaObservation?.(
+				"verified",
+				activeVerifiedPersona,
+				threadId,
+				threadRpcAckAt,
+			);
+			await deps.recordPersonaObservation?.(
+				"ready",
+				activeVerifiedPersona,
+				threadId,
+				threadRpcAckAt,
+			);
+		};
 		const emit = (event: string, fields: Record<string, unknown> = {}) => {
 			if (!threadRotationEnabled) return;
 			appendRotationReceipt(
@@ -720,6 +804,121 @@ export function buildTuiGeneration(
 			}
 		};
 
+		const tuiSocketPath = (spec: TuiWindowSpec): string =>
+			spec.capabilitySocketPath ??
+			`${spec.codexHome}/app-server-control/app-server-control.sock`;
+		const tuiCarrierInstanceId = (spec: TuiWindowSpec): string =>
+			spec.carrierInstanceId ?? "legacy";
+		const bindingMatches = (
+			binding: {
+				threadId: string;
+				socketPath: string;
+				carrierInstanceId: string;
+			},
+			spec: TuiWindowSpec,
+		): boolean =>
+			binding.threadId === spec.threadId &&
+			binding.socketPath === tuiSocketPath(spec) &&
+			binding.carrierInstanceId === tuiCarrierInstanceId(spec);
+		const retryBindingFor = (spec: TuiWindowSpec): string =>
+			`${spec.threadId}\0${tuiSocketPath(spec)}\0${tuiCarrierInstanceId(spec)}`;
+		const prepareRetryBinding = (spec: TuiWindowSpec) => {
+			const binding = retryBindingFor(spec);
+			if (binding === tuiRetryBinding) return;
+			tuiRetryBinding = binding;
+			tuiRetryBackoff.recordHealthy();
+		};
+		const recordTuiFailure = (spec: TuiWindowSpec) => {
+			const delay = tuiRetryBackoff.recordFailure();
+			tuiWindowAlertGuard?.record(false);
+			if (delay > 0)
+				logger.warn(
+					`tui-window: unstable resume; retry_backoff_ms=${delay} (${spec.projectName}-${spec.leadId}, thread ${spec.threadId})`,
+				);
+		};
+		const logExitEvidence = (spec: TuiWindowSpec) => {
+			void readTuiWindowExitEvidenceAsync(spec)
+				.then((evidence) => {
+					if (!evidence) return;
+					logger.warn(
+						`tui-window: retained_exit window=${evidence.windowName} pane=${evidence.paneId} status=${evidence.exitStatus ?? "unknown"} tail=${JSON.stringify(evidence.terminalTail)}`,
+					);
+				})
+				.catch((error) =>
+					logger.warn(
+						`tui-window: exit evidence unavailable: ${(error as Error).message}`,
+					),
+				);
+		};
+		const samePaneTuple = (
+			left: TuiWindowIdentity,
+			right: TuiWindowIdentity,
+		): boolean =>
+			left.windowName === right.windowName &&
+			left.paneId === right.paneId &&
+			left.panePid === right.panePid &&
+			left.startCommand === right.startCommand;
+		const cancelPendingVisibility = () => {
+			const pending = pendingVisibility;
+			if (!pending) return;
+			pendingVisibility = undefined;
+			visibilityEpoch += 1;
+			pending.cancel();
+		};
+		const currentStableTuiIdentity = (): TuiWindowIdentity | null => {
+			if (!tuiSpec || !stableTuiVisibility) return null;
+			if (!bindingMatches(stableTuiVisibility, tuiSpec)) return null;
+			const current = readTuiWindowIdentity(tuiSpec);
+			if (
+				!current ||
+				!current.modelAlive ||
+				!samePaneTuple(stableTuiVisibility.identity, current)
+			) {
+				stableTuiVisibility = undefined;
+				return null;
+			}
+			return current;
+		};
+		const startVisibilityProof = (first: TuiWindowIdentity) => {
+			if (!tuiSpec) return;
+			cancelPendingVisibility();
+			const spec = tuiSpec;
+			const binding = {
+				threadId: spec.threadId,
+				socketPath: tuiSocketPath(spec),
+				carrierInstanceId: tuiCarrierInstanceId(spec),
+			};
+			const epoch = ++visibilityEpoch;
+			const proof = beginTuiWindowVisibilityProof(spec, first);
+			pendingVisibility = { ...binding, epoch, cancel: proof.cancel };
+			void proof.promise.then((identity) => {
+				if (
+					stopped ||
+					rotationFenceHeld ||
+					pendingVisibility?.epoch !== epoch ||
+					!tuiSpec ||
+					!bindingMatches(binding, tuiSpec)
+				)
+					return;
+				pendingVisibility = undefined;
+				if (identity) {
+					stableTuiVisibility = { ...binding, identity };
+					tuiRetryBackoff.recordHealthy();
+					logger.info(
+						`tui-window: real TUI up (${identity.windowName}, thread ${binding.threadId})`,
+					);
+					tuiWindowAlertGuard?.record(true);
+					settleReadiness(true);
+				} else {
+					if (stableTuiVisibility && bindingMatches(stableTuiVisibility, spec))
+						stableTuiVisibility = undefined;
+					recordTuiFailure(spec);
+					logExitEvidence(spec);
+					settleReadiness(false);
+				}
+			});
+		};
+
 		// Single TUI-health entry, used by wire() and the liveness cadence (review
 		// R2 HIGH-2 + R4 MED-1). Ownership-aware:
 		//   - ownedTuiThreadId !== this thread → UNCONDITIONAL ensure (PR-C
@@ -731,16 +930,30 @@ export function buildTuiGeneration(
 		//     window actually died (never flap a healthy session on rebuild).
 		const ensureTuiHealthy = () => {
 			if (stopped || !tuiSpec) return false;
-			if (rotationFenceHeld) return isTuiWindowAlive(tuiSpec);
+			prepareRetryBinding(tuiSpec);
+			if (rotationFenceHeld) {
+				cancelPendingVisibility();
+				return false;
+			}
+			if (currentStableTuiIdentity()) {
+				tuiRetryBackoff.recordHealthy();
+				tuiWindowAlertGuard?.record(true);
+				return true;
+			}
+			if (pendingVisibility) {
+				if (bindingMatches(pendingVisibility, tuiSpec)) return false;
+				cancelPendingVisibility();
+			}
+			if (!tuiRetryBackoff.canAttempt()) return false;
 			// Derive one health signal per tick and feed the silent-no-pane guard
 			// (W2). healthy=false unifies "create failed" and "died, re-create
 			// failed"; a genuinely alive owned window is healthy without a rebuild.
-			let healthy: boolean;
+			let created = false;
 			if (
 				ownedTuiThreadId !== tuiSpec.threadId ||
 				ownedTuiSocketPath !== tuiSpec.capabilitySocketPath
 			) {
-				const created = ensureTuiWindow(tuiSpec, {
+				created = ensureTuiWindow(tuiSpec, {
 					log: (m) => logger.warn(m),
 				});
 				if (created) {
@@ -748,14 +961,26 @@ export function buildTuiGeneration(
 					ownedTuiThreadId = tuiSpec.threadId;
 					ownedTuiSocketPath = tuiSpec.capabilitySocketPath;
 				}
-				healthy = created;
-			} else if (isTuiWindowAlive(tuiSpec)) {
-				healthy = true;
-			} else {
-				healthy = ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
+			} else if (!readTuiWindowIdentity(tuiSpec)) {
+				if (isTuiWindowAlive(tuiSpec)) {
+					recordTuiFailure(tuiSpec);
+					return false;
+				}
+				created = ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
+				if (created) deps.onWindowOwned?.();
 			}
-			tuiWindowAlertGuard?.record(healthy);
-			return healthy && isTuiWindowAlive(tuiSpec);
+			if (!created && !isTuiWindowAlive(tuiSpec)) {
+				recordTuiFailure(tuiSpec);
+				return false;
+			}
+			const first = readTuiWindowIdentity(tuiSpec);
+			if (!first) {
+				recordTuiFailure(tuiSpec);
+				logExitEvidence(tuiSpec);
+				return false;
+			}
+			startVisibilityProof(first);
+			return false;
 		};
 		const attemptRotation = async (router: LeadInputRouter) => {
 			if (
@@ -781,6 +1006,7 @@ export function buildTuiGeneration(
 				return;
 			attemptInFlight = true;
 			rotationFenceHeld = true;
+			cancelPendingVisibility();
 			router.pause();
 			const from = ledger.currentThreadId;
 			let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -870,6 +1096,7 @@ export function buildTuiGeneration(
 				rotationTimer = null;
 				if (livenessTimer) clearInterval(livenessTimer);
 				livenessTimer = null;
+				cancelPendingVisibility();
 				residencyLifecycle?.generationLost();
 				try {
 					await runtime?.stop();
@@ -903,6 +1130,9 @@ export function buildTuiGeneration(
 
 		return {
 			start: startSafely(async () => {
+				const verifiedPersona = (await deps.verifyPersona?.()) ?? null;
+				if (verifiedPersona) await deps.verifyColdProof?.(verifiedPersona);
+				activeVerifiedPersona = verifiedPersona;
 				// Validate persona BEFORE opening the WS (review R3 MED-2): a
 				// fail-close here must not leak an already-connected transport (at
 				// this point `runtime` is unassigned, so stop() couldn't close it).
@@ -924,9 +1154,11 @@ export function buildTuiGeneration(
 				if (capabilityV2 && config.outboundMode !== "bridge")
 					throw new Error("capability_outbound_requires_bridge");
 				if (capabilityV2) await capabilityParent!.assertCurrent();
-				const baseInstructions = capabilityV2
-					? capabilityParent!.baseInstructions
-					: requirePersona(config);
+				const baseInstructions =
+					verifiedPersona?.baseInstructions ??
+					(capabilityV2
+						? capabilityParent!.baseInstructions
+						: requirePersona(config));
 				if (capabilityV2 && !baseInstructions?.trim())
 					throw new Error("capability_rules_unverified");
 				if (capabilityParent?.skillGaps?.length)
@@ -1226,6 +1458,7 @@ export function buildTuiGeneration(
 													ledgerWriteFailed,
 												});
 												activeThreadId = id;
+												await markPersonaReady(id);
 												return id;
 											}
 										}
@@ -1237,6 +1470,7 @@ export function buildTuiGeneration(
 							try {
 								await p.resumeThread(saved, threadParams());
 								activeThreadId = saved;
+								await markPersonaReady(saved);
 								return saved;
 							} catch (err) {
 								if (!isTurnlessRolloutError(err)) throw err;
@@ -1271,6 +1505,7 @@ export function buildTuiGeneration(
 							});
 						}
 						activeThreadId = id;
+						await markPersonaReady(id);
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
@@ -1544,9 +1779,8 @@ export function buildTuiGeneration(
 							codexBin: capabilityV2
 								? capabilityParent!.codexPath
 								: config.codexBin,
-							// FLY-398 (pin ③): a full-access TUI Lead shares the thread's
-							// workspace-write sandbox → the founder resume pane passes
-							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
+							// FLY-398 compatibility identity. The remote thread owns its
+							// permission tier; Codex 0.154 rejects TUI-side overrides.
 							fullAccess: config.codexProfile === "full-access",
 							...(capabilityV2
 								? {
@@ -1613,11 +1847,7 @@ export function buildTuiGeneration(
 								// (CodexLeadRuntime orders recover() before startGateway()).
 								await ownership.start();
 								gatewayReady = true;
-								settleReadiness(
-									!!tuiSpec &&
-										ownedTuiThreadId === tuiSpec.threadId &&
-										isTuiWindowAlive(tuiSpec),
-								);
+								settleReadiness(!!currentStableTuiIdentity());
 								residencyLifecycle?.online();
 							},
 							stopGateway: async () => {
@@ -1665,6 +1895,7 @@ export async function main(
 	// full-access ⟹ workspace-write (profile↔sandbox lockstep), so reaching here
 	// with full-access guarantees workspace-write.
 	const fullAccess = config.codexProfile === "full-access";
+	const exactRaya = config.projectName === "raya" && config.leadId === "raya";
 	if (config.sandboxMode !== "read-only" && !fullAccess) {
 		throw new Error(
 			`codex-lead-tui-runtime: sandbox="${config.sandboxMode}" profile="${config.codexProfile}" is write-capable but not full-access — the ③ TUI Lead supports only read-only companion and full-access (Claude-equal); the (Z) write-capable gateway tier is headless-only (FLY-245). Refusing to start.`,
@@ -1673,7 +1904,8 @@ export async function main(
 	// Persona fail-close at boot (review MED — parity with headless). The same
 	// check runs at every generation read point (requirePersona), so a companion
 	// never silently falls back to the default persona.
-	if (config.capabilityBundleVersion !== 2) requirePersona(config);
+	if (config.capabilityBundleVersion !== 2 && !exactRaya)
+		requirePersona(config);
 	// DRY-RUN (review MED — parity with headless): describe what WOULD start with
 	// zero side effects (no daemon connect, no Discord poll). The launcher skips
 	// ensure-home/ensure-daemon in dry-run so this path is genuinely side-effect free.
@@ -1690,6 +1922,32 @@ export async function main(
 		...config,
 		carrierInstanceId,
 	};
+	let personaStateRoot: string | undefined;
+	const verifyCurrentPersona = async (): Promise<VerifiedPersona | null> => {
+		if (!exactRaya) return null;
+		if (
+			!config.projectsFile ||
+			!config.expectedProjectsDigest ||
+			!config.fullAccessProjectRoot
+		) {
+			throw new Error("persona_startup_authority_missing");
+		}
+		personaStateRoot ??= resolvePersonaStateRoot(env, homedir());
+		return verifyPersonaStartup({
+			projectName: config.projectName,
+			leadId: config.leadId,
+			projectsPath: config.projectsFile,
+			expectedProjectsDigest: config.expectedProjectsDigest,
+			projectRoot: config.fullAccessProjectRoot,
+			stateRoot: personaStateRoot,
+			systemPromptFiles: config.systemPromptFiles,
+			...(config.capabilityBundleVersion === 2
+				? { capabilityBundleVersion: 2 as const }
+				: {}),
+			bridgeUrl: config.bridgeUrl,
+			bridgeToken: config.apiToken,
+		});
+	};
 	publishCarrierRuntimeAssertion({
 		env,
 		leadKey: config.leadKey,
@@ -1701,6 +1959,7 @@ export async function main(
 		),
 	});
 	if (config.capabilityBundleVersion === 2) {
+		await verifyCurrentPersona();
 		const owned = createCapabilityTuiRuntime(carrierConfig, env, console);
 		const stop = () => {
 			void owned.stop().then(
@@ -1757,6 +2016,15 @@ export async function main(
 			stateDir,
 			commDbPath: config.commDbPath,
 			outboundMode: config.outboundMode,
+			attachmentContext: tryResolveLeadAttachmentContext({
+				projectsPath:
+					config.projectsFile ?? join(homedir(), ".flywheel", "projects.json"),
+				homeDir: homedir(),
+				projectName: config.projectName,
+				leadId: config.leadId,
+				identityDigest: config.identityDigest,
+				outboundMode: config.outboundMode,
+			}),
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
 			// FLY-676: forward the effective roundtable autoContinue (parity with headless).
 			// codex-lead-tui-home.sh writes the matching env into config.toml; the full-access
@@ -1790,7 +2058,15 @@ export async function main(
 			`[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, outbound=${config.outboundMode}, credential by-name, no broker)`,
 		);
 	}
+	let preparedPersona: VerifiedPersona | null | undefined;
+	let preparedPersonaGenerationId: string | undefined;
+	let preparedPersonaColdProof: PersonaColdProof | undefined;
 	const ensureDaemon = async () => {
+		preparedPersona = await verifyCurrentPersona();
+		preparedPersonaColdProof = undefined;
+		preparedPersonaGenerationId = preparedPersona
+			? randomBytes(16).toString("hex")
+			: undefined;
 		const { stderr } = await execFileP(
 			"/bin/bash",
 			[homeScript, "ensure-daemon"],
@@ -1806,6 +2082,8 @@ export async function main(
 					carrierInstanceId,
 					leadId: config.leadId,
 					projectName: config.projectName,
+					personaColdRequired: preparedPersona !== null,
+					personaGenerationId: preparedPersonaGenerationId,
 				}),
 			},
 		);
@@ -1815,6 +2093,50 @@ export async function main(
 		{
 			buildGeneration: buildTuiGeneration(carrierConfig, console, {
 				requestRebuild: (reason) => supervisor.requestRebuild(reason),
+				verifyPersona: async () => {
+					if (preparedPersona === undefined)
+						throw new Error("persona_daemon_not_prepared");
+					const fresh = await verifyCurrentPersona();
+					if (
+						canonicalSubmissionDigest(fresh) !==
+						canonicalSubmissionDigest(preparedPersona)
+					)
+						throw new Error("persona_authority_changed_after_daemon_start");
+					return fresh;
+				},
+				verifyColdProof: () => {
+					if (!preparedPersonaGenerationId)
+						throw new Error("persona_cold_generation_missing");
+					preparedPersonaColdProof = verifyPersonaColdProof({
+						codexHome: config.codexHome,
+						generationId: preparedPersonaGenerationId,
+					});
+				},
+				recordPersonaObservation: (
+					stage,
+					persona,
+					threadId,
+					threadRpcAckAt,
+				) => {
+					if (
+						!personaStateRoot ||
+						!preparedPersonaColdProof ||
+						!preparedPersonaGenerationId
+					) {
+						throw new Error("persona_observation_authority_missing");
+					}
+					writePersonaObservationReceipt(personaStateRoot, {
+						schemaVersion: 1,
+						stage,
+						generationId: preparedPersonaGenerationId,
+						pid: preparedPersonaColdProof.pid,
+						processStartTime: preparedPersonaColdProof.processStartTime,
+						leadKey: config.leadKey,
+						threadId,
+						threadRpcAckAt,
+						...persona,
+					});
+				},
 			}),
 			ensureDaemon,
 			log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`),

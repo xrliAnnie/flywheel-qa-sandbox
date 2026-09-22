@@ -1,0 +1,86 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2737 · 三点判断与自动批准</title><style>
+:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--blue:#007aff}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;line-height:1.75}
+main{max-width:960px;margin:auto;padding:40px 22px 80px}header{padding:10px 6px 30px}h1{font-size:clamp(28px,5vw,42px);line-height:1.25;letter-spacing:-.04em;margin:8px 0 12px}h2{font-size:21px;letter-spacing:-.015em;margin:0 0 20px}.eyebrow{font-size:12px;letter-spacing:.15em;color:var(--blue);font-weight:650}.muted,.small{color:var(--muted);font-size:13px}.card{background:#fff;border:1px solid #e8e8ed;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:28px;margin-bottom:20px}.hero{font-size:24px;line-height:1.65;margin-top:0}p{margin:12px 0}.tag{display:inline-block;padding:5px 10px;background:#edf5ff;color:#145b9b;border-radius:6px;font-size:12px;margin:8px 8px 0 0}.diagram{overflow-x:auto}.diagram svg{display:block;max-width:100%;height:auto;margin:8px auto 24px}.pending{padding:20px;border:1px dashed #c58c33;border-radius:8px;background:#fffaf0;color:#725320;font-size:14px;margin:12px 0 22px}.pending strong{font-size:12px;letter-spacing:.06em}.pending p{margin:6px 0}dl{margin:18px 0}dt{font-weight:650;color:#15599c;margin-top:18px}dd{margin:5px 0 0}.sample{background:#f5f5f7;padding:18px;border-radius:8px}code{font:13px "SFMono-Regular",Consolas,monospace;background:#f5f5f7;padding:3px 6px;border-radius:4px}li{margin:7px 0}.comment{border-top:1px solid #ececf0;margin-top:24px;padding-top:18px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:8px}label span{margin-left:12px;color:#237343}textarea{width:100%;min-height:76px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;font-size:14px;background:#fcfcfd}textarea:focus{outline:2px solid #7ab7ff;outline-offset:2px}button{background:var(--blue);color:#fff;border:0;border-radius:7px;padding:10px 16px;font:inherit;font-size:14px;cursor:pointer;margin:14px 12px 0 0}.secondary{background:#eaf3ff;color:#15599c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif;background:#f5f5f7;padding:16px;border-radius:8px}.chunk{margin-top:18px}#copy-status{font-size:13px;color:var(--muted)}a{color:#0067d6;text-decoration:none}@media(max-width:600px){main{padding:22px 12px 50px}.card{padding:22px 18px;border-radius:12px}.hero{font-size:21px}h2{font-size:18px}}
+</style></head><body><main><header><div class="eyebrow">FLY-2737 · 设计说明</div><h1>开自动，判断标准不再变。</h1><p class="muted">一套三点证据 · 两种执行模式 · 每节都能留言</p></header><section class="card" id="summary"><h2>01 / 一句话</h2><p class="hero">只用<strong>三点证据</strong>判断能不能过卡；开自动，只改变谁来执行批准。</p><p>dry_run 是只展示判断、等你决定；auto 是三点通过且保护检查通过后，由系统记录批准。以前自动模式只能批准纯文档；这次改成三点通过的代码改动也能自动批准并进入合并流程。两种模式都看同一套标准，代码、配置和文档一视同仁。按你9月18日16:27的裁定替换策略，部署不再请你重发开闸消息，也不改变当前开关状态。</p><div class="comment"><label for="comment-summary">这一节的意见<span data-saved="summary" aria-live="polite"></span></label><textarea id="comment-summary" data-comment="summary" data-title="01 / 一句话" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="flow"><h2>02 / 每张卡走同一条判断路径</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地浏览器权限阻止渲染，流程文字保留如下，图形待补。</p></div><p>读取当前改动与依据 → 检查三点 → 卡下显示结论 → 按模式决定是否记录批准。资料不全就写清缺什么，不用文件类型代替判断。</p><div class="comment"><label for="comment-flow">这一节的意见<span data-saved="flow" aria-live="polite"></span></label><textarea id="comment-flow" data-comment="flow" data-title="02 / 每张卡走同一条判断路径" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="criteria"><h2>03 / 三点具体看什么</h2><dl><dt>① 按已确认要求做了吗</dt><dd>把要求、已通过审查的设计和改动逐条对照。必须核对本次设计原文与获批原文一致；找不到获批原文，就显示缺证据。</dd><dt>② 会撞正在做的工作吗</dt><dd>检查能否合进当前主分支，以及同项目待合并改动是否修改相同文件。这不能证明所有运行时冲突都不存在。</dd><dt>③ 用户会遇到的情形都测了吗</dt><dd>必须实际读到对应这次版本的测试报告，逐项核对用户情形。只有“测试通过”状态、没有报告正文，不能算通过。</dd></dl><p>三点全通过才是“可”；任何一项缺证据都不能自动批。旧的“纯文档、组长声明、三闸”不再参与判定，也不在当前卡面保留为第二套意见。</p><div class="comment"><label for="comment-criteria">这一节的意见<span data-saved="criteria" aria-live="polite"></span></label><textarea id="comment-criteria" data-comment="criteria" data-title="03 / 三点具体看什么" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="model"><h2>04 / 批准必须对得上当时那一版</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地浏览器权限阻止渲染，流程文字保留如下，图形待补。</p></div><p>版本指纹是每次改动的唯一编号。卡片、证据、机器意见和批准记录必须对应同一组完整版本；一个任务涉及多个仓库时，必须全部对齐。</p><p>可见回执记录意见确实已贴到卡下，不代表你读过。批准凭据记录三点结果、当时开关、当前版本和出处；模型输出本身不能直接合并。</p><div class="comment"><label for="comment-model">这一节的意见<span data-saved="model" aria-live="polite"></span></label><textarea id="comment-model" data-comment="model" data-title="04 / 批准必须对得上当时那一版" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="guards"><h2>05 / 旧“可”不能替新证据作决定</h2><p>有新证据正在等待更新，旧“可”就不能批准。意见发送失败、检查已过期、版本变了、你已打回或撤销，都不能继续拿旧判断放行。</p><p>批准流水可能跨两个存储步骤，重启后必须认同一条记录；重试不会重复批准。已经批准与已经合并分别显示，合并后的上线仍由独立更新服务按原窗口执行。</p><div class="comment"><label for="comment-guards">这一节的意见<span data-saved="guards" aria-live="polite"></span></label><textarea id="comment-guards" data-comment="guards" data-title="05 / 旧“可”不能替新证据作决定" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="switch"><h2>06 / 开关回执也说明标准没有变</h2><p>“现在放开”和“现在停止”仍只认你本人、原指定频道里的有效消息。回执固定写明“卡面机器意见口径＝三点试判”，并说明是否会真正批准。</p><p>切换后的第一张新卡会自动核对：是否出现当前版本的三点意见。没有新卡时显示等待；发送失败会记录并报告，不能把排队成功算成核对通过。</p><div class="comment"><label for="comment-switch">这一节的意见<span data-saved="switch" aria-live="polite"></span></label><textarea id="comment-switch" data-comment="switch" data-title="06 / 开关回执也说明标准没有变" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="migration"><h2>07 / 旧闸删掉，历史账留下</h2><p>删除旧判定和发帖路径。旧消息能确认归属时标记已退役；无法编辑的消息记为待处理。历史判断、曾经生效的批准保留，方便追查。旧设计批准如果没有保存获批原文证明，不能自动放行；上线初期自动批准较少是预期，仍可由你本人决定。</p><p>升级时尚未生效的旧批准流水不会借重放获得新批准；系统作废其待处理资格，重新生成可用的卡，让三点判断接手。旧表存在不代表旧闸仍能运行。</p><div class="comment"><label for="comment-migration">这一节的意见<span data-saved="migration" aria-live="polite"></span></label><textarea id="comment-migration" data-comment="migration" data-title="07 / 旧闸删掉，历史账留下" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="tradeoffs"><h2>08 / 为什么选这条路</h2><p><strong>复用三点判断和既有批准流程。</strong>这样卡面依据和真正批准能逐条对应，也保留现有打回、撤销和版本检查。</p><p>不选仅放开显示开关：它修不了扫描、投递和批准的多层限制。不选新旧两套闸并存：那会继续出现相互矛盾的意见。不让模型直接合并：模型结果必须经过当前证据和批准守卫检查。</p><p>代价是证据收集和消息更新需要时间；等待期间显示缺证据或待更新，不伪造通过。目前收集接口的请求额度可能在待合并任务很多时耗尽，届时只能显示缺证据，不能自动批准；模型额度不足、回答缺少有效依据时也不能自动批准，页面应说明具体原因。上线可用性仍须按真实任务量、模型可用性和完整批准流程验证。</p><div class="comment"><label for="comment-tradeoffs">这一节的意见<span data-saved="tradeoffs" aria-live="polite"></span></label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="08 / 为什么选这条路" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="acceptance"><h2>09 / 实现后怎样证明修好了</h2><p>同一张代码卡在两种模式下得到相同三点依据；只试判时不产生批准；自动模式下全通过会进入既有合并流程。</p><p>逐项验证打回、撤销、停止、换版本、缺测试、旧“可”等待更新、重启重放和多仓库不齐。还要读取真实测试环境卡面，确认旧三闸文案消失，开关回执和第一张卡核对结果一致。</p><p>系统自己的自动批准单独统计，不能拿自己的决定来训练自己；你本人的后续决定仍能形成对照。</p><div class="comment"><label for="comment-acceptance">这一节的意见<span data-saved="acceptance" aria-live="polite"></span></label><textarea id="comment-acceptance" data-comment="acceptance" data-title="09 / 实现后怎样证明修好了" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="boundary"><h2>10 / 当前交付到哪里</h2><p>这是设计交付，后续实现和独立验证尚未完成。本轮没有改产品代码、生产开关或数据，没有部署或合并。</p><p>本地图形渲染两次均被浏览器权限阻止：页面保留真实 Mermaid 源码对应的待渲染标记。Mermaid 是用文字定义流程图的格式。页面脚本验证与托管检查分别记录，不把它们称为真实浏览器视觉验收。</p><div class="comment"><label for="comment-boundary">这一节的意见<span data-saved="boundary" aria-live="polite"></span></label><textarea id="comment-boundary" data-comment="boundary" data-title="10 / 当前交付到哪里" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="feedback"><h2>11 / 意见汇总</h2><p>每节留言实时汇总，长意见分段复制。这些是修改意见，不是通过信号；不会自动送出。</p><div class="comment"><label for="comment-feedback">这一节的意见<span data-saved="feedback" aria-live="polite"></span></label><textarea id="comment-feedback" data-comment="feedback" data-title="11 / 总体意见" placeholder="自动保存在当前浏览器；复制给组长才会送出"></textarea></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status"></span><div id="comment-chunks"></div></section><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2737';
+  const prefix = 'flywheel:design-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const chunksBox = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function splitText(text) {
+    const chars = Array.from(text);
+    const room = 1800 - Array.from(marker).length - 1;
+    if (!chars.length) return [marker + '\n（暂无意见）'];
+    const result = [];
+    let part = '';
+    for (const char of chars) {
+      if (part.length + char.length > room) {
+        result.push(marker + '\n' + part);
+        part = '';
+      }
+      part += char;
+    }
+    if (part) result.push(marker + '\n' + part);
+    return result;
+  }
+  function fallbackCopy(text) {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '复制意见');
+    helper.style.position = 'fixed';
+    helper.style.left = '-10000px';
+    document.body.appendChild(helper);
+    helper.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    helper.remove();
+    return ok;
+  }
+  async function copyText(text) {
+    let ok = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { await navigator.clipboard.writeText(text); ok = true; }
+      catch (_) { ok = fallbackCopy(text); }
+    } else { ok = fallbackCopy(text); }
+    status.textContent = ok ? '已复制' : '复制失败，请选中下方文字手动复制';
+  }
+  function updateSummary() {
+    const entries = inputs.filter(input => input.value.trim()).map(input =>
+      input.dataset.title + '\n' + input.value.trim());
+    chunks = splitText(entries.join('\n\n'));
+    chunksBox.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const block = document.createElement('div');
+      block.className = 'chunk';
+      const text = document.createElement('pre');
+      text.textContent = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      block.appendChild(text);
+      block.appendChild(button);
+      chunksBox.appendChild(block);
+    });
+  }
+  inputs.forEach(input => {
+    const saved = document.querySelector('[data-saved="' + input.dataset.comment + '"]');
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+    catch (_) { if (saved) saved.textContent = '无法读取本机保存'; }
+    input.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + input.dataset.comment, input.value);
+        if (saved) saved.textContent = '已保存';
+      } catch (_) { if (saved) saved.textContent = '未保存；仍可复制'; }
+      updateSummary();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copyText(chunks.join('\n\n')));
+  updateSummary();
+})();
+</script></main></body></html>

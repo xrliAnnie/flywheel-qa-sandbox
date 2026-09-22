@@ -405,6 +405,71 @@ describe("submitWorkflowDecisionClaim — the single-transaction submission (pla
 		expect(res).toEqual({ ok: false, reason: "same_vendor_review" });
 	});
 
+	it("FLY-2763 R3: same-vendor claim is admitted under the project sanction regardless of model", async () => {
+		const store = await freshStore();
+		const runId = seedRun(store);
+		const setFlag = (rawTo: string) => {
+			const applied = store.applyScopedFlagValueChange({
+				name: "review_same_family_allowed",
+				scope: "flywheel",
+				op: "set",
+				rawTo,
+				expectedChangeSeq: store.getFlagValueChangeSeq(
+					"review_same_family_allowed",
+					"flywheel",
+				),
+				actor: "test",
+				reason: "FLY-2763 R3 test",
+			});
+			if (!applied.ok) throw new Error(`flag set failed: ${applied.reason}`);
+		};
+		// flag off (default): byte-identical FLY-1188 refusal
+		const { token: t0 } = issueQaCapability(store, runId, 1);
+		expect(
+			submitQaPass(store, t0, {
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerVendor: "claude",
+				subjectProducerModel: "fable",
+			}),
+		).toEqual({ ok: false, reason: "same_vendor_review" });
+		setFlag("1");
+		// flag on + identical model (implement Opus + QA Opus) → admitted
+		const { token: t1 } = issueQaCapability(store, runId, 2);
+		expect(
+			submitQaPass(store, t1, {
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerVendor: "claude",
+				subjectProducerModel: "claude-opus-5",
+			}).ok,
+		).toBe(true);
+		// flag on + unknown producer model → still admitted (model no longer gates)
+		const { token: t2 } = issueQaCapability(store, runId, 3);
+		expect(
+			submitQaPass(store, t2, {
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerVendor: "claude",
+			}).ok,
+		).toBe(true);
+		expect(store.countWorkflowClaims(runId)).toBe(2);
+		// flag back off → refusal returns
+		setFlag("0");
+		const { token: t3 } = issueQaCapability(store, runId, 4);
+		expect(
+			submitQaPass(store, t3, {
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerVendor: "claude",
+				subjectProducerModel: "fable",
+			}),
+		).toEqual({ ok: false, reason: "same_vendor_review" });
+		// cross-vendor stays admitted with the flag off
+		const { token: t4 } = issueQaCapability(store, runId, 5);
+		expect(submitQaPass(store, t4).ok).toBe(true);
+	});
+
 	it("review-class claim without a subject producer → rejected", async () => {
 		const store = await freshStore();
 		const runId = seedRun(store);

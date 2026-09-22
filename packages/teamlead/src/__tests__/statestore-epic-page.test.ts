@@ -247,6 +247,102 @@ describe("Epic page render receipts", () => {
 		}
 	});
 
+	it("keeps publication freshness authoritative after refresh and receipt pruning", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const { token } = store.reserveEpicPageToken("example");
+			store.insertEpicPageRenderReceipt({
+				projectName: "example",
+				trigger: "manual",
+				expectedVersion: 1,
+				receipt: receiptAt("2026-09-03T04:00:00Z"),
+			});
+			store.commitEpicPagePublication({
+				contentDigest: "a".repeat(64),
+				hostingKey: "fw-reports-abcdef/store",
+				projectName: "example",
+				token,
+				publishedAt: "2026-09-03T04:00:00Z",
+				version: 1,
+			});
+			for (let version = 2; version <= 22; version += 1) {
+				store.insertEpicPageRenderReceipt({
+					projectName: "example",
+					trigger: "manual",
+					expectedVersion: version,
+					receipt: receiptAt(
+						new Date(
+							Date.parse("2026-09-03T04:00:00Z") + version * 1_000,
+						).toISOString(),
+					),
+				});
+			}
+			for (let index = 0; index < 201; index += 1) {
+				store.insertEpicPageRefresh({
+					projectName: "example",
+					attemptedAt: new Date(
+						Date.parse("2026-09-03T05:00:00Z") + index * 1_000,
+					).toISOString(),
+					trigger: "event",
+					reasons: ["session_completed"],
+					outcome: `ok_unpublished:${index + 2}:event`,
+				});
+			}
+
+			expect(store.getEpicPageFreshness("example")).toMatchObject({
+				last_published: {
+					version: 1,
+					attempted_at: "2026-09-03T04:00:00Z",
+					trigger: "manual",
+				},
+				publish_failures_since_last_published: 0,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("counts hosted publish failures against publication time when the ok row is absent", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const { token } = store.reserveEpicPageToken("example");
+			store.commitEpicPagePublication({
+				contentDigest: "a".repeat(64),
+				hostingKey: "fw-reports-abcdef/store",
+				projectName: "example",
+				token,
+				publishedAt: "2026-09-03T04:00:00Z",
+				version: 1,
+			});
+			for (const attemptedAt of [
+				"2026-09-03T03:00:00Z",
+				"2026-09-03T05:00:00Z",
+			]) {
+				store.insertEpicPageRefresh({
+					projectName: "example",
+					attemptedAt,
+					trigger: "manual",
+					reasons: ["manual"],
+					outcome: "transient: publish_failed:blob",
+				});
+			}
+
+			expect(store.getEpicPageFreshness("example")).toMatchObject({
+				last_published: {
+					version: 1,
+					attempted_at: "2026-09-03T04:00:00Z",
+					trigger: "manual",
+				},
+				publish_failures_since_last_published: 1,
+				last_publish_failure: {
+					attempted_at: "2026-09-03T05:00:00Z",
+				},
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("validates refresh vocabulary and retains exactly 200 attempts per project", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
@@ -499,15 +595,15 @@ describe("Epic page render receipts", () => {
 });
 
 describe("Epic page execution fact projections", () => {
-	it("scopes sessions by project and uses julianday, deterministic ties, and all-row live count", async () => {
+	it("scopes sessions by project and uses fresh heartbeat rather than last activity for machine liveness", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
 			const db = rawDb(store);
 			const insert = db.prepare(
 				`INSERT INTO sessions
 				 (execution_id, issue_id, issue_identifier, project_name, status,
-				  started_at, last_activity_at, branch, session_role, last_error)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  started_at, last_activity_at, heartbeat_at, branch, session_role, last_error)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			insert.run(
 				"exec-b-long",
@@ -515,8 +611,9 @@ describe("Epic page execution fact projections", () => {
 				"EPX-1",
 				"example",
 				"running",
-				"2026-09-03T02:00:00Z",
-				"2026-09-03T02:00:00Z",
+				"2026-09-03 01:00:00",
+				"2026-09-03 01:00:00",
+				"2026-09-03 04:59:00",
 				"branch-b",
 				"implement",
 				"/SECRET Bearer token",
@@ -529,6 +626,7 @@ describe("Epic page execution fact projections", () => {
 				"completed",
 				"2026-09-03 02:00:00",
 				"2026-09-03 03:00:00",
+				null,
 				"branch-a",
 				"qa",
 				null,
@@ -541,38 +639,180 @@ describe("Epic page execution fact projections", () => {
 				"running",
 				"2026-09-03 05:00:00",
 				"2026-09-03 05:00:00",
+				"2026-09-03 05:00:00",
 				null,
 				"main",
 				null,
 			);
-
-			const fact = store.getEpicPageSessionFact("example", [
+			insert.run(
+				"exec-stale",
 				"child-uuid",
 				"EPX-1",
-			]);
+				"example",
+				"running",
+				"2026-09-03 02:00:00",
+				"2026-09-03 02:00:00",
+				"2026-09-03 02:00:00",
+				null,
+				"implement",
+				null,
+			);
+			insert.run(
+				"exec-missing",
+				"child-uuid",
+				"EPX-1",
+				"example",
+				"running",
+				"2026-09-03 01:30:00",
+				"2026-09-03 01:30:00",
+				null,
+				null,
+				"implement",
+				null,
+			);
+
+			const fact = store.getEpicPageSessionFact(
+				"example",
+				["child-uuid", "EPX-1"],
+				"2026-09-03T05:00:00Z",
+				15,
+			);
 			expect(fact).toEqual({
 				value: {
 					latest: [
 						{
-							status: "completed",
-							role: "qa",
-							branch: "branch-a",
-							execution_id8: "exec-a-l",
+							status: "running",
+							role: "implement",
+							branch: "branch-b",
+							execution_id8: "exec-b-l",
 						},
 					],
-					ledger_live_count: 1,
+					ledger_live_count: 3,
+					machine_running_count: 1,
+					running_heartbeat_stale_count: 1,
+					running_heartbeat_missing_count: 1,
 				},
-				source_updated_at: "2026-09-03T03:00:00Z",
+				source_updated_at: "2026-09-03T01:00:00Z",
 			});
 			expect(JSON.stringify(fact)).not.toContain("SECRET");
 
-			db.prepare(
-				"UPDATE sessions SET last_activity_at = '2026-09-03 02:00:00' WHERE execution_id = 'exec-a-long'",
-			).run();
 			expect(
-				store.getEpicPageSessionFact("example", ["EPX-1"]).value.latest[0]
-					?.execution_id8,
-			).toBe("exec-a-l");
+				store.getEpicPageSessionFact(
+					"example",
+					["EPX-1"],
+					"2026-09-03T05:00:00Z",
+					15,
+				).value.machine_running_count,
+			).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not let fresh last activity rescue a stale or missing running heartbeat", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const insert = rawDb(store).prepare(
+				`INSERT INTO sessions
+				 (execution_id, issue_id, issue_identifier, project_name, status,
+				  started_at, last_activity_at, heartbeat_at)
+				 VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
+			);
+			insert.run(
+				"exec-stale-fresh-activity",
+				"child-uuid",
+				"EPX-1",
+				"example",
+				"2026-09-03 01:00:00",
+				"2026-09-03 04:59:00",
+				"2026-09-03 01:00:00",
+			);
+			insert.run(
+				"exec-missing-fresh-activity",
+				"child-uuid",
+				"EPX-1",
+				"example",
+				"2026-09-03 01:00:00",
+				"2026-09-03 04:59:00",
+				null,
+			);
+
+			expect(
+				store.getEpicPageSessionFact(
+					"example",
+					["child-uuid", "EPX-1"],
+					"2026-09-03T05:00:00Z",
+					15,
+				).value,
+			).toMatchObject({
+				ledger_live_count: 2,
+				machine_running_count: 0,
+				running_heartbeat_stale_count: 1,
+				running_heartbeat_missing_count: 1,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("selects a timestamp-less pending handoff before an older completed session", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const insert = rawDb(store).prepare(
+				`INSERT INTO sessions
+				 (execution_id, issue_id, issue_identifier, project_name, status,
+				  started_at, last_activity_at, heartbeat_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			);
+			insert.run(
+				"old-design",
+				"child-uuid",
+				"EPX-1",
+				"example",
+				"completed",
+				"2026-09-03 02:00:00",
+				"2026-09-03 03:00:00",
+				null,
+			);
+			insert.run(
+				"new-pending",
+				"child-uuid",
+				"EPX-1",
+				"example",
+				"pending",
+				null,
+				null,
+				null,
+			);
+
+			const fact = store.getEpicPageSessionFact(
+				"example",
+				["EPX-1"],
+				"2026-09-03T05:00:00Z",
+				15,
+			);
+			expect(fact.value.latest[0]).toMatchObject({
+				status: "pending",
+				execution_id8: "new-pend",
+			});
+			insert.run(
+				"new-running",
+				"child-uuid",
+				"EPX-1",
+				"example",
+				"running",
+				"2026-09-03 04:58:00",
+				"2026-09-03 04:58:00",
+				"2026-09-03 04:59:00",
+			);
+			expect(
+				store.getEpicPageSessionFact(
+					"example",
+					["EPX-1"],
+					"2026-09-03T05:00:00Z",
+					15,
+				).value.latest[0],
+			).toMatchObject({ status: "running", execution_id8: "new-runn" });
 		} finally {
 			store.close();
 		}
@@ -599,9 +839,10 @@ describe("Epic page execution fact projections", () => {
 				"active",
 			);
 			db.prepare(
-				`INSERT INTO workflow_run_node (run_id, node_id, attempt, state)
-				 VALUES (?, ?, ?, ?)`,
-			).run("run-custom", "custom_step", 2, "review");
+				`INSERT INTO workflow_run_node
+				 (run_id, node_id, attempt, state, started_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+			).run("run-custom", "custom_step", 2, "review", "2026-09-03 04:58:00");
 
 			const run = store.getEpicPageRunFact("example", ["child-uuid", "EPX-1"]);
 			expect(run.value).toEqual([
@@ -618,13 +859,112 @@ describe("Epic page execution fact projections", () => {
 				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
 			);
 
-			const attempt = store.getEpicPageAttemptFact("run-custom", "custom_step");
+			const attempt = store.getEpicPageAttemptFact(
+				"run-custom",
+				"custom_step",
+				"2026-09-03T05:00:00Z",
+				15,
+			);
 			expect(attempt.value).toEqual([
-				{ state: "review", attempt: 2, ledger_open: true },
+				{
+					state: "review",
+					attempt: 2,
+					ledger_open: true,
+					machine_live: false,
+					starting_recent: false,
+					heartbeat_state: "not_applicable",
+				},
 			]);
 			expect(attempt.source_updated_at).toMatch(
 				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
 			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("binds running attempts to a fresh session heartbeat and ages pending attempts from node start", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const db = rawDb(store);
+			db.prepare(
+				`INSERT INTO workflow_run
+				 (run_id, issue_id, project_name, template_id, snapshot,
+				  current_node_id, status)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).run("run-live", "EPX-1", "example", "tpl", "{}", "implement", "active");
+			db.prepare(
+				`INSERT INTO workflow_run_node
+				 (run_id, node_id, attempt, state, execution_id, started_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+			).run(
+				"run-live",
+				"implement",
+				1,
+				"running",
+				"exec-live",
+				"2026-09-03 01:00:00",
+			);
+			db.prepare(
+				`INSERT INTO sessions
+				 (execution_id, issue_id, project_name, status, started_at, last_activity_at, heartbeat_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"exec-live",
+				"EPX-1",
+				"example",
+				"running",
+				"2026-09-03 01:00:00",
+				"2026-09-03 01:00:00",
+				"2026-09-03 04:59:00",
+			);
+
+			const read = () =>
+				store.getEpicPageAttemptFact(
+					"run-live",
+					"implement",
+					"2026-09-03T05:00:00Z",
+					15,
+				).value[0];
+			expect(read()).toMatchObject({
+				machine_live: true,
+				starting_recent: false,
+				heartbeat_state: "fresh",
+			});
+
+			db.prepare(
+				"UPDATE sessions SET heartbeat_at = '2026-09-03 01:00:00' WHERE execution_id = 'exec-live'",
+			).run();
+			expect(read()).toMatchObject({
+				machine_live: false,
+				heartbeat_state: "stale",
+			});
+
+			db.prepare(
+				"UPDATE sessions SET last_activity_at = '2026-09-03 04:59:00', heartbeat_at = NULL WHERE execution_id = 'exec-live'",
+			).run();
+			expect(read()).toMatchObject({
+				machine_live: false,
+				heartbeat_state: "missing",
+			});
+
+			db.prepare(
+				"UPDATE workflow_run_node SET state = 'admitted', execution_id = NULL, started_at = '2026-09-03 04:59:30' WHERE run_id = 'run-live'",
+			).run();
+			expect(read()).toMatchObject({
+				machine_live: false,
+				starting_recent: true,
+				heartbeat_state: "not_applicable",
+			});
+
+			db.prepare(
+				"UPDATE workflow_run_node SET started_at = '2026-09-03 04:00:00' WHERE run_id = 'run-live'",
+			).run();
+			expect(read()).toMatchObject({
+				machine_live: false,
+				starting_recent: false,
+				heartbeat_state: "not_applicable",
+			});
 		} finally {
 			store.close();
 		}
@@ -756,10 +1096,12 @@ describe("Epic page execution fact projections", () => {
 				]);
 			vi.spyOn(store, "getEpicPageLandFact").mockReturnValue({ value: [] });
 
-			const facts = readEpicItemFacts(store, "example", {
-				uuid: "child-uuid",
-				identifier: "EPX-1",
-			});
+			const facts = readEpicItemFacts(
+				store,
+				"example",
+				{ uuid: "child-uuid", identifier: "EPX-1" },
+				{ generatedAt: "2026-09-03T05:00:00Z", stuckThresholdMinutes: 15 },
+			);
 			expect(facts.gates).toEqual({
 				ok: true,
 				value: [{ state: "awaiting_review" }],
@@ -772,10 +1114,12 @@ describe("Epic page execution fact projections", () => {
 			runSpy.mockImplementationOnce(() => {
 				throw new Error("SECRET Bearer token /Users/private");
 			});
-			const failed = readEpicItemFacts(store, "example", {
-				uuid: "child-uuid",
-				identifier: "EPX-1",
-			});
+			const failed = readEpicItemFacts(
+				store,
+				"example",
+				{ uuid: "child-uuid", identifier: "EPX-1" },
+				{ generatedAt: "2026-09-03T05:00:00Z", stuckThresholdMinutes: 15 },
+			);
 			expect(failed.run).toEqual({ ok: false, table: "workflow_run" });
 			expect(failed.attempt).toEqual({
 				ok: false,
@@ -793,10 +1137,12 @@ describe("Epic page execution fact projections", () => {
 			authoritySpy.mockImplementationOnce(() => {
 				throw new Error("SECOND_SECRET Bearer token /Users/private");
 			});
-			const unionFailed = readEpicItemFacts(store, "example", {
-				uuid: "child-uuid",
-				identifier: "EPX-1",
-			});
+			const unionFailed = readEpicItemFacts(
+				store,
+				"example",
+				{ uuid: "child-uuid", identifier: "EPX-1" },
+				{ generatedAt: "2026-09-03T05:00:00Z", stuckThresholdMinutes: 15 },
+			);
 			expect(unionFailed.attempt).toEqual({ ok: true, value: [] });
 			expect(unionFailed.gates).toEqual({
 				ok: false,

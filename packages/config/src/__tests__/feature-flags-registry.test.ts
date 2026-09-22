@@ -57,7 +57,7 @@ const EXPECTED_WHEN_ON = {
 		"这个项目使用 DAG 流程派发时，检查任务类型是否符合当前节点，避免交给错误角色",
 	doc_flow: "要求这个项目的 Runner 随任务提交探索、调研、计划和进度文档",
 	auto_merge_narrow_gate:
-		"dry_run 给每张 ship 卡附机器意见但仍等 founder；auto 仅代批同时通过机器纯文档、人声明 pure_docs、强度二证据的卡",
+		"dry_run 与 auto 都按设计对齐、在飞冲突、QA 覆盖三点显示机器判断；auto 仅在三点全通过且既有守卫有效时自动批准",
 	runner_memory_mode:
 		"决定新 Runner 使用哪种记忆方案；off 不注入实验记忆，其余选项用于对照实验",
 	skill_framework_mode:
@@ -65,6 +65,8 @@ const EXPECTED_WHEN_ON = {
 	skill_framework_split_participation:
 		"只在技能框架处于分流模式时生效：关闭后这个项目退出分流、固定使用 superpowers；全局强制指定某个方案时这个开关不起作用",
 	proofshot: "这个项目有界面改动时，自动要求用 ProofShot 做视觉验收",
+	review_same_family_allowed:
+		"Claude 写的代码由不同模型的 Claude 复审并盖章过门；Claude 实现 + Claude QA 的组合可派发。",
 	xiaohongshu_learning:
 		"定期读取这个项目的小红书收藏，把可执行内容整理成后续任务草稿",
 	ponytail:
@@ -82,7 +84,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(32);
+		expect(FEATURE_FLAGS).toHaveLength(33);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

@@ -31,7 +31,7 @@
 #   2 — Discord POST failed, payload queued for later drain
 #
 # --strict-delivery (FLY-913): print ONE machine-readable result line on stdout
-#   (`sent|duplicate|queued_transient|dead_lettered|config_error`) so callers
+#   (`sent|duplicate|queued_transient|delivery_unknown|dead_lettered|config_error`) so callers
 #   can distinguish "transient failure, queued and WILL drain" from "permanently
 #   undeliverable" — exit 2 alone conflates the two (Codex R1 #1). Without the
 #   flag, behavior (stdout/stderr/exit codes) is byte-for-byte unchanged.
@@ -40,6 +40,7 @@ set -euo pipefail
 log() {
   echo "[lead-alert] $(date '+%H:%M:%S') $*" >&2
 }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # FLY-1319: resolve Annie's current timezone without trusting `TZ=bad date`.
 # macOS date silently renders UTC and exits 0 for an invalid TZ, so every named
@@ -117,10 +118,24 @@ STRICT_DELIVERY=0
 DELIVERY_MESSAGE_ID=""
 MENTION_USER=""
 PLAIN_MESSAGE=0
+SHUTTLE_INTENT=""
+SHUTTLE_ROUTE_KEY=""
+SHUTTLE_ROUTE_BINDING=""
+SHUTTLE_CHANNEL=""
+SHUTTLE_ROUTE_TOKEN_ENV=""
+VOICE_INTENT=""
+VOICE_HELPER=""
+VOICE_STATE_ROOT=""
+VOICE_CLAIM_TOKEN=""
+VOICE_SOURCE_ID=""
+VOICE_EPISODE_ID=""
+VOICE_ROUTE_BINDING=""
+VOICE_CHANNEL=""
+VOICE_ROUTE_TOKEN_ENV=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock"
+INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock shuttle_unit_unhealthy voice_daemon_unhealthy"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -137,7 +152,7 @@ is_quota_switch_kind() {
 
 carries_delivery_channel() {
   case "$1" in
-    account_switched|account_switch_degraded|quota_switch_confirmation|account_dead) return 0 ;;
+    account_switched|account_switch_degraded|quota_switch_confirmation|account_dead|codex_home_migration_overdue|shuttle_unit_unhealthy) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -146,7 +161,19 @@ carries_delivery_channel() {
 # --strict-delivery. log() writes to stderr, so this is the sole stdout line.
 emit_result() {
   if [ "$STRICT_DELIVERY" = "1" ]; then
-    if [[ "$KIND" == activation_probe && "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+    if [[ "$KIND" == voice_daemon_unhealthy && -n "$VOICE_CHANNEL" ]]; then
+      printf '%s channel_id=%s binding_digest=%s' "$1" "$VOICE_CHANNEL" "$VOICE_ROUTE_BINDING"
+      if [[ "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+        printf ' message_id=%s' "$DELIVERY_MESSAGE_ID"
+      fi
+      printf '\n'
+    elif [[ "$KIND" == shuttle_unit_unhealthy && -n "$SHUTTLE_CHANNEL" ]]; then
+      printf '%s channel_id=%s binding_digest=%s' "$1" "$SHUTTLE_CHANNEL" "$SHUTTLE_ROUTE_BINDING"
+      if [[ "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+        printf ' message_id=%s' "$DELIVERY_MESSAGE_ID"
+      fi
+      printf '\n'
+    elif [[ ( "$KIND" == activation_probe || "$KIND" == codex_home_migration_overdue ) && "$1" == sent && "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
       printf '%s message_id=%s\n' "$1" "$DELIVERY_MESSAGE_ID"
     else
       printf '%s\n' "$1"
@@ -166,6 +193,8 @@ while [ $# -gt 0 ]; do
     --strict-delivery) STRICT_DELIVERY=1; shift ;;
     --mention-user) MENTION_USER="${2:?--mention-user requires a value}"; shift 2 ;;
     --plain-message) PLAIN_MESSAGE=1; shift ;;
+    --shuttle-intent) SHUTTLE_INTENT="${2:?--shuttle-intent requires a value}"; shift 2 ;;
+    --voice-intent) VOICE_INTENT="${2:?--voice-intent requires a value}"; shift 2 ;;
     -h|--help)   usage ;;
     *)
       log "ERROR: unknown flag '$1'"
@@ -175,13 +204,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] || [ -z "$TITLE" ] || [ -z "$BODY" ]; then
+if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] \
+  || { [ "$KIND" != shuttle_unit_unhealthy ] && [ "$KIND" != voice_daemon_unhealthy ] \
+    && { [ -z "$TITLE" ] || [ -z "$BODY" ]; }; }; then
   log "ERROR: --lead, --project, --kind, --title, --body are all required"
   emit_result "config_error"
   usage
 fi
+if { [ "$KIND" = shuttle_unit_unhealthy ] && [ -z "$SHUTTLE_INTENT" ]; } \
+  || { [ "$KIND" != shuttle_unit_unhealthy ] && [ -n "$SHUTTLE_INTENT" ]; }; then
+  log "ERROR: --shuttle-intent is required only for shuttle_unit_unhealthy"
+  emit_result "config_error"
+  exit 1
+fi
+if { [ "$KIND" = voice_daemon_unhealthy ] && [ -z "$VOICE_INTENT" ]; } \
+  || { [ "$KIND" != voice_daemon_unhealthy ] && [ -n "$VOICE_INTENT" ]; }; then
+  log "ERROR: --voice-intent is required only for voice_daemon_unhealthy"
+  emit_result "config_error"
+  exit 1
+fi
 
 case "$KIND" in
+  codex_quota_automation_disabled) ;;
   # FLY-871 §12 W2: tui_window_lost — the windowed Codex Lead's silent-no-pane
   # guard fires this via lead-alert.sh (Discord-independent path). Kept in the TS
   # AlertEventType union too (LeadAlertNotifier.ts) so the shared type face has no drift.
@@ -209,7 +253,7 @@ case "$KIND" in
   # Covers BOTH sources; pressure vs panic is encoded in the body + signature,
   # because a validated occupancy climb and a fresh panic report are the same
   # incident class with the same (absent) remediation posture.
-  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident) ;;
+  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|shuttle_unit_unhealthy|voice_daemon_unhealthy|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident|codex_home_migration_overdue) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -225,6 +269,113 @@ case "$SEVERITY" in
     exit 1
     ;;
 esac
+
+# FLY-2523 rework: this one migration kind may target a QA slot only when the
+# complete slot isolation tuple is present. A lone leaked flag on production is
+# ignored for the historical production tuple; a real slot tuple can never name
+# that production identity.
+CODEX_HOME_SLOT_ROUTE=0
+slot_path_within() {
+  local root="$1" candidate="$2"
+  case "/${candidate#/}/" in */../*|*/./*) return 1 ;; esac
+  case "$candidate" in "$root"|"$root"/*) return 0 ;; *) return 1 ;; esac
+}
+slot_path_parents_safe() {
+  local root="$1" candidate="$2" rel parent current component old_ifs
+  slot_path_within "$root" "$candidate" || return 1
+  rel="${candidate#"$root"/}"
+  [ "$rel" != "$candidate" ] || return 0
+  parent="${rel%/*}"
+  [ "$parent" != "$rel" ] || return 0
+  current="$root"
+  old_ifs="$IFS"; IFS='/'
+  for component in $parent; do
+    current="$current/$component"
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      if [ -L "$current" ] || [ ! -d "$current" ]; then IFS="$old_ifs"; return 1; fi
+    else
+      break
+    fi
+  done
+  IFS="$old_ifs"
+  return 0
+}
+if [ "$KIND" = "codex_home_migration_overdue" ] \
+    && [ "${FLYWHEEL_CODEX_HOME_RECONCILE_SLOT:-0}" = "1" ]; then
+  SLOT_ROOT="${FLYWHEEL_ISOLATION_ROOT:-}"
+  SLOT_STATE="${FLYWHEEL_STATE_DIR:-}"
+  SLOT_PROJECT="${FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT:-}"
+  SLOT_LEAD="${FLYWHEEL_CODEX_HOME_RECONCILE_LEAD:-}"
+  SLOT_DEFAULT_LEAD="${TEAMLEAD_DEFAULT_LEAD_AGENT:-}"
+  SLOT_PROJECTS_PATH="${FLYWHEEL_PROJECTS_FILE:-}"
+  if [[ "$SLOT_ROOT" =~ ^/(private/)?tmp/flywheel-test-slot-[1-9][0-9]*$ ]]; then
+    SLOT_ROOT_SHAPED=1
+  else
+    SLOT_ROOT_SHAPED=0
+  fi
+  if slot_path_within "$SLOT_ROOT" "$SLOT_STATE"; then SLOT_STATE_SCOPED=1; else SLOT_STATE_SCOPED=0; fi
+  if [ "$PROJECT_NAME" = "flywheel" ] && [ "$LEAD_ID" = "flywheel-eng-lead" ]; then
+    if [ "$SLOT_ROOT_SHAPED" = "1" ] && [ "$SLOT_STATE_SCOPED" = "1" ]; then
+      log "ERROR: a QA slot cannot use the production migration alert identity"
+      emit_result "config_error"
+      exit 1
+    fi
+    # Incomplete/ambient slot env on the production tuple preserves the
+    # historical production pin instead of silently suppressing its page.
+  else
+    if [ "$SLOT_ROOT_SHAPED" != "1" ] || [ ! -d "$SLOT_ROOT" ] \
+        || [ -L "$SLOT_ROOT" ] || [ "$SLOT_STATE_SCOPED" != "1" ] \
+        || [ ! -d "$SLOT_STATE" ] || [ -L "$SLOT_STATE" ] \
+        || ! slot_path_parents_safe "$SLOT_ROOT" "$SLOT_STATE" \
+        || [ "$SLOT_PROJECT" != "test-slot-${SLOT_ROOT##*-}" ] \
+        || [ "$PROJECT_NAME" != "$SLOT_PROJECT" ] \
+        || [ -z "$SLOT_LEAD" ] || [ "$LEAD_ID" != "$SLOT_LEAD" ] \
+        || [ "$SLOT_LEAD" != "$SLOT_DEFAULT_LEAD" ]; then
+      log "ERROR: incomplete Codex home reconcile QA-slot identity"
+      emit_result "config_error"
+      exit 1
+    fi
+    if ! slot_path_within "$SLOT_ROOT" "$SLOT_PROJECTS_PATH" \
+        || ! slot_path_parents_safe "$SLOT_ROOT" "$SLOT_PROJECTS_PATH" \
+        || [ ! -f "$SLOT_PROJECTS_PATH" ] || [ -L "$SLOT_PROJECTS_PATH" ]; then
+      log "ERROR: QA-slot projects path escaped isolation root"
+      emit_result "config_error"
+      exit 1
+    fi
+    for SLOT_WRITE_PATH in \
+      "${FLYWHEEL_ALERT_QUEUE_DIR:-}" \
+      "${FLYWHEEL_ALERT_DEADLETTER_DIR:-}" \
+      "${FLYWHEEL_CLAIMS_DB:-}"; do
+      if ! slot_path_within "$SLOT_ROOT" "$SLOT_WRITE_PATH"; then
+        log "ERROR: QA-slot alert state path escaped isolation root"
+        emit_result "config_error"
+        exit 1
+      fi
+      if ! slot_path_parents_safe "$SLOT_ROOT" "$SLOT_WRITE_PATH"; then
+        log "ERROR: QA-slot alert state path has an unsafe parent"
+        emit_result "config_error"
+        exit 1
+      fi
+    done
+    for SLOT_DIRECTORY_PATH in \
+      "${FLYWHEEL_ALERT_QUEUE_DIR:-}" \
+      "${FLYWHEEL_ALERT_DEADLETTER_DIR:-}"; do
+      if { [ -e "$SLOT_DIRECTORY_PATH" ] || [ -L "$SLOT_DIRECTORY_PATH" ]; } \
+          && { [ -L "$SLOT_DIRECTORY_PATH" ] || [ ! -d "$SLOT_DIRECTORY_PATH" ]; }; then
+        log "ERROR: QA-slot alert directory is unsafe"
+        emit_result "config_error"
+        exit 1
+      fi
+    done
+    if { [ -e "${FLYWHEEL_CLAIMS_DB:-}" ] || [ -L "${FLYWHEEL_CLAIMS_DB:-}" ]; } \
+        && { [ -L "${FLYWHEEL_CLAIMS_DB:-}" ] || [ ! -f "${FLYWHEEL_CLAIMS_DB:-}" ]; }; then
+      log "ERROR: QA-slot claims database is unsafe"
+      emit_result "config_error"
+      exit 1
+    fi
+    CODEX_HOME_SLOT_ROUTE=1
+  fi
+fi
 
 # FLY-2390: capture intent precedes config/tool exits. Keep it until the
 # observation transaction lands; a missing tool/token must not look healthy.
@@ -260,18 +411,23 @@ fi
 READINESS_AT=$(/bin/date -u '+%Y-%m-%dT%H:%M:%S.000Z')
 READINESS_UNIX=$(/bin/date +%s)
 READINESS_INTENT="$READINESS_GAPS/${READINESS_UNIX}-$$-${RANDOM}-${RANDOM}.intent.json"
-if mkdir -p "$READINESS_GAPS" && {
-  printf '{"eventIdHint":null,"kind":'; readiness_json_string "$KIND"
-  printf ',"severity":'; readiness_json_string "$SEVERITY"
-  printf ',"projectName":'; readiness_json_string "$PROJECT_NAME"
-  printf ',"leadId":'; readiness_json_string "$LEAD_ID"
-  printf ',"baseVersion":'; if [ -n "$READINESS_BASE" ]; then readiness_json_string "$READINESS_BASE"; else printf null; fi
-  printf ',"sourceCommit":'; if [ "$READINESS_SHA" != null ]; then readiness_json_string "$READINESS_SHA"; else printf null; fi
-  printf ',"observedAt":"%s","reason":"shell_preflight"}\n' "$READINESS_AT"
-} > "$READINESS_INTENT.tmp" && mv "$READINESS_INTENT.tmp" "$READINESS_INTENT"; then
-  :
-else
-  log "ERROR: release signal capture intent could not be written"
+# Voice alerts are already durably captured in their source-owned health ledger.
+# Their early-return delivery path must not leave an unrelated release-readiness
+# gap that can never be retired by the generic claims transaction below.
+if [ "$KIND" != voice_daemon_unhealthy ]; then
+  if mkdir -p "$READINESS_GAPS" && {
+    printf '{"eventIdHint":null,"kind":'; readiness_json_string "$KIND"
+    printf ',"severity":'; readiness_json_string "$SEVERITY"
+    printf ',"projectName":'; readiness_json_string "$PROJECT_NAME"
+    printf ',"leadId":'; readiness_json_string "$LEAD_ID"
+    printf ',"baseVersion":'; if [ -n "$READINESS_BASE" ]; then readiness_json_string "$READINESS_BASE"; else printf null; fi
+    printf ',"sourceCommit":'; if [ "$READINESS_SHA" != null ]; then readiness_json_string "$READINESS_SHA"; else printf null; fi
+    printf ',"observedAt":"%s","reason":"shell_preflight"}\n' "$READINESS_AT"
+  } > "$READINESS_INTENT.tmp" && mv "$READINESS_INTENT.tmp" "$READINESS_INTENT"; then
+    :
+  else
+    log "ERROR: release signal capture intent could not be written"
+  fi
 fi
 
 # FLY-2051: ordinary-message rendering is a narrow capability, not a generic
@@ -377,7 +533,7 @@ if [ "$LEAD_ID" = "system" ] || [ "${FLYWHEEL_CMUX_SUPERVISED:-0}" = "1" ]; then
 fi
 
 # ── Tool preflight ──────────────────────────────────────────
-for tool in jq sqlite3 curl shasum node; do
+for tool in jq sqlite3 curl shasum node python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     log "ERROR: required tool '$tool' not found in PATH"
     emit_result "config_error"
@@ -390,13 +546,238 @@ done
 # failure branch — including unknown-lead, which exits before the later
 # dead_letter() definition. meta-alert.sh self-debounces per reason and
 # OVERWRITES its marker, so repeated calls neither spam nor grow unbounded.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fire_meta_alert() {
   # $1 = reason, $2 = title, $3 = body. Best-effort; never breaks the caller.
   if [ -x "${SCRIPT_DIR}/meta-alert.sh" ]; then
     "${SCRIPT_DIR}/meta-alert.sh" "$1" "$2" "$3" || true
   fi
 }
+
+# FLY-2669: a shuttle alert may only render a frozen observation intent and may
+# only route through the canonical config resolver. The resolver checks the
+# selected sender's effective VIEW_CHANNEL + SEND_MESSAGES permissions before
+# claims or POST side effects. Tests inject a local permission fixture; live
+# callers use read-only Discord API requests.
+if [ "$KIND" = shuttle_unit_unhealthy ]; then
+  SHUTTLE_PAYLOAD=""
+  SHUTTLE_HELPER="$SCRIPT_DIR/lib/shuttle-observation.py"
+  if [ -n "${SHUTTLE_OBSERVER_BUNDLE_DIR:-}" ] \
+    && [ -f "$SHUTTLE_OBSERVER_BUNDLE_DIR/shuttle-observation.py" ] \
+    && [ ! -L "$SHUTTLE_OBSERVER_BUNDLE_DIR/shuttle-observation.py" ]; then
+    SHUTTLE_HELPER="$SHUTTLE_OBSERVER_BUNDLE_DIR/shuttle-observation.py"
+  fi
+  if ! SHUTTLE_PAYLOAD=$(python3 "$SHUTTLE_HELPER" \
+      intent --intent-id "$SHUTTLE_INTENT" 2>/dev/null) \
+    || ! printf '%s' "$SHUTTLE_PAYLOAD" | jq -e \
+      '(.schemaVersion == 1) and (.batchId | test("^[0-9a-f]{64}$"))
+       and (.routeKey == "primary" or .routeKey == "project_copy")
+       and (.originProject | type == "string") and (.title | type == "string")
+       and (.body | type == "string") and (.signature == .batchId)' >/dev/null; then
+    log "ERROR: shuttle observation intent is missing or malformed"
+    fire_meta_alert "shuttle_alert_intent_unavailable" \
+      "Shuttle alert intent unavailable" \
+      "The updater created a shuttle failure but its frozen notification intent could not be read. Inspect flywheel-updater.log and the shuttle fixed-page source."
+    emit_result "config_error"
+    exit 1
+  fi
+  SHUTTLE_ORIGIN="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .originProject)"
+  if [ "$PROJECT_NAME" != "$SHUTTLE_ORIGIN" ]; then
+    log "ERROR: shuttle intent origin does not match --project"
+    emit_result "config_error"
+    exit 1
+  fi
+  SHUTTLE_ROUTE_KEY="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .routeKey)"
+  TITLE="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .title)"
+  BODY="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .body)"
+  SIGNATURE="$(printf '%s' "$SHUTTLE_PAYLOAD" | jq -r .signature)"
+  PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  shuttle_route_args=(--resolve --projects-file "$PROJECTS_JSON" \
+    --origin-project "$SHUTTLE_ORIGIN" --route-key "$SHUTTLE_ROUTE_KEY" \
+    --permission-preflight)
+  if [ -n "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    shuttle_route_args+=(--sender-token-env "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV")
+  fi
+  if [ -n "${SHUTTLE_ROUTE_PERMISSION_FIXTURE:-}" ]; then
+    shuttle_route_args+=(--permission-fixture "$SHUTTLE_ROUTE_PERMISSION_FIXTURE")
+  fi
+  SHUTTLE_ROUTE=""
+  if ! SHUTTLE_ROUTE=$(node "$SCRIPT_DIR/shuttle-route-bindings.mjs" \
+      "${shuttle_route_args[@]}" 2>/dev/null); then
+    log "ERROR: shuttle route or sender permission preflight failed"
+    fire_meta_alert "shuttle_alert_route_unavailable" \
+      "Shuttle alert route unavailable" \
+      "A shuttle unit failed, but the configured engineering alert route or sender permission preflight failed. Inspect flywheel-updater.log and projects.json."
+    emit_result "config_error"
+    exit 1
+  fi
+  SHUTTLE_CHANNEL="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .channelId)"
+  SHUTTLE_ROUTE_BINDING="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .bindingDigest)"
+  SHUTTLE_ROUTE_TOKEN_ENV="$(printf '%s' "$SHUTTLE_ROUTE" | jq -r '.tokenEnv // ""')"
+  # Persist the resolved route identity, not the updater's synthetic caller
+  # identity, so a queued alert can drain through either unified or legacy
+  # LeadAlertNotifier routing without becoming an unknown-lead dead letter.
+  LEAD_ID="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .leadId)"
+  PROJECT_NAME="$(printf '%s' "$SHUTTLE_ROUTE" | jq -er .deliveryProject)"
+fi
+
+# FLY-2693: voice health has its own source-owned outbox. This path borrows the
+# engineering-primary route and permission witness from FLY-2669, but never
+# copies the intent into the generic Lead alert queue. The helper claim is the
+# single delivery authority, and the frozen payload supplies all rendered data.
+resolve_voice_health_route() {
+  local route_args=(--resolve --projects-file "$PROJECTS_JSON" \
+    --origin-project flywheel --route-key primary --permission-preflight)
+  if [ -n "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    route_args+=(--sender-token-env "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV")
+  fi
+  local permission_fixture="${VOICE_HEALTH_ROUTE_PERMISSION_FIXTURE:-${SHUTTLE_ROUTE_PERMISSION_FIXTURE:-}}"
+  if [ -n "$permission_fixture" ]; then
+    route_args+=(--permission-fixture "$permission_fixture")
+  fi
+  node "$SCRIPT_DIR/shuttle-route-bindings.mjs" "${route_args[@]}" 2>/dev/null
+}
+
+if [ "$KIND" = voice_daemon_unhealthy ]; then
+  if [[ ! "$VOICE_INTENT" =~ ^[0-9a-f]{64}$ ]]; then
+    log "ERROR: voice health intent identity is invalid"
+    emit_result "config_error"
+    exit 1
+  fi
+  VOICE_HELPER="$SCRIPT_DIR/lib/voice-health.py"
+  VOICE_STATE_ROOT="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+  PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  if [ ! -f "$VOICE_HELPER" ] || [ -L "$VOICE_HELPER" ]; then
+    log "ERROR: trusted voice health helper is unavailable"
+    fire_meta_alert "voice_health_alert_unavailable" \
+      "Voice health alert unavailable" \
+      "A voice health incident exists, but its trusted alert helper is unavailable."
+    emit_result "config_error"
+    exit 1
+  fi
+  VOICE_ROUTE=""
+  if ! VOICE_ROUTE=$(resolve_voice_health_route); then
+    log "ERROR: voice health route or sender permission preflight failed"
+    fire_meta_alert "voice_health_alert_route_unavailable" \
+      "Voice health alert route unavailable" \
+      "A voice health incident exists, but the engineering route or sender permission preflight failed."
+    emit_result "config_error"
+    exit 1
+  fi
+  VOICE_CHANNEL="$(printf '%s' "$VOICE_ROUTE" | jq -er .channelId)"
+  VOICE_ROUTE_BINDING="$(printf '%s' "$VOICE_ROUTE" | jq -er .bindingDigest)"
+  VOICE_ROUTE_TOKEN_ENV="$(printf '%s' "$VOICE_ROUTE" | jq -r '.tokenEnv // ""')"
+  LEAD_ID="$(printf '%s' "$VOICE_ROUTE" | jq -er .leadId)"
+  PROJECT_NAME="$(printf '%s' "$VOICE_ROUTE" | jq -er .deliveryProject)"
+
+  VOICE_CLAIM_META="$(node -e '
+    const { randomUUID } = require("node:crypto");
+    const claimed = new Date();
+    const expires = new Date(claimed.getTime() + 60_000);
+    process.stdout.write(JSON.stringify({
+      claimToken: randomUUID(),
+      claimedAt: claimed.toISOString(),
+      expiresAt: expires.toISOString(),
+    }));
+  ')"
+  VOICE_CLAIM_TOKEN="$(printf '%s' "$VOICE_CLAIM_META" | jq -er .claimToken)"
+  VOICE_CLAIM_INPUT="$(jq -cn \
+    --arg intentId "$VOICE_INTENT" \
+    --arg claimToken "$VOICE_CLAIM_TOKEN" \
+    --arg claimedAt "$(printf '%s' "$VOICE_CLAIM_META" | jq -er .claimedAt)" \
+    --arg expiresAt "$(printf '%s' "$VOICE_CLAIM_META" | jq -er .expiresAt)" \
+    --arg bindingDigest "$VOICE_ROUTE_BINDING" \
+    --arg channelId "$VOICE_CHANNEL" \
+    '{intentId:$intentId,claimToken:$claimToken,claimedAt:$claimedAt,
+      expiresAt:$expiresAt,bindingDigest:$bindingDigest,channelId:$channelId}')"
+  VOICE_CLAIM=""
+  if ! VOICE_CLAIM=$(printf '%s' "$VOICE_CLAIM_INPUT" | \
+      python3 "$VOICE_HELPER" --state-root "$VOICE_STATE_ROOT" claim-notification 2>/dev/null); then
+    log "ERROR: voice health notification claim failed"
+    fire_meta_alert "voice_health_alert_unavailable" \
+      "Voice health alert unavailable" \
+      "A voice health notification could not be claimed from its source ledger."
+    emit_result "config_error"
+    exit 2
+  fi
+  VOICE_CLAIM_STATUS="$(printf '%s' "$VOICE_CLAIM" | jq -er .status)"
+  case "$VOICE_CLAIM_STATUS" in
+    claimed) ;;
+    claimed_elsewhere|not_claimable)
+      emit_result "duplicate"
+      exit 0
+      ;;
+    delivery_unknown)
+      emit_result "delivery_unknown"
+      exit 2
+      ;;
+    *)
+      log "ERROR: voice health notification claim receipt is invalid"
+      emit_result "config_error"
+      exit 2
+      ;;
+  esac
+  record_voice_source_delivery() {
+    local state="$1" message_id="${2:-}" payload receipt
+    if [ "$state" = sent ]; then
+      payload="$(jq -cn \
+        --arg intentId "$VOICE_INTENT" \
+        --arg claimToken "$VOICE_CLAIM_TOKEN" \
+        --arg bindingDigest "$VOICE_ROUTE_BINDING" \
+        --arg state "$state" \
+        --arg channelId "$VOICE_CHANNEL" \
+        --arg messageId "$message_id" \
+        '{intentId:$intentId,claimToken:$claimToken,bindingDigest:$bindingDigest,
+          state:$state,channelId:$channelId,messageId:$messageId}')"
+    else
+      payload="$(jq -cn \
+        --arg intentId "$VOICE_INTENT" \
+        --arg claimToken "$VOICE_CLAIM_TOKEN" \
+        --arg bindingDigest "$VOICE_ROUTE_BINDING" \
+        --arg state "$state" \
+        '{intentId:$intentId,claimToken:$claimToken,bindingDigest:$bindingDigest,
+          state:$state}')"
+    fi
+    receipt=$(printf '%s' "$payload" | \
+      python3 "$VOICE_HELPER" --state-root "$VOICE_STATE_ROOT" record-delivery 2>/dev/null) \
+      || return 1
+    printf '%s' "$receipt" | jq -er \
+      --arg intent "$VOICE_INTENT" \
+      'select(.status == "recorded" and .intentId == $intent) | .state'
+  }
+  if ! printf '%s' "$VOICE_CLAIM" | jq -e \
+    --arg intent "$VOICE_INTENT" \
+    --arg token "$VOICE_CLAIM_TOKEN" \
+    --arg binding "$VOICE_ROUTE_BINDING" \
+    --arg channel "$VOICE_CHANNEL" '
+      .intentId == $intent and .claimToken == $token and
+      .routeKey == "primary" and .bindingDigest == $binding and
+      .channelId == $channel and
+      (.sourceId | test("^[0-9a-f-]{36}$")) and
+      (.frozenPayload | type == "object") and
+      (.frozenPayload | keys - ["attemptId","demandId","episodeId","kind","openedAt","operation","reasonClass","scope","serviceId"] | length == 0) and
+      (.frozenPayload.kind == "voice_daemon_unhealthy") and
+      (.frozenPayload.episodeId | test("^[0-9a-f-]{36}$")) and
+      (.frozenPayload.serviceId | test("^[0-9a-f]{64}$")) and
+      (.frozenPayload.openedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")) and
+      (.frozenPayload.scope == "poll_dependency" or .frozenPayload.scope == "session_unavailable") and
+      (.frozenPayload.reasonClass | test("^(bridge_connect_failed|bridge_timeout_headers|bridge_timeout_body|bridge_auth_rejected|bridge_http_error|bridge_protocol_invalid|startup_config_invalid|startup_lock_unavailable|startup_not_ready|session_create_failed|session_runtime_failed|lease_lost|heartbeat_stale|health_observation_unavailable|demand_source_unavailable|unknown_failure)$")) and
+      (.frozenPayload.operation | test("^(desired|claim|renew|state|outbound|receipt|session_create|session_runtime|startup|health_store|demand_snapshot)$"))' \
+      >/dev/null; then
+    log "ERROR: voice health frozen notification payload is invalid"
+    record_voice_source_delivery config_error >/dev/null || true
+    emit_result "config_error"
+    exit 2
+  fi
+  VOICE_SOURCE_ID="$(printf '%s' "$VOICE_CLAIM" | jq -er .sourceId)"
+  VOICE_EPISODE_ID="$(printf '%s' "$VOICE_CLAIM" | jq -er .frozenPayload.episodeId)"
+  VOICE_SCOPE="$(printf '%s' "$VOICE_CLAIM" | jq -er .frozenPayload.scope)"
+  VOICE_REASON="$(printf '%s' "$VOICE_CLAIM" | jq -er .frozenPayload.reasonClass)"
+  VOICE_OPERATION="$(printf '%s' "$VOICE_CLAIM" | jq -er .frozenPayload.operation)"
+  VOICE_OPENED_AT="$(printf '%s' "$VOICE_CLAIM" | jq -er .frozenPayload.openedAt)"
+  TITLE="Voice daemon unhealthy"
+  BODY="com.flywheel.voice has an active ${VOICE_SCOPE} episode since ${VOICE_OPENED_AT}; reason=${VOICE_REASON}; operation=${VOICE_OPERATION}. Inspect the voice health fixed page and local service logs."
+  SIGNATURE="$VOICE_INTENT"
+fi
 
 # Escape single quotes for sqlite3 string literals (parity with the TS
 # sqlString() claimer). sqlite3-over-stdin can't bind params, so we double any
@@ -419,7 +800,9 @@ FALLBACK_TO_CORE=""
 GENERAL_CHANNEL=""
 ALERT_BOT_TOKEN_ENV=""
 LEAD_BOT_TOKEN_ENV=""
-if [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
+if [ "$KIND" = shuttle_unit_unhealthy ] || [ "$KIND" = voice_daemon_unhealthy ]; then
+  : # source-owned frozen route above; never replace it with arbitrary config
+elif [ "$KIND" != "codex_home_migration_overdue" ] && [ -n "$UNIFIED_CHANNEL" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
   : # channel + identity fully env-driven — skip projects.json entirely
 else
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
@@ -472,23 +855,83 @@ if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
   exit 1
 fi
 
+if [ "$KIND" = "codex_home_migration_overdue" ]; then
+  if [ "$CODEX_HOME_SLOT_ROUTE" != "1" ] \
+      && { [ "$PROJECT_NAME" != "flywheel" ] || [ "$LEAD_ID" != "flywheel-eng-lead" ]; }; then
+    log "ERROR: codex_home_migration_overdue requires flywheel/flywheel-eng-lead"
+    emit_result "config_error"
+    exit 1
+  fi
+  LEAD_CFG_COUNT=$(printf '%s\n' "$LEAD_CFG" | jq -s 'length')
+  if [ "$LEAD_CFG_COUNT" != "1" ]; then
+    log "ERROR: dedicated engineering alert route is ambiguous"
+    emit_result "config_error"
+    exit 1
+  fi
+fi
+
 ALERT_CHANNEL=$(printf '%s' "$LEAD_CFG" | jq -r '.alertChannel // ""')
 FALLBACK_TO_CORE=$(printf '%s' "$LEAD_CFG" | jq -r '.alertFallbackToCore')
 GENERAL_CHANNEL=$(printf '%s' "$LEAD_CFG" | jq -r '.generalChannel // ""')
 ALERT_BOT_TOKEN_ENV=$(printf '%s' "$LEAD_CFG" | jq -r '.alertBotTokenEnv // ""')
 LEAD_BOT_TOKEN_ENV=$(printf '%s' "$LEAD_CFG" | jq -r '.botTokenEnv // ""')
+if [ "$KIND" = "codex_home_migration_overdue" ] \
+    && [ "$CODEX_HOME_SLOT_ROUTE" = "1" ]; then
+  if [[ ! "$ALERT_BOT_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+      || [[ ! "$LEAD_BOT_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    log "ERROR: QA-slot alert token binding is invalid (alert=${ALERT_BOT_TOKEN_ENV:-missing}, lead=${LEAD_BOT_TOKEN_ENV:-missing})"
+    emit_result "config_error"
+    exit 1
+  fi
+  PRODUCTION_PROJECTS_JSON="${FLYWHEEL_CODEX_PRODUCTION_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  if [ ! -f "$PRODUCTION_PROJECTS_JSON" ] || [ -L "$PRODUCTION_PROJECTS_JSON" ]; then
+    log "ERROR: production channel census is unavailable"
+    emit_result "config_error"
+    exit 1
+  fi
+  if ! PRODUCTION_CHANNELS=$(jq -er '
+    if type != "array" then error("projects must be an array") else
+      [ .[] |
+        (.generalChannel // empty),
+        (.leads[]? | (.alertChannel // empty), (.chatChannel // empty))
+      ]
+      | map(select(type == "string" and test("^[0-9]{17,20}$")))
+      | unique | .[]
+    end
+  ' "$PRODUCTION_PROJECTS_JSON" 2>/dev/null); then
+    log "ERROR: production channel census is invalid"
+    emit_result "config_error"
+    exit 1
+  fi
+  if printf '%s\n' "$PRODUCTION_CHANNELS" | grep -Fxq "$ALERT_CHANNEL"; then
+    log "ERROR: QA-slot alertChannel collides with a production channel"
+    emit_result "config_error"
+    exit 1
+  fi
+fi
 fi # end projects.json resolution (skipped when unified channel + sender env set)
 
 # Resolve channel: FLY-927 unified channel env wins; else
 # alertChannel → generalChannel (if alertFallbackToCore) — the legacy path.
 CHANNEL_ID=""
-if [ -n "$UNIFIED_CHANNEL" ]; then
+if [ "$KIND" = voice_daemon_unhealthy ]; then
+  CHANNEL_ID="$VOICE_CHANNEL"
+elif [ "$KIND" = shuttle_unit_unhealthy ]; then
+  CHANNEL_ID="$SHUTTLE_CHANNEL"
+elif [ "$KIND" = "codex_home_migration_overdue" ]; then
+  CHANNEL_ID="$ALERT_CHANNEL"
+elif [ -n "$UNIFIED_CHANNEL" ]; then
   CHANNEL_ID="$UNIFIED_CHANNEL"
 elif [ -n "$ALERT_CHANNEL" ]; then
   CHANNEL_ID="$ALERT_CHANNEL"
 elif [ "$FALLBACK_TO_CORE" = "true" ] && [ -n "$GENERAL_CHANNEL" ]; then
   CHANNEL_ID="$GENERAL_CHANNEL"
   log "WARNING: no alertChannel configured, falling back to generalChannel ($CHANNEL_ID)"
+fi
+if [ "$KIND" = "codex_home_migration_overdue" ] \
+    && ! printf '%s' "$CHANNEL_ID" | grep -Eq '^[0-9]{17,20}$'; then
+  log "ERROR: dedicated engineering alertChannel is missing or invalid"
+  CHANNEL_ID=""
 fi
 
 # Resolve token: FLY-927 (D2) sender identity env wins — and when it is set but
@@ -497,7 +940,12 @@ fi
 # a dead-letter than an unauthorized sender). Else the legacy per-lead chain:
 # alertBotTokenEnv → botTokenEnv (fallback warned once).
 TOKEN=""
-if [ -n "$SENDER_TOKEN_ENV" ]; then
+if [ "$KIND" = voice_daemon_unhealthy ] && [ -z "$SENDER_TOKEN_ENV" ]; then
+  SENDER_TOKEN_ENV="$VOICE_ROUTE_TOKEN_ENV"
+elif [ "$KIND" = shuttle_unit_unhealthy ] && [ -z "$SENDER_TOKEN_ENV" ]; then
+  SENDER_TOKEN_ENV="$SHUTTLE_ROUTE_TOKEN_ENV"
+fi
+if [ "$CODEX_HOME_SLOT_ROUTE" != "1" ] && [ -n "$SENDER_TOKEN_ENV" ]; then
   TOKEN="${!SENDER_TOKEN_ENV:-}"
   if [ -z "$TOKEN" ]; then
     log "ERROR: FLYWHEEL_ALERT_SENDER_TOKEN_ENV='$SENDER_TOKEN_ENV' does not resolve — refusing per-lead fallback"
@@ -512,6 +960,175 @@ else
       log "WARNING: alert token env '$ALERT_BOT_TOKEN_ENV' empty, using '$LEAD_BOT_TOKEN_ENV'"
     fi
   fi
+fi
+
+# Voice notification intents never enter the generic claims.db / retry queue:
+# the voice health ledger is the sole claim, retry, and recovery authority.
+# Re-resolve permissions and re-read the exact source immediately before POST.
+if [ "$KIND" = voice_daemon_unhealthy ]; then
+  finish_voice_without_send() {
+    local source_state
+    source_state=$(record_voice_source_delivery config_error 2>/dev/null || true)
+    if [ "$source_state" = cancelled_recovered ]; then
+      emit_result duplicate
+    else
+      emit_result config_error
+    fi
+    exit 2
+  }
+
+  VOICE_CURRENT_ROUTE=""
+  if ! VOICE_CURRENT_ROUTE=$(resolve_voice_health_route); then
+    log "ERROR: voice health route revalidation failed"
+    fire_meta_alert "voice_health_alert_route_unavailable" \
+      "Voice health alert route unavailable" \
+      "A claimed voice health notification failed its immediate route or permission revalidation."
+    finish_voice_without_send
+  fi
+  if ! printf '%s' "$VOICE_CURRENT_ROUTE" | jq -e \
+    --arg binding "$VOICE_ROUTE_BINDING" \
+    --arg channel "$VOICE_CHANNEL" \
+    --arg lead "$LEAD_ID" \
+    --arg project "$PROJECT_NAME" '
+      .bindingDigest == $binding and .channelId == $channel and
+      .leadId == $lead and .deliveryProject == $project and
+      .routeKey == "primary" and .permissionPreflight.checked == true' \
+      >/dev/null; then
+    log "ERROR: voice health route binding changed before send"
+    finish_voice_without_send
+  fi
+
+  VOICE_CURRENT=""
+  VOICE_CURSOR=0
+  for ((VOICE_PAGE = 0; VOICE_PAGE < 32; VOICE_PAGE += 1)); do
+    VOICE_EXPORT_INPUT="$(jq -cn --arg sourceId "$VOICE_SOURCE_ID" \
+      --argjson afterCursor "$VOICE_CURSOR" \
+      '{sourceId:$sourceId,afterCursor:$afterCursor,limit:200}')"
+    VOICE_PAGE_EXPORT=""
+    if ! VOICE_PAGE_EXPORT=$(printf '%s' "$VOICE_EXPORT_INPUT" | \
+        python3 "$VOICE_HELPER" --state-root "$VOICE_STATE_ROOT" export 2>/dev/null); then
+      log "ERROR: voice health source revalidation failed"
+      finish_voice_without_send
+    fi
+    VOICE_HAS_MORE="$(printf '%s' "$VOICE_PAGE_EXPORT" | \
+      jq -er '.hasMore | select(type == "boolean")' 2>/dev/null || true)"
+    # Revalidation needs current authority, not replay of historical changes.
+    # Jump to this source's high-water mark; the next export includes any
+    # concurrent suffix before exposing its final projection.
+    VOICE_NEXT_CURSOR="$(printf '%s' "$VOICE_PAGE_EXPORT" | \
+      jq -er '.eventHighWater | select(type == "number" and floor == .)' 2>/dev/null || true)"
+    if [[ ! "$VOICE_NEXT_CURSOR" =~ ^[0-9]+$ ]] || \
+       { [ "$VOICE_HAS_MORE" != true ] && [ "$VOICE_HAS_MORE" != false ]; }; then
+      log "ERROR: voice health source cursor is invalid"
+      finish_voice_without_send
+    fi
+    if [ "$VOICE_HAS_MORE" = false ]; then
+      VOICE_CURRENT="$VOICE_PAGE_EXPORT"
+      break
+    fi
+    if [ "$VOICE_NEXT_CURSOR" -le "$VOICE_CURSOR" ]; then
+      log "ERROR: voice health source cursor did not advance"
+      finish_voice_without_send
+    fi
+    VOICE_CURSOR="$VOICE_NEXT_CURSOR"
+  done
+  if [ -z "$VOICE_CURRENT" ]; then
+    log "ERROR: voice health source revalidation exceeded page limit"
+    finish_voice_without_send
+  fi
+  if ! printf '%s' "$VOICE_CURRENT" | jq -e \
+    --arg source "$VOICE_SOURCE_ID" \
+    --arg intent "$VOICE_INTENT" \
+    --arg episode "$VOICE_EPISODE_ID" \
+    --arg binding "$VOICE_ROUTE_BINDING" \
+    --arg channel "$VOICE_CHANNEL" '
+      .sourceId == $source and
+      .notificationsTruncated == false and .openEpisodesTruncated == false and
+      any(.openEpisodes[];
+        .episodeId == $episode and .closedAt == null and .sourceStatus == "verified") and
+      any(.currentProjection.activeNotifications[];
+        .intentId == $intent and .episodeId == $episode and
+        .bindingDigest == $binding and .channelId == $channel and
+        (.state == "pending" or .state == "queued_transient" or .state == "config_error"))' \
+      >/dev/null; then
+    log "voice health notification recovered or changed before send"
+    finish_voice_without_send
+  fi
+  if [ -z "$CHANNEL_ID" ] || [ -z "$TOKEN" ]; then
+    log "ERROR: voice health sender channel or token is unavailable"
+    finish_voice_without_send
+  fi
+
+  case "$SEVERITY" in
+    severe) VOICE_EMOJI="🚨" ;;
+    warning) VOICE_EMOJI="⚠️" ;;
+    info|*) VOICE_EMOJI="ℹ️" ;;
+  esac
+  VOICE_CONTENT=$(printf '%s **%s** (%s / %s)\n%s' \
+    "$VOICE_EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
+  VOICE_BODY_JSON=$(jq -n --arg c "$VOICE_CONTENT" \
+    '{content:$c,allowed_mentions:{parse:[]}}')
+  VOICE_RESPONSE="${TMPDIR:-/tmp}/voice-health-alert-$$.out"
+  rm -f "$VOICE_RESPONSE"
+  voice_post_discord() {
+    curl -s -o "$VOICE_RESPONSE" -w '%{http_code}' \
+      --max-time 15 \
+      -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+      -H "Content-Type: application/json" \
+      -d "$VOICE_BODY_JSON" \
+      -K - <<CURLCFG
+header = "Authorization: Bot ${TOKEN}"
+CURLCFG
+  }
+  if ! VOICE_HTTP_CODE=$(voice_post_discord 2>/dev/null); then
+    VOICE_HTTP_CODE="000"
+  fi
+  case "$VOICE_HTTP_CODE" in
+    ''|*[!0-9]*) VOICE_HTTP_CODE="000" ;;
+  esac
+
+  if [ "$VOICE_HTTP_CODE" -ge 200 ] && [ "$VOICE_HTTP_CODE" -lt 300 ] 2>/dev/null; then
+    DELIVERY_MESSAGE_ID="$(jq -er \
+      '.id | select(type == "string" and test("^[0-9]{17,20}$"))' \
+      "$VOICE_RESPONSE" 2>/dev/null || true)"
+    rm -f "$VOICE_RESPONSE"
+    if [[ ! "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+      record_voice_source_delivery delivery_unknown >/dev/null || true
+      emit_result delivery_unknown
+      exit 2
+    fi
+    VOICE_RECORDED_STATE=$(record_voice_source_delivery sent "$DELIVERY_MESSAGE_ID" 2>/dev/null || true)
+    if [ "$VOICE_RECORDED_STATE" = sent ]; then
+      emit_result sent
+      exit 0
+    fi
+    emit_result delivery_unknown
+    exit 2
+  fi
+  rm -f "$VOICE_RESPONSE"
+
+  if [ "$VOICE_HTTP_CODE" = 000 ]; then
+    record_voice_source_delivery delivery_unknown >/dev/null || true
+    emit_result delivery_unknown
+    exit 2
+  fi
+  if [ "$VOICE_HTTP_CODE" -ge 500 ] 2>/dev/null || [ "$VOICE_HTTP_CODE" = 429 ]; then
+    VOICE_RECORDED_STATE=$(record_voice_source_delivery queued_transient 2>/dev/null || true)
+    if [ "$VOICE_RECORDED_STATE" = cancelled_recovered ]; then
+      emit_result duplicate
+    elif [ "$VOICE_RECORDED_STATE" = queued_transient ]; then
+      emit_result queued_transient
+    else
+      emit_result delivery_unknown
+    fi
+    exit 2
+  fi
+  record_voice_source_delivery dead_lettered >/dev/null || true
+  fire_meta_alert "voice_health_alert_delivery_failed" \
+    "Voice health alert delivery failed" \
+    "A voice health notification reached a permanent Discord rejection."
+  emit_result dead_lettered
+  exit 2
 fi
 
 # ── Event ID (Fix 3: signature-based) ──────────────────────
@@ -725,6 +1342,7 @@ write_record() {
   # FLY-2051: the switch family carries its resolved primary channel through a
   # transient queue. Every other kind omits the key to retain its legacy shape.
   local mention_args=() mention_expr="" route_args=() route_expr="" style_args=() style_expr=""
+  local shuttle_args=() shuttle_expr=""
   if [ -n "$MENTION_USER" ]; then
     mention_args=(--arg mentionUserId "$MENTION_USER")
     mention_expr=', mentionUserId: $mentionUserId'
@@ -736,6 +1354,12 @@ write_record() {
   if [ "$PLAIN_MESSAGE" = "1" ]; then
     style_args=(--arg deliveryStyle "plain")
     style_expr=', deliveryStyle: $deliveryStyle'
+  fi
+  if [ "$KIND" = shuttle_unit_unhealthy ]; then
+    shuttle_args=(--arg shuttleBatchId "$SHUTTLE_INTENT" \
+      --arg shuttleRouteKey "$SHUTTLE_ROUTE_KEY" \
+      --arg shuttleBindingDigest "$SHUTTLE_ROUTE_BINDING")
+    shuttle_expr=', shuttleBatchId: $shuttleBatchId, shuttleRouteKey: $shuttleRouteKey, shuttleBindingDigest: $shuttleBindingDigest'
   fi
   jq -n \
     --arg leadId "$LEAD_ID" \
@@ -750,9 +1374,10 @@ write_record() {
     ${mention_args[@]+"${mention_args[@]}"} \
     ${route_args[@]+"${route_args[@]}"} \
     ${style_args[@]+"${style_args[@]}"} \
+    ${shuttle_args[@]+"${shuttle_args[@]}"} \
     "{leadId: \$leadId, projectName: \$projectName, eventId: \$eventId,
       eventType: \$eventType, title: \$title, body: \$body,
-      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}${route_expr}${style_expr}}" \
+      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}${route_expr}${style_expr}${shuttle_expr}}" \
     > "$1"
 }
 
@@ -882,14 +1507,18 @@ case "$HTTP_CODE" in
 esac
 
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
-  if [[ "$KIND" == activation_probe ]]; then
+  if [[ "$KIND" == activation_probe || "$KIND" == shuttle_unit_unhealthy || "$KIND" == codex_home_migration_overdue ]]; then
     DELIVERY_MESSAGE_ID="$(jq -er '.id | select(type == "string" and test("^[0-9]{17,20}$"))' \
       "/tmp/lead-alert-$$.out" 2>/dev/null || true)"
   fi
   rm -f /tmp/lead-alert-$$.out
   log "sent lead=$LEAD_ID kind=$KIND channel=$CHANNEL_ID (HTTP $HTTP_CODE)"
   if record_delivery "sent"; then
-    emit_result "sent"
+    if [[ "$KIND" == shuttle_unit_unhealthy && ! "$DELIVERY_MESSAGE_ID" =~ ^[0-9]{17,20}$ ]]; then
+      emit_result "delivery_unknown"
+    else
+      emit_result "sent"
+    fi
   else
     # POST may have landed, but without a durable receipt the daemon must keep
     # its outbox and replay. A duplicate post is preferable to silent loss.
@@ -907,6 +1536,11 @@ log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 #   5xx / 429 / 000(network) → TRANSIENT → queue for Bridge drainQueue retry.
 #   other 4xx (401/403/404 — bad token, forbidden, channel gone) → PERMANENT
 #     → dead-letter + meta-alert (retry is pointless).
+if [ "$HTTP_CODE" = "000" ] && [ "$KIND" = shuttle_unit_unhealthy ]; then
+  record_delivery "dead_lettered" "delivery-unknown" || true
+  emit_result "delivery_unknown"
+  exit 2
+fi
 if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
   || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
   if enqueue "discord-${HTTP_CODE}"; then

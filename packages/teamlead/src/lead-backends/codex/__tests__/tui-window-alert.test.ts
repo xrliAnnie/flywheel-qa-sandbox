@@ -237,10 +237,10 @@ describe("TuiWindowAlertGuard — episode-latched consecutive-failure state mach
 		expect(calls).toHaveLength(1); // in-proc latch prevents re-spam
 	});
 
-	it("default threshold is 9 (~3 min at the 20s cadence)", () => {
-		expect(DEFAULT_TUI_WINDOW_ALERT_THRESHOLD).toBe(9);
+	it("default threshold is three consecutive failures before retry backoff", () => {
+		expect(DEFAULT_TUI_WINDOW_ALERT_THRESHOLD).toBe(3);
 		const { guard, calls } = harness(); // no threshold override → default
-		feed(guard, false, 8);
+		feed(guard, false, 2);
 		expect(calls).toHaveLength(0);
 		guard.record(false);
 		expect(calls).toHaveLength(1);
@@ -394,7 +394,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		);
 		expect(guard).not.toBeNull();
 		expect(logs).toEqual([
-			"tui-window-alert: silent-no-pane guard ARMED for raya/raya (roster opt-in, threshold=9)",
+			"tui-window-alert: silent-no-pane guard ARMED for raya/raya (roster opt-in, threshold=3)",
 		]);
 	});
 

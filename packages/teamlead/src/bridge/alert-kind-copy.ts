@@ -365,6 +365,10 @@ export function titleFor(kind: AlertEventType): string {
 			return "Flywheel deploy failed";
 		case "deploy_degraded":
 			return "Flywheel deploy degraded";
+		case "shuttle_unit_unhealthy":
+			return "Shuttle deployment unit unhealthy";
+		case "voice_daemon_unhealthy":
+			return "Voice daemon unhealthy";
 		// FLY-1256: never routed through this table; the external quota monitor
 		// supplies its own title. Cases keep the shared union exhaustive.
 		case "account_switched":
@@ -391,6 +395,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Claude requires a manual model choice";
 		case "quota_switch_confirmation":
 			return "Claude quota switch recovery confirmation";
+		case "codex_quota_automation_disabled":
+			return "Codex 自动切号关着";
 		case "quota_no_target":
 			return "No Claude account has quota";
 		case "quota_blocked_recovered":
@@ -464,12 +470,15 @@ export function titleFor(kind: AlertEventType): string {
 			return "tmux rescue lock held too long";
 		case "host_voucher_incident":
 			return "Host IPC-voucher incident (kernel panic risk)";
+		case "codex_home_migration_overdue":
+			return "Codex credential home migration overdue";
 	}
 }
 
 export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 	if (kind === "activation_probe") return "info";
 	if (kind === "model_family_updated") return "info";
+	if (kind === "codex_quota_automation_disabled") return "info";
 	if (
 		kind === "crash_loop" ||
 		kind === "login_expired" ||
@@ -634,6 +643,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log, ~/.flywheel/state/bridge-startup.log, ~/.flywheel/state/bridge-log-rotation-error.json, and ~/.flywheel/deployed-sha.";
 		case "deploy_degraded":
 			return "A Flywheel deploy completed degraded (skipped/failed leads, plugin update problem, or idle-wait timeout). Shell-only kind via lead-alert.sh — see the shell alert body for specifics.";
+		case "shuttle_unit_unhealthy":
+			return "A shuttle deployment unit failed or was unexpectedly skipped. The durable observation ledger owns recovery and founder-awareness state; this notification opens no ticket or automated repair.";
+		case "voice_daemon_unhealthy":
+			return "The voice health source has an active demand-bound failure episode. Its durable source ledger owns retry and recovery; this notice opens no ticket or automated repair.";
 		// FLY-1256: never routed through this table. The external daemon supplies
 		// account/quota/reset evidence in the real alert body.
 		case "account_switched":
@@ -660,6 +673,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Claude is asking for a paid-model choice. The monitor will not choose or send keys; a human must decide.";
 		case "quota_switch_confirmation":
 			return "The external quota monitor rechecked every recorded affected pane after the switch and reported the five-state recovery result.";
+		case "codex_quota_automation_disabled":
+			return "Codex 自动切号不可用；本次额度事件已交 Lead 手工处理。";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
 		case "quota_blocked_recovered":
@@ -735,5 +750,7 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// kind switch exhaustive.
 		case "host_voucher_incident":
 			return "Host IPC-voucher occupancy climbed toward IVAC_ENTRIES_MAX, or a new voucher kernel-panic report appeared. The known holder is macOS ecosystemanalyticsd, not a Flywheel process; the containment action is root- and founder-gated. See the FLY-1929 runbook.";
+		case "codex_home_migration_overdue":
+			return "One or more approved Codex credential homes remain unsatisfied past their durable enrollment deadline. Run only the exact safe reconcile commands in the alert; active homes will skip without mutation.";
 	}
 }

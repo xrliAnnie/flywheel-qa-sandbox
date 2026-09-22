@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
-import { prepareLandIntent } from "../land-intent-targets.js";
+import {
+	prepareLandIntent,
+	prepareLandRecloseTargets,
+} from "../land-intent-targets.js";
 
 describe("land intent target snapshot", () => {
 	const roots: string[] = [];
@@ -332,6 +335,310 @@ describe("land intent target snapshot", () => {
 			expect(result).toMatchObject({
 				ok: false,
 				missing: ["implement-1:worktree_registration_mismatch"],
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("returns a typed refusal when the registered worktree path cannot be resolved", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2662-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const worktreePath = join(parent, "flywheel-FLY-2662");
+		await mkdir(projectRoot);
+		await mkdir(worktreePath);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-2662",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-1", {
+				path: worktreePath,
+				branch: "flywheel-FLY-2662",
+				generation: "generation-1",
+			});
+			let worktreeResolutionCount = 0;
+			const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+
+			await expect(
+				prepareLandIntent(
+					store,
+					{
+						issueId: "FLY-2662",
+						projectName: "flywheel",
+						prNumber: 2662,
+						approvedHead: "a".repeat(40),
+						now: "2026-09-17T20:40:00.000Z",
+					},
+					{
+						resolveProjectRoot: () => projectRoot,
+						getRegisteredWorktree: async () => ({
+							path: worktreePath,
+							branch: "flywheel-FLY-2662",
+							isDetached: false,
+						}),
+						readWorktreeGeneration: async () => "generation-1",
+						realpath: async (path) => {
+							if (path === worktreePath && ++worktreeResolutionCount > 1) {
+								throw denied;
+							}
+							return realpath(path);
+						},
+					},
+				),
+			).resolves.toMatchObject({
+				ok: false,
+				missing: ["implement-1:worktree_registration_unresolvable:EACCES"],
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects a target snapshot when attribution changes during filesystem inspection", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2662-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const worktreePath = join(parent, "flywheel-FLY-2662");
+		await mkdir(projectRoot);
+		await mkdir(worktreePath);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-2662",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-1", {
+				path: worktreePath,
+				branch: "flywheel-FLY-2662",
+				generation: "generation-1",
+			});
+
+			const result = await prepareLandIntent(
+				store,
+				{
+					issueId: "FLY-2662",
+					projectName: "flywheel",
+					prNumber: 2662,
+					approvedHead: "a".repeat(40),
+					now: "2026-09-17T20:40:00.000Z",
+				},
+				{
+					resolveProjectRoot: () => projectRoot,
+					getRegisteredWorktree: async () => {
+						store.upsertSession({
+							execution_id: "late-qa",
+							issue_id: "FLY-2662",
+							project_name: "flywheel",
+							status: "completed",
+						});
+						return {
+							path: worktreePath,
+							branch: "flywheel-FLY-2662",
+							isDetached: false,
+						};
+					},
+					readWorktreeGeneration: async () => "generation-1",
+				},
+			);
+
+			expect(result).toMatchObject({
+				ok: false,
+				missing: ["closeout_attribution_changed"],
+			});
+			expect(
+				store.getLatestLandOperationForIssue("flywheel", "FLY-2662"),
+			).toBeUndefined();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2662: prepares a v2 absence target from a durable pre-deployment binding without mutating the old operation", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2662-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const removedWorktreePath = join(parent, "flywheel-FLY-9002");
+		await mkdir(projectRoot);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-predeploy",
+				issue_id: "FLY-9002",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-predeploy", {
+				path: removedWorktreePath,
+				branch: "flywheel-FLY-9002",
+				generation: "generation-predeploy",
+			});
+			const operation = store.ensureLandOperation({
+				issueId: "FLY-9002",
+				projectName: "flywheel",
+				prNumber: 9002,
+				approvedHead: "a".repeat(40),
+				now: "2026-09-17T02:11:18.371Z",
+			});
+			expect(operation.closeout_targets_json).toBeNull();
+
+			const prepared = await prepareLandRecloseTargets(
+				store,
+				{
+					operation,
+					requestId: "11111111-1111-4111-8111-111111111111",
+					now: "2026-09-17T20:40:00.000Z",
+				},
+				{
+					resolveProjectRoot: () => projectRoot,
+					getRegisteredWorktree: async () => null,
+					readWorktreeGeneration: async () => undefined,
+				},
+			);
+
+			expect(prepared).toMatchObject({
+				ok: true,
+				verifiedTargets: { version: 2 },
+			});
+			if (!prepared.ok) return;
+			const snapshot = JSON.parse(prepared.verifiedTargets.json);
+			const canonicalRemovedPath = join(
+				await realpath(parent),
+				"flywheel-FLY-9002",
+			);
+			expect(snapshot).toMatchObject({
+				version: 2,
+				project: "flywheel",
+				issueUuid: "FLY-9002",
+				runId: null,
+				targets: [
+					{
+						kind: "verified_absent_worktree",
+						evidenceMode: "legacy_absence_observation",
+						path: canonicalRemovedPath,
+						branch: "flywheel-FLY-9002",
+						generation: "generation-predeploy",
+						sourceExecutionIds: ["implement-predeploy"],
+						sourceRunId: null,
+					},
+				],
+			});
+			expect(
+				store.getLandOperation(operation.operation_id)?.closeout_targets_json,
+			).toBeNull();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2662: refuses an unreadable legacy worktree path instead of signing absence", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2662-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const removedWorktreePath = join(parent, "flywheel-FLY-9002");
+		await mkdir(projectRoot);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-predeploy",
+				issue_id: "FLY-9002",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-predeploy", {
+				path: removedWorktreePath,
+				branch: "flywheel-FLY-9002",
+				generation: "generation-predeploy",
+			});
+			const operation = store.ensureLandOperation({
+				issueId: "FLY-9002",
+				projectName: "flywheel",
+				prNumber: 9002,
+				approvedHead: "a".repeat(40),
+				now: "2026-09-17T02:11:18.371Z",
+			});
+			const pathError = Object.assign(new Error("denied"), { code: "EACCES" });
+
+			await expect(
+				prepareLandRecloseTargets(
+					store,
+					{
+						operation,
+						requestId: "11111111-1111-4111-8111-111111111111",
+						now: "2026-09-17T20:40:00.000Z",
+					},
+					{
+						resolveProjectRoot: () => projectRoot,
+						getRegisteredWorktree: async () => null,
+						readWorktreeGeneration: async () => undefined,
+						lstat: async () => {
+							throw pathError;
+						},
+					},
+				),
+			).resolves.toMatchObject({
+				ok: false,
+				missing: ["implement-predeploy:worktree_path_unreadable:EACCES"],
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2662: refuses an unreadable legacy worktree parent instead of throwing", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "fly2662-targets-"));
+		roots.push(parent);
+		const projectRoot = join(parent, "flywheel");
+		const removedWorktreePath = join(parent, "flywheel-FLY-9002");
+		await mkdir(projectRoot);
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "implement-predeploy",
+				issue_id: "FLY-9002",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			store.bindWorktreeOnce("implement-predeploy", {
+				path: removedWorktreePath,
+				branch: "flywheel-FLY-9002",
+				generation: "generation-predeploy",
+			});
+			const operation = store.ensureLandOperation({
+				issueId: "FLY-9002",
+				projectName: "flywheel",
+				prNumber: 9002,
+				approvedHead: "a".repeat(40),
+				now: "2026-09-17T02:11:18.371Z",
+			});
+			const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+
+			await expect(
+				prepareLandRecloseTargets(
+					store,
+					{
+						operation,
+						requestId: "11111111-1111-4111-8111-111111111111",
+						now: "2026-09-17T20:40:00.000Z",
+					},
+					{
+						resolveProjectRoot: () => projectRoot,
+						getRegisteredWorktree: async () => null,
+						readWorktreeGeneration: async () => undefined,
+						stat: async () => {
+							throw denied;
+						},
+					},
+				),
+			).resolves.toMatchObject({
+				ok: false,
+				missing: ["implement-predeploy:worktree_parent_unreadable:EACCES"],
 			});
 		} finally {
 			store.close();

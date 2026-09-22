@@ -69,10 +69,7 @@ import {
 	hasPendingCompleteMarker,
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
-import {
-	type EventFilter,
-	leadEventDeliveryDisposition,
-} from "./EventFilter.js";
+import { type EventFilter, leadNotificationDecision } from "./EventFilter.js";
 import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
 import {
 	evaluateFounderReviewAuthority,
@@ -349,6 +346,49 @@ function isSafePlanPath(planPath: string): boolean {
 }
 
 /**
+ * Return an event-local durable owner only after the real reviewer instruction
+ * exists. A settled correction, codex-skip marker, or bare stage transition is
+ * not review ownership and must keep the Lead model path fail-open.
+ */
+export function authoritativeReviewOwnerRef(
+	store: Pick<StateStore, "getDesignReviewManifestForSourceEvent">,
+	event: Pick<IngestEvent, "execution_id" | "event_id" | "project_name">,
+	stage: string,
+): string | undefined {
+	try {
+		let instructionId: string | undefined;
+		if (stage === "design_review") {
+			const manifest = store.getDesignReviewManifestForSourceEvent(
+				event.execution_id,
+				event.event_id,
+			);
+			if (!manifest) return undefined;
+			instructionId = `design-review-manifest:${event.execution_id}:${manifest.revision}`;
+		} else if (stage === "pr_created") {
+			instructionId = `codex-trigger:${event.event_id}`;
+		} else {
+			return undefined;
+		}
+
+		const dbPath = commDbPathForProject(event.project_name);
+		if (!existsSync(dbPath)) return undefined;
+		const commDb = CommDB.openReadonly(dbPath);
+		try {
+			const instruction = commDb.getMessageById(instructionId);
+			return instruction?.type === "instruction" &&
+				instruction.from_agent === "bridge" &&
+				instruction.to_agent === event.execution_id
+				? `mailbox:${instructionId}`
+				: undefined;
+		} finally {
+			commDb.close();
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Handle stage_changed → design_review / pr_created. Reads session
  * state (codex_skip + worktree_path + plan_path) and either writes
  * skip.json or writes a CommDB instruction to the Runner inbox.
@@ -550,9 +590,12 @@ export function handleCodexAutoTrigger(
 		try {
 			const manifest = store.advanceDesignReviewManifest({
 				executionId: event.execution_id,
+				issueId: event.issue_id,
 				projectName: event.project_name,
+				repositoryIdentity: "__main__",
 				sourceEventId: event.event_id,
 				expectedPlanPath: persistedPlanPath,
+				reviewedCommitSha: snapshot.commitSha,
 				expectedBlobSha: snapshot.blobSha,
 			});
 			const delivered = deliverDesignReviewManifest(store, manifest);
@@ -3699,21 +3742,55 @@ export function createEventRouter(
 				} else {
 					// Persist every event after its domain side effects; routine trusted
 					// progress can remain audit-only without fabricating delivery.
+					const stage = asString(payload.stage);
+					const inheritedDecision = Boolean(hookPayload.decision_route);
+					const reviewOwnerRef =
+						stageRecord && stage
+							? authoritativeReviewOwnerRef(store, event, stage)
+							: undefined;
+					const notificationEvidence = stageRecord
+						? {
+								kind: "stage_recorded" as const,
+								proofRef: `stage-event:${stageRecord.row.event_id}`,
+								actionState: inheritedDecision
+									? session.status === "running"
+										? ("resolved" as const)
+										: ("pending" as const)
+									: ("none" as const),
+								...(inheritedDecision && session.status === "running"
+									? {
+											actionProofRef: `stage-event:${stageRecord.row.event_id}:current-running`,
+										}
+									: {}),
+								...(reviewOwnerRef ? { reviewOwnerRef } : {}),
+							}
+						: event.event_type === "session_started" &&
+								!transitionRejected &&
+								session.status === "running"
+							? {
+									kind: "session_registered" as const,
+									proofRef: `session-event:${event.event_id}`,
+								}
+							: undefined;
+					const deliveryDecision =
+						tokenSavingsEnabled && notificationEvidence
+							? [hookPayload, payload].map((part) =>
+									leadNotificationDecision(
+										event.event_type,
+										{ ...part },
+										notificationEvidence,
+									),
+								)
+							: [];
 					const seq = store.appendLeadEvent(
 						lead.agentId,
 						event.event_id,
 						event.event_type,
 						JSON.stringify(hookPayload),
 						sessionKey,
-						tokenSavingsEnabled &&
-							[hookPayload, payload].every(
-								(part) =>
-									leadEventDeliveryDisposition(
-										event.event_type,
-										{ ...part },
-										event.event_type === "stage_changed" &&
-											Boolean(stageRecord),
-									) === "audit_only",
+						deliveryDecision.length > 0 &&
+							deliveryDecision.every(
+								(decision) => decision.disposition === "audit_only",
 							)
 							? "audit_only"
 							: "model",

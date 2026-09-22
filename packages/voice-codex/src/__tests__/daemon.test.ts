@@ -102,7 +102,11 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("voice-stop");
+		expect(await daemon.runOnce()).toEqual({
+			kind: "session_ended",
+			sessionId: SESSION_ID,
+			reason: "voice-stop",
+		});
 		expect(calls.indexOf("store.save")).toBeLessThan(
 			calls.indexOf("runtime.start"),
 		);
@@ -156,7 +160,11 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("no_human");
+		expect(await daemon.runOnce()).toEqual({
+			kind: "session_failed",
+			sessionId: SESSION_ID,
+			reason: "no_human",
+		});
 		expect(bridge.setState).toHaveBeenLastCalledWith(
 			SESSION_ID,
 			"lease",
@@ -278,7 +286,7 @@ describe("VoiceDaemon", () => {
 			"daemon_restart",
 			1,
 		);
-		expect(await daemon.runOnce()).toBe("idle");
+		expect(await daemon.runOnce()).toEqual({ kind: "idle_success" });
 	});
 
 	it("does not grant recovery authority for an ending session", async () => {
@@ -362,7 +370,11 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("lease_lost");
+		expect(await daemon.runOnce()).toEqual({
+			kind: "session_failed",
+			sessionId: SESSION_ID,
+			reason: "lease_lost",
+		});
 		expect(bridge.renew).toHaveBeenCalledTimes(2);
 		expect(() => claimedLease.assert()).toThrow(/voice_lease_fenced/);
 		expect(runtime.stop).toHaveBeenCalledWith({
@@ -405,7 +417,11 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("voice-stop");
+		expect(await daemon.runOnce()).toEqual({
+			kind: "session_ended",
+			sessionId: SESSION_ID,
+			reason: "voice-stop",
+		});
 		expect(runtime.stop).toHaveBeenCalledWith({
 			kind: "ended",
 			reason: "voice-stop",
@@ -452,7 +468,11 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("voice-stop");
+		expect(await daemon.runOnce()).toEqual({
+			kind: "session_ended",
+			sessionId: SESSION_ID,
+			reason: "voice-stop",
+		});
 		expect(bridge.renew).toHaveBeenCalled();
 	});
 
@@ -539,7 +559,11 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
-		expect(await daemon.runOnce()).toBe("daemon_shutdown");
+		expect(await daemon.runOnce()).toEqual({
+			kind: "daemon_stopped",
+			sessionId: SESSION_ID,
+			reason: "daemon_shutdown",
+		});
 		expect(runtime.start).not.toHaveBeenCalled();
 		expect(runtime.stop).toHaveBeenCalledOnce();
 	});
@@ -587,13 +611,17 @@ describe("VoiceDaemon", () => {
 					speechChunkTokens: 600,
 				},
 			});
-			expect(await daemon.runOnce()).toBe("voice_session_registry_drift");
+			expect(await daemon.runOnce()).toEqual({
+				kind: "session_failed",
+				sessionId: SESSION_ID,
+				reason: "session_create_failed",
+			});
 			expect(bridge.setState).toHaveBeenCalledWith(
 				SESSION_ID,
 				"lease",
 				expect.any(VoiceLease),
 				"failed",
-				"voice_session_registry_drift",
+				"session_create_failed",
 			);
 			expect(stateStore.remove).toHaveBeenCalledWith(SESSION_ID);
 		},
@@ -684,7 +712,7 @@ describe("VoiceDaemon", () => {
 			createSession: vi.fn(),
 			recoverSession: vi.fn(),
 			sleep,
-			now: () => elapsed,
+			monotonicNow: () => elapsed,
 			timing: {
 				idlePollMs: 5_000,
 				idleExitMs: 120_000,
@@ -738,7 +766,7 @@ describe("VoiceDaemon", () => {
 			createSession: vi.fn(),
 			recoverSession: vi.fn(),
 			sleep,
-			now: () => elapsed,
+			monotonicNow: () => elapsed,
 			timing: {
 				idlePollMs: 5_000,
 				idleExitMs: 120_000,
@@ -799,7 +827,7 @@ describe("VoiceDaemon", () => {
 			createSession: () => runtime,
 			recoverSession: vi.fn(),
 			sleep,
-			now: () => elapsed,
+			monotonicNow: () => elapsed,
 			timing: {
 				idlePollMs: 5_000,
 				idleExitMs: 120_000,
@@ -885,6 +913,23 @@ function lifetimeFixture() {
 }
 
 describe("VoiceDaemon session lifetime", () => {
+	it("classifies an explicit daemon shutdown separately from session failure", async () => {
+		vi.useFakeTimers();
+		try {
+			const fixture = lifetimeFixture();
+			const running = fixture.daemon.runOnce();
+			await vi.advanceTimersByTimeAsync(0);
+			fixture.daemon.shutdown();
+			expect(await running).toEqual({
+				kind: "daemon_stopped",
+				sessionId: SESSION_ID,
+				reason: "daemon_shutdown",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("kills a warming session at the hard deadline even when renewal never settles", async () => {
 		vi.useFakeTimers();
 		try {
@@ -897,7 +942,11 @@ describe("VoiceDaemon session lifetime", () => {
 				kind: "failed",
 				reason: "lease_lost",
 			});
-			expect(await running).toBe("lease_lost");
+			expect(await running).toEqual({
+				kind: "session_failed",
+				sessionId: SESSION_ID,
+				reason: "lease_lost",
+			});
 		} finally {
 			vi.useRealTimers();
 		}
@@ -923,7 +972,11 @@ describe("VoiceDaemon session lifetime", () => {
 				kind: "ended",
 				reason: "text-stop",
 			});
-			expect(await running).toBe("text-stop");
+			expect(await running).toEqual({
+				kind: "session_ended",
+				sessionId: SESSION_ID,
+				reason: "text-stop",
+			});
 			expect(fixture.runtime.markLive).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
@@ -954,8 +1007,20 @@ describe("VoiceDaemon session lifetime", () => {
 							};
 				fixture.ended.resolve(outcome);
 				await vi.advanceTimersByTimeAsync(0);
-				expect(fixture.runtime.stop).toHaveBeenCalledWith(outcome);
-				expect(await running).toBe(reason);
+				expect(fixture.runtime.stop).toHaveBeenCalledWith(
+					reason === "codex_process_exit"
+						? { kind: "failed", reason: "session_runtime_failed" }
+						: outcome,
+				);
+				expect(await running).toEqual({
+					kind:
+						reason === "codex_process_exit"
+							? "session_failed"
+							: "session_ended",
+					sessionId: SESSION_ID,
+					reason:
+						reason === "codex_process_exit" ? "session_runtime_failed" : reason,
+				});
 				speech.resolve("confirmed");
 				await vi.advanceTimersByTimeAsync(8_000);
 				expect(fixture.bridge.claimOutbound).toHaveBeenCalledTimes(1);
@@ -984,7 +1049,11 @@ describe("VoiceDaemon session lifetime", () => {
 			founder.resolve(true);
 			await vi.advanceTimersByTimeAsync(0);
 			fixture.ended.resolve({ kind: "ended", reason: "voice-stop" });
-			expect(await running).toBe("voice-stop");
+			expect(await running).toEqual({
+				kind: "session_ended",
+				sessionId: SESSION_ID,
+				reason: "voice-stop",
+			});
 		} finally {
 			vi.useRealTimers();
 		}

@@ -31,7 +31,7 @@ it("renders every bounded escaped row in one local-only document", () => {
 		...row,
 		questionId: `q-${n}`,
 		auditId: `audit-${n}`,
-		issue: "<img src=x onerror=alert(1)> & 文".repeat(30),
+		issue: `FLY-${n} ${"<img src=x onerror=alert(1)> & 文".repeat(30)}`,
 		summary: '<script>alert("x")</script>&中文'.repeat(1000),
 	}));
 	const html = renderHistoryDocument(rows, options);
@@ -42,6 +42,14 @@ it("renders every bounded escaped row in one local-only document", () => {
 	expect(html).toContain("本文件仅在 Lead 明确请求时生成，不会自动上传");
 	expect(html).not.toContain("下一页");
 	expect(html).not.toMatch(/<script|<[^>]+onerror=|<img|fetch\(/);
+	expect(html).toContain("data-discord-app");
+	expect(html).toContain(
+		'href="https://discord.com/channels/@me/123456789012345679/123456789012345680"',
+	);
+	expect(html).toContain(
+		'data-discord-fallback href="https://discord.com/channels/@me/123456789012345679/123456789012345680"',
+	);
+	expect(html).toContain('aria-label="FLY-0 Discord 网页版"');
 	const rendered = html.match(/<tr data-audit=[\s\S]*?<\/tr>/g)!;
 	expect(rendered).toHaveLength(40);
 	for (const line of rendered)

@@ -1,0 +1,61 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2643 每位成员默认可见</title><style>body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:980px;margin:auto;padding:44px 20px 70px}h1{font-size:36px;line-height:1.2;letter-spacing:-1px}h2{font-size:23px;margin-top:0}.eyebrow,.note{color:#6e6e73;font-size:14px}.card{background:white;border:1px solid #e6e6e9;border-radius:20px;padding:28px;margin:22px 0;box-shadow:0 4px 18px #00000004}.hero{font-size:23px;line-height:1.5}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:12px 8px;border-bottom:1px solid #ececf0}th{color:#6e6e73;font-size:14px}.comment{border-top:1px solid #ececf0;margin-top:24px;padding-top:16px}label{display:block;color:#6e6e73;font-size:14px;margin-bottom:7px}textarea{box-sizing:border-box;width:100%;min-height:85px;padding:12px;border:1px solid #d2d2d7;border-radius:10px;font:inherit;resize:vertical}button{background:#0071e3;color:white;border:0;border-radius:10px;padding:11px 17px;cursor:pointer;font:inherit;margin:8px 10px 8px 0}.pending{padding:24px;border:1px dashed #b6b6bc;border-radius:12px;background:#fafafa}.pending strong{display:block;color:#8a5000}pre{white-space:pre-wrap;word-break:break-word;font:14px/1.6 ui-monospace,monospace}svg{max-width:100%;height:auto}.chunk{border-top:1px solid #ddd;padding-top:15px}.status{color:#6e6e73;font-size:14px}@media(max-width:600px){main{padding:22px 12px}h1{font-size:29px}.card{padding:19px}td,th{padding:8px 4px;font-size:14px}}</style></head><body><main><div class="eyebrow">FLY-2643 · 2026-09-17 · 设计交付</div><h1>每位成员，默认看得见。</h1><p class="note">从“进程还在”提升到“真实终端可见、可接入”。</p>
+<section class="card" data-section="看得见，才算上线"><h2>看得见，才算上线</h2><p class="hero">每一位 Lead 和正在执行的 Runner，都必须在 cmux 里有自己的真实、可接入终端。后台进程活着，不能替代这个承诺。</p><p>Lead 是持续工作的负责人；Runner 是执行具体任务的成员。cmux 是你看这些成员工作的窗口；tmux 保存背后的实际终端；TUI 是可以看见并操作的文字界面。</p><p class="note">这是实施前的设计交付。尚未执行生产切换，也没有宣称全舰队已经通过验收。</p><div class="comment"><label for="c-summary">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-summary" data-key="summary" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="一次判定，贯穿三处验收"><h2>一次判定，贯穿三处验收</h2><p>安装、班车重启和巡检使用同一套判据。班车指负责定时部署和重启的独立 updater 服务。只要窗口缺失、接错对象或证据不足，就明确报告未上线或异常。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染权限被拒绝，两次本地尝试均失败。保留了 Mermaid 图源，等待可用的本地渲染环境。</p><details><summary>查看图源</summary><pre>flowchart TD
+ A[期望在线的 Lead 与 Runner 名册] --&gt; B[核对当前身份和真实终端]
+ B --&gt; C{真实模型终端存在？}
+ C --&gt;|否| F[未上线或异常：明确报告]
+ C --&gt;|是| D[核对 cmux 窗口和实际连接]
+ D --&gt; E{能看见且接到正确终端？}
+ E --&gt;|是| G[本次验收通过]
+ E --&gt;|否或证据不足| F
+ F --&gt; H[由现有恢复流程处理]
+ H --&gt; B
+</pre></details></div><p>现有恢复流程负责修复。检查工具只观察，不擅自杀进程、切焦点或重建窗口；修复后重新采集当前证据。</p><div class="comment"><label for="c-flow">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-flow" data-key="flow" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="窗口必须对应当前这一个人"><h2>窗口必须对应当前这一个人</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染权限被拒绝，两次本地尝试均失败。保留了 Mermaid 图源，等待可用的本地渲染环境。</p><details><summary>查看图源</summary><pre>classDiagram
+ class AgentIdentity {
+  project
+  leadId_or_executionId
+  current_activation
+ }
+ class RealTerminal {
+  socket_and_session
+  window_and_pane
+  process_start_and_thread
+ }
+ class VisibleConnection {
+  cmux_workspace
+  surface_and_client
+  current_generation
+ }
+ class Observation {
+  time
+  pass_fail_inconclusive
+  reasons
+ }
+ AgentIdentity &quot;1&quot; --&gt; &quot;1&quot; RealTerminal : 精确对应
+ RealTerminal &quot;1&quot; --&gt; &quot;1&quot; VisibleConnection : 真实连接
+ Observation --&gt; AgentIdentity : 当场复核
+ Observation --&gt; VisibleConnection : 当场复核
+</pre></details></div><table><tr><th>核对哪一层</th><th>必须证明什么</th></tr><tr><td>身份</td><td>项目和 Lead 身份，或 Runner 本次执行编号，必须准确对应。</td></tr><tr><td>真实终端</td><td>窗口里有当前模型工作进程；空白 shell 不算。shell 是等待命令的普通终端壳。</td></tr><tr><td>可见连接</td><td>cmux 当前窗口实际接到那个终端，不是同名旧画面。</td></tr><tr><td>本次观测</td><td>记录时间和失败原因；旧的成功回执不能证明现在还可用。</td></tr></table><div class="comment"><label for="c-model">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-model" data-key="model" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="安装、重启、巡检分别怎样改变"><h2>安装、重启、巡检分别怎样改变</h2><table><tr><th>入口</th><th>新验收</th></tr><tr><td>安装与激活</td><td>安装后有界等待并复验；具体时限先按真实舰队规模测定。可见性未通过，明确返回未上线并告警。仅登记身份的前置检查不要求提前启动。</td></tr><tr><td>班车重启</td><td>调度载体重启和 cmux 刷新后，等待每个成员的真实窗口连接稳定；调度成功不算完成。代码部署成功与成员上线成功分别报告。</td></tr><tr><td>日常巡检</td><td>舰队巡检逐个核对所有应该在线的 Lead；各部门只检查自身和名下 Runner。缺窗的人仍在异常清单里，不会被过滤掉。</td></tr><tr><td>Runner</td><td>核本次执行对应的窗口；等待中仍驻留的成员也保留窗口。启动暂未完成须显示未验收，超时必须报告。</td></tr></table><div class="comment"><label for="c-gates">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-gates" data-key="gates" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="当前已知：这不是 Raya 一个人的问题"><h2>当前已知：这不是 Raya 一个人的问题</h2><p>2026-09-17 19:14:54 UTC 的只读抽查：17 个标准服务均已加载；其中 14 个独立终端存在，但当时只看见 bash，尚未证明其中模型可交互。</p><table><tr><th>成员</th><th>当时结果</th><th>处置路径</th></tr><tr><td>Raya</td><td>对应共享窗口未找到</td><td>实际割接仍归 FLY-2496</td></tr><tr><td>Mufasa</td><td>对应共享窗口未找到</td><td>Lead 安排标准载体修复与复验</td></tr><tr><td>Codex Infra Bot</td><td>对应共享窗口未找到</td><td>同样逐项处理，基础设施成员不豁免</td></tr></table><p>19:22 UTC 的后续采样发现：三者窗口均会出现，约一秒后消失，并非只有 Raya 恢复。因此必须间隔复核，不能把“创建成功”的日志当作持续可见。谁触发先前重启、窗口为何退出仍未查明：进程与系统日志读取受本机权限限制。</p><p class="note">Raya 的 cmux 验证器当时返回“证据不足”，并未通过。未完成全进程反向核对，因此没有宣称异常仅有这三个。</p><div class="comment"><label for="c-facts">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-facts" data-key="facts" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="必须真的挡住后台无终端的负例"><h2>必须真的挡住后台无终端的负例</h2><p>在隔离测试环境启动一个没有终端的 Lead 和一个 Runner。验收必须失败，安装或班车不能报告上线，巡检保留异常行，并留下实际告警或报告回执。</p><p>本单还会纠正“创建命令成功就报可用”的假绿，并在隔离环境保留死亡终端、采集退出码和错误，先复现再修复窗口瞬间退出的根因。远程连接错误仍只是候选原因，不能直接归因。再补正确终端和 cmux 连接，重新验证恢复。还要覆盖空壳窗口、旧线程、接错人、失效连接和读不到证据。线程是模型当前会话的编号；同名窗口可能仍连着旧会话。</p><p>可交互验收要有受控现场接入或截图证据。脚本测试全绿不等于生产窗口可用。</p><div class="comment"><label for="c-proof">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-proof" data-key="proof" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="取舍：统一验收，保留现有恢复流程"><h2>取舍：统一验收，保留现有恢复流程</h2><p><b>采用：</b>公共只读验收入口，复用现有身份、窗口和 cmux 连接检查。正常启动有短暂等待，超时明确失败。</p><p><b>不采用：</b>只改文字规则或只检查窗口名字，它们会放过空壳和旧窗口；也不在每次观察失败时自动杀进程，避免破坏进行中的工作。</p><p>后台模型服务可以作为可见终端的后端存在；“只有后台服务、没有可见终端”仍是缺陷。</p><div class="comment"><label for="c-choices">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-choices" data-key="choices" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="本轮交付与后续责任"><h2>本轮交付与后续责任</h2><p>本轮交付经设计评审的实施计划、验收清单和此页面。后续实现节点完成代码；QA 在受控环境证明正例与反例。QA 指独立验收。</p><p>存量逐个切换需要各自的执行权限与复验回执，Raya 继续走已有 FLY-2496 流程。本轮没有安装、重启、迁移、合并或部署，也不更改模型、账号、凭据或任务身份。</p><p>Bridge、watcher、updater 等普通基础设施服务不要求模型终端。缺少生产验收证据的项目会明确留待执行者补齐。</p><div class="comment"><label for="c-boundary">这一节的意见（自动保存在当前浏览器）</label><textarea id="c-boundary" data-key="boundary" placeholder="写下你的意见…"></textarea></div></section>
+<section class="card" data-section="意见汇总"><h2>意见汇总</h2><p class="note">评论仅保存在当前浏览器。复制后交给 Lead；这份汇总是修改意见，不是通过信号。</p><div class="comment"><label for="c-overall">整体意见</label><textarea id="c-overall" data-key="overall"></textarea></div><pre id="summary"></pre><button id="copy-all" type="button">复制全部意见</button><span id="status" class="status" role="status"></span><div id="chunks"></div></section></main><script nonce="__CSP_NONCE__">
+(function(){
+'use strict';
+const marker='【页面意见汇总】FLY-2643';
+const prefix='fly2643-comments:'+location.pathname+':';
+const fields=Array.from(document.querySelectorAll('textarea[data-key]'));
+const summary=document.getElementById('summary');
+const chunksNode=document.getElementById('chunks');
+const status=document.getElementById('status');
+let full=marker, chunks=[];
+function fallbackCopy(text){const temp=document.createElement('textarea');temp.value=text;temp.style.position='fixed';temp.style.top='-9999px';document.body.appendChild(temp);temp.select();let ok=false;try{ok=document.execCommand('copy');}finally{temp.remove();}if(!ok)throw new Error('copy unavailable');}
+async function copy(text){try{try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw new Error('clipboard unavailable');await navigator.clipboard.writeText(text);}catch(e){fallbackCopy(text);}status.textContent='已复制';}catch(e){status.textContent='复制失败，请手动选择上方文本。';}}
+function refresh(){const entries=fields.filter(f=>f.value.trim()).map(f=>'【'+f.closest('[data-section]').dataset.section+'】\n'+f.value.trim());full=marker+(entries.length?'\n\n'+entries.join('\n\n'):'');summary.textContent=full;chunks=[];let chunk=marker;for(const entry of entries){let rest=entry;while(rest.length){let room=1780-chunk.length-2;if(room<1){chunks.push(chunk);chunk=marker;room=1780-chunk.length-2;}const cut=rest.slice(0,room);chunk+='\n\n'+cut;rest=rest.slice(cut.length);if(rest.length){chunks.push(chunk);chunk=marker;}}}if(chunk!==marker||!chunks.length)chunks.push(chunk);chunksNode.replaceChildren();if(full.length>1800){chunks.forEach((text,index)=>{const div=document.createElement('div');div.className='chunk';const pre=document.createElement('pre');pre.textContent=text;const button=document.createElement('button');button.type='button';button.textContent='复制第 '+(index+1)+' 段';button.addEventListener('click',()=>copy(text));div.append(pre,button);chunksNode.append(div);});}}
+for(const field of fields){try{field.value=localStorage.getItem(prefix+field.dataset.key)||'';}catch(e){status.textContent='浏览器禁止本地保存；仍可复制意见。';}field.addEventListener('input',()=>{try{localStorage.setItem(prefix+field.dataset.key,field.value);}catch(e){status.textContent='本地保存不可用，请复制保留。';}refresh();});}
+document.getElementById('copy-all').addEventListener('click',()=>copy(full));refresh();
+})();
+</script></body></html>

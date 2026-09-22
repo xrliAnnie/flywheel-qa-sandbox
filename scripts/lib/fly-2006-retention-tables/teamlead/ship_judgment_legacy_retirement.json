@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "ship_judgment_legacy_retirement",
+	"classification": "protectedCurrentOrReference"
+}

@@ -21,9 +21,17 @@ export CMUX_FLAG_STATE="$TMP/cmux-flags"
 export LEDGER_CONFLICT_STATE="$TMP/ledger-conflicts"
 export ROSTER_EPISODE_STATE="$TMP/roster-episodes"
 export FLYWHEEL_ENV_FILE="$TMP/home/.flywheel/.env"
+export FLYWHEEL_PROJECTS_FILE="$TMP/home/.flywheel/projects.json"
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMP/maintenance"
 export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
 mkdir -p "$HOME/.flywheel/manifests" "$HOME/Library/LaunchAgents" "$(dirname "$FLYWHEEL_ENV_FILE")" "$FLYWHEEL_LEAD_STATE_DIR"
+cat > "$FLYWHEEL_PROJECTS_FILE" <<'JSON'
+[
+  {"projectName":"flywheel","leads":[{"agentId":"eng-lead"}]},
+  {"projectName":"growth","leads":[{"agentId":"mufasa-lead"}]},
+  {"projectName":"raya","leads":[{"agentId":"raya"}]}
+]
+JSON
 
 # shellcheck source=../flywheel-cmux-sync.sh
 source "$SUT"
@@ -78,9 +86,9 @@ lead_plist_wrapper_basename() {
 }
 derive_lead_roster
 expect_eq "$LEAD_ROSTER_STATE" "ok" "valid loaded jobs produce one complete roster snapshot"
-if grep -qE '^claude-private\|com\.flywheel\.lead\.flywheel-eng-lead\|flywheel-eng-lead\|.+\.sock$' <<< "$LEAD_ROSTER_ROWS" \
-    && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead|' <<< "$LEAD_ROSTER_ROWS" \
-    && grep -qx 'codex-tui-cmux|com.flywheel.lead.raya-raya|raya-raya|' <<< "$LEAD_ROSTER_ROWS"; then
+if grep -qE '^claude-private\|com\.flywheel\.lead\.flywheel-eng-lead\|flywheel-eng-lead\|.+\.sock\|claude-private$' <<< "$LEAD_ROSTER_ROWS" \
+    && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead||codex-tui-cmux' <<< "$LEAD_ROSTER_ROWS" \
+    && grep -qx 'codex-tui-cmux|com.flywheel.lead.raya-raya|raya-raya||codex-tui-cmux' <<< "$LEAD_ROSTER_ROWS"; then
   pass "derived roster uses manifest projectName/leadId and the TUI label identity"
 else
   fail "derived roster rows mismatch: [$LEAD_ROSTER_ROWS]"
@@ -98,10 +106,11 @@ lead_plist_wrapper_basename() {
   esac
 }
 derive_lead_roster
-if [[ "$LEAD_ROSTER_STATE" == "indeterminate" && -z "$LEAD_ROSTER_ROWS" ]]; then
-  pass "one malformed loaded manifest invalidates the entire Lead snapshot"
+if [[ "$LEAD_ROSTER_STATE" == "ok" \
+    && "$LEAD_ROSTER_ROWS" == *'config-drift|com.flywheel.lead.bad-lead|bad-lead|'* ]]; then
+  pass "an out-of-registry loaded Lead is explicit config drift without weakening the registry snapshot"
 else
-  fail "Lead derivation leaked a partial roster state=$LEAD_ROSTER_STATE rows=[$LEAD_ROSTER_ROWS]"
+  fail "extra loaded Lead was not classified as config drift state=$LEAD_ROSTER_STATE rows=[$LEAD_ROSTER_ROWS]"
 fi
 rm -f "$HOME/Library/LaunchAgents/com.flywheel.lead.bad-lead.plist"
 
@@ -120,8 +129,8 @@ tmux() {
       done
       if [[ "$TMUX_MODE" == "partial" && "$target" == "runner-flywheel" ]]; then return 1; fi
       case "$target" in
-        flywheel) printf '%s\n' 'flywheel|@7|flywheel-eng-lead' ;;
-        runner-flywheel) printf '%s\n' 'runner-flywheel|@8|FLY-1446-implement' ;;
+        flywheel) printf '%s\n' 'flywheel|@7|flywheel-eng-lead|0' ;;
+        runner-flywheel) printf '%s\n' 'runner-flywheel|@8|FLY-1446-implement|0' ;;
       esac
       ;;
     *) return 1 ;;
@@ -129,7 +138,7 @@ tmux() {
 }
 read_roster_tmux_inventory
 expect_eq "$ROSTER_TMUX_STATE" "ok_nonempty" "complete inventory is typed nonempty"
-expect_eq "$ROSTER_TMUX_WINDOWS" $'flywheel|@7|flywheel-eng-lead\nrunner-flywheel|@8|FLY-1446-implement' \
+expect_eq "$ROSTER_TMUX_WINDOWS" $'flywheel|@7|flywheel-eng-lead|0\nrunner-flywheel|@8|FLY-1446-implement|0' \
   "complete typed inventory publishes atomically parsed rows"
 TMUX_MODE=empty; read_roster_tmux_inventory
 expect_eq "$ROSTER_TMUX_STATE" "ok_empty" "successful zero-session read is conclusive empty"
@@ -137,6 +146,48 @@ TMUX_MODE=fail; read_roster_tmux_inventory
 expect_eq "$ROSTER_TMUX_STATE" "indeterminate" "tmux IPC failure is not interpreted as empty"
 TMUX_MODE=partial; read_roster_tmux_inventory
 expect_eq "$ROSTER_TMUX_STATE" "indeterminate" "one runner-session read failure invalidates the whole snapshot"
+
+echo "Test: FLY-2643 retained dead Lead panes are missing, never healthy"
+REAL_TMUX_BIN="$(type -P tmux || true)"
+if [[ -n "$REAL_TMUX_BIN" ]]; then
+  REAL_TMUX_DIR="$TMP/real-tmux"
+  PRIVATE_SOCKET="$REAL_TMUX_DIR/private.sock"
+  mkdir -p "$REAL_TMUX_DIR"
+  TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" -f /dev/null \
+    new-session -d -s flywheel -n keeper '/bin/sleep 120'
+  TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" new-window -d \
+    -t '=flywheel' -n raya-raya
+  TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" set-window-option \
+    -t '=flywheel:=raya-raya' remain-on-exit on
+  TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" respawn-pane -k \
+    -t '=flywheel:=raya-raya' 'exit 1'
+  TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" new-window -d \
+    -t '=flywheel' -n growth-mufasa-lead '/bin/sleep 120'
+  "$REAL_TMUX_BIN" -S "$PRIVATE_SOCKET" -f /dev/null new-session -d \
+    -s main -n main '/bin/sleep 120'
+  "$REAL_TMUX_BIN" -S "$PRIVATE_SOCKET" set-option -g remain-on-exit on
+  "$REAL_TMUX_BIN" -S "$PRIVATE_SOCKET" respawn-pane -k -t '=main:=main' 'exit 1'
+  sleep 0.2
+  tmux() { TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" "$@"; }
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="codex-tui-cmux|raya/raya|raya-raya|"$'\n'"codex-tui-cmux|growth/mufasa-lead|growth-mufasa-lead|"$'\n'"codex-tui-cmux|flywheel/infra|flywheel-infra|"$'\n'"claude-private|flywheel/deadpriv|flywheel-deadpriv|$PRIVATE_SOCKET"
+  }
+  rm -f "$ROSTER_EPISODE_STATE"; : > "$ALERTS"
+  reconcile_lead_roster
+  if grep -q 'lead-window-missing|raya-raya|e1' "$ALERTS" \
+      && grep -q 'lead-window-missing|flywheel-deadpriv|e1' "$ALERTS" \
+      && grep -q 'lead-window-missing|flywheel-infra|e1' "$ALERTS" \
+      && ! grep -q 'lead-window-missing|growth-mufasa-lead|' "$ALERTS"; then
+    pass "shared and private retained dead panes are missing while the live pane stays healthy"
+  else
+    fail "retained dead pane census mismatch: [$(cat "$ALERTS")]"
+  fi
+  TMUX= TMUX_TMPDIR="$REAL_TMUX_DIR" "$REAL_TMUX_BIN" kill-server >/dev/null 2>&1 || true
+  "$REAL_TMUX_BIN" -S "$PRIVATE_SOCKET" kill-server >/dev/null 2>&1 || true
+else
+  pass "real tmux retained-pane regression skipped (tmux unavailable)"
+fi
 
 echo "Test: FLY-1446 roster episodes re-arm after recovery"
 rm -f "$ROSTER_EPISODE_STATE"; : > "$ALERTS"
@@ -153,7 +204,7 @@ fi
 
 echo "Test: FLY-1446 Lead reconciliation alerts exact missing/config subjects"
 rm -f "$ROSTER_EPISODE_STATE"; : > "$ALERTS"
-LEAD_FIXTURE_WINDOWS='flywheel|@7|flywheel-eng-lead'
+LEAD_FIXTURE_WINDOWS='flywheel|@7|flywheel-eng-lead|0'
 derive_lead_roster() {
   LEAD_ROSTER_STATE=ok
   LEAD_ROSTER_ROWS=$'claude-tmux|com.flywheel.lead.flywheel-eng-lead|flywheel-eng-lead\ncodex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead\nconfig-drift|com.flywheel.lead.bad|bad-lead'
@@ -164,9 +215,9 @@ read_roster_tmux_inventory() {
 }
 reconcile_lead_roster
 reconcile_lead_roster
-LEAD_FIXTURE_WINDOWS+=$'\n''flywheel|@8|growth-mufasa-lead'
+LEAD_FIXTURE_WINDOWS+=$'\n''flywheel|@8|growth-mufasa-lead|0'
 reconcile_lead_roster
-LEAD_FIXTURE_WINDOWS='flywheel|@7|flywheel-eng-lead'
+LEAD_FIXTURE_WINDOWS='flywheel|@7|flywheel-eng-lead|0'
 reconcile_lead_roster
 if [[ "$(grep -c 'lead-window-missing|growth-mufasa-lead|e1' "$ALERTS")" == "1" \
     && "$(grep -c 'lead-window-missing|growth-mufasa-lead|e2' "$ALERTS")" == "1" \
@@ -219,7 +270,7 @@ else
 fi
 
 echo "Test: FLY-1446 runner window identity merges aliases by exact window id"
-TMUX_EXEC_ROWS=$'runner-flywheel\t@8\texec-a\ncmux-alias\t@8\texec-a\nrunner-flywheel\t@9\texec-b\nrunner-other\t@10\texec-b'
+TMUX_EXEC_ROWS=$'runner-flywheel|@8|exec-a\ncmux-alias|@8|exec-a\nrunner-flywheel|@9|exec-b\nrunner-other|@10|exec-b'
 tmux() {
   [[ "$1" == "list-windows" && "$2" == "-a" ]] || return 1
   printf '%s\n' "$TMUX_EXEC_ROWS"

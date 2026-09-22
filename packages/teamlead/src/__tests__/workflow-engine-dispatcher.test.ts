@@ -1748,6 +1748,55 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("delivers a deduplicated land owner-health episode from the durable outbox", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "FLY-2662",
+			projectName: "flywheel",
+			prNumber: 2662,
+			approvedHead: HEAD,
+			now: "2026-09-17T19:00:00.000Z",
+		});
+		store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-engine:42",
+			ownerInstanceId: "11111111-1111-4111-8111-111111111111",
+			ownerPid: 42,
+			ownerProcessStart: "Thu Sep 17 19:00:00 2026",
+			ownerHostBootId: "host-boot",
+			now: "2026-09-17T19:00:01.000Z",
+			leaseExpiresAt: "2026-09-17T20:00:01.000Z",
+		});
+		const lease = store.listActiveLandOwnerLeases()[0]!;
+		expect(
+			store.recordLandOwnerHealthStall({
+				observed: lease,
+				now: "2026-09-17T19:05:01.000Z",
+			}),
+		).toBe(true);
+		const alert = vi.fn(async () => ({ sent: true as const }));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			alertsEnabled: () => true,
+			alertSink: { current: { alert } },
+			now: () => new Date("2026-09-17T19:05:02.000Z"),
+		});
+
+		await expect(dispatcher.reconcileWorkflowEngineAlerts()).resolves.toBe(1);
+		expect(alert).toHaveBeenCalledWith(
+			expect.objectContaining({
+				eventType: "workflow_engine_escalation",
+				title: "Land owner has made no progress for FLY-2662",
+			}),
+		);
+		expect(store.listLandOwnerHealthOutbox()[0]).toMatchObject({
+			state: "sent",
+			attempt: 1,
+		});
+		store.close();
+	});
+
 	it("holds an engine auto-advance before activation and credential writes while admission is paused", async () => {
 		const store = await storeWithIntent("implement");
 		const startDispatcher = inertStartDispatcher();
@@ -2013,54 +2062,63 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("reuses a verified land target snapshot when partial closeout is re-consumed", async () => {
-		const store = await storeWithLandIntent();
-		const operation = store.ensureLandOperation({
-			runId: "run-land",
-			issueId: "FLY-1375",
-			projectName: "flywheel",
-			prNumber: 1375,
-			approvedHead: HEAD,
-			now: "2026-07-21T20:01:30.000Z",
-			verifiedTargets: {
-				json: "{}",
-				digest: canonicalSubmissionDigest({}),
-				version: 1,
-				attributionDigest: "b".repeat(64),
-				observedAt: "2026-07-21T20:01:00.000Z",
-			},
-		});
-		const prepareLandIntent = vi.fn().mockResolvedValue({
-			ok: false,
-			reason: "land_target_snapshot_unavailable",
-			missing: ["implement-land:worktree_path_unresolvable"],
-			retryable: true,
-		});
-		const landExecutor = vi.fn().mockResolvedValue({
-			status: "partial",
-			reason: "issue_closeout_incomplete:cause=archive_failed",
-		});
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fakeStartDispatcher(store).dispatcher,
-			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-21T20:02:00.000Z"),
-			landExecutor,
-			prepareLandIntent,
-			resolveRunAlertIdentity: (projectName) => ({
-				leadId: "flywheel-eng-lead",
-				projectName,
-				leadResolution: "resolved",
-			}),
-		});
+	it.each([1, 2] as const)(
+		"reuses a verified v%s land target snapshot when partial closeout is re-consumed",
+		async (targetVersion) => {
+			const store = await storeWithLandIntent();
+			const attribution = store.getCloseoutAttributionSnapshot({
+				projectName: "flywheel",
+				issueId: "FLY-1375",
+				runId: "run-land",
+			});
+			const operation = store.ensureLandOperation({
+				runId: "run-land",
+				issueId: "FLY-1375",
+				projectName: "flywheel",
+				prNumber: 1375,
+				approvedHead: HEAD,
+				now: "2026-07-21T20:01:30.000Z",
+				verifiedTargets: {
+					json: "{}",
+					digest: canonicalSubmissionDigest({}),
+					version: targetVersion,
+					attributionDigest: attribution.digest,
+					attributionEpoch: attribution.epoch,
+					observedAt: "2026-07-21T20:01:00.000Z",
+				},
+			});
+			const prepareLandIntent = vi.fn().mockResolvedValue({
+				ok: false,
+				reason: "land_target_snapshot_unavailable",
+				missing: ["implement-land:worktree_path_unresolvable"],
+				retryable: true,
+			});
+			const landExecutor = vi.fn().mockResolvedValue({
+				status: "partial",
+				reason: "issue_closeout_incomplete:cause=archive_failed",
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fakeStartDispatcher(store).dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-07-21T20:02:00.000Z"),
+				landExecutor,
+				prepareLandIntent,
+				resolveRunAlertIdentity: (projectName) => ({
+					leadId: "flywheel-eng-lead",
+					projectName,
+					leadResolution: "resolved",
+				}),
+			});
 
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
-		expect(prepareLandIntent).not.toHaveBeenCalled();
-		expect(landExecutor).toHaveBeenCalledOnce();
-		expect(landExecutor).toHaveBeenCalledWith(operation.operation_id);
-		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
-		store.close();
-	});
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(prepareLandIntent).not.toHaveBeenCalled();
+			expect(landExecutor).toHaveBeenCalledOnce();
+			expect(landExecutor).toHaveBeenCalledWith(operation.operation_id);
+			expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+			store.close();
+		},
+	);
 
 	it.each([
 		"issue_closeout_incomplete",
@@ -5601,9 +5659,12 @@ it.each(["bound", "new", "bound without root resolver"])(
 	},
 );
 
-it.each(["bound", "fresh"])(
-	"FLY-2465 OFF releases a %s queued launch on the next pass without changing pause facts",
-	async (kind) => {
+it.each([
+	{ kind: "bound", expectedRelease: false },
+	{ kind: "fresh", expectedRelease: true },
+] as const)(
+	"FLY-2676 OFF releases only a fresh queued launch on the next pass without changing pause facts ($kind)",
+	async ({ kind, expectedRelease }) => {
 		const store = await storeWithIntent("implement");
 		const stateRoot = mkdtempSync(join(tmpdir(), "fly2465-off-intent-"));
 		let enabled = true;
@@ -5638,8 +5699,13 @@ it.each(["bound", "fresh"])(
 			expect(fake.start).not.toHaveBeenCalled();
 			enabled = false;
 			await engine.reconcile();
-			expect(fake.start).toHaveBeenCalledTimes(1);
-			expect(store.getSession("implement-1")?.status).toBe("running");
+			expect(fake.start).toHaveBeenCalledTimes(expectedRelease ? 1 : 0);
+			if (expectedRelease) {
+				expect(store.getSession("implement-1")?.status).toBe("running");
+			} else {
+				expect(store.getSession("implement-1")).toBeUndefined();
+				expect(store.codexQuota.isExecutionPaused("implement-1")).toBe(true);
+			}
 			expect(store.getSession("dead-old")).toBeUndefined();
 			expect(store.codexQuota.listIncidents()).toEqual(incidentBefore);
 			expect(store.codexQuota.isPaused("root")).toBe(true);

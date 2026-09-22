@@ -11,7 +11,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import { RestPollDiscordInboundSource } from "../lead-backends/codex/RestPollDiscordInboundSource.js";
-import { seedLeadInboundCursor } from "./seed-lead-inbound-cursor.js";
+import {
+	seedLeadInboundCursor,
+	verifyPreexistingLeadInboundCursor,
+} from "./seed-lead-inbound-cursor.js";
 
 const roots: string[] = [];
 function fixture() {
@@ -142,6 +145,73 @@ describe("seedLeadInboundCursor", () => {
 		writeFileSync(other, "{}", { mode: 0o600 });
 		symlinkSync(other, path);
 		expect(() => seedLeadInboundCursor({ path, seed })).toThrow("symlink");
+	});
+});
+
+describe("verifyPreexistingLeadInboundCursor", () => {
+	it("accepts an equal or advanced live cursor without rewriting it", () => {
+		const { path } = fixture();
+		const liveSeed = { ...seed, writerStopped: false };
+		writeFileSync(
+			path,
+			JSON.stringify({
+				"12345678901234567": "22345678901234568",
+				"32345678901234567": "42345678901234569",
+			}),
+			{ mode: 0o600 },
+		);
+		const before = readFileSync(path, "utf8");
+		expect(
+			verifyPreexistingLeadInboundCursor({ path, seed: liveSeed }),
+		).toMatchObject({
+			status: "preexisting",
+			migrationId: seed.migrationId,
+			channels: 2,
+		});
+		expect(readFileSync(path, "utf8")).toBe(before);
+	});
+
+	it.each([
+		{
+			"12345678901234567": "22345678901234566",
+			"32345678901234567": "42345678901234569",
+		},
+		{
+			"12345678901234567": "22345678901234568",
+		},
+	])(
+		"rejects a live cursor that is behind or missing a boundary key",
+		(cursor) => {
+			const { path } = fixture();
+			writeFileSync(path, JSON.stringify(cursor), { mode: 0o600 });
+			expect(() =>
+				verifyPreexistingLeadInboundCursor({
+					path,
+					seed: { ...seed, writerStopped: false },
+				}),
+			).toThrow();
+		},
+	);
+
+	it("accepts unrelated live cursor channels without rewriting them", () => {
+		const { path } = fixture();
+		writeFileSync(
+			path,
+			JSON.stringify({
+				"12345678901234567": "22345678901234568",
+				"32345678901234567": "42345678901234569",
+				"52345678901234567": "62345678901234567",
+			}),
+			{ mode: 0o600 },
+		);
+		const before = readFileSync(path, "utf8");
+		expect(
+			verifyPreexistingLeadInboundCursor({
+				path,
+				seed: { ...seed, writerStopped: false },
+			}),
+		).toMatchObject({ status: "preexisting", channels: 2 });
+		expect(readFileSync(path, "utf8")).toBe(before);
 	});
 });
 

@@ -1,0 +1,85 @@
+from pathlib import Path
+from html import escape
+p=Path(__file__).resolve().parent
+
+def diagram(name):
+ s=p/(name+'.svg')
+ if s.exists():return '<div class="diagram">'+s.read_text()+'</div>'
+ return '<div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机渲染器被系统权限阻止，标准重试仍失败。流程源图已保留；这里不展示替代图形。</p></div><details><summary>查看 Mermaid 源图（图表的文字定义）</summary><pre>'+escape((p/(name+'.mmd')).read_text())+'</pre></details>'
+
+def card(key,title,body):
+ return '<section class="card" data-section="'+escape(title,quote=True)+'"><h2>'+escape(title)+'</h2>'+body+'<label for="c-'+escape(key,quote=True)+'">这一节的意见</label><textarea id="c-'+escape(key,quote=True)+'" data-comment="'+escape(key,quote=True)+'" placeholder="写下意见，自动保存在当前浏览器"></textarea></section>'
+
+cards=[
+card('summary','01 · 让已合入的任务真正结束','<p class="lead">用一次正式重收尾，补回旧作业的可靠清单；证明执行体消失后，依次清目录、关记录、归档讨论串，最后将 Linear 卡标为完成。</p><p class="muted">这是一份设计，尚未上线。主死结优先处理；另有 12 组、15 个审阅发现纳入本单。</p>'),
+card('flow','02 · 顺序不变，每一步都要有依据',diagram('flow')+'<p>Lead 是负责本任务的工程负责人。恢复入口支持当前 Claude 负责人和 Codex 负责人各自的身份核验。Claude 入口由操作系统确认调用进程来自负责人，并排除任务执行者；复制公开身份字段无效。它只接续已经合入的作业，不重新合入代码。任何执行体还活着，或检查不完整，都会停在清理之前。</p>'),
+card('deadlocks','03 · 两处死结，一条恢复入口','<table><thead><tr><th>现在卡在哪里</th><th>设计如何接回</th></tr></thead><tbody><tr><td>窗口记录仍是 pending：还没有绑定真实窗口。</td><td>查询全部真实窗口和进程；确认都不存在才判定消失。</td></tr><tr><td>旧作业的 targets 是 NULL：没有保存待清目录清单。</td><td>用历史执行与目录绑定补证，保存清单版本，再恢复同一作业。</td></tr><tr><td>只恢复作业，关联流程又落回暂停。</td><td>把清单、作业、流程与恢复回执一起提交，后续执行从收尾继续。</td></tr></tbody></table><p>只读核对的 8 张点名卡中，5 张仍有 pending 通信行。一个任务可有多份历史作业，必须先找准本次合入对应的那份。</p>'),
+card('model','04 · 留下什么，才能安全接着做',diagram('model')+'<p>回执是系统留下的操作记录。它说明谁恢复了哪份作业、依据哪次合入、清单是哪一版。身份版本每次变化都递增，即使窗口先换走又换回来，也不能复用旧证明。</p>'),
+card('guards','05 · 活着、查不清，都不冒充消失','<ul><li>找到活窗口、进程或新鲜心跳：保留现场。心跳是运行中的控制器定期发出的存活信号。</li><li>权限错误、探测超时、仍可能启动：记录未知，说明缺哪份证据。</li><li>目录重新出现、归属变化、负责人失去权限：旧证明作废，重新核对。正式重收尾时，旧卡号也要对应到真实任务身份，确保创始人叫停和取消仍然有效；普通合入流程不新增在线查询门槛。</li><li>已失去作业控制权的执行者：不能再通知、清理或重写归档记录。</li></ul>'),
+card('choices','06 · 为什么选择补证恢复','<table><thead><tr><th>选择</th><th>原因</th></tr></thead><tbody><tr><td>扩展正式重收尾入口</td><td>负责人只用一个命令，系统留可审计记录。</td></tr><tr><td>不把 pending 直接改成某个窗口</td><td>那会猜错身份，掩盖仍活着的执行体。</td></tr><tr><td>不先归档、以后再清目录</td><td>页面显示完成时，真实工作也必须已经结束。</td></tr></tbody></table><p>身份、目标版本和权限是主死结修复的必要保护；其它审阅收口可由后续流程安排第二个变更，仍全部保留在本单范围。</p>'),
+card('verification','07 · 验收从真实旧数据形状开始','<p>测试保留部署前记录的 NULL、空串和未绑定窗口，先重现失败，再验证恢复。Lead 已允许按只读查询逐字段脱敏重建，并明确标注“非受管快照、形状来源=只读查询”。不能先用新代码造出完整记录再宣布旧数据能恢复。</p><p>隔离环境必须实际核对目录、通信记录、讨论串归档与 Linear 完成；再加入活体和检查失败的反例，证明系统会停止清理。</p>'),
+card('boundary','08 · 现在交付什么，之后谁来验证','<p><strong>本次交付：</strong>探索、源码调研、实施计划、独立设计评审与这份页面。</p><p><strong>上线后：</strong>由 Lead 逐张用正式入口恢复 FLY-2519、2606、2608、2612、2619、2616、2598、2601，并把实际结果记在本单。Runner 不写生产数据库。</p><p class="muted">没有部署、重启、生产清理或上线成功声明。受管快照两次失败已记录。本地两张 Mermaid 图均因系统权限失败，含标准重试；保留源图并标明待渲染。</p>')
+]
+css='''*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:17px;line-height:1.7}main{max-width:1000px;margin:0 auto;padding:48px 24px 72px}header{margin-bottom:28px}h1{font-size:40px;line-height:1.22;letter-spacing:-1.5px;margin:12px 0}h2{font-size:24px;line-height:1.4;margin:0 0 20px}.eyebrow{color:#0071e3;font-size:13px;font-weight:700;letter-spacing:1px}.card{background:white;border:1px solid #e5e5e7;border-radius:20px;padding:32px;margin:20px 0}.lead{font-size:22px}.muted{color:#666}.pending{border:1px dashed #b1b1b7;border-radius:12px;padding:24px;color:#6b5800;background:#fffbeb}.pending strong{font-size:14px;letter-spacing:1px}label{display:block;margin:24px 0 8px;font-size:14px;color:#666}textarea{display:block;width:100%;min-height:88px;border:1px solid #c7c7cc;border-radius:10px;padding:12px;font:inherit;resize:vertical;background:#fafafa}textarea:focus{outline:2px solid #0071e3;outline-offset:2px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e5e5e7;padding:14px 8px}th{font-size:14px;color:#666}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;background:#f5f5f7;padding:16px;border-radius:10px}button{border:0;border-radius:999px;background:#0071e3;color:white;padding:10px 20px;font:inherit;cursor:pointer;margin:8px 8px 0 0}.diagram svg{max-width:100%;height:auto}details{margin-top:16px}#copy-status{min-height:1.5em;font-size:14px;color:#666}.chunk{border-top:1px solid #e5e5e7;margin-top:20px;padding-top:12px}footer{font-size:13px;color:#777;margin-top:32px}@media(max-width:600px){main{padding:24px 16px 48px}h1{font-size:30px}.card{padding:22px}h2{font-size:21px}th,td{padding:10px 4px;font-size:15px}.lead{font-size:19px}}'''
+script='''(() => {
+  const marker = '【页面意见汇总】FLY-2662';
+  const prefix = 'flywheel-report:' + location.pathname + ':FLY-2662:';
+  const inputs = Array.from(document.querySelectorAll('[data-comment]'));
+  const output = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+      status.textContent = '已复制，可贴回任务讨论串。';
+    } catch (_) {
+      const temp = document.createElement('textarea');
+      temp.value = text; temp.setAttribute('aria-label', '待复制的页面意见');
+      document.body.appendChild(temp); temp.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      temp.remove();
+      status.textContent = ok ? '已复制，可贴回任务讨论串。' : '自动复制不可用，请选中下方文字手动复制。';
+    }
+  }
+  function render() {
+    const entries = inputs.filter(x => x.value.trim()).map(x => '[' + x.closest('[data-section]').dataset.section + ']\\n' + x.value.trim());
+    chunks = []; let current = marker;
+    for (const entry of entries) {
+      let remaining = entry;
+      while (remaining.length) {
+        const capacity = 1800 - current.length - 2;
+        if (capacity < 1) { chunks.push(current); current = marker; continue; }
+        let piece = remaining.slice(0, capacity);
+        if (piece.length < remaining.length && /[\\uD800-\\uDBFF]$/.test(piece)) piece = piece.slice(0,-1);
+        if (!piece.length) { chunks.push(current); current = marker; continue; }
+        current += '\\n\\n' + piece; remaining = remaining.slice(piece.length);
+        if (remaining.length) { chunks.push(current); current = marker; }
+      }
+    }
+    if (current !== marker) chunks.push(current);
+    output.replaceChildren();
+    if (!chunks.length) { const empty = document.createElement('p'); empty.textContent = '还没有意见。每节下方写完，这里会自动汇总。'; output.appendChild(empty); }
+    chunks.forEach((text, i) => {
+      const box = document.createElement('div'); box.className = 'chunk';
+      const pre = document.createElement('pre'); pre.textContent = text;
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (i + 1) + ' 段';
+      button.addEventListener('click', () => copy(text)); box.append(pre, button); output.appendChild(box);
+    });
+    document.getElementById('copy-all').disabled = !chunks.length;
+  }
+  for (const input of inputs) {
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; } catch (_) {}
+    input.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + input.dataset.comment, input.value); } catch (_) {}
+      render();
+    });
+  }
+  document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\\n\\n')));
+  render();
+})();'''
+summary=card('overall','09 · 页面意见汇总','<p>批注只是修改意见，不代表批准。超过约 1800 字会分段，每段都带任务标记。</p><button id="copy-all" type="button">复制全部意见</button><div id="copy-status" role="status" aria-live="polite"></div><div id="comment-chunks"></div>')
+html='<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2662 · 让已合入的任务真正结束</title><style>'+css+'</style></head><body><main><header><span class="eyebrow">FLY-2662 · 工程设计 · 2026-09-17</span><h1>合入之后，收尾走到最后。</h1><p class="muted">先证明执行体消失，再让任务卡真正完成。</p></header>'+''.join(cards)+summary+'<footer>设计交付 · 不含生产操作 · 批注只保存在当前浏览器</footer></main><script nonce="__CSP_NONCE__">'+script+'</script></body></html>'
+(p/'founder-design.html').write_text(html)
+print('wrote',len(html.encode()),'bytes')

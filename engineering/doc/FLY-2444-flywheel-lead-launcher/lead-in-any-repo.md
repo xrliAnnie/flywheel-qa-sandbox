@@ -123,9 +123,11 @@ test -f "$FW_MANIFEST" && test ! -L "$FW_MANIFEST"
 grep -F "PASS preflight complete for ${FW_PROJECT}/${FW_LEAD_ID}" "$HOME/.flywheel/state/${FW_PROJECT}-${FW_LEAD_ID}-preflight.log"
 "$FW_LEAD" install --project "$FW_PROJECT" --lead "$FW_LEAD_ID"
 launchctl print "gui/$(id -u)/$FW_LABEL" | grep -E '^[[:space:]]*state = running[[:space:]]*$'
+bash "$HOME/.flywheel/bin/verify-agent-visibility.sh" --project "$FW_PROJECT" --lead "$FW_LEAD_ID" --level visible --json | tee "$HOME/.flywheel/state/${FW_PROJECT}-${FW_LEAD_ID}-visibility.json"
+jq -e '.status == "pass" and .checks.pane == "pass" and .checks.body == "pass" and .checks.cmux == "pass"' "$HOME/.flywheel/state/${FW_PROJECT}-${FW_LEAD_ID}-visibility.json"
 ```
 
-成功判据：preflight 只出现 `PASS` 且有最终完成行；install 打印 `installed`；launchctl 恰有一行 `state = running`。再核对所选 harness 的出生日志：
+成功判据：preflight 只出现 `PASS` 且有最终完成行；install 打印 `installed`；launchctl 恰有一行 `state = running`；公共可见性验收为 `pass` 且 pane/body/cmux 均通过。后台进程、启动日志、同名空窗或不可接入窗口都不算上线。再核对所选 harness 的出生日志（仅作诊断，不替代公共验收）：
 
 ```bash
 grep -E "tui-window: real TUI up \(${FW_PROJECT}-${FW_LEAD_ID}|\[lead\].*Comm DB:" "$FW_LOG"

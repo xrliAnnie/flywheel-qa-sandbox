@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+REQUIRED_JOBS="$REPO_ROOT/.github/ci-required-jobs.json"
 CLASSIFIER="$REPO_ROOT/scripts/ci-classify.sh"
 SUFFIX_LEDGER="$REPO_ROOT/engineering/doc/FLY-1987-actions-cost-audit/data/derive-lib.mjs"
 REVIEW_GOVERNANCE_DOCS="$REPO_ROOT/packages/teamlead/src/bridge/__tests__/review-governance-docs.test.ts"
@@ -20,8 +21,10 @@ if grep -Fq -- ' -- --shard' "$WORKFLOW"; then
   exit 1
 fi
 
-WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" FLY2331_GUARD_TEST="$FLY2331_GUARD_TEST" python3 <<'PY'
+WORKFLOW="$WORKFLOW" REQUIRED_JOBS="$REQUIRED_JOBS" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" FLY2331_GUARD_TEST="$FLY2331_GUARD_TEST" python3 <<'PY'
 import ast
+import copy
+import json
 import os
 import re
 import shlex
@@ -326,6 +329,29 @@ require(
 with open(workflow_path, encoding="utf-8") as handle:
     workflow = mapping(yaml.safe_load(handle), "workflow")
 
+expected_run_name = "${{ (github.event.action == 'labeled' && github.event.label.name == 'ci:full') && format('CI full-request {0}', github.event.pull_request.head.sha) || '' }}"
+require(workflow.get("run-name") == expected_run_name, "workflow run-name contract changed")
+triggers = mapping(workflow.get("on", workflow.get(True)), "on")
+require(
+    mapping(triggers.get("push"), "on.push") == {"branches": ["main"]},
+    "push trigger must remain main-only",
+)
+pull_request_trigger = mapping(triggers.get("pull_request"), "on.pull_request")
+expected_pull_request_trigger = {
+    "branches": ["main"],
+    "types": ["opened", "synchronize", "reopened", "labeled"],
+}
+require(
+    pull_request_trigger == expected_pull_request_trigger,
+    "pull_request trigger must include exactly opened/synchronize/reopened/labeled",
+)
+trigger_mutant = copy.deepcopy(pull_request_trigger)
+trigger_mutant["types"].remove("labeled")
+require(
+    trigger_mutant != expected_pull_request_trigger,
+    "positive control must reject removal of the labeled trigger",
+)
+
 jobs = mapping(workflow.get("jobs"), "jobs")
 expected_job_ids = {
     "classify",
@@ -336,6 +362,7 @@ expected_job_ids = {
     "script-tests-3",
     "script-tests-4",
     "script-tests-5",
+    "script-tests-6",
     "payload-distribution",
     "ci-ok",
 }
@@ -353,6 +380,7 @@ require(
         "script-tests-3",
         "script-tests-4",
         "script-tests-5",
+        "script-tests-6",
         "payload-distribution",
         "ci-ok",
     ],
@@ -367,6 +395,7 @@ script_tests_2 = mapping(jobs["script-tests-2"], "script-tests-2")
 script_tests_3 = mapping(jobs["script-tests-3"], "script-tests-3")
 script_tests_4 = mapping(jobs["script-tests-4"], "script-tests-4")
 script_tests_5 = mapping(jobs["script-tests-5"], "script-tests-5")
+script_tests_6 = mapping(jobs["script-tests-6"], "script-tests-6")
 payload_distribution = mapping(jobs["payload-distribution"], "payload-distribution")
 ci_ok = mapping(jobs["ci-ok"], "ci-ok")
 
@@ -383,13 +412,20 @@ for job_id, job in (
     ("script-tests-3", script_tests_3),
     ("script-tests-4", script_tests_4),
     ("script-tests-5", script_tests_5),
+    ("script-tests-6", script_tests_6),
     ("payload-distribution", payload_distribution),
 ):
     require(job.get("needs") == ["classify"], f"{job_id} must depend only on classify")
+    expected_heavy_if = "needs.classify.outputs.heavy!='skip'"
     require(
-        normalize_expression(job.get("if")) == "needs.classify.outputs.no_code!='true'",
-        f"{job_id} must run unless classify proves no_code=true",
+        normalize_expression(job.get("if")) == expected_heavy_if,
+        f"{job_id} must run unless scope explicitly emits heavy=skip",
     )
+require(
+    normalize_expression("${{ needs.classify.outputs.heavy == 'run' }}")
+    != expected_heavy_if,
+    "positive control must reject fail-open heavy == run conditions",
+)
 
 permissions = mapping(classify.get("permissions"), "classify.permissions")
 require(
@@ -398,6 +434,17 @@ require(
 )
 classify_steps = classify.get("steps")
 require(isinstance(classify_steps, list), "classify.steps must be a list")
+expected_classify_outputs = {
+    "no_code": "${{ steps.classify.outputs.no_code }}",
+    "heavy": "${{ steps.scope.outputs.heavy }}",
+    "mode": "${{ steps.scope.outputs.mode }}",
+    "tested_tree": "${{ steps.scope.outputs.tested_tree }}",
+    "reuse_run": "${{ steps.scope.outputs.reuse_run }}",
+}
+require(
+    classify.get("outputs") == expected_classify_outputs,
+    "classify outputs must expose the exact five-value scope contract",
+)
 classify_checkout = [
     step for step in classify_steps
     if isinstance(step, dict) and step.get("uses") == "actions/checkout@v4"
@@ -413,6 +460,25 @@ classify_runs = [
 ]
 require(len(classify_runs) == 1, "classify must run scripts/ci-classify.sh exactly once")
 require(classify_runs[0].get("id") == "classify", "classifier step id must be classify")
+classify_step_contract = [
+    (step.get("uses"), step.get("id"), str(step.get("run", "")).strip())
+    for step in classify_steps
+    if isinstance(step, dict)
+]
+require(
+    classify_step_contract == [
+        ("actions/checkout@v4", None, ""),
+        (None, "classify", "bash scripts/ci-classify.sh"),
+        (None, "reuse", "bash scripts/ci-full-reuse.sh"),
+        (None, "scope", "bash scripts/ci-scope.sh"),
+    ],
+    f"classify step order/identity changed: {classify_step_contract}",
+)
+reuse_step = classify_steps[2]
+require(
+    normalize_expression(reuse_step.get("if")) == "github.event_name=='push'",
+    "reuse probe must run only for push events",
+)
 
 concurrency = mapping(workflow.get("concurrency"), "concurrency")
 require(
@@ -514,6 +580,43 @@ require(
 )
 require(actual_matrix == expected_matrix, "unit-tests matrix name/cmd contract changed")
 
+with open(os.environ["REQUIRED_JOBS"], encoding="utf-8") as handle:
+    required_jobs = mapping(json.load(handle), "ci-required-jobs.json")
+unit_check_names = [f"Unit ({entry['name']})" for entry in actual_matrix]
+script_check_names = [
+    str(script_tests["name"]),
+    str(script_tests_2["name"]),
+    str(script_tests_3["name"]),
+    str(script_tests_4["name"]),
+    str(script_tests_5["name"]),
+    str(script_tests_6["name"]),
+]
+expected_required_jobs = {
+    "schema": 1,
+    "aggregate": "CI OK",
+    "aggregate_scoped": "CI Scope OK",
+    "always": ["Classify CI scope", "Quick Gate (build + typecheck + lint)"],
+    "heavy": unit_check_names
+    + script_check_names
+    + [str(payload_distribution["name"])],
+}
+require(
+    required_jobs == expected_required_jobs,
+    "required-job manifest must exactly expand the ci.yml check graph",
+)
+manifest_without_shard = copy.deepcopy(required_jobs)
+manifest_without_shard["heavy"].remove(script_check_names[-1])
+require(
+    manifest_without_shard != expected_required_jobs,
+    "positive control must reject a manifest missing one script shard",
+)
+renamed_matrix = copy.deepcopy(expected_required_jobs)
+renamed_matrix["heavy"][0] += " renamed"
+require(
+    renamed_matrix != expected_required_jobs,
+    "positive control must reject a renamed unit matrix check",
+)
+
 ci_ok_needs = ci_ok.get("needs")
 require(isinstance(ci_ok_needs, list), "ci-ok.needs must be a list")
 expected_needs = {
@@ -525,6 +628,7 @@ expected_needs = {
     "script-tests-3",
     "script-tests-4",
     "script-tests-5",
+    "script-tests-6",
     "payload-distribution",
 }
 require(
@@ -535,9 +639,22 @@ require(
     normalize_expression(ci_ok.get("if")) == "always()&&!cancelled()",
     "ci-ok.if must be always() && !cancelled()",
 )
+expected_aggregate_name = "contains(fromJSON('[\"full\",\"docs_only\",\"reuse\"]'),needs.classify.outputs.mode)&&'CIOK'||'CIScopeOK'"
+require(
+    normalize_expression(ci_ok.get("name")) == expected_aggregate_name,
+    "aggregate name must whitelist full/docs_only/reuse as CI OK",
+)
+swapped_aggregate_name = expected_aggregate_name.replace(
+    "&&'CIOK'||'CIScopeOK'", "&&'CIScopeOK'||'CIOK'"
+)
+require(
+    swapped_aggregate_name != expected_aggregate_name,
+    "positive control must reject swapped CI OK and CI Scope OK names",
+)
 ci_ok_steps = ci_ok.get("steps")
 require(isinstance(ci_ok_steps, list), "ci-ok.steps must be a list")
 aggregate_steps = []
+aggregate_run = None
 for step in ci_ok_steps:
     if not isinstance(step, dict):
         continue
@@ -545,33 +662,177 @@ for step in ci_ok_steps:
     run = str(step.get("run", ""))
     if isinstance(env, dict) and normalize_expression(env.get("NEEDS_JSON")) == "toJSON(needs)":
         aggregate_steps.append(step)
+        aggregate_run = run
         require(
             normalize_expression(env.get("NO_CODE")) == "needs.classify.outputs.no_code",
             "ci-ok aggregate must receive classify no_code output",
+        )
+        require(
+            normalize_expression(env.get("HEAVY")) == "needs.classify.outputs.heavy",
+            "ci-ok aggregate must receive classify heavy output",
+        )
+        require(
+            normalize_expression(env.get("MODE")) == "needs.classify.outputs.mode",
+            "ci-ok aggregate must receive classify mode output",
         )
         normalized_run = re.sub(r"\s+", "", run)
         expected_run = re.sub(
             r"\s+",
             "",
-            """printf '%s\\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" '
+            """printf '%s\\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" --arg heavy "$HEAVY" --arg mode "$MODE" '
               . as $needs
+              | ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "script-tests-6", "payload-distribution"] as $heavy_jobs
               | ($needs["quick-gate"].result == "success")
                 and ($needs.classify.result == "success")
                 and (
-                  ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"]
-                  | all(
-                      . as $job
-                      | ($needs[$job].result == "success")
-                        or ($no_code == "true" and $needs[$job].result == "skipped")
-                    )
+                  ( $mode == "full" and $heavy == "run" and $no_code != "true"
+                    and ($needs["unit-tests"].result == "success")
+                    and ($needs["script-tests"].result == "success")
+                    and ($needs["script-tests-2"].result == "success")
+                    and ($needs["script-tests-3"].result == "success")
+                    and ($needs["script-tests-4"].result == "success")
+                    and ($needs["script-tests-5"].result == "success")
+                    and ($needs["script-tests-6"].result == "success")
+                    and ($needs["payload-distribution"].result == "success") )
+                  or
+                  ( $heavy == "skip"
+                    and ( ($mode == "docs_only" and $no_code == "true")
+                          or (($mode == "scoped" or $mode == "reuse") and $no_code != "true") )
+                    and ($heavy_jobs | all(. as $job | $needs[$job].result == "skipped")) )
                 )
             '""",
         )
         require(
             normalized_run == expected_run,
-            "ci-ok aggregate must accept heavy-job skips only when no_code=true",
+            "ci-ok aggregate must enforce exact full and skip-mode result shapes",
+        )
+        jq_mutant = normalized_run.replace(
+            'and($needs["script-tests-6"].result=="success")', "", 1
+        )
+        require(
+            jq_mutant != expected_run,
+            "positive control must reject removing one full-mode success assertion",
         )
 require(len(aggregate_steps) == 1, "ci-ok must contain exactly one NEEDS_JSON aggregate step")
+require(isinstance(aggregate_run, str), "ci-ok aggregate run command must be text")
+
+heavy_job_ids = [
+    "unit-tests",
+    "script-tests",
+    "script-tests-2",
+    "script-tests-3",
+    "script-tests-4",
+    "script-tests-5",
+    "script-tests-6",
+    "payload-distribution",
+]
+
+
+def aggregate_status(
+    no_code: str,
+    heavy: str,
+    mode: str,
+    heavy_result: str = "success",
+    overrides: dict[str, str] | None = None,
+    command: str = aggregate_run,
+) -> int:
+    results = {job_id: heavy_result for job_id in heavy_job_ids}
+    results.update(overrides or {})
+    needs = {
+        "classify": {"result": "success"},
+        "quick-gate": {"result": "success"},
+        **{job_id: {"result": result} for job_id, result in results.items()},
+    }
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "NEEDS_JSON": json.dumps(needs),
+            "NO_CODE": no_code,
+            "HEAVY": heavy,
+            "MODE": mode,
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.returncode
+
+
+require(aggregate_status("false", "run", "full") == 0, "full aggregate fixture must pass")
+require(
+    aggregate_status("true", "skip", "docs_only", "skipped") == 0,
+    "docs-only aggregate fixture must pass",
+)
+for skip_mode in ("scoped", "reuse"):
+    require(
+        aggregate_status("false", "skip", skip_mode, "skipped") == 0,
+        f"{skip_mode} aggregate fixture must pass",
+    )
+require(
+    aggregate_status("false", "run", "full", overrides={"script-tests-6": "skipped"})
+    != 0,
+    "full mode must reject even one skipped required job",
+)
+require(
+    aggregate_status("false", "skip", "scoped", "skipped", {"script-tests-6": "success"})
+    != 0,
+    "skip modes must reject partially executed heavy jobs",
+)
+require(
+    aggregate_status("false", "run", "") != 0,
+    "missing mode must fail closed",
+)
+require(
+    aggregate_status("false", "skip", "docs_only", "skipped") != 0,
+    "docs-only mode must require no_code=true",
+)
+aggregate_mutant = aggregate_run.replace(
+    'and ($needs["script-tests-6"].result == "success")', "", 1
+)
+require(aggregate_mutant != aggregate_run, "positive control must remove one success assertion")
+mutant_results = {"script-tests-6": "failure"}
+require(
+    aggregate_status("false", "run", "full", overrides=mutant_results) != 0,
+    "real aggregate must reject a failed script shard",
+)
+require(
+    aggregate_status(
+        "false", "run", "full", overrides=mutant_results, command=aggregate_mutant
+    )
+    == 0,
+    "positive control must prove removing one success assertion creates a false green",
+)
+
+summary_steps = [
+    step
+    for step in ci_ok_steps
+    if isinstance(step, dict) and step.get("name") == "Summarize CI scope"
+]
+require(len(summary_steps) == 1, "ci-ok must contain exactly one scope summary step")
+require(
+    normalize_expression(summary_steps[0].get("if")) == "always()",
+    "scope summary must run always",
+)
+upload_steps = [
+    step
+    for step in ci_ok_steps
+    if isinstance(step, dict) and step.get("uses") == "actions/upload-artifact@v4"
+]
+require(len(upload_steps) == 1, "ci-ok must contain exactly one evidence upload")
+upload_step = upload_steps[0]
+require(
+    normalize_expression(upload_step.get("if"))
+    == "success()&&needs.classify.outputs.mode=='full'",
+    "full evidence upload condition changed",
+)
+upload_with = mapping(upload_step.get("with"), "ci-ok evidence upload.with")
+require(
+    upload_with.get("name")
+    == "ci-full-green-${{ needs.classify.outputs.tested_tree }}",
+    "full evidence artifact name changed",
+)
+require(upload_with.get("retention-days") == 14, "full evidence retention must be 14 days")
 
 timeout_floors = {
     "unit-tests": (unit_tests, 15),
@@ -583,6 +844,7 @@ timeout_floors = {
     "script-tests-3": (script_tests_3, 20),
     "script-tests-4": (script_tests_4, 20),
     "script-tests-5": (script_tests_5, 20),
+    "script-tests-6": (script_tests_6, 20),
 }
 for job_id, (job, timeout_floor) in timeout_floors.items():
     timeout = job.get("timeout-minutes")
@@ -601,7 +863,16 @@ script_steps_4 = script_tests_4.get("steps")
 require(isinstance(script_steps_4, list), "script-tests-4.steps must be a list")
 script_steps_5 = script_tests_5.get("steps")
 require(isinstance(script_steps_5, list), "script-tests-5.steps must be a list")
-all_script_steps = (script_steps, script_steps_2, script_steps_3, script_steps_4, script_steps_5)
+script_steps_6 = script_tests_6.get("steps")
+require(isinstance(script_steps_6, list), "script-tests-6.steps must be a list")
+all_script_steps = (
+    script_steps,
+    script_steps_2,
+    script_steps_3,
+    script_steps_4,
+    script_steps_5,
+    script_steps_6,
+)
 quick_steps = quick_gate.get("steps")
 require(isinstance(quick_steps, list), "quick-gate.steps must be a list")
 fly2664_steps = [
@@ -638,6 +909,19 @@ require(
     ci_structure_in_quick == 1 and ci_structure_in_scripts == 0,
     "ci-structure.test.sh must run exactly once in the always-on quick-gate",
 )
+for new_suite in (
+    "bash scripts/__tests__/ci-scope.test.sh",
+    "bash scripts/__tests__/ci-full-reuse.test.sh",
+):
+    require(
+        sum(
+            new_suite in str(step.get("run", ""))
+            for step in quick_steps
+            if isinstance(step, dict)
+        )
+        == 1,
+        f"{new_suite} must run exactly once in quick-gate",
+    )
 retention_consumer_steps = [
     step for step in quick_steps
     if isinstance(step, dict)
@@ -655,6 +939,24 @@ require(
 require(
     "continue-on-error" not in retention_consumer_steps[0],
     "FLY-2006 retention consumer gate must fail closed",
+)
+package_gate_steps = [
+    step for step in quick_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Package gate receipt, retry, and host admission guards (FLY-2467/FLY-2702)"
+]
+require(
+    len(package_gate_steps) == 1,
+    "quick-gate must contain exactly one package gate receipt and host admission step",
+)
+require(
+    str(package_gate_steps[0].get("run", "")).strip()
+    == "node --test scripts/__tests__/package-gate.test.mjs\nnode --test scripts/__tests__/package-gate-host.test.mjs\nnode --test scripts/__tests__/qa-package-gate-host.test.mjs\nnode --test scripts/__tests__/teamlead-shards.test.mjs\nnode --test scripts/__tests__/vitest-worker-rpc.test.mjs",
+    "package gate quick-gate inventory drifted",
+)
+require(
+    "continue-on-error" not in package_gate_steps[0],
+    "package gate quick-gate inventory must fail closed",
 )
 
 # FLY-2074: founder-facing acceptance must disclose all measured rounds and keep
@@ -769,75 +1071,69 @@ expected_setup = [
 ]
 expected_shard_tests = {
     "script-tests": [
-        "Test — FLY-2664 merged worktree read-only audit",
-        "Test — FLY-2549 summary preflight with stale workspace dist",
-        "Test — FLY-1707 incident replay",
-        "Test — FLY-1393 flag truth CLI",
-        "Test — FLY-1436 work-kind cutover CLI",
-        "Test — FLY-1759 reap-first worktree teardown",
-        "Test — FLY-1867/2026 Playwright lifecycle tools",
-        "Test — FLY-1572 mailbox migration CLI",
-        "Test — FLY-2278 attempt-version rollback",
-        "Test — FLY-1764 legacy swap broadcast retirement",
-        "Test — FLY-1327 cycle-time report",
-        "Integration test — cmux-sync hooks",
-        "Test — FLY-1944 host terminal cutover brake",
-        "Test — FLY-2274 cutover window artifacts",
-        "Test — Discord adapter orphan reaper (FLY-183)",
-        "Test — Lead rules single-bundle load chain (FLY-1402)",
+        "Test — FLY-1389 path-hygiene + 529-Room repair batch",
+        "Test — FLY-2598 voice host configuration",
         "Test — FLY-1496 model resolution + Lead derivation",
-        "Test — FLY-1948 slot Discord channel evidence",
-        "Test — FLY-1830 non-Lead daemon convergence",
-        "Test — FLY-1814 launchd fleet contracts",
-        "Test — FLY-1929 voucher watch contracts",
-        "Test — FLY-913/2204 restart + calendar isolation guards",
-        "Test — FLY-2533 packed phase protocols",
         "Test — FLY-2007 phase-0 analyser contract",
+        "Test — FLY-1887 one-shot Codex hard timeout",
+        "Test — FLY-2237 slot Bridge cycle",
+        "Test — onboard-shell public install chain",
+        "Test — FLY-2145 Lead memory private repository",
+        "Test — FLY-2144 retired dispatch residue guard",
+        "Test — Lead in-flight mailbox adoption contracts",
+        "Test — FLY-1189 multi-Lead campaign harness",
+        "Test — FLY-1961 dual-vendor workspace trust",
+        "Test — FLY-1959 updater sources + body provenance contracts",
+        "Test — FLY-2102 startup flag freeze residue guard",
+        "Test — FLY-2664 merged worktree read-only audit",
     ],
     "script-tests-2": [
-        "Test — FLY-1905 CI apt-install helper",
-        "Test — FLY-519 fleet provisioning + zero-secret gate",
-        "Test — FLY-2034 Belle staged credential gate",
-        "Test — FLY-1356 skill-framework vendor + variant contracts",
-        "Test — FLY-1609 four-arm analysis contract",
-        "Test — FLY-648 one-command setup wizard",
-        "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
-        "Test — FLY-1189 multi-Lead campaign harness",
-        "Test — FLY-2237 slot Bridge cycle",
-        "Test — FLY-2270 QA report host stub",
-        "Test — FLY-2270 slot Bridge launch boundary",
-        "Test — FLY-2454 slot isolation contracts",
-        "Test — FLY-2456 hermetic restart drill evidence",
-        "Test — FLY-2519 read-only Lead parity inventory",
-        "Test — FLY-1775 generalized-DAG 529 room",
-        "Test — FLY-2383 voice concurrency measurement contract",
-        "Test — FLY-2446 two-Lead voice driver",
-        "Test — FLY-1189 fault injector safety lock",
-        "Test — FLY-1189 assert library + driver trap owner",
-        "Test — FLY-1389 path-hygiene + 529-Room repair batch",
-        "Test — resident Codex recovery contracts",
-        "Test — NPM packaging pipeline + packaged-mode seams",
-        "Test — FLY-2190 host tmux selection S0",
+        "Test — FLY-2331 Bridge async-child guard regression",
         "Test — FLY-2444 generalized Lead launcher",
-        "Test — FLY-2459 Codex department capability and migration",
-        "Test — FLY-1501 restart brake + heartbeat guard contracts",
-        "Test — FLY-1634 restart net-deletion contracts",
-        "Test — FLY-1959 updater sources + body provenance contracts",
-        "Test — payload real-install smoke",
-        "Test — onboard-shell public install chain",
-        "Test — FLY-882 Discord bot token pool",
-        "Test — FLY-513 global-codex repoint apply-path",
+        "Test — FLY-2598 voice client coexistence",
+        "Test — FLY-1081 notify-path migration",
+        "Test — FLY-913/2204 restart + calendar isolation guards",
         "Test — FLY-1955/2211 Codex daemon mutation safety",
-        "Test — FLY-697 codex-log-guard",
         "Test — FLY-1330 log janitor",
+        "Test — FLY-2465 isolated Codex quota contracts",
+        "Test — FLY-2549 summary preflight with stale workspace dist",
+        "Test — FLY-2139 database maintenance",
+        "Test — FLY-2598 readonly voice preflight",
+        "Test — FLY-2454 slot isolation contracts",
+        "Test — FLY-1393 flag truth CLI",
+        "Test — FLY-1338 matrix coverage parity (QA)",
+        "Test — FLY-1759 reap-first worktree teardown",
     ],
     "script-tests-3": [
-        "Test — FLY-2139 database maintenance",
-        "Test — FLY-1887 one-shot Codex hard timeout",
-        "Test — FLY-2465 isolated Codex quota contracts",
+        "Test — FLY-1434 unified restart + quota caller",
+        "Test — payload real-install smoke",
+        "Test — FLY-1501 restart brake + heartbeat guard contracts",
+        "Test — FLY-1678 statusline model-scoped bar + installer",
+        "Test — FLY-2456 hermetic restart drill evidence",
+        "Test — FLY-1189 assert library + driver trap owner",
+        "Test — FLY-648 one-command setup wizard",
+        "Test — FLY-2134 artifact freshness monitor",
+        "Test — Discord adapter orphan reaper (FLY-183)",
+        "Test — resident Codex recovery contracts",
+        "Test — FLY-1729/1743 restart update + consistency guards",
+        "Test — FLY-1707 incident replay",
+        "Test — FLY-1944 host terminal cutover brake",
+        "Test — FLY-2446 two-Lead voice driver",
+        "Test — FLY-1830 non-Lead daemon convergence",
+    ],
+    "script-tests-4": [
+        "Test — FLY-1364 cmux sync repair",
         "Test — FLY-2404 shared Codex credential truth",
+        "Test — FLY-1905 CI apt-install helper",
+        "Test — Lead rules single-bundle load chain (FLY-1402)",
+        "Test — FLY-2270 QA report host stub",
+        "Test — FLY-1634 restart net-deletion contracts",
+        "Test — FLY-2519 read-only Lead parity inventory",
+        "Test — FLY-2403 Astra/Fable design outcome report",
+        "Test — FLY-2383 voice concurrency measurement contract",
         "Test — FLY-1887 bounded Flywheel logs",
-        "Test — FLY-1961 dual-vendor workspace trust",
+        "Test — FLY-957 record_deployed_range best-effort",
+        "Test — FLY-2459 Codex department capability and migration",
         "Test — FLY-1018 gemini-agent guard",
         "Test — FLY-880 PM executor role contract",
         "Test — FLY-2015 diagram-design role routing",
@@ -846,42 +1142,51 @@ expected_shard_tests = {
         "Test — FLY-1461 QA executor 529 N-to-N contract",
         "Test — FLY-1463 QA executor ship-report contract",
         "Test — FLY-1981 runtime role auto-QA retirement",
-        "Test — FLY-1434 unified restart + quota caller",
         "Test — FLY-1715 runner boundary shell contracts",
-        "Test — FLY-2126 Raya voice scenario wrapper",
-        "Test — FLY-2033 meeting artifact closure",
-        "Test — FLY-1726 canonical Lead identity delivery",
-        "Test — Lead in-flight mailbox adoption contracts",
-        "Test — FLY-1649 r4 migration-window hardening",
-        "Test — FLY-927 infra-alert shell path",
-        "Test — FLY-957 record_deployed_range best-effort",
-        "Test — FLY-1729/1743 restart update + consistency guards",
-        "Test — FLY-1081 notify-path migration",
-        "Test — FLY-1861 CI cancellation and classification contracts",
-        "Test — FLY-1674 legacy-path residue guard",
-        "Test — FLY-2144 retired dispatch residue guard",
-        "Test — FLY-2102 startup flag freeze residue guard",
-        "Test — FLY-1338 matrix coverage parity (QA)",
-        "Test — FLY-1855 executable Lead patrol snapshot",
         "Test — FLY-1945 trusted patrol helper closure",
-        "Test — FLY-2403 Astra/Fable design outcome report",
-        "Test — FLY-2570 dynamic design ratio operator",
-        "Test — FLY-1986 load probe contract",
-        "Test — FLY-1678 statusline model-scoped bar + installer",
         "Test — FLY-1870 job elapsed tripwire contract",
-    ],
-    "script-tests-4": [
-        "Test — FLY-2145 Lead memory private repository",
-        "Test — FLY-1364 cmux sync repair",
+        "Test — FLY-2034 Belle staged credential gate",
+        "Test — FLY-1356 skill-framework vendor + variant contracts",
+        "Test — FLY-2270 slot Bridge launch boundary",
+        "Test — FLY-513 global-codex repoint apply-path",
+        "Test — FLY-697 codex-log-guard",
+        "Test — FLY-1436 work-kind cutover CLI",
+        "Test — FLY-1867/2026 Playwright lifecycle tools",
+        "Test — FLY-2278 attempt-version rollback",
     ],
     "script-tests-5": [
-        "Test — FLY-2331 Bridge async-child guard regression",
-        "Test — FLY-1663 launchd-native Lead lifecycle",
+        "Test — FLY-1855 executable Lead patrol snapshot",
+        "Test — FLY-1929 voucher watch contracts",
+        "Test — FLY-1986 load probe contract",
         "Test — FLY-2146 Lead memory remote sync",
-        "Test — FLY-2134 artifact freshness monitor",
-        "Test — FLY-2598 voice host configuration",
-        "Test — FLY-2598 readonly voice preflight",
-        "Test — FLY-2598 voice client coexistence",
+        "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
+        "Test — NPM packaging pipeline + packaged-mode seams",
+        "Test — FLY-1572 mailbox migration CLI",
+        "Test — FLY-1861 CI cancellation and classification contracts",
+        "Test — FLY-2533 packed phase protocols",
+        "Test — FLY-519 fleet provisioning + zero-secret gate",
+        "Test — FLY-1189 fault injector safety lock",
+        "Test — FLY-2126 Raya voice scenario wrapper",
+        "Test — FLY-1674 legacy-path residue guard",
+        "Test — FLY-882 Discord bot token pool",
+    ],
+    "script-tests-6": [
+        "Test — FLY-1663 launchd-native Lead lifecycle",
+        "Test — FLY-1814 launchd fleet contracts",
+        "Test — FLY-2693 voice health source",
+        "Test — FLY-1726 canonical Lead identity delivery",
+        "Test — FLY-2274 cutover window artifacts",
+        "Test — FLY-2570 dynamic design ratio operator",
+        "Test — FLY-1948 slot Discord channel evidence",
+        "Test — FLY-1775 generalized-DAG 529 room",
+        "Test — FLY-1649 r4 migration-window hardening",
+        "Integration test — cmux-sync hooks",
+        "Test — FLY-2033 meeting artifact closure",
+        "Test — FLY-927 infra-alert shell path",
+        "Test — FLY-2190 host tmux selection S0",
+        "Test — FLY-1764 legacy swap broadcast retirement",
+        "Test — FLY-1609 four-arm analysis contract",
+        "Test — FLY-1327 cycle-time report",
     ],
 }
 script_shards = {
@@ -890,13 +1195,15 @@ script_shards = {
     "script-tests-3": (script_tests_3, script_steps_3),
     "script-tests-4": (script_tests_4, script_steps_4),
     "script-tests-5": (script_tests_5, script_steps_5),
+    "script-tests-6": (script_tests_6, script_steps_6),
 }
 expected_shard_names = {
-    "script-tests": "Script Tests 1/5 — session/lifecycle (shell suites)",
-    "script-tests-2": "Script Tests 2/5 — fleet/setup/packaging A (shell suites)",
-    "script-tests-3": "Script Tests 3/5 — fleet/setup/packaging B (shell suites)",
-    "script-tests-4": "Script Tests 4/5 — cmux repair + Lead memory (shell suites)",
-    "script-tests-5": "Script Tests 5/5 — Lead memory remote sync",
+    "script-tests": "Script Tests 1/6 — balanced shell suites A",
+    "script-tests-2": "Script Tests 2/6 — balanced shell suites B",
+    "script-tests-3": "Script Tests 3/6 — balanced shell suites C",
+    "script-tests-4": "Script Tests 4/6 — balanced shell suites D",
+    "script-tests-5": "Script Tests 5/6 — balanced shell suites E",
+    "script-tests-6": "Script Tests 6/6 — balanced shell suites F",
 }
 
 all_expected_tests = [
@@ -1002,6 +1309,37 @@ require(
     f"FLY-2444 CI command inventory drifted: {fly2444_commands}",
 )
 
+fly2404_steps = [
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-2404 shared Codex credential truth"
+]
+require(len(fly2404_steps) == 1, "script shards must contain exactly one FLY-2404 step")
+fly2404_commands = [
+    line.strip()
+    for line in str(fly2404_steps[0].get("run", "")).splitlines()
+    if line.strip().startswith("bash ")
+]
+require(
+    fly2404_commands
+    == [
+        "bash scripts/__tests__/codex-home-link-truth.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-cycle.test.sh",
+        "bash scripts/__tests__/codex-home-launch-fence.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-process.test.sh",
+        "bash scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+        "bash scripts/__tests__/codex-home-migration-alert.test.sh",
+        "bash scripts/__tests__/codex-home-migration-overdue-mutation.test.sh",
+        "bash scripts/__tests__/codex-quota-readiness-check.test.sh",
+        "bash scripts/__tests__/codex-lead-launchd-preflight.test.sh",
+        "bash scripts/__tests__/codex-credential-cutover.test.sh",
+        "bash scripts/__tests__/codex-home-credential-sweep.test.sh",
+    ],
+    f"FLY-2404 CI command inventory drifted: {fly2404_commands}",
+)
+
 fly2146_steps = [
     step for step in script_steps_5
     if isinstance(step, dict) and step.get("name") == "Test — FLY-2146 Lead memory remote sync"
@@ -1028,10 +1366,12 @@ fly2146_env = mapping(fly2146_step.get("env"), "FLY-2146 shell suite env")
 require(str(fly2146_env.get("GITLEAKS_VERSION")) == "8.30.1", "FLY-2146 must pin gitleaks 8.30.1")
 
 fly2134_steps = [
-    step for step in script_steps_5
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict) and step.get("name") == "Test — FLY-2134 artifact freshness monitor"
 ]
-require(len(fly2134_steps) == 1, "script-tests-5 must contain exactly one FLY-2134 step")
+require(len(fly2134_steps) == 1, "script shards must contain exactly one FLY-2134 step")
 fly2134_step = fly2134_steps[0]
 fly2134_commands = [
     line.strip()
@@ -1093,7 +1433,7 @@ fly1715_steps = [
 ]
 require(
     len(fly1715_steps) == 1,
-    "script-tests-2 must contain exactly one FLY-1715 runner boundary shell contracts step",
+    "script shards must contain exactly one FLY-1715 runner boundary shell contracts step",
 )
 fly1715_step = fly1715_steps[0]
 require("if" not in fly1715_step, "FLY-1715 shell contracts must not be conditional")
@@ -1161,6 +1501,8 @@ expected_fly1364_commands = [
     "bash scripts/__tests__/test-teardown-lease-contract.test.sh",
     "bash scripts/__tests__/qa-teardown-finalize.test.sh",
     "bash scripts/__tests__/restart-cmux-watcher.test.sh",
+    "bash scripts/__tests__/agent-visibility-rules.test.sh",
+    "bash scripts/__tests__/agent-visibility.test.sh",
 ]
 require(
     fly1364_commands == expected_fly1364_commands,
@@ -1179,7 +1521,7 @@ fly1830_steps = [
 ]
 require(
     len(fly1830_steps) == 1,
-    "script-tests must contain exactly one FLY-1830 non-Lead daemon convergence step",
+    "script shards must contain exactly one FLY-1830 non-Lead daemon convergence step",
 )
 fly1830_step = fly1830_steps[0]
 require("if" not in fly1830_step, "FLY-1830 convergence suite must not be conditional")
@@ -1209,7 +1551,7 @@ fly1814_steps = [
 ]
 require(
     len(fly1814_steps) == 1,
-    "script-tests must contain exactly one FLY-1814 launchd fleet contracts step",
+    "script shards must contain exactly one FLY-1814 launchd fleet contracts step",
 )
 fly1814_step = fly1814_steps[0]
 require("if" not in fly1814_step, "FLY-1814 launchd suites must not be conditional")
@@ -1237,7 +1579,35 @@ require(
     f"FLY-1814 CI command set/order drifted: {fly1814_commands}",
 )
 
-fly1948_steps = [step for step in script_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-1948 slot Discord channel evidence"]
+fly2693_steps = [
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Test — FLY-2693 voice health source"
+]
+require(
+    len(fly2693_steps) == 1,
+    "script-tests shards must contain exactly one FLY-2693 voice health source step",
+)
+require("if" not in fly2693_steps[0], "FLY-2693 health suite must not be conditional")
+require(
+    "continue-on-error" not in fly2693_steps[0],
+    "FLY-2693 health suite must fail the PR gate",
+)
+require(
+    str(fly2693_steps[0].get("run", "")).strip()
+    == "python3 scripts/__tests__/voice-health.test.py\npython3 scripts/__tests__/voice-health-startup-spool.test.py\nbash scripts/__tests__/voice-health-alert-route.test.sh",
+    "FLY-2693 health suite command drifted",
+)
+
+
+fly1948_steps = [
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-1948 slot Discord channel evidence"
+]
 require(len(fly1948_steps) == 1, "FLY-1948 channel evidence must run exactly once")
 fly1948_commands = [line.strip() for line in str(fly1948_steps[0].get("run", "")).splitlines() if line.strip()]
 require(fly1948_commands == [
@@ -1446,10 +1816,14 @@ for step in unit_steps:
     condition = str(step.get("if", ""))
     for name in re.findall(r"matrix\.name\s*==\s*'([^']+)'", condition):
         require(name in matrix_names, f"conditional step targets absent matrix row: {name}")
-writer_mutations = [step for step in unit_steps if step.get("name") == "FLY-2453 whole-gate writer mutations"]
-require(len(writer_mutations) == 1, "writer mutation gate must appear exactly once")
-require(writer_mutations[0].get("if") == "matrix.name == 'teamlead 1 of 4'", "writer mutation gate must run in shard 1")
-require("continue-on-error" not in writer_mutations[0], "writer mutation gate must not swallow failures")
+require(
+    not any(
+        step.get("name") == "FLY-2453 whole-gate writer mutations"
+        for step in unit_steps
+        if isinstance(step, dict)
+    ),
+    "retired FLY-2453 pure-docs mutation gate must not return",
+)
 
 stub_hygiene_steps = [
     step
@@ -1476,21 +1850,21 @@ require(
     "FLY-1883 stub-hygiene pairing must not swallow failures",
 )
 
-voice_driver_steps = [step for step in script_steps_2 if isinstance(step, dict) and step.get("name") == "Test — FLY-2446 two-Lead voice driver"]
-require(len(voice_driver_steps) == 1, "FLY-2446 driver must run exactly once in script-tests-2")
+voice_driver_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2446 two-Lead voice driver"]
+require(len(voice_driver_steps) == 1, "FLY-2446 driver must run exactly once across script shards")
 voice_driver_step = voice_driver_steps[0]
 require(voice_driver_step.get("run") == "node --test scripts/__tests__/fly2446-two-lead-run.test.mjs", "FLY-2446 driver command drifted")
 require("if" not in voice_driver_step and "continue-on-error" not in voice_driver_step, "FLY-2446 driver must be a mandatory hermetic gate")
-voice_preflight_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 readonly voice preflight"]
-require(len(voice_preflight_steps) == 1, "FLY-2598 readonly preflight missing from script-tests-5")
+voice_preflight_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 readonly voice preflight"]
+require(len(voice_preflight_steps) == 1, "FLY-2598 readonly preflight must run exactly once across script shards")
 require(voice_preflight_steps[0].get("run") == "node --test scripts/__tests__/fly2598-voice-preflight.test.mjs", "FLY-2598 preflight command drifted")
 require(not voice_preflight_steps[0].get("if") and not voice_preflight_steps[0].get("continue-on-error"), "FLY-2598 preflight must be mandatory")
-voice_coexist_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice client coexistence"]
-require(len(voice_coexist_steps) == 1, "FLY-2598 voice coexistence missing from script-tests-5")
+voice_coexist_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice client coexistence"]
+require(len(voice_coexist_steps) == 1, "FLY-2598 voice coexistence must run exactly once across script shards")
 require(voice_coexist_steps[0].get("run") == "pnpm --filter flywheel-voice-codex... build\nnode --test scripts/__tests__/fly2598-voice-coexistence.test.mjs\n", "FLY-2598 coexistence command drifted")
 require(not voice_coexist_steps[0].get("if") and not voice_coexist_steps[0].get("continue-on-error"), "FLY-2598 coexistence must be mandatory")
-voice_config_steps = [step for step in script_steps_5 if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice host configuration"]
-require(len(voice_config_steps) == 1, "FLY-2598 voice config test must run exactly once in script-tests-5")
+voice_config_steps = [step for job_steps in all_script_steps for step in job_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-2598 voice host configuration"]
+require(len(voice_config_steps) == 1, "FLY-2598 voice config test must run exactly once across script shards")
 voice_config_step = voice_config_steps[0]
 require(str(voice_config_step.get("run", "")).strip().splitlines() == ["pnpm --filter flywheel-teamlead... build", "pnpm --filter flywheel-comm... build", "node --test scripts/__tests__/voice-host-configure.test.mjs scripts/__tests__/install-voice-launchd.test.mjs"], "FLY-2598 voice config gate commands drifted")
 require("if" not in voice_config_step and "continue-on-error" not in voice_config_step, "FLY-2598 voice config gate must be mandatory")

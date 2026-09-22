@@ -15,11 +15,7 @@ import {
 	canonicalSubmissionDigest,
 	installSqlTiming,
 } from "flywheel-config";
-import {
-	AUTO_NARROW_ACTOR,
-	AUTO_NARROW_DECISION_SOURCE,
-	parseAutoNarrowSourceEnvelope,
-} from "./auto-narrow-contract.js";
+import { AUTO_NARROW_ACTOR } from "./auto-narrow-contract.js";
 import { openCommDbWritable } from "./commdb-open-gate.js";
 import {
 	type IngestDiscordChatArgs,
@@ -59,6 +55,12 @@ import {
 	type ReworkWakeRetirementProof,
 } from "./rework-wake-identity.js";
 import { encodeSenderRef } from "./sender-ref.js";
+import {
+	parseShipJudgmentApprovalEnvelope,
+	SHIP_JUDGMENT_APPROVAL_ACTOR,
+	SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+	shipJudgmentApprovalSourceEventId,
+} from "./ship-judgment-approval-contract.js";
 import type {
 	Message,
 	MessageProvenance,
@@ -470,6 +472,17 @@ export interface PendingRunnerQuestion {
 	checkpoint: string | null;
 }
 
+export interface RunnerStopDeclarationRecord {
+	execution_id: string;
+	state_hash: string;
+	state_key: string;
+	content_hash: string;
+	content: string;
+	question_id: string;
+	derived_at_ms: number;
+	emitted_at_ms: number;
+}
+
 /**
  * FLY-887: the DAG workflow TURN — which phase-session (identified by its
  * `holder_exec_id`) currently holds the exclusive right to touch the shared
@@ -647,6 +660,7 @@ export interface FounderShipGateQuestionInspection {
 	resolved: boolean;
 	responseExists: boolean;
 	founderSourceEventExists: boolean;
+	machineSourceEventExists: boolean;
 	answerable: boolean;
 	unanswerableReasons: FounderShipGateQuestionUnanswerableReason[];
 }
@@ -679,9 +693,10 @@ export type FinalizeSessionCommunicationsResult =
 	| { finalized: true; result: FinalizeSessionResult };
 
 export interface SessionCloseoutIdentity {
-	version: 1;
+	version: 2;
 	executionId: string;
 	revision: string;
+	contentDigest: string;
 	session: {
 		tmuxWindow: string;
 		projectName: string;
@@ -1587,6 +1602,7 @@ export class CommDB {
 			SELECT execution_id, project_name, issue_id, lead_id
 			  FROM sessions
 		`);
+		this.installSessionIdentityEpoch();
 
 		// FLY-1375: founder feedback is an immutable workflow source event just
 		// like approval. SQLite cannot widen the CHECK constraint in place.
@@ -1707,6 +1723,104 @@ export class CommDB {
 				PRIMARY KEY (execution_id, epoch)
 			)
 		`);
+	}
+
+	private installSessionIdentityEpoch(): void {
+		this.db
+			.transaction(() => {
+				this.db.exec(`
+					CREATE TABLE IF NOT EXISTS session_identity_epoch (
+						execution_id TEXT PRIMARY KEY,
+						epoch INTEGER NOT NULL CHECK (epoch >= 1)
+					);
+					INSERT OR IGNORE INTO session_identity_epoch (execution_id, epoch)
+					SELECT execution_id, 1 FROM sessions
+					UNION
+					SELECT execution_id, 1 FROM runner_declared_states;
+
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_insert;
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_delete;
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_update_same;
+					DROP TRIGGER IF EXISTS session_identity_epoch_sessions_update_move;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_insert;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_delete;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_update_same;
+					DROP TRIGGER IF EXISTS session_identity_epoch_declared_update_move;
+
+					CREATE TRIGGER session_identity_epoch_sessions_insert
+					AFTER INSERT ON sessions BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_sessions_delete
+					AFTER DELETE ON sessions BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_sessions_update_same
+					AFTER UPDATE ON sessions
+					WHEN OLD.execution_id IS NEW.execution_id AND (
+						OLD.tmux_window IS NOT NEW.tmux_window OR
+						OLD.project_name IS NOT NEW.project_name OR
+						OLD.issue_id IS NOT NEW.issue_id OR
+						OLD.status IS NOT NEW.status OR
+						OLD.ended_at IS NOT NEW.ended_at
+					) BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_sessions_update_move
+					AFTER UPDATE ON sessions
+					WHEN OLD.execution_id IS NOT NEW.execution_id BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+
+					CREATE TRIGGER session_identity_epoch_declared_insert
+					AFTER INSERT ON runner_declared_states BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_declared_delete
+					AFTER DELETE ON runner_declared_states BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_declared_update_same
+					AFTER UPDATE ON runner_declared_states
+					WHEN OLD.execution_id IS NEW.execution_id AND (
+						OLD.kind IS NOT NEW.kind OR
+						OLD.reason IS NOT NEW.reason OR
+						OLD.created_at IS NOT NEW.created_at OR
+						OLD.expires_at IS NOT NEW.expires_at OR
+						OLD.updated_at IS NOT NEW.updated_at
+					) BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+					CREATE TRIGGER session_identity_epoch_declared_update_move
+					AFTER UPDATE ON runner_declared_states
+					WHEN OLD.execution_id IS NOT NEW.execution_id BEGIN
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (OLD.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+						INSERT INTO session_identity_epoch (execution_id, epoch)
+						VALUES (NEW.execution_id, 1)
+						ON CONFLICT(execution_id) DO UPDATE SET epoch = epoch + 1;
+					END;
+				`);
+			})
+			.exclusive();
 	}
 
 	purgeExpired(): number {
@@ -1983,6 +2097,25 @@ export class CommDB {
 				};
 			})
 			.immediate();
+	}
+
+	getRunnerStopDeclaration(
+		executionId: string,
+	): RunnerStopDeclarationRecord | undefined {
+		const row = this.db
+			.prepare(
+				`SELECT execution_id, state_hash, state_key, content_hash, content,
+				        question_id, derived_at_ms, emitted_at_ms
+				   FROM runner_stop_declarations WHERE execution_id = ?`,
+			)
+			.get(executionId) as RunnerStopDeclarationRecord | undefined;
+		if (!row) return undefined;
+		const stateHash = createHash("sha256").update(row.state_key).digest("hex");
+		const contentHash = createHash("sha256").update(row.content).digest("hex");
+		if (row.state_hash !== stateHash || row.content_hash !== contentHash) {
+			return undefined;
+		}
+		return row;
 	}
 
 	/**
@@ -2443,7 +2576,20 @@ export class CommDB {
 	markQuestionTerminalDisposed(questionId: string): boolean {
 		const result = this.db
 			.prepare(
-				`UPDATE mailbox SET relay_state = 'terminal_disposed'
+				`UPDATE mailbox SET relay_state = 'terminal_disposed',
+				   state = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN 'ACKED' ELSE state END,
+				   acked_at = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+				     ELSE acked_at END,
+				   claimed_by = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE claimed_by END,
+				   claim_expires_at = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE claim_expires_at END,
+				   batch_id = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE batch_id END,
+				   next_retry_at = CASE WHEN delivery_disposition = 'audit_only'
+				     THEN NULL ELSE next_retry_at END
 				 WHERE id = ? AND type = 'question'
 				   AND relay_state != 'terminal_disposed'`,
 			)
@@ -2667,9 +2813,12 @@ export class CommDB {
 		payload: unknown;
 		provenance?: MessageProvenance;
 	}): boolean {
-		if (input.fromAgent === AUTO_NARROW_ACTOR) {
+		if (
+			input.fromAgent === AUTO_NARROW_ACTOR ||
+			input.fromAgent === SHIP_JUDGMENT_APPROVAL_ACTOR
+		) {
 			throw new Error(
-				"bridge-auto-narrow-gate is reserved for the strict auto narrow source writer",
+				`${input.fromAgent} is reserved for a dedicated machine approval source writer`,
 			);
 		}
 		const payload = canonicalJsonString(input.payload);
@@ -2741,30 +2890,33 @@ export class CommDB {
 			.immediate();
 	}
 
-	/** FLY-2453: the sole writer for a synthetic narrow-gate approval source. */
-	insertAutoNarrowApprovalWithSource(input: {
+	/** Sole writer for a strict three-point automatic approval source. */
+	insertShipJudgmentApprovalWithSource(input: {
 		project: string;
 		expectedOwner: string;
 		projectedThroughSourceRowId: number;
 		envelope: unknown;
 	}): { written: boolean; replayed: boolean } {
-		const envelope = parseAutoNarrowSourceEnvelope(input.envelope);
+		const envelope = parseShipJudgmentApprovalEnvelope(input.envelope);
 		if (
 			input.project !== "flywheel" ||
+			envelope.project_name !== input.project ||
 			!input.expectedOwner.trim() ||
 			!Number.isSafeInteger(input.projectedThroughSourceRowId) ||
 			input.projectedThroughSourceRowId < 0
 		) {
-			throw new Error("auto narrow source scope invalid");
+			throw new Error("ship judgment approval source scope invalid");
 		}
-		const sourceEventId = `auto-narrow:${envelope.question_id}`;
+		const sourceEventId = shipJudgmentApprovalSourceEventId(
+			envelope.question_id,
+		);
 		const payload = canonicalJsonString(envelope);
 		const payloadDigest = canonicalSubmissionDigest(envelope);
 		const content = canonicalJsonString({
 			approved: true,
-			actor: AUTO_NARROW_ACTOR,
-			decision_source: AUTO_NARROW_DECISION_SOURCE,
-			head_sha: envelope.head_sha,
+			actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+			decision_source: SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+			head_sha: envelope.primary.head_sha,
 		});
 		const priorBusyTimeout = Number(
 			this.db.pragma("busy_timeout", { simple: true }),
@@ -2785,10 +2937,12 @@ export class CommDB {
 						const response = this.getResponse(envelope.question_id);
 						if (
 							existingSource.payload_digest !== payloadDigest ||
-							response?.from_agent !== AUTO_NARROW_ACTOR ||
+							response?.from_agent !== SHIP_JUDGMENT_APPROVAL_ACTOR ||
 							response.content !== content
 						) {
-							throw new Error("auto narrow source replay conflict (poison)");
+							throw new Error(
+								"ship judgment approval source replay conflict (poison)",
+							);
 						}
 						return { written: true, replayed: true };
 					}
@@ -2832,7 +2986,7 @@ export class CommDB {
 					}
 					new MailboxQueue(this.db).enqueue({
 						id: randomUUID(),
-						fromAgent: AUTO_NARROW_ACTOR,
+						fromAgent: SHIP_JUDGMENT_APPROVAL_ACTOR,
 						toAgent: question.from_agent,
 						recipientKind: "runner",
 						type: "response",
@@ -3102,6 +3256,7 @@ export class CommDB {
 		if (!project.trim()) throw new Error("project is required");
 		const approvalBase = `founder-approval:${questionId}`;
 		const feedbackBase = `founder-feedback:${questionId}`;
+		const machineBase = `ship-judgment-auto:${questionId}`;
 		const row = this.db
 			.prepare(
 				`WITH question AS (
@@ -3136,7 +3291,13 @@ export class CommDB {
 				          AND source_event_id >= ? AND source_event_id < ?
 				          AND (source_event_id = ? OR substr(source_event_id, length(?) + 1, 1) = ':')
 				     )
-				   ) AS founder_source_event_exists`,
+				   ) AS founder_source_event_exists,
+				   EXISTS(
+				     SELECT 1 FROM workflow_source_event
+				      WHERE project = ?
+				        AND source_event_id >= ? AND source_event_id < ?
+				        AND (source_event_id = ? OR substr(source_event_id, length(?) + 1, 1) = ':')
+				   ) AS machine_source_event_exists`,
 			)
 			.get(
 				questionId,
@@ -3151,6 +3312,11 @@ export class CommDB {
 				`${feedbackBase};`,
 				feedbackBase,
 				feedbackBase,
+				project,
+				machineBase,
+				`${machineBase};`,
+				machineBase,
+				machineBase,
 			) as {
 			question_exists: 0 | 1;
 			terminal_disposed: 0 | 1;
@@ -3158,6 +3324,7 @@ export class CommDB {
 			resolved: 0 | 1;
 			response_exists: 0 | 1;
 			founder_source_event_exists: 0 | 1;
+			machine_source_event_exists: 0 | 1;
 		};
 		const unanswerableReasons: FounderShipGateQuestionUnanswerableReason[] = [];
 		if (!row.question_exists) unanswerableReasons.push("question_missing");
@@ -3173,6 +3340,7 @@ export class CommDB {
 			resolved: row.resolved === 1,
 			responseExists: row.response_exists === 1,
 			founderSourceEventExists: row.founder_source_event_exists === 1,
+			machineSourceEventExists: row.machine_source_event_exists === 1,
 			answerable: unanswerableReasons.length === 0,
 			unanswerableReasons,
 		};
@@ -8845,7 +9013,7 @@ export class CommDB {
 			  }
 			| undefined;
 		const identity = {
-			version: 1 as const,
+			version: 2 as const,
 			executionId,
 			session: session
 				? {
@@ -8866,9 +9034,26 @@ export class CommDB {
 					}
 				: null,
 		};
+		const epoch = (() => {
+			try {
+				return Number(
+					(
+						this.db
+							.prepare(
+								"SELECT epoch FROM session_identity_epoch WHERE execution_id = ?",
+							)
+							.get(executionId) as { epoch?: number } | undefined
+					)?.epoch ?? 0,
+				);
+			} catch (error) {
+				if (isMissingTableError(error, "session_identity_epoch")) return 0;
+				throw error;
+			}
+		})();
 		return {
 			...identity,
-			revision: canonicalSubmissionDigest(identity),
+			revision: `epoch:${epoch}`,
+			contentDigest: canonicalSubmissionDigest(identity),
 		};
 	}
 
@@ -8891,7 +9076,7 @@ export class CommDB {
 			input.reservationId.length > 300 ||
 			!input.evidenceId ||
 			input.evidenceId.length > 300 ||
-			!/^[0-9a-f]{64}$/.test(input.expectedIdentityRevision) ||
+			!/^epoch:(?:0|[1-9][0-9]*)$/.test(input.expectedIdentityRevision) ||
 			!Number.isFinite(observedMs) ||
 			!Number.isFinite(expiresMs) ||
 			!Number.isFinite(nowMs) ||

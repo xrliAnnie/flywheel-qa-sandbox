@@ -28,8 +28,8 @@
 		},
 		{
 			"file": "packages/claude-runner/src/codex-daemon-runtime.ts",
-			"sync_child": 2,
-			"sync_marker": 2,
+			"sync_child": 3,
+			"sync_marker": 3,
 			"raw_spawn": 3,
 			"disposition": "runner_bounded_or_observed"
 		},
@@ -101,6 +101,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/flywheel-comm/src/commands/ci-full.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/flywheel-comm/src/commands/codex-resume.ts",
 			"raw_spawn": 1,
 			"disposition": "one_shot_cli"
@@ -159,6 +164,11 @@
 			"file": "packages/flywheel-comm/src/lead-lease.ts",
 			"sync_child": 3,
 			"disposition": "bridge_sync_marker_timeout_at_callers"
+		},
+		{
+			"file": "packages/flywheel-comm/src/persona-projector.ts",
+			"sync_child": 3,
+			"disposition": "one_shot_launcher: exact-commit Git projection with sanitized auth, bounded local tracking/fetch/blob reads, and temporary-repository cleanup"
 		},
 		{
 			"file": "packages/flywheel-comm/src/proofshot/free-port.ts",
@@ -268,6 +278,11 @@
 			"disposition": "observed_async_lifecycle"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/land-reclose-peer.ts",
+			"sync_child": 2,
+			"disposition": "bounded_identity_probe"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/lead-alert-helpers.ts",
 			"raw_spawn": 1,
 			"disposition": "observed_async_lifecycle"
@@ -320,6 +335,11 @@
 			"file": "packages/teamlead/src/bridge/runs-route.ts",
 			"raw_spawn": 1,
 			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/shuttle-observation-projector.ts",
+			"sync_child": 1,
+			"disposition": "bridge_bounded_sync_receipt"
 		},
 		{
 			"file": "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
@@ -399,6 +419,11 @@
 			"disposition": "separate_gateway"
 		},
 		{
+			"file": "packages/teamlead/src/lead-backends/codex/persona-startup-gate.ts",
+			"sync_marker": 1,
+			"disposition": "lead_runtime_bounded: process-start identity probe under the canonical sync-operation marker"
+		},
+		{
 			"file": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
 			"sync_child": 2,
 			"sync_marker": 2,
@@ -445,6 +470,11 @@
 			"disposition": "Parent verifies pinned patrol rule programs and owned report before each of three gates; 3 second timeout and 4 KiB output bound, washed environment"
 		},
 		{
+			"file": "packages/teamlead/src/package-gate-queue.ts",
+			"sync_child": 2,
+			"disposition": "FLY-2702 bounded read-only owner-lock probes: fixed /usr/bin/python3 helper, 1 second timeout, 1 MiB output bound, no shell"
+		},
+		{
 			"file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
 			"raw_spawn": 1,
 			"disposition": "FLY-2399 isolated subscription evaluator: async child, minimal environment, 120s deadline, bounded output, abort and TERM/KILL drain"
@@ -471,7 +501,7 @@
 		},
 		{
 			"file": "packages/voice-codex/src/startup-alert.ts",
-			"sync_child": 1,
+			"sync_child": 2,
 			"disposition": "standalone_runtime_bounded"
 		},
 		{

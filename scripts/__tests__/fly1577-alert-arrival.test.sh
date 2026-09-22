@@ -43,7 +43,7 @@ done
 pad() { local i=1; while [ "$i" -le 60 ]; do echo "$1 line $i padding text >/dev/null"; i=$((i+1)); done; }
 
 # ── trusted fake repo carrying the REAL alerter ─────────────────────────────
-FR="$RSB/repo"; mkdir -p "$FR/scripts/lib" "$FR/.git"
+FR="$RSB/repo"; mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/dist/bin" "$FR/.git"
 for f in lib/script-sanity.sh lib/path-hygiene.sh lib/bounded-run.sh \
          meta-alert.sh lead-alert.sh lead-patrol-snapshot.sh \
          flywheel-node-dwell-control.mjs flywheel-patrol-continuity.mjs converge-flywheel-bin.sh; do
@@ -58,6 +58,7 @@ for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
          flywheel-codex-lead-wrapper-codex-infra-bot.sh \
          flywheel-lead-attach.sh \
          flywheel-view-attach.sh flywheel-node-status.sh \
+         verify-agent-visibility.sh lib/agent-visibility.sh \
          flywheel-bridge-wrapper.sh restart-services.sh \
          host-tmux-selection-gate.sh lib/lead-host-tmux-gate.sh \
          lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs; do
@@ -66,6 +67,8 @@ done
 { echo '#!/bin/bash'; pad 'echo r-lead-address'; } > "$FR/scripts/lib/lead-address.sh"
 { echo '#!/usr/bin/env python3'; echo 'import sys'; pad "print('g')  #"; echo 'sys.exit(0)'; } \
   > "$FR/scripts/restart-storm-gate.py"
+{ echo '#!/usr/bin/env node'; pad "console.log('binding'); //"; } \
+  > "$FR/packages/teamlead/dist/bin/verify-agent-tui-binding.js"
 
 # ── the receiver stand-in ────────────────────────────────────────────────────
 # lead-alert.sh POSTs to a hard-coded discord.com URL, so the wire is shimmed
@@ -200,8 +203,9 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
            flywheel-codex-lead-wrapper-codex-infra-bot.sh \
            flywheel-lead-attach.sh \
            flywheel-view-attach.sh flywheel-node-status.sh \
+           verify-agent-visibility.sh \
            flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py \
-           host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
+           host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh \
            lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs; do
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
@@ -209,6 +213,7 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   ln -sfn "$FR/scripts/lead-patrol-snapshot.sh" "$st/bin/flywheel-patrol-snapshot"
   ln -sfn "$FR/scripts/flywheel-node-dwell-control.mjs" "$st/bin/flywheel-node-dwell-control"
   ln -sfn "$FR/scripts/flywheel-patrol-continuity.mjs" "$st/bin/flywheel-patrol-continuity"
+  ln -sfn "$FR/packages/teamlead/dist/bin/verify-agent-tui-binding.js" "$st/bin/verify-agent-tui-binding"
 }
 
 deliveries_in_state() {  # <state> → count

@@ -250,10 +250,26 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2519 per-invocation development entry selection: explicit source execution instead of deployed dist; production launch requires deployed artifact verification",
 	FLYWHEEL_LEAD_CAPABILITY_MANIFEST:
 		"FLY-2519 plumbing: nonsecret capability manifest file coordinate for the current Lead runtime, not an on/off gate",
+	FLYWHEEL_LEAD_CAPABILITY_ACTIVATION:
+		"FLY-2519 per-invocation capability activation identity, not a persistent feature toggle",
 	FLYWHEEL_LEAD_CAPABILITY_SOCKET:
 		"FLY-2519 plumbing: capability broker Unix socket coordinate for the current Lead runtime, not an on/off gate",
+	FLYWHEEL_RECLOSE_PEER_SOCKET:
+		"FLY-2662 plumbing: land reclose Unix socket coordinate, not an on/off gate",
+	FLYWHEEL_RECLOSE_PEER_NATIVE_FORCE_FAIL:
+		"FLY-2662 test-only native-adapter fault seam, not a runtime feature toggle",
+	FLYWHEEL_RECLOSE_PEER_NATIVE_OUT_DIR:
+		"FLY-2662 build and test output path for the native peer adapter, not an on/off gate",
 	FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS:
 		"credential selector allowlist: operator-owned comma-separated beta Actions token variable names, not a feature toggle",
+	FLYWHEEL_PACKAGE_GATE_ADMITTED_AT_MS:
+		"FLY-2702 per-invocation package-gate admission timestamp, not a persistent on/off gate",
+	FLYWHEEL_PACKAGE_GATE_HOST_LIMIT:
+		"FLY-2702 per-invocation host queue selection and rollback value, not a persistent on/off gate",
+	FLYWHEEL_PACKAGE_GATE_REQUEST_ID:
+		"FLY-2702 opaque package-gate request identity propagated to one admitted worker, not a persistent on/off gate",
+	FLYWHEEL_PACKAGE_GATE_SUBMITTED_AT_MS:
+		"FLY-2702 per-invocation package-gate submission timestamp, not a persistent on/off gate",
 	FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS:
 		"FLY-2465 per-invocation execution timeout duration, not a persistent switch",
 	FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS:
@@ -262,6 +278,52 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2465 internal wrapper recursion marker set for a single child invocation",
 	FLYWHEEL_CODEX_QUOTA_SPOOL_DIR:
 		"FLY-2465 explicit durable review-signal spool path, not a switch",
+	FLYWHEEL_BUILD_SHA:
+		"FLY-2523 deployed artifact identity bound into reconciliation receipts, not an on/off gate",
+	FLYWHEEL_CODEX_ALERT_BIN:
+		"FLY-2523 plumbing: alert executable path override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_APPROVED_HOMES:
+		"FLY-2523 plumbing: explicit approved-home roster coordinate, not an on/off gate",
+	FLYWHEEL_CODEX_FENCE_PS_BIN:
+		"FLY-2523 plumbing: process census executable override for hermetic launch-fence tests, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED:
+		"FLY-2523 per-invocation production Bridge identity marker authorizing the existing health rider, not a persistent feature toggle",
+	FLYWHEEL_CODEX_HOME_RECONCILE_LEAD:
+		"FLY-2523 plumbing: QA-slot Lead identity bound to one isolated reconciliation route, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT:
+		"FLY-2523 plumbing: QA-slot project identity bound to one isolated reconciliation route, not an on/off gate",
+	FLYWHEEL_CODEX_HOME_RECONCILE_SLOT:
+		"FLY-2523 per-invocation QA-slot isolation identity marker, not a persistent feature toggle",
+	FLYWHEEL_CODEX_HOME_POLICY:
+		"FLY-2523 plumbing: managed home-policy manifest path, not an on/off gate",
+	FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED:
+		"FLY-2523 per-invocation authority marker injected by the owning Lead launcher, not a persistent feature toggle",
+	FLYWHEEL_CODEX_LEAD_AUTHORITY_BIN:
+		"FLY-2523 plumbing: Lead authority collector executable path override, not an on/off gate",
+	FLYWHEEL_CODEX_LINK_STRUCTURED:
+		"FLY-2523 internal one-invocation output-shape marker for the link-truth child, not a persistent feature toggle",
+	FLYWHEEL_CODEX_LINK_TRUTH_BIN:
+		"FLY-2523 plumbing: link-truth executable path override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_PROJECTS_FILE:
+		"FLY-2523 plumbing: project registry path used to derive the approved-home roster, not an on/off gate",
+	FLYWHEEL_CODEX_READINESS_RECEIPT_BIN:
+		"FLY-2523 plumbing: readiness-receipt executable path override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_BIN:
+		"FLY-2523 plumbing: home reconciliation executable path override, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_FORCE_GROUP_UNKNOWN:
+		"FLY-2523 test-only process-group uncertainty fault seam, not a runtime feature toggle",
+	FLYWHEEL_CODEX_RECONCILE_GROUP_PROBE_BIN:
+		"FLY-2523 plumbing: process-group probe executable override for hermetic tests, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_NOW_MS:
+		"FLY-2523 test-only reconciliation clock seam, not a runtime feature toggle",
+	FLYWHEEL_CODEX_RECONCILE_PROCESS_BIN:
+		"FLY-2523 plumbing: bounded process-manager executable path override, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_PS_BIN:
+		"FLY-2523 plumbing: process census executable override for hermetic reconciliation tests, not an on/off gate",
+	FLYWHEEL_CODEX_RECONCILE_SIGNAL_BIN:
+		"FLY-2523 plumbing: bounded process-group signal executable override for hermetic tests, not an on/off gate",
+	FLYWHEEL_FLY2729_DEPENDENCY_INPUT:
+		"FLY-2523 plumbing: immutable FLY-2729 acceptance-evidence file coordinate, not an on/off gate",
 	...Object.fromEntries(
 		FLY1455_NON_FLAG_ENV.map((name) => [
 			name,
@@ -280,10 +342,30 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: onboarding service endpoint override, not an on/off gate",
 	FLYWHEEL_PATROL_CONFIG:
 		"path override for the hot-read patrol timing config (FLY-1687), not an on/off gate",
+	FLYWHEEL_AGENT_VISIBILITY_VERIFIER:
+		"FLY-2643 plumbing: packaged agent-visibility verifier path override for hermetic install, restart, and patrol tests, not an on/off gate",
+	FLYWHEEL_LEAD_VISIBILITY_MAX_ATTEMPTS:
+		"FLY-2643 numeric tuning: bounded Lead install visibility-probe attempts, not an on/off gate",
+	FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:
+		"FLY-2643 internal recursion marker for one bounded restart-wave visibility probe, not an operator toggle",
+	FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS:
+		"FLY-2643 numeric tuning: bounded restart-wave visibility-probe attempts, not an on/off gate",
+	FLYWHEEL_RESTART_VISIBILITY_VERIFIER:
+		"FLY-2643 plumbing: packaged restart-wave visibility verifier path override for hermetic tests, not an on/off gate",
+	FLYWHEEL_VISIBILITY_SAMPLE_SECONDS:
+		"FLY-2643 numeric tuning: observation interval for stable agent-visibility identity sampling, not an on/off gate",
 	FLYWHEEL_MEETING_NOTES_CONFIG:
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:
 		"FLY-2446 config value: comma-separated bot author ids excluded from Codex Lead intake, not an on/off gate",
+	FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST:
+		"FLY-2696 per-invocation identity binding: selector-observed projects registry digest checked by the launcher, not an on/off gate",
+	FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED:
+		"FLY-2696 per-invocation startup-barrier context derived from a verified persona projection, not an operator feature toggle",
+	FLYWHEEL_RAYA_PERSONA_GENERATION_ID:
+		"FLY-2696 per-invocation projected persona generation identity consumed by the startup barrier, not an on/off gate",
+	FLYWHEEL_VOICE_IDLE_HTTP_TIMEOUT_MS:
+		"FLY-2693 numeric tuning: positive-integer idle Bridge request timeout, not an on/off gate",
 	...Object.fromEntries(
 		[
 			"FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS",

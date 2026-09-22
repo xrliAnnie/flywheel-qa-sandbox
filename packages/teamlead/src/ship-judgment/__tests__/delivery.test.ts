@@ -310,15 +310,10 @@ it("invalidates old receipts durably on mode changes and reserves history PATCH 
 		expect(delivery.confirm(posted, "123456789012345681", NOW, now)).toBe(true);
 		delivery.setMode("auto", now + 1);
 		expect(delivery.claim("q", CHANNEL, "sender", now + 2).status).toBe(
-			"inactive",
+			"stale",
 		);
-		expect(delivery.historyWork()).toEqual(["q"]);
-		const history = delivery.claimHistory("q", "history", now + 2);
-		if (history.status !== "claimed") throw new Error(history.status);
-		expect(history.messageId).toBe("123456789012345681");
-		expect(delivery.historyWork(now + 2)).toEqual([]);
+		expect(delivery.historyWork()).toEqual([]);
 		delivery.setMode("dry_run", now + 3);
-		expect(delivery.confirmHistory(history, now + 4)).toBe(false);
 		delivery.setMode("off", now + 5);
 		const retried = delivery.claimHistory("q", "history", now + 6);
 		if (retried.status !== "claimed") throw new Error(retried.status);
@@ -347,7 +342,7 @@ it("invalidates old receipts durably on mode changes and reserves history PATCH 
 					"SELECT json_array_length(patch_reserved_times) AS n FROM ship_judgment_delivery",
 				)
 				.get(),
-		).toEqual({ n: 3 });
+		).toEqual({ n: 2 });
 	} finally {
 		store.close();
 	}

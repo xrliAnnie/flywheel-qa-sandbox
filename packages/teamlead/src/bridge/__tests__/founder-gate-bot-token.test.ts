@@ -224,8 +224,6 @@ describe("founder gate Discord token selection", () => {
 			ok: true,
 			agentId: "eng-lead",
 			botToken: "eng-token",
-			botUserId: "22345678901234567",
-			chatChannel: "eng-channel",
 		});
 	});
 });

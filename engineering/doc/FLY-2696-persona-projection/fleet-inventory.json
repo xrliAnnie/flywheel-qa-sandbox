@@ -1,0 +1,142 @@
+{
+  "observedAt": "2026-09-18T00:50:53.337371+00:00",
+  "source": "read-only projects.json + filesystem/git ls-files; no production writes",
+  "rows": [
+    {
+      "project": "geoforge3d",
+      "lead": "product-lead",
+      "projectRepo": "xrliAnnie/geoforge3d",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "geoforge3d",
+      "lead": "ops-lead",
+      "projectRepo": "xrliAnnie/geoforge3d",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "geoforge3d",
+      "lead": "cos-lead",
+      "projectRepo": "xrliAnnie/geoforge3d",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "joycon-typeless",
+      "lead": "joycon-lead",
+      "projectRepo": "xrliAnnie/joycon-typeless",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "personal-assistant",
+      "lead": "belle-lead",
+      "projectRepo": "xrliAnnie/belle-workspace",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "growth",
+      "lead": "mufasa-lead",
+      "projectRepo": "xrliAnnie/growth",
+      "identityExists": true,
+      "tracked": false,
+      "optInPresent": false
+    },
+    {
+      "project": "growth",
+      "lead": "rafiki-lead",
+      "projectRepo": "xrliAnnie/growth",
+      "identityExists": true,
+      "tracked": false,
+      "optInPresent": false
+    },
+    {
+      "project": "growth",
+      "lead": "reflection-lead",
+      "projectRepo": "xrliAnnie/growth",
+      "identityExists": true,
+      "tracked": false,
+      "optInPresent": false
+    },
+    {
+      "project": "flywheel",
+      "lead": "flywheel-cos-lead",
+      "projectRepo": "xrliAnnie/flywheel",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "flywheel",
+      "lead": "flywheel-eng-lead",
+      "projectRepo": "xrliAnnie/flywheel",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "flywheel",
+      "lead": "flywheel-product-lead",
+      "projectRepo": "xrliAnnie/flywheel",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "flywheel",
+      "lead": "codex-infra-bot-lead",
+      "projectRepo": "xrliAnnie/flywheel",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "flywheel",
+      "lead": "claude-infra-bot-lead",
+      "projectRepo": "xrliAnnie/flywheel",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "tidal-echo",
+      "lead": "tidal-echo-cos-lead",
+      "projectRepo": "xrliAnnie/tidal-echo",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "tidal-echo",
+      "lead": "tidal-echo-content-lead",
+      "projectRepo": "xrliAnnie/tidal-echo",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "tidal-echo",
+      "lead": "sub-lead",
+      "projectRepo": "xrliAnnie/tidal-echo",
+      "identityExists": true,
+      "tracked": true,
+      "optInPresent": false
+    },
+    {
+      "project": "raya",
+      "lead": "raya",
+      "projectRepo": "xrliAnnie/raya",
+      "identityExists": true,
+      "tracked": false,
+      "optInPresent": false
+    }
+  ]
+}

@@ -17,6 +17,12 @@ describe("FLY-398 full-access lead_actions", () => {
 		stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
 		commDbPath: "/Users/x/.flywheel/comm/growth/comm.db",
 		outboundMode: "bridge" as const,
+		attachmentContext: {
+			projectsPath: "/Users/x/.flywheel/projects.json",
+			projectName: "growth",
+			leadId: "mufasa-lead",
+			identityDigest: "a".repeat(64),
+		},
 	});
 
 	describe("buildFullAccessLeadActionsMcpServerConfig", () => {
@@ -38,11 +44,16 @@ describe("FLY-398 full-access lead_actions", () => {
 			expect(cfg.envVarNames).toEqual([
 				"BRIDGE_URL",
 				"TEAMLEAD_API_TOKEN",
+				"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID",
 				"FLYWHEEL_LEAD_SUMMARY_ROLE",
 				"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
 				"FLYWHEEL_SUMMARY_GRANULARITY",
 			]);
 			expect(cfg.defaultToolsApprovalMode).toBe("approve");
+			expect(cfg.env.FLYWHEEL_LEAD_IDENTITY_DIGEST).toBe("a".repeat(64));
+			expect(cfg.env.FLYWHEEL_PROJECTS_FILE).toBe(
+				"/Users/x/.flywheel/projects.json",
+			);
 			// no secret-shaped LITERAL env key (the token travels by name, never literal).
 			for (const k of Object.keys(cfg.env)) {
 				expect(/TOKEN|SECRET|KEY/i.test(k)).toBe(false);
@@ -53,6 +64,7 @@ describe("FLY-398 full-access lead_actions", () => {
 			const cfg = buildFullAccessLeadActionsMcpServerConfig({
 				...faOpts(),
 				outboundMode: "direct",
+				attachmentContext: undefined,
 			});
 			expect(cfg.env.FLYWHEEL_CODEX_LEAD_OUTBOUND).toBe("direct");
 			expect(cfg.envVarNames).toEqual([
@@ -62,6 +74,19 @@ describe("FLY-398 full-access lead_actions", () => {
 				"FLYWHEEL_SUMMARY_GRANULARITY",
 			]);
 		});
+
+		it.each(["", "  /Users/x/.flywheel/projects.json  "])(
+			"normalizes an optional projects file without disabling full-access startup: %j",
+			(projectsFile) => {
+				const cfg = buildFullAccessLeadActionsMcpServerConfig({
+					...faOpts(),
+					projectsFile,
+				});
+				expect(cfg.env.FLYWHEEL_PROJECTS_FILE).toBe(
+					"/Users/x/.flywheel/projects.json",
+				);
+			},
+		);
 
 		it("FLY-676: forwards FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE only when on (TUI full-access guard)", () => {
 			const off = buildFullAccessLeadActionsMcpServerConfig(faOpts());
@@ -93,7 +118,7 @@ describe("FLY-398 full-access lead_actions", () => {
 			expect(toml).toContain("[mcp_servers.lead_actions]");
 			expect(toml).toContain('default_tools_approval_mode = "approve"');
 			expect(toml).toContain(
-				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN", "FLYWHEEL_LEAD_SUMMARY_ROLE", "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY", "FLYWHEEL_SUMMARY_GRANULARITY"]',
+				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN", "FLYWHEEL_LEAD_CARRIER_INSTANCE_ID", "FLYWHEEL_LEAD_SUMMARY_ROLE", "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY", "FLYWHEEL_SUMMARY_GRANULARITY"]',
 			);
 			expect(toml).not.toContain("DISCORD_BOT_TOKEN");
 			expect(toml).toContain('FLYWHEEL_LEAD_ID = "mufasa-lead"');

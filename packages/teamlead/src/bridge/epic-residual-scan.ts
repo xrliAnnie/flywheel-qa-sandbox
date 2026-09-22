@@ -49,6 +49,7 @@ export type EpicScanMaterialized =
 
 export interface EpicResidualScanDeps {
 	store: StateStore;
+	stuckThresholdMinutes: number;
 	projects: ProjectEntry[];
 	linearApiKey?: string;
 	resolveOwner: (projectName: string, labels: string[]) => EpicResidualOwner;
@@ -153,8 +154,11 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 											?.leads.map((l) => l.chatChannel) ?? [],
 										generatedAt,
 									),
-								readItemFacts: (projectName, item) =>
-									readEpicItemFacts(deps.store, projectName, item),
+								readItemFacts: (projectName, item, generatedAt) =>
+									readEpicItemFacts(deps.store, projectName, item, {
+										generatedAt: generatedAt.toISOString(),
+										stuckThresholdMinutes: deps.stuckThresholdMinutes,
+									}),
 								readSignals: (projectName, items, generatedAt) =>
 									readSignals(
 										{ stateStore: deps.store },

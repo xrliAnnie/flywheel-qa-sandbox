@@ -138,6 +138,45 @@ describe("migration resolution CLI", () => {
 		});
 		expect(after.unresolved).toEqual([]);
 	});
+	it("permits explicit recovery of an ambiguous post-activation preexisting probe", async () => {
+		const f = fixture();
+		const ledger = JSON.parse(readFileSync(f.file, "utf8"));
+		ledger.checkpoint = "P4b";
+		ledger.cursor = { status: "preexisting" };
+		ledger.lead_restart_installed_at = "2026-09-12T23:59:59Z";
+		ledger.activated_at = "2026-09-13T00:00:00Z";
+		ledger.seed_probe = {
+			intent: { nonce: "seed-nonce" },
+			message_id: first,
+		};
+		ledger.probe_resets = [{ nonce: "seed-nonce" }];
+		ledger.unresolved = [{ reason: "probe_delivery_ambiguous" }];
+		writeFileSync(f.file, JSON.stringify(ledger));
+		const intentFile = join(dirname(f.file), "cutover-probe.intent");
+		const intent = {
+			nonce: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			at: "2026-09-13T00:00:01Z",
+		};
+		writeFileSync(intentFile, JSON.stringify(intent), { mode: 0o600 });
+
+		await runMigrationManifest(
+			[
+				"resolve",
+				"--as",
+				"probe_not_delivered",
+				"--evidence",
+				"Lead verified the post-activation POST never ran",
+			],
+			{ home: f.home, flywheelDir: f.home, io: f.io },
+		);
+
+		const after = JSON.parse(readFileSync(f.file, "utf8"));
+		expect(after.probe_resets.at(-1)).toMatchObject({
+			nonce: intent.nonce,
+			by: "flywheel-eng-lead",
+		});
+		expect(after.unresolved).toEqual([]);
+	});
 	it("accepts a manually located probe only when REST proves its exact nonce and bot", async () => {
 		const f = fixture();
 		const ledger = JSON.parse(readFileSync(f.file, "utf8"));

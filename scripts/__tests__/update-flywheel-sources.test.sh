@@ -44,6 +44,8 @@ required_functions=(
   updater_token_shape_valid updater_claim_token updater_urgent_signature
   updater_scheduled_signature updater_sync_fable_model update_main
   updater_raya_pass raya_configure_runtime_paths raya_host_capable raya_alert_dispatch
+  updater_alert_observation
+  shuttle_observation_begin shuttle_observation_record_values shuttle_observation_finish
 )
 missing_functions=()
 for fn in "${required_functions[@]}"; do
@@ -67,7 +69,7 @@ else
 fi
 if ! rg -n "$bash3_guard" \
   "$UPDATER" "$ROOT/scripts/lib/updater-raya-deploy.sh" \
-  "$ROOT/scripts/lead-patrol-snapshot.sh" >/dev/null; then
+  "$ROOT/scripts/lib/shuttle-observation.sh" "$ROOT/scripts/lead-patrol-snapshot.sh" >/dev/null; then
   pass "Raya updater path stays compatible with production /bin/bash 3.2"
 else
   fail "Raya updater path contains a bash 4+ construct"
@@ -79,7 +81,7 @@ else
   fail "CI does not run updater-raya-deploy.test.sh"
 fi
 
-last_library_source_line="$(rg -n '^source "\$\{SCRIPT_DIR\}/lib/updater-raya-deploy\.sh"$' "$UPDATER" | tail -1 | cut -d: -f1)"
+last_library_source_line="$(rg -n '^source "\$\{SCRIPT_DIR\}/lib/shuttle-observation\.sh"$' "$UPDATER" | tail -1 | cut -d: -f1)"
 last_runtime_pin_line="$(rg -n '^updater_configure_runtime_paths$' "$UPDATER" | tail -1 | cut -d: -f1)"
 last_raya_runtime_pin_line="$(rg -n '^raya_configure_runtime_paths$' "$UPDATER" | tail -1 | cut -d: -f1)"
 if [[ "$last_library_source_line" =~ ^[0-9]+$ \
@@ -194,11 +196,13 @@ ALERT_CALLS="$TMP/alert.calls"
 FETCH_MODE=ok
 LAUNCHD_PASS_CALLS="$TMP/launchd-pass.calls"
 MODEL_SYNC_CALLS="$TMP/model-sync.calls"
+CODEX_RECONCILE_CALLS="$TMP/codex-reconcile.calls"
 : > "$DEPLOY_CALLS"
 : > "$RAYA_CALLS"
 : > "$ALERT_CALLS"
 : > "$LAUNCHD_PASS_CALLS"
 : > "$MODEL_SYNC_CALLS"
+: > "$CODEX_RECONCILE_CALLS"
 
 updater_fetch_origin() {
   case "$FETCH_MODE" in
@@ -213,6 +217,7 @@ updater_sync_fable_model() {
   printf 'call\n' >> "$MODEL_SYNC_CALLS"
   [ "${MODEL_SYNC_MODE:-ok}" = ok ]
 }
+updater_codex_home_reconcile() { printf 'call\n' >> "$CODEX_RECONCILE_CALLS"; }
 severe_alert() { printf '%s|%s\n' "$1" "$2" >> "$ALERT_CALLS"; }
 PRODUCTION_RAYA_PASS_DEFINITION="$(declare -f updater_raya_pass)"
 updater_raya_pass() {
@@ -237,6 +242,10 @@ FLYWHEEL_FOUNDER_USER_ID=founder-123 raya_alert_dispatch severe raya-deploy-roll
 warning_argv="$(sed -n '1p' "$RAYA_ALERT_ARGV")"
 severe_argv="$(sed -n '2p' "$RAYA_ALERT_ARGV")"
 : > "$RAYA_ALERT_ARGV"
+FLYWHEEL_FOUNDER_USER_ID=founder-123 updater_alert_observation \
+  observation-write-failed observation-body >/dev/null 2>&1
+observation_argv="$(sed -n '1p' "$RAYA_ALERT_ARGV")"
+: > "$RAYA_ALERT_ARGV"
 UPDATER_UTC_DAY=20260821 FLYWHEEL_FOUNDER_USER_ID=founder-123 \
   /bin/bash -c 'source "$1"; raya_alert_dispatch warning raya-fetch-failed ignored compat-body' \
   fly2385 "$UPDATER" >/dev/null 2>&1
@@ -252,6 +261,11 @@ if [ "$compat_argv" = "--project flywheel --lead updater --kind deploy_degraded 
   pass "production /bin/bash executes the Raya alert path through lead-alert.sh"
 else
   fail "production /bin/bash did not deliver the Raya alert path (argv=$compat_argv)"
+fi
+if [ "$observation_argv" = "--project flywheel --lead updater --kind deploy_degraded --severity warning --title Shuttle observation degraded --body observation-body --signature observation-write-failed-scheduled-20260821" ]; then
+  pass "observation failures use degraded warning copy without a founder mention"
+else
+  fail "observation failure alert is not isolated from deploy_failed/founder paging (argv=$observation_argv)"
 fi
 stub_deploy_ok() {
   printf 'call\n' >> "$DEPLOY_CALLS"
@@ -294,6 +308,7 @@ reset_case() {
   : > "$ALERT_CALLS"
   : > "$LAUNCHD_PASS_CALLS"
   : > "$MODEL_SYNC_CALLS"
+  : > "$CODEX_RECONCILE_CALLS"
   FETCH_MODE=ok
   MODEL_SYNC_MODE=ok
   RAYA_STUB_STATE=current
@@ -308,11 +323,12 @@ printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
   && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
+  && [ "$(grep -c '^call$' "$CODEX_RECONCILE_CALLS")" = 1 ] \
   && [ "$(raya_count)" = 1 ] \
   && grep -q '^call wake=scheduled result=scheduled_current$' "$RAYA_CALLS"; then
   pass "caught-up schedule runs one independent Raya pass after the Flywheel cycle"
 else
-  fail "caught-up schedule/model sync/Raya wiring drifted (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") syncs=$(cat "$MODEL_SYNC_CALLS"))"
+  fail "caught-up schedule/model sync/home reconcile/Raya wiring drifted (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") syncs=$(cat "$MODEL_SYNC_CALLS") reconcile=$(cat "$CODEX_RECONCILE_CALLS"))"
 fi
 
 reset_case
@@ -336,6 +352,25 @@ fi
 
 reset_case
 printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_token migration-noop "$SHA1"
+(
+  trap - EXIT
+  eval "$PRODUCTION_RAYA_PASS_DEFINITION"
+  unset RAYA_DEPLOY_STATE RAYA_DEPLOY_DETAIL
+  update_main > "$TMP/missing-ledger-urgent.log" 2>&1
+  [[ "$UPDATER_WAKE_KIND" == urgent && "$UPDATER_CYCLE_RESULT" == urgent_deployed ]] \
+    && [[ "${RAYA_DEPLOY_STATE:-}" == not_configured && "${RAYA_DEPLOY_DETAIL:-}" == migration-ledger-absent ]] \
+    && [[ "$(rg -c migration-ledger-absent "$TMP/missing-ledger-urgent.log")" == 1 ]] \
+    && [[ ! -e "$RAYA_DEPLOY_LOCK_DIR" && ! -e "$RAYA_DEPLOY_RECEIPT" ]]
+)
+if [[ $? == 0 ]]; then
+  pass "successful urgent deploy runs the production Raya pass and missing ledger stays a no-op"
+else
+  fail "successful urgent deploy must run one side-effect-free Raya pass when its ledger is absent"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 RAYA_HOST_CAPABLE_RC=1
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(raya_count)" = 0 ] \
@@ -344,6 +379,20 @@ if [ "$rc" -eq 0 ] && [ "$(raya_count)" = 0 ] \
   pass "scheduled updater skips Raya silently on hosts without its canonical standard Lead"
 else
   fail "host capability gate ran or alerted Raya on an unrelated updater host (rc=$rc raya=$(raya_count) state=${RAYA_DEPLOY_STATE:-unset} detail=${RAYA_DEPLOY_DETAIL:-unset})"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_token host-absent "$SHA1"
+RAYA_HOST_CAPABLE_RC=1
+update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$UPDATER_CYCLE_RESULT" = urgent_deployed ] \
+  && [ "$(raya_count)" = 0 ] \
+  && [ "$RAYA_DEPLOY_STATE" = not_configured ] \
+  && [ "$RAYA_DEPLOY_DETAIL" = host-capability-absent ]; then
+  pass "successful urgent deploy still respects the Raya host capability gate"
+else
+  fail "urgent host capability gate drifted (rc=$rc result=${UPDATER_CYCLE_RESULT:-unset} raya=$(raya_count) state=${RAYA_DEPLOY_STATE:-unset} detail=${RAYA_DEPLOY_DETAIL:-unset})"
 fi
 
 reset_case
@@ -383,6 +432,18 @@ if [ "$rc" -eq 9 ] && [ "$(cat "$RAYA_CALLS")" = cycle ]; then
   pass "unknown wake kind fails closed, skips Raya, and preserves the Flywheel cycle rc"
 else
   fail "unknown wake kind ran Raya or changed rc (rc=$rc calls=$(cat "$RAYA_CALLS"))"
+fi
+
+saved_observation_record="$(declare -f updater_observation_record)"
+updater_observation_record() { printf '%s\n' "$*" > "$TMP/urgent-skip-observation"; }
+UPDATER_WAKE_KIND=urgent
+unset RAYA_DEPLOY_STATE RAYA_DEPLOY_DETAIL
+updater_observation_record_raya
+eval "$saved_observation_record"
+if grep -Fq 'raya external_repo raya-repo Raya skipped wake-out-of-scope ' "$TMP/urgent-skip-observation"; then
+  pass "skipped urgent cycles retain the wake-out-of-scope observation reason"
+else
+  fail "skipped urgent cycle observation reason drifted ($(cat "$TMP/urgent-skip-observation"))"
 fi
 
 if declare -F updater_fetch_origin_once >/dev/null 2>&1 \
@@ -552,10 +613,11 @@ SELF_SHIP_DEPLOY_CMD=stub_deploy_observe_claim update_main >/dev/null 2>&1; rc=$
 after_status="$(git -C "$FLYWHEEL_DIR" status --porcelain)"
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
   && grep -q '^call watched=0 claimed=2$' "$DEPLOY_CALLS" \
-  && [ "$(raya_count)" = 0 ] \
+  && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=urgent result=urgent_deployed$' "$RAYA_CALLS" \
   && [ -z "$before_status" ] && [ -z "$after_status" ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ]; then
-  pass "urgent batch claims before one deploy without dirtying checkout"
+  pass "urgent batch claims before one deploy, then runs one Raya pass without dirtying checkout"
 else
   fail "urgent claim/deploy drifted (rc=$rc calls=$(cat "$DEPLOY_CALLS") before=$before_status after=$after_status)"
 fi

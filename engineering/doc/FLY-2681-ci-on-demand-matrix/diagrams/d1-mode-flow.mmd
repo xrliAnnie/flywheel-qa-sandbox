@@ -1,0 +1,26 @@
+flowchart TD
+  A["有人往 PR 推了一个新头<br/>或给 PR 打了 label<br/>或 PR 合进了 main"] --> B["Classify CI scope<br/>约 20 秒"]
+  B --> C{"整个 PR 只改了文档?"}
+  C -- 是 --> M1["模式 docs_only<br/>重 job 全跳过"]
+  C -- 否 --> D{"开关 CI_SCOPED_MODE 打开了?"}
+  D -- 否 --> M2["模式 full<br/>16 个 job 全跑<br/>和今天一样"]
+  D -- 是 --> E{"这次是什么事件?"}
+  E -- "合进 main" --> F{"这棵树已经有一次<br/>回验通过的全量绿?"}
+  F -- 是 --> M3["模式 reuse<br/>重 job 全跳过"]
+  F -- 否 --> M2
+  E -- "打了 label ci:full" --> M2
+  E -- "PR 头是合并提交<br/>例如 land 刷新 main" --> M2
+  E -- "普通推送" --> M4["模式 scoped<br/>只跑廉价门 约 7 分钟"]
+  E -- "任何看不懂的情况" --> M2
+  M1 --> N1["聚合检查叫 CI OK"]
+  M2 --> N1
+  M3 --> N1
+  M4 --> N2["聚合检查叫 CI Scope OK<br/>这个头上不存在 CI OK"]
+  N1 --> G["分支保护 / 合并前等待脚本 / land 守卫<br/>只认名字叫 CI OK 的检查"]
+  N2 --> H["三个硬门都找不到 CI OK<br/>自动拒绝 一行代码不用改"]
+  classDef full fill:#e8f8ee,stroke:#34c759,color:#1d1d1f
+  classDef cheap fill:#fff3e0,stroke:#ff9500,color:#1d1d1f
+  classDef gate fill:#eaf2ff,stroke:#007aff,color:#1d1d1f
+  class M2,N1 full
+  class M4,N2 cheap
+  class G,H gate

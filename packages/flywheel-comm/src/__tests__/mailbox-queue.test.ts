@@ -37,6 +37,76 @@ function enqueueLead(
 }
 
 describe("FLY-1572 MailboxQueue", () => {
+	it("persists an owner-fenced audit decision without making the Lead row model-deliverable", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "owner",
+				now: NOW,
+				leaseTtlMs: 60_000,
+			});
+			enqueueLead(queue, "review-question");
+			const [claimed] = queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: "owner",
+				batchId: "review-batch",
+				now: NOW,
+				claimTtlMs: 60_000,
+			});
+			expect(claimed?.id).toBe("review-question");
+
+			const decision = {
+				policyVersion: "notification-v1",
+				reason: "review_gate_owned_by_reviewer",
+				proofRef: "question:review-question",
+				decidedAt: NOW,
+			};
+			expect(
+				queue.releaseClaimForAudit({
+					id: "review-question",
+					ownerEpoch: "stale-owner",
+					batchId: "review-batch",
+					decision,
+				}),
+			).toBe(false);
+			expect(queue.getById("review-question")?.state).toBe("LEASED");
+			expect(
+				queue.releaseClaimForAudit({
+					id: "review-question",
+					ownerEpoch: "owner",
+					batchId: "review-batch",
+					decision,
+				}),
+			).toBe(true);
+			expect(queue.getById("review-question")).toMatchObject({
+				state: "QUEUED",
+				claimed_by: null,
+				claim_expires_at: null,
+				batch_id: null,
+				delivery_disposition: "audit_only",
+				notification_policy_version: "notification-v1",
+				notification_reason: "review_gate_owned_by_reviewer",
+				notification_proof_ref: "question:review-question",
+				notification_decided_at: NOW,
+				next_retry_at: "9999-12-31T23:59:59.999Z",
+			});
+			expect(queue.countDeliverable("lead-a")).toBe(0);
+			expect(
+				queue.claimLeadBatch({
+					toAgent: "lead-a",
+					msgClass: "model",
+					ownerEpoch: "owner",
+					batchId: "second-batch",
+					now: NOW,
+					claimTtlMs: 60_000,
+				}),
+			).toEqual([]);
+		} finally {
+			queue.close();
+		}
+	});
+
 	it.each(["restart", "rollback", "late"])(
 		"FLY-2567 ACK expiry %s preserves exact batch authority",
 		(mode) => {

@@ -22,14 +22,15 @@ it.each(["preview", "hosted"])(
 				.filter((el) => !el.closest("details"))
 				.map((el) => el.textContent);
 			expect(headings).toEqual([
-				"⚡ 现在要你看",
-				"在跑的 Epic(全做完的已拿掉;状态直接照抄 Linear)",
+				"⚡ 现在要你看 · 0 件",
+				"班车状态",
+				"在做的 Epic(全做完的已拿掉;Linear 状态单列;在跑按机器会话)",
 			]);
 			expect(
 				[...doc.querySelector("main > .mock")!.children]
 					.slice(0, 4)
 					.map((el) => el.className || el.tagName),
-			).toEqual(["mock-bar", "m-h", "SECTION", "sec"]);
+			).toEqual(["mock-bar", "m-h", "SECTION", "SECTION"]);
 			for (const old of [
 				"当前范围",
 				"每件做完算什么样",

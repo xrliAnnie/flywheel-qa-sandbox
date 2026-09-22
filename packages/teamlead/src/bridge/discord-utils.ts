@@ -146,6 +146,8 @@ export async function fetchDiscordMessageFromChannel(
 		message.id !== messageId ||
 		typeof message.author?.id !== "string" ||
 		!message.author.id ||
+		(message.author.bot !== undefined &&
+			typeof message.author.bot !== "boolean") ||
 		typeof message.content !== "string" ||
 		!Number.isFinite(timestampMs)
 	) {
@@ -170,9 +172,7 @@ export async function fetchDiscordMessageFromChannel(
 			id: message.id,
 			channelId,
 			authorId: message.author.id,
-			...(typeof message.author.bot === "boolean"
-				? { authorIsBot: message.author.bot }
-				: {}),
+			authorIsBot: message.author.bot === true,
 			timestampMs,
 			...(message.edited_timestamp !== undefined
 				? { editedTimestampMs: editedTimestampMs ?? null }
@@ -492,5 +492,51 @@ export async function reactDiscordMessageInChannel(
 				};
 	} catch {
 		return { ok: false, error: "discord_reaction_failed" };
+	}
+}
+
+/** Remove this bot's reaction; 404 is already-converged for retirement work. */
+export async function removeDiscordMessageReactionInChannel(
+	threadId: string,
+	messageId: string,
+	emoji: string,
+	botToken: string,
+	options: { signal?: AbortSignal } = {},
+	fetchImpl: typeof fetch = fetch,
+): Promise<EditDiscordResult> {
+	if (
+		!/^\d{17,20}$/.test(threadId) ||
+		!/^\d{17,20}$/.test(messageId) ||
+		!emoji.trim() ||
+		emoji.length > 128 ||
+		[...emoji].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+	) {
+		return { ok: false, error: "invalid_discord_reaction" };
+	}
+	try {
+		const response = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+			{
+				method: "DELETE",
+				headers: { Authorization: `Bot ${botToken}` },
+				signal: options.signal,
+			},
+		);
+		return response.ok || response.status === 404
+			? { ok: true }
+			: {
+					ok: false,
+					status: response.status,
+					error: `Discord ${response.status}: ${(
+						await response.text().catch(() => "")
+					).slice(0, 200)}`,
+				};
+	} catch (error) {
+		return {
+			ok: false,
+			error: `Discord reaction DELETE failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
 	}
 }

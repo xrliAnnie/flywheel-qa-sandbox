@@ -1,0 +1,51 @@
+{
+  "round": 1,
+  "blockingCount": 2,
+  "dispositions": [
+    {
+      "findingKey": "idle-success-cancels-session-episode",
+      "severity": "HIGH",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "demand-revision-manual-increment-fails-open-to-dormant",
+      "severity": "HIGH",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "lastprogressat-spawn-rate-on-realtime-path",
+      "severity": "MEDIUM",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "observation-seq-scope-ambiguous-vs-projector-cursor",
+      "severity": "MEDIUM",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "rendered-reason-not-bound-to-closed-vocabulary",
+      "severity": "MEDIUM",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "no-repage-policy-for-long-running-episode",
+      "severity": "MEDIUM",
+      "disposition": "documented limitation / follow-up"
+    },
+    {
+      "findingKey": "two-writer-sqlite-no-locking-policy",
+      "severity": "MEDIUM",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "child-process-census-execfile-entry-wrong",
+      "severity": "LOW",
+      "disposition": "fixed in design"
+    },
+    {
+      "findingKey": "wrapper-early-failloud-has-no-state-root",
+      "severity": "LOW",
+      "disposition": "fixed in design"
+    }
+  ]
+}

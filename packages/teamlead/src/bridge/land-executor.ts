@@ -5,6 +5,7 @@ import type {
 	LandOperationClaim,
 	LandOperationRow,
 	LandOwnerIdentity,
+	LandVerifiedTargets,
 	StateStore,
 } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -312,8 +313,25 @@ export async function resumeHeldLandOperation(
 		expectedResumeGeneration?: number;
 		expectedApprovedHead?: string;
 		requestId?: string;
+		/** Internal authenticated carrier/peer fence; never decoded from a request. */
+		authorityCheck?: () => void | Promise<void>;
 	},
-	deps: Pick<LandExecutorDeps, "store" | "mergeDriver"> & { now?: () => Date },
+	deps: Pick<LandExecutorDeps, "store" | "mergeDriver"> & {
+		now?: () => Date;
+		prepareRecloseTargets?: (input: {
+			operation: LandOperationRow;
+			requestId: string;
+			now: string;
+		}) => Promise<
+			| { ok: true; verifiedTargets: LandVerifiedTargets }
+			| {
+					ok: false;
+					reason: string;
+					missing: string[];
+					retryable: boolean;
+			  }
+		>;
+	},
 ): Promise<
 	| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
 	| { ok: false; reason: string }
@@ -353,11 +371,46 @@ export async function resumeHeldLandOperation(
 	if (closeoutOnly && pr.state !== "MERGED") {
 		return { ok: false, reason: "resume_refused:pr_not_merged" };
 	}
+	const now = (deps.now ?? (() => new Date()))().toISOString();
+	let verifiedTargets: LandVerifiedTargets | undefined;
+	const needsTargetPreparation =
+		closeoutOnly &&
+		operation.state !== "completed" &&
+		(operation.closeout_targets_version == null ||
+			!deps.store.isCurrentLandCloseoutAttribution(operation));
+	if (needsTargetPreparation) {
+		if (!deps.prepareRecloseTargets || !input.requestId) {
+			return {
+				ok: false,
+				reason: "resume_refused:land_target_snapshot_unavailable",
+			};
+		}
+		const prepared = await deps.prepareRecloseTargets({
+			operation,
+			requestId: input.requestId,
+			now,
+		});
+		if (!prepared.ok) {
+			return {
+				ok: false,
+				reason: `${prepared.reason}:${prepared.missing.join(",")}`.slice(
+					0,
+					500,
+				),
+			};
+		}
+		verifiedTargets = prepared.verifiedTargets;
+	}
+	try {
+		await input.authorityCheck?.();
+	} catch {
+		return { ok: false, reason: "resume_refused:peer_authority_changed" };
+	}
 	return deps.store.resumeHeldLandOperation({
 		operationId: input.operationId,
 		actor: input.actor,
 		reason: input.reason,
-		now: (deps.now ?? (() => new Date()))().toISOString(),
+		now,
 		expectedPrDisposition: pr.state === "MERGED" ? "merged" : "open",
 		expectedHeadSha: pr.headSha,
 		...(pr.mergeSha ? { expectedMergeSha: pr.mergeSha } : {}),
@@ -369,6 +422,15 @@ export async function resumeHeldLandOperation(
 			? { expectedApprovedHead: input.expectedApprovedHead }
 			: {}),
 		...(input.requestId ? { requestId: input.requestId } : {}),
+		...(verifiedTargets
+			? {
+					verifiedTargets,
+					targetSource:
+						operation.closeout_targets_version == null
+							? ("reclose_migration" as const)
+							: ("attribution_refresh" as const),
+				}
+			: {}),
 	});
 }
 
@@ -572,6 +634,7 @@ function recordStep(
 	const recorded = deps.store.recordLandOperationStep({
 		operationId: operation.operation_id,
 		ownerId: claim.ownerId,
+		ownerInstanceId: claim.ownerInstanceId,
 		generation: claim.generation,
 		step,
 		receipt,
@@ -591,6 +654,15 @@ async function announce(
 	if (!deps.notify) return;
 	const receiptStep = `notification:${stage}`;
 	if (stepReceipt(deps.store, operation.operation_id, receiptStep)) return;
+	if (
+		!deps.store.isCurrentLandOperationClaim({
+			operation,
+			claim,
+			now: (deps.now?.() ?? new Date()).toISOString(),
+		})
+	) {
+		return;
+	}
 	const notified = await deps.notify(operation, stage, detail);
 	const disposition = notified?.disposition ?? "posted";
 	recordStep(
@@ -2733,7 +2805,15 @@ export async function executeLandOperation(
 				reason,
 				now,
 			});
-			if (preview?.state === "held" && deps.notify) {
+			if (
+				preview?.state === "held" &&
+				deps.notify &&
+				deps.store.isCurrentLandOperationClaim({
+					operation,
+					claim,
+					now: (deps.now?.() ?? new Date()).toISOString(),
+				})
+			) {
 				const receiptStep = `aux:notification:land_held:${operation.resume_generation}`;
 				if (!stepReceipt(deps.store, operation.operation_id, receiptStep)) {
 					try {

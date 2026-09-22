@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "land_owner_health_outbox",
+	"classification": "protectedCurrentOrReference"
+}

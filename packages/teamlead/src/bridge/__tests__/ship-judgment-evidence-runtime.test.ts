@@ -12,9 +12,67 @@ vi.mock("../../ship-judgment/production-collect.js", () => ({
 	collectProductionJudgment: vi.fn(),
 }));
 
-it.each(["complete", "no_qa", "no_linear", "no_repositories"])(
-	"offers independent evidence without a model or same-run design reference: %s",
-	async (scenario) => {
+const scenarios = [
+	{
+		name: "complete",
+		alignmentMissing: ["input"],
+		conflict: "pass",
+		conflictMissing: [],
+		coverageMissing: ["input"],
+		input: { status: "ready", reason: "evidence_complete" },
+		collectCalls: 1,
+		reportsInputError: false,
+	},
+	{
+		name: "no_qa",
+		alignmentMissing: ["input"],
+		conflict: "pass",
+		conflictMissing: [],
+		coverageMissing: ["qa_claim", "input"],
+		input: { status: "ready", reason: "evidence_complete" },
+		collectCalls: 1,
+		reportsInputError: false,
+	},
+	{
+		name: "no_linear",
+		alignmentMissing: ["input"],
+		conflict: "pass",
+		conflictMissing: [],
+		coverageMissing: ["input"],
+		input: { status: "unavailable", reason: "linear_credentials_missing" },
+		collectCalls: 1,
+		reportsInputError: true,
+	},
+	{
+		name: "no_repositories",
+		alignmentMissing: [
+			"design_review",
+			"plan_at_head",
+			"code_review_at_head",
+			"pr_diff",
+			"input",
+		],
+		conflict: "undetermined",
+		conflictMissing: ["mechanical_snapshot"],
+		coverageMissing: ["qa_report", "input"],
+		input: { status: "unavailable", reason: "repositories_unavailable" },
+		collectCalls: 0,
+		reportsInputError: true,
+	},
+] as const;
+
+it.each(scenarios)(
+	"preserves independent evidence while requiring semantic input: $name",
+	async ({
+		name: scenario,
+		alignmentMissing,
+		conflict,
+		conflictMissing,
+		coverageMissing,
+		input,
+		collectCalls,
+		reportsInputError,
+	}) => {
 		const { store, db } = await bindingFixture();
 		try {
 			vi.spyOn(store, "getSessionLabels").mockReturnValue(["Engineering"]);
@@ -73,22 +131,45 @@ it.each(["complete", "no_qa", "no_linear", "no_repositories"])(
 				)
 				.get() as Record<string, string>;
 			expect(row.evidence_json).toBeTruthy();
-			expect(row.coverage).toBe(scenario === "no_qa" ? "undetermined" : "pass");
-			expect(row.alignment).toBe(
-				scenario === "no_repositories" ? "undetermined" : "pass",
-			);
-			expect(row.conflict).toBe(
-				scenario === "no_repositories" ? "undetermined" : "pass",
-			);
-			expect(collectProductionJudgment).toHaveBeenCalledTimes(
-				scenario === "no_repositories" ? 0 : 1,
-			);
+			expect({
+				overall: row.overall,
+				alignment: row.alignment,
+				conflict: row.conflict,
+				coverage: row.coverage,
+			}).toEqual({
+				overall: "undetermined",
+				alignment: "undetermined",
+				conflict,
+				coverage: "undetermined",
+			});
+			const evidence = JSON.parse(row.evidence_json) as {
+				alignment: { missing: string[] };
+				conflict: { missing: string[] };
+				coverage: { missing: string[] };
+				semantic: { status: string };
+				input: { status: string; reason: string };
+			};
+			expect({
+				alignmentMissing: evidence.alignment.missing,
+				conflictMissing: evidence.conflict.missing,
+				coverageMissing: evidence.coverage.missing,
+				semanticStatus: evidence.semantic.status,
+				input: evidence.input,
+			}).toEqual({
+				alignmentMissing,
+				conflictMissing,
+				coverageMissing,
+				semanticStatus: "not_run",
+				input,
+			});
+			expect(collectProductionJudgment).toHaveBeenCalledTimes(collectCalls);
 			expect(modelBin).not.toHaveBeenCalled();
-			if (scenario === "no_repositories" || scenario === "no_linear") {
-				expect(JSON.parse(row.evidence_json!).input.status).toBe("unavailable");
+			if (reportsInputError) {
 				expect(onError).toHaveBeenCalledWith(
 					expect.stringMatching(/^input_unavailable:/),
 				);
+			} else {
+				expect(onError).not.toHaveBeenCalled();
 			}
 			await runtime.stop();
 		} finally {

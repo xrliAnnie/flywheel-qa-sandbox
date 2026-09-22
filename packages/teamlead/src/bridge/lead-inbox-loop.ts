@@ -12,6 +12,7 @@ import {
 	parseDiscordChatRoute,
 } from "flywheel-comm/discord-chat-ingest";
 import type {
+	MailboxAuditDecision,
 	MailboxQueue,
 	MailboxRecipientState,
 	MailboxRow,
@@ -57,10 +58,14 @@ export interface LeadInboxLoopOptions {
 		error: Error,
 	) => Promise<void> | void;
 	/** Fail-closed question/event dispatch revalidation. */
-	revalidateModel?: (
-		row: MailboxRow,
-	) => Promise<
-		{ deliver: true } | { deliver: false; disposition: string; retry?: boolean }
+	revalidateModel?: (row: MailboxRow) => Promise<
+		| { deliver: true }
+		| { deliver: false; disposition: string; retry?: boolean }
+		| {
+				deliver: false;
+				disposition: "audit_only";
+				auditDecision: MailboxAuditDecision;
+		  }
 	>;
 	/** Durable audit mirror update, called only after the adapter receipt. */
 	markAuditDelivered?: (row: MailboxRow) => Promise<void> | void;
@@ -358,21 +363,29 @@ export class LeadInboxLoop {
 							? await this.opts.revalidateModel(row)
 							: ({ deliver: true } as const);
 					if (!verdict.deliver) {
-						const changed = verdict.retry
-							? this.opts.queue.releaseClaimForRetry({
-									id: row.id,
-									ownerEpoch: this.opts.ownerEpoch,
-									batchId: row.batch_id!,
-									nextRetryAt: new Date(
-										this.now().getTime() + 30_000,
-									).toISOString(),
-									reason: verdict.disposition,
-								})
-							: this.opts.queue.markDead(
-									row.id,
-									this.isoNow(),
-									verdict.disposition,
-								);
+						const changed =
+							"auditDecision" in verdict
+								? this.opts.queue.releaseClaimForAudit({
+										id: row.id,
+										ownerEpoch: this.opts.ownerEpoch,
+										batchId: row.batch_id!,
+										decision: verdict.auditDecision,
+									})
+								: verdict.retry
+									? this.opts.queue.releaseClaimForRetry({
+											id: row.id,
+											ownerEpoch: this.opts.ownerEpoch,
+											batchId: row.batch_id!,
+											nextRetryAt: new Date(
+												this.now().getTime() + 30_000,
+											).toISOString(),
+											reason: verdict.disposition,
+										})
+									: this.opts.queue.markDead(
+											row.id,
+											this.isoNow(),
+											verdict.disposition,
+										);
 						if (!changed) {
 							throw new Error("owner fence lost while revoking model row");
 						}

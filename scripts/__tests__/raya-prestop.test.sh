@@ -33,6 +33,18 @@ run_case() (
   target="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
   git clone -q --bare "$RAYA_CODE_DIR" "$HOME/remote.git"
   git -C "$RAYA_CODE_DIR" remote add origin "$HOME/remote.git"
+  if [[ "$scenario" == target-ahead ]]; then
+    printf 'summary\n' > "$RAYA_CODE_DIR/summary.md"
+    git -C "$RAYA_CODE_DIR" add summary.md
+    git -C "$RAYA_CODE_DIR" commit -qm summary
+    git -C "$RAYA_CODE_DIR" push -q origin main
+  elif [[ "$scenario" == target-diverged ]]; then
+    git -C "$RAYA_CODE_DIR" reset --hard -q "$base"
+    printf 'diverged\n' > "$RAYA_CODE_DIR/diverged.md"
+    git -C "$RAYA_CODE_DIR" add diverged.md
+    git -C "$RAYA_CODE_DIR" commit -qm diverged
+    git -C "$RAYA_CODE_DIR" push -q --force origin main
+  fi
   git -C "$RAYA_CODE_DIR" reset --hard -q "$base"
   jq -n --arg workspace "$RAYA_WORKSPACE" '{projectName:"raya",leadId:"raya",projectDir:$workspace,leadBackend:{backendId:"codex-app-server"}}' > "$RAYA_CANONICAL_MANIFEST"
   printf '%040d\n' 2 > "$FLYWHEEL_DEPLOYED_SHA_FILE"
@@ -41,10 +53,6 @@ run_case() (
       evidence_author_id:"323456789012345678",content_sha256:("a"*64),canonical_line:("FLY-2496 AUTHORIZE register cutover="+$target[0:8]+" urgent-restart baseline=quiet15m")},
     legacy_owner:[{label:"com.xrli.raya.brain"},{label:"com.xrli.raya.voice"}],cursor:{path:"/fixture",seed_input:"/fixture",sha256:null}}' > "$RAYA_MIGRATION_MANIFEST"
   chmod 600 "$RAYA_CANONICAL_MANIFEST" "$RAYA_MIGRATION_MANIFEST"
-  if [[ "$scenario" == target-mismatch ]]; then
-    jq --arg base "$base" '.target_raya_sha=$base | .authorization.canonical_line=("FLY-2496 AUTHORIZE register cutover="+$base[0:8]+" urgent-restart baseline=quiet15m")' "$RAYA_MIGRATION_MANIFEST" > "$HOME/changed"
-    cat "$HOME/changed" > "$RAYA_MIGRATION_MANIFEST"
-  fi
   if [[ "$scenario" == persona-drift ]]; then printf 'foreign\n' > "$RAYA_WORKSPACE/.lead/raya/identity.md"; fi
   if [[ "$scenario" == artifact-collision ]]; then
     mkdir -p "$RAYA_WORKSPACE/.flywheel-managed/versions/$target"
@@ -81,11 +89,14 @@ run_case() (
   local rc=0
   raya_prepare_source >/dev/null 2>&1 || rc=$?
   case "$scenario" in
-    build-fail|quiet-fail|target-mismatch|persona-drift|ff-fail)
+    build-fail|quiet-fail|persona-drift|ff-fail)
       [[ "$rc" != 0 && "$stopped" == 0 && "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$base" ]] ;;
+    target-diverged)
+      [[ "$rc" != 0 && "$stopped" == 0 && "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$base" ]] \
+        && ! rg -q '^build|^stop|^prestop-probe|^quiet-check' "$calls" ;;
     final-quiet-fail|dirty-after-ff|identity-drift|artifact-collision)
       [[ "$rc" != 0 && "$stopped" == 0 && "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$target" ]] ;;
-    success)
+    success|target-ahead)
       [[ "$rc" == 0 && "$stopped" == 1 && "$quiet" == 2 && "$(readlink "$RAYA_WORKSPACE/business/current")" == "$RAYA_WORKSPACE/.flywheel-managed/versions/$target" ]] ;;
     resume)
       [[ "$rc" != 0 && "$stopped" == 1 ]] || exit 1
@@ -137,7 +148,7 @@ run_case() (
       ! rg -q '^severe|^build|^prestop-probe|^quiet-check' "$calls" ;;
   esac
 )
-for scenario in build-fail quiet-fail target-mismatch persona-drift ff-fail final-quiet-fail dirty-after-ff identity-drift artifact-collision success resume pre-p2 pre-p3 pre-p4b pre-p3-unresolved pre-health-fail pre-public-fail pre-registry-drift pre-artifact-drift pre-checkout-drift; do
+for scenario in build-fail quiet-fail target-ahead target-diverged persona-drift ff-fail final-quiet-fail dirty-after-ff identity-drift artifact-collision success resume pre-p2 pre-p3 pre-p4b pre-p3-unresolved pre-health-fail pre-public-fail pre-registry-drift pre-artifact-drift pre-checkout-drift; do
   if run_case "$scenario"; then printf '[TEST] ok - %s\n' "$scenario"; passed=$((passed+1)); else
     printf '[TEST] FAIL - %s\n' "$scenario"; failed=$((failed+1))
   fi

@@ -123,13 +123,96 @@ describe("voice daemon config", () => {
 		);
 		expect(config).toMatchObject({
 			realtimeApiKey: "api-key",
+			bridgeUrl: "http://127.0.0.1:9876",
+			idleHttpTimeoutMs: 2_000,
+			leaseHttpTimeoutMs: 2_000,
 			idleExitMs: 120_000,
 			mirrorRetryWindowMs: 60_000,
 			mirrorRetries: 1,
 			ingestRetries: 1,
 			deliveryRetryMs: 500,
+			healthStateRoot: "/Users/tester/.flywheel",
+			voiceHealthHelperPath:
+				"/Users/tester/Dev/flywheel/scripts/lib/voice-health.py",
 		});
 	});
+
+	it("derives health paths only from trusted Flywheel roots, never the voice subdirectory", () => {
+		const config = loadVoiceDaemonConfig(
+			{
+				TEAMLEAD_API_TOKEN: "master",
+				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_DIR: "/opt/flywheel",
+				FLYWHEEL_STATE_DIR: "/var/lib/flywheel",
+				FLYWHEEL_VOICE_STATE_DIR: "/var/lib/custom-voice",
+			},
+			"/Users/tester",
+		);
+
+		expect(config.healthStateRoot).toBe("/var/lib/flywheel");
+		expect(config.voiceHealthHelperPath).toBe(
+			"/opt/flywheel/scripts/lib/voice-health.py",
+		);
+		expect(config.healthStateRoot).not.toBe(config.voiceRoot);
+	});
+
+	it("gives the canonical Bridge URL precedence over the compatibility alias", () => {
+		const base = { TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" };
+		expect(
+			loadVoiceDaemonConfig(
+				{
+					...base,
+					FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9001/",
+					BRIDGE_URL: "http://127.0.0.1:9002",
+				},
+				"/Users/tester",
+			).bridgeUrl,
+		).toBe("http://127.0.0.1:9001");
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...base, BRIDGE_URL: "http://localhost:9002/" },
+				"/Users/tester",
+			).bridgeUrl,
+		).toBe("http://localhost:9002");
+	});
+
+	it("configures idle and lease HTTP timeouts independently", () => {
+		const config = loadVoiceDaemonConfig(
+			{
+				TEAMLEAD_API_TOKEN: "master",
+				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_VOICE_IDLE_HTTP_TIMEOUT_MS: "7000",
+				FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: "1500",
+			},
+			"/Users/tester",
+		);
+
+		expect(config.idleHttpTimeoutMs).toBe(7_000);
+		expect(config.leaseHttpTimeoutMs).toBe(1_500);
+	});
+
+	it.each([
+		"https://bridge.example.com",
+		"ftp://127.0.0.1:9876",
+		"http://user:pass@127.0.0.1:9876",
+		"http://127.0.0.1:9876?token=secret",
+		"http://127.0.0.1:9876/#private",
+	])(
+		"rejects an unsafe canonical Bridge URL without falling back: %s",
+		(url) => {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{
+						TEAMLEAD_API_TOKEN: "master",
+						OPENAI_API_KEY: "api-key",
+						FLYWHEEL_BRIDGE_URL: url,
+						BRIDGE_URL: "http://127.0.0.1:9876",
+					},
+					"/Users/tester",
+				),
+			).toThrow("voice_bridge_url_invalid");
+		},
+	);
 
 	it("builds a positive environment allowlist for the no-tool Codex frontend", () => {
 		expect(

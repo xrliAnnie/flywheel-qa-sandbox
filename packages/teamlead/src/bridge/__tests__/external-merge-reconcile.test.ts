@@ -12,6 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { SHIP_JUDGMENT_APPROVAL_ACTOR } from "flywheel-comm/ship-judgment-approval-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import {
@@ -1110,7 +1111,10 @@ describe("FLY-945 Fix D: hasTrustedFounderApproval (real CommDB)", () => {
 		const qid = db.insertQuestion("exec-1", "lead-1", "ship?", {
 			checkpoint: "approve_to_ship",
 		});
-		if (from === "bridge-founder-consent") {
+		if (
+			from === "bridge-founder-consent" ||
+			from === SHIP_JUDGMENT_APPROVAL_ACTOR
+		) {
 			// Read compatibility is intentionally broader than write authority. Seed
 			// the pre-FLY-1981 historical row at the migration layer so this fixture
 			// cannot accidentally exercise a now-forbidden production write API.
@@ -1135,11 +1139,11 @@ describe("FLY-945 Fix D: hasTrustedFounderApproval (real CommDB)", () => {
 					`INSERT INTO mailbox
 					 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
 					  ref_id, created_at, expires_at, relay_state)
-					 VALUES (?, ?, 'bridge-founder-consent', 'exec-1', 'runner', 'response',
+					 VALUES (?, ?, ?, 'exec-1', 'runner', 'response',
 					         ?, ?, '2026-08-22T00:00:00.000Z',
 					         '2026-08-25T00:00:00.000Z', 'terminal_disposed')`,
 				)
-				.run(responseId, deliveryId, content, qid);
+				.run(responseId, deliveryId, from, content, qid);
 			raw
 				.prepare(
 					"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
@@ -1155,6 +1159,7 @@ describe("FLY-945 Fix D: hasTrustedFounderApproval (real CommDB)", () => {
 			project_name: projectName,
 			status: "completed",
 			review_question_id: qid,
+			pr_head_sha: "a".repeat(40),
 		} as Session;
 	}
 
@@ -1192,6 +1197,31 @@ describe("FLY-945 Fix D: hasTrustedFounderApproval (real CommDB)", () => {
 		expect(
 			hasTrustedFounderApproval(unbound, {
 				env: { DISCORD_OWNER_USER_ID: FOUNDER },
+			}),
+		).toBe(false);
+	});
+
+	it("accepts the machine actor only with an applied exact-head judgment proof", () => {
+		const session = seedGate(
+			SHIP_JUDGMENT_APPROVAL_ACTOR,
+			JSON.stringify({ approved: true }),
+			"flywheel",
+		);
+		const proof = vi.fn(() => true);
+		expect(
+			hasTrustedFounderApproval(session, {
+				env: { DISCORD_OWNER_USER_ID: FOUNDER },
+				store: { hasAppliedShipJudgmentMachineApproval: proof },
+			}),
+		).toBe(true);
+		expect(proof).toHaveBeenCalledWith(
+			session.review_question_id,
+			"a".repeat(40),
+		);
+		expect(
+			hasTrustedFounderApproval(session, {
+				env: { DISCORD_OWNER_USER_ID: FOUNDER },
+				store: { hasAppliedShipJudgmentMachineApproval: () => false },
 			}),
 		).toBe(false);
 	});

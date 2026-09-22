@@ -9,8 +9,8 @@
 #       + sentinel + mirror map (the plan's RED starting point)
 #   A2  onboard skin patch: git-clone fetch skin replaced, private URL gone,
 #       Buddy handoff preserved; anchor drift FAILS the build
-#   A3  run-bridge compile: ../packages/<dir>/dist imports rewritten to
-#       ../node_modules/<name>/dist, type annotations stripped
+#   A3  run-bridge compile + curated script runtime: ../packages/<dir>/dist
+#       imports rewritten to ../node_modules/<name>/dist; bridge types stripped
 #   A4  non-runtime residue stripped (.map/.d.ts/__tests__)
 #   A5  idempotence: re-running assembly converges (diff -r empty)
 #   U1-U4 dependency union: single/intersecting ranges unify; UNREGISTERED
@@ -92,6 +92,10 @@ import { startBridge } from "../packages/alpha/dist/index.js";
 const label: string = "fixture";
 startBridge(label);
 EOF
+  cat > "$FIX/scripts/runtime-check.mjs" <<'EOF'
+import { startBridge } from "../packages/alpha/dist/index.js";
+console.log(startBridge("packaged-runtime-ok"));
+EOF
 
   # union exceptions: zeta nests alpha's own resolved copy under the winner ^4;
   # omega is resolution-uniform ("-": every declarer really resolves v4).
@@ -108,6 +112,7 @@ dist/run-bridge.js
 .flywheel/agents/registry.yaml
 .flywheel/agents/nodes/general.md
 scripts/flywheel-onboard.sh
+scripts/runtime-check.mjs
 node_modules/fw-alpha/package.json
 node_modules/fw-alpha/dist/*
 node_modules/fw-beta/package.json
@@ -132,7 +137,8 @@ run_po() {
     PO_PACKAGES="alpha beta" \
     PO_PACKAGE_ASSETS="${TEST_PACKAGE_ASSETS:- }" \
     PO_PACKAGE_ASSET_FILES=" " \
-    PO_SCRIPT_FILES="flywheel-onboard.sh" \
+    PO_SCRIPT_FILES="flywheel-onboard.sh
+runtime-check.mjs" \
     PO_SCRIPT_DIRS=" " \
     PO_AGENT_FILES="registry.yaml
 nodes/general.md" \
@@ -236,6 +242,17 @@ if [ -f "$rb" ] && grep -q "../node_modules/fw-alpha/dist/index.js" "$rb" \
   pass "A3 run-bridge compiled: imports rewritten to node_modules, types stripped"
 else
   fail "A3 run-bridge compile wrong: $(cat "$rb" 2>/dev/null)"
+fi
+
+runtime_script="$TREE/scripts/runtime-check.mjs"
+runtime_out="$(node "$runtime_script" 2>&1)"; runtime_rc=$?
+if [ "$runtime_rc" -eq 0 ] \
+   && [ "$runtime_out" = "packaged-runtime-ok" ] \
+   && grep -q '../node_modules/fw-alpha/dist/index.js' "$runtime_script" \
+   && ! grep -q '../packages/alpha/dist/index.js' "$runtime_script"; then
+  pass "A3b curated script imports resolve from packaged node_modules"
+else
+  fail "A3b curated script is not runnable from the packaged tree: rc=$runtime_rc out=$runtime_out"
 fi
 
 # ── A4 · residue strip ───────────────────────────────────────────────────────
@@ -457,6 +474,26 @@ if env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "flywheel-patrol
  pass "X0b patrol continuity trusted launcher is in the payload closure"
 else
  fail "X0b patrol continuity trusted launcher is missing from payload closure"
+fi
+
+package_gate_files=(
+  package-gate.mjs
+  package-gate-worker.mjs
+  package-gate-host.py
+  package-gate-reporter.mjs
+  lib/package-gate-core.mjs
+)
+package_gate_closure_ok=true
+for package_gate_file in "${package_gate_files[@]}"; do
+  if ! env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "$2" <<<"$PO_SCRIPT_FILES"' _ "$PO" "$package_gate_file" \
+      || ! grep -qx "scripts/$package_gate_file" "$REPO_ROOT/scripts/package-onboard-files.allow"; then
+    package_gate_closure_ok=false
+  fi
+done
+if [ "$package_gate_closure_ok" = true ]; then
+  pass "X0c package gate host semaphore runtime is in the payload closure"
+else
+  fail "X0c package gate host semaphore runtime is missing from payload closure"
 fi
 
 # ── X1 · audit-table closure over the REAL default whitelist ─────────────────

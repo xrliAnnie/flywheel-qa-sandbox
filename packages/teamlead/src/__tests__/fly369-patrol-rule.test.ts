@@ -232,6 +232,8 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"owner_attribution_incomplete",
 			"comm.sessions",
 			"patrol-continuity",
+			"package_gate_queue",
+			"queue_request",
 			"ship_parked",
 			"WELL_FORMED_EVIDENCE",
 		]) {

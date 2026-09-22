@@ -1,0 +1,13 @@
+erDiagram
+  CYCLE ||--|{ RESULT : records
+  UNIT ||--o{ RESULT : observed
+  UNIT ||--o{ INCIDENT : experiences
+  INCIDENT ||--o{ ALERT_INTENT : budgets
+  RESULT ||--o{ PAGE_STATE : projects
+  INCIDENT ||--o{ PAGE_STATE : explains
+  CYCLE { string cycleId string wakeKind }
+  UNIT { string unitId string projectName string displayName }
+  RESULT { string outcome string stableReason boolean verified }
+  INCIDENT { string episodeId int failedShuttles boolean recovered }
+  ALERT_INTENT { string utcDay string reason string deliveryState }
+  PAGE_STATE { string projectName string sourceVersion }

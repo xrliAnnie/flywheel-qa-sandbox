@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ const SHADOW_FACT =
 const ALLOWED = new Set([
 	"engineering/doc/FLY-2398-auto-merge-shadow-run/shadow-table.sql",
 	"packages/teamlead/src/StateStore.ts",
+	"packages/teamlead/src/auto-merge-shadow-declaration-migration.ts",
 	"packages/teamlead/src/auto-merge-shadow/observation.ts",
 	"packages/teamlead/src/bridge/auto-merge-shadow-route.ts",
 	"scripts/fly-2398-shadow-table.mjs",
@@ -46,8 +47,8 @@ function sourceFiles(path: string): string[] {
 	});
 }
 
-describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
-	it("freezes the exact shadow readers, including the one protected narrow-gate core", () => {
+describe("FLY-2398 shadow audit boundary", () => {
+	it("keeps shadow facts audit-only and removes the retired narrow-gate authority", () => {
 		const references = [
 			...sourceFiles(resolve(REPO_ROOT, "packages")),
 			...sourceFiles(resolve(REPO_ROOT, "scripts")),
@@ -78,8 +79,22 @@ describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
 			resolve(REPO_ROOT, "packages/teamlead/src/StateStore.ts"),
 			"utf8",
 		);
-		expect(stateStore).toContain("evaluateAutoNarrowEligibility({");
-		expect(stateStore).toContain("commitAutoNarrowSourceIfEligible(input:");
+		expect(stateStore).not.toContain("evaluateAutoNarrowEligibility({");
+		expect(stateStore).not.toContain("commitAutoNarrowSourceIfEligible(input:");
+		expect(stateStore).toContain("commitShipJudgmentSourceIfEligible(input:");
+		const commDb = readFileSync(
+			resolve(REPO_ROOT, "packages/flywheel-comm/src/db.ts"),
+			"utf8",
+		);
+		expect(commDb).not.toContain("insertAutoNarrowApprovalWithSource(");
+		for (const retired of [
+			"packages/teamlead/src/auto-narrow/eligibility.ts",
+			"packages/teamlead/src/auto-narrow/opinion.ts",
+			"packages/teamlead/src/bridge/auto-narrow-gate.ts",
+			"packages/teamlead/src/bridge/auto-narrow-opinion-delivery.ts",
+		]) {
+			expect(existsSync(resolve(REPO_ROOT, retired))).toBe(false);
+		}
 	});
 
 	it("does not expose the shadow facts to review-hold or the founder merge guard", () => {
@@ -92,5 +107,33 @@ describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
 				SHADOW_FACT,
 			);
 		}
+	});
+
+	it("keeps shadow declarations off Discord while preserving the retired-option guard", () => {
+		const route = readFileSync(
+			resolve(
+				REPO_ROOT,
+				"packages/teamlead/src/bridge/auto-merge-shadow-route.ts",
+			),
+			"utf8",
+		);
+		expect(route).not.toMatch(/discord-utils|fetchDiscordMessage|message_ref/);
+
+		const prompt = readFileSync(
+			resolve(REPO_ROOT, "packages/teamlead/src/bridge/hook-payload.ts"),
+			"utf8",
+		);
+		expect(prompt).toContain("Do not post or relay");
+		expect(prompt).not.toContain("--message-ref <that message>");
+
+		const command = readFileSync(
+			resolve(
+				REPO_ROOT,
+				"packages/flywheel-comm/src/commands/shadow-declare.ts",
+			),
+			"utf8",
+		);
+		expect(command).toContain("--message-ref is retired");
+		expect(command).not.toContain("FLYWHEEL_INGEST_TOKEN");
 	});
 });

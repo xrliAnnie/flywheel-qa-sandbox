@@ -1,0 +1,16 @@
+{
+  "checkedAt": "2026-09-17T23:47:52.602432+00:00",
+  "url": "https://fw-reports-42fba7.vercel.app/r/5af9485463563a177b199bb028af989b/",
+  "httpStatus": 200,
+  "placeholderCount": 0,
+  "singleScript": true,
+  "nonceMatchesCsp": true,
+  "scriptMatchesCommittedSource": true,
+  "allSectionTitlesMatch": true,
+  "commentInputs": 11,
+  "externalAssets": 0,
+  "localHtmlSha256": "39afaad3d3753692eb660fcc83daa3dd6e92586c27f9f95c2b73704f21bdbdf8",
+  "hostedHtmlSha256": "6170fe91540c07cc814bed81944586a6e84756ed4692853aa4ab6dc4fa406929",
+  "diagramStatus": "DIAGRAM PENDING LOCAL RENDER",
+  "scope": "hosted HTTP/source/CSP plus previously passed static/VM checks; browser visual rendering not verified"
+}

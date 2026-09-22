@@ -31,12 +31,50 @@ echo "$@" >> "$MOCK_LOG"
 if [ "$1" = "remote-control" ] && [ "$2" = "start" ]; then
   mkdir -p "$CODEX_HOME/app-server-control"
   SOCK="$CODEX_HOME/app-server-control/app-server-control.sock"
-  [ -e "$SOCK" ] || python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "$SOCK"
+  if [ "${MOCK_COLD_DAEMON:-}" = "1" ]; then
+    rm -f "$SOCK"
+    nohup python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(120)' "$SOCK" >/dev/null 2>&1 &
+    daemon_pid=$!
+    for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.02; done
+    mkdir -p "$CODEX_HOME/app-server-daemon"
+    daemon_start="${MOCK_PROCESS_START:-}"
+    [ -n "$daemon_start" ] || daemon_start="$(LC_ALL=C ps -o lstart= -p "$daemon_pid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    python3 - "$CODEX_HOME/app-server-daemon/app-server.pid" "$daemon_pid" "$daemon_start" <<'PY'
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"pid": int(sys.argv[2]), "processStartTime": sys.argv[3]}, handle)
+PY
+  else
+    [ -e "$SOCK" ] || python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "$SOCK"
+  fi
   echo '{"status":"connected"}'
+fi
+if [ "$1" = "remote-control" ] && [ "$2" = "stop" ] && [ "${MOCK_STOP_FAIL:-}" = "1" ]; then
+  exit 1
 fi
 EOF
 chmod +x "$T/bin/codex"
 export MOCK_LOG="$T/mock.log"
+
+cat > "$T/bin/mock-ps" <<'EOF'
+#!/bin/bash
+field=""; pid=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field="${2%=}"; shift 2 ;;
+    -p) pid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || exit 1
+case "$field" in
+  lstart) printf '%s\n' "${MOCK_PROCESS_START:-test-process-start}" ;;
+  state) printf '%s\n' S ;;
+  ppid) printf '%s\n' 1 ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$T/bin/mock-ps"
 
 fresh_home() {
   local h="$T/home-$1"; rm -rf "$h"; mkdir -p "$h"
@@ -622,6 +660,50 @@ H=$(fresh_home 31); : > "$MOCK_LOG"
 FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
 command grep -q "remote-control stop" "$MOCK_LOG" && pass "full-access ensure-daemon: stop invoked (no stale read-only daemon)" || fail "full-access ensure-daemon: stop not invoked"
 command grep -q "remote-control start --json" "$MOCK_LOG" && pass "full-access ensure-daemon: start invoked after stop" || fail "full-access ensure-daemon: start not invoked"
+
+# ── FLY-2696: opted-in Raya requires a proven cold daemon generation ─────
+H=$(fresh_home persona-cold)
+: > "$MOCK_LOG"
+COLD_GENERATION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SUT_COLD="$T/codex-lead-tui-home-cold-test.sh"
+python3 - "$SUT" "$SUT_COLD" <<'PY'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+needle = 'fly1955_ps() { /bin/ps "$@"; }'
+replacement = 'fly1955_ps() { "$FLYWHEEL_TEST_PS_BIN" "$@"; }'
+assert text.count(needle) == 1
+open(sys.argv[2], "w", encoding="utf-8").write(text.replace(needle, replacement))
+PY
+if MOCK_COLD_DAEMON=1 MOCK_PROCESS_START=test-process-start \
+  FLYWHEEL_TEST_PS_BIN="$T/bin/mock-ps" FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED=1 \
+  FLYWHEEL_RAYA_PERSONA_GENERATION_ID="$COLD_GENERATION" \
+  FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_BIN="$T/bin/codex" \
+  FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT_COLD" ensure-daemon >"$T/persona-cold.out" 2>"$T/persona-cold.err" \
+  && jq -e --arg generation "$COLD_GENERATION" --arg socket "$H/app-server-control/app-server-control.sock" \
+    '.schemaVersion == 1 and .generationId == $generation and .socketPath == $socket and (.pid > 1) and (.processStartTime | length > 0)' \
+    "$H/.flywheel-raya-persona-cold-proof.json" >/dev/null; then
+  pass "FLY-2696: opted-in generation writes a live pid/socket cold-start proof"
+else
+  fail "FLY-2696: opted-in generation must prove a cold daemon before success ($(tr '\n' ' ' < "$T/persona-cold.err"))"
+fi
+cold_pid="$(jq -r '.pid // empty' "$H/.flywheel-raya-persona-cold-proof.json" 2>/dev/null || true)"
+[ -z "$cold_pid" ] || kill "$cold_pid" 2>/dev/null || true
+
+H=$(fresh_home persona-stop-fail)
+mkdir -p "$H/app-server-control"
+python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" \
+  "$H/app-server-control/app-server-control.sock"
+: > "$MOCK_LOG"
+if MOCK_STOP_FAIL=1 FLYWHEEL_RAYA_PERSONA_COLD_REQUIRED=1 \
+  FLYWHEEL_RAYA_PERSONA_GENERATION_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_BIN="$T/bin/codex" \
+  FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1; then
+  fail "FLY-2696: a failed cold-stop must refuse startup"
+elif ! command grep -q "remote-control start" "$MOCK_LOG"; then
+  pass "FLY-2696: a failed cold-stop opens no replacement daemon transport"
+else
+  fail "FLY-2696: cold-stop failure still attempted daemon start"
+fi
 
 # ── shell→gate full-access xcheck: the SHELL-written config.toml passes the FULL-ACCESS runtime gate ──
 if [ ! -f "$GATE_JS" ] || [ ! -f "$RUNTIME_JS" ]; then

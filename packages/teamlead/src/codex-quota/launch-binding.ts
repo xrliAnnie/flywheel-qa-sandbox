@@ -26,7 +26,7 @@ export function createCodexQuotaLaunchBinder(options: {
 		const canonicalHome = await realpath(options.canonicalHome);
 		const rootKey = createHash("sha256").update(canonicalHome).digest("hex");
 		const quota = options.store.codexQuota;
-		if (quota.isPaused(rootKey) || quota.isExecutionPaused(executionId))
+		if (options.store.isCodexQuotaLaunchPaused(executionId, rootKey))
 			throw new CodexQuotaLaunchPausedError();
 		const canonicalAuthPath = join(canonicalHome, "auth.json");
 		const readiness = await checkCodexQuotaReadiness({
@@ -41,7 +41,7 @@ export function createCodexQuotaLaunchBinder(options: {
 			await readFile(join(home, "auth.json"), "utf8"),
 		);
 		// Readiness and auth reads yield; reject a pause that opened meanwhile.
-		if (quota.isPaused(rootKey) || quota.isExecutionPaused(executionId))
+		if (options.store.isCodexQuotaLaunchPaused(executionId, rootKey))
 			throw new CodexQuotaLaunchPausedError();
 		const existing = quota.getRoot(rootKey);
 		quota.initializeRoot({

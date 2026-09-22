@@ -192,6 +192,8 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// never emits them; same legacy human posture as the other shell kinds.
 	deploy_failed: { owner: "claude", arc: "human_by_design" },
 	deploy_degraded: { owner: "claude", arc: "human_by_design" },
+	shuttle_unit_unhealthy: { owner: "owning_lead", arc: "none_escalate" },
+	voice_daemon_unhealthy: { owner: "owning_lead", arc: "none_escalate" },
 	activation_probe: { owner: "claude", arc: "human_by_design" },
 	// FLY-1256: the quota monitor already performed (or deliberately declined)
 	// the switch/revive. Bridge ARC would duplicate an external safety action.
@@ -210,6 +212,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	model_bench_malformed: { owner: "claude", arc: "human_by_design" },
 	quota_choice: { owner: "founder_direct", arc: "human_by_design" },
 	quota_switch_confirmation: { owner: "claude", arc: "human_by_design" },
+	codex_quota_automation_disabled: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	quota_no_target: { owner: "claude", arc: "human_by_design" },
 	quota_blocked_recovered: { owner: "claude", arc: "human_by_design" },
 	quota_read_blind: { owner: "claude", arc: "human_by_design" },
@@ -351,6 +357,11 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 		remediationRef: "FLY-1929",
+	},
+	codex_home_migration_overdue: {
+		owner: "owning_lead",
+		arc: "human_by_design",
+		remediationRef: "FLY-2523 safe per-home reconcile command in alert body",
 	},
 };
 

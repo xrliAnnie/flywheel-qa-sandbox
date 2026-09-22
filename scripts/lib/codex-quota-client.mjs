@@ -119,6 +119,10 @@ export async function runReview(deps) {
 		try {
 			while (true) {
 				if (waitSpent + deps.now() - started > WAIT_MS) return false;
+				if (current.state === "manual_required") {
+					waitFailure = "CODEX_QUOTA_MANUAL_REQUIRED";
+					return false;
+				}
 				if (current.state === "ready") {
 					if (current.generation === current.binding.generation) return true;
 					const expected = current.generation;
@@ -162,6 +166,8 @@ export async function runReview(deps) {
 	for (let attempt = 0; attempt < 2; attempt++) {
 		if (attempt === 1 && waitingBinding) {
 			const permit = await deps.status(waitingBinding);
+			if (permit.state === "manual_required")
+				return fail("CODEX_QUOTA_MANUAL_REQUIRED");
 			if (
 				permit.state !== "ready" ||
 				permit.generation !== current.binding.generation
@@ -242,7 +248,13 @@ function durableWrite(path, value) {
 function validateResponse(value) {
 	if (
 		!value ||
-		!["ready", "paused", "probe_failed", "abandoned"].includes(value.state) ||
+		![
+			"ready",
+			"paused",
+			"probe_failed",
+			"abandoned",
+			"manual_required",
+		].includes(value.state) ||
 		!Number.isSafeInteger(value.generation) ||
 		value.generation < 0
 	)

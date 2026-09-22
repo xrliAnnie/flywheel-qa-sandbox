@@ -201,6 +201,15 @@ reset_scenario() {
   rm -f "$EVENT_FILE"
   # Kill any leftover isolated server windows from a previous scenario.
   command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
+  # kill-server returns before the server has fully exited. Wait (bounded) until
+  # the isolated socket no longer answers, so the next new-session cannot race a
+  # dying server (FLY-2746: observed on ubicloud-standard-2 as "no server running").
+  local reset_wait=0
+  while [ "$reset_wait" -lt 40 ] \
+      && command tmux -S "$TMUX_SOCKET" has-session 2>/dev/null; do
+    sleep 0.05
+    reset_wait=$((reset_wait + 1))
+  done
   rm -f "$VIEW_LEDGER"
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
@@ -219,6 +228,36 @@ setup_session() {
   register_session_hooks "$session" >/dev/null
   echo "$session"
 }
+
+# ── Scenario I: production runner inventory delimiter ────────────────
+#
+# tmux 3.7c rewrites literal tab bytes in -F templates to underscores.
+# Exercise the production functions against the real isolated server so the
+# broad mock suite cannot accidentally model the old format as working.  The
+# unowned a|b window proves an unrelated external title cannot poison the
+# filtered runner inventory.
+echo
+echo "── Scenario I (FLY-2656): runner inventory survives tmux 3.7c format escaping ──"
+reset_scenario "I"
+tmux new-session -d -s external-fly2656 -n 'a|b' "sleep 60" 2>/dev/null
+tmux new-session -d -s runner-fly2656 -n FLY-2656-implement "sleep 60" 2>/dev/null
+tmux set-option -w -t '=runner-fly2656:FLY-2656-implement' \
+  @flywheel_exec_id exec-fly2656 2>/dev/null
+
+inventory_exec_rc=0
+inventory_node_rc=0
+read_runner_tmux_exec_inventory || inventory_exec_rc=$?
+read_runner_tmux_node_inventory || inventory_node_rc=$?
+inventory_wid=$(tmux display-message -p -t '=runner-fly2656:FLY-2656-implement' \
+  '#{window_id}' 2>/dev/null || true)
+if [[ "$inventory_exec_rc" == 0 && "$inventory_node_rc" == 0 \
+    && "$RUNNER_TMUX_STATE" == ok && "$RUNNER_NODE_TMUX_STATE" == ok \
+    && "$RUNNER_TMUX_EXEC_ROWS" == "exec-fly2656|present|$inventory_wid" \
+    && "$RUNNER_NODE_TMUX_ROWS" == "exec-fly2656|present|$inventory_wid|FLY-2656-implement|runner-fly2656" ]]; then
+  pass "Scenario I: exact runner identity parses while an unowned a|b window is ignored"
+else
+  fail "Scenario I: inventory delimiter failed exec_rc=$inventory_exec_rc node_rc=$inventory_node_rc exec_state=$RUNNER_TMUX_STATE node_state=$RUNNER_NODE_TMUX_STATE exec=[$RUNNER_TMUX_EXEC_ROWS] node=[$RUNNER_NODE_TMUX_ROWS]"
+fi
 
 # ── Scenario A: program exits + remain-on-exit ON (production main path) ──
 
@@ -490,8 +529,10 @@ reset_scenario "F1272"
 FLYWHEEL_CMUX_LINKED_VIEW=1
 source_session="runner-test-fly1272"
 view_title="FLY-1272-implement"
-tmux new-session -d -s "$source_session" -n "$view_title" "sleep 60" 2>/dev/null
-tmux new-window -d -t "${source_session}:" -n "FLY-1225-qa" "sleep 60" 2>/dev/null
+# stderr intentionally NOT suppressed: a failed setup must show the real tmux
+# error in CI logs instead of surfacing later as an opaque topology mismatch.
+tmux new-session -d -s "$source_session" -n "$view_title" "sleep 60"
+tmux new-window -d -t "${source_session}:" -n "FLY-1225-qa" "sleep 60"
 source_wid=$(tmux list-windows -t "=$source_session" -F '#{window_id}|#{window_name}' \
   | awk -F'|' -v n="$view_title" '$2 == n { print $1; exit }')
 f1272_rc=0

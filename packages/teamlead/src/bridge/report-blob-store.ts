@@ -12,7 +12,6 @@ export const REPORT_BLOB_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const REPORT_TOKEN_RE = /^[0-9a-f]{32}$/;
 const REPORT_PATH_RE =
 	/^r\/([0-9a-f]{32})\/(?:index\.html|[0-9a-f]{64}\/index\.audit\.json)$/;
-const AUDIT_PATH_RE = /^r\/([0-9a-f]{32})\/([0-9a-f]{64})\/index\.audit\.json$/;
 export class EpicAuditGatewayError extends Error {
 	constructor() {
 		super("epic_audit_gateway_unavailable");
@@ -282,10 +281,17 @@ export class VercelBlobReportStore implements ReportBlobStore {
 		const oldHash = /href="([0-9a-f]{64})\/index\.audit\.json"/.exec(
 			oldHtml,
 		)?.[1];
-		const previous =
-			oldHash === audit.sha256
-				? /data-previous-audit="([0-9a-f]{64})"/.exec(oldHtml)?.[1]
-				: oldHash;
+		const oldPrevious = /data-previous-audit="([0-9a-f]{64})"/.exec(
+			oldHtml,
+		)?.[1];
+		const previous = oldHash === audit.sha256 ? oldPrevious : oldHash;
+		const obsolete =
+			oldHash !== audit.sha256 &&
+			oldPrevious !== undefined &&
+			oldPrevious !== audit.sha256 &&
+			oldPrevious !== previous
+				? oldPrevious
+				: undefined;
 		await this.putObject(
 			`r/${token}/${audit.sha256}/index.audit.json`,
 			audit.json,
@@ -305,38 +311,16 @@ export class VercelBlobReportStore implements ReportBlobStore {
 			...result,
 			afterCommit: async () => {
 				// Keep the stable HTML and both audit versions untouched until the caller commits.
+				if (!obsolete) return;
 				try {
-					const stale = (await this.auditPaths(token)).filter((path) => {
-						const hash = AUDIT_PATH_RE.exec(path)![2];
-						return hash !== audit.sha256 && hash !== previous;
+					await this.client.del(`r/${token}/${obsolete}/index.audit.json`, {
+						token: this.token,
 					});
-					if (stale.length) await this.client.del(stale, { token: this.token });
 				} catch {
 					this.warn("[reports] epic audit cleanup failed");
 				}
 			},
 		};
-	}
-
-	private async auditPaths(token: string): Promise<string[]> {
-		const paths: string[] = [];
-		let cursor: string | undefined;
-		do {
-			const page = await this.client.list({
-				cursor,
-				limit: 1000,
-				mode: "expanded",
-				prefix: "r/",
-				token: this.token,
-			});
-			for (const blob of page.blobs)
-				if (AUDIT_PATH_RE.exec(blob.pathname)?.[1] === token)
-					paths.push(blob.pathname);
-			cursor = page.hasMore ? page.cursor : undefined;
-			if (page.hasMore && !cursor)
-				throw new Error("Vercel Blob list returned hasMore without a cursor");
-		} while (cursor);
-		return paths;
 	}
 
 	/** Idempotent upload used only by the one-time legacy migration. */

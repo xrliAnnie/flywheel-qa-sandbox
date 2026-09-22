@@ -26,6 +26,7 @@ import {
 } from "../lead-capability-read.js";
 import { LeadEventDeliveryCoordinator } from "../lead-event-delivery.js";
 import { createLeadPatrolConfiguration } from "../lead-patrol-config.js";
+import { createBridgeApp } from "../plugin.js";
 
 const carrier = vi.hoisted(() => ({
 	valid: true,
@@ -137,7 +138,6 @@ async function fixture(
 		vi.stubEnv("HOME", home);
 		vi.stubEnv("FLYWHEEL_COMM_ROOT", join(home, "comm"));
 		vi.stubEnv("FLYWHEEL_PROJECTS_FILE", projectsPath);
-		const { createBridgeApp } = await import("../plugin.js");
 		const bridgeArgs: Parameters<typeof createBridgeApp> = [
 			store,
 			[],
@@ -1026,6 +1026,7 @@ it.each([false, true])(
 
 it("mounts actual patrol snapshot and judgment services with scoped HTTP replay and drain guards", async () => {
 	const f = await fixture(false, false, true);
+	const timerSpy = vi.spyOn(globalThis, "setTimeout");
 	const snapshot = {
 		operationId: "patrol.snapshot",
 		requestId: randomUUID(),
@@ -1042,6 +1043,9 @@ it("mounts actual patrol snapshot and judgment services with scoped HTTP replay 
 		);
 		const first = await f.request({ tickId: "1" }, "test-token", snapshot);
 		expect(first.status).toBe(200);
+		expect(
+			timerSpy.mock.calls.some(([, timeoutMs]) => timeoutMs === 275_000),
+		).toBe(true);
 		expect(first.body.data.text).toContain("project: flywheel\nlead: eng");
 		expect(
 			await f.request({ tickId: "1" }, "test-token", snapshot, undefined, true),
@@ -1089,6 +1093,7 @@ it("mounts actual patrol snapshot and judgment services with scoped HTTP replay 
 			).status,
 		).toBe(403);
 	} finally {
+		timerSpy.mockRestore();
 		await f.close();
 	}
 }, 20000);

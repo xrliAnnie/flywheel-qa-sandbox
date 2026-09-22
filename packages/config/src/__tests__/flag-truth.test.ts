@@ -436,6 +436,14 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("FLY-2693 classifies the voice idle HTTP timeout as numeric tuning, not a feature flag", () => {
+		const envVar = "FLYWHEEL_VOICE_IDLE_HTTP_TIMEOUT_MS";
+		expect(NON_FLAG_ALLOWLIST[envVar]).toMatch(/numeric tuning/i);
+		expect(NON_FLAG_ALLOWLIST[envVar]).toMatch(/FLY-2693/);
+		expect(FEATURE_FLAGS.some((flag) => flag.envVar === envVar)).toBe(false);
+		expect(RETIRED_FLAGS.some((flag) => flag.envVar === envVar)).toBe(false);
+	});
+
 	it("FLY-2216 classifies resident Codex Lead health thresholds as numeric tuning", () => {
 		for (const envVar of [
 			"FLYWHEEL_CODEX_LEAD_RESIDENCY_CONSECUTIVE_FAILURES",
@@ -1029,6 +1037,40 @@ describe("FLY-2131 Codex Lead model coordinates", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW).toMatch(
 			/numeric tuning/i,
 		);
+	});
+});
+
+describe("FLY-2523 Codex home reconciliation env contract", () => {
+	it("accounts for every reconciliation coordinate and test seam as a non-flag", () => {
+		const expected = [
+			"FLYWHEEL_BUILD_SHA",
+			"FLYWHEEL_CODEX_ALERT_BIN",
+			"FLYWHEEL_CODEX_APPROVED_HOMES",
+			"FLYWHEEL_CODEX_FENCE_PS_BIN",
+			"FLYWHEEL_CODEX_HOME_RECONCILE_ENABLED",
+			"FLYWHEEL_CODEX_HOME_RECONCILE_LEAD",
+			"FLYWHEEL_CODEX_HOME_RECONCILE_PROJECT",
+			"FLYWHEEL_CODEX_HOME_RECONCILE_SLOT",
+			"FLYWHEEL_CODEX_HOME_POLICY",
+			"FLYWHEEL_CODEX_LAUNCH_FENCE_REQUIRED",
+			"FLYWHEEL_CODEX_LEAD_AUTHORITY_BIN",
+			"FLYWHEEL_CODEX_LINK_STRUCTURED",
+			"FLYWHEEL_CODEX_LINK_TRUTH_BIN",
+			"FLYWHEEL_CODEX_PROJECTS_FILE",
+			"FLYWHEEL_CODEX_READINESS_RECEIPT_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_FORCE_GROUP_UNKNOWN",
+			"FLYWHEEL_CODEX_RECONCILE_GROUP_PROBE_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_NOW_MS",
+			"FLYWHEEL_CODEX_RECONCILE_PROCESS_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_PS_BIN",
+			"FLYWHEEL_CODEX_RECONCILE_SIGNAL_BIN",
+			"FLYWHEEL_FLY2729_DEPENDENCY_INPUT",
+		] as const;
+
+		for (const envVar of expected) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/FLY-2523/);
+		}
 	});
 });
 

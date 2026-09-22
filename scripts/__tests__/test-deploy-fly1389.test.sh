@@ -204,6 +204,8 @@ mkdir -p "$FR/packages/teamlead/scripts/lib" \
   "$FR/packages/inbox-mcp/node_modules"
 cp "${SCRIPT_DIR}/../packages/teamlead/scripts/codex-lead.sh" \
   "$FR/packages/teamlead/scripts/codex-lead.sh"
+printf '%s\n' '// hermetic launch-fence fixture; the test node shim accepts the call' \
+  > "$FR/scripts/codex-home-launch-fence.mjs"
 cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lib/canonical-lead-identity.sh" \
   "$FR/packages/teamlead/scripts/lib/canonical-lead-identity.sh"
 ln -s "${SCRIPT_DIR}/../packages/flywheel-comm/dist" \

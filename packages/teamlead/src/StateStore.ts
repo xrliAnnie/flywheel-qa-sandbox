@@ -47,6 +47,7 @@ import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "fl
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
+import type { CodexQuotaAvailabilitySnapshot } from "./codex-quota/availability.js";
 import { ShipJudgmentJobs } from "./ship-judgment/jobs.js";
 import { ShipJudgmentInputs } from "./ship-judgment/inputs.js";
 import { ShipJudgmentOpinions } from "./ship-judgment/opinions.js";
@@ -59,8 +60,10 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -95,16 +98,28 @@ import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution
 import {
 	AUTO_NARROW_ACTOR,
 	AUTO_NARROW_DECISION_SOURCE,
-	AUTO_NARROW_POLICY_VERSION,
-	autoNarrowSourceEventId,
-	autoNarrowVerdictId,
-	parseAutoNarrowSourceEnvelope,
-	type AutoNarrowSourceEnvelopeV1,
 } from "flywheel-comm/auto-narrow-contract";
+import {
+	compareShipJudgmentApprovalTargets,
+	parseShipJudgmentApprovalEnvelope,
+	SHIP_JUDGMENT_APPROVAL_ACTOR,
+	SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+	SHIP_JUDGMENT_APPROVAL_POLICY,
+	SHIP_JUDGMENT_EVIDENCE_POLICY,
+	SHIP_JUDGMENT_POLICY,
+	shipJudgmentApprovalSourceEventId,
+	shipJudgmentApprovalTargetDigest,
+	type ShipJudgmentApprovalEnvelopeV1,
+} from "flywheel-comm/ship-judgment-approval-contract";
 import {
 	RAN_REASONS,
 	RECORD_REASONS,
 } from "flywheel-comm/strength-two-contract";
+import {
+	EVIDENCE_POLICY_VERSION,
+	evidenceLedgerDigest,
+	evidenceLedgerSchema,
+} from "./ship-judgment/evidence-ledger.js";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import {
 	type RecordProbe,
@@ -115,16 +130,7 @@ import {
 	judgeRecord,
 } from "./strength-two/judge.js";
 import { buildShadowObservation } from "./auto-merge-shadow/observation.js";
-import {
-	evaluateAutoNarrowEligibility,
-	type AutoNarrowEligibility,
-} from "./auto-narrow/eligibility.js";
-import {
-	computeAutoNarrowMetrics,
-	type AutoNarrowMetricSample,
-	type AutoNarrowMetrics,
-	type AutoNarrowOpinionReason,
-} from "./auto-narrow/opinion.js";
+import { migrateAutoMergeShadowDeclarationV2 } from "./auto-merge-shadow-declaration-migration.js";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import {
 	deliveryContractFrozenCopy,
@@ -204,6 +210,9 @@ import {
 	REFRESH_REASONS,
 	type EpicPage,
 	type RefreshReason,
+	type ShuttleDeploymentUnit,
+	type ShuttleDeploymentView,
+	type VoiceHealthView,
 } from "./epic-page/model.js";
 import { EPIC_RESIDUAL_UNAVAILABLE_TOKENS } from "./epic-page/residual.js";
 import {
@@ -406,22 +415,6 @@ export const MAX_BLIND_REPLACEMENTS = 3;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
-const AUTO_NARROW_OPINION_RETRY_BASE_MS = 30_000;
-const AUTO_NARROW_OPINION_RETRY_MAX_MS = 15 * 60_000;
-const AUTO_NARROW_OPINION_MAX_ATTEMPTS = 8;
-
-function autoNarrowOpinionRetryAt(now: string, attempt: number): string {
-	const nowMs = Date.parse(now);
-	if (!Number.isFinite(nowMs)) {
-		throw new Error("auto narrow opinion retry timestamp invalid");
-	}
-	const delay = Math.min(
-		AUTO_NARROW_OPINION_RETRY_MAX_MS,
-		AUTO_NARROW_OPINION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
-	);
-	return new Date(nowMs + delay).toISOString();
-}
-
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
 export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
 export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
@@ -1945,6 +1938,8 @@ export interface CodexReviewRecord {
 	 * record fails closed. See `crossFamilyReviewSatisfied` (flywheel-config).
 	 */
 	author_family?: string;
+	/** FLY-2763: exact sanction token for a same-family (Claude↔Claude) review; NULL otherwise. */
+	same_family_sanction?: string;
 	reviewer_family?: string;
 	/** FLY-1188 §7.1: review-job binding (codex-author lane). */
 	request_id?: string;
@@ -1975,9 +1970,40 @@ export interface DesignReviewManifest {
 	source_event_id: string;
 	expected_plan_path: string;
 	expected_blob_sha: string;
+	reviewed_commit_sha?: string;
 	is_current: boolean;
 	created_at: string;
 	delivered_at?: string;
+}
+
+export type DesignReviewApprovalProofState =
+	| "captured"
+	| "validated"
+	| "approved"
+	| "invalidated";
+
+/** Immutable reviewed-plan binding that becomes authority only after two receipts. */
+export interface DesignReviewApprovalProof {
+	proof_id: string;
+	lane: "coordinator" | "manifest";
+	project_name: string;
+	issue_id: string;
+	execution_id: string;
+	repository_identity: string;
+	review_job_request_id?: string;
+	manifest_request_id?: string;
+	manifest_revision?: number;
+	plan_path: string;
+	reviewed_commit_sha: string;
+	expected_blob_sha: string;
+	state: DesignReviewApprovalProofState;
+	captured_at: string;
+	validation_receipt_id?: string;
+	validated_at?: string;
+	verdict_receipt_id?: string;
+	approved_at?: string;
+	invalidated_at?: string;
+	invalidation_reason?: string;
 }
 
 /**
@@ -2041,6 +2067,8 @@ export interface CodexReviewJob {
 	/** Monotonic generation incremented for every persisted failure attempt. */
 	failure_attempt_count: number;
 	author_family?: string;
+	/** FLY-2763: exact sanction token for a same-family (Claude↔Claude) review; NULL otherwise. */
+	same_family_sanction?: string;
 	created_at: string;
 	updated_at?: string;
 	/**
@@ -2406,6 +2434,19 @@ export interface AutoNarrowControlEventRow {
 	schemaVersion: 1;
 }
 
+export interface ShipJudgmentModeCheckRow {
+	controlEventId: string;
+	mode: "dry_run" | "auto";
+	policy: string;
+	status: "pending" | "passed" | "failed" | "superseded";
+	questionId: string | null;
+	cardMessageId: string | null;
+	opinionId: string | null;
+	messageId: string | null;
+	observedAt: string | null;
+	reason: string | null;
+}
+
 export type ApplyAutoNarrowControlChangeResult =
 	| { ok: true; replayed: boolean; event: AutoNarrowControlEventRow }
 	| {
@@ -2433,6 +2474,8 @@ export type EpicPageTrigger = "manual" | "event" | "scan";
 export const EPIC_PAGE_REFRESH_OUTCOMES = [
 	"ok:<version>",
 	"ok_unpublished:<version>:manual",
+	"ok_unpublished:<version>:event",
+	"ok_unpublished:<version>:scan",
 	"ok_unpublished:<version>:skipped_hosting_not_configured",
 	"ok_unpublished:<version>:skipped_hosting_unsupported",
 	"ok_unpublished:<version>:unchanged_digest",
@@ -2455,7 +2498,7 @@ export function parseEpicPageRefreshOutcome(value: unknown): string {
 	}
 	if (/^ok:[1-9]\d*$/.test(value)) return value;
 	if (
-		/^ok_unpublished:[1-9]\d*:(?:manual|skipped_hosting_not_configured|skipped_hosting_unsupported|unchanged_digest)$/.test(
+		/^ok_unpublished:[1-9]\d*:(?:manual|event|scan|skipped_hosting_not_configured|skipped_hosting_unsupported|unchanged_digest)$/.test(
 			value,
 		)
 	) {
@@ -2496,6 +2539,25 @@ export interface EpicPageFreshnessRead {
 	};
 }
 
+export interface ShuttleProjectionCursorRead {
+	sourceId: string | null;
+	cursor: number;
+	status: ShuttleDeploymentView["sourceStatus"];
+	lastOkAt: string | null;
+}
+
+export interface ShuttleProjectionApplyResult {
+	changed: boolean;
+	changedProjects: string[];
+}
+
+export interface VoiceHealthProjectionCursorRead {
+	sourceId: string | null;
+	cursor: number;
+	status: VoiceHealthView["sourceStatus"];
+	lastOkAt: string | null;
+}
+
 export interface EpicPageRenderReceiptRow {
 	version: number;
 	generated_at: string;
@@ -2511,6 +2573,9 @@ export interface EpicPageSessionValue {
 		execution_id8: string;
 	}>;
 	ledger_live_count: number;
+	machine_running_count: number;
+	running_heartbeat_stale_count: number;
+	running_heartbeat_missing_count: number;
 }
 
 export interface EpicPageRunValue {
@@ -2526,6 +2591,9 @@ export interface EpicPageAttemptValue {
 	state: string;
 	attempt: number;
 	ledger_open: boolean;
+	machine_live: boolean;
+	starting_recent: boolean;
+	heartbeat_state: "fresh" | "stale" | "missing" | "not_applicable";
 }
 
 export interface EpicPageLandValue {
@@ -2666,6 +2734,154 @@ export interface VoiceSessionReservation {
 	createdAt: string;
 }
 
+export type VoiceHealthDemandEventKind =
+	| "required"
+	| "failed"
+	| "cancelled"
+	| "normal_completed";
+
+export interface VoiceHealthDemandIdentity {
+	demandId: string;
+	attemptId: string;
+	projectId: string;
+	meetingId?: string;
+}
+
+export interface VoiceHealthDemandEvent {
+	eventSeq: number;
+	mutation: "insert" | "update" | "delete";
+	eventKind: VoiceHealthDemandEventKind;
+	demandId: string;
+	attemptId: string;
+	projectId: string;
+	meetingId?: string;
+	previousState: VoiceSessionState | null;
+	state: VoiceSessionState | null;
+	observedAt: string;
+	reasonClass?: string;
+	cancelRequested: boolean;
+	endingStarted: boolean;
+	ended: boolean;
+}
+
+export interface VoiceHealthDemandSnapshot {
+	demandSourceId: string;
+	revision: number;
+	eventHighWater: number;
+	afterCursor: number;
+	nextCursor: number;
+	hasMore: boolean;
+	gap: boolean;
+	sourceStatus:
+		| "available"
+		| "trigger_invalid"
+		| "change_gap"
+		| "demand_overflow";
+	state: "none" | "required" | "unknown";
+	observedAt: string;
+	digest: string;
+	demandIdentities: VoiceHealthDemandIdentity[];
+	events: VoiceHealthDemandEvent[];
+}
+
+const VOICE_HEALTH_DEMAND_TRIGGER_NAMES = [
+	"voice_health_demand_sessions_insert",
+	"voice_health_demand_sessions_delete",
+	"voice_health_demand_sessions_update",
+] as const;
+
+function voiceHealthReasonClassSql(row: "OLD" | "NEW"): string {
+	return `CASE
+		WHEN ${row}.state != 'failed' THEN NULL
+		WHEN ${row}.reason IN ('no_human', 'daemon_shutdown') THEN NULL
+		WHEN ${row}.reason = 'lease_lost' THEN 'lease_lost'
+		WHEN ${row}.reason IN (
+			'provisioning_failed',
+			'voice_session_admission_failed',
+			'identity_binding_missing',
+			'voice_session_registry_drift',
+			'self_filter_unverified'
+		) OR ${row}.reason LIKE 'provisioning_%' THEN 'session_create_failed'
+		WHEN ${row}.reason IN ('ending_timeout', 'daemon_restart')
+			THEN 'session_runtime_failed'
+		ELSE 'unknown_failure'
+	END`;
+}
+
+const VOICE_HEALTH_DEMAND_TRIGGER_SQL = {
+	insert: `CREATE TRIGGER voice_health_demand_sessions_insert
+		AFTER INSERT ON voice_sessions
+		BEGIN
+			INSERT INTO voice_health_demand_events (
+				mutation, session_id, project_id, meeting_id, old_state, new_state,
+				reason_class, cancel_requested, ending_started, ended, observed_at
+			) VALUES (
+				'insert', NEW.session_id, NEW.project_name, NEW.meeting_id, NULL,
+				NEW.state, ${voiceHealthReasonClassSql("NEW")},
+				NEW.cancel_requested_at IS NOT NULL,
+				NEW.ending_started_at IS NOT NULL,
+				NEW.ended_at IS NOT NULL,
+				NEW.updated_at
+			);
+		END`,
+	delete: `CREATE TRIGGER voice_health_demand_sessions_delete
+		AFTER DELETE ON voice_sessions
+		BEGIN
+			INSERT INTO voice_health_demand_events (
+				mutation, session_id, project_id, meeting_id, old_state, new_state,
+				reason_class, cancel_requested, ending_started, ended, observed_at
+			) VALUES (
+				'delete', OLD.session_id, OLD.project_name, OLD.meeting_id,
+				OLD.state, NULL, ${voiceHealthReasonClassSql("OLD")},
+				OLD.cancel_requested_at IS NOT NULL,
+				OLD.ending_started_at IS NOT NULL,
+				OLD.ended_at IS NOT NULL,
+				OLD.updated_at
+			);
+		END`,
+	update: `CREATE TRIGGER voice_health_demand_sessions_update
+		AFTER UPDATE OF state, reason, cancel_requested_at, ending_started_at, ended_at ON voice_sessions
+		WHEN OLD.state IS NOT NEW.state
+			OR OLD.reason IS NOT NEW.reason
+			OR OLD.cancel_requested_at IS NOT NEW.cancel_requested_at
+			OR OLD.ending_started_at IS NOT NEW.ending_started_at
+			OR OLD.ended_at IS NOT NEW.ended_at
+		BEGIN
+			INSERT INTO voice_health_demand_events (
+				mutation, session_id, project_id, meeting_id, old_state, new_state,
+				reason_class, cancel_requested, ending_started, ended, observed_at
+			) VALUES (
+				'update', NEW.session_id, NEW.project_name, NEW.meeting_id,
+				OLD.state, NEW.state, ${voiceHealthReasonClassSql("NEW")},
+				NEW.cancel_requested_at IS NOT NULL,
+				NEW.ending_started_at IS NOT NULL,
+				NEW.ended_at IS NOT NULL,
+				NEW.updated_at
+			);
+		END`,
+} as const;
+
+function normalizedVoiceHealthTriggerSql(sql: string): string {
+	return sql.replace(/\s+/g, " ").trim();
+}
+
+const VOICE_HEALTH_DEMAND_TRIGGER_DIGEST = createHash("sha256")
+	.update(
+		VOICE_HEALTH_DEMAND_TRIGGER_NAMES.map((name) => {
+			const key = name.slice("voice_health_demand_sessions_".length) as
+				| "insert"
+				| "delete"
+				| "update";
+			return normalizedVoiceHealthTriggerSql(
+				VOICE_HEALTH_DEMAND_TRIGGER_SQL[key],
+			);
+		}).join("\n"),
+	)
+	.digest("hex");
+const VOICE_HEALTH_DEMAND_LEGACY_TRIGGER_DIGESTS = new Set([
+	"bc7da93194749ebf189112778862d7f0515e839d3ae702ee1acfbacc4eaa8cf7",
+]);
+
 export interface DiscordConfigRow {
 	singleton_key: "discord";
 	guild_id: string | null;
@@ -2714,6 +2930,62 @@ export type AttentionThreadBinding =
 				| "issue_identity_unknown";
 	  };
 
+export interface OpenedDatabaseIdentity {
+	canonicalPath: string;
+	device: string;
+	inode: string;
+}
+
+function readDatabaseIdentity(dbPath: string): OpenedDatabaseIdentity {
+	const canonicalPath = realpathSync.native(dbPath);
+	const stat = statSync(canonicalPath, { bigint: true });
+	if (!stat.isFile()) throw new Error("database_identity_not_regular_file");
+	return {
+		canonicalPath,
+		device: stat.dev.toString(10),
+		inode: stat.ino.toString(10),
+	};
+}
+
+function sameDatabaseIdentity(
+	left: OpenedDatabaseIdentity,
+	right: OpenedDatabaseIdentity,
+): boolean {
+	return (
+		left.canonicalPath === right.canonicalPath &&
+		left.device === right.device &&
+		left.inode === right.inode
+	);
+}
+
+/**
+ * Bind the opened handle to the path identity observed on both sides of open.
+ * The injected opener keeps the race seam executable without weakening the
+ * production constructor.
+ */
+export function openWithDatabaseIdentity<T extends { close(): void }>(
+	dbPath: string,
+	open: () => T,
+): { connection: T; identity: OpenedDatabaseIdentity | null } {
+	if (dbPath === ":memory:") return { connection: open(), identity: null };
+	const before = existsSync(dbPath) ? readDatabaseIdentity(dbPath) : null;
+	const connection = open();
+	try {
+		const after = readDatabaseIdentity(dbPath);
+		if (before !== null && !sameDatabaseIdentity(before, after)) {
+			throw new Error("database_identity_changed_during_open");
+		}
+		return { connection, identity: after };
+	} catch (error) {
+		try {
+			connection.close();
+		} catch {
+			// Best effort: the identity failure is authoritative.
+		}
+		throw error;
+	}
+}
+
 export class StateStore {
 	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
 	private summaryPresentationStoreCache?: {
@@ -2744,13 +3016,34 @@ export class StateStore {
 	}
 	private db: CompatDb;
 	private dbPath: string;
+	private openedDatabaseIdentity: OpenedDatabaseIdentity | null;
 	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
 	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
 	codexQuotaLaunchEnabled: () => boolean = () => true;
+	codexQuotaAvailability: () => CodexQuotaAvailabilitySnapshot = () =>
+		this.codexQuotaLaunchEnabled()
+			? { mode: "automatic", reasons: [], revision: 0, checkedAt: null }
+			: {
+					mode: "manual",
+					reasons: ["flag_disabled"],
+					revision: 0,
+					checkedAt: null,
+				};
 	isCodexQuotaLaunchPaused(executionId: string, rootKey?: string): boolean {
-		if (!this.codexQuotaLaunchEnabled()) return false;
-		return this.codexQuota.isExecutionPaused(executionId) ||
-			(rootKey !== undefined && this.codexQuota.isPaused(rootKey));
+		if (this.codexQuota.isExecutionPaused(executionId)) return true;
+		if (rootKey === undefined) return false;
+		if (
+			this.codexQuota.hasRootSafetyGuard(
+				rootKey,
+				Date.now(),
+				this.codexQuotaLaunchEnabled(),
+			)
+		)
+			return true;
+		return (
+			this.codexQuotaAvailability().mode === "automatic" &&
+			this.codexQuota.isPaused(rootKey)
+		);
 	}
 
 
@@ -2849,9 +3142,11 @@ export class StateStore {
 		db: CompatDb,
 		dbPath: string,
 		private readonly maintenance?: { readonly: boolean },
+		openedDatabaseIdentity: OpenedDatabaseIdentity | null = null,
 	) {
 		this.db = db;
 		this.dbPath = dbPath;
+		this.openedDatabaseIdentity = openedDatabaseIdentity;
 	}
 
 	/**
@@ -2862,6 +3157,66 @@ export class StateStore {
 	 */
 	getDbPath(): string {
 		return this.dbPath;
+	}
+
+	/** The file identity held by this live SQLite connection. */
+	getOpenedDatabaseIdentity(): OpenedDatabaseIdentity | null {
+		return this.openedDatabaseIdentity
+			? { ...this.openedDatabaseIdentity }
+			: null;
+	}
+
+	/** Refuse when the path now names a different file than the live handle. */
+	assertOpenedDatabaseIdentityCurrent(): OpenedDatabaseIdentity {
+		const opened = this.openedDatabaseIdentity;
+		if (this.dbPath === ":memory:" || opened === null) {
+			throw new Error("database_identity_unavailable");
+		}
+		let current: OpenedDatabaseIdentity;
+		try {
+			current = readDatabaseIdentity(this.dbPath);
+		} catch {
+			throw new Error("database_identity_path_unavailable");
+		}
+		if (!sameDatabaseIdentity(opened, current)) {
+			throw new Error("database_identity_changed_after_open");
+		}
+		return { ...opened };
+	}
+
+	/** Read-only S4 evidence seam; FLY-2697 owns adding/populating completed_at_ms. */
+	readSummaryPresentationMigrationEvidence(
+		projectName: string,
+		leadId: string,
+	): {
+		migration: ReturnType<SummaryPresentationStore["getMigration"]>;
+		completedAtMs: number | null;
+	} {
+		const migration = this.summaryPresentations.getMigration(projectName, leadId);
+		const hasCompletedAt = (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM pragma_table_info('summary_presentation_migration') WHERE name = 'completed_at_ms'",
+				)
+				.get() as { "1": number } | undefined
+		) !== undefined;
+		if (!migration || !hasCompletedAt) {
+			return { migration, completedAtMs: null };
+		}
+		const row = this.db.raw
+			.prepare(
+				`SELECT completed_at_ms AS completedAtMs
+				 FROM summary_presentation_migration
+				 WHERE project_name = ? AND lead_id = ? AND contract_version = 2`,
+			)
+			.get(projectName, leadId) as { completedAtMs: number | null } | undefined;
+		return {
+			migration,
+			completedAtMs:
+				row?.completedAtMs != null && Number.isSafeInteger(row.completedAtMs)
+					? row.completedAtMs
+					: null,
+		};
 	}
 
 	/** Persist the resolved configuration before page consumers start. */
@@ -3261,6 +3616,235 @@ export class StateStore {
 		)
 			.map((row) => this.voiceSessionFromRow(row))
 			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	/**
+	 * FLY-2693: one read transaction binds the change page, allocator high-water,
+	 * and current demand projection. Incomplete or discontinuous pages never carry
+	 * an authoritative current set.
+	 */
+	getVoiceDemandSnapshot(afterSeq: number): VoiceHealthDemandSnapshot {
+		if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
+			throw new Error("voice_demand_cursor_invalid");
+		}
+		return this.db.raw.transaction((): VoiceHealthDemandSnapshot => {
+			const source = this.db.raw
+				.prepare(
+					`SELECT source_id, trigger_digest, created_at
+					 FROM voice_health_demand_source WHERE singleton = 1`,
+				)
+				.get() as
+				| { source_id: string; trigger_digest: string; created_at: string }
+				| undefined;
+			if (!source) throw new Error("voice_demand_source_missing");
+
+			const sequence = this.db.raw
+				.prepare(
+					"SELECT seq FROM sqlite_sequence WHERE name = 'voice_health_demand_events'",
+				)
+				.get() as { seq: number } | undefined;
+			const eventHighWater = Number(sequence?.seq ?? 0);
+			const emptyDigest = canonicalSubmissionDigest([]);
+			const unknown = (
+				sourceStatus: "trigger_invalid" | "change_gap" | "demand_overflow",
+			): VoiceHealthDemandSnapshot => ({
+				demandSourceId: source.source_id,
+				revision: eventHighWater,
+				eventHighWater,
+				afterCursor: afterSeq,
+				nextCursor: afterSeq,
+				hasMore: false,
+				gap: sourceStatus === "change_gap",
+				sourceStatus,
+				state: "unknown",
+				observedAt: source.created_at,
+				digest: emptyDigest,
+				demandIdentities: [],
+				events: [],
+			});
+
+			const actualTriggers = this.db.raw
+				.prepare(
+					`SELECT name, sql FROM sqlite_master
+					 WHERE type = 'trigger' AND name LIKE 'voice_health_demand_sessions_%'`,
+				)
+				.all() as Array<{ name: string; sql: string | null }>;
+			const actualByName = new Map(
+				actualTriggers.map((trigger) => [trigger.name, trigger.sql]),
+			);
+			const triggerDigest = createHash("sha256")
+				.update(
+					VOICE_HEALTH_DEMAND_TRIGGER_NAMES.map((name) =>
+						normalizedVoiceHealthTriggerSql(actualByName.get(name) ?? ""),
+					).join("\n"),
+				)
+				.digest("hex");
+			if (
+				!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+					source.source_id,
+				) ||
+				actualTriggers.length !== VOICE_HEALTH_DEMAND_TRIGGER_NAMES.length ||
+				source.trigger_digest !== VOICE_HEALTH_DEMAND_TRIGGER_DIGEST ||
+				triggerDigest !== VOICE_HEALTH_DEMAND_TRIGGER_DIGEST
+			) {
+				return unknown("trigger_invalid");
+			}
+
+			const pageRows = this.db.raw
+				.prepare(
+					`SELECT event_seq, mutation, session_id, project_id, meeting_id,
+						old_state, new_state, reason_class, cancel_requested,
+						ending_started, ended, observed_at
+					 FROM voice_health_demand_events
+					 WHERE event_seq > ? ORDER BY event_seq LIMIT 201`,
+				)
+				.all(afterSeq) as Array<Record<string, unknown>>;
+			const hasMore = pageRows.length > 200;
+			const deliveredRows = pageRows.slice(0, 200);
+			let expectedSeq = afterSeq + 1;
+			let contiguous = afterSeq <= eventHighWater;
+			for (const row of deliveredRows) {
+				if (Number(row.event_seq) !== expectedSeq) contiguous = false;
+				expectedSeq = Number(row.event_seq) + 1;
+			}
+			if (afterSeq < eventHighWater && deliveredRows.length === 0) {
+				contiguous = false;
+			}
+			if (
+				!hasMore &&
+				deliveredRows.length > 0 &&
+				Number(deliveredRows.at(-1)?.event_seq) !== eventHighWater
+			) {
+				contiguous = false;
+			}
+			if (!contiguous) return unknown("change_gap");
+
+			const events = deliveredRows.map((row): VoiceHealthDemandEvent => {
+				const mutation = row.mutation as "insert" | "update" | "delete";
+				const previousState = (row.old_state as VoiceSessionState | null) ?? null;
+				const state = (row.new_state as VoiceSessionState | null) ?? null;
+				const semanticState = state ?? previousState;
+				const reasonClass = (row.reason_class as string | null) ?? undefined;
+				const eventKind: VoiceHealthDemandEventKind =
+					semanticState === "failed"
+						? reasonClass !== undefined
+							? "failed"
+							: "cancelled"
+						: semanticState === "ended"
+							? "normal_completed"
+							: semanticState === "cancelled" || mutation === "delete"
+								? "cancelled"
+								: "required";
+				const meetingId = (row.meeting_id as string | null) ?? undefined;
+				return {
+					eventSeq: Number(row.event_seq),
+					mutation,
+					eventKind,
+					demandId: meetingId ?? String(row.session_id),
+					attemptId: String(row.session_id),
+					projectId: String(row.project_id),
+					...(meetingId ? { meetingId } : {}),
+					previousState,
+					state,
+					observedAt: String(row.observed_at),
+					...(reasonClass ? { reasonClass } : {}),
+					cancelRequested: Number(row.cancel_requested) === 1,
+					endingStarted: Number(row.ending_started) === 1,
+					ended: Number(row.ended) === 1,
+				};
+			});
+			const nextCursor = events.at(-1)?.eventSeq ?? afterSeq;
+			if (hasMore) {
+				return {
+					demandSourceId: source.source_id,
+					revision: eventHighWater,
+					eventHighWater,
+					afterCursor: afterSeq,
+					nextCursor,
+					hasMore: true,
+					gap: false,
+					sourceStatus: "available",
+					state: "unknown",
+					observedAt: events.at(-1)?.observedAt ?? source.created_at,
+					digest: emptyDigest,
+					demandIdentities: [],
+					events,
+				};
+			}
+
+			const currentRows = this.db.raw
+				.prepare(
+					`SELECT session_id, project_name, meeting_id, state, reason,
+						cancel_requested_at, ending_started_at, ended_at, updated_at
+					 FROM voice_sessions
+					 WHERE state NOT IN ('ended', 'cancelled', 'failed')
+					 ORDER BY session_id`,
+				)
+				.all() as Array<Record<string, unknown>>;
+			if (currentRows.length > 32) return unknown("demand_overflow");
+			const demandIdentities = currentRows.map(
+				(row): VoiceHealthDemandIdentity => {
+					const meetingId = (row.meeting_id as string | null) ?? undefined;
+					return {
+						demandId: meetingId ?? String(row.session_id),
+						attemptId: String(row.session_id),
+						projectId: String(row.project_name),
+						...(meetingId ? { meetingId } : {}),
+					};
+				},
+			);
+			const digestRows = currentRows.map((row) => [
+				String(row.session_id),
+				String(row.state),
+				row.cancel_requested_at === null,
+				row.ending_started_at === null,
+				row.ended_at === null,
+				this.voiceHealthReasonClass(row.state, row.reason),
+			]);
+			return {
+				demandSourceId: source.source_id,
+				revision: eventHighWater,
+				eventHighWater,
+				afterCursor: afterSeq,
+				nextCursor,
+				hasMore: false,
+				gap: false,
+				sourceStatus: "available",
+				state: demandIdentities.length > 0 ? "required" : "none",
+				observedAt:
+					String(currentRows.at(-1)?.updated_at ?? "") ||
+					events.at(-1)?.observedAt ||
+					source.created_at,
+				digest: canonicalSubmissionDigest(digestRows),
+				demandIdentities,
+				events,
+			};
+		})();
+	}
+
+	private voiceHealthReasonClass(
+		state: unknown,
+		reason: unknown,
+	): string | null {
+		if (state !== "failed") return null;
+		if (reason === "no_human" || reason === "daemon_shutdown") return null;
+		if (reason === "lease_lost") return "lease_lost";
+		if (
+			new Set([
+				"provisioning_failed",
+				"voice_session_admission_failed",
+				"identity_binding_missing",
+				"voice_session_registry_drift",
+				"self_filter_unverified",
+			]).has(String(reason)) ||
+			String(reason).startsWith("provisioning_")
+		) {
+			return "session_create_failed";
+		}
+		if (reason === "ending_timeout" || reason === "daemon_restart") {
+			return "session_runtime_failed";
+		}
+		return "unknown_failure";
 	}
 
 	reserveVoiceSession(
@@ -3897,7 +4481,15 @@ export class StateStore {
 	 * full-DB export-on-every-write.
 	 */
 	static async create(dbPath: string): Promise<StateStore> {
-		const store = new StateStore(StateStore.openDatabase(dbPath), dbPath);
+		const opened = openWithDatabaseIdentity(dbPath, () =>
+			StateStore.openDatabase(dbPath),
+		);
+		const store = new StateStore(
+			opened.connection,
+			dbPath,
+			undefined,
+			opened.identity,
+		);
 		store.migrate();
 		store.codexQuota.migrate();
 		return store;
@@ -3916,10 +4508,15 @@ export class StateStore {
 		if (dbPath === ":memory:" || !existsSync(dbPath)) {
 			throw new Error(`maintenance_database_missing:${dbPath}`);
 		}
-		const raw = new BetterSqlite3(dbPath, {
-			readonly: options.readonly,
-			fileMustExist: true,
-		});
+		const opened = openWithDatabaseIdentity(
+			dbPath,
+			() =>
+				new BetterSqlite3(dbPath, {
+					readonly: options.readonly,
+					fileMustExist: true,
+				}),
+		);
+		const raw = opened.connection;
 		try {
 			installSqlTiming(raw, "teamlead");
 			raw.pragma("busy_timeout = 5000");
@@ -3933,9 +4530,12 @@ export class StateStore {
 				raw.pragma("foreign_keys = ON");
 			}
 			StateStore.assertMaintenanceSchema(raw);
-			return new StateStore(new CompatDb(raw), dbPath, {
-				readonly: options.readonly,
-			});
+			return new StateStore(
+				new CompatDb(raw),
+				dbPath,
+				{ readonly: options.readonly },
+				opened.identity,
+			);
 		} catch (error) {
 			raw.close();
 			throw error;
@@ -4333,11 +4933,14 @@ export class StateStore {
 		// Track the freshly-built handle so it can be closed if migration throws
 		// (no leaked handle on the failure path — Codex code R1 LOW).
 		let next: CompatDb | undefined;
+		const oldIdentity = this.openedDatabaseIdentity;
 		try {
 			// Reopen from the on-disk file, swap it in, then migrate it (idempotent;
 			// synchronous). On ANY throw the catch restores `old` and closes `next`.
-			next = this.buildDatabaseFromDisk();
+			const rebuilt = this.buildDatabaseFromDisk();
+			next = rebuilt.db;
 			this.db = next;
+			this.openedDatabaseIdentity = rebuilt.identity;
 			this.migrate();
 			// Best-effort close of the old (corrupt) handle. A close failure does
 			// not fail recovery.
@@ -4353,6 +4956,7 @@ export class StateStore {
 			return true;
 		} catch (rebuildErr) {
 			this.db = old; // restore defined state (old is corrupt, retried next window)
+			this.openedDatabaseIdentity = oldIdentity;
 			// Close the half-built replacement so a failed rebuild never leaks a handle.
 			if (next) {
 				try {
@@ -4383,19 +4987,25 @@ export class StateStore {
 	 * failure in `recoverFromCorruption()` and can reach the unrecoverable
 	 * escalation (FLY-639 contract preserved; Codex code R1 MEDIUM).
 	 */
-	private buildDatabaseFromDisk(): CompatDb {
+	private buildDatabaseFromDisk(): {
+		db: CompatDb;
+		identity: OpenedDatabaseIdentity | null;
+	} {
 		if (this.dbPath === ":memory:") {
-			return StateStore.openDatabase(":memory:");
+			return { db: StateStore.openDatabase(":memory:"), identity: null };
 		}
 		const fileExisted = existsSync(this.dbPath);
-		const db = StateStore.openDatabase(this.dbPath);
+		const opened = openWithDatabaseIdentity(this.dbPath, () =>
+			StateStore.openDatabase(this.dbPath),
+		);
+		const db = opened.connection;
 		if (fileExisted) {
 			// Existing file → prove it is a real SQLite DB. A malformed/NOTADB image
 			// makes this read throw, which the caller counts as a rebuild failure
 			// (rather than masking corruption as a clean empty DB).
 			db.raw.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
 		}
-		return db;
+		return { db, identity: opened.identity };
 	}
 
 	/**
@@ -5569,11 +6179,25 @@ export class StateStore {
 			AND n.attempt=(SELECT MAX(n2.attempt) FROM workflow_run_node n2 WHERE n2.run_id=n.run_id AND n2.node_id=n.node_id)
 			ORDER BY j.created_at DESC,j.round DESC,j.request_id DESC LIMIT 1`).get(runId, repoIdentity) as
 			{ request_id: string; execution_id: string; target_path: string | null; status: string; verdict: string | null } | undefined;
-		if (!row || row.status !== "done" || row.verdict !== "APPROVED" || !row.target_path) return undefined;
-		const manifest = this.getCurrentDesignReviewManifest(row.execution_id);
-		if (manifest && manifest.expected_plan_path !== row.target_path) return undefined;
-		return { requestId: row.request_id, path: row.target_path,
-			...(manifest ? { expectedBlobSha: manifest.expected_blob_sha } : {}) };
+		if (row) {
+			if (row.status !== "done" || row.verdict !== "APPROVED" || !row.target_path) return undefined;
+			const proof = this.getApprovedDesignReviewProofForReviewJob(row.request_id);
+			if (!proof || proof.execution_id !== row.execution_id ||
+				proof.repository_identity !== repoIdentity || proof.plan_path !== row.target_path) return undefined;
+			return { requestId: row.request_id, path: proof.plan_path,
+				expectedBlobSha: proof.expected_blob_sha };
+		}
+		const proofRow = this.db.raw.prepare(`SELECT p.* FROM design_review_approval_proof p
+			JOIN workflow_run_node n ON n.execution_id=p.execution_id
+			JOIN workflow_run r ON r.run_id=n.run_id
+			WHERE r.run_id=? AND r.project_name='flywheel' AND r.status='active'
+			AND p.lane='manifest' AND p.repository_identity=? AND p.state='approved'
+			AND n.attempt=(SELECT MAX(n2.attempt) FROM workflow_run_node n2 WHERE n2.run_id=n.run_id AND n2.node_id=n.node_id)
+			ORDER BY julianday(p.approved_at) DESC,p.proof_id DESC LIMIT 1`).get(runId, repoIdentity) as Record<string, unknown> | undefined;
+		if (!proofRow) return undefined;
+		const proof = this.rowToDesignReviewApprovalProof(proofRow);
+		return { requestId: proof.manifest_request_id!, path: proof.plan_path,
+			expectedBlobSha: proof.expected_blob_sha };
 	}
 
 	readShipJudgmentBinding(questionId: string, channelId: string): ShipJudgmentBinding | undefined {
@@ -5610,6 +6234,881 @@ export class StateStore {
 		return { projectName: "flywheel", runId: run.run_id, questionId, issueId: run.issue_id,
 			cardMessageId: holder.card_message_id, threadId: thread.thread_id,
 			manifestRevision: manifest?.current_revision ?? 0, targets };
+	}
+
+	recordShipJudgmentPolicyProvenance(input: {
+		provenanceId: string;
+		channelId: string;
+		threadId: string;
+		messageId: string;
+		authorId: string;
+		messageCreatedAt: string;
+		originalMessageDigest: string;
+		verifiedAt: string;
+		verificationReceiptId: string;
+	}): ShipJudgmentPolicyProvenanceRow {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.provenanceId) ||
+			input.channelId !== "1516209714097291335" ||
+			input.threadId !== "1550442575066955787" ||
+			input.messageId !== "1550543841961050283" ||
+			input.authorId !== "1138241636057481306" ||
+			input.messageCreatedAt !== "2026-09-18T16:27:39.635Z" ||
+			!/^[0-9a-f]{64}$/.test(input.originalMessageDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.verifiedAt) ||
+			!input.verificationReceiptId.trim()
+		) {
+			throw new Error("ship judgment policy provenance invalid");
+		}
+		const existing = this.getShipJudgmentPolicyProvenance(input.provenanceId);
+		if (existing) {
+			const expected: ShipJudgmentPolicyProvenanceRow = {
+				provenanceId: input.provenanceId,
+				policy: SHIP_JUDGMENT_APPROVAL_POLICY,
+				channelId: input.channelId,
+				threadId: input.threadId,
+				messageId: input.messageId,
+				authorId: input.authorId,
+				messageCreatedAt: input.messageCreatedAt,
+				originalMessageDigest: input.originalMessageDigest,
+				verifiedAt: input.verifiedAt,
+				verificationReceiptId: input.verificationReceiptId,
+			};
+			if (canonicalJsonString(existing) !== canonicalJsonString(expected)) {
+				throw new Error("ship judgment policy provenance replay conflict");
+			}
+			return existing;
+		}
+		this.db.raw.prepare(`INSERT INTO ship_judgment_policy_provenance
+			(provenance_id,policy,channel_id,thread_id,message_id,author_id,message_created_at,
+			 original_message_digest,verified_at,verification_receipt_id)
+			 VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+			input.provenanceId,
+			SHIP_JUDGMENT_APPROVAL_POLICY,
+			input.channelId,
+			input.threadId,
+			input.messageId,
+			input.authorId,
+			input.messageCreatedAt,
+			input.originalMessageDigest,
+			input.verifiedAt,
+			input.verificationReceiptId,
+		);
+		return this.getShipJudgmentPolicyProvenance(input.provenanceId)!;
+	}
+
+	getShipJudgmentPolicyProvenance(
+		provenanceId?: string,
+	): ShipJudgmentPolicyProvenanceRow | undefined {
+		const row = this.db.raw.prepare(
+			provenanceId
+				? "SELECT * FROM ship_judgment_policy_provenance WHERE provenance_id=?"
+				: "SELECT * FROM ship_judgment_policy_provenance ORDER BY verified_at DESC,provenance_id DESC LIMIT 1",
+		).get(...(provenanceId ? [provenanceId] : [])) as Record<string, unknown> | undefined;
+		return row
+			? {
+					provenanceId: String(row.provenance_id),
+					policy: SHIP_JUDGMENT_APPROVAL_POLICY,
+					channelId: String(row.channel_id),
+					threadId: String(row.thread_id),
+					messageId: String(row.message_id),
+					authorId: String(row.author_id),
+					messageCreatedAt: String(row.message_created_at),
+					originalMessageDigest: String(row.original_message_digest),
+					verifiedAt: String(row.verified_at),
+					verificationReceiptId: String(row.verification_receipt_id),
+				}
+			: undefined;
+	}
+
+	prepareShipJudgmentAutoApproval(
+		value: unknown,
+	): { status: "created" | "existing"; row: ShipJudgmentAutoApprovalRow } {
+		const envelope = parseShipJudgmentApprovalEnvelope(value);
+		const provenance = this.getShipJudgmentPolicyProvenance(
+			envelope.policy_provenance.id,
+		);
+		if (
+			!provenance ||
+			provenance.originalMessageDigest !==
+				envelope.policy_provenance.original_message_digest
+		) {
+			throw new Error("ship judgment policy provenance unavailable");
+		}
+		const sourceEventId = shipJudgmentApprovalSourceEventId(
+			envelope.question_id,
+		);
+		const envelopeJson = canonicalJsonString(envelope);
+		const envelopeHash = canonicalSubmissionDigest(envelope);
+		const existing = this.getShipJudgmentAutoApproval(sourceEventId);
+		if (existing) {
+			if (
+				existing.envelopeHash !== envelopeHash ||
+				existing.envelopeJson !== envelopeJson
+			) {
+				throw new Error("ship judgment auto approval replay conflict");
+			}
+			return { status: "existing", row: existing };
+		}
+		const bindingDigest = canonicalSubmissionDigest({
+			card: envelope.card,
+			primary: envelope.primary,
+			targets: envelope.targets,
+			manifest: envelope.manifest,
+		});
+		const targetsDigest = canonicalSubmissionDigest({
+			targets: envelope.targets,
+			manifest: envelope.manifest,
+		});
+		this.db.raw.prepare(`INSERT INTO ship_judgment_auto_approval
+			(source_event_id,question_id,opinion_id,input_id,evaluation_id,run_id,
+			 source_execution_id,binding_digest,targets_digest,manifest_revision,
+			 control_event_id,opening_event_id,flag_revision,policy_provenance_id,
+			 mechanical_digest,presentation_digest,envelope_json,envelope_hash,created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+			sourceEventId,
+			envelope.question_id,
+			envelope.judgment.opinion_id,
+			envelope.judgment.input_id,
+			envelope.judgment.evaluation_id,
+			envelope.run_id,
+			envelope.source_execution_id,
+			bindingDigest,
+			targetsDigest,
+			envelope.manifest.revision,
+			envelope.control.event_id,
+			envelope.control.opening_event_id,
+			envelope.control.flag_revision,
+			envelope.policy_provenance.id,
+			envelope.judgment.mechanical_digest,
+			envelope.judgment.presentation_digest,
+			envelopeJson,
+			envelopeHash,
+			envelope.decision_at,
+		);
+		this.recordShipJudgmentAutoApprovalDisposition({
+			sourceEventId,
+			disposition: "prepared",
+			reason: "eligible",
+			at: envelope.decision_at,
+		});
+		return {
+			status: "created",
+			row: this.getShipJudgmentAutoApproval(sourceEventId)!,
+		};
+	}
+
+	getShipJudgmentAutoApproval(
+		sourceEventId: string,
+	): ShipJudgmentAutoApprovalRow | undefined {
+		const row = this.db.raw.prepare(
+			"SELECT * FROM ship_judgment_auto_approval WHERE source_event_id=?",
+		).get(sourceEventId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					sourceEventId: String(row.source_event_id),
+					questionId: String(row.question_id),
+					envelopeJson: String(row.envelope_json),
+					envelopeHash: String(row.envelope_hash),
+					createdAt: String(row.created_at),
+				}
+			: undefined;
+	}
+
+	hasAppliedShipJudgmentMachineApproval(
+		questionId: string,
+		headSha: string,
+	): boolean {
+		if (!questionId.trim() || !/^[0-9a-f]{40}$/.test(headSha)) return false;
+		const sourceEventId = shipJudgmentApprovalSourceEventId(questionId);
+		const row = this.db.raw.prepare(`SELECT a.envelope_json,v.author_evidence_json,
+			v.verdict,v.founder_authored,v.question_id,v.head_sha,c.predicate,c.subject_digest
+			FROM ship_judgment_auto_approval a
+			JOIN ship_judgment_auto_approval_disposition d
+			 ON d.source_event_id=a.source_event_id AND d.disposition='applied'
+			JOIN workflow_source_receipt r
+			 ON r.project='flywheel' AND r.source_event_id=a.source_event_id AND r.claim_id IS NOT NULL
+			JOIN workflow_founder_gate_verdict v
+			 ON v.source_event_id=a.source_event_id AND v.claim_id=r.claim_id
+			JOIN workflow_claims c ON c.id=r.claim_id
+			WHERE a.source_event_id=? AND a.question_id=?
+			AND NOT EXISTS (SELECT 1 FROM workflow_claim_revocation x WHERE x.claim_id=c.id)
+			LIMIT 1`).get(sourceEventId, questionId) as Record<string, unknown> | undefined;
+		if (
+			!row ||
+			row.verdict !== "approved" ||
+			Number(row.founder_authored) !== 0 ||
+			row.question_id !== questionId ||
+			row.head_sha !== headSha ||
+			row.predicate !== "founder_approved" ||
+			row.subject_digest !== headSha
+		) {
+			return false;
+		}
+		try {
+			const envelope = parseShipJudgmentApprovalEnvelope(
+				JSON.parse(String(row.envelope_json)),
+			);
+			const evidence = JSON.parse(String(row.author_evidence_json)) as Record<
+				string,
+				unknown
+			>;
+			return (
+				envelope.question_id === questionId &&
+				envelope.primary.head_sha === headSha &&
+				evidence.kind === "ship_judgment_auto" &&
+				evidence.actor === SHIP_JUDGMENT_APPROVAL_ACTOR &&
+				evidence.decision_source ===
+					SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE &&
+				evidence.source_event_id === sourceEventId &&
+				evidence.opinion_id === envelope.judgment.opinion_id
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	hasRejectedShipJudgmentMachineApproval(questionId: string): boolean {
+		if (!questionId.trim()) return false;
+		const latest = this.db.raw.prepare(`SELECT d.disposition
+			FROM ship_judgment_auto_approval a
+			JOIN ship_judgment_auto_approval_disposition d
+			  ON d.source_event_id=a.source_event_id
+			WHERE a.question_id=?
+			ORDER BY d.at DESC,d.rowid DESC LIMIT 1`).get(questionId) as
+			| { disposition: string }
+			| undefined;
+		return latest?.disposition === "rejected";
+	}
+
+	recordShipJudgmentAutoApprovalDisposition(input: {
+		sourceEventId: string;
+		disposition: "prepared" | "source_written" | "applied" | "rejected";
+		reason: string;
+		at: string;
+	}): void {
+		if (!input.reason.trim() || !StateStore.workflowFiniteTimestamp(input.at)) {
+			throw new Error("ship judgment approval disposition invalid");
+		}
+		this.db.raw.prepare(`INSERT OR IGNORE INTO ship_judgment_auto_approval_disposition
+			(source_event_id,disposition,reason,at) VALUES (?,?,?,?)`).run(
+			input.sourceEventId,
+			input.disposition,
+			input.reason,
+			input.at,
+		);
+	}
+
+	seedShipJudgmentLegacyRetirement(at: string): number {
+		if (!StateStore.workflowFiniteTimestamp(at)) {
+			throw new Error("ship judgment retirement timestamp invalid");
+		}
+		return this.db.raw.prepare(`INSERT OR IGNORE INTO ship_judgment_legacy_retirement
+			(question_id,retirement_policy,thread_id,card_message_id,legacy_message_id,
+			 legacy_marker,legacy_state,legacy_posting_at,status,observed_at)
+			SELECT question_id,'three-point-retirement-v1',issue_thread_id,card_message_id,
+			 followup_message_id,correlation_marker,state,posting_at,'pending',?
+			FROM auto_narrow_opinion_delivery`).run(at).changes;
+	}
+
+	listShipJudgmentLegacyRetirementWork(
+		at: string,
+		limit = 20,
+	): ShipJudgmentLegacyRetirementRow[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return (this.db.raw.prepare(`SELECT * FROM ship_judgment_legacy_retirement
+			WHERE status IN ('pending','claimed')
+			AND (expires_at IS NULL OR expires_at<=?)
+			AND (retry_after IS NULL OR retry_after<=?)
+			ORDER BY observed_at,question_id LIMIT ?`).all(at, at, bounded) as Record<string, unknown>[])
+			.map((row) => this.shipJudgmentLegacyRetirementRow(row));
+	}
+
+	claimShipJudgmentLegacyRetirement(input: {
+		questionId: string;
+		owner: string;
+		at: string;
+	}): ShipJudgmentLegacyRetirementRow | undefined {
+		if (!input.owner.trim() || !StateStore.workflowFiniteTimestamp(input.at)) {
+			throw new Error("ship judgment retirement claim invalid");
+		}
+		const expiresAt = new Date(Date.parse(input.at) + 30_000).toISOString();
+		return this.db.raw.transaction(() => {
+			const current = this.db.raw.prepare(`SELECT * FROM ship_judgment_legacy_retirement
+				WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+				AND status IN ('pending','claimed') AND (expires_at IS NULL OR expires_at<=?)
+				AND (retry_after IS NULL OR retry_after<=?)`).get(
+				input.questionId,
+				input.at,
+				input.at,
+			) as Record<string, unknown> | undefined;
+			if (!current) return undefined;
+			const generation = Number(current.generation) + 1;
+			this.db.raw.prepare(`UPDATE ship_judgment_legacy_retirement
+				SET status='claimed',generation=?,lease_owner=?,expires_at=?,last_error=NULL
+				WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+				AND generation=?`).run(
+				generation,
+				input.owner,
+				expiresAt,
+				input.questionId,
+				Number(current.generation),
+			);
+			const claimed = this.db.raw.prepare(
+				"SELECT * FROM ship_judgment_legacy_retirement WHERE question_id=? AND retirement_policy='three-point-retirement-v1'",
+			).get(input.questionId) as Record<string, unknown>;
+			return this.shipJudgmentLegacyRetirementRow(claimed);
+		}).immediate();
+	}
+
+	finishShipJudgmentLegacyRetirement(input: {
+		questionId: string;
+		owner: string;
+		generation: number;
+		at: string;
+		status: "retired" | "unavailable";
+		reason: string;
+		messageId?: string;
+	}): boolean {
+		const changes = this.db.raw.prepare(`UPDATE ship_judgment_legacy_retirement
+			SET status=?,legacy_message_id=COALESCE(?,legacy_message_id),retired_at=?,
+			 lease_owner=NULL,expires_at=NULL,retry_after=NULL,last_error=?
+			WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+			AND status='claimed' AND lease_owner=? AND generation=? AND expires_at>?`).run(
+			input.status,
+			input.messageId ?? null,
+			input.at,
+			input.reason,
+			input.questionId,
+			input.owner,
+			input.generation,
+			input.at,
+		).changes;
+		return changes === 1;
+	}
+
+	deferShipJudgmentLegacyRetirement(input: {
+		questionId: string;
+		owner: string;
+		generation: number;
+		at: string;
+		reason: string;
+	}): boolean {
+		const retryAt = new Date(Date.parse(input.at) + 60_000).toISOString();
+		return this.db.raw.prepare(`UPDATE ship_judgment_legacy_retirement
+			SET status='pending',lease_owner=NULL,expires_at=NULL,retry_after=?,last_error=?
+			WHERE question_id=? AND retirement_policy='three-point-retirement-v1'
+			AND status='claimed' AND lease_owner=? AND generation=?`).run(
+			retryAt,
+			input.reason,
+			input.questionId,
+			input.owner,
+			input.generation,
+		).changes === 1;
+	}
+
+	private shipJudgmentLegacyRetirementRow(
+		row: Record<string, unknown>,
+	): ShipJudgmentLegacyRetirementRow {
+		return {
+			questionId: String(row.question_id),
+			threadId: String(row.thread_id),
+			cardMessageId: String(row.card_message_id),
+			legacyMessageId:
+				row.legacy_message_id == null ? null : String(row.legacy_message_id),
+			legacyMarker: String(row.legacy_marker),
+			legacyState: String(row.legacy_state),
+			legacyPostingAt:
+				row.legacy_posting_at == null
+					? null
+					: String(row.legacy_posting_at),
+			status: row.status as ShipJudgmentLegacyRetirementRow["status"],
+			generation: Number(row.generation),
+			leaseOwner: row.lease_owner == null ? null : String(row.lease_owner),
+		};
+	}
+
+	listPendingShipJudgmentAutoCandidates(
+		limit = 20,
+		startAfterQuestionId = "",
+	): string[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return (
+			this.db.raw.prepare(`SELECT d.question_id FROM ship_judgment_delivery d
+				JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
+				JOIN workflow_gate_holder h ON h.question_id=d.question_id
+				JOIN workflow_run r ON r.run_id=h.run_id
+				WHERE d.purpose='opinion' AND d.delivery_mode='auto' AND d.mode_label='current'
+				AND d.state='delivered' AND d.desired_id=d.posted_id AND d.message_id IS NOT NULL
+				AND d.dirty_since IS NULL AND d.latest_candidate_json IS NULL
+				AND o.overall='can' AND o.alignment='pass' AND o.conflict='pass' AND o.coverage='pass'
+				AND r.project_name='flywheel' AND r.status='active'
+				AND h.state='awaiting_review' AND h.materialization_stage='completed'
+				ORDER BY CASE WHEN d.question_id>? THEN 0 ELSE 1 END,d.question_id LIMIT ?`)
+				.all(startAfterQuestionId, bounded) as { question_id: string }[]
+		).map((row) => row.question_id);
+	}
+
+	private assertShipJudgmentApprovalEnvelopeCurrentTx(
+		envelope: ShipJudgmentApprovalEnvelopeV1,
+		at: string,
+		requirePersistedIntent = true,
+	): void {
+		const atMs = Date.parse(at);
+		if (!Number.isFinite(atMs) || new Date(atMs).toISOString() !== at) {
+			throw new Error("ship judgment approval ineligible: invalid_time");
+		}
+		const intent = this.getShipJudgmentAutoApproval(
+			shipJudgmentApprovalSourceEventId(envelope.question_id),
+		);
+		if (
+			requirePersistedIntent &&
+			(!intent || intent.envelopeHash !== canonicalSubmissionDigest(envelope) ||
+				intent.envelopeJson !== canonicalJsonString(envelope))
+		) {
+			throw new Error("ship judgment approval ineligible: intent_mismatch");
+		}
+		const flag = this.getFlagValueRow("auto_merge_narrow_gate", "flywheel");
+		const control = this.getLatestAutoNarrowControlEvent("flywheel");
+		const opening = control?.openingEventId
+			? this.getAutoNarrowControlEventById(control.openingEventId)
+			: undefined;
+		if (
+			!flag ||
+			flag.lastEffective !== "auto" ||
+			!control ||
+			control.mode !== "auto" ||
+			control.eventId !== envelope.control.event_id ||
+			control.flagRevision !== flag.revision ||
+			control.flagRevision !== envelope.control.flag_revision ||
+			control.flagChangeSeq !==
+				this.getFlagValueChangeSeq("auto_merge_narrow_gate", "flywheel") ||
+			!opening ||
+			opening.mode !== "auto" ||
+			opening.eventId !== envelope.control.opening_event_id
+		) {
+			throw new Error("ship judgment approval ineligible: control_changed");
+		}
+		const modeCheck = this.getShipJudgmentModeCheck(control.eventId);
+		if (!modeCheck || modeCheck.status !== "passed") {
+			throw new Error("ship judgment approval ineligible: mode_check_pending");
+		}
+		const legacyRetirement = this.db.raw.prepare(`SELECT status
+			FROM ship_judgment_legacy_retirement
+			WHERE question_id=? AND retirement_policy='three-point-retirement-v1'`).get(
+			envelope.question_id,
+		) as { status: string } | undefined;
+		if (
+			legacyRetirement &&
+			!["retired", "unavailable"].includes(legacyRetirement.status)
+		) {
+			throw new Error(
+				"ship judgment approval ineligible: legacy_retirement_pending",
+			);
+		}
+		const provenance = this.getShipJudgmentPolicyProvenance(
+			envelope.policy_provenance.id,
+		);
+		if (
+			!provenance ||
+			provenance.policy !== envelope.policy ||
+			provenance.originalMessageDigest !==
+				envelope.policy_provenance.original_message_digest
+		) {
+			throw new Error("ship judgment approval ineligible: policy_provenance");
+		}
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+			envelope.question_id,
+		);
+		const run = holder ? this.getWorkflowRun(holder.run_id) : undefined;
+		if (
+			!holder ||
+			!run ||
+			run.project_name !== "flywheel" ||
+			run.status !== "active" ||
+			run.run_id !== envelope.run_id ||
+			run.issue_id !== envelope.issue_id ||
+			holder.gate_node_id !== envelope.gate_node_id ||
+			holder.attempt !== envelope.attempt ||
+			holder.source_execution_id !== envelope.source_execution_id ||
+			holder.authority_mode !== "land" ||
+			holder.subject_kind !== "git_head" ||
+			holder.carrier_binding_state !== "bound" ||
+			holder.state !== "awaiting_review" ||
+			holder.materialization_stage !== "completed" ||
+			holder.card_message_id !== envelope.card.message_id
+		) {
+			throw new Error("ship judgment approval ineligible: gate_changed");
+		}
+		const binding = this.readShipJudgmentBinding(
+			envelope.question_id,
+			envelope.card.channel_id,
+		);
+		if (
+			!binding ||
+			binding.threadId !== envelope.card.thread_id ||
+			binding.cardMessageId !== envelope.card.message_id ||
+			binding.manifestRevision !== envelope.manifest.revision
+		) {
+			throw new Error("ship judgment approval ineligible: binding_changed");
+		}
+		const targets = binding.targets
+			.map((target) => ({
+				repo_identity: target.repo_identity,
+				repo_slug: target.repo_slug,
+				pr_number: target.pr_number,
+				head_sha: target.head_sha.toLowerCase(),
+			}))
+			.sort(compareShipJudgmentApprovalTargets);
+		if (
+			canonicalJsonString(targets) !== canonicalJsonString(envelope.targets) ||
+			shipJudgmentApprovalTargetDigest(targets, binding.manifestRevision) !==
+				envelope.manifest.digest ||
+			!targets.some(
+				(target) =>
+					canonicalJsonString(target) === canonicalJsonString(envelope.primary),
+			)
+		) {
+			throw new Error("ship judgment approval ineligible: targets_changed");
+		}
+		for (const target of targets) {
+			if (!this.readShipJudgmentPlanReference(run.run_id, target.repo_identity)) {
+				throw new Error("ship judgment approval ineligible: reviewed_plan_missing");
+			}
+			const founderRework = this.workflowSelectAll(
+				`SELECT 1 FROM workflow_founder_gate_verdict v
+				 JOIN workflow_run r ON r.run_id=v.run_id
+				 WHERE r.project_name='flywheel' AND v.repo_identity=?
+				 AND lower(v.head_sha)=lower(?) AND v.verdict='rework'
+				 AND v.founder_authored=1 LIMIT 1`,
+				[target.repo_identity, target.head_sha],
+			)[0];
+			if (founderRework) {
+				throw new Error("ship judgment approval ineligible: founder_rework");
+			}
+		}
+		const pendingFounder =
+			this.workflowSelectAll(
+				"SELECT 1 FROM founder_decision_convergence WHERE question_id=? AND resolved_at_ms IS NULL LIMIT 1",
+				[envelope.question_id],
+			)[0] ??
+			this.workflowSelectAll(
+				"SELECT 1 FROM founder_deferred_approval WHERE question_id=? AND consumed_at IS NULL AND invalidated_at IS NULL LIMIT 1",
+				[envelope.question_id],
+			)[0];
+		if (pendingFounder) {
+			throw new Error("ship judgment approval ineligible: founder_input_pending");
+		}
+		const row = this.db.raw.prepare(`SELECT
+			 d.delivery_mode,d.mode_label,d.state,d.desired_id,d.posted_id,d.message_id,
+			 d.visible_at,d.validated_presentation_digest,d.validated_at,d.dirty_since,
+			 d.latest_candidate_json,d.thread_id,d.card_message_id,
+			 o.input_id,o.evaluation_id,o.mechanical_json,o.mechanical_digest,
+			 o.presentation_digest,o.alignment,o.conflict,o.coverage,o.overall,o.status,
+			 o.evidence_json,o.ordinal,
+			 i.semantic_digest,i.model_snapshot_digest,i.semantic_ordinal,i.sources_json,
+			 e.result_code,e.alignment AS semantic_alignment,e.coverage AS semantic_coverage
+			 FROM ship_judgment_delivery d
+			 JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
+			 JOIN ship_judgment_input i ON i.input_id=o.input_id
+			 JOIN ship_judgment_evaluation e ON e.evaluation_id=o.evaluation_id
+			 WHERE d.purpose='opinion' AND d.question_id=?`).get(
+			envelope.question_id,
+		) as Record<string, unknown> | undefined;
+		if (
+			!row ||
+			row.delivery_mode !== "auto" ||
+			row.mode_label !== "current" ||
+			row.state !== "delivered" ||
+			row.desired_id !== envelope.judgment.opinion_id ||
+			row.posted_id !== envelope.judgment.opinion_id ||
+			row.message_id !== envelope.judgment.delivered_message_id ||
+			row.thread_id !== envelope.card.thread_id ||
+			row.card_message_id !== envelope.card.message_id ||
+			row.dirty_since !== null ||
+			row.latest_candidate_json !== null ||
+			row.validated_presentation_digest !== envelope.judgment.presentation_digest ||
+			row.presentation_digest !== envelope.judgment.presentation_digest ||
+			row.mechanical_digest !== envelope.judgment.mechanical_digest ||
+			row.input_id !== envelope.judgment.input_id ||
+			row.evaluation_id !== envelope.judgment.evaluation_id ||
+			row.semantic_digest !== envelope.judgment.semantic_digest ||
+			row.model_snapshot_digest !== envelope.judgment.model_snapshot_digest ||
+			row.result_code !== "evaluated" ||
+			row.semantic_alignment !== "pass" ||
+			row.semantic_coverage !== "pass" ||
+			row.alignment !== "pass" ||
+			row.conflict !== "pass" ||
+			row.coverage !== "pass" ||
+			row.overall !== "can" ||
+			row.status !== "complete"
+		) {
+			throw new Error("ship judgment approval ineligible: judgment_changed");
+		}
+		const latestInput = this.db.raw.prepare(
+			"SELECT input_id FROM ship_judgment_input WHERE question_id=? ORDER BY semantic_ordinal DESC LIMIT 1",
+		).get(envelope.question_id) as { input_id: string } | undefined;
+		const latestOpinion = this.db.raw.prepare(
+			"SELECT opinion_id FROM ship_judgment_opinion WHERE question_id=? ORDER BY ordinal DESC LIMIT 1",
+		).get(envelope.question_id) as { opinion_id: string } | undefined;
+		if (
+			latestInput?.input_id !== envelope.judgment.input_id ||
+			latestOpinion?.opinion_id !== envelope.judgment.opinion_id
+		) {
+			throw new Error("ship judgment approval ineligible: newer_material");
+		}
+		const evidence = evidenceLedgerSchema.parse(
+			JSON.parse(String(row.evidence_json)),
+		);
+		const sources = JSON.parse(String(row.sources_json)) as {
+			sources?: { kind?: string }[];
+		};
+		if (
+			evidence.version !== 2 ||
+			evidence.policyVersion !== EVIDENCE_POLICY_VERSION ||
+			evidence.policyVersion !== SHIP_JUDGMENT_EVIDENCE_POLICY ||
+			evidence.semantic.status !== "evaluated" ||
+			evidence.semantic.evaluationId !== envelope.judgment.evaluation_id ||
+			evidence.semantic.modelSnapshotDigest !==
+				envelope.judgment.model_snapshot_digest ||
+			evidence.alignment.verdict !== "pass" ||
+			evidence.conflict.verdict !== "pass" ||
+			evidence.coverage.verdict !== "pass" ||
+			evidence.targets.some(
+				(target) => target.a.verdict !== "pass" || target.c.verdict !== "pass",
+			) ||
+			evidenceLedgerDigest(evidence) !== envelope.judgment.evidence_digest ||
+			(sources.sources ?? []).filter((source) => source.kind === "plan").length <
+				targets.length ||
+			(sources.sources ?? []).filter((source) => source.kind === "qa").length <
+				targets.length
+		) {
+			throw new Error("ship judgment approval ineligible: evidence_incomplete");
+		}
+		const checkedAt = Date.parse(envelope.judgment.mechanical_checked_at);
+		if (
+			row.validated_at !== envelope.judgment.mechanical_checked_at ||
+			!Number.isFinite(checkedAt) ||
+			atMs < checkedAt ||
+			atMs - checkedAt > 60_000
+		) {
+			throw new Error("ship judgment approval ineligible: mechanical_stale");
+		}
+	}
+
+	private prepareShipJudgmentAutoApprovalIntentTx(
+		questionId: string,
+		at: string,
+	):
+		| { status: "not_auto" | "not_candidate" | "ineligible" }
+		| { status: "prepared"; envelope: ShipJudgmentApprovalEnvelopeV1 } {
+		const flag = this.getFlagValueRow("auto_merge_narrow_gate", "flywheel");
+		if (flag?.lastEffective !== "auto") return { status: "not_auto" };
+		const sourceEventId = shipJudgmentApprovalSourceEventId(questionId);
+		const prepared = this.getShipJudgmentAutoApproval(sourceEventId);
+		if (prepared) {
+			return {
+				status: "prepared",
+				envelope: parseShipJudgmentApprovalEnvelope(
+					JSON.parse(prepared.envelopeJson),
+				),
+			};
+		}
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(questionId);
+		const run = holder ? this.getWorkflowRun(holder.run_id) : undefined;
+		const delivery = this.db.raw.prepare(`SELECT d.*,o.input_id,o.evaluation_id,
+			o.mechanical_digest,o.mechanical_json,o.presentation_digest,o.evidence_json,
+			i.semantic_digest,i.model_snapshot_digest
+			FROM ship_judgment_delivery d JOIN ship_judgment_opinion o ON o.opinion_id=d.desired_id
+			JOIN ship_judgment_input i ON i.input_id=o.input_id
+			WHERE d.purpose='opinion' AND d.question_id=?`).get(questionId) as Record<string, unknown> | undefined;
+		const thread = delivery
+			? this.db.raw.prepare(
+					"SELECT channel_id FROM chat_threads WHERE thread_id=? AND discord_missing_at IS NULL",
+				).get(delivery.thread_id) as { channel_id: string } | undefined
+			: undefined;
+		const binding = thread
+			? this.readShipJudgmentBinding(questionId, thread.channel_id)
+			: undefined;
+		const control = this.getLatestAutoNarrowControlEvent("flywheel");
+		const provenance = this.getShipJudgmentPolicyProvenance();
+		if (
+			!holder ||
+			!run ||
+			!delivery ||
+			!thread ||
+			!binding ||
+			!control?.openingEventId ||
+			!provenance ||
+			!delivery.input_id ||
+			!delivery.evaluation_id ||
+			!delivery.desired_id ||
+			!delivery.message_id ||
+			!delivery.validated_at ||
+			!delivery.evidence_json
+		) {
+			return { status: "not_candidate" };
+		}
+		const primaryBinding = this.resolveFounderGateBindingTx({
+			runId: run.run_id,
+			questionId,
+		});
+		const targets = binding.targets
+			.map((target) => ({
+				repo_identity: target.repo_identity,
+				repo_slug: target.repo_slug,
+				pr_number: target.pr_number,
+				head_sha: target.head_sha.toLowerCase(),
+			}))
+			.sort(compareShipJudgmentApprovalTargets);
+		const evidence = evidenceLedgerSchema.parse(
+			JSON.parse(String(delivery.evidence_json)),
+		);
+		const envelope = parseShipJudgmentApprovalEnvelope({
+			schema_version: 1,
+			policy: SHIP_JUDGMENT_APPROVAL_POLICY,
+			judgment_policy: SHIP_JUDGMENT_POLICY,
+			project_name: "flywheel",
+			run_id: run.run_id,
+			issue_id: run.issue_id,
+			question_id: questionId,
+			gate_node_id: holder.gate_node_id,
+			attempt: holder.attempt,
+			source_execution_id: holder.source_execution_id,
+			card: {
+				message_id: holder.card_message_id,
+				thread_id: binding.threadId,
+				channel_id: thread.channel_id,
+			},
+			primary: {
+				repo_identity: primaryBinding.repoIdentity,
+				repo_slug: primaryBinding.repoSlug,
+				pr_number: primaryBinding.prNumber,
+				head_sha: primaryBinding.headSha.toLowerCase(),
+			},
+			targets,
+			manifest: {
+				revision: binding.manifestRevision,
+				digest: shipJudgmentApprovalTargetDigest(
+					targets,
+					binding.manifestRevision,
+				),
+			},
+			judgment: {
+				opinion_id: String(delivery.desired_id),
+				input_id: String(delivery.input_id),
+				evaluation_id: String(delivery.evaluation_id),
+				semantic_digest: String(delivery.semantic_digest),
+				model_snapshot_digest: String(delivery.model_snapshot_digest),
+				evidence_policy: SHIP_JUDGMENT_EVIDENCE_POLICY,
+				evidence_digest: evidenceLedgerDigest(evidence),
+				mechanical_digest: String(delivery.mechanical_digest),
+				mechanical_checked_at: String(delivery.validated_at),
+				presentation_digest: String(delivery.presentation_digest),
+				delivered_message_id: String(delivery.message_id),
+			},
+			control: {
+				event_id: control.eventId,
+				opening_event_id: control.openingEventId,
+				flag_revision: control.flagRevision,
+			},
+			policy_provenance: {
+				id: provenance.provenanceId,
+				original_message_digest: provenance.originalMessageDigest,
+			},
+			decision_at: at,
+			response: { approved: true },
+			actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+			decision_source: SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+		});
+		try {
+			this.assertShipJudgmentApprovalEnvelopeCurrentTx(envelope, at, false);
+		} catch {
+			return { status: "ineligible" };
+		}
+		this.prepareShipJudgmentAutoApproval(envelope);
+		return { status: "prepared", envelope };
+	}
+
+	commitShipJudgmentSourceIfEligible(input: {
+		questionId: string;
+		at: string;
+		writeSource: (args: {
+			expectedOwner: string;
+			projectedThroughSourceRowId: number;
+			envelope: ShipJudgmentApprovalEnvelopeV1;
+		}) => { written: boolean; replayed: boolean };
+	}): ShipJudgmentSourceCommitResult {
+		const priorBusyTimeout = Number(
+			this.db.raw.pragma("busy_timeout", { simple: true }),
+		);
+		this.db.raw.pragma("busy_timeout = 0");
+		try {
+			// Seal the exact source payload before crossing into CommDB. If the
+			// process dies after the Comm write, the next pass reuses these bytes
+			// and the Comm idempotency key can prove a byte-identical replay.
+			const prepared = this.db.raw
+				.transaction(() =>
+					this.prepareShipJudgmentAutoApprovalIntentTx(
+						input.questionId,
+						input.at,
+					),
+				)
+				.immediate();
+			if (prepared.status !== "prepared") return prepared;
+			return this.db.raw
+				.transaction((): ShipJudgmentSourceCommitResult => {
+					const flag = this.getFlagValueRow(
+						"auto_merge_narrow_gate",
+						"flywheel",
+					);
+					if (flag?.lastEffective !== "auto") return { status: "not_auto" };
+					const sourceEventId = shipJudgmentApprovalSourceEventId(
+						input.questionId,
+					);
+					const envelope = parseShipJudgmentApprovalEnvelope(
+						JSON.parse(
+							this.getShipJudgmentAutoApproval(sourceEventId)!.envelopeJson,
+						),
+					);
+					try {
+						this.assertShipJudgmentApprovalEnvelopeCurrentTx(envelope, input.at);
+					} catch (error) {
+						this.recordShipJudgmentAutoApprovalDisposition({
+							sourceEventId,
+							disposition: "rejected",
+							reason: error instanceof Error ? error.message.slice(0, 200) : "ineligible",
+							at: input.at,
+						});
+						return { status: "ineligible" };
+					}
+					const projectedThroughSourceRowId = Number(
+						this.workflowSelectAll(
+							"SELECT last_row_id FROM workflow_source_cursor WHERE project='flywheel'",
+							[],
+						)[0]?.last_row_id ?? 0,
+					);
+					const written = input.writeSource({
+						expectedOwner: envelope.source_execution_id,
+						projectedThroughSourceRowId,
+						envelope,
+					});
+					if (!written.written) return { status: "not_candidate" };
+					this.recordShipJudgmentAutoApprovalDisposition({
+						sourceEventId,
+						disposition: "source_written",
+						reason: written.replayed ? "replayed" : "written",
+						at: input.at,
+					});
+					return {
+						status: written.replayed ? "replayed" : "written",
+						envelope,
+					};
+				})
+				.immediate();
+		} finally {
+			this.db.raw.pragma(`busy_timeout = ${priorBusyTimeout}`);
+		}
 	}
 
 	private migrateShipJudgmentLedger(): void {
@@ -5725,11 +7224,89 @@ export class StateStore {
 					history_lease_owner TEXT, history_generation INTEGER NOT NULL DEFAULT 0,
 					history_expires_at TEXT, last_error TEXT
 				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_policy_provenance (
+					provenance_id TEXT PRIMARY KEY,
+					policy TEXT NOT NULL CHECK(policy='three-point-auto-v1'),
+					channel_id TEXT NOT NULL,
+					thread_id TEXT NOT NULL,
+					message_id TEXT NOT NULL UNIQUE,
+					author_id TEXT NOT NULL,
+					message_created_at TEXT NOT NULL,
+					original_message_digest TEXT NOT NULL CHECK(length(original_message_digest)=64),
+					verified_at TEXT NOT NULL,
+					verification_receipt_id TEXT NOT NULL UNIQUE
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_auto_approval (
+					source_event_id TEXT PRIMARY KEY,
+					question_id TEXT NOT NULL UNIQUE,
+					opinion_id TEXT NOT NULL,
+					input_id TEXT NOT NULL,
+					evaluation_id TEXT NOT NULL,
+					run_id TEXT NOT NULL,
+					source_execution_id TEXT NOT NULL,
+					binding_digest TEXT NOT NULL CHECK(length(binding_digest)=64),
+					targets_digest TEXT NOT NULL CHECK(length(targets_digest)=64),
+					manifest_revision INTEGER NOT NULL CHECK(manifest_revision>=0),
+					control_event_id TEXT NOT NULL,
+					opening_event_id TEXT NOT NULL,
+					flag_revision INTEGER NOT NULL CHECK(flag_revision>0),
+					policy_provenance_id TEXT NOT NULL REFERENCES ship_judgment_policy_provenance(provenance_id),
+					mechanical_digest TEXT NOT NULL CHECK(length(mechanical_digest)=64),
+					presentation_digest TEXT NOT NULL CHECK(length(presentation_digest)=64),
+					envelope_json TEXT NOT NULL CHECK(json_valid(envelope_json) AND length(CAST(envelope_json AS BLOB))<=65536),
+					envelope_hash TEXT NOT NULL CHECK(length(envelope_hash)=64),
+					created_at TEXT NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_auto_approval_disposition (
+					source_event_id TEXT NOT NULL REFERENCES ship_judgment_auto_approval(source_event_id),
+					disposition TEXT NOT NULL CHECK(disposition IN ('prepared','source_written','applied','rejected')),
+					reason TEXT NOT NULL,
+					at TEXT NOT NULL,
+					PRIMARY KEY(source_event_id,disposition,reason)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_legacy_retirement (
+					question_id TEXT NOT NULL,
+					retirement_policy TEXT NOT NULL CHECK(retirement_policy='three-point-retirement-v1'),
+					thread_id TEXT NOT NULL,
+					card_message_id TEXT NOT NULL,
+					legacy_message_id TEXT,
+					legacy_marker TEXT NOT NULL,
+					legacy_state TEXT NOT NULL,
+					legacy_posting_at TEXT,
+					status TEXT NOT NULL CHECK(status IN ('pending','claimed','retired','unavailable')),
+					generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0),
+					lease_owner TEXT,
+					expires_at TEXT,
+					retry_after TEXT,
+					last_error TEXT,
+					retired_at TEXT,
+					observed_at TEXT NOT NULL,
+					PRIMARY KEY(question_id,retirement_policy)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_mode_check (
+					control_event_id TEXT PRIMARY KEY REFERENCES auto_narrow_control_event(event_id),
+					mode TEXT NOT NULL CHECK(mode IN ('dry_run','auto')),
+					policy TEXT NOT NULL CHECK(policy='ship-judgment-v1'),
+					status TEXT NOT NULL CHECK(status IN ('pending','passed','failed','superseded')),
+					question_id TEXT,
+					card_message_id TEXT,
+					opinion_id TEXT,
+					message_id TEXT,
+					observed_at TEXT,
+					reason TEXT
+				);
 				CREATE INDEX IF NOT EXISTS ship_judgment_input_project ON ship_judgment_input(project_name,requested_at);
 				CREATE INDEX IF NOT EXISTS ship_judgment_job_work ON ship_judgment_job(state,expires_at);
 				CREATE INDEX IF NOT EXISTS ship_judgment_opinion_question ON ship_judgment_opinion(question_id,created_at);
 				CREATE INDEX IF NOT EXISTS ship_judgment_outcome_question ON ship_judgment_outcome(question_id,decided_at);
 			`);
+			for (const name of ["policy_provenance", "auto_approval"] as const) {
+				for (const operation of ["UPDATE", "DELETE"] as const) {
+					this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ship_judgment_${name}_no_${operation.toLowerCase()}
+						BEFORE ${operation} ON ship_judgment_${name}
+						BEGIN SELECT RAISE(ABORT, 'ship_judgment_${name} is immutable'); END;`);
+				}
+			}
 			for (const name of ["input", "evaluation", "opinion", "outcome", "clarification"] as const) {
 				for (const operation of ["UPDATE", "DELETE"] as const) {
 					this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ship_judgment_${name}_no_${operation.toLowerCase()}
@@ -5757,7 +7334,21 @@ export class StateStore {
 				if(!deliveryColumns.some(existing=>existing.name===column)) this.db.raw.exec(`ALTER TABLE ship_judgment_delivery ADD COLUMN ${column} TEXT NULL`);
 			}
             if (!deliveryColumns.some(column => column.name === "delivery_mode")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'dry_run' CHECK(delivery_mode IN ('dry_run','auto','off'))");
-            if (!deliveryColumns.some(column => column.name === "mode_label")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN mode_label TEXT NOT NULL DEFAULT 'current' CHECK(mode_label IN ('current','history'))");
+			if (!deliveryColumns.some(column => column.name === "mode_label")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN mode_label TEXT NOT NULL DEFAULT 'current' CHECK(mode_label IN ('current','history'))");
+			const retirementColumns = this.db.raw.prepare("PRAGMA table_info(ship_judgment_legacy_retirement)").all() as {name:string}[];
+			if (!retirementColumns.some(column => column.name === "legacy_posting_at")) this.db.raw.exec("ALTER TABLE ship_judgment_legacy_retirement ADD COLUMN legacy_posting_at TEXT NULL");
+			this.db.raw.exec(`INSERT OR IGNORE INTO ship_judgment_legacy_retirement
+				(question_id,retirement_policy,thread_id,card_message_id,legacy_message_id,
+				 legacy_marker,legacy_state,legacy_posting_at,status,observed_at)
+				SELECT question_id,'three-point-retirement-v1',issue_thread_id,card_message_id,
+				 followup_message_id,correlation_marker,state,posting_at,'pending',
+				 strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				FROM auto_narrow_opinion_delivery`);
+			this.db.raw.exec(`INSERT OR IGNORE INTO ship_judgment_mode_check
+				(control_event_id,mode,policy,status,reason)
+				SELECT event_id,mode,'ship-judgment-v1','pending','awaiting_first_card'
+				FROM auto_narrow_control_event WHERE project_name='flywheel'
+				AND control_seq=(SELECT MAX(control_seq) FROM auto_narrow_control_event WHERE project_name='flywheel')`);
 			const columns = this.db.raw.prepare("PRAGMA table_info(auto_narrow_opinion_delivery)").all() as { name: string }[];
 			for (const column of ["legacy_freeze_requested_at", "legacy_frozen_at"] as const) {
 				if (!columns.some(existing => existing.name === column)) {
@@ -6237,6 +7828,108 @@ export class StateStore {
 		} finally {
 			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
 		}
+	}
+
+	private migrateVoiceHealthDemandProjection(): void {
+		this.db.transaction(() => {
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS voice_health_demand_source (
+					singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+					source_id TEXT NOT NULL,
+					trigger_digest TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				)
+			`);
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS voice_health_demand_events (
+					event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+					mutation TEXT NOT NULL CHECK(mutation IN ('insert','update','delete')),
+					session_id TEXT NOT NULL,
+					project_id TEXT NOT NULL,
+					meeting_id TEXT,
+					old_state TEXT,
+					new_state TEXT,
+					reason_class TEXT,
+					cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)),
+					ending_started INTEGER NOT NULL CHECK(ending_started IN (0,1)),
+					ended INTEGER NOT NULL CHECK(ended IN (0,1)),
+					observed_at TEXT NOT NULL
+				)
+			`);
+				const existing = this.db.raw
+					.prepare(
+						"SELECT source_id, trigger_digest FROM voice_health_demand_source WHERE singleton = 1",
+					)
+					.get() as
+					| { source_id: string; trigger_digest: string }
+					| undefined;
+				const installedTriggers = this.db.raw
+					.prepare(
+						`SELECT name, sql FROM sqlite_master
+						 WHERE type = 'trigger' AND name LIKE 'voice_health_demand_sessions_%'`,
+					)
+					.all() as Array<{ name: string; sql: string | null }>;
+				const installedByName = new Map(
+					installedTriggers.map((trigger) => [trigger.name, trigger.sql]),
+				);
+				const installedDigest = createHash("sha256")
+					.update(
+						VOICE_HEALTH_DEMAND_TRIGGER_NAMES.map((name) =>
+							normalizedVoiceHealthTriggerSql(installedByName.get(name) ?? ""),
+						).join("\n"),
+					)
+					.digest("hex");
+				if (
+					existing?.trigger_digest === VOICE_HEALTH_DEMAND_TRIGGER_DIGEST &&
+					installedTriggers.length === VOICE_HEALTH_DEMAND_TRIGGER_NAMES.length &&
+					installedDigest === VOICE_HEALTH_DEMAND_TRIGGER_DIGEST
+				)
+					return;
+				const knownLegacyContract =
+					existing !== undefined &&
+					VOICE_HEALTH_DEMAND_LEGACY_TRIGGER_DIGESTS.has(
+						existing.trigger_digest,
+					) &&
+					installedTriggers.length === VOICE_HEALTH_DEMAND_TRIGGER_NAMES.length &&
+					installedDigest === existing.trigger_digest;
+				if (existing && !knownLegacyContract) return;
+
+				// The first install is a baseline: existing session rows become the
+				// current projection, never fabricated historical change events.
+				for (const name of VOICE_HEALTH_DEMAND_TRIGGER_NAMES) {
+					this.db.run(`DROP TRIGGER IF EXISTS ${name}`);
+				}
+				this.db.run("DELETE FROM voice_health_demand_events");
+				this.db.run(
+					"DELETE FROM sqlite_sequence WHERE name = 'voice_health_demand_events'",
+				);
+				if (existing) {
+					this.db.run(
+						`UPDATE voice_health_demand_source
+						 SET source_id = ?, trigger_digest = ?, created_at = ?
+						 WHERE singleton = 1`,
+						[
+							randomUUID(),
+							VOICE_HEALTH_DEMAND_TRIGGER_DIGEST,
+							new Date().toISOString(),
+						],
+					);
+				} else {
+					this.db.run(
+						`INSERT INTO voice_health_demand_source
+						 (singleton, source_id, trigger_digest, created_at)
+						 VALUES (1, ?, ?, ?)`,
+						[
+							randomUUID(),
+							VOICE_HEALTH_DEMAND_TRIGGER_DIGEST,
+							new Date().toISOString(),
+						],
+					);
+				}
+				this.db.run(VOICE_HEALTH_DEMAND_TRIGGER_SQL.insert);
+			this.db.run(VOICE_HEALTH_DEMAND_TRIGGER_SQL.delete);
+			this.db.run(VOICE_HEALTH_DEMAND_TRIGGER_SQL.update);
+		});
 	}
 
 	migrate(): void {
@@ -7038,6 +8731,7 @@ export class StateStore {
 		this.db.run(
 			"UPDATE voice_sessions SET ending_started_at = created_at WHERE state = 'ending' AND ending_started_at IS NULL",
 		);
+		this.migrateVoiceHealthDemandProjection();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
 			ON voice_sessions(voice_channel_id)
@@ -7412,6 +9106,7 @@ export class StateStore {
 				source_event_id TEXT NOT NULL,
 				expected_plan_path TEXT NOT NULL,
 				expected_blob_sha TEXT NOT NULL,
+				reviewed_commit_sha TEXT,
 				is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0,1)),
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				delivered_at TEXT,
@@ -7422,6 +9117,54 @@ export class StateStore {
 		this.db.run(
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_manifest_current
 			   ON design_review_manifest(execution_id) WHERE is_current = 1`,
+		);
+		try {
+			this.db.run(
+				"ALTER TABLE design_review_manifest ADD COLUMN reviewed_commit_sha TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS design_review_approval_proof (
+				proof_id TEXT PRIMARY KEY,
+				lane TEXT NOT NULL CHECK (lane IN ('coordinator','manifest')),
+				project_name TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				repository_identity TEXT NOT NULL,
+				review_job_request_id TEXT,
+				manifest_request_id TEXT,
+				manifest_revision INTEGER,
+				plan_path TEXT NOT NULL,
+				reviewed_commit_sha TEXT NOT NULL,
+				expected_blob_sha TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN ('captured','validated','approved','invalidated')),
+				captured_at TEXT NOT NULL,
+				validation_receipt_id TEXT UNIQUE,
+				validated_at TEXT,
+				verdict_receipt_id TEXT UNIQUE,
+				approved_at TEXT,
+				invalidated_at TEXT,
+				invalidation_reason TEXT,
+				CHECK (
+					(lane = 'coordinator' AND review_job_request_id IS NOT NULL
+					 AND manifest_request_id IS NULL AND manifest_revision IS NULL)
+					OR
+					(lane = 'manifest' AND review_job_request_id IS NULL
+					 AND manifest_request_id IS NOT NULL AND manifest_revision > 0)
+				)
+			)
+		`);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_proof_coordinator
+			   ON design_review_approval_proof(review_job_request_id)
+			 WHERE lane = 'coordinator'`,
+		);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_proof_manifest
+			   ON design_review_approval_proof(manifest_request_id, manifest_revision)
+			 WHERE lane = 'manifest'`,
 		);
 
 		// FLY-1251: exact-head, server-owned docs-only/code classification. A
@@ -7516,7 +9259,13 @@ export class StateStore {
 		// stamps; NULL = pre-FLY-1188 legacy row (claude-author→codex-reviewer
 		// lane only). request_id binds a record to its review job (codex-author
 		// lane).
-		for (const col of ["author_family", "reviewer_family", "request_id"]) {
+		for (const col of [
+			"author_family",
+			"reviewer_family",
+			"request_id",
+			// FLY-2763: same-family review sanction (Codex quota outage lane)
+			"same_family_sanction",
+		]) {
 			try {
 				this.db.run(`ALTER TABLE codex_review_record ADD COLUMN ${col} TEXT`);
 			} catch {
@@ -7577,6 +9326,7 @@ export class StateStore {
 						author_family TEXT,
 						reviewer_family TEXT,
 						request_id TEXT,
+						same_family_sanction TEXT,
 						PRIMARY KEY (execution_id, target_repo_identity, target_pr_head_sha)
 					)
 				`);
@@ -7586,14 +9336,14 @@ export class StateStore {
 						issue_id, project_name, status, reviewed_target,
 						codex_thread_id, rounds, verdict_event_id, created_at,
 						approved_at, hold_notified_at, stuck_notified_at,
-						author_family, reviewer_family, request_id
+						author_family, reviewer_family, request_id, same_family_sanction
 					)
 					SELECT execution_id,
 						COALESCE(NULLIF(target_repo_identity, ''), '__main__'),
 						target_pr_head_sha, issue_id, project_name, status,
 						reviewed_target, codex_thread_id, rounds, verdict_event_id,
 						created_at, approved_at, hold_notified_at, stuck_notified_at,
-						author_family, reviewer_family, request_id
+						author_family, reviewer_family, request_id, same_family_sanction
 					FROM codex_review_record
 				`);
 				this.db.run("DROP TABLE codex_review_record");
@@ -7702,6 +9452,8 @@ export class StateStore {
 			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
 			["retired_reviewer_session_uuid", "TEXT"],
+			// FLY-2763: same-family sanction captured at request time
+			["same_family_sanction", "TEXT"],
 		] as const) {
 			if (!reviewJobColumns.includes(column)) {
 				this.db.run(
@@ -8265,6 +10017,7 @@ export class StateStore {
 		// ledger migration — it indexes workflow_run. Production reaches it only
 		// through the workflow engine when claims writes are enabled.
 		this.migrateWorkflowLedger();
+		this.migrateCloseoutAttributionEpoch();
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -8280,6 +10033,8 @@ export class StateStore {
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
 		this.migrateEpicPage();
+		this.migrateShuttleProjection();
+		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
@@ -8579,6 +10334,57 @@ export class StateStore {
 		});
 		this.addColumnIfMissing("epic_page_publication", "last_content_digest", "TEXT");
 		this.addColumnIfMissing("epic_page_publication", "last_hosting_key", "TEXT");
+	}
+
+	private migrateShuttleProjection(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS shuttle_unit_projection (
+				unit_id TEXT PRIMARY KEY,
+				project_name TEXT NOT NULL,
+				source_id TEXT NOT NULL,
+				source_change_seq INTEGER NOT NULL CHECK (source_change_seq >= 0),
+				payload_json TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_shuttle_unit_projection_project
+			ON shuttle_unit_projection(project_name, unit_id)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS shuttle_projection_cursor (
+				source_key TEXT PRIMARY KEY CHECK (source_key = 'updater'),
+				source_id TEXT,
+				cursor INTEGER NOT NULL CHECK (cursor >= 0),
+				status TEXT NOT NULL CHECK (status IN ('complete','truncated','unavailable')),
+				last_ok_at TEXT,
+				last_error TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
+	}
+
+	private migrateVoiceHealthProjection(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_health_projection (
+				project_name TEXT PRIMARY KEY CHECK (project_name = 'flywheel'),
+				source_id TEXT NOT NULL,
+				source_change_seq INTEGER NOT NULL CHECK (source_change_seq >= 0),
+				payload_json TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_health_projection_cursor (
+				source_key TEXT PRIMARY KEY CHECK (source_key = 'voice'),
+				source_id TEXT,
+				cursor INTEGER NOT NULL CHECK (cursor >= 0),
+				status TEXT NOT NULL CHECK (status IN ('complete','truncated','unavailable')),
+				last_ok_at TEXT,
+				last_error TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
 	}
 
 	/** FLY-1778/2100: scoped current-value rows plus append-only operator audit. */
@@ -9329,6 +11135,116 @@ export class StateStore {
 		return row ? this.mapAutoNarrowControlEvent(row) : undefined;
 	}
 
+	getShipJudgmentModeCheck(
+		controlEventId: string,
+	): ShipJudgmentModeCheckRow | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM ship_judgment_mode_check WHERE control_event_id=?")
+			.get(controlEventId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					controlEventId: String(row.control_event_id),
+					mode: row.mode as "dry_run" | "auto",
+					policy: String(row.policy),
+					status: row.status as ShipJudgmentModeCheckRow["status"],
+					questionId: row.question_id == null ? null : String(row.question_id),
+					cardMessageId:
+						row.card_message_id == null ? null : String(row.card_message_id),
+					opinionId: row.opinion_id == null ? null : String(row.opinion_id),
+					messageId: row.message_id == null ? null : String(row.message_id),
+					observedAt: row.observed_at == null ? null : String(row.observed_at),
+					reason: row.reason == null ? null : String(row.reason),
+				}
+			: undefined;
+	}
+
+	reconcileShipJudgmentModeCheck(at: string): ShipJudgmentModeCheckRow | undefined {
+		if (!StateStore.workflowFiniteTimestamp(at)) {
+			throw new Error("ship judgment mode check timestamp invalid");
+		}
+		return this.db.raw.transaction(() => {
+			const control = this.getLatestAutoNarrowControlEvent("flywheel");
+			if (!control) return undefined;
+			const check = this.getShipJudgmentModeCheck(control.eventId);
+			if (!check || check.status === "superseded" || check.status === "passed") {
+				return check;
+			}
+			const selected = this.db.raw.prepare(`SELECT d.question_id,d.card_message_id,h.run_id,
+				d.message_id,d.visible_at,d.posted_id AS opinion_id,o.evidence_json,h.state AS holder_state,
+				COALESCE((SELECT status FROM ship_judgment_legacy_retirement lr
+				 WHERE lr.question_id=d.question_id AND lr.retirement_policy='three-point-retirement-v1'), 'absent') AS legacy_status
+				FROM ship_judgment_delivery d
+				JOIN ship_judgment_opinion o ON o.opinion_id=d.posted_id
+				JOIN workflow_gate_holder h ON h.question_id=d.question_id
+				WHERE d.purpose='opinion' AND d.state='delivered' AND d.mode_label='current'
+				AND d.delivery_mode=? AND d.message_id IS NOT NULL AND d.visible_at>=?
+				AND (? IS NULL OR d.question_id=?)
+				ORDER BY d.visible_at,d.question_id LIMIT 1`).get(
+				control.mode,
+				control.appliedAt,
+				check.questionId,
+				check.questionId,
+			) as Record<string, unknown> | undefined;
+			if (!selected) return check;
+			if (selected.holder_state !== "awaiting_review") {
+				this.db.raw.prepare(`UPDATE ship_judgment_mode_check SET status='pending',
+					question_id=NULL,card_message_id=NULL,opinion_id=NULL,message_id=NULL,
+					observed_at=?,reason='selected_card_inactive_reselect'
+					WHERE control_event_id=? AND status IN ('pending','failed')`).run(
+					at,
+					control.eventId,
+				);
+				return this.getShipJudgmentModeCheck(control.eventId);
+			}
+			const evidence = (() => {
+				try {
+					return evidenceLedgerSchema.parse(
+						JSON.parse(String(selected.evidence_json ?? "null")),
+					);
+				} catch {
+					return undefined;
+				}
+			})();
+			const valid =
+				evidence?.policyVersion === EVIDENCE_POLICY_VERSION &&
+				!["pending", "claimed"].includes(String(selected.legacy_status));
+			const visibleAt = String(selected.visible_at);
+			const expired = Date.parse(at) - Date.parse(visibleAt) >= 120_000;
+			const status = valid ? "passed" : expired ? "failed" : "pending";
+			const reason = valid
+				? "three_point_opinion_visible"
+				: evidence?.policyVersion !== EVIDENCE_POLICY_VERSION
+					? "opinion_policy_mismatch"
+					: "legacy_retirement_pending";
+			this.db.raw.prepare(`UPDATE ship_judgment_mode_check SET status=?,question_id=?,
+				card_message_id=?,opinion_id=?,message_id=?,observed_at=?,reason=?
+				WHERE control_event_id=? AND status IN ('pending','failed')`).run(
+				status,
+				String(selected.question_id),
+				String(selected.card_message_id),
+				String(selected.opinion_id),
+				String(selected.message_id),
+				at,
+				reason,
+				control.eventId,
+			);
+			if (status === "failed") {
+				this.appendWorkflowRunEventTx({
+					runId: String(selected.run_id),
+					eventUid: `ship_judgment_mode_check_failed:${control.eventId}`,
+					kind: "ship_judgment_delivery_error",
+					payload: {
+						question_id: String(selected.question_id),
+						control_event_id: control.eventId,
+						reason,
+						policy: "ship-judgment-v1",
+					},
+				});
+			}
+			return this.getShipJudgmentModeCheck(control.eventId);
+		}).immediate();
+	}
+
 	applyAutoNarrowControlChange(args: {
 		eventId: string;
 		projectName: string;
@@ -9382,6 +11298,12 @@ export class StateStore {
 				args.founderMessageId,
 			);
 			if (replay) {
+				this.db.raw.prepare(`INSERT OR IGNORE INTO ship_judgment_mode_check
+					(control_event_id,mode,policy,status,reason)
+					VALUES (?,?,'ship-judgment-v1','pending','awaiting_first_card')`).run(
+					replay.eventId,
+					replay.mode,
+				);
 				result =
 					replay.projectName === args.projectName &&
 					replay.mode === args.mode &&
@@ -9506,6 +11428,16 @@ export class StateStore {
 				args.founderMessageId,
 			);
 			if (!event) throw new Error("auto narrow control event disappeared");
+			this.db.raw.prepare(`UPDATE ship_judgment_mode_check SET status='superseded',
+				observed_at=?,reason='newer_control_event' WHERE status IN ('pending','failed')`).run(
+				new Date(now).toISOString(),
+			);
+			this.db.raw.prepare(`INSERT INTO ship_judgment_mode_check
+				(control_event_id,mode,policy,status,reason)
+				VALUES (?,?,'ship-judgment-v1','pending','awaiting_first_card')`).run(
+				event.eventId,
+				event.mode,
+			);
 			result = { ok: true, replayed: false, event };
 		});
 		transaction.immediate();
@@ -14322,13 +16254,36 @@ export class StateStore {
 				row.outcome.startsWith("ok_unpublished:"),
 		);
 		const publishedRow = rows.find((row) => row.outcome.startsWith("ok:"));
+		const publication = this.getEpicPagePublication(projectName);
+		const authoritativePublishedAt =
+			publication?.published === true ? publication.last_published_at : undefined;
+		const authoritativePublishedVersion =
+			publication?.published === true ? publication.last_version : undefined;
+		const publicationReceipt =
+			authoritativePublishedVersion === undefined
+				? undefined
+				: this.workflowSelectAll(
+						`SELECT trigger FROM epic_page
+						  WHERE project_name = ? AND version = ?`,
+						[projectName, authoritativePublishedVersion],
+					)[0];
+		const publicationTrigger = ["manual", "event", "scan"].includes(
+			String(publicationReceipt?.trigger),
+		)
+			? (String(publicationReceipt?.trigger) as EpicPageTrigger)
+			: "manual";
+		const publishedBoundary = authoritativePublishedAt ?? publishedRow?.attempted_at;
+		const isPublishFailure = (outcome: string): boolean =>
+			outcome.startsWith("transient: publish_failed:") ||
+			outcome === "structural: epic_html_too_large";
 		const publishFailures = rows.filter((row) => {
-			if (row.trigger === "manual" || row.outcome.startsWith("ok")) return false;
-			if (!publishedRow) return true;
+			if (!isPublishFailure(row.outcome)) return false;
+			if (authoritativePublishedAt)
+				return row.attempted_at >= authoritativePublishedAt;
+			if (!publishedRow || !publishedBoundary) return true;
 			return (
-				row.attempted_at > publishedRow.attempted_at ||
-				(row.attempted_at === publishedRow.attempted_at &&
-					row.rowid > publishedRow.rowid)
+				row.attempted_at > publishedBoundary ||
+				(row.attempted_at === publishedBoundary && row.rowid > publishedRow.rowid)
 			);
 		});
 		const lastFailure = rows.find((row) => !row.outcome.startsWith("ok"));
@@ -14342,7 +16297,16 @@ export class StateStore {
 				trigger: generatedRow.trigger,
 			};
 		}
-		if (publishedRow) {
+		if (
+			authoritativePublishedAt &&
+			authoritativePublishedVersion !== undefined
+		) {
+			result.last_published = {
+				version: authoritativePublishedVersion,
+				attempted_at: authoritativePublishedAt,
+				trigger: publicationTrigger,
+			};
+		} else if (publishedRow) {
 			result.last_published = {
 				version: parseVersion(publishedRow.outcome)!,
 				attempted_at: publishedRow.attempted_at,
@@ -14369,6 +16333,423 @@ export class StateStore {
 			};
 		}
 		return result;
+	}
+
+	getShuttleProjectionCursor(): ShuttleProjectionCursorRead {
+		const row = this.workflowSelectAll(
+			`SELECT source_id, cursor, status, last_ok_at
+			   FROM shuttle_projection_cursor
+			  WHERE source_key = 'updater'`,
+			[],
+		)[0];
+		return row
+			? {
+					sourceId: row.source_id == null ? null : String(row.source_id),
+					cursor: Number(row.cursor),
+					status: row.status as ShuttleDeploymentView["sourceStatus"],
+					lastOkAt: row.last_ok_at == null ? null : String(row.last_ok_at),
+				}
+			: {
+					sourceId: null,
+					cursor: 0,
+					status: "unavailable",
+					lastOkAt: null,
+				};
+	}
+
+	applyShuttleProjection(input: {
+		sourceId: string;
+		cursor: number;
+		status: "complete" | "truncated";
+		units: ShuttleDeploymentUnit[];
+		now: string;
+	}): ShuttleProjectionApplyResult {
+		if (
+			!input.sourceId.trim() ||
+			input.sourceId.length > 160 ||
+			!Number.isSafeInteger(input.cursor) ||
+			input.cursor < 0 ||
+			!Number.isFinite(Date.parse(input.now))
+		) {
+			throw new Error("shuttle_projection_invalid");
+		}
+		const duplicate = new Set<string>();
+		for (const unit of input.units) {
+			if (
+				!unit.unitId ||
+				!unit.projectName ||
+				duplicate.has(unit.unitId)
+			) {
+				throw new Error("shuttle_projection_unit_invalid");
+			}
+			duplicate.add(unit.unitId);
+		}
+		const cursor = this.getShuttleProjectionCursor();
+		const previous = this.workflowSelectAll(
+			`SELECT unit_id, project_name, payload_json
+			   FROM shuttle_unit_projection ORDER BY unit_id`,
+			[],
+		);
+		if (
+			cursor.sourceId !== null &&
+			cursor.sourceId !== input.sourceId &&
+			previous.length > 0 &&
+			input.units.length === 0
+		) {
+			throw new Error("shuttle_projection_empty_source_reset");
+		}
+		const previousById = new Map(
+			previous.map((row) => [
+				String(row.unit_id),
+				{
+					projectName: String(row.project_name),
+					payload: String(row.payload_json),
+				},
+			]),
+		);
+		const nextById = new Map(
+			input.units.map((unit) => [unit.unitId, canonicalJsonString(unit)]),
+		);
+		const changedProjects = new Set<string>();
+		for (const [unitId, prior] of previousById) {
+			const next = nextById.get(unitId);
+			if (next === undefined || next !== prior.payload)
+				changedProjects.add(prior.projectName);
+		}
+		for (const unit of input.units) {
+			if (previousById.get(unit.unitId)?.payload !== nextById.get(unit.unitId))
+				changedProjects.add(unit.projectName);
+		}
+		const statusChanged = cursor.status !== input.status;
+		if (statusChanged) {
+			for (const unit of input.units) changedProjects.add(unit.projectName);
+			for (const row of previous) changedProjects.add(String(row.project_name));
+		}
+		this.db.transaction(() => {
+			if (input.units.length === 0) {
+				this.db.run("DELETE FROM shuttle_unit_projection");
+			} else {
+				const placeholders = input.units.map(() => "?").join(",");
+				this.db.run(
+					`DELETE FROM shuttle_unit_projection
+					  WHERE unit_id NOT IN (${placeholders})`,
+					input.units.map((unit) => unit.unitId),
+				);
+			}
+			for (const unit of input.units) {
+				this.db.run(
+					`INSERT INTO shuttle_unit_projection
+					 (unit_id, project_name, source_id, source_change_seq, payload_json, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(unit_id) DO UPDATE SET
+					 project_name=excluded.project_name,
+					 source_id=excluded.source_id,
+					 source_change_seq=excluded.source_change_seq,
+					 payload_json=excluded.payload_json,
+					 updated_at=excluded.updated_at`,
+					[
+						unit.unitId,
+						unit.projectName,
+						input.sourceId,
+						input.cursor,
+						nextById.get(unit.unitId)!,
+						input.now,
+					],
+				);
+			}
+			this.db.run(
+				`INSERT INTO shuttle_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('updater', ?, ?, ?, ?, NULL, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 source_id=excluded.source_id, cursor=excluded.cursor,
+				 status=excluded.status, last_ok_at=excluded.last_ok_at,
+				 last_error=NULL, updated_at=excluded.updated_at`,
+				[input.sourceId, input.cursor, input.status, input.now, input.now],
+			);
+		});
+		this.save();
+		return {
+			changed: changedProjects.size > 0 || statusChanged,
+			changedProjects: [...changedProjects].sort(),
+		};
+	}
+
+	markShuttleProjectionUnavailable(input: {
+		error: string;
+		now: string;
+	}): boolean {
+		if (!input.error.trim() || !Number.isFinite(Date.parse(input.now)))
+			throw new Error("shuttle_projection_unavailable_invalid");
+		const previous = this.getShuttleProjectionCursor();
+		this.db.run(
+			`INSERT INTO shuttle_projection_cursor
+			 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+			 VALUES ('updater', NULL, 0, 'unavailable', NULL, ?, ?)
+			 ON CONFLICT(source_key) DO UPDATE SET
+			 status='unavailable', last_error=excluded.last_error,
+			 updated_at=excluded.updated_at`,
+			[input.error.slice(0, 240), input.now],
+		);
+		this.save();
+		return previous.status !== "unavailable";
+	}
+
+	getShuttleDeploymentProjection(projectName: string): ShuttleDeploymentView {
+		if (!projectName.trim()) throw new Error("shuttle_projection_project_required");
+		const cursor = this.getShuttleProjectionCursor();
+		const rows = this.workflowSelectAll(
+			`SELECT payload_json, updated_at
+			   FROM shuttle_unit_projection
+			  ${projectName === "flywheel" ? "" : "WHERE project_name = ?"}
+			  ORDER BY project_name, unit_id`,
+			projectName === "flywheel" ? [] : [projectName],
+		);
+		const units = rows.map(
+			(row) => JSON.parse(String(row.payload_json)) as ShuttleDeploymentUnit,
+		);
+		const active = units
+			.filter((unit) => unit.episodeId !== null)
+			.sort(
+				(a, b) =>
+					Number(b.founderAware) - Number(a.founderAware) ||
+					a.projectName.localeCompare(b.projectName) ||
+					a.displayName.localeCompare(b.displayName),
+			);
+		const healthy = units
+			.filter((unit) => unit.episodeId === null)
+			.sort(
+				(a, b) =>
+					a.projectName.localeCompare(b.projectName) ||
+					a.displayName.localeCompare(b.displayName),
+			);
+		const retained = [
+			...active,
+			...healthy.slice(0, Math.max(0, 200 - active.length)),
+		];
+		const observedAt = units
+			.map((unit) => unit.observedAt)
+			.sort()
+			.at(-1) ?? cursor.lastOkAt;
+		return {
+			schemaVersion: 1,
+			sourceStatus:
+				units.length > retained.length && cursor.status === "complete"
+					? "truncated"
+					: cursor.status,
+			observedAt,
+			retained: retained.length,
+			total: units.length,
+			units: retained,
+			activeIncidents: active.map((unit) => unit.unitId).sort(),
+		};
+	}
+
+	getVoiceHealthProjectionCursor(): VoiceHealthProjectionCursorRead {
+		const row = this.workflowSelectAll(
+			`SELECT source_id, cursor, status, last_ok_at
+			   FROM voice_health_projection_cursor
+			  WHERE source_key = 'voice'`,
+			[],
+		)[0];
+		return row
+			? {
+					sourceId: row.source_id == null ? null : String(row.source_id),
+					cursor: Number(row.cursor),
+					status: row.status as VoiceHealthView["sourceStatus"],
+					lastOkAt:
+						row.last_ok_at == null ? null : String(row.last_ok_at),
+				}
+			: {
+					sourceId: null,
+					cursor: 0,
+					status: "unavailable",
+					lastOkAt: null,
+				};
+	}
+
+	applyVoiceHealthProjection(input: {
+		sourceId: string;
+		cursor: number;
+		status: "complete" | "truncated";
+		view: VoiceHealthView;
+		now: string;
+	}): { changed: boolean } {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+				input.sourceId,
+			) ||
+			!Number.isSafeInteger(input.cursor) ||
+			input.cursor < 0 ||
+			!Number.isFinite(Date.parse(input.now)) ||
+			input.view.schemaVersion !== 1 ||
+			input.view.sourceStatus !== input.status
+		) {
+			throw new Error("voice_health_projection_invalid");
+		}
+		const payload = canonicalJsonString(input.view);
+		let changed = false;
+		this.db.transaction(() => {
+			const cursor = this.getVoiceHealthProjectionCursor();
+			const previous = this.workflowSelectAll(
+				`SELECT source_id, source_change_seq, payload_json
+				   FROM voice_health_projection WHERE project_name = 'flywheel'`,
+				[],
+			)[0];
+			if (
+				cursor.sourceId === input.sourceId &&
+				input.cursor < cursor.cursor
+			) {
+				return;
+			}
+			if (
+				cursor.sourceId === input.sourceId &&
+				input.cursor === cursor.cursor &&
+				previous &&
+				String(previous.payload_json) !== payload
+			) {
+				throw new Error("voice_health_projection_cursor_conflict");
+			}
+			if (previous && String(previous.source_id) !== input.sourceId) {
+				const prior = JSON.parse(
+					String(previous.payload_json),
+				) as VoiceHealthView;
+				if (prior.activeIncidents.length > 0) {
+					throw new Error(
+						"voice_health_projection_source_reset_unverified",
+					);
+				}
+			}
+			changed =
+				!previous ||
+				String(previous.payload_json) !== payload ||
+				cursor.sourceId !== input.sourceId ||
+				cursor.cursor !== input.cursor ||
+				cursor.status !== input.status;
+			this.db.run(
+				`INSERT INTO voice_health_projection
+				 (project_name, source_id, source_change_seq, payload_json, updated_at)
+				 VALUES ('flywheel', ?, ?, ?, ?)
+				 ON CONFLICT(project_name) DO UPDATE SET
+				 source_id=excluded.source_id,
+				 source_change_seq=excluded.source_change_seq,
+				 payload_json=excluded.payload_json,
+				 updated_at=excluded.updated_at`,
+				[input.sourceId, input.cursor, payload, input.now],
+			);
+			this.db.run(
+				`INSERT INTO voice_health_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('voice', ?, ?, ?, ?, NULL, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 source_id=excluded.source_id, cursor=excluded.cursor,
+				 status=excluded.status, last_ok_at=excluded.last_ok_at,
+				 last_error=NULL, updated_at=excluded.updated_at`,
+				[
+					input.sourceId,
+					input.cursor,
+					input.status,
+					input.now,
+					input.now,
+				],
+			);
+		});
+		if (changed) this.save();
+		return { changed };
+	}
+
+	markVoiceHealthProjectionUnavailable(input: {
+		error: string;
+		now: string;
+		sourceId?: string;
+		cursor?: number;
+	}): boolean {
+		const hasCheckpoint =
+			input.sourceId !== undefined || input.cursor !== undefined;
+		if (
+			!input.error.trim() ||
+			input.error.length > 240 ||
+			!Number.isFinite(Date.parse(input.now)) ||
+			(hasCheckpoint &&
+				(!input.sourceId ||
+					input.cursor === undefined ||
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+						input.sourceId,
+					) ||
+					!Number.isSafeInteger(input.cursor) ||
+					input.cursor < 0))
+		) {
+			throw new Error("voice_health_projection_unavailable_invalid");
+		}
+		const previous = this.getVoiceHealthProjectionCursor();
+		if (
+			hasCheckpoint &&
+			previous.sourceId === input.sourceId &&
+			input.cursor! < previous.cursor
+		) {
+			throw new Error("voice_health_projection_unavailable_invalid");
+		}
+		if (hasCheckpoint) {
+			this.db.run(
+				`INSERT INTO voice_health_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('voice', ?, ?, 'unavailable', NULL, ?, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 source_id=excluded.source_id, cursor=excluded.cursor,
+				 status='unavailable', last_error=excluded.last_error,
+				 updated_at=excluded.updated_at`,
+				[input.sourceId, input.cursor, input.error, input.now],
+			);
+		} else {
+			this.db.run(
+				`INSERT INTO voice_health_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('voice', NULL, 0, 'unavailable', NULL, ?, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 status='unavailable', last_error=excluded.last_error,
+				 updated_at=excluded.updated_at`,
+				[input.error, input.now],
+			);
+		}
+		this.save();
+		return (
+			previous.status !== "unavailable" ||
+			(hasCheckpoint &&
+				(previous.sourceId !== input.sourceId || previous.cursor !== input.cursor))
+		);
+	}
+
+	getVoiceHealthProjection(projectName: string): VoiceHealthView {
+		if (!projectName.trim())
+			throw new Error("voice_health_projection_project_required");
+		const cursor = this.getVoiceHealthProjectionCursor();
+		const row = this.workflowSelectAll(
+			`SELECT payload_json FROM voice_health_projection
+			  WHERE project_name = 'flywheel'`,
+			[],
+		)[0];
+		const unavailable = (prior?: VoiceHealthView): VoiceHealthView => ({
+			schemaVersion: 1,
+			sourceStatus: "unavailable",
+			observedAt: prior?.observedAt ?? null,
+			status:
+				(prior?.activeIncidents.length ?? 0) > 0 ? "unhealthy" : "unknown",
+			demandState: prior?.demandState ?? "unknown",
+			phase: prior?.phase ?? "unknown",
+			lastIterationSuccessAt: prior?.lastIterationSuccessAt ?? null,
+			lastProgressAt: prior?.lastProgressAt ?? null,
+			failureStreak: prior?.failureStreak ?? 0,
+			activeIncidents: prior?.activeIncidents ?? [],
+		});
+		if (!row) return unavailable();
+		try {
+			const view = JSON.parse(String(row.payload_json)) as VoiceHealthView;
+			return cursor.status === "unavailable"
+				? unavailable(view)
+				: { ...view, sourceStatus: cursor.status };
+		} catch {
+			return unavailable();
+		}
 	}
 
 	insertEpicPageRenderReceipt(input: {
@@ -14431,17 +16812,27 @@ export class StateStore {
 	getEpicPageSessionFact(
 		projectName: string,
 		keys: string[],
+		generatedAt: string,
+		stuckThresholdMinutes: number,
 	): EpicPageFactProjection<EpicPageSessionValue> {
 		const aliases = normalizeIssueKeys(keys);
 		if (aliases.length === 0) {
-			return { value: { latest: [], ledger_live_count: 0 } };
+			return {
+				value: {
+					latest: [],
+					ledger_live_count: 0,
+					machine_running_count: 0,
+					running_heartbeat_stale_count: 0,
+					running_heartbeat_missing_count: 0,
+				},
+			};
 		}
 		const aliasPlaceholders = aliases.map(() => "?").join(", ");
 		const liveStatuses = [...CMUX_LIVE_SESSION_STATUSES];
 		const livePlaceholders = liveStatuses.map(() => "?").join(", ");
 		const row = this.workflowSelectAll(
 			`WITH matched AS (
-			   SELECT execution_id, status, session_role, branch,
+			   SELECT execution_id, status, session_role, branch, heartbeat_at,
 			          COALESCE(last_activity_at, started_at) AS source_time
 			     FROM sessions
 			    WHERE project_name = ?
@@ -14450,20 +16841,51 @@ export class StateStore {
 			 ), latest AS (
 			   SELECT execution_id, status, session_role, branch, source_time
 			     FROM matched
-			    ORDER BY julianday(source_time) DESC, execution_id ASC
+			    ORDER BY CASE
+			               WHEN status = 'running' AND heartbeat_at IS NOT NULL
+			                    AND julianday(heartbeat_at) >=
+			                        julianday(?) - (? / 1440.0) THEN 0
+			               WHEN status = 'pending' AND source_time IS NULL THEN 1
+			               ELSE 2
+			             END,
+			             julianday(source_time) DESC, execution_id ASC
 			    LIMIT 1
 			 ), aggregate_fact AS (
-			   SELECT COUNT(*) AS ledger_live_count
+			   SELECT SUM(CASE WHEN status IN (${livePlaceholders}) THEN 1 ELSE 0 END)
+			            AS ledger_live_count,
+			          SUM(CASE WHEN status = 'running' AND heartbeat_at IS NOT NULL
+			                    AND julianday(heartbeat_at) >=
+			                        julianday(?) - (? / 1440.0)
+			                   THEN 1 ELSE 0 END) AS machine_running_count,
+			          SUM(CASE WHEN status = 'running' AND heartbeat_at IS NOT NULL
+			                    AND julianday(heartbeat_at) <
+			                        julianday(?) - (? / 1440.0)
+			                   THEN 1 ELSE 0 END) AS running_heartbeat_stale_count,
+			          SUM(CASE WHEN status = 'running' AND heartbeat_at IS NULL
+			                   THEN 1 ELSE 0 END) AS running_heartbeat_missing_count
 			     FROM matched
-			    WHERE status IN (${livePlaceholders})
 			 )
 			 SELECT latest.execution_id, latest.status, latest.session_role,
 			        latest.branch,
 			        strftime('%Y-%m-%dT%H:%M:%SZ', latest.source_time)
 			          AS source_updated_at,
-			        aggregate_fact.ledger_live_count
+			        aggregate_fact.ledger_live_count,
+			        aggregate_fact.machine_running_count,
+			        aggregate_fact.running_heartbeat_stale_count,
+			        aggregate_fact.running_heartbeat_missing_count
 			   FROM aggregate_fact LEFT JOIN latest ON 1 = 1`,
-			[projectName, ...aliases, ...aliases, ...liveStatuses],
+			[
+				projectName,
+				...aliases,
+				...aliases,
+				generatedAt,
+				stuckThresholdMinutes,
+				...liveStatuses,
+				generatedAt,
+				stuckThresholdMinutes,
+				generatedAt,
+				stuckThresholdMinutes,
+			],
 		)[0];
 		const latest =
 			typeof row?.execution_id === "string"
@@ -14483,6 +16905,13 @@ export class StateStore {
 			value: {
 				latest,
 				ledger_live_count: Number(row?.ledger_live_count ?? 0),
+				machine_running_count: Number(row?.machine_running_count ?? 0),
+				running_heartbeat_stale_count: Number(
+					row?.running_heartbeat_stale_count ?? 0,
+				),
+				running_heartbeat_missing_count: Number(
+					row?.running_heartbeat_missing_count ?? 0,
+				),
 			},
 			...(typeof row?.source_updated_at === "string"
 				? { source_updated_at: row.source_updated_at }
@@ -14647,16 +17076,38 @@ export class StateStore {
 	getEpicPageAttemptFact(
 		runId: string,
 		nodeId: string,
+		generatedAt: string,
+		stuckThresholdMinutes: number,
 	): EpicPageFactProjection<EpicPageAttemptValue[]> {
 		const row = this.workflowSelectAll(
-			`SELECT state, attempt,
-			        strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(ended_at, started_at))
+			`SELECT node.state, node.attempt,
+			        CASE
+			          WHEN node.state != 'running' THEN 'not_applicable'
+			          WHEN session.execution_id IS NULL OR session.status != 'running'
+			               OR session.heartbeat_at IS NULL THEN 'missing'
+			          WHEN julianday(session.heartbeat_at) >=
+			               julianday(?) - (? / 1440.0) THEN 'fresh'
+			          ELSE 'stale'
+			        END AS heartbeat_state,
+			        CASE WHEN node.state IN ('pending', 'admitted')
+			                   AND julianday(node.started_at) >=
+			                       julianday(?) - (? / 1440.0)
+			             THEN 1 ELSE 0 END AS starting_recent,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(node.ended_at, node.started_at))
 			          AS source_updated_at
-			   FROM workflow_run_node
-			  WHERE run_id = ? AND node_id = ?
-			  ORDER BY attempt DESC
+			   FROM workflow_run_node node
+			   LEFT JOIN sessions session ON session.execution_id = node.execution_id
+			  WHERE node.run_id = ? AND node.node_id = ?
+			  ORDER BY node.attempt DESC
 			  LIMIT 1`,
-			[runId, nodeId],
+			[
+				generatedAt,
+				stuckThresholdMinutes,
+				generatedAt,
+				stuckThresholdMinutes,
+				runId,
+				nodeId,
+			],
 		)[0];
 		if (!row) return { value: [] };
 		const state = String(row.state);
@@ -14670,6 +17121,14 @@ export class StateStore {
 						state === "admitted" ||
 						state === "running" ||
 						state === "review",
+					machine_live:
+						state === "running" && row.heartbeat_state === "fresh",
+					starting_recent: Number(row.starting_recent ?? 0) === 1,
+					heartbeat_state: row.heartbeat_state as
+						| "fresh"
+						| "stale"
+						| "missing"
+						| "not_applicable",
 				},
 			],
 			...(typeof row.source_updated_at === "string"
@@ -16394,6 +18853,8 @@ export class StateStore {
 			source_event_id: row.source_event_id as string,
 			expected_plan_path: row.expected_plan_path as string,
 			expected_blob_sha: row.expected_blob_sha as string,
+			reviewed_commit_sha:
+				(row.reviewed_commit_sha as string | null) ?? undefined,
 			is_current: Number(row.is_current) === 1,
 			created_at: row.created_at as string,
 			delivered_at: (row.delivered_at as string) ?? undefined,
@@ -16427,9 +18888,12 @@ export class StateStore {
 
 	advanceDesignReviewManifest(input: {
 		executionId: string;
+		issueId: string;
 		projectName: string;
+		repositoryIdentity: string;
 		sourceEventId: string;
 		expectedPlanPath: string;
+		reviewedCommitSha: string;
 		expectedBlobSha: string;
 	}): DesignReviewManifest {
 		for (const [name, value] of Object.entries(input)) {
@@ -16438,8 +18902,9 @@ export class StateStore {
 			}
 		}
 		const blobSha = input.expectedBlobSha.toLowerCase();
-		if (!/^[a-f0-9]{40}$/.test(blobSha)) {
-			throw new Error("design review manifest expectedBlobSha must be 40 hex");
+		const commitSha = input.reviewedCommitSha.toLowerCase();
+		if (!/^[a-f0-9]{40}$/.test(blobSha) || !/^[a-f0-9]{40}$/.test(commitSha)) {
+			throw new Error("design review manifest commit/blob must be 40 hex");
 		}
 
 		let result: DesignReviewManifest | null = null;
@@ -16454,7 +18919,8 @@ export class StateStore {
 				if (
 					existing.project_name !== input.projectName ||
 					existing.expected_plan_path !== input.expectedPlanPath ||
-					existing.expected_blob_sha !== blobSha
+					existing.expected_blob_sha !== blobSha ||
+					existing.reviewed_commit_sha !== commitSha
 				) {
 					throw new Error(
 						`design review source event replay conflict: ${input.sourceEventId}`,
@@ -16479,8 +18945,8 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO design_review_manifest
 				   (execution_id, revision, request_id, project_name, source_event_id,
-				    expected_plan_path, expected_blob_sha, is_current)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+				    expected_plan_path, expected_blob_sha, reviewed_commit_sha, is_current)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 				[
 					input.executionId,
 					revision,
@@ -16489,6 +18955,7 @@ export class StateStore {
 					input.sourceEventId,
 					input.expectedPlanPath,
 					blobSha,
+					commitSha,
 				],
 			);
 			result = this.findDesignReviewManifest(
@@ -16496,6 +18963,20 @@ export class StateStore {
 				"revision",
 				revision,
 			);
+			if (!result) throw new Error("design review manifest insert vanished");
+			this.captureDesignReviewApprovalProof({
+				lane: "manifest",
+				projectName: input.projectName,
+				issueId: input.issueId,
+				executionId: input.executionId,
+				repositoryIdentity: input.repositoryIdentity,
+				manifestRequestId: result.request_id,
+				manifestRevision: result.revision,
+				planPath: input.expectedPlanPath,
+				reviewedCommitSha: commitSha,
+				expectedBlobSha: blobSha,
+				capturedAt: result.created_at,
+			});
 			inserted = true;
 		});
 		if (inserted) this.save();
@@ -16552,6 +19033,177 @@ export class StateStore {
 		return marked;
 	}
 
+	private rowToDesignReviewApprovalProof(
+		row: Record<string, unknown>,
+	): DesignReviewApprovalProof {
+		return {
+			proof_id: row.proof_id as string,
+			lane: row.lane as DesignReviewApprovalProof["lane"],
+			project_name: row.project_name as string,
+			issue_id: row.issue_id as string,
+			execution_id: row.execution_id as string,
+			repository_identity: row.repository_identity as string,
+			review_job_request_id:
+				(row.review_job_request_id as string | null) ?? undefined,
+			manifest_request_id:
+				(row.manifest_request_id as string | null) ?? undefined,
+			manifest_revision:
+				row.manifest_revision == null ? undefined : Number(row.manifest_revision),
+			plan_path: row.plan_path as string,
+			reviewed_commit_sha: row.reviewed_commit_sha as string,
+			expected_blob_sha: row.expected_blob_sha as string,
+			state: row.state as DesignReviewApprovalProofState,
+			captured_at: row.captured_at as string,
+			validation_receipt_id:
+				(row.validation_receipt_id as string | null) ?? undefined,
+			validated_at: (row.validated_at as string | null) ?? undefined,
+			verdict_receipt_id:
+				(row.verdict_receipt_id as string | null) ?? undefined,
+			approved_at: (row.approved_at as string | null) ?? undefined,
+			invalidated_at: (row.invalidated_at as string | null) ?? undefined,
+			invalidation_reason:
+				(row.invalidation_reason as string | null) ?? undefined,
+		};
+	}
+
+	getDesignReviewApprovalProof(proofId: string): DesignReviewApprovalProof | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM design_review_approval_proof WHERE proof_id = ?")
+			.get(proofId) as Record<string, unknown> | undefined;
+		return row ? this.rowToDesignReviewApprovalProof(row) : null;
+	}
+
+	getDesignReviewProofForReviewJob(requestId: string): DesignReviewApprovalProof | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM design_review_approval_proof WHERE lane='coordinator' AND review_job_request_id=?")
+			.get(requestId) as Record<string, unknown> | undefined;
+		return row ? this.rowToDesignReviewApprovalProof(row) : null;
+	}
+
+	getApprovedDesignReviewProofForReviewJob(requestId: string): DesignReviewApprovalProof | null {
+		const proof = this.getDesignReviewProofForReviewJob(requestId);
+		return proof?.state === "approved" ? proof : null;
+	}
+
+	getDesignReviewProofForManifest(requestId: string, revision: number): DesignReviewApprovalProof | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM design_review_approval_proof WHERE lane='manifest' AND manifest_request_id=? AND manifest_revision=?")
+			.get(requestId, revision) as Record<string, unknown> | undefined;
+		return row ? this.rowToDesignReviewApprovalProof(row) : null;
+	}
+
+	getApprovedDesignReviewProofForManifest(requestId: string, revision: number): DesignReviewApprovalProof | null {
+		const proof = this.getDesignReviewProofForManifest(requestId, revision);
+		return proof?.state === "approved" ? proof : null;
+	}
+
+	captureDesignReviewApprovalProof(input: {
+		lane: "coordinator" | "manifest";
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		repositoryIdentity: string;
+		reviewJobRequestId?: string;
+		manifestRequestId?: string;
+		manifestRevision?: number;
+		planPath: string;
+		reviewedCommitSha: string;
+		expectedBlobSha: string;
+		capturedAt: string;
+	}): DesignReviewApprovalProof {
+		const coordinator = input.lane === "coordinator";
+		if (
+			[ input.projectName, input.issueId, input.executionId, input.repositoryIdentity, input.planPath ].some((value) => !value?.trim()) ||
+			!/^[0-9a-f]{40}$/.test(input.reviewedCommitSha.toLowerCase()) ||
+			!/^[0-9a-f]{40}$/.test(input.expectedBlobSha.toLowerCase()) ||
+			!Number.isFinite(Date.parse(input.capturedAt)) ||
+			(coordinator && (!input.reviewJobRequestId || input.manifestRequestId || input.manifestRevision)) ||
+			(!coordinator && (!input.manifestRequestId || !Number.isInteger(input.manifestRevision) || (input.manifestRevision ?? 0) < 1 || input.reviewJobRequestId !== undefined))
+		) throw new Error("design review approval proof identity is invalid");
+		const existing = coordinator
+			? this.getDesignReviewProofForReviewJob(input.reviewJobRequestId!)
+			: this.getDesignReviewProofForManifest(input.manifestRequestId!, input.manifestRevision!);
+		if (existing) {
+			if (
+				existing.project_name !== input.projectName ||
+				existing.issue_id !== input.issueId ||
+				existing.execution_id !== input.executionId ||
+				existing.repository_identity !== input.repositoryIdentity ||
+				existing.plan_path !== input.planPath ||
+				existing.reviewed_commit_sha !== input.reviewedCommitSha.toLowerCase() ||
+				existing.expected_blob_sha !== input.expectedBlobSha.toLowerCase() ||
+				existing.captured_at !== input.capturedAt
+			) throw new Error("design review approval proof replay conflict");
+			return existing;
+		}
+		const proofId = randomUUID();
+		this.db.run(
+			`INSERT INTO design_review_approval_proof
+			 (proof_id,lane,project_name,issue_id,execution_id,repository_identity,
+			  review_job_request_id,manifest_request_id,manifest_revision,plan_path,
+			  reviewed_commit_sha,expected_blob_sha,state,captured_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'captured',?)`,
+			[ proofId, input.lane, input.projectName, input.issueId, input.executionId,
+			  input.repositoryIdentity, input.reviewJobRequestId ?? null,
+			  input.manifestRequestId ?? null, input.manifestRevision ?? null,
+			  input.planPath, input.reviewedCommitSha.toLowerCase(),
+			  input.expectedBlobSha.toLowerCase(), input.capturedAt ],
+		);
+		this.save();
+		return this.getDesignReviewApprovalProof(proofId)!;
+	}
+
+	validateDesignReviewApprovalProof(input: {
+		proofId: string;
+		validationReceiptId: string;
+		reviewedCommitSha: string;
+		expectedBlobSha: string;
+		validatedAt: string;
+	}): DesignReviewApprovalProof {
+		const proof = this.getDesignReviewApprovalProof(input.proofId);
+		if (!proof) throw new Error("design review approval proof missing");
+		if (proof.reviewed_commit_sha !== input.reviewedCommitSha.toLowerCase() || proof.expected_blob_sha !== input.expectedBlobSha.toLowerCase()) {
+			throw new Error("design review approval proof binding mismatch");
+		}
+		if (proof.validation_receipt_id) {
+			if (proof.validation_receipt_id !== input.validationReceiptId || proof.validated_at !== input.validatedAt) {
+				throw new Error("design review approval proof validation replay conflict");
+			}
+			return proof;
+		}
+		this.db.run(
+			"UPDATE design_review_approval_proof SET state='validated',validation_receipt_id=?,validated_at=? WHERE proof_id=? AND state='captured'",
+			[input.validationReceiptId, input.validatedAt, input.proofId],
+		);
+		if (this.db.getRowsModified() !== 1) throw new Error("design review approval proof validation raced");
+		this.save();
+		return this.getDesignReviewApprovalProof(input.proofId)!;
+	}
+
+	sealDesignReviewApprovalProof(input: {
+		proofId: string;
+		verdictReceiptId: string;
+		approvedAt: string;
+	}): { ok: true; proof: DesignReviewApprovalProof } | { ok: false; reason: "proof_missing" | "proof_not_validated" | "proof_invalidated" } {
+		const proof = this.getDesignReviewApprovalProof(input.proofId);
+		if (!proof) return { ok: false, reason: "proof_missing" };
+		if (proof.state === "invalidated") return { ok: false, reason: "proof_invalidated" };
+		if (proof.state === "approved") {
+			if (proof.verdict_receipt_id !== input.verdictReceiptId || proof.approved_at !== input.approvedAt) {
+				throw new Error("design review approval proof verdict replay conflict");
+			}
+			return { ok: true, proof };
+		}
+		if (proof.state !== "validated") return { ok: false, reason: "proof_not_validated" };
+		this.db.run(
+			"UPDATE design_review_approval_proof SET state='approved',verdict_receipt_id=?,approved_at=? WHERE proof_id=? AND state='validated'",
+			[input.verdictReceiptId, input.approvedAt, input.proofId],
+		);
+		if (this.db.getRowsModified() !== 1) throw new Error("design review approval proof seal raced");
+		this.save();
+		return { ok: true, proof: this.getDesignReviewApprovalProof(input.proofId)! };
+	}
+
 	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────
 
 	private rowToCodexReviewRecord(
@@ -16577,6 +19229,7 @@ export class StateStore {
 			author_family: (row.author_family as string) ?? undefined,
 			reviewer_family: (row.reviewer_family as string) ?? undefined,
 			request_id: (row.request_id as string) ?? undefined,
+			same_family_sanction: (row.same_family_sanction as string) ?? undefined,
 			created_at: row.created_at as string,
 			approved_at: (row.approved_at as string) ?? undefined,
 			hold_notified_at: (row.hold_notified_at as string) ?? undefined,
@@ -16700,6 +19353,8 @@ export class StateStore {
 		reviewerFamily?: string;
 		/** FLY-1188 §7.1: review-job binding (codex-author lane). */
 		requestId?: string;
+		/** FLY-2763: exact sanction token for a same-family (Claude↔Claude) approval. */
+		sameFamilySanction?: string;
 	}): boolean {
 		const sha = input.targetPrHeadSha.toLowerCase();
 		const repoIdentity = input.targetRepoIdentity ?? "__main__";
@@ -16713,8 +19368,8 @@ export class StateStore {
 				`INSERT INTO codex_review_record
 				   (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status,
 				    reviewed_target, codex_thread_id, rounds, verdict_event_id,
-				    author_family, reviewer_family, request_id, created_at, approved_at)
-				 VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+				    author_family, reviewer_family, request_id, same_family_sanction, created_at, approved_at)
+				 VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
 				[
 					input.executionId,
 					repoIdentity,
@@ -16728,6 +19383,7 @@ export class StateStore {
 					input.authorFamily ?? null,
 					input.reviewerFamily ?? null,
 					input.requestId ?? null,
+					input.sameFamilySanction ?? null,
 				],
 			);
 			this.save();
@@ -16784,7 +19440,8 @@ export class StateStore {
 				   rounds = ?,
 				   author_family = ?,
 				   reviewer_family = ?,
-				   request_id = ?
+				   request_id = ?,
+				   same_family_sanction = ?
 				 WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?`,
 				[
 					input.verdictEventId ?? null,
@@ -16794,6 +19451,7 @@ export class StateStore {
 					input.authorFamily ?? null,
 					input.reviewerFamily ?? null,
 					input.requestId ?? null,
+					input.sameFamilySanction ?? null,
 					input.executionId,
 					repoIdentity,
 					sha,
@@ -16821,7 +19479,8 @@ export class StateStore {
 			   rounds = COALESCE(rounds, ?),
 			   author_family = COALESCE(author_family, ?),
 			   reviewer_family = COALESCE(reviewer_family, ?),
-			   request_id = COALESCE(request_id, ?)
+			   request_id = COALESCE(request_id, ?),
+			   same_family_sanction = COALESCE(same_family_sanction, ?)
 			 WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?`,
 			[
 				input.verdictEventId ?? null,
@@ -16831,6 +19490,7 @@ export class StateStore {
 				input.authorFamily ?? null,
 				input.reviewerFamily ?? null,
 				input.requestId ?? null,
+				input.sameFamilySanction ?? null,
 				input.executionId,
 				repoIdentity,
 				sha,
@@ -16925,6 +19585,7 @@ export class StateStore {
 			updated_at: (row.updated_at as string) ?? undefined,
 			responded_at: (row.responded_at as string) ?? undefined,
 			delivery_nonce: (row.delivery_nonce as string) ?? undefined,
+			same_family_sanction: (row.same_family_sanction as string) ?? undefined,
 		};
 	}
 
@@ -17315,18 +19976,28 @@ export class StateStore {
 		reviewerSessionGeneration?: number;
 		reviewerSessionFailureStreak?: number;
 		authorFamily?: string;
+		/** FLY-2763: exact sanction token when a Claude author is reviewed by Claude. */
+		sameFamilySanction?: string;
+		designPlanProof?: {
+			planPath: string;
+			reviewedCommitSha: string;
+			expectedBlobSha: string;
+			capturedAt: string;
+		};
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
 	}): { inserted: boolean; job: CodexReviewJob } {
-		this.db.run(
-			`INSERT OR IGNORE INTO codex_review_job
+		let inserted = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
 			    round, question_id, target_path, target_repo_path,
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
-			    created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			    same_family_sanction, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -17346,9 +20017,25 @@ export class StateStore {
 				input.authorFamily ?? null,
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
+				input.sameFamilySanction ?? null,
+				],
+			);
+			inserted = this.db.getRowsModified() > 0;
+			if (inserted && input.designPlanProof) {
+				this.captureDesignReviewApprovalProof({
+					lane: "coordinator",
+					projectName: input.projectName,
+					issueId: input.issueId ?? input.executionId,
+					executionId: input.executionId,
+					repositoryIdentity: input.targetRepoIdentity ?? "__main__",
+					reviewJobRequestId: input.requestId,
+					planPath: input.designPlanProof.planPath,
+					reviewedCommitSha: input.designPlanProof.reviewedCommitSha,
+					expectedBlobSha: input.designPlanProof.expectedBlobSha,
+					capturedAt: input.designPlanProof.capturedAt,
+				});
+			}
+		});
 		this.save();
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
@@ -18464,6 +21151,8 @@ export class StateStore {
 			authorFamily: rec.author_family ?? null,
 			reviewerFamily: rec.reviewer_family ?? null,
 			sessionAdapterType: this.getSession(executionId)?.adapter_type ?? null,
+			// FLY-2763: same-family approval is valid only with the exact sanction.
+			sameFamilySanction: rec.same_family_sanction ?? null,
 		});
 	}
 
@@ -28773,6 +31462,8 @@ export class StateStore {
 				owner_process_start TEXT,
 				owner_host_boot_id TEXT,
 				owner_heartbeat_at TEXT,
+				owner_last_progress_at TEXT,
+				owner_progress_step TEXT,
 				lease_expires_at TEXT,
 				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
 				ship_attempt INTEGER NOT NULL DEFAULT 0 CHECK (ship_attempt >= 0),
@@ -28796,7 +31487,11 @@ export class StateStore {
 				closeout_targets_json TEXT,
 				closeout_targets_digest TEXT,
 				closeout_targets_version INTEGER,
+				closeout_targets_revision INTEGER NOT NULL DEFAULT 0
+				  CHECK (closeout_targets_revision >= 0),
+				closeout_targets_source TEXT,
 				closeout_attribution_digest TEXT,
+				closeout_attribution_epoch INTEGER,
 				closeout_targets_observed_at TEXT,
 				closeout_reservation_epoch INTEGER,
 				closeout_inventory_digest TEXT,
@@ -28822,6 +31517,8 @@ export class StateStore {
 		this.addColumnIfMissing("land_operation", "owner_process_start", "TEXT");
 		this.addColumnIfMissing("land_operation", "owner_host_boot_id", "TEXT");
 		this.addColumnIfMissing("land_operation", "owner_heartbeat_at", "TEXT");
+		this.addColumnIfMissing("land_operation", "owner_last_progress_at", "TEXT");
+		this.addColumnIfMissing("land_operation", "owner_progress_step", "TEXT");
 		this.addColumnIfMissing(
 			"land_operation",
 			"retry_count",
@@ -28880,8 +31577,23 @@ export class StateStore {
 		);
 		this.addColumnIfMissing(
 			"land_operation",
+			"closeout_targets_revision",
+			"INTEGER NOT NULL DEFAULT 0 CHECK (closeout_targets_revision >= 0)",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_targets_source",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
 			"closeout_attribution_digest",
 			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"closeout_attribution_epoch",
+			"INTEGER",
 		);
 		this.addColumnIfMissing(
 			"land_operation",
@@ -28923,6 +31635,60 @@ export class StateStore {
 				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_closeout_target_revision (
+				operation_id TEXT NOT NULL,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				schema_version INTEGER NOT NULL CHECK (schema_version IN (1,2)),
+				canonical_json TEXT NOT NULL,
+				digest TEXT NOT NULL,
+				attribution_digest TEXT NOT NULL,
+				attribution_epoch INTEGER NOT NULL CHECK (attribution_epoch >= 1),
+				source TEXT NOT NULL CHECK (source IN ('intent','reclose_migration','attribution_refresh')),
+				source_receipts_json TEXT NOT NULL,
+				observed_at TEXT NOT NULL,
+				request_id TEXT,
+				PRIMARY KEY (operation_id, revision),
+				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		this.addColumnIfMissing(
+			"land_closeout_target_revision",
+			"attribution_epoch",
+			"INTEGER",
+		);
+		this.db.run(
+			`UPDATE land_operation
+			    SET closeout_targets_revision = 1,
+			        closeout_targets_source = COALESCE(closeout_targets_source, 'intent')
+			  WHERE closeout_targets_version IS NOT NULL
+			    AND closeout_targets_revision = 0`,
+		);
+		this.db.run(
+			`INSERT OR IGNORE INTO land_closeout_target_revision
+			   (operation_id, revision, schema_version, canonical_json, digest,
+			    attribution_digest, attribution_epoch, source, source_receipts_json, observed_at, request_id)
+			 SELECT operation_id, closeout_targets_revision, closeout_targets_version,
+			        closeout_targets_json, closeout_targets_digest,
+			        closeout_attribution_digest, closeout_attribution_epoch,
+			        COALESCE(closeout_targets_source, 'intent'), '[]',
+			        closeout_targets_observed_at, NULL
+			   FROM land_operation
+			  WHERE closeout_targets_version IN (1,2)
+			    AND closeout_targets_revision > 0
+			    AND closeout_targets_json IS NOT NULL
+			    AND closeout_targets_digest IS NOT NULL
+			    AND closeout_attribution_digest IS NOT NULL
+			    AND closeout_attribution_epoch IS NOT NULL
+			    AND closeout_targets_observed_at IS NOT NULL`,
+		);
+		for (const trigger of ["update", "delete"]) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS land_closeout_target_revision_no_${trigger}
+				BEFORE ${trigger.toUpperCase()} ON land_closeout_target_revision
+				BEGIN SELECT RAISE(ABORT, 'land_closeout_target_revision is immutable'); END
+			`);
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS closeout_execution_evidence (
 				evidence_id TEXT PRIMARY KEY,
@@ -29079,6 +31845,32 @@ export class StateStore {
 		`);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_alert_delivery ON land_alert_outbox(state, lease_expires_at, created_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_owner_health_outbox (
+				episode_id TEXT PRIMARY KEY,
+				operation_id TEXT NOT NULL,
+				owner_instance_id TEXT NOT NULL,
+				owner_generation INTEGER NOT NULL CHECK (owner_generation >= 0),
+				stalled_since TEXT NOT NULL,
+				progress_step TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'pending'
+				  CHECK (state IN ('pending','delivering','sent','failed','resolved')),
+				attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+				lease_owner TEXT,
+				lease_expires_at TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				resolved_at TEXT,
+				UNIQUE (operation_id, owner_instance_id, owner_generation, stalled_since),
+				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_owner_health_delivery ON land_owner_health_outbox(state, lease_expires_at, created_at)",
 		);
 		// A transport can be unavailable for the whole three-attempt process
 		// window. `failed` is a durable diagnostic, not a delivered terminal:
@@ -29383,6 +32175,7 @@ export class StateStore {
 		this.migrateFounderGateVerdictLedger();
 		this.migrateAutoMergeShadowLedger();
 		this.migrateAutoNarrowGateLedger();
+		migrateAutoMergeShadowDeclarationV2(this.db.raw);
 		this.migrateShipJudgmentLedger();
 		try {
 			installObservationStorage(this.db.raw);
@@ -40669,6 +43462,47 @@ export class StateStore {
 	}
 
 	/** One fail-closed admission seam for typed engine and generalized executions. */
+	/**
+	 * FLY-2763 R2: engine-level same-family sanction. The menu admission
+	 * (`resolveMenuOverrides`) and the review coordinator already honour the
+	 * project flag `review_same_family_allowed`; this store is the flag store,
+	 * so the three engine guards (QA dispatch admission + both QA-claim
+	 * issuance paths) read the same row directly. Fail-closed: no row, no
+	 * override, an unreadable row or an equal resolved model keeps the
+	 * FLY-1188 §7.3 cross-vendor refusal byte-identical.
+	 */
+	private reviewSameFamilyAllowedForProject(projectName: string): boolean {
+		try {
+			const row =
+				this.getFlagValueRow("review_same_family_allowed", projectName) ??
+				this.getFlagValueRow("review_same_family_allowed", "*");
+			if (!row) return false;
+			const codec = getFlagStoreCodec("review_same_family_allowed");
+			if (!codec) return false;
+			return (
+				codec.parse({ hasOverride: row.hasOverride, raw: row.raw }) === true
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * True only when the same-family sanction applies: flag on for the run's
+	 * project. FLY-2763 R3 (founder 2026-09-22): the sanction no longer
+	 * requires the producer and reviewer/QA models to differ — implement Opus
+	 * + QA Opus is the intended Codex-outage shape. The model arguments are
+	 * kept for audit callers; they do not gate admission.
+	 */
+	private sameFamilyReviewSanctioned(input: {
+		projectName: string | undefined;
+		producerModel: string | null | undefined;
+		reviewerModel: string | null | undefined;
+	}): boolean {
+		if (!input.projectName) return false;
+		return this.reviewSameFamilyAllowedForProject(input.projectName);
+	}
+
 	admitGeneralizedWorkflowExecution(input: {
 		codexQuotaRootKey?: string;
 		runId: string;
@@ -40775,7 +43609,14 @@ export class StateStore {
 				: undefined;
 			const producerVendor =
 				producerRuntime?.vendor ?? producers[0].dispatch.vendor;
-			if (producerVendor === resolvedDispatch.vendor) {
+			if (
+				producerVendor === resolvedDispatch.vendor &&
+				!this.sameFamilyReviewSanctioned({
+					projectName: run.project_name,
+					producerModel: producerRuntime?.model ?? producers[0].dispatch.model,
+					reviewerModel: resolvedDispatch.model,
+				})
+			) {
 				return { ok: false, reason: "same_vendor_review" };
 			}
 		}
@@ -42576,7 +45417,17 @@ export class StateStore {
 				if(prior.execution_id!==input.executionId || prior.event_type!=="session_failed" || canonicalSubmissionDigest(JSON.parse(String(prior.payload)))!==canonicalSubmissionDigest(payload)) return {ok:false as const,reason:"terminal_signal_conflict"};
 				return {ok:true as const,idempotentReplay:true};
 			}
-			this.codexQuota.recordSignal({executionId:input.executionId,bindingId:signal?.bindingId,now:input.now});
+			this.codexQuota.recordSignal({
+				executionId: input.executionId,
+				bindingId: signal?.bindingId,
+				now: input.now,
+				source:
+					signal?.source === "review_exec"
+						? "review_exec"
+						: "runner_terminal",
+				sourceEventId: input.sourceEventId,
+				availability: this.codexQuotaAvailability(),
+			});
 			this.db.run("INSERT INTO session_events(event_id,execution_id,issue_id,project_name,event_type,severity,payload,source) VALUES(?,?,?,?,'session_failed','info',?,?)",[input.sourceEventId,input.executionId,input.issueId,input.projectName,JSON.stringify(payload),input.source]);
 			this.upsertSession({execution_id:input.executionId,issue_id:input.issueId,project_name:input.projectName,status:"failed",last_error:"goal ended non-complete: usageLimited"});
 			return {ok:true as const,idempotentReplay:false};
@@ -42690,7 +45541,18 @@ export class StateStore {
 				return;
 			} else {
 				if (input.failureKind === "goal_usage_limited") {
-					this.codexQuota.recordSignal({executionId:input.executionId,bindingId:quotaSignal?.bindingId,nodeId:context.binding.node_id,now});
+					this.codexQuota.recordSignal({
+						executionId: input.executionId,
+						bindingId: quotaSignal?.bindingId,
+						nodeId: context.binding.node_id,
+						now,
+						source:
+							quotaSignal?.source === "review_exec"
+								? "review_exec"
+								: "runner_terminal",
+						sourceEventId: input.sourceEventId,
+						availability: this.codexQuotaAvailability(),
+					});
 				}
 				const canonical =
 					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);
@@ -52706,6 +55568,9 @@ export class StateStore {
 		const closeoutExplanation = closeout
 			? describeLandCloseoutCause(landCloseoutCauseFromReason(input.reason))
 			: undefined;
+		const recloseInstruction = input.operationId
+			? ` Inspect GET /api/lifecycle/land/${input.operationId}, then use flywheel-comm land reclose with that operation's exact --expected-generation and --expected-head; do not POST resume directly.`
+			: ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`;
 		return {
 			leadId: input.identity.leadId,
 			projectName: input.identity.projectName,
@@ -52721,7 +55586,7 @@ export class StateStore {
 					? `Run ${input.runId} land node ${input.nodeId} merged but cleanup is incomplete: ${closeoutExplanation} (${input.reason}). The durable operation retries at most 9 times over roughly 4 hours, then stops in held state. Inspect GET /api/lifecycle/land/<operation-id>.`
 					: `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
 				: closeout
-					? `Run ${input.runId} node ${input.nodeId} is held and automatic retries have stopped after execution ${input.executionId}: ${closeoutExplanation} (${input.reason}).${input.operationId ? ` Prove the execution-attributed host processes and Runner window quiescent, repair teardown, then POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`
+					? `Run ${input.runId} node ${input.nodeId} is held and automatic retries have stopped after execution ${input.executionId}: ${closeoutExplanation} (${input.reason}).${recloseInstruction}`
 					: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}.${input.missing?.length ? ` Missing closeout evidence: ${input.missing.join(", ")}.` : ""}${input.operationId ? ` Recover after inspecting the PR with POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`,
 			metadata: {
 				workflowEngine: {
@@ -58192,962 +61057,6 @@ export class StateStore {
 		).map((row) => this.autoMergeShadowObservationRow(row));
 	}
 
-	private evaluateAutoNarrowCandidateTx(
-		questionId: string,
-		at: string,
-		verdictId: string,
-	): AutoNarrowCandidateEvaluation | undefined {
-		const holder = this.getWorkflowGateHolderByQuestionId(questionId);
-		if (
-			!holder ||
-			holder.gate_node_id !== "founder_gate" ||
-			holder.authority_mode !== "land" ||
-			holder.subject_kind !== "git_head" ||
-			holder.state !== "awaiting_review" ||
-			holder.materialization_stage !== "completed" ||
-			!holder.card_message_id
-		) {
-			return undefined;
-		}
-		const run = this.getWorkflowRun(holder.run_id);
-		if (!run || run.project_name !== "flywheel" || run.status !== "active") {
-			return undefined;
-		}
-		const binding = this.resolveFounderGateBindingTx({
-			runId: holder.run_id,
-			questionId,
-		});
-		const observation = this.buildAutoMergeShadowObservationTx({
-			verdictId,
-			runId: holder.run_id,
-			binding,
-			recordedAt: at,
-		});
-		const declaration = this.listAutoMergeShadowDeclarations(questionId).at(-1);
-		const hasFounderRework = Boolean(
-			this.workflowSelectAll(
-				`SELECT 1 FROM workflow_founder_gate_verdict v
-				   JOIN workflow_run r ON r.run_id = v.run_id
-				  WHERE r.project_name = ? AND v.repo_identity = ?
-				    AND lower(v.head_sha) = lower(?) AND v.verdict = 'rework'
-				    AND v.founder_authored = 1 LIMIT 1`,
-				[run.project_name, binding.repoIdentity, binding.headSha],
-			)[0],
-		);
-		const hasPendingFounderInput = Boolean(
-			this.workflowSelectAll(
-				`SELECT 1 FROM founder_decision_convergence
-				  WHERE question_id = ? AND resolved_at_ms IS NULL LIMIT 1`,
-				[questionId],
-			)[0] ??
-				this.workflowSelectAll(
-					`SELECT 1 FROM founder_deferred_approval
-					  WHERE question_id = ? AND consumed_at IS NULL
-					    AND invalidated_at IS NULL LIMIT 1`,
-					[questionId],
-				)[0],
-		);
-		const eligibility = evaluateAutoNarrowEligibility({
-			binding: {
-				runId: holder.run_id,
-				questionId,
-				gateExecutionId: holder.source_execution_id,
-				repoIdentity: binding.repoIdentity,
-				prNumber: binding.prNumber,
-				headSha: binding.headSha,
-			},
-			observation,
-			declaration,
-			hasFounderRework,
-			hasPendingFounderInput,
-		});
-		return {
-			holder,
-			binding,
-			observation,
-			...(declaration ? { declaration } : {}),
-			eligibility,
-			hasFounderRework,
-			hasPendingFounderInput,
-		};
-	}
-
-	evaluateAutoNarrowCandidate(
-		questionId: string,
-		at: string,
-	): AutoNarrowCandidateEvaluation | undefined {
-		return this.db.raw
-			.transaction(() =>
-				this.evaluateAutoNarrowCandidateTx(
-					questionId,
-					at,
-					autoNarrowVerdictId(questionId),
-				),
-			)
-			.immediate();
-	}
-
-	private autoNarrowOpinionSnapshotRow(
-		row: Record<string, unknown>,
-	): AutoNarrowOpinionSnapshotRow {
-		return {
-			opinionId: String(row.opinion_id),
-			questionId: String(row.question_id),
-			runId: String(row.run_id),
-			projectName: String(row.project_name),
-			headSha: String(row.head_sha),
-			cardMessageId: String(row.card_message_id),
-			ordinal: Number(row.ordinal),
-			capturedAt: String(row.captured_at),
-			gate1: Number(row.gate1) as 0 | 1,
-			gate2: Number(row.gate2) as 0 | 1,
-			gate3: Number(row.gate3) as 0 | 1,
-			eligible: Number(row.eligible) as 0 | 1,
-			declarationId: (row.declaration_id as string | null) ?? null,
-			machineReason: (row.machine_reason as string | null) ?? null,
-			s2BasisRecordId: (row.s2_basis_record_id as string | null) ?? null,
-			reasonCode: row.reason_code as AutoNarrowOpinionReason,
-			policyVersion: 1,
-			sampleN: Number(row.sample_n),
-			agreeN: Number(row.agree_n),
-			precisionA: Number(row.precision_a),
-			precisionB: Number(row.precision_b),
-			confidenceLower:
-				row.confidence_lower == null ? null : Number(row.confidence_lower),
-			sampleStartAt: (row.sample_start_at as string | null) ?? null,
-			sampleEndAt: (row.sample_end_at as string | null) ?? null,
-			lastEligibleHumanAt:
-				(row.last_eligible_human_at as string | null) ?? null,
-		};
-	}
-
-	listAutoNarrowOpinionSnapshots(
-		questionId: string,
-	): AutoNarrowOpinionSnapshotRow[] {
-		return this.workflowSelectAll(
-			`SELECT * FROM auto_narrow_opinion_snapshot
-			  WHERE question_id = ? ORDER BY ordinal`,
-			[questionId],
-		).map((row) => this.autoNarrowOpinionSnapshotRow(row));
-	}
-
-	private autoNarrowMetricSamplesTx(
-		projectName: string,
-		at: string,
-	): AutoNarrowMetricSample[] {
-		const verdicts = this.workflowSelectAll(
-			`SELECT v.verdict_id, v.question_id, v.run_id, v.repo_identity,
-			        v.pr_number, v.head_sha, v.verdict, v.recorded_at
-			   FROM workflow_founder_gate_verdict v
-			   JOIN workflow_run r ON r.run_id = v.run_id
-			  WHERE r.project_name = ? AND v.founder_authored = 1
-			    AND v.recorded_at <= ?
-			  ORDER BY v.recorded_at, v.verdict_id`,
-			[projectName, at],
-		);
-		const grouped = new Map<
-			string,
-			Array<{
-				verdictId: string;
-				runId: string;
-				repoIdentity: string;
-				prNumber: number;
-				headSha: string;
-				verdict: "approved" | "rework";
-				recordedAt: string;
-			}>
-		>();
-		for (const row of verdicts) {
-			const questionId = String(row.question_id);
-			const rows = grouped.get(questionId) ?? [];
-			rows.push({
-				verdictId: String(row.verdict_id),
-				runId: String(row.run_id),
-				repoIdentity: String(row.repo_identity),
-				prNumber: Number(row.pr_number),
-				headSha: String(row.head_sha),
-				verdict: row.verdict as "approved" | "rework",
-				recordedAt: String(row.recorded_at),
-			});
-			grouped.set(questionId, rows);
-		}
-		return [...grouped.entries()]
-			.map(([questionId, rows]) => ({
-				questionId,
-				first: rows[0]!,
-				actual: !rows.some((row) => row.verdict === "rework"),
-			}))
-			.sort((left, right) => right.first.recordedAt.localeCompare(left.first.recordedAt))
-			.slice(0, 200)
-			.flatMap((sample) => {
-				const coverage = this.workflowSelectAll(
-					`SELECT 1 FROM auto_merge_shadow_observation o
-					  WHERE o.verdict_id = ? AND o.run_id = ? AND o.question_id = ?
-					    AND o.repo_identity = ? AND o.pr_number = ?
-					    AND lower(o.head_sha) = lower(?) AND o.observed_at = ?
-					    AND EXISTS (
-					      SELECT 1 FROM auto_merge_shadow_declaration d
-					       WHERE d.question_id = ? AND d.run_id = ? AND d.declared_at <= ?
-					    ) LIMIT 1`,
-					[
-						sample.first.verdictId,
-						sample.first.runId,
-						sample.questionId,
-						sample.first.repoIdentity,
-						sample.first.prNumber,
-						sample.first.headSha,
-						sample.first.recordedAt,
-						sample.questionId,
-						sample.first.runId,
-						sample.first.recordedAt,
-					],
-				)[0];
-				if (!coverage) return [];
-				const prediction = this.workflowSelectAll(
-					`SELECT eligible FROM auto_narrow_opinion_snapshot
-					  WHERE project_name = ? AND question_id = ? AND captured_at <= ?
-					  ORDER BY ordinal DESC LIMIT 1`,
-					[projectName, sample.questionId, sample.first.recordedAt],
-				)[0];
-				return prediction
-					? [
-							{
-								decidedAt: sample.first.recordedAt,
-								predicted: Number(prediction.eligible) === 1,
-								actual: sample.actual,
-							},
-						]
-					: [];
-			});
-	}
-
-	private autoNarrowOpinionDeliveryRow(
-		row: Record<string, unknown>,
-	): AutoNarrowOpinionDeliveryRow {
-		return {
-			questionId: String(row.question_id),
-			issueThreadId: String(row.issue_thread_id),
-			cardMessageId: String(row.card_message_id),
-			desiredOpinionId: (row.desired_opinion_id as string | null) ?? null,
-			postedOpinionId: (row.posted_opinion_id as string | null) ?? null,
-			followupMessageId: (row.followup_message_id as string | null) ?? null,
-			generation: Number(row.generation),
-			attempt: Number(row.attempt),
-			state: row.state as AutoNarrowOpinionDeliveryRow["state"],
-			correlationMarker: String(row.correlation_marker),
-			postingAt: (row.posting_at as string | null) ?? null,
-			firstZeroScanAt: (row.first_zero_scan_at as string | null) ?? null,
-			scanFrontier: (row.scan_frontier as string | null) ?? null,
-			nextAttemptAt: (row.next_attempt_at as string | null) ?? null,
-			lastErrorCode: (row.last_error_code as string | null) ?? null,
-			reactionApplied: row.reaction_applied as AutoNarrowOpinionDeliveryRow["reactionApplied"],
-			automaticLabelPending: Number(row.automatic_label_pending) as 0 | 1,
-			legacyFreezeRequestedAt: (row.legacy_freeze_requested_at as string | null) ?? null,
-			legacyFrozenAt: (row.legacy_frozen_at as string | null) ?? null,
-		};
-	}
-
-	getAutoNarrowOpinionDelivery(
-		questionId: string,
-	): AutoNarrowOpinionDeliveryRow | undefined {
-		const row = this.workflowSelectAll(
-			"SELECT * FROM auto_narrow_opinion_delivery WHERE question_id = ?",
-			[questionId],
-		)[0];
-		return row ? this.autoNarrowOpinionDeliveryRow(row) : undefined;
-	}
-
-	/** Bridge boot only: a rollback may have rewritten the owned message while ignoring these nullable fields. */
-	invalidateAutoNarrowLegacyFreezeOnStartup(at: string): void {
-		this.db.run(`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,
-		legacy_freeze_requested_at=COALESCE(legacy_freeze_requested_at,?),legacy_frozen_at=NULL,next_attempt_at=NULL
-		WHERE legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL`, [at]);
-	}
-	requestAutoNarrowLegacyFreeze(at: string): void {
-		this.db.raw
-			.transaction(() => {
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,
- legacy_freeze_requested_at=?,legacy_frozen_at=CASE WHEN followup_message_id IS NULL AND state NOT IN ('posting','uncertain') THEN ? ELSE NULL END,
- next_attempt_at=NULL
- WHERE question_id IN (SELECT d.question_id FROM auto_narrow_opinion_delivery d
- JOIN auto_narrow_opinion_snapshot s ON s.opinion_id=d.desired_opinion_id
- WHERE s.project_name='flywheel' AND d.legacy_freeze_requested_at IS NULL AND d.legacy_frozen_at IS NULL
- ORDER BY d.question_id LIMIT 20)`,
-					[at, at],
-				);
-			})
-			.immediate();
-	}
-	listAutoNarrowLegacyFreezeWork(at: string): AutoNarrowOpinionDeliveryRow[] {
-		return this.workflowSelectAll(
-			`SELECT * FROM auto_narrow_opinion_delivery
- WHERE legacy_freeze_requested_at IS NOT NULL AND legacy_frozen_at IS NULL
- AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY question_id LIMIT 20`,
-			[at],
-		).map((row) => this.autoNarrowOpinionDeliveryRow(row));
-	}
-	beginAutoNarrowLegacyFreeze(
-		questionId: string,
-		generation: number,
-		at: string,
-	): AutoNarrowOpinionDeliveryRow | undefined {
-		return this.db.raw
-			.transaction(() => {
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,attempt=attempt+1,next_attempt_at=?
- WHERE question_id=? AND generation=? AND legacy_freeze_requested_at IS NOT NULL AND legacy_frozen_at IS NULL
- AND (next_attempt_at IS NULL OR next_attempt_at<=?)`,
-					[
-						new Date(Date.parse(at) + 30_000).toISOString(),
-						questionId,
-						generation,
-						at,
-					],
-				);
-				return this.db.getRowsModified() === 1
-					? this.getAutoNarrowOpinionDelivery(questionId)
-					: undefined;
-			})
-			.immediate();
-	}
-	finishAutoNarrowLegacyFreeze(
-		questionId: string,
-		generation: number,
-		at: string,
-		ok: boolean,
-	): boolean {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(questionId);
-				if (
-					!current ||
-					current.generation !== generation ||
-					!current.legacyFreezeRequestedAt ||
-					current.legacyFrozenAt
-				)
-					return false;
-				const delay =
-					current.attempt <= 5
-						? 60_000 * 2 ** Math.max(0, current.attempt - 1)
-						: 3_600_000;
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery SET legacy_frozen_at=?,
- state=CASE WHEN ?=1 AND followup_message_id IS NOT NULL THEN 'delivered' ELSE state END,
- next_attempt_at=?,last_error_code=?,attempt=CASE WHEN ?=1 THEN 0 ELSE attempt END
- WHERE question_id=? AND generation=?`,
-					[
-						ok ? at : null,
-						ok ? 1 : 0,
-						ok ? null : new Date(Date.parse(at) + delay).toISOString(),
-						ok ? null : "legacy_freeze_failed",
-						ok ? 1 : 0,
-						questionId,
-						generation,
-					],
-				);
-				return this.db.getRowsModified() === 1;
-			})
-			.immediate();
-	}
-	listAutoNarrowOpinionDeliveryWork(
-		limit = 20,
-		now = new Date().toISOString(),
-	): AutoNarrowOpinionDeliveryWork[] {
-		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
-		return this.workflowSelectAll(
-			`SELECT d.*, c.applied_at AS opening_at
-			   FROM auto_narrow_opinion_delivery d
-			   LEFT JOIN auto_narrow_decision_audit a ON a.question_id = d.question_id
-			   LEFT JOIN auto_narrow_control_event c ON c.event_id = a.opening_event_id
-			  WHERE d.desired_opinion_id IS NOT NULL AND d.state <> 'gone'
-			    AND d.legacy_frozen_at IS NULL
-			    AND (d.state <> 'delivered' OR d.automatic_label_pending = 1
-			         OR d.desired_opinion_id <> d.posted_opinion_id)
-			    AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
-			  ORDER BY COALESCE(d.next_attempt_at, ''), d.question_id LIMIT ?`,
-			[now, bounded],
-		).flatMap((row) => {
-			const opinion = this.workflowSelectAll(
-				"SELECT * FROM auto_narrow_opinion_snapshot WHERE opinion_id = ?",
-				[row.desired_opinion_id],
-			)[0];
-			return opinion
-				? [
-						{
-							delivery: this.autoNarrowOpinionDeliveryRow(row),
-							opinion: this.autoNarrowOpinionSnapshotRow(opinion),
-							openingAt: (row.opening_at as string | null) ?? null,
-						},
-					]
-				: [];
-		});
-	}
-
-	beginAutoNarrowOpinionDelivery(
-		questionId: string,
-		now: string,
-	): AutoNarrowOpinionDeliveryRow | undefined {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(questionId);
-				if (!current || current.state !== "pending" || current.legacyFreezeRequestedAt || current.legacyFrozenAt) return undefined;
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery
-					    SET state='posting', generation=generation+1, attempt=attempt+1,
-					        posting_at=?, last_error_code=NULL
-					  WHERE question_id=? AND generation=? AND state='pending'`,
-					[now, questionId, current.generation],
-				);
-				return this.db.getRowsModified() === 1
-					? this.getAutoNarrowOpinionDelivery(questionId)
-					: undefined;
-			})
-			.immediate();
-	}
-
-	bindAutoNarrowOpinionMessage(input: {
-		questionId: string;
-		generation: number;
-		messageId: string;
-		opinionId: string;
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery
-			    SET followup_message_id=?, posted_opinion_id=?, state='posting',
-			        first_zero_scan_at=NULL, scan_frontier=NULL,
-			        last_error_code=NULL
-			  WHERE question_id=? AND generation=? AND state='posting'`,
-			[
-				input.messageId,
-				input.opinionId,
-				input.questionId,
-				input.generation,
-			],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	markAutoNarrowOpinionReaction(input: {
-		questionId: string;
-		generation: number;
-		reaction: "eligible" | "ineligible";
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery SET reaction_applied=?
-			  WHERE question_id=? AND generation=? AND state='posting'`,
-			[input.reaction, input.questionId, input.generation],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	markAutoNarrowAutomaticLabelDelivered(input: {
-		questionId: string;
-		generation: number;
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery SET automatic_label_pending=0
-			  WHERE question_id=? AND generation=? AND state='posting'`,
-			[input.questionId, input.generation],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	finishAutoNarrowOpinionDelivery(input: {
-		questionId: string;
-		generation: number;
-		expectedReaction: "eligible" | "ineligible";
-	}): boolean {
-		this.db.run(
-			`UPDATE auto_narrow_opinion_delivery
-			    SET state='delivered', posting_at=NULL, next_attempt_at=NULL,
-			        attempt=0, last_error_code=NULL
-			  WHERE question_id=? AND generation=? AND state='posting'
-			    AND followup_message_id IS NOT NULL
-			    AND desired_opinion_id=posted_opinion_id
-			    AND legacy_freeze_requested_at IS NULL AND legacy_frozen_at IS NULL
-			    AND reaction_applied=? AND automatic_label_pending=0`,
-			[
-				input.questionId,
-				input.generation,
-				input.expectedReaction,
-			],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	deferAutoNarrowOpinionDelivery(input: {
-		questionId: string;
-		generation: number;
-		state: "pending" | "uncertain";
-		errorCode: string;
-		now: string;
-	}): boolean {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
-				if (
-					!current ||
-					current.generation !== input.generation ||
-					current.state !== "posting"
-				) {
-					return false;
-				}
-				const terminal = current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS;
-				const state = terminal ? "gone" : input.state;
-				const nextAttemptAt = terminal
-					? null
-					: autoNarrowOpinionRetryAt(input.now, current.attempt);
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery
-					    SET state=?,
-					        posting_at=CASE WHEN ?='uncertain' THEN posting_at ELSE NULL END,
-					        next_attempt_at=?, last_error_code=?
-					  WHERE question_id=? AND generation=? AND state='posting'`,
-					[
-						state,
-						state,
-						nextAttemptAt,
-						input.errorCode.slice(0, 64),
-						input.questionId,
-						input.generation,
-					],
-				);
-				return this.db.getRowsModified() === 1;
-			})
-			.immediate();
-	}
-
-	recordAutoNarrowOpinionRecovery(input: {
-		questionId: string;
-		kind: "found" | "none" | "ambiguous";
-		now: string;
-		frontier: string | null;
-		messageId?: string;
-		expectedGeneration?: number;
-	}): "recovered" | "waiting" | "retry" {
-		return this.db.raw
-			.transaction(() => {
-				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
-				if (
-					!current ||
- (input.expectedGeneration !== undefined && current.generation !== input.expectedGeneration) ||
-					(current.state !== "posting" && current.state !== "uncertain")
-				) {
-					return "waiting";
-				}
-				if (input.kind === "found" && input.messageId) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET followup_message_id=?, state='pending', posting_at=NULL,
-						        first_zero_scan_at=NULL, scan_frontier=NULL,
-						        next_attempt_at=NULL, last_error_code=NULL
-						  WHERE question_id=?`,
-						[input.messageId, input.questionId],
-					);
-					return "recovered";
-				}
-				if (!current.legacyFreezeRequestedAt && current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='gone', posting_at=NULL, next_attempt_at=NULL,
-						        last_error_code='recovery_exhausted'
-						  WHERE question_id=?`,
-						[input.questionId],
-					);
-					return "waiting";
-				}
-				if (input.kind !== "none") {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='uncertain', next_attempt_at=?,
-						        last_error_code='scan_ambiguous'
-						  WHERE question_id=?`,
-						[
-							autoNarrowOpinionRetryAt(input.now, current.attempt),
-							input.questionId,
-						],
-					);
-					return "waiting";
-				}
-				const firstMs = Date.parse(current.firstZeroScanAt ?? "invalid");
-				const nowMs = Date.parse(input.now);
-				if (
-					!current.firstZeroScanAt ||
-					current.scanFrontier !== input.frontier ||
-					!Number.isFinite(firstMs) ||
-					!Number.isFinite(nowMs)
-				) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='uncertain', first_zero_scan_at=?, scan_frontier=?,
-						        next_attempt_at=?, last_error_code='scan_zero_once'
-						  WHERE question_id=?`,
-						[
-							input.now,
-							input.frontier,
-							autoNarrowOpinionRetryAt(input.now, current.attempt),
-							input.questionId,
-						],
-					);
-					return "waiting";
-				}
-				if (nowMs - firstMs < AUTO_NARROW_OPINION_RETRY_BASE_MS) {
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET state='uncertain', next_attempt_at=?,
-						        last_error_code='scan_zero_once'
-						  WHERE question_id=?`,
-						[
-							new Date(
-								firstMs + AUTO_NARROW_OPINION_RETRY_BASE_MS,
-							).toISOString(),
-							input.questionId,
-						],
-					);
-					return "waiting";
-				}
-				this.db.run(
-					`UPDATE auto_narrow_opinion_delivery
-					    SET state='pending', posting_at=NULL, first_zero_scan_at=NULL,
-					        scan_frontier=NULL, next_attempt_at=NULL, last_error_code=NULL
-					  WHERE question_id=?`,
-					[input.questionId],
-				);
-				return "retry";
-			})
-			.immediate();
-	}
-
-	refreshAutoNarrowOpinion(input: {
-		questionId: string;
-		issueThreadId: string;
-		mode: "off" | "dry_run" | "auto";
-		controlAppliedAt?: string;
-		at: string;
-		metrics?: AutoNarrowMetrics;
-		captureOnly?: boolean;
-	}): AutoNarrowOpinionRefreshResult {
-		if (input.mode === "off") return { status: "off" };
-		return this.db.raw
-			.transaction((): AutoNarrowOpinionRefreshResult => {
-				const candidate = this.evaluateAutoNarrowCandidateTx(
-					input.questionId,
-					input.at,
-					autoNarrowVerdictId(input.questionId),
-				);
-				if (!candidate?.holder.card_message_id) {
-					return { status: "not_candidate" };
-				}
-				const gate1 = candidate.eligibility.gate1 ? 1 : 0;
-				const gate2 = candidate.eligibility.gate2 ? 1 : 0;
-				const gate3 = candidate.eligibility.gate3 ? 1 : 0;
-				const eligible = candidate.eligibility.eligible ? 1 : 0;
-				const reasonCode: AutoNarrowOpinionReason =
-					candidate.eligibility.reasonCode;
-				const metrics =
-					input.metrics ??
-					computeAutoNarrowMetrics(
-						this.autoNarrowMetricSamplesTx("flywheel", input.at),
-					);
-				const latest = this.listAutoNarrowOpinionSnapshots(input.questionId).at(
-					-1,
-				);
-				const same =
-					latest &&
-					latest.headSha === candidate.binding.headSha &&
-					latest.cardMessageId === candidate.holder.card_message_id &&
-					latest.gate1 === gate1 &&
-					latest.gate2 === gate2 &&
-					latest.gate3 === gate3 &&
-					latest.eligible === eligible &&
-					latest.declarationId ===
-						(candidate.declaration?.declaration_id ?? null) &&
-					latest.machineReason === candidate.observation.machine_reason &&
-					latest.s2BasisRecordId === candidate.observation.s2_basis_record_id &&
-					latest.reasonCode === reasonCode &&
-					latest.sampleN === metrics.sampleN &&
-					latest.agreeN === metrics.agreeN &&
-					latest.precisionA === metrics.precisionA &&
-					latest.precisionB === metrics.precisionB &&
-					latest.confidenceLower === metrics.confidenceLower &&
-					latest.sampleStartAt === metrics.sampleStartAt &&
-					latest.sampleEndAt === metrics.sampleEndAt &&
-					latest.lastEligibleHumanAt === metrics.lastEligibleHumanAt &&
-					(!input.controlAppliedAt ||
-						latest.capturedAt >= input.controlAppliedAt);
-				if (same) {
-					if (!input.captureOnly)
-						this.ensureAutoNarrowLegacyIntentTx(latest, input.issueThreadId);
-					return { status: "unchanged", snapshot: latest };
-				}
-				const ordinal = (latest?.ordinal ?? 0) + 1;
-				const opinionId = `${input.questionId}:${ordinal}`;
-				this.db.run(
-					`INSERT INTO auto_narrow_opinion_snapshot
-					  (opinion_id, question_id, run_id, project_name, head_sha,
-					   card_message_id, ordinal, captured_at, gate1, gate2, gate3,
-					   eligible, declaration_id, machine_reason, s2_basis_record_id,
-					   reason_code, policy_version, sample_n, agree_n, precision_a,
-					   precision_b, confidence_lower, sample_start_at, sample_end_at,
-					   last_eligible_human_at)
-					 VALUES (?, ?, ?, 'flywheel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1,
-					         ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						opinionId,
-						input.questionId,
-						candidate.holder.run_id,
-						candidate.binding.headSha,
-						candidate.holder.card_message_id,
-						ordinal,
-						input.at,
-						gate1,
-						gate2,
-						gate3,
-						eligible,
-						candidate.declaration?.declaration_id ?? null,
-						candidate.observation.machine_reason,
-						candidate.observation.s2_basis_record_id,
-						reasonCode,
-						metrics.sampleN,
-						metrics.agreeN,
-						metrics.precisionA,
-						metrics.precisionB,
-						metrics.confidenceLower,
-						metrics.sampleStartAt,
-						metrics.sampleEndAt,
-						metrics.lastEligibleHumanAt,
-					],
-				);
-				const saved = this.listAutoNarrowOpinionSnapshots(input.questionId).at(
-					-1,
-				)!;
-				if (!input.captureOnly)
-					this.ensureAutoNarrowLegacyIntentTx(saved, input.issueThreadId);
-
-				return {
-					status: "created",
-					snapshot: this.listAutoNarrowOpinionSnapshots(input.questionId).at(
-						-1,
-					)!,
-				};
-			})
-			.immediate();
-	}
-
-	private ensureAutoNarrowLegacyIntentTx(
-		snapshot: AutoNarrowOpinionSnapshotRow,
-		threadId: string,
-	): void {
-		const marker = `auto-narrow-opinion:${createHash("sha256").update(snapshot.questionId).digest("hex").slice(0, 16)}`;
-		this.db.run(
-			`INSERT INTO auto_narrow_opinion_delivery
- (question_id,issue_thread_id,card_message_id,desired_opinion_id,state,correlation_marker)
- VALUES (?,?,?,?,'pending',?)
- ON CONFLICT(question_id) DO UPDATE SET
- issue_thread_id=excluded.issue_thread_id,card_message_id=excluded.card_message_id,desired_opinion_id=excluded.desired_opinion_id,
- generation=generation+CASE WHEN legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL THEN 1 ELSE 0 END,
- legacy_freeze_requested_at=NULL,legacy_frozen_at=NULL,
- state=CASE WHEN state IN ('posting','uncertain') THEN state ELSE 'pending' END,
- next_attempt_at=CASE WHEN state IN ('posting','uncertain') THEN next_attempt_at ELSE NULL END,
- last_error_code=CASE WHEN state IN ('posting','uncertain') THEN last_error_code ELSE NULL END
- WHERE desired_opinion_id<>excluded.desired_opinion_id OR issue_thread_id<>excluded.issue_thread_id
- OR card_message_id<>excluded.card_message_id OR legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL`,
-			[
-				snapshot.questionId,
-				threadId,
-				snapshot.cardMessageId,
-				snapshot.opinionId,
-				marker,
-			],
-		);
-	}
-	getAutoNarrowOpinionMetrics(at: string): AutoNarrowMetrics {
-		return this.db.raw
-			.transaction(() =>
-				computeAutoNarrowMetrics(
-					this.autoNarrowMetricSamplesTx("flywheel", at),
-				),
-			)
-			.immediate();
-	}
-
-	listPendingAutoNarrowCandidates(
-		limit = 20,
-		startAfterQuestionId?: string,
-	): string[] {
-		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
-		return this.workflowSelectAll(
-			`SELECT h.question_id FROM workflow_gate_holder h
-			   JOIN workflow_run r ON r.run_id = h.run_id
-			  WHERE r.project_name = 'flywheel' AND r.status = 'active'
-			    AND h.gate_node_id = 'founder_gate' AND h.authority_mode = 'land'
-			    AND h.subject_kind = 'git_head' AND h.state = 'awaiting_review'
-			    AND h.materialization_stage = 'completed' AND h.card_message_id IS NOT NULL
-			  ORDER BY CASE WHEN ? IS NULL OR h.question_id > ? THEN 0 ELSE 1 END,
-			           h.question_id
-			  LIMIT ?`,
-			[startAfterQuestionId ?? null, startAfterQuestionId ?? null, bounded],
-		).map((row) => String(row.question_id));
-	}
-
-	private assertAutoNarrowEnvelopeEvidenceTx(
-		envelope: AutoNarrowSourceEnvelopeV1,
-	): void {
-		const control = this.getAutoNarrowControlEventById(envelope.control.event_id);
-		const opening = this.getAutoNarrowControlEventById(
-			envelope.control.opening_event_id,
-		);
-		const declaration = this.listAutoMergeShadowDeclarations(
-			envelope.question_id,
-		).find(
-			(row) => row.declaration_id === envelope.declaration.declaration_id,
-		);
-		const latestDeclarationAtDecision = this.listAutoMergeShadowDeclarations(
-			envelope.question_id,
-		)
-			.filter((row) => row.declared_at <= envelope.decision_at)
-			.at(-1);
-		const strengthTwo = this.getStrengthTwoEvidenceRecord(
-			envelope.strength_two.basis_record_id,
-		);
-		if (
-			!control ||
-			control.projectName !== "flywheel" ||
-			control.mode !== "auto" ||
-			control.flagRevision !== envelope.control.flag_revision ||
-			control.openingEventId !== envelope.control.opening_event_id ||
-			!opening ||
-			opening.projectName !== "flywheel" ||
-			opening.mode !== "auto" ||
-			opening.appliedAt !== envelope.control.opening_at ||
-			opening.founderMessageId !== envelope.control.founder_message_id ||
-			!declaration ||
-			declaration.question_id !== envelope.question_id ||
-			declaration.run_id !== envelope.run_id ||
-			declaration.declaration_seq !== envelope.declaration.declaration_seq ||
-			declaration.declared_by !== "flywheel-eng-lead" ||
-			declaration.declared_class !== "pure_docs" ||
-			declaration.declared_at > envelope.decision_at ||
-			latestDeclarationAtDecision?.declaration_id !==
-				envelope.declaration.declaration_id ||
-			!strengthTwo ||
-			strengthTwo.run_id !== envelope.run_id ||
-			strengthTwo.target_repo_identity !== envelope.repo_identity ||
-			strengthTwo.head_sha !== envelope.head_sha ||
-			strengthTwo.ran_status !== "satisfied" ||
-			strengthTwo.ran_reason !== "ok" ||
-			strengthTwo.record_status !== "satisfied" ||
-			strengthTwo.record_reason !== "ok" ||
-			strengthTwo.verdict !== "satisfied" ||
-			strengthTwo.recorded_at > envelope.decision_at
-		) {
-			throw new Error("auto narrow source payload invalid: evidence reference");
-		}
-	}
-
-	commitAutoNarrowSourceIfEligible(input: {
-		questionId: string;
-		at: string;
-		writeSource: (args: {
-			expectedOwner: string;
-			projectedThroughSourceRowId: number;
-			envelope: AutoNarrowSourceEnvelopeV1;
-		}) => { written: boolean; replayed: boolean };
-	}): AutoNarrowSourceCommitResult {
-		const priorBusyTimeout = Number(
-			this.db.raw.pragma("busy_timeout", { simple: true }),
-		);
-		this.db.raw.pragma("busy_timeout = 0");
-		try {
-			return this.db.raw
-				.transaction((): AutoNarrowSourceCommitResult => {
-				const row = this.getFlagValueRow(
-					"auto_merge_narrow_gate",
-					"flywheel",
-				);
-				if (!row || row.raw !== "auto" || row.lastEffective !== "auto") {
-					return { status: "not_auto" };
-				}
-				const control = this.getLatestAutoNarrowControlEvent("flywheel");
-				if (
-					!control ||
-					control.mode !== "auto" ||
-					control.flagRevision !== row.revision ||
-					!control.openingEventId
-				) {
-					return { status: "not_auto" };
-				}
-				const opening = this.getAutoNarrowControlEventById(
-					control.openingEventId,
-				);
-				if (!opening || opening.mode !== "auto") return { status: "not_auto" };
-				const verdictId = autoNarrowVerdictId(input.questionId);
-				const candidate = this.evaluateAutoNarrowCandidateTx(
-					input.questionId,
-					input.at,
-					verdictId,
-				);
-				if (!candidate) return { status: "not_candidate" };
-				if (!candidate.eligibility.eligible || !candidate.declaration) {
-					return { status: "ineligible" };
-				}
-				const envelope = parseAutoNarrowSourceEnvelope({
-					schema_version: 1,
-					policy_version: AUTO_NARROW_POLICY_VERSION,
-					run_id: candidate.holder.run_id,
-					issue_id: this.getWorkflowRun(candidate.holder.run_id)?.issue_id,
-					question_id: input.questionId,
-					gate_node_id: candidate.holder.gate_node_id,
-					attempt: candidate.holder.attempt,
-					source_execution_id: candidate.holder.source_execution_id,
-					repo_identity: candidate.binding.repoIdentity,
-					repo_slug: candidate.binding.repoSlug,
-					pr_number: candidate.binding.prNumber,
-					head_sha: candidate.binding.headSha,
-					response: { approved: true },
-					actor: AUTO_NARROW_ACTOR,
-					decision_source: AUTO_NARROW_DECISION_SOURCE,
-					control: {
-						event_id: control.eventId,
-						opening_event_id: opening.eventId,
-						flag_revision: control.flagRevision,
-						opening_at: opening.appliedAt,
-						founder_message_id: opening.founderMessageId,
-					},
-					declaration: {
-						declaration_id: candidate.declaration.declaration_id,
-						declaration_seq: candidate.declaration.declaration_seq,
-					},
-					strength_two: {
-						basis_record_id: candidate.observation.s2_basis_record_id,
-					},
-					observation: candidate.observation,
-					decision_at: input.at,
-				});
-				const projectedThroughSourceRowId = Number(
-					this.workflowSelectAll(
-						"SELECT last_row_id FROM workflow_source_cursor WHERE project = 'flywheel'",
-						[],
-					)[0]?.last_row_id ?? 0,
-				);
-				const written = input.writeSource({
-					expectedOwner: candidate.holder.source_execution_id,
-					projectedThroughSourceRowId,
-					envelope,
-				});
-				if (!written.written) return { status: "not_candidate" };
-				return {
-					status: written.replayed ? "replayed" : "written",
-					envelope,
-				};
-				})
-				.immediate();
-		} finally {
-			this.db.raw.pragma(`busy_timeout = ${priorBusyTimeout}`);
-		}
-	}
-
 	private autoMergeShadowDeclarationRow(
 		row: Record<string, unknown>,
 	): AutoMergeShadowDeclarationRow {
@@ -59158,10 +61067,16 @@ export class StateStore {
 			declared_class:
 				row.declared_class as AutoMergeShadowDeclarationRow["declared_class"],
 			declared_by: row.declared_by as string,
-			discord_channel_id: row.discord_channel_id as string,
-			discord_message_id: row.discord_message_id as string,
-			discord_author_user_id: row.discord_author_user_id as string,
-			message_ts: row.message_ts as string,
+			discord_channel_id: (row.discord_channel_id as string | null) ?? null,
+			discord_message_id: (row.discord_message_id as string | null) ?? null,
+			discord_author_user_id:
+				(row.discord_author_user_id as string | null) ?? null,
+			message_ts: (row.message_ts as string | null) ?? null,
+			evidence_kind: row.evidence_kind as AutoMergeShadowDeclarationEvidenceKind,
+			lead_identity_digest:
+				(row.lead_identity_digest as string | null) ?? null,
+			lead_auth_method:
+				(row.lead_auth_method as AutoMergeShadowLeadAuthMethod | null) ?? null,
 			declaration_seq: Number(row.declaration_seq),
 			declared_at: row.declared_at as string,
 		};
@@ -59180,7 +61095,19 @@ export class StateStore {
 	recordAutoMergeShadowDeclaration(
 		input: RecordAutoMergeShadowDeclarationInput,
 	): RecordAutoMergeShadowDeclarationResult {
+		const evidenceKind = input.evidenceKind ?? "discord_message";
+		const discordEvidence =
+			evidenceKind === "discord_message"
+				? (input as RecordDiscordAutoMergeShadowDeclarationInput)
+				: undefined;
+		const leadEvidence =
+			evidenceKind === "lead_authenticated"
+				? (input as RecordLeadAuthenticatedAutoMergeShadowDeclarationInput)
+				: undefined;
 		if (
+			!(
+				["discord_message", "lead_authenticated"] as const
+			).includes(evidenceKind) ||
 			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
 				input.declarationId,
 			) ||
@@ -59190,10 +61117,16 @@ export class StateStore {
 				input.declaredClass,
 			) ||
 			!/^[A-Za-z0-9._-]{1,64}$/.test(input.declaredBy) ||
-			!/^\d{1,32}$/.test(input.discordChannelId) ||
-			!/^\d{1,32}$/.test(input.discordMessageId) ||
-			!/^\d{1,32}$/.test(input.discordAuthorUserId) ||
-			!StateStore.workflowFiniteTimestamp(input.messageTs) ||
+			(discordEvidence != null &&
+				(!/^\d{1,32}$/.test(discordEvidence.discordChannelId) ||
+					!/^\d{1,32}$/.test(discordEvidence.discordMessageId) ||
+					!/^\d{1,32}$/.test(discordEvidence.discordAuthorUserId) ||
+					!StateStore.workflowFiniteTimestamp(discordEvidence.messageTs))) ||
+			(leadEvidence != null &&
+				(!/^[0-9a-f]{64}$/.test(leadEvidence.leadIdentityDigest) ||
+					!(
+						["lead_hmac", "carrier_passthrough"] as const
+					).includes(leadEvidence.leadAuthMethod))) ||
 			!StateStore.workflowFiniteTimestamp(input.declaredAt)
 		) {
 			return { ok: false, reason: "invalid_declaration" };
@@ -59213,8 +61146,17 @@ export class StateStore {
 				result =
 					row.question_id === input.questionId &&
 					row.declared_class === input.declaredClass &&
-					row.discord_channel_id === input.discordChannelId &&
-					row.discord_message_id === input.discordMessageId
+					row.declared_by === input.declaredBy &&
+					row.evidence_kind === evidenceKind &&
+					(discordEvidence
+						? row.discord_channel_id === discordEvidence.discordChannelId &&
+							row.discord_message_id === discordEvidence.discordMessageId &&
+							row.discord_author_user_id ===
+								discordEvidence.discordAuthorUserId &&
+							row.message_ts === discordEvidence.messageTs
+						: row.lead_identity_digest ===
+								leadEvidence?.leadIdentityDigest &&
+							row.lead_auth_method === leadEvidence?.leadAuthMethod)
 						? { ok: true, status: "replayed", row }
 						: { ok: false, reason: "declaration_conflict" };
 				return;
@@ -59225,13 +61167,15 @@ export class StateStore {
 				result = { ok: false, reason: "question_run_mismatch" };
 				return;
 			}
-			const usedMessage = this.workflowSelectAll(
-				"SELECT 1 FROM auto_merge_shadow_declaration WHERE discord_message_id = ?",
-				[input.discordMessageId],
-			)[0];
-			if (usedMessage) {
-				result = { ok: false, reason: "message_already_used" };
-				return;
+			if (discordEvidence) {
+				const usedMessage = this.workflowSelectAll(
+					"SELECT 1 FROM auto_merge_shadow_declaration WHERE discord_message_id = ?",
+					[discordEvidence.discordMessageId],
+				)[0];
+				if (usedMessage) {
+					result = { ok: false, reason: "message_already_used" };
+					return;
+				}
 			}
 			const sequenceRow = this.workflowSelectAll(
 				`SELECT COALESCE(MAX(declaration_seq), 0) + 1 AS next_seq
@@ -59243,18 +61187,22 @@ export class StateStore {
 				`INSERT INTO auto_merge_shadow_declaration
 				   (declaration_id, question_id, run_id, declared_class, declared_by,
 				    discord_channel_id, discord_message_id, discord_author_user_id,
-				    message_ts, declaration_seq, declared_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    message_ts, evidence_kind, lead_identity_digest, lead_auth_method,
+				    declaration_seq, declared_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					input.declarationId,
 					input.questionId,
 					input.runId,
 					input.declaredClass,
 					input.declaredBy,
-					input.discordChannelId,
-					input.discordMessageId,
-					input.discordAuthorUserId,
-					input.messageTs,
+					discordEvidence?.discordChannelId ?? null,
+					discordEvidence?.discordMessageId ?? null,
+					discordEvidence?.discordAuthorUserId ?? null,
+					discordEvidence?.messageTs ?? null,
+					evidenceKind,
+					leadEvidence?.leadIdentityDigest ?? null,
+					leadEvidence?.leadAuthMethod ?? null,
 					sequence,
 					input.declaredAt,
 				],
@@ -59746,6 +61694,8 @@ export class StateStore {
 		issuerModel: string;
 		subjectProducerExecutionId?: string;
 		subjectProducerVendor?: string;
+		/** FLY-2763 R2: producer's resolved model (defaults to its execution runtime row). */
+		subjectProducerModel?: string;
 		claimExpiresAt: string;
 		evidence?: unknown;
 		alertIdentity: WorkflowEngineAlertIdentity;
@@ -59902,7 +61852,19 @@ export class StateStore {
 						result = { ok: false, reason: "missing_subject_producer" };
 						return;
 					}
-					if (input.issuerVendor === input.subjectProducerVendor) {
+					if (
+						input.issuerVendor === input.subjectProducerVendor &&
+						!this.sameFamilyReviewSanctioned({
+							projectName: this.getWorkflowRun(credential.run_id as string)
+								?.project_name,
+							producerModel:
+								input.subjectProducerModel ??
+								this.getWorkflowExecutionRuntime(
+									input.subjectProducerExecutionId,
+								)?.model,
+							reviewerModel: input.issuerModel,
+						})
+					) {
 						result = { ok: false, reason: "same_vendor_review" };
 						return;
 					}
@@ -62509,6 +64471,8 @@ export class StateStore {
 		subjectProducerExecutionId?: string;
 		/** Server-resolved family of the PRODUCING session (see E6 CONTRACT). */
 		subjectProducerVendor?: string;
+		/** FLY-2763 R2: producer's resolved model (defaults to its execution runtime row). */
+		subjectProducerModel?: string;
 		claimExpiresAt?: string;
 		evidence?: unknown;
 		now?: string;
@@ -62605,7 +64569,17 @@ export class StateStore {
 					result = { ok: false, reason: "missing_subject_producer" };
 					return;
 				}
-				if (input.issuerVendor === input.subjectProducerVendor) {
+				if (
+					input.issuerVendor === input.subjectProducerVendor &&
+					!this.sameFamilyReviewSanctioned({
+						projectName: this.getWorkflowRun(cap.run_id as string)?.project_name,
+						producerModel:
+							input.subjectProducerModel ??
+							this.getWorkflowExecutionRuntime(input.subjectProducerExecutionId)
+								?.model,
+						reviewerModel: input.issuerModel,
+					})
+				) {
 					result = { ok: false, reason: "same_vendor_review" };
 					return;
 				}
@@ -63437,28 +65411,43 @@ export class StateStore {
 			payload.actor === AUTO_NARROW_ACTOR ||
 			payload.decision_source === AUTO_NARROW_DECISION_SOURCE ||
 			input.sourceEventId.startsWith("auto-narrow:");
-		let autoNarrowEnvelope: AutoNarrowSourceEnvelopeV1 | undefined;
 		if (carriesAutoNarrowIdentity) {
+			throw new Error(
+				"auto narrow source payload invalid: retired_policy",
+			);
+		}
+		const carriesShipJudgmentIdentity =
+			payload.actor === SHIP_JUDGMENT_APPROVAL_ACTOR ||
+			payload.decision_source === SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE ||
+			input.sourceEventId.startsWith("ship-judgment-auto:");
+		let shipJudgmentEnvelope: ShipJudgmentApprovalEnvelopeV1 | undefined;
+		if (carriesShipJudgmentIdentity) {
 			if (
 				input.kind !== "founder_approval" ||
 				input.project !== "flywheel" ||
-				payload.actor !== AUTO_NARROW_ACTOR ||
-				payload.decision_source !== AUTO_NARROW_DECISION_SOURCE
+				payload.actor !== SHIP_JUDGMENT_APPROVAL_ACTOR ||
+				payload.decision_source !== SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE
 			) {
-				throw new Error("auto narrow source payload invalid: identity");
+				throw new Error(
+					"ship judgment approval source payload invalid: identity",
+				);
 			}
 			try {
-				autoNarrowEnvelope = parseAutoNarrowSourceEnvelope(payload);
+				shipJudgmentEnvelope = parseShipJudgmentApprovalEnvelope(payload);
 			} catch (error) {
 				throw new Error(
-					`auto narrow source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
+					`ship judgment approval source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 			if (
 				input.sourceEventId !==
-				autoNarrowSourceEventId(autoNarrowEnvelope.question_id)
+					shipJudgmentApprovalSourceEventId(
+						shipJudgmentEnvelope.question_id,
+					)
 			) {
-				throw new Error("auto narrow source payload invalid: source id");
+				throw new Error(
+					"ship judgment approval source payload invalid: source id",
+				);
 			}
 		}
 
@@ -63685,19 +65674,19 @@ export class StateStore {
 				return;
 			}
 
-			const runId = autoNarrowEnvelope
-				? autoNarrowEnvelope.run_id
+			const runId = shipJudgmentEnvelope
+				? shipJudgmentEnvelope.run_id
 				: typeof payload.run_id === "string"
 					? payload.run_id
 					: "";
 			const issueId =
-				autoNarrowEnvelope?.issue_id ??
+				shipJudgmentEnvelope?.issue_id ??
 				(typeof payload.issue_id === "string" ? payload.issue_id : "");
 			const approvedHead =
-				autoNarrowEnvelope?.head_sha ??
+				shipJudgmentEnvelope?.primary.head_sha ??
 				(typeof payload.approved_head === "string" ? payload.approved_head : "");
 			const authorityId =
-				autoNarrowEnvelope?.question_id ??
+				shipJudgmentEnvelope?.question_id ??
 				(typeof payload.authority_id === "string" ? payload.authority_id : "");
 			const response = payload.response as
 				| { approved?: unknown; feedback?: unknown }
@@ -64148,7 +66137,7 @@ export class StateStore {
 			}
 
 			const decisionQuestionId =
-				autoNarrowEnvelope?.question_id ??
+				shipJudgmentEnvelope?.question_id ??
 				(typeof payload.question_id === "string" ? payload.question_id : "");
 			const decisionHolder = this.workflowSelectAll(
 				`SELECT * FROM workflow_gate_holder
@@ -64156,21 +66145,32 @@ export class StateStore {
 				    AND state IN ('materializing','awaiting_review','approved')`,
 				[decisionQuestionId, runId],
 			)[0];
-			if (autoNarrowEnvelope) {
-				this.assertAutoNarrowEnvelopeEvidenceTx(autoNarrowEnvelope);
+			if (shipJudgmentEnvelope) {
+				try {
+					this.assertShipJudgmentApprovalEnvelopeCurrentTx(
+						shipJudgmentEnvelope,
+						input.projectedAt ?? new Date().toISOString(),
+					);
+				} catch (error) {
+					throw new Error(
+						`ship judgment approval source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 				if (
 					!decisionHolder ||
-					decisionHolder.gate_node_id !== autoNarrowEnvelope.gate_node_id ||
-					Number(decisionHolder.attempt) !== autoNarrowEnvelope.attempt ||
+					decisionHolder.gate_node_id !== shipJudgmentEnvelope.gate_node_id ||
+					Number(decisionHolder.attempt) !== shipJudgmentEnvelope.attempt ||
 					decisionHolder.source_execution_id !==
-						autoNarrowEnvelope.source_execution_id ||
+						shipJudgmentEnvelope.source_execution_id ||
 					decisionHolder.authority_mode !== "land" ||
 					decisionHolder.subject_kind !== "git_head" ||
 					decisionHolder.state !== "awaiting_review" ||
 					decisionHolder.materialization_stage !== "completed" ||
-					!decisionHolder.card_message_id
+					decisionHolder.card_message_id !== shipJudgmentEnvelope.card.message_id
 				) {
-					throw new Error("auto narrow source payload invalid: gate holder");
+					throw new Error(
+						"ship judgment approval source payload invalid: gate holder",
+					);
 				}
 			}
 			const founderSubjectKind =
@@ -64218,18 +66218,19 @@ export class StateStore {
 					founderSubjectKind,
 					approvedHead,
 					JSON.stringify(
-						autoNarrowEnvelope
+						shipJudgmentEnvelope
 							? {
-									questionId: autoNarrowEnvelope.question_id,
-									actor: AUTO_NARROW_ACTOR,
-									decisionSource: AUTO_NARROW_DECISION_SOURCE,
-									controlEventId: autoNarrowEnvelope.control.event_id,
-									openingEventId:
-										autoNarrowEnvelope.control.opening_event_id,
-									declarationId:
-										autoNarrowEnvelope.declaration.declaration_id,
-									strengthTwoBasisRecordId:
-										autoNarrowEnvelope.strength_two.basis_record_id,
+									questionId: shipJudgmentEnvelope.question_id,
+									actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+									decisionSource:
+										SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
+									opinionId:
+										shipJudgmentEnvelope.judgment.opinion_id,
+									policy: shipJudgmentEnvelope.policy,
+									controlEventId:
+										shipJudgmentEnvelope.control.event_id,
+									policyProvenanceId:
+										shipJudgmentEnvelope.policy_provenance.id,
 									sourceEventId: input.sourceEventId,
 								}
 							: {
@@ -64262,20 +66263,23 @@ export class StateStore {
 					binding,
 					verdict: "approved",
 					claimId,
-					founderAuthored: autoNarrowEnvelope
+					founderAuthored: shipJudgmentEnvelope
 						? 0
 						: founderIdAtCapture !== undefined && actor === founderIdAtCapture
 							? 1
 							: 0,
-					authorEvidence: autoNarrowEnvelope
+					authorEvidence: shipJudgmentEnvelope
 						? {
-								kind: "auto_narrow_gate",
-								actor: AUTO_NARROW_ACTOR,
-								decision_source: AUTO_NARROW_DECISION_SOURCE,
+								kind: "ship_judgment_auto",
+								actor: SHIP_JUDGMENT_APPROVAL_ACTOR,
+								decision_source:
+									SHIP_JUDGMENT_APPROVAL_DECISION_SOURCE,
 								source_event_id: input.sourceEventId,
-								control_event_id: autoNarrowEnvelope.control.event_id,
-								opening_event_id:
-									autoNarrowEnvelope.control.opening_event_id,
+								opinion_id: shipJudgmentEnvelope.judgment.opinion_id,
+								control_event_id:
+									shipJudgmentEnvelope.control.event_id,
+								policy_provenance_id:
+									shipJudgmentEnvelope.policy_provenance.id,
 							}
 						: founderIdAtCapture
 						? {
@@ -64290,59 +66294,22 @@ export class StateStore {
 								source_event_id: input.sourceEventId,
 							},
 					recordedAt:
-						autoNarrowEnvelope?.decision_at ??
+						shipJudgmentEnvelope?.decision_at ??
 						input.at ??
 						new Date().toISOString(),
-					...(autoNarrowEnvelope
-						? {
-								frozenObservation:
-									autoNarrowEnvelope.observation as unknown as AutoMergeShadowObservationRow,
-							}
-						: {}),
 				});
-				if (autoNarrowEnvelope) {
+				if (shipJudgmentEnvelope) {
+					this.recordShipJudgmentAutoApprovalDisposition({
+						sourceEventId: input.sourceEventId,
+						disposition: "applied",
+						reason: verdict.verdict_id,
+						at: input.at ?? new Date().toISOString(),
+					});
 					this.db.run(
-						`INSERT INTO auto_narrow_decision_audit
-						  (source_event_id, question_id, verdict_id, decision_source,
-						   project_name, run_id, gate_node_id, attempt, source_execution_id,
-						   repo_identity, pr_number, head_sha, control_event_id,
-						   opening_event_id, flag_revision, declaration_id,
-						   declaration_seq, s2_basis_record_id, observation_digest,
-						   source_payload_digest, decision_at, policy_version)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[
-							input.sourceEventId,
-							autoNarrowEnvelope.question_id,
-							verdict.verdict_id,
-							AUTO_NARROW_DECISION_SOURCE,
-							input.project,
-							autoNarrowEnvelope.run_id,
-							autoNarrowEnvelope.gate_node_id,
-							autoNarrowEnvelope.attempt,
-							autoNarrowEnvelope.source_execution_id,
-							autoNarrowEnvelope.repo_identity,
-							autoNarrowEnvelope.pr_number,
-							autoNarrowEnvelope.head_sha,
-							autoNarrowEnvelope.control.event_id,
-							autoNarrowEnvelope.control.opening_event_id,
-							autoNarrowEnvelope.control.flag_revision,
-							autoNarrowEnvelope.declaration.declaration_id,
-							autoNarrowEnvelope.declaration.declaration_seq,
-							autoNarrowEnvelope.strength_two.basis_record_id,
-							canonicalSubmissionDigest(autoNarrowEnvelope.observation),
-							input.payloadDigest,
-							autoNarrowEnvelope.decision_at,
-							AUTO_NARROW_POLICY_VERSION,
-						],
-					);
-					this.db.run(
-						`UPDATE auto_narrow_opinion_delivery
-						    SET automatic_label_pending = 1,
-						        state = CASE WHEN state IN ('posting', 'uncertain') THEN state ELSE 'pending' END,
-						        next_attempt_at = CASE WHEN state IN ('posting', 'uncertain') THEN next_attempt_at ELSE NULL END,
-						        last_error_code = CASE WHEN state IN ('posting', 'uncertain') THEN last_error_code ELSE NULL END
-						  WHERE question_id = ?`,
-						[autoNarrowEnvelope.question_id],
+						`UPDATE ship_judgment_delivery SET state='pending',generation=generation+1,
+						 lease_owner=NULL,expires_at=NULL,retry_after=NULL,presentation_state_changed_at=?
+						 WHERE purpose='opinion' AND question_id=? AND state='delivered'`,
+						[input.at ?? new Date().toISOString(), decisionQuestionId],
 					);
 				}
 			}
@@ -65748,6 +67715,120 @@ export class StateStore {
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_run_active
 			ON workflow_run(project_name, issue_id) WHERE status = 'active'
+		`);
+	}
+
+	private migrateCloseoutAttributionEpoch(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS closeout_attribution_epoch (
+				project_name TEXT NOT NULL,
+				scope_kind TEXT NOT NULL CHECK (scope_kind IN ('run','issue')),
+				scope_id TEXT NOT NULL,
+				epoch INTEGER NOT NULL CHECK (epoch >= 1),
+				PRIMARY KEY (project_name, scope_kind, scope_id)
+			)
+		`);
+		this.db.run(
+			`INSERT OR IGNORE INTO closeout_attribution_epoch
+			   (project_name, scope_kind, scope_id, epoch)
+			 SELECT project_name, 'run', run_id, 1 FROM workflow_run`,
+		);
+		this.db.run(
+			`INSERT OR IGNORE INTO closeout_attribution_epoch
+			   (project_name, scope_kind, scope_id, epoch)
+			 SELECT DISTINCT project_name, 'issue', issue_id, 1 FROM sessions`,
+		);
+
+		const installRunTrigger = (
+			name: string,
+			timing: "INSERT" | "DELETE" | "UPDATE",
+			row: "NEW" | "OLD",
+			when = "",
+		): void => {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${name}
+				AFTER ${timing} ON ${name.split("_epoch_")[0]} ${when}
+				BEGIN
+					INSERT INTO closeout_attribution_epoch
+						(project_name, scope_kind, scope_id, epoch)
+					VALUES (COALESCE(
+					          (SELECT project_name FROM workflow_run WHERE run_id = ${row}.run_id),
+					          (SELECT project_name FROM workflow_actor WHERE execution_id = ${row}.execution_id),
+					          (SELECT project_name FROM sessions WHERE execution_id = ${row}.execution_id)
+					        ),
+					        'run', ${row}.run_id, 1)
+					ON CONFLICT(project_name, scope_kind, scope_id)
+					DO UPDATE SET epoch = epoch + 1;
+				END
+			`);
+		};
+		for (const table of [
+			"workflow_run_node",
+			"workflow_side_effect_ledger",
+			"workflow_execution_binding",
+		]) {
+			installRunTrigger(`${table}_epoch_insert`, "INSERT", "NEW");
+			installRunTrigger(`${table}_epoch_delete`, "DELETE", "OLD");
+			installRunTrigger(
+				`${table}_epoch_update`,
+				"UPDATE",
+				"OLD",
+				"WHEN OLD.run_id IS NOT NEW.run_id OR OLD.node_id IS NOT NEW.node_id OR OLD.attempt IS NOT NEW.attempt OR OLD.execution_id IS NOT NEW.execution_id",
+			);
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_epoch_update_new_scope
+				AFTER UPDATE ON ${table}
+				WHEN OLD.run_id IS NOT NEW.run_id
+				BEGIN
+					INSERT INTO closeout_attribution_epoch
+						(project_name, scope_kind, scope_id, epoch)
+					VALUES (COALESCE(
+					          (SELECT project_name FROM workflow_run WHERE run_id = NEW.run_id),
+					          (SELECT project_name FROM workflow_actor WHERE execution_id = NEW.execution_id),
+					          (SELECT project_name FROM sessions WHERE execution_id = NEW.execution_id)
+					        ),
+					        'run', NEW.run_id, 1)
+					ON CONFLICT(project_name, scope_kind, scope_id)
+					DO UPDATE SET epoch = epoch + 1;
+				END
+			`);
+		}
+
+		// Session rows are disposable after target capture. A new execution changes
+		// the legacy issue inventory; deleting an already-captured row does not erase
+		// its append-only target provenance.
+		this.db.run("DROP TRIGGER IF EXISTS sessions_closeout_epoch_delete");
+		this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS sessions_closeout_epoch_insert
+				AFTER INSERT ON sessions
+				BEGIN
+					INSERT INTO closeout_attribution_epoch
+						(project_name, scope_kind, scope_id, epoch)
+					VALUES (NEW.project_name, 'issue', NEW.issue_id, 1)
+					ON CONFLICT(project_name, scope_kind, scope_id)
+					DO UPDATE SET epoch = epoch + 1;
+				END
+			`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS sessions_closeout_epoch_binding_update
+			AFTER UPDATE ON sessions
+			WHEN OLD.worktree_binding_path IS NOT NEW.worktree_binding_path
+			  OR OLD.worktree_binding_branch IS NOT NEW.worktree_binding_branch
+			  OR OLD.worktree_binding_generation IS NOT NEW.worktree_binding_generation
+			  OR OLD.issue_id IS NOT NEW.issue_id OR OLD.project_name IS NOT NEW.project_name
+			BEGIN
+				INSERT INTO closeout_attribution_epoch
+					(project_name, scope_kind, scope_id, epoch)
+				VALUES (OLD.project_name, 'issue', OLD.issue_id, 1)
+				ON CONFLICT(project_name, scope_kind, scope_id)
+				DO UPDATE SET epoch = epoch + 1;
+				INSERT INTO closeout_attribution_epoch
+					(project_name, scope_kind, scope_id, epoch)
+				SELECT NEW.project_name, 'issue', NEW.issue_id, 1
+				 WHERE OLD.project_name IS NOT NEW.project_name OR OLD.issue_id IS NOT NEW.issue_id
+				ON CONFLICT(project_name, scope_kind, scope_id)
+				DO UPDATE SET epoch = epoch + 1;
+			END
 		`);
 	}
 
@@ -74982,9 +77063,11 @@ export class StateStore {
 				throw new Error("invalid_land_target_snapshot");
 			}
 			if (
-				input.verifiedTargets.version !== 1 ||
+				!new Set([1, 2]).has(input.verifiedTargets.version) ||
 				!/^[0-9a-f]{64}$/.test(input.verifiedTargets.digest) ||
 				!/^[0-9a-f]{64}$/.test(input.verifiedTargets.attributionDigest) ||
+				!Number.isSafeInteger(input.verifiedTargets.attributionEpoch) ||
+				input.verifiedTargets.attributionEpoch < 1 ||
 				!StateStore.workflowFiniteTimestamp(input.verifiedTargets.observedAt) ||
 				canonicalJsonString(parsed) !== input.verifiedTargets.json ||
 				canonicalSubmissionDigest(parsed) !== input.verifiedTargets.digest
@@ -75012,14 +77095,28 @@ export class StateStore {
 		})}`;
 		let row: Record<string, unknown> | undefined;
 		this.db.transaction(() => {
+			if (verifiedTargets) {
+				const currentAttribution = this.getCloseoutAttributionSnapshot({
+					projectName: input.projectName,
+					issueId: input.issueId,
+					runId: input.runId,
+				});
+				if (
+					currentAttribution.epoch !== verifiedTargets.attributionEpoch ||
+					currentAttribution.digest !== verifiedTargets.attributionDigest
+				) {
+					throw new Error("land_target_attribution_changed");
+				}
+			}
 			this.db.run(
 				`INSERT OR IGNORE INTO land_operation
 				   (operation_id, run_id, issue_id, project_name, pr_number,
 				    approved_head, state, closeout_targets_json,
 				    closeout_targets_digest, closeout_targets_version,
-				    closeout_attribution_digest, closeout_targets_observed_at,
-				    created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?, ?, ?, ?, ?, ?)`,
+				    closeout_targets_revision, closeout_targets_source,
+				    closeout_attribution_digest, closeout_attribution_epoch,
+				    closeout_targets_observed_at, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					operationId,
 					input.runId ?? null,
@@ -75030,7 +77127,10 @@ export class StateStore {
 					verifiedTargets?.json ?? null,
 					verifiedTargets?.digest ?? null,
 					verifiedTargets?.version ?? null,
+					verifiedTargets ? 1 : 0,
+					verifiedTargets ? "intent" : null,
 					verifiedTargets?.attributionDigest ?? null,
+					verifiedTargets?.attributionEpoch ?? null,
 					verifiedTargets?.observedAt ?? null,
 					input.now,
 					input.now,
@@ -75059,7 +77159,9 @@ export class StateStore {
 					this.db.run(
 						`UPDATE land_operation
 						    SET closeout_targets_json = ?, closeout_targets_digest = ?,
-						        closeout_targets_version = ?, closeout_attribution_digest = ?,
+						        closeout_targets_version = ?, closeout_targets_revision = 1,
+						        closeout_targets_source = 'intent', closeout_attribution_digest = ?,
+						        closeout_attribution_epoch = ?,
 						        closeout_targets_observed_at = ?, updated_at = ?
 						  WHERE operation_id = ? AND closeout_targets_version IS NULL
 						    AND superseded_at IS NULL`,
@@ -75068,6 +77170,7 @@ export class StateStore {
 							verifiedTargets.digest,
 							verifiedTargets.version,
 							verifiedTargets.attributionDigest,
+							verifiedTargets.attributionEpoch,
 							verifiedTargets.observedAt,
 							input.now,
 							operationId,
@@ -75084,10 +77187,27 @@ export class StateStore {
 					row.closeout_targets_digest !== verifiedTargets.digest ||
 					row.closeout_targets_json !== verifiedTargets.json ||
 					row.closeout_attribution_digest !==
-						verifiedTargets.attributionDigest
+						verifiedTargets.attributionDigest ||
+					Number(row.closeout_attribution_epoch) !==
+						verifiedTargets.attributionEpoch
 				) {
 					throw new Error("land_target_snapshot_conflict");
 				}
+				this.db.run(
+					`INSERT OR IGNORE INTO land_closeout_target_revision
+					   (operation_id, revision, schema_version, canonical_json, digest,
+					    attribution_digest, attribution_epoch, source, source_receipts_json, observed_at, request_id)
+					 VALUES (?, 1, ?, ?, ?, ?, ?, 'intent', '[]', ?, NULL)`,
+					[
+						operationId,
+						verifiedTargets.version,
+						verifiedTargets.json,
+						verifiedTargets.digest,
+						verifiedTargets.attributionDigest,
+						verifiedTargets.attributionEpoch,
+						verifiedTargets.observedAt,
+					],
+				);
 			}
 			this.mintWorkflowStateDeliveryAttemptTx({
 				family: "land",
@@ -75108,6 +77228,89 @@ export class StateStore {
 			"SELECT * FROM land_operation WHERE operation_id = ?",
 			[operationId],
 		)[0] as unknown as LandOperationRow | undefined;
+	}
+
+	getCloseoutAttributionSnapshot(input: {
+		projectName: string;
+		issueId: string;
+		runId?: string | null;
+	}): { epoch: number; digest: string } {
+		const scopeKind = input.runId ? "run" : "issue";
+		const scopeId = input.runId ?? input.issueId;
+		const epochRow = this.workflowSelectAll(
+			`SELECT epoch FROM closeout_attribution_epoch
+			  WHERE project_name = ? AND scope_kind = ? AND scope_id = ?`,
+			[input.projectName, scopeKind, scopeId],
+		)[0];
+		const nodes = input.runId
+			? this.workflowSelectAll(
+					`SELECT run_id, node_id, attempt, state, execution_id
+					   FROM workflow_run_node WHERE run_id = ?
+					  ORDER BY node_id, attempt`,
+					[input.runId],
+				)
+			: [];
+		const effects = input.runId
+			? this.workflowSelectAll(
+					`SELECT run_id, node_id, attempt, kind, launch_ordinal, execution_id
+					   FROM workflow_side_effect_ledger WHERE run_id = ?
+					  ORDER BY node_id, attempt, kind, launch_ordinal`,
+					[input.runId],
+				)
+			: [];
+		const activations = input.runId
+			? this.workflowSelectAll(
+					`SELECT activation_id, execution_id, run_id, node_id, attempt, mode,
+					        rework_request_id, bound_at
+					   FROM workflow_execution_binding WHERE run_id = ?
+					  ORDER BY node_id, attempt, activation_id`,
+					[input.runId],
+				)
+			: [];
+		const executionIds = input.runId
+			? this.listRunAttributedExecutions(input.runId).filter(
+					(executionId) => !/^mat:[0-9a-f]{64}$/.test(executionId),
+				)
+			: this.getSessionsByIssue(input.issueId)
+					.filter((session) => session.project_name === input.projectName)
+					.map((session) => session.execution_id);
+		const worktrees = [...new Set(executionIds)]
+			.sort()
+			.map((executionId) => ({
+				executionId,
+				binding: this.getWorktreeBinding(executionId) ?? null,
+			}));
+		return {
+			epoch: Number(epochRow?.epoch ?? 0),
+			digest: canonicalSubmissionDigest({
+				projectName: input.projectName,
+				scopeKind,
+				scopeId,
+				nodes,
+				effects,
+				activations,
+				worktrees,
+			}),
+		};
+	}
+
+	isCurrentLandCloseoutAttribution(operation: LandOperationRow): boolean {
+		if (
+			operation.closeout_attribution_epoch == null ||
+			!operation.closeout_attribution_digest
+		) {
+			return false;
+		}
+		const current = this.getCloseoutAttributionSnapshot({
+			projectName: operation.project_name,
+			issueId: operation.issue_id,
+			runId: operation.run_id,
+		});
+		return (
+			current.epoch === operation.closeout_attribution_epoch &&
+			(operation.run_id === null ||
+				current.digest === operation.closeout_attribution_digest)
+		);
 	}
 
 	private workflowCarryoverActivationTable(
@@ -77069,7 +79272,9 @@ export class StateStore {
 				`UPDATE land_operation
 				    SET state = 'running', owner_id = ?, owner_instance_id = ?,
 				        owner_pid = ?, owner_process_start = ?, owner_host_boot_id = ?,
-				        owner_heartbeat_at = ?, lease_expires_at = ?, generation = ?,
+				        owner_heartbeat_at = ?, owner_last_progress_at = ?,
+				        owner_progress_step = COALESCE(current_step, 'claimed'),
+				        lease_expires_at = ?, generation = ?,
 				        closeout_reservation_epoch = NULL,
 				        closeout_inventory_digest = NULL, closeout_reserved_at = NULL,
 				        updated_at = ?
@@ -77099,6 +79304,7 @@ export class StateStore {
 					input.ownerProcessStart ?? null,
 					input.ownerHostBootId ?? null,
 					modernIdentity ? input.now : null,
+					input.now,
 					input.leaseExpiresAt,
 					generation,
 					input.now,
@@ -77169,7 +79375,8 @@ export class StateStore {
 		return this.workflowSelectAll(
 			`SELECT operation_id, project_name, owner_id, owner_instance_id,
 			        owner_pid, owner_process_start, owner_host_boot_id,
-			        owner_heartbeat_at, lease_expires_at, generation
+			        owner_heartbeat_at, owner_last_progress_at, owner_progress_step,
+			        lease_expires_at, generation
 			   FROM land_operation
 			  WHERE state = 'running' AND superseded_at IS NULL
 			    AND owner_id IS NOT NULL AND lease_expires_at IS NOT NULL
@@ -77187,6 +79394,9 @@ export class StateStore {
 			ownerProcessStart: (row.owner_process_start as string | null) ?? null,
 			ownerHostBootId: (row.owner_host_boot_id as string | null) ?? null,
 			ownerHeartbeatAt: (row.owner_heartbeat_at as string | null) ?? null,
+			ownerLastProgressAt:
+				(row.owner_last_progress_at as string | null) ?? null,
+			ownerProgressStep: (row.owner_progress_step as string | null) ?? null,
 			leaseExpiresAt: String(row.lease_expires_at),
 			generation: Number(row.generation),
 		}));
@@ -77385,6 +79595,7 @@ export class StateStore {
 	recordLandOperationStep(input: {
 		operationId: string;
 		ownerId: string;
+		ownerInstanceId?: string;
 		generation: number;
 		step: string;
 		receipt: Record<string, unknown>;
@@ -77423,7 +79634,9 @@ export class StateStore {
 			)[0];
 			if (prior) {
 				if (prior.receipt_digest === receiptDigest) {
-					commitThreadArchive();
+					// A completed step is a read-only replay. Re-applying the nested
+					// archive mutation here could overwrite a later founder reopen or
+					// compensation epoch without re-establishing fresh authority.
 					result = { ok: true, idempotentReplay: true };
 				} else {
 					result = { ok: false, reason: "land_step_receipt_conflict" };
@@ -77433,6 +79646,8 @@ export class StateStore {
 			if (
 				operation.state !== "running" ||
 				operation.owner_id !== input.ownerId ||
+				(operation.owner_instance_id ?? null) !==
+					(input.ownerInstanceId ?? null) ||
 				Number(operation.generation) !== input.generation ||
 				!operation.lease_expires_at ||
 				String(operation.lease_expires_at) <= input.now
@@ -77495,6 +79710,8 @@ export class StateStore {
 				`UPDATE land_operation
 				    SET current_step = CASE WHEN ? = 1 THEN current_step ELSE ? END,
 				        updated_at = ?,
+				        owner_last_progress_at = CASE WHEN ? = 1 THEN owner_last_progress_at ELSE ? END,
+				        owner_progress_step = CASE WHEN ? = 1 THEN owner_progress_step ELSE ? END,
 				        merge_confirmed_at = CASE WHEN ? = 'merge_confirmed' THEN COALESCE(merge_confirmed_at, ?) ELSE merge_confirmed_at END,
 				        finalization_completed_at = CASE WHEN ? = 'finalization_completed' THEN COALESCE(finalization_completed_at, ?) ELSE finalization_completed_at END,
 				        state = CASE WHEN ? = 1 THEN 'completed' ELSE state END,
@@ -77507,6 +79724,10 @@ export class StateStore {
 					auxiliary ? 1 : 0,
 					input.step,
 					input.now,
+					auxiliary ? 1 : 0,
+					input.now,
+					auxiliary ? 1 : 0,
+					input.step,
 					input.step,
 					input.now,
 					input.step,
@@ -77520,6 +79741,21 @@ export class StateStore {
 					input.generation,
 				],
 			);
+			if (!auxiliary) {
+				this.db.run(
+					`UPDATE land_owner_health_outbox
+					    SET state = 'resolved', resolved_at = ?, updated_at = ?,
+					        lease_owner = NULL, lease_expires_at = NULL
+					  WHERE operation_id = ? AND owner_generation = ?
+					    AND state IN ('pending','delivering','sent','failed')`,
+					[
+						input.now,
+						input.now,
+						input.operationId,
+						input.generation,
+					],
+				);
+			}
 			if (completed) {
 				this.settleWorkflowDeliveryAttemptTx({
 					family: "land",
@@ -77622,6 +79858,8 @@ export class StateStore {
 				!operation ||
 				operation.state !== "running" ||
 				operation.owner_id !== input.ownerId ||
+				(operation.owner_instance_id ?? null) !==
+					(input.ownerInstanceId ?? null) ||
 				Number(operation.generation) !== input.operationGeneration ||
 				!operation.lease_expires_at ||
 				String(operation.lease_expires_at) <= input.observedAt ||
@@ -77670,6 +79908,7 @@ export class StateStore {
 	reserveLandCloseout(input: {
 		operationId: string;
 		ownerId: string;
+		ownerInstanceId?: string;
 		generation: number;
 		inventoryDigest: string;
 		now: string;
@@ -77714,6 +79953,8 @@ export class StateStore {
 				operation.superseded_at ||
 				operation.state !== "running" ||
 				operation.owner_id !== input.ownerId ||
+				(operation.owner_instance_id ?? null) !==
+					(input.ownerInstanceId ?? null) ||
 				Number(operation.generation) !== input.generation ||
 				!operation.lease_expires_at ||
 				String(operation.lease_expires_at) <= input.now
@@ -77740,7 +79981,8 @@ export class StateStore {
 				    SET closeout_reservation_epoch = COALESCE(closeout_reservation_epoch, 0) + 1,
 				        closeout_inventory_digest = ?, closeout_reserved_at = ?, updated_at = ?
 				  WHERE operation_id = ? AND superseded_at IS NULL
-				    AND state = 'running' AND owner_id = ? AND generation = ?
+				    AND state = 'running' AND owner_id = ?
+				    AND owner_instance_id IS ? AND generation = ?
 				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
 				[
 					input.inventoryDigest,
@@ -77748,6 +79990,7 @@ export class StateStore {
 					input.now,
 					input.operationId,
 					input.ownerId,
+					input.ownerInstanceId ?? null,
 					input.generation,
 					input.now,
 				],
@@ -78043,6 +80286,225 @@ export class StateStore {
 		return result;
 	}
 
+	recordLandOwnerHealthStall(input: {
+		observed: LandOwnerLease;
+		now: string;
+	}): boolean {
+		const observed = input.observed;
+		if (
+			!observed.ownerInstanceId ||
+			!observed.ownerLastProgressAt ||
+			!observed.ownerProgressStep ||
+			!StateStore.workflowFiniteTimestamp(observed.ownerLastProgressAt) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return false;
+		}
+		const episodeId = `land-owner-health:${canonicalSubmissionDigest({
+			operationId: observed.operationId,
+			ownerInstanceId: observed.ownerInstanceId,
+			ownerGeneration: observed.generation,
+			stalledSince: observed.ownerLastProgressAt,
+		})}`;
+		let inserted = false;
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT * FROM land_operation
+				  WHERE operation_id = ? AND project_name = ? AND state = 'running'
+				    AND superseded_at IS NULL AND owner_id = ? AND generation = ?
+				    AND owner_instance_id = ? AND owner_last_progress_at = ?
+				    AND owner_progress_step = ? AND lease_expires_at = ?`,
+				[
+					observed.operationId,
+					observed.projectName,
+					observed.ownerId,
+					observed.generation,
+					observed.ownerInstanceId,
+					observed.ownerLastProgressAt,
+					observed.ownerProgressStep,
+					observed.leaseExpiresAt,
+				],
+			)[0];
+			if (!operation) return;
+			const payload: LandOwnerHealthPayload = {
+				episodeId,
+				operationId: observed.operationId,
+				projectName: observed.projectName,
+				issueId: String(operation.issue_id),
+				prNumber: Number(operation.pr_number),
+				runId: (operation.run_id as string | null) ?? null,
+				ownerInstanceId: observed.ownerInstanceId!,
+				ownerGeneration: observed.generation,
+				stalledSince: observed.ownerLastProgressAt!,
+				progressStep: observed.ownerProgressStep!,
+			};
+			this.db.run(
+				`INSERT OR IGNORE INTO land_owner_health_outbox
+				   (episode_id, operation_id, owner_instance_id, owner_generation,
+				    stalled_since, progress_step, payload_json, state, attempt,
+				    generation, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)`,
+				[
+					episodeId,
+					observed.operationId,
+					observed.ownerInstanceId,
+					observed.generation,
+					observed.ownerLastProgressAt,
+					observed.ownerProgressStep,
+					JSON.stringify(payload),
+					input.now,
+					input.now,
+				],
+			);
+			inserted = this.db.getRowsModified() === 1;
+		});
+		if (inserted) this.save();
+		return inserted;
+	}
+
+	listLandOwnerHealthOutbox(): LandOwnerHealthOutboxRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_owner_health_outbox
+			  ORDER BY created_at, episode_id`,
+			[],
+		).map((row) => ({
+			episode_id: String(row.episode_id),
+			operation_id: String(row.operation_id),
+			payload: JSON.parse(String(row.payload_json)) as LandOwnerHealthPayload,
+			state: row.state as LandOwnerHealthOutboxRow["state"],
+			attempt: Number(row.attempt),
+			lease_owner: (row.lease_owner as string | null) ?? null,
+			lease_expires_at: (row.lease_expires_at as string | null) ?? null,
+			generation: Number(row.generation),
+			last_error: (row.last_error as string | null) ?? null,
+			created_at: String(row.created_at),
+			updated_at: String(row.updated_at),
+			resolved_at: (row.resolved_at as string | null) ?? null,
+		}));
+	}
+
+	claimNextLandOwnerHealthAlert(input: {
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): LandOwnerHealthDeliveryClaim | undefined {
+		if (
+			!input.ownerId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			throw new Error("invalid_land_owner_health_alert_lease");
+		}
+		let claimed: LandOwnerHealthDeliveryClaim | undefined;
+		this.db.transaction(() => {
+			const candidate = this.workflowSelectAll(
+				`SELECT * FROM land_owner_health_outbox
+				  WHERE attempt < 3 AND (
+				    state = 'pending' OR
+				    (state = 'delivering' AND lease_expires_at <= ?)
+				  )
+				  ORDER BY created_at, episode_id LIMIT 1`,
+				[input.now],
+			)[0];
+			if (!candidate) return;
+			const generation = Number(candidate.generation) + 1;
+			const attempt = Number(candidate.attempt) + 1;
+			this.db.run(
+				`UPDATE land_owner_health_outbox
+				    SET state = 'delivering', attempt = ?, lease_owner = ?,
+				        lease_expires_at = ?, generation = ?, updated_at = ?
+				  WHERE episode_id = ? AND generation = ? AND attempt = ?
+				    AND (state = 'pending' OR
+				         (state = 'delivering' AND lease_expires_at <= ?))`,
+				[
+					attempt,
+					input.ownerId,
+					input.leaseExpiresAt,
+					generation,
+					input.now,
+					candidate.episode_id,
+					candidate.generation,
+					candidate.attempt,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			claimed = {
+				episodeId: String(candidate.episode_id),
+				payload: JSON.parse(
+					String(candidate.payload_json),
+				) as LandOwnerHealthPayload,
+				attempt,
+				generation,
+				ownerId: input.ownerId,
+			};
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	finishLandOwnerHealthAlertDelivery(input: {
+		episodeId: string;
+		ownerId: string;
+		generation: number;
+		outcome: "sent" | "failed";
+		error?: string;
+		now: string;
+	}):
+		| { ok: true; state: "pending" | "sent" | "failed" }
+		| { ok: false; reason: string } {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_land_owner_health_alert_finish" };
+		}
+		let result:
+			| { ok: true; state: "pending" | "sent" | "failed" }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_owner_health_alert_generation",
+		};
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT * FROM land_owner_health_outbox WHERE episode_id = ?`,
+				[input.episodeId],
+			)[0];
+			if (
+				!row ||
+				row.state !== "delivering" ||
+				row.lease_owner !== input.ownerId ||
+				Number(row.generation) !== input.generation
+			) {
+				return;
+			}
+			const state =
+				input.outcome === "sent"
+					? "sent"
+					: Number(row.attempt) >= 3
+						? "failed"
+						: "pending";
+			this.db.run(
+				`UPDATE land_owner_health_outbox
+				    SET state = ?, lease_owner = NULL, lease_expires_at = NULL,
+				        last_error = ?, updated_at = ?
+				  WHERE episode_id = ? AND state = 'delivering'
+				    AND lease_owner = ? AND generation = ?`,
+				[
+					state,
+					input.outcome === "failed"
+						? (input.error ?? "delivery_failed")
+						: null,
+					input.now,
+					input.episodeId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() === 1) result = { ok: true, state };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	setLandOperationDisposition(input: {
 		operationId: string;
 		ownerId: string;
@@ -78220,6 +80682,8 @@ export class StateStore {
 		expectedResumeGeneration?: number;
 		expectedApprovedHead?: string;
 		requestId?: string;
+		verifiedTargets?: LandVerifiedTargets;
+		targetSource?: "reclose_migration" | "attribution_refresh";
 	}):
 		| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
 		| { ok: false; reason: string } {
@@ -78233,6 +80697,28 @@ export class StateStore {
 			?.trim()
 			.toLowerCase();
 		const requestId = input.requestId?.trim().toLowerCase();
+		let verifiedTargets: LandVerifiedTargets | undefined;
+		if (input.verifiedTargets) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(input.verifiedTargets.json);
+			} catch {
+				return { ok: false, reason: "resume_refused:invalid_target_snapshot" };
+			}
+			if (
+				!new Set([1, 2]).has(input.verifiedTargets.version) ||
+				!/^[0-9a-f]{64}$/.test(input.verifiedTargets.digest) ||
+				!/^[0-9a-f]{64}$/.test(input.verifiedTargets.attributionDigest) ||
+				!Number.isSafeInteger(input.verifiedTargets.attributionEpoch) ||
+				input.verifiedTargets.attributionEpoch < 1 ||
+				!StateStore.workflowFiniteTimestamp(input.verifiedTargets.observedAt) ||
+				canonicalJsonString(parsed) !== input.verifiedTargets.json ||
+				canonicalSubmissionDigest(parsed) !== input.verifiedTargets.digest
+			) {
+				return { ok: false, reason: "resume_refused:invalid_target_snapshot" };
+			}
+			verifiedTargets = input.verifiedTargets;
+		}
 		if (
 			!input.operationId ||
 			!actor ||
@@ -78250,6 +80736,11 @@ export class StateStore {
 					!/^[0-9a-f]{40}$/.test(expectedMergeSha ?? "") ||
 					!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
 						requestId ?? "",
+					))) ||
+			(verifiedTargets !== undefined &&
+				(!closeoutOnly ||
+					!new Set(["reclose_migration", "attribution_refresh"]).has(
+						input.targetSource ?? "",
 					)))
 		) {
 			return { ok: false, reason: "resume_refused:invalid_input" };
@@ -78278,7 +80769,10 @@ export class StateStore {
 					if (priorRequest) {
 						if (
 							priorRequest.mode !== "closeout_only" ||
+							priorRequest.actor !== actor ||
+							priorRequest.reason !== reason ||
 							priorRequest.expectedApprovedHead !== expectedApprovedHead ||
+							priorRequest.mergeSha !== expectedMergeSha ||
 							priorRequest.expectedResumeGeneration !==
 								input.expectedResumeGeneration
 						) {
@@ -78345,6 +80839,142 @@ export class StateStore {
 				} else if (operation.state !== "held") {
 					result = { ok: false, reason: "resume_refused:not_held" };
 					return;
+				}
+
+				const currentTargetAttribution =
+					operation.closeout_targets_version != null &&
+					this.isCurrentLandCloseoutAttribution(operation);
+				const needsTargetRevision =
+					closeoutOnly &&
+					(operation.closeout_targets_version == null ||
+						!currentTargetAttribution);
+				if (needsTargetRevision) {
+					if (!verifiedTargets || !input.targetSource) {
+						result = {
+							ok: false,
+							reason:
+								operation.closeout_targets_version == null
+									? "resume_refused:land_target_snapshot_unavailable"
+									: "resume_refused:closeout_attribution_changed",
+						};
+						return;
+					}
+					const expectedSource =
+						operation.closeout_targets_version == null
+							? "reclose_migration"
+							: "attribution_refresh";
+					if (input.targetSource !== expectedSource) {
+						result = {
+							ok: false,
+							reason: "resume_refused:target_snapshot_source_mismatch",
+						};
+						return;
+					}
+					const currentAttribution = this.getCloseoutAttributionSnapshot({
+						projectName: operation.project_name,
+						issueId: operation.issue_id,
+						runId: operation.run_id,
+					});
+					if (
+						currentAttribution.epoch !== verifiedTargets.attributionEpoch ||
+						currentAttribution.digest !== verifiedTargets.attributionDigest
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:closeout_attribution_changed",
+						};
+						return;
+					}
+					const revision = operation.closeout_targets_revision + 1;
+					this.db.run(
+						`INSERT INTO land_closeout_target_revision
+						   (operation_id, revision, schema_version, canonical_json, digest,
+						    attribution_digest, attribution_epoch, source, source_receipts_json, observed_at, request_id)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						[
+							input.operationId,
+							revision,
+							verifiedTargets.version,
+							verifiedTargets.json,
+							verifiedTargets.digest,
+							verifiedTargets.attributionDigest,
+							verifiedTargets.attributionEpoch,
+							input.targetSource,
+							JSON.stringify([
+								`reclose_request:${requestId}`,
+							]),
+							verifiedTargets.observedAt,
+							requestId,
+						],
+					);
+					const updateParameters = [
+						verifiedTargets.json,
+						verifiedTargets.digest,
+						verifiedTargets.version,
+						revision,
+						input.targetSource,
+						verifiedTargets.attributionDigest,
+						verifiedTargets.attributionEpoch,
+						verifiedTargets.observedAt,
+						input.now,
+						input.operationId,
+						operation.closeout_targets_revision,
+						operation.state,
+						operation.resume_generation,
+					];
+					if (operation.closeout_targets_version == null) {
+						this.db.run(
+							`UPDATE land_operation
+							    SET closeout_targets_json = ?, closeout_targets_digest = ?,
+							        closeout_targets_version = ?, closeout_targets_revision = ?,
+							        closeout_targets_source = ?, closeout_attribution_digest = ?,
+							        closeout_attribution_epoch = ?,
+							        closeout_targets_observed_at = ?, updated_at = ?
+							  WHERE operation_id = ? AND closeout_targets_version IS NULL
+							    AND closeout_targets_revision = ? AND state = ?
+							    AND resume_generation = ?`,
+							updateParameters,
+						);
+					} else {
+						this.db.run(
+							`UPDATE land_operation
+							    SET closeout_targets_json = ?, closeout_targets_digest = ?,
+							        closeout_targets_version = ?, closeout_targets_revision = ?,
+							        closeout_targets_source = ?, closeout_attribution_digest = ?,
+							        closeout_attribution_epoch = ?,
+							        closeout_targets_observed_at = ?, updated_at = ?
+							  WHERE operation_id = ? AND closeout_targets_revision = ?
+							    AND state = ? AND resume_generation = ?
+							    AND closeout_targets_version = ?
+							    AND closeout_attribution_digest IS ?
+							    AND closeout_attribution_epoch IS ?`,
+							[
+								...updateParameters,
+								operation.closeout_targets_version,
+								operation.closeout_attribution_digest,
+								operation.closeout_attribution_epoch,
+							],
+						);
+					}
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("target_snapshot_state_changed");
+					}
+				} else if (verifiedTargets) {
+					if (
+						operation.closeout_targets_json !== verifiedTargets.json ||
+						operation.closeout_targets_digest !== verifiedTargets.digest ||
+						operation.closeout_targets_version !== verifiedTargets.version ||
+						operation.closeout_attribution_digest !==
+							verifiedTargets.attributionDigest ||
+						operation.closeout_attribution_epoch !==
+							verifiedTargets.attributionEpoch
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:target_snapshot_conflict",
+						};
+						return;
+					}
 				}
 
 				let runId: string | undefined;
@@ -78500,6 +81130,9 @@ export class StateStore {
 					expectedHeadSha,
 					expectedApprovedHead: expectedApprovedHead ?? expectedHeadSha,
 					mergeSha: expectedMergeSha ?? null,
+					targetRevision:
+						this.getLandOperation(input.operationId)?.closeout_targets_revision ??
+						0,
 					priorLastError: operation.last_error,
 					priorRetryCount: operation.retry_count,
 					priorRetryEpochKey: operation.retry_epoch_key,
@@ -79530,6 +82163,8 @@ export interface LandOperationRow {
 	owner_process_start?: string | null;
 	owner_host_boot_id?: string | null;
 	owner_heartbeat_at?: string | null;
+	owner_last_progress_at?: string | null;
+	owner_progress_step?: string | null;
 	lease_expires_at: string | null;
 	generation: number;
 	ship_attempt: number;
@@ -79553,7 +82188,14 @@ export interface LandOperationRow {
 	closeout_targets_json: string | null;
 	closeout_targets_digest: string | null;
 	closeout_targets_version: number | null;
+	closeout_targets_revision: number;
+	closeout_targets_source:
+		| "intent"
+		| "reclose_migration"
+		| "attribution_refresh"
+		| null;
 	closeout_attribution_digest: string | null;
+	closeout_attribution_epoch: number | null;
 	closeout_targets_observed_at: string | null;
 	closeout_reservation_epoch: number | null;
 	closeout_inventory_digest: string | null;
@@ -79566,8 +82208,9 @@ export interface LandOperationRow {
 export interface LandVerifiedTargets {
 	json: string;
 	digest: string;
-	version: 1;
+	version: 1 | 2;
 	attributionDigest: string;
+	attributionEpoch: number;
 	observedAt: string;
 }
 
@@ -79575,6 +82218,7 @@ export interface CloseoutExecutionEvidenceInput {
 	evidenceId: string;
 	operationId: string;
 	ownerId: string;
+	ownerInstanceId?: string;
 	operationGeneration: number;
 	probeSequence: number;
 	projectName: string;
@@ -79679,6 +82323,8 @@ export interface LandOwnerLease {
 	ownerProcessStart: string | null;
 	ownerHostBootId: string | null;
 	ownerHeartbeatAt: string | null;
+	ownerLastProgressAt: string | null;
+	ownerProgressStep: string | null;
 	leaseExpiresAt: string;
 	generation: number;
 }
@@ -79815,6 +82461,42 @@ export interface LandAlertDeliveryClaim {
 	operationId: string;
 	resumeGeneration: number;
 	payload: LandAlertPayload;
+	attempt: number;
+	generation: number;
+	ownerId: string;
+}
+
+export interface LandOwnerHealthPayload {
+	episodeId: string;
+	operationId: string;
+	projectName: string;
+	issueId: string;
+	prNumber: number;
+	runId: string | null;
+	ownerInstanceId: string;
+	ownerGeneration: number;
+	stalledSince: string;
+	progressStep: string;
+}
+
+export interface LandOwnerHealthOutboxRow {
+	episode_id: string;
+	operation_id: string;
+	payload: LandOwnerHealthPayload;
+	state: "pending" | "delivering" | "sent" | "failed" | "resolved";
+	attempt: number;
+	lease_owner: string | null;
+	lease_expires_at: string | null;
+	generation: number;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+	resolved_at: string | null;
+}
+
+export interface LandOwnerHealthDeliveryClaim {
+	episodeId: string;
+	payload: LandOwnerHealthPayload;
 	attempt: number;
 	generation: number;
 	ownerId: string;
@@ -80689,93 +83371,46 @@ export interface AutoMergeShadowObservationRow {
 	shadow_version: 1;
 }
 
-export interface AutoNarrowCandidateEvaluation {
-	holder: WorkflowGateHolderRow;
-	binding: {
-		questionId: string;
-		gateNodeId: string;
-		attempt: number;
-		repoIdentity: string;
-		repoSlug: string;
-		prNumber: number;
-		headSha: string;
-	};
-	observation: AutoMergeShadowObservationRow;
-	declaration?: AutoMergeShadowDeclarationRow;
-	eligibility: AutoNarrowEligibility;
-	hasFounderRework: boolean;
-	hasPendingFounderInput: boolean;
+export interface ShipJudgmentPolicyProvenanceRow {
+	provenanceId: string;
+	policy: typeof SHIP_JUDGMENT_APPROVAL_POLICY;
+	channelId: string;
+	threadId: string;
+	messageId: string;
+	authorId: string;
+	messageCreatedAt: string;
+	originalMessageDigest: string;
+	verifiedAt: string;
+	verificationReceiptId: string;
 }
 
-export type AutoNarrowSourceCommitResult =
+export interface ShipJudgmentAutoApprovalRow {
+	sourceEventId: string;
+	questionId: string;
+	envelopeJson: string;
+	envelopeHash: string;
+	createdAt: string;
+}
+
+export type ShipJudgmentSourceCommitResult =
 	| { status: "not_auto" | "not_candidate" | "ineligible" }
 	| {
 			status: "written" | "replayed";
-			envelope: AutoNarrowSourceEnvelopeV1;
+			envelope: ShipJudgmentApprovalEnvelopeV1;
 	  };
 
-export interface AutoNarrowOpinionSnapshotRow {
-	opinionId: string;
+export interface ShipJudgmentLegacyRetirementRow {
 	questionId: string;
-	runId: string;
-	projectName: string;
-	headSha: string;
+	threadId: string;
 	cardMessageId: string;
-	ordinal: number;
-	capturedAt: string;
-	gate1: 0 | 1;
-	gate2: 0 | 1;
-	gate3: 0 | 1;
-	eligible: 0 | 1;
-	declarationId: string | null;
-	machineReason: string | null;
-	s2BasisRecordId: string | null;
-	reasonCode: AutoNarrowOpinionReason;
-	policyVersion: 1;
-	sampleN: number;
-	agreeN: number;
-	precisionA: number;
-	precisionB: number;
-	confidenceLower: number | null;
-	sampleStartAt: string | null;
-	sampleEndAt: string | null;
-	lastEligibleHumanAt: string | null;
-}
-
-export interface AutoNarrowOpinionDeliveryRow {
-	questionId: string;
-	issueThreadId: string;
-	cardMessageId: string;
-	desiredOpinionId: string | null;
-	postedOpinionId: string | null;
-	followupMessageId: string | null;
+	legacyMessageId: string | null;
+	legacyMarker: string;
+	legacyState: string;
+	legacyPostingAt: string | null;
+	status: "pending" | "claimed" | "retired" | "unavailable";
 	generation: number;
-	attempt: number;
-	state: "pending" | "posting" | "uncertain" | "delivered" | "gone";
-	correlationMarker: string;
-	postingAt: string | null;
-	firstZeroScanAt: string | null;
-	scanFrontier: string | null;
-	nextAttemptAt: string | null;
-	lastErrorCode: string | null;
-	reactionApplied: "none" | "eligible" | "ineligible";
-	automaticLabelPending: 0 | 1;
-	legacyFreezeRequestedAt: string | null;
-	legacyFrozenAt: string | null;
+	leaseOwner: string | null;
 }
-
-export interface AutoNarrowOpinionDeliveryWork {
-	delivery: AutoNarrowOpinionDeliveryRow;
-	opinion: AutoNarrowOpinionSnapshotRow;
-	openingAt: string | null;
-}
-
-export type AutoNarrowOpinionRefreshResult =
-	| { status: "off" | "not_candidate" }
-	| {
-			status: "created" | "unchanged";
-			snapshot: AutoNarrowOpinionSnapshotRow;
-	  };
 
 export const AUTO_MERGE_SHADOW_DECLARED_CLASSES = [
 	"pure_docs",
@@ -80785,6 +83420,12 @@ export const AUTO_MERGE_SHADOW_DECLARED_CLASSES = [
 ] as const;
 export type AutoMergeShadowDeclaredClass =
 	(typeof AUTO_MERGE_SHADOW_DECLARED_CLASSES)[number];
+export type AutoMergeShadowDeclarationEvidenceKind =
+	| "discord_message"
+	| "lead_authenticated";
+export type AutoMergeShadowLeadAuthMethod =
+	| "lead_hmac"
+	| "carrier_passthrough";
 
 export interface AutoMergeShadowDeclarationRow {
 	declaration_id: string;
@@ -80792,26 +83433,45 @@ export interface AutoMergeShadowDeclarationRow {
 	run_id: string;
 	declared_class: AutoMergeShadowDeclaredClass;
 	declared_by: string;
-	discord_channel_id: string;
-	discord_message_id: string;
-	discord_author_user_id: string;
-	message_ts: string;
+	discord_channel_id: string | null;
+	discord_message_id: string | null;
+	discord_author_user_id: string | null;
+	message_ts: string | null;
+	evidence_kind: AutoMergeShadowDeclarationEvidenceKind;
+	lead_identity_digest: string | null;
+	lead_auth_method: AutoMergeShadowLeadAuthMethod | null;
 	declaration_seq: number;
 	declared_at: string;
 }
 
-export interface RecordAutoMergeShadowDeclarationInput {
+interface RecordAutoMergeShadowDeclarationBaseInput {
 	declarationId: string;
 	questionId: string;
 	runId: string;
 	declaredClass: AutoMergeShadowDeclaredClass;
 	declaredBy: string;
+	declaredAt: string;
+}
+
+export interface RecordDiscordAutoMergeShadowDeclarationInput
+	extends RecordAutoMergeShadowDeclarationBaseInput {
+	evidenceKind?: "discord_message";
 	discordChannelId: string;
 	discordMessageId: string;
 	discordAuthorUserId: string;
 	messageTs: string;
-	declaredAt: string;
 }
+
+export interface RecordLeadAuthenticatedAutoMergeShadowDeclarationInput
+	extends RecordAutoMergeShadowDeclarationBaseInput {
+	evidenceKind: "lead_authenticated";
+	leadIdentityDigest: string;
+	leadAuthMethod: AutoMergeShadowLeadAuthMethod;
+}
+
+export type RecordAutoMergeShadowDeclarationInput =
+	| RecordDiscordAutoMergeShadowDeclarationInput
+	| RecordLeadAuthenticatedAutoMergeShadowDeclarationInput;
 
 export type RecordAutoMergeShadowDeclarationResult =
 	| {
@@ -81963,6 +84623,8 @@ export interface WorkflowSourceEventInput {
 	sourceRowId?: number;
 	/** Frozen source timestamp; projector callers must forward it unchanged. */
 	at?: string;
+	/** Fresh projector observation time used only for currentness checks. */
+	projectedAt?: string;
 	/** Best-effort Lead target for non-blocking founder rework advisories. */
 	alertIdentity?: WorkflowEngineAlertIdentity;
 }
@@ -82172,6 +84834,7 @@ export function readEpicItemFacts(
 	store: StateStore,
 	projectName: string,
 	child: { uuid: string; identifier: string },
+	freshness: { generatedAt: string; stuckThresholdMinutes: number },
 ): EpicItemFacts {
 	const keys = [child.uuid, child.identifier];
 	const failed = (table: string): { ok: false; table: string } => ({
@@ -82194,7 +84857,12 @@ export function readEpicItemFacts(
 	};
 
 	const session = read("sessions", () =>
-		store.getEpicPageSessionFact(projectName, keys),
+		store.getEpicPageSessionFact(
+			projectName,
+			keys,
+			freshness.generatedAt,
+			freshness.stuckThresholdMinutes,
+		),
 	);
 	const land = read("land_operation", () =>
 		store.getEpicPageLandFact(projectName, keys),
@@ -82234,6 +84902,8 @@ export function readEpicItemFacts(
 		store.getEpicPageAttemptFact(
 			activeRun.run_id,
 			activeRun.current_node_id,
+			freshness.generatedAt,
+			freshness.stuckThresholdMinutes,
 		),
 	);
 	let authorities: PatrolLoopGateAuthority[];

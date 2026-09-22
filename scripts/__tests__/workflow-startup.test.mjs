@@ -7,12 +7,27 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import "../ci-ubicloud/__tests__/canary.test.mjs";
+import "../ci-ubicloud/__tests__/collector.test.mjs";
+import "../ci-ubicloud/__tests__/runner-variable.test.mjs";
+
 const require = createRequire(
 	new URL("../../packages/teamlead/package.json", import.meta.url),
 );
 const { parse } = require("yaml");
 
 function validateWiring(workflow) {
+	assert.equal(
+		workflow["run-name"],
+		"$" +
+			"{{ (github.event.action == 'labeled' && github.event.label.name == 'ci:full') && format('CI full-request {0}', github.event.pull_request.head.sha) || '' }}",
+	);
+	assert.deepEqual(workflow.on.pull_request.types, [
+		"opened",
+		"synchronize",
+		"reopened",
+		"labeled",
+	]);
 	const quick = workflow.jobs["quick-gate"];
 	assert.equal(quick.if, undefined);
 	assert.equal(quick["continue-on-error"], undefined);
@@ -33,6 +48,11 @@ function validateWiring(workflow) {
 		/node --test scripts\/__tests__\/workflow-startup\.test\.mjs/,
 	);
 	assert.ok(workflow.jobs["ci-ok"].needs.includes("quick-gate"));
+	assert.equal(
+		workflow.jobs["ci-ok"].name,
+		"$" +
+			"{{ contains(fromJSON('[\"full\",\"docs_only\",\"reuse\"]'), needs.classify.outputs.mode) && 'CI OK' || 'CI Scope OK' }}",
+	);
 	assert.match(
 		workflow.jobs["ci-ok"].steps[0].run,
 		/\$needs\["quick-gate"\]\.result == "success"/,
@@ -68,6 +88,17 @@ test("startup guard is mandatory in the CI OK dependency chain", () => {
 			w.jobs["quick-gate"].steps.find((s) =>
 				s.run?.includes("node scripts/check-workflow-startup.mjs"),
 			)["continue-on-error"] = true;
+		},
+		(w) => {
+			w.on.pull_request.types = w.on.pull_request.types.filter(
+				(type) => type !== "labeled",
+			);
+		},
+		(w) => {
+			w.jobs["ci-ok"].name = w.jobs["ci-ok"].name
+				.replace("'CI OK'", "'temporary'")
+				.replace("'CI Scope OK'", "'CI OK'")
+				.replace("'temporary'", "'CI Scope OK'");
 		},
 	]) {
 		const changed = structuredClone(workflow);

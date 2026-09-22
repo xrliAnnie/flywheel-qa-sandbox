@@ -105,7 +105,7 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
      `last_change_epoch` 只锚真实状态跃迁或该身份的远端 head 推进；初次采样是 baseline。
      渲染行 hash、spinner、poll、重复 stage、park 续期、报告重排或 result 修改均不刷新。
      旧 TSV 不迁移 epoch。`state_sha256` 仅用于渲染诊断，不能判停滞。
-     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待或有未到期 expires_at 的 long_task 声明为 WAITING，
+     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待、未到期 expires_at 的 long_task 声明，或 collector 以当前 execution/activation/TURN/worktree、grant/binding 时间、live owner lock 与 supervisor 进程核验的 `package_gate_queue` 均为 WAITING。队列证据写入 `queue_request`/`queue_position`/`queue_wait_seconds`；它只移除 STALLED，不得遮蔽 LIMIT_LIVE、INTERACTIVE_MENU、PANE_DEAD、capture/hash finding；
      source 不完整为 UNKNOWN，只有完整连续观测满 3600 秒才可生成候选。
      任何 exact 同期 push receipt 都能证伪：作者/committer 时间和 PR updated_at 不算 push。
      当前 head 改变以及最近 3600 秒内已验证推进为 ACTIVE；保留活动的观察区间。
@@ -1051,9 +1051,11 @@ tick 里「还剩什么」三行是 Bridge 在**这一轮**按 Linear 扫出的�
 - 固定链接从 `flywheel-comm epic-page status` 的 `url` 取(master token)。首次用
   `founder-html-delivery` 发一次,之后不重复发。需要给「此刻快照」时仍用 `render` +
   `publish-report`;它会得到新 token,保留 14 天。`show`、`render`、`generate` 都不刷新
-  固定页。
+  固定页。只有 founder/Lead 明确要更新固定页时才运行
+  `flywheel-comm epic-page publish --project "$PROJECT_NAME"`;事件与巡检不得自动发布。
+- `status` 的 `expires_at` 临近时先问 founder/Lead 是否更新,不得为了续期自动发布。
 - `status` 的 `publish_failures_since_last_published > 0` 时,先看失败 token,再看固定页;
-  手动生成不会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
+  只有显式发布成功才会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
 
 Founder attention 由机器派生：固定页「待你看」与 thread 标题同源。不得定时手写进展或维护第二份待办；不得手改 thread 名。
 纯记录类回帖（收件凭证、ACK 回执、已有机器持久记录的状态转述）不进 Discord thread；Epic 级状态只在固定页看。

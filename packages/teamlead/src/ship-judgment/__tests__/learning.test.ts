@@ -190,13 +190,15 @@ it.each([
 				});
 			let mode = "dry_run";
 			const clarifications = new ShipJudgmentClarifications(db, () => mode);
-			for (const inactive of ["off", "auto"]) {
-				mode = inactive;
-				expect(clarifications.sweep()).toBe(0);
-				expect(clarifications.ensure("decision")).toEqual({
-					status: "inactive",
-				});
-			}
+			mode = "off";
+			expect(clarifications.sweep()).toBe(0);
+			expect(clarifications.ensure("decision")).toEqual({
+				status: "inactive",
+			});
+			mode = "auto";
+			expect(clarifications.ensure("missing-outcome")).toEqual({
+				status: "ineligible",
+			});
 			mode = "dry_run";
 			if (scenario === "divergent") {
 				const root = canonicalDigest([

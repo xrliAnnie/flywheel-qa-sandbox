@@ -1,0 +1,944 @@
+{
+  "observedAt": "2026-09-17T19:14:06.898454+00:00",
+  "method": "Independent read-only SQL transactions, not a cross-database atomic snapshot; managed snapshot refused snapshot_owner_unavailable twice. Evidence only, not replay closure.",
+  "operations": [
+    {
+      "operation_id": "land:564edcccdd41be90654589affc1d8ba8473e9006101091152facc85e5f01c471",
+      "issue_id": "FLY-2519",
+      "run_id": "2ee4747d-ff26-4c92-9dce-fa08a6c69dd9",
+      "pr_number": 1191,
+      "state": "running",
+      "last_error": null,
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "terminated",
+      "current_node_id": "implement",
+      "approved_head": "215556c8b7e78aeef78755ed4b135f34faccc0e5"
+    },
+    {
+      "operation_id": "land:81e2af1732274c6eebf2d118156a38577949ebe260cdb7d1ed4ff379471d6d25",
+      "issue_id": "FLY-2519",
+      "run_id": "2ee4747d-ff26-4c92-9dce-fa08a6c69dd9",
+      "pr_number": 1191,
+      "state": "running",
+      "last_error": null,
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "terminated",
+      "current_node_id": "implement",
+      "approved_head": "9d7b4639054a8487c6d6df129fe46e6571443443"
+    },
+    {
+      "operation_id": "land:7af5255fdd65a929b81443d27b83821479a609bc7a1671c1bba59d0f050905cd",
+      "issue_id": "FLY-2519",
+      "run_id": "2ee4747d-ff26-4c92-9dce-fa08a6c69dd9",
+      "pr_number": 1191,
+      "state": "running",
+      "last_error": null,
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "terminated",
+      "current_node_id": "implement",
+      "approved_head": "e2ff062b82337368ca1101537834212212c29a1c"
+    },
+    {
+      "operation_id": "land:b26c9c57faa1151a81230eb218114b9dd41d985aa52c59e702a496f96b5424d1",
+      "issue_id": "FLY-2519",
+      "run_id": "685d117d-8eeb-489b-9f44-9abd313b3ab4",
+      "pr_number": 1191,
+      "state": "running",
+      "last_error": "mergeability_pending",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "d41b37146811af3aa27a34d978d58a1923fbd7e2"
+    },
+    {
+      "operation_id": "land:8734ef65f746e649942b06fab3f8585de05e7d82faea13f53143445cac85de85",
+      "issue_id": "FLY-2519",
+      "run_id": "685d117d-8eeb-489b-9f44-9abd313b3ab4",
+      "pr_number": 1191,
+      "state": "held",
+      "last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "eead9e67d82635ed3448a0ff9ae342e4f77c6992"
+    },
+    {
+      "operation_id": "land:7dc587d4e4d56e717980b04db98ed642bc04fb55b5451950a11f585960441f4a",
+      "issue_id": "FLY-2598",
+      "run_id": "d0e72d2d-e8b3-469d-af0c-abc4b2036bce",
+      "pr_number": 1219,
+      "state": "held",
+      "last_error": "retry_exhausted:issue_closeout_incomplete:cause=nodes_not_confirmed_gone",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "055dde558ef1513f691e0a4e1ed609caf84e21fa"
+    },
+    {
+      "operation_id": "land:8a5873971e96e3d9c456a1613febdd774b5cabf21a40b9d382f5f7b4737a31f7",
+      "issue_id": "FLY-2601",
+      "run_id": "2aee42fd-ee80-4ca8-9cab-696b95a1ba4b",
+      "pr_number": 1232,
+      "state": "held",
+      "last_error": "land_target_not_current",
+      "resume_generation": 1,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "d57e82a7891d2a106840f575d9e94a883c805bf1"
+    },
+    {
+      "operation_id": "land:430e9e0f8c99b378770ebec4984c39fa945dd08fc8590ec319fc13b855b32180",
+      "issue_id": "FLY-2606",
+      "run_id": "443b2f98-0e6e-4fe0-8e55-6562a7253046",
+      "pr_number": 1222,
+      "state": "held",
+      "last_error": "land_target_not_current",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "084a0647c45ac1443a4a8e47dd6ef1b8915c11f8"
+    },
+    {
+      "operation_id": "land:b0e96338c3be9ae4038af6639f83e2d4cbcb402203e2346879b73dc4a35adc13",
+      "issue_id": "FLY-2606",
+      "run_id": "443b2f98-0e6e-4fe0-8e55-6562a7253046",
+      "pr_number": 1222,
+      "state": "held",
+      "last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
+      "resume_generation": 1,
+      "closeout_targets_version": 1,
+      "targets_null": 0,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "01a04b7f68259c80b0d56545b73276143d3f391e"
+    },
+    {
+      "operation_id": "land:e243f828fd0da3dd0a4efa052a417dd8e8b4f3c21d4459b7b0daab79298583e7",
+      "issue_id": "FLY-2608",
+      "run_id": "0079c0da-2d36-4c12-8dc1-a14f4ef04517",
+      "pr_number": 1221,
+      "state": "held",
+      "last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "1d592c0ed8f3ae18de2ab87c440ee0ec878442c1"
+    },
+    {
+      "operation_id": "land:5a542cd8852c10b5468c6f8dcd307f3418fc2e6f6689cd2452d40f5a8b75cd88",
+      "issue_id": "FLY-2612",
+      "run_id": "d726a117-1b05-4090-8e84-041def77f860",
+      "pr_number": 1220,
+      "state": "held",
+      "last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "c0fe80132f4a74b6903a2768427aad069eca52e1"
+    },
+    {
+      "operation_id": "land:e560fbd67027591721cce63a5ab186c82d069cb5eb4d4983f1300be2d3296463",
+      "issue_id": "FLY-2616",
+      "run_id": "cd8ca652-00d7-4594-839a-e0f9f3bad594",
+      "pr_number": 1224,
+      "state": "held",
+      "last_error": "land_target_not_current",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "d3642ee913e2e519c21557ca09c0d070d1c32cb8"
+    },
+    {
+      "operation_id": "land:1e0e871a8183100279bda02a406e860f17de707754c4e34b34fe89390f81ad47",
+      "issue_id": "FLY-2616",
+      "run_id": "cd8ca652-00d7-4594-839a-e0f9f3bad594",
+      "pr_number": 1224,
+      "state": "running",
+      "last_error": null,
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "8e22a875620180f35fa50563321500e48a7a817b"
+    },
+    {
+      "operation_id": "land:5fad5a5324de5d8ce22888becc155dda3cb8447c2c7aaabbeab8a2b775881061",
+      "issue_id": "FLY-2616",
+      "run_id": "cd8ca652-00d7-4594-839a-e0f9f3bad594",
+      "pr_number": 1224,
+      "state": "held",
+      "last_error": "closeout_only_run_not_active",
+      "resume_generation": 1,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "6b8de58aa10dd0012c1f3968e3218d29e5c53cf3"
+    },
+    {
+      "operation_id": "land:e4c54d610ca0c0504008fa981b749bf37a8fc6cb993ac2a5e6e45672c343f2ec",
+      "issue_id": "FLY-2619",
+      "run_id": "fce48843-eb28-44a3-8256-0b5193e6c1e1",
+      "pr_number": 1223,
+      "state": "held",
+      "last_error": "retry_exhausted:issue_closeout_incomplete:cause=window_identity_pending",
+      "resume_generation": 0,
+      "closeout_targets_version": null,
+      "targets_null": 1,
+      "run_status": "held",
+      "current_node_id": "land",
+      "approved_head": "d06e6416d75c2883cb4f70363555b83f26418dce"
+    }
+  ],
+  "mergeReceipts": [
+    {
+      "operation_id": "land:8734ef65f746e649942b06fab3f8585de05e7d82faea13f53143445cac85de85",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"d1af40c719dcd8c16d4afc24b509c6275c9fc866\",\"headSha\":\"eead9e67d82635ed3448a0ff9ae342e4f77c6992\"}"
+    },
+    {
+      "operation_id": "land:7dc587d4e4d56e717980b04db98ed642bc04fb55b5451950a11f585960441f4a",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"aa8a9ce0ca3a55bfa1aa091abb581f1fc96f1d8d\",\"headSha\":\"055dde558ef1513f691e0a4e1ed609caf84e21fa\"}"
+    },
+    {
+      "operation_id": "land:8a5873971e96e3d9c456a1613febdd774b5cabf21a40b9d382f5f7b4737a31f7",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"a64aac8c7e593bcdf32202c257556bbfeff873b3\",\"headSha\":\"d57e82a7891d2a106840f575d9e94a883c805bf1\"}"
+    },
+    {
+      "operation_id": "land:b0e96338c3be9ae4038af6639f83e2d4cbcb402203e2346879b73dc4a35adc13",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"a3686d9606de1db1d8304151ae08a87aec186fc0\",\"headSha\":\"01a04b7f68259c80b0d56545b73276143d3f391e\"}"
+    },
+    {
+      "operation_id": "land:e243f828fd0da3dd0a4efa052a417dd8e8b4f3c21d4459b7b0daab79298583e7",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"b2f0c3e6119d87b43509673aa5f9633eb4c4ea78\",\"headSha\":\"1d592c0ed8f3ae18de2ab87c440ee0ec878442c1\"}"
+    },
+    {
+      "operation_id": "land:5a542cd8852c10b5468c6f8dcd307f3418fc2e6f6689cd2452d40f5a8b75cd88",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"bd8a1f7b902fffddeb2285be515e11925079f96b\",\"headSha\":\"c0fe80132f4a74b6903a2768427aad069eca52e1\"}"
+    },
+    {
+      "operation_id": "land:5fad5a5324de5d8ce22888becc155dda3cb8447c2c7aaabbeab8a2b775881061",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"aaf8e9c0ea9b1dc68c56698fe38e751501f138e2\",\"headSha\":\"6b8de58aa10dd0012c1f3968e3218d29e5c53cf3\"}"
+    },
+    {
+      "operation_id": "land:e4c54d610ca0c0504008fa981b749bf37a8fc6cb993ac2a5e6e45672c343f2ec",
+      "step": "merge_confirmed",
+      "receipt_json": "{\"mergeSha\":\"2768d5dc7d247ecd559d24f74923f2351e5fe491\",\"headSha\":\"d06e6416d75c2883cb4f70363555b83f26418dce\"}"
+    }
+  ],
+  "commSessions": [
+    {
+      "execution_id": "e0c055e7-2e2a-4189-969a-d37d3109aed6",
+      "issue_id": "FLY-2519",
+      "tmux_window": "runner-flywheel:pending",
+      "status": "running",
+      "ended_at": null
+    },
+    {
+      "execution_id": "fa22d94c-042b-420f-99f3-5b9518b99e46",
+      "issue_id": "FLY-2608",
+      "tmux_window": "runner-flywheel:pending",
+      "status": "running",
+      "ended_at": null
+    },
+    {
+      "execution_id": "c4138e92-aadf-416c-a1b0-d5b384d06f57",
+      "issue_id": "FLY-2612",
+      "tmux_window": "runner-flywheel:pending",
+      "status": "running",
+      "ended_at": null
+    },
+    {
+      "execution_id": "76ffba1b-7d17-4e95-a0cc-5dfd7a06dbd3",
+      "issue_id": "FLY-2612",
+      "tmux_window": "runner-flywheel:pending",
+      "status": "failed",
+      "ended_at": "2026-09-16 07:54:25"
+    },
+    {
+      "execution_id": "35b23197-342c-4f5f-b506-7cad0b175e93",
+      "issue_id": "FLY-2619",
+      "tmux_window": "runner-flywheel:pending",
+      "status": "running",
+      "ended_at": null
+    },
+    {
+      "execution_id": "0b2356d0-2de7-4d63-ac87-3b648177f8cd",
+      "issue_id": "FLY-2606",
+      "tmux_window": "runner-flywheel:pending",
+      "status": "running",
+      "ended_at": null
+    }
+  ],
+  "stateSessionPathObservations": [
+    {
+      "execution_id": "412485c1-93e3-4bbf-b228-b12410649347",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "eb9fb39b-2fea-49bd-9fba-6d497a5ef678",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "7f333430-7c96-405d-9f43-0117d69811f7",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": null,
+      "branch": null,
+      "status": "terminated",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "4c428168-c403-4b03-b2b9-ffa47bf68433",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "ed0040d2-b967-4079-b8ce-f8aa2b23cf02",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "terminated",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "ebb55498-f820-4e7e-a291-34bd9a7edb17",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "8b2e28ea-325a-47d3-807c-deda7711bd5d",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "ddbd5df0-8ffa-44ff-aac7-fb6cb6ac329c",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "terminated",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "ff25fa7d-3047-4fe1-b6e3-93cbbde2be06",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "9c482989-3044-4672-9110-1ccdd6b92c65",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "b40aeee0-1bdb-4a5f-b3c9-82e9d2a536a1",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "terminated",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "6bd95652-bb85-4197-9387-1102fea07b2a",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "4ed9ec0d-3fc5-484a-a2aa-0dbd7f9d1f05",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "3657f99b-5dfb-47d8-b30e-85c61e8587c1",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "e0c055e7-2e2a-4189-969a-d37d3109aed6",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "a70a514f-5882-4bc0-aa0e-c4d5002f01df",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "93e1ef68-1afa-459a-a0d1-d52eb4ad7a2e",
+      "issue_id": "FLY-2598",
+      "issue_identifier": "FLY-2598",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2598",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "dd57b466-0a26-4d51-b32f-726ae6e3d311",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "fabd68a3-0b4c-4315-83b6-83a26d7a9046",
+      "issue_id": "FLY-2598",
+      "issue_identifier": "FLY-2598",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2598",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "e059729e-9960-4b78-80c1-70b28214852f",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "14d1a745-a11b-4428-a1ec-50dc4bcd93c7",
+      "issue_id": "FLY-2608",
+      "issue_identifier": "FLY-2608",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "03e9aa3e-96be-41ed-a1bb-7c6f2cf8f3de",
+      "issue_id": "FLY-2612",
+      "issue_identifier": "FLY-2612",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2612",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "dc0d2010-e9b2-4d9d-ba35-66d22c00c912",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "fa22d94c-042b-420f-99f3-5b9518b99e46",
+      "issue_id": "FLY-2608",
+      "issue_identifier": "FLY-2608",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2608",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "b9b78aa2-997a-470c-aa55-418235e05bf1",
+      "issue_id": "FLY-2612",
+      "issue_identifier": "FLY-2612",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "c4138e92-aadf-416c-a1b0-d5b384d06f57",
+      "issue_id": "FLY-2612",
+      "issue_identifier": "FLY-2612",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2612",
+      "branch": null,
+      "status": "terminated",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "76ffba1b-7d17-4e95-a0cc-5dfd7a06dbd3",
+      "issue_id": "FLY-2612",
+      "issue_identifier": "FLY-2612",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2612",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "bd5809a1-0069-4e41-9571-914f80847be6",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "17829ab7-7067-4c1b-8c79-34b51757e96f",
+      "issue_id": "FLY-2598",
+      "issue_identifier": "FLY-2598",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "ba143787-b612-40e6-9b9c-86ce31c70062",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "53863018-a864-4190-b45d-bac15c630a4e",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "2f2f6441-598c-44ee-a057-33d77b0f5932",
+      "issue_id": "FLY-2598",
+      "issue_identifier": "FLY-2598",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2598",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "5c2f5ba2-c87b-427b-8551-bc43c6687df4",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "d54d7422-472a-4f48-882b-0ce4fb056027",
+      "issue_id": "FLY-2608",
+      "issue_identifier": "FLY-2608",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2608",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "813e97ef-8bdd-452c-85a5-0454e7452a0d",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "8575b98f-ea64-4ae1-b0e0-8f6fcc9a3c36",
+      "issue_id": "FLY-2598",
+      "issue_identifier": "FLY-2598",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2598",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "35b23197-342c-4f5f-b506-7cad0b175e93",
+      "issue_id": "FLY-2619",
+      "issue_identifier": "FLY-2619",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2619",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "219d2ef5-d60b-4b76-b66e-a4a066463fdf",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": null,
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": null
+    },
+    {
+      "execution_id": "0b2356d0-2de7-4d63-ac87-3b648177f8cd",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "terminated",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "41b90fe5-6c8b-483a-b3d4-220e360577ba",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "e34f8d15-815a-496b-b696-7e1ee23b3247",
+      "issue_id": "FLY-2619",
+      "issue_identifier": "FLY-2619",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2619",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "e2e6ac15-e29b-480c-b372-09a9f9851ef5",
+      "issue_id": "FLY-2608",
+      "issue_identifier": "FLY-2608",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2608",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "7a4c9ce4-59b8-47ca-8231-9cade3ad0790",
+      "issue_id": "FLY-2608",
+      "issue_identifier": "FLY-2608",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2608",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "8bfd37f2-7fb3-442c-9e4b-ea777757a207",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "05cc03de-2398-4204-b765-c13fb9e47e75",
+      "issue_id": "FLY-2612",
+      "issue_identifier": "FLY-2612",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2612",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "cbdae0bc-2819-4300-98ee-0197c0cbbd8e",
+      "issue_id": "FLY-2608",
+      "issue_identifier": "FLY-2608",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2608",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "9ce407a3-d956-45c0-9abb-6d36b8fc56c2",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "4969a1b7-7374-4d31-ab10-d2a6ae63376e",
+      "issue_id": "FLY-2612",
+      "issue_identifier": "FLY-2612",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2612",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "af2ed011-5d6b-40b7-bdcf-1ecbeb3e3a65",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "823730c9-5476-4677-b2f1-634bb0192302",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "56cd8c01-fa9b-4265-aaa1-b62b1ed00c1c",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "ae550b58-2a04-4fc1-9811-3c31d9889ca2",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "09a3fba0-4f77-4d2b-8330-32b2f11222a6",
+      "issue_id": "FLY-2619",
+      "issue_identifier": "FLY-2619",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2619",
+      "branch": null,
+      "status": "blocked",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "6962d5f9-c206-449e-bedd-4e0415405a94",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "39d9b1ba-b170-44cc-95c3-222dd6821c6e",
+      "issue_id": "FLY-2619",
+      "issue_identifier": "FLY-2619",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2619",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "414bf9c9-4789-4752-bbe2-ac0f8d19c7b2",
+      "issue_id": "FLY-2619",
+      "issue_identifier": "FLY-2619",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2619",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "872afadc-bee7-4cc8-8ebf-4f0fb48f709c",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "23fa4549-7e22-400c-ad32-f32f34c60ffa",
+      "issue_id": "FLY-2519",
+      "issue_identifier": "FLY-2519",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2519",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "f6ad8105-be75-44f3-8444-832f460d4646",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "5bdb9764-2f0c-4c39-a1a1-6abd95d5a5dd",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "ca1c8038-3a37-4e86-b132-839db0a4c157",
+      "issue_id": "FLY-2606",
+      "issue_identifier": "FLY-2606",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2606",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "153dfa8a-d17a-484d-9d48-cbe00822414d",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "failed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "6f880aac-46c4-4d2d-858d-7d6301f9ef5a",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "511b6182-08b8-4a35-8290-2357d988cf4c",
+      "issue_id": "FLY-2601",
+      "issue_identifier": "FLY-2601",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2601",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": true
+    },
+    {
+      "execution_id": "ecd3c21f-2a83-4be3-928d-541dcf0d03de",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    },
+    {
+      "execution_id": "0cd35ab1-062f-4f15-8d8f-51a684218e8b",
+      "issue_id": "FLY-2616",
+      "issue_identifier": "FLY-2616",
+      "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "branch": null,
+      "status": "completed",
+      "pathExistsObservation": false
+    }
+  ],
+  "stateSessionPathObservedAt": "2026-09-17T19:27:41.948994+00:00",
+  "pathObservationBoundary": "os.path.exists observation only; false is not ENOENT/gone attestation; no deletion authority",
+  "absentPathBindingSamples": [
+    {
+      "execution_id": "5c2f5ba2-c87b-427b-8551-bc43c6687df4",
+      "issue_identifier": "FLY-2616",
+      "worktree_binding_path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+      "worktree_binding_branch": "flywheel-FLY-2616",
+      "worktree_binding_generation": "0dbeb01f-16eb-4c53-a995-553c26993053",
+      "worktree_binding_locked_at": "2026-09-16 03:59:24"
+    },
+    {
+      "execution_id": "93e1ef68-1afa-459a-a0d1-d52eb4ad7a2e",
+      "issue_identifier": "FLY-2598",
+      "worktree_binding_path": "/Users/xiaorongli/Dev/flywheel-FLY-2598",
+      "worktree_binding_branch": "flywheel-FLY-2598",
+      "worktree_binding_generation": "ae339d22-cace-42f5-b664-943edfcd3b1c",
+      "worktree_binding_locked_at": "2026-09-16 00:12:31"
+    }
+  ],
+  "targetPathDetail": {
+    "observedAt": "2026-09-17T19:29:44.031340+00:00",
+    "boundary": "read-only point observation, no historical-parent equivalence claim; no cleanup authority",
+    "targets": [
+      {
+        "path": "/Users/xiaorongli/Dev/flywheel-FLY-2598",
+        "lstat": "ENOENT",
+        "gitRegistered": false,
+        "currentParent": {
+          "path": "/Users/xiaorongli/Dev",
+          "dev": 16777229,
+          "ino": 2376780
+        }
+      },
+      {
+        "path": "/Users/xiaorongli/Dev/flywheel-FLY-2616",
+        "lstat": "ENOENT",
+        "gitRegistered": false,
+        "currentParent": {
+          "path": "/Users/xiaorongli/Dev",
+          "dev": 16777229,
+          "ino": 2376780
+        }
+      }
+    ]
+  }
+}

@@ -1672,7 +1672,8 @@ export class WorkflowEngineDispatcher {
 		if (!this.alertsEnabled()) return 0;
 		const sink = this.alertSink?.current;
 		if (!sink) return 0;
-		let finalized = await this.reconcileLegacyLandAlerts(sink, max);
+		let finalized = await this.reconcileLandOwnerHealthAlerts(sink, max);
+		finalized += await this.reconcileLegacyLandAlerts(sink, max - finalized);
 		for (let index = finalized; index < max; index += 1) {
 			const now = this.now();
 			const claim = this.options.store.claimNextWorkflowAlert({
@@ -1711,6 +1712,71 @@ export class WorkflowEngineDispatcher {
 				});
 				finalized += 1;
 			}
+		}
+		return finalized;
+	}
+
+	private async reconcileLandOwnerHealthAlerts(
+		sink: { alert: (payload: AlertPayload) => Promise<AlertResult> },
+		max: number,
+	): Promise<number> {
+		let finalized = 0;
+		for (let index = 0; index < max; index += 1) {
+			const now = this.now();
+			const claim = this.options.store.claimNextLandOwnerHealthAlert({
+				ownerId: this.ownerId,
+				now: now.toISOString(),
+				leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+			});
+			if (!claim) break;
+			const identity = this.resolveRunAlertIdentity(
+				claim.payload.projectName,
+				claim.payload.issueId,
+				claim.payload.runId ?? `land:${claim.payload.operationId}`,
+			);
+			try {
+				const delivery = await sink.alert({
+					leadId: identity.leadId,
+					projectName: identity.projectName,
+					eventId: `${claim.episodeId}:${claim.attempt}`,
+					eventType: "workflow_engine_escalation",
+					severity: "warning",
+					sessionKey: `land:${claim.payload.operationId}`,
+					title: `Land owner has made no progress for ${claim.payload.issueId}`,
+					body: `PR #${claim.payload.prNumber} land operation ${claim.payload.operationId} is still owned by a live process but has made no durable progress since ${claim.payload.stalledSince}. Last step: ${claim.payload.progressStep}. The live owner remains fenced in place; inspect it before considering recovery.`,
+					metadata: {
+						workflowEngine: {
+							runId: claim.payload.runId ?? `land:${claim.payload.operationId}`,
+							issueId: claim.payload.issueId,
+							nodeId: "land",
+							executionId: `land:${claim.payload.operationId}`,
+							disposition: "partial",
+							leadResolution: identity.leadResolution,
+						},
+					},
+				});
+				const accepted = delivery.sent === true || delivery.queued === true;
+				this.options.store.finishLandOwnerHealthAlertDelivery({
+					episodeId: claim.episodeId,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: accepted ? "sent" : "failed",
+					...(accepted
+						? {}
+						: { error: delivery.skipped ?? "alert_not_delivered" }),
+					now: this.now().toISOString(),
+				});
+			} catch (error) {
+				this.options.store.finishLandOwnerHealthAlertDelivery({
+					episodeId: claim.episodeId,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: "failed",
+					error: error instanceof Error ? error.message : String(error),
+					now: this.now().toISOString(),
+				});
+			}
+			finalized += 1;
 		}
 		return finalized;
 	}
@@ -2293,7 +2359,8 @@ export class WorkflowEngineDispatcher {
 			if (
 				this.options.prepareLandIntent &&
 				!(
-					existingOperation?.closeout_targets_version === 1 &&
+					(existingOperation?.closeout_targets_version === 1 ||
+						existingOperation?.closeout_targets_version === 2) &&
 					existingOperation.closeout_targets_json &&
 					existingOperation.closeout_targets_digest &&
 					existingOperation.closeout_attribution_digest
@@ -2310,7 +2377,7 @@ export class WorkflowEngineDispatcher {
 				if (!prepared.ok) {
 					return holdLandRun(
 						"land_target_snapshot_unavailable",
-						undefined,
+						existingOperation?.operation_id,
 						prepared.missing,
 					);
 				}

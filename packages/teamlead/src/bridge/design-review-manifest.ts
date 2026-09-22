@@ -16,7 +16,7 @@ const DIRTY_PLAN_MESSAGE =
 	"commit plan current contents and re-run review (staged, unstaged, and untracked plan changes are rejected)";
 
 export type DesignPlanSnapshot =
-	| { ok: true; blobSha: string }
+	| { ok: true; commitSha: string; blobSha: string }
 	| {
 			ok: false;
 			reason: "missing" | "dirty" | "invalid_path" | "git_error";
@@ -165,7 +165,7 @@ export function snapshotDesignReviewPlan(
 		) {
 			return { ok: false, reason: "dirty", message: DIRTY_PLAN_MESSAGE };
 		}
-		return { ok: true, blobSha };
+		return { ok: true, commitSha: headCommit, blobSha };
 	} catch (error) {
 		return {
 			ok: false,

@@ -260,6 +260,8 @@ describe("Bridge synchronous operation marker coverage", () => {
 			"codex-tui:new-session",
 			"codex-tui:kill-window",
 			"codex-tui:new-window",
+			"codex-tui:set-window-option",
+			"codex-tui:respawn-pane",
 		]);
 		expect(existsSync(tuiMarker)).toBe(false);
 	});

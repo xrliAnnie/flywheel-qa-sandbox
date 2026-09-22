@@ -823,9 +823,9 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		enumValues: ["off", "dry_run", "auto"],
 		default: "dry_run",
 		description:
-			"FLY-2453: founder-message-controlled narrow auto approval for three-gate pure-document ship cards",
+			"Founder-message-controlled three-point ship judgment execution mode (historical key retained for compatibility)",
 		whenOn:
-			"dry_run 给每张 ship 卡附机器意见但仍等 founder；auto 仅代批同时通过机器纯文档、人声明 pure_docs、强度二证据的卡",
+			"dry_run 与 auto 都按设计对齐、在飞冲突、QA 覆盖三点显示机器判断；auto 仅在三点全通过且既有守卫有效时自动批准",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -835,7 +835,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 		controlAuthority: "founder_message",
-		note: "No env/config override. Production writes require an exact, unedited founder Discord message through the protected Lead route; off is fixture/emergency storage only.",
+		note: "The key name is historical and no longer denotes a pure-docs gate. No env/config override. Production writes require an exact, unedited founder Discord message through the protected Lead route; off is fixture/emergency storage only.",
 	},
 	{
 		name: "runner_memory_mode",
@@ -933,6 +933,35 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/run-infra.ts",
 				"setupRunInfrastructure",
 				"storeSkillFrameworkSplitParticipation",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "review_same_family_allowed",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "review.same_family_allowed",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: false,
+		description:
+			"FLY-2763 Codex 号全灭时的应急口：允许 Claude 作者由另一个 Claude 模型做代码复审（记录盖 same_family_sanction），并允许菜单 implement 与 QA 同为 Claude（模型必须不同）。Enable: feature-flags set --name review_same_family_allowed --to on --project <project> --reason <reason>；Codex 号恢复后关掉。",
+		whenOn:
+			"Claude 写的代码由不同模型的 Claude 复审并盖章过门；Claude 实现 + Claude QA 的组合可派发。",
+		note: "关着时 FLY-1188 跨家族复审与 SAME_VENDOR_REVIEW_COMBINATION 准入逐字节不变；已盖章的历史记录不受开关影响。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/runs-route.ts",
+				"createRunsRouter",
+				"storeReviewSameFamilyAllowed",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/review-request-coordinator.ts",
+				"ReviewRequestCoordinator.accept",
+				"storeReviewSameFamilyAllowed",
 			),
 		],
 		toggleable: "conversational",

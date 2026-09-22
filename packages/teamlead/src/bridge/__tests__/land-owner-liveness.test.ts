@@ -125,6 +125,64 @@ describe("FLY-2616 land owner liveness", () => {
 		}
 	});
 
+	it("queues one durable health episode for a live owner without progress", async () => {
+		const { store, operation } = await fixture();
+		try {
+			const claim = store.claimLandOperation({
+				operationId: operation.operation_id,
+				...OWNER,
+				now: "2026-09-16T02:49:51.000Z",
+				leaseExpiresAt: "2026-09-16T04:49:51.000Z",
+			});
+			if (!claim) throw new Error("claim missing");
+
+			const first = await runLandOwnerLivenessPass(store, {
+				now: () => new Date("2026-09-16T02:54:51.000Z"),
+				hostBootId: OWNER.ownerHostBootId,
+				probeProcessTuple: () => "alive",
+			});
+			const replay = await runLandOwnerLivenessPass(store, {
+				now: () => new Date("2026-09-16T02:54:52.000Z"),
+				hostBootId: OWNER.ownerHostBootId,
+				probeProcessTuple: () => "alive",
+			});
+
+			expect(first).toEqual({
+				reclaimed: [],
+				unresolved: [],
+				stalled: [operation.operation_id],
+			});
+			expect(replay).toEqual({ reclaimed: [], unresolved: [], stalled: [] });
+			expect(store.listLandOwnerHealthOutbox()).toHaveLength(1);
+
+			expect(
+				store.recordLandOperationStep({
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					ownerInstanceId: claim.ownerInstanceId,
+					generation: claim.generation,
+					step: "merge_confirmed",
+					receipt: { headSha: HEAD },
+					now: "2026-09-16T02:55:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(store.listLandOwnerHealthOutbox()[0]).toMatchObject({
+				state: "resolved",
+				resolved_at: "2026-09-16T02:55:00.000Z",
+			});
+
+			const nextEpisode = await runLandOwnerLivenessPass(store, {
+				now: () => new Date("2026-09-16T03:00:00.000Z"),
+				hostBootId: OWNER.ownerHostBootId,
+				probeProcessTuple: () => "alive",
+			});
+			expect(nextEpisode.stalled).toEqual([operation.operation_id]);
+			expect(store.listLandOwnerHealthOutbox()).toHaveLength(2);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("reclaims a positively dead owner immediately and fences every old write", async () => {
 		const { store, operation } = await fixture();
 		try {
@@ -301,6 +359,7 @@ describe("FLY-2616 land owner liveness", () => {
 			expect(unresolved).toEqual({
 				reclaimed: [],
 				unresolved: [operation.operation_id],
+				stalled: [],
 			});
 			expect(probeProcessTuple).not.toHaveBeenCalled();
 			expect(store.getLandOperation(operation.operation_id)?.state).toBe(
@@ -315,6 +374,7 @@ describe("FLY-2616 land owner liveness", () => {
 			expect(expired).toEqual({
 				reclaimed: [operation.operation_id],
 				unresolved: [],
+				stalled: [],
 			});
 			expect(store.getLandOperation(operation.operation_id)).toMatchObject({
 				state: "partial",

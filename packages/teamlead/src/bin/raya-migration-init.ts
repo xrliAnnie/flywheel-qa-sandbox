@@ -12,11 +12,13 @@ import {
 	digest,
 	discordJson,
 	ensureDiscordProbe,
+	LEAD_LIVE_VERIFY_TIMEOUT_MS,
 	type MigrationIO,
 	readPrivate,
 	withRayaDeployLock,
 } from "./raya-migration-io.js";
 import { verifyMigrationAuthorization } from "./raya-migration-manifest.js";
+import { readLeadInboundCursor } from "./seed-lead-inbound-cursor.js";
 
 const ID = /^[0-9]{17,20}$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -117,6 +119,12 @@ export async function inspectLegacyOwners(
 			throw new Error("legacy-probe-failed");
 		}
 		const pids = [...output.matchAll(/^\s*pid = ([1-9][0-9]*)\s*$/gm)];
+		const states = [...output.matchAll(/^\s*state = ([^\r\n]+?)\s*$/gm)];
+		if (pids.length === 0 && states[0]?.[1]?.trim() === "not running") {
+			owner.loaded = true;
+			owners.push(owner);
+			continue;
+		}
 		if (pids.length !== 1) throw new Error("legacy-pid-invalid");
 		owner.pid = Number(pids[0]![1]);
 		owner.loaded = true;
@@ -300,11 +308,29 @@ export async function initializeMigration(
 		}
 		directory(existingStateParent);
 		const cursorPath = join(state, "inbound-cursor.json");
+		let cursorStatus: "preexisting" | null = null;
+		let cursorExists = false;
 		try {
 			lstatSync(cursorPath);
-			throw new Error("cursor-already-exists");
+			cursorExists = true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		if (cursorExists) {
+			if (!input.resumeFromFailed) throw new Error("cursor-already-exists");
+			readLeadInboundCursor(cursorPath);
+			await io.run(
+				"bash",
+				[
+					join(root, "bin/flywheel-lead.sh"),
+					"verify",
+					"--stage",
+					"live",
+					join(root, "manifests/raya-raya.json"),
+				],
+				LEAD_LIVE_VERIFY_TIMEOUT_MS,
+			);
+			cursorStatus = "preexisting";
 		}
 		const summaryBytes = readRegular(
 			join(root, "state/summary-registry/migration-receipt.json"),
@@ -350,7 +376,7 @@ export async function initializeMigration(
 			cursor: {
 				path: cursorPath,
 				seed_input: join(folder, "seed-input.json"),
-				status: null,
+				status: cursorStatus,
 				sha256: null,
 			},
 			window_probe: {

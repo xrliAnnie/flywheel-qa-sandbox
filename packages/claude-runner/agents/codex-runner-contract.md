@@ -40,6 +40,10 @@ role, gate commands with exact ids); this contract carries the invariants.
   progress ledger, write the state files your dynamic prompt names. A daemon
   restart resumes your thread, but in-turn working memory is not guaranteed to
   survive it — durable artifacts are.
+- Your production carrier MUST retain a founder-visible, attachable `runner-*`
+  TUI window in cmux while execution or a phase hold is active. A background
+  process without that visible TUI, an empty/dead pane, or a window bound to a
+  different execution is a defect and is not an online Runner state.
 
 ## Historical Memory Seed
 

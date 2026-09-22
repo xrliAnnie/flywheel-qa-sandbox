@@ -1,0 +1,22 @@
+{
+	"name": "flywheel-raya-cos",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Raya CoS business package landed from xrliAnnie/raya@90e433e87a68287ed59ba64f2584e3a6bc0da151:packages/cos (FLY-2694). Zero runtime dependencies; no resident entrypoint.",
+	"type": "module",
+	"exports": "./dist/index.js",
+	"bin": {
+		"raya-cos": "./dist/cli.js"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"test": "vitest run",
+		"test:run": "vitest run",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

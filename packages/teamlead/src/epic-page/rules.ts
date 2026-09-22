@@ -4,6 +4,7 @@ import type {
 	MissingReason,
 	RootCounts,
 	RootCountsResult,
+	SignalKind,
 } from "./model.js";
 
 import { EpicPageSchemaError } from "./schema-error.js";
@@ -259,17 +260,130 @@ export function isSchedulable(item: EpicItem): boolean {
 
 export type ItemClass =
 	| "live"
+	| "stopped_acceptance"
+	| "stopped_stuck"
+	| "evidence_gap"
 	| "waiting"
 	| "free"
 	| "idle"
 	| "done"
 	| "canceled";
 
+const ACCEPTANCE_SESSION_STATUSES = new Set([
+	"completed",
+	"ship_parked",
+	"awaiting_review",
+	"design_done",
+	"approved_to_ship",
+	"approved",
+]);
+
+function executionFactsKnown(item: EpicItem): boolean {
+	return (
+		item.session.value !== null &&
+		item.run.value !== null &&
+		item.attempt.value !== null
+	);
+}
+
+function signalFactsKnown(item: EpicItem): boolean {
+	return (
+		known(item.signal_sources.statestore) && known(item.signal_sources.commdb)
+	);
+}
+
+function hasFreshMachineSession(item: EpicItem): boolean {
+	return (item.session.value?.machine_running_count ?? 0) > 0;
+}
+
+function hasProvenNoFreshMachineSession(item: EpicItem): boolean {
+	return item.session.value?.machine_running_count === 0;
+}
+
+function machineLive(item: EpicItem): boolean {
+	if (!executionFactsKnown(item)) return false;
+	const run = item.run.value?.[0];
+	if (run) {
+		const attempt = item.attempt.value?.[0];
+		return Boolean(
+			run.status === "active" &&
+				attempt?.state === "running" &&
+				attempt.machine_live,
+		);
+	}
+	return hasFreshMachineSession(item);
+}
+
+function machineStarting(item: EpicItem): boolean {
+	return Boolean(
+		executionFactsKnown(item) &&
+			item.run.value?.[0]?.status === "active" &&
+			item.attempt.value?.[0]?.starting_recent,
+	);
+}
+
+function executionEvidenceGap(item: EpicItem): boolean {
+	if (!executionFactsKnown(item)) return true;
+	if (
+		(item.session.value?.running_heartbeat_stale_count ?? 0) > 0 ||
+		(item.session.value?.running_heartbeat_missing_count ?? 0) > 0
+	)
+		return true;
+	const attempt = item.attempt.value?.[0];
+	if (
+		attempt?.state === "running" &&
+		(attempt.heartbeat_state === "stale" ||
+			attempt.heartbeat_state === "missing")
+	)
+		return true;
+	return false;
+}
+
+export type StuckSignalKind = Extract<
+	SignalKind,
+	"declared_blocked" | "runner_stopped" | "run_held"
+>;
+
+const STUCK_SIGNAL_KINDS = new Set<StuckSignalKind>([
+	"declared_blocked",
+	"runner_stopped",
+	"run_held",
+]);
+
+export function stuckSignalKind(item: EpicItem): StuckSignalKind | null {
+	return (
+		(item.signals.find((signal) =>
+			STUCK_SIGNAL_KINDS.has(signal.kind as StuckSignalKind),
+		)?.kind as StuckSignalKind | undefined) ?? null
+	);
+}
+
+function machineStuck(item: EpicItem): boolean {
+	return stuckSignalKind(item) !== null;
+}
+
 export function classifyItem(item: EpicItem): ItemClass | null {
 	const type = item.state.value!.type;
-	if (type === "started") return "live";
 	if (type === "completed") return "done";
 	if (type === "canceled") return "canceled";
+	if (machineLive(item)) return "live";
+	if (type === "started") {
+		if (!signalFactsKnown(item)) return "evidence_gap";
+		if (machineStuck(item)) return "stopped_stuck";
+		if (machineStarting(item)) return "evidence_gap";
+		if (executionEvidenceGap(item)) return "evidence_gap";
+		if (
+			ACCEPTANCE_SESSION_STATUSES.has(
+				item.session.value?.latest[0]?.status ?? "",
+			) ||
+			item.attempt.value?.[0]?.state === "review"
+		)
+			return "stopped_acceptance";
+		if (hasFreshMachineSession(item)) return "stopped_acceptance";
+		return hasProvenNoFreshMachineSession(item)
+			? "stopped_stuck"
+			: "evidence_gap";
+	}
 	if (["backlog", "unstarted", "triage"].includes(type)) {
 		const blockers = item.blocked_by.value!;
 		if (blockers.length === 0) return "idle";
@@ -325,6 +439,9 @@ export function computeRootCounts(
 	return roots.map((root) => {
 		const counts: RootCounts["counts"] = {
 			live: 0,
+			stopped_acceptance: 0,
+			stopped_stuck: 0,
+			evidence_gap: 0,
 			waiting: 0,
 			free: 0,
 			idle: 0,
@@ -336,7 +453,15 @@ export function computeRootCounts(
 		const from = ["/header/roots", ...parentPointers];
 		for (const index of members.get(root.identifier) ?? []) {
 			const item = items[index]!;
-			from.push(`/items/${index}/state`, `/items/${index}/blocked_by`);
+			from.push(
+				`/items/${index}/state`,
+				`/items/${index}/blocked_by`,
+				`/items/${index}/session`,
+				`/items/${index}/run`,
+				`/items/${index}/attempt`,
+				`/items/${index}/signal_sources/statestore`,
+				`/items/${index}/signal_sources/commdb`,
+			);
 			const cls = classifyItem(item);
 			if (cls !== null) counts[cls]++;
 			else
@@ -347,6 +472,9 @@ export function computeRootCounts(
 		}
 		counts.total =
 			counts.live +
+			counts.stopped_acceptance +
+			counts.stopped_stuck +
+			counts.evidence_gap +
 			counts.waiting +
 			counts.free +
 			counts.idle +

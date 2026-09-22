@@ -27,7 +27,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
+import {
+	adapterTypeToFamily,
+	type RoleEffort,
+	SAME_FAMILY_REVIEW_SANCTION,
+} from "flywheel-config";
 import { defaultQuotaMonitorStatePath } from "../account-heal/quota-monitor-state.js";
 import {
 	type QuotaWitness,
@@ -44,6 +48,8 @@ import {
 	type ClaudeReviewOutcome,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
+import { snapshotDesignReviewPlan } from "./design-review-manifest.js";
+import { storeReviewSameFamilyAllowed } from "./flag-store-runtime.js";
 import { wakeQuotaDaemon as wakeDefaultQuotaDaemon } from "./quota-daemon-wake.js";
 import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
 import { classifyReviewFailure } from "./review-quota-retry.js";
@@ -712,7 +718,19 @@ export class ReviewRequestCoordinator {
 		// claude-author→codex-reviewer lane — running the Claude reviewer for
 		// a claude author would BE a same-family review.
 		const authorFamily = adapterTypeToFamily(session.adapter_type);
-		if (authorFamily === "claude") {
+		// FLY-2763: a claude-family author may use this lane ONLY under the
+		// project-scoped sanction (review_same_family_allowed=on, Codex quota
+		// outage). The sanction is frozen on the job at request time and the
+		// reviewer model is forced to differ from the author model.
+		const sameFamilySanction =
+			authorFamily === "claude" &&
+			storeReviewSameFamilyAllowed(
+				{ mode: "ready", store: this.store },
+				projectName,
+			)
+				? SAME_FAMILY_REVIEW_SANCTION
+				: undefined;
+		if (authorFamily === "claude" && !sameFamilySanction) {
 			return reject(
 				409,
 				`execution ${executionId} is a claude-family author — request-review is the non-claude lane (legacy codex review applies)`,
@@ -908,6 +926,7 @@ export class ReviewRequestCoordinator {
 				reviewType,
 				questionId,
 				authorFamily,
+				sameFamilySanction,
 			});
 			this.failReviewJob(requestId, acceptGateFailureReason(gate));
 			this.alert(
@@ -947,6 +966,7 @@ export class ReviewRequestCoordinator {
 				reuseRepoIdentity,
 				frozenHeadSha,
 				authorFamily,
+				sameFamilySanction,
 				status: "skipped",
 			});
 			if (!skipInsert.inserted) {
@@ -1047,6 +1067,32 @@ export class ReviewRequestCoordinator {
 			reviewType,
 			reviewTarget.identity,
 		);
+		let designPlanProof:
+			| {
+					planPath: string;
+					reviewedCommitSha: string;
+					expectedBlobSha: string;
+					capturedAt: string;
+			  }
+			| undefined;
+		if (reviewType === "design" && planPath) {
+			const snapshot = snapshotDesignReviewPlan(
+				{ worktree_path: reviewTarget.path },
+				planPath,
+			);
+			if (snapshot.ok) {
+				designPlanProof = {
+					planPath,
+					reviewedCommitSha: snapshot.commitSha,
+					expectedBlobSha: snapshot.blobSha,
+					capturedAt: new Date(this.now()).toISOString(),
+				};
+			} else {
+				this.log(
+					`review request ${requestId}: design plan proof unavailable (${snapshot.reason}); review remains registered without auto-approval authority`,
+				);
+			}
+		}
 		const insert = this.store.insertCodexReviewJob({
 			requestId,
 			executionId,
@@ -1064,6 +1110,8 @@ export class ReviewRequestCoordinator {
 			reviewerSessionGeneration: priorSession.generation,
 			reviewerSessionFailureStreak: priorSession.failureStreak,
 			authorFamily,
+			sameFamilySanction,
+			designPlanProof,
 		});
 		if (!insert.inserted) {
 			// R13 MEDIUM-2: concurrent first POST — the row already exists.
@@ -1521,7 +1569,11 @@ export class ReviewRequestCoordinator {
 				resume: roundResume,
 				cwd,
 				binary: this.deps.reviewerBinary,
-				model: this.deps.reviewerModel,
+				// FLY-2763: a sanctioned same-family job must be reviewed by a
+				// DIFFERENT Claude model than the author's.
+				model: job.same_family_sanction
+					? this.sameFamilyReviewerModel(job.execution_id)
+					: this.deps.reviewerModel,
 				// FLY-1224: forwarded on EVERY round; undefined → the runner's own
 				// DEFAULT_REVIEW_EFFORT ("xhigh") applies.
 				effort: this.deps.reviewerEffort,
@@ -1629,6 +1681,45 @@ export class ReviewRequestCoordinator {
 			rulings: rulingSnapshot,
 			enabled: policyEnabled,
 		});
+
+		if (
+			job.review_type === "design" &&
+			policyResult.effectiveVerdict === "APPROVED"
+		) {
+			const proof = this.store.getDesignReviewProofForReviewJob(job.request_id);
+			if (proof) {
+				if (
+					!outcome.reviewedPlanBlobSha ||
+					outcome.reviewedPlanBlobSha !== proof.expected_blob_sha
+				) {
+					this.failReviewJob(requestId, "reviewed_wrong_plan_blob");
+					this.alert(
+						`claude review ${requestId}: reviewer reports plan blob ${outcome.reviewedPlanBlobSha ?? "<missing>"} but the job froze ${proof.expected_blob_sha} — approval refused.`,
+					);
+					return;
+				}
+				const snapshot = job.target_path
+					? snapshotDesignReviewPlan(
+							{ worktree_path: job.target_repo_path },
+							job.target_path,
+						)
+					: undefined;
+				if (!snapshot?.ok || snapshot.blobSha !== proof.expected_blob_sha) {
+					this.failReviewJob(requestId, "reviewed_plan_moved");
+					this.alert(
+						`claude review ${requestId}: committed design plan changed after capture — approval refused.`,
+					);
+					return;
+				}
+				this.store.validateDesignReviewApprovalProof({
+					proofId: proof.proof_id,
+					validationReceiptId: `review-validation:${job.request_id}:${job.delivery_nonce ?? "legacy"}`,
+					reviewedCommitSha: proof.reviewed_commit_sha,
+					expectedBlobSha: proof.expected_blob_sha,
+					validatedAt: new Date(this.now()).toISOString(),
+				});
+			}
+		}
 
 		if (job.review_type === "code") {
 			// accept-time freeze × verdict-time recheck for EVERY code verdict
@@ -2240,6 +2331,17 @@ export class ReviewRequestCoordinator {
 			requestId: job.request_id,
 		},
 	): void {
+		if (job.verdict === "APPROVED" && job.review_type === "design") {
+			const proof = this.store.getDesignReviewProofForReviewJob(job.request_id);
+			if (proof?.state === "validated") {
+				this.store.sealDesignReviewApprovalProof({
+					proofId: proof.proof_id,
+					verdictReceiptId: `review-response:${job.request_id}:${job.delivery_nonce ?? "legacy"}`,
+					approvedAt: new Date(this.now()).toISOString(),
+				});
+			}
+			return;
+		}
 		if (
 			job.verdict !== "APPROVED" ||
 			job.review_type !== "code" ||
@@ -2259,7 +2361,20 @@ export class ReviewRequestCoordinator {
 			authorFamily: job.author_family,
 			reviewerFamily: "claude",
 			requestId: binding.requestId,
+			// FLY-2763: carry the request-time sanction onto the head-bound record.
+			sameFamilySanction: job.same_family_sanction,
 		});
+	}
+
+	/**
+	 * FLY-2763: reviewer model for a sanctioned same-family job. The author
+	 * model comes from the execution runtime row; the reviewer is always the
+	 * OTHER heavy Claude alias (Opus author → Fable reviewer, otherwise Opus).
+	 */
+	private sameFamilyReviewerModel(executionId: string): string {
+		const authorModel =
+			this.store.getWorkflowExecutionRuntime(executionId)?.model ?? "";
+		return /opus/i.test(authorModel) ? "fable" : "opus";
 	}
 
 	private buildPrompt(
@@ -2277,6 +2392,10 @@ export class ReviewRequestCoordinator {
 		policyEnabled: boolean,
 		governancePrompt: string,
 	): string {
+		const reviewedIdentityField =
+			job.review_type === "design"
+				? `"reviewedPlanBlobSha": "<the exact committed plan blob you reviewed>"`
+				: `"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"`;
 		const legacyContract =
 			`You are the CROSS-FAMILY REVIEWER for ${job.issue_id ?? job.execution_id} ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
@@ -2284,7 +2403,7 @@ export class ReviewRequestCoordinator {
 			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
-			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
+			`${reviewedIdentityField}}. ` +
 			`No prose outside the JSON. Your very last line must be that JSON object itself.`;
 		const contract = policyEnabled
 			? legacyContract.replace(
@@ -2293,9 +2412,15 @@ export class ReviewRequestCoordinator {
 				) +
 				` Severity policy: HIGH means a ship-unsafe defect in correctness, security, data loss, or authorization. MEDIUM means a non-ship-blocking improvement; LOW means a nit. Vote CHANGES_REQUESTED ONLY when at least one HIGH finding exists. If every finding is MEDIUM/LOW, vote APPROVED and list them as non-blocking advisories. Give every finding a stable "id" and reuse the same id for the same issue in every re-review round.`
 			: legacyContract;
+		const designProof =
+			job.review_type === "design" && "request_id" in job
+				? this.store.getDesignReviewProofForReviewJob(
+						(job as { request_id: string }).request_id,
+					)
+				: null;
 		const target =
 			job.review_type === "design"
-				? `Review the DESIGN/PLAN at path: ${job.target_path ?? "engineering/doc (locate the plan for this issue)"} — read it fully, verify it against the codebase, judge soundness, completeness and risk.`
+				? `Review the DESIGN/PLAN at path: ${job.target_path ?? "engineering/doc (locate the plan for this issue)"} — read it fully, verify it against the codebase, judge soundness, completeness and risk.${designProof ? ` The server froze reviewed commit ${designProof.reviewed_commit_sha} and plan blob ${designProof.expected_blob_sha}; echo that exact blob as reviewedPlanBlobSha.` : ""}`
 				: `Review the CODE at commit ${job.frozen_head_sha ?? "HEAD"} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
 		const governance = governancePrompt ? `\n\n${governancePrompt}` : "";
 		if (job.round <= 1) {

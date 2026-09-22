@@ -33,6 +33,9 @@ checkout 或旧部署取配方。legacy prompt-file 模式使用实际加载的�
   `comm.sessions.lead_id = LEAD_ID`、status=`running|blocked` 确认唯一 target，再与
   canonical `runner-*` pane 元数据求交。不得全机 capture 后过滤。owner 缺失或歧义
   fail closed；无主 pane 属 Bridge orphan sweeper/Claw，不扩大本 Lead 可见面。
+- STEP 1 对本 Lead 与每个仍在执行/phase-held 的名下 Runner 都要核验可见 TUI
+  窗口存在且身份唯一、可接入。缺窗、空壳、死 pane、错 execution 或探测不可用都
+  不能静默算健康；按同版本 runbook 输出 `LEAD_VISIBILITY` / Runner finding 事实。
 - 每 tick 先读上一报告，再运行一次受管 flywheel-patrol-snapshot；复用唯一 REPORT_PATH。
   六个 numeric STEP + 一个命名 STEP DWELL 都须定稿 OK/FINDING/UNAVAILABLE。
   STEP 1 名册，2 每个名下 pane 的全 scrollback 与有界动作，3 TURN/engine 交接账，
@@ -41,7 +44,10 @@ checkout 或旧部署取配方。legacy prompt-file 模式使用实际加载的�
   不是独立真相或完成证据。报告仅留 allowlist 元数据/hash，不存 secret、消息正文或 token。
 - STEP 2 必有 pane_count=N 与恰好 N 行 PANE_EVIDENCE；零 pane 也写 0。不抽样、
   不用 tail 代替全 scrollback；保留 machine-owned 连续性，不修改 sidecar。只在明确
-  允许的名下场景唤醒/按 Enter，未知菜单写 UNAVAILABLE。命令失败不得静默跳过。
+  允许的名下场景唤醒/按 Enter，未知菜单写 UNAVAILABLE。经 execution/activation/TURN/
+  worktree、时间边界、owner lock 与 supervisor 核验的 `package_gate_queue` 是 WAITING，
+  PANE_EVIDENCE 保留 `queue_request`/position/wait seconds；只抑制 STALLED，不遮 finding。
+  命令失败不得静默跳过。
 - STEP DWELL 先验证 canonical founder gate/question/card/run/execution 绑定，再决定
   grouped founder reminder 或强制 deep dive。非 founder 等待须读最新 transition、
   终端内容和工作日志，不能以画面刷新封口。founder 等待按同一 durable episode 只提醒
@@ -94,9 +100,11 @@ tick 里「还剩什么」三行是 Bridge 在**这一轮**按 Linear 扫出的�
 - 固定链接从 `flywheel-comm epic-page status` 的 `url` 取(master token)。首次用
   `founder-html-delivery` 发一次,之后不重复发。需要给「此刻快照」时仍用 `render` +
   `publish-report`;它会得到新 token,保留 14 天。`show`、`render`、`generate` 都不刷新
-  固定页。
+  固定页。只有 founder/Lead 明确要更新固定页时才运行
+  `flywheel-comm epic-page publish --project "$PROJECT_NAME"`;事件与巡检不得自动发布。
+- `status` 的 `expires_at` 临近时先问 founder/Lead 是否更新,不得为了续期自动发布。
 - `status` 的 `publish_failures_since_last_published > 0` 时,先看失败 token,再看固定页;
-  手动生成不会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
+  只有显式发布成功才会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
 
 Founder attention 由机器派生：固定页「待你看」与 thread 标题同源。不得定时手写进展或维护第二份待办；不得手改 thread 名。
 纯记录类回帖（收件凭证、ACK 回执、已有机器持久记录的状态转述）不进 Discord thread；Epic 级状态只在固定页看。

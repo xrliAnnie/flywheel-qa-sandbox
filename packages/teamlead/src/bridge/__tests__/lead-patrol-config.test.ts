@@ -79,18 +79,28 @@ it("disables patrol when a packaged layout omits monorepo helper files", () => {
 			join(root, "node_modules/flywheel-teamlead/package.json"),
 			JSON.stringify({ type: "module" }),
 		);
-		for (const name of ["lead-patrol-config", "lead-patrol-snapshot"]) {
-			const source = readFileSync(
-				new URL(`../${name}.ts`, import.meta.url),
-				"utf8",
-			);
+		for (const [sourcePath, outputPath] of [
+			["../lead-patrol-config.ts", "bridge/lead-patrol-config.js"],
+			["../lead-patrol-snapshot.ts", "bridge/lead-patrol-snapshot.js"],
+			[
+				"../../lead-capabilities/patrol-timeouts.ts",
+				"lead-capabilities/patrol-timeouts.js",
+			],
+		] as const) {
+			const source = readFileSync(new URL(sourcePath, import.meta.url), "utf8");
 			const output = ts.transpileModule(source, {
 				compilerOptions: {
 					target: ts.ScriptTarget.ES2022,
 					module: ts.ModuleKind.ES2022,
 				},
 			}).outputText;
-			writeFileSync(join(bridge, `${name}.js`), output);
+			const outputFile = join(
+				root,
+				"node_modules/flywheel-teamlead/dist",
+				outputPath,
+			);
+			mkdirSync(join(outputFile, ".."), { recursive: true });
+			writeFileSync(outputFile, output);
 		}
 		const entry = pathToFileURL(join(bridge, "lead-patrol-config.js")).href;
 		const result = spawnSync(

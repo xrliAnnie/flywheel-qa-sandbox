@@ -16,8 +16,8 @@ assert_contains() {
 }
 
 assert_contains 'pnpm lint' 'implement node names the whole-repo lint gate'
-assert_contains 'pnpm -r build' 'implement node names the topological build gate'
-assert_contains 'pnpm test:packages:run' 'implement node names the package test gate'
+assert_contains 'pnpm --filter "<pkg>..." build' 'implement node scopes build to affected packages and dependencies'
+assert_contains 'no local full package suite' 'implement node delegates the full package suite to CI'
 assert_contains 'codex:rescue' 'implement node names the supported code-review command'
 assert_contains 'never raw `codex exec`' 'implement node forbids raw codex exec'
 assert_contains 'engineering/doc/milestones/<ID>.md' 'implement node pins the per-issue milestone path'

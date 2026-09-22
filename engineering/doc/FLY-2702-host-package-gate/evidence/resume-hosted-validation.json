@@ -1,0 +1,23 @@
+{
+  "executionId": "d9fb0d9a-6815-4b74-8cdc-d959fc08a493",
+  "url": "https://fw-reports-42fba7.vercel.app/r/2bab608294a4b61f44ed408bc4669b68/",
+  "reportId": "2bab608294a4b61f44ed408bc4669b68",
+  "publishOnly": true,
+  "delivered": false,
+  "messageId": null,
+  "leadReportReceipt": "c824cda5-c20d-42b7-b4e6-78f3ce04f753",
+  "checkedAt": "2026-09-18T16:47:51.418954+00:00",
+  "checks": {
+    "http200": true,
+    "placeholderGone": true,
+    "nonceMinted": true,
+    "scriptContentMatches": true,
+    "bodyMatches": true,
+    "nonceInCsp": true,
+    "noExternalAssets": true
+  },
+  "sourceSha256": "4e406f1f5fd3c3a17038da7b7a2a6b36262603f6fd107fe1e6fbc635f4ce5cf0",
+  "hostedSha256": "381799d160def641775db30989489d967ea088291a5c0242091840e4fc853a07",
+  "browserExecution": "not rerun; unchanged source retains prior controller validation, no browser QA claim",
+  "diagram": "inherited two local render failures; explicit pending placeholder and Mermaid source retained"
+}

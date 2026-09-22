@@ -62,7 +62,8 @@ const founderMessage = z.object({
 function attribution(row: VerdictRow, evidence: unknown): Authorship {
 	const value = evidence as Record<string, unknown> | null;
 	if (
-		value?.kind === "auto_narrow_gate" &&
+		(value?.kind === "auto_narrow_gate" ||
+			value?.kind === "ship_judgment_auto") &&
 		value.source_event_id === row.source_event_id
 	)
 		return "auto";
@@ -108,9 +109,9 @@ export function refreshHistoryAt(
 		dirty = Date.parse(delivery?.dirty_since ?? "");
 	if (!Number.isFinite(decided)) return "unknown";
 	if (Number.isFinite(changed) && changed < decided) {
-		if (delivery?.delivery_mode === "auto" || delivery?.delivery_mode === "off")
-			return "inactive";
-		if (delivery?.delivery_mode !== "dry_run") return "unknown";
+		if (delivery?.delivery_mode === "off") return "inactive";
+		if (!delivery || !["dry_run", "auto"].includes(delivery.delivery_mode))
+			return "unknown";
 		if (Number.isFinite(dirty) && dirty < decided) return "pending";
 		return delivery.dirty_since ? "unknown" : "clear";
 	}

@@ -35,6 +35,7 @@ for f in flywheel-lead-wrapper-v2.sh \
     resident-codex-lead-recover.sh \
     flywheel-codex-lead-wrapper-codex-infra-bot.sh \
     flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
+    verify-agent-visibility.sh lib/agent-visibility.sh \
     flywheel-bridge-wrapper.sh restart-services.sh \
     host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
     lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs; do
@@ -54,7 +55,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh verify-agent-visibility.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do
@@ -285,15 +286,17 @@ rm -rf "$ST/bin/lib"
 run_converge; RC=$?
 if [ "$RC" -eq 0 ] && [ -d "$ST/bin/lib" ] \
    && cmp -s "$ST/bin/lib/bounded-run.sh" "$FR/scripts/lib/bounded-run.sh" \
+   && cmp -s "$ST/bin/lib/agent-visibility.sh" "$FR/scripts/lib/agent-visibility.sh" \
    && cmp -s "$ST/bin/lib/lead-address.sh" "$FR/scripts/lib/lead-address.sh" \
    && cmp -s "$ST/bin/lib/lead-host-tmux-gate.sh" "$FR/scripts/lib/lead-host-tmux-gate.sh" \
    && cmp -s "$ST/bin/lib/raya-standard-migration.sh" "$FR/scripts/lib/raya-standard-migration.sh" \
    && cmp -s "$ST/bin/lib/lead-backend-migration.sh" "$FR/scripts/lib/lead-backend-migration.sh" \
    && [ "$(t_mode "$ST/bin/lib/bounded-run.sh")" = "555" ] \
+   && [ "$(t_mode "$ST/bin/lib/agent-visibility.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-address.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-host-tmux-gate.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/raya-standard-migration.sh")" = "555" ] \
-   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 3 ] \
+   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 4 ] \
    && [ "$(t_mode "$ST/state/converge-adoptions/lib__raya-standard-migration.sh")" = "600" ]; then
   pass "C10: missing support-lib closure repaired to 555, <bin>/lib auto-created"
 else fail "C10: nested copy not converged (rc=$RC)"; cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi

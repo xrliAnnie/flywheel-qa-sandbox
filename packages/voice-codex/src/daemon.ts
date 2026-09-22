@@ -1,9 +1,20 @@
 import { performance } from "node:perf_hooks";
 import type {
+	VoiceBridgeRequestDiagnostic,
 	VoiceOutboundItem,
 	VoiceSessionProjection,
 } from "./bridge-client.js";
-import { BridgeVoiceHttpError, type VoiceLease } from "./bridge-client.js";
+import {
+	BridgeVoiceHttpError,
+	BridgeVoiceRequestError,
+	type VoiceLease,
+} from "./bridge-client.js";
+import type {
+	VoiceHealthObservation,
+	VoiceHealthObserver,
+	VoiceHealthOperation,
+	VoiceHealthReasonClass,
+} from "./health.js";
 import type {
 	SavedVoiceSession,
 	VoiceRecoveryRecord,
@@ -13,6 +24,24 @@ import { chunkForSpeech } from "./speech.js";
 export type VoiceEnd =
 	| { kind: "ended"; reason: "she-left" | "text-stop" | "voice-stop" }
 	| { kind: "failed"; reason: string };
+
+export type VoiceDaemonIterationResult =
+	| { kind: "idle_success" }
+	| {
+			kind: "daemon_stopped";
+			sessionId: string;
+			reason: "daemon_shutdown";
+	  }
+	| {
+			kind: "session_ended";
+			sessionId: string;
+			reason: Extract<VoiceEnd, { kind: "ended" }>["reason"];
+	  }
+	| {
+			kind: "session_failed";
+			sessionId: string;
+			reason: string;
+	  };
 
 export interface ActiveVoiceSession {
 	start(): Promise<{ founderPresent: boolean }>;
@@ -98,7 +127,6 @@ export interface VoiceDaemonOptions {
 	bridge: VoiceDaemonBridge;
 	stateStore: VoiceSessionStore;
 	bootId: string;
-	now?: () => number;
 	createSession(
 		context: VoiceSessionContext,
 	): ActiveVoiceSession | Promise<ActiveVoiceSession>;
@@ -107,6 +135,9 @@ export interface VoiceDaemonOptions {
 		authority?: VoiceLease,
 	): Promise<number>;
 	sleep(ms: number, signal?: AbortSignal): Promise<void>;
+	health?: VoiceHealthObserver;
+	now?: () => Date;
+	monotonicNow?: () => number;
 	timing: {
 		idlePollMs: number;
 		idleExitMs?: number;
@@ -117,11 +148,34 @@ export interface VoiceDaemonOptions {
 	};
 }
 
+function safelyObserveHealth(
+	options: VoiceDaemonOptions,
+	observation: VoiceHealthObservation,
+): void {
+	try {
+		options.health?.observe(observation);
+	} catch {
+		console.error(
+			"[voice] health observation unavailable reasonClass=health_observation_unavailable operation=health_store",
+		);
+	}
+}
+
 function authorityLost(error: unknown): boolean {
+	const diagnostic = bridgeRequestDiagnostic(error);
 	return (
 		(error instanceof Error && error.message === "voice_lease_fenced") ||
-		(error instanceof BridgeVoiceHttpError && error.status === 409)
+		(error instanceof BridgeVoiceHttpError && error.status === 409) ||
+		diagnostic?.status === 409
 	);
+}
+
+function bridgeRequestDiagnostic(
+	error: unknown,
+): VoiceBridgeRequestDiagnostic | undefined {
+	if (error instanceof BridgeVoiceRequestError) return error.diagnostic;
+	if (error instanceof BridgeVoiceHttpError) return error.diagnostic;
+	return undefined;
 }
 
 class SessionEnded extends Error {
@@ -146,6 +200,7 @@ class SessionLifetime {
 		private readonly context: VoiceSessionContext,
 		session: ActiveVoiceSession,
 		private readonly options: VoiceDaemonOptions,
+		private readonly onRenewProgress?: (observedAt: string) => void,
 	) {
 		void session.waitForEnd().then((outcome) => this.finish(outcome));
 		this.armDeadline();
@@ -191,6 +246,20 @@ class SessionLifetime {
 			);
 			if (this.disposed || this.outcome) return;
 			this.missed = 0;
+			if (["claimed", "warming", "live"].includes(result.state)) {
+				const observedAt = (this.options.now?.() ?? new Date()).toISOString();
+				safelyObserveHealth(this.options, {
+					kind: "progress",
+					observedAt,
+				});
+				if (result.state === "live") {
+					try {
+						this.onRenewProgress?.(observedAt);
+					} catch {
+						// Proof observations cannot block renewal or session work.
+					}
+				}
+			}
 			if (result.state === "ending")
 				this.finish({ kind: "ended", reason: "text-stop" });
 			else if (!["claimed", "warming", "live"].includes(result.state))
@@ -232,48 +301,93 @@ class SessionLifetime {
 export class VoiceDaemon {
 	private stopping = false;
 	private current?: ActiveVoiceSession;
-	private readonly now: () => number;
+	private readonly sleepController = new AbortController();
 
-	constructor(private readonly options: VoiceDaemonOptions) {
-		this.now = options.now ?? (() => performance.now());
-	}
+	constructor(private readonly options: VoiceDaemonOptions) {}
 
 	async run(): Promise<void> {
 		await this.recover();
+		let consecutivePollFailures = 0;
+		let stoppedObserved = false;
+		// FLY-2701: on-demand hosts hold no resident daemon. Idle accounting only
+		// runs on *successful* empty reads, so a Bridge outage never counts as
+		// "nobody wants me" and exits the process.
 		let idleSince: number | undefined;
+		let pendingDesired: { sessionId: string } | undefined;
 		while (!this.stopping) {
+			const startedAt = this.monotonicNow();
 			try {
-				const desired = await this.options.bridge.desired();
-				if (desired) {
+				const claimed = pendingDesired;
+				pendingDesired = undefined;
+				const result = claimed
+					? await this.runDesired(claimed)
+					: await this.runOnce();
+				if (result.kind === "idle_success") {
+					consecutivePollFailures = 0;
+					this.observeHealth({
+						kind: "idle_success",
+						observedAt: this.nowIso(),
+						durationMs: Math.max(
+							0,
+							Math.round(this.monotonicNow() - startedAt),
+						),
+					});
+					const observedAt = this.monotonicNow();
+					idleSince ??= observedAt;
+					if (
+						observedAt - idleSince >=
+						(this.options.timing.idleExitMs ?? 120_000)
+					) {
+						// Exit race: a demand written between the last empty read and
+						// this one is still an unclaimed to-do, so consume it here
+						// instead of exiting on a stale observation.
+						const finalDesired = await this.options.bridge.desired();
+						if (!finalDesired) break;
+						idleSince = undefined;
+						pendingDesired = finalDesired;
+						continue;
+					}
+					await this.options.sleep(
+						this.options.timing.idlePollMs,
+						this.sleepController.signal,
+					);
+				} else if (result.kind === "daemon_stopped") {
 					idleSince = undefined;
-					await this.runDesired(desired);
-					continue;
-				}
-				const observedAt = this.now();
-				idleSince ??= observedAt;
-				if (
-					observedAt - idleSince >=
-					(this.options.timing.idleExitMs ?? 120_000)
-				) {
-					const finalDesired = await this.options.bridge.desired();
-					if (!finalDesired) return;
+					this.observeHealth({
+						kind: "daemon_stopped",
+						observedAt: this.nowIso(),
+					});
+					stoppedObserved = true;
+				} else {
+					consecutivePollFailures = 0;
 					idleSince = undefined;
-					await this.runDesired(finalDesired);
-					continue;
 				}
-				await this.options.sleep(this.options.timing.idlePollMs);
 			} catch (error) {
+				consecutivePollFailures += 1;
 				idleSince = undefined;
+				const failure = this.pollFailure(error, startedAt);
+				this.observeHealth(failure);
 				console.error(
-					`[voice] daemon iteration failed: ${(error as Error).message}`,
+					`[voice] daemon iteration failed reasonClass=${failure.reasonClass} operation=${failure.operation}`,
 				);
-				await this.options.sleep(this.options.timing.idlePollMs);
+				await this.options.sleep(
+					[5_000, 10_000, 20_000, 30_000][
+						Math.min(consecutivePollFailures - 1, 3)
+					]!,
+					this.sleepController.signal,
+				);
 			}
 		}
+		if (!stoppedObserved)
+			this.observeHealth({
+				kind: "daemon_stopped",
+				observedAt: this.nowIso(),
+			});
 	}
 
 	shutdown(): void {
 		this.stopping = true;
+		this.sleepController.abort();
 		this.current?.requestEnd({ kind: "failed", reason: "daemon_shutdown" });
 	}
 
@@ -329,16 +443,15 @@ export class VoiceDaemon {
 		}
 	}
 
-	async runOnce(): Promise<string> {
+	async runOnce(): Promise<VoiceDaemonIterationResult> {
 		const desired = await this.options.bridge.desired();
-		if (!desired) {
-			await this.options.sleep(this.options.timing.idlePollMs);
-			return "idle";
-		}
+		if (!desired) return { kind: "idle_success" };
 		return this.runDesired(desired);
 	}
 
-	private async runDesired(desired: { sessionId: string }): Promise<string> {
+	private async runDesired(desired: {
+		sessionId: string;
+	}): Promise<VoiceDaemonIterationResult> {
 		const claimed = await this.options.bridge.claim(
 			desired.sessionId,
 			this.options.bootId,
@@ -361,21 +474,74 @@ export class VoiceDaemon {
 				await session.stop();
 				throw new Error("daemon_shutdown");
 			}
-		} catch (error) {
-			const reason = (error as Error).message || "session_create_failed";
-			await this.options.bridge.setState(
-				context.sessionId,
-				context.leaseToken,
-				context.lease,
-				"failed",
-				reason,
-			);
-			this.options.stateStore.remove(context.sessionId);
-			return reason;
+		} catch {
+			const reason = this.stopping
+				? "daemon_shutdown"
+				: "session_create_failed";
+			if (reason === "session_create_failed")
+				this.observeSessionFailure(context, reason, "session_create");
+			let terminalConfirmed = false;
+			try {
+				await this.options.bridge.setState(
+					context.sessionId,
+					context.leaseToken,
+					context.lease,
+					"failed",
+					reason,
+				);
+				terminalConfirmed = true;
+			} catch {
+				console.error(
+					"[voice] session terminal receipt unavailable; recovery state retained",
+				);
+			}
+			if (terminalConfirmed) this.options.stateStore.remove(context.sessionId);
+			return this.stopping && reason === "daemon_shutdown"
+				? {
+						kind: "daemon_stopped",
+						sessionId: context.sessionId,
+						reason,
+					}
+				: {
+						kind: "session_failed",
+						sessionId: context.sessionId,
+						reason,
+					};
 		}
 		this.current = session;
 		let outcome: VoiceEnd = { kind: "failed", reason: "session_start_failed" };
-		const lifetime = new SessionLifetime(context, session, this.options);
+		let failureClassification:
+			| {
+					reasonClass: VoiceHealthReasonClass;
+					operation: VoiceHealthOperation;
+			  }
+			| undefined;
+		let liveAt: string | undefined;
+		let renewAt: string | undefined;
+		let recoveryObserved = false;
+		const lifetime = new SessionLifetime(
+			context,
+			session,
+			this.options,
+			(observedAt) => {
+				if (
+					!liveAt ||
+					recoveryObserved ||
+					Date.parse(observedAt) <= Date.parse(liveAt)
+				)
+					return;
+				renewAt = observedAt;
+				recoveryObserved = true;
+				this.observeHealth({
+					kind: "session_recovered",
+					observedAt,
+					demandId: this.demandId(context),
+					successorAttemptId: context.sessionId,
+					liveAt,
+					renewAt,
+				});
+			},
+		);
 		try {
 			await lifetime.wait(() =>
 				this.options.bridge.setState(
@@ -404,6 +570,7 @@ export class VoiceDaemon {
 					),
 				);
 				await lifetime.wait(() => session.markLive());
+				liveAt = this.nowIso();
 				for (;;) {
 					await this.deliverOutbound(context, session, lifetime);
 					await lifetime.wait(
@@ -419,33 +586,170 @@ export class VoiceDaemon {
 				}
 			}
 		} catch (error) {
-			if (error instanceof SessionEnded) outcome = error.outcome;
-			else {
+			if (error instanceof SessionEnded) {
+				outcome = error.outcome;
+			} else if (authorityLost(error)) {
 				context.lease.fence();
+				const diagnostic = bridgeRequestDiagnostic(error);
 				outcome = {
 					kind: "failed",
-					reason: authorityLost(error)
-						? "lease_lost"
-						: (error as Error).message || "session_failed",
+					reason: "lease_lost",
 				};
+				failureClassification = {
+					reasonClass: "lease_lost",
+					operation: diagnostic?.operation ?? "renew",
+				};
+			} else {
+				context.lease.fence();
+				const diagnostic = bridgeRequestDiagnostic(error);
+				if (diagnostic) {
+					outcome = { kind: "failed", reason: diagnostic.reasonClass };
+					failureClassification = {
+						reasonClass: diagnostic.reasonClass,
+						operation: diagnostic.operation,
+					};
+				} else {
+					outcome = {
+						kind: "failed",
+						reason: (error as Error).message || "session_failed",
+					};
+				}
+			}
+			if (outcome.kind === "failed" && !failureClassification) {
+				outcome = {
+					kind: "failed",
+					reason: this.safeRuntimeReason(outcome.reason),
+				};
+				if (outcome.reason !== "daemon_shutdown")
+					failureClassification = {
+						reasonClass:
+							outcome.reason === "lease_lost"
+								? "lease_lost"
+								: "session_runtime_failed",
+						operation:
+							outcome.reason === "lease_lost" ? "renew" : "session_runtime",
+					};
 			}
 		} finally {
 			lifetime.dispose();
-			await session.stop(outcome).catch(() => undefined);
-			try {
-				await this.options.bridge.setState(
-					context.sessionId,
-					context.leaseToken,
-					context.lease,
-					outcome.kind === "ended" ? "ended" : "failed",
-					outcome.reason,
-				);
-				this.options.stateStore.remove(context.sessionId);
-			} finally {
-				if (this.current === session) this.current = undefined;
-			}
 		}
-		return outcome.reason;
+		const result: VoiceDaemonIterationResult =
+			this.stopping &&
+			outcome.kind === "failed" &&
+			outcome.reason === "daemon_shutdown"
+				? {
+						kind: "daemon_stopped",
+						sessionId: context.sessionId,
+						reason: "daemon_shutdown",
+					}
+				: outcome.kind === "ended"
+					? {
+							kind: "session_ended",
+							sessionId: context.sessionId,
+							reason: outcome.reason,
+						}
+					: {
+							kind: "session_failed",
+							sessionId: context.sessionId,
+							reason: outcome.reason,
+						};
+		if (result.kind === "session_failed" && result.reason !== "no_human")
+			this.observeSessionFailure(
+				context,
+				failureClassification?.reasonClass ?? "session_runtime_failed",
+				failureClassification?.operation ?? "session_runtime",
+			);
+		if (result.kind === "session_ended" && liveAt && renewAt)
+			this.observeHealth({
+				kind: "session_ended",
+				observedAt: this.nowIso(),
+				demandId: this.demandId(context),
+				successorAttemptId: context.sessionId,
+				liveAt,
+				renewAt,
+			});
+
+		await session.stop(outcome).catch(() => undefined);
+		let terminalConfirmed = false;
+		try {
+			await this.options.bridge.setState(
+				context.sessionId,
+				context.leaseToken,
+				context.lease,
+				outcome.kind === "ended" ? "ended" : "failed",
+				outcome.reason,
+			);
+			terminalConfirmed = true;
+		} catch {
+			console.error(
+				"[voice] session terminal receipt unavailable; recovery state retained",
+			);
+		} finally {
+			if (this.current === session) this.current = undefined;
+		}
+		if (terminalConfirmed) this.options.stateStore.remove(context.sessionId);
+		return result;
+	}
+
+	private nowIso(): string {
+		return (this.options.now?.() ?? new Date()).toISOString();
+	}
+
+	private monotonicNow(): number {
+		return this.options.monotonicNow?.() ?? performance.now();
+	}
+
+	private safeRuntimeReason(reason: string): string {
+		if (["daemon_shutdown", "lease_lost", "no_human"].includes(reason))
+			return reason;
+		return "session_runtime_failed";
+	}
+
+	private observeSessionFailure(
+		context: VoiceSessionContext,
+		reasonClass: VoiceHealthReasonClass,
+		operation: VoiceHealthOperation,
+	): void {
+		this.observeHealth({
+			kind: "session_failed",
+			observedAt: this.nowIso(),
+			reasonClass,
+			operation,
+			demandId: this.demandId(context),
+			attemptId: context.sessionId,
+		});
+	}
+
+	private demandId(context: VoiceSessionContext): string {
+		return context.projection.mode === "meeting" && context.projection.meetingId
+			? context.projection.meetingId
+			: context.sessionId;
+	}
+
+	private observeHealth(observation: VoiceHealthObservation): void {
+		safelyObserveHealth(this.options, observation);
+	}
+
+	private pollFailure(
+		error: unknown,
+		startedAt: number,
+	): Extract<VoiceHealthObservation, { kind: "poll_failed" }> {
+		const diagnostic = bridgeRequestDiagnostic(error);
+		if (diagnostic)
+			return {
+				kind: "poll_failed",
+				observedAt: this.nowIso(),
+				durationMs: diagnostic.elapsedMs,
+				reasonClass: diagnostic.reasonClass,
+				operation: diagnostic.operation,
+			};
+		return {
+			kind: "poll_failed",
+			observedAt: this.nowIso(),
+			durationMs: Math.max(0, Math.round(this.monotonicNow() - startedAt)),
+			reasonClass: "unknown_failure",
+			operation: "desired",
+		};
 	}
 
 	private async deliverOutbound(

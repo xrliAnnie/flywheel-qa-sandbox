@@ -90,6 +90,7 @@ import {
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import { fetchDiscordMessageFromChannel } from "./discord-utils.js";
+import { storeReviewSameFamilyAllowed } from "./flag-store-runtime.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import {
 	getGeneralizedLaunchDelivery,
@@ -2810,6 +2811,11 @@ export function createRunsRouter(
 				try {
 					menuResolution = resolveMenuOverrides(menu, req.body.overrides, {
 						issueIdentifier: issueIdentifier ?? issueId,
+						// FLY-2763: project-scoped sanction for a same-vendor QA/producer pair
+						sameVendorReviewAllowed: storeReviewSameFamilyAllowed(
+							{ mode: "ready", store },
+							projectName,
+						),
 					});
 					menuTemplateOverride =
 						Object.hasOwn(req.body, "overrides") ||

@@ -1,0 +1,14 @@
+flowchart LR
+  M["迁移账本 manifest.json<br/>checkpoint P2 到 P7<br/>target_raya_sha<br/>migration_id 沿用旧值<br/>prestop_retry"]
+  AU["authorization 授权证据<br/>canonical_line 必须含 target 前 8 位<br/>evidence_message_id<br/>evidence_channel_id<br/>evidence_author_id 等于 founder<br/>content_sha256 工具自己算"]
+  LO["legacy_owner 两条 brain 和 voice<br/>plist_sha256<br/>loaded · pid · start<br/>stop_started_at_ms<br/>disabled_at_ms<br/>stopped_at_ms"]
+  CU["cursor 收件进度<br/>path<br/>status 为 preexisting<br/>sha256 存 boundary 摘要"]
+  WS["工作区 persona 占位<br/>identity.md<br/>摘要必须等于 target 的"]
+  RC["deploy-receipt.json<br/>schemaVersion 2<br/>carrier standard-lead<br/>两仓 SHA"]
+  M --> AU
+  M --> LO
+  M --> CU
+  M -.->|"prestop 时比对"| WS
+  M -->|"P7 时写出"| RC
+  classDef box fill:#ffffff,stroke:#1a365d,color:#1d1d1f,text-align:left
+  class M,AU,LO,CU,WS,RC box

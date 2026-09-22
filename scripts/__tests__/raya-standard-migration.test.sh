@@ -26,7 +26,10 @@ done
 TOOL="$TMP/seed-tool.js"
 CALLS="$TMP/calls"
 cat > "$TOOL" <<'JS'
-process.stdout.write(JSON.stringify({status:"seeded",migrationId:"fly-2445-test",sha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",channels:2})+"\n");
+const preexisting = process.argv.includes("--preexisting");
+process.stdout.write(JSON.stringify(preexisting
+  ? {status:"preexisting",migrationId:"fly-2445-test",sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",seedSha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",channels:2}
+  : {status:"seeded",migrationId:"fly-2445-test",sha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",channels:2})+"\n");
 JS
 chmod 600 "$TOOL"
 INPUT="$TMP/seed.json"
@@ -77,6 +80,24 @@ if raya_standard_preinstall_ready "$MANIFEST" "$CURSOR" >/dev/null 2>&1; then
   fail "unresolved side effects block install"
 else
   pass "unresolved side effects block install"
+fi
+
+jq '.unresolved=[] | .cursor.status="preexisting" |
+  .cursor.sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" |
+  .cursor.seed_input=$input' --arg input "$INPUT" "$MANIFEST" > "$MANIFEST.tmp" \
+  && mv "$MANIFEST.tmp" "$MANIFEST"
+chmod 600 "$MANIFEST"
+if raya_standard_preinstall_ready "$MANIFEST" "$CURSOR"; then
+  pass "preexisting P4b revalidates the live cursor boundary without exact digest equality"
+else
+  fail "preexisting P4b must use the read-only live cursor validator"
+fi
+jq '.unresolved=["unknown"]' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+chmod 600 "$MANIFEST"
+if raya_standard_preinstall_ready "$MANIFEST" "$CURSOR" >/dev/null 2>&1; then
+  fail "preexisting P4b rejects unresolved side effects"
+else
+  pass "preexisting P4b rejects unresolved side effects"
 fi
 
 legacy_paths=(

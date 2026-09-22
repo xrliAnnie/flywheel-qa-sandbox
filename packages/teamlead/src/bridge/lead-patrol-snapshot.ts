@@ -13,6 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { PATROL_SNAPSHOT_EXECUTION_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
 
 export const PATROL_HELPER_SOURCES = [
 	"scripts/lead-patrol-snapshot.sh",
@@ -20,7 +21,9 @@ export const PATROL_HELPER_SOURCES = [
 	"scripts/lib/bounded-run.sh",
 	"scripts/flywheel-snapshot-control.mjs",
 	"scripts/flywheel-node-dwell-control.mjs",
+	"scripts/lib/agent-visibility.sh",
 ] as const;
+export const PATROL_SNAPSHOT_TIMEOUT_MS = PATROL_SNAPSHOT_EXECUTION_TIMEOUT_MS;
 const invalid = () => new Error("patrol_snapshot_unverified");
 const digest = (data: Buffer) =>
 	createHash("sha256").update(data).digest("hex");
@@ -222,7 +225,7 @@ export async function executeLeadPatrolSnapshot(options: {
 						process.kill(-child.pid, "SIGKILL");
 					} catch {}
 			};
-			const timer = setTimeout(abort, 15000);
+			const timer = setTimeout(abort, PATROL_SNAPSHOT_TIMEOUT_MS);
 			options.signal.addEventListener("abort", abort, { once: true });
 			if (options.signal.aborted) abort();
 			child.on("error", () => {

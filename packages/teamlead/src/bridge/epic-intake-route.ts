@@ -116,7 +116,8 @@ export function createEpicIntakeRouter(
 				evidence,
 				(deps.now ?? (() => new Date()))().toISOString(),
 			);
-			// Durable page_dirty is the retry authority even if the immediate refresh fails.
+			// Durable page_dirty is the retry authority until local materialization
+			// captures this intake revision; hosted publication is separately manual.
 			try {
 				deps.onEpicChange?.(projectName, "epic_intake");
 			} catch {}

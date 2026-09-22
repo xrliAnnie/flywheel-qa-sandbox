@@ -67,9 +67,7 @@ export type ShadowDeclarationLeadIdentity =
 	| {
 			ok: true;
 			agentId: string;
-			botToken: string;
-			botUserId: string;
-			chatChannel: string;
+			botToken?: string;
 	  };
 
 export function resolveLeadIdentityForShadowDeclaration(
@@ -85,10 +83,8 @@ export function resolveLeadIdentityForShadowDeclaration(
 	}
 	const agentId = resolved.lead.agentId.trim();
 	const botToken = resolved.lead.botToken?.trim() ?? "";
-	const botUserId = resolved.lead.botUserId?.trim() ?? "";
-	const chatChannel = resolved.lead.chatChannel.trim();
-	if (!agentId || !botToken || !botUserId || !chatChannel) {
+	if (!agentId) {
 		return { ok: false, reason: "lead_identity_unavailable" };
 	}
-	return { ok: true, agentId, botToken, botUserId, chatChannel };
+	return { ok: true, agentId, ...(botToken ? { botToken } : {}) };
 }

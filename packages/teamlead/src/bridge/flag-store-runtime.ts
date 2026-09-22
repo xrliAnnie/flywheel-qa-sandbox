@@ -152,9 +152,10 @@ export function readScopedValue(
 }
 
 /**
- * FLY-2453: unlike ordinary project flags, this control never inherits a `*`
- * row. An `auto` value is authority only while its exact immutable founder
- * control receipt is present and agrees with the current scoped revision.
+ * Compatibility key: unlike ordinary project flags, this control never
+ * inherits a `*` row. Both active modes use the three-point judgment policy;
+ * `auto` adds execution authority only while its exact immutable founder
+ * control receipt agrees with the current scoped revision.
  */
 export function readAutoNarrowRuntimeControl(
 	runtime: FlagStoreRuntime,
@@ -320,6 +321,23 @@ export function storePipelineWorkKindEnabled(
 	projectName: string,
 ): boolean {
 	return readScopedBoolean(runtime, "pipeline_work_kind", projectName);
+}
+
+/** FLY-2763: same-family (Claude↔Claude) review + QA admission, project-scoped, default off. */
+export function storeReviewSameFamilyAllowed(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	try {
+		return readScopedBoolean(
+			runtime,
+			"review_same_family_allowed",
+			projectName,
+		);
+	} catch {
+		// fail-closed: an unreadable/invalid flag never sanctions a same-family review
+		return false;
+	}
 }
 
 export function storeProofshotEnabled(

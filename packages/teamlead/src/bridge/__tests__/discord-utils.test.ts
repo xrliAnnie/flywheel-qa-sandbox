@@ -13,6 +13,7 @@ import {
 	MAX_DISCORD_MESSAGE_LENGTH,
 	postDiscordMessageToChannel,
 	reactDiscordMessageInChannel,
+	removeDiscordMessageReactionInChannel,
 	sendTypingToChannel,
 	splitDiscordMessage,
 } from "../discord-utils.js";
@@ -24,6 +25,24 @@ function okResponse(body: object): Response {
 		headers: { "Content-Type": "application/json" },
 	});
 }
+
+it("removes the bot's own opinion reaction idempotently", async () => {
+	const fetchImpl = vi.fn(async () => new Response(null, { status: 404 }));
+	await expect(
+		removeDiscordMessageReactionInChannel(
+			"12345678901234567",
+			"22345678901234567",
+			"🤖",
+			"token",
+			{},
+			fetchImpl as typeof fetch,
+		),
+	).resolves.toEqual({ ok: true });
+	expect(fetchImpl).toHaveBeenCalledWith(
+		expect.stringContaining("/reactions/%F0%9F%A4%96/@me"),
+		expect.objectContaining({ method: "DELETE" }),
+	);
+});
 
 function errResponse(status: number, body: object | string): Response {
 	const text = typeof body === "string" ? body : JSON.stringify(body);
@@ -88,8 +107,25 @@ describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
 		);
 		expect(result).toMatchObject({
 			ok: true,
-			message: { content: "" },
+			message: { authorIsBot: false, content: "" },
 		});
+	});
+
+	it("rejects a present non-boolean Discord bot marker", async () => {
+		const result = await fetchDiscordMessageFromChannel(
+			"channel",
+			"message",
+			"token",
+			vi.fn().mockResolvedValueOnce(
+				okResponse({
+					id: "message",
+					author: { id: "founder", bot: "yes" },
+					timestamp: "2026-09-06T18:59:00.123Z",
+					content: "founder policy",
+				}),
+			) as unknown as typeof fetch,
+		);
+		expect(result).toEqual({ ok: false, kind: "server", status: 200 });
 	});
 
 	it.each([

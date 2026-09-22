@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import BetterSqlite3 from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { summaryPresentationPayloadDigest } from "../bridge/summary-presentation-store.js";
 import { StateStore } from "../StateStore.js";
@@ -71,6 +75,86 @@ function completeEmptyMigration(
 }
 
 describe("FLY-2619 summary presentation ledger", () => {
+	it("persists completion time once and adopts legacy complete rows without rewriting them", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2697-completed-at-"));
+		const dbPath = join(root, "teamlead.db");
+		try {
+			const store = await StateStore.create(dbPath);
+			try {
+				const sourceDigests = { journal: "empty" };
+				store.summaryPresentations.beginMigration({
+					projectName: "raya",
+					leadId: "raya",
+					boundarySeq: 0,
+					sourceDigests,
+					nowMs: 100,
+				});
+				expect(
+					store.summaryPresentations.completeMigration({
+						projectName: "raya",
+						leadId: "raya",
+						sourceDigests,
+						nowMs: 200,
+					}).completedAtMs,
+				).toBe(200);
+				expect(
+					store.summaryPresentations.completeMigration({
+						projectName: "raya",
+						leadId: "raya",
+						sourceDigests,
+						nowMs: 300,
+					}).completedAtMs,
+				).toBe(200);
+			} finally {
+				store.close();
+			}
+
+			const raw = new BetterSqlite3(dbPath);
+			try {
+				raw
+					.prepare(
+						"UPDATE summary_presentation_migration SET completed_at_ms = NULL WHERE project_name = 'raya' AND lead_id = 'raya'",
+					)
+					.run();
+			} finally {
+				raw.close();
+			}
+
+			const reopened = await StateStore.create(dbPath);
+			try {
+				expect(
+					reopened.summaryPresentations.adoptMigrationCompletedAt(
+						"raya",
+						"raya",
+					),
+				).toBe(300);
+				expect(
+					reopened.summaryPresentations.adoptMigrationCompletedAt(
+						"raya",
+						"raya",
+					),
+				).toBe(300);
+
+				reopened.summaryPresentations.beginMigration({
+					projectName: "raya",
+					leadId: "building",
+					boundarySeq: 0,
+					sourceDigests: { journal: "empty" },
+				});
+				expect(() =>
+					reopened.summaryPresentations.adoptMigrationCompletedAt(
+						"raya",
+						"building",
+					),
+				).toThrow("summary_presentation_migration_not_complete");
+			} finally {
+				reopened.close();
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("gates begin on migration and claims all 65 eligible rounds as one chronological group", async () => {
 		const store = await StateStore.create(":memory:");
 		try {

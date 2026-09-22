@@ -115,15 +115,6 @@ export function resolveLandFinalizationContext(
 		};
 	}
 
-	const legacySession = resolveLandSourceSession(store, {
-		runId: operation.run_id,
-		issueId: operation.issue_id,
-		projectName: operation.project_name,
-		prNumber: operation.pr_number,
-		approvedHead: operation.approved_head,
-	});
-	if (legacySession) return { kind: "session", session: legacySession };
-
 	return {
 		kind: "operation",
 		operationId: operation.operation_id,

@@ -372,6 +372,7 @@ it("preserves the event coordinator disabled code and uses fixed receipt lookup"
 
 it("projects patrol reports into real artifacts and maps judgment evidence only inside the parent", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "patrol-parent-")));
+	const timerSpy = vi.spyOn(globalThis, "setTimeout");
 	const artifactRoot = join(root, "artifacts");
 	mkdirSync(artifactRoot, { mode: 0o700 });
 	const artifacts = new LeadArtifactStore({
@@ -447,6 +448,9 @@ it("projects patrol reports into real artifacts and maps judgment evidence only 
 		const handler = handlers.get("patrol.snapshot")!;
 		const output = await handler.execute({ tickId: "1" }, ctx);
 		expect(output.status).toBe("succeeded");
+		expect(
+			timerSpy.mock.calls.some(([, timeoutMs]) => timeoutMs === 295_000),
+		).toBe(true);
 		const data = output.data as {
 			artifactHandle: string;
 			artifactPath: string;
@@ -479,6 +483,7 @@ it("projects patrol reports into real artifacts and maps judgment evidence only 
 			"unknown",
 		);
 	} finally {
+		timerSpy.mockRestore();
 		artifacts.close();
 		rmSync(root, { recursive: true, force: true });
 	}

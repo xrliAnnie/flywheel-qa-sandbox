@@ -74,6 +74,9 @@ run_guard() {
     echo '#!/usr/bin/env bash'
     echo "$opts"
     echo 'log() { echo "log: $*"; }'
+    # Startup-spool persistence has its own real-wrapper coverage. Keep this
+    # extracted guard harness focused on the synchronous meta-alert contract.
+    echo 'record_startup_spool() { :; }'
     # Must resolve to the real tree: the guard invokes scripts/lib/bounded-run.sh
     # through these. Only the alert binary itself is stubbed.
     echo "FLYWHEEL_DIR='$REPO'"
@@ -192,6 +195,7 @@ hang_guard() {
     echo '#!/usr/bin/env bash'
     echo "$opts"
     echo 'log() { echo "log: $*"; }'
+    echo 'record_startup_spool() { :; }'
     # Must resolve to the real tree: the guard invokes scripts/lib/bounded-run.sh
     # through these. Only the alert binary itself is stubbed.
     echo "FLYWHEEL_DIR='$REPO'"

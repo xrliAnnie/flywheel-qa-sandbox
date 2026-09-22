@@ -46,8 +46,12 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { crossFamilyReviewSatisfied, installSqlTiming } from "flywheel-config";
-import { CommDB } from "../db.js";
+import {
+	canonicalSubmissionDigest,
+	crossFamilyReviewSatisfied,
+	installSqlTiming,
+} from "flywheel-config";
+import { CommDB, type WorkflowSourceEvent } from "../db.js";
 import {
 	isTrustedApprovalAttribution,
 	resolveFounderId,
@@ -55,6 +59,11 @@ import {
 import { resolveFounderReviewVerdictAtCommit } from "../founder-review.js";
 import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
 import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
+import {
+	parseShipJudgmentApprovalEnvelope,
+	SHIP_JUDGMENT_APPROVAL_ACTOR,
+	shipJudgmentApprovalSourceEventId,
+} from "../ship-judgment-approval-contract.js";
 
 export interface VerifyApprovalArgs {
 	execId: string;
@@ -92,6 +101,7 @@ export type VerifyApprovalReason =
 	| "response_not_structured_approval"
 	| "response_not_approved"
 	| "response_not_founder_attributed"
+	| "machine_approval_proof_missing"
 	| "founder_review_missing"
 	| "founder_review_not_passed"
 	| "founder_review_stale_artifact"
@@ -390,24 +400,43 @@ function verifyBoundApproval(
 			// column → codexApprovedForHead stays false (fail-closed under the
 			// gate), but must NOT corrupt the authoritative row read above.
 			try {
-				const candidates = stateDb
-					.prepare(
-						`SELECT r.status, r.author_family, r.reviewer_family,
-						        author.adapter_type AS author_adapter_type
-						   FROM codex_review_record r
-						   LEFT JOIN sessions author ON author.execution_id = r.execution_id
-						  WHERE r.project_name = ?
-						    AND r.issue_id = ?
-						    AND r.target_repo_identity = '__main__'
-						    AND lower(r.target_pr_head_sha) = ?
-						    AND r.status IN ('approved','skipped')`,
-					)
-					.all(row?.project_name, row?.issue_id, prHead) as Array<{
+				// FLY-2763: read the same-family sanction column when present; a
+				// pre-FLY-2763 database (no column) falls back to the family-only
+				// projection, which keeps same-family records fail-closed.
+				type Candidate = {
 					status?: string;
 					author_family?: string | null;
 					reviewer_family?: string | null;
 					author_adapter_type?: string | null;
-				}>;
+					same_family_sanction?: string | null;
+				};
+				const candidateSql = (withSanction: boolean) =>
+					`SELECT r.status, r.author_family, r.reviewer_family,
+					        author.adapter_type AS author_adapter_type${
+										withSanction ? ", r.same_family_sanction" : ""
+									}
+					   FROM codex_review_record r
+					   LEFT JOIN sessions author ON author.execution_id = r.execution_id
+					  WHERE r.project_name = ?
+					    AND r.issue_id = ?
+					    AND r.target_repo_identity = '__main__'
+					    AND lower(r.target_pr_head_sha) = ?
+					    AND r.status IN ('approved','skipped')`;
+				let candidates: Candidate[];
+				try {
+					candidates = stateDb
+						.prepare(candidateSql(true))
+						.all(row?.project_name, row?.issue_id, prHead) as Candidate[];
+				} catch (error) {
+					if (
+						!(error instanceof Error) ||
+						!/no such column: r\.same_family_sanction/.test(error.message)
+					)
+						throw error;
+					candidates = stateDb
+						.prepare(candidateSql(false))
+						.all(row?.project_name, row?.issue_id, prHead) as Candidate[];
+				}
 				// FLY-1434 §10: the ship execution may differ from the author
 				// execution. Query issue-scoped candidates and evaluate each
 				// record with its AUTHOR session adapter, never the shipping one.
@@ -417,6 +446,7 @@ function verifyBoundApproval(
 						authorFamily: candidate.author_family ?? null,
 						reviewerFamily: candidate.reviewer_family ?? null,
 						sessionAdapterType: candidate.author_adapter_type ?? null,
+						sameFamilySanction: candidate.same_family_sanction ?? null,
 					}),
 				);
 			} catch {
@@ -474,6 +504,7 @@ function verifyBoundApproval(
 	// and carry a structured approval response.
 	let responseFrom: string | undefined;
 	let responseContent: string | undefined;
+	let machineSource: WorkflowSourceEvent | undefined;
 	try {
 		const db = CommDB.openReadonly(args.dbPath);
 		try {
@@ -499,6 +530,16 @@ function verifyBoundApproval(
 			}
 			responseFrom = response.from_agent;
 			responseContent = response.content;
+			if (responseFrom === SHIP_JUDGMENT_APPROVAL_ACTOR) {
+				machineSource = db
+					.listWorkflowSourceEvents()
+					.find(
+						(source) =>
+							source.project === "flywheel" &&
+							source.source_event_id ===
+								shipJudgmentApprovalSourceEventId(questionId),
+					);
+			}
 		} finally {
 			db.close();
 		}
@@ -546,9 +587,11 @@ function verifyBoundApproval(
 		processEnv: env,
 		dotenvPath: args.codexDotenvPath,
 	});
+	const machineAttributed = responseFrom === SHIP_JUDGMENT_APPROVAL_ACTOR;
 	if (
 		founderId !== undefined &&
-		!isTrustedApprovalAttribution(responseFrom, founderId)
+		!isTrustedApprovalAttribution(responseFrom, founderId) &&
+		!machineAttributed
 	) {
 		return notApproved("response_not_founder_attributed", {
 			questionId,
@@ -575,6 +618,25 @@ function verifyBoundApproval(
 	}
 	if (expected !== prHead) {
 		return notApproved("pr_head_sha_mismatch", {
+			questionId,
+			responseFrom,
+			status: row.status,
+			expectedPrHeadSha: expected,
+		});
+	}
+	if (
+		machineAttributed &&
+		!hasAppliedShipJudgmentMachineApproval({
+			statePath,
+			questionId,
+			prHead,
+			projectName: row.project_name ?? "",
+			issueId: row.issue_id ?? "",
+			prNumber: Number(row.pr_number),
+			source: machineSource,
+		})
+	) {
+		return notApproved("machine_approval_proof_missing", {
 			questionId,
 			responseFrom,
 			status: row.status,
@@ -695,4 +757,90 @@ function verifyBoundApproval(
 		expectedPrHeadSha: expected,
 		exitCode: 0,
 	};
+}
+
+function hasAppliedShipJudgmentMachineApproval(input: {
+	statePath: string;
+	questionId: string;
+	prHead: string;
+	projectName: string;
+	issueId: string;
+	prNumber: number;
+	source?: WorkflowSourceEvent;
+}): boolean {
+	if (!input.source) return false;
+	try {
+		const envelope = parseShipJudgmentApprovalEnvelope(
+			JSON.parse(input.source.payload),
+		);
+		if (
+			input.source.payload_digest !== canonicalSubmissionDigest(envelope) ||
+			envelope.question_id !== input.questionId ||
+			envelope.project_name !== input.projectName ||
+			envelope.issue_id !== input.issueId ||
+			envelope.primary.pr_number !== input.prNumber ||
+			envelope.primary.head_sha !== input.prHead
+		) {
+			return false;
+		}
+		const db = installSqlTiming(
+			new Database(input.statePath, { readonly: true, fileMustExist: true }),
+			"teamlead",
+		);
+		try {
+			const proof = db
+				.prepare(`SELECT a.envelope_json,a.envelope_hash,
+				r.payload_digest,r.claim_id,v.author_evidence_json,v.founder_authored,
+				v.verdict,v.question_id,v.head_sha,v.pr_number,c.predicate,c.subject_digest,
+				c.workflow_run_id,h.run_id AS holder_run_id
+				FROM ship_judgment_auto_approval a
+				JOIN ship_judgment_auto_approval_disposition d
+				  ON d.source_event_id=a.source_event_id AND d.disposition='applied'
+				JOIN workflow_source_receipt r
+				  ON r.project='flywheel' AND r.source_event_id=a.source_event_id
+				JOIN workflow_founder_gate_verdict v
+				  ON v.source_event_id=a.source_event_id AND v.claim_id=r.claim_id
+				JOIN workflow_claims c ON c.id=r.claim_id
+				JOIN workflow_gate_holder h ON h.question_id=a.question_id
+				WHERE a.source_event_id=? AND a.question_id=?
+				AND NOT EXISTS (SELECT 1 FROM workflow_claim_revocation x WHERE x.claim_id=c.id)
+				LIMIT 1`)
+				.get(input.source.source_event_id, input.questionId) as
+				| Record<string, unknown>
+				| undefined;
+			if (
+				!proof ||
+				String(proof.envelope_json) !== input.source.payload ||
+				String(proof.envelope_hash) !== canonicalSubmissionDigest(envelope) ||
+				String(proof.payload_digest) !== input.source.payload_digest ||
+				Number(proof.founder_authored) !== 0 ||
+				proof.verdict !== "approved" ||
+				proof.question_id !== input.questionId ||
+				proof.head_sha !== input.prHead ||
+				Number(proof.pr_number) !== input.prNumber ||
+				proof.predicate !== "founder_approved" ||
+				proof.subject_digest !== input.prHead ||
+				proof.workflow_run_id !== envelope.run_id ||
+				proof.holder_run_id !== envelope.run_id
+			) {
+				return false;
+			}
+			const evidence = JSON.parse(String(proof.author_evidence_json)) as {
+				kind?: unknown;
+				actor?: unknown;
+				source_event_id?: unknown;
+				opinion_id?: unknown;
+			};
+			return (
+				evidence.kind === "ship_judgment_auto" &&
+				evidence.actor === SHIP_JUDGMENT_APPROVAL_ACTOR &&
+				evidence.source_event_id === input.source.source_event_id &&
+				evidence.opinion_id === envelope.judgment.opinion_id
+			);
+		} finally {
+			db.close();
+		}
+	} catch {
+		return false;
+	}
 }

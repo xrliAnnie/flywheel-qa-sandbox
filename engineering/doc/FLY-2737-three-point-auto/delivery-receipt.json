@@ -1,0 +1,23 @@
+{
+  "issue": "FLY-2737",
+  "url": "https://fw-reports-42fba7.vercel.app/r/09906038aefe5d726d0ab0ba12b7506f/",
+  "reportId": "09906038aefe5d726d0ab0ba12b7506f",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "artifactCommit": "9a957c2fb",
+  "reviewRequestId": "7d354432-5b03-4159-885e-35d989ec1d55",
+  "reviewVerdict": "APPROVED",
+  "leadReportId": "e3651c20-b2f3-4582-bb76-62f894916c54",
+  "verifiedAt": "2026-09-18T17:48:25.836Z",
+  "http": 200,
+  "scriptCount": 1,
+  "noncePlaceholderCount": 0,
+  "cspNonceMatch": true,
+  "scriptSha256": "498c6d661130c49cb287cde07e70cdecd4f85a1bd4f1f8e5f2c5f719501c2441",
+  "normalizedBodyMatchesSource": true,
+  "externalAssets": 0,
+  "sections": 11,
+  "diagramPending": 2,
+  "browserVisualVerified": false
+}
