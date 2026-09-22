@@ -724,11 +724,21 @@ export class VoiceDaemon {
 		return result;
 	}
 
-	/** Sleeps until an absolute instant, in bounded steps the lease can fence. */
-	private waitUntil(instant: string): Promise<void> {
-		const remaining = Date.parse(instant) - Date.parse(this.nowIso());
-		if (!Number.isFinite(remaining) || remaining <= 0) return Promise.resolve();
-		return this.options.sleep(remaining, this.sleepController.signal);
+	/**
+	 * Sleeps until an absolute instant. A timer that fires early (or a sleep cut
+	 * short) re-checks rather than falling through: the Bridge enforces the same
+	 * floor and would answer an early live with a 409, which this daemon reads as
+	 * a lost lease and would turn a benign early wake into a failed session.
+	 */
+	private async waitUntil(instant: string): Promise<void> {
+		const target = Date.parse(instant);
+		if (!Number.isFinite(target)) return;
+		for (let attempt = 0; attempt < 64; attempt += 1) {
+			if (this.stopping) return;
+			const remaining = target - Date.parse(this.nowIso());
+			if (!Number.isFinite(remaining) || remaining <= 0) return;
+			await this.options.sleep(remaining, this.sleepController.signal);
+		}
 	}
 
 	/**
