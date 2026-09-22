@@ -67,7 +67,7 @@ export async function runVoiceSessionCommand(
 	try {
 		const request = async (
 			path: string,
-			method: "GET" | "POST",
+			method: "GET" | "POST" | "PATCH",
 			body?: unknown,
 		): Promise<{ response: Response; body: unknown }> => {
 			const bridgeUrl = (env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL)?.trim();
@@ -154,8 +154,68 @@ export async function runVoiceSessionCommand(
 				),
 			);
 		}
+		// FLY-2701: a booked meeting is Bridge state with its own revision, so
+		// every mutation names the exact revision it believes it is changing.
+		if (
+			subcommand === "schedule-status" ||
+			subcommand === "reschedule" ||
+			subcommand === "cancel-schedule"
+		) {
+			const { values } = parseArgs({
+				args: args.slice(1),
+				options: {
+					"schedule-id": { type: "string" },
+					"expected-revision": { type: "string" },
+					"scheduled-at": { type: "string" },
+					"request-id": { type: "string" },
+					json: { type: "boolean", default: false },
+				},
+				allowPositionals: false,
+			});
+			const scheduleId = values["schedule-id"]?.trim();
+			if (!scheduleId || !UUID.test(scheduleId)) {
+				throw new Error("--schedule-id must be a canonical UUID");
+			}
+			const path = `/api/voice/schedules/${encodeURIComponent(scheduleId)}`;
+			if (subcommand === "schedule-status") {
+				return finish(await request(path, "GET"));
+			}
+			const requestIdValue = values["request-id"]?.trim();
+			if (!requestIdValue || !UUID.test(requestIdValue)) {
+				throw new Error("--request-id must be a canonical UUID");
+			}
+			const revisionText = values["expected-revision"]?.trim();
+			if (!revisionText || !/^[1-9][0-9]*$/.test(revisionText)) {
+				throw new Error("--expected-revision must be a positive integer");
+			}
+			const expectedRevision = Number(revisionText);
+			if (!Number.isSafeInteger(expectedRevision)) {
+				throw new Error("--expected-revision must be a positive integer");
+			}
+			if (subcommand === "cancel-schedule") {
+				return finish(
+					await request(`${path}/cancel`, "POST", {
+						requestId: requestIdValue,
+						expectedRevision,
+					}),
+				);
+			}
+			const scheduledAt = values["scheduled-at"]?.trim();
+			if (!scheduledAt) {
+				throw new Error("--scheduled-at is required to reschedule");
+			}
+			return finish(
+				await request(path, "PATCH", {
+					requestId: requestIdValue,
+					expectedRevision,
+					scheduledAt,
+				}),
+			);
+		}
 		if (subcommand !== "start") {
-			throw new Error("start, stop, or status is required");
+			throw new Error(
+				"start, stop, status, schedule-status, reschedule, or cancel-schedule is required",
+			);
 		}
 		const { values } = parseArgs({
 			args: args.slice(1),
@@ -167,6 +227,8 @@ export async function runVoiceSessionCommand(
 				lead: { type: "string" },
 				"evidence-dir": { type: "string" },
 				topic: { type: "string" },
+				"scheduled-at": { type: "string" },
+				"request-id": { type: "string" },
 				json: { type: "boolean", default: false },
 			},
 			allowPositionals: false,
@@ -210,6 +272,37 @@ export async function runVoiceSessionCommand(
 			if (evidenceDir && !isAbsolute(evidenceDir)) {
 				throw new Error("--evidence-dir must be absolute");
 			}
+		}
+		const scheduledAt = values["scheduled-at"]?.trim();
+		if (scheduledAt) {
+			// Booking a future meeting is a different contract from starting one
+			// now: it needs an idempotency key and only meeting mode exists.
+			const scheduleRequestId = values["request-id"]?.trim();
+			if (!scheduleRequestId || !UUID.test(scheduleRequestId)) {
+				throw new Error(
+					"--scheduled-at requires --request-id as a canonical UUID",
+				);
+			}
+			if (mode !== "meeting") {
+				throw new Error("--scheduled-at requires --mode meeting");
+			}
+			if (!evidenceDir) {
+				throw new Error("--evidence-dir is required to schedule a meeting");
+			}
+			return finish(
+				await request("/api/voice/schedules", "POST", {
+					requestId: scheduleRequestId,
+					projectName,
+					leadId,
+					evidenceDir,
+					scheduledAt,
+					...(topic ? { topic } : {}),
+					...(meetingId ? { meetingId } : {}),
+				}),
+			);
+		}
+		if (values["request-id"]?.trim()) {
+			throw new Error("--request-id requires --scheduled-at");
 		}
 		return finish(
 			await request(
