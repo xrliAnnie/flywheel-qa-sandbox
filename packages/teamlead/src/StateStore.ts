@@ -42709,6 +42709,66 @@ export class StateStore {
 	}
 
 	/** One fail-closed admission seam for typed engine and generalized executions. */
+	/**
+	 * FLY-2763 R2: engine-level same-family sanction. The menu admission
+	 * (`resolveMenuOverrides`) and the review coordinator already honour the
+	 * project flag `review_same_family_allowed`; this store is the flag store,
+	 * so the three engine guards (QA dispatch admission + both QA-claim
+	 * issuance paths) read the same row directly. Fail-closed: no row, no
+	 * override, an unreadable row or an equal resolved model keeps the
+	 * FLY-1188 §7.3 cross-vendor refusal byte-identical.
+	 */
+	private reviewSameFamilyAllowedForProject(projectName: string): boolean {
+		try {
+			const row =
+				this.getFlagValueRow("review_same_family_allowed", projectName) ??
+				this.getFlagValueRow("review_same_family_allowed", "*");
+			if (!row) return false;
+			const codec = getFlagStoreCodec("review_same_family_allowed");
+			if (!codec) return false;
+			return (
+				codec.parse({ hasOverride: row.hasOverride, raw: row.raw }) === true
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	/** Canonical model id for the same-family comparison (aliases resolve via models.json; unknown strings compare verbatim). */
+	private static sameFamilyModelKey(
+		model: string | null | undefined,
+	): string | undefined {
+		if (typeof model !== "string") return undefined;
+		let candidate = model.trim();
+		if (!candidate) return undefined;
+		const receipt = /\(=\s*([^)]+)\)/.exec(candidate);
+		if (receipt?.[1]) candidate = receipt[1].trim();
+		try {
+			const entry = getModelConfigSnapshot().getModelRegistryEntry(candidate);
+			if (entry?.id) return entry.id.toLowerCase();
+		} catch {
+			// fall through: compare the literal string
+		}
+		return candidate.toLowerCase();
+	}
+
+	/**
+	 * True only when the same-family sanction applies: flag on for the run's
+	 * project AND both models resolve AND they differ.
+	 */
+	private sameFamilyReviewSanctioned(input: {
+		projectName: string | undefined;
+		producerModel: string | null | undefined;
+		reviewerModel: string | null | undefined;
+	}): boolean {
+		if (!input.projectName) return false;
+		if (!this.reviewSameFamilyAllowedForProject(input.projectName)) return false;
+		const producer = StateStore.sameFamilyModelKey(input.producerModel);
+		const reviewer = StateStore.sameFamilyModelKey(input.reviewerModel);
+		if (!producer || !reviewer) return false;
+		return producer !== reviewer;
+	}
+
 	admitGeneralizedWorkflowExecution(input: {
 		codexQuotaRootKey?: string;
 		runId: string;
@@ -42815,7 +42875,14 @@ export class StateStore {
 				: undefined;
 			const producerVendor =
 				producerRuntime?.vendor ?? producers[0].dispatch.vendor;
-			if (producerVendor === resolvedDispatch.vendor) {
+			if (
+				producerVendor === resolvedDispatch.vendor &&
+				!this.sameFamilyReviewSanctioned({
+					projectName: run.project_name,
+					producerModel: producerRuntime?.model ?? producers[0].dispatch.model,
+					reviewerModel: resolvedDispatch.model,
+				})
+			) {
 				return { ok: false, reason: "same_vendor_review" };
 			}
 		}
@@ -60893,6 +60960,8 @@ export class StateStore {
 		issuerModel: string;
 		subjectProducerExecutionId?: string;
 		subjectProducerVendor?: string;
+		/** FLY-2763 R2: producer's resolved model (defaults to its execution runtime row). */
+		subjectProducerModel?: string;
 		claimExpiresAt: string;
 		evidence?: unknown;
 		alertIdentity: WorkflowEngineAlertIdentity;
@@ -61049,7 +61118,19 @@ export class StateStore {
 						result = { ok: false, reason: "missing_subject_producer" };
 						return;
 					}
-					if (input.issuerVendor === input.subjectProducerVendor) {
+					if (
+						input.issuerVendor === input.subjectProducerVendor &&
+						!this.sameFamilyReviewSanctioned({
+							projectName: this.getWorkflowRun(credential.run_id as string)
+								?.project_name,
+							producerModel:
+								input.subjectProducerModel ??
+								this.getWorkflowExecutionRuntime(
+									input.subjectProducerExecutionId,
+								)?.model,
+							reviewerModel: input.issuerModel,
+						})
+					) {
 						result = { ok: false, reason: "same_vendor_review" };
 						return;
 					}
@@ -63656,6 +63737,8 @@ export class StateStore {
 		subjectProducerExecutionId?: string;
 		/** Server-resolved family of the PRODUCING session (see E6 CONTRACT). */
 		subjectProducerVendor?: string;
+		/** FLY-2763 R2: producer's resolved model (defaults to its execution runtime row). */
+		subjectProducerModel?: string;
 		claimExpiresAt?: string;
 		evidence?: unknown;
 		now?: string;
@@ -63752,7 +63835,17 @@ export class StateStore {
 					result = { ok: false, reason: "missing_subject_producer" };
 					return;
 				}
-				if (input.issuerVendor === input.subjectProducerVendor) {
+				if (
+					input.issuerVendor === input.subjectProducerVendor &&
+					!this.sameFamilyReviewSanctioned({
+						projectName: this.getWorkflowRun(cap.run_id as string)?.project_name,
+						producerModel:
+							input.subjectProducerModel ??
+							this.getWorkflowExecutionRuntime(input.subjectProducerExecutionId)
+								?.model,
+						reviewerModel: input.issuerModel,
+					})
+				) {
 					result = { ok: false, reason: "same_vendor_review" };
 					return;
 				}
