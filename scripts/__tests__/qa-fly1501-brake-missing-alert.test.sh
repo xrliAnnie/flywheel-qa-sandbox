@@ -157,6 +157,9 @@ run_voice_policy() {
     echo '#!/usr/bin/env bash'
     echo 'set -euo pipefail'
     echo 'log() { echo "log: $*"; }'
+    # FLY-2693 ships a durable startup spool alongside the alert; stub it so the
+    # extracted guard runs here for exactly the reason it runs in production.
+    echo "record_startup_spool() { echo \"spool: \$*\" >> '$WORK/spool.log'; }"
     echo "FLYWHEEL_DIR='$REPO'"
     echo "FLYWHEEL_META_ALERT_BIN='$WORK/meta-alert.sh'"
     echo "RESTART_STORM_GATE_BIN='$WORK/definitely-absent-gate.py'"
@@ -174,12 +177,15 @@ eq "voice: verified on-demand contract bypasses resident storm accounting" \
 eq "voice: verified on-demand bypass stays quiet" "$(grep -c '^meta ' "$ALERT_LOG")" "0"
 
 : >"$ALERT_LOG"
+: >"$WORK/spool.log"
 out="$(run_voice_policy false)"
 eq "voice: mixed migration keeps missing-brake fail-close" \
   "$(echo "$out" | grep -c REACHED_LAUNCH)" "0"
 wait_for_alert
 eq "voice: mixed migration still alerts on missing brake" \
   "$(grep -c '^meta restart_storm_gate_unavailable' "$ALERT_LOG")" "1"
+eq "voice: mixed migration records one durable startup spool event" \
+  "$(grep -c '^spool: startup_not_ready' "$WORK/spool.log")" "1"
 
 # --- the bound itself -------------------------------------------------------
 # A hung notifier must not pin the launch path. Uses the real watchdog with a

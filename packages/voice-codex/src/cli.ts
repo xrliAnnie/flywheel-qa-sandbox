@@ -33,6 +33,7 @@ import {
 } from "./health.js";
 import { VoiceHealthAlertDispatcher } from "./health-alert.js";
 import { SessionJournal } from "./journal.js";
+import { probeVoiceLaunchdOwner } from "./launchd-owner.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
 import { parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
@@ -88,6 +89,17 @@ export async function main(): Promise<void> {
 		join(config.voiceRoot, "voice.lock"),
 	);
 	if (lock.status === "conflict") {
+		// FLY-2701: on demand, a wake can land while the previous instance is
+		// still finishing. That race is designed, not a fault — but only when the
+		// host can be shown to already own a running voice job. Evidence source:
+		// launchd's own record for the fixed label (see launchd-owner.ts).
+		const owner = await probeVoiceLaunchdOwner();
+		if (owner.kind === "launchd_running") {
+			console.log(
+				`[voice] benign_owner_conflict label=${owner.label} owner_pid=${owner.pid} source=${owner.source}`,
+			);
+			return;
+		}
 		reportStartupRefusal({
 			reason: "voice_process_lock_conflict",
 			title: "Voice process lock unavailable",
