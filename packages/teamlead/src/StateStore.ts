@@ -43453,27 +43453,12 @@ export class StateStore {
 		}
 	}
 
-	/** Canonical model id for the same-family comparison (aliases resolve via models.json; unknown strings compare verbatim). */
-	private static sameFamilyModelKey(
-		model: string | null | undefined,
-	): string | undefined {
-		if (typeof model !== "string") return undefined;
-		let candidate = model.trim();
-		if (!candidate) return undefined;
-		const receipt = /\(=\s*([^)]+)\)/.exec(candidate);
-		if (receipt?.[1]) candidate = receipt[1].trim();
-		try {
-			const entry = getModelConfigSnapshot().getModelRegistryEntry(candidate);
-			if (entry?.id) return entry.id.toLowerCase();
-		} catch {
-			// fall through: compare the literal string
-		}
-		return candidate.toLowerCase();
-	}
-
 	/**
 	 * True only when the same-family sanction applies: flag on for the run's
-	 * project AND both models resolve AND they differ.
+	 * project. FLY-2763 R3 (founder 2026-09-22): the sanction no longer
+	 * requires the producer and reviewer/QA models to differ — implement Opus
+	 * + QA Opus is the intended Codex-outage shape. The model arguments are
+	 * kept for audit callers; they do not gate admission.
 	 */
 	private sameFamilyReviewSanctioned(input: {
 		projectName: string | undefined;
@@ -43481,11 +43466,7 @@ export class StateStore {
 		reviewerModel: string | null | undefined;
 	}): boolean {
 		if (!input.projectName) return false;
-		if (!this.reviewSameFamilyAllowedForProject(input.projectName)) return false;
-		const producer = StateStore.sameFamilyModelKey(input.producerModel);
-		const reviewer = StateStore.sameFamilyModelKey(input.reviewerModel);
-		if (!producer || !reviewer) return false;
-		return producer !== reviewer;
+		return this.reviewSameFamilyAllowedForProject(input.projectName);
 	}
 
 	admitGeneralizedWorkflowExecution(input: {

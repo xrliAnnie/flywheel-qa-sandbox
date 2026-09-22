@@ -874,10 +874,11 @@ export function resolveMenuOverrides(
 		const producerSelection = selected.get(producer.id)!;
 		if (
 			qaSelection.vendor === producerSelection.vendor &&
-			context.sameVendorReviewAllowed === true &&
-			qaSelection.model !== producerSelection.model
+			context.sameVendorReviewAllowed === true
 		) {
-			// FLY-2763 sanctioned same-vendor pair (different models) — admitted.
+			// FLY-2763 R3: sanctioned same-vendor pair — admitted regardless of
+			// model (founder 2026-09-22: implement Opus + QA Opus while Codex is
+			// exhausted; the review coordinator still picks a different reviewer model).
 			continue;
 		}
 		if (qaSelection.vendor === producerSelection.vendor) {
