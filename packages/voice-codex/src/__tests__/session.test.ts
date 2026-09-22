@@ -597,3 +597,78 @@ describe("GenericVoiceSession prewarm gate (FLY-2701)", () => {
 		await session.stop();
 	});
 });
+
+describe("GenericVoiceSession current presence (FLY-2701)", () => {
+	function session() {
+		let roomHandlers!: Parameters<
+			ConstructorParameters<typeof GenericVoiceSession>[0]["createRoom"]
+		>[0];
+		const instance = new GenericVoiceSession({
+			projection: {
+				...projection,
+				notBeforeLiveAt: "2026-09-22T09:00:00.000Z",
+			},
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => ({
+				start: vi.fn(async () => {}),
+				appendAudio: vi.fn(),
+				appendSpeech: vi.fn(async () => {}),
+				stop: vi.fn(async () => {}),
+			}),
+			createRoom: (handlers) => {
+				roomHandlers = handlers;
+				return {
+					start: vi.fn(async () => ({ founderPresent: true })),
+					speaker: vi.fn(() => ({ userId: "founder", name: "Annie" })),
+					feedOutputAudio: vi.fn(),
+					finishOutputAudio: vi.fn(),
+					flushOutputAudio: vi.fn(),
+					status: vi.fn(async () => {}),
+					stop: vi.fn(async () => {}),
+				};
+			},
+			lifecycle: vi.fn(),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+		});
+		return { instance, room: () => roomHandlers };
+	}
+
+	it("forgets a founder who arrived early and then left before the meeting", async () => {
+		const fixture = session();
+		await fixture.instance.start();
+		expect(fixture.instance.isFounderPresent()).toBe(true);
+		fixture.room().onFounderPresence(false);
+		// She was here at prewarm time. That is not evidence she is here now, and
+		// going live into an empty room would leave the bot talking to nobody.
+		expect(fixture.instance.isFounderPresent()).toBe(false);
+		await expect(fixture.instance.waitForFounderPresence(10)).resolves.toBe(
+			false,
+		);
+		await fixture.instance.stop();
+	});
+
+	it("resolves as soon as she comes back", async () => {
+		const fixture = session();
+		await fixture.instance.start();
+		fixture.room().onFounderPresence(false);
+		const waiting = fixture.instance.waitForFounderPresence(5_000);
+		fixture.room().onFounderPresence(true);
+		await expect(waiting).resolves.toBe(true);
+		expect(fixture.instance.isFounderPresent()).toBe(true);
+		await fixture.instance.stop();
+	});
+
+	it("still ends a live session the moment she leaves", async () => {
+		const fixture = session();
+		await fixture.instance.start();
+		await fixture.instance.markLive();
+		const ended = fixture.instance.waitForEnd();
+		fixture.room().onFounderPresence(false);
+		await expect(ended).resolves.toEqual({
+			kind: "ended",
+			reason: "she-left",
+		});
+		await fixture.instance.stop();
+	});
+});

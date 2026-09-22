@@ -1059,3 +1059,103 @@ describe("VoiceDaemon session lifetime", () => {
 		}
 	});
 });
+
+describe("VoiceDaemon prewarmed meeting (FLY-2701)", () => {
+	function prewarmedProjection() {
+		return {
+			...projection,
+			notBeforeLiveAt: "2026-09-22T09:00:00.000Z",
+			presenceDeadlineAt: "2026-09-22T09:10:00.000Z",
+			scheduleRevision: 1,
+		};
+	}
+
+	it("reports ready, waits for the meeting time, and re-reads her presence", async () => {
+		const order: string[] = [];
+		const runtime = active();
+		const session = {
+			...runtime,
+			start: async () => {
+				order.push("start");
+				return { founderPresent: true };
+			},
+			// She was here when the room came up and left again during the wait.
+			isFounderPresent: () => false,
+			waitForFounderPresence: async () => {
+				order.push("presence_recheck");
+				return true;
+			},
+			waitForFounder: async () => {
+				order.push("stale_presence");
+				return true;
+			},
+			markLive: async () => {
+				order.push("live");
+			},
+		};
+		const bridge = {
+			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+			claim: vi.fn(async () => ({
+				lease: lease(),
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection: prewarmedProjection(),
+			})),
+			renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+			renewRecovered: vi.fn(),
+			ready: vi.fn(async () => {
+				order.push("ready");
+			}),
+			setState: vi.fn(async (_id, _t, _l, state) => {
+				order.push(`state:${state}`);
+			}),
+			outbound: vi.fn(async () => []),
+			claimOutbound: vi.fn(),
+			receipt: vi.fn(),
+		};
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: () => session,
+			recoverSession: vi.fn(),
+			sleep: vi.fn(async () => {
+				order.push("wait_until_T");
+			}),
+			now: () => new Date("2026-09-22T08:58:00.000Z"),
+			timing: {
+				idlePollMs: 5_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 600_000,
+				speechChunkTokens: 600,
+			},
+		});
+
+		const result = daemon.runOnce();
+		await vi.waitFor(() => expect(order).toContain("live"));
+		session.requestEnd({ kind: "ended", reason: "she-left" });
+		await result;
+
+		expect(bridge.ready).toHaveBeenCalledWith(
+			SESSION_ID,
+			"lease",
+			expect.anything(),
+			1,
+		);
+		expect(order.slice(0, 6)).toEqual([
+			"state:warming",
+			"start",
+			"ready",
+			"wait_until_T",
+			"presence_recheck",
+			"state:live",
+		]);
+		expect(order).not.toContain("stale_presence");
+	});
+});

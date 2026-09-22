@@ -79,6 +79,9 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly now: () => Date;
 	private live = false;
 	private admitted = false;
+	/** Her presence *right now*, as opposed to "she showed up at some point". */
+	private founderInRoom = false;
+	private presenceWaiters: Array<(present: boolean) => void> = [];
 	private stopping = false;
 	private pendingSpeech?: {
 		normalized: string;
@@ -134,6 +137,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		}
 		this.options.assertLease?.();
 		this.admitted = true;
+		this.founderInRoom = result.founderPresent;
 		if (result.founderPresent) this.founder.resolve(true);
 		await this.options.lifecycle("ready");
 		return result;
@@ -161,6 +165,34 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	 */
 	private prewarmGated(): boolean {
 		return !this.live && this.options.projection.notBeforeLiveAt != null;
+	}
+
+	isFounderPresent(): boolean {
+		return this.founderInRoom;
+	}
+
+	/**
+	 * FLY-2701: a prewarmed meeting may have watched her arrive and leave again
+	 * while it waited for the meeting time. Going live needs her here now, so
+	 * this asks about the current state and then waits for the next arrival —
+	 * it never replays the one-off "she was here once" event.
+	 */
+	async waitForFounderPresence(timeoutMs: number): Promise<boolean> {
+		if (this.founderInRoom) return true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let waiter!: (present: boolean) => void;
+		try {
+			return await new Promise<boolean>((resolve) => {
+				waiter = resolve;
+				this.presenceWaiters.push(waiter);
+				timer = setTimeout(() => resolve(false), timeoutMs);
+				timer.unref?.();
+			});
+		} finally {
+			if (timer) clearTimeout(timer);
+			const index = this.presenceWaiters.indexOf(waiter);
+			if (index >= 0) this.presenceWaiters.splice(index, 1);
+		}
 	}
 
 	async markLive(): Promise<void> {
@@ -219,8 +251,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	private founderPresence(present: boolean): void {
+		this.founderInRoom = present;
 		if (present) {
 			this.founder.resolve(true);
+			for (const waiter of this.presenceWaiters.splice(0)) waiter(true);
 		} else if (this.live) {
 			this.finish({ kind: "ended", reason: "she-left" });
 		}

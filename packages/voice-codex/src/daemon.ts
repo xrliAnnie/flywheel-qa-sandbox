@@ -46,6 +46,9 @@ export type VoiceDaemonIterationResult =
 export interface ActiveVoiceSession {
 	start(): Promise<{ founderPresent: boolean }>;
 	waitForFounder(timeoutMs: number): Promise<boolean>;
+	/** FLY-2701: her presence now, re-read after a prewarmed wait. */
+	isFounderPresent?(): boolean;
+	waitForFounderPresence?(timeoutMs: number): Promise<boolean>;
 	markLive(): Promise<void>;
 	waitForEnd(): Promise<VoiceEnd>;
 	requestEnd(outcome: VoiceEnd): void;
@@ -577,9 +580,17 @@ export class VoiceDaemon {
 			// schedule wins over the local grace so an early start never shortens
 			// how long the bot waits for her.
 			const presenceWaitMs = this.presenceWaitMs(context);
-			const founderPresent =
-				started.founderPresent ||
-				(await lifetime.wait(() => session.waitForFounder(presenceWaitMs)));
+			// A prewarmed meeting may have watched her arrive and leave again while
+			// it waited for T, so it re-reads presence instead of trusting the
+			// reading it took before the wait.
+			const founderPresent = notBeforeLiveAt
+				? await lifetime.wait(() =>
+						session.waitForFounderPresence
+							? session.waitForFounderPresence(presenceWaitMs)
+							: session.waitForFounder(presenceWaitMs),
+					)
+				: started.founderPresent ||
+					(await lifetime.wait(() => session.waitForFounder(presenceWaitMs)));
 			if (!founderPresent) {
 				outcome = { kind: "failed", reason: "no_human" };
 			} else {
