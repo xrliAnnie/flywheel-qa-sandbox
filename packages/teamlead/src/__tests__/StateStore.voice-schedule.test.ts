@@ -467,3 +467,153 @@ describe("StateStore scheduled live floor", () => {
 		).toBe(true);
 	});
 });
+
+describe("StateStore schedule and session stay in step (FLY-2701 review R3)", () => {
+	function prewarming(): void {
+		store.createVoiceSchedule(reservation());
+		store.reserveVoiceSession({
+			sessionId: SESSION_ID,
+			mode: "meeting",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceBotUserId: "100000000000000005",
+			voiceChannelId: "100000000000000002",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: T0,
+			scheduleId: SCHEDULE_ID,
+			scheduleRevision: 1,
+			notBeforeLiveAt: MEETING_AT,
+			presenceDeadlineAt: "2026-09-22T09:10:00.000Z",
+		});
+		store.attachVoiceScheduleSession({
+			scheduleId: SCHEDULE_ID,
+			expectedRevision: 1,
+			sessionId: SESSION_ID,
+			updatedAt: PREWARM_AT,
+		});
+	}
+
+	it("cancels the unclaimed session in the same call that cancels the booking", () => {
+		prewarming();
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: PREWARM_AT,
+		});
+		store.cancelVoiceSchedule({
+			scheduleId: SCHEDULE_ID,
+			requestKey: "master:founder:cancel-x",
+			requestDigest: "digest-cancel-x",
+			expectedRevision: 1,
+			updatedAt: PREWARM_AT,
+		});
+		// The desired row is the launch intent. Leaving it behind means the host
+		// is still woken, joins the room, and waits mute for a meeting that was
+		// called off.
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "cancelled",
+		});
+		expect(store.getDesiredVoiceSession()).toBeUndefined();
+	});
+
+	it("moves a claimed session to ending when its booking is cancelled", () => {
+		prewarming();
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: PREWARM_AT,
+		});
+		store.claimVoiceSession({
+			sessionId: SESSION_ID,
+			daemonBootId: "boot-1",
+			now: PREWARM_AT,
+			leaseTtlMs: 30 * 60_000,
+		});
+		store.cancelVoiceSchedule({
+			scheduleId: SCHEDULE_ID,
+			requestKey: "master:founder:cancel-y",
+			requestDigest: "digest-cancel-y",
+			expectedRevision: 1,
+			updatedAt: PREWARM_AT,
+		});
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "ending",
+		});
+	});
+
+	it("frees the old session when a booking moves, so the new slot can start", () => {
+		prewarming();
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: PREWARM_AT,
+		});
+		store.rescheduleVoiceSchedule({
+			scheduleId: SCHEDULE_ID,
+			requestKey: "master:founder:move-x",
+			requestDigest: "digest-move-x",
+			expectedRevision: 1,
+			scheduledAt: "2026-09-22T09:30:00.000Z",
+			prewarmAt: "2026-09-22T09:28:00.000Z",
+			readyDeadlineAt: "2026-09-22T09:30:00.000Z",
+			presenceDeadlineAt: "2026-09-22T09:40:00.000Z",
+			updatedAt: PREWARM_AT,
+		});
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "cancelled",
+		});
+	});
+
+	it("reaps a booking whose session died outside the state route", () => {
+		prewarming();
+		// failVoiceSessionAdmission and the lease sweep write voice_sessions only.
+		store.failVoiceSessionAdmission(
+			SESSION_ID,
+			"startup_retry_exhausted",
+			PREWARM_AT,
+		);
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "prewarming",
+		});
+		expect(store.reapStrandedVoiceSchedules("2026-09-22T08:59:00.000Z")).toBe(
+			1,
+		);
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "failed",
+			terminalReason: "startup_retry_exhausted",
+		});
+		// A stranded booking must stop blocking a fresh one for the same meeting.
+		expect(store.reapStrandedVoiceSchedules("2026-09-22T08:59:00.000Z")).toBe(
+			0,
+		);
+	});
+
+	it("leaves a healthy prewarming booking alone", () => {
+		prewarming();
+		expect(store.reapStrandedVoiceSchedules("2026-09-22T08:59:00.000Z")).toBe(
+			0,
+		);
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "prewarming",
+		});
+	});
+
+	it("fails a booking that ran past its presence deadline with nothing to end it", () => {
+		prewarming();
+		expect(store.reapStrandedVoiceSchedules("2026-09-22T09:10:00.001Z")).toBe(
+			1,
+		);
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "failed",
+			terminalReason: "presence_deadline_passed",
+		});
+	});
+});

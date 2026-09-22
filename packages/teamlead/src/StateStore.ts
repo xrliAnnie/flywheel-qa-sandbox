@@ -4146,6 +4146,12 @@ export class StateStore {
 			}
 			// A new version never inherits the old session: the old one must reach a
 			// terminal state before the new revision may allocate its own.
+			// The old revision's session must go terminal now, or the new time can
+			// never allocate one and a meeting moved during prewarm is simply
+			// missed.
+			if (current.sessionId) {
+				this.stopVoiceSessionTx(current.sessionId, input.updatedAt);
+			}
 			this.db.run(
 				`UPDATE voice_schedules
 				 SET revision = revision + 1, scheduled_at = ?, prewarm_at = ?,
@@ -4223,6 +4229,12 @@ export class StateStore {
 				 WHERE schedule_id = ? AND revision = ?`,
 				[input.updatedAt, input.scheduleId, input.expectedRevision],
 			);
+			// Revoke the launch intent here, not later: a desired row left behind
+			// still wakes the host, joins the room, and waits mute for a meeting
+			// nobody is coming to.
+			if (current.sessionId) {
+				this.stopVoiceSessionTx(current.sessionId, input.updatedAt);
+			}
 			const schedule = this.getVoiceSchedule(input.scheduleId)!;
 			this.recordVoiceScheduleReceipt({
 				requestKey: input.requestKey,
@@ -4420,6 +4432,52 @@ export class StateStore {
 		});
 		if (changed) this.save();
 		return changed;
+	}
+
+	/**
+	 * FLY-2701 review R3: setVoiceSessionState is not the only writer that ends a
+	 * session — the admission failure path and the lease sweep write voice_sessions
+	 * alone. Without this, such a booking sits prewarming/ready forever and its
+	 * partial unique index keeps rejecting every new booking for that meeting.
+	 */
+	reapStrandedVoiceSchedules(now: string): number {
+		let reaped = 0;
+		this.db.transaction(() => {
+			const rows = this.workflowSelectAll(
+				`SELECT * FROM voice_schedules
+				 WHERE state IN ('prewarming','ready','live')
+				 ORDER BY scheduled_at, schedule_id`,
+				[],
+			);
+			for (const row of rows) {
+				const schedule = this.voiceScheduleFromRow(row);
+				if (!schedule) continue;
+				const session = schedule.sessionId
+					? this.getVoiceSession(schedule.sessionId)
+					: undefined;
+				const sessionTerminal =
+					!session ||
+					["ended", "cancelled", "failed"].includes(session.state);
+				const deadlinePassed =
+					Date.parse(now) > Date.parse(schedule.presenceDeadlineAt);
+				if (!sessionTerminal && !deadlinePassed) continue;
+				const state =
+					session?.state === "ended" ? "ended" : ("failed" as const);
+				const reason = sessionTerminal
+					? (session?.reason ?? "session_missing")
+					: "presence_deadline_passed";
+				this.db.run(
+					`UPDATE voice_schedules
+					 SET state = ?, terminal_reason = ?, updated_at = ?
+					 WHERE schedule_id = ? AND revision = ?
+					   AND state NOT IN ('ended','cancelled','failed')`,
+					[state, reason, now, schedule.scheduleId, schedule.revision],
+				);
+				if (this.db.getRowsModified() === 1) reaped += 1;
+			}
+		});
+		if (reaped) this.save();
+		return reaped;
 	}
 
 	listDueVoiceSchedules(now: string): VoiceScheduleRow[] {
@@ -4927,40 +4985,53 @@ export class StateStore {
 	): "cancel_requested" | "cancelled" | "ending" | VoiceSessionState | undefined {
 		let result: ReturnType<StateStore["stopVoiceSession"]>;
 		this.db.transaction(() => {
-			const current = this.getVoiceSession(sessionId);
-			if (!current) return;
-			if (current.state === "provisioning") {
-				this.db.run(
-					`UPDATE voice_sessions SET cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
-					 WHERE session_id = ? AND state = 'provisioning'`,
-					[now, now, sessionId],
-				);
-				result = "cancel_requested";
-				return;
-			}
-			if (current.state === "desired") {
-				this.db.run(
-					`UPDATE voice_sessions SET state = 'cancelled', reason = 'text-stop',
-					 updated_at = ?, ended_at = ? WHERE session_id = ? AND state = 'desired'`,
-					[now, now, sessionId],
-				);
-				this.settleVoiceOutboundTx(sessionId, now);
-				result = "cancelled";
-				return;
-			}
-			if (new Set<VoiceSessionState>(["claimed", "warming", "live"]).has(current.state)) {
-				this.db.run(
-					`UPDATE voice_sessions SET state = 'ending', reason = 'text-stop', updated_at = ?, ending_started_at = ?
-					 WHERE session_id = ? AND state = ?`,
-					[now, now, sessionId, current.state],
-				);
-				result = "ending";
-				return;
-			}
-			result = current.state;
+			result = this.stopVoiceSessionTx(sessionId, now);
 		});
 		if (result) this.save();
 		return result;
+	}
+
+	/**
+	 * The stop decision itself, with no transaction of its own, so a caller that
+	 * already owns one (cancelling or moving a booking) revokes the launch intent
+	 * in the very same commit that changes the schedule.
+	 */
+	private stopVoiceSessionTx(
+		sessionId: string,
+		now: string,
+	): "cancel_requested" | "cancelled" | "ending" | VoiceSessionState | undefined {
+		const current = this.getVoiceSession(sessionId);
+		if (!current) return undefined;
+		if (current.state === "provisioning") {
+			this.db.run(
+				`UPDATE voice_sessions SET cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
+				 WHERE session_id = ? AND state = 'provisioning'`,
+				[now, now, sessionId],
+			);
+			return "cancel_requested";
+		}
+		if (current.state === "desired") {
+			this.db.run(
+				`UPDATE voice_sessions SET state = 'cancelled', reason = 'text-stop',
+				 updated_at = ?, ended_at = ? WHERE session_id = ? AND state = 'desired'`,
+				[now, now, sessionId],
+			);
+			this.settleVoiceOutboundTx(sessionId, now);
+			return "cancelled";
+		}
+		if (
+			new Set<VoiceSessionState>(["claimed", "warming", "live"]).has(
+				current.state,
+			)
+		) {
+			this.db.run(
+				`UPDATE voice_sessions SET state = 'ending', reason = 'text-stop', updated_at = ?, ending_started_at = ?
+				 WHERE session_id = ? AND state = ?`,
+				[now, now, sessionId, current.state],
+			);
+			return "ending";
+		}
+		return current.state;
 	}
 
 	getActiveVoiceLease(

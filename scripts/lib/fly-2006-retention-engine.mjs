@@ -141,6 +141,21 @@ function staticPolicy(key, database, table, primaryKey, predicate, params) {
 }
 
 export const RETENTION_TARGET_POLICIES = Object.freeze([
+	// FLY-2701: on-demand launch attempts are bounded audit, not authority. A
+	// demand that is still unresolved keeps its whole attempt history, so the
+	// launch budget can never be reset by a sweep.
+	staticPolicy(
+		"voiceLaunchAttempts",
+		"teamlead",
+		"voice_launch_attempts",
+		"attempt_id",
+		`julianday(t.requested_at)<julianday(?)
+		 AND NOT EXISTS (
+		   SELECT 1 FROM voice_sessions s
+		   WHERE s.session_id = t.session_id
+		     AND s.state NOT IN ('ended','cancelled','failed')
+		 )`,
+	),
 	staticPolicy(
 		"releaseSignalEvents",
 		"teamlead",

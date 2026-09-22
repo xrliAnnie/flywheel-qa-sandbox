@@ -535,9 +535,9 @@ it.each(["missing", "unleased"] as const)(
 describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
 	function wakeRuntime(
 		now: string,
-		requestWake: (
-			session: { sessionId: string },
-		) => Promise<"coalesced" | "accepted" | "unavailable" | "failed">,
+		requestWake: (session: {
+			sessionId: string;
+		}) => Promise<"coalesced" | "accepted" | "unavailable" | "failed">,
 	) {
 		return new VoiceSessionRuntime({
 			store,
@@ -597,7 +597,10 @@ describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
 	it("stops on the first configuration fault instead of burning the budget", async () => {
 		const requestWake = vi.fn(async () => "unavailable" as const);
 		await wakeRuntime(T0, requestWake).wakeTick();
-		await wakeRuntime(new Date(Date.parse(T0) + 600_000).toISOString(), requestWake).wakeTick();
+		await wakeRuntime(
+			new Date(Date.parse(T0) + 600_000).toISOString(),
+			requestWake,
+		).wakeTick();
 		// One observation is enough: nothing retries a disabled or drifted unit.
 		expect(requestWake).toHaveBeenCalledTimes(1);
 		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({

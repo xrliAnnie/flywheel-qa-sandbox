@@ -1,5 +1,5 @@
 {
 	"database": "teamlead",
 	"table": "voice_launch_attempts",
-	"classification": "protectedCurrentOrReference"
+	"classification": "deleteTarget"
 }

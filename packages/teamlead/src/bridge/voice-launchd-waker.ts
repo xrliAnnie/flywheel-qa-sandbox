@@ -86,9 +86,7 @@ export class VoiceLaunchdWaker {
 				try {
 					await this.deps.verify();
 				} catch {
-					(this.deps.log ?? console.warn)(
-						"voice launchd contract unavailable",
-					);
+					(this.deps.log ?? console.warn)("voice launchd contract unavailable");
 					return "unavailable";
 				}
 			}

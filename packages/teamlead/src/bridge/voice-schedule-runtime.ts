@@ -51,6 +51,10 @@ export class VoiceScheduleRuntime {
 		this.ticking = true;
 		try {
 			const at = this.now();
+			// Bookings whose session died outside the state route, or that ran past
+			// their own presence deadline, must reach a terminal state or they keep
+			// blocking every new booking for the same meeting.
+			this.deps.store.reapStrandedVoiceSchedules(at);
 			this.reapMissed(at);
 			for (const schedule of this.deps.store.listDueVoiceSchedules(at)) {
 				await this.prewarm(schedule, at);
