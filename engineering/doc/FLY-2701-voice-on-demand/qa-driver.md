@@ -118,13 +118,20 @@ QA 要验：①部署日志里出现 `migrated`；②迁移后 `launchctl print`
 | kickstart 明确失败 | FLY-2693 工程频道真实回执 + 固定页；同一 episode 不刷屏 |
 | 单元缺失 / disabled | configuration unavailable；**不得**偷偷安装或 enable |
 | 进程起来但从不 claim | 3 次「已受理但无 claim」后预算耗尽，会话 `failed/startup_retry_exhausted`，停止唤醒并告警 |
-| 单元 disabled / 字节 drift（契约检查失败） | **第一次**就记 `startup_config_invalid` 并停止重试，不烧三个启动窗口 |
+| 单元 disabled / 字节 drift（契约检查失败） | 与「已受理」同样拿满 60s 启动窗口；**连续 3 个空窗**才耗尽并记 `startup_config_invalid`。**不是第一次就停** |
+| 契约探针超时（2s deadline 被杀） | 解析为 `unknown`，**完全不消耗预算**；同一需求下最多每 60s 再探一次，不会每 3s 落一行审计 |
 | 预约会议到点前一直 warming | 阴性：**不得**出现 `startup_not_ready`（已报 ready 的会话豁免到 presence deadline） |
 | 取消一场已在预热的会议 | 关联 session 同步取消/转 ending；不得继续唤醒主机、不得进房静音等到旧 deadline |
 | 起来后进房失败 | 现有失败路径告警 |
 | 无需求休眠 | 阴性：不告警 |
 
-本轮的失败预算只用 Bridge 自有证据（命令结果 + 是否在 60s 内被 claim）。unknown 命令结果与被合并（coalesced）的请求**不消耗**预算——QA 可用重复快速触发验证这一点。
+本轮的失败预算只用 Bridge 自有证据（命令结果 + 是否在 60s 内被 claim）。unknown 命令结果与被合并
+（coalesced）的请求**不消耗**预算——QA 可用重复快速触发验证这一点。
+
+⚠️ **契约检查失败为什么不是「第一次就停」**：本机可能正处在「新 Bridge + 旧常驻 plist + 旧 daemon
+仍在轮询」的迁移窗口。那台机器**当时是能通话的**（旧 daemon 会来 claim），所以一次契约检查失败只
+说明「新契约没装上」，不说明「这个需求做不成」。因此它和「命令已受理」拿同样的 60s 窗口，连续 3 个
+空窗才耗尽。QA 判据以此为准。
 
 进程锁冲突：当 `launchctl print` 显示本机确有运行中的 voice job 时记 `benign_owner_conflict` 并 exit 0、保留 desired 补扫；证明不弹 founder。无法证明持锁者时仍走原来的响亮拒绝。
 

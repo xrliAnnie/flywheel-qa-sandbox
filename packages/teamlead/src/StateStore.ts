@@ -4377,9 +4377,15 @@ export class StateStore {
 				"SELECT requested_at FROM voice_launch_attempts WHERE attempt_id = ?",
 				[input.attemptId],
 			)[0]?.requested_at;
+			// "unknown" spends no budget, but it is still an observation: a host
+			// whose probe always exceeds its deadline would otherwise be re-probed
+			// on every wake tick, one audit row per tick, for as long as the demand
+			// lives. Give it the same window; the FLY-2693 startup guard still
+			// alerts at 60s either way.
 			const windowed =
 				input.commandResult === "accepted" ||
-				input.commandResult === "unavailable";
+				input.commandResult === "unavailable" ||
+				input.commandResult === "unknown";
 			const anchorMs =
 				windowed && requestedAt
 					? Date.parse(String(requestedAt))

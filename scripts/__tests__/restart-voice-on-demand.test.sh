@@ -17,15 +17,19 @@ sed "s#/Users/xiaorongli/Dev/flywheel#${FIXTURE_REPO}#g" \
   "$REPO_ROOT/scripts/launchd/com.flywheel.voice.plist" > "$SOURCE"
 cp "$SOURCE" "$INSTALLED"
 
+# restart_voice_managed derives its own domain from the running uid, so the stub
+# must too: hardcoding 501 passes locally and fails on any other runner.
+UID_NOW="$(id -u)"
+DOMAIN="gui/${UID_NOW}"
 LAUNCHCTL_MODE=valid
 launchctl() {
   printf '%s\n' "$*" >> "$ROOT/launchctl-calls"
   # bootout/bootstrap are the migration seam; they succeed like the real tool.
   [[ "$1" == bootout || "$1" == bootstrap ]] && return 0
-  [[ "$1" == print && "$2" == gui/501/com.flywheel.voice ]] || return 90
+  [[ "$1" == print && "$2" == "${DOMAIN}/com.flywheel.voice" ]] || return 90
   [[ "$LAUNCHCTL_MODE" == valid ]] || return 113
   printf '%s\n' \
-    'gui/501/com.flywheel.voice = {' \
+    "${DOMAIN}/com.flywheel.voice = {" \
     $'\tpath = '"$INSTALLED" \
     $'\tprogram = /bin/bash' \
     $'\targuments = {' \
@@ -40,11 +44,11 @@ launchctl() {
 # shellcheck source=../lib/voice-on-demand.sh
 source "$REPO_ROOT/scripts/lib/voice-on-demand.sh"
 
-voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" gui/501
-[[ "$(cat "$ROOT/launchctl-calls")" == 'print gui/501/com.flywheel.voice' ]]
+voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" "$DOMAIN"
+[[ "$(cat "$ROOT/launchctl-calls")" == "print ${DOMAIN}/com.flywheel.voice" ]]
 
 printf '\n<!-- drift -->\n' >> "$INSTALLED"
-if voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" gui/501; then
+if voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" "$DOMAIN"; then
   echo "FAIL: installed byte drift was accepted" >&2
   exit 1
 fi
@@ -59,7 +63,7 @@ for path in sys.argv[1:]:
     p['ThrottleInterval']=30
     plistlib.dump(p,open(path,'wb'))
 PY
-if voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" gui/501; then
+if voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" "$DOMAIN"; then
   echo "FAIL: resident launchd bytes were accepted as on-demand" >&2
   exit 1
 fi
@@ -68,7 +72,7 @@ sed "s#/Users/xiaorongli/Dev/flywheel#${FIXTURE_REPO}#g" \
   "$REPO_ROOT/scripts/launchd/com.flywheel.voice.plist" > "$SOURCE"
 cp "$SOURCE" "$INSTALLED"
 LAUNCHCTL_MODE=missing
-if voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" gui/501; then
+if voice_on_demand_contract_check "$FIXTURE_REPO" "$FIXTURE_HOME" "$DOMAIN"; then
   echo "FAIL: an unregistered unit was accepted" >&2
   exit 1
 fi
@@ -150,9 +154,9 @@ if ! restart_voice_managed; then
 fi
 [[ "$VOICE_RESTART_STATE" == "migrated" ]] || {
   echo "FAIL: expected migrated, got $VOICE_RESTART_STATE" >&2; exit 1; }
-grep -q 'bootout gui/501/com.flywheel.voice' "$ROOT/launchctl-calls" || {
+grep -q "bootout ${DOMAIN}/com.flywheel.voice" "$ROOT/launchctl-calls" || {
   echo "FAIL: the resident daemon was never stopped" >&2; exit 1; }
-grep -q "bootstrap gui/501 $INSTALLED" "$ROOT/launchctl-calls" || {
+grep -q "bootstrap ${DOMAIN} $INSTALLED" "$ROOT/launchctl-calls" || {
   echo "FAIL: the on-demand unit was never registered" >&2; exit 1; }
 cmp -s "$SOURCE" "$INSTALLED" || {
   echo "FAIL: installed bytes are not the on-demand contract" >&2; exit 1; }

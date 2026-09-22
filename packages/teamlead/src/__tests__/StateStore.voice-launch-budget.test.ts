@@ -270,3 +270,68 @@ describe("StateStore launch budget during a migration window (FLY-2701 review R4
 		});
 	});
 });
+
+describe("StateStore bounded unknown observations (FLY-2701 follow-up 2)", () => {
+	it("stops re-probing every tick when the contract probe keeps timing out", () => {
+		desired();
+		store.admitVoiceLaunchAttempt({
+			sessionId: SESSION_ID,
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			now: T0,
+		});
+		store.recordVoiceLaunchResult({
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			commandResult: "unknown",
+			observedAt: at(2_000),
+		});
+		// An unknown result spends no budget, but it is still an observation: a
+		// host whose probe always exceeds its deadline must not accumulate one
+		// audit row per wake tick for as long as the demand lives.
+		expect(
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId: "40000000-0000-4000-8000-000000000002",
+				now: at(3_000),
+			}),
+		).toMatchObject({ status: "deferred" });
+		expect(
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId: "40000000-0000-4000-8000-000000000002",
+				now: at(59_000),
+			}),
+		).toMatchObject({ status: "deferred" });
+		expect(
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId: "40000000-0000-4000-8000-000000000002",
+				now: at(60_000),
+			}),
+		).toMatchObject({ status: "admitted" });
+		// Still no budget spent: an unknown observation never ends the demand.
+		expect(store.getVoiceLaunchBudget(SESSION_ID, at(600_000))).toMatchObject({
+			provenFailures: 0,
+		});
+	});
+
+	it("keeps the fast retry for a command that definitely failed", () => {
+		desired();
+		store.admitVoiceLaunchAttempt({
+			sessionId: SESSION_ID,
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			now: T0,
+		});
+		store.recordVoiceLaunchResult({
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			commandResult: "failed",
+			observedAt: at(100),
+		});
+		expect(
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId: "40000000-0000-4000-8000-000000000002",
+				now: at(3_100),
+			}),
+		).toMatchObject({ status: "admitted" });
+	});
+});
