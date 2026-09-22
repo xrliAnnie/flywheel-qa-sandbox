@@ -1,5 +1,5 @@
 {
 	"database": "teamlead",
 	"table": "voice_schedules",
-	"classification": "protectedCurrentOrReference"
+	"classification": "deleteTarget"
 }

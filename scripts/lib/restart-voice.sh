@@ -120,5 +120,9 @@ restart_voice_managed() {
   VOICE_RESTART_STATE="failed"
   VOICE_RESTART_DETAIL="on_demand_contract_mismatch"
   voice_restart_log "ERROR: loaded voice unit does not match the on-demand contract; refusing an unsafe restart"
+  # Plan section 11: a rollback to pre-on-demand code lands here on purpose —
+  # this never silently restores a RunAtLoad resident unit. Name the manual
+  # remedy so an operator is not left guessing why voice is unavailable.
+  voice_restart_log "remedy: reinstall the voice unit for the deployed checkout (scripts/install-voice-launchd.sh) inside an authorized deploy window"
   return 1
 }

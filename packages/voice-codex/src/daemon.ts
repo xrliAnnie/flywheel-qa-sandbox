@@ -770,7 +770,18 @@ export class VoiceDaemon {
 	}
 
 	private safeRuntimeReason(reason: string): string {
-		if (["daemon_shutdown", "lease_lost", "no_human"].includes(reason))
+		// A closed allowlist: anything else may carry host paths or error text.
+		// meeting_floor_unreachable is on it deliberately — it is the one way to
+		// tell "never reached its meeting time" apart from a generic runtime
+		// failure, and the Bridge cannot diagnose it otherwise.
+		if (
+			[
+				"daemon_shutdown",
+				"lease_lost",
+				"no_human",
+				"meeting_floor_unreachable",
+			].includes(reason)
+		)
 			return reason;
 		return "session_runtime_failed";
 	}

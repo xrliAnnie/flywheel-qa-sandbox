@@ -15,7 +15,7 @@ export interface VoiceSessionRuntimeDeps {
 	poll: (session: VoiceSessionRow) => Promise<void>;
 	requestWake?: (
 		session: VoiceSessionRow,
-	) => Promise<"coalesced" | "accepted" | "unavailable" | "failed">;
+	) => Promise<"coalesced" | "unknown" | "accepted" | "unavailable" | "failed">;
 	/** Attempt id minted per admitted wake; injected so tests stay deterministic. */
 	newAttemptId?: () => string;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
@@ -185,7 +185,8 @@ export class VoiceSessionRuntime {
 					"unknown";
 				try {
 					const settled = await this.deps.requestWake(session);
-					if (settled !== "coalesced") outcome = settled;
+					if (settled !== "coalesced" && settled !== "unknown")
+						outcome = settled;
 				} catch {
 					outcome = "failed";
 					console.warn(

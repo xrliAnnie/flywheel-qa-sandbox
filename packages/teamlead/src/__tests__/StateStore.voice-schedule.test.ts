@@ -617,3 +617,85 @@ describe("StateStore schedule and session stay in step (FLY-2701 review R3)", ()
 		});
 	});
 });
+
+describe("StateStore reaper and a real meeting (FLY-2701 review R4)", () => {
+	it("never fails a live booking for running long", () => {
+		store.createVoiceSchedule(reservation());
+		store.reserveVoiceSession({
+			sessionId: SESSION_ID,
+			mode: "meeting",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceBotUserId: "100000000000000005",
+			voiceChannelId: "100000000000000002",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: T0,
+			scheduleId: SCHEDULE_ID,
+			scheduleRevision: 1,
+			notBeforeLiveAt: MEETING_AT,
+			presenceDeadlineAt: "2026-09-22T09:10:00.000Z",
+		});
+		store.attachVoiceScheduleSession({
+			scheduleId: SCHEDULE_ID,
+			expectedRevision: 1,
+			sessionId: SESSION_ID,
+			updatedAt: PREWARM_AT,
+		});
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: PREWARM_AT,
+		});
+		const lease = store.claimVoiceSession({
+			sessionId: SESSION_ID,
+			daemonBootId: "boot-1",
+			now: PREWARM_AT,
+			leaseTtlMs: 4 * 60 * 60_000,
+		})!;
+		store.setVoiceSessionState({
+			sessionId: SESSION_ID,
+			leaseToken: lease.leaseToken,
+			state: "warming",
+			now: PREWARM_AT,
+		});
+		store.markVoiceSessionReady({
+			sessionId: SESSION_ID,
+			scheduleRevision: 1,
+			readyAt: PREWARM_AT,
+		});
+		expect(
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken: lease.leaseToken,
+				state: "live",
+				now: MEETING_AT,
+			}),
+		).toBe(true);
+
+		// She is in the room and talking. The presence deadline was about whether
+		// she ever showed up; it says nothing about how long the meeting may run.
+		expect(store.reapStrandedVoiceSchedules("2026-09-22T09:45:00.000Z")).toBe(
+			0,
+		);
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "live",
+			terminalReason: null,
+		});
+
+		// It still settles the moment the call actually ends.
+		store.setVoiceSessionState({
+			sessionId: SESSION_ID,
+			leaseToken: lease.leaseToken,
+			state: "ended",
+			reason: "she-left",
+			now: "2026-09-22T09:50:00.000Z",
+		});
+		expect(store.getVoiceSchedule(SCHEDULE_ID)).toMatchObject({
+			state: "ended",
+		});
+	});
+});

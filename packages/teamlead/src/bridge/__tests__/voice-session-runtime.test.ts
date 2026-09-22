@@ -594,18 +594,35 @@ describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
 		});
 	});
 
-	it("stops on the first configuration fault instead of burning the budget", async () => {
+	it("ends a demand naming the contract fault once its windows close unclaimed", async () => {
 		const requestWake = vi.fn(async () => "unavailable" as const);
-		await wakeRuntime(T0, requestWake).wakeTick();
-		await wakeRuntime(
-			new Date(Date.parse(T0) + 600_000).toISOString(),
-			requestWake,
-		).wakeTick();
-		// One observation is enough: nothing retries a disabled or drifted unit.
-		expect(requestWake).toHaveBeenCalledTimes(1);
+		// The host may be mid-migration with the old resident daemon still
+		// polling, so each refusal gets the same startup window an accepted
+		// command gets rather than killing the demand on the next 3s tick.
+		for (let index = 0; index < 4; index += 1) {
+			await wakeRuntime(
+				new Date(Date.parse(T0) + index * 60_000).toISOString(),
+				requestWake,
+			).wakeTick();
+		}
+		expect(requestWake).toHaveBeenCalledTimes(3);
 		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
 			state: "failed",
 			reason: "startup_config_invalid",
+		});
+	});
+
+	it("a probe timeout spends no budget at all", async () => {
+		const requestWake = vi.fn(async () => "unknown" as const);
+		for (let index = 0; index < 5; index += 1) {
+			await wakeRuntime(
+				new Date(Date.parse(T0) + index * 60_000).toISOString(),
+				requestWake,
+			).wakeTick();
+		}
+		expect(requestWake).toHaveBeenCalledTimes(5);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "desired",
 		});
 	});
 });

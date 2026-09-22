@@ -103,6 +103,26 @@ describe("voice launchd waker", () => {
 		await expect(waker.requestWake()).resolves.toBe("failed");
 	});
 
+	it("does not call a probe timeout a configuration fault", async () => {
+		const wake = vi.fn(async () => {});
+		const timeout = Object.assign(new Error("timeout"), {
+			killed: true,
+			signal: "SIGTERM",
+		});
+		const waker = new VoiceLaunchdWaker({
+			wake,
+			verify: async () => {
+				throw timeout;
+			},
+			now: () => 0,
+		});
+
+		// A slow host proves nothing about the installed contract; calling it a
+		// permanent fault would end the demand on a single slow probe.
+		await expect(waker.requestWake()).resolves.toBe("unknown");
+		expect(wake).not.toHaveBeenCalled();
+	});
+
 	it("separates a configuration fault from a flaky command", async () => {
 		const wake = vi.fn(async () => {});
 		const log = vi.fn();

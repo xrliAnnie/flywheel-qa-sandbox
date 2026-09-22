@@ -137,31 +137,6 @@ describe("StateStore voice launch budget", () => {
 		).toMatchObject({ status: "admitted" });
 	});
 
-	it("stops immediately on a permanent configuration failure", () => {
-		desired();
-		store.admitVoiceLaunchAttempt({
-			sessionId: SESSION_ID,
-			attemptId: "40000000-0000-4000-8000-000000000001",
-			now: T0,
-		});
-		store.recordVoiceLaunchResult({
-			attemptId: "40000000-0000-4000-8000-000000000001",
-			commandResult: "unavailable",
-			failureClass: "startup_config_invalid",
-			observedAt: at(10),
-		});
-		expect(
-			store.admitVoiceLaunchAttempt({
-				sessionId: SESSION_ID,
-				attemptId: "40000000-0000-4000-8000-000000000002",
-				now: at(600_000),
-			}),
-		).toMatchObject({
-			status: "exhausted",
-			failureClass: "startup_config_invalid",
-		});
-	});
-
 	it("a claim clears the budget, so a later session starts from zero", () => {
 		desired();
 		store.admitVoiceLaunchAttempt({
@@ -204,5 +179,94 @@ describe("StateStore voice launch budget", () => {
 		expect(
 			store.getVoiceLaunchBudget("10000000-0000-4000-8000-0000000000ff"),
 		).toMatchObject({ provenFailures: 0, attempts: 0 });
+	});
+});
+
+describe("StateStore launch budget during a migration window (FLY-2701 review R4)", () => {
+	it("gives a contract fault the same startup window instead of killing the demand at once", () => {
+		desired();
+		store.admitVoiceLaunchAttempt({
+			sessionId: SESSION_ID,
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			now: T0,
+		});
+		store.recordVoiceLaunchResult({
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			commandResult: "unavailable",
+			failureClass: "startup_config_invalid",
+			observedAt: at(10),
+		});
+		// While a host sits between the resident and the on-demand contract, the
+		// old daemon is still polling and can still claim this demand. Killing it
+		// on the next 3s tick would lose calls that work today.
+		expect(
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId: "40000000-0000-4000-8000-000000000002",
+				now: at(3_000),
+			}),
+		).toMatchObject({ status: "deferred" });
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "desired",
+		});
+	});
+
+	it("still exhausts, naming the contract fault, once the windows close unclaimed", () => {
+		desired();
+		let now = 0;
+		for (let index = 1; index <= 3; index += 1) {
+			const attemptId = `40000000-0000-4000-8000-00000000000${index}`;
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId,
+				now: at(now),
+			});
+			store.recordVoiceLaunchResult({
+				attemptId,
+				commandResult: "unavailable",
+				failureClass: "startup_config_invalid",
+				observedAt: at(now + 10),
+			});
+			now += 60_000;
+		}
+		expect(
+			store.admitVoiceLaunchAttempt({
+				sessionId: SESSION_ID,
+				attemptId: "40000000-0000-4000-8000-000000000004",
+				now: at(now),
+			}),
+		).toMatchObject({
+			status: "exhausted",
+			provenFailures: 3,
+			failureClass: "startup_config_invalid",
+		});
+	});
+
+	it("a claim inside the window keeps the demand alive", () => {
+		desired();
+		store.admitVoiceLaunchAttempt({
+			sessionId: SESSION_ID,
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			now: T0,
+		});
+		store.recordVoiceLaunchResult({
+			attemptId: "40000000-0000-4000-8000-000000000001",
+			commandResult: "unavailable",
+			failureClass: "startup_config_invalid",
+			observedAt: at(10),
+		});
+		// The resident daemon still running on the host claims it.
+		expect(
+			store.claimVoiceSession({
+				sessionId: SESSION_ID,
+				daemonBootId: "resident-boot",
+				now: at(5_000),
+				leaseTtlMs: 15_000,
+			}),
+		).toBeDefined();
+		expect(store.getVoiceLaunchBudget(SESSION_ID, at(600_000))).toMatchObject({
+			provenFailures: 0,
+			claimed: true,
+		});
 	});
 });

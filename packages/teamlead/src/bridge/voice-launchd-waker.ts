@@ -53,9 +53,21 @@ export async function verifyVoiceOnDemandContract(
  */
 export type VoiceWakeOutcome =
 	| "coalesced"
+	| "unknown"
 	| "accepted"
 	| "unavailable"
 	| "failed";
+
+/**
+ * FLY-2701 review R4: a probe killed on its own deadline says nothing about the
+ * installed contract. Treating a slow host as a permanent configuration fault
+ * would end a demand on one slow observation.
+ */
+function probeTimedOut(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	const candidate = error as { killed?: unknown; signal?: unknown };
+	return candidate.killed === true || typeof candidate.signal === "string";
+}
 
 export class VoiceLaunchdWaker {
 	private inFlight?: Promise<VoiceWakeOutcome>;
@@ -85,7 +97,13 @@ export class VoiceLaunchdWaker {
 			if (this.deps.verify) {
 				try {
 					await this.deps.verify();
-				} catch {
+				} catch (error) {
+					if (probeTimedOut(error)) {
+						(this.deps.log ?? console.warn)(
+							"voice launchd contract probe timed out",
+						);
+						return "unknown";
+					}
 					(this.deps.log ?? console.warn)("voice launchd contract unavailable");
 					return "unavailable";
 				}

@@ -4280,8 +4280,13 @@ export class StateStore {
 			const startupWindowClosed =
 				nowMs >=
 				Date.parse(String(row.requested_at)) + VOICE_LAUNCH_STARTUP_WINDOW_MS;
+			// FLY-2701 review R4: "the contract does not verify" is a reason, not a
+			// verdict about this demand. A host part-way through the resident →
+			// on-demand migration still has the old daemon polling, and it can
+			// still claim this session. Both an accepted command and a refused
+			// contract therefore get the same startup window before they count.
 			if (
-				result === "accepted" &&
+				(result === "accepted" || result === "unavailable") &&
 				!row.claim_observed_at &&
 				!claimed &&
 				startupWindowClosed
@@ -4327,21 +4332,14 @@ export class StateStore {
 			  } = { status: "admitted" };
 		this.db.transaction(() => {
 			const budget = this.getVoiceLaunchBudget(input.sessionId, input.now);
-			// A permanent configuration fault is not retried at all: installing or
-			// enabling a unit behind the operator's back is never this code's job.
-			if (budget.failureClass) {
+			if (budget.provenFailures >= VOICE_LAUNCH_MAX_PROVEN_FAILURES) {
+				// The failure class, when there is one, names *why* it ended — the
+				// unit is missing, disabled or drifted, and this code will never
+				// install or enable one behind the operator's back.
 				result = {
 					status: "exhausted",
 					provenFailures: budget.provenFailures,
 					failureClass: budget.failureClass,
-				};
-				return;
-			}
-			if (budget.provenFailures >= VOICE_LAUNCH_MAX_PROVEN_FAILURES) {
-				result = {
-					status: "exhausted",
-					provenFailures: budget.provenFailures,
-					failureClass: null,
 				};
 				return;
 			}
@@ -4379,13 +4377,16 @@ export class StateStore {
 				"SELECT requested_at FROM voice_launch_attempts WHERE attempt_id = ?",
 				[input.attemptId],
 			)[0]?.requested_at;
+			const windowed =
+				input.commandResult === "accepted" ||
+				input.commandResult === "unavailable";
 			const anchorMs =
-				input.commandResult === "accepted" && requestedAt
+				windowed && requestedAt
 					? Date.parse(String(requestedAt))
 					: Date.parse(input.observedAt);
 			const backoffMs =
 				input.backoffMs ??
-				(input.commandResult === "accepted"
+				(windowed
 					? VOICE_LAUNCH_STARTUP_WINDOW_MS
 					: VOICE_LAUNCH_RETRY_BACKOFF_MS);
 			this.db.run(
@@ -4458,7 +4459,12 @@ export class StateStore {
 				const sessionTerminal =
 					!session ||
 					["ended", "cancelled", "failed"].includes(session.state);
+				// The presence deadline asks "did she ever show up", not "how long
+				// may the meeting run". A live booking is settled by its own
+				// session ending — never by the clock, or a call that runs long
+				// would be marked failed while she is still talking.
 				const deadlinePassed =
+					schedule.state !== "live" &&
 					Date.parse(now) > Date.parse(schedule.presenceDeadlineAt);
 				if (!sessionTerminal && !deadlinePassed) continue;
 				const state =
