@@ -95,6 +95,22 @@ node packages/flywheel-comm/dist/index.js voice-session cancel-schedule \
 4. 竞态阴性对照：在退出临界点（最后一次空读之后）注入新 desired，证明**不丢**——保留两个 boot 的日志与同一个 desired→claim 的证据链。中途重启 Bridge 再做一次。
 5. 短命实例退出后 0/1/3/10/29 秒各再请求一次，记录 kickstart 受理时刻与真正 wrapper 入口时刻，证明 `ThrottleInterval=1` 的实际等待已计入 ≤5s 目标。⛔ 不能用假 launchctl 证明无 30s 尾延迟。
 
+## 4b. 部署时的常驻→按需迁移（复审 R3 HIGH，真机必验）
+
+本机目前仍跑**旧的常驻 plist**。本分支第一次部署时，`restart_voice_managed` 会：
+
+1. 先跑按需契约检查；已经是按需 → `registered`，不动进程。
+2. 不是按需、但**恰好是已知的旧常驻字节**（`RunAtLoad=true` + `KeepAlive` + `ThrottleInterval=30`）：
+   - 只读查 `${FLYWHEEL_STATE_DIR}/teamlead.db` 的 `voice_sessions` 是否有非终态行；
+   - **有通话 / 查不到** → `VOICE_RESTART_STATE=deferred`（`active_call_defers_on_demand_migration`
+     或 `voice_session_state_unknown_defers_migration`），**部署继续，不回滚**，下次部署再迁移；
+   - **确认无通话** → `bootout` 旧单元（旧常驻 daemon 随之停止）+ 装上按需 plist + `bootstrap`
+     + 重新验证契约 → `migrated`。
+3. 其它未知 drift → 仍然 `failed / on_demand_contract_mismatch`（保持原来的 fail-closed）。
+
+QA 要验：①部署日志里出现 `migrated`；②迁移后 `launchctl print` 是按需契约且 `state = not running`；
+③旧常驻进程确实没了；④**在通话中触发一次部署**，确认是 `deferred` 且通话没断、部署没回滚。
+
 ## 5. 失败与告警
 
 | 注入 | 期望 |
@@ -102,6 +118,9 @@ node packages/flywheel-comm/dist/index.js voice-session cancel-schedule \
 | kickstart 明确失败 | FLY-2693 工程频道真实回执 + 固定页；同一 episode 不刷屏 |
 | 单元缺失 / disabled | configuration unavailable；**不得**偷偷安装或 enable |
 | 进程起来但从不 claim | 3 次「已受理但无 claim」后预算耗尽，会话 `failed/startup_retry_exhausted`，停止唤醒并告警 |
+| 单元 disabled / 字节 drift（契约检查失败） | **第一次**就记 `startup_config_invalid` 并停止重试，不烧三个启动窗口 |
+| 预约会议到点前一直 warming | 阴性：**不得**出现 `startup_not_ready`（已报 ready 的会话豁免到 presence deadline） |
+| 取消一场已在预热的会议 | 关联 session 同步取消/转 ending；不得继续唤醒主机、不得进房静音等到旧 deadline |
 | 起来后进房失败 | 现有失败路径告警 |
 | 无需求休眠 | 阴性：不告警 |
 
