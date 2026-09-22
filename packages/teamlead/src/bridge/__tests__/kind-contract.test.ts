@@ -81,6 +81,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"flag_scan_handoff",
 	"flag_scan_no_clock",
 	"shuttle_unit_unhealthy",
+	"voice_daemon_unhealthy",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 

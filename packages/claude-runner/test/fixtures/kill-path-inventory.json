@@ -1248,6 +1248,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/__tests__/voice-health-startup-spool-reader.test.ts:process.kill(claim.handle.helperPid!, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/__tests__/voice-health-startup-spool-reader.test.ts",
+		"code": "process.kill(claim.handle.helperPid!, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:\"capture-pane\", \"display-message\", \"has-session\", \"kill-window\",#1",
 		"path": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
 		"code": "\"capture-pane\", \"display-message\", \"has-session\", \"kill-window\",",

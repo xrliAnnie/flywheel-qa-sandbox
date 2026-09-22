@@ -1406,6 +1406,15 @@ jobs:
           bash scripts/__tests__/launchd-census-wiring.test.sh
           bash scripts/__tests__/fly1814-operator-tools.test.sh
 
+      # FLY-2693: helper and shell delivery suites are not discovered by Vitest.
+      # Keep source durability, startup spool, and alert receipts explicit.
+      # Step seconds: ~35 locally (helper ~17s + spool + route shell suite).
+      - name: Test — FLY-2693 voice health source
+        run: |
+          python3 scripts/__tests__/voice-health.test.py
+          python3 scripts/__tests__/voice-health-startup-spool.test.py
+          bash scripts/__tests__/voice-health-alert-route.test.sh
+
       # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
       # while Bridge default selection is explicit on both legacy upgrades and
       # fresh setup. Hermetic registries/HOMEs; no production config mutation.

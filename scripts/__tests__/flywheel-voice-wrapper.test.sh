@@ -50,6 +50,8 @@ trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/repo/scripts/lib" "$ROOT/repo/packages/voice-codex/dist" \
   "$ROOT/state" "$ROOT/home/.local/bin"
 if [[ -f "$WRAPPER" ]]; then cp "$WRAPPER" "$ROOT/repo/scripts/flywheel-voice-wrapper.sh"; fi
+cp "$REPO_ROOT/scripts/lib/voice-health-startup-spool.py" \
+  "$ROOT/repo/scripts/lib/voice-health-startup-spool.py"
 cat > "$ROOT/repo/scripts/lib/host-config.sh" <<'EOF'
 host_config_load() { return 0; }
 EOF
@@ -114,6 +116,8 @@ fi
 mkdir -p "$ROOT/bootstrap/scripts/lib" "$ROOT/configured-repo/packages/voice-codex/dist" \
   "$ROOT/configured-state"
 cp "$WRAPPER" "$ROOT/bootstrap/scripts/flywheel-voice-wrapper.sh"
+cp "$REPO_ROOT/scripts/lib/voice-health-startup-spool.py" \
+  "$ROOT/bootstrap/scripts/lib/voice-health-startup-spool.py"
 cat > "$ROOT/bootstrap/scripts/lib/host-config.sh" <<'EOF'
 host_config_load() {
   export FLYWHEEL_DIR="${FLYWHEEL_DIR:-$TEST_ROOT/configured-repo}"
@@ -141,6 +145,7 @@ else
 fi
 
 : > "$ROOT/node-calls"
+rm -rf "$ROOT/home/.flywheel/voice-startup-spool"
 CONFIG_RC=0
 env -i TEST_ROOT="$ROOT" TEST_NODE_FAIL_CHECK=1 HOME="$ROOT/home" PATH="/usr/bin:/bin" \
 FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
@@ -160,6 +165,20 @@ if [[ ! -e "$ROOT/inherited-variable-leaked" ]] \
   pass "wrapper subprocesses scrub inherited variables and record only the expected local alert"
 else
   fail "wrapper environment isolation or local alert receipt"
+fi
+if python3 - "$ROOT/home/.flywheel/voice-startup-spool" <<'PY'
+import json, pathlib, sys
+files = list(pathlib.Path(sys.argv[1]).glob('*.json'))
+assert len(files) == 1
+payload = json.loads(files[0].read_text())
+assert payload['reasonClass'] == 'startup_config_invalid'
+assert payload['operation'] == 'startup'
+assert set(payload) == {'schemaVersion', 'startupAttemptId', 'observedAt', 'reasonClass', 'operation'}
+PY
+then
+  pass "invalid daemon config records one closed durable startup spool event"
+else
+  fail "invalid daemon config startup spool"
 fi
 
 : > "$ROOT/node-calls"

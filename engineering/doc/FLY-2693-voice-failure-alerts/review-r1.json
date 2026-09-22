@@ -1,0 +1,156 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "65efd0ec-6167-4c80-8f38-9a7e4080e9fa",
+  "round": 1,
+  "findings": [
+    {
+      "id": "idle-success-cancels-session-episode",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 68,
+      "title": "§3 阈值及恢复 的 idle_success 关闭规则会取消 §3 需求门刚刚开出的会话不可用告警",
+      "detail": "两条规范语句直接冲突，且冲突方向是「告警被静默取消」。plan.md:58（防止失败后自动消警）规定 session 故障「立即记录确定的会话不可用事件，不等三个完整会话失败」，并把未满足的 attempt 锁存到「同需求后继会话有完整成功，或可信控制面明确取消」。但 plan.md:68 无条件写着「一次完整 idle_success 或正常 session_ended 原子清 failureStreak/firstFailureAt、记成功、关 episode 和取消尚未发送的通知」，其 exclusion 列表（session_failed / GET 单独成功 / alive / 重启 / 旧 generation 成功）没有为会话不可用 episode 留豁免；按文档顺序 :68 还在 :58 之后，实现者会把它当作更靠后的细化规则。\n\n代码侧核实这不是理论竞态而是必然发生：StateStore.ts:3249 `getDesiredVoiceSession()` 只取 `state = 'desired'`；daemon 通过 StateStore.ts:3492 claim 把行改成 'claimed'，会话创建失败后 daemon.ts:334-345 调 `setState(..., 'failed', reason)` 并 `return reason`。于是 run() 循环（daemon.ts:235-247）立刻进入下一圈，`desired()` 必然返回 null，走 daemon.ts:306-310 的 `sleep(idlePollMs=5000)` 后 `return 'idle'`。也就是每一次会话级故障之后约 5 秒内必定产生一次 idle_success。\n\n失败场景：founder 进会 → provisioning 完成 → daemon claim → createSession 抛错（例如 lead voice token 身份校验失败）→ 按 :58 立即铸出 voice_daemon_unhealthy 意图 → 异步 worker execFile 调 scripts/lead-alert.sh（40KB bash + Discord REST，实测量级 0.5–3s）→ 与此同时 daemon 在 ~5s 后写入 idle_success → 按 :68「关 episode 和取消尚未发送的通知」→ 意图被标记 cancelled_recovered，工程频道一条都不发，固定页也移出活动区。每次会话都失败的主机会稳定落在这条路径上，正是本单要消灭的「语音静默失败」。\n\n需要的修改：把 :68 的清除规则显式限定到依赖/空转类 episode（desired/poll 失败），并写明 idle_success 不得关闭 session-unavailable episode、不得取消其未发送意图；或改写 :58 的锁存条件使其在文本上覆盖 :68。请在 plan 里明确哪一条优先，并在 §6.2/§6.5 增加一条针对性回归：session_failed 之后紧跟 idle_success，意图仍必须送达且 episode 保持 open。",
+      "findingKey": "idle-success-cancels-session-episode"
+    },
+    {
+      "id": "demand-revision-manual-increment-fails-open-to-dormant",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 50,
+      "title": "手工递增的 voice demand revision 散落在 9+ 个 voice_sessions 状态写点，漏一处即把真故障显示成「正常休眠」",
+      "detail": "plan.md:50 把需求门的新鲜度建立在「新增 StateStore voice demand revision（每个影响非终态集合的事务递增）」上，并规定 helper「仅接受更高 revision，重复幂等、较旧拒绝」。计划既没有枚举需要递增的事务，也没有提出任何结构性闭包保证。\n\n仓库实测：StateStore.ts 中会改变 voice_sessions.state（即改变 provisioning/desired/claimed/warming/live/ending 非终态集合）的语句至少有 9 处独立裸 SQL —— 3308(INSERT)、3402(provisioner step machine 的动态 assignments UPDATE)、3432、3492(claim)、3583(setState)、3625/3635(text-stop)、3834、3876(lease 过期/reaper)。其中 3402 正是 provisioning→desired 的迁移，也就是「需求诞生」那一刻，而它写的是 `SET ${assignments.join(\", \")}` 这种动态拼装语句，是最容易在实现时被漏掉的一处。\n\n失败场景：实现者在 claim/setState 上加了 revision 递增，漏掉 3402。founder 开会 → provisioner 把会话推进到 desired，非终态集合从 {} 变成 {s1}，但 revision 没有变 → Bridge 3s tick 读到新集合 + 旧 revision → helper 按 :50 的「重复幂等」把这份快照当成重复输入丢弃 → 健康源里 demandState 保持 none → 按 plan.md:52「demand=none：没有 PID、旧 lastSuccess、未启动 producer 都不触发 stale，页面『无会话需求/正常休眠』」→ daemon 从未被唤起、会话永远不 live，而固定页显示正常休眠、工程频道零告警。这与今天 55 小时无人发现的现状完全等价，且 plan.md:54 的 unknown 兜底也救不了（Bridge 读 StateStore 成功，不满足 unknown 的任一条件）。\n\n方向性问题是这个 revision 是「写侧手工维护的不变量」，而它的失效方向是 fail-open 到健康。建议改为读侧派生（getVoiceDemandSnapshot 直接由非终态集合查询计算一个单调标识，例如 max(updated_at)+集合基数/内容 hash，或 Bridge 本地读计数器），使漏改写点在结构上不可能；若坚持手工列，请在 plan 中逐条枚举上述 9 个语句，并在 §6.5 增加一个类似 bridge-child-process-census 的闭包测试：扫描 StateStore 中所有 voice_sessions 的 state 写语句，断言每一处都在 revision 递增事务内。",
+      "findingKey": "demand-revision-manual-increment-fails-open-to-dormant"
+    },
+    {
+      "id": "lastprogressat-spawn-rate-on-realtime-path",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 65,
+      "title": "通话期间每 4 秒一次 lease renew 都写 lastProgressAt，等于实时音频进程上每分钟 ~15 次 Python 子进程 spawn，计划未规定节流",
+      "detail": "plan.md:65 规定「每次成功 lease renew 写 lastProgressAt」。config.ts:87 的 FLYWHEEL_VOICE_LEASE_RENEW_MS 缺省 4000，即活跃通话中每 4 秒一次；plan.md:44 规定所有健康写入都经 `scripts/lib/voice-health.py` 的异步 execFile（单次 deadline 500ms、单飞串行队列）。4 秒间隔远大于 500ms deadline，所以 :44 的「正常结果允许合并尚未写入的健康快照」几乎不会命中，实际就是每分钟 ~15 次 python3 解释器启动 + SQLite 事务，持续整场通话。\n\n这与计划自己的两条约束不一致：plan.md 第 8 节「不能阻塞实时音频」，以及 plan.md:42 对 changes 表定的「健康变化最多 30 秒一条」。同一份设计对旁路记录限了 30s 节流，却对实时路径上的 lastProgressAt 放任 4s。\n\n失败场景：一场 40 分钟会议产生约 600 次子进程 spawn；在本单怀疑的「主机负载/事件循环延迟」条件下（research.md 列为未判定原因之一），这些 spawn 本身会加剧事件循环延迟，反过来推高 2s HTTP timeout 的命中率——即观测手段污染被观测量。建议为 lastProgressAt 单独规定节流下限（例如 ≥15s 或与 60 秒 stale 阈值挂钩取 1/3），并在 §6.2 的压力测试里断言一场 N 分钟通话的 helper 调用次数上界。",
+      "findingKey": "lastprogressat-spawn-rate-on-realtime-path"
+    },
+    {
+      "id": "observation-seq-scope-ambiguous-vs-projector-cursor",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 89,
+      "title": "observationSeq 是 per-source 还是 per-generation 没有写死，取后者会让 daemon 每次重启后固定页静默冻结",
+      "detail": "plan.md:46 写「每次 result 绑定 generation + 递增 seq；旧 generation/旧 seq 拒绝」，读起来 seq 是绑在 generation 上的；plan.md:89 又写投影「按 sourceId+seq 单调应用」，读起来 seq 是 per-source 全局的。两处对同一个字段给了不相容的作用域，而计划没有一句话钉死它。\n\n失败场景：实现者按 :46 让 seq 随每个新 generation 从 0 重新计数。daemon 重启（launchd ThrottleInterval 30 下这会频繁发生）→ register-boot 建新 generation，seq 回到 0 → Bridge 侧 voice_health_projection/cursor 按 :89 的 sourceId+seq 单调规则，认为 seq 0..N 全是已应用过的旧记录，全部丢弃 → StateStore 投影冻结在重启前那一刻 → 固定页继续展示重启前的状态，既不报 stale（因为最后一条记录的时间戳是旧的但 cursor 认为没有新数据可应用）也不更新。这类「页面看着正常、其实早已停止更新」正是本单要消灭的形态。\n\n建议：明确 observationSeq 在 sourceId 范围内全局单调、跨 generation 不重置（generation 只做写入准入判断），并在 §6.5 的 voice-health-projector.test.ts 里加一条「跨两个 generation 的记录按 seq 连续应用」的用例。",
+      "findingKey": "observation-seq-scope-ambiguous-vs-projector-cursor"
+    },
+    {
+      "id": "rendered-reason-not-bound-to-closed-vocabulary",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 91,
+      "title": "固定页要展示的 reason 没有绑定到封闭词表，而现有 runOnce 的 reason 就是原始 Error.message",
+      "detail": "plan.md:18 明确禁止记录「任意 error.message」，并要求「有限 errorClass/causeCode」。但 plan.md:39 的 health 表只写了 `reason/operation` 这一个字段名，plan.md:91 又规定固定页要「展示……原因」。计划没有一句话说页面上那个 reason 必须取自封闭枚举。\n\n代码侧现状使这个缺口很容易被踩：daemon.ts:335 `const reason = (error as Error).message || \"session_create_failed\"`，daemon.ts:394-398 也是 `(error as Error).message || \"session_failed\"`，这个字符串今天已经原样发给 Bridge 的 setState。实现者最省事的做法就是把同一个 reason 写进健康记录。\n\n失败场景：fetch 失败时 Node 的 error message / cause 可能带上完整 URL；配置类错误可能带上绝对路径。这些经 voiceHealth.v1 进入 epic-page，再由 epic-page-publisher 发布到 hosted URL。plan.md:93 只承诺「派生文本 HTML 转义」——转义只防 XSS，不防内容泄露，而 §1 的非协商项要求错误信息不得泄露敏感数据或内部路径。\n\n建议：在 §3 的表里把该字段拆成 `reasonClass`（封闭枚举，唯一进入页面与频道文案的值）与可选的仅本机 stderr 的诊断细节，并在 §6.5 加一条断言：任意注入的含 token/绝对路径的 Error.message 都不会出现在 projection/HTML/Markdown 任一产物里。",
+      "findingKey": "rendered-reason-not-bound-to-closed-vocabulary"
+    },
+    {
+      "id": "no-repage-policy-for-long-running-episode",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 69,
+      "title": "一个 episode 只发一次频道消息且永不复发，对「55 小时无人发现」这个动机场景保险太薄",
+      "detail": "plan.md:69 规定「重复失败不逐圈刷频道，无周期性再发。长时间故障由固定页持续展示」。防噪音的意图正确，但配合 plan.md:68「恢复必须是一次完整成功」，一台彻底坏掉的 daemon 永远等不到恢复，于是整个多日故障只对应频道里的一条消息。\n\n失败场景：与本单 issue 描述的现场同构——故障在 T0 发一条消息，落在工程频道里被其它流量顶走（memory 里记过 founder 频道告警噪音的历史），此后 55 小时零提醒；固定页虽然一直亮着活动故障，但没有任何机制要求有人去看它。交付的可观测性相对现状确有提升，但对「长时间静默」这一条并没有形成硬保障。\n\n建议：给 open episode 加一条老化再页策略（例如 open 超过 N 小时后每日一条、文案里带 episode 年龄与首次发生时间，仍走同一 intentId 家族以便去重审计），或至少在 plan 里显式记为已知限制并说明由谁负责巡检固定页。",
+      "findingKey": "no-repage-policy-for-long-running-episode"
+    },
+    {
+      "id": "two-writer-sqlite-no-locking-policy",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 44,
+      "title": "daemon 与 Bridge 双进程写同一个 SQLite 源，但未规定 WAL / busy_timeout / 争用策略，500ms deadline 下高负载时会退化成 observation_unavailable",
+      "detail": "计划让两个进程写同一个 observations.sqlite：daemon 走 plan.md:44 的 execFile（单次 deadline 500ms），Bridge 走 plan.md:50 的 `record-demand` 以及 plan.md:85 的「stale 评估及通知意图写入走同一 helper 事务」。plan.md:34 只规定了路径安全、权限、参数绑定 SQL 和 schema fail-closed，对并发没有任何约定（journal 模式、busy_timeout、重试/退避、写事务粒度都缺席）。\n\n失败场景：Bridge tick 正持有写事务（record-demand 或 intent 写入），daemon 同一时刻提交一次结果 → sqlite3 默认 busy_timeout 为 0，立即 `database is locked` → 超出 500ms deadline → 按 plan.md:44 记为 health_observation_unavailable → 该次观测结果丢失、重试推到下一圈。争用概率与主机负载正相关，而主机负载正是 research.md 里列为未判定的疑似根因条件——也就是最需要观测的时候观测质量最先塌。\n\n建议：在 §3 写明 journal_mode=WAL、一个明确的 busy_timeout（需小于 500ms deadline 并留出重试余量）、写事务保持最小粒度，并在 §6.2 的 helper Python 测试里加一条双写者争用用例，断言争用下不产生伪 sent、不误清故障、且结果最终落库。",
+      "findingKey": "two-writer-sqlite-no-locking-policy"
+    },
+    {
+      "id": "child-process-census-execfile-entry-wrong",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 75,
+      "title": "§4 说要给 child-process-census「新增 execFile 入口」，但该 census 不扫描异步 execFile，加条目会直接把测试打红",
+      "detail": "plan.md:75 把 child-process-census 列为需要同步的消费者并注明「新增 execFile 入口」。核实 packages/teamlead/src/__tests__/bridge-child-process-census.test.ts:23-26，它的 PATTERNS 只有三条：`execFileSync|spawnSync|execSync`、`withSyncOpMarker|markSyncOp`、`spawn\\(`。异步 `execFile(` 不匹配任何一条，因此 sweep 不会为新文件产出条目；而该测试第 86 行断言 `expect(actual).toEqual(expected)`，即 manifest 必须与 sweep 结果逐项相等。\n\n失败场景：实现者照 plan 给 packages/voice-codex/src/health.ts 在 child-process-census.json 里加一行 → sweep 里没有对应项 → `actual` 与 `expected` 不等 → 该测试红，且错误信息指向 manifest 漂移而非真实问题，白耗一轮排查。\n\n实际结论有两种，plan 应当择一写清：若确定用异步 execFile，则 census 不需要也不允许新增条目（并可顺带说明该 spawn 因此不在 census 的可见范围内）；若希望这次 spawn 被 census 记账，则需要相应扩展 PATTERNS —— 那属于改动 FLY-2331 的守卫范围，应单独说明。",
+      "findingKey": "child-process-census-execfile-entry-wrong"
+    },
+    {
+      "id": "wrapper-early-failloud-has-no-state-root",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 83,
+      "title": "§4 声称「wrapper 现有 fail_loud 均覆盖」，但最早两道 fail_loud 发生在 FLYWHEEL_STATE_DIR 解析之前，拿不到受信状态根来写 startup 事件",
+      "detail": "plan.md:83 写「wrapper 现有 fail_loud、cli 配置/锁/顶层 fatal 均覆盖」，plan.md:46 又规定启动拒绝要「以独立 startupAttemptId 写 startup 事件」，而 plan.md:34 规定健康源路径「由受信状态根解析为 state/voice-health/observations.sqlite」。\n\n核实 scripts/flywheel-voice-wrapper.sh：第 21-25 行（lib/host-config.sh 缺失 → voice_config_unavailable）和第 28-32 行（host_config_load 失败 → voice_config_invalid）这两道 fail_loud 都在第 35 行 `FLYWHEEL_STATE_DIR=\"${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}\"` 之前触发；已安装的 com.flywheel.voice.plist 没有 EnvironmentVariables，所以此刻 FLYWHEEL_STATE_DIR 是空的。\n\n失败场景：host.json 损坏 → wrapper 在第 28 行退出（exit 0，KeepAlive SuccessfulExit=false 因此 launchd 也不会重拉）→ 按计划本应写入的 startup 事件写不成 → 频道与固定页都拿不到这次启动拒绝，语音长期不可用而无人知晓。\n\n建议：要么在 wrapper 里把状态根解析提前到第一道 fail_loud 之前（注意 host_config_load 本身可能就是状态根的来源，需说明降级顺序），要么在 plan 里把这两道最早的 gate 显式记为「仅 meta-alert、不进健康源」的已知空白，而不是笼统写成「均覆盖」。",
+      "findingKey": "wrapper-early-failloud-has-no-state-root"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "lastprogressat-spawn-rate-on-realtime-path",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 65,
+      "title": "通话期间每 4 秒一次 lease renew 都写 lastProgressAt，等于实时音频进程上每分钟 ~15 次 Python 子进程 spawn，计划未规定节流",
+      "detail": "plan.md:65 规定「每次成功 lease renew 写 lastProgressAt」。config.ts:87 的 FLYWHEEL_VOICE_LEASE_RENEW_MS 缺省 4000，即活跃通话中每 4 秒一次；plan.md:44 规定所有健康写入都经 `scripts/lib/voice-health.py` 的异步 execFile（单次 deadline 500ms、单飞串行队列）。4 秒间隔远大于 500ms deadline，所以 :44 的「正常结果允许合并尚未写入的健康快照」几乎不会命中，实际就是每分钟 ~15 次 python3 解释器启动 + SQLite 事务，持续整场通话。\n\n这与计划自己的两条约束不一致：plan.md 第 8 节「不能阻塞实时音频」，以及 plan.md:42 对 changes 表定的「健康变化最多 30 秒一条」。同一份设计对旁路记录限了 30s 节流，却对实时路径上的 lastProgressAt 放任 4s。\n\n失败场景：一场 40 分钟会议产生约 600 次子进程 spawn；在本单怀疑的「主机负载/事件循环延迟」条件下（research.md 列为未判定原因之一），这些 spawn 本身会加剧事件循环延迟，反过来推高 2s HTTP timeout 的命中率——即观测手段污染被观测量。建议为 lastProgressAt 单独规定节流下限（例如 ≥15s 或与 60 秒 stale 阈值挂钩取 1/3），并在 §6.2 的压力测试里断言一场 N 分钟通话的 helper 调用次数上界。",
+      "findingKey": "lastprogressat-spawn-rate-on-realtime-path"
+    },
+    {
+      "id": "observation-seq-scope-ambiguous-vs-projector-cursor",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 89,
+      "title": "observationSeq 是 per-source 还是 per-generation 没有写死，取后者会让 daemon 每次重启后固定页静默冻结",
+      "detail": "plan.md:46 写「每次 result 绑定 generation + 递增 seq；旧 generation/旧 seq 拒绝」，读起来 seq 是绑在 generation 上的；plan.md:89 又写投影「按 sourceId+seq 单调应用」，读起来 seq 是 per-source 全局的。两处对同一个字段给了不相容的作用域，而计划没有一句话钉死它。\n\n失败场景：实现者按 :46 让 seq 随每个新 generation 从 0 重新计数。daemon 重启（launchd ThrottleInterval 30 下这会频繁发生）→ register-boot 建新 generation，seq 回到 0 → Bridge 侧 voice_health_projection/cursor 按 :89 的 sourceId+seq 单调规则，认为 seq 0..N 全是已应用过的旧记录，全部丢弃 → StateStore 投影冻结在重启前那一刻 → 固定页继续展示重启前的状态，既不报 stale（因为最后一条记录的时间戳是旧的但 cursor 认为没有新数据可应用）也不更新。这类「页面看着正常、其实早已停止更新」正是本单要消灭的形态。\n\n建议：明确 observationSeq 在 sourceId 范围内全局单调、跨 generation 不重置（generation 只做写入准入判断），并在 §6.5 的 voice-health-projector.test.ts 里加一条「跨两个 generation 的记录按 seq 连续应用」的用例。",
+      "findingKey": "observation-seq-scope-ambiguous-vs-projector-cursor"
+    },
+    {
+      "id": "rendered-reason-not-bound-to-closed-vocabulary",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 91,
+      "title": "固定页要展示的 reason 没有绑定到封闭词表，而现有 runOnce 的 reason 就是原始 Error.message",
+      "detail": "plan.md:18 明确禁止记录「任意 error.message」，并要求「有限 errorClass/causeCode」。但 plan.md:39 的 health 表只写了 `reason/operation` 这一个字段名，plan.md:91 又规定固定页要「展示……原因」。计划没有一句话说页面上那个 reason 必须取自封闭枚举。\n\n代码侧现状使这个缺口很容易被踩：daemon.ts:335 `const reason = (error as Error).message || \"session_create_failed\"`，daemon.ts:394-398 也是 `(error as Error).message || \"session_failed\"`，这个字符串今天已经原样发给 Bridge 的 setState。实现者最省事的做法就是把同一个 reason 写进健康记录。\n\n失败场景：fetch 失败时 Node 的 error message / cause 可能带上完整 URL；配置类错误可能带上绝对路径。这些经 voiceHealth.v1 进入 epic-page，再由 epic-page-publisher 发布到 hosted URL。plan.md:93 只承诺「派生文本 HTML 转义」——转义只防 XSS，不防内容泄露，而 §1 的非协商项要求错误信息不得泄露敏感数据或内部路径。\n\n建议：在 §3 的表里把该字段拆成 `reasonClass`（封闭枚举，唯一进入页面与频道文案的值）与可选的仅本机 stderr 的诊断细节，并在 §6.5 加一条断言：任意注入的含 token/绝对路径的 Error.message 都不会出现在 projection/HTML/Markdown 任一产物里。",
+      "findingKey": "rendered-reason-not-bound-to-closed-vocabulary"
+    },
+    {
+      "id": "no-repage-policy-for-long-running-episode",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 69,
+      "title": "一个 episode 只发一次频道消息且永不复发，对「55 小时无人发现」这个动机场景保险太薄",
+      "detail": "plan.md:69 规定「重复失败不逐圈刷频道，无周期性再发。长时间故障由固定页持续展示」。防噪音的意图正确，但配合 plan.md:68「恢复必须是一次完整成功」，一台彻底坏掉的 daemon 永远等不到恢复，于是整个多日故障只对应频道里的一条消息。\n\n失败场景：与本单 issue 描述的现场同构——故障在 T0 发一条消息，落在工程频道里被其它流量顶走（memory 里记过 founder 频道告警噪音的历史），此后 55 小时零提醒；固定页虽然一直亮着活动故障，但没有任何机制要求有人去看它。交付的可观测性相对现状确有提升，但对「长时间静默」这一条并没有形成硬保障。\n\n建议：给 open episode 加一条老化再页策略（例如 open 超过 N 小时后每日一条、文案里带 episode 年龄与首次发生时间，仍走同一 intentId 家族以便去重审计），或至少在 plan 里显式记为已知限制并说明由谁负责巡检固定页。",
+      "findingKey": "no-repage-policy-for-long-running-episode"
+    },
+    {
+      "id": "two-writer-sqlite-no-locking-policy",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 44,
+      "title": "daemon 与 Bridge 双进程写同一个 SQLite 源，但未规定 WAL / busy_timeout / 争用策略，500ms deadline 下高负载时会退化成 observation_unavailable",
+      "detail": "计划让两个进程写同一个 observations.sqlite：daemon 走 plan.md:44 的 execFile（单次 deadline 500ms），Bridge 走 plan.md:50 的 `record-demand` 以及 plan.md:85 的「stale 评估及通知意图写入走同一 helper 事务」。plan.md:34 只规定了路径安全、权限、参数绑定 SQL 和 schema fail-closed，对并发没有任何约定（journal 模式、busy_timeout、重试/退避、写事务粒度都缺席）。\n\n失败场景：Bridge tick 正持有写事务（record-demand 或 intent 写入），daemon 同一时刻提交一次结果 → sqlite3 默认 busy_timeout 为 0，立即 `database is locked` → 超出 500ms deadline → 按 plan.md:44 记为 health_observation_unavailable → 该次观测结果丢失、重试推到下一圈。争用概率与主机负载正相关，而主机负载正是 research.md 里列为未判定的疑似根因条件——也就是最需要观测的时候观测质量最先塌。\n\n建议：在 §3 写明 journal_mode=WAL、一个明确的 busy_timeout（需小于 500ms deadline 并留出重试余量）、写事务保持最小粒度，并在 §6.2 的 helper Python 测试里加一条双写者争用用例，断言争用下不产生伪 sent、不误清故障、且结果最终落库。",
+      "findingKey": "two-writer-sqlite-no-locking-policy"
+    },
+    {
+      "id": "child-process-census-execfile-entry-wrong",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 75,
+      "title": "§4 说要给 child-process-census「新增 execFile 入口」，但该 census 不扫描异步 execFile，加条目会直接把测试打红",
+      "detail": "plan.md:75 把 child-process-census 列为需要同步的消费者并注明「新增 execFile 入口」。核实 packages/teamlead/src/__tests__/bridge-child-process-census.test.ts:23-26，它的 PATTERNS 只有三条：`execFileSync|spawnSync|execSync`、`withSyncOpMarker|markSyncOp`、`spawn\\(`。异步 `execFile(` 不匹配任何一条，因此 sweep 不会为新文件产出条目；而该测试第 86 行断言 `expect(actual).toEqual(expected)`，即 manifest 必须与 sweep 结果逐项相等。\n\n失败场景：实现者照 plan 给 packages/voice-codex/src/health.ts 在 child-process-census.json 里加一行 → sweep 里没有对应项 → `actual` 与 `expected` 不等 → 该测试红，且错误信息指向 manifest 漂移而非真实问题，白耗一轮排查。\n\n实际结论有两种，plan 应当择一写清：若确定用异步 execFile，则 census 不需要也不允许新增条目（并可顺带说明该 spawn 因此不在 census 的可见范围内）；若希望这次 spawn 被 census 记账，则需要相应扩展 PATTERNS —— 那属于改动 FLY-2331 的守卫范围，应单独说明。",
+      "findingKey": "child-process-census-execfile-entry-wrong"
+    },
+    {
+      "id": "wrapper-early-failloud-has-no-state-root",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 83,
+      "title": "§4 声称「wrapper 现有 fail_loud 均覆盖」，但最早两道 fail_loud 发生在 FLYWHEEL_STATE_DIR 解析之前，拿不到受信状态根来写 startup 事件",
+      "detail": "plan.md:83 写「wrapper 现有 fail_loud、cli 配置/锁/顶层 fatal 均覆盖」，plan.md:46 又规定启动拒绝要「以独立 startupAttemptId 写 startup 事件」，而 plan.md:34 规定健康源路径「由受信状态根解析为 state/voice-health/observations.sqlite」。\n\n核实 scripts/flywheel-voice-wrapper.sh：第 21-25 行（lib/host-config.sh 缺失 → voice_config_unavailable）和第 28-32 行（host_config_load 失败 → voice_config_invalid）这两道 fail_loud 都在第 35 行 `FLYWHEEL_STATE_DIR=\"${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}\"` 之前触发；已安装的 com.flywheel.voice.plist 没有 EnvironmentVariables，所以此刻 FLYWHEEL_STATE_DIR 是空的。\n\n失败场景：host.json 损坏 → wrapper 在第 28 行退出（exit 0，KeepAlive SuccessfulExit=false 因此 launchd 也不会重拉）→ 按计划本应写入的 startup 事件写不成 → 频道与固定页都拿不到这次启动拒绝，语音长期不可用而无人知晓。\n\n建议：要么在 wrapper 里把状态根解析提前到第一道 fail_loud 之前（注意 host_config_load 本身可能就是状态根的来源，需说明降级顺序），要么在 plan 里把这两道最早的 gate 显式记为「仅 meta-alert、不进健康源」的已知空白，而不是笼统写成「均覆盖」。",
+      "findingKey": "wrapper-early-failloud-has-no-state-root"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

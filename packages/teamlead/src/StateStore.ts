@@ -212,6 +212,7 @@ import {
 	type RefreshReason,
 	type ShuttleDeploymentUnit,
 	type ShuttleDeploymentView,
+	type VoiceHealthView,
 } from "./epic-page/model.js";
 import { EPIC_RESIDUAL_UNAVAILABLE_TOKENS } from "./epic-page/residual.js";
 import {
@@ -2548,6 +2549,13 @@ export interface ShuttleProjectionApplyResult {
 	changedProjects: string[];
 }
 
+export interface VoiceHealthProjectionCursorRead {
+	sourceId: string | null;
+	cursor: number;
+	status: VoiceHealthView["sourceStatus"];
+	lastOkAt: string | null;
+}
+
 export interface EpicPageRenderReceiptRow {
 	version: number;
 	generated_at: string;
@@ -2723,6 +2731,154 @@ export interface VoiceSessionReservation {
 	credentialTier: VoiceCredentialTier;
 	createdAt: string;
 }
+
+export type VoiceHealthDemandEventKind =
+	| "required"
+	| "failed"
+	| "cancelled"
+	| "normal_completed";
+
+export interface VoiceHealthDemandIdentity {
+	demandId: string;
+	attemptId: string;
+	projectId: string;
+	meetingId?: string;
+}
+
+export interface VoiceHealthDemandEvent {
+	eventSeq: number;
+	mutation: "insert" | "update" | "delete";
+	eventKind: VoiceHealthDemandEventKind;
+	demandId: string;
+	attemptId: string;
+	projectId: string;
+	meetingId?: string;
+	previousState: VoiceSessionState | null;
+	state: VoiceSessionState | null;
+	observedAt: string;
+	reasonClass?: string;
+	cancelRequested: boolean;
+	endingStarted: boolean;
+	ended: boolean;
+}
+
+export interface VoiceHealthDemandSnapshot {
+	demandSourceId: string;
+	revision: number;
+	eventHighWater: number;
+	afterCursor: number;
+	nextCursor: number;
+	hasMore: boolean;
+	gap: boolean;
+	sourceStatus:
+		| "available"
+		| "trigger_invalid"
+		| "change_gap"
+		| "demand_overflow";
+	state: "none" | "required" | "unknown";
+	observedAt: string;
+	digest: string;
+	demandIdentities: VoiceHealthDemandIdentity[];
+	events: VoiceHealthDemandEvent[];
+}
+
+const VOICE_HEALTH_DEMAND_TRIGGER_NAMES = [
+	"voice_health_demand_sessions_insert",
+	"voice_health_demand_sessions_delete",
+	"voice_health_demand_sessions_update",
+] as const;
+
+function voiceHealthReasonClassSql(row: "OLD" | "NEW"): string {
+	return `CASE
+		WHEN ${row}.state != 'failed' THEN NULL
+		WHEN ${row}.reason IN ('no_human', 'daemon_shutdown') THEN NULL
+		WHEN ${row}.reason = 'lease_lost' THEN 'lease_lost'
+		WHEN ${row}.reason IN (
+			'provisioning_failed',
+			'voice_session_admission_failed',
+			'identity_binding_missing',
+			'voice_session_registry_drift',
+			'self_filter_unverified'
+		) OR ${row}.reason LIKE 'provisioning_%' THEN 'session_create_failed'
+		WHEN ${row}.reason IN ('ending_timeout', 'daemon_restart')
+			THEN 'session_runtime_failed'
+		ELSE 'unknown_failure'
+	END`;
+}
+
+const VOICE_HEALTH_DEMAND_TRIGGER_SQL = {
+	insert: `CREATE TRIGGER voice_health_demand_sessions_insert
+		AFTER INSERT ON voice_sessions
+		BEGIN
+			INSERT INTO voice_health_demand_events (
+				mutation, session_id, project_id, meeting_id, old_state, new_state,
+				reason_class, cancel_requested, ending_started, ended, observed_at
+			) VALUES (
+				'insert', NEW.session_id, NEW.project_name, NEW.meeting_id, NULL,
+				NEW.state, ${voiceHealthReasonClassSql("NEW")},
+				NEW.cancel_requested_at IS NOT NULL,
+				NEW.ending_started_at IS NOT NULL,
+				NEW.ended_at IS NOT NULL,
+				NEW.updated_at
+			);
+		END`,
+	delete: `CREATE TRIGGER voice_health_demand_sessions_delete
+		AFTER DELETE ON voice_sessions
+		BEGIN
+			INSERT INTO voice_health_demand_events (
+				mutation, session_id, project_id, meeting_id, old_state, new_state,
+				reason_class, cancel_requested, ending_started, ended, observed_at
+			) VALUES (
+				'delete', OLD.session_id, OLD.project_name, OLD.meeting_id,
+				OLD.state, NULL, ${voiceHealthReasonClassSql("OLD")},
+				OLD.cancel_requested_at IS NOT NULL,
+				OLD.ending_started_at IS NOT NULL,
+				OLD.ended_at IS NOT NULL,
+				OLD.updated_at
+			);
+		END`,
+	update: `CREATE TRIGGER voice_health_demand_sessions_update
+		AFTER UPDATE OF state, reason, cancel_requested_at, ending_started_at, ended_at ON voice_sessions
+		WHEN OLD.state IS NOT NEW.state
+			OR OLD.reason IS NOT NEW.reason
+			OR OLD.cancel_requested_at IS NOT NEW.cancel_requested_at
+			OR OLD.ending_started_at IS NOT NEW.ending_started_at
+			OR OLD.ended_at IS NOT NEW.ended_at
+		BEGIN
+			INSERT INTO voice_health_demand_events (
+				mutation, session_id, project_id, meeting_id, old_state, new_state,
+				reason_class, cancel_requested, ending_started, ended, observed_at
+			) VALUES (
+				'update', NEW.session_id, NEW.project_name, NEW.meeting_id,
+				OLD.state, NEW.state, ${voiceHealthReasonClassSql("NEW")},
+				NEW.cancel_requested_at IS NOT NULL,
+				NEW.ending_started_at IS NOT NULL,
+				NEW.ended_at IS NOT NULL,
+				NEW.updated_at
+			);
+		END`,
+} as const;
+
+function normalizedVoiceHealthTriggerSql(sql: string): string {
+	return sql.replace(/\s+/g, " ").trim();
+}
+
+const VOICE_HEALTH_DEMAND_TRIGGER_DIGEST = createHash("sha256")
+	.update(
+		VOICE_HEALTH_DEMAND_TRIGGER_NAMES.map((name) => {
+			const key = name.slice("voice_health_demand_sessions_".length) as
+				| "insert"
+				| "delete"
+				| "update";
+			return normalizedVoiceHealthTriggerSql(
+				VOICE_HEALTH_DEMAND_TRIGGER_SQL[key],
+			);
+		}).join("\n"),
+	)
+	.digest("hex");
+const VOICE_HEALTH_DEMAND_LEGACY_TRIGGER_DIGESTS = new Set([
+	"bc7da93194749ebf189112778862d7f0515e839d3ae702ee1acfbacc4eaa8cf7",
+]);
 
 export interface DiscordConfigRow {
 	singleton_key: "discord";
@@ -3458,6 +3614,235 @@ export class StateStore {
 		)
 			.map((row) => this.voiceSessionFromRow(row))
 			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	/**
+	 * FLY-2693: one read transaction binds the change page, allocator high-water,
+	 * and current demand projection. Incomplete or discontinuous pages never carry
+	 * an authoritative current set.
+	 */
+	getVoiceDemandSnapshot(afterSeq: number): VoiceHealthDemandSnapshot {
+		if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
+			throw new Error("voice_demand_cursor_invalid");
+		}
+		return this.db.raw.transaction((): VoiceHealthDemandSnapshot => {
+			const source = this.db.raw
+				.prepare(
+					`SELECT source_id, trigger_digest, created_at
+					 FROM voice_health_demand_source WHERE singleton = 1`,
+				)
+				.get() as
+				| { source_id: string; trigger_digest: string; created_at: string }
+				| undefined;
+			if (!source) throw new Error("voice_demand_source_missing");
+
+			const sequence = this.db.raw
+				.prepare(
+					"SELECT seq FROM sqlite_sequence WHERE name = 'voice_health_demand_events'",
+				)
+				.get() as { seq: number } | undefined;
+			const eventHighWater = Number(sequence?.seq ?? 0);
+			const emptyDigest = canonicalSubmissionDigest([]);
+			const unknown = (
+				sourceStatus: "trigger_invalid" | "change_gap" | "demand_overflow",
+			): VoiceHealthDemandSnapshot => ({
+				demandSourceId: source.source_id,
+				revision: eventHighWater,
+				eventHighWater,
+				afterCursor: afterSeq,
+				nextCursor: afterSeq,
+				hasMore: false,
+				gap: sourceStatus === "change_gap",
+				sourceStatus,
+				state: "unknown",
+				observedAt: source.created_at,
+				digest: emptyDigest,
+				demandIdentities: [],
+				events: [],
+			});
+
+			const actualTriggers = this.db.raw
+				.prepare(
+					`SELECT name, sql FROM sqlite_master
+					 WHERE type = 'trigger' AND name LIKE 'voice_health_demand_sessions_%'`,
+				)
+				.all() as Array<{ name: string; sql: string | null }>;
+			const actualByName = new Map(
+				actualTriggers.map((trigger) => [trigger.name, trigger.sql]),
+			);
+			const triggerDigest = createHash("sha256")
+				.update(
+					VOICE_HEALTH_DEMAND_TRIGGER_NAMES.map((name) =>
+						normalizedVoiceHealthTriggerSql(actualByName.get(name) ?? ""),
+					).join("\n"),
+				)
+				.digest("hex");
+			if (
+				!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+					source.source_id,
+				) ||
+				actualTriggers.length !== VOICE_HEALTH_DEMAND_TRIGGER_NAMES.length ||
+				source.trigger_digest !== VOICE_HEALTH_DEMAND_TRIGGER_DIGEST ||
+				triggerDigest !== VOICE_HEALTH_DEMAND_TRIGGER_DIGEST
+			) {
+				return unknown("trigger_invalid");
+			}
+
+			const pageRows = this.db.raw
+				.prepare(
+					`SELECT event_seq, mutation, session_id, project_id, meeting_id,
+						old_state, new_state, reason_class, cancel_requested,
+						ending_started, ended, observed_at
+					 FROM voice_health_demand_events
+					 WHERE event_seq > ? ORDER BY event_seq LIMIT 201`,
+				)
+				.all(afterSeq) as Array<Record<string, unknown>>;
+			const hasMore = pageRows.length > 200;
+			const deliveredRows = pageRows.slice(0, 200);
+			let expectedSeq = afterSeq + 1;
+			let contiguous = afterSeq <= eventHighWater;
+			for (const row of deliveredRows) {
+				if (Number(row.event_seq) !== expectedSeq) contiguous = false;
+				expectedSeq = Number(row.event_seq) + 1;
+			}
+			if (afterSeq < eventHighWater && deliveredRows.length === 0) {
+				contiguous = false;
+			}
+			if (
+				!hasMore &&
+				deliveredRows.length > 0 &&
+				Number(deliveredRows.at(-1)?.event_seq) !== eventHighWater
+			) {
+				contiguous = false;
+			}
+			if (!contiguous) return unknown("change_gap");
+
+			const events = deliveredRows.map((row): VoiceHealthDemandEvent => {
+				const mutation = row.mutation as "insert" | "update" | "delete";
+				const previousState = (row.old_state as VoiceSessionState | null) ?? null;
+				const state = (row.new_state as VoiceSessionState | null) ?? null;
+				const semanticState = state ?? previousState;
+				const reasonClass = (row.reason_class as string | null) ?? undefined;
+				const eventKind: VoiceHealthDemandEventKind =
+					semanticState === "failed"
+						? reasonClass !== undefined
+							? "failed"
+							: "cancelled"
+						: semanticState === "ended"
+							? "normal_completed"
+							: semanticState === "cancelled" || mutation === "delete"
+								? "cancelled"
+								: "required";
+				const meetingId = (row.meeting_id as string | null) ?? undefined;
+				return {
+					eventSeq: Number(row.event_seq),
+					mutation,
+					eventKind,
+					demandId: meetingId ?? String(row.session_id),
+					attemptId: String(row.session_id),
+					projectId: String(row.project_id),
+					...(meetingId ? { meetingId } : {}),
+					previousState,
+					state,
+					observedAt: String(row.observed_at),
+					...(reasonClass ? { reasonClass } : {}),
+					cancelRequested: Number(row.cancel_requested) === 1,
+					endingStarted: Number(row.ending_started) === 1,
+					ended: Number(row.ended) === 1,
+				};
+			});
+			const nextCursor = events.at(-1)?.eventSeq ?? afterSeq;
+			if (hasMore) {
+				return {
+					demandSourceId: source.source_id,
+					revision: eventHighWater,
+					eventHighWater,
+					afterCursor: afterSeq,
+					nextCursor,
+					hasMore: true,
+					gap: false,
+					sourceStatus: "available",
+					state: "unknown",
+					observedAt: events.at(-1)?.observedAt ?? source.created_at,
+					digest: emptyDigest,
+					demandIdentities: [],
+					events,
+				};
+			}
+
+			const currentRows = this.db.raw
+				.prepare(
+					`SELECT session_id, project_name, meeting_id, state, reason,
+						cancel_requested_at, ending_started_at, ended_at, updated_at
+					 FROM voice_sessions
+					 WHERE state NOT IN ('ended', 'cancelled', 'failed')
+					 ORDER BY session_id`,
+				)
+				.all() as Array<Record<string, unknown>>;
+			if (currentRows.length > 32) return unknown("demand_overflow");
+			const demandIdentities = currentRows.map(
+				(row): VoiceHealthDemandIdentity => {
+					const meetingId = (row.meeting_id as string | null) ?? undefined;
+					return {
+						demandId: meetingId ?? String(row.session_id),
+						attemptId: String(row.session_id),
+						projectId: String(row.project_name),
+						...(meetingId ? { meetingId } : {}),
+					};
+				},
+			);
+			const digestRows = currentRows.map((row) => [
+				String(row.session_id),
+				String(row.state),
+				row.cancel_requested_at === null,
+				row.ending_started_at === null,
+				row.ended_at === null,
+				this.voiceHealthReasonClass(row.state, row.reason),
+			]);
+			return {
+				demandSourceId: source.source_id,
+				revision: eventHighWater,
+				eventHighWater,
+				afterCursor: afterSeq,
+				nextCursor,
+				hasMore: false,
+				gap: false,
+				sourceStatus: "available",
+				state: demandIdentities.length > 0 ? "required" : "none",
+				observedAt:
+					String(currentRows.at(-1)?.updated_at ?? "") ||
+					events.at(-1)?.observedAt ||
+					source.created_at,
+				digest: canonicalSubmissionDigest(digestRows),
+				demandIdentities,
+				events,
+			};
+		})();
+	}
+
+	private voiceHealthReasonClass(
+		state: unknown,
+		reason: unknown,
+	): string | null {
+		if (state !== "failed") return null;
+		if (reason === "no_human" || reason === "daemon_shutdown") return null;
+		if (reason === "lease_lost") return "lease_lost";
+		if (
+			new Set([
+				"provisioning_failed",
+				"voice_session_admission_failed",
+				"identity_binding_missing",
+				"voice_session_registry_drift",
+				"self_filter_unverified",
+			]).has(String(reason)) ||
+			String(reason).startsWith("provisioning_")
+		) {
+			return "session_create_failed";
+		}
+		if (reason === "ending_timeout" || reason === "daemon_restart") {
+			return "session_runtime_failed";
+		}
+		return "unknown_failure";
 	}
 
 	reserveVoiceSession(
@@ -7443,6 +7828,108 @@ export class StateStore {
 		}
 	}
 
+	private migrateVoiceHealthDemandProjection(): void {
+		this.db.transaction(() => {
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS voice_health_demand_source (
+					singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+					source_id TEXT NOT NULL,
+					trigger_digest TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				)
+			`);
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS voice_health_demand_events (
+					event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+					mutation TEXT NOT NULL CHECK(mutation IN ('insert','update','delete')),
+					session_id TEXT NOT NULL,
+					project_id TEXT NOT NULL,
+					meeting_id TEXT,
+					old_state TEXT,
+					new_state TEXT,
+					reason_class TEXT,
+					cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)),
+					ending_started INTEGER NOT NULL CHECK(ending_started IN (0,1)),
+					ended INTEGER NOT NULL CHECK(ended IN (0,1)),
+					observed_at TEXT NOT NULL
+				)
+			`);
+				const existing = this.db.raw
+					.prepare(
+						"SELECT source_id, trigger_digest FROM voice_health_demand_source WHERE singleton = 1",
+					)
+					.get() as
+					| { source_id: string; trigger_digest: string }
+					| undefined;
+				const installedTriggers = this.db.raw
+					.prepare(
+						`SELECT name, sql FROM sqlite_master
+						 WHERE type = 'trigger' AND name LIKE 'voice_health_demand_sessions_%'`,
+					)
+					.all() as Array<{ name: string; sql: string | null }>;
+				const installedByName = new Map(
+					installedTriggers.map((trigger) => [trigger.name, trigger.sql]),
+				);
+				const installedDigest = createHash("sha256")
+					.update(
+						VOICE_HEALTH_DEMAND_TRIGGER_NAMES.map((name) =>
+							normalizedVoiceHealthTriggerSql(installedByName.get(name) ?? ""),
+						).join("\n"),
+					)
+					.digest("hex");
+				if (
+					existing?.trigger_digest === VOICE_HEALTH_DEMAND_TRIGGER_DIGEST &&
+					installedTriggers.length === VOICE_HEALTH_DEMAND_TRIGGER_NAMES.length &&
+					installedDigest === VOICE_HEALTH_DEMAND_TRIGGER_DIGEST
+				)
+					return;
+				const knownLegacyContract =
+					existing !== undefined &&
+					VOICE_HEALTH_DEMAND_LEGACY_TRIGGER_DIGESTS.has(
+						existing.trigger_digest,
+					) &&
+					installedTriggers.length === VOICE_HEALTH_DEMAND_TRIGGER_NAMES.length &&
+					installedDigest === existing.trigger_digest;
+				if (existing && !knownLegacyContract) return;
+
+				// The first install is a baseline: existing session rows become the
+				// current projection, never fabricated historical change events.
+				for (const name of VOICE_HEALTH_DEMAND_TRIGGER_NAMES) {
+					this.db.run(`DROP TRIGGER IF EXISTS ${name}`);
+				}
+				this.db.run("DELETE FROM voice_health_demand_events");
+				this.db.run(
+					"DELETE FROM sqlite_sequence WHERE name = 'voice_health_demand_events'",
+				);
+				if (existing) {
+					this.db.run(
+						`UPDATE voice_health_demand_source
+						 SET source_id = ?, trigger_digest = ?, created_at = ?
+						 WHERE singleton = 1`,
+						[
+							randomUUID(),
+							VOICE_HEALTH_DEMAND_TRIGGER_DIGEST,
+							new Date().toISOString(),
+						],
+					);
+				} else {
+					this.db.run(
+						`INSERT INTO voice_health_demand_source
+						 (singleton, source_id, trigger_digest, created_at)
+						 VALUES (1, ?, ?, ?)`,
+						[
+							randomUUID(),
+							VOICE_HEALTH_DEMAND_TRIGGER_DIGEST,
+							new Date().toISOString(),
+						],
+					);
+				}
+				this.db.run(VOICE_HEALTH_DEMAND_TRIGGER_SQL.insert);
+			this.db.run(VOICE_HEALTH_DEMAND_TRIGGER_SQL.delete);
+			this.db.run(VOICE_HEALTH_DEMAND_TRIGGER_SQL.update);
+		});
+	}
+
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
@@ -8242,6 +8729,7 @@ export class StateStore {
 		this.db.run(
 			"UPDATE voice_sessions SET ending_started_at = created_at WHERE state = 'ending' AND ending_started_at IS NULL",
 		);
+		this.migrateVoiceHealthDemandProjection();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
 			ON voice_sessions(voice_channel_id)
@@ -9544,6 +10032,7 @@ export class StateStore {
 		this.migrateFly1427TerminalStatusCorrections();
 		this.migrateEpicPage();
 		this.migrateShuttleProjection();
+		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
@@ -9863,6 +10352,29 @@ export class StateStore {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS shuttle_projection_cursor (
 				source_key TEXT PRIMARY KEY CHECK (source_key = 'updater'),
+				source_id TEXT,
+				cursor INTEGER NOT NULL CHECK (cursor >= 0),
+				status TEXT NOT NULL CHECK (status IN ('complete','truncated','unavailable')),
+				last_ok_at TEXT,
+				last_error TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
+	}
+
+	private migrateVoiceHealthProjection(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_health_projection (
+				project_name TEXT PRIMARY KEY CHECK (project_name = 'flywheel'),
+				source_id TEXT NOT NULL,
+				source_change_seq INTEGER NOT NULL CHECK (source_change_seq >= 0),
+				payload_json TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_health_projection_cursor (
+				source_key TEXT PRIMARY KEY CHECK (source_key = 'voice'),
 				source_id TEXT,
 				cursor INTEGER NOT NULL CHECK (cursor >= 0),
 				status TEXT NOT NULL CHECK (status IN ('complete','truncated','unavailable')),
@@ -15997,6 +16509,213 @@ export class StateStore {
 			units: retained,
 			activeIncidents: active.map((unit) => unit.unitId).sort(),
 		};
+	}
+
+	getVoiceHealthProjectionCursor(): VoiceHealthProjectionCursorRead {
+		const row = this.workflowSelectAll(
+			`SELECT source_id, cursor, status, last_ok_at
+			   FROM voice_health_projection_cursor
+			  WHERE source_key = 'voice'`,
+			[],
+		)[0];
+		return row
+			? {
+					sourceId: row.source_id == null ? null : String(row.source_id),
+					cursor: Number(row.cursor),
+					status: row.status as VoiceHealthView["sourceStatus"],
+					lastOkAt:
+						row.last_ok_at == null ? null : String(row.last_ok_at),
+				}
+			: {
+					sourceId: null,
+					cursor: 0,
+					status: "unavailable",
+					lastOkAt: null,
+				};
+	}
+
+	applyVoiceHealthProjection(input: {
+		sourceId: string;
+		cursor: number;
+		status: "complete" | "truncated";
+		view: VoiceHealthView;
+		now: string;
+	}): { changed: boolean } {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+				input.sourceId,
+			) ||
+			!Number.isSafeInteger(input.cursor) ||
+			input.cursor < 0 ||
+			!Number.isFinite(Date.parse(input.now)) ||
+			input.view.schemaVersion !== 1 ||
+			input.view.sourceStatus !== input.status
+		) {
+			throw new Error("voice_health_projection_invalid");
+		}
+		const payload = canonicalJsonString(input.view);
+		let changed = false;
+		this.db.transaction(() => {
+			const cursor = this.getVoiceHealthProjectionCursor();
+			const previous = this.workflowSelectAll(
+				`SELECT source_id, source_change_seq, payload_json
+				   FROM voice_health_projection WHERE project_name = 'flywheel'`,
+				[],
+			)[0];
+			if (
+				cursor.sourceId === input.sourceId &&
+				input.cursor < cursor.cursor
+			) {
+				return;
+			}
+			if (
+				cursor.sourceId === input.sourceId &&
+				input.cursor === cursor.cursor &&
+				previous &&
+				String(previous.payload_json) !== payload
+			) {
+				throw new Error("voice_health_projection_cursor_conflict");
+			}
+			if (previous && String(previous.source_id) !== input.sourceId) {
+				const prior = JSON.parse(
+					String(previous.payload_json),
+				) as VoiceHealthView;
+				if (prior.activeIncidents.length > 0) {
+					throw new Error(
+						"voice_health_projection_source_reset_unverified",
+					);
+				}
+			}
+			changed =
+				!previous ||
+				String(previous.payload_json) !== payload ||
+				cursor.sourceId !== input.sourceId ||
+				cursor.cursor !== input.cursor ||
+				cursor.status !== input.status;
+			this.db.run(
+				`INSERT INTO voice_health_projection
+				 (project_name, source_id, source_change_seq, payload_json, updated_at)
+				 VALUES ('flywheel', ?, ?, ?, ?)
+				 ON CONFLICT(project_name) DO UPDATE SET
+				 source_id=excluded.source_id,
+				 source_change_seq=excluded.source_change_seq,
+				 payload_json=excluded.payload_json,
+				 updated_at=excluded.updated_at`,
+				[input.sourceId, input.cursor, payload, input.now],
+			);
+			this.db.run(
+				`INSERT INTO voice_health_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('voice', ?, ?, ?, ?, NULL, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 source_id=excluded.source_id, cursor=excluded.cursor,
+				 status=excluded.status, last_ok_at=excluded.last_ok_at,
+				 last_error=NULL, updated_at=excluded.updated_at`,
+				[
+					input.sourceId,
+					input.cursor,
+					input.status,
+					input.now,
+					input.now,
+				],
+			);
+		});
+		if (changed) this.save();
+		return { changed };
+	}
+
+	markVoiceHealthProjectionUnavailable(input: {
+		error: string;
+		now: string;
+		sourceId?: string;
+		cursor?: number;
+	}): boolean {
+		const hasCheckpoint =
+			input.sourceId !== undefined || input.cursor !== undefined;
+		if (
+			!input.error.trim() ||
+			input.error.length > 240 ||
+			!Number.isFinite(Date.parse(input.now)) ||
+			(hasCheckpoint &&
+				(!input.sourceId ||
+					input.cursor === undefined ||
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+						input.sourceId,
+					) ||
+					!Number.isSafeInteger(input.cursor) ||
+					input.cursor < 0))
+		) {
+			throw new Error("voice_health_projection_unavailable_invalid");
+		}
+		const previous = this.getVoiceHealthProjectionCursor();
+		if (
+			hasCheckpoint &&
+			previous.sourceId === input.sourceId &&
+			input.cursor! < previous.cursor
+		) {
+			throw new Error("voice_health_projection_unavailable_invalid");
+		}
+		if (hasCheckpoint) {
+			this.db.run(
+				`INSERT INTO voice_health_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('voice', ?, ?, 'unavailable', NULL, ?, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 source_id=excluded.source_id, cursor=excluded.cursor,
+				 status='unavailable', last_error=excluded.last_error,
+				 updated_at=excluded.updated_at`,
+				[input.sourceId, input.cursor, input.error, input.now],
+			);
+		} else {
+			this.db.run(
+				`INSERT INTO voice_health_projection_cursor
+				 (source_key, source_id, cursor, status, last_ok_at, last_error, updated_at)
+				 VALUES ('voice', NULL, 0, 'unavailable', NULL, ?, ?)
+				 ON CONFLICT(source_key) DO UPDATE SET
+				 status='unavailable', last_error=excluded.last_error,
+				 updated_at=excluded.updated_at`,
+				[input.error, input.now],
+			);
+		}
+		this.save();
+		return (
+			previous.status !== "unavailable" ||
+			(hasCheckpoint &&
+				(previous.sourceId !== input.sourceId || previous.cursor !== input.cursor))
+		);
+	}
+
+	getVoiceHealthProjection(projectName: string): VoiceHealthView {
+		if (!projectName.trim())
+			throw new Error("voice_health_projection_project_required");
+		const cursor = this.getVoiceHealthProjectionCursor();
+		const row = this.workflowSelectAll(
+			`SELECT payload_json FROM voice_health_projection
+			  WHERE project_name = 'flywheel'`,
+			[],
+		)[0];
+		const unavailable = (prior?: VoiceHealthView): VoiceHealthView => ({
+			schemaVersion: 1,
+			sourceStatus: "unavailable",
+			observedAt: prior?.observedAt ?? null,
+			status:
+				(prior?.activeIncidents.length ?? 0) > 0 ? "unhealthy" : "unknown",
+			demandState: prior?.demandState ?? "unknown",
+			phase: prior?.phase ?? "unknown",
+			lastIterationSuccessAt: prior?.lastIterationSuccessAt ?? null,
+			lastProgressAt: prior?.lastProgressAt ?? null,
+			failureStreak: prior?.failureStreak ?? 0,
+			activeIncidents: prior?.activeIncidents ?? [],
+		});
+		if (!row) return unavailable();
+		try {
+			const view = JSON.parse(String(row.payload_json)) as VoiceHealthView;
+			return cursor.status === "unavailable"
+				? unavailable(view)
+				: { ...view, sourceStatus: cursor.status };
+		} catch {
+			return unavailable();
+		}
 	}
 
 	insertEpicPageRenderReceipt(input: {

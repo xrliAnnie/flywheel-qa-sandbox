@@ -540,6 +540,81 @@ function renderDeployment(page: EpicPage, now: Date): string {
 	return ["## 班车状态", source, status].join("\n\n");
 }
 
+const VOICE_HEALTH_STALE_MS = 90_000;
+const VOICE_REASON_TEXT = {
+	bridge_connect_failed: "无法连接本机 Bridge",
+	bridge_timeout_headers: "Bridge 响应头超时",
+	bridge_timeout_body: "Bridge 响应体超时",
+	bridge_auth_rejected: "Bridge 拒绝认证",
+	bridge_http_error: "Bridge 返回错误",
+	bridge_protocol_invalid: "Bridge 响应格式无效",
+	startup_config_invalid: "启动配置无效",
+	startup_lock_unavailable: "启动锁不可用",
+	startup_not_ready: "启动后未就绪",
+	session_create_failed: "语音会话创建失败",
+	session_runtime_failed: "语音会话运行失败",
+	lease_lost: "语音租约丢失",
+	heartbeat_stale: "语音心跳过期",
+	health_observation_unavailable: "健康记录不可用",
+	demand_source_unavailable: "会话需求来源不可用",
+	unknown_failure: "未知语音故障",
+} as const;
+
+function renderVoiceHealth(page: EpicPage, now: Date): string {
+	if (page.key.project_name !== "flywheel") return "";
+	const health = page.voiceHealth?.value;
+	if (!health) return "## 语音健康\n\n语音健康尚未采集（旧页面不代表健康）。";
+	const observed = health.observedAt
+		? Date.parse(health.observedAt)
+		: Number.NaN;
+	const stale =
+		!Number.isFinite(observed) ||
+		now.getTime() - observed > VOICE_HEALTH_STALE_MS;
+	const lastSuccess = health.lastIterationSuccessAt
+		? `最近完整成功：${health.lastIterationSuccessAt}。`
+		: "尚无完整成功记录。";
+	// FLY-2693 review R5: caveats never hide retained active incidents; see
+	// render-html.ts renderVoiceHealth for the shared contract.
+	const caveat =
+		health.sourceStatus === "unavailable"
+			? "unavailable"
+			: stale
+				? "stale"
+				: health.status === "unknown" || health.demandState === "unknown"
+					? "unknown"
+					: health.sourceStatus === "truncated"
+						? "truncated"
+						: null;
+	const caveatText =
+		caveat === "unavailable"
+			? "状态来源不可用；以下为最后一次成功投影，不视为当前健康。"
+			: caveat === "stale"
+				? "语音读数过期；以下为最后一次读数，不视为当前健康。"
+				: caveat === "unknown"
+					? "无法确认当前语音健康。"
+					: caveat === "truncated"
+						? "活动故障列表已截断，仅展示最早的一部分。"
+						: "";
+	if (health.activeIncidents.length > 0) {
+		const incidents = health.activeIncidents
+			.map(
+				(incident) =>
+					`- ${markdownText(`${VOICE_REASON_TEXT[incident.reasonClass]} · 自 ${incident.openedAt} · 告警 ${incident.deliveryState ?? "待记录"}`)}`,
+			)
+			.join("\n");
+		return `## 语音健康\n\n${caveatText ? `${caveatText} ` : ""}有会话需求，语音不可用。连续失败 ${health.failureStreak} 次。${lastSuccess}\n\n${incidents}`;
+	}
+	if (caveat === "unavailable" || caveat === "stale" || caveat === "unknown")
+		return `## 语音健康\n\n${caveat === "stale" ? "语音读数过期；" : ""}无法确认当前语音健康。${lastSuccess}`;
+	if (health.demandState === "none" && health.status === "dormant")
+		return `## 语音健康\n\n无会话需求，正常休眠。${lastSuccess}`;
+	if (health.status === "unhealthy")
+		return `## 语音健康\n\n${caveatText ? `${caveatText} ` : ""}有会话需求，语音不可用。连续失败 ${health.failureStreak} 次。${lastSuccess}`;
+	if (health.status === "starting")
+		return `## 语音健康\n\n有会话需求，语音正在启动或等待 live。${lastSuccess}`;
+	return `## 语音健康\n\n有会话需求，语音健康正常。${lastSuccess}`;
+}
+
 export function renderEpicPageMarkdown(
 	page: EpicPage,
 	now = new Date(),
@@ -549,6 +624,7 @@ export function renderEpicPageMarkdown(
 			`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
 			renderAttention(page, now),
 			renderDeployment(page, now),
+			renderVoiceHealth(page, now),
 			label("attention.scope_unavailable"),
 			`${label("page.generated_at")}: ${page.generated_at}`,
 			renderFreshness(page),
@@ -583,6 +659,7 @@ export function renderEpicPageMarkdown(
 		`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
 		renderAttention(page, now),
 		renderDeployment(page, now),
+		renderVoiceHealth(page, now),
 		`${label("page.generated_at")}: ${page.generated_at}`,
 		renderFreshness(page),
 		`## ${label("section.ready")}`,

@@ -1,0 +1,71 @@
+{
+  "checkedAt": "2026-09-20T21:45:00Z",
+  "executionId": "225b9ad5-2785-4416-a89a-ea1f3b534344",
+  "runId": "e3953013-ab39-420d-af22-914cca1404b8",
+  "turn": {
+    "phase": "design",
+    "epoch": 22
+  },
+  "inheritedHead": "d1a0777e38df91b78421a32c494c612685abb64d",
+  "inheritedProgress": {
+    "phase": "implement",
+    "cursor": "9/9",
+    "next": "Merged current origin/main@4b8bed5c8 without conflicts and verified post-merge build, lint, focused 5/5 tests, diff check, and main ancestry. Refresh literal-last milestone, push, renew exact-head review, and monitor automatic CI."
+  },
+  "pr": {
+    "number": 1265,
+    "state": "OPEN",
+    "mergeable": "MERGEABLE",
+    "head": "d1a0777e38df91b78421a32c494c612685abb64d",
+    "ci": "14/15 green; Script Tests 3/5 red = FLY-1870 capacity tripwire (1021s > 1020s, 121 checks 0 failures), Lead-approved capacity-only exception per PR body; repo debt FLY-2755",
+    "codeReview": "R5 APPROVED per PR body (not re-verified by this design node)"
+  },
+  "review": {
+    "questionId": "c92e5e08-9d27-49b6-a07f-0e18b23d9f1d",
+    "effectiveVerdict": "APPROVED",
+    "checkedLive": true,
+    "currentPlanSha256": "96d1d5ded7c195ac49888673378aeac98bd7ba045e6740134e53e98309211310",
+    "planChanged": false
+  },
+  "html": {
+    "previousSha256": "39afaad3d3753692eb660fcc83daa3dd6e92586c27f9f95c2b73704f21bdbdf8",
+    "sha256": "7577de7158e9494e29ae950feb9b9a445e1961058074937fa7c7fd45fdbdaaf0",
+    "change": "two DIAGRAM PENDING LOCAL RENDER placeholders replaced by locally rendered SVGs; eyebrow notes render date; prose/sections/script unchanged",
+    "diagrams": {
+      "renderer": "local mmdc 11.12.0",
+      "svgIds": [
+        "FLY-2693-d1",
+        "FLY-2693-d2"
+      ],
+      "duplicateIdsAcrossSvgs": 0,
+      "foreignObjectPerSvg": 1,
+      "externalFetches": 0
+    },
+    "staticAndVm": "PASS (verify-founder-html.mjs)",
+    "browserVisual": "headless Chrome screenshot 1000x2400: both diagrams and Chinese labels render; comment inputs visible",
+    "commit": "5fd2215fe",
+    "publish": {
+      "reportId": "b43542ecb5d46e66592abd1a847724ce",
+      "url": "https://fw-reports-356a6d.vercel.app/r/b43542ecb5d46e66592abd1a847724ce/",
+      "publishOnly": true,
+      "delivered": false
+    },
+    "hostedVerification": {
+      "httpStatus": 200,
+      "placeholderCount": 0,
+      "pendingCount": 0,
+      "svgCount": 2,
+      "singleScript": true,
+      "nonceMatchesCsp": true,
+      "commentInputs": 11,
+      "externalAssets": 0,
+      "hostedSha16": "cfc07e4f7fdb4bb7"
+    }
+  },
+  "reports": {
+    "designHtmlReady": "49110741-514a-4c07-9229-f19828c97c19"
+  },
+  "implementationModified": false,
+  "productionModified": false,
+  "memoryCloseout": "one existing topic file body updated (mmdc denial is per-activation); MEMORY.md index unchanged to stay within 20,000-byte budget"
+}

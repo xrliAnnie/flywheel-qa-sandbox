@@ -33,6 +33,7 @@ export const RULE_IDS = [
 	"signals.v1",
 	"attention.v1",
 	"deployment.v1",
+	"voice-health.v1",
 	"lead_note_fade.v1",
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
@@ -102,6 +103,7 @@ export const REFRESH_REASONS = [
 	"lead_note_changed",
 	"ship_judgment_history",
 	"deployment_changed",
+	"voice_health_changed",
 	"scan",
 	"manual",
 ] as const;
@@ -323,9 +325,73 @@ export interface ShuttleDeploymentView {
 	activeIncidents: string[];
 }
 
+export type VoiceHealthReasonClass =
+	| "bridge_connect_failed"
+	| "bridge_timeout_headers"
+	| "bridge_timeout_body"
+	| "bridge_auth_rejected"
+	| "bridge_http_error"
+	| "bridge_protocol_invalid"
+	| "startup_config_invalid"
+	| "startup_lock_unavailable"
+	| "startup_not_ready"
+	| "session_create_failed"
+	| "session_runtime_failed"
+	| "lease_lost"
+	| "heartbeat_stale"
+	| "health_observation_unavailable"
+	| "demand_source_unavailable"
+	| "unknown_failure";
+
+export interface VoiceHealthIncidentView {
+	scope: "poll_dependency" | "session_unavailable";
+	openedAt: string;
+	reasonClass: VoiceHealthReasonClass;
+	threshold:
+		| "three_consecutive_failures"
+		| "first_failure_60s"
+		| "first_session_failure"
+		| "terminal_session_failure"
+		| "startup_failure";
+	deliveryState:
+		| "pending"
+		| "sent"
+		| "queued_transient"
+		| "delivery_unknown"
+		| "dead_lettered"
+		| "config_error"
+		| "cancelled_recovered"
+		| null;
+}
+
+export const MAX_VOICE_HEALTH_ACTIVE_INCIDENTS = 32;
+
+export interface VoiceHealthView {
+	schemaVersion: 1;
+	sourceStatus: "complete" | "truncated" | "unavailable";
+	observedAt: string | null;
+	status: "dormant" | "starting" | "healthy" | "unhealthy" | "unknown";
+	demandState: "none" | "required" | "unknown";
+	phase:
+		| "dormant"
+		| "idle"
+		| "failed_retrying"
+		| "active"
+		| "session_ended"
+		| "session_failed"
+		| "startup_failed"
+		| "stopped"
+		| "unknown";
+	lastIterationSuccessAt: string | null;
+	lastProgressAt: string | null;
+	failureStreak: number;
+	activeIncidents: VoiceHealthIncidentView[];
+}
+
 interface EpicPageBase {
 	ship_judgment_history?: Cell<EpicHistory>;
 	deployment?: Cell<ShuttleDeploymentView>;
+	voiceHealth?: Cell<VoiceHealthView>;
 	lead_note_policy?: Cell<{ fade_after_days: number }>;
 	key: {
 		project_name: string;
@@ -960,7 +1026,7 @@ export function assertEpicPage(
 				? ["discord", "attention_sources", "attention", "epic_scope"]
 				: []),
 		],
-		["lead_note_policy", "ship_judgment_history", "deployment"],
+		["lead_note_policy", "ship_judgment_history", "deployment", "voiceHealth"],
 		"",
 	);
 	if (root.deployment !== undefined) {
@@ -1094,6 +1160,146 @@ export function assertEpicPage(
 				"/deployment/value/activeIncidents",
 				"must match active unit episodes",
 			);
+	}
+	if (root.voiceHealth !== undefined) {
+		assertCell(root.voiceHealth, "/voiceHealth", root);
+		const cell = root.voiceHealth as Cell<VoiceHealthView>;
+		if (
+			cell.provenance.kind !== "statestore" ||
+			cell.provenance.table !== "voice_health_projection"
+		) {
+			fail(
+				"/voiceHealth/provenance",
+				"expected voice_health_projection source",
+			);
+		}
+		const value = requireRecord(cell.value, "/voiceHealth/value");
+		requireExactKeys(
+			value,
+			[
+				"schemaVersion",
+				"sourceStatus",
+				"observedAt",
+				"status",
+				"demandState",
+				"phase",
+				"lastIterationSuccessAt",
+				"lastProgressAt",
+				"failureStreak",
+				"activeIncidents",
+			],
+			[],
+			"/voiceHealth/value",
+		);
+		if (value.schemaVersion !== 1)
+			fail("/voiceHealth/value/schemaVersion", "expected 1");
+		if (
+			!new Set(["complete", "truncated", "unavailable"]).has(
+				String(value.sourceStatus),
+			)
+		)
+			fail("/voiceHealth/value/sourceStatus", "unsupported status");
+		if (
+			!new Set(["dormant", "starting", "healthy", "unhealthy", "unknown"]).has(
+				String(value.status),
+			)
+		)
+			fail("/voiceHealth/value/status", "unsupported status");
+		if (
+			!new Set(["none", "required", "unknown"]).has(String(value.demandState))
+		)
+			fail("/voiceHealth/value/demandState", "unsupported state");
+		if (
+			!new Set([
+				"dormant",
+				"idle",
+				"failed_retrying",
+				"active",
+				"session_ended",
+				"session_failed",
+				"startup_failed",
+				"stopped",
+				"unknown",
+			]).has(String(value.phase))
+		)
+			fail("/voiceHealth/value/phase", "unsupported phase");
+		for (const key of [
+			"observedAt",
+			"lastIterationSuccessAt",
+			"lastProgressAt",
+		] as const) {
+			if (value[key] !== null)
+				requireTimestamp(value[key], `/voiceHealth/value/${key}`);
+		}
+		requireNonNegativeInteger(
+			value.failureStreak,
+			"/voiceHealth/value/failureStreak",
+		);
+		if (
+			!Array.isArray(value.activeIncidents) ||
+			value.activeIncidents.length > MAX_VOICE_HEALTH_ACTIVE_INCIDENTS
+		)
+			fail("/voiceHealth/value/activeIncidents", "expected bounded array");
+		const reasonClasses = new Set([
+			"bridge_connect_failed",
+			"bridge_timeout_headers",
+			"bridge_timeout_body",
+			"bridge_auth_rejected",
+			"bridge_http_error",
+			"bridge_protocol_invalid",
+			"startup_config_invalid",
+			"startup_lock_unavailable",
+			"startup_not_ready",
+			"session_create_failed",
+			"session_runtime_failed",
+			"lease_lost",
+			"heartbeat_stale",
+			"health_observation_unavailable",
+			"demand_source_unavailable",
+			"unknown_failure",
+		]);
+		const thresholds = new Set([
+			"three_consecutive_failures",
+			"first_failure_60s",
+			"first_session_failure",
+			"terminal_session_failure",
+			"startup_failure",
+		]);
+		const deliveryStates = new Set([
+			"pending",
+			"sent",
+			"queued_transient",
+			"delivery_unknown",
+			"dead_lettered",
+			"config_error",
+			"cancelled_recovered",
+		]);
+		for (const [index, rawIncident] of value.activeIncidents.entries()) {
+			const path = `/voiceHealth/value/activeIncidents/${index}`;
+			const incident = requireRecord(rawIncident, path);
+			requireExactKeys(
+				incident,
+				["scope", "openedAt", "reasonClass", "threshold", "deliveryState"],
+				[],
+				path,
+			);
+			if (
+				!new Set(["poll_dependency", "session_unavailable"]).has(
+					String(incident.scope),
+				)
+			)
+				fail(`${path}/scope`, "unsupported scope");
+			requireTimestamp(incident.openedAt, `${path}/openedAt`);
+			if (!reasonClasses.has(String(incident.reasonClass)))
+				fail(`${path}/reasonClass`, "unsupported reason class");
+			if (!thresholds.has(String(incident.threshold)))
+				fail(`${path}/threshold`, "unsupported threshold");
+			if (
+				incident.deliveryState !== null &&
+				!deliveryStates.has(String(incident.deliveryState))
+			)
+				fail(`${path}/deliveryState`, "unsupported delivery state");
+		}
 	}
 	if (root.ship_judgment_history !== undefined) {
 		assertCell(root.ship_judgment_history, "/ship_judgment_history", root);

@@ -229,8 +229,9 @@ voice_cli_out="$(env -i PATH="$PATH" HOME="$SANDBOX/voice-home" \
   CODEX_HOME="$SANDBOX/voice-codex-home" node \
   "$PKG_ROOT/packages/voice-codex/dist/cli.js" --check-config 2>&1)"
 voice_cli_rc=$?
-if [ "$voice_cli_rc" -eq 1 ] && grep -q '^\[voice\] fatal: TEAMLEAD_API_TOKEN is required$' <<<"$voice_cli_out"; then
-  pass "②i installed generic voice CLI loads and rejects absent credentials"
+if [ "$voice_cli_rc" -eq 1 ] \
+   && [ "$voice_cli_out" = '[voice] fatal reasonClass=startup_not_ready operation=startup' ]; then
+  pass "②i installed generic voice CLI loads and rejects absent credentials without leaking config text"
 else
   fail "②i voice CLI import/config boundary failed: rc=$voice_cli_rc output=$voice_cli_out"
 fi

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "voice_health_projection_cursor",
+	"classification": "protectedCurrentOrReference"
+}

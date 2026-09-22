@@ -1,0 +1,84 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "72f6f9bc-80ae-4a7f-bc22-806777aa5b7d",
+  "round": 2,
+  "findings": [
+    {
+      "id": "demand-digest-field-scope-undefined",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 52,
+      "title": "snapshotDemandDigest 的字段范围没定义；若它 hash 整行，StateStore.ts:3432 这类不触发 trigger 的写会在健康系统上持续误报 demand_source_unavailable",
+      "detail": "plan.md:52 只写「snapshotDemandDigest 按规范集合内容 hash」，没有说明「集合内容」是成员身份（sessionId+state）还是整行。同一行又把 digest 提升为故障探测器：「同 seq 而 digest 不同是 schema/trigger 缺口，立即 demand_source_unavailable」，plan.md:170 进一步要求「制造 same-seq/different-digest 必须显示 unknown 并保留告警」。这使 digest 的字段范围必须与三个 trigger 监听的列集合（state, reason, cancel_requested_at, ending_started_at, ended_at）精确同构，否则探测器本身会误报。\n\n代码侧找到一个具体反例：StateStore.ts:3428-3436，在 CAS 推进失败且该行已 cancel_requested 时，会执行 `UPDATE voice_sessions SET ${column} = ?`，column 只可能是 root_message_id 或 thread_id。这五个被监听的列一个都没碰，所以按设计 trigger 不 append 事件——这是正确的，因为非终态成员身份没变。但如果 digest 按整行计算，这次写就会在 eventSeq 不变的情况下改变 digest，直接命中 plan.md:52 的缺口判据。\n\n失败场景：一次被取消的 provisioning 竞态写入 thread_id → 下一次 3s tick 取到相同 eventSeq、不同 digest → 按 :52 立刻 demand_source_unavailable → 需求降级为 unknown → 固定页长期显示「需求未确认」。这不仅是噪音：unknown 会让真正的 trigger 缺失失去信噪比，等于把本轮新加的结构性守卫钝化掉。\n\n建议在 :52 补一句把 digest 的字段集合写死为 trigger 监听的同一组（例如 canonical 排序的 `[sessionId, state, cancel_requested_at IS NULL, ending_started_at IS NULL, ended_at IS NULL, reasonClass]`），并在 §6.5 加一条断言：只写 root_message_id/thread_id 的路径既不产生事件也不改变 digest。另外 plan.md:170 把 3432 标成「3432 failed」是误标——它是取消竞态下的回执写入而不是失败路径，照此要求它「必须产生日志」会把实现引向给非成员变更也 append 事件。",
+      "findingKey": "demand-digest-field-scope-undefined"
+    },
+    {
+      "id": "bootstrap-spool-path-escapes-isolation-contract",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 100,
+      "title": "固定且刻意不可被 env 改写的 bootstrap spool 路径落在本仓 isolation-boundary 合同的可见范围之外，多个 Bridge 化身会争抢同一个 spool",
+      "detail": "plan.md:100 把 wrapper 最早期的告警 spool 定为固定的 `$HOME/.flywheel/voice-startup-spool`，并明确「不让 .env 改它」，然后规定「Bridge 的健康适配固定导入该同用户 spool 并按 attemptId 幂等落源库」。防止坏 host.json 重定向的动机是对的，但代价是这个路径对本仓既有的隔离机制不可见。\n\n核实隔离机制的工作方式：scripts/run-bridge.ts:21-34 在 `FLYWHEEL_ISOLATION_ROOT` 存在时调用 scripts/lib/run-bridge-isolation-bootstrap.mjs，后者加载的 contract 是一个 `{name, boot}` 数组，name 是**环境变量名**，boot 取 mustBeUnderRoot/mustBeAbsent 等（见该文件 5-41、43-59 行）。也就是说，隔离边界只能约束「由某个 env 变量指定的路径」。plan.md:100 恰恰规定这条路径没有对应 env 变量，因此它在结构上无法被任何 isolation contract 约束。\n\n同时核实多化身是本仓的常规形态：plugin.ts 有 8 处以上 `process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), \".flywheel\")`，scripts/ 下有 qa-529-*、qa-fly-2519-529-drill.mjs、qa-fly-529-alert-smoke.sh 等整族 529 slot 脚本。这些 slot Bridge 改的是 FLYWHEEL_STATE_DIR / FLYWHEEL_COMM_ROOT，通常不改 HOME —— 于是生产 Bridge 与 slot Bridge 的 state root 不同，却共享同一个固定 spool。\n\n失败场景：529 slot Bridge 与生产 Bridge 同时在跑，生产 wrapper 因坏 host.json 写了一条启动拒绝进固定 spool；两个 Bridge 的健康适配都「固定导入」它。计划没有说导入是否消费/截断 spool，也没有给 per-source cursor。若导入是破坏性的，slot Bridge 先跑一轮就把这条记录吃掉，生产固定页永远看不到这次启动拒绝；若不是破坏性的，生产主机的启动拒绝就同时落进了 QA slot 的源库。\n\n影响被两点限住，所以不是 HIGH：(1) 现有 wrapper 测试用 `env -i ... HOME=\"$ROOT/home\"`（scripts/__tests__/flywheel-voice-wrapper.test.sh:95,126,145,169）可以靠改 HOME 做隔离，§6.3 的测试要求不会因此落空；(2) plan.md:101 的「required/no-ready 独立的 Bridge guard 仍在 60 秒触发」读的是各化身自己的 StateStore，demand 存在时仍有独立兜底。残余损失是启动拒绝这条诊断记录的归属与留存。\n\n建议在 :100 补明：导入为非破坏性读 + 按 (sourceId, startupAttemptId) 去重的 per-source cursor；spool 的保留期与清理归写方（wrapper）或按 age，不归任何读方；并写清哪个 Bridge 化身有资格导入（例如仅当解析出的 state root 等于 `$HOME/.flywheel`，或存在 FLYWHEEL_ISOLATION_ROOT 时一律不导入）。",
+      "findingKey": "bootstrap-spool-path-escapes-isolation-contract"
+    },
+    {
+      "id": "wal-autocheckpoint-not-disabled",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 80,
+      "title": "并发小节声明 checkpoint 由 helper 低频执行、不在 lease 路径，但没有关掉 SQLite 默认的 wal_autocheckpoint",
+      "detail": "plan.md:80 规定 `journal_mode=WAL`，并在末尾写「checkpoint 有界由 helper 低频执行，不在 lease 路径」。SQLite 的 `wal_autocheckpoint` 默认是 1000 页且默认开启，会在任意一次 commit 之后顺带触发 checkpoint——包括 daemon 在通话期间那几次写。也就是说「不在 lease 路径」这句话在默认 pragma 下不成立。\n\n失败场景：通话中一次健康写触发自动 checkpoint，与 Bridge 侧的写者争 WAL；在 500ms 外层 deadline 下被记成 health_observation_unavailable，或吃掉本就不宽裕的 busy_timeout=100ms + 一次 20–40ms 退避预算。实际风险不大（稳定通话每分钟最多 3 次写、行很小，攒到 1000 页要很久），所以只作 nit。\n\n建议在 :80 补上 `wal_autocheckpoint=0`（或一个明确的大阈值），并说明 helper 的低频 checkpoint 在哪个时机执行（例如仅在 idle 结果路径、不在活跃会话窗口内）。",
+      "findingKey": "wal-autocheckpoint-not-disabled"
+    },
+    {
+      "id": "unrecoverable-manual-episodes-accumulate-in-active-area",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 75,
+      "title": "manual demandId 无 retry 链 ⇒ 这类 session_unavailable 事件永远关不掉，会在固定页活动区以预算优先级持续堆积",
+      "detail": "plan.md:75 规定 demandId 对 manual 用「首次请求 sessionId」，并且「若现有 API 没有显式 retryOfSessionId 链，本单不按同项目或相邻时间猜关联，旧 manual 事件仅由可信显式取消关闭并标未证明恢复」。不猜关联这个判断是对的（猜错会伪造恢复），但它的后果没有被写完。\n\n后果链：plan.md:71 规定 session_unavailable 只能由「对应需求的后继会话取得 live+至少一次有效续租」关闭；manual 场景下后继会话是一个新 sessionId，即新 demandId，所以永远不构成「对应需求的后继会话」。于是每一次失败的 manual 语音尝试都留下一个永不关闭的事件。再叠加 plan.md:93 的「预算超限优先保留活动故障/投递未知」，这些僵尸事件在页面预算里享有优先级。\n\n失败场景：founder 手动试语音失败三次、第四次成功，固定页活动区从此常驻三条「进房故障（未证明恢复）」；几周后这类条目占满 voiceHealth.v1 的预算，把当天真正的活动故障挤到截断线以下——页面从「可信的故障面板」退化成「历史噪音面板」，而本单的固定页正是长时间故障唯一的持续可见面（plan.md:76 已把重复提醒排除在本单之外）。\n\n建议给这类永不可关闭的事件一条显式老化规则：超过 N 小时/N 条后自动移出活动区进历史、并在历史里保留「未证明恢复」的定性；或给活动区的 manual 未证明恢复事件设一个独立的小额配额，使其不与当日故障争预算。这与已列为 follow-up 的 no-repage 是两件事——那条讲的是频道提醒频次，这条讲的是固定页活动区的可用性。",
+      "findingKey": "unrecoverable-manual-episodes-accumulate-in-active-area"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "demand-digest-field-scope-undefined",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 52,
+      "title": "snapshotDemandDigest 的字段范围没定义；若它 hash 整行，StateStore.ts:3432 这类不触发 trigger 的写会在健康系统上持续误报 demand_source_unavailable",
+      "detail": "plan.md:52 只写「snapshotDemandDigest 按规范集合内容 hash」，没有说明「集合内容」是成员身份（sessionId+state）还是整行。同一行又把 digest 提升为故障探测器：「同 seq 而 digest 不同是 schema/trigger 缺口，立即 demand_source_unavailable」，plan.md:170 进一步要求「制造 same-seq/different-digest 必须显示 unknown 并保留告警」。这使 digest 的字段范围必须与三个 trigger 监听的列集合（state, reason, cancel_requested_at, ending_started_at, ended_at）精确同构，否则探测器本身会误报。\n\n代码侧找到一个具体反例：StateStore.ts:3428-3436，在 CAS 推进失败且该行已 cancel_requested 时，会执行 `UPDATE voice_sessions SET ${column} = ?`，column 只可能是 root_message_id 或 thread_id。这五个被监听的列一个都没碰，所以按设计 trigger 不 append 事件——这是正确的，因为非终态成员身份没变。但如果 digest 按整行计算，这次写就会在 eventSeq 不变的情况下改变 digest，直接命中 plan.md:52 的缺口判据。\n\n失败场景：一次被取消的 provisioning 竞态写入 thread_id → 下一次 3s tick 取到相同 eventSeq、不同 digest → 按 :52 立刻 demand_source_unavailable → 需求降级为 unknown → 固定页长期显示「需求未确认」。这不仅是噪音：unknown 会让真正的 trigger 缺失失去信噪比，等于把本轮新加的结构性守卫钝化掉。\n\n建议在 :52 补一句把 digest 的字段集合写死为 trigger 监听的同一组（例如 canonical 排序的 `[sessionId, state, cancel_requested_at IS NULL, ending_started_at IS NULL, ended_at IS NULL, reasonClass]`），并在 §6.5 加一条断言：只写 root_message_id/thread_id 的路径既不产生事件也不改变 digest。另外 plan.md:170 把 3432 标成「3432 failed」是误标——它是取消竞态下的回执写入而不是失败路径，照此要求它「必须产生日志」会把实现引向给非成员变更也 append 事件。",
+      "findingKey": "demand-digest-field-scope-undefined"
+    },
+    {
+      "id": "bootstrap-spool-path-escapes-isolation-contract",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 100,
+      "title": "固定且刻意不可被 env 改写的 bootstrap spool 路径落在本仓 isolation-boundary 合同的可见范围之外，多个 Bridge 化身会争抢同一个 spool",
+      "detail": "plan.md:100 把 wrapper 最早期的告警 spool 定为固定的 `$HOME/.flywheel/voice-startup-spool`，并明确「不让 .env 改它」，然后规定「Bridge 的健康适配固定导入该同用户 spool 并按 attemptId 幂等落源库」。防止坏 host.json 重定向的动机是对的，但代价是这个路径对本仓既有的隔离机制不可见。\n\n核实隔离机制的工作方式：scripts/run-bridge.ts:21-34 在 `FLYWHEEL_ISOLATION_ROOT` 存在时调用 scripts/lib/run-bridge-isolation-bootstrap.mjs，后者加载的 contract 是一个 `{name, boot}` 数组，name 是**环境变量名**，boot 取 mustBeUnderRoot/mustBeAbsent 等（见该文件 5-41、43-59 行）。也就是说，隔离边界只能约束「由某个 env 变量指定的路径」。plan.md:100 恰恰规定这条路径没有对应 env 变量，因此它在结构上无法被任何 isolation contract 约束。\n\n同时核实多化身是本仓的常规形态：plugin.ts 有 8 处以上 `process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), \".flywheel\")`，scripts/ 下有 qa-529-*、qa-fly-2519-529-drill.mjs、qa-fly-529-alert-smoke.sh 等整族 529 slot 脚本。这些 slot Bridge 改的是 FLYWHEEL_STATE_DIR / FLYWHEEL_COMM_ROOT，通常不改 HOME —— 于是生产 Bridge 与 slot Bridge 的 state root 不同，却共享同一个固定 spool。\n\n失败场景：529 slot Bridge 与生产 Bridge 同时在跑，生产 wrapper 因坏 host.json 写了一条启动拒绝进固定 spool；两个 Bridge 的健康适配都「固定导入」它。计划没有说导入是否消费/截断 spool，也没有给 per-source cursor。若导入是破坏性的，slot Bridge 先跑一轮就把这条记录吃掉，生产固定页永远看不到这次启动拒绝；若不是破坏性的，生产主机的启动拒绝就同时落进了 QA slot 的源库。\n\n影响被两点限住，所以不是 HIGH：(1) 现有 wrapper 测试用 `env -i ... HOME=\"$ROOT/home\"`（scripts/__tests__/flywheel-voice-wrapper.test.sh:95,126,145,169）可以靠改 HOME 做隔离，§6.3 的测试要求不会因此落空；(2) plan.md:101 的「required/no-ready 独立的 Bridge guard 仍在 60 秒触发」读的是各化身自己的 StateStore，demand 存在时仍有独立兜底。残余损失是启动拒绝这条诊断记录的归属与留存。\n\n建议在 :100 补明：导入为非破坏性读 + 按 (sourceId, startupAttemptId) 去重的 per-source cursor；spool 的保留期与清理归写方（wrapper）或按 age，不归任何读方；并写清哪个 Bridge 化身有资格导入（例如仅当解析出的 state root 等于 `$HOME/.flywheel`，或存在 FLYWHEEL_ISOLATION_ROOT 时一律不导入）。",
+      "findingKey": "bootstrap-spool-path-escapes-isolation-contract"
+    },
+    {
+      "id": "wal-autocheckpoint-not-disabled",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 80,
+      "title": "并发小节声明 checkpoint 由 helper 低频执行、不在 lease 路径，但没有关掉 SQLite 默认的 wal_autocheckpoint",
+      "detail": "plan.md:80 规定 `journal_mode=WAL`，并在末尾写「checkpoint 有界由 helper 低频执行，不在 lease 路径」。SQLite 的 `wal_autocheckpoint` 默认是 1000 页且默认开启，会在任意一次 commit 之后顺带触发 checkpoint——包括 daemon 在通话期间那几次写。也就是说「不在 lease 路径」这句话在默认 pragma 下不成立。\n\n失败场景：通话中一次健康写触发自动 checkpoint，与 Bridge 侧的写者争 WAL；在 500ms 外层 deadline 下被记成 health_observation_unavailable，或吃掉本就不宽裕的 busy_timeout=100ms + 一次 20–40ms 退避预算。实际风险不大（稳定通话每分钟最多 3 次写、行很小，攒到 1000 页要很久），所以只作 nit。\n\n建议在 :80 补上 `wal_autocheckpoint=0`（或一个明确的大阈值），并说明 helper 的低频 checkpoint 在哪个时机执行（例如仅在 idle 结果路径、不在活跃会话窗口内）。",
+      "findingKey": "wal-autocheckpoint-not-disabled"
+    },
+    {
+      "id": "unrecoverable-manual-episodes-accumulate-in-active-area",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2693-voice-failure-alerts/plan.md",
+      "line": 75,
+      "title": "manual demandId 无 retry 链 ⇒ 这类 session_unavailable 事件永远关不掉，会在固定页活动区以预算优先级持续堆积",
+      "detail": "plan.md:75 规定 demandId 对 manual 用「首次请求 sessionId」，并且「若现有 API 没有显式 retryOfSessionId 链，本单不按同项目或相邻时间猜关联，旧 manual 事件仅由可信显式取消关闭并标未证明恢复」。不猜关联这个判断是对的（猜错会伪造恢复），但它的后果没有被写完。\n\n后果链：plan.md:71 规定 session_unavailable 只能由「对应需求的后继会话取得 live+至少一次有效续租」关闭；manual 场景下后继会话是一个新 sessionId，即新 demandId，所以永远不构成「对应需求的后继会话」。于是每一次失败的 manual 语音尝试都留下一个永不关闭的事件。再叠加 plan.md:93 的「预算超限优先保留活动故障/投递未知」，这些僵尸事件在页面预算里享有优先级。\n\n失败场景：founder 手动试语音失败三次、第四次成功，固定页活动区从此常驻三条「进房故障（未证明恢复）」；几周后这类条目占满 voiceHealth.v1 的预算，把当天真正的活动故障挤到截断线以下——页面从「可信的故障面板」退化成「历史噪音面板」，而本单的固定页正是长时间故障唯一的持续可见面（plan.md:76 已把重复提醒排除在本单之外）。\n\n建议给这类永不可关闭的事件一条显式老化规则：超过 N 小时/N 条后自动移出活动区进历史、并在历史里保留「未证明恢复」的定性；或给活动区的 manual 未证明恢复事件设一个独立的小额配额，使其不与当日故障争预算。这与已列为 follow-up 的 no-repage 是两件事——那条讲的是频道提醒频次，这条讲的是固定页活动区的可用性。",
+      "findingKey": "unrecoverable-manual-episodes-accumulate-in-active-area"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

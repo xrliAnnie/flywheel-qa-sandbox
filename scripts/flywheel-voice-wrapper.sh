@@ -6,11 +6,27 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() { echo "[voice-wrapper] $(date '+%H:%M:%S') $*"; }
 
+record_startup_spool() {
+  local reason_class="$1"
+  local helper="${SELF_DIR}/lib/voice-health-startup-spool.py"
+  if [[ -f "$helper" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 "$helper" record "$reason_class" >/dev/null 2>&1 || true
+  fi
+}
+
 fail_loud() {
   local reason="$1" title="$2" body="$3"
   local alert_root="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
   local bounded_run="${alert_root}/scripts/lib/bounded-run.sh"
   local meta_alert="${FLYWHEEL_META_ALERT_BIN:-${alert_root}/scripts/meta-alert.sh}"
+  case "$reason" in
+    voice_config_unavailable|voice_config_invalid|voice_api_key_unset)
+      record_startup_spool startup_config_invalid
+      ;;
+    *)
+      record_startup_spool startup_not_ready
+      ;;
+  esac
   log "FAIL-LOUD [${reason}] ${title} — ${body}" >&2
   if [[ -x "$bounded_run" && -x "$meta_alert" ]]; then
     "$bounded_run" "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
@@ -123,6 +139,7 @@ RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${FLYWHEEL_DIR}/scrip
 RESTART_STORM_RC=0
 "$RESTART_STORM_GATE_BIN" gate voice || RESTART_STORM_RC=$?
 if [[ "$RESTART_STORM_RC" -ne 0 ]]; then
+  record_startup_spool startup_not_ready
   if [[ "$RESTART_STORM_RC" -eq 126 || "$RESTART_STORM_RC" -eq 127 ]]; then
     "${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh" \
       "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \

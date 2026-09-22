@@ -234,6 +234,9 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-2669: per-unit shuttle failures are plain engineering notices. The
 	// durable observation ledger owns incidents; this kind opens no ticket/ARC.
 	"shuttle_unit_unhealthy",
+	// FLY-2693: source-owned voice health episodes use the same engineering
+	// channel, but their own helper ledger owns claims, retry, and recovery.
+	"voice_daemon_unhealthy",
 	// FLY-1256/FLY-1182: emitted by the external quota monitor. Successful,
 	// transient-unknown, and confirmation notices are root-only informational;
 	// conflict/persistent-unknown/malformed/choice and legacy failures ticket.
@@ -397,6 +400,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"flag_scan_no_clock",
 	"flag_scan_handoff",
 	"shuttle_unit_unhealthy",
+	"voice_daemon_unhealthy",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

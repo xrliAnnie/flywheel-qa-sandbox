@@ -1173,6 +1173,7 @@ expected_shard_tests = {
     "script-tests-6": [
         "Test — FLY-1663 launchd-native Lead lifecycle",
         "Test — FLY-1814 launchd fleet contracts",
+        "Test — FLY-2693 voice health source",
         "Test — FLY-1726 canonical Lead identity delivery",
         "Test — FLY-2274 cutover window artifacts",
         "Test — FLY-2570 dynamic design ratio operator",
@@ -1576,6 +1577,29 @@ require(
     fly1814_commands == expected_fly1814_commands,
     f"FLY-1814 CI command set/order drifted: {fly1814_commands}",
 )
+
+fly2693_steps = [
+    step
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Test — FLY-2693 voice health source"
+]
+require(
+    len(fly2693_steps) == 1,
+    "script-tests shards must contain exactly one FLY-2693 voice health source step",
+)
+require("if" not in fly2693_steps[0], "FLY-2693 health suite must not be conditional")
+require(
+    "continue-on-error" not in fly2693_steps[0],
+    "FLY-2693 health suite must fail the PR gate",
+)
+require(
+    str(fly2693_steps[0].get("run", "")).strip()
+    == "python3 scripts/__tests__/voice-health.test.py\npython3 scripts/__tests__/voice-health-startup-spool.test.py\nbash scripts/__tests__/voice-health-alert-route.test.sh",
+    "FLY-2693 health suite command drifted",
+)
+
 
 fly1948_steps = [
     step

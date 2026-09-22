@@ -27,6 +27,9 @@ export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
 	readDeployment?: (projectName: string) => GenerateEpicPageInput["deployment"];
+	readVoiceHealth?: (
+		projectName: string,
+	) => GenerateEpicPageInput["voiceHealth"];
 	readIntakes?: (projectName: string) => GenerateEpicPageInput["intakes"];
 	readChildThreads?: (
 		projectName: string,
@@ -139,6 +142,7 @@ export async function materializeEpicPage(
 			: undefined;
 	const candidate = deps.generatePage({
 		deployment: deps.readDeployment?.(input.projectName),
+		voiceHealth: deps.readVoiceHealth?.(input.projectName),
 		...(shipJudgmentHistory ? { shipJudgmentHistory } : {}),
 		childThreads: deps.readChildThreads?.(
 			input.projectName,

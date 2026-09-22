@@ -920,6 +920,13 @@ import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
+import {
+	createVoiceHealthBridgeGuard,
+	createVoiceHealthExportReader,
+	createVoiceHealthIntentNotifier,
+	createVoiceHealthProjector,
+	createVoiceHealthStartupSpoolReader,
+} from "./voice-health-projector.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";
@@ -7147,6 +7154,10 @@ export async function startBridge(
 							}),
 							readDeployment: (projectName) =>
 								store.getShuttleDeploymentProjection(projectName),
+							readVoiceHealth: (projectName) =>
+								projectName === "flywheel"
+									? store.getVoiceHealthProjection(projectName)
+									: undefined,
 							generatePage: generateAttentionEpicPage,
 							buildReceipt: buildEpicPageRenderReceipt,
 							now: () => new Date(),
@@ -7189,6 +7200,38 @@ export async function startBridge(
 		}),
 		requestRefresh: (projectName, reason) =>
 			epicPageRefresher.requestRefresh(projectName, reason),
+		everyNTicks: 20,
+		log: (message) => console.warn(message),
+	});
+	const flywheelRepoRoot =
+		process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+		resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+	const voiceHealthHelperPath = join(
+		flywheelRepoRoot,
+		"scripts",
+		"lib",
+		"voice-health.py",
+	);
+	const voiceHealthStateRoot =
+		process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
+	const voiceHealthProjector = createVoiceHealthProjector({
+		store,
+		readExport: createVoiceHealthExportReader({
+			helperPath: voiceHealthHelperPath,
+			stateRoot: voiceHealthStateRoot,
+		}),
+		beforeRead: createVoiceHealthBridgeGuard({
+			store,
+			helperPath: voiceHealthHelperPath,
+			stateRoot: voiceHealthStateRoot,
+			readStartupEvents: createVoiceHealthStartupSpoolReader(),
+		}),
+		requestRefresh: (projectName, reason) =>
+			epicPageRefresher.requestRefresh(projectName, reason),
+		notifyIntent: createVoiceHealthIntentNotifier({
+			leadAlertPath: join(flywheelRepoRoot, "scripts", "lead-alert.sh"),
+			log: (message) => console.warn(message),
+		}),
 		everyNTicks: 20,
 		log: (message) => console.warn(message),
 	});
@@ -12155,6 +12198,7 @@ export async function startBridge(
 			Promise.all([
 				epicIntakeScheduler.tick(),
 				shuttleObservationProjector.tick(),
+				voiceHealthProjector.tick(),
 			]).then(() => undefined),
 		pollIntervalMs: 3_000,
 		recordSpan: (name, startMs, endMs) =>
@@ -13367,6 +13411,7 @@ export async function startBridge(
 	// FLY-1505 M1: the first GatePoller tick may re-wake an approved ship
 	// runner. Start it only after durable failed-attempt markers have restored
 	// their suppression state (or the drain has failed loudly and retained them).
+	await voiceHealthProjector.tick();
 	gatePoller.start();
 	if (!process.env.VITEST) {
 		try {

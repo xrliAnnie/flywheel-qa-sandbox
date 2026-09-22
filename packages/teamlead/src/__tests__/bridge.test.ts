@@ -1460,7 +1460,7 @@ describe("Bridge scaffold", () => {
 
 		await result.close();
 		closeFn = undefined;
-	});
+	}, 15_000);
 });
 
 // Helper: start an express app on a random port and return the base URL

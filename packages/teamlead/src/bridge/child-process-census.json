@@ -501,7 +501,7 @@
 		},
 		{
 			"file": "packages/voice-codex/src/startup-alert.ts",
-			"sync_child": 1,
+			"sync_child": 2,
 			"disposition": "standalone_runtime_bounded"
 		},
 		{

@@ -35,6 +35,134 @@ afterEach(() => {
 });
 
 describe("VoiceSessionRuntime", () => {
+	it("projects one coalesced demand page on the existing tick cadence and retries failures", async () => {
+		const recordDemand = vi
+			.fn<() => Promise<void>>()
+			.mockRejectedValueOnce(new Error("health_store_unavailable"))
+			.mockResolvedValue(undefined);
+		const runtime = new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => "2026-09-18T08:00:00.000Z",
+			provision: vi.fn(),
+			poll: vi.fn(),
+			recordDemand,
+		});
+
+		await expect(runtime.tick()).resolves.toBeUndefined();
+		await runtime.tick();
+		await runtime.tick();
+		expect(recordDemand).toHaveBeenCalledTimes(2);
+		expect(recordDemand.mock.calls[0]?.[0]).toMatchObject({
+			afterCursor: 0,
+			nextCursor: 1,
+			hasMore: false,
+			state: "required",
+		});
+		expect(recordDemand.mock.calls[1]?.[0]).toEqual(
+			recordDemand.mock.calls[0]?.[0],
+		);
+	});
+
+	it("refreshes an unchanged authoritative demand at most every twenty seconds", async () => {
+		let elapsedMs = 0;
+		const recordDemand = vi.fn(async () => {});
+		const runtime = new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => new Date(Date.parse(T0) + elapsedMs).toISOString(),
+			provision: vi.fn(),
+			poll: vi.fn(),
+			recordDemand,
+		});
+
+		await runtime.tick();
+		elapsedMs = 19_999;
+		await runtime.tick();
+		expect(recordDemand).toHaveBeenCalledTimes(1);
+		elapsedMs = 20_000;
+		await runtime.tick();
+		expect(recordDemand).toHaveBeenCalledTimes(2);
+		expect(recordDemand.mock.calls[1]?.[0]).toMatchObject({
+			events: [],
+			hasMore: false,
+		});
+		// FLY-2693 review R5 (stale-gate-uses-frozen-data-clock): observedAt is
+		// the Bridge observation clock, not a frozen row/source timestamp, so an
+		// unchanged demand keeps advancing the fixed page's 90s stale gate.
+		expect(recordDemand.mock.calls[0]?.[0]).toMatchObject({ observedAt: T0 });
+		expect(recordDemand.mock.calls[1]?.[0]).toMatchObject({
+			observedAt: new Date(Date.parse(T0) + 20_000).toISOString(),
+		});
+	});
+
+	// FLY-2693 review R5: a dropped demand trigger must reach the helper as a
+	// fail-closed snapshot (rendered unknown), not be swallowed so the page keeps
+	// saying dormant; and the cursor must not advance past unread authority.
+	it("projects a fail-closed demand snapshot instead of dropping it", async () => {
+		let elapsedMs = 0;
+		const recordDemand = vi.fn(async () => {});
+		const runtime = new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => new Date(Date.parse(T0) + elapsedMs).toISOString(),
+			provision: vi.fn(),
+			poll: vi.fn(),
+			recordDemand,
+		});
+		await runtime.tick();
+		expect(recordDemand).toHaveBeenCalledTimes(1);
+		expect(recordDemand.mock.calls[0]?.[0]).toMatchObject({
+			sourceStatus: "available",
+			state: "required",
+			nextCursor: 1,
+		});
+
+		store.db.run("DROP TRIGGER voice_health_demand_sessions_update");
+		elapsedMs = 20_000;
+		await runtime.tick();
+		expect(recordDemand).toHaveBeenCalledTimes(2);
+		expect(recordDemand.mock.calls[1]?.[0]).toMatchObject({
+			sourceStatus: "trigger_invalid",
+			state: "unknown",
+			observedAt: new Date(Date.parse(T0) + 20_000).toISOString(),
+		});
+
+		// Unread authority is not consumed: the next projection reads from the
+		// same cursor rather than skipping past the invalid window.
+		elapsedMs = 40_000;
+		await runtime.tick();
+		expect(recordDemand).toHaveBeenCalledTimes(3);
+		expect(recordDemand.mock.calls[2]?.[0]).toMatchObject({
+			sourceStatus: "trigger_invalid",
+			afterCursor: recordDemand.mock.calls[1]?.[0].afterCursor,
+		});
+	});
+
 	it("hands stale provisioning back to the reducer", async () => {
 		const provision = vi.fn(async () => {});
 		const runtime = new VoiceSessionRuntime({

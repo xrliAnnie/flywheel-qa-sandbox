@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	CodexLeadProcess,
 	spawnCodexAppServer,
@@ -26,6 +26,12 @@ import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
 import { VoiceDelivery } from "./delivery.js";
 import { DiscordVoiceRoom } from "./discord-room.js";
 import { EvidenceLog } from "./evidence.js";
+import {
+	logVoiceHealthSuccess,
+	VoiceHealthHelperClient,
+	VoiceHealthReporter,
+} from "./health.js";
+import { VoiceHealthAlertDispatcher } from "./health-alert.js";
 import { SessionJournal } from "./journal.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
 import { parseVoiceProjection } from "./projection.js";
@@ -33,7 +39,11 @@ import { RealtimeFrontend } from "./realtime.js";
 import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
-import { reportStartupRefusal } from "./startup-alert.js";
+import {
+	reportFatalStartupFailure,
+	reportStartupRefusal,
+	VOICE_LOCK_UNAVAILABLE_BODY,
+} from "./startup-alert.js";
 
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
@@ -89,7 +99,7 @@ export async function main(): Promise<void> {
 		reportStartupRefusal({
 			reason: "voice_process_lock_unavailable",
 			title: "Voice process lock unavailable",
-			body: `The standalone voice lock helper failed: ${lock.error}`,
+			body: VOICE_LOCK_UNAVAILABLE_BODY,
 		});
 		return;
 	}
@@ -99,10 +109,34 @@ export async function main(): Promise<void> {
 		baseUrl: config.bridgeUrl,
 		token: config.apiToken,
 		httpTimeoutMs: config.leaseHttpTimeoutMs,
+		idleHttpTimeoutMs: config.idleHttpTimeoutMs,
 	});
 	const stateStore = new SessionStateStore(config.voiceRoot);
 	const daemonBootId = randomUUID();
 	stateStore.saveBoot(daemonBootId);
+	const reportHealthUnavailable = () =>
+		console.error(
+			"[voice] health observation unavailable reasonClass=health_observation_unavailable operation=health_store",
+		);
+	const healthAlerts = new VoiceHealthAlertDispatcher({
+		leadAlertPath: join(
+			dirname(dirname(config.voiceHealthHelperPath)),
+			"lead-alert.sh",
+		),
+		onUnavailable: reportHealthUnavailable,
+	});
+	const health = new VoiceHealthReporter({
+		client: new VoiceHealthHelperClient({
+			helperPath: config.voiceHealthHelperPath,
+			stateRoot: config.healthStateRoot,
+		}),
+		bootId: daemonBootId,
+		stateRoot: config.healthStateRoot,
+		onUnavailable: reportHealthUnavailable,
+		onNotification: (intentId) => healthAlerts.notify(intentId),
+		onSuccessLog: logVoiceHealthSuccess,
+	});
+	await health.registerBoot();
 	const tokenFor = (projection: VoiceSessionProjection) =>
 		resolveLeadVoiceToken(projection, projects, process.env);
 	const buildDelivery = (
@@ -277,6 +311,7 @@ export async function main(): Promise<void> {
 		bridge,
 		stateStore,
 		bootId: daemonBootId,
+		health,
 		createSession,
 		recoverSession: async (saved, authority) => {
 			try {
@@ -336,11 +371,13 @@ export async function main(): Promise<void> {
 	} finally {
 		process.off("SIGINT", shutdown);
 		process.off("SIGTERM", shutdown);
+		health.stop();
+		await health.whenSettled();
 		await lock.handle.close();
 	}
 }
 
 main().catch((error) => {
-	console.error(`[voice] fatal: ${(error as Error).message}`);
+	reportFatalStartupFailure(error);
 	process.exitCode = 1;
 });

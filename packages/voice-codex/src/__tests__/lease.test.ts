@@ -38,7 +38,7 @@ describe("BridgeVoiceClient", () => {
 				);
 			});
 		const client = new BridgeVoiceClient({
-			baseUrl: "http://bridge.test",
+			baseUrl: "http://127.0.0.1:9876",
 			token: "master",
 			httpTimeoutMs: 2_000,
 			fetchImpl,
@@ -68,7 +68,7 @@ describe("BridgeVoiceClient", () => {
 			);
 		});
 		const client = new BridgeVoiceClient({
-			baseUrl: "http://bridge.test",
+			baseUrl: "http://127.0.0.1:9876",
 			token: "master",
 			httpTimeoutMs: 2_000,
 			fetchImpl,

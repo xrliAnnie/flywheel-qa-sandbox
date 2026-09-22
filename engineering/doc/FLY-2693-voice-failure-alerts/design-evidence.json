@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "baseline": "d11bb892d",
+  "designCommit": "8ac4c2d0a",
+  "reviewQuestionId": "cbc0b3b4-4da1-4b96-a200-e8792f616d89",
+  "reviewRequestId": "65efd0ec-6167-4c80-8f38-9a7e4080e9fa",
+  "productionModified": false,
+  "probes": {
+    "deployedClientDesiredMs": [
+      68,
+      10,
+      6
+    ],
+    "deployedRunOnce": {
+      "result": "idle",
+      "elapsedMs": 960,
+      "at": "2026-09-17T23:13:45.878Z",
+      "originalPid": false
+    },
+    "logCounts": {
+      "startup": 3,
+      "fetchFailed": 25,
+      "timeout": 50
+    },
+    "injectedRun": {
+      "errors": 3,
+      "catchCycles": 3,
+      "healthNotifications": 0,
+      "expected": "RED missing observer seam"
+    }
+  },
+  "unknown": [
+    "PID1668 last successful iteration",
+    "historical per-iteration causes",
+    "load/timeout causal correlation"
+  ],
+  "leadDecisions": {
+    "scope": "5afe7d2f-60ba-4573-a9dc-cfbf565d93b3",
+    "pidExactNames": "3da751f1-ef6d-4300-94c0-99c39337de3c",
+    "onDemandSplit": "27abc2a2-cefc-4e70-97e9-b6a1976fa98b",
+    "successorIssue": "FLY-2701"
+  },
+  "htmlValidation": {
+    "staticAndVm": "PASS",
+    "browserRender": "unavailable: local Chromium sandbox denial",
+    "hosted": "PASS: delivery-evidence.json"
+  },
+  "diagramRender": {
+    "attemptsPerDiagram": 2,
+    "fallback": "DIAGRAM PENDING LOCAL RENDER",
+    "sourceRevisedAfterFailure": true
+  },
+  "currentPlanCommit": "49dd24eb5",
+  "planSha256": "96d1d5ded7c195ac49888673378aeac98bd7ba045e6740134e53e98309211310",
+  "reviewRounds": [
+    {
+      "round": 1,
+      "questionId": "cbc0b3b4-4da1-4b96-a200-e8792f616d89",
+      "effectiveVerdict": "CHANGES_REQUESTED",
+      "dispositions": "review-dispositions.json"
+    },
+    {
+      "round": 2,
+      "questionId": "c92e5e08-9d27-49b6-a07f-0e18b23d9f1d",
+      "requestId": "72f6f9bc-80ae-4a7f-bc22-806777aa5b7d",
+      "effectiveVerdict": "APPROVED"
+    }
+  ],
+  "currentEffectiveReview": "review-r2.json",
+  "pendingSteps": [
+    "phase completion",
+    "park"
+  ],
+  "designHtmlReportId": "d7caf001-da79-481e-a5d8-40098dce7e08",
+  "completionSummaryReportId": "97249b49-2e48-4ce1-b8c2-c41348bc5594"
+}

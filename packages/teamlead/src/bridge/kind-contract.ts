@@ -193,6 +193,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	deploy_failed: { owner: "claude", arc: "human_by_design" },
 	deploy_degraded: { owner: "claude", arc: "human_by_design" },
 	shuttle_unit_unhealthy: { owner: "owning_lead", arc: "none_escalate" },
+	voice_daemon_unhealthy: { owner: "owning_lead", arc: "none_escalate" },
 	activation_probe: { owner: "claude", arc: "human_by_design" },
 	// FLY-1256: the quota monitor already performed (or deliberately declined)
 	// the switch/revive. Bridge ARC would duplicate an external safety action.
