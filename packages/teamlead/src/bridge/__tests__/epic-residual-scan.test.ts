@@ -184,7 +184,7 @@ describe("createEpicResidualScan", () => {
 			{
 				trigger: "scan",
 				reason: "scan",
-				outcome: "ok_unpublished:1:skipped_hosting_not_configured",
+				outcome: "ok_unpublished:1:scan",
 			},
 		]);
 	});

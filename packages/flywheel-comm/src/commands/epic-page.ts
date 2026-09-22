@@ -29,6 +29,7 @@ const USAGE = [
 	"usage:",
 	"  flywheel-comm epic-page status [--project <name>] [--bridge-url <url>]",
 	"  flywheel-comm epic-page generate [--project <name>] [--bridge-url <url>]",
+	"  flywheel-comm epic-page publish [--project <name>] [--bridge-url <url>]",
 	"  flywheel-comm epic-page show [--project <name>] [--format json|md]",
 	"  flywheel-comm epic-page render [--project <name>] --out <file.html>",
 ].join("\n");
@@ -70,7 +71,7 @@ export async function runEpicPage(
 	const rest = args.slice(1);
 	if (
 		!subcommand ||
-		!["status", "generate", "show", "render"].includes(subcommand)
+		!["status", "generate", "publish", "show", "render"].includes(subcommand)
 	) {
 		return fail("invalid_arguments", USAGE);
 	}
@@ -126,11 +127,14 @@ export async function runEpicPage(
 	if (subcommand === "status") {
 		init = { method: "GET", headers };
 		format = "json";
-	} else if (subcommand === "generate") {
+	} else if (subcommand === "generate" || subcommand === "publish") {
 		init = {
 			method: "POST",
 			headers: { ...headers, "Content-Type": "application/json" },
-			body: JSON.stringify({ projectName: project }),
+			body: JSON.stringify({
+				projectName: project,
+				...(subcommand === "publish" ? { publish: true } : {}),
+			}),
 		};
 		format = "json";
 	} else {

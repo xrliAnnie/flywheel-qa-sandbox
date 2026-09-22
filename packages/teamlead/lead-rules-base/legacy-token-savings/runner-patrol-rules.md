@@ -1051,9 +1051,11 @@ tick 里「还剩什么」三行是 Bridge 在**这一轮**按 Linear 扫出的�
 - 固定链接从 `flywheel-comm epic-page status` 的 `url` 取(master token)。首次用
   `founder-html-delivery` 发一次,之后不重复发。需要给「此刻快照」时仍用 `render` +
   `publish-report`;它会得到新 token,保留 14 天。`show`、`render`、`generate` 都不刷新
-  固定页。
+  固定页。只有 founder/Lead 明确要更新固定页时才运行
+  `flywheel-comm epic-page publish --project "$PROJECT_NAME"`;事件与巡检不得自动发布。
+- `status` 的 `expires_at` 临近时先问 founder/Lead 是否更新,不得为了续期自动发布。
 - `status` 的 `publish_failures_since_last_published > 0` 时,先看失败 token,再看固定页;
-  手动生成不会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
+  只有显式发布成功才会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
 
 Founder attention 由机器派生：固定页「待你看」与 thread 标题同源。不得定时手写进展或维护第二份待办；不得手改 thread 名。
 纯记录类回帖（收件凭证、ACK 回执、已有机器持久记录的状态转述）不进 Discord thread；Epic 级状态只在固定页看。

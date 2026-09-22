@@ -25,6 +25,7 @@ import {
 import { LinearUpstreamError } from "../linear-query.js";
 import { scheduledAtOrBefore } from "../patrol-tick.js";
 import { tokenAuthMiddleware } from "../plugin.js";
+import { REPORT_RETENTION_MS } from "../report-retention.js";
 
 const projects: ProjectEntry[] = [
 	{
@@ -224,6 +225,7 @@ describe("Epic page router", () => {
 		[{ projectName: "example", format: "pdf" }, 400, "invalid_format"],
 		[{ projectName: "example", epic: "EPX-100" }, 400, "unsupported_option"],
 		[{ projectName: "example", version: 1 }, 400, "unsupported_option"],
+		[{ projectName: "example", publish: "yes" }, 400, "unsupported_option"],
 	] as const)("rejects invalid input %#", async (body, status, error) => {
 		const response = await request(app(), { token: "master", body });
 		expect(response).toMatchObject({ status, body: { error } });
@@ -435,6 +437,49 @@ describe("Epic page router", () => {
 		]);
 	});
 
+	it("publishes only with an explicit publish intent", async () => {
+		const publishHosted = vi.fn(async () => "ok:1" as const);
+		const deployment = vi.spyOn(store, "getShuttleDeploymentProjection");
+		const history = vi.spyOn(store, "getEpicShipJudgmentHistory");
+		const response = await request(
+			app({
+				publisher: { publishHosted },
+				projects: [{ ...projects[0]!, projectName: "flywheel" }],
+			}),
+			{
+				token: "master",
+				body: { projectName: "flywheel", publish: true },
+			},
+		);
+
+		expect(response.status).toBe(200);
+		expect(publishHosted).toHaveBeenCalledWith(expect.any(Object), {
+			force: true,
+		});
+		expect(deployment).toHaveBeenCalledWith("flywheel");
+		expect(history).toHaveBeenCalledOnce();
+	});
+
+	it("fails an explicit publish request when the hosted write did not commit", async () => {
+		const response = await request(
+			app({
+				publisher: {
+					publishHosted: vi.fn(
+						async () => "transient: publish_failed:blob" as const,
+					),
+				},
+			}),
+			{
+				token: "master",
+				body: { projectName: "example", publish: true },
+			},
+		);
+		expect(response).toMatchObject({
+			status: 503,
+			body: { error: "transient: publish_failed:blob" },
+		});
+	});
+
 	it("embeds the production patrol phase in manual page freshness", async () => {
 		const intervalMs = 30 * 60_000;
 		const response = await request(
@@ -561,7 +606,9 @@ describe("Epic page router", () => {
 			body: {
 				freshness: {
 					last_generated: { version: 3, trigger: "scan" },
-					last_published: { version: 3, trigger: "scan" },
+					// Publications created before trigger provenance was retained fall
+					// back to manual, which is the only supported publisher now.
+					last_published: { version: 3, trigger: "manual" },
 				},
 				publication: {
 					token8: token.slice(0, 8),
@@ -569,13 +616,18 @@ describe("Epic page router", () => {
 					url: `https://fw-reports-test.vercel.app/r/${token}/`,
 					last_published_at: "2026-09-03T03:00:01.000Z",
 					last_version: 3,
+					expires_at: new Date(
+						Date.parse("2026-09-03T03:00:01.000Z") + REPORT_RETENTION_MS,
+					).toISOString(),
 				},
 				next_scan_expected_at: nextScanExpectedAt,
 			},
 		});
 		expect(response.text).not.toContain(`"token":"${token}"`);
 		expect(readFreshness).toHaveBeenCalledOnce();
-		expect(readPublication).toHaveBeenCalledOnce();
+		// Status reads publication directly and freshness uses the same durable
+		// row as its authoritative last-published source.
+		expect(readPublication).toHaveBeenCalledTimes(2);
 		expect(insert).not.toHaveBeenCalled();
 	});
 
@@ -617,7 +669,9 @@ describe("Epic page router", () => {
 			}),
 		).toMatchObject({
 			status: 200,
-			body: { publication: { published: false, url: null } },
+			body: {
+				publication: { published: false, url: null, expires_at: null },
+			},
 		});
 
 		store.commitEpicPagePublication({

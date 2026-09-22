@@ -247,6 +247,102 @@ describe("Epic page render receipts", () => {
 		}
 	});
 
+	it("keeps publication freshness authoritative after refresh and receipt pruning", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const { token } = store.reserveEpicPageToken("example");
+			store.insertEpicPageRenderReceipt({
+				projectName: "example",
+				trigger: "manual",
+				expectedVersion: 1,
+				receipt: receiptAt("2026-09-03T04:00:00Z"),
+			});
+			store.commitEpicPagePublication({
+				contentDigest: "a".repeat(64),
+				hostingKey: "fw-reports-abcdef/store",
+				projectName: "example",
+				token,
+				publishedAt: "2026-09-03T04:00:00Z",
+				version: 1,
+			});
+			for (let version = 2; version <= 22; version += 1) {
+				store.insertEpicPageRenderReceipt({
+					projectName: "example",
+					trigger: "manual",
+					expectedVersion: version,
+					receipt: receiptAt(
+						new Date(
+							Date.parse("2026-09-03T04:00:00Z") + version * 1_000,
+						).toISOString(),
+					),
+				});
+			}
+			for (let index = 0; index < 201; index += 1) {
+				store.insertEpicPageRefresh({
+					projectName: "example",
+					attemptedAt: new Date(
+						Date.parse("2026-09-03T05:00:00Z") + index * 1_000,
+					).toISOString(),
+					trigger: "event",
+					reasons: ["session_completed"],
+					outcome: `ok_unpublished:${index + 2}:event`,
+				});
+			}
+
+			expect(store.getEpicPageFreshness("example")).toMatchObject({
+				last_published: {
+					version: 1,
+					attempted_at: "2026-09-03T04:00:00Z",
+					trigger: "manual",
+				},
+				publish_failures_since_last_published: 0,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("counts hosted publish failures against publication time when the ok row is absent", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const { token } = store.reserveEpicPageToken("example");
+			store.commitEpicPagePublication({
+				contentDigest: "a".repeat(64),
+				hostingKey: "fw-reports-abcdef/store",
+				projectName: "example",
+				token,
+				publishedAt: "2026-09-03T04:00:00Z",
+				version: 1,
+			});
+			for (const attemptedAt of [
+				"2026-09-03T03:00:00Z",
+				"2026-09-03T05:00:00Z",
+			]) {
+				store.insertEpicPageRefresh({
+					projectName: "example",
+					attemptedAt,
+					trigger: "manual",
+					reasons: ["manual"],
+					outcome: "transient: publish_failed:blob",
+				});
+			}
+
+			expect(store.getEpicPageFreshness("example")).toMatchObject({
+				last_published: {
+					version: 1,
+					attempted_at: "2026-09-03T04:00:00Z",
+					trigger: "manual",
+				},
+				publish_failures_since_last_published: 1,
+				last_publish_failure: {
+					attempted_at: "2026-09-03T05:00:00Z",
+				},
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("validates refresh vocabulary and retains exactly 200 attempts per project", async () => {
 		const store = await StateStore.create(":memory:");
 		try {

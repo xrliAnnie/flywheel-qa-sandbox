@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 92150,
-      "sha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100"
+      "bytes": 92421,
+      "sha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9"
     }
   ],
   "constraints": [
@@ -96,5 +96,11 @@
     "beforeSourceSha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389",
     "afterSourceSha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100",
     "meaning": "The historical patrol procedure gains only the verified package-gate WAITING evidence and finding non-suppression contract."
+  },
+  "epicPagePublicationEvolution": {
+    "issue": "FLY-2751",
+    "beforeSourceSha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100",
+    "afterSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
+    "meaning": "The historical patrol procedure gains only the explicit-only Epic fixed-page publication duty shared with the current patrol rules."
   }
 }

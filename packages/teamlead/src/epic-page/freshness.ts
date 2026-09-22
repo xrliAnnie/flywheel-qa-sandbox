@@ -87,7 +87,7 @@ export function buildFreshness(input: BuildFreshnessInput): FreshnessSection {
 	);
 	const lastPublished = stateCell(
 		input,
-		"epic_page_refresh",
+		"epic_page_publication",
 		input.history.last_published
 			? {
 					version: input.history.last_published.version,

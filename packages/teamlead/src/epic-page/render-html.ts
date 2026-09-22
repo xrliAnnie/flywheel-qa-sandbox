@@ -814,7 +814,7 @@ function renderHtml(
 </style>
 </head>
 <body><main><div class="mock">
-	<div class="mock-bar" data-generated-at="${escapeHtml(page.generated_at)}">🔒 一个固定链接 · 手机能开 · 系统自己刷新 · ${escapeHtml(page.generated_at)} · <span data-opened-age>${escapeHtml(relativeTime(page.generated_at, now))}</span></div>
+	<div class="mock-bar" data-generated-at="${escapeHtml(page.generated_at)}">🔒 一个固定链接 · 手机能开 · 按需刷新 · 页面快照截至 ${escapeHtml(page.generated_at)} · <span data-opened-age>${escapeHtml(relativeTime(page.generated_at, now))}</span></div>
 	<div class="m-h"><h1 class="m-t">${escapeHtml(page.key.project_name)} · 现在在做什么</h1><div class="note">全部默认收起,点开才展开</div></div>
 	${renderAttention(page, now, dictionary)}
 	${renderDeployment(page, now)}

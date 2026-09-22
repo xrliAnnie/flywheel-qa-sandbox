@@ -744,8 +744,11 @@ it("shows short dependency titles but retains the complete title in the shared d
 });
 
 it("matches the founder-approved v5 blocks without legacy overview furniture", () => {
-	const { doc } = fixture();
+	const { doc, html } = fixture();
 	expect(doc.querySelector(".mock-bar")?.textContent).toContain("一个固定链接");
+	expect(doc.querySelector(".mock-bar")?.textContent).toContain("按需刷新");
+	expect(doc.querySelector(".mock-bar")?.textContent).toContain("页面快照截至");
+	expect(html).not.toContain("系统自己刷新");
 	expect(doc.querySelector(".m-h .note")?.textContent).toBe(
 		"全部默认收起,点开才展开",
 	);

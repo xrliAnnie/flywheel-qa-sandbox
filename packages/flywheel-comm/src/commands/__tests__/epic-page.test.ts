@@ -80,6 +80,23 @@ describe("flywheel-comm epic-page", () => {
 		});
 	});
 
+	it("publishes only through the explicit publish verb", async () => {
+		const fetchFn = vi.fn(async () => response({ receipt: { version: 2 } }));
+		const input = deps({ fetchFn });
+		expect(await runEpicPage(["publish"], input)).toBe(0);
+		expect(fetchFn).toHaveBeenCalledWith(
+			"http://localhost:9876/api/epic-page/generate",
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({ projectName: "example", publish: true }),
+			}),
+		);
+		expect(JSON.parse(vi.mocked(input.log!).mock.calls[0]![0])).toMatchObject({
+			ok: true,
+			command: "publish",
+		});
+	});
+
 	it("recomputes JSON and Markdown instead of reading a stored version", async () => {
 		const fetchFn = vi
 			.fn()

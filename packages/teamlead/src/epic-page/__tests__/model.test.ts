@@ -309,7 +309,7 @@ function validPage(withItem = true): EpicPage {
 				"no_prior_generation",
 			),
 			last_published: missingStatestoreCell(
-				"epic_page_refresh",
+				"epic_page_publication",
 				"no_prior_publication",
 			),
 			publish_failures: {
@@ -976,4 +976,12 @@ it("hosted digest ignores refresh bookkeeping but preserves substantive changes"
 	refreshed.header.roots.value![0]!.title = "changed";
 	expect(hostedContentDigest(refreshed)).not.toBe(hostedContentDigest(page));
 	expect(page.generator.version).not.toBe("next-generator");
+});
+
+it("requires publication provenance for last published freshness", () => {
+	const page = validPage() as any;
+	page.freshness.last_published.provenance.table = "epic_page_publication";
+	expect(assertEpicPage(page)).toBeUndefined();
+	page.freshness.last_published.provenance.table = "epic_page_refresh";
+	expectSchemaFailure(page);
 });

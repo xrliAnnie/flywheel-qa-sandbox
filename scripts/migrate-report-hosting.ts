@@ -145,7 +145,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 			log: print,
 		});
 		print(
-			"Epic audit 下一次刷新补齐。按 envHint 更新凭据后删除 secretsFile；无需重启 Bridge。",
+			`更新并启动支持显式发布的 Bridge 后，运行 flywheel-comm epic-page publish --project ${command.projectName} 并验证固定链接。按 envHint 更新凭据后删除 secretsFile。`,
 		);
 		print(result);
 		return;

@@ -92,54 +92,55 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 	});
 	const serializer = createEpicPageSerializer();
 	let readFailure = false;
+	const runAttempt = (input: Parameters<typeof runEpicPageAttempt>[1]) =>
+		runEpicPageAttempt(
+			{
+				store,
+				serializer,
+				publisher,
+				now: () => EPIC_SHAPE_NOW,
+				materialize: (attempt) =>
+					materializeEpicPage(
+						{
+							fetchSnapshot: async () => snapshot,
+							readItemFacts: () => emptyItemFacts(),
+							readLeadNotes: (project, ids) => {
+								if (readFailure) throw new Error("fixture read failure");
+								return store.getLeadNotes(project, ids);
+							},
+							readSignals: (projectName, items, now) =>
+								readSignals(
+									{
+										stateStore: store,
+										openCommReadonly: () => ({
+											listEpicPageSignals: () => ({
+												signals: [],
+												truncated: false,
+											}),
+											close: () => undefined,
+										}),
+									},
+									{ projectName, items, now },
+								),
+							readFreshness: (projectName) => ({
+								history: store.getEpicPageFreshness(projectName),
+								publication: store.getEpicPagePublication(projectName),
+							}),
+							readAttention: async () => attentionFixture(),
+							generatePage: generateAttentionEpicPage,
+							buildReceipt: buildEpicPageRenderReceipt,
+							now: () => EPIC_SHAPE_NOW,
+						},
+						{ ...attempt, leadNoteFadeDays: 2.5 },
+					),
+			},
+			input,
+		);
 	const refresher = createEpicPageRefresher({
 		store,
 		projects,
 		linearApiKey: "fixture",
-		runAttempt: (input) =>
-			runEpicPageAttempt(
-				{
-					store,
-					serializer,
-					publisher,
-					now: () => EPIC_SHAPE_NOW,
-					materialize: (attempt) =>
-						materializeEpicPage(
-							{
-								fetchSnapshot: async () => snapshot,
-								readItemFacts: () => emptyItemFacts(),
-								readLeadNotes: (project, ids) => {
-									if (readFailure) throw new Error("fixture read failure");
-									return store.getLeadNotes(project, ids);
-								},
-								readSignals: (projectName, items, now) =>
-									readSignals(
-										{
-											stateStore: store,
-											openCommReadonly: () => ({
-												listEpicPageSignals: () => ({
-													signals: [],
-													truncated: false,
-												}),
-												close: () => undefined,
-											}),
-										},
-										{ projectName, items, now },
-									),
-								readFreshness: (projectName) => ({
-									history: store.getEpicPageFreshness(projectName),
-									publication: store.getEpicPagePublication(projectName),
-								}),
-								readAttention: async () => attentionFixture(),
-								generatePage: generateAttentionEpicPage,
-								buildReceipt: buildEpicPageRenderReceipt,
-								now: () => EPIC_SHAPE_NOW,
-							},
-							{ ...attempt, leadNoteFadeDays: 2.5 },
-						),
-				},
-				input,
-			),
+		runAttempt,
 	});
 	const app = express();
 	app.use(express.json());
@@ -167,6 +168,7 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 			["example", "engineering"],
 			["second", "生活 部门"],
 		]) {
+			const blobCountBeforeEvents = blobs.size;
 			const invoke = async (
 				command: string,
 				id: string,
@@ -227,6 +229,16 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 				),
 			).toMatchObject({ ok: true });
 			await refresher.flushForTest();
+			expect(store.getEpicPagePublication(project!)).toBeUndefined();
+			expect(blobs.size).toBe(blobCountBeforeEvents);
+			await runAttempt({
+				projectName: project!,
+				binding: { team: "EPX" },
+				apiKey: "fixture",
+				trigger: "manual",
+				reasons: ["manual"],
+				publishHosted: true,
+			});
 			const publication = store.getEpicPagePublication(project!);
 			expect(publication).toBeDefined();
 			const token = publication!.token;
@@ -241,6 +253,15 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 				await invoke("clear", snapshot.items[0]!.identifier, role!),
 			).toMatchObject({ ok: true, changed: true });
 			await refresher.flushForTest();
+			expect(blobs.get(token)).toContain(`${project} 子判断`);
+			await runAttempt({
+				projectName: project!,
+				binding: { team: "EPX" },
+				apiKey: "fixture",
+				trigger: "manual",
+				reasons: ["manual"],
+				publishHosted: true,
+			});
 			expect(blobs.get(token)).not.toContain(`${project} 子判断`);
 			expect(blobs.get(token)).toContain("并列保留");
 			const beforeFailure = blobs.get(token);
@@ -251,6 +272,15 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 			readFailure = false;
 			refresher.requestRefresh(project!, "lead_note_changed");
 			await refresher.flushForTest();
+			expect(blobs.get(token)).toBe(beforeFailure);
+			await runAttempt({
+				projectName: project!,
+				binding: { team: "EPX" },
+				apiKey: "fixture",
+				trigger: "manual",
+				reasons: ["manual"],
+				publishHosted: true,
+			});
 			expect(blobs.get(token)).toContain("等待读库恢复");
 			for (const [id, r] of [
 				[snapshot.items[0]!.id, role!],
@@ -259,6 +289,15 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 			])
 				await invoke("clear", id!, r!);
 			await refresher.flushForTest();
+			expect(blobs.get(token)).toContain("等待读库恢复");
+			await runAttempt({
+				projectName: project!,
+				binding: { team: "EPX" },
+				apiKey: "fixture",
+				trigger: "manual",
+				reasons: ["manual"],
+				publishHosted: true,
+			});
 			expect(store.getEpicPagePublication(project!)!.token).toBe(token);
 			expect(blobs.get(token)).not.toMatch(/<[^>]+data-lead-written-at=/);
 			expect(blobs.get(token)).toContain("还没有人写过");

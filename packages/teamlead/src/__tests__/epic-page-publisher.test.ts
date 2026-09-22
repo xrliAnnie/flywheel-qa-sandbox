@@ -174,11 +174,7 @@ describe("hosted Epic page publisher", () => {
 		"defers real Epic cleanup until registry commit succeeds (conflict=%s)",
 		async (conflict) => {
 			const objects = new Map<string, string | Buffer>();
-			let listSawCommitted = false;
-			const list = vi.fn(async () => {
-				listSawCommitted = registry.list().length === 1;
-				return { blobs: [], hasMore: false };
-			});
+			const list = vi.fn(async () => ({ blobs: [], hasMore: false }));
 			const del = vi.fn();
 			const actual = new VercelBlobReportStore("fake", {
 				get: vi.fn().mockResolvedValue(null),
@@ -204,8 +200,7 @@ describe("hosted Epic page publisher", () => {
 				}).publishHosted(epicPage()),
 			).toBe(conflict ? "transient: publish_failed:credentials" : "ok:1");
 			expect(objects.size).toBe(2);
-			expect(list).toHaveBeenCalledTimes(conflict ? 0 : 1);
-			expect(listSawCommitted).toBe(!conflict);
+			expect(list).not.toHaveBeenCalled();
 			expect(del).not.toHaveBeenCalled();
 			expect(registry.list()).toHaveLength(conflict ? 0 : 1);
 		},
@@ -252,7 +247,7 @@ describe("hosted Epic page publisher", () => {
 		value = a;
 		expect(await subject.publishHosted(epicPage())).toBe("ok:1");
 		expect(put.mock.calls.map((call) => call[2].token)).toEqual([a, a]);
-		expect(list.mock.calls[0]![0].token).toBe(a);
+		expect(list).not.toHaveBeenCalled();
 		snapshot.mockClear();
 		expect(await subject.publishHosted(epicPage())).toBe(
 			"ok_unpublished:1:unchanged_digest",
@@ -276,6 +271,19 @@ describe("hosted Epic page publisher", () => {
 		expect(putEpicPage).toHaveBeenCalledTimes(1);
 		expect(binding).toHaveBeenCalledTimes(1);
 		expect(store.getEpicPagePublication("example")?.last_version).toBe(1);
+	});
+
+	it("force publishes unchanged content inside the keepalive", async () => {
+		const page = epicPage();
+		expect(await publisher().publishHosted(page)).toBe("ok:1");
+		page.freshness.current.value!.version = 2;
+		expect(
+			await publisher({
+				now: () => new Date(EPIC_SHAPE_NOW.getTime() + 60_000),
+			}).publishHosted(page, { force: true }),
+		).toBe("ok:2");
+		expect(putEpicPage).toHaveBeenCalledTimes(2);
+		expect(store.getEpicPagePublication("example")?.last_version).toBe(2);
 	});
 
 	it.each(["24h", "25h", "content", "hosting", "legacy-null"])(

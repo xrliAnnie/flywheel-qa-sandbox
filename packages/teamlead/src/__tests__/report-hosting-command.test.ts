@@ -178,6 +178,10 @@ it("dispatches all successful modes with named credentials and leaves the operat
 		expect(output.mock.calls.flat().join(" ")).not.toContain(
 			"vercel_blob_rw_abc_secret",
 		);
+		expect(output.mock.calls.flat().join(" ")).toContain(
+			"flywheel-comm epic-page publish --project",
+		);
+		expect(output.mock.calls.flat().join(" ")).not.toContain("无需重启 Bridge");
 	} finally {
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();

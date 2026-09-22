@@ -43,6 +43,7 @@ import { resolveProjectNameParam } from "./linear-scope.js";
 import { scheduledAtOrBefore } from "./patrol-tick.js";
 import type { ReportHostOverride } from "./report-host-override.js";
 import type { ReportRegistry } from "./report-registry.js";
+import { REPORT_RETENTION_MS } from "./report-retention.js";
 import { reportUrlForToken } from "./report-url.js";
 
 type EpicPageFormat = "json" | "md" | "html";
@@ -167,6 +168,12 @@ export function createEpicPageStatusRouter(
 			const schedule = deps.scanSchedule?.(project.projectName);
 			const nowMs = now().getTime();
 			const published = row?.published === true && !deps.hostOverride;
+			const expiresAt =
+				published && row.last_published_at
+					? new Date(
+							Date.parse(row.last_published_at) + REPORT_RETENTION_MS,
+						).toISOString()
+					: null;
 			const nextScanExpectedAt = schedule
 				? new Date(
 						scheduledAtOrBefore(nowMs, schedule.leadId, schedule.intervalMs) +
@@ -179,6 +186,7 @@ export function createEpicPageStatusRouter(
 					? {
 							token8: row.token.slice(0, 8),
 							published,
+							expires_at: expiresAt,
 							url: published
 								? reportUrlForToken(deps.registry, row.token)
 								: null,
@@ -216,8 +224,15 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 			req.body !== null &&
 			typeof req.body === "object" &&
 			Object.keys(req.body).some(
-				(key) => key !== "projectName" && key !== "format",
+				(key) => key !== "projectName" && key !== "format" && key !== "publish",
 			)
+		) {
+			res.status(400).json({ error: "unsupported_option" });
+			return;
+		}
+		if (
+			req.body?.publish !== undefined &&
+			typeof req.body.publish !== "boolean"
 		) {
 			res.status(400).json({ error: "unsupported_option" });
 			return;
@@ -301,6 +316,10 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 									),
 								readLeadNotes: (projectName, ids) =>
 									deps.store.getLeadNotes(projectName, ids),
+								readShipJudgmentHistory: (asOf) =>
+									deps.store.getEpicShipJudgmentHistory(asOf),
+								readDeployment: (projectName) =>
+									deps.store.getShuttleDeploymentProjection(projectName),
 								readFreshness: (projectName) => ({
 									history: deps.store.getEpicPageFreshness(projectName),
 									publication: deps.store.getEpicPagePublication(projectName),
@@ -323,10 +342,15 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 					apiKey: deps.linearApiKey!,
 					trigger: "manual",
 					reasons: ["manual"],
+					publishHosted: req.body?.publish === true,
 					scanSchedule: deps.scanSchedule?.(project.projectName),
 				},
 			);
 			if (result.kind === "unavailable") throw result.error;
+			if (req.body?.publish === true && !result.outcome.startsWith("ok:")) {
+				res.status(503).json({ error: result.outcome });
+				return;
+			}
 			const document = result.materialized.page;
 			const inserted = result.inserted;
 			if (format === "md") {

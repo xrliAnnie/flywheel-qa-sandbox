@@ -783,7 +783,7 @@ function assertFreshness(
 	const expectedTables: Record<string, string> = {
 		current: "epic_page",
 		last_generated: "epic_page_refresh",
-		last_published: "epic_page_refresh",
+		last_published: "epic_page_publication",
 		publish_failures: "epic_page_refresh",
 		last_failure: "epic_page_refresh",
 		last_publish_failure: "epic_page_refresh",

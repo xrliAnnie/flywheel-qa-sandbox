@@ -144,48 +144,30 @@ it("retains a newer dirty revision written during materialization", async () => 
 			?.pageDirty,
 	).toBe(true);
 });
-it.each([
-	"transient: publish_failed:blob",
-	"ok_unpublished:1:skipped_hosting_not_configured",
-	"ok_unpublished:1:skipped_hosting_unsupported",
-] as const)(
-	"bounds %s attempts across repeated dirty scans and restart",
-	async (outcome) => {
-		const row = intake();
-		const f = fixture();
-		f.publisher.publishHosted.mockResolvedValue(outcome);
-		for (let tick = 0; tick < 120; tick++) {
-			await f.run();
-			f.advance(30_000);
+it("keeps repeated intake events locally refreshable without hosted publishing", async () => {
+	const row = intake();
+	const f = fixture();
+	for (let tick = 0; tick < 5; tick++) {
+		if (tick > 0) {
+			store.markEpicIntakePageDirty(
+				row.eventUid,
+				new Date(Date.parse(at) + tick * 30_000).toISOString(),
+			);
 		}
-		expect(f.materialize).toHaveBeenCalledTimes(3);
-		expect(f.deps.store.insertEpicPageRefresh).toHaveBeenCalledTimes(3);
-		expect(f.deps.store.insertEpicPageRefresh).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				outcome: "structural: intake_not_refreshable",
-			}),
-		);
+		await f.run();
+		f.advance(30_000);
 		expect(
 			store.listEpicIntakes("test").find((r) => r.eventUid === row.eventUid)
 				?.pageDirty,
-		).toBe(true);
-		expect(store.getEpicIntakeRefreshState("test")).toMatchObject({
-			failures: 3,
-			notRefreshable: true,
-		});
-		store.close();
-		store = await StateStore.create(join(dir, "state.db"));
-		const restarted = fixture();
-		await restarted.run();
-		expect(restarted.materialize).not.toHaveBeenCalled();
-		// An independent normal scan can verify repaired hosting and re-arm intake refresh.
-		await restarted.run("scan");
-		expect(store.getEpicIntakeRefreshState("test")).toMatchObject({
-			failures: 0,
-			notRefreshable: false,
-		});
-	},
-);
+		).toBe(false);
+	}
+	expect(f.materialize).toHaveBeenCalledTimes(5);
+	expect(f.publisher.publishHosted).not.toHaveBeenCalled();
+	expect(store.getEpicIntakeRefreshState("test")).toMatchObject({
+		failures: 0,
+		notRefreshable: false,
+	});
+});
 it("also bounds persistent materialization failures and keeps projects independent", async () => {
 	intake();
 	const f = fixture();
@@ -200,6 +182,30 @@ it("also bounds persistent materialization failures and keeps projects independe
 		expect.objectContaining({ outcome: "structural: intake_not_refreshable" }),
 	);
 	expect(store.getEpicIntakeRefreshState("other").notRefreshable).toBe(false);
+});
+
+it("re-arms intake refresh after a successful local scan", async () => {
+	intake();
+	const f = fixture();
+	for (let failure = 0; failure < 3; failure += 1) {
+		store.recordEpicIntakeRefreshResult(
+			"test",
+			false,
+			new Date(Date.parse(at) + failure * 60_000).toISOString(),
+		);
+	}
+	expect(store.getEpicIntakeRefreshState("test")).toMatchObject({
+		failures: 3,
+		notRefreshable: true,
+	});
+
+	await f.run("scan");
+
+	expect(f.publisher.publishHosted).not.toHaveBeenCalled();
+	expect(store.getEpicIntakeRefreshState("test")).toMatchObject({
+		failures: 0,
+		notRefreshable: false,
+	});
 });
 
 it("upgrades the existing scan table idempotently without moving its watermark", () => {
@@ -236,9 +242,7 @@ it("upgrades the existing scan table idempotently without moving its watermark",
 it("recovers after a transient failure only when the retry is due", async () => {
 	const row = intake();
 	const f = fixture();
-	f.publisher.publishHosted.mockResolvedValueOnce(
-		"transient: publish_failed:blob",
-	);
+	f.materialize.mockRejectedValueOnce(new Error("snapshot unavailable"));
 	await f.run();
 	f.advance(30_000);
 	await f.run();

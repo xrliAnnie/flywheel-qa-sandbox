@@ -70,6 +70,10 @@ describe("FLY-2143 Epic page freshness", () => {
 		});
 		expect(freshness.last_published).toMatchObject({
 			value: { version: 5, trigger: "event" },
+			provenance: {
+				kind: "statestore",
+				table: "epic_page_publication",
+			},
 			source_updated_at: "2026-09-05T03:00:00.000Z",
 		});
 		expect(freshness.publish_failures.value).toEqual({ count: 2 });

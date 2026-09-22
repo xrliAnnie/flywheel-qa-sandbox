@@ -2474,6 +2474,8 @@ export type EpicPageTrigger = "manual" | "event" | "scan";
 export const EPIC_PAGE_REFRESH_OUTCOMES = [
 	"ok:<version>",
 	"ok_unpublished:<version>:manual",
+	"ok_unpublished:<version>:event",
+	"ok_unpublished:<version>:scan",
 	"ok_unpublished:<version>:skipped_hosting_not_configured",
 	"ok_unpublished:<version>:skipped_hosting_unsupported",
 	"ok_unpublished:<version>:unchanged_digest",
@@ -2496,7 +2498,7 @@ export function parseEpicPageRefreshOutcome(value: unknown): string {
 	}
 	if (/^ok:[1-9]\d*$/.test(value)) return value;
 	if (
-		/^ok_unpublished:[1-9]\d*:(?:manual|skipped_hosting_not_configured|skipped_hosting_unsupported|unchanged_digest)$/.test(
+		/^ok_unpublished:[1-9]\d*:(?:manual|event|scan|skipped_hosting_not_configured|skipped_hosting_unsupported|unchanged_digest)$/.test(
 			value,
 		)
 	) {
@@ -16252,13 +16254,36 @@ export class StateStore {
 				row.outcome.startsWith("ok_unpublished:"),
 		);
 		const publishedRow = rows.find((row) => row.outcome.startsWith("ok:"));
+		const publication = this.getEpicPagePublication(projectName);
+		const authoritativePublishedAt =
+			publication?.published === true ? publication.last_published_at : undefined;
+		const authoritativePublishedVersion =
+			publication?.published === true ? publication.last_version : undefined;
+		const publicationReceipt =
+			authoritativePublishedVersion === undefined
+				? undefined
+				: this.workflowSelectAll(
+						`SELECT trigger FROM epic_page
+						  WHERE project_name = ? AND version = ?`,
+						[projectName, authoritativePublishedVersion],
+					)[0];
+		const publicationTrigger = ["manual", "event", "scan"].includes(
+			String(publicationReceipt?.trigger),
+		)
+			? (String(publicationReceipt?.trigger) as EpicPageTrigger)
+			: "manual";
+		const publishedBoundary = authoritativePublishedAt ?? publishedRow?.attempted_at;
+		const isPublishFailure = (outcome: string): boolean =>
+			outcome.startsWith("transient: publish_failed:") ||
+			outcome === "structural: epic_html_too_large";
 		const publishFailures = rows.filter((row) => {
-			if (row.trigger === "manual" || row.outcome.startsWith("ok")) return false;
-			if (!publishedRow) return true;
+			if (!isPublishFailure(row.outcome)) return false;
+			if (authoritativePublishedAt)
+				return row.attempted_at >= authoritativePublishedAt;
+			if (!publishedRow || !publishedBoundary) return true;
 			return (
-				row.attempted_at > publishedRow.attempted_at ||
-				(row.attempted_at === publishedRow.attempted_at &&
-					row.rowid > publishedRow.rowid)
+				row.attempted_at > publishedBoundary ||
+				(row.attempted_at === publishedBoundary && row.rowid > publishedRow.rowid)
 			);
 		});
 		const lastFailure = rows.find((row) => !row.outcome.startsWith("ok"));
@@ -16272,7 +16297,16 @@ export class StateStore {
 				trigger: generatedRow.trigger,
 			};
 		}
-		if (publishedRow) {
+		if (
+			authoritativePublishedAt &&
+			authoritativePublishedVersion !== undefined
+		) {
+			result.last_published = {
+				version: authoritativePublishedVersion,
+				attempted_at: authoritativePublishedAt,
+				trigger: publicationTrigger,
+			};
+		} else if (publishedRow) {
 			result.last_published = {
 				version: parseVersion(publishedRow.outcome)!,
 				attempted_at: publishedRow.attempted_at,
