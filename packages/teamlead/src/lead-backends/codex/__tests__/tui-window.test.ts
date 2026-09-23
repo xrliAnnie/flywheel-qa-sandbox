@@ -553,11 +553,12 @@ describe("real tmux exit evidence without a client locale", () => {
 					"=flywheel",
 					"-n",
 					"growth-mufasa-lead",
-					"/bin/sh -c 'exit 42'",
+					"/bin/sh -c 'sleep 1; exit 42'",
 				]);
 				const target = "=flywheel:=growth-mufasa-lead";
 				let dead = "";
-				for (let attempt = 0; attempt < 30; attempt += 1) {
+				const deadline = Date.now() + EXIT_EVIDENCE_POLL_BUDGET_MS;
+				while (true) {
 					dead = runIsolatedTmux(socket, [
 						"display-message",
 						"-p",
@@ -565,8 +566,8 @@ describe("real tmux exit evidence without a client locale", () => {
 						target,
 						"#{pane_dead} #{pane_dead_status}",
 					]).trim();
-					if (dead === "1 42") break;
-					execFileSync("/bin/sleep", ["0.05"]);
+					if (dead === "1 42" || Date.now() >= deadline) break;
+					execFileSync("/bin/sleep", ["0.1"]);
 				}
 				expect(dead).toBe("1 42");
 
@@ -584,6 +585,7 @@ describe("real tmux exit evidence without a client locale", () => {
 				rmSync(root, { recursive: true, force: true });
 			}
 		},
+		EXIT_EVIDENCE_POLL_BUDGET_MS + 10_000,
 	);
 });
 
