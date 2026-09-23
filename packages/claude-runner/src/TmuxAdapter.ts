@@ -1324,7 +1324,10 @@ export class TmuxAdapter implements IAdapter {
 			validatedAt: new Date().toISOString(),
 		};
 		const path = join(stateDir, "session.json");
-		const temp = join(stateDir, `.session.json.${process.pid}.${randomUUID()}.tmp`);
+		const temp = join(
+			stateDir,
+			`.session.json.${process.pid}.${randomUUID()}.tmp`,
+		);
 		writeFileSync(temp, `${JSON.stringify(state)}\n`, {
 			encoding: "utf8",
 			mode: 0o600,

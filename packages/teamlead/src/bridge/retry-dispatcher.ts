@@ -8,7 +8,10 @@ import type {
 	SkillFrameworkMode,
 	WorkflowDispatchVendor,
 } from "flywheel-config";
-import type { AdapterExecutionContext, LaunchPrecommitOutcome } from "flywheel-core";
+import type {
+	AdapterExecutionContext,
+	LaunchPrecommitOutcome,
+} from "flywheel-core";
 import type {
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,

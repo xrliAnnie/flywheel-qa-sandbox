@@ -82,17 +82,14 @@ describe("recipient identity and StateStore authority", () => {
 		"ship_parked",
 		"approved_to_ship",
 		null,
-	])(
-		"allows StateStore %s regardless of CommDB status",
-		(status) => {
-			seed(db);
-			db.updateSessionStatus(ID, "completed");
-			stateStore = { readStatus: () => ({ readable: true, status }) };
-			expect(
-				resolveRunnerRecipient({ commDb: db, stateStore }, ID),
-			).toMatchObject({ executionId: ID });
-		},
-	);
+	])("allows StateStore %s regardless of CommDB status", (status) => {
+		seed(db);
+		db.updateSessionStatus(ID, "completed");
+		stateStore = { readStatus: () => ({ readable: true, status }) };
+		expect(
+			resolveRunnerRecipient({ commDb: db, stateStore }, ID),
+		).toMatchObject({ executionId: ID });
+	});
 	it("refuses terminal StateStore truth", () => {
 		seed(db);
 		stateStore = {

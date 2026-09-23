@@ -1081,8 +1081,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
-					workflowProcessLifecycle:
-						req.generalizedExecution.processLifecycle,
+					workflowProcessLifecycle: req.generalizedExecution.processLifecycle,
 				}),
 				...runnerSpawn,
 				// FLY-751: recompute the MCP slim profile on retry from the persisted
@@ -1718,7 +1717,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			if (
 				!req.processLifecycle &&
 				(engineOwnedSpawn ||
-					req.shareParentBranch === true && isWorkflowPhaseRole(role))
+					(req.shareParentBranch === true && isWorkflowPhaseRole(role)))
 			) {
 				const turnPhase = isWorkflowPhaseRole(role)
 					? role
@@ -1810,8 +1809,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
-					workflowProcessLifecycle:
-						req.generalizedExecution.processLifecycle,
+					workflowProcessLifecycle: req.generalizedExecution.processLifecycle,
 				}),
 				...(req.processLifecycle && {
 					workflowProcessLifecycle: req.processLifecycle,

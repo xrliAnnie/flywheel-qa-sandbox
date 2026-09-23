@@ -330,7 +330,9 @@ describe("generalized execution admission and terminal contracts", () => {
 			store as unknown as {
 				db: { run(sql: string, params?: unknown[]): void };
 			}
-		).db.run("UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'");
+		).db.run(
+			"UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'",
+		);
 
 		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
 			state: "closed",

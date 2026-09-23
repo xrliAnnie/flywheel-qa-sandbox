@@ -442,7 +442,9 @@ export function computeSessionsFingerprint(
 		| "getActiveWorkflowRunForIssue"
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
-	> & { getWorkflowExecutionActivity?: StateStore["getWorkflowExecutionActivity"] },
+	> & {
+		getWorkflowExecutionActivity?: StateStore["getWorkflowExecutionActivity"];
+	},
 	issueId: string,
 	activeWorkflowRun?: WorkflowRunRow | null,
 ): string {

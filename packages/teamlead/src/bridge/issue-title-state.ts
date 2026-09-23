@@ -94,7 +94,8 @@ export function readIssueTitleState(input: {
 				status: s.status,
 				park: parkFor(s),
 				issueConcluded,
-				activity: store.getWorkflowExecutionActivity?.(s.execution_id)?.activityState,
+				activity: store.getWorkflowExecutionActivity?.(s.execution_id)
+					?.activityState,
 			}),
 		);
 	}

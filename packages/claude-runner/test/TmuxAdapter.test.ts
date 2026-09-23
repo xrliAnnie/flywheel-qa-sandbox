@@ -1496,7 +1496,8 @@ describe("TmuxAdapter", () => {
 			});
 			rmSync(cwd, { recursive: true, force: true });
 		} finally {
-			if (priorRoot === undefined) delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+			if (priorRoot === undefined)
+				delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
 			else process.env.FLYWHEEL_CLAUDE_SESSION_DIR = priorRoot;
 			rmSync(stateRoot, { recursive: true, force: true });
 		}

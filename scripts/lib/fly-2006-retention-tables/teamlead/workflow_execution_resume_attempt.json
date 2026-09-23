@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_execution_resume_attempt",
+	"classification": "protectedCurrentOrReference"
+}

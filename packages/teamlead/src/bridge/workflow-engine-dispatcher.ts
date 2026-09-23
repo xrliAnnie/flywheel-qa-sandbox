@@ -2062,9 +2062,7 @@ export class WorkflowEngineDispatcher {
 					).length;
 					if (faultReplacementCount < MAX_BLIND_REPLACEMENTS) {
 						const delay =
-							WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[
-								faultReplacementCount
-							]!;
+							WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[faultReplacementCount]!;
 						const launchedAt = parseSqliteUtcMs(latest.created_at);
 						if (
 							launchedAt !== null &&
@@ -3127,7 +3125,9 @@ export class WorkflowEngineDispatcher {
 									now: evidence.retiredAt,
 								});
 								if (!retired.ok) {
-									throw new Error(`engine_process_retirement_${retired.reason}`);
+									throw new Error(
+										`engine_process_retirement_${retired.reason}`,
+									);
 								}
 							},
 						},

@@ -9624,7 +9624,9 @@ export async function startBridge(
 		store,
 		isIntentionalStandby: (executionId) => {
 			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
-			return state === "retiring" || state === "standby" || state === "resuming";
+			return (
+				state === "retiring" || state === "standby" || state === "resuming"
+			);
 		},
 		alertIdentity: (session) => {
 			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
@@ -13872,10 +13874,9 @@ export async function startBridge(
 								);
 					let manifest: Record<string, unknown>;
 					try {
-						manifest = JSON.parse(ffReadFileSync(manifestPath, "utf8")) as Record<
-							string,
-							unknown
-						>;
+						manifest = JSON.parse(
+							ffReadFileSync(manifestPath, "utf8"),
+						) as Record<string, unknown>;
 					} catch {
 						return { ok: false, error: "resume_manifest_unavailable" };
 					}
@@ -13960,7 +13961,9 @@ export async function startBridge(
 							issueIdentifier: session.issue_identifier,
 							issueTitle: session.issue_title,
 							sessionRole:
-								session.chat_thread_role ?? session.session_role ?? runtime.node_id,
+								session.chat_thread_role ??
+								session.session_role ??
+								runtime.node_id,
 							shareParentBranch: true,
 							startPoint: currentHead,
 							ignoreRunnerLabelSelection: true,

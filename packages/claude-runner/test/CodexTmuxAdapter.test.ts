@@ -820,11 +820,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(
 			JSON.parse(
 				readFileSync(
-					join(
-						process.env.FLYWHEEL_CODEX_SESSION_DIR!,
-						execId,
-						"session.json",
-					),
+					join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId, "session.json"),
 					"utf8",
 				),
 			),

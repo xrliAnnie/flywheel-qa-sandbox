@@ -115,7 +115,12 @@ export interface WorkflowReworkCoordinatorStore {
 		ownerClaimId: string;
 		now: string;
 	}):
-		| { ok: true; generation: number; attempt: number; idempotentReplay: boolean }
+		| {
+				ok: true;
+				generation: number;
+				attempt: number;
+				idempotentReplay: boolean;
+		  }
 		| { ok: false; reason: string };
 	finishWorkflowExecutionResume?(input: {
 		executionId: string;

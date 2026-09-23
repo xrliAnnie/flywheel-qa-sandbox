@@ -9195,6 +9195,7 @@ export class StateStore {
 					this.db.raw.exec(`
 						DROP TRIGGER IF EXISTS workflow_execution_runtime_no_update;
 						DROP TRIGGER IF EXISTS workflow_execution_runtime_no_delete;
+						DROP TRIGGER IF EXISTS workflow_process_body_close_with_run;
 						CREATE TABLE workflow_execution_runtime_next (
 							execution_id TEXT PRIMARY KEY,
 							run_id TEXT NOT NULL,
@@ -9213,6 +9214,19 @@ export class StateStore {
 						DROP TABLE workflow_execution_runtime;
 						ALTER TABLE workflow_execution_runtime_next
 							RENAME TO workflow_execution_runtime;
+						CREATE TRIGGER workflow_process_body_close_with_run
+						AFTER UPDATE OF status ON workflow_run
+						WHEN NEW.status IN ('completed','terminated') AND OLD.status <> NEW.status
+						BEGIN
+							UPDATE workflow_execution_process_body
+							   SET state = 'closed', current_demand_id = NULL,
+							       owner_claim_id = NULL, updated_at = datetime('now'),
+							       reason_code = 'workflow_run_terminal'
+							 WHERE execution_id IN (
+							       SELECT execution_id FROM workflow_execution_runtime
+							        WHERE run_id = NEW.run_id
+							 ) AND state <> 'closed';
+						END;
 					`);
 				}
 
@@ -58954,9 +58968,7 @@ export class StateStore {
 			failureCode: current.failureCode,
 			priorDeadExecutionId: String(prior.execution_id),
 			lastError: current.lastError,
-			launchCount: launches.filter(
-				(launch) => launch.purpose === "fault_replacement",
-			).length,
+			launchCount: launches.length,
 		};
 	}
 
@@ -59143,6 +59155,13 @@ export class StateStore {
 				input.attempt,
 			);
 			if (faultReplacementCount >= MAX_BLIND_REPLACEMENTS) {
+				const launchCount = Number(
+					this.workflowSelectAll(
+						`SELECT COUNT(*) AS count FROM workflow_side_effect_ledger
+						  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'`,
+						[input.runId, input.nodeId, input.attempt],
+					)[0]?.count ?? 0,
+				);
 				const outputExistsForAttempt =
 					this.workflowSelectAll(
 						`SELECT 1 AS present FROM workflow_node_outputs
@@ -59161,12 +59180,13 @@ export class StateStore {
 				);
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
-					eventUid: `retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${faultReplacementCount}`,
+					eventUid: `retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
 					kind: "retry_limit_escalated",
 					nodeId: input.nodeId,
 					executionId: input.deadExecutionId,
 					payload: {
 						attempt: input.attempt,
+						launchCount,
 						faultReplacementCount,
 						reason: input.reason,
 						livenessEvidence: input.livenessEvidence,
@@ -59174,8 +59194,8 @@ export class StateStore {
 					},
 				});
 				enqueueAlert(
-					`retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${faultReplacementCount}`,
-					faultReplacementCount,
+					`retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
+					launchCount,
 					outputExistsForAttempt,
 				);
 				result = { ok: false, reason: "retry_limit_exceeded" };
