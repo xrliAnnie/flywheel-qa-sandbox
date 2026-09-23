@@ -1,14 +1,13 @@
 ---
 issue: FLY-2798
 phase: design
-phaseCursor: 2/6
-updated: 2026-09-23T18:04:35.423Z
-nextStep: Write implementation plan with V2 dependency contracts and all
-  acceptance evidence
+phaseCursor: 3/6
+updated: 2026-09-23T18:08:23.507Z
+nextStep: Check dependency alignment, commit plan and explicitly request design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: design (2/6)
-**next**: Write implementation plan with V2 dependency contracts and all acceptance evidence
+**phase**: design (3/6)
+**next**: Check dependency alignment, commit plan and explicitly request design review
