@@ -12,6 +12,7 @@ import type { OpenAiLiveSessionConfig } from "./liveProtocol.js";
 export type LiveCancelReason =
 	| "barge-in"
 	| "announcer-takeover"
+	| "delegation-sealed"
 	| "provider-failure"
 	| "session-close";
 
@@ -29,6 +30,7 @@ export interface LiveGenerationControllerEvents extends LiveSessionEvents {
 	retired: [
 		result: {
 			generation: number;
+			reason: LiveCancelReason;
 			finalization: LiveSessionFinalization;
 		},
 	];
@@ -102,7 +104,7 @@ export class LiveGenerationController {
 		this.cancelCurrent(reason);
 		const replacement = (async (): Promise<number> => {
 			if (priorSession) {
-				await this.retire(priorSession);
+				await this.retire(priorSession, reason);
 			}
 			if (priorOpening) await priorOpening.catch(() => undefined);
 			if (this.closed) throw this.closedError();
@@ -139,7 +141,7 @@ export class LiveGenerationController {
 		const priorOpening = this.opening;
 		this.cancelCurrent("session-close");
 		this.closing = (async () => {
-			if (priorSession) await this.retire(priorSession);
+			if (priorSession) await this.retire(priorSession, "session-close");
 			if (priorOpening) await priorOpening.catch(() => undefined);
 		})();
 		return this.closing;
@@ -215,13 +217,16 @@ export class LiveGenerationController {
 		this.sessionUnsubscribers.delete(session);
 	}
 
-	private async retire(session: LiveSession): Promise<void> {
+	private async retire(
+		session: LiveSession,
+		reason: LiveCancelReason,
+	): Promise<void> {
 		const result = await session.retire({
 			deadlineMs: this.opts.retirementDeadlineMs,
 		});
 		this.detach(session);
 		if (this.active === session) this.active = undefined;
-		this.emitter.emit("retired", result);
+		this.emitter.emit("retired", { ...result, reason });
 	}
 
 	private cancelCurrent(reason: LiveCancelReason): void {

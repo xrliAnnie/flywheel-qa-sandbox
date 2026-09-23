@@ -152,6 +152,29 @@ describe("LiveGenerationController", () => {
 		await expect(replacing).resolves.toBe(2);
 	});
 
+	it("seals a delegated generation before admitting its replacement", async () => {
+		const { controller, sockets, cancelLocalOutput } = makeController();
+		const retired = vi.fn();
+		controller.on("retired", retired);
+		const starting = controller.start();
+		await vi.waitFor(() => expect(sockets).toHaveLength(1));
+		sockets[0]?.started(1);
+		await starting;
+
+		const replacing = controller.cancelAndReplace("delegation-sealed");
+		expect(cancelLocalOutput).toHaveBeenCalledWith(1, "delegation-sealed");
+		expect(controller.turnCancelOrSuppress).toBe(false);
+		sockets[0]?.receive({ type: "session.closed" });
+		await vi.waitFor(() => expect(sockets).toHaveLength(2));
+		expect(retired).toHaveBeenCalledWith({
+			generation: 1,
+			reason: "delegation-sealed",
+			finalization: "provider_connection_closed",
+		});
+		sockets[1]?.started(2);
+		await expect(replacing).resolves.toBe(2);
+	});
+
 	it("closes without reconnecting and refuses later effects", async () => {
 		const { controller, sockets, cancelLocalOutput } = makeController();
 		const starting = controller.start();
