@@ -2036,6 +2036,13 @@ export function buildCodexLeadRuntime(
 						externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 					}
 				},
+				onRuntimeTimelineEvent: (event) => {
+					if (event.memberIds.length === 0) return;
+					console.info("[lead-inbox-timeline]", {
+						leadId: config.leadId,
+						...event,
+					});
+				},
 				...(typing ? { typing } : {}),
 				...(replyInThread
 					? {

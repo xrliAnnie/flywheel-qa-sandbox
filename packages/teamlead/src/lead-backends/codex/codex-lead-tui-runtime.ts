@@ -1583,6 +1583,13 @@ export function buildTuiGeneration(
 									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 								}
 							},
+							onRuntimeTimelineEvent: (event) => {
+								if (event.memberIds.length === 0) return;
+								console.info("[lead-inbox-timeline]", {
+									leadId: config.leadId,
+									...event,
+								});
+							},
 							onInputAccepted: (entry) => {
 								lastActivityAt = Date.now();
 								replyInThread?.onInputAccepted(entry);

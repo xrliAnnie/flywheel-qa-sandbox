@@ -117,6 +117,16 @@ export interface LeadInputBatch {
 	replyRoute?: RoundtableReplyRoute;
 }
 
+export interface LeadRuntimeTimelineEvent {
+	eventId: string;
+	stage: "model_consumed" | "lead_result_committed";
+	entryId: string;
+	idempotencyKey: string;
+	memberIds: string[];
+	turnId: string;
+	at: number;
+}
+
 export interface LeadInputRouterOptions {
 	leadId: string;
 	threadId: string;
@@ -145,6 +155,12 @@ export interface LeadInputRouterOptions {
 	 * journal reaches completed; failures are logged so an already-delivered
 	 * response is never mislabeled ambiguous. */
 	onEntryCompleted?: (entry: import("./LeadJournal.js").JournalEntry) => void;
+	/**
+	 * Runtime-derived latency evidence. Unlike the inbox socket receipt, these
+	 * stages are emitted only after a real turn id is durably associated with the
+	 * input and after its result is committed to the journal, respectively.
+	 */
+	onRuntimeTimelineEvent?: (event: LeadRuntimeTimelineEvent) => void;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -164,6 +180,7 @@ export class LeadInputRouter {
 	private readonly onTopicEngaged?: (route: RoundtableReplyRoute) => void;
 	private readonly onInputAccepted?: LeadInputRouterOptions["onInputAccepted"];
 	private readonly onEntryCompleted?: LeadInputRouterOptions["onEntryCompleted"];
+	private readonly onRuntimeTimelineEvent?: LeadInputRouterOptions["onRuntimeTimelineEvent"];
 	private readonly enterDeliveryContext?: LeadInputRouterOptions["enterDeliveryContext"];
 	private readonly corr: () => string;
 	private readonly logger: {
@@ -188,6 +205,7 @@ export class LeadInputRouter {
 		this.onTopicEngaged = opts.onTopicEngaged;
 		this.onInputAccepted = opts.onInputAccepted;
 		this.onEntryCompleted = opts.onEntryCompleted;
+		this.onRuntimeTimelineEvent = opts.onRuntimeTimelineEvent;
 		this.enterDeliveryContext = opts.enterDeliveryContext;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
@@ -321,11 +339,13 @@ export class LeadInputRouter {
 					input: entry.payload,
 					clientUserMessageId: corrId,
 				});
-				this.journal.toDispatched(id, turnId);
+				const dispatched = this.journal.toDispatched(id, turnId);
+				this.publishRuntimeTimeline("model_consumed", dispatched);
 				const { output } = await this.executor.awaitCompletion(turnId);
 				// Persist output AT model_completed (CR HIGH-1): if we crash before the
 				// outbox enqueue, recovery can still resend from the journal.
-				this.journal.toModelCompleted(id, output);
+				const modelCompleted = this.journal.toModelCompleted(id, output);
+				this.publishRuntimeTimeline("lead_result_committed", modelCompleted);
 				// FLY-267 回: route the reply to the inbound source channel (cross-dept
 				// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
 				await this.deliverOutput(
@@ -427,6 +447,7 @@ export class LeadInputRouter {
 					// Turn finished before the crash → only re-send output, never re-run.
 					// Use the REAL turn id from reconcile (CR MED-2: no placeholder).
 					if (entry.state === "dispatching" || entry.state === "dispatched") {
+						let dispatched = entry;
 						if (entry.state === "dispatching") {
 							if (!r.turnId) {
 								this.safeAmbiguous(
@@ -435,9 +456,17 @@ export class LeadInputRouter {
 								);
 								return;
 							}
-							this.journal.toDispatched(entry.id, r.turnId);
+							dispatched = this.journal.toDispatched(entry.id, r.turnId);
 						}
-						this.journal.toModelCompleted(entry.id, r.output);
+						this.publishRuntimeTimeline("model_consumed", dispatched);
+						const modelCompleted = this.journal.toModelCompleted(
+							entry.id,
+							r.output,
+						);
+						this.publishRuntimeTimeline(
+							"lead_result_committed",
+							modelCompleted,
+						);
 					}
 					// FLY-267: recovery resend must target the same source channel.
 					await this.deliverOutput(
@@ -455,6 +484,7 @@ export class LeadInputRouter {
 			}
 			case "resend_output":
 				// model_completed/output_pending: re-send output only, never re-run.
+				this.publishRuntimeTimeline("lead_result_committed", entry);
 				if (entry.outboxId) {
 					// output_pending: the outbox already has it → just deliver. FLY-314
 					// Phase 2 (Codex R3#1): ensure the thread first, but do NOT re-enqueue
@@ -494,6 +524,37 @@ export class LeadInputRouter {
 		} catch (error) {
 			this.logger.error("completed-entry receipt hook failed", {
 				id,
+				error: (error as Error).message,
+			});
+		}
+	}
+
+	private publishRuntimeTimeline(
+		stage: LeadRuntimeTimelineEvent["stage"],
+		entry: import("./LeadJournal.js").JournalEntry,
+	): void {
+		if (!this.onRuntimeTimelineEvent) return;
+		if (!entry.turnId) {
+			this.logger.error("runtime timeline event missing turn id", {
+				entryId: entry.id,
+				stage,
+			});
+			return;
+		}
+		try {
+			this.onRuntimeTimelineEvent({
+				eventId: `${entry.id}:${stage}`,
+				stage,
+				entryId: entry.id,
+				idempotencyKey: entry.idempotencyKey,
+				memberIds: this.journal.listMemberIds(entry.id),
+				turnId: entry.turnId,
+				at: Date.now(),
+			});
+		} catch (error) {
+			this.logger.error("runtime timeline event hook failed", {
+				entryId: entry.id,
+				stage,
 				error: (error as Error).message,
 			});
 		}
