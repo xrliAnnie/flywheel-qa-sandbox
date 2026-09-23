@@ -1,13 +1,13 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 2/7
-updated: 2026-09-23T23:48:27.361Z
-nextStep: finish production carrier/RoomIO composition, then durable inbox
+phaseCursor: 5/7
+updated: 2026-09-23T23:58:32.568Z
+nextStep: implement Bridge durable inbox/handoff and finish production RoomIO composition
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (2/7)
-**next**: finish production carrier/RoomIO composition, then durable inbox
+**phase**: implement (5/7)
+**next**: implement Bridge durable inbox/handoff and finish production RoomIO composition
