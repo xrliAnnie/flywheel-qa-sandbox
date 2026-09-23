@@ -314,3 +314,71 @@ export type DurableTranscriptEntry = TranscriptEntry & {
 	attribution: VoiceAttribution;
 	source: string;
 };
+
+export type SpeakKind =
+	| "brief"
+	| "question"
+	| "readback"
+	| "heartbeat"
+	| "cue"
+	| "control";
+export type SpeakVerification = "required" | "best_effort" | "none";
+export type SpeakTransport = "none" | "submitted" | "playback_drained";
+export type SpeakContentProof =
+	| "none"
+	| "deterministic_tts"
+	| "transcript_equivalent";
+
+type SpeakReceiptIdentity = {
+	pendingKey: string;
+	requestDigest: string;
+};
+
+export type SpeakReceipt = SpeakReceiptIdentity &
+	(
+		| {
+				outcome: "rejected";
+				reason: string;
+				transport: "none";
+				contentProof: "none";
+		  }
+		| {
+				outcome: "failed";
+				reason: string;
+				transport: "none" | "submitted";
+				contentProof: SpeakContentProof;
+		  }
+		| {
+				outcome: "completed";
+				transport: "submitted" | "playback_drained";
+				contentProof: SpeakContentProof;
+		  }
+	);
+
+export interface VoiceUtterance extends DurableTranscriptEntry {
+	role: "user" | "assistant";
+}
+
+export interface VoiceV1Capabilities {
+	audioIn: readonly AudioFormat[];
+	audioOut: readonly AudioFormat[];
+	onUtterance: boolean;
+	verbatim: boolean;
+	attribution: boolean;
+}
+
+export interface VoiceV1Session {
+	readonly sessionId: string;
+	readonly generation: number;
+	readonly backendId: string;
+	readonly capabilities: VoiceV1Capabilities;
+	open(initialSessionContext: string): Promise<void>;
+	speak(
+		text: string,
+		kind: SpeakKind,
+		opts: { pendingKey: string; verification: SpeakVerification },
+	): Promise<SpeakReceipt>;
+	onUtterance(listener: (utterance: VoiceUtterance) => void): () => void;
+	injectContext(text: string): Promise<void> | void;
+	close(): Promise<void>;
+}
