@@ -25,4 +25,12 @@ Lead 回复 `59204e41-e16d-420b-8db2-379c8a4362b4` 撤回 CDN 路径，并回交
 
 未做浏览器 QA。Lead 声明已查看 d1 的本地 PNG，不能据此推断全部托管图已验；正式发布后仍须核对托管 HTTP/CSP/源码，并由 Lead 打开检查实际显示。
 
-设计评审 `eb6c9d54-6d9a-421b-8c87-435e4bb50042` R1为 CHANGES_REQUESTED，修正明细见plan.md §9；待新评审通过，未发布、实施或 phase complete。若评审修改 `.mmd`，必须重新渲染对应图，不得复用旧 SVG。
+设计评审 R1 为 CHANGES_REQUESTED，修正明细见plan.md §9；R2 `188d04c6-1f0f-46a0-808c-9fdf2043b4f2` 有效 APPROVED，回执见 design-review.md。图源没有变化。若后续修订修改 `.mmd`，必须重新渲染对应图，不得复用旧 SVG。
+
+## 已发布并回报 Lead
+
+- URL：https://fw-reports-356a6d.vercel.app/r/200c21ca8544d13e737fd225b0dc6465/
+- 使用精确 `publish-report --html engineering/doc/FLY-2799-codex-voice-container/founder-design.html --project flywheel --publish-only`，结果 `publishOnly=true, messageId=null, delivered=false`，符合静默发布要求。
+- 2026-09-23 09:05Z 托管核验：HTTP 200；CSP header/meta 均与唯一 script nonce 相符；占位符残留为0；复原nonce后body与提交源码完全相同；三张内联SVG均存在，无重复ID或外部资源。证据 `evidence/design-html-publish.json` / `design-html-hosted-check.json`。
+- `DESIGN-HTML ready` 已发给实际 Lead，report id `370ce2d7-ab2e-44fb-aef8-dee9507d2938`。两项非阻塞 R2 advisories 已另报并保留实施Follow-ups。
+- 未做浏览器QA、未实施或部署。下一步仅运行设计阶段精确 completion 命令并 park；阶段完成以命令的服务端回执为准。

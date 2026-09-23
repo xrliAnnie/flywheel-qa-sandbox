@@ -1,0 +1,25 @@
+{
+  "checkedAt": "2026-09-23T09:05:10.907004+00:00",
+  "url": "https://fw-reports-356a6d.vercel.app/r/200c21ca8544d13e737fd225b0dc6465/",
+  "httpStatus": 200,
+  "bytes": 326152,
+  "sourceSha256": "d43224ecbeac7a0b558dbdc375d8d5e98e1792a092012c106b80603550679825",
+  "hostedSha256": "8eb62ce4c7849451c46a4c2ac74f5a388fc12e24ec1775764e7a629f030b48a7",
+  "sourceBodyMatchAfterNonceReplacement": true,
+  "scriptCount": 1,
+  "noncePlaceholderRemaining": false,
+  "nonceMatchesCsp": true,
+  "cspHeader": "default-src 'none'; script-src 'nonce-821c81214cc9a223fddb1614155cb0e4'; style-src 'unsafe-inline'; img-src data:;",
+  "cspMeta": [
+    "default-src 'none'; script-src 'nonce-821c81214cc9a223fddb1614155cb0e4'; style-src 'unsafe-inline'; img-src data:;"
+  ],
+  "inlineDiagramIds": [
+    "fly2799-d1",
+    "fly2799-d2",
+    "fly2799-d3"
+  ],
+  "externalResourceReferences": [],
+  "duplicateIds": [],
+  "browserQA": "not performed; browser tool approval denied",
+  "result": "PASS"
+}
