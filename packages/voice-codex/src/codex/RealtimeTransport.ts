@@ -45,7 +45,7 @@ export interface CodexRealtimeAudioDelta {
 export interface CodexRealtimeTranscript {
 	generation: number;
 	itemId?: string;
-	association: "preceding_item" | "unattributed";
+	association: "provider_item" | "preceding_item" | "unattributed";
 	role: "assistant" | "user";
 	text: string;
 	final: boolean;
@@ -505,7 +505,18 @@ export class CodexRealtimeTransport {
 			this.options.onError?.(new Error("realtime_transcript_invalid"));
 			return;
 		}
-		const itemId = this.lastItemByRole.get(role);
+		// V2 user transcript notifications normally carry no item id. Never bind
+		// those words to the most recently observed user item: transcripts can
+		// arrive late and after another speaker's item. A user owner is available
+		// only when the provider supplies an exact item id on this notification.
+		const providerItemId =
+			role === "user" &&
+			typeof params.itemId === "string" &&
+			params.itemId.length > 0
+				? params.itemId
+				: undefined;
+		const itemId =
+			role === "user" ? providerItemId : this.lastItemByRole.get(role);
 		const ownership =
 			role === "user" && itemId
 				? this.inputOwnershipByItem.get(itemId)
@@ -517,7 +528,11 @@ export class CodexRealtimeTransport {
 		this.options.onTranscript?.({
 			generation: this.options.generation,
 			...(itemId ? { itemId } : {}),
-			association: itemId ? "preceding_item" : "unattributed",
+			association: providerItemId
+				? "provider_item"
+				: itemId
+					? "preceding_item"
+					: "unattributed",
 			role,
 			text,
 			final,

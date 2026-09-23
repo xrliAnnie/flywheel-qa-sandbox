@@ -314,7 +314,7 @@ describe("Codex V2 realtime transport", () => {
 		);
 	});
 
-	it("binds a final user transcript only to one continuous RoomIO owner", async () => {
+	it("binds a final user transcript only when the provider carries its item id", async () => {
 		const h = harness();
 		await start(h);
 		const owner = {
@@ -344,6 +344,7 @@ describe("Codex V2 realtime transport", () => {
 		});
 		h.rpc.emit("thread/realtime/transcript/done", {
 			threadId: "thread-a",
+			itemId: "item-founder",
 			role: "user",
 			text: "请把这件事交给本体",
 		});
@@ -351,7 +352,79 @@ describe("Codex V2 realtime transport", () => {
 		expect(h.transcript).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				itemId: "item-founder",
+				association: "provider_item",
 				inputOwner: owner,
+			}),
+		);
+	});
+
+	it("keeps an itemless delayed user transcript unknown after speakers alternate", async () => {
+		const h = harness();
+		await start(h);
+		h.transport.appendAudio(Buffer.alloc(960), 7, {
+			utteranceId: "utterance-guest",
+			ownerUserId: "guest",
+			ownerName: "Guest",
+		});
+		await h.transport.drain();
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				type: "input_audio_buffer.speech_started",
+				item_id: "item-guest",
+			},
+		});
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				id: "item-guest",
+				type: "message",
+				status: "completed",
+				role: "user",
+				content: [],
+			},
+		});
+		h.transport.appendAudio(Buffer.alloc(960), 7, {
+			utteranceId: "utterance-founder",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		await h.transport.drain();
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				type: "input_audio_buffer.speech_started",
+				item_id: "item-founder",
+			},
+		});
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				id: "item-founder",
+				type: "message",
+				status: "completed",
+				role: "user",
+				content: [],
+			},
+		});
+
+		h.rpc.emit("thread/realtime/transcript/done", {
+			threadId: "thread-a",
+			role: "user",
+			text: "GUEST SENTENCE",
+		});
+
+		expect(h.transcript).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				association: "unattributed",
+				role: "user",
+				text: "GUEST SENTENCE",
+			}),
+		);
+		expect(h.transcript).toHaveBeenLastCalledWith(
+			expect.not.objectContaining({
+				itemId: expect.anything(),
+				inputOwner: expect.anything(),
 			}),
 		);
 	});
@@ -372,10 +445,18 @@ describe("Codex V2 realtime transport", () => {
 		await h.transport.drain();
 		h.rpc.emit("thread/realtime/itemAdded", {
 			threadId: "thread-a",
+			item: {
+				type: "input_audio_buffer.speech_started",
+				item_id: "item-mixed",
+			},
+		});
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
 			item: { id: "item-mixed", role: "user", status: "completed" },
 		});
 		h.rpc.emit("thread/realtime/transcript/done", {
 			threadId: "thread-a",
+			itemId: "item-mixed",
 			role: "user",
 			text: "mixed",
 		});
@@ -402,10 +483,18 @@ describe("Codex V2 realtime transport", () => {
 		});
 		h.rpc.emit("thread/realtime/itemAdded", {
 			threadId: "thread-a",
+			item: {
+				type: "input_audio_buffer.speech_started",
+				item_id: "item-gap",
+			},
+		});
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
 			item: { id: "item-gap", role: "user", status: "completed" },
 		});
 		h.rpc.emit("thread/realtime/transcript/done", {
 			threadId: "thread-a",
+			itemId: "item-gap",
 			role: "user",
 			text: "gap",
 		});

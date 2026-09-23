@@ -385,7 +385,7 @@ class CodexVoiceSession implements ConversationSession {
 						: {
 								kind: "unknown",
 								reason:
-									transcript.association === "preceding_item"
+									transcript.association !== "unattributed"
 										? "provider_item_not_speaker_bound"
 										: "provider_item_unattributed",
 							},
