@@ -1,0 +1,72 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2808 · 做完退下，需要再来</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.7 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:0 auto;padding:48px 22px 80px}header{margin-bottom:30px}.eyebrow{color:#007aff;font-size:13px;letter-spacing:2px}h1{font-size:42px;line-height:1.2;letter-spacing:-1px;max-width:760px}h2{font-size:25px;line-height:1.35;margin:8px 0 20px}p{margin:12px 0}.sub{font-size:20px;color:#555}.card{background:white;border-radius:12px;padding:28px;margin:22px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.pending{padding:20px;background:#fff7e8;border:1px dashed #c78920;border-radius:8px;color:#714b0b;font-size:14px}.pending strong{letter-spacing:.5px}.states{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}.blue{color:#0064cc}.green{color:#247c38}.red{color:#bd2b25}table{width:100%;border-collapse:collapse;text-align:left}td,th{border-bottom:1px solid #e5e5ea;padding:12px 8px;vertical-align:top}th{color:#1a365d}label{display:block;font-size:14px;color:#666;margin-top:24px}textarea{display:block;width:100%;min-height:80px;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;background:#fafafa;color:#1d1d1f;margin-top:8px}textarea:focus{outline:2px solid #007aff}button{border:0;border-radius:8px;padding:10px 16px;background:#007aff;color:white;font:inherit;cursor:pointer;margin-top:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;border-radius:8px;padding:16px;font:14px/1.7 -apple-system,system-ui,sans-serif}.muted,footer{font-size:13px;color:#666}#copy-status{min-height:28px}@media(max-width:600px){main{padding:24px 14px 60px}h1{font-size:32px}.card{padding:20px 16px}.states{grid-template-columns:1fr;gap:0}table{font-size:14px}td,th{padding:10px 5px}}</style></head><body><main><header><p class="eyebrow">FLY-2808 / ENGINEERING DESIGN / 2026-09-22</p><h1>做完退下，需要再来</h1><p class="sub">所有节点释放空等进程，被打回时用原模型、原对话和原工作目录继续。</p><p class="muted">设计说明 · 生产能力尚未实施 · 可逐节留下意见</p></header>
+<section class="card" id="flow"><p class="eyebrow">01 · 核心流程</p><h2>做完就退下，需要时接着原对话</h2><p>设计、实现、验收，以及未来新增节点，统一执行。Claude 和 Codex 行为一致。阶段完成照原规则推进一次，释放进程和再次拉起本身不推进整单。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>核心流程图暂未渲染：本机 Chromium 权限限制；已按标准参数重试。Mermaid（用于描述流程图的文本语法）源码保留在交付中。</p></div><p>完成阶段后先确认可以安全退出，再释放前台与后台进程；被打回后，核对原会话与当前写权限，再继续工作。恢复失败必须可见。</p><label for="comment-flow">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-flow" data-comment data-title="01 · 核心流程" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="states"><p class="eyebrow">02 · 一眼能看懂</p><h2>三种状态，不靠猜进程</h2><div class="states"><p><b class="blue">在干活</b><br>也能看到排队或拉起中的进度。</p><p><b class="green">退下待命</b><br>显示已完成哪一段、退下时间，以及可拉起。</p><p><b class="red">出问题</b><br>显示原因、重试情况和兜底进展。</p></div><p>只有确认后台进程也退出后，才显示退下待命。整单结束单独显示，不等于节点退下。</p><label for="comment-states">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-states" data-comment data-title="02 · 一眼能看懂" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="structure"><p class="eyebrow">03 · 保留什么</p><h2>节点与对话保留，进程可以换</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>数据关系图暂未渲染，原因同上；源码 identity.mmd 已保留。</p></div><table><thead><tr><th>保留</th><th>每次核对</th></tr></thead><tbody><tr><td>原节点与原对话编号</td><td>实际拉起的对话编号必须相等</td></tr><tr><td>原模型与推理力度</td><td>启动前不匹配就挡住</td></tr><tr><td>原目录、分支、未提交改动</td><td>不重置、不强行切分支</td></tr><tr><td>当前工作流与写权限</td><td>旧权限不会因恢复而复活</td></tr></tbody></table><p>TURN 是共享目录的写权限凭证：进程回来了，也必须重新确认现在是否轮到自己写。每次拉起另记触发原因、原身份、实际身份和耗时。</p><label for="comment-structure">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-structure" data-comment data-title="03 · 保留什么" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="breakpoints"><p class="eyebrow">04 · 六处一起改</p><h2>“进程不在”不再直接等于死亡</h2><table><thead><tr><th>今天的打断点</th><th>定稿改法</th></tr></thead><tbody><tr><td>退出被标完成</td><td>正常退下有专门回执，不写终态</td></tr><tr><td>探活判死后换人</td><td>先查控制器确认的退下记录</td></tr><tr><td>写权限被收走</td><td>不因退下收权；正常交接仍有效</td></tr><tr><td>收件人终态拒投</td><td>待命仍接收排队消息，按需拉起</td></tr><tr><td>重启后只接管活进程</td><td>无需求时维持待命，不把全员拉起</td></tr><tr><td>换人吃故障额度</td><td>恢复、丢上下文兜底、真实故障分账</td></tr></tbody></table><p>还覆盖通用节点完成与返工入口、旧回执晚到、消息清理和工作目录回收，避免只修表面六处。</p><label for="comment-breakpoints">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-breakpoints" data-comment data-title="04 · 六处一起改" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="failure"><p class="eyebrow">05 · 拉不起来怎么办</p><h2>允许继续，也如实承认丢了上下文</h2><p>瞬态错误最多尝试两次原会话恢复。原会话文件坏了，安全条件满足时自动启动一次新执行，明确显示“原对话恢复失败，已重新开始”。原节点与工作流历史保留。</p><p>如果目录丢失、模型不符、旧进程是否退出不明，先显示可读原因并等待负责人修复或授权。不能靠强行换模型、覆盖目录来假装恢复。</p><p><strong>这两类恢复动作都不吃真实故障的三次盲换额度。</strong> 重试耗尽后单子保留可恢复状态，不直接判死。新执行兜底也不能继承过期审批。</p><label for="comment-failure">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-failure" data-comment data-title="05 · 拉不起来怎么办" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="defaults"><p class="eyebrow">06 · Lead 已确认的默认值</p><h2>整单未结束，就保留恢复机会</h2><table><tbody><tr><th>恢复期限</th><td>直到整单终结；不设按小时过期</td></tr><tr><th>空转缓冲</th><td>不设，做完便开始释放</td></tr><tr><th>并发</th><td>同一目录一个；不同目录全机最多两个</td></tr><tr><th>原会话 / 兜底</th><td>每次需求最多两次 / 一次</td></tr><tr><th>启动 / 释放上限</th><td>180 秒 / 60 秒（工程默认，后续实测校准）</td></tr><tr><th>等待提示</th><td>排队五分钟提示原因，不扣恢复额度</td></tr></tbody></table><p>上游实验曾观察到 Codex 约 11 秒、Claude 约 66 秒；这是已有样本，不是本设计的性能保证。</p><label for="comment-defaults">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-defaults" data-comment data-title="06 · Lead 已确认的默认值" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="tradeoffs"><p class="eyebrow">07 · 为什么这样选</p><h2>复用现有机制，保留必要的核验</h2><p>不用一个“我在等”的自报就批准退出：它不足以证明阶段完成和会话可恢复。也不另造调度系统：扩展现有完成记录、消息投递、写权限和进程所有权即可。</p><p>不加十五分钟缓冲，接受频繁打回时多花本地重建时间。保留到整单终结会占磁盘，但不会偷偷删除还需要恢复的对话。磁盘不足会明确报告。</p><p>同一目录串行避免双写；跨目录最多两个，控制恢复时的机器负载。</p><label for="comment-tradeoffs">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-tradeoffs" data-comment data-title="07 · 为什么这样选" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="delivery"><p class="eyebrow">08 · 实现怎么交</p><h2>建议一张实现单，内部四个工作包</h2><table><tbody><tr><th>N2</th><td>通用状态、六处消费者、预算与显示合同</td></tr><tr><th>N3</th><td>Codex 原会话核验、后台释放、可见终端</td></tr><tr><th>N4</th><td>Claude 会话身份持久化与交互式恢复</td></tr><tr><th>N5</th><td>真实跨节点来回、故障反例、界面与迁移验收</td></tr></tbody></table><p>按代码配套关系，建议一张完整实现单。上述编号是内部工作包，不要求四张独立单；两个执行体不会分开启用。代码评审和独立验收照常。</p><label for="comment-delivery">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-delivery" data-comment data-title="08 · 实现怎么交" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="boundary"><p class="eyebrow">09 · 诚实边界</p><h2>这是工程设计，不是上线验收</h2><p>本单交付源码调研、实施计划、设计评审和这份说明。没有改生产代码、部署、重启服务或操作真实会话。生产效果尚未验证。</p><p>后续必须证明：两个执行体与全部节点表现一致；QA 打回实现再复验时原上下文仍在；故障兜底可继续且账能对上；前台和独立后台进程均退出。</p><p>本页图形渲染因本机权限限制失败，已明确标注；不能把占位区算成已验证图形。评论控制器可做本地逻辑检查，真实浏览器表现仍需明确区分。</p><label for="comment-boundary">这一节的意见（自动保存在当前浏览器）</label><textarea id="comment-boundary" data-comment data-title="09 · 诚实边界" placeholder="写下希望调整的地方"></textarea></section>
+<section class="card" id="summary"><p class="eyebrow">页面意见汇总</p><h2>整理后复制给 Lead</h2><p>意见会实时汇总；超过约 1800 字自动分段，每段都带同一标记。留言表示修订意见，不是通过信号。</p><label for="comment-summary">对整体方案的补充意见</label><textarea id="comment-summary" data-comment data-title="整体意见"></textarea><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><div id="chunks"></div></section><footer>FLY-2808 · 基于已批准产品范围与本单工程源码审计。评论仅保存在此浏览器，不自动发送。</footer></main>
+<script nonce="__CSP_NONCE__">
+'use strict';
+const marker = '【页面意见汇总】FLY-2808';
+const prefix = 'flywheel-report:' + location.pathname + ':comments:';
+const inputs = Array.from(document.querySelectorAll('[data-comment]'));
+const chunksRoot = document.getElementById('chunks');
+const status = document.getElementById('copy-status');
+let chunks = [];
+function refresh() {
+  const lines = inputs.filter(input => input.value.trim()).map(input => input.dataset.title + '：' + input.value.trim());
+  const chars = Array.from(lines.join('\n\n'));
+  const limit = 1800 - Array.from(marker).length - 1;
+  chunks = [];
+  for (let offset = 0; offset < chars.length; offset += limit) chunks.push(marker + '\n' + chars.slice(offset, offset + limit).join(''));
+  chunksRoot.replaceChildren();
+  if (!chunks.length) {
+    const empty = document.createElement('p');
+    empty.textContent = '还没有填写意见。';
+    chunksRoot.append(empty);
+  }
+  chunks.forEach((chunk, index) => {
+    const preview = document.createElement('pre');
+    preview.textContent = chunk;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '复制第 ' + (index + 1) + ' 段';
+    button.addEventListener('click', () => copy(chunk));
+    chunksRoot.append(preview, button);
+  });
+}
+async function copy(text) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+    await navigator.clipboard.writeText(text);
+    status.textContent = '已复制。';
+  } catch (_) {
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('readonly', '');
+    document.body.append(field);
+    field.select();
+    try { status.textContent = document.execCommand('copy') ? '已复制。' : '复制失败，请手动选择上方意见文字。'; }
+    catch (_) { status.textContent = '复制失败，请手动选择上方意见文字。'; }
+    field.remove();
+  }
+}
+inputs.forEach(input => {
+  try { input.value = localStorage.getItem(prefix + input.id) || ''; }
+  catch (_) { status.textContent = '浏览器存储不可用；意见仍可汇总和复制，但刷新后无法保留。'; }
+  input.addEventListener('input', () => {
+    try { localStorage.setItem(prefix + input.id, input.value); }
+    catch (_) { status.textContent = '浏览器存储不可用，请复制保存意见。'; }
+    refresh();
+  });
+});
+document.getElementById('copy-all').addEventListener('click', () => {
+  if (!chunks.length) { status.textContent = '请先填写意见。'; return; }
+  copy(chunks.join('\n\n'));
+});
+refresh();
+</script></body></html>

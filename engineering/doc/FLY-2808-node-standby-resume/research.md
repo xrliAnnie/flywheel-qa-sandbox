@@ -26,7 +26,7 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 
 - StateStore.projectGeneralizedCompletionTx（58872）：只有特定 needs_review/land/creates_pr/keepalive_park 情形保留 ship_parked；其它节点 completed。这是所有节点一致性的入口，不可只改 adapter。
 - StateStore.applyTerminalTimestamp（15315）：设置 terminal_at 并撤销未消费 submission credential。先终结后“改回 running”会破坏权限，不允许作为迁移方式。
-- generalized-workflow-rework-coordinator 的终态前置判断直接进入 replacement_pending；需与 phase-actor-reentry 一起改。
+- workflow-rework-coordinator 的终态前置判断直接进入 replacement_pending；需与 phase-actor-reentry 一起改。
 - config/src/node-type-registry.ts 的 keepalive_park 及冻结的 workflow snapshot 是当前能力来源；只改默认 registry 不会改变已启动 run。新增版本能力需在启动时冻结并由 controller/adapter/消费者共同支持。
 - CodexTmuxAdapter.resumeExistingExecution:735 使用 launch snapshot、executionOwners 和 recovery commit hooks；优先复用，但必须区别 standby 与 crash recovery 原因。
 - CodexTmuxAdapter:1593/2111 的缺失 thread ID 可回落 fresh；codex-daemon-client.ts:487 resumeThread 在服务端不返回 ID 时用请求 ID 兜底。这不是身份确认，standby 路径必须拒绝缺失/不等的返回 ID。
@@ -48,3 +48,10 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 已有测试：claude-runner/test/{TmuxAdapter,CodexTmuxAdapter}.test.ts；flywheel-comm/src/__tests__/{declare-state,recipient-resolve}.test.ts；teamlead/src/bridge/__tests__/turn-belt-reconcile.test.ts；teamlead/src/__tests__/HeartbeatService.fly1329-readopt-parked.test.ts、workflow-engine-dispatcher.test.ts。扩展这些最邻近测试，并新增载体事务测试与两 vendor 真载体隔离验收。
 
 本单只验证设计/HTML；实现单必须先加失败用例再写最小实现。产品 11 秒/66 秒观测不是 SLA，Claude 大 transcript 上界未证。本设计定义 180 秒单次恢复超时、排队时间单列；N5 实测后可经配置调整，不能默默换模型绕过。
+
+## 补充消费者核对
+
+- workflow-engine-park-evidence.ts 与 workflow-engine-park-projector.ts 已提供精确待命权威校验和 outbox 游标；新载体状态复用该链路，不另设待命权威。
+- mailbox-queue.ts:1791/2246 与 db.ts:9055 finalizeProvenGoneSession 会根据终态/缺失身份清理；除收件人 resolver 外必须一起 veto 待命与旧 carrier generation。
+- codex-home.ts:2448 retireCodexExecutionHome 保留 keyed home 但释放执行 lease/最后一位清 credentials；恢复须重获当前权限。
+- done-running-reconciler 和 commdb-session-prune 已保守 veto parked；扩展控制器证据，不以新标记削弱其安全检查。
