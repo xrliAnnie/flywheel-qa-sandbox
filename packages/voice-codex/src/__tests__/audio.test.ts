@@ -58,6 +58,43 @@ describe("WaitingMouth", () => {
 		mouth.stop();
 	});
 
+	it("plays consecutive speech ids in FIFO order", async () => {
+		let tick!: () => void;
+		const frames: Buffer[] = [];
+		const mouth = new WaitingMouth({
+			player: { play: vi.fn(), stop: vi.fn() },
+			createResource: (source) => {
+				source.stream.on("data", (chunk: Buffer) => frames.push(chunk));
+				return source;
+			},
+			setIntervalFn: (callback) => {
+				tick = callback;
+				return 1 as unknown as NodeJS.Timeout;
+			},
+			clearIntervalFn: vi.fn(),
+		});
+		mouth.start();
+		const completed: string[] = [];
+		const first = mouth
+			.playSpeech("speech-1", pcm16(Array(480).fill(111)))
+			.then(() => completed.push("speech-1"));
+		const second = mouth
+			.playSpeech("speech-2", pcm16(Array(480).fill(222)))
+			.then(() => completed.push("speech-2"));
+		const both = Promise.all([first, second]);
+
+		tick();
+		await first;
+		expect(completed).toEqual(["speech-1"]);
+		expect(frames.map((frame) => frame.readInt16LE(0))).toEqual([111]);
+
+		tick();
+		await both;
+		expect(completed).toEqual(["speech-1", "speech-2"]);
+		expect(frames.map((frame) => frame.readInt16LE(0))).toEqual([111, 222]);
+		mouth.stop();
+	});
+
 	it("stops queued playback before writing when the lease fence trips", async () => {
 		let tick!: () => void;
 		const onError = vi.fn();

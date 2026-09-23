@@ -332,6 +332,113 @@ describe("Codex room composition", () => {
 		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
 	});
 
+	it("queues consecutive assistant sentences without ending the conversation", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		let tick!: () => void;
+		const renderedFrames: Buffer[] = [];
+		const mouth = new WaitingMouth({
+			player: { play: vi.fn(), stop: vi.fn() },
+			createResource: (source) => {
+				source.stream.on("data", (frame: Buffer) => renderedFrames.push(frame));
+				return source;
+			},
+			setIntervalFn: (callback) => {
+				tick = callback;
+				return 1 as unknown as NodeJS.Timeout;
+			},
+			clearIntervalFn: vi.fn(),
+		});
+		mouth.start();
+		const playbacks: Promise<void>[] = [];
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-consecutive-output",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			playAudio: ({ itemId, pcm24Mono }) => {
+				const playback = mouth.playSpeech(itemId, pcm24Mono);
+				playbacks.push(playback);
+				return playback;
+			},
+		});
+		const conversation = await actual.createConversation({ brain });
+		const errors: Error[] = [];
+		conversation.on("error", (error) => errors.push(error));
+		const completed: string[] = [];
+		const emitSentence = (itemId: string, sample: number) => {
+			callbacks.onItem({
+				generation: 1,
+				itemId,
+				role: "assistant",
+				raw: {},
+			} as never);
+			const pcm24Mono = Buffer.alloc(960);
+			for (let offset = 0; offset < pcm24Mono.length; offset += 2) {
+				pcm24Mono.writeInt16LE(sample, offset);
+			}
+			callbacks.onAudio({
+				generation: 1,
+				itemId,
+				pcm24Mono,
+				sampleRate: 24_000,
+				numChannels: 1,
+				samplesPerChannel: 480,
+				raw: {},
+			} as never);
+			callbacks.onTranscript({
+				generation: 1,
+				itemId,
+				association: "preceding_item",
+				role: "assistant",
+				text: itemId,
+				final: true,
+				raw: {},
+			} as never);
+		};
+
+		emitSentence("assistant-first", 111);
+		emitSentence("assistant-second", 222);
+		await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+		playbacks.forEach((playback, index) => {
+			void playback.then(
+				() =>
+					completed.push(index === 0 ? "assistant-first" : "assistant-second"),
+				() => undefined,
+			);
+		});
+
+		tick();
+		await playbacks[0];
+		expect(completed).toEqual(["assistant-first"]);
+		expect(errors).toEqual([]);
+		expect(renderedFrames.map((frame) => frame.readInt16LE(0))).toEqual([111]);
+
+		tick();
+		await expect(playbacks[1]).resolves.toBeUndefined();
+		expect(completed).toEqual(["assistant-first", "assistant-second"]);
+		expect(errors).toEqual([]);
+		expect(renderedFrames.map((frame) => frame.readInt16LE(0))).toEqual([
+			111, 222,
+		]);
+		await conversation.close();
+		mouth.stop();
+	});
+
 	it("stops real queued playback on founder barge-in and continues on the next generation", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		let roomHandlers!: RoomHandlers;
@@ -474,13 +581,39 @@ describe("Codex room composition", () => {
 			final: true,
 			raw: {},
 		} as never);
-		await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+		callbacks.onItem({
+			generation: 1,
+			itemId: "assistant-queued-before-barge-in",
+			role: "assistant",
+			raw: {},
+		} as never);
+		callbacks.onAudio({
+			generation: 1,
+			itemId: "assistant-queued-before-barge-in",
+			pcm24Mono: Buffer.alloc(960, 3),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 480,
+			raw: {},
+		} as never);
+		callbacks.onTranscript({
+			generation: 1,
+			itemId: "assistant-queued-before-barge-in",
+			association: "preceding_item",
+			role: "assistant",
+			text: "这句也必须一起停。",
+			final: true,
+			raw: {},
+		} as never);
+		await vi.waitFor(() => expect(playbacks).toHaveLength(2));
 		tick();
 		expect(renderedFrames).toHaveLength(1);
 
-		let playbackCancelled = false;
-		void playbacks[0]!.catch(() => {
-			playbackCancelled = true;
+		const cancellationReasons: string[] = [];
+		playbacks.slice(0, 2).forEach((playback) => {
+			void playback.catch((error: Error) => {
+				cancellationReasons.push(error.message);
+			});
 		});
 		roomHandlers.onAudio(Buffer.alloc(960), {
 			utteranceId: "founder-interrupt",
@@ -489,7 +622,10 @@ describe("Codex room composition", () => {
 		});
 		await Promise.resolve();
 		await Promise.resolve();
-		expect(playbackCancelled).toBe(true);
+		expect(cancellationReasons).toEqual([
+			"speech_playback_stopped",
+			"speech_playback_stopped",
+		]);
 		const framesAtCancel = renderedFrames.length;
 		tick();
 		tick();
@@ -531,9 +667,9 @@ describe("Codex room composition", () => {
 			final: true,
 			raw: {},
 		} as never);
-		await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+		await vi.waitFor(() => expect(playbacks).toHaveLength(3));
 		tick();
-		await expect(playbacks[1]).resolves.toBeUndefined();
+		await expect(playbacks[2]).resolves.toBeUndefined();
 		await Promise.resolve();
 		expect(ended).toBeUndefined();
 		await session.stop({ kind: "ended", reason: "test-complete" });
