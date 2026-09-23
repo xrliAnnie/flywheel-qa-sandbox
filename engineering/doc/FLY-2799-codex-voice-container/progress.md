@@ -1,14 +1,14 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-23T21:18:12.516Z
-nextStep: Audit direct consumers, verify formatting/types/related tests, then
-  scoped review
+phaseCursor: 2/4
+updated: 2026-09-23T21:21:40.876Z
+nextStep: Update literal-last milestone with 0.125 ms queue evidence and scoped
+  verification, then push and request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (1/4)
-**next**: Audit direct consumers, verify formatting/types/related tests, then scoped review
+**phase**: implement (2/4)
+**next**: Update literal-last milestone with 0.125 ms queue evidence and scoped verification, then push and request code review
