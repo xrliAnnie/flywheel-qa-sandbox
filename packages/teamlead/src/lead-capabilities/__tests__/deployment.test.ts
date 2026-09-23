@@ -26,6 +26,12 @@ it("pins the parent-side voice handler in the deployment receipt", () => {
 	);
 });
 
+it("pins the 0.154.0/0.156.0 native resource baseline in the deployment receipt", () => {
+	expect(LEAD_DEPLOYMENT_ENTRIES).toContain(
+		"lead-capabilities/native-resource-baseline-0154-0156.js",
+	);
+});
+
 it("binds actual checkout HEAD to deployed-sha and hashes fixed dist entries", () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "lead-deploy-")));
 	try {

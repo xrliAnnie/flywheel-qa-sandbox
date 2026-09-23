@@ -1,11 +1,111 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 const script = new URL("../qa-codex-lead-parity.mjs", import.meta.url);
+
+function runNativeCanary(name, args = [], env = {}) {
+	return spawnSync(
+		process.execPath,
+		[new URL(`../${name}`, import.meta.url).pathname, ...args],
+		{
+			encoding: "utf8",
+			env: { HOME: process.env.HOME, PATH: process.env.PATH, ...env },
+		},
+	);
+}
+
+test("native skill canaries reject missing authority inputs", () => {
+	for (const name of [
+		"qa-fly-2519-native-skills-canary.mjs",
+		"qa-fly-2766-native-origin-canary.mjs",
+	]) {
+		for (const result of [
+			runNativeCanary(name),
+			runNativeCanary(name, ["unexpected"]),
+		]) {
+			assert.equal(result.status, 1);
+			assert.deepEqual(JSON.parse(result.stdout), {
+				status: "failed",
+				errorCode: "native_skill_baseline_unverified",
+			});
+			assert.equal(result.stderr, "");
+		}
+	}
+});
+
+test("native home canary probes without exposing a writable Codex home", () => {
+	const root = realpathSync(
+		mkdtempSync(join(tmpdir(), "native-canary-probe-")),
+	);
+	try {
+		const codexHome = join(root, ".codex-259-qa");
+		const release = join(
+			codexHome,
+			"packages/standalone/releases/0.153.2-fixture",
+		);
+		const current = join(codexHome, "packages/standalone/current");
+		const capture = join(root, "child-env.txt");
+		mkdirSync(release, { recursive: true });
+		writeFileSync(
+			join(release, "codex"),
+			`#!/bin/sh\nprintf '%s|%s\\n' "$HOME" "\${CODEX_HOME-unset}" > "${capture}"\nprintf 'codex-cli 0.153.2\\n'\n`,
+		);
+		chmodSync(join(release, "codex"), 0o755);
+		symlinkSync(release, current);
+
+		const result = runNativeCanary("qa-fly-2519-native-skills-canary.mjs", [], {
+			HOME: root,
+			CODEX_HOME: codexHome,
+		});
+		assert.equal(result.status, 1);
+		assert.equal(readFileSync(capture, "utf8"), "/dev/null|unset\n");
+
+		const undesignated = join(root, ".codex-unreviewed");
+		mkdirSync(undesignated);
+		rmSync(capture);
+		const rejected = runNativeCanary(
+			"qa-fly-2519-native-skills-canary.mjs",
+			[],
+			{ HOME: root, CODEX_HOME: undesignated },
+		);
+		assert.equal(rejected.status, 1);
+		assert.equal(existsSync(capture), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("native origin canary retains its fail-closed input shape", () => {
+	const originSource = readFileSync(
+		new URL("../qa-fly-2766-native-origin-canary.mjs", import.meta.url),
+		"utf8",
+	);
+	assert.match(originSource, /FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION/);
+	assert.match(originSource, /native-skill-baselines/);
+	assert.match(
+		originSource,
+		/resolvePinnedNativeSkillBaseline\(codexVersion\)/,
+	);
+	assert.match(originSource, /realpathSync\(baseline\.origin\.root\)/);
+	assert.doesNotMatch(originSource, /origin !== baseline\.origin\.root/);
+	assert.match(originSource, /modelStarted: false/);
+	assert.match(originSource, /productionMutated: false/);
+	assert.doesNotMatch(originSource, /writeFile|mkdir|rmSync|rename/);
+});
 
 test("plugin skill inventory retains each installation provenance without claiming activation", async () => {
 	const { collectInventory } = await import("../qa-codex-lead-parity.mjs");

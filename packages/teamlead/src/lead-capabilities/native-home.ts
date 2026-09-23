@@ -14,7 +14,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { PINNED_NATIVE_CODEX_SKILLS } from "./native-skill-baseline.js";
+import {
+	PINNED_NATIVE_CODEX_SKILLS,
+	resolvePinnedNativeSkillBaseline,
+} from "./native-skill-baseline.js";
 import {
 	type NativeSkillBaseline,
 	verifyNativeSkillBaseline,
@@ -89,26 +92,38 @@ function assertOrigin(
 		if (!actual || hash(actual.data) !== file.sha256) throw denied();
 	}
 }
+/** Read-only full-tree admission check for operator canaries and trusted launchers. */
+export function verifyNativeSkillOrigin(options: {
+	root: string;
+	baseline: NativeSkillBaseline;
+	codexVersion: string;
+	secrets: readonly string[];
+}) {
+	const receipts = verifyNativeSkillBaseline(options);
+	assertOrigin(options.root, options.baseline, options.secrets);
+	return receipts;
+}
 /** Canonical source is fixed by the deployed baseline. Existing homes are verified, never overwritten. */
 export function preparePinnedNativeSkillHome(options: {
 	codexHome: string;
 	codexVersion: string;
 	secrets: readonly string[];
 }) {
-	const baseline = PINNED_NATIVE_CODEX_SKILLS;
-	if (!baseline.origin) throw denied();
+	const selectedBaseline = resolvePinnedNativeSkillBaseline(
+		options.codexVersion,
+	);
+	if (!selectedBaseline.origin) throw denied();
 	const target = join(options.codexHome, "skills/.system");
 	if (existsSync(target)) {
 		let closed = false;
 		const assertCurrent = () => {
 			if (closed) throw denied();
-			verifyNativeSkillBaseline({
+			verifyNativeSkillOrigin({
 				root: target,
-				baseline,
+				baseline: selectedBaseline,
 				codexVersion: options.codexVersion,
 				secrets: options.secrets,
 			});
-			assertOrigin(target, baseline, options.secrets);
 		};
 		assertCurrent();
 		return {
@@ -119,9 +134,26 @@ export function preparePinnedNativeSkillHome(options: {
 			},
 		};
 	}
+	if (!existsSync(selectedBaseline.origin.root)) throw denied();
+	let canonicalOrigin: string;
+	try {
+		canonicalOrigin = realpathSync(selectedBaseline.origin.root);
+		if (
+			!isAbsolute(canonicalOrigin) ||
+			!lstatSync(canonicalOrigin).isDirectory()
+		)
+			throw denied();
+	} catch {
+		throw denied();
+	}
+	const baseline: NativeSkillBaseline = {
+		...selectedBaseline,
+		origin: { ...selectedBaseline.origin, root: canonicalOrigin },
+	};
 	return prepareNativeSkillHome({
 		...options,
-		sourceRoot: baseline.origin.root,
+		sourceRoot: canonicalOrigin,
+		baseline,
 	});
 }
 /** Trusted launcher preparation; never accepts model paths. Owns only its newly created .system. */
@@ -144,6 +176,7 @@ export function prepareNativeSkillHome(options: {
 	for (const path of [options.sourceRoot, options.codexHome])
 		if (
 			!isAbsolute(path) ||
+			!existsSync(path) ||
 			realpathSync(path) !== path ||
 			!lstatSync(path).isDirectory()
 		)
