@@ -1,6 +1,6 @@
 # FLY-2799 Codex 语音容器 — 调研
 Issue: FLY-2799 (https://linear.app/geoforge3d/issue/FLY-2799/语音v5-引擎-bcodex-语音容器-每次开一个新-codex-实时语音-session装进当前-lead-的-memory)
-日期: 2026-09-22
+日期: 2026-09-23
 基于: 无
 
 ## 第 1 步首轮实测一页结论
@@ -25,4 +25,32 @@ Issue: FLY-2799 (https://linear.app/geoforge3d/issue/FLY-2799/语音v5-引擎-bc
 
 官方独立包 SHA-256 与 release digest 一致，实际 `--version=0.156.1`、`realtime_conversation stable true`；私有 home、无文件环境、无舰队入口改动。全部测试进程已 stop 并退出，认证副本已删除。详见 [隔离与实验明细](probe-details.md)、[汇总](evidence/probe-summary.json)、[V2 事件](evidence/api-v2.jsonl)、[离线音频验证](evidence/offline-audio-verification.json)、[开口音频](evidence/api-v2-appendSpeech.wav)。V3、订阅失败及后台代理反例均保留，没有用成功样本覆盖失败。
 
-按 Lead 指令先交这一页；等待 FLY-2795 合同后再完成设计、评审和浅色 HTML。没有实施、部署、真人进房测试或设计完成申报。
+以上为已完成的第一步历史报告；本轮不重跑。FLY-2795 已按下节固定版本放行，继续设计。没有实施、部署或真人进房测试。
+
+## 2026-09-23 恢复审计：固定合同与代码接缝
+
+权威：`git show 313befcfa3a7039dca2fc7eb1178803d47699026:engineering/doc/FLY-2795-voice-layering-contract/research.md` §4；同 SHA plan.md 的 K1–K6、G1–G2。Lead 回复 `50a4b17b-0669-479b-969b-1d677324432b` 确认 G1/G2 未关闭，作为集成准入依赖，允许设计继续。
+
+| 已读来源 | 实际行为与设计处置 |
+|---|---|
+| Raya `apps/voice/src/codex/CodexLeg.ts@f669d1b`（blob `52459a7ebb3a5853dcc7921386dbd1930a6bc704`） | `openThread` 的显式 baseInstructions 替换 identity+memory；ACTIONS 在有 actions 配置时另行附加。恢复生成守卫、thread 回执检查与事件分发；改成统一强制装配，废弃可写 action.json 目录 |
+| Raya `RealtimeTransport.ts@f669d1b`（blob `cda9f1b8b15ccafaf9d85411366d6bdf2666f757`） | start 同时等待 RPC 与 started；24k mono PCM 严格 base64 校验；appendAudio / appendSpeech 有 generation，appendText 没有；转写剥掉了上游 item 关联信息；事件 closed 后 audio 分支未再次检查 active。恢复时必须修这两个迟到入口，保留关联字段 |
+| `teamlead/src/lead-backends/codex/CodexLeadProcess.ts:166` | 已有 spawnChild 注入、request、notify、notification / exit、server-request 白名单，K2 指定复用。stop 结束 stdin 并延时 SIGTERM，但不等待 exit、不升级 SIGKILL；音频热路径需要有界背压扩展 |
+| `voice-core/src/types.ts:56,151,186,212,265` | 已有 backend/session、audio 格式集和静默 injectContext；缺 verbatim/attribution、规范 utterance 和可等待逐条持久化证明。共同类型按 V1 扩已有面，不建 B 私有词汇 |
+| `voice-core/src/transcript.ts:49-71` | append/flush 吞写错并丢弃后续内容；目前不能证明某句已持久。先写后读回 sessionId+transcriptId+contentDigest，失败禁止动作 |
+| `voice-codex/src/discord-room.ts:57,239,269,279` | 收音有 metadata，presence 可观测；playSpeech/cancelSpeech 已有；输出格式抽象、持续插话与 audibleTail（估算）由 G1 收敛 owner 提供 |
+| `voice-codex/src/adapters.ts:103` | ingest 是整句 chat-ingest，只回 lane/deliveryId；不是通用 handoff 的授权/执行回执。模式层只投动作，不能照搬“每句话进 Lead” |
+| `voice-codex/src/speech.ts:167` / `session.ts:457` | 回读等价规则可复用；confirmed 只到本地 submitted，不能升级成 playback_drained |
+| `voice-core/src/factory.ts:102` | 目前 registry 仅注册 edge-tts / gemini-live；B 通过应用组合根注入注册，避免 voice-core 反向依赖 teamlead |
+
+上表 Flywheel 路径省略共同前缀 `packages/`。Raya 当前项目 workspace 已无 Git；本次用 GitHub contents API 按精确 `f669d1b` 读取两份源码，没有 checkout 或修改 Raya。合同提供完整 commit `f669d1beac0cf052747a50a9b255516948936384`。
+
+### 两个不应扩大解释的实验细节
+
+`evidence/api-probe.py:78,81,94`（新模型驱动同样设置）把 thread 的 baseInstructions 与 realtime prompt 分开、`includeStartupContext=false`，且 appendText 明确为 `role=user`。因此：首轮证明可以开口/外部输入；**没有**证明 developer 静默注入、Lead memory 到达前台或后台无执行权限。方案把同一份强制上下文装入 thread 和 realtime prompt，独立验收回答中使用 memory 与当前状态。
+
+官方 [Codex App Server 文档](https://learn.chatgpt.com/docs/app-server) 说明 thread/turn 与流式客户端协议；这是通用接口参考，不是 0.156.1 特定能力证明。本设计版本行为以已提交探针和精确版本生成 schema 为准，不用最新网页覆盖固定版本证据。
+
+### 验证边界
+
+不再重复首轮 API/模型探针。实现阶段必须补逐请求 proof/冲突测试、developer 注入测试、归属的无歧义关联、取消整轮迟到效果隔离、工具/凭据负控、真实 Raya 与 Honey Lemon 两场 room→container→Lead mailbox→minutes 验收。全量测试归 PR CI；本地只跑涉及包的定向测试。
