@@ -314,6 +314,108 @@ describe("Codex V2 realtime transport", () => {
 		);
 	});
 
+	it("binds a final user transcript only to one continuous RoomIO owner", async () => {
+		const h = harness();
+		await start(h);
+		const owner = {
+			utteranceId: "utterance-founder",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		};
+		h.transport.appendAudio(Buffer.alloc(960), 7, owner);
+		h.transport.appendAudio(Buffer.alloc(960), 7, owner);
+		await h.transport.drain();
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				type: "input_audio_buffer.speech_started",
+				item_id: "item-founder",
+			},
+		});
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				id: "item-founder",
+				type: "message",
+				status: "completed",
+				role: "user",
+				content: [],
+			},
+		});
+		h.rpc.emit("thread/realtime/transcript/done", {
+			threadId: "thread-a",
+			role: "user",
+			text: "请把这件事交给本体",
+		});
+
+		expect(h.transcript).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				itemId: "item-founder",
+				inputOwner: owner,
+			}),
+		);
+	});
+
+	it("fails attribution closed after mixed ownership or an input gap", async () => {
+		const h = harness();
+		await start(h);
+		h.transport.appendAudio(Buffer.alloc(960), 7, {
+			utteranceId: "utterance-a",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		h.transport.appendAudio(Buffer.alloc(960), 7, {
+			utteranceId: "utterance-b",
+			ownerUserId: "guest",
+			ownerName: "Guest",
+		});
+		await h.transport.drain();
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: { id: "item-mixed", role: "user", status: "completed" },
+		});
+		h.rpc.emit("thread/realtime/transcript/done", {
+			threadId: "thread-a",
+			role: "user",
+			text: "mixed",
+		});
+		expect(h.transcript).toHaveBeenLastCalledWith(
+			expect.not.objectContaining({ inputOwner: expect.anything() }),
+		);
+
+		const held = h.rpc.defer("thread/realtime/appendAudio");
+		for (
+			let bytes = 0;
+			bytes < CODEX_REALTIME_INPUT_QUEUE_BYTES;
+			bytes += 4_800
+		) {
+			h.transport.appendAudio(Buffer.alloc(4_800), 7, {
+				utteranceId: "utterance-gap",
+				ownerUserId: "founder",
+				ownerName: "Annie",
+			});
+		}
+		h.transport.appendAudio(Buffer.alloc(960), 7, {
+			utteranceId: "utterance-gap",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: { id: "item-gap", role: "user", status: "completed" },
+		});
+		h.rpc.emit("thread/realtime/transcript/done", {
+			threadId: "thread-a",
+			role: "user",
+			text: "gap",
+		});
+		expect(h.transcript).toHaveBeenLastCalledWith(
+			expect.not.objectContaining({ inputOwner: expect.anything() }),
+		);
+		held.resolve({ result: {} });
+		await h.transport.drain();
+	});
+
 	it("fences audio, transcript, and capability effects before cancellation awaits close", async () => {
 		const h = harness();
 		await start(h);

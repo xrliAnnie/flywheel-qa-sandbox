@@ -6,6 +6,7 @@ import type { RealtimeAudioOwner } from "./realtime.js";
 import type { PreparedSpeech } from "./speech.js";
 
 export interface FrontendHandlers {
+	onResponseState(active: boolean): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -111,6 +112,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private presenceObserved = false;
 	private presenceWaiters: Array<(present: boolean) => void> = [];
 	private latestReceiveHealth?: ReceiveHealth;
+	private frontendResponseActive = false;
 	private pendingSpeech?: {
 		speech: PreparedSpeech;
 		resolve(status: SpeechReceipt): void;
@@ -120,6 +122,9 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
 		this.frontend = options.createFrontend({
+			onResponseState: (active) => {
+				if (!this.stopping) this.frontendResponseActive = active;
+			},
 			onTranscript: (input) => this.transcript(input),
 			onSpeechAudioReady: (input) => this.speechAudioReady(input),
 			onSpeechResult: (input) => this.speechResult(input),
@@ -134,6 +139,14 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			onAudio: (frame, metadata) =>
 				this.guarded(() => {
 					if (this.prewarmGated()) return;
+					if (
+						this.frontendResponseActive &&
+						metadata.ownerUserId === this.options.projection.founderUserId
+					) {
+						this.frontendResponseActive = false;
+						this.frontend.cancelSpeech("__conversation__");
+						this.room.cancelSpeech?.("__conversation__");
+					}
 					this.frontend.appendAudio(frame, metadata);
 				}),
 			onFounderPresence: (present) => this.founderPresence(present),
@@ -374,6 +387,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (this.stopping) return;
 		this.stopping = true;
 		this.admitted = false;
+		this.frontendResponseActive = false;
 		const pending = this.pendingSpeech;
 		if (pending) {
 			this.frontend.cancelSpeech(pending.speech.speechId);

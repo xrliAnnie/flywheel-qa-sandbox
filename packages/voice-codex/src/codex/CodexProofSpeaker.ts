@@ -22,6 +22,7 @@ interface ChunkResult {
 }
 
 interface PendingChunk {
+	generation: number;
 	expected: string;
 	verification: VoiceSpeakVerification;
 	itemId?: string;
@@ -84,10 +85,10 @@ export class CodexProofSpeaker {
 	constructor(
 		private readonly options: {
 			sessionId: string;
-			sessionGeneration: number;
+			sessionGeneration(): number;
 			voice: string;
 			format: AudioFormat;
-			transport: CodexSpeechTransport;
+			transport(): CodexSpeechTransport;
 			isLive(): boolean;
 			confirmTimeoutMs?: number;
 		},
@@ -99,12 +100,13 @@ export class CodexProofSpeaker {
 		options: VoiceSpeakOptions,
 	): Promise<SpeakReceipt> {
 		const verification = options.verification ?? defaultVerification(kind);
+		const sessionGeneration = this.options.sessionGeneration();
 		let requestDigest: string;
 		try {
 			requestDigest = digest({
 				version: 1,
 				sessionId: this.options.sessionId,
-				sessionGeneration: this.options.sessionGeneration,
+				sessionGeneration,
 				pendingKey: options.pendingKey,
 				text,
 				kind,
@@ -142,6 +144,7 @@ export class CodexProofSpeaker {
 			verification,
 			pendingKey: options.pendingKey,
 			requestDigest,
+			sessionGeneration,
 			chunkCharacters: options.chunkCharacters,
 		});
 		this.requests.set(options.pendingKey, { requestDigest, promise });
@@ -205,19 +208,34 @@ export class CodexProofSpeaker {
 		this.evaluate(pending);
 	}
 
+	interrupt(reason = "speech_interrupted"): void {
+		const pending = this.pending;
+		if (!pending) return;
+		this.settle(pending, {
+			ok: false,
+			transport: pending.playbackSubmitted ? "submitted" : "none",
+			contentProof: pending.contentProof,
+			reason,
+		});
+	}
+
 	private async run(input: {
 		text: string;
 		kind: VoiceSpeakKind;
 		verification: VoiceSpeakVerification;
 		pendingKey: string;
 		requestDigest: string;
+		sessionGeneration: number;
 		chunkCharacters?: number;
 	}): Promise<SpeakReceipt> {
 		const binding = {
 			pendingKey: input.pendingKey,
 			requestDigest: input.requestDigest,
 		};
-		if (!this.options.isLive()) {
+		if (
+			!this.options.isLive() ||
+			input.sessionGeneration !== this.options.sessionGeneration()
+		) {
 			return {
 				...binding,
 				outcome: "rejected",
@@ -249,7 +267,11 @@ export class CodexProofSpeaker {
 		let allProof = true;
 		let anySubmitted = false;
 		for (const [index, chunk] of chunks.entries()) {
-			const result = await this.runChunk(chunk.spokenText, input.verification);
+			const result = await this.runChunk(
+				chunk.spokenText,
+				input.verification,
+				input.sessionGeneration,
+			);
 			anySubmitted ||= result.transport === "submitted";
 			allProof &&= result.contentProof === "transcript_equivalent";
 			if (!result.ok) {
@@ -286,9 +308,11 @@ export class CodexProofSpeaker {
 	private runChunk(
 		expected: string,
 		verification: VoiceSpeakVerification,
+		generation: number,
 	): Promise<ChunkResult> {
 		return new Promise<ChunkResult>((resolve) => {
 			const pending: PendingChunk = {
+				generation,
 				expected,
 				verification,
 				finalSeen: false,
@@ -309,8 +333,9 @@ export class CodexProofSpeaker {
 			}, this.options.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS);
 			pending.timer.unref?.();
 			this.pending = pending;
-			void this.options.transport
-				.appendSpeech(expected, this.options.sessionGeneration)
+			void this.options
+				.transport()
+				.appendSpeech(expected, generation)
 				.then(() => this.evaluate(pending))
 				.catch(() =>
 					this.settle(pending, {
@@ -324,9 +349,7 @@ export class CodexProofSpeaker {
 	}
 
 	private current(generation: number): PendingChunk | undefined {
-		return generation === this.options.sessionGeneration
-			? this.pending
-			: undefined;
+		return generation === this.pending?.generation ? this.pending : undefined;
 	}
 
 	private fail(pending: PendingChunk, reason: string): void {

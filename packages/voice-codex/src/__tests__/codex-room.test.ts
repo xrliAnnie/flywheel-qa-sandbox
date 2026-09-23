@@ -178,6 +178,208 @@ describe("Codex room composition", () => {
 		expect(close).toHaveBeenCalledOnce();
 	});
 
+	it("records backpressure as a gap without ending the room session", async () => {
+		const appendAudio = vi
+			.fn()
+			.mockReturnValueOnce("dropped:backpressure" as const)
+			.mockReturnValue("sent" as const);
+		const evidence = vi.fn();
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-backpressure",
+			voice: "marin",
+			container: {
+				open: vi.fn(async () => ({
+					generation: 1,
+					transport: {
+						appendAudio,
+						appendSpeech: vi.fn(async () => undefined),
+						appendText: vi.fn(async () => undefined),
+						cancel: vi.fn(async () => undefined),
+					},
+					restart: vi.fn(async () => 2),
+					close: vi.fn(async () => undefined),
+				})),
+			},
+			loadContext: vi.fn(),
+			onEvidence: evidence,
+		});
+		const session = await actual.createConversation({ brain });
+		const errors: Error[] = [];
+		session.on("error", (error) => errors.push(error));
+
+		session.sendAudio(Buffer.alloc(960), {
+			encoding: "pcm16",
+			sampleRateHz: 24_000,
+			channels: 1,
+		});
+		session.sendAudio(Buffer.alloc(960), {
+			encoding: "pcm16",
+			sampleRateHz: 24_000,
+			channels: 1,
+		});
+
+		expect(appendAudio).toHaveBeenCalledTimes(2);
+		expect(errors).toEqual([]);
+	});
+
+	it("restarts after interrupt, replays queued founder audio, and can speak on the new generation", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		let generation = 1;
+		const firstTransport = {
+			appendAudio: vi.fn(() => "sent" as const),
+			appendSpeech: vi.fn(async () => undefined),
+			appendText: vi.fn(async () => undefined),
+			cancel: vi.fn(async () => undefined),
+		};
+		const secondTransport = {
+			appendAudio: vi.fn(() => "sent" as const),
+			appendSpeech: vi.fn(async () => undefined),
+			appendText: vi.fn(async () => undefined),
+			cancel: vi.fn(async () => undefined),
+		};
+		let transport = firstTransport;
+		const conversation = {
+			get generation() {
+				return generation;
+			},
+			get transport() {
+				return transport;
+			},
+			restart: vi.fn(async () => {
+				await firstTransport.cancel();
+				generation = 2;
+				transport = secondTransport;
+				return generation;
+			}),
+			close: vi.fn(async () => undefined),
+		};
+		const played = vi.fn(async () => undefined);
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-interrupt",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return conversation;
+				}),
+			},
+			loadContext: vi.fn(),
+			playAudio: played,
+		});
+		const session = await actual.createConversation({ brain });
+		const owned = session as ConversationSession & {
+			sendOwnedAudio(
+				frame: Buffer,
+				owner: {
+					utteranceId: string | null;
+					ownerUserId: string | null;
+					ownerName?: string | null;
+				},
+			): void;
+		};
+
+		session.interrupt();
+		owned.sendOwnedAudio(Buffer.alloc(960), {
+			utteranceId: "founder-turn",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		await vi.waitFor(() => expect(conversation.restart).toHaveBeenCalledOnce());
+		await vi.waitFor(() =>
+			expect(secondTransport.appendAudio).toHaveBeenCalledWith(
+				expect.any(Buffer),
+				2,
+				{
+					utteranceId: "founder-turn",
+					ownerUserId: "founder",
+					ownerName: "Annie",
+				},
+			),
+		);
+
+		const receipt = session.speak!("继续", "readback", {
+			pendingKey: "after-interrupt",
+			verification: "required",
+		});
+		await vi.waitFor(() =>
+			expect(secondTransport.appendSpeech).toHaveBeenCalledWith("继续", 2),
+		);
+		callbacks.onItem({
+			generation: 2,
+			itemId: "assistant-2",
+			role: "assistant",
+			raw: {},
+		} as never);
+		callbacks.onAudio({
+			generation: 2,
+			itemId: "assistant-2",
+			pcm24Mono: Buffer.alloc(960),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 480,
+			raw: {},
+		} as never);
+		callbacks.onTranscript({
+			generation: 2,
+			itemId: "assistant-2",
+			association: "preceding_item",
+			role: "assistant",
+			text: "继续",
+			final: true,
+			raw: {},
+		} as never);
+		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
+	});
+
+	it("turns a continuously owned user item into known attribution", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-owner",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+		});
+		const session = await actual.createConversation({ brain });
+		const utterances: unknown[] = [];
+		session.on("utterance", (utterance) => utterances.push(utterance));
+		callbacks.onTranscript({
+			generation: 1,
+			itemId: "user-1",
+			association: "preceding_item",
+			role: "user",
+			text: "请交给本体",
+			final: true,
+			inputOwner: {
+				utteranceId: "room-utterance-1",
+				ownerUserId: "founder",
+				ownerName: "Annie",
+			},
+			raw: {},
+		} as never);
+
+		expect(utterances).toEqual([
+			expect.objectContaining({
+				utteranceId: "room-utterance-1",
+				attribution: { kind: "known", speakerUserId: "founder" },
+			}),
+		]);
+	});
+
 	it("registers Codex only at the composition root", async () => {
 		const registry = new BackendRegistry();
 		expect(registry.has("codex-realtime")).toBe(false);

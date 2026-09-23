@@ -22,6 +22,7 @@ export interface CodexRealtimeRpc {
 export interface CodexRealtimeInputOwner {
 	utteranceId: string | null;
 	ownerUserId: string | null;
+	ownerName?: string | null;
 }
 
 export type CodexRealtimeAppendOutcome =
@@ -48,6 +49,8 @@ export interface CodexRealtimeTranscript {
 	role: "assistant" | "user";
 	text: string;
 	final: boolean;
+	/** Present only when one gap-free RoomIO owner is bound to this provider item. */
+	inputOwner?: CodexRealtimeInputOwner;
 	raw: Record<string, unknown>;
 }
 
@@ -110,6 +113,26 @@ function decodeCanonicalBase64(value: unknown): Buffer | undefined {
 
 type State = "idle" | "opening" | "active" | "fenced" | "closed";
 
+interface InputOwnership {
+	owner?: CodexRealtimeInputOwner;
+	valid: boolean;
+	sawAudio: boolean;
+}
+
+function freshInputOwnership(): InputOwnership {
+	return { valid: true, sawAudio: false };
+}
+
+function sameOwner(
+	left: CodexRealtimeInputOwner,
+	right: CodexRealtimeInputOwner,
+): boolean {
+	return (
+		left.utteranceId === right.utteranceId &&
+		left.ownerUserId === right.ownerUserId
+	);
+}
+
 /**
  * A generation-fenced adapter over the Codex 0.156.1 V2 realtime RPCs.
  *
@@ -126,6 +149,9 @@ export class CodexRealtimeTransport {
 	private pendingAudioBytes = 0;
 	private audioTail: Promise<void> = Promise.resolve();
 	private readonly lastItemByRole = new Map<string, string>();
+	private inputOwnership = freshInputOwnership();
+	private activeInputItemId?: string;
+	private readonly inputOwnershipByItem = new Map<string, InputOwnership>();
 	private closedReported = false;
 
 	constructor(
@@ -217,6 +243,7 @@ export class CodexRealtimeTransport {
 			this.pendingAudioBytes + frame.length >
 			CODEX_REALTIME_INPUT_QUEUE_BYTES
 		) {
+			this.inputOwnership.valid = false;
 			this.options.onInputGap?.({
 				generation,
 				...owner,
@@ -226,7 +253,9 @@ export class CodexRealtimeTransport {
 			return "dropped:backpressure";
 		}
 
+		this.observeInputOwner(owner);
 		this.pendingAudioBytes += frame.length;
+		const ownership = this.inputOwnership;
 		const data = frame.toString("base64");
 		const send = this.audioTail.then(async () => {
 			if (this.state !== "active") return;
@@ -246,6 +275,7 @@ export class CodexRealtimeTransport {
 		});
 		this.audioTail = send
 			.catch((error: unknown) => {
+				ownership.valid = false;
 				this.options.onInputGap?.({
 					generation,
 					...owner,
@@ -259,7 +289,8 @@ export class CodexRealtimeTransport {
 			.finally(() => {
 				this.pendingAudioBytes -= frame.length;
 			});
-		return this.pendingAudioBytes === CODEX_REALTIME_INPUT_QUEUE_BYTES
+		return this.pendingAudioBytes >=
+			CODEX_REALTIME_INPUT_QUEUE_BYTES - CODEX_REALTIME_MAX_INPUT_FRAME_BYTES
 			? "sent:need-drain"
 			: "sent";
 	}
@@ -360,11 +391,29 @@ export class CodexRealtimeTransport {
 		if (method === "thread/realtime/itemAdded") {
 			const item = record(params.item);
 			if (
+				item?.type === "input_audio_buffer.speech_started" &&
+				typeof item.item_id === "string" &&
+				item.item_id.length > 0
+			) {
+				this.activeInputItemId = item.item_id;
+				this.inputOwnershipByItem.set(item.item_id, this.inputOwnership);
+				return;
+			}
+			if (
 				item &&
 				typeof item.id === "string" &&
 				(item.role === "assistant" || item.role === "user")
 			) {
 				this.lastItemByRole.set(item.role, item.id);
+				if (item.role === "user" && item.status === "completed") {
+					if (this.activeInputItemId === item.id) {
+						this.inputOwnershipByItem.set(item.id, this.inputOwnership);
+					} else {
+						this.inputOwnershipByItem.delete(item.id);
+					}
+					this.inputOwnership = freshInputOwnership();
+					this.activeInputItemId = undefined;
+				}
 				this.options.onItem?.({
 					generation: this.options.generation,
 					itemId: item.id,
@@ -453,6 +502,14 @@ export class CodexRealtimeTransport {
 			return;
 		}
 		const itemId = this.lastItemByRole.get(role);
+		const ownership =
+			role === "user" && itemId
+				? this.inputOwnershipByItem.get(itemId)
+				: undefined;
+		const inputOwner =
+			ownership?.valid === true && ownership.sawAudio
+				? ownership.owner
+				: undefined;
 		this.options.onTranscript?.({
 			generation: this.options.generation,
 			...(itemId ? { itemId } : {}),
@@ -460,8 +517,25 @@ export class CodexRealtimeTransport {
 			role,
 			text,
 			final,
+			...(inputOwner ? { inputOwner: { ...inputOwner } } : {}),
 			raw: params,
 		});
+		if (final && role === "user" && itemId)
+			this.inputOwnershipByItem.delete(itemId);
+	}
+
+	private observeInputOwner(owner: CodexRealtimeInputOwner): void {
+		const ownership = this.inputOwnership;
+		ownership.sawAudio = true;
+		if (!owner.utteranceId || !owner.ownerUserId) {
+			ownership.valid = false;
+			return;
+		}
+		if (!ownership.owner) {
+			ownership.owner = { ...owner };
+			return;
+		}
+		if (!sameOwner(ownership.owner, owner)) ownership.valid = false;
 	}
 
 	private processExit(

@@ -143,6 +143,54 @@ describe("BridgeVoiceClient safe request diagnostics", () => {
 		);
 	});
 
+	it("exposes an explicit handoffToLead seam without forwarding transcripts by itself", async () => {
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+			response(
+				JSON.stringify({
+					handoffId: "handoff-a",
+					state: "dispatched",
+					idempotencyKey: "action-a",
+					requestDigest: "d".repeat(64),
+				}),
+				202,
+			),
+		);
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+
+		await expect(
+			bridge.handoffToLead("session-a", "lease-a", lease, {
+				intentKind: "create_issue",
+				payload: { title: "跟进 FLY-2799" },
+				transcriptId: "transcript-action",
+				originalText: "请给 FLY-2799 开一个后续单",
+				idempotencyKey: "action-a",
+				authorityBinding: { issueId: "FLY-2799", epoch: 3 },
+			}),
+		).resolves.toMatchObject({
+			handoffId: "handoff-a",
+			state: "dispatched",
+		});
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		const [url, request] = fetchImpl.mock.calls[0]!;
+		expect(String(url)).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/handoffs`,
+		);
+		expect(request?.headers).toMatchObject({
+			Authorization: "Bearer master-secret-token",
+			"X-Voice-Lease": "lease-a",
+		});
+		expect(JSON.parse(String(request?.body))).toEqual({
+			intentKind: "create_issue",
+			payload: { title: "跟进 FLY-2799" },
+			transcriptId: "transcript-action",
+			originalText: "请给 FLY-2799 开一个后续单",
+			idempotencyKey: "action-a",
+			authorityBinding: { issueId: "FLY-2799", epoch: 3 },
+		});
+	});
+
 	it("reports a closed diagnostic envelope without raw request or error data", async () => {
 		let mono = 100;
 		const fetchImpl = vi.fn<typeof fetch>(async () => {

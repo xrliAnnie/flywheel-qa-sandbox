@@ -18,12 +18,13 @@ import type {
 	CodexVoiceContextSnapshot,
 	CodexVoiceOpenInput,
 } from "./CodexVoiceContainer.js";
-import type {
-	CodexRealtimeAppendOutcome,
-	CodexRealtimeAudioDelta,
-	CodexRealtimeInputOwner,
-	CodexRealtimeItem,
-	CodexRealtimeTranscript,
+import {
+	CODEX_REALTIME_INPUT_QUEUE_BYTES,
+	type CodexRealtimeAppendOutcome,
+	type CodexRealtimeAudioDelta,
+	type CodexRealtimeInputOwner,
+	type CodexRealtimeItem,
+	type CodexRealtimeTranscript,
 } from "./RealtimeTransport.js";
 
 const PCM24_MONO: AudioFormat = {
@@ -65,7 +66,9 @@ interface CodexTransportLike {
 }
 
 interface CodexConversationLike {
-	transport: CodexTransportLike;
+	readonly generation?: number;
+	readonly transport: CodexTransportLike;
+	restart?(): Promise<number>;
 	close(reason?: string): Promise<void>;
 }
 
@@ -115,7 +118,7 @@ export class CodexVoiceBackend implements VoiceBackend {
 				onInputGap: (input) => callbacks.session?.observeInputGap(input),
 				onCapabilityViolation: (input) =>
 					callbacks.session?.capabilityViolation(input.method),
-				onClosed: (input) => callbacks.session?.transportClosed(input.reason),
+				onClosed: (input) => callbacks.session?.transportClosed(input),
 				onError: (error) => callbacks.session?.transportError(error),
 			},
 		});
@@ -136,9 +139,16 @@ class CodexVoiceSession implements ConversationSession {
 	private readonly now: () => Date;
 	private readonly audio = new Map<string, Buffer[]>();
 	private readonly outputStarted = new Set<string>();
+	private readonly restartAudio: Array<{
+		frame: Buffer;
+		owner: CodexRealtimeInputOwner;
+	}> = [];
+	private restartAudioBytes = 0;
 	private durabilityTail: Promise<void> = Promise.resolve();
 	private sequence = 0;
+	private generation: number;
 	private live = true;
+	private restarting = false;
 	private closing = false;
 	private closePromise?: Promise<undefined>;
 
@@ -150,13 +160,14 @@ class CodexVoiceSession implements ConversationSession {
 	) {
 		this.sessionId = options.sessionId;
 		this.now = options.now ?? (() => new Date());
+		this.generation = options.conversation.generation ?? 1;
 		this.speaker = new CodexProofSpeaker({
 			sessionId: options.sessionId,
-			sessionGeneration: 1,
+			sessionGeneration: () => this.generation,
 			voice: options.voice,
 			format: PCM24_MONO,
-			transport: options.conversation.transport,
-			isLive: () => this.live && !this.closing,
+			transport: () => options.conversation.transport,
+			isLive: () => this.live && !this.restarting && !this.closing,
 			confirmTimeoutMs: options.confirmTimeoutMs,
 		});
 	}
@@ -169,6 +180,7 @@ class CodexVoiceSession implements ConversationSession {
 		this.send(frame, PCM24_MONO, {
 			ownerUserId: owner.ownerUserId,
 			utteranceId: owner.utteranceId,
+			ownerName: owner.ownerName,
 		});
 	}
 
@@ -186,17 +198,19 @@ class CodexVoiceSession implements ConversationSession {
 				"backend-protocol",
 				"Codex voice requires 24k mono PCM16",
 			);
-		const result = this.options.conversation.transport.appendAudio(
-			frame,
-			1,
-			owner,
-		);
-		if (result.startsWith("dropped:")) {
-			this.events.emit(
-				"error",
-				new VoiceError("backend-protocol", `Codex audio ${result}`),
-			);
+		if (this.closing || !this.live) return;
+		if (this.restarting) {
+			this.queueRestartAudio(frame, owner);
+			return;
 		}
+		this.observeAppendOutcome(
+			this.options.conversation.transport.appendAudio(
+				frame,
+				this.generation,
+				owner,
+			),
+			frame.length,
+		);
 	}
 
 	sendText(_text: string): void {
@@ -231,16 +245,35 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	interrupt(): void {
-		if (this.closing) return;
-		this.live = false;
-		void this.options.conversation.transport
-			.cancel()
-			.catch((error) =>
+		if (this.closing || this.restarting || !this.live) return;
+		this.restarting = true;
+		this.speaker.interrupt();
+		this.audio.clear();
+		this.outputStarted.clear();
+		this.events.emit("response-cancelled");
+		const restart = this.options.conversation.restart;
+		if (!restart) {
+			this.restarting = false;
+			this.transportError(new Error("codex_realtime_restart_unsupported"));
+			return;
+		}
+		void restart
+			.call(this.options.conversation)
+			.then((generation) => {
+				if (this.closing) return;
+				this.generation = generation;
+				this.restarting = false;
+				this.flushRestartAudio();
+			})
+			.catch((error) => {
+				this.restarting = false;
+				this.restartAudio.length = 0;
+				this.restartAudioBytes = 0;
 				this.transportError(
 					error instanceof Error ? error : new Error(String(error)),
-				),
-			);
-		this.events.emit("response-cancelled");
+				);
+				void this.close();
+			});
 	}
 
 	injectToolResult(): void {
@@ -283,7 +316,8 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	observeItem(item: CodexRealtimeItem): void {
-		if (this.closing) return;
+		if (this.closing || this.restarting || item.generation !== this.generation)
+			return;
 		if (item.role === "assistant") {
 			this.speaker.observeAssistantItem(item);
 			if (!this.outputStarted.has(item.itemId)) {
@@ -294,7 +328,8 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	observeAudio(delta: CodexRealtimeAudioDelta): void {
-		if (this.closing) return;
+		if (this.closing || this.restarting || delta.generation !== this.generation)
+			return;
 		const chunks = this.audio.get(delta.itemId) ?? [];
 		chunks.push(delta.pcm24Mono);
 		this.audio.set(delta.itemId, chunks);
@@ -302,7 +337,12 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	observeTranscript(transcript: CodexRealtimeTranscript): void {
-		if (this.closing) return;
+		if (
+			this.closing ||
+			this.restarting ||
+			transcript.generation !== this.generation
+		)
+			return;
 		this.speaker.observeTranscript(transcript);
 		this.events.emit("transcript", {
 			role: transcript.role,
@@ -312,11 +352,19 @@ class CodexVoiceSession implements ConversationSession {
 		if (!transcript.final) return;
 		const sequence = ++this.sequence;
 		const itemId = transcript.itemId ?? `unattributed-${sequence}`;
+		const inputOwner =
+			transcript.role === "user" &&
+			transcript.inputOwner?.utteranceId &&
+			transcript.inputOwner.ownerUserId
+				? transcript.inputOwner
+				: undefined;
 		const utterance: VoiceUtterance = {
 			sessionId: this.sessionId,
-			sessionGeneration: 1,
-			utteranceId: `${this.sessionId}:1:${itemId}`,
-			transcriptId: `${this.sessionId}:1:${itemId}:${sequence}`,
+			sessionGeneration: transcript.generation,
+			utteranceId:
+				inputOwner?.utteranceId ??
+				`${this.sessionId}:${transcript.generation}:${itemId}`,
+			transcriptId: `${this.sessionId}:${transcript.generation}:${itemId}:${sequence}`,
 			ts: this.now().toISOString(),
 			sequence,
 			source: transcript.role === "user" ? "room_audio" : "engine_audio",
@@ -326,13 +374,18 @@ class CodexVoiceSession implements ConversationSession {
 			attribution:
 				transcript.role === "assistant"
 					? { kind: "unknown", reason: "engine_output" }
-					: {
-							kind: "unknown",
-							reason:
-								transcript.association === "preceding_item"
-									? "provider_item_not_speaker_bound"
-									: "provider_item_unattributed",
-						},
+					: inputOwner
+						? {
+								kind: "known",
+								speakerUserId: inputOwner.ownerUserId!,
+							}
+						: {
+								kind: "unknown",
+								reason:
+									transcript.association === "preceding_item"
+										? "provider_item_not_speaker_bound"
+										: "provider_item_unattributed",
+							},
 		};
 		this.events.emit("utterance", utterance);
 		this.persist(utterance, transcript);
@@ -349,11 +402,16 @@ class CodexVoiceSession implements ConversationSession {
 		void this.close();
 	}
 
-	transportClosed(reason: string): void {
-		if (this.closing) return;
+	transportClosed(input: { generation: number; reason: string }): void {
+		if (this.closing || this.restarting || input.generation !== this.generation)
+			return;
 		this.events.emit(
 			"error",
-			new VoiceError("connection-closed", "Codex realtime closed", reason),
+			new VoiceError(
+				"connection-closed",
+				"Codex realtime closed",
+				input.reason,
+			),
 		);
 	}
 
@@ -433,8 +491,17 @@ class CodexVoiceSession implements ConversationSession {
 		const chunks = this.audio.get(itemId) ?? [];
 		this.audio.delete(itemId);
 		if (chunks.length === 0) return;
+		if (!this.options.playAudio) {
+			this.options.onEvidence?.({
+				kind: "codex_output_unsubmitted",
+				itemId,
+				generation,
+				reason: "playback_sink_missing",
+			});
+			return;
+		}
 		try {
-			await this.options.playAudio?.({
+			await this.options.playAudio({
 				itemId,
 				pcm24Mono: Buffer.concat(chunks),
 				generation,
@@ -450,5 +517,52 @@ class CodexVoiceSession implements ConversationSession {
 
 	private unsupported(message: string): void {
 		this.events.emit("error", new VoiceError("unsupported", message));
+	}
+
+	private queueRestartAudio(
+		frame: Buffer,
+		owner: CodexRealtimeInputOwner,
+	): void {
+		if (
+			this.restartAudioBytes + frame.length >
+			CODEX_REALTIME_INPUT_QUEUE_BYTES
+		) {
+			this.options.onEvidence?.({
+				kind: "codex_input_gap",
+				reason: "restart_backpressure",
+				droppedBytes: frame.length,
+			});
+			return;
+		}
+		this.restartAudio.push({ frame: Buffer.from(frame), owner: { ...owner } });
+		this.restartAudioBytes += frame.length;
+	}
+
+	private flushRestartAudio(): void {
+		const queued = this.restartAudio.splice(0);
+		this.restartAudioBytes = 0;
+		for (const { frame, owner } of queued) {
+			this.observeAppendOutcome(
+				this.options.conversation.transport.appendAudio(
+					frame,
+					this.generation,
+					owner,
+				),
+				frame.length,
+			);
+		}
+	}
+
+	private observeAppendOutcome(
+		outcome: CodexRealtimeAppendOutcome,
+		droppedBytes: number,
+	): void {
+		if (!outcome.startsWith("dropped:")) return;
+		this.options.onEvidence?.({
+			kind: "codex_audio_dropped",
+			outcome,
+			droppedBytes,
+			generation: this.generation,
+		});
 	}
 }

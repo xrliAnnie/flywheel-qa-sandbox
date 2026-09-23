@@ -16,10 +16,10 @@ function harness(options: { live?: boolean; confirmTimeoutMs?: number } = {}) {
 	const transport = new FakeSpeechTransport();
 	const speaker = new CodexProofSpeaker({
 		sessionId: "session-a",
-		sessionGeneration: 9,
+		sessionGeneration: () => 9,
 		voice: "marin",
 		format: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
-		transport,
+		transport: () => transport,
 		isLive: () => options.live ?? true,
 		confirmTimeoutMs: options.confirmTimeoutMs,
 	});

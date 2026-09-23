@@ -32,6 +32,36 @@ export interface VoiceOutboundItem {
 	text: string;
 }
 
+export type VoiceHandoffIntentKind =
+	| "create_issue"
+	| "approve_ship"
+	| "change_priority"
+	| "dispatch_runner";
+
+export interface VoiceHandoffToLeadInput {
+	intentKind: VoiceHandoffIntentKind;
+	payload: Record<string, unknown>;
+	transcriptId: string;
+	originalText: string;
+	idempotencyKey: string;
+	authorityBinding: Record<string, unknown>;
+}
+
+export interface VoiceHandoffReceipt {
+	handoffId: string;
+	state:
+		| "authorized"
+		| "dispatching"
+		| "dispatched"
+		| "committed"
+		| "rejected"
+		| "ambiguous"
+		| "needs_human";
+	idempotencyKey: string;
+	requestDigest: string;
+	reason?: string;
+}
+
 export type VoiceBridgeOperation =
 	| "desired"
 	| "claim"
@@ -177,6 +207,44 @@ function decodeDesired(value: unknown): { sessionId: string } | null {
 		throw new VoiceBridgeProtocolError("invalid_response");
 	}
 	return value.session as { sessionId: string };
+}
+
+const HANDOFF_STATES = new Set<VoiceHandoffReceipt["state"]>([
+	"authorized",
+	"dispatching",
+	"dispatched",
+	"committed",
+	"rejected",
+	"ambiguous",
+	"needs_human",
+]);
+
+function decodeHandoffReceipt(value: unknown): VoiceHandoffReceipt {
+	if (!isRecord(value)) throw new VoiceBridgeProtocolError("invalid_response");
+	const keys = Object.keys(value).sort();
+	const expected = [
+		"handoffId",
+		"idempotencyKey",
+		"requestDigest",
+		"state",
+		...(value.reason === undefined ? [] : ["reason"]),
+	].sort();
+	if (
+		keys.length !== expected.length ||
+		keys.some((key, index) => key !== expected[index]) ||
+		typeof value.handoffId !== "string" ||
+		value.handoffId.length === 0 ||
+		typeof value.idempotencyKey !== "string" ||
+		value.idempotencyKey.length === 0 ||
+		typeof value.requestDigest !== "string" ||
+		!/^[a-f0-9]{64}$/u.test(value.requestDigest) ||
+		typeof value.state !== "string" ||
+		!HANDOFF_STATES.has(value.state as VoiceHandoffReceipt["state"]) ||
+		!(value.reason === undefined || typeof value.reason === "string")
+	) {
+		throw new VoiceBridgeProtocolError("invalid_response");
+	}
+	return value as unknown as VoiceHandoffReceipt;
 }
 
 function errorCode(error: unknown): unknown {
@@ -479,6 +547,30 @@ export class BridgeVoiceClient {
 				method: "POST",
 				leaseToken,
 				body: input,
+			},
+		);
+	}
+
+	/**
+	 * Explicit trusted-mode seam. The client never classifies transcripts or
+	 * calls this automatically; FLY-2796/2797 own intent selection and bindings.
+	 */
+	async handoffToLead(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		input: VoiceHandoffToLeadInput,
+	): Promise<VoiceHandoffReceipt> {
+		lease.assert();
+		return this.request(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/handoffs`,
+			{
+				operation: "handoff",
+				routeTemplate: "/api/voice/sessions/:sessionId/handoffs",
+				method: "POST",
+				leaseToken,
+				body: input,
+				decode: decodeHandoffReceipt,
 			},
 		);
 	}

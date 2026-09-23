@@ -363,6 +363,9 @@ function withTimeout<T>(
 
 export class CodexVoiceConversation {
 	private closePromise?: Promise<void>;
+	private restartPromise?: Promise<number>;
+	private currentGeneration = 1;
+	private currentTransport: CodexRealtimeTransport;
 
 	constructor(
 		readonly sessionId: string,
@@ -372,9 +375,57 @@ export class CodexVoiceConversation {
 		readonly workdir: string,
 		readonly snapshotDigest: string,
 		private readonly process: CodexVoiceProcess,
-		readonly transport: CodexRealtimeTransport,
+		transport: CodexRealtimeTransport,
+		private readonly createTransport: (
+			generation: number,
+		) => CodexRealtimeTransport,
 		private readonly evidence: EvidenceSink,
-	) {}
+	) {
+		this.currentTransport = transport;
+	}
+
+	get generation(): number {
+		return this.currentGeneration;
+	}
+
+	get transport(): CodexRealtimeTransport {
+		return this.currentTransport;
+	}
+
+	restart(): Promise<number> {
+		if (this.closePromise)
+			return Promise.reject(new Error("conversation_closed"));
+		this.restartPromise ??= this.restartOnce().finally(() => {
+			this.restartPromise = undefined;
+		});
+		return this.restartPromise;
+	}
+
+	private async restartOnce(): Promise<number> {
+		const previous = this.currentTransport;
+		await withTimeout(
+			previous.cancel(),
+			CLOSE_RPC_TIMEOUT_MS,
+			"codex_open_failed",
+		);
+		if (this.closePromise) throw new Error("conversation_closed");
+		const generation = this.currentGeneration + 1;
+		const next = this.createTransport(generation);
+		await next.start();
+		if (this.closePromise) {
+			await next.cancel().catch(() => undefined);
+			throw new Error("conversation_closed");
+		}
+		this.currentTransport = next;
+		this.currentGeneration = generation;
+		this.evidence({
+			kind: "codex_voice_realtime_restarted",
+			sessionId: this.sessionId,
+			threadId: this.threadId,
+			generation,
+		});
+		return generation;
+	}
 
 	close(reason = "session_end"): Promise<void> {
 		this.closePromise ??= this.closeOnce(reason);
@@ -383,8 +434,9 @@ export class CodexVoiceConversation {
 
 	private async closeOnce(reason: string): Promise<void> {
 		try {
+			await this.restartPromise?.catch(() => undefined);
 			await withTimeout(
-				this.transport.cancel(),
+				this.currentTransport.cancel(),
 				CLOSE_RPC_TIMEOUT_MS,
 				"codex_open_failed",
 			).catch(() => undefined);
@@ -596,23 +648,26 @@ export class CodexVoiceContainer {
 			assertActive();
 			if (violation) throw new Error(violation);
 			assertThreadReceipt(opened.result, opened.id, workdir);
-			const transport = new CodexRealtimeTransport({
-				rpc: process,
-				sessionId: input.sessionId,
-				threadId: opened.id,
-				generation: 1,
-				start: {
-					outputModality: "audio",
-					clientManagedHandoffs: true,
-					includeStartupContext: false,
-					prompt: snapshot.realtimePrompt,
-					transport: { type: "websocket" },
-					version: CODEX_VOICE_REALTIME_VERSION,
-					model: CODEX_VOICE_REALTIME_MODEL,
-					voice: input.voice,
-				},
-				...input.realtime,
-			});
+			const realtimeStart = {
+				outputModality: "audio",
+				clientManagedHandoffs: true,
+				includeStartupContext: false,
+				prompt: snapshot.realtimePrompt,
+				transport: { type: "websocket" },
+				version: CODEX_VOICE_REALTIME_VERSION,
+				model: CODEX_VOICE_REALTIME_MODEL,
+				voice: input.voice,
+			};
+			const createTransport = (generation: number) =>
+				new CodexRealtimeTransport({
+					rpc: process,
+					sessionId: input.sessionId,
+					threadId: opened.id,
+					generation,
+					start: realtimeStart,
+					...input.realtime,
+				});
+			const transport = createTransport(1);
 			await transport.start();
 			assertActive();
 			if (violation) throw new Error(violation);
@@ -625,6 +680,7 @@ export class CodexVoiceContainer {
 				snapshot.snapshotDigest,
 				process,
 				transport,
+				createTransport,
 				this.evidence,
 			);
 			this.evidence({

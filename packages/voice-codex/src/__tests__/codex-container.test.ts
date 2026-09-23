@@ -311,6 +311,36 @@ describe("Codex voice container", () => {
 		expect(existsSync(secondRoot)).toBe(false);
 	});
 
+	it("restarts only the realtime connection and advances its generation after a confirmed close", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-restart",
+			voice: "marin",
+			loadContext: async () => context("session-restart"),
+		});
+		const firstTransport = opened.transport;
+
+		expect(opened.generation).toBe(1);
+		await expect(opened.restart()).resolves.toBe(2);
+		expect(opened.generation).toBe(2);
+		expect(opened.transport).not.toBe(firstTransport);
+		expect(h.processes[0]?.requests.map(({ method }) => method)).toEqual([
+			"thread/realtime/start",
+			"thread/realtime/stop",
+			"thread/realtime/start",
+		]);
+		expect(h.processes[0]?.stopCount).toBe(0);
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_voice_realtime_restarted",
+				generation: 2,
+			}),
+		);
+
+		await opened.close();
+		expect(h.processes[0]?.stopCount).toBe(1);
+	});
+
 	it.each([
 		["version", "codex-cli 0.157.0", CODEX_VOICE_BINARY_SHA256, true],
 		["digest", CODEX_VOICE_BINARY_VERSION, "0".repeat(64), true],

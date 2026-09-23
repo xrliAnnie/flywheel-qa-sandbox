@@ -11,6 +11,7 @@ import type { PreparedSpeech } from "../speech.js";
 import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
 
 export interface CodexRoomFrontendHandlers {
+	onResponseState(active: boolean): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -132,6 +133,11 @@ export class CodexRoomFrontend {
 	}
 
 	private bind(session: ConversationSession): void {
+		session.on("response-started", () => this.handlers?.onResponseState(true));
+		session.on("response-done", () => this.handlers?.onResponseState(false));
+		session.on("response-cancelled", () =>
+			this.handlers?.onResponseState(false),
+		);
 		session.on("utterance", (utterance) => {
 			if (
 				utterance.role !== "user" ||

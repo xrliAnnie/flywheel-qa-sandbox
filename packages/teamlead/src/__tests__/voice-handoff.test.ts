@@ -6,6 +6,10 @@ import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	BridgeVoiceClient,
+	VoiceLease,
+} from "../../../voice-codex/src/bridge-client.js";
+import {
 	VoiceHandoffError,
 	VoiceHandoffService,
 	type VoiceMailboxSettlement,
@@ -447,5 +451,91 @@ describe("voice handoff HTTP authorization", () => {
 			status: 400,
 			body: { error: "voice_handoff_invalid" },
 		});
+	});
+
+	it("lets a fake trusted mode layer hand off only the selected action to the resident Lead", async () => {
+		const { leaseToken } = liveSession();
+		const h = service();
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/voice/sessions",
+			voiceSessionAuthMiddleware(MASTER, INGEST),
+			createVoiceSessionRouter({
+				store,
+				leaseTtlMs: 60_000,
+				leaseRenewMs: 4_000,
+				now: () => NOW,
+				resolveStart: () => {
+					throw new Error("unused");
+				},
+				provisionSession: () => undefined,
+				projectSession: () => ({}),
+				voiceHandoffs: h.service,
+			}),
+		);
+		server = createServer(app);
+		await new Promise<void>((resolve) =>
+			server!.listen(0, "127.0.0.1", resolve),
+		);
+		const bridge = new BridgeVoiceClient({
+			baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+			token: MASTER,
+			httpTimeoutMs: 2_000,
+		});
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		const record = (input: {
+			transcriptId: string;
+			utteranceId: string;
+			sequence: number;
+			text: string;
+		}) =>
+			bridge.recordUtterance(SESSION_ID, leaseToken, lease, {
+				...input,
+				sessionGeneration: 1,
+				source: "room_audio",
+				role: "user",
+				final: true,
+				attribution: { kind: "known", speakerUserId: "founder" },
+				captureDigest: input.sequence.toString(16).padStart(64, "0"),
+			});
+		await record({
+			transcriptId: "transcript-casual",
+			utteranceId: "utterance-casual",
+			sequence: 1,
+			text: "今天天气怎么样",
+		});
+		await record({
+			transcriptId: "transcript-action",
+			utteranceId: "utterance-action",
+			sequence: 2,
+			text: "请给 FLY-2799 开一个后续单",
+		});
+
+		// This explicit call stands in for the trusted 2796/2797 mode layer. The
+		// engine and client do not classify or forward the casual utterance.
+		const receipt = await bridge.handoffToLead(SESSION_ID, leaseToken, lease, {
+			intentKind: "create_issue",
+			payload: { title: "跟进 FLY-2799", quote: "开一个后续单" },
+			transcriptId: "transcript-action",
+			originalText: "请给 FLY-2799 开一个后续单",
+			idempotencyKey: "action-a",
+			authorityBinding: { issueId: "FLY-2799", epoch: 3 },
+		});
+
+		expect(receipt.state).toBe("dispatched");
+		expect(h.enqueue).toHaveBeenCalledOnce();
+		expect(h.enqueue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: "raya",
+				event: expect.objectContaining({
+					voice_transcript_id: "transcript-action",
+				}),
+			}),
+		);
+		expect(JSON.stringify(h.enqueue.mock.calls)).not.toContain(
+			"今天天气怎么样",
+		);
 	});
 });

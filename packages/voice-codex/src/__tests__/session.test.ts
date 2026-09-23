@@ -107,6 +107,27 @@ describe("GenericVoiceSession", () => {
 		expect(test.room.setWaiting).toHaveBeenCalledWith(true);
 	});
 
+	it("uses founder audio to cancel active Codex output once before forwarding the frame", async () => {
+		const test = fixture();
+		await test.session.start();
+		await test.session.markLive();
+		const owner = {
+			utteranceId: "founder-turn",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		};
+		const pcm = Buffer.alloc(960);
+
+		test.getFrontendHandlers().onResponseState(true);
+		test.getRoomHandlers().onAudio(pcm, owner);
+		test.getRoomHandlers().onAudio(pcm, owner);
+
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledOnce();
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledWith("__conversation__");
+		expect(test.room.cancelSpeech).toHaveBeenCalledWith("__conversation__");
+		expect(test.frontend.appendAudio).toHaveBeenCalledTimes(2);
+	});
+
 	it("confirms a reply only after validated audio finishes paced playback", async () => {
 		let finishPlayback!: () => void;
 		const playback = new Promise<void>((resolve) => {
@@ -764,7 +785,7 @@ describe("GenericVoiceSession start cleanup is per-branch", () => {
  */
 describe("GenericVoiceSession start budget includes preflight", () => {
 	it("gives the branches only what the caller's deadline has left", async () => {
-		let now = 1_000_000;
+		const now = 1_000_000;
 		const room = {
 			start: vi.fn(() => new Promise<{ founderPresent: boolean }>(() => {})),
 			playSpeech: vi.fn(async () => {}),
