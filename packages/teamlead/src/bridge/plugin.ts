@@ -13951,6 +13951,7 @@ export async function startBridge(
 					}>((resolveIdentityPromise) => {
 						resolveIdentity = resolveIdentityPromise;
 					});
+					let identityTimeout: ReturnType<typeof setTimeout> | undefined;
 					try {
 						await startDispatcher.start({
 							issueId: session.issue_id,
@@ -14010,12 +14011,12 @@ export async function startBridge(
 						});
 						const observed = await Promise.race([
 							identity,
-							new Promise<never>((_, reject) =>
-								setTimeout(
+							new Promise<never>((_, reject) => {
+								identityTimeout = setTimeout(
 									() => reject(new Error("resume_identity_timeout")),
 									60_000,
-								),
-							),
+								);
+							}),
 						]);
 						const totalMs = Math.max(0, Date.now() - requestedAt);
 						if (observed.model === null) {
@@ -14038,6 +14039,8 @@ export async function startBridge(
 							ok: false,
 							error: error instanceof Error ? error.message : String(error),
 						};
+					} finally {
+						if (identityTimeout) clearTimeout(identityTimeout);
 					}
 				},
 				activateActorForWake: (session) =>
