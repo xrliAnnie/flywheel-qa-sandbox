@@ -1,4 +1,4 @@
-# FLY-2798 前台快答与后台 Lead — 调研
+# FLY-2798 交付验证记录 — 调研
 Issue: FLY-2798 (https://linear.app/geoforge3d/issue/FLY-2798/语音v4-引擎-a前台快答-后台-lead-在现有通用管道上让实时模型自己答简单的复杂的交给)
 日期: 2026-09-23
 基于: plan.md
@@ -33,3 +33,6 @@ R1 期间收到 2796 草案 c7189944e，plan §2.1 九项已对齐，最终 pin 
 - MEDIUM t0-hard-gate-blocks-everything：接受；T0前离线与T0后集成任务明确拆开；九项已对齐上游草案。
 - LOW sendtext-to-speak-receipt-dropped / close-resumehandle-contract-unstated：接受；写明 audit/error、catch、supportsResume=false、undefined与close异常语义。
 - MEDIUM announcer-takeover-rebuilds-live-unconditionally：非阻断 Follow-up，§10.2 保留 Lead 已接受的安全基线，频繁重连实测；优化空闲接管需另证无turn ID的晚帧安全。不是覆盖HIGH的治理裁定。
+
+## R2 有效通过
+reviewVerdict=APPROVED，reviewerVerdict=APPROVED；questionId=612688a1-1e25-4d88-a290-8a881e6b7658，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db9。计划commit=757434f30，plan blob=ee5f97dcf948350857d9ad60e1576183a7ca5c84。七条非阻断建议原文见review-r2.json，处置边界见follow-ups.md。
