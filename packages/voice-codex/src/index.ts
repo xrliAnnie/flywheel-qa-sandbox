@@ -2,6 +2,7 @@ export * from "./adapters.js";
 export * from "./audio.js";
 export * from "./bridge-client.js";
 export * from "./codex/CodexVoiceContainer.js";
+export * from "./codex/RealtimeTransport.js";
 export * from "./config.js";
 export * from "./daemon.js";
 export * from "./delivery.js";
