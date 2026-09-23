@@ -60,7 +60,11 @@ import {
 	reportStartupRefusal,
 	VOICE_LOCK_UNAVAILABLE_BODY,
 } from "./startup-alert.js";
-import { type VoiceMinutesJob, VoiceMinutesQueue } from "./voice-minutes.js";
+import {
+	type VoiceMinutesJob,
+	VoiceMinutesQueue,
+	voiceMinutesMessageId,
+} from "./voice-minutes.js";
 
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
@@ -306,7 +310,7 @@ export async function main(): Promise<void> {
 				leadId: payload.leadId,
 				voiceSessionId: payload.sessionId,
 				threadId: payload.threadId,
-				messageId: `voice-minutes-${job.jobId}`,
+				messageId: voiceMinutesMessageId(job.jobId),
 				authorId: payload.voiceBotUserId,
 				authorName: `${payload.displayName} voice minutes`,
 				text: renderVoiceMinutes(job),

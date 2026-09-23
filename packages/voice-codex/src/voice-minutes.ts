@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const SYNTHETIC_SNOWFLAKE_HIGH_BIT = 1n << 63n;
 
 export type VoiceMinutesSettlement =
 	| { kind: "absent" }
@@ -83,6 +84,20 @@ function digest(value: unknown): string {
 	return createHash("sha256")
 		.update(JSON.stringify(canonical(value)))
 		.digest("hex");
+}
+
+export function voiceMinutesMessageId(jobId: string): string {
+	if (!SHA256_PATTERN.test(jobId))
+		throw new Error("voice_minutes_job_id_invalid");
+	// chat-ingest requires a numeric unsigned snowflake-shaped identity even for
+	// origin=voice. Keep 63 bits of the durable job digest and force 19-20 digits.
+	return (
+		BigInt(`0x${jobId.slice(0, 16)}`) | SYNTHETIC_SNOWFLAKE_HIGH_BIT
+	).toString();
+}
+
+function voiceMinutesDeliveryId(leadId: string, jobId: string): string {
+	return `chat:${leadId}:${voiceMinutesMessageId(jobId)}`;
 }
 
 function validId(value: string): boolean {
@@ -169,7 +184,7 @@ export class VoiceMinutesQueue {
 		const job: VoiceMinutesJob = {
 			version: 1,
 			jobId,
-			deliveryId: `chat:${payload.leadId}:voice-minutes-${jobId}`,
+			deliveryId: voiceMinutesDeliveryId(payload.leadId, jobId),
 			payloadDigest,
 			state: "pending",
 			attemptToken: null,
@@ -293,14 +308,15 @@ export class VoiceMinutesQueue {
 			sessionId: payload.sessionId,
 			transcriptDigest: payload.transcriptDigest,
 		});
+		const deliveryId = voiceMinutesDeliveryId(payload.leadId, expectedJobId);
+		const legacyDeliveryId = `chat:${payload.leadId}:voice-minutes-${expectedJobId}`;
 		if (
 			calculatedJobId !== expectedJobId ||
 			value.payloadDigest !== digest(payload) ||
-			value.deliveryId !==
-				`chat:${payload.leadId}:voice-minutes-${expectedJobId}`
+			(value.deliveryId !== deliveryId && value.deliveryId !== legacyDeliveryId)
 		)
 			throw new Error("voice_minutes_job_corrupt");
-		return value as unknown as VoiceMinutesJob;
+		return { ...value, deliveryId } as unknown as VoiceMinutesJob;
 	}
 
 	private write(job: VoiceMinutesJob): void {

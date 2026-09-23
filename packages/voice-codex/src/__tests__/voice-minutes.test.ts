@@ -1,7 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FlywheelCommDelivery } from "../adapters.js";
 import {
 	VoiceMinutesQueue,
 	type VoiceMinutesSettlement,
@@ -109,6 +111,70 @@ describe("durable voice minutes", () => {
 			status: "incomplete",
 			handoffs: [{ handoffId: "handoff-a", state: "dispatched" }],
 		});
+	});
+
+	it("delivers its stable identity through the real flywheel-comm carrier", async () => {
+		const stateRoot = root();
+		const queue = new VoiceMinutesQueue({
+			root: join(stateRoot, "minutes"),
+			deliver: vi.fn(),
+			inspect: () => ({ kind: "absent" }),
+		});
+		const input = payload();
+		const job = queue.enqueue(input);
+		const messageId = job.deliveryId.split(":").at(-1);
+		expect(messageId).toBeDefined();
+		const delivery = new FlywheelCommDelivery({
+			cliPath: fileURLToPath(
+				new URL("../../../flywheel-comm/dist/index.js", import.meta.url),
+			),
+			dbPath: join(stateRoot, "comm.db"),
+			founderUserId: input.founderUserId,
+		});
+
+		const receipt = await delivery.ingest({
+			leadId: input.leadId,
+			voiceSessionId: input.sessionId,
+			threadId: input.threadId,
+			messageId: messageId as string,
+			authorId: input.voiceBotUserId,
+			authorName: `${input.displayName} voice minutes`,
+			text: "voice minutes",
+			ts: "2026-09-23T00:00:00.000Z",
+		});
+
+		expect(receipt.deliveryId).toBe(job.deliveryId);
+		expect(await delivery.read(job.deliveryId)).toEqual({
+			origin: "voice",
+			voiceSessionId: input.sessionId,
+			authorId: input.voiceBotUserId,
+			text: "voice minutes",
+		});
+	});
+
+	it("normalizes the legacy non-snowflake identity during durable recovery", () => {
+		const stateRoot = root();
+		const queue = new VoiceMinutesQueue({
+			root: stateRoot,
+			deliver: vi.fn(),
+			inspect: () => ({ kind: "absent" }),
+		});
+		const job = queue.enqueue(payload());
+		const path = join(stateRoot, `${job.jobId}.json`);
+		const encoded = JSON.parse(readFileSync(path, "utf8")) as {
+			deliveryId: string;
+		};
+		encoded.deliveryId = `chat:${job.payload.leadId}:voice-minutes-${job.jobId}`;
+		writeFileSync(path, `${JSON.stringify(encoded)}\n`);
+
+		const restarted = new VoiceMinutesQueue({
+			root: stateRoot,
+			deliver: vi.fn(),
+			inspect: () => ({ kind: "absent" }),
+		});
+		const recovered = restarted.prepareNext();
+
+		expect(recovered?.deliveryId).toMatch(/^chat:raya:\d{19,20}$/u);
 	});
 
 	it("fails visibly instead of dropping a corrupt durable job", async () => {
