@@ -108,7 +108,10 @@ import {
 } from "./discord-chat-ingest.js";
 import { resolveFounderId } from "./founder-attribution.js";
 import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
-import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
+import {
+	nudgeLeadInboxBestEffort,
+	resolveLeadInboxBridgeUrl,
+} from "./lead-inbox-nudge.js";
 import { RecipientError } from "./recipient-resolve.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 import {
@@ -620,7 +623,7 @@ async function runAckEvent(args: string[]): Promise<void> {
 		leadId,
 	});
 	await nudgeLeadInboxBestEffort({
-		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
+		bridgeUrl: resolveLeadInboxBridgeUrl(process.env),
 		leadId,
 		project: values.project,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
@@ -691,7 +694,7 @@ async function runAsk(args: string[]): Promise<void> {
 		deadlineAt: values.deadline,
 	});
 	await nudgeLeadInboxBestEffort({
-		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
+		bridgeUrl: resolveLeadInboxBridgeUrl(process.env),
 		leadId: values.lead,
 		project: values.project,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
@@ -974,7 +977,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 	console.log(JSON.stringify(result));
 	if (result.lane === "inserted_inbox" && !result.deadLettered) {
 		await nudgeLeadInboxBestEffort({
-			bridgeUrl: process.env.BRIDGE_URL,
+			bridgeUrl: resolveLeadInboxBridgeUrl(process.env),
 			leadId: required("lead"),
 			project: values.project ?? process.env.PROJECT_NAME,
 			apiToken: process.env.TEAMLEAD_API_TOKEN,
@@ -2357,14 +2360,15 @@ async function runGate(args: string[]): Promise<void> {
 		cleanupTtlHours,
 		deadlineAt: values.deadline,
 		founderReviewEvidence,
-		nudge: () =>
-			nudgeLeadInboxBestEffort({
-				bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
+		nudge: async () => {
+			await nudgeLeadInboxBestEffort({
+				bridgeUrl: resolveLeadInboxBridgeUrl(process.env),
 				leadId: values.lead as string,
 				project: values.project,
 				apiToken: process.env.TEAMLEAD_API_TOKEN,
 				ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
-			}),
+			});
+		},
 		stage: values.stage,
 		noBlock: values["no-block"],
 	});
