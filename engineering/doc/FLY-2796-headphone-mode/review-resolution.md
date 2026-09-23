@@ -35,6 +35,14 @@ Request: ec688e80-8878-4e14-b61b-cc639c3a94cd
 
 Lead 指令 cf7aeb81-f149-4ff2-80ce-044ca80dd9ae 同轮纳入 plan §7.1a：文件 owner 表覆盖 2798 旧分工；resultEventId 稳定，seq 每 handoff 单调，cursor=(handoffId,lastAppliedSeq)。
 
-## R3
+## R3 — APPROVED
 
-以上在同一 R3 gate 重新审查，不给 Lead 两项补充另开独立轮次。HTML 产品表述仍适用；未开启第二批功能。
+Question: 2722e726-a1e3-4822-83e8-0c91752a04af
+Request: 6d3956ba-c2a6-45d2-9590-9a433a693fd5
+Effective reviewVerdict=APPROVED；reviewerVerdict=APPROVED。2026-09-23T19:31:47Z 持久结果。
+
+本轮曾于 18:40Z 因 API ENOTFOUND/nonzero_exit 失败，无 verdict；19:29:50Z 通过同一 requestId/gate 的受支持重试恢复，并得到以上结论。没有新造身份或自行放行。
+
+R1/R2 所有 HIGH 均已闭合。R3 新增两项非阻塞建议保留在 plan Follow-ups：resident-self-filter-proof-races-cold-member-cache（MEDIUM）、cue-skip-condition-ambiguous-vs-tail-drain-gate（LOW）。已批准的设计实现边界不变。
+
+Lead 两项补充与 R2 修复在本轮一起审阅，没有另开独立轮次。HTML 产品表述仍适用；未开启第二批功能。

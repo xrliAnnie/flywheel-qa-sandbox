@@ -3,7 +3,7 @@ Issue: FLY-2796 (https://linear.app/geoforge3d/issue/FLY-2796/语音v2-耳机模
 日期: 2026-09-23
 基于: research.md
 
-Status: review_requested (R3; R1/R2 findings reconciled)
+Status: approved (effective reviewVerdict=APPROVED, R3 request 6d3956ba-c2a6-45d2-9590-9a433a693fd5)
 
 ## 1. 给使用者看的结果
 
@@ -275,3 +275,8 @@ G1-e: 两旧命令及 A/B 接缝均生成同规格 RoomIO 会话收据；V6 后�
 ## 10. 本设计阶段交付与非结论
 
 探索、调研、计划、Mermaid 源/SVG、可逐节评论的浅色 founder HTML 一并提交推送。获得 effective reviewVerdict=APPROVED 后发布 HTML（publish-only），核对托管 HTTP/CSP/nonce/页面内容并 report Lead，再 `complete --route phase_design_complete` 和 park。此阶段不实现、不开真房、不部署、不申请 ship，不把后续 QA 判据当已获证据。
+
+## Follow-ups（R3 非阻塞建议，交 Lead 决定）
+
+- `resident-self-filter-proof-races-cold-member-cache`（MEDIUM）：成员缓存未解析不等于身份失败；后续细化初始化等待/有界重试、刷新周期与租约关系，避免误拒或误终止。该 finding 不改变本轮 effective APPROVED；不在设计收尾阶段重开方案。
+- `cue-skip-condition-ambiguous-vs-tail-drain-gate`（LOW）：正文已 end、但 audibleTail（估算）仍未排空时，cue 等待还是跳过需明确；后续保留提示音实际触发观察。
