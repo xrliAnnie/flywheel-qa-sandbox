@@ -207,6 +207,7 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 	const base = (assistant: unknown) => [
 		{
 			projectName: "flywheel",
+			leads: [{ agentId: "eng-lead", botTokenEnv: "ENG_TOKEN" }],
 			huddle: {
 				guildId: "g",
 				voiceChannelId: "vc",
@@ -216,6 +217,10 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 			},
 		},
 	];
+	const configured = (over: Record<string, unknown> = {}) => ({
+		leadId: "eng-lead",
+		...over,
+	});
 
 	it("absent assistant block → null (byte-compat, /live off)", () => {
 		expect(resolveAssistantConfig(base(undefined), {})).toBeNull();
@@ -223,10 +228,20 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 		expect(resolveAssistantConfig("junk", {})).toBeNull();
 	});
 
-	it("empty block gets full defaults", () => {
-		const c = resolveAssistantConfig(base({}), {});
+	it("leadId is required and must name a declared project lead", () => {
+		expect(() => resolveAssistantConfig(base({}), {})).toThrow(
+			/huddle\.assistant\.leadId/,
+		);
+		expect(() => resolveAssistantConfig(base({ leadId: "ghost" }), {})).toThrow(
+			/ghost.*leads/s,
+		);
+	});
+
+	it("configured block gets full defaults", () => {
+		const c = resolveAssistantConfig(base(configured()), {});
 		expect(c).toMatchObject({
 			commandName: "gemini",
+			leadId: "eng-lead",
 			assistantToken: null,
 			localBargeIn: false,
 			bargeIn: true, // Annie's call: default ON (headphone users get real barge-in)
@@ -241,40 +256,44 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 	});
 
 	it("bargeIn: false is honored (speaker users — assistant echo would cancel live responses)", () => {
-		const c = resolveAssistantConfig(base({ bargeIn: false }), {});
+		const c = resolveAssistantConfig(base(configured({ bargeIn: false })), {});
 		expect(c?.bargeIn).toBe(false);
 	});
 
 	it('a non-boolean bargeIn fails FAST — a string "false" silently meaning ON is the exact speaker-user trap (Codex R21)', () => {
 		expect(() =>
-			resolveAssistantConfig(base({ bargeIn: "false" }), {}),
+			resolveAssistantConfig(base(configured({ bargeIn: "false" })), {}),
 		).toThrow(/bargeIn must be true or false/);
 	});
 
 	it("captions defaults ON; explicit false is honored (FLY-1065 escape hatch back to v1 log-only)", () => {
-		expect(resolveAssistantConfig(base({}), {})?.captions).toBe(true);
+		expect(resolveAssistantConfig(base(configured()), {})?.captions).toBe(true);
 		expect(
-			resolveAssistantConfig(base({ captions: false }), {})?.captions,
+			resolveAssistantConfig(base(configured({ captions: false })), {})
+				?.captions,
 		).toBe(false);
-		expect(resolveAssistantConfig(base({ captions: true }), {})?.captions).toBe(
-			true,
-		);
+		expect(
+			resolveAssistantConfig(base(configured({ captions: true })), {})
+				?.captions,
+		).toBe(true);
 	});
 
 	it("a non-boolean captions fails FAST (same trap shape as bargeIn)", () => {
 		expect(() =>
-			resolveAssistantConfig(base({ captions: "false" }), {}),
+			resolveAssistantConfig(base(configured({ captions: "false" })), {}),
 		).toThrow(/captions must be true or false/);
 	});
 
 	it("explicit fields override defaults", () => {
 		const c = resolveAssistantConfig(
-			base({
-				commandName: "chat",
-				voice: "Kore",
-				localBargeIn: true,
-				briefing: { refreshSec: 300, docs: ["product/prd.md"] },
-			}),
+			base(
+				configured({
+					commandName: "chat",
+					voice: "Kore",
+					localBargeIn: true,
+					briefing: { refreshSec: 300, docs: ["product/prd.md"] },
+				}),
+			),
 			{},
 		);
 		expect(c).toMatchObject({
@@ -287,27 +306,33 @@ describe("resolveAssistantConfig (FLY-967 P7 config contract)", () => {
 
 	it("assistantBotTokenEnv resolves from env, fails fast when missing", () => {
 		const c = resolveAssistantConfig(
-			base({ assistantBotTokenEnv: "ASSIST_TOKEN" }),
+			base(configured({ assistantBotTokenEnv: "ASSIST_TOKEN" })),
 			{ ASSIST_TOKEN: "tok-123" },
 		);
 		expect(c?.assistantToken).toBe("tok-123");
 		expect(() =>
 			resolveAssistantConfig(
-				base({ assistantBotTokenEnv: "ASSIST_TOKEN" }),
+				base(configured({ assistantBotTokenEnv: "ASSIST_TOKEN" })),
 				{},
 			),
 		).toThrow(/ASSIST_TOKEN/);
 	});
 
 	it("bad types fail fast with guidance", () => {
-		expect(() => resolveAssistantConfig(base({ commandName: 42 }), {})).toThrow(
-			/commandName/,
-		);
 		expect(() =>
-			resolveAssistantConfig(base({ briefing: { refreshSec: -1 } }), {}),
+			resolveAssistantConfig(base(configured({ commandName: 42 })), {}),
+		).toThrow(/commandName/);
+		expect(() =>
+			resolveAssistantConfig(
+				base(configured({ briefing: { refreshSec: -1 } })),
+				{},
+			),
 		).toThrow(/refreshSec/);
 		expect(() =>
-			resolveAssistantConfig(base({ briefing: { docs: [""] } }), {}),
+			resolveAssistantConfig(
+				base(configured({ briefing: { docs: [""] } })),
+				{},
+			),
 		).toThrow(/docs/);
 	});
 });

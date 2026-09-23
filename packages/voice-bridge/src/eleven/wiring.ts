@@ -23,6 +23,7 @@ import {
 import type { PlayerLike, ResourceSource } from "../audio/LeadSpeaker.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import type { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { ELEVEN_SLOT_MODE, type ElevenModeConfig } from "./config.js";
 import { ElevenCommand, type ElevenPreflightResult } from "./ElevenCommand.js";
@@ -82,6 +83,7 @@ export function makeWaitingCue(opts: {
 export interface WireElevenOptions {
 	config: HuddleBridgeConfig;
 	eleven: ElevenModeConfig;
+	claimSession?(): Promise<ResidentVoiceLease>;
 	registry: {
 		client(id: string): unknown;
 		join(
@@ -324,7 +326,8 @@ export async function wireElevenMode(
 			activeSession = null;
 			return true;
 		},
-		startSession: async ({ sessionId, issueId, topic }) => {
+		claimSession: opts.claimSession,
+		startSession: async ({ sessionId, issueId, topic, lease }) => {
 			let orchestratorConn: unknown;
 			let noShowTimer: ReturnType<typeof setTimeout> | undefined;
 			const deferredPlayer = makeDeferredPlayer(log);
@@ -434,6 +437,7 @@ export async function wireElevenMode(
 				...(issueId ? { issueId } : {}),
 				slot: room.slot,
 				slotMode: ELEVEN_SLOT_MODE,
+				lease,
 				ears: room,
 				connect,
 				speaker,

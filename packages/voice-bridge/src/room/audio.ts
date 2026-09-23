@@ -123,6 +123,9 @@ export class WaitingMouth {
 		reject(error: Error): void;
 	}> = [];
 	private readonly cancelledSpeechIds = new Set<string>();
+	private readonly queuedSpeechIds = new Set<string>();
+	private playSpeechTail: Promise<void> = Promise.resolve();
+	private activeOneShotId?: string;
 	private pendingClip?: {
 		id: string;
 		epoch: number;
@@ -148,7 +151,7 @@ export class WaitingMouth {
 			setIntervalFn?: typeof setInterval;
 			clearIntervalFn?: typeof clearInterval;
 		},
-		) {
+	) {
 		options.player.on?.("playing", () => {
 			if (this.phase === "clip" && this.pendingClip)
 				this.pendingClip.started = true;
@@ -194,10 +197,7 @@ export class WaitingMouth {
 		const chunk = Buffer.from(pcm24Mono);
 		this.compactQueue();
 		let offset = 0;
-		if (
-			this.phase === "pcm" &&
-			this.pendingWrites.length === 0
-		) {
+		if (this.phase === "pcm" && this.pendingWrites.length === 0) {
 			const accepted = Math.min(
 				chunk.length,
 				Math.max(0, this.maxQueueBytes() - this.queued.length),
@@ -230,10 +230,48 @@ export class WaitingMouth {
 		});
 	}
 
-	async playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void> {
+	playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void> {
+		if (
+			!speechId ||
+			this.pendingSpeech?.id === speechId ||
+			this.queuedSpeechIds.has(speechId) ||
+			(this.pendingSpeech && !this.activeOneShotId)
+		)
+			return Promise.reject(new Error("speech_playback_invalid"));
+		if (!this.pendingSpeech && this.queuedSpeechIds.size === 0) {
+			this.activeOneShotId = speechId;
+			const playback = this.playSpeechNow(speechId, pcm24Mono).finally(() => {
+				this.activeOneShotId = undefined;
+			});
+			this.playSpeechTail = playback.catch(() => {});
+			return playback;
+		}
+		this.queuedSpeechIds.add(speechId);
+		const playback = this.playSpeechTail.then(async () => {
+			this.queuedSpeechIds.delete(speechId);
+			if (this.cancelledSpeechIds.delete(speechId))
+				throw new Error("speech_playback_stopped");
+			this.activeOneShotId = speechId;
+			try {
+				await this.playSpeechNow(speechId, pcm24Mono);
+			} finally {
+				this.activeOneShotId = undefined;
+			}
+		});
+		this.playSpeechTail = playback.catch(() => {});
+		return playback;
+	}
+
+	private async playSpeechNow(
+		speechId: string,
+		pcm24Mono: Buffer,
+	): Promise<void> {
 		this.beginSpeech(speechId);
 		const written = this.writeSpeech(speechId, pcm24Mono);
-		if (this.pendingWrites.length === 0 && this.pendingSpeech?.id === speechId) {
+		if (
+			this.pendingWrites.length === 0 &&
+			this.pendingSpeech?.id === speechId
+		) {
 			const ended = this.endSpeech(speechId);
 			await written;
 			await ended;
@@ -275,6 +313,10 @@ export class WaitingMouth {
 	}
 
 	cancelSpeech(speechId: string): void {
+		if (this.queuedSpeechIds.has(speechId)) {
+			this.cancelledSpeechIds.add(speechId);
+			return;
+		}
 		if (this.pendingClip?.id === speechId) {
 			const pending = this.pendingClip;
 			this.pendingClip = undefined;
@@ -295,6 +337,8 @@ export class WaitingMouth {
 		const pending = this.pendingSpeech;
 		this.pendingSpeech = undefined;
 		if (pending) this.cancelledSpeechIds.add(pending.id);
+		for (const speechId of this.queuedSpeechIds)
+			this.cancelledSpeechIds.add(speechId);
 		for (const write of this.pendingWrites.splice(0))
 			write.reject(new Error("speech_playback_stopped"));
 		pending?.reject(new Error("speech_playback_stopped"));
@@ -447,10 +491,7 @@ export class WaitingMouth {
 			const available = this.maxQueueBytes() - this.queued.length;
 			if (available <= 0) break;
 			const accepted = Math.min(available, next.chunk.length - next.offset);
-			const admitted = next.chunk.subarray(
-				next.offset,
-				next.offset + accepted,
-			);
+			const admitted = next.chunk.subarray(next.offset, next.offset + accepted);
 			this.queued = this.queued.length
 				? Buffer.concat([this.queued, admitted])
 				: Buffer.from(admitted);

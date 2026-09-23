@@ -34,6 +34,7 @@ import { superviseVoiceConnection } from "../audio/VoiceConnSupervisor.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
 import { TivPresenter } from "../discord/TivPresenter.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import { wireRoomEars } from "../roomEars.js";
 import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { AssistantLanding } from "./AssistantLanding.js";
@@ -98,6 +99,7 @@ export interface WireAssistantOptions {
 	/** FLY-1160 §3.3 Phase 1: when true, new /gemini invocations are refused
 	 * (命令下架) — the daemon is shutting down and must not start meetings. */
 	isShuttingDown?: () => boolean;
+	claimSession?(): Promise<ResidentVoiceLease>;
 }
 
 export interface AssistantRuntime {
@@ -325,10 +327,12 @@ export async function wireAssistantMode(
 			sessionId,
 			issueId,
 			topic,
+			lease,
 		}: {
 			sessionId: string;
 			issueId: string;
 			topic?: string;
+			lease?: ResidentVoiceLease;
 		}) => {
 			let orchestratorConn: unknown;
 			// the real AudioPlayer exists only after the orchestrator joins the VC.
@@ -346,6 +350,7 @@ export async function wireAssistantMode(
 				sessionId,
 				topic,
 				slot,
+				lease,
 				briefing,
 				createConversation: (p: string, o: { sessionId: string }) =>
 					create(p, { ...o, advanced }),
@@ -454,6 +459,7 @@ export async function wireAssistantMode(
 						)
 				: undefined,
 			log,
+			claimSession: opts.claimSession,
 			startSession: makeStartSession(name, create, advanced),
 		});
 
