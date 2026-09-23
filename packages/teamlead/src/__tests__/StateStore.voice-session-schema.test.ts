@@ -26,6 +26,7 @@ describe("StateStore voice session schema", () => {
 			.all()
 			.map((row) => (row as { name: string }).name);
 		expect(names).toEqual([
+			"voice_handoffs",
 			"voice_health_demand_events",
 			"voice_health_demand_source",
 			"voice_health_projection",
@@ -36,6 +37,7 @@ describe("StateStore voice session schema", () => {
 			"voice_schedule_requests",
 			"voice_schedules",
 			"voice_sessions",
+			"voice_utterances",
 		]);
 		const indexes = db
 			.prepare(

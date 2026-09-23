@@ -164,6 +164,13 @@ export interface HookPayload {
 	// FLY-159 gate timeout / FLY-1279 park notice: elapsed wait duration.
 	waited_ms?: number;
 	original_message?: string;
+	/** FLY-2799: durable voice action identity; prose is never authority. */
+	voice_handoff_id?: string;
+	voice_transcript_id?: string;
+	voice_request_digest?: string;
+	voice_intent_kind?: string;
+	voice_payload?: Record<string, unknown>;
+	voice_authority_binding?: Record<string, unknown>;
 	timeout_behavior?: string;
 	/** "default" (no --timeout-behavior flag) | "flag" (flag was present) */
 	timeout_behavior_source?: string;

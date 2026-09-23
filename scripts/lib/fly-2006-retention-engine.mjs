@@ -141,6 +141,35 @@ function staticPolicy(key, database, table, primaryKey, predicate, params) {
 }
 
 export const RETENTION_TARGET_POLICIES = Object.freeze([
+	// FLY-2799: an unresolved voice handoff is durable authority, including
+	// ambiguous and needs_human. Only final business outcomes may age out.
+	staticPolicy(
+		"voiceHandoffs",
+		"teamlead",
+		"voice_handoffs",
+		"handoff_id",
+		`t.state IN ('committed','rejected')
+		 AND julianday(t.updated_at)<julianday(?)`,
+	),
+	// A transcript is the authorization source for its handoffs. Keep it while
+	// the session is live/recent or any handoff still references it; the latter
+	// also gives the handoff sweep a full pass to remove terminal children first.
+	staticPolicy(
+		"voiceUtterances",
+		"teamlead",
+		"voice_utterances",
+		"__rowid",
+		`NOT EXISTS (
+		   SELECT 1 FROM voice_handoffs h
+		   WHERE h.session_id=t.session_id AND h.transcript_id=t.transcript_id
+		 )
+		 AND EXISTS (
+		   SELECT 1 FROM voice_sessions s
+		   WHERE s.session_id=t.session_id
+		     AND s.state IN ('ended','cancelled','failed')
+		     AND julianday(s.updated_at)<julianday(?)
+		 )`,
+	),
 	// FLY-2701: on-demand launch attempts are bounded audit, not authority. A
 	// demand that is still unresolved keeps its whole attempt history, so the
 	// launch budget can never be reset by a sweep.
