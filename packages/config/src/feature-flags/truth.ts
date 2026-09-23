@@ -244,6 +244,8 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:
+		"FLY-2766 per-invocation exact version selector for a read-only native-skill origin canary, not an on/off gate",
 	FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:
 		"FLY-2654 plumbing: standing-authority state directory coordinate for independently confirmed manifests and receipts, not an on/off gate",
 	FLYWHEEL_STANDING_PACKAGE_ACTIVE:

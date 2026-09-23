@@ -378,7 +378,7 @@ describe("buildRunnerTuiCommand", () => {
 		expect(cmd.indexOf("env -i")).toBeLessThan(cmd.indexOf("CODEX_HOME="));
 	});
 
-	it("resumes the owned thread on its exact short socket with managed policy", () => {
+	it("resumes the owned thread without overriding app-server permissions", () => {
 		const cmd = buildRunnerTuiCommand(spec);
 		expect(cmd).toContain('CODEX_HOME="/home/x/.flywheel/codex-homes/exec-1"');
 		expect(cmd).toContain("/bin/codex resume");
@@ -386,8 +386,8 @@ describe("buildRunnerTuiCommand", () => {
 			'--remote "unix:///home/x/.flywheel/cdx-sock/abc.sock"',
 		);
 		expect(cmd).toContain('-C "/home/x/Dev/flywheel-FLY-1188"');
-		expect(cmd).toContain("-s workspace-write");
-		expect(cmd).toContain(`approval_policy="never"`);
+		expect(cmd).not.toMatch(/(?:^|\s)(?:-s|--sandbox)(?:\s|=)/);
+		expect(cmd).not.toContain("approval_policy");
 		expect(cmd.trim().endsWith(spec.threadId)).toBe(true);
 	});
 
@@ -733,6 +733,9 @@ describe("ensureRunnerTuiWindow", () => {
 		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
 		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
+		const command = createCall?.at(-1) ?? "";
+		expect(command).not.toMatch(/(?:^|\s)(?:-s|--sandbox)(?:\s|=)/);
+		expect(command).not.toContain("approval_policy");
 		expect(createCall?.some((a) => a.includes("tail -F"))).toBe(false);
 		expect(birthEnvironments).toHaveLength(2);
 		for (const env of birthEnvironments) {

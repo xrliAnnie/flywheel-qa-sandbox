@@ -34,6 +34,7 @@ export const MODEL_IDS = {
 	SONNET_5: "claude-sonnet-5",
 	HAIKU: "claude-haiku-4-5-20251001",
 	CODEX_STANDARD: "gpt-5.6-sol",
+	CODEX_SOL: "gpt-6-sol",
 	CODEX_ASTRA: "gpt-6-astra",
 } as const;
 
@@ -295,6 +296,18 @@ export function buildModelRegistry(
 				runner: ["xhigh"],
 				workflow: ROLE_EFFORT_LEVELS,
 				cron: [],
+			},
+		},
+		{
+			id: MODEL_IDS.CODEX_SOL,
+			provider: "openai",
+			runtimeVendor: "codex",
+			label: "GPT-6 Sol",
+			aliases: [],
+			surfaces: ["runner", "workflow"],
+			effortsBySurface: {
+				runner: ["xhigh"],
+				workflow: ROLE_EFFORT_LEVELS,
 			},
 		},
 		{

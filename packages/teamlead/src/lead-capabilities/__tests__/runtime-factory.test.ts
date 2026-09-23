@@ -163,7 +163,7 @@ it.each([false, true, "identity"] as const)(
 			nodePath: process.execPath,
 			codexPath: "/fixture/codex",
 			proxyEntryPath: "/fixture/proxy",
-			codexVersion: "0.153.2",
+			codexVersion: "0.154.0",
 			permissionProfile: {
 				deploymentRoot: "/fixture/deploy",
 				projectRoot: "/fixture/work",
@@ -224,6 +224,9 @@ it.each([false, true, "identity"] as const)(
 		expect(state.parent?.manifest.operationIds).toContain("start_runner");
 		expect(state.parent?.manifest.operationIds).toContain("git.feature.push");
 		expect(state.parent?.manifest.nativeSkillBaseline?.sources).toHaveLength(6);
+		expect(state.parent?.manifest.nativeSkillBaseline?.codexVersion).toBe(
+			"0.154.0",
+		);
 		expect(state.parent?.manifest.skillGaps).toEqual([
 			{
 				sourceId: "skill/research",

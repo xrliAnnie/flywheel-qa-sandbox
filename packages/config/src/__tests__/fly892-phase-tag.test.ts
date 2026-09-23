@@ -35,6 +35,11 @@ describe("modelDisplayName (FLY-892)", () => {
 		expect(modelDisplayName("gpt-5.6-sol", "heavy")).toBe("GPT-5.6");
 		expect(modelDisplayName("gpt-5-codex", "light")).toBe("GPT");
 	});
+	it("names exact GPT-6 Sol without widening future GPT-6 ids", () => {
+		expect(modelDisplayName("gpt-6-sol")).toBe("GPT-6 Sol");
+		expect(modelDisplayName("gpt-6-sol", "heavy")).toBe("GPT-6 Sol");
+		expect(modelDisplayName("gpt-7-sol")).toBe("GPT");
+	});
 	it("returns undefined when unknown and no fallback tier", () => {
 		expect(modelDisplayName(null)).toBeUndefined();
 		expect(modelDisplayName("some-non-claude-model")).toBeUndefined();
@@ -56,6 +61,9 @@ describe("phaseMessageTag (FLY-892)", () => {
 	it("shows GPT for a codex phase session's runner model (FLY-1224 T9)", () => {
 		expect(phaseMessageTag("implement", "gpt-5.6-sol", undefined)).toBe(
 			"[实现·GPT-5.6] ",
+		);
+		expect(phaseMessageTag("implement", "gpt-6-sol", undefined)).toBe(
+			"[实现·GPT-6 Sol] ",
 		);
 	});
 	it("omits a model for a pending row without runtime evidence", () => {
