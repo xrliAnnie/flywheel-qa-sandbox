@@ -247,9 +247,16 @@ fi
 if [[ -f "$RESTART_LIB" ]]; then
   # shellcheck source=/dev/null
   source "$RESTART_LIB"
+  : > "$ROOT/restart-launchctl-calls"
+  launchctl() {
+    printf '%s\n' "$*" >> "$ROOT/restart-launchctl-calls"
+    return 97
+  }
   supervisor_is_loaded() { return 1; }
-  if output="$(restart_voice_managed 2>&1)" && grep -q 'not loaded.*no-op' <<<"$output"; then
-    pass "unloaded voice restart is an explicit no-op"
+  if output="$(restart_voice_managed 2>&1)" \
+    && grep -q 'not loaded.*no-op' <<<"$output" \
+    && [[ ! -s "$ROOT/restart-launchctl-calls" ]]; then
+    pass "unloaded voice restart is an explicit no-op without launchctl mutation"
   else
     fail "unloaded voice restart"
   fi
@@ -284,13 +291,14 @@ PY
   fi
   supervisor_restart() { printf '%s %s\n' "$1" "$2" > "$ROOT/supervisor-call"; }
   voice_on_demand_contract_check() { return 0; }
+  voice_on_demand_disk_contract_check() { return 0; }
   rm -f "$ROOT/supervisor-call"
   if restart_voice_managed >/dev/null 2>&1 \
     && [[ "$VOICE_RESTART_STATE" == registered ]] \
     && [[ ! -f "$ROOT/supervisor-call" ]]; then
     pass "verified dormant registration is preserved without an idle restart"
   else
-    fail "loaded dormant registration"
+    fail "loaded dormant registration (state=${VOICE_RESTART_STATE:-unset} detail=${VOICE_RESTART_DETAIL:-unset} launchctl=$(cat "$ROOT/restart-launchctl-calls"))"
   fi
   voice_on_demand_contract_check() { return 1; }
   if ! restart_voice_managed >/dev/null 2>&1 \
