@@ -23,3 +23,13 @@ R1 期间收到 2796 草案 c7189944e，plan §2.1 九项已对齐，最终 pin 
 
 ## 待完成交付检查
 有效 APPROVED；最终 HTML commit/push；publish-only；托管 HTTP 200、nonce/CSP 一致、source/content 对齐；向 Lead DESIGN-HTML ready；closeout receipt；phase_design_complete + park。
+
+## R1 处置
+有效 verdict=CHANGES_REQUESTED；完整 findings 去除投递 nonce 后存 review-r1.json。
+- HIGH delegation-closure-and-live-restate：接受；§6.5 使用关闭并永久隔离原 Live 会话，明确不依赖 thinking.append resolve；commentary-only 不退回模型复述；不回灌已播报正文/已完成问题；新增重复请求、超时、逐字/改写重复检测与真实 QA 失败规则。
+- MEDIUM shared-type-surface-typecheck-scope：接受；所有5个下游逐包 typecheck，仍不跑全量。
+- MEDIUM doorbell-bridge-url-env-name-split：接受；已核 index.ts:976，实际 child process 中统一 URL resolver，列四种 env 回归；尚不认定历史事故根因。
+- MEDIUM no-latency-budget-for-2s-gate：接受；§10.1 加明确未实测的2000ms预算与10/10失败处置，不改验收。
+- MEDIUM t0-hard-gate-blocks-everything：接受；T0前离线与T0后集成任务明确拆开；九项已对齐上游草案。
+- LOW sendtext-to-speak-receipt-dropped / close-resumehandle-contract-unstated：接受；写明 audit/error、catch、supportsResume=false、undefined与close异常语义。
+- MEDIUM announcer-takeover-rebuilds-live-unconditionally：非阻断 Follow-up，§10.2 保留 Lead 已接受的安全基线，频繁重连实测；优化空闲接管需另证无turn ID的晚帧安全。不是覆盖HIGH的治理裁定。

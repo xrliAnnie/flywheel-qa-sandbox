@@ -91,11 +91,11 @@ RoomIO 输出/转写持久化底层文件归 2796；本单仅接口集成。两�
 | endUserTurn | 记录 RoomIO 发言窗口关闭；不是 response.create，也不编造服务端 final |
 | onUtterance / transcript | shared schema，原始 delta 去重/累积→应用封口，见 §5；display 与 durable/action 事件分开 |
 | speak(text,kind,opts) | 显式 CompositeSpeech，见 §6；模式层不依赖供应商 |
-| sendText | 兼容映射 speak(kind=control)，不冒充 user 原话 |
+| sendText | 保留 void；内部启动 speak(kind=control) 后必须注册 then/catch，把 receipt 写 session audit，failed/rejected 发 error 事件；无 unhandledRejection。要消费结果的 V3 调用改 await speak，不从 void 推断成功 |
 | injectContext | session.thinking.append，delegation_id=null；不进 transcript sink、不要求即时出声；含 500 token 单事件上限。需 quiet-output 测试；未证明 silent 时返回 unsupported，不能偷偷用 commentary |
 | injectToolResult | A 不支持旧函数工具；抛 unsupported。Lead 结果只能经有 handoff/digest/generation 的 typed result API |
 | interrupt | §7 全代 fence + RoomIO cancel；不把 native bargeIn 静态 flag 当成立证据 |
-| close | fence 新效果、取消播放、flush transcript、session.close/closed（有界超时记 incomplete）、释放订阅；VoiceSessionState 由原 controller 结束 |
+| close | fence 新效果、取消播放、flush transcript、session.close/closed、释放订阅；A supportsResume=false，正常返回 undefined；超时也清理资源但发 typed close_incomplete error 并写 audit，reject close Promise；VoiceSessionState 仍由原 controller 结束 |
 
 配置：backendId=openai-live、model=gpt-live-1、endpoint=wss://api.openai.com/v1/live/sessions、delegation=client，announcerId=edge-tts、announcer voice、协议版本、上下文上限/队列上限均显式。model/endpoint 不硬编码在 transport；部署配置钉这组默认，模式层不可改。端点要求 TLS 与服务端允许列表；API key 只在服务器认证头，不进文档/转写/日志。
 启动校验 model/protocol/格式/RoomIO version、两面依赖、TTS decoder。Live 不支持的命令或权限/额度错误→明确「语音不可用」，不切 B/legacy；live admission 必须等完整握手。上下文组合必须保留 identity、memory、mode、退出规则，按 token 上限检查并显式拒绝超限，不静默截断。
@@ -124,26 +124,37 @@ requestDigest 绑定 sessionId/generation/text/kind/resolved verification/voice/
 
 ### 6.2 两张脸的固定分工
 - 自主快答：Live 原生流式输出，source=frontend，不借道 speak 排队。
-- text-bearing speak（brief/question/readback/heartbeat/cue）和已持久 Lead 结果：显式 announcer face，经同 RoomIO 输出，来源来自调用者绑定；Lead 原话无改写，避免无 turn ID 时把前台新话错标 Lead。Live 得到 thinking 上下文用于继续对话，不用它重复念结果。
+- text-bearing speak（brief/question/readback/heartbeat/cue）和已持久 Lead 结果：显式 announcer face，经同 RoomIO 输出，来源来自调用者绑定；Lead 原话无改写，避免无 turn ID 时把前台新话错标 Lead。Live 不接收该 Lead 结果原文或已完成问题的历史重放，只接收不含正文的任务状态；结果解释/重读走同 carrier 的只读查询，见 §6.5。
 - control：通过 commentary/应用指令要求前台带节奏，source=frontend、proof=none，不允许 required；有限控制请求若无法证明完成，超时 failed，不把 commentary ACK 当 completed。V3 需要确定念完的开场/提问必须用 brief/question，而不是伪装 control。
-- Live 内部 delegation result 可回 thinking.append 做背景；正确 id 只用于尚存的原代；旧代已关闭的结果恢复到新代时用 null session context，并保留 handoff binding。不得向新连接塞旧 delegation.id。业务结果只由 carrier receipt 认定。
+- 本方案**不使用 thinking.append 终结 delegation**，也不把 commentary ACK 当终结。模型发出 delegation 的连接按 §5/§7 封存关闭；业务 handoff 独立继续。不存在把旧 delegation.id 搬到新连接的路径；具体生命周期与失败处置见 §6.5。
 
 ### 6.3 无整段缓存
 Live delta 到达即按格式送 RoomIO.write；不等转写、不 concat 全段。RoomIO 只需有限抖动缓冲，默认 100ms、硬上限 2s（48kB/s PCM24k mono），write 返回背压 Promise。持续背压或超限→停止该输出、明确 failed，不丢帧后继续假称完整。
 现有 EdgeTtsEngine 是文件型，不能直接声称满足。新增 streaming synthesis face：受控 Python helper 使用 edge_tts 的音频迭代流，经二进制 stdout → 单个受控 decoder → PCM16 mono 24k → 同 RoomIO.write；元数据/错误走独立 stderr/结构管道，正文经私有 stdin/文件，不能 shell 拼参。TTS 进程正常结束、精确输入 digest、完整生成/解码字节计数及连续 chunk seq 构成 deterministic_tts proof；错误/截断/取消缺任一项→failed。实现先验证所钉 edge_tts 版本 streaming API，不增加云账户。
 每个 speak 单独的 synthesis ID 关联源文字、voice/format、PCM hash；即使音频已提交后才发现后段失败，receipt 仍 failed/submitted，不能 arm。流式生成无需整句回读缓存，既有 synthesize 仅为老调用保留。
-同一房间只有一个 output owner。announcer 占用前 fence 并关闭 Live 旧输出代，暂停新 Live 播放；期间输入帧带身份有界保存。announcer 结束/取消再新建 Live，注入已播报结果与未完成任务状态，回放输入一次。输入缓冲上限默认 30s，溢出明确「语音暂不可用，请重说」，保留到达记录与 overflow 证据；不静默吞话。连续长播报须分段给输入恢复机会；每段仍共享请求 receipt，所有段成功才 completed。
+同一房间只有一个 output owner。announcer 占用前 fence 并关闭 Live 旧输出代，暂停新 Live 播放；期间输入帧带身份有界保存。announcer 结束/取消再新建 Live，只注入不含结果正文的任务状态，排除已完成原问题和已播报 Lead 内容，回放新输入一次。输入缓冲上限默认 30s，溢出明确「语音暂不可用，请重说」，保留到达记录与 overflow 证据；不静默吞话。连续长播报须分段给输入恢复机会；每段仍共享请求 receipt，所有段成功才 completed。
 这个声音切换与恢复等待是已获 Lead 接受的成本，QA 必须给真实可听证据，不能用切换次数代替体验。
 
 ### 6.4 字幕与不可信内容
 Live output 只标 🤖 前台；经 carrier 校验的 Lead 结果/announcer 标 💬 Lead（leadId 用权威映射到显示名）。已播报 Lead 文本与实际播放进度分开，pending/partial/interrupted 清晰；不要一开始就标整段已念完。保留已说出的 interrupted 片段，取消后旧片段不再追加为有效字幕。日志可记 late/suppressed 审计，不能喂模式动作池。
 Discord 禁 mentions，HTML 对所有派生字段 escape；浏览器只 textContent/value，不拼 innerHTML。状态消息不冒充 Lead 回复（例如进房提示不得被作为工作结果朗读）。
 
+### 6.5 R1 阻断修复：delegation 生命周期与重复播报
+本方案选 **application-owned handoff + 旧 Live 连接退役**，不依赖任何未经证实的“silent delegation resolve” API。
+
+1. 收到 delegation 时持久记录 binding candidate，进入 `sealing`（adapter 内部连接操作状态，不是 VoiceSessionState）。按 §5 等当前发言窗口关闭后关旧连接；未证明完整原话时不创建 handoff。所有旧代 assistant 输出在退役标记后立即 fence，输入仅进入只读封存 collector，不发布模式动作。
+2. `session.close` 前挂好 session.closed 监听；有界 deadline 内收到 closed，记 `provider_connection_closed`；仅本地 socket close/超时记 `provider_finalization_incomplete`。两者均永久隔离旧代。这个 receipt **只证明连接处理到哪，不叫 delegation resolved**。超时下没有可靠原话封口则拒绝新委托；已经持久派发的 handoff 只读查询，不因 provider 超时重发。
+3. 老连接上的 delegation created 重发、timeout/error、等待提示与 late thinking/commentary ACK 只进审计，不产生新投递/字幕/声音；旧连接终结前后的所有回调均带 tombstone。新代历史不重放已委托原问题；其任何新 delegation 必须绑定新代独立的 final user 输入；没有新原话就拒绝。因此模型自发重发不会重新办事。
+4. `thinking.append` 的可用性/是否会终结 delegation 不再是主路径假设。实施 T2 必须保留 **commentary-only** fixture：即提供方只支持已证的 commentary 回送，adapter 仍选择关闭旧会话并用 announcer 播报，绝不回退到让 Live 改写 Lead 结果。若连关闭/隔离/新代重建都不能保持上述安全性质，则 A unavailable，保留持久 handoff 等人工/后续恢复，不能降级绕过。
+5. **结果内容不回灌**：Lead 原文只进入 announcer、带 Lead 来源的 transcript/展示与业务记录，不能混入 Live startup input、thinking、instructions 或历史摘要。新代允许的任务状态仅含 opaque handoffId 与 delivered/spoken/pending 标志；不得含已完成问题文本或结果片段。需要基于结果续问时，前台把新问题交给只读 Lead query，服务端从业务记录定位既有结果；不重新执行原 action。这是避免“双声道复述”的结构边界。
+6. 再加可检出的违例：输出转写旁路检查与最近已播报 Lead 文本的规范化逐句等值/包含、关键编号交集，并针对非逐字改写做语义重复判别；它仅是异常检测，绝不产生权限。若没有新用户重读请求却重复已播报结果，标 `unsolicited_lead_restatement`、取消剩余声音并记字幕为前台异常，不重新标成 Lead。检测可能晚于已播放首句，不能撤回已听音频，因此这类样本直接算 QA 失败，不能以“后段已停”当通过。
+7. T2/T4/真实 QA 新增：delegation repeated before/after close、close超时、commentary-only、后台结果在新代/播报期间到达、自然改写/逐字复述两个 negative control。检查 Live transport 发出的上下文不含 Lead 正文/完成问题；无新 user 输入时没有新 carrier call；Live 自行复述必须被检出并使该次联调失败。若无法检出代表性改写，复述保护不合格，不得声明 A/字幕验收完成。
+
 ## 7. turnCancelOrSuppress 与连接恢复
 取消入口由 RoomIO sustained barge-in 给出，不以 assistant 回声或短 backchannel 触发。具体能量/时长阈值归 RoomIO；effective capability 包含 RoomIO 实际配置。
 取消操作先同步设置本地 generation tombstone，RoomIO.flush/cancel 立即执行；中止该代排队 speak/await 回调/未 dispatch 委托；通知 carrier 撤销该代未派发请求。随后关旧 WS，所有 handler 捕获 generation，在任何 await 后、播放写入前、转写发布前、delegation dispatch 前、result 注入前再次校验。旧代永不恢复；晚到 provider 音频即使没有 ID 也可按其 socket 归属丢弃。
 撤销与外部提交有竞态：V2 carrier 在 dispatch 的 CAS 原子核对 generation/authority；已经 dispatch 的信箱投递只能继续按原 deliveryId 查询，不能声称被撤回，也不自动重发；Lead 若已开始外部动作，其是否可取消另按业务合同处理。结果保留在持久 carrier；新 generation 由模式重新决定是否播报，但不会重做动作。
-新 WS session.started 后以新 generation 出声；VoiceSessionState/room lease/slot 不变。启动上下文仅含已持久 user/已确认结果，排除被 fence 的旧 assistant 草稿。interrupt 时的输入从 RoomIO 环形缓冲首帧保存，按采样率播放到新连接一次；延迟/容量超过配置则失败可见，不能丢首字。
+新 WS session.started 后以新 generation 出声；VoiceSessionState/room lease/slot 不变。启动上下文包含仍未处理的已持久 user 输入与不含结果正文的任务状态；已完成原问题、已播报 Lead 内容与旧 assistant 草稿全部排除。interrupt 时的输入从 RoomIO 环形缓冲首帧保存，按采样率播放到新连接一次；延迟/容量超过配置则失败可见，不能丢首字。
 原会话失去 lease/用户退房/controller ending：全局 fence，终止输入补发、取消 TTS/订阅、不再重连。仅连接断开可以同一 backend 有界重连，不自动改模型；连续失败由现有 controller 报语音不可用。
 
 ## 8. 去双轮询与修门铃
@@ -157,11 +168,13 @@ A steady path 完全不运行 Discord 3s poll，也不等 daemon 4s 循环；pol
 
 ### 8.2 门铃的可验证修复
 门铃已存在，12.7s 根因未定位。为每个 handoff/deliveryId 记录：durable_commit_at、nudge_sent/accepted/error、inbox_tick_started、admission（含 busy/backpressure 原因）、transport_receipted、model_consumed、lead_result_committed。模型消费必须来自 runtime turn 输入/回复关联，不从 socket ACK 推断。
-A 启动必须校验有效 BRIDGE_URL；nudge 失败/跳过返回明确结果。对已经持久的同 delivery 允许再次 nudge（不再 ingest），忙 tick coalesce 后保证马上补一轮。Bridge 重启从 durable pending 恢复扫描，异常补偿是事件丢失恢复，不是每次等固定轮询。
+具名回归：`flywheel-comm/src/index.ts` 的 chat-ingest 门铃当前只读 `process.env.BRIDGE_URL`（:976），而其他路径读 `FLYWHEEL_BRIDGE_URL ?? BRIDGE_URL`；`adapters.ts` 子进程继承环境。这是可证代码差异，尚不是12.7s事故根因。统一**实际发门铃进程**的 URL resolver 为 `FLYWHEEL_BRIDGE_URL ?? BRIDGE_URL`，校验其最终值并让缺失/非法/nudge失败返回明确结果；不只检查父进程。加入仅前者、仅后者、两者冲突按优先级、均缺失四个用例，经过实际 child env→chat-ingest→nudge seam。对已经持久的同 delivery 允许再次 nudge（不再 ingest），忙 tick coalesce 后保证马上补一轮。Bridge 重启从 durable pending 恢复扫描，异常补偿是事件丢失恢复，不是每次等固定轮询。
 先用缺 URL、HTTP 失败、busy tick、重复 nudge、restart 回归复现；只有能由代码与时间证据归因的故障才改。Lead 真忙的串行等待如实显示「Lead 正在处理」，不另开 app-server 或绕过 mailbox lease 插队。QA 仍需证明不再有无说明的空等，未证明则此项不通过。
 
 ## 9. 实施顺序与相关测试
 每任务依次：写会失败的相关测试→跑出预期失败→最小实现→相关测试通过→提交。禁止本机全量。
+
+T0 前可执行：T1 的 additive types/config/factory、T2 transport/protocol/fence fixtures、T4 streaming TTS 与复述检测单元测试、T6 实际子进程 env/nudge 回归。T0 后才可执行：T1 生产 CLI/RoomIO 组装、T2 真房间桥接、T3 全部 carrier/durable 输入、T4 房间双面集成、T5 授权 result/push、T7 全部联调。T0 未完成不阻止可离线子集，但不以 mocks 宣布后半通过。
 
 | # | 任务 | RED/验收用例 | 命令/证据 |
 |---|---|---|---|
@@ -174,7 +187,7 @@ A 启动必须校验有效 BRIDGE_URL；nudge 失败/跳过返回明确结果。
 | T6 | 门铃具体回归 | 缺 URL/忙 tick/重试/恢复；区分模型消费和 transport ACK | flywheel-comm lead-inbox-nudge.test.ts；teamlead lead-inbox-loop.test.ts |
 | T7 | 联调/QA交接 | V2进来播报 required receipt；V3 brief/question/control、silent context、真实打断 | V1 conformance fixtures + 下表真实证据 |
 
-测试路径以仓内实际 __tests__ 目录为准；新测试放各改动包 src/__tests__。分别执行 `pnpm --filter flywheel-voice-core typecheck`、`pnpm --filter flywheel-voice-codex typecheck`；teamlead/flywheel-comm 仅针对变更的 tests/typecheck。全量 tests/build 留 PR CI；设计阶段不运行这些尚不存在的实现测试。
+测试路径以仓内实际 __tests__ 目录为准；新测试放各改动包 src/__tests__。分别执行 `pnpm --filter flywheel-voice-core typecheck`、`pnpm --filter flywheel-voice-codex typecheck`；所有 shared type 消费方同样必须单包 typecheck：`pnpm --filter flywheel-voice-bridge typecheck`、`pnpm --filter flywheel-voice-headphone typecheck`、`pnpm --filter flywheel-gemini-agent typecheck`、`pnpm --filter flywheel-teamlead typecheck`；flywheel-comm 变更也 typecheck，覆盖 FakeSession 与 sink 消费者。全量 tests/build 留 PR CI；设计阶段不运行这些尚不存在的实现测试。
 
 ## 10. QA 明细：不能缩小判据
 | 条件 | 必需留痕与判定 |
@@ -190,6 +203,13 @@ A 启动必须校验有效 BRIDGE_URL；nudge 失败/跳过返回明确结果。
 | K6与兼容 | 无额度/无权限/错误协议任一面失败明确语音不可用，无切引擎；V6预告两面声音可能不同；legacy/Gemini/Eleven 的相关兼容由同一房间版本验 |
 
 所有性能证据包含 commit、模型/endpoint（无 key）、backend/announcer voice、RoomIO版本与实现 SHA、session/generation、硬件/录音时钟、样本与原始文件hash。不能拿 15fe2c875 的文字时间、单场探针或历史 38/18秒当 A 的成绩。
+
+### 10.1 2秒工程预算与未达标处置
+以下为设计目标/待测分配，**全部尚非本单实测**：上行房间/网络150ms、最后发言到模型可决策的处理/VAD250ms、模型到首个有效回答音频1000ms、下行/解码/RoomIO抖动200ms（含100ms默认缓冲）、接收端播放200ms、余量200ms，总计2000ms。Live 会边听边处理，拆分用于定位，重叠段不重复相加；同源录音的总时长始终是验收权威。1175ms 历史命令→音频探针与此口径不同，不用于证明1000ms预算。
+10次任一超标即不通过；先按上述分段证据定位配置/实现瓶颈（例如不应有的全段等待/重复连接），仅做本单相关修复并重测完整10次。若模型/网络下限或已获准的重连取舍导致无法满足，向 Lead 报实测分布与瓶颈，等待新的明确裁定；不得自行放宽判据、剔除慢样本或把等待音当首字。插话/announcer 后紧接简单问题也列入体验测试，不能只测长期空闲态。
+
+### 10.2 非阻断 follow-up
+R1 `announcer-takeover-rebuilds-live-unconditionally`：保留 Lead 已明确接受的统一 fence+重连安全路径作为本轮基线；heartbeat/cue 的频繁重连成本须实测、列分布并与2秒判据一起验收。无需取消的纯 RoomIO 等待音床可复用；若未来要让空闲 Live 跨 announcer 保持连接，须先证明无 turn ID 条件下不会泄漏延迟输出，再单独优化。此项是非阻断 MEDIUM，不据此重开已裁定架构；若实际性能不过则按 §10.1 处理。
 
 ## 11. 迁移、回滚、排除
 只对显式选择 openai-live composite 的新会话启用；已有 legacy 会话按原协议终结，不热替换。扩展字段允许老历史记录读取为 legacy/unknown，无重写旧 evidence；能力缺省 false；新 carrier schema 归 2796 additive migration。
