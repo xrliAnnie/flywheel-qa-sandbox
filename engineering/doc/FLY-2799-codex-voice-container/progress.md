@@ -1,19 +1,21 @@
 ---
 issue: FLY-2799
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-23T09:04:29.845Z
-nextStep: R2 effective APPROVED question188d04c6 request8627c264; structured
-  evidence saved design-review-r2.json and design-review.md. Two nonblocking
-  MEDIUM advisories retained as Follow-ups and reported Lead. Plan bytes
-  unchanged from approved91b5a2367. Final founder-design.html committed with
-  three hash-verified inline SVGs, no external assets. Next commit/push review
-  receipt then publish-only, hosted HTTP/CSP/source verify, report URL, exact
-  phase_design_complete and park; no implementation.
+phaseCursor: 6/6
+updated: 2026-09-23T09:06:15.227Z
+nextStep: "Design deliverables complete: R2 effective APPROVED188d04c6; final
+  inline-SVG HTML published
+  https://fw-reports-356a6d.vercel.app/r/200c21ca8544d13e737fd225b0dc6465/ and
+  reported Lead370ce2d7. Hosted HTTP200, exact source body, nonce/CSP, three
+  SVGs, zero external assets verified; evidence committed next. Browser QA
+  explicitly not done. Two R2 advisories retained design-review.md Follow-ups;
+  G1/G2 open for integration. NEXT exact complete --route phase_design_complete,
+  verify server receipt then park; phase command not yet claimed complete in
+  this ledger. No implementation/ship/successor dispatch."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: design (5/6)
-**next**: R2 effective APPROVED question188d04c6 request8627c264; structured evidence saved design-review-r2.json and design-review.md. Two nonblocking MEDIUM advisories retained as Follow-ups and reported Lead. Plan bytes unchanged from approved91b5a2367. Final founder-design.html committed with three hash-verified inline SVGs, no external assets. Next commit/push review receipt then publish-only, hosted HTTP/CSP/source verify, report URL, exact phase_design_complete and park; no implementation.
+**phase**: design (6/6)
+**next**: Design deliverables complete: R2 effective APPROVED188d04c6; final inline-SVG HTML published https://fw-reports-356a6d.vercel.app/r/200c21ca8544d13e737fd225b0dc6465/ and reported Lead370ce2d7. Hosted HTTP200, exact source body, nonce/CSP, three SVGs, zero external assets verified; evidence committed next. Browser QA explicitly not done. Two R2 advisories retained design-review.md Follow-ups; G1/G2 open for integration. NEXT exact complete --route phase_design_complete, verify server receipt then park; phase command not yet claimed complete in this ledger. No implementation/ship/successor dispatch.
