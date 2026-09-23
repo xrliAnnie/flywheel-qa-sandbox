@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>模型怎么配 —— 定稿 — FLY-2779</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.55;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:32px 18px 48px}
+h1{font-size:27px;line-height:1.28;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 24px}
+.card{background:var(--card);border-radius:12px;padding:17px 20px;margin:0 0 13px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18.5px;margin:0 0 5px;letter-spacing:-.2px}
+.kicker{font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--dim);
+font-weight:600;margin:0 0 9px}
+p{margin:0 0 11px}
+ul{margin:0 0 11px;padding-left:20px}
+li{margin:0 0 6px}
+.lead{font-size:19px;line-height:1.5;font-weight:600;letter-spacing:-.2px}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 13px;color:#4a4a4f;margin:0 0 12px;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:4px 0 13px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.no{color:var(--red);font-weight:700}
+.dim{color:var(--dim);font-size:13px}
+.yes{color:var(--green);font-weight:700}
+.warn{color:var(--amber);font-weight:700}
+.note{background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+font-size:13.5px;color:#4a4a4f;margin:0 0 11px}
+.opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 10px;background:#fcfcfe}
+.opt h3{font-size:15.5px;margin:0 0 6px}
+.opt .cost{font-size:13.5px;color:#8a4a00;background:#fff6e8;border-radius:7px;padding:8px 10px;margin:8px 0 0}
+.rec{font-size:14px;background:#eef6ff;border-radius:8px;padding:10px 12px;margin:2px 0 8px;color:#0a3f8a}
+.unsure{font-size:13.5px;background:#fbf0ff;border-radius:8px;padding:9px 12px;margin:0 0 4px;color:#5d1f77}
+.tree{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.65;
+background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+white-space:pre;overflow-x:auto;margin:0 0 11px}
+.big{font-size:31px;font-weight:700;letter-spacing:-1px;line-height:1.1}
+.stat{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 13px}
+.stat > div{min-width:96px}
+.stat .lbl{font-size:12px;color:var(--dim);margin-top:2px}
+.cmt{margin:15px 0 0;padding-top:13px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{background:var(--card);border-radius:12px;border:1px solid var(--line);
+margin:18px 0 0;padding:14px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+@media (max-width:560px){.wrap{padding:22px 13px 40px}h1{font-size:23px}.lead{font-size:17px}
+.bar{padding:13px 14px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>模型怎么配 —— 定稿</h1>
+<p class="sub">FLY-2779 · 2026-09-22 · 这是<b>决定记录</b>,不是提问。依据和每个数字的出处在 research.md 里。</p>
+
+<div class="card green">
+<p class="kicker">你定的</p>
+<h2>每个节点 / 每个 Lead 用什么</h2>
+<div class="scroll">
+<table>
+<tr><th>在哪</th><th>现在</th><th>定下来用</th><th>来源</th></tr>
+<tr><td><b>设计</b></td><td>Astra(全量)</td><td class="yes">Astra / Opus 5.5 / Fable 5.1 <b>各 1/3</b></td><td>你拍的 —— 三组对比</td></tr>
+<tr><td><b>实现</b></td><td>GPT-5.6 Sol</td><td class="yes">Opus 5.5</td><td>你拍的(看过新结果后)</td></tr>
+<tr><td><b>QA</b></td><td>Opus 4.6</td><td class="yes">GPT-6 Sol <b>75%</b> / Opus 5.5 <b>25%</b></td><td>你拍的 —— 主要为了攒数据</td></tr>
+<tr><td><b>Raya</b></td><td>Astra</td><td class="yes">Astra(不动)</td><td>你拍的</td></tr>
+<tr><td><b>Tadashi</b>(工程 Lead)</td><td>Fable 5.1</td><td class="warn">你先手动试 Opus 5.5(今天已在跑),看效果再定</td><td>你拍的 —— 待你回来定</td></tr>
+<tr><td>产品单节点(PRD / 设计 / 原型 / 通用)</td><td>Opus 5</td><td>Opus 5.5</td><td class="dim">沿用推荐,你没动过</td></tr>
+<tr><td>其余 Opus Lead(产品/运营/CoS/Joy-Con/tidal-echo)</td><td>Opus 5(1M)</td><td>Opus 5.5(1M),统一升</td><td class="dim">沿用推荐,你没动过</td></tr>
+<tr><td>几个 Sonnet Lead(Belle / Rafiki / Reflection / infra-bot / tidal-echo CoS)</td><td>Sonnet</td><td>—</td><td class="dim">现状,本单不评</td></tr>
+</table>
+</div>
+<p class="sub" style="margin:0">标「沿用推荐」的两行是我的建议、你没表态过;要改随时说。最后一行只是记录现状,本单没有评估它。</p>
+<div class="cmt"><label>这格有什么想说的</label><textarea data-s="01 决定表"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">一条提醒</p>
+<h2>不改你的决定,只是把代价讲清楚</h2>
+<p><b>设计段分三组要跑多久</b><br>
+<b>你定的:</b>三个模型各 1/3。<br>
+<b>我们提醒:</b>看成本大约 <b>3 周</b>(每组约 25 单)就能出结论;但如果要「统计上显著」地证明哪个最好,要 <b>3.6–8 个月</b>。<br>
+<b>因为:</b>分三组把每组的样本砍到了三分之一,而且三组要两两比较。<br>
+<b>建议按 3 周的成本口径收</b>,能力只当护栏(见下)。<b>你要等到显著我们也照办。</b></p>
+<div class="cmt"><label>这格有什么想说的</label><textarea data-s="02 一条提醒"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">两段分流</p>
+<h2>记哪些数,什么情况下停</h2>
+<p>设计段(三组各 1/3)和 QA 段(GPT-6 Sol 75% / Opus 5.5 25%)<b>用同一套办法量</b>。</p>
+<p><b>每一组记四个数:</b></p>
+<ul>
+<li>QA 一次过的比例(没被打回重做过)</li>
+<li>你打回的次数</li>
+<li>每单烧掉多少额度窗口</li>
+<li>每单花了多久</li>
+</ul>
+<p><b>最终看一个合成数:每「一次过 QA 的单」花了多少额度。</b>它同时惩罚「便宜但老返工」和「一次过但烧光窗口」。</p>
+<p><b>什么情况下停(两段同一条规则):</b></p>
+<ul>
+<li><b>正常收:</b>每组约 25 单到点收,按成本判。</li>
+<li class="no"><b>提前摘:</b>哪一组的 QA 一次过比例比最好那组<b>低超过 15 个百分点</b>,或者你打回的次数翻倍 —— <b>立刻摘掉这一组,不等到点、不看成本。</b></li>
+</ul>
+<div class="note">
+<b>QA 那组 25% 攒到 25 单要多久:</b>按最近 8 周实测的单量(每周不同单号中位数 <b>55 张</b>),
+25% 那一组大约 <b>2–3.5 周</b>。<br>
+把周与周的波动也算进去(实测区间 23–80 张/周),最快约 <b>1.8 周</b>,碰上连着几个慢周可能到 <b>6 周</b>。<br>
+<span class="dim">区间这么宽,是因为还有一个数我们现在量不到:有多少比例的单会走到 QA 这一段。这一项已经列进下一步要补的记账里。</span>
+</div>
+<p>⚠️ 前提:现在会话表里<b>没有「这单用的哪个模型」这一列</b>,不补上的话这四个数一个也记不下来。已列进下一步。</p>
+<div class="cmt"><label>这格有什么想说的</label><textarea data-s="03 两段怎么量"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="kicker">下一步</p>
+<h2>定稿后交 Tadashi 改配置</h2>
+<p><b>你看到的那两条,他在做,预计今晚修好:</b></p>
+<ul>
+<li>升 Codex 客户端,拿到 GPT-6 Sol</li>
+<li>把 Opus 5.5 登记进 Flywheel</li>
+</ul>
+<p><b>这三条是这轮新查出来的,一起交给他:</b></p>
+<ul>
+<li>节点白名单缺模型:设计段和实现段没开 Opus,QA 段没开 GPT-6 Sol —— 不开会直接报错</li>
+<li>分流只支持两组 —— <b>QA 段的两组现在就能用,设计段的三分之一分法还不行</b>,要先放开到三组</li>
+<li>分组钥匙要带上节点名,否则不同节点的实验会被同一枚硬币决定</li>
+<li>会话表加「模型 / 组 / 节点」列,否则设计段的 A/B 记不下数</li>
+<li class="no"><b>另一处配置现在把 QA 钉在 Opus 4.6 —— 不解掉,你 QA 那一行(GPT-6 Sol 75% / Opus 5.5 25%)整个不会生效</b>(两组都会被直接盖掉)</li>
+</ul>
+<div class="cmt"><label>这格有什么想说的</label><textarea data-s="04 下一步"></textarea></div>
+</div>
+
+<div class="note" style="margin-top:18px">
+<b>怎么把意见给我:</b>上面每一格都能写。写完点下面的<b>「一键汇总复制」</b>,然后<b>贴回 issue 里</b> —— 我才收得到。
+<b>这一页的批注只存在你自己的浏览器里,不会自己传给我。</b>如果内容多,会自动分成几段,<b>每一段都要贴</b>。
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空我的批注</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-2779";
+var LIMIT = 1800;
+var KEY = "fly2779-model-selection-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写,没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制(共 " + cs.length + " 段,每段都要贴)"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制(共 " + cs.length + " 段,都要贴回 issue)"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    }).catch(function(){ showManual(text, manualMsg); });
+  } else {
+    showManual(text, manualMsg);
+  }
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>
