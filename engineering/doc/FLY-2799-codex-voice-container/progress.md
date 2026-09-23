@@ -2,19 +2,20 @@
 issue: FLY-2799
 phase: design
 phaseCursor: 2/6
-updated: 2026-09-23T06:25:53.833Z
-nextStep: "GPT-Live standalone one-page handoff for FLY-2798 committed/pushed
-  15fe2c875; DONE receipt for lead instruction
-  542588a3-4f9a-4590-96cf-4f49d84ac221 is fa65d0e6-71cb-41a7-98e4-0df74ac2afad.
-  Scope clarified: A uses public Live plus Lead backend; B retains Codex0.156.1
-  V2 control. Additional probes complete at 91534ea9e; no human room or real
-  Lead mailbox QA. LEAD_HOLD_FLY2795: await authoritative contract path/fixed
-  SHA; do not define interface or implement. Remaining exploration/plan/design
-  review/final founder HTML/design phase completion."
+updated: 2026-09-23T07:32:39.586Z
+nextStep: "LEAD_HOLD_FLY2795 remains: dependency execution
+  482670d8-8dfc-4a51-96b7-d02071fd0076 ended via needs_review with PR1300; its
+  ruling question 8a09c25d-b35c-422c-9361-257fa3b0439e was pending at closeout.
+  Reported change to Lead as a6806da4-a005-4166-93f9-e0b802b77e8e. Await exact
+  authorized contract path and fixed SHA; PR alone is not contract release. B
+  retains Codex0.156.1 V2; A public Live one-page handoff committed15fe2c875 and
+  DONE receipt fa65d0e6-71cb-41a7-98e4-0df74ac2afad; probe evidence91534ea9e.
+  Pending exploration/plan/approved review/founder HTML/design phase completion;
+  no implementation or independent interface."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
 **phase**: design (2/6)
-**next**: GPT-Live standalone one-page handoff for FLY-2798 committed/pushed 15fe2c875; DONE receipt for lead instruction 542588a3-4f9a-4590-96cf-4f49d84ac221 is fa65d0e6-71cb-41a7-98e4-0df74ac2afad. Scope clarified: A uses public Live plus Lead backend; B retains Codex0.156.1 V2 control. Additional probes complete at 91534ea9e; no human room or real Lead mailbox QA. LEAD_HOLD_FLY2795: await authoritative contract path/fixed SHA; do not define interface or implement. Remaining exploration/plan/design review/final founder HTML/design phase completion.
+**next**: LEAD_HOLD_FLY2795 remains: dependency execution 482670d8-8dfc-4a51-96b7-d02071fd0076 ended via needs_review with PR1300; its ruling question 8a09c25d-b35c-422c-9361-257fa3b0439e was pending at closeout. Reported change to Lead as a6806da4-a005-4166-93f9-e0b802b77e8e. Await exact authorized contract path and fixed SHA; PR alone is not contract release. B retains Codex0.156.1 V2; A public Live one-page handoff committed15fe2c875 and DONE receipt fa65d0e6-71cb-41a7-98e4-0df74ac2afad; probe evidence91534ea9e. Pending exploration/plan/approved review/founder HTML/design phase completion; no implementation or independent interface.
