@@ -469,8 +469,10 @@ For each PR the user approves to ship:
    ```
    <!-- FLY-1759 reap-first: every removal described below calls the sibling reaper. -->
    - A Flywheel merge **never** starts the updater and never restarts services. Normal
-     deployment waits for the local 00:00/12:00 shuttle; only a separately authorized
-     founder emergency may call `scripts/request-restart.sh`. The merge path performs
+     deployment waits for the local 00:00/12:00 shuttle. The separate emergency path may
+     call `scripts/request-restart.sh` only for a current direct-founder v1 instruction or
+     an independently activated `lead-closeout-restart/v1` decision whose a/b/c evidence
+     is complete; merge is never that evidence. The merge path performs
      worktree cleanup and a clean-checkout preflight, then reports completion:
      ```bash
      # Worktree cleanup — final post-merge git operation.

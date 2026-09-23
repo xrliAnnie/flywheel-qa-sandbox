@@ -63,6 +63,7 @@ FLY2523_TERMINAL_EVENTS="$terminal_events" bash -c '
 	pause_admission_best_effort() { return 0; }
 	stop_bridge() { return 0; }
 	bash() { return 0; }
+	conditional_restart_final_check() { return 0; }
 	codex_home_reconcile_restart_window() {
 		printf "%s\n" reconcile >> "$FLY2523_TERMINAL_EVENTS"
 		return 75

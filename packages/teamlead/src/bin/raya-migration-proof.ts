@@ -21,6 +21,10 @@ import {
 	readSummaryEvidence,
 	readTuiEvidence,
 } from "./raya-migration-proof-evidence.js";
+import {
+	rayaRegistryIdentity,
+	rayaRegistryIdentityEqual,
+} from "./raya-registry-identity.js";
 
 const ID = /^[0-9]{17,20}$/,
 	SHA = /^[0-9a-f]{64}$/;
@@ -62,14 +66,27 @@ export async function collectMigrationProof(input: {
 		const canonicalBytes = readRegular(canonicalPath),
 			registryBytes = readRegular(registryPath),
 			summaryBytes = readRegular(summaryPath);
+		// FLY-2654 QA2 rework: a ledger that froze Raya's registry identity
+		// projection compares projections; only a legacy ledger still binds the
+		// whole-file digest, so unrelated Lead edits cannot break the proof.
+		const registryIdentityFrozen = manifest.registry_identity !== undefined;
 		const verifyBindings = () => {
+			if (
+				registryIdentityFrozen &&
+				!rayaRegistryIdentityEqual(
+					rayaRegistryIdentity(JSON.parse(registryBytes)),
+					manifest.registry_identity,
+				)
+			)
+				throw new Error("proof-registry-identity-drift");
 			if (
 				readPrivate(file) !== bytes ||
 				readRegular(canonicalPath) !== canonicalBytes ||
 				readRegular(registryPath) !== registryBytes ||
 				readRegular(summaryPath) !== summaryBytes ||
 				digest(canonicalBytes) !== manifest.canonical_manifest_digest ||
-				digest(registryBytes) !== manifest.registry_digest ||
+				(!registryIdentityFrozen &&
+					digest(registryBytes) !== manifest.registry_digest) ||
 				digest(summaryBytes) !== manifest.summary_receipt_digest ||
 				readRegular(join(root, "deployed-sha")).trim() !==
 					manifest.flywheel_deployed_sha

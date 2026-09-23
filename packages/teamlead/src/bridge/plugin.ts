@@ -104,6 +104,8 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
+import { confirmStandingAuthorityCandidate } from "../bin/standing-authority-activation-store.js";
+import { resolveStandingAuthorityStateDir } from "../bin/standing-authority-confirmation-ledger.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
@@ -872,6 +874,7 @@ import {
 	finalizeStaleBlocker,
 	type PrState,
 } from "./stale-blocker-guard.js";
+import { createStandingAuthorityConfirmationRouter } from "./standing-authority-confirmation-route.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
@@ -3314,6 +3317,31 @@ export function createBridgeApp(
 			stateDbPath: store.getDbPath(),
 			receipts: leadOutboundDedupStore.operationReceipts,
 		});
+	}
+	if (config.apiToken) {
+		const standingAuthorityRoot = resolveStandingAuthorityStateDir(homedir());
+		app.use(
+			"/api/standing-authority/confirm",
+			createStandingAuthorityConfirmationRouter({
+				apiToken: config.apiToken,
+				confirm: (input) =>
+					confirmStandingAuthorityCandidate({
+						root: standingAuthorityRoot,
+						entryId: input.entryId,
+						revision: input.revision,
+						pendingManifestDigest: input.pendingManifestDigest,
+						authenticatedIdentity: input.authenticatedIdentity.leadId,
+						authenticatedIdentityDigest: input.authenticatedIdentityDigest,
+						carrierClaim: input.carrierClaim,
+						confirmedAt: new Date().toISOString(),
+						// FLY-2654 review R7: the authoritative confirmation row lives in
+						// the StateStore and is written before any activation file.
+						authority: {
+							record: (row) => store.recordStandingAuthorityConfirmation(row),
+						},
+					}),
+			}),
+		);
 	}
 	if (config.apiToken) {
 		mountLeadCapabilityReadProvider(app, {

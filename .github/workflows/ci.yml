@@ -473,14 +473,16 @@ jobs:
       - name: Test — FLY-1961 dual-vendor workspace trust
         run: bash scripts/__tests__/test-runner-workspace-trust.sh
 
-      # FLY-1959: merge never triggers updater; only the scheduled shuttle and
-      # founder emergency tickets remain. Restart reporting still distinguishes
+      # FLY-1959/2654: merge never triggers updater; only the scheduled shuttle
+      # and revalidated founder-instruction/Lead-initiated tickets remain.
+      # Restart reporting still distinguishes
       # a newly launched Lead body from an adopted pre-existing one.
       - name: Test — FLY-1959 updater sources + body provenance contracts
         run: |
           bash scripts/__tests__/lead-body-evidence.test.sh
           bash scripts/__tests__/lead-body-provenance.test.sh
           bash scripts/__tests__/request-restart.test.sh
+          bash scripts/__tests__/conditional-restart.test.sh
           bash scripts/__tests__/updater-trigger-policy.test.sh
 
       - name: Test — FLY-2102 startup flag freeze residue guard

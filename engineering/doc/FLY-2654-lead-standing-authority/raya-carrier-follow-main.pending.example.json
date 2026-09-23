@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "entryId": "raya-carrier-follow-main/v1",
+  "entryDigest": "46b0b883f09fcf0f4fb9a25f58f230198e348a3ef4db6d4f1e51cb12876a7f48",
+  "extractionVersion": "entry-extraction/v1",
+  "mechanismVersion": "standing-authority/v1",
+  "scope": {
+    "repository": "xrliAnnie/raya",
+    "project": "raya",
+    "leadClass": "engineering-lead",
+    "action": "follow-approved-main",
+    "transport": "com.flywheel.updater"
+  },
+  "revision": 1,
+  "status": "pending",
+  "founderApproval": {
+    "receiptId": "pending-not-approved",
+    "channelId": "10000000000000000",
+    "messageId": "10000000000000001",
+    "authorId": "10000000000000002",
+    "approvedAt": "2026-09-20T00:00:00.000Z",
+    "contentDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "approvedPrHead": "0000000000000000000000000000000000000000",
+    "entryDigest": "46b0b883f09fcf0f4fb9a25f58f230198e348a3ef4db6d4f1e51cb12876a7f48",
+    "confirmerIdentity": "flywheel-cos-lead"
+  },
+  "contractLandedCommit": "0000000000000000000000000000000000000000",
+  "enforcementDeployment": {
+    "commit": "0000000000000000000000000000000000000000",
+    "packageDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "immutableRoot": "/pending/not-deployed",
+    "deploymentReceiptId": "pending-not-deployed"
+  },
+  "verificationReceipt": {
+    "receiptId": "pending-not-verified",
+    "entryId": "raya-carrier-follow-main/v1",
+    "mechanismVersion": "standing-authority/v1",
+    "executionPackageDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "positiveDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "negativeDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "attributionDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sourceDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "authorIdentity": "flywheel-eng-lead",
+    "implementationIdentity": "implement:FLY-2654"
+  },
+  "liveBundleReceipt": {
+    "leadIdentity": "flywheel-eng-lead",
+    "backend": "claude-code",
+    "instanceId": "pending-instance",
+    "threadId": "pending-thread",
+    "turnId": "pending-turn",
+    "rulesDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "entryDigest": "46b0b883f09fcf0f4fb9a25f58f230198e348a3ef4db6d4f1e51cb12876a7f48",
+    "observedAt": "2026-09-20T00:00:00.000Z",
+    "sourceReceiptId": "pending-not-observed"
+  },
+  "independentConfirmation": null,
+  "revocation": null
+}

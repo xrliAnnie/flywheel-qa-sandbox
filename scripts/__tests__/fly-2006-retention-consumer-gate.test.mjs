@@ -259,3 +259,61 @@ for (const [file, table] of [
 		);
 	});
 }
+
+test("registers every guarded closeout-restart retention read", () => {
+	const file = "packages/teamlead/src/bin/restart-request.ts";
+	const tables = [
+		"chat_threads",
+		"mailbox",
+		"phase_chat_threads",
+		"runner_phase_wakes",
+	];
+	const source = readFileSync(
+		new URL(`../../${file}`, import.meta.url),
+		"utf8",
+	);
+	const consumers = scanRetentionConsumers({
+		files: new Map([[file, source]]),
+		targetTables: tables,
+	});
+	const expected = tables.map((table) => ({
+		file,
+		relation: table,
+		baseTable: table,
+		usage: "read",
+	}));
+	assert.deepEqual(consumers, expected);
+	const config = JSON.parse(
+		readFileSync(
+			new URL(
+				"../fly-2006-retention-consumer-gate.config.json",
+				import.meta.url,
+			),
+			"utf8",
+		),
+	);
+	const entries = config.consumers.filter((entry) => entry.file === file);
+	assert.deepEqual(
+		entries,
+		expected.map((consumer) => ({
+			...consumer,
+			disposition: "candidate_guarded",
+		})),
+	);
+	assert.equal(
+		auditRetentionConsumers({
+			consumers,
+			config: { version: 1, consumers: entries },
+		}).ok,
+		true,
+	);
+	assert.deepEqual(
+		auditRetentionConsumers({
+			consumers,
+			config: { version: 1, consumers: [] },
+		}).errors,
+		tables.map(
+			(table) => `unclassified_retention_consumer:${file}:${table}:read`,
+		),
+	);
+});

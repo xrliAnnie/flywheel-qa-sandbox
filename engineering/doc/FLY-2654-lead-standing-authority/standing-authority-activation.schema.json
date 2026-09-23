@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flywheel.local/schemas/standing-authority-activation-v1.json",
+  "title": "FLY-2654 canonical standing-authority activation manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "entryId",
+    "entryDigest",
+    "extractionVersion",
+    "mechanismVersion",
+    "scope",
+    "revision",
+    "status",
+    "founderApproval",
+    "contractLandedCommit",
+    "enforcementDeployment",
+    "verificationReceipt",
+    "liveBundleReceipt",
+    "independentConfirmation",
+    "revocation"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "entryId": {
+      "enum": ["raya-carrier-follow-main/v1", "lead-closeout-restart/v1"]
+    },
+    "entryDigest": { "$ref": "#/$defs/sha256" },
+    "extractionVersion": { "const": "entry-extraction/v1" },
+    "mechanismVersion": { "$ref": "#/$defs/safeId" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "project", "leadClass", "action", "transport"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/safeId" },
+        "project": { "$ref": "#/$defs/safeId" },
+        "leadClass": { "const": "engineering-lead" },
+        "action": { "$ref": "#/$defs/safeId" },
+        "transport": { "$ref": "#/$defs/safeId" }
+      }
+    },
+    "revision": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["pending", "active", "revoked"] },
+    "founderApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "channelId",
+        "messageId",
+        "authorId",
+        "approvedAt",
+        "contentDigest",
+        "approvedPrHead",
+        "entryDigest",
+        "confirmerIdentity"
+      ],
+      "properties": {
+        "receiptId": { "$ref": "#/$defs/safeId" },
+        "channelId": { "$ref": "#/$defs/snowflake" },
+        "messageId": { "$ref": "#/$defs/snowflake" },
+        "authorId": { "$ref": "#/$defs/snowflake" },
+        "approvedAt": { "$ref": "#/$defs/dateTime" },
+        "contentDigest": { "$ref": "#/$defs/sha256" },
+        "approvedPrHead": { "$ref": "#/$defs/sha40" },
+        "entryDigest": { "$ref": "#/$defs/sha256" },
+        "confirmerIdentity": { "const": "flywheel-cos-lead" }
+      }
+    },
+    "contractLandedCommit": { "$ref": "#/$defs/sha40" },
+    "enforcementDeployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "packageDigest", "immutableRoot", "deploymentReceiptId"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/sha40" },
+        "packageDigest": { "$ref": "#/$defs/sha256" },
+        "immutableRoot": { "type": "string", "pattern": "^/", "not": { "pattern": "\\.\\." } },
+        "deploymentReceiptId": { "$ref": "#/$defs/safeId" }
+      }
+    },
+    "verificationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "entryId",
+        "mechanismVersion",
+        "executionPackageDigest",
+        "positiveDigest",
+        "negativeDigest",
+        "attributionDigest",
+        "sourceDigest",
+        "authorIdentity",
+        "implementationIdentity"
+      ],
+      "properties": {
+        "receiptId": { "$ref": "#/$defs/safeId" },
+        "entryId": {
+          "enum": ["raya-carrier-follow-main/v1", "lead-closeout-restart/v1"]
+        },
+        "mechanismVersion": { "$ref": "#/$defs/safeId" },
+        "executionPackageDigest": { "$ref": "#/$defs/sha256" },
+        "positiveDigest": { "$ref": "#/$defs/sha256" },
+        "negativeDigest": { "$ref": "#/$defs/sha256" },
+        "attributionDigest": { "$ref": "#/$defs/sha256" },
+        "sourceDigest": { "$ref": "#/$defs/sha256" },
+        "authorIdentity": { "$ref": "#/$defs/safeId" },
+        "implementationIdentity": { "$ref": "#/$defs/safeId" }
+      }
+    },
+    "liveBundleReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leadIdentity",
+        "backend",
+        "instanceId",
+        "threadId",
+        "turnId",
+        "rulesDigest",
+        "entryDigest",
+        "observedAt",
+        "sourceReceiptId"
+      ],
+      "properties": {
+        "leadIdentity": { "$ref": "#/$defs/safeId" },
+        "backend": { "enum": ["claude-code", "codex-app-server"] },
+        "instanceId": { "$ref": "#/$defs/safeId" },
+        "threadId": { "$ref": "#/$defs/safeId" },
+        "turnId": { "$ref": "#/$defs/safeId" },
+        "rulesDigest": { "$ref": "#/$defs/sha256" },
+        "entryDigest": { "$ref": "#/$defs/sha256" },
+        "observedAt": { "$ref": "#/$defs/dateTime" },
+        "sourceReceiptId": { "$ref": "#/$defs/safeId" }
+      }
+    },
+    "independentConfirmation": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "receiptId", "confirmedAt", "evidenceBodyDigest"],
+          "properties": {
+            "identity": { "const": "flywheel-cos-lead" },
+            "receiptId": { "$ref": "#/$defs/safeId" },
+            "confirmedAt": { "$ref": "#/$defs/dateTime" },
+            "evidenceBodyDigest": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "revocation": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["revokedAt", "receiptId", "sourceDigest"],
+          "properties": {
+            "revokedAt": { "$ref": "#/$defs/dateTime" },
+            "receiptId": { "$ref": "#/$defs/safeId" },
+            "sourceDigest": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "sha40": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "snowflake": { "type": "string", "pattern": "^[1-9][0-9]{16,19}$" },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "safeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      "not": { "pattern": "\\*" }
+    }
+  }
+}

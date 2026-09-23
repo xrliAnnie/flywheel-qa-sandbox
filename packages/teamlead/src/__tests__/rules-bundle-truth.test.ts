@@ -3,6 +3,7 @@ import {
 	appendFileSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -278,7 +279,19 @@ describe("check-rules-truth", () => {
 	it("pins the ps locale to C and returns PASS for the exact live bundle target", () => {
 		const department = join(fixtureDir, "department-lead-rules.md");
 		const bundle = join(fixtureDir, "live-dept-bundle.md");
-		writeFileSync(department, "# FLY-162 Reply Discipline\n");
+		writeFileSync(
+			department,
+			[
+				"# FLY-162 Reply Discipline",
+				"<!-- FLY-2654-ENTRY-BEGIN raya-carrier-follow-main/v1 -->",
+				"raya body",
+				"<!-- FLY-2654-ENTRY-END raya-carrier-follow-main/v1 -->",
+				"<!-- FLY-2654-ENTRY-BEGIN lead-closeout-restart/v1 -->",
+				"restart body",
+				"<!-- FLY-2654-ENTRY-END lead-closeout-restart/v1 -->",
+				"",
+			].join("\n"),
+		);
 		const materialized = spawnSync(
 			"bash",
 			[
@@ -363,6 +376,7 @@ describe("check-rules-truth", () => {
 			{ mode: 0o755 },
 		);
 
+		const standingReceiptDir = join(fixtureDir, "standing-receipts");
 		const result = spawnSync(
 			"bash",
 			[
@@ -375,6 +389,8 @@ describe("check-rules-truth", () => {
 				"dept",
 				"--expect-mode",
 				"bundle",
+				"--standing-receipt-dir",
+				standingReceiptDir,
 				"--strict",
 			],
 			{
@@ -391,6 +407,12 @@ describe("check-rules-truth", () => {
 		);
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.stdout).toMatch(/^PASS .*mode=bundle .*role=dept/m);
+		for (const entry of [
+			"raya-carrier-follow-main--v1",
+			"lead-closeout-restart--v1",
+		]) {
+			expect(readdirSync(join(standingReceiptDir, entry))).toHaveLength(1);
+		}
 	});
 
 	it("rejects a bundle whose header Lead and project do not match the dynamic target", () => {

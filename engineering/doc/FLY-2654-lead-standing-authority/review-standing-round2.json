@@ -1,0 +1,123 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "eb9aaaa3-d744-4b64-a3fa-2405c92d2fc7",
+  "round": 2,
+  "findings": [
+    {
+      "id": "closeout-precondition-a-no-detection-contract",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 44,
+      "title": "Precondition (a) still gates a standing authority on free-form founder text, with no detection contract and no founder backstop",
+      "detail": "§6 line 99 correctly retires v2 outright — that is the right fix for round 1's `immediate-path-denylist-gate`, and it closes the substring bypass at the source rather than patching regexes. But the new design re-introduces the same failure class one layer up. Condition (a) requires that the founder '在其权威本地当日明确表达收尾后重启或重启电脑的意图' (line 44), and the intent row (line 105) requires '原文中的收尾重启意图' — i.e. a semantic classification of free-form Discord text is once again the gate. The plan specifies no detection contract for it: no anchored positive grammar (the retired v2 had `isCurrentRestartAuthorization` for its conditional kinds), no explicit reject corpus, and no statement of who decides. Line 112 makes this worse rather than better: it assigns the verifier only '来源、日期、scope、撤回和证据一致性' — provenance, date, scope, withdrawal, consistency — and pointedly not the intent semantics, then records the classification as 'Lead 的当次判断' while in the same sentence forbidding '模糊/冲突意图不能被模型扩写'. The Lead is the model. The design therefore says the model decides (a) and the model must not over-read (a), with no mechanism separating the two. The consequence is strictly larger than under AUTH-CANON(A): line 46 states '不需要 founder 再发一条当下无条件确认', so a false positive on (a) has no human backstop at all, whereas the old path at least required a per-instance founder authorization. §9's matrix does not cover it either — row 152 is positive-only, row 153's '不把条件文本解析为单次授权' addresses (A)-classification rather than (a) false positives, and row 154 covers only the retired v2 shape. Round 1 demonstrated against the frozen implementation that '先交给班车，然后请重启' and '如果你觉得需要就现在重启' pass a substring+denylist gate; nothing in this plan prevents an implementer from reusing that family for (a), which would reopen the exact bypass line 99 claims to have closed. Fix: specify (a)'s detection contract in the plan — an anchored positive grammar or an explicit enumerated-source rule — plus an acceptance-matrix row carrying a counterexample corpus, or state plainly that (a) is a human-judgement precondition and add the compensating control that makes that safe.",
+      "failure_scenario": "A Lead implements (a) by reusing the retired v2 intent regexes. The founder posts '今天收个尾，先交给班车，然后重启一下' on her local day. The text matches the reused pattern, (b) and (c) are self-certified by the same Lead, and the activated lead-closeout-restart/v1 carve-out restarts the whole fleet with no founder authorization and — per line 46 — no confirmation request ever sent.",
+      "findingKey": "closeout-precondition-a-no-detection-contract"
+    },
+    {
+      "id": "withdrawal-scope-claim-overstated",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 112,
+      "title": "Withdrawal / conflict detection is required in three places but never given a contract",
+      "detail": "Carried from round 1, unresolved in the new design. Condition (a) requires '无后续撤回/冲突' (line 44), line 112 puts '撤回' among the verifier's duties, and §7 line 120 requires re-checking '撤销' again before service stop. None of the three says which channels are scanned, over what window, or how a withdrawal or a 'conflict' is recognized. The only existing implementation of this idea is restart-request.ts:694-712, which iterates messages from a single channel (`authority.messageRef.channelId`) and fails only on a fixed keyword list (撤回|取消|先不要|不要重启|别重启|hold off|cancel|do not restart). A withdrawal in another channel, a DM or a thread is invisible to it, and a scope change that is not one of those words ('先只重启 Bridge') is not detected at all. Since v3 is new code being written against this plan, the contract should be stated here rather than inherited silently from the code being retired.",
+      "failure_scenario": "The founder expresses the closeout intent in one channel and later says '算了先别动' in the engineering channel. The v3 verifier, reusing the same-channel keyword scan, sees an empty later-message set, all three preconditions still read satisfied, and the wave proceeds against a withdrawn intent.",
+      "findingKey": "withdrawal-scope-claim-overstated"
+    },
+    {
+      "id": "scope-snapshot-ledger-unnamed",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 106,
+      "title": "Condition (b)'s '权威运行列表' is never identified, and the candidate ledgers disagree on parked state",
+      "detail": "scopeSnapshot (line 106) requires '权威运行列表版本与全部将被打断实例', and line 114's ready branch requires '只接受已在既有停驻/交接状态的实例'. The plan never names which ledger is authoritative, and the candidates materially disagree. CommDB's schema pins sessions.status to ('running','completed','timeout','blocked','failed') (packages/flywheel-comm/src/db.ts:213) with no parked vocabulary at all, so a parked body reads `running` there; StateStore carries ship_parked (packages/teamlead/src/StateStore.ts:13556, packages/teamlead/src/terminal-row-archive.ts:288). restart-services.sh's --wait-idle path counts 'active sessions' from a third source. Enumerate from CommDB and the ready branch rejects every parked body, so the carve-out never fires; enumerate from StateStore without a liveness cross-check and bodies can be missed entirely — and (b) is the precondition that protects unsaved work. Name the authoritative ledger and the cross-check in the plan.",
+      "failure_scenario": "The implementer enumerates the interrupted set from CommDB. Bodies that are genuinely parked and safe report `running`, the ready branch refuses, and the Lead either never uses the carve-out or reaches for the waiver path to clear a condition that was actually already satisfied.",
+      "findingKey": "scope-snapshot-ledger-unnamed"
+    },
+    {
+      "id": "execution-package-churn-cost",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 79,
+      "title": "The immutable execution package spans a high-churn file, gating ordinary ships behind the confirmer cycle",
+      "detail": "§4 line 79 requires that enforcement always run from a deployed, independently confirmed immutable package containing 'producer、verifier、updater、restart-services、Raya pass 及全部运行依赖', and line 81 requires that any real mechanism change go through deploy-to-slot → independent confirmation → atomic swap. The motivating window (the updater fast-forwards the checkout and then invokes enforcement code from it) is real. The sizing is not stated, and the measured scope is wide: scripts/restart-services.sh has 59 commits in the last 90 days (~2/week), scripts/update-flywheel.sh 25, and restart-services.sh sources 16 libs from the live checkout, all of which the closure rule pulls in. Under line 81 every one of those edits is a mechanism change requiring an Aunt Cass confirmation cycle before it can deploy, and §8 line 130 makes the whole apparatus a hard FLY-2654 Done-blocker that cannot be deferred. Either scope the package to the authority-deciding closure (conditional-restart.sh + restart-request verifier + producer), which covers the same swap window at a fraction of the churn, or state the expected reconfirmation cadence and who absorbs it.",
+      "failure_scenario": "An unrelated FLY issue edits restart-services.sh. Its ship is now blocked on rebuilding the execution package and obtaining an independent confirmation from flywheel-cos-lead before it may deploy — twice a week, indefinitely — and the pressure to bypass the gate lands on the same guard this issue exists to build.",
+      "findingKey": "execution-package-churn-cost"
+    },
+    {
+      "id": "v1-bypass-after-closeout-rejection",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 99,
+      "title": "Nothing enforces that a rejected closeout cannot be laundered through bare v1",
+      "detail": "Line 99 states '原 bare v1 仍受 AUTH-CANON(A) 的真实单次直接授权约束，不被 standing 前提失败自动调用', and §9 row 153 allows '回原授权路径' when a precondition fails. But bare v1 (`request-restart.sh` with no arguments) carries zero machine-checkable authority evidence — it publishes a `founder-urgent-restart` token for origin/main and kickstarts the updater, and conditional_restart_final_check no-ops on it because updater_restart_services exports no ticket env for the founder-direct shape. Its only enforcement is rule text binding the Lead. After v2 is retired, the same Lead whose v3 closeout was just refused can produce an identical fleet restart by running one unargumented command, and §9 has no negative case requiring that this be detectable. This is pre-existing rather than introduced here, but the new design raises the incentive: it is now the documented fallback for every precondition failure. At minimum require an audit linkage — a v1 ticket issued close in time to a v3 consumed-no-deploy must be flagged in FOLLOWUPS — and add the negative row to §9.",
+      "failure_scenario": "Condition (b) fails because an in-flight body has unpushed work. The v3 request is refused and audited. The Lead runs bare `request-restart.sh`, the fleet restarts on the honor-system path, the unpushed work is lost, and the audit trail shows a refused closeout and an unrelated founder-direct ticket with nothing connecting them.",
+      "findingKey": "v1-bypass-after-closeout-rejection"
+    },
+    {
+      "id": "i5-omits-final-guard-lib",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 138,
+      "title": "I5's file list omits the library that actually holds the final pre-stop guard",
+      "detail": "I5 names request-restart.sh, restart-request.ts, update-flywheel.sh and restart-services.sh. The pre-stop guard itself lives in scripts/lib/conditional-restart.sh — conditional_restart_final_check and conditional_restart_restore_premerge — and it is keyed on the v2 ticket shape and the FLYWHEEL_URGENT_RESTART_* env contract that §6 retires; restart-services.sh only sources it. §8 line 143 does list conditional-restart.test.sh so the suite will catch it, but naming the file in I5 keeps the retirement sweep explicit rather than relying on a test to discover the omission.",
+      "failure_scenario": "The implementer edits only the four files I5 names. conditional_restart_final_check still verifies against the retired v2 ticket, conditional-restart.test.sh goes red late in the cycle, and the v3 guard has to be redesigned after the rest of I5 is already written.",
+      "findingKey": "i5-omits-final-guard-lib"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "withdrawal-scope-claim-overstated",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 112,
+      "title": "Withdrawal / conflict detection is required in three places but never given a contract",
+      "detail": "Carried from round 1, unresolved in the new design. Condition (a) requires '无后续撤回/冲突' (line 44), line 112 puts '撤回' among the verifier's duties, and §7 line 120 requires re-checking '撤销' again before service stop. None of the three says which channels are scanned, over what window, or how a withdrawal or a 'conflict' is recognized. The only existing implementation of this idea is restart-request.ts:694-712, which iterates messages from a single channel (`authority.messageRef.channelId`) and fails only on a fixed keyword list (撤回|取消|先不要|不要重启|别重启|hold off|cancel|do not restart). A withdrawal in another channel, a DM or a thread is invisible to it, and a scope change that is not one of those words ('先只重启 Bridge') is not detected at all. Since v3 is new code being written against this plan, the contract should be stated here rather than inherited silently from the code being retired.",
+      "failure_scenario": "The founder expresses the closeout intent in one channel and later says '算了先别动' in the engineering channel. The v3 verifier, reusing the same-channel keyword scan, sees an empty later-message set, all three preconditions still read satisfied, and the wave proceeds against a withdrawn intent.",
+      "findingKey": "withdrawal-scope-claim-overstated"
+    },
+    {
+      "id": "scope-snapshot-ledger-unnamed",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 106,
+      "title": "Condition (b)'s '权威运行列表' is never identified, and the candidate ledgers disagree on parked state",
+      "detail": "scopeSnapshot (line 106) requires '权威运行列表版本与全部将被打断实例', and line 114's ready branch requires '只接受已在既有停驻/交接状态的实例'. The plan never names which ledger is authoritative, and the candidates materially disagree. CommDB's schema pins sessions.status to ('running','completed','timeout','blocked','failed') (packages/flywheel-comm/src/db.ts:213) with no parked vocabulary at all, so a parked body reads `running` there; StateStore carries ship_parked (packages/teamlead/src/StateStore.ts:13556, packages/teamlead/src/terminal-row-archive.ts:288). restart-services.sh's --wait-idle path counts 'active sessions' from a third source. Enumerate from CommDB and the ready branch rejects every parked body, so the carve-out never fires; enumerate from StateStore without a liveness cross-check and bodies can be missed entirely — and (b) is the precondition that protects unsaved work. Name the authoritative ledger and the cross-check in the plan.",
+      "failure_scenario": "The implementer enumerates the interrupted set from CommDB. Bodies that are genuinely parked and safe report `running`, the ready branch refuses, and the Lead either never uses the carve-out or reaches for the waiver path to clear a condition that was actually already satisfied.",
+      "findingKey": "scope-snapshot-ledger-unnamed"
+    },
+    {
+      "id": "execution-package-churn-cost",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 79,
+      "title": "The immutable execution package spans a high-churn file, gating ordinary ships behind the confirmer cycle",
+      "detail": "§4 line 79 requires that enforcement always run from a deployed, independently confirmed immutable package containing 'producer、verifier、updater、restart-services、Raya pass 及全部运行依赖', and line 81 requires that any real mechanism change go through deploy-to-slot → independent confirmation → atomic swap. The motivating window (the updater fast-forwards the checkout and then invokes enforcement code from it) is real. The sizing is not stated, and the measured scope is wide: scripts/restart-services.sh has 59 commits in the last 90 days (~2/week), scripts/update-flywheel.sh 25, and restart-services.sh sources 16 libs from the live checkout, all of which the closure rule pulls in. Under line 81 every one of those edits is a mechanism change requiring an Aunt Cass confirmation cycle before it can deploy, and §8 line 130 makes the whole apparatus a hard FLY-2654 Done-blocker that cannot be deferred. Either scope the package to the authority-deciding closure (conditional-restart.sh + restart-request verifier + producer), which covers the same swap window at a fraction of the churn, or state the expected reconfirmation cadence and who absorbs it.",
+      "failure_scenario": "An unrelated FLY issue edits restart-services.sh. Its ship is now blocked on rebuilding the execution package and obtaining an independent confirmation from flywheel-cos-lead before it may deploy — twice a week, indefinitely — and the pressure to bypass the gate lands on the same guard this issue exists to build.",
+      "findingKey": "execution-package-churn-cost"
+    },
+    {
+      "id": "v1-bypass-after-closeout-rejection",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 99,
+      "title": "Nothing enforces that a rejected closeout cannot be laundered through bare v1",
+      "detail": "Line 99 states '原 bare v1 仍受 AUTH-CANON(A) 的真实单次直接授权约束，不被 standing 前提失败自动调用', and §9 row 153 allows '回原授权路径' when a precondition fails. But bare v1 (`request-restart.sh` with no arguments) carries zero machine-checkable authority evidence — it publishes a `founder-urgent-restart` token for origin/main and kickstarts the updater, and conditional_restart_final_check no-ops on it because updater_restart_services exports no ticket env for the founder-direct shape. Its only enforcement is rule text binding the Lead. After v2 is retired, the same Lead whose v3 closeout was just refused can produce an identical fleet restart by running one unargumented command, and §9 has no negative case requiring that this be detectable. This is pre-existing rather than introduced here, but the new design raises the incentive: it is now the documented fallback for every precondition failure. At minimum require an audit linkage — a v1 ticket issued close in time to a v3 consumed-no-deploy must be flagged in FOLLOWUPS — and add the negative row to §9.",
+      "failure_scenario": "Condition (b) fails because an in-flight body has unpushed work. The v3 request is refused and audited. The Lead runs bare `request-restart.sh`, the fleet restarts on the honor-system path, the unpushed work is lost, and the audit trail shows a refused closeout and an unrelated founder-direct ticket with nothing connecting them.",
+      "findingKey": "v1-bypass-after-closeout-rejection"
+    },
+    {
+      "id": "i5-omits-final-guard-lib",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 138,
+      "title": "I5's file list omits the library that actually holds the final pre-stop guard",
+      "detail": "I5 names request-restart.sh, restart-request.ts, update-flywheel.sh and restart-services.sh. The pre-stop guard itself lives in scripts/lib/conditional-restart.sh — conditional_restart_final_check and conditional_restart_restore_premerge — and it is keyed on the v2 ticket shape and the FLYWHEEL_URGENT_RESTART_* env contract that §6 retires; restart-services.sh only sources it. §8 line 143 does list conditional-restart.test.sh so the suite will catch it, but naming the file in I5 keeps the retirement sweep explicit rather than relying on a test to discover the omission.",
+      "failure_scenario": "The implementer edits only the four files I5 names. conditional_restart_final_check still verifies against the retired v2 ticket, conditional-restart.test.sh goes red late in the cycle, and the v3 guard has to be redesigned after the rest of I5 is already written.",
+      "findingKey": "i5-omits-final-guard-lib"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "51d47107-a657-49ab-ac30-0d4980e6fb92"
+}

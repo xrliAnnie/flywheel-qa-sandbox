@@ -1,0 +1,53 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "99bc9f51-729e-4dd5-8a74-2d5eda7772e9",
+  "round": 3,
+  "findings": [
+    {
+      "id": "reboot-computer-branch-lacks-closeout-binding",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 130,
+      "title": "The REBOOT_COMPUTER branch admits a bare '重启电脑' with no closeout token, widening a carve-out scoped to closeout",
+      "detail": "New in this round. I transcribed the §6 BNF exactly and enumerated its language. Branch 1 always contains a CLOSEOUT token, so every string it admits is an unambiguous closeout-restart command — that part is tight. Branch 2 is `[DAY] REBOOT_COMPUTER [END]`, which admits exactly {重启电脑, 今天重启电脑, 今晚重启电脑} × END with no closeout token and, in the bare form, no day token either. Verified by running the grammar: '重启电脑', '今天重启电脑', '今晚重启电脑', '重启电脑。' all ACCEPT while '重启' and '今天重启' correctly REJECT. The entry is named and scoped `lead-closeout-restart/v1` and §3 line 44 frames (a) as closeout intent, yet a founder message carrying zero closeout semantics — plausibly about her own laptop, a hung app, or anything else — satisfies (a) and, per line 46, triggers a full fleet restart with no founder confirmation requested. The contract text at line 44 does name '重启电脑' as an accepted form so the grammar is faithful to it, and (b)/(c) plus the one-use key still bound the damage to a single wave with a prior announcement, which is why this is MEDIUM rather than blocking. Cheap fix: require DAY or a CLOSEOUT token on the REBOOT_COMPUTER branch too, or state in the contract clause why a bare reboot request is accepted as closeout intent so the widening is a recorded decision rather than a grammar artifact.",
+      "failure_scenario": "The founder's laptop wedges mid-afternoon and she types '重启电脑' in the engineering channel meaning her own machine. The manifest is active, (b) and (c) pass, and the Lead self-decides a full fleet restart with no confirmation request — the announcement is the only warning she gets, and it arrives after the decision.",
+      "findingKey": "reboot-computer-branch-lacks-closeout-binding"
+    },
+    {
+      "id": "intent-grammar-hit-rate-unvalidated",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 179,
+      "title": "Acceptance validates the recognizer only against four self-authored positives, never against the founder's real phrasing",
+      "detail": "New in this round. The §9 row added at line 179 requires the four locked positives to fire and the fourteen locked negatives plus affix-wrapping to reject. I ran all of those against a faithful transcription of the BNF: 0 violations — 4/4 positives accept, 14/14 negatives reject, and every positive wrapped with an extra condition / negation / consent-withholding clause rejects. The recognizer is sound. What no acceptance item covers is whether it ever fires on how the founder actually writes. The admitted language requires one of exactly five CLOSEOUT tokens or the exact string 重启电脑, and near-misses fail: I verified '收尾之后重启' REJECTs (the list has 收尾后/收尾完后/收尾完成后 but not 收尾之后) and '收尾后重启一下' REJECTs. The founder phrasings this repo actually records also reject — 'FLY-2655 修好了马上重启' (quoted in plan §1 history) and the engineering message cited at founder-only-authority.md:543. Fail-closed is the right default and the plan handles a miss correctly (`intent-unverified`, no model-authored substitute message, version bump requires a new design review). But this issue exists because the founder asked to stop authorizing each time, and §10 line 168 itself warns '不可缩小整体交付为安全拒绝一切'. A recognizer validated only on four positives its own author wrote can ship as complete and never fire in production. Add an acceptance item: run the founder's real historical closeout/restart messages through `closeout-restart-intent/v1` and report the hit rate, so the grammar can be versioned up before activation rather than after.",
+      "failure_scenario": "All acceptance rows pass, both entries activate, and every real closeout message the founder sends over the following weeks returns `intent-unverified`. The carve-out never fires, she keeps authorizing each restart by hand, and FLY-2654 is marked Done against a product goal it did not deliver.",
+      "findingKey": "intent-grammar-hit-rate-unvalidated"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "reboot-computer-branch-lacks-closeout-binding",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 130,
+      "title": "The REBOOT_COMPUTER branch admits a bare '重启电脑' with no closeout token, widening a carve-out scoped to closeout",
+      "detail": "New in this round. I transcribed the §6 BNF exactly and enumerated its language. Branch 1 always contains a CLOSEOUT token, so every string it admits is an unambiguous closeout-restart command — that part is tight. Branch 2 is `[DAY] REBOOT_COMPUTER [END]`, which admits exactly {重启电脑, 今天重启电脑, 今晚重启电脑} × END with no closeout token and, in the bare form, no day token either. Verified by running the grammar: '重启电脑', '今天重启电脑', '今晚重启电脑', '重启电脑。' all ACCEPT while '重启' and '今天重启' correctly REJECT. The entry is named and scoped `lead-closeout-restart/v1` and §3 line 44 frames (a) as closeout intent, yet a founder message carrying zero closeout semantics — plausibly about her own laptop, a hung app, or anything else — satisfies (a) and, per line 46, triggers a full fleet restart with no founder confirmation requested. The contract text at line 44 does name '重启电脑' as an accepted form so the grammar is faithful to it, and (b)/(c) plus the one-use key still bound the damage to a single wave with a prior announcement, which is why this is MEDIUM rather than blocking. Cheap fix: require DAY or a CLOSEOUT token on the REBOOT_COMPUTER branch too, or state in the contract clause why a bare reboot request is accepted as closeout intent so the widening is a recorded decision rather than a grammar artifact.",
+      "failure_scenario": "The founder's laptop wedges mid-afternoon and she types '重启电脑' in the engineering channel meaning her own machine. The manifest is active, (b) and (c) pass, and the Lead self-decides a full fleet restart with no confirmation request — the announcement is the only warning she gets, and it arrives after the decision.",
+      "findingKey": "reboot-computer-branch-lacks-closeout-binding"
+    },
+    {
+      "id": "intent-grammar-hit-rate-unvalidated",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 179,
+      "title": "Acceptance validates the recognizer only against four self-authored positives, never against the founder's real phrasing",
+      "detail": "New in this round. The §9 row added at line 179 requires the four locked positives to fire and the fourteen locked negatives plus affix-wrapping to reject. I ran all of those against a faithful transcription of the BNF: 0 violations — 4/4 positives accept, 14/14 negatives reject, and every positive wrapped with an extra condition / negation / consent-withholding clause rejects. The recognizer is sound. What no acceptance item covers is whether it ever fires on how the founder actually writes. The admitted language requires one of exactly five CLOSEOUT tokens or the exact string 重启电脑, and near-misses fail: I verified '收尾之后重启' REJECTs (the list has 收尾后/收尾完后/收尾完成后 but not 收尾之后) and '收尾后重启一下' REJECTs. The founder phrasings this repo actually records also reject — 'FLY-2655 修好了马上重启' (quoted in plan §1 history) and the engineering message cited at founder-only-authority.md:543. Fail-closed is the right default and the plan handles a miss correctly (`intent-unverified`, no model-authored substitute message, version bump requires a new design review). But this issue exists because the founder asked to stop authorizing each time, and §10 line 168 itself warns '不可缩小整体交付为安全拒绝一切'. A recognizer validated only on four positives its own author wrote can ship as complete and never fire in production. Add an acceptance item: run the founder's real historical closeout/restart messages through `closeout-restart-intent/v1` and report the hit rate, so the grammar can be versioned up before activation rather than after.",
+      "failure_scenario": "All acceptance rows pass, both entries activate, and every real closeout message the founder sends over the following weeks returns `intent-unverified`. The carve-out never fires, she keeps authorizing each restart by hand, and FLY-2654 is marked Done against a product goal it did not deliver.",
+      "findingKey": "intent-grammar-hit-rate-unvalidated"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "f5ac0eb2-772d-4d74-bd5c-4759605acf3d"
+}

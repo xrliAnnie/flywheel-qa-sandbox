@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,6 +32,7 @@ function parseArgs(argv) {
 				"--expected",
 				"--lead",
 				"--project",
+				"--standing-receipt-dir",
 			].includes(arg)
 		) {
 			if (i + 1 >= argv.length) usage(`${arg} requires a value`);
@@ -48,6 +49,39 @@ function parseArgs(argv) {
 
 function fail(reason) {
 	throw new Error(reason);
+}
+
+const STANDING_ENTRIES = [
+	"raya-carrier-follow-main/v1",
+	"lead-closeout-restart/v1",
+];
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+function canonical(value) {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (!value || typeof value !== "object") return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([key, item]) => [key, canonical(item)]),
+	);
+}
+function standingEntryDigests(bytes) {
+	const source = bytes.toString("utf8");
+	const present = STANDING_ENTRIES.map((id) =>
+		source.includes(`FLY-2654-ENTRY-BEGIN ${id}`),
+	);
+	if (present.every((value) => !value)) return [];
+	if (!present.every(Boolean)) fail("standing authority entry set is partial");
+	return STANDING_ENTRIES.map((entryId) => {
+		const begin = `<!-- FLY-2654-ENTRY-BEGIN ${entryId} -->\n`;
+		const end = `<!-- FLY-2654-ENTRY-END ${entryId} -->`;
+		if (source.split(begin).length !== 2 || source.split(end).length !== 2)
+			fail(`standing authority marker mismatch: ${entryId}`);
+		const start = source.indexOf(begin) + begin.length;
+		const finish = source.indexOf(end, start);
+		if (finish < start) fail(`standing authority marker order: ${entryId}`);
+		return { entryId, entryDigest: sha256(source.slice(start, finish)) };
+	});
 }
 
 function readJson(path, label) {
@@ -220,7 +254,46 @@ export function verifyBundle(bundlePath, expectedRole, expectedIdentity) {
 		sha: declaredSha,
 		manifests,
 		degraded,
+		rulesDigest: sha256(bytes),
+		standingEntries: standingEntryDigests(bytes),
 	};
+}
+
+function writeStandingReceipts(root, result) {
+	if (
+		result.status !== "PASS" ||
+		result.receipt.mode !== "bundle" ||
+		!result.bundleResult ||
+		!result.runtime
+	)
+		fail("standing receipt requires a live PASS bundle");
+	for (const entry of result.bundleResult.standingEntries) {
+		const identity = {
+			leadIdentity: result.receipt.leadId ?? result.runtime.leadId,
+			backend: "claude-code",
+			instanceId: sha256(
+				`${result.receipt.pid}:${result.receipt.supervisorStart}`,
+			),
+			threadId: `claude-pane-${result.runtime.panePid}`,
+			turnId: `claude-process-${result.runtime.processPid}`,
+			rulesDigest: result.bundleResult.rulesDigest,
+			entryDigest: entry.entryDigest,
+			observedAt: new Date().toISOString(),
+		};
+		const receipt = {
+			...identity,
+			sourceReceiptId: sha256(JSON.stringify(canonical(identity))),
+		};
+		const dir = join(root, entry.entryId.replaceAll("/", "--"));
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		const path = join(dir, `${receipt.sourceReceiptId}.json`);
+		const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify(canonical(receipt))}\n`, {
+			mode: 0o600,
+			flag: "wx",
+		});
+		renameSync(temporary, path);
+	}
 }
 
 function verifyCarrier(project, lead) {
@@ -601,6 +674,12 @@ function verifyLead(args) {
 		exitCode: 0,
 		carrier,
 		receipt,
+		bundleResult,
+		runtime: {
+			leadId: args.lead,
+			panePid: Number.parseInt(livePanes[0][0], 10),
+			processPid: candidates[0].pid,
+		},
 	};
 }
 
@@ -673,6 +752,8 @@ function main() {
 			return;
 		}
 		const result = verifyLead(args);
+		if (args.standing_receipt_dir)
+			writeStandingReceipts(args.standing_receipt_dir, result);
 		if (result.status !== "SKIP") {
 			statusResult(result.status, {
 				project: args.project,

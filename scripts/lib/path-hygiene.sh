@@ -203,6 +203,7 @@ EOF
 path_hygiene_source_priority_registry() {
   cat <<'EOF'
 packages/flywheel-comm/src/commands/qa-result.ts|QA_GITHUB_CLI_CANDIDATES=["/opt/homebrew/bin/gh","/usr/local/bin/gh","/usr/bin/gh",]asconst
+packages/teamlead/src/bin/restart-request.ts|["/opt/homebrew/bin/gh","/usr/local/bin/gh"].find
 EOF
 }
 

@@ -18,6 +18,7 @@ import {
 	type MigrationIO,
 } from "./raya-migration-io.js";
 import { collectMigrationProof } from "./raya-migration-proof.js";
+import { rayaRegistryIdentity } from "./raya-registry-identity.js";
 
 const roots: string[] = [];
 afterEach(() =>
@@ -401,4 +402,64 @@ it("accepts the older launchd true readback", async () => {
 	f.enableLegacy("true");
 	await f.run();
 	expect(existsSync(f.proof)).toBe(true);
+});
+
+// FLY-2654 QA2 rework (hard-red 2): a ledger that froze Raya's registry
+// identity projection compares projections, so an unrelated Lead edit or a
+// serialization-only change cannot break the proof; only a Raya identity change
+// refuses, and it refuses with its own reason.
+it("compares the frozen Raya registry identity instead of whole-file bytes", async () => {
+	const f = fixture();
+	f.enableLegacy("true");
+	const registryPath = join(f.home, ".flywheel/projects.json");
+	const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+	writeFileSync(
+		f.file,
+		JSON.stringify({
+			...f.manifest,
+			registry_identity: rayaRegistryIdentity(registry),
+			registry_digest: "0".repeat(64),
+		}),
+		{ mode: 0o600 },
+	);
+	registry.push({
+		projectName: "flywheel",
+		leads: [
+			{
+				agentId: "flywheel-cos-lead",
+				backend: "claude-code",
+				effort: "medium",
+			},
+		],
+	});
+	writeFileSync(registryPath, `${JSON.stringify(registry)}\n`, { mode: 0o600 });
+	await f.run();
+	expect(existsSync(f.proof)).toBe(true);
+
+	const drifted = fixture();
+	drifted.enableLegacy("true");
+	const driftedPath = join(drifted.home, ".flywheel/projects.json");
+	const driftedRegistry = JSON.parse(readFileSync(driftedPath, "utf8"));
+	writeFileSync(
+		drifted.file,
+		JSON.stringify({
+			...drifted.manifest,
+			registry_identity: rayaRegistryIdentity(driftedRegistry),
+		}),
+		{ mode: 0o600 },
+	);
+	driftedRegistry[0].leads[0].botUserId = probeBot;
+	writeFileSync(driftedPath, JSON.stringify(driftedRegistry), { mode: 0o600 });
+	await expect(drifted.run()).rejects.toThrow("proof-registry-identity-drift");
+	expect(existsSync(drifted.proof)).toBe(false);
+
+	// A legacy ledger without registry_identity still binds whole-file bytes.
+	const legacy = fixture();
+	legacy.enableLegacy("true");
+	const legacyPath = join(legacy.home, ".flywheel/projects.json");
+	writeFileSync(legacyPath, `${readFileSync(legacyPath, "utf8")}\n`, {
+		mode: 0o600,
+	});
+	await expect(legacy.run()).rejects.toThrow("proof-binding-drift");
+	expect(existsSync(legacy.proof)).toBe(false);
 });

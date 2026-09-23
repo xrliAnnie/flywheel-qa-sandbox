@@ -292,6 +292,8 @@ MUST_BLOCK = [
 # ── T2: must-pass matrix (legit flow + reads + unrelated ops) ────────────────
 MUST_PASS = [
     ("bash scripts/request-restart.sh", "default updater-backed restart request"),
+    ("bash scripts/request-restart.sh --request /private/tmp/closeout.json",
+     "standing closeout updater-backed restart request"),
     ("bash scripts/restart-services.sh", "legit restart-services relative"),
     ("bash ~/Dev/flywheel/scripts/restart-services.sh --force", "legit --force"),
     ("bash /Users/x/.flywheel/bin/restart-services.sh --dry-run", "legit deployed copy --dry-run"),
@@ -398,10 +400,11 @@ def t3_deny_schema():
         reason = hso.get("permissionDecisionReason", "")
         if (
             "request-restart.sh" in reason
-            and "founder 紧急票" in reason
+            and "受控紧急票" in reason
+            and "standing closeout" in reason
             and "self-ship" not in reason
         ):
-            ok("T3 reason names the sole founder emergency ticket path")
+            ok("T3 reason names both authority classes on the sole emergency ticket path")
         else:
             bad("T3 reason", f"missing correct-command pointer: {reason[:200]}")
         if "FLYWHEEL_RESTART_GUARD_BYPASS" not in reason:

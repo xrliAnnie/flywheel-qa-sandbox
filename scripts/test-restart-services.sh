@@ -365,6 +365,7 @@ rn_run_terminal_case() {
       pnpm() { [[ "$mode" != "rollback-build-failed" ]]; }
       pause_admission_best_effort() { :; }
       resume_admission_best_effort() { :; }
+      conditional_restart_final_check() { return 0; }
       stop_bridge() { [[ "$mode" != "rollback-port-stuck" ]]; }
       start_bridge() { :; }
       bridge_port() { printf "9876\n"; }
@@ -1015,6 +1016,18 @@ if [[ "$rn_missing_ok" == "true" ]] \
     pass "FLY-1814 missing and invalid modes fail closed before candidate mutation"
 else
     fail "FLY-1814 invalid mode fail-close mismatch: missing=$rn_missing_ok rc=$RN_INVALID_RC out='$RN_INVALID_OUTPUT' err='$RN_INVALID_ERRORS' events='$RN_INVALID_EVENTS'"
+fi
+
+# FLY-2654 (review round 9): a standing-authority wave runs only from the
+# independently confirmed immutable package. Every script/package reference in
+# restart-services.sh must resolve through FLYWHEEL_RUNTIME_DIR so a main merge
+# cannot silently re-add an execution from the fast-forwarded checkout.
+out_of_package_refs="$(grep -nE '\$\{?FLYWHEEL_DIR\}?/(scripts|packages)' "$SCRIPT_DIR/restart-services.sh" || true)"
+if [[ -z "$out_of_package_refs" ]] \
+  && [[ "$(grep -c 'FLYWHEEL_RUNTIME_DIR:-\${FLYWHEEL_DIR}}' "$SCRIPT_DIR/restart-services.sh")" -ge 48 ]]; then
+    pass "FLY-2654 restart-services resolves every script/package reference through the runtime package root"
+else
+    fail "FLY-2654 out-of-package execution references in restart-services.sh: ${out_of_package_refs:-<runtime-dir count drifted>}"
 fi
 
 if grep -qF 'rb_lead_result=$(do_restart_all_leads immediate)' "$SCRIPT_DIR/restart-services.sh" \
@@ -2509,6 +2522,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/conditional-restart.sh" \
    "$REAL_REPO_ROOT/scripts/lib/legacy-swap-broadcast-retirement.sh" \
    "$REAL_REPO_ROOT/scripts/lib/default-lead-agent-env.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
@@ -3978,6 +3992,7 @@ fly1649_run_deploy_case() {
       account_switch_runtime_preflight() { :; }
       pause_admission_best_effort() { :; }
       resume_admission_best_effort() { :; }
+      conditional_restart_final_check() { return 0; }
       stop_bridge() { return 0; }
       codex_home_reconcile_restart_window() { return 0; }
       start_bridge() { :; }
@@ -4008,6 +4023,254 @@ if [[ "$health_disabled" == 1$'\t'* \
 else
     fail "FLY-1649 health failure still entered code-only rollback: $health_disabled"
 fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-2654 (review R7 HIGH): restart-services never sources package libraries
+# from a caller-supplied FLYWHEEL_STANDING_PACKAGE_ROOT. The root must match the
+# independently confirmed active-package pointer, the package manifest and CLI
+# digests must verify, and this script itself must be the package's resolved
+# entry. Every case runs the extracted fence only; no service is touched.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-2654 restart-services standing package root fence"
+
+# Physical path: the fence compares `cd -P` resolved roots against the pointer,
+# and macOS mktemp hands out /var/... for /private/var/....
+sp_root_dir="$(cd -P "$TMPDIR_ROOT" && pwd)/fly2654-package-root"
+mkdir -p "$sp_root_dir"
+sp_fence_src="$sp_root_dir/fence.sh"
+awk '
+  /^rs_standing_package_reject\(\)/,/^}/ { print; next }
+  /^rs_verify_standing_package_root\(\)/,/^}/ { print; next }
+' "$RS_SOURCE" > "$sp_fence_src"
+
+sp_fence_line="$(grep -n '^rs_verify_standing_package_root || exit' "$RS_SOURCE" | head -1 | cut -d: -f1 || true)"
+sp_first_source_line="$(grep -n '^ *source "\${FLYWHEEL_RUNTIME_DIR' "$RS_SOURCE" | head -1 | cut -d: -f1 || true)"
+sp_runtime_dir_line="$(grep -n '^FLYWHEEL_RUNTIME_DIR=' "$RS_SOURCE" | head -1 | cut -d: -f1 || true)"
+if [[ "$sp_fence_line" =~ ^[0-9]+$ && "$sp_first_source_line" =~ ^[0-9]+$ \
+  && "$sp_runtime_dir_line" =~ ^[0-9]+$ ]] \
+  && (( sp_fence_line < sp_runtime_dir_line && sp_runtime_dir_line < sp_first_source_line )) \
+  && grep -q '^rs_verify_standing_package_root()' "$sp_fence_src"; then
+    pass "FLY-2654 package-root fence runs before the runtime dir is chosen and before any package source"
+else
+    fail "FLY-2654 package-root fence is missing or ordered after a package source (fence=$sp_fence_line runtime=$sp_runtime_dir_line source=$sp_first_source_line)"
+fi
+
+
+# FLY-2654 review R7 round 2: an active-package pointer is only a request; the
+# fence must read the Bridge confirmation ledger back. Seed a ledger row that
+# binds the pointer's activatedByReceiptId to the package digest.
+sp_seed_ledger() {
+    local ledger="$1" receipt="$2" package_digest="$3"
+    mkdir -p "$(dirname "$ledger")"
+    # Production shape: WAL StateStore after a clean Bridge close (no -wal/-shm).
+    sqlite3 "$ledger" "PRAGMA journal_mode=wal; CREATE TABLE IF NOT EXISTS standing_authority_confirmation (receipt_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, revision INTEGER NOT NULL, manifest_digest TEXT NOT NULL, evidence_body_digest TEXT NOT NULL, package_digest TEXT NOT NULL, confirmer_identity TEXT NOT NULL, confirmer_identity_digest TEXT NOT NULL, carrier_claim TEXT NOT NULL, confirmed_at TEXT NOT NULL, recorded_at TEXT NOT NULL); INSERT OR REPLACE INTO standing_authority_confirmation VALUES ('${receipt}','raya-carrier-follow-main/v1',1,'$(printf 'a%.0s' {1..64})','$(printf 'b%.0s' {1..64})','${package_digest}','flywheel-cos-lead','$(printf 'c%.0s' {1..64})','carrier-claim','2026-09-21T00:00:00.000Z','2026-09-21T00:00:01.000Z');" > /dev/null
+    rm -f "${ledger}-wal" "${ledger}-shm"
+}
+
+# Run one fence case in a subshell: $1=fixture root for the script copy,
+# $2=state dir, $3=requested root env, $4=extra PATH dir (may be empty).
+sp_run_fence() {
+    local script_dir="$1" state_dir="$2" requested="$3" bin_dir="$4"
+    mkdir -p "$script_dir/scripts"
+    cp "$sp_fence_src" "$script_dir/scripts/restart-services.sh"
+    (
+        export HOME="$sp_root_dir/home"
+        export FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$state_dir"
+        export FLYWHEEL_STANDING_PACKAGE_ACTIVE=1
+        export FLYWHEEL_STANDING_PACKAGE_ROOT="$requested"
+        [[ -z "$bin_dir" ]] || export PATH="$bin_dir:$PATH"
+        # shellcheck disable=SC1090
+        source "$script_dir/scripts/restart-services.sh"
+        rs_verify_standing_package_root
+    )
+}
+
+# Case 1: caller-controlled root with no active-package pointer at all.
+sp_case1_log="$sp_root_dir/case1.log"
+sp_case1_rc=0
+sp_run_fence "$sp_root_dir/forged1" "$sp_root_dir/no-state" "$sp_root_dir/forged1" "" \
+  > "$sp_case1_log" 2>&1 || sp_case1_rc=$?
+if [[ "$sp_case1_rc" -eq 78 ]] && grep -Fq 'reason=active-package-pointer-missing' "$sp_case1_log"; then
+    pass "FLY-2654 forged package root with no active pointer is refused before any source"
+else
+    fail "FLY-2654 forged package root without a pointer was accepted (rc=$sp_case1_rc log=$(cat "$sp_case1_log"))"
+fi
+
+# Shared verified fixture: pointer + manifest + CLI digest + stub node verifier.
+sp_pkg_root="$sp_root_dir/verified-package"
+sp_state="$sp_root_dir/verified-state"
+sp_bin="$sp_root_dir/verified-bin"
+sp_cli_rel="packages/teamlead/dist/bin/standing-authority-package-cli.js"
+sp_digest="$(printf 'd%.0s' {1..64})"
+mkdir -p "$sp_pkg_root/$(dirname "$sp_cli_rel")" "$sp_pkg_root/scripts" "$sp_state" "$sp_bin"
+printf '%s\n' '// synthetic package verifier' > "$sp_pkg_root/$sp_cli_rel"
+sp_cli_digest="$(shasum -a 256 "$sp_pkg_root/$sp_cli_rel" | awk '{print $1}')"
+jq -n --arg packageDigest "$sp_digest" --arg cliPath "$sp_cli_rel" --arg cliDigest "$sp_cli_digest" \
+  '{packageDigest:$packageDigest,files:[{path:$cliPath,sha256:$cliDigest}]}' \
+  > "$sp_pkg_root/standing-authority-package.json"
+sp_receipt="$(printf '9%.0s' {1..64})"
+jq -n --arg root "$sp_pkg_root" --arg packageDigest "$sp_digest" --arg receipt "$sp_receipt" \
+  '{schemaVersion:1,immutableRoot:$root,packageDigest:$packageDigest,activatedByReceiptId:$receipt}' \
+  > "$sp_state/active-package.json"
+sp_seed_ledger "$sp_root_dir/home/.flywheel/teamlead.db" "$sp_receipt" "$sp_digest"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${2:-}" in' \
+  '  verify) printf '\''{"packageDigest":"%s"}\n'\'' "$SP_PACKAGE_DIGEST" ;;' \
+  '  resolve) printf '\''%s\n'\'' "$SP_PACKAGE_ENTRY" ;;' \
+  '  *) exit 64 ;;' \
+  'esac' \
+  > "$sp_bin/node"
+chmod 500 "$sp_bin/node"
+# The package's own entry exists from the start so an outside script fails on
+# identity, not on a missing entry.
+cp "$sp_fence_src" "$sp_pkg_root/scripts/restart-services.sh"
+export SP_PACKAGE_DIGEST="$sp_digest"
+export SP_PACKAGE_ENTRY="$sp_pkg_root/scripts/restart-services.sh"
+
+# Case 2: pointer exists but names a different immutable root than the caller.
+sp_case2_log="$sp_root_dir/case2.log"
+sp_case2_rc=0
+sp_run_fence "$sp_root_dir/forged2" "$sp_state" "$sp_root_dir/forged2" "$sp_bin" \
+  > "$sp_case2_log" 2>&1 || sp_case2_rc=$?
+if [[ "$sp_case2_rc" -eq 78 ]] && grep -Fq 'reason=active-package-root-mismatch' "$sp_case2_log"; then
+    pass "FLY-2654 caller root that differs from the confirmed pointer is refused"
+else
+    fail "FLY-2654 mismatched caller root was accepted (rc=$sp_case2_rc log=$(cat "$sp_case2_log"))"
+fi
+
+# Case 3: root matches the pointer, but the running script lives outside it.
+sp_case3_log="$sp_root_dir/case3.log"
+sp_case3_rc=0
+sp_run_fence "$sp_root_dir/outside3" "$sp_state" "$sp_pkg_root" "$sp_bin" \
+  > "$sp_case3_log" 2>&1 || sp_case3_rc=$?
+if [[ "$sp_case3_rc" -eq 78 ]] && grep -Fq 'reason=active-package-script-mismatch' "$sp_case3_log"; then
+    pass "FLY-2654 mutable-checkout script cannot borrow the verified package root"
+else
+    fail "FLY-2654 script outside the package was accepted (rc=$sp_case3_rc log=$(cat "$sp_case3_log"))"
+fi
+
+# Case 4: tampered CLI bytes under an otherwise valid pointer.
+sp_tamper_root="$sp_root_dir/tampered-package"
+sp_tamper_state="$sp_root_dir/tampered-state"
+mkdir -p "$sp_tamper_root/$(dirname "$sp_cli_rel")" "$sp_tamper_root/scripts" "$sp_tamper_state"
+printf '%s\n' '// tampered verifier' > "$sp_tamper_root/$sp_cli_rel"
+cp "$sp_pkg_root/standing-authority-package.json" "$sp_tamper_root/standing-authority-package.json"
+jq -n --arg root "$sp_tamper_root" --arg packageDigest "$sp_digest" --arg receipt "$sp_receipt" \
+  '{schemaVersion:1,immutableRoot:$root,packageDigest:$packageDigest,activatedByReceiptId:$receipt}' \
+  > "$sp_tamper_state/active-package.json"
+sp_case4_log="$sp_root_dir/case4.log"
+sp_case4_rc=0
+sp_run_fence "$sp_tamper_root" "$sp_tamper_state" "$sp_tamper_root" "$sp_bin" \
+  > "$sp_case4_log" 2>&1 || sp_case4_rc=$?
+if [[ "$sp_case4_rc" -eq 78 ]] && grep -Fq 'reason=active-package-cli-digest-mismatch' "$sp_case4_log"; then
+    pass "FLY-2654 package CLI whose bytes drift from the manifest is refused"
+else
+    fail "FLY-2654 tampered package CLI was accepted (rc=$sp_case4_rc log=$(cat "$sp_case4_log"))"
+fi
+
+# Case 5: fully verified package, script is the resolved entry → admitted.
+sp_case5_log="$sp_root_dir/case5.log"
+sp_case5_rc=0
+sp_run_fence "$sp_pkg_root" "$sp_state" "$sp_pkg_root" "$sp_bin" \
+  > "$sp_case5_log" 2>&1 || sp_case5_rc=$?
+if [[ "$sp_case5_rc" -eq 0 ]] && ! grep -q 'standing-package-verification-failed' "$sp_case5_log"; then
+    pass "FLY-2654 verified package root whose entry is this script is admitted"
+else
+    fail "FLY-2654 verified package root was refused (rc=$sp_case5_rc log=$(cat "$sp_case5_log"))"
+fi
+
+# Case 7: valid pointer + package, but the Bridge ledger has no confirmation
+# row for the pointer's receipt (a hand-written activation) → refused.
+sp_case7_state="$sp_root_dir/unconfirmed-state"
+mkdir -p "$sp_case7_state"
+jq -n --arg root "$sp_pkg_root" --arg packageDigest "$sp_digest" --arg receipt "$(printf '8%.0s' {1..64})" \
+  '{schemaVersion:1,immutableRoot:$root,packageDigest:$packageDigest,activatedByReceiptId:$receipt}' \
+  > "$sp_case7_state/active-package.json"
+sp_case7_rc=0
+sp_run_fence "$sp_pkg_root" "$sp_case7_state" "$sp_pkg_root" "$sp_bin" \
+  > "$sp_root_dir/case7.log" 2>&1 || sp_case7_rc=$?
+if [[ "$sp_case7_rc" -eq 78 ]] && grep -Fq 'reason=confirmation-record-missing' "$sp_root_dir/case7.log"; then
+    pass "FLY-2654 pointer whose receipt was never recorded by the Bridge is refused"
+else
+    fail "FLY-2654 unconfirmed pointer elected the package (rc=$sp_case7_rc log=$(cat "$sp_root_dir/case7.log"))"
+fi
+
+# Case 8: the ledger row exists but binds a different package digest.
+sp_case8_state="$sp_root_dir/drifted-state"
+mkdir -p "$sp_case8_state"
+sp_case8_receipt="$(printf '7%.0s' {1..64})"
+jq -n --arg root "$sp_pkg_root" --arg packageDigest "$sp_digest" --arg receipt "$sp_case8_receipt" \
+  '{schemaVersion:1,immutableRoot:$root,packageDigest:$packageDigest,activatedByReceiptId:$receipt}' \
+  > "$sp_case8_state/active-package.json"
+sp_seed_ledger "$sp_root_dir/home/.flywheel/teamlead.db" "$sp_case8_receipt" "$(printf '6%.0s' {1..64})"
+sp_case8_rc=0
+sp_run_fence "$sp_pkg_root" "$sp_case8_state" "$sp_pkg_root" "$sp_bin" \
+  > "$sp_root_dir/case8.log" 2>&1 || sp_case8_rc=$?
+if [[ "$sp_case8_rc" -eq 78 ]] && grep -Fq 'reason=confirmation-record-mismatch' "$sp_root_dir/case8.log"; then
+    pass "FLY-2654 ledger row bound to another package digest is refused"
+else
+    fail "FLY-2654 drifted ledger row elected the package (rc=$sp_case8_rc log=$(cat "$sp_root_dir/case8.log"))"
+fi
+
+# Case 9: no ledger file at all → unavailable, never "not recorded, so allow".
+sp_case9_rc=0
+(
+    export HOME="$sp_root_dir/home-without-ledger"
+    export FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$sp_state"
+    export FLYWHEEL_STANDING_PACKAGE_ACTIVE=1
+    export FLYWHEEL_STANDING_PACKAGE_ROOT="$sp_pkg_root"
+    export PATH="$sp_bin:$PATH"
+    # shellcheck disable=SC1090
+    source "$sp_pkg_root/scripts/restart-services.sh"
+    rs_verify_standing_package_root
+) > "$sp_root_dir/case9.log" 2>&1 || sp_case9_rc=$?
+if [[ "$sp_case9_rc" -eq 78 ]] && grep -Fq 'reason=confirmation-ledger-unavailable' "$sp_root_dir/case9.log"; then
+    pass "FLY-2654 missing Bridge ledger is unavailable, not permissive"
+else
+    fail "FLY-2654 missing ledger was treated as permissive (rc=$sp_case9_rc log=$(cat "$sp_root_dir/case9.log"))"
+fi
+
+# Case 10 (review R7 round 3): the ledger must be readable with NO -wal/-shm
+# sidecars (WAL StateStore after a clean Bridge close). `sqlite3 -readonly`
+# fails with SQLITE_CANTOPEN there, which would refuse every emergency restart
+# exactly while the Bridge is down.
+sp_case10_ledger="$sp_root_dir/home/.flywheel/teamlead.db"
+rm -f "${sp_case10_ledger}-wal" "${sp_case10_ledger}-shm"
+if [[ "$(xxd -s 18 -l 1 -p "$sp_case10_ledger")" == "02" && ! -e "${sp_case10_ledger}-shm" ]]; then
+    pass "FLY-2654 fixture ledger is WAL without sidecars (production shape)"
+else
+    fail "FLY-2654 fixture ledger is not WAL-without-sidecars (header=$(xxd -s 18 -l 1 -p "$sp_case10_ledger"))"
+fi
+sp_case10_rc=0
+sp_run_fence "$sp_pkg_root" "$sp_state" "$sp_pkg_root" "$sp_bin" \
+  > "$sp_root_dir/case10.log" 2>&1 || sp_case10_rc=$?
+if [[ "$sp_case10_rc" -eq 0 ]]; then
+    pass "FLY-2654 ledger readback admits a WAL ledger with no sidecars"
+else
+    fail "FLY-2654 ledger readback refused a sidecar-less WAL ledger (rc=$sp_case10_rc log=$(cat "$sp_root_dir/case10.log"))"
+fi
+if ! grep -q 'sqlite3 -readonly' "$RS_SOURCE" "$SCRIPT_DIR/update-flywheel.sh" "$SCRIPT_DIR/request-restart.sh"; then
+    pass "FLY-2654 no package fence opens the ledger with sqlite3 -readonly"
+else
+    fail "FLY-2654 a package fence still uses sqlite3 -readonly (breaks on sidecar-less WAL)"
+fi
+
+# Case 6: no standing env at all → fence is inert (mutable checkout path).
+sp_case6_rc=0
+(
+    export FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$sp_root_dir/no-state"
+    unset FLYWHEEL_STANDING_PACKAGE_ACTIVE FLYWHEEL_STANDING_PACKAGE_ROOT
+    # shellcheck disable=SC1090
+    source "$sp_fence_src"
+    rs_verify_standing_package_root
+) > "$sp_root_dir/case6.log" 2>&1 || sp_case6_rc=$?
+if [[ "$sp_case6_rc" -eq 0 ]]; then
+    pass "FLY-2654 fence is inert without standing package environment"
+else
+    fail "FLY-2654 fence refused the plain checkout path (rc=$sp_case6_rc log=$(cat "$sp_root_dir/case6.log"))"
+fi
+unset SP_PACKAGE_DIGEST SP_PACKAGE_ENTRY
 
 # ════════════════════════════════════════════════════════════════
 # Summary

@@ -1,0 +1,139 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "23cc8d5f-1552-448d-abfd-d13a8d0ba77b",
+  "round": 4,
+  "findings": [
+    {
+      "id": "time-frame-omission-silently-falls-back-to-24h",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 47,
+      "title": "自然时间框规则本身已改对，但「漏识别」没有检测器——漏看一次就是一个干净的 24h 默认值",
+      "detail": "本轮把时效规则改成「有时间框先服从时间框，完全无时间框才 24h」，并补了时态判别和「时区变化使解释不确定则拒绝」，方向完全正确，我上一轮的 conditional-authority-expiry-default-vs-worked-example 可以关掉。残留的是检测面：A2:33 写「不能把『马上/今天/今晚/不要等到』**漏识别**后静默降为 24 小时」，A3:47 的 expiresAt 也只描述优先级。但「漏识别」按定义不会自曝——Lead 没注意到「今晚」，产出的就是一个格式完好、理由自洽的 24h expiresAt，没有任何信号。计划已经把**歧义**这一档做成 fail-closed（「原消息与上下文无法判清则拒绝并澄清」「无法消歧的跨日/未来时间表达拒绝并请求澄清，不能回落 24h」），但 fail-closed 只覆盖「我知道我拿不准」，覆盖不了「我根本没看见」。这正是本仓反复吃过的形状（第二轮那句「漏依赖则验证失败」也是同一个毛病：被漏掉的东西不在尺子的量程里）。后果有界但真实：founder 说「不要等到今天晚上 12 点」，条件第二天上午才达成，票仍然合法发出，一次无人值守全舰重启落在她框定的窗口之外十几个小时。修法很便宜，且不需要自然语言分类器承担安全责任：(1) expiresAt 增加 `timeFrameSource: explicit | none-asserted` 与被扫描原文片段，把「没有时间框」从**默认**变成一条**显式断言**；(2) verifier（不是 Lead）在回读到的 Discord 原文上独立跑一次确定性词法预扫（固定词表：马上/立刻/尽快/今天/今晚/明天/午夜/12 点/之前/别等/不要等到…），命中就强制走 explicit 分支或直接拒绝，于是 24h 只在机械扫描也为空时才可达；(3) 配一条红用例：原文含「今晚」而请求标了 `none-asserted`，必须 FAIL。这样「漏看」从一个静默通过变成一个确定性拒绝。",
+      "findingKey": "time-frame-omission-silently-falls-back-to-24h"
+    },
+    {
+      "id": "sweep-roots-omit-doc-tree",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 75,
+      "title": "（仍未处理）A4 强制的消费者 sweep 漏掉顶层 `doc/` 树，那里的现行 runbook 仍在教人跑将会 fail-closed 的无参命令",
+      "detail": "上一轮判决因运输 no_verdict 未送达，本条原样重提。A4:75 的 sweep root 是 `scripts packages engineering .lead .claude`。本仓有两个平行文档根：`engineering/` 和顶层 `doc/`，后者不在列表里，而它装着现行操作 runbook（本轮复核仍在）：`doc/engineer/implementation/restart-guard.md:25`「唯一即时入口:`request-restart.sh`,且每次都要 founder 单独授权」及 :53/:55/:88，`doc/engineer/implementation/bridge-ship-discipline.md:20`「founder 对本次重启单独拍板后运行 `bash ~/Dev/flywheel/scripts/request-restart.sh`」。A4:69 把无参形式改成 fail-closed，这些就成了错误指引。按 CLAUDE.md 的 FLY-1914 合同，root 缺失必须显式写明「未检查」，不允许把「没查」报告成「零引用」——这里是直接漏了 root。把 `doc` 加进 root 即可。顺带把已实测到的消费者点名进 I1 处置清单：`scripts/hooks/flywheel-restart-guard.py:192,210`（FLY-913 guard 的 deny 补救文案正指向无参命令，且 guard 必须继续放行新的 `--request <abs-path>` argv 形状）、`scripts/hooks/test-flywheel-restart-guard.py:294`（断言 `bash scripts/request-restart.sh` 是被允许形状）、`packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json`（executor baseline 正文内嵌同一句，改 prompt 要重生成 baseline）、`.lead/flywheel-eng-lead/identity.md:79`、`.claude/commands/spin.md:368`、`.claude/commands/orchestrator.md:473`、`scripts/restart-services.sh:1716`、`packages/teamlead/lead-rules-base/founder-only-authority.md:482`。",
+      "findingKey": "sweep-roots-omit-doc-tree"
+    },
+    {
+      "id": "no-arg-emergency-path-removed-without-degraded-fallback",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 69,
+      "title": "（仍未处理）无参紧急入口变 fail-closed，而新路径依赖 Discord 可达——正是最需要紧急重启的故障面",
+      "detail": "上一轮判决未送达，原样重提。A4:69 规定无参/缺证据一律返回 `restart-request-evidence-required`；A3 又要求发票前必须从 Discord 回读原消息校验 founder author，且工程频道播报「必须在发票前已发送」。两条叠加意味着 Discord 或 Bridge 不可达时 v2 路径整条不可用，而 R4 红线禁止 Lead 直接调 `restart-services.sh`（`doc/engineer/implementation/restart-guard.md:53` 重申），于是唯一为紧急设计的通道在紧急故障类里最容易失效。方向是对的（旧四字段票零溯源，同 UID 下任何进程都能投），但降级面应当写清楚：要么明说 founder 本人在终端上的直接操作不受 Lead 合同约束、那就是降级路径（她是机器所有者，这个说法成立），要么给一个不依赖 Discord 往返但证据仍完整的离线请求形式。现在是静默留白，实施者会自己决定，而这块留白只在真出事那天暴露。",
+      "findingKey": "no-arg-emergency-path-removed-without-degraded-fallback"
+    },
+    {
+      "id": "merge-not-pinned-to-targetsha",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 84,
+      "title": "（仍未处理）波次没把 merge 钉到 targetSha，于是自造目标漂移，再用 preMergeHead reset 收拾",
+      "detail": "上一轮判决未送达，原样重提。A5 step 4 要求最终复核时 `git HEAD == targetSha`，漂移即拒绝；step 5(:84) 为此引入「恢复本轮工具记录的 preMergeHead」——对生产 checkout 做一次 reset 类操作。但 `update-flywheel.sh:293-298` 的 `updater_merge_remote` 是 `merge --ff-only \"$(updater_remote_sha)\"`，即 fetch 后的**当前 origin/main**，不是票里的 `targetSha`；main 近 14 天 175 个提交（约每天 12 次），发票到 updater 合并之间虽只有秒到分钟级，漂移仍真实可能。把 merge 钉到 `targetSha`（按 A3 已经过 fresh remote 校验、包含 trigger 修复、是 origin/main 祖先，`--ff-only` 同样成立）就能让 HEAD==targetSha 天然为真，step 4 的漂移分支与 step 5 的 reset 类恢复整条都不必存在。step 5 的护栏本身写得不错（持锁、HEAD 仍是本轮 target、工作树干净、审计证明零服务副作用、deployed-sha 仍是 fromDeployedSha、任一前提不可证就不 reset），但 Part A 只在这一处引入破坏性动作，而它是可以设计掉的。请明确二选一并在 A5 写出理由。",
+      "findingKey": "merge-not-pinned-to-targetsha"
+    },
+    {
+      "id": "no-reconciliation-with-fly1894-r4-ruling",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 30,
+      "title": "（仍未处理，全文 0 处提及）改 R4 却没有与 FLY-1894 那条「R4 不授予发起权」的既有裁定对账",
+      "detail": "上一轮判决未送达，原样重提；本轮复核 plan.md 对 `FLY-1894` 仍是 0 处提及。`engineering/doc/FLY-1894-recovery-class-self-serve/plan.md:619` 记着一条 2026-08-19 的 Lead 拍板：「**Lead 不得自主发起全舰重启。** ⇒ R4 只规定拿到授权之后的 transport，**不授予发起权**；正常与紧急路径都要 per-instance founder 授权；『已知情 / 已通知 / 脚本成功』都不是批准。R4 因此不是 carve-out。」同处还记录了一个第 8 轮 HIGH 的攻击式读法，形状与本次相近：「Lead 自己决定重启，先通知让 founder『aware』，然后执行」。我判断 Part A 站得住：授权来自 founder 那条精确指令，Lead 只核一个机器可判的 trigger（merged commit + QA/复审引用，且明写「不给『任意修好就行』的自然语言分类器造授权」），播报被定位成门而不是授权（「这段只是识别指引，不是新的授权来源」），AUTH-CANON 本身也允许各规则写识别指引（\"R1's and R2's reading guides do exactly that\"），其非授权清单还专门为「精确、当前、逐实例的指令」开了口。但计划通篇没有引用或对账这条裁定，后面的评审者读 R4 时一定会撞上 FLY-1894 的记录看到表面矛盾。请在 A2 加一小段显式对账：说明本次新增的是「识别一项已存在的逐实例授权」，不是给 R4 发起权；FLY-1894 那条裁定继续成立；条件式指令与「已知情/已通知」的区别在哪里。",
+      "findingKey": "no-reconciliation-with-fly1894-r4-ruling"
+    },
+    {
+      "id": "part-b-sections-lack-paused-markers",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 302,
+      "title": "（已大幅改善）Part B 归档守卫补到三层，残留只是 `## 6. 实施拆分` 这类标题仍在 `##` 层、语气仍是祈使",
+      "detail": "本轮改得不错：Part B 标题改成「历史归档（已关闭，由 FLY-2679 取代）」(:122)，下面补了「以下『暂停/待决定』措辞是当时的归档原文，不是当前状态；没有现行授权或实施效力」(:124)，并新增 `## B3. 拆分前设计原文（完整冻结的历史记录，无现行规范效力）`(:171) 及「本历史块中的『本次/必须/实施』不对当前派发生效」。据此我把本条从 MEDIUM 降为 LOW。残留：B3 之下的旧章节仍保持原编号且仍在 `##` 层（与 B1/B2/B3 同级，不是视觉嵌套），例如 `## 6. 实施拆分（顺序执行，禁止用本设计跳过阶段）`(:302) 连同它那张带精确文件、先红后绿的实施表，以及 `### 2.3`「**必须替换** AUTH-CANON(B) 的规范原句」。这份 plan.md 正是 `/implement` 节点的输入，现在一个文件里有 A6 和 §6 两张实施表、两套 I1–I5/I7 编号；用 grep 或锚点跳到某个小标题的读者视野里仍然没有任何「已关闭」字样。给每个归档标题加 `【归档·无效力】` 前缀，或把编号改成 B3.1/B3.2/… 即可闭合。",
+      "findingKey": "part-b-sections-lack-paused-markers"
+    },
+    {
+      "id": "partb-closure-provenance-has-no-original-message-ref",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 11,
+      "title": "Part B 从「暂停」改判「关闭」所依据的 founder 决定只有 Lead 转述，没有原始消息 id/频道",
+      "detail": "本轮把 Part B 从「暂停、待 founder 架构决定」改成「已关闭、由 FLY-2679 取代」，A7 也从「等待明确恢复或关闭指令」改成「不再等待本单恢复」。依据是 :11 与 :124 的一句转述：「founder 2026-09-17 20:29Z 已拍板 Raya 总管逻辑迁入 Flywheel（Epic FLY-2679）」，出处只给到 Lead 指令 `ec106d4d-6c4b-4507-a164-73bcef60a2e3`，没有 founder 原始 messageId/channelId/contentDigest。这不是授权动作，所以不受 Part A 自己那条「必须引用认证的原始消息」的约束；但同一份文档组在 exploration.md:20 给自己立过更高的标准（「9-16 精确消息 id 仍待 Lead 从 Discord 取回，**不编造**」），而这次是据此**关闭**一整块设计而非暂停它——转述若有偏差，被丢掉的是已经做完的工作。补一个原始消息引用（或注明「仅有 Lead 转述，未取得原始 id」）即可。另需说明：本次我无法独立核实 Epic FLY-2679 是否存在——本会话的 linear-api MCP 连接被拒（HTTP 401 invalid_token），这是连接失败不是「查无此单」，请不要把我的沉默当成确认。",
+      "findingKey": "partb-closure-provenance-has-no-original-message-ref"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "time-frame-omission-silently-falls-back-to-24h",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 47,
+      "title": "自然时间框规则本身已改对，但「漏识别」没有检测器——漏看一次就是一个干净的 24h 默认值",
+      "detail": "本轮把时效规则改成「有时间框先服从时间框，完全无时间框才 24h」，并补了时态判别和「时区变化使解释不确定则拒绝」，方向完全正确，我上一轮的 conditional-authority-expiry-default-vs-worked-example 可以关掉。残留的是检测面：A2:33 写「不能把『马上/今天/今晚/不要等到』**漏识别**后静默降为 24 小时」，A3:47 的 expiresAt 也只描述优先级。但「漏识别」按定义不会自曝——Lead 没注意到「今晚」，产出的就是一个格式完好、理由自洽的 24h expiresAt，没有任何信号。计划已经把**歧义**这一档做成 fail-closed（「原消息与上下文无法判清则拒绝并澄清」「无法消歧的跨日/未来时间表达拒绝并请求澄清，不能回落 24h」），但 fail-closed 只覆盖「我知道我拿不准」，覆盖不了「我根本没看见」。这正是本仓反复吃过的形状（第二轮那句「漏依赖则验证失败」也是同一个毛病：被漏掉的东西不在尺子的量程里）。后果有界但真实：founder 说「不要等到今天晚上 12 点」，条件第二天上午才达成，票仍然合法发出，一次无人值守全舰重启落在她框定的窗口之外十几个小时。修法很便宜，且不需要自然语言分类器承担安全责任：(1) expiresAt 增加 `timeFrameSource: explicit | none-asserted` 与被扫描原文片段，把「没有时间框」从**默认**变成一条**显式断言**；(2) verifier（不是 Lead）在回读到的 Discord 原文上独立跑一次确定性词法预扫（固定词表：马上/立刻/尽快/今天/今晚/明天/午夜/12 点/之前/别等/不要等到…），命中就强制走 explicit 分支或直接拒绝，于是 24h 只在机械扫描也为空时才可达；(3) 配一条红用例：原文含「今晚」而请求标了 `none-asserted`，必须 FAIL。这样「漏看」从一个静默通过变成一个确定性拒绝。",
+      "findingKey": "time-frame-omission-silently-falls-back-to-24h"
+    },
+    {
+      "id": "sweep-roots-omit-doc-tree",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 75,
+      "title": "（仍未处理）A4 强制的消费者 sweep 漏掉顶层 `doc/` 树，那里的现行 runbook 仍在教人跑将会 fail-closed 的无参命令",
+      "detail": "上一轮判决因运输 no_verdict 未送达，本条原样重提。A4:75 的 sweep root 是 `scripts packages engineering .lead .claude`。本仓有两个平行文档根：`engineering/` 和顶层 `doc/`，后者不在列表里，而它装着现行操作 runbook（本轮复核仍在）：`doc/engineer/implementation/restart-guard.md:25`「唯一即时入口:`request-restart.sh`,且每次都要 founder 单独授权」及 :53/:55/:88，`doc/engineer/implementation/bridge-ship-discipline.md:20`「founder 对本次重启单独拍板后运行 `bash ~/Dev/flywheel/scripts/request-restart.sh`」。A4:69 把无参形式改成 fail-closed，这些就成了错误指引。按 CLAUDE.md 的 FLY-1914 合同，root 缺失必须显式写明「未检查」，不允许把「没查」报告成「零引用」——这里是直接漏了 root。把 `doc` 加进 root 即可。顺带把已实测到的消费者点名进 I1 处置清单：`scripts/hooks/flywheel-restart-guard.py:192,210`（FLY-913 guard 的 deny 补救文案正指向无参命令，且 guard 必须继续放行新的 `--request <abs-path>` argv 形状）、`scripts/hooks/test-flywheel-restart-guard.py:294`（断言 `bash scripts/request-restart.sh` 是被允许形状）、`packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json`（executor baseline 正文内嵌同一句，改 prompt 要重生成 baseline）、`.lead/flywheel-eng-lead/identity.md:79`、`.claude/commands/spin.md:368`、`.claude/commands/orchestrator.md:473`、`scripts/restart-services.sh:1716`、`packages/teamlead/lead-rules-base/founder-only-authority.md:482`。",
+      "findingKey": "sweep-roots-omit-doc-tree"
+    },
+    {
+      "id": "no-arg-emergency-path-removed-without-degraded-fallback",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 69,
+      "title": "（仍未处理）无参紧急入口变 fail-closed，而新路径依赖 Discord 可达——正是最需要紧急重启的故障面",
+      "detail": "上一轮判决未送达，原样重提。A4:69 规定无参/缺证据一律返回 `restart-request-evidence-required`；A3 又要求发票前必须从 Discord 回读原消息校验 founder author，且工程频道播报「必须在发票前已发送」。两条叠加意味着 Discord 或 Bridge 不可达时 v2 路径整条不可用，而 R4 红线禁止 Lead 直接调 `restart-services.sh`（`doc/engineer/implementation/restart-guard.md:53` 重申），于是唯一为紧急设计的通道在紧急故障类里最容易失效。方向是对的（旧四字段票零溯源，同 UID 下任何进程都能投），但降级面应当写清楚：要么明说 founder 本人在终端上的直接操作不受 Lead 合同约束、那就是降级路径（她是机器所有者，这个说法成立），要么给一个不依赖 Discord 往返但证据仍完整的离线请求形式。现在是静默留白，实施者会自己决定，而这块留白只在真出事那天暴露。",
+      "findingKey": "no-arg-emergency-path-removed-without-degraded-fallback"
+    },
+    {
+      "id": "merge-not-pinned-to-targetsha",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 84,
+      "title": "（仍未处理）波次没把 merge 钉到 targetSha，于是自造目标漂移，再用 preMergeHead reset 收拾",
+      "detail": "上一轮判决未送达，原样重提。A5 step 4 要求最终复核时 `git HEAD == targetSha`，漂移即拒绝；step 5(:84) 为此引入「恢复本轮工具记录的 preMergeHead」——对生产 checkout 做一次 reset 类操作。但 `update-flywheel.sh:293-298` 的 `updater_merge_remote` 是 `merge --ff-only \"$(updater_remote_sha)\"`，即 fetch 后的**当前 origin/main**，不是票里的 `targetSha`；main 近 14 天 175 个提交（约每天 12 次），发票到 updater 合并之间虽只有秒到分钟级，漂移仍真实可能。把 merge 钉到 `targetSha`（按 A3 已经过 fresh remote 校验、包含 trigger 修复、是 origin/main 祖先，`--ff-only` 同样成立）就能让 HEAD==targetSha 天然为真，step 4 的漂移分支与 step 5 的 reset 类恢复整条都不必存在。step 5 的护栏本身写得不错（持锁、HEAD 仍是本轮 target、工作树干净、审计证明零服务副作用、deployed-sha 仍是 fromDeployedSha、任一前提不可证就不 reset），但 Part A 只在这一处引入破坏性动作，而它是可以设计掉的。请明确二选一并在 A5 写出理由。",
+      "findingKey": "merge-not-pinned-to-targetsha"
+    },
+    {
+      "id": "no-reconciliation-with-fly1894-r4-ruling",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 30,
+      "title": "（仍未处理，全文 0 处提及）改 R4 却没有与 FLY-1894 那条「R4 不授予发起权」的既有裁定对账",
+      "detail": "上一轮判决未送达，原样重提；本轮复核 plan.md 对 `FLY-1894` 仍是 0 处提及。`engineering/doc/FLY-1894-recovery-class-self-serve/plan.md:619` 记着一条 2026-08-19 的 Lead 拍板：「**Lead 不得自主发起全舰重启。** ⇒ R4 只规定拿到授权之后的 transport，**不授予发起权**；正常与紧急路径都要 per-instance founder 授权；『已知情 / 已通知 / 脚本成功』都不是批准。R4 因此不是 carve-out。」同处还记录了一个第 8 轮 HIGH 的攻击式读法，形状与本次相近：「Lead 自己决定重启，先通知让 founder『aware』，然后执行」。我判断 Part A 站得住：授权来自 founder 那条精确指令，Lead 只核一个机器可判的 trigger（merged commit + QA/复审引用，且明写「不给『任意修好就行』的自然语言分类器造授权」），播报被定位成门而不是授权（「这段只是识别指引，不是新的授权来源」），AUTH-CANON 本身也允许各规则写识别指引（\"R1's and R2's reading guides do exactly that\"），其非授权清单还专门为「精确、当前、逐实例的指令」开了口。但计划通篇没有引用或对账这条裁定，后面的评审者读 R4 时一定会撞上 FLY-1894 的记录看到表面矛盾。请在 A2 加一小段显式对账：说明本次新增的是「识别一项已存在的逐实例授权」，不是给 R4 发起权；FLY-1894 那条裁定继续成立；条件式指令与「已知情/已通知」的区别在哪里。",
+      "findingKey": "no-reconciliation-with-fly1894-r4-ruling"
+    },
+    {
+      "id": "part-b-sections-lack-paused-markers",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 302,
+      "title": "（已大幅改善）Part B 归档守卫补到三层，残留只是 `## 6. 实施拆分` 这类标题仍在 `##` 层、语气仍是祈使",
+      "detail": "本轮改得不错：Part B 标题改成「历史归档（已关闭，由 FLY-2679 取代）」(:122)，下面补了「以下『暂停/待决定』措辞是当时的归档原文，不是当前状态；没有现行授权或实施效力」(:124)，并新增 `## B3. 拆分前设计原文（完整冻结的历史记录，无现行规范效力）`(:171) 及「本历史块中的『本次/必须/实施』不对当前派发生效」。据此我把本条从 MEDIUM 降为 LOW。残留：B3 之下的旧章节仍保持原编号且仍在 `##` 层（与 B1/B2/B3 同级，不是视觉嵌套），例如 `## 6. 实施拆分（顺序执行，禁止用本设计跳过阶段）`(:302) 连同它那张带精确文件、先红后绿的实施表，以及 `### 2.3`「**必须替换** AUTH-CANON(B) 的规范原句」。这份 plan.md 正是 `/implement` 节点的输入，现在一个文件里有 A6 和 §6 两张实施表、两套 I1–I5/I7 编号；用 grep 或锚点跳到某个小标题的读者视野里仍然没有任何「已关闭」字样。给每个归档标题加 `【归档·无效力】` 前缀，或把编号改成 B3.1/B3.2/… 即可闭合。",
+      "findingKey": "part-b-sections-lack-paused-markers"
+    },
+    {
+      "id": "partb-closure-provenance-has-no-original-message-ref",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 11,
+      "title": "Part B 从「暂停」改判「关闭」所依据的 founder 决定只有 Lead 转述，没有原始消息 id/频道",
+      "detail": "本轮把 Part B 从「暂停、待 founder 架构决定」改成「已关闭、由 FLY-2679 取代」，A7 也从「等待明确恢复或关闭指令」改成「不再等待本单恢复」。依据是 :11 与 :124 的一句转述：「founder 2026-09-17 20:29Z 已拍板 Raya 总管逻辑迁入 Flywheel（Epic FLY-2679）」，出处只给到 Lead 指令 `ec106d4d-6c4b-4507-a164-73bcef60a2e3`，没有 founder 原始 messageId/channelId/contentDigest。这不是授权动作，所以不受 Part A 自己那条「必须引用认证的原始消息」的约束；但同一份文档组在 exploration.md:20 给自己立过更高的标准（「9-16 精确消息 id 仍待 Lead 从 Discord 取回，**不编造**」），而这次是据此**关闭**一整块设计而非暂停它——转述若有偏差，被丢掉的是已经做完的工作。补一个原始消息引用（或注明「仅有 Lead 转述，未取得原始 id」）即可。另需说明：本次我无法独立核实 Epic FLY-2679 是否存在——本会话的 linear-api MCP 连接被拒（HTTP 401 invalid_token），这是连接失败不是「查无此单」，请不要把我的沉默当成确认。",
+      "findingKey": "partb-closure-provenance-has-no-original-message-ref"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "07cd432f-9590-401a-a209-0563011db04b"
+}

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# FLY-1959: launchd-driven Flywheel updater with exactly two trigger sources:
+# FLY-2654: launchd-driven Flywheel updater with exactly two trigger sources:
 #   1. local 00:00 / 12:00 schedule, deploying only when deployed-sha is behind;
-#   2. founder-only urgent tokens, each claimed once before one restart attempt.
+#   2. founder-direct current-main or authenticated Lead closeout standing-authority
+#      urgent tickets,
+#      each validated and claimed once before one restart attempt.
 #
 # QueueDirectories watches only the urgent directory. There is no per-merge
 # marker, acknowledgement, retry receipt, blocked queue, or in-process loop.
@@ -9,6 +11,133 @@ set -uo pipefail
 
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+updater_standing_package_reject() {
+  printf '[flywheel-updater] standing-package-verification-failed reason=%s\n' "$1" >&2
+  return 78
+}
+
+updater_enter_active_package() {
+  local state_root="${FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:-${HOME}/.flywheel/state/standing-authority}"
+  local pointer="${state_root}/active-package.json" root="" package_digest=""
+  local manifest="" cli_rel="packages/teamlead/dist/bin/standing-authority-package-cli.js"
+  local cli="" expected_cli_digest="" actual_cli_digest="" verified_digest="" entry=""
+  local current_script="" current_root="" receipt="" ledger="" recorded_digest=""
+  if [[ ! -e "$pointer" ]]; then
+    [[ "${FLYWHEEL_STANDING_PACKAGE_ACTIVE:-0}" != 1 ]] && return 0
+    updater_standing_package_reject active-package-pointer-missing
+    return 78
+  fi
+  if [[ ! -f "$pointer" || -L "$pointer" ]]; then
+    updater_standing_package_reject active-package-pointer-invalid
+    return 78
+  fi
+  root="$(jq -er '.immutableRoot | select(type == "string" and startswith("/") and (contains("..") | not))' "$pointer" 2>/dev/null)" || {
+    updater_standing_package_reject active-package-root-invalid
+    return 78
+  }
+  package_digest="$(jq -er '.packageDigest | select(test("^[a-f0-9]{64}$"))' "$pointer" 2>/dev/null)" || {
+    updater_standing_package_reject active-package-digest-invalid
+    return 78
+  }
+  # FLY-2654 review R7 round 2: the pointer is a request, not authority. Read
+  # the Bridge confirmation ledger back (outside the candidate package) and
+  # require the row for the pointer's receipt to bind this package digest.
+  receipt="$(jq -er '.activatedByReceiptId | select(type == "string" and test("^[a-f0-9]{64}$"))' "$pointer" 2>/dev/null)" || {
+      updater_standing_package_reject active-package-receipt-invalid
+      return 78
+  }
+  ledger="${TEAMLEAD_DB_PATH:-${HOME}/.flywheel/teamlead.db}"
+  if [[ ! -f "$ledger" || -L "$ledger" ]]; then
+      updater_standing_package_reject confirmation-ledger-unavailable
+      return 78
+  fi
+  # Plain open on purpose: the StateStore is WAL and a clean Bridge close removes
+  # the -wal/-shm sidecars; the sqlite3 CLI in read-only mode cannot recreate
+  # them and fails with SQLITE_CANTOPEN (14) exactly when the Bridge is down.
+  # The statement is a SELECT; same-uid sidecar creation is what better-sqlite3
+  # readers do too.
+  recorded_digest="$(sqlite3 "$ledger" "SELECT package_digest FROM standing_authority_confirmation WHERE receipt_id = '${receipt}' LIMIT 1;" 2>/dev/null)" || {
+      updater_standing_package_reject confirmation-ledger-unavailable
+      return 78
+  }
+  if [[ -z "$recorded_digest" ]]; then
+      updater_standing_package_reject confirmation-record-missing
+      return 78
+  fi
+  if [[ "$recorded_digest" != "$package_digest" ]]; then
+      updater_standing_package_reject confirmation-record-mismatch
+      return 78
+  fi
+  manifest="${root}/standing-authority-package.json"
+  cli="${root}/${cli_rel}"
+  if [[ ! -f "$manifest" || -L "$manifest" || ! -f "$cli" || -L "$cli" ]]; then
+    updater_standing_package_reject active-package-files-invalid
+    return 78
+  fi
+  if [[ "$(jq -r '.packageDigest // empty' "$manifest" 2>/dev/null)" != "$package_digest" ]]; then
+    updater_standing_package_reject active-package-manifest-digest-mismatch
+    return 78
+  fi
+  expected_cli_digest="$(jq -er --arg path "$cli_rel" '[.files[] | select(.path == $path) | .sha256] | select(length == 1) | .[0]' "$manifest" 2>/dev/null)" || {
+    updater_standing_package_reject active-package-cli-digest-missing
+    return 78
+  }
+  actual_cli_digest="$(shasum -a 256 "$cli" 2>/dev/null | awk 'NF == 2 {print $1}')"
+  if [[ "$actual_cli_digest" != "$expected_cli_digest" ]]; then
+    updater_standing_package_reject active-package-cli-digest-mismatch
+    return 78
+  fi
+  verified_digest="$(node "$cli" verify --root "$root" --manifest "$manifest" 2>/dev/null | jq -er '.packageDigest')" || {
+    updater_standing_package_reject active-package-verification-failed
+    return 78
+  }
+  if [[ "$verified_digest" != "$package_digest" ]]; then
+    updater_standing_package_reject active-package-verified-digest-mismatch
+    return 78
+  fi
+  entry="$(node "$cli" resolve --root "$root" --manifest "$manifest" --path scripts/update-flywheel.sh 2>/dev/null)" || {
+    updater_standing_package_reject active-package-entry-unresolved
+    return 78
+  }
+  if [[ ! -f "$entry" || -L "$entry" ]]; then
+    updater_standing_package_reject active-package-entry-invalid
+    return 78
+  fi
+  if [[ "${FLYWHEEL_STANDING_PACKAGE_ACTIVE:-0}" == 1 ]]; then
+    current_script="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")" || {
+      updater_standing_package_reject active-package-script-unresolved
+      return 78
+    }
+    current_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+      updater_standing_package_reject active-package-current-root-unresolved
+      return 78
+    }
+    if [[ "${FLYWHEEL_STANDING_PACKAGE_ROOT:-}" != "$root" ]]; then
+      updater_standing_package_reject active-package-root-mismatch
+      return 78
+    fi
+    if [[ -L "${BASH_SOURCE[0]}" || ! -f "$current_script" || "$current_root" != "$root" || "$current_script" != "$entry" ]]; then
+      updater_standing_package_reject active-package-script-mismatch
+      return 78
+    fi
+    return 0
+  fi
+  exec env \
+    FLYWHEEL_STANDING_PACKAGE_ACTIVE=1 \
+    FLYWHEEL_STANDING_PACKAGE_ROOT="$root" \
+    FLYWHEEL_TEAMLEAD_ROOT="$root/packages/teamlead" \
+    FLYWHEEL_DIR="$FLYWHEEL_DIR" \
+    bash "$entry" "$@"
+}
+
+if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != 1 ]]; then
+  updater_enter_active_package "$@" || exit $?
+fi
+UPDATER_RUNTIME_SCRIPT_DIR="${UPDATER_RUNTIME_SCRIPT_DIR:-${FLYWHEEL_DIR}/scripts}"
+if [[ "${FLYWHEEL_STANDING_PACKAGE_ACTIVE:-0}" == 1 ]]; then
+  UPDATER_RUNTIME_SCRIPT_DIR="$SCRIPT_DIR"
+fi
 
 # FLY-1062: packaged installs do not have the monorepo git-pull deployment path.
 if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != 1 ]] && [[ -f "$SCRIPT_DIR/../.flywheel-prebuilt" ]]; then
@@ -28,17 +157,24 @@ _UPDATER_LAUNCH_HOME="$HOME"
 updater_configure_runtime_paths() {
   if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" == 1 ]]; then
     : "${FLYWHEEL_HOME:=${HOME}/.flywheel}"
-    SELF_SHIP_URGENT_DIR="${SELF_SHIP_URGENT_DIR:-${FLYWHEEL_HOME}/self-ship-urgent.d}"
-    SELF_SHIP_LOCK_DIR="${SELF_SHIP_LOCK_DIR:-${FLYWHEEL_HOME}/self-ship-updater.lock.d}"
-    return
+		SELF_SHIP_URGENT_DIR="${SELF_SHIP_URGENT_DIR:-${FLYWHEEL_HOME}/self-ship-urgent.d}"
+		SELF_SHIP_LOCK_DIR="${SELF_SHIP_LOCK_DIR:-${FLYWHEEL_HOME}/self-ship-updater.lock.d}"
+		RESTART_REQUEST_INDEX="${RESTART_REQUEST_INDEX:-${FLYWHEEL_HOME}/restart-request-index.json}"
+		RESTART_REQUEST_AUDIT_DIR="${RESTART_REQUEST_AUDIT_DIR:-${FLYWHEEL_HOME}/restart-request-audit}"
+		RESTART_WAVE_ACTIVE_TICKET="${RESTART_WAVE_ACTIVE_TICKET:-${FLYWHEEL_HOME}/restart-wave-active-ticket.json}"
+		return
   fi
   HOME="$_UPDATER_LAUNCH_HOME"
   FLYWHEEL_HOME="${HOME}/.flywheel"
-  SELF_SHIP_URGENT_DIR="${FLYWHEEL_HOME}/self-ship-urgent.d"
-  SELF_SHIP_LOCK_DIR="${FLYWHEEL_HOME}/self-ship-updater.lock.d"
+	SELF_SHIP_URGENT_DIR="${FLYWHEEL_HOME}/self-ship-urgent.d"
+	SELF_SHIP_LOCK_DIR="${FLYWHEEL_HOME}/self-ship-updater.lock.d"
+	RESTART_REQUEST_INDEX="${FLYWHEEL_HOME}/restart-request-index.json"
+	RESTART_REQUEST_AUDIT_DIR="${FLYWHEEL_HOME}/restart-request-audit"
+	RESTART_WAVE_ACTIVE_TICKET="${FLYWHEEL_HOME}/restart-wave-active-ticket.json"
 }
 UPDATER_GIT="${UPDATER_GIT:-git}"
 UPDATER_NODE="${UPDATER_NODE:-node}"
+UPDATER_RESTART_REQUEST_CLI="${UPDATER_RESTART_REQUEST_CLI:-${FLYWHEEL_TEAMLEAD_ROOT:-${FLYWHEEL_DIR}/packages/teamlead}/dist/bin/restart-request.js}"
 UPDATER_BOUNDED_RUN="${UPDATER_BOUNDED_RUN:-${SCRIPT_DIR}/lib/bounded-run.sh}"
 # Deliberately shorter than restart-services' one-shot 120s fetch: this periodic
 # updater gets three 20s noninteractive attempts before consuming urgent intent.
@@ -48,6 +184,9 @@ UPDATER_FETCH_TIMEOUT_SECONDS="${UPDATER_FETCH_TIMEOUT_SECONDS:-20}"
 # shellcheck source=lib/discord-pointer-guard.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/discord-pointer-guard.sh"
+# shellcheck source=lib/conditional-restart.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/conditional-restart.sh"
 LAUNCHD_CENSUS_SOURCED=1
 # shellcheck source=launchd-census.sh
 # shellcheck disable=SC1091
@@ -89,7 +228,7 @@ severe_alert() { # $1=complete signature, $2=body
   else
     alert_args+=(--mention-user "$FLYWHEEL_FOUNDER_USER_ID")
   fi
-  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
+  "${UPDATER_RUNTIME_SCRIPT_DIR}/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
 }
 
 updater_alert_urgent() { # $1=class $2=basename $3=body
@@ -108,7 +247,7 @@ updater_alert_observation() { # $1=class $2=body
     --signature "$(updater_scheduled_signature "$class")"
   )
   log "WARNING: Shuttle observation degraded: $body"
-  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
+  "${UPDATER_RUNTIME_SCRIPT_DIR}/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
 }
 
 raya_alert_dispatch() { # $1=severity $2=class $3=requested title $4=body
@@ -129,7 +268,7 @@ raya_alert_dispatch() { # $1=severity $2=class $3=requested title $4=body
   if [[ "$severity" == severe && -n "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
     alert_args+=(--mention-user "$FLYWHEEL_FOUNDER_USER_ID")
   fi
-  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
+  "${UPDATER_RUNTIME_SCRIPT_DIR}/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
 }
 
 UPDATER_OBSERVATION_STATE=not_started
@@ -359,7 +498,7 @@ updater_observation_dispatch() {
       "Shuttle unit failures were recorded, but notification intents could not be prepared (rc=$rc). Inspect the fixed page and flywheel-updater.log." || true
     return 0
   fi
-  alert_bin="${SHUTTLE_LEAD_ALERT_BIN:-$FLYWHEEL_DIR/scripts/lead-alert.sh}"
+  alert_bin="${SHUTTLE_LEAD_ALERT_BIN:-$UPDATER_RUNTIME_SCRIPT_DIR/lead-alert.sh}"
   while IFS= read -r batch; do
     [[ -n "$batch" ]] || continue
     batch_id="$(printf '%s' "$batch" | jq -er .batchId 2>/dev/null || true)"
@@ -423,7 +562,7 @@ updater_alert_consumed_no_deploy() { # $1=class $2=basename $3=body
 # Pull main and perform the existing full restart. The return classes remain
 # useful for diagnosis even though FLY-1959 deliberately does not auto-retry.
 default_deploy() {
-  local remote_rc=0
+  local remote_rc=0 expected_target=""
   if [[ -n "$("$UPDATER_GIT" -C "$FLYWHEEL_DIR" status --porcelain 2>/dev/null)" ]]; then
     log "main checkout dirty — refusing deploy (single-writer preflight)"
     return 3
@@ -438,6 +577,19 @@ default_deploy() {
     log "git fetch failed (transient)"
     return 2
   fi
+  expected_target="$(updater_remote_sha)" || return 3
+	if [[ -n "$UPDATER_ACTIVE_TICKET" ]]; then
+		if ! updater_token_is_founder_direct "$UPDATER_ACTIVE_TICKET" \
+		  && [[ "$(updater_token_target "$UPDATER_ACTIVE_TICKET")" != "$expected_target" ]]; then
+			log "urgent target changed after claim — refusing checkout mutation"
+			return 82
+		fi
+		if ! updater_token_is_founder_direct "$UPDATER_ACTIVE_TICKET" \
+		  && ! updater_export_conditional_restart_env "$UPDATER_ACTIVE_TICKET"; then
+			log "conditional restart evidence could not be loaded before checkout mutation"
+			return 82
+		fi
+	fi
   if discord_pointer_cutover_required; then
     log "origin/main selects discord@flywheel-plugins but the live checker is still legacy — refusing to pull before the guarded FLY-1676 cutover"
     return 3
@@ -450,14 +602,25 @@ default_deploy() {
     log "auto narrow rollback precheck refused target — no merge or restart attempted"
     return 3
   fi
-  updater_merge_remote
+  updater_merge_remote "$expected_target"
   remote_rc=$?
   if (( remote_rc != 0 )); then
     log "local git merge --ff-only failed (untracked collision / non-ff)"
     return 2
   fi
-  if updater_restart_services; then
+  updater_restart_services
+  remote_rc=$?
+  if (( remote_rc == 0 )); then
     return 0
+  fi
+  if (( remote_rc == 82 )) && [[ -n "$UPDATER_ACTIVE_TICKET" ]]; then
+    if conditional_restart_restore_premerge; then
+      log "urgent final check failed before service stop; restored pre-merge checkout"
+    else
+      log "urgent final check failed and pre-merge checkout restore was refused"
+      return 83
+    fi
+    return 82
   fi
   log "restart-services.sh failed (deterministic)"
   return 3
@@ -533,8 +696,39 @@ updater_fetch_origin() {
   done
   return 1
 }
+updater_export_conditional_restart_env() {
+	local ticket="$1" target="" from="" pre_merge="" trigger=""
+	[[ -n "$ticket" ]] || return 1
+	target="$(updater_token_target "$ticket")" || return 1
+	from="$(updater_token_from_sha "$ticket")" || return 1
+	pre_merge="$(updater_token_pre_merge_head "$ticket")" || return 1
+	trigger="$(updater_token_trigger_sha "$ticket")" || return 1
+	updater_is_sha40 "$target" && updater_is_sha40 "$from" \
+		&& updater_is_sha40 "$pre_merge" && updater_is_sha40 "$trigger" || return 1
+	FLYWHEEL_URGENT_RESTART_TICKET="$ticket"
+	FLYWHEEL_URGENT_RESTART_INDEX="$RESTART_REQUEST_INDEX"
+	FLYWHEEL_URGENT_RESTART_WAVE_ID="$UPDATER_ACTIVE_WAVE_ID"
+	FLYWHEEL_URGENT_RESTART_TARGET_SHA="$target"
+	FLYWHEEL_URGENT_RESTART_FROM_SHA="$from"
+	FLYWHEEL_URGENT_RESTART_PRE_MERGE_HEAD="$pre_merge"
+	FLYWHEEL_URGENT_RESTART_TRIGGER_SHA="$trigger"
+	FLYWHEEL_URGENT_RESTART_NODE="$UPDATER_NODE"
+	FLYWHEEL_URGENT_RESTART_CLI="$UPDATER_RESTART_REQUEST_CLI"
+	export FLYWHEEL_URGENT_RESTART_TICKET FLYWHEEL_URGENT_RESTART_INDEX \
+		FLYWHEEL_URGENT_RESTART_WAVE_ID FLYWHEEL_URGENT_RESTART_TARGET_SHA \
+		FLYWHEEL_URGENT_RESTART_FROM_SHA FLYWHEEL_URGENT_RESTART_PRE_MERGE_HEAD \
+		FLYWHEEL_URGENT_RESTART_TRIGGER_SHA FLYWHEEL_URGENT_RESTART_NODE \
+		FLYWHEEL_URGENT_RESTART_CLI
+}
 updater_restart_services() {
-  FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
+	local ticket="${UPDATER_ACTIVE_TICKET:-}"
+  if [[ -z "$ticket" ]] || updater_token_is_founder_direct "$ticket"; then
+    FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
+		return $?
+	fi
+	updater_export_conditional_restart_env "$ticket" || return 82
+	FLYWHEEL_RESTART_FOREGROUND=1 \
+		"${SCRIPT_DIR}/restart-services.sh" --reason updater
 }
 updater_codex_home_reconcile() {
   "$UPDATER_NODE" "${SCRIPT_DIR}/codex-home-reconcile-cycle.mjs" --source updater
@@ -545,7 +739,7 @@ updater_host_tmux_gate() {
   target="$(updater_remote_sha)" || return 2
   updater_is_sha40 "$target" || return 2
   if [[ ! -x "$gate_bin" ]]; then
-    gate_bin="${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh"
+    gate_bin="${UPDATER_RUNTIME_SCRIPT_DIR}/host-tmux-selection-gate.sh"
   fi
   [[ -f "$gate_bin" && ! -L "$gate_bin" && -x "$gate_bin" ]] || return 127
   (
@@ -575,9 +769,10 @@ updater_host_tmux_gate() {
   )
 }
 updater_merge_remote() {
-  local target=""
-  target="$(updater_remote_sha)" || return 2
+  local target="${1:-}"
+  [[ -n "$target" ]] || target="$(updater_remote_sha)" || return 2
   updater_is_sha40 "$target" || return 2
+  [[ "$target" == "$(updater_remote_sha)" ]] || return 2
   GIT_TERMINAL_PROMPT=0 "$UPDATER_GIT" -C "$FLYWHEEL_DIR" \
     merge --ff-only "$target" --quiet
 }
@@ -587,8 +782,8 @@ updater_converge_bin() { bash "${SCRIPT_DIR}/converge-flywheel-bin.sh" >/dev/nul
 # The compiled CLI owns bounded probing, atomic authority mutation, verification,
 # and success notification. Every outcome is advisory to the deploy shuttle.
 updater_sync_fable_model() {
-  local cli="${FLYWHEEL_FABLE_MODEL_SYNC_CLI:-${FLYWHEEL_DIR}/packages/teamlead/dist/account-heal/fable-model-sync-cli.js}"
-  local alert_bin="${FLYWHEEL_LEAD_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/lead-alert.sh}"
+  local cli="${FLYWHEEL_FABLE_MODEL_SYNC_CLI:-${FLYWHEEL_TEAMLEAD_ROOT:-${FLYWHEEL_DIR}/packages/teamlead}/dist/account-heal/fable-model-sync-cli.js}"
+  local alert_bin="${FLYWHEEL_LEAD_ALERT_BIN:-${UPDATER_RUNTIME_SCRIPT_DIR}/lead-alert.sh}"
   [[ -f "$cli" && ! -L "$cli" ]] || return 127
   "$UPDATER_NODE" "$cli" \
     --authority "${FLYWHEEL_HOME}/models.json" \
@@ -678,44 +873,247 @@ updater_lock_release() {
   [[ "$owner" == "$$" ]] && _updater_lock_clear || true
 }
 
+updater_token_is_founder_direct() {
+	jq -e '
+		.schemaVersion == 1 and
+		.kind == "founder-urgent-restart" and
+		(.targetSha | type == "string" and test("^[0-9a-f]{40}$")) and
+		(.createdAt | type == "number") and
+		(keys | sort) == ["createdAt","kind","schemaVersion","targetSha"]
+	' "$1" >/dev/null 2>&1
+}
+
+updater_token_is_v2() {
+	jq -e '.schemaVersion == 2 and .kind == "authorized-urgent-restart"' "$1" >/dev/null 2>&1
+}
+
+updater_token_is_closeout_v3() {
+	jq -e '.schemaVersion == 3 and .kind == "lead-closeout-restart"' "$1" >/dev/null 2>&1
+}
+
 updater_token_shape_valid() {
-  local path="$1" base="" target=""
-  base="$(basename "$path")"
-  [[ "$base" =~ ^[A-Za-z0-9._-]+\.urgent\.json$ ]] || return 1
-  jq -e '
-    .schemaVersion == 1 and
-    .kind == "founder-urgent-restart" and
-    (.targetSha | type == "string" and test("^[0-9a-fA-F]{40}$")) and
-    (.createdAt | type == "number" and . == floor) and
-    (keys | sort) == ["createdAt","kind","schemaVersion","targetSha"]
-  ' "$path" >/dev/null 2>&1 || return 1
+	local path="$1" base="" target=""
+	base="$(basename "$path")"
+	[[ "$base" =~ ^[A-Za-z0-9._-]+\.urgent\.json$ ]] || return 1
+	if updater_token_is_founder_direct "$path"; then
+		target="$(jq -r .targetSha "$path" 2>/dev/null)"
+		updater_is_sha40 "$target"
+		return $?
+	fi
+	jq -e '
+		((
+			.schemaVersion == 2 and
+			.kind == "authorized-urgent-restart" and
+			.authority.kind == "founder-per-instance" and
+			(.requestId | type == "string" and test("^[0-9a-fA-F-]{36}$")) and
+			(.trigger.evidence.mergedCommit | type == "string" and test("^[0-9a-f]{40}$")) and
+			(keys | sort) == ["announcement","authority","createdAt","fromDeployedSha","kind","preMergeHead","requestDigest","requestId","requestedBy","schemaVersion","targetSha","trigger","validatedAt"]
+		) or (
+			.schemaVersion == 3 and
+			.kind == "lead-closeout-restart" and
+			.authority.kind == "standing-carve-out" and
+			.authority.entryId == "lead-closeout-restart/v1" and
+			(.decisionId | type == "string" and test("^[0-9a-fA-F-]{36}$")) and
+			(.waveId | type == "string" and length > 0 and length <= 200) and
+			(.revision | type == "number" and floor == . and . >= 1) and
+			(keys | sort) == ["announcement","authority","createdAt","decisionId","executionPackage","fromDeployedSha","intent","kind","preMergeHead","readiness","requestDigest","requestedBy","revision","schemaVersion","scopeSnapshot","targetSha","validatedAt","waveId"]
+		)) and
+		(.targetSha | type == "string" and test("^[0-9a-f]{40}$")) and
+		(.fromDeployedSha | type == "string" and test("^[0-9a-f]{40}$")) and
+		(.preMergeHead | type == "string" and test("^[0-9a-f]{40}$")) and
+		(.requestDigest | type == "string" and test("^[0-9a-f]{64}$"))
+	' "$path" >/dev/null 2>&1 || return 1
   target="$(jq -r .targetSha "$path" 2>/dev/null)"
   updater_is_sha40 "$target"
 }
 
 updater_token_target() { jq -r .targetSha "$1" 2>/dev/null; }
+updater_token_request_id() { jq -r 'if .schemaVersion == 3 then .decisionId else .requestId end' "$1" 2>/dev/null; }
+updater_token_from_sha() { jq -r .fromDeployedSha "$1" 2>/dev/null; }
+updater_token_pre_merge_head() { jq -r .preMergeHead "$1" 2>/dev/null; }
+updater_token_trigger_sha() { jq -r 'if .schemaVersion == 3 then .targetSha else .trigger.evidence.mergedCommit end' "$1" 2>/dev/null; }
+updater_token_founder_ref() {
+	jq -r 'if .schemaVersion == 3 then "channel=" + .intent.messageRef.channelId + " message=" + .intent.messageRef.messageId else "channel=" + .authority.messageRef.channelId + " message=" + .authority.messageRef.messageId end' "$1" 2>/dev/null
+}
+updater_token_lead_ref() {
+	jq -r '"project=" + .requestedBy.projectName + " lead=" + .requestedBy.leadId + " instanceDigest=" + .requestedBy.instanceId' "$1" 2>/dev/null
+}
+
+updater_token_wave_id() {
+	if updater_token_is_closeout_v3 "$1"; then
+		jq -er '.waveId | select(type == "string" and length > 0)' "$1" 2>/dev/null
+	else
+		updater_v2_started_wave_id "$1"
+	fi
+}
 
 # Prints valid, invalid, or indeterminate after a successful origin/main fetch.
 updater_token_target_state() {
-  local path="$1" target="" rc=0
-  target="$(updater_token_target "$path")" || { printf 'indeterminate\n'; return; }
-  if ! git -C "$FLYWHEEL_DIR" cat-file -e "${target}^{commit}" 2>/dev/null; then
-    printf 'invalid\n'
-    return
-  fi
-  git -C "$FLYWHEEL_DIR" merge-base --is-ancestor "$target" origin/main 2>/dev/null
-  rc=$?
-  case "$rc" in
-    0) printf 'valid\n' ;;
-    1) printf 'invalid\n' ;;
-    *) printf 'indeterminate\n' ;;
-  esac
+	local path="$1" target="" remote="" rc=0
+	target="$(updater_token_target "$path")" || { printf 'indeterminate\n'; return; }
+	remote="$(updater_remote_sha)" || { printf 'indeterminate\n'; return; }
+	if ! git -C "$FLYWHEEL_DIR" cat-file -e "${target}^{commit}" 2>/dev/null; then
+		printf 'invalid\n'
+		return
+	fi
+	if updater_token_is_founder_direct "$path"; then
+		git -C "$FLYWHEEL_DIR" merge-base --is-ancestor "$target" "$remote" 2>/dev/null
+		rc=$?
+		case "$rc" in
+			0) printf 'valid\n' ;;
+			1) printf 'invalid\n' ;;
+			*) printf 'indeterminate\n' ;;
+		esac
+		return
+	fi
+	if [[ "$target" == "$remote" ]]; then printf 'valid\n'; else printf 'invalid\n'; fi
+}
+
+updater_verify_restart_ticket() {
+	local path="$1" target="" from="" pre_merge="" trigger="" deployed="" head="" intent_state=""
+	[[ -f "$UPDATER_RESTART_REQUEST_CLI" && ! -L "$UPDATER_RESTART_REQUEST_CLI" ]] || return 127
+	# The durable intent state is checked before Discord/GitHub revalidation. A
+	# deterministic revoked state therefore stops here without any natural-
+	# language scan or remote-message dependency.
+	intent_state="$("$UPDATER_NODE" "$UPDATER_RESTART_REQUEST_CLI" intent-state \
+		--ticket "$path" --index "$RESTART_REQUEST_INDEX" 2>/dev/null)" || return 1
+	if updater_token_is_v2 "$path"; then
+		[[ "$intent_state" == started ]] || return 1
+	else
+		[[ "$intent_state" == prepared ]] || return 1
+	fi
+	target="$(updater_token_target "$path")" || return 1
+	from="$(updater_token_from_sha "$path")" || return 1
+	pre_merge="$(updater_token_pre_merge_head "$path")" || return 1
+	trigger="$(updater_token_trigger_sha "$path")" || return 1
+	deployed="$(deployed_sha)"
+	head="$($UPDATER_GIT -C "$FLYWHEEL_DIR" rev-parse HEAD 2>/dev/null)" || return 1
+	[[ "$target" == "$(updater_remote_sha)" && "$from" == "$deployed" && "$pre_merge" == "$head" ]] || return 1
+	$UPDATER_GIT -C "$FLYWHEEL_DIR" merge-base --is-ancestor "$trigger" "$target" 2>/dev/null || return 1
+	local verify_args=(verify \
+		--ticket "$path" --home "$HOME" \
+		--deployed-sha "$deployed" --remote-sha "$target" \
+		--pre-merge-head "$pre_merge" --contains-trigger)
+	if updater_token_is_v2 "$path"; then
+		verify_args+=(--allow-started-v2-recovery --index "$RESTART_REQUEST_INDEX")
+	fi
+	"$UPDATER_NODE" "$UPDATER_RESTART_REQUEST_CLI" "${verify_args[@]}" >/dev/null
+}
+
+updater_v2_started_wave_id() {
+	local path="$1" request_id="" digest=""
+	request_id="$(jq -er .requestId "$path" 2>/dev/null)" || return 1
+	digest="$(jq -er .requestDigest "$path" 2>/dev/null)" || return 1
+	jq -er --arg request_id "$request_id" --arg digest "$digest" '
+		[.intents[] | select(.requestId == $request_id and .requestDigest == $digest and .state == "started") | .waveId] |
+		select(length == 1) | .[0] | select(type == "string" and length > 0)
+	' "$RESTART_REQUEST_INDEX" 2>/dev/null
+}
+
+updater_retire_unstarted_v2() {
+	local ticket="$1" base="$2" dir="" fingerprint="" preserved="" receipt="" tmp=""
+	dir="${RESTART_REQUEST_AUDIT_DIR}/retired-conditional-authority"
+	mkdir -p "$dir" || return 1
+	[[ ! -L "$dir" ]] || return 1
+	chmod 700 "$dir" || return 1
+	fingerprint="$(shasum -a 256 "$ticket" | awk '{print $1}')" || return 1
+	preserved="${dir}/${fingerprint}.ticket.json"
+	receipt="${dir}/${fingerprint}.receipt.json"
+	if [[ -e "$preserved" ]]; then
+		[[ -f "$preserved" && ! -L "$preserved" ]] && cmp -s "$ticket" "$preserved" || return 1
+	else
+		cp "$ticket" "$preserved" && chmod 600 "$preserved" || return 1
+	fi
+	if [[ ! -e "$receipt" ]]; then
+		tmp="$(mktemp "${dir}/.retired.XXXXXX")" || return 1
+		jq -n --arg occurredAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+			--arg ticket "$preserved" --arg queueEntry "$base" --arg fingerprint "$fingerprint" \
+			'{schemaVersion:1,event:"restart-request-retired",result:"retired-conditional-authority",occurredAt:$occurredAt,queueEntry:$queueEntry,ticketFingerprint:$fingerprint,preservedTicket:$ticket,zeroDeploySideEffects:true}' > "$tmp" \
+			&& chmod 600 "$tmp" && mv "$tmp" "$receipt" || { rm -f "$tmp"; return 1; }
+	fi
+	printf '%s\n' "$receipt"
+}
+
+updater_transition_restart_intent() {
+	local path="$1" state="$2" wave_id="${3:-}" zero_side_effects="${4:-0}"
+	local args=(transition --ticket "$path" --index "$RESTART_REQUEST_INDEX" --state "$state" --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+	[[ -z "$wave_id" ]] || args+=(--wave-id "$wave_id")
+	[[ "$zero_side_effects" == 1 ]] && args+=(--zero-side-effects)
+	[[ -f "$UPDATER_RESTART_REQUEST_CLI" && ! -L "$UPDATER_RESTART_REQUEST_CLI" ]] || return 127
+	"$UPDATER_NODE" "$UPDATER_RESTART_REQUEST_CLI" "${args[@]}" >/dev/null
+}
+
+updater_mark_consumed_no_deploy_if_v3() {
+	local path="$1" wave_id=""
+	updater_token_is_closeout_v3 "$path" || return 0
+	wave_id="$(updater_token_wave_id "$path")" || return 1
+	updater_transition_restart_intent "$path" consumed-no-deploy "$wave_id" 1
 }
 
 updater_claim_token() { # $1=watched path $2=claim directory
   local path="$1" claim_dir="$2" base=""
   base="$(basename "$path")"
   mv "$path" "${claim_dir}/${base}"
+}
+
+updater_clear_wave_marker() {
+	local ticket="$1"
+	if [[ -f "$RESTART_WAVE_ACTIVE_TICKET" && ! -L "$RESTART_WAVE_ACTIVE_TICKET" ]] \
+		&& cmp -s "$ticket" "$RESTART_WAVE_ACTIVE_TICKET"; then
+		rm -f "$RESTART_WAVE_ACTIVE_TICKET"
+	fi
+}
+
+updater_audit_wave_duplicate() {
+	local duplicate="$1" primary="$2" dir="" tmp="" final=""
+	dir="${RESTART_REQUEST_AUDIT_DIR}/restart-wave-duplicates"
+	mkdir -p "$dir" || return 1
+	[[ ! -L "$dir" ]] || return 1
+	chmod 700 "$dir" || return 1
+	tmp="$(mktemp "${dir}/.coalesced.XXXXXX")" || return 1
+	if ! jq -n \
+			--arg occurredAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+			--arg duplicate "$(basename "$duplicate")" \
+			--arg primary "$(basename "$primary")" \
+			--arg duplicateTarget "$(updater_token_target "$duplicate")" \
+			--arg primaryTarget "$(updater_token_target "$primary")" \
+			'{schemaVersion:1,event:"restart-wave-duplicate",result:"coalesced-into-active-wave",occurredAt:$occurredAt,duplicate:{ticket:$duplicate,targetSha:$duplicateTarget},active:{ticket:$primary,targetSha:$primaryTarget}}' \
+			> "$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+	final="${dir}/coalesced.$(date +%s).$$.${RANDOM}.json"
+	mv "$tmp" "$final"
+}
+
+updater_coalesce_late_wave_tickets() {
+	local primary="$1" candidate="" base="" claimed=""
+	for candidate in "$SELF_SHIP_URGENT_DIR"/*.urgent.json; do
+		[[ -f "$candidate" && ! -L "$candidate" ]] || continue
+		# Invalid entries cannot authorize a restart and remain for the ordinary
+		# invalid-entry consumer. Every valid entry created inside this active
+		# lifecycle is absorbed before the lifecycle marker is released.
+		updater_token_shape_valid "$candidate" || continue
+		base="$(basename "$candidate")"
+		claimed="${UPDATER_CLAIM_DIR}/late.$(date +%s).${RANDOM}.${base}"
+		mv "$candidate" "$claimed" || return 1
+		if updater_token_is_v2 "$claimed"; then
+			local v2_state=""
+			v2_state="$("$UPDATER_NODE" "$UPDATER_RESTART_REQUEST_CLI" intent-state \
+				--ticket "$claimed" --index "$RESTART_REQUEST_INDEX" 2>/dev/null)" || v2_state=""
+			if [[ "$v2_state" != started ]]; then
+				updater_retire_unstarted_v2 "$claimed" "$base" >/dev/null || return 1
+				updater_clear_wave_marker "$claimed" || true
+				log "urgent restart: retired late unstarted v2 ticket $base"
+				continue
+			fi
+		fi
+		updater_mark_consumed_no_deploy_if_v3 "$claimed" || return 1
+		updater_clear_wave_marker "$claimed" || true
+		updater_audit_wave_duplicate "$claimed" "$primary" || return 1
+		log "urgent restart: coalesced in-flight duplicate ticket $base into $(basename "$primary")"
+	done
 }
 
 UPDATER_CLAIM_DIR=""
@@ -726,17 +1124,26 @@ UPDATER_CLEANUP_DONE=0
 UPDATER_CLAIMED_BASENAMES=()
 UPDATER_WAKE_KIND=unknown
 UPDATER_CYCLE_RESULT=unknown
+UPDATER_ACTIVE_TICKET=""
+UPDATER_ACTIVE_WAVE_ID=""
+UPDATER_INTENT_STARTED=0
 
 updater_cleanup() {
   (( UPDATER_CLEANUP_DONE == 0 )) || return 0
   UPDATER_CLEANUP_DONE=1
-  if (( UPDATER_CLAIMED == 1 && UPDATER_COMPLETED == 0 && UPDATER_ALERTED == 0 )); then
+	if (( UPDATER_CLAIMED == 1 && UPDATER_COMPLETED == 0 && UPDATER_ALERTED == 0 )); then
+		if (( UPDATER_INTENT_STARTED == 1 )) && [[ -f "$UPDATER_ACTIVE_TICKET" ]]; then
+			updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" unknown "$UPDATER_ACTIVE_WAVE_ID" || true
+		fi
     local base
     for base in ${UPDATER_CLAIMED_BASENAMES[@]+"${UPDATER_CLAIMED_BASENAMES[@]}"}; do
       updater_alert_urgent interrupted "$base" \
         "Founder urgent restart token $base was claimed but this updater invocation ended before deploy completion. Re-submit only after checking updater logs."
     done
-  fi
+	fi
+	if [[ -n "$UPDATER_ACTIVE_TICKET" && -f "$UPDATER_ACTIVE_TICKET" ]]; then
+		updater_clear_wave_marker "$UPDATER_ACTIVE_TICKET" || true
+	fi
   case "$UPDATER_CLAIM_DIR" in
     "${FLYWHEEL_HOME}"/.urgent-claim.*)
       rm -rf -- "$UPDATER_CLAIM_DIR" 2>/dev/null || true
@@ -764,7 +1171,9 @@ updater_snapshot_tokens() {
 }
 
 updater_run_cycle() {
-  local path="" base="" state="" remote="" rc=0 fetch_rc=0
+  local path="" base="" state="" remote="" claimed="" rc=0 fetch_rc=0
+  local duplicate="" duplicate_base="" late_coalesce_rc=0
+  local founder_direct=0 intent_state=""
   local had_invalid=0 had_indeterminate=0
   local had_consumed_indeterminate=0
   local shape_valid=() valid=()
@@ -788,11 +1197,39 @@ UPDATER_CYCLE_RESULT=unknown
   for path in ${UPDATER_SNAPSHOT[@]+"${UPDATER_SNAPSHOT[@]}"}; do
     base="$(basename "$path")"
     if updater_token_shape_valid "$path"; then
+			if updater_token_is_v2 "$path"; then
+				state="$("$UPDATER_NODE" "$UPDATER_RESTART_REQUEST_CLI" intent-state \
+					--ticket "$path" --index "$RESTART_REQUEST_INDEX" 2>/dev/null)" || state=""
+				if [[ "$state" == started ]]; then
+					shape_valid+=("$path")
+					continue
+				fi
+				if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+					claimed="${UPDATER_CLAIM_DIR}/${base}"
+					if updater_retire_unstarted_v2 "$claimed" "$base" >/dev/null; then
+						had_invalid=1
+						updater_clear_wave_marker "$claimed" || true
+						updater_alert_consumed_no_deploy retired-conditional-authority "$base" \
+							"Retired unstarted v2 conditional-authority ticket $base with its original bytes preserved in the audit ledger. No deploy or restart was attempted."
+					else
+						had_indeterminate=1
+						mv "$claimed" "$path" 2>/dev/null || true
+						updater_alert_urgent retirement-audit-failed "$base" \
+							"Could not preserve the mandatory retirement audit for v2 ticket $base; it was not authorized to execute and no restart was attempted."
+					fi
+				else
+					had_indeterminate=1
+					updater_alert_urgent claim-failed "$base" \
+						"Could not claim retired v2 conditional-authority ticket $base; no restart was attempted."
+				fi
+				continue
+			fi
       shape_valid+=("$path")
       continue
     fi
     if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
       had_invalid=1
+      updater_clear_wave_marker "${UPDATER_CLAIM_DIR}/${base}" || true
       updater_alert_consumed_no_deploy invalid "$base" \
         "Ignored invalid founder urgent token $base (bad basename/schema/kind). It was removed from the watched directory without restarting."
     else
@@ -813,11 +1250,13 @@ UPDATER_CYCLE_RESULT=unknown
         updater_alert_scheduled fetch-failed "Scheduled updater could not fetch origin/main; no restart was attempted."
       fi
     else
-      for path in ${shape_valid[@]+"${shape_valid[@]}"}; do
+	for path in ${shape_valid[@]+"${shape_valid[@]}"}; do
         base="$(basename "$path")"
         [[ -e "$path" ]] || continue
         if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
           had_consumed_indeterminate=1
+          updater_mark_consumed_no_deploy_if_v3 "${UPDATER_CLAIM_DIR}/${base}" || true
+          updater_clear_wave_marker "${UPDATER_CLAIM_DIR}/${base}" || true
           if (( fetch_rc == 127 )); then
             updater_alert_consumed_no_deploy probe-runtime-missing "$base" \
               "Cannot execute the updater bounded runner at $UPDATER_BOUNDED_RUN while validating urgent token $base. The ticket was consumed without restarting."
@@ -845,12 +1284,29 @@ UPDATER_CYCLE_RESULT=unknown
   for path in ${shape_valid[@]+"${shape_valid[@]}"}; do
     [[ -e "$path" ]] || continue
     base="$(basename "$path")"
-    state="$(updater_token_target_state "$path")"
-    case "$state" in
-      valid) valid+=("$path") ;;
+		state="$(updater_token_target_state "$path")"
+		case "$state" in
+			valid)
+				if updater_token_is_founder_direct "$path" \
+					|| updater_verify_restart_ticket "$path"; then
+					valid+=("$path")
+				elif updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+					had_invalid=1
+					updater_mark_consumed_no_deploy_if_v3 "${UPDATER_CLAIM_DIR}/${base}" || true
+					updater_clear_wave_marker "${UPDATER_CLAIM_DIR}/${base}" || true
+					updater_alert_consumed_no_deploy evidence-invalid "$base" \
+						"Consumed urgent ticket $base without restart because its founder instruction, Lead identity, trigger, announcement, version, or withdrawal evidence no longer verified."
+				else
+					had_indeterminate=1
+					updater_alert_urgent claim-failed "$base" \
+						"Could not claim unverifiable urgent ticket $base; no restart was attempted."
+				fi
+				;;
       invalid)
         if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
           had_invalid=1
+          updater_mark_consumed_no_deploy_if_v3 "${UPDATER_CLAIM_DIR}/${base}" || true
+          updater_clear_wave_marker "${UPDATER_CLAIM_DIR}/${base}" || true
           updater_alert_consumed_no_deploy invalid "$base" \
             "Ignored founder urgent token $base because its target is provably outside origin/main. No restart was attempted."
         else
@@ -862,6 +1318,8 @@ UPDATER_CYCLE_RESULT=unknown
       *)
         if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
           had_consumed_indeterminate=1
+          updater_mark_consumed_no_deploy_if_v3 "${UPDATER_CLAIM_DIR}/${base}" || true
+          updater_clear_wave_marker "${UPDATER_CLAIM_DIR}/${base}" || true
           updater_alert_consumed_no_deploy probe-indeterminate "$base" \
             "Git could not determine whether urgent token $base belongs to origin/main. The ticket was consumed without restarting and will not auto-retry."
         else
@@ -880,32 +1338,118 @@ UPDATER_CYCLE_RESULT=unknown
     return 2
   fi
 
-  if (( ${#valid[@]} > 0 )); then
-    for path in ${valid[@]+"${valid[@]}"}; do
-      base="$(basename "$path")"
-      if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
-        UPDATER_CLAIMED=1
-        UPDATER_CLAIMED_BASENAMES+=("$base")
-      else
-        updater_alert_urgent claim-failed "$base" \
-          "Could not claim founder urgent token $base; no restart was attempted."
-        UPDATER_CYCLE_RESULT=indeterminate
-        return 1
-      fi
-    done
-    "$SELF_SHIP_DEPLOY_CMD"
-    rc=$?
-    if (( rc == 0 )); then
-      UPDATER_COMPLETED=1
-      UPDATER_CYCLE_RESULT=urgent_deployed
-      return 0
-    fi
-    for base in ${UPDATER_CLAIMED_BASENAMES[@]+"${UPDATER_CLAIMED_BASENAMES[@]}"}; do
-      updater_alert_urgent deploy-failed "$base" \
-        "Founder urgent restart token $base was claimed, but the single deploy attempt failed (rc=$rc). It will not auto-retry; inspect logs before submitting a new ticket."
-    done
-    UPDATER_ALERTED=1
+	if (( ${#valid[@]} > 0 )); then
+		# Full-fleet waves are serialized. Leave any later valid tickets watched so
+		# launchd runs a fresh validation cycle only after this wave releases locks.
+		path="${valid[0]}"
+		base="$(basename "$path")"
+		if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+			UPDATER_CLAIMED=1
+			UPDATER_CLAIMED_BASENAMES+=("$base")
+			UPDATER_ACTIVE_TICKET="${UPDATER_CLAIM_DIR}/${base}"
+		else
+			updater_alert_urgent claim-failed "$base" \
+				"Could not claim authorized urgent ticket $base; no restart was attempted."
+			UPDATER_CYCLE_RESULT=indeterminate
+			return 1
+		fi
+		# A single fleet restart is the unit of idempotency, independent of SHA.
+		# Consume every other already-valid snapshot entry into this wave so
+		# pre-hardening or concurrent legacy tickets cannot arm follow-on waves.
+		for duplicate in ${valid[@]+"${valid[@]}"}; do
+			[[ "$duplicate" != "$path" && -e "$duplicate" ]] || continue
+			duplicate_base="$(basename "$duplicate")"
+			if ! updater_claim_token "$duplicate" "$UPDATER_CLAIM_DIR"; then
+				updater_alert_urgent claim-failed "$duplicate_base" \
+					"Could not merge duplicate urgent ticket $duplicate_base into the active restart wave; no restart was attempted."
+				UPDATER_CYCLE_RESULT=indeterminate
+				return 1
+			fi
+			duplicate="${UPDATER_CLAIM_DIR}/${duplicate_base}"
+			updater_mark_consumed_no_deploy_if_v3 "$duplicate" || true
+			updater_clear_wave_marker "$duplicate" || true
+			if ! updater_audit_wave_duplicate "$duplicate" "$UPDATER_ACTIVE_TICKET"; then
+				updater_alert_urgent duplicate-audit-failed "$duplicate_base" \
+					"Duplicate urgent ticket $duplicate_base was consumed, but its merge audit failed; no restart was attempted."
+				UPDATER_CYCLE_RESULT=indeterminate
+				return 1
+			fi
+			log "urgent restart: coalesced duplicate ticket $duplicate_base into $base"
+		done
+		if updater_token_is_founder_direct "$UPDATER_ACTIVE_TICKET"; then
+			founder_direct=1
+			UPDATER_ACTIVE_WAVE_ID="restart-$$-$(date +%s)-founder-direct"
+			log "urgent restart: direct founder request; target=$(updater_token_target "$UPDATER_ACTIVE_TICKET")"
+		else
+			UPDATER_ACTIVE_WAVE_ID="$(updater_token_wave_id "$UPDATER_ACTIVE_TICKET")" || {
+				updater_clear_wave_marker "$UPDATER_ACTIVE_TICKET" || true
+				updater_mark_consumed_no_deploy_if_v3 "$UPDATER_ACTIVE_TICKET" || true
+				updater_alert_consumed_no_deploy wave-binding-invalid "$base" \
+					"Consumed authorized urgent ticket $base without restart because its bound wave could not be recovered."
+				UPDATER_ALERTED=1
+				UPDATER_CYCLE_RESULT=indeterminate
+				return 1
+			}
+			if updater_token_is_v2 "$UPDATER_ACTIVE_TICKET"; then
+				# Recovery-only v2 tickets already crossed the irreversible ledger
+				# boundary before this process. Never mint or re-start a v2 wave.
+				UPDATER_INTENT_STARTED=1
+			fi
+			if updater_token_is_closeout_v3 "$UPDATER_ACTIVE_TICKET"; then
+				log "urgent restart: founder closeout intent $(updater_token_founder_ref "$UPDATER_ACTIVE_TICKET"); Lead standing-authority decision $(updater_token_lead_ref "$UPDATER_ACTIVE_TICKET"); target=$(updater_token_target "$UPDATER_ACTIVE_TICKET")"
+			else
+				log "urgent restart: founder instruction $(updater_token_founder_ref "$UPDATER_ACTIVE_TICKET"); Lead initiation $(updater_token_lead_ref "$UPDATER_ACTIVE_TICKET"); target=$(updater_token_target "$UPDATER_ACTIVE_TICKET")"
+			fi
+		fi
+		"$SELF_SHIP_DEPLOY_CMD" "$UPDATER_ACTIVE_TICKET"
+		rc=$?
+		if (( founder_direct == 0 )); then
+			intent_state="$("$UPDATER_NODE" "$UPDATER_RESTART_REQUEST_CLI" intent-state \
+				--ticket "$UPDATER_ACTIVE_TICKET" --index "$RESTART_REQUEST_INDEX" 2>/dev/null)" || intent_state=""
+			[[ "$intent_state" == started ]] && UPDATER_INTENT_STARTED=1
+		fi
+		updater_coalesce_late_wave_tickets "$UPDATER_ACTIVE_TICKET" || late_coalesce_rc=$?
+		if (( late_coalesce_rc != 0 )); then
+			updater_alert_urgent duplicate-audit-failed "$base" \
+				"The active restart wave returned, but an in-flight duplicate could not be consumed and audited. Treat the lifecycle outcome as unknown."
+			UPDATER_ALERTED=1
+			UPDATER_CYCLE_RESULT=urgent_unknown
+			return 2
+		fi
+		if (( rc == 0 )); then
+			if (( founder_direct == 0 )) \
+				&& ! updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" succeeded "$UPDATER_ACTIVE_WAVE_ID"; then
+				updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" unknown "$UPDATER_ACTIVE_WAVE_ID" || true
+				updater_alert_urgent result-ledger-failed "$base" \
+					"Urgent restart returned success, but its one-use ledger result could not be recorded. Treat the outcome as unknown and do not retry."
+				UPDATER_ALERTED=1
+				UPDATER_CYCLE_RESULT=urgent_unknown
+				updater_clear_wave_marker "$UPDATER_ACTIVE_TICKET" || true
+				return 2
+			fi
+			UPDATER_COMPLETED=1
+			UPDATER_CYCLE_RESULT=urgent_deployed
+			updater_clear_wave_marker "$UPDATER_ACTIVE_TICKET" || true
+			return 0
+		fi
+		if (( founder_direct == 0 )); then
+			if (( rc == 82 )) && updater_token_is_closeout_v3 "$UPDATER_ACTIVE_TICKET" \
+				&& [[ "$intent_state" == prepared ]]; then
+				updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" consumed-no-deploy "$UPDATER_ACTIVE_WAVE_ID" 1 || true
+			elif (( rc == 82 )); then
+				# A legacy v2 recovery wave is already `started`; its refusal is a
+				# plain `failed` (review round 6): the zero-side-effect flag is only
+				# provable before start and the ledger refuses it here.
+				updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" failed "$UPDATER_ACTIVE_WAVE_ID" || true
+			else
+				updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" failed "$UPDATER_ACTIVE_WAVE_ID" || true
+			fi
+		fi
+		updater_alert_urgent deploy-failed "$base" \
+			"Founder-direct or Lead standing-authority urgent ticket $base was claimed, but the single deploy attempt failed (rc=$rc). It will not auto-retry; inspect the one-use audit before submitting a revised request."
+		UPDATER_ALERTED=1
     UPDATER_CYCLE_RESULT=urgent_failed
+		updater_clear_wave_marker "$UPDATER_ACTIVE_TICKET" || true
     return "$rc"
   fi
 
@@ -993,7 +1537,10 @@ update_main() {
   UPDATER_COMPLETED=0
   UPDATER_ALERTED=0
   UPDATER_CLEANUP_DONE=0
-  UPDATER_CLAIMED_BASENAMES=()
+	UPDATER_CLAIMED_BASENAMES=()
+	UPDATER_ACTIVE_TICKET=""
+	UPDATER_ACTIVE_WAVE_ID=""
+	UPDATER_INTENT_STARTED=0
   local previous_exit previous_int previous_term rc=0
   previous_exit="$(trap -p EXIT)"
   previous_int="$(trap -p INT)"
@@ -1036,7 +1583,7 @@ update_main() {
       ;;
     *) log "raya shuttle: skipped wake=unknown (fail closed)" ;;
   esac
-  log "raya shuttle: ${RAYA_DEPLOY_STATE:-not_run} ${RAYA_DEPLOY_DETAIL:-}"
+  log "raya shuttle: ${RAYA_DEPLOY_STATE:-not_run} ${RAYA_DEPLOY_DETAIL:-}${RAYA_DEPLOY_REASON:+ reason=$RAYA_DEPLOY_REASON}"
   updater_observation_record_raya
   updater_observation_finish
   updater_observation_dispatch

@@ -244,6 +244,10 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:
+		"FLY-2654 plumbing: standing-authority state directory coordinate for independently confirmed manifests and receipts, not an on/off gate",
+	FLYWHEEL_STANDING_PACKAGE_ACTIVE:
+		"FLY-2654 internal one-invocation recursion marker after re-entering the confirmed immutable package, not a persistent feature toggle",
 	FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:
 		"FLY-2519 context: canonical Lead registry capability bundle version projected into one launcher invocation, not an independent feature toggle",
 	FLYWHEEL_CODEX_LEAD_DEV_SOURCE:

@@ -37,12 +37,138 @@ export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/l
 # ════════════════════════════════════════════════════════════════
 
 FLYWHEEL_DIR="${HOME}/Dev/flywheel"
+
+rs_standing_package_reject() {
+    printf '[restart] standing-package-verification-failed reason=%s\n' "$1" >&2
+    return 78
+}
+
+# FLY-2654 (review R7 HIGH): the caller-supplied FLYWHEEL_STANDING_PACKAGE_ROOT
+# is a request, never authority. Before this script sources a single package
+# library it re-derives the root from the independently confirmed
+# active-package pointer, re-verifies the package manifest and verifier CLI
+# digests, and proves that this very script is the package's resolved entry.
+# A mismatch on any step refuses with rc=78 (same code as the updater and
+# request-restart fences) and nothing from the requested root is executed.
+# Without standing environment the fence is inert and the plain checkout path
+# (main-era behaviour) is unchanged.
+rs_verify_standing_package_root() {
+    local requested="${FLYWHEEL_STANDING_PACKAGE_ROOT:-}"
+    if [[ -z "$requested" && "${FLYWHEEL_STANDING_PACKAGE_ACTIVE:-0}" != 1 ]]; then
+        return 0
+    fi
+    local state_root="${FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:-${HOME}/.flywheel/state/standing-authority}"
+    local pointer="${state_root}/active-package.json" root="" package_digest=""
+    local manifest="" cli_rel="packages/teamlead/dist/bin/standing-authority-package-cli.js"
+    local cli="" expected_cli_digest="" actual_cli_digest="" verified_digest="" entry=""
+    local current_script="" current_root="" receipt="" ledger="" recorded_digest=""
+    if [[ ! -e "$pointer" ]]; then
+        rs_standing_package_reject active-package-pointer-missing
+        return 78
+    fi
+    if [[ ! -f "$pointer" || -L "$pointer" ]]; then
+        rs_standing_package_reject active-package-pointer-invalid
+        return 78
+    fi
+    root="$(jq -er '.immutableRoot | select(type == "string" and startswith("/") and (contains("..") | not))' "$pointer" 2>/dev/null)" || {
+        rs_standing_package_reject active-package-root-invalid
+        return 78
+    }
+    if [[ "$requested" != "$root" ]]; then
+        rs_standing_package_reject active-package-root-mismatch
+        return 78
+    fi
+    package_digest="$(jq -er '.packageDigest | select(test("^[a-f0-9]{64}$"))' "$pointer" 2>/dev/null)" || {
+        rs_standing_package_reject active-package-digest-invalid
+        return 78
+    }
+    # FLY-2654 review R7 round 2: the pointer is a request, not authority. Read
+    # the Bridge confirmation ledger back (outside the candidate package) and
+    # require the row for the pointer's receipt to bind this package digest.
+    receipt="$(jq -er '.activatedByReceiptId | select(type == "string" and test("^[a-f0-9]{64}$"))' "$pointer" 2>/dev/null)" || {
+        rs_standing_package_reject active-package-receipt-invalid
+        return 78
+    }
+    ledger="${TEAMLEAD_DB_PATH:-${HOME}/.flywheel/teamlead.db}"
+    if [[ ! -f "$ledger" || -L "$ledger" ]]; then
+        rs_standing_package_reject confirmation-ledger-unavailable
+        return 78
+    fi
+    # Plain open on purpose: the StateStore is WAL and a clean Bridge close removes
+    # the -wal/-shm sidecars; the sqlite3 CLI in read-only mode cannot recreate
+    # them and fails with SQLITE_CANTOPEN (14) exactly when the Bridge is down.
+    # The statement is a SELECT; same-uid sidecar creation is what better-sqlite3
+    # readers do too.
+    recorded_digest="$(sqlite3 "$ledger" "SELECT package_digest FROM standing_authority_confirmation WHERE receipt_id = '${receipt}' LIMIT 1;" 2>/dev/null)" || {
+        rs_standing_package_reject confirmation-ledger-unavailable
+        return 78
+    }
+    if [[ -z "$recorded_digest" ]]; then
+        rs_standing_package_reject confirmation-record-missing
+        return 78
+    fi
+    if [[ "$recorded_digest" != "$package_digest" ]]; then
+        rs_standing_package_reject confirmation-record-mismatch
+        return 78
+    fi
+    manifest="${root}/standing-authority-package.json"
+    cli="${root}/${cli_rel}"
+    if [[ ! -f "$manifest" || -L "$manifest" || ! -f "$cli" || -L "$cli" ]]; then
+        rs_standing_package_reject active-package-files-invalid
+        return 78
+    fi
+    if [[ "$(jq -r '.packageDigest // empty' "$manifest" 2>/dev/null)" != "$package_digest" ]]; then
+        rs_standing_package_reject active-package-manifest-digest-mismatch
+        return 78
+    fi
+    expected_cli_digest="$(jq -er --arg path "$cli_rel" '[.files[] | select(.path == $path) | .sha256] | select(length == 1) | .[0]' "$manifest" 2>/dev/null)" || {
+        rs_standing_package_reject active-package-cli-digest-missing
+        return 78
+    }
+    actual_cli_digest="$(shasum -a 256 "$cli" 2>/dev/null | awk 'NF == 2 {print $1}')"
+    if [[ "$actual_cli_digest" != "$expected_cli_digest" ]]; then
+        rs_standing_package_reject active-package-cli-digest-mismatch
+        return 78
+    fi
+    verified_digest="$(node "$cli" verify --root "$root" --manifest "$manifest" 2>/dev/null | jq -er '.packageDigest')" || {
+        rs_standing_package_reject active-package-verification-failed
+        return 78
+    }
+    if [[ "$verified_digest" != "$package_digest" ]]; then
+        rs_standing_package_reject active-package-verified-digest-mismatch
+        return 78
+    fi
+    entry="$(node "$cli" resolve --root "$root" --manifest "$manifest" --path scripts/restart-services.sh 2>/dev/null)" || {
+        rs_standing_package_reject active-package-entry-unresolved
+        return 78
+    }
+    if [[ ! -f "$entry" || -L "$entry" ]]; then
+        rs_standing_package_reject active-package-entry-invalid
+        return 78
+    fi
+    current_script="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")" || {
+        rs_standing_package_reject active-package-script-unresolved
+        return 78
+    }
+    current_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+        rs_standing_package_reject active-package-current-root-unresolved
+        return 78
+    }
+    if [[ -L "${BASH_SOURCE[0]}" || ! -f "$current_script" || "$current_root" != "$root" || "$current_script" != "$entry" ]]; then
+        rs_standing_package_reject active-package-script-mismatch
+        return 78
+    fi
+    return 0
+}
+rs_verify_standing_package_root || exit $?
+
+FLYWHEEL_RUNTIME_DIR="${FLYWHEEL_STANDING_PACKAGE_ROOT:-${FLYWHEEL_DIR}}"
 DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
 SCHEDULER_REPAIR_LOCK_DIR="${FLYWHEEL_SCHEDULER_REPAIR_LOCK_DIR:-${HOME}/.flywheel/scheduler-repair.lock.d}"
 # shellcheck source=lib/kill-ledger.sh
-if [[ -r "${FLYWHEEL_DIR}/scripts/lib/kill-ledger.sh" ]]; then
-    source "${FLYWHEEL_DIR}/scripts/lib/kill-ledger.sh"
+if [[ -r "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/kill-ledger.sh" ]]; then
+    source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/kill-ledger.sh"
 else
     # Bridge restart is an explicit forced-shutdown path. If the helper is
     # unavailable during a partial deploy, preserve liveness while emitting a
@@ -66,38 +192,41 @@ else
 fi
 # shellcheck source=lib/lead-restart-lifecycle.sh
 # shellcheck disable=SC1091
-source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/lead-restart-lifecycle.sh"
 
 # shellcheck source=lib/restart-notify.sh
-source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-notify.sh"
 # shellcheck source=lib/restart-cmux-watcher.sh
-source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-cmux-watcher.sh"
 # shellcheck source=lib/converge-nonlead-daemons.sh
-source "${FLYWHEEL_DIR}/scripts/lib/converge-nonlead-daemons.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/converge-nonlead-daemons.sh"
 # shellcheck source=lib/restart-quota-monitor.sh
-source "${FLYWHEEL_DIR}/scripts/lib/restart-quota-monitor.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-quota-monitor.sh"
 LAUNCHD_CENSUS_SOURCED=1
 # shellcheck source=launchd-census.sh
-source "${FLYWHEEL_DIR}/scripts/launchd-census.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/launchd-census.sh"
 # shellcheck source=lib/deploy-build-identity.sh
-source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/default-lead-agent-env.sh
-source "${FLYWHEEL_DIR}/scripts/lib/default-lead-agent-env.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/default-lead-agent-env.sh"
 # shellcheck source=lib/discord-pointer-guard.sh
 # shellcheck disable=SC1091
-source "${FLYWHEEL_DIR}/scripts/lib/discord-pointer-guard.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/discord-pointer-guard.sh"
+# shellcheck source=lib/conditional-restart.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/conditional-restart.sh"
 # shellcheck source=lib/supervisor.sh
-source "${FLYWHEEL_DIR}/scripts/lib/supervisor.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/supervisor.sh"
 # shellcheck source=lib/restart-voice-bridge.sh
-source "${FLYWHEEL_DIR}/scripts/lib/restart-voice-bridge.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-voice-bridge.sh"
 # shellcheck source=lib/restart-voice.sh
-source "${FLYWHEEL_DIR}/scripts/lib/restart-voice.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-voice.sh"
 # shellcheck source=lib/tmux-server-rescue.sh
-if [[ -f "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh" ]]; then
-    source "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh"
+if [[ -f "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/tmux-server-rescue.sh" ]]; then
+    source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/tmux-server-rescue.sh"
 fi
 # shellcheck source=lib/legacy-swap-broadcast-retirement.sh
-source "${FLYWHEEL_DIR}/scripts/lib/legacy-swap-broadcast-retirement.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/legacy-swap-broadcast-retirement.sh"
 
 # FLY-2669: only updater-owned cycles carry this identity. Source the immutable
 # observer bundle chosen before the ff-merge, never a second scheduler or writer.
@@ -119,7 +248,7 @@ fi
 # NEVER affects the deploy outcome (all failures swallowed).
 record_deployed_range() {
     local old="$1" new="$2"
-    local comm="${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js"
+    local comm="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/packages/flywheel-comm/dist/index.js"
     [[ -f "$comm" ]] || return 0
     [[ "$old" =~ ^[0-9a-f]{40}$ ]] || return 0   # need a base commit for the range
     [[ "$new" =~ ^[0-9a-f]{40}$ ]] || return 0
@@ -237,7 +366,7 @@ restart_shuttle_record() { # project kind owner display outcome reason evidence 
 # so this pre-build check never mixes new source with deployed workspace dist.
 # It runs before Bridge stop, Lead bootout, or any other service mutation.
 summary_registry_activation_preflight() {
-    local source_cli="${FLYWHEEL_DIR}/packages/flywheel-comm/src/bin/summary-registry.ts"
+    local source_cli="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/packages/flywheel-comm/src/bin/summary-registry.ts"
     local projects_path="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
     local receipt_path="${FLYWHEEL_SUMMARY_MIGRATION_RECEIPT:-${HOME}/.flywheel/state/summary-registry/migration-receipt.json}"
     if [[ ! -f "$source_cli" ]]; then
@@ -248,7 +377,7 @@ summary_registry_activation_preflight() {
         log "ERROR: summary registry activation refuses inline FLYWHEEL_PROJECTS split-brain"
         return 1
     fi
-    TSX_TSCONFIG_PATH="${FLYWHEEL_DIR}/scripts/tsconfig.restart-preflight.json" \
+    TSX_TSCONFIG_PATH="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/tsconfig.restart-preflight.json" \
     pnpm --dir "$FLYWHEEL_DIR" exec tsx "$source_cli" verify-activation \
         --projects-file "$projects_path" \
         --receipt-file "$receipt_path"
@@ -607,8 +736,8 @@ write_leads_restart_status() {
 # caller, never blocks the deploy.
 fire_meta_alert() {
     # $1 = reason, $2 = title, $3 = body
-    [[ -x "${FLYWHEEL_DIR}/scripts/meta-alert.sh" ]] && \
-        "${FLYWHEEL_DIR}/scripts/meta-alert.sh" "$1" "$2" "$3" || true
+    [[ -x "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/meta-alert.sh" ]] && \
+        "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/meta-alert.sh" "$1" "$2" "$3" || true
 }
 
 # FLY-1659: audit detached same-uid tmux servers before a fleet restart. This
@@ -725,7 +854,7 @@ audit_tmux_qa_residue_read_only() {
 # `|| true`: a failed notification must never block the deploy (FLY-739).
 alert_warning() {
     # $1 = signature slug, $2 = title, $3 = body
-    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+    "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lead-alert.sh" --project flywheel --lead deploy \
         --kind deploy_degraded --severity warning --title "$2" --body "$3" \
         --signature "$1-$(date -u +%Y%m%d%H%M)" 1>&2 || true
 }
@@ -760,7 +889,7 @@ alert_severe() {
     if [[ -z "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
         log "WARNING: FLYWHEEL_FOUNDER_USER_ID not set — deploy_failed alert will NOT @-mention the founder" >&2
     fi
-    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+    "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lead-alert.sh" --project flywheel --lead deploy \
         --kind deploy_failed --severity severe --title "$2" --body "$3" \
         --signature "$1-$(date -u +%Y%m%d%H%M)" \
         ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
@@ -768,7 +897,7 @@ alert_severe() {
 
 alert_discord_plugin_integrity() {
     # $1 = daily signature reason, $2 = diagnostic body
-    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+    "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lead-alert.sh" --project flywheel --lead deploy \
         --kind discord_plugin_integrity_failed --severity severe \
         --title "Discord plugin integrity failed" --body "$2" \
         --signature "$1-$(date -u +%Y%m%d)" 1>&2 || true
@@ -780,7 +909,7 @@ alert_launchd_refusal() {
     if [[ -z "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
         log "WARNING: FLYWHEEL_FOUNDER_USER_ID not set — deploy_failed alert will NOT @-mention the founder" >&2
     fi
-    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+    "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lead-alert.sh" --project flywheel --lead deploy \
         --kind deploy_failed --severity severe \
         --title "restart-services refused a direct launchd invocation" --body "$1" \
         --signature "restart-guard-launchd-refusal-$(date -u +%Y%m%d)" \
@@ -928,7 +1057,7 @@ restart_host_tmux_gate() {
     local gate_bin="${state_dir}/bin/host-tmux-selection-gate.sh" rc=0
     [[ "$target_sha" =~ ^[0-9a-fA-F]{40}$ ]] || return 2
     if [[ ! -x "$gate_bin" ]]; then
-        gate_bin="${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh"
+        gate_bin="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/host-tmux-selection-gate.sh"
     fi
     [[ -f "$gate_bin" && ! -L "$gate_bin" && -x "$gate_bin" ]] || return 127
     (
@@ -979,7 +1108,7 @@ restart_host_tmux_census() {
 preflight_pull_latest_main() {
     local branch="" branch_rc=0 status_output="" status_rc=0
     local status_preview="" status_alert_preview=""
-    local bounded="${FLYWHEEL_RESTART_BOUNDED_RUN_BIN:-${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh}"
+    local bounded="${FLYWHEEL_RESTART_BOUNDED_RUN_BIN:-${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/bounded-run.sh}"
     local old_head="" target_sha="" behind_count="" git_rc=0 reverse_rc=0
     local accepted_state="" cutover_rc=0 post_head="" merge_output=""
     local merge_preview="" merge_alert_preview=""
@@ -1798,7 +1927,7 @@ if _rs_is_direct_launchd_invocation "$PPID" "${FLYWHEEL_RESTART_FOREGROUND:-0}";
     log "ERROR: started DIRECTLY by launchd (ppid 1) — refusing before any mutation (FLY-1783)."
     log "A submit-style job relaunches on every exit — the 2026-08-14 66-spawn storm shape."
     log "Fleet deployment has only two updater sources: the local 00:00/12:00 shuttle"
-    log "and a founder-authorized emergency ticket from scripts/request-restart.sh."
+    log "and an authority-verified emergency ticket from scripts/request-restart.sh."
     alert_launchd_refusal \
         "refused direct launchd invocation of restart-services.sh (ppid 1); see FLY-1783 / incident 2026-08-14"
     exit 78
@@ -2111,7 +2240,7 @@ fi
 # from this exact intended checkout. Source mode requires an explicit override.
 BRIDGE_DEPLOY_MODE="${FLYWHEEL_BRIDGE_DEPLOY_MODE:-built}"
 BRIDGE_ARTIFACT_SHA="$(jq -r '.artifactBuildSha // empty' \
-    "${FLYWHEEL_DIR}/packages/teamlead/dist/build-identity.json" 2>/dev/null || true)"
+    "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/packages/teamlead/dist/build-identity.json" 2>/dev/null || true)"
 if ! dbi_skip_build_allowed "$BRIDGE_DEPLOY_MODE" "$CURRENT_HEAD" "$BRIDGE_ARTIFACT_SHA"; then
     SKIP_BUILD=false
     log "Build identity requires rebuild (mode=${BRIDGE_DEPLOY_MODE} artifact=${BRIDGE_ARTIFACT_SHA:-missing})"
@@ -2183,9 +2312,9 @@ fi
 # Route the lib's fail-loud seam through this script's existing Discord channel
 # plus the Bridge-independent meta-alert.
 # shellcheck source=lib/bridge-port.sh
-source "${FLYWHEEL_DIR}/scripts/lib/bridge-port.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/bridge-port.sh"
 # shellcheck source=lib/bridge-process-tree.sh
-source "${FLYWHEEL_DIR}/scripts/lib/bridge-process-tree.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/bridge-process-tree.sh"
 bp_fail_loud() {
     local reason="$1" title="$2" body="$3"
     # >&2: never write to stdout — bp_confirm_port_released's verdict is captured
@@ -2193,8 +2322,8 @@ bp_fail_loud() {
     # (Codex R2 HIGH). alert_severe honors the same discipline (stdout empty).
     log "FAIL-LOUD [$reason] $title — $body" >&2
     alert_severe "port-fail-loud-${reason}" "$title" "$body"
-    [[ -x "${FLYWHEEL_DIR}/scripts/meta-alert.sh" ]] && \
-        "${FLYWHEEL_DIR}/scripts/meta-alert.sh" "$reason" "$title" "$body" || true
+    [[ -x "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/meta-alert.sh" ]] && \
+        "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/meta-alert.sh" "$reason" "$title" "$body" || true
 }
 
 # ── FLY-239: precise Bridge-stop targeting ──────────────────────────────
@@ -2286,12 +2415,12 @@ start_bridge() {
 # FLY-1507: keep destructive identity logic in sourceable production libraries.
 # shellcheck source=lib/lead-body-sweep.sh
 # shellcheck disable=SC1091
-source "${FLYWHEEL_DIR}/scripts/lib/lead-body-sweep.sh"
+source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/lead-body-sweep.sh"
 # FLY-1671: optional provenance reader. Missing/corrupt evidence is unknown and
 # never changes the launchd carrier verdict established below.
-if [[ -f "${FLYWHEEL_DIR}/scripts/lib/lead-body-evidence.sh" ]]; then
+if [[ -f "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/lead-body-evidence.sh" ]]; then
     # shellcheck source=lib/lead-body-evidence.sh
-    source "${FLYWHEEL_DIR}/scripts/lib/lead-body-evidence.sh" \
+    source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/lead-body-evidence.sh" \
       || log "DEBUG: body evidence library unavailable; provenance will be unknown"
 fi
 # FLY-1602 lifecycle helpers were sourced before global lock acquisition.
@@ -2376,7 +2505,7 @@ restart_lead_recover_job_after_failure() {
 
 codex_home_reconcile_restart_window() {
     local home_id="${1:-}"
-    local cycle="${FLYWHEEL_CODEX_RECONCILE_CYCLE_BIN:-${FLYWHEEL_DIR}/scripts/codex-home-reconcile-cycle.mjs}"
+    local cycle="${FLYWHEEL_CODEX_RECONCILE_CYCLE_BIN:-${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/codex-home-reconcile-cycle.mjs}"
     local args=(--source restart-window)
     [[ -z "$home_id" ]] || args+=(--home-id "$home_id")
     if [[ ! -f "$cycle" || -L "$cycle" ]]; then
@@ -2443,7 +2572,7 @@ restart_lead() {
         log "ERROR: Lead $lead_id manifest leadBackend witness is invalid"
         return 1
     }
-    local identity_cli="${FLYWHEEL_LEAD_IDENTITY_CLI:-${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js}"
+    local identity_cli="${FLYWHEEL_LEAD_IDENTITY_CLI:-${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/packages/flywheel-comm/dist/index.js}"
     if [[ ! -f "$identity_cli" ]]; then
         log "ERROR: canonical Lead identity CLI is missing; cannot restart $lead_id"
         return 1
@@ -2690,7 +2819,7 @@ restart_lead() {
 # Set to "none" to disable Path A while leaving Path B (--close-for-restart)
 # usable as an operator escape hatch. See doc/engineer/research/new/FLY-129-refresh-surfaces-spike.md.
 trigger_cmux_refresh() {
-    local sync_script="${FLYWHEEL_DIR}/scripts/flywheel-cmux-sync.sh"
+    local sync_script="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/flywheel-cmux-sync.sh"
     if [[ ! -x "$sync_script" ]]; then
         return 0
     fi
@@ -2770,7 +2899,7 @@ restart_lead_cmux_preflight() {
     bounded="${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/lib/bounded-run.sh}"
     if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-}" ]] \
       && [[ ! -x "$bounded" || -L "$bounded" ]]; then
-        bounded="${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh"
+        bounded="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/bounded-run.sh"
     fi
     [[ -x "$bounded" && ! -L "$bounded" ]] || return 2
     cmux_cli="${FLYWHEEL_RESTART_CMUX_BIN:-$(command -v cmux 2>/dev/null || true)}"
@@ -2793,12 +2922,12 @@ restart_lead_visibility_worker() {
     verifier="${FLYWHEEL_RESTART_VISIBILITY_VERIFIER:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/verify-agent-visibility.sh}"
     if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_VERIFIER:-}" ]] \
       && [[ ! -x "$verifier" || -L "$verifier" ]]; then
-        verifier="${FLYWHEEL_DIR}/scripts/verify-agent-visibility.sh"
+        verifier="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/verify-agent-visibility.sh"
     fi
     bounded="${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/lib/bounded-run.sh}"
     if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-}" ]] \
       && [[ ! -x "$bounded" || -L "$bounded" ]]; then
-        bounded="${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh"
+        bounded="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/bounded-run.sh"
     fi
     if [[ ! -x "$verifier" || -L "$verifier" ]]; then
         printf 'visibility_unproven\t%s\tverifier_unavailable\n' "$key" >> "$results_file"
@@ -3140,7 +3269,7 @@ do_restart_all_leads() {
         fi
     else
         # bin-copy execution context (fleet host): fall back to FLYWHEEL_DIR repo
-        if ! bash "${FLYWHEEL_DIR}/scripts/converge-flywheel-bin.sh" >&2; then
+        if ! bash "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/converge-flywheel-bin.sh" >&2; then
             log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads (FLY-954)" >&2
             record_lead_restart_detail wave_error "flywheel-bin convergence 失败"
             echo "skipped:0 failed:1 total:0"
@@ -3164,7 +3293,7 @@ do_restart_all_leads() {
     local migration_activated_key="" migration_result="" migration_helper=""
     if [[ "${RESTART_REASON:-}" == updater && ( -e "${HOME}/.flywheel/lead-backend-migrations/FLY-2459-honey-lemon.json" \
       || -L "${HOME}/.flywheel/lead-backend-migrations/FLY-2459-honey-lemon.json" ) ]]; then
-        migration_helper="${FLYWHEEL_DIR}/scripts/lib/lead-backend-migration.sh"
+        migration_helper="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/lead-backend-migration.sh"
         if [[ ! -f "$migration_helper" || -L "$migration_helper" ]] \
           || ! source "$migration_helper" \
           || ! migration_result="$(lead_backend_migration_run "$HOME")" \
@@ -3356,8 +3485,8 @@ build_project() {
 # artifact and remains restart/rollback compatible; a partial installation is
 # always a hard failure.
 account_switch_runtime_preflight() {
-    local runtime="${FLYWHEEL_DIR}/packages/teamlead/dist/account-heal/account-switch-cli.js"
-    local launcher="${FLYWHEEL_DIR}/packages/teamlead/bin/flywheel-claude-switch"
+    local runtime="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/packages/teamlead/dist/account-heal/account-switch-cli.js"
+    local launcher="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/packages/teamlead/bin/flywheel-claude-switch"
     if [[ ! -e "$runtime" && ! -e "$launcher" ]]; then
         log "Atomic account-switch runtime preflight: not required by this source generation"
         return 0
@@ -3560,6 +3689,21 @@ deploy_and_verify() {
         fi
     fi
 
+    # FLY-2654: an urgent direct-founder / Lead standing-authority wave gets one
+    # last source, version, announcement, carrier, and one-use-ledger check at
+    # the irreversible boundary. Failure resumes admission and returns a
+    # distinct code so the updater may restore only its untouched pre-merge
+    # checkout. No Bridge/Lead process has been stopped at this point.
+    if ! conditional_restart_final_check; then
+        resume_admission_best_effort
+        log "ERROR: conditional urgent restart evidence changed before service stop; refusing the fleet wave"
+        alert_severe "conditional-restart-final-check-failed" \
+            "Conditional urgent restart refused before service stop" \
+            "Direct-founder or Lead standing-authority evidence no longer matches at the final pre-stop boundary. No Bridge or Lead process was stopped; inspect the request audit before submitting a revised request."
+        RESTART_TERMINAL_REPORTED=true
+        return 82
+    fi
+
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
     # FLY-516 (Codex R1 HIGH): fail-closed — if the old Bridge's port can't be
     # freed, abort BEFORE start_bridge + the /health check (which would otherwise
@@ -3579,7 +3723,7 @@ deploy_and_verify() {
         # backup/checkpoint/weekly compaction. Failure evidence is durable and
         # alerting is emitted by the helper; maintenance must never strand the
         # fleet offline, so restart proceeds on a non-zero helper result.
-        if ! bash "$FLYWHEEL_DIR/scripts/db-maintenance.sh"; then
+        if ! bash "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/db-maintenance.sh"; then
             log "WARNING: database maintenance failed; continuing service restart"
             alert_severe "database-maintenance-failed" \
                 "Flywheel database maintenance failed" \

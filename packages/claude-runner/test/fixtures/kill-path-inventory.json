@@ -1188,6 +1188,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "packages/teamlead/src/bin/restart-request.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bin/restart-request.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/__tests__/bridge-exit-marker.test.ts:it(\"kill -9 shape: marker stays `running` → next boot latches the dirty evidence BEFORE overwriting\", () => {#1",
 		"path": "packages/teamlead/src/bridge/__tests__/bridge-exit-marker.test.ts",
 		"code": "it(\"kill -9 shape: marker stays `running` → next boot latches the dirty evidence BEFORE overwriting\", () => {",

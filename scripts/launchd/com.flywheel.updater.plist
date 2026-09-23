@@ -17,7 +17,8 @@
     <dict>
         <key>PATH</key><string>/Users/xiaorongli/.local/bin:/Users/xiaorongli/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
-    <!-- FLY-1959: only founder-authorized emergency tokens trigger this job.
+    <!-- FLY-1959/FLY-2654: only direct-founder v1 or active standing-authority
+         Lead-closeout v3 emergency tokens trigger this job.
          Ordinary merges publish nothing and never start updater. A token that
          arrives during a running invocation remains for the next instance.
          Absolute host-pinned path required (no '~'). -->

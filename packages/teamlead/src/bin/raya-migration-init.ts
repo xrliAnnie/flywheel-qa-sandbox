@@ -17,7 +17,12 @@ import {
 	readPrivate,
 	withRayaDeployLock,
 } from "./raya-migration-io.js";
-import { verifyMigrationAuthorization } from "./raya-migration-manifest.js";
+import {
+	standingMigrationAuthorization,
+	verifyMigrationAuthorization,
+	verifyStoredFounderMigrationAuthorization,
+} from "./raya-migration-manifest.js";
+import { rayaRegistryIdentity } from "./raya-registry-identity.js";
 import { readLeadInboundCursor } from "./seed-lead-inbound-cursor.js";
 
 const ID = /^[0-9]{17,20}$/;
@@ -142,22 +147,89 @@ export interface InitializeMigrationInput {
 	home: string;
 	flywheelDir: string;
 	targetRayaSha: string;
-	authorizationMessageId: string;
-	authorizationChannelId: string;
+	authorizationMessageId?: string;
+	authorizationChannelId?: string;
+	standingAuthority?: boolean;
 	probeBotTokenEnv: string;
 	io: MigrationIO;
 	dryRun?: boolean;
 	resumeFromFailed?: boolean;
 }
 
+export function migrateMigrationToStandingAuthority(input: {
+	home: string;
+	expectedManifestDigest: string;
+}): Record<string, unknown> {
+	if (!/^[a-f0-9]{64}$/.test(input.expectedManifestDigest))
+		throw new Error("migration-cas-invalid");
+	const file = join(
+		input.home,
+		".flywheel/raya/migrations/FLY-2445-standard-lead/manifest.json",
+	);
+	const bytes = readPrivate(file);
+	const before = digest(bytes);
+	if (before !== input.expectedManifestDigest)
+		throw new Error("migration-cas-conflict");
+	const manifest = record(JSON.parse(bytes));
+	const owners = manifest.legacy_owner;
+	if (
+		manifest.schemaVersion !== 1 ||
+		manifest.checkpoint !== "P2" ||
+		manifest.old_stopped_at ||
+		manifest.prestop_probe !== undefined ||
+		!Array.isArray(owners) ||
+		(manifest.authorization_history !== undefined &&
+			!Array.isArray(manifest.authorization_history)) ||
+		owners.some((owner) => {
+			const value = record(owner);
+			return (
+				value.stop_started_at_ms !== undefined ||
+				value.stopped_at_ms !== undefined
+			);
+		})
+	)
+		throw new Error("migration-standing-transition-unsafe");
+	const legacyAuthorization = verifyStoredFounderMigrationAuthorization(
+		String(manifest.target_raya_sha ?? ""),
+		manifest.authorization,
+	);
+	const authorization = standingMigrationAuthorization(input.home);
+	manifest.authorization_history = [
+		...(Array.isArray(manifest.authorization_history)
+			? manifest.authorization_history
+			: []),
+		legacyAuthorization,
+	];
+	manifest.authorization = authorization;
+	manifest.authority_migration = {
+		from: "founder-per-sha",
+		to: authorization.entry_id,
+		previous_manifest_digest: before,
+	};
+	atomicJson(file, manifest, before);
+	return {
+		status: "migrated",
+		entryId: authorization.entry_id,
+		beforeDigest: before,
+		afterDigest: digest(readPrivate(file)),
+	};
+}
+
 export async function initializeMigration(
 	input: InitializeMigrationInput,
 ): Promise<Record<string, unknown>> {
 	const { io, home } = input;
+	const founderAuthorization =
+		typeof input.authorizationMessageId === "string" &&
+		ID.test(input.authorizationMessageId) &&
+		typeof input.authorizationChannelId === "string" &&
+		ID.test(input.authorizationChannelId);
 	if (
 		!SHA.test(input.targetRayaSha) ||
-		!ID.test(input.authorizationMessageId) ||
-		!ID.test(input.authorizationChannelId) ||
+		(input.standingAuthority === true) === founderAuthorization ||
+		(input.standingAuthority === true &&
+			(input.authorizationMessageId !== undefined ||
+				input.authorizationChannelId !== undefined)) ||
 		!/^[A-Z][A-Z0-9_]*$/.test(input.probeBotTokenEnv) ||
 		input.probeBotTokenEnv === "RAYA_BOT_TOKEN"
 	)
@@ -263,17 +335,19 @@ export async function initializeMigration(
 		const rayaIdentity = record(await discordJson(io, "/users/@me", token));
 		if (rayaIdentity.id !== lead.botUserId || rayaIdentity.bot !== true)
 			throw new Error("bridge-bot-mismatch");
-		const authorization = verifyMigrationAuthorization({
-			targetRayaSha: input.targetRayaSha,
-			messageId: input.authorizationMessageId,
-			channelId: input.authorizationChannelId,
-			founder: { processEnv: {}, dotenvPath: envFile },
-			message: await discordJson(
-				io,
-				`/channels/${input.authorizationChannelId}/messages/${input.authorizationMessageId}`,
-				probeToken,
-			),
-		});
+		const authorization = input.standingAuthority
+			? standingMigrationAuthorization(home)
+			: verifyMigrationAuthorization({
+					targetRayaSha: input.targetRayaSha,
+					messageId: input.authorizationMessageId!,
+					channelId: input.authorizationChannelId!,
+					founder: { processEnv: {}, dotenvPath: envFile },
+					message: await discordJson(
+						io,
+						`/channels/${input.authorizationChannelId}/messages/${input.authorizationMessageId}`,
+						probeToken,
+					),
+				});
 		const probeIdentity = record(
 			await discordJson(io, "/users/@me", probeToken),
 		);
@@ -282,7 +356,8 @@ export async function initializeMigration(
 			!ID.test(probeIdentity.id) ||
 			probeIdentity.bot !== true ||
 			probeIdentity.id === lead.botUserId ||
-			probeIdentity.id === authorization.evidence_author_id
+			(authorization.granted_by === "founder" &&
+				probeIdentity.id === authorization.evidence_author_id)
 		)
 			throw new Error("probe-bot-invalid");
 		const legacyOwners = await inspectLegacyOwners(home, io);
@@ -365,6 +440,9 @@ export async function initializeMigration(
 			authorization,
 			lead_bot_user_id: lead.botUserId,
 			registry_digest: digest(registryBytes),
+			// FLY-2654 QA2 rework: the shuttle and the proof compare this
+			// Raya-scoped projection, never the whole-file digest above.
+			registry_identity: rayaRegistryIdentity(JSON.parse(registryBytes)),
 			summary_receipt_digest: digest(summaryBytes),
 			canonical_manifest_digest: digest(canonicalBytes),
 			bridge: {

@@ -1771,6 +1771,7 @@ for required_command in (
     "bash scripts/__tests__/lead-body-evidence.test.sh",
     "bash scripts/__tests__/lead-body-provenance.test.sh",
     "bash scripts/__tests__/request-restart.test.sh",
+    "bash scripts/__tests__/conditional-restart.test.sh",
     "bash scripts/__tests__/fly1726-default-lead-delivery.test.sh",
     "bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh",
     "bash scripts/__tests__/fly1697-v2-lease-body.test.sh",

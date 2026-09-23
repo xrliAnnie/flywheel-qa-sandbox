@@ -259,6 +259,7 @@ bash -c '
   audit_tmux_qa_residue_read_only() { :; }
   pause_admission_best_effort() { :; }
   resume_admission_best_effort() { :; }
+  conditional_restart_final_check() { return 0; }
   stop_bridge() { return 0; }
   codex_home_reconcile_restart_window() { return 0; }
   log() { :; }

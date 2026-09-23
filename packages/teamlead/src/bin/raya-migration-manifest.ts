@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,7 +12,13 @@ import type { CursorSeed } from "./seed-lead-inbound-cursor.js";
 const SNOWFLAKE = /^[0-9]{17,20}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
 
-export interface MigrationAuthorization {
+import { loadVerifiedStandingAuthority } from "./standing-authority-activation-store.js";
+import {
+	resolveStandingAuthorityLedgerPath,
+	resolveStandingAuthorityStateDir,
+} from "./standing-authority-confirmation-ledger.js";
+
+export interface FounderMigrationAuthorization {
 	legacy_stop: true;
 	granted_by: "founder";
 	granted_at: string;
@@ -22,6 +29,24 @@ export interface MigrationAuthorization {
 	canonical_line: string;
 	issued_by: "flywheel-eng-lead";
 }
+
+export interface StandingMigrationAuthorization {
+	legacy_stop: true;
+	granted_by: "standing-carve-out";
+	entry_id: "raya-carrier-follow-main/v1";
+	entry_digest: string;
+	activation_manifest_digest: string;
+	manifest_revision: number;
+	mechanism_version: string;
+	execution_package_digest: string;
+	confirmed_by: "flywheel-cos-lead";
+	confirmation_receipt_id: string;
+	issued_by: "flywheel-eng-lead";
+}
+
+export type MigrationAuthorization =
+	| FounderMigrationAuthorization
+	| StandingMigrationAuthorization;
 
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value))
@@ -35,7 +60,7 @@ export function verifyMigrationAuthorization(input: {
 	messageId: string;
 	channelId: string;
 	founder: Parameters<typeof resolveFounderId>[0];
-}): MigrationAuthorization {
+}): FounderMigrationAuthorization {
 	const founderId = resolveFounderId(input.founder);
 	if (
 		!founderId ||
@@ -70,6 +95,66 @@ export function verifyMigrationAuthorization(input: {
 		canonical_line: canonical,
 		issued_by: "flywheel-eng-lead",
 	};
+}
+
+export function verifyStoredFounderMigrationAuthorization(
+	targetRayaSha: string,
+	value: unknown,
+): FounderMigrationAuthorization {
+	const authorization = object(value);
+	const canonical = `FLY-2496 AUTHORIZE register cutover=${targetRayaSha.slice(0, 8)} urgent-restart baseline=quiet15m`;
+	if (
+		!SHA40.test(targetRayaSha) ||
+		Object.keys(authorization).sort().join(",") !==
+			"canonical_line,content_sha256,evidence_author_id,evidence_channel_id,evidence_message_id,granted_at,granted_by,issued_by,legacy_stop" ||
+		authorization.legacy_stop !== true ||
+		authorization.granted_by !== "founder" ||
+		typeof authorization.granted_at !== "string" ||
+		!Number.isFinite(Date.parse(authorization.granted_at)) ||
+		!SNOWFLAKE.test(String(authorization.evidence_message_id)) ||
+		!SNOWFLAKE.test(String(authorization.evidence_channel_id)) ||
+		!SNOWFLAKE.test(String(authorization.evidence_author_id)) ||
+		!/^[a-f0-9]{64}$/.test(String(authorization.content_sha256)) ||
+		authorization.canonical_line !== canonical ||
+		authorization.issued_by !== "flywheel-eng-lead"
+	)
+		throw new Error("stored-founder-authorization-invalid");
+	return authorization as unknown as FounderMigrationAuthorization;
+}
+
+export function standingMigrationAuthorization(
+	home: string,
+): StandingMigrationAuthorization {
+	const active = loadVerifiedStandingAuthority(
+		resolveStandingAuthorityStateDir(home),
+		"raya-carrier-follow-main/v1",
+		{ ledgerPath: resolveStandingAuthorityLedgerPath(home) },
+	);
+	const confirmation = active.manifest.independentConfirmation;
+	if (!confirmation) throw new Error("standing-authority-not-active");
+	return {
+		legacy_stop: true,
+		granted_by: "standing-carve-out",
+		entry_id: "raya-carrier-follow-main/v1",
+		entry_digest: active.verification.entryDigest,
+		activation_manifest_digest: active.verification.manifestDigest,
+		manifest_revision: active.verification.revision,
+		mechanism_version: active.verification.mechanismVersion,
+		execution_package_digest: active.verification.packageDigest,
+		confirmed_by: confirmation.identity,
+		confirmation_receipt_id: confirmation.receiptId,
+		issued_by: "flywheel-eng-lead",
+	};
+}
+
+export function verifyStandingMigrationAuthorization(
+	home: string,
+	value: unknown,
+): StandingMigrationAuthorization {
+	const expected = standingMigrationAuthorization(home);
+	if (JSON.stringify(value) !== JSON.stringify(expected))
+		throw new Error("standing-migration-authorization-mismatch");
+	return expected;
 }
 
 export interface MigrationResolution {
@@ -240,6 +325,9 @@ export async function runMigrationManifest(
 			"target-raya-sha": { type: "string" },
 			"authorization-message-id": { type: "string" },
 			"authorization-channel-id": { type: "string" },
+			"standing-authority": { type: "boolean" },
+			"migration-manifest": { type: "string" },
+			"expected-manifest-digest": { type: "string" },
 			"probe-bot-token-env": { type: "string" },
 			"dry-run": { type: "boolean" },
 			"resume-from-failed": { type: "boolean" },
@@ -287,13 +375,64 @@ export async function runMigrationManifest(
 	}
 	if (parsed.values["lock-owner"] !== undefined)
 		throw new Error("migration-arguments-invalid");
+	if (parsed.positionals[0] === "verify-standing") {
+		const allowed = new Set(["migration-manifest"]);
+		if (Object.keys(parsed.values).some((key) => !allowed.has(key)))
+			throw new Error("migration-arguments-invalid");
+		const path =
+			parsed.values["migration-manifest"] ??
+			join(
+				context.home,
+				".flywheel/raya/migrations/FLY-2445-standard-lead/manifest.json",
+			);
+		const migration = object(JSON.parse(readFileSync(path, "utf8")));
+		verifyStandingMigrationAuthorization(context.home, migration.authorization);
+		return { status: "verified", authority: "standing-carve-out" };
+	}
+	if (parsed.positionals[0] === "migrate-standing-authority") {
+		if (
+			Object.keys(parsed.values).some(
+				(key) => key !== "expected-manifest-digest",
+			)
+		)
+			throw new Error("migration-arguments-invalid");
+		const { migrateMigrationToStandingAuthority } = await import(
+			"./raya-migration-init.js"
+		);
+		return migrateMigrationToStandingAuthority({
+			home: context.home,
+			expectedManifestDigest: string("expected-manifest-digest"),
+		});
+	}
 	if (parsed.positionals[0] === "init") {
+		const allowed = new Set([
+			"target-raya-sha",
+			"authorization-message-id",
+			"authorization-channel-id",
+			"standing-authority",
+			"probe-bot-token-env",
+			"dry-run",
+			"resume-from-failed",
+		]);
+		if (Object.keys(parsed.values).some((key) => !allowed.has(key)))
+			throw new Error("migration-arguments-invalid");
 		const { initializeMigration } = await import("./raya-migration-init.js");
+		const standing = parsed.values["standing-authority"] === true;
+		if (
+			standing &&
+			(parsed.values["authorization-message-id"] !== undefined ||
+				parsed.values["authorization-channel-id"] !== undefined)
+		)
+			throw new Error("migration-arguments-invalid");
 		return initializeMigration({
 			...context,
 			targetRayaSha: string("target-raya-sha"),
-			authorizationMessageId: string("authorization-message-id"),
-			authorizationChannelId: string("authorization-channel-id"),
+			...(standing
+				? { standingAuthority: true }
+				: {
+						authorizationMessageId: string("authorization-message-id"),
+						authorizationChannelId: string("authorization-channel-id"),
+					}),
 			probeBotTokenEnv: string("probe-bot-token-env"),
 			dryRun: parsed.values["dry-run"] === true,
 			resumeFromFailed: parsed.values["resume-from-failed"] === true,

@@ -1,3 +1,4 @@
+import { recordStandingAuthorityLoadedRuleReceipts } from "../../bin/standing-authority-loaded-rule.js";
 import { startDefaultLeadCapabilityParent } from "../../lead-capabilities/default-runtime.js";
 import {
 	buildLeadModelEnv,
@@ -1491,6 +1492,7 @@ export function buildCodexLeadRuntime(
 		dependencies.capabilityParent ?? startDefaultLeadCapabilityParent;
 	let capabilityParent: LeadCapabilityParent | undefined;
 	let capabilityCarrierInstanceId: string | undefined;
+	const standingReceiptInstanceId = randomBytes(24).toString("hex");
 
 	mkdirSync(config.stateDir, { recursive: true });
 
@@ -1949,16 +1951,41 @@ export function buildCodexLeadRuntime(
 				queue: externalReceiptQueue,
 				journal,
 			});
-			const turnProcess: CodexProcessLike = nativeConfig
-				? {
-						on: proc.on.bind(proc),
-						request: proc.request.bind(proc),
-						startTurn: async (args) => {
-							const admission = await nativeConfig!.beforeTurn();
-							return proc.startTurn(admitLeadTurn(args, admission));
-						},
+			const turnProcess: CodexProcessLike = {
+				on: proc.on.bind(proc),
+				request: proc.request.bind(proc),
+				startTurn: async (args) => {
+					const admitted = nativeConfig
+						? admitLeadTurn(args, await nativeConfig.beforeTurn())
+						: args;
+					const turnId = await proc.startTurn(admitted);
+					if (turnId) {
+						// FLY-2654 review R7: the receipt is evidence, not admission. The
+						// app-server turn is already live here, so any evidence failure
+						// (partial rules after a revocation, ENOSPC, archive conflict) is
+						// logged and skipped instead of failing the executor's turn.
+						recordStandingAuthorityLoadedRuleReceipts({
+							root: join(
+								config.stateDir,
+								"standing-authority",
+								"loaded-rule-receipts",
+							),
+							input: {
+								baseInstructions: threadBaseInstructions ?? "",
+								leadIdentity: config.leadId,
+								backend: "codex-app-server",
+								instanceId: standingReceiptInstanceId,
+								threadId,
+								turnId,
+								observedAt: new Date().toISOString(),
+							},
+							warn: (message) =>
+								console.warn(`[codex-lead-runtime] ${message}`),
+						});
 					}
-				: proc;
+					return turnId;
+				},
+			};
 			const executor = new CodexTurnExecutor({
 				process: turnProcess,
 				threadId,

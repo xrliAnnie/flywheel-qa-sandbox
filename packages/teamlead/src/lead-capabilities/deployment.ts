@@ -17,6 +17,8 @@ import { join } from "node:path";
 
 export const LEAD_DEPLOYMENT_ENTRIES = [
 	"bin/verify-codex-deployment.js",
+	"bin/standing-authority.js",
+	"bin/standing-authority-loaded-rule.js",
 	"lead-backends/codex/codex-lead-runtime.js",
 	"lead-backends/codex/codex-lead-tui-runtime.js",
 	"lead-backends/codex/capability-mcp-entry.js",

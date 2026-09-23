@@ -1,0 +1,13 @@
+{
+  "url": "https://fw-reports-42fba7.vercel.app/r/c018a2dc6a267a2b761a5f0c9c532575/",
+  "status": 200,
+  "scripts": 1,
+  "nonceReplaced": true,
+  "nonceMatchesCsp": true,
+  "scriptMatchesCommittedSource": true,
+  "commentInputs": 8,
+  "externalDependencies": [],
+  "hostedSha256": "1f64461f838529ac146040521a0acab071d88dfa474a35baa3f513cffa07ad13",
+  "sourceSha256": "30c0a3fc6cf37714827dbd6fdc5383c52201a89c09a7a268fb71ed209d3f3dfa",
+  "boundary": "HTTP/source/CSP and separate VM DOM validation only; no browser QA; local Mermaid render unavailable"
+}

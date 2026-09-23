@@ -1,0 +1,67 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "573e3ee4-9c04-4648-a2f5-a6d14f787c7f",
+  "round": 3,
+  "findings": [
+    {
+      "id": "enforcement-deploy-gate-blocks-every-shuttle",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 68,
+      "title": "按部署 commit 设 confirmer 门 + Flywheel 每天两班车 ⇒ 两条 carve-out 大部分时间处于 awaiting-confirmation，可能达不到本单目的",
+      "detail": "本轮把自动续签整段删掉是对的（第二轮那句不可兑现的「漏依赖则验证失败」已不存在）。但替代方案是「执行代码部署 commit 改变时，独立 confirmer 必须核对新部署…并在保留原批准链的 manifest 新 revision 上确认」，而 enforcementDeployedCommit 按 §3 表就是「实际执行 producer/consumer 的部署版本」，即当前部署 SHA。实测 origin/main 近 14 天 175 个提交、15 个自然日**每天都有**提交，定时班车（00:00/12:00，deployed-sha 落后即部署）因此几乎每天换两次部署版本。更要紧的是时序：update-flywheel.sh:711-726 的 `update_main` 在同一次调用里先 `updater_run_launchd_then_cycle` 完成部署，紧接着 scheduled 分支才跑 `updater_raya_pass`——于是凡是本轮部署了 Flywheel 的班车，Raya pass 一定落在一个刚刚产生、尚无 confirmer 的部署版本上，按 §3 必须记 `activation-awaiting-confirmation`。净效果是 Raya standing carve-out 基本不会自主触发，而 FLY-2654 的原始要求是「Raya 合入 main → 下一班车自动带上，不再有任何逐次授权步骤」。计划也没写这道门由谁触发、什么信号唤醒 confirmer、多久内完成，只说「独立确认完成后由既有下一班车继续，不增加新调度器」，等于默认延迟至少一个班车周期且无人负责。这不是安全问题（全部 fail-closed、且明确禁止谎报已上线），但很可能是功能不成立。建议二选一并写进计划：(a) 明确 confirmer 循环的触发信号、责任体与 SLA，并如实量化「Raya 更新平均延迟一到两个班车」，让 founder 在批卡时知道自己买的是什么；或 (b) 把这道门从「部署 commit 标签变了」收窄成「enforcement 产物内容变了」，但这次要给可机械推导且被测试钉住的范围（部署 dist 入口的传递 import 闭包 + 显式 bash 消费者清单 + lockfile digest，外加一条反例测试：运行时确实加载、但不在清单里的文件必须让验证 FAIL），不能回到第二轮那种靠断言的闭包。",
+      "findingKey": "enforcement-deploy-gate-blocks-every-shuttle"
+    },
+    {
+      "id": "closeout-wave-activation-binding-ambiguous",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 124,
+      "title": "收尾票最终复核里的 activation 绑哪个部署 commit 没写，两种读法各有坏结果",
+      "detail": "§5.3 规定最终复核「重新验证当前头/判决/时区/撤回/activation」，挂在 `restart-services.sh` pause 成功之后、任何 service stop 之前。实测这个位置的状态是：`update-flywheel.sh:172` 的 `updater_merge_remote` 已经把工作树快进到新 head，而 `deployed-sha` 要到 `restart-services.sh:3284`（Step 5，Bridge + Lead 波次都跑完之后）才写；也就是说在 :3053 pause 成功、:3061 `stop_bridge` 之前，工作树是新 head、`~/.flywheel/deployed-sha` 还是旧值。计划没说 activation 的 enforcementDeployedCommit 此刻比对哪一个。绑旧值：复核通过、波次照常执行，但重启完成后新代码的部署版本无人确认，按 §3 两条 carve-out 立即进入 awaiting-confirmation——Lead 刚用掉的这张票造出了一个自己失效的舰队，同波次的 Raya pass 也只能报 awaiting-confirmation。绑新 head：凡是携带代码前进的收尾票（正常情况都携带）都会在最终复核处失配退出，留下 source HEAD ≠ deployed-sha，直接踩 `restart-services.sh:824` 的「deploy did not converge」告警路径。§3 只为 Raya pass 写了 awaiting-confirmation 的表现，完全没覆盖收尾票本身。请明确选一种并写出波次的完整结果（包括失配退出后工作树/deployed-sha 的收敛责任），别把这个岔口留给实施者猜——猜「绑旧值」就是在一个与确认对象不同的部署版本上行权，正是本轮修法要堵的那种绑定漏洞。",
+      "findingKey": "closeout-wave-activation-binding-ambiguous"
+    },
+    {
+      "id": "livebundle-codex-lane-unavailable",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 70,
+      "title": "点名的 liveBundleReceipt 来源只存在于 Claude lane，Codex-backed Engineering Lead 拿不到证据",
+      "detail": "本轮点名 active.json + check-rules-truth 是准确的：`check-rules-truth.mjs` 实测确实按 `~/.flywheel/lead-rules-bundles/<project>-<lead>.active.json` 校验 role/mode/selectedSources/bundlePath/bundle 内容与 sha（:479-495），再核 pid、`ps -o lstart=` 对 supervisorStart（:504-530）、tmux pane 存活（:532-558）、进程树归属与 live `--append-system-prompt-file` argv（:560-598），并把 STATIC_ONLY/STALE/DEGRADED/AMBIGUOUS 与 PASS 分开——计划说「静态模式或未绑定活进程的结果不得用于 activation」与实现完全对得上。问题是这条链只在 Claude lane 存在：`RULES_BUNDLE_STATE_DIR` / `_rules_bundle_write_receipt` / `_rules_bundle_commit_once` 只在 `claude-lead.sh`(:3045-3048, :3419) 接通，`codex-lead.sh`(:196-198) 虽然 source 同一个库，但只用 `assemble_full_access_governance`，不写 active.json；live 判定本身也是 Claude 形状（isClaudeAgent、--append-system-prompt-file、tmux `flywheel:<project>-<lead>`）。而合同明确把 Codex Lead 也绑进来（founder-only-authority.md:506「also binds Leads with no hook layer, including Codex」、:531-532「Claude- or Codex-backed」）。结合计划自己的「若 live checker 无法验证则 fail closed」，Codex-backed 的 Engineering Lead 永远造不出 liveBundleReceipt，也就永远无法行使这两条 carve-out。这是安全的默认，但计划应当把它说破：要么把两条 entry 的 scope 显式限定为 Claude-backed Engineering Lead（§3 的 scope 字段本来就要求绑 Lead 权限类别），要么点名 Codex lane 的等价证据路径。生产 flywheel-eng-lead 目前是 Claude、active.json 齐备（mode=bundle, role=dept, files=18, sha 非空），所以这不挡当下落地，只是范围没写清。",
+      "findingKey": "livebundle-codex-lane-unavailable"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "enforcement-deploy-gate-blocks-every-shuttle",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 68,
+      "title": "按部署 commit 设 confirmer 门 + Flywheel 每天两班车 ⇒ 两条 carve-out 大部分时间处于 awaiting-confirmation，可能达不到本单目的",
+      "detail": "本轮把自动续签整段删掉是对的（第二轮那句不可兑现的「漏依赖则验证失败」已不存在）。但替代方案是「执行代码部署 commit 改变时，独立 confirmer 必须核对新部署…并在保留原批准链的 manifest 新 revision 上确认」，而 enforcementDeployedCommit 按 §3 表就是「实际执行 producer/consumer 的部署版本」，即当前部署 SHA。实测 origin/main 近 14 天 175 个提交、15 个自然日**每天都有**提交，定时班车（00:00/12:00，deployed-sha 落后即部署）因此几乎每天换两次部署版本。更要紧的是时序：update-flywheel.sh:711-726 的 `update_main` 在同一次调用里先 `updater_run_launchd_then_cycle` 完成部署，紧接着 scheduled 分支才跑 `updater_raya_pass`——于是凡是本轮部署了 Flywheel 的班车，Raya pass 一定落在一个刚刚产生、尚无 confirmer 的部署版本上，按 §3 必须记 `activation-awaiting-confirmation`。净效果是 Raya standing carve-out 基本不会自主触发，而 FLY-2654 的原始要求是「Raya 合入 main → 下一班车自动带上，不再有任何逐次授权步骤」。计划也没写这道门由谁触发、什么信号唤醒 confirmer、多久内完成，只说「独立确认完成后由既有下一班车继续，不增加新调度器」，等于默认延迟至少一个班车周期且无人负责。这不是安全问题（全部 fail-closed、且明确禁止谎报已上线），但很可能是功能不成立。建议二选一并写进计划：(a) 明确 confirmer 循环的触发信号、责任体与 SLA，并如实量化「Raya 更新平均延迟一到两个班车」，让 founder 在批卡时知道自己买的是什么；或 (b) 把这道门从「部署 commit 标签变了」收窄成「enforcement 产物内容变了」，但这次要给可机械推导且被测试钉住的范围（部署 dist 入口的传递 import 闭包 + 显式 bash 消费者清单 + lockfile digest，外加一条反例测试：运行时确实加载、但不在清单里的文件必须让验证 FAIL），不能回到第二轮那种靠断言的闭包。",
+      "findingKey": "enforcement-deploy-gate-blocks-every-shuttle"
+    },
+    {
+      "id": "closeout-wave-activation-binding-ambiguous",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 124,
+      "title": "收尾票最终复核里的 activation 绑哪个部署 commit 没写，两种读法各有坏结果",
+      "detail": "§5.3 规定最终复核「重新验证当前头/判决/时区/撤回/activation」，挂在 `restart-services.sh` pause 成功之后、任何 service stop 之前。实测这个位置的状态是：`update-flywheel.sh:172` 的 `updater_merge_remote` 已经把工作树快进到新 head，而 `deployed-sha` 要到 `restart-services.sh:3284`（Step 5，Bridge + Lead 波次都跑完之后）才写；也就是说在 :3053 pause 成功、:3061 `stop_bridge` 之前，工作树是新 head、`~/.flywheel/deployed-sha` 还是旧值。计划没说 activation 的 enforcementDeployedCommit 此刻比对哪一个。绑旧值：复核通过、波次照常执行，但重启完成后新代码的部署版本无人确认，按 §3 两条 carve-out 立即进入 awaiting-confirmation——Lead 刚用掉的这张票造出了一个自己失效的舰队，同波次的 Raya pass 也只能报 awaiting-confirmation。绑新 head：凡是携带代码前进的收尾票（正常情况都携带）都会在最终复核处失配退出，留下 source HEAD ≠ deployed-sha，直接踩 `restart-services.sh:824` 的「deploy did not converge」告警路径。§3 只为 Raya pass 写了 awaiting-confirmation 的表现，完全没覆盖收尾票本身。请明确选一种并写出波次的完整结果（包括失配退出后工作树/deployed-sha 的收敛责任），别把这个岔口留给实施者猜——猜「绑旧值」就是在一个与确认对象不同的部署版本上行权，正是本轮修法要堵的那种绑定漏洞。",
+      "findingKey": "closeout-wave-activation-binding-ambiguous"
+    },
+    {
+      "id": "livebundle-codex-lane-unavailable",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2654-lead-standing-authority/plan.md",
+      "line": 70,
+      "title": "点名的 liveBundleReceipt 来源只存在于 Claude lane，Codex-backed Engineering Lead 拿不到证据",
+      "detail": "本轮点名 active.json + check-rules-truth 是准确的：`check-rules-truth.mjs` 实测确实按 `~/.flywheel/lead-rules-bundles/<project>-<lead>.active.json` 校验 role/mode/selectedSources/bundlePath/bundle 内容与 sha（:479-495），再核 pid、`ps -o lstart=` 对 supervisorStart（:504-530）、tmux pane 存活（:532-558）、进程树归属与 live `--append-system-prompt-file` argv（:560-598），并把 STATIC_ONLY/STALE/DEGRADED/AMBIGUOUS 与 PASS 分开——计划说「静态模式或未绑定活进程的结果不得用于 activation」与实现完全对得上。问题是这条链只在 Claude lane 存在：`RULES_BUNDLE_STATE_DIR` / `_rules_bundle_write_receipt` / `_rules_bundle_commit_once` 只在 `claude-lead.sh`(:3045-3048, :3419) 接通，`codex-lead.sh`(:196-198) 虽然 source 同一个库，但只用 `assemble_full_access_governance`，不写 active.json；live 判定本身也是 Claude 形状（isClaudeAgent、--append-system-prompt-file、tmux `flywheel:<project>-<lead>`）。而合同明确把 Codex Lead 也绑进来（founder-only-authority.md:506「also binds Leads with no hook layer, including Codex」、:531-532「Claude- or Codex-backed」）。结合计划自己的「若 live checker 无法验证则 fail closed」，Codex-backed 的 Engineering Lead 永远造不出 liveBundleReceipt，也就永远无法行使这两条 carve-out。这是安全的默认，但计划应当把它说破：要么把两条 entry 的 scope 显式限定为 Claude-backed Engineering Lead（§3 的 scope 字段本来就要求绑 Lead 权限类别），要么点名 Codex lane 的等价证据路径。生产 flywheel-eng-lead 目前是 Claude、active.json 齐备（mode=bundle, role=dept, files=18, sha 非空），所以这不挡当下落地，只是范围没写清。",
+      "findingKey": "livebundle-codex-lane-unavailable"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "2e6e23e7-cb4b-45ae-a549-d9a58b247512"
+}

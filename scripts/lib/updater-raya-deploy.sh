@@ -82,6 +82,65 @@ raya_is_sha40() { [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]]; }
 raya_is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
 raya_git() { git -C "$RAYA_CODE_DIR" "$@"; }
 raya_sha256() { shasum -a 256 "$1" 2>/dev/null | awk 'NF == 2 {print $1}'; }
+
+# FLY-2654 QA2 rework: the migration ledger freezes only Raya's own identity
+# rows of projects.json (scripts/lib/raya-registry-identity.jq), never the
+# whole-file sha256. On 2026-09-19 an unrelated Lead model edit (trailing
+# newline only) made every shuttle refuse with awaiting_pre_activation_rebind.
+# An unrelated Lead edit, a new Lead row or a serialization-only difference must
+# still deploy; a Raya identity change fails closed with the changed paths.
+RAYA_REGISTRY_IDENTITY_JQ="${RAYA_REGISTRY_IDENTITY_JQ:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/raya-registry-identity.jq}"
+RAYA_REBIND_REFUSAL=""
+RAYA_REGISTRY_IDENTITY_MIGRATE=""
+raya_registry_identity_projection() {
+  [[ -f "$1" && ! -L "$1" && -f "$RAYA_REGISTRY_IDENTITY_JQ" && ! -L "$RAYA_REGISTRY_IDENTITY_JQ" ]] || return 1
+  jq -c -f "$RAYA_REGISTRY_IDENTITY_JQ" "$1" 2>/dev/null
+}
+raya_registry_identity_drift() {
+  jq -rn --argjson a "$1" --argjson b "$2" '
+    def leaves: [paths(scalars) as $p | {p: ($p | map(tostring) | join(".")), v: getpath($p)}];
+    ($a | leaves) as $x | ($b | leaves) as $y |
+    ([$x[] | select(. as $e | ($y | any(. == $e) | not)) | .p] +
+     [$y[] | select(. as $e | ($x | any(. == $e) | not)) | .p]) | unique | join(",")'
+}
+# Returns 0 when Raya's registry identity is unchanged. Sets RAYA_REBIND_REFUSAL
+# with the named reason on refusal, and RAYA_REGISTRY_IDENTITY_MIGRATE with the
+# projection to record when a legacy whole-file ledger can be upgraded in place.
+raya_registry_identity_check() {
+  local registry="$1" stored="" current="" drift="" bot="" root="" backend=""
+  RAYA_REBIND_REFUSAL=""
+  RAYA_REGISTRY_IDENTITY_MIGRATE=""
+  current="$(raya_registry_identity_projection "$registry")" \
+    || { RAYA_REBIND_REFUSAL=raya-registry-unreadable; return 1; }
+  stored="$(jq -c '.registry_identity // empty' "$RAYA_MIGRATION_MANIFEST" 2>/dev/null)" || stored=""
+  if [[ -n "$stored" ]]; then
+    jq -n --argjson a "$stored" --argjson b "$current" -e '$a == $b' >/dev/null 2>&1 && return 0
+    drift="$(raya_registry_identity_drift "$stored" "$current" 2>/dev/null)" || drift=""
+    RAYA_REBIND_REFUSAL="raya-registry-identity-drift:${drift:-unknown}"
+    return 1
+  fi
+  # Legacy ledger (whole-file digest only). Unchanged bytes remain proof; a
+  # byte change is accepted only when Raya's own rows still match the facts the
+  # migration froze independently (bot identity, workspace, canonical carrier).
+  bot="$(jq -r '.lead_bot_user_id // empty' "$RAYA_MIGRATION_MANIFEST" 2>/dev/null)" || bot=""
+  root="$(jq -r '.projectDir // empty' "$RAYA_CANONICAL_MANIFEST" 2>/dev/null)" || root=""
+  backend="$(jq -r '.leadBackend.backendId // empty' "$RAYA_CANONICAL_MANIFEST" 2>/dev/null)" || backend=""
+  if [[ "$(raya_sha256 "$registry")" != "$(jq -r '.registry_digest // empty' "$RAYA_MIGRATION_MANIFEST")" ]]; then
+    if [[ -z "$bot" || -z "$root" || -z "$backend" ]] || ! jq -n --argjson p "$current" \
+        --arg bot "$bot" --arg root "$root" --arg backend "$backend" -e '
+        ($p | length) == 1 and ($p[0].leads | length) == 1 and
+        $p[0].projectRoot == $root and $p[0].leads[0].botUserId == $bot and
+        $p[0].leads[0].botTokenEnv == "RAYA_BOT_TOKEN" and
+        (($p[0].leads[0].backend // "claude-code") == $backend)' >/dev/null 2>&1; then
+      RAYA_REBIND_REFUSAL="raya-registry-identity-unverifiable:legacy-whole-file-digest-mismatch"
+      return 1
+    fi
+  fi
+  if jq -n --argjson p "$current" -e '($p | length) == 1 and ($p[0].leads | length) == 1' >/dev/null 2>&1; then
+    RAYA_REGISTRY_IDENTITY_MIGRATE="$current"
+  fi
+  return 0
+}
 raya_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
 raya_owner_file() {
   local mode=""
@@ -229,7 +288,7 @@ PY
 
 raya_legacy_stop_authorized() {
   raya_manifest_base_valid || return 1
-  jq -e '
+  if jq -e '
     def snowflake: type == "string" and test("^[0-9]{17,20}$");
     (.target_raya_sha | type == "string" and test("^[0-9a-f]{40}$")) and
     .authorization.legacy_stop == true and .authorization.granted_by == "founder" and
@@ -240,7 +299,25 @@ raya_legacy_stop_authorized() {
     .authorization.canonical_line ==
       ("FLY-2496 AUTHORIZE register cutover=" + .target_raya_sha[0:8] +
        " urgent-restart baseline=quiet15m")
-  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1
+  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+    return 0
+  fi
+  jq -e '
+    .authorization.legacy_stop == true and
+    .authorization.granted_by == "standing-carve-out" and
+    .authorization.entry_id == "raya-carrier-follow-main/v1" and
+    (.authorization.entry_digest | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.authorization.activation_manifest_digest | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.authorization.manifest_revision | type == "number" and . >= 1 and floor == .) and
+    (.authorization.mechanism_version | type == "string" and length > 0) and
+    (.authorization.execution_package_digest | type == "string" and test("^[0-9a-f]{64}$")) and
+    .authorization.confirmed_by == "flywheel-cos-lead" and
+    (.authorization.confirmation_receipt_id | type == "string" and length > 0) and
+    .authorization.issued_by == "flywheel-eng-lead" and
+    (.authorization | has("canonical_line") | not)
+  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+  "$RAYA_STANDARD_NODE_BIN" "$FLYWHEEL_TEAMLEAD_ROOT/dist/bin/raya-migration-manifest.js" \
+    verify-standing --migration-manifest "$RAYA_MIGRATION_MANIFEST" >/dev/null
 }
 
 # A bootout alone does not survive login: ignored legacy dist can still run.
@@ -1109,6 +1186,19 @@ raya_prestop_prepare() {
   remote_head="$(raya_git rev-parse origin/main 2>/dev/null || true)"
   raya_is_sha40 "$remote_head" || return 1
   raya_git merge-base --is-ancestor "$RAYA_TARGET" "$remote_head" || return 1
+  if [[ "$remote_head" != "$RAYA_TARGET" ]] \
+    && [[ "$(jq -r '.authorization.granted_by // ""' "$RAYA_MIGRATION_MANIFEST")" == standing-carve-out ]]; then
+    jq -e 'all(.legacy_owner[]?; .stop_started_at_ms == null and .stopped_at_ms == null) and
+      (.old_stopped_at // null) == null and (.prestop_probe // null) == null' \
+      "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+    raya_manifest_transform P2 P2 '
+      .target_raya_sha = $target |
+      .target_revision = ((.target_revision // 1) + 1) |
+      del(.prepared_candidate,.prestop_probe) |
+      .prestop_retry = true
+    ' --arg target "$remote_head" || return 1
+    RAYA_TARGET="$remote_head"
+  fi
   raya_git merge-base --is-ancestor "$RAYA_CHECKOUT_BEFORE" "$RAYA_TARGET" || return 1
   [[ ! -L "$RAYA_HOME/build-check" && ! -L "$scratch" && ! -L "$candidate" ]] || return 1
   mkdir -p "$RAYA_HOME/build-check" || return 1
@@ -1407,8 +1497,8 @@ raya_rebind_before_activation() {
   registry="$root/projects.json"
   summary="$root/state/summary-registry/migration-receipt.json"
   [[ -f "$registry" && ! -L "$registry" && -f "$summary" && ! -L "$summary" \
-    && "$(raya_sha256 "$registry")" == "$(jq -r .registry_digest "$RAYA_MIGRATION_MANIFEST")" \
     && "$(raya_sha256 "$summary")" == "$(jq -r .summary_receipt_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  raya_registry_identity_check "$registry" || return 1
   if [[ "$checkpoint" == P2 ]]; then
     raya_verify_candidate_artifact || return 1
   else
@@ -1420,8 +1510,14 @@ raya_rebind_before_activation() {
   [[ "$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE")" == "$current" ]] || return 1
   raya_manifest_transform "$checkpoint" "$checkpoint" '
     .pre_activation_rebinds += [{from:.flywheel_deployed_sha,to:$sha,at:$at,checkpoint:.checkpoint}] |
-    .flywheel_deployed_sha=$sha
-  ' --arg sha "$current" --arg at "$(raya_now_iso)"
+    .flywheel_deployed_sha=$sha |
+    if $identity != null then
+      .registry_identity = $identity | .registry_digest = $registry_digest |
+      .registry_identity_recorded_at = $at
+    else . end
+  ' --arg sha "$current" --arg at "$(raya_now_iso)" \
+    --argjson identity "${RAYA_REGISTRY_IDENTITY_MIGRATE:-null}" \
+    --arg registry_digest "$(raya_sha256 "$registry")"
 }
 
 updater_raya_pass() {
@@ -1430,6 +1526,7 @@ updater_raya_pass() {
   raya_configure_runtime_paths
   RAYA_DEPLOY_STATE=not_run
   RAYA_DEPLOY_DETAIL=""
+  RAYA_DEPLOY_REASON=""
   RAYA_LOCK_OWNED=0
   RAYA_PREFLIGHT_RC=""
   RAYA_RESTORE_STATE=""
@@ -1455,10 +1552,15 @@ updater_raya_pass() {
       (.checkpoint == "P3" or .checkpoint == "P4b" or
        (.checkpoint == "P2" and any(.legacy_owner[]?; .stop_started_at_ms != null)))' \
       "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+    RAYA_REBIND_REFUSAL=""
     if ! raya_rebind_before_activation "$current_flywheel"; then
       RAYA_DEPLOY_STATE=awaiting_rebind
       RAYA_DEPLOY_DETAIL=awaiting_pre_activation_rebind
-      raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
+      # The named reason (e.g. raya-registry-identity-drift:<paths>) travels in
+      # the receipt and the shuttle log; the state/detail pair stays exact for
+      # the observation classifier.
+      RAYA_DEPLOY_REASON="$RAYA_REBIND_REFUSAL"
+      raya_write_standard_receipt refused "${RAYA_DEPLOY_DETAIL}${RAYA_DEPLOY_REASON:+:$RAYA_DEPLOY_REASON}" >/dev/null 2>&1 || true
       raya_lock_release
       return 2
     fi

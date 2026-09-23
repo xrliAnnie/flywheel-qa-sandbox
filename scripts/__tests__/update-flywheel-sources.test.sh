@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FLY-1959: updater accepts only schedule drift or founder urgent tokens.
+# FLY-2654: updater accepts only schedule drift or revalidated conditional tickets.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -19,6 +19,10 @@ export FLYWHEEL_STATE_DIR="$FLYWHEEL_HOME"
 export SELF_SHIP_URGENT_DIR="$FLYWHEEL_HOME/self-ship-urgent.d"
 export SELF_SHIP_LOCK_DIR="$FLYWHEEL_HOME/updater.lock.d"
 export DEPLOYED_SHA_FILE="$FLYWHEEL_HOME/deployed-sha"
+export RESTART_REQUEST_INDEX="$FLYWHEEL_HOME/restart-request-index.json"
+export RESTART_REQUEST_AUDIT_DIR="$FLYWHEEL_HOME/restart-request-audit"
+export RESTART_WAVE_ACTIVE_TICKET="$FLYWHEEL_HOME/restart-wave-active-ticket.json"
+export UPDATER_RESTART_REQUEST_CLI="$TMP/restart-request.js"
 export ENV_FILE=/dev/null
 export UPDATE_FLYWHEEL_SOURCED=1
 export UPDATE_FLYWHEEL_CONVERGE_CMD=true
@@ -32,16 +36,20 @@ printf 'one\n' > "$FLYWHEEL_DIR/state.txt"
 git -C "$FLYWHEEL_DIR" add state.txt
 git -C "$FLYWHEEL_DIR" commit -qm one
 SHA1="$(git -C "$FLYWHEEL_DIR" rev-parse HEAD)"
+SHA2="$(printf 'two\n' | git -C "$FLYWHEEL_DIR" commit-tree "${SHA1}^{tree}" -p "$SHA1")"
 git -C "$FLYWHEEL_DIR" update-ref refs/remotes/origin/main "$SHA1"
 FOREIGN_SHA=9999999999999999999999999999999999999999
 
 # shellcheck source=/dev/null
 source "$UPDATER"
 PRODUCTION_FETCH_DEFINITION="$(declare -f updater_fetch_origin)"
+PRODUCTION_VERIFY_RESTART_TICKET_DEFINITION="$(declare -f updater_verify_restart_ticket)"
 
 required_functions=(
+  updater_enter_active_package
   updater_init_dirs updater_lock_acquire updater_lock_release
   updater_token_shape_valid updater_claim_token updater_urgent_signature
+  updater_verify_restart_ticket updater_transition_restart_intent
   updater_scheduled_signature updater_sync_fable_model update_main
   updater_raya_pass raya_configure_runtime_paths raya_host_capable raya_alert_dispatch
   updater_alert_observation
@@ -55,6 +63,118 @@ if [ "${#missing_functions[@]}" -ne 0 ]; then
   fail "new two-source updater API is missing: ${missing_functions[*]}"
   printf 'Results: %s passed, %s failed\n' "$PASSED" "$FAILED"
   exit 1
+fi
+
+forged_package_log="$TMP/forged-package-active.log"
+saved_package_active="${FLYWHEEL_STANDING_PACKAGE_ACTIVE:-}"
+saved_package_root="${FLYWHEEL_STANDING_PACKAGE_ROOT:-}"
+saved_authority_state="${FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:-}"
+FLYWHEEL_STANDING_PACKAGE_ACTIVE=1
+FLYWHEEL_STANDING_PACKAGE_ROOT="$TMP/forged-package"
+FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$TMP/missing-standing-authority"
+updater_enter_active_package >"$forged_package_log" 2>&1
+forged_package_rc=$?
+FLYWHEEL_STANDING_PACKAGE_ACTIVE="$saved_package_active"
+FLYWHEEL_STANDING_PACKAGE_ROOT="$saved_package_root"
+FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$saved_authority_state"
+if [ "$forged_package_rc" -eq 78 ] \
+  && grep -Fq 'active-package-pointer-missing' "$forged_package_log"; then
+  pass "caller-controlled package-active environment cannot bypass updater package verification"
+else
+  fail "forged package-active environment bypassed updater verification (rc=$forged_package_rc log=$(cat "$forged_package_log"))"
+fi
+
+forged_active_root="$TMP/forged-active-package"
+forged_active_state="$TMP/forged-active-state"
+forged_active_bin="$TMP/forged-active-bin"
+forged_active_cli_rel="packages/teamlead/dist/bin/standing-authority-package-cli.js"
+forged_active_entry="$forged_active_root/scripts/update-flywheel.sh"
+forged_active_digest="$(printf 'e%.0s' {1..64})"
+mkdir -p \
+  "$forged_active_root/$(dirname "$forged_active_cli_rel")" \
+  "$forged_active_root/scripts" \
+  "$forged_active_state" \
+  "$forged_active_bin"
+printf '%s\n' '// synthetic package verifier' \
+  > "$forged_active_root/$forged_active_cli_rel"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$forged_active_entry"
+chmod 500 \
+  "$forged_active_root/$forged_active_cli_rel" \
+  "$forged_active_entry"
+forged_active_cli_digest="$(
+  shasum -a 256 "$forged_active_root/$forged_active_cli_rel" | awk '{print $1}'
+)"
+jq -n \
+  --arg packageDigest "$forged_active_digest" \
+  --arg cliPath "$forged_active_cli_rel" \
+  --arg cliDigest "$forged_active_cli_digest" \
+  '{packageDigest:$packageDigest,files:[{path:$cliPath,sha256:$cliDigest}]}' \
+  > "$forged_active_root/standing-authority-package.json"
+forged_active_receipt="$(printf '9%.0s' {1..64})"
+jq -n \
+  --arg root "$forged_active_root" \
+  --arg packageDigest "$forged_active_digest" \
+  --arg receipt "$forged_active_receipt" \
+  '{schemaVersion:1,immutableRoot:$root,packageDigest:$packageDigest,activatedByReceiptId:$receipt}' \
+  > "$forged_active_state/active-package.json"
+
+# FLY-2654 review R7 round 2: an active-package pointer is only a request; the
+# fence must read the Bridge confirmation ledger back. Seed a ledger row that
+# binds the pointer's activatedByReceiptId to the package digest.
+forged_seed_ledger() {
+    local ledger="$1" receipt="$2" package_digest="$3"
+    mkdir -p "$(dirname "$ledger")"
+    # Production shape: WAL StateStore after a clean Bridge close (no -wal/-shm).
+    sqlite3 "$ledger" "PRAGMA journal_mode=wal; CREATE TABLE IF NOT EXISTS standing_authority_confirmation (receipt_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, revision INTEGER NOT NULL, manifest_digest TEXT NOT NULL, evidence_body_digest TEXT NOT NULL, package_digest TEXT NOT NULL, confirmer_identity TEXT NOT NULL, confirmer_identity_digest TEXT NOT NULL, carrier_claim TEXT NOT NULL, confirmed_at TEXT NOT NULL, recorded_at TEXT NOT NULL); INSERT OR REPLACE INTO standing_authority_confirmation VALUES ('${receipt}','raya-carrier-follow-main/v1',1,'$(printf 'a%.0s' {1..64})','$(printf 'b%.0s' {1..64})','${package_digest}','flywheel-cos-lead','$(printf 'c%.0s' {1..64})','carrier-claim','2026-09-21T00:00:00.000Z','2026-09-21T00:00:01.000Z');" > /dev/null
+    rm -f "${ledger}-wal" "${ledger}-shm"
+}
+
+forged_active_ledger="$TMP/forged-active-home/.flywheel/teamlead.db"
+forged_seed_ledger "$forged_active_ledger" "$forged_active_receipt" "$forged_active_digest"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${2:-}" in' \
+  '  verify) printf '\''{"packageDigest":"%s"}\n'\'' "$FORGED_ACTIVE_PACKAGE_DIGEST" ;;' \
+  '  resolve) printf '\''%s\n'\'' "$FORGED_ACTIVE_PACKAGE_ENTRY" ;;' \
+  '  *) exit 64 ;;' \
+  'esac' \
+  > "$forged_active_bin/node"
+chmod 500 "$forged_active_bin/node"
+forged_active_log="$TMP/forged-active-script.log"
+saved_path="$PATH"
+PATH="$forged_active_bin:$PATH"
+export FORGED_ACTIVE_PACKAGE_DIGEST="$forged_active_digest"
+export FORGED_ACTIVE_PACKAGE_ENTRY="$forged_active_entry"
+FLYWHEEL_STANDING_PACKAGE_ACTIVE=1
+FLYWHEEL_STANDING_PACKAGE_ROOT="$forged_active_root"
+FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$forged_active_state"
+saved_ledger_path="${TEAMLEAD_DB_PATH:-}"
+# Review R7 round 2: a valid pointer + package with no Bridge confirmation row
+# must not elect the package, before any script identity question arises.
+TEAMLEAD_DB_PATH="$TMP/forged-active-no-ledger.db"
+forged_unconfirmed_log="$TMP/forged-unconfirmed.log"
+updater_enter_active_package >"$forged_unconfirmed_log" 2>&1
+forged_unconfirmed_rc=$?
+if [ "$forged_unconfirmed_rc" -eq 78 ] \
+  && grep -Fq 'confirmation-ledger-unavailable' "$forged_unconfirmed_log"; then
+  pass "updater refuses an active pointer whose confirmation ledger is unavailable"
+else
+  fail "updater elected a package without the Bridge confirmation ledger (rc=$forged_unconfirmed_rc log=$(cat "$forged_unconfirmed_log"))"
+fi
+TEAMLEAD_DB_PATH="$forged_active_ledger"
+updater_enter_active_package >"$forged_active_log" 2>&1
+forged_active_rc=$?
+if [ -n "$saved_ledger_path" ]; then TEAMLEAD_DB_PATH="$saved_ledger_path"; else unset TEAMLEAD_DB_PATH; fi
+PATH="$saved_path"
+unset FORGED_ACTIVE_PACKAGE_DIGEST FORGED_ACTIVE_PACKAGE_ENTRY
+FLYWHEEL_STANDING_PACKAGE_ACTIVE="$saved_package_active"
+FLYWHEEL_STANDING_PACKAGE_ROOT="$saved_package_root"
+FLYWHEEL_STANDING_AUTHORITY_STATE_DIR="$saved_authority_state"
+if [ "$forged_active_rc" -eq 78 ] \
+  && grep -Fq 'active-package-script-mismatch' "$forged_active_log"; then
+  pass "forged package-active environment cannot run the mutable updater against a valid package"
+else
+  fail "forged package-active script identity bypassed updater verification (rc=$forged_active_rc log=$(cat "$forged_active_log"))"
 fi
 
 bash3_guard='\$\{[^}]*[\^,]{1,2}\}|declare[[:space:]]+-A|local[[:space:]]+-n|readarray|mapfile|coproc|&>>|;;&'
@@ -73,6 +193,17 @@ if ! rg -n "$bash3_guard" \
   pass "Raya updater path stays compatible with production /bin/bash 3.2"
 else
   fail "Raya updater path contains a bash 4+ construct"
+fi
+
+# Review round 6 (FLY-2654): a legacy v2 recovery wave is already `started`, so
+# its pre-stop refusal must be recorded as a plain `failed`. Passing the
+# zero-side-effect flag there is refused by the ledger (side-effects-not-provable)
+# and, swallowed by `|| true`, would leave the row consumable at `started`.
+rc82_branch="$(awk '/elif \(\( rc == 82 \)\); then/{flag=1; next} flag && /updater_transition_restart_intent/{print; exit}' "$UPDATER")"
+if [[ "$rc82_branch" == *'failed "$UPDATER_ACTIVE_WAVE_ID" || true'* && "$rc82_branch" != *'"$UPDATER_ACTIVE_WAVE_ID" 1'* ]]; then
+  pass "a started v2 recovery refusal is recorded as a plain failed without the zero-side-effect flag"
+else
+  fail "rc=82 recovery refusal must record a plain failed (got: $rc82_branch)"
 fi
 
 if grep -Fq 'bash scripts/__tests__/updater-raya-deploy.test.sh' "$ROOT/.github/workflows/ci.yml"; then
@@ -193,6 +324,7 @@ fi
 DEPLOY_CALLS="$TMP/deploy.calls"
 RAYA_CALLS="$TMP/raya.calls"
 ALERT_CALLS="$TMP/alert.calls"
+TRANSITION_CALLS="$TMP/transition.calls"
 FETCH_MODE=ok
 LAUNCHD_PASS_CALLS="$TMP/launchd-pass.calls"
 MODEL_SYNC_CALLS="$TMP/model-sync.calls"
@@ -200,6 +332,7 @@ CODEX_RECONCILE_CALLS="$TMP/codex-reconcile.calls"
 : > "$DEPLOY_CALLS"
 : > "$RAYA_CALLS"
 : > "$ALERT_CALLS"
+: > "$TRANSITION_CALLS"
 : > "$LAUNCHD_PASS_CALLS"
 : > "$MODEL_SYNC_CALLS"
 : > "$CODEX_RECONCILE_CALLS"
@@ -211,6 +344,23 @@ updater_fetch_origin() {
     *) return 1 ;;
   esac
 }
+updater_verify_restart_ticket() {
+  printf 'verify|%s\n' "$(basename "$1")" >> "$TRANSITION_CALLS"
+  [ "${VERIFY_MODE:-ok}" = ok ]
+}
+updater_transition_restart_intent() {
+  printf '%s|%s|%s|%s\n' "$2" "${3:-}" "$(basename "$1")" "${4:-0}" >> "$TRANSITION_CALLS"
+  [ "${TRANSITION_MODE:-ok}" = ok ]
+}
+cat > "$UPDATER_RESTART_REQUEST_CLI" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  intent-state) printf '%s\n' "${MOCK_INTENT_STATE:-prepared}" ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$UPDATER_RESTART_REQUEST_CLI"
+UPDATER_NODE=bash
 updater_converge_bin() { :; }
 updater_launchd_pass() { printf 'pass\n' >> "$LAUNCHD_PASS_CALLS"; }
 updater_sync_fable_model() {
@@ -269,54 +419,180 @@ else
 fi
 stub_deploy_ok() {
   printf 'call\n' >> "$DEPLOY_CALLS"
+  if [[ -n "${UPDATER_ACTIVE_TICKET:-}" ]] && updater_token_is_closeout_v3 "$UPDATER_ACTIVE_TICKET"; then
+    updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" started "$UPDATER_ACTIVE_WAVE_ID"
+    MOCK_INTENT_STATE=started
+    export MOCK_INTENT_STATE
+  fi
   git -C "$FLYWHEEL_DIR" rev-parse origin/main > "$DEPLOYED_SHA_FILE"
   return 0
 }
-stub_deploy_fail() { printf 'call\n' >> "$DEPLOY_CALLS"; return 3; }
+stub_deploy_fail() {
+  printf 'call\n' >> "$DEPLOY_CALLS"
+  if [[ -n "${UPDATER_ACTIVE_TICKET:-}" ]] && updater_token_is_closeout_v3 "$UPDATER_ACTIVE_TICKET"; then
+    updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" started "$UPDATER_ACTIVE_WAVE_ID"
+    MOCK_INTENT_STATE=started
+    export MOCK_INTENT_STATE
+  fi
+  return 3
+}
 stub_deploy_observe_claim() {
   printf 'call watched=%s claimed=%s\n' \
     "$(urgent_count)" \
     "$(find "${UPDATER_CLAIM_DIR:?}" -type f 2>/dev/null | wc -l | tr -d ' ')" \
     >> "$DEPLOY_CALLS"
+  updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" started "$UPDATER_ACTIVE_WAVE_ID"
+  MOCK_INTENT_STATE=started
+  export MOCK_INTENT_STATE
   git -C "$FLYWHEEL_DIR" rev-parse origin/main > "$DEPLOYED_SHA_FILE"
   return 0
 }
 stub_deploy_late() {
   printf 'call\n' >> "$DEPLOY_CALLS"
+  updater_transition_restart_intent "$UPDATER_ACTIVE_TICKET" started "$UPDATER_ACTIVE_WAVE_ID"
+  MOCK_INTENT_STATE=started
+  export MOCK_INTENT_STATE
   write_token late "$SHA1"
   git -C "$FLYWHEEL_DIR" rev-parse origin/main > "$DEPLOYED_SHA_FILE"
   return 0
 }
 
 write_token() {
-  local nonce="$1" sha="$2" kind="${3:-founder-urgent-restart}"
+  local nonce="$1" sha="$2" kind="${3:-lead-closeout-restart}" id="" digest=""
+  id="$(printf '%s' "$nonce" | shasum -a 256 | awk '{print $1}')"
+  id="${id:0:8}-${id:8:4}-4${id:13:3}-8${id:17:3}-${id:20:12}"
+  digest="$(printf '%s' "$nonce-ticket" | shasum -a 256 | awk '{print $1}')"
   mkdir -p "$SELF_SHIP_URGENT_DIR"
-  jq -n --arg sha "$sha" --arg kind "$kind" \
-    '{schemaVersion:1,kind:$kind,targetSha:$sha,createdAt:1700000000}' \
+  jq -n --arg sha "$sha" --arg from "$SHA1" --arg kind "$kind" --arg id "$id" --arg digest "$digest" \
+    '{schemaVersion:3,kind:$kind,decisionId:$id,waveId:("wave-"+$id),revision:1,
+      authority:{kind:"standing-carve-out",entryId:"lead-closeout-restart/v1"},
+      intent:{messageRef:{channelId:"100000000000000001",messageId:"100000000000000002"}},
+      scopeSnapshot:{},readiness:{},
+      requestedBy:{projectName:"flywheel",leadId:"flywheel-eng-lead",instanceId:"carrier-2654"},
+      announcement:{},fromDeployedSha:$from,targetSha:$sha,executionPackage:{},
+      createdAt:"2026-09-18T05:00:00.000Z",preMergeHead:$from,
+      validatedAt:"2026-09-18T05:00:00.000Z",requestDigest:$digest}' \
+    > "$SELF_SHIP_URGENT_DIR/${nonce}.urgent.json"
+  chmod 600 "$SELF_SHIP_URGENT_DIR/${nonce}.urgent.json"
+}
+write_v2_token() {
+  local nonce="$1" sha="$2" id="" digest=""
+  id="$(printf '%s' "$nonce" | shasum -a 256 | awk '{print $1}')"
+  id="${id:0:8}-${id:8:4}-4${id:13:3}-8${id:17:3}-${id:20:12}"
+  digest="$(printf '%s' "$nonce-ticket" | shasum -a 256 | awk '{print $1}')"
+  mkdir -p "$SELF_SHIP_URGENT_DIR"
+  jq -n --arg sha "$sha" --arg from "$SHA1" --arg id "$id" --arg digest "$digest" \
+    '{schemaVersion:2,kind:"authorized-urgent-restart",requestId:$id,
+      authority:{kind:"founder-per-instance",messageRef:{channelId:"100000000000000001",messageId:"100000000000000002"}},
+      trigger:{evidence:{mergedCommit:$sha}},requestedBy:{},announcement:{},
+      fromDeployedSha:$from,targetSha:$sha,createdAt:"2026-09-18T05:00:00.000Z",preMergeHead:$from,
+      validatedAt:"2026-09-18T05:00:00.000Z",requestDigest:$digest}' \
+    > "$SELF_SHIP_URGENT_DIR/${nonce}.urgent.json"
+  chmod 600 "$SELF_SHIP_URGENT_DIR/${nonce}.urgent.json"
+}
+write_founder_direct_token() {
+  local nonce="$1" sha="$2"
+  mkdir -p "$SELF_SHIP_URGENT_DIR"
+  jq -n --arg sha "$sha" \
+    '{schemaVersion:1,kind:"founder-urgent-restart",targetSha:$sha,createdAt:1770000000}' \
     > "$SELF_SHIP_URGENT_DIR/${nonce}.urgent.json"
   chmod 600 "$SELF_SHIP_URGENT_DIR/${nonce}.urgent.json"
 }
 urgent_count() { find "$SELF_SHIP_URGENT_DIR" -type f 2>/dev/null | wc -l | tr -d ' '; }
 urgent_entry_count() { find "$SELF_SHIP_URGENT_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' '; }
+wave_duplicate_audit_count() { find "$RESTART_REQUEST_AUDIT_DIR/restart-wave-duplicates" -type f 2>/dev/null | wc -l | tr -d ' '; }
 deploy_count() { grep -c '^call' "$DEPLOY_CALLS" 2>/dev/null || true; }
 raya_count() { grep -c '^call' "$RAYA_CALLS" 2>/dev/null || true; }
 reset_case() {
-  rm -rf "$SELF_SHIP_URGENT_DIR" "$SELF_SHIP_LOCK_DIR" "$FLYWHEEL_HOME"/.urgent-claim.*
+  rm -rf "$SELF_SHIP_URGENT_DIR" "$SELF_SHIP_LOCK_DIR" "$RESTART_REQUEST_AUDIT_DIR" \
+    "$RESTART_REQUEST_INDEX" "$RESTART_WAVE_ACTIVE_TICKET" "$FLYWHEEL_HOME"/.urgent-claim.*
   mkdir -p "$FLYWHEEL_HOME"
   : > "$DEPLOY_CALLS"
   : > "$RAYA_CALLS"
   : > "$ALERT_CALLS"
+  : > "$TRANSITION_CALLS"
   : > "$LAUNCHD_PASS_CALLS"
   : > "$MODEL_SYNC_CALLS"
   : > "$CODEX_RECONCILE_CALLS"
   FETCH_MODE=ok
+  VERIFY_MODE=ok
+  TRANSITION_MODE=ok
   MODEL_SYNC_MODE=ok
   RAYA_STUB_STATE=current
   RAYA_STUB_RC=0
   RAYA_HOST_CAPABLE_RC=0
   SELF_SHIP_DEPLOY_CMD=stub_deploy_ok
   UPDATER_UTC_DAY=20260821
+  MOCK_INTENT_STATE=prepared
+  export MOCK_INTENT_STATE
 }
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_v2_token retired-v2 "$SHA1"
+cp "$SELF_SHIP_URGENT_DIR/retired-v2.urgent.json" "$TMP/retired-v2.original.json"
+MOCK_INTENT_STATE=prepared
+export MOCK_INTENT_STATE
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+retired_ticket="$(find "$RESTART_REQUEST_AUDIT_DIR/retired-conditional-authority" -name '*.ticket.json' -type f 2>/dev/null | head -1)"
+retired_receipt="$(find "$RESTART_REQUEST_AUDIT_DIR/retired-conditional-authority" -name '*.receipt.json' -type f 2>/dev/null | head -1)"
+if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 0 ] && [ "$(urgent_count)" = 0 ] \
+  && [ -n "$retired_ticket" ] && cmp -s "$retired_ticket" "$TMP/retired-v2.original.json" \
+  && jq -e '.result == "retired-conditional-authority" and .zeroDeploySideEffects == true' "$retired_receipt" >/dev/null \
+  && grep -q '^urgent-retired-conditional-authority-retired-v2.urgent.json|' "$ALERT_CALLS"; then
+  pass "unstarted v2 is retired with original bytes and a deterministic zero-deploy audit"
+else
+  fail "unstarted v2 retirement lost bytes, audit, or fail-closed behavior (rc=$rc deploys=$(deploy_count) alerts=$(cat "$ALERT_CALLS"))"
+fi
+
+reset_case
+write_v2_token revoked-preflight "$SHA1"
+REVOKED_PREFLIGHT_LOG="$TMP/revoked-preflight.log"
+cat > "$TMP/revoked-preflight-node" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${REVOKED_PREFLIGHT_LOG:?}"
+case " $* " in
+  *" intent-state "*) printf 'revoked\n'; exit 0 ;;
+  *) exit 99 ;;
+esac
+EOF
+chmod +x "$TMP/revoked-preflight-node"
+stub_verify_definition="$(declare -f updater_verify_restart_ticket)"
+saved_updater_node="$UPDATER_NODE"
+export REVOKED_PREFLIGHT_LOG
+UPDATER_NODE="$TMP/revoked-preflight-node"
+eval "$PRODUCTION_VERIFY_RESTART_TICKET_DEFINITION"
+updater_verify_restart_ticket "$SELF_SHIP_URGENT_DIR/revoked-preflight.urgent.json" >/dev/null 2>&1; rc=$?
+eval "$stub_verify_definition"
+UPDATER_NODE="$saved_updater_node"
+if [ "$rc" -ne 0 ] \
+  && grep -q ' intent-state ' "$REVOKED_PREFLIGHT_LOG" \
+  && ! grep -q ' verify ' "$REVOKED_PREFLIGHT_LOG"; then
+  pass "revoked v2 intent stops at the deterministic ledger before Discord natural-language verification"
+else
+  fail "revoked intent reached mutable/NL verification (rc=$rc calls=$(cat "$REVOKED_PREFLIGHT_LOG" 2>/dev/null))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_v2_token started-v2 "$SHA1"
+v2_ticket="$SELF_SHIP_URGENT_DIR/started-v2.urgent.json"
+v2_id="$(jq -r .requestId "$v2_ticket")"
+v2_digest="$(jq -r .requestDigest "$v2_ticket")"
+jq -n --arg id "$v2_id" --arg digest "$v2_digest" \
+  '{schemaVersion:1,intents:{key:{requestId:$id,requestDigest:$digest,state:"started",updatedAt:"2026-09-18T05:00:00Z",waveId:"v2-recovery-wave"}}}' \
+  > "$RESTART_REQUEST_INDEX"
+chmod 600 "$RESTART_REQUEST_INDEX"
+MOCK_INTENT_STATE=started
+export MOCK_INTENT_STATE
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(grep -c '^started|' "$TRANSITION_CALLS" || true)" = 0 ] \
+  && [ "$(grep -c '^succeeded|v2-recovery-wave|' "$TRANSITION_CALLS" || true)" = 1 ]; then
+  pass "already-started v2 resumes its bound wave without a second started transition"
+else
+  fail "started v2 recovery drifted (rc=$rc deploys=$(deploy_count) transitions=$(cat "$TRANSITION_CALLS"))"
+fi
 
 reset_case
 printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
@@ -548,12 +824,15 @@ if declare -F updater_git_bounded >/dev/null 2>&1 \
   saved_host_tmux_gate="$(declare -f updater_host_tmux_gate)"
   saved_restart_services="$(declare -f updater_restart_services)"
   saved_pointer_guard="$(declare -f discord_pointer_cutover_required)"
+	saved_auto_narrow_precheck="$(declare -f updater_auto_narrow_rollback_precheck)"
+	saved_restore_premerge="$(declare -f conditional_restart_restore_premerge)"
   updater_fetch_origin() { printf 'fetch\n' >> "$deploy_path_calls"; }
   updater_git_bounded() { printf 'git|%s\n' "$*" >> "$deploy_path_calls"; }
   updater_merge_remote() { printf 'merge\n' >> "$deploy_path_calls"; }
   updater_host_tmux_gate() { printf 'host-tmux-gate\n' >> "$deploy_path_calls"; }
   updater_restart_services() { printf 'restart\n' >> "$deploy_path_calls"; }
   discord_pointer_cutover_required() { return 1; }
+	updater_auto_narrow_rollback_precheck() { return 0; }
   default_deploy >/dev/null 2>&1; rc=$?
   success_calls="$(cat "$deploy_path_calls")"
   : > "$deploy_path_calls"
@@ -564,21 +843,53 @@ if declare -F updater_git_bounded >/dev/null 2>&1 \
   updater_fetch_origin() { return 127; }
   default_deploy >/dev/null 2>&1; missing_deploy_rc=$?
   missing_deploy_calls="$(cat "$deploy_path_calls")"
+	: > "$deploy_path_calls"
+	conditional_token="$TMP/default-deploy-conditional.urgent.json"
+	jq -n --arg target "$SHA1" --arg from "$SHA1" --arg pre "$SHA1" \
+	  '{schemaVersion:3,kind:"lead-closeout-restart",decisionId:"11111111-2222-4333-8444-555555555555",waveId:"wave-default-deploy",targetSha:$target,fromDeployedSha:$from,preMergeHead:$pre}' \
+	  > "$conditional_token"
+	UPDATER_ACTIVE_TICKET="$conditional_token"
+	UPDATER_ACTIVE_WAVE_ID=wave-default-deploy
+	updater_fetch_origin() { printf 'fetch\n' >> "$deploy_path_calls"; }
+	updater_host_tmux_gate() { printf 'host-tmux-gate\n' >> "$deploy_path_calls"; }
+	updater_restart_services() { printf 'restart-refused\n' >> "$deploy_path_calls"; return 82; }
+	conditional_restart_restore_premerge() {
+	  printf 'restore|%s|%s|%s\n' \
+	    "${FLYWHEEL_URGENT_RESTART_TICKET:-}" \
+	    "${FLYWHEEL_URGENT_RESTART_TARGET_SHA:-}" \
+	    "${FLYWHEEL_URGENT_RESTART_PRE_MERGE_HEAD:-}" >> "$deploy_path_calls"
+	  [ "${FLYWHEEL_URGENT_RESTART_TICKET:-}" = "$conditional_token" ] \
+	    && [ "${FLYWHEEL_URGENT_RESTART_TARGET_SHA:-}" = "$SHA1" ] \
+	    && [ "${FLYWHEEL_URGENT_RESTART_PRE_MERGE_HEAD:-}" = "$SHA1" ]
+	}
+	default_deploy >/dev/null 2>&1; restore_rc=$?
+	restore_calls="$(cat "$deploy_path_calls")"
+	UPDATER_ACTIVE_TICKET=""
+	UPDATER_ACTIVE_WAVE_ID=""
+	unset FLYWHEEL_URGENT_RESTART_TICKET FLYWHEEL_URGENT_RESTART_TARGET_SHA \
+	  FLYWHEEL_URGENT_RESTART_FROM_SHA FLYWHEEL_URGENT_RESTART_PRE_MERGE_HEAD \
+	  FLYWHEEL_URGENT_RESTART_TRIGGER_SHA FLYWHEEL_URGENT_RESTART_INDEX \
+	  FLYWHEEL_URGENT_RESTART_WAVE_ID FLYWHEEL_URGENT_RESTART_NODE \
+	  FLYWHEEL_URGENT_RESTART_CLI
   eval "$saved_fetch"
   eval "$saved_bounded_git"
   eval "$saved_merge_remote"
   eval "$saved_host_tmux_gate"
   eval "$saved_restart_services"
   eval "$saved_pointer_guard"
+	eval "$saved_auto_narrow_precheck"
+	eval "$saved_restore_premerge"
   if [ "$rc" -eq 0 ] \
     && [ "$success_calls" = $'fetch\nhost-tmux-gate\nmerge\nrestart' ] \
     && ! printf '%s\n' "$success_calls" | grep -q '^git|' \
     && [ "$gate_held_rc" -eq 3 ] \
     && [ "$gate_held_calls" = $'fetch\nhost-tmux-gate' ] \
-    && [ "$missing_deploy_rc" -eq 127 ] && [ -z "$missing_deploy_calls" ]; then
-    pass "default deploy gates the frozen target before merge and refuses held targets"
+    && [ "$missing_deploy_rc" -eq 127 ] && [ -z "$missing_deploy_calls" ] \
+		&& [ "$restore_rc" -eq 82 ] \
+		&& grep -Fqx "restore|$conditional_token|$SHA1|$SHA1" <<<"$restore_calls"; then
+		pass "default deploy gates targets and restores refused conditional deploys with parent-shell evidence"
   else
-    fail "default deploy host-tmux ordering drifted (rc=$rc calls=$success_calls held=$gate_held_rc/$gate_held_calls missing=$missing_deploy_rc/$missing_deploy_calls)"
+		fail "default deploy wiring drifted (rc=$rc calls=$success_calls held=$gate_held_rc/$gate_held_calls missing=$missing_deploy_rc/$missing_deploy_calls restore=$restore_rc/$restore_calls)"
   fi
 else
   fail "default deploy lacks bounded-fetch/host-gate/local-merge/restart seams"
@@ -606,6 +917,52 @@ fi
 
 reset_case
 printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_founder_direct_token founder-direct "$SHA1"
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
+  && [ "$(urgent_count)" = 0 ] \
+  && [ ! -s "$TRANSITION_CALLS" ] \
+  && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=urgent result=urgent_deployed$' "$RAYA_CALLS"; then
+  pass "founder-direct v1 urgent ticket remains verdict-free, deploys once, and runs Raya once"
+else
+  fail "founder-direct urgent ticket regressed (rc=$rc deploys=$(deploy_count) urgent=$(urgent_count) transitions=$(cat "$TRANSITION_CALLS") raya=$(raya_count))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+write_founder_direct_token duplicate-a "$SHA1"
+write_founder_direct_token duplicate-b "$SHA1"
+write_founder_direct_token duplicate-c "$SHA1"
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
+  && [ "$(urgent_count)" = 0 ] \
+  && [ "$(wave_duplicate_audit_count)" = 2 ] \
+  && [ "$(raya_count)" = 1 ]; then
+  pass "legacy duplicate founder-direct tickets coalesce into one fleet wave with one audit per duplicate"
+else
+  fail "legacy duplicate tickets escaped single-wave coalescing (rc=$rc deploys=$(deploy_count) urgent=$(urgent_count) audits=$(wave_duplicate_audit_count) raya=$(raya_count))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+git -C "$FLYWHEEL_DIR" update-ref refs/remotes/origin/main "$SHA2"
+write_founder_direct_token founder-direct-ancestor "$SHA1"
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+git -C "$FLYWHEEL_DIR" update-ref refs/remotes/origin/main "$SHA1"
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
+  && [ "$(cat "$DEPLOYED_SHA_FILE")" = "$SHA2" ] \
+  && [ "$(urgent_count)" = 0 ] \
+  && [ ! -s "$TRANSITION_CALLS" ] \
+  && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=urgent result=urgent_deployed$' "$RAYA_CALLS"; then
+  pass "founder-direct v1 accepts an ancestor target and deploys the latest main"
+else
+  fail "founder-direct ancestor target was dropped (rc=$rc deploys=$(deploy_count) deployed=$(cat "$DEPLOYED_SHA_FILE") urgent=$(urgent_count) alerts=$(cat "$ALERT_CALLS"))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 write_token batch-a "$SHA1"
 write_token batch-b "$SHA1"
 before_status="$(git -C "$FLYWHEEL_DIR" status --porcelain)"
@@ -613,13 +970,17 @@ SELF_SHIP_DEPLOY_CMD=stub_deploy_observe_claim update_main >/dev/null 2>&1; rc=$
 after_status="$(git -C "$FLYWHEEL_DIR" status --porcelain)"
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
   && grep -q '^call watched=0 claimed=2$' "$DEPLOY_CALLS" \
+  && [ "$(urgent_count)" = 0 ] \
+  && [ "$(wave_duplicate_audit_count)" = 1 ] \
+  && [ "$(grep -c '^started|' "$TRANSITION_CALLS")" = 1 ] \
+  && [ "$(grep -c '^succeeded|' "$TRANSITION_CALLS")" = 1 ] \
   && [ "$(raya_count)" = 1 ] \
   && grep -q '^call wake=urgent result=urgent_deployed$' "$RAYA_CALLS" \
   && [ -z "$before_status" ] && [ -z "$after_status" ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ]; then
-  pass "urgent batch claims before one deploy, then runs one Raya pass without dirtying checkout"
+  pass "urgent duplicates coalesce into one audited wave and one Raya pass without dirtying checkout"
 else
-  fail "urgent claim/deploy drifted (rc=$rc calls=$(cat "$DEPLOY_CALLS") before=$before_status after=$after_status)"
+  fail "urgent coalescing drifted (rc=$rc calls=$(cat "$DEPLOY_CALLS") urgent=$(urgent_count) audits=$(wave_duplicate_audit_count) transitions=$(cat "$TRANSITION_CALLS") raya=$(cat "$RAYA_CALLS") before=$before_status after=$after_status)"
 fi
 
 reset_case
@@ -630,11 +991,12 @@ left_after_first="$(urgent_count)"
 : > "$DEPLOY_CALLS"
 SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc2=$?
 if [ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] \
-  && [ "$first_calls" = 1 ] && [ "$left_after_first" = 1 ] \
-  && [ "$(deploy_count)" = 1 ] && [ "$(urgent_count)" = 0 ]; then
-  pass "late same-SHA token survives snapshot and triggers the next invocation"
+  && [ "$first_calls" = 1 ] && [ "$left_after_first" = 0 ] \
+  && [ "$(deploy_count)" = 0 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(wave_duplicate_audit_count)" = 1 ]; then
+  pass "a token arriving during deploy is absorbed into the active wave instead of arming a follow-on restart"
 else
-  fail "late token was lost or deduped (rc=$rc/$rc2 first=$first_calls left=$left_after_first second=$(deploy_count))"
+  fail "late token escaped the active lifecycle window (rc=$rc/$rc2 first=$first_calls left=$left_after_first second=$(deploy_count) audits=$(wave_duplicate_audit_count))"
 fi
 
 reset_case
@@ -642,11 +1004,26 @@ write_token fail-once "$SHA1"
 SELF_SHIP_DEPLOY_CMD=stub_deploy_fail update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 1 ] && [ "$(urgent_count)" = 0 ] \
   && [ "$(raya_count)" = 0 ] \
+  && [ "$(grep -c '^started|' "$TRANSITION_CALLS")" = 1 ] \
+  && [ "$(grep -c '^failed|' "$TRANSITION_CALLS")" = 1 ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ] \
   && grep -q '^urgent-deploy-failed-fail-once.urgent.json|' "$ALERT_CALLS"; then
   pass "urgent deploy failure is claim-once, alerting, and non-retrying"
 else
   fail "urgent failure retained/retried/silenced (rc=$rc calls=$(deploy_count) urgent=$(urgent_count) alerts=$(cat "$ALERT_CALLS"))"
+fi
+
+reset_case
+write_token source-changed "$SHA1"
+VERIFY_MODE=fail
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 0 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(grep -c '^verify|' "$TRANSITION_CALLS")" = 1 ] \
+  && [ "$(grep -c '^started|' "$TRANSITION_CALLS")" = 0 ] \
+  && grep -q '^urgent-evidence-invalid-source-changed.urgent.json|' "$ALERT_CALLS"; then
+  pass "changed source evidence is consumed and refused before one-use start"
+else
+  fail "changed source evidence reached deploy or lost audit (rc=$rc deploys=$(deploy_count) urgent=$(urgent_count) transitions=$(cat "$TRANSITION_CALLS") alerts=$(cat "$ALERT_CALLS"))"
 fi
 
 reset_case

@@ -18,6 +18,7 @@ import {
 	type MigrationIO,
 } from "./raya-migration-io.js";
 import { runMigrationManifest } from "./raya-migration-manifest.js";
+import { rayaRegistryIdentity } from "./raya-registry-identity.js";
 
 const roots: string[] = [];
 afterEach(() =>
@@ -370,6 +371,22 @@ describe("H3 migration initialization", () => {
 			cursor: { path: join(f.state, "inbound-cursor.json"), sha256: null },
 		});
 		expect(ledger.legacy_owner).toHaveLength(2);
+		// FLY-2654 QA2 rework: the ledger freezes Raya's registry identity
+		// projection; the whole-file digest stays only as a legacy field.
+		expect(ledger.registry_identity).toEqual(
+			rayaRegistryIdentity(
+				JSON.parse(readFileSync(join(f.root, "projects.json"), "utf8")),
+			),
+		);
+		expect(ledger.registry_identity[0].leads).toEqual([
+			{
+				agentId: "raya",
+				botUserId: bot,
+				botTokenEnv: "RAYA_BOT_TOKEN",
+				chatChannel: channel,
+				alertChannel: channel,
+			},
+		]);
 		expect(lstatSync(f.file).mode & 0o777).toBe(0o600);
 		expect(readFileSync(f.file, "utf8")).not.toContain("CANARY");
 		expect(f.commands.join("\n")).not.toMatch(/install|bootout|kickstart/);

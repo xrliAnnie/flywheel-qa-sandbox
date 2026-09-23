@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "entryId": "lead-closeout-restart/v1",
+  "entryDigest": "224e0c79e61332924be2439f7fa3a6533505c308f921f61fb31b4ee4f988cba9",
+  "extractionVersion": "entry-extraction/v1",
+  "mechanismVersion": "standing-authority/v1",
+  "scope": {
+    "repository": "xrliAnnie/flywheel",
+    "project": "flywheel",
+    "leadClass": "engineering-lead",
+    "action": "lead-closeout-restart",
+    "transport": "request-restart.sh"
+  },
+  "revision": 1,
+  "status": "pending",
+  "founderApproval": {
+    "receiptId": "pending-not-approved",
+    "channelId": "10000000000000000",
+    "messageId": "10000000000000001",
+    "authorId": "10000000000000002",
+    "approvedAt": "2026-09-20T00:00:00.000Z",
+    "contentDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "approvedPrHead": "0000000000000000000000000000000000000000",
+    "entryDigest": "224e0c79e61332924be2439f7fa3a6533505c308f921f61fb31b4ee4f988cba9",
+    "confirmerIdentity": "flywheel-cos-lead"
+  },
+  "contractLandedCommit": "0000000000000000000000000000000000000000",
+  "enforcementDeployment": {
+    "commit": "0000000000000000000000000000000000000000",
+    "packageDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "immutableRoot": "/pending/not-deployed",
+    "deploymentReceiptId": "pending-not-deployed"
+  },
+  "verificationReceipt": {
+    "receiptId": "pending-not-verified",
+    "entryId": "lead-closeout-restart/v1",
+    "mechanismVersion": "standing-authority/v1",
+    "executionPackageDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "positiveDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "negativeDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "attributionDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sourceDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "authorIdentity": "flywheel-eng-lead",
+    "implementationIdentity": "implement:FLY-2654"
+  },
+  "liveBundleReceipt": {
+    "leadIdentity": "flywheel-eng-lead",
+    "backend": "codex-app-server",
+    "instanceId": "pending-instance",
+    "threadId": "pending-thread",
+    "turnId": "pending-turn",
+    "rulesDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "entryDigest": "224e0c79e61332924be2439f7fa3a6533505c308f921f61fb31b4ee4f988cba9",
+    "observedAt": "2026-09-20T00:00:00.000Z",
+    "sourceReceiptId": "pending-not-observed"
+  },
+  "independentConfirmation": null,
+  "revocation": null
+}

@@ -363,9 +363,11 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
 4. **Flywheel post-merge cleanup — no deploy or restart (FLY-1959):**
 
    > A Flywheel merge never starts the updater and never restarts Bridge or any
-   > Lead. Normal deployment waits for the local 00:00/12:00 shuttle; only a
-   > separately authorized founder emergency may create a ticket with
-   > `scripts/request-restart.sh`. Post-merge work is cleanup and reporting only:
+   > Lead. Normal deployment waits for the local 00:00/12:00 shuttle. The separate
+   > emergency path may create a ticket with `scripts/request-restart.sh` only for a
+   > current direct-founder v1 instruction or an independently activated
+   > `lead-closeout-restart/v1` decision with complete a/b/c evidence. A merge never
+   > supplies that evidence. Post-merge work is cleanup and reporting only:
    >
    > - **Bookkeeping is in the PR, not post-merge**: the new
    >   `engineering/doc/milestones/<ID>.md` (FLY-2045 — **not** a CLAUDE.md edit) +

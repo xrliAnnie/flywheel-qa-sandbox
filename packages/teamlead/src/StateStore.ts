@@ -1,4 +1,10 @@
 import {
+	assertStandingAuthorityConfirmationRecord,
+	STANDING_AUTHORITY_CONFIRMATION_DDL,
+	STANDING_AUTHORITY_CONFIRMATION_TRIGGERS,
+	type StandingAuthorityConfirmationRecord,
+} from "./bin/standing-authority-confirmation-ledger.js";
+import {
 	epicIntakeResultSchema,
 	sameEpicIntakeEvidence,
 	type EpicIntakeResult,
@@ -10415,6 +10421,8 @@ export class StateStore {
 		// through the workflow engine when claims writes are enabled.
 		this.migrateWorkflowLedger();
 		this.migrateCloseoutAttributionEpoch();
+		// FLY-2654: authoritative standing-authority confirmation ledger.
+		this.migrateStandingAuthorityConfirmation();
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -68113,6 +68121,72 @@ export class StateStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_run_active
 			ON workflow_run(project_name, issue_id) WHERE status = 'active'
 		`);
+	}
+
+	/** FLY-2654: the Bridge-recorded independent confirmation (plan §4). */
+	private migrateStandingAuthorityConfirmation(): void {
+		this.db.run(STANDING_AUTHORITY_CONFIRMATION_DDL);
+		for (const trigger of STANDING_AUTHORITY_CONFIRMATION_TRIGGERS)
+			this.db.run(trigger);
+	}
+
+	/**
+	 * FLY-2654 (review R7 HIGH): record one independent confirmation through
+	 * the authenticated confirm route. Re-recording the identical row is
+	 * idempotent; a different row under the same receipt id is a conflict.
+	 */
+	recordStandingAuthorityConfirmation(
+		row: StandingAuthorityConfirmationRecord,
+	): void {
+		assertStandingAuthorityConfirmationRecord(row);
+		const values = [
+			row.receiptId,
+			row.entryId,
+			row.revision,
+			row.manifestDigest,
+			row.evidenceBodyDigest,
+			row.packageDigest,
+			row.confirmerIdentity,
+			row.confirmerIdentityDigest,
+			row.carrierClaim,
+			row.confirmedAt,
+			row.recordedAt,
+		];
+		this.db.transaction(() => {
+			const existing = this.db.exec(
+				`SELECT entry_id, revision, manifest_digest, evidence_body_digest,
+				        package_digest, confirmer_identity, confirmer_identity_digest,
+				        carrier_claim, confirmed_at
+				 FROM standing_authority_confirmation WHERE receipt_id = ?`,
+				[row.receiptId],
+			);
+			const prior = existing[0]?.values[0];
+			if (prior) {
+				const same =
+					prior[0] === row.entryId &&
+					prior[1] === row.revision &&
+					prior[2] === row.manifestDigest &&
+					prior[3] === row.evidenceBodyDigest &&
+					prior[4] === row.packageDigest &&
+					prior[5] === row.confirmerIdentity &&
+					prior[6] === row.confirmerIdentityDigest &&
+					prior[7] === row.carrierClaim &&
+					prior[8] === row.confirmedAt;
+				if (!same)
+					throw new Error(
+						"standing-authority-activation-authority-record-conflict",
+					);
+				return;
+			}
+			this.db.run(
+				`INSERT INTO standing_authority_confirmation
+				 (receipt_id, entry_id, revision, manifest_digest, evidence_body_digest,
+				  package_digest, confirmer_identity, confirmer_identity_digest,
+				  carrier_claim, confirmed_at, recorded_at)
+				 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+				values,
+			);
+		});
 	}
 
 	private migrateCloseoutAttributionEpoch(): void {

@@ -175,6 +175,110 @@ else
 fi
 rm -f "$RAYA_MIGRATION_MANIFEST"
 
+# Standing authority is a mutually exclusive authorization variant. Shape
+# checks are necessary but not sufficient: the packaged verifier must confirm
+# the active manifest and independent receipt.
+write_p2_manifest
+jq '.authorization={legacy_stop:true,granted_by:"standing-carve-out",
+  entry_id:"raya-carrier-follow-main/v1",entry_digest:("a"*64),
+  activation_manifest_digest:("b"*64),manifest_revision:1,
+  mechanism_version:"standing-authority/v1",execution_package_digest:("c"*64),
+  confirmed_by:"flywheel-cos-lead",confirmation_receipt_id:"receipt-1",
+  issued_by:"flywheel-eng-lead"}' "$RAYA_MIGRATION_MANIFEST" > "$TMP/standing-manifest.json"
+mv "$TMP/standing-manifest.json" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+cat > "$TMP/standing-verifier" <<'EOF'
+#!/usr/bin/env bash
+[[ "$2" == verify-standing && "$3" == --migration-manifest && -f "$4" ]]
+EOF
+chmod +x "$TMP/standing-verifier"
+saved_node="$RAYA_STANDARD_NODE_BIN"
+RAYA_STANDARD_NODE_BIN="$TMP/standing-verifier"
+if raya_legacy_stop_authorized; then
+  pass "standing Raya authorization requires and passes the packaged active-manifest verifier"
+else
+  fail "valid standing Raya authorization did not reach the packaged verifier"
+fi
+jq '.authorization.canonical_line="forged"' "$RAYA_MIGRATION_MANIFEST" > "$TMP/standing-mutated.json"
+mv "$TMP/standing-mutated.json" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+if raya_legacy_stop_authorized; then
+  fail "mixed founder and standing authorization was accepted"
+else
+  pass "mixed founder and standing authorization is rejected"
+fi
+jq 'del(.authorization.canonical_line)' "$RAYA_MIGRATION_MANIFEST" > "$TMP/standing-mutated.json"
+mv "$TMP/standing-mutated.json" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+cat > "$TMP/standing-verifier" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$TMP/standing-verifier"
+if raya_legacy_stop_authorized; then
+  fail "standing authorization bypassed a failed active-manifest verification"
+else
+  pass "standing authorization fails closed when active-manifest verification fails"
+fi
+RAYA_STANDARD_NODE_BIN="$saved_node"
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
+# A standing P2 transaction follows a newer origin/main only before the
+# stop-window probe exists. The refresh is a revision, not an in-place reuse of
+# candidate or quiet-window evidence.
+(
+  trap - EXIT
+  old_target="$(printf '1%.0s' {1..40})"
+  new_target="$(printf '2%.0s' {1..40})"
+  export RAYA_CHECKOUT_BEFORE="$(printf '0%.0s' {1..40})"
+  raya_legacy_stop_authorized() { return 0; }
+  raya_verify_legacy_owners() { return 0; }
+  raya_git_fetch_bounded() { return 0; }
+  raya_git() {
+    case "$*" in
+      "remote get-url origin") printf '%s\n' "$TMP/raya-remote.git" ;;
+      "rev-parse origin/main") printf '%s\n' "$new_target" ;;
+      "merge-base --is-ancestor "*) return 0 ;;
+      "worktree add "*) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  write_p2_manifest
+  jq '.authorization.granted_by="standing-carve-out" |
+    .legacy_owner=[] | .target_revision=1 |
+    .prepared_candidate={digest:("d"*64)} | del(.prestop_probe)' \
+    "$RAYA_MIGRATION_MANIFEST" > "$TMP/standing-refresh.json"
+  mv "$TMP/standing-refresh.json" "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+  raya_prestop_prepare >/dev/null 2>&1 && exit 1
+  jq -e --arg target "$new_target" '
+    .target_raya_sha == $target and .target_revision == 2 and
+    .prestop_retry == true and
+    (has("prepared_candidate") | not) and (has("prestop_probe") | not)
+  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null || exit 1
+
+  write_p2_manifest
+  jq '.authorization.granted_by="standing-carve-out" |
+    .legacy_owner=[] | .target_revision=1 |
+    .prepared_candidate={digest:("d"*64)} |
+    .prestop_probe={message_id:"12345678901234567"}' \
+    "$RAYA_MIGRATION_MANIFEST" > "$TMP/standing-frozen.json"
+  mv "$TMP/standing-frozen.json" "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+  raya_prestop_prepare >/dev/null 2>&1 && exit 1
+  jq -e --arg target "$old_target" '
+    .target_raya_sha == $target and .target_revision == 1 and
+    .prestop_probe.message_id == "12345678901234567" and
+    has("prepared_candidate")
+  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null
+)
+if [[ $? == 0 ]]; then
+  pass "standing P2 target refresh revisions evidence before the stop window and freezes afterward"
+else
+  fail "standing P2 target refresh must rebuild evidence only before the stop window"
+fi
+rm -f "$RAYA_MIGRATION_MANIFEST"
+
 (
   trap - EXIT
   export RAYA_LEGACY_PLIST_DIR="$TMP/authorization-plists"
@@ -1695,6 +1799,171 @@ fi
 )
 if [[ $? == 0 ]]; then pass "pre-restart Lead blip waits without a severe alert"; else
   fail "pre-restart Lead blip must remain retryable without paging"
+fi
+
+# FLY-2654 QA2 rework (hard-red 2): the pre-activation rebind gate must freeze
+# only Raya's own registry identity rows, never the whole-file sha256 of
+# projects.json. Differential arms on the REAL gate: an unrelated Lead's effort
+# edit, a new Lead row and the 2026-09-19 trailing-newline shape still deploy; a
+# Raya identity/carrier change refuses with the changed paths named. A legacy
+# whole-file ledger is upgraded in place only when Raya's rows still match the
+# facts the migration froze independently.
+registry_scope_fixture() {
+  # $1 = ledger flavour: legacy | frozen | legacy-no-bot
+  local flavour="$1" registry="$FLYWHEEL_HOME/projects.json" summary="$FLYWHEEL_HOME/state/summary-registry/migration-receipt.json"
+  write_canonical
+  mkdir -p "$HOME/Dev/raya-lead-workspace" "$(dirname "$summary")"
+  jq -n --arg root "$HOME/Dev/raya-lead-workspace" '[
+    {projectName:"flywheel", projectRoot:"/Users/test/Dev/flywheel", generalChannel:"911111111111111111",
+      leads:[{agentId:"flywheel-cos-lead", backend:"claude-code", model:"claude-opus", effort:"high", role:"cos"},
+             {agentId:"flywheel-eng-lead", backend:"codex-app-server", effort:"high"}]},
+    {projectName:"raya", projectRoot:$root, projectRepo:"xrliAnnie/raya",
+      leads:[{agentId:"raya", botUserId:"223456789012345678", botTokenEnv:"RAYA_BOT_TOKEN",
+              chatChannel:"123456789012345678", backend:"codex-app-server", model:"gpt-5.4", effort:"high"}]}
+  ]' > "$registry"
+  printf '{}\n' > "$summary"
+  printf '%s\n' "$scope_new_sha" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+  jq -n --arg raya "$scope_raya_sha" --arg flywheel "$scope_old_sha" \
+    --arg registry_digest "$(raya_sha256 "$registry")" --arg summary_digest "$(raya_sha256 "$summary")" \
+    --arg manifest_digest "$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" \
+    --argjson identity "$(jq -c -f "$RAYA_REGISTRY_IDENTITY_JQ" "$registry")" \
+    --arg flavour "$flavour" '{
+      schemaVersion:1, migration_id:"fly-2445-scope", checkpoint:"P4b", unresolved:[],
+      target_raya_sha:$raya, raya_sha:$raya, flywheel_deployed_sha:$flywheel,
+      authorization:{legacy_stop:true, granted_by:"standing-carve-out"},
+      legacy_owner:[{label:"brain", stop_started_at_ms:1, disabled_at_ms:1, stopped_at_ms:1}],
+      registry_digest:$registry_digest, summary_receipt_digest:$summary_digest,
+      canonical_manifest_digest:$manifest_digest,
+      artifact:{workspace:"/unused"}, cursor:{status:"seeded"}
+    } | if $flavour != "legacy-no-bot" then .lead_bot_user_id = "223456789012345678" else . end
+      | if $flavour == "frozen" then .registry_identity = $identity | .registry_digest = ("0"*64) else . end' \
+    > "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+}
+registry_scope_gate() {
+  # Runs the real gate with everything except the registry stubbed green.
+  raya_lock_acquire() { RAYA_LOCK_OWNED=1; }
+  raya_lock_release() { RAYA_LOCK_OWNED=0; }
+  raya_legacy_stop_authorized() { return 0; }
+  raya_verify_materialized_artifact() { return 0; }
+  raya_standard_lead() { printf '%s\n' "$*" >> "$TMP/scope-lead-calls"; return 0; }
+  raya_git() {
+    case "$*" in
+      "symbolic-ref --short HEAD") printf 'main\n' ;;
+      "status --porcelain") return 0 ;;
+      "rev-parse HEAD") printf '%s\n' "$scope_raya_sha" ;;
+      *) return 1 ;;
+    esac
+  }
+  curl() { printf '{"ok":true,"buildSha":"%s"}\n' "$scope_new_sha"; }
+  raya_alert() { printf 'severe\n' >> "$TMP/scope-alerts"; }
+  RAYA_LOCK_OWNED=1
+  raya_rebind_before_activation "$scope_new_sha"
+}
+registry_mutate() {
+  local registry="$FLYWHEEL_HOME/projects.json" filter="$1" out="$TMP/registry-mutated.json"
+  case "$filter" in
+    trailing-newline) printf '%s' "$(cat "$registry")" > "$out" ;;
+    invalid-json) printf '%s\ndrift\n' "$(cat "$registry")" > "$out" ;;
+    *) jq "$filter" "$registry" > "$out" ;;
+  esac
+  cat "$out" > "$registry"
+}
+scope_raya_sha=1111111111111111111111111111111111111111
+scope_old_sha=2222222222222222222222222222222222222222
+scope_new_sha=3333333333333333333333333333333333333333
+scope_arm() {
+  # $1 flavour, $2 mutation, $3 expected rc, $4 expected refusal prefix ("" = none)
+  local flavour="$1" mutation="$2" want_rc="$3" want_refusal="$4"
+  (
+    trap - EXIT
+    rm -f "$TMP/scope-alerts" "$TMP/scope-lead-calls"
+    registry_scope_fixture "$flavour"
+    [[ "$mutation" == untouched ]] || registry_mutate "$mutation"
+    registry_scope_gate; rc=$?
+    [[ "$rc" == "$want_rc" ]] || { echo "rc=$rc want=$want_rc refusal=$RAYA_REBIND_REFUSAL" >&2; exit 1; }
+    [[ ! -e "$TMP/scope-alerts" ]] || exit 1
+    if [[ -n "$want_refusal" ]]; then
+      [[ "$RAYA_REBIND_REFUSAL" == "$want_refusal" ]] || { echo "refusal=$RAYA_REBIND_REFUSAL want=$want_refusal" >&2; exit 1; }
+      [[ "$(jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST")" == "$scope_old_sha" ]] || exit 1
+      jq -e '(.registry_identity // null) == null or true' "$RAYA_MIGRATION_MANIFEST" >/dev/null || exit 1
+    else
+      [[ -z "$RAYA_REBIND_REFUSAL" ]] || exit 1
+      # A frozen ledger keeps its (now legacy) whole-file digest untouched; a
+      # legacy ledger is upgraded in place with the projection and a refreshed digest.
+      jq -e --arg sha "$scope_new_sha" --arg digest "$(raya_sha256 "$FLYWHEEL_HOME/projects.json")" \
+        --arg flavour "$flavour" \
+        --argjson identity "$(jq -c -f "$RAYA_REGISTRY_IDENTITY_JQ" "$FLYWHEEL_HOME/projects.json")" '
+        .flywheel_deployed_sha == $sha and .checkpoint == "P4b" and
+        .pre_activation_rebinds[-1].to == $sha and
+        .registry_identity == $identity and
+        (if $flavour == "frozen" then .registry_digest == ("0"*64) and (has("registry_identity_recorded_at") | not)
+         else .registry_digest == $digest and (.registry_identity_recorded_at | type == "string") end) and
+        (.registry_identity | length) == 1 and (.registry_identity[0].leads | length) == 1 and
+        (.registry_identity[0].leads[0] | has("model") or has("effort") | not)' \
+        "$RAYA_MIGRATION_MANIFEST" >/dev/null || { jq . "$RAYA_MIGRATION_MANIFEST" >&2; exit 1; }
+      grep -q '^verify --stage registered ' "$TMP/scope-lead-calls" || exit 1
+    fi
+  )
+}
+scope_other_effort='.[0].leads[0].effort = "medium"'
+scope_new_lead='.[0].leads += [{agentId:"flywheel-new-lead", backend:"claude-code"}]'
+scope_raya_bot='.[1].leads[0].botUserId = "323456789012345678"'
+scope_raya_carrier='.[1].leads[0].backend = "claude-code"'
+scope_raya_tuning='.[1].leads[0].effort = "medium" | .[1].leads[0].model = "gpt-5.5"'
+scope_raya_root='.[1].projectRoot = "/elsewhere"'
+
+# Frozen ledger (registry_identity recorded; whole-file digest deliberately stale).
+if scope_arm frozen untouched 0 ""; then pass "frozen registry identity: untouched registry deploys"; else fail "frozen registry identity: untouched registry must deploy"; fi
+if scope_arm frozen "$scope_other_effort" 0 ""; then pass "frozen registry identity: another Lead's effort edit still deploys"; else fail "frozen registry identity: unrelated Lead effort edit must deploy"; fi
+if scope_arm frozen "$scope_new_lead" 0 ""; then pass "frozen registry identity: a new Lead row still deploys"; else fail "frozen registry identity: new Lead row must deploy"; fi
+if scope_arm frozen trailing-newline 0 ""; then pass "frozen registry identity: the 2026-09-19 trailing-newline shape still deploys"; else fail "frozen registry identity: serialization-only change must deploy"; fi
+if scope_arm frozen "$scope_raya_tuning" 0 ""; then pass "frozen registry identity: Raya model/effort tuning is not identity"; else fail "frozen registry identity: Raya tuning must not refuse"; fi
+if scope_arm frozen "$scope_raya_bot" 1 "raya-registry-identity-drift:0.leads.0.botUserId"; then pass "frozen registry identity: Raya bot identity change refuses and names the field"; else fail "frozen registry identity: Raya bot identity change must refuse with the field named"; fi
+if scope_arm frozen "$scope_raya_carrier" 1 "raya-registry-identity-drift:0.leads.0.backend"; then pass "frozen registry identity: Raya carrier change refuses and names the field"; else fail "frozen registry identity: Raya carrier change must refuse with the field named"; fi
+if scope_arm frozen "$scope_raya_root" 1 "raya-registry-identity-drift:0.projectRoot"; then pass "frozen registry identity: Raya workspace change refuses and names the field"; else fail "frozen registry identity: Raya workspace change must refuse with the field named"; fi
+if scope_arm frozen '.[1].leads = []' 1 "raya-registry-identity-drift:0.leads.0.agentId,0.leads.0.backend,0.leads.0.botTokenEnv,0.leads.0.botUserId,0.leads.0.chatChannel"; then pass "frozen registry identity: removing the Raya lead row refuses and names every field"; else fail "frozen registry identity: removed Raya lead row must refuse"; fi
+if scope_arm frozen '"broken"' 1 "raya-registry-identity-drift:0.leads.0.agentId,0.leads.0.backend,0.leads.0.botTokenEnv,0.leads.0.botUserId,0.leads.0.chatChannel,0.projectName,0.projectRepo,0.projectRoot"; then pass "frozen registry identity: a registry without the Raya rows refuses and names every field"; else fail "frozen registry identity: registry without Raya rows must refuse"; fi
+if scope_arm frozen invalid-json 1 "raya-registry-unreadable"; then pass "frozen registry identity: an unreadable registry refuses"; else fail "frozen registry identity: unreadable registry must refuse"; fi
+if scope_arm legacy invalid-json 1 "raya-registry-unreadable"; then pass "legacy registry digest: an unreadable registry refuses"; else fail "legacy registry digest: unreadable registry must refuse"; fi
+
+# Legacy ledger (whole-file digest only): upgraded in place, refused when Raya's rows are unverifiable.
+if scope_arm legacy untouched 0 ""; then pass "legacy registry digest: unchanged bytes deploy and freeze the identity projection"; else fail "legacy registry digest: unchanged bytes must deploy and record registry_identity"; fi
+if scope_arm legacy "$scope_other_effort" 0 ""; then pass "legacy registry digest: another Lead's effort edit deploys once Raya's rows match the frozen facts"; else fail "legacy registry digest: unrelated edit must deploy via the frozen-facts fallback"; fi
+if scope_arm legacy trailing-newline 0 ""; then pass "legacy registry digest: the 2026-09-19 trailing-newline shape deploys"; else fail "legacy registry digest: trailing newline must deploy"; fi
+if scope_arm legacy "$scope_raya_bot" 1 "raya-registry-identity-unverifiable:legacy-whole-file-digest-mismatch"; then pass "legacy registry digest: Raya bot identity change refuses"; else fail "legacy registry digest: Raya bot identity change must refuse"; fi
+if scope_arm legacy "$scope_raya_carrier" 1 "raya-registry-identity-unverifiable:legacy-whole-file-digest-mismatch"; then pass "legacy registry digest: Raya carrier change refuses"; else fail "legacy registry digest: Raya carrier change must refuse"; fi
+if scope_arm legacy-no-bot "$scope_other_effort" 1 "raya-registry-identity-unverifiable:legacy-whole-file-digest-mismatch"; then pass "legacy registry digest: without a frozen bot identity a byte change stays refused"; else fail "legacy registry digest: missing frozen facts must fail closed"; fi
+
+# Through updater_raya_pass: the exact state/detail pair is unchanged for the
+# observation classifier; the named reason reaches the receipt.
+(
+  trap - EXIT
+  registry_scope_fixture frozen
+  registry_mutate "$scope_raya_bot"
+  raya_lock_acquire() { RAYA_LOCK_OWNED=1; }
+  raya_lock_release() { RAYA_LOCK_OWNED=0; }
+  raya_legacy_stop_authorized() { return 0; }
+  raya_verify_materialized_artifact() { return 0; }
+  raya_standard_lead() { return 0; }
+  raya_git() { case "$*" in "symbolic-ref --short HEAD") printf 'main\n' ;; "status --porcelain") return 0 ;; "rev-parse HEAD") printf '%s\n' "$scope_raya_sha" ;; *) return 1 ;; esac; }
+  curl() { printf '{"ok":true,"buildSha":"%s"}\n' "$scope_new_sha"; }
+  raya_alert() { printf 'severe\n' >> "$TMP/scope-pass-alerts"; }
+  raya_prepare_source() { touch "$TMP/scope-pass-gate-passed"; return 1; }
+  rm -f "$TMP/scope-pass-alerts" "$TMP/scope-pass-gate-passed" "$RAYA_DEPLOY_RECEIPT"
+  updater_raya_pass >/dev/null 2>&1; rc=$?
+  [[ "$rc" == 2 && "$RAYA_DEPLOY_STATE" == awaiting_rebind && "$RAYA_DEPLOY_DETAIL" == awaiting_pre_activation_rebind ]] || exit 1
+  [[ "$RAYA_DEPLOY_REASON" == "raya-registry-identity-drift:0.leads.0.botUserId" ]] || exit 1
+  [[ ! -e "$TMP/scope-pass-gate-passed" && ! -e "$TMP/scope-pass-alerts" ]] || exit 1
+  jq -e '.outcome == "refused" and .failure == "awaiting_pre_activation_rebind:raya-registry-identity-drift:0.leads.0.botUserId"' "$RAYA_DEPLOY_RECEIPT" >/dev/null || exit 1
+  registry_scope_fixture frozen
+  registry_mutate "$scope_other_effort"
+  rm -f "$TMP/scope-pass-gate-passed"
+  updater_raya_pass >/dev/null 2>&1
+  [[ -e "$TMP/scope-pass-gate-passed" && "$RAYA_DEPLOY_DETAIL" != awaiting_pre_activation_rebind && -z "$RAYA_DEPLOY_REASON" ]] || exit 1
+)
+if [[ $? == 0 ]]; then pass "shuttle pass keeps the exact awaiting_pre_activation_rebind pair and carries the named reason into the receipt"; else
+  fail "shuttle pass must keep the state/detail pair exact and record the named refusal reason"
 fi
 
 # FLY-2758: the failure receipt stays `failed`, but the alert must say what

@@ -1,0 +1,26 @@
+{
+  "date": "2026-09-20",
+  "scope": "latest standing carve-out ruling",
+  "source_sha256": "679695b6c0e22841549906886cebbdb05b7d36d743e46c0103e125722ebb5ce3",
+  "script_sha256": "6b717a9c598969e4918baf6814ed565695f95b7e9a03e0e7d3239d59525e1a09",
+  "sections_with_comment": 8,
+  "scripts": 1,
+  "external_dependencies": 0,
+  "inline_handlers": 0,
+  "author_csp_meta": 0,
+  "controller_unchanged_from": "758823879",
+  "vm_checks": [
+    "storage throws safely",
+    "pathname isolation",
+    "1800-character chunks repeat marker",
+    "all sections aggregate",
+    "clipboard success",
+    "clipboard absent fallback",
+    "clipboard rejected fallback",
+    "empty summary marker",
+    "untrusted text remains value"
+  ],
+  "browser_qa": false,
+  "diagram": "new source local render failed twice; retained",
+  "effective_design_review": "APPROVED:99bc9f51-729e-4dd5-8a74-2d5eda7772e9"
+}

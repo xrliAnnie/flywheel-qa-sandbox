@@ -592,6 +592,34 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "packages/teamlead/src/bin/restart-request.ts",
+			"relation": "chat_threads",
+			"baseTable": "chat_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/bin/restart-request.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/bin/restart-request.ts",
+			"relation": "phase_chat_threads",
+			"baseTable": "phase_chat_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/bin/restart-request.ts",
+			"relation": "runner_phase_wakes",
+			"baseTable": "runner_phase_wakes",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "packages/teamlead/src/StateStore.ts",
 			"relation": "release_signal_events",
 			"baseTable": "release_signal_events",

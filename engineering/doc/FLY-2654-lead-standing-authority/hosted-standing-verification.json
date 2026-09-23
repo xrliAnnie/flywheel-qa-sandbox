@@ -1,0 +1,15 @@
+{
+  "url": "https://fw-reports-356a6d.vercel.app/r/00bff3645292c1619a076df607f90fae/",
+  "http_status": 200,
+  "placeholder_count": 0,
+  "script_count": 1,
+  "csp_nonce_match": true,
+  "source_script_equal": true,
+  "comments": 8,
+  "external_dependencies": 0,
+  "source_sha256": "679695b6c0e22841549906886cebbdb05b7d36d743e46c0103e125722ebb5ce3",
+  "hosted_sha256": "184bbff57acd75df47334311614574934a66f1e3fa006e3dcdb7e54af1147cd1",
+  "browser_qa": false,
+  "publishOnly": true,
+  "design_request": "99bc9f51-729e-4dd5-8a74-2d5eda7772e9"
+}

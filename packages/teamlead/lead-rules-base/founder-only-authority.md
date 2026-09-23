@@ -23,15 +23,12 @@ This rule routes two action categories — **merge to `main`** and
 calibration window**. It is **not** a permanent statement that the Lead
 cannot judge these things. It is a present-tense protocol.
 
-Two founder-granted exceptions are live: the standing **R3** infra self-heal
-restart-in-place carve-out, and the separate issue-bound Raya read-receipt
-exemption defined under R1 below. Neither arrived by graduating through
-accumulated audit evidence.
+Exceptions: **R3**, Raya read-receipt, and the two FLY-2654 entries, each live
+**only** with its own active AUTH-CANON(B) manifest.
 
-**R5 is not another carve-out.** It is a classification framework whose registry of
-authorized mechanisms is **empty**, so it authorizes nothing; an empty-registry
-framework is not an exception. Outside the two explicit exceptions above, the
-routing below applies every time.
+**R5 is not another carve-out.** Its registry of authorized mechanisms is
+**empty**, so it authorizes nothing. Outside the exceptions above, the routing
+below applies every time.
 
 The protocol holds while:
 
@@ -95,23 +92,26 @@ for how this list contracts as calibration data accumulates.
 
 - Raya 仓的生产部署由既有 `com.flywheel.updater` 定时班车负责；PR
   合入 `main` 本身不代表已上线，不得用 merge 状态关闭部署责任。
-- Lead 对外报告“已上线”或把相关 issue 标记 Done 前，必须核对生产 checkout
-  已到目标 Raya SHA，公共 `flywheel-lead.sh verify` 已核验
-  `com.flywheel.lead.raya-raya` 的当前 standard Lead 与可见 TUI，并引用
-  `~/.flywheel/raya/deploy-receipt.json`。该回执必须是 `schemaVersion:2`、
-  `carrier:standard-lead`，同时绑定当前 `deployed_sha`（Raya）与
-  `flywheel_deployed_sha`，且 text、summary、Bridge identity、alert 和迁移窗口
-  补录证据都属于同一 activation；旧 v1 回执不能证明新 carrier 已上线。
+- 报告“已上线”或标 Done 前，必须核对生产 checkout 已到目标 Raya SHA，
+  且公共 `flywheel-lead.sh verify` 已核验 `com.flywheel.lead.raya-raya` 的
+  standard Lead 与可见 TUI，并引用 `~/.flywheel/raya/deploy-receipt.json`
+  （`schemaVersion:2`、`carrier:standard-lead`，绑定两仓 deployed SHA 与同一
+  activation 的 text/summary/identity/alert/补录证据；旧 v1 回执无效）。
 - `~/.flywheel/raya/deployed-sha` 是班车失败回滚的 known-good anchor，不是
   绕过验收的替代证据。
-- 若 launchd identity 需要修复，唯一入口是公共
-  `flywheel-lead.sh install --project raya --lead raya`，且仍需 founder 当前、
-  明确授权；不得另造手工部署脚本、Raya 专属 wrapper 或新的调度器。
-- FLY-2496 首次标准载体激活时，人手仅做工作区/Codex home 准备及公共
-  `flywheel-lead.sh register`；`install` 归定时班车 P4b，人手不得提前执行。
-  founder 授权消息必须含完整一行
-  `FLY-2496 AUTHORIZE register cutover=<目标 SHA 前 8 位> urgent-restart baseline=quiet15m`。
-  `baseline=quiet15m` 明确授权更早历史不补录；停机窗口人类消息仍须逐条对账。
+- launchd identity 修复只经公共 `flywheel-lead.sh install --project raya --lead raya`，
+  且仍需 founder 当前明确授权；不得另造部署脚本、wrapper 或调度器。
+
+<!-- FLY-2654-ENTRY-BEGIN raya-carrier-follow-main/v1 -->
+### Standing carve-out — Raya follows approved `origin/main` (`raya-carrier-follow-main/v1`)
+
+AUTH-CANON(B) manifest active 后，Engineering Lead 可用公共 `register` 准备载体；
+既有 updater 班车从正常审批后的 `xrliAnnie/raya` fresh `origin/main` 固定完整 SHA，
+install/切换/更新，不再逐 SHA 授权。停旧体前 main 前进须新 revision+重建核验；开始
+停机/对账即冻结，新头留下一班。quiet15m、停机窗口逐条对账、cursor/未决消息/旧身份
+及 schema-v2 同 activation 全套上线证据不变。业务 SHA 不改条目/机制。本条不授权
+merge/ship/停体/身份修复/紧急重启，不新增 trigger/wrapper/scheduler；越界或缺证即拒。
+<!-- FLY-2654-ENTRY-END raya-carrier-follow-main/v1 -->
 
 ### Narrow exemption — Raya's read-receipt merges (founder-decided 2026-08-18; FLY-2030)
 
@@ -210,9 +210,9 @@ domain, and lists the things people keep mistaking for one.
 Each item above has a documented past where a Lead's analysis turned out
 to be off in a way the founder cared about — usually because the Lead
 modeled risk from a code-correctness lens but the founder was deciding
-on a different axis (product scope, comms timing, audit trail). Today
-the rule routes back to the founder so that mismatch surfaces as a
-question, not a merge. The Track 2 audit table records **the evaluator's
+on a different axis (product scope, comms timing, audit trail). Routing
+to the founder surfaces that mismatch as a question, not a merge. The
+Track 2 audit table records **the evaluator's
 judgement at the time**; it does not today record how the founder ultimately
 resolved each case, so treat it as one input to calibration rather than a
 finished training signal.
@@ -266,16 +266,12 @@ its behalf**. `verify-approval` now also refuses Lead-attributed gate
 responses outright (`response_not_founder_attributed`), so a
 `flywheel-comm respond` self-approval cannot ship anything.
 
-Why this matters — the FLY-921 night, as the cautionary tale: the
-founder said "ship it"; the approval was in flight (it landed 4 minutes
-later); the Lead executor-merged in the meantime. The merge itself
-"worked", but it bypassed the Runner's self-ship — so the automatic
-cleanup, thread archive and Linear-Done cascade never fired, and the
-founder had to come back and ask for the archive by hand. An
-executor-merge doesn't save time; it converts one automated chain into
-three manual chores. (A bounded reconcile pass now exists to converge
-externally-merged PRs, but it is a backstop for accidents — not
-permission.)
+Why this matters — the FLY-921 night: the founder said "ship it"; while the
+approval was in flight (it landed 4 minutes later) the Lead executor-merged.
+That bypassed the Runner's self-ship, so cleanup, thread archive and Linear
+Done never fired and the founder had to ask by hand: one automated chain became
+three manual chores. (A bounded reconcile pass converges externally-merged PRs,
+but it is a backstop for accidents — not permission.)
 
 ---
 
@@ -472,46 +468,65 @@ is empty today, so today the answer is always "needs the founder").
 ## R4 — Fleet Restart Discipline (FLY-1959, superseding FLY-1783)
 
 The standalone `com.flywheel.updater` is the only component that deploys and
-restarts the fleet. It recognizes exactly two sources:
+restarts the fleet. It recognizes exactly two transport sources:
 
 1. the local 00:00/12:00 scheduled shuttle, which deploys once only when the
    deployed SHA is behind `origin/main`; and
-2. one founder-authorized emergency ticket written by:
+2. one emergency ticket under AUTH-CANON(A) (a fresh, per-instance direct
+   founder instruction) or the active AUTH-CANON(B) closeout entry below:
 
    ```bash
    bash ~/Dev/flywheel/scripts/request-restart.sh
+   bash ~/Dev/flywheel/scripts/request-restart.sh --request /absolute/private/restart-request.json
    ```
 
-The updater sits outside the Lead fleet, so the initiating Lead may be replaced
-by the wave without needing to outlive it. Merge is not a third source: merging
-any PR never writes a ticket, nudges the updater, deploys, or restarts.
+Its wave may replace the initiating Lead; merge never writes a ticket, deploys
+or restarts.
 
 Hard red lines — no judgment calls:
 
 - **NEVER** use `launchctl submit`, a hand-rolled launchd job, or a crontab
   entry that points at `restart-services.sh`. Submit-style jobs re-run on every
-  exit. On 2026-08-14 that produced 66 chained restarts and 20 minutes of
-  Bridge downtime.
-- macOS has no `setsid`; do not improvise detach chains such as
-  `nohup setsid …`, and do not invent a replacement when a detach attempt
-  fails. Failed detach means **STOP and report**, never silently switch
-  mechanisms.
-- **NEVER** turn a merge, ship completion, fallback, or repair into an implicit
-  restart. A direct `restart-services.sh` invocation is not a sanctioned third
-  route. Stop and ask the founder to decide how to recover a broken updater.
+  exit (2026-08-14: 66 chained restarts, 20 minutes of Bridge downtime).
+- macOS has no `setsid`; never improvise `nohup setsid …` or another detach
+  chain. Failed detach means **STOP and report**.
+- **NEVER** make merge, ship, fallback, or repair an implicit restart, or invoke
+  `restart-services.sh` directly. For a broken updater, stop and ask founder.
 
-Enforcement is layered: the FLY-913 PreToolUse guard hard-blocks scheduler
-shapes at the Bash boundary for Claude sessions, and `restart-services.sh`
-refuses to run as a direct launchd child (ppid 1). This section is the
-behavioral layer and also binds Leads with no hook layer, including Codex.
+FLY-913 blocks scheduler shapes for Claude, and `restart-services.sh` refuses a
+direct launchd child (ppid 1). This rule also binds hookless Leads including
+Codex.
 
 ### R4 governs the transport, not the right to initiate
 
-**A Lead may not decide, on its own, that the fleet should restart.** The
-scheduled shuttle is autonomous and does not inherit authority from individual
-merges. Every emergency ticket requires a fresh per-instance founder
-authorization — see AUTH-CANON in R5. Merge approval, awareness, notification,
-or a previous ticket are none of them approval for an emergency restart.
+Merge, notices, old tickets and failed requests confer no authority. Outside the
+active entry below, a ticket needs a fresh, current, unconditional (A)
+instruction in bare form with live instance evidence; future/conditional/
+deferred/ambiguous text never qualifies, and unstarted v2 is retired, never up-
+or downgraded. Producer, updater and final pre-stop guard revalidate;
+publication never proves completion.
+
+<!-- FLY-2654-ENTRY-BEGIN lead-closeout-restart/v1 -->
+### Standing carve-out — Lead closeout restart (`lead-closeout-restart/v1`)
+
+AUTH-CANON(B) manifest active 后，收尾 Engineering Lead 可自决一票，须同时：
+(a) 认证入站账本 full-match `closeout-restart-intent/v1`：founder 权威本地当日的收尾
+重启/重启电脑原文及作者/频道/id/时间、至 final guard 完整 cursor 均可回读，无未处理
+后续/撤回/冲突/gap/跨日；不抽句/清洗/拼接，意图仅为前提而非 (A)；(b) StateStore、
+CommDB、TURN/wake、实际进程并集全部已 push+clean，适用 review/QA 绑定当前头，恢复
+上下文已持久化且 parked/handed-off、无写 turn/wake；或认证 waiver 精确覆盖重铸损失。
+单边/未知/版本不一/idle PID/pause 非 ready，waiver 不绕 ship/QA；(c) 已回读工程播报，
+绑定 decision/intent/scope/target 并说明目的、打断、恢复。
+
+schema-v3 绑定 entry/manifest、真实 Lead/instance、from/target、不可变包、a/b/c、revision
+与单 wave；entryId+intent channel/id 唯一，换 UUID/trigger/repo/scope 不生权。producer、
+updater、final guard 全复核；started/unknown 不重发，仅同 wave 可证 no-deploy 后复核增版。
+只调用 `request-restart.sh`；FOLLOWUPS/巡检记证据、actor、wave、全终态。pre-stop 拒绝仅
+clean HEAD+部署未变+未 stop 服务可证时回 pre-merge（通知/pause 仍审计）；已 stop 只
+安全恢复。本条不授权 OS reboot、终结/删 Runner、绕 review/QA/ship、直跑 restart 或新
+scheduler。缺项拒绝；另获 (A) 不得自动 fallback，30 分钟内 bare v1 关联审计；a/b/c
+满足时不得再索取 founder 当下确认。
+<!-- FLY-2654-ENTRY-END lead-closeout-restart/v1 -->
 
 ---
 
@@ -519,7 +534,8 @@ or a previous ticket are none of them approval for an emergency restart.
 
 This section gives Leads a shared vocabulary for a class of run-state problems, and
 a closed registry of the mechanisms they may act on themselves. **The registry ships
-empty.** R3 remains the only live carve-out; nothing here authorizes an action today.
+empty.** R3 is the only live carve-out here; the R1/R4 entries do not populate
+this registry. Nothing here authorizes an action today.
 
 The founder's ask behind this section was that a Lead should not park a stuck run on
 her queue when the fix is obviously right. What changed is **how you bring it to
@@ -612,7 +628,9 @@ this section does not summarise them — summarising a rule edits it:
 - **R4** binds the restart scope, the target commit or wave, and the transport.
 - **R5** binds **this run, this mechanism, and the current state**.
 
-**(B) An activated standing carve-out.** Today that is **R3**, and only R3. A
+**(B) An activated standing carve-out.** The closed list is **R3**,
+`raya-carrier-follow-main/v1` (R1) and `lead-closeout-restart/v1` (R4), each only
+while its manifest verifies active; the latter two are not R5 mechanisms. A
 mechanism becomes a standing carve-out only when **all** of these hold:
 
 1. **that exact entry** carries an explicit founder approval — broad product
@@ -636,6 +654,11 @@ confirmer may not be that person.
 > recorded in R3 itself, is grandfathered from clause 3 — it predates this gate.
 > This is **non-precedential**: it cannot be cited by any other entry, and every
 > entry created after this gate goes through the full manifest.
+
+`entry-extraction/v1`: UTF-8/LF/no BOM, one non-nested marker pair, SHA-256 of
+the untrimmed bytes between them. Manifests are strict and monotonic
+(`pending|active|revoked`); pending never activates, revoked never revives, and
+a business SHA never revises an entry.
 
 **None of the following is authorization** — not singly, not in combination:
 
@@ -771,11 +794,9 @@ wired into it; direct database writes, other CLIs and helper scripts do not pass
 through it at all. The prompt-side catch-all in R2 is deliberately wider, and
 you are bound by the wider one.
 
-Critically, Track 2 is **the substrate that lets this rule relax**.
-Without a server-side audit table, there is no calibration corpus, and
-the Lead's judgment cannot be safely graduated case by case. Track 2 is
-not just a backstop — it's the mechanism by which the contract gets
-narrower over time.
+Critically, Track 2 is **the substrate that lets this rule relax**: without its
+audit table there is no calibration corpus to graduate the Lead's judgment case
+by case, so it is how the contract narrows over time.
 
 ---
 
@@ -832,19 +853,16 @@ routes to the founder.
 Long-term direction:
 
 - Trust tier as a function of `(issue_label, project, action_type,
-  Lead_identity, founder's recent acks of similar)`. Computed live by
-  the Track 2 gate from the audit table.
-- `FOUNDER_CONSENT_BYPASS=<issue_id>` env var for single-issue temporary
-  bypass when the founder pre-clears something out of band (e.g. a
-  scheduled overnight ship).
-- The audit table becomes a **training corpus**: every
-  evaluator decision + how the founder ultimately resolved it (ack,
-  override, retroactive reject) feeds back into prompt fine-tuning and
-  threshold auto-calibration in Track 3 (TBD).
-- End-state mental model: the founder defines the *aesthetic and risk
-  posture*; the Lead executes within that posture autonomously, only
-  re-asking when the proposed action falls outside the calibrated
-  envelope. The contract in this file shrinks accordingly each version.
+  Lead_identity, founder's recent acks of similar)`, computed live by the
+  Track 2 gate from the audit table.
+- `FOUNDER_CONSENT_BYPASS=<issue_id>` for a single-issue temporary bypass the
+  founder pre-clears out of band.
+- The audit table becomes a **training corpus** (each evaluator decision plus
+  the founder's final resolution) for prompt tuning and threshold
+  auto-calibration in Track 3 (TBD).
+- End state: the founder defines the *aesthetic and risk posture*; the Lead
+  acts autonomously within it, re-asking only outside the calibrated envelope,
+  and this contract shrinks each version.
 
 The roadmap is direction-setting, not promises. Relaxation arrives by
 **amending this contract**; audit evidence and founder product direction are
