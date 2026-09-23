@@ -1,14 +1,14 @@
 ---
 issue: FLY-2796
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-23T19:34:21.326Z
-nextStep: R3 APPROVED; HTML published+HTTP/CSP verified+Lead reported; artifacts
-  3bef75cda. Run exact phase_design_complete then park; no implementation.
+phase: implement
+phaseCursor: 0/7
+updated: 2026-09-23T21:09:29.755Z
+nextStep: "T1: audit current RoomIO/audio consumers, then add failing contract
+  tests before implementation"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: design (6/6)
-**next**: R3 APPROVED; HTML published+HTTP/CSP verified+Lead reported; artifacts 3bef75cda. Run exact phase_design_complete then park; no implementation.
+**phase**: implement (0/7)
+**next**: T1: audit current RoomIO/audio consumers, then add failing contract tests before implementation
