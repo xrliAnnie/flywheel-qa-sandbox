@@ -317,6 +317,122 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 	});
 
+	it("keeps cleanup-unconfirmed latched until an audited Lead reopen restores the resume budget", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-reopen",
+			manifestDigest: "e".repeat(64),
+			now: "2026-09-22T01:20:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T01:20:01.000Z",
+		});
+		const first = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-a:1",
+			now: "2026-09-22T01:20:02.000Z",
+		});
+		if (!first.ok) throw new Error(first.reason);
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: first.generation,
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-a:1",
+			reasonCode: "cleanup_unconfirmed",
+			now: "2026-09-22T01:20:03.000Z",
+		});
+
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: false,
+			reason: "cleanup_unconfirmed",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-reopen",
+				ownerClaimId: "bridge-b:1",
+				now: "2026-09-22T01:20:04.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_cleanup_unconfirmed" });
+
+		expect(
+			store.reopenWorkflowExecutionResume({
+				executionId: "exec-1",
+				actor: "master-api-token",
+				reason: "verified the retired process tree is gone",
+				now: "2026-09-22T01:20:05.000Z",
+			}),
+		).toMatchObject({ ok: true, previousAttemptCount: 1 });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: true,
+			reason: "operator_reopened",
+		});
+		expect(store.listWorkflowExecutionResumeReopenReceipts("exec-1")).toEqual([
+			expect.objectContaining({
+				executionId: "exec-1",
+				demandId: "rework-reopen",
+				actor: "master-api-token",
+				reason: "verified the retired process tree is gone",
+				previousAttemptCount: 1,
+				reopenedAt: "2026-09-22T01:20:05.000Z",
+			}),
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.some((event) => event.kind === "workflow_process_resume_reopened"),
+		).toBe(true);
+
+		const second = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:2",
+			now: "2026-09-22T01:20:06.000Z",
+		});
+		expect(second).toMatchObject({ ok: true, attempt: 2 });
+		if (!second.ok) throw new Error(second.reason);
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: second.generation,
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:2",
+			reasonCode: "startup_timeout",
+			now: "2026-09-22T01:20:07.000Z",
+		});
+		const third = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:3",
+			now: "2026-09-22T01:20:08.000Z",
+		});
+		expect(third).toMatchObject({ ok: true, attempt: 3 });
+		if (!third.ok) throw new Error(third.reason);
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: third.generation,
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:3",
+			reasonCode: "startup_timeout",
+			now: "2026-09-22T01:20:09.000Z",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-reopen",
+				ownerClaimId: "bridge-b:4",
+				now: "2026-09-22T01:20:10.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_attempt_limit" });
+	});
+
 	it("closes every process body only when the whole workflow becomes terminal", async () => {
 		const store = await StateStore.create(":memory:");
 		createAdmittedEngineRun(store, { standbyLifecycle: true });

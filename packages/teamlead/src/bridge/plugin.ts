@@ -2369,6 +2369,52 @@ export function createBridgeApp(
 		});
 	}
 
+	// FLY-2808: cleanup-unconfirmed is a fail-closed safety latch. Only the
+	// master-token operator path may reopen it, and StateStore records the
+	// server-derived actor, timestamp, reason, and restored attempt boundary.
+	if (config.apiToken) {
+		app.post(
+			"/api/workflow-resume/reopen",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				const executionId =
+					typeof req.body?.executionId === "string"
+						? req.body.executionId.trim()
+						: "";
+				const reason =
+					typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+				if (!executionId || !reason || reason.length > 500) {
+					res.status(400).json({
+						ok: false,
+						error:
+							"executionId and a reason of at most 500 characters are required",
+					});
+					return;
+				}
+				const reopened = store.reopenWorkflowExecutionResume({
+					executionId,
+					actor: "master-api-token",
+					reason,
+					now: new Date().toISOString(),
+				});
+				if (!reopened.ok) {
+					res
+						.status(reopened.reason === "process_body_not_enrolled" ? 404 : 409)
+						.json({ ok: false, reason: reopened.reason });
+					return;
+				}
+				res.json(reopened);
+			},
+		);
+	} else {
+		app.post("/api/workflow-resume/reopen", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				error: "workflow resume reopen requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
 	// FLY-1285: supervisor observations are bearer-authenticated inside this
 	// dedicated router (including an explicit 503 when apiToken is absent) and
 	// hydrate the durable hold before any heartbeat reaper can act.

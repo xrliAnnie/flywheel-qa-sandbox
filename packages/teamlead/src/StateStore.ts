@@ -45723,12 +45723,137 @@ export class StateStore {
 						: "working",
 			transition: body.state,
 			parkedAt: body.standby_at,
-			canResume: body.state === "standby" || body.state === "resume_failed",
+			canResume:
+				(body.state === "standby" || body.state === "resume_failed") &&
+				body.reason_code !== "cleanup_unconfirmed",
 			reason: body.reason_code,
 			lastResumeMs: body.last_resume_ms,
 			contextLoss: body.context_loss === 1,
 			observedAt: body.updated_at,
 		};
+	}
+
+	reopenWorkflowExecutionResume(input: {
+		executionId: string;
+		actor: string;
+		reason: string;
+		now: string;
+	}):
+		| { ok: true; demandId: string; previousAttemptCount: number }
+		| { ok: false; reason: string } {
+		const actor = input.actor.trim();
+		const reason = input.reason.trim();
+		if (
+			!input.executionId ||
+			!actor ||
+			actor.length > 200 ||
+			!reason ||
+			reason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resume_reopen" };
+		}
+		let result:
+			| { ok: true; demandId: string; previousAttemptCount: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resume_reopen_not_committed",
+		};
+		this.db.transaction(() => {
+			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			const runtime = this.getWorkflowExecutionRuntime(input.executionId);
+			if (!body || !runtime) {
+				result = { ok: false, reason: "process_body_not_enrolled" };
+				return;
+			}
+			if (
+				body.state !== "resume_failed" ||
+				body.reason_code !== "cleanup_unconfirmed" ||
+				!body.current_demand_id ||
+				body.owner_claim_id !== null
+			) {
+				result = { ok: false, reason: "resume_cleanup_not_latched" };
+				return;
+			}
+			const attemptSummary = this.workflowSelectAll(
+				`SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS last_id
+				   FROM workflow_execution_resume_attempt
+				  WHERE execution_id = ? AND demand_id = ?
+				    AND kind = 'original_session'`,
+				[input.executionId, body.current_demand_id],
+			)[0];
+			const previousAttemptCount = Number(attemptSummary?.count ?? 0);
+			const priorAttemptId = Number(attemptSummary?.last_id ?? 0);
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET updated_at = ?, reason_code = 'operator_reopened'
+				  WHERE execution_id = ? AND generation = ? AND state = 'resume_failed'
+				    AND reason_code = 'cleanup_unconfirmed' AND current_demand_id = ?
+				    AND owner_claim_id IS NULL`,
+				[
+					input.now,
+					input.executionId,
+					body.generation,
+					body.current_demand_id,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "resume_reopen_cas_failed" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: runtime.run_id,
+				eventUid: `process_resume_reopened:${input.executionId}:${body.generation}`,
+				kind: "workflow_process_resume_reopened",
+				nodeId: runtime.node_id,
+				executionId: input.executionId,
+				payload: {
+					generation: body.generation,
+					demandId: body.current_demand_id,
+					actor,
+					reason,
+					priorAttemptId,
+					previousAttemptCount,
+					at: input.now,
+				},
+			});
+			result = {
+				ok: true,
+				demandId: body.current_demand_id,
+				previousAttemptCount,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listWorkflowExecutionResumeReopenReceipts(executionId: string): Array<{
+		executionId: string;
+		demandId: string;
+		actor: string;
+		reason: string;
+		previousAttemptCount: number;
+		reopenedAt: string;
+	}> {
+		const runtime = this.getWorkflowExecutionRuntime(executionId);
+		if (!runtime) return [];
+		return this.listWorkflowRunEvents(runtime.run_id)
+			.filter(
+				(event) =>
+					event.kind === "workflow_process_resume_reopened" &&
+					event.execution_id === executionId,
+			)
+			.map((event) => {
+				const payload = event.payload as Record<string, unknown>;
+				return {
+					executionId,
+					demandId: String(payload.demandId),
+					actor: String(payload.actor),
+					reason: String(payload.reason),
+					previousAttemptCount: Number(payload.previousAttemptCount),
+					reopenedAt: String(payload.at),
+				};
+			});
 	}
 
 	beginWorkflowExecutionRetirement(input: {
@@ -45992,17 +46117,36 @@ export class StateStore {
 				result = { ok: false, reason: "resume_cleanup_unconfirmed" };
 				return;
 			}
-			const attempt =
-				Number(
-					this.workflowSelectAll(
-						`SELECT COUNT(*) AS count
-						   FROM workflow_execution_resume_attempt
-						  WHERE execution_id = ? AND demand_id = ?
-						    AND kind = 'original_session'`,
-						[input.executionId, input.demandId],
-					)[0]?.count ?? 0,
-				) + 1;
-			if (attempt > MAX_WORKFLOW_RESUME_ATTEMPTS) {
+			const prior = this.workflowSelectAll(
+				`SELECT COALESCE(MAX(attempt), 0) AS max_attempt
+				   FROM workflow_execution_resume_attempt
+				  WHERE execution_id = ? AND demand_id = ?
+				    AND kind = 'original_session'`,
+				[input.executionId, input.demandId],
+			)[0];
+			const attempt = Number(prior?.max_attempt ?? 0) + 1;
+			const reopen = this.workflowSelectAll(
+				`SELECT COALESCE(json_extract(payload, '$.priorAttemptId'), 0) AS prior_attempt_id
+				   FROM workflow_run_event
+				  WHERE execution_id = ? AND kind = 'workflow_process_resume_reopened'
+				    AND json_extract(payload, '$.demandId') = ?
+				  ORDER BY id DESC LIMIT 1`,
+				[input.executionId, input.demandId],
+			)[0];
+			const attemptsInBudget = Number(
+				this.workflowSelectAll(
+					`SELECT COUNT(*) AS count
+					   FROM workflow_execution_resume_attempt
+					  WHERE execution_id = ? AND demand_id = ?
+					    AND kind = 'original_session' AND id > ?`,
+					[
+						input.executionId,
+						input.demandId,
+						Number(reopen?.prior_attempt_id ?? 0),
+					],
+				)[0]?.count ?? 0,
+			);
+			if (attemptsInBudget >= MAX_WORKFLOW_RESUME_ATTEMPTS) {
 				result = { ok: false, reason: "resume_attempt_limit" };
 				return;
 			}
