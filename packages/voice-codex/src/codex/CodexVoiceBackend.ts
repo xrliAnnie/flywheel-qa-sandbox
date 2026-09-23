@@ -204,7 +204,21 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	speak(text: string, kind: VoiceSpeakKind, options: VoiceSpeakOptions) {
-		return this.speaker.speak(text, kind, options);
+		return this.speaker.speak(text, kind, options).then((receipt) => {
+			this.options.onEvidence?.({
+				kind: "codex_speak_receipt",
+				speechKind: kind,
+				pendingKey: receipt.pendingKey,
+				requestDigest: receipt.requestDigest,
+				outcome: receipt.outcome,
+				transport: receipt.transport,
+				contentProof: receipt.contentProof,
+				...("reason" in receipt && receipt.reason
+					? { reason: receipt.reason }
+					: {}),
+			});
+			return receipt;
+		});
 	}
 
 	injectContext(_text: string): void {

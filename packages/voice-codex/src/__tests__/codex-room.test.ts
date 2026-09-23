@@ -68,14 +68,16 @@ describe("Codex room composition", () => {
 	it("maps the V2 transport into the shared session without claiming attribution", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		const appendAudio = vi.fn(() => "sent" as const);
+		const appendSpeech = vi.fn(async () => undefined);
 		const close = vi.fn(async () => undefined);
+		const evidence = vi.fn();
 		const container = {
 			open: vi.fn(async (input: { realtime: typeof callbacks }) => {
 				callbacks = input.realtime;
 				return {
 					transport: {
 						appendAudio,
-						appendSpeech: vi.fn(async () => undefined),
+						appendSpeech,
 						appendText: vi.fn(async () => undefined),
 						cancel: vi.fn(async () => undefined),
 					},
@@ -92,6 +94,7 @@ describe("Codex room composition", () => {
 			loadContext: vi.fn(),
 			playAudio: played,
 			persistUtterance: persisted,
+			onEvidence: evidence,
 		});
 		expect(actual.capabilities).toMatchObject({
 			converse: true,
@@ -111,6 +114,11 @@ describe("Codex room composition", () => {
 			ownerUserId: null,
 			utteranceId: null,
 		});
+		const speechReceipt = session.speak!("你好", "readback", {
+			pendingKey: "speech-1",
+			verification: "required",
+		});
+		expect(appendSpeech).toHaveBeenCalledWith("你好", 1);
 
 		callbacks.onItem({
 			generation: 1,
@@ -137,6 +145,19 @@ describe("Codex room composition", () => {
 			raw: {},
 		} as never);
 		await vi.waitFor(() => expect(played).toHaveBeenCalledOnce());
+		await expect(speechReceipt).resolves.toMatchObject({
+			outcome: "completed",
+			transport: "submitted",
+			contentProof: "transcript_equivalent",
+		});
+		expect(evidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "codex_speak_receipt",
+				pendingKey: "speech-1",
+				outcome: "completed",
+				contentProof: "transcript_equivalent",
+			}),
+		);
 		expect(played).toHaveBeenCalledWith(
 			expect.objectContaining({ itemId: "assistant-1" }),
 		);
