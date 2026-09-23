@@ -28,6 +28,7 @@ import {
 } from "./health.js";
 import { VoiceHealthAlertDispatcher } from "./health-alert.js";
 import { SessionJournal } from "./journal.js";
+import { probeVoiceLaunchdOwner } from "./launchd-owner.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
 import { parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
@@ -72,6 +73,9 @@ function evidencePath(
 		: join(voiceRoot, "sessions", sessionId, "events.jsonl");
 }
 
+/** Plan §7: one fixed session-start ceiling over preflight and both branches. */
+const SESSION_START_DEADLINE_MS = 120_000;
+
 export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
 	const projects = loadVoiceProjects(config);
@@ -86,6 +90,17 @@ export async function main(): Promise<void> {
 		join(config.voiceRoot, "voice.lock"),
 	);
 	if (lock.status === "conflict") {
+		// FLY-2701: on demand, a wake can land while the previous instance is
+		// still finishing. That race is designed, not a fault — but only when the
+		// host can be shown to already own a running voice job. Evidence source:
+		// launchd's own record for the fixed label (see launchd-owner.ts).
+		const owner = await probeVoiceLaunchdOwner();
+		if (owner.kind === "launchd_running") {
+			console.log(
+				`[voice] benign_owner_conflict label=${owner.label} owner_pid=${owner.pid} source=${owner.source}`,
+			);
+			return;
+		}
 		reportStartupRefusal({
 			reason: "voice_process_lock_conflict",
 			title: "Voice process lock unavailable",
@@ -196,6 +211,10 @@ export async function main(): Promise<void> {
 	};
 
 	const createSession = async (context: VoiceSessionContext) => {
+		// Plan §7: the 120s ceiling covers preflight *and* both start branches.
+		// Identity verification below is preflight, so the clock starts here —
+		// not when the branches finally begin.
+		const startDeadlineAt = Date.now() + SESSION_START_DEADLINE_MS;
 		context.lease.assert();
 		parseVoiceProjection(context.projection, context.sessionId);
 		const token = tokenFor(context.projection);
@@ -239,6 +258,8 @@ export async function main(): Promise<void> {
 		return new GenericVoiceSession({
 			projection: context.projection,
 			delivery,
+			startDeadlineMs: SESSION_START_DEADLINE_MS,
+			startDeadlineAt: () => startDeadlineAt,
 			createFrontend: (handlers) => {
 				return new RealtimeFrontend({
 					apiKey: config.realtimeApiKey,
@@ -368,6 +389,7 @@ export async function main(): Promise<void> {
 		sleep: pause,
 		timing: {
 			idlePollMs: config.idlePollMs,
+			idleExitMs: config.idleExitMs,
 			leaseRenewMs: config.leaseRenewMs,
 			leaseMissMax: config.leaseMissMax,
 			presenceGraceMs: config.presenceGraceMs,

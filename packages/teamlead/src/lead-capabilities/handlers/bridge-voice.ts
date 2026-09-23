@@ -17,8 +17,10 @@ const replySchema = z
 	.object({
 		requestId: z.string().uuid(),
 		status: z.enum(["succeeded", "rejected", "unknown"]),
+		// FLY-2701: a start deduplicated into an existing booking refers to that
+		// booking, not to a session. Both shapes stay tightly pinned.
 		resourceRefs: z
-			.array(z.string().regex(/^voice-session:[0-9a-f-]{36}$/))
+			.array(z.string().regex(/^voice-(?:session|schedule):[0-9a-f-]{36}$/))
 			.max(1),
 		data: z.unknown().optional(),
 		errorCode: z
@@ -162,15 +164,43 @@ export function createBridgeVoiceHandlers(options: {
 				throw denied();
 			const reply = parsed.data;
 			if (reply.status !== "succeeded") {
+				// FLY-2701 review R4: a start refused because it disagreed with an
+				// existing booking must name that booking, or the Lead is told
+				// "rejected" with nothing to act on. The ref is the same pinned
+				// shape the reply schema already validates.
+				const conflictRef =
+					operationId === "voice.session.start" &&
+					reply.errorCode === "voice_schedule_binding_conflict" &&
+					reply.resourceRefs[0]?.startsWith("voice-schedule:")
+						? reply.resourceRefs[0]
+						: undefined;
 				return {
 					status: reply.status,
 					...(reply.errorCode ? { errorCode: reply.errorCode } : {}),
+					...(conflictRef ? { providerRef: conflictRef } : {}),
 				};
 			}
 			if (!response.ok || reply.resourceRefs.length !== 1) throw denied();
 			const data = definition.outputSchema.parse(reply.data);
 			if (data.receiptId !== context.requestId) throw denied();
 			const result = data.result as Record<string, unknown>;
+			// FLY-2701: a start for an already booked meeting is deduplicated into
+			// that booking. It carries the booking's identity, not a session's, so
+			// it is matched against its own resource ref.
+			if (result.status === "schedule_bound") {
+				const scheduleId = result.scheduleId;
+				if (
+					operationId !== "voice.session.start" ||
+					typeof scheduleId !== "string" ||
+					reply.resourceRefs[0] !== `voice-schedule:${scheduleId}`
+				)
+					throw denied();
+				return {
+					status: "succeeded",
+					providerRef: reply.resourceRefs[0],
+					data,
+				};
+			}
 			const sessionId = result.sessionId;
 			if (
 				typeof sessionId !== "string" ||

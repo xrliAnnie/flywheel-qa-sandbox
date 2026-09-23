@@ -120,7 +120,27 @@ export class DiscordVoiceRoom {
 		});
 	}
 
-	async start(): Promise<{ founderPresent: boolean }> {
+	async start(signal?: AbortSignal): Promise<{ founderPresent: boolean }> {
+		// FLY-2701 review R3: the checkpoints below only see the abort once the
+		// call they are waiting on returns, and joining waits up to 15s for Ready.
+		// When the other start branch fails, everything already created here has
+		// to come down now — not when the hung call finally finishes, and not at
+		// the caller's outer deadline.
+		const onAbort = () => {
+			void this.stop().catch(() => undefined);
+		};
+		if (signal?.aborted) onAbort();
+		signal?.addEventListener("abort", onAbort, { once: true });
+		try {
+			return await this.startUnderAbort(signal);
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+		}
+	}
+
+	private async startUnderAbort(
+		signal?: AbortSignal,
+	): Promise<{ founderPresent: boolean }> {
 		this.vad = await (
 			this.options.createVad ??
 			(() =>
@@ -128,7 +148,7 @@ export class DiscordVoiceRoom {
 					fileURLToPath(new URL("../models/silero_vad.onnx", import.meta.url)),
 				))
 		)();
-		await this.checkActive();
+		await this.checkActive(signal);
 		const vad = this.vad;
 		const gate = new UplinkSpeechGate({
 			score: (samples, state) => vad.score(samples, state as SileroState),
@@ -167,7 +187,7 @@ export class DiscordVoiceRoom {
 				}),
 		});
 		await this.registry.start([{ id: "voice", token: this.options.token }]);
-		await this.checkActive();
+		await this.checkActive(signal);
 		const client = this.registry.client("voice");
 		if (
 			!this.options.expectedBotUserId ||
@@ -176,13 +196,20 @@ export class DiscordVoiceRoom {
 			await this.stop();
 			throw new Error("lead_bot_identity_mismatch");
 		}
-		this.connection = await this.registry.join("voice", {
-			guildId: this.options.guildId,
-			channelId: this.options.voiceChannelId,
-			selfMute: false,
-			selfDeaf: false,
-		});
-		await this.checkActive();
+		this.connection = await this.registry.join(
+			"voice",
+			{
+				guildId: this.options.guildId,
+				channelId: this.options.voiceChannelId,
+				selfMute: false,
+				selfDeaf: false,
+			},
+			// FLY-2701 review R4: the connection only reaches `this.connection`
+			// once the whole join resolves, so the room's own cleanup cannot see
+			// it before then. The join itself has to take the abort.
+			signal,
+		);
+		await this.checkActive(signal);
 		this.subscribeConnectionDiagnostics();
 		this.options.onReceiveHealth?.(this.receiveHealth.current());
 		const player = this.options.deps.createPlayer(this.connection);
@@ -299,10 +326,21 @@ export class DiscordVoiceRoom {
 		await vad?.close();
 	}
 
-	private async checkActive(): Promise<void> {
-		if (this.stopped) {
+	/**
+	 * FLY-2701 review R2: the caller's start deadline and the other branch's
+	 * failure both arrive as an abort. Honour it at the same checkpoints that
+	 * already handle a local stop — including the one right after `join()`,
+	 * where the connection exists but `start()` has not returned yet, so the
+	 * caller cannot see anything to clean up.
+	 */
+	private async checkActive(signal?: AbortSignal): Promise<void> {
+		if (this.stopped || signal?.aborted) {
 			await this.stop();
-			throw new Error("voice_room_stopped");
+			throw new Error(
+				signal?.aborted && !this.stopped
+					? "voice_room_start_aborted"
+					: "voice_room_stopped",
+			);
 		}
 	}
 

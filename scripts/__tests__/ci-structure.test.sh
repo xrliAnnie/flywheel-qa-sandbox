@@ -1567,6 +1567,7 @@ fly1814_commands = [
 ]
 expected_fly1814_commands = [
     "bash scripts/__tests__/flywheel-voice-wrapper.test.sh",
+    "bash scripts/__tests__/restart-voice-on-demand.test.sh",
     "bash scripts/__tests__/install-voice-launchd.test.sh",
     "bash scripts/__tests__/launchd-units-manifest.test.sh",
     "bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh",

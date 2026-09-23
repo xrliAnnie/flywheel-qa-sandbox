@@ -49,6 +49,7 @@ async function fixture(
 	options: {
 		onResolve?: () => void;
 		onProvision?: (sessionId: string) => void | Promise<void>;
+		meetingId?: string;
 	} = {},
 ) {
 	const provision = vi.fn(async (sessionId: string) => {
@@ -85,6 +86,7 @@ async function fixture(
 				requestedBy: "master",
 				credentialTier: "master",
 				createdAt: "2026-09-17T20:00:00.000Z",
+				...(options.meetingId ? { meetingId: options.meetingId } : {}),
 			};
 		},
 		provisionSession: provision,
@@ -279,4 +281,141 @@ it("denies an unconfigured Lead and hides foreign session existence", async () =
 			envelope("voice.session.status", { sessionId: SESSION_ID }),
 		),
 	).toMatchObject({ status: 403, body: { errorCode: "voice_scope_denied" } });
+});
+
+/**
+ * FLY-2701 review R2 (MEDIUM): plan §5 says the instant entry that meets its
+ * own booking gets the booking's identity back. The Lead path used to return a
+ * bare rejection with no data, so a Lead could not tell "already booked, here
+ * it is" apart from "the room is busy" and had nothing to act on.
+ */
+const BOOKED_MEETING = "40000000-0000-4000-8000-000000000001";
+const BOOKED_SCHEDULE = "40000000-0000-4000-8000-000000000002";
+
+function bookForLead(overrides: Record<string, unknown> = {}) {
+	return store.createVoiceSchedule({
+		scheduleId: BOOKED_SCHEDULE,
+		requestKey: "master:lead-booking",
+		requestDigest: "digest-lead-booking",
+		projectName: "raya",
+		leadId: "raya",
+		guildId: "guild",
+		voiceChannelId: "voice",
+		voiceBotUserId: "12345678901234567",
+		meetingId: BOOKED_MEETING,
+		scheduledAt: "2026-09-17T21:00:00.000Z",
+		prewarmAt: "2026-09-17T20:58:00.000Z",
+		readyDeadlineAt: "2026-09-17T21:00:00.000Z",
+		presenceDeadlineAt: "2026-09-17T21:10:00.000Z",
+		requestedBy: "master",
+		credentialTier: "master",
+		createdAt: "2026-09-17T20:00:00.000Z",
+		...overrides,
+	});
+}
+
+it("returns the existing booking to the Lead instead of a bare refusal", async () => {
+	const { url, provision } = await fixture({ meetingId: BOOKED_MEETING });
+	bookForLead();
+
+	const response = await post(
+		url,
+		"",
+		envelope("voice.session.start", { mode: "rg" }),
+	);
+
+	expect(response).toMatchObject({
+		status: 200,
+		body: {
+			status: "succeeded",
+			data: {
+				result: {
+					status: "schedule_bound",
+					scheduleId: BOOKED_SCHEDULE,
+					revision: 1,
+					state: "scheduled",
+				},
+			},
+		},
+	});
+	expect(provision).not.toHaveBeenCalled();
+	expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
+});
+
+it("tells the Lead which booking it disagreed with", async () => {
+	const { url } = await fixture({ meetingId: BOOKED_MEETING });
+	bookForLead({ voiceChannelId: "someone-elses-voice" });
+
+	const response = await post(
+		url,
+		"",
+		envelope("voice.session.start", { mode: "rg" }),
+	);
+
+	expect(response).toMatchObject({
+		status: 200,
+		body: {
+			status: "rejected",
+			errorCode: "voice_schedule_binding_conflict",
+			// The identity rides the resource ref: the broker drops `data` on a
+			// rejection, so anything put there never reaches the Lead.
+			resourceRefs: [`voice-schedule:${BOOKED_SCHEDULE}`],
+		},
+	});
+	expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
+});
+
+/**
+ * FLY-2701 review R3 (HIGH): the schedule guard returned before the intent was
+ * written, so `/receipt` could only ever answer unknown for a deduplicated
+ * start. Worse, a caller whose first response was lost and who retries after
+ * the booking reached a terminal state no longer hits the guard — and would
+ * really reserve a second session, which is exactly what plan §5 forbids
+ * ("已终态预约不得被旧 canonical 重新创建会话").
+ */
+it("replays a deduplicated start from its receipt, even after the booking ended", async () => {
+	const { url, provision } = await fixture({ meetingId: BOOKED_MEETING });
+	bookForLead();
+	const request = envelope("voice.session.start", { mode: "rg" });
+
+	const first = await post(url, "", request);
+	expect(first.body).toMatchObject({
+		status: "succeeded",
+		resourceRefs: [`voice-schedule:${BOOKED_SCHEDULE}`],
+	});
+
+	// The caller never saw that answer. Meanwhile the booking is cancelled, so
+	// the guard would no longer fire for a fresh request.
+	store.cancelVoiceSchedule({
+		scheduleId: BOOKED_SCHEDULE,
+		requestKey: "master:lead-cancel",
+		requestDigest: "digest-lead-cancel",
+		expectedRevision: 1,
+		updatedAt: "2026-09-17T20:05:00.000Z",
+	});
+
+	const retry = await post(url, "", request);
+	expect(retry.body).toMatchObject({
+		status: "succeeded",
+		resourceRefs: [`voice-schedule:${BOOKED_SCHEDULE}`],
+		data: { result: { status: "schedule_bound", scheduleId: BOOKED_SCHEDULE } },
+	});
+	// The whole point: no second session was opened by the retry.
+	expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
+	expect(provision).not.toHaveBeenCalled();
+});
+
+it("answers the receipt route for a deduplicated start instead of unknown", async () => {
+	const { url } = await fixture({ meetingId: BOOKED_MEETING });
+	bookForLead();
+	const request = envelope("voice.session.start", { mode: "rg" });
+	await post(url, "", request);
+
+	const receipt = await post(url, "/receipt", request);
+
+	expect(receipt.body).toMatchObject({
+		status: "succeeded",
+		resourceRefs: [`voice-schedule:${BOOKED_SCHEDULE}`],
+		data: { result: { status: "schedule_bound", scheduleId: BOOKED_SCHEDULE } },
+	});
 });

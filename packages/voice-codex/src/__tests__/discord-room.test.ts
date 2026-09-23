@@ -416,3 +416,119 @@ describe("DiscordVoiceRoom", () => {
 		await room.stop();
 	});
 });
+
+/**
+ * FLY-2701 review R3 (MEDIUM): the abort checkpoints only run once the awaited
+ * call returns. Joining really does `joinVoiceChannel()` and then waits up to
+ * 15s for Ready, and the presence query is another await after the last
+ * checkpoint. So when the other start branch fails, everything already created
+ * here — the logged-in client, the VAD, and eventually the connection itself —
+ * sat there until that call finished or the outer deadline expired.
+ */
+describe("DiscordVoiceRoom honours an aborted start promptly", () => {
+	function room(options: {
+		joinVoice: () => Promise<unknown>;
+		userVoiceChannelId?: () => Promise<string | undefined>;
+		signal: AbortSignal;
+	}) {
+		const client = {
+			user: { id: "voice-bot" },
+			login: vi.fn(async () => {}),
+			isReady: () => true,
+			once: vi.fn(),
+			destroy: vi.fn(async () => {}),
+		};
+		const leaveVoice = vi.fn();
+		const close = vi.fn(async () => {});
+		const joinVoice = vi.fn(options.joinVoice);
+		const instance = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 0, next: state }),
+				close,
+			}),
+			deps: {
+				createClient: () => client,
+				joinVoice,
+				sendMessage: vi.fn(async () => {}),
+				subscribeManual: vi.fn(),
+				createDecoder: vi.fn(),
+				createPlayer: vi.fn(() => ({})),
+				createResource: vi.fn(),
+				speakingEvents: vi.fn(() => ({ on: vi.fn() })),
+				memberDisplayName: vi.fn(),
+				userVoiceChannelId: vi.fn(
+					options.userVoiceChannelId ?? (async () => "voice"),
+				),
+				onVoiceStateUpdate: vi.fn(() => vi.fn()),
+				leaveVoice,
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			onAudio: vi.fn(),
+			onFounderPresence: vi.fn(),
+			onError: vi.fn(),
+		});
+		return { instance, client, leaveVoice, close, joinVoice };
+	}
+
+	it("releases the logged-in client without waiting for a hung join", async () => {
+		const controller = new AbortController();
+		const test = room({
+			joinVoice: () => new Promise(() => {}),
+			signal: controller.signal,
+		});
+		const started = test.instance.start(controller.signal);
+		started.catch(() => undefined);
+
+		await vi.waitFor(() => expect(test.joinVoice).toHaveBeenCalled());
+		controller.abort(new Error("other branch failed"));
+
+		// The join is still hanging and always will be; everything that already
+		// exists must come down now, not in fifteen seconds.
+		await vi.waitFor(() => expect(test.client.destroy).toHaveBeenCalled());
+		await vi.waitFor(() => expect(test.close).toHaveBeenCalled());
+	});
+
+	it("leaves a connection that lands after the abort", async () => {
+		const controller = new AbortController();
+		let landJoin!: (value: unknown) => void;
+		const test = room({
+			joinVoice: () =>
+				new Promise((resolve) => {
+					landJoin = resolve;
+				}),
+			signal: controller.signal,
+		});
+		const started = test.instance.start(controller.signal);
+		started.catch(() => undefined);
+		await vi.waitFor(() => expect(test.joinVoice).toHaveBeenCalled());
+
+		controller.abort(new Error("other branch failed"));
+		landJoin({ connection: true });
+
+		await expect(started).rejects.toThrow();
+		await vi.waitFor(() => expect(test.leaveVoice).toHaveBeenCalled());
+	});
+
+	it("never issues the presence query once the start was aborted", async () => {
+		const controller = new AbortController();
+		const userVoiceChannelId = vi.fn(async () => "voice");
+		const test = room({
+			joinVoice: async () => {
+				controller.abort(new Error("other branch failed"));
+				return { connection: true };
+			},
+			userVoiceChannelId,
+			signal: controller.signal,
+		});
+
+		await expect(test.instance.start(controller.signal)).rejects.toThrow();
+		expect(userVoiceChannelId).not.toHaveBeenCalled();
+		expect(test.leaveVoice).toHaveBeenCalled();
+	});
+});

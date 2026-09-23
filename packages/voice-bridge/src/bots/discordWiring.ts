@@ -338,6 +338,65 @@ export function parseDiscordReceiveDiagnostic(
 	return { kind: "unknown" };
 }
 
+/**
+ * FLY-2701 review R4: joining creates the connection and only then waits for it
+ * to become Ready. Every path out of that wait that is not success must destroy
+ * what was created — the caller never receives a handle on those paths, so
+ * nothing upstream can take the bot back out of the channel. The same applies
+ * to an abort arriving mid-join: the room's own cleanup can only reach fields
+ * it already owns, and this connection is not one of them yet.
+ */
+export async function joinVoiceConnection(input: {
+	// Structurally the two primitives this needs, so a test can hand it fakes
+	// while production hands it the real `@discordjs/voice` module.
+	voice: {
+		joinVoiceChannel: (options: any) => { destroy: () => void };
+		entersState: (
+			connection: any,
+			status: any,
+			timeoutMs: number,
+		) => Promise<unknown>;
+		VoiceConnectionStatus: { Ready: any };
+	};
+	client: {
+		user?: { id?: string };
+		guilds: { fetch: (guildId: string) => Promise<any> };
+	};
+	opts: VoiceJoinOpts;
+	receivePolicy?: DiscordReceivePolicy;
+	signal?: AbortSignal;
+}): Promise<unknown> {
+	const { voice, client, opts, receivePolicy, signal } = input;
+	const aborted = (): Error =>
+		new Error("voice_join_aborted", { cause: signal?.reason });
+	if (signal?.aborted) throw aborted();
+	const guild = await client.guilds.fetch(opts.guildId);
+	if (signal?.aborted) throw aborted();
+	// @discordjs/voice keys its connection registry by (group, guildId).
+	// Group by bot id so multiple bot clients in one process cannot clobber
+	// each other's connections.
+	const conn = voice.joinVoiceChannel(
+		buildVoiceJoinOptions(
+			opts,
+			guild.voiceAdapterCreator,
+			client.user?.id,
+			receivePolicy,
+		) as any,
+	);
+	try {
+		await voice.entersState(conn, voice.VoiceConnectionStatus.Ready, 15_000);
+		if (signal?.aborted) throw aborted();
+	} catch (error) {
+		try {
+			conn.destroy();
+		} catch {
+			// Already torn down by the failure itself; nothing left to give back.
+		}
+		throw error;
+	}
+	return conn;
+}
+
 export async function createDiscordDeps(
 	receivePolicy?: DiscordReceivePolicy,
 ): Promise<DiscordDeps> {
@@ -357,22 +416,14 @@ export async function createDiscordDeps(
 
 		// FLY-960 first pitfall: caller (BotRegistry.start) has already gated on
 		// clientReady before this runs.
-		joinVoice: async (client: any, opts: VoiceJoinOpts) => {
-			const guild = await client.guilds.fetch(opts.guildId);
-			// @discordjs/voice keys its connection registry by (group, guildId).
-			// Group by bot id so multiple bot clients in one process cannot clobber
-			// each other's connections.
-			const conn = voice.joinVoiceChannel(
-				buildVoiceJoinOptions(
-					opts,
-					guild.voiceAdapterCreator,
-					client.user?.id,
-					receivePolicy,
-				) as any,
-			);
-			await voice.entersState(conn, voice.VoiceConnectionStatus.Ready, 15_000);
-			return conn;
-		},
+		joinVoice: async (client: any, opts: VoiceJoinOpts, signal?: AbortSignal) =>
+			joinVoiceConnection({
+				voice,
+				client,
+				opts,
+				...(receivePolicy ? { receivePolicy } : {}),
+				...(signal ? { signal } : {}),
+			}),
 
 		subscribeManual: (conn: any) => (userId: string) =>
 			conn.receiver.subscribe(userId, {

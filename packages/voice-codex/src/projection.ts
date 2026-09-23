@@ -7,6 +7,8 @@ const snowflake = (value: unknown): value is string =>
 	typeof value === "string" && /^\d{17,20}$/u.test(value);
 const text = (value: unknown): value is string =>
 	typeof value === "string" && value.trim().length > 0;
+const instant = (value: unknown): value is string =>
+	typeof value === "string" && Number.isFinite(Date.parse(value));
 
 /** Validate disk/HTTP data before it may select credentials or IO destinations. */
 export function parseVoiceProjection(
@@ -37,7 +39,14 @@ export function parseVoiceProjection(
 		!Array.isArray(row.qaAllowUserIds) ||
 		!row.qaAllowUserIds.every(snowflake) ||
 		(row.evidenceDir != null && !text(row.evidenceDir)) ||
-		(row.meetingId != null && !text(row.meetingId))
+		(row.meetingId != null && !text(row.meetingId)) ||
+		// FLY-2701: the live floor decides when a bot may open its microphone, so
+		// an unparseable instant must be refused, never treated as "now".
+		(row.notBeforeLiveAt != null && !instant(row.notBeforeLiveAt)) ||
+		(row.presenceDeadlineAt != null && !instant(row.presenceDeadlineAt)) ||
+		(row.scheduleRevision != null &&
+			(!Number.isSafeInteger(row.scheduleRevision) ||
+				(row.scheduleRevision as number) < 1))
 	) {
 		throw new Error("voice_projection_invalid");
 	}

@@ -31,7 +31,10 @@ describe("StateStore voice session schema", () => {
 			"voice_health_projection",
 			"voice_health_projection_cursor",
 			"voice_intents",
+			"voice_launch_attempts",
 			"voice_outbound",
+			"voice_schedule_requests",
+			"voice_schedules",
 			"voice_sessions",
 		]);
 		const indexes = db

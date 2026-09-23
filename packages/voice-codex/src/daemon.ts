@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { ReceiveHealth } from "flywheel-voice-core";
 import type {
 	VoiceBridgeRequestDiagnostic,
@@ -29,7 +30,10 @@ export type VoiceEnd =
 				| "text-stop"
 				| "voice-stop"
 				| "realtime_session_expiring"
-				| "realtime_capacity";
+				| "realtime_capacity"
+				// FLY-2701 plan §7: nobody came to a booked meeting. A normal
+				// ending, never a fault — and only reachable before going live.
+				| "no_human";
 	  }
 	| { kind: "failed"; reason: string };
 
@@ -55,6 +59,9 @@ export interface ActiveVoiceSession {
 	receiveHealth(): ReceiveHealth | undefined;
 	start(): Promise<{ founderPresent: boolean }>;
 	waitForFounder(timeoutMs: number): Promise<boolean>;
+	/** FLY-2701: her presence now, re-read after a prewarmed wait. */
+	isFounderPresent?(): boolean;
+	waitForFounderPresence?(timeoutMs: number): Promise<boolean>;
 	markLive(): Promise<void>;
 	waitForEnd(): Promise<VoiceEnd>;
 	requestEnd(outcome: VoiceEnd): void;
@@ -93,6 +100,12 @@ interface VoiceDaemonBridge {
 		leaseExpiresAt: string;
 		lease: VoiceLease;
 	}>;
+	ready(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		scheduleRevision: number | null,
+	): Promise<void>;
 	setState(
 		sessionId: string,
 		leaseToken: string,
@@ -153,6 +166,7 @@ export interface VoiceDaemonOptions {
 	monotonicNow?: () => number;
 	timing: {
 		idlePollMs: number;
+		idleExitMs?: number;
 		leaseRenewMs: number;
 		leaseMissMax: number;
 		presenceGraceMs: number;
@@ -322,10 +336,19 @@ export class VoiceDaemon {
 		await this.recover();
 		let consecutivePollFailures = 0;
 		let stoppedObserved = false;
+		// FLY-2701: on-demand hosts hold no resident daemon. Idle accounting only
+		// runs on *successful* empty reads, so a Bridge outage never counts as
+		// "nobody wants me" and exits the process.
+		let idleSince: number | undefined;
+		let pendingDesired: { sessionId: string } | undefined;
 		while (!this.stopping) {
 			const startedAt = this.monotonicNow();
 			try {
-				const result = await this.runOnce();
+				const claimed = pendingDesired;
+				pendingDesired = undefined;
+				const result = claimed
+					? await this.runDesired(claimed)
+					: await this.runOnce();
 				if (result.kind === "idle_success") {
 					consecutivePollFailures = 0;
 					this.observeHealth({
@@ -336,11 +359,27 @@ export class VoiceDaemon {
 							Math.round(this.monotonicNow() - startedAt),
 						),
 					});
+					const observedAt = this.monotonicNow();
+					idleSince ??= observedAt;
+					if (
+						observedAt - idleSince >=
+						(this.options.timing.idleExitMs ?? 120_000)
+					) {
+						// Exit race: a demand written between the last empty read and
+						// this one is still an unclaimed to-do, so consume it here
+						// instead of exiting on a stale observation.
+						const finalDesired = await this.options.bridge.desired();
+						if (!finalDesired) break;
+						idleSince = undefined;
+						pendingDesired = finalDesired;
+						continue;
+					}
 					await this.options.sleep(
 						this.options.timing.idlePollMs,
 						this.sleepController.signal,
 					);
 				} else if (result.kind === "daemon_stopped") {
+					idleSince = undefined;
 					this.observeHealth({
 						kind: "daemon_stopped",
 						observedAt: this.nowIso(),
@@ -348,9 +387,11 @@ export class VoiceDaemon {
 					stoppedObserved = true;
 				} else {
 					consecutivePollFailures = 0;
+					idleSince = undefined;
 				}
 			} catch (error) {
 				consecutivePollFailures += 1;
+				idleSince = undefined;
 				const failure = this.pollFailure(error, startedAt);
 				this.observeHealth(failure);
 				console.error(
@@ -432,6 +473,12 @@ export class VoiceDaemon {
 	async runOnce(): Promise<VoiceDaemonIterationResult> {
 		const desired = await this.options.bridge.desired();
 		if (!desired) return { kind: "idle_success" };
+		return this.runDesired(desired);
+	}
+
+	private async runDesired(desired: {
+		sessionId: string;
+	}): Promise<VoiceDaemonIterationResult> {
 		const claimed = await this.options.bridge.claim(
 			desired.sessionId,
 			this.options.bootId,
@@ -533,13 +580,41 @@ export class VoiceDaemon {
 			);
 			context.lease.assert();
 			const started = await lifetime.wait(() => session.start());
-			const founderPresent =
-				started.founderPresent ||
-				(await lifetime.wait(() =>
-					session.waitForFounder(this.options.timing.presenceGraceMs),
-				));
+			// FLY-2701: a booked meeting reports ready as soon as the room and the
+			// model are up, then waits — mute — for its own time.
+			const notBeforeLiveAt = context.projection.notBeforeLiveAt;
+			if (notBeforeLiveAt) {
+				await lifetime.wait(() =>
+					this.options.bridge.ready(
+						context.sessionId,
+						context.leaseToken,
+						context.lease,
+						context.projection.scheduleRevision ?? null,
+					),
+				);
+				await lifetime.wait(() => this.waitUntil(notBeforeLiveAt));
+			}
+			// Founder presence: she is the meeting. The absolute deadline from the
+			// schedule wins over the local grace so an early start never shortens
+			// how long the bot waits for her.
+			const presenceWaitMs = this.presenceWaitMs(context);
+			// A prewarmed meeting may have watched her arrive and leave again while
+			// it waited for T, so it re-reads presence instead of trusting the
+			// reading it took before the wait.
+			const founderPresent = notBeforeLiveAt
+				? await lifetime.wait(() =>
+						session.waitForFounderPresence
+							? session.waitForFounderPresence(presenceWaitMs)
+							: session.waitForFounder(presenceWaitMs),
+					)
+				: started.founderPresent ||
+					(await lifetime.wait(() => session.waitForFounder(presenceWaitMs)));
 			if (!founderPresent) {
-				outcome = { kind: "failed", reason: "no_human" };
+				// Plan §7: "不可沿现有 failed/no_human 偷偷将正常缺席算故障".
+				// Suppressing the alert downstream is not the same as recording
+				// what actually happened, which is that the meeting simply had
+				// nobody in it.
+				outcome = { kind: "ended", reason: "no_human" };
 			} else {
 				await lifetime.wait(() =>
 					this.options.bridge.setState(
@@ -633,12 +708,15 @@ export class VoiceDaemon {
 							sessionId: context.sessionId,
 							reason: outcome.reason,
 						};
-		if (result.kind === "session_failed" && result.reason !== "no_human")
+		if (result.kind === "session_failed")
 			this.observeSessionFailure(
 				context,
 				failureClassification?.reasonClass ?? "session_runtime_failed",
 				failureClassification?.operation ?? "session_runtime",
 			);
+		// An unattended meeting never went live, so `liveAt` is unset and no
+		// completed-call health event is emitted for it — correct: it is neither
+		// a fault nor a call that happened.
 		if (result.kind === "session_ended" && liveAt && renewAt)
 			this.observeHealth({
 				kind: "session_ended",
@@ -671,6 +749,43 @@ export class VoiceDaemon {
 		return result;
 	}
 
+	/**
+	 * Sleeps until an absolute instant. A timer that fires early (or a sleep cut
+	 * short) re-checks rather than falling through: the Bridge enforces the same
+	 * floor and would answer an early live with a 409, which this daemon reads as
+	 * a lost lease and would turn a benign early wake into a failed session.
+	 */
+	private async waitUntil(instant: string): Promise<void> {
+		const target = Date.parse(instant);
+		if (!Number.isFinite(target)) return;
+		for (let attempt = 0; attempt < 64; attempt += 1) {
+			if (this.stopping) return;
+			const remaining = target - Date.parse(this.nowIso());
+			if (!Number.isFinite(remaining) || remaining <= 0) return;
+			await this.options.sleep(remaining, this.sleepController.signal);
+		}
+		// Falling through here would issue exactly the early live this wait exists
+		// to prevent, and the Bridge's 409 would be misread as a lost lease. Say
+		// what actually happened instead.
+		throw new SessionEnded({
+			kind: "failed",
+			reason: "meeting_floor_unreachable",
+		});
+	}
+
+	/**
+	 * A scheduled meeting carries an absolute presence deadline; an instant
+	 * session keeps the configured grace. Never less than a moment, so a clock
+	 * that jumped forward cannot turn the wait into an instant no_human.
+	 */
+	private presenceWaitMs(context: VoiceSessionContext): number {
+		const deadline = context.projection.presenceDeadlineAt;
+		if (!deadline) return this.options.timing.presenceGraceMs;
+		const remaining = Date.parse(deadline) - Date.parse(this.nowIso());
+		if (!Number.isFinite(remaining)) return this.options.timing.presenceGraceMs;
+		return Math.max(remaining, 0);
+	}
+
 	private nowIso(): string {
 		return (this.options.now?.() ?? new Date()).toISOString();
 	}
@@ -680,7 +795,18 @@ export class VoiceDaemon {
 	}
 
 	private safeRuntimeReason(reason: string): string {
-		if (["daemon_shutdown", "lease_lost", "no_human"].includes(reason))
+		// A closed allowlist: anything else may carry host paths or error text.
+		// meeting_floor_unreachable is on it deliberately — it is the one way to
+		// tell "never reached its meeting time" apart from a generic runtime
+		// failure, and the Bridge cannot diagnose it otherwise.
+		if (
+			[
+				"daemon_shutdown",
+				"lease_lost",
+				"no_human",
+				"meeting_floor_unreachable",
+			].includes(reason)
+		)
 			return reason;
 		return "session_runtime_failed";
 	}

@@ -134,6 +134,33 @@ export function createVoiceSessionRouter(
 				res.status(409).json({ error: result.status });
 				return;
 			}
+			if (result.status === "schedule_bound") {
+				// Plan §5: the same binding already has a booking, so this is
+				// successful deduplication, not a conflict — the caller is handed
+				// what already exists. Starting a second session here would carry no
+				// live floor and open the microphone before the meeting time.
+				res.status(200).json({
+					status: "schedule_bound",
+					scheduleId: result.schedule.scheduleId,
+					revision: result.schedule.revision,
+					state: result.schedule.state,
+					sessionId: result.schedule.sessionId,
+					scheduledAt: result.schedule.scheduledAt,
+				});
+				return;
+			}
+			if (result.status === "schedule_binding_conflict") {
+				// A different Lead, room or bot for a meeting that is already
+				// booked. Never overwrite a booking; report it.
+				res.status(409).json({
+					error: "voice_schedule_binding_conflict",
+					scheduleId: result.schedule.scheduleId,
+					revision: result.schedule.revision,
+					state: result.schedule.state,
+					sessionId: result.schedule.sessionId,
+				});
+				return;
+			}
 			if (result.status === "already_exists") {
 				res.status(200).json({
 					status: "already_exists",
@@ -302,6 +329,50 @@ export function createVoiceSessionRouter(
 			return;
 		}
 		res.json({ ...renewed, leaseTtlMs: deps.leaseTtlMs });
+	});
+
+	// FLY-2701: a prewarmed meeting reports "in the room, model up" before its
+	// time. Ready is not live — the session stays warming and the Bridge alone
+	// decides when the meeting starts.
+	router.post("/:sessionId/ready", masterOnly(), (req, res) => {
+		const scheduleRevision = req.body?.scheduleRevision ?? null;
+		if (
+			scheduleRevision !== null &&
+			(!Number.isSafeInteger(scheduleRevision) || scheduleRevision < 1)
+		) {
+			res.status(400).json({ error: "voice_schedule_revision_invalid" });
+			return;
+		}
+		const session = deps.store.getActiveVoiceLease(
+			param(req.params.sessionId),
+			lease(req),
+			now(),
+		);
+		if (!session) {
+			res.status(409).json(LEASE_CONFLICT);
+			return;
+		}
+		const result = deps.store.markVoiceSessionReady({
+			sessionId: param(req.params.sessionId),
+			scheduleRevision,
+			readyAt: now(),
+		});
+		if (result === "not_found") {
+			res.status(404).json({ error: "voice_session_not_found" });
+			return;
+		}
+		if (result !== "ready") {
+			res.status(409).json({ error: `voice_${result}` });
+			return;
+		}
+		const updated = deps.store.getVoiceSession(param(req.params.sessionId))!;
+		res.json({
+			status: "ready",
+			state: updated.state,
+			readyAt: updated.readyAt,
+			notBeforeLiveAt: updated.notBeforeLiveAt,
+			presenceDeadlineAt: updated.presenceDeadlineAt,
+		});
 	});
 
 	router.post("/:sessionId/state", masterOnly(), async (req, res) => {

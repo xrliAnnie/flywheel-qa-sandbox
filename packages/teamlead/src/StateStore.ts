@@ -2718,9 +2718,76 @@ export interface VoiceSessionRow {
 	receiveHealthBootId: string | null;
 	receiveCardDigest: string | null;
 	outboundCursor: Record<string, string>;
+	scheduleId: string | null;
+	scheduleRevision: number | null;
+	notBeforeLiveAt: string | null;
+	presenceDeadlineAt: string | null;
+	readyAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 	endedAt: string | null;
+}
+
+export type VoiceScheduleState =
+	| "scheduled"
+	| "prewarming"
+	| "ready"
+	| "live"
+	| "ended"
+	| "cancelled"
+	| "failed";
+
+/**
+ * FLY-2701: a future meeting is durable Bridge to-do, not a held room. It keeps
+ * its own revision so a reschedule/cancel can fence the effects of an older one
+ * that is already in flight.
+ */
+export interface VoiceScheduleRow {
+	scheduleId: string;
+	revision: number;
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	voiceBotUserId: string;
+	meetingId: string | null;
+	topic: string | null;
+	evidenceDir: string | null;
+	scheduledAt: string;
+	prewarmAt: string;
+	readyDeadlineAt: string;
+	presenceDeadlineAt: string;
+	state: VoiceScheduleState;
+	sessionId: string | null;
+	sessionRevision: number | null;
+	lateAdmission: boolean;
+	requestedBy: string;
+	credentialTier: VoiceCredentialTier;
+	terminalReason: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface VoiceScheduleReservation {
+	scheduleId: string;
+	requestKey: string;
+	requestDigest: string;
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	voiceBotUserId: string;
+	meetingId?: string;
+	topic?: string;
+	evidenceDir?: string;
+	scheduledAt: string;
+	prewarmAt: string;
+	readyDeadlineAt: string;
+	presenceDeadlineAt: string;
+	lateAdmission?: boolean;
+	requestedBy: string;
+	credentialTier: VoiceCredentialTier;
+	createdAt: string;
 }
 
 export interface VoiceOutboundRow {
@@ -2744,6 +2811,8 @@ export interface VoiceIntentRow {
 	operationId: string;
 	inputDigest: string;
 	sessionId: string | null;
+	/** Set instead of sessionId when the start was deduplicated into a booking. */
+	scheduleId: string | null;
 	resultState: string;
 	createdAt: string;
 }
@@ -2762,7 +2831,25 @@ export interface VoiceSessionReservation {
 	requestedBy: string;
 	credentialTier: VoiceCredentialTier;
 	createdAt: string;
+	scheduleId?: string;
+	scheduleRevision?: number;
+	notBeforeLiveAt?: string;
+	presenceDeadlineAt?: string;
 }
+
+/**
+ * FLY-2701 review R1: the instant entry can now be refused because a booking
+ * already owns the meeting (`schedule_bound`), or because the request disagrees
+ * with that booking's binding (`schedule_binding_conflict`). Both refusals carry
+ * the booking so the caller can report it instead of guessing.
+ */
+export type VoiceSessionReservationResult =
+	| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
+	| {
+			status: "schedule_bound" | "schedule_binding_conflict";
+			schedule: VoiceScheduleRow;
+	  }
+	| { status: "meeting_intent_conflict" | "session_active" };
 
 export type VoiceHealthDemandEventKind =
 	| "required"
@@ -2813,6 +2900,11 @@ export interface VoiceHealthDemandSnapshot {
 	demandIdentities: VoiceHealthDemandIdentity[];
 	events: VoiceHealthDemandEvent[];
 }
+
+/** How long an accepted kickstart has to turn into a claim before it counts. */
+const VOICE_LAUNCH_STARTUP_WINDOW_MS = 60_000;
+const VOICE_LAUNCH_MAX_PROVEN_FAILURES = 3;
+const VOICE_LAUNCH_RETRY_BACKOFF_MS = 3_000;
 
 const VOICE_HEALTH_DEMAND_TRIGGER_NAMES = [
 	"voice_health_demand_sessions_insert",
@@ -3602,6 +3694,13 @@ export class StateStore {
 				(row.receive_health_boot_id as string | null) ?? null,
 			receiveCardDigest: (row.receive_card_digest as string | null) ?? null,
 			outboundCursor: stringRecord(row.outbound_cursor),
+			scheduleId: (row.schedule_id as string | null) ?? null,
+			scheduleRevision:
+				row.schedule_revision == null ? null : Number(row.schedule_revision),
+			notBeforeLiveAt: (row.not_before_live_at as string | null) ?? null,
+			presenceDeadlineAt:
+				(row.presence_deadline_at as string | null) ?? null,
+			readyAt: (row.ready_at as string | null) ?? null,
 			createdAt: String(row.created_at),
 			updatedAt: String(row.updated_at),
 			endedAt: (row.ended_at as string | null) ?? null,
@@ -3935,20 +4034,885 @@ export class StateStore {
 		return "unknown_failure";
 	}
 
-	reserveVoiceSession(
-		input: VoiceSessionReservation,
+	private voiceScheduleFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceScheduleRow | undefined {
+		if (!row) return;
+		return {
+			scheduleId: String(row.schedule_id),
+			revision: Number(row.revision),
+			projectName: String(row.project_name),
+			leadId: String(row.lead_id),
+			guildId: String(row.guild_id),
+			voiceChannelId: String(row.voice_channel_id),
+			voiceBotUserId: String(row.voice_bot_user_id),
+			meetingId: (row.meeting_id as string | null) ?? null,
+			topic: (row.topic as string | null) ?? null,
+			evidenceDir: (row.evidence_dir as string | null) ?? null,
+			scheduledAt: String(row.scheduled_at),
+			prewarmAt: String(row.prewarm_at),
+			readyDeadlineAt: String(row.ready_deadline_at),
+			presenceDeadlineAt: String(row.presence_deadline_at),
+			state: row.state as VoiceScheduleState,
+			sessionId: (row.session_id as string | null) ?? null,
+			sessionRevision:
+				row.session_revision == null ? null : Number(row.session_revision),
+			lateAdmission: Number(row.late_admission) === 1,
+			requestedBy: String(row.requested_by),
+			credentialTier: row.credential_tier as VoiceCredentialTier,
+			terminalReason: (row.terminal_reason as string | null) ?? null,
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
+		};
+	}
+
+	getVoiceSchedule(scheduleId: string): VoiceScheduleRow | undefined {
+		return this.voiceScheduleFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_schedules WHERE schedule_id = ?",
+				[scheduleId],
+			)[0],
+		);
+	}
+
+	/**
+	 * Returns the receipt of an identical earlier request, or "conflict" when the
+	 * same key arrives with a different frozen body. Callers must run this inside
+	 * the same transaction as the mutation so a replay can never see a half write.
+	 */
+	/**
+	 * FLY-2701 review R1: a committed request whose response was lost must be
+	 * replayable *exactly*, which means the receipt has to be reachable before
+	 * anything that can change its mind — the "is this time in the past" check
+	 * and the external binding lookup both can, so the route asks here first.
+	 */
+	readVoiceScheduleReceipt(
+		requestKey: string,
+		requestDigest: string,
+	): { kind: "fresh" } | { kind: "conflict" } | { kind: "replay"; schedule: VoiceScheduleRow } {
+		return this.voiceScheduleReplay(requestKey, requestDigest);
+	}
+
+	private voiceScheduleReplay(
+		requestKey: string,
+		requestDigest: string,
+	): { kind: "fresh" } | { kind: "conflict" } | { kind: "replay"; schedule: VoiceScheduleRow } {
+		const row = this.workflowSelectAll(
+			"SELECT request_digest, result_snapshot FROM voice_schedule_requests WHERE request_key = ?",
+			[requestKey],
+		)[0];
+		if (!row) return { kind: "fresh" };
+		if (String(row.request_digest) !== requestDigest) return { kind: "conflict" };
+		return {
+			kind: "replay",
+			schedule: JSON.parse(String(row.result_snapshot)) as VoiceScheduleRow,
+		};
+	}
+
+	private recordVoiceScheduleReceipt(input: {
+		requestKey: string;
+		requestDigest: string;
+		schedule: VoiceScheduleRow;
+		createdAt: string;
+	}): void {
+		this.db.run(
+			`INSERT OR REPLACE INTO voice_schedule_requests
+			 (request_key, request_digest, schedule_id, result_revision, result_snapshot, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				input.requestKey,
+				input.requestDigest,
+				input.schedule.scheduleId,
+				input.schedule.revision,
+				JSON.stringify(input.schedule),
+				input.createdAt,
+			],
+		);
+	}
+
+	createVoiceSchedule(
+		input: VoiceScheduleReservation,
 	):
-		| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
-		| { status: "meeting_intent_conflict" | "session_active" } {
-		if (typeof input.voiceBotUserId !== "string" || !/^\d{17,20}$/.test(input.voiceBotUserId)) {
+		| { status: "created" | "replayed"; schedule: VoiceScheduleRow }
+		| { status: "request_conflict" }
+		| { status: "session_conflict"; session: VoiceSessionRow }
+		| { status: "meeting_conflict"; schedule: VoiceScheduleRow } {
+		if (!/^\d{17,20}$/.test(input.voiceBotUserId)) {
 			throw new Error("voice_bot_identity_required");
 		}
 		let result:
-			| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
-			| { status: "meeting_intent_conflict" | "session_active" } = {
+			| { status: "created" | "replayed"; schedule: VoiceScheduleRow }
+			| { status: "request_conflict" }
+			| { status: "session_conflict"; session: VoiceSessionRow }
+			| { status: "meeting_conflict"; schedule: VoiceScheduleRow } = {
+			status: "request_conflict",
+		};
+		this.db.transaction(() => {
+			const replay = this.voiceScheduleReplay(
+				input.requestKey,
+				input.requestDigest,
+			);
+			if (replay.kind === "conflict") {
+				result = { status: "request_conflict" };
+				return;
+			}
+			if (replay.kind === "replay") {
+				result = { status: "replayed", schedule: replay.schedule };
+				return;
+			}
+			if (input.meetingId) {
+				const existing = this.voiceScheduleFromRow(
+					this.workflowSelectAll(
+						`SELECT * FROM voice_schedules WHERE meeting_id = ?
+						 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+						[input.meetingId],
+					)[0],
+				);
+				if (existing) {
+					result = { status: "meeting_conflict", schedule: existing };
+					return;
+				}
+				// Plan §5 double-entry dedup: the instant entry may already own this
+				// meeting. Booking it now would quietly convert a call that is
+				// already running into a schedule nobody asked for, so the caller is
+				// told about the session instead.
+				const running = this.voiceSessionFromRow(
+					this.workflowSelectAll(
+						`SELECT * FROM voice_sessions WHERE meeting_id = ?
+						 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+						[input.meetingId],
+					)[0],
+				);
+				if (running) {
+					result = { status: "session_conflict", session: running };
+					return;
+				}
+			}
+			this.db.run(
+				`INSERT INTO voice_schedules
+				 (schedule_id, revision, project_name, lead_id, guild_id, voice_channel_id,
+				  voice_bot_user_id, meeting_id, topic, evidence_dir, scheduled_at, prewarm_at,
+				  ready_deadline_at, presence_deadline_at, state, late_admission, requested_by,
+				  credential_tier, created_at, updated_at)
+				 VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)`,
+				[
+					input.scheduleId,
+					input.projectName,
+					input.leadId,
+					input.guildId,
+					input.voiceChannelId,
+					input.voiceBotUserId,
+					input.meetingId ?? null,
+					input.topic ?? null,
+					input.evidenceDir ?? null,
+					input.scheduledAt,
+					input.prewarmAt,
+					input.readyDeadlineAt,
+					input.presenceDeadlineAt,
+					input.lateAdmission ? 1 : 0,
+					input.requestedBy,
+					input.credentialTier,
+					input.createdAt,
+					input.createdAt,
+				],
+			);
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			this.recordVoiceScheduleReceipt({
+				requestKey: input.requestKey,
+				requestDigest: input.requestDigest,
+				schedule,
+				createdAt: input.createdAt,
+			});
+			result = { status: "created", schedule };
+		});
+		this.save();
+		return result;
+	}
+
+	rescheduleVoiceSchedule(input: {
+		scheduleId: string;
+		requestKey: string;
+		requestDigest: string;
+		expectedRevision: number;
+		scheduledAt: string;
+		prewarmAt: string;
+		readyDeadlineAt: string;
+		presenceDeadlineAt: string;
+		updatedAt: string;
+		lateAdmission?: boolean;
+	}):
+		| { status: "updated" | "replayed"; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+		| { status: "request_conflict" | "not_found" } {
+		let result:
+			| { status: "updated" | "replayed"; schedule: VoiceScheduleRow }
+			| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+			| { status: "request_conflict" | "not_found" } = { status: "not_found" };
+		this.db.transaction(() => {
+			const replay = this.voiceScheduleReplay(
+				input.requestKey,
+				input.requestDigest,
+			);
+			if (replay.kind === "conflict") {
+				result = { status: "request_conflict" };
+				return;
+			}
+			if (replay.kind === "replay") {
+				result = { status: "replayed", schedule: replay.schedule };
+				return;
+			}
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) {
+				result = { status: "not_found" };
+				return;
+			}
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			if (current.revision !== input.expectedRevision) {
+				result = { status: "revision_conflict", schedule: current };
+				return;
+			}
+			if (current.state === "live") {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			// A new version never inherits the old session: the old one must reach a
+			// terminal state before the new revision may allocate its own.
+			// The old revision's session must go terminal now, or the new time can
+			// never allocate one and a meeting moved during prewarm is simply
+			// missed.
+			if (current.sessionId) {
+				this.stopVoiceSessionTx(current.sessionId, input.updatedAt);
+			}
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET revision = revision + 1, scheduled_at = ?, prewarm_at = ?,
+				     ready_deadline_at = ?, presence_deadline_at = ?, state = 'scheduled',
+				     late_admission = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ?`,
+				[
+					input.scheduledAt,
+					input.prewarmAt,
+					input.readyDeadlineAt,
+					input.presenceDeadlineAt,
+					input.lateAdmission ? 1 : 0,
+					input.updatedAt,
+					input.scheduleId,
+					input.expectedRevision,
+				],
+			);
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			this.recordVoiceScheduleReceipt({
+				requestKey: input.requestKey,
+				requestDigest: input.requestDigest,
+				schedule,
+				createdAt: input.updatedAt,
+			});
+			result = { status: "updated", schedule };
+		});
+		this.save();
+		return result;
+	}
+
+	cancelVoiceSchedule(input: {
+		scheduleId: string;
+		requestKey: string;
+		requestDigest: string;
+		expectedRevision: number;
+		updatedAt: string;
+	}):
+		| { status: "cancelled" | "replayed"; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+		| { status: "request_conflict" | "not_found" } {
+		let result:
+			| { status: "cancelled" | "replayed"; schedule: VoiceScheduleRow }
+			| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+			| { status: "request_conflict" | "not_found" } = { status: "not_found" };
+		this.db.transaction(() => {
+			const replay = this.voiceScheduleReplay(
+				input.requestKey,
+				input.requestDigest,
+			);
+			if (replay.kind === "conflict") {
+				result = { status: "request_conflict" };
+				return;
+			}
+			if (replay.kind === "replay") {
+				result = { status: "replayed", schedule: replay.schedule };
+				return;
+			}
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) {
+				result = { status: "not_found" };
+				return;
+			}
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			if (current.revision !== input.expectedRevision) {
+				result = { status: "revision_conflict", schedule: current };
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET revision = revision + 1, state = 'cancelled',
+				     terminal_reason = 'cancelled', updated_at = ?
+				 WHERE schedule_id = ? AND revision = ?`,
+				[input.updatedAt, input.scheduleId, input.expectedRevision],
+			);
+			// Revoke the launch intent here, not later: a desired row left behind
+			// still wakes the host, joins the room, and waits mute for a meeting
+			// nobody is coming to.
+			if (current.sessionId) {
+				this.stopVoiceSessionTx(current.sessionId, input.updatedAt);
+			}
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			this.recordVoiceScheduleReceipt({
+				requestKey: input.requestKey,
+				requestDigest: input.requestDigest,
+				schedule,
+				createdAt: input.updatedAt,
+			});
+			result = { status: "cancelled", schedule };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2701 launch budget. A wake is only worth sending while there is still
+	 * reason to believe a host will answer it. "Proven failure" means the command
+	 * was accepted and the session still was not claimed within the startup
+	 * window — an unknown command result proves nothing and never spends budget.
+	 */
+	getVoiceLaunchBudget(
+		sessionId: string,
+		now?: string,
+	): {
+		attempts: number;
+		provenFailures: number;
+		claimed: boolean;
+		nextAttemptAt: string | null;
+		failureClass: string | null;
+	} {
+		const session = this.getVoiceSession(sessionId);
+		const claimed = session !== undefined && session.state !== "desired";
+		const rows = this.workflowSelectAll(
+			`SELECT command_result, failure_class, requested_at, next_attempt_at, claim_observed_at
+			 FROM voice_launch_attempts WHERE session_id = ? ORDER BY requested_at, attempt_id`,
+			[sessionId],
+		);
+		const nowMs = now ? Date.parse(now) : Number.POSITIVE_INFINITY;
+		let provenFailures = 0;
+		let failureClass: string | null = null;
+		let nextAttemptAt: string | null = null;
+		for (const row of rows) {
+			const result = (row.command_result as string | null) ?? null;
+			const startupWindowClosed =
+				nowMs >=
+				Date.parse(String(row.requested_at)) + VOICE_LAUNCH_STARTUP_WINDOW_MS;
+			// FLY-2701 review R4: "the contract does not verify" is a reason, not a
+			// verdict about this demand. A host part-way through the resident →
+			// on-demand migration still has the old daemon polling, and it can
+			// still claim this session. Both an accepted command and a refused
+			// contract therefore get the same startup window before they count.
+			if (
+				(result === "accepted" || result === "unavailable") &&
+				!row.claim_observed_at &&
+				!claimed &&
+				startupWindowClosed
+			) {
+				provenFailures += 1;
+			}
+			if (result === "failed") provenFailures += 1;
+			if (result === "unavailable") {
+				failureClass =
+					(row.failure_class as string | null) ?? "startup_config_invalid";
+			}
+			nextAttemptAt = (row.next_attempt_at as string | null) ?? nextAttemptAt;
+		}
+		return {
+			attempts: rows.length,
+			provenFailures,
+			claimed,
+			nextAttemptAt,
+			failureClass,
+		};
+	}
+
+	/**
+	 * Decides whether one more kickstart may be sent for this session, and opens
+	 * the attempt row when it may. Returns "exhausted" when asking again would
+	 * just be a restart storm under a different name.
+	 */
+	admitVoiceLaunchAttempt(input: {
+		sessionId: string;
+		attemptId: string;
+		now: string;
+	}):
+		| { status: "admitted" }
+		| { status: "deferred"; nextAttemptAt: string }
+		| { status: "exhausted"; provenFailures: number; failureClass: string | null } {
+		let result:
+			| { status: "admitted" }
+			| { status: "deferred"; nextAttemptAt: string }
+			| {
+					status: "exhausted";
+					provenFailures: number;
+					failureClass: string | null;
+			  } = { status: "admitted" };
+		this.db.transaction(() => {
+			const budget = this.getVoiceLaunchBudget(input.sessionId, input.now);
+			if (budget.provenFailures >= VOICE_LAUNCH_MAX_PROVEN_FAILURES) {
+				// The failure class, when there is one, names *why* it ended — the
+				// unit is missing, disabled or drifted, and this code will never
+				// install or enable one behind the operator's back.
+				result = {
+					status: "exhausted",
+					provenFailures: budget.provenFailures,
+					failureClass: budget.failureClass,
+				};
+				return;
+			}
+			if (
+				budget.nextAttemptAt &&
+				Date.parse(input.now) < Date.parse(budget.nextAttemptAt)
+			) {
+				result = { status: "deferred", nextAttemptAt: budget.nextAttemptAt };
+				return;
+			}
+			this.db.run(
+				`INSERT OR IGNORE INTO voice_launch_attempts
+				 (attempt_id, session_id, requested_at, updated_at)
+				 VALUES (?, ?, ?, ?)`,
+				[input.attemptId, input.sessionId, input.now, input.now],
+			);
+			result = { status: "admitted" };
+		});
+		this.save();
+		return result;
+	}
+
+	recordVoiceLaunchResult(input: {
+		attemptId: string;
+		commandResult: "accepted" | "failed" | "unavailable" | "unknown";
+		failureClass?: string;
+		observedAt: string;
+		backoffMs?: number;
+	}): void {
+		this.db.transaction(() => {
+			// An accepted command's next attempt is measured from when the command
+			// was sent, so the retry lands exactly when the startup window that
+			// decides "proven failure" closes — not a round trip later.
+			const requestedAt = this.workflowSelectAll(
+				"SELECT requested_at FROM voice_launch_attempts WHERE attempt_id = ?",
+				[input.attemptId],
+			)[0]?.requested_at;
+			// "unknown" spends no budget, but it is still an observation: a host
+			// whose probe always exceeds its deadline would otherwise be re-probed
+			// on every wake tick, one audit row per tick, for as long as the demand
+			// lives. Give it the same window; the FLY-2693 startup guard still
+			// alerts at 60s either way.
+			const windowed =
+				input.commandResult === "accepted" ||
+				input.commandResult === "unavailable" ||
+				input.commandResult === "unknown";
+			const anchorMs =
+				windowed && requestedAt
+					? Date.parse(String(requestedAt))
+					: Date.parse(input.observedAt);
+			const backoffMs =
+				input.backoffMs ??
+				(windowed
+					? VOICE_LAUNCH_STARTUP_WINDOW_MS
+					: VOICE_LAUNCH_RETRY_BACKOFF_MS);
+			this.db.run(
+				`UPDATE voice_launch_attempts
+				 SET command_result = ?, failure_class = ?, updated_at = ?,
+				     failed_at = CASE WHEN ? IN ('failed','unavailable') THEN ? ELSE failed_at END,
+				     next_attempt_at = ?
+				 WHERE attempt_id = ?`,
+				[
+					input.commandResult,
+					input.failureClass ?? null,
+					input.observedAt,
+					input.commandResult,
+					input.observedAt,
+					new Date(anchorMs + backoffMs).toISOString(),
+					input.attemptId,
+				],
+			);
+		});
+		this.save();
+	}
+
+	/**
+	 * Terminal failure for a booking that can no longer be honoured (its meeting
+	 * window passed, or the launch budget ran out). It never revives a schedule
+	 * and never invents a session.
+	 */
+	failVoiceSchedule(input: {
+		scheduleId: string;
+		expectedRevision: number;
+		reason: string;
+		updatedAt: string;
+	}): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET state = 'failed', terminal_reason = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ?
+				   AND state NOT IN ('ended','cancelled','failed')`,
+				[input.reason, input.updatedAt, input.scheduleId, input.expectedRevision],
+			);
+			changed = this.db.getRowsModified() === 1;
+		});
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * FLY-2701 review R3: setVoiceSessionState is not the only writer that ends a
+	 * session — the admission failure path and the lease sweep write voice_sessions
+	 * alone. Without this, such a booking sits prewarming/ready forever and its
+	 * partial unique index keeps rejecting every new booking for that meeting.
+	 */
+	/**
+	 * How long past its presence deadline a booking waits for its own daemon to
+	 * report before the clock settles it anyway. Long enough for an ordinary
+	 * report, short enough that a hung daemon cannot hold the room for a day.
+	 */
+	private static readonly REPORTING_WINDOW_MS = 300_000;
+
+	reapStrandedVoiceSchedules(now: string): number {
+		let reaped = 0;
+		this.db.transaction(() => {
+			const rows = this.workflowSelectAll(
+				`SELECT * FROM voice_schedules
+				 WHERE state IN ('prewarming','ready','live')
+				 ORDER BY scheduled_at, schedule_id`,
+				[],
+			);
+			for (const row of rows) {
+				const schedule = this.voiceScheduleFromRow(row);
+				if (!schedule) continue;
+				const session = schedule.sessionId
+					? this.getVoiceSession(schedule.sessionId)
+					: undefined;
+				const sessionTerminal =
+					!session ||
+					["ended", "cancelled", "failed"].includes(session.state);
+				// FLY-2701 review R2: a daemon that is still renewing its lease is
+				// about to report what actually happened — most often the perfectly
+				// normal "nobody came". Reaping past it would overwrite that with a
+				// fault and then silently drop the daemon's own ending, because the
+				// schedule would already be terminal.
+				//
+				// FLY-2701 review R3: but a live lease only proves the owner is
+				// alive. The lease renews on its own timer, so a session whose main
+				// flow hung would renew forever and hold the booking and the room
+				// slot hostage. The wait therefore gets a ceiling: one reporting
+				// window past the deadline, and no longer.
+				const reportingWindowEndsAt =
+					Date.parse(schedule.presenceDeadlineAt) +
+					StateStore.REPORTING_WINDOW_MS;
+				const leaseAlive =
+					session?.leaseExpiresAt !== undefined &&
+					session.leaseExpiresAt !== null &&
+					Date.parse(session.leaseExpiresAt) > Date.parse(now) &&
+					Date.parse(now) <= reportingWindowEndsAt;
+				// The presence deadline asks "did she ever show up", not "how long
+				// may the meeting run". A live booking is settled by its own
+				// session ending — never by the clock, or a call that runs long
+				// would be marked failed while she is still talking.
+				const deadlinePassed =
+					schedule.state !== "live" &&
+					!leaseAlive &&
+					Date.parse(now) > Date.parse(schedule.presenceDeadlineAt);
+				if (!sessionTerminal && !deadlinePassed) continue;
+				const state =
+					session?.state === "ended" ? "ended" : ("failed" as const);
+				const reason = sessionTerminal
+					? (session?.reason ?? "session_missing")
+					: "presence_deadline_passed";
+				// An abandoned session left non-terminal keeps its launch intent
+				// alive, so the wake lane goes on asking launchd to start a bot for
+				// a meeting that is over. Revoke it in the same transaction.
+				if (!sessionTerminal && session) {
+					this.stopVoiceSessionTx(session.sessionId, now);
+				}
+				this.db.run(
+					`UPDATE voice_schedules
+					 SET state = ?, terminal_reason = ?, updated_at = ?
+					 WHERE schedule_id = ? AND revision = ?
+					   AND state NOT IN ('ended','cancelled','failed')`,
+					[state, reason, now, schedule.scheduleId, schedule.revision],
+				);
+				if (this.db.getRowsModified() === 1) reaped += 1;
+			}
+		});
+		if (reaped) this.save();
+		return reaped;
+	}
+
+	listDueVoiceSchedules(now: string): VoiceScheduleRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM voice_schedules
+			 WHERE state = 'scheduled' AND prewarm_at <= ?
+			 ORDER BY scheduled_at, schedule_id`,
+			[now],
+		)
+			.map((row) => this.voiceScheduleFromRow(row))
+			.filter((row): row is VoiceScheduleRow => row !== undefined);
+	}
+
+	attachVoiceScheduleSession(input: {
+		scheduleId: string;
+		expectedRevision: number;
+		sessionId: string;
+		updatedAt: string;
+	}):
+		| { status: "linked"; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+		| { status: "not_found" } {
+		let result:
+			| { status: "linked"; schedule: VoiceScheduleRow }
+			| { status: "revision_conflict" | "terminal"; schedule: VoiceScheduleRow }
+			| { status: "not_found" } = { status: "not_found" };
+		this.db.transaction(() => {
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) return;
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal", schedule: current };
+				return;
+			}
+			// One non-terminal session per schedule: an already linked revision must
+			// not be re-linked to a second room occupant.
+			if (
+				current.revision !== input.expectedRevision ||
+				current.state !== "scheduled"
+			) {
+				result = { status: "revision_conflict", schedule: current };
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET state = 'prewarming', session_id = ?, session_revision = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ? AND state = 'scheduled'`,
+				[
+					input.sessionId,
+					input.expectedRevision,
+					input.updatedAt,
+					input.scheduleId,
+					input.expectedRevision,
+				],
+			);
+			result = { status: "linked", schedule: this.getVoiceSchedule(input.scheduleId)! };
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2701: the daemon reports "in the room and the model is up" before the
+	 * meeting time. Ready is not live — the session stays warming and drops all
+	 * media until the Bridge lets it go live at T.
+	 */
+	markVoiceSessionReady(input: {
+		sessionId: string;
+		scheduleRevision: number | null;
+		readyAt: string;
+	}): "ready" | "revision_conflict" | "not_found" | "state_conflict" {
+		let result: "ready" | "revision_conflict" | "not_found" | "state_conflict" =
+			"not_found";
+		this.db.transaction(() => {
+			const session = this.getVoiceSession(input.sessionId);
+			if (!session) return;
+			if (!["claimed", "warming"].includes(session.state)) {
+				result = "state_conflict";
+				return;
+			}
+			if ((session.scheduleRevision ?? null) !== (input.scheduleRevision ?? null)) {
+				result = "revision_conflict";
+				return;
+			}
+			if (session.scheduleId) {
+				const schedule = this.getVoiceSchedule(session.scheduleId);
+				if (!schedule || schedule.revision !== session.scheduleRevision) {
+					result = "revision_conflict";
+					return;
+				}
+				if (["ended", "cancelled", "failed"].includes(schedule.state)) {
+					result = "state_conflict";
+					return;
+				}
+			}
+			if (!session.readyAt) {
+				this.db.run(
+					"UPDATE voice_sessions SET ready_at = ?, updated_at = ? WHERE session_id = ? AND ready_at IS NULL",
+					[input.readyAt, input.readyAt, input.sessionId],
+				);
+				if (session.scheduleId) {
+					this.db.run(
+						`UPDATE voice_schedules SET state = 'ready', updated_at = ?
+						 WHERE schedule_id = ? AND revision = ? AND state = 'prewarming'`,
+						[input.readyAt, session.scheduleId, session.scheduleRevision],
+					);
+				}
+			}
+			result = "ready";
+		});
+		this.save();
+		return result;
+	}
+
+	/**
+	 * Plan §5 double-entry dedup: a booking owns its meeting. The instant entry
+	 * must return that booking rather than reserve a second session — a second
+	 * one carries no `not_before_live_at` and would walk straight through the T
+	 * live floor the booking exists to enforce. A request that disagrees with the
+	 * booking's binding is a conflict to report, never something to overwrite.
+	 *
+	 * Callers run this inside their own transaction so the lookup and the insert
+	 * cannot be interleaved by the other entry.
+	 */
+	private voiceScheduleGuardTx(
+		input: VoiceSessionReservation,
+	):
+		| { status: "schedule_bound"; schedule: VoiceScheduleRow }
+		| { status: "schedule_binding_conflict"; schedule: VoiceScheduleRow }
+		| undefined {
+		// A session the schedule runtime itself reserved carries the binding and
+		// is the very row this guard protects; it must not block itself.
+		if (!input.meetingId || input.scheduleId) return undefined;
+		const schedule = this.voiceScheduleFromRow(
+			this.workflowSelectAll(
+				`SELECT * FROM voice_schedules WHERE meeting_id = ?
+				 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+				[input.meetingId],
+			)[0],
+		);
+		if (!schedule) return undefined;
+		const sameBinding =
+			schedule.projectName === input.projectName &&
+			schedule.leadId === input.leadId &&
+			schedule.guildId === input.guildId &&
+			schedule.voiceChannelId === input.voiceChannelId &&
+			schedule.voiceBotUserId === input.voiceBotUserId;
+		return sameBinding
+			? { status: "schedule_bound", schedule }
+			: { status: "schedule_binding_conflict", schedule };
+	}
+
+	/**
+	 * FLY-2701 review R1 (HIGH): plan §5's contract is "atomically link session
+	 * and state=prewarming". Reserving and linking in two transactions leaves a
+	 * crash window whose debris nothing can clear: a non-terminal session tagged
+	 * with the schedule's id and revision, while the schedule is still
+	 * `scheduled` with `session_id` NULL. The next scan sees the meeting already
+	 * has a session and defers forever; cancel and reschedule reach the session
+	 * *through* the schedule's link, so neither can stop it. One transaction
+	 * either produces both rows or neither.
+	 */
+	reserveVoiceScheduleSession(input: {
+		scheduleId: string;
+		expectedRevision: number;
+		reservation: VoiceSessionReservation;
+		updatedAt: string;
+	}):
+		| { status: "reserved"; session: VoiceSessionRow; schedule: VoiceScheduleRow }
+		| { status: "revision_conflict" | "terminal" | "not_found" }
+		| { status: "deferred"; reason: VoiceSessionReservationResult["status"] } {
+		let result:
+			| {
+					status: "reserved";
+					session: VoiceSessionRow;
+					schedule: VoiceScheduleRow;
+			  }
+			| { status: "revision_conflict" | "terminal" | "not_found" }
+			| {
+					status: "deferred";
+					reason: VoiceSessionReservationResult["status"];
+			  } = { status: "not_found" };
+		this.db.transaction(() => {
+			const current = this.getVoiceSchedule(input.scheduleId);
+			if (!current) return;
+			if (["ended", "cancelled", "failed"].includes(current.state)) {
+				result = { status: "terminal" };
+				return;
+			}
+			if (
+				current.revision !== input.expectedRevision ||
+				current.state !== "scheduled"
+			) {
+				result = { status: "revision_conflict" };
+				return;
+			}
+			const reserved = this.reserveVoiceSessionTx(input.reservation);
+			if (reserved.status !== "inserted") {
+				// The room is busy or the meeting already has a session. Nothing was
+				// written, so the booking keeps its own deadline and the next scan
+				// tries again; we never preempt whoever is already talking.
+				result = { status: "deferred", reason: reserved.status };
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_schedules
+				 SET state = 'prewarming', session_id = ?, session_revision = ?, updated_at = ?
+				 WHERE schedule_id = ? AND revision = ? AND state = 'scheduled'`,
+				[
+					input.reservation.sessionId,
+					input.expectedRevision,
+					input.updatedAt,
+					input.scheduleId,
+					input.expectedRevision,
+				],
+			);
+			const schedule = this.getVoiceSchedule(input.scheduleId)!;
+			if (schedule.sessionId !== input.reservation.sessionId) {
+				// Unreachable while the re-read above holds, but a silent miss here
+				// would recreate exactly the orphan this method exists to prevent.
+				throw new Error("voice_schedule_link_lost");
+			}
+			result = {
+				status: "reserved",
+				session: reserved.session,
+				schedule,
+			};
+		});
+		this.save();
+		return result;
+	}
+
+	reserveVoiceSession(
+		input: VoiceSessionReservation,
+	): VoiceSessionReservationResult {
+		if (typeof input.voiceBotUserId !== "string" || !/^\d{17,20}$/.test(input.voiceBotUserId)) {
+			throw new Error("voice_bot_identity_required");
+		}
+		let result: VoiceSessionReservationResult = {
 			status: "session_active",
 		};
 		this.db.transaction(() => {
+			result = this.reserveVoiceSessionTx(input);
+		});
+		this.save();
+		return result;
+	}
+
+	private reserveVoiceSessionTx(
+		input: VoiceSessionReservation,
+	): VoiceSessionReservationResult {
+		let result: VoiceSessionReservationResult = {
+			status: "session_active",
+		};
+		{
+			const guard = this.voiceScheduleGuardTx(input);
+			if (guard) return guard;
 			if (input.meetingId) {
 				const existing = this.voiceSessionFromRow(
 					this.workflowSelectAll(
@@ -3967,7 +4931,7 @@ export class StateStore {
 						existing.voiceBotUserId === input.voiceBotUserId
 							? { status: "already_exists", session: existing }
 							: { status: "meeting_intent_conflict" };
-					return;
+					return result;
 				}
 			}
 			const activeRoom = this.workflowSelectAll(
@@ -3975,13 +4939,14 @@ export class StateStore {
 				 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
 				[input.voiceChannelId],
 			)[0];
-			if (activeRoom) return;
+			if (activeRoom) return result;
 			this.db.run(
 				`INSERT INTO voice_sessions
 				 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id, voice_bot_user_id,
 				  meeting_id, evidence_dir, topic, requested_by, credential_tier, state,
+				  schedule_id, schedule_revision, not_before_live_at, presence_deadline_at,
 				  created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?)`,
 				[
 					input.sessionId,
 					input.mode,
@@ -3995,6 +4960,10 @@ export class StateStore {
 					input.topic ?? null,
 					input.requestedBy,
 					input.credentialTier,
+					input.scheduleId ?? null,
+					input.scheduleRevision ?? null,
+					input.notBeforeLiveAt ?? null,
+					input.presenceDeadlineAt ?? null,
 					input.createdAt,
 					input.createdAt,
 				],
@@ -4003,8 +4972,7 @@ export class StateStore {
 				status: "inserted",
 				session: this.getVoiceSession(input.sessionId)!,
 			};
-		});
-		this.save();
+		}
 		return result;
 	}
 
@@ -4026,6 +4994,7 @@ export class StateStore {
 			operationId: String(row.operation_id),
 			inputDigest: String(row.input_digest),
 			sessionId: (row.session_id as string | null) ?? null,
+			scheduleId: (row.schedule_id as string | null) ?? null,
 			resultState: String(row.result_state),
 			createdAt: String(row.created_at),
 		};
@@ -4040,11 +5009,19 @@ export class StateStore {
 		reservation: VoiceSessionReservation;
 	}):
 		| { status: "inserted" | "replayed" | "bound_active"; session: VoiceSessionRow }
+		| {
+				status: "schedule_bound" | "schedule_binding_conflict";
+				schedule: VoiceScheduleRow;
+		  }
 		| { status: "intent_conflict" | "session_active" } {
 		let result:
 			| {
 					status: "inserted" | "replayed" | "bound_active";
 					session: VoiceSessionRow;
+			  }
+			| {
+					status: "schedule_bound" | "schedule_binding_conflict";
+					schedule: VoiceScheduleRow;
 			  }
 			| { status: "intent_conflict" | "session_active" } = {
 			status: "session_active",
@@ -4059,12 +5036,23 @@ export class StateStore {
 				if (
 					prior.operationId !== input.operationId ||
 					prior.inputDigest !== input.inputDigest ||
-					!prior.sessionId
+					(!prior.sessionId && !prior.scheduleId)
 				) {
 					result = { status: "intent_conflict" };
 					return;
 				}
-				const session = this.getVoiceSession(prior.sessionId);
+				// A start that was deduplicated into a booking replays as that same
+				// answer forever — including once the booking is terminal, when a
+				// fresh request would no longer be deduplicated and would really
+				// open a second session.
+				if (prior.scheduleId) {
+					const schedule = this.getVoiceSchedule(prior.scheduleId);
+					result = schedule
+						? { status: "schedule_bound", schedule }
+						: { status: "intent_conflict" };
+					return;
+				}
+				const session = this.getVoiceSession(prior.sessionId!);
 				result = session
 					? { status: "replayed", session }
 					: { status: "intent_conflict" };
@@ -4076,6 +5064,35 @@ export class StateStore {
 				reservation.leadId !== input.leadId
 			) {
 				result = { status: "intent_conflict" };
+				return;
+			}
+			// Same double-entry dedup as the unkeyed instant entry: an intent key
+			// makes a request replayable, it does not make it allowed to open a
+			// second session for a meeting a booking already owns. The outcome is
+			// still a committed answer, so it gets its receipt here — without one,
+			// a caller whose response was lost would come back after the booking
+			// went terminal and really open that second session.
+			const guard = this.voiceScheduleGuardTx(reservation);
+			if (guard) {
+				if (guard.status === "schedule_bound") {
+					this.db.run(
+						`INSERT INTO voice_intents
+						 (project_name, lead_id, request_id, operation_id, input_digest,
+						  session_id, schedule_id, result_state, created_at)
+						 VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+						[
+							input.projectName,
+							input.leadId,
+							input.requestId,
+							input.operationId,
+							input.inputDigest,
+							guard.schedule.scheduleId,
+							"schedule_bound",
+							reservation.createdAt,
+						],
+					);
+				}
+				result = guard;
 				return;
 			}
 			const active = this.voiceSessionFromRow(
@@ -4429,12 +5446,17 @@ export class StateStore {
 		now: string;
 		abandonedCount?: number;
 	}): boolean {
+		// FLY-2701 plan §7: nobody turning up for a booked meeting is a normal
+		// ending, not a fault, so `warming` may reach `ended` — but only for that
+		// one reason, and only from `warming`. A call that already went live had
+		// somebody in it, so it can never end as unattended.
 		const allowed: Record<string, readonly VoiceSessionState[]> = {
 			claimed: ["warming", "failed"],
-			warming: ["live", "failed"],
+			warming: ["live", "ended", "failed"],
 			live: ["ended", "failed"],
 			ending: ["ended", "failed"],
 		};
+		const unattendedReason = "no_human";
 		let changed = false;
 		this.db.transaction(() => {
 			const current = this.getVoiceSession(input.sessionId);
@@ -4459,9 +5481,44 @@ export class StateStore {
 			if (new Set(["ended", "failed"]).has(input.state) && !input.reason) return;
 			if (
 				input.state === "ended" &&
-				!new Set([...daemonEndReasons, "text-stop"]).has(input.reason!)
+				!new Set([...daemonEndReasons, "text-stop", unattendedReason]).has(
+					input.reason!,
+				)
 			)
 				return;
+			// Unattended belongs to exactly one transition. A warming meeting may
+			// end that way and only that way; a call that already went live had
+			// somebody in it, so it can never claim nobody came.
+			if (current.state === "warming" && input.state === "ended") {
+				if (input.reason !== unattendedReason) return;
+				// "Nobody came" only becomes true once the booking's own absolute
+				// deadline has passed. The daemon waits for it, but the durable
+				// boundary belongs here: a stale daemon still holding the lease
+				// must not be able to close a meeting she could still walk into.
+				if (
+					current.presenceDeadlineAt &&
+					Date.parse(input.now) < Date.parse(current.presenceDeadlineAt)
+				)
+					return;
+			} else if (input.state === "ended" && input.reason === unattendedReason) {
+				return;
+			}
+			// FLY-2701: a prewarmed meeting sits in the room, ready and mute, until
+			// its own time. Going live early would put a bot on an open mic before
+			// the meeting exists, so the floor is checked here, not in the daemon.
+			if (input.state === "live" && current.notBeforeLiveAt) {
+				if (!current.readyAt) return;
+				if (Date.parse(input.now) < Date.parse(current.notBeforeLiveAt)) return;
+				if (current.scheduleId) {
+					const schedule = this.getVoiceSchedule(current.scheduleId);
+					if (
+						!schedule ||
+						schedule.revision !== current.scheduleRevision ||
+						["ended", "cancelled", "failed"].includes(schedule.state)
+					)
+						return;
+				}
+			}
 			this.db.run(
 				`UPDATE voice_sessions SET state = ?, reason = ?, updated_at = ?,
 				 ended_at = CASE WHEN ? IN ('ended','failed') THEN ? ELSE ended_at END
@@ -4481,6 +5538,33 @@ export class StateStore {
 			if (changed && new Set(["ended", "failed"]).has(input.state)) {
 				this.settleVoiceOutboundTx(input.sessionId, input.now);
 			}
+			if (changed && current.scheduleId) {
+				const scheduleState =
+					input.state === "live"
+						? "live"
+						: input.state === "ended"
+							? "ended"
+							: input.state === "failed"
+								? "failed"
+								: undefined;
+				if (scheduleState) {
+					this.db.run(
+						`UPDATE voice_schedules
+						 SET state = ?, terminal_reason = CASE WHEN ? IN ('ended','failed') THEN ? ELSE terminal_reason END,
+						     updated_at = ?
+						 WHERE schedule_id = ? AND revision = ?
+						   AND state NOT IN ('ended','cancelled','failed')`,
+						[
+							scheduleState,
+							scheduleState,
+							input.reason ?? null,
+							input.now,
+							current.scheduleId,
+							current.scheduleRevision,
+						],
+					);
+				}
+			}
 		});
 		if (changed) this.save();
 		return changed;
@@ -4498,6 +5582,11 @@ export class StateStore {
 		return result;
 	}
 
+	/**
+	 * FLY-2655 owns the intent-keyed public entry point. FLY-2701 also calls the
+	 * transaction-less helper directly, so cancelling or moving a booking revokes
+	 * its launch intent in the very same commit that changes the schedule.
+	 */
 	stopVoiceSessionIntent(input: {
 		projectName: string;
 		leadId: string;
@@ -9102,6 +10191,13 @@ export class StateStore {
 		// Additive migration: ending age must not be rejuvenated by lease/poller writes.
 		this.addColumnIfMissing("voice_sessions", "ending_started_at", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "root_requested_at", "TEXT");
+		// FLY-2701 additive migration: instant sessions keep these null.
+		this.addColumnIfMissing("voice_sessions", "schedule_id", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "schedule_revision", "INTEGER");
+		this.addColumnIfMissing("voice_sessions", "not_before_live_at", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "presence_deadline_at", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "ready_at", "TEXT");
+		// FLY-2655 receive-path health columns.
 		this.addColumnIfMissing("voice_sessions", "receive_health", "TEXT");
 		this.addColumnIfMissing(
 			"voice_sessions",
@@ -9128,6 +10224,81 @@ export class StateStore {
 			ON voice_sessions(meeting_id)
 			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
 		`);
+		// FLY-2701: a scheduled meeting is a durable to-do; it carries no room
+		// uniqueness of its own, so a future booking never blocks today's call.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_schedules (
+				schedule_id TEXT PRIMARY KEY,
+				revision INTEGER NOT NULL DEFAULT 1,
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				guild_id TEXT NOT NULL,
+				voice_channel_id TEXT NOT NULL,
+				voice_bot_user_id TEXT NOT NULL,
+				meeting_id TEXT,
+				topic TEXT,
+				evidence_dir TEXT,
+				scheduled_at TEXT NOT NULL,
+				prewarm_at TEXT NOT NULL,
+				ready_deadline_at TEXT NOT NULL,
+				presence_deadline_at TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'scheduled'
+					CHECK(state IN ('scheduled','prewarming','ready','live','ended','cancelled','failed')),
+				session_id TEXT,
+				session_revision INTEGER,
+				late_admission INTEGER NOT NULL DEFAULT 0,
+				requested_by TEXT NOT NULL,
+				credential_tier TEXT NOT NULL CHECK(credential_tier IN ('master','ingest')),
+				terminal_reason TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS voice_schedules_due
+			ON voice_schedules(prewarm_at, schedule_id)
+			WHERE state = 'scheduled'
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS voice_schedules_active_meeting
+			ON voice_schedules(meeting_id)
+			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
+		`);
+		// FLY-2701: bounded audit of on-demand launch attempts. It is evidence,
+		// not authority — the desired row remains the only to-do, and this table
+		// only decides when to stop asking launchd for the same session.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_launch_attempts (
+				attempt_id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				requested_at TEXT NOT NULL,
+				command_result TEXT
+					CHECK(command_result IS NULL OR command_result IN ('accepted','failed','unavailable','unknown')),
+				failure_class TEXT,
+				actual_boot_id TEXT,
+				spawn_observed_at TEXT,
+				claim_observed_at TEXT,
+				failed_at TEXT,
+				next_attempt_at TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS voice_launch_attempts_session
+			ON voice_launch_attempts(session_id, requested_at)
+		`);
+		// Exact request receipts: a lost response must replay the original result
+		// instead of guessing from whatever revision happens to be current now.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_schedule_requests (
+				request_key TEXT PRIMARY KEY,
+				request_digest TEXT NOT NULL,
+				schedule_id TEXT NOT NULL,
+				result_revision INTEGER NOT NULL,
+				result_snapshot TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			)
+		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS voice_intents (
 				project_name TEXT NOT NULL,
@@ -9142,6 +10313,11 @@ export class StateStore {
 				FOREIGN KEY(session_id) REFERENCES voice_sessions(session_id)
 			)
 		`);
+		// FLY-2701 review R3: a start deduplicated into an existing booking has no
+		// session, but it is still a committed answer that must replay exactly —
+		// including after that booking reaches a terminal state, when the guard
+		// would no longer fire for a fresh request.
+		this.addColumnIfMissing("voice_intents", "schedule_id", "TEXT");
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS voice_intents_session ON voice_intents(session_id)",
 		);

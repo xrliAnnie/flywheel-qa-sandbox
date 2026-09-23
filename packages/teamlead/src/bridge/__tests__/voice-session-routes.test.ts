@@ -482,3 +482,155 @@ it("returns pinned status without projecting a terminal session against registry
 	expect(projectSession).not.toHaveBeenCalled();
 	expect(validateSession).not.toHaveBeenCalled();
 });
+
+describe("voice session ready receipt (FLY-2701)", () => {
+	async function claimed() {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claim = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		return {
+			base,
+			leaseToken: (claim.body as { leaseToken: string }).leaseToken,
+		};
+	}
+
+	it("records ready under the session lease and stays warming", async () => {
+		const { base, leaseToken } = await claimed();
+		const response = await call(base, `/${SESSION_ID}/ready`, {
+			method: "POST",
+			token: MASTER,
+			lease: leaseToken,
+			body: { scheduleRevision: null },
+		});
+		expect(response).toMatchObject({ status: 200, body: { status: "ready" } });
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "claimed",
+			readyAt: NOW,
+		});
+	});
+
+	it("refuses a ready receipt without the current lease", async () => {
+		const { base } = await claimed();
+		expect(
+			(
+				await call(base, `/${SESSION_ID}/ready`, {
+					method: "POST",
+					token: MASTER,
+					lease: "not-the-lease",
+					body: { scheduleRevision: null },
+				})
+			).status,
+		).toBe(409);
+	});
+
+	it("keeps the daemon-only surface closed to the ingest tier", async () => {
+		const { base, leaseToken } = await claimed();
+		expect(
+			(
+				await call(base, `/${SESSION_ID}/ready`, {
+					method: "POST",
+					token: INGEST,
+					lease: leaseToken,
+					body: { scheduleRevision: null },
+				})
+			).status,
+		).toBe(403);
+	});
+
+	it("rejects a malformed schedule revision instead of guessing", async () => {
+		const { base, leaseToken } = await claimed();
+		expect(
+			(
+				await call(base, `/${SESSION_ID}/ready`, {
+					method: "POST",
+					token: MASTER,
+					lease: leaseToken,
+					body: { scheduleRevision: "1" },
+				})
+			).status,
+		).toBe(400);
+	});
+});
+
+/**
+ * FLY-2701 review R2 (MEDIUM): plan §5 distinguishes two outcomes that this
+ * route had collapsed into one 409. Meeting the same booking is successful
+ * deduplication and must hand back the booking's identity; disagreeing with it
+ * is the conflict.
+ */
+describe("voice session start meets an existing booking (FLY-2701)", () => {
+	const MEETING = "20000000-0000-4000-8000-000000000001";
+	const SCHEDULE_ID = "20000000-0000-4000-8000-000000000009";
+
+	function book(overrides: Record<string, unknown> = {}) {
+		return store.createVoiceSchedule({
+			scheduleId: SCHEDULE_ID,
+			requestKey: "master:booking-1",
+			requestDigest: "digest-booking",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000002",
+			voiceBotUserId: "100000000000000005",
+			meetingId: MEETING,
+			evidenceDir: "/evidence/a",
+			scheduledAt: "2026-09-08T21:00:00.000Z",
+			prewarmAt: "2026-09-08T20:58:00.000Z",
+			readyDeadlineAt: "2026-09-08T21:00:00.000Z",
+			presenceDeadlineAt: "2026-09-08T21:10:00.000Z",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: NOW,
+			...overrides,
+		});
+	}
+
+	it("hands back the existing booking instead of reporting a conflict", async () => {
+		const { base, provisionSession } = await start();
+		book();
+
+		const response = await call(base, "/", {
+			method: "POST",
+			token: MASTER,
+			body: {},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.body).toMatchObject({
+			status: "schedule_bound",
+			scheduleId: SCHEDULE_ID,
+			revision: 1,
+			state: "scheduled",
+			scheduledAt: "2026-09-08T21:00:00.000Z",
+		});
+		// Nothing was started early and no second session exists.
+		expect(provisionSession).not.toHaveBeenCalled();
+		expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
+	});
+
+	it("reports a conflict when the request disagrees with the booking", async () => {
+		const { base } = await start();
+		book({ voiceChannelId: "100000000000000099" });
+
+		const response = await call(base, "/", {
+			method: "POST",
+			token: MASTER,
+			body: {},
+		});
+
+		expect(response.status).toBe(409);
+		expect(response.body).toMatchObject({
+			error: "voice_schedule_binding_conflict",
+			scheduleId: SCHEDULE_ID,
+		});
+		expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
+	});
+});

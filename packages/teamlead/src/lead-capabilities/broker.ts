@@ -448,6 +448,12 @@ export class LeadCapabilityBroker {
 			(operation.operationId === "inbox.event.ack" &&
 			outcome.errorCode === "inbox_event_ack_disabled"
 				? outcome.errorCode
+				: undefined) ??
+			// FLY-2701: a voice start refused because it disagreed with an existing
+			// booking is a trusted, named refusal that carries that booking's ref.
+			(operation.operationId === "voice.session.start" &&
+			outcome.errorCode === "voice_schedule_binding_conflict"
+				? outcome.errorCode
 				: undefined);
 		if (outcome.status === "unknown")
 			return {
@@ -456,13 +462,23 @@ export class LeadCapabilityBroker {
 				resourceRefs: [],
 				errorCode: providerCode ?? "provider_unknown",
 			};
-		if (outcome.status === "rejected")
+		if (outcome.status === "rejected") {
+			// A refusal normally names nothing. The exception is a *trusted* code
+			// that points at a resource the Lead should look at; that ref goes
+			// through the same validation a successful one does.
+			const rejectedRef =
+				providerCode !== undefined &&
+				outcome.providerRef !== undefined &&
+				/^[a-zA-Z0-9_.:-]{1,256}$/.test(outcome.providerRef)
+					? outcome.providerRef
+					: undefined;
 			return {
 				requestId,
 				status: "rejected",
-				resourceRefs: [],
+				resourceRefs: rejectedRef ? [rejectedRef] : [],
 				errorCode: providerCode ?? "provider_rejected",
 			};
+		}
 		if (outcome.status !== "succeeded")
 			throw new BrokerFailure("invalid_provider_output");
 		if (

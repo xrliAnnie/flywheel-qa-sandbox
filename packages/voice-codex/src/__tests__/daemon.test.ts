@@ -164,8 +164,12 @@ describe("VoiceDaemon", () => {
 				speechChunkTokens: 600,
 			},
 		});
+		// FLY-2701 review R1 / plan §7: nobody turning up is a normal ending, so
+		// it is recorded as one. It used to be persisted as `failed/no_human` and
+		// merely hidden from the alert projection, which made every unattended
+		// meeting look like a voice fault in the durable record.
 		expect(await daemon.runOnce()).toEqual({
-			kind: "session_failed",
+			kind: "session_ended",
 			sessionId: SESSION_ID,
 			reason: "no_human",
 		});
@@ -173,7 +177,7 @@ describe("VoiceDaemon", () => {
 			SESSION_ID,
 			"lease",
 			expect.any(VoiceLease),
-			"failed",
+			"ended",
 			"no_human",
 		);
 		expect(runtime.stop).toHaveBeenCalled();
@@ -700,6 +704,170 @@ describe("VoiceDaemon", () => {
 			expect(stateStore.remove).not.toHaveBeenCalled();
 		},
 	);
+
+	it("exits after 120 seconds of continuously successful empty reads", async () => {
+		let elapsed = 0;
+		const daemonRef: { current?: VoiceDaemon } = {};
+		const desired = vi.fn(async () => null);
+		const sleep = vi.fn(async (ms: number) => {
+			elapsed += ms;
+			// Escape hatch keeps the pre-feature implementation from hanging the RED run.
+			if (elapsed > 125_000) daemonRef.current?.shutdown();
+		});
+		const daemon = new VoiceDaemon({
+			bridge: {
+				desired,
+				claim: vi.fn(),
+				renew: vi.fn(),
+				renewRecovered: vi.fn(),
+				setState: vi.fn(),
+				outbound: vi.fn(),
+				claimOutbound: vi.fn(),
+				receipt: vi.fn(),
+			},
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: vi.fn(),
+			recoverSession: vi.fn(),
+			sleep,
+			monotonicNow: () => elapsed,
+			timing: {
+				idlePollMs: 5_000,
+				idleExitMs: 120_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 120_000,
+				speechChunkTokens: 600,
+			},
+		});
+		daemonRef.current = daemon;
+
+		await daemon.run();
+
+		expect(elapsed).toBe(120_000);
+		expect(desired).toHaveBeenCalledTimes(26); // 25 polls plus the final race read
+	});
+
+	it("resets idle accounting after a desired read fails", async () => {
+		let elapsed = 0;
+		const daemonRef: { current?: VoiceDaemon } = {};
+		let failed = false;
+		const desired = vi.fn(async () => {
+			if (!failed && elapsed === 115_000) {
+				failed = true;
+				throw new Error("bridge_unavailable");
+			}
+			return null;
+		});
+		const sleep = vi.fn(async (ms: number) => {
+			elapsed += ms;
+			if (elapsed > 240_000) daemonRef.current?.shutdown();
+		});
+		const daemon = new VoiceDaemon({
+			bridge: {
+				desired,
+				claim: vi.fn(),
+				renew: vi.fn(),
+				renewRecovered: vi.fn(),
+				setState: vi.fn(),
+				outbound: vi.fn(),
+				claimOutbound: vi.fn(),
+				receipt: vi.fn(),
+			},
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: vi.fn(),
+			recoverSession: vi.fn(),
+			sleep,
+			monotonicNow: () => elapsed,
+			timing: {
+				idlePollMs: 5_000,
+				idleExitMs: 120_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 120_000,
+				speechChunkTokens: 600,
+			},
+		});
+		daemonRef.current = daemon;
+
+		await daemon.run();
+
+		expect(failed).toBe(true);
+		expect(elapsed).toBe(240_000);
+	});
+
+	it("claims a demand found by the final idle-exit read", async () => {
+		let elapsed = 0;
+		const daemonRef: { current?: VoiceDaemon } = {};
+		let finalRaceDelivered = false;
+		const runtime = active();
+		const desired = vi.fn(async () => {
+			if (elapsed === 120_000 && !finalRaceDelivered) {
+				finalRaceDelivered = true;
+				return { sessionId: SESSION_ID };
+			}
+			return null;
+		});
+		const sleep = vi.fn(async (ms: number) => {
+			elapsed += ms;
+			if (elapsed > 245_000) daemonRef.current?.shutdown();
+		});
+		const bridge = {
+			desired,
+			claim: vi.fn(async () => ({
+				lease: lease(),
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection,
+			})),
+			renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+			renewRecovered: vi.fn(),
+			setState: vi.fn(async () => {}),
+			outbound: vi.fn(async () => []),
+			claimOutbound: vi.fn(),
+			receipt: vi.fn(),
+		};
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: () => runtime,
+			recoverSession: vi.fn(),
+			sleep,
+			monotonicNow: () => elapsed,
+			timing: {
+				idlePollMs: 5_000,
+				idleExitMs: 120_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 120_000,
+				speechChunkTokens: 600,
+			},
+		});
+		daemonRef.current = daemon;
+
+		await daemon.run();
+
+		expect(finalRaceDelivered).toBe(true);
+		expect(bridge.claim).toHaveBeenCalledOnce();
+		expect(elapsed).toBe(240_000);
+	});
 });
 
 function pending<T>() {
@@ -940,5 +1108,181 @@ describe("VoiceDaemon session lifetime", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("VoiceDaemon prewarmed meeting (FLY-2701)", () => {
+	function prewarmedProjection() {
+		return {
+			...projection,
+			notBeforeLiveAt: "2026-09-22T09:00:00.000Z",
+			presenceDeadlineAt: "2026-09-22T09:10:00.000Z",
+			scheduleRevision: 1,
+		};
+	}
+
+	it("reports ready, waits for the meeting time, and re-reads her presence", async () => {
+		const order: string[] = [];
+		let elapsedMs = 0;
+		const runtime = active();
+		const session = {
+			...runtime,
+			start: async () => {
+				order.push("start");
+				return { founderPresent: true };
+			},
+			// She was here when the room came up and left again during the wait.
+			isFounderPresent: () => false,
+			waitForFounderPresence: async () => {
+				order.push("presence_recheck");
+				return true;
+			},
+			waitForFounder: async () => {
+				order.push("stale_presence");
+				return true;
+			},
+			markLive: async () => {
+				order.push("live");
+			},
+		};
+		const bridge = {
+			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+			claim: vi.fn(async () => ({
+				lease: lease(),
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection: prewarmedProjection(),
+			})),
+			renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+			renewRecovered: vi.fn(),
+			ready: vi.fn(async () => {
+				order.push("ready");
+			}),
+			setState: vi.fn(async (_id, _t, _l, state) => {
+				order.push(`state:${state}`);
+			}),
+			outbound: vi.fn(async () => []),
+			claimOutbound: vi.fn(),
+			receipt: vi.fn(),
+		};
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: () => session,
+			recoverSession: vi.fn(),
+			sleep: vi.fn(async (ms: number) => {
+				order.push("wait_until_T");
+				elapsedMs += ms;
+			}),
+			now: () => new Date(Date.parse("2026-09-22T08:58:00.000Z") + elapsedMs),
+			timing: {
+				idlePollMs: 5_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 600_000,
+				speechChunkTokens: 600,
+			},
+		});
+
+		const result = daemon.runOnce();
+		await vi.waitFor(() => expect(order).toContain("live"));
+		session.requestEnd({ kind: "ended", reason: "she-left" });
+		await result;
+
+		expect(bridge.ready).toHaveBeenCalledWith(
+			SESSION_ID,
+			"lease",
+			expect.anything(),
+			1,
+		);
+		expect(order.slice(0, 6)).toEqual([
+			"state:warming",
+			"start",
+			"ready",
+			"wait_until_T",
+			"presence_recheck",
+			"state:live",
+		]);
+		expect(order).not.toContain("stale_presence");
+	});
+});
+
+describe("VoiceDaemon meeting floor (FLY-2701)", () => {
+	it("does not fall through when a sleep returns before the meeting time", async () => {
+		const sleeps: number[] = [];
+		let elapsed = 0;
+		const runtime = active();
+		const session = {
+			...runtime,
+			start: async () => ({ founderPresent: true }),
+			isFounderPresent: () => true,
+			waitForFounderPresence: async () => true,
+		};
+		const bridge = {
+			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+			claim: vi.fn(async () => ({
+				lease: lease(),
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection: {
+					...projection,
+					notBeforeLiveAt: "2026-09-22T09:00:00.000Z",
+					scheduleRevision: 1,
+				},
+			})),
+			renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+			renewRecovered: vi.fn(),
+			ready: vi.fn(async () => {}),
+			setState: vi.fn(async () => {}),
+			outbound: vi.fn(async () => []),
+			claimOutbound: vi.fn(),
+			receipt: vi.fn(),
+		};
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: {
+				save: vi.fn(),
+				list: vi.fn(() => []),
+				remove: vi.fn(),
+				quarantine: vi.fn(),
+			},
+			bootId: "boot",
+			createSession: () => session,
+			recoverSession: vi.fn(),
+			// A short sleep: the first one only covers half the wait.
+			sleep: vi.fn(async (ms: number) => {
+				sleeps.push(ms);
+				elapsed += Math.min(ms, 60_000);
+			}),
+			now: () => new Date(Date.parse("2026-09-22T08:58:00.000Z") + elapsed),
+			timing: {
+				idlePollMs: 5_000,
+				leaseRenewMs: 4_000,
+				leaseMissMax: 2,
+				presenceGraceMs: 600_000,
+				speechChunkTokens: 600,
+			},
+		});
+
+		const result = daemon.runOnce();
+		await vi.waitFor(() =>
+			expect(bridge.setState).toHaveBeenCalledWith(
+				SESSION_ID,
+				"lease",
+				expect.anything(),
+				"live",
+			),
+		);
+		session.requestEnd({ kind: "ended", reason: "she-left" });
+		await result;
+
+		// 120s of floor covered by two 60s sleeps, never one fall-through.
+		expect(sleeps.slice(0, 2)).toEqual([120_000, 60_000]);
 	});
 });

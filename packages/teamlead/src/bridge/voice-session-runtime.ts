@@ -13,6 +13,11 @@ export interface VoiceSessionRuntimeDeps {
 	now?: () => string;
 	provision: (sessionId: string, signal: AbortSignal) => Promise<void>;
 	poll: (session: VoiceSessionRow) => Promise<void>;
+	requestWake?: (
+		session: VoiceSessionRow,
+	) => Promise<"coalesced" | "unknown" | "accepted" | "unavailable" | "failed">;
+	/** Attempt id minted per admitted wake; injected so tests stay deterministic. */
+	newAttemptId?: () => string;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
 	reportPollFailure?: (
 		session: VoiceSessionRow,
@@ -23,7 +28,9 @@ export interface VoiceSessionRuntimeDeps {
 
 export class VoiceSessionRuntime {
 	private timer?: ReturnType<typeof setInterval>;
+	private wakeTimer?: ReturnType<typeof setInterval>;
 	private ticking = false;
+	private wakeTicking = false;
 	private readonly now: () => string;
 	private readonly pollFailures = new Map<
 		string,
@@ -146,6 +153,60 @@ export class VoiceSessionRuntime {
 		}
 	}
 
+	async wakeTick(): Promise<void> {
+		if (this.wakeTicking || !this.deps.requestWake) return;
+		this.wakeTicking = true;
+		try {
+			for (const session of this.deps.store.listVoiceSessions(["desired"])) {
+				const at = this.now();
+				const attemptId =
+					this.deps.newAttemptId?.() ?? `${session.sessionId}:${at}`;
+				// FLY-2701: an unclaimed demand is a standing to-do, but asking a
+				// host that never answers is a restart storm by another name. The
+				// budget decides when to stop asking and say so out loud.
+				const admission = this.deps.store.admitVoiceLaunchAttempt({
+					sessionId: session.sessionId,
+					attemptId,
+					now: at,
+				});
+				if (admission.status === "deferred") continue;
+				if (admission.status === "exhausted") {
+					this.deps.store.failVoiceSessionAdmission(
+						session.sessionId,
+						admission.failureClass ?? "startup_retry_exhausted",
+						at,
+					);
+					continue;
+				}
+				// The outcome is the *settled* command result. A request that was
+				// coalesced away proves nothing and must not spend budget; a
+				// configuration fault stops the retries on the first observation.
+				let outcome: "accepted" | "failed" | "unavailable" | "unknown" =
+					"unknown";
+				try {
+					const settled = await this.deps.requestWake(session);
+					if (settled !== "coalesced" && settled !== "unknown")
+						outcome = settled;
+				} catch {
+					outcome = "failed";
+					console.warn(
+						`[voice-session] wake request ${session.sessionId} failed`,
+					);
+				}
+				this.deps.store.recordVoiceLaunchResult({
+					attemptId,
+					commandResult: outcome,
+					observedAt: at,
+					...(outcome === "unavailable"
+						? { failureClass: "startup_config_invalid" }
+						: {}),
+				});
+			}
+		} finally {
+			this.wakeTicking = false;
+		}
+	}
+
 	private async projectVoiceDemand(): Promise<void> {
 		if (!this.deps.recordDemand) return;
 		let snapshot = this.deps.store.getVoiceDemandSnapshot(this.demandCursor);
@@ -222,6 +283,13 @@ export class VoiceSessionRuntime {
 
 	start(): void {
 		if (this.timer) return;
+		if (this.deps.requestWake) {
+			void this.wakeTick();
+			this.wakeTimer = setInterval(() => {
+				void this.wakeTick();
+			}, this.deps.timing.pollIntervalMs);
+			this.wakeTimer.unref?.();
+		}
 		void this.tick().catch((error) =>
 			console.warn(
 				`[voice-session] runtime tick failed: ${(error as Error).message}`,
@@ -239,6 +307,8 @@ export class VoiceSessionRuntime {
 
 	stop(): void {
 		if (this.timer) clearInterval(this.timer);
+		if (this.wakeTimer) clearInterval(this.wakeTimer);
 		this.timer = undefined;
+		this.wakeTimer = undefined;
 	}
 }

@@ -36,8 +36,14 @@ export interface VoiceJoinOpts {
 
 export interface BotRegistryOptions<C extends RegistryClientLike, V> {
 	createClient: () => C;
-	/** real impl: guild fetch + joinVoiceChannel + entersState(Ready, 15s). */
-	joinVoice: (client: C, opts: VoiceJoinOpts) => Promise<V>;
+	/** real impl: guild fetch + joinVoiceChannel + entersState(Ready, 15s).
+	 * FLY-2701: the signal lets a caller that has already given up stop the
+	 * join from leaving a connection behind that nobody holds a handle to. */
+	joinVoice: (
+		client: C,
+		opts: VoiceJoinOpts,
+		signal?: AbortSignal,
+	) => Promise<V>;
 }
 
 export class BotRegistry<C extends RegistryClientLike, V> {
@@ -85,8 +91,12 @@ export class BotRegistry<C extends RegistryClientLike, V> {
 		return client;
 	}
 
-	async join(id: string, opts: VoiceJoinOpts): Promise<V> {
-		return this.opts.joinVoice(this.client(id), opts);
+	async join(
+		id: string,
+		opts: VoiceJoinOpts,
+		signal?: AbortSignal,
+	): Promise<V> {
+		return this.opts.joinVoice(this.client(id), opts, signal);
 	}
 
 	async destroyAll(): Promise<void> {

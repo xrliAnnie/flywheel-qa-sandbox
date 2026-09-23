@@ -35,6 +35,39 @@ afterEach(() => {
 });
 
 describe("VoiceSessionRuntime", () => {
+	it("scans desired sessions in a wake lane independent of provisioning", async () => {
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+		});
+		const requestWake = vi.fn();
+		const runtime = new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => T0,
+			provision: vi.fn(() => new Promise(() => {})),
+			poll: vi.fn(),
+			requestWake,
+		});
+
+		await runtime.wakeTick();
+
+		expect(requestWake).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: SESSION_ID, state: "desired" }),
+		);
+	});
+
 	it("projects one coalesced demand page on the existing tick cadence and retries failures", async () => {
 		const recordDemand = vi
 			.fn<() => Promise<void>>()
@@ -498,3 +531,98 @@ it.each(["missing", "unleased"] as const)(
 		expect(reportPollFailure).toHaveBeenCalledTimes(2);
 	},
 );
+
+describe("VoiceSessionRuntime launch budget (FLY-2701)", () => {
+	function wakeRuntime(
+		now: string,
+		requestWake: (session: {
+			sessionId: string;
+		}) => Promise<"coalesced" | "accepted" | "unavailable" | "failed">,
+	) {
+		return new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => now,
+			provision: vi.fn(),
+			poll: vi.fn(),
+			requestWake,
+			newAttemptId: () => `attempt-${now}`,
+		});
+	}
+
+	beforeEach(() => {
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+		});
+	});
+
+	it("stops asking launchd once three accepted wakes produced no claim", async () => {
+		const requestWake = vi.fn(async () => "accepted" as const);
+		for (let index = 0; index < 5; index += 1) {
+			await wakeRuntime(
+				new Date(Date.parse(T0) + index * 60_000).toISOString(),
+				requestWake,
+			).wakeTick();
+		}
+		expect(requestWake).toHaveBeenCalledTimes(3);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "failed",
+			reason: "startup_retry_exhausted",
+		});
+	});
+
+	it("does not spend budget on a coalesced request", async () => {
+		const requestWake = vi.fn(async () => "coalesced" as const);
+		await wakeRuntime(T0, requestWake).wakeTick();
+		expect(store.getVoiceLaunchBudget(SESSION_ID)).toMatchObject({
+			provenFailures: 0,
+		});
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "desired",
+		});
+	});
+
+	it("ends a demand naming the contract fault once its windows close unclaimed", async () => {
+		const requestWake = vi.fn(async () => "unavailable" as const);
+		// The host may be mid-migration with the old resident daemon still
+		// polling, so each refusal gets the same startup window an accepted
+		// command gets rather than killing the demand on the next 3s tick.
+		for (let index = 0; index < 4; index += 1) {
+			await wakeRuntime(
+				new Date(Date.parse(T0) + index * 60_000).toISOString(),
+				requestWake,
+			).wakeTick();
+		}
+		expect(requestWake).toHaveBeenCalledTimes(3);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "failed",
+			reason: "startup_config_invalid",
+		});
+	});
+
+	it("a probe timeout spends no budget at all", async () => {
+		const requestWake = vi.fn(async () => "unknown" as const);
+		for (let index = 0; index < 5; index += 1) {
+			await wakeRuntime(
+				new Date(Date.parse(T0) + index * 60_000).toISOString(),
+				requestWake,
+			).wakeTick();
+		}
+		expect(requestWake).toHaveBeenCalledTimes(5);
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "desired",
+		});
+	});
+});

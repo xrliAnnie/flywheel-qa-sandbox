@@ -18,6 +18,12 @@ export interface VoiceSessionProjection {
 	qaAllowUserIds: string[];
 	evidenceDir?: string;
 	meetingId?: string;
+	/** FLY-2701: set only for a booked meeting — the earliest live instant. */
+	notBeforeLiveAt?: string;
+	/** Absolute deadline for the founder to show up; null for instant sessions. */
+	presenceDeadlineAt?: string;
+	/** Schedule revision this session belongs to; null for instant sessions. */
+	scheduleRevision?: number;
 }
 
 export interface VoiceOutboundItem {
@@ -379,6 +385,29 @@ export class BridgeVoiceClient {
 		const lease = new VoiceLease(this.monoNow);
 		lease.install(sentAt, body.leaseTtlMs, this.httpTimeoutMs);
 		return { state: body.state, leaseExpiresAt: body.leaseExpiresAt, lease };
+	}
+
+	/**
+	 * FLY-2701: "in the room, model up" for a prewarmed meeting. The Bridge keeps
+	 * the session warming and owns the decision to go live at the meeting time.
+	 */
+	async ready(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		scheduleRevision: number | null,
+	): Promise<void> {
+		lease.assert();
+		await this.request(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/ready`,
+			{
+				operation: "state",
+				routeTemplate: "/api/voice/sessions/:sessionId/ready",
+				method: "POST",
+				leaseToken,
+				body: { scheduleRevision },
+			},
+		);
 	}
 
 	async setState(

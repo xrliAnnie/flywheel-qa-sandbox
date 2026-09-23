@@ -288,3 +288,606 @@ describe("GenericVoiceSession cancellation", () => {
 		},
 	);
 });
+
+describe("GenericVoiceSession prewarm gate (FLY-2701)", () => {
+	function prewarmed(founderPresent = true) {
+		let frontendHandlers!: FrontendHandlers;
+		let roomHandlers!: RoomHandlers;
+		const frontend = {
+			start: vi.fn(async () => {}),
+			appendAudio: vi.fn(),
+			appendSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			stop: vi.fn(async () => {}),
+		};
+		const room = {
+			start: vi.fn(async () => ({ founderPresent })),
+			playSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			status: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		const delivery = { capture: vi.fn(async () => true) };
+		const session = new GenericVoiceSession({
+			projection: {
+				...projection,
+				notBeforeLiveAt: "2026-09-22T09:00:00.000Z",
+			},
+			delivery,
+			createFrontend: (handlers) => {
+				frontendHandlers = handlers;
+				return frontend;
+			},
+			createRoom: (handlers) => {
+				roomHandlers = handlers;
+				return room;
+			},
+			lifecycle: vi.fn(async () => {}),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+		});
+		return {
+			session,
+			frontend,
+			delivery,
+			getFrontendHandlers: () => frontendHandlers,
+			getRoomHandlers: () => roomHandlers,
+		};
+	}
+
+	const frame = () => Buffer.alloc(960);
+	const owner = { ownerUserId: "founder", speakerName: "Annie" } as never;
+
+	it("holds room audio out of the model while it waits for the meeting time", async () => {
+		const test = prewarmed();
+		await test.session.start();
+		test.getRoomHandlers().onAudio(frame(), owner);
+		test.getFrontendHandlers().onTranscript(userTranscript("开会前的闲聊"));
+		expect(test.frontend.appendAudio).not.toHaveBeenCalled();
+		expect(test.delivery.capture).not.toHaveBeenCalled();
+		await test.session.stop();
+	});
+
+	it("opens the microphone once the meeting actually starts", async () => {
+		const test = prewarmed();
+		await test.session.start();
+		await test.session.markLive();
+		test.getRoomHandlers().onAudio(frame(), owner);
+		expect(test.frontend.appendAudio).toHaveBeenCalledTimes(1);
+		await test.session.stop();
+	});
+
+	it("leaves an instant session unchanged: audio flows as soon as the room is up", async () => {
+		const test = fixture();
+		await test.session.start();
+		test.getRoomHandlers().onAudio(frame(), owner);
+		expect(test.frontend.appendAudio).toHaveBeenCalledTimes(1);
+		await test.session.stop();
+	});
+
+	it("forgets a founder who arrived early and then left before the meeting", async () => {
+		const test = prewarmed();
+		await test.session.start();
+		expect(test.session.isFounderPresent()).toBe(true);
+		test.getRoomHandlers().onFounderPresence(false);
+		// She was here at prewarm time. That is not evidence she is here now, and
+		// going live into an empty room would leave the bot talking to nobody.
+		expect(test.session.isFounderPresent()).toBe(false);
+		await expect(test.session.waitForFounderPresence(10)).resolves.toBe(false);
+		await test.session.stop();
+	});
+
+	it("resolves as soon as she comes back", async () => {
+		const test = prewarmed(false);
+		await test.session.start();
+		const waiting = test.session.waitForFounderPresence(5_000);
+		test.getRoomHandlers().onFounderPresence(true);
+		await expect(waiting).resolves.toBe(true);
+		expect(test.session.isFounderPresent()).toBe(true);
+		await test.session.stop();
+	});
+
+	it("still ends a live session the moment she leaves", async () => {
+		const test = prewarmed();
+		await test.session.start();
+		await test.session.markLive();
+		const ended = test.session.waitForEnd();
+		test.getRoomHandlers().onFounderPresence(false);
+		await expect(ended).resolves.toEqual({
+			kind: "ended",
+			reason: "she-left",
+		});
+		await test.session.stop();
+	});
+});
+
+/**
+ * FLY-2701 review R1 (HIGH): between "she is here" and the media actually
+ * opening there is an await — the Bridge's setState("live") round trip. If she
+ * leaves inside it, the leave event arrives while `live` is still false, so the
+ * end path ignores it; then markLive opens everything anyway and no second
+ * leave event is ever coming. The session sits live in an empty room.
+ *
+ * The founder's rule is "she leaves, it leaves". Presence is therefore asked
+ * again at the last possible moment, and a leave in that window ends the call.
+ */
+describe("GenericVoiceSession live transition presence race", () => {
+	it("does not open media when she left during the Bridge round trip", async () => {
+		const test = fixture({ founderPresent: true });
+		await test.session.start();
+		expect(await test.session.waitForFounderPresence(0)).toBe(true);
+
+		// The Bridge ACK is in flight; she leaves.
+		test.getRoomHandlers().onFounderPresence(false);
+		await test.session.markLive();
+
+		await expect(test.session.waitForEnd()).resolves.toEqual({
+			kind: "ended",
+			reason: "she-left",
+		});
+		// No media may have been opened on the way out.
+		expect(test.lifecycle).not.toHaveBeenCalledWith("live");
+		test.getFrontendHandlers().onTranscript(userTranscript("还在吗"));
+		expect(test.delivery.capture).not.toHaveBeenCalled();
+	});
+
+	it("still goes live normally when she stayed", async () => {
+		const test = fixture({ founderPresent: true });
+		await test.session.start();
+		await test.session.markLive();
+
+		expect(test.lifecycle).toHaveBeenCalledWith("live");
+		test.getFrontendHandlers().onTranscript(userTranscript("开始吧"));
+		await vi.waitFor(() =>
+			expect(test.delivery.capture).toHaveBeenCalledOnce(),
+		);
+	});
+
+	it("goes live for an instant session that never tracked presence", async () => {
+		// An rg session with no founder in the room is a normal case today; the
+		// new guard must not turn it into an end.
+		const test = fixture({ founderPresent: false });
+		await test.session.start();
+		test.getRoomHandlers().onFounderPresence(true);
+		await test.session.markLive();
+
+		expect(test.lifecycle).toHaveBeenCalledWith("live");
+	});
+});
+
+/**
+ * FLY-2701 review R1 (MEDIUM) — plan §7 / slice D "预热并行": the two start
+ * branches share one AbortController and one 120s session-start deadline.
+ * Neither waits for the other; the first failure fences the other; and a branch
+ * that lands late is stopped rather than left sitting in the room.
+ */
+describe("GenericVoiceSession parallel start", () => {
+	function branches(options: {
+		frontend?: (signal?: AbortSignal) => Promise<void>;
+		room?: (signal?: AbortSignal) => Promise<{ founderPresent: boolean }>;
+		startDeadlineMs?: number;
+	}) {
+		const frontend = {
+			start: vi.fn(options.frontend ?? (async () => {})),
+			appendAudio: vi.fn(),
+			appendSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			stop: vi.fn(async () => {}),
+		};
+		const room = {
+			start: vi.fn(options.room ?? (async () => ({ founderPresent: true }))),
+			playSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			status: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => frontend,
+			createRoom: () => room,
+			lifecycle: vi.fn(async () => {}),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+			...(options.startDeadlineMs === undefined
+				? {}
+				: { startDeadlineMs: options.startDeadlineMs }),
+		});
+		return { session, frontend, room };
+	}
+
+	it("starts both branches without either waiting for the other", async () => {
+		let releaseFrontend!: () => void;
+		const test = branches({
+			frontend: () =>
+				new Promise<void>((resolve) => {
+					releaseFrontend = resolve;
+				}),
+		});
+
+		const started = test.session.start();
+		// The room must already be on its way while the frontend is still hanging.
+		await vi.waitFor(() => expect(test.room.start).toHaveBeenCalled());
+		releaseFrontend();
+		await expect(started).resolves.toEqual({ founderPresent: true });
+	});
+
+	it("fences the other branch when one fails, and stops it if it lands late", async () => {
+		let landRoom!: (value: { founderPresent: boolean }) => void;
+		let aborted = false;
+		const test = branches({
+			frontend: async () => {
+				throw new Error("realtime refused");
+			},
+			room: (signal) =>
+				new Promise((resolve) => {
+					signal?.addEventListener("abort", () => {
+						aborted = true;
+					});
+					landRoom = resolve;
+				}),
+		});
+
+		const started = test.session.start();
+
+		// The caller learns about the failure while the room is *still pending* —
+		// that is what fail-fast means, and awaiting it here, before the room is
+		// ever landed, is what proves it: an implementation that waited for the
+		// other branch would hang on this line forever. Awaiting it first also
+		// keeps the rejection handled from the tick it is created, which is what
+		// stops it surfacing as an unhandled rejection.
+		await expect(started).rejects.toThrow("realtime refused");
+		expect(aborted).toBe(true);
+
+		// The room ignores the fence and finishes anyway: the bot is now in the
+		// channel with nothing driving it, so the session must take it back out.
+		landRoom({ founderPresent: true });
+		await vi.waitFor(() => expect(test.room.stop).toHaveBeenCalled());
+	});
+
+	it("gives the whole start one deadline and cleans up what lands after it", async () => {
+		let landRoom!: (value: { founderPresent: boolean }) => void;
+		const test = branches({
+			startDeadlineMs: 10,
+			room: () =>
+				new Promise((resolve) => {
+					landRoom = resolve;
+				}),
+		});
+
+		const started = test.session.start();
+		await expect(started).rejects.toThrow("voice_session_start_timeout");
+		landRoom({ founderPresent: true });
+
+		await vi.waitFor(() => expect(test.room.stop).toHaveBeenCalled());
+		expect(test.frontend.stop).toHaveBeenCalled();
+	});
+});
+
+/**
+ * FLY-2701 review R2 (HIGH): parallelising the start turned the room's
+ * `founderPresent` into a snapshot that can go stale. The room subscribes to
+ * presence *before* it reads the channel, so an event that arrives while the
+ * other branch is still starting is strictly newer than the snapshot — but the
+ * snapshot was applied afterwards and rolled it back. markLive's re-read then
+ * saw the rolled-back value and opened the media anyway.
+ */
+describe("GenericVoiceSession presence ordering across a parallel start", () => {
+	function orderedFixture() {
+		let roomHandlers!: RoomHandlers;
+		let releaseFrontend!: () => void;
+		let landRoom!: (value: { founderPresent: boolean }) => void;
+		const frontend = {
+			start: vi.fn(
+				() =>
+					new Promise<void>((resolve) => {
+						releaseFrontend = resolve;
+					}),
+			),
+			appendAudio: vi.fn(),
+			appendSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			stop: vi.fn(async () => {}),
+		};
+		const room = {
+			start: vi.fn(
+				() =>
+					new Promise<{ founderPresent: boolean }>((resolve) => {
+						landRoom = resolve;
+					}),
+			),
+			playSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			status: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		const lifecycle = vi.fn(async () => {});
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => frontend,
+			createRoom: (handlers) => {
+				roomHandlers = handlers;
+				return room;
+			},
+			lifecycle,
+			evidence: vi.fn(),
+			confirmationMs: 100,
+		});
+		return {
+			session,
+			lifecycle,
+			handlers: () => roomHandlers,
+			landRoom: (present: boolean) => landRoom({ founderPresent: present }),
+			releaseFrontend: () => releaseFrontend(),
+		};
+	}
+
+	it("keeps a leave that happened after the room read the channel", async () => {
+		const test = orderedFixture();
+		const started = test.session.start();
+
+		test.landRoom(true);
+		// She leaves while the model connection is still coming up.
+		test.handlers().onFounderPresence(false);
+		test.releaseFrontend();
+		// FLY-2701 review R3: the *returned* value matters too. The daemon's
+		// instant path trusts `started.founderPresent` and commits `live` to the
+		// Bridge on it, so a stale `true` here shows a durable live state for a
+		// call nobody is in — permanently, if the process dies in that window.
+		await expect(started).resolves.toEqual({ founderPresent: false });
+
+		expect(test.session.isFounderPresent()).toBe(false);
+		await test.session.markLive();
+		expect(test.lifecycle).not.toHaveBeenCalledWith("live");
+	});
+
+	it("keeps a join that happened after the room read an empty channel", async () => {
+		const test = orderedFixture();
+		const started = test.session.start();
+
+		test.landRoom(false);
+		test.handlers().onFounderPresence(true);
+		test.releaseFrontend();
+		await expect(started).resolves.toEqual({ founderPresent: true });
+
+		expect(test.session.isFounderPresent()).toBe(true);
+		await test.session.markLive();
+		expect(test.lifecycle).toHaveBeenCalledWith("live");
+	});
+
+	it("still uses the room snapshot when no event contradicted it", async () => {
+		const test = orderedFixture();
+		const started = test.session.start();
+
+		test.landRoom(true);
+		test.releaseFrontend();
+		await started;
+
+		expect(test.session.isFounderPresent()).toBe(true);
+	});
+});
+
+/**
+ * FLY-2701 review R2 (HIGH): cleanup was gated on `Promise.all` of both
+ * branches, so the one case that actually leaks a joined bot — the room lands
+ * and the model connection never settles at all — never cleaned up, because
+ * that combined promise never resolved. Each branch now hands itself back the
+ * moment it lands into an abandoned start, independently of the other.
+ */
+describe("GenericVoiceSession start cleanup is per-branch", () => {
+	function hangingFrontend(startDeadlineMs: number) {
+		let landRoom!: (value: { founderPresent: boolean }) => void;
+		const frontend = {
+			start: vi.fn(() => new Promise<void>(() => {})),
+			appendAudio: vi.fn(),
+			appendSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			stop: vi.fn(async () => {}),
+		};
+		const room = {
+			start: vi.fn(
+				() =>
+					new Promise<{ founderPresent: boolean }>((resolve) => {
+						landRoom = resolve;
+					}),
+			),
+			playSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			status: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => frontend,
+			createRoom: () => room,
+			lifecycle: vi.fn(async () => {}),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+			startDeadlineMs,
+		});
+		return {
+			session,
+			frontend,
+			room,
+			landRoom: () => landRoom({ founderPresent: true }),
+		};
+	}
+
+	it("stops a room that landed before the deadline while the model never settles", async () => {
+		const test = hangingFrontend(10);
+		const started = test.session.start();
+		test.landRoom();
+
+		await expect(started).rejects.toThrow("voice_session_start_timeout");
+		await vi.waitFor(() => expect(test.room.stop).toHaveBeenCalled());
+	});
+
+	it("stops a room that lands long after the deadline already passed", async () => {
+		const test = hangingFrontend(10);
+		const started = test.session.start();
+
+		await expect(started).rejects.toThrow("voice_session_start_timeout");
+		expect(test.room.stop).not.toHaveBeenCalled();
+		// The room ignored the fence and finally joins, minutes later.
+		test.landRoom();
+
+		await vi.waitFor(() => expect(test.room.stop).toHaveBeenCalled());
+	});
+
+	it("does not wait for the hung branch before releasing the one that landed", async () => {
+		const test = hangingFrontend(10);
+		const started = test.session.start();
+		test.landRoom();
+		await expect(started).rejects.toThrow("voice_session_start_timeout");
+
+		// The frontend is still hanging and always will be; cleanup of the room
+		// must not be behind it.
+		await vi.waitFor(() => expect(test.room.stop).toHaveBeenCalled());
+		expect(test.frontend.start).toHaveBeenCalled();
+	});
+});
+
+/**
+ * FLY-2701 review R2: plan §7's 120s is a ceiling over preflight AND both
+ * branches. Starting the clock when the branches begin quietly grants the whole
+ * budget again to a start that already spent most of it verifying identity.
+ */
+describe("GenericVoiceSession start budget includes preflight", () => {
+	it("gives the branches only what the caller's deadline has left", async () => {
+		let now = 1_000_000;
+		const room = {
+			start: vi.fn(() => new Promise<{ founderPresent: boolean }>(() => {})),
+			playSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			status: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => ({
+				start: vi.fn(() => new Promise<void>(() => {})),
+				appendAudio: vi.fn(),
+				appendSpeech: vi.fn(async () => {}),
+				cancelSpeech: vi.fn(),
+				stop: vi.fn(async () => {}),
+			}),
+			createRoom: () => room,
+			lifecycle: vi.fn(async () => {}),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+			now: () => new Date(now),
+			startDeadlineMs: 120_000,
+			// Preflight already burned nearly the whole budget: 15ms remain.
+			startDeadlineAt: () => now + 15,
+		});
+
+		// The proof is the outcome, not a stopwatch: with only 15ms left the start
+		// expires and this settles. An implementation that handed the branches a
+		// fresh 120s would never settle here at all, and the test would fail on
+		// its own timeout rather than on a host-duration threshold — which
+		// required checks are not allowed to assert.
+		await expect(session.start()).rejects.toThrow(
+			"voice_session_start_timeout",
+		);
+		// The expired start gives back the branch that had come up, if any.
+		expect(room.start).toHaveBeenCalledTimes(1);
+	});
+
+	it("uses the whole ceiling when the caller names no deadline", () => {
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => ({
+				start: vi.fn(async () => {}),
+				appendAudio: vi.fn(),
+				appendSpeech: vi.fn(async () => {}),
+				cancelSpeech: vi.fn(),
+				stop: vi.fn(async () => {}),
+			}),
+			createRoom: () => ({
+				start: vi.fn(async () => ({ founderPresent: true })),
+				playSpeech: vi.fn(async () => {}),
+				cancelSpeech: vi.fn(),
+				status: vi.fn(async () => {}),
+				stop: vi.fn(async () => {}),
+				setWaiting: vi.fn(),
+				setBedEnabled: vi.fn(),
+			}),
+			lifecycle: vi.fn(async () => {}),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+			startDeadlineMs: 120_000,
+		});
+
+		// No `startDeadlineAt`, so the budget is the ceiling itself — the
+		// remaining-budget arithmetic must not silently apply to a caller that
+		// never claimed to have spent any of it.
+		expect(
+			(session as unknown as { startBudgetMs(): number }).startBudgetMs(),
+		).toBe(120_000);
+	});
+});
+
+/**
+ * FLY-2701 review R3: with each branch now cleaning itself up on landing, there
+ * is no longer any reason for the caller to sit through the other branch. The
+ * first failure ends the wait; the survivor still hands itself back whenever it
+ * eventually lands.
+ */
+describe("GenericVoiceSession start fails fast on the first failure", () => {
+	it("does not wait for the other branch after one fails", async () => {
+		let landRoom!: (value: { founderPresent: boolean }) => void;
+		const room = {
+			start: vi.fn(
+				() =>
+					new Promise<{ founderPresent: boolean }>((resolve) => {
+						landRoom = resolve;
+					}),
+			),
+			playSpeech: vi.fn(async () => {}),
+			cancelSpeech: vi.fn(),
+			status: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		const session = new GenericVoiceSession({
+			projection,
+			delivery: { capture: vi.fn(async () => true) },
+			createFrontend: () => ({
+				start: vi.fn(async () => {
+					throw new Error("realtime refused");
+				}),
+				appendAudio: vi.fn(),
+				appendSpeech: vi.fn(async () => {}),
+				cancelSpeech: vi.fn(),
+				stop: vi.fn(async () => {}),
+			}),
+			createRoom: () => room,
+			lifecycle: vi.fn(async () => {}),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+			startDeadlineMs: 60_000,
+		});
+
+		// The room has not settled and will not for a while; the failure must
+		// surface long before the 60s ceiling.
+		await expect(session.start()).rejects.toThrow("realtime refused");
+
+		landRoom({ founderPresent: true });
+		await vi.waitFor(() => expect(room.stop).toHaveBeenCalled());
+	});
+});

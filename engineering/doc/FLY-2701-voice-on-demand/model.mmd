@@ -1,0 +1,26 @@
+classDiagram
+  class Schedule {
+    scheduleId 固定预约编号
+    revision 修改版本
+    scheduledAt 开会时间
+    prewarmAt 提前准备时间
+    state 预约进度
+  }
+  class Session {
+    sessionId 本次通话编号
+    scheduleRevision 对应预约版本
+    readyAt 真正准备完成
+    lease 有时限的占用许可
+  }
+  class LaunchAttempt {
+    attemptId 启动尝试编号
+    result 系统启动回执
+  }
+  class Health {
+    demandRevision 当前需求版本
+    episodeId 同一次故障编号
+    deliveryReceipt 告警送达凭据
+  }
+  Schedule "1" --> "0..*" Session : 改期先结束旧会话
+  Session "1" --> "0..*" LaunchAttempt : 未领取前可重试
+  Session --> Health : 真实结果驱动

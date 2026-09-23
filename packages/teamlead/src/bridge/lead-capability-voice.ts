@@ -135,15 +135,21 @@ export function createLeadCapabilityVoiceRouter(
 		status: "succeeded" | "rejected" | "unknown",
 		options: {
 			session?: VoiceSessionRow;
+			scheduleId?: string;
 			data?: unknown;
 			errorCode?: string;
 		} = {},
 	) => ({
 		requestId: request.requestId,
 		status,
+		// FLY-2701: a start deduplicated into an existing booking names that
+		// booking. The Lead handler matches the payload against this ref, so the
+		// two must always be produced together.
 		resourceRefs: options.session
 			? [`voice-session:${options.session.sessionId}`]
-			: [],
+			: options.scheduleId
+				? [`voice-schedule:${options.scheduleId}`]
+				: [],
 		...(options.data === undefined ? {} : { data: options.data }),
 		...(options.errorCode ? { errorCode: options.errorCode } : {}),
 	});
@@ -215,11 +221,37 @@ export function createLeadCapabilityVoiceRouter(
 				reservation,
 			});
 			if (!("session" in reserved)) {
+				// Plan §5: the same binding already has a booking. That is the
+				// dedup working, so the Lead gets the booking's identity back
+				// rather than a bare refusal it cannot act on.
+				if (reserved.status === "schedule_bound") {
+					return reply(request, "succeeded", {
+						scheduleId: reserved.schedule.scheduleId,
+						data: output(request, {
+							status: "schedule_bound",
+							scheduleId: reserved.schedule.scheduleId,
+							revision: reserved.schedule.revision,
+							state: reserved.schedule.state,
+							sessionId: reserved.schedule.sessionId,
+							scheduledAt: reserved.schedule.scheduledAt,
+						}),
+					});
+				}
 				return reply(request, "rejected", {
 					errorCode:
 						reserved.status === "intent_conflict"
 							? "voice_intent_conflict"
-							: "voice_session_active",
+							: reserved.status === "schedule_binding_conflict"
+								? // A different Lead, room or bot for a meeting that is
+									// already booked: report it, never overwrite it.
+									"voice_schedule_binding_conflict"
+								: "voice_session_active",
+					// FLY-2701 review R4: the refusal names the booking. `data` alone
+					// does not survive the broker's rejection path, so the identity
+					// travels as the resource ref the Lead handler already validates.
+					...(reserved.status === "schedule_binding_conflict"
+						? { scheduleId: reserved.schedule.scheduleId }
+						: {}),
 				});
 			}
 			if (reserved.session.state === "provisioning") {
@@ -307,12 +339,34 @@ export function createLeadCapabilityVoiceRouter(
 				!intent ||
 				intent.operationId !== request.operationId ||
 				intent.inputDigest !== leadOperationInputDigest(parsed.input) ||
-				!intent.sessionId
+				(!intent.sessionId && !intent.scheduleId)
 			) {
 				res.json(reply(request, "unknown"));
 				return;
 			}
-			const session = scopedSession(request, intent.sessionId);
+			// FLY-2701 review R3: a start deduplicated into an existing booking has
+			// no session of its own, but it is a committed answer and the receipt
+			// route has to give it back rather than claiming it never happened.
+			if (intent.scheduleId) {
+				const schedule = deps.store.getVoiceSchedule(intent.scheduleId);
+				if (!schedule || schedule.leadId !== request.leadId) throw denied();
+				captured.assertSourceCurrent();
+				res.json(
+					reply(request, "succeeded", {
+						scheduleId: schedule.scheduleId,
+						data: output(request, {
+							status: "schedule_bound",
+							scheduleId: schedule.scheduleId,
+							revision: schedule.revision,
+							state: schedule.state,
+							sessionId: schedule.sessionId,
+							scheduledAt: schedule.scheduledAt,
+						}),
+					}),
+				);
+				return;
+			}
+			const session = scopedSession(request, intent.sessionId!);
 			captured.assertSourceCurrent();
 			if (request.operationId === "voice.session.start") {
 				res.json(startReply(request, session));

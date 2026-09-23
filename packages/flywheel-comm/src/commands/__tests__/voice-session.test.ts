@@ -267,3 +267,180 @@ describe("voice-session", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });
+
+describe("voice-session meeting schedules (FLY-2701)", () => {
+	const env = {
+		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876/",
+		TEAMLEAD_API_TOKEN: "master-token",
+	};
+
+	it("books a meeting through the schedule API when --scheduled-at is given", async () => {
+		const fetchImpl = vi.fn(async () =>
+			response(201, { scheduleId: "schedule-1", revision: 1 }),
+		);
+		const stdout: string[] = [];
+		expect(
+			await runVoiceSessionCommand(
+				[
+					"start",
+					"--mode",
+					"meeting",
+					"--project",
+					"flywheel",
+					"--lead",
+					"lead-a",
+					"--evidence-dir",
+					"/tmp/evidence",
+					"--scheduled-at",
+					"2026-09-22T09:00:00Z",
+					"--request-id",
+					"30000000-0000-4000-8000-000000000001",
+					"--json",
+				],
+				{
+					env,
+					fetchImpl,
+					stdout: (line) => stdout.push(line),
+					stderr: () => {},
+				},
+			),
+		).toBe(0);
+		const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("http://127.0.0.1:9876/api/voice/schedules");
+		expect(init.method).toBe("POST");
+		expect(JSON.parse(String(init.body))).toEqual({
+			requestId: "30000000-0000-4000-8000-000000000001",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			evidenceDir: "/tmp/evidence",
+			scheduledAt: "2026-09-22T09:00:00Z",
+		});
+		expect(stdout[0]).toContain("schedule-1");
+	});
+
+	it("requires a request id and refuses to book an instant rg session", async () => {
+		const fetchImpl = vi.fn(async () => response(201, {}));
+		const stderr: string[] = [];
+		expect(
+			await runVoiceSessionCommand(
+				[
+					"start",
+					"--mode",
+					"meeting",
+					"--project",
+					"flywheel",
+					"--lead",
+					"lead-a",
+					"--evidence-dir",
+					"/tmp/evidence",
+					"--scheduled-at",
+					"2026-09-22T09:00:00Z",
+				],
+				{
+					env,
+					fetchImpl,
+					stdout: () => {},
+					stderr: (line) => stderr.push(line),
+				},
+			),
+		).toBe(1);
+		expect(
+			await runVoiceSessionCommand(
+				[
+					"start",
+					"--mode",
+					"rg",
+					"--project",
+					"flywheel",
+					"--lead",
+					"lead-a",
+					"--scheduled-at",
+					"2026-09-22T09:00:00Z",
+					"--request-id",
+					"30000000-0000-4000-8000-000000000001",
+				],
+				{
+					env,
+					fetchImpl,
+					stdout: () => {},
+					stderr: (line) => stderr.push(line),
+				},
+			),
+		).toBe(1);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("reads, moves, and cancels a booking by its exact revision", async () => {
+		const fetchImpl = vi.fn(async () => response(200, { revision: 2 }));
+		const call = (args: string[]) =>
+			runVoiceSessionCommand(args, {
+				env,
+				fetchImpl,
+				stdout: () => {},
+				stderr: () => {},
+			});
+		expect(
+			await call([
+				"schedule-status",
+				"--schedule-id",
+				"20000000-0000-4000-8000-000000000001",
+			]),
+		).toBe(0);
+		expect(
+			await call([
+				"reschedule",
+				"--schedule-id",
+				"20000000-0000-4000-8000-000000000001",
+				"--expected-revision",
+				"1",
+				"--scheduled-at",
+				"2026-09-22T10:00:00Z",
+				"--request-id",
+				"30000000-0000-4000-8000-000000000002",
+			]),
+		).toBe(0);
+		expect(
+			await call([
+				"cancel-schedule",
+				"--schedule-id",
+				"20000000-0000-4000-8000-000000000001",
+				"--expected-revision",
+				"2",
+				"--request-id",
+				"30000000-0000-4000-8000-000000000003",
+			]),
+		).toBe(0);
+		const calls = fetchImpl.mock.calls as Array<[string, RequestInit]>;
+		expect(
+			calls.map(([url, init]) => `${init.method ?? "GET"} ${url}`),
+		).toEqual([
+			"GET http://127.0.0.1:9876/api/voice/schedules/20000000-0000-4000-8000-000000000001",
+			"PATCH http://127.0.0.1:9876/api/voice/schedules/20000000-0000-4000-8000-000000000001",
+			"POST http://127.0.0.1:9876/api/voice/schedules/20000000-0000-4000-8000-000000000001/cancel",
+		]);
+		expect(JSON.parse(String(calls[1]![1].body))).toEqual({
+			requestId: "30000000-0000-4000-8000-000000000002",
+			expectedRevision: 1,
+			scheduledAt: "2026-09-22T10:00:00Z",
+		});
+	});
+
+	it("refuses a non-integer revision instead of sending it to the Bridge", async () => {
+		const fetchImpl = vi.fn(async () => response(200, {}));
+		expect(
+			await runVoiceSessionCommand(
+				[
+					"cancel-schedule",
+					"--schedule-id",
+					"20000000-0000-4000-8000-000000000001",
+					"--expected-revision",
+					"one",
+					"--request-id",
+					"30000000-0000-4000-8000-000000000003",
+				],
+				{ env, fetchImpl, stdout: () => {}, stderr: () => {} },
+			),
+		).toBe(1);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+});

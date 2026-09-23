@@ -338,6 +338,125 @@ describe("voice health projector", () => {
 		},
 	);
 
+	// FLY-2701 review R3: a booked meeting is reserved two minutes early and
+	// stays warming, ready and mute until its own time. Judging it by the
+	// instant-session 60s+60s rule fires startup_not_ready at exactly T for
+	// every scheduled meeting — a false alarm on the working path.
+	it.each([
+		["2026-09-18T20:05:00.000Z", [] as string[]],
+		["2026-09-18T20:10:00.001Z", ["record-startup"]],
+	] as const)(
+		"excuses a ready prewarmed meeting until its presence deadline (now=%s)",
+		async (nowIso, expectedStartupCalls) => {
+			const scheduleId = "50000000-0000-4000-8000-000000000005";
+			const sessionId = "41000000-0000-4000-8000-000000000009";
+			store.createVoiceSchedule({
+				scheduleId,
+				requestKey: "master:req-1",
+				requestDigest: "digest-1",
+				projectName: "flywheel",
+				leadId: "lead-a",
+				guildId: "100000000000000001",
+				voiceChannelId: "100000000000000002",
+				voiceBotUserId: "100000000000000005",
+				evidenceDir: "/tmp/evidence",
+				scheduledAt: "2026-09-18T20:00:00.000Z",
+				prewarmAt: "2026-09-18T19:58:00.000Z",
+				readyDeadlineAt: "2026-09-18T20:00:00.000Z",
+				presenceDeadlineAt: "2026-09-18T20:10:00.000Z",
+				requestedBy: "master",
+				credentialTier: "master",
+				createdAt: "2026-09-18T19:58:00.000Z",
+			});
+			store.reserveVoiceSession({
+				sessionId,
+				mode: "meeting",
+				projectName: "flywheel",
+				leadId: "lead-a",
+				guildId: "100000000000000001",
+				voiceBotUserId: "100000000000000005",
+				voiceChannelId: "100000000000000002",
+				meetingId: "meeting-9",
+				requestedBy: "master",
+				credentialTier: "master",
+				createdAt: "2026-09-18T19:58:00.000Z",
+				scheduleId,
+				scheduleRevision: 1,
+				notBeforeLiveAt: "2026-09-18T20:00:00.000Z",
+				presenceDeadlineAt: "2026-09-18T20:10:00.000Z",
+			});
+			store.attachVoiceScheduleSession({
+				scheduleId,
+				expectedRevision: 1,
+				sessionId,
+				updatedAt: "2026-09-18T19:58:00.000Z",
+			});
+			store.updateVoiceProvisioning({
+				sessionId,
+				expectedStep: "reserved",
+				nextStep: "done",
+				nextState: "desired",
+				updatedAt: "2026-09-18T19:58:10.000Z",
+			});
+			const claim = store.claimVoiceSession({
+				sessionId,
+				daemonBootId: "daemon-b",
+				now: "2026-09-18T19:58:20.000Z",
+				leaseTtlMs: 30 * 60_000,
+			});
+			expect(claim).toBeDefined();
+			expect(
+				store.setVoiceSessionState({
+					sessionId,
+					leaseToken: claim!.leaseToken,
+					state: "warming",
+					now: "2026-09-18T19:58:21.000Z",
+				}),
+			).toBe(true);
+			expect(
+				store.markVoiceSessionReady({
+					sessionId,
+					scheduleRevision: 1,
+					readyAt: "2026-09-18T19:59:00.000Z",
+				}),
+			).toBe("ready");
+
+			const invocations: string[] = [];
+			const guard = createVoiceHealthBridgeGuard({
+				store,
+				helperPath: "/trusted/voice-health.py",
+				stateRoot: root,
+				execFile: vi.fn(
+					(
+						_file: string,
+						args: string[],
+						_options: unknown,
+						callback: (
+							error: Error | null,
+							stdout: string,
+							stderr: string,
+						) => void,
+					) => {
+						const child = new EventEmitter() as ChildProcess;
+						child.stdin = new EventEmitter() as ChildProcess["stdin"];
+						Object.assign(child.stdin!, {
+							once: child.stdin!.once.bind(child.stdin),
+							end: () => {
+								invocations.push(args.at(-1)!);
+								callback(null, '{"status":"no_action"}', "");
+							},
+						});
+						return child;
+					},
+				),
+				now: () => new Date(nowIso),
+			});
+
+			await expect(guard(exported())).resolves.toEqual([]);
+			expect(invocations).toEqual(["evaluate", ...expectedStartupCalls]);
+		},
+	);
+
 	it("imports bootstrap evidence only for one authoritative demand and ignores lock contention", async () => {
 		store.reserveVoiceSession({
 			sessionId: "70000000-0000-4000-8000-000000000007",

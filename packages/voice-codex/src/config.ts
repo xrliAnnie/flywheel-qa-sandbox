@@ -32,6 +32,7 @@ export interface VoiceDaemonConfig {
 	idleHttpTimeoutMs: number;
 	leaseHttpTimeoutMs: number;
 	idlePollMs: number;
+	idleExitMs: number;
 	leaseRenewMs: number;
 	leaseMissMax: number;
 	presenceGraceMs: number;
@@ -175,9 +176,15 @@ export function loadVoiceDaemonConfig(
 		),
 		leaseHttpTimeoutMs,
 		idlePollMs: integer(env, "FLYWHEEL_VOICE_IDLE_POLL_MS", 5_000),
+		idleExitMs: integer(env, "FLYWHEEL_VOICE_IDLE_EXIT_MS", 120_000),
 		leaseRenewMs,
 		leaseMissMax: integer(env, "FLYWHEEL_VOICE_LEASE_MISS_MAX", 2),
-		presenceGraceMs: integer(env, "FLYWHEEL_VOICE_PRESENCE_GRACE_MS", 120_000),
+		// FLY-2701 (founder 2026-09-22): after the host is woken, the bot waits in
+		// the room ten minutes for her. "Idle" means an empty room, so a short
+		// grace would hang up on her while she is still walking over.
+		presenceGraceMs: integer(env, "FLYWHEEL_VOICE_PRESENCE_GRACE_MS", 600_000),
+		// FLY-2655 lowered this to 80; keep it — it belongs to the recovered
+		// receive path, not to anything this issue changed.
 		speechChunkTokens: integer(env, "FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS", 80),
 		confirmationMs: integer(env, "FLYWHEEL_VOICE_CONFIRMATION_MS", 15_000),
 		discordTimeoutMs: integer(env, "FLYWHEEL_VOICE_DISCORD_TIMEOUT_MS", 10_000),

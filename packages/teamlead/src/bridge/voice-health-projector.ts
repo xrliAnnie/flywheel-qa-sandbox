@@ -809,6 +809,18 @@ export function createVoiceHealthBridgeGuard(input: {
 					now.getTime() - createdAt < STARTUP_NOT_READY_MS
 				)
 					return false;
+				// FLY-2701: a booked meeting is deliberately in the room early and
+				// stays warming until its own time, so its readiness target is
+				// "ready", not "live". A session that has reported ready is doing
+				// exactly what was asked of it until the founder's own deadline.
+				if (session.readyAt && session.presenceDeadlineAt) {
+					const presenceDeadlineAt = Date.parse(session.presenceDeadlineAt);
+					if (
+						Number.isFinite(presenceDeadlineAt) &&
+						now.getTime() <= presenceDeadlineAt
+					)
+						return false;
+				}
 				if (session.state === "claimed" || session.state === "warming") {
 					// FLY-2693 review R5, plan section 3: a claim or lease renewal
 					// cannot extend the startup boundary. A live lease excuses the

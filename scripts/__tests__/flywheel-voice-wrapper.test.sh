@@ -29,16 +29,18 @@ check_wrapper "host gate" 'HOST_TMUX_GATE_BIN.*gate voice'
 check_wrapper "host receipt verification" 'HOST_TMUX_GATE_BIN.*verify voice'
 check_wrapper "build identity export" 'export FLYWHEEL_VOICE_BUILD_SHA='
 check_wrapper "restart storm gate" 'RESTART_STORM_GATE_BIN.*gate voice'
-check_wrapper "pid guard" 'voice\.pid'
+check_wrapper "on-demand contract" 'voice_on_demand_contract_check'
 check_wrapper "built daemon exec" '^exec node packages/voice-codex/dist/cli\.js'
 
-if [[ -f "$PLIST" ]] && grep -q '<key>SuccessfulExit</key><false/>' "$PLIST"; then
-  pass "plist restarts only crashes"
+if [[ -f "$PLIST" ]] \
+  && grep -q '<key>RunAtLoad</key><false/>' "$PLIST" \
+  && grep -q '<key>KeepAlive</key><false/>' "$PLIST"; then
+  pass "plist stays registered and dormant"
 else
-  fail "plist SuccessfulExit false"
+  fail "plist on-demand booleans"
 fi
-if [[ -f "$PLIST" ]] && grep -q '<key>ThrottleInterval</key>' "$PLIST"; then pass "plist throttles"; else fail "plist throttle"; fi
-if grep -Fq $'com.flywheel.voice\tcom.flywheel.voice.plist\thold\t0\t' "$MANIFEST"; then pass "manifest holds voice"; else fail "manifest hold row"; fi
+if [[ -f "$PLIST" ]] && grep -A1 '<key>ThrottleInterval</key>' "$PLIST" | grep -q '<integer>1</integer>'; then pass "plist has one-second explicit throttle"; else fail "plist throttle"; fi
+if grep -Fq $'com.flywheel.voice\tcom.flywheel.voice.plist\tsetup\t0\t' "$MANIFEST"; then pass "manifest owns voice setup"; else fail "manifest setup row"; fi
 if grep -q 'packages/voice-codex/\*.*_restart_voice=true' "$RESTART" \
   && grep -q 'scripts/flywheel-voice-wrapper\.sh.*_restart_voice=true' "$RESTART"; then
   pass "restart classifier owns voice changes"
@@ -55,6 +57,9 @@ cp "$REPO_ROOT/scripts/lib/voice-health-startup-spool.py" \
   "$ROOT/repo/scripts/lib/voice-health-startup-spool.py"
 cat > "$ROOT/repo/scripts/lib/host-config.sh" <<'EOF'
 host_config_load() { return 0; }
+EOF
+cat > "$ROOT/repo/scripts/lib/voice-on-demand.sh" <<'EOF'
+voice_on_demand_contract_check() { [[ "${TEST_ON_DEMAND_CONTRACT:-0}" == 1 ]]; }
 EOF
 cat > "$ROOT/host-gate" <<'EOF'
 #!/bin/bash
@@ -99,15 +104,16 @@ if [[ -f "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" ]] && \
   env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
   FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
   FLYWHEEL_DIR="$ROOT/repo" FLYWHEEL_STATE_DIR="$ROOT/state" \
+  TEST_ON_DEMAND_CONTRACT=1 \
   FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
   FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
   bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1; then
   if grep -q '^gate voice|keepalive:voice|scripts/flywheel-voice-wrapper.sh|' "$ROOT/host-calls" \
     && grep -q '^verify voice|keepalive:voice|scripts/flywheel-voice-wrapper.sh|' "$ROOT/host-calls" \
-    && grep -qx 'gate voice' "$ROOT/restart-calls" \
+    && [[ ! -s "$ROOT/restart-calls" ]] \
     && grep -qx 'packages/voice-codex/dist/cli.js --check-config' "$ROOT/node-calls" \
     && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls"; then
-    pass "wrapper executes both host receipts, restart brake, and daemon"
+    pass "verified on-demand wrapper skips the resident storm gate and starts daemon"
   else
     fail "wrapper gate execution"
   fi
@@ -118,6 +124,7 @@ fi
 mkdir -p "$ROOT/bootstrap/scripts/lib" "$ROOT/configured-repo/packages/voice-codex/dist" \
   "$ROOT/configured-state"
 cp "$WRAPPER" "$ROOT/bootstrap/scripts/flywheel-voice-wrapper.sh"
+cp "$ROOT/repo/scripts/lib/voice-on-demand.sh" "$ROOT/bootstrap/scripts/lib/voice-on-demand.sh"
 cp "$REPO_ROOT/scripts/lib/voice-health-startup-spool.py" \
   "$ROOT/bootstrap/scripts/lib/voice-health-startup-spool.py"
 cat > "$ROOT/bootstrap/scripts/lib/host-config.sh" <<'EOF'
@@ -134,6 +141,7 @@ if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
   FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
   FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
   FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
+  TEST_ON_DEMAND_CONTRACT=1 \
   bash "$ROOT/bootstrap/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 \
   && grep -qx 'packages/voice-codex/dist/cli.js --check-config' "$ROOT/node-calls" \
   && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls"; then
@@ -141,6 +149,42 @@ if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
 else
   fail "host.json path precedence"
 fi
+
+: > "$ROOT/node-calls"
+: > "$ROOT/restart-calls"
+if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
+  FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
+  FLYWHEEL_DIR="$ROOT/repo" FLYWHEEL_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
+  FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
+  TEST_ON_DEMAND_CONTRACT=0 \
+  bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 \
+  && grep -qx 'gate voice' "$ROOT/restart-calls" \
+  && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls"; then
+  pass "mixed migration retains the legacy restart-storm brake"
+else
+  fail "mixed migration storm brake"
+fi
+
+mkdir -p "$ROOT/state/pids"
+/bin/sleep 60 &
+FOREIGN_PID=$!
+printf '%s\n' "$FOREIGN_PID" > "$ROOT/state/pids/voice.pid"
+: > "$ROOT/node-calls"
+if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
+  FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
+  FLYWHEEL_DIR="$ROOT/repo" FLYWHEEL_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
+  FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
+  TEST_ON_DEMAND_CONTRACT=1 \
+  bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 \
+  && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls"; then
+  pass "foreign reused PID cannot suppress a legitimate on-demand boot"
+else
+  fail "foreign PID suppressed on-demand boot"
+fi
+kill "$FOREIGN_PID" >/dev/null 2>&1 || true
+wait "$FOREIGN_PID" 2>/dev/null || true
 if [[ ! -e "$ROOT/inherited-env-read" ]]; then
   pass "wrapper ignores inherited host dotenv"
 else
@@ -239,28 +283,22 @@ PY
     }
   fi
   supervisor_restart() { printf '%s %s\n' "$1" "$2" > "$ROOT/supervisor-call"; }
-  if restart_voice_managed >/dev/null 2>&1 && grep -qx 'voice service' "$ROOT/supervisor-call"; then
-    pass "loaded voice unit restarts through supervisor"
+  voice_on_demand_contract_check() { return 0; }
+  rm -f "$ROOT/supervisor-call"
+  if restart_voice_managed >/dev/null 2>&1 \
+    && [[ "$VOICE_RESTART_STATE" == registered ]] \
+    && [[ ! -f "$ROOT/supervisor-call" ]]; then
+    pass "verified dormant registration is preserved without an idle restart"
   else
-    fail "loaded voice restart"
+    fail "loaded dormant registration"
   fi
-  for policy in '<true/>' '<false/>' '<dict><key>SuccessfulExit</key><true/></dict>' '<dict/>'; do
-    printf '<plist version="1.0"><dict><key>KeepAlive</key>%s</dict></plist>\n' "$policy" > "$ROOT/launchd/com.flywheel.voice.plist"
-    rm -f "$ROOT/supervisor-call"
-    if ! restart_voice_managed >/dev/null 2>&1 && [[ ! -f "$ROOT/supervisor-call" ]]; then
-      pass "voice rejects incompatible restart policy $policy"
-    else
-      fail "voice accepted incompatible restart policy $policy"
-    fi
-  done
-  cp "$PLIST" "$ROOT/launchd/com.flywheel.voice.plist"
-  supervisor_restart() {
-    printf '<plist version="1.0"><dict><key>KeepAlive</key><false/></dict></plist>\n' > "$ROOT/launchd/com.flywheel.voice.plist"
-  }
-  if ! restart_voice_managed >/dev/null 2>&1 && [[ "$VOICE_RESTART_DETAIL" == keepalive_contract_lost ]]; then
-    pass "voice rechecks the policy after restart"
+  voice_on_demand_contract_check() { return 1; }
+  if ! restart_voice_managed >/dev/null 2>&1 \
+    && [[ "$VOICE_RESTART_DETAIL" == on_demand_contract_mismatch ]] \
+    && [[ ! -f "$ROOT/supervisor-call" ]]; then
+    pass "voice contract drift fails closed without restarting a possibly active call"
   else
-    fail "voice failed to detect policy lost after restart"
+    fail "voice contract drift boundary"
   fi
   printf '<plist version="1.0"><dict><key>KeepAlive</key><true/></dict></plist>\n' > "$ROOT/launchd/com.flywheel.bridge.plist"
   if supervisor_assert_keepalive bridge; then pass "Bridge boolean policy preserved"; else fail "Bridge boolean policy changed"; fi

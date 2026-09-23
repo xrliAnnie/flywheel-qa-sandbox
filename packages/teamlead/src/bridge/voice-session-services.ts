@@ -13,6 +13,16 @@ import {
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
 import type { BridgeConfig } from "./types.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
+import {
+	kickstartVoiceOnDemand,
+	VoiceLaunchdWaker,
+	verifyVoiceOnDemandContract,
+} from "./voice-launchd-waker.js";
+import {
+	createVoiceScheduleRouter,
+	resolveVoicePrewarmLeadMs,
+} from "./voice-schedule-routes.js";
+import { VoiceScheduleRuntime } from "./voice-schedule-runtime.js";
 import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
 import { VoiceSessionCardProjector } from "./voice-session-card.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
@@ -42,7 +52,9 @@ export function createVoiceSessionServices(input: {
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
+	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
 	runtime: VoiceSessionRuntime;
+	scheduleRuntime: VoiceScheduleRuntime;
 	cardProjector: VoiceSessionCardProjector;
 	leadCapabilityRouter: express.Router;
 	leadCapabilityReceiptRouter: express.Router;
@@ -76,6 +88,18 @@ export function createVoiceSessionServices(input: {
 	const recordDemand = createVoiceHealthDemandRecorder({
 		helperPath: join(repoRoot, "scripts", "lib", "voice-health.py"),
 		stateRoot: env.FLYWHEEL_STATE_DIR?.trim() || join(homeDir, ".flywheel"),
+	});
+	const voiceLaunchdWaker = new VoiceLaunchdWaker({
+		verify: () =>
+			verifyVoiceOnDemandContract({
+				// The same trusted root this factory already resolved. Using the
+				// process cwd would silently fail verification for a Bridge started
+				// anywhere but FLYWHEEL_DIR, and still record an accepted wake.
+				repoRoot,
+				homeDir,
+			}),
+		wake: () => kickstartVoiceOnDemand(),
+		log: (message) => console.warn(`[voice-session] ${message}`),
 	});
 	const discordDeps = createDiscordVoiceProvisionerDeps(fetchImpl);
 	const resolve = (session: VoiceSessionRow) => {
@@ -215,6 +239,17 @@ export function createVoiceSessionServices(input: {
 			qaAllowUserIds: voiceHost.qaAllowUserIds,
 			evidenceDir: session.evidenceDir,
 			meetingId: session.meetingId,
+			// FLY-2701: only a booked meeting carries a live floor. Instant
+			// sessions keep exactly the projection they have today.
+			...(session.notBeforeLiveAt
+				? { notBeforeLiveAt: session.notBeforeLiveAt }
+				: {}),
+			...(session.presenceDeadlineAt
+				? { presenceDeadlineAt: session.presenceDeadlineAt }
+				: {}),
+			...(session.scheduleRevision != null
+				? { scheduleRevision: session.scheduleRevision }
+				: {}),
 		};
 	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
@@ -251,7 +286,25 @@ export function createVoiceSessionServices(input: {
 				fetchImpl,
 			});
 		},
+		// The waker resolves to the settled command result, so a coalesced request
+		// spends no budget and a contract fault stops the retries immediately.
+		requestWake: () => voiceLaunchdWaker.requestWake(),
+		newAttemptId: randomUUID,
 		reportPollFailure: (session) => postStatus(session, "📻 回程暂时不通"),
+	});
+	// FLY-2701: booked meetings live in the Bridge, so the calendar keeps
+	// running while no voice process exists. The prewarm lead and the founder
+	// presence window are deployment configuration, never request fields.
+	const prewarmLeadMs = resolveVoicePrewarmLeadMs(
+		input.config.voiceSessionTiming?.prewarmLeadMs,
+	);
+	const presenceGraceMs =
+		input.config.voiceSessionTiming?.presenceGraceMs ?? 600_000;
+	const scheduleRuntime = new VoiceScheduleRuntime({
+		store: input.store,
+		newSessionId: randomUUID,
+		provision,
+		log: (message) => console.warn(`[voice-schedule] ${message}`),
 	});
 	const cardProjector = new VoiceSessionCardProjector({
 		store: input.store,
@@ -284,6 +337,36 @@ export function createVoiceSessionServices(input: {
 		env: { ...env },
 	});
 	return {
+		scheduleRuntime,
+		scheduleRouter: createVoiceScheduleRouter({
+			store: input.store,
+			prewarmLeadMs,
+			presenceGraceMs,
+			newScheduleId: randomUUID,
+			resolveBinding: async ({ projectName, leadId, evidenceDir, topic }) => {
+				// Reuse the instant-start resolver so a schedule can never bind an
+				// identity, room, or evidence root the live path would refuse.
+				const reservation = await resolveStart(
+					{
+						mode: "meeting",
+						projectName,
+						leadId,
+						evidenceDir,
+						...(topic ? { topic } : {}),
+					},
+					"master",
+				);
+				return {
+					projectName: reservation.projectName,
+					leadId: reservation.leadId,
+					guildId: reservation.guildId,
+					voiceChannelId: reservation.voiceChannelId,
+					voiceBotUserId: reservation.voiceBotUserId,
+					evidenceDir: reservation.evidenceDir!,
+					...(reservation.topic ? { topic: reservation.topic } : {}),
+				};
+			},
+		}),
 		router: createVoiceSessionRouter({
 			store: input.store,
 			leaseTtlMs: timing.leaseTtlMs,

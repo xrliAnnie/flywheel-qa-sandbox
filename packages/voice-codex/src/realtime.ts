@@ -249,8 +249,13 @@ export class RealtimeFrontend {
 		this.now = options.now ?? Date.now;
 	}
 
-	async start(): Promise<void> {
+	async start(signal?: AbortSignal): Promise<void> {
 		if (this.state !== "new") throw new Error("realtime_start_state");
+		// FLY-2701 review R2: the session's start deadline, and the other start
+		// branch failing, both arrive here as an abort. Without honouring it a
+		// hung connect would sit on its own 30s timeout no matter what the
+		// caller decided.
+		if (signal?.aborted) throw new Error("realtime_start_aborted");
 		this.state = "connecting";
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const ready = new Promise<void>((resolve, reject) => {
@@ -277,7 +282,13 @@ export class RealtimeFrontend {
 				START_TIMEOUT_MS,
 			);
 			timer.unref?.();
-			await ready;
+			const onAbort = () => this.connectionFailure("realtime_start_aborted");
+			signal?.addEventListener("abort", onAbort, { once: true });
+			try {
+				await ready;
+			} finally {
+				signal?.removeEventListener("abort", onAbort);
+			}
 		} finally {
 			if (timer) clearTimeout(timer);
 			this.settleStart = undefined;

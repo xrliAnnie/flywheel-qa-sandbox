@@ -248,13 +248,26 @@ add(
 	"bridge",
 	{},
 	{
-		result: object({
-			sessionId: z.string().uuid(),
-			threadId: id.nullable(),
-			mode: z.enum(["rg", "meeting"]),
-			state: id,
-			accepted: z.literal(true),
-		}),
+		// FLY-2701: a start for a meeting that is already booked is deduplicated
+		// into that booking rather than opening a second session, so the Lead
+		// gets the booking back. Both outcomes are part of the contract.
+		result: z.union([
+			object({
+				sessionId: z.string().uuid(),
+				threadId: id.nullable(),
+				mode: z.enum(["rg", "meeting"]),
+				state: id,
+				accepted: z.literal(true),
+			}),
+			object({
+				status: z.literal("schedule_bound"),
+				scheduleId: z.string().uuid(),
+				revision: z.number().int().positive(),
+				state: id,
+				sessionId: z.string().uuid().nullable(),
+				scheduledAt: z.string().min(1),
+			}),
+		]),
 		...receipt,
 	},
 	voiceStartInput,

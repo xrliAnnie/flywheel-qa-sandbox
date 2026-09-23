@@ -4,6 +4,7 @@ set -euo pipefail
 VOICE_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$VOICE_INSTALL_DIR/lib/converge-nonlead-daemons.sh"
 source "$VOICE_INSTALL_DIR/lib/supervisor.sh"
+source "$VOICE_INSTALL_DIR/lib/voice-on-demand.sh"
 source "$VOICE_INSTALL_DIR/flywheel-config-lock.sh"
 
 launchctl() { "$VOICE_INSTALL_DIR/lib/bounded-run.sh" 5 launchctl "$@"; }
@@ -54,8 +55,8 @@ p=plistlib.load(open(sys.argv[1],'rb'))
 assert p.get('Label')=='com.flywheel.voice'
 assert p.get('ProgramArguments')==['/bin/bash',sys.argv[2]]
 assert 'Program' not in p and 'BundleProgram' not in p
-assert p.get('RunAtLoad') is True and p.get('KeepAlive')=={'SuccessfulExit':False}
-assert type(p.get('ThrottleInterval')) is int and p['ThrottleInterval']==30
+assert p.get('RunAtLoad') is False and p.get('KeepAlive') is False
+assert type(p.get('ThrottleInterval')) is int and p['ThrottleInterval']==1
 assert not p.get('EnvironmentVariables')
 PY
   source "$VOICE_INSTALL_DIR/lib/host-config.sh"
@@ -97,9 +98,8 @@ JS
     [[ -f "$target" && ! -L "$target" ]] && cmp -s "$source_plist" "$target" || { _voice_error 'installed plist conflict'; exit 1; }
   fi
   if [[ "$current" == loaded ]]; then
-    launchctl print "$domain/$label" | _voice_loaded_identity "$target" "$wrapper" running || { _voice_error 'loaded voice identity or PID unverified'; exit 1; }
-    supervisor_assert_keepalive voice on-failure || { _voice_error 'loaded keepalive mismatch'; exit 1; }
-    echo 'voice-install: already running'; exit 0
+    voice_on_demand_contract_check "$repo" "$HOME" "$domain" || { _voice_error 'loaded on-demand identity unverified'; exit 1; }
+    echo 'voice-install: already registered'; exit 0
   fi
   [[ "$mode" != --check ]] || { echo 'voice-install: preflight ready; not installed or started'; exit 0; }
   created=false
@@ -130,15 +130,9 @@ JS
   fingerprint="$(_voice_fingerprint "$target")"
   launchctl bootstrap "$domain" "$target" || { _voice_error 'bootstrap failed'; exit 1; }
   bootstrapped=true
-  supervisor_assert_keepalive voice on-failure || { _voice_error 'installed keepalive mismatch'; exit 1; }
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if launchctl print "$domain/$label" | _voice_loaded_identity "$target" "$wrapper" running; then
-      [[ "$(_voice_fingerprint "$target")" == "$fingerprint" ]] || exit 1
-      echo 'voice-install: running'; exit 0
-    fi
-    sleep 1
-  done
-  _voice_error 'wrapper refused or running PID was not observed'; exit 1
+  voice_on_demand_contract_check "$repo" "$HOME" "$domain" || { _voice_error 'registered on-demand identity unverified'; exit 1; }
+  [[ "$(_voice_fingerprint "$target")" == "$fingerprint" ]] || exit 1
+  echo 'voice-install: registered'; exit 0
 )
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

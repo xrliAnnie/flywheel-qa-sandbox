@@ -196,11 +196,10 @@ test("check is read-only and install/repeat bootstrap exactly once", () => {
 	);
 	assert.doesNotMatch(f.calls(), /bootout|kickstart|enable/);
 });
-for (const conflict of ["disabled", "different", "symlink", "refused"])
+for (const conflict of ["disabled", "different", "symlink"])
 	test(`fails safely for ${conflict}`, () => {
 		const f = fixture();
-		if (conflict === "disabled" || conflict === "refused")
-			writeFileSync(join(f.root, conflict), "1");
+		if (conflict === "disabled") writeFileSync(join(f.root, conflict), "1");
 		if (conflict === "different" || conflict === "symlink") {
 			mkdirSync(resolve(f.dest, ".."), { recursive: true });
 			if (conflict === "different") writeFileSync(f.dest, "original");
@@ -208,31 +207,30 @@ for (const conflict of ["disabled", "different", "symlink", "refused"])
 		}
 		const r = f.run();
 		assert.notEqual(r.status, 0, r.stdout + r.stderr);
-		if (conflict === "refused") {
-			assert.match(f.calls(), /bootout/);
-			assert.equal(existsSync(f.dest), false);
-		} else assert.doesNotMatch(f.calls(), /bootstrap|bootout/);
+		assert.doesNotMatch(f.calls(), /bootstrap|bootout/);
 		if (conflict === "different")
 			assert.equal(readFileSync(f.dest, "utf8"), "original");
 	});
 
-test("retains an identical preexisting plist when this bootstrap is refused", () => {
+test("accepts a registered dormant job without requiring a running PID", () => {
 	const f = fixture();
 	mkdirSync(resolve(f.dest, ".."), { recursive: true });
 	cpSync(f.source, f.dest);
+	writeFileSync(join(f.root, "loaded"), "1");
 	writeFileSync(join(f.root, "refused"), "1");
 	const r = f.run();
-	assert.notEqual(r.status, 0);
-	assert.match(f.calls(), /bootout/);
+	assert.equal(r.status, 0, r.stdout + r.stderr);
+	assert.match(r.stdout, /registered/);
+	assert.doesNotMatch(f.calls(), /bootstrap|bootout|kickstart|enable/);
 	assert.equal(readFileSync(f.dest, "utf8"), readFileSync(f.source, "utf8"));
 });
-test("rejects nested running when the top-level state is not running", () => {
+test("accepts registration identity independently of nested running state", () => {
 	const f = fixture();
 	writeFileSync(join(f.root, "nested-running"), "1");
 	const r = f.run();
-	assert.notEqual(r.status, 0, r.stdout + r.stderr);
-	assert.match(f.calls(), /bootout/);
-	assert.equal(existsSync(f.dest), false);
+	assert.equal(r.status, 0, r.stdout + r.stderr);
+	assert.doesNotMatch(f.calls(), /bootout|kickstart|enable/);
+	assert.equal(existsSync(f.dest), true);
 });
 test("does not boot out a preexisting service with unverified identity", () => {
 	const f = fixture();

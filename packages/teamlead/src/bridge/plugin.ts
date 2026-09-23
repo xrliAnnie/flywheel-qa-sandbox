@@ -1753,6 +1753,7 @@ export interface BridgeAppOptions {
 		dutyWritePath?: () => "configured" | "unconfigured";
 	};
 	voiceSessionRouter?: express.Router;
+	voiceScheduleRouter?: express.Router;
 	leadVoiceCapabilityRouter?: express.Router;
 	leadVoiceCapabilityReceiptRouter?: express.Router;
 }
@@ -5774,6 +5775,13 @@ export function createBridgeApp(
 			opts.voiceSessionRouter,
 		);
 	}
+	if (opts?.voiceScheduleRouter) {
+		app.use(
+			"/api/voice/schedules",
+			voiceSessionAuthMiddleware(config.apiToken, config.ingestToken),
+			opts.voiceScheduleRouter,
+		);
+	}
 	if (opts?.leadVoiceCapabilityRouter && config.apiToken) {
 		app.use(
 			"/api/lead-capabilities/voice",
@@ -9478,6 +9486,7 @@ export async function startBridge(
 			},
 			flagScanRoute: flagScanRouteHolder,
 			voiceSessionRouter: voiceSessionServices.router,
+			voiceScheduleRouter: voiceSessionServices.scheduleRouter,
 			leadVoiceCapabilityRouter: voiceSessionServices.leadCapabilityRouter,
 			leadVoiceCapabilityReceiptRouter:
 				voiceSessionServices.leadCapabilityReceiptRouter,
@@ -9492,6 +9501,7 @@ export async function startBridge(
 
 	const server = app.listen(config.port, config.host);
 	voiceSessionServices.runtime.start();
+	voiceSessionServices.scheduleRuntime.start();
 	voiceSessionServices.cardProjector.start();
 
 	await new Promise<void>((resolve, reject) => {
@@ -15236,6 +15246,7 @@ export async function startBridge(
 		await processResources.stop();
 		await betaReleaseRuntime.stop();
 		voiceSessionServices.runtime.stop();
+		voiceSessionServices.scheduleRuntime.stop();
 		voiceSessionServices.cardProjector.stop();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that

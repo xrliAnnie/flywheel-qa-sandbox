@@ -162,7 +162,8 @@ Commands:
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
-  voice-session  Start, stop, or inspect a generic Codex realtime voice session
+  voice-session  Start, stop, inspect, or schedule a generic Codex realtime voice session
+                 (start|stop|status|schedule-status|reschedule|cancel-schedule)
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB

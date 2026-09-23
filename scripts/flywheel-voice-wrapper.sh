@@ -133,32 +133,34 @@ if [[ "$HOST_TMUX_GATE_RC" -ne 0 ]]; then
   exit 0
 fi
 
-if [[ -f "$PID_FILE" ]]; then
-  EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [[ "$EXISTING_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    log "voice already running (PID ${EXISTING_PID}); exit 0."
-    exit 0
+RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${FLYWHEEL_DIR}/scripts/restart-storm-gate.py}"
+ON_DEMAND_CONTRACT=false
+if [[ -f "$SELF_DIR/lib/voice-on-demand.sh" ]]; then
+  # shellcheck source=lib/voice-on-demand.sh
+  source "$SELF_DIR/lib/voice-on-demand.sh"
+  if voice_on_demand_contract_check "$FLYWHEEL_DIR" "$HOME" "gui/$(id -u)"; then
+    ON_DEMAND_CONTRACT=true
   fi
 fi
-
-RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${FLYWHEEL_DIR}/scripts/restart-storm-gate.py}"
-RESTART_STORM_RC=0
-"$RESTART_STORM_GATE_BIN" gate voice || RESTART_STORM_RC=$?
-if [[ "$RESTART_STORM_RC" -ne 0 ]]; then
-  record_startup_spool startup_not_ready
-  if [[ "$RESTART_STORM_RC" -eq 126 || "$RESTART_STORM_RC" -eq 127 ]]; then
-    "${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh" \
-      "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
-      "${FLYWHEEL_META_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/meta-alert.sh}" \
-      restart_storm_gate_unavailable_voice \
-      "Voice restart brake unavailable" \
-      "restart-storm-gate.py is unavailable (exit ${RESTART_STORM_RC}); voice will not launch until it is restored." \
-      >/dev/null 2>&1 || true
-    log "Restart brake unavailable (exit ${RESTART_STORM_RC}); refusing to launch voice."
-  else
-    log "Restart-storm gate held or refused voice startup."
+if [[ "$ON_DEMAND_CONTRACT" != true ]]; then
+  RESTART_STORM_RC=0
+  "$RESTART_STORM_GATE_BIN" gate voice || RESTART_STORM_RC=$?
+  if [[ "$RESTART_STORM_RC" -ne 0 ]]; then
+    record_startup_spool startup_not_ready
+    if [[ "$RESTART_STORM_RC" -eq 126 || "$RESTART_STORM_RC" -eq 127 ]]; then
+      "${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh" \
+        "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
+        "${FLYWHEEL_META_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/meta-alert.sh}" \
+        restart_storm_gate_unavailable_voice \
+        "Voice restart brake unavailable" \
+        "restart-storm-gate.py is unavailable (exit ${RESTART_STORM_RC}); voice will not launch until it is restored." \
+        >/dev/null 2>&1 || true
+      log "Restart brake unavailable (exit ${RESTART_STORM_RC}); refusing to launch voice."
+    else
+      log "Restart-storm gate held or refused voice startup."
+    fi
+    exit 0
   fi
-  exit 0
 fi
 
 cd "$FLYWHEEL_DIR"

@@ -8,12 +8,9 @@
         <string>/bin/bash</string>
         <string>/Users/xiaorongli/Dev/flywheel/scripts/flywheel-voice-wrapper.sh</string>
     </array>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key><false/>
-    </dict>
-    <key>ThrottleInterval</key><integer>30</integer>
-    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><false/>
+    <key>ThrottleInterval</key><integer>1</integer>
+    <key>RunAtLoad</key><false/>
     <key>StandardOutPath</key><string>/tmp/flywheel-voice.log</string>
     <key>StandardErrorPath</key><string>/tmp/flywheel-voice.log</string>
 </dict>
