@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CI 迁 Ubicloud 之后，钱花得对不对 — FLY-2791</title>
+<style>
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 80px}
+header{margin-bottom:28px}
+h1{font-size:30px;line-height:1.25;margin:0 0 10px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:14px}
+.sub code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px}
+.answer{background:var(--navy);color:#fff;border-radius:14px;padding:22px 24px;margin:22px 0 34px}
+.answer .lab{font-size:12px;letter-spacing:1.4px;text-transform:uppercase;opacity:.65;margin-bottom:8px}
+.answer p{margin:0;font-size:17px;line-height:1.7}
+.section{margin:0 0 30px}
+.section-title{font-size:20px;font-weight:650;margin:0 0 14px;letter-spacing:-.2px;display:flex;align-items:center;gap:9px}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.card{background:var(--card);border-radius:12px;padding:20px 22px;margin-bottom:14px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)} .card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)} .card.gray{border-left-color:#c7c7cc}
+.card h3{margin:0 0 9px;font-size:16px;font-weight:650}
+.card p{margin:0 0 10px} .card p:last-child{margin-bottom:0}
+.card ul{margin:8px 0 0;padding-left:20px} .card li{margin:5px 0}
+.badge{display:inline-block;font-size:11px;font-weight:650;padding:2px 9px;border-radius:20px;
+  vertical-align:middle;margin-left:7px;letter-spacing:.3px}
+.b-red{background:#ffe5e3;color:#c4241b} .b-amber{background:#fff0dc;color:#9a5a00}
+.b-green{background:#ddf6e3;color:#1d7f36} .b-blue{background:#e1efff;color:#0059c1}
+.b-gray{background:#ececf0;color:#5b5b60} .b-purple{background:#f3e6fb;color:#7a30a8}
+table{width:100%;border-collapse:collapse;margin:10px 0 0;font-size:14.5px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12.5px;color:var(--dim);font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+tr:last-child td{border-bottom:none}
+.tag{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;background:#f0f0f4;
+  padding:1px 6px;border-radius:5px;color:#3a3a3e}
+.note{font-size:14px;color:var(--dim);margin-top:10px}
+.cmt{margin-top:14px;padding-top:14px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:6px}
+textarea{width:100%;min-height:62px;resize:vertical;border:1px solid var(--line);border-radius:9px;
+  padding:10px 12px;font:inherit;font-size:14.5px;background:#fbfbfd;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.sumbox{background:var(--card);border-radius:12px;padding:22px 24px;margin-top:34px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--purple)}
+.sumbox h2{margin:0 0 6px;font-size:19px}
+.sumbox .hint{color:var(--dim);font-size:14px;margin:0 0 14px}
+#sumPreview{white-space:pre-wrap;background:#fbfbfd;border:1px solid var(--line);border-radius:9px;
+  padding:12px 14px;font-size:13.5px;min-height:56px;max-height:300px;overflow:auto;
+  font-family:"SF Mono",ui-monospace,Menlo,monospace;color:#3a3a3e}
+.btnrow{margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button{font:inherit;font-size:15px;font-weight:600;border:none;border-radius:10px;padding:11px 20px;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:hover{filter:brightness(1.06)} button:disabled{background:#c7c7cc;cursor:default;filter:none}
+#copyState{font-size:14px;color:var(--green);font-weight:600}
+footer{margin-top:36px;color:var(--dim);font-size:13px;line-height:1.7}
+@media(max-width:600px){.wrap{padding:26px 16px 60px}h1{font-size:24px}
+  table,thead,tbody,th,td,tr{display:block}th{display:none}
+  td{border-bottom:none;padding:4px 0}tr{border-bottom:1px solid var(--line);padding:10px 0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>CI 迁 Ubicloud 之后，钱花得对不对？</h1>
+  <div class="sub">FLY-2791 · 2026-09-23 · 数据来自 GitHub Actions 的真实作业记录（1,500+ 个 job 的实际起止时间）。<strong>账单本身没拿到</strong>，页面里每个金额都标了是怎么算出来的。</div>
+</header>
+
+<div class="answer">
+  <div class="lab">一句话</div>
+  <p><strong>省了，而且省了一大截。</strong>同样的 CI 活、机器跑的分钟数几乎一模一样，月成本从约 <strong>$1,400–1,600</strong> 降到 <strong>$291</strong>（便宜档）或 <strong>$468</strong>（贵档）—— 降 <strong>79%</strong> 或 <strong>67%</strong>。<br>
+  「用 Ubicloud 比以前还贵」这件事<strong>没有发生，也不会发生</strong>，除非 GitHub 把一条已经撤回的收费重新开征。<br>
+  至于「是不是跑了很多没必要的 CI」：<strong>没有重复跑的测试</strong>，但<strong>有一个已经做好、却一直没打开的省钱开关</strong>——它值每月 $114–196，是剩下唯一的大钱。</p>
+</div>
+
+<!-- 1 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--green)"></span>一、省没省，省多少</div>
+
+  <div class="card green">
+    <h3>迁移前后对比<span class="badge b-green">省 79%</span></h3>
+    <table>
+      <tr><th>时期</th><th>机器分钟/月</th><th>单价</th><th>金额/月</th></tr>
+      <tr><td><strong>迁移前</strong>（全在 GitHub 自己的机器上）</td><td>约 237,000</td><td>$0.006/分</td><td><strong>$1,405</strong></td></tr>
+      <tr><td><strong>迁移后</strong>（Ubicloud 便宜档 + 发布流程留在 GitHub）</td><td>约 235,000 + 2,100</td><td>$0.00125/分</td><td><strong>$291</strong></td></tr>
+      <tr><td><strong>迁移后</strong>（Ubicloud 贵档 —— 见下面那条要你确认的）</td><td>同上</td><td>$0.002/分</td><td><strong>$468</strong></td></tr>
+    </table>
+    <p class="note">用另一个口径交叉验证过：按 9 月 1–22 日<strong>实际发生</strong>的 1,659 次 CI 算，这 22 天是 $1,106，折全月 $1,538；8 月同法是 $1,617。两个口径都落在 $1,400–1,620，互相印证。</p>
+  </div>
+
+  <div class="card blue">
+    <h3>为什么省的是钱、不是时间</h3>
+    <p>我拿同名的 17 个 CI 作业，把它们在两家机器上跑的时间逐个比了一遍：<strong>Ubicloud 的机器其实还快约 16%</strong>（原本担心它更慢，实测不是）。但把一次完整 CI 的所有作业加起来、按计费规则向上取整之后，<strong>两边消耗的分钟数几乎完全相同：每次都是约 112 分钟</strong>。</p>
+    <p>所以这笔钱省下来的原因很干脆：<strong>同样的机器时间，单价便宜了 4.8 倍</strong>。跟跑得快不快基本无关。</p>
+  </div>
+
+  <div class="card amber">
+    <h3>有一件事只有你能确认，它值 $177/月<span class="badge b-amber">需要你看一眼</span></h3>
+    <p>Ubicloud 有个叫 <strong>Premium Runners</strong> 的开关，藏在控制台的 Settings 页。它不换标签、不换写法，<strong>只是把同一批活分到更快的机器上，然后按贵一档收费</strong>（$0.002 而不是 $0.00125 一分钟）。</p>
+    <p>我们 9 月 18 日在你的控制台实测过一次：<strong>新装完成后这个开关是「开着」的</strong>（和看源码推断的默认值相反）。但之后有没有被改过，我这边看不到。</p>
+    <p><strong>要你做的：打开 Ubicloud 控制台 → Settings → 看一眼 Premium Runners 是不是 Enabled，截个图给我。</strong>开着 = $468/月，关着 = $291/月。</p>
+    <div class="cmt"><label>这一条的回应（看完控制台写这里）</label><textarea data-sec="Premium 开关状态"></textarea></div>
+  </div>
+
+  <div class="card red">
+    <h3>你说的「本月已花 800+」，我对不上，如实告诉你<span class="badge b-red">未收口</span></h3>
+    <p>我算出来 9 月 1–22 日应该是 <strong>$1,106</strong>，和你说的 800+ 差约 28%。这个差我<strong>没有查清楚</strong>，原因是：</p>
+    <ul>
+      <li><strong>账单页我读不到。</strong>这台机器的 GitHub 令牌权限不够（缺 <span class="tag">user</span> 权限），账单接口直接返回「权限不足」。本单的边界不允许我去改令牌权限。</li>
+      <li><strong>不是被额度上限挡掉的。</strong>我把窗口内全部 903 次 CI 都查了一遍，<strong>没有一次是「余额耗尽被拒跑」</strong>，抽查的 368 次里最小的也花了 2 分钟，没有 0 分钟的。所以差额不是来自「有些活根本没跑」。</li>
+      <li>剩下的可能（都没验证，不当结论）：你的 GitHub 计划含的免费分钟可能多于 3,000；800+ 可能不是当期精确值；或者 9 月上半月的活比我抽样的那两周轻。</li>
+    </ul>
+    <p><strong>要你做的：GitHub → Settings → Billing → Actions 用量页截个图。</strong>有了它，这 28% 五分钟就能收口。</p>
+    <div class="cmt"><label>这一条的回应</label><textarea data-sec="GitHub 账单页"></textarea></div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--blue)"></span>二、是不是跑了很多没必要的 CI</div>
+
+  <div class="card green">
+    <h3>好消息：没有一条测试被重复跑<span class="badge b-green">已核实</span></h3>
+    <p>CI 里有 290 个 shell 测试套件 + 85 个 Node 套件，分散在 15 个作业里。仓库里有一道硬闸专门防重复：它把「仓库里所有测试文件」「CI 里写明要跑的」「人工标记为不在 CI 跑的」三份名单对比，<strong>重了或漏了就直接红</strong>。我实测过：<strong>一条重复都没有。</strong></p>
+    <p>所以「跑了很多重复 CI」这个猜想，在测试粒度上不成立。浪费在别的地方。</p>
+  </div>
+
+  <div class="card red">
+    <h3>真正的浪费：一个 PR 平均跑 <strong>17.5 次</strong>完整 CI<span class="badge b-red">根因</span></h3>
+    <p>我用仓库自带的成本工具跑了 9 月 20 日一整天：<strong>72 次 CI、8,677 计费分钟、68 个不同的代码版本，最后只合进去 4 个 PR</strong>。换算下来，一个 PR 从开到合，平均要跑 <strong>17.5 次</strong>完整测试矩阵。</p>
+    <p>另一面：两周内 962 次 CI 里 <strong>321 次（33%）被「有新提交了，取消旧的」打断</strong>——但每次被打断前，平均已经烧掉了约 80 分钟机器时间，相当于一次完整 CI 的六成。</p>
+    <p>这不是 CI 配置写坏了，是<strong>「一个 PR 被推了十几次中间提交，每一次都触发全套测试」</strong>。</p>
+  </div>
+
+  <div class="card amber">
+    <h3>好消息的另一半：解药早就做好了，只是没打开<span class="badge b-amber">一个变量</span></h3>
+    <p>9 月 17 日上线的 FLY-2681 已经把机制建好了：打开之后，<strong>开发过程中的普通提交只跑 5 分钟的快速检查</strong>，全套重活留给「真正要合进去的那个版本」。</p>
+    <p>但它的总开关 <span class="tag">CI_SCOPED_MODE</span> <strong>到今天还是 off</strong>（9 月 18 日设的，至今没打开）。</p>
+    <p><strong>打开它安全吗？</strong>安全。「能合进 main 的东西」受到的保护一条都没少——要合入必须拿到 <span class="tag">CI OK</span> 这个凭据，而只跑了快速检查的版本<strong>拿不到它，根本合不进去</strong>。少跑的全是那些「反正也不会拿来当合入凭据」的中间版本。代价是：开发过程中发现问题会晚一点。</p>
+    <p><strong>值多少钱：每月 $114–196</strong>（按 FLY-2681 自己做的重放，降幅 39%–67%）。回滚就是把变量改回 off，一步，不动代码。</p>
+    <div class="cmt"><label>要不要打开这个开关？（按原计划这是 Tadashi 的动作，需要先做一次 canary，开了之后 7 天复核）</label><textarea data-sec="CI_SCOPED_MODE 开关"></textarea></div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--purple)"></span>三、Ubicloud Canary 流程能不能删</div>
+
+  <div class="card purple">
+    <h3>能删。但我要先说清楚：删它省不到钱<span class="badge b-purple">清洁工作</span></h3>
+    <p><strong>它已经完全不需要了，三条证据：</strong></p>
+    <ul>
+      <li>迁移已经在 9 月 22 日做完了。它当初要回答的三个问题（Ubicloud 上跑得起来吗、容量够吗、并发作业会不会互相踩），<strong>已经被生产上两周、1,000 多个真实作业回答了</strong>——比 canary 那 2 次试跑强得多。</li>
+      <li>它<strong>全历史只跑过 2 次</strong>，都在 9 月 18 日，之后再没动过。</li>
+      <li>它的授权开关变量 <span class="tag">UBICLOUD_CANARY_AUTHORIZED</span> <strong>已经被删掉了</strong>——现在就算有人手动点它，第一步就会被拒。它已经是一具跑不起来的空壳。</li>
+    </ul>
+    <p><strong>删掉丢什么：</strong>一条「不动生产 CI、单独拿任意机器跑一轮试验」的通道。将来要评估第三家供应商时得重写。不过它在 git 历史里完整留着，随时能取回来。</p>
+    <p><strong>省多少：现金 $0/月。</strong>它已经零运行了，不产生任何费用。省的是维护：这个 32KB 的文件现在每次 CI 都要被语法校验扫一遍，任何 CI 结构改动都要同步改它。</p>
+    <p class="note">我按边界没有动它。请你说一声，我让后续的实现单去删。</p>
+    <div class="cmt"><label>删 Ubicloud Canary —— 确认？</label><textarea data-sec="删 Canary"></textarea></div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--navy)"></span>四、那些 payload 发布流程，迁不迁</div>
+
+  <div class="card blue">
+    <h3>建议：留在 GitHub<span class="badge b-blue">按你自己的口径</span></h3>
+    <p>你说过「如果这些只是一些 release 的流程，那放在 GitHub 上倒也可以」。我查了：<strong>这六个确实全都是发布/分发流程</strong>（beta 班车、过期清理、一次性激活、客户版候选、manifest 提交、客户版执行器）。三条理由支持留着不动：</p>
+    <ul>
+      <li><strong>迁过去省不到钱。</strong>六个加起来约 2,100 分钟/月，<strong>完全在 GitHub 的免费额度里</strong>（每月含 2,000–3,000 分钟）。迁过去省 $0–6/月。</li>
+      <li><strong>迁过去要付一次安全评审的代价。</strong>其中四个握着真凭据（Cloudflare 令牌、npm 发布令牌）。当初把凭据放进 CI 是一次特意做的、评审过的决定，<strong>而那次评审的前提就是「跑在 GitHub 自己的机器上」</strong>。交给第三方的虚拟机是换了信任边界，得重走一遍评审。为省 $0 去动它不划算。</li>
+      <li><strong>它们本来就不怎么跑。</strong>其中四个近 60 天一次都没跑过。</li>
+    </ul>
+    <p><strong>但有件事该做（不是清理，是体检）：</strong>正因为四个 60 天没跑过，<strong>我们没有任何证据说明它们今天还能跑通</strong>。建议单开一张单，在非生产目标上把整条发布链走一遍。防的是「真要发版那天，发现四个流程全坏了」。</p>
+    <div class="cmt"><label>payload 发布流程 —— 留在 GitHub？要不要开体检单？</label><textarea data-sec="payload 去留"></textarea></div>
+  </div>
+</div>
+
+<!-- 5 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--amber)"></span>五、完整清理清单（7 条，按建议顺序）</div>
+  <div class="card gray">
+    <table>
+      <tr><th>#</th><th>做什么</th><th>省/月</th><th>风险</th></tr>
+      <tr><td>1</td><td><strong>删 <span class="tag">ci-ubicloud-canary.yml</span></strong>（你点名的）</td><td>$0（清洁）</td><td>低</td></tr>
+      <tr><td>2</td><td><strong>打开 <span class="tag">CI_SCOPED_MODE</span></strong> —— 唯一的大钱</td><td><strong>$114–196</strong></td><td>中，回滚一步</td></tr>
+      <tr><td>3</td><td>给定时任务加「连续失败」告警</td><td>$0（防下一次）</td><td>低</td></tr>
+      <tr><td>4</td><td>发布链路体检单（另开）</td><td>$0（防发版翻车）</td><td>—</td></tr>
+      <tr><td>5</td><td>让 15 个作业共用一次构建</td><td>$13–38</td><td>中高，建议靠后</td></tr>
+      <tr><td>6</td><td>过期清理任务从每小时降到每 6 小时</td><td>$0–3</td><td>低，但要先核保留期合同</td></tr>
+      <tr><td>7</td><td>减少一个 PR 的中途推送次数（根因）</td><td>第 2 条已解决大半</td><td>另行调研</td></tr>
+    </table>
+    <p class="note"><strong>实话的另一半：</strong>能省的钱几乎全在第 2 条上，其余加起来不到 $45/月。迁 Ubicloud 这一步已经把 $1,400 打到 $291，剩下能再挤的空间本来就不大了。</p>
+  </div>
+
+  <div class="card gray">
+    <h3>两件「看着浪费、其实不花钱」的事，别去动</h3>
+    <ul>
+      <li><strong>每条评论都会触发一次 ship 流程</strong>：两周 501 次，其中 345 次（69%）在第一步就被跳过。<strong>被跳过的作业不占机器、不计费。</strong>GitHub 不支持按评论内容提前过滤，这已经是最省的写法。真正的 ship 每次只花 0.6 分钟。</li>
+      <li><strong>纯文档 PR 也会跑一遍快速检查</strong>：约 4 分钟。但那个检查里有一批专门校验文档和目录结构的脚本，纯文档 PR 恰恰需要它们。整条文档 CI 才 6 分钟，占全月不到 0.1%。不值得为它加复杂度。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 6 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--red)"></span>六、这份报告的边界（哪些是实测，哪些不是）</div>
+  <div class="card red">
+    <table>
+      <tr><th>项</th><th>状态</th></tr>
+      <tr><td>每个作业跑了多久、跑在哪家机器上</td><td><span class="badge b-green">实测</span> GitHub Actions 接口，1,500+ 个作业的真实起止时间</td></tr>
+      <tr><td>两家的单价</td><td><span class="badge b-green">公开挂牌价</span> 2026-09-23 查</td></tr>
+      <tr><td>所有 <strong>$</strong> 金额</td><td><span class="badge b-amber">折算</span> 真实分钟 × 挂牌价，<strong>不是账单</strong></td></tr>
+      <tr><td>GitHub 账单</td><td><span class="badge b-red">未取得</span> 令牌权限不足</td></tr>
+      <tr><td>Ubicloud 账单</td><td><span class="badge b-red">未取得</span> 只在控制台，无接口</td></tr>
+      <tr><td>Premium 开关现在是开是关</td><td><span class="badge b-red">未取得</span> 只有你能看</td></tr>
+      <tr><td>Ubicloud 是否也按分钟向上取整</td><td><span class="badge b-amber">官方没写</span> 我按「向上取整」算（偏贵）；若按秒计费，实际还要再低约 8%</td></tr>
+    </table>
+    <p class="note"><strong>最大的外部风险：</strong>GitHub 曾宣布要对「用别家机器跑」的分钟收 $0.002/分的平台费，原定今年 3 月 1 日开征，宣布 48 小时后撤回，3 月 1 日当天没有开征，至今没有新日期。<strong>一旦重新开征</strong>，我们的 Ubicloud 成本会变成约 $760–940/月 —— 仍比 $1,400 便宜，但优势腰斩。这条值得让人盯着。</p>
+  </div>
+</div>
+
+<div class="sumbox">
+  <h2>你的意见汇总</h2>
+  <p class="hint">下面是你在这一页写下的全部意见。<strong>写完点「一键汇总复制」，然后贴回 issue 的对话里——我才收得到。</strong>这一页的输入框只存在你自己的浏览器里，不会自动同步给我。</p>
+  <div id="sumPreview">（还没有填写任何意见）</div>
+  <div class="btnrow">
+    <button id="copyBtn" disabled>一键汇总复制</button>
+    <span id="copyState"></span>
+  </div>
+</div>
+
+<footer>
+  完整调研笔记（含全部取证命令、复现方法与边界）：<span class="tag">engineering/doc/FLY-2791-ci-cost-review/research.md</span><br>
+  清理清单（每条写明「删掉丢什么保护、为什么可以不要」）：<span class="tag">engineering/doc/FLY-2791-ci-cost-review/cleanup-checklist.md</span><br>
+  数据窗口：GitHub 时期 2026-09-08 → 09-22，Ubicloud 时期 2026-09-22 → 09-23（只有 24 小时）。本单没有改任何 workflow、变量或账单设置，也没有触发任何 workflow。
+</footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var KEY = "fly2791-comments-v1";
+  var MARK = "【页面意见汇总】FLY-2791";
+  var LIMIT = 1800;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-sec]"));
+  var preview = document.getElementById("sumPreview");
+  var btn = document.getElementById("copyBtn");
+  var state = document.getElementById("copyState");
+
+  function load(){
+    try{
+      var raw = window.localStorage.getItem(KEY);
+      if(!raw) return {};
+      var o = JSON.parse(raw);
+      return (o && typeof o === "object") ? o : {};
+    }catch(e){ return {}; }
+  }
+  function save(o){
+    try{ window.localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){}
+  }
+
+  var saved = load();
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-sec");
+    if(typeof saved[k] === "string") t.value = saved[k];
+  });
+
+  function collect(){
+    var out = [];
+    areas.forEach(function(t){
+      var v = (t.value || "").trim();
+      if(v) out.push({ sec: t.getAttribute("data-sec") || "未命名", text: v });
+    });
+    return out;
+  }
+
+  function body(items){
+    return items.map(function(it){
+      return "【" + it.sec + "】\n" + it.text;
+    }).join("\n\n");
+  }
+
+  // Split into chunks; every chunk repeats the marker on its own first line.
+  function chunks(items){
+    var head = MARK + "\n";
+    // Reserve room for the "(i/n)\n" line that multi-chunk output prepends.
+    var budget = LIMIT - head.length - 10;
+    var res = [];
+    var cur = "";
+    items.forEach(function(it){
+      var piece = "【" + it.sec + "】\n" + it.text;
+      var pieces = [piece];
+      // A single oversized section is hard-split on character count.
+      while(pieces.length && pieces[pieces.length-1].length > budget){
+        var last = pieces.pop();
+        var room = budget;
+        if(room < 40) room = 40;
+        pieces.push(last.slice(0, room));
+        pieces.push(last.slice(room));
+        if(pieces.length > 200) break;
+      }
+      pieces.forEach(function(p){
+        if(!p) return;
+        var next = cur ? (cur + "\n\n" + p) : p;
+        if(next.length > budget && cur){ res.push(cur); cur = p; }
+        else { cur = next; }
+      });
+    });
+    if(cur) res.push(cur);
+    if(!res.length) return [];
+    if(res.length === 1) return [head + res[0]];
+    return res.map(function(c, i){
+      return head + "(" + (i+1) + "/" + res.length + ")\n" + c;
+    });
+  }
+
+  function render(){
+    var items = collect();
+    if(!items.length){
+      preview.textContent = "（还没有填写任何意见）";
+      btn.disabled = true;
+      return;
+    }
+    preview.textContent = MARK + "\n" + body(items);
+    btn.disabled = false;
+  }
+
+  areas.forEach(function(t){
+    t.addEventListener("input", function(){
+      saved[t.getAttribute("data-sec")] = t.value;
+      save(saved);
+      state.textContent = "";
+      render();
+    });
+  });
+
+  function fallbackCopy(text){
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try{ ok = document.execCommand("copy"); }catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  var pending = [];
+  function copyNext(){
+    if(!pending.length) return;
+    var text = pending.shift();
+    var done = function(ok){
+      if(!ok){ state.textContent = "复制失败，请手动选中上面的文字复制"; return; }
+      if(pending.length){
+        state.textContent = "已复制第 " + (total - pending.length) + " 段，共 " + total + " 段 — 贴出去后再点一次按钮拿下一段";
+        btn.textContent = "复制下一段（还剩 " + pending.length + " 段）";
+      } else {
+        state.textContent = total > 1 ? "全部 " + total + " 段已复制完" : "已复制 — 贴回 issue 对话里";
+        btn.textContent = "一键汇总复制";
+      }
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  var total = 0;
+  btn.addEventListener("click", function(){
+    if(!pending.length){
+      pending = chunks(collect());
+      total = pending.length;
+      if(!total){ state.textContent = "还没有意见可复制"; return; }
+    }
+    copyNext();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
