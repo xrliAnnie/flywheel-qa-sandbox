@@ -40,6 +40,12 @@ export type OpenAiLiveClientEvent =
 			delegation_id: string | null;
 			content: string;
 	  }
+	| {
+			type: "session.thinking.append";
+			event_id: string;
+			delegation_id: null;
+			content: string;
+	  }
 	| { type: "session.close"; event_id: string };
 
 export type OpenAiLiveServerEvent =
@@ -153,6 +159,18 @@ export function buildCommentaryAppend(
 		event_id: string(eventId, "eventId"),
 		delegation_id:
 			delegationId === null ? null : string(delegationId, "delegationId"),
+		content: string(content, "content"),
+	};
+}
+
+export function buildThinkingAppend(
+	content: string,
+	eventId: string,
+): OpenAiLiveClientEvent {
+	return {
+		type: "session.thinking.append",
+		event_id: string(eventId, "eventId"),
+		delegation_id: null,
 		content: string(content, "content"),
 	};
 }

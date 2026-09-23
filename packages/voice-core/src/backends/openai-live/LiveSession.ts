@@ -4,9 +4,11 @@ import { VoiceError } from "../../types.js";
 import type { GenerationFence } from "./generationFence.js";
 import {
 	assertStartedMatchesConfig,
+	buildCommentaryAppend,
 	buildInputAudioAppend,
 	buildSessionClose,
 	buildSessionStart,
+	buildThinkingAppend,
 	type OpenAiLiveClientEvent,
 	type OpenAiLiveServerEvent,
 	type OpenAiLiveSessionConfig,
@@ -122,6 +124,20 @@ export class LiveSession {
 		}
 		this.opts.socket.send(
 			buildInputAudioAppend(chunk, this.opts.nextEventId()),
+		);
+	}
+
+	appendCommentary(content: string, delegationId: string | null): void {
+		this.assertActive();
+		this.opts.socket.send(
+			buildCommentaryAppend(content, delegationId, this.opts.nextEventId()),
+		);
+	}
+
+	appendThinking(content: string): void {
+		this.assertActive();
+		this.opts.socket.send(
+			buildThinkingAppend(content, this.opts.nextEventId()),
 		);
 	}
 
@@ -248,6 +264,16 @@ export class LiveSession {
 
 	private emitError(error: unknown): void {
 		this.emitter.emit("error", this.asVoiceError(error));
+	}
+
+	private assertActive(): void {
+		this.opts.fence.assertCurrent(this.opts.generation);
+		if (this.state !== "active") {
+			throw new VoiceError(
+				"backend-protocol",
+				`openai-live: session is not active (${this.state})`,
+			);
+		}
 	}
 
 	private failOpening(error: unknown): void {

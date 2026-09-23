@@ -182,6 +182,36 @@ describe("LiveSession", () => {
 		});
 	});
 
+	it("sends commentary and silent context only while the generation is current", async () => {
+		const { session, socket } = makeSession();
+		const opening = session.start();
+		started(socket);
+		await opening;
+		session.appendCommentary("Lead 原文", "dlg-1");
+		session.appendThinking("silent meeting context");
+		expect(socket.sent.slice(1)).toEqual([
+			{
+				type: "session.commentary.append",
+				event_id: "client-2",
+				delegation_id: "dlg-1",
+				content: "Lead 原文",
+			},
+			{
+				type: "session.thinking.append",
+				event_id: "client-3",
+				delegation_id: null,
+				content: "silent meeting context",
+			},
+		]);
+
+		const retiring = session.retire({ deadlineMs: 100 });
+		expect(() => session.appendCommentary("late", "dlg-1")).toThrow(
+			/generation 1 is fenced/,
+		);
+		socket.receive({ type: "session.closed" });
+		await retiring;
+	});
+
 	it("fences every late effect as soon as retirement starts", async () => {
 		const { session, socket, fence } = makeSession();
 		const audio = vi.fn();

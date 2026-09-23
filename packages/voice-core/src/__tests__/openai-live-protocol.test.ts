@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
 	assertStartedMatchesConfig,
+	buildCommentaryAppend,
 	buildInputAudioAppend,
 	buildSessionStart,
+	buildThinkingAppend,
 	type OpenAiLiveSessionConfig,
 	parseLiveServerEvent,
 } from "../backends/openai-live/liveProtocol.js";
@@ -39,6 +41,21 @@ describe("OpenAI Live wire protocol", () => {
 			type: "session.input_audio.append",
 			event_id: "evt-2",
 			audio: "AAECAw==",
+		});
+	});
+
+	it("keeps commentary and silent context on distinct protocol events", () => {
+		expect(buildCommentaryAppend("Lead 原文", "dlg-1", "evt-3")).toEqual({
+			type: "session.commentary.append",
+			event_id: "evt-3",
+			delegation_id: "dlg-1",
+			content: "Lead 原文",
+		});
+		expect(buildThinkingAppend("silent meeting context", "evt-4")).toEqual({
+			type: "session.thinking.append",
+			event_id: "evt-4",
+			delegation_id: null,
+			content: "silent meeting context",
 		});
 	});
 
