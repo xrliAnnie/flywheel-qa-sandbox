@@ -63,6 +63,7 @@ interface CodexTransportLike {
 		generation: number,
 	): Promise<void>;
 	cancel(): Promise<void>;
+	invalidateInputOwnership?(): void;
 }
 
 interface CodexConversationLike {
@@ -144,6 +145,7 @@ class CodexVoiceSession implements ConversationSession {
 		owner: CodexRealtimeInputOwner;
 	}> = [];
 	private restartAudioBytes = 0;
+	private restartInputGap = false;
 	private durabilityTail: Promise<void> = Promise.resolve();
 	private sequence = 0;
 	private generation: number;
@@ -269,6 +271,7 @@ class CodexVoiceSession implements ConversationSession {
 				this.restarting = false;
 				this.restartAudio.length = 0;
 				this.restartAudioBytes = 0;
+				this.restartInputGap = false;
 				this.transportError(
 					error instanceof Error ? error : new Error(String(error)),
 				);
@@ -527,6 +530,7 @@ class CodexVoiceSession implements ConversationSession {
 			this.restartAudioBytes + frame.length >
 			CODEX_REALTIME_INPUT_QUEUE_BYTES
 		) {
+			this.restartInputGap = true;
 			this.options.onEvidence?.({
 				kind: "codex_input_gap",
 				reason: "restart_backpressure",
@@ -541,6 +545,10 @@ class CodexVoiceSession implements ConversationSession {
 	private flushRestartAudio(): void {
 		const queued = this.restartAudio.splice(0);
 		this.restartAudioBytes = 0;
+		if (this.restartInputGap) {
+			this.options.conversation.transport.invalidateInputOwnership?.();
+			this.restartInputGap = false;
+		}
 		for (const { frame, owner } of queued) {
 			this.observeAppendOutcome(
 				this.options.conversation.transport.appendAudio(

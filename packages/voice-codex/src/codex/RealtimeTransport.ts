@@ -295,6 +295,10 @@ export class CodexRealtimeTransport {
 			: "sent";
 	}
 
+	invalidateInputOwnership(): void {
+		this.inputOwnership.valid = false;
+	}
+
 	async appendText(
 		text: string,
 		role: "developer" | "user",

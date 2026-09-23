@@ -331,6 +331,90 @@ describe("Codex room composition", () => {
 		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
 	});
 
+	it("invalidates attribution when restart buffering drops founder audio", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		let finishRestart!: (generation: number) => void;
+		const restartPending = new Promise<number>((resolve) => {
+			finishRestart = resolve;
+		});
+		const secondTransport = {
+			appendAudio: vi.fn(() => "sent" as const),
+			appendSpeech: vi.fn(async () => undefined),
+			appendText: vi.fn(async () => undefined),
+			cancel: vi.fn(async () => undefined),
+			invalidateInputOwnership: vi.fn(),
+		};
+		let transport = {
+			appendAudio: vi.fn(() => "sent" as const),
+			appendSpeech: vi.fn(async () => undefined),
+			appendText: vi.fn(async () => undefined),
+			cancel: vi.fn(async () => undefined),
+			invalidateInputOwnership: vi.fn(),
+		};
+		const evidence = vi.fn();
+		const conversation = {
+			generation: 1,
+			get transport() {
+				return transport;
+			},
+			restart: vi.fn(async () => {
+				const generation = await restartPending;
+				conversation.generation = generation;
+				transport = secondTransport;
+				return generation;
+			}),
+			close: vi.fn(async () => undefined),
+		};
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-restart-gap",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return conversation;
+				}),
+			},
+			loadContext: vi.fn(),
+			onEvidence: evidence,
+		});
+		const session = await actual.createConversation({ brain });
+		const owned = session as ConversationSession & {
+			sendOwnedAudio(
+				frame: Buffer,
+				owner: {
+					utteranceId: string | null;
+					ownerUserId: string | null;
+					ownerName?: string | null;
+				},
+			): void;
+		};
+		const owner = {
+			utteranceId: "founder-overflow",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		};
+
+		session.interrupt();
+		for (let index = 0; index < 51; index += 1) {
+			owned.sendOwnedAudio(Buffer.alloc(960), owner);
+		}
+		expect(evidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "codex_input_gap",
+				reason: "restart_backpressure",
+			}),
+		);
+
+		finishRestart(2);
+		await vi.waitFor(() =>
+			expect(secondTransport.appendAudio).toHaveBeenCalled(),
+		);
+		expect(secondTransport.invalidateInputOwnership).toHaveBeenCalledOnce();
+		expect(
+			secondTransport.invalidateInputOwnership.mock.invocationCallOrder[0],
+		).toBeLessThan(secondTransport.appendAudio.mock.invocationCallOrder[0]!);
+	});
+
 	it("turns a continuously owned user item into known attribution", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		const actual = new CodexVoiceBackend({
