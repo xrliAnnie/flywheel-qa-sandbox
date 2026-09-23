@@ -378,7 +378,11 @@ describe("Codex room composition", () => {
 		});
 		const conversation = await actual.createConversation({ brain });
 		const errors: Error[] = [];
+		let responseDone = 0;
 		conversation.on("error", (error) => errors.push(error));
+		conversation.on("response-done", () => {
+			responseDone += 1;
+		});
 		const completed: string[] = [];
 		const emitSentence = (itemId: string, sample: number) => {
 			callbacks.onItem({
@@ -426,12 +430,14 @@ describe("Codex room composition", () => {
 		await playbacks[0];
 		expect(completed).toEqual(["assistant-first"]);
 		expect(errors).toEqual([]);
+		expect(responseDone).toBe(0);
 		expect(renderedFrames.map((frame) => frame.readInt16LE(0))).toEqual([111]);
 
 		tick();
 		await expect(playbacks[1]).resolves.toBeUndefined();
 		expect(completed).toEqual(["assistant-first", "assistant-second"]);
 		expect(errors).toEqual([]);
+		expect(responseDone).toBe(1);
 		expect(renderedFrames.map((frame) => frame.readInt16LE(0))).toEqual([
 			111, 222,
 		]);
@@ -566,10 +572,10 @@ describe("Codex room composition", () => {
 		callbacks.onAudio({
 			generation: 1,
 			itemId: "assistant-before-barge-in",
-			pcm24Mono: Buffer.alloc(4_800, 1),
+			pcm24Mono: Buffer.alloc(960, 1),
 			sampleRate: 24_000,
 			numChannels: 1,
-			samplesPerChannel: 2_400,
+			samplesPerChannel: 480,
 			raw: {},
 		} as never);
 		callbacks.onTranscript({
@@ -590,10 +596,10 @@ describe("Codex room composition", () => {
 		callbacks.onAudio({
 			generation: 1,
 			itemId: "assistant-queued-before-barge-in",
-			pcm24Mono: Buffer.alloc(960, 3),
+			pcm24Mono: Buffer.alloc(4_800, 3),
 			sampleRate: 24_000,
 			numChannels: 1,
-			samplesPerChannel: 480,
+			samplesPerChannel: 2_400,
 			raw: {},
 		} as never);
 		callbacks.onTranscript({
@@ -605,12 +611,39 @@ describe("Codex room composition", () => {
 			final: true,
 			raw: {},
 		} as never);
-		await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+		callbacks.onItem({
+			generation: 1,
+			itemId: "assistant-third-before-barge-in",
+			role: "assistant",
+			raw: {},
+		} as never);
+		callbacks.onAudio({
+			generation: 1,
+			itemId: "assistant-third-before-barge-in",
+			pcm24Mono: Buffer.alloc(960, 4),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 480,
+			raw: {},
+		} as never);
+		callbacks.onTranscript({
+			generation: 1,
+			itemId: "assistant-third-before-barge-in",
+			association: "preceding_item",
+			role: "assistant",
+			text: "排队的第三句也必须停。",
+			final: true,
+			raw: {},
+		} as never);
+		await vi.waitFor(() => expect(playbacks).toHaveLength(3));
 		tick();
 		expect(renderedFrames).toHaveLength(1);
+		await expect(playbacks[0]).resolves.toBeUndefined();
+		tick();
+		expect(renderedFrames).toHaveLength(2);
 
 		const cancellationReasons: string[] = [];
-		playbacks.slice(0, 2).forEach((playback) => {
+		playbacks.slice(1, 3).forEach((playback) => {
 			void playback.catch((error: Error) => {
 				cancellationReasons.push(error.message);
 			});
@@ -667,9 +700,9 @@ describe("Codex room composition", () => {
 			final: true,
 			raw: {},
 		} as never);
-		await vi.waitFor(() => expect(playbacks).toHaveLength(3));
+		await vi.waitFor(() => expect(playbacks).toHaveLength(4));
 		tick();
-		await expect(playbacks[2]).resolves.toBeUndefined();
+		await expect(playbacks[3]).resolves.toBeUndefined();
 		await Promise.resolve();
 		expect(ended).toBeUndefined();
 		await session.stop({ kind: "ended", reason: "test-complete" });

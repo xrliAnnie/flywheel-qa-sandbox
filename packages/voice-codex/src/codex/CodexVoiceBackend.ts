@@ -148,6 +148,7 @@ class CodexVoiceSession implements ConversationSession {
 	private restartInputGap = false;
 	private durabilityTail: Promise<void> = Promise.resolve();
 	private sequence = 0;
+	private pendingPlaybackCount = 0;
 	private generation: number;
 	private live = true;
 	private restarting = false;
@@ -503,6 +504,8 @@ class CodexVoiceSession implements ConversationSession {
 			});
 			return;
 		}
+		this.pendingPlaybackCount += 1;
+		let completed = false;
 		try {
 			await this.options.playAudio({
 				itemId,
@@ -510,13 +513,24 @@ class CodexVoiceSession implements ConversationSession {
 				generation,
 			});
 			this.speaker.observePlaybackSubmitted({ generation, itemId });
-			this.events.emit("response-done");
+			completed = true;
 		} catch (error) {
 			if (this.closing || this.restarting || generation !== this.generation)
 				return;
 			this.transportError(
 				error instanceof Error ? error : new Error(String(error)),
 			);
+		} finally {
+			this.pendingPlaybackCount -= 1;
+			if (
+				completed &&
+				this.pendingPlaybackCount === 0 &&
+				!this.closing &&
+				!this.restarting &&
+				generation === this.generation
+			) {
+				this.events.emit("response-done");
+			}
 		}
 	}
 
