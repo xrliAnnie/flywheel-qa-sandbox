@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>节点做完就退 · FLY-2782</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.65;
+-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 16px 72px}
+header{margin-bottom:28px}
+h1{font-size:32px;line-height:1.25;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px}
+.card{background:var(--card);border-radius:12px;padding:22px 24px;margin:0 0 18px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+h2{font-size:20px;margin:0 0 12px;letter-spacing:-.01em}
+h2 .tag{font-size:12px;font-weight:600;color:#fff;background:var(--navy);
+border-radius:6px;padding:2px 8px;margin-right:8px;vertical-align:2px;letter-spacing:0}
+p{margin:0 0 12px}
+ul{margin:0 0 12px;padding-left:22px}
+li{margin-bottom:6px}
+.lead{font-size:17px}
+strong{font-weight:650}
+.big{font-size:15px;color:var(--dim);margin-top:-4px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:15px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:600;font-size:13px;letter-spacing:.02em}
+td.num{font-family:"SF Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.hi{background:#fff8e6}
+.pill{display:inline-block;font-size:13px;font-weight:600;border-radius:6px;padding:2px 9px}
+.pill.y{background:#e8f8ec;color:#1d7a33}
+.pill.n{background:#ffeceb;color:#c22a20}
+.ask{background:#f0f6ff;border-radius:10px;padding:14px 16px;margin:12px 0}
+.ask b{color:var(--navy)}
+.note{font-size:14px;color:var(--dim)}
+.cbox{margin-top:16px;padding-top:14px;border-top:1px dashed var(--line)}
+.cbox label{display:block;font-size:13px;color:var(--dim);margin-bottom:6px}
+textarea{width:100%;min-height:62px;border:1px solid var(--line);border-radius:8px;
+padding:10px 12px;font-family:inherit;font-size:14px;line-height:1.6;resize:vertical;
+background:#fcfcfd;color:var(--ink)}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+#sum{background:var(--card);border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+border-left:4px solid var(--green);margin-top:34px}
+#sumbody{font-size:14px;white-space:pre-wrap;background:#fafafa;border:1px solid var(--line);
+border-radius:8px;padding:12px;max-height:340px;overflow:auto;margin:10px 0}
+button{font:inherit;font-weight:600;font-size:15px;border:0;border-radius:9px;
+padding:11px 20px;background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+button.alt{background:#e9e9ed;color:var(--ink)}
+#status{font-size:14px;margin-left:10px;color:var(--dim)}
+#status.bad{color:var(--red)}
+#fallback{display:none;width:100%;min-height:120px;margin-top:10px}
+.chunks button{margin:6px 6px 0 0;font-size:14px;padding:8px 14px}
+@media (max-width:600px){h1{font-size:26px}.wrap{padding:26px 16px 56px}
+.card{padding:18px 16px}table{font-size:14px}th,td{padding:7px 6px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>节点做完就退，要用时再拉起</h1>
+  <div class="sub">FLY-2782 · 产品研究 + 原型实测 · 2026-09-22</div>
+</header>
+
+<div class="card green" data-sec="做成什么样">
+  <h2><span class="tag">一句话</span>做成什么样</h2>
+  <p class="lead"><strong>所有节点做完自己那一段就退下，不占内存；被打回、或需要再跑一轮时按需拉起，接着原来的对话往下说。</strong></p>
+  <p>设计、实现、QA 以及以后新加的节点<strong>一视同仁</strong>，Claude 和 Codex 两边表现一样。
+  按你说的，<strong>不加空转缓冲</strong>——做完就退。</p>
+  <div class="cbox"><label>这段的意见</label><textarea data-k="做成什么样"
+    placeholder="写完记得到页面最底下点一次「一键汇总复制」"></textarea></div>
+</div>
+
+<div class="card blue" data-sec="你会看到的样子">
+  <h2><span class="tag">形态</span>你和 Lead 会看到的样子</h2>
+  <ul>
+    <li><strong>退下是一个正常状态，不是「消失了」。</strong> 任何地方都能一眼分出三种：
+      在干活 · 做完了退下待命 · 出问题了。</li>
+    <li><strong>退下不等于这一单结束。</strong> 整单进度不会因为节点退下就往前跳。</li>
+    <li><strong>拉起你不用管。</strong> 你做的还是原来那件事（打回、或要求再跑一轮），
+      底下有没有进程、拉没拉起来，不需要你知道。</li>
+    <li><strong>拉起来还是原来那个。</strong> 它记得自己之前做过什么，在系统眼里也仍是同一个节点 ——
+      之前在等的、领到的东西都还认它。</li>
+    <li><strong>拉不起来会被看见。</strong> 不会静默换一个新的然后假装没事；有兜底让这单还能往下走，
+      而且兜底不会偷偷吃掉故障重试的额度。</li>
+  </ul>
+  <div class="cbox"><label>这段的意见</label><textarea data-k="你会看到的样子"
+    placeholder="哪一条不是你要的，写在这里"></textarea></div>
+</div>
+
+<div class="card amber" data-sec="实测证据">
+  <h2><span class="tag">证据</span>我们实测过，它可行</h2>
+  <table>
+    <tbody>
+      <tr><td><strong>拉得回来吗</strong></td>
+        <td>Claude 拉起 22 小时前、Codex 拉起 5 天前的死会话，都准确说出了自己做过什么、结论是什么</td></tr>
+      <tr><td><strong>要多久</strong></td>
+        <td class="num">Codex 约 <strong>11 秒</strong> · Claude 约 <strong>66 秒</strong></td></tr>
+      <tr class="hi"><td><strong>留着能省钱吗</strong></td>
+        <td><strong>不能。</strong>上下文缓存在服务器上、约一小时过期，跟本地进程活不活无关。
+        空闲超过一小时再被叫醒的，<strong>94.8%</strong> 的上下文要重新花钱读一遍 —— 而那些进程一直活着。
+        按小时算，95% 的空等都落在这一档</td></tr>
+      <tr><td><strong>能省多少</strong></td>
+        <td class="num">峰值同时空等 11 个节点 ≈ <strong>2.9 GB</strong>（这台机器 48 GB 的 6%）</td></tr>
+    </tbody>
+  </table>
+  <p class="note">这几条在 PRD 里写成了「必须满足」的硬约束（还包括：拉起必须用原来那个模型，
+  以及按 ID 拉起必须核对拉到的是不是那一个 —— 这两条我们实测时都真的踩到过）。</p>
+  <div class="cbox"><label>这段的意见</label><textarea data-k="实测证据"
+    placeholder=""></textarea></div>
+</div>
+
+<div class="card purple" data-sec="推荐">
+  <h2><span class="tag">推荐</span>按这份 PRD 交给 Tadashi</h2>
+  <div class="ask">
+    <p><b>要你批的就一条：</b></p>
+    <p class="lead" style="margin-bottom:6px"><b>按这份 PRD 交给 Tadashi 落地。</b></p>
+    <p style="margin-bottom:0">PRD 只写产品上要什么样、什么算做成了；
+    <b>代码具体怎么改、分几期，由他自己定</b>，我只附了调研时看到的位置当参考。
+    同意就点<b>通过</b>；哪里不对，写在下面的框里。</p>
+  </div>
+  <div class="cbox"><label>不同意的话，写在这里</label><textarea data-k="推荐"
+    placeholder="同意就不用写，直接点通过。&#10;&#10;如果范围不对：……（比如某类节点不该退）&#10;如果「你会看到的样子」少了什么：……&#10;如果还有别的顾虑：……"></textarea></div>
+</div>
+
+<div class="card" data-sec="还没证到的">
+  <h2><span class="tag">老实说</span>还没证到的</h2>
+  <ul>
+    <li><strong>还没在真的流水线上跑通一次「退下 → 打回 → 拉起」。</strong>
+      这单只验了命令行层面拉得回来、以及真实记录的统计，没改任何生产代码。</li>
+    <li><strong>两个待定的口子写在 PRD 里</strong>：退下之后保留多久还允许拉起（最长的一个节点空等过 55 小时）；
+      同时打回多个节点时，是一起拉还是排队。</li>
+    <li><strong>关于不加缓冲</strong>：我补查了数据 —— 真实打回里有 70% 发生在节点做完后 15 分钟内，
+      比你我印象中都频繁。但我也发现自己上一版算错了一件事：
+      <strong>拉起时命中的是同一份服务器缓存，并不会多花钱</strong>，缓冲只能省下本地那几十秒。
+      所以不加缓冲是对的，代价只是 Codex 11 秒 / Claude 66 秒。</li>
+  </ul>
+  <div class="cbox"><label>这段的意见</label><textarea data-k="还没证到的"
+    placeholder=""></textarea></div>
+</div>
+
+<div id="sum">
+  <h2>你的意见汇总</h2>
+  <p class="note">写完点下面的按钮复制，然后贴回这张单的 Discord thread 里 —— <strong>不贴我就收不到</strong>。
+  这个页面不会自动同步你写的东西。</p>
+  <div id="sumbody">（还没写任何意见）</div>
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="alt">清空</button>
+  <span id="status"></span>
+  <div class="chunks" id="chunks"></div>
+  <textarea id="fallback" aria-label="复制用文本"></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = "fly2782-founder-notes:";
+  var MARK = "【页面意见汇总】FLY-2782";
+  var LIMIT = 1800;
+  var areas = [].slice.call(document.querySelectorAll("textarea[data-k]"));
+  var sumbody = document.getElementById("sumbody");
+  var status = document.getElementById("status");
+  var fallback = document.getElementById("fallback");
+  var chunksBox = document.getElementById("chunks");
+
+  function read(k){ try { return localStorage.getItem(KEY+k) || ""; } catch(e){ return ""; } }
+  function write(k,v){ try { localStorage.setItem(KEY+k, v); } catch(e){} }
+
+  function sectionTitle(el){
+    var card = el.closest("[data-sec]");
+    if(!card) return el.getAttribute("data-k");
+    var h = card.querySelector("h2");
+    if(!h) return card.getAttribute("data-sec");
+    var clone = h.cloneNode(true);
+    var tag = clone.querySelector(".tag");
+    if(tag) tag.remove();
+    return (clone.textContent || "").trim();
+  }
+
+  function collect(){
+    var out = [];
+    areas.forEach(function(a){
+      var v = (a.value || "").trim();
+      if(v) out.push({ title: sectionTitle(a), text: v });
+    });
+    return out;
+  }
+
+  function buildText(){
+    var items = collect();
+    if(!items.length) return "";
+    var lines = [MARK];
+    items.forEach(function(it){
+      lines.push("");
+      lines.push("【" + it.title + "】");
+      lines.push(it.text);
+    });
+    return lines.join("\n");
+  }
+
+  function splitChunks(text){
+    if(text.length <= LIMIT) return [text];
+    var body = text.slice(MARK.length);
+    var parts = [];
+    var budget = LIMIT - MARK.length - 12;
+    var rest = body;
+    while(rest.length){
+      var take = rest.slice(0, budget);
+      if(rest.length > budget){
+        var cut = take.lastIndexOf("\n");
+        if(cut > budget * 0.4) take = rest.slice(0, cut);
+      }
+      parts.push(take);
+      rest = rest.slice(take.length);
+    }
+    return parts.map(function(p,i){
+      var head = MARK + " (" + (i+1) + "/" + parts.length + ")";
+      return p.charAt(0) === "\n" ? head + p : head + "\n" + p;
+    });
+  }
+
+  function render(){
+    var text = buildText();
+    sumbody.textContent = text || "（还没写任何意见）";
+    chunksBox.innerHTML = "";
+    if(text){
+      var parts = splitChunks(text);
+      if(parts.length > 1){
+        var tip = document.createElement("div");
+        tip.className = "note";
+        tip.textContent = "内容较长，已拆成 " + parts.length + " 段，请逐段复制粘贴：";
+        chunksBox.appendChild(tip);
+        parts.forEach(function(p,i){
+          var b = document.createElement("button");
+          b.className = "alt";
+          b.textContent = "复制第 " + (i+1) + "/" + parts.length + " 段";
+          b.addEventListener("click", function(){ doCopy(p); });
+          chunksBox.appendChild(b);
+        });
+      }
+    }
+  }
+
+  function doCopy(text){
+    if(!text){ status.className="bad"; status.textContent="还没有任何意见可以复制"; return; }
+    var done = false;
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){
+          status.className=""; status.textContent="已复制，请贴回这张单的 Discord thread";
+          fallback.style.display="none";
+        }, function(){ manual(text); });
+        return;
+      }
+    } catch(e){}
+    manual(text);
+    function manual(t){
+      fallback.value = t;
+      fallback.style.display = "block";
+      fallback.focus(); fallback.select();
+      try { done = document.execCommand("copy"); } catch(e){ done = false; }
+      if(done){ status.className=""; status.textContent="已复制，请贴回这张单的 Discord thread"; }
+      else { status.className="bad"; status.textContent="浏览器不让自动复制，下面的文字已选中，按 ⌘C 复制后贴回 thread"; }
+    }
+  }
+
+  areas.forEach(function(a){
+    var k = a.getAttribute("data-k");
+    a.value = read(k);
+    a.addEventListener("input", function(){ write(k, a.value); render(); });
+  });
+
+  document.getElementById("copy").addEventListener("click", function(){ doCopy(buildText()); });
+  document.getElementById("clear").addEventListener("click", function(){
+    areas.forEach(function(a){ a.value=""; write(a.getAttribute("data-k"), ""); });
+    status.className=""; status.textContent="已清空"; fallback.style.display="none"; render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
