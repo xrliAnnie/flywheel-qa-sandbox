@@ -1,5 +1,5 @@
 import type { ReceiveHealth } from "./receive-health.js";
-import type { AudioFormat } from "./types.js";
+import type { AudioFormat, VoiceAttribution } from "./types.js";
 
 export interface RoomAudioOwner {
 	utteranceId: string | null;
@@ -10,9 +10,7 @@ export interface RoomAudioOwner {
 /** @deprecated Legacy voice-codex name; the owner contract belongs to RoomIO. */
 export type RealtimeAudioOwner = RoomAudioOwner;
 
-export type RoomAudioAttribution =
-	| { kind: "known"; speakerUserId: string; speakerName?: string | null }
-	| { kind: "unknown"; reason: string };
+export type RoomAudioAttribution = VoiceAttribution;
 
 export interface RoomAudioFrame {
 	pcm: Buffer;

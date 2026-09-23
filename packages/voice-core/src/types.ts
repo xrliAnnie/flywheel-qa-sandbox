@@ -262,11 +262,35 @@ export interface TtsEngine {
 	): Promise<{ audio: Buffer; format: AudioFormat; ttsFirstByteMs: number }>;
 }
 
+export type VoiceAttribution =
+	| { kind: "known"; speakerUserId: string; speakerName?: string | null }
+	| { kind: "unknown"; reason: string };
+
+export interface TranscriptDurabilityReceipt {
+	version: 1;
+	durable: boolean;
+	sessionId: string;
+	transcriptId: string;
+	contentDigest: string;
+	persistedAt: string;
+}
+
 export interface TranscriptSink {
 	/** failures throw explicitly — never swallowed. */
 	append(entry: TranscriptEntry): void;
 	/** drain pending writes (async sinks); readers await this first. */
 	flush?(): Promise<void>;
+}
+
+export interface DurableTranscriptSink extends TranscriptSink {
+	appendDurable(
+		entry: DurableTranscriptEntry,
+	): Promise<TranscriptDurabilityReceipt>;
+	readReceipt(
+		sessionId: string,
+		transcriptId: string,
+		contentDigest: string,
+	): Promise<TranscriptDurabilityReceipt | undefined>;
 }
 
 export type TranscriptEntry = {
@@ -279,4 +303,14 @@ export type TranscriptEntry = {
 	final: boolean;
 	/** FLY-1065: the turn was cut short by a barge-in (recorded as-said). */
 	interrupted?: boolean;
+};
+
+export type DurableTranscriptEntry = TranscriptEntry & {
+	transcriptId: string;
+	utteranceId: string;
+	generation: number;
+	sequence: number;
+	timestamp: string;
+	attribution: VoiceAttribution;
+	source: string;
 };
