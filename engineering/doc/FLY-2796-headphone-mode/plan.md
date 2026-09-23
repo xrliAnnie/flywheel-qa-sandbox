@@ -3,7 +3,7 @@ Issue: FLY-2796 (https://linear.app/geoforge3d/issue/FLY-2796/语音v2-耳机模
 日期: 2026-09-23
 基于: research.md
 
-Status: review_requested
+Status: review_requested (R2; R1 findings reconciled)
 
 ## 1. 给使用者看的结果
 
@@ -36,7 +36,7 @@ flowchart LR
 |---|---|---|
 | 共享类型 | `packages/voice-core/src/room-io.ts`、`types.ts`、`index.ts` | RoomIO、RoomAudioOwner、V1 规范形状、转写回执；复用 AudioFormat |
 | 唯一房间实现 | `packages/voice-bridge/src/room/RoomIO.ts`，从 `voice-codex/src/discord-room.ts` 提取 | 只此一个 Discord 收/放音、presence、健康、取消、归属、slot/lease 驱动 |
-| 房间支持闭包 | `voice-bridge/src/room/` 内移入 `WaitingMouth.ts`、`receive-health.ts`、`speaker-attribution.ts`、`audio/*`、`pipeline/*` | 移动 codex 原文件，保留既有算法和测试，不重写 DSP/VAD |
+| 房间支持闭包 | `voice-bridge/src/room/` 内移入 `audio.ts`（其中包含 WaitingMouth 类）、`receive-health.ts`、`speaker-attribution.ts`、`audio/*`、`pipeline/*` | 移动 codex 原文件，保留既有算法和测试，不重写 DSP/VAD |
 | 兼容适配 | `voice-codex/src/{discord-room,audio}.ts` 转导出；bridge `VoiceRoomRuntime.ts`、`roomEars.ts`、`assistant/AssistantSpeaker.ts` | 保留旧 API，委托同一 RoomIO 实例；不能保留第二套物理播放器 |
 | 模式策略 | `voice-core/src/headphone/{InboxReader,SpeechBrief,ExitProtocol,HeadphoneMode}.ts` | 找回 Raya 规则并接 V1；只管理播报 item，不另设会话状态权威 |
 | 模式 I/O | `voice-headphone/src/{room-io,bridge-client}.ts`，`voice-codex/src/{cli,session}.ts` | 引擎事件/房间/Bridge 持久回执组合；模式模块只依赖注入接口 |
@@ -44,7 +44,7 @@ flowchart LR
 | 唯一转写底座 | `voice-core/src/transcript.ts` | 原有 sink 的 durable 扩展，不搬 Raya TranscriptLog store |
 | comm 通用载体 | `flywheel-comm/src/{chat-delivery-envelope,discord-chat-ingest}.ts` | 增量 typed handoff metadata；沿用 deterministic delivery identity |
 
-`RoomIO` 实现和 `ROOM_IO_VERSION = 1` 从 `flywheel-voice-bridge` 同一公共导出提供；稳定 implementation key 为 `flywheel-voice-bridge/room/RoomIO#createRoomIO`。不增加新包。codex → bridge → core 依赖方向保持；room 内将原 `flywheel-voice-bridge` 自引用改成本包相对 import。`RealtimeAudioOwner` 移到 core，legacy 类型可转导出别名。
+`RoomIO` 实现和 `ROOM_IO_VERSION = 1` 从 `flywheel-voice-bridge` 同一公共导出提供；稳定 implementation key 为 `flywheel-voice-bridge/room/RoomIO#createRoomIO`。不增加新包。voice-headphone/src/room-io.ts 仅接收注入的 core RoomIO 类型和 V1 engine，不 import bridge 实现；实例由 codex/bridge composition root 传入，因此不增加 headphone → bridge 依赖。codex → bridge → core 依赖方向保持；room 内将原 `flywheel-voice-bridge` 自引用改成本包相对 import。`RealtimeAudioOwner` 移到 core，legacy 类型可转导出别名。
 
 依赖闭包具体迁移：codex `audio/{AudioClock,FrameQueue,JitterBuffer,Resample,Silence}.ts`、`pipeline/{Uplink,UplinkSpeechGate,SileroVad}.ts`、`receive-health.ts`、`speaker-attribution.ts`、`audio.ts`、`discord-room.ts`。ONNX runtime `1.29.0` 迁到 bridge manifest（复用已装依赖），模型随提取包发布、保留 sha256 验证；修改 model fileURL 基准及 `files` 清单，不靠 codex 源目录相对路径。旧 import 先保持转导出；确认零消费者后才删除多余 shim。
 
@@ -53,8 +53,9 @@ flowchart LR
 ### 3.1 输入、输出与调度
 
 - 输入 `RoomAudioFrame = {pcm:Buffer, format:AudioFormat, sessionId, generation, sequence, capturedAt, utteranceId:string|null, attribution:known|unknown}`。known 由房间收音身份产生；静音/多人重叠/关联失效给 unknown，不能从模型文字或时间区间猜成 known。旧 ownerUserId 转此 union；A/B 将房间关联依据带到最终 utterance。
-- 格式复用 `AudioFormat`；RoomIO 接受 PCM16 的 16k/24k mono、48k stereo，进入边界核验整样本长度、有限合法采样率、通道和流内格式一致。WAV/MP3 显式 rejected；需要解码的旧输出在已存在 adapter 做真实转换，不能仅改标签。
+- 格式复用 `AudioFormat`；RoomIO 接受 PCM16 的 16k/24k mono、48k stereo，进入边界核验整样本长度、有限合法采样率、通道和流内格式一致。帧接口中的 WAV/MP3 显式 rejected；旧提示音及压缩 TTS 走下述 clip 操作，不能把媒体 bytes 改标签冒充 PCM。
 - 输出 `playSpeech({speechId, generation, sequence, pcm, format, final})` 支持完整 buffer（单帧 final=true）和流式帧；同 speechId 单序列、同格式、final 只一次；无音频 final 合法用于结束。调用返回该帧被本地接受/拒绝的结果，末帧 receipt 仅 `submitted`；不宣称 drain 或听到。RoomIO 按容量提供异步背压，生产者 await，不无限堆内存、不静默丢正文。低水位恢复，close/cancel 唤醒并 reject 等待者。
+- 非 PCM 兼容操作 `playClip({speechId,generation,source:{kind:"file",path}|{kind:"encoded",bytes,format:"wav"|"mp3"},priority:"cue"|"speech"})` 复用 `DiscordDeps.createResource` 的 file / probeable stream 分支（discordWiring.ts:792），由既有 ffmpeg/prism 解码，**仍使用 RoomIO 同一 AudioPlayer**，不造 decoder/helper 或第二 player。path 仅接受应用配置的 cue 文件/受管 TTS 临时文件，不接模型任意路径。AssistantSpeaker 的 earcon/filler 和 LeadSpeaker 的 edge-tts bytes/text→TtsEngine 明确映射到此操作。cue 遇正在播的正文沿用 skip+diagnostic，speech 媒体按同一串行队列播放；generation/lease 在排队和 player.play 前重验。Playing/Idle/error 事件决定该 clip 本地回执；未知长度时 audibleTail（估算）保持 remainingMs=null、drained=false，直到该资源 Idle 后经过余量。取消统一 stop player、清流和解码资源，晚回调 fenced。启动保留 ffmpeg preflight，缺解码器明确报错不静音。
 - `localPlaybackCancel(speechId,generation)`：清应用队列 + stop/reset 物理 player/PassThrough，拒绝未完成 promise，记本地 cancelled；该 generation/speechId 的后续帧全部拒绝。它不是引擎 turnCancelOrSuppress，本单不据此宣称支持用户打断。
 - `audibleTail()`（估算）返回 `{estimated:true,remainingMs,drained,observedAt,sessionId,generation}`。remainingMs 纳入待播放 PCM 时长、已写未消费 buffer 和可配置输送余量；无可信计量则 remainingMs=null/drained=false。cancel 后也不能凭清数组立即认定远端无尾音。该估算只用于下一段播报调度，不作为人耳证据。
 - `onPresence` 同时给 exact founderPresent 与 humanCount；耳机用 founderPresent，旧 Gemini 任意 human occupancy 行为由 adapter 保留。`onReceiveHealth` 沿用现有健康 schema，不把没人说话判故障。所有订阅返回 unsubscribe，并以 holder/generation 防旧 unsubscribe 清掉新会话。
@@ -65,6 +66,14 @@ flowchart LR
 `VoiceSessionState` 是会话唯一权威，`voice_sessions_active_room` 已有跨进程互斥。`SessionSlot` 是该租约的进程内投影，不创建第二套持久房间锁。
 
 所有 `/gemini`、`/eleven`、codex A/B 与 `/glaw` 的开会路径，先预留同一个 voice_sessions room 行并获取 lease，再 acquire 本地 `(mode,sessionId,generation)` slot，之后才订阅帧/启用输出；legacy live 命令映射 mode=rg，glaw 映射 meeting，backend/mode 标签放会话 metadata，不扩大 state enum。RoomIO 依赖注入现有 lease 的 assert/renew/release，保留单调截止与永久 fencing。Bridge 不可达时不绕过开新会话；已开会话只活到当前 lease 截止。
+
+**R1 修正：不得直接复用当前 reserveVoiceSession 的 provisioning 路径给旧命令。** 当前路径会发 root、建 thread，并让 wakeTick 唤醒 codex daemon，getDesired/claim 又没有承运者过滤；“只有一个 winner”不能证明 winner 正确。
+
+新增 additive `carrier_kind`（`daemon` 默认 / `resident`）、`owner_boot_id`、`session_generation` 字段，旧行默认 daemon；不扩 VoiceSessionState enum。`voice-session-routes.ts` 增加 master-only resident reserve-and-claim 入口，验证服务端配置中的 project/Lead/bot/guild/channel 和调用者的 resident 注册绑定，拒绝客户端任意指定目标。使用同一个 active-room UNIQUE 约束，**一个事务直接建立 resident 行 state=claimed + provisioning_step=done + owner_boot_id + generation + leaseToken**，返回 lease；不曾可见 desired/provisioning，因此无跨进程 claim 窗口。绑定现有命令文字频道，root/thread/member 可空，不补发 Discord 产物。owner_boot_id 是路由绑定，不单独充当认证凭据；重试同 requestId 返回同 reservation，换 boot 不接管旧 lease。
+
+消费扫面必须一起改：StateStore `getDesiredVoiceSession` / 普通 `claimVoiceSession`、`listRecoverableVoiceProvisioning`、`admitVoiceLaunchAttempt` 只接受 carrier_kind=daemon；`voice-session-provisioner.ts` 对 resident 明确拒绝，`voice-session-runtime.ts` wakeTick 在 admission 之前过滤 resident，active poll 只对需要 daemon outbound 的会话运行。生命周期 sweep/过期租约回收仍覆盖两类；收听健康与房间需求统计保留两类但 codex launchd demand 只计 daemon。card/root/thread 消费者对 resident 无产物明确跳过，不能因 null 当损坏而修复创建。resident renew/state/release 除 leaseToken 还要求 owner_boot_id/generation 一致；普通 daemon 即使知道 sessionId 也不能 claim resident。
+
+精确负测：启动 /gemini 或 /eleven 后，root/thread/addMember/send、requestWake、admit launch budget 均零次；普通 GET desired 不返回该行，直接 daemon claim resident ID 拒绝；仅原 resident 拿到 lease 并能收放。同房另一个命令仍被拒绝；resident 崩溃到期后允许重新发起新 session，不自动变成 daemon。把 `voice-session-{runtime,provisioner,routes}`、StateStore session methods 和 health demand projection 的 carrier predicates 列入 T2 消费者测试。
 
 失败启动必须释放自己 generation 的 slot 并结束对应 session；stale close/renew/release 不得影响继任者。resident bot 可保持 Discord 连接，但没有有效 slot 时不把音频喂给任何模式，也不播报；连接存活不是活动会话。租约丢失立即停收转发、清输出、使所有未完成回执失败。
 
@@ -86,6 +95,8 @@ Bridge `headphone-inbox.ts` 常驻运行，与 mode off / voice 进程退出无�
 
 首次接入及新增 scope：完整分页恢复可访问历史，不设“最新一条”基线、不设隐藏天数截断。保存 bootstrap lower/upper bound 和继续位置，分 tick 跑到各频道固定 high watermark；期间持续插入已读页，不丢新来消息。历史已解决的问题记 source-resolved 不再问，旧报告没有可靠“已听”证据则保留 pending；数量大是公开代价，不暗中筛选。源已删除/403/权限缺失记 `source_gap`，进入时说明“某些来源暂未读全”，不能说“没有新消息”。未发送到 Discord 的普通报告不在可读取的持久来源中，不编造存在；当前未发卡的 founder 问题由上述投影补齐。
 
+**速率纪律（工程默认，不是产品承诺）**：collector 全局并发一，每 token 至多每五秒一页，每 tick 至多一页/一百条；跨 scope 轮转，bootstrap 与增量共享预算，增量优先。Bridge 的 founder 通知/问题卡有待发请求时，通过注入的 token 背景准入回调暂停 collector，不让历史回填排到通知前面；在 `discord-utils.ts` 的既有请求边界只增加在飞通知/限流窗口观测，不重建一套发送队列。遇 429 按服务器 retry_after（秒）或 Retry-After、global 标志设置持久 token/bucket nextAllowedAt，尊重更长值并加少量 jitter；格式缺失用三十秒退避，连续限流指数增长到五分钟，成功后复位。重启仍守 nextAllowedAt，cursor 不前进、不忙重试。状态是 `rate_limited/recovering`，**不是 source_gap**；只有历史不可访问/删除等才是 gap。测试共享 token 通知优先、429 global 与桶、重启冷却、失败页不前进及多频道公平性。
+
 ### 4.2 最小表和事务
 
 均加到 StateStore additive migration，参数化 SQL；不改既有 session outbound 的终结含义。
@@ -94,13 +105,14 @@ Bridge `headphone-inbox.ts` 常驻运行，与 mode off / voice 进程退出无�
 |---|---|---|
 | `headphone_inbox_items` | itemId；project/founder；sourceKind、sourceId、channelId、authorId、questionId?；revision、contentDigest、text、speechBrief?、needsDecision；seq、createdAt、resolvedAt? | UNIQUE(project,founder,sourceKind,sourceId,revision)，消息正文不可变 |
 | `headphone_inbox_sources` | project/founder/sourceId；scopeRevision、bootstrapPosition、highWatermark、cursor、status、lastError | 页入库和推进 cursor 同事务；失败两者都不生效 |
-| `headphone_inbox_delivery` | itemId/revision 主键；sessionId、generation、claimToken、leaseExpiresAt、stateVersion；attempts、nextAt；pendingKey/requestDigest；SpeakReceipt、ackedAt | pending/claimed/spoken；失败记录保留，spoken 仅指本地提交且内容证明 |
+| `headphone_inbox_delivery` | (itemId,revision,sessionId) 主键；generation、claimToken、leaseExpiresAt、stateVersion；attempts、nextAt；pendingKey/requestDigest；SpeakReceipt | 每真实 session 两次预算；恢复同 session 不重置 |
+| item 的全局回执字段 | inbox_items 的 spokenAt、spokenReceipt；对该 item/revision 全局唯一的 activeClaimSession/token | 跨 session 不重播已 spoken；不能同时认领不同 session 行绕开单 claim |
 
 同 Discord id 内容变更形成新 revision；稳定 contentDigest 去掉采集时间等非内容字段。相同源+revision 不同 digest 为冲突并告警，不能覆盖。question 投影与发卡合并用持久 alias，不新造第二条；投影本身已有完整正文时不等待卡片发出。collector pages 根据 source cursor 重放幂等；超过单 tick 工作额度保存游标，继续后续 tick，不能跳到高水位。
 
 模式入口 `snapshot` 返回 `{snapshotId,highWatermark,sourceStatus,nextCursor,items}`；页按 needsDecision desc、seq asc、itemId 排序，cursor 包含排序元组及 watermark，不能只用 seq 忽略排序。收完 ≤watermark 的全部 pending 才算开场清单读全；同时持久发现 >watermark 的新消息，新消息在段落边界进入队列。阅读页游标不是 ack。
 
-claim 必须验证服务端 session/lease/generation/founder 范围；同 item 只有一个活跃 claim。播报使用 `pendingKey=inbox:<itemId>:<revision>:<sessionId>:<generation>:<attempt>`；attempt 在 speak 前 CAS 持久递增，最多两次/session，六十秒退避。请求 digest 按 V1 完整正文/kind/verification/voice/format 计算，ack 重算期望值再比较。
+claim 必须验证服务端 session/lease/generation/founder 范围；同 item 只有一个活跃 claim。播报使用 `pendingKey=inbox:<itemId>:<revision>:<sessionId>:<generation>:<attempt>`；attempt 在 speak 前 CAS 持久递增，最多两次/session，六十秒退避。同 session 的换 generation 不重置 attempts；不同 session 新建预算行但先查 item 的全局 spoken/activeClaim。保持 Raya 每 session 两次原语义，**本单不另设终身自动丢弃上限**：永久坏项可在下次会话再尝试，代价明确列入使用观察；每场到上限即停止并提示文字，不悄悄耗尽后永远漏报。请求 digest 按 V1 完整正文/kind/verification/voice/format 计算，ack 重算期望值再比较。
 
 ack 条件：outcome=completed，contentProof 正向枚举 deterministic_tts 或 transcript_equivalent，pendingKey/requestDigest 全等，item revision 与活 lease/claim 相符；原文分段必须所有段满足。无 proof、缺字段、timeout、旧 lease、文本变更一律不 ack。ack 本身失败则先重试同一 receipt 写入，不再播；崩溃后重查 receipt。无法证明上次已经提交时允许重播并记录 ambiguous playback：**物理声音不承诺 exactly-once**；已持久 spoken 不重播。
 
@@ -113,6 +125,8 @@ ack 条件：outcome=completed，contentProof 正向枚举 deterministic_tts 或
 ## 5. 模式、文案与完整 V1 接口
 
 Raya `InboxReader` 和 `SpeechBrief` 实际文件找回到 §2 路径，保留 provenance 注释与对应原测试。改成注入 `list/claim/ack/speak/record/clock`，去掉 Raya import、filter、ship 和“非决策只发文字”分支。沿用单 poll promise、防重复、排序、重试；不复制完整旧 turn-machine（含第二批交互），旧桌面 dry-run 留原入口，不与新 RoomIO 会话同时放音。
+
+**SpeechBrief 生产者与可达路径**：生产者是发布原问题/汇报的 Lead，不让 collector 猜“为什么”。新增 `packages/teamlead/lead-rules-base/voice-speech-brief.md` 的最小规则：需要语音友好稿时，Lead 在原消息写明三个自然段“现状：… / 原因：… / 下一步：…”，或同名 Discord embed fields；原稿真实、不编造、保留原文和链接。collector 在已认证来源消息内解析这三个完整标签到 what/why/next；多组/缺段/歧义不提取，走原文。此为可选语音文案，不要求所有历史报告改写，也不把三段文字当机器授权。修改通用 Lead 规则接入，使 Claude/Codex 载入同一规则；运行规则字节预算/生成回归，不能挤掉别的硬规则。新增测试必须从实际三段 Discord message/embed 经 collector 入库，再经恢复后的 SpeechBrief 验证/render 到 speak/ack，而非直接给函数塞 fixture；另测普通历史消息走原文。这样复用校验路径在生产可达，且没有三段稿的内容仍全部播。
 
 SpeechBrief 三字段各 ≤200 code points、非空、无 Unicode 数字、末尾句号等规则逐项保留。没有合格三段稿时记录 reject 原因，改读来源原文，按句子/最大 backend 文本长度拆段；不截掉尾部，不把内部数字删掉后伪装“校验通过”。原文分段共享 item claim，分别 requestDigest；所有段完成后才写 item ack。来源内容是数据，不当系统指令；不能从三段摘要生成动作授权。
 
@@ -149,8 +163,8 @@ Bridge 接受 handoff 前必须自己验证可访问的受管会话 transcript �
 新增 `voice_handoffs`：§7 请求全字段、state、attemptToken、claimToken、leaseExpiresAt、stateVersion、providerOperationId、lastReconcileAt、nextReconcileAt、terminalReason。即时/后续回执沿用 V1 HandoffReceipt / HandoffExecutionReceipt 同一 state enum。
 
 1. 验证可信 transcript 回读及当前 binding，落 authorized。相同 key+digest 返回原记录；同 key 不同 digest=409。未证明 durable 不进入 authorized。
-2. 确定目标 project 的 CommDB carrier，预分配 messageId=`voice-handoff:<handoffId>`，由 **导入的 chatDeliveryId** 算 deliveryId；将二者与完整 envelope digest 持久写入，CAS authorized→dispatching，然后才调用已存在 ingestDiscordChat/通用 comm service。
-3. 扩 canonical envelope 的可选 typed voiceHandoff metadata，校验/编码/渲染/读取整链一起更新，旧 envelope 仍有效；Lead 收到清楚的原话、来源、目标与“待 Lead 判断执行”。不伪造真实 Discord snowflake；只在 origin=voice 的该已验证载体允许合成 messageId。
+2. 确定目标 project 的 CommDB carrier，预分配 messageId=`voice-handoff:<handoffId>`，由 **扩展后的 chatDeliveryId** 算 deliveryId；将二者与完整 envelope digest 持久写入，CAS authorized→dispatching，然后才调用已存在 ingestDiscordChat/通用 comm service。
+3. 扩 canonical envelope 的可选 typed voiceHandoff metadata，校验/编码/渲染/读取整链一起更新，旧 envelope 仍有效；Lead 收到清楚的原话、来源、目标与“待 Lead 判断执行”。不伪造真实 Discord snowflake。明确修改 `chat-delivery-envelope.ts` 的 `chatDeliveryId` 与 `normalizeChatDeliveryEnvelope`：保留通用 snowflake() 不变，给 message identity 增加只在 origin=voice、voiceSessionId 非空且已验证 typed voiceHandoff.handoffId 与 `voice-handoff:<uuid>` 完全一致时才可用的分支。chatDeliveryId 新增可选 identity context 参数，默认仍走原 snowflake；normalize 先验 origin/metadata，再以同一 context 重算 deliveryId；discord-chat-ingest.ts 同步传 context。所有非 voice、仅声称 voice 但缺绑定、格式错误、错 handoffId 都拒绝合成 ID；chatId/channelId/authorId/replyTo 继续强制原 snowflake。禁止无条件放宽 snowflake 正则，补这些负例和旧 Discord envelope 回归。
 4. provider ACK 回来记 dispatched；按预分配 deliveryId 只读查询并核对 envelope source、lead、session、founder、typed metadata 和完整 digest 一致，才 committed。**committed=信箱记录已持久存在，非 Lead 消费、非业务完成**；消费状态另外据真实 mailbox 状态展示。
 5. timeout/崩溃后的 dispatching → ambiguous；reconciler 以 CAS+claim lease 在 Bridge 重启后继续，按预分配键只读查询。找到一致提交→committed，确定拒绝→rejected，查不到/读取失败不当未提交。采用 1s/5s/30s/120s/600s 工程退避，仍无证明→持久 needs_human，不盲重投或换键。UI/播报说“送达结果还没确认”，不能说已交办。
 6. 重复 worker/旧 attemptToken 无权更新。dispatch 前再校验 lease/target/binding；已进入 uncertain 的结果查询可以在源会话结束后继续，因为它不再创建新副作用。
@@ -175,6 +189,8 @@ providerOperationId=预分配 deterministic deliveryId，满足 V1 “查询键�
 
 Lead mailbox 门铃已存在，复用；2798 负责事件驱动的回复接入和门铃可观测性，本单只交 durable 结果流及可重放接口，不造另一套 carrier。此前十二点七秒邮箱空等的根因未证实，此设计不宣称已修。
 
+结果读取认证固定落在 `plugin.ts` 单独挂载的 voiceSessionAuthMiddleware/master-only handoff router 下，不借通用 `/api/voice` 的 Gemini token 权限。GET results 和订阅都校验 master token、服务端 handoff.project/founder 与请求会话同一授权范围及活 lease/generation；跨 project、错 founder、scoped Gemini token 一律拒绝。会话结束后的 reconciler 用 Bridge 内部只读 service 查询，不通过放宽外部路由权限实现。新会话补读历史结果必须先证明同 founder/project 的合法关联。读/写分别测试，不把写入鉴权当读权限证明。
+
 新增验证：持续发言的 owner/时间线与 unknown 分支；等背压期间换代；>1800 字 canonical 无丢尾；三种 intent roundtrip；结果重复/乱序/断线重放/伪造 Lead/错 digest；旧 claim/attempt token 不能被新字段绕过。
 
 ## 8. 实施顺序与相关测试
@@ -184,7 +200,7 @@ Lead mailbox 门铃已存在，复用；2798 负责事件驱动的回复接入�
 | 次序 | 文件/交付 | 必须测试的真实失败 |
 |---|---|---|
 | T1 | core room-io/types/index；bridge room 提取支持闭包、manifest/model；codex 转导出 | import 无循环；唯一实现；所有旧 room/audio/lease 测试；模型路径与 hash；格式拒绝、流式 final、背压、晚帧、physical cancel |
-| T2 | bridge SessionSlot/VoiceRoomRuntime/roomEars/cli/assistant/eleven wiring；teamlead voice-session-routes | 两 daemon 同房仅一 winner；旧 close 不释放新 holder；启动失败清理；borrowed connection 不被杀；legacy bot/健康/帧身份保留 |
+| T2 | StateStore carrier columns + resident atomic claim、voice-session runtime/provisioner/routes/demand 消费者过滤；bridge SessionSlot/VoiceRoomRuntime/roomEars/cli/assistant/eleven wiring；teamlead voice-session-routes | 两 daemon 同房仅一正确 owner，resident 不触发 root/thread/wake/budget；旧 close 不释放新 holder；启动失败清理；borrowed connection 不被杀；legacy bot/健康/帧身份保留 |
 | T3 | StateStore + headphone-inbox/headphone-routes + plugin 注册/关闭 collector | OFF 和无 voice 进程仍收消息；>100 多页；首启/新增 scope；未发卡 founder 问题；投影/卡片去重；事务崩溃；source gap；跨项目拒绝；编辑 revision |
 | T4 | core transcript/types + consumer/fake 适配 | await fsync/read-back；失败拒绝；三键同一性；重复句不同 ID；冲突 ID；损坏尾部；landing 原失败保护不退化 |
 | T5 | core headphone 四文件；headphone room-io/client + codex session/cli 组合 | 三条产品测试如下；全部汇报朗读；坏 brief 原文兜底；多段全 ack；两次/六十秒；晚 ack 拒绝；退出守卫 |

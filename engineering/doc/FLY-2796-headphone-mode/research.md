@@ -69,3 +69,9 @@ PRD FLY-1850 §5.1 要进来主动播报，§5.2 区分全部输入与可听表�
 ## 6. 验证边界
 
 复用现有 `discord-room` / `audio` / `lease`、bridge `voice-room-runtime` / `assistant-wiring` / `eleven-wiring` 测试，增加实例身份、格式拒绝、晚帧 fencing、跨进程抢房和恢复证据。假引擎完整实现 V1；三条产品测试与失败路径见 plan。`/gemini`、`/eleven` 真房兼容验收由本单后续 QA 负责；A/B 真机和四场可比性由 V6 负责。此时全部真机状态为未验证。
+
+## 7. R1 补充核实（不覆盖旧证据）
+
+- StateStore reserve 在 `:4952` 创建 provisioning；runtime `:160` wake 全部 desired；getDesired `:3755`/claim `:5306` 未区分承运者。旧命令加入 session 权威必须同时隔离 provisioning/wake/claim；不能只验证互斥。
+- `voice-bridge/src/bots/discordWiring.ts:792` 的 createResource 已支持 file/probeable stream，AssistantSpeaker 的提示音与 LeadSpeaker 的 mp3 可共用此路径，无需新造解码器。帧 PCM 与媒体资源操作必须分清。
+- `flywheel-comm/src/chat-delivery-envelope.ts:62,69` 目前强制 messageId 为 snowflake；合成 voice identity 必须显式且局部扩展，不可全局放宽。
