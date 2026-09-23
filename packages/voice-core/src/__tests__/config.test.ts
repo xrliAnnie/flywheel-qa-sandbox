@@ -42,6 +42,18 @@ describe("resolveConfig", () => {
 		expect(c.edgeTts.args).toEqual(["-m", "edge_tts"]);
 	});
 
+	it("configures bounded incremental edge-tts separately from the legacy CLI", () => {
+		const defaults = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(defaults.edgeTts.streamCommand).toBe("python3");
+		expect(defaults.edgeTts.streamMaxBufferedBytes).toBe(1024 * 1024);
+		const configured = resolveConfig({}, {
+			FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD: "/venv/bin/python",
+			FLYWHEEL_VOICE_EDGE_TTS_STREAM_MAX_BYTES: "2048",
+		} as NodeJS.ProcessEnv);
+		expect(configured.edgeTts.streamCommand).toBe("/venv/bin/python");
+		expect(configured.edgeTts.streamMaxBufferedBytes).toBe(2048);
+	});
+
 	it("defaults edge-tts command + gemini apiKeyEnv", () => {
 		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
 		expect(c.edgeTts.command).toBe("edge-tts");
@@ -99,7 +111,11 @@ describe("fail-fast component checks", () => {
 		// resolveConfig itself always defaults the command, so hand-build the bad shape.
 		const c = {
 			...resolveConfig({}, {} as NodeJS.ProcessEnv),
-			edgeTts: { command: "", args: [] },
+			edgeTts: {
+				...resolveConfig({}, {} as NodeJS.ProcessEnv).edgeTts,
+				command: "",
+				args: [],
+			},
 		};
 		const err = catchErr(() => verifyAnnounceComponents(c));
 		expect((err as VoiceError).code).toBe("component-missing");

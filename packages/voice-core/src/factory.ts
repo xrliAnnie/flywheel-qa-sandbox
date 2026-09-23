@@ -36,6 +36,8 @@ export function buildEdgeTtsBackend(
 		command: config.edgeTts.command,
 		baseArgs: config.edgeTts.args,
 		timeoutMs: config.timeouts.ttsMs,
+		streamCommand: config.edgeTts.streamCommand,
+		streamMaxBufferedBytes: config.edgeTts.streamMaxBufferedBytes,
 		runner: wiring.runner,
 	});
 	const player =

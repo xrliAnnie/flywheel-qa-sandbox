@@ -9,7 +9,8 @@
 		"flywheel-voice-poc": "dist/cli.js"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"scripts"
 	],
 	"scripts": {
 		"build": "tsc",

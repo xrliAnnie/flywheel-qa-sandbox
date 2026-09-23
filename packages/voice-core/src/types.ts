@@ -262,6 +262,22 @@ export interface TtsEngine {
 	): Promise<{ audio: Buffer; format: AudioFormat; ttsFirstByteMs: number }>;
 }
 
+export interface StreamingTtsChunk {
+	audio: Buffer;
+	format: AudioFormat;
+	/** Present only on the first emitted media chunk. */
+	ttsFirstByteMs?: number;
+}
+
+/** Additive streaming face; legacy synthesize() remains byte-compatible. */
+export interface StreamingTtsEngine extends TtsEngine {
+	synthesizeStream(
+		text: string,
+		voice: VoiceRef,
+		opts: { signal: AbortSignal },
+	): AsyncIterable<StreamingTtsChunk>;
+}
+
 export interface TranscriptSink {
 	/** failures throw explicitly — never swallowed. */
 	append(entry: TranscriptEntry): void;

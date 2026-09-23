@@ -9,7 +9,12 @@ import { VoiceError } from "./types.js";
 
 export interface VoiceCoreConfig {
 	/** announce face: edge-tts invocation, split so no default assumes a venv. */
-	edgeTts: { command: string; args: string[] };
+	edgeTts: {
+		command: string;
+		args: string[];
+		streamCommand: string;
+		streamMaxBufferedBytes: number;
+	};
 	/** mp3 file playback (announce). */
 	afplayBin: string;
 	/** streaming PCM playback (converse). */
@@ -91,6 +96,16 @@ export function resolveConfig(
 			args:
 				overrides.edgeTts?.args ??
 				(edgeArgsEnv ? edgeArgsEnv.split(" ").filter(Boolean) : []),
+			streamCommand: pick(
+				overrides.edgeTts?.streamCommand,
+				env.FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD,
+				"python3",
+			),
+			streamMaxBufferedBytes:
+				pickNum(
+					overrides.edgeTts?.streamMaxBufferedBytes,
+					env.FLYWHEEL_VOICE_EDGE_TTS_STREAM_MAX_BYTES,
+				) ?? 1024 * 1024,
 		},
 		afplayBin: pick(overrides.afplayBin, env.FLYWHEEL_VOICE_AFPLAY, "afplay"),
 		ffplayBin: pick(overrides.ffplayBin, env.FLYWHEEL_VOICE_FFPLAY, "ffplay"),
@@ -177,6 +192,21 @@ export function verifyAnnounceComponents(config: VoiceCoreConfig): void {
 		throw new VoiceError(
 			"component-missing",
 			"edge-tts command not set (set FLYWHEEL_VOICE_EDGE_TTS_CMD, e.g. edge-tts or python with args -m edge_tts)",
+		);
+	}
+	if (!config.edgeTts.streamCommand) {
+		throw new VoiceError(
+			"component-missing",
+			"edge-tts streaming command not set (FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD)",
+		);
+	}
+	if (
+		!Number.isSafeInteger(config.edgeTts.streamMaxBufferedBytes) ||
+		config.edgeTts.streamMaxBufferedBytes <= 0
+	) {
+		throw new VoiceError(
+			"component-missing",
+			"edge-tts streaming buffer limit must be a positive integer",
 		);
 	}
 }
