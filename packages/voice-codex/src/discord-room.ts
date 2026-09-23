@@ -280,6 +280,10 @@ export class DiscordVoiceRoom {
 		this.mouth?.cancelSpeech(speechId);
 	}
 
+	cancelAllSpeech(): void {
+		this.mouth?.cancelAllSpeech();
+	}
+
 	setWaiting(waiting: boolean): void {
 		this.mouth?.setWaiting(waiting);
 	}

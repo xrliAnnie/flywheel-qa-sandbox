@@ -512,6 +512,8 @@ class CodexVoiceSession implements ConversationSession {
 			this.speaker.observePlaybackSubmitted({ generation, itemId });
 			this.events.emit("response-done");
 		} catch (error) {
+			if (this.closing || this.restarting || generation !== this.generation)
+				return;
 			this.transportError(
 				error instanceof Error ? error : new Error(String(error)),
 			);

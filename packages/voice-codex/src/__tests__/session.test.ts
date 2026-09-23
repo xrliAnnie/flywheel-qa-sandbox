@@ -53,6 +53,7 @@ function fixture(options?: {
 		})),
 		playSpeech: vi.fn(options?.playSpeech ?? (async () => {})),
 		cancelSpeech: vi.fn(),
+		cancelAllSpeech: vi.fn(),
 		status: vi.fn(async () => {}),
 		stop: vi.fn(async () => {}),
 		setWaiting: vi.fn(),
@@ -124,7 +125,8 @@ describe("GenericVoiceSession", () => {
 
 		expect(test.frontend.cancelSpeech).toHaveBeenCalledOnce();
 		expect(test.frontend.cancelSpeech).toHaveBeenCalledWith("__conversation__");
-		expect(test.room.cancelSpeech).toHaveBeenCalledWith("__conversation__");
+		expect(test.room.cancelAllSpeech).toHaveBeenCalledOnce();
+		expect(test.room.cancelSpeech).not.toHaveBeenCalled();
 		expect(test.frontend.appendAudio).toHaveBeenCalledTimes(2);
 	});
 

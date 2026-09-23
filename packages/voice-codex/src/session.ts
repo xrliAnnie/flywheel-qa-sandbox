@@ -46,6 +46,7 @@ interface RoomLike {
 	start(signal?: AbortSignal): Promise<{ founderPresent: boolean }>;
 	playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void>;
 	cancelSpeech?(speechId: string): void;
+	cancelAllSpeech?(): void;
 	status(text: string): Promise<void>;
 	stop(): Promise<void>;
 	setBedEnabled?(enabled: boolean): void;
@@ -145,7 +146,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					) {
 						this.frontendResponseActive = false;
 						this.frontend.cancelSpeech("__conversation__");
-						this.room.cancelSpeech?.("__conversation__");
+						this.room.cancelAllSpeech?.();
 					}
 					this.frontend.appendAudio(frame, metadata);
 				}),

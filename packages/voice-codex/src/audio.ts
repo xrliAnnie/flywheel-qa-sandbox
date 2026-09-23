@@ -162,6 +162,10 @@ export class WaitingMouth {
 		this.flush();
 	}
 
+	cancelAllSpeech(): void {
+		this.flush();
+	}
+
 	flush(): void {
 		this.queued = Buffer.alloc(0);
 		this.queuedOffset = 0;

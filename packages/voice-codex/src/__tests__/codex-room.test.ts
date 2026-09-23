@@ -5,13 +5,14 @@ import {
 	type VoiceBackend,
 } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
+import { WaitingMouth } from "../audio.js";
 import {
 	CodexRoomFrontend,
 	registerCodexVoiceBackend,
 } from "../codex/CodexRoomFrontend.js";
 import { CodexVoiceBackend } from "../codex/CodexVoiceBackend.js";
 import { CodexVoiceContainerError } from "../codex/CodexVoiceContainer.js";
-import { GenericVoiceSession } from "../session.js";
+import { GenericVoiceSession, type RoomHandlers } from "../session.js";
 
 const brain: BrainAdapter = {
 	async *respond() {
@@ -329,6 +330,216 @@ describe("Codex room composition", () => {
 			raw: {},
 		} as never);
 		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
+	});
+
+	it("stops real queued playback on founder barge-in and continues on the next generation", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		let roomHandlers!: RoomHandlers;
+		let finishRestart!: () => void;
+		const restartPending = new Promise<void>((resolve) => {
+			finishRestart = resolve;
+		});
+		let generation = 1;
+		const firstTransport = {
+			appendAudio: vi.fn(() => "sent" as const),
+			appendSpeech: vi.fn(async () => undefined),
+			appendText: vi.fn(async () => undefined),
+			cancel: vi.fn(async () => undefined),
+		};
+		const secondTransport = {
+			appendAudio: vi.fn(() => "sent" as const),
+			appendSpeech: vi.fn(async () => undefined),
+			appendText: vi.fn(async () => undefined),
+			cancel: vi.fn(async () => undefined),
+		};
+		let transport = firstTransport;
+		const conversation = {
+			get generation() {
+				return generation;
+			},
+			get transport() {
+				return transport;
+			},
+			restart: vi.fn(async () => {
+				await restartPending;
+				generation = 2;
+				transport = secondTransport;
+				return generation;
+			}),
+			close: vi.fn(async () => undefined),
+		};
+		let tick!: () => void;
+		const renderedFrames: Buffer[] = [];
+		const mouth = new WaitingMouth({
+			player: { play: vi.fn(), stop: vi.fn() },
+			createResource: (source) => {
+				source.stream.on("data", (frame: Buffer) => renderedFrames.push(frame));
+				return source;
+			},
+			setIntervalFn: (callback) => {
+				tick = callback;
+				return 1 as unknown as NodeJS.Timeout;
+			},
+			clearIntervalFn: vi.fn(),
+		});
+		mouth.start();
+		const playbacks: Promise<void>[] = [];
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-local-barge-in",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return conversation;
+				}),
+			},
+			loadContext: vi.fn(),
+			playAudio: ({ itemId, pcm24Mono }) => {
+				const playback = mouth.playSpeech(itemId, pcm24Mono);
+				playbacks.push(playback);
+				return playback;
+			},
+		});
+		const room = {
+			start: vi.fn(async () => ({ founderPresent: true })),
+			playSpeech: (speechId: string, pcm24Mono: Buffer) =>
+				mouth.playSpeech(speechId, pcm24Mono),
+			cancelSpeech: (speechId: string) => mouth.cancelSpeech(speechId),
+			cancelAllSpeech: () => mouth.cancelAllSpeech(),
+			status: vi.fn(async () => undefined),
+			stop: vi.fn(async () => mouth.stop()),
+			setWaiting: vi.fn(),
+			setBedEnabled: vi.fn(),
+		};
+		let ended: unknown;
+		const session = new GenericVoiceSession({
+			projection: {
+				sessionId: "11111111-1111-4111-8111-111111111111",
+				voiceBotUserId: "323456789012345678",
+				mode: "meeting",
+				projectName: "raya",
+				leadId: "raya",
+				displayName: "Raya",
+				realtimeVoice: "marin",
+				guildId: "guild",
+				voiceChannelId: "voice",
+				threadId: "thread",
+				boundChannelIds: ["thread"],
+				founderUserId: "founder",
+				qaAllowUserIds: [],
+			},
+			delivery: { capture: vi.fn(async () => false) },
+			createFrontend: (handlers) =>
+				new CodexRoomFrontend({
+					backend: actual,
+					conversationOptions: { brain },
+					handlers,
+					onUnavailable: vi.fn(),
+				}),
+			createRoom: (handlers) => {
+				roomHandlers = handlers;
+				return room;
+			},
+			lifecycle: vi.fn(),
+			evidence: vi.fn(),
+			confirmationMs: 100,
+		});
+		void session.waitForEnd().then((outcome) => {
+			ended = outcome;
+		});
+		await session.start();
+		await session.markLive();
+
+		callbacks.onItem({
+			generation: 1,
+			itemId: "assistant-before-barge-in",
+			role: "assistant",
+			raw: {},
+		} as never);
+		callbacks.onAudio({
+			generation: 1,
+			itemId: "assistant-before-barge-in",
+			pcm24Mono: Buffer.alloc(4_800, 1),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 2_400,
+			raw: {},
+		} as never);
+		callbacks.onTranscript({
+			generation: 1,
+			itemId: "assistant-before-barge-in",
+			association: "preceding_item",
+			role: "assistant",
+			text: "这句必须立刻停。",
+			final: true,
+			raw: {},
+		} as never);
+		await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+		tick();
+		expect(renderedFrames).toHaveLength(1);
+
+		let cancelledAt: number | undefined;
+		void playbacks[0]!.catch(() => {
+			cancelledAt = performance.now();
+		});
+		const bargeInAt = performance.now();
+		roomHandlers.onAudio(Buffer.alloc(960), {
+			utteranceId: "founder-interrupt",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(cancelledAt).toBeDefined();
+		const cancelLatencyMs = cancelledAt! - bargeInAt;
+		expect(cancelLatencyMs).toBeLessThan(20);
+		const framesAtCancel = renderedFrames.length;
+		tick();
+		tick();
+		expect(
+			renderedFrames
+				.slice(framesAtCancel)
+				.every((frame) => frame.every((byte) => byte === 0)),
+		).toBe(true);
+
+		finishRestart();
+		await vi.waitFor(() =>
+			expect(secondTransport.appendAudio).toHaveBeenCalledWith(
+				expect.any(Buffer),
+				2,
+				expect.objectContaining({ utteranceId: "founder-interrupt" }),
+			),
+		);
+		callbacks.onItem({
+			generation: 2,
+			itemId: "assistant-after-barge-in",
+			role: "assistant",
+			raw: {},
+		} as never);
+		callbacks.onAudio({
+			generation: 2,
+			itemId: "assistant-after-barge-in",
+			pcm24Mono: Buffer.alloc(960, 2),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 480,
+			raw: {},
+		} as never);
+		callbacks.onTranscript({
+			generation: 2,
+			itemId: "assistant-after-barge-in",
+			association: "preceding_item",
+			role: "assistant",
+			text: "可以继续说。",
+			final: true,
+			raw: {},
+		} as never);
+		await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+		tick();
+		await expect(playbacks[1]).resolves.toBeUndefined();
+		await Promise.resolve();
+		expect(ended).toBeUndefined();
+		await session.stop({ kind: "ended", reason: "test-complete" });
 	});
 
 	it("invalidates attribution when restart buffering drops founder audio", async () => {
