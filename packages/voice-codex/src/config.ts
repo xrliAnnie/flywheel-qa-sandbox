@@ -17,6 +17,7 @@ export interface VoiceBotBinding {
 }
 
 export interface VoiceDaemonConfig {
+	backendId: "openai-realtime" | "codex-realtime";
 	buildSha: string | null;
 	realtimeApiKey: string;
 	apiToken: string;
@@ -124,6 +125,16 @@ export function loadVoiceDaemonConfig(
 	const voiceRoot = env.FLYWHEEL_VOICE_STATE_DIR ?? join(stateDir, "voice");
 	const commDbPath = env.FLYWHEEL_COMM_DB?.trim();
 	const buildSha = env.FLYWHEEL_VOICE_BUILD_SHA?.trim() || null;
+	const backendId = env.FLYWHEEL_VOICE_BACKEND?.trim() || "openai-realtime";
+	if (!new Set(["openai-realtime", "codex-realtime"]).has(backendId)) {
+		throw new Error("voice backend must be openai-realtime or codex-realtime");
+	}
+	const codexBin = env.FLYWHEEL_CODEX_BIN ?? "codex";
+	if (backendId === "codex-realtime" && !isAbsolute(codexBin)) {
+		throw new Error(
+			"codex-realtime requires an absolute standalone Codex binary",
+		);
+	}
 	if (buildSha && !/^[0-9a-f]{40}$/u.test(buildSha)) {
 		throw new Error(
 			"FLYWHEEL_VOICE_BUILD_SHA must be a full lowercase git SHA",
@@ -150,6 +161,7 @@ export function loadVoiceDaemonConfig(
 		);
 	}
 	return {
+		backendId: backendId as VoiceDaemonConfig["backendId"],
 		buildSha,
 		apiToken,
 		realtimeApiKey,
@@ -163,7 +175,7 @@ export function loadVoiceDaemonConfig(
 			"voice-health.py",
 		),
 		codexHome: env.FLYWHEEL_VOICE_CODEX_HOME ?? join(voiceRoot, "codex-home"),
-		codexBin: env.FLYWHEEL_CODEX_BIN ?? "codex",
+		codexBin,
 		commCliPath:
 			env.FLYWHEEL_COMM_CLI ??
 			join(flywheelDir, "packages", "flywheel-comm", "dist", "index.js"),

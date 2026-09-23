@@ -314,7 +314,27 @@ describe("voice handoff state machine", () => {
 			afterRestart.service.reconcileNext("reconciler-restart"),
 		).toMatchObject({ state: "ambiguous" });
 		expect(afterRestart.enqueue).not.toHaveBeenCalled();
-		expect(inspect).toHaveBeenCalledWith(authorized.handoff.deliveryId);
+		expect(inspect).toHaveBeenCalledWith(
+			authorized.handoff.deliveryId,
+			expect.objectContaining({ handoffId: authorized.handoff.handoffId }),
+		);
+	});
+
+	it("starts and stops the bounded production reconciler", async () => {
+		const { leaseToken } = liveSession();
+		const inspect = vi.fn(() => ({ kind: "absent" as const }));
+		const h = service({
+			enqueue: vi.fn(async () => {
+				throw new Error("ack_lost");
+			}),
+			inspect,
+		});
+		h.service.recordUtterance(utterance(leaseToken));
+		await h.service.handoff(handoff(leaseToken));
+
+		h.service.startReconciler("bridge-a", 100);
+		expect(inspect).toHaveBeenCalledOnce();
+		h.service.stopReconciler();
 	});
 
 	it("uses a CAS recovery lease and reaches needs_human after 24 hours", async () => {

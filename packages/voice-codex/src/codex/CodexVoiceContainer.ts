@@ -1,14 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import {
-	chmod,
-	lstat,
-	mkdir,
-	mkdtemp,
-	rm,
-	writeFile,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -19,6 +12,12 @@ import {
 	assertVoiceCodexHome,
 	VOICE_CODEX_HOME_CONFIG,
 } from "../codex-home.js";
+import {
+	type CodexRealtimeAudioDelta,
+	type CodexRealtimeItem,
+	type CodexRealtimeTranscript,
+	CodexRealtimeTransport,
+} from "./RealtimeTransport.js";
 
 export const CODEX_VOICE_BINARY_VERSION = "codex-cli 0.156.1";
 export const CODEX_VOICE_BINARY_SHA256 =
@@ -106,6 +105,7 @@ export class CodexVoiceContainerError extends Error {
 			| "codex_binary_mismatch"
 			| "codex_profile_mismatch"
 			| "codex_quota_exhausted"
+			| "codex_auth_rejected"
 			| "codex_open_failed"
 			| "context_stale"
 			| "context_invalid"
@@ -291,6 +291,14 @@ function classifyOpenError(error: unknown): CodexVoiceContainerError {
 	) {
 		return new CodexVoiceContainerError("codex_quota_exhausted");
 	}
+	if (
+		message.includes("invalid_api_key") ||
+		message.includes("authentication") ||
+		message.includes("unauthorized") ||
+		message.includes("http 401")
+	) {
+		return new CodexVoiceContainerError("codex_auth_rejected");
+	}
 	return new CodexVoiceContainerError("codex_open_failed");
 }
 
@@ -364,6 +372,7 @@ export class CodexVoiceConversation {
 		readonly workdir: string,
 		readonly snapshotDigest: string,
 		private readonly process: CodexVoiceProcess,
+		readonly transport: CodexRealtimeTransport,
 		private readonly evidence: EvidenceSink,
 	) {}
 
@@ -375,9 +384,7 @@ export class CodexVoiceConversation {
 	private async closeOnce(reason: string): Promise<void> {
 		try {
 			await withTimeout(
-				this.process.request("thread/realtime/stop", {
-					threadId: this.threadId,
-				}),
+				this.transport.cancel(),
 				CLOSE_RPC_TIMEOUT_MS,
 				"codex_open_failed",
 			).catch(() => undefined);
@@ -399,6 +406,31 @@ export class CodexVoiceConversation {
 			reason,
 		});
 	}
+}
+
+export interface CodexVoiceOpenInput {
+	sessionId: string;
+	voice: string;
+	loadContext: () => Promise<CodexVoiceContextSnapshot>;
+	realtime?: {
+		onAudio?(delta: CodexRealtimeAudioDelta): void;
+		onTranscript?(transcript: CodexRealtimeTranscript): void;
+		onItem?(item: CodexRealtimeItem): void;
+		onInputGap?(gap: {
+			generation: number;
+			utteranceId: string | null;
+			ownerUserId: string | null;
+			droppedBytes: number;
+			reason: "backpressure" | "rpc_error";
+		}): void;
+		onCapabilityViolation?(input: {
+			generation: number;
+			method: string;
+			params: unknown;
+		}): void;
+		onClosed?(input: { generation: number; reason: string }): void;
+		onError?(error: Error): void;
+	};
 }
 
 export class CodexVoiceContainer {
@@ -429,11 +461,7 @@ export class CodexVoiceContainer {
 		this.evidence = options.onEvidence ?? (() => undefined);
 	}
 
-	open(input: {
-		sessionId: string;
-		voice: string;
-		loadContext: () => Promise<CodexVoiceContextSnapshot>;
-	}): Promise<CodexVoiceConversation> {
+	open(input: CodexVoiceOpenInput): Promise<CodexVoiceConversation> {
 		const resources: OpenResources = { cancelled: false };
 		const attempt = this.openWithinDeadline(input, resources);
 		// A timed-out real child is stopped below. Its in-flight RPC then rejects;
@@ -451,11 +479,7 @@ export class CodexVoiceContainer {
 	}
 
 	private async openWithinDeadline(
-		input: {
-			sessionId: string;
-			voice: string;
-			loadContext: () => Promise<CodexVoiceContextSnapshot>;
-		},
+		input: CodexVoiceOpenInput,
 		resources: OpenResources,
 	): Promise<CodexVoiceConversation> {
 		const assertActive = () => {
@@ -572,19 +596,25 @@ export class CodexVoiceContainer {
 			assertActive();
 			if (violation) throw new Error(violation);
 			assertThreadReceipt(opened.result, opened.id, workdir);
-			const realtime = await process.request("thread/realtime/start", {
+			const transport = new CodexRealtimeTransport({
+				rpc: process,
+				sessionId: input.sessionId,
 				threadId: opened.id,
-				outputModality: "audio",
-				clientManagedHandoffs: true,
-				includeStartupContext: false,
-				prompt: snapshot.realtimePrompt,
-				transport: { type: "websocket" },
-				version: CODEX_VOICE_REALTIME_VERSION,
-				model: CODEX_VOICE_REALTIME_MODEL,
-				voice: input.voice,
+				generation: 1,
+				start: {
+					outputModality: "audio",
+					clientManagedHandoffs: true,
+					includeStartupContext: false,
+					prompt: snapshot.realtimePrompt,
+					transport: { type: "websocket" },
+					version: CODEX_VOICE_REALTIME_VERSION,
+					model: CODEX_VOICE_REALTIME_MODEL,
+					voice: input.voice,
+				},
+				...input.realtime,
 			});
+			await transport.start();
 			assertActive();
-			if (realtime.error) throw new Error(realtime.error.message);
 			if (violation) throw new Error(violation);
 			conversation = new CodexVoiceConversation(
 				input.sessionId,
@@ -594,6 +624,7 @@ export class CodexVoiceContainer {
 				workdir,
 				snapshot.snapshotDigest,
 				process,
+				transport,
 				this.evidence,
 			);
 			this.evidence({

@@ -34,7 +34,9 @@ export interface RoomHandlers {
 interface FrontendLike {
 	start(signal?: AbortSignal): Promise<void>;
 	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
-	appendSpeech(speech: PreparedSpeech): Promise<void>;
+	appendSpeech(
+		speech: PreparedSpeech,
+	): Promise<void> | Promise<"confirmed" | "unconfirmed" | "failed">;
 	cancelSpeech(speechId: string): void;
 	stop(): Promise<void>;
 }
@@ -72,6 +74,7 @@ export interface GenericVoiceSessionOptions {
 	cleanup?(): void;
 	assertLease?(): void;
 	postStatus?(text: string): Promise<void>;
+	finalize?(outcome?: VoiceEnd): Promise<void> | void;
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
@@ -352,9 +355,14 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.room.setWaiting?.(false);
 		return new Promise<SpeechReceipt>((resolve) => {
 			this.pendingSpeech = { speech, resolve };
-			void this.frontend.appendSpeech(speech).catch(() => {
-				this.settleSpeech(speech.speechId, "failed");
-			});
+			void this.frontend
+				.appendSpeech(speech)
+				.then((result) => {
+					if (result) this.settleSpeech(speech.speechId, result);
+				})
+				.catch(() => {
+					this.settleSpeech(speech.speechId, "failed");
+				});
 		});
 	}
 
@@ -380,9 +388,13 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				);
 			}
 		} finally {
-			await this.room.stop().catch(() => undefined);
 			await this.frontend.stop().catch(() => undefined);
-			this.options.cleanup?.();
+			await this.room.stop().catch(() => undefined);
+			try {
+				await this.options.finalize?.(outcome);
+			} finally {
+				this.options.cleanup?.();
+			}
 		}
 	}
 

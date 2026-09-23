@@ -142,6 +142,7 @@ describe("voice daemon config", () => {
 			"/Users/tester",
 		);
 		expect(config).toMatchObject({
+			backendId: "openai-realtime",
 			realtimeApiKey: "api-key",
 			buildSha: "a".repeat(40),
 			speechChunkTokens: 80,
@@ -157,6 +158,41 @@ describe("voice daemon config", () => {
 			voiceHealthHelperPath:
 				"/Users/tester/Dev/flywheel/scripts/lib/voice-health.py",
 		});
+	});
+
+	it("enables Codex only explicitly and requires an absolute standalone binary", () => {
+		expect(
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+					FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
+				},
+				"/Users/tester",
+			),
+		).toMatchObject({
+			backendId: "codex-realtime",
+			codexBin: "/opt/flywheel/codex-0.156.1/codex",
+		});
+		for (const env of [
+			{ FLYWHEEL_VOICE_BACKEND: "unknown" },
+			{
+				FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+				FLYWHEEL_CODEX_BIN: "codex",
+			},
+		]) {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{
+						TEAMLEAD_API_TOKEN: "master",
+						OPENAI_API_KEY: "api-key",
+						...env,
+					},
+					"/Users/tester",
+				),
+			).toThrow(/voice backend|standalone Codex binary/);
+		}
 	});
 
 	it("rejects a malformed voice build identity", () => {

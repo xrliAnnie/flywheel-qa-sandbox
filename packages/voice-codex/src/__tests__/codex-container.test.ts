@@ -139,6 +139,25 @@ class FakeProcess implements CodexVoiceProcess {
 
 	async request(method: string, params?: unknown) {
 		this.requests.push({ method, params });
+		if (!this.realtimeError && method === "thread/realtime/start") {
+			const threadId = (params as { threadId: string }).threadId;
+			queueMicrotask(() =>
+				this.emit("thread/realtime/started", {
+					threadId,
+					version: "v2",
+					realtimeSessionId: `realtime-${threadId}`,
+				}),
+			);
+		}
+		if (method === "thread/realtime/stop") {
+			const threadId = (params as { threadId: string }).threadId;
+			queueMicrotask(() =>
+				this.emit("thread/realtime/closed", {
+					threadId,
+					reason: "client_stop",
+				}),
+			);
+		}
 		return this.realtimeError ? { error: this.realtimeError } : { result: {} };
 	}
 

@@ -63,7 +63,10 @@ export interface VoiceHandoffServiceOptions {
 	enqueueLeadEvent: (
 		envelope: LeadEventEnvelope,
 	) => DurableQueueReceipt | Promise<DurableQueueReceipt>;
-	inspectDeliveryState: (deliveryId: string) => VoiceMailboxSettlement;
+	inspectDeliveryState: (
+		deliveryId: string,
+		handoff: VoiceHandoffRow,
+	) => VoiceMailboxSettlement;
 	deliveryCanReconcile?: boolean;
 	reconcileLeaseMs?: number;
 }
@@ -281,6 +284,7 @@ function mapStoreFailure(status: string): never {
 export class VoiceHandoffService {
 	private readonly now: () => string;
 	private readonly reconcileLeaseMs: number;
+	private reconcileTimer?: ReturnType<typeof setInterval>;
 
 	constructor(private readonly options: VoiceHandoffServiceOptions) {
 		this.now = options.now ?? (() => new Date().toISOString());
@@ -289,6 +293,31 @@ export class VoiceHandoffService {
 		// dispatching therefore means the process died across external I/O; it is
 		// never safe to infer "not sent" and replay it.
 		this.options.store.recoverVoiceHandoffDispatching(this.now());
+	}
+
+	startReconciler(owner: string, intervalMs = 1_000): void {
+		boundedId(owner, "voice_handoff_reconciler_invalid");
+		if (!Number.isSafeInteger(intervalMs) || intervalMs < 100)
+			throw new VoiceHandoffError(400, "voice_handoff_reconciler_invalid");
+		if (this.reconcileTimer) return;
+		const tick = () => {
+			try {
+				for (let count = 0; count < 32; count += 1) {
+					if (!this.reconcileNext(owner)) break;
+				}
+			} catch {
+				// The claimed row has a durable lease and will be retried after expiry.
+				// One malformed/external settlement must not stop later timer ticks.
+			}
+		};
+		tick();
+		this.reconcileTimer = setInterval(tick, intervalMs);
+		this.reconcileTimer.unref?.();
+	}
+
+	stopReconciler(): void {
+		if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+		this.reconcileTimer = undefined;
 	}
 
 	recordUtterance(input: RecordVoiceUtteranceInput): {
@@ -405,7 +434,10 @@ export class VoiceHandoffService {
 		if (!claimed) return;
 		let settlement: VoiceMailboxSettlement;
 		try {
-			settlement = this.options.inspectDeliveryState(claimed.deliveryId!);
+			settlement = this.options.inspectDeliveryState(
+				claimed.deliveryId!,
+				claimed,
+			);
 		} catch {
 			settlement = { kind: "torn_identity" };
 		}

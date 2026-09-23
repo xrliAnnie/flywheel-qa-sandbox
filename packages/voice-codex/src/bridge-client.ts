@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ReceiveHealth } from "flywheel-voice-core";
+import type { ReceiveHealth, VoiceUtterance } from "flywheel-voice-core";
 import { validateVoiceBridgeUrl } from "./config.js";
 
 export interface VoiceSessionProjection {
@@ -38,7 +38,10 @@ export type VoiceBridgeOperation =
 	| "renew"
 	| "state"
 	| "outbound"
-	| "receipt";
+	| "receipt"
+	| "context"
+	| "utterance"
+	| "handoff";
 
 export type VoiceBridgeReasonClass =
 	| "bridge_connect_failed"
@@ -431,6 +434,51 @@ export class BridgeVoiceClient {
 					...(reason ? { reason } : {}),
 					...(abandonedCount === undefined ? {} : { abandonedCount }),
 				},
+			},
+		);
+	}
+
+	async context<T = Record<string, unknown>>(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+	): Promise<T> {
+		lease.assert();
+		return this.request<T>(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/context`,
+			{
+				operation: "context",
+				routeTemplate: "/api/voice/sessions/:sessionId/context",
+				leaseToken,
+			},
+		);
+	}
+
+	async recordUtterance(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		input: Omit<VoiceUtterance, "sessionId" | "ts" | "interrupted"> & {
+			captureDigest: string;
+		},
+	): Promise<{
+		status: "inserted" | "replayed";
+		receipt: {
+			sessionId: string;
+			transcriptId: string;
+			contentDigest: string;
+			receiptId: string;
+		};
+	}> {
+		lease.assert();
+		return this.request(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/utterances`,
+			{
+				operation: "utterance",
+				routeTemplate: "/api/voice/sessions/:sessionId/utterances",
+				method: "POST",
+				leaseToken,
+				body: input,
 			},
 		);
 	}

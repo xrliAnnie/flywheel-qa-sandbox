@@ -13,6 +13,7 @@ import {
 } from "./discord-utils.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
 import type { BridgeConfig } from "./types.js";
+import type { VoiceHandoffService } from "./voice-handoff.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
 import {
 	kickstartVoiceOnDemand,
@@ -58,6 +59,7 @@ export function createVoiceSessionServices(input: {
 	cwd?: string;
 	fetchImpl?: typeof fetch;
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
+	voiceHandoffs?: VoiceHandoffService;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
@@ -421,6 +423,7 @@ export function createVoiceSessionServices(input: {
 			projectSession,
 			validateSession,
 			getSessionContext,
+			voiceHandoffs: input.voiceHandoffs,
 		}),
 		runtime,
 		cardProjector,

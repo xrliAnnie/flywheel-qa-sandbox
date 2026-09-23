@@ -102,6 +102,47 @@ describe("BridgeVoiceClient desired response decoding", () => {
 });
 
 describe("BridgeVoiceClient safe request diagnostics", () => {
+	it("loads leased context and persists normalized utterances through master routes", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response('{"snapshotDigest":"digest"}'))
+			.mockResolvedValueOnce(
+				response('{"status":"inserted","receipt":{"transcriptId":"t-1"}}', 201),
+			);
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		expect(await bridge.context("session-a", "lease-a", lease)).toMatchObject({
+			snapshotDigest: "digest",
+		});
+		expect(
+			await bridge.recordUtterance("session-a", "lease-a", lease, {
+				transcriptId: "t-1",
+				utteranceId: "u-1",
+				sessionGeneration: 1,
+				sequence: 1,
+				source: "room_audio",
+				role: "user",
+				text: "原话",
+				final: true,
+				attribution: { kind: "unknown", reason: "not_bound" },
+				captureDigest: "a".repeat(64),
+			}),
+		).toMatchObject({ receipt: { transcriptId: "t-1" } });
+		expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/context`,
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/utterances`,
+		]);
+		const utteranceRequest = fetchImpl.mock.calls[1]?.[1];
+		expect(utteranceRequest?.headers).toMatchObject({
+			Authorization: "Bearer master-secret-token",
+			"X-Voice-Lease": "lease-a",
+		});
+		expect(JSON.parse(String(utteranceRequest?.body))).not.toHaveProperty(
+			"sessionId",
+		);
+	});
+
 	it("reports a closed diagnostic envelope without raw request or error data", async () => {
 		let mono = 100;
 		const fetchImpl = vi.fn<typeof fetch>(async () => {
