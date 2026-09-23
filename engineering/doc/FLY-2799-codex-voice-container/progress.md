@@ -1,16 +1,17 @@
 ---
 issue: FLY-2799
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-23T05:33:51.394Z
-nextStep: Subscription auth negative control saved. Lead response
-  a00af684-46b9-4e72-949c-e9f8ba8cd2cc authorizes existing production voice API
-  key via environment only; API-key probes underway. Report one page before any
-  design; FLY-2795 contract still prerequisite.
+phaseCursor: 2/6
+updated: 2026-09-23T05:40:20.385Z
+nextStep: "Step 1 complete: API-key V2 appendSpeech and external audio proven,
+  V3 denied, appendText alone no speech. Probe commit ffdbd371f. Wait for
+  FLY-2795 authoritative contract before exploration/plan; preserve
+  background_agent auto-turn counterexample. Report question
+  60bc3bec-ab60-412e-9cbf-441376cc9138."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: design (1/6)
-**next**: Subscription auth negative control saved. Lead response a00af684-46b9-4e72-949c-e9f8ba8cd2cc authorizes existing production voice API key via environment only; API-key probes underway. Report one page before any design; FLY-2795 contract still prerequisite.
+**phase**: design (2/6)
+**next**: Step 1 complete: API-key V2 appendSpeech and external audio proven, V3 denied, appendText alone no speech. Probe commit ffdbd371f. Wait for FLY-2795 authoritative contract before exploration/plan; preserve background_agent auto-turn counterexample. Report question 60bc3bec-ab60-412e-9cbf-441376cc9138.
