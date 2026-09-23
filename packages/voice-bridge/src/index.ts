@@ -276,6 +276,7 @@ export {
 	type AcquireResult,
 	SessionSlot,
 	type SessionSlotHolder,
+	type SessionSlotLease,
 	type SessionSlotOptions,
 } from "./SessionSlot.js";
 export { type RoomFrameCb, VoiceRoomRuntime } from "./VoiceRoomRuntime.js";

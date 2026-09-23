@@ -303,6 +303,8 @@ export interface HuddleConfig {
 	orchestratorBotUserId?: string;
 	/** Env var NAME for the ears (receive) bot token (pool claim). REQUIRED. */
 	earsBotTokenEnv: string;
+	/** Registry-owned Discord user id for the ears bot. */
+	earsBotUserId?: string;
 	/** Slash-command name (PRD R10: configurable). Consumer default: "glaw" (Annie-final ①). */
 	commandName?: string;
 	/** Zero-tap MOVE_MEMBERS when the founder is already in a VC. Consumer default: true. */
@@ -1268,6 +1270,15 @@ export function parseAndValidateProjects(
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" huddle.orchestratorBotUserId: if provided, must be a Discord snowflake`,
+				);
+			}
+			if (
+				hb.earsBotUserId !== undefined &&
+				(typeof hb.earsBotUserId !== "string" ||
+					!/^[0-9]{17,20}$/.test(hb.earsBotUserId))
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" huddle.earsBotUserId: if provided, must be a Discord snowflake`,
 				);
 			}
 		}

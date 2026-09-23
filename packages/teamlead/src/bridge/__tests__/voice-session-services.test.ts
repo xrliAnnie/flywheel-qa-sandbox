@@ -148,6 +148,163 @@ function configuredProject(): ProjectEntry {
 	} as ProjectEntry;
 }
 
+function configuredResidentProject(): ProjectEntry {
+	return {
+		projectName: "flywheel",
+		projectRoot: root,
+		huddle: {
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000099",
+			orchestratorBotTokenEnv: "ORCHESTRATOR_TOKEN",
+			orchestratorBotUserId: "100000000000000008",
+			earsBotTokenEnv: "EARS_TOKEN",
+			earsBotUserId: "100000000000000009",
+		},
+		leads: [
+			{
+				agentId: "lead-a",
+				botTokenEnv: "LEAD_TOKEN",
+				botUserId: "100000000000000005",
+				chatChannel: "100000000000000003",
+				match: {},
+				summaryRole: "producer",
+			},
+		],
+	} as ProjectEntry;
+}
+
+function residentStartBody(overrides: Record<string, unknown> = {}) {
+	const observedAt = new Date().toISOString();
+	return {
+		requestId: "resident-request-1",
+		mode: "meeting",
+		projectName: "flywheel",
+		leadId: "lead-a",
+		ownerBootId: "resident-boot-1",
+		sessionGeneration: 7,
+		bindingProof: {
+			version: 1,
+			projectName: "flywheel",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000099",
+			ownerBootId: "resident-boot-1",
+			sessionGeneration: 7,
+			outputBotUserId: "100000000000000008",
+			earsBotUserId: "100000000000000009",
+			outputBotDropped: true,
+			earsBotDropped: true,
+			unknownDropped: true,
+			allowedHumanPassed: true,
+			observedAt,
+			expiresAt: new Date(Date.parse(observedAt) + 60_000).toISOString(),
+		},
+		...overrides,
+	};
+}
+
+it("resolves and validates a resident claim from registered huddle identities without daemon effects", async () => {
+	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+	const fetchImpl = vi.fn();
+	const { runtime } = createVoiceSessionServices({
+		store,
+		projects: [configuredResidentProject()],
+		env: {},
+		homeDir: root,
+		cwd: root,
+		fetchImpl,
+		config: {} as BridgeConfig,
+	});
+	const deps = factory.mock.calls[0]![0];
+	const resolved = await deps.resolveResidentStart!(residentStartBody());
+	expect(resolved.reservation).toMatchObject({
+		mode: "meeting",
+		projectName: "flywheel",
+		leadId: "lead-a",
+		guildId: "100000000000000001",
+		voiceChannelId: "100000000000000099",
+		voiceBotUserId: "100000000000000008",
+		requestedBy: "master",
+		credentialTier: "master",
+	});
+	expect(resolved.inputDigest).toMatch(/^[0-9a-f]{64}$/);
+
+	store.setVoiceSessionState({
+		sessionId: SESSION_ID,
+		state: "ended",
+		now: new Date().toISOString(),
+	});
+	const claimed = store.reserveAndClaimResidentVoiceSession({
+		...resolved,
+		leaseTtlMs: 15_000,
+	});
+	expect("session" in claimed).toBe(true);
+	if (!("session" in claimed)) throw new Error("resident claim failed");
+	await expect(deps.validateSession?.(claimed.session)).resolves.toBeUndefined();
+	await expect(
+		deps.validateSession?.({
+			...claimed.session,
+			residentBindingProof: {
+				...claimed.session.residentBindingProof!,
+				observedAt: "1999-12-31T23:59:00.000Z",
+				expiresAt: "2000-01-01T00:00:00.000Z",
+			},
+		}),
+	).rejects.toThrow("self_filter_unverified");
+	await runtime.tick();
+	expect(fetchImpl).not.toHaveBeenCalled();
+	expect(store.getVoiceSession(claimed.session.sessionId)).toMatchObject({
+		carrierKind: "resident",
+		state: "claimed",
+		ownerBootId: "resident-boot-1",
+		sessionGeneration: 7,
+	});
+});
+
+it("fails closed when a resident claim cannot prove the registered room and bot bindings", async () => {
+	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+	createVoiceSessionServices({
+		store,
+		projects: [configuredResidentProject()],
+		env: {},
+		homeDir: root,
+		cwd: root,
+		config: {} as BridgeConfig,
+	});
+	const resolveResidentStart = factory.mock.calls[0]![0].resolveResidentStart!;
+	expect(() =>
+		resolveResidentStart(
+			residentStartBody({
+				bindingProof: {
+					...residentStartBody().bindingProof,
+					earsBotUserId: "100000000000000010",
+				},
+			}),
+		),
+	).toThrowError(
+		expect.objectContaining({
+		status: 503,
+		code: "voice_unavailable",
+		reason: "resident_binding_invalid",
+		}),
+	);
+	expect(() =>
+		resolveResidentStart(
+			residentStartBody({
+				bindingProof: {
+					...residentStartBody().bindingProof,
+					allowedHumanPassed: false,
+				},
+			}),
+		),
+	).toThrowError(
+		expect.objectContaining({
+		status: 503,
+		code: "voice_unavailable",
+		reason: "self_filter_unverified",
+		}),
+	);
+});
+
 it.each(["bot", "room", "guild", "missing", "duplicate"])(
 	"rejects %s registry drift before provision or projection effects",
 	async (drift) => {

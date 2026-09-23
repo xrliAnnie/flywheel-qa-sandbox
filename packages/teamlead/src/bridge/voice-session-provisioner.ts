@@ -165,6 +165,10 @@ export async function runVoiceProvisioner(
 	input: RunVoiceProvisionerInput,
 ): Promise<VoiceSessionState | "not_owner"> {
 	input.signal?.throwIfAborted();
+	const candidate = input.store.getVoiceSession(input.sessionId);
+	if (candidate?.carrierKind === "resident") {
+		throw new Error("resident_session_not_provisionable");
+	}
 	const now = input.now ?? (() => new Date().toISOString());
 	const claimedAt = now();
 	const staleBefore = new Date(

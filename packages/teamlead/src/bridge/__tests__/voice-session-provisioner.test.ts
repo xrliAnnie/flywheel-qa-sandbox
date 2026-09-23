@@ -71,6 +71,55 @@ function run(
 }
 
 describe("voice session provisioner", () => {
+	it("explicitly refuses a resident carrier without Discord provisioning effects", async () => {
+		const residentId = "10000000-0000-4000-8000-000000000099";
+		store.reserveAndClaimResidentVoiceSession({
+			projectName: "flywheel",
+			leadId: "lead-resident",
+			requestId: "resident-request",
+			inputDigest: "resident-digest",
+			ownerBootId: "bridge-boot",
+			sessionGeneration: 1,
+			bindingProof: {
+				version: 1,
+				projectName: "flywheel",
+				guildId: "100000000000000001",
+				voiceChannelId: "100000000000000099",
+				ownerBootId: "bridge-boot",
+				sessionGeneration: 1,
+				outputBotUserId: "100000000000000006",
+				earsBotUserId: "100000000000000007",
+				outputBotDropped: true,
+				earsBotDropped: true,
+				unknownDropped: true,
+				allowedHumanPassed: true,
+				observedAt: T0,
+				expiresAt: "2026-09-08T20:01:00.000Z",
+			},
+			leaseTtlMs: 15_000,
+			reservation: {
+				sessionId: residentId,
+				mode: "rg",
+				projectName: "flywheel",
+				leadId: "lead-resident",
+				guildId: "100000000000000001",
+				voiceBotUserId: "100000000000000006",
+				voiceChannelId: "100000000000000099",
+				requestedBy: "master",
+				credentialTier: "master",
+				createdAt: T0,
+			},
+		});
+		const effects = deps();
+		await expect(
+			run({ sessionId: residentId, deps: effects }),
+		).rejects.toThrow("resident_session_not_provisionable");
+		expect(effects.captureCursor).not.toHaveBeenCalled();
+		expect(effects.postRoot).not.toHaveBeenCalled();
+		expect(effects.startThread).not.toHaveBeenCalled();
+		expect(effects.addMember).not.toHaveBeenCalled();
+	});
+
 	it("seeds an empty channel at the current snowflake instead of failing or backfilling", async () => {
 		const now = Date.now();
 		const fetchImpl = vi.fn(

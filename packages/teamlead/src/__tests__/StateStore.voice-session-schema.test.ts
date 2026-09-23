@@ -57,6 +57,10 @@ describe("StateStore voice session schema", () => {
 				"receive_health_observed_at",
 				"receive_health_boot_id",
 				"receive_card_digest",
+				"carrier_kind",
+				"owner_boot_id",
+				"session_generation",
+				"resident_binding_proof",
 			]),
 		);
 		db.close();
