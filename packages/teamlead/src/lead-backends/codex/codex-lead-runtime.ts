@@ -1405,7 +1405,10 @@ export function spawnCodexAppServer(cfg: {
 	mcpArgv: string[];
 	featureArgv?: string[];
 	codexHome: string;
+	cwd?: string;
 	baseEnv?: NodeJS.ProcessEnv;
+	/** Explicit isolated voice profile: preserves only this API key after washing. */
+	voiceProfile?: { openAiApiKey: string };
 	/** FLY-350 full-access: when false, the `baseEnv` is used AS-IS — it is already
 	 * a curated positive allowlist (buildFullAccessEnv), and washing it would strip
 	 * the gh/Discord/Bridge auth a Claude-equal Lead needs. Default TRUE: every
@@ -1425,12 +1428,27 @@ export function spawnCodexAppServer(cfg: {
 		...cfg.mcpArgv,
 	];
 	const base = cfg.baseEnv ?? process.env;
+	if (cfg.voiceProfile && !cfg.voiceProfile.openAiApiKey.trim()) {
+		throw new Error("voice_profile_openai_api_key_missing");
+	}
+	if (
+		cfg.voiceProfile &&
+		(cfg.washSecrets === false ||
+			cfg.capabilityModelEnv !== undefined ||
+			cfg.carrierInstanceId !== undefined)
+	) {
+		throw new Error("voice_profile_incompatible_with_business_credentials");
+	}
 	const child = spawn(cfg.codexBin, args, {
+		...(cfg.cwd ? { cwd: cfg.cwd } : {}),
 		env: cfg.capabilityModelEnv
 			? buildLeadModelEnv(base, cfg.capabilityModelEnv)
 			: {
 					...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
 					CODEX_HOME: cfg.codexHome,
+					...(cfg.voiceProfile
+						? { OPENAI_API_KEY: cfg.voiceProfile.openAiApiKey }
+						: {}),
 					...(cfg.carrierInstanceId
 						? {
 								FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: cfg.carrierInstanceId,
@@ -1447,7 +1465,11 @@ export function spawnCodexAppServer(cfg: {
 	child.stderr?.setEncoding("utf8");
 	return {
 		writeStdin: (data) => {
-			child.stdin?.write(data);
+			if (!child.stdin) throw new Error("codex app-server stdin unavailable");
+			return child.stdin.write(data);
+		},
+		onStdinDrain: (cb) => {
+			child.stdin?.on("drain", cb);
 		},
 		endStdin: () => {
 			child.stdin?.end();

@@ -8,6 +8,7 @@ class FakeChild implements ChildTransport {
 	private exitCb?: (code: number | null, sig: NodeJS.Signals | null) => void;
 	writeStdin(d: string) {
 		this.writes.push(d);
+		return true;
 	}
 	endStdin() {}
 	kill() {}
