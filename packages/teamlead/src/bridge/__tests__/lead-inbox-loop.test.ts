@@ -350,6 +350,65 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			lease_retry_count: 1,
 		});
 	});
+
+	it("coalesces repeated doorbells during a busy tick and compensates immediately", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "doorbell-busy");
+		let delivered!: LeadDeliveryBatch;
+		let release!: (value: DurableAcceptReceipt) => void;
+		const blocked = new Promise<DurableAcceptReceipt>((resolve) => {
+			release = resolve;
+		});
+		const adapter = {
+			deliverBatch: vi.fn(async (batch: LeadDeliveryBatch) => {
+				delivered = batch;
+				return blocked;
+			}),
+		};
+		const reconcile = vi.spyOn(queue, "reconcileExpiredLeases");
+		const consumer = loop(queue, adapter);
+		try {
+			consumer.start();
+			await vi.waitFor(() =>
+				expect(adapter.deliverBatch).toHaveBeenCalledOnce(),
+			);
+			consumer.nudge();
+			consumer.nudge();
+			release(receipt(delivered));
+			await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(2));
+			expect(adapter.deliverBatch).toHaveBeenCalledOnce();
+		} finally {
+			consumer.stop();
+		}
+	});
+
+	it("scans durable pending work on restart without waiting for another doorbell", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "pending-before-restart");
+		const adapter = {
+			deliverBatch: vi.fn(async (batch: LeadDeliveryBatch) => receipt(batch)),
+		};
+		const restarted = loop(queue, adapter, {
+			batchIdFactory: () => "batch-after-restart",
+		});
+		try {
+			restarted.start();
+			await vi.waitFor(() =>
+				expect(adapter.deliverBatch).toHaveBeenCalledOnce(),
+			);
+			expect(adapter.deliverBatch.mock.calls[0]?.[0]).toMatchObject({
+				batchId: "batch-after-restart#r0",
+				members: [
+					expect.objectContaining({
+						deliveryId: "pending-before-restart#r0",
+					}),
+				],
+			});
+		} finally {
+			restarted.stop();
+		}
+	});
+
 	it("records heartbeat and delivery only after adapter receipt plus audit", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "A");
