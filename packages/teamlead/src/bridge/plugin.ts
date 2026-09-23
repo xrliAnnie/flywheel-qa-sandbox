@@ -14017,7 +14017,7 @@ export async function startBridge(
 							new Promise<never>((_, reject) => {
 								identityTimeout = setTimeout(
 									() => reject(new Error("resume_identity_timeout")),
-									60_000,
+									180_000,
 								);
 							}),
 						]);
