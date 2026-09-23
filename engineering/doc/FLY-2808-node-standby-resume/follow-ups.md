@@ -3,14 +3,14 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 日期: 2026-09-22
 基于: plan.md、review-receipt.json
 
-有效 verdict=APPROVED（R2）。以下均是 reviewer 的非阻塞建议，完整 findingKey 和理由见 review-receipt.json。保留已批准 plan，不借收尾重开设计；交 FLY-2809 实现规划与独立 QA 处理，Lead 报告 receipt a9f3bf1e-748b-4106-9cd0-c8ba18015c95。
+有效设计 verdict=APPROVED（R2）。Lead 后续授权本单直接实现；以下 disposition 只说明当前代码是否覆盖建议，完整 findingKey 和理由仍见 review-receipt.json。生产与真实 QA 证据仍未执行。
 
 | 优先级 | findingKey | 后续建议 / 验收关注 |
 |---|---|---|
-| MEDIUM | sweep-scope-misses-core-and-claude-runner | 普查 root 扩至 packages/ + scripts/；包括 core/workflow-fsm、claude-runner/codex-home、keepalive_park、design_done 与 active/readopt 查询，逐消费者处置 |
-| MEDIUM | stale-worktree-context-after-head-advance | 首轮工作前向恢复会话注入 lastObservedHead 到当前 HEAD 的提交/文件变化与 dirty 差异；验收其实际收到，而非只检查允许 HEAD 前移 |
-| MEDIUM | single-issue-scope-vs-incremental-pr-landing | 一张 issue 不要求一个巨大 PR；可按工作包分默认关闭的 PR 落地，最终统一启用，遵循既有 ship/独立 updater 门禁 |
-| LOW | pane-loss-reconcile-missing-from-closure-list | 纳入 pane-loss-reconcile，验收正常待命不产生 pane-loss / monitor-lost 提示 |
-| LOW | carrier-term-collides-with-existing-ship-gate-carrier | 术语明确“进程载体”与 gate carrier 不同，避免读串；无需为命名扩展抽象 |
+| MEDIUM | sweep-scope-misses-core-and-claude-runner | 已覆盖 core adapter contract、Claude/Codex adapter、completion/rework、Heartbeat、pane loss、auto reowner、expiry、recipient 与 fault budget；validation 记录消费者搜索及排除项 |
+| MEDIUM | stale-worktree-context-after-head-advance | 已实现 lastObservedHead/current HEAD/dirty 比对，并在恢复首轮 prompt 前注入重读提示；真实模型收到提示待独立 QA |
+| MEDIUM | single-issue-scope-vs-incremental-pr-landing | Lead 明确要求当前一张 PR 完成完整默认关闭实现；仍保留小提交、独立 code review/QA，未获得 ship 权限 |
+| LOW | pane-loss-reconcile-missing-from-closure-list | 已接线：confirmed standby 跳过 pane-loss/monitor-lost 误报，并有定向测试 |
+| LOW | carrier-term-collides-with-existing-ship-gate-carrier | 实现采用 `process_body` / process lifecycle 命名，未引入新的裸 `carrier` 类型 |
 
-这些建议尚未实现、未做生产验证，不表示已被源代码修复。
+以上“已覆盖”只指当前分支源代码和定向本地证明，不表示生产启用或 QA 通过。

@@ -3,7 +3,7 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 日期: 2026-09-22
 基于: research.md、exploration.md
 
-状态：待有效设计评审。N1 仅文档；N2–N5 是实现工作包，建单粒度按下文最新 Lead 决定；本单不实施、不部署、不启动真实恢复。
+状态：设计 R2 已有效批准；Lead 后续以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本单继续完成默认关闭的 N2–N5 实现。仍不部署、不启用生产恢复、不操作真实凭证。
 
 ## 1. 给 founder 的结论
 
@@ -196,4 +196,17 @@ schema 仅加字段/表/索引；已有 park outbox 类型按版本扩展，旧�
 
 Lead 回答 question `11a10fbd-8cbe-4f82-b91c-5e3e0dd7d573` 已同意：无墙钟 TTL、单目录串行/跨目录最多2、原会话最多2次/每需求1次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖。另要求根据代码改动面建议实现1张还是2张，founder 不希望拆碎。
 
-**建议1张实现单，内部按 N2–N5 四个可验收工作包推进。** 生命周期事务、completion 投影、两 adapter、消息和 TURN 消费者是一条不可分割的跨层合同；按引擎/载体分单会增加中间不兼容状态。N2–N5 的范围/前置/测试保持 §8 不变，改作实施清单而非要求四张独立 issue。实现后仍走独立代码评审和 QA 节点，部署仍需原审批；本 N1 不建单、不派后继。Lead 后续回答 question `604dec16-9c3c-413e-99c4-ac70bdb3c598` 已采纳一张完整实现单：由 Lead 将 FLY-2809 合并为完整范围并关闭 FLY-2810/2811/2812；内部四工作包与独立 QA 保留。本设计不再提出两张备选，不由设计 Runner 操作后继单。
+**建议1张实现单，内部按 N2–N5 四个可验收工作包推进。** 生命周期事务、completion 投影、两 adapter、消息和 TURN 消费者是一条不可分割的跨层合同；按引擎/载体分单会增加中间不兼容状态。N2–N5 的范围/前置/测试保持 §8 不变，改作实施清单而非要求四张独立 issue。实现后仍走独立代码评审和 QA 节点，部署仍需原审批。Lead 后续回答 question `604dec16-9c3c-413e-99c4-ac70bdb3c598` 已采纳一张完整实现单；随后以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 将该完整范围直接并入 FLY-2808 当前实现阶段。DAG 后继仍由 orchestrator 派发，本节点不派 QA、不 merge、不 deploy。
+
+## 12. 当前实现落地（Lead 后续授权）
+
+实现沿用本设计的共用合同，没有另建调度框架或外部依赖：
+
+- `workflow_execution_process_body` 保存 active → retiring → standby → resuming / resume_failed → closed 的代数化物理进程状态；工作流整体终态才统一 close，普通阶段完成不再用 terminal timestamp 抹掉可恢复性。
+- completion、Heartbeat、pane-loss、Codex 自动 reowner、resident expiry、recipient terminal guard 与 writer replacement 预算均读取同一 process-body 事实；待命不再被当死亡、终态拒投或故障换人。
+- Claude 持久实际 session id，并以精确 `--resume` 恢复；Codex 空/错 thread id fail closed。两 adapter 均在身份回调前核 model/cwd，持久 generation、git/worktree 摘要，并在合法 HEAD 前移/dirty 时注入重读提示。
+- rework coordinator 先领取 resume claim、拉起并核验 observed session/model/cwd，再激活 holder、授予 TURN、发送 wake；任何拉起失败都不会发 TURN。
+- 同一 demand 的原会话最多两次；耗尽后原子分配一次 `resume_fallback` 新 execution，并改写 route/node/delivery。该 purpose 与 `fault_replacement` 分账，回放复用同一 fallback receipt。
+- founder 投影统一为 working / standby / problem；标题、刷新 fingerprint 和状态工具读取相同 DTO。功能只在 `FLYWHEEL_NODE_STANDBY_RESUME=1` 的新 admission 上启用，默认关闭；旧 run 保持原语义。
+
+本阶段只证明代码和定向本地测试；真实服务重启、生产开关、真实 Claude/Codex 长会话、资源曲线、浏览器视觉和跨节点 QA 均留给独立 QA/发布授权，不能由这些本地结果替代。
