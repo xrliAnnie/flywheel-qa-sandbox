@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scion 是给谁用的 — FLY-2783</title>
+<style>
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 80px}
+header{margin-bottom:28px}
+h1{font-size:30px;line-height:1.25;margin:0 0 10px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:14px}
+.sub code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px}
+.answer{background:var(--navy);color:#fff;border-radius:14px;padding:22px 24px;margin:22px 0 34px}
+.answer .lab{font-size:12px;letter-spacing:1.4px;text-transform:uppercase;opacity:.65;margin-bottom:8px}
+.answer p{margin:0;font-size:17px;line-height:1.7}
+.section{margin:0 0 30px}
+.section-title{font-size:20px;font-weight:650;margin:0 0 14px;letter-spacing:-.2px;display:flex;align-items:center;gap:9px}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.card{background:var(--card);border-radius:12px;padding:20px 22px;margin-bottom:14px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)} .card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)} .card.gray{border-left-color:#c7c7cc}
+.card h3{margin:0 0 9px;font-size:16px;font-weight:650}
+.card p{margin:0 0 10px} .card p:last-child{margin-bottom:0}
+.card ul{margin:8px 0 0;padding-left:20px} .card li{margin:5px 0}
+.badge{display:inline-block;font-size:11px;font-weight:650;padding:2px 9px;border-radius:20px;
+  vertical-align:middle;margin-left:7px;letter-spacing:.3px}
+.b-red{background:#ffe5e3;color:#c4241b} .b-amber{background:#fff0dc;color:#9a5a00}
+.b-green{background:#ddf6e3;color:#1d7f36} .b-blue{background:#e1efff;color:#0059c1}
+.b-gray{background:#ececf0;color:#5b5b60} .b-purple{background:#f3e6fb;color:#7a30a8}
+table{width:100%;border-collapse:collapse;margin:10px 0 0;font-size:14.5px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12.5px;color:var(--dim);font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+tr:last-child td{border-bottom:none}
+.tag{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;background:#f0f0f4;
+  padding:1px 6px;border-radius:5px;color:#3a3a3e}
+.note{font-size:14px;color:var(--dim);margin-top:10px}
+.cmt{margin-top:14px;padding-top:14px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:6px}
+textarea{width:100%;min-height:62px;resize:vertical;border:1px solid var(--line);border-radius:9px;
+  padding:10px 12px;font:inherit;font-size:14.5px;background:#fbfbfd;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.sumbox{background:var(--card);border-radius:12px;padding:22px 24px;margin-top:34px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--purple)}
+.sumbox h2{margin:0 0 6px;font-size:19px}
+.sumbox .hint{color:var(--dim);font-size:14px;margin:0 0 14px}
+#sumPreview{white-space:pre-wrap;background:#fbfbfd;border:1px solid var(--line);border-radius:9px;
+  padding:12px 14px;font-size:13.5px;min-height:56px;max-height:300px;overflow:auto;
+  font-family:"SF Mono",ui-monospace,Menlo,monospace;color:#3a3a3e}
+.btnrow{margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button{font:inherit;font-size:15px;font-weight:600;border:none;border-radius:10px;padding:11px 20px;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:hover{filter:brightness(1.06)} button:disabled{background:#c7c7cc;cursor:default;filter:none}
+#copyState{font-size:14px;color:var(--green);font-weight:600}
+footer{margin-top:36px;color:var(--dim);font-size:13px;line-height:1.7}
+@media(max-width:600px){.wrap{padding:26px 16px 60px}h1{font-size:24px}
+  table,thead,tbody,th,td,tr{display:block}th{display:none}
+  td{border-bottom:none;padding:4px 0}tr{border-bottom:1px solid var(--line);padding:10px 0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Scion 是给谁用的？我们该不该动？</h1>
+  <div class="sub">FLY-2783 · 2026-09-22 · 一手核实了仓库和文档，并在这台 Mac 上真跑了它的命令行</div>
+</header>
+
+<div class="answer">
+  <div class="lab">一句话</div>
+  <p>Scion 不是 Google 的产品，是一个挂在 Google 名下、<strong>主要由一个人维护</strong>的开源实验项目。它给「已经在同时跑好几个 AI 助手、开始被互相踩脚和账号混乱折磨」的人用——个人和小团队都行，不需要服务器集群，Mac 能跑，订阅登录也支持。它跟 Flywheel 长得几乎一样。<strong>但我不建议我们迁过去，建议抄它两件事。</strong></p>
+</div>
+
+<!-- 1 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--amber)"></span>它到底是什么，靠不靠谱</div>
+  <div class="card amber">
+    <h3>一个开源的「AI 助手班组管理器」<span class="badge b-amber">谨慎</span></h3>
+    <p>你手上如果同时有五个 AI 助手在改同一个项目，会遇到三个麻烦：它们互相改乱对方的文件、共用一个账号把额度撞爆、你不知道谁在干嘛。Scion 就是专门管这三件事的：<strong>每个助手关在自己的小盒子里，用自己的账号，有自己的一份代码副本</strong>，它们之间能互相发消息、派活，你能随时探头进去看。</p>
+    <table>
+      <tr><th>项目</th><th>实测值</th><th>怎么读</th></tr>
+      <tr><td>身份</td><td>挂在 Google Cloud 名下，但说明书第一句就写「这不是 Google 官方支持的产品」</td><td><span class="badge b-red">别当官方背书</span></td></tr>
+      <tr><td>版本</td><td>所有版本都标着「预览版」，没有一个正式版</td><td><span class="badge b-amber">随时会变</span></td></tr>
+      <tr><td>开发速度</td><td>过去 7 天改了 200 次，一年改了 4387 次</td><td><span class="badge b-amber">快得有点吓人</span></td></tr>
+      <tr><td>谁在写</td><td>最近 200 次改动里，191 次出自同一个人</td><td><span class="badge b-red">一个人扛</span></td></tr>
+      <tr><td>受欢迎程度</td><td>1718 个收藏</td><td><span class="badge b-green">有人在看</span></td></tr>
+      <tr><td>开源协议</td><td>Apache-2.0，我们可以自由参考和使用</td><td><span class="badge b-green">没有法律障碍</span></td></tr>
+    </table>
+    <p class="note">我自己撞到的三处「说明书和实际不一致」：版本号标的是 preview.3、程序自报 preview.1；说明书说 Mac 上默认用苹果自带的容器，实测它选的是 Docker；说明书说默认只装两个助手，实测装了九个。单条都不致命，但合起来说明——<strong>它的文档不能当承诺看，只能当线索看。</strong></p>
+    <div class="cmt"><label>你对这段的意见（写完记得到页面最下面点复制）</label><textarea data-sec="它靠不靠谱" placeholder="…"></textarea></div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--blue)"></span>谁会去用它，用来干嘛</div>
+  <div class="card blue">
+    <h3>四类人，和一类明确不该用的人</h3>
+    <table>
+      <tr><th>谁</th><th>什么场景</th><th>合不合适</th></tr>
+      <tr><td>个人开发者</td><td>一台笔记本上同时跑三五个 AI 助手改同一个项目，要它们互不打架，还能随时探头看某一个在干嘛</td><td><span class="badge b-green">最贴合</span></td></tr>
+      <tr><td>2–10 人的小团队</td><td>租一台便宜机器当中枢，大家从各自电脑派活，在网页看板上看进度，在 Slack / Discord 里跟助手对话</td><td><span class="badge b-green">合适，但要有人管机器</span></td></tr>
+      <tr><td>公司里做内部工具的团队</td><td>拿它当地基，往上长自己公司的「AI 助手工作台」：身份、权限、密钥、审计、多人隔离它都有</td><td><span class="badge b-green">它最高配的形态就为这个设计</span></td></tr>
+      <tr><td>研究「AI 助手怎么协作」的人</td><td>这是它的本命。Google 内部拿它做过软件移植、市场调研；公开案例里有一个 AI 剧组拍片的项目，还有一个纯靠文字说明书定义的多助手解谜游戏</td><td><span class="badge b-green">本命场景</span></td></tr>
+      <tr><td>想要一个稳定工具、不想当小白鼠的人</td><td>要保证、要不折腾、要出事有人兜底</td><td><span class="badge b-red">不该用</span></td></tr>
+    </table>
+    <p class="note"><strong>划线人群</strong>：已经在同时跑多个 AI 助手、并且开始被「互相踩脚 / 账号混在一起 / 看不见谁在干嘛」折磨的人。只跑一个助手的话，Scion 给的一切都是纯成本。</p>
+    <div class="cmt"><label>你对这段的意见</label><textarea data-sec="谁会用它" placeholder="…"></textarea></div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--purple)"></span>那 AX 呢？（你同时问到的那个）</div>
+  <div class="card purple">
+    <h3>AX 跟我们不相干，它是另一个量级的东西</h3>
+    <p>AX（<span class="tag">google/ax</span>，7766 个收藏）自称是「Google 的开源 AI 助手调度运行时」，目标写得很直白：<strong>在一个服务器集群里跑几十亿个助手任务</strong>。它的用法是写配置文件然后一条命令下发，风格跟运维大型服务器集群的工具一模一样。</p>
+    <p><strong>关键差别：AX 的安装前置是一整套集群设施</strong>——一个服务器集群、一个打镜像的工具、一个集群能拉取的镜像仓库，外加另一个它依赖的底层服务。笔记本上不是「装不了」，而是<strong>得先把这一整套自己搭起来</strong>，这个前置本身就把它挡在了单机场景之外。所以它的人群是「我要给全公司几百个工程师提供 AI 助手算力，要配额、要网络管控、要成本控制」的基础设施团队。</p>
+    <p><strong>成熟度也别读错</strong>：它 9 月 20 日确实发了一个 v0.3.0（不带预览标记），但仍然是 0.x，接口还标着「第一版草案」，说明书首屏的警告框明写<strong>「稳定版之前很可能引入重大不兼容改动」</strong>。比 Scion 规整，但同样不是能押生产的东西。</p>
+    <p>打个比方：<strong>AX 是给 AI 助手用的「机场调度系统」，Scion 是「一个车队的排班表」。</strong>我们是后者的尺寸。AX 这条线我建议直接不看。</p>
+    <div class="cmt"><label>你对这段的意见</label><textarea data-sec="AX 是什么" placeholder="…"></textarea></div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--green)"></span>Mac 能跑吗？我们的订阅账号能用吗？</div>
+  <div class="card green">
+    <h3>两个都能<span class="badge b-green">实测</span></h3>
+    <p><strong>Mac：能。</strong>我把它的官方 Mac 版程序下到临时目录里真跑了一遍——启动、体检、建项目都成功。它对电脑的要求只有两样：git 和 tmux，我们本来就有。顺带一个有意思的发现：<strong>Scion 也是用 tmux 装 AI 助手的会话，跟 Flywheel 一模一样</strong>，它连「抓登录令牌」都是从 tmux 的屏幕回滚里扒的。</p>
+    <p><strong>订阅登录：能，而且设计得很细。</strong>它不强迫你用按量付费的 API key。它的流程是：先让助手在<em>没有账号</em>的状态下起来，掉到一个命令行里；你进去手动跑一次登录（Claude 是 <span class="tag">claude setup-token</span>，Codex 是 <span class="tag">codex login</span>）；然后它把登录结果<strong>抓下来存成这个项目的密钥</strong>，以后新起的助手就自动是登录好的。找不到账号时它不报错崩掉、而是告诉你该跑哪条命令——这个体贴设计本身就值得我们抄。</p>
+    <p><strong>但有两个它解决不了的坑，我必须说清楚：</strong></p>
+    <ul>
+      <li>本机的 Claude Code 登录信息存在 macOS 钥匙串里、<strong>不是文件</strong>（我实测确认了：那个文件不存在，Codex 的存在）。所以它文档里「直接拷贝登录文件」那条路在我们这儿是空的，只剩「手动生成令牌」这一条路能走。能走通，但要知道只有这一条。</li>
+      <li><strong>一份订阅喂给十个盒子，还是一份订阅。</strong>它给的是「每个助手一套独立账号」的机制，不是「每个助手一个独立订阅」。十个助手同时用同一个订阅，照样撞额度上限；Codex 那种会自动轮换令牌的，多个盒子同时刷还会互相踢掉线——这个我们自己踩过。<strong>Flywheel 现在的账号池和自动切号，Scion 里没有对应的东西。</strong></li>
+    </ul>
+    <div class="cmt"><label>你对这段的意见</label><textarea data-sec="Mac 和订阅账号" placeholder="…"></textarea></div>
+  </div>
+</div>
+
+<!-- 5 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--navy)"></span>跟 Flywheel 比，值得抄的两件事</div>
+
+  <div class="card blue">
+    <h3>① 明确告诉每个助手「你这份代码是独占的还是共享的」<span class="badge b-green">几乎零成本</span></h3>
+    <p>Scion 把「代码怎么分」定义成三个<strong>有名字</strong>的档位：全共享 / 各自一份工作副本 / 各自一份完整拷贝。然后它把当前档位<strong>直接告诉助手本人</strong>，还在说明书里写死每档下必须守的规矩（比如共享档：「不许假设你读完到写回之间文件没被别人改过」）。</p>
+    <p>我们事实上跑的就是中间那档，<strong>但从来没告诉过 Runner 它在哪一档</strong>。最近一次事故正是这个形状——一个已经验收完的 Runner 去合并主干，把被绑定的那个版本挪走了。如果它开工时就知道「你在共享区，这几件事禁止做」，源头就能拦住。</p>
+    <p class="note">代价：加一个环境变量 + 一段固定说明文字。这是最便宜的一条，建议第一个做。</p>
+  </div>
+
+  <div class="card gray">
+    <h3>② 闲着的助手怎么收 — <strong>已经在做了，归 FLY-2782</strong><span class="badge b-gray">不在这张单里</span></h3>
+    <p>你要的「跑完退下、打回再拉起」已经是 FLY-2782 的活，已经有人在做原型，这里不重复展开。只从 Scion 捞一句最值钱的留给那边：<strong>让助手自己说「我在等某件事」，用这句话把「故意在等」和「意外卡死」区分开</strong>——这个歧义我们现在是靠猜的。</p>
+  </div>
+
+  <div class="card purple">
+    <h3>③ 把「盒子活着没」和「助手在想什么」拆成两件事<span class="badge b-green">低成本</span></h3>
+    <p>Scion 用两个互不干扰的维度描述一个助手：一维是<strong>基础设施状态</strong>（正在创建 / 运行中 / 正在停 / 已暂停 / 崩了），另一维是<strong>它在干嘛</strong>（在干活 / 在思考 / 在等人回话 / 在等别人 / 干完了 / 撞额度了 / 疑似卡住）。</p>
+    <p>好处很直接：你的面板要回答「这个 Runner 是没在动，还是在等我回话？」时，现在是靠推断，拆开之后是直接读出来的。</p>
+  </div>
+
+  <div class="card gray">
+    <h3>还可以顺手学的小东西</h3>
+    <ul>
+      <li>助手退出时把<strong>真实退出码</strong>捞回来分类：正常收工 / 撞额度 / 真崩了——三者不再混为一谈。</li>
+      <li>项目级的<strong>权限天花板</strong>：单次派活能给多大权限，被项目的上限压住，比我们现在散落各处的护栏好审计。</li>
+      <li>它把「谁有权删掉一个助手」写成了一张表，其中一条我们踩过：<strong>「提交了不等于推上去了，有没推送的活不许删」</strong>。</li>
+    </ul>
+  </div>
+  <div class="card blue">
+    <h3>我的建议顺序</h3>
+    <p><strong>先做 ①</strong>——最便宜（一个环境变量 + 一段固定说明文字），而且正对着我们刚踩过的那个坑。<strong>然后做 ③</strong>，也很轻。<strong>② 归 FLY-2782</strong>，这里不动。</p>
+    <p>你只需要点通过，或者告诉我哪里不同意。</p>
+  </div>
+  <div class="cmt"><label>如果不同意这个顺序，写在这里</label><textarea data-sec="抄哪几条的顺序" placeholder="…"></textarea></div>
+</div>
+
+<!-- 6 -->
+<div class="section">
+  <div class="section-title"><span class="dot" style="background:var(--red)"></span>我的建议：两条路，我推荐哪条</div>
+
+  <div class="card gray">
+    <h3>选项 A：整体迁到 Scion 上去<span class="badge b-red">不推荐</span></h3>
+    <p><strong>好处</strong>：一步拿到真正的盒子级隔离、现成的网页看板、现成的多人权限体系，不用自己造。</p>
+    <p><strong>代价</strong>：① 非官方产品、没有正式版、一个人在写、一周改 200 次——把生产押上去，它哪天大改我们就得跟着改；② 我们的 Runner 要用这台 Mac 的 tmux、cmux 窗口、Chrome、钥匙串、开机服务，这些<strong>全都在盒子外面</strong>，关进盒子等于全部重做；③ 我们现在 50 个工作副本，一个助手一个盒子就是 50 个盒子，这台 Mac 的内存和硬盘顶不住。</p>
+  </div>
+
+  <div class="card green">
+    <h3>选项 B：不迁，只抄 ① 和 ③<span class="badge b-green">我推荐这个</span></h3>
+    <p><strong>好处</strong>：① 几乎零成本，并且直接对着我们最近真实踩过的坑；③ 也很轻。两件都是在现有 Flywheel 里加东西，不推翻任何地基。（② 已经在 FLY-2782 里做，不算这张单的成本。）</p>
+    <p><strong>代价</strong>：拿不到盒子级隔离。但说实话——<strong>隔离这件事我们用「一人一份代码副本 + 排队锁 + 护栏」已经买到了大半</strong>，剩下那部分不值 50 个盒子的价钱。</p>
+    <p><strong>为什么推荐 B</strong>：Scion 对我们的价值是<em>设计参考</em>，不是<em>替换方案</em>。它的地基（容器）是我们最不需要的部分，它的上层设计（隔离档位显式化、状态分层）才是我们真缺的——而上层设计可以白嫖，不用搬地基。</p>
+  </div>
+
+  <div class="card amber">
+    <h3>我不确定的地方（不藏着）</h3>
+    <ul>
+      <li><strong>我没真正跑起来过一个助手盒子。</strong>所以「跑起来之后好不好用」这一格我是空的。不是因为难，是因为要填它得动这台生产机的底层环境（装 Homebrew 包被护栏正确拦下了，而且要先起容器服务、再下几个 GB 的镜像）。如果你想填这一格，那是单独一张单。</li>
+      <li><strong>Scion 的闲置回收该抄多重，我没把握</strong>（这条留给 FLY-2782）。Scion 是「拆掉盒子留记忆」，我们的 tmux 会话比盒子便宜得多，可能只需要「自报在等 + 超时提醒」而不需要真的回收。</li>
+      <li><strong>它一周改 200 次，我今天读到的设计下个月可能就不长这样了。</strong>我抄的是思路，这一点对我们影响不大，但值得记一句。</li>
+    </ul>
+  </div>
+  <div class="cmt"><label>你选 A 还是 B？还是别的？</label><textarea data-sec="A还是B" placeholder="…"></textarea></div>
+</div>
+
+<!-- summary: bottom, normal flow, never sticky -->
+<div class="sumbox">
+  <h2>你的意见汇总</h2>
+  <p class="hint">下面是你在这一页写下的全部意见。<strong>写完点「一键汇总复制」，然后贴回 issue 的对话里——我才收得到。</strong>这一页的输入框只存在你自己的浏览器里，不会自动同步给我。</p>
+  <div id="sumPreview">（还没有填写任何意见）</div>
+  <div class="btnrow">
+    <button id="copyBtn" disabled>一键汇总复制</button>
+    <span id="copyState"></span>
+  </div>
+</div>
+
+<footer>
+  完整调研笔记（含全部一手取证命令与边界）：<span class="tag">product/doc/FLY-2783-scion-agent-sandbox/research.md</span><br>
+  数据采集时间：2026-09-22。Scion 一周改 200 次，具体数字会过期。
+</footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var KEY = "fly2783-comments-v1";
+  var MARK = "【页面意见汇总】FLY-2783";
+  var LIMIT = 1800;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-sec]"));
+  var preview = document.getElementById("sumPreview");
+  var btn = document.getElementById("copyBtn");
+  var state = document.getElementById("copyState");
+
+  function load(){
+    try{
+      var raw = window.localStorage.getItem(KEY);
+      if(!raw) return {};
+      var o = JSON.parse(raw);
+      return (o && typeof o === "object") ? o : {};
+    }catch(e){ return {}; }
+  }
+  function save(o){
+    try{ window.localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){}
+  }
+
+  var saved = load();
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-sec");
+    if(typeof saved[k] === "string") t.value = saved[k];
+  });
+
+  function collect(){
+    var out = [];
+    areas.forEach(function(t){
+      var v = (t.value || "").trim();
+      if(v) out.push({ sec: t.getAttribute("data-sec") || "未命名", text: v });
+    });
+    return out;
+  }
+
+  function body(items){
+    return items.map(function(it){
+      return "【" + it.sec + "】\n" + it.text;
+    }).join("\n\n");
+  }
+
+  // Split into chunks; every chunk repeats the marker on its own first line.
+  function chunks(items){
+    var head = MARK + "\n";
+    // Reserve room for the "(i/n)\n" line that multi-chunk output prepends.
+    var budget = LIMIT - head.length - 10;
+    var res = [];
+    var cur = "";
+    items.forEach(function(it){
+      var piece = "【" + it.sec + "】\n" + it.text;
+      var pieces = [piece];
+      // A single oversized section is hard-split on character count.
+      while(pieces.length && pieces[pieces.length-1].length > budget){
+        var last = pieces.pop();
+        var room = budget;
+        if(room < 40) room = 40;
+        pieces.push(last.slice(0, room));
+        pieces.push(last.slice(room));
+        if(pieces.length > 200) break;
+      }
+      pieces.forEach(function(p){
+        if(!p) return;
+        var next = cur ? (cur + "\n\n" + p) : p;
+        if(next.length > budget && cur){ res.push(cur); cur = p; }
+        else { cur = next; }
+      });
+    });
+    if(cur) res.push(cur);
+    if(!res.length) return [];
+    if(res.length === 1) return [head + res[0]];
+    return res.map(function(c, i){
+      return head + "(" + (i+1) + "/" + res.length + ")\n" + c;
+    });
+  }
+
+  function render(){
+    var items = collect();
+    if(!items.length){
+      preview.textContent = "（还没有填写任何意见）";
+      btn.disabled = true;
+      return;
+    }
+    preview.textContent = MARK + "\n" + body(items);
+    btn.disabled = false;
+  }
+
+  areas.forEach(function(t){
+    t.addEventListener("input", function(){
+      saved[t.getAttribute("data-sec")] = t.value;
+      save(saved);
+      state.textContent = "";
+      render();
+    });
+  });
+
+  function fallbackCopy(text){
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try{ ok = document.execCommand("copy"); }catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  var pending = [];
+  function copyNext(){
+    if(!pending.length) return;
+    var text = pending.shift();
+    var done = function(ok){
+      if(!ok){ state.textContent = "复制失败，请手动选中上面的文字复制"; return; }
+      if(pending.length){
+        state.textContent = "已复制第 " + (total - pending.length) + " 段，共 " + total + " 段 — 贴出去后再点一次按钮拿下一段";
+        btn.textContent = "复制下一段（还剩 " + pending.length + " 段）";
+      } else {
+        state.textContent = total > 1 ? "全部 " + total + " 段已复制完" : "已复制 — 贴回 issue 对话里";
+        btn.textContent = "一键汇总复制";
+      }
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  var total = 0;
+  btn.addEventListener("click", function(){
+    if(!pending.length){
+      pending = chunks(collect());
+      total = pending.length;
+      if(!total){ state.textContent = "还没有意见可复制"; return; }
+    }
+    copyNext();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
