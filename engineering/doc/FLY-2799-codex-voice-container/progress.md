@@ -2,18 +2,16 @@
 issue: FLY-2799
 phase: design
 phaseCursor: 2/6
-updated: 2026-09-23T05:49:58.151Z
-nextStep: "LEAD_HOLD_FLY2795: response to 7fedb16e-2289-42ec-93cf-f608ad9ec28a
-  confirms no dependably released contract yet; Lead will send document path +
-  fixed SHA. Stay here, no new interface or implementation. Step1 accepted via
-  60bc3bec-ab60-412e-9cbf-441376cc9138; preserve clientManagedHandoffs auto-turn
-  counterexample as enforced permission/tool-boundary requirement. Resume from
-  inbox/TURN, do not rerun probe. Pending: exploration/plan/review/final
-  HTML/phase completion."
+updated: 2026-09-23T06:11:00.819Z
+nextStep: "Lead f32792b4-6fbf-49ca-a4d6-607a7e22302f authorizes extra step1
+  tests gpt-live-1 vs gpt-realtime-2.1: same API key env only,
+  duplex/tool/latency/interruption; model must be configurable. Preserve prior
+  V2 evidence. V1 interface design still on hold awaiting FLY-2795 fixed
+  contract."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
 **phase**: design (2/6)
-**next**: LEAD_HOLD_FLY2795: response to 7fedb16e-2289-42ec-93cf-f608ad9ec28a confirms no dependably released contract yet; Lead will send document path + fixed SHA. Stay here, no new interface or implementation. Step1 accepted via 60bc3bec-ab60-412e-9cbf-441376cc9138; preserve clientManagedHandoffs auto-turn counterexample as enforced permission/tool-boundary requirement. Resume from inbox/TURN, do not rerun probe. Pending: exploration/plan/review/final HTML/phase completion.
+**next**: Lead f32792b4-6fbf-49ca-a4d6-607a7e22302f authorizes extra step1 tests gpt-live-1 vs gpt-realtime-2.1: same API key env only, duplex/tool/latency/interruption; model must be configurable. Preserve prior V2 evidence. V1 interface design still on hold awaiting FLY-2795 fixed contract.
