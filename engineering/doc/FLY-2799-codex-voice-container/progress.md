@@ -1,13 +1,13 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 6/8
-updated: 2026-09-23T11:24:54.040Z
-nextStep: T7 composition root, room lifecycle, and durable minutes
+phaseCursor: 7/8
+updated: 2026-09-23T12:52:33.833Z
+nextStep: T8 authorized test-room harness and gated live verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (6/8)
-**next**: T7 composition root, room lifecycle, and durable minutes
+**phase**: implement (7/8)
+**next**: T8 authorized test-room harness and gated live verification
