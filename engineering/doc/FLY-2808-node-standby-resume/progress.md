@@ -1,9 +1,9 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 6/6
-updated: 2026-09-23T14:03:38.564Z
-nextStep: Request exact-head R5 code review, then complete needs_review for QA refreeze
+phaseCursor: 6/7
+updated: 2026-09-23T14:14:31.418Z
+nextStep: TDD cleanup_unconfirmed founder projection and audited Lead reopen path
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -13,5 +13,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (6/6)
-**next**: Request exact-head R5 code review, then complete needs_review for QA refreeze
+**phase**: implement (6/7)
+**next**: TDD cleanup_unconfirmed founder projection and audited Lead reopen path
