@@ -1,10 +1,9 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-23T11:53:59.118Z
-nextStep: Run lint, affected related tests, update evidence docs, commit and
-  request new exact-head code review
+phaseCursor: 6/6
+updated: 2026-09-23T12:32:03.348Z
+nextStep: Request and await exact-head code review, then complete needs_review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -14,5 +13,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (5/6)
-**next**: Run lint, affected related tests, update evidence docs, commit and request new exact-head code review
+**phase**: implement (6/6)
+**next**: Request and await exact-head code review, then complete needs_review
