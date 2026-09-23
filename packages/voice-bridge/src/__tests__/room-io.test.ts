@@ -122,6 +122,115 @@ const PCM24_MONO: AudioFormat = {
 describe("RoomIO v1", () => {
 	afterEach(() => vi.useRealTimers());
 
+	it("uses borrowed resident clients and only leaves connections it owns", async () => {
+		const inputClient = {
+			user: { id: "ears-bot" },
+			login: vi.fn(async () => {}),
+			isReady: () => true,
+			once: vi.fn(),
+			destroy: vi.fn(async () => {}),
+		};
+		const outputClient = {
+			user: { id: "output-bot" },
+			login: vi.fn(async () => {}),
+			isReady: () => true,
+			once: vi.fn(),
+			destroy: vi.fn(async () => {}),
+		};
+		const inputConnection = { kind: "ears" };
+		const outputConnection = { kind: "mouth" };
+		const createClient = vi.fn(() => inputClient);
+		const joinVoice = vi.fn(async () => inputConnection);
+		const leaveVoice = vi.fn();
+		const createPlayer = vi.fn(() => ({
+			play: vi.fn(),
+			stop: vi.fn(),
+			on: vi.fn(),
+		}));
+		const room = createRoomIO({
+			sessionId: "resident-session",
+			generation: 4,
+			roomKey: "guild:voice-channel",
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 0, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient,
+				joinVoice,
+				subscribeManual: () => vi.fn(() => new PassThrough()),
+				createDecoder: () => new PassThrough(),
+				createPlayer,
+				createResource: (source) => source,
+				speakingEvents: () => ({ on: vi.fn() }),
+				receiveEvents: () => ({
+					onTransition: () => () => {},
+					onDiagnostic: () => () => {},
+					isSpeaking: () => false,
+				}),
+				memberDisplayName: vi.fn(),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice,
+			},
+			token: "unused-borrowed-token",
+			expectedBotUserId: "output-bot",
+			expectedInputBotUserId: "ears-bot",
+			expectedOutputBotUserId: "output-bot",
+			borrowedConnections: {
+				inputClient,
+				inputConnection,
+				inputOwnership: "borrowed",
+				outputClient,
+				outputConnection,
+				outputOwnership: "owned",
+			},
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			onError: vi.fn(),
+		});
+
+		await room.start();
+		expect(createClient).not.toHaveBeenCalled();
+		expect(joinVoice).not.toHaveBeenCalled();
+		expect(createPlayer).toHaveBeenCalledWith(outputConnection);
+		await room.stop();
+		expect(leaveVoice).toHaveBeenCalledTimes(1);
+		expect(leaveVoice).toHaveBeenCalledWith(outputConnection);
+		expect(inputClient.destroy).not.toHaveBeenCalled();
+		expect(outputClient.destroy).not.toHaveBeenCalled();
+	});
+
+	it("emits speaker-bound utterance boundaries for legacy engine adapters", async () => {
+		const test = roomFixture();
+		const utterances: unknown[] = [];
+		test.room.onUtterance((event) => utterances.push(event));
+		await test.room.start();
+		test.speak("start");
+		test.speak("end");
+		expect(utterances).toEqual([
+			expect.objectContaining({
+				phase: "start",
+				sessionId: "fixture-session",
+				generation: 1,
+				attribution: expect.objectContaining({
+					kind: "known",
+					speakerUserId: "founder",
+				}),
+			}),
+			expect.objectContaining({
+				phase: "end",
+				utteranceId: expect.any(String),
+			}),
+		]);
+		await test.room.stop();
+	});
+
 	it("exports one versioned implementation and fences streamed output by session generation", async () => {
 		vi.useFakeTimers();
 		const player = { play: vi.fn(), stop: vi.fn(), on: vi.fn() };
@@ -257,9 +366,7 @@ describe("RoomIO v1", () => {
 			sha256: createHash("sha256").update(model).digest("hex"),
 		});
 		expect(ROOM_IO_IMPLEMENTATION_MANIFEST.map((entry) => entry.path)).toEqual(
-			[...ROOM_IO_IMPLEMENTATION_MANIFEST]
-				.map((entry) => entry.path)
-				.sort(),
+			[...ROOM_IO_IMPLEMENTATION_MANIFEST].map((entry) => entry.path).sort(),
 		);
 		expect(ROOM_IO_IMPLEMENTATION_DIGEST).toMatch(/^[a-f0-9]{64}$/);
 
@@ -275,14 +382,9 @@ describe("RoomIO v1", () => {
 		expect(bridgePackage.dependencies).not.toHaveProperty(
 			"flywheel-voice-codex",
 		);
-		expect(codexPackage.dependencies).toHaveProperty(
-			"flywheel-voice-bridge",
-		);
+		expect(codexPackage.dependencies).toHaveProperty("flywheel-voice-bridge");
 		const codexShim = readFileSync(
-			new URL(
-				"../../../voice-codex/src/discord-room.ts",
-				import.meta.url,
-			),
+			new URL("../../../voice-codex/src/discord-room.ts", import.meta.url),
 			"utf8",
 		);
 		expect(codexShim).toContain("createRoomIO");
@@ -308,7 +410,10 @@ describe("RoomIO v1", () => {
 			once: vi.fn(),
 			destroy: vi.fn(async () => {}),
 		};
-		const humanCount = vi.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(1);
+		const humanCount = vi
+			.fn()
+			.mockResolvedValueOnce(2)
+			.mockResolvedValueOnce(1);
 		const room = createRoomIO({
 			sessionId: "session-capture",
 			generation: 3,
@@ -555,10 +660,7 @@ describe("RoomIO v1", () => {
 				pcm: Buffer.alloc(4, 4),
 			}),
 		).resolves.toMatchObject({ outcome: "submitted" });
-		const splitEnded = test.room.endSpeech(
-			"split-stereo",
-			test.generation,
-		);
+		const splitEnded = test.room.endSpeech("split-stereo", test.generation);
 		await vi.advanceTimersByTimeAsync(20);
 		await expect(splitEnded).resolves.toMatchObject({ outcome: "submitted" });
 
@@ -770,10 +872,7 @@ describe("RoomIO v1", () => {
 		test.opus.write(Buffer.alloc(3_840 * 14, 7));
 		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 		await vi.advanceTimersByTimeAsync(20);
-		expect(events.map((event) => event.phase)).toEqual([
-			"start",
-			"sustained",
-		]);
+		expect(events.map((event) => event.phase)).toEqual(["start", "sustained"]);
 		expect(events[0]).toMatchObject({
 			sessionId: "fixture-session",
 			generation: test.generation,

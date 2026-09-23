@@ -4,8 +4,8 @@ import { extname } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type {
-	AudioFormat,
 	AudibleTailEstimate,
+	AudioFormat,
 	FrameReceipt,
 	ReceiveHealth,
 	RoomAudioFrame,
@@ -14,6 +14,7 @@ import type {
 	RoomIO as RoomIOContract,
 	RoomIOIdentity,
 	RoomPresence,
+	RoomUtteranceEvent,
 	SpeechFrame,
 	SpeechStart,
 	SpeechStartReceipt,
@@ -88,6 +89,16 @@ export interface RoomIOOptions {
 	deps: RoomDeps;
 	token: string;
 	expectedBotUserId: string;
+	expectedInputBotUserId?: string;
+	expectedOutputBotUserId?: string;
+	borrowedConnections?: {
+		inputClient: VoiceClient;
+		inputConnection: unknown;
+		inputOwnership: "borrowed" | "owned";
+		outputClient: VoiceClient;
+		outputConnection: unknown;
+		outputOwnership: "borrowed" | "owned";
+	};
 	guildId: string;
 	voiceChannelId: string;
 	threadId: string;
@@ -99,6 +110,7 @@ export interface RoomIOOptions {
 	onPresence?(presence: RoomPresence): void;
 	onReceiveHealth?(snapshot: ReceiveHealth): void;
 	onBargeIn?(event: RoomBargeInEvent): void;
+	onUtterance?(event: RoomUtteranceEvent): void;
 	onError(error: Error): void;
 	assertLease?(): void;
 	now?: () => number;
@@ -115,11 +127,17 @@ const ROOM_IO_CLOSURE = [
 	},
 	{
 		path: "src/audio/resample",
-		url: new URL(`../audio/resample${ROOM_IO_MODULE_EXTENSION}`, import.meta.url),
+		url: new URL(
+			`../audio/resample${ROOM_IO_MODULE_EXTENSION}`,
+			import.meta.url,
+		),
 	},
 	{
 		path: "src/bots/BotRegistry",
-		url: new URL(`../bots/BotRegistry${ROOM_IO_MODULE_EXTENSION}`, import.meta.url),
+		url: new URL(
+			`../bots/BotRegistry${ROOM_IO_MODULE_EXTENSION}`,
+			import.meta.url,
+		),
 	},
 	...[
 		"RoomIO",
@@ -166,6 +184,9 @@ export class BridgeRoomIO implements RoomIOContract {
 	private readonly attribution: SpeakerAttribution;
 	private readonly receiveHealth: ReceiveHealthTracker;
 	private connection?: unknown;
+	private outputConnection?: unknown;
+	private inputClient?: VoiceClient;
+	private outputClient?: VoiceClient;
 	private unsubscribePresence?: () => void;
 	private readonly unsubscribeConnection: Array<() => void> = [];
 	private capture?: Capture;
@@ -210,6 +231,9 @@ export class BridgeRoomIO implements RoomIOContract {
 	>();
 	private readonly bargeInListeners = new Set<
 		(event: RoomBargeInEvent) => void
+	>();
+	private readonly utteranceListeners = new Set<
+		(event: RoomUtteranceEvent) => void
 	>();
 
 	constructor(private readonly options: RoomIOOptions) {
@@ -267,6 +291,11 @@ export class BridgeRoomIO implements RoomIOContract {
 	onBargeIn(listener: (event: RoomBargeInEvent) => void): () => void {
 		this.bargeInListeners.add(listener);
 		return () => this.bargeInListeners.delete(listener);
+	}
+
+	onUtterance(listener: (event: RoomUtteranceEvent) => void): () => void {
+		this.utteranceListeners.add(listener);
+		return () => this.utteranceListeners.delete(listener);
 	}
 
 	async start(signal?: AbortSignal): Promise<{
@@ -362,33 +391,50 @@ export class BridgeRoomIO implements RoomIOContract {
 					...summary,
 				}),
 		});
-		await this.registry.start([{ id: "voice", token: this.options.token }]);
-		await this.checkActive(signal);
-		const client = this.registry.client("voice");
+		const borrowed = this.options.borrowedConnections;
+		if (borrowed) {
+			this.inputClient = borrowed.inputClient;
+			this.outputClient = borrowed.outputClient;
+			this.connection = borrowed.inputConnection;
+			this.outputConnection = borrowed.outputConnection;
+		} else {
+			await this.registry.start([{ id: "voice", token: this.options.token }]);
+			await this.checkActive(signal);
+			const client = this.registry.client("voice");
+			this.inputClient = client;
+			this.outputClient = client;
+			this.connection = await this.registry.join(
+				"voice",
+				{
+					guildId: this.options.guildId,
+					channelId: this.options.voiceChannelId,
+					selfMute: false,
+					selfDeaf: false,
+				},
+				// FLY-2701 review R4: the connection only reaches `this.connection`
+				// once the whole join resolves, so the room's own cleanup cannot see
+				// it before then. The join itself has to take the abort.
+				signal,
+			);
+			this.outputConnection = this.connection;
+		}
+		const inputExpected =
+			this.options.expectedInputBotUserId ?? this.options.expectedBotUserId;
+		const outputExpected =
+			this.options.expectedOutputBotUserId ?? this.options.expectedBotUserId;
 		if (
-			!this.options.expectedBotUserId ||
-			client.user?.id !== this.options.expectedBotUserId
+			!inputExpected ||
+			!outputExpected ||
+			this.inputClient.user?.id !== inputExpected ||
+			this.outputClient.user?.id !== outputExpected
 		) {
 			await this.stop();
 			throw new Error("lead_bot_identity_mismatch");
 		}
-		this.connection = await this.registry.join(
-			"voice",
-			{
-				guildId: this.options.guildId,
-				channelId: this.options.voiceChannelId,
-				selfMute: false,
-				selfDeaf: false,
-			},
-			// FLY-2701 review R4: the connection only reaches `this.connection`
-			// once the whole join resolves, so the room's own cleanup cannot see
-			// it before then. The join itself has to take the abort.
-			signal,
-		);
 		await this.checkActive(signal);
 		this.subscribeConnectionDiagnostics();
 		this.emitReceiveHealth(this.receiveHealth.current());
-		const player = this.options.deps.createPlayer(this.connection);
+		const player = this.options.deps.createPlayer(this.outputConnection);
 		this.mouth = new WaitingMouth({
 			player,
 			createResource: this.options.deps.createResource,
@@ -424,7 +470,7 @@ export class BridgeRoomIO implements RoomIOContract {
 		speaking.on("start", (userId) => this.speakingStart(userId));
 		speaking.on("end", (userId) => this.speakingEnd(userId));
 		this.unsubscribePresence = this.options.deps.onVoiceStateUpdate(
-			client,
+			this.inputClient,
 			(event) => {
 				if (event.userId !== this.options.founderUserId || event.isBot) return;
 				if (event.toChannelId === this.options.voiceChannelId) {
@@ -438,16 +484,16 @@ export class BridgeRoomIO implements RoomIOContract {
 		);
 		const founderPresent =
 			(await this.options.deps.userVoiceChannelId(
-					client,
-					this.options.guildId,
-					this.options.founderUserId,
-				)) === this.options.voiceChannelId;
+				this.inputClient,
+				this.options.guildId,
+				this.options.founderUserId,
+			)) === this.options.voiceChannelId;
 		const humanCount =
 			(await this.options.deps.voiceChannelHumanCount?.(
-					client,
-					this.options.guildId,
-					this.options.voiceChannelId,
-				)) ?? (founderPresent ? 1 : 0);
+				this.inputClient,
+				this.options.guildId,
+				this.options.voiceChannelId,
+			)) ?? (founderPresent ? 1 : 0);
 		const presence = { founderPresent, humanCount };
 		this.emitPresenceSnapshot(presence);
 		return presence;
@@ -697,7 +743,7 @@ export class BridgeRoomIO implements RoomIOContract {
 
 	async status(text: string): Promise<void> {
 		await this.options.deps.sendMessage(
-			this.registry.client("voice"),
+			this.outputClient ?? this.registry.client("voice"),
 			this.options.threadId,
 			text,
 		);
@@ -718,17 +764,25 @@ export class BridgeRoomIO implements RoomIOContract {
 		this.cooldownSpeaker = undefined;
 		for (const unsubscribe of this.unsubscribeConnection.splice(0))
 			unsubscribe();
-		if (this.activeSpeaker) {
-			this.uplink?.speakingEnd(this.activeSpeaker);
-			this.attribution.speakingEnd(this.activeSpeaker, this.now());
-			this.activeSpeaker = undefined;
-		}
+		if (this.activeSpeaker) this.speakingEnd(this.activeSpeaker);
 		if (this.capture) this.disposeCapture(this.capture);
 		this.mouth?.stop();
 		this.mouth = undefined;
-		if (this.connection) this.options.deps.leaveVoice(this.connection);
+		const borrowed = this.options.borrowedConnections;
+		const leave = new Set<unknown>();
+		if (this.connection && (!borrowed || borrowed.inputOwnership === "owned"))
+			leave.add(this.connection);
+		if (
+			this.outputConnection &&
+			(!borrowed || borrowed.outputOwnership === "owned")
+		)
+			leave.add(this.outputConnection);
+		for (const connection of leave) this.options.deps.leaveVoice(connection);
 		this.connection = undefined;
-		await this.registry.destroyAll();
+		this.outputConnection = undefined;
+		this.inputClient = undefined;
+		this.outputClient = undefined;
+		if (!borrowed) await this.registry.destroyAll();
 		const vad = this.vad;
 		this.vad = undefined;
 		await vad?.close();
@@ -766,6 +820,7 @@ export class BridgeRoomIO implements RoomIOContract {
 		}
 		if (this.retryTimer) return;
 		this.startCapture(userId, false);
+		this.emitUtterance("start", userId);
 	}
 
 	private startCapture(userId: string, retry: boolean): void {
@@ -799,7 +854,7 @@ export class BridgeRoomIO implements RoomIOContract {
 		if (retry) this.receiveHealth.retryAttempt();
 		void this.options.deps
 			.memberDisplayName(
-				this.registry.client("voice"),
+				this.inputClient ?? this.registry.client("voice"),
 				this.options.guildId,
 				userId,
 			)
@@ -843,12 +898,32 @@ export class BridgeRoomIO implements RoomIOContract {
 	private speakingEnd(userId: string): void {
 		if (this.cooldownSpeaker === userId) this.cooldownSpeaker = undefined;
 		if (this.activeSpeaker !== userId) return;
+		this.emitUtterance("end", userId);
 		this.uplink?.endUtterance(this.now());
 		this.emitBargeObservation("end");
 		this.uplink?.speakingEnd(userId);
 		this.attribution.speakingEnd(userId, this.now());
 		this.activeSpeaker = undefined;
 		if (this.capture) this.disposeCapture(this.capture);
+	}
+
+	private emitUtterance(phase: "start" | "end", userId: string): void {
+		const utteranceId = this.uplink?.utteranceId;
+		if (!utteranceId) return;
+		const event: RoomUtteranceEvent = {
+			sessionId: this.options.sessionId,
+			generation: this.options.generation,
+			utteranceId,
+			attribution: {
+				kind: "known",
+				speakerUserId: userId,
+				speakerName: this.names.get(userId) ?? userId,
+			},
+			observedAt: this.now(),
+			phase,
+		};
+		this.options.onUtterance?.(event);
+		for (const listener of this.utteranceListeners) listener(event);
 	}
 
 	private captureFailed(
@@ -1078,7 +1153,7 @@ export class BridgeRoomIO implements RoomIOContract {
 		try {
 			const humanCount =
 				(await this.options.deps.voiceChannelHumanCount?.(
-					this.registry.client("voice"),
+					this.inputClient ?? this.registry.client("voice"),
 					this.options.guildId,
 					this.options.voiceChannelId,
 				)) ?? (founderPresent ? 1 : 0);
@@ -1106,9 +1181,7 @@ export class BridgeRoomIO implements RoomIOContract {
 		this.emitBargeObservation("start");
 	}
 
-	private emitBargeObservation(
-		phase: RoomBargeInEvent["phase"],
-	): void {
+	private emitBargeObservation(phase: RoomBargeInEvent["phase"]): void {
 		const active = this.activeBarge;
 		if (!active) return;
 		const observedAt = this.now();
@@ -1149,9 +1222,11 @@ export class BridgeRoomIO implements RoomIOContract {
 		if (this.speech) return "speech_busy";
 		if (
 			input.format.encoding !== "pcm16" ||
-			!((input.format.sampleRateHz === 16_000 && input.format.channels === 1) ||
+			!(
+				(input.format.sampleRateHz === 16_000 && input.format.channels === 1) ||
 				(input.format.sampleRateHz === 24_000 && input.format.channels === 1) ||
-				(input.format.sampleRateHz === 48_000 && input.format.channels === 2))
+				(input.format.sampleRateHz === 48_000 && input.format.channels === 2)
+			)
 		)
 			return "speech_format_unsupported";
 		return undefined;
@@ -1197,7 +1272,9 @@ export class BridgeRoomIO implements RoomIOContract {
 		return output;
 	}
 
-	private createSpeechConverter(format: AudioFormat): (input: Buffer) => Buffer {
+	private createSpeechConverter(
+		format: AudioFormat,
+	): (input: Buffer) => Buffer {
 		if (format.sampleRateHz === 48_000 && format.channels === 2) {
 			const converter = new Downmix48to24();
 			return (input) => converter.push(input);

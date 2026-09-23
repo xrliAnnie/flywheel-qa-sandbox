@@ -2,13 +2,35 @@
  * FLY-1006 S7 — ElevenCommand contract tests: fail-loud preflight, shared
  * slot contention, session ownership handoff, /eleven stop.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ELEVEN_SLOT_MODE } from "../eleven/config.js";
 import {
 	ElevenCommand,
 	type ElevenPreflightResult,
 } from "../eleven/ElevenCommand.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import { SessionSlot } from "../SessionSlot.js";
+
+function residentLease(): ResidentVoiceLease {
+	return {
+		mode: "meeting",
+		sessionId: "resident-eleven",
+		sessionGeneration: 4,
+		leaseToken: "resident-token",
+		leaseTtlMs: 15_000,
+		toSlotLease: (mode = "meeting") => ({
+			mode,
+			sessionId: "resident-eleven",
+			sessionGeneration: 4,
+			leaseToken: "resident-token",
+		}),
+		assertActive: () => {},
+		renew: async () => {},
+		setState: async () => {},
+		startRenewing: () => () => {},
+		close: vi.fn(async () => {}),
+	};
+}
 
 function makeCommand(over: Record<string, unknown> = {}) {
 	const slot = new SessionSlot();
@@ -78,6 +100,49 @@ describe("ElevenCommand (FLY-1006 S7)", () => {
 		expect(f.calls.started).toHaveLength(1);
 		expect(f.calls.startedIssues).toEqual(["FLY-2001"]); // issueId threaded
 		expect(f.slot.current()?.mode).toBe(ELEVEN_SLOT_MODE);
+	});
+
+	it("resident path projects the claimed generation into the shared slot", async () => {
+		const lease = residentLease();
+		let startArgs: Record<string, unknown> | undefined;
+		const f = makeCommand({
+			claimSession: async () => lease,
+			startSession: async (args: Record<string, unknown>) => {
+				startArgs = args;
+			},
+		});
+		await f.invoke();
+		expect(f.slot.current()).toMatchObject({
+			holder: "resident-eleven",
+			sessionGeneration: 4,
+		});
+		expect(startArgs).toMatchObject({
+			sessionId: "resident-eleven",
+			lease,
+		});
+	});
+
+	it("resident startup failure releases both lease authorities", async () => {
+		const lease = residentLease();
+		const f = makeCommand({
+			claimSession: async () => lease,
+			startSession: async () => {
+				throw new Error("agent unreachable");
+			},
+		});
+		await f.invoke();
+		expect(lease.close).toHaveBeenCalledWith("failed", "session_start_failed");
+		expect(f.slot.current()).toBe(null);
+	});
+
+	it("closes a claimed resident lease when the local room is already occupied", async () => {
+		const lease = residentLease();
+		const f = makeCommand({ claimSession: async () => lease });
+		f.slot.acquire("gemini", "existing-session");
+		await f.invoke();
+		expect(lease.close).toHaveBeenCalledWith("failed", "slot_busy");
+		expect(f.calls.issues).toBe(0);
+		expect(f.slot.current()?.holder).toBe("existing-session");
 	});
 
 	it("FLY-1160: kickoff issue failure = no meeting — slot released, no session", async () => {

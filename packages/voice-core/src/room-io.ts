@@ -1,5 +1,5 @@
-import type { AudioFormat } from "./types.js";
 import type { ReceiveHealth } from "./receive-health.js";
+import type { AudioFormat } from "./types.js";
 
 export interface RoomAudioOwner {
 	utteranceId: string | null;
@@ -39,6 +39,15 @@ export interface RoomBargeInEvent {
 	observedAt: number;
 	durationMs: number;
 	phase: "start" | "sustained" | "end";
+}
+
+export interface RoomUtteranceEvent {
+	sessionId: string;
+	generation: number;
+	utteranceId: string;
+	attribution: RoomAudioAttribution;
+	observedAt: number;
+	phase: "start" | "end";
 }
 
 export interface RoomIOIdentity {
@@ -126,6 +135,7 @@ export interface RoomIO {
 	onPresence(listener: (presence: RoomPresence) => void): () => void;
 	onReceiveHealth(listener: (health: ReceiveHealth) => void): () => void;
 	onBargeIn(listener: (event: RoomBargeInEvent) => void): () => void;
+	onUtterance(listener: (event: RoomUtteranceEvent) => void): () => void;
 	start(signal?: AbortSignal): Promise<RoomPresence>;
 	stop(): Promise<void>;
 	status(text: string): Promise<void>;

@@ -11,6 +11,7 @@
  * note). Discord specifics are injected seams.
  */
 import { randomUUID } from "node:crypto";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import type { SessionSlot } from "../SessionSlot.js";
 import { ASSISTANT_SLOT_MODE } from "./config.js";
 
@@ -32,10 +33,12 @@ export interface GeminiCommandOptions {
 	/** MOVE_MEMBERS when she is already in another VC; false = no permission /
 	 * not applicable — never fatal (the Join button is always there). */
 	moveFounderToVc?(): Promise<boolean>;
+	claimSession?(): Promise<ResidentVoiceLease>;
 	startSession(args: {
 		sessionId: string;
 		issueId: string;
 		topic?: string;
+		lease?: ResidentVoiceLease;
 	}): Promise<void>;
 	now?: () => Date;
 	log?: (line: string) => void;
@@ -49,9 +52,26 @@ export class GeminiCommand {
 	}
 
 	async handle(inv: GeminiInvocation): Promise<void> {
-		const sessionId = randomUUID();
-		const acquired = this.opts.slot.acquire(ASSISTANT_SLOT_MODE, sessionId);
+		let lease: ResidentVoiceLease | undefined;
+		try {
+			lease = await this.opts.claimSession?.();
+		} catch (err) {
+			await inv.reply(
+				`/${this.name} 没起起来:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
+			);
+			return;
+		}
+		const sessionId = lease?.sessionId ?? randomUUID();
+		const slotLease = lease?.toSlotLease(ASSISTANT_SLOT_MODE);
+		const acquired = slotLease
+			? this.opts.slot.acquireLease(slotLease)
+			: this.opts.slot.acquire(ASSISTANT_SLOT_MODE, sessionId);
 		if (!acquired.ok) {
+			await lease?.close("failed", "slot_busy").catch((err: unknown) => {
+				this.opts.log?.(
+					`[gemini-command] resident lease cleanup failed: ${String((err as Error).message ?? err)}`,
+				);
+			});
 			// FLY-1159 (Codex R3): /gemini and /gemini-advanced share
 			// ASSISTANT_SLOT_MODE, so the slot's per-mode copy would misname
 			// whichever assistant command is running as /gemini. Same-mode busy
@@ -79,7 +99,15 @@ export class GeminiCommand {
 			identifier = created.identifier;
 			issueUrl = created.url;
 		} catch (err) {
-			this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
+			if (slotLease) this.opts.slot.releaseLease(slotLease);
+			else this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
+			await lease
+				?.close("failed", "issue_creation_failed")
+				.catch((cleanupError: unknown) => {
+					this.opts.log?.(
+						`[gemini-command] resident lease cleanup failed: ${String((cleanupError as Error).message ?? cleanupError)}`,
+					);
+				});
 			await inv.reply(
 				`/${this.name} 没起起来:立项 issue 创建失败(${String((err as Error).message ?? err)})。稍后再试。`,
 			);
@@ -115,9 +143,18 @@ export class GeminiCommand {
 				sessionId,
 				issueId: identifier,
 				topic: inv.topic,
+				...(lease ? { lease } : {}),
 			});
 		} catch (err) {
-			this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
+			if (slotLease) this.opts.slot.releaseLease(slotLease);
+			else this.opts.slot.release(ASSISTANT_SLOT_MODE, sessionId);
+			await lease
+				?.close("failed", "session_start_failed")
+				.catch((cleanupError: unknown) => {
+					this.opts.log?.(
+						`[gemini-command] resident lease cleanup failed: ${String((cleanupError as Error).message ?? cleanupError)}`,
+					);
+				});
 			// the session's abort path may have already closed the kickoff issue
 			// (flagged on the error) — the founder-facing reply must not lie (R17)
 			const issueClosed =
