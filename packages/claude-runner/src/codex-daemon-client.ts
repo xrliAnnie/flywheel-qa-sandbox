@@ -485,19 +485,22 @@ export class CodexDaemonClient {
 	}
 
 	/** thread/resume — the same-account daemon-restart recovery path. */
-	async resumeThread(threadId: string): Promise<string> {
+	async resumeThread(
+		threadId: string,
+		options: { strictIdentity?: boolean } = {},
+	): Promise<string> {
 		const res = await this.request("thread/resume", { threadId });
 		const resumedId = extractThreadId(res.result);
-		if (!resumedId) {
+		if (options.strictIdentity && !resumedId) {
 			throw new CodexDaemonError("thread/resume returned no id", "no_thread");
 		}
-		if (resumedId !== threadId) {
+		if (options.strictIdentity && resumedId !== threadId) {
 			throw new CodexDaemonError(
 				"thread/resume returned a different id",
 				"thread_mismatch",
 			);
 		}
-		return resumedId;
+		return resumedId ?? threadId;
 	}
 
 	/** thread/read with turns — used by durable injection reconciliation. */

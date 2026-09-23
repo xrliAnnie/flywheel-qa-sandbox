@@ -3113,6 +3113,15 @@ export class WorkflowEngineDispatcher {
 							mode: "initial" as const,
 							generation: processBody.generation,
 							expectedModel: runtime.model,
+							retirementApproved: () => {
+								const current = store.getWorkflowExecutionProcessBody(
+									intent.execution_id,
+								);
+								return (
+									current?.generation === processBody.generation &&
+									current.state === "retiring"
+								);
+							},
 							onRetired: (evidence: {
 								generation: number;
 								reasonCode: "process_tree_gone";

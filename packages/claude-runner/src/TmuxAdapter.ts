@@ -1101,7 +1101,7 @@ export class TmuxAdapter implements IAdapter {
 				throw new Error("Claude resume cwd mismatch");
 			}
 			try {
-				this.persistClaudeSessionState(
+				await this.persistClaudeSessionState(
 					ctx,
 					claudeSessionId,
 					resolvedModel,
@@ -1227,8 +1227,15 @@ export class TmuxAdapter implements IAdapter {
 			sessionStatus = "timeout";
 			throw err;
 		} finally {
+			let retirementApproved = false;
+			try {
+				retirementApproved =
+					ctx.processLifecycle?.retirementApproved?.() === true;
+			} catch {
+				// Controller state is authoritative; an unreadable approval fails closed.
+			}
 			const retiringToStandby =
-				ctx.processLifecycle !== undefined && sessionStatus === "completed";
+				sessionStatus === "completed" && retirementApproved;
 			// GEO-206 Phase 2: Update session status
 			if (!retiringToStandby && registeredSession && ctx.commDbPath) {
 				try {
@@ -1278,31 +1285,37 @@ export class TmuxAdapter implements IAdapter {
 		};
 	}
 
-	private persistClaudeSessionState(
+	private async persistClaudeSessionState(
 		ctx: AdapterExecutionContext,
 		sessionId: string,
 		resolvedModel: string | null,
 		cwd: string,
-	): void {
+	): Promise<void> {
 		const stateRoot =
 			process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
 			join(homedir(), ".flywheel", "state", "claude-sessions");
 		const stateDir = join(stateRoot, ctx.executionId);
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 		chmodSync(stateDir, 0o700);
-		const git = (...args: string[]): string | null => {
+		const git = async (...args: string[]): Promise<string | null> => {
 			try {
-				return execFileSync("git", ["-C", cwd, ...args], {
-					encoding: "utf8",
-					timeout: 5_000,
-					stdio: ["ignore", "pipe", "ignore"],
-				}).trim();
+				return (
+					await defaultAsyncExecFile("git", ["-C", cwd, ...args], {
+						timeoutMs: 5_000,
+					})
+				).stdout.trim();
 			} catch {
 				return null;
 			}
 		};
-		const commonDir = git("rev-parse", "--git-common-dir");
-		const dirty = git("status", "--porcelain=v1", "-uno");
+		const [commonDir, dirty, worktree, branch, lastObservedHead] =
+			await Promise.all([
+				git("rev-parse", "--git-common-dir"),
+				git("status", "--porcelain=v1", "-uno"),
+				git("rev-parse", "--show-toplevel"),
+				git("symbolic-ref", "--quiet", "--short", "HEAD"),
+				git("rev-parse", "HEAD"),
+			]);
 		const state = {
 			schemaVersion: 1,
 			executionId: ctx.executionId,
@@ -1317,9 +1330,9 @@ export class TmuxAdapter implements IAdapter {
 					? commonDir
 					: resolve(cwd, commonDir)
 				: null,
-			worktree: git("rev-parse", "--show-toplevel"),
-			branch: git("symbolic-ref", "--quiet", "--short", "HEAD"),
-			lastObservedHead: git("rev-parse", "HEAD"),
+			worktree,
+			branch,
+			lastObservedHead,
 			dirty: dirty === null ? null : dirty.length > 0,
 			validatedAt: new Date().toISOString(),
 		};

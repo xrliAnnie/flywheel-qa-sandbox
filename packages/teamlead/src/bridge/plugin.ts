@@ -13997,6 +13997,15 @@ export async function startBridge(
 								expectedModel: runtime.model,
 								expectedCwd,
 								...(headDriftNotice ? { headDriftNotice } : {}),
+								retirementApproved: () => {
+									const current = store.getWorkflowExecutionProcessBody(
+										session.execution_id,
+									);
+									return (
+										current?.generation === processGeneration &&
+										current.state === "retiring"
+									);
+								},
 								onIdentityVerified: resolveIdentity,
 								onRetired: (evidence) => {
 									const retired = store.confirmWorkflowExecutionStandby({

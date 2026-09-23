@@ -795,6 +795,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				processLifecycle: {
 					mode: "initial",
 					generation: 1,
+					retirementApproved: () => true,
 					expectedSessionId: THREAD_ID,
 					expectedModel: "gpt-5.6-sol",
 					expectedCwd: cwd,
@@ -831,6 +832,27 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			resolvedModel: "gpt-5.6-sol",
 			cwd,
 		});
+	});
+
+	it("does not declare standby when the controller has not approved retirement", async () => {
+		const onRetired = vi.fn();
+		const cwd = realpathSync(dir);
+
+		const res = await makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					expectedSessionId: THREAD_ID,
+					expectedCwd: cwd,
+					retirementApproved: () => false,
+					onRetired,
+				},
+			}),
+		);
+
+		expect(res.success).toBe(true);
+		expect(onRetired).not.toHaveBeenCalled();
 	});
 
 	it("FLY-2170 does not post-publish identity after a verified window result", async () => {
@@ -2679,6 +2701,26 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			ctx({ previousSession: { threadId: "prior-thread-xyz" } }),
 		);
 		expect(runtime.runGoalInputs[0]?.resumeThreadId).toBe("prior-thread-xyz");
+	});
+
+	it("uses strict daemon identity checks only for a standby process resume", async () => {
+		await makeAdapter().execute(
+			ctx({
+				previousSession: { threadId: THREAD_ID },
+				processLifecycle: {
+					mode: "resume",
+					generation: 2,
+					expectedSessionId: THREAD_ID,
+					expectedCwd: realpathSync(dir),
+				},
+			}),
+		);
+
+		expect(runtime.runGoalInputs[0]).toMatchObject({
+			resumeThreadId: THREAD_ID,
+			strictResumeIdentity: true,
+			failOnThreadReadyError: true,
+		});
 	});
 
 	it("HIGH-4: self-contained resume — reads the persisted session.json when previousSession is absent", async () => {

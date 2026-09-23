@@ -111,11 +111,11 @@ export function derivePhaseDisplayState(
 ): PhaseDisplayState {
 	if (!p.status) return "pending";
 	if (p.activity === "problem") return "blocked";
-	if (p.activity === "standby") return "standby";
-	if (p.activity === "working") return "active";
 	if (PHASE_DONE_STATUSES.has(p.status)) return "done";
 	if (p.status === "terminated" && p.issueConcluded) return "done";
 	if (PHASE_BLOCKED_STATUSES.has(p.status)) return "blocked";
+	if (p.activity === "standby") return "standby";
+	if (p.activity === "working") return "active";
 	// An explicit park marker = the runner itself declared "this round's work
 	// is handed off" — regardless of which live status it parks at.
 	if (p.park === "parked") return "done";

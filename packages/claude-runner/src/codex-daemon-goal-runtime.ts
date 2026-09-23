@@ -146,6 +146,10 @@ export interface RunGoalInput {
 	tokenBudget?: number;
 	/** Resume an existing thread instead of starting a fresh one. */
 	resumeThreadId?: string;
+	/** Require thread/resume to report the exact requested identity. */
+	strictResumeIdentity?: boolean;
+	/** Propagate an authoritative identity-hook error before any goal input. */
+	failOnThreadReadyError?: boolean;
 	/** The ACTIVE ceiling (cap when NOT waiting on a gate). */
 	overallTimeoutMs?: number;
 	/** FLY-1188 MED-7: the EXTENDED ceiling used only while a gate is open. */
@@ -505,9 +509,12 @@ export class CodexDaemonGoalRuntime {
 	private async ensureThread(
 		session: DaemonSession,
 		existingThreadId: string | undefined,
+		strictIdentity: boolean,
 	): Promise<string> {
 		if (existingThreadId) {
-			return session.client.resumeThread(existingThreadId);
+			return session.client.resumeThread(existingThreadId, {
+				strictIdentity,
+			});
 		}
 		return session.client.startThread({
 			cwd: this.opts.cwd,
@@ -638,7 +645,11 @@ export class CodexDaemonGoalRuntime {
 						if (this.stopped)
 							throw new Error("runtime stopped during admission");
 					}
-					threadId = await this.ensureThread(session, threadId);
+					threadId = await this.ensureThread(
+						session,
+						threadId,
+						input.strictResumeIdentity === true,
+					);
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
 					// confirmed ours here (not a raw notification, which can be
 					// foreign). Fires on each restart/resume too; a throwing handler
@@ -647,6 +658,7 @@ export class CodexDaemonGoalRuntime {
 						try {
 							input.onThreadReady(threadId, restarts);
 						} catch (err) {
+							if (input.failOnThreadReadyError) throw err;
 							this.safeLog(
 								`onThreadReady handler threw (ignored): ${err instanceof Error ? err.message : String(err)}`,
 							);

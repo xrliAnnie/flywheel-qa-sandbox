@@ -45715,7 +45715,7 @@ export class StateStore {
 		if (!body || body.state === "closed") return undefined;
 		return {
 			activityState:
-				body.state === "standby" || body.state === "retiring"
+				body.state === "standby"
 					? "standby"
 					: body.state === "resume_failed"
 						? "problem"
@@ -46106,17 +46106,27 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const body = this.getWorkflowExecutionProcessBody(input.executionId);
-			if (
-				!body ||
-				body.generation !== input.generation ||
-				body.current_demand_id !== input.demandId ||
-				body.owner_claim_id !== input.ownerClaimId
-			) {
+			if (!body || body.generation !== input.generation) {
 				result = { ok: false, reason: "resume_fence_changed" };
 				return;
 			}
 			if (body.state === "active") {
-				result = { ok: true, idempotentReplay: true };
+				const prior = this.workflowSelectAll(
+					`SELECT 1 FROM workflow_execution_resume_attempt
+					  WHERE execution_id = ? AND demand_id = ? AND generation = ?
+					    AND kind = 'original_session' AND state = 'succeeded'`,
+					[input.executionId, input.demandId, input.generation],
+				)[0];
+				result = prior
+					? { ok: true, idempotentReplay: true }
+					: { ok: false, reason: "process_body_active" };
+				return;
+			}
+			if (
+				body.current_demand_id !== input.demandId ||
+				body.owner_claim_id !== input.ownerClaimId
+			) {
+				result = { ok: false, reason: "resume_fence_changed" };
 				return;
 			}
 			if (body.state !== "resuming") {
@@ -46216,6 +46226,7 @@ export class StateStore {
 		if (body.state !== "resuming" || body.owner_claim_id !== input.ownerClaimId) {
 			return { ok: false, reason: "resume_owner_conflict" };
 		}
+		let committed = false;
 		this.db.transaction(() => {
 			this.db.run(
 				`UPDATE workflow_execution_process_body
@@ -46233,7 +46244,7 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) {
-				throw new Error("resume_failure_cas_failed");
+				return;
 			}
 			this.db.run(
 				`UPDATE workflow_execution_resume_attempt
@@ -46248,7 +46259,9 @@ export class StateStore {
 					input.generation,
 				],
 			);
+			committed = true;
 		});
+		if (!committed) return { ok: false, reason: "resume_failure_cas_failed" };
 		this.save();
 		return { ok: true, idempotentReplay: false };
 	}
@@ -46285,7 +46298,8 @@ export class StateStore {
 			ok: false,
 			reason: "resume_fallback_not_committed",
 		};
-		this.db.transaction(() => {
+		try {
+			this.db.transaction(() => {
 			const body = this.getWorkflowExecutionProcessBody(input.executionId);
 			const runtime = this.getWorkflowExecutionRuntime(input.executionId);
 			if (!body || !runtime || body.current_demand_id !== input.demandId) {
@@ -46451,7 +46465,17 @@ export class StateStore {
 				launchOrdinal,
 				idempotentReplay: false,
 			};
-		});
+			});
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				(error.message === "resume_fallback_cas_failed" ||
+					error.message === "resume_fallback_delivery_cas_failed")
+			) {
+				return { ok: false, reason: error.message };
+			}
+			throw error;
+		}
 		if (result.ok) this.save();
 		return result;
 	}
@@ -59208,6 +59232,23 @@ export class StateStore {
 			) {
 				result = { ok: false, reason: "execution_not_terminal" };
 				return;
+			}
+			const processBody = this.getWorkflowExecutionProcessBody(
+				input.deadExecutionId,
+			);
+			if (processBody?.state === "active") {
+				this.db.run(
+					`UPDATE workflow_execution_process_body
+					    SET state = 'closed', current_demand_id = NULL,
+					        owner_claim_id = NULL, resume_lease_expires_at = NULL,
+					        updated_at = ?, reason_code = 'unexpected_process_exit'
+					  WHERE execution_id = ? AND generation = ? AND state = 'active'`,
+					[now, input.deadExecutionId, processBody.generation],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "process_body_close_cas_failed" };
+					return;
+				}
 			}
 			const faultReplacementCount = this.countWorkflowFaultReplacements(
 				input.runId,

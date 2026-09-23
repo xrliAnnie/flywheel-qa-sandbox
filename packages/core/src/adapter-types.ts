@@ -237,6 +237,8 @@ export interface AdapterExecutionContext {
 		expectedCwd?: string;
 		/** Bounded HEAD/dirty delta injected before the first resumed work turn. */
 		headDriftNotice?: string;
+		/** True only after the controller durably accepted this generation's stop. */
+		retirementApproved?: () => boolean;
 		onIdentityVerified?: (evidence: {
 			sessionId: string;
 			model: string | null;

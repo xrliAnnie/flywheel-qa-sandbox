@@ -208,20 +208,31 @@ describe("CodexDaemonClient — handshake + protocol", () => {
 		expect(await c.resumeThread("th-42")).toBe("th-42");
 	});
 
-	it("fails closed when thread/resume omits the actual resumed id", async () => {
+	it("preserves legacy daemon-restart recovery when thread/resume omits the id", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/resume", () => ({}));
 		const c = makeClient(d);
-		await expect(c.resumeThread("th-42")).rejects.toMatchObject({
+		expect(await c.resumeThread("th-42")).toBe("th-42");
+	});
+
+	it("fails closed when a strict thread/resume omits the actual resumed id", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({}));
+		const c = makeClient(d);
+		await expect(
+			c.resumeThread("th-42", { strictIdentity: true }),
+		).rejects.toMatchObject({
 			kind: "no_thread",
 		});
 	});
 
-	it("fails closed when thread/resume reports a different thread", async () => {
+	it("fails closed when a strict thread/resume reports a different thread", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/resume", () => ({ thread: { id: "th-new" } }));
 		const c = makeClient(d);
-		await expect(c.resumeThread("th-42")).rejects.toMatchObject({
+		await expect(
+			c.resumeThread("th-42", { strictIdentity: true }),
+		).rejects.toMatchObject({
 			kind: "thread_mismatch",
 		});
 	});

@@ -255,6 +255,11 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-09-22T01:00:00.000Z",
 			}),
 		).toEqual({ ok: true, generation: 1, idempotentReplay: false });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "working",
+			transition: "retiring",
+			canResume: false,
+		});
 		expect(
 			store.confirmWorkflowExecutionStandby({
 				executionId: "exec-1",
@@ -281,24 +286,30 @@ describe("generalized execution admission and terminal contracts", () => {
 			attempt: 1,
 			idempotentReplay: false,
 		});
-		expect(
-			store.finishWorkflowExecutionResume({
-				executionId: "exec-1",
-				generation: 2,
-				demandId: "rework-1",
-				ownerClaimId: "owner-1",
-				expectedSessionId: "thread-original",
-				observedSessionId: "thread-original",
-				expectedModel: "gpt-5.6-sol",
-				observedModel: "gpt-5.6-sol",
-				expectedCwd: "/tmp/worktree",
-				observedCwd: "/tmp/worktree",
-				queueMs: 8,
-				startupMs: 120,
-				totalMs: 140,
-				now: "2026-09-22T01:00:03.000Z",
-			}),
-		).toEqual({ ok: true, idempotentReplay: false });
+		const finishInput = {
+			executionId: "exec-1",
+			generation: 2,
+			demandId: "rework-1",
+			ownerClaimId: "owner-1",
+			expectedSessionId: "thread-original",
+			observedSessionId: "thread-original",
+			expectedModel: "gpt-5.6-sol",
+			observedModel: "gpt-5.6-sol",
+			expectedCwd: "/tmp/worktree",
+			observedCwd: "/tmp/worktree",
+			queueMs: 8,
+			startupMs: 120,
+			totalMs: 140,
+			now: "2026-09-22T01:00:03.000Z",
+		};
+		expect(store.finishWorkflowExecutionResume(finishInput)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.finishWorkflowExecutionResume(finishInput)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
 		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
 			generation: 2,
 			state: "active",

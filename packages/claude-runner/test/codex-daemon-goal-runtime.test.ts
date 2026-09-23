@@ -45,6 +45,7 @@ class FakeClient {
 	initialized = 0;
 	started: string[] = [];
 	resumed: string[] = [];
+	resumeOptions: Array<{ strictIdentity?: boolean } | undefined> = [];
 	closed = 0;
 	constructor(private readonly threadId: string) {}
 	isClosed(): boolean {
@@ -57,8 +58,12 @@ class FakeClient {
 		this.started.push(this.threadId);
 		return this.threadId;
 	}
-	async resumeThread(id: string): Promise<string> {
+	async resumeThread(
+		id: string,
+		options?: { strictIdentity?: boolean },
+	): Promise<string> {
 		this.resumed.push(id);
+		this.resumeOptions.push(options);
 		return id;
 	}
 	close(): void {
@@ -247,6 +252,23 @@ describe("CodexDaemonGoalRuntime", () => {
 		});
 		expect(out.result.succeeded).toBe(true);
 		rt.stop();
+	});
+
+	it("fails closed on an identity-handler error when strict standby resume is requested", async () => {
+		const h = makeHarness({ runGoalScript: [COMPLETE] });
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				resumeThreadId: "prior-thread",
+				strictResumeIdentity: true,
+				failOnThreadReadyError: true,
+				onThreadReady: () => {
+					throw new Error("identity mismatch");
+				},
+			}),
+		).rejects.toThrow("identity mismatch");
+		expect(h.clients[0].resumeOptions).toEqual([{ strictIdentity: true }]);
 	});
 
 	it("resumeThreadId → resumes the existing thread instead of starting a new one", async () => {

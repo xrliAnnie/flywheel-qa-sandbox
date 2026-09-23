@@ -24,6 +24,7 @@ const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 async function engineRunWithImplement(
 	sessionStatus: "running" | "failed" = "failed",
+	standbyLifecycle = false,
 ): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
 	const seed = pinLegacyWorkflowSeedAgents(
@@ -80,7 +81,9 @@ async function engineRunWithImplement(
 			expiresAt: "2026-07-20T01:00:00.000Z",
 			absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
 			now: "2026-07-20T00:06:00.000Z",
-			env: WORKFLOW_ON,
+			env: standbyLifecycle
+				? { ...WORKFLOW_ON, FLYWHEEL_NODE_STANDBY_RESUME: "1" }
+				: WORKFLOW_ON,
 		}),
 	).toMatchObject({ ok: true });
 	store.applyWorkflowLedgerBatch({
@@ -479,6 +482,36 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				}),
 			}),
 		]);
+		store.close();
+	});
+
+	it("closes an enrolled carrier when its active process is proven dead", async () => {
+		const store = await engineRunWithImplement("failed", true);
+		expect(
+			store.getWorkflowExecutionProcessBody("implement-dead"),
+		).toMatchObject({ state: "active" });
+
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				deadExecutionId: "implement-dead",
+				newExecutionId: "implement-retry-1",
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-20T00:10:00.000Z",
+				},
+				now: "2026-07-20T00:10:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.getWorkflowExecutionProcessBody("implement-dead"),
+		).toMatchObject({
+			state: "closed",
+			reason_code: "unexpected_process_exit",
+		});
 		store.close();
 	});
 

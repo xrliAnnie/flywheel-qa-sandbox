@@ -1053,6 +1053,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			() => {};
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
+		let processRetirementApproved = false;
 		let teardownError: unknown;
 		let controlledShutdownRequestId: string | undefined;
 		const controlledShutdownSucceeded = (): boolean => {
@@ -1727,6 +1728,12 @@ export class CodexTmuxAdapter implements IAdapter {
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
+					...(ctx.processLifecycle?.mode === "resume"
+						? {
+								strictResumeIdentity: true,
+								failOnThreadReadyError: true,
+							}
+						: {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
 					// FLY-1940: this hard callback runs synchronously before socket
@@ -1895,7 +1902,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				await closeTranscript(
 					controlledShutdownSucceeded() ? "completed" : "timeout",
 				);
-				if (!ctx.processLifecycle && registeredSession && ctx.commDbPath) {
+				try {
+					processRetirementApproved =
+						controlledShutdownSucceeded() &&
+						ctx.processLifecycle?.retirementApproved?.() === true;
+				} catch {
+					processRetirementApproved = false;
+				}
+				if (!processRetirementApproved && registeredSession && ctx.commDbPath) {
 					let commDb: CommDB | undefined;
 					try {
 						commDb = new CommDB(ctx.commDbPath);
@@ -1980,6 +1994,13 @@ export class CodexTmuxAdapter implements IAdapter {
 					: closeBlocked
 						? "blocked"
 						: "timeout";
+				try {
+					processRetirementApproved =
+						closeCompleted &&
+						ctx.processLifecycle?.retirementApproved?.() === true;
+				} catch {
+					processRetirementApproved = false;
+				}
 				await closeTranscript(
 					closeCompleted
 						? "completed"
@@ -1996,7 +2017,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						teardownError ??= err;
 					}
 				}
-				if (!ctx.processLifecycle && registeredSession && ctx.commDbPath) {
+				if (!processRetirementApproved && registeredSession && ctx.commDbPath) {
 					try {
 						const commDb = new CommDB(ctx.commDbPath);
 						commDb.updateSessionStatusIfRunning(ctx.executionId, closeStatus);
@@ -2043,7 +2064,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			(cls.success || controlledShutdownSucceeded()) &&
 			!teardownError &&
 			!quotaFailure;
-		if (success && ctx.processLifecycle) {
+		if (success && ctx.processLifecycle && processRetirementApproved) {
 			ctx.processLifecycle.onRetired?.({
 				generation: ctx.processLifecycle.generation,
 				reasonCode: "process_tree_gone",

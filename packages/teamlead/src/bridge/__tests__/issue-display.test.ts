@@ -77,6 +77,14 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 				activity: "working",
 			}),
 		).toBe("active");
+		expect(
+			derivePhaseDisplayState({
+				role: "implement",
+				status: "failed",
+				park: "unknown",
+				activity: "working",
+			}),
+		).toBe("blocked");
 	});
 
 	it("completed / merged → done UNCONDITIONALLY (post-ship finalization contract: a finalized QA phase has no park marker and must never flip back to active)", () => {

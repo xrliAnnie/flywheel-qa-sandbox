@@ -1461,6 +1461,7 @@ describe("TmuxAdapter", () => {
 			const { fn } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter("flywheel", fn, 10);
 			const onIdentityVerified = vi.fn();
+			const onRetired = vi.fn();
 
 			const result = await adapter.execute(
 				makeCtx({
@@ -1469,7 +1470,9 @@ describe("TmuxAdapter", () => {
 					processLifecycle: {
 						mode: "initial",
 						generation: 1,
+						retirementApproved: () => false,
 						onIdentityVerified,
+						onRetired,
 					},
 				}),
 			);
@@ -1480,6 +1483,7 @@ describe("TmuxAdapter", () => {
 				cwd: realpathSync(cwd),
 				verifiedAt: expect.any(String),
 			});
+			expect(onRetired).not.toHaveBeenCalled();
 			expect(
 				JSON.parse(
 					readFileSync(
