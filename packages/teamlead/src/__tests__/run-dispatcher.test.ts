@@ -337,6 +337,39 @@ describe("RunDispatcher", () => {
 		});
 	});
 
+	it("returns a launch outcome for an observed non-generalized resume failure", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		vi.mocked(runtime.blueprint.run).mockResolvedValue({
+			success: false,
+			error: "workflow_process_resume_worktree_mismatch",
+			launchFailure: {
+				code: "LAUNCH_PRECOMMIT_FAILED",
+				reason: "workflow_process_resume_worktree_mismatch",
+				physicalEvidence: "absent",
+			},
+		});
+		const dispatcher = new CleanupObservingRunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-2808",
+			projectName: "TestProject",
+			observeLaunchOutcome: true,
+		});
+
+		await expect(result.launchOutcome).resolves.toEqual({
+			status: "precommit_failed",
+			failure: {
+				code: "LAUNCH_PRECOMMIT_FAILED",
+				reason: "workflow_process_resume_worktree_mismatch",
+				physicalEvidence: "absent",
+			},
+		});
+	});
+
 	it("fails closed before launch when a design node has no resolved Lead", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const dispatcher = new RunDispatcher(

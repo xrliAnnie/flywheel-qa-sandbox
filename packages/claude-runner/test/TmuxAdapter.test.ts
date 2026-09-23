@@ -1507,6 +1507,40 @@ describe("TmuxAdapter", () => {
 		}
 	});
 
+	it("does not replace a completed result when standby confirmation loses a race", async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2808-claude-race-"));
+		const priorRoot = process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+		process.env.FLYWHEEL_CLAUDE_SESSION_DIR = stateRoot;
+		try {
+			const cwd = mkdtempSync(join(tmpdir(), "fly2808-claude-race-cwd-"));
+			const { fn } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await expect(
+				adapter.execute(
+					makeCtx({
+						executionId: "fly2808-claude-race",
+						cwd,
+						processLifecycle: {
+							mode: "initial",
+							generation: 1,
+							retirementApproved: () => true,
+							onRetired: () => {
+								throw new Error("process_body_closed");
+							},
+						},
+					}),
+				),
+			).resolves.toMatchObject({ success: true });
+			rmSync(cwd, { recursive: true, force: true });
+		} finally {
+			if (priorRoot === undefined)
+				delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+			else process.env.FLYWHEEL_CLAUDE_SESSION_DIR = priorRoot;
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("does NOT include --print or --output-format", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);

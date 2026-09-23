@@ -284,6 +284,7 @@ import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
 import {
 	CLOSE_ELIGIBLE_STATES,
+	cleanupWorkflowResumeAttempt,
 	closeRunner,
 	registerLifecycleCloseGuard,
 } from "./close-runner.js";
@@ -13852,8 +13853,13 @@ export async function startBridge(
 					processGeneration,
 					expectedHeadSha,
 				}) => {
+					const failed = (error: string, cleanupRequired = false) => ({
+						ok: false as const,
+						error,
+						cleanupRequired,
+					});
 					if (!startDispatcher) {
-						return { ok: false, error: "start_dispatcher_unavailable" };
+						return failed("start_dispatcher_unavailable");
 					}
 					const runtime = store.getWorkflowExecutionRuntime(
 						session.execution_id,
@@ -13862,7 +13868,7 @@ export async function startBridge(
 						session.execution_id,
 					);
 					if (!runtime || binding.kind !== "current") {
-						return { ok: false, error: "resume_runtime_unavailable" };
+						return failed("resume_runtime_unavailable");
 					}
 					const manifestPath =
 						runtime.vendor === "codex"
@@ -13879,7 +13885,7 @@ export async function startBridge(
 							ffReadFileSync(manifestPath, "utf8"),
 						) as Record<string, unknown>;
 					} catch {
-						return { ok: false, error: "resume_manifest_unavailable" };
+						return failed("resume_manifest_unavailable");
 					}
 					const expectedSessionId =
 						runtime.vendor === "codex" ? manifest.threadId : manifest.sessionId;
@@ -13889,19 +13895,19 @@ export async function startBridge(
 						typeof expectedSessionId !== "string" ||
 						!expectedSessionId.trim()
 					) {
-						return { ok: false, error: "resume_session_identity_missing" };
+						return failed("resume_session_identity_missing");
 					}
 					if (manifestModel !== runtime.model) {
-						return { ok: false, error: "resume_model_mismatch" };
+						return failed("resume_model_mismatch");
 					}
 					if (typeof manifestCwd !== "string" || !manifestCwd.trim()) {
-						return { ok: false, error: "resume_cwd_missing" };
+						return failed("resume_cwd_missing");
 					}
 					let expectedCwd: string;
 					try {
 						expectedCwd = voiceRealpathSync(manifestCwd);
 					} catch {
-						return { ok: false, error: "resume_cwd_unavailable" };
+						return failed("resume_cwd_unavailable");
 					}
 					let observedWorktree: string | undefined;
 					try {
@@ -13912,7 +13918,7 @@ export async function startBridge(
 						observedWorktree = undefined;
 					}
 					if (observedWorktree !== expectedCwd) {
-						return { ok: false, error: "resume_worktree_mismatch" };
+						return failed("resume_worktree_mismatch");
 					}
 					let currentHead = expectedHeadSha;
 					let dirty = false;
@@ -13930,7 +13936,7 @@ export async function startBridge(
 						currentHead = head.stdout.trim();
 						dirty = status.stdout.trim().length > 0;
 					} catch {
-						return { ok: false, error: "resume_git_identity_unavailable" };
+						return failed("resume_git_identity_unavailable");
 					}
 					const priorHead =
 						typeof manifest.lastObservedHead === "string"
@@ -13954,8 +13960,9 @@ export async function startBridge(
 						resolveIdentity = resolveIdentityPromise;
 					});
 					let identityTimeout: ReturnType<typeof setTimeout> | undefined;
+					let cleanupRequired = false;
 					try {
-						await startDispatcher.start({
+						const startResult = await startDispatcher.start({
 							issueId: session.issue_id,
 							projectName: session.project_name ?? binding.run.project_name,
 							successorExecutionId: session.execution_id,
@@ -13968,6 +13975,7 @@ export async function startBridge(
 							shareParentBranch: true,
 							startPoint: currentHead,
 							ignoreRunnerLabelSelection: true,
+							observeLaunchOutcome: true,
 							dispatchVendor: runtime.vendor as "claude" | "codex",
 							dispatchModel: runtime.model,
 							...(runtime.effort
@@ -14022,42 +14030,94 @@ export async function startBridge(
 								},
 							},
 						});
+						cleanupRequired = true;
+						const launchOutcome = startResult.launchOutcome?.then(
+							(outcome) => ({
+								kind: "launch" as const,
+								outcome,
+							}),
+						);
 						const observed = await Promise.race([
-							identity,
+							identity.then((value) => ({ kind: "identity" as const, value })),
 							new Promise<never>((_, reject) => {
 								identityTimeout = setTimeout(
 									() => reject(new Error("resume_identity_timeout")),
 									180_000,
 								);
 							}),
+							...(launchOutcome ? [launchOutcome] : []),
 						]);
+						if (observed.kind === "launch") {
+							if (observed.outcome.status === "committed") {
+								return failed("resume_launch_committed_without_identity", true);
+							}
+							return failed(
+								observed.outcome.failure.reason,
+								observed.outcome.failure.physicalEvidence === "unknown",
+							);
+						}
 						const totalMs = Math.max(0, Date.now() - requestedAt);
-						if (observed.model === null) {
-							return { ok: false, error: "resume_observed_model_missing" };
+						if (observed.value.model === null) {
+							return failed("resume_observed_model_missing", true);
 						}
 						return {
 							ok: true,
 							expectedSessionId,
-							observedSessionId: observed.sessionId,
+							observedSessionId: observed.value.sessionId,
 							expectedModel: runtime.model,
-							observedModel: observed.model,
+							observedModel: observed.value.model,
 							expectedCwd,
-							observedCwd: observed.cwd,
+							observedCwd: observed.value.cwd,
 							queueMs: 0,
 							startupMs: totalMs,
 							totalMs,
 						};
 					} catch (error) {
-						return {
-							ok: false,
-							error: error instanceof Error ? error.message : String(error),
-						};
+						return failed(
+							error instanceof Error ? error.message : String(error),
+							cleanupRequired,
+						);
 					} finally {
 						if (identityTimeout) clearTimeout(identityTimeout);
 					}
 				},
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
+				cleanupFailedStandbyResume: async ({
+					session,
+					requestId,
+					ownerId,
+					generation,
+					routeRevision,
+					executionId,
+					processGeneration,
+					demandId,
+					ownerClaimId,
+				}) => {
+					const result = await cleanupWorkflowResumeAttempt(
+						{
+							executionId,
+							issueId: session.issue_id,
+							projectName: session.project_name ?? "",
+							generation: processGeneration,
+							demandId,
+							ownerClaimId,
+							authorityCheck: async () =>
+								store.checkWorkflowReworkSupersessionAuthority({
+									requestId,
+									ownerId,
+									generation,
+									routeRevision,
+									executionId,
+								}),
+						},
+						store,
+					);
+					return {
+						ok: result.closed,
+						...(result.error ? { error: result.error } : {}),
+					};
+				},
 				closeActorForReworkSupersession: async ({
 					session,
 					requestId,

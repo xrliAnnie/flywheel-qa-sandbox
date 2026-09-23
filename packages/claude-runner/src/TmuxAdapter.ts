@@ -1268,11 +1268,15 @@ export class TmuxAdapter implements IAdapter {
 				} catch {
 					// A dead pane/window is the expected retired state.
 				}
-				ctx.processLifecycle!.onRetired?.({
-					generation: ctx.processLifecycle!.generation,
-					reasonCode: "process_tree_gone",
-					retiredAt: new Date().toISOString(),
-				});
+				try {
+					ctx.processLifecycle!.onRetired?.({
+						generation: ctx.processLifecycle!.generation,
+						reasonCode: "process_tree_gone",
+						retiredAt: new Date().toISOString(),
+					});
+				} catch {
+					// A controller race after physical retirement must not rewrite success.
+				}
 			}
 		}
 

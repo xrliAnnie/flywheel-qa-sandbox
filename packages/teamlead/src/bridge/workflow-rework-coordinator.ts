@@ -318,8 +318,19 @@ export interface WorkflowReworkCoordinatorEffects {
 				startupMs: number;
 				totalMs: number;
 		  }
-		| { ok: false; error: string }
+		| { ok: false; error: string; cleanupRequired: boolean }
 	>;
+	cleanupFailedStandbyResume(input: {
+		session: WorkflowActorSession;
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		routeRevision: number;
+		executionId: string;
+		processGeneration: number;
+		demandId: string;
+		ownerClaimId: string;
+	}): Promise<{ ok: boolean; error?: string }>;
 	closeActorForReworkSupersession(input: {
 		session: WorkflowActorSession;
 		requestId: string;
@@ -629,6 +640,7 @@ export class WorkflowReworkCoordinator {
 			worktreeReady = true;
 			if (
 				!this.deps.effects.resumeStandbyActor ||
+				!this.deps.effects.cleanupFailedStandbyResume ||
 				!this.deps.store.beginWorkflowExecutionResume ||
 				!this.deps.store.finishWorkflowExecutionResume ||
 				!this.deps.store.failWorkflowExecutionResume
@@ -687,21 +699,27 @@ export class WorkflowReworkCoordinator {
 			const failAfterCleanup = async (
 				reasonCode: string,
 				releaseReason: string,
+				cleanupRequired: boolean,
 			): Promise<WorkflowReworkCoordinatorOutcome> => {
 				let cleanupError: string | undefined;
-				try {
-					const cleanup =
-						await this.deps.effects.closeActorForReworkSupersession({
+				if (cleanupRequired) {
+					try {
+						const cleanup = await this.deps.effects.cleanupFailedStandbyResume({
 							session: actor,
 							requestId,
 							ownerId: this.deps.ownerId,
 							generation: claim.generation,
 							routeRevision: route.revision,
 							executionId: actor.execution_id,
+							processGeneration: begun.generation,
+							demandId: requestId,
+							ownerClaimId,
 						});
-					if (!cleanup.ok) cleanupError = cleanup.error ?? "unknown";
-				} catch (error) {
-					cleanupError = error instanceof Error ? error.message : String(error);
+						if (!cleanup.ok) cleanupError = cleanup.error ?? "unknown";
+					} catch (error) {
+						cleanupError =
+							error instanceof Error ? error.message : String(error);
+					}
 				}
 				const failed = this.deps.store.failWorkflowExecutionResume!({
 					executionId: actor.execution_id,
@@ -730,6 +748,7 @@ export class WorkflowReworkCoordinator {
 				return failAfterCleanup(
 					resumed.error,
 					`standby_resume_failed:${resumed.error}`,
+					resumed.cleanupRequired,
 				);
 			}
 			const verified = this.deps.store.finishWorkflowExecutionResume({
@@ -744,6 +763,7 @@ export class WorkflowReworkCoordinator {
 				return failAfterCleanup(
 					`verification_${verified.reason}`,
 					`standby_resume_verification_failed:${verified.reason}`,
+					true,
 				);
 			}
 		}

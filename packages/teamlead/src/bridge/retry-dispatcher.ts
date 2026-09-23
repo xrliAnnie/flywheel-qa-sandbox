@@ -313,6 +313,8 @@ export interface StartRequest {
 	generalizedExecution?: GeneralizedExecutionDispatch;
 	/** FLY-2808: exact-session relaunch on the same execution id. Bridge-internal. */
 	processLifecycle?: AdapterExecutionContext["processLifecycle"];
+	/** Return a typed Blueprint launch outcome without enrolling a generalized run. */
+	observeLaunchOutcome?: boolean;
 	/** Provider identity persisted by the first launch; never accepted from HTTP. */
 	previousSession?: Record<string, unknown>;
 }

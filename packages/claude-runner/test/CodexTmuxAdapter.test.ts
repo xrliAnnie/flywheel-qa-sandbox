@@ -855,6 +855,23 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(onRetired).not.toHaveBeenCalled();
 	});
 
+	it("does not replace a completed result when standby confirmation loses a race", async () => {
+		const res = await makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired: () => {
+						throw new Error("process_body_closed");
+					},
+				},
+			}),
+		);
+
+		expect(res).toMatchObject({ success: true });
+	});
+
 	it("FLY-2170 does not post-publish identity after a verified window result", async () => {
 		await makeAdapter().execute(ctx());
 

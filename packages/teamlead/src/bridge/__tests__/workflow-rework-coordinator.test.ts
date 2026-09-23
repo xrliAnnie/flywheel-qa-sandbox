@@ -171,7 +171,7 @@ function makeHarness(input: {
 				startupMs: number;
 				totalMs: number;
 		  }
-		| { ok: false; error: string };
+		| { ok: false; error: string; cleanupRequired: boolean };
 }) {
 	const targetNode = input.targetNode ?? "implement";
 	const request: WorkflowReworkRequestRow = {
@@ -451,6 +451,9 @@ function makeHarness(input: {
 		closeActorForReworkSupersession: vi.fn(
 			async () => input.cleanupResult ?? { ok: true },
 		),
+		cleanupFailedStandbyResume: vi.fn(
+			async () => input.cleanupResult ?? { ok: true },
+		),
 		hasTurnSource: vi.fn(async () => {
 			if (input.turnSourceProbeError) {
 				throw new Error(input.turnSourceProbeError);
@@ -627,7 +630,11 @@ describe("WorkflowReworkCoordinator", () => {
 			processBodyState: "standby",
 			registered: "absent",
 			persisted: "absent",
-			resumeResult: { ok: false, error: "session_identity_mismatch" },
+			resumeResult: {
+				ok: false,
+				error: "session_identity_mismatch",
+				cleanupRequired: true,
+			},
 		});
 
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
@@ -642,16 +649,19 @@ describe("WorkflowReworkCoordinator", () => {
 			}),
 		);
 		expect(h.store.finishWorkflowExecutionResume).not.toHaveBeenCalled();
-		expect(h.effects.closeActorForReworkSupersession).toHaveBeenCalledWith({
+		expect(h.effects.cleanupFailedStandbyResume).toHaveBeenCalledWith({
 			session,
 			requestId: "rework-1",
 			ownerId: "coordinator-a",
 			generation: 1,
 			routeRevision: 1,
 			executionId: "implement-exec",
+			processGeneration: 2,
+			demandId: "rework-1",
+			ownerClaimId: "coordinator-a:1",
 		});
 		expect(
-			h.effects.closeActorForReworkSupersession.mock.invocationCallOrder[0],
+			h.effects.cleanupFailedStandbyResume.mock.invocationCallOrder[0],
 		).toBeLessThan(
 			vi.mocked(h.store.failWorkflowExecutionResume!).mock
 				.invocationCallOrder[0]!,
@@ -661,12 +671,41 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
+	it("records a pre-launch resume failure without tearing down the parked body", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			resumeResult: {
+				ok: false,
+				error: "resume_git_identity_unavailable",
+				cleanupRequired: false,
+			},
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "standby_resume_failed:resume_git_identity_unavailable",
+		});
+		expect(h.effects.cleanupFailedStandbyResume).not.toHaveBeenCalled();
+		expect(h.effects.closeActorForReworkSupersession).not.toHaveBeenCalled();
+		expect(h.store.failWorkflowExecutionResume).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reasonCode: "resume_git_identity_unavailable",
+			}),
+		);
+	});
+
 	it("fails closed without another launch when failed-resume cleanup is unconfirmed", async () => {
 		const h = makeHarness({
 			processBodyState: "standby",
 			registered: "absent",
 			persisted: "absent",
-			resumeResult: { ok: false, error: "resume_identity_timeout" },
+			resumeResult: {
+				ok: false,
+				error: "resume_identity_timeout",
+				cleanupRequired: true,
+			},
 			cleanupResult: { ok: false, error: "process_still_alive" },
 		});
 

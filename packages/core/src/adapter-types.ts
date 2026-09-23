@@ -536,7 +536,7 @@ export type LaunchPrecommitFailure =
 	| {
 			code: "LAUNCH_PRECOMMIT_FAILED";
 			reason: string;
-			physicalEvidence: "cleaned" | "unknown";
+			physicalEvidence: "absent" | "cleaned" | "unknown";
 	  };
 
 export type LaunchPrecommitOutcome =

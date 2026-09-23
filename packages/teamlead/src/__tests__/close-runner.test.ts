@@ -19,6 +19,7 @@ import {
 	CLOSE_ELIGIBLE_STATES,
 	type CloseRunnerResult,
 	CRASH_PRESERVE_STATES,
+	cleanupWorkflowResumeAttempt,
 	closeRunner,
 } from "../bridge/close-runner.js";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
@@ -344,6 +345,106 @@ describe("closeRunner", () => {
 		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 		expect(mockFinalizeCommDbTerminalSession).not.toHaveBeenCalled();
 		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it("cleans a fenced failed standby resume without finalizing lifecycle rows", async () => {
+		seedSession(store, "ship_parked");
+		vi.spyOn(store, "getWorkflowExecutionProcessBody").mockReturnValue({
+			state: "resuming",
+			generation: 2,
+			current_demand_id: "rework-1",
+			owner_claim_id: "bridge:1",
+		} as ReturnType<StateStore["getWorkflowExecutionProcessBody"]>);
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@42",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
+
+		const result = await cleanupWorkflowResumeAttempt(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				generation: 2,
+				demandId: "rework-1",
+				ownerClaimId: "bridge:1",
+				authorityCheck: async () => ({ ok: true }),
+			},
+			store,
+		);
+
+		expect(result).toMatchObject({
+			closed: true,
+			physicalGone: true,
+			commDbFinalized: false,
+		});
+		expect(mockKillTmuxWindow).toHaveBeenCalledWith("runner-flywheel:@42");
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbTerminalSession).not.toHaveBeenCalled();
+	});
+
+	it("refuses standby resume cleanup after its process-body fence changes", async () => {
+		seedSession(store, "ship_parked");
+		vi.spyOn(store, "getWorkflowExecutionProcessBody").mockReturnValue({
+			state: "resuming",
+			generation: 3,
+			current_demand_id: "rework-2",
+			owner_claim_id: "bridge:2",
+		} as ReturnType<StateStore["getWorkflowExecutionProcessBody"]>);
+
+		const result = await cleanupWorkflowResumeAttempt(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				generation: 2,
+				demandId: "rework-1",
+				ownerClaimId: "bridge:1",
+			},
+			store,
+		);
+
+		expect(result).toMatchObject({
+			closed: false,
+			error: "authority_lost:preflight:resume_cleanup_fence_changed",
+		});
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+	});
+
+	it("does not confirm failed-resume cleanup while any execution process remains alive", async () => {
+		seedSession(store, "ship_parked");
+		vi.spyOn(store, "getWorkflowExecutionProcessBody").mockReturnValue({
+			state: "resuming",
+			generation: 2,
+			current_demand_id: "rework-1",
+			owner_claim_id: "bridge:1",
+		} as ReturnType<StateStore["getWorkflowExecutionProcessBody"]>);
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@42",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		mockProbeRunExecutionLiveness.mockResolvedValue("alive");
+
+		const result = await cleanupWorkflowResumeAttempt(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				generation: 2,
+				demandId: "rework-1",
+				ownerClaimId: "bridge:1",
+			},
+			store,
+		);
+
+		expect(result).toMatchObject({
+			closed: false,
+			error: "resume_cleanup_liveness_alive",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 	});
 
 	it("fences a stale collector after graceful phase shutdown before finalization", async () => {

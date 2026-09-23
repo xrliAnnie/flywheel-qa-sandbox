@@ -1433,6 +1433,11 @@ export class Blueprint {
 						success: false,
 						error: "workflow_process_resume_worktree_mismatch",
 						worktreePath: expected.path,
+						launchFailure: {
+							code: "LAUNCH_PRECOMMIT_FAILED",
+							reason: "workflow_process_resume_worktree_mismatch",
+							physicalEvidence: "absent",
+						},
 					};
 				}
 				let generation = "";

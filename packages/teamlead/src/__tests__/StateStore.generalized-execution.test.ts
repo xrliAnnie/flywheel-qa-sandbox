@@ -501,7 +501,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				executionId: "exec-1",
 				demandId: "mail-lease",
 				ownerClaimId: "bridge-b:1",
-				now: "2026-09-22T03:02:59.000Z",
+				now: "2026-09-22T03:04:59.000Z",
 			}),
 		).toEqual({ ok: false, reason: "resume_owner_conflict" });
 		expect(
@@ -509,7 +509,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				executionId: "exec-1",
 				demandId: "mail-lease",
 				ownerClaimId: "bridge-b:2",
-				now: "2026-09-22T03:03:03.000Z",
+				now: "2026-09-22T03:05:03.000Z",
 			}),
 		).toMatchObject({ ok: true, generation: 3, attempt: 2 });
 		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({

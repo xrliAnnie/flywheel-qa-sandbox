@@ -2065,11 +2065,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			!teardownError &&
 			!quotaFailure;
 		if (success && ctx.processLifecycle && processRetirementApproved) {
-			ctx.processLifecycle.onRetired?.({
-				generation: ctx.processLifecycle.generation,
-				reasonCode: "process_tree_gone",
-				retiredAt: new Date().toISOString(),
-			});
+			try {
+				ctx.processLifecycle.onRetired?.({
+					generation: ctx.processLifecycle.generation,
+					reasonCode: "process_tree_gone",
+					retiredAt: new Date().toISOString(),
+				});
+			} catch {
+				// A controller race after physical retirement must not rewrite success.
+			}
 		}
 		const threadId = outcome?.threadId;
 		const result: AdapterExecutionResult = {

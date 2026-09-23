@@ -377,6 +377,39 @@ describe("FLY-887 worktree in-place takeover", () => {
 		expect(gitChecker.assertCleanTree).not.toHaveBeenCalled();
 	});
 
+	it("process-body resume reports a missing exact worktree as physically absent", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: false, path });
+		const { result } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{
+				sessionRole: "main",
+				shareParentBranch: true,
+				startPoint: HEAD,
+				workflowProcessLifecycle: {
+					mode: "resume",
+					generation: 2,
+					demandId: "rework-1",
+					expectedSessionId: "session-1",
+					expectedModel: "sonnet",
+					expectedCwd: path,
+				},
+			},
+		);
+
+		expect(result).toMatchObject({
+			success: false,
+			error: "workflow_process_resume_worktree_mismatch",
+			launchFailure: {
+				code: "LAUNCH_PRECOMMIT_FAILED",
+				reason: "workflow_process_resume_worktree_mismatch",
+				physicalEvidence: "absent",
+			},
+		});
+	});
+
 	it("resume launch quarantines and rebuilds instead of taking over in place", async () => {
 		const path = makeRealWorktree();
 		created.push(path);

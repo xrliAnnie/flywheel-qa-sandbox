@@ -1642,11 +1642,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			throw error;
 		}
 
-		const launchOutcome = req.generalizedExecution
-			? createLaunchOutcomeDeferred(
-					req.generalizedExecution.commitWorkflowLaunch,
-				)
-			: undefined;
+		const launchOutcome =
+			req.generalizedExecution || req.observeLaunchOutcome
+				? createLaunchOutcomeDeferred(
+						req.generalizedExecution?.commitWorkflowLaunch,
+					)
+				: undefined;
 		const entry = {
 			executionId,
 			promise: null! as Promise<void>,

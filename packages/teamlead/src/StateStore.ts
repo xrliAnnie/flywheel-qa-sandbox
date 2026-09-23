@@ -423,7 +423,7 @@ export class WorkflowEventUidConflictError extends Error {
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
 export const MAX_WORKFLOW_RESUME_ATTEMPTS = 2;
-export const WORKFLOW_RESUME_LEASE_MS = 180_000;
+export const WORKFLOW_RESUME_LEASE_MS = 5 * 60_000;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
