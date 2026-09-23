@@ -1,6 +1,7 @@
 export * from "./adapters.js";
 export * from "./audio.js";
 export * from "./bridge-client.js";
+export * from "./codex/CodexProofSpeaker.js";
 export * from "./codex/CodexVoiceContainer.js";
 export * from "./codex/RealtimeTransport.js";
 export * from "./config.js";

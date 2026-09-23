@@ -51,6 +51,14 @@ export interface CodexRealtimeTranscript {
 	raw: Record<string, unknown>;
 }
 
+export interface CodexRealtimeItem {
+	generation: number;
+	itemId: string;
+	role: "assistant" | "user";
+	status?: string;
+	raw: Record<string, unknown>;
+}
+
 interface Deferred<T> {
 	promise: Promise<T>;
 	resolve(value: T): void;
@@ -129,6 +137,7 @@ export class CodexRealtimeTransport {
 			start: Record<string, unknown>;
 			onAudio?(delta: CodexRealtimeAudioDelta): void;
 			onTranscript?(transcript: CodexRealtimeTranscript): void;
+			onItem?(item: CodexRealtimeItem): void;
 			onInputGap?(gap: {
 				generation: number;
 				utteranceId: string | null;
@@ -356,6 +365,13 @@ export class CodexRealtimeTransport {
 				(item.role === "assistant" || item.role === "user")
 			) {
 				this.lastItemByRole.set(item.role, item.id);
+				this.options.onItem?.({
+					generation: this.options.generation,
+					itemId: item.id,
+					role: item.role,
+					...(typeof item.status === "string" ? { status: item.status } : {}),
+					raw: item,
+				});
 			}
 			return;
 		}

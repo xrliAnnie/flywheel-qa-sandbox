@@ -15,6 +15,8 @@ const caps = (
 	announce: false,
 	converse: false,
 	bargeIn: false,
+	verbatim: false,
+	attribution: false,
 	toolCallScheduling: "none",
 	transcriptGranularity: "final-only",
 	supportsResume: false,

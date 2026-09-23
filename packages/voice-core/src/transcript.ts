@@ -14,7 +14,12 @@
  */
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { TranscriptEntry, TranscriptSink } from "./types.js";
+import type {
+	TranscriptEntry,
+	TranscriptFlushReceipt,
+	TranscriptSink,
+	TranscriptWriteReceipt,
+} from "./types.js";
 
 /** durable completeness ledger: a file that lost writes must never be read
  * back as a "complete verbatim record" (Codex R27 HIGH). Keyed by path so the
@@ -35,7 +40,7 @@ export function clearTranscriptWriteFailure(filePath: string): void {
 export class JsonlTranscriptSink implements TranscriptSink {
 	private tail: Promise<void> = Promise.resolve();
 	private dirEnsured = false;
-	private failed = false;
+	private failure?: Error;
 
 	constructor(
 		private readonly filePath: string,
@@ -46,35 +51,57 @@ export class JsonlTranscriptSink implements TranscriptSink {
 			),
 	) {}
 
-	append(entry: TranscriptEntry): void {
+	append(entry: TranscriptEntry): Promise<TranscriptWriteReceipt> {
 		const line = `${JSON.stringify(entry)}\n`;
+		let settle!: (receipt: TranscriptWriteReceipt) => void;
+		const receipt = new Promise<TranscriptWriteReceipt>((resolve) => {
+			settle = resolve;
+		});
 		this.tail = this.tail.then(async () => {
-			if (this.failed) return;
+			if (this.failure) {
+				settle({
+					outcome: "failed",
+					medium: "jsonl",
+					reason: this.failure.message,
+				});
+				return;
+			}
 			try {
 				if (!this.dirEnsured) {
 					await mkdir(dirname(this.filePath), { recursive: true });
 					this.dirEnsured = true;
 				}
 				await appendFile(this.filePath, line, { encoding: "utf8" });
+				settle({ outcome: "durable", medium: "jsonl" });
 			} catch (err) {
-				this.failed = true;
 				const e = err instanceof Error ? err : new Error(String(err));
+				this.failure = e;
 				writeFailures.set(this.filePath, e);
 				this.onError(e);
+				settle({
+					outcome: "failed",
+					medium: "jsonl",
+					reason: e.message,
+				});
 			}
 		});
+		return receipt;
 	}
 
 	/** drain pending writes — call before READING the file back. */
-	flush(): Promise<void> {
-		return this.tail;
+	async flush(): Promise<TranscriptFlushReceipt> {
+		await this.tail;
+		return this.failure
+			? { outcome: "failed", reason: this.failure.message }
+			: { outcome: "durable" };
 	}
 }
 
 /** In-memory sink for tests and dry runs. */
 export class MemoryTranscriptSink implements TranscriptSink {
 	readonly entries: TranscriptEntry[] = [];
-	append(entry: TranscriptEntry): void {
+	async append(entry: TranscriptEntry): Promise<TranscriptWriteReceipt> {
 		this.entries.push(entry);
+		return { outcome: "durable", medium: "memory" };
 	}
 }
