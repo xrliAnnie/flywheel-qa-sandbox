@@ -41,6 +41,8 @@ export interface VoiceCoreConfig {
 		protocolVersion: 1;
 		voice: string;
 		delegation: "client";
+		announcerBackendId: string;
+		announcerVoice: string;
 	};
 	defaultAnnounceBackendId: string;
 	defaultConverseBackendId: string;
@@ -162,6 +164,18 @@ export function resolveConfig(
 				"marin",
 			),
 			delegation: overrides.openaiLive?.delegation ?? "client",
+			announcerBackendId: pick(
+				overrides.openaiLive?.announcerBackendId,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_BACKEND,
+				"edge-tts",
+			),
+			announcerVoice: pick(
+				overrides.openaiLive?.announcerVoice,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_VOICE,
+				overrides.voice,
+				env.FLYWHEEL_VOICE_VOICE,
+				DEFAULT_VOICE,
+			),
 		},
 		defaultAnnounceBackendId: pick(
 			overrides.defaultAnnounceBackendId,
@@ -246,6 +260,12 @@ export function verifyOpenAiLiveComponents(
 		unavailable("OpenAI Live protocol must be v1 with client delegation");
 	}
 	if (!config.openaiLive.voice) unavailable("OpenAI Live voice is not set");
+	if (config.openaiLive.announcerBackendId !== "edge-tts") {
+		unavailable("OpenAI Live announcer must use edge-tts");
+	}
+	if (!config.openaiLive.announcerVoice) {
+		unavailable("OpenAI Live edge-tts announcer voice is not set");
+	}
 	try {
 		const endpoint = new URL(config.openaiLive.endpoint);
 		if (

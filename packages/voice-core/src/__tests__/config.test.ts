@@ -74,6 +74,8 @@ describe("resolveConfig", () => {
 			protocolVersion: 1,
 			voice: "marin",
 			delegation: "client",
+			announcerBackendId: "edge-tts",
+			announcerVoice: "zh-CN-XiaoxiaoNeural",
 		});
 
 		const configured = resolveConfig(
@@ -164,6 +166,21 @@ describe("fail-fast component checks", () => {
 				OPENAI_API_KEY: "test-key",
 			} as NodeJS.ProcessEnv),
 		).not.toThrow();
+	});
+
+	it("OpenAI Live: rejects a missing or non-Edge announcer face", () => {
+		const config = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		for (const announcerBackendId of ["", "gemini-live"]) {
+			expect(() =>
+				verifyOpenAiLiveComponents(
+					{
+						...config,
+						openaiLive: { ...config.openaiLive, announcerBackendId },
+					},
+					{ OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+				),
+			).toThrow(/语音不可用.*announcer.*edge-tts/i);
+		}
 	});
 
 	it("brain: throws when identity file unset or missing", () => {
