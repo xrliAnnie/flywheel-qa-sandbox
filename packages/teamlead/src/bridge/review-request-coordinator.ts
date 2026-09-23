@@ -2401,6 +2401,17 @@ export class ReviewRequestCoordinator {
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
 			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
+			// FLY-2547: the reviewer used to background a long suite and end its
+			// turn "to wait for the completion notification". `claude -p` is one
+			// headless session: ending the turn ends the session, the notification
+			// never arrives, stdout carries no verdict, and the job dies as
+			// `no_verdict` with the gate shut. Pin the turn lifecycle, and give a
+			// slow suite an exit that still produces a verdict.
+			`Run every command in the FOREGROUND and wait for it to finish before you judge. ` +
+			`Never background a command and then end your turn to wait for a completion notification — ` +
+			`this is a single headless session, ending your turn ends the session, and that notification will never arrive. ` +
+			`If one suite is still running after 5 minutes, stop waiting on it and judge on the evidence you already have: ` +
+			`still emit the verdict JSON, and add a {"severity": "LOW", "title": "tests_incomplete", ...} finding naming the suites that did not finish. ` +
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`${reviewedIdentityField}}. ` +

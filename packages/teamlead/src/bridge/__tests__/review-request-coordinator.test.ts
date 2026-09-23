@@ -1049,6 +1049,12 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
 			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
+			// FLY-2547 turn-lifecycle clause — see the dedicated test below.
+			`Run every command in the FOREGROUND and wait for it to finish before you judge. ` +
+			`Never background a command and then end your turn to wait for a completion notification — ` +
+			`this is a single headless session, ending your turn ends the session, and that notification will never arrive. ` +
+			`If one suite is still running after 5 minutes, stop waiting on it and judge on the evidence you already have: ` +
+			`still emit the verdict JSON, and add a {"severity": "LOW", "title": "tests_incomplete", ...} finding naming the suites that did not finish. ` +
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
@@ -1090,6 +1096,61 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		);
 		expect(prompt).toContain('stable "id"');
 		expect(prompt).toContain("reuse the same id");
+	});
+
+	// FLY-2547: the reviewer used to background a long suite and then END ITS
+	// TURN to "wait for the completion notification". `claude -p` is a single
+	// headless session — the turn ending ends the session, the notification
+	// never arrives, stdout carries no verdict, and the runner fails the job
+	// with `no_verdict` (claude-review-runner.ts) while the gate stays shut.
+	// The contract therefore has to pin the TURN LIFECYCLE, not just the
+	// output shape, and it must give a slow suite an exit that still produces
+	// a verdict. All three sentences live in the shared legacyContract, so
+	// both the policy-off and policy-on prompts must carry them.
+	it("FLY-2547: the review contract forbids backgrounding work and ending the turn, and gives slow suites a verdict-preserving exit", async () => {
+		const expectedSentences = [
+			"Run every command in the FOREGROUND and wait for it to finish before you judge.",
+			"Never background a command and then end your turn to wait for a completion notification",
+			"this is a single headless session, ending your turn ends the session, and that notification will never arrive",
+			"If one suite is still running after 5 minutes, stop waiting on it and judge on the evidence you already have",
+			'still emit the verdict JSON, and add a {"severity": "LOW", "title": "tests_incomplete", ...} finding naming the suites that did not finish',
+		];
+
+		for (const policyEnabled of [false, true]) {
+			const h = await makeHarness({
+				reviewSeverityPolicyEnabled: policyEnabled,
+			});
+			registerSession(h.store, "e1");
+			openGate(h.comm, "q1");
+			h.outcomes.push({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: HEAD,
+				raw: "",
+			});
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: `r-${String(policyEnabled)}`,
+				reviewType: "code",
+				questionId: "q1",
+			});
+			await settle();
+			const prompt = h.invocations[0]?.prompt ?? "";
+			expect(prompt).not.toBe("");
+			for (const sentence of expectedSentences) {
+				expect(
+					prompt,
+					`policyEnabled=${String(policyEnabled)} prompt must teach: ${sentence}`,
+				).toContain(sentence);
+			}
+			// The severity-policy rewrite keys off this exact anchor; the new
+			// sentences must never duplicate or shadow it.
+			expect(
+				prompt.split('"findings": [{').length - 1,
+				`policyEnabled=${String(policyEnabled)} must keep exactly one findings-array anchor`,
+			).toBe(1);
+		}
 	});
 
 	it("FLY-1278: settled HIGH findings approve with frozen payload and deterministic dispute alerts", async () => {
