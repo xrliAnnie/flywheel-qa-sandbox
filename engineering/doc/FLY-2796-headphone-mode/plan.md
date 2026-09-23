@@ -3,7 +3,7 @@ Issue: FLY-2796 (https://linear.app/geoforge3d/issue/FLY-2796/语音v2-耳机模
 日期: 2026-09-23
 基于: research.md
 
-Status: review_requested (R2; R1 findings reconciled)
+Status: review_requested (R3; R1/R2 findings reconciled)
 
 ## 1. 给使用者看的结果
 
@@ -44,7 +44,7 @@ flowchart LR
 | 唯一转写底座 | `voice-core/src/transcript.ts` | 原有 sink 的 durable 扩展，不搬 Raya TranscriptLog store |
 | comm 通用载体 | `flywheel-comm/src/{chat-delivery-envelope,discord-chat-ingest}.ts` | 增量 typed handoff metadata；沿用 deterministic delivery identity |
 
-`RoomIO` 实现和 `ROOM_IO_VERSION = 1` 从 `flywheel-voice-bridge` 同一公共导出提供；稳定 implementation key 为 `flywheel-voice-bridge/room/RoomIO#createRoomIO`。不增加新包。voice-headphone/src/room-io.ts 仅接收注入的 core RoomIO 类型和 V1 engine，不 import bridge 实现；实例由 codex/bridge composition root 传入，因此不增加 headphone → bridge 依赖。codex → bridge → core 依赖方向保持；room 内将原 `flywheel-voice-bridge` 自引用改成本包相对 import。`RealtimeAudioOwner` 移到 core，legacy 类型可转导出别名。
+`RoomIO` 实现和 `ROOM_IO_VERSION = 1` 从 `flywheel-voice-bridge` 同一公共导出提供；稳定 implementation key 为 `flywheel-voice-bridge/room/RoomIO#createRoomIO`。不增加新包。voice-headphone/src/room-io.ts 仅接收注入的 core RoomIO 类型和 V1 engine，不 import bridge 实现；实例由 codex/bridge composition root 传入，因此不增加 headphone → bridge 依赖。codex composition root 导入 headphone 的注入组合函数，显式新增 `voice-codex/package.json` 的 `flywheel-voice-headphone: workspace:*` 依赖；方向 codex→headphone→core 无环。bridge legacy composition 不依赖 headphone（V2 模式只由 codex carrier 组合），仅创建自己共用的 RoomIO。codex → bridge → core 依赖方向保持；room 内将原 `flywheel-voice-bridge` 自引用改成本包相对 import。`RealtimeAudioOwner` 移到 core，legacy 类型可转导出别名。
 
 依赖闭包具体迁移：codex `audio/{AudioClock,FrameQueue,JitterBuffer,Resample,Silence}.ts`、`pipeline/{Uplink,UplinkSpeechGate,SileroVad}.ts`、`receive-health.ts`、`speaker-attribution.ts`、`audio.ts`、`discord-room.ts`。ONNX runtime `1.29.0` 迁到 bridge manifest（复用已装依赖），模型随提取包发布、保留 sha256 验证；修改 model fileURL 基准及 `files` 清单，不靠 codex 源目录相对路径。旧 import 先保持转导出；确认零消费者后才删除多余 shim。
 
@@ -56,6 +56,9 @@ flowchart LR
 - 格式复用 `AudioFormat`；RoomIO 接受 PCM16 的 16k/24k mono、48k stereo，进入边界核验整样本长度、有限合法采样率、通道和流内格式一致。帧接口中的 WAV/MP3 显式 rejected；旧提示音及压缩 TTS 走下述 clip 操作，不能把媒体 bytes 改标签冒充 PCM。
 - 输出 `playSpeech({speechId, generation, sequence, pcm, format, final})` 支持完整 buffer（单帧 final=true）和流式帧；同 speechId 单序列、同格式、final 只一次；无音频 final 合法用于结束。调用返回该帧被本地接受/拒绝的结果，末帧 receipt 仅 `submitted`；不宣称 drain 或听到。RoomIO 按容量提供异步背压，生产者 await，不无限堆内存、不静默丢正文。低水位恢复，close/cancel 唤醒并 reject 等待者。
 - 非 PCM 兼容操作 `playClip({speechId,generation,source:{kind:"file",path}|{kind:"encoded",bytes,format:"wav"|"mp3"},priority:"cue"|"speech"})` 复用 `DiscordDeps.createResource` 的 file / probeable stream 分支（discordWiring.ts:792），由既有 ffmpeg/prism 解码，**仍使用 RoomIO 同一 AudioPlayer**，不造 decoder/helper 或第二 player。path 仅接受应用配置的 cue 文件/受管 TTS 临时文件，不接模型任意路径。AssistantSpeaker 的 earcon/filler 和 LeadSpeaker 的 edge-tts bytes/text→TtsEngine 明确映射到此操作。cue 遇正在播的正文沿用 skip+diagnostic，speech 媒体按同一串行队列播放；generation/lease 在排队和 player.play 前重验。Playing/Idle/error 事件决定该 clip 本地回执；未知长度时 audibleTail（估算）保持 remainingMs=null、drained=false，直到该资源 Idle 后经过余量。取消统一 stop player、清流和解码资源，晚回调 fenced。启动保留 ffmpeg preflight，缺解码器明确报错不静音。
+- **R2 修正：clip 与常驻 PCM 资源的交接协议**。`WaitingMouth.start()` 当前只安装一次长命 PassThrough，不能拿它来重载资源。改为同一 mouth 的显式 `suspendForClip()` / `resumePcm()`：clip 只在当前正文 stream 已 end、队列空且 audibleTail（估算）排空后进入；设置 output phase=clip，暂停 PCM/音床 tick，递增 resourceEpoch，解绑旧 drain/Playing/Idle/error 回调，stop player 并销毁旧 PassThrough。随后安装 clip resource。结束/失败/取消后，在 lease/generation 仍有效时创建**全新** PassThrough/resource，重绑带 resourceEpoch 的回调、reset writeBlocked、player.play 新 raw resource，重新启动单一二十毫秒 timer，并在资源确认为当前且播放器就绪后恢复队列。不能重用 end/destroy 过的 stream；不能以 timer 已存在直接返回，也不能多开 timer。没有有效 lease 或进入 closing 则不 re-arm。
+  clip 期间新 PCM start/write 等待同一 bounded queue 的背压（不报告 submitted、不往被卸下的流写、不丢弃）；clip Idle 后 re-arm 才提交等待帧。队列满会持续阻塞写者，调用者取消/超时则显式 reject。cue 本来有正文在飞就 skip，不切断正文；encoded speech 遵循串行顺序。资源重载失败将当前及等待输出全部 failed、上报健康不可用；不让 write offset 推进冒充播放提交。localPlaybackCancel 通过 speechId/generation/resourceEpoch fencing，旧 clip 的 late Idle 不能重装覆盖继任流。保持上行 AudioClock/Uplink 静音帧连续，只有下行音床在 clip 播放窗口暂停。
+  必测序列是 **PCM 正文一→earcon→PCM 正文二→filler→PCM 正文三**，不仅看 promise：实际 player 资源消费到各段不同 PCM 标记，始终同 player；另测 clip 中背压、clip error、取消/换代和 late Idle、重复 resume 无双 timer。它覆盖“clip 后永久静音但仍回 submitted”的原反例。
 - `localPlaybackCancel(speechId,generation)`：清应用队列 + stop/reset 物理 player/PassThrough，拒绝未完成 promise，记本地 cancelled；该 generation/speechId 的后续帧全部拒绝。它不是引擎 turnCancelOrSuppress，本单不据此宣称支持用户打断。
 - `audibleTail()`（估算）返回 `{estimated:true,remainingMs,drained,observedAt,sessionId,generation}`。remainingMs 纳入待播放 PCM 时长、已写未消费 buffer 和可配置输送余量；无可信计量则 remainingMs=null/drained=false。cancel 后也不能凭清数组立即认定远端无尾音。该估算只用于下一段播报调度，不作为人耳证据。
 - `onPresence` 同时给 exact founderPresent 与 humanCount；耳机用 founderPresent，旧 Gemini 任意 human occupancy 行为由 adapter 保留。`onReceiveHealth` 沿用现有健康 schema，不把没人说话判故障。所有订阅返回 unsubscribe，并以 holder/generation 防旧 unsubscribe 清掉新会话。
@@ -71,9 +74,13 @@ flowchart LR
 
 新增 additive `carrier_kind`（`daemon` 默认 / `resident`）、`owner_boot_id`、`session_generation` 字段，旧行默认 daemon；不扩 VoiceSessionState enum。`voice-session-routes.ts` 增加 master-only resident reserve-and-claim 入口，验证服务端配置中的 project/Lead/bot/guild/channel 和调用者的 resident 注册绑定，拒绝客户端任意指定目标。使用同一个 active-room UNIQUE 约束，**一个事务直接建立 resident 行 state=claimed + provisioning_step=done + owner_boot_id + generation + leaseToken**，返回 lease；不曾可见 desired/provisioning，因此无跨进程 claim 窗口。绑定现有命令文字频道，root/thread/member 可空，不补发 Discord 产物。owner_boot_id 是路由绑定，不单独充当认证凭据；重试同 requestId 返回同 reservation，换 boot 不接管旧 lease。
 
-消费扫面必须一起改：StateStore `getDesiredVoiceSession` / 普通 `claimVoiceSession`、`listRecoverableVoiceProvisioning`、`admitVoiceLaunchAttempt` 只接受 carrier_kind=daemon；`voice-session-provisioner.ts` 对 resident 明确拒绝，`voice-session-runtime.ts` wakeTick 在 admission 之前过滤 resident，active poll 只对需要 daemon outbound 的会话运行。生命周期 sweep/过期租约回收仍覆盖两类；收听健康与房间需求统计保留两类但 codex launchd demand 只计 daemon。card/root/thread 消费者对 resident 无产物明确跳过，不能因 null 当损坏而修复创建。resident renew/state/release 除 leaseToken 还要求 owner_boot_id/generation 一致；普通 daemon 即使知道 sessionId 也不能 claim resident。
+消费扫面必须一起改（包括下面的 tick 顶部 admission 校验，不能只改 wake admission）：StateStore `getDesiredVoiceSession` / 普通 `claimVoiceSession`、`listRecoverableVoiceProvisioning`、`admitVoiceLaunchAttempt` 只接受 carrier_kind=daemon；`voice-session-provisioner.ts` 对 resident 明确拒绝，`voice-session-runtime.ts` wakeTick 在 admission 之前过滤 resident，active poll 只对需要 daemon outbound 的会话运行。生命周期 sweep/过期租约回收仍覆盖两类；收听健康与房间需求统计保留两类但 codex launchd demand 只计 daemon。card/root/thread 消费者对 resident 无产物明确跳过，不能因 null 当损坏而修复创建。resident renew/state/release 除 leaseToken 还要求 owner_boot_id/generation 一致；普通 daemon 即使知道 sessionId 也不能 claim resident。
 
-精确负测：启动 /gemini 或 /eleven 后，root/thread/addMember/send、requestWake、admit launch budget 均零次；普通 GET desired 不返回该行，直接 daemon claim resident ID 拒绝；仅原 resident 拿到 lease 并能收放。同房另一个命令仍被拒绝；resident 崩溃到期后允许重新发起新 session，不自动变成 daemon。把 `voice-session-{runtime,provisioner,routes}`、StateStore session methods 和 health demand projection 的 carrier predicates 列入 T2 消费者测试。
+**R2 修正：tick 顶部校验不能使用 daemon 的 resolve。** `voice-session-runtime.ts:52-81` 遍历所有活跃状态调用 validateSession，失败会 `failVoiceSessionAdmission`；将 `voice-session-services.ts:105/143` 的 resolve/validateSession 按 carrier_kind 显式分支。daemon 完全保留现有 voiceRoom、Lead bot 和 probeVoiceSelfFilter 语义；resident 必须走独立 `resolveResidentSession`，依据唯一 `project.huddle.guildId/voiceChannelId`、已注册 owner_boot_id 与当前 generation 校验，不能要求 voiceRoom 存在或 huddle 为空。resident 输出 bot 为该 huddle 配置的 orchestrator、输入为 ears；允许与 lead.botUserId 不同。reserve 路由从服务端 huddle 注册记录填 voiceBotUserId/ears identity，不能留空也不接受调用方自选身份。
+
+resident **仍需自过滤证明**，但不是 daemon 的单 Lead bot 证明：在现有 BotRegistry 登录成功、Discord 返回真实 user.id 并与服务端配置所解析的 bot binding 对齐后，RoomIO 针对该会话的实际 receive filter 产生 boot/generation/room 绑定的自检回执，断言 outputBotDropped、earsBotDropped、unknownDropped、allowedHumanPassed；Bridge 校验来自该受信 resident 注册通道、完整 bot/room/boot/generation 匹配且未过期。借用 EarsReceiver 的 isHuman/allowUserIds 过滤函数跑此测试，不用文本 self-filter 证明冒充音频过滤。创建/续租和 tick validateSession 都检查同一 resident 绑定及证明；过期/漂移按 failVoiceSessionAdmission 正确终止，不能为免误杀把所有 resident 验证跳过。member lookup 未就绪时既有 fail-closed+prefetch 行为保留。server side 注册/证明回执验证和 carrier 分支同时纳入 `voice-session-services` 相关测试。
+
+精确负测：启动 /gemini 或 /eleven 后，root/thread/addMember/send、requestWake、admit launch budget 均零次；普通 GET desired 不返回该行，直接 daemon claim resident ID 拒绝；仅原 resident 拿到 lease 并能收放。同房另一个命令仍被拒绝；resident 崩溃到期后允许重新发起新 session，不自动变成 daemon。增加跨多个 runtime tick 的正例：huddle 非空、voiceRoom 为空，resident 仍 live 并能双向收放；反例：bot 身份/room/boot 漂移和失败自过滤证明使该 resident 终结，同时 daemon 原有负测仍有效。把 `voice-session-{runtime,services,provisioner,routes}`、StateStore session methods 和 health demand projection 的 carrier predicates 列入 T2 消费者测试。
 
 失败启动必须释放自己 generation 的 slot 并结束对应 session；stale close/renew/release 不得影响继任者。resident bot 可保持 Discord 连接，但没有有效 slot 时不把音频喂给任何模式，也不播报；连接存活不是活动会话。租约丢失立即停收转发、清输出、使所有未完成回执失败。
 
@@ -126,7 +133,7 @@ ack 条件：outcome=completed，contentProof 正向枚举 deterministic_tts 或
 
 Raya `InboxReader` 和 `SpeechBrief` 实际文件找回到 §2 路径，保留 provenance 注释与对应原测试。改成注入 `list/claim/ack/speak/record/clock`，去掉 Raya import、filter、ship 和“非决策只发文字”分支。沿用单 poll promise、防重复、排序、重试；不复制完整旧 turn-machine（含第二批交互），旧桌面 dry-run 留原入口，不与新 RoomIO 会话同时放音。
 
-**SpeechBrief 生产者与可达路径**：生产者是发布原问题/汇报的 Lead，不让 collector 猜“为什么”。新增 `packages/teamlead/lead-rules-base/voice-speech-brief.md` 的最小规则：需要语音友好稿时，Lead 在原消息写明三个自然段“现状：… / 原因：… / 下一步：…”，或同名 Discord embed fields；原稿真实、不编造、保留原文和链接。collector 在已认证来源消息内解析这三个完整标签到 what/why/next；多组/缺段/歧义不提取，走原文。此为可选语音文案，不要求所有历史报告改写，也不把三段文字当机器授权。修改通用 Lead 规则接入，使 Claude/Codex 载入同一规则；运行规则字节预算/生成回归，不能挤掉别的硬规则。新增测试必须从实际三段 Discord message/embed 经 collector 入库，再经恢复后的 SpeechBrief 验证/render 到 speak/ack，而非直接给函数塞 fixture；另测普通历史消息走原文。这样复用校验路径在生产可达，且没有三段稿的内容仍全部播。
+**SpeechBrief 生产者与可达路径**：生产者是发布原问题/汇报的 Lead，不让 collector 猜“为什么”。使用不进入常驻 bundle 的 `packages/teamlead/lead-rules-base/runbooks/voice-speech-brief.md` 按需规则：需要语音友好稿时，Lead 在原消息写明三个自然段“现状：… / 原因：… / 下一步：…”，或同名 Discord embed fields；原稿真实、不编造、保留原文和链接。collector 在已认证来源消息内解析这三个完整标签到 what/why/next；多组/缺段/歧义不提取，走原文。此为可选语音文案，不要求所有历史报告改写，也不把三段文字当机器授权。不修改常驻 Lead 规则或抬规则预算基线（R2 核实余量仅约五个字符）。在耳机会话已授权的 Lead briefing/交办动态上下文中，通过既有 mailbox/context 注入携带该 runbook 同版本路径与“发语音友好报告时按需读取”的提示；Claude/Codex 使用同一动态载荷，来源接入时保存一次性 notice identity 避免每轮重复提示。它不授予新业务权限，也不是新常驻 rule 文件。未读取/无三段稿仍全文兜底；测试按需入口→Lead 消息样本→collector 贯通并验证常驻 bundle 字节不变。新增测试必须从实际三段 Discord message/embed 经 collector 入库，再经恢复后的 SpeechBrief 验证/render 到 speak/ack，而非直接给函数塞 fixture；另测普通历史消息走原文。这样复用校验路径在生产可达，且没有三段稿的内容仍全部播。
 
 SpeechBrief 三字段各 ≤200 code points、非空、无 Unicode 数字、末尾句号等规则逐项保留。没有合格三段稿时记录 reject 原因，改读来源原文，按句子/最大 backend 文本长度拆段；不截掉尾部，不把内部数字删掉后伪装“校验通过”。原文分段共享 item claim，分别 requestDigest；所有段完成后才写 item ack。来源内容是数据，不当系统指令；不能从三段摘要生成动作授权。
 
@@ -192,6 +199,28 @@ Lead mailbox 门铃已存在，复用；2798 负责事件驱动的回复接入�
 结果读取认证固定落在 `plugin.ts` 单独挂载的 voiceSessionAuthMiddleware/master-only handoff router 下，不借通用 `/api/voice` 的 Gemini token 权限。GET results 和订阅都校验 master token、服务端 handoff.project/founder 与请求会话同一授权范围及活 lease/generation；跨 project、错 founder、scoped Gemini token 一律拒绝。会话结束后的 reconciler 用 Bridge 内部只读 service 查询，不通过放宽外部路由权限实现。新会话补读历史结果必须先证明同 founder/project 的合法关联。读/写分别测试，不把写入鉴权当读权限证明。
 
 新增验证：持续发言的 owner/时间线与 unknown 分支；等背压期间换代；>1800 字 canonical 无丢尾；三种 intent roundtrip；结果重复/乱序/断线重放/伪造 Lead/错 digest；旧 claim/attempt token 不能被新字段绕过。
+
+### 7.1a FLY-2798 消费分工与结果游标定稿
+
+依据 Lead 指令 `cf7aeb81-f149-4ff2-80ce-044ca80dd9ae`（2026-09-23T18:27Z），核对其批准 plan@757434f30 后，本表覆盖该稿 §3 中尚未对齐的共享文件改动归属。此处与 R2 findings 一起进入 R3，不单独开审查。
+
+| 文件或接口 | 唯一改动 owner / 消费界限 |
+|---|---|
+| core `room-io.ts`、共享 V1 receipt/utterance/transcript 类型与导出 | 2796 固定单一公共合同；2798 使用导出，不另定义相同字段。A 专有类型放 adapter 文件内。 |
+| codex `realtime.ts` 的 RealtimeAudioOwner 迁出、`discord-room.ts`/`audio.ts` 迁移与兼容 shim，bridge room 支持闭包及旧命令 adapters | 2796；2798 不改房间捕获/输出实现。旧 realtime 引擎其余逻辑维持。 |
+| codex `cli.ts`/`session.ts` 的 RoomIO/V1 factory 注入接缝，`delivery.ts`/`journal.ts` 的完整原话，`adapters.ts` 的 carrier 接线 | 2796；2798 不再直接改这些共享本体文件，以导出的注入点提供 A adapter。 |
+| codex `daemon.ts`/`bridge-client.ts` 的通用 lease、claim/attempt receipt、本单 carrier/result 查询 | 2796；2798 的事件驱动回复接入写在新 `live-reply-events.ts`，由本单留出的 `subscribeReplies` 注入点装配，不另写收件/状态机。 |
+| core `backends/openai-live/*`、A 专有 config/factory/registry 注册；codex 新 `live-lead-adapter.ts` | 2798；只实现 A 的协议、能力与上述注入接口，依赖 2796 定稿版本。 |
+| Bridge handoff request/result 持久化、授权 producer adapter、查询/claim 权威 | 2796；2798 的 session events/SSE 只订阅、投影既有结果并触发既有 claim，不创建第二存储或 carrier。 |
+| comm 子进程 URL resolver、现有 mailbox 门铃触发与可观测性 | 2798；本单只消费已有 ingest/查询能力，不认领邮箱等待延迟修复。 |
+
+实现者以 2796 最终 approved commit 的 module exports、V1 conformance fixtures 和注入接口作为 dependency-lock；任何接口缺口先报 Lead，不到对方 owner 文件中补第二实现。通用启动可按 registry 选择工厂，2798 只注册 A，不必再修改 cli/session。
+
+**结果事件形状**：`{resultEventId,seq,handoffId,requestDigest,sourceLeadId,sourceDeliveryId,resultKind,text,createdAt}`。resultEventId 是上游授权 result producer 在提交前持久确定的稳定事件 ID，随同一正文重试复用；Bridge 校验 `(handoffId,resultEventId)` 唯一，相同 ID 不同 payload digest 为 409 conflict，不能覆盖。可由已稳定的 sourceDeliveryId 加修订号确定性派生；禁止每次 retry 随机生成。
+
+**seq 是每 handoff 的严格递增序号**，不是 voice session 序号，也不是全 carrier 全局序号。Bridge 在写事件同一事务中为该 handoff 分配下一个 seq；同事件重复提交返回原 seq、不占新位置。源 session 结束、换代或换引擎不重置 seq。
+
+**replay cursor 为 `(handoffId,lastAppliedSeq)`**。现有 GET `/api/voice/handoffs/:id/results?after=<seq>` 的路径固定 handoffId；response 带该 handoff 的 highWatermark/nextCursor，升序分页。客户端先注册通知再补读 watermark 内 backlog，按 eventId/seq 去重；多个 handoff 保存各自 cursor map，绝不能拿 A handoff 的 after 值查 B。只有事件及后续 voice_outbound 关联已持久提交才推进 lastAppliedSeq，声音成功仍以既有 claim/attempt receipt 为权威。2798 若另建 session SSE 聚合流，session 的推送 event id 只作通知句柄，重连仍回到这组 handoff cursor 恢复，不能冒充本 carrier seq。测试同一 handoff 跨 session 连续 seq、不同 handoff 都有 seq=1、断线重放/重叠通知/冲突 eventId，确认不漏不串。
 
 ## 8. 实施顺序与相关测试
 
