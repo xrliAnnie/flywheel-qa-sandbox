@@ -156,11 +156,34 @@ export class LiveSession {
 		}
 
 		this.opts.fence.tombstone(this.opts.generation);
+		if (this.state === "opening") {
+			this.rejectOpening?.(
+				new VoiceError(
+					"cancelled",
+					"openai-live: admission cancelled by session retirement",
+				),
+			);
+			this.resolveOpening = undefined;
+			this.rejectOpening = undefined;
+		}
 		this.state = "retiring";
 		this.retirement = new Promise((resolve) => {
 			this.resolveRetirement = resolve;
 		});
-		this.opts.socket.send(buildSessionClose(this.opts.nextEventId()));
+		try {
+			this.opts.socket.send(buildSessionClose(this.opts.nextEventId()));
+		} catch (error) {
+			this.emitter.emit(
+				"error",
+				new VoiceError(
+					"connection-closed",
+					`openai-live: session.close failed (${(error as Error).message})`,
+					error,
+				),
+			);
+			this.finishRetirement("provider_finalization_incomplete");
+			return this.retirement;
+		}
 		this.retirementTimer = setTimeout(
 			() => this.finishRetirement("provider_finalization_incomplete"),
 			opts.deadlineMs,
@@ -174,21 +197,27 @@ export class LiveSession {
 			event = parseLiveServerEvent(raw);
 		} catch (error) {
 			if (this.state === "opening") this.failOpening(error);
+			else if (this.state === "active")
+				this.failConnection(this.asVoiceError(error));
 			else this.emitError(error);
 			return;
 		}
 
 		if (event.type === "session-closed") {
-			if (this.state === "retiring") {
-				this.finishRetirement("provider_connection_closed");
-			} else if (this.state !== "closed") {
-				this.state = "closed";
-				this.closeSocket();
-				this.emitter.emit(
-					"error",
+			if (this.state === "opening") {
+				this.failOpening(
 					new VoiceError(
 						"connection-closed",
-						"openai-live: provider closed the active session",
+						"语音不可用: OpenAI Live closed before admission",
+					),
+				);
+			} else if (this.state === "retiring") {
+				this.finishRetirement("provider_connection_closed");
+			} else if (this.state !== "closed") {
+				this.failConnection(
+					new VoiceError(
+						"connection-closed",
+						"语音不可用: OpenAI Live provider closed the active session",
 					),
 				);
 			}
@@ -210,7 +239,10 @@ export class LiveSession {
 		}
 		if (this.state === "opening" && event.type === "server-error") {
 			this.failOpening(
-				new VoiceError("backend-protocol", `openai-live: ${event.message}`),
+				new VoiceError(
+					"connection-closed",
+					`语音不可用: OpenAI Live admission failed (${event.message})`,
+				),
 			);
 			return;
 		}
@@ -243,9 +275,11 @@ export class LiveSession {
 				});
 				break;
 			case "server-error":
-				this.emitter.emit(
-					"error",
-					new VoiceError("backend-protocol", `openai-live: ${event.message}`),
+				this.failConnection(
+					new VoiceError(
+						"connection-closed",
+						`语音不可用: OpenAI Live server error (${event.message})`,
+					),
 				);
 				break;
 			case "session-started":
@@ -322,13 +356,23 @@ export class LiveSession {
 	private failConnection(error?: Error): void {
 		if (this.state === "closed") return;
 		const detail = error?.message ?? "provider connection closed";
+		const voiceError =
+			error instanceof VoiceError
+				? error
+				: new VoiceError(
+						"connection-closed",
+						`openai-live: provider connection failed (${detail})`,
+						error,
+					);
 		if (this.state === "opening") {
 			this.failOpening(
-				new VoiceError(
-					"connection-closed",
-					`语音不可用: OpenAI Live admission failed (${detail})`,
-					error,
-				),
+				error instanceof VoiceError
+					? error
+					: new VoiceError(
+							"connection-closed",
+							`语音不可用: OpenAI Live admission failed (${detail})`,
+							error,
+						),
 			);
 			return;
 		}
@@ -340,14 +384,7 @@ export class LiveSession {
 		this.state = "closed";
 		this.unsubscribeAll();
 		this.closeSocket();
-		this.emitter.emit(
-			"error",
-			new VoiceError(
-				"connection-closed",
-				`openai-live: provider connection failed (${detail})`,
-				error,
-			),
-		);
+		this.emitter.emit("error", voiceError);
 	}
 
 	private unsubscribeAll(): void {

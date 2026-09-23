@@ -16,8 +16,10 @@ class FakeSocket implements OpenAiLiveSocket {
 	private messageHandler: (raw: string | Buffer) => void = () => {};
 	private closeHandler: (error?: Error) => void = () => {};
 	private errorHandler: (error: Error) => void = () => {};
+	sendError?: Error;
 
 	send(event: OpenAiLiveClientEvent): void {
+		if (this.sendError) throw this.sendError;
 		this.sent.push(event);
 	}
 
@@ -163,6 +165,29 @@ describe("LiveSession", () => {
 		expect(socket.closed).toBe(1);
 	});
 
+	it("rejects admission when the provider closes before session.started", async () => {
+		const { session, socket, fence } = makeSession();
+		const opening = session.start();
+		socket.receive({ type: "session.closed" });
+		await expect(opening).rejects.toThrow(/语音不可用.*before admission/);
+		expect(fence.isCurrent(1)).toBe(false);
+		expect(socket.closed).toBe(1);
+	});
+
+	it("reports provider admission errors as voice unavailable", async () => {
+		const { session, socket, fence } = makeSession();
+		const opening = session.start();
+		socket.receive({
+			type: "session.error",
+			error: { message: "model access denied" },
+		});
+		await expect(opening).rejects.toMatchObject({
+			code: "connection-closed",
+			message: expect.stringMatching(/语音不可用.*model access denied/),
+		});
+		expect(fence.isCurrent(1)).toBe(false);
+	});
+
 	it("delivers each audio delta without waiting for a done event", async () => {
 		const { session, socket } = makeSession();
 		const audio = vi.fn();
@@ -267,6 +292,60 @@ describe("LiveSession", () => {
 			finalization: "provider_finalization_incomplete",
 		});
 		expect(socket.closed).toBe(1);
+	});
+
+	it("cancels an in-flight admission before retiring its socket", async () => {
+		const { session, socket, fence } = makeSession();
+		const opening = session.start();
+		const retiring = session.retire({ deadlineMs: 100 });
+		await expect(opening).rejects.toMatchObject({ code: "cancelled" });
+		expect(fence.isCurrent(1)).toBe(false);
+		expect(socket.sent.at(-1)?.type).toBe("session.close");
+		socket.receive({ type: "session.closed" });
+		await expect(retiring).resolves.toEqual({
+			generation: 1,
+			finalization: "provider_connection_closed",
+		});
+	});
+
+	it("finishes retirement when session.close cannot be sent", async () => {
+		const { session, socket, fence } = makeSession();
+		const errors: VoiceError[] = [];
+		session.on("error", (error) => errors.push(error));
+		const opening = session.start();
+		started(socket);
+		await opening;
+		socket.sendError = new Error("socket already gone");
+
+		await expect(session.retire({ deadlineMs: 100 })).resolves.toEqual({
+			generation: 1,
+			finalization: "provider_finalization_incomplete",
+		});
+		expect(fence.isCurrent(1)).toBe(false);
+		expect(errors.at(-1)).toMatchObject({ code: "connection-closed" });
+	});
+
+	it("tombstones the active generation on provider close or server error", async () => {
+		const closed = makeSession();
+		const closedOpening = closed.session.start();
+		started(closed.socket);
+		await closedOpening;
+		closed.socket.receive({ type: "session.closed" });
+		expect(closed.fence.isCurrent(1)).toBe(false);
+
+		const failed = makeSession(2);
+		const errors: VoiceError[] = [];
+		failed.session.on("error", (error) => errors.push(error));
+		const failedOpening = failed.session.start();
+		started(failed.socket);
+		await failedOpening;
+		failed.socket.receive({
+			type: "session.error",
+			error: { message: "quota exceeded" },
+		});
+		expect(failed.fence.isCurrent(2)).toBe(false);
+		expect(errors.at(-1)).toMatchObject({ code: "connection-closed" });
+		expect(errors.at(-1)?.message).toMatch(/语音不可用.*quota exceeded/);
 	});
 
 	it("surfaces invalid server input as a typed error", async () => {
