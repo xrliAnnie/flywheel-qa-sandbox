@@ -223,6 +223,51 @@ export {
 } from "./linear/BridgeLinearClient.js";
 export { type BinaryProbe, verifyPlaybackStack } from "./preflight.js";
 export {
+	BridgeRoomIO,
+	createRoomIO,
+	ROOM_IO_IMPLEMENTATION_DIGEST,
+	ROOM_IO_IMPLEMENTATION_KEY,
+	ROOM_IO_IMPLEMENTATION_MANIFEST,
+	ROOM_IO_VERSION,
+	type RoomIOOptions,
+} from "./room/RoomIO.js";
+export { Downmix48to24, WaitingMouth } from "./room/audio.js";
+export { AudioClock } from "./room/audio/AudioClock.js";
+export { FrameQueue } from "./room/audio/FrameQueue.js";
+export { JitterBuffer } from "./room/audio/JitterBuffer.js";
+export {
+	Downmix48to24 as RoomAudioDownmix48to24,
+	Up24to48Stereo,
+} from "./room/audio/Resample.js";
+export {
+	PCM24_MONO_SILENCE,
+	PCM48_STEREO_SILENCE,
+} from "./room/audio/Silence.js";
+export {
+	createInitialSileroState,
+	SILERO_MODEL_SHA256,
+	SileroVad,
+	type SileroScore,
+	type SileroState,
+} from "./room/pipeline/SileroVad.js";
+export { Uplink, type UplinkFrameMetadata } from "./room/pipeline/Uplink.js";
+export {
+	uplinkGateDelayFrames,
+	UplinkSpeechGate,
+	type UplinkGateDegradedEvent,
+	type UplinkGateDegradedReason,
+	type UplinkGateFrame,
+	type UplinkGateMode,
+	type UplinkGateSummary,
+} from "./room/pipeline/UplinkSpeechGate.js";
+export {
+	classifyReceiveFailure,
+	ReceiveHealthTracker,
+	VOICE_CODEX_RECEIVE_POLICY,
+	voiceReceiveRuntimeEvidence,
+} from "./room/receive-health.js";
+export { SpeakerAttribution } from "./room/speaker-attribution.js";
+export {
 	type RoomEarsRuntime,
 	type WireRoomEarsOptions,
 	wireRoomEars,

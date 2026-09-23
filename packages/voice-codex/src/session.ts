@@ -1,8 +1,7 @@
-import type { ReceiveHealth } from "flywheel-voice-core";
+import type { ReceiveHealth, RoomAudioOwner } from "flywheel-voice-core";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
-import type { RealtimeAudioOwner } from "./realtime.js";
 import type { PreparedSpeech } from "./speech.js";
 
 export interface FrontendHandlers {
@@ -24,7 +23,7 @@ export interface FrontendHandlers {
 }
 
 export interface RoomHandlers {
-	onAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
+	onAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	onFounderPresence(present: boolean): void;
 	onReceiveHealth(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
@@ -33,7 +32,7 @@ export interface RoomHandlers {
 
 interface FrontendLike {
 	start(signal?: AbortSignal): Promise<void>;
-	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
+	appendAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	appendSpeech(speech: PreparedSpeech): Promise<void>;
 	cancelSpeech(speechId: string): void;
 	stop(): Promise<void>;

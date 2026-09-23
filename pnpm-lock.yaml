@@ -637,6 +637,9 @@ importers:
       flywheel-voice-core:
         specifier: workspace:*
         version: link:../voice-core
+      onnxruntime-node:
+        specifier: 1.29.0
+        version: 1.29.0
       opusscript:
         specifier: 0.0.8
         version: 0.0.8
@@ -668,9 +671,6 @@ importers:
       flywheel-voice-core:
         specifier: workspace:*
         version: link:../voice-core
-      onnxruntime-node:
-        specifier: 1.29.0
-        version: 1.29.0
       ws:
         specifier: 8.19.0
         version: 8.19.0

@@ -112,6 +112,7 @@ export {
 	type ReceiveReason,
 	type ReceiveState,
 } from "./receive-health.js";
+export * from "./room-io.js";
 // secret red line (FLY-1065) — every transcript exit passes through this
 export { scrubTranscript } from "./scrub.js";
 export {

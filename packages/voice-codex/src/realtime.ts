@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { RoomAudioOwner } from "flywheel-voice-core";
 import type WebSocket from "ws";
 import type { VoiceEnd } from "./daemon.js";
 import {
@@ -54,11 +55,8 @@ interface RealtimeFrontendOptions {
 	onStatus?(text: string): void;
 }
 
-export interface RealtimeAudioOwner {
-	utteranceId: string | null;
-	ownerUserId: string | null;
-	ownerName?: string | null;
-}
+/** @deprecated Import RoomAudioOwner from flywheel-voice-core. */
+export type RealtimeAudioOwner = RoomAudioOwner;
 
 interface AudioSpan extends RealtimeAudioOwner {
 	startSample: number;
