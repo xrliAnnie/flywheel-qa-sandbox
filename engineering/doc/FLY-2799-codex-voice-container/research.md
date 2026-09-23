@@ -54,3 +54,12 @@ Issue: FLY-2799 (https://linear.app/geoforge3d/issue/FLY-2799/语音v5-引擎-bc
 ### 验证边界
 
 不再重复首轮 API/模型探针。实现阶段必须补逐请求 proof/冲突测试、developer 注入测试、归属的无歧义关联、取消整轮迟到效果隔离、工具/凭据负控、真实 Raya 与 Honey Lemon 两场 room→container→Lead mailbox→minutes 验收。全量测试归 PR CI；本地只跑涉及包的定向测试。
+
+
+## R1 后的真实来源与预算复核
+
+生产projects.json的17个Lead都没有cosContext，包含本单两个人格；因此它只能是可选覆盖，不能是唯一输入。已按真正启动路径检查：Honey Lemon由 `packages/teamlead/scripts/claude-lead.sh:973-994,2938` 安装并以 `--agent flywheel-product-lead` 启动，identity frontmatter的 `memory:user` 对应 `~/.claude/agent-memory/flywheel-product-lead/MEMORY.md`（有效manifest无另一个CLAUDE_CONFIG_DIR）；安装副本与源identity hash一致。Raya身份的开场约定指向workspace memory/MEMORY.md，并有从当前CODEX_HOME得到的native memory_summary。完整路径、字节/码点/hash及o200k_base本地估计见 `evidence/context-source-measurements.json`，未提交文件正文。
+
+Raya三文件共59139bytes/42423码点/15625估计tokens；Honey两文件41585bytes/36388码点/11040估计tokens。移除无法容纳两位身份的8192码点上限；计划最终prompt预算为128KiB与32768估计tokens，选定文件全文进入，其他索引引用不自动递归加载。该预算是应用防护，不是上游tokenizer或接入成功证明；实际状态和wrapper也必须算入，超限无静默裁剪。
+
+本地0.156.1源码 `realtime-0.156.1.rs:1383-1492` 显示：8192估计token约束是V3初始items与realtimeStart/EndInstructions；显式prompt按本路径组装到instructions。`includeStartupContext=false` 不走隐式startup 5300估计token装配。官方[模型页](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)当前标128000上下文窗口，但不能拿整个模型窗口冒充语音instructions的实测上限。实现必须用真实规模的persona上下文完成T3/T8的模型消费证明；本轮只做本地文件与计数审计，未重跑首轮语音探针。
