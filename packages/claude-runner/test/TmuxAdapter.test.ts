@@ -1452,6 +1452,56 @@ describe("TmuxAdapter", () => {
 		expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
 	});
 
+	it("persists and reports the exact Claude process identity before release", async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2808-claude-state-"));
+		const priorRoot = process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+		process.env.FLYWHEEL_CLAUDE_SESSION_DIR = stateRoot;
+		try {
+			const cwd = mkdtempSync(join(tmpdir(), "fly2808-claude-cwd-"));
+			const { fn } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			const onIdentityVerified = vi.fn();
+
+			const result = await adapter.execute(
+				makeCtx({
+					executionId: "fly2808-claude",
+					cwd,
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						onIdentityVerified,
+					},
+				}),
+			);
+
+			expect(onIdentityVerified).toHaveBeenCalledWith({
+				sessionId: result.sessionId,
+				model: null,
+				cwd: realpathSync(cwd),
+				verifiedAt: expect.any(String),
+			});
+			expect(
+				JSON.parse(
+					readFileSync(
+						join(stateRoot, "fly2808-claude", "session.json"),
+						"utf8",
+					),
+				),
+			).toMatchObject({
+				schemaVersion: 1,
+				executionId: "fly2808-claude",
+				vendor: "claude",
+				sessionId: result.sessionId,
+				cwd: realpathSync(cwd),
+			});
+			rmSync(cwd, { recursive: true, force: true });
+		} finally {
+			if (priorRoot === undefined) delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+			else process.env.FLYWHEEL_CLAUDE_SESSION_DIR = priorRoot;
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("does NOT include --print or --output-format", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);

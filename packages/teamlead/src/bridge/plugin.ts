@@ -13843,6 +13843,203 @@ export async function startBridge(
 				},
 				hasHostProcess: hasHostProcessByExecutionId,
 				assertWorktreeReady: assertWorkflowActorWorktreeReady,
+				resumeStandbyActor: async ({
+					session,
+					demandId,
+					processGeneration,
+					expectedHeadSha,
+				}) => {
+					if (!startDispatcher) {
+						return { ok: false, error: "start_dispatcher_unavailable" };
+					}
+					const runtime = store.getWorkflowExecutionRuntime(
+						session.execution_id,
+					);
+					const binding = store.resolveCurrentWorkflowActivation(
+						session.execution_id,
+					);
+					if (!runtime || binding.kind !== "current") {
+						return { ok: false, error: "resume_runtime_unavailable" };
+					}
+					const manifestPath =
+						runtime.vendor === "codex"
+							? join(codexSessionStateDir(session.execution_id), "session.json")
+							: join(
+									process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+										join(homedir(), ".flywheel", "state", "claude-sessions"),
+									session.execution_id,
+									"session.json",
+								);
+					let manifest: Record<string, unknown>;
+					try {
+						manifest = JSON.parse(ffReadFileSync(manifestPath, "utf8")) as Record<
+							string,
+							unknown
+						>;
+					} catch {
+						return { ok: false, error: "resume_manifest_unavailable" };
+					}
+					const expectedSessionId =
+						runtime.vendor === "codex" ? manifest.threadId : manifest.sessionId;
+					const manifestModel = manifest.resolvedModel;
+					const manifestCwd = manifest.cwd;
+					if (
+						typeof expectedSessionId !== "string" ||
+						!expectedSessionId.trim()
+					) {
+						return { ok: false, error: "resume_session_identity_missing" };
+					}
+					if (manifestModel !== runtime.model) {
+						return { ok: false, error: "resume_model_mismatch" };
+					}
+					if (typeof manifestCwd !== "string" || !manifestCwd.trim()) {
+						return { ok: false, error: "resume_cwd_missing" };
+					}
+					let expectedCwd: string;
+					try {
+						expectedCwd = voiceRealpathSync(manifestCwd);
+					} catch {
+						return { ok: false, error: "resume_cwd_unavailable" };
+					}
+					let observedWorktree: string | undefined;
+					try {
+						observedWorktree = session.worktree_path
+							? voiceRealpathSync(session.worktree_path)
+							: undefined;
+					} catch {
+						observedWorktree = undefined;
+					}
+					if (observedWorktree !== expectedCwd) {
+						return { ok: false, error: "resume_worktree_mismatch" };
+					}
+					let currentHead = expectedHeadSha;
+					let dirty = false;
+					try {
+						const [head, status] = await Promise.all([
+							execFileP("git", ["-C", expectedCwd, "rev-parse", "HEAD"], {
+								timeout: 5_000,
+							}),
+							execFileP(
+								"git",
+								["-C", expectedCwd, "status", "--porcelain=v1", "-uno"],
+								{ timeout: 5_000 },
+							),
+						]);
+						currentHead = head.stdout.trim();
+						dirty = status.stdout.trim().length > 0;
+					} catch {
+						return { ok: false, error: "resume_git_identity_unavailable" };
+					}
+					const priorHead =
+						typeof manifest.lastObservedHead === "string"
+							? manifest.lastObservedHead
+							: undefined;
+					const headDriftNotice =
+						priorHead && (priorHead !== currentHead || dirty)
+							? `Workflow resume context: the shared worktree moved from ${priorHead} to ${currentHead}${dirty ? " and currently has uncommitted changes" : ""}. Re-read the current files before acting; TURN remains the only write authority.`
+							: undefined;
+					const requestedAt = Date.now();
+					let resolveIdentity!: (value: {
+						sessionId: string;
+						model: string | null;
+						cwd: string;
+					}) => void;
+					const identity = new Promise<{
+						sessionId: string;
+						model: string | null;
+						cwd: string;
+					}>((resolveIdentityPromise) => {
+						resolveIdentity = resolveIdentityPromise;
+					});
+					try {
+						await startDispatcher.start({
+							issueId: session.issue_id,
+							projectName: session.project_name ?? binding.run.project_name,
+							successorExecutionId: session.execution_id,
+							issueIdentifier: session.issue_identifier,
+							issueTitle: session.issue_title,
+							sessionRole:
+								session.chat_thread_role ?? session.session_role ?? runtime.node_id,
+							shareParentBranch: true,
+							startPoint: currentHead,
+							ignoreRunnerLabelSelection: true,
+							dispatchVendor: runtime.vendor as "claude" | "codex",
+							dispatchModel: runtime.model,
+							...(runtime.effort
+								? {
+										dispatchEffort: runtime.effort as
+											| "low"
+											| "medium"
+											| "high"
+											| "xhigh"
+											| "max",
+									}
+								: {}),
+							previousSession:
+								runtime.vendor === "codex"
+									? { threadId: expectedSessionId }
+									: {
+											sessionId: expectedSessionId,
+											vendor: "claude",
+											resolvedModel: runtime.model,
+											cwd: expectedCwd,
+										},
+							processLifecycle: {
+								mode: "resume",
+								generation: processGeneration,
+								demandId,
+								expectedSessionId,
+								expectedModel: runtime.model,
+								expectedCwd,
+								...(headDriftNotice ? { headDriftNotice } : {}),
+								onIdentityVerified: resolveIdentity,
+								onRetired: (evidence) => {
+									const retired = store.confirmWorkflowExecutionStandby({
+										executionId: session.execution_id,
+										generation: evidence.generation,
+										reasonCode: evidence.reasonCode,
+										now: evidence.retiredAt,
+									});
+									if (!retired.ok) {
+										console.warn(
+											`[workflow-rework] standby confirmation refused for ${session.execution_id}: ${retired.reason}`,
+										);
+									}
+								},
+							},
+						});
+						const observed = await Promise.race([
+							identity,
+							new Promise<never>((_, reject) =>
+								setTimeout(
+									() => reject(new Error("resume_identity_timeout")),
+									60_000,
+								),
+							),
+						]);
+						const totalMs = Math.max(0, Date.now() - requestedAt);
+						if (observed.model === null) {
+							return { ok: false, error: "resume_observed_model_missing" };
+						}
+						return {
+							ok: true,
+							expectedSessionId,
+							observedSessionId: observed.sessionId,
+							expectedModel: runtime.model,
+							observedModel: observed.model,
+							expectedCwd,
+							observedCwd: observed.cwd,
+							queueMs: 0,
+							startupMs: totalMs,
+							totalMs,
+						};
+					} catch (error) {
+						return {
+							ok: false,
+							error: error instanceof Error ? error.message : String(error),
+						};
+					}
+				},
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
 				closeActorForReworkSupersession: async ({

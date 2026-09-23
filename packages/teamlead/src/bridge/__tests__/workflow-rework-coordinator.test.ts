@@ -157,7 +157,20 @@ function makeHarness(input: {
 	implementProducesOutput?: boolean;
 	turnSourceProbeError?: string;
 	processBodyState?: "standby" | "resume_failed";
-	resumeResult?: { ok: true } | { ok: false; error: string };
+	resumeResult?:
+		| {
+				ok: true;
+				expectedSessionId: string;
+				observedSessionId: string;
+				expectedModel: string;
+				observedModel: string;
+				expectedCwd: string;
+				observedCwd: string;
+				queueMs: number;
+				startupMs: number;
+				totalMs: number;
+		  }
+		| { ok: false; error: string };
 }) {
 	const targetNode = input.targetNode ?? "implement";
 	const request: WorkflowReworkRequestRow = {
@@ -205,19 +218,45 @@ function makeHarness(input: {
 	let projected = false;
 	let turnSourceFrozen = false;
 	let failProjection = input.failTurnProjectionOnce ?? false;
+	let processBodyState = input.processBodyState;
+	let processGeneration = 1;
 
 	const store: WorkflowReworkCoordinatorStore = {
 		getWorkflowExecutionProcessBody: vi.fn(() =>
-			input.processBodyState
+			processBodyState
 				? {
 						execution_id: session.execution_id,
-						generation: 1,
-						state: input.processBodyState,
+						generation: processGeneration,
+						state: processBodyState,
 						current_demand_id: null,
 						owner_claim_id: null,
 					}
 				: undefined,
 		),
+		beginWorkflowExecutionResume: vi.fn(() => {
+			processGeneration += 1;
+			processBodyState = "resume_failed";
+			return {
+				ok: true as const,
+				generation: processGeneration,
+				attempt: 1,
+				idempotentReplay: false,
+			};
+		}),
+		finishWorkflowExecutionResume: vi.fn(() => {
+			processBodyState = undefined;
+			return { ok: true as const, idempotentReplay: false };
+		}),
+		failWorkflowExecutionResume: vi.fn(() => {
+			processBodyState = "resume_failed";
+			return { ok: true as const, idempotentReplay: false };
+		}),
+		allocateWorkflowResumeFallback: vi.fn((fallback) => ({
+			ok: true as const,
+			executionId: fallback.newExecutionId,
+			launchOrdinal: 2,
+			idempotentReplay: false,
+		})),
 		getWorkflowReworkRequest: vi.fn(() => request),
 		getLatestWorkflowReworkRoute: vi.fn(() => route),
 		getWorkflowReworkDelivery: vi.fn(() => ({ ...delivery })),
@@ -393,7 +432,18 @@ function makeHarness(input: {
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
 		resumeStandbyActor: vi.fn(async () => {
-			const result = input.resumeResult ?? { ok: true as const };
+			const result = input.resumeResult ?? {
+				ok: true as const,
+				expectedSessionId: "session-1",
+				observedSessionId: "session-1",
+				expectedModel: "sonnet",
+				observedModel: "sonnet",
+				expectedCwd: "/tmp/worktree",
+				observedCwd: "/tmp/worktree",
+				queueMs: 1,
+				startupMs: 2,
+				totalMs: 3,
+			};
 			if (result.ok) resumed = true;
 			return result;
 		}),
@@ -550,14 +600,74 @@ describe("WorkflowReworkCoordinator", () => {
 			demandId: "rework-1",
 			ownerId: "coordinator-a",
 			ownerGeneration: 1,
+			processGeneration: 2,
 			expectedHeadSha: HEAD,
 		});
+		expect(
+			vi.mocked(h.store.beginWorkflowExecutionResume!).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.resumeStandbyActor.mock.invocationCallOrder[0]!);
+		expect(
+			vi.mocked(h.store.finishWorkflowExecutionResume!).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.grantTurn.mock.invocationCallOrder[0]!);
 		expect(
 			h.effects.resumeStandbyActor.mock.invocationCallOrder[0],
 		).toBeLessThan(h.effects.activateActorForWake.mock.invocationCallOrder[0]!);
 		expect(
 			h.effects.resumeStandbyActor.mock.invocationCallOrder[0],
 		).toBeLessThan(h.effects.grantTurn.mock.invocationCallOrder[0]!);
+	});
+
+	it("records a failed standby resume and never grants TURN or wakes", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			resumeResult: { ok: false, error: "session_identity_mismatch" },
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "standby_resume_failed:session_identity_mismatch",
+		});
+		expect(h.store.failWorkflowExecutionResume).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "implement-exec",
+				demandId: "rework-1",
+				reasonCode: "session_identity_mismatch",
+			}),
+		);
+		expect(h.store.finishWorkflowExecutionResume).not.toHaveBeenCalled();
+		expect(h.effects.activateActorForWake).not.toHaveBeenCalled();
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("allocates a separate fallback dispatch after the resume budget is exhausted", async () => {
+		const h = makeHarness({
+			processBodyState: "resume_failed",
+			registered: "absent",
+			persisted: "absent",
+		});
+		vi.mocked(h.store.beginWorkflowExecutionResume!).mockReturnValue({
+			ok: false,
+			reason: "resume_attempt_limit",
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "replacement_converged",
+			executionId: expect.any(String),
+		});
+		expect(h.store.allocateWorkflowResumeFallback).toHaveBeenCalledWith({
+			executionId: "implement-exec",
+			demandId: "rework-1",
+			newExecutionId: expect.any(String),
+			now: NOW,
+		});
+		expect(h.effects.resumeStandbyActor).not.toHaveBeenCalled();
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
 	it("reprobes an unacked actor on the durable cadence without granting or waking again", async () => {

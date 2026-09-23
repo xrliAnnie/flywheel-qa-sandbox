@@ -33967,6 +33967,19 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_process_body_close_with_run
+			AFTER UPDATE OF status ON workflow_run
+			WHEN NEW.status IN ('completed','terminated') AND OLD.status <> NEW.status
+			BEGIN
+				UPDATE workflow_execution_process_body
+				   SET state = 'closed', current_demand_id = NULL, owner_claim_id = NULL,
+				       updated_at = datetime('now'), reason_code = 'workflow_run_terminal'
+				 WHERE execution_id IN (
+				       SELECT execution_id FROM workflow_execution_runtime WHERE run_id = NEW.run_id
+				 ) AND state <> 'closed';
+			END
+		`);
+		this.db.run(`
 			CREATE TRIGGER IF NOT EXISTS workflow_execution_runtime_no_update
 			BEFORE UPDATE ON workflow_execution_runtime
 			BEGIN SELECT RAISE(ABORT, 'workflow_execution_runtime is append-only'); END
@@ -45668,10 +45681,10 @@ export class StateStore {
 		executionId: string,
 	): WorkflowExecutionActivity | undefined {
 		const body = this.getWorkflowExecutionProcessBody(executionId);
-		if (!body) return undefined;
+		if (!body || body.state === "closed") return undefined;
 		return {
 			activityState:
-				body.state === "standby"
+				body.state === "standby" || body.state === "retiring"
 					? "standby"
 					: body.state === "resume_failed"
 						? "problem"
@@ -46172,7 +46185,12 @@ export class StateStore {
 		newExecutionId: string;
 		now: string;
 	}):
-		| { ok: true; launchOrdinal: number; idempotentReplay: boolean }
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+				idempotentReplay: boolean;
+		  }
 		| { ok: false; reason: string } {
 		if (
 			!input.executionId ||
@@ -46183,7 +46201,12 @@ export class StateStore {
 			return { ok: false, reason: "invalid_resume_fallback" };
 		}
 		let result:
-			| { ok: true; launchOrdinal: number; idempotentReplay: boolean }
+			| {
+					ok: true;
+					executionId: string;
+					launchOrdinal: number;
+					idempotentReplay: boolean;
+			  }
 			| { ok: false; reason: string } = {
 			ok: false,
 			reason: "resume_fallback_not_committed",
@@ -46195,6 +46218,23 @@ export class StateStore {
 				result = { ok: false, reason: "resume_fence_changed" };
 				return;
 			}
+			const existingLaunch = this.workflowSelectAll(
+				`SELECT execution_id, launch_ordinal
+				   FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND purpose = 'resume_fallback'
+				    AND source_demand_id = ? AND state <> 'abandoned'`,
+				[runtime.run_id, runtime.node_id, runtime.attempt, input.demandId],
+			)[0];
+			if (existingLaunch) {
+				result = {
+					ok: true,
+					executionId: String(existingLaunch.execution_id),
+					launchOrdinal: Number(existingLaunch.launch_ordinal),
+					idempotentReplay: true,
+				};
+				return;
+			}
 			const prior = this.workflowSelectAll(
 				`SELECT attempt FROM workflow_execution_resume_attempt
 				  WHERE execution_id = ? AND demand_id = ? AND kind = 'fresh_fallback'`,
@@ -46202,6 +46242,29 @@ export class StateStore {
 			);
 			if (prior.length > 0) {
 				result = { ok: false, reason: "resume_fallback_limit" };
+				return;
+			}
+			const request = this.getWorkflowReworkRequest(input.demandId);
+			const route = this.getLatestWorkflowReworkRoute(input.demandId);
+			const delivery = this.getWorkflowReworkDelivery(input.demandId);
+			const run = this.getWorkflowRun(runtime.run_id);
+			const hasReworkContext = !!request || !!route || !!delivery;
+			if (
+				hasReworkContext &&
+				(!request ||
+					!route ||
+					!delivery ||
+					!run ||
+					request.run_id !== runtime.run_id ||
+					route.target_node_id !== runtime.node_id ||
+					route.target_attempt !== runtime.attempt ||
+					route.preferred_actor_execution_id !== input.executionId ||
+					delivery.route_revision !== route.revision ||
+					!["pending", "turn_granted", "awaiting_receipt", "wake_delivered"].includes(
+						delivery.state,
+					))
+			) {
+				result = { ok: false, reason: "resume_fallback_context_changed" };
 				return;
 			}
 			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
@@ -46236,6 +46299,64 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("resume_fallback_cas_failed");
 			}
+			if (request && route && delivery && run) {
+				this.upsertWorkflowRunNodeTx({
+					runId: runtime.run_id,
+					nodeId: runtime.node_id,
+					attempt: runtime.attempt,
+					state: "pending",
+					executionId: input.newExecutionId,
+				});
+				this.db.run(
+				`INSERT OR IGNORE INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					runtime.node_id,
+					input.now,
+				],
+				);
+				const nextRevision = route.revision + 1;
+				this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:resume_fallback',
+				         'original_session_unavailable', ?)`,
+				[
+					input.demandId,
+					nextRevision,
+					runtime.node_id,
+					runtime.attempt,
+					input.newExecutionId,
+					JSON.stringify(route.invalidation_scope),
+					JSON.stringify(route.verification_policy),
+					input.now,
+				],
+				);
+				this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET route_revision = ?, state = 'replacement_pending',
+				        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+				        last_error = 'resume_fallback_allocated', updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state IN ('pending','turn_granted','awaiting_receipt','wake_delivered')`,
+					[nextRevision, input.now, input.demandId, route.revision],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("resume_fallback_delivery_cas_failed");
+				}
+				this.remintWorkflowReworkDeliveryAttemptTx({
+					requestId: input.demandId,
+					runId: runtime.run_id,
+					now: input.now,
+				});
+			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: runtime.run_id,
 				eventUid: `process_resume_fallback:${input.executionId}:${input.demandId}`,
@@ -46250,7 +46371,12 @@ export class StateStore {
 					at: input.now,
 				},
 			});
-			result = { ok: true, launchOrdinal, idempotentReplay: false };
+			result = {
+				ok: true,
+				executionId: input.newExecutionId,
+				launchOrdinal,
+				idempotentReplay: false,
+			};
 		});
 		if (result.ok) this.save();
 		return result;

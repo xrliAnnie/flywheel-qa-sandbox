@@ -76,7 +76,13 @@ describe("recipient identity and StateStore authority", () => {
 			resolveRunnerRecipient({ commDb: db, stateStore }, "abcdef01"),
 		).toThrowError(/recipient_ambiguous/);
 	});
-	it.each(["awaiting_review", "running", "approved_to_ship", null])(
+	it.each([
+		"awaiting_review",
+		"running",
+		"ship_parked",
+		"approved_to_ship",
+		null,
+	])(
 		"allows StateStore %s regardless of CommDB status",
 		(status) => {
 			seed(db);

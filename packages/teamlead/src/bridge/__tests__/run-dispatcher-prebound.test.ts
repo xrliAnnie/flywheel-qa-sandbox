@@ -11,7 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BlueprintContext } from "flywheel-edge-worker/dist/Blueprint.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type ProjectRuntime, RetryDispatcher } from "../run-dispatcher.js";
+import {
+	type ProjectRuntime,
+	RetryDispatcher,
+	RunDispatcher,
+} from "../run-dispatcher.js";
 
 /** preRegisterCommDb writes to the real ~/.flywheel/comm — no-op it in tests. */
 class TestRetryDispatcher extends RetryDispatcher {
@@ -28,6 +32,10 @@ class TestRetryDispatcher extends RetryDispatcher {
 	protected override cleanupPreRegistration(): void {
 		this.cleanupCalls += 1;
 	}
+}
+
+class TestRunDispatcher extends RunDispatcher {
+	protected override preRegisterCommDb(): void {}
 }
 
 describe("RetryDispatcher pre-bound successor id (D2)", () => {
@@ -58,6 +66,13 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 
 	function makeDispatcher(blockRun = false): TestRetryDispatcher {
 		return new TestRetryDispatcher(
+			new Map([["proj", makeRuntime(blockRun)]]),
+			[],
+		);
+	}
+
+	function makeStartDispatcher(blockRun = false): TestRunDispatcher {
+		return new TestRunDispatcher(
 			new Map([["proj", makeRuntime(blockRun)]]),
 			[],
 		);
@@ -185,6 +200,36 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 			launchFingerprint: createHash("sha256")
 				.update("succ-generalized:7:launch-token")
 				.digest("hex"),
+		});
+	});
+
+	it("threads an exact-session process resume without pre-granting workflow TURN", async () => {
+		const d = makeStartDispatcher();
+		const processLifecycle = {
+			mode: "resume" as const,
+			generation: 2,
+			demandId: "rework-1",
+			expectedSessionId: "thread-1",
+			expectedModel: "gpt-5.6-sol",
+			expectedCwd: tmpDir,
+		};
+		const previousSession = { threadId: "thread-1" };
+
+		await d.start({
+			issueId: "FLY-2808",
+			projectName: "proj",
+			successorExecutionId: "resume-exec",
+			sessionRole: "implement",
+			shareParentBranch: true,
+			processLifecycle,
+			previousSession,
+		});
+		await d.drain();
+
+		expect(captured[0]).toMatchObject({
+			executionId: "resume-exec",
+			workflowProcessLifecycle: processLifecycle,
+			workflowPreviousSession: previousSession,
 		});
 	});
 

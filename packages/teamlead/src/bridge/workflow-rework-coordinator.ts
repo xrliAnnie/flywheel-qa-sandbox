@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { buildReworkWakeId, type CommDB } from "flywheel-comm/db";
 import type {
 	GeneralizedWorkflowAdmissionResult,
@@ -108,6 +109,51 @@ export interface WorkflowReworkCoordinatorStore {
 				owner_claim_id: string | null;
 		  }
 		| undefined;
+	beginWorkflowExecutionResume?(input: {
+		executionId: string;
+		demandId: string;
+		ownerClaimId: string;
+		now: string;
+	}):
+		| { ok: true; generation: number; attempt: number; idempotentReplay: boolean }
+		| { ok: false; reason: string };
+	finishWorkflowExecutionResume?(input: {
+		executionId: string;
+		generation: number;
+		demandId: string;
+		ownerClaimId: string;
+		expectedSessionId: string;
+		observedSessionId: string;
+		expectedModel: string;
+		observedModel: string;
+		expectedCwd: string;
+		observedCwd: string;
+		queueMs: number;
+		startupMs: number;
+		totalMs: number;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
+	failWorkflowExecutionResume?(input: {
+		executionId: string;
+		generation: number;
+		demandId: string;
+		ownerClaimId: string;
+		reasonCode: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
+	allocateWorkflowResumeFallback?(input: {
+		executionId: string;
+		demandId: string;
+		newExecutionId: string;
+		now: string;
+	}):
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string };
 	getWorkflowReworkRequest(
 		requestId: string,
 	): WorkflowReworkRequestRow | undefined;
@@ -251,8 +297,23 @@ export interface WorkflowReworkCoordinatorEffects {
 		demandId: string;
 		ownerId: string;
 		ownerGeneration: number;
+		processGeneration: number;
 		expectedHeadSha: string;
-	}): Promise<{ ok: true } | { ok: false; error: string }>;
+	}): Promise<
+		| {
+				ok: true;
+				expectedSessionId: string;
+				observedSessionId: string;
+				expectedModel: string;
+				observedModel: string;
+				expectedCwd: string;
+				observedCwd: string;
+				queueMs: number;
+				startupMs: number;
+				totalMs: number;
+		  }
+		| { ok: false; error: string }
+	>;
 	closeActorForReworkSupersession(input: {
 		session: WorkflowActorSession;
 		requestId: string;
@@ -558,11 +619,53 @@ export class WorkflowReworkCoordinator {
 				});
 			}
 			worktreeReady = true;
-			if (!this.deps.effects.resumeStandbyActor) {
+			if (
+				!this.deps.effects.resumeStandbyActor ||
+				!this.deps.store.beginWorkflowExecutionResume ||
+				!this.deps.store.finishWorkflowExecutionResume ||
+				!this.deps.store.failWorkflowExecutionResume
+			) {
 				return this.releaseRetryable({
 					requestId,
 					generation: claim.generation,
 					reason: "standby_resume_not_wired",
+				});
+			}
+			const ownerClaimId = `${this.deps.ownerId}:${claim.generation}`;
+			const begun = this.deps.store.beginWorkflowExecutionResume({
+				executionId: actor.execution_id,
+				demandId: requestId,
+				ownerClaimId,
+				now: this.now().toISOString(),
+			});
+			if (!begun.ok) {
+				if (
+					begun.reason === "resume_attempt_limit" &&
+					this.deps.store.allocateWorkflowResumeFallback
+				) {
+					const fallbackExecutionId = randomUUID();
+					const fallback = this.deps.store.allocateWorkflowResumeFallback({
+						executionId: actor.execution_id,
+						demandId: requestId,
+						newExecutionId: fallbackExecutionId,
+						now: this.now().toISOString(),
+					});
+					if (fallback.ok) {
+						return {
+							kind: "replacement_converged",
+							executionId: fallback.executionId,
+						};
+					}
+					return this.releaseRetryable({
+						requestId,
+						generation: claim.generation,
+						reason: `standby_fallback_failed:${fallback.reason}`,
+					});
+				}
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `standby_resume_begin_failed:${begun.reason}`,
 				});
 			}
 			const resumed = await this.deps.effects.resumeStandbyActor({
@@ -570,13 +673,45 @@ export class WorkflowReworkCoordinator {
 				demandId: requestId,
 				ownerId: this.deps.ownerId,
 				ownerGeneration: claim.generation,
+				processGeneration: begun.generation,
 				expectedHeadSha: request.base_revision,
 			});
 			if (!resumed.ok) {
+				this.deps.store.failWorkflowExecutionResume({
+					executionId: actor.execution_id,
+					generation: begun.generation,
+					demandId: requestId,
+					ownerClaimId,
+					reasonCode: resumed.error,
+					now: this.now().toISOString(),
+				});
 				return this.releaseRetryable({
 					requestId,
 					generation: claim.generation,
 					reason: `standby_resume_failed:${resumed.error}`,
+				});
+			}
+			const verified = this.deps.store.finishWorkflowExecutionResume({
+				executionId: actor.execution_id,
+				generation: begun.generation,
+				demandId: requestId,
+				ownerClaimId,
+				...resumed,
+				now: this.now().toISOString(),
+			});
+			if (!verified.ok) {
+				this.deps.store.failWorkflowExecutionResume({
+					executionId: actor.execution_id,
+					generation: begun.generation,
+					demandId: requestId,
+					ownerClaimId,
+					reasonCode: `verification_${verified.reason}`,
+					now: this.now().toISOString(),
+				});
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `standby_resume_verification_failed:${verified.reason}`,
 				});
 			}
 		}

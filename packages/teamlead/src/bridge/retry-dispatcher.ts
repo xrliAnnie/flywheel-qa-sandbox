@@ -308,6 +308,10 @@ export interface StartRequest {
 	 */
 	/** FLY-1281: Bridge-internal, pre-bound generalized node execution. */
 	generalizedExecution?: GeneralizedExecutionDispatch;
+	/** FLY-2808: exact-session relaunch on the same execution id. Bridge-internal. */
+	processLifecycle?: AdapterExecutionContext["processLifecycle"];
+	/** Provider identity persisted by the first launch; never accepted from HTTP. */
+	previousSession?: Record<string, unknown>;
 }
 
 export interface StartResult {

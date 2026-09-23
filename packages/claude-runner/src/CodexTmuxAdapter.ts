@@ -1642,6 +1642,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				throw new Error("Codex resume session id is missing");
 			}
 			if (
+				ctx.processLifecycle?.mode === "resume" &&
 				ctx.processLifecycle?.expectedSessionId !== undefined &&
 				ctx.processLifecycle.expectedSessionId !== resumeThreadId
 			) {

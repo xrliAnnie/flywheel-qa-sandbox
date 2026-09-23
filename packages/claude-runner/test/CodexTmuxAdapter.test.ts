@@ -784,6 +784,59 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(runtime.drainedCalls).toBe(1);
 	});
 
+	it("verifies and persists the Codex process identity before retiring", async () => {
+		const onIdentityVerified = vi.fn();
+		const onRetired = vi.fn();
+		const cwd = realpathSync(dir);
+
+		const res = await makeAdapter().execute(
+			ctx({
+				model: "gpt-5.6-sol",
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					expectedSessionId: THREAD_ID,
+					expectedModel: "gpt-5.6-sol",
+					expectedCwd: cwd,
+					onIdentityVerified,
+					onRetired,
+				},
+			}),
+		);
+
+		expect(res.error).toBeUndefined();
+		expect(res.success).toBe(true);
+		expect(onIdentityVerified).toHaveBeenCalledWith({
+			sessionId: THREAD_ID,
+			model: "gpt-5.6-sol",
+			cwd,
+			verifiedAt: expect.any(String),
+		});
+		expect(onRetired).toHaveBeenCalledWith({
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			retiredAt: expect.any(String),
+		});
+		expect(
+			JSON.parse(
+				readFileSync(
+					join(
+						process.env.FLYWHEEL_CODEX_SESSION_DIR!,
+						execId,
+						"session.json",
+					),
+					"utf8",
+				),
+			),
+		).toMatchObject({
+			schemaVersion: 1,
+			processGeneration: 1,
+			threadId: THREAD_ID,
+			resolvedModel: "gpt-5.6-sol",
+			cwd,
+		});
+	});
+
 	it("FLY-2170 does not post-publish identity after a verified window result", async () => {
 		await makeAdapter().execute(ctx());
 

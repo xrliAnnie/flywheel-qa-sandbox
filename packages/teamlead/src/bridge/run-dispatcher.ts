@@ -1716,8 +1716,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// Legacy non-engine dispatches remain byte-compatible and grant nothing.
 			const engineOwnedSpawn = req.generalizedExecution?.engineOwned === true;
 			if (
-				engineOwnedSpawn ||
-				(req.shareParentBranch === true && isWorkflowPhaseRole(role))
+				!req.processLifecycle &&
+				(engineOwnedSpawn ||
+					req.shareParentBranch === true && isWorkflowPhaseRole(role))
 			) {
 				const turnPhase = isWorkflowPhaseRole(role)
 					? role
@@ -1811,6 +1812,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					workflowSubmissionExpected: true,
 					workflowProcessLifecycle:
 						req.generalizedExecution.processLifecycle,
+				}),
+				...(req.processLifecycle && {
+					workflowProcessLifecycle: req.processLifecycle,
+				}),
+				...(req.previousSession && {
+					workflowPreviousSession: req.previousSession,
 				}),
 				launchCommitPath: workflowLaunchCommitPath,
 				launchGateToken: req.generalizedExecution?.launchGateToken,

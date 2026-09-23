@@ -263,6 +263,11 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-09-22T01:00:01.000Z",
 			}),
 		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "standby",
+			transition: "standby",
+			canResume: true,
+		});
 
 		const resume = store.beginWorkflowExecutionResume({
 			executionId: "exec-1",
@@ -299,6 +304,39 @@ describe("generalized execution admission and terminal contracts", () => {
 			state: "active",
 			current_demand_id: null,
 		});
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "working",
+			transition: "active",
+		});
+	});
+
+	it("closes every process body only when the whole workflow becomes terminal", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-terminal",
+			manifestDigest: "c".repeat(64),
+			now: "2026-09-22T01:10:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T01:10:01.000Z",
+		});
+
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'");
+
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "closed",
+			reason_code: "workflow_run_terminal",
+		});
+		expect(store.getWorkflowExecutionActivity("exec-1")).toBeUndefined();
 	});
 
 	it("fails closed on identity drift and keeps resume/fallback out of the fault budget", async () => {
@@ -350,6 +388,38 @@ describe("generalized execution admission and terminal contracts", () => {
 			reasonCode: "session_identity_mismatch",
 			now: "2026-09-22T02:00:04.000Z",
 		});
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES ('mail-1', 'run-1', 'source-mail-1', 'engine', 'execute', 1,
+				         ?, '{"authority":"engine"}', 'digest-mail-1',
+				         '2026-09-22T02:00:01.000Z')`,
+			)
+			.run("a".repeat(40));
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('mail-1', 1, 'execute', 1, 'exec-1', '["execute"]',
+				         '["code_review"]', 'engine:test', 'resume test',
+				         '2026-09-22T02:00:01.000Z')`,
+			)
+			.run();
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES ('mail-1', 1, 'pending', '2026-09-22T02:00:01.000Z')`,
+			)
+			.run();
+		store.baselineWorkflowDeliveryContracts("2026-09-22T02:00:01.000Z");
 		const fallback = store.allocateWorkflowResumeFallback({
 			executionId: "exec-1",
 			demandId: "mail-1",
@@ -357,6 +427,22 @@ describe("generalized execution admission and terminal contracts", () => {
 			now: "2026-09-22T02:00:05.000Z",
 		});
 		expect(fallback).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(store.getWorkflowRunNode("run-1", "execute", 1)).toMatchObject({
+			state: "pending",
+			execution_id: "exec-fallback",
+		});
+		expect(store.getLatestWorkflowReworkRoute("mail-1")).toMatchObject({
+			revision: 2,
+			preferred_actor_execution_id: "exec-fallback",
+			interpreted_by: "engine:resume_fallback",
+		});
+		expect(store.getWorkflowReworkDelivery("mail-1")).toMatchObject({
+			state: "replacement_pending",
+			route_revision: 2,
+		});
+		expect(store.getWorkflowActor("exec-fallback")).toMatchObject({
+			role: "execute",
+		});
 		expect(store.countWorkflowFaultReplacements("run-1", "execute", 1)).toBe(0);
 		expect(
 			store.allocateWorkflowResumeFallback({
@@ -365,7 +451,12 @@ describe("generalized execution admission and terminal contracts", () => {
 				newExecutionId: "exec-fallback-2",
 				now: "2026-09-22T02:00:06.000Z",
 			}),
-		).toEqual({ ok: false, reason: "resume_fallback_limit" });
+		).toEqual({
+			ok: true,
+			executionId: "exec-fallback",
+			launchOrdinal: 2,
+			idempotentReplay: true,
+		});
 	});
 
 	it("refreshes the same-run worktree binding cohort only inside an accepted completion", async () => {

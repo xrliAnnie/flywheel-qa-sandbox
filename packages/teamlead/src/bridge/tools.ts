@@ -334,6 +334,8 @@ export function createQueryRouter(
 		res.json({
 			execution_id: session.execution_id,
 			...result,
+			workflow_activity:
+				store.getWorkflowExecutionActivity(session.execution_id) ?? null,
 		});
 	});
 

@@ -713,6 +713,7 @@ export interface BlueprintContext {
 	};
 	/** FLY-2808: Bridge-owned process body, threaded unchanged to the adapter. */
 	workflowProcessLifecycle?: AdapterExecutionContext["processLifecycle"];
+	workflowPreviousSession?: Record<string, unknown>;
 	workflowCapabilities?: Record<string, boolean | string>;
 	workflowAgentContent?: string;
 	workflowOutputCredential?: string;
@@ -3039,6 +3040,9 @@ export class Blueprint {
 				...(phaseKeepAlive && { phaseKeepAlive }),
 				...(ctx.workflowProcessLifecycle && {
 					processLifecycle: ctx.workflowProcessLifecycle,
+				}),
+				...(ctx.workflowPreviousSession && {
+					previousSession: ctx.workflowPreviousSession,
 				}),
 				...(residentLoopTarget && { residentLoopTarget }),
 				...(ctx.sessionRole && { sessionRole: ctx.sessionRole }),
