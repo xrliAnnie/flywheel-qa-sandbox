@@ -2,7 +2,7 @@
 issue: FLY-2798
 phase: implement
 phaseCursor: 5/8
-updated: 2026-09-23T23:57:41.496Z
+updated: 2026-09-23T23:59:30.513Z
 nextStep: Lock final FLY-2796 RoomIO/V1 exports, then compose RoomIO, announcer
   speak, carrier, and push wiring
 chunks: []
