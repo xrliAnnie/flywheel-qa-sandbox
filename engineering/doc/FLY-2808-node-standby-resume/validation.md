@@ -20,5 +20,6 @@ lifecycle.mmd / identity.mmd 各执行一次 mmdc 并按用户指定标准 flags
 ## 门禁与交付游标
 
 - R1 gate：8b0a14ec-0f02-4e07-bf7c-62e4e194fe64；request：460e8036-ac1b-4029-9893-6bda991f0d39；初稿 commit 14442c875。
+- R1 后台状态 verified failed：reviewed_plan_moved，2026-09-23 05:54:55 UTC；原因是评审期间纳入 Lead 对建单范围的最新决定，不能算批准。冻结最终 plan 后开新 gate。
 - 后续有效 verdict 与 hosted fetch 证据在评审通过后补入本文件。
 - Lead 的默认值确认及建议一张实现单已记录 plan.md §11；没有独立 ship/部署授权。
