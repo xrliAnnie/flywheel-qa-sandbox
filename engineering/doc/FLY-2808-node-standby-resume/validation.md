@@ -14,24 +14,25 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | 范围 | 命令/结果 | 结论 |
 |---|---|---|
 | teamlead 新合同 | StateStore/process-body、resume/fallback、rework coordinator、Heartbeat、pane-loss、reowner、founder display 等精确测试：219 PASS | 新增正负路径绿 |
-| adapter | `vitest related` 覆盖 TmuxAdapter、CodexTmuxAdapter、daemon client：596 PASS，2 个依赖真实环境的既有用例 SKIP | 两 vendor 精确 ID/model/cwd 与 manifest 合同绿 |
-| edge-worker | `vitest related src/Blueprint.ts --run`：345 PASS | launch context 传递绿 |
+| adapter | `vitest related` 覆盖 TmuxAdapter、CodexTmuxAdapter、daemon client/runtime：600 PASS，2 个依赖真实环境的既有用例 SKIP | 两 vendor 精确 ID/model/cwd、严格恢复与 manifest 合同绿 |
+| edge-worker | `vitest related src/Blueprint.ts --run`：346 PASS | launch context、原工作树复用与 retirement approval 传递绿 |
 | core | `vitest related src/adapter-types.ts --run`：23 PASS，2 个既有 terminal 环境用例 SKIP | 共用 adapter 类型合同绿 |
 | flywheel-comm | recipient 精确测试及 related：17 PASS | standby 非终态收件语义绿 |
 | 本轮发现的 legacy migration | `StateStore.workflow-rework.test.ts` 精确 migration 用例：1 PASS | 重建 runtime 表前移除依赖 trigger，rename 后恢复 |
 | 本轮发现的既有故障预算回归 | `StateStore.fly1385-dead-exec.test.ts` 三个精确用例：3 PASS | budget 只数 `fault_replacement`；审计 `launchCount` 仍报告全部物理 launch |
 | strict retention registry | `fly-2413-retention-registry.test.ts` 两个 schema 分类用例：2 PASS；两个新增 JSON 的 Biome check PASS | 新表登记为 `protectedCurrentOrReference` |
 | 整单终态关闭 | `StateStore.generalized-execution.test.ts` 精确用例：1 PASS | 只有 whole-run terminal 才 close process body |
-| teamlead exact code-head related | 574/575 files PASS；8121 tests PASS、4 SKIP、1 FAIL。唯一红是无关 chat-thread 404 响应的一次空 JSON 解析；同头失败用例 1/1、整文件 68/68 重跑 PASS | 生命周期相关测试无红；保留首次 related 红与定向清除记录，不把它改写成一次性全绿 |
+| R2 评审修正定向集 | adapter 4 文件 435 PASS；StateStore generalized 64 PASS；dead-exec 24 PASS、1 个既有 SKIP；resume coordinator 44 PASS；founder display 48 PASS；dispatcher 122 PASS | 退休批准、失败清理、resume lease、严格 Codex 身份、终态显示、CAS union 与死 body 关闭均有正负路径 |
+| teamlead exact code-head related | `vitest related` 对当前 code head 自动选择 570 files；8029 PASS、4 个既有 SKIP、0 FAIL | `StateStore`/dispatcher 的广泛直接依赖面全绿；这是 related，不是 full package suite 或 CI |
 
-最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。修正后先精确复现转绿，再以 exact code head 重跑 related；最终大套件只有上述无关瞬态红，已用同头的精确用例和整个 owning test file 清除。
+最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。第一轮修正后的 related 曾有一个无关 chat-thread 404 空 JSON 瞬态红，同头精确用例和 owning file 重跑均绿。R2 评审修正后，当前 code head 的最终 related 为 570/570 files、8029 PASS、4 SKIP、0 FAIL。
 
 ## 构建、类型与静态检查
 
 - exact code head 的 `pnpm --filter 'flywheel-teamlead...' build`：13 个受影响包及依赖构建通过。
 - `pnpm --filter flywheel-voice-bridge build` 后，`pnpm --filter '...flywheel-core' typecheck`：9 个 core 反向依赖包通过。首轮仅因 sibling `voice-bridge/dist` 尚未生成而失败，补建该 workspace 输出后同一检查通过；不把首轮红藏掉。
 - teamlead、edge-worker、claude-runner、flywheel-comm 各自 typecheck 通过。
-- `pnpm lint` 按角色要求执行但全仓红：命中本分支外旧 research scripts/config/core/scripts 诊断；本分支最初 3 个格式问题已用现有 Biome 修复。对全部 changed TypeScript 的标准 `biome check` 无 error，仅报告 plugin.ts 两处既有 `let` warning；默认 1 MiB 限制跳过 2.8 MiB 的 StateStore。将上限提到 3 MiB 检查整个 StateStore 会命中该巨型旧文件既有 import 排序/格式和一处旧字符串拼接，故不能把它宣称为全绿，也不为本单机械重排约九千行。
+- `pnpm lint`：退出 0，检查 5130 files；26 个 warning 均在既有 research/config/core/scripts 路径，无 error。对当前 revision 的 changed TypeScript 再跑定向 `biome check`：21 个可处理文件退出 0，仅报告 `plugin.ts` 两处既有 `let` warning；仓库默认 1 MiB 上限跳过 2.8 MiB 的 `StateStore.ts`。不为本单机械重排该巨型旧文件。
 - `git diff --check`：当前通过，final exact head 再复核；没有添加依赖或秘密。
 
 ## 消费者发现与取舍
@@ -40,26 +41,28 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 
 | 源文件 | 命中数 | 保留的实际消费者 |
 |---|---:|---|
-| CodexTmuxAdapter | 1/2/7 | runner tests、Blueprint/dispatcher |
-| TmuxAdapter | 4/5/7 | runner tests、Blueprint/dispatcher |
-| codex-daemon-client | 0/0/7 | Codex adapter 与直接测试 |
-| core adapter-types | 0/0/3 | adapters、Blueprint、dispatch context |
-| Blueprint | 3/9/8 | edge-worker tests、teamlead launch paths |
-| HeartbeatService | 3/6/43 | Bridge wiring、直接/parked tests |
-| StateStore | 3/15/43 | workflow dispatcher/rework/display/guards 与直接 tests |
-| codex-session-reown | 0/0/29 | plugin wiring、直接 tests |
-| issue-display-refresher | 0/2/29 | plugin refresh 与 display tests |
-| issue-display | 0/0/29 | title/tools/refresher 与直接 tests |
-| issue-title-state | 0/0/29 | plugin title refresh 与 tests |
-| pane-loss-reconcile | 0/0/29 | plugin lifecycle sweep 与直接 tests |
-| plugin | 12/89/29 | Bridge bootstrap/runtime tests |
-| retry-dispatcher | 0/1/29 | run/workflow dispatch paths |
-| run-dispatcher | 0/6/29 | plugin、retry、prebound tests |
-| tools | 0/5/29 | Bridge API/status tests |
-| workflow-engine-dispatcher | 2/6/29 | plugin、engine transition tests |
-| workflow-rework-coordinator | 0/1/29 | plugin、rework e2e/直接 tests |
+| CodexTmuxAdapter | 53/158/210 | runner tests、Blueprint/dispatcher |
+| TmuxAdapter | 79/296/210 | runner tests、Blueprint/dispatcher |
+| codex-daemon-client | 23/63/210 | Codex adapter/runtime 与直接测试 |
+| codex-daemon-goal-runtime | 4/27/210 | Codex adapter 与直接测试 |
+| core adapter-types | 44/66/130 | adapters、Blueprint、dispatch context |
+| Blueprint | 196/426/294 | edge-worker tests、teamlead launch paths |
+| HeartbeatService | 54/167/1383 | Bridge wiring、直接/parked tests |
+| StateStore | 289/840/1383 | workflow dispatcher/rework/display/guards 与直接 tests |
+| codex-session-reown | 15/35/978 | plugin wiring、直接 tests |
+| issue-display-refresher | 16/55/978 | plugin refresh 与 display tests |
+| issue-display | 9/36/978 | title/tools/refresher 与直接 tests |
+| issue-title-state | 1/2/978 | plugin title refresh 与 tests |
+| pane-loss-reconcile | 2/8/978 | plugin lifecycle sweep 与直接 tests |
+| plugin | 254/1049/978 | Bridge bootstrap/runtime tests |
+| retry-dispatcher | 18/45/978 | run/workflow dispatch paths |
+| run-dispatcher | 39/187/978 | plugin、retry、prebound tests |
+| tools | 39/137/978 | Bridge API/status tests |
+| workflow-engine-dispatcher | 34/169/978 | plugin、engine transition tests |
+| workflow-rework-coordinator | 14/63/978 | plugin、rework e2e/直接 tests |
+| workflow-worktree-readiness | 1/1/978 | resume coordinator 的 worktree 校验 |
 
-排除项逐类说明：`engineering/doc` 和 `product/doc` 是历史设计/调研引用，不是运行时消费者；generated child-process census/inventory 是快照清单；大量同名 `plugin.ts`/`tools.ts` 命中属于其它 package；只复述文件名的 fixture/文档不形成调用关系。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；没有把历史文档命中误算成需要执行的测试。
+排除项逐类说明：所有 `doc/**`、`engineering/doc/**`、`product/doc/**` 命中都是历史设计/调研引用；generated child-process census/inventory 是快照清单；同名 `plugin.ts`/`tools.ts` 但路径不在 owning package 的命中属于其它模块；只复述文件名的 fixture/文档不形成调用关系。比如 `StateStore.ts` 的 289 个完整路径命中中，23 个位于 `packages/**`/`scripts/**`，至少 265 个位于上述文档树，后者全部排除。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；三种搜索的每个其余命中都由上述路径规则覆盖，没有把历史文本命中误算成需执行测试。
 
 ## 设计、HTML 与评审沿革
 
@@ -67,6 +70,8 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 - 浅色 design.html 已静默发布到 <https://fw-reports-356a6d.vercel.app/r/26fd140eb5edba1cbc40ad3555a79561/>；publish receipt 证明 hosted source/nonce/无外部资源，但不冒充真实浏览器视觉/CSP QA。
 - 本地 Mermaid 四次均因 Chromium MachPort sandbox permission 在启动前失败，保留 `.mmd` 源与明确 pending 标识；未使用远程渲染、未冒领图形完成。
 - 旧 docs-only code review 已被后续实现头替代；完成本地验证和 literal-last milestone 后必须对新的 exact head 重新请求有效 code review。
+- 实现 code review R2 gate `0afda40e-8a35-4302-bbb2-7e6687293f06` 在旧 head `3f03ea22` 返回 `CHANGES_REQUESTED`。3 个 HIGH 已修：恢复不再重建/重置共享工作树；失败/超时会先清理已启动进程且清理未确认时禁止重试/兜底；`resuming` 增加 180 秒 lease 与过期接管。MEDIUM 也已修：只有 controller 批准的 retiring generation 才按主动退休投影、终态压过 working、Codex strict identity 只作用于 standby resume 且错误不再被吞、StateStore CAS 失败返回 union、Claude manifest git 探测异步化、dead enrolled body 同事务关闭。需以新 exact head 再审。
+- 保留两个 LOW follow-up：同 worktree 串行/跨 worktree 最大 2 的调度 limiter 尚未实现；`queueMs` 仍为占位且 `totalMs` 截止身份确认，不是首个模型消费回执。默认关闭路径不因此扩大本单抽象层，交由后续单独实现/验收。
 
 ## 最终需求审计
 
@@ -77,7 +82,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | 拉起身份/model/cwd | 两 adapter manifest + exact resume；pre/post identity；HEAD/dirty 重读提示 | 真实 provider 长会话连续性 |
 | 拉不起与兜底 | 两次 resume、一次原子 fresh fallback、route/node/delivery rebind、独立 purpose | 真实 transcript 损坏和 fallback 端到端 QA |
 | founder 三态 | working/standby/problem DTO 接 title/refresher/status tool | 真实浏览器和移动端视觉 |
-| 默认值与并发 | 无墙钟 TTL；同目录串行、跨目录最多2；预算默认落入冻结合同 | 压力/饥饿 QA |
+| 默认值与并发 | 无墙钟 TTL 与恢复/故障分账已落地；同目录串行、跨目录最多 2 仍仅是冻结设计默认值，未新增调度 limiter；`queueMs`/首模型消费 `totalMs` 仍待实现 | 后续实现单与压力/饥饿 QA |
 | 默认关闭和旧 run | 仅新 admission 在 flag=1 时纳入；旧 run 维持旧语义 | 发布/回滚演练 |
 
 最终 code review、PR checks 和 completion receipt 在 exact head 形成后记录到 PR；本文件不会把 focused/related 本地检查称为全量 CI。

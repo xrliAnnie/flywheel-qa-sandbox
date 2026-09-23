@@ -14,3 +14,12 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | LOW | carrier-term-collides-with-existing-ship-gate-carrier | 实现采用 `process_body` / process lifecycle 命名，未引入新的裸 `carrier` 类型 |
 
 以上“已覆盖”只指当前分支源代码和定向本地证明，不表示生产启用或 QA 通过。
+
+## 实现 code review R2 disposition
+
+旧 head `3f03ea22` 的 gate `0afda40e-8a35-4302-bbb2-7e6687293f06` 为 `CHANGES_REQUESTED`。三个 HIGH（共享工作树被重建、失败后孤儿进程、无 lease 的永久 resuming）与 substantive MEDIUM 已在后续代码提交修正，并由当前 code-head focused/related/build/typecheck 复核；必须对新的 exact head 再请求 review，旧 verdict 不可复用。
+
+仍保留两项 LOW，避免为默认关闭路径提前引入新的 scheduler 抽象：
+
+- 同 worktree 串行、跨 worktree 最大 2 的 admission/queue limiter 尚未实现；设计默认值保留给后续实现单。
+- `queueMs` 仍是占位，`totalMs` 当前止于身份确认而非首个模型消费回执；需要后续定义并接入可审计 receipt。
