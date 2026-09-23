@@ -2,14 +2,13 @@
 issue: FLY-2808
 phase: design
 phaseCursor: 4/5
-updated: 2026-09-23T05:53:29.575Z
-nextStep: Review 8b0a14ec-0f02-4e07-bf7c-62e4e194fe64 pending; committed HTML
-  7c1eaba57; publish only after effective APPROVED; local render degraded and
-  Lead acknowledged
+updated: 2026-09-23T05:56:55.502Z
+nextStep: R1 failed reviewed_plan_moved. Frozen plan ca9ea312e. Poll new gate
+  d0cf1a21-fa94-4d23-9663-63df581f0d15; do not edit plan while review runs.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
 **phase**: design (4/5)
-**next**: Review 8b0a14ec-0f02-4e07-bf7c-62e4e194fe64 pending; committed HTML 7c1eaba57; publish only after effective APPROVED; local render degraded and Lead acknowledged
+**next**: R1 failed reviewed_plan_moved. Frozen plan ca9ea312e. Poll new gate d0cf1a21-fa94-4d23-9663-63df581f0d15; do not edit plan while review runs.
