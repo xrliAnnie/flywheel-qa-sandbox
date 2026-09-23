@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2780 谷歌 AX — 我们能借什么(一页)</title>
+<style>
+  :root { --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height:1.65; }
+  .wrap { max-width:820px; margin:0 auto; padding:26px 16px 60px; }
+  h1 { font-size:24px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:18px; margin:0 0 10px; color:var(--navy); }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .mono { font-family:"SF Mono", Menlo, monospace; font-size:12.5px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:0 0 16px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); }
+  .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); }
+  .card.gray { border-left-color:#c7c7cc; }
+  .lead { font-size:16px; }
+  .lead b { color:var(--navy); }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 4px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  .yes { color:#1f7a3a; font-weight:600; }
+  .no { color:var(--red); font-weight:600; }
+  .note { font-size:13.5px; color:#444; background:#fafafa; border-radius:8px; padding:9px 12px; margin:9px 0; }
+  .note.warn { background:#fff7e6; } .note.ok { background:#eefbf1; } .note.ask { background:#f4ecff; }
+  .pick { background:#eefbf1; border-radius:8px; padding:10px 12px; margin:8px 0; font-size:14px; }
+  ul { padding-left:20px; margin:6px 0; } li { margin:4px 0; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:56px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:340px; overflow:auto; }
+  .btn { display:inline-block; background:var(--navy); color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#e8e8ed; color:var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>谷歌开源的 AX —— 我们能借什么</h1>
+  <div class="meta">FLY-2780 · 2026-09-22 · 只看 7 月之后的增量 · 细节在 <span class="mono">research.md</span></div>
+
+  <section class="card green" data-section="一句话结论">
+    <h2>一句话结论</h2>
+    <p class="lead">谷歌把「让闲着的 agent 腾出机器」这件事做成了<b>能力</b>,但<b>没做成自动的</b> ——
+    什么时候该让它睡,谷歌也是留给上层自己判断的。<br>
+    所以对我们有用的不是它的代码,是这句:<b>「等你审核的那段时间,该由我们自己来决定不留活进程。」</b></p>
+    <div class="note">顺带三件事:①它确实开源了(Apache-2.0),7 月那个没核实的问号可以销账;
+    ②「几十亿 agent」是传播时拧出来的,谷歌自己写的是「数亿个注册」;③网上的吐槽站得住脚。</div>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s1" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card" data-section="AX 是什么">
+    <h2>1 · AX 是什么(30 秒)</h2>
+    <p>一个「派活给 AI agent 的调度台」。你写一个 YAML 描述一份活儿,一条命令交上去,它替你把这份活儿
+    关进一个隔离的盒子里跑,并且能随时看进度。它一共只有四个概念:</p>
+    <table>
+      <tr><th>它的概念</th><th>管什么</th><th>我们有没有</th></tr>
+      <tr><td><b>活儿</b> Task</td><td>一份隔离的、带内存上限的、随时能丢掉的工作</td><td class="yes">有(就是我们的 runner),但我们没有上限和隔离</td></tr>
+      <tr><td><b>工位</b> Workspace</td><td>提前把代码仓库、工具、技能包摆好,agent 一上来就是热的</td><td class="yes">有(worktree + CLAUDE.md + skill)</td></tr>
+      <tr><td><b>闸门</b> Gateway</td><td>只允许它连白名单上的网站</td><td class="no">没有,也不太需要</td></tr>
+      <tr><td><b>模型配置</b> Model</td><td>用哪个模型、什么参数、密钥放哪,全集群改一处</td><td class="yes">有,而且我们的更贴身</td></tr>
+    </table>
+    <div class="note warn">要跑起来它,你得先有一整套谷歌式的服务器集群(Kubernetes)加镜像仓库加 Redis。
+    我们是一台 Mac。<b>不可能直接用</b> —— 这跟 7 月的结论一样,没变。</div>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s2" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card purple" data-section="那句话哪半句是真的">
+    <h2>2 · ⭐ 你最关心的那句话,哪半句是真的</h2>
+    <p>帖子说:「闲着的 agent 会被存档挂起,等模型回话、等工具、<b>等人工审批</b>的时候把算力让出来,恢复不到一秒。」</p>
+    <table>
+      <tr><th>这半句</th><th>真假</th><th>依据</th></tr>
+      <tr><td>能把进程连同内存整个存下来、再原样恢复,不到一秒</td><td class="yes">真</td><td>机制写在架构文档里,恢复速度是他们自报的口径</td></tr>
+      <tr><td>闲着就会<b>自动</b>被挂起</td><td class="no">假</td><td>我翻了控制台全部代码:没有任何计时器。「按闲置时长自动回收」还躺在他们的「以后可能做」清单里</td></tr>
+      <tr><td>等人工审批时会自动让出算力</td><td class="no">假</td><td>更空:他们把「要不要人批」这个配置项<b>从接口里删掉了</b>,只留了个「有一件待批」的空格子,代码里从没被填过</td></tr>
+    </table>
+    <div class="note ok"><b>我觉得这才是最值钱的发现:</b>连谷歌都没敢把「什么时候该睡」自动化 ——
+    因为通用的「闲置检测」很难判准。而我们这里有一个<b>百分百准的闲置点</b>:卡发给你的那一刻起,
+    到你回复为止,那个 runner 什么都不做。这是别人没有、我们独有的条件。</div>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s3" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="我们现在漏多少">
+    <h2>3 · 这件事在我们这儿值多少(刚在你机器上量的)</h2>
+    <p>这台 Mac 48 GB,此刻 25 个 Claude 进程占 <b>9.8 GB</b>。但要先分清谁是谁 ——</p>
+    <table>
+      <tr><th>身份</th><th>几个</th><th>占多少</th><th>上面那条推荐碰得到吗</th></tr>
+      <tr><td><b>Lead</b>(各部门的负责人)</td><td>14</td><td>4.65 GB</td><td class="no">碰不到 —— Lead 的活就是一直在线等消息</td></tr>
+      <tr><td><b>runner</b>(干活的)</td><td>9</td><td>4.48 GB</td><td>只碰得到停在卡上的那几个</td></tr>
+      <tr><td>其他</td><td>2</td><td>0.68 GB</td><td class="no">碰不到</td></tr>
+    </table>
+    <p style="margin-top:12px"><b>此刻真正「交了卡、停着等你」的 runner 有 4 个:</b></p>
+    <table>
+      <tr><th>单子</th><th>占多少</th><th>卡开了多久</th><th>还在动吗</th></tr>
+      <tr><td><b>FLY-2769</b></td><td>380 MB</td><td><b>19.7 小时</b></td><td>只剩心跳(CPU 0.8%) —— <b>真的停着</b></td></tr>
+      <tr><td>FLY-2777</td><td>466 MB</td><td>0.5 小时</td><td>还在动</td></tr>
+      <tr><td>FLY-2779</td><td>489 MB</td><td>0.1 小时</td><td>还在动</td></tr>
+      <tr><td>FLY-2780(就是我)</td><td>523 MB</td><td>0.2 小时</td><td>我正在改这一页,不算停着</td></tr>
+    </table>
+    <div class="note warn"><b>所以收益别说大了:</b>这条推荐此刻能腾出来的是 <b>约 0.38 GB(一个 runner)</b>,
+    不是 4.48 GB,更不是 9.8 GB。<br>
+    <b>但它的真正价值在「时间」不在「一时的 GB」</b> —— FLY-2769 已经用 0.38 GB 钉了将近 20 小时。
+    等得越久省得越多;卡答得快,本来就没什么可省。</div>
+    <div class="note">顺带查到一件让人松口气的事:另外 15 张等你按 ship 的卡,持卡的 runner <b>全都已经退出了,一个都不占内存</b>。
+    所以这个毛病今天只出在「审阅卡」这一种上。</div>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s4" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card red" data-section="三条路我推荐哪条">
+    <h2>4 · 三条路,我推荐第一条</h2>
+    <div class="pick"><b>✅ 我推荐:发出卡之后,不留活进程。</b><br>
+    把「<b>进程</b>在等你」改成「<b>记录</b>在等你」:卡发出去 runner 就退出,内存全还给系统;你回复了,再把它拉起来。<br>
+    <span style="font-size:13px;color:#555">为什么选它:这是唯一<b>不用换操作系统</b>就能把「停在卡上那部分」还回去的做法。
+    <b>它省的是上一节那个数</b> —— 停在卡上的 runner,此刻约 0.38 GB;Lead 的 4.65 GB 它碰不到。
+    值不值得做,看的是「卡平均要等多久」,不是一时的 GB 数。<br>
+    <b>怎么「拉起来」有两条路</b>(我上一版只写了第一条,漏了第二条):<br>
+    ① 照着进度账本重来一遍 —— 上下文是新的,但要重读一堆东西;<br>
+    ② <b>按会话号直接续上</b>(<span class="mono">claude --resume</span> / Codex 的 resume)——
+    对话本身就存在磁盘上,拉起来便宜得多。<b>这条在你这台 Mac 上就能走</b>,不用搬去 Linux。<br>
+    两条各有取舍(②便宜但把旧上下文一起接回来),选哪条已经单开在 <b>FLY-2782</b>,这里不展开。<br>
+    共同的代价:都不是「不到一秒」那种恢复。</span></div>
+    <ul>
+      <li><b>⚠️ 中间方案:只冻结不关掉。</b>把进程按暂停键,CPU 归零 —— 但<b>内存还占着</b>,上一节那笔钱一分也拿不回来。如果第一条太贵,这是个便宜的半步。</li>
+      <li><b>⛔ 不建议:照抄谷歌那种「存档恢复」。</b>那套技术只在 Linux 上有。要拿到它,得把所有 runner 从你的 Mac 搬进 Linux 容器 —— 那是整台机器的架构改造,不是「借一个点」。</li>
+    </ul>
+    <div class="note">另外三样明确<b>不建议借</b>:它的网络白名单、它让 agent 自己开子 agent 的那套树、以及整个集群层。对单机是纯负担。</div>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s5" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card gray" data-section="另外两问">
+    <h2>5 · 你问的另外两件事,短答</h2>
+    <p><b>「一句话描述环境、让 agent 自己装工具链」有用吗 → 用处很小。</b>
+    它确实存在(工位上可以写一句「把 Go 工具链装好」,首次启动时让一个 agent 去装)。
+    但它解决的是「一个空白盒子怎么变成能干活的环境」—— 我们没这个问题,工具链就在你机器上,
+    而且我们现在是<b>确定性</b>的脚本,拿它换成让 agent 去猜,是往下走。</p>
+    <p><b>网上的吐槽成立吗 → 成立,但要分开看。</b>吐槽的是「说自己很轻,实际要先搭一整套集群」——
+    这点它自己的说明书就写着,不用辩。不过底下那一层(Substrate)确实是通用的,
+    甚至有个现成的 demo 就是<b>三个 Claude Code 挤在两台机器上轮流跑</b>。吐槽打中的是上面那层。</p>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s6" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card purple" data-section="已定的和我还不确定的">
+    <h2>6 · 已定的 / 我还不确定的</h2>
+    <ul>
+      <li><b>已定:</b>上面那条推荐(发出卡就不留活进程、打回再拉起)已经单开成 <b>FLY-2782</b> —— 研究和原型都在那张单里做,本单不展开。</li>
+      <li><b>不确定(留给 FLY-2782):</b>「重新拉起一个 runner」在我们今天的流程里到底多贵(会不会打断重试计数、卡的绑定)。我没查,得工程侧给个数。</li>
+      <li><b>不确定:</b>他们一个 demo 的说明里写着「会自动挂起」,但我在代码里找不到这段。我判断那是宣传话;我没有集群实跑验证。</li>
+    </ul>
+    <div class="comment"><label>你的意见(可选)</label><textarea data-key="s7" placeholder="…"></textarea></div>
+  </section>
+
+  <section class="card summary" data-section="意见汇总">
+    <h2>意见汇总</h2>
+    <p style="font-size:13px;color:#555">下面自动汇集你在每一节写的意见,前面带节名;复制出来的第一行固定是「【页面意见汇总】FLY-2780」。
+    <b>写完点复制贴回 issue 里,我才收得到</b> —— 这页不会自己同步。没写意见的节不会出现。</p>
+    <pre id="summary-view">(还没有意见)</pre>
+    <button class="btn" id="copy-all" type="button">一键汇总复制</button>
+    <span id="copy-status" style="font-size:12.5px;color:var(--dim)"></span>
+    <div id="chunk-area"></div>
+  </section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2780';
+  var MARKER = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2780-comment:' + location.pathname + ':';
+  function safeGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function safeSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  areas.forEach(function (ta) {
+    ta.value = safeGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      safeSet(ta.getAttribute('data-key'), ta.value);
+      render();
+    });
+  });
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.replace(/^\s+|\s+$/g, '');
+      if (!v) return;
+      var sec = ta.closest('section');
+      var name = sec ? sec.getAttribute('data-section') : ta.getAttribute('data-key');
+      parts.push('【' + name + '】' + v);
+    });
+    return parts;
+  }
+  function fullText() {
+    var parts = collect();
+    return parts.length ? MARKER + '\n' + parts.join('\n\n') : '';
+  }
+  function chunkText(text) {
+    if (text.length <= 1800) return [text];
+    var body = text.slice(MARKER.length + 1);
+    var pieces = body.split('\n\n');
+    var chunks = []; var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur + '\n\n' + p).length > 1600) { chunks.push(cur); cur = p; }
+      else cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+  function render() {
+    var view = document.getElementById('summary-view');
+    var text = fullText();
+    view.textContent = text || '(还没有意见)';
+    var area = document.getElementById('chunk-area');
+    while (area.firstChild) area.removeChild(area.firstChild);
+    var chunks = text ? chunkText(text) : [];
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn secondary';
+        b.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        b.addEventListener('click', function () { copyText(c); });
+        area.appendChild(b);
+      });
+    }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copied(ok) {
+    var s = document.getElementById('copy-status');
+    s.textContent = ok ? '已复制 ✓' : '复制失败,请手动全选上面的文本';
+    setTimeout(function () { s.textContent = ''; }, 3000);
+  }
+  function copyText(text) {
+    if (!text) { copied(false); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { copied(true); }, function () { copied(fallbackCopy(text)); });
+    } else {
+      copied(fallbackCopy(text));
+    }
+  }
+  document.getElementById('copy-all').addEventListener('click', function () { copyText(fullText()); });
+  render();
+})();
+</script>
+</body>
+</html>
