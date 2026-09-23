@@ -1034,6 +1034,15 @@ export class HeartbeatService implements ReconnectController {
 	 * (`dead`/`dead_pin`/`gone`) alerts too — A3 never changes status or closes.
 	 */
 	private async readoptParkedPhase(session: Session): Promise<void> {
+		const processBody = this.store.getWorkflowExecutionProcessBody(
+			session.execution_id,
+		);
+		if (
+			processBody &&
+			["retiring", "standby", "resuming"].includes(processBody.state)
+		) {
+			return;
+		}
 		const liveness = await this.probeSessionLiveness(session);
 		if (liveness.verdict === "alive") {
 			await this.enterReconnecting(session);

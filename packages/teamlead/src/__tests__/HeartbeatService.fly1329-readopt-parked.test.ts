@@ -91,6 +91,7 @@ function makeStore(candidate: Session): MockStore {
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
 		getActiveSessions: vi.fn().mockReturnValue([]),
 		getReadoptCandidateSessions: vi.fn().mockReturnValue([candidate]),
+		getWorkflowExecutionProcessBody: vi.fn().mockReturnValue(undefined),
 		getSession: vi.fn((id: string) =>
 			id === candidate.execution_id ? candidate : undefined,
 		),
@@ -189,6 +190,19 @@ describe("FLY-1329 A3 — parked readopt", () => {
 		expect(store.updateHeartbeat).toHaveBeenCalledWith("parked-impl");
 		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
 		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+
+	it("treats durable workflow standby as healthy absence without probing or alerting", async () => {
+		store = makeStore(parkedImplement({ status: "ship_parked" }));
+		store.getWorkflowExecutionProcessBody.mockReturnValue({ state: "standby" });
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+
+		await service.seedReconnecting();
+
+		expect(mockedProbe).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
 	});
 
 	it("a parked implement whose tmux is DEAD → alert-only, never a status change or re-adopt", async () => {

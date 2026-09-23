@@ -389,6 +389,16 @@ export async function reconcilePaneLoss(
 	const attemptedSettlements = new Set<string>();
 	for (const snapshot of candidates) {
 		const run = async (): Promise<void> => {
+			const processBody = deps.store.getWorkflowExecutionProcessBody(
+				snapshot.execution_id,
+			);
+			if (
+				processBody &&
+				["retiring", "standby", "resuming"].includes(processBody.state)
+			) {
+				result.kept++;
+				return;
+			}
 			if (deps.isCompleteMarkerPending(snapshot.execution_id)) {
 				result.kept++;
 				return;

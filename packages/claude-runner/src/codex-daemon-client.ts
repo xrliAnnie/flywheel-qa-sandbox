@@ -231,7 +231,8 @@ export class CodexDaemonError extends Error {
 			| "rpc_error"
 			| "timeout"
 			| "handshake"
-			| "no_thread",
+			| "no_thread"
+			| "thread_mismatch",
 	) {
 		super(message);
 		this.name = "CodexDaemonError";
@@ -486,7 +487,17 @@ export class CodexDaemonClient {
 	/** thread/resume — the same-account daemon-restart recovery path. */
 	async resumeThread(threadId: string): Promise<string> {
 		const res = await this.request("thread/resume", { threadId });
-		return extractThreadId(res.result) ?? threadId;
+		const resumedId = extractThreadId(res.result);
+		if (!resumedId) {
+			throw new CodexDaemonError("thread/resume returned no id", "no_thread");
+		}
+		if (resumedId !== threadId) {
+			throw new CodexDaemonError(
+				"thread/resume returned a different id",
+				"thread_mismatch",
+			);
+		}
+		return resumedId;
 	}
 
 	/** thread/read with turns — used by durable injection reconciliation. */

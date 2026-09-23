@@ -422,6 +422,7 @@ export class WorkflowEventUidConflictError extends Error {
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
+export const MAX_WORKFLOW_RESUME_ATTEMPTS = 2;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
@@ -33921,6 +33922,51 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_execution_process_body (
+				execution_id TEXT PRIMARY KEY,
+				generation INTEGER NOT NULL CHECK (generation > 0),
+				state TEXT NOT NULL CHECK (state IN (
+					'active','retiring','standby','resuming','resume_failed','closed')),
+				completion_event_id TEXT,
+				manifest_digest TEXT,
+				current_demand_id TEXT,
+				owner_claim_id TEXT,
+				started_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				retirement_requested_at TEXT,
+				standby_at TEXT,
+				reason_code TEXT,
+				last_resume_ms INTEGER CHECK (last_resume_ms IS NULL OR last_resume_ms >= 0),
+				context_loss INTEGER NOT NULL DEFAULT 0 CHECK (context_loss IN (0,1)),
+				FOREIGN KEY (execution_id) REFERENCES workflow_execution_runtime(execution_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_execution_resume_attempt (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				execution_id TEXT NOT NULL,
+				demand_id TEXT NOT NULL,
+				generation INTEGER NOT NULL CHECK (generation > 0),
+				kind TEXT NOT NULL CHECK (kind IN ('original_session','fresh_fallback')),
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				state TEXT NOT NULL CHECK (state IN ('started','succeeded','failed','allocated')),
+				reason_code TEXT,
+				requested_at TEXT NOT NULL,
+				finished_at TEXT,
+				queue_ms INTEGER CHECK (queue_ms IS NULL OR queue_ms >= 0),
+				startup_ms INTEGER CHECK (startup_ms IS NULL OR startup_ms >= 0),
+				total_ms INTEGER CHECK (total_ms IS NULL OR total_ms >= 0),
+				expected_session_id TEXT,
+				observed_session_id TEXT,
+				expected_model TEXT,
+				observed_model TEXT,
+				expected_cwd TEXT,
+				observed_cwd TEXT,
+				UNIQUE (execution_id, demand_id, kind, attempt),
+				FOREIGN KEY (execution_id) REFERENCES workflow_execution_runtime(execution_id)
+			)
+		`);
+		this.db.run(`
 			CREATE TRIGGER IF NOT EXISTS workflow_execution_runtime_no_update
 			BEFORE UPDATE ON workflow_execution_runtime
 			BEGIN SELECT RAISE(ABORT, 'workflow_execution_runtime is append-only'); END
@@ -45111,6 +45157,7 @@ export class StateStore {
 			audit: boolean;
 			modelAssignment?: WorkflowModelAssignmentReceipt;
 		};
+		env?: Record<string, string | undefined>;
 	}): GeneralizedWorkflowAdmissionResult {
 		const now = input.now ?? new Date().toISOString();
 		const activationId =
@@ -45354,6 +45401,14 @@ export class StateStore {
 						now,
 					],
 				);
+				if (input.env?.FLYWHEEL_NODE_STANDBY_RESUME === "1") {
+					this.db.run(
+						`INSERT INTO workflow_execution_process_body
+						   (execution_id, generation, state, started_at, updated_at)
+						 VALUES (?, 1, 'active', ?, ?)`,
+						[input.executionId, now, now],
+					);
+				}
 			}
 			if (input.dispatchResolution?.audit) {
 				this.appendWorkflowRunEventCheckedTx({
@@ -45579,6 +45634,641 @@ export class StateStore {
 			capabilities_digest: row.capabilities_digest as string,
 			created_at: row.created_at as string,
 		};
+	}
+
+	getWorkflowExecutionProcessBody(
+		executionId: string,
+	): WorkflowExecutionProcessBodyRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_execution_process_body WHERE execution_id = ?",
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			execution_id: String(row.execution_id),
+			generation: Number(row.generation),
+			state: row.state as WorkflowExecutionProcessBodyState,
+			completion_event_id: (row.completion_event_id as string) ?? null,
+			manifest_digest: (row.manifest_digest as string) ?? null,
+			current_demand_id: (row.current_demand_id as string) ?? null,
+			owner_claim_id: (row.owner_claim_id as string) ?? null,
+			started_at: String(row.started_at),
+			updated_at: String(row.updated_at),
+			retirement_requested_at:
+				(row.retirement_requested_at as string) ?? null,
+			standby_at: (row.standby_at as string) ?? null,
+			reason_code: (row.reason_code as string) ?? null,
+			last_resume_ms:
+				row.last_resume_ms == null ? null : Number(row.last_resume_ms),
+			context_loss: Number(row.context_loss) === 1 ? 1 : 0,
+		};
+	}
+
+	getWorkflowExecutionActivity(
+		executionId: string,
+	): WorkflowExecutionActivity | undefined {
+		const body = this.getWorkflowExecutionProcessBody(executionId);
+		if (!body) return undefined;
+		return {
+			activityState:
+				body.state === "standby"
+					? "standby"
+					: body.state === "resume_failed"
+						? "problem"
+						: "working",
+			transition: body.state,
+			parkedAt: body.standby_at,
+			canResume: body.state === "standby" || body.state === "resume_failed",
+			reason: body.reason_code,
+			lastResumeMs: body.last_resume_ms,
+			contextLoss: body.context_loss === 1,
+			observedAt: body.updated_at,
+		};
+	}
+
+	beginWorkflowExecutionRetirement(input: {
+		executionId: string;
+		completionEventId: string;
+		manifestDigest: string;
+		now: string;
+	}):
+		| { ok: true; generation: number; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!input.completionEventId ||
+			!/^[0-9a-f]{64}$/.test(input.manifestDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_retirement_request" };
+		}
+		let result:
+			| { ok: true; generation: number; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "retirement_not_committed",
+		};
+		this.db.transaction(() => {
+			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			if (!body) {
+				result = { ok: false, reason: "process_body_not_enrolled" };
+				return;
+			}
+			if (body.state === "retiring") {
+				result =
+					body.completion_event_id === input.completionEventId &&
+					body.manifest_digest === input.manifestDigest
+						? {
+								ok: true,
+								generation: body.generation,
+								idempotentReplay: true,
+							}
+						: { ok: false, reason: "retirement_receipt_conflict" };
+				return;
+			}
+			if (body.state !== "active") {
+				result = { ok: false, reason: `process_body_${body.state}` };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET state = 'retiring', completion_event_id = ?, manifest_digest = ?,
+				        retirement_requested_at = ?, updated_at = ?, reason_code = NULL
+				  WHERE execution_id = ? AND generation = ? AND state = 'active'`,
+				[
+					input.completionEventId,
+					input.manifestDigest,
+					input.now,
+					input.now,
+					input.executionId,
+					body.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "retirement_cas_failed" };
+				return;
+			}
+			const runtime = this.getWorkflowExecutionRuntime(input.executionId)!;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: runtime.run_id,
+				eventUid: `process_retiring:${input.executionId}:${body.generation}:${input.completionEventId}`,
+				kind: "workflow_process_retiring",
+				nodeId: runtime.node_id,
+				executionId: input.executionId,
+				payload: { generation: body.generation, at: input.now },
+			});
+			result = {
+				ok: true,
+				generation: body.generation,
+				idempotentReplay: false,
+			};
+		});
+		if ((result as { idempotentReplay?: boolean }).idempotentReplay === false)
+			this.save();
+		return result;
+	}
+
+	confirmWorkflowExecutionStandby(input: {
+		executionId: string;
+		generation: number;
+		reasonCode: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.reasonCode ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_standby_confirmation" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "standby_not_committed",
+		};
+		this.db.transaction(() => {
+			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			if (!body || body.generation !== input.generation) {
+				result = { ok: false, reason: "process_generation_changed" };
+				return;
+			}
+			if (body.state === "standby") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (body.state !== "retiring") {
+				result = { ok: false, reason: `process_body_${body.state}` };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET state = 'standby', standby_at = ?, updated_at = ?, reason_code = ?
+				  WHERE execution_id = ? AND generation = ? AND state = 'retiring'`,
+				[
+					input.now,
+					input.now,
+					input.reasonCode,
+					input.executionId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "standby_cas_failed" };
+				return;
+			}
+			const runtime = this.getWorkflowExecutionRuntime(input.executionId)!;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: runtime.run_id,
+				eventUid: `process_standby:${input.executionId}:${input.generation}`,
+				kind: "workflow_process_standby",
+				nodeId: runtime.node_id,
+				executionId: input.executionId,
+				payload: {
+					generation: input.generation,
+					reasonCode: input.reasonCode,
+					at: input.now,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if ((result as { idempotentReplay?: boolean }).idempotentReplay === false)
+			this.save();
+		return result;
+	}
+
+	beginWorkflowExecutionResume(input: {
+		executionId: string;
+		demandId: string;
+		ownerClaimId: string;
+		now: string;
+	}):
+		| {
+				ok: true;
+				generation: number;
+				attempt: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!input.demandId ||
+			!input.ownerClaimId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resume_request" };
+		}
+		let result:
+			| {
+					ok: true;
+					generation: number;
+					attempt: number;
+					idempotentReplay: boolean;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resume_not_committed",
+		};
+		this.db.transaction(() => {
+			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			if (!body) {
+				result = { ok: false, reason: "process_body_not_enrolled" };
+				return;
+			}
+			if (body.state === "resuming") {
+				if (
+					body.current_demand_id !== input.demandId ||
+					body.owner_claim_id !== input.ownerClaimId
+				) {
+					result = { ok: false, reason: "resume_owner_conflict" };
+					return;
+				}
+				const attempt = Number(
+					this.workflowSelectAll(
+						`SELECT MAX(attempt) AS attempt
+						   FROM workflow_execution_resume_attempt
+						  WHERE execution_id = ? AND demand_id = ?
+						    AND kind = 'original_session'`,
+						[input.executionId, input.demandId],
+					)[0]?.attempt ?? 1,
+				);
+				result = {
+					ok: true,
+					generation: body.generation,
+					attempt,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			if (body.state !== "standby" && body.state !== "resume_failed") {
+				result = { ok: false, reason: `process_body_${body.state}` };
+				return;
+			}
+			const attempt =
+				Number(
+					this.workflowSelectAll(
+						`SELECT COUNT(*) AS count
+						   FROM workflow_execution_resume_attempt
+						  WHERE execution_id = ? AND demand_id = ?
+						    AND kind = 'original_session'`,
+						[input.executionId, input.demandId],
+					)[0]?.count ?? 0,
+				) + 1;
+			if (attempt > MAX_WORKFLOW_RESUME_ATTEMPTS) {
+				result = { ok: false, reason: "resume_attempt_limit" };
+				return;
+			}
+			const generation = body.generation + 1;
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET state = 'resuming', generation = ?, current_demand_id = ?,
+				        owner_claim_id = ?, updated_at = ?, reason_code = NULL
+				  WHERE execution_id = ? AND generation = ? AND state = ?`,
+				[
+					generation,
+					input.demandId,
+					input.ownerClaimId,
+					input.now,
+					input.executionId,
+					body.generation,
+					body.state,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "resume_cas_failed" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_execution_resume_attempt
+				   (execution_id, demand_id, generation, kind, attempt, state, requested_at)
+				 VALUES (?, ?, ?, 'original_session', ?, 'started', ?)`,
+				[
+					input.executionId,
+					input.demandId,
+					generation,
+					attempt,
+					input.now,
+				],
+			);
+			const runtime = this.getWorkflowExecutionRuntime(input.executionId)!;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: runtime.run_id,
+				eventUid: `process_resume_started:${input.executionId}:${input.demandId}:${attempt}`,
+				kind: "workflow_process_resume_started",
+				nodeId: runtime.node_id,
+				executionId: input.executionId,
+				payload: { generation, demandId: input.demandId, attempt, at: input.now },
+			});
+			result = {
+				ok: true,
+				generation,
+				attempt,
+				idempotentReplay: false,
+			};
+		});
+		if ((result as { idempotentReplay?: boolean }).idempotentReplay === false)
+			this.save();
+		return result;
+	}
+
+	finishWorkflowExecutionResume(input: {
+		executionId: string;
+		generation: number;
+		demandId: string;
+		ownerClaimId: string;
+		expectedSessionId: string;
+		observedSessionId: string;
+		expectedModel: string;
+		observedModel: string;
+		expectedCwd: string;
+		observedCwd: string;
+		queueMs: number;
+		startupMs: number;
+		totalMs: number;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (!input.expectedSessionId || !input.observedSessionId) {
+			return { ok: false, reason: "session_identity_missing" };
+		}
+		if (input.expectedSessionId !== input.observedSessionId) {
+			return { ok: false, reason: "session_identity_mismatch" };
+		}
+		if (input.expectedModel !== input.observedModel) {
+			return { ok: false, reason: "model_mismatch" };
+		}
+		if (input.expectedCwd !== input.observedCwd) {
+			return { ok: false, reason: "cwd_mismatch" };
+		}
+		if (
+			[input.queueMs, input.startupMs, input.totalMs].some(
+				(value) => !Number.isSafeInteger(value) || value < 0,
+			) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resume_verification" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resume_verification_not_committed",
+		};
+		this.db.transaction(() => {
+			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			if (
+				!body ||
+				body.generation !== input.generation ||
+				body.current_demand_id !== input.demandId ||
+				body.owner_claim_id !== input.ownerClaimId
+			) {
+				result = { ok: false, reason: "resume_fence_changed" };
+				return;
+			}
+			if (body.state === "active") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (body.state !== "resuming") {
+				result = { ok: false, reason: `process_body_${body.state}` };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET state = 'active', current_demand_id = NULL, owner_claim_id = NULL,
+				        updated_at = ?, reason_code = NULL, last_resume_ms = ?
+				  WHERE execution_id = ? AND generation = ? AND state = 'resuming'
+				    AND current_demand_id = ? AND owner_claim_id = ?`,
+				[
+					input.now,
+					input.totalMs,
+					input.executionId,
+					input.generation,
+					input.demandId,
+					input.ownerClaimId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "resume_verification_cas_failed" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_execution_resume_attempt
+				    SET state = 'succeeded', finished_at = ?, queue_ms = ?, startup_ms = ?,
+				        total_ms = ?, expected_session_id = ?, observed_session_id = ?,
+				        expected_model = ?, observed_model = ?, expected_cwd = ?, observed_cwd = ?
+				  WHERE execution_id = ? AND demand_id = ? AND generation = ?
+				    AND kind = 'original_session' AND state = 'started'`,
+				[
+					input.now,
+					input.queueMs,
+					input.startupMs,
+					input.totalMs,
+					input.expectedSessionId,
+					input.observedSessionId,
+					input.expectedModel,
+					input.observedModel,
+					input.expectedCwd,
+					input.observedCwd,
+					input.executionId,
+					input.demandId,
+					input.generation,
+				],
+			);
+			const runtime = this.getWorkflowExecutionRuntime(input.executionId)!;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: runtime.run_id,
+				eventUid: `process_resume_verified:${input.executionId}:${input.demandId}:${input.generation}`,
+				kind: "workflow_process_resume_verified",
+				nodeId: runtime.node_id,
+				executionId: input.executionId,
+				payload: {
+					generation: input.generation,
+					demandId: input.demandId,
+					queueMs: input.queueMs,
+					startupMs: input.startupMs,
+					totalMs: input.totalMs,
+					at: input.now,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if ((result as { idempotentReplay?: boolean }).idempotentReplay === false)
+			this.save();
+		return result;
+	}
+
+	failWorkflowExecutionResume(input: {
+		executionId: string;
+		generation: number;
+		demandId: string;
+		ownerClaimId: string;
+		reasonCode: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (!input.reasonCode || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_resume_failure" };
+		}
+		const body = this.getWorkflowExecutionProcessBody(input.executionId);
+		if (
+			!body ||
+			body.generation !== input.generation ||
+			body.current_demand_id !== input.demandId
+		) {
+			return { ok: false, reason: "resume_fence_changed" };
+		}
+		if (body.state === "resume_failed") {
+			return { ok: true, idempotentReplay: true };
+		}
+		if (body.state !== "resuming" || body.owner_claim_id !== input.ownerClaimId) {
+			return { ok: false, reason: "resume_owner_conflict" };
+		}
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET state = 'resume_failed', owner_claim_id = NULL, updated_at = ?, reason_code = ?
+				  WHERE execution_id = ? AND generation = ? AND state = 'resuming'
+				    AND current_demand_id = ? AND owner_claim_id = ?`,
+				[
+					input.now,
+					input.reasonCode,
+					input.executionId,
+					input.generation,
+					input.demandId,
+					input.ownerClaimId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("resume_failure_cas_failed");
+			}
+			this.db.run(
+				`UPDATE workflow_execution_resume_attempt
+				    SET state = 'failed', reason_code = ?, finished_at = ?
+				  WHERE execution_id = ? AND demand_id = ? AND generation = ?
+				    AND kind = 'original_session' AND state = 'started'`,
+				[
+					input.reasonCode,
+					input.now,
+					input.executionId,
+					input.demandId,
+					input.generation,
+				],
+			);
+		});
+		this.save();
+		return { ok: true, idempotentReplay: false };
+	}
+
+	allocateWorkflowResumeFallback(input: {
+		executionId: string;
+		demandId: string;
+		newExecutionId: string;
+		now: string;
+	}):
+		| { ok: true; launchOrdinal: number; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!input.demandId ||
+			!input.newExecutionId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resume_fallback" };
+		}
+		let result:
+			| { ok: true; launchOrdinal: number; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resume_fallback_not_committed",
+		};
+		this.db.transaction(() => {
+			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			const runtime = this.getWorkflowExecutionRuntime(input.executionId);
+			if (!body || !runtime || body.current_demand_id !== input.demandId) {
+				result = { ok: false, reason: "resume_fence_changed" };
+				return;
+			}
+			const prior = this.workflowSelectAll(
+				`SELECT attempt FROM workflow_execution_resume_attempt
+				  WHERE execution_id = ? AND demand_id = ? AND kind = 'fresh_fallback'`,
+				[input.executionId, input.demandId],
+			);
+			if (prior.length > 0) {
+				result = { ok: false, reason: "resume_fallback_limit" };
+				return;
+			}
+			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+				runtime.run_id,
+				runtime.node_id,
+				runtime.attempt,
+				input.newExecutionId,
+				"resume_fallback",
+				input.demandId,
+			);
+			this.db.run(
+				`INSERT INTO workflow_execution_resume_attempt
+				   (execution_id, demand_id, generation, kind, attempt, state,
+				    reason_code, requested_at, finished_at)
+				 VALUES (?, ?, ?, 'fresh_fallback', 1, 'allocated',
+				         'original_session_unavailable', ?, ?)`,
+				[
+					input.executionId,
+					input.demandId,
+					body.generation,
+					input.now,
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_execution_process_body
+				    SET state = 'closed', updated_at = ?, reason_code = 'fresh_fallback_allocated',
+				        context_loss = 1
+				  WHERE execution_id = ? AND generation = ? AND state = 'resume_failed'`,
+				[input.now, input.executionId, body.generation],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("resume_fallback_cas_failed");
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: runtime.run_id,
+				eventUid: `process_resume_fallback:${input.executionId}:${input.demandId}`,
+				kind: "workflow_process_resume_fallback",
+				nodeId: runtime.node_id,
+				executionId: input.executionId,
+				payload: {
+					demandId: input.demandId,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					contextLoss: true,
+					at: input.now,
+				},
+			});
+			result = { ok: true, launchOrdinal, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	countWorkflowFaultReplacements(
+		runId: string,
+		nodeId: string,
+		attempt: number,
+	): number {
+		return Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS count FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND purpose = 'fault_replacement'`,
+				[runId, nodeId, attempt],
+			)[0]?.count ?? 0,
+		);
 	}
 
 	getWorkflowNodeCompletion(
@@ -46259,6 +46949,11 @@ export class StateStore {
 			const candidates = this.workflowSelectAll(
 				`SELECT * FROM workflow_resident_hold
 				  WHERE state = 'resident' AND grace_expires_at < ?
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_execution_process_body body
+				       WHERE body.execution_id = workflow_resident_hold.execution_id
+				         AND body.state <> 'closed'
+				    )
 				  ORDER BY grace_expires_at, execution_id`,
 				[now],
 			) as unknown as WorkflowResidentHoldRow[];
@@ -46489,6 +47184,13 @@ export class StateStore {
 				return;
 			}
 			const openPark = this.openResidentParkTx(String(operation.root_id));
+			const processBody = this.getWorkflowExecutionProcessBody(
+				String(operation.root_id),
+			);
+			if (processBody && processBody.state !== "closed") {
+				result = { ok: false, reason: "resident_expiry_process_standby" };
+				return;
+			}
 			if (openPark?.reason === "runner_ship_gate_wait") {
 				result = {ok: false, reason: "resident_expiry_ship_park"};
 				return;
@@ -46880,7 +47582,7 @@ export class StateStore {
 			return undefined;
 		}
 		const launches = this.workflowSelectAll(
-			`SELECT launch_ordinal, execution_id, created_at
+			`SELECT launch_ordinal, execution_id, purpose, created_at
 			   FROM workflow_side_effect_ledger
 			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
 			  ORDER BY launch_ordinal ASC`,
@@ -46892,6 +47594,9 @@ export class StateStore {
 		);
 		const latest = launches.at(-1);
 		if (!latest || latest.execution_id !== input.executionId) return undefined;
+		const faultReplacementCount = launches.filter(
+			(launch) => launch.purpose === "fault_replacement",
+		).length;
 		const launchOrdinal = Number(latest.launch_ordinal);
 		if (!Number.isSafeInteger(launchOrdinal) || launchOrdinal < 1) {
 			return undefined;
@@ -46918,7 +47623,7 @@ export class StateStore {
 		if (alreadyEscalated) return undefined;
 		let nextCheckDisposition: WorkflowReplacementNextCheckDisposition =
 			"replacement_candidate";
-		if (launches.length >= MAX_BLIND_REPLACEMENTS + 1) {
+		if (faultReplacementCount >= MAX_BLIND_REPLACEMENTS) {
 			nextCheckDisposition = "retry_limit_hold_candidate";
 		} else if (
 			this.workflowEnvironmentEscalationCandidate({
@@ -46933,7 +47638,7 @@ export class StateStore {
 		const delay =
 			WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[
 				Math.min(
-					launches.length - 1,
+					faultReplacementCount,
 					WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS.length - 1,
 				)
 			]!;
@@ -46965,7 +47670,7 @@ export class StateStore {
 			workflow_node_id: context.binding.node_id,
 			workflow_attempt: context.binding.attempt,
 			launch_ordinal: launchOrdinal,
-			blind_replacements: Math.max(0, launches.length - 1),
+			blind_replacements: faultReplacementCount,
 			max_blind_replacements: MAX_BLIND_REPLACEMENTS,
 			next_check_at: nextCheckAt,
 			next_check_disposition: nextCheckDisposition,
@@ -58094,7 +58799,7 @@ export class StateStore {
 			return undefined;
 		}
 		const launches = this.workflowSelectAll(
-			`SELECT execution_id, launch_ordinal
+			`SELECT execution_id, launch_ordinal, purpose
 			   FROM workflow_side_effect_ledger
 			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
 			  ORDER BY launch_ordinal ASC`,
@@ -58123,7 +58828,9 @@ export class StateStore {
 			failureCode: current.failureCode,
 			priorDeadExecutionId: String(prior.execution_id),
 			lastError: current.lastError,
-			launchCount: launches.length,
+			launchCount: launches.filter(
+				(launch) => launch.purpose === "fault_replacement",
+			).length,
 		};
 	}
 
@@ -58304,14 +59011,12 @@ export class StateStore {
 				result = { ok: false, reason: "execution_not_terminal" };
 				return;
 			}
-			const launchCount = Number(
-				this.workflowSelectAll(
-					`SELECT COUNT(*) AS count FROM workflow_side_effect_ledger
-					  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'`,
-					[input.runId, input.nodeId, input.attempt],
-				)[0]?.count ?? 0,
+			const faultReplacementCount = this.countWorkflowFaultReplacements(
+				input.runId,
+				input.nodeId,
+				input.attempt,
 			);
-			if (launchCount >= MAX_BLIND_REPLACEMENTS + 1) {
+			if (faultReplacementCount >= MAX_BLIND_REPLACEMENTS) {
 				const outputExistsForAttempt =
 					this.workflowSelectAll(
 						`SELECT 1 AS present FROM workflow_node_outputs
@@ -58330,21 +59035,21 @@ export class StateStore {
 				);
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
-					eventUid: `retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
+					eventUid: `retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${faultReplacementCount}`,
 					kind: "retry_limit_escalated",
 					nodeId: input.nodeId,
 					executionId: input.deadExecutionId,
 					payload: {
 						attempt: input.attempt,
-						maxLaunchOrdinal: launchCount,
+						faultReplacementCount,
 						reason: input.reason,
 						livenessEvidence: input.livenessEvidence,
 						at: now,
 					},
 				});
 				enqueueAlert(
-					`retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
-					launchCount,
+					`retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${faultReplacementCount}`,
+					faultReplacementCount,
 					outputExistsForAttempt,
 				);
 				result = { ok: false, reason: "retry_limit_exceeded" };
@@ -58895,8 +59600,13 @@ export class StateStore {
 			node?.capabilities.keepalive_park === true &&
 			node?.capabilities.creates_pr === true;
 		const previousStatus = this.getSession(binding.execution_id)?.status;
+		const processBody = this.getWorkflowExecutionProcessBody(
+			binding.execution_id,
+		);
 		const projectedStatus =
-			input.route === "no_code"
+			processBody
+				? "ship_parked"
+				: input.route === "no_code"
 				? "completed"
 				: reworkReachableLandCompletion
 					? "ship_parked"
@@ -58953,11 +59663,62 @@ export class StateStore {
 				attempt: binding.attempt,
 				activationId: binding.activation_id,
 				event: "park_opened",
-				reason: reworkReachableLandCompletion
+				reason: processBody
+					? "process_retirement_pending"
+					: reworkReachableLandCompletion
 					? "rework_reachable_wait"
 					: "runner_ship_gate_wait",
 				createdAt: input.completedAt,
 			});
+			if (processBody?.state === "active") {
+				const completion = this.getWorkflowNodeCompletion(
+					binding.run_id,
+					binding.node_id,
+					binding.attempt,
+				);
+				const runtime = this.getWorkflowExecutionRuntime(binding.execution_id);
+				const completionEventId =
+					completion?.event_uid ??
+					`completion:${binding.run_id}:${binding.node_id}:${binding.attempt}`;
+				const manifestDigest = canonicalSubmissionDigest({
+					executionId: binding.execution_id,
+					runId: binding.run_id,
+					nodeId: binding.node_id,
+					attempt: binding.attempt,
+					vendor: runtime?.vendor ?? "unknown",
+					model: runtime?.model ?? "unknown",
+					effort: runtime?.effort ?? "",
+				});
+				this.db.run(
+					`UPDATE workflow_execution_process_body
+					    SET state = 'retiring', completion_event_id = ?, manifest_digest = ?,
+					        retirement_requested_at = ?, updated_at = ?, reason_code = NULL
+					  WHERE execution_id = ? AND generation = ? AND state = 'active'`,
+					[
+						completionEventId,
+						manifestDigest,
+						input.completedAt,
+						input.completedAt,
+						binding.execution_id,
+						processBody.generation,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_process_retirement_cas_failed");
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: binding.run_id,
+					eventUid: `process_retiring:${binding.execution_id}:${processBody.generation}:${completionEventId}`,
+					kind: "workflow_process_retiring",
+					nodeId: binding.node_id,
+					executionId: binding.execution_id,
+					payload: {
+						generation: processBody.generation,
+						completionEventId,
+						at: input.completedAt,
+					},
+				});
+			}
 		}
 		// FLY-1328 HIGH: this generalized-completion writer sets status='completed'
 		// but is NOT the FSM path, so it must stamp terminal_at itself. Without it a
@@ -69218,6 +69979,9 @@ export class StateStore {
 				kind TEXT NOT NULL CHECK (kind IN ('dispatch','materialize')),
 				launch_ordinal INTEGER NOT NULL,
 				execution_id TEXT NOT NULL,
+				purpose TEXT NOT NULL DEFAULT 'initial' CHECK (purpose IN (
+					'initial','fault_replacement','resume_fallback')),
+				source_demand_id TEXT,
 				state TEXT NOT NULL CHECK (state IN (
 					'intent_recorded','launch_committed','started','abandoned')),
 				reason TEXT,
@@ -69229,11 +69993,33 @@ export class StateStore {
 				UNIQUE (run_id, node_id, attempt, kind, launch_ordinal)
 			)
 		`);
+		const sideEffectColumns = new Set(
+			(
+				this.db.raw
+					.prepare("PRAGMA table_info(workflow_side_effect_ledger)")
+					.all() as Array<{ name: string }>
+			).map((column) => column.name),
+		);
+		if (!sideEffectColumns.has("purpose")) {
+			this.db.run(
+				"ALTER TABLE workflow_side_effect_ledger ADD COLUMN purpose TEXT NOT NULL DEFAULT 'initial' CHECK (purpose IN ('initial','fault_replacement','resume_fallback'))",
+			);
+		}
+		if (!sideEffectColumns.has("source_demand_id")) {
+			this.db.run(
+				"ALTER TABLE workflow_side_effect_ledger ADD COLUMN source_demand_id TEXT",
+			);
+		}
+		this.db.run(
+			"UPDATE workflow_side_effect_ledger SET purpose = 'fault_replacement' WHERE kind = 'dispatch' AND launch_ordinal > 1 AND purpose = 'initial'",
+		);
 		// Row identity + execution binding are immutable (B7: a committed row's
 		// execution_id is never rewritten) — only state/reason/timestamps move.
+		this.db.run("DROP TRIGGER IF EXISTS workflow_side_effect_identity_immutable");
 		this.db.run(`
 			CREATE TRIGGER IF NOT EXISTS workflow_side_effect_identity_immutable
-			BEFORE UPDATE OF run_id, node_id, attempt, kind, launch_ordinal, execution_id, created_at
+			BEFORE UPDATE OF run_id, node_id, attempt, kind, launch_ordinal, execution_id,
+				purpose, source_demand_id, created_at
 			ON workflow_side_effect_ledger
 			BEGIN SELECT RAISE(ABORT, 'workflow_side_effect_ledger identity is immutable'); END
 		`);
@@ -70481,6 +71267,8 @@ export class StateStore {
 			kind: row.kind as string,
 			launch_ordinal: Number(row.launch_ordinal),
 			execution_id: row.execution_id as string,
+			purpose: (row.purpose as WorkflowDispatchPurpose) ?? "initial",
+			source_demand_id: (row.source_demand_id as string) ?? null,
 			state: row.state as WorkflowSideEffectState,
 			reason: (row.reason as string) ?? null,
 			created_at: row.created_at as string,
@@ -70516,6 +71304,8 @@ export class StateStore {
 			kind: r.kind as string,
 			launch_ordinal: Number(r.launch_ordinal),
 			execution_id: r.execution_id as string,
+			purpose: (r.purpose as WorkflowDispatchPurpose) ?? "initial",
+			source_demand_id: (r.source_demand_id as string) ?? null,
 			state: r.state as WorkflowSideEffectState,
 			reason: (r.reason as string) ?? null,
 			created_at: r.created_at as string,
@@ -70595,6 +71385,8 @@ export class StateStore {
 			kind: r.kind as string,
 			launch_ordinal: Number(r.launch_ordinal),
 			execution_id: r.execution_id as string,
+			purpose: (r.purpose as WorkflowDispatchPurpose) ?? "initial",
+			source_demand_id: (r.source_demand_id as string) ?? null,
 			state: r.state as WorkflowSideEffectState,
 			reason: (r.reason as string) ?? null,
 			created_at: r.created_at as string,
@@ -83187,6 +83979,8 @@ export class StateStore {
 		nodeId: string,
 		attempt: number,
 		executionId: string,
+		purpose?: "initial" | "fault_replacement" | "resume_fallback",
+		sourceDemandId?: string,
 	): number {
 		const rows = this.workflowSelectAll(
 			`SELECT launch_ordinal, execution_id FROM workflow_side_effect_ledger
@@ -83197,13 +83991,24 @@ export class StateStore {
 		if (mine) return Number(mine.launch_ordinal);
 		const next =
 			rows.reduce((max, r) => Math.max(max, Number(r.launch_ordinal)), 0) + 1;
+		const resolvedPurpose = purpose ?? (next === 1 ? "initial" : "fault_replacement");
 		const now = new Date().toISOString();
 		this.db.run(
 			`INSERT INTO workflow_side_effect_ledger
-			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state,
-			    created_at, updated_at)
-			 VALUES (?, ?, ?, 'dispatch', ?, ?, 'intent_recorded', ?, ?)`,
-			[runId, nodeId, attempt, next, executionId, now, now],
+			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id,
+			    purpose, source_demand_id, state, created_at, updated_at)
+			 VALUES (?, ?, ?, 'dispatch', ?, ?, ?, ?, 'intent_recorded', ?, ?)`,
+			[
+				runId,
+				nodeId,
+				attempt,
+				next,
+				executionId,
+				resolvedPurpose,
+				sourceDemandId ?? null,
+				now,
+				now,
+			],
 		);
 		this.mintWorkflowStateDeliveryAttemptTx({
 			family: "launch",
@@ -85325,6 +86130,42 @@ export interface WorkflowExecutionRuntimeRow {
 	created_at: string;
 }
 
+export type WorkflowExecutionProcessBodyState =
+	| "active"
+	| "retiring"
+	| "standby"
+	| "resuming"
+	| "resume_failed"
+	| "closed";
+
+export interface WorkflowExecutionProcessBodyRow {
+	execution_id: string;
+	generation: number;
+	state: WorkflowExecutionProcessBodyState;
+	completion_event_id: string | null;
+	manifest_digest: string | null;
+	current_demand_id: string | null;
+	owner_claim_id: string | null;
+	started_at: string;
+	updated_at: string;
+	retirement_requested_at: string | null;
+	standby_at: string | null;
+	reason_code: string | null;
+	last_resume_ms: number | null;
+	context_loss: 0 | 1;
+}
+
+export interface WorkflowExecutionActivity {
+	activityState: "working" | "standby" | "problem";
+	transition: WorkflowExecutionProcessBodyState;
+	parkedAt: string | null;
+	canResume: boolean;
+	reason: string | null;
+	lastResumeMs: number | null;
+	contextLoss: boolean;
+	observedAt: string;
+}
+
 export interface WorkflowNodeCompletionRow {
 	activation_id: string | null;
 	run_id: string;
@@ -86307,6 +87148,11 @@ export type WorkflowSideEffectState =
 	| "started"
 	| "abandoned";
 
+export type WorkflowDispatchPurpose =
+	| "initial"
+	| "fault_replacement"
+	| "resume_fallback";
+
 export interface WorkflowSideEffectRow {
 	id: number;
 	run_id: string;
@@ -86315,6 +87161,8 @@ export interface WorkflowSideEffectRow {
 	kind: string;
 	launch_ordinal: number;
 	execution_id: string;
+	purpose: WorkflowDispatchPurpose;
+	source_demand_id: string | null;
 	state: WorkflowSideEffectState;
 	reason: string | null;
 	created_at: string;

@@ -156,6 +156,8 @@ function makeHarness(input: {
 	targetNode?: "implement" | "qa";
 	implementProducesOutput?: boolean;
 	turnSourceProbeError?: string;
+	processBodyState?: "standby" | "resume_failed";
+	resumeResult?: { ok: true } | { ok: false; error: string };
 }) {
 	const targetNode = input.targetNode ?? "implement";
 	const request: WorkflowReworkRequestRow = {
@@ -205,6 +207,17 @@ function makeHarness(input: {
 	let failProjection = input.failTurnProjectionOnce ?? false;
 
 	const store: WorkflowReworkCoordinatorStore = {
+		getWorkflowExecutionProcessBody: vi.fn(() =>
+			input.processBodyState
+				? {
+						execution_id: session.execution_id,
+						generation: 1,
+						state: input.processBodyState,
+						current_demand_id: null,
+						owner_claim_id: null,
+					}
+				: undefined,
+		),
 		getWorkflowReworkRequest: vi.fn(() => request),
 		getLatestWorkflowReworkRoute: vi.fn(() => route),
 		getWorkflowReworkDelivery: vi.fn(() => ({ ...delivery })),
@@ -370,12 +383,20 @@ function makeHarness(input: {
 	};
 
 	const wakeResults = [...(input.wakeResults ?? [{ ok: true }])];
+	let resumed = false;
 	const effects = {
 		getActorSession: vi.fn(() => session),
-		probeRegistered: vi.fn(async () => input.registered ?? "alive"),
+		probeRegistered: vi.fn(async () =>
+			resumed ? "alive" : (input.registered ?? "alive"),
+		),
 		probePersisted: vi.fn(async () => input.persisted ?? "absent"),
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
+		resumeStandbyActor: vi.fn(async () => {
+			const result = input.resumeResult ?? { ok: true as const };
+			if (result.ok) resumed = true;
+			return result;
+		}),
 		closeActorForReworkSupersession: vi.fn(async () => ({ ok: true })),
 		hasTurnSource: vi.fn(async () => {
 			if (input.turnSourceProbeError) {
@@ -511,6 +532,32 @@ describe("WorkflowReworkCoordinator", () => {
 		);
 		expect(h.getDelivery().state).toBe("awaiting_receipt");
 		expect(h.getDelivery().next_retry_at).toBe("2026-07-23T00:03:00.000Z");
+	});
+
+	it("resumes a confirmed standby process body before granting TURN or waking", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			implementProducesOutput: true,
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "awaiting_receipt",
+			executionId: "implement-exec",
+		});
+		expect(h.effects.resumeStandbyActor).toHaveBeenCalledWith({
+			session,
+			demandId: "rework-1",
+			ownerId: "coordinator-a",
+			ownerGeneration: 1,
+			expectedHeadSha: HEAD,
+		});
+		expect(
+			h.effects.resumeStandbyActor.mock.invocationCallOrder[0],
+		).toBeLessThan(h.effects.activateActorForWake.mock.invocationCallOrder[0]!);
+		expect(
+			h.effects.resumeStandbyActor.mock.invocationCallOrder[0],
+		).toBeLessThan(h.effects.grantTurn.mock.invocationCallOrder[0]!);
 	});
 
 	it("reprobes an unacked actor on the durable cadence without granting or waking again", async () => {

@@ -1081,6 +1081,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
+					workflowProcessLifecycle:
+						req.generalizedExecution.processLifecycle,
 				}),
 				...runnerSpawn,
 				// FLY-751: recompute the MCP slim profile on retry from the persisted
@@ -1807,6 +1809,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
+					workflowProcessLifecycle:
+						req.generalizedExecution.processLifecycle,
 				}),
 				launchCommitPath: workflowLaunchCommitPath,
 				launchGateToken: req.generalizedExecution?.launchGateToken,

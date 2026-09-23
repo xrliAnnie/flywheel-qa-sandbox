@@ -1425,7 +1425,7 @@ describe("TmuxAdapter", () => {
 
 	// ─── Claude args ────────────────────────────────
 
-	it("passes --session-id <uuid> to claude (ignores previousSession)", async () => {
+	it("resumes the exact Claude session without forking or allocating a new id", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
@@ -1435,12 +1435,21 @@ describe("TmuxAdapter", () => {
 
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const claudeArgs = newWindow!.args;
-		// Should contain --session-id with a UUID, not "old-session-id"
-		const sessionIdx = claudeArgs.indexOf("--session-id");
-		expect(sessionIdx).toBeGreaterThan(-1);
-		const sessionId = claudeArgs[sessionIdx + 1]!;
-		expect(sessionId).not.toBe("old-session-id");
-		expect(sessionId).toMatch(/^[0-9a-f-]{36}$/); // UUID format
+		expect(claudeArgs).not.toContain("--session-id");
+		expect(claudeArgs).not.toContain("--fork-session");
+		const resumeIdx = claudeArgs.indexOf("--resume");
+		expect(resumeIdx).toBeGreaterThan(-1);
+		expect(claudeArgs[resumeIdx + 1]).toBe("old-session-id");
+	});
+
+	it("fails closed when a Claude resume request has no session id", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await expect(
+			adapter.execute(makeCtx({ previousSession: { sessionId: "" } })),
+		).rejects.toThrow("Claude resume session id is missing");
+		expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
 	});
 
 	it("does NOT include --print or --output-format", async () => {

@@ -41,7 +41,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
 	defaultGateMarkerDir,
@@ -930,6 +930,29 @@ export class CodexTmuxAdapter implements IAdapter {
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
 		const gitWritableDirs = await this.resolveGitWritableDirs(sandboxCwd);
+		if (ctx.processLifecycle) {
+			if (
+				!Number.isSafeInteger(ctx.processLifecycle.generation) ||
+				ctx.processLifecycle.generation < 1
+			) {
+				throw new Error("Codex process generation is invalid");
+			}
+			if (
+				ctx.processLifecycle.expectedCwd !== undefined &&
+				ctx.processLifecycle.expectedCwd !== sandboxCwd
+			) {
+				throw new Error("Codex resume cwd mismatch");
+			}
+			if (
+				ctx.processLifecycle.expectedModel !== undefined &&
+				ctx.processLifecycle.expectedModel !== (ctx.model ?? null)
+			) {
+				throw new Error("Codex resume model mismatch");
+			}
+		}
+		const processGitIdentity = ctx.processLifecycle
+			? await this.captureProcessGitIdentity(sandboxCwd)
+			: undefined;
 		// Build and validate in the fail-loud zone. This must stay before GitHub
 		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
 		const gateMarkerDir = defaultGateMarkerDir();
@@ -1169,6 +1192,9 @@ export class CodexTmuxAdapter implements IAdapter {
 					},
 				});
 			}
+			if (ctx.processLifecycle?.headDriftNotice) {
+				kickText = `${ctx.processLifecycle.headDriftNotice}\n\n${kickText}`;
+			}
 			const transcriptPath = join(
 				codexSessionStateDir(ctx.executionId),
 				"transcript.log",
@@ -1216,7 +1242,10 @@ export class CodexTmuxAdapter implements IAdapter {
 					: {}),
 			});
 
-			if (ctx.phaseKeepAlive || ctx.residentLoopTarget) {
+			if (
+				!ctx.processLifecycle &&
+				(ctx.phaseKeepAlive || ctx.residentLoopTarget)
+			) {
 				if (!ctx.commDbPath) {
 					throw new Error(
 						`resident lifecycle requires commDbPath for ${ctx.executionId}`,
@@ -1533,7 +1562,19 @@ export class CodexTmuxAdapter implements IAdapter {
 			// transcript filter, and asynchronously attach the native TUI. The 0ms
 			// scheduled attempt keeps goal setup and the machine turn non-blocking.
 			const onThreadReady = (threadId: string, restarts: number): void => {
-				this.persistSessionState(ctx, threadId);
+				if (
+					ctx.processLifecycle?.expectedSessionId !== undefined &&
+					ctx.processLifecycle.expectedSessionId !== threadId
+				) {
+					throw new Error("Codex resume session identity mismatch");
+				}
+				this.persistSessionState(ctx, threadId, processGitIdentity);
+				ctx.processLifecycle?.onIdentityVerified?.({
+					sessionId: threadId,
+					model: ctx.model ?? null,
+					cwd: sandboxCwd,
+					verifiedAt: new Date().toISOString(),
+				});
 				tuiThreadId = threadId;
 				try {
 					transcriptSink?.setThreadScope(threadId);
@@ -1594,6 +1635,18 @@ export class CodexTmuxAdapter implements IAdapter {
 				(typeof ctx.previousSession?.threadId === "string"
 					? (ctx.previousSession.threadId as string)
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
+			if (
+				ctx.processLifecycle?.mode === "resume" &&
+				(!resumeThreadId || resumeThreadId.trim().length === 0)
+			) {
+				throw new Error("Codex resume session id is missing");
+			}
+			if (
+				ctx.processLifecycle?.expectedSessionId !== undefined &&
+				ctx.processLifecycle.expectedSessionId !== resumeThreadId
+			) {
+				throw new Error("Codex resume session identity mismatch");
+			}
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
 			const turnDbPath = ctx.commDbPath;
 			const turnLifecycle = turnDbPath
@@ -1841,7 +1894,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				await closeTranscript(
 					controlledShutdownSucceeded() ? "completed" : "timeout",
 				);
-				if (registeredSession && ctx.commDbPath) {
+				if (!ctx.processLifecycle && registeredSession && ctx.commDbPath) {
 					let commDb: CommDB | undefined;
 					try {
 						commDb = new CommDB(ctx.commDbPath);
@@ -1942,7 +1995,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						teardownError ??= err;
 					}
 				}
-				if (registeredSession && ctx.commDbPath) {
+				if (!ctx.processLifecycle && registeredSession && ctx.commDbPath) {
 					try {
 						const commDb = new CommDB(ctx.commDbPath);
 						commDb.updateSessionStatusIfRunning(ctx.executionId, closeStatus);
@@ -1989,6 +2042,13 @@ export class CodexTmuxAdapter implements IAdapter {
 			(cls.success || controlledShutdownSucceeded()) &&
 			!teardownError &&
 			!quotaFailure;
+		if (success && ctx.processLifecycle) {
+			ctx.processLifecycle.onRetired?.({
+				generation: ctx.processLifecycle.generation,
+				reasonCode: "process_tree_gone",
+				retiredAt: new Date().toISOString(),
+			});
+		}
 		const threadId = outcome?.threadId;
 		const result: AdapterExecutionResult = {
 			success,
@@ -2159,6 +2219,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	private persistSessionState(
 		ctx: AdapterExecutionContext,
 		threadId: string,
+		gitIdentity?: {
+			gitCommonDir: string | null;
+			worktree: string | null;
+			branch: string | null;
+			lastObservedHead: string | null;
+			dirty: boolean | null;
+		},
 	): void {
 		try {
 			this.mergeSessionState(ctx.executionId, {
@@ -2167,12 +2234,60 @@ export class CodexTmuxAdapter implements IAdapter {
 				cwd: ctx.cwd,
 				vendor: "codex",
 				threadId,
+				resolvedModel: ctx.model ?? null,
+				effort: ctx.effort ?? null,
+				...(ctx.processLifecycle
+					? {
+							schemaVersion: 1,
+							processGeneration: ctx.processLifecycle.generation,
+							validatedAt: new Date().toISOString(),
+							...(gitIdentity ?? {}),
+						}
+					: {}),
 			});
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
 			);
 		}
+	}
+
+	private async captureProcessGitIdentity(cwd: string): Promise<{
+		gitCommonDir: string | null;
+		worktree: string | null;
+		branch: string | null;
+		lastObservedHead: string | null;
+		dirty: boolean | null;
+	}> {
+		const git = async (...args: string[]): Promise<string | null> => {
+			try {
+				return (
+					await this.asyncExecFileFn("git", ["-C", cwd, ...args], {
+						timeoutMs: 5_000,
+					})
+				).stdout.trim();
+			} catch {
+				return null;
+			}
+		};
+		const [commonDir, worktree, branch, head, dirty] = await Promise.all([
+			git("rev-parse", "--git-common-dir"),
+			git("rev-parse", "--show-toplevel"),
+			git("symbolic-ref", "--quiet", "--short", "HEAD"),
+			git("rev-parse", "HEAD"),
+			git("status", "--porcelain=v1", "-uno"),
+		]);
+		return {
+			gitCommonDir: commonDir
+				? isAbsolute(commonDir)
+					? commonDir
+					: resolve(cwd, commonDir)
+				: null,
+			worktree,
+			branch,
+			lastObservedHead: head,
+			dirty: dirty === null ? null : dirty.length > 0,
+		};
 	}
 
 	/** Window identity is a separate commit: a name is never durable evidence. */

@@ -208,6 +208,24 @@ describe("CodexDaemonClient — handshake + protocol", () => {
 		expect(await c.resumeThread("th-42")).toBe("th-42");
 	});
 
+	it("fails closed when thread/resume omits the actual resumed id", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({}));
+		const c = makeClient(d);
+		await expect(c.resumeThread("th-42")).rejects.toMatchObject({
+			kind: "no_thread",
+		});
+	});
+
+	it("fails closed when thread/resume reports a different thread", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({ thread: { id: "th-new" } }));
+		const c = makeClient(d);
+		await expect(c.resumeThread("th-42")).rejects.toMatchObject({
+			kind: "thread_mismatch",
+		});
+	});
+
 	it("goal/set forwards objective + budget + active status", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/goal/set", () => ({}));

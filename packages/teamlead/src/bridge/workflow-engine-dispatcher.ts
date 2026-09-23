@@ -2057,10 +2057,13 @@ export class WorkflowEngineDispatcher {
 						undefined,
 					);
 					if (!latest || latest.execution_id !== node.execution_id) continue;
-					if (launches.length <= MAX_BLIND_REPLACEMENTS) {
+					const faultReplacementCount = launches.filter(
+						(launch) => launch.purpose === "fault_replacement",
+					).length;
+					if (faultReplacementCount < MAX_BLIND_REPLACEMENTS) {
 						const delay =
 							WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[
-								Math.max(0, launches.length - 1)
+								faultReplacementCount
 							]!;
 						const launchedAt = parseSqliteUtcMs(latest.created_at);
 						if (
@@ -2840,6 +2843,7 @@ export class WorkflowEngineDispatcher {
 			now: now.toISOString(),
 			expiresAt: credentialExpiry.expiresAt,
 			absoluteDeadlineAt: credentialExpiry.absoluteDeadlineAt,
+			env: this.env,
 			...(reworkReplacementRequestId
 				? {
 						activationMode: "replacement" as const,
@@ -2867,6 +2871,9 @@ export class WorkflowEngineDispatcher {
 					}
 				: {}),
 		};
+		const processBody = store.getWorkflowExecutionProcessBody(
+			intent.execution_id,
+		);
 
 		const ownerId = this.ownerId;
 		const markerPath = join(this.stateRoot, intent.execution_id);
@@ -3103,6 +3110,28 @@ export class WorkflowEngineDispatcher {
 					idempotencyKey: `engine:${intent.run_id}:${intent.node_id}:${intent.attempt}`,
 					launchGateToken,
 					launchGeneration,
+					...(processBody && {
+						processLifecycle: {
+							mode: "initial" as const,
+							generation: processBody.generation,
+							expectedModel: runtime.model,
+							onRetired: (evidence: {
+								generation: number;
+								reasonCode: "process_tree_gone";
+								retiredAt: string;
+							}) => {
+								const retired = store.confirmWorkflowExecutionStandby({
+									executionId: intent.execution_id,
+									generation: evidence.generation,
+									reasonCode: evidence.reasonCode,
+									now: evidence.retiredAt,
+								});
+								if (!retired.ok) {
+									throw new Error(`engine_process_retirement_${retired.reason}`);
+								}
+							},
+						},
+					}),
 					commitWorkflowLaunch,
 					prepareWorkflowIssueDelivery,
 					projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),

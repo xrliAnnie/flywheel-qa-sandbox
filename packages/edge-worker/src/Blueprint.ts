@@ -711,6 +711,8 @@ export interface BlueprintContext {
 		/** FLY-1441: frozen run-level gate-carrier behavior epoch. */
 		gateCarrierEpoch?: number;
 	};
+	/** FLY-2808: Bridge-owned process body, threaded unchanged to the adapter. */
+	workflowProcessLifecycle?: AdapterExecutionContext["processLifecycle"];
 	workflowCapabilities?: Record<string, boolean | string>;
 	workflowAgentContent?: string;
 	workflowOutputCredential?: string;
@@ -1751,7 +1753,8 @@ export class Blueprint {
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
 			ctx.shareParentBranch === true && ctx.sessionRole === "qa";
-		const sharedPhaseKeepAlive = ctx.shareParentBranch === true;
+		const sharedPhaseKeepAlive =
+			ctx.shareParentBranch === true && !ctx.workflowProcessLifecycle;
 		const phaseKeepAlive: AdapterExecutionContext["phaseKeepAlive"] =
 			isCodexRunner && sharedPhaseKeepAlive
 				? isDesignPhase
@@ -3034,6 +3037,9 @@ export class Blueprint {
 						}
 					: {}),
 				...(phaseKeepAlive && { phaseKeepAlive }),
+				...(ctx.workflowProcessLifecycle && {
+					processLifecycle: ctx.workflowProcessLifecycle,
+				}),
 				...(residentLoopTarget && { residentLoopTarget }),
 				...(ctx.sessionRole && { sessionRole: ctx.sessionRole }),
 				timeoutMs,

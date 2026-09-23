@@ -94,6 +94,20 @@ export function grantWorkflowReworkTurn(
 }
 
 export interface WorkflowReworkCoordinatorStore {
+	getWorkflowExecutionProcessBody?(executionId: string):
+		| {
+				generation: number;
+				state:
+					| "active"
+					| "retiring"
+					| "standby"
+					| "resuming"
+					| "resume_failed"
+					| "closed";
+				current_demand_id: string | null;
+				owner_claim_id: string | null;
+		  }
+		| undefined;
 	getWorkflowReworkRequest(
 		requestId: string,
 	): WorkflowReworkRequestRow | undefined;
@@ -232,6 +246,13 @@ export interface WorkflowReworkCoordinatorEffects {
 	activateActorForWake?(
 		session: WorkflowActorSession,
 	): Promise<{ ok: boolean; error?: string }>;
+	resumeStandbyActor?(input: {
+		session: WorkflowActorSession;
+		demandId: string;
+		ownerId: string;
+		ownerGeneration: number;
+		expectedHeadSha: string;
+	}): Promise<{ ok: true } | { ok: false; error: string }>;
 	closeActorForReworkSupersession(input: {
 		session: WorkflowActorSession;
 		requestId: string;
@@ -516,6 +537,49 @@ export class WorkflowReworkCoordinator {
 				reason: "actor_session_missing",
 			});
 		}
+		let worktreeReady = false;
+		const processBody = this.deps.store.getWorkflowExecutionProcessBody?.(
+			actor.execution_id,
+		);
+		if (
+			!observingReceipt &&
+			(processBody?.state === "standby" ||
+				processBody?.state === "resume_failed")
+		) {
+			const ready = await this.deps.effects.assertWorktreeReady(
+				actor,
+				request.base_revision,
+			);
+			if (!ready.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
+				});
+			}
+			worktreeReady = true;
+			if (!this.deps.effects.resumeStandbyActor) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: "standby_resume_not_wired",
+				});
+			}
+			const resumed = await this.deps.effects.resumeStandbyActor({
+				session: actor,
+				demandId: requestId,
+				ownerId: this.deps.ownerId,
+				ownerGeneration: claim.generation,
+				expectedHeadSha: request.base_revision,
+			});
+			if (!resumed.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `standby_resume_failed:${resumed.error}`,
+				});
+			}
+		}
 		const reentry = await classifyPhaseActorReentry({
 			session: actor,
 			probeRegistered: this.deps.effects.probeRegistered,
@@ -557,16 +621,18 @@ export class WorkflowReworkCoordinator {
 			});
 		}
 
-		const ready = await this.deps.effects.assertWorktreeReady(
-			actor,
-			request.base_revision,
-		);
-		if (!ready.ok) {
-			return this.releaseRetryable({
-				requestId,
-				generation: claim.generation,
-				reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
-			});
+		if (!worktreeReady) {
+			const ready = await this.deps.effects.assertWorktreeReady(
+				actor,
+				request.base_revision,
+			);
+			if (!ready.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
+				});
+			}
 		}
 		const holderActivation =
 			await this.deps.effects.activateActorForWake?.(actor);

@@ -9622,6 +9622,10 @@ export async function startBridge(
 	};
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
+		isIntentionalStandby: (executionId) => {
+			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
+			return state === "retiring" || state === "standby" || state === "resuming";
+		},
 		alertIdentity: (session) => {
 			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
 			if (!bound) return undefined;

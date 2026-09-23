@@ -168,7 +168,12 @@ function createRun(
 
 function createAdmittedEngineRun(
 	store: StateStore,
-	options: { output?: boolean; templateId?: string; loopTarget?: boolean } = {},
+	options: {
+		output?: boolean;
+		templateId?: string;
+		loopTarget?: boolean;
+		standbyLifecycle?: boolean;
+	} = {},
 ): { markerPath: string; outputCredential?: string; activationId: string } {
 	createRun(store, options);
 	const db = (
@@ -193,7 +198,12 @@ function createAdmittedEngineRun(
 		expiresAt: "2026-07-15T01:00:00.000Z",
 		absoluteDeadlineAt: "2026-07-16T00:00:00.000Z",
 		now: "2026-07-15T00:00:00.000Z",
-		env: enabled,
+		env: {
+			...enabled,
+			...(options.standbyLifecycle
+				? { FLYWHEEL_NODE_STANDBY_RESUME: "1" }
+				: {}),
+		},
 	});
 	if (!admitted.ok) throw new Error(`admission failed: ${admitted.reason}`);
 	const markerRoot = mkdtempSync(join(tmpdir(), "fly1423-unlaunched-"));
@@ -221,6 +231,143 @@ const DECLARED_NESTED_PR = {
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it("keeps the process-body lifecycle disabled unless the run is explicitly enrolled", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toBeUndefined();
+	});
+
+	it("persists active -> retiring -> standby and resumes the exact process body", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			execution_id: "exec-1",
+			generation: 1,
+			state: "active",
+		});
+		expect(
+			store.beginWorkflowExecutionRetirement({
+				executionId: "exec-1",
+				completionEventId: "completion-1",
+				manifestDigest: "a".repeat(64),
+				now: "2026-09-22T01:00:00.000Z",
+			}),
+		).toEqual({ ok: true, generation: 1, idempotentReplay: false });
+		expect(
+			store.confirmWorkflowExecutionStandby({
+				executionId: "exec-1",
+				generation: 1,
+				reasonCode: "process_tree_gone",
+				now: "2026-09-22T01:00:01.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+
+		const resume = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-1",
+			ownerClaimId: "owner-1",
+			now: "2026-09-22T01:00:02.000Z",
+		});
+		expect(resume).toEqual({
+			ok: true,
+			generation: 2,
+			attempt: 1,
+			idempotentReplay: false,
+		});
+		expect(
+			store.finishWorkflowExecutionResume({
+				executionId: "exec-1",
+				generation: 2,
+				demandId: "rework-1",
+				ownerClaimId: "owner-1",
+				expectedSessionId: "thread-original",
+				observedSessionId: "thread-original",
+				expectedModel: "gpt-5.6-sol",
+				observedModel: "gpt-5.6-sol",
+				expectedCwd: "/tmp/worktree",
+				observedCwd: "/tmp/worktree",
+				queueMs: 8,
+				startupMs: 120,
+				totalMs: 140,
+				now: "2026-09-22T01:00:03.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			generation: 2,
+			state: "active",
+			current_demand_id: null,
+		});
+	});
+
+	it("fails closed on identity drift and keeps resume/fallback out of the fault budget", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-1",
+			manifestDigest: "b".repeat(64),
+			now: "2026-09-22T02:00:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T02:00:01.000Z",
+		});
+		const first = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "mail-1",
+			ownerClaimId: "owner-1",
+			now: "2026-09-22T02:00:02.000Z",
+		});
+		if (!first.ok) throw new Error(first.reason);
+		expect(
+			store.finishWorkflowExecutionResume({
+				executionId: "exec-1",
+				generation: first.generation,
+				demandId: "mail-1",
+				ownerClaimId: "owner-1",
+				expectedSessionId: "thread-original",
+				observedSessionId: "thread-new",
+				expectedModel: "gpt-5.6-sol",
+				observedModel: "gpt-5.6-sol",
+				expectedCwd: "/tmp/worktree",
+				observedCwd: "/tmp/worktree",
+				queueMs: 1,
+				startupMs: 2,
+				totalMs: 3,
+				now: "2026-09-22T02:00:03.000Z",
+			}),
+		).toEqual({ ok: false, reason: "session_identity_mismatch" });
+
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: first.generation,
+			demandId: "mail-1",
+			ownerClaimId: "owner-1",
+			reasonCode: "session_identity_mismatch",
+			now: "2026-09-22T02:00:04.000Z",
+		});
+		const fallback = store.allocateWorkflowResumeFallback({
+			executionId: "exec-1",
+			demandId: "mail-1",
+			newExecutionId: "exec-fallback",
+			now: "2026-09-22T02:00:05.000Z",
+		});
+		expect(fallback).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(store.countWorkflowFaultReplacements("run-1", "execute", 1)).toBe(0);
+		expect(
+			store.allocateWorkflowResumeFallback({
+				executionId: "exec-1",
+				demandId: "mail-1",
+				newExecutionId: "exec-fallback-2",
+				now: "2026-09-22T02:00:06.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_fallback_limit" });
+	});
+
 	it("refreshes the same-run worktree binding cohort only inside an accepted completion", async () => {
 		const store = await StateStore.create(":memory:");
 		createAdmittedEngineRun(store);
@@ -2646,6 +2793,61 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T00:02:01.000Z",
 			}),
 		).toMatchObject({ ok: true, idempotentReplay: true });
+		store.close();
+	});
+
+	it("projects an enrolled completion to retiring standby instead of a terminal session", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store, { output: true });
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 1,
+			expiresAt: "2026-09-22T01:00:00.000Z",
+			absoluteDeadlineAt: "2026-09-23T00:00:00.000Z",
+			now: "2026-09-22T00:00:00.000Z",
+			env: { ...enabled, FLYWHEEL_NODE_STANDBY_RESUME: "1" },
+		});
+		if (!admitted.ok || !admitted.outputCredential) {
+			throw new Error("admission failed");
+		}
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential,
+				clientRequestId: "standby-output",
+				payload: '{"ok":true}',
+				now: "2026-09-22T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		expect(
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "standby-completion",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-09-22T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "ship_parked",
+			terminal_at: undefined,
+		});
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "retiring",
+			generation: 1,
+			completion_event_id: expect.any(String),
+			manifest_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+		});
 		store.close();
 	});
 

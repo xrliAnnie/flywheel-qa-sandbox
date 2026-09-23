@@ -7,13 +7,14 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	unlinkSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
 	buildNonLeadClaudeSettings,
@@ -496,7 +497,65 @@ export class TmuxAdapter implements IAdapter {
 		let windowName = this.sanitizeWindowName(
 			ctx.label ?? `issue-${Date.now()}`,
 		);
-		const claudeSessionId = randomUUID();
+		let claudeSessionId: string;
+		if (ctx.previousSession !== undefined) {
+			const resumedSessionId = ctx.previousSession.sessionId;
+			if (
+				typeof resumedSessionId !== "string" ||
+				resumedSessionId.trim().length === 0
+			) {
+				throw new Error("Claude resume session id is missing");
+			}
+			const expectedVendor = ctx.previousSession.vendor;
+			if (expectedVendor !== undefined && expectedVendor !== "claude") {
+				throw new Error("Claude resume vendor mismatch");
+			}
+			if (typeof ctx.previousSession.resolvedModel === "string") {
+				const resolvedModel = ctx.model
+					? resolveAllowedCanonicalModel(ctx.model, {
+							surface: "runner",
+							runtimeVendor: "claude",
+						})
+					: undefined;
+				if (resolvedModel !== ctx.previousSession.resolvedModel) {
+					throw new Error("Claude resume model mismatch");
+				}
+			}
+			if (typeof ctx.previousSession.cwd === "string") {
+				let observedCwd = ctx.cwd;
+				try {
+					observedCwd = realpathSync(ctx.cwd);
+				} catch {
+					// The launch path reports the missing worktree separately.
+				}
+				if (observedCwd !== ctx.previousSession.cwd) {
+					throw new Error("Claude resume cwd mismatch");
+				}
+			}
+			claudeSessionId = resumedSessionId;
+		} else {
+			claudeSessionId = randomUUID();
+		}
+		if (ctx.processLifecycle) {
+			if (
+				!Number.isSafeInteger(ctx.processLifecycle.generation) ||
+				ctx.processLifecycle.generation < 1
+			) {
+				throw new Error("Claude process generation is invalid");
+			}
+			if (
+				ctx.processLifecycle.mode === "resume" &&
+				ctx.previousSession === undefined
+			) {
+				throw new Error("Claude resume manifest is missing");
+			}
+			if (
+				ctx.processLifecycle.expectedSessionId !== undefined &&
+				ctx.processLifecycle.expectedSessionId !== claudeSessionId
+			) {
+				throw new Error("Claude resume session identity mismatch");
+			}
+		}
 		const start = Date.now();
 		const effectiveTimeoutMs = ctx.timeoutMs ?? this.defaultTimeoutMs;
 
@@ -1014,6 +1073,51 @@ export class TmuxAdapter implements IAdapter {
 				);
 			}
 		}
+		if (ctx.processLifecycle) {
+			let observedCwd = ctx.cwd;
+			try {
+				observedCwd = realpathSync(ctx.cwd);
+			} catch {
+				// A missing worktree is rejected by launch/preflight; retain the value for evidence.
+			}
+			const resolvedModel = ctx.model
+				? resolveAllowedCanonicalModel(ctx.model, {
+						surface: "runner",
+						runtimeVendor: "claude",
+					})
+				: null;
+			if (
+				ctx.processLifecycle.expectedModel !== undefined &&
+				ctx.processLifecycle.expectedModel !== resolvedModel
+			) {
+				this.cleanupExactWindow(exactWindowTarget);
+				throw new Error("Claude resume model mismatch");
+			}
+			if (
+				ctx.processLifecycle.expectedCwd !== undefined &&
+				ctx.processLifecycle.expectedCwd !== observedCwd
+			) {
+				this.cleanupExactWindow(exactWindowTarget);
+				throw new Error("Claude resume cwd mismatch");
+			}
+			try {
+				this.persistClaudeSessionState(
+					ctx,
+					claudeSessionId,
+					resolvedModel,
+					observedCwd,
+				);
+				ctx.processLifecycle.onIdentityVerified?.({
+					sessionId: claudeSessionId,
+					model: resolvedModel,
+					cwd: observedCwd,
+					verifiedAt: new Date().toISOString(),
+				});
+			} catch (error) {
+				this.cleanupExactWindow(exactWindowTarget);
+				throw error;
+			}
+		}
 
 		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
 		// = release ONLY this launch's gated shell. The file's existence is the
@@ -1123,8 +1227,10 @@ export class TmuxAdapter implements IAdapter {
 			sessionStatus = "timeout";
 			throw err;
 		} finally {
+			const retiringToStandby =
+				ctx.processLifecycle !== undefined && sessionStatus === "completed";
 			// GEO-206 Phase 2: Update session status
-			if (registeredSession && ctx.commDbPath) {
+			if (!retiringToStandby && registeredSession && ctx.commDbPath) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
 					commDb.updateSessionStatusIfRunning(ctx.executionId, sessionStatus);
@@ -1145,6 +1251,22 @@ export class TmuxAdapter implements IAdapter {
 					// Window may already be gone — non-fatal
 				}
 			}
+			if (retiringToStandby) {
+				try {
+					auditedTmuxKillWindow(
+						this.execFileFn,
+						exactWindowTarget,
+						"workflow_process_standby",
+					);
+				} catch {
+					// A dead pane/window is the expected retired state.
+				}
+				ctx.processLifecycle!.onRetired?.({
+					generation: ctx.processLifecycle!.generation,
+					reasonCode: "process_tree_gone",
+					retiredAt: new Date().toISOString(),
+				});
+			}
 		}
 
 		return {
@@ -1154,6 +1276,61 @@ export class TmuxAdapter implements IAdapter {
 			durationMs: Date.now() - start,
 			timedOut,
 		};
+	}
+
+	private persistClaudeSessionState(
+		ctx: AdapterExecutionContext,
+		sessionId: string,
+		resolvedModel: string | null,
+		cwd: string,
+	): void {
+		const stateRoot =
+			process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+			join(homedir(), ".flywheel", "state", "claude-sessions");
+		const stateDir = join(stateRoot, ctx.executionId);
+		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		chmodSync(stateDir, 0o700);
+		const git = (...args: string[]): string | null => {
+			try {
+				return execFileSync("git", ["-C", cwd, ...args], {
+					encoding: "utf8",
+					timeout: 5_000,
+					stdio: ["ignore", "pipe", "ignore"],
+				}).trim();
+			} catch {
+				return null;
+			}
+		};
+		const commonDir = git("rev-parse", "--git-common-dir");
+		const dirty = git("status", "--porcelain=v1", "-uno");
+		const state = {
+			schemaVersion: 1,
+			executionId: ctx.executionId,
+			issueId: ctx.issueId,
+			vendor: "claude",
+			sessionId,
+			resolvedModel,
+			effort: ctx.effort ?? null,
+			cwd,
+			gitCommonDir: commonDir
+				? isAbsolute(commonDir)
+					? commonDir
+					: resolve(cwd, commonDir)
+				: null,
+			worktree: git("rev-parse", "--show-toplevel"),
+			branch: git("symbolic-ref", "--quiet", "--short", "HEAD"),
+			lastObservedHead: git("rev-parse", "HEAD"),
+			dirty: dirty === null ? null : dirty.length > 0,
+			validatedAt: new Date().toISOString(),
+		};
+		const path = join(stateDir, "session.json");
+		const temp = join(stateDir, `.session.json.${process.pid}.${randomUUID()}.tmp`);
+		writeFileSync(temp, `${JSON.stringify(state)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(temp, 0o600);
+		renameSync(temp, path);
 	}
 
 	/**
@@ -1215,7 +1392,8 @@ export class TmuxAdapter implements IAdapter {
 	): BuiltCliArgs {
 		// CLI syntax: claude [options] [prompt] — options MUST come before prompt
 		const args: string[] = [];
-		args.push("--session-id", sessionId);
+		if (ctx.previousSession !== undefined) args.push("--resume", sessionId);
+		else args.push("--session-id", sessionId);
 		if (ctx.permissionMode) args.push("--permission-mode", ctx.permissionMode);
 		if (ctx.appendSystemPrompt) {
 			// FLY-154 hotfix: tmux `new-window` parser has an internal command
@@ -1313,12 +1491,14 @@ export class TmuxAdapter implements IAdapter {
 		}
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
-		// NOTE: previousSession intentionally ignored — no resume in interactive tmux mode
+		const effectivePrompt = ctx.processLifecycle?.headDriftNotice
+			? `${ctx.processLifecycle.headDriftNotice}\n\n${ctx.prompt}`
+			: ctx.prompt;
 		// Blank prompts must stay inline: shell command substitution strips trailing
 		// newlines, so externalizing whitespace-only input would turn it into an
 		// empty file-backed prompt and fail the launch gate.
-		if (ctx.prompt.trim() === "") {
-			args.push(ctx.prompt);
+		if (effectivePrompt.trim() === "") {
+			args.push(effectivePrompt);
 			return { args };
 		}
 		if (!launchToken) {
@@ -1335,7 +1515,7 @@ export class TmuxAdapter implements IAdapter {
 		mkdirSync(promptDir, { recursive: true, mode: 0o700 });
 		chmodSync(promptDir, 0o700);
 		const windowPromptFile = join(promptDir, `prompt-${launchToken}.md`);
-		writeFileSync(windowPromptFile, ctx.prompt, {
+		writeFileSync(windowPromptFile, effectivePrompt, {
 			encoding: "utf-8",
 			mode: 0o600,
 		});

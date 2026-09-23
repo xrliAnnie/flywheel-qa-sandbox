@@ -115,6 +115,8 @@ export interface CodexSessionReownDeps {
 	nowMs(): number;
 	holderId: string;
 	isExcluded(session: Session): boolean;
+	/** FLY-2808: no-demand standby is healthy absence, not crash recovery input. */
+	isIntentionalStandby?(executionId: string): boolean;
 }
 
 export interface CodexReownPassResult {
@@ -518,7 +520,8 @@ export class CodexSessionReowner {
 	private async inspectCandidate(session: Session): Promise<void> {
 		if (
 			session.adapter_type !== "codex-tmux" ||
-			this.deps.isExcluded(session)
+			this.deps.isExcluded(session) ||
+			this.deps.isIntentionalStandby?.(session.execution_id) === true
 		) {
 			return;
 		}
