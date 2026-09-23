@@ -1,9 +1,10 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-23T07:54:59.208Z
-nextStep: Complete consumer search, targeted verification, and implementation docs
+phaseCursor: 5/6
+updated: 2026-09-23T08:30:53.045Z
+nextStep: Finish exact-head related verification, docs, literal-last milestone,
+  push, and code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -13,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (4/6)
-**next**: Complete consumer search, targeted verification, and implementation docs
+**phase**: implement (5/6)
+**next**: Finish exact-head related verification, docs, literal-last milestone, push, and code review
