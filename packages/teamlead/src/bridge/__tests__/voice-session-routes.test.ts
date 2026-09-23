@@ -37,6 +37,10 @@ afterEach(
 );
 
 async function start() {
+	const getSessionContext = vi.fn(async (_session, authority) => ({
+		snapshotDigest: "context-digest",
+		leaseBindingDigest: authority.leaseBindingDigest,
+	}));
 	const validateSession = vi.fn(async () => {});
 	const projectSession = vi.fn((session) => ({
 		mode: session.mode,
@@ -83,6 +87,7 @@ async function start() {
 			reportAbandoned,
 			projectSession,
 			validateSession,
+			getSessionContext,
 		}),
 	);
 	server = createServer(app);
@@ -93,6 +98,7 @@ async function start() {
 		reportAbandoned,
 		projectSession,
 		validateSession,
+		getSessionContext,
 	};
 }
 
@@ -246,6 +252,49 @@ describe("voice session routes", () => {
 				body: { attemptToken, status: "confirmed" },
 			}),
 		).toMatchObject({ status: 200, body: { status: "confirmed" } });
+	});
+
+	it("serves context only to the master holding the current session lease", async () => {
+		const { base, getSessionContext } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claimed = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		const currentLease = (claimed.body as { leaseToken: string }).leaseToken;
+
+		expect(
+			await call(base, `/${SESSION_ID}/context`, {
+				token: MASTER,
+				lease: "wrong-lease",
+			}),
+		).toEqual({ status: 409, body: { error: "voice_lease_conflict" } });
+		expect(
+			await call(base, `/${SESSION_ID}/context`, {
+				token: INGEST,
+				lease: currentLease,
+			}),
+		).toEqual({ status: 403, body: { error: "daemon_credential_required" } });
+		const loaded = await call(base, `/${SESSION_ID}/context`, {
+			token: MASTER,
+			lease: currentLease,
+		});
+		expect(loaded).toMatchObject({
+			status: 200,
+			body: {
+				snapshotDigest: "context-digest",
+				leaseBindingDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+			},
+		});
+		expect(getSessionContext).toHaveBeenCalledTimes(1);
+		expect(getSessionContext.mock.calls[0]?.[1].leaseBindingDigest).not.toBe(
+			currentLease,
+		);
 	});
 
 	it.each([
