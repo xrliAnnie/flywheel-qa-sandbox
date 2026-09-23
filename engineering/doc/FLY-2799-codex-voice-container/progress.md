@@ -1,14 +1,14 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 1/8
-updated: 2026-09-23T09:34:16.655Z
-nextStep: T2 red tests for trusted voice-session context source resolution,
-  freshness, budgets, and lease binding.
+phaseCursor: 2/8
+updated: 2026-09-23T10:00:36.170Z
+nextStep: T3 red tests for the isolated Codex 0.156.1 ephemeral voice container
+  and read-only profile receipts.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (1/8)
-**next**: T2 red tests for trusted voice-session context source resolution, freshness, budgets, and lease binding.
+**phase**: implement (2/8)
+**next**: T3 red tests for the isolated Codex 0.156.1 ephemeral voice container and read-only profile receipts.
