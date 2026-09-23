@@ -2,9 +2,9 @@
 issue: FLY-2808
 phase: implement
 phaseCursor: 7/7
-updated: 2026-09-23T14:48:13.310Z
-nextStep: Update exact-head validation and follow-ups, then literal-last
-  milestone and R6 code review
+updated: 2026-09-23T15:02:49.288Z
+nextStep: Record targeted merge validation, restore literal-last milestone, push
+  and request exact-head code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -15,4 +15,4 @@ pointers:
 
 # FLY-2808 progress
 **phase**: implement (7/7)
-**next**: Update exact-head validation and follow-ups, then literal-last milestone and R6 code review
+**next**: Record targeted merge validation, restore literal-last milestone, push and request exact-head code review
