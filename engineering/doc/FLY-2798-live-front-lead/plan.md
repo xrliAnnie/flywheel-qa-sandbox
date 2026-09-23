@@ -50,7 +50,17 @@ Lead `61d6f5c8-54aa-4e39-a88d-a0cc609ebdda` 已把消费清单转给 2796，要�
 8. dispatch 前 generation fence 的原子校验。
 9. 现有 claim/attemptToken 播放权威与恢复语义保持。
 
-以上 9 项状态均为 **依赖 2796，待对齐**。实现 T0 必须把每项落点、接口版本和对应 conformance fixture 固定；没有落点的项报 Lead，禁止偷偷补第二实现。
+九项已与 `c7189944e:engineering/doc/FLY-2796-headphone-mode/plan.md §7.1` 逐项对齐，状态为 **依赖2796，草案对齐，最终批准版本待 pin**。实现 T0 必须改用 Lead 后续给出的批准 SHA；没有落点的项报 Lead，禁止偷偷补第二实现。
+
+- 输出方法名称固定 `startSpeech({speechId,generation,format})` / `writeSpeech(frame):Promise<FrameReceipt>` / `endSpeech(speechId,generation):Promise<SubmittedReceipt>` / `localPlaybackCancel`；旧 playSpeech 只是兼容包装。
+- `onBargeIn` 的事件字段为 `{sessionId,generation,utteranceId,owner:known|unknown,startedAt,observedAt,durationMs,phase:start|sustained|end}`；只 sustained 触发 A 取消，start/end 用于完整窗口记录。
+- 所有帧携 sessionId/generation，背压后及物理 sink 写前复验 lease；V2 authority 名为 `generation`，本单内部 `sessionGeneration` 映射它，线上只用一份字段。
+- Handoff 请求使用 V2 §7 全字段；`providerOperationId` 是发送前保存的 deterministic chatDeliveryId，合成 messageId=`voice-handoff:<handoffId>` 仅 V2 verified origin=voice 入口可用，本单不生成伪 Discord snowflake。
+- **这三类 handoff 都只把请求送 Lead 信箱**。`committed` 只证明匹配 envelope 已在 CommDB 持久存在，既不表示模型消费，也不表示外部业务完成。它们不能携带 ship consent/审批凭据；动作由 Lead 自己按权限处理。
+- 结果事件是 V2 的 `voice_handoff_results`，字段 `{seq,handoffId,requestDigest,sourceLeadId,sourceDeliveryId,resultKind,text,createdAt}`，唯一键 `(handoffId,resultEventId)`；消费 `GET /api/voice/handoffs/:id/results?after=<seq>` 分页与订阅通知。普通结果 `resultKind=lead_reply`，不得提升为业务完成。
+- generation/lease/binding 在 dispatching CAS 与实际 ingest 前复核；提交后只读对账持续；回新会话须同 founder 重新建立合法绑定。三种旧 token 权威不变。
+
+所有下文涉及“业务 commit/动作对账”的一般 V1约束，在本单 relay 路径只作用于**信箱投递**；外部动作的授权、取消、查询与完成证明属于 Lead 的具体业务执行，不由音频或 relay receipt 代证。
 
 ## 3. 文件与实际组装路径
 所有路径下文省略 packages/ 前缀。
@@ -99,9 +109,9 @@ Capabilities：native Live `verbatim=false`；composite 对 announcer 逐次 pro
 3. 简单快答不等待持久封口才能出声，但不得由 partial 推动副作用。普通字幕段可用显示分段，标 final=false；停顿不充当 provider final。
 4. 复杂 delegation 到达后等真实 RoomIO 发言结束；封存该 Live generation，按 §7 关旧连接并收尾 input deltas、flush，建立不可变 transcript revision。`finalizationKind=connection_sealed` 是**应用结束该代收集**，不是 Live 提供 final。断线/关闭超时、窗口缺片、无法唯一归属，仍记完整可得文本及 unknown/incomplete；不派发，明确请求澄清。不得用最后 delta 时间或超时冒充“原话完整”。
 5. 将封存转写交 V2 durability API，回读 sessionId+transcriptId+digest 相等才给模式层 final receipt。更新不得改已提交原话；补充话使用新 revision/新 handoff，不重复旧动作。用户插话 generation fence 不应删除用户输入；禁止的是旧 assistant/业务效果。
-6. 模式层用完整 canonical 原话构造 intent；query/judgment 只读，action 必须 V2 已有 authority/readback gate，Live 只请求帮助。未知说话人禁副作用；本设计对不能唯一关联的只读委托也请求澄清，保留 utterance。
+6. 模式层用完整 canonical 原话构造 intent；query/judgment 是只读请求，action 也是“请 Lead 办事”的 relay 请求，均经 V2 来源/目标/复述规则校验但不携带可执行审批，Live 只请求帮助。未知说话人禁副作用；本设计对不能唯一关联的只读委托也请求澄清，保留 utterance。
 7. 持久绑定键 `(sessionId, generation, delegation.id)` → `handoffId, transcriptId, requestDigest, modeOperationId`；carrier 的 idempotencyKey 由业务操作生成并在 I/O 前保存。重复 delegation 复用绑定；同键异 digest 拒绝；重连 delegation.id 不复用成业务键。对同一已存在业务操作的重复请求查询原 handoff，不自动创建第二次 mutation。
-8. 通用 carrier 保留 V1 authorized→dispatching→dispatched→committed/rejected/ambiguous→needs_human 的唯一状态机；stale dispatching 只读对账，所有变更 CAS+lease；queryable key 在 I/O 前存在。不会读回的 mutation 默认拒绝；human-recovery-only 必须模式显式声明。任何 comm ACK 不是业务 committed。
+8. 通用 carrier 保留 V1 authorized→dispatching→dispatched→committed/rejected/ambiguous→needs_human 的唯一状态机；stale dispatching 只读对账，所有变更 CAS+lease；queryable key 在 I/O 前存在。本单 provider 查询的是精确 mailbox envelope，不直接执行 mutation。handoff committed 只表示信箱记录持久存在；任何 comm ACK 或 committed 都不是业务完成。
 9. 原话不受 1800 字镜像限制；配置 maxTranscriptBytes 明确超限失败，绝不截短再执行。内部记录按既有私有目录权限保存，公开 Discord/HTML 只使用脱敏投影；要脱敏则标记投影，不改变 canonical digest。
 
 委托后的「我问下 Lead」首选 Live prompt 在模型请求帮助前说出；应用依转写确认是否已说，缺失时以 frontend 来源 cue 补一次，不能把这句当作 Lead 已消费或动作已完成证据。
@@ -132,15 +142,15 @@ Discord 禁 mentions，HTML 对所有派生字段 escape；浏览器只 textCont
 ## 7. turnCancelOrSuppress 与连接恢复
 取消入口由 RoomIO sustained barge-in 给出，不以 assistant 回声或短 backchannel 触发。具体能量/时长阈值归 RoomIO；effective capability 包含 RoomIO 实际配置。
 取消操作先同步设置本地 generation tombstone，RoomIO.flush/cancel 立即执行；中止该代排队 speak/await 回调/未 dispatch 委托；通知 carrier 撤销该代未派发请求。随后关旧 WS，所有 handler 捕获 generation，在任何 await 后、播放写入前、转写发布前、delegation dispatch 前、result 注入前再次校验。旧代永不恢复；晚到 provider 音频即使没有 ID 也可按其 socket 归属丢弃。
-撤销与外部提交有竞态：V2 carrier 在 dispatch 的 CAS 原子核对 generation/authority；已经 dispatch 的动作只能继续按原 operation 查询，不能声称被撤回，也不自动重发。结果保留在持久 carrier；新 generation 由模式重新决定是否播报，但不会重做动作。
+撤销与外部提交有竞态：V2 carrier 在 dispatch 的 CAS 原子核对 generation/authority；已经 dispatch 的信箱投递只能继续按原 deliveryId 查询，不能声称被撤回，也不自动重发；Lead 若已开始外部动作，其是否可取消另按业务合同处理。结果保留在持久 carrier；新 generation 由模式重新决定是否播报，但不会重做动作。
 新 WS session.started 后以新 generation 出声；VoiceSessionState/room lease/slot 不变。启动上下文仅含已持久 user/已确认结果，排除被 fence 的旧 assistant 草稿。interrupt 时的输入从 RoomIO 环形缓冲首帧保存，按采样率播放到新连接一次；延迟/容量超过配置则失败可见，不能丢首字。
 原会话失去 lease/用户退房/controller ending：全局 fence，终止输入补发、取消 TTS/订阅、不再重连。仅连接断开可以同一 backend 有界重连，不自动改模型；连续失败由现有 controller 报语音不可用。
 
 ## 8. 去双轮询与修门铃
 ### 8.1 已有权威上的事件推送
-V2 carrier commit canonical Lead result（含 project/lead/session/handoff/requestDigest、resultId、full text、seq）时写同一事务 outbox；本单订阅 commit hook，投影到既有 voice_outbound。不能先发通知再落记录；不能把任意频道 bot 文本当 canonical result。
+V2 carrier 持久 append `voice_handoff_results`（精确字段见 §2.1；project/session 由 handoff 权威关联取得）后发订阅通知；本单按其 seq 读取事件，投影到既有 voice_outbound。不能先发通知再落记录；不能把任意频道 bot 文本当 canonical result。
 Codex 的 send API 与 broker 入口都使用同一个授权 result adapter；server 从 frozen mailbox delivery/handoff binding 推导 voice reply route，调用者自报 handoffId 只能匹配检查。Claude 路径也接相同 carrier result adapter；未支持时相应会话启动明确不可用，不把 FLY-2711 起会修复吞入本单。
-Discord mirror 与 voice 投递互不阻塞，canonical result 是一次正文；Discord 分片 ID 仅关联展示，不能生成多次朗读。崩溃后按 V2 durable outbox 重建 voice_outbound，一条 resultId 唯一插入；不重发 Lead mutation。
+Discord mirror 与 voice 投递互不阻塞，canonical resultEventId 对应一次正文；Discord 分片 ID 仅关联展示，不能生成多次朗读。崩溃后按 V2 durable results 流重建 voice_outbound，以 (handoffId,resultEventId) 唯一插入；不重发 Lead mutation。
 Bridge 加 `GET /api/voice/sessions/:id/events`（拟名）：主认证 + X-Voice-Lease + session/project/lead 绑定；header cursor，不在 URL 放凭据。先注册订阅，再读取持久 high-water 与 backlog，重叠按 seq 去重；通知只带 seq/result identity，正文从已鉴权存储取。
 客户端收到后立即唤醒现有 list/claim→speak→finish 流程，claim/attemptToken 仍是唯一播放权威。续租独立定时，不能借 SSE 长连接保活绕过 lease。lease 轮换/终结立刻关闭订阅；客户端断线重连按持久 cursor 补读，保留 claim 中的 ambiguous、不自动重播已可能出声项。连接缓冲有界，满则断开重连补读，绝不跳过 seq。
 A steady path 完全不运行 Discord 3s poll，也不等 daemon 4s 循环；poller 仅 legacy 明确选项及断线后的有限补账，不能热路径双写。遗留 poll 修复也使用同一 result identity，无法关联的频道消息只供人工查看。

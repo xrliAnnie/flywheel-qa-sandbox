@@ -55,3 +55,5 @@ Issue: FLY-2798 (https://linear.app/geoforge3d/issue/FLY-2798/语音v4-引擎-a�
 输入 final 是应用对房间 utterance 的封口，不是虚构 Live final；不能按最近一句认领 delegation。延迟片段、两人重叠、缺 speaker、断线缺片都要保留 unknown，动作拒绝。精确匹配不足时请求澄清。
 Live 的 injectContext 要实际验证不触发语音；未通过则明确 unsupported 并关闭依赖它的模式功能，不能把 commentary 当 silent feed。V2/V3 原验收仍未满足，不能因此宣称本单已经可联调。
 相关测试才本地跑；没有运行付费探针、生产服务或全量测试。设计交付不是生产证明。
+
+补充：确定性朗读的增量接口可参考 [edge-tts 项目官方流式示例](https://github.com/rany2/edge-tts/blob/master/examples/async_audio_streaming_with_predefined_voice_and_subtitles.py)：Communicate.stream 输出音频与边界元数据。仓内现有 CLI 仍是文件型；这只是可实现性的源码依据，不代表本机版本已验证。实现必须钉版本并测试中途失败、背压和取消。

@@ -1,0 +1,65 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2798 · 前台快答与后台 Lead</title><style>body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.7 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:40px auto;padding:0 20px}h1{font-size:36px;line-height:1.25;letter-spacing:-1px}h2{font-size:23px;margin-top:0}p{margin:12px 0}.meta{color:#6e6e73}.card{background:white;border-radius:12px;padding:26px;margin:22px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.lead{font-size:21px}.pending{border:1px dashed #ff9500;border-radius:8px;padding:22px;color:#735014;background:#fff9ef}.pending strong{font-size:15px}textarea{display:block;width:100%;box-sizing:border-box;min-height:90px;padding:12px;border:1px solid #c8c8cd;border-radius:8px;font:inherit;background:#fafafa;resize:vertical}label{display:block;margin:22px 0 8px;font-size:14px;color:#6e6e73}button{background:#007aff;color:white;border:0;border-radius:8px;padding:10px 18px;font:inherit;cursor:pointer;margin:8px 8px 8px 0}button:focus-visible,textarea:focus{outline:3px solid #b6d7ff}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #e8e8ed}th{color:#1a365d}svg{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}li{margin:9px 0}.chunk{min-height:130px}.status{color:#6e6e73;font-size:14px}@media(max-width:600px){main{padding:0 12px;margin:22px auto}h1{font-size:28px}.card{padding:18px}th,td{padding:8px;font-size:14px}}</style></head><body><main><header><p class="meta">FLY-2798 · 设计交付 · 2026-09-23</p><h1>前台快答，复杂的交给 Lead</h1><p class="meta">设计评审状态见交付回执 · 真实语音验收待实施</p></header><section class="card" id="summary"><h2>一句话：简单的快答，复杂的交给 Lead</h2><p class="lead">你说完，前台直接回答简单问题；需要查、做或判断时，它说“我问下 Lead”，把完整原话交过去，结果准备好就推回房间。</p><p>字幕分开标 <b>🤖 前台</b> 与 <b>💬 Lead</b>。本页是设计交付；真人速度和实际任务落地还需实施后的验收。</p><label for="comment-summary">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-summary" data-comment="summary" data-title="一句话：简单的快答，复杂的交给 Lead" placeholder="写下你的意见"></textarea></section><section class="card" id="flow"><h2>核心流程</h2><div class="pending" id="FLY-2798-d1" data-mermaid-source="engineering/doc/FLY-2798-live-front-lead/flow.mmd"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>前台与 Lead 的语音流程：本机图表渲染程序受权限限制，已按标准参数重试一次。保留 Mermaid 图表源文件，未使用远程渲染。</p><p>源文件：<code>engineering/doc/FLY-2798-live-front-lead/flow.mmd</code>；唯一 id：FLY-2798-d1</p></div><p>快速回答直接边生成边播放。复杂任务先保存原话和来源，再交给后台；回复不再等两层定时查询。</p><label for="comment-flow">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-flow" data-comment="flow" data-title="核心流程" placeholder="写下你的意见"></textarea></section><section class="card" id="identity"><h2>每句话和结果都能对上来源</h2><div class="pending" id="FLY-2798-d2" data-mermaid-source="engineering/doc/FLY-2798-live-front-lead/identity.mmd"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>原话、委托与播放回执的关系：本机图表渲染程序受权限限制，已按标准参数重试一次。保留 Mermaid 图表源文件，未使用远程渲染。</p><p>源文件：<code>engineering/doc/FLY-2798-live-front-lead/identity.mmd</code>；唯一 id：FLY-2798-d2</p></div><p><b>委托编号</b>是后台请求的唯一标识，用来避免重试时做两遍；<b>连接代号</b>区分打断前后的连接，让旧声音和旧请求不能混进来。</p><table><tr><th>保存什么</th><th>用来证明什么</th></tr><tr><td>原话、说话人、转写编号</td><td>这件事是谁说的，不能拿截短字幕代替</td></tr><tr><td>委托编号、正文摘要指纹</td><td>同一请求不会重复投递，也不会换内容</td></tr><tr><td>Lead 回复编号、播放回执</td><td>哪段结果来自 Lead，声音提交到了哪一步</td></tr></table><p>“邮箱收到”不等于 Lead 已消费，更不等于事情已做完。播放回执也不代表你已经听见。</p><label for="comment-identity">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-identity" data-comment="identity" data-title="每句话和结果都能对上来源" placeholder="写下你的意见"></textarea></section><section class="card" id="experience"><h2>使用时会遇到什么</h2><ul><li>简单话由实时前台自然回应，后台工作不挡住聊天。</li><li>Lead 的正文使用确定性朗读：直接把指定文字念出来，避免模型改写。它与前台可能是不同声音。</li><li>你插话时先立即停本地播放，再重连前台；重连等待会实测公布。</li><li>插话先缓存在本地，超出容量明确提示，请你重说，不静默吞话。</li><li>确认不了说话人的话仍保存、显示；不会拿它去批权限或执行动作。</li></ul><label for="comment-experience">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-experience" data-comment="experience" data-title="使用时会遇到什么" placeholder="写下你的意见"></textarea></section><section class="card" id="choices"><h2>关键取舍与没有选的路</h2><table><tr><th>选择</th><th>原因与代价</th></tr><tr><td>新的 Live 接口</td><td>使用已选定的 gpt-live-1；不是给旧管线换个模型名</td></tr><tr><td>结果直接推送</td><td>去掉正常回复的两层轮询；保存事件后再通知，断线可补取</td></tr><tr><td>打断后隔离旧连接</td><td>协议没有可靠的回答结束编号；重连有等待，但旧声音不能回来</td></tr><tr><td>精确播报用单独朗读组件</td><td>实时模型可能改写文字；两种声音需在测试前告知</td></tr></table><p>不选择：缩短轮询间隔假装推送、只清空当前音频、用模型文字当批准、归不上人就整句丢弃。</p><label for="comment-choices">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-choices" data-comment="choices" data-title="关键取舍与没有选的路" placeholder="写下你的意见"></textarea></section><section class="card" id="acceptance"><h2>怎样才算能用</h2><ul><li>Raya 测试房，简单问题测 10 次：同一录音里“说完 → 听到回答第一字”，每次不超过 2 秒，公开全部数值与分布。</li><li>复杂查询、判断和行动各有真实原话、Lead 消费与结果证据；邮箱送达不能代替行动落地。</li><li>打断测 10 次：分别量旧声音停止与新连接恢复可答；取消后旧一代声音、有效字幕和委托不能泄漏。</li><li>耳机进来播报、会议开场/提问/带节奏，经同一个接口验收；字幕来源正确。</li><li>额度、权限或任一语音组件失败时明确说“语音不可用”，不悄悄切换引擎。</li></ul><label for="comment-acceptance">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-acceptance" data-comment="acceptance" data-title="怎样才算能用" placeholder="写下你的意见"></textarea></section><section class="card" id="boundary"><h2>交付边界与依赖</h2><p>本单负责前台适配器、流式播报、回复推送与门铃等待的可观测性。共用房间接口和持久委托载体由 FLY-2796 提供，九项接口已对齐其草案，正式批准版本仍需锁定。</p><p>12.7 秒邮箱空等是历史实测，根因尚未定位；门铃本来就存在，实施必须用逐跳时间证据修复，不能宣称已经解决。</p><p>本阶段没有实现、生产变更或真人性能结果。FLY-2767、FLY-2773、FLY-2711 留在原待办；若挡住对比测试，只做具名最小修补。完整验收不会因依赖未完成而缩小。</p><label for="comment-boundary">这节有什么意见？输入后自动保存在当前浏览器。</label><textarea id="comment-boundary" data-comment="boundary" data-title="交付边界与依赖" placeholder="写下你的意见"></textarea></section><section class="card" id="feedback"><h2>页面意见汇总</h2><p>这份汇总用于修改设计，不代表批准。意见保存在你当前浏览器；复制后发给 Lead。</p><label for="comment-feedback">对意见汇总区的意见</label><textarea id="comment-feedback" data-comment="feedback" data-title="页面意见汇总"></textarea><label for="all-comments">所有意见</label><textarea id="all-comments" readonly></textarea><button id="copy-all">复制全部意见</button><span class="status" id="status" role="status"></span><div id="chunks"></div></section></main><script nonce="__CSP_NONCE__">
+'use strict';
+const marker = '【页面意见汇总】FLY-2798';
+const prefix = 'flywheel:FLY-2798:' + location.pathname + ':';
+const comments = Array.from(document.querySelectorAll('textarea[data-comment]'));
+const all = document.getElementById('all-comments');
+const chunksRoot = document.getElementById('chunks');
+const status = document.getElementById('status');
+let chunks = [];
+function currentParts() {
+  return comments.filter(x => x.value.trim()).map(x => x.dataset.title + '\n' + x.value.trim());
+}
+function update() {
+  const parts = currentParts();
+  all.value = marker + (parts.length ? '\n\n' + parts.join('\n\n') : '\n（暂无意见）');
+  chunks = [];
+  let rest = parts.join('\n\n');
+  const max = 1750 - marker.length - 2;
+  if (!rest) chunks.push(all.value);
+  while (rest.length) {
+    let take = Math.min(max, rest.length);
+    const c = rest.charCodeAt(take - 1);
+    if (c >= 0xD800 && c <= 0xDBFF) take--;
+    chunks.push(marker + '\n\n' + rest.slice(0, take));
+    rest = rest.slice(take);
+  }
+  chunksRoot.replaceChildren();
+  if (chunks.length > 1) chunks.forEach((chunk, i) => {
+    const label = document.createElement('label');
+    label.textContent = '分段 ' + (i + 1) + ' / ' + chunks.length;
+    const box = document.createElement('textarea');
+    box.readOnly = true; box.value = chunk; box.className = 'chunk';
+    box.setAttribute('aria-label',label.textContent);
+    const button = document.createElement('button');
+    button.textContent = '复制第 ' + (i + 1) + ' 段';
+    button.addEventListener('click', () => copy(chunk));
+    chunksRoot.append(label,box,button);
+  });
+}
+async function copy(text) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(text);
+    status.textContent = '已复制';
+  } catch (_) {
+    const temp = document.createElement('textarea');
+    temp.value = text; temp.style.position = 'fixed'; temp.style.top = '0';
+    document.body.append(temp); temp.select();
+    try { status.textContent = document.execCommand('copy') ? '已复制' : '复制不可用，请选择汇总文字手动复制'; }
+    catch (_) { status.textContent = '复制不可用，请选择汇总文字手动复制'; }
+    temp.remove();
+  }
+}
+for (const input of comments) {
+  try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+  catch (_) { status.textContent = '本地保存不可用；可直接复制意见'; }
+  input.addEventListener('input', () => {
+    try { localStorage.setItem(prefix + input.dataset.comment, input.value); }
+    catch (_) { status.textContent = '本地保存不可用；可直接复制意见'; }
+    update();
+  });
+}
+document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\n\n')));
+update();
+</script></body></html>
