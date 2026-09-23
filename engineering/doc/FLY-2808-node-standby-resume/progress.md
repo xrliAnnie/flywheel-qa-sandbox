@@ -1,9 +1,10 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 6/6
-updated: 2026-09-23T12:32:03.348Z
-nextStep: Request and await exact-head code review, then complete needs_review
+phaseCursor: 5/6
+updated: 2026-09-23T13:33:30.151Z
+nextStep: Finish related/build/typecheck/lint for flag-governance fix, commit,
+  re-review exact head, and hand back to QA
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -13,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (6/6)
-**next**: Request and await exact-head code review, then complete needs_review
+**phase**: implement (5/6)
+**next**: Finish related/build/typecheck/lint for flag-governance fix, commit, re-review exact head, and hand back to QA
