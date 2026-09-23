@@ -1,13 +1,14 @@
 ---
 issue: FLY-2808
 phase: design
-phaseCursor: 2/5
-updated: 2026-09-23T05:43:14.369Z
-nextStep: Finalize lifecycle, authority, fallback budget, N2-N5 and acceptance matrix
+phaseCursor: 3/5
+updated: 2026-09-23T05:47:17.700Z
+nextStep: Commit design; register explicit design review; build light founder
+  HTML while pending
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
-**phase**: design (2/5)
-**next**: Finalize lifecycle, authority, fallback budget, N2-N5 and acceptance matrix
+**phase**: design (3/5)
+**next**: Commit design; register explicit design review; build light founder HTML while pending
