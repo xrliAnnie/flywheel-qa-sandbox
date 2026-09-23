@@ -2,16 +2,18 @@
 issue: FLY-2799
 phase: design
 phaseCursor: 2/6
-updated: 2026-09-23T05:41:19.931Z
-nextStep: "WAIT_FLY2795: poll question 7fedb16e-2289-42ec-93cf-f608ad9ec28a for
-  authoritative V1 contract path/SHA before step2+. Step1 ffdbd371f pushed; DONE
-  report 04b152ee-8924-476b-be67-a774d66b3003. On resume read inbox/TURN; do not
-  rerun probe. Plan, review, founder HTML and phase_design_complete remain
-  pending. Gate timeout does not supply missing interface."
+updated: 2026-09-23T05:49:58.151Z
+nextStep: "LEAD_HOLD_FLY2795: response to 7fedb16e-2289-42ec-93cf-f608ad9ec28a
+  confirms no dependably released contract yet; Lead will send document path +
+  fixed SHA. Stay here, no new interface or implementation. Step1 accepted via
+  60bc3bec-ab60-412e-9cbf-441376cc9138; preserve clientManagedHandoffs auto-turn
+  counterexample as enforced permission/tool-boundary requirement. Resume from
+  inbox/TURN, do not rerun probe. Pending: exploration/plan/review/final
+  HTML/phase completion."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
 **phase**: design (2/6)
-**next**: WAIT_FLY2795: poll question 7fedb16e-2289-42ec-93cf-f608ad9ec28a for authoritative V1 contract path/SHA before step2+. Step1 ffdbd371f pushed; DONE report 04b152ee-8924-476b-be67-a774d66b3003. On resume read inbox/TURN; do not rerun probe. Plan, review, founder HTML and phase_design_complete remain pending. Gate timeout does not supply missing interface.
+**next**: LEAD_HOLD_FLY2795: response to 7fedb16e-2289-42ec-93cf-f608ad9ec28a confirms no dependably released contract yet; Lead will send document path + fixed SHA. Stay here, no new interface or implementation. Step1 accepted via 60bc3bec-ab60-412e-9cbf-441376cc9138; preserve clientManagedHandoffs auto-turn counterexample as enforced permission/tool-boundary requirement. Resume from inbox/TURN, do not rerun probe. Pending: exploration/plan/review/final HTML/phase completion.
