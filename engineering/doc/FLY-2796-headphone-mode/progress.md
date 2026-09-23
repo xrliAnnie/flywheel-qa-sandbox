@@ -2,15 +2,12 @@
 issue: FLY-2796
 phase: design
 phaseCursor: 5/6
-updated: 2026-09-23T18:24:36.507Z
-nextStep: R2 question=e15c75df-122a-4a54-bc81-e68073a2fbef
-  request=ec688e80-8878-4e14-b61b-cc639c3a94cd accepted; R1 reconciled commit
-  18da6ec99. Await effective verdict, then publish-only/hosted
-  verification/report/complete/park.
+updated: 2026-09-23T18:33:19.912Z
+nextStep: R2 两 HIGH 与两 advisory 已修订；Lead cf7aeb81 分工/事件游标一并纳入 R3
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
 **phase**: design (5/6)
-**next**: R2 question=e15c75df-122a-4a54-bc81-e68073a2fbef request=ec688e80-8878-4e14-b61b-cc639c3a94cd accepted; R1 reconciled commit 18da6ec99. Await effective verdict, then publish-only/hosted verification/report/complete/park.
+**next**: R2 两 HIGH 与两 advisory 已修订；Lead cf7aeb81 分工/事件游标一并纳入 R3
