@@ -1,14 +1,14 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-23T21:41:52.368Z
-nextStep: "Review round 1 CHANGES_REQUESTED: reproduce and TDD-fix HIGH
-  voice-minutes carrier ID; leave MEDIUM/LOW as advisories"
+phaseCursor: 3/4
+updated: 2026-09-23T21:47:47.121Z
+nextStep: Update literal-last milestone with review round 1 blocker fix and
+  verification; push, request fresh scoped review, then complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (2/4)
-**next**: Review round 1 CHANGES_REQUESTED: reproduce and TDD-fix HIGH voice-minutes carrier ID; leave MEDIUM/LOW as advisories
+**phase**: implement (3/4)
+**next**: Update literal-last milestone with review round 1 blocker fix and verification; push, request fresh scoped review, then complete needs_review
