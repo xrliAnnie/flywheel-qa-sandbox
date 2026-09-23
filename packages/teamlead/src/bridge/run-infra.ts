@@ -1236,6 +1236,34 @@ export function createRunInfraDispatcher(input: {
 				mutate: () => grantPrelaunchWorkflowTurn(turnInput),
 			});
 		},
+		(event) => {
+			const result =
+				event.kind === "bind"
+					? input.store.workflowScorecard.bindUsageSource({
+							vendor: event.vendor,
+							nativeSessionId: event.nativeSessionId,
+							executionId: event.executionId,
+							activationId: event.activationId,
+							providerHome: event.providerHome,
+							sourcePath: event.sourcePath,
+							boundAt: event.at,
+						})
+					: input.store.workflowScorecard.importUsageSource({
+							vendor: event.vendor,
+							nativeSessionId: event.nativeSessionId,
+							executionId: event.executionId,
+							activationId: event.activationId,
+							providerHome: event.providerHome,
+							sourcePath: event.sourcePath,
+							final: event.final === true,
+							allowBootstrap: event.allowBootstrap === true,
+						});
+			if (!result.ok) {
+				console.warn(
+					`[workflow-scorecard] ${event.kind} ${event.vendor}/${event.nativeSessionId}: ${result.reason}`,
+				);
+			}
+		},
 	);
 }
 

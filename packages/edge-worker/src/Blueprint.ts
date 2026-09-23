@@ -563,6 +563,7 @@ export interface BlueprintContext {
 	}) => "prune" | "keep";
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 	beforeCodexDaemonStart?: AdapterExecutionContext["beforeCodexDaemonStart"];
+	onWorkflowUsageEvent?: AdapterExecutionContext["onWorkflowUsageEvent"];
 	// FLY-137 v1.27.2 — Lead override: explicit agent name; bypasses label-match dispatch
 	agentName?: string;
 	// FLY-137 v1.27.2 — Pre-normalized (lowercased) Linear labels passed by caller
@@ -3076,6 +3077,7 @@ export class Blueprint {
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},
+				onWorkflowUsageEvent: ctx.onWorkflowUsageEvent,
 				// FLY-116: forward callback so dispatcher can spawn Terminal viewer
 				// when TmuxAdapter creates the tmux window.
 				onTmuxWindowCreated: ctx.onTmuxWindowCreated,

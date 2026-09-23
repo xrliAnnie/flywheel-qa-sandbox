@@ -1,0 +1,90 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2789 · 把每张单的投入与成绩对上账</title><style>body{margin:0;background:#f5f5f7;color:#1d1d1f;font:17px/1.65 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:32px 20px 64px}h1{font-size:clamp(30px,5vw,48px);line-height:1.18;letter-spacing:-1.5px}h2{font-size:24px;margin:0 0 16px}p{margin:12px 0}.eyebrow{color:#007aff;font-weight:700;font-size:14px}.intro{font-size:22px;color:#424245}.card{background:white;border-radius:12px;padding:28px;margin:24px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.muted,small{color:#68686e}.pending{background:#fff8ed;border:1px solid #f0cb92;border-radius:8px;padding:20px;color:#744500}.pending strong{display:block;font-size:16px}.pending p{font-size:15px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 'SF Mono',monospace;background:#f5f5f7;padding:16px;border-radius:8px}textarea{box-sizing:border-box;display:block;width:100%;font:inherit;background:#fafafa;border:1px solid #bfc3c9;border-radius:8px;padding:12px;min-height:92px;resize:vertical}label{display:block;font-size:14px;font-weight:600;margin:24px 0 8px}.formula{background:#f0f6ff;border-radius:8px;padding:20px}.formula strong{font-size:24px;color:#1a365d}table{border-collapse:collapse;width:100%;font-size:16px}td,th{text-align:left;padding:12px;border-bottom:1px solid #e8e8ed}button{background:#007aff;color:white;border:0;border-radius:8px;padding:12px 18px;font:inherit;cursor:pointer;margin:12px 8px 8px 0}button:focus-visible,textarea:focus-visible{outline:3px solid #af52de;outline-offset:3px}ul{padding-left:24px}svg{max-width:100%;height:auto}#copy-status{min-height:28px}@media(max-width:600px){main{padding:20px 12px}.card{padding:20px 16px}h2{font-size:21px}.formula strong{font-size:20px}}</style></head><body><main><header><p class="eyebrow">FLY-2789 · 2787-B 成绩记录 · 设计交付</p><h1>每张一次过 QA 的单，<br>究竟花了多少投入？</h1><p class="intro">逐节点保留模型、分组与用量，让返工和换体后的成绩仍能逐笔核对。</p></header>
+<section class="card" aria-labelledby="flow-title"><h2 id="flow-title">01 · 怎么记账</h2><p>每次工作先绑定节点执行，再收模型原始用量；正式 QA（质量验收）和 founder 判决补上成绩。最后按设计组、实现组、QA 组分别比较。</p>
+<div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机 Chromium 沙箱拒绝启动，两次本地渲染均失败。以下保留 Mermaid 图源，不用假图或远程渲染替代。</p></div><details><summary>查看 Mermaid 图源</summary><pre>flowchart TB
+ A[&quot;每次节点执行&lt;br/&gt;模型 · 分组 · 执行编号&quot;] --&gt; D[&quot;逐节点明细&lt;br/&gt;原生请求去重 · 保留换体旧账&quot;]
+ B[&quot;Claude / Codex 原始用量&lt;br/&gt;绑定请求开始时的执行&quot;] --&gt; D
+ D --&gt; E[&quot;逐单成绩&lt;br/&gt;总投入 · 节点耗时 · 端到端耗时&quot;]
+ C[&quot;正式 QA 与 founder 判决&lt;br/&gt;凭已提交回执计数&quot;] --&gt; E
+ E --&gt; F[&quot;设计 / 实现 / QA 组对比&lt;br/&gt;总投入 ÷ 一次过 QA 单数&quot;]
+ F --&gt; G[&quot;Lead 只读命令&lt;br/&gt;降级单单列 · 显示缺账&quot;]
+</pre></details>
+<label for="note-flow">这一节的意见</label><textarea class="note" id="note-flow" data-title="01 · 怎么记账" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="identity-title"><h2 id="identity-title">02 · 一张单，几层编号</h2><p><b>run</b> 是一轮工作流；<b>execution</b> 是一个 Runner 载体；<b>activation</b> 是该载体本次承担的节点工作。原体接返工会有新 activation，换体也保留旧载体账目。</p><p>原生 turn 是模型的一轮工作。它开始时固定归属，因此晚到用量不会算到下一节点。</p>
+<div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机 Chromium 沙箱拒绝启动，两次本地渲染均失败。以下保留 Mermaid 图源，不用假图或远程渲染替代。</p></div><details><summary>查看 Mermaid 图源</summary><pre>erDiagram
+ ISSUE ||--o{ RUN : &quot;可重派&quot;
+ RUN ||--o{ ACTIVATION : &quot;每节点每次执行&quot;
+ EXECUTION ||--o{ ACTIVATION : &quot;原体可接返工&quot;
+ ACTIVATION ||--o{ TURN : &quot;开始时冻结归属&quot;
+ TURN ||--o{ USAGE : &quot;原始用量去重&quot;
+ RUN ||--o{ VERDICT : &quot;正式判决&quot;
+ ISSUE {
+  string issue_id &quot;一张单&quot;
+ }
+ ACTIVATION {
+  string activation_id &quot;一次节点执行&quot;
+  string group_receipt &quot;原分组回执&quot;
+ }
+ USAGE {
+  string source_id &quot;来源编号&quot;
+  int tokens &quot;统一计数&quot;
+ }
+</pre></details>
+<label for="note-identity">这一节的意见</label><textarea class="note" id="note-identity" data-title="02 · 一张单，几层编号" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="metrics-title"><h2 id="metrics-title">03 · 主要比较什么</h2><p class="formula">每张一次过 QA 单的投入<br><strong>全组已完成单总 token ÷ 一次过 QA 单数</strong></p><p><b>token</b> 是模型处理文字的计数单位，并非订阅实际账单。跨供应商的统计会标注不可视为等价额度，不据此直接排优劣。失败与返工投入也进入分子；另外展示“一次过单自身平均投入”。</p><table><tr><th>样例：设计 G1 组</th><th>结果</th></tr><tr><td>3 单总投入</td><td>400 token</td></tr><tr><td>一次过 QA</td><td>2 / 3</td></tr><tr><td>主指标</td><td>200 token / 首过单</td></tr><tr><td>首过单自身均值</td><td>100 token</td></tr><tr><td>平均节点累计 / 端到端耗时</td><td>1.4 秒 / 约 1.73 秒</td></tr></table><p class="muted">这是隔离测试的手算样例，不是生产成绩。三张分组表不能相加。</p>
+<label for="note-metrics">这一节的意见</label><textarea class="note" id="note-metrics" data-title="03 · 主要比较什么" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="outcomes-title"><h2 id="outcomes-title">04 · 成绩怎么算</h2><ul><li>一次过：整张单最早被系统正式接受的 QA 判决是通过。</li><li>先失败再通过仍不算首过；换体前没有判决不算失败。</li><li>founder 打回只数带真实作者证明的独立决定；重发、转派、验证链不加次数。</li><li>打回率以确实受过 founder 审阅的单为分母；未审单单列。</li><li>耗时列节点累计与端到端两种墙钟时间，包括当次工作中的等待，不冒充模型推理时间。</li></ul>
+<label for="note-outcomes">这一节的意见</label><textarea class="note" id="note-outcomes" data-title="04 · 成绩怎么算" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="group-title"><h2 id="group-title">05 · 与分流工作的接口</h2><p><b>receipt（回执）</b> 是已保存、可追溯的分组记录。B 读取回执，A 决定并写入分组。Lead 已确认这个边界。</p><p>接口包含 runId、nodeId、policyVersion、arm、resolvedModel、assignedAt：分别是工作流编号、节点编号、策略版本、组编号、解析后的模型编号、分配时间。</p><p>保留旧策略；新策略的设计三组、实现两组与 QA 两组分别比较。实现组由 A 按 Opus 5.5 75% / GPT-6 Sol 25% 分配，B 不改分流。没有回执记“无分流”；来源损坏记“未知”。同一单跨组时列“混组”，不复制成多张单。</p><p><b>额度降级单单列，不进入原组。</b> 只认 A 写入的服务端降级回执，保留原组和实际模型；不靠模型名称变化猜测。分配模型与实际启动模型无理由不一致时，会单列异常，排除原组。整单一旦有降级，三个维度均单独列出。每个原组同时展示被移出的降级单数与比例，避免只看到剩余样本而误判。</p>
+<label for="note-group">这一节的意见</label><textarea class="note" id="note-group" data-title="05 · 与分流工作的接口" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="tradeoffs-title"><h2 id="tradeoffs-title">06 · 为什么选这条路</h2><ul><li><b>选现有账本 + 少量缺失明细 + 只读命令。</b> 复用正式判决，避免再建一套计数器。</li><li>不从日汇总反推节点：共享工作目录会混淆不同执行。</li><li>不从模型猜组：历史分组不应随当前配置改变。</li><li>不做新仪表盘、通用事件平台或账号额度分摊：本单不需要，也无法可靠归因。</li></ul>
+<label for="note-tradeoffs">这一节的意见</label><textarea class="note" id="note-tradeoffs" data-title="06 · 为什么选这条路" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="proof-title"><h2 id="proof-title">07 · 怎么证明数字可信</h2><p>隔离环境跑基准 4 张模拟单：正常首过、失败返工、founder 打回、换体，再加 1 张额度降级单。降级单要保留全部投入，同时不改变原组的统计。逐条原始记录和手算表核对；再把相同事件重放，数字必须完全不变。</p><p>额外验证同一载体接返工、跨节点晚到用量、崩溃补读、缓存 token、缺账与历史缺口。两种模型载体都必须有真实原生日志的脱敏样本证明，不能全填未知就算通过。</p><p><b>dry-run</b> 是只读运行：生产入口只查数据库，不建表、不补账、不改配置、不重启。设计和静态检查不能代替这些实现验收。</p>
+<label for="note-proof">这一节的意见</label><textarea class="note" id="note-proof" data-title="07 · 怎么证明数字可信" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="boundary-title"><h2 id="boundary-title">08 · 现在到哪一步</h2><p><b>本页是设计交付，不是功能上线证明。</b> 第三轮设计评审已批准（APPROVED）；非阻塞示例澄清记录在交接说明。实现和真实验收交给后续节点。</p><p>已知缺口：当前 CLI 的既有失败结束 hook 在对照实验也未触发，失败轮次额度可能漏采；本单不修这个既有问题，无法补齐时显示缺失。账没收齐时显示缺失：整组成本不输出假精确值，仅附已覆盖样本的估计和覆盖比例。未结束、未审、免 QA 的单分别展示。</p><p>页面意见只保存在当前浏览器，不会自动发送。请复制底部汇总交给 Lead；“页面意见汇总”不是批准信号。</p>
+<label for="note-boundary">这一节的意见</label><textarea class="note" id="note-boundary" data-title="08 · 现在到哪一步" placeholder="写下意见，会尝试保存在当前浏览器"></textarea></section>
+<section class="card" aria-labelledby="summary-title"><h2 id="summary-title">09 · 复制页面意见</h2><label for="note-summary">汇总与整体意见</label><textarea class="note" id="note-summary" data-title="整体意见"></textarea><label for="summary-text">自动汇总</label><textarea id="summary-text" readonly rows="8"></textarea><button type="button" id="copy-all">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><div id="chunks"></div><small>超过约 1800 字时自动分段，每段保留意见标记。复制内容不代表批准。</small></section></main><script nonce="__CSP_NONCE__">(() => {
+'use strict';
+const marker = '【页面意见汇总】FLY-2789';
+const prefix = 'flywheel-comments:' + location.pathname + ':';
+const notes = [...document.querySelectorAll('textarea.note')];
+const summary = document.getElementById('summary-text');
+const chunks = document.getElementById('chunks');
+const status = document.getElementById('copy-status');
+let currentChunks = [];
+function aggregate() {
+  const body = notes.map(n => n.value.trim() ? '[' + n.dataset.title + ']\n' + n.value.trim() : '').filter(Boolean).join('\n\n');
+  const size = 1750 - marker.length - 1;
+  currentChunks = [];
+  const points = Array.from(body);
+  for (let i = 0; i < points.length; i += size) currentChunks.push(marker + '\n' + points.slice(i, i + size).join(''));
+  if (!currentChunks.length) currentChunks = [marker + '\n（暂无意见）'];
+  summary.value = currentChunks.join('\n\n');
+  chunks.replaceChildren();
+  if (currentChunks.length > 1) currentChunks.forEach((chunk, i) => {
+    const text = document.createElement('textarea'); text.readOnly = true; text.value = chunk; text.setAttribute('aria-label', '意见分段 ' + (i + 1));
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (i + 1) + ' 段';
+    button.addEventListener('click', () => copy(chunk)); chunks.append(text, button);
+  });
+}
+async function copy(text) {
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(text);
+    status.textContent = '已复制，可发给 Lead。'; return;
+  } catch (_) {
+    const area = document.createElement('textarea'); area.value = text; area.style.position = 'fixed'; area.style.opacity = '0'; document.body.append(area); area.focus(); area.select();
+    try { if (!document.execCommand('copy')) throw new Error('copy denied'); status.textContent = '已复制，可发给 Lead。'; }
+    catch (_) { status.textContent = '自动复制失败，请手动选择汇总文字复制。'; }
+    finally { area.remove(); }
+  }
+}
+notes.forEach(n => {
+  try { n.value = localStorage.getItem(prefix + n.id) || ''; } catch (_) {}
+  n.addEventListener('input', () => {
+    try { localStorage.setItem(prefix + n.id, n.value); } catch (_) { status.textContent = '浏览器不允许本地保存，请先复制意见。'; }
+    aggregate();
+  });
+});
+document.getElementById('copy-all').addEventListener('click', () => copy(currentChunks.join('\n\n')));
+aggregate();
+})();</script></body></html>

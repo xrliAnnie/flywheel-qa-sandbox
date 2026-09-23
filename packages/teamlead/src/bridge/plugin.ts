@@ -2428,6 +2428,11 @@ export function createBridgeApp(
 			}),
 		);
 	if (!config.ingestToken) {
+		app.post("/api/workflow/usage-source", (_req, res) => {
+			res
+				.status(503)
+				.json({ ok: false, reason: "bridge ingest token not configured" });
+		});
 		app.post("/api/workflow/evidence-run", (_req, res) => {
 			res.status(503).json({
 				ok: false,
@@ -2435,6 +2440,41 @@ export function createBridgeApp(
 			});
 		});
 	} else {
+		app.post(
+			"/api/workflow/usage-source",
+			tokenAuthMiddleware(config.ingestToken),
+			(req, res) => {
+				const body = (req.body ?? {}) as Record<string, unknown>;
+				const value = (key: string) =>
+					typeof body[key] === "string" ? String(body[key]).trim() : "";
+				const executionId = value("execution_id");
+				const activationId = value("activation_id");
+				const sessionId = value("session_id");
+				const sourcePath = value("transcript_path");
+				if (
+					body.event !== "turn-start" ||
+					!executionId ||
+					!activationId ||
+					!sessionId ||
+					!sourcePath
+				) {
+					res.status(400).json({ ok: false, reason: "invalid_request" });
+					return;
+				}
+				const result = store.workflowScorecard.importUsageSource({
+					vendor: "claude",
+					nativeSessionId: sessionId,
+					executionId,
+					activationId,
+					providerHome:
+						process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+					sourcePath,
+					final: false,
+					allowBootstrap: true,
+				});
+				res.status(result.ok ? 200 : 409).json(result);
+			},
+		);
 		app.post(
 			"/api/workflow/evidence-run",
 			tokenAuthMiddleware(config.ingestToken),

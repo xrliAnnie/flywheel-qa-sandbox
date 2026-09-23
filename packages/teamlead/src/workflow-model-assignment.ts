@@ -1,8 +1,278 @@
 import {
+	canonicalSubmissionDigest,
 	parsePercentageModelSplit,
 	resolvePercentageModelSplit,
 } from "flywheel-config";
+import type { WorkflowRunEventRow } from "./StateStore.js";
 import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
+
+export interface ScorecardAssignmentReceiptV1 {
+	schemaVersion: 1;
+	runId: string;
+	nodeId: string;
+	policyVersion: string;
+	arm: string;
+	resolvedModel: string;
+	assignedAt: string;
+}
+
+export type ScorecardAssignmentRead =
+	| { state: "unassigned" }
+	| { state: "unknown"; reason: string; eventUids: string[] }
+	| { state: "invalid_assignment"; reason: string; eventUids: string[] }
+	| {
+			state: "assigned";
+			receipt: ScorecardAssignmentReceiptV1;
+			eventUid: string;
+			digest: string;
+	  };
+
+export interface ScorecardDegradedReceiptV1 {
+	schemaVersion: 1;
+	runId: string;
+	nodeId: string;
+	activationId: string;
+	assignmentEventUid: string;
+	arm: string;
+	degraded: true;
+	assignedModel: string;
+	actualModel: string;
+	reason: "codex_pool_exhausted";
+	degradedAt: string;
+}
+
+export type ScorecardDegradationRead =
+	| { state: "not_degraded" }
+	| { state: "invalid_degradation"; reason: string; eventUids: string[] }
+	| {
+			state: "degraded";
+			receipt: ScorecardDegradedReceiptV1;
+			eventUid: string;
+			digest: string;
+	  };
+
+function record(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function utcTimestamp(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+		return `${value.replace(" ", "T")}.000Z`;
+	}
+	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
+		return undefined;
+	}
+	return Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+function boundedString(value: unknown, max = 256): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= max;
+}
+
+function canonicalReceipt(
+	event: WorkflowRunEventRow,
+): ScorecardAssignmentReceiptV1 | undefined {
+	const payload = record(event.payload);
+	if (
+		!payload ||
+		!event.node_id ||
+		event.event_uid !== `model_arm_assigned:${event.run_id}:${event.node_id}` ||
+		payload.schemaVersion !== 1 ||
+		payload.runId !== event.run_id ||
+		payload.nodeId !== event.node_id ||
+		!boundedString(payload.policyVersion, 128) ||
+		!boundedString(payload.arm, 128) ||
+		!boundedString(payload.resolvedModel)
+	) {
+		return undefined;
+	}
+	const assignedAt = utcTimestamp(payload.assignedAt);
+	if (!assignedAt) return undefined;
+	return {
+		schemaVersion: 1,
+		runId: event.run_id,
+		nodeId: event.node_id,
+		policyVersion: payload.policyVersion,
+		arm: payload.arm,
+		resolvedModel: payload.resolvedModel,
+		assignedAt,
+	};
+}
+
+function legacyReceipt(
+	event: WorkflowRunEventRow,
+): ScorecardAssignmentReceiptV1 | undefined {
+	const payload = record(event.payload);
+	const basis = record(payload?.basis);
+	const assignedAt = utcTimestamp(event.at);
+	if (
+		!payload ||
+		!basis ||
+		!event.node_id ||
+		event.event_uid !==
+			`design_model_arm_assigned:${event.run_id}:${event.node_id}` ||
+		!boundedString(basis.ruleVersion, 128) ||
+		!boundedString(payload.arm, 128) ||
+		!boundedString(payload.model) ||
+		!assignedAt
+	) {
+		return undefined;
+	}
+	return {
+		schemaVersion: 1,
+		runId: event.run_id,
+		nodeId: event.node_id,
+		policyVersion: basis.ruleVersion,
+		arm: payload.arm,
+		resolvedModel: payload.model,
+		assignedAt,
+	};
+}
+
+/** Read frozen assignment evidence without selecting, rewriting, or inferring an arm. */
+export function readScorecardAssignment(
+	events: readonly WorkflowRunEventRow[],
+	identity: { runId: string; nodeId: string },
+): ScorecardAssignmentRead {
+	const relevant = events.filter(
+		(event) =>
+			event.run_id === identity.runId &&
+			event.node_id === identity.nodeId &&
+			(event.kind === "model_arm_assigned" ||
+				event.kind === "design_model_arm_assigned"),
+	);
+	if (relevant.length === 0) return { state: "unassigned" };
+
+	const normalized = relevant.map((event) => ({
+		event,
+		receipt:
+			event.kind === "model_arm_assigned"
+				? canonicalReceipt(event)
+				: legacyReceipt(event),
+	}));
+	if (normalized.some(({ receipt }) => !receipt)) {
+		return {
+			state: "unknown",
+			reason: "malformed_or_non_utc_assignment",
+			eventUids: relevant.map((event) => event.event_uid),
+		};
+	}
+	const digests = new Set(
+		normalized.map(({ receipt }) => canonicalSubmissionDigest(receipt)),
+	);
+	if (digests.size !== 1) {
+		return {
+			state: "invalid_assignment",
+			reason: "conflicting_assignment_receipts",
+			eventUids: relevant.map((event) => event.event_uid),
+		};
+	}
+	const first =
+		normalized.find(({ event }) => event.kind === "model_arm_assigned") ??
+		normalized[0]!;
+	return {
+		state: "assigned",
+		receipt: first.receipt!,
+		eventUid: first.event.event_uid,
+		digest: digests.values().next().value!,
+	};
+}
+
+/** Validate explicit degradation authority; a model mismatch alone is never degradation. */
+export function readScorecardDegradation(
+	events: readonly WorkflowRunEventRow[],
+	identity: {
+		runId: string;
+		nodeId: string;
+		activationId: string;
+		launchModel: string;
+		assignment: ScorecardAssignmentRead;
+	},
+): ScorecardDegradationRead {
+	const expectedEventUid = `model_arm_degraded:${identity.runId}:${identity.nodeId}:${identity.activationId}`;
+	const relevant = events.filter((event) => {
+		const payload = record(event.payload);
+		return (
+			event.kind === "model_arm_degraded" &&
+			event.run_id === identity.runId &&
+			event.node_id === identity.nodeId &&
+			(event.event_uid === expectedEventUid ||
+				payload?.activationId === identity.activationId)
+		);
+	});
+	if (relevant.length === 0) return { state: "not_degraded" };
+	if (identity.assignment.state !== "assigned") {
+		return {
+			state: "invalid_degradation",
+			reason: "degradation_without_canonical_assignment",
+			eventUids: relevant.map((event) => event.event_uid),
+		};
+	}
+	const assignment = identity.assignment;
+	const expectedAssignmentUid = `model_arm_assigned:${identity.runId}:${identity.nodeId}`;
+	const normalized = relevant.map((event) => {
+		const payload = record(event.payload);
+		const degradedAt = utcTimestamp(payload?.degradedAt);
+		if (
+			event.event_uid !== expectedEventUid ||
+			!payload ||
+			payload.schemaVersion !== 1 ||
+			payload.runId !== identity.runId ||
+			payload.nodeId !== identity.nodeId ||
+			payload.activationId !== identity.activationId ||
+			payload.assignmentEventUid !== expectedAssignmentUid ||
+			assignment.eventUid !== expectedAssignmentUid ||
+			payload.arm !== assignment.receipt.arm ||
+			payload.degraded !== true ||
+			payload.assignedModel !== assignment.receipt.resolvedModel ||
+			payload.actualModel !== identity.launchModel ||
+			payload.actualModel === payload.assignedModel ||
+			payload.reason !== "codex_pool_exhausted" ||
+			!degradedAt
+		) {
+			return undefined;
+		}
+		return {
+			schemaVersion: 1 as const,
+			runId: identity.runId,
+			nodeId: identity.nodeId,
+			activationId: identity.activationId,
+			assignmentEventUid: expectedAssignmentUid,
+			arm: assignment.receipt.arm,
+			degraded: true as const,
+			assignedModel: assignment.receipt.resolvedModel,
+			actualModel: identity.launchModel,
+			reason: "codex_pool_exhausted" as const,
+			degradedAt,
+		};
+	});
+	if (normalized.some((receipt) => !receipt)) {
+		return {
+			state: "invalid_degradation",
+			reason: "degradation_authority_mismatch",
+			eventUids: relevant.map((event) => event.event_uid),
+		};
+	}
+	const digests = new Set(
+		normalized.map((receipt) => canonicalSubmissionDigest(receipt)),
+	);
+	if (digests.size !== 1) {
+		return {
+			state: "invalid_degradation",
+			reason: "conflicting_degradation_receipts",
+			eventUids: relevant.map((event) => event.event_uid),
+		};
+	}
+	return {
+		state: "degraded",
+		receipt: normalized[0]!,
+		eventUid: relevant[0]!.event_uid,
+		digest: digests.values().next().value!,
+	};
+}
 
 /** Validate the frozen percentage basis at both materialization and dispatch replay. */
 export function assertPercentageModelAssignment(

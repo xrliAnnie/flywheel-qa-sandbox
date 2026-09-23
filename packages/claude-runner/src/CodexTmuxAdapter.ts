@@ -115,6 +115,7 @@ import {
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
 } from "./codex-phase-lifecycle.js";
+import { findCodexRolloutPath } from "./codex-rollout-probe.js";
 import {
 	ensureRunnerTuiWindow,
 	killRunnerTuiWindow,
@@ -1014,6 +1015,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let tuiThreadId: string | undefined;
 		let transcriptSink: CodexTranscriptSinkLike | undefined;
 		let transcriptClosed = false;
+		let usageFreshSession = false;
 		// FLY-1239 founder-window retry state (all scoped to this execution).
 		let tuiOpening = false; // a bounded reopen chain is in flight (single-flight)
 		let runEnded = false; // set in `finally` — stops any pending reopen from spawning
@@ -1032,6 +1034,41 @@ export class CodexTmuxAdapter implements IAdapter {
 		let caughtError: unknown;
 		let teardownError: unknown;
 		let controlledShutdownRequestId: string | undefined;
+		let workflowUsageImported = false;
+		const importWorkflowUsage = (): void => {
+			if (workflowUsageImported) return;
+			const usageThreadId = outcome?.threadId ?? tuiThreadId;
+			if (
+				!ctx.workflowActivationId ||
+				!ctx.onWorkflowUsageEvent ||
+				!usageThreadId
+			)
+				return;
+			try {
+				const sourcePath = findCodexRolloutPath(codexHome, usageThreadId, [
+					"sessions",
+					"archived_sessions",
+				]);
+				if (!sourcePath) return;
+				ctx.onWorkflowUsageEvent({
+					kind: "import",
+					vendor: "codex",
+					executionId: ctx.executionId,
+					activationId: ctx.workflowActivationId,
+					nativeSessionId: usageThreadId,
+					providerHome: codexHome,
+					sourcePath,
+					at: new Date().toISOString(),
+					final: true,
+					allowBootstrap: usageFreshSession,
+				});
+				workflowUsageImported = true;
+			} catch (error) {
+				this.log(
+					`[CodexTmuxAdapter] workflow usage import failed (ignored): ${safeErr(error)}`,
+				);
+			}
+		};
 		const controlledShutdownSucceeded = (): boolean => {
 			if (!controlledShutdownRequestId || teardownError) return false;
 			if (classifyGoalOutcome({ outcome, caughtError }).success) return true;
@@ -1535,6 +1572,31 @@ export class CodexTmuxAdapter implements IAdapter {
 			const onThreadReady = (threadId: string, restarts: number): void => {
 				this.persistSessionState(ctx, threadId);
 				tuiThreadId = threadId;
+				usageFreshSession = !resumeThreadId || resumeThreadId !== threadId;
+				if (ctx.workflowActivationId && ctx.onWorkflowUsageEvent) {
+					try {
+						const sourcePath = findCodexRolloutPath(codexHome, threadId, [
+							"sessions",
+							"archived_sessions",
+						]);
+						if (sourcePath) {
+							ctx.onWorkflowUsageEvent({
+								kind: "bind",
+								vendor: "codex",
+								executionId: ctx.executionId,
+								activationId: ctx.workflowActivationId,
+								nativeSessionId: threadId,
+								providerHome: codexHome,
+								sourcePath,
+								at: new Date().toISOString(),
+							});
+						}
+					} catch (error) {
+						this.log(
+							`[CodexTmuxAdapter] workflow usage bind failed (ignored): ${safeErr(error)}`,
+						);
+					}
+				}
 				try {
 					transcriptSink?.setThreadScope(threadId);
 					if (restarts > 0) {
@@ -1855,6 +1917,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						commDb?.close();
 					}
 				}
+				importWorkflowUsage();
 				try {
 					await retireOnce();
 				} catch (err) {
@@ -1951,6 +2014,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						// non-fatal (legacy behavior)
 					}
 				}
+				importWorkflowUsage();
 				try {
 					await retireOnce();
 				} catch (error) {
@@ -1974,7 +2038,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				}
 			}
 		}
-
 		const cls = classifyGoalOutcome({ outcome, caughtError });
 		const quotaFailure = goalQuotaFailure({
 			outcome,

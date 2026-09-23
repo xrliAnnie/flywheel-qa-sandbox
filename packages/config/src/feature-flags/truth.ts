@@ -258,6 +258,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2519 plumbing: nonsecret capability manifest file coordinate for the current Lead runtime, not an on/off gate",
 	FLYWHEEL_LEAD_CAPABILITY_ACTIVATION:
 		"FLY-2519 per-invocation capability activation identity, not a persistent feature toggle",
+	FLYWHEEL_WORKFLOW_ACTIVATION_ID:
+		"FLY-2789 per-invocation workflow activation identity used to attribute usage to one admitted execution, not an on/off gate",
 	FLYWHEEL_LEAD_CAPABILITY_SOCKET:
 		"FLY-2519 plumbing: capability broker Unix socket coordinate for the current Lead runtime, not an on/off gate",
 	FLYWHEEL_RECLOSE_PEER_SOCKET:

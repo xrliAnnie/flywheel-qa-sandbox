@@ -346,6 +346,7 @@ describe("FLY-1869 launch command budget", () => {
 			"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
 			"FLYWHEEL_RUNNER_STATE_DIR",
 			"FLYWHEEL_STATE_DB_PATH",
+			"FLYWHEEL_WORKFLOW_ACTIVATION_ID",
 			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
 			"NODE_OPTIONS",
 			"PROJECT_NAME",
@@ -1058,6 +1059,34 @@ describe("TmuxAdapter", () => {
 		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
 			"ponytail@ponytail": true,
 		});
+	});
+
+	it("FLY-2789: workflow launches add only the runner-scoped UserPromptSubmit usage hook", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await new TmuxAdapter("flywheel", fn, 10).execute(
+			makeCtx({ workflowActivationId: "activation:test" }),
+		);
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		const index = newWindow!.args.indexOf("--settings");
+		const settings = JSON.parse(newWindow!.args[index + 1] as string);
+		expect(settings.hooks).toEqual({
+			UserPromptSubmit: [
+				{
+					hooks: [
+						{
+							type: "command",
+							command:
+								'node "$FLYWHEEL_COMM_CLI" workflow-usage-source --event turn-start',
+							timeout: 10,
+						},
+					],
+				},
+			],
+		});
+		expect(Object.keys(settings.hooks)).toEqual(["UserPromptSubmit"]);
+		expect(newWindow!.args).toContain(
+			"FLYWHEEL_WORKFLOW_ACTIVATION_ID=activation:test",
+		);
 	});
 
 	it('FLY-615: --settings survives the gateway launch path (sh -c "$@")', async () => {
