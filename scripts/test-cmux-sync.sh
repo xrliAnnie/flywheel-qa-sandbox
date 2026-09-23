@@ -1432,7 +1432,7 @@ if echo "$MOCK_TMUX_HOOKS" | grep -q 'after-new-window\[500\]'; then
 else
   fail "after-new-window[500] not found"
 fi
-if echo "$MOCK_TMUX_HOOKS" | grep -q 'pane-exited\[500\]'; then
+if [[ "$MOCK_TMUX_HOOKS" == *'pane-exited[500]'* ]]; then
   pass "pane-exited[500] used"
 else
   fail "pane-exited[500] not found"
