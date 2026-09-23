@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { GptLiveBackend } from "../backends/openai-live/GptLiveBackend.js";
 import type { OpenAiLiveSocket } from "../backends/openai-live/LiveSession.js";
 import type { OpenAiLiveClientEvent } from "../backends/openai-live/liveProtocol.js";
-import type { BrainAdapter, ConversationOptions } from "../types.js";
+import {
+	type BrainAdapter,
+	type ConversationOptions,
+	VoiceError,
+} from "../types.js";
 
 class FakeSocket implements OpenAiLiveSocket {
 	readonly sent: OpenAiLiveClientEvent[] = [];
@@ -220,6 +224,46 @@ describe("GptLiveBackend", () => {
 		sockets[1]?.started(2);
 		await vi.waitFor(() =>
 			expect(effective.effectiveCapabilities.turnCancelOrSuppress).toBe(true),
+		);
+	});
+
+	it("reports a failed replacement connection instead of dropping its rejection", async () => {
+		const socket = new FakeSocket();
+		let attempts = 0;
+		const backend = new GptLiveBackend({
+			model: "gpt-live-1",
+			voice: "marin",
+			transport: {
+				connect: async () => {
+					attempts += 1;
+					if (attempts === 1) return socket;
+					throw new VoiceError(
+						"connection-closed",
+						"语音不可用: replacement connection failed",
+					);
+				},
+			},
+		});
+		const opening = backend.createConversation(conversationOptions);
+		await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+		socket.started();
+		const session = await opening;
+		const errors = vi.fn();
+		session.on("error", errors);
+
+		session.interrupt();
+		await vi.waitFor(() =>
+			expect(socket.sent.at(-1)?.type).toBe("session.close"),
+		);
+		socket.receive({ type: "session.closed" });
+		await vi.waitFor(() => expect(attempts).toBe(2));
+		await vi.waitFor(() =>
+			expect(errors).toHaveBeenCalledWith(
+				expect.objectContaining({
+					code: "connection-closed",
+					message: expect.stringContaining("语音不可用"),
+				}),
+			),
 		);
 	});
 });

@@ -169,7 +169,18 @@ class GptLiveConversationSession implements CapabilityAwareConversationSession {
 	endUserTurn(): void {}
 
 	interrupt(): void {
-		void this.controller.cancelAndReplace("barge-in");
+		void this.controller.cancelAndReplace("barge-in").catch((error) => {
+			this.emitter.emit(
+				"error",
+				error instanceof VoiceError
+					? error
+					: new VoiceError(
+							"connection-closed",
+							"语音不可用: OpenAI Live replacement failed",
+							error,
+						),
+			);
+		});
 	}
 
 	injectToolResult(_result: ToolResult, _schedule?: ScheduleHint): void {
