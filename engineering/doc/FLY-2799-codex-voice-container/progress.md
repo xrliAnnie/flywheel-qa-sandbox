@@ -2,21 +2,19 @@
 issue: FLY-2799
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-23T08:47:06.738Z
-nextStep: "Progress this turn: consumed Lead responseed8d3fd4 forbidding final
-  placeholders; prepared exact light CDN Mermaid draft; current production
-  injectHeadMeta rejects external script src even with nonce. Evidence
-  cdn-publish-preflight.json and report-delivery.md;
-  question59204e41-e16d-420b-8db2-379c8a4362b4 asks for locally rendered SVG
-  handback or supported publish path. Do not dynamically evade script guard or
-  publish old placeholder draft. Design revieweb6c9d54 still pending; no
-  repeated Step1. Next check TURN/inbox and both question handles, resolve
-  diagram delivery and review before final
-  publication/report/phase_design_complete."
+updated: 2026-09-23T08:56:45.337Z
+nextStep: "R1 CHANGES_REQUESTED stored evidence/design-review-r1.json; both HIGH
+  fixed using actual persona sources and measured sizes (cosContext optional,
+  source fallback; 128KiB/32768 estimated token budget replaces8192 codepoints),
+  all4 advisories fixed plan9. Lead SVG handoff59204e41 resolved delivery: all
+  source/SVG hashes match, final HTML inline325KB, publisher preflight and
+  comment harness PASS; browser QA not run. Next commit/push and NEW explicit
+  review gate; no publication/phase completion before effective APPROVED. Step1
+  not rerun, G1/G2 open."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
 **phase**: design (4/6)
-**next**: Progress this turn: consumed Lead responseed8d3fd4 forbidding final placeholders; prepared exact light CDN Mermaid draft; current production injectHeadMeta rejects external script src even with nonce. Evidence cdn-publish-preflight.json and report-delivery.md; question59204e41-e16d-420b-8db2-379c8a4362b4 asks for locally rendered SVG handback or supported publish path. Do not dynamically evade script guard or publish old placeholder draft. Design revieweb6c9d54 still pending; no repeated Step1. Next check TURN/inbox and both question handles, resolve diagram delivery and review before final publication/report/phase_design_complete.
+**next**: R1 CHANGES_REQUESTED stored evidence/design-review-r1.json; both HIGH fixed using actual persona sources and measured sizes (cosContext optional, source fallback; 128KiB/32768 estimated token budget replaces8192 codepoints), all4 advisories fixed plan9. Lead SVG handoff59204e41 resolved delivery: all source/SVG hashes match, final HTML inline325KB, publisher preflight and comment harness PASS; browser QA not run. Next commit/push and NEW explicit review gate; no publication/phase completion before effective APPROVED. Step1 not rerun, G1/G2 open.
