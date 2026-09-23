@@ -1,9 +1,10 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 6/7
-updated: 2026-09-23T14:14:31.418Z
-nextStep: TDD cleanup_unconfirmed founder projection and audited Lead reopen path
+phaseCursor: 7/7
+updated: 2026-09-23T14:48:13.310Z
+nextStep: Update exact-head validation and follow-ups, then literal-last
+  milestone and R6 code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -13,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (6/7)
-**next**: TDD cleanup_unconfirmed founder projection and audited Lead reopen path
+**phase**: implement (7/7)
+**next**: Update exact-head validation and follow-ups, then literal-last milestone and R6 code review
