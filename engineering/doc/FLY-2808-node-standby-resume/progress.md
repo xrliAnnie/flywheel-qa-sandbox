@@ -1,10 +1,9 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-23T10:45:11.478Z
-nextStep: Run exact-head related/build/lint and consumer audit; update
-  validation, then restore literal-last milestone and request new code review
+phaseCursor: 6/6
+updated: 2026-09-23T11:22:46.457Z
+nextStep: Push literal-last milestone head and request exact-head code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -14,5 +13,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (5/6)
-**next**: Run exact-head related/build/lint and consumer audit; update validation, then restore literal-last milestone and request new code review
+**phase**: implement (6/6)
+**next**: Push literal-last milestone head and request exact-head code review
