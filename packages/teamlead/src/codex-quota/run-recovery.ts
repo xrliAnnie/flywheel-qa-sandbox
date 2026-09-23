@@ -1,4 +1,6 @@
+import type { CodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { codexQuotaAdmissionRequest } from "./admission-replay.js";
+import { codexQuotaIdentityReader } from "./probe.js";
 export type CodexRunRecoveryState =
 	| "waiting"
 	| "terminating"
@@ -137,7 +139,7 @@ export async function advanceCodexQuotaRunRecovery(
 export interface CodexQuotaRunRecoveryOptions {
 	store: import("../StateStore.js").StateStore;
 	canonicalHome: string;
-	identify(auth: string): { accountKey: string; profile: string };
+	pool(): CodexAccountPool;
 	bridgeUrl: string;
 	apiToken: string;
 	readiness?(): Promise<boolean>;
@@ -164,7 +166,10 @@ export function createCodexQuotaRunRecovery(
 		throw new Error("quota_recovery_local_bridge_required");
 	const store = options.store,
 		quota = store.codexQuota;
-	const canRecover = async (incidentId: string): Promise<boolean> => {
+	const canRecoverWithPool = async (
+		incidentId: string,
+		pool: CodexAccountPool,
+	): Promise<boolean> => {
 		try {
 			const incident = store.getCodexQuotaRecoveryPermit(incidentId);
 			if (
@@ -183,7 +188,7 @@ export function createCodexQuotaRunRecovery(
 				return false;
 			const root = quota.getRoot(String(incident.root_key));
 			const raw = await readFile(join(home, "auth.json"), "utf8");
-			const id = options.identify(raw);
+			const id = codexQuotaIdentityReader(pool)(raw);
 			if (
 				!root ||
 				root.generation !== incident.installed_generation ||
@@ -204,6 +209,13 @@ export function createCodexQuotaRunRecovery(
 				});
 			}
 			return true;
+		} catch {
+			return false;
+		}
+	};
+	const canRecover = async (incidentId: string): Promise<boolean> => {
+		try {
+			return await canRecoverWithPool(incidentId, options.pool());
 		} catch {
 			return false;
 		}
@@ -242,6 +254,7 @@ export function createCodexQuotaRunRecovery(
 	const recoverTarget = async (
 		incidentId: string,
 		row: Record<string, unknown>,
+		pool: CodexAccountPool,
 	) => {
 		if (
 			row.target_kind !== "runner" ||
@@ -306,7 +319,7 @@ export function createCodexQuotaRunRecovery(
 						committed: !!store.getCodexQuotaRecoveryPermit(incidentId),
 						generation:
 							quota.getRoot(String(current.incident.root_key))?.generation ?? 0,
-						canonicalMatches: await canRecover(incidentId),
+						canonicalMatches: await canRecoverWithPool(incidentId, pool),
 						quotaProvenance: true,
 						operatorStopped: current.operatorStopped,
 						healthySuccessor,
@@ -328,7 +341,7 @@ export function createCodexQuotaRunRecovery(
 					});
 				},
 				verifyRunning: async (executionId, generation) => {
-					if (!(await canRecover(incidentId))) return false;
+					if (!(await canRecoverWithPool(incidentId, pool))) return false;
 					const root = quota.getRoot(String(context.incident.root_key));
 					const bindings = quota.getRunnerBindings(executionId);
 					const currentSession = store.getSession(executionId);
@@ -388,6 +401,7 @@ export function createCodexQuotaRunRecovery(
 	const resumeAdmissionWaiter = async (
 		incidentId: string,
 		waiter: Record<string, unknown>,
+		pool: CodexAccountPool,
 	) => {
 		const startKey = String(waiter.start_key);
 		try {
@@ -402,7 +416,7 @@ export function createCodexQuotaRunRecovery(
 				current.waiter.root_key !== permit.root_key ||
 				Number(current.waiter.generation) >=
 					Number(permit.installed_generation) ||
-				!(await canRecover(incidentId)) ||
+				!(await canRecoverWithPool(incidentId, pool)) ||
 				!(await options.readiness?.())
 			)
 				return;
@@ -426,7 +440,7 @@ export function createCodexQuotaRunRecovery(
 			const executionId = String(current.waiter.execution_id),
 				root = quota.getRoot(String(permit.root_key));
 			if (
-				(await canRecover(incidentId)) &&
+				(await canRecoverWithPool(incidentId, pool)) &&
 				store.getSession(executionId)?.status === "running" &&
 				quota
 					.getRunnerBindings(executionId)
@@ -457,7 +471,16 @@ export function createCodexQuotaRunRecovery(
 	};
 	const recover = async (incident: Record<string, unknown>) => {
 		const incidentId = String(incident.incident_id);
-		if (!(await canRecover(incidentId)) || !(await options.readiness?.()))
+		let pool: CodexAccountPool;
+		try {
+			pool = options.pool();
+		} catch {
+			return;
+		}
+		if (
+			!(await canRecoverWithPool(incidentId, pool)) ||
+			!(await options.readiness?.())
+		)
 			return;
 		const permit = store.getCodexQuotaRecoveryPermit(incidentId)!;
 		const waiters = quota
@@ -471,13 +494,13 @@ export function createCodexQuotaRunRecovery(
 			await Promise.all(
 				waiters
 					.slice(i, i + 2)
-					.map((waiter) => resumeAdmissionWaiter(incidentId, waiter)),
+					.map((waiter) => resumeAdmissionWaiter(incidentId, waiter, pool)),
 			);
 		const rows = quota.listTargets(incidentId);
 		// One transport failure cannot prevent the other dead runs from recovering.
 		for (let i = 0; i < rows.length; i += 2)
 			await Promise.all(
-				rows.slice(i, i + 2).map((row) => recoverTarget(incidentId, row)),
+				rows.slice(i, i + 2).map((row) => recoverTarget(incidentId, row, pool)),
 			);
 		const targets = quota
 			.listTargets(incidentId)

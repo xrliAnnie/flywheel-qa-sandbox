@@ -7,30 +7,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadCodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { afterEach, describe, expect, it } from "vitest";
 import { observeCodexAccounts } from "../codex-accounts-observer.js";
-
-const registry = {
-	version: 1 as const,
-	primary: "personal" as const,
-	profiles: [
-		{
-			name: "school" as const,
-			email: "school@example.test",
-			role: "manual_backup" as const,
-		},
-		{
-			name: "personal" as const,
-			email: "personal@example.test",
-			role: "primary" as const,
-		},
-		{
-			name: "business" as const,
-			email: "business@example.test",
-			role: "manual_backup" as const,
-		},
-	],
-};
 
 const auth = (local: string, refresh: string) =>
 	JSON.stringify({
@@ -96,6 +75,11 @@ function fixture(body = FAKE_APP_SERVER) {
 	roots.push(root);
 	const codexHome = join(root, "codex");
 	const profilesRoot = join(codexHome, "profiles");
+	const registryPath = join(root, "codex-account-registry.json");
+	writeFileSync(
+		registryPath,
+		JSON.stringify({ version: 2, primary: "personal" }),
+	);
 	mkdirSync(profilesRoot, { recursive: true });
 	for (const slot of ["school", "shopping"]) {
 		mkdirSync(join(profilesRoot, slot));
@@ -122,7 +106,7 @@ function fixture(body = FAKE_APP_SERVER) {
 			canonicalAuthPath: join(codexHome, "auth.json"),
 			workspaceRoot: join(root, "candidates"),
 			binary,
-			registry,
+			pool: () => loadCodexAccountPool({ profilesRoot, registryPath }),
 			limitId: "codex",
 			now: () => NOW,
 		},
@@ -130,7 +114,7 @@ function fixture(body = FAKE_APP_SERVER) {
 }
 
 describe("FLY-2688 — Codex accounts observer", () => {
-	it("reads every profile slot, including accounts the registry does not list", async () => {
+	it("reads every ready profile slot from the directory pool", async () => {
 		const f = fixture();
 		const store = await observeCodexAccounts(f.options);
 
@@ -165,12 +149,13 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		expect(school.resetCredits).toEqual({ known: true, value: null });
 
 		const shopping = store.accounts.find((a) => a.name === "shopping")!;
-		expect(shopping.registeredProfile).toBeNull();
+		expect(shopping.registeredProfile).toBe("shopping");
+		expect(shopping.identityKey).toMatch(/^[a-f0-9]{64}$/);
 		expect(shopping.weekly?.usedPercent).toBe(100);
 
 		expect(store.accounts.find((a) => a.name === "broken")).toMatchObject({
 			authHealth: "missing",
-			note: "read_failed",
+			note: "invalid_credential",
 			weekly: null,
 		});
 		expect(JSON.stringify(store)).not.toContain("id_token");
@@ -213,6 +198,45 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		);
 	});
 
+	it("does not carry quota readings across an identity change in the same slot", async () => {
+		const f = fixture();
+		const first = await observeCodexAccounts(f.options);
+		writeFileSync(
+			join(f.profilesRoot, "school", "auth.json"),
+			auth("school", "different-account"),
+			{ mode: 0o600 },
+		);
+		const changed = JSON.parse(
+			readFileSync(join(f.profilesRoot, "school", "auth.json"), "utf8"),
+		);
+		const payload = JSON.parse(
+			Buffer.from(changed.tokens.id_token.split(".")[1], "base64url").toString(
+				"utf8",
+			),
+		);
+		payload["https://api.openai.com/auth"].chatgpt_account_id = "school-new";
+		changed.tokens.id_token = `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.x`;
+		writeFileSync(
+			join(f.profilesRoot, "school", "auth.json"),
+			JSON.stringify(changed),
+			{ mode: 0o600 },
+		);
+		const second = await observeCodexAccounts({
+			...f.options,
+			previous: first,
+			totalDeadlineMs: 0,
+		});
+		const school = second.accounts.find(
+			(account) => account.name === "school",
+		)!;
+		expect(school.note).toBe("deadline");
+		expect(school.weekly).toBeNull();
+		expect(school.planType).toBeNull();
+		expect(school.identityKey).not.toBe(
+			first.accounts.find((account) => account.name === "school")!.identityKey,
+		);
+	});
+
 	it("stops starting probes once the round deadline passes", async () => {
 		const f = fixture();
 		const previous = await observeCodexAccounts(f.options);
@@ -238,7 +262,7 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		expect(school.credits.known).toBe(false);
 	});
 
-	it("ignores paths that are not usable profile slots", async () => {
+	it("reports an empty slot but ignores hidden directories and stray files", async () => {
 		const f = fixture();
 		mkdirSync(join(f.profilesRoot, "no-auth-here"));
 		mkdirSync(join(f.profilesRoot, ".hidden"));
@@ -246,9 +270,54 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		const store = await observeCodexAccounts(f.options);
 		expect(store.accounts.map((a) => a.name)).toEqual([
 			"broken",
+			"no-auth-here",
 			"school",
 			"shopping",
 		]);
+		expect(store.accounts.find((a) => a.name === "no-auth-here")).toMatchObject(
+			{
+				authHealth: "missing",
+				note: "not_logged_in",
+			},
+		);
+	});
+
+	it("emits six ready accounts plus a separate not-logged-in row", async () => {
+		const f = fixture();
+		for (const slot of ["business", "personal", "personal1", "personal2"]) {
+			mkdirSync(join(f.profilesRoot, slot));
+			writeFileSync(
+				join(f.profilesRoot, slot, "auth.json"),
+				auth(slot, "old"),
+				{
+					mode: 0o600,
+				},
+			);
+		}
+		mkdirSync(join(f.profilesRoot, "new-account"));
+		const store = await observeCodexAccounts({
+			...f.options,
+			totalDeadlineMs: 0,
+		});
+		expect(store.accounts.map((account) => account.name)).toEqual([
+			"broken",
+			"business",
+			"new-account",
+			"personal",
+			"personal1",
+			"personal2",
+			"school",
+			"shopping",
+		]);
+		expect(
+			store.accounts.filter((account) => account.note === "deadline"),
+		).toHaveLength(6);
+		expect(
+			store.accounts.find((account) => account.name === "new-account"),
+		).toMatchObject({
+			authHealth: "missing",
+			note: "not_logged_in",
+		});
 	});
 
 	it("re-reads the in-use inventory before every slot", async () => {
@@ -267,7 +336,7 @@ describe("FLY-2688 — Codex accounts observer", () => {
 			},
 		});
 
-		// `broken` never reaches the guard: its identity fails first.
+		// `broken` never reaches the guard: the pool marks it invalid first.
 		expect(seen).toEqual(["1:school", "2:shopping"]);
 		expect(store.accounts.find((a) => a.name === "shopping")).toMatchObject({
 			authHealth: "in_use_unshared",

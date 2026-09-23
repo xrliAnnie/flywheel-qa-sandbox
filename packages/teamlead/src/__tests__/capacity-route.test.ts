@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CapacitySnapshot } from "../bridge/capacity-snapshot.js";
 import { formatPatrolTick } from "../bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
@@ -71,7 +71,10 @@ async function start(
 	config: BridgeConfig,
 	seed?: (store: StateStore) => void,
 	path = "/api/capacity",
-	refreshAccountQuota?: () => Promise<void>,
+	refreshAccountQuota?: () => Promise<{
+		generatedAt: string;
+		accountCount: number;
+	}>,
 ): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
@@ -438,6 +441,84 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 		});
 	}
 
+	it("protects the refresh endpoint and coalesces concurrent requests", async () => {
+		let release!: (value: {
+			generatedAt: string;
+			accountCount: number;
+		}) => void;
+		const pending = new Promise<{ generatedAt: string; accountCount: number }>(
+			(resolve) => {
+				release = resolve;
+			},
+		);
+		const refresh = vi.fn(() => pending);
+		const url = await start(
+			pageConfig(),
+			undefined,
+			"/api/codex-accounts/refresh",
+			refresh,
+		);
+		expect((await fetch(url, { method: "POST" })).status).toBe(401);
+		expect(
+			(
+				await fetch(url, {
+					method: "POST",
+					headers: { Authorization: "Bearer wrong" },
+				})
+			).status,
+		).toBe(401);
+		const request = () =>
+			fetch(url, {
+				method: "POST",
+				headers: { Authorization: "Bearer master-token" },
+			});
+		const first = request();
+		const second = request();
+		await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+		release({ generatedAt: "2026-09-22T00:00:00.000Z", accountCount: 6 });
+		for (const response of await Promise.all([first, second])) {
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				ok: true,
+				generatedAt: "2026-09-22T00:00:00.000Z",
+				accountCount: 6,
+			});
+		}
+	});
+
+	it("fails closed without a token and sanitizes refresh errors", async () => {
+		const disabled = vi.fn(async () => ({
+			generatedAt: "2026-09-22T00:00:00.000Z",
+			accountCount: 6,
+		}));
+		const noTokenUrl = await start(
+			makeConfig(),
+			undefined,
+			"/api/codex-accounts/refresh",
+			disabled,
+		);
+		expect((await fetch(noTokenUrl, { method: "POST" })).status).toBe(503);
+		expect(disabled).not.toHaveBeenCalled();
+
+		const failureUrl = await start(
+			pageConfig(),
+			undefined,
+			"/api/codex-accounts/refresh",
+			async () => {
+				throw new Error("private /path/to/auth.json");
+			},
+		);
+		const response = await fetch(failureUrl, {
+			method: "POST",
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({
+			ok: false,
+			error: "Codex account refresh unavailable",
+		});
+	});
+
 	it("probes only when the caller asks for a refresh", async () => {
 		let refreshes = 0;
 		const url = await start(
@@ -446,6 +527,7 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 			"/api/accounts-page.html",
 			async () => {
 				refreshes += 1;
+				return { generatedAt: "2026-09-22T00:00:00.000Z", accountCount: 6 };
 			},
 		);
 

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex 号池按目录枚举</title>
+<style>
+:root{--bg:#f5f5f7;--ink:#1d1d1f;--dim:#86868b;--card:#fff;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,system-ui,sans-serif}
+main{max-width:960px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:26px;margin:0 0 6px;color:var(--navy)}
+.sub{color:var(--dim);font-size:13px}
+.id{font-family:'SF Mono',monospace;color:var(--navy)}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin:18px 0;border-left:4px solid var(--blue)}
+.card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18px;margin:0 0 10px;color:var(--navy)}
+.big{font-size:17px;font-weight:600}
+.diagram{overflow-x:auto;margin:10px 0;background:#fff;border:1px solid #eee;border-radius:8px;padding:8px}
+.diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
+table{width:100%;border-collapse:collapse;font-size:14px;margin:8px 0}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #eee;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px}
+.term{font-weight:600}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;color:#fff}
+.pill.g{background:var(--green)}.pill.r{background:var(--red)}.pill.a{background:var(--amber)}.pill.b{background:var(--blue)}.pill.p{background:var(--purple)}.pill.d{background:var(--dim)}
+.comment-box{margin-top:14px;border-top:1px dashed #ddd;padding-top:10px}
+.comment-box label{font-size:12px;color:var(--dim);display:block;margin-bottom:4px}
+.comment-box textarea{width:100%;min-height:56px;border:1px solid #ddd;border-radius:8px;padding:8px;font:14px/1.5 -apple-system,system-ui,sans-serif;resize:vertical}
+#summary-out{white-space:pre-wrap;background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px;font-size:13px;min-height:40px}
+button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+#copy-note{margin-left:10px;color:var(--dim);font-size:13px}
+ul{margin:6px 0;padding-left:20px}
+</style>
+</head>
+<body>
+<main>
+<h1>Codex 号池：从「写死三个」改成「目录里有几个就是几个」</h1>
+<div class="sub"><span class="id">FLY-2762</span> · 设计阶段 · 2026-09-22 · 本页只讲设计，还没有写代码</div>
+
+<div class="card green" id="s1">
+<h2>一句话</h2>
+<p class="big">以后 <code>~/.codex/profiles/</code> 里有哪些文件夹，系统就认哪些 Codex 号；六个号（将来第七个也一样）用同一套规则切换、保存、查状态、被自动切号选中，账号页也能分清「吊销 / 未登录 / 打满」。</p>
+<p>今天的问题：代码里有 11 处把号池写死成 school、personal、business 三个。你另外三个已登录的号（personal1、personal2、shopping）用 <code>codex-profile use</code> 会直接报错，自动切号也永远不会选它们。</p>
+<p>我实测复现了这个错误（用临时目录，没碰真凭据）：</p>
+<table><tr><th>命令</th><th>今天的结果</th></tr>
+<tr><td><code>use shopping</code></td><td>报错：expected school, personal, or business</td></tr>
+<tr><td><code>save personal1</code></td><td>同上</td></tr>
+<tr><td><code>list</code></td><td>只列三个号，另三个标成「Untracked（未跟踪）」</td></tr></table>
+<div class="comment-box" data-sec="s1" data-title="一句话"><label>你的意见（自动保存在本浏览器）</label><textarea></textarea></div>
+</div>
+
+<div class="card" id="s2">
+<h2>核心流程：一个号池，所有地方都从它读</h2>
+<p><span class="term">现算号池</span>：每次要用号池时，程序现场去读一遍 profiles 文件夹，而不是查一张提前写好的名单。所以新建文件夹后不用改代码、不用发版，下一次用到就能看到。</p>
+<p><span class="term">真探</span>：用这个号的登录凭据真的去问 OpenAI「我还剩多少额度」，能问通就说明凭据有效。这件事只让 Bridge（后台常驻服务）做，因为它知道哪个号正在被在跑的 Codex 使用；两个进程同时用同一个号的凭据，会让其中一个被 OpenAI 踢掉。</p>
+<div class="diagram">{{D1}}</div>
+<div class="comment-box" data-sec="s2" data-title="核心流程"><label>你的意见</label><textarea></textarea></div>
+</div>
+
+<div class="card purple" id="s3">
+<h2>账号页的 token 状态怎么分</h2>
+<p>你 9/19 指出页面上看不出「吊销」「未登录」「打满」的区别。新设计给 Codex 表加一列「token 状态」，每种情况文案不同：</p>
+<div class="diagram">{{D2}}</div>
+<table><tr><th>页面显示</th><th>意思</th><th>你要做什么</th></tr>
+<tr><td><span class="pill g">正常</span></td><td>凭据有效，额度没用完</td><td>无</td></tr>
+<tr><td><span class="pill a">打满</span></td><td>凭据有效，但 5 小时或每周额度用到 100%</td><td>等到显示的恢复时刻</td></tr>
+<tr><td><span class="pill r">已吊销</span> <span class="pill r">已过期</span> <span class="pill r">凭据失效</span></td><td>登录凭据被 OpenAI 作废了（原因不同，处置相同）</td><td>重新登录这个号</td></tr>
+<tr><td><span class="pill d">未登录</span></td><td>文件夹建好了，但里面还没有登录凭据</td><td>登录这个号</td></tr>
+<tr><td><span class="pill r">凭据损坏</span></td><td>文件夹里的凭据文件读不出是哪个号</td><td>重新登录这个号</td></tr>
+<tr><td><span class="pill r">重复登录</span></td><td>两个文件夹登的是同一个邮箱；为防两边互相把凭据弄作废，两个都不用、也不去探</td><td>删掉其中一个文件夹</td></tr>
+<tr><td><span class="pill b">在用未探</span> <span class="pill d">未探</span></td><td>这次没去问（正在被用，或超时）；不是号本身的状态</td><td>稍后刷新</td></tr></table>
+<div class="comment-box" data-sec="s3" data-title="token 状态"><label>你的意见</label><textarea></textarea></div>
+</div>
+
+<div class="card" id="s4">
+<h2>数据结构</h2>
+<p><span class="term">id_token</span>：登录后 OpenAI 发的一张「身份证」，里面写着邮箱和订阅档位。我们只读它，不改它。</p>
+<p><span class="term">注册表</span>：以前是一张写死三个号的名单；以后只剩一行规则「默认用 personal」，不再列任何号。</p>
+<div class="diagram">{{D3}}</div>
+<div class="comment-box" data-sec="s4" data-title="数据结构"><label>你的意见</label><textarea></textarea></div>
+</div>
+
+<div class="card amber" id="s5">
+<h2>关键取舍与否决的方案</h2>
+<table><tr><th>方案</th><th>结论</th><th>原因</th></tr>
+<tr><td>把名单从 3 行扩到 6 行</td><td><span class="pill r">否决</span></td><td>新号还要改代码发版；名单和文件夹是两份真相，今天的问题正是这两份对不上</td></tr>
+<tr><td>让 codex-profile 自己去真探</td><td><span class="pill r">否决</span></td><td>它不知道哪个号正被在跑的 Codex 使用，可能把正在干活的 runner 的凭据弄作废</td></tr>
+<tr><td>给原来三个号保留「邮箱钉死」保护</td><td><span class="pill r">否决</span></td><td>那样三个号有别的号没有的保护，违背「每个号一视同仁」；改用对所有号一样的规则：<code>save</code> 只能存回同一个账号的文件夹</td></tr>
+<tr><td>用 <code>save</code> 把凭据存进一个空文件夹</td><td><span class="pill r">否决</span></td><td>评审发现这一步要同时锁住新旧两个身份，复杂易错；直接在文件夹里登录更简单，效果一样</td></tr>
+<tr><td>两个文件夹登的是同一个邮箱</td><td><span class="pill a">两个都排除</span></td><td>不猜哪个是对的，<code>list</code> 里明确显示原因</td></tr>
+<tr><td>自动切号要不要单独加开关</td><td><span class="pill g">不加</span></td><td>沿用已有总开关 <code>codex_quota_auto_switch</code>，出问题一键关</td></tr></table>
+<div class="comment-box" data-sec="s5" data-title="取舍"><label>你的意见</label><textarea></textarea></div>
+</div>
+
+<div class="card red" id="s6">
+<h2>诚实边界：做什么、不做什么</h2>
+<p><b>会做</b></p>
+<ul>
+<li>六个号都能 <code>use</code> / <code>save</code> / <code>status</code>；<code>list</code> 每个号一行：邮箱、档位、token 状态、重置时刻、探测时间。</li>
+<li>自动切号的候选从 3 个变成全部可用号。<b>上线后自动切号可能切到 personal1 / personal2 / shopping</b>（它们是 prolite 档，额度比 pro 小）。这是本单的目的，但你会在切号通知里第一次看到这些名字。</li>
+<li>账号页多一列 token 状态；只建了文件夹还没登录的号也会出现一行「未登录」。</li>
+<li>新号流程：建文件夹 → 在这个文件夹里登录（<code>CODEX_HOME=~/.codex/profiles/新名字 codex login</code>）→ 马上可用，不改代码。</li>
+<li><code>save</code> 只能把凭据存回「同一个账号」的文件夹（邮箱和账号编号都要一致），防止把 A 号存进 B 号的位置。</li>
+</ul>
+<p><b>不做</b></p>
+<ul>
+<li>不动 Claude 账号那一套（Claude 的切号和额度监控）。</li>
+<li><code>codex-profile list</code> 显示的是 Bridge 最近一次真探的结果，带探测时间；要最新数据用 <code>list --refresh</code>，Bridge 不在时会明说「未刷新」，不会拿旧数冒充新数。</li>
+<li>不在上线检查里切换共享的 Codex 号；切换功能的证据来自测试环境。</li>
+<li>本页只是设计。代码、测试、QA 在后续阶段。</li>
+</ul>
+<div class="comment-box" data-sec="s6" data-title="边界"><label>你的意见</label><textarea></textarea></div>
+</div>
+
+<div class="card purple" id="s7">
+<h2>设计评审记录</h2>
+{{REVIEW}}
+<div class="comment-box" data-sec="s7" data-title="评审记录"><label>你的意见</label><textarea></textarea></div>
+</div>
+
+<div class="card" id="summary">
+<h2>意见汇总</h2>
+<p class="sub">上面每个框里写的意见会自动汇总在这里。点按钮复制，贴回 Discord 即可。这是修改意见，不代表通过。</p>
+<div id="summary-out"></div>
+<p><button id="copy-btn" type="button">复制全部意见</button><span id="copy-note"></span></p>
+</div>
+</main>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = "【页面意见汇总】FLY-2762";
+  var prefix;
+  try { prefix = "fly2762-comments:" + location.pathname + ":"; } catch (e) { prefix = "fly2762-comments:"; }
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box"));
+  function loadVal(sec) { try { return localStorage.getItem(prefix + sec) || ""; } catch (e) { return ""; } }
+  function saveVal(sec, v) { try { localStorage.setItem(prefix + sec, v); } catch (e) { /* storage unavailable */ } }
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (box) {
+      var ta = box.querySelector("textarea");
+      var v = (ta && ta.value ? ta.value : "").trim();
+      if (v) parts.push("· " + box.getAttribute("data-title") + "：" + v);
+    });
+    return parts;
+  }
+  function chunkText(parts) {
+    var chunks = [], cur = MARKER;
+    parts.forEach(function (p) {
+      if (cur !== MARKER && (cur + "\n" + p).length > 1800) { chunks.push(cur); cur = MARKER; }
+      cur += "\n" + p;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  var out = document.getElementById("summary-out");
+  function refresh() {
+    var parts = collect();
+    if (parts.length === 0) { out.textContent = "（还没有意见）"; return; }
+    out.textContent = chunkText(parts).join("\n\n————（分段，每段单独复制也可）————\n\n");
+  }
+  boxes.forEach(function (box) {
+    var sec = box.getAttribute("data-sec");
+    var ta = box.querySelector("textarea");
+    if (!ta) return;
+    ta.value = loadVal(sec);
+    ta.addEventListener("input", function () { saveVal(sec, ta.value); refresh(); });
+  });
+  refresh();
+  var note = document.getElementById("copy-note");
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    note.textContent = ok ? "已复制" : "复制失败，请手动全选上面的文字";
+  }
+  document.getElementById("copy-btn").addEventListener("click", function () {
+    var parts = collect();
+    var text = parts.length === 0 ? MARKER + "\n（无意见）" : chunkText(parts).join("\n\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { note.textContent = "已复制"; }, function () { fallbackCopy(text); });
+    } else { fallbackCopy(text); }
+  });
+})();
+</script>
+</body>
+</html>

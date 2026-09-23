@@ -184,7 +184,7 @@ if printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'not supported when using C
   exit $?
 elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE '429|rate.?limit|too many requests|capacity|usage.?limit'; then
   [[ "${FLYWHEEL_CODEX_QUOTA_CHILD:-}" == "1" ]] && exit "$exit_code"
-  printf '\n[codex-with-fallback] RATE_LIMIT on the selected account. Run codex-profile status; the Founder may manually select school/personal/business with the profile tool use command.\n' >&2
+  printf '\n[codex-with-fallback] RATE_LIMIT on the selected account. Run codex-profile list to see available accounts, then codex-profile use <name>.\n' >&2
   exit "$exit_code"
 elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qi 'refresh_token_reused'; then
   if codex_shared_truth_is_healthy; then

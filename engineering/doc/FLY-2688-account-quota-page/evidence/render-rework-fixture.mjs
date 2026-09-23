@@ -38,6 +38,7 @@ const codexAccount = (over) => ({
 	authUnusable: false,
 	note: null,
 	unclassifiedWindows: 0,
+	tokenState: "正常",
 	...over,
 });
 
@@ -103,6 +104,7 @@ const view = buildAccountQuotaView({
 					weeklyResetAt: "2026-09-26T09:00:00.000Z",
 					exhausted: true,
 					recoveryAt: "2026-09-26T09:00:00.000Z",
+					tokenState: "打满",
 					credits: {
 						known: true,
 						hasCredits: true,
@@ -130,6 +132,7 @@ const view = buildAccountQuotaView({
 					ageMinutes: 210,
 					stale: true,
 					note: "in_use_unshared",
+					tokenState: "在用未探",
 				}),
 				codexAccount({
 					name: "personal1",
@@ -157,6 +160,7 @@ const view = buildAccountQuotaView({
 					ageMinutes: null,
 					stale: null,
 					note: "read_failed",
+					tokenState: "未探",
 					credits: {
 						known: false,
 						hasCredits: null,

@@ -112,32 +112,25 @@ function discoverAccountPool(envArg: NodeJS.ProcessEnv = env): string[] {
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "fly123-home-"));
 	const src = join(tmp, "dotcodex");
-	mkdirSync(join(src, "profiles", "personal"), { recursive: true });
-	mkdirSync(join(src, "profiles", "business"), { recursive: true });
+	for (const [name, email, accountId] of [
+		["business", "business@example.test", "acct-business"],
+		["personal", "personal@example.test", "acct-personal"],
+		["school", "school@example.test", "acct-school"],
+	] as const) {
+		mkdirSync(join(src, "profiles", name), { recursive: true });
+		writeFileSync(
+			join(src, "profiles", name, "auth.json"),
+			testAuth(email, accountId),
+			{ mode: 0o600 },
+		);
+	}
 	registryPath = join(tmp, "codex-account-registry.json");
 	ledgerRoot = join(tmp, "codex-account-ledger");
 	writeFileSync(
 		registryPath,
 		JSON.stringify({
-			version: 1,
+			version: 2,
 			primary: "personal",
-			profiles: [
-				{
-					name: "school",
-					email: "school@example.test",
-					role: "manual_backup",
-				},
-				{
-					name: "personal",
-					email: "personal@example.test",
-					role: "primary",
-				},
-				{
-					name: "business",
-					email: "business@example.test",
-					role: "manual_backup",
-				},
-			],
 		}),
 	);
 	writeFileSync(join(src, "auth.json"), testAuth());
@@ -1229,11 +1222,6 @@ describe("FLY-2358 keyed-home startup janitor", () => {
 
 describe("discoverAccountPool (dynamic, AC6)", () => {
 	it("lists only existing canonical profile dirs sorted", () => {
-		expect(discoverAccountPool(env)).toEqual(["business", "personal"]);
-	});
-
-	it("follows the pool when a profile is added (no code change)", () => {
-		mkdirSync(join(tmp, "dotcodex", "profiles", "school"));
 		expect(discoverAccountPool(env)).toEqual([
 			"business",
 			"personal",
@@ -1241,16 +1229,36 @@ describe("discoverAccountPool (dynamic, AC6)", () => {
 		]);
 	});
 
-	it("returns [] when the pool dir is absent", () => {
+	it("follows the pool when a profile is added (no code change)", () => {
+		mkdirSync(join(tmp, "dotcodex", "profiles", "shopping"));
+		writeFileSync(
+			join(tmp, "dotcodex", "profiles", "shopping", "auth.json"),
+			testAuth("shopping@example.test", "acct-shopping"),
+		);
+		expect(discoverAccountPool(env)).toEqual([
+			"business",
+			"personal",
+			"school",
+			"shopping",
+		]);
+	});
+
+	it("returns an empty pool when the profiles dir is absent", () => {
 		expect(
-			discoverAccountPool({ FLYWHEEL_CODEX_PROFILES_DIR: join(tmp, "nope") }),
+			discoverAccountPool({
+				FLYWHEEL_CODEX_PROFILES_DIR: join(tmp, "nope"),
+			}),
 		).toEqual([]);
 	});
 
-	it("excludes zombie and unknown profile directories", () => {
+	it("excludes profile directories that are not logged in", () => {
 		mkdirSync(join(tmp, "dotcodex", "profiles", "personal1"));
 		mkdirSync(join(tmp, "dotcodex", "profiles", "mystery"));
-		expect(discoverAccountPool(env)).toEqual(["business", "personal"]);
+		expect(discoverAccountPool(env)).toEqual([
+			"business",
+			"personal",
+			"school",
+		]);
 	});
 });
 
@@ -1932,6 +1940,20 @@ describe("provisionCodexHome (WS-A)", () => {
 			accountId: "acct-personal",
 			plan: "pro",
 			mode: "primary",
+		});
+	});
+
+	it("derives a source identity when the profiles dir is absent", () => {
+		rmSync(join(sourceCodexDir(env), "profiles"), {
+			recursive: true,
+			force: true,
+		});
+		expect(assertCodexSourceIdentity({ env, registryPath })).toEqual({
+			profile: "account-personal",
+			email: "personal@example.test",
+			accountId: "acct-personal",
+			plan: "pro",
+			mode: "manual_backup",
 		});
 	});
 

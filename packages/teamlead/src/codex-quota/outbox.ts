@@ -1,3 +1,7 @@
+import {
+	isCodexIdentityLabel,
+	isCodexSlotName,
+} from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { leadEventEnvelopeFromJournalRow } from "../bridge/legacy-lead-event-reconciler.js";
 import type { DurableQueueReceipt } from "../bridge/runtime-registry.js";
@@ -239,17 +243,14 @@ export function createCodexQuotaOutboxDelivery(
 					.listOutbox()
 					.find((item) => item.event_id === `${incidentId}:usage_limit`);
 				const data = JSON.parse(String(source?.payload_json ?? "{}"));
-				if (["school", "personal", "business"].includes(data.profile))
-					sourceProfile = data.profile;
+				if (isCodexIdentityLabel(data.profile)) sourceProfile = data.profile;
 				if (typeof data.resetsAt === "number" && Number.isFinite(data.resetsAt))
 					reset = new Date(data.resetsAt).toISOString();
 			} catch {}
 			const runs = options.store.codexQuota
 				.listTargets(incidentId)
 				.filter((target) => target.target_kind === "runner");
-			const targetProfile = ["school", "personal", "business"].includes(
-				String(incident?.target_profile),
-			)
+			const targetProfile = isCodexSlotName(incident?.target_profile)
 				? String(incident?.target_profile)
 				: "none";
 			const material =

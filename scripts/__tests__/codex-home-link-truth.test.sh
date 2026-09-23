@@ -17,14 +17,15 @@ file_mode() {
 
 make_fixture() {
 	local t="$1"
-	mkdir -p "$t/home/.codex" "$t/home/runner" "$t/bin"
-	printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' > "$t/registry.json"
+	mkdir -p "$t/home/.codex/profiles/personal" "$t/home/runner" "$t/bin"
+	printf '%s\n' '{"version":2,"primary":"personal"}' > "$t/registry.json"
 	python3 - "$t/home/.codex/auth.json" <<'PY'
 import base64, json, pathlib, sys
 payload = base64.urlsafe_b64encode(json.dumps({"email":"personal@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"acct-personal","chatgpt_plan_type":"pro"}}).encode()).decode().rstrip("=")
 pathlib.Path(sys.argv[1]).write_text(json.dumps({"tokens":{"id_token":"e30.%s.sig" % payload,"access_token":"fixture-access","refresh_token":"fixture-refresh"}}))
 PY
 	chmod 600 "$t/home/.codex/auth.json"
+	cp "$t/home/.codex/auth.json" "$t/home/.codex/profiles/personal/auth.json"
 	printf 'legacy-copy' > "$t/home/runner/auth.json"
 	chmod 600 "$t/home/runner/auth.json"
 	cat > "$t/bin/ps" <<'SH'

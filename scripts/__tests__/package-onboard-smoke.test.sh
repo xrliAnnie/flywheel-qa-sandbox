@@ -399,6 +399,14 @@ cat > "$GEN_STATE/bin/tmux" <<'SH'
 #!/bin/bash
 exit 0
 SH
+cat > "$GEN_STATE/bin/ps" <<'SH'
+#!/bin/bash
+case "${2:-}" in
+  lstart=) printf '%s\n' 'Thu Sep 18 00:00:00 2026' ;;
+  ppid=) printf '%s\n' 1 ;;
+  *) exit 2 ;;
+esac
+SH
 cat > "$GEN_STATE/bin/claude" <<'SH'
 #!/bin/bash
 exit 0
@@ -413,7 +421,7 @@ cat > "$GEN_STATE/bin/update-discord-plugin.sh" <<'SH'
 exit 0
 SH
 chmod +x "$GEN_STATE/bin/"*.sh "$GEN_STATE/bin/lib/"*.sh \
-  "$GEN_STATE/bin/tmux" "$GEN_STATE/bin/claude"
+  "$GEN_STATE/bin/tmux" "$GEN_STATE/bin/ps" "$GEN_STATE/bin/claude"
 cat > "$GEN_STATE/.env" <<'ENV'
 SMOKE_CLAUDE_TOKEN=claude-smoke-token
 SMOKE_CODEX_TOKEN=codex-smoke-token
@@ -428,14 +436,15 @@ exit 0
 SH
 chmod +x "$GEN_CODEX_HOME/packages/standalone/current/codex"
 # Isolated synthetic identity; exercise the shipped read-only truth inspector.
-mkdir -p "$GEN_HOME/.codex"
-printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' > "$GEN_HOME/account-registry.json"
+mkdir -p "$GEN_HOME/.codex/profiles/personal"
+printf '%s\n' '{"version":2,"primary":"personal"}' > "$GEN_HOME/account-registry.json"
 python3 - "$GEN_HOME/.codex/auth.json" <<'PY_AUTH'
 import base64, json, pathlib, sys
 payload = base64.urlsafe_b64encode(json.dumps({"email":"personal@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"acct-personal","chatgpt_plan_type":"pro"}}).encode()).decode().rstrip("=")
 pathlib.Path(sys.argv[1]).write_text(json.dumps({"tokens":{"id_token":"e30.%s.sig" % payload,"access_token":"fixture-access","refresh_token":"fixture-refresh"}}))
 PY_AUTH
 chmod 600 "$GEN_HOME/.codex/auth.json"
+cp "$GEN_HOME/.codex/auth.json" "$GEN_HOME/.codex/profiles/personal/auth.json"
 GEN_AUTH_TRUTH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GEN_HOME/.codex/auth.json")"
 printf '%s\n' '{}' > "$GEN_CODEX_HOME/auth.json"
 bash "$PKG_ROOT/scripts/materialize-lead-manifests.sh" \
@@ -446,6 +455,7 @@ run_generalized() {
   env -i HOME="$GEN_HOME" PATH="$GEN_STATE/bin:$PATH" \
     FLYWHEEL_DIR="$PKG_ROOT" FLYWHEEL_STATE_DIR="$GEN_STATE" \
     FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH="$GEN_HOME/account-registry.json" \
+    FLYWHEEL_CODEX_FENCE_PS_BIN="$GEN_STATE/bin/ps" \
     FLYWHEEL_LEAD_DRY_RUN="${FLYWHEEL_LEAD_DRY_RUN:-}" \
     "$@"
 }

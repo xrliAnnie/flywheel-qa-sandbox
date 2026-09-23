@@ -1,0 +1,62 @@
+[
+	{
+		"authHealth": "valid",
+		"note": null,
+		"usedPercent": 10,
+		"expected": "正常"
+	},
+	{
+		"authHealth": "valid",
+		"note": null,
+		"usedPercent": 100,
+		"expected": "打满"
+	},
+	{
+		"authHealth": "refresh_invalid",
+		"note": "token_revoked",
+		"usedPercent": null,
+		"expected": "已吊销"
+	},
+	{
+		"authHealth": "refresh_invalid",
+		"note": "token_expired",
+		"usedPercent": null,
+		"expected": "已过期"
+	},
+	{
+		"authHealth": "refresh_invalid",
+		"note": "refresh_invalid",
+		"usedPercent": null,
+		"expected": "凭据失效"
+	},
+	{
+		"authHealth": "missing",
+		"note": "not_logged_in",
+		"usedPercent": null,
+		"expected": "未登录"
+	},
+	{
+		"authHealth": "missing",
+		"note": "invalid_credential",
+		"usedPercent": null,
+		"expected": "凭据损坏"
+	},
+	{
+		"authHealth": "unknown",
+		"note": "duplicate_email",
+		"usedPercent": null,
+		"expected": "重复登录"
+	},
+	{
+		"authHealth": "in_use_unshared",
+		"note": "in_use_unshared",
+		"usedPercent": null,
+		"expected": "在用未探"
+	},
+	{
+		"authHealth": "unknown",
+		"note": "read_failed",
+		"usedPercent": null,
+		"expected": "未探"
+	}
+]

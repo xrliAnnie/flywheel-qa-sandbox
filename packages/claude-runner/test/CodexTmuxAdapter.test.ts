@@ -268,27 +268,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		mkdirSync(join(srcCodex, "profiles", "personal"), { recursive: true });
 		writeFileSync(
 			registryPath,
-			JSON.stringify({
-				version: 1,
-				primary: "personal",
-				profiles: [
-					{
-						name: "school",
-						email: "school@example.test",
-						role: "manual_backup",
-					},
-					{
-						name: "personal",
-						email: "personal@example.test",
-						role: "primary",
-					},
-					{
-						name: "business",
-						email: "business@example.test",
-						role: "manual_backup",
-					},
-				],
-			}),
+			JSON.stringify({ version: 2, primary: "personal" }),
+		);
+		writeFileSync(
+			join(srcCodex, "profiles", "personal", "auth.json"),
+			codexAuth("personal@example.test", "acct-personal"),
+			{ mode: 0o600 },
 		);
 		writeFileSync(
 			join(srcCodex, "auth.json"),

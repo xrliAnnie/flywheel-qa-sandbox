@@ -129,6 +129,46 @@ const binding = (i = 0) => ({
 	credentialRootKey: "root",
 });
 describe("Codex quota durable provenance", () => {
+	it("accepts dynamic slot names while rejecting unsafe identity labels", async () => {
+		store = await StateStore.create(":memory:");
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "source-key",
+			profile: "account-xrliannie-1",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			...binding(),
+			accountKey: "source-key",
+			profile: "account-xrliannie-1",
+		});
+		store.codexQuota.recordSignal({ executionId: "e0", bindingId: "b0" });
+		expect(() =>
+			store.codexQuota.recordInstalling({
+				incidentId: "codex:root:1",
+				profile: "shopping",
+				accountKey: "shopping-key",
+				priorAuthDigest: "old",
+				installedAuthDigest: "a".repeat(64),
+				recoveryMaterialPath: "/fixture/auth",
+			}),
+		).not.toThrow();
+		expect(store.codexQuota.listSwitchAudit()).toMatchObject([
+			{ from_profile: "account-xrliannie-1", to_profile: "shopping" },
+		]);
+		for (const profile of ["../x", "Foo", ""]) {
+			expect(() =>
+				store.codexQuota.recordSwitchAudit({
+					switchId: `bad-${profile}`,
+					incidentId: "codex:root:1",
+					from: profile,
+					to: "shopping",
+					reason: "usage_limit",
+					probeResult: "ok",
+				}),
+			).toThrow("invalid_quota_audit");
+		}
+	});
 	it("records each manual quota event as N11 without creating an automatic incident", async () => {
 		store = await StateStore.create(":memory:");
 		store.codexQuota.initializeRoot({
@@ -534,12 +574,20 @@ it("uses only the latest unresolved capacity fact as the current guard", async (
 		}));
 	store.codexQuota.recordPoolExhausted({
 		incidentId: "codex:root:1",
+		pool: ["business", "personal", "school"].map((profile) => ({
+			profile,
+			accountKey: `${profile}-key`,
+		})),
 		observations: observations(now - 1_000, now + 60_000),
 		observedAt: now - 1_000,
 		nextAttemptAt: now + 60_000,
 	});
 	store.codexQuota.recordPoolExhausted({
 		incidentId: "codex:root:1",
+		pool: ["business", "personal", "school"].map((profile) => ({
+			profile,
+			accountKey: `${profile}-key`,
+		})),
 		observations: observations(now - 500, now - 1),
 		observedAt: now - 500,
 		nextAttemptAt: now + 60_000,
@@ -548,6 +596,80 @@ it("uses only the latest unresolved capacity fact as the current guard", async (
 	expect(store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now)).toBe(
 		false,
 	);
+});
+it("binds capacity facts to account identities and replays only retained members", async () => {
+	store = await StateStore.create(":memory:");
+	const now = Date.parse("2026-09-17T20:00:00.000Z");
+	store.codexQuota.initializeRoot({
+		rootKey: "root",
+		accountKey: "a-key",
+		profile: "a",
+		generation: 1,
+	});
+	store.codexQuota.registerBinding({
+		...binding(),
+		accountKey: "a-key",
+		profile: "a",
+	});
+	store.codexQuota.recordSignal({ executionId: "e0", bindingId: "b0" });
+	const pool = [
+		{ profile: "a", accountKey: "a-key" },
+		{ profile: "b", accountKey: "b-key" },
+	];
+	const observations = pool.map((member, index) => ({
+		...member,
+		observedAt: now,
+		identityVerified: true,
+		authHealth: "valid" as const,
+		scopeKnown: true,
+		windows: [
+			{ usedPercent: 100, resetsAt: now + (index === 0 ? 10_000 : 50_000) },
+		],
+	}));
+	store.codexQuota.recordPoolExhausted({
+		incidentId: "codex:root:1",
+		pool,
+		observations,
+		observedAt: now,
+		nextAttemptAt: now + 10_000,
+	});
+
+	store.currentCodexPoolMembers = () => pool;
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 5_000),
+	).toBe(true);
+	store.currentCodexPoolMembers = () => [
+		...pool,
+		{ profile: "shopping", accountKey: "shopping-key" },
+	];
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 5_000),
+	).toBe(false);
+	store.currentCodexPoolMembers = () => [
+		{ profile: "a", accountKey: "new-a-key" },
+		pool[1]!,
+	];
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 5_000),
+	).toBe(false);
+
+	store.currentCodexPoolMembers = () => [pool[1]!];
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 15_000),
+	).toBe(true);
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 55_000),
+	).toBe(false);
+	store.currentCodexPoolMembers = () => [];
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 55_000),
+	).toBe(true);
+	store.currentCodexPoolMembers = () => {
+		throw new Error("inventory unavailable");
+	};
+	expect(
+		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 55_000),
+	).toBe(true);
 });
 it("late prior-generation incident cannot pause a current healthy root", async () => {
 	store = await StateStore.create(":memory:");

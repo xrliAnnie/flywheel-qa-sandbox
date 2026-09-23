@@ -1,0 +1,22 @@
+flowchart LR
+  START(("开始")) --> DIR["目录存在"]
+  DIR -- "没有 auth.json" --> S1["未登录"]
+  DIR -- "auth.json 读不出身份" --> S2["凭据损坏"]
+  DIR -- "和别的目录是同一个邮箱" --> S3["重复登录"]
+  DIR -- "身份唯一" --> HAS["有凭据"]
+  HAS -- "正被在跑的 Codex 使用" --> S4["在用未探"]
+  HAS -- "Bridge 起隔离 app-server" --> PROBE{"真探"}
+  PROBE -- "token_revoked 等" --> S5["已吊销"]
+  PROBE -- "refresh_token_expired" --> S6["已过期"]
+  PROBE -- "仅 invalid_grant" --> S7["凭据失效"]
+  PROBE -- "某窗口 100%" --> S8["打满"]
+  PROBE -- "读到额度 未打满" --> S9["正常"]
+  PROBE -- "超时 / 读取失败" --> S10["未探"]
+  classDef bad fill:#fdecec,stroke:#ff3b30,color:#1d1d1f
+  classDef ok fill:#e8f8ec,stroke:#34c759,color:#1d1d1f
+  classDef warn fill:#fff4e5,stroke:#ff9500,color:#1d1d1f
+  classDef dim fill:#f2f2f4,stroke:#86868b,color:#1d1d1f
+  class S1,S2,S3,S5,S6,S7 bad
+  class S9 ok
+  class S8 warn
+  class S4,S10 dim

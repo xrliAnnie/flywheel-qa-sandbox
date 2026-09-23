@@ -70,7 +70,7 @@ import {
 	type CodexAuthIdentity,
 	DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
 	identifyCodexAuth,
-	loadCodexAccountRegistry,
+	loadCodexAccountPool,
 } from "./codex-account-identity.js";
 import {
 	recordCodexAccountObservation,
@@ -740,15 +740,9 @@ export function discoverAccountPool(
 ): string[] {
 	const dir = codexProfilesDir(env);
 	if (!existsSync(dir)) return [];
-	const canonical = new Set<string>(
-		loadCodexAccountRegistry(registryPath).profiles.map(
-			(profile) => profile.name,
-		),
+	return loadCodexAccountPool({ profilesRoot: dir, registryPath }).profiles.map(
+		(profile) => profile.name,
 	);
-	return readdirSync(dir, { withFileTypes: true })
-		.filter((d) => d.isDirectory() && canonical.has(d.name))
-		.map((d) => d.name)
-		.sort();
 }
 
 export function assertCodexSourceIdentity({
@@ -792,9 +786,15 @@ function readCodexSourceAuth({
 			);
 		}
 		const raw = readFileSync(fd, "utf8");
+		const profilesRoot = codexProfilesDir(env);
 		return {
 			raw,
-			identity: identifyCodexAuth(raw, loadCodexAccountRegistry(registryPath)),
+			identity: identifyCodexAuth(
+				raw,
+				existsSync(profilesRoot)
+					? loadCodexAccountPool({ profilesRoot, registryPath })
+					: { profiles: [] },
+			),
 		};
 	} finally {
 		if (fd !== undefined) closeSync(fd);
@@ -2052,6 +2052,7 @@ function provisionCodexHomeAt(
 				identity: sourceIdentity,
 				home,
 				source: "provision",
+				profilesRoot: codexProfilesDir(env),
 				ledgerRoot: opts.ledgerRoot ?? resolveCodexAccountLedgerRoot(env),
 				registryPath: opts.registryPath ?? DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
 			});

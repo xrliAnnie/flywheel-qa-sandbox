@@ -1,6 +1,6 @@
-export const CODEX_QUOTA_PROFILES = ["business", "personal", "school"] as const;
+import { isCodexSlotName } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 
-export type CodexQuotaProfile = (typeof CODEX_QUOTA_PROFILES)[number];
+export type CodexQuotaProfile = string;
 export type QuotaState = "available" | "exhausted" | "unknown";
 
 export interface CodexResetCreditState {
@@ -91,12 +91,12 @@ const exclusionOrder: readonly CodexResetSelectionExclusionCode[] = [
 
 const noRecommendationReasons: Record<CodexResetNoRecommendationCode, string> =
 	{
-		invalid_input: "输入不是完整且有效的三号快照，无法安全推荐。",
+		invalid_input: "输入不是完整且有效的账号快照，无法安全推荐。",
 		quota_available: "至少一个有效账号仍有周额度，不应兑卡。",
 		quota_state_unknown: "至少一个有效账号的周额度状态未知，无法确认全线停摆。",
 		auth_state_unknown: "至少一个账号的登录状态未知，无法确认全线停摆。",
-		all_candidates_excluded: "三个账号都已被本次重算明确排除，无法继续推荐。",
-		no_usable_account: "三个账号的登录都已失效，没有可兑卡的账号。",
+		all_candidates_excluded: "全部账号都已被本次重算明确排除，无法继续推荐。",
+		no_usable_account: "全部账号的登录都已失效，没有可兑卡的账号。",
 		reset_time_unknown: "候选号的周重置时刻读不到，无法安全推荐。",
 		card_count_unknown: "候选号的重置卡张数读不到，无法安全推荐。",
 		credit_details_unknown:
@@ -108,15 +108,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
 const isProfile = (value: unknown): value is CodexQuotaProfile =>
-	typeof value === "string" &&
-	(CODEX_QUOTA_PROFILES as readonly string[]).includes(value);
+	isCodexSlotName(value);
 
 const validEpoch = (value: unknown): value is number =>
 	typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
-function profileRank(profile: CodexQuotaProfile): number {
-	return CODEX_QUOTA_PROFILES.indexOf(profile);
-}
 
 function noRecommendation(
 	reasonCode: CodexResetNoRecommendationCode,
@@ -191,7 +186,7 @@ function selectedReason(
 		case "most_credits":
 			return `${candidate.profile} 与其它候选同刻重置且剩卡最多。`;
 		case "profile_order":
-			return `候选在前序阶梯全部平手，按固定账号序选择 ${candidate.profile}。`;
+			return `候选在前序阶梯全部平手，按账号名字典序选择 ${candidate.profile}。`;
 		case "sole_candidate":
 			return `${candidate.profile} 是唯一可安全显式兑卡的候选号。`;
 	}
@@ -206,7 +201,7 @@ function compareCandidates(a: Candidate, b: Candidate): number {
 		return b.weeklyResetAt - a.weeklyResetAt;
 	if (a.availableCount !== b.availableCount)
 		return a.availableCount > b.availableCount ? -1 : 1;
-	return profileRank(a.profile) - profileRank(b.profile);
+	return a.profile.localeCompare(b.profile, "en-US");
 }
 
 function selectionReasonCode(
@@ -255,27 +250,21 @@ export function selectCodexResetCredit(
 	accounts: readonly CodexResetAccountState[],
 	options: { excludedProfiles?: readonly CodexQuotaProfile[] } = {},
 ): CodexResetCreditSelection {
-	if (
-		!Array.isArray(accounts) ||
-		accounts.length !== CODEX_QUOTA_PROFILES.length
-	)
+	if (!Array.isArray(accounts) || accounts.length === 0)
 		return noRecommendation("invalid_input");
 	if (!accounts.every(validAccountShape))
 		return noRecommendation("invalid_input");
 	const byProfile = new Map(
 		accounts.map((account) => [account.profile, account] as const),
 	);
-	if (
-		byProfile.size !== CODEX_QUOTA_PROFILES.length ||
-		CODEX_QUOTA_PROFILES.some((profile) => !byProfile.has(profile))
-	)
+	if (byProfile.size !== accounts.length)
 		return noRecommendation("invalid_input");
 	const excludedInput = options.excludedProfiles ?? [];
 	if (!Array.isArray(excludedInput) || !excludedInput.every(isProfile))
 		return noRecommendation("invalid_input");
 	const excludedProfiles = new Set(excludedInput);
-	const ordered = CODEX_QUOTA_PROFILES.map(
-		(profile) => byProfile.get(profile)!,
+	const ordered = [...accounts].sort((a, b) =>
+		a.profile.localeCompare(b.profile, "en-US"),
 	);
 
 	if (
@@ -386,7 +375,7 @@ export function selectCodexResetCredit(
 	}
 
 	if (invalidInventory) return noRecommendation("invalid_input");
-	const exclusions = CODEX_QUOTA_PROFILES.flatMap((profile) => {
+	const exclusions = ordered.flatMap(({ profile }) => {
 		const profileReasons = reasons.get(profile);
 		if (!profileReasons?.size) return [];
 		return [
@@ -398,7 +387,7 @@ export function selectCodexResetCredit(
 			},
 		];
 	});
-	if (excludedProfiles.size === CODEX_QUOTA_PROFILES.length)
+	if (excludedProfiles.size === ordered.length)
 		return noRecommendation("all_candidates_excluded", exclusions);
 	if (ordered.every((account) => account.auth === "invalid"))
 		return noRecommendation("no_usable_account", exclusions);

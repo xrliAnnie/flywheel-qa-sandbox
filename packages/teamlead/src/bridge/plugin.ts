@@ -41,7 +41,8 @@ import {
 	syncOpMarkerPath,
 	withSyncOpMarker,
 } from "flywheel-claude-runner";
-import { loadCodexAccountRegistry } from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import { loadCodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import { codexInstallAccountKey } from "flywheel-claude-runner/bin/codex-account-install.mjs";
 import { CommDB } from "flywheel-comm/db";
 import {
 	defaultGateMarkerDir,
@@ -1597,7 +1598,10 @@ export interface BridgeAppOptions {
 		rootKey: string;
 		canRecover: (incidentId: string) => Promise<boolean>;
 		/** FLY-2688: on-demand Codex account readings; never scheduled. */
-		refreshAccountQuota?: () => Promise<void>;
+		refreshAccountQuota?: () => Promise<{
+			generatedAt: string;
+			accountCount: number;
+		}>;
 	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
@@ -1947,7 +1951,28 @@ export function createBridgeApp(
 			scanSchedule: opts?.epicPageScanSchedule,
 		}),
 	);
+	let codexAccountsRefreshRequest:
+		| Promise<{ generatedAt: string; accountCount: number }>
+		| undefined;
 	if (config.apiToken) {
+		app.post(
+			"/api/codex-accounts/refresh",
+			tokenAuthMiddleware(config.apiToken),
+			async (_req, res) => {
+				try {
+					const refresh = opts?.codexQuota?.refreshAccountQuota;
+					if (!refresh) throw new Error("unavailable");
+					codexAccountsRefreshRequest ??= refresh().finally(() => {
+						codexAccountsRefreshRequest = undefined;
+					});
+					res.json({ ok: true, ...(await codexAccountsRefreshRequest) });
+				} catch {
+					res
+						.status(503)
+						.json({ ok: false, error: "Codex account refresh unavailable" });
+				}
+			},
+		);
 		app.get(
 			"/api/capacity",
 			tokenAuthMiddleware(config.apiToken),
@@ -2025,6 +2050,12 @@ export function createBridgeApp(
 			(_req, res) => res.json(buildWorkflowMenuPolicyCatalog()),
 		);
 	} else {
+		app.use("/api/codex-accounts/refresh", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				error: "Codex account refresh requires TEAMLEAD_API_TOKEN",
+			});
+		});
 		app.use("/api/capacity", (_req, res) => {
 			res.status(503).json({
 				error: "capacity API requires TEAMLEAD_API_TOKEN",
@@ -8593,14 +8624,9 @@ export async function startBridge(
 			if (!receipt.queued) throw new Error("quota_runtime_alert_not_queued");
 		},
 	});
-	let codexQuotaAccountRegistry: ReturnType<
-		typeof loadCodexAccountRegistry
-	> | null = null;
-	const getCodexQuotaAccountRegistry = () => {
-		if (!codexQuotaAccountRegistry)
-			codexQuotaAccountRegistry = loadCodexAccountRegistry();
-		return codexQuotaAccountRegistry;
-	};
+	const codexQuotaProfilesRoot = join(codexQuotaCanonicalHome, "profiles");
+	const getCodexQuotaAccountPool = () =>
+		loadCodexAccountPool({ profilesRoot: codexQuotaProfilesRoot });
 	const codexQuotaCollectHomes = createCodexQuotaHostCollector(
 		createRegisteredCodexQuotaHostCollectorOptions(projects, {
 			canonicalHome: codexQuotaCanonicalHome,
@@ -8622,7 +8648,7 @@ export async function startBridge(
 				if (typeof token !== "string" || !token)
 					throw new Error("quota_refresh_identity_unavailable");
 				return {
-					...codexQuotaIdentityReader(getCodexQuotaAccountRegistry())(bytes),
+					...codexQuotaIdentityReader(getCodexQuotaAccountPool())(bytes),
 					chainKey: createHash("sha256").update(token).digest("hex"),
 				};
 			},
@@ -8649,6 +8675,19 @@ export async function startBridge(
 					}),
 	});
 	store.codexQuotaAvailability = () => codexQuotaAvailability.snapshot();
+	store.currentCodexPoolMembers = () => {
+		const pool = getCodexQuotaAccountPool();
+		return pool.profiles.map((profile) => {
+			const identity = pool.slots.find(
+				(slot) => slot.name === profile.name && slot.state === "ready",
+			)?.identity;
+			if (!identity) throw new Error("codex_pool_identity_unavailable");
+			return {
+				profile: profile.name,
+				accountKey: codexInstallAccountKey(identity),
+			};
+		});
+	};
 	const codexQuotaMaintenance = createCodexQuotaMaintenance({
 		store,
 		refreshAvailability: () => codexQuotaAvailability.refresh(),
@@ -8666,23 +8705,22 @@ export async function startBridge(
 				.update(canonicalHome)
 				.digest("hex");
 			if (!config.apiToken) throw new Error("quota_api_token_missing");
-			const accountRegistry = getCodexQuotaAccountRegistry();
 			const recovery = createCodexQuotaRunRecovery({
 				readiness: async () => (await codexQuotaRuntime?.readiness()) ?? false,
 				store,
 				bridgeUrl: buildLoopbackBaseUrl(config.host, config.port),
 				apiToken: config.apiToken,
 				canonicalHome,
-				identify: codexQuotaIdentityReader(accountRegistry),
+				pool: getCodexQuotaAccountPool,
 			});
 			codexQuotaCanRecover = recovery.canRecover;
 			codexQuotaRuntime = new CodexQuotaRuntime({
 				store,
 				canonicalHome,
-				profilesRoot: join(canonicalHome, "profiles"),
+				profilesRoot: codexQuotaProfilesRoot,
 				stateRoot: codexQuotaStateRoot,
 				rawBinary: rawCodexBin(),
-				registry: accountRegistry,
+				pool: getCodexQuotaAccountPool,
 				model: (incident) => {
 					for (const target of store.codexQuota.listTargets(
 						String(incident.incident_id),
@@ -8727,8 +8765,13 @@ export async function startBridge(
 	// Same path the capacity snapshot reads by default; derived once so the
 	// writer and the reader cannot drift.
 	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
-	let codexAccountQuotaRefresh: Promise<void> | undefined;
-	const refreshCodexAccountQuota = (): Promise<void> => {
+	let codexAccountQuotaRefresh:
+		| Promise<{ generatedAt: string; accountCount: number }>
+		| undefined;
+	const refreshCodexAccountQuota = (): Promise<{
+		generatedAt: string;
+		accountCount: number;
+	}> => {
 		codexAccountQuotaRefresh ??= (async () => {
 			// Hard ceiling above the observer's own round deadline so a wedged
 			// app-server cannot hold the request open.
@@ -8739,11 +8782,11 @@ export async function startBridge(
 				if (!runtime) throw new Error("codex_quota_runtime_unavailable");
 				const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
 				const store = await observeCodexAccounts({
-					profilesRoot: join(canonicalHome, "profiles"),
+					profilesRoot: codexQuotaProfilesRoot,
 					canonicalAuthPath: join(canonicalHome, "auth.json"),
 					workspaceRoot: join(codexQuotaStateRoot, "accounts-page-candidates"),
 					binary: rawCodexBin(),
-					registry: getCodexQuotaAccountRegistry(),
+					pool: getCodexQuotaAccountPool,
 					limitId: "codex",
 					previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
 					signal: abort.signal,
@@ -8751,6 +8794,10 @@ export async function startBridge(
 					refreshInUse: () => runtime.accountInUseGuard(),
 				});
 				writeCodexAccountQuotaStore(codexAccountQuotaStorePath, store);
+				return {
+					generatedAt: store.generatedAt,
+					accountCount: store.accounts.length,
+				};
 			} finally {
 				clearTimeout(ceiling);
 				codexAccountQuotaRefresh = undefined;

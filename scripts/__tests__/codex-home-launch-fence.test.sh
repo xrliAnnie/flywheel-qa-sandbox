@@ -12,7 +12,7 @@ CANONICAL="$USER_HOME/.codex"
 LEAD_HOME="$USER_HOME/.codex-raya"
 REGISTRY="$TMP/registry.json"
 APPROVED="$TMP/approved.json"
-mkdir -p "$STATE_ROOT" "$CANONICAL" "$LEAD_HOME"
+mkdir -p "$STATE_ROOT" "$CANONICAL/profiles/personal" "$LEAD_HOME"
 PS_BIN="$TMP/ps"
 cat > "$PS_BIN" <<'SH'
 #!/usr/bin/env bash
@@ -45,13 +45,14 @@ print(hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest())
 PY
 }
 
-printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"personal","email":"personal@example.test","role":"primary"}]}' > "$REGISTRY"
+printf '%s\n' '{"version":2,"primary":"personal"}' > "$REGISTRY"
 python3 - "$CANONICAL/auth.json" <<'PY'
 import base64, json, pathlib, sys
 payload = base64.urlsafe_b64encode(json.dumps({"email":"personal@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"acct-personal","chatgpt_plan_type":"pro"}}).encode()).decode().rstrip("=")
 pathlib.Path(sys.argv[1]).write_text(json.dumps({"tokens":{"id_token":"e30.%s.sig" % payload,"access_token":"fixture-access","refresh_token":"fixture-refresh"}}))
 PY
 chmod 600 "$CANONICAL/auth.json"
+cp "$CANONICAL/auth.json" "$CANONICAL/profiles/personal/auth.json"
 printf 'lead-copy' > "$LEAD_HOME/auth.json"
 printf 'pending\n' > "$LEAD_HOME/.credential-copy-pending"
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify([{id:"raya/raya",home:process.argv[2],ownership:"managed",leadTuple:"raya/raya"}]))' "$APPROVED" "$LEAD_HOME"

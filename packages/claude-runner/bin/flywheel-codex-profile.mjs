@@ -7,7 +7,6 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
-	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -16,8 +15,7 @@ import {
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
 	identifyCodexAuth,
-	loadCodexAccountRegistry,
-	readCodexAccountSnapshot,
+	loadCodexAccountPool,
 	recordCodexAccountObservation,
 	redactCodexEmail,
 } from "./codex-account-core.mjs";
@@ -29,14 +27,24 @@ import {
 } from "./codex-account-install.mjs";
 
 function withManualCredentialLocks(context, name, operation) {
-	expectedProfile(context.registry, name);
+	expectedProfile(context, name, operation);
 	assertSafeDirectory(context.profiles, "Codex profile pool");
 	const sourcePath =
 		operation === "use"
 			? join(context.profiles, name, "auth.json")
 			: join(context.home, "auth.json");
-	const initial = verifiedAuth(sourcePath, name, context.registry);
+	const initial = verifiedAuth(sourcePath, name, context.pool);
 	const accountKey = codexInstallAccountKey(initial.identity);
+	if (operation === "save") {
+		const target = verifiedAuth(
+			join(context.profiles, name, "auth.json"),
+			name,
+			context.pool,
+		);
+		if (codexInstallAccountKey(target.identity) !== accountKey) {
+			fail("Codex save identity mismatch with target profile slot");
+		}
+	}
 	const lease = acquireCodexAccountLease(context.profiles, accountKey);
 	try {
 		if (lease.orphanRecovery) fail("codex_candidate_recovery_required");
@@ -44,9 +52,19 @@ function withManualCredentialLocks(context, name, operation) {
 			create: operation === "use",
 		});
 		return withCodexInstallLock(context.home, () => {
-			const current = verifiedAuth(sourcePath, name, context.registry);
+			const current = verifiedAuth(sourcePath, name, context.pool);
 			if (codexInstallAccountKey(current.identity) !== accountKey)
 				fail("codex_account_changed");
+			if (operation === "save") {
+				const target = verifiedAuth(
+					join(context.profiles, name, "auth.json"),
+					name,
+					context.pool,
+				);
+				if (codexInstallAccountKey(target.identity) !== accountKey) {
+					fail("Codex save identity mismatch with target profile slot");
+				}
+			}
 			if (operation === "use") return use(context, name);
 			return save(context, name);
 		});
@@ -65,7 +83,7 @@ function usage() {
 Manual Codex account control for one CODEX_HOME.
 
 Commands:
-  list          Show the canonical School/Personal/Business pool
+  list          Show every account slot discovered in the profiles directory
   use <name>    Install a verified pool credential into this home
   save <name>   Save this home's credential to its matching pool slot
   status        Inspect the live auth.json identity and sidecar drift
@@ -79,7 +97,13 @@ function parseArgs(argv) {
 		const flag = argv[index];
 		if (flag === "--json") break;
 		if (
-			!["--home", "--profiles", "--ledger-root", "--registry"].includes(flag)
+			![
+				"--home",
+				"--profiles",
+				"--ledger-root",
+				"--registry",
+				"--snapshot",
+			].includes(flag)
 		) {
 			fail(`Unknown option: ${flag}`);
 		}
@@ -94,17 +118,28 @@ function parseArgs(argv) {
 			fail(`--${key} must be an explicit absolute path`);
 		}
 	}
+	if (
+		values.snapshot !== undefined &&
+		(typeof values.snapshot !== "string" || !isAbsolute(values.snapshot))
+	) {
+		fail("--snapshot must be an explicit absolute path");
+	}
 	const command = argv[index];
 	const rest = argv.slice(index + 1);
 	const json = rest.includes("--json");
-	const positional = rest.filter((value) => value !== "--json");
+	const refresh = rest.includes("--refresh");
+	const positional = rest.filter(
+		(value) => value !== "--json" && value !== "--refresh",
+	);
 	return {
 		home: values.home,
 		profiles: values.profiles,
 		ledgerRoot: values["ledger-root"],
 		registryPath: values.registry,
+		snapshotPath: values.snapshot,
 		command,
 		json,
+		refresh,
 		positional,
 	};
 }
@@ -193,13 +228,30 @@ function atomicWrite(path, contents, mode, verify) {
 	}
 }
 
-function expectedProfile(registry, name) {
-	const profile = registry.profiles.find(
+function shellQuote(value) {
+	return /^[A-Za-z0-9_./-]+$/.test(value)
+		? value
+		: `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function expectedProfile(context, name, operation) {
+	const profile = context.pool.profiles.find(
 		(candidate) => candidate.name === name,
 	);
 	if (!profile) {
+		const problem = context.pool.problems.find(
+			(candidate) => candidate.name === name,
+		);
+		if (problem) {
+			const login =
+				operation === "save" && problem.code === "not_logged_in"
+					? `; new accounts must login directly: CODEX_HOME=${shellQuote(join(context.profiles, name))} codex login`
+					: "";
+			fail(`Codex profile '${name}' is ${problem.code}${login}`);
+		}
+		const names = context.pool.profiles.map((candidate) => candidate.name);
 		fail(
-			`Unknown Codex profile '${name ?? ""}'; expected school, personal, or business`,
+			`Unknown Codex profile '${name ?? ""}'; expected one of: ${names.join(", ")}`,
 		);
 	}
 	return profile;
@@ -237,6 +289,7 @@ function recordObservationBestEffort(context, identity, source) {
 			home: context.home,
 			source,
 			ledgerRoot: context.ledgerRoot,
+			profilesRoot: context.profiles,
 			registryPath: context.registryPath,
 		});
 	} catch (error) {
@@ -252,7 +305,7 @@ function status(context) {
 		join(context.home, "auth.json"),
 		"Codex home auth.json",
 	);
-	const actual = identifyCodexAuth(raw, context.registry);
+	const actual = identifyCodexAuth(raw, context.pool);
 	const sidecarHint = readSidecar(context.home);
 	const drift = sidecarHint !== null && sidecarHint !== actual.profile;
 	const result = { actual, sidecarHint, drift };
@@ -271,83 +324,179 @@ function status(context) {
 	recordObservationBestEffort(context, actual, "status");
 }
 
-function list(context) {
-	assertSafeDirectory(context.profiles, "Codex profile pool");
-	const profiles = context.registry.profiles.map((profile) => {
-		const profileDir = join(context.profiles, profile.name);
-		let lastObservation = null;
-		let ledgerUnreadable = false;
-		try {
-			lastObservation = readCodexAccountSnapshot(profile.name, {
-				ledgerRoot: context.ledgerRoot,
-				registryPath: context.registryPath,
-			});
-		} catch (error) {
-			ledgerUnreadable = true;
-			console.warn(
-				`[codex-profile] ledger snapshot unreadable for ${profile.name} at ${ledgerSnapshotPath(context, profile.name)}; live identity remains authoritative: ${errorMessage(error)}`,
-			);
-		}
-		const ledgerStatus = ledgerUnreadable ? { ledgerUnreadable: true } : {};
-		try {
-			assertSafeDirectory(profileDir, `Codex ${profile.name} profile`);
-			const identity = verifiedAuth(
-				join(profileDir, "auth.json"),
-				profile.name,
-				context.registry,
-			).identity;
-			return {
-				...profile,
-				status: "ready",
-				identity,
-				lastObservation,
-				...ledgerStatus,
-			};
-		} catch (error) {
-			return {
-				...profile,
-				status: "invalid",
-				lastObservation,
-				...ledgerStatus,
-				error: errorMessage(error),
-			};
-		}
+function isRecord(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readQuotaSnapshot(path) {
+	const empty = (error) => ({
+		path: path ?? null,
+		generatedAt: null,
+		rows: [],
+		error,
 	});
-	const canonical = new Set(
-		context.registry.profiles.map((profile) => profile.name),
+	if (!path) return empty("not_configured");
+	if (!lstatIfExists(path)) return empty("missing");
+	try {
+		const parsed = JSON.parse(readSafeFile(path, "Codex quota snapshot"));
+		if (
+			!isRecord(parsed) ||
+			!Array.isArray(parsed.accounts) ||
+			(typeof parsed.generatedAt !== "string" && parsed.generatedAt !== null)
+		) {
+			return empty("invalid");
+		}
+		return {
+			path,
+			generatedAt: parsed.generatedAt,
+			rows: parsed.accounts.filter(isRecord),
+			error: null,
+		};
+	} catch {
+		return empty("unreadable");
+	}
+}
+
+function exhausted(reading) {
+	return [reading?.fiveH, reading?.weekly].some(
+		(window) => isRecord(window) && window.usedPercent === 100,
 	);
-	const untracked = readdirSync(context.profiles, { withFileTypes: true })
-		.filter(
-			(entry) =>
-				(entry.isDirectory() || entry.isSymbolicLink()) &&
-				!canonical.has(entry.name) &&
-				entry.name !== ".codex-quota-account-locks",
-		)
-		.map((entry) => entry.name)
-		.sort();
-	const result = { primary: context.registry.primary, profiles, untracked };
+}
+
+function tokenStatus(reading, problem) {
+	if (problem === "not_logged_in") return "未登录";
+	if (problem === "invalid_credential") return "凭据损坏";
+	if (problem === "duplicate_email") return "重复登录";
+	if (!reading) return "未探";
+	if (reading.note === "token_revoked") return "已吊销";
+	if (reading.note === "token_expired") return "已过期";
+	if (reading.note === "refresh_invalid") return "凭据失效";
+	if (reading.note === "not_logged_in") return "未登录";
+	if (reading.note === "invalid_credential") return "凭据损坏";
+	if (reading.note === "duplicate_email") return "重复登录";
+	if (reading.authHealth === "in_use_unshared") return "在用未探";
+	if (reading.authHealth === "valid")
+		return exhausted(reading) ? "打满" : "正常";
+	return "未探";
+}
+
+function snapshotReading(snapshot, slot) {
+	if (slot.state !== "ready" || !slot.identity) return null;
+	const identityKey = codexInstallAccountKey(slot.identity);
+	const row = snapshot.rows.find((candidate) => candidate.name === slot.name);
+	return row &&
+		typeof row.identityKey === "string" &&
+		/^[a-f0-9]{64}$/.test(row.identityKey) &&
+		row.identityKey === identityKey
+		? row
+		: null;
+}
+
+function resetAt(reading, key) {
+	const value = reading?.[key];
+	return isRecord(value) && typeof value.resetAt === "string"
+		? value.resetAt
+		: null;
+}
+
+async function refreshQuotaSnapshot(context) {
+	if (!context.refresh) return { requested: false, ok: true, error: null };
+	const token = process.env.TEAMLEAD_API_TOKEN;
+	if (!token)
+		return {
+			requested: true,
+			ok: false,
+			error: "TEAMLEAD_API_TOKEN is required",
+		};
+	let url;
+	try {
+		url = new URL(process.env.FLYWHEEL_BRIDGE_URL || "http://127.0.0.1:9876");
+	} catch {
+		return { requested: true, ok: false, error: "invalid FLYWHEEL_BRIDGE_URL" };
+	}
+	if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+		return { requested: true, ok: false, error: "bridge URL must be loopback" };
+	}
+	url.pathname = "/api/codex-accounts/refresh";
+	url.search = "";
+	try {
+		const response = await fetch(url, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}` },
+			signal: AbortSignal.timeout(100_000),
+		});
+		if (!response.ok) {
+			return { requested: true, ok: false, error: `HTTP ${response.status}` };
+		}
+		return { requested: true, ok: true, error: null };
+	} catch (error) {
+		return { requested: true, ok: false, error: errorMessage(error) };
+	}
+}
+
+async function list(context) {
+	const refresh = await refreshQuotaSnapshot(context);
+	const snapshot = readQuotaSnapshot(context.snapshotPath);
+	const profileByName = new Map(
+		context.pool.profiles.map((profile) => [profile.name, profile]),
+	);
+	const problemByName = new Map(
+		context.pool.problems.map((problem) => [problem.name, problem.code]),
+	);
+	const accounts = context.pool.slots
+		.filter((slot) => slot.state !== "invalid_name")
+		.map((slot) => {
+			const profile = profileByName.get(slot.name);
+			const problem = problemByName.get(slot.name) ?? null;
+			const reading = snapshotReading(snapshot, slot);
+			return {
+				name: slot.name,
+				role: profile?.role ?? null,
+				email: slot.identity?.email ?? null,
+				plan: slot.identity?.plan ?? null,
+				tokenStatus: tokenStatus(reading, problem),
+				fiveHResetAt: resetAt(reading, "fiveH"),
+				weeklyResetAt: resetAt(reading, "weekly"),
+				observedAt:
+					reading && typeof reading.observedAt === "string"
+						? reading.observedAt
+						: null,
+				problem,
+			};
+		});
+	const result = {
+		primary: context.pool.primary,
+		accounts,
+		problems: context.pool.problems,
+		snapshot: {
+			path: snapshot.path,
+			generatedAt: snapshot.generatedAt,
+		},
+		refresh,
+	};
 	if (context.json) {
 		console.log(JSON.stringify(result, null, 2));
-		return;
+	} else {
+		for (const account of accounts) {
+			console.log(
+				`${account.name}: ${account.role ?? account.problem ?? "unknown"} | ${account.email ?? "—"} | ${account.plan ?? "—"} | token ${account.tokenStatus} | 5h ${account.fiveHResetAt ?? "—"} | weekly ${account.weeklyResetAt ?? "—"} | observed ${account.observedAt ?? "—"}`,
+			);
+		}
+		if (snapshot.error) console.log(`Snapshot: ${snapshot.error}`);
+		if (!refresh.ok) console.error(`REFRESH FAILED: ${refresh.error}`);
 	}
-	for (const profile of profiles) {
-		const ledgerStatus = profile.ledgerUnreadable ? " [ledger unreadable]" : "";
-		console.log(
-			`${profile.name}: ${profile.status} (${profile.role})${ledgerStatus}`,
-		);
-	}
-	if (untracked.length > 0) console.log(`Untracked: ${untracked.join(", ")}`);
+	if (!refresh.ok) process.exitCode = 3;
 }
 
 function use(context, name) {
-	expectedProfile(context.registry, name);
+	expectedProfile(context, name, "use");
 	assertSafeDirectory(context.profiles, "Codex profile pool");
 	const profileDir = join(context.profiles, name);
 	assertSafeDirectory(profileDir, `Codex ${name} profile`);
 	const source = verifiedAuth(
 		join(profileDir, "auth.json"),
 		name,
-		context.registry,
+		context.pool,
 	);
 	assertSafeDirectory(context.home, "CODEX_HOME", { create: true });
 	atomicWrite(
@@ -355,7 +504,7 @@ function use(context, name) {
 		source.raw,
 		0o600,
 		(tempPath) => {
-			verifiedAuth(tempPath, name, context.registry);
+			verifiedAuth(tempPath, name, context.pool);
 		},
 	);
 	atomicWrite(join(context.home, ".active"), `${name}\n`, 0o600);
@@ -366,18 +515,18 @@ function use(context, name) {
 }
 
 function save(context, name) {
-	expectedProfile(context.registry, name);
+	expectedProfile(context, name, "save");
 	assertSafeDirectory(context.home, "CODEX_HOME");
 	const source = verifiedAuth(
 		join(context.home, "auth.json"),
 		name,
-		context.registry,
+		context.pool,
 	);
 	assertSafeDirectory(context.profiles, "Codex profile pool");
 	const profileDir = join(context.profiles, name);
 	assertSafeDirectory(profileDir, `Codex ${name} profile`);
 	atomicWrite(join(profileDir, "auth.json"), source.raw, 0o600, (tempPath) => {
-		verifiedAuth(tempPath, name, context.registry);
+		verifiedAuth(tempPath, name, context.pool);
 	});
 	console.log(
 		`Saved verified Codex profile '${name}' (${source.identity.mode})`,
@@ -385,10 +534,13 @@ function save(context, name) {
 	recordObservationBestEffort(context, source.identity, "save");
 }
 
-function main() {
+async function main() {
 	const options = parseArgs(process.argv.slice(2));
-	const registry = loadCodexAccountRegistry(options.registryPath);
-	const context = { ...options, registry };
+	const pool = loadCodexAccountPool({
+		profilesRoot: options.profiles,
+		registryPath: options.registryPath,
+	});
+	const context = { ...options, pool };
 	switch (options.command) {
 		case "status":
 			if (options.positional.length > 0) fail(usage());
@@ -396,7 +548,7 @@ function main() {
 			break;
 		case "list":
 			if (options.positional.length > 0) fail(usage());
-			list(context);
+			await list(context);
 			break;
 		case "use":
 			if (options.positional.length !== 1) fail(usage());
@@ -408,7 +560,7 @@ function main() {
 			break;
 		case "next":
 			fail(
-				"Automatic Codex account switching is retired. Use 'flywheel-codex-profile use <school|personal|business>' after checking status.",
+				"Automatic Codex account switching is retired. Run 'flywheel-codex-profile list', then use '<name>'.",
 			);
 			break;
 		default:
@@ -417,7 +569,7 @@ function main() {
 }
 
 try {
-	main();
+	await main();
 } catch (error) {
 	console.error(
 		`Error: ${error instanceof Error ? error.message : String(error)}`,

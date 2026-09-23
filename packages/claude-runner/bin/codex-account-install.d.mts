@@ -1,5 +1,5 @@
 import type {
-	CodexAccountRegistry,
+	CodexAccountPool,
 	CodexAuthIdentity,
 } from "./codex-account-core.mjs";
 export interface CodexCandidateRecovery {
@@ -45,7 +45,7 @@ export function installCodexQuotaCredential(options: {
 	home: string;
 	profilesRoot: string;
 	profile: string;
-	registry: CodexAccountRegistry;
+	registry: CodexAccountPool;
 	finalAuthPath: string;
 	expectedProfileDigest: string;
 	expectedCanonicalDigest: string;
@@ -91,7 +91,7 @@ export interface CodexCandidateRecoveryResult {
 export function recoverCodexCandidateCredential(options: {
 	profilesRoot: string;
 	profile: string;
-	registry: CodexAccountRegistry;
+	registry: CodexAccountPool;
 	accountKey: string;
 }): CodexCandidateRecoveryResult;
 
@@ -108,7 +108,7 @@ export interface CodexCandidatePersistResult {
 export function persistCodexCandidateCredential(options: {
 	profilesRoot: string;
 	profile: string;
-	registry: CodexAccountRegistry;
+	registry: CodexAccountPool;
 	accountKey: string;
 	finalAuthPath: string;
 	expectedProfileDigest: string;
@@ -119,7 +119,7 @@ export function persistCodexProfileQuotaRefresh(options: {
 	profilesRoot: string;
 	/** Profile slot directory name under `profilesRoot`; need not be registered. */
 	profileDir: string;
-	registry: CodexAccountRegistry;
+	registry: CodexAccountPool;
 	accountKey: string;
 	finalAuthPath: string;
 	expectedProfileDigest: string;

@@ -23,14 +23,15 @@ mode_of() {
 	stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
-mkdir -p "$CANONICAL" "$TARGET"
-printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' > "$REGISTRY"
+mkdir -p "$CANONICAL/profiles/personal" "$TARGET"
+printf '%s\n' '{"version":2,"primary":"personal"}' > "$REGISTRY"
 python3 - "$CANONICAL/auth.json" <<'PY'
 import base64, json, pathlib, sys
 payload = base64.urlsafe_b64encode(json.dumps({"email":"personal@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"acct-personal","chatgpt_plan_type":"pro"}}).encode()).decode().rstrip("=")
 pathlib.Path(sys.argv[1]).write_text(json.dumps({"tokens":{"id_token":"e30.%s.sig" % payload,"access_token":"fixture-access","refresh_token":"fixture-refresh"}}))
 PY
 chmod 600 "$CANONICAL/auth.json"
+cp "$CANONICAL/auth.json" "$CANONICAL/profiles/personal/auth.json"
 CANONICAL_TRUTH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CANONICAL/auth.json")"
 printf 'legacy-copy' > "$TARGET/auth.json"
 chmod 600 "$TARGET/auth.json"

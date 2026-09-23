@@ -85,6 +85,18 @@ done
 "$node_bin" --check "$SOURCE_CORE" >/dev/null \
   || die "account core source failed node --check"
 
+validate_account_policy() {
+  "$node_bin" --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const [corePath, policyPath] = process.argv.slice(1);
+    const { loadCodexAccountPolicy } = await import(pathToFileURL(corePath).href);
+    loadCodexAccountPolicy(policyPath);
+  ' "$1" "$2" >/dev/null
+}
+
+validate_account_policy "$SOURCE_CORE" "$SOURCE_REGISTRY" \
+  || die "account policy source failed validation"
+
 "$node_bin" --check "$SOURCE_QUOTA_CLIENT" >/dev/null || die "quota client source failed node --check"
 "$node_bin" --check "$SOURCE_ACCOUNT_INSTALL" >/dev/null || die "account installer source failed node --check"
 
@@ -144,6 +156,11 @@ if [[ ! -d "$release_dir" ]]; then
   mv "$stage" "$release_dir" || die "cannot publish release"
 fi
 
+validate_account_policy \
+  "$release_dir/codex-account-core.mjs" \
+  "$release_dir/codex-account-registry.json" \
+  || die "selected account policy release failed validation"
+
 link_tmp="$LIBEXEC_DIR/.current-$$"
 rm -f "$link_tmp" 2>/dev/null || true
 ln -s "releases/$content_hash" "$link_tmp" || die "cannot stage current symlink"
@@ -175,6 +192,7 @@ profile_tmp="$GLOBAL_BIN_DIR/.codex-profile.tmp.$$"
   printf 'global_home=%q\n' "$HOME/.codex"
   printf 'global_profiles=%q\n' "$HOME/.codex/profiles"
   printf 'global_ledger=%q\n' "$HOME/.flywheel/codex-account-ledger"
+  printf 'global_snapshot=%q\n' "$HOME/.flywheel/codex-quota/codex-accounts.json"
   printf '%s\n' 'if [[ "$NODE_BIN" == */* ]]; then'
   printf '%s\n' '  [[ -x "$NODE_BIN" ]] || { printf '\''[codex-profile] INSTALL_ERROR Node executable is unavailable\n'\'' >&2; exit 125; }'
   printf '%s\n' 'elif ! command -v "$NODE_BIN" >/dev/null 2>&1; then'
@@ -185,7 +203,7 @@ profile_tmp="$GLOBAL_BIN_DIR/.codex-profile.tmp.$$"
   printf '%s\n' '  printf '\''[codex-profile] INSTALL_ERROR stable profile CLI is missing\n'\'' >&2'
   printf '%s\n' '  exit 125'
   printf '%s\n' 'fi'
-  printf '%s\n' 'exec "$NODE_BIN" "$target" --home "$global_home" --profiles "$global_profiles" --ledger-root "$global_ledger" --registry "$registry" "$@"'
+  printf '%s\n' 'exec "$NODE_BIN" "$target" --home "$global_home" --profiles "$global_profiles" --ledger-root "$global_ledger" --registry "$registry" --snapshot "$global_snapshot" "$@"'
 } > "$profile_tmp" \
   || { rm -f "$profile_tmp" 2>/dev/null || true; die "cannot stage global profile shim"; }
 chmod 555 "$profile_tmp" \

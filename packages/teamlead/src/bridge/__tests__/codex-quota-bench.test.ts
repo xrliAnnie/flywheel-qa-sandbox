@@ -19,7 +19,6 @@ import express from "express";
 import { CODEX_QUOTA_FAILURE_REASON } from "flywheel-core";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { createCodexQuotaOutboxDelivery } from "../../codex-quota/outbox.js";
-import { codexQuotaIdentityReader } from "../../codex-quota/probe.js";
 import { createCodexQuotaRunRecovery } from "../../codex-quota/run-recovery.js";
 import { CodexQuotaRuntime } from "../../codex-quota/runtime.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
@@ -91,14 +90,16 @@ const fixtureDir = fileURLToPath(
 	new URL("../../../../../scripts/fixtures/codex-quota/", import.meta.url),
 );
 const registry = {
-	version: 1 as const,
+	version: 2 as const,
 	primary: "personal" as const,
 	profiles: ["school", "personal", "business"].map((name) => ({
-		name: name as "school" | "personal" | "business",
+		name,
 		email: `${name}@example.test`,
 		role:
 			name === "personal" ? ("primary" as const) : ("manual_backup" as const),
 	})),
+	slots: [],
+	problems: [],
 };
 const summaries: Record<string, unknown>[] = [];
 const cleanup: Array<() => Promise<void>> = [];
@@ -329,7 +330,7 @@ async function fixture(
 	const recovery = createCodexQuotaRunRecovery({
 		store,
 		canonicalHome,
-		identify: codexQuotaIdentityReader(registry),
+		pool: () => registry,
 		bridgeUrl: base,
 		apiToken: "fixture-master",
 		verifyLiveness: live,
@@ -342,7 +343,7 @@ async function fixture(
 			profilesRoot,
 			stateRoot: join(root, "state"),
 			rawBinary: binary,
-			registry,
+			pool: () => registry,
 			model: "gpt-5.6-sol",
 			limitId: "codex",
 			collectHomes: async () => ({

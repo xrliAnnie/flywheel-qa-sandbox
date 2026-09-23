@@ -1,11 +1,28 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_QUOTA_MONITOR_CONFIG } from "../../account-heal/quota-monitor-config.js";
-import { buildCapacitySnapshot } from "../capacity-snapshot.js";
+import {
+	buildCapacitySnapshot,
+	codexTokenState,
+} from "../capacity-snapshot.js";
 
 const scratch: string[] = [];
+const TOKEN_STATE_VECTORS = JSON.parse(
+	readFileSync(
+		new URL(
+			"../../../../../scripts/__tests__/fixtures/codex-token-state-vectors.json",
+			import.meta.url,
+		),
+		"utf8",
+	),
+) as readonly {
+	authHealth: Parameters<typeof codexTokenState>[0]["authHealth"];
+	note: Parameters<typeof codexTokenState>[0]["note"];
+	usedPercent: number | null;
+	expected: string;
+}[];
 
 function writeAccountStore(value: unknown): string {
 	const dir = mkdtempSync(join(tmpdir(), "fly2144-capacity-"));
@@ -54,6 +71,23 @@ describe("FLY-2688 — Codex quota projection", () => {
 			getAdmissionPause: () => undefined,
 		},
 	};
+
+	it.each(TOKEN_STATE_VECTORS)(
+		"maps $authHealth / $note to token state $expected",
+		({ authHealth, note, usedPercent, expected }) => {
+			expect(
+				codexTokenState({
+					authHealth,
+					note,
+					fiveH:
+						usedPercent === null
+							? null
+							: { usedPercent, windowMinutes: 300, resetAt: null },
+					weekly: null,
+				}),
+			).toBe(expected);
+		},
+	);
 
 	it("projects real readings, exhaustion and recovery from the Codex store", async () => {
 		const snapshot = await buildCapacitySnapshot({
@@ -108,6 +142,24 @@ describe("FLY-2688 — Codex quota projection", () => {
 						resetCredits: { known: false, value: null },
 						unclassifiedWindows: 0,
 					},
+					{
+						name: "school",
+						registeredProfile: "school",
+						observedAt: null,
+						authHealth: "missing",
+						note: "read_failed",
+						planType: null,
+						fiveH: null,
+						weekly: null,
+						credits: {
+							known: false,
+							hasCredits: null,
+							unlimited: null,
+							balance: null,
+						},
+						resetCredits: { known: false, value: null },
+						unclassifiedWindows: 0,
+					},
 				],
 			}),
 			quotaConfigPath: join(tmpdir(), "fly2688-missing-quota-config.json"),
@@ -138,6 +190,12 @@ describe("FLY-2688 — Codex quota projection", () => {
 			ageMinutes: null,
 			stale: null,
 			note: "in_use_unshared",
+		});
+		expect(snapshot.quota.codex.accounts?.[2]).toMatchObject({
+			name: "school",
+			tokenState: "未探",
+			authUnusable: true,
+			note: "read_failed",
 		});
 		expect(JSON.stringify(snapshot)).not.toContain("@");
 	});

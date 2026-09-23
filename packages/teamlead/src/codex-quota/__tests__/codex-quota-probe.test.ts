@@ -154,12 +154,14 @@ it("reader initializes, verifies account before reading correct limit bucket, pr
 		},
 	);
 });
-it("reader rejects generic 429 as quota and marks only explicit invalid refresh as invalid", async () => {
+it("reader separates revoked, expired and invalid refresh failures", async () => {
 	const { readCodexQuota } = await import("../quota-reader.js");
-	for (const [code, health] of [
-		["rateLimitExceeded", "unknown"],
-		["invalid_grant", "refresh_invalid"],
-	]) {
+	for (const [code, health, refreshFailure] of [
+		["rateLimitExceeded", "unknown", undefined],
+		["invalid_grant", "refresh_invalid", "invalid"],
+		["refresh_token_expired", "refresh_invalid", "expired"],
+		["token_revoked refresh_token_expired", "refresh_invalid", "revoked"],
+	] as const) {
 		const { root, bin } = await fixture(
 			`require('readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id)console.log(JSON.stringify({id:m.id,error:{code:${JSON.stringify(code)}}}));});`,
 		);
@@ -178,6 +180,7 @@ it("reader rejects generic 429 as quota and marks only explicit invalid refresh 
 					now: () => 1_800_000_000_000,
 				});
 				expect(result.observation.authHealth).toBe(health);
+				expect(result.refreshFailure).toBe(refreshFailure);
 				expect(result.observation.reached).not.toBe(true);
 				expect(result.reason).not.toBe("ok");
 			},
@@ -341,7 +344,10 @@ it("composes network reader failures as observation_unavailable rather than bad 
 			},
 		);
 	expect(
-		selectCodexQuotaCandidate(observations, { now: 1800000000000 }).kind,
+		selectCodexQuotaCandidate(observations, {
+			now: 1800000000000,
+			pool: ["business", "personal", "school"],
+		}).kind,
 	).toBe("observation_unavailable");
 });
 it("releases orphan gate only after matching retained bytes were persisted elsewhere", async () => {

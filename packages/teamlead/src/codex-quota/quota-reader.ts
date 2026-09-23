@@ -30,6 +30,7 @@ export interface CodexQuotaReadResult {
 		| "refresh_invalid"
 		| "observation_unavailable";
 	finalAuthPath: string;
+	refreshFailure?: "revoked" | "expired" | "invalid";
 }
 const record = (v: unknown): v is Record<string, unknown> =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
@@ -51,7 +52,9 @@ export async function readCodexQuota(
 		observation,
 		reason,
 		finalAuthPath: options.workspace.authPath,
+		...(refreshFailure ? { refreshFailure } : {}),
 	});
+	let refreshFailure: CodexQuotaReadResult["refreshFailure"];
 	const matches = (raw: string) => {
 		const id = options.identify(raw);
 		return (
@@ -84,14 +87,25 @@ export async function readCodexQuota(
 				if (message.id !== expected) throw new Error("unexpected_response");
 				if (message.error) {
 					const error = message.error;
+					const errorText = record(error)
+						? `${String(error.code)} ${typeof error.message === "string" ? error.message.slice(0, 4096) : ""}`
+						: "";
 					if (
 						record(error) &&
 						/\b(?:invalid_grant|refresh_token_reused|refresh_token_expired|refresh_token_invalidated|token_revoked)\b/.test(
-							`${String(error.code)} ${typeof error.message === "string" ? error.message.slice(0, 4096) : ""}`,
+							errorText,
 						)
 					) {
 						observation.authHealth = "refresh_invalid";
 						reason = "refresh_invalid";
+						refreshFailure =
+							/\b(?:token_revoked|refresh_token_reused|refresh_token_invalidated)\b/.test(
+								errorText,
+							)
+								? "revoked"
+								: /\brefresh_token_expired\b/.test(errorText)
+									? "expired"
+									: "invalid";
 					}
 					child.stdin.end();
 					expected = -1;

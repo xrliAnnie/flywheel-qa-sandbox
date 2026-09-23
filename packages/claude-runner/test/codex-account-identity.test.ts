@@ -1,35 +1,19 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	identifyCodexAuth,
-	loadCodexAccountRegistry,
+	loadCodexAccountPool,
 	readCodexAuthIdentity,
 	redactCodexEmail,
 } from "../src/codex-account-identity.js";
-
-const TEST_REGISTRY = {
-	version: 1,
-	primary: "personal",
-	profiles: [
-		{
-			name: "school",
-			email: "school@example.test",
-			role: "manual_backup",
-		},
-		{
-			name: "personal",
-			email: "personal@example.test",
-			role: "primary",
-		},
-		{
-			name: "business",
-			email: "business@example.test",
-			role: "manual_backup",
-		},
-	],
-} as const;
 
 function authJson(
 	email: string,
@@ -57,12 +41,28 @@ function authJson(
 
 const roots: string[] = [];
 
-function fixtureRegistry(): string {
+function fixturePool() {
 	const root = mkdtempSync(join(tmpdir(), "fly2003-registry-"));
 	roots.push(root);
-	const path = join(root, "registry.json");
-	writeFileSync(path, JSON.stringify(TEST_REGISTRY));
-	return path;
+	const registryPath = join(root, "registry.json");
+	const profilesRoot = join(root, "profiles");
+	mkdirSync(profilesRoot);
+	for (const name of ["business", "personal", "school"]) {
+		mkdirSync(join(profilesRoot, name));
+		writeFileSync(
+			join(profilesRoot, name, "auth.json"),
+			authJson(`${name}@example.test`, `acct-${name}`),
+		);
+	}
+	writeFileSync(
+		registryPath,
+		JSON.stringify({ version: 2, primary: "personal" }),
+	);
+	return {
+		profilesRoot,
+		registryPath,
+		pool: loadCodexAccountPool({ profilesRoot, registryPath }),
+	};
 }
 
 afterEach(() => {
@@ -72,22 +72,22 @@ afterEach(() => {
 });
 
 describe("Codex account registry", () => {
-	it("ships exactly school/personal/business with one Personal primary", () => {
-		const registry = loadCodexAccountRegistry();
-		expect(registry.profiles.map((profile) => profile.name)).toEqual([
-			"school",
-			"personal",
+	it("derives all profile identities from directories with one configured primary", () => {
+		const { pool } = fixturePool();
+		expect(pool.profiles.map((profile) => profile.name)).toEqual([
 			"business",
+			"personal",
+			"school",
 		]);
-		expect(registry.primary).toBe("personal");
+		expect(pool.primary).toBe("personal");
 		expect(
-			registry.profiles.filter((profile) => profile.role === "primary"),
+			pool.profiles.filter((profile) => profile.role === "primary"),
 		).toHaveLength(1);
 	});
 
-	it("accepts an injected registry so tests do not embed production identity", () => {
-		const registry = loadCodexAccountRegistry(fixtureRegistry());
-		expect(registry.profiles[1]).toEqual({
+	it("accepts injected roots so tests do not read production identity", () => {
+		const { pool } = fixturePool();
+		expect(pool.profiles[1]).toEqual({
 			name: "personal",
 			email: "personal@example.test",
 			role: "primary",
@@ -97,9 +97,10 @@ describe("Codex account registry", () => {
 
 describe("Codex auth identity", () => {
 	it("derives canonical label, account id, plan, and mode from the JWT", () => {
+		const { pool } = fixturePool();
 		const identity = identifyCodexAuth(
 			authJson("business@example.test", "acct-business", "prolite"),
-			loadCodexAccountRegistry(fixtureRegistry()),
+			pool,
 		);
 		expect(identity).toEqual({
 			profile: "business",
@@ -122,15 +123,17 @@ describe("Codex auth identity", () => {
 			JSON.stringify({ tokens: { id_token: "head.%%%%.sig" } }),
 		],
 	])("rejects %s without guessing a profile", (_label, raw) => {
-		expect(() =>
-			identifyCodexAuth(raw, loadCodexAccountRegistry(fixtureRegistry())),
-		).toThrow(/Codex auth identity|unknown Codex account/i);
+		const { pool } = fixturePool();
+		expect(() => identifyCodexAuth(raw, pool)).toThrow(
+			/Codex auth identity|unknown Codex account/i,
+		);
 	});
 
 	it("accepts an unregistered account with an email-derived profile (FLY-2750)", () => {
+		const { pool } = fixturePool();
 		const identity = identifyCodexAuth(
 			authJson("xrliannie.shopping@example.test"),
-			loadCodexAccountRegistry(fixtureRegistry()),
+			pool,
 		);
 		expect(identity.profile).toBe("account-xrliannie-shopping");
 		expect(identity.mode).toBe("manual_backup");
@@ -138,6 +141,7 @@ describe("Codex auth identity", () => {
 	});
 
 	it("reads only regular auth files and refuses a symlink", () => {
+		const f = fixturePool();
 		const root = mkdtempSync(join(tmpdir(), "fly2003-auth-"));
 		roots.push(root);
 		const real = join(root, "real-auth.json");
@@ -146,7 +150,8 @@ describe("Codex auth identity", () => {
 		symlinkSync(real, link);
 		expect(() =>
 			readCodexAuthIdentity(link, {
-				registryPath: fixtureRegistry(),
+				profilesRoot: f.profilesRoot,
+				registryPath: f.registryPath,
 			}),
 		).toThrow(/symlink|regular file/i);
 	});

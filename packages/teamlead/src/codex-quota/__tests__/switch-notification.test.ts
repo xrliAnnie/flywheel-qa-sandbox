@@ -93,3 +93,31 @@ it("rejects malformed durable snapshots before they reach Discord copy", () => {
 		}),
 	).toBeNull();
 });
+
+it("accepts an unregistered source identity and a dynamically named target slot", () => {
+	const parsed = parseCodexSwitchNotificationSnapshot({
+		version: 1,
+		from: {
+			profile: "account-xrliannie-1",
+			accountKey: "source-key",
+			email: null,
+			windows: [],
+		},
+		to: {
+			profile: "shopping",
+			accountKey: "target-key",
+			email: "shopping@example.test",
+			windows: [],
+		},
+	});
+	expect(parsed).not.toBeNull();
+	expect(
+		formatCodexSwitchNotification(parsed!, "America/Los_Angeles"),
+	).toContain("account-xrliannie-1 → shopping");
+	expect(
+		parseCodexSwitchNotificationSnapshot({
+			...parsed,
+			to: { ...parsed!.to, profile: "account-reserved" },
+		}),
+	).toBeNull();
+});

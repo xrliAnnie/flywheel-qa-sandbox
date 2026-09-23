@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { CodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import type { CodexQuotaStore } from "../bridge/codex-quota-store.js";
 import type { CodexQuotaAvailabilitySnapshot } from "./availability.js";
 import {
@@ -20,11 +21,17 @@ export interface CodexQuotaCoordinatorOptions {
 		>,
 	): Promise<"installed" | "rolled_back" | "uncertain">;
 	readiness(rootKey: string): Promise<boolean>;
-	observe(rootKey: string): Promise<CodexQuotaObservation[]>;
+	observe(rootKey: string): Promise<{
+		pool: CodexAccountPool;
+		observations: readonly CodexQuotaObservation[];
+	}>;
 	rotate(
 		incident: Record<string, unknown>,
 		candidate: CodexQuotaObservation,
-		observations: readonly CodexQuotaObservation[],
+		round: {
+			pool: CodexAccountPool;
+			observations: readonly CodexQuotaObservation[];
+		},
 	): Promise<{ ok: boolean; authDigest?: string }>;
 	recover(incident: Record<string, unknown>): Promise<void>;
 }
@@ -137,7 +144,11 @@ export class CodexQuotaCoordinator {
 				}
 				if (
 					incident.next_attempt_at &&
-					Date.parse(String(incident.next_attempt_at)) > now
+					Date.parse(String(incident.next_attempt_at)) > now &&
+					!(
+						incident.state === "pool_exhausted" &&
+						this.options.store.hasNewPoolMember(id)
+					)
 				)
 					continue;
 				const readiness = this.options.availability
@@ -190,7 +201,8 @@ export class CodexQuotaCoordinator {
 					}
 					continue;
 				}
-				const observations = await this.options.observe(rootKey);
+				const round = await this.options.observe(rootKey);
+				const observations = round.observations;
 				now = clock();
 				const source = observations.find(
 					(item) => item.accountKey === root.accountKey,
@@ -204,12 +216,22 @@ export class CodexQuotaCoordinator {
 						? Math.max(...limitedWindows.map((window) => window.resetsAt!))
 						: null,
 				);
-				const selected = selectCodexQuotaCandidate(observations, { now });
+				const selected = selectCodexQuotaCandidate(observations, {
+					now,
+					pool: round.pool.profiles.map((profile) => profile.name),
+				});
 				if (selected.kind !== "selected" || !selected.candidate) {
 					const exhausted = selected.kind === "pool_exhausted";
 					if (exhausted) {
 						this.options.store.recordPoolExhausted({
 							incidentId: id,
+							pool: round.pool.profiles.map((profile) => ({
+								profile: profile.name,
+								accountKey:
+									observations.find(
+										(observation) => observation.profile === profile.name,
+									)?.accountKey ?? "unknown",
+							})),
 							observations,
 							observedAt: now,
 							nextAttemptAt: selected.nextAttemptAt ?? now + 60_000,
@@ -259,7 +281,7 @@ export class CodexQuotaCoordinator {
 				const rotated = await this.options.rotate(
 					incident,
 					selected.candidate,
-					observations,
+					round,
 				);
 				if (rotated.ok && rotated.authDigest) {
 					// rotate() has already installed the canonical credential and journaled

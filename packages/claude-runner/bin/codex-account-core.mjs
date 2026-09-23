@@ -8,6 +8,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readSync,
 	renameSync,
 	rmSync,
@@ -16,11 +17,10 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PROFILE_NAMES = ["school", "personal", "business"];
-const PROFILE_NAME_SET = new Set(PROFILE_NAMES);
 const ROLE_SET = new Set(["primary", "manual_backup"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+const IDENTITY_LABEL_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const OBSERVATION_SOURCES = ["status", "use", "save", "provision"];
 const OBSERVATION_SOURCE_SET = new Set(OBSERVATION_SOURCES);
 const SNAPSHOT_KEYS = [
@@ -38,6 +38,19 @@ const SNAPSHOT_KEYS = [
 export const DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH = fileURLToPath(
 	new URL("../agents/codex-account-registry.json", import.meta.url),
 );
+export const CODEX_PROFILE_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+
+export function isCodexSlotName(name) {
+	return (
+		typeof name === "string" &&
+		CODEX_PROFILE_NAME.test(name) &&
+		!name.startsWith("account-")
+	);
+}
+
+export function isCodexIdentityLabel(name) {
+	return typeof name === "string" && IDENTITY_LABEL_RE.test(name);
+}
 
 function isRecord(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -105,19 +118,144 @@ function parseJson(raw, label) {
 	}
 }
 
-function validateRegistry(value) {
-	if (!isRecord(value) || value.version !== 1) {
-		throw new Error("Codex account registry must be a version 1 object");
+export function loadCodexAccountPolicy(
+	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+) {
+	const value = parseJson(
+		readRegularFile(registryPath, "Codex account policy"),
+		"Codex account policy",
+	);
+	if (!isRecord(value) || value.version !== 2) {
+		throw new Error("Codex account policy must be a version 2 object");
 	}
-	if (value.primary !== "personal" || !Array.isArray(value.profiles)) {
+	if (Object.keys(value).sort().join(",") !== "primary,version") {
+		throw new Error("Codex account policy contains invalid keys");
+	}
+	if (!isCodexSlotName(value.primary)) {
 		throw new Error(
-			"Codex account registry primary must be personal and profiles must be an array",
+			"Codex account policy primary must be a valid profile name",
 		);
 	}
-	if (value.profiles.length !== PROFILE_NAMES.length) {
+	return Object.freeze({ version: 2, primary: value.primary });
+}
+
+function assertProfilePoolRoot(profilesRoot) {
+	if (typeof profilesRoot !== "string" || !isAbsolute(profilesRoot)) {
 		throw new Error(
-			"Codex account registry must contain exactly three profiles",
+			"Codex profile pool root must be an explicit absolute path",
 		);
+	}
+	let stat;
+	try {
+		stat = lstatSync(profilesRoot);
+	} catch (error) {
+		throw new Error(
+			`Codex profile pool is unavailable at ${profilesRoot}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	if (stat.isSymbolicLink() || !stat.isDirectory()) {
+		throw new Error(
+			`Codex profile pool must be a real directory, not a symlink: ${profilesRoot}`,
+		);
+	}
+}
+
+function parseCodexAuthClaims(rawAuth) {
+	const auth = parseJson(rawAuth, "Codex auth identity file");
+	if (!isRecord(auth) || !isRecord(auth.tokens)) {
+		throw new Error("Codex auth identity file has no tokens object");
+	}
+	const idToken = auth.tokens.id_token;
+	if (typeof idToken !== "string" || idToken.length === 0) {
+		throw new Error("Codex auth identity file has no id_token");
+	}
+	const payload = decodeJwtPayload(idToken);
+	const email = payload.email;
+	if (typeof email !== "string" || !EMAIL_RE.test(email)) {
+		throw new Error("Codex auth identity JWT has no valid email claim");
+	}
+	const openAiAuth = payload["https://api.openai.com/auth"];
+	return Object.freeze({
+		email,
+		accountId:
+			isRecord(openAiAuth) &&
+			typeof openAiAuth.chatgpt_account_id === "string" &&
+			openAiAuth.chatgpt_account_id.length > 0
+				? openAiAuth.chatgpt_account_id
+				: null,
+		plan:
+			isRecord(openAiAuth) &&
+			typeof openAiAuth.chatgpt_plan_type === "string" &&
+			openAiAuth.chatgpt_plan_type.length > 0
+				? openAiAuth.chatgpt_plan_type
+				: null,
+	});
+}
+
+export function enumerateCodexProfileSlots(profilesRoot) {
+	assertProfilePoolRoot(profilesRoot);
+	let entries;
+	try {
+		entries = readdirSync(profilesRoot, { withFileTypes: true });
+	} catch (error) {
+		throw new Error(
+			`Codex profile pool could not be read at ${profilesRoot}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	return Object.freeze(
+		entries
+			.filter((entry) => !entry.name.startsWith("."))
+			.filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+			.map((entry) => {
+				if (entry.isSymbolicLink() || !isCodexSlotName(entry.name)) {
+					return Object.freeze({
+						name: entry.name,
+						state: "invalid_name",
+						error: "unsafe profile directory name",
+					});
+				}
+				const authPath = join(profilesRoot, entry.name, "auth.json");
+				if (!lstatIfExists(authPath)) {
+					return Object.freeze({
+						name: entry.name,
+						state: "not_logged_in",
+					});
+				}
+				try {
+					const claims = parseCodexAuthClaims(
+						readRegularFile(authPath, `Codex ${entry.name} auth.json`),
+					);
+					return Object.freeze({
+						name: entry.name,
+						state: "ready",
+						identity: Object.freeze({
+							profile: entry.name,
+							...claims,
+							mode: "manual_backup",
+						}),
+					});
+				} catch (error) {
+					return Object.freeze({
+						name: entry.name,
+						state: "invalid_credential",
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			})
+			.sort((left, right) =>
+				left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+			),
+	);
+}
+
+export function validateCodexAccountPool(value) {
+	if (
+		!isRecord(value) ||
+		value.version !== 2 ||
+		!(value.primary === null || isCodexSlotName(value.primary)) ||
+		!Array.isArray(value.profiles)
+	) {
+		throw new Error("Codex account pool must be a version 2 object");
 	}
 	const names = new Set();
 	const emails = new Set();
@@ -125,8 +263,7 @@ function validateRegistry(value) {
 	const profiles = value.profiles.map((candidate) => {
 		if (
 			!isRecord(candidate) ||
-			typeof candidate.name !== "string" ||
-			!PROFILE_NAME_SET.has(candidate.name) ||
+			!isCodexSlotName(candidate.name) ||
 			typeof candidate.email !== "string" ||
 			!EMAIL_RE.test(candidate.email) ||
 			typeof candidate.role !== "string" ||
@@ -151,27 +288,67 @@ function validateRegistry(value) {
 			role: candidate.role,
 		});
 	});
-	if (primaryCount !== 1 || PROFILE_NAMES.some((name) => !names.has(name))) {
+	if (
+		(value.primary === null && primaryCount !== 0) ||
+		(value.primary !== null &&
+			(primaryCount !== 1 || !names.has(value.primary)))
+	) {
 		throw new Error(
-			"Codex account registry must contain school/personal/business and one primary",
+			"Codex account pool must contain at most one valid primary",
 		);
 	}
 	return Object.freeze({
-		version: 1,
-		primary: "personal",
+		...value,
+		version: 2,
+		primary: value.primary,
 		profiles: Object.freeze(profiles),
 	});
 }
 
-export function loadCodexAccountRegistry(
+export function loadCodexAccountPool({
+	profilesRoot,
 	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
-) {
-	return validateRegistry(
-		parseJson(
-			readRegularFile(registryPath, "Codex account registry"),
-			"Codex account registry",
-		),
-	);
+}) {
+	const policy = loadCodexAccountPolicy(registryPath);
+	const slots = enumerateCodexProfileSlots(profilesRoot);
+	const ready = slots.filter((slot) => slot.state === "ready");
+	const emailCounts = new Map();
+	for (const slot of ready) {
+		emailCounts.set(
+			slot.identity.email,
+			(emailCounts.get(slot.identity.email) ?? 0) + 1,
+		);
+	}
+	const problems = slots
+		.filter(
+			(slot) =>
+				slot.state !== "ready" || emailCounts.get(slot.identity.email) > 1,
+		)
+		.map((slot) =>
+			Object.freeze({
+				name: slot.name,
+				code: slot.state === "ready" ? "duplicate_email" : slot.state,
+			}),
+		);
+	const profiles = ready
+		.filter((slot) => emailCounts.get(slot.identity.email) === 1)
+		.map((slot) =>
+			Object.freeze({
+				name: slot.name,
+				email: slot.identity.email,
+				role: slot.name === policy.primary ? "primary" : "manual_backup",
+			}),
+		);
+	const primary = profiles.some((profile) => profile.name === policy.primary)
+		? policy.primary
+		: null;
+	return validateCodexAccountPool({
+		version: 2,
+		primary,
+		profiles,
+		slots,
+		problems,
+	});
 }
 
 function decodeJwtPayload(token) {
@@ -199,59 +376,38 @@ function decodeJwtPayload(token) {
 function unregisteredProfileName(email) {
 	const local = email.split("@")[0].toLowerCase();
 	const slug = local.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-	return `account-${slug || "unknown"}`;
+	const candidate = `account-${slug || "unknown"}`;
+	if (candidate.length <= 80) return candidate;
+	const suffix = createHash("sha256").update(email).digest("hex").slice(0, 8);
+	const bounded = slug.slice(0, 63).replace(/-+$/g, "") || "unknown";
+	return `account-${bounded}-${suffix}`;
 }
 
-export function identifyCodexAuth(rawAuth, registry) {
-	const auth = parseJson(rawAuth, "Codex auth identity file");
-	if (!isRecord(auth) || !isRecord(auth.tokens)) {
-		throw new Error("Codex auth identity file has no tokens object");
-	}
-	const idToken = auth.tokens.id_token;
-	if (typeof idToken !== "string" || idToken.length === 0) {
-		throw new Error("Codex auth identity file has no id_token");
-	}
-	const payload = decodeJwtPayload(idToken);
-	const email = payload.email;
-	if (typeof email !== "string" || !EMAIL_RE.test(email)) {
-		throw new Error("Codex auth identity JWT has no valid email claim");
-	}
+export function identifyCodexAuth(rawAuth, pool) {
+	const claims = parseCodexAuthClaims(rawAuth);
 	// FLY-2750: any logged-in ChatGPT account is usable. Registered accounts keep
 	// their profile name/role; an unregistered account gets a stable name derived
 	// from its email local part instead of being refused.
-	const profile = registry.profiles.find((entry) => entry.email === email) ?? {
-		name: unregisteredProfileName(email),
+	const profile = pool.profiles.find(
+		(entry) => entry.email === claims.email,
+	) ?? {
+		name: unregisteredProfileName(claims.email),
 		role: "manual_backup",
 	};
-	const openAiAuth = payload["https://api.openai.com/auth"];
-	const accountId =
-		isRecord(openAiAuth) &&
-		typeof openAiAuth.chatgpt_account_id === "string" &&
-		openAiAuth.chatgpt_account_id.length > 0
-			? openAiAuth.chatgpt_account_id
-			: null;
-	const plan =
-		isRecord(openAiAuth) &&
-		typeof openAiAuth.chatgpt_plan_type === "string" &&
-		openAiAuth.chatgpt_plan_type.length > 0
-			? openAiAuth.chatgpt_plan_type
-			: null;
 	return Object.freeze({
 		profile: profile.name,
-		email,
-		accountId,
-		plan,
+		...claims,
 		mode: profile.role,
 	});
 }
 
 export function readCodexAuthIdentity(
 	authPath,
-	{ registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH } = {},
+	{ profilesRoot, registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH } = {},
 ) {
 	return identifyCodexAuth(
 		readRegularFile(authPath, "Codex auth identity file"),
-		loadCodexAccountRegistry(registryPath),
+		loadCodexAccountPool({ profilesRoot, registryPath }),
 	);
 }
 
@@ -299,11 +455,11 @@ function assertLedgerRoot(ledgerRoot, { create }) {
 	return true;
 }
 
-function assertIdentityMatchesRegistry(identity, registry) {
+function assertIdentityMatchesPool(identity, pool) {
 	if (!isRecord(identity)) {
 		throw new Error("Codex account ledger identity must be an object");
 	}
-	const expected = registry.profiles.find(
+	const expected = pool.profiles.find(
 		(profile) => profile.name === identity.profile,
 	);
 	if (
@@ -313,14 +469,12 @@ function assertIdentityMatchesRegistry(identity, registry) {
 		!(identity.accountId === null || typeof identity.accountId === "string") ||
 		!(identity.plan === null || typeof identity.plan === "string")
 	) {
-		throw new Error(
-			"Codex account ledger identity mismatch with canonical registry",
-		);
+		throw new Error("Codex account ledger identity mismatch with account pool");
 	}
 	return expected;
 }
 
-function validateSnapshot(value, profile, registry) {
+function validateSnapshot(value, profile, pool) {
 	if (
 		!isRecord(value) ||
 		Object.keys(value).length !== SNAPSHOT_KEYS.length ||
@@ -335,7 +489,7 @@ function validateSnapshot(value, profile, registry) {
 	) {
 		throw new Error(`Codex account ledger snapshot for ${profile} is invalid`);
 	}
-	assertIdentityMatchesRegistry(value, registry);
+	assertIdentityMatchesPool(value, pool);
 	return Object.freeze({ ...value });
 }
 
@@ -375,11 +529,12 @@ export function recordCodexAccountObservation({
 	home,
 	source,
 	ledgerRoot = resolveCodexAccountLedgerRoot(),
+	profilesRoot,
 	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
 	observedAt = new Date(),
 }) {
-	const registry = loadCodexAccountRegistry(registryPath);
-	assertIdentityMatchesRegistry(identity, registry);
+	const pool = loadCodexAccountPool({ profilesRoot, registryPath });
+	assertIdentityMatchesPool(identity, pool);
 	if (!OBSERVATION_SOURCE_SET.has(source)) {
 		throw new Error(
 			`Invalid Codex account ledger observation source: ${source}`,
@@ -410,11 +565,12 @@ export function readCodexAccountSnapshot(
 	profile,
 	{
 		ledgerRoot = resolveCodexAccountLedgerRoot(),
+		profilesRoot,
 		registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
 	} = {},
 ) {
-	const registry = loadCodexAccountRegistry(registryPath);
-	if (!registry.profiles.some((entry) => entry.name === profile)) {
+	const pool = loadCodexAccountPool({ profilesRoot, registryPath });
+	if (!pool.profiles.some((entry) => entry.name === profile)) {
 		throw new Error(`Unknown Codex account ledger profile: ${profile}`);
 	}
 	if (!assertLedgerRoot(ledgerRoot, { create: false })) return null;
@@ -426,6 +582,6 @@ export function readCodexAccountSnapshot(
 			"Codex account ledger snapshot",
 		),
 		profile,
-		registry,
+		pool,
 	);
 }
