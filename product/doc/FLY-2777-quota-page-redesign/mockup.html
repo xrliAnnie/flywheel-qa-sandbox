@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-2777 账号额度一览 · 设计稿</title>
+<style>
+:root{
+  --ink:#1d1d1f; --dim:#6e6e73; --faint:#a1a1a6;
+  --line:#e3e1dc; --paper:#fbfaf7; --page:#f0efec;
+  --ok:#1f7a68; --ok-bg:#e8f5f1; --active-bg:#e3f4ec;
+  --full:#c0392b; --full-bg:#fdf0ee;
+  --stale:#9a9a9a; --stale-bg:#f4f4f4;
+  --warn:#9a6200;
+  --chrome:#e7e5e0; --chrome-ink:#4a4a4f;
+  --mono:'SF Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}
+
+/* ===================== 产品画布 ===================== */
+.canvas-wrap{padding:34px 16px 10px}
+.canvas{max-width:1180px;margin:0 auto;background:var(--paper);
+  border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.08),0 12px 40px rgba(0,0,0,.05);
+  padding:38px 34px 34px}
+.canvas header{display:flex;align-items:baseline;justify-content:space-between;
+  gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}
+.canvas h1{margin:0;font-size:25px;letter-spacing:-.02em}
+.stamp{font-family:var(--mono);font-size:12px;color:var(--dim)}
+.tbl{margin-top:30px}
+.tbl h2{margin:0 0 4px;font-size:17px;letter-spacing:-.01em}
+.grp{display:flex;align-items:center;gap:9px;margin:18px 0 6px;
+  font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--dim)}
+.grp:after{content:"";flex:1;height:1px;background:var(--line)}
+.grp .n{font-family:var(--mono);font-weight:400;color:var(--faint)}
+.grp.full{color:var(--full)}
+
+.rows{display:flex;flex-direction:column;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.row{display:grid;gap:14px;align-items:center;background:#fff;padding:13px 15px}
+.claude .row{grid-template-columns:minmax(200px,1.15fr) 128px 128px minmax(130px,1.05fr) minmax(130px,1.05fr) 116px 84px}
+.codex  .row{grid-template-columns:minmax(200px,1.15fr) 128px 128px minmax(150px,1.4fr) 116px 84px}
+.colhead{padding:0 15px 7px;font-size:11px;letter-spacing:.06em;color:var(--faint);font-weight:600;display:grid;gap:14px}
+.tbl.claude .colhead{grid-template-columns:minmax(200px,1.15fr) 128px 128px minmax(130px,1.05fr) minmax(130px,1.05fr) 116px 84px}
+.tbl.codex .colhead{grid-template-columns:minmax(200px,1.15fr) 128px 128px minmax(150px,1.4fr) 116px 84px}
+.sample{font-size:12.5px}
+.blank{color:#d4d2cc}
+.row.head{background:#faf9f7;padding:9px 15px;font-size:11px;letter-spacing:.07em;
+  color:var(--faint);font-weight:600}
+.row.full{background:var(--full-bg)}
+.row.active,.row.full.active{background:var(--active-bg);box-shadow:inset 4px 0 0 var(--ok)}
+.cards{display:flex;flex-direction:column;gap:3px;font-size:12.5px;font-family:var(--mono)}
+
+.acct{display:flex;flex-direction:column;gap:3px;min-width:0}
+.acct .n1{display:flex;align-items:center;gap:7px;font-weight:650;font-size:15px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.chip{font-size:10.5px;font-weight:600;letter-spacing:.03em;
+  padding:1.5px 6px;border-radius:5px;white-space:nowrap}
+.chip.use{background:var(--ok-bg);color:var(--ok)}
+.chip.full{background:#f7dcd7;color:var(--full)}
+.tier{font-size:11.5px;color:var(--dim)}
+.tier.q{color:var(--warn);font-weight:600}
+
+.bar{display:flex;flex-direction:column;gap:5px;min-width:0}
+.bar .top{display:flex;align-items:baseline;gap:7px;font-size:11.5px;color:var(--dim)}
+.bar .pct{font-family:var(--mono);font-size:14px;font-weight:650;color:var(--ink)}
+.bar.is-full .pct{color:var(--full)}
+.bar .track{height:6px;border-radius:3px;background:#e9e7e2;overflow:hidden}
+.bar .fill{height:100%;background:var(--ok);border-radius:3px}
+.bar.is-full .fill{background:var(--full)}
+.bar.na .pct{color:var(--faint);font-weight:400;font-size:12.5px}
+
+.reset{font-family:var(--mono);font-size:12.5px}
+.na{color:var(--faint);font-size:12.5px}
+.wire{font-size:12px;color:var(--faint);border:1px dashed #cfcdc7;
+  border-radius:6px;padding:3px 8px;text-align:center;background:#fafaf8}
+.rows+.rows{margin-top:10px}
+.colhead+.rows{margin-top:4px}
+.empty{background:#fff;padding:13px 15px;font-size:13px;color:var(--faint)}
+.canvas-end{margin-top:26px;border-top:2px solid var(--ink)}
+
+/* ===================== 审稿层 ===================== */
+.chrome{background:var(--chrome);margin-top:34px;padding:0 16px 60px}
+.chrome-inner{max-width:1180px;margin:0 auto}
+.banner{position:relative;max-width:1180px;margin:0 auto;
+  background:#4a4a4f;color:#fff;padding:11px 18px;border-radius:10px;
+  transform:translateY(-16px);font-size:13px;font-weight:600;letter-spacing:.02em}
+.banner span{font-weight:400;opacity:.8}
+.chrome h2{font-size:16px;margin:30px 0 4px;color:var(--chrome-ink)}
+.chrome .lede{font-size:13px;color:#6e6e73;margin:0 0 12px}
+.card{background:#fff;border-radius:11px;padding:16px 18px;margin:11px 0;
+  box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.card.b{border-left:4px solid #8e8e93}
+.card.d{border-left:4px solid #b07d2b}
+.card h3{margin:0 0 7px;font-size:14.5px}
+.card p{margin:6px 0;font-size:13.5px;line-height:1.6}
+.card .ref{font-size:12px;color:var(--dim);font-family:var(--mono)}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.04em;
+  padding:1.5px 6px;border-radius:4px;margin-right:6px;vertical-align:1px}
+.tag.ok{background:#e4f3ee;color:#1f7a68}
+.tag.no{background:#fdeeea;color:#c0392b}
+.tag.ask{background:#fbf1de;color:#8a6212}
+code{font-family:var(--mono);font-size:12.5px;background:#f2f1ee;
+  padding:1px 5px;border-radius:4px}
+table.ax{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+table.ax th,table.ax td{text-align:left;padding:7px 9px;border-bottom:1px solid #eee;vertical-align:top}
+table.ax th{font-size:11px;letter-spacing:.05em;color:var(--faint);text-transform:uppercase}
+table.ax td:first-child{font-family:var(--mono);white-space:nowrap;color:var(--dim)}
+
+.alt{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}
+.alt>div{flex:1;min-width:250px;border-radius:9px;padding:12px 14px}
+.alt .pick{background:#eef7f4;border:1.5px solid #bcdfd5}
+.alt .drop{background:#f5f5f5;border:1.5px dashed #ccc;opacity:.72}
+.alt h4{margin:0 0 6px;font-size:13px}
+.mini{font-family:var(--mono);font-size:11px;line-height:1.7;
+  background:#fff;border-radius:6px;padding:9px 10px;margin-top:7px;white-space:pre}
+
+.cmt{margin-top:11px}
+.cmt label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:58px;resize:vertical;font:13.5px/1.5 inherit;
+  border:1px solid #ddd;border-radius:8px;padding:8px 10px;background:#fcfcfc}
+.cmt textarea:focus{outline:2px solid #bcdfd5;outline-offset:-1px;background:#fff}
+
+#sum{background:#fff;border-radius:11px;padding:18px;margin-top:26px;
+  box-shadow:0 1px 2px rgba(0,0,0,.05)}
+#sum h2{margin:0 0 6px}
+#sumtext{width:100%;min-height:150px;font:12.5px/1.6 var(--mono);
+  border:1px solid #ddd;border-radius:8px;padding:10px;background:#fafafa}
+#btns{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px}
+button{font:600 13.5px inherit;padding:9px 17px;border-radius:9px;border:0;
+  background:var(--ok);color:#fff;cursor:pointer}
+button:active{opacity:.85}
+button.done{background:#3a3a3c}
+.hint{font-size:12.5px;color:var(--dim);margin-top:9px}
+
+@media(max-width:900px){
+  .canvas{padding:24px 16px}
+  .claude .row,.codex .row,.tbl.claude .colhead,.tbl.codex .colhead{grid-template-columns:1fr 1fr;gap:9px}
+  .row.head,.colhead{display:none}
+  .acct{grid-column:1/-1}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ 产品画布：这一块就是最终页面本身 ============ -->
+<div class="canvas-wrap"><div class="canvas" id="canvas">
+  <header>
+    <h1>账号额度一览</h1>
+    <div class="stamp">9/22 18:18 PT</div>
+  </header>
+
+  <!-- Claude -->
+  <section class="tbl claude">
+    <h2>Claude</h2>
+    <div class="colhead"><div>账号</div><div>周重置日</div><div>5h reset</div><div>周用量</div><div>Fable 周用量</div><div>充值卡</div><div>订阅到期</div></div>
+
+    <div class="rows">
+      <div class="row">
+        <div class="acct"><div class="n1">personal1</div><div class="tier">Max 20x</div></div>
+        <div class="reset">09/09 周三 00:00</div>
+        <div class="na">无</div>
+        <div class="bar"><div class="top"><span class="pct">70%</span><span>周</span></div><div class="track"><div class="fill" style="width:70%"></div></div></div>
+        <div class="na">无</div>
+        <div class="blank">—</div>
+        <div class="sample">10/07</div>
+      </div>
+      <div class="row active">
+        <div class="acct"><div class="n1"><span class="dot"></span>personal<span class="chip use">在用</span></div><div class="tier">Max 20x</div></div>
+        <div class="reset">09/24 周四 22:59</div>
+        <div class="reset">09/22 周二 19:19</div>
+        <div class="bar"><div class="top"><span class="pct">96%</span><span>周</span></div><div class="track"><div class="fill" style="width:96%"></div></div></div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span class="chip full">Fable 已满</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="cards"><div>10/28</div><div>10/31</div></div>
+        <div class="blank">—</div>
+      </div>
+      <div class="row">
+        <div class="acct"><div class="n1">school</div><div class="tier">Max 20x</div></div>
+        <div class="reset">09/28 周一 09:00</div>
+        <div class="na">无</div>
+        <div class="bar"><div class="top"><span class="pct">21%</span><span>周</span></div><div class="track"><div class="fill" style="width:21%"></div></div></div>
+        <div class="bar"><div class="top"><span class="pct">23%</span><span>Fable</span></div><div class="track"><div class="fill" style="width:23%"></div></div></div>
+        <div class="cards"><div>11/15</div></div>
+        <div class="blank">—</div>
+      </div>
+      <div class="row">
+        <div class="acct"><div class="n1">shopping</div><div class="tier">Max 20x</div></div>
+        <div class="reset">09/29 周二 07:00</div>
+        <div class="na">无</div>
+        <div class="bar"><div class="top"><span class="pct">0%</span><span>周</span></div><div class="track"><div class="fill" style="width:0%"></div></div></div>
+        <div class="bar"><div class="top"><span class="pct">0%</span><span>Fable</span></div><div class="track"><div class="fill" style="width:0%"></div></div></div>
+        <div class="blank">—</div>
+        <div class="blank">—</div>
+      </div>
+    </div>
+
+    <div class="rows">
+      <div class="row full">
+        <div class="acct"><div class="n1">business</div><div class="tier q">机器读数 5x / 你说 20x，待你确认</div></div>
+        <div class="reset">09/23 周三 19:00</div>
+        <div class="na">无</div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span>周</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="bar"><div class="top"><span class="pct">97%</span><span>Fable</span></div><div class="track"><div class="fill" style="width:97%"></div></div></div>
+        <div class="cards"><div>10/09</div><div>10/20</div><div>11/03</div></div>
+        <div class="sample">10/14</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Codex -->
+  <section class="tbl codex">
+    <h2>Codex</h2>
+    <div class="colhead"><div>账号</div><div>周重置日</div><div>5h reset</div><div>周用量</div><div>兑换卡</div><div>订阅到期</div></div>
+
+
+    <div class="rows">
+      <div class="row full">
+        <div class="acct"><div class="n1">personal</div><div class="tier">Pro</div></div>
+        <div class="reset">09/22 周二 16:50</div>
+        <div class="na">无</div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span>周</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="cards"><div>10/31</div></div>
+        <div class="blank">—</div>
+      </div>
+      <div class="row full">
+        <div class="acct"><div class="n1">business</div><div class="tier">Pro</div></div>
+        <div class="reset">09/23 周三 13:59</div>
+        <div class="na">无</div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span>周</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="cards"><div>11/07</div></div>
+        <div class="blank">—</div>
+      </div>
+      <div class="row full">
+        <div class="acct"><div class="n1">school</div><div class="tier">Pro</div></div>
+        <div class="reset">09/24 周四 20:06</div>
+        <div class="na">无</div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span>周</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="cards"><div>10/24</div></div>
+        <div class="blank">—</div>
+      </div>
+      <div class="row full">
+        <div class="acct"><div class="n1">shopping</div><div class="tier">prolite</div></div>
+        <div class="reset">09/25 周五 15:06</div>
+        <div class="na">无</div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span>周</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="cards"><div>11/19</div></div>
+        <div class="blank">—</div>
+      </div>
+      <div class="row full">
+        <div class="acct"><div class="n1">personal1</div><div class="tier">prolite</div></div>
+        <div class="reset">09/25 周五 21:04</div>
+        <div class="na">无</div>
+        <div class="bar is-full"><div class="top"><span class="pct">100%</span><span>周</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div>
+        <div class="cards"><div>12/02</div></div>
+        <div class="blank">—</div>
+      </div>
+    </div>
+
+    <div class="grp">本轮读数不可用 <span class="n">1</span></div>
+    <div class="rows">
+      <div class="row active">
+        <div class="acct"><div class="n1"><span class="dot"></span>personal2<span class="chip use">在用</span></div><div class="tier">档位未知</div></div>
+        <div class="na">无</div>
+        <div class="na">无</div>
+        <div class="na">无</div>
+        <div class="na">无</div>
+        <div class="blank">—</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="canvas-end"></div>
+</div></div>
+
+<!-- ============ 审稿层：不属于最终页面 ============ -->
+<div class="chrome">
+<div class="banner">审稿工具 · 不属于最终页面 <span>—— 上面那张白卡片就是新页面本身。</span></div>
+<div class="chrome-inner">
+
+<p class="lede" style="margin:18px 0 0">账号、用量、重置日全是你 9/22 18:18 PT 看的那一版的原始读数，<strong>一个都没改</strong>。</p>
+
+<h2>额度我推荐这样显示</h2>
+<div class="alt">
+  <div class="pick">
+    <h4>✅ 推荐：周和 Fable 两条并排，各自画出百分比</h4>
+    <div class="mini">personal   周 96% ▓▓▓▓▓▓▓▓▓░
+           Fable 100% ▓▓▓▓▓▓▓▓▓▓ ⛔已满</div>
+    <p style="font-size:12.5px;margin:9px 0 0">分组只看周这一维，所以 96% 的 personal 算「还有额度」。</p>
+  </div>
+  <div class="drop">
+    <h4>⬜ 未采用：只显示周用量，Fable 满了才挂个红徽章</h4>
+    <div class="mini">personal   96%  [Fable 满]
+business   100% [Fable 满]</div>
+    <p style="font-size:12.5px;margin:9px 0 0">这样 97% 和 23% 会塌成同一个「没满」，看不出快满了。</p>
+  </div>
+</div>
+
+<h2>要你拍两件事</h2>
+
+<div class="card d" data-cmt="Q1 business 档位以哪个为准">
+  <h3>Q1 · business 的档位，机器读数是 <strong>Max 5x</strong>，你说是 <strong>Max 20x</strong> —— 以哪个为准？</h3>
+</div>
+
+<div class="card d" data-cmt="Q2 哪些号已 cancel 各自哪天到期">
+  <h3>Q2 · 哪些号已经 cancel、各自哪天到期？</h3>
+  <p>已知你说 personal1 已经 cancel 了（稿上先用 10/07 占位，真日期等你给）。<br>
+  business 我们记录里有一个 <strong>10/14</strong> 的退役日 —— 那是 cancel 吗？<br>
+  Codex 那边有没有已经 cancel 的？现在整列是空的。</p>
+</div>
+
+<h2>两件说明</h2>
+<div class="card">
+  <p>· <strong>充值卡 / 兑换卡 / 订阅到期这三列，今天还读不到真数据，稿上画的是示例值</strong>，
+  好让你看见这一页最终长什么样。怎么把真数据读出来是另一件事，已写进 spec 交工程。</p>
+  <p>· Codex 本轮没读到数的号（personal2，就是你正在用的那个）单独排在最后一组。</p>
+</div>
+
+<div class="card" data-cmt="整页">
+  <h3>其它想说的</h3>
+</div>
+
+<div id="sum">
+  <h2>意见汇总</h2>
+  <p class="lede">写完点下面的按钮复制，<strong>贴回 issue 里我才收得到</strong>。</p>
+  <textarea id="sumtext" readonly></textarea>
+  <div id="btns"></div>
+  <p class="hint" id="hint"></p>
+</div>
+
+</div>
+</div>
+
+<script>
+(function(){
+  var KEY='fly2777:';
+  var MARK='【页面意见汇总】FLY-2777';
+  var LIMIT=1800;
+
+  // Attach a comment box to every node carrying data-cmt.
+  var hosts=[].slice.call(document.querySelectorAll('[data-cmt]'));
+  var boxes=[];
+  hosts.forEach(function(host,i){
+    var title=host.getAttribute('data-cmt');
+    var wrap=host.classList.contains('cmt')?host:document.createElement('div');
+    if(wrap!==host){wrap.className='cmt';host.appendChild(wrap);}
+    var id='c'+i;
+    var lab=document.createElement('label');
+    lab.textContent = title==='整页' ? '其它意见' : ('对「'+title+'」的意见');
+    lab.setAttribute('for',id);
+    var ta=document.createElement('textarea');
+    ta.id=id;
+    ta.placeholder='想改什么，直接写在这里…';
+    wrap.appendChild(lab);wrap.appendChild(ta);
+    try{var v=localStorage.getItem(KEY+title);if(v)ta.value=v;}catch(e){}
+    ta.addEventListener('input',function(){
+      try{localStorage.setItem(KEY+title,ta.value);}catch(e){}
+      render();
+    });
+    boxes.push({title:title,ta:ta});
+  });
+
+  var sumtext=document.getElementById('sumtext');
+  var btns=document.getElementById('btns');
+  var hint=document.getElementById('hint');
+  var chunks=[];
+
+  function build(){
+    var parts=[];
+    boxes.forEach(function(b){
+      var v=(b.ta.value||'').trim();
+      if(v)parts.push('## '+b.title+'\n'+v);
+    });
+    return parts;
+  }
+
+  function split(parts){
+    if(parts.length===0)return [];
+    var whole=MARK+'\n\n'+parts.join('\n\n');
+    if(whole.length<=LIMIT)return [whole];
+    var out=[],cur=[];
+    function flush(){if(cur.length)out.push(cur.join('\n\n'));cur=[];}
+    parts.forEach(function(p){
+      var trial=cur.concat([p]).join('\n\n');
+      if(cur.length&&(MARK.length+20+trial.length)>LIMIT)flush();
+      cur.push(p);
+    });
+    flush();
+    return out.map(function(body,i){
+      return MARK+'（第 '+(i+1)+'/'+out.length+' 段）\n\n'+body;
+    });
+  }
+
+  function render(){
+    var parts=build();
+    chunks=split(parts);
+    sumtext.value=chunks.length?chunks.join('\n\n———\n\n'):'（还没写意见）';
+    btns.innerHTML='';
+    if(!chunks.length){hint.textContent='写了意见之后这里才会出现复制按钮。';return;}
+    chunks.forEach(function(txt,i){
+      var b=document.createElement('button');
+      b.textContent=chunks.length===1?'一键汇总复制':('复制第 '+(i+1)+'/'+chunks.length+' 段');
+      b.addEventListener('click',function(){
+        copy(txt,b,chunks.length===1?'一键汇总复制':('复制第 '+(i+1)+'/'+chunks.length+' 段'));
+      });
+      btns.appendChild(b);
+    });
+    hint.textContent=chunks.length===1
+      ? '复制完贴回 issue 里就行。'
+      : '内容比较长，分成了 '+chunks.length+' 段，每段都要复制粘贴一次。';
+  }
+
+  function copy(txt,btn,label){
+    function ok(){
+      btn.textContent='✓ 已复制';btn.classList.add('done');
+      setTimeout(function(){btn.textContent=label;btn.classList.remove('done');},1600);
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(ok,fallback);
+    }else{fallback();}
+    function fallback(){
+      var t=document.createElement('textarea');
+      t.value=txt;t.style.position='fixed';t.style.opacity='0';
+      document.body.appendChild(t);t.select();
+      try{document.execCommand('copy');ok();}catch(e){btn.textContent='复制失败，请手动选中上面的文字';}
+      document.body.removeChild(t);
+    }
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
