@@ -21,10 +21,12 @@
 	},
 	"dependencies": {
 		"@google/genai": "^1.16.0",
-		"flywheel-config": "workspace:*"
+		"flywheel-config": "workspace:*",
+		"ws": "8.19.0"
 	},
 	"devDependencies": {
 		"@types/node": "^20.0.0",
+		"@types/ws": "^8.18.0",
 		"typescript": "^5.3.3",
 		"vitest": "^3.1.4"
 	},

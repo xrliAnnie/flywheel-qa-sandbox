@@ -16,6 +16,8 @@ import {
 export interface OpenAiLiveSocket {
 	send(event: OpenAiLiveClientEvent): void;
 	onMessage(handler: (raw: string | Buffer) => void): () => void;
+	onClose(handler: (error?: Error) => void): () => void;
+	onError(handler: (error: Error) => void): () => void;
 	close(): void;
 }
 
@@ -67,10 +69,14 @@ export class LiveSession {
 	}) => void;
 	private retirementTimer?: ReturnType<typeof setTimeout>;
 	private socketClosed = false;
-	private readonly unsubscribe: () => void;
+	private readonly unsubscribe: Array<() => void>;
 
 	constructor(private readonly opts: LiveSessionOptions) {
-		this.unsubscribe = opts.socket.onMessage((raw) => this.onMessage(raw));
+		this.unsubscribe = [
+			opts.socket.onMessage((raw) => this.onMessage(raw)),
+			opts.socket.onClose((error) => this.failConnection(error)),
+			opts.socket.onError((error) => this.failConnection(error)),
+		];
 	}
 
 	on<E extends keyof LiveSessionEvents>(
@@ -249,7 +255,7 @@ export class LiveSession {
 		const voiceError = this.asVoiceError(error);
 		this.opts.fence.tombstone(this.opts.generation);
 		this.state = "closed";
-		this.unsubscribe();
+		this.unsubscribeAll();
 		this.closeSocket();
 		this.emitter.emit("error", voiceError);
 		this.rejectOpening?.(voiceError);
@@ -272,7 +278,7 @@ export class LiveSession {
 		this.state = "closed";
 		if (this.retirementTimer) clearTimeout(this.retirementTimer);
 		this.retirementTimer = undefined;
-		this.unsubscribe();
+		this.unsubscribeAll();
 		this.closeSocket();
 		this.resolveRetirement?.({
 			generation: this.opts.generation,
@@ -285,5 +291,40 @@ export class LiveSession {
 		if (this.socketClosed) return;
 		this.socketClosed = true;
 		this.opts.socket.close();
+	}
+
+	private failConnection(error?: Error): void {
+		if (this.state === "closed") return;
+		const detail = error?.message ?? "provider connection closed";
+		if (this.state === "opening") {
+			this.failOpening(
+				new VoiceError(
+					"connection-closed",
+					`语音不可用: OpenAI Live admission failed (${detail})`,
+					error,
+				),
+			);
+			return;
+		}
+		if (this.state === "retiring") {
+			this.finishRetirement("provider_finalization_incomplete");
+			return;
+		}
+		this.opts.fence.tombstone(this.opts.generation);
+		this.state = "closed";
+		this.unsubscribeAll();
+		this.closeSocket();
+		this.emitter.emit(
+			"error",
+			new VoiceError(
+				"connection-closed",
+				`openai-live: provider connection failed (${detail})`,
+				error,
+			),
+		);
+	}
+
+	private unsubscribeAll(): void {
+		for (const unsubscribe of this.unsubscribe) unsubscribe();
 	}
 }

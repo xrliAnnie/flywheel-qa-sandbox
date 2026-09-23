@@ -28,6 +28,15 @@ export interface VoiceCoreConfig {
 	voice: string;
 	/** converse backend (Gemini Live). */
 	gemini: { model: string; apiKeyEnv: string };
+	/** OpenAI Live converse backend (engine A). */
+	openaiLive: {
+		model: string;
+		endpoint: string;
+		apiKeyEnv: string;
+		protocolVersion: 1;
+		voice: string;
+		delegation: "client";
+	};
 	defaultAnnounceBackendId: string;
 	defaultConverseBackendId: string;
 	timeouts: { ttsMs: number; brainMs: number };
@@ -35,14 +44,17 @@ export interface VoiceCoreConfig {
 
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
 const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";
+const DEFAULT_OPENAI_LIVE_MODEL = "gpt-live-1";
+const DEFAULT_OPENAI_LIVE_ENDPOINT = "wss://api.openai.com/v1/live/sessions";
 const DEFAULT_TIMEOUTS = { ttsMs: 30_000, brainMs: 120_000 };
 
 export type ConfigOverrides = Partial<
-	Omit<VoiceCoreConfig, "edgeTts" | "timeouts" | "gemini">
+	Omit<VoiceCoreConfig, "edgeTts" | "timeouts" | "gemini" | "openaiLive">
 > & {
 	edgeTts?: Partial<VoiceCoreConfig["edgeTts"]>;
 	timeouts?: Partial<VoiceCoreConfig["timeouts"]>;
 	gemini?: Partial<VoiceCoreConfig["gemini"]>;
+	openaiLive?: Partial<VoiceCoreConfig["openaiLive"]>;
 };
 
 function pick(...vals: (string | undefined)[]): string {
@@ -112,6 +124,30 @@ export function resolveConfig(
 				"GEMINI_API_KEY",
 			),
 		},
+		openaiLive: {
+			model: pick(
+				overrides.openaiLive?.model,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_MODEL,
+				DEFAULT_OPENAI_LIVE_MODEL,
+			),
+			endpoint: pick(
+				overrides.openaiLive?.endpoint,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_ENDPOINT,
+				DEFAULT_OPENAI_LIVE_ENDPOINT,
+			),
+			apiKeyEnv: pick(
+				overrides.openaiLive?.apiKeyEnv,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_KEY_ENV,
+				"OPENAI_API_KEY",
+			),
+			protocolVersion: overrides.openaiLive?.protocolVersion ?? 1,
+			voice: pick(
+				overrides.openaiLive?.voice,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_VOICE,
+				"marin",
+			),
+			delegation: overrides.openaiLive?.delegation ?? "client",
+		},
 		defaultAnnounceBackendId: pick(
 			overrides.defaultAnnounceBackendId,
 			env.FLYWHEEL_VOICE_ANNOUNCE_BACKEND,
@@ -161,6 +197,41 @@ export function verifyConverseComponents(
 			"component-missing",
 			`${config.gemini.apiKeyEnv} not set — the converse (Gemini Live) face needs an API key`,
 		);
+	}
+}
+
+/** Engine A fail-fast admission: exact protocol plus a TLS OpenAI endpoint. */
+export function verifyOpenAiLiveComponents(
+	config: VoiceCoreConfig,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
+	const unavailable = (detail: string): never => {
+		throw new VoiceError("component-missing", `语音不可用: ${detail}`);
+	};
+	if (!config.openaiLive.model) unavailable("OpenAI Live model is not set");
+	if (
+		config.openaiLive.protocolVersion !== 1 ||
+		config.openaiLive.delegation !== "client"
+	) {
+		unavailable("OpenAI Live protocol must be v1 with client delegation");
+	}
+	if (!config.openaiLive.voice) unavailable("OpenAI Live voice is not set");
+	try {
+		const endpoint = new URL(config.openaiLive.endpoint);
+		if (
+			endpoint.protocol !== "wss:" ||
+			endpoint.hostname !== "api.openai.com" ||
+			endpoint.username ||
+			endpoint.password
+		) {
+			unavailable("OpenAI Live endpoint is outside the TLS allowlist");
+		}
+	} catch (error) {
+		if (error instanceof VoiceError) throw error;
+		unavailable("OpenAI Live endpoint is outside the TLS allowlist");
+	}
+	if (!env[config.openaiLive.apiKeyEnv]) {
+		unavailable(`${config.openaiLive.apiKeyEnv} is not set`);
 	}
 }
 

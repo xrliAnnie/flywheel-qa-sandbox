@@ -4,6 +4,7 @@ import {
 	verifyAnnounceComponents,
 	verifyBrainComponents,
 	verifyConverseComponents,
+	verifyOpenAiLiveComponents,
 } from "../config.js";
 import type { VoiceError } from "../types.js";
 
@@ -52,6 +53,35 @@ describe("resolveConfig", () => {
 		expect(c.gemini.model).toBe("gemini-3.1-flash-live-preview");
 	});
 
+	it("pins the OpenAI Live protocol while keeping model and endpoint configurable", () => {
+		const defaults = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(defaults.openaiLive).toEqual({
+			model: "gpt-live-1",
+			endpoint: "wss://api.openai.com/v1/live/sessions",
+			apiKeyEnv: "OPENAI_API_KEY",
+			protocolVersion: 1,
+			voice: "marin",
+			delegation: "client",
+		});
+
+		const configured = resolveConfig(
+			{
+				openaiLive: {
+					model: "gpt-live-override",
+					endpoint: "wss://api.openai.com/override",
+				},
+			},
+			{
+				FLYWHEEL_VOICE_OPENAI_LIVE_MODEL: "gpt-live-env",
+				FLYWHEEL_VOICE_OPENAI_LIVE_ENDPOINT: "wss://api.openai.com/from-env",
+			} as NodeJS.ProcessEnv,
+		);
+		expect(configured.openaiLive.model).toBe("gpt-live-override");
+		expect(configured.openaiLive.endpoint).toBe(
+			"wss://api.openai.com/override",
+		);
+	});
+
 	it("resolves micDevice: override > env > ':default'", () => {
 		expect(resolveConfig({}, {}).micDevice).toBe(":default");
 		expect(
@@ -93,6 +123,30 @@ describe("fail-fast component checks", () => {
 		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
 		expect(() =>
 			verifyConverseComponents(c, { GEMINI_API_KEY: "k" } as NodeJS.ProcessEnv),
+		).not.toThrow();
+	});
+
+	it("OpenAI Live: rejects missing credentials and endpoints outside the TLS allowlist", () => {
+		const config = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(() =>
+			verifyOpenAiLiveComponents(config, {} as NodeJS.ProcessEnv),
+		).toThrow(/语音不可用.*OPENAI_API_KEY/);
+		expect(() =>
+			verifyOpenAiLiveComponents(
+				{
+					...config,
+					openaiLive: {
+						...config.openaiLive,
+						endpoint: "ws://attacker.invalid/live",
+					},
+				},
+				{ OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+			),
+		).toThrow(/语音不可用.*TLS allowlist/);
+		expect(() =>
+			verifyOpenAiLiveComponents(config, {
+				OPENAI_API_KEY: "test-key",
+			} as NodeJS.ProcessEnv),
 		).not.toThrow();
 	});
 

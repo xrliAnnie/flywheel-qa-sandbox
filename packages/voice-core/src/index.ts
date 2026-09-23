@@ -78,6 +78,7 @@ export {
 	verifyAnnounceComponents,
 	verifyBrainComponents,
 	verifyConverseComponents,
+	verifyOpenAiLiveComponents,
 } from "./config.js";
 export { TypedEmitter } from "./emitter.js";
 export { mapProcessError } from "./errors.js";

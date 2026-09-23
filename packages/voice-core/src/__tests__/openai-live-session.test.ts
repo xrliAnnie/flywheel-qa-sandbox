@@ -14,6 +14,8 @@ class FakeSocket implements OpenAiLiveSocket {
 	readonly sent: OpenAiLiveClientEvent[] = [];
 	closed = 0;
 	private messageHandler: (raw: string | Buffer) => void = () => {};
+	private closeHandler: (error?: Error) => void = () => {};
+	private errorHandler: (error: Error) => void = () => {};
 
 	send(event: OpenAiLiveClientEvent): void {
 		this.sent.push(event);
@@ -26,12 +28,34 @@ class FakeSocket implements OpenAiLiveSocket {
 		};
 	}
 
+	onClose(handler: (error?: Error) => void): () => void {
+		this.closeHandler = handler;
+		return () => {
+			this.closeHandler = () => {};
+		};
+	}
+
+	onError(handler: (error: Error) => void): () => void {
+		this.errorHandler = handler;
+		return () => {
+			this.errorHandler = () => {};
+		};
+	}
+
 	close(): void {
 		this.closed += 1;
 	}
 
 	receive(event: Record<string, unknown>): void {
 		this.messageHandler(JSON.stringify(event));
+	}
+
+	serverClose(error?: Error): void {
+		this.closeHandler(error);
+	}
+
+	serverError(error: Error): void {
+		this.errorHandler(error);
 	}
 }
 
@@ -227,5 +251,23 @@ describe("LiveSession", () => {
 		await expect(opening).rejects.toMatchObject({ code: "backend-protocol" });
 		expect(errors).toHaveLength(1);
 		expect(errors[0]?.code).toBe("backend-protocol");
+	});
+
+	it("rejects admission and fences the generation when the socket dies", async () => {
+		const openingCase = makeSession();
+		const opening = openingCase.session.start();
+		openingCase.socket.serverClose(new Error("401 Unauthorized"));
+		await expect(opening).rejects.toThrow(/语音不可用.*401 Unauthorized/);
+		expect(openingCase.fence.isCurrent(1)).toBe(false);
+
+		const activeCase = makeSession(2);
+		const errors: VoiceError[] = [];
+		activeCase.session.on("error", (error) => errors.push(error));
+		const activeOpening = activeCase.session.start();
+		started(activeCase.socket);
+		await activeOpening;
+		activeCase.socket.serverError(new Error("network reset"));
+		expect(activeCase.fence.isCurrent(2)).toBe(false);
+		expect(errors.at(-1)).toMatchObject({ code: "connection-closed" });
 	});
 });
