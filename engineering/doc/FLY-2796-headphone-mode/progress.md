@@ -2,13 +2,13 @@
 issue: FLY-2796
 phase: implement
 phaseCursor: 1/7
-updated: 2026-09-23T22:05:47.893Z
-nextStep: Implement resident carrier claim plus SessionSlot and route bridge
-  adapters through canonical RoomIO
+updated: 2026-09-23T23:17:07.050Z
+nextStep: Audit recovered resident carrier and canonical RoomIO changes, then
+  run focused red-green verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
 **phase**: implement (1/7)
-**next**: Implement resident carrier claim plus SessionSlot and route bridge adapters through canonical RoomIO
+**next**: Audit recovered resident carrier and canonical RoomIO changes, then run focused red-green verification
