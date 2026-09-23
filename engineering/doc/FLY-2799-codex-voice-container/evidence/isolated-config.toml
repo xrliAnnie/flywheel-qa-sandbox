@@ -1,0 +1,12 @@
+cli_auth_credentials_store = "file"
+[features]
+realtime_conversation = true
+shell_tool = false
+memories = false
+apps = false
+plugins = false
+browser_use = false
+computer_use = false
+multi_agent = false
+hooks = false
+skip_host_skill_discovery = true
