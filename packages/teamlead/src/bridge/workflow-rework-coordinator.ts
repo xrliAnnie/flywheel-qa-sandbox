@@ -293,6 +293,7 @@ export interface WorkflowReworkCoordinatorEffects {
 	assertWorktreeReady(
 		session: WorkflowActorSession,
 		expectedHeadSha: string,
+		options?: { allowDirty?: boolean },
 	): Promise<{ ok: boolean; reason?: string }>;
 	activateActorForWake?(
 		session: WorkflowActorSession,
@@ -610,11 +611,13 @@ export class WorkflowReworkCoordinator {
 		if (
 			!observingReceipt &&
 			(processBody?.state === "standby" ||
+				processBody?.state === "resuming" ||
 				processBody?.state === "resume_failed")
 		) {
 			const ready = await this.deps.effects.assertWorktreeReady(
 				actor,
 				request.base_revision,
+				{ allowDirty: true },
 			);
 			if (!ready.ok) {
 				return this.releaseRetryable({
@@ -681,20 +684,53 @@ export class WorkflowReworkCoordinator {
 				processGeneration: begun.generation,
 				expectedHeadSha: request.base_revision,
 			});
-			if (!resumed.ok) {
-				this.deps.store.failWorkflowExecutionResume({
+			const failAfterCleanup = async (
+				reasonCode: string,
+				releaseReason: string,
+			): Promise<WorkflowReworkCoordinatorOutcome> => {
+				let cleanupError: string | undefined;
+				try {
+					const cleanup =
+						await this.deps.effects.closeActorForReworkSupersession({
+							session: actor,
+							requestId,
+							ownerId: this.deps.ownerId,
+							generation: claim.generation,
+							routeRevision: route.revision,
+							executionId: actor.execution_id,
+						});
+					if (!cleanup.ok) cleanupError = cleanup.error ?? "unknown";
+				} catch (error) {
+					cleanupError = error instanceof Error ? error.message : String(error);
+				}
+				const failed = this.deps.store.failWorkflowExecutionResume!({
 					executionId: actor.execution_id,
 					generation: begun.generation,
 					demandId: requestId,
 					ownerClaimId,
-					reasonCode: resumed.error,
+					reasonCode: cleanupError ? "cleanup_unconfirmed" : reasonCode,
 					now: this.now().toISOString(),
 				});
+				if (!failed.ok) {
+					return this.releaseRetryable({
+						requestId,
+						generation: claim.generation,
+						reason: `standby_resume_failure_record_failed:${failed.reason}`,
+					});
+				}
 				return this.releaseRetryable({
 					requestId,
 					generation: claim.generation,
-					reason: `standby_resume_failed:${resumed.error}`,
+					reason: cleanupError
+						? `standby_resume_cleanup_unconfirmed:${cleanupError}`
+						: releaseReason,
 				});
+			};
+			if (!resumed.ok) {
+				return failAfterCleanup(
+					resumed.error,
+					`standby_resume_failed:${resumed.error}`,
+				);
 			}
 			const verified = this.deps.store.finishWorkflowExecutionResume({
 				executionId: actor.execution_id,
@@ -705,19 +741,10 @@ export class WorkflowReworkCoordinator {
 				now: this.now().toISOString(),
 			});
 			if (!verified.ok) {
-				this.deps.store.failWorkflowExecutionResume({
-					executionId: actor.execution_id,
-					generation: begun.generation,
-					demandId: requestId,
-					ownerClaimId,
-					reasonCode: `verification_${verified.reason}`,
-					now: this.now().toISOString(),
-				});
-				return this.releaseRetryable({
-					requestId,
-					generation: claim.generation,
-					reason: `standby_resume_verification_failed:${verified.reason}`,
-				});
+				return failAfterCleanup(
+					`verification_${verified.reason}`,
+					`standby_resume_verification_failed:${verified.reason}`,
+				);
 			}
 		}
 		const reentry = await classifyPhaseActorReentry({

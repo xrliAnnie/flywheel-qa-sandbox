@@ -461,6 +461,70 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 	});
 
+	it("reclaims an expired resuming owner after Bridge restart without exceeding the original-session budget", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-lease",
+			manifestDigest: "d".repeat(64),
+			now: "2026-09-22T03:00:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T03:00:01.000Z",
+		});
+
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-a:1",
+				now: "2026-09-22T03:00:02.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 2, attempt: 1 });
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-b:1",
+				now: "2026-09-22T03:02:59.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_owner_conflict" });
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-b:2",
+				now: "2026-09-22T03:03:03.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 3, attempt: 2 });
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "resuming",
+			generation: 3,
+			owner_claim_id: "bridge-b:2",
+		});
+
+		const attempts = (
+			store as unknown as {
+				db: { raw: Database.Database };
+			}
+		).db.raw
+			.prepare(
+				`SELECT attempt, state, reason_code
+				   FROM workflow_execution_resume_attempt
+				  WHERE execution_id = 'exec-1' AND demand_id = 'mail-lease'
+				  ORDER BY attempt`,
+			)
+			.all();
+		expect(attempts).toEqual([
+			{ attempt: 1, state: "failed", reason_code: "resume_lease_expired" },
+			{ attempt: 2, state: "started", reason_code: null },
+		]);
+	});
+
 	it("refreshes the same-run worktree binding cohort only inside an accepted completion", async () => {
 		const store = await StateStore.create(":memory:");
 		createAdmittedEngineRun(store);

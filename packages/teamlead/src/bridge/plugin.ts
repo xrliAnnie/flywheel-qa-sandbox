@@ -13806,11 +13806,12 @@ export async function startBridge(
 		const assertWorkflowActorWorktreeReady = async (
 			session: WorkflowActorSession,
 			expectedHeadSha: string,
+			options?: { allowDirty?: boolean },
 		) => {
 			const worktree = store.getSession(session.execution_id)?.worktree_path;
 			if (!worktree)
 				return { ok: false as const, reason: "worktree_path_missing" };
-			return assertWorkflowWorktreeReady(worktree, expectedHeadSha);
+			return assertWorkflowWorktreeReady(worktree, expectedHeadSha, options);
 		};
 
 		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({

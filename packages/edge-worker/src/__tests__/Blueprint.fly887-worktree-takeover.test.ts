@@ -351,6 +351,32 @@ describe("FLY-887 worktree in-place takeover", () => {
 		expect(wt.create).toHaveBeenCalled();
 	});
 
+	it("process-body resume reuses a registered generic worktree in place even when dirty", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const gitChecker = makeGitChecker({ clean: false, head: HEAD });
+		const { result } = await run(wt, gitChecker, {
+			sessionRole: "main",
+			shareParentBranch: true,
+			startPoint: HEAD,
+			workflowProcessLifecycle: {
+				mode: "resume",
+				generation: 2,
+				demandId: "rework-1",
+				expectedSessionId: "session-1",
+				expectedModel: "sonnet",
+				expectedCwd: path,
+			},
+		});
+
+		expect(result.success).toBe(true);
+		expect(wt.isRegistered).toHaveBeenCalled();
+		expect(wt.removeIfExists).not.toHaveBeenCalled();
+		expect(wt.create).not.toHaveBeenCalled();
+		expect(gitChecker.assertCleanTree).not.toHaveBeenCalled();
+	});
+
 	it("resume launch quarantines and rebuilds instead of taking over in place", async () => {
 		const path = makeRealWorktree();
 		created.push(path);

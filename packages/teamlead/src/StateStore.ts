@@ -423,6 +423,7 @@ export class WorkflowEventUidConflictError extends Error {
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
 export const MAX_WORKFLOW_RESUME_ATTEMPTS = 2;
+export const WORKFLOW_RESUME_LEASE_MS = 180_000;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
@@ -33945,6 +33946,7 @@ export class StateStore {
 				manifest_digest TEXT,
 				current_demand_id TEXT,
 				owner_claim_id TEXT,
+				resume_lease_expires_at TEXT,
 				started_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
 				retirement_requested_at TEXT,
@@ -33955,6 +33957,17 @@ export class StateStore {
 				FOREIGN KEY (execution_id) REFERENCES workflow_execution_runtime(execution_id)
 			)
 		`);
+		const processBodyInfo = this.db.exec(
+			"PRAGMA table_info(workflow_execution_process_body)",
+		);
+		const processBodyColumns = new Set(
+			(processBodyInfo[0]?.values ?? []).map((row) => String(row[1])),
+		);
+		if (!processBodyColumns.has("resume_lease_expires_at")) {
+			this.db.run(
+				"ALTER TABLE workflow_execution_process_body ADD COLUMN resume_lease_expires_at TEXT",
+			);
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_execution_resume_attempt (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33980,6 +33993,7 @@ export class StateStore {
 				FOREIGN KEY (execution_id) REFERENCES workflow_execution_runtime(execution_id)
 			)
 		`);
+		this.db.run("DROP TRIGGER IF EXISTS workflow_process_body_close_with_run");
 		this.db.run(`
 			CREATE TRIGGER IF NOT EXISTS workflow_process_body_close_with_run
 			AFTER UPDATE OF status ON workflow_run
@@ -33987,7 +34001,8 @@ export class StateStore {
 			BEGIN
 				UPDATE workflow_execution_process_body
 				   SET state = 'closed', current_demand_id = NULL, owner_claim_id = NULL,
-				       updated_at = datetime('now'), reason_code = 'workflow_run_terminal'
+				       resume_lease_expires_at = NULL, updated_at = datetime('now'),
+				       reason_code = 'workflow_run_terminal'
 				 WHERE execution_id IN (
 				       SELECT execution_id FROM workflow_execution_runtime WHERE run_id = NEW.run_id
 				 ) AND state <> 'closed';
@@ -45679,6 +45694,8 @@ export class StateStore {
 			manifest_digest: (row.manifest_digest as string) ?? null,
 			current_demand_id: (row.current_demand_id as string) ?? null,
 			owner_claim_id: (row.owner_claim_id as string) ?? null,
+			resume_lease_expires_at:
+				(row.resume_lease_expires_at as string) ?? null,
 			started_at: String(row.started_at),
 			updated_at: String(row.updated_at),
 			retirement_requested_at:
@@ -45889,6 +45906,9 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_resume_request" };
 		}
+		const resumeLeaseExpiresAt = new Date(
+			Date.parse(input.now) + WORKFLOW_RESUME_LEASE_MS,
+		).toISOString();
 		let result:
 			| {
 					ok: true;
@@ -45901,38 +45921,74 @@ export class StateStore {
 			reason: "resume_not_committed",
 		};
 		this.db.transaction(() => {
-			const body = this.getWorkflowExecutionProcessBody(input.executionId);
+			let body = this.getWorkflowExecutionProcessBody(input.executionId);
 			if (!body) {
 				result = { ok: false, reason: "process_body_not_enrolled" };
 				return;
 			}
 			if (body.state === "resuming") {
 				if (
-					body.current_demand_id !== input.demandId ||
-					body.owner_claim_id !== input.ownerClaimId
+					body.current_demand_id === input.demandId &&
+					body.owner_claim_id === input.ownerClaimId
+				) {
+					const attempt = Number(
+						this.workflowSelectAll(
+							`SELECT MAX(attempt) AS attempt
+							   FROM workflow_execution_resume_attempt
+							  WHERE execution_id = ? AND demand_id = ?
+							    AND kind = 'original_session'`,
+							[input.executionId, input.demandId],
+						)[0]?.attempt ?? 1,
+					);
+					result = {
+						ok: true,
+						generation: body.generation,
+						attempt,
+						idempotentReplay: true,
+					};
+					return;
+				}
+				if (
+					!body.resume_lease_expires_at ||
+					Date.parse(body.resume_lease_expires_at) > Date.parse(input.now)
 				) {
 					result = { ok: false, reason: "resume_owner_conflict" };
 					return;
 				}
-				const attempt = Number(
-					this.workflowSelectAll(
-						`SELECT MAX(attempt) AS attempt
-						   FROM workflow_execution_resume_attempt
-						  WHERE execution_id = ? AND demand_id = ?
-						    AND kind = 'original_session'`,
-						[input.executionId, input.demandId],
-					)[0]?.attempt ?? 1,
+				this.db.run(
+					`UPDATE workflow_execution_resume_attempt
+					    SET state = 'failed', reason_code = 'resume_lease_expired', finished_at = ?
+					  WHERE execution_id = ? AND generation = ?
+					    AND kind = 'original_session' AND state = 'started'`,
+					[input.now, input.executionId, body.generation],
 				);
-				result = {
-					ok: true,
-					generation: body.generation,
-					attempt,
-					idempotentReplay: true,
+				this.db.run(
+					`UPDATE workflow_execution_process_body
+					    SET state = 'resume_failed', owner_claim_id = NULL,
+					        resume_lease_expires_at = NULL, updated_at = ?,
+					        reason_code = 'resume_lease_expired'
+					  WHERE execution_id = ? AND generation = ? AND state = 'resuming'`,
+					[input.now, input.executionId, body.generation],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "resume_lease_reap_cas_failed" };
+					return;
+				}
+				body = {
+					...body,
+					state: "resume_failed",
+					owner_claim_id: null,
+					resume_lease_expires_at: null,
+					updated_at: input.now,
+					reason_code: "resume_lease_expired",
 				};
-				return;
 			}
 			if (body.state !== "standby" && body.state !== "resume_failed") {
 				result = { ok: false, reason: `process_body_${body.state}` };
+				return;
+			}
+			if (body.reason_code === "cleanup_unconfirmed") {
+				result = { ok: false, reason: "resume_cleanup_unconfirmed" };
 				return;
 			}
 			const attempt =
@@ -45953,12 +46009,14 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_execution_process_body
 				    SET state = 'resuming', generation = ?, current_demand_id = ?,
-				        owner_claim_id = ?, updated_at = ?, reason_code = NULL
+				        owner_claim_id = ?, resume_lease_expires_at = ?,
+				        updated_at = ?, reason_code = NULL
 				  WHERE execution_id = ? AND generation = ? AND state = ?`,
 				[
 					generation,
 					input.demandId,
 					input.ownerClaimId,
+					resumeLeaseExpiresAt,
 					input.now,
 					input.executionId,
 					body.generation,
@@ -46068,7 +46126,8 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_execution_process_body
 				    SET state = 'active', current_demand_id = NULL, owner_claim_id = NULL,
-				        updated_at = ?, reason_code = NULL, last_resume_ms = ?
+				        resume_lease_expires_at = NULL, updated_at = ?, reason_code = NULL,
+				        last_resume_ms = ?
 				  WHERE execution_id = ? AND generation = ? AND state = 'resuming'
 				    AND current_demand_id = ? AND owner_claim_id = ?`,
 				[
@@ -46160,7 +46219,8 @@ export class StateStore {
 		this.db.transaction(() => {
 			this.db.run(
 				`UPDATE workflow_execution_process_body
-				    SET state = 'resume_failed', owner_claim_id = NULL, updated_at = ?, reason_code = ?
+				    SET state = 'resume_failed', owner_claim_id = NULL,
+				        resume_lease_expires_at = NULL, updated_at = ?, reason_code = ?
 				  WHERE execution_id = ? AND generation = ? AND state = 'resuming'
 				    AND current_demand_id = ? AND owner_claim_id = ?`,
 				[
@@ -46306,7 +46366,7 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_execution_process_body
 				    SET state = 'closed', updated_at = ?, reason_code = 'fresh_fallback_allocated',
-				        context_loss = 1
+				        resume_lease_expires_at = NULL, context_loss = 1
 				  WHERE execution_id = ? AND generation = ? AND state = 'resume_failed'`,
 				[input.now, input.executionId, body.generation],
 			);
@@ -86292,6 +86352,7 @@ export interface WorkflowExecutionProcessBodyRow {
 	manifest_digest: string | null;
 	current_demand_id: string | null;
 	owner_claim_id: string | null;
+	resume_lease_expires_at: string | null;
 	started_at: string;
 	updated_at: string;
 	retirement_requested_at: string | null;

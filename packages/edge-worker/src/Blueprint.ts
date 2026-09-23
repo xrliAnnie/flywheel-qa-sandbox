@@ -1408,7 +1408,52 @@ export class Blueprint {
 						).path,
 					)
 					.catch(() => false));
-			if (ctx.workflowResume) {
+			const processBodyResume = ctx.workflowProcessLifecycle?.mode === "resume";
+			if (processBodyResume) {
+				const expected = this.worktreeManager.expectedWorktree(
+					projectRoot,
+					projectName,
+					worktreeIssueId,
+				);
+				const expectedCwd = ctx.workflowProcessLifecycle?.expectedCwd;
+				let registered = false;
+				try {
+					registered =
+						!!expectedCwd &&
+						fs.realpathSync(expected.path) === fs.realpathSync(expectedCwd) &&
+						(await this.worktreeManager.isRegistered(
+							projectRoot,
+							expected.path,
+						));
+				} catch {
+					registered = false;
+				}
+				if (!registered) {
+					return {
+						success: false,
+						error: "workflow_process_resume_worktree_mismatch",
+						worktreePath: expected.path,
+					};
+				}
+				let generation = "";
+				try {
+					generation =
+						(await this.worktreeManager.readWorktreeGeneration?.(
+							expected.path,
+						)) ?? "";
+				} catch {
+					generation = "";
+				}
+				worktreeInfo = {
+					projectName,
+					issueId: worktreeIssueId,
+					worktreePath: expected.path,
+					branch: expected.branch,
+					mainRepoPath: projectRoot,
+					generation,
+				};
+				cwd = expected.path;
+			} else if (ctx.workflowResume) {
 				const resume = ctx.workflowResume;
 				if (
 					ctx.startPoint?.toLowerCase() !== resume.anchorCommit.toLowerCase()
@@ -1645,7 +1690,9 @@ export class Blueprint {
 		}
 
 		// ── Git preflight (existing — THROWS on failure) ──────
-		await this.gitChecker.assertCleanTree(cwd);
+		if (ctx.workflowProcessLifecycle?.mode !== "resume") {
+			await this.gitChecker.assertCleanTree(cwd);
+		}
 		const baseSha = await this.gitChecker.captureBaseline(cwd);
 		if (ctx.prepareWorkflowIssueDelivery) {
 			try {
