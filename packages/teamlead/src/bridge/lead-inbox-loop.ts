@@ -33,6 +33,13 @@ export const IDLE_LEAD_INBOX_INTERVAL_MS = 30_000;
 export interface LeadInboxTickResult {
 	ok: boolean;
 	protocolConsumed: number;
+	/** Rows durably accepted by the backend transport during this tick. */
+	transportReceipted: number;
+	/**
+	 * Rows proven consumed by a runtime model turn. The inbox loop cannot make
+	 * that claim from an adapter/socket receipt, so this stays zero here. Runtime
+	 * turn input/reply association owns the positive observation.
+	 */
 	modelConsumed: number;
 	error?: string;
 }
@@ -221,7 +228,7 @@ export class LeadInboxLoop {
 	async tick(): Promise<LeadInboxTickResult> {
 		const startedAt = this.isoNow();
 		let protocolConsumed = 0;
-		let modelConsumed = 0;
+		let transportReceipted = 0;
 		try {
 			const queueConfig =
 				this.opts.queueConfig?.() ?? DEFAULT_MAILBOX_QUEUE_CONFIG;
@@ -399,11 +406,16 @@ export class LeadInboxLoop {
 
 				if (deliverable.length > 0) {
 					await this.deliverModelBatch(deliverable, queueConfig);
-					modelConsumed = deliverable.length;
+					transportReceipted = deliverable.length;
 				}
 			}
 			this.opts.queue.recordTickSuccess(this.opts.leadId, this.isoNow());
-			return { ok: true, protocolConsumed, modelConsumed };
+			return {
+				ok: true,
+				protocolConsumed,
+				transportReceipted,
+				modelConsumed: 0,
+			};
 		} catch (error) {
 			const message = describeError(error);
 			this.opts.logger?.warn("Lead inbox tick failed", {
@@ -413,7 +425,8 @@ export class LeadInboxLoop {
 			return {
 				ok: false,
 				protocolConsumed,
-				modelConsumed,
+				transportReceipted,
+				modelConsumed: 0,
 				error: message,
 			};
 		}
