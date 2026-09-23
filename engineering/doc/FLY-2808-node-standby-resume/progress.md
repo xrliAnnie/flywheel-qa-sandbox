@@ -1,14 +1,15 @@
 ---
 issue: FLY-2808
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-23T05:56:55.502Z
-nextStep: R1 failed reviewed_plan_moved. Frozen plan ca9ea312e. Poll new gate
-  d0cf1a21-fa94-4d23-9663-63df581f0d15; do not edit plan while review runs.
+phaseCursor: 5/5
+updated: 2026-09-23T06:02:43.078Z
+nextStep: R2 effective APPROVED; HTML hosted verified/reported
+  c4e8cc63-0745-43c1-8401-91d74e49896e; commit final receipts, complete --route
+  phase_design_complete, park. Do not reopen approved plan.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
-**phase**: design (4/5)
-**next**: R1 failed reviewed_plan_moved. Frozen plan ca9ea312e. Poll new gate d0cf1a21-fa94-4d23-9663-63df581f0d15; do not edit plan while review runs.
+**phase**: design (5/5)
+**next**: R2 effective APPROVED; HTML hosted verified/reported c4e8cc63-0745-43c1-8401-91d74e49896e; commit final receipts, complete --route phase_design_complete, park. Do not reopen approved plan.
