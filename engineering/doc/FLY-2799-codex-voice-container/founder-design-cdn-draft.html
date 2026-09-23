@@ -1,0 +1,117 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FLY-2799 · 每场一个 Codex 语音容器</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,sans-serif;line-height:1.65}main{max-width:960px;margin:auto;padding:36px 20px 70px}header{padding:14px 4px 28px}h1{font-size:38px;line-height:1.2;letter-spacing:-1px;margin:10px 0 16px}h2{font-size:23px;line-height:1.35;margin:0 0 18px;color:#1a365d}.eyebrow{font-size:13px;color:#007aff;font-weight:700;letter-spacing:1px}.sub{color:#626269}.card{background:white;border-radius:12px;padding:26px;margin:18px 0;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid #007aff}p{margin:12px 0}label{display:block;margin-top:24px;font-size:14px;color:#626269}textarea{display:block;width:100%;min-height:78px;border:1px solid #c7c7cc;border-radius:8px;padding:12px;font:inherit;resize:vertical;background:#fcfcfe;color:#1d1d1f;margin:8px 0}textarea:focus{outline:2px solid #007aff;outline-offset:2px}.aggregate{min-height:130px}button{border:0;border-radius:8px;padding:10px 16px;margin:8px 8px 8px 0;background:#007aff;color:white;font:inherit;cursor:pointer}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px}th{text-align:left;background:#f5f5f7;color:#1a365d}th,td{padding:12px;border-bottom:1px solid #e5e5ea;vertical-align:top;min-width:135px}.diagram-pending{padding:22px;border:1px dashed #d9a32b;background:#fffaf0;border-radius:8px}.diagram-pending strong{font-size:13px;color:#805900}svg{max-width:100%;height:auto}#copy-status{color:#626269;font-size:14px}@media(max-width:600px){main{padding:20px 12px 50px}h1{font-size:30px}.card{padding:20px 16px}h2{font-size:21px}}</style></head><body><main><header><div class="eyebrow">FLY-2799 · ENGINE B · 2026-09-23</div><h1>每场一个新容器，<br>装谁的记忆，就和谁聊。</h1><p class="sub">设计交付 · 固定合同 313befcfa · 已有实测，尚未产品验收</p></header><section class="card" id="flow"><h2>01 · 每场都是新的语音分身</h2><p>开会或进耳机时，新开一个 Codex 语音容器，装进指定 Lead 的记忆和当前工作；要动手的事交本体，结束后关掉容器并交回纪要。</p><pre class="mermaid" id="diagram-1">flowchart LR
+  R[现有房间：收音与放音] &lt;--&gt; B[本场 Codex 容器]
+  C[指定 Lead：身份、记忆、当前事项] --&gt; B
+  B --&gt; T[同一份持久转写]
+  T --&gt; M[模式层核对原话与权限]
+  M --&gt; H[Lead 本体信箱]
+  H --&gt; E[执行结果回执]
+  E --&gt; M
+  M --&gt; B
+  T --&gt; N[结束：纪要交本体]
+</pre><p>容器指只为本场存在的独立会话。RoomIO 指共用的房间收音、放音和出入房接口；本单复用它，不再造进房或播放器。</p><label for="comment-flow">对「01 · 每场都是新的语音分身」的意见</label><textarea class="comment" id="comment-flow" data-title="01 · 每场都是新的语音分身" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="evidence"><h2>02 · 已经证实到哪一步</h2><div class="table-wrap"><table><thead><tr><th>项目</th><th>已有结果</th><th>还不能据此声称</th></tr></thead><tbody><tr><td>Codex 0.156.1 / V2</td><td>已返回开口音频，也能接外部音频流</td><td>已在真人房间可用</td></tr><tr><td>V3 协议</td><td>当前 Codex 路径拒绝访问</td><td>公开 GPT Live 不可用；公开 Live 已交 A 路</td></tr><tr><td>文字让它开口</td><td>appendSpeech 已出声；即把待说内容交给语音模型</td><td>每一次都逐字正确</td></tr><tr><td>appendText</td><td>原探针用 user 角色，12秒观察窗无音频</td><td>developer 角色已验证或永远不会出声</td></tr><tr><td>权限与身份</td><td>已找到需补的隔离与归属边界</td><td>语音容器已能安全派单/批准</td></tr></tbody></table></div><p>V2/V3 在此指 Codex 协议版本。耳机、会议两个工作包也被简称 V2/V3，名称相同，但不是同一件事。第一步实测和 A 路交接已完成，本轮不重跑。</p><label for="comment-evidence">对「02 · 已经证实到哪一步」的意见</label><textarea class="comment" id="comment-evidence" data-title="02 · 已经证实到哪一步" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="context"><h2>03 · 装进去的内容要能核对</h2><pre class="mermaid" id="diagram-2">classDiagram
+  class VoiceSession {
+    sessionId
+    projectName
+    leadId
+    leaseEpoch
+    state
+  }
+  class ContextSnapshot {
+    snapshotDigest
+    capturedAt
+    rosterDigest
+    identityDigest
+    memoryFileDigests
+    activeIssues
+    pendingDecisions
+  }
+  class Container {
+    threadId
+    processGeneration
+    sessionGeneration
+    binaryDigest
+    effectiveConfigDigest
+  }
+  class Utterance {
+    transcriptId
+    utteranceId
+    contentDigest
+    attribution
+    durabilityReceipt
+  }
+  class Handoff {
+    handoffId
+    idempotencyKey
+    requestDigest
+    stateVersion
+    state
+  }
+  VoiceSession &quot;1&quot; --&gt; &quot;1&quot; ContextSnapshot
+  VoiceSession &quot;1&quot; --&gt; &quot;1&quot; Container
+  VoiceSession &quot;1&quot; --&gt; &quot;many&quot; Utterance
+  Utterance &quot;1&quot; --&gt; &quot;many&quot; Handoff
+</pre><p>上下文快照就是开场时固定下来的一份身份、记忆和当前工作清单。按配置读取完整记忆文件，附文件摘要、来源和时间；缺文件或超长就明确报错，不能悄悄截掉。</p><p>顺序固定：身份与只读边界 → 记忆 → 在跑的单与待决定事项 → 本场议题与上次纪要 → 退出规则。会议提示不能覆盖身份或记忆。相同内容同时进入文字会话和语音提示，不能只给模型一个文件路径。</p><p>Raya 和 Honey Lemon 各使用自己的稳定 Lead 身份。Honey Lemon 本体用 Opus，也能装入 Codex 语音容器；切换的是语音载体，不是她的业务身份。</p><label for="comment-context">对「03 · 装进去的内容要能核对」的意见</label><textarea class="comment" id="comment-context" data-title="03 · 装进去的内容要能核对" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="authority"><h2>04 · 动作交本体，回执逐步说清</h2><pre class="mermaid" id="diagram-3">stateDiagram-v2
+  [*] --&gt; authorized
+  authorized --&gt; dispatching: 持久化后才发
+  authorized --&gt; rejected
+  dispatching --&gt; dispatched: 本体信箱受理回执
+  dispatching --&gt; ambiguous: 超时或重启
+  dispatched --&gt; committed: 本体执行证明
+  dispatched --&gt; rejected
+  dispatched --&gt; ambiguous
+  ambiguous --&gt; committed: 只读对账
+  ambiguous --&gt; rejected: 只读对账
+  ambiguous --&gt; needs_human: 有界退避用尽
+</pre><p>语音容器没有派单、批准或改文件的工具和业务凭据。模式层负责理解“要做什么”，再核对说话人、原话记录和当前授权，把请求送给本体。Codex 内置后台可以只读推理，不能成为第二个动作出口。</p><p>持久回执指重启后仍可按编号读回的记录。“信箱受理”“本体消费”“动作完成”分开证明。超时可能意味着已经执行，所以只能查询对账，不能盲目重发。</p><p>说话人不明的整句话仍保留；涉及动作则拒绝执行并说明。播放已送给本地播放器，也不能写成她已经听见。</p><label for="comment-authority">对「04 · 动作交本体，回执逐步说清」的意见</label><textarea class="comment" id="comment-authority" data-title="04 · 动作交本体，回执逐步说清" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="caps"><h2>05 · 能力要逐项过关</h2><div class="table-wrap"><table><thead><tr><th>能力</th><th>启用前必须证明</th><th>未通过时</th></tr></thead><tbody><tr><td>逐句校验</td><td>每次播报都能绑定原请求并发现漏句、错编号或超时</td><td>依赖复述的动作关闭</td></tr><tr><td>说话人归属</td><td>房间音频和该条最终转写有唯一关联</td><td>原句保留，禁止动作</td></tr><tr><td>插话即停</td><td>检测持续插话、清本地播放、阻止旧轮后续声音和动作</td><td>会议所需能力关闭</td></tr><tr><td>静默补上下文</td><td>补事实不会自行开口，之后回答能用到它</td><td>明确不支持，不冒充已实现</td></tr></tbody></table></div><p>这四项目前尚未完成实现验收。功能开关不能因为一次成功样本就打开。声称逐字正确，需要每一次都可检查；打断后也要确认旧答案不会重新冒出来。</p><label for="comment-caps">对「05 · 能力要逐项过关」的意见</label><textarea class="comment" id="comment-caps" data-title="05 · 能力要逐项过关" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="tradeoffs"><h2>06 · 取舍与依赖</h2><div class="table-wrap"><table><thead><tr><th>选择</th><th>原因</th></tr></thead><tbody><tr><td>扩现有进程管理器</td><td>避免恢复第二套 Codex 客户端，同时支持每场新建、用完即关</td></tr><tr><td>独立 0.156.1 安装</td><td>不改舰队 codex 入口，舰队升级仍归 FLY-2766</td></tr><tr><td>API key 认证</td><td>首轮已证实订阅认证不支持这条路；额度/权限失败明确语音不可用</td></tr><tr><td>不用 B 静默切 A</td><td>A 是公开 GPT Live，B 是 Codex 载体，失败必须可见</td></tr><tr><td>G1、G2 仍未关闭</td><td>G1 是共用房间层的归属与验收；G2 是跨单需求对账。Lead 已确认不挡设计，但挡相应集成准入</td></tr></tbody></table></div><p>接口合同固定为 FLY-2795 的 313befcfa。Founder 后续调整由 Lead 增量传达，不跟随浮动文档改变范围。</p><label for="comment-tradeoffs">对「06 · 取舍与依赖」的意见</label><textarea class="comment" id="comment-tradeoffs" data-title="06 · 取舍与依赖" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="acceptance"><h2>07 · 怎样才算真正完成</h2><p>测试房分别装 Raya 与 Honey Lemon 各跑一场：问出她自己的记忆、手上工作与待决定事项；提出一个无害测试动作，核对确实进入正确本体信箱并取得真实结果回执。</p><p>继续验证：主动开口、真人音频输入、插话后旧轮不回流、说话人不明时不动手、旧授权失效、额度用尽明确失败、退出后进程死亡、纪要落到本体，重进使用全新会话。</p><p>本地只跑涉及模块的测试，全量测试交 PR CI。CI 是提交后的自动测试流程。已有探针不能代替两场真人房间验收。</p><label for="comment-acceptance">对「07 · 怎样才算真正完成」的意见</label><textarea class="comment" id="comment-acceptance" data-title="07 · 怎样才算真正完成" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="boundary"><h2>08 · 这次设计交付的边界</h2><p>交付的是实施方案与验收条件，尚未实现、部署、切换生产或完成两场真人 QA。设计评审通过也不等于语音功能已能使用。</p><p>正式发布前以有效设计评审结论为准；发布后的页面意见属于修订反馈，不是批准信号。页面只用浅色。按 Lead 新裁定在浏览器加载 Mermaid 绘图；未做浏览器 QA。</p><label for="comment-boundary">对「08 · 这次设计交付的边界」的意见</label><textarea class="comment" id="comment-boundary" data-title="08 · 这次设计交付的边界" placeholder="写在这里，自动保存在当前浏览器"></textarea></section><section class="card" id="summary"><h2>页面意见汇总</h2><p>意见只保存在当前浏览器。复制后交给 Lead；超过约1800字会自动拆分，每段保留本单标记。</p><div id="chunks"></div><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status"></p><label for="comment-summary">对「页面意见汇总」的意见</label><textarea class="comment" id="comment-summary" data-title="页面意见汇总" placeholder="写在这里，自动保存在当前浏览器"></textarea></section></main><script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" nonce="__CSP_NONCE__"></script><script nonce="__CSP_NONCE__">
+mermaid.initialize({ startOnLoad: true, theme: 'default' });
+(() => {
+  const marker = '【页面意见汇总】FLY-2799';
+  const prefix = 'flywheel-comments:' + location.pathname + ':';
+  const fields = Array.from(document.querySelectorAll('textarea.comment'));
+  const chunksHost = document.getElementById('chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  async function copy(text) {
+    let success = false;
+    try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); success = true; } } catch (_) {}
+    if (!success) {
+      const temp = document.createElement('textarea'); temp.value = text;
+      temp.setAttribute('aria-label', '复制暂存'); temp.style.position = 'fixed'; temp.style.opacity = '0';
+      document.body.appendChild(temp); temp.select();
+      try { success = document.execCommand('copy'); } catch (_) { success = false; }
+      temp.remove();
+    }
+    status.textContent = success ? '已复制。请交给 Lead。' : '自动复制失败，请手动选择汇总文本复制。';
+  }
+  function refresh() {
+    const entries = fields.filter(f => f.value.trim()).map(f => ({title:f.dataset.title, text:Array.from(f.value.trim())}));
+    chunks = []; let current = marker;
+    const limit = 1800;
+    for (const entry of entries) {
+      const title = '\n\n[' + entry.title + ']\n';
+      let remaining = entry.text;
+      while (remaining.length) {
+        const room = limit - Array.from(current).length - Array.from(title).length;
+        if (room <= 0) { chunks.push(current); current = marker; continue; }
+        const take = Math.min(room, remaining.length);
+        current += title + remaining.slice(0,take).join(''); remaining = remaining.slice(take);
+        if (remaining.length) { chunks.push(current); current = marker; }
+      }
+    }
+    if (current !== marker || chunks.length === 0) chunks.push(current);
+    chunksHost.replaceChildren();
+    chunks.forEach((chunk,i) => {
+      const text = document.createElement('textarea'); text.readOnly = true; text.value = chunk;
+      text.setAttribute('aria-label','汇总第' + (i+1) + '段'); text.className = 'aggregate';
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第' + (i+1) + '段';
+      button.addEventListener('click', () => copy(chunk)); chunksHost.append(text,button);
+    });
+  }
+  fields.forEach(field => {
+    try { field.value = localStorage.getItem(prefix + field.id) || ''; } catch (_) {}
+    field.addEventListener('input', () => { try { localStorage.setItem(prefix + field.id,field.value); } catch (_) { status.textContent = '浏览器存储不可用，请及时复制意见。'; } refresh(); });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\n\n')));
+  refresh();
+})();
+</script></body></html>
