@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音能不能用了 — FLY-2781 上线验证</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:32px 16px 72px}
+h1{font-size:30px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 28px}
+.verdict{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--amber);padding:22px 24px;margin:0 0 28px}
+.verdict h2{margin:0 0 10px;font-size:21px;letter-spacing:-.01em}
+.verdict p{margin:0 0 10px}
+.verdict p:last-child{margin-bottom:0}
+.section{margin:34px 0 0}
+.section-title{font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--navy);margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.count{background:#e8e8ed;color:var(--dim);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600;letter-spacing:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue);padding:16px 20px;margin:0 0 12px}
+.card.green{border-left-color:var(--green)}
+.card.amber{border-left-color:var(--amber)}
+.card.red{border-left-color:var(--red)}
+.card.purple{border-left-color:var(--purple)}
+.card.gray{border-left-color:#d2d2d7}
+.card-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.card-title{font-weight:600;font-size:16px}
+.card-body{font-size:15px;color:#3a3a3c}
+.card-body p{margin:6px 0 0}
+.badge{font-size:11px;font-weight:600;border-radius:5px;padding:2px 7px;letter-spacing:.02em;white-space:nowrap}
+.b-ok{background:#e3f7e8;color:#1a7f37}
+.b-warn{background:#fff2df;color:#9a5b00}
+.b-no{background:#ffe5e3;color:#b3241a}
+.b-info{background:#e5f0ff;color:#0a58c2}
+.step{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 20px 16px 20px;margin:0 0 12px;border-left:4px solid var(--purple);display:flex;gap:14px;align-items:flex-start}
+.step-n{flex:0 0 28px;height:28px;border-radius:14px;background:var(--navy);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:2px}
+.step-main{flex:1;min-width:0}
+.step-title{font-weight:600;font-size:16px;margin-bottom:4px}
+.ok-line,.no-line{font-size:14px;margin:5px 0 0;padding-left:20px;position:relative}
+.ok-line::before{content:"✓";position:absolute;left:0;color:#1a7f37;font-weight:700}
+.no-line::before{content:"—";position:absolute;left:0;color:var(--dim);font-weight:700}
+.no-line{color:var(--dim)}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;background:#f0f0f3;border-radius:5px;padding:1px 6px}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:4px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eaeaef;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+tr:last-child td{border-bottom:none}
+.note{font-size:13px;color:var(--dim);margin-top:8px}
+footer{margin-top:44px;padding-top:20px;border-top:1px solid #e0e0e5;font-size:13px;color:var(--dim)}
+@media (max-width:600px){h1{font-size:25px}.wrap{padding:24px 16px 56px}}
+@media (prefers-color-scheme:dark){
+:root:not([data-theme="light"]){--bg:#000;--card:#1c1c1e;--ink:#f5f5f7;--dim:#98989d;--navy:#7aa7e0}
+:root:not([data-theme="light"]) .count{background:#2c2c2e;color:var(--dim)}
+:root:not([data-theme="light"]) .card-body{color:#c7c7cc}
+:root:not([data-theme="light"]) .mono{background:#2c2c2e}
+:root:not([data-theme="light"]) th,:root:not([data-theme="light"]) td{border-bottom-color:#2c2c2e}
+:root:not([data-theme="light"]) footer{border-top-color:#2c2c2e}
+:root:not([data-theme="light"]) .b-ok{background:#12351c;color:#6ede8a}
+:root:not([data-theme="light"]) .b-warn{background:#3a2a08;color:#ffbf5e}
+:root:not([data-theme="light"]) .b-no{background:#3a1512;color:#ff8b80}
+:root:not([data-theme="light"]) .b-info{background:#0d2547;color:#7ab3ff}
+:root:not([data-theme="light"]) .step-n{background:#0a58c2}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>语音能不能用了</h1>
+<p class="sub">FLY-2781 · 2026-09-22 19:55 PT · 本次没有开任何真实语音会话，原因见下</p>
+
+<div class="verdict">
+  <h2>一句话：可以去用了 —— 而且必须由你去用，因为最关键的那一半只有你能验。</h2>
+  <p><strong>嗓子和耳朵 —— 已证。</strong> 部署的字节确实是 FLY-2655 修复后的；语音守护进程健康在跑；耳朵/嘴巴用的 OpenAI Realtime 后端刚刚实测连通（1.6 秒握手成功）；Raya 在语音房的进房和说话权限齐全。</p>
+  <p><strong>脑子的号是满的。</strong> Raya 的 Codex 账号 16:50 PT 刚重置，额度充足；她 19:49 PT 还完成过一次回复，恢复之后一次都没被限流过。</p>
+  <p><strong>但「听 → 想 → 说」这整条链，在生产上从来没有端到端跑通过一次。</strong> 上次 FLY-2655 的验收只打通了嗓子和耳朵（入房、听到、出声）；当时 Codex 正好打满，「想」那一段是<em>人手打字代替</em>的。这次我也没能替你补上 —— 设计上语音房里必须有<em>你本人</em>，bot 顶替不了（第 3 节解释）。</p>
+  <p><strong>所以你进去说第一句话的那一刻，验的就是从来没验过的那一半。</strong>下面第 4 节第 5 步专门为此设计。</p>
+</div>
+
+<div class="section">
+  <div class="section-title">① 我实测了什么 <span class="count">5 项</span></div>
+
+  <div class="card green">
+    <div class="card-header"><span class="badge b-ok">已证</span><span class="card-title">部署的确实是修复后的代码</span></div>
+    <div class="card-body">
+      宿主 checkout 干净，HEAD 就是 FLY-2655 的合并提交（09:21 PT 合入）；构建产物 12:01 PT 生成；语音进程 12:02 PT 启动。时序闭合，而且产物里有只在修复后才存在的文件。
+      <p class="note">小更正：进程实际起于 12:02 PT，比你记的 12:24 班车早 22 分钟，但它加载的代码已经含这次修复，结论不变。</p>
+    </div>
+  </div>
+
+  <div class="card green">
+    <div class="card-header"><span class="badge b-ok">已证</span><span class="card-title">语音守护进程健康，一直在等你</span></div>
+    <div class="card-body">
+      最近一次心跳 19:45 PT：成功 16057 次、连续失败 0 次、状态 idle，持续在轮询「有没有人要开语音」。也就是你一说要开，它立刻接得住。
+      <p class="note">19:41–19:43 有 3 次和 Bridge 的短暂超时，随即自行恢复。是抖动，不是故障。</p>
+    </div>
+  </div>
+
+  <div class="card green">
+    <div class="card-header"><span class="badge b-ok">已证</span><span class="card-title">耳朵和嘴的后端连得上、有额度</span></div>
+    <div class="card-body">
+      19:48 PT 用生产密钥打开语音daemon用的同一个连接（<span class="mono">gpt-realtime-1.5</span>），1.6 秒内建连成功。只握手、没发任何音频、立刻关闭，没有产生任何声音或消息。
+      <p class="note">这只证明「电话线通了」，不证明「听得清、答得对」——后者要真实音频。</p>
+    </div>
+  </div>
+
+  <div class="card green">
+    <div class="card-header"><span class="badge b-ok">已证</span><span class="card-title">Raya 进得了语音房、说得出话</span></div>
+    <div class="card-body">
+      语音房是 <strong>claude's server 的 #General</strong>（不限人数）。Raya 的进房 / 说话 / 看频道 / 发消息 / 开 thread 权限全部具备，bot 身份也对得上。查的时候房里没人。
+      <p class="note">另外：目前<strong>只有 Raya 一个人</strong>开了随身语音模式，其余 16 个 Lead 都只有会议模式。想随身说话就找 Raya。</p>
+    </div>
+  </div>
+
+  <div class="card green">
+    <div class="card-header"><span class="badge b-ok">已证</span><span class="card-title">Raya 的脑子有额度，而且在正常出回复</span></div>
+    <div class="card-body">
+      她的 Codex 账号 <strong>16:50 PT 刚重置</strong>，额度是满的。之后她完成过 4 次回复（最近一次 19:49 PT），一次都没被限流。
+      <p class="note">这条只说明「想」这个能力本身是好的，<strong>不说明它已经接到语音上</strong>——接没接上要靠你那一句话。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">② 一处更正：语音卡住 ≠ Codex 打满 <span class="count">重要</span></div>
+  <div class="card blue">
+    <div class="card-body">
+      工单上写的是「语音的脑子走 Codex，白天 Codex 打满」。源码不是这么分的：
+      <table>
+        <tr><th>环节</th><th>走哪条路</th><th>Codex 打满会怎样</th></tr>
+        <tr><td><strong>耳朵 + 嘴</strong><br>听你说、断句、出声</td><td>OpenAI 平台 API 直连<br><span class="mono">gpt-realtime-1.5</span></td><td>不受影响</td></tr>
+        <tr><td><strong>脑子</strong><br>答什么内容</td><td>Raya 作为 Codex Lead<br>走 ChatGPT 订阅</td><td>会受影响</td></tr>
+      </table>
+      <p>所以 Codex 打满的表现是「她在房里、但沉默或答得敷衍」，<strong>不是「电话打不通」</strong>。这两种情况该找的人不一样。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">③ 为什么我没能替你先跑一场 <span class="count">设计如此</span></div>
+  <div class="card amber">
+    <div class="card-header"><span class="badge b-warn">结构性</span><span class="card-title">语音房的「有人在」只认你本人，bot 顶替不了</span></div>
+    <div class="card-body">
+      <p>代码里在房判定只认你的 Discord 账号，并且显式排除所有 bot。等不到你，120 秒后会话自动判成 <span class="mono">no_human</span> 结束，永远进不到能说话的状态。</p>
+      <p>所以「派个 bot 进去放段合成音频」这条路走不通——放音频的必然是 bot，那一关就被挡掉了。</p>
+      <p>FLY-2655 当时的 QA 工装是跑在隔离测试槽里、用独立的测试 bot 和独立的测试频道，而且代码里<strong>明确拒绝</strong>对生产 #General 使用。它验的是代码对不对，不是你这个房、这个 bot 对不对。</p>
+      <p>还有一层：开一场会话会在你的频道建 thread 并把你拉进去——那本身就是打扰你。所以我停下来先问了 Tadashi，他的裁决是不开、只做零噪声探针，把验收留给你本人。</p>
+    </div>
+  </div>
+  <div class="card red">
+    <div class="card-header"><span class="badge b-no">从没验过</span><span class="card-title">「听 → 想 → 说」这整条链，生产上一次都没跑通过</span></div>
+    <div class="card-body">
+      <p>上次 FLY-2655 的验收（9-22 凌晨）只打通了两头：Raya <strong>入了房、听到了、出了声</strong>。中间「想」那一段当时因为 Codex 打满没能跑，是<strong>人手打字代替</strong>的。</p>
+      <p>也就是说，「她听懂了你说什么 → Codex 想出该答什么 → 再用她的声音说出来」这条完整链路，<strong>至今没有在生产上真跑通过一次</strong>。这次我也没能补上，原因就是上面那条（必须你本人在房）。</p>
+      <p>所以这次上线真正没落地的不是「能不能出声」，而是<strong>「答的内容跟你说的话对不对得上」</strong>。</p>
+    </div>
+  </div>
+
+  <div class="card gray">
+    <div class="card-header"><span class="badge b-info">如实记账</span><span class="card-title">部署后仍然没有任何真实语音会话</span></div>
+    <div class="card-body">
+      <span class="mono">voice_sessions</span> 里最后一场仍是 9-16 那次失败（原因就是 FLY-2655 修的那个解密错）。这次修复<strong>在真实音频上还没被验证过</strong>——只验证了修复代码确实在跑。
+    </div>
+  </div>
+
+  <div class="card amber">
+    <div class="card-header"><span class="badge b-warn">延迟</span><span class="card-title">大概会等多久：我只能给你一半的数</span></div>
+    <div class="card-body">
+      <table>
+        <tr><th>环节</th><th>实测</th></tr>
+        <tr><td>耳朵/嘴的后端建连</td><td><strong>1.6 秒</strong>（今晚实测）</td></tr>
+        <tr><td>「想」一次要多久</td><td>Raya 恢复后的 4 次<em>干活</em> turn：10 秒 / 37 秒 / 11 秒 / 86 秒</td></tr>
+        <tr><td>语音里「想」一次要多久</td><td><strong>没有数</strong>——从没跑通过</td></tr>
+      </table>
+      <p class="note">上面那 10–86 秒是她<strong>做工程任务</strong>的长 turn，不是聊天。语音对话的句子短得多，应该快不少，但我没有实测数，<strong>不替它编一个</strong>。</p>
+      <p>已知的两个慢点（FLY-2655 记在案的待办，不是这次上线的新问题）：长回复是<strong>分段串行</strong>朗读的，段与段之间会有静场，整段总时长偏长。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">④ 你的 90 秒自助验收 <span class="count">6 步</span></div>
+
+  <div class="step"><div class="step-n">1</div><div class="step-main">
+    <div class="step-title">先进语音房，再叫人</div>
+    <div class="card-body">打开 Discord → <strong>claude's server</strong> → 语音频道 <strong>#General</strong> → 点进去。
+      <p class="ok-line">正常：你的头像出现在 #General 里。</p>
+      <p class="no-line">不算失败：房里空着没别人。</p>
+    </div>
+  </div></div>
+
+  <div class="step"><div class="step-n">2</div><div class="step-main">
+    <div class="step-title">跟 Raya 说「开语音」</div>
+    <div class="card-body">在 Raya 的文字频道说一句想开随身语音。
+      <p class="ok-line">正常：Raya 新建一个 thread 并把你拉进去。</p>
+      <p class="no-line">不算失败：thread 名字是英文、或带一串 id。</p>
+    </div>
+  </div></div>
+
+  <div class="step"><div class="step-n">3</div><div class="step-main">
+    <div class="step-title">等她入房（约 5–15 秒）</div>
+    <div class="card-body">
+      <p class="ok-line">正常：#General 里出现 Raya 的头像。</p>
+      <p class="no-line">不算失败：她进来后头几秒不出声。</p>
+    </div>
+  </div></div>
+
+  <div class="step"><div class="step-n">4</div><div class="step-main">
+    <div class="step-title">关键：她入房后 120 秒内你必须人在 #General</div>
+    <div class="card-body">这是唯一一条硬要求。
+      <p class="no-line">你不在的话，会话 120 秒后自动结束、记成 <span class="mono">no_human</span>。<strong>这是设计如此，不是坏了</strong>——重新叫一次就行。</p>
+    </div>
+  </div></div>
+
+  <div class="step"><div class="step-n">5</div><div class="step-main">
+    <div class="step-title">说一句测试话 —— 这一步就是这次上线的真正验收</div>
+    <div class="card-body">建议说一句<strong>带具体内容、她必须听懂才能答对</strong>的话，比如：
+      <p style="margin:8px 0;padding:10px 14px;background:#f0f0f3;border-radius:8px;font-weight:600">「我刚才说的是三个词：苹果、下雨、星期四。请按顺序重复一遍。」</p>
+      <p>为什么要这么说：单纯问「你在吗」她答「在」，证明不了她<em>听懂了什么</em>。要她复述具体内容，才能一次验完<strong>听清 → 想对 → 说出</strong>整条链——也就是从没验过的那一半。</p>
+      <p class="ok-line">通过：她用声音把三个词按顺序说对。<strong>这就成了</strong>——请截个图或记一下时间告诉工程。</p>
+      <p class="ok-line">正常：文字 thread 里同时出现 🗣️ 开头的你的话的镜像。</p>
+      <p class="no-line">不算失败：首句要等几秒（听 → 想 → 朗读三段串着走）。</p>
+      <p class="no-line">不算失败：长回复中间有静场、整体偏慢。已知待办，不是这次上线的问题。</p>
+      <p class="no-line" style="color:var(--red)"><strong>算失败</strong>：她出声了，但内容跟你说的完全对不上（答非所问、复述错词）。这说明「听→想」之间断了，请记下来告诉工程——这正是这次要查的那一段。</p>
+    </div>
+  </div></div>
+
+  <div class="step"><div class="step-n">6</div><div class="step-main">
+    <div class="step-title">想结束就直接说，或让 Raya 停</div>
+    <div class="card-body">
+      <p class="ok-line">正常：Raya 离开 #General，thread 里落一条结束记录。</p>
+    </div>
+  </div></div>
+</div>
+
+<div class="section">
+  <div class="section-title">⑤ 你可能撞上的异常，以及分别意味着什么 <span class="count">4 种</span></div>
+
+  <div class="card amber">
+    <div class="card-header"><span class="badge b-warn">最可能</span><span class="card-title">她在房里，但你说了话她不吭声（>30 秒）</span></div>
+    <div class="card-body">先看她头像还在不在 #General。<strong>在房但沉默，多半是「听 → 想」之间没接上</strong>——她的耳朵和额度今晚都验过是好的，所以沉默更可能是这条链断在中间，而不是没听见。这正是这次要查的那一段，请记下来告诉工程。</div>
+  </div>
+
+  <div class="card amber">
+    <div class="card-header"><span class="badge b-warn">同上</span><span class="card-title">她答了，但很短 / 跑题</span></div>
+    <div class="card-body">同样指向「听 → 想」那一段：她听到的可能只是残缺的一句。<strong>比完全沉默更有诊断价值</strong>，请把她答的原话记下来。</div>
+  </div>
+
+  <div class="card red">
+    <div class="card-header"><span class="badge b-no">要叫人</span><span class="card-title">thread 里出现 <span class="mono">discord_audio:Failed to decrypt</span></span></div>
+    <div class="card-body">这就是 9-16 那次的老毛病原样复发，说明 FLY-2655 没修干净。<strong>看到这个直接叫人，别自己反复重试</strong>——重试只会刷出更多失败记录。</div>
+  </div>
+
+  <div class="card red">
+    <div class="card-header"><span class="badge b-no">要叫人</span><span class="card-title">完全没人入房</span></div>
+    <div class="card-body">会话在建立阶段就失败了，thread 里会写原因。截图给工程就行。</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">⑥ 我没做的事 <span class="count">如实记账</span></div>
+  <div class="card gray">
+    <div class="card-body">
+      没有开任何生产语音会话；没有往任何 Discord 频道发消息；没有改语音配置；没有切 Codex 账号；没有重启任何服务；没有改任何代码。<br>
+      两次外部调用只有：一次对 OpenAI 的握手探针（无音频），几次对 Discord 的只读查询。
+    </div>
+  </div>
+</div>
+
+<footer>
+FLY-2781 · Flywheel 工程 · 详细证据与源码行号见 <span class="mono">engineering/doc/FLY-2781-voice-live-verification/research.md</span>
+</footer>
+
+</div>
+</body>
+</html>

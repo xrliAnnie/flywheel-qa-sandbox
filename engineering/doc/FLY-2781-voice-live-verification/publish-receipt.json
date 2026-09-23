@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "issue": "FLY-2781",
+  "artifact": "engineering/doc/FLY-2781-voice-live-verification/founder-report.html",
+  "current": {
+    "version": "v2",
+    "publishedAt": "2026-09-23T03:05Z",
+    "url": "https://fw-reports-356a6d.vercel.app/r/4a52788685069882169fb5d77dcc40dd/",
+    "reportId": "4a52788685069882169fb5d77dcc40dd",
+    "reason": "Lead 勘误（quota-monitor 那条线是 Claude 账号不是 Codex；raya 的 Codex personal 16:50 PT 刚重置、额度满）+ Lead 指令 e5e8e486（FLY-2655 QA 只打通嗓子+耳朵，脑子那段是手打句子代替，本次核心是那一半）",
+    "hostedVerification": {
+      "httpStatus": 200,
+      "bytes": 19969,
+      "placeholderResidue": 0,
+      "scriptTags": 0,
+      "staleQuotaClaims": 0,
+      "checklistStepsRendered": 6
+    }
+  },
+  "superseded": [
+    {
+      "version": "v1",
+      "publishedAt": "2026-09-23T02:58Z",
+      "url": "https://fw-reports-356a6d.vercel.app/r/536886fe867b0f6a51f8263cad763d13/",
+      "reportId": "536886fe867b0f6a51f8263cad763d13",
+      "note": "含被 Lead 纠正的『周额度红线』说法；不要投递这一版"
+    }
+  ],
+  "publishOnly": true,
+  "delivered": false,
+  "deliveryOwner": "flywheel-eng-lead",
+  "note": "runner has no delivery authority; publish-only per FLY-1404. Lead delivers the URL to the founder."
+}
