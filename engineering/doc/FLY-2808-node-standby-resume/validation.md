@@ -28,6 +28,8 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | 其余 owning-package related | core 23 PASS、2 个既有真实 Terminal 环境用例 SKIP；edge-worker 347 PASS；claude-runner 435 PASS、2 个既有环境用例 SKIP | changed TypeScript 的 owning-package related 全绿；仍不称 full suite 或 CI |
 | QA full-CI rework 定向集 | config drift/registry/truth 113 PASS；config related 21 files / 380 PASS；teamlead 5 files / 290 PASS、1 个既有 SKIP；真实 tmux 旧红精确用例 1 PASS | `FLYWHEEL_NODE_STANDBY_RESUME` 进入统一 flag store，Claude session 目录按 plumbing 治理；fresh admission 与 rework admission 都热读同一 resolver |
 | teamlead rework code-head related | `vitest related` 对 rework code head 自动选择 575 files；8083 PASS、4 个既有 SKIP、0 FAIL | flag runtime、StateStore、dispatcher、rework coordinator 与 plugin 的直接依赖面全绿；仍是 related，不是 full package suite 或 CI |
+| Lead 必修 cleanup latch 返工 | 先红：activity `canResume` 仍为 true、reopen route 404、StateStore 无 reopen 方法；后绿：StateStore + route 精确 2 files / 67 PASS | `cleanup_unconfirmed` 对 founder 明确不可拉起；master-token-only 审计重开记录 actor/time/reason 并恢复独立 resume budget |
+| cleanup latch code-head related | `vitest related` 自动选择 568 files；567 files / 7983 PASS、4 个既有 SKIP，`chat-thread-routes` 1 条 404 JSON 断言瞬态红；同头精确复跑该文件 68/68 PASS | 唯一红项不触及本轮 route，隔离复跑绿；如实保留 related 非全绿，不称 full suite 或 CI |
 
 最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。第一轮修正后的 related 曾有一个无关 chat-thread 404 空 JSON 瞬态红，同头精确用例和 owning file 重跑均绿。R2 评审修正后为 570/570 files、8029 PASS、4 SKIP、0 FAIL；R3 修正后的当前 code head 最终为 580/580 files、8206 PASS、4 SKIP、0 FAIL。
 
@@ -40,6 +42,8 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 - R3 delta 的定向 `biome check` 处理 16 个文件并退出 0；仍仅有上述两处既有 warning，`StateStore.ts` 仍因仓库上限被工具明确跳过。
 - QA rework 的 `pnpm --filter 'flywheel-teamlead...' build`：13 个受影响包及依赖构建通过；`pnpm --filter '...flywheel-config' typecheck`：13 个 config 反向依赖包通过。
 - QA rework 后再跑 `pnpm lint`：退出 0，仍为 5130 files / 26 个既有 warning / 0 error；改动文件定向 Biome 仅保留 `plugin.ts` 两处既有 warning，`StateStore.ts` 仍因 1 MiB 上限被明确跳过。
+- cleanup latch 返工后 `pnpm --filter 'flywheel-teamlead...' build`：13 个受影响包及依赖通过；`pnpm --filter '...flywheel-teamlead' typecheck`：teamlead 与反向依赖 voice-codex 通过；`pnpm lint`：退出 0，检查 5131 files，仍为 26 个既有 warning / 0 error。
+- cleanup latch 4 个 changed TypeScript 的定向 Biome 退出 0：两个测试文件与 `plugin.ts` 被检查，仍仅有 `plugin.ts` 两处既有 warning；2.8 MiB 的 `StateStore.ts` 被仓库 1 MiB 上限明确跳过。
 - `git diff --check`：当前通过，final exact head 再复核；没有添加依赖或秘密。
 
 ## 消费者发现与取舍
@@ -78,6 +82,8 @@ R3 同时对 7 个改动测试文件执行同样三种搜索，命中数依次�
 
 QA rework 对全部 14 个 changed TypeScript 再执行三种搜索。新增源码命中数为 registry 105/364/164、store-policy 10/41/164、truth 34/123/164、flag-store-runtime 18/40/978；既有 StateStore/plugin/dispatcher/coordinator 的新计数见上表。6 个改动测试文件依次为 feature-flags drift 18/57/76、registry test 8/34/76、flag-truth 5/19/76、StateStore dead-exec 1/11/317、StateStore generalized 3/15/317、flag-store-runtime test 8/18/157。所有实际运行时消费者与 owning-package related 均保留；文档、fixture、同名跨包文件继续按下述规则排除。
 
+cleanup latch 返工再次覆盖 StateStore 289/841/1383、plugin 254/1049/978、StateStore generalized test 3/15/317；新建 route test 的内容搜索为 0/0/317，完整路径和文件名没有任何引用，父目录命中按同一排除规则审计。实际运行时消费者与新测试均由精确测试和 owning-package related 保留。
+
 排除项逐类说明：所有 `doc/**`、`engineering/doc/**`、`product/doc/**` 命中都是历史设计/调研引用；generated child-process census/inventory 是快照清单；同名 `plugin.ts`/`tools.ts`/`*.test.ts` 但路径不在 owning package 的命中属于其它模块；只复述文件名的 fixture/文档不形成调用关系。比如 `StateStore.ts` 的 289 个完整路径命中中，23 个位于 `packages/**`/`scripts/**`，至少 265 个位于上述文档树，后者全部排除。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；三种搜索的每个其余命中都由上述路径规则覆盖，没有把历史文本命中误算成需执行测试。
 
 ## 设计、HTML 与评审沿革
@@ -90,6 +96,8 @@ QA rework 对全部 14 个 changed TypeScript 再执行三种搜索。新增源�
 - 实现 code review R3 在旧 head `09d931b99` 再次返回 `CHANGES_REQUESTED`。当前修正不用终态 `closeRunner` 粗粒度清理恢复失败，而以 process generation/demand/owner 三重 fence 授权物理 cleanup，保留 lifecycle/CommDB 记录，并以 execution-wide liveness 证明后才允许重试；resume 同时观察物理 launch outcome，确定未启动时不误清理。lease 已增至 5 分钟，超过 180 秒身份超时；Claude/Codex 的 `onRetired` observer 异常也不再改写已成功的启动结果。需以新的 literal-last exact head 再审。
 - 实现 code review R4 对 exact head `a351d044b` effective `APPROVED`，带 1 个 MEDIUM 与 1 个 LOW advisory；见 follow-ups.md。随后 QA 在同头发起 full exact-head CI run `35862850957`：多数矩阵绿色，但 teamlead shard 1 的真实 tmux 一秒退出码用例、light unit 的 feature-flag drift、script suite E 的 load-probe positive control 三处失败，因此 `CI OK` 为红，不能作为全量通过证据。QA 按 workflow 将 TURN 退回 implement。
 - rework 修复其中唯一可归因回归：`FLYWHEEL_NODE_STANDBY_RESUME` 作为 default-off opt-in feature 正式注册、使用统一 codec 与 named flag-store resolver；fresh/rework admission 都通过同一 call-time boolean 接线，`FLYWHEEL_CLAUDE_SESSION_DIR` 则以路径 plumbing 登记。真实 tmux 旧红精确重跑通过；未改动的 load-probe 在本机因宿主进程身份条件出现多处不同失败并超出正常时长，终止该诊断 run，未修改无关脚本。新头必须重新 code review，再由 QA 冻结并运行新的 full exact-head CI。
+- 实现 code review R5 gate `14b2c500-dc14-46e4-9207-826823ffa26f` / request `4480df89-00ae-4bab-aac8-aac34fd81bc5` 对 head `b39a2ea75` effective `APPROVED`，但 Lead 指令 `[lead-instruction ec413437-959a-4757-8b3a-d1d6f6e76d4d]` 将其中 `resume-cleanup-unconfirmed-permanent-latch` 明确升级为交卷前必修。当前代码让 latch 投影 `canResume=false`，新增仅 master token 可用、无 actions alias 的重开 route；事务内清 latch 为 `operator_reopened`，向既有 append-only run-event ledger 写 actor/time/reason/原预算边界，并只重置独立 resume budget，不删除旧尝试或改故障替换额度。其余 R5 MEDIUM/LOW 仍按 follow-ups.md 明示为未实施建议。
+- plan 批准后的实现、R2/R3 修正、QA flag rework 和本轮 Lead 必修项都没有冒充原设计批准内容：每个移动后的 code head 均进入 scoped code review；最终 literal-last head 仍需 R6 重新绑定。R6 未返回前，不把 R5 旧头 approval 当作当前头证据。
 - 保留两个 LOW follow-up：同 worktree 串行/跨 worktree 最大 2 的调度 limiter 尚未实现；`queueMs` 仍为占位且 `totalMs` 截止身份确认，不是首个模型消费回执。默认关闭路径不因此扩大本单抽象层，交由后续单独实现/验收。
 
 ## 最终需求审计

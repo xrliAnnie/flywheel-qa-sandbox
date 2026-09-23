@@ -42,4 +42,15 @@ Exact head `a351d044b` 的 R4 effective verdict 为 `APPROVED`；以下建议不
 - MEDIUM `resume-cleanup-unconfirmed-permanent-latch`：`cleanup_unconfirmed` 已只在物理死亡无法证明时 fail closed，但仍缺少 Lead 可审计的 reopen 操作；同时 founder activity DTO 对该 latch 仍可能投影 `canResume: true`。需后续把人工解锁权限、审计 receipt 与 `canResume` 语义一并设计，不能以直接改库代替。
 - LOW `resume-metrics-and-concurrency-caps-missing`：与 R2/R3 已记录项相同，仍缺同 worktree 串行、跨 worktree 最大 2，以及 queue/首模型消费时点的准确 receipt。
 
-QA full CI 后的 implement rework 只修复 feature-flag governance 红项，没有把上述 advisory 偷渡进本轮，也没有修改无关真实 tmux/load-probe 测试。由于 head 已移动，R4 approval 不能绑定新头；需重新 code review。
+QA full CI 后的首轮 implement rework 只修复 feature-flag governance 红项，没有修改无关真实 tmux/load-probe 测试。由于 head 已移动，R4 approval 不能绑定新头。
+
+## 实现 code review R5 advisories 与 Lead 必修 disposition
+
+R5 gate `14b2c500-dc14-46e4-9207-826823ffa26f` / request `4480df89-00ae-4bab-aac8-aac34fd81bc5` 对旧 head `b39a2ea75` effective verdict 为 `APPROVED`。Lead 随后以 `[lead-instruction ec413437-959a-4757-8b3a-d1d6f6e76d4d]` 明确要求交卷前处理 cleanup latch，因此该项不再作为可选 follow-up：
+
+- MEDIUM `resume-cleanup-unconfirmed-permanent-latch`：已覆盖。latch 期间 founder activity DTO 返回 `canResume=false`；master-token-only、无 `/api/actions` alias 的审计 route 事务内记录 server-derived actor、时间、原因和 prior attempt 边界，再将 reason 改为 `operator_reopened`。旧尝试保留可审计，新的 resume budget 从审计边界后重新计数；fault replacement 额度不受影响。先红后绿与权限负例见 validation.md。
+- MEDIUM `standby-enrollment-misses-two-admission-paths`：未在本轮扩大。R5 指出 engine entry 与 Lead retry 两个 admission caller 尚未传 `standbyResumeEnabled`；默认关闭且旧行为 fail-safe，但启用时会形成部分 enrollment，需后续按该 findingKey 补齐调用点与负例。
+- LOW `resume-metrics-and-concurrency-caps-missing`：仍保留。缺同 worktree 串行、跨 worktree 最大 2，以及真实 queue/首模型消费 receipt。
+- LOW `admit-env-param-now-dead`：仍保留。flag 已改走 governed boolean 后，admission API 的 `env` 参数不再使用；后续删除该参数及调用方传值，不重新引入 env flag read。
+
+plan 批准后的追加实现与历次修正均通过 scoped code review 重新绑定移动后的 head；本轮 Lead 必修提交后仍必须以 literal-last exact head 请求 R6。R5 approval 不能复用为当前头证据。
