@@ -416,6 +416,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	),
 	FLYWHEEL_VOICE_BUILD_SHA:
 		"FLY-2655 per-invocation build identity binding for voice runtime evidence, not an on/off gate",
+	FLYWHEEL_VOICE_BACKEND:
+		"FLY-2799 per-invocation voice backend selector for an explicitly requested session, not an on/off gate",
 	FLYWHEEL_CODEX_LEAD_STATE_DIRS:
 		"FLY-2301 slot-injected Lead identity-to-state-directory path map, not an on/off gate",
 	FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH:
