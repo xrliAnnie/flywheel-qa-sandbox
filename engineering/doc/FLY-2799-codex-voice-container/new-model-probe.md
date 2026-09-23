@@ -40,7 +40,7 @@ Live 的 client 模式已实测：它发委托元数据给调用方，调用方�
 ## 对后续设计的明确输入
 
 1. 语音模型必须可配置，不硬编码 `gpt-realtime-1.5`。配置同时要与所选引擎/协议匹配；模型名存在不代表 Codex 路径兼容。具体字段服从尚待交付的 FLY-2795 合同，不在这里另立接口。
-2. 公开 GPT-Live 使用新的会话入口与 `session.start`，Codex 0.156.1 V3 的现有连接并未因此自动兼容。要让 B 使用公开 Live，必须先选定并验证载体适配方式；本次只提供诊断与协议实验，不借机改成另一个产品引擎。[官方连接文档](https://developers.openai.com/api/docs/guides/voice-websockets)
+2. 按后续 `[lead-instruction 542588a3-4f9a-4590-96cf-4f49d84ac221]`，公开 GPT-Live 的“前台语音 + 后台 Lead”归引擎 A（FLY-2798）；本单引擎 B 保留 Codex 0.156.1 V2 作对照。公开 Live 使用新的会话入口与 `session.start`，Codex 0.156.1 V3 的现有连接并未自动兼容。跨单输入见独立一页 [GPT-Live 结论](gpt-live-handoff.md)，不在 B 中另建公开 Live 适配器。[官方连接文档](https://developers.openai.com/api/docs/guides/voice-websockets)
 3. 凭据/权限失败与额度耗尽均需明确显示“语音不可用”，保留原因，不静默切模型或切引擎。密钥依旧只由父进程环境注入，配置/纪要/证据不存值。
 4. 官方公开 Live 语音按 $0.05/分钟、按秒计费，后台模型/工具另计；这次 client 纯函数实验没有托管后台模型调用。2.1 按文本/音频 token 计费。价格只作为 2026-09-23 文档快照，不是消费账单或预算承诺。[Live 模型页](https://developers.openai.com/api/docs/models/gpt-live-1)、[2.1 模型页](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)
 
