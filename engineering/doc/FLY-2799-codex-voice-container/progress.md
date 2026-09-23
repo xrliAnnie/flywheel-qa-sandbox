@@ -1,22 +1,19 @@
 ---
 issue: FLY-2799
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-23T08:57:25.998Z
-nextStep: "R2 submitted/accepted after all6 R1 fixes:
-  gate188d04c6-1f0f-46a0-808c-9fdf2043b4f2
-  request8627c264-3e69-4f55-bf40-8013bc12656b, reviewed design head91b5a2367.
-  Next resumed turn check TURN/inbox/R2. On CHANGES fix HIGH and new gate; on
-  effective APPROVED finalize review evidence, publish founder-design.html
-  (325925bytes, three verified inline SVGs, no external assets), verify hosted
-  CSP/source, report URL, complete phase_design_complete then park. Lead59204e41
-  diagram delivery resolved; no need further diagram help unless .mmd changes.
-  Browser QA not run; no repeat Step1, no implementation, G1/G2 still open
-  integration gates."
+phaseCursor: 5/6
+updated: 2026-09-23T09:04:29.845Z
+nextStep: R2 effective APPROVED question188d04c6 request8627c264; structured
+  evidence saved design-review-r2.json and design-review.md. Two nonblocking
+  MEDIUM advisories retained as Follow-ups and reported Lead. Plan bytes
+  unchanged from approved91b5a2367. Final founder-design.html committed with
+  three hash-verified inline SVGs, no external assets. Next commit/push review
+  receipt then publish-only, hosted HTTP/CSP/source verify, report URL, exact
+  phase_design_complete and park; no implementation.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: design (4/6)
-**next**: R2 submitted/accepted after all6 R1 fixes: gate188d04c6-1f0f-46a0-808c-9fdf2043b4f2 request8627c264-3e69-4f55-bf40-8013bc12656b, reviewed design head91b5a2367. Next resumed turn check TURN/inbox/R2. On CHANGES fix HIGH and new gate; on effective APPROVED finalize review evidence, publish founder-design.html (325925bytes, three verified inline SVGs, no external assets), verify hosted CSP/source, report URL, complete phase_design_complete then park. Lead59204e41 diagram delivery resolved; no need further diagram help unless .mmd changes. Browser QA not run; no repeat Step1, no implementation, G1/G2 still open integration gates.
+**phase**: design (5/6)
+**next**: R2 effective APPROVED question188d04c6 request8627c264; structured evidence saved design-review-r2.json and design-review.md. Two nonblocking MEDIUM advisories retained as Follow-ups and reported Lead. Plan bytes unchanged from approved91b5a2367. Final founder-design.html committed with three hash-verified inline SVGs, no external assets. Next commit/push review receipt then publish-only, hosted HTTP/CSP/source verify, report URL, exact phase_design_complete and park; no implementation.
