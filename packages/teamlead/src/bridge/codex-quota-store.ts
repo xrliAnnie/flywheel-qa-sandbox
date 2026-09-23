@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Database } from "better-sqlite3";
 import {
+	isCodexIdentityLabel,
+	isCodexSlotName,
+} from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import {
 	type CodexQuotaBindingV1,
 	parseCodexQuotaBindingV1,
 } from "flywheel-core";
@@ -41,6 +45,12 @@ const LEGACY_BATCH_ID = "codex-quota-legacy:FLY-2676:v1";
 // Bound startup write-lock time even if an unexpectedly large old fleet exists.
 const LEGACY_FREEZE_LIMIT = 10_000;
 const LEGACY_MEMBER_MAX_ATTEMPTS = 3;
+// Historical v1 capacity rows had no pool envelope and always represented this pool.
+const LEGACY_CODEX_QUOTA_POOL = ["business", "personal", "school"] as const;
+export interface CodexQuotaPoolMember {
+	profile: string;
+	accountKey: string;
+}
 function quotaSignalEventKey(
 	source: CodexQuotaSignalSource,
 	executionId: string,
@@ -110,8 +120,49 @@ function canonicalCapacityObservation(
 			),
 	);
 }
+
+function validPoolMembers(
+	value: unknown,
+): value is readonly CodexQuotaPoolMember[] {
+	return (
+		Array.isArray(value) &&
+		value.length > 0 &&
+		value.every(
+			(member) =>
+				typeof member === "object" &&
+				member !== null &&
+				isCodexSlotName((member as CodexQuotaPoolMember).profile) &&
+				typeof (member as CodexQuotaPoolMember).accountKey === "string" &&
+				(member as CodexQuotaPoolMember).accountKey.length > 0,
+		) &&
+		new Set(
+			value.map(
+				(member) =>
+					`${(member as CodexQuotaPoolMember).profile}\0${(member as CodexQuotaPoolMember).accountKey}`,
+			),
+		).size === value.length &&
+		new Set(value.map((member) => (member as CodexQuotaPoolMember).profile))
+			.size === value.length
+	);
+}
+
+function canonicalCapacityEvidence(
+	pool: readonly CodexQuotaPoolMember[],
+	observations: readonly CodexQuotaObservation[],
+): string {
+	return JSON.stringify({
+		v: 2,
+		pool: [...pool].sort(
+			(a, b) =>
+				a.profile.localeCompare(b.profile) ||
+				a.accountKey.localeCompare(b.accountKey),
+		),
+		observations: JSON.parse(canonicalCapacityObservation(observations)),
+	});
+}
 /** The StateStore connection owns every quota transaction; never a second DB. */
 export class CodexQuotaStore {
+	currentCodexPoolMembers?: () => readonly CodexQuotaPoolMember[];
 	constructor(private readonly db: Database) {}
 	migrate(): void {
 		this.db.exec(`
@@ -280,7 +331,7 @@ export class CodexQuotaStore {
 		authDigest: string;
 	}): void {
 		if (
-			!["school", "personal", "business"].includes(input.profile) ||
+			!isCodexIdentityLabel(input.profile) ||
 			!input.accountKey ||
 			!/^[a-f0-9]{64}$/.test(input.authDigest)
 		)
@@ -366,7 +417,7 @@ export class CodexQuotaStore {
 		now?: string;
 	}): void {
 		if (
-			!["school", "personal", "business"].includes(input.profile) ||
+			!isCodexSlotName(input.profile) ||
 			!input.accountKey ||
 			!isAbsolute(input.recoveryMaterialPath) ||
 			!input.priorAuthDigest ||
@@ -689,9 +740,8 @@ export class CodexQuotaStore {
 		installedAuthDigest?: string;
 	}): void {
 		if (
-			![input.from, input.to].every((p) =>
-				["school", "personal", "business"].includes(p),
-			) ||
+			!isCodexIdentityLabel(input.from) ||
+			!isCodexSlotName(input.to) ||
 			!["ok", "failed", "unknown"].includes(input.probeResult) ||
 			!/^[a-z_]{1,80}$/.test(input.reason)
 		)
@@ -1415,6 +1465,7 @@ export class CodexQuotaStore {
 	}
 	recordPoolExhausted(input: {
 		incidentId: string;
+		pool: readonly CodexQuotaPoolMember[];
 		observations: readonly CodexQuotaObservation[];
 		observedAt: number;
 		nextAttemptAt: number;
@@ -1422,10 +1473,17 @@ export class CodexQuotaStore {
 		this.db.transaction(() => {
 			const incident = this.getIncident(input.incidentId);
 			if (!incident) throw new Error("quota_incident_missing");
-			const observationJson = canonicalCapacityObservation(input.observations);
+			if (!validPoolMembers(input.pool))
+				throw new Error("quota_capacity_pool_invalid");
+			const poolNames = input.pool.map((member) => member.profile);
+			const observationJson = canonicalCapacityEvidence(
+				input.pool,
+				input.observations,
+			);
 			if (
-				selectCodexQuotaCandidate(JSON.parse(observationJson), {
+				selectCodexQuotaCandidate(input.observations, {
 					now: input.observedAt,
+					pool: poolNames,
 				}).kind !== "pool_exhausted"
 			)
 				throw new Error("quota_capacity_fact_not_exhausted");
@@ -1461,9 +1519,13 @@ export class CodexQuotaStore {
 			});
 		})();
 	}
-	hasCurrentCapacityGuard(incidentId: string, now = Date.now()): boolean {
+	private latestCapacityEvidence(incidentId: string): {
+		legacy: boolean;
+		observations: readonly CodexQuotaObservation[];
+		storedPool: readonly CodexQuotaPoolMember[];
+	} | null {
 		const incident = this.getIncident(incidentId);
-		if (!incident || !Number.isFinite(now)) return false;
+		if (!incident) return null;
 		const row = this.db
 			.prepare(
 				// Deliberately latest-only: an older positive sample must not outvote
@@ -1473,11 +1535,93 @@ export class CodexQuotaStore {
 			.get(incident.root_key, incident.generation) as
 			| { observation_json: string }
 			| undefined;
-		if (!row) return false;
+		if (!row) return null;
 		try {
+			const parsed: unknown = JSON.parse(row.observation_json);
+			const legacy = Array.isArray(parsed);
+			const observations = legacy
+				? (parsed as CodexQuotaObservation[])
+				: typeof parsed === "object" &&
+						parsed !== null &&
+						(parsed as { v?: unknown }).v === 2 &&
+						Array.isArray((parsed as { observations?: unknown }).observations)
+					? (parsed as { observations: CodexQuotaObservation[] }).observations
+					: null;
+			const storedPool = legacy
+				? observations?.map(({ profile, accountKey }) => ({
+						profile,
+						accountKey,
+					}))
+				: (parsed as { pool?: unknown }).pool;
+			if (!observations || !validPoolMembers(storedPool)) return null;
+			return { legacy, observations, storedPool };
+		} catch {
+			return null;
+		}
+	}
+	hasNewPoolMember(incidentId: string): boolean {
+		const evidence = this.latestCapacityEvidence(incidentId);
+		if (!evidence || !this.currentCodexPoolMembers) return false;
+		try {
+			const current = this.currentCodexPoolMembers();
+			if (!validPoolMembers(current)) return false;
+			const storedKeys = new Set(
+				evidence.storedPool.map(
+					(member) => `${member.profile}\0${member.accountKey}`,
+				),
+			);
+			return current.some(
+				(member) => !storedKeys.has(`${member.profile}\0${member.accountKey}`),
+			);
+		} catch {
+			return false;
+		}
+	}
+	hasCurrentCapacityGuard(incidentId: string, now = Date.now()): boolean {
+		if (!Number.isFinite(now)) return false;
+		const evidence = this.latestCapacityEvidence(incidentId);
+		if (!evidence) return false;
+		const { legacy, observations, storedPool } = evidence;
+		try {
+			let current: readonly CodexQuotaPoolMember[];
+			try {
+				current = this.currentCodexPoolMembers?.() ?? storedPool;
+				if (!validPoolMembers(current)) return true;
+			} catch {
+				return true;
+			}
+			const storedKeys = new Set(
+				storedPool.map((member) => `${member.profile}\0${member.accountKey}`),
+			);
+			if (
+				current.some(
+					(member) =>
+						!storedKeys.has(`${member.profile}\0${member.accountKey}`),
+				)
+			)
+				return false;
+			const currentKeys = new Set(
+				current.map((member) => `${member.profile}\0${member.accountKey}`),
+			);
+			const replayPool = storedPool.filter((member) =>
+				currentKeys.has(`${member.profile}\0${member.accountKey}`),
+			);
+			if (replayPool.length === 0) return true;
+			const replayKeys = new Set(
+				replayPool.map((member) => `${member.profile}\0${member.accountKey}`),
+			);
+			const replay = observations.filter((observation) =>
+				replayKeys.has(`${observation.profile}\0${observation.accountKey}`),
+			);
 			return (
-				selectCodexQuotaCandidate(JSON.parse(row.observation_json), { now })
-					.kind === "pool_exhausted"
+				selectCodexQuotaCandidate(replay, {
+					now,
+					pool: legacy
+						? LEGACY_CODEX_QUOTA_POOL.filter((profile) =>
+								replayPool.some((member) => member.profile === profile),
+							)
+						: replayPool.map((member) => member.profile),
+				}).kind === "pool_exhausted"
 			);
 		} catch {
 			return false;

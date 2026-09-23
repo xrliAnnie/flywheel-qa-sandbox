@@ -337,7 +337,7 @@ export function installCodexQuotaCredential(options) {
 	if (!proof?.ok) return answer;
 	let finalRaw, finalDigest, identity, ownedLease;
 	try {
-		if (!["school", "personal", "business"].includes(profile))
+		if (!registry.profiles.some((entry) => entry.name === profile))
 			throw new Error("invalid_profile");
 		safeDir(home);
 		safeDir(profilesRoot);
@@ -485,10 +485,7 @@ export function persistCodexCandidateCredential(options) {
 			result.status = "process_not_drained";
 			return result;
 		}
-		if (
-			!["school", "personal", "business"].includes(profile) ||
-			!registry.profiles.some((entry) => entry.name === profile)
-		) {
+		if (!registry.profiles.some((entry) => entry.name === profile)) {
 			result.status = "identity_mismatch";
 			return result;
 		}

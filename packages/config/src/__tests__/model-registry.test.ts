@@ -121,6 +121,50 @@ describe("model registry invariants", () => {
 		}
 	});
 
+	it("registers exact GPT-6 Sol for runner/workflow without moving defaults", () => {
+		expect(MODEL_IDS.CODEX_SOL).toBe("gpt-6-sol");
+		expect(getModelRegistryEntry("codex")?.id).toBe("gpt-5.6-sol");
+		expect(getModelRegistryEntry("astra")?.id).toBe("gpt-6-astra");
+
+		const sol = getModelRegistryEntry("gpt-6-sol");
+		expect(sol).toMatchObject({
+			id: "gpt-6-sol",
+			provider: "openai",
+			runtimeVendor: "codex",
+			label: "GPT-6 Sol",
+			aliases: [],
+			surfaces: ["runner", "workflow"],
+		});
+		expect(sol?.effortsBySurface).toEqual({
+			runner: ["xhigh"],
+			workflow: ["low", "medium", "high", "xhigh", "max"],
+		});
+		for (const surface of ["runner", "workflow"] as const) {
+			expect(isModelSelectable({ surface, model: "gpt-6-sol" })).toBe(true);
+		}
+		for (const surface of ["lead", "cron", "dispatch"] as const) {
+			expect(isModelSelectable({ surface, model: "gpt-6-sol" })).toBe(false);
+		}
+		expect(
+			isModelSelectionSupported({
+				surface: "runner",
+				model: "gpt-6-sol",
+				effort: "low",
+			}),
+		).toBe(false);
+		expect(
+			isModelSelectionSupported({
+				surface: "runner",
+				model: "gpt-6-sol",
+				effort: "xhigh",
+			}),
+		).toBe(true);
+		expect(getModelRegistryEntry("gpt-7-sol")).toBeNull();
+		expect(isModelSelectable({ surface: "workflow", model: "gpt-7-sol" })).toBe(
+			false,
+		);
+	});
+
 	it("covers every built-in tier", () => {
 		for (const tier of Object.values(MODEL_TIERS)) {
 			expect(getModelRegistryEntry(tier.id)).not.toBeNull();
@@ -140,6 +184,16 @@ describe("model registry catalog", () => {
 				.flatMap((provider) => provider.models)
 				.find((model) => model.id === "gpt-5.6-sol")?.efforts,
 		).toContain("xhigh");
+		expect(
+			workflow.providers
+				.flatMap((provider) => provider.models)
+				.find((model) => model.id === "gpt-6-sol"),
+		).toMatchObject({
+			label: "GPT-6 Sol",
+			runtimeVendor: "codex",
+			efforts: ["low", "medium", "high", "xhigh", "max"],
+			selectable: true,
+		});
 		expect(
 			workflow.providers.some((provider) => provider.id === "google"),
 		).toBe(false);

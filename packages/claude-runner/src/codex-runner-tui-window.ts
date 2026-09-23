@@ -104,8 +104,6 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 		"resume",
 		`--remote "unix://${spec.socketPath}"`,
 		`-C "${spec.cwd}"`,
-		"-s workspace-write",
-		`-c 'approval_policy="never"'`,
 		spec.threadId,
 	].join(" ");
 }

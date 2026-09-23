@@ -321,45 +321,61 @@ for (const exhausted of [false, true]) {
 			store: quota,
 			now: () => now,
 			readiness: async () => true,
-			observe: async () => [
-				{
-					profile: "business",
-					accountKey: "business-key",
-					observedAt: now,
-					identityVerified: true,
-					authHealth: "valid" as const,
-					scopeKnown: true,
-					windows: [{ usedPercent: 100, resetsAt }],
+			observe: async () => ({
+				pool: {
+					version: 2,
+					primary: "personal",
+					profiles: ["business", "personal", "school"].map((name) => ({
+						name,
+						email: `${name}@example.test`,
+						role:
+							name === "personal"
+								? ("primary" as const)
+								: ("manual_backup" as const),
+					})),
+					slots: [],
+					problems: [],
 				},
-				{
-					profile: "school",
-					accountKey: "school-key",
-					observedAt: now,
-					identityVerified: true,
-					authHealth: "valid" as const,
-					scopeKnown: true,
-					windows: [
-						{
-							usedPercent: exhausted ? 100 : 70,
-							resetsAt: Date.parse("2026-09-20T20:00:00.000Z"),
-						},
-					],
-				},
-				{
-					profile: "personal",
-					accountKey: "personal-key",
-					observedAt: now,
-					identityVerified: true,
-					authHealth: "valid" as const,
-					scopeKnown: true,
-					windows: [
-						{
-							usedPercent: exhausted ? 100 : 38,
-							resetsAt: Date.parse("2026-09-19T17:17:00.000Z"),
-						},
-					],
-				},
-			],
+				observations: [
+					{
+						profile: "business",
+						accountKey: "business-key",
+						observedAt: now,
+						identityVerified: true,
+						authHealth: "valid" as const,
+						scopeKnown: true,
+						windows: [{ usedPercent: 100, resetsAt }],
+					},
+					{
+						profile: "school",
+						accountKey: "school-key",
+						observedAt: now,
+						identityVerified: true,
+						authHealth: "valid" as const,
+						scopeKnown: true,
+						windows: [
+							{
+								usedPercent: exhausted ? 100 : 70,
+								resetsAt: Date.parse("2026-09-20T20:00:00.000Z"),
+							},
+						],
+					},
+					{
+						profile: "personal",
+						accountKey: "personal-key",
+						observedAt: now,
+						identityVerified: true,
+						authHealth: "valid" as const,
+						scopeKnown: true,
+						windows: [
+							{
+								usedPercent: exhausted ? 100 : 38,
+								resetsAt: Date.parse("2026-09-19T17:17:00.000Z"),
+							},
+						],
+					},
+				],
+			}),
 			rotate: async (_incident, candidate) => {
 				quota.recordInstalling({
 					incidentId: "codex:root:1",

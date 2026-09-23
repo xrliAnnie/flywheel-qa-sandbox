@@ -21,7 +21,9 @@ export interface CodexQuotaObservation {
 	/** Digest only; distinguishes newly retained credential evidence from a clock-only reread. */
 	credentialFingerprint?: string;
 }
-const profiles = ["school", "personal", "business"];
+
+import { isCodexSlotName } from "flywheel-claude-runner/bin/codex-account-core.mjs";
+
 const record = (v: unknown): v is Record<string, unknown> =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
 export function parseCodexRateLimits(
@@ -73,10 +75,21 @@ export interface CodexCandidateSelection {
 }
 export function selectCodexQuotaCandidate(
 	observations: readonly CodexQuotaObservation[],
-	options: { now: number; excludedProfiles?: readonly string[] },
+	options: {
+		now: number;
+		pool: readonly string[];
+		excludedProfiles?: readonly string[];
+	},
 ): CodexCandidateSelection {
 	const { now } = options;
-	const pool = profiles.map(
+	if (!Array.isArray(options.pool)) throw new Error("invalid_codex_quota_pool");
+	if (options.pool.length === 0) return { kind: "no_usable_credentials" };
+	if (
+		!options.pool.every(isCodexSlotName) ||
+		new Set(options.pool).size !== options.pool.length
+	)
+		throw new Error("invalid_codex_quota_pool");
+	const pool = options.pool.map(
 		(p) =>
 			observations
 				.filter((o) => o.profile === p)

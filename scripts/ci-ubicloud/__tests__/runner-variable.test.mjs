@@ -44,9 +44,6 @@ const excludedFromCiRunner = {
 		name: "Ship on :cool: Comment",
 		runsOn: shipRunnerExpression,
 	},
-	"ci-ubicloud-canary.yml": {
-		reason: "canary picks its runner from a workflow_dispatch input by design",
-	},
 	"payload-activation.yml": {
 		reason: "release/payload pipeline, out of FLY-2746 scope",
 	},

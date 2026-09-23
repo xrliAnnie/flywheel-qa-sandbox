@@ -39,7 +39,7 @@ import { createXhsAuthorityReadHandlers } from "./handlers/xiaohongshu-authority
 import { createXhsWriteHandlers } from "./handlers/xiaohongshu-write.js";
 import { createXhsWriteManagementHandlers } from "./handlers/xiaohongshu-write-management.js";
 import { createLeadCapabilityManifest } from "./manifest.js";
-import { PINNED_NATIVE_CODEX_SKILLS } from "./native-skill-baseline.js";
+import { resolvePinnedNativeSkillBaseline } from "./native-skill-baseline.js";
 import { resolveLeadCapabilities } from "./resolve.js";
 import {
 	type LeadRuleSourceRecord,
@@ -116,6 +116,9 @@ export async function startLeadRuntimeParent(
 		});
 		if (!resolved || resolved.missingOperationIds.length)
 			throw new Error("runtime_capabilities_incomplete");
+		const nativeSkillBaseline = resolvePinnedNativeSkillBaseline(
+			options.parent.codexVersion ?? "",
+		);
 		const localIntegrations = ["bridge", "discord", "linear", "github"].map(
 			(id) => ({
 				id,
@@ -163,16 +166,16 @@ export async function startLeadRuntimeParent(
 				},
 			],
 			nativeSkillBaseline: {
-				codexVersion: PINNED_NATIVE_CODEX_SKILLS.codexVersion,
-				...(PINNED_NATIVE_CODEX_SKILLS.origin
+				codexVersion: nativeSkillBaseline.codexVersion,
+				...(nativeSkillBaseline.origin
 					? {
 							origin: {
-								root: PINNED_NATIVE_CODEX_SKILLS.origin.root,
-								files: [...PINNED_NATIVE_CODEX_SKILLS.origin.files],
+								root: nativeSkillBaseline.origin.root,
+								files: [...nativeSkillBaseline.origin.files],
 							},
 						}
 					: {}),
-				sources: PINNED_NATIVE_CODEX_SKILLS.sources.map((source) => ({
+				sources: nativeSkillBaseline.sources.map((source) => ({
 					...source,
 				})),
 			},

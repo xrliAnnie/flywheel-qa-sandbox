@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import {
-	type CodexAccountRegistry,
+	type CodexAccountPool,
 	identifyCodexAuth,
 } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import {
@@ -38,13 +38,17 @@ export interface CodexQuotaRuntimeOptions {
 	profilesRoot: string;
 	stateRoot: string;
 	rawBinary: string;
-	registry: CodexAccountRegistry;
+	pool: () => CodexAccountPool;
 	model: string | ((incident: Record<string, unknown>) => string);
 	limitId: string;
 	collectHomes: CodexQuotaReadinessOptions["collectHomes"];
 	recover(incident: Record<string, unknown>): Promise<void>;
 	autoEnabled?: () => boolean;
 	availability?: CodexQuotaAvailability;
+}
+export interface CodexQuotaRound {
+	pool: CodexAccountPool;
+	observations: readonly CodexQuotaObservation[];
 }
 export class CodexQuotaRuntime {
 	private canonicalChainActive = false;
@@ -97,11 +101,11 @@ export class CodexQuotaRuntime {
 			return (await this.options.availability.refresh()).mode === "automatic";
 		return (await this.readinessResult()).ready;
 	}
-	private candidateInUse(accountKey: string): boolean {
+	private candidateInUse(accountKey: string, pool: CodexAccountPool): boolean {
 		if (this.activeUnsharedAccountKeys.has(accountKey)) return true;
 		return (
 			this.canonicalChainActive &&
-			codexQuotaIdentityReader(this.options.registry)(
+			codexQuotaIdentityReader(pool)(
 				readFileSync(join(this.options.canonicalHome, "auth.json"), "utf8"),
 			).accountKey === accountKey
 		);
@@ -117,25 +121,27 @@ export class CodexQuotaRuntime {
 	> {
 		try {
 			await this.readinessResult();
+			const pool = this.options.pool();
+			return (accountKey) => {
+				try {
+					return this.candidateInUse(accountKey, pool);
+				} catch {
+					return "unknown";
+				}
+			};
 		} catch {
 			return () => "unknown";
 		}
-		return (accountKey) => {
-			try {
-				return this.candidateInUse(accountKey);
-			} catch {
-				return "unknown";
-			}
-		};
 	}
 	private async requireReadiness() {
 		if (!(await this.readiness())) throw new Error("quota_readiness_failed");
 	}
-	async observe(): Promise<CodexQuotaObservation[]> {
+	async observe(): Promise<CodexQuotaRound> {
 		await this.requireReadiness();
+		const pool = this.options.pool();
 		const observations: CodexQuotaObservation[] = [];
-		const identify = codexQuotaIdentityReader(this.options.registry);
-		for (const profile of this.options.registry.profiles) {
+		const identify = codexQuotaIdentityReader(pool);
+		for (const profile of pool.profiles) {
 			await this.requireReadiness();
 			const authPath = join(
 				this.options.profilesRoot,
@@ -159,7 +165,7 @@ export class CodexQuotaRuntime {
 				});
 				continue;
 			}
-			if (this.candidateInUse(identity.accountKey)) {
+			if (this.candidateInUse(identity.accountKey, pool)) {
 				observations.push({
 					profile: profile.name,
 					accountKey: identity.accountKey,
@@ -175,7 +181,7 @@ export class CodexQuotaRuntime {
 				const recovered = recoverCodexCandidateCredential({
 					profilesRoot: this.options.profilesRoot,
 					profile: profile.name,
-					registry: this.options.registry,
+					registry: pool,
 					accountKey: identity.accountKey,
 				});
 				if (!["recovered", "no_pending"].includes(recovered.status))
@@ -184,14 +190,14 @@ export class CodexQuotaRuntime {
 					identity.accountKey,
 					async () => {
 						await this.requireReadiness();
-						if (this.candidateInUse(identity.accountKey))
+						if (this.candidateInUse(identity.accountKey, pool))
 							throw new Error("quota_candidate_in_use");
 						return readFile(authPath, "utf8");
 					},
 					async (workspace) => {
 						const initial = identifyCodexAuth(
 							await readFile(workspace.authPath, "utf8"),
-							this.options.registry,
+							pool,
 						);
 						const result = await readCodexQuota({
 							workspace,
@@ -210,7 +216,7 @@ export class CodexQuotaRuntime {
 						const retained = persistCodexCandidateCredential({
 							profilesRoot: this.options.profilesRoot,
 							profile: profile.name,
-							registry: this.options.registry,
+							registry: pool,
 							accountKey: identity.accountKey,
 							finalAuthPath: result.finalAuthPath,
 							expectedProfileDigest: workspace.originalAuthDigest,
@@ -251,26 +257,25 @@ export class CodexQuotaRuntime {
 				});
 			}
 		}
-		return observations;
+		return { pool, observations };
 	}
 	async rotate(
 		incident: Record<string, unknown>,
 		candidate: CodexQuotaObservation,
-		observations: readonly CodexQuotaObservation[],
+		round: CodexQuotaRound,
 	): Promise<{ ok: boolean; authDigest?: string }> {
 		await this.requireReadiness();
-		if (
-			!this.options.registry.profiles.some((p) => p.name === candidate.profile)
-		)
+		if (!round.pool.profiles.some((p) => p.name === candidate.profile))
 			return { ok: false };
-		if (this.candidateInUse(candidate.accountKey)) return { ok: false };
-		const identify = codexQuotaIdentityReader(this.options.registry);
+		if (this.candidateInUse(candidate.accountKey, round.pool))
+			return { ok: false };
+		const identify = codexQuotaIdentityReader(round.pool);
 		const root = this.options.store.codexQuota.getRoot(
 			String(incident.root_key),
 		);
 		const profileEmail = (profile: string) =>
-			this.options.registry.profiles.find((entry) => entry.name === profile)
-				?.email ?? null;
+			round.pool.profiles.find((entry) => entry.name === profile)?.email ??
+			null;
 		const notification = root
 			? {
 					version: 1 as const,
@@ -279,7 +284,7 @@ export class CodexQuotaRuntime {
 						accountKey: root.accountKey,
 						email: profileEmail(root.profile),
 						windows:
-							observations.find(
+							round.observations.find(
 								(observation) => observation.accountKey === root.accountKey,
 							)?.windows ?? [],
 					},
@@ -299,7 +304,7 @@ export class CodexQuotaRuntime {
 		const recovered = recoverCodexCandidateCredential({
 			profilesRoot: this.options.profilesRoot,
 			profile: candidate.profile,
-			registry: this.options.registry,
+			registry: round.pool,
 			accountKey: candidate.accountKey,
 		});
 		if (!["recovered", "no_pending"].includes(recovered.status))
@@ -317,7 +322,7 @@ export class CodexQuotaRuntime {
 			candidate.accountKey,
 			async () => {
 				await this.requireReadiness();
-				if (this.candidateInUse(candidate.accountKey))
+				if (this.candidateInUse(candidate.accountKey, round.pool))
 					throw new Error("quota_candidate_in_use");
 				return readFile(authPath, "utf8");
 			},
@@ -335,12 +340,12 @@ export class CodexQuotaRuntime {
 					!probe.ok ||
 					!probe.finalAuthDigest ||
 					!(await this.readiness()) ||
-					this.candidateInUse(candidate.accountKey)
+					this.candidateInUse(candidate.accountKey, round.pool)
 				) {
 					const retained = persistCodexCandidateCredential({
 						profilesRoot: this.options.profilesRoot,
 						profile: candidate.profile,
-						registry: this.options.registry,
+						registry: round.pool,
 						accountKey: candidate.accountKey,
 						finalAuthPath: probe.finalAuthPath,
 						expectedProfileDigest: workspace.originalAuthDigest,
@@ -354,7 +359,7 @@ export class CodexQuotaRuntime {
 					home: this.options.canonicalHome,
 					profilesRoot: this.options.profilesRoot,
 					profile: candidate.profile,
-					registry: this.options.registry,
+					registry: round.pool,
 					finalAuthPath: probe.finalAuthPath,
 					expectedProfileDigest: workspace.originalAuthDigest,
 					expectedCanonicalDigest: canonicalDigest,
@@ -393,15 +398,14 @@ export class CodexQuotaRuntime {
 		},
 	): Promise<"installed" | "rolled_back" | "uncertain"> {
 		if (!(await this.readiness())) return "uncertain";
-		if (
-			!this.options.registry.profiles.some((p) => p.name === material.profile)
-		)
+		const accountPool = this.options.pool();
+		if (!accountPool.profiles.some((p) => p.name === material.profile))
 			return "uncertain";
 		try {
 			const recovered = recoverCodexCandidateCredential({
 				profilesRoot: this.options.profilesRoot,
 				profile: material.profile,
-				registry: this.options.registry,
+				registry: accountPool,
 				accountKey: material.accountKey,
 			});
 			if (!["recovered", "no_pending"].includes(recovered.status))
@@ -421,18 +425,14 @@ export class CodexQuotaRuntime {
 						join(this.options.profilesRoot, material.profile, "auth.json"),
 						"utf8",
 					);
-					const identity = codexQuotaIdentityReader(this.options.registry)(
-						pool,
-					);
+					const identity = codexQuotaIdentityReader(accountPool)(pool);
 					if (
 						identity.profile !== material.profile ||
 						identity.accountKey !== material.accountKey
 					)
 						return "uncertain";
 					if (hash === material.priorAuthDigest) return "rolled_back";
-					const current = codexQuotaIdentityReader(this.options.registry)(
-						canonical,
-					);
+					const current = codexQuotaIdentityReader(accountPool)(canonical);
 					if (
 						hash === material.installedAuthDigest &&
 						current.profile === material.profile &&
@@ -450,10 +450,11 @@ export class CodexQuotaRuntime {
 		}
 	}
 	async credential() {
+		const pool = this.options.pool();
 		const canonical = await realpath(this.options.canonicalHome);
 		return withCodexInstallLock(canonical, () => {
 			const bytes = readFileSync(join(canonical, "auth.json"), "utf8");
-			const identity = codexQuotaIdentityReader(this.options.registry)(bytes);
+			const identity = codexQuotaIdentityReader(pool)(bytes);
 			const rootKey = createHash("sha256").update(canonical).digest("hex");
 			const authDigest = createHash("sha256").update(bytes).digest("hex");
 			const quota = this.options.store.codexQuota;
@@ -481,10 +482,11 @@ export class CodexQuotaRuntime {
 	async beforeCodexDaemonStart(home: string, executionId: string) {
 		if (this.abort.signal.aborted) throw new Error("quota_runtime_stopped");
 		await this.credential();
+		const pool = this.options.pool();
 		return createCodexQuotaLaunchBinder({
 			store: this.options.store,
 			canonicalHome: this.options.canonicalHome,
-			identify: codexQuotaIdentityReader(this.options.registry),
+			identify: codexQuotaIdentityReader(pool),
 		})(home, executionId);
 	}
 	tick(): Promise<void> {
@@ -498,8 +500,8 @@ export class CodexQuotaRuntime {
 				: {}),
 			readiness: () => this.readiness(),
 			observe: () => this.observe(),
-			rotate: (incident, candidate, observations) =>
-				this.rotate(incident, candidate, observations),
+			rotate: (incident, candidate, round) =>
+				this.rotate(incident, candidate, round),
 			reconcileInstallation: (incident, material) =>
 				this.reconcileInstallation(incident, material),
 			recover: this.options.recover,

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { identifyCodexAuth } from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import { codexInstallAccountKey } from "flywheel-claude-runner/bin/codex-account-install.mjs";
 import { afterEach, expect, it, vi } from "vitest";
 import { createCodexQuotaRunRecovery } from "../../codex-quota/run-recovery.js";
 import type { StateStore } from "../../StateStore.js";
@@ -11,10 +13,43 @@ afterEach(async () => {
 	vi.unstubAllGlobals();
 	for (const root of roots) await rm(root, { recursive: true, force: true });
 });
+const auth = (profile: "school" | "personal", refresh: string) =>
+	JSON.stringify({
+		tokens: {
+			id_token: `x.${Buffer.from(
+				JSON.stringify({
+					email: `${profile}@example.test`,
+					"https://api.openai.com/auth": {
+						chatgpt_account_id: profile,
+					},
+				}),
+			).toString("base64url")}.x`,
+			refresh_token: refresh,
+		},
+	});
 async function fixture() {
 	const home = await realpath(await mkdtemp(join(tmpdir(), "quota-recover-")));
 	roots.push(home);
-	const raw = "school-credential";
+	const pool = {
+		version: 2 as const,
+		primary: "personal",
+		profiles: [
+			{
+				name: "personal",
+				email: "personal@example.test",
+				role: "primary" as const,
+			},
+			{
+				name: "school",
+				email: "school@example.test",
+				role: "manual_backup" as const,
+			},
+		],
+		slots: [],
+		problems: [],
+	};
+	const raw = auth("school", "initial");
+	const schoolKey = codexInstallAccountKey(identifyCodexAuth(raw, pool));
 	await writeFile(join(home, "auth.json"), raw);
 	const rootKey = createHash("sha256").update(home).digest("hex");
 	const incident = {
@@ -42,7 +77,11 @@ async function fixture() {
 			if (w) w.state = state;
 		}),
 		getIncident: () => incident,
-		getRoot: () => ({ generation: 2, profile: "school", accountKey: "school" }),
+		getRoot: () => ({
+			generation: 2,
+			profile: "school",
+			accountKey: schoolKey,
+		}),
 		listTargets: () => [target],
 		updateTarget: vi.fn((_i, _k, _t, patch) => Object.assign(target, patch)),
 		enqueueOutbox: vi.fn(),
@@ -51,7 +90,7 @@ async function fixture() {
 				generation: 2,
 				credentialRootKey: rootKey,
 				profile: "school",
-				accountKey: "school",
+				accountKey: schoolKey,
 				executionId: "new",
 			},
 		],
@@ -101,10 +140,7 @@ async function fixture() {
 	const factory = createCodexQuotaRunRecovery({
 		store,
 		canonicalHome: home,
-		identify: (raw) =>
-			raw.startsWith("school-")
-				? { accountKey: "school", profile: "school" }
-				: { accountKey: "personal", profile: "personal" },
+		pool: () => pool,
 		bridgeUrl: "http://127.0.0.1:12345",
 		apiToken: "fixture-secret",
 		verifyLiveness: liveness,
@@ -120,6 +156,8 @@ async function fixture() {
 		store,
 		waits,
 		readiness,
+		schoolKey,
+		pool,
 	};
 }
 it("requires current canonical bytes and committed generation before any restart", async () => {
@@ -127,10 +165,28 @@ it("requires current canonical bytes and committed generation before any restart
 	const fetcher = vi.fn();
 	vi.stubGlobal("fetch", fetcher);
 	expect(await f.factory.canRecover("incident")).toBe(true);
-	await writeFile(join(f.home, "auth.json"), "manual-change");
+	await writeFile(join(f.home, "auth.json"), auth("personal", "manual-change"));
 	expect(await f.factory.canRecover("incident")).toBe(false);
 	await f.factory.recover(f.incident);
 	expect(fetcher).not.toHaveBeenCalled();
+});
+it("loads one account-pool snapshot for an entire recovery pass", async () => {
+	const f = await fixture();
+	f.target.state = "recovered";
+	const pool = vi.fn(() => f.pool);
+	const factory = createCodexQuotaRunRecovery({
+		store: f.store,
+		canonicalHome: f.home,
+		pool,
+		bridgeUrl: "http://127.0.0.1:12345",
+		apiToken: "fixture-secret",
+		verifyLiveness: f.liveness,
+		readiness: f.readiness,
+	});
+
+	await factory.recover(f.incident);
+
+	expect(pool).toHaveBeenCalledOnce();
 });
 it("persists queued cursor and identical authenticated request until actual running binding and process", async () => {
 	const f = await fixture();
@@ -179,7 +235,7 @@ it("treats unknown old process liveness as waiting rather than dead", async () =
 
 it("same-account native refresh preserves the committed generation recovery permission", async () => {
 	const f = await fixture();
-	await writeFile(join(f.home, "auth.json"), "school-refreshed-credential");
+	await writeFile(join(f.home, "auth.json"), auth("school", "refreshed"));
 	expect(await f.factory.canRecover("incident")).toBe(true);
 	expect(f.incident.installed_generation).toBe(2);
 	const originalProof = f.incident.installed_auth_digest;
@@ -205,7 +261,7 @@ it("same-account native refresh preserves the committed generation recovery perm
 	expect(f.target.state).toBe("recovered");
 	expect(f.incident.installed_auth_digest).toBe(originalProof);
 	expect(f.store.observeCodexQuotaCanonicalCredential).toHaveBeenCalledWith(
-		expect.objectContaining({ generation: 2, accountKey: "school" }),
+		expect.objectContaining({ generation: 2, accountKey: f.schoolKey }),
 	);
 });
 

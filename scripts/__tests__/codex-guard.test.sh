@@ -461,8 +461,8 @@ env -i \
   >"$ROOT/rate-limit.stdout" 2>"$ROOT/rate-limit.stderr" || rc=$?
 if [[ "$rc" == "7" && "$(cat "$ROOT/rate-limit-calls" 2>/dev/null)" == "1" ]] \
   && [[ ! -e "$ROOT/profile-actions" ]] \
-  && grep -q 'codex-profile status' "$ROOT/rate-limit.stderr" \
-  && grep -q 'Founder may manually.*use' "$ROOT/rate-limit.stderr"; then
+  && grep -q 'codex-profile list' "$ROOT/rate-limit.stderr" \
+  && grep -q 'codex-profile use <name>' "$ROOT/rate-limit.stderr"; then
   pass "rate limit stays on the current account and gives a manual recovery hint"
 else
   fail "rate limit stays on the current account and gives a manual recovery hint" \
@@ -771,10 +771,13 @@ fs.writeFileSync(destination, JSON.stringify({
 }), { mode: 0o600 });
 NODE
 }
-mkdir -p "$INSTALL_HOME/.local/bin" "$INSTALL_HOME/.codex/profiles/school"
+mkdir -p "$INSTALL_HOME/.local/bin" \
+  "$INSTALL_HOME/.codex/profiles/personal" "$INSTALL_HOME/.codex/profiles/school"
 printf 'legacy-wrapper\n' > "$INSTALL_HOME/.local/bin/codex-with-fallback"
 printf 'legacy-profile\n' > "$INSTALL_HOME/.local/bin/codex-profile"
 make_codex_auth "$INSTALL_HOME/.codex/auth.json" "xrliannie@gmail.com" "acct-personal"
+cp "$INSTALL_HOME/.codex/auth.json" \
+  "$INSTALL_HOME/.codex/profiles/personal/auth.json"
 make_codex_auth "$INSTALL_HOME/.codex/profiles/school/auth.json" \
   "xiaorongli2011@u.northwestern.edu" "acct-school"
 install_rc=0
@@ -805,6 +808,13 @@ if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-profile.bak" 2>/dev/null)" == "lega
   pass "installer preserves the original profile command once"
 else
   fail "installer preserves the original profile command once" "backup=$(cat "$INSTALL_HOME/.local/bin/codex-profile.bak" 2>/dev/null || echo missing)"
+fi
+if grep -Fq -- '--snapshot ' "$INSTALL_HOME/.local/bin/codex-profile" \
+  && grep -Fq "$INSTALL_HOME/.flywheel/codex-quota/codex-accounts.json" \
+    "$INSTALL_HOME/.local/bin/codex-profile"; then
+  pass "global profile shim pins the shared quota snapshot"
+else
+  fail "global profile shim pins the shared quota snapshot" "snapshot argument missing"
 fi
 
 POISON_HOME="$ROOT/poison-codex-home"
@@ -867,6 +877,28 @@ else
   fail "installer rerun is idempotent and never overwrites backup" "targets=$first_target/$second_target backups=$first_backup_hash/$second_backup_hash"
 fi
 
+BAD_RELEASE_HOME="$ROOT/bad-release-home"
+bad_release_hash="${first_target#releases/}"
+mkdir -p "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/releases/safe" \
+  "$BAD_RELEASE_HOME/.local/bin"
+cp -R "$INSTALL_HOME/.flywheel/libexec/codex-guard/$first_target" \
+  "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/releases/$bad_release_hash"
+chmod u+w "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/releases/$bad_release_hash/codex-account-registry.json"
+printf '{"version":2,"primary":"../unsafe"}\n' \
+  > "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/releases/$bad_release_hash/codex-account-registry.json"
+ln -s 'releases/safe' "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/current"
+bad_release_rc=0
+HOME="$BAD_RELEASE_HOME" /bin/bash "$INSTALLER" \
+  >"$ROOT/bad-release.stdout" 2>"$ROOT/bad-release.stderr" || bad_release_rc=$?
+if [[ "$bad_release_rc" != "0" \
+  && "$(readlink "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/current")" == "releases/safe" ]] \
+  && grep -q 'selected account policy release failed validation' "$ROOT/bad-release.stderr"; then
+  pass "installer rejects a corrupt pre-existing same-hash policy before switching current"
+else
+  fail "installer rejects a corrupt pre-existing same-hash policy before switching current" \
+    "rc=$bad_release_rc current=$(readlink "$BAD_RELEASE_HOME/.flywheel/libexec/codex-guard/current" 2>/dev/null || echo missing) stderr=$(cat "$ROOT/bad-release.stderr" 2>/dev/null)"
+fi
+
 echo "== installer advances current when the vendored bytes change =="
 UPGRADE_REPO="$ROOT/upgrade-repo"
 UPGRADE_HOME="$ROOT/upgrade-home"
@@ -892,6 +924,23 @@ HOME="$UPGRADE_HOME" /bin/bash "$UPGRADE_REPO/scripts/install-codex-guard.sh" \
   >"$ROOT/upgrade-v1.stdout" 2>"$ROOT/upgrade-v1.stderr"
 upgrade_current="$UPGRADE_HOME/.flywheel/libexec/codex-guard/current"
 upgrade_v1_target="$(readlink "$upgrade_current" 2>/dev/null || true)"
+cp "$UPGRADE_REPO/packages/claude-runner/agents/codex-account-registry.json" \
+  "$ROOT/upgrade-policy.valid.json"
+printf '{"version":2,"primary":"../unsafe"}\n' \
+  > "$UPGRADE_REPO/packages/claude-runner/agents/codex-account-registry.json"
+invalid_source_rc=0
+HOME="$UPGRADE_HOME" /bin/bash "$UPGRADE_REPO/scripts/install-codex-guard.sh" \
+  >"$ROOT/invalid-source.stdout" 2>"$ROOT/invalid-source.stderr" || invalid_source_rc=$?
+invalid_source_target="$(readlink "$upgrade_current" 2>/dev/null || true)"
+if [[ "$invalid_source_rc" != "0" && "$invalid_source_target" == "$upgrade_v1_target" ]] \
+  && grep -q 'account policy source failed validation' "$ROOT/invalid-source.stderr"; then
+  pass "installer rejects invalid source policy before publishing a release"
+else
+  fail "installer rejects invalid source policy before publishing a release" \
+    "rc=$invalid_source_rc targets=$upgrade_v1_target/$invalid_source_target stderr=$(cat "$ROOT/invalid-source.stderr" 2>/dev/null)"
+fi
+mv "$ROOT/upgrade-policy.valid.json" \
+  "$UPGRADE_REPO/packages/claude-runner/agents/codex-account-registry.json"
 cat > "$UPGRADE_REPO/scripts/codex-with-fallback.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'upgrade-v2\n'
@@ -1118,8 +1167,8 @@ else
     "rc=$daemon_rc stdout=$(cat "$ROOT/daemon.stdout" 2>/dev/null) stderr=$(cat "$ROOT/daemon.stderr" 2>/dev/null) profile=$(cat "$ROOT/daemon-profile-actions" 2>/dev/null || echo none)"
 fi
 
-if ! grep -Eq 'codex-profile[[:space:]]+(next|use)|account-rotation-notify' \
-  "$WRAPPER" "$DAEMON_WRAPPER"; then
+if ! grep -Ev '^[[:space:]]*printf' "$WRAPPER" "$DAEMON_WRAPPER" \
+  | grep -Eq 'codex-profile[[:space:]]+(next|use)|account-rotation-notify'; then
   pass "Codex fallback sources contain no automatic profile or rotation notifier caller"
 else
   fail "Codex fallback sources contain no automatic profile or rotation notifier caller" "caller remains"

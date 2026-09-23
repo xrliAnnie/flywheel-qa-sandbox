@@ -10,10 +10,10 @@
  * be shared by two processes without invalidating the other.
  */
 
-import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
-	type CodexAccountRegistry,
+	type CodexAccountPool,
 	identifyCodexAuth,
 } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import {
@@ -21,10 +21,9 @@ import {
 	codexInstallAccountKey,
 	persistCodexProfileQuotaRefresh,
 } from "flywheel-claude-runner/bin/codex-account-install.mjs";
-import {
-	CODEX_ACCOUNT_SLOT_NAME,
-	type CodexAccountQuotaStore,
-	type CodexAccountReading,
+import type {
+	CodexAccountQuotaStore,
+	CodexAccountReading,
 } from "./codex-account-quota-store.js";
 import { CodexCandidateWorkspace, codexQuotaIdentityReader } from "./probe.js";
 import { readCodexQuota } from "./quota-reader.js";
@@ -40,7 +39,8 @@ export interface CodexAccountsObserverOptions {
 	canonicalAuthPath: string;
 	workspaceRoot: string;
 	binary: string;
-	registry: CodexAccountRegistry;
+	/** Loaded once at the beginning of each refresh round. */
+	pool: () => CodexAccountPool;
 	limitId: string;
 	now?: () => number;
 	totalDeadlineMs?: number;
@@ -74,26 +74,9 @@ const EMPTY_RESET_CREDITS: CodexAccountReading["resetCredits"] = {
 	value: null,
 };
 
-/** Throws when the root cannot be enumerated, so a transient error never
- * overwrites the last good store with an empty one. */
-export function listCodexProfileSlots(profilesRoot: string): string[] {
-	const entries = readdirSync(profilesRoot, { withFileTypes: true });
-	const slots: string[] = [];
-	for (const entry of entries) {
-		if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-		if (!CODEX_ACCOUNT_SLOT_NAME.test(entry.name)) continue;
-		try {
-			const auth = statSync(join(profilesRoot, entry.name, "auth.json"));
-			if (auth.isFile()) slots.push(entry.name);
-		} catch {
-			/* a slot without credentials is not an account */
-		}
-	}
-	return slots.sort((a, b) => a.localeCompare(b, "en-US"));
-}
-
 function carried(
 	previous: CodexAccountReading | undefined,
+	identityKey: string,
 ): Pick<
 	CodexAccountReading,
 	| "observedAt"
@@ -104,6 +87,7 @@ function carried(
 	| "resetCredits"
 	| "unclassifiedWindows"
 > {
+	if (previous?.identityKey !== identityKey) previous = undefined;
 	return {
 		observedAt: previous?.observedAt ?? null,
 		planType: previous?.planType ?? null,
@@ -118,6 +102,7 @@ function carried(
 /** Clears a pending candidate recovery so the next read can take the lease. */
 function clearPendingRecovery(
 	options: CodexAccountsObserverOptions,
+	pool: CodexAccountPool,
 	slot: string,
 	accountKey: string,
 ): boolean {
@@ -128,7 +113,7 @@ function clearPendingRecovery(
 		const persisted = persistCodexProfileQuotaRefresh({
 			profilesRoot: options.profilesRoot,
 			profileDir: slot,
-			registry: options.registry,
+			registry: pool,
 			accountKey,
 			finalAuthPath: pending.authPath,
 			expectedProfileDigest: pending.originalAuthDigest,
@@ -157,6 +142,7 @@ function clearPendingRecovery(
 
 async function readSlot(
 	options: CodexAccountsObserverOptions,
+	pool: CodexAccountPool,
 	input: {
 		slot: string;
 		accountKey: string;
@@ -183,7 +169,7 @@ async function readSlot(
 				profile: input.profile,
 				accountKey: input.accountKey,
 				limitId: options.limitId,
-				identify: codexQuotaIdentityReader(options.registry),
+				identify: codexQuotaIdentityReader(pool),
 				...(options.signal ? { signal: options.signal } : {}),
 				accountMatches: (account) =>
 					!!account &&
@@ -197,7 +183,7 @@ async function readSlot(
 			const persisted = persistCodexProfileQuotaRefresh({
 				profilesRoot: options.profilesRoot,
 				profileDir: input.slot,
-				registry: options.registry,
+				registry: pool,
 				accountKey: input.accountKey,
 				finalAuthPath: read.finalAuthPath,
 				expectedProfileDigest: candidate.originalAuthDigest,
@@ -209,15 +195,20 @@ async function readSlot(
 			if (read.reason === "refresh_invalid") {
 				return {
 					authHealth: "refresh_invalid" as const,
-					note: "refresh_invalid",
-					...carried(input.previous),
+					note:
+						read.refreshFailure === "revoked"
+							? "token_revoked"
+							: read.refreshFailure === "expired"
+								? "token_expired"
+								: "refresh_invalid",
+					...carried(input.previous, input.accountKey),
 				};
 			}
 			if (read.reason === "identity_mismatch") {
 				return {
 					authHealth: "unknown" as const,
 					note: "identity_mismatch",
-					...carried(input.previous),
+					...carried(input.previous, input.accountKey),
 				};
 			}
 			const detail =
@@ -236,7 +227,7 @@ async function readSlot(
 					note: persisted.profilePersisted
 						? "read_failed"
 						: "recovery_uncertain",
-					...carried(input.previous),
+					...carried(input.previous, input.accountKey),
 				};
 			}
 			return {
@@ -261,7 +252,8 @@ export async function observeCodexAccounts(
 ): Promise<CodexAccountQuotaStore> {
 	const now = options.now ?? Date.now;
 	const nowIso = new Date(now()).toISOString();
-	const identify = codexQuotaIdentityReader(options.registry);
+	const pool = options.pool();
+	const identify = codexQuotaIdentityReader(pool);
 	const deadlineAt =
 		Date.now() + (options.totalDeadlineMs ?? DEFAULT_TOTAL_DEADLINE_MS);
 	const previousByName = new Map(
@@ -281,33 +273,61 @@ export async function observeCodexAccounts(
 
 	const accounts: CodexAccountReading[] = [];
 	let activeAccount: string | null = null;
-	for (const slot of listCodexProfileSlots(options.profilesRoot)) {
+	for (const slotRecord of pool.slots) {
+		if (slotRecord.state === "invalid_name") continue;
+		const slot = slotRecord.name;
 		const previous = previousByName.get(slot);
 		const base = { name: slot, registeredProfile: null as string | null };
+		const problem = pool.problems.find((entry) => entry.name === slot)?.code;
+		if (problem) {
+			const identityKey = slotRecord.identity
+				? codexInstallAccountKey(slotRecord.identity)
+				: undefined;
+			if (identityKey === canonicalAccountKey) activeAccount = slot;
+			accounts.push({
+				...base,
+				...(identityKey ? { identityKey } : {}),
+				authHealth: problem === "duplicate_email" ? "unknown" : "missing",
+				note: problem,
+				observedAt: null,
+				planType: null,
+				fiveH: null,
+				weekly: null,
+				credits: EMPTY_CREDITS,
+				resetCredits: EMPTY_RESET_CREDITS,
+				unclassifiedWindows: 0,
+			});
+			continue;
+		}
 		let identity: ReturnType<typeof identifyCodexAuth>;
 		try {
 			identity = identifyCodexAuth(
 				readFileSync(join(options.profilesRoot, slot, "auth.json"), "utf8"),
-				options.registry,
+				pool,
 			);
 		} catch {
 			accounts.push({
 				...base,
 				authHealth: "missing",
 				note: "read_failed",
-				...carried(previous),
+				...carried(previous, ""),
 			});
 			continue;
 		}
 		const accountKey = codexInstallAccountKey(identity);
 		const registeredProfile =
-			options.registry.profiles.find((entry) => entry.email === identity.email)
-				?.name ?? null;
+			pool.profiles.find((entry) => entry.email === identity.email)?.name ??
+			null;
 		if (accountKey === canonicalAccountKey) activeAccount = slot;
 		const reading = (
 			extra: Pick<CodexAccountReading, "authHealth" | "note"> &
 				ReturnType<typeof carried>,
-		): CodexAccountReading => ({ ...base, registeredProfile, ...extra });
+		): CodexAccountReading => ({
+			...base,
+			registeredProfile,
+			identityKey: accountKey,
+			...extra,
+		});
 
 		// Deadline first: an expired round must not pay for an inventory scan.
 		if (Date.now() >= deadlineAt || options.signal?.aborted === true) {
@@ -315,7 +335,7 @@ export async function observeCodexAccounts(
 				reading({
 					authHealth: "unknown",
 					note: "deadline",
-					...carried(previous),
+					...carried(previous, accountKey),
 				}),
 			);
 			continue;
@@ -329,17 +349,17 @@ export async function observeCodexAccounts(
 				reading({
 					authHealth: inUse === true ? "in_use_unshared" : "unknown",
 					note: inUse === true ? "in_use_unshared" : "inventory_unavailable",
-					...carried(previous),
+					...carried(previous, accountKey),
 				}),
 			);
 			continue;
 		}
-		if (!clearPendingRecovery(options, slot, accountKey)) {
+		if (!clearPendingRecovery(options, pool, slot, accountKey)) {
 			accounts.push(
 				reading({
 					authHealth: "recovery_uncertain",
 					note: "recovery_uncertain",
-					...carried(previous),
+					...carried(previous, accountKey),
 				}),
 			);
 			continue;
@@ -347,7 +367,7 @@ export async function observeCodexAccounts(
 		try {
 			accounts.push(
 				reading(
-					await readSlot(options, {
+					await readSlot(options, pool, {
 						slot,
 						accountKey,
 						email: identity.email,
@@ -362,7 +382,7 @@ export async function observeCodexAccounts(
 				reading({
 					authHealth: "unknown",
 					note: "read_failed",
-					...carried(previous),
+					...carried(previous, accountKey),
 				}),
 			);
 		}

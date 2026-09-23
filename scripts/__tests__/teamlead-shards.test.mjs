@@ -61,7 +61,7 @@ test("teamlead uses the measured sequencer for the real Vitest shard command", (
 	assert.equal(run.status, 0, run.stderr);
 });
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -300,11 +300,17 @@ test("CI projects discover every test except the dedicated performance test", as
 });
 
 test("CI does not invoke the retired FLY-2453 pure-docs mutation gate", () => {
-	for (const workflow of ["ci.yml", "ci-ubicloud-canary.yml"]) {
-		const source = readFileSync(
-			new URL(`../../.github/workflows/${workflow}`, import.meta.url),
-			"utf8",
+	const workflowsDir = new URL("../../.github/workflows/", import.meta.url);
+	const workflows = readdirSync(workflowsDir).filter((file) =>
+		/\.ya?ml$/.test(file),
+	);
+	assert.ok(workflows.length > 0, "no workflow files found");
+	for (const workflow of workflows) {
+		const source = readFileSync(new URL(workflow, workflowsDir), "utf8");
+		assert.doesNotMatch(
+			source,
+			/fly-2453-narrow-gate-mutations\.mjs/,
+			`${workflow} invokes the retired FLY-2453 mutation gate`,
 		);
-		assert.doesNotMatch(source, /fly-2453-narrow-gate-mutations\.mjs/);
 	}
 });

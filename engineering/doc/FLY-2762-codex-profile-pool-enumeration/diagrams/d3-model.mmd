@@ -1,0 +1,33 @@
+classDiagram
+  class 策略文件 {
+    version = 2
+    primary = "personal"
+  }
+  class 号槽_目录 {
+    name 目录名即号名
+    state 四选一
+    ready 可用
+    not_logged_in 未登录
+    invalid 坏凭据或非法名
+  }
+  class 身份_idtoken {
+    email
+    accountId
+    plan
+  }
+  class 号池_现算 {
+    primary
+    profiles[]  name + email + role
+    problems[]  重邮箱 / 非法名 / 未登录
+  }
+  class 探测快照 {
+    name
+    authHealth
+    note  token_revoked / token_expired / not_logged_in
+    fiveH / weekly  用量与重置时刻
+    observedAt
+  }
+  号槽_目录 "1" --> "0..1" 身份_idtoken : auth.json
+  策略文件 --> 号池_现算
+  号槽_目录 --> 号池_现算
+  号池_现算 --> 探测快照 : Bridge 按号真探

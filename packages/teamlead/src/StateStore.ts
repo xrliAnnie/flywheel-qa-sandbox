@@ -52,7 +52,10 @@ import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
-import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
+import {
+	type CodexQuotaPoolMember,
+	CodexQuotaStore,
+} from "./bridge/codex-quota-store.js";
 import type { CodexQuotaAvailabilitySnapshot } from "./codex-quota/availability.js";
 import { ShipJudgmentJobs } from "./ship-judgment/jobs.js";
 import { ShipJudgmentInputs } from "./ship-judgment/inputs.js";
@@ -3141,7 +3144,12 @@ export class StateStore {
 	private db: CompatDb;
 	private dbPath: string;
 	private openedDatabaseIdentity: OpenedDatabaseIdentity | null;
-	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
+	get codexQuota(): CodexQuotaStore {
+		const store = new CodexQuotaStore(this.db.raw);
+		store.currentCodexPoolMembers = this.currentCodexPoolMembers;
+		return store;
+	}
+	currentCodexPoolMembers?: () => readonly CodexQuotaPoolMember[];
 	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
 	codexQuotaLaunchEnabled: () => boolean = () => true;
 	codexQuotaAvailability: () => CodexQuotaAvailabilitySnapshot = () =>

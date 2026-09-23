@@ -107,13 +107,7 @@ describe("account quota shared view", () => {
 			source: "missing",
 		});
 
-		expect(view.codex).toHaveLength(3);
-		expect(view.codex.find((row) => row.name === "personal")).toMatchObject({
-			active: true,
-			subscriptionTier: { display: "未知", source: "missing" },
-			weeklyUsage: { display: "0%", source: "manual" },
-			expiry: { display: "8/3", source: "manual" },
-		});
+		expect(view.codex).toEqual([]);
 		expect(view.codexSourceLabel).toBe("无数值源");
 		expect(view.discrepancies).toEqual(
 			expect.arrayContaining([
@@ -138,15 +132,13 @@ describe("account quota shared view", () => {
 		expect(html).not.toContain("shop&lt;owner&gt;");
 		expect(visibleHtml).not.toContain("*");
 		expect(html).not.toContain('<span class="active">');
-		expect(html).toContain(
-			"<span>高亮行：当前在用（Codex：手填 2026-09-17）</span>",
-		);
+		expect(html).toContain("<th>token 状态</th>");
 		expect(sections).toHaveLength(2);
 		expect(sections?.[0]?.match(/<tr class="active-account/g)).toHaveLength(1);
-		expect(sections?.[1]?.match(/<tr class="active-account/g)).toHaveLength(1);
+		expect(sections?.[1]?.match(/<tr class="active-account/g)).toBeNull();
 		expect(
 			html.match(/<tr class="active-account(?: account-missing)?">/g),
-		).toHaveLength(2);
+		).toHaveLength(1);
 		expect(html).toContain(".active-account td{background:var(--active-row)}");
 		expect(html).toContain(
 			".active-account td:first-child{box-shadow:inset 4px 0 0 var(--active-row-border)}",
@@ -205,6 +197,7 @@ const codexQuota = () => ({
 			authUnusable: false,
 			note: null,
 			unclassifiedWindows: 0,
+			tokenState: "打满" as const,
 		},
 		{
 			name: "personal1",
@@ -230,6 +223,7 @@ const codexQuota = () => ({
 			authUnusable: false,
 			note: null,
 			unclassifiedWindows: 0,
+			tokenState: "正常" as const,
 		},
 		{
 			name: "shopping",
@@ -255,6 +249,7 @@ const codexQuota = () => ({
 			authUnusable: false,
 			note: "in_use_unshared",
 			unclassifiedWindows: 0,
+			tokenState: "在用未探" as const,
 		},
 	],
 	unavailable: [] as string[],
@@ -339,18 +334,13 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		);
 		expect(html).toContain("RPC 未暴露");
 		expect(html).not.toContain("无数据 weekly;");
-		// Codex subscription expiry still has no machine source: the founder's
-		// hand-written baseline stays, explicitly labelled as hand-written.
-		expect(html).toContain("8/3");
-		expect(html).toContain("来源：手填 · 记录于 9/17 16:38 PT");
+		expect(html).toContain("token 状态");
+		expect(html).toContain("打满");
 	});
 
-	it("keeps manual Codex fallbacks only while no machine source exists", () => {
+	it("does not invent Codex rows while no machine source exists", () => {
 		const view = buildAccountQuotaView({ generatedAt, quota: quota() });
-		expect(view.codex).toHaveLength(3);
-		expect(view.codex.every((row) => row.credits.source === "missing")).toBe(
-			true,
-		);
+		expect(view.codex).toEqual([]);
 		expect(view.codexSourceLabel).toBe("无数值源");
 	});
 
@@ -411,5 +401,26 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 
 		expect(html).toContain("打满 · 恢复时刻未知");
 		expect(html).not.toContain("打满 · 恢复 恢复时刻未知");
+	});
+
+	it("keeps a failed Codex credential read visibly unusable", () => {
+		const value = codexQuota();
+		Object.assign(value.accounts[1], {
+			authUnusable: true,
+			note: "read_failed",
+			tokenState: "未探",
+		});
+		const view = buildAccountQuotaView({
+			generatedAt,
+			quota: { ...quota(), codex: value },
+		});
+		const row = view.codex.find((account) => account.name === "personal1")!;
+		expect(row).toMatchObject({
+			unusable: true,
+			sortAt: null,
+			note: "本次读取失败",
+			tokenStatus: { display: "未探" },
+		});
+		expect(renderAccountsPageHtml(view)).toContain("本次读取失败");
 	});
 });

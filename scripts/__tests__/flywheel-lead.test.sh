@@ -1111,14 +1111,15 @@ if [ ! -e "$RAYA_PLIST" ] && run_raya_authority --authority >"$TMP/raya-authorit
   pass "registered Raya resolves pre-install authority without residency opt-in"
 else fail "pre-install authority failed: $(cat "$TMP/raya-authority.err")"; fi
 
-mkdir -p "$H/.codex" "$TMP/link-tools"
-printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' >"$TMP/link-registry.json"
+mkdir -p "$H/.codex/profiles/personal" "$TMP/link-tools"
+printf '%s\n' '{"version":2,"primary":"personal"}' >"$TMP/link-registry.json"
 python3 - "$H/.codex/auth.json" <<'PY'
 import base64,json,pathlib,sys
 payload=base64.urlsafe_b64encode(json.dumps({'email':'personal@example.test','https://api.openai.com/auth':{'chatgpt_account_id':'acct-personal','chatgpt_plan_type':'pro'}}).encode()).decode().rstrip('=')
 pathlib.Path(sys.argv[1]).write_text(json.dumps({'tokens':{'id_token':'e30.'+payload+'.sig','access_token':'fixture-access','refresh_token':'fixture-refresh'}}))
 PY
 chmod 600 "$H/.codex/auth.json" "$RAYA_CODEX_HOME/auth.json"
+cp "$H/.codex/auth.json" "$H/.codex/profiles/personal/auth.json"
 printf '#!/bin/bash\nexit 0\n' >"$TMP/link-tools/ps"
 cat >"$TMP/link-tools/launchctl" <<'SH'
 #!/bin/bash

@@ -74,34 +74,172 @@ sys.exit(1 if row else 0)
 PY
 }
 
+# Reuse the launchd timing knobs already validated by the generic supervisor
+# path. Focused tests source this file directly, so retain a small standalone
+# fallback instead of making the restart seam depend on a private helper.
+voice_launchd_tuning() {
+  local name="$1" default="$2" pattern="$3" value
+  if declare -F _sup_tuning >/dev/null 2>&1; then
+    _sup_tuning "$name" "$default" "$pattern"
+    return
+  fi
+  value="${!name:-}"
+  if [[ -n "$value" && "$value" =~ $pattern ]]; then
+    printf '%s\n' "$value"
+  else
+    if [[ -n "$value" ]]; then
+      voice_restart_log "WARNING: invalid ${name}='${value}'; using default ${default}" >&2
+    fi
+    printf '%s\n' "$default"
+  fi
+}
+
+# A non-zero launchctl print is not enough to prove absence: permission/domain
+# errors must not authorize a bootstrap over an identity we could not inspect.
+voice_launchd_label_absent() {
+  local target="$1" stderr rc=0
+  stderr="$(launchctl print "$target" 2>&1 >/dev/null)" || rc=$?
+  [[ "$rc" -ne 0 ]] || return 1
+  printf '%s\n' "$stderr" | grep -qiE 'could not find service|no such process'
+}
+
+voice_wait_until_launchd_label_absent() {
+  local target="$1" attempts interval attempt
+  attempts="$(voice_launchd_tuning FLYWHEEL_SUPERVISOR_BOOTOUT_WAIT_ATTEMPTS 40 '^[1-9][0-9]*$')"
+  interval="$(voice_launchd_tuning FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL 1 '^[0-9]+$')"
+  for (( attempt = 1; attempt <= attempts; attempt++ )); do
+    if voice_launchd_label_absent "$target"; then return 0; fi
+    [[ "$attempt" -ge "$attempts" ]] || sleep "$interval"
+  done
+  VOICE_RESTART_DETAIL="launchctl print did not confirm ${target} absent after ${attempts} attempts"
+  voice_restart_log "ERROR: ${VOICE_RESTART_DETAIL}"
+  return 1
+}
+
+# bootstrap may return before the new registration is visible to print. Poll
+# the complete contract with the same bounded budget instead of rolling back on
+# one transient post-bootstrap miss.
+voice_wait_until_on_demand_contract() {
+  local repo="$1" home_dir="$2" domain="$3"
+  local attempts=5 interval attempt
+  interval="$(voice_launchd_tuning FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL 1 '^[0-9]+$')"
+  for (( attempt = 1; attempt <= attempts; attempt++ )); do
+    if voice_on_demand_contract_check "$repo" "$home_dir" "$domain"; then return 0; fi
+    [[ "$attempt" -ge "$attempts" ]] || sleep "$interval"
+  done
+  VOICE_RESTART_DETAIL="on_demand_contract_check_failed_after_bootstrap (${attempts} attempts)"
+  voice_restart_log "ERROR: ${VOICE_RESTART_DETAIL}"
+  return 1
+}
+
+voice_bootstrap_on_demand() {
+  local domain="$1" installed="$2" repo="$3" home_dir="$4"
+  local attempts interval attempt stderr rc
+  attempts="$(voice_launchd_tuning FLYWHEEL_SUPERVISOR_BOOTSTRAP_ATTEMPTS 5 '^[1-9][0-9]*$')"
+  interval="$(voice_launchd_tuning FLYWHEEL_SUPERVISOR_LAUNCHD_POLL_INTERVAL 1 '^[0-9]+$')"
+  for (( attempt = 1; attempt <= attempts; attempt++ )); do
+    # A previous bootstrap can report an error after launchd has accepted the
+    # registration. Re-probe before issuing another bootstrap for the label.
+    if voice_on_demand_contract_check "$repo" "$home_dir" "$domain"; then
+      return 0
+    fi
+    rc=0
+    stderr="$(launchctl bootstrap "$domain" "$installed" 2>&1 >/dev/null)" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      if voice_wait_until_on_demand_contract "$repo" "$home_dir" "$domain"; then
+        return 0
+      fi
+      return 1
+    fi
+    [[ -n "$stderr" ]] || stderr="<empty stderr>"
+    VOICE_RESTART_DETAIL="launchctl bootstrap attempt ${attempt}/${attempts} failed rc=${rc}: ${stderr}"
+    if voice_on_demand_contract_check "$repo" "$home_dir" "$domain"; then
+      voice_restart_log "WARNING: ${VOICE_RESTART_DETAIL}; registration is present despite the error"
+      return 0
+    fi
+    if [[ "$attempt" -ge "$attempts" ]]; then
+      voice_restart_log "ERROR: ${VOICE_RESTART_DETAIL}"
+      return 1
+    fi
+    voice_restart_log "WARNING: ${VOICE_RESTART_DETAIL}"
+    sleep "$((attempt * interval))"
+  done
+  return 1
+}
+
 # Replace the resident unit with the on-demand one under the deploy's restart
 # lock. bootout stops the running resident daemon — which is the point: the old
 # binary has no idle exit, so leaving it running means on-demand never starts.
 voice_migrate_to_on_demand() {
   local source_plist="$1" installed="$2" domain="$3"
+  local repo="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
   launchctl bootout "${domain}/com.flywheel.voice" >/dev/null 2>&1 || true
-  cp "$source_plist" "$installed" || return 1
-  chmod 0644 "$installed" || return 1
-  launchctl bootstrap "$domain" "$installed" >/dev/null 2>&1 || return 1
-  voice_on_demand_contract_check \
-    "${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}" "${HOME}" "$domain"
+  voice_wait_until_launchd_label_absent "${domain}/com.flywheel.voice" || return 1
+  cp "$source_plist" "$installed" || {
+    VOICE_RESTART_DETAIL="copy_on_demand_plist_failed"
+    return 1
+  }
+  chmod 0644 "$installed" || {
+    VOICE_RESTART_DETAIL="chmod_on_demand_plist_failed"
+    return 1
+  }
+  voice_bootstrap_on_demand "$domain" "$installed" "$repo" "$HOME"
 }
 
 restart_voice_managed() {
   VOICE_RESTART_STATE="not_attempted"
   VOICE_RESTART_DETAIL=""
-  if ! supervisor_is_loaded voice service >/dev/null 2>&1; then
-    VOICE_RESTART_STATE="not_loaded"
-    VOICE_RESTART_DETAIL="supervisor not loaded"
-    voice_restart_log "voice unit not loaded; managed restart is a no-op"
-    return 0
-  fi
-  if ! declare -F voice_on_demand_contract_check >/dev/null 2>&1; then
+  if ! declare -F voice_on_demand_contract_check >/dev/null 2>&1 \
+    || ! declare -F voice_on_demand_disk_contract_check >/dev/null 2>&1; then
     # shellcheck source=voice-on-demand.sh
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/voice-on-demand.sh"
   fi
   local repo="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
   local domain="gui/$(id -u)"
+  local source_plist="${repo}/scripts/launchd/com.flywheel.voice.plist"
+  local installed="${HOME}/Library/LaunchAgents/com.flywheel.voice.plist"
+  local wrapper="${repo}/scripts/flywheel-voice-wrapper.sh"
+  local supervisor_loaded=false
+  if supervisor_is_loaded voice service >/dev/null 2>&1; then
+    supervisor_loaded=true
+  fi
+
+  if [[ "$supervisor_loaded" != true ]]; then
+    if voice_on_demand_disk_contract_check "$repo" "$HOME" \
+      && voice_launchd_label_absent "${domain}/com.flywheel.voice"; then
+      if ! declare -F nonlead_daemon_disabled_labels >/dev/null 2>&1; then
+        # shellcheck source=converge-nonlead-daemons.sh
+        source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/converge-nonlead-daemons.sh"
+      fi
+      local disabled_labels=""
+      if ! disabled_labels="$(nonlead_daemon_disabled_labels "$domain")"; then
+        VOICE_RESTART_STATE="not_loaded"
+        VOICE_RESTART_DETAIL="disabled overrides unreadable; registration recovery skipped"
+        voice_restart_log "WARNING: ${VOICE_RESTART_DETAIL}"
+        return 0
+      fi
+      if printf '%s\n' "$disabled_labels" | grep -Fxq 'com.flywheel.voice'; then
+        VOICE_RESTART_STATE="not_loaded"
+        VOICE_RESTART_DETAIL="voice is explicitly disabled; registration recovery skipped"
+        voice_restart_log "voice unit is explicitly disabled; managed restart is a no-op"
+        return 0
+      fi
+      if voice_bootstrap_on_demand "$domain" "$installed" "$repo" "$HOME"; then
+        VOICE_RESTART_STATE="registered"
+        VOICE_RESTART_DETAIL="on-demand plist was installed but unregistered; registration restored"
+        voice_restart_log "restored the missing voice on-demand registration"
+        return 0
+      fi
+      VOICE_RESTART_STATE="failed"
+      voice_restart_log "ERROR: voice on-demand registration recovery failed (${VOICE_RESTART_DETAIL})"
+      return 1
+    fi
+    VOICE_RESTART_STATE="not_loaded"
+    VOICE_RESTART_DETAIL="supervisor not loaded"
+    voice_restart_log "voice unit not loaded; managed restart is a no-op"
+    return 0
+  fi
+
   if voice_on_demand_contract_check "$repo" "${HOME}" "$domain"; then
     VOICE_RESTART_STATE="registered"
     VOICE_RESTART_DETAIL="on-demand registration already current; no process restart"
@@ -109,9 +247,6 @@ restart_voice_managed() {
     return 0
   fi
 
-  local source_plist="${repo}/scripts/launchd/com.flywheel.voice.plist"
-  local installed="${HOME}/Library/LaunchAgents/com.flywheel.voice.plist"
-  local wrapper="${repo}/scripts/flywheel-voice-wrapper.sh"
   if [[ -f "$source_plist" && -f "$installed" ]] &&
     voice_installed_is_legacy_resident "$installed" "$wrapper" &&
     voice_loaded_is_our_unit "$installed" "$wrapper" "$domain"; then
@@ -134,8 +269,8 @@ restart_voice_managed() {
       return 0
     fi
     VOICE_RESTART_STATE="failed"
-    VOICE_RESTART_DETAIL="on_demand_migration_failed"
-    voice_restart_log "ERROR: voice on-demand migration did not converge"
+    [[ -n "$VOICE_RESTART_DETAIL" ]] || VOICE_RESTART_DETAIL="on_demand_migration_failed"
+    voice_restart_log "ERROR: voice on-demand migration did not converge (${VOICE_RESTART_DETAIL})"
     return 1
   fi
 

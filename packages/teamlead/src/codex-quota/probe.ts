@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import {
-	type CodexAccountRegistry,
+	type CodexAccountPool,
 	identifyCodexAuth,
 } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 
@@ -28,10 +28,10 @@ export interface CandidateIdentity {
 	accountKey: string;
 }
 export function codexQuotaIdentityReader(
-	registry: CodexAccountRegistry,
+	pool: CodexAccountPool,
 ): (auth: string) => CandidateIdentity {
 	return (auth) => {
-		const identity = identifyCodexAuth(auth, registry);
+		const identity = identifyCodexAuth(auth, pool);
 		return {
 			profile: identity.profile,
 			accountKey: codexInstallAccountKey(identity),

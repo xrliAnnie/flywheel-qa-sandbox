@@ -1,5 +1,6 @@
 import {
 	BUILTIN_MODEL_TIERS,
+	MODEL_IDS,
 	type ModelTier,
 	type ModelTierSpec,
 } from "./model-builtins.js";
@@ -86,6 +87,7 @@ export function modelDisplayName(
 ): string | undefined {
 	const normalized = model?.toLowerCase();
 	if (normalized?.startsWith("gpt-5.6")) return "GPT-5.6";
+	if (normalized === MODEL_IDS.CODEX_SOL) return "GPT-6 Sol";
 	if (normalized?.startsWith("gpt-")) return "GPT";
 	const code = modelShortCode(model);
 	if (code) return SHORT_CODE_DISPLAY_NAME[code];

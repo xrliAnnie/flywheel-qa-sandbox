@@ -30,14 +30,23 @@ export {
 	TUI_OPEN_RETRY_GAP_MS, // FLY-1239
 } from "./CodexTmuxAdapter.js";
 export {
+	CODEX_PROFILE_NAME,
+	type CodexAccountPolicy,
+	type CodexAccountPool,
+	type CodexAccountPoolProblem,
 	type CodexAccountProfile,
-	type CodexAccountRegistry,
 	type CodexAuthIdentity,
+	type CodexProfileSlot,
 	DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+	enumerateCodexProfileSlots,
 	identifyCodexAuth,
-	loadCodexAccountRegistry,
+	isCodexIdentityLabel,
+	isCodexSlotName,
+	loadCodexAccountPolicy,
+	loadCodexAccountPool,
 	readCodexAuthIdentity,
 	redactCodexEmail,
+	validateCodexAccountPool,
 } from "./codex-account-identity.js";
 export {
 	type CodexAccountObservationSource,

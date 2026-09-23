@@ -1,4 +1,4 @@
-export type CodexProfileName = "school" | "personal" | "business";
+export type CodexProfileName = string;
 export type CodexProfileRole = "primary" | "manual_backup";
 
 export interface CodexAccountProfile {
@@ -7,10 +7,9 @@ export interface CodexAccountProfile {
 	role: CodexProfileRole;
 }
 
-export interface CodexAccountRegistry {
-	version: 1;
-	primary: "personal";
-	profiles: readonly CodexAccountProfile[];
+export interface CodexAccountPolicy {
+	version: 2;
+	primary: CodexProfileName;
 }
 
 export interface CodexAuthIdentity {
@@ -19,6 +18,38 @@ export interface CodexAuthIdentity {
 	accountId: string | null;
 	plan: string | null;
 	mode: CodexProfileRole;
+}
+
+export type CodexProfileSlotState =
+	| "ready"
+	| "not_logged_in"
+	| "invalid_credential"
+	| "invalid_name";
+
+export interface CodexProfileSlot {
+	name: string;
+	state: CodexProfileSlotState;
+	identity?: CodexAuthIdentity;
+	error?: string;
+}
+
+export type CodexAccountPoolProblemCode =
+	| "duplicate_email"
+	| "invalid_name"
+	| "invalid_credential"
+	| "not_logged_in";
+
+export interface CodexAccountPoolProblem {
+	name: string;
+	code: CodexAccountPoolProblemCode;
+}
+
+export interface CodexAccountPool {
+	version: 2;
+	primary: CodexProfileName | null;
+	profiles: readonly CodexAccountProfile[];
+	slots: readonly CodexProfileSlot[];
+	problems: readonly CodexAccountPoolProblem[];
 }
 
 export type CodexAccountObservationSource =
@@ -35,16 +66,27 @@ export interface CodexAccountSnapshot extends CodexAuthIdentity {
 }
 
 export const DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH: string;
-export function loadCodexAccountRegistry(
+export const CODEX_PROFILE_NAME: RegExp;
+export function isCodexSlotName(name: unknown): name is string;
+export function isCodexIdentityLabel(name: unknown): name is string;
+export function loadCodexAccountPolicy(
 	registryPath?: string,
-): CodexAccountRegistry;
+): CodexAccountPolicy;
+export function enumerateCodexProfileSlots(
+	profilesRoot: string,
+): readonly CodexProfileSlot[];
+export function validateCodexAccountPool(value: unknown): CodexAccountPool;
+export function loadCodexAccountPool(options: {
+	profilesRoot: string;
+	registryPath?: string;
+}): CodexAccountPool;
 export function identifyCodexAuth(
 	rawAuth: string,
-	registry: CodexAccountRegistry,
+	pool: Pick<CodexAccountPool, "profiles">,
 ): CodexAuthIdentity;
 export function readCodexAuthIdentity(
 	authPath: string,
-	opts?: { registryPath?: string },
+	opts: { profilesRoot: string; registryPath?: string },
 ): CodexAuthIdentity;
 export function redactCodexEmail(email: string): string;
 export function resolveCodexAccountLedgerRoot(
@@ -55,11 +97,16 @@ export function recordCodexAccountObservation(options: {
 	identity: CodexAuthIdentity;
 	home: string;
 	source: CodexAccountObservationSource;
+	profilesRoot: string;
 	ledgerRoot?: string;
 	registryPath?: string;
 	observedAt?: Date | string | number;
 }): CodexAccountSnapshot;
 export function readCodexAccountSnapshot(
 	profile: CodexProfileName,
-	options?: { ledgerRoot?: string; registryPath?: string },
+	options: {
+		profilesRoot: string;
+		ledgerRoot?: string;
+		registryPath?: string;
+	},
 ): CodexAccountSnapshot | null;

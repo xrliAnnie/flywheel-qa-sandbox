@@ -6,6 +6,18 @@ import {
 import { StateStore } from "../../StateStore.js";
 
 const stores: StateStore[] = [];
+const pool = {
+	version: 2 as const,
+	primary: "personal",
+	profiles: ["business", "personal", "school"].map((name) => ({
+		name,
+		email: `${name}@example.test`,
+		role:
+			name === "personal" ? ("primary" as const) : ("manual_backup" as const),
+	})),
+	slots: [],
+	problems: [],
+};
 afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
 });
@@ -323,7 +335,7 @@ describe("Codex quota coordinator", () => {
 			now: () => now,
 			autoEnabled: () => enabled,
 			readiness: async () => true,
-			observe: async () => observations,
+			observe: async () => ({ pool, observations }),
 			rotate: vi.fn(),
 			recover: vi.fn(),
 			reconcileInstallation: vi.fn(async () => "rolled_back" as const),
@@ -377,8 +389,9 @@ describe("Codex quota coordinator", () => {
 			now: new Date(now).toISOString(),
 		});
 		let businessAvailable = false;
-		const observe = vi.fn(async () =>
-			["school", "personal", "business"].map((profile) => ({
+		const observe = vi.fn(async () => ({
+			pool,
+			observations: ["school", "personal", "business"].map((profile) => ({
 				profile,
 				accountKey: `${profile}-key`,
 				observedAt: now,
@@ -392,7 +405,7 @@ describe("Codex quota coordinator", () => {
 					},
 				],
 			})),
-		);
+		}));
 		const rotate = vi.fn();
 		const recover = vi.fn();
 		const options = {
@@ -488,7 +501,7 @@ describe("Codex quota coordinator", () => {
 							checkedAt: new Date(now).toISOString(),
 						},
 			readiness: async () => true,
-			observe: async () => observations,
+			observe: async () => ({ pool, observations }),
 			rotate: vi.fn(),
 			recover: vi.fn(),
 		};
@@ -502,6 +515,98 @@ describe("Codex quota coordinator", () => {
 		await new CodexQuotaCoordinator(options).tick();
 		expect(store.codexQuota.isIncidentManual("codex:root:1")).toBe(true);
 		expect(store.codexQuota.isPaused("root")).toBe(false);
+	});
+
+	it("honors an exhausted backoff after readings age and reprobes only for a new pool member", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		let now = Date.parse("2026-09-11T18:45:00Z");
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding({
+			bindingId: "binding",
+			executionId: "exec",
+			runId: "run",
+			purpose: "runner",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+		});
+		store.codexQuota.recordSignal({
+			executionId: "exec",
+			bindingId: "binding",
+			source: "runner_terminal",
+			sourceEventId: "event",
+		});
+		const members = pool.profiles.map(({ name }) => ({
+			profile: name,
+			accountKey: `${name}-key`,
+		}));
+		let currentMembers = members;
+		store.currentCodexPoolMembers = () => currentMembers;
+		const exhausted = members.map((member) => ({
+			...member,
+			observedAt: now,
+			identityVerified: true,
+			authHealth: "valid" as const,
+			scopeKnown: true,
+			windows: [{ usedPercent: 100, resetsAt: now + 3_600_000 }],
+		}));
+		const shopping = {
+			profile: "shopping",
+			accountKey: "shopping-key",
+			observedAt: now,
+			identityVerified: true,
+			authHealth: "valid" as const,
+			scopeKnown: true,
+			windows: [{ usedPercent: 10, resetsAt: now + 3_600_000 }],
+		};
+		const observe = vi
+			.fn()
+			.mockResolvedValueOnce({ pool, observations: exhausted })
+			.mockResolvedValueOnce({
+				pool: {
+					...pool,
+					profiles: [
+						...pool.profiles,
+						{
+							name: "shopping",
+							email: "shopping@example.test",
+							role: "manual_backup" as const,
+						},
+					],
+				},
+				observations: [...exhausted, shopping],
+			});
+		const rotate = vi.fn(async () => ({ ok: false }));
+		const options = {
+			store: store.codexQuota,
+			now: () => now,
+			readiness: async () => true,
+			observe,
+			rotate,
+			recover: vi.fn(),
+		};
+
+		await new CodexQuotaCoordinator(options).tick();
+		now += 61_000;
+		await new CodexQuotaCoordinator(options).tick();
+		expect(observe).toHaveBeenCalledOnce();
+		shopping.observedAt = now;
+		currentMembers = [
+			...members,
+			{ profile: "shopping", accountKey: "shopping-key" },
+		];
+		await new CodexQuotaCoordinator(options).tick();
+
+		expect(observe).toHaveBeenCalledTimes(2);
+		expect(rotate).toHaveBeenCalledOnce();
+		expect(rotate.mock.calls[0]?.[1]).toMatchObject({ profile: "shopping" });
 	});
 
 	it("keeps failed probes paused with no recovery and no immediate repeated exec", async () => {
@@ -531,19 +636,22 @@ describe("Codex quota coordinator", () => {
 		});
 		const observe = vi.fn(async () => {
 			now += 50;
-			return [
-				{
-					profile: "school",
-					accountKey: "school-key",
-					observedAt: now,
-					identityVerified: true,
-					authHealth: "valid" as const,
-					scopeKnown: true,
-					windows: [
-						{ usedPercent: 30, resetsAt: Date.parse("2026-09-09T01:00:00Z") },
-					],
-				},
-			];
+			return {
+				pool,
+				observations: [
+					{
+						profile: "school",
+						accountKey: "school-key",
+						observedAt: now,
+						identityVerified: true,
+						authHealth: "valid" as const,
+						scopeKnown: true,
+						windows: [
+							{ usedPercent: 30, resetsAt: Date.parse("2026-09-09T01:00:00Z") },
+						],
+					},
+				],
+			};
 		});
 		const rotate = vi.fn(async () => ({ ok: false }));
 		const recover = vi.fn();
@@ -594,8 +702,9 @@ describe("Codex quota coordinator", () => {
 				now: new Date(now).toISOString(),
 			});
 		}
-		const observe = vi.fn(async () =>
-			["school", "personal"].map((profile, i) => ({
+		const observe = vi.fn(async () => ({
+			pool,
+			observations: ["school", "personal"].map((profile, i) => ({
 				profile,
 				accountKey: `${profile}-key`,
 				observedAt: now,
@@ -604,7 +713,7 @@ describe("Codex quota coordinator", () => {
 				scopeKnown: true,
 				windows: [{ usedPercent: 30, resetsAt: now + (i + 1) * 60_000 }],
 			})),
-		);
+		}));
 		const rotate = vi.fn(async () => {
 			store.codexQuota.recordInstalling({
 				incidentId: "codex:root:1",
@@ -753,17 +862,20 @@ describe("Codex quota coordinator", () => {
 			bindingId: "binding",
 			now: new Date(now).toISOString(),
 		});
-		const observe = vi.fn(async () => [
-			{
-				profile: "school",
-				accountKey: "school-key",
-				observedAt: now,
-				identityVerified: true,
-				authHealth: "valid" as const,
-				scopeKnown: true,
-				windows: [{ usedPercent: 30, resetsAt: now + 3600000 }],
-			},
-		]);
+		const observe = vi.fn(async () => ({
+			pool,
+			observations: [
+				{
+					profile: "school",
+					accountKey: "school-key",
+					observedAt: now,
+					identityVerified: true,
+					authHealth: "valid" as const,
+					scopeKnown: true,
+					windows: [{ usedPercent: 30, resetsAt: now + 3600000 }],
+				},
+			],
+		}));
 		const rotate = vi.fn(async () => {
 			store.codexQuota.recordInstalling({
 				incidentId: "codex:root:1",
@@ -864,17 +976,20 @@ describe("Codex quota coordinator", () => {
 			now: () => now,
 			availability,
 			readiness: async () => true,
-			observe: async () => [
-				{
-					profile: "school",
-					accountKey: "school-key",
-					observedAt: now,
-					identityVerified: true,
-					authHealth: "valid",
-					scopeKnown: true,
-					windows: [{ usedPercent: 10, resetsAt: now + 3_600_000 }],
-				},
-			],
+			observe: async () => ({
+				pool,
+				observations: [
+					{
+						profile: "school",
+						accountKey: "school-key",
+						observedAt: now,
+						identityVerified: true,
+						authHealth: "valid",
+						scopeKnown: true,
+						windows: [{ usedPercent: 10, resetsAt: now + 3_600_000 }],
+					},
+				],
+			}),
 			rotate,
 			recover,
 		}).tick();

@@ -19,6 +19,7 @@ fi
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 PROFILES_DIR="${FLYWHEEL_CODEX_PROFILES_DIR:-$HOME/.codex/profiles}"
 LEDGER_ROOT="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/codex-account-ledger"
+SNAPSHOT_PATH="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/codex-quota/codex-accounts.json"
 REGISTRY_PATH="$SCRIPT_DIR/../agents/codex-account-registry.json"
 
 exec "$NODE_BIN" "$SCRIPT_DIR/flywheel-codex-profile.mjs" \
@@ -26,4 +27,5 @@ exec "$NODE_BIN" "$SCRIPT_DIR/flywheel-codex-profile.mjs" \
   --profiles "$PROFILES_DIR" \
   --ledger-root "$LEDGER_ROOT" \
   --registry "$REGISTRY_PATH" \
+  --snapshot "$SNAPSHOT_PATH" \
   "$@"

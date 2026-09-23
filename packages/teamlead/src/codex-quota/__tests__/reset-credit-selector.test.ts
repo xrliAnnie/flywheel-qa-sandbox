@@ -527,7 +527,7 @@ describe("selectCodexResetCredit", () => {
 	});
 
 	it.each([
-		["missing profile", fleet().slice(0, 2)],
+		["empty account pool", []],
 		[
 			"duplicate profile",
 			[account("business"), account("business"), account("school")],

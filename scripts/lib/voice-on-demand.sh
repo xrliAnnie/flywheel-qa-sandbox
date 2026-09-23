@@ -15,16 +15,15 @@ sys.exit(0 if valid else 1)
 ' "$target" "$wrapper"
 }
 
-# Prove the complete installed on-demand contract. A registered job may be
-# dormant; PID/state are deliberately not part of this identity check.
-voice_on_demand_contract_check() {
+# Prove the complete on-disk on-demand contract without requiring a registered
+# launchd job. This is the recovery seam for a plist that was installed before
+# a failed bootstrap left the label absent.
+voice_on_demand_disk_contract_check() {
   local repo="${1:-${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}}"
   local home_dir="${2:-${HOME}}"
-  local domain="${3:-gui/$(id -u)}"
   local source_plist="${repo}/scripts/launchd/com.flywheel.voice.plist"
   local installed_plist="${home_dir}/Library/LaunchAgents/com.flywheel.voice.plist"
   local wrapper="${repo}/scripts/flywheel-voice-wrapper.sh"
-  local loaded
 
   [[ -f "$source_plist" && ! -L "$source_plist" ]] || return 1
   [[ -f "$installed_plist" && ! -L "$installed_plist" ]] || return 1
@@ -44,6 +43,19 @@ assert p.get('RunAtLoad') is False and p.get('KeepAlive') is False
 assert type(p.get('ThrottleInterval')) is int and p['ThrottleInterval']==1
 assert not p.get('EnvironmentVariables')
 PY
+}
+
+# Prove the complete installed on-demand contract. A registered job may be
+# dormant; PID/state are deliberately not part of this identity check.
+voice_on_demand_contract_check() {
+  local repo="${1:-${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}}"
+  local home_dir="${2:-${HOME}}"
+  local domain="${3:-gui/$(id -u)}"
+  local installed_plist="${home_dir}/Library/LaunchAgents/com.flywheel.voice.plist"
+  local wrapper="${repo}/scripts/flywheel-voice-wrapper.sh"
+  local loaded
+
+  voice_on_demand_disk_contract_check "$repo" "$home_dir" || return 1
   loaded="$(launchctl print "${domain}/com.flywheel.voice" 2>/dev/null)" || return 1
   printf '%s\n' "$loaded" | voice_on_demand_loaded_identity "$installed_plist" "$wrapper"
 }

@@ -180,6 +180,48 @@ export interface CodexAccountProjection {
 	authUnusable: boolean;
 	note: string | null;
 	unclassifiedWindows: number;
+	tokenState: CodexTokenState;
+}
+
+export type CodexTokenState =
+	| "正常"
+	| "打满"
+	| "已吊销"
+	| "已过期"
+	| "凭据失效"
+	| "未登录"
+	| "凭据损坏"
+	| "重复登录"
+	| "在用未探"
+	| "未探";
+
+export function codexTokenState(
+	reading: Pick<
+		CodexAccountReading,
+		"authHealth" | "note" | "fiveH" | "weekly"
+	>,
+): CodexTokenState {
+	switch (reading.note) {
+		case "token_revoked":
+			return "已吊销";
+		case "token_expired":
+			return "已过期";
+		case "refresh_invalid":
+			return "凭据失效";
+		case "not_logged_in":
+			return "未登录";
+		case "invalid_credential":
+			return "凭据损坏";
+		case "duplicate_email":
+			return "重复登录";
+	}
+	if (reading.authHealth === "in_use_unshared") return "在用未探";
+	if (reading.authHealth !== "valid") return "未探";
+	return [reading.fiveH, reading.weekly].some(
+		(window) => window?.usedPercent === 100,
+	)
+		? "打满"
+		: "正常";
 }
 
 function projectCodexAccount(
@@ -197,6 +239,7 @@ function projectCodexAccount(
 		.filter((window) => window.usedPercent === 100)
 		.map((window) => window.resetAt);
 	const exhausted = exhaustedResets.length > 0;
+	const tokenState = codexTokenState(reading);
 	const recoveryAt =
 		exhausted && exhaustedResets.every((reset) => reset !== null)
 			? new Date(
@@ -225,9 +268,20 @@ function projectCodexAccount(
 		stale: ageMinutes === null ? null : ageMinutes > input.staleAfterMinutes,
 		exhausted,
 		recoveryAt,
-		authUnusable: ["refresh_invalid", "missing"].includes(reading.authHealth),
+		authUnusable:
+			reading.authHealth === "missing" ||
+			reading.note === "read_failed" ||
+			[
+				"已吊销",
+				"已过期",
+				"凭据失效",
+				"未登录",
+				"凭据损坏",
+				"重复登录",
+			].includes(tokenState),
 		note: reading.note,
 		unclassifiedWindows: reading.unclassifiedWindows,
+		tokenState,
 	};
 }
 

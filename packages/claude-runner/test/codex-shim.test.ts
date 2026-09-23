@@ -3,6 +3,7 @@
  * The live auth.json JWT is authoritative; .active is only a diagnostic hint.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	accessSync,
 	constants,
@@ -24,6 +25,20 @@ const PROFILE_BIN = join(
 	dirname(flywheelCodexBin({})),
 	"flywheel-codex-profile",
 );
+const TOKEN_STATE_VECTORS = JSON.parse(
+	readFileSync(
+		new URL(
+			"../../../scripts/__tests__/fixtures/codex-token-state-vectors.json",
+			import.meta.url,
+		),
+		"utf8",
+	),
+) as readonly {
+	authHealth: string;
+	note: string | null;
+	usedPercent: number | null;
+	expected: string;
+}[];
 
 const ACCOUNTS = {
 	school: {
@@ -43,8 +58,18 @@ const ACCOUNTS = {
 	},
 	personal1: {
 		email: "xrliannie.1@gmail.com",
-		accountId: "acct-zombie",
-		plan: "pro",
+		accountId: "acct-personal1",
+		plan: "prolite",
+	},
+	personal2: {
+		email: "xrliannie.2@gmail.com",
+		accountId: "acct-personal2",
+		plan: "prolite",
+	},
+	shopping: {
+		email: "xrliannie.shopping@gmail.com",
+		accountId: "acct-shopping",
+		plan: "prolite",
 	},
 } as const;
 
@@ -139,6 +164,8 @@ beforeEach(() => {
 	seedPool("personal");
 	seedPool("business");
 	seedPool("personal1");
+	seedPool("personal2");
+	seedPool("shopping");
 });
 
 afterEach(() => {
@@ -238,81 +265,158 @@ describe("flywheel-codex-profile manual identity control", () => {
 		expect(`${result.stdout}${result.stderr}`).not.toContain("secret-");
 	});
 
-	it("list exposes only the canonical three and reports untracked pool entries", () => {
+	it("list exposes every directory profile without an Untracked bucket", () => {
 		writeFileSync(join(homeA, "auth.json"), auth("personal"));
 		runProfile(homeA, ["status", "--json"]);
 		const result = JSON.parse(runProfile(homeA, ["list", "--json"]));
 
 		expect(
-			result.profiles.map((entry: { name: string }) => entry.name),
-		).toEqual(["school", "personal", "business"]);
-		expect(result.profiles).toEqual(
+			result.accounts.map((entry: { name: string }) => entry.name),
+		).toEqual([
+			"business",
+			"personal",
+			"personal1",
+			"personal2",
+			"school",
+			"shopping",
+		]);
+		expect(result.accounts).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ name: "personal", status: "ready" }),
+				expect.objectContaining({
+					name: "personal1",
+					email: ACCOUNTS.personal1.email,
+					plan: "prolite",
+					tokenStatus: "未探",
+				}),
+				expect.objectContaining({ name: "shopping", tokenStatus: "未探" }),
 			]),
 		);
-		expect(result.untracked).toEqual(["personal1"]);
-		expect(
-			result.profiles.find(
-				(entry: { name: string }) => entry.name === "personal",
-			),
-		).toMatchObject({
-			status: "ready",
-			lastObservation: { profile: "personal", lastSource: "status" },
-		});
+		expect(result).not.toHaveProperty("untracked");
 		expect(JSON.stringify(result)).not.toContain("secret-");
 	});
 
-	it("keeps all live profile health visible when one ledger snapshot is corrupt", () => {
-		const corruptSnapshot = join(
-			stateDir,
-			"codex-account-ledger",
-			"business.json",
+	it("uses a matching identityKey snapshot for token state and reset times", () => {
+		const snapshot = join(stateDir, "codex-quota", "codex-accounts.json");
+		mkdirSync(dirname(snapshot), { recursive: true });
+		writeFileSync(
+			snapshot,
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-22T20:00:00.000Z",
+				activeAccount: "shopping",
+				accounts: [
+					{
+						name: "shopping",
+						identityKey: createHash("sha256")
+							.update("shopping:acct-shopping")
+							.digest("hex"),
+						authHealth: "valid",
+						note: null,
+						planType: "prolite",
+						fiveH: {
+							usedPercent: 100,
+							windowMinutes: 300,
+							resetAt: "2026-09-22T21:00:00.000Z",
+						},
+						weekly: {
+							usedPercent: 50,
+							windowMinutes: 10080,
+							resetAt: "2026-09-25T21:00:00.000Z",
+						},
+						observedAt: "2026-09-22T20:00:00.000Z",
+					},
+				],
+			}),
 		);
-		mkdirSync(dirname(corruptSnapshot), { recursive: true });
-		writeFileSync(corruptSnapshot, "{truncated");
 
-		const result = failProfile(homeA, ["list", "--json"]);
-
-		expect(result.status).toBe(0);
-		const output = JSON.parse(result.stdout);
+		const result = JSON.parse(runProfile(homeA, ["list", "--json"]));
 		expect(
-			output.profiles.map((entry: { name: string }) => entry.name),
-		).toEqual(["school", "personal", "business"]);
-		expect(
-			output.profiles.find(
-				(entry: { name: string }) => entry.name === "business",
+			result.accounts.find(
+				(entry: { name: string }) => entry.name === "shopping",
 			),
 		).toMatchObject({
-			status: "ready",
-			lastObservation: null,
-			ledgerUnreadable: true,
+			tokenStatus: "打满",
+			fiveHResetAt: "2026-09-22T21:00:00.000Z",
+			weeklyResetAt: "2026-09-25T21:00:00.000Z",
 		});
-		expect(result.stderr).toContain("ledger snapshot unreadable for business");
-		expect(result.stderr).toContain(corruptSnapshot);
 	});
 
-	it("refuses to install a mislabeled pool credential without changing either file", () => {
-		const businessPath = join(pool, "business", "auth.json");
-		writeFileSync(businessPath, auth("personal"));
-		writeFileSync(join(homeA, "auth.json"), auth("business"));
-		writeFileSync(join(homeA, ".active"), "business\n");
-		const beforeAuth = readFileSync(join(homeA, "auth.json"));
-		const beforeSidecar = readFileSync(join(homeA, ".active"));
-
-		const result = failProfile(homeA, ["use", "business"]);
-
-		expect(result.status).not.toBe(0);
-		expect(result.stderr).toContain("expected business");
-		expect(readFileSync(join(homeA, "auth.json"))).toEqual(beforeAuth);
-		expect(readFileSync(join(homeA, ".active"))).toEqual(beforeSidecar);
+	it("matches the shared account-page token-state vectors", () => {
+		const snapshot = join(stateDir, "codex-quota", "codex-accounts.json");
+		mkdirSync(dirname(snapshot), { recursive: true });
+		const identityKey = createHash("sha256")
+			.update("shopping:acct-shopping")
+			.digest("hex");
+		for (const vector of TOKEN_STATE_VECTORS) {
+			writeFileSync(
+				snapshot,
+				JSON.stringify({
+					version: 1,
+					generatedAt: "2026-09-22T20:00:00.000Z",
+					accounts: [
+						{
+							name: "shopping",
+							identityKey,
+							authHealth: vector.authHealth,
+							note: vector.note,
+							fiveH:
+								vector.usedPercent === null
+									? null
+									: { usedPercent: vector.usedPercent, resetAt: null },
+							weekly: null,
+						},
+					],
+				}),
+			);
+			const result = JSON.parse(runProfile(homeA, ["list", "--json"]));
+			expect(
+				result.accounts.find(
+					(entry: { name: string }) => entry.name === "shopping",
+				)?.tokenStatus,
+			).toBe(vector.expected);
+		}
 	});
+
+	it.each([undefined, "not-a-sha256", "0".repeat(64)])(
+		"does not trust a missing, malformed, or mismatched identityKey: %s",
+		(identityKey) => {
+			const snapshot = join(stateDir, "codex-quota", "codex-accounts.json");
+			mkdirSync(dirname(snapshot), { recursive: true });
+			writeFileSync(
+				snapshot,
+				JSON.stringify({
+					version: 1,
+					generatedAt: "2026-09-22T20:00:00.000Z",
+					accounts: [
+						{
+							name: "shopping",
+							...(identityKey === undefined ? {} : { identityKey }),
+							authHealth: "valid",
+							note: null,
+							fiveH: { usedPercent: 100, resetAt: "2026-09-22T21:00:00.000Z" },
+						},
+					],
+				}),
+			);
+			const result = JSON.parse(runProfile(homeA, ["list", "--json"]));
+			expect(
+				result.accounts.find(
+					(entry: { name: string }) => entry.name === "shopping",
+				),
+			).toMatchObject({
+				tokenStatus: "未探",
+				fiveHResetAt: null,
+			});
+		},
+	);
 
 	it("manually installs a verified backup credential with mode 0600", () => {
-		runProfile(homeA, ["use", "school"]);
+		runProfile(homeA, ["use", "shopping"]);
 
-		expect(readFileSync(join(homeA, "auth.json"), "utf8")).toBe(auth("school"));
-		expect(readFileSync(join(homeA, ".active"), "utf8")).toBe("school\n");
+		expect(readFileSync(join(homeA, "auth.json"), "utf8")).toBe(
+			auth("shopping"),
+		);
+		expect(readFileSync(join(homeA, ".active"), "utf8")).toBe("shopping\n");
 		expect(statSync(join(homeA, "auth.json")).mode & 0o777).toBe(0o600);
 		expect(readFileSync(join(homeA, "auth.json"), "utf8")).not.toContain(
 			"secret-access-personal",
@@ -320,11 +424,11 @@ describe("flywheel-codex-profile manual identity control", () => {
 		expect(
 			JSON.parse(
 				readFileSync(
-					join(stateDir, "codex-account-ledger", "school.json"),
+					join(stateDir, "codex-account-ledger", "shopping.json"),
 					"utf8",
 				),
 			),
-		).toMatchObject({ profile: "school", lastSource: "use" });
+		).toMatchObject({ profile: "shopping", lastSource: "use" });
 	});
 
 	it("reports a successful use when only its ledger observation fails", () => {
@@ -359,18 +463,46 @@ describe("flywheel-codex-profile manual identity control", () => {
 	});
 
 	it("records a successful verified save", () => {
-		writeFileSync(join(homeA, "auth.json"), auth("business"));
+		writeFileSync(join(homeA, "auth.json"), auth("personal1"));
 
-		runProfile(homeA, ["save", "business"]);
+		runProfile(homeA, ["save", "personal1"]);
 
 		expect(
 			JSON.parse(
 				readFileSync(
-					join(stateDir, "codex-account-ledger", "business.json"),
+					join(stateDir, "codex-account-ledger", "personal1.json"),
 					"utf8",
 				),
 			),
-		).toMatchObject({ profile: "business", lastSource: "save" });
+		).toMatchObject({ profile: "personal1", lastSource: "save" });
+	});
+
+	it("refuses save into an empty slot and points to direct login", () => {
+		mkdirSync(join(pool, "newslot"));
+		writeFileSync(join(homeA, "auth.json"), auth("personal1"));
+		const result = failProfile(homeA, ["save", "newslot"]);
+		expect(result.status).toBe(2);
+		expect(result.stderr).toContain("not_logged_in");
+		expect(result.stderr).toContain(`CODEX_HOME=${join(pool, "newslot")}`);
+	});
+
+	it("refuses save when email matches but account id differs", () => {
+		const target = join(pool, "personal1", "auth.json");
+		const differentAccount = JSON.parse(auth("personal1"));
+		const payload = {
+			email: ACCOUNTS.personal1.email,
+			"https://api.openai.com/auth": {
+				chatgpt_account_id: "acct-different",
+				chatgpt_plan_type: "prolite",
+			},
+		};
+		differentAccount.tokens.id_token = jwt(payload);
+		writeFileSync(join(homeA, "auth.json"), JSON.stringify(differentAccount));
+		const before = readFileSync(target);
+		const result = failProfile(homeA, ["save", "personal1"]);
+		expect(result.status).toBe(2);
+		expect(result.stderr).toContain("identity mismatch");
+		expect(readFileSync(target)).toEqual(before);
 	});
 
 	it("reports a successful save when only its ledger observation fails", () => {

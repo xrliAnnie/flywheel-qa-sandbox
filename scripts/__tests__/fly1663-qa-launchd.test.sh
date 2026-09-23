@@ -350,6 +350,9 @@ Path(sys.argv[1]).write_text(json.dumps({"tokens": {
 }}) + "\n", encoding="utf-8")
 PY
 chmod 600 "$mint_source/auth.json"
+mkdir -p "$mint_source/profiles/business"
+cp "$mint_source/auth.json" "$mint_source/profiles/business/auth.json"
+chmod 600 "$mint_source/profiles/business/auth.json"
 mint_source_hash=$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')
 write_mint_codex_fixture "$mint_release/bin/codex"
 ln -s bin/codex "$mint_release/codex"

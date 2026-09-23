@@ -189,6 +189,10 @@ it("applies a current capacity guard only while the fleet flag is on", async () 
 		});
 		store.codexQuota.recordPoolExhausted({
 			incidentId: "codex:root:1",
+			pool: ["business", "personal", "school"].map((profile) => ({
+				profile,
+				accountKey: profile,
+			})),
 			observedAt,
 			nextAttemptAt: observedAt + 60_000,
 			observations: ["school", "personal", "business"].map((profile) => ({

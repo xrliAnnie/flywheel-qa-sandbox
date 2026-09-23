@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { loadCodexAccountPool } from "../bin/codex-account-core.mjs";
 import {
 	acquireCodexAccountLease,
 	installCodexQuotaCredential,
@@ -20,27 +21,7 @@ import {
 } from "../bin/codex-account-install.mjs";
 
 const digest = (raw: string) => createHash("sha256").update(raw).digest("hex");
-const registry = {
-	version: 1 as const,
-	primary: "personal" as const,
-	profiles: [
-		{
-			name: "school" as const,
-			email: "school@example.test",
-			role: "manual_backup" as const,
-		},
-		{
-			name: "personal" as const,
-			email: "personal@example.test",
-			role: "primary" as const,
-		},
-		{
-			name: "business" as const,
-			email: "business@example.test",
-			role: "manual_backup" as const,
-		},
-	],
-};
+const PROFILE_NAMES = ["school", "personal", "business", "shopping"] as const;
 const auth = (profile: string, refresh: string) =>
 	JSON.stringify({
 		tokens: {
@@ -59,10 +40,14 @@ function fixture() {
 		profilesRoot = join(root, "profiles");
 	mkdirSync(home);
 	mkdirSync(profilesRoot);
-	for (const p of registry.profiles) {
-		mkdirSync(join(profilesRoot, p.name));
-		writeFileSync(join(profilesRoot, p.name, "auth.json"), auth(p.name, "old"));
+	for (const profile of PROFILE_NAMES) {
+		mkdirSync(join(profilesRoot, profile));
+		writeFileSync(
+			join(profilesRoot, profile, "auth.json"),
+			auth(profile, "old"),
+		);
 	}
+	const registry = loadCodexAccountPool({ profilesRoot });
 	const prior = auth("business", "live"),
 		initial = auth("school", "old"),
 		fresh = auth("school", "refreshed");
@@ -140,6 +125,26 @@ it("installs only after durable installing callback and never exports outgoing l
 		readFileSync(join(f.profilesRoot, "business", "auth.json"), "utf8"),
 	).toBe(auth("business", "old"));
 });
+it("installs a discovered fourth profile", () => {
+	const f = fixture();
+	const initial = auth("shopping", "old");
+	const fresh = auth("shopping", "refreshed");
+	writeFileSync(f.finalAuthPath, fresh, { mode: 0o600 });
+	const result = installCodexQuotaCredential({
+		...f,
+		profile: "shopping",
+		expectedProfileDigest: digest(initial),
+		proof: {
+			ok: true,
+			profile: "shopping",
+			accountKey: digest("shopping:shopping"),
+			authDigest: digest(fresh),
+			at: 1000,
+		},
+	});
+	expect(result.status).toBe("installed");
+	expect(readFileSync(join(f.home, "auth.json"), "utf8")).toBe(fresh);
+});
 it("stale proof and callback abort preserve refreshed profile while canonical remains old", () => {
 	for (const mode of ["stale", "throw"]) {
 		const f = fixture();
@@ -200,7 +205,10 @@ it("shared install lock refuses nested/manual competing owner and releases after
 it("manual use and save honor shared root and candidate locks", () => {
 	const f = fixture();
 	const registryPath = join(f.home, "registry.json");
-	writeFileSync(registryPath, JSON.stringify(registry));
+	writeFileSync(
+		registryPath,
+		JSON.stringify({ version: 2, primary: "personal" }),
+	);
 	const cli = fileURLToPath(
 		new URL("../bin/flywheel-codex-profile.mjs", import.meta.url),
 	);
@@ -255,7 +263,10 @@ it("rechecks proof age after durable callback before canonical rename", () => {
 it("does not report internal account lock directory as an untracked profile", () => {
 	const f = fixture();
 	const registryPath = join(f.home, "registry.json");
-	writeFileSync(registryPath, JSON.stringify(registry));
+	writeFileSync(
+		registryPath,
+		JSON.stringify({ version: 2, primary: "personal" }),
+	);
 	const lease = acquireCodexAccountLease(
 		f.profilesRoot,
 		digest("school:school"),
@@ -282,7 +293,12 @@ it("does not report internal account lock directory as an untracked profile", ()
 		{ encoding: "utf8" },
 	);
 	expect(result.status).toBe(0);
-	expect(JSON.parse(result.stdout).untracked).toEqual([]);
+	expect(
+		JSON.parse(result.stdout).accounts.some(
+			(account: { name: string }) =>
+				account.name === ".codex-quota-account-locks",
+		),
+	).toBe(false);
 });
 it("recovers account and canonical locks after SIGKILL with recorded process identity", async () => {
 	const { spawn } = await import("node:child_process");
@@ -469,7 +485,7 @@ it("SIGKILL after refresh recovers the orphan pool through reconstructed helper 
 	const recovered = recoverCodexCandidateCredential({
 		profilesRoot: f.profilesRoot,
 		profile: "school",
-		registry,
+		registry: f.registry,
 		accountKey: f.proof.accountKey,
 	});
 	expect(recovered.status).toBe("recovered");
@@ -482,7 +498,7 @@ it("SIGKILL after refresh recovers the orphan pool through reconstructed helper 
 		recoverCodexCandidateCredential({
 			profilesRoot: f.profilesRoot,
 			profile: "school",
-			registry,
+			registry: f.registry,
 			accountKey: f.proof.accountKey,
 		}).status,
 	).toBe("no_pending");
@@ -506,7 +522,7 @@ it("recovery refuses ambiguous starting/no-pid processes and newer saved pool cr
 			recoverCodexCandidateCredential({
 				profilesRoot: f.profilesRoot,
 				profile: "school",
-				registry,
+				registry: f.registry,
 				accountKey: f.proof.accountKey,
 			}).status,
 		).toBe("process_not_drained");
@@ -542,7 +558,7 @@ it("persists reader-refreshed auth under held lease and refuses concurrent newer
 			const result = persistCodexCandidateCredential({
 				profilesRoot: f.profilesRoot,
 				profile: "school",
-				registry,
+				registry: f.registry,
 				accountKey: f.proof.accountKey,
 				finalAuthPath: f.finalAuthPath,
 				expectedProfileDigest: f.expectedProfileDigest,

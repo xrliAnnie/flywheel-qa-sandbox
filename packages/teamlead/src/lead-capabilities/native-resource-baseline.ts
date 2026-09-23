@@ -1,6 +1,5 @@
 /** Host-native source admitted by Lead 67ca977b; immutable pins, never refreshed at startup. */
 export const PINNED_NATIVE_ORIGIN = {
-	root: "/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement/skills/.system",
 	files: [
 		{
 			path: ".codex-system-skills.marker",

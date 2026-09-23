@@ -1,7 +1,10 @@
+import {
+	isCodexIdentityLabel,
+	isCodexSlotName,
+} from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { resetTimestamp } from "../account-heal/account-switch-notification.js";
 import type { CodexQuotaWindow } from "./candidate-selector.js";
 
-const PROFILES = new Set(["school", "personal", "business"]);
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
@@ -21,11 +24,16 @@ export interface CodexSwitchNotificationSnapshot {
 const record = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-function parseAccount(value: unknown): CodexSwitchNotificationAccount | null {
+function parseAccount(
+	value: unknown,
+	kind: "source" | "target",
+): CodexSwitchNotificationAccount | null {
 	if (
 		!record(value) ||
 		typeof value.profile !== "string" ||
-		!PROFILES.has(value.profile) ||
+		!(kind === "source"
+			? isCodexIdentityLabel(value.profile)
+			: isCodexSlotName(value.profile)) ||
 		typeof value.accountKey !== "string" ||
 		value.accountKey.length < 1 ||
 		value.accountKey.length > 512 ||
@@ -63,8 +71,8 @@ export function parseCodexSwitchNotificationSnapshot(
 	value: unknown,
 ): CodexSwitchNotificationSnapshot | null {
 	if (!record(value) || value.version !== 1) return null;
-	const from = parseAccount(value.from);
-	const to = parseAccount(value.to);
+	const from = parseAccount(value.from, "source");
+	const to = parseAccount(value.to, "target");
 	return from && to ? { version: 1, from, to } : null;
 }
 

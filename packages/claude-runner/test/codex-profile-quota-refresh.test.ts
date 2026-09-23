@@ -10,7 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { identifyCodexAuth } from "../bin/codex-account-core.mjs";
+import {
+	identifyCodexAuth,
+	loadCodexAccountPool,
+} from "../bin/codex-account-core.mjs";
 import {
 	acquireCodexAccountLease,
 	codexInstallAccountKey,
@@ -20,27 +23,6 @@ import {
 } from "../bin/codex-account-install.mjs";
 
 const digest = (raw: string) => createHash("sha256").update(raw).digest("hex");
-const registry = {
-	version: 1 as const,
-	primary: "personal" as const,
-	profiles: [
-		{
-			name: "school" as const,
-			email: "school@example.test",
-			role: "manual_backup" as const,
-		},
-		{
-			name: "personal" as const,
-			email: "personal@example.test",
-			role: "primary" as const,
-		},
-		{
-			name: "business" as const,
-			email: "business@example.test",
-			role: "manual_backup" as const,
-		},
-	],
-};
 const auth = (local: string, refresh: string) =>
 	JSON.stringify({
 		tokens: {
@@ -59,7 +41,6 @@ afterEach(() => {
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
-/** `shopping` is deliberately NOT in the registry: FLY-2688 must persist it too. */
 function fixture(slot = "shopping", local = slot) {
 	const root = mkdtempSync(join(tmpdir(), "codex-quota-refresh-"));
 	roots.push(root);
@@ -68,6 +49,7 @@ function fixture(slot = "shopping", local = slot) {
 	const profilePath = join(profilesRoot, slot, "auth.json");
 	const before = auth(local, "old");
 	writeFileSync(profilePath, before, { mode: 0o600 });
+	const registry = loadCodexAccountPool({ profilesRoot });
 	const workspaceAuthPath = join(root, "candidate-auth.json");
 	const after = auth(local, "rotated");
 	writeFileSync(workspaceAuthPath, after, { mode: 0o600 });
@@ -87,18 +69,19 @@ function fixture(slot = "shopping", local = slot) {
 		profilePath,
 		workspaceAuthPath,
 		accountKey,
+		registry,
 		lease,
 		before,
 		after,
 	};
 }
 
-it("persists a rotated refresh token back into an unregistered profile slot", () => {
+it("persists a rotated refresh token back into a dynamically discovered profile slot", () => {
 	const f = fixture();
 	const result = persistCodexProfileQuotaRefresh({
 		profilesRoot: f.profilesRoot,
 		profileDir: f.slot,
-		registry,
+		registry: f.registry,
 		accountKey: f.accountKey,
 		finalAuthPath: f.workspaceAuthPath,
 		expectedProfileDigest: digest(f.before),
@@ -118,7 +101,7 @@ it("persists a registered slot through the same identity-only guard", () => {
 		persistCodexProfileQuotaRefresh({
 			profilesRoot: f.profilesRoot,
 			profileDir: f.slot,
-			registry,
+			registry: f.registry,
 			accountKey: f.accountKey,
 			finalAuthPath: f.workspaceAuthPath,
 			expectedProfileDigest: digest(f.before),
@@ -135,7 +118,7 @@ it("refuses to write another account's bytes into the slot", () => {
 		persistCodexProfileQuotaRefresh({
 			profilesRoot: f.profilesRoot,
 			profileDir: f.slot,
-			registry,
+			registry: f.registry,
 			accountKey: f.accountKey,
 			finalAuthPath: f.workspaceAuthPath,
 			expectedProfileDigest: digest(f.before),
@@ -153,7 +136,7 @@ it("refuses when the slot changed under us", () => {
 		persistCodexProfileQuotaRefresh({
 			profilesRoot: f.profilesRoot,
 			profileDir: f.slot,
-			registry,
+			registry: f.registry,
 			accountKey: f.accountKey,
 			finalAuthPath: f.workspaceAuthPath,
 			expectedProfileDigest: digest(f.before),
@@ -173,7 +156,7 @@ it("refuses a slot path that escapes the profiles root", () => {
 			persistCodexProfileQuotaRefresh({
 				profilesRoot: f.profilesRoot,
 				profileDir,
-				registry,
+				registry: f.registry,
 				accountKey: f.accountKey,
 				finalAuthPath: f.workspaceAuthPath,
 				expectedProfileDigest: digest(f.before),
@@ -192,7 +175,7 @@ it("refuses while the candidate process has not drained", () => {
 		persistCodexProfileQuotaRefresh({
 			profilesRoot: f.profilesRoot,
 			profileDir: f.slot,
-			registry,
+			registry: f.registry,
 			accountKey: f.accountKey,
 			finalAuthPath: f.workspaceAuthPath,
 			expectedProfileDigest: digest(f.before),

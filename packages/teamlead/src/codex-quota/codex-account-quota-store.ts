@@ -19,13 +19,13 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isCodexSlotName } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import type {
 	CodexCreditsDetail,
 	CodexRateLimitWindow,
 	CodexResetCreditsDetail,
 } from "./rate-limit-detail.js";
 
-export const CODEX_ACCOUNT_SLOT_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const MAX_STORE_BYTES = 256 * 1024;
 const MAX_ACCOUNTS = 64;
 
@@ -42,6 +42,8 @@ export interface CodexAccountReading {
 	name: string;
 	/** Registry profile name when the account is registered; null otherwise. */
 	registeredProfile: string | null;
+	/** Non-PII credential identity binding used to reject stale readings after re-login. */
+	identityKey?: string;
 	observedAt: string | null;
 	authHealth: CodexAccountAuthHealth;
 	/** Machine token explaining a missing reading (`deadline`, `read_failed`, …). */
@@ -122,10 +124,13 @@ function validReading(value: unknown): value is CodexAccountReading {
 	if (!record(value)) return false;
 	return (
 		typeof value.name === "string" &&
-		CODEX_ACCOUNT_SLOT_NAME.test(value.name) &&
+		isCodexSlotName(value.name) &&
 		(value.registeredProfile === null ||
 			(typeof value.registeredProfile === "string" &&
-				CODEX_ACCOUNT_SLOT_NAME.test(value.registeredProfile))) &&
+				isCodexSlotName(value.registeredProfile))) &&
+		(value.identityKey === undefined ||
+			(typeof value.identityKey === "string" &&
+				/^[a-f0-9]{64}$/.test(value.identityKey))) &&
 		(value.observedAt === null || instant(value.observedAt)) &&
 		AUTH_HEALTH.includes(value.authHealth as CodexAccountAuthHealth) &&
 		(value.note === null || text(value.note, 128)) &&

@@ -1,6 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	type CodexAccountPool,
+	loadCodexAccountPool,
+} from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { afterEach, expect, it, vi } from "vitest";
 import { CodexQuotaRuntime } from "../runtime.js";
 
@@ -8,29 +12,14 @@ const roots: string[] = [];
 afterEach(async () => {
 	for (const root of roots) await rm(root, { recursive: true, force: true });
 });
-const registry = {
-	version: 1 as const,
-	primary: "personal" as const,
-	profiles: [
-		{
-			name: "personal" as const,
-			email: "personal@example.test",
-			role: "primary" as const,
-		},
-		{
-			name: "business" as const,
-			email: "business@example.test",
-			role: "manual_backup" as const,
-		},
-	],
-};
-const auth = (refresh: string) =>
+const authFor = (profile: string, refresh: string) =>
 	JSON.stringify({
 		tokens: {
-			id_token: `x.${Buffer.from(JSON.stringify({ email: "personal@example.test", "https://api.openai.com/auth": { chatgpt_account_id: "personal" } })).toString("base64url")}.x`,
+			id_token: `x.${Buffer.from(JSON.stringify({ email: `${profile}@example.test`, "https://api.openai.com/auth": { chatgpt_account_id: profile } })).toString("base64url")}.x`,
 			refresh_token: refresh,
 		},
 	});
+const auth = (refresh: string) => authFor("personal", refresh);
 async function fixture(
 	ready: boolean,
 	store?: import("../../StateStore.js").StateStore,
@@ -40,11 +29,15 @@ async function fixture(
 	const canonicalHome = join(root, "canonical"),
 		profilesRoot = join(root, "profiles");
 	await mkdir(canonicalHome);
-	await mkdir(join(profilesRoot, "personal"), { recursive: true });
+	for (const profile of ["personal", "business"]) {
+		await mkdir(join(profilesRoot, profile), { recursive: true });
+		await writeFile(
+			join(profilesRoot, profile, "auth.json"),
+			authFor(profile, "old"),
+			{ mode: 0o600 },
+		);
+	}
 	await writeFile(join(canonicalHome, "auth.json"), auth("old"), {
-		mode: 0o600,
-	});
-	await writeFile(join(profilesRoot, "personal", "auth.json"), auth("old"), {
 		mode: 0o600,
 	});
 	const binary = join(root, "fake-codex");
@@ -54,6 +47,7 @@ async function fixture(
 		{ mode: 0o700 },
 	);
 	const collectHomes = vi.fn(async () => ({ complete: ready, homes: [] }));
+	let currentPool = loadCodexAccountPool({ profilesRoot });
 	const recordInstalling = vi.fn();
 	const getRoot = vi.fn(
 		() =>
@@ -71,7 +65,7 @@ async function fixture(
 		profilesRoot,
 		stateRoot: join(root, "state"),
 		rawBinary: binary,
-		registry,
+		pool: () => currentPool,
 		model: "fixture",
 		limitId: "codex",
 		collectHomes,
@@ -86,6 +80,10 @@ async function fixture(
 		profilesRoot,
 		canonicalHome,
 		binary,
+		pool: currentPool,
+		setPool: (next: CodexAccountPool) => {
+			currentPool = next;
+		},
 	};
 }
 it("fresh incomplete host authority prevents any candidate refresh", async () => {
@@ -100,9 +98,12 @@ it("fresh incomplete host authority prevents any candidate refresh", async () =>
 });
 it("a failed reader durably retains rotated candidate bytes before releasing its lease", async () => {
 	const f = await fixture(true);
-	const observations = await f.runtime.observe();
-	expect(observations[0].authHealth).toBe("unknown");
-	expect(observations[0].credentialFingerprint).toBe(
+	const { observations } = await f.runtime.observe();
+	const personal = observations.find(
+		(observation) => observation.profile === "personal",
+	)!;
+	expect(personal.authHealth).toBe("unknown");
+	expect(personal.credentialFingerprint).toBe(
 		(await import("node:crypto"))
 			.createHash("sha256")
 			.update(await readFile(join(f.profilesRoot, "personal", "auth.json")))
@@ -116,13 +117,30 @@ it("a failed reader durably retains rotated candidate bytes before releasing its
 	expect(f.recordInstalling).not.toHaveBeenCalled();
 	await f.runtime.stop();
 });
+it("sees a newly added profile on the next observation round", async () => {
+	const f = await fixture(true);
+	expect(
+		(await f.runtime.observe()).pool.profiles.map((entry) => entry.name),
+	).toEqual(["business", "personal"]);
+	await mkdir(join(f.profilesRoot, "shopping"));
+	await writeFile(
+		join(f.profilesRoot, "shopping", "auth.json"),
+		authFor("shopping", "old"),
+		{ mode: 0o600 },
+	);
+	f.setPool(loadCodexAccountPool({ profilesRoot: f.profilesRoot }));
+	expect(
+		(await f.runtime.observe()).pool.profiles.map((entry) => entry.name),
+	).toContain("shopping");
+	await f.runtime.stop();
+});
 it("probe failure never installs and still preserves refreshed candidate credentials", async () => {
 	const f = await fixture(true);
 	const candidate = {
 		profile: "personal",
-		accountKey: (await import("../probe.js")).codexQuotaIdentityReader(
-			registry,
-		)(auth("old")).accountKey,
+		accountKey: (await import("../probe.js")).codexQuotaIdentityReader(f.pool)(
+			auth("old"),
+		).accountKey,
 		observedAt: Date.now(),
 		identityVerified: true,
 		authHealth: "valid" as const,
@@ -132,7 +150,7 @@ it("probe failure never installs and still preserves refreshed candidate credent
 	const result = await f.runtime.rotate(
 		{ incident_id: "incident" },
 		candidate,
-		[candidate],
+		{ pool: f.pool, observations: [candidate] },
 	);
 	expect(result.ok).toBe(false);
 	expect(f.recordInstalling).not.toHaveBeenCalled();
@@ -160,9 +178,9 @@ it("successful probe journals before canonical rename and installs the proven by
 	});
 	const candidate = {
 		profile: "personal",
-		accountKey: (await import("../probe.js")).codexQuotaIdentityReader(
-			registry,
-		)(auth("old")).accountKey,
+		accountKey: (await import("../probe.js")).codexQuotaIdentityReader(f.pool)(
+			auth("old"),
+		).accountKey,
 		observedAt: Date.now(),
 		identityVerified: true,
 		authHealth: "valid" as const,
@@ -196,7 +214,7 @@ it("successful probe journals before canonical rename and installs the proven by
 			await f.runtime.rotate(
 				{ incident_id: "incident", root_key: "root" },
 				candidate,
-				observations,
+				{ pool: f.pool, observations },
 			)
 		).ok,
 	).toBe(true);
@@ -265,8 +283,14 @@ it("the tick coordinator wiring forwards the same observation snapshot to rotati
 			}
 		).coordinator;
 		const incident = { incident_id: "incident", root_key: "root" };
-		await coordinator.options.rotate(incident, candidate, observations);
-		expect(rotate).toHaveBeenLastCalledWith(incident, candidate, observations);
+		await coordinator.options.rotate(incident, candidate, {
+			pool: f.pool,
+			observations,
+		});
+		expect(rotate).toHaveBeenLastCalledWith(incident, candidate, {
+			pool: f.pool,
+			observations,
+		});
 	} finally {
 		await f.runtime.stop();
 		store.close();
@@ -277,7 +301,7 @@ it("reconciliation refuses unrelated canonical bytes and recognizes only journal
 	const { createHash } = await import("node:crypto");
 	const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(
-		registry,
+		f.pool,
 	)(auth("old"));
 	const material = {
 		...identity,
@@ -329,14 +353,18 @@ it("dispatcher wiring checks current pause on each admission and bypasses unavai
 it("active independent candidate is excluded before any reader or probe", async () => {
 	const f = await fixture(true);
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(
-		registry,
+		f.pool,
 	)(auth("old"));
 	f.collectHomes.mockResolvedValue({
 		complete: true,
 		homes: [],
 		activeUnsharedAccountKeys: [identity.accountKey],
 	} as never);
-	expect((await f.runtime.observe())[0].authHealth).toBe("in_use_unshared");
+	expect(
+		(await f.runtime.observe()).observations.find(
+			(observation) => observation.profile === "personal",
+		)?.authHealth,
+	).toBe("in_use_unshared");
 	const candidate = {
 		...identity,
 		observedAt: Date.now(),
@@ -346,7 +374,10 @@ it("active independent candidate is excluded before any reader or probe", async 
 		windows: [],
 	} as const;
 	expect(
-		await f.runtime.rotate({ incident_id: "i" }, candidate, [candidate]),
+		await f.runtime.rotate({ incident_id: "i" }, candidate, {
+			pool: f.pool,
+			observations: [candidate],
+		}),
 	).toEqual({ ok: false });
 	expect(
 		JSON.parse(
@@ -367,7 +398,7 @@ it("readiness lost after successful probe preserves refreshed bytes and prevents
 		.mockResolvedValueOnce({ complete: true, homes: [] })
 		.mockResolvedValue({ complete: false, homes: [] });
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(
-		registry,
+		f.pool,
 	)(auth("old"));
 	const candidate = {
 		...identity,
@@ -378,7 +409,12 @@ it("readiness lost after successful probe preserves refreshed bytes and prevents
 		windows: [],
 	};
 	expect(
-		(await f.runtime.rotate({ incident_id: "i" }, candidate, [candidate])).ok,
+		(
+			await f.runtime.rotate({ incident_id: "i" }, candidate, {
+				pool: f.pool,
+				observations: [candidate],
+			})
+		).ok,
 	).toBe(false);
 	expect(f.recordInstalling).not.toHaveBeenCalled();
 	expect(
@@ -395,13 +431,15 @@ it("readiness lost after successful probe preserves refreshed bytes and prevents
 it("an account lease owned by another reader is unavailable without failing the whole observation batch", async () => {
 	const f = await fixture(true);
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(
-		registry,
+		f.pool,
 	)(auth("old"));
 	const lease = (
 		await import("flywheel-claude-runner/bin/codex-account-install.mjs")
 	).acquireCodexAccountLease(f.profilesRoot, identity.accountKey);
 	try {
-		expect((await f.runtime.observe())[0].authHealth).toBe("unknown");
+		expect((await f.runtime.observe()).observations[0].authHealth).toBe(
+			"unknown",
+		);
 	} finally {
 		lease.release();
 		await f.runtime.stop();
@@ -431,21 +469,21 @@ it("a manual canonical identity change advances observed generation without gran
 });
 
 it("the active canonical account is never refreshed as an isolated candidate", async () => {
+	const f = await fixture(true);
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(
-		registry,
+		f.pool,
 	)(auth("old"));
-	const f = await fixture(true, {
-		codexQuota: {
-			recordInstalling: () => {},
-			getRoot: () => ({ ...identity, generation: 1, rootKey: "root" }),
-		},
-	} as never);
+	f.getRoot.mockReturnValue({ ...identity, generation: 1, rootKey: "root" });
 	f.collectHomes.mockResolvedValue({
 		complete: true,
 		homes: [],
 		canonicalChainActive: true,
 	} as never);
-	expect((await f.runtime.observe())[0].authHealth).toBe("in_use_unshared");
+	expect(
+		(await f.runtime.observe()).observations.find(
+			(observation) => observation.profile === "personal",
+		)?.authHealth,
+	).toBe("in_use_unshared");
 	expect(
 		JSON.parse(
 			await readFile(join(f.profilesRoot, "personal", "auth.json"), "utf8"),

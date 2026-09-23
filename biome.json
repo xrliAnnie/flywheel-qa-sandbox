@@ -13,7 +13,8 @@
 			"!packages/claude-runner/test/fixtures/fly2148-adapter-unsupported.json",
 			"!packages/flywheel-comm/src/__tests__/fixtures/fly2148-complete-payload-no-memory.json",
 			"!packages/flywheel-comm/src/commands/__tests__/fixtures/fly2148-decision-body-no-memory.json",
-			"!product/doc/**/evidence/**"
+			"!product/doc/**/evidence/**",
+			"!product/doc/**/prototype/raw/**/*.json"
 		]
 	},
 	"linter": {

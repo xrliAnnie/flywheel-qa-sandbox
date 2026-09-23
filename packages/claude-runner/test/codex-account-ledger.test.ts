@@ -57,6 +57,29 @@ function identity(
 	return identities[profile];
 }
 
+function fixtureProfiles(root: string): string {
+	const profilesRoot = join(root, "profiles");
+	mkdirSync(profilesRoot);
+	for (const profile of ["school", "personal", "business"] as const) {
+		const value = identity(profile);
+		const payload = Buffer.from(
+			JSON.stringify({
+				email: value.email,
+				"https://api.openai.com/auth": {
+					chatgpt_account_id: value.accountId,
+					chatgpt_plan_type: value.plan,
+				},
+			}),
+		).toString("base64url");
+		mkdirSync(join(profilesRoot, profile));
+		writeFileSync(
+			join(profilesRoot, profile, "auth.json"),
+			JSON.stringify({ tokens: { id_token: `x.${payload}.x` } }),
+		);
+	}
+	return profilesRoot;
+}
+
 afterEach(() => {
 	while (roots.length > 0) {
 		const root = roots.pop();
@@ -79,6 +102,7 @@ describe("Codex account ledger", () => {
 
 	it("writes only the approved token-free fields with a home fingerprint", () => {
 		const root = tempRoot();
+		const profilesRoot = fixtureProfiles(root);
 		const ledgerRoot = join(root, "ledger");
 		const home = join(root, "execution-secret-id", "..", "runner-home");
 		mkdirSync(resolve(home), { recursive: true });
@@ -87,6 +111,7 @@ describe("Codex account ledger", () => {
 			home,
 			source: "status",
 			ledgerRoot,
+			profilesRoot,
 			observedAt: new Date("2026-08-24T18:00:00.000Z"),
 		});
 		const path = join(ledgerRoot, "personal.json");
@@ -123,6 +148,7 @@ describe("Codex account ledger", () => {
 
 	it("isolates state roots and profile snapshots", () => {
 		const root = tempRoot();
+		const profilesRoot = fixtureProfiles(root);
 		const productionRoot = join(root, "production", "ledger");
 		const qaRoot = join(root, "qa-529", "ledger");
 		const home = join(root, "home");
@@ -133,22 +159,30 @@ describe("Codex account ledger", () => {
 			home,
 			source: "use",
 			ledgerRoot: productionRoot,
+			profilesRoot,
 		});
 		recordCodexAccountObservation({
 			identity: identity("school"),
 			home,
 			source: "save",
 			ledgerRoot: qaRoot,
+			profilesRoot,
 		});
 
 		expect(
-			readCodexAccountSnapshot("personal", { ledgerRoot: productionRoot }),
+			readCodexAccountSnapshot("personal", {
+				ledgerRoot: productionRoot,
+				profilesRoot,
+			}),
 		).toMatchObject({ profile: "personal", lastSource: "use" });
 		expect(
-			readCodexAccountSnapshot("school", { ledgerRoot: productionRoot }),
+			readCodexAccountSnapshot("school", {
+				ledgerRoot: productionRoot,
+				profilesRoot,
+			}),
 		).toBeNull();
 		expect(
-			readCodexAccountSnapshot("school", { ledgerRoot: qaRoot }),
+			readCodexAccountSnapshot("school", { ledgerRoot: qaRoot, profilesRoot }),
 		).toMatchObject({
 			profile: "school",
 			lastSource: "save",
@@ -157,6 +191,7 @@ describe("Codex account ledger", () => {
 
 	it("last-writer-wins with complete JSON and no leftover temp files", () => {
 		const root = tempRoot();
+		const profilesRoot = fixtureProfiles(root);
 		const ledgerRoot = join(root, "ledger");
 		const home = join(root, "home");
 		mkdirSync(home);
@@ -166,6 +201,7 @@ describe("Codex account ledger", () => {
 				home,
 				source,
 				ledgerRoot,
+				profilesRoot,
 			});
 		}
 		expect(
@@ -176,6 +212,7 @@ describe("Codex account ledger", () => {
 
 	it("rejects mismatched or unsafe snapshots without overwriting truth", () => {
 		const root = tempRoot();
+		const profilesRoot = fixtureProfiles(root);
 		const ledgerRoot = join(root, "ledger");
 		const home = join(root, "home");
 		mkdirSync(home);
@@ -184,6 +221,7 @@ describe("Codex account ledger", () => {
 			home,
 			source: "status",
 			ledgerRoot,
+			profilesRoot,
 		});
 		const path = join(ledgerRoot, "personal.json");
 		const before = readFileSync(path);
@@ -194,6 +232,7 @@ describe("Codex account ledger", () => {
 				home,
 				source: "use",
 				ledgerRoot,
+				profilesRoot,
 			}),
 		).toThrow(/identity mismatch/i);
 		expect(readFileSync(path)).toEqual(before);
@@ -207,6 +246,7 @@ describe("Codex account ledger", () => {
 				home,
 				source: "use",
 				ledgerRoot: unsafeRoot,
+				profilesRoot,
 			}),
 		).toThrow(/symlink/i);
 		expect(readdirSync(join(root, "real-ledger"))).toEqual([]);
@@ -214,17 +254,19 @@ describe("Codex account ledger", () => {
 
 	it("refuses malformed persisted snapshots instead of treating them as truth", () => {
 		const root = tempRoot();
+		const profilesRoot = fixtureProfiles(root);
 		const ledgerRoot = join(root, "ledger");
 		mkdirSync(ledgerRoot);
 		writeFileSync(join(ledgerRoot, "school.json"), '{"profile":"business"}');
 
-		expect(() => readCodexAccountSnapshot("school", { ledgerRoot })).toThrow(
-			/invalid/i,
-		);
+		expect(() =>
+			readCodexAccountSnapshot("school", { ledgerRoot, profilesRoot }),
+		).toThrow(/invalid/i);
 	});
 
 	it("refuses to replace a dangling canonical snapshot symlink", () => {
 		const root = tempRoot();
+		const profilesRoot = fixtureProfiles(root);
 		const ledgerRoot = join(root, "ledger");
 		const home = join(root, "home");
 		mkdirSync(ledgerRoot);
@@ -238,6 +280,7 @@ describe("Codex account ledger", () => {
 				home,
 				source: "status",
 				ledgerRoot,
+				profilesRoot,
 			}),
 		).toThrow(/symlink/i);
 		expect(lstatSync(snapshotPath).isSymbolicLink()).toBe(true);

@@ -12,22 +12,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+	type CodexAccountPool,
+	loadCodexAccountPool,
+} from "../bin/codex-account-core.mjs";
 import type { ExecFileFn } from "../src/TmuxAdapter.js";
 import { RUNNER_PANE_BASE_ALLOWLIST, TmuxAdapter } from "../src/TmuxAdapter.js";
 
-const CODEX_ACCOUNT_REGISTRY = JSON.parse(
-	readFileSync(
-		fileURLToPath(
-			new URL("../agents/codex-account-registry.json", import.meta.url),
-		),
-		"utf8",
-	),
-) as { profiles: Array<{ name: string; email: string }> };
-
-function canonicalEmail(name: string): string {
-	const profile = CODEX_ACCOUNT_REGISTRY.profiles.find(
-		(candidate) => candidate.name === name,
-	);
+function canonicalEmail(pool: CodexAccountPool, name: string): string {
+	const profile = pool.profiles.find((candidate) => candidate.name === name);
 	if (!profile) throw new Error(`missing canonical Codex profile: ${name}`);
 	return profile.email;
 }
@@ -81,9 +74,12 @@ describeReal("FLY-1999 runner identity isolation (real tmux)", () => {
 			mkdirSync(profileDir, { recursive: true });
 			writeFileSync(
 				join(profileDir, "auth.json"),
-				auth(canonicalEmail(profile)),
+				auth(`${profile}@example.test`),
 			);
 		}
+		const accountPool = loadCodexAccountPool({
+			profilesRoot: join(codexDir, "profiles"),
+		});
 		mkdirSync(poisonedCodexDir, { recursive: true });
 		writeFileSync(
 			join(poisonedCodexDir, "auth.json"),
@@ -226,12 +222,12 @@ fs.appendFileSync(${JSON.stringify(recordFile)}, JSON.stringify({
 			{
 				label: "profile-one",
 				codexHome: null,
-				email: canonicalEmail("personal"),
+				email: canonicalEmail(accountPool, "personal"),
 			},
 			{
 				label: "profile-two",
 				codexHome: null,
-				email: canonicalEmail("school"),
+				email: canonicalEmail(accountPool, "school"),
 			},
 		]);
 

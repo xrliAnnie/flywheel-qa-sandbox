@@ -47,6 +47,7 @@ export const LEAD_DEPLOYMENT_ENTRIES = [
 	"lead-capabilities/manifest-skills.js",
 	"lead-capabilities/native-skills.js",
 	"lead-capabilities/native-home.js",
+	"lead-capabilities/native-resource-baseline-0154-0156.js",
 	"lead-capabilities/native-resource-baseline.js",
 	"lead-capabilities/native-skill-baseline.js",
 	"lead-capabilities/persona-skill-baseline.js",

@@ -113,18 +113,20 @@ vi.mock("../native-skill-baseline.js", async () => {
 			)
 			.digest("hex"),
 	}));
-	return {
-		PINNED_NATIVE_CODEX_SKILLS: {
-			codexVersion: "0.153.2",
-			sources,
-			origin: {
-				root: "/fixture/native",
-				files: sources.map((source) => ({
-					path: `${source.name}/SKILL.md`,
-					sha256: source.sha256,
-				})),
-			},
+	const baseline = {
+		codexVersion: "0.153.2",
+		sources,
+		origin: {
+			root: "/fixture/native",
+			files: sources.map((source) => ({
+				path: `${source.name}/SKILL.md`,
+				sha256: source.sha256,
+			})),
 		},
+	};
+	return {
+		PINNED_NATIVE_CODEX_SKILLS: baseline,
+		resolvePinnedNativeSkillBaseline: () => baseline,
 	};
 });
 async function upstream(id: string) {

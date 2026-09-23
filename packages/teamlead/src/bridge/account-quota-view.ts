@@ -21,12 +21,6 @@ const MANUAL_CLAUDE: readonly ManualAccountReading[] = [
 	{ name: "school", weeklyPct: 0, fablePct: 0, expiry: "9/17" },
 ] as const;
 
-const MANUAL_CODEX: readonly ManualAccountReading[] = [
-	{ name: "business", weeklyPct: 0, expiry: "8/3" },
-	{ name: "personal", weeklyPct: 0, expiry: "8/3" },
-	{ name: "school", weeklyPct: 0, expiry: "8/3" },
-] as const;
-
 export type QuotaCellSource = "machine" | "manual" | "missing";
 
 export interface QuotaCell {
@@ -44,6 +38,7 @@ export interface AccountQuotaRow {
 	accountMissing: boolean;
 	ageMinutes: number | null;
 	subscriptionTier: QuotaCell;
+	tokenStatus: QuotaCell;
 	weeklyReset: QuotaCell;
 	fiveHReset: QuotaCell;
 	fableReset: QuotaCell;
@@ -167,6 +162,11 @@ const NOTE_LABELS: Readonly<Record<string, string>> = {
 	deadline: "本轮超时未读",
 	read_failed: "本次读取失败",
 	refresh_invalid: "凭据失效，需重新登录",
+	token_revoked: "token 已吊销，需重新登录",
+	token_expired: "token 已过期，需重新登录",
+	not_logged_in: "未登录",
+	invalid_credential: "凭据损坏，需重新登录",
+	duplicate_email: "两个目录登录了同一账号，需删除一个",
 	// Claude collapses auth expiry and an operator bench mark into one flag, so
 	// the page must not instruct a re-login it cannot prove is the fix.
 	auth_unusable: "凭据不可用，需人工处理",
@@ -475,6 +475,7 @@ function buildClaudeRows(
 			active: account?.active ?? false,
 			accountMissing: account === undefined,
 			ageMinutes: account?.ageMinutes ?? null,
+			tokenStatus: missingCell("—"),
 			subscriptionTier:
 				account && subscriptionTier
 					? machineCell(subscriptionTier, snapshot.generatedAt, false)
@@ -579,15 +580,12 @@ function creditsCell(
 	return machineCell(`${creditPart} · ${resetPart}`, observedAt, stale);
 }
 
-function buildMachineCodexRows(
-	snapshot: AccountQuotaSnapshot,
-	staleAfterMinutes: number,
-): { rows: AccountQuotaRow[]; warnings: string[] } {
+function buildMachineCodexRows(snapshot: AccountQuotaSnapshot): {
+	rows: AccountQuotaRow[];
+	warnings: string[];
+} {
 	const codex = snapshot.quota.codex;
 	const accounts = codex.accounts ?? [];
-	const manualByName = new Map(
-		MANUAL_CODEX.map((entry) => [entry.name, entry]),
-	);
 	const warnings: string[] = [...codex.unavailable];
 	const rows = accounts.map((account): AccountQuotaRow => {
 		if (!ACCOUNT_NAME.test(account.name)) {
@@ -612,7 +610,6 @@ function buildMachineCodexRows(
 				`Codex ${account.name}：${account.unclassifiedWindows} 个窗口未给出时长，未归入 5h/周`,
 			);
 		}
-		const manual = manualByName.get(account.name);
 		const planType = formatPlanType(account.planType);
 		return {
 			provider: "Codex" as const,
@@ -621,6 +618,7 @@ function buildMachineCodexRows(
 			active: account.active,
 			accountMissing: observedAt === null,
 			ageMinutes: account.ageMinutes,
+			tokenStatus: machineCell(account.tokenState, observedAt, stale),
 			subscriptionTier:
 				planType === null
 					? missingCell("未知")
@@ -632,9 +630,7 @@ function buildMachineCodexRows(
 			weeklyUsage: pct(account.weeklyPct),
 			fableUsage: missingCell("—"),
 			credits: creditsCell(account, observedAt, stale),
-			expiry: manual
-				? manualCell(manual.expiry, snapshot.generatedAt, staleAfterMinutes)
-				: missingCell(),
+			expiry: missingCell(),
 			exhausted: account.exhausted,
 			unusable: account.authUnusable,
 			recovery: account.exhausted
@@ -658,17 +654,18 @@ function buildMachineCodexRows(
 	return { rows, warnings };
 }
 
-function buildCodexRows(
-	snapshot: AccountQuotaSnapshot,
-	staleAfterMinutes: number,
-): { rows: AccountQuotaRow[]; warnings: string[]; label: CodexSourceLabel } {
+function buildCodexRows(snapshot: AccountQuotaSnapshot): {
+	rows: AccountQuotaRow[];
+	warnings: string[];
+	label: CodexSourceLabel;
+} {
 	const codex = snapshot.quota.codex;
 	if (codex.source === "codex-accounts.json") {
 		if (!Array.isArray(codex.accounts) || !Array.isArray(codex.unavailable)) {
 			throw new Error("invalid Codex quota snapshot");
 		}
 		return {
-			...buildMachineCodexRows(snapshot, staleAfterMinutes),
+			...buildMachineCodexRows(snapshot),
 			label: CODEX_MACHINE_SOURCE_LABEL,
 		};
 	}
@@ -680,36 +677,7 @@ function buildCodexRows(
 		throw new Error("invalid Codex quota snapshot");
 	}
 	return {
-		rows: MANUAL_CODEX.map((manual) => ({
-			provider: "Codex" as const,
-			name: manual.name,
-			identity: manual.name,
-			active: manual.name === "personal",
-			accountMissing: true,
-			ageMinutes: null,
-			subscriptionTier: missingCell("未知"),
-			weeklyReset: missingCell(),
-			fiveHReset: missingCell("—"),
-			fableReset: missingCell("—"),
-			fiveHUsage: missingCell("—"),
-			weeklyUsage: manualCell(
-				formatPct(manual.weeklyPct),
-				snapshot.generatedAt,
-				staleAfterMinutes,
-			),
-			fableUsage: missingCell("—"),
-			credits: missingCell("无数值源"),
-			expiry: manualCell(
-				manual.expiry,
-				snapshot.generatedAt,
-				staleAfterMinutes,
-			),
-			exhausted: false,
-			unusable: false,
-			recovery: null,
-			note: null,
-			sortAt: null,
-		})),
+		rows: [],
 		warnings: codex.unavailable,
 		label: "无数值源",
 	};
@@ -723,10 +691,7 @@ export function buildAccountQuotaView(
 	if (generatedAt === null) throw new Error("invalid capacity generatedAt");
 	const normalized = { ...snapshot, generatedAt };
 	const claude = buildClaudeRows(normalized, options);
-	const codex = buildCodexRows(
-		normalized,
-		normalized.quota.claude.staleAfterMinutes,
-	);
+	const codex = buildCodexRows(normalized);
 	return {
 		generatedAt,
 		staleAfterMinutes: normalized.quota.claude.staleAfterMinutes,
@@ -872,6 +837,7 @@ function renderRows(rows: readonly AccountQuotaRow[]): string {
 					: renderCell(row.fableUsage, " fable");
 			return `<tr${classes.length > 0 ? ` class="${classes.join(" ")}"` : ""}>
 		${renderIdentity(row)}
+		${row.provider === "Codex" ? renderCell(row.tokenStatus) : ""}
 		${renderCell(row.weeklyReset)}
 		${renderCell(row.fiveHReset)}
 		${renderCell(row.weeklyUsage, " weekly;")}
@@ -887,11 +853,12 @@ function renderTable(
 	rows: readonly AccountQuotaRow[],
 	fifthColumn: string,
 	subtitle = "",
+	includeTokenStatus = false,
 ): string {
 	return `<section>
 	<h2>${escapeHtml(title)}${subtitle ? `<span class="source-note">${escapeHtml(subtitle)}</span>` : ""}</h2>
 	<div class="table-wrap"><table>
-		<thead><tr><th>账号</th><th>周重置日</th><th>5h reset</th><th>周用量</th><th>${escapeHtml(fifthColumn)}</th><th>订阅到期</th></tr></thead>
+		<thead><tr><th>账号</th>${includeTokenStatus ? "<th>token 状态</th>" : ""}<th>周重置日</th><th>5h reset</th><th>周用量</th><th>${escapeHtml(fifthColumn)}</th><th>订阅到期</th></tr></thead>
 		<tbody>${renderRows(rows)}</tbody>
 	</table></div>
 </section>`;
@@ -922,9 +889,9 @@ export function renderAccountsPageHtml(view: AccountQuotaView): string {
 <body><main>
 	<header><h1>账号额度一览</h1><div class="generated">按需生成 · ${escapeHtml(formatReadingTime(view.generatedAt))}<br>灰色 = 超过 ${view.staleAfterMinutes} 分钟未更新</div></header>
 	${renderTable("Claude", view.claude, "Fable 周用量")}
-	${renderTable("Codex", view.codex, "credits / 重置兑换", view.codexSourceLabel)}
+	${renderTable("Codex", view.codex, "credits / 重置兑换", view.codexSourceLabel, true)}
 	<footer>
-		<div class="legend"><span>机器：容量快照</span><span>手填：founder 2026-09-17</span><span>高亮行：当前在用（Codex：${view.codexSourceLabel === "无数值源" ? "手填 2026-09-17" : "机器判定，凭据与 ~/.codex 一致"}）</span><span>红色行：额度打满，注明恢复时刻</span><span>排序：越早恢复/重置越靠前，未知排最后</span></div>
+		<div class="legend"><span>机器：容量快照</span><span>手填：founder 2026-09-17</span><span>高亮行：当前在用（Codex：${view.codexSourceLabel === "无数值源" ? "手填 2026-09-17" : "机器判定，凭据与 ~/.codex 一致"}）</span><span>红色行：额度打满或 token 异常，行内注明原因/恢复时刻</span><span>排序：越早恢复/重置越靠前，未知排最后</span></div>
 		<h3>机器值与手填值差异</h3>${differences}
 		${warnings.length ? `<h3>数据说明</h3><ul>${warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
 	</footer>

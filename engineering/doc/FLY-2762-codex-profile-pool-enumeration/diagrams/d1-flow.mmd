@@ -1,0 +1,16 @@
+flowchart TB
+  subgraph DISK["磁盘 ~/.codex/profiles/（目录名 = 号名）"]
+    direction LR
+    B["business"] ~~~ P["personal"] ~~~ S["school"] ~~~ P1["personal1"] ~~~ P2["personal2"] ~~~ SH["shopping"] ~~~ NEW["新号目录<br/>（未登录）"]
+  end
+  POL["注册表 v2<br/>只写 primary = personal"]
+  LOAD["现算号池<br/>每次用时现读目录"]
+  DISK --> LOAD
+  POL --> LOAD
+  LOAD --> CLI["codex-profile<br/>list / use / save / status"]
+  LOAD --> BIRTH["runner 出生<br/>身份校验"]
+  LOAD --> AUTO["自动切号<br/>候选池"]
+  LOAD --> OBS["Bridge 真探<br/>（额度页观察器）"]
+  OBS --> SNAP[("探测快照<br/>codex-accounts.json")]
+  SNAP --> PAGE["账号额度页<br/>token 状态列"]
+  SNAP -. 只读 .-> CLI
