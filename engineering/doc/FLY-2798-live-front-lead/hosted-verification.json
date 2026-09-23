@@ -1,0 +1,20 @@
+{
+  "url": "https://fw-reports-356a6d.vercel.app/r/a2fe477fa352537b7b64f6f0aab81d19/",
+  "httpStatus": 200,
+  "nonceReplaced": true,
+  "cspMatchesNonce": true,
+  "singleScript": true,
+  "inlineScriptMatchesSource": true,
+  "commentSectionCount": 8,
+  "renderPlaceholders": 2,
+  "externalAssets": false,
+  "sourceSha256": "66f1c1d8e4ba007f9549565eb167469c5684d4626f492c3f722122325c07925e",
+  "hostedSha256": "bf5b87681a182d6e65359e01f829286d1527d7ae2967dd7bb42a85ab420a9a40",
+  "browserQa": "unavailable: tool approval disallowed; VM DOM only",
+  "sourceMatchesAfterPublishTransforms": true,
+  "publishTransforms": [
+    "nonce substitution",
+    "CSP meta injection",
+    "robots noindex meta injection"
+  ]
+}

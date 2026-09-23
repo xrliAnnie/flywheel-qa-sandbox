@@ -36,3 +36,12 @@ R1 期间收到 2796 草案 c7189944e，plan §2.1 九项已对齐，最终 pin 
 
 ## R2 有效通过
 reviewVerdict=APPROVED，reviewerVerdict=APPROVED；questionId=612688a1-1e25-4d88-a290-8a881e6b7658，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db9。计划commit=757434f30，plan blob=ee5f97dcf948350857d9ad60e1576183a7ca5c84。七条非阻断建议原文见review-r2.json，处置边界见follow-ups.md。
+
+## 托管发布与完成审计
+- 最终HTML提交：25ad43c60；publish-only 返回 reportId=a2fe477fa352537b7b64f6f0aab81d19、messageId=null、delivered=false、publishOnly=true（静默发布预期）。
+- URL：https://fw-reports-356a6d.vercel.app/r/a2fe477fa352537b7b64f6f0aab81d19/
+- HTTP200；nonce占位残留0；CSP授权同一nonce；inline script与源一致；移除发布器注入的CSP/robots noindex并还原nonce后逐字一致；8意见区、2明示图占位、零外部依赖。详见hosted-verification.json。
+- 已通过DESIGN-HTML ready结构化报告向flywheel-eng-lead交付（报告id=9a386016-7c8f-4a56-8d56-9f64e0a46fb6）。
+- Lead答复ef71823a-cc11-4b05-b5ba-3c01febf88fd明确不重开设计；文件分工及resultEventId/seq问题已转2796；最终pin供实施T0。Lead在其侧按FLY-2798-d1/d2本地补图后交founder。
+- 无生产代码改动、无服务变更、无后继派发、无ship/merge；真实语音及V2/V3联调验收留实施/QA。
+- closeout可复用判断按当前memory写入规则保存于native memories/extensions/ad_hoc/notes/2026-09-23T1822Z-fly2798-live-contract-boundaries.md；没有修改共享role-memory索引。此项不作为实现验收。
