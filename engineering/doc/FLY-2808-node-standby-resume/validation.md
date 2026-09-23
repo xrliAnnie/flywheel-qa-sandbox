@@ -21,5 +21,5 @@ lifecycle.mmd / identity.mmd 各执行一次 mmdc 并按用户指定标准 flags
 
 - R1 gate：8b0a14ec-0f02-4e07-bf7c-62e4e194fe64；request：460e8036-ac1b-4029-9893-6bda991f0d39；初稿 commit 14442c875。
 - R1 后台状态 verified failed：reviewed_plan_moved，2026-09-23 05:54:55 UTC；原因是评审期间纳入 Lead 对建单范围的最新决定，不能算批准。冻结最终 plan 后开新 gate。
-- 后续有效 verdict 与 hosted fetch 证据在评审通过后补入本文件。
+- R2 gate d0cf1a21-fa94-4d23-9663-63df581f0d15 / request 1f35923f-ea52-4f3b-8e4b-53650e105e75：reviewVerdict=APPROVED、reviewerVerdict=APPROVED。当前 plan 摘要已记 review-receipt.json；3 MEDIUM + 2 LOW 全为非阻塞，逐项保留 follow-ups.md 并上报 Lead。已批准计划保持原字节；其待评审状态句是冻结时的历史状态，以此有效回执为准。
 - Lead 的默认值确认及建议一张实现单已记录 plan.md §11；没有独立 ship/部署授权。
