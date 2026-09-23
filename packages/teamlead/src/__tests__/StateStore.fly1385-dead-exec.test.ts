@@ -81,9 +81,8 @@ async function engineRunWithImplement(
 			expiresAt: "2026-07-20T01:00:00.000Z",
 			absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
 			now: "2026-07-20T00:06:00.000Z",
-			env: standbyLifecycle
-				? { ...WORKFLOW_ON, FLYWHEEL_NODE_STANDBY_RESUME: "1" }
-				: WORKFLOW_ON,
+			env: WORKFLOW_ON,
+			standbyResumeEnabled: standbyLifecycle,
 		}),
 	).toMatchObject({ ok: true });
 	store.applyWorkflowLedgerBatch({

@@ -43,6 +43,8 @@ const EXPECTED_WHEN_ON = {
 		"QA 或 founder 要求返工时，让原来的执行节点继续修改；关闭后只暂停并告警",
 	workflow_node_reuse:
 		"后续 QA 复验要求返工时，优先交回同一个仍在线的执行节点；节点已退出才新建",
+	node_standby_resume:
+		"让之后新启动的工作流节点在主动退下后保留可核验的原会话身份，并能按同一进程体拉起",
 	workflow_gate_question_recovery:
 		"发现 founder ship 卡对应的问题已不可回答且没有真实 founder 决策时，校验同一 PR head 后自动重铸新卡",
 	database_archive:
@@ -84,7 +86,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(33);
+		expect(FEATURE_FLAGS).toHaveLength(34);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);
@@ -513,6 +515,37 @@ describe("feature-flag registry invariants", () => {
 		expect(flag?.readSites.map((site) => site.symbol)).toEqual([
 			"eventRouterWorkflowCompletion",
 			"workflowDecisionRoutes",
+		]);
+		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+	});
+
+	it("FLY-2808 registers new-actor standby resume as a default-off live feature", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.envVar === "FLYWHEEL_NODE_STANDBY_RESUME",
+		);
+		expect(flag).toMatchObject({
+			name: "node_standby_resume",
+			category: "feature",
+			scope: "bridge_global",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "direct",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/plugin.ts",
+				symbol: "workflowEngineDispatcher",
+				pattern: "delegated",
+				timing: "call_time",
+				resolverSymbol: "storeNodeStandbyResumeEnabled",
+			}),
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/plugin.ts",
+				symbol: "workflowReworkCoordinatorHolder.current",
+				pattern: "delegated",
+				timing: "call_time",
+				resolverSymbol: "storeNodeStandbyResumeEnabled",
+			}),
 		]);
 		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
 	});

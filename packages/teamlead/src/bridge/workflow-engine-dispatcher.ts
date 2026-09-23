@@ -94,6 +94,7 @@ interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
 	workflowReworkReentryEnabled?: () => boolean;
+	nodeStandbyResumeEnabled?: () => boolean;
 	/** FLY-2076: hot master switch; false preserves durable alert attempts. */
 	alertsEnabled?: () => boolean;
 	env?: Record<string, string | undefined>;
@@ -2842,6 +2843,7 @@ export class WorkflowEngineDispatcher {
 			expiresAt: credentialExpiry.expiresAt,
 			absoluteDeadlineAt: credentialExpiry.absoluteDeadlineAt,
 			env: this.env,
+			standbyResumeEnabled: this.options.nodeStandbyResumeEnabled?.() ?? false,
 			...(reworkReplacementRequestId
 				? {
 						activationMode: "replacement" as const,

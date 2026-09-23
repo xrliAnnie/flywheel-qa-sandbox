@@ -469,6 +469,7 @@ import {
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
+	storeNodeStandbyResumeEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
@@ -8958,6 +8959,8 @@ export async function startBridge(
 				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
+				nodeStandbyResumeEnabled: () =>
+					storeNodeStandbyResumeEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				armResidentReceiver: (executionId, source) =>
 					residentReceiverSupervisor.arm(executionId, source),
@@ -13818,7 +13821,7 @@ export async function startBridge(
 		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
 			store,
 			ownerId: `bridge:${process.pid}`,
-			env: process.env,
+			nodeStandbyResumeEnabled: () => storeNodeStandbyResumeEnabled(flagStore),
 			reentryEnabled: () => storeWorkflowReworkReentryEnabled(flagStore),
 			resolveAlertIdentity: (run) =>
 				resolveWorkflowRunAlertIdentity({

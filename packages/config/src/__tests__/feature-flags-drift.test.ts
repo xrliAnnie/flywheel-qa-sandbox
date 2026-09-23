@@ -440,6 +440,18 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowNodeReuseEnabled",
 				],
 				[
+					"node_standby_resume",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflowEngineDispatcher",
+					"storeNodeStandbyResumeEnabled",
+				],
+				[
+					"node_standby_resume",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflowReworkCoordinatorHolder.current",
+					"storeNodeStandbyResumeEnabled",
+				],
+				[
 					"codex_lead_thread_rotation",
 					"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
 					"buildTuiGeneration",

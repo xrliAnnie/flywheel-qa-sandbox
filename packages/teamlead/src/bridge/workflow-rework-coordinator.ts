@@ -254,6 +254,7 @@ export interface WorkflowReworkCoordinatorStore {
 		absoluteDeadlineAt: string;
 		now?: string;
 		env?: Record<string, string | undefined>;
+		standbyResumeEnabled?: boolean;
 	}): GeneralizedWorkflowAdmissionResult;
 	rotateGeneralizedWorkflowOutputCredential(input: {
 		executionId: string;
@@ -395,7 +396,7 @@ export class WorkflowReworkCoordinator {
 				nodeId: string,
 				now: Date,
 			) => { expiresAt: string; absoluteDeadlineAt: string };
-			env?: Record<string, string | undefined>;
+			nodeStandbyResumeEnabled?: () => boolean;
 			reentryEnabled?: () => boolean;
 		},
 	) {
@@ -903,7 +904,7 @@ export class WorkflowReworkCoordinator {
 			expiresAt: credentialWindow.expiresAt,
 			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
-			env: this.deps.env,
+			standbyResumeEnabled: this.deps.nodeStandbyResumeEnabled?.() ?? false,
 		});
 		if (!admission.ok) {
 			return this.releaseRetryable({

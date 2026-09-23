@@ -198,12 +198,8 @@ function createAdmittedEngineRun(
 		expiresAt: "2026-07-15T01:00:00.000Z",
 		absoluteDeadlineAt: "2026-07-16T00:00:00.000Z",
 		now: "2026-07-15T00:00:00.000Z",
-		env: {
-			...enabled,
-			...(options.standbyLifecycle
-				? { FLYWHEEL_NODE_STANDBY_RESUME: "1" }
-				: {}),
-		},
+		env: enabled,
+		standbyResumeEnabled: options.standbyLifecycle === true,
 	});
 	if (!admitted.ok) throw new Error(`admission failed: ${admitted.reason}`);
 	const markerRoot = mkdtempSync(join(tmpdir(), "fly1423-unlaunched-"));
@@ -2975,7 +2971,8 @@ describe("generalized execution admission and terminal contracts", () => {
 			expiresAt: "2026-09-22T01:00:00.000Z",
 			absoluteDeadlineAt: "2026-09-23T00:00:00.000Z",
 			now: "2026-09-22T00:00:00.000Z",
-			env: { ...enabled, FLYWHEEL_NODE_STANDBY_RESUME: "1" },
+			env: enabled,
+			standbyResumeEnabled: true,
 		});
 		if (!admitted.ok || !admitted.outputCredential) {
 			throw new Error("admission failed");

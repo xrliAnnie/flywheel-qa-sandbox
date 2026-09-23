@@ -45200,6 +45200,7 @@ export class StateStore {
 			modelAssignment?: WorkflowModelAssignmentReceipt;
 		};
 		env?: Record<string, string | undefined>;
+		standbyResumeEnabled?: boolean;
 	}): GeneralizedWorkflowAdmissionResult {
 		const now = input.now ?? new Date().toISOString();
 		const activationId =
@@ -45443,7 +45444,7 @@ export class StateStore {
 						now,
 					],
 				);
-				if (input.env?.FLYWHEEL_NODE_STANDBY_RESUME === "1") {
+				if (input.standbyResumeEnabled === true) {
 					this.db.run(
 						`INSERT INTO workflow_execution_process_body
 						   (execution_id, generation, state, started_at, updated_at)

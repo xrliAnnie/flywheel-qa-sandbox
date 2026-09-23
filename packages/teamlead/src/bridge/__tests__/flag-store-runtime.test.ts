@@ -22,6 +22,7 @@ import {
 	storeLoopProfilerEnabled,
 	storeNodeDwellEnabled,
 	storeNodeDwellThresholdHours,
+	storeNodeStandbyResumeEnabled,
 	storePipelineDagEnabled,
 	storePipelineWorkKindEnabled,
 	storePonytailEnabled,
@@ -79,6 +80,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeShippedHuskForceEnabled(runtime)).toBe(false);
 		expect(storeWorkflowReworkReentryEnabled(runtime)).toBe(true);
 		expect(storeWorkflowNodeReuseEnabled(runtime)).toBe(false);
+		expect(storeNodeStandbyResumeEnabled(runtime)).toBe(false);
 		expect(storeWorkflowTurnDivergenceAlertsEnabled(runtime)).toBe(true);
 		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
 			hasOverride: true,
@@ -98,6 +100,20 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeWorkflowNodeReuseEnabled(runtime)).toBe(true);
+
+		const standbyRevision = store.getFlagValueRow(
+			"node_standby_resume",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "node_standby_resume",
+				rawTo: "1",
+				expectedRevision: standbyRevision,
+				actor: "bridge-local-operator",
+				reason: "prove standby resume reads at call time",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeNodeStandbyResumeEnabled(runtime)).toBe(true);
 
 		const revision = store.getFlagValueRow(
 			"workflow_turn_divergence_alerts",

@@ -1049,6 +1049,15 @@ describe("FLY-2131 Codex Lead model coordinates", () => {
 	});
 });
 
+describe("FLY-2808 standby resume env contract", () => {
+	it("classifies the Claude session directory as plumbing, not a feature flag", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CLAUDE_SESSION_DIR).toMatch(/FLY-2808/);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CLAUDE_SESSION_DIR).toMatch(
+			/directory.*not an on\/off gate/i,
+		);
+	});
+});
+
 describe("FLY-2523 Codex home reconciliation env contract", () => {
 	it("accounts for every reconciliation coordinate and test seam as a non-flag", () => {
 		const expected = [
