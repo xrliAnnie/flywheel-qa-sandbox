@@ -111,4 +111,47 @@ describe("buildRegistry (A5 pluggability, dual-face)", () => {
 		expect(converse).toBeInstanceOf(GeminiLiveBackend);
 		expect(converse.capabilities.converse).toBe(true);
 	});
+
+	it("registers the OpenAI Live backend lazily when its transport is injected", async () => {
+		const transport = {
+			connect: async () => {
+				throw new Error("not called while constructing the lazy backend");
+			},
+		};
+		const r = buildRegistry(config, {
+			openaiLive: { transport },
+		} as Parameters<typeof buildRegistry>[1]);
+
+		expect(r.ids().sort()).toEqual(["edge-tts", "openai-live"]);
+		const backend = await r.create("openai-live");
+		expect(backend.id).toBe("openai-live");
+		expect(backend.capabilities).toMatchObject({
+			announce: false,
+			converse: true,
+			bargeIn: false,
+			verbatim: false,
+			attribution: false,
+			supportsResume: false,
+		});
+	});
+
+	it("fails OpenAI Live selection explicitly when protocol admission is invalid", async () => {
+		const invalid = {
+			...config,
+			openaiLive: { ...config.openaiLive, protocolVersion: 2 },
+		} as unknown as typeof config;
+		const r = buildRegistry(invalid, {
+			openaiLive: {
+				transport: {
+					connect: async () => {
+						throw new Error("not reached");
+					},
+				},
+			},
+		});
+
+		await expect(r.create("openai-live")).rejects.toThrow(
+			/语音不可用.*protocol/i,
+		);
+	});
 });

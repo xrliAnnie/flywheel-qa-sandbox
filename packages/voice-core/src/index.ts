@@ -42,6 +42,11 @@ export type {
 	LiveConnectParams,
 	LiveServerEvent,
 } from "./backends/gemini/transport.js";
+export {
+	GptLiveBackend,
+	type GptLiveBackendOptions,
+	type OpenAiLiveConnector,
+} from "./backends/openai-live/GptLiveBackend.js";
 // backends + registry
 export {
 	assertBackendConsistent,
@@ -87,9 +92,11 @@ export {
 	type AnnounceWiring,
 	buildEdgeTtsBackend,
 	buildGeminiBackend,
+	buildGptLiveBackend,
 	buildHeadlessBrain,
 	buildRegistry,
 	type ConverseWiring,
+	type OpenAiLiveWiring,
 	type RegistryWiring,
 } from "./factory.js";
 // headphone mode (FLY-546) — pure logic layer

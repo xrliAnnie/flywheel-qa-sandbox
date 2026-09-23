@@ -58,6 +58,10 @@ export interface VoiceBackendCapabilities {
 	announce: boolean;
 	/** provides createConversation (speech-in + out). */
 	converse: boolean;
+	/** Every text-bearing call can produce a per-utterance content proof. */
+	verbatim: boolean;
+	/** User utterances can be bound to a known RoomIO speaker. */
+	attribution: boolean;
 	bargeIn: boolean;
 	toolCallScheduling: "none" | "basic" | "scheduled";
 	transcriptGranularity: "final-only" | "partial";
@@ -204,6 +208,14 @@ export type ConversationEventMap = {
 	/** emitted after any interrupt; no assistant transcript follows for that turn. */
 	"response-cancelled": [];
 	"tool-call": [{ callId: string; name: string; args: unknown }];
+	"delegation-created": [
+		{
+			delegationId: string;
+			generation: number;
+			offsetMs?: number;
+			target: "client";
+		},
+	];
 	/** Gemini goAway.timeLeft maps here. */
 	"session-expiring": [{ inSec: number }];
 	error: [VoiceError];
@@ -244,6 +256,113 @@ export interface ConversationSession {
 	): () => void;
 	/** returns the latest resume handle (if the backend supports it). */
 	close(): Promise<ResumeHandle | undefined>;
+}
+
+/** Capabilities after session config and generation fencing are applied. */
+export interface EffectiveConversationCapabilities {
+	verbatim: boolean;
+	attribution: boolean;
+	turnCancelOrSuppress: boolean;
+}
+
+export interface CapabilityAwareConversationSession
+	extends ConversationSession {
+	readonly effectiveCapabilities: EffectiveConversationCapabilities;
+}
+
+export type SpeakKind =
+	| "brief"
+	| "question"
+	| "readback"
+	| "heartbeat"
+	| "cue"
+	| "control";
+
+export type SpeakVerification = "required" | "best_effort" | "none";
+export type SpeakContentProof =
+	| "none"
+	| "deterministic_tts"
+	| "transcript_equivalent";
+
+type SpeakReceiptIdentity = {
+	pendingKey: string;
+	requestDigest: string;
+};
+
+export type SpeakReceipt = SpeakReceiptIdentity &
+	(
+		| {
+				outcome: "rejected";
+				reason: string;
+				transport: "none";
+				contentProof: "none";
+		  }
+		| {
+				outcome: "failed";
+				reason: string;
+				transport: "none" | "submitted";
+				contentProof: SpeakContentProof;
+		  }
+		| {
+				outcome: "completed";
+				transport: "submitted" | "playback_drained";
+				contentProof: SpeakContentProof;
+		  }
+	);
+
+export interface SpeakOptions {
+	pendingKey: string;
+	verification?: SpeakVerification;
+	/** Digest of the related action/decision authority, when one exists. */
+	authorityBinding?: string;
+}
+
+export type UtteranceAttribution =
+	| { kind: "known"; speakerUserId: string }
+	| { kind: "unknown"; reason: string };
+
+export interface Utterance {
+	sessionId: string;
+	sessionGeneration: number;
+	utteranceId: string;
+	transcriptId: string;
+	contentDigest: string;
+	sequence: number;
+	source: "founder" | "frontend" | "lead";
+	attribution: UtteranceAttribution;
+	role: "user" | "assistant";
+	text: string;
+	final: boolean;
+	finalizationKind?: "provider_final" | "connection_sealed" | "incomplete";
+	startedAt: number;
+	endedAt: number;
+}
+
+export interface V1ConversationSession
+	extends CapabilityAwareConversationSession {
+	readonly contractVersion: 1;
+	speak(
+		text: string,
+		kind: SpeakKind,
+		opts: SpeakOptions,
+	): Promise<SpeakReceipt>;
+	onUtterance(handler: (utterance: Utterance) => void): () => void;
+}
+
+export function isV1ConversationSession(
+	session: ConversationSession,
+): session is V1ConversationSession {
+	const candidate = session as Partial<V1ConversationSession>;
+	const capabilities = candidate.effectiveCapabilities;
+	return (
+		candidate.contractVersion === 1 &&
+		typeof candidate.speak === "function" &&
+		typeof candidate.onUtterance === "function" &&
+		capabilities !== undefined &&
+		typeof capabilities.verbatim === "boolean" &&
+		typeof capabilities.attribution === "boolean" &&
+		typeof capabilities.turnCancelOrSuppress === "boolean"
+	);
 }
 
 export interface BrainAdapter {
