@@ -197,6 +197,7 @@ export class FfmpegPcmDecoder {
 		void (async () => {
 			try {
 				for await (const chunk of source) {
+					if (failure) throw failure;
 					if (opts.signal.aborted) {
 						throw new VoiceError("cancelled", "ffmpeg PCM decode cancelled");
 					}

@@ -321,9 +321,19 @@ describe("FfmpegPcmDecoder", () => {
 	});
 
 	it("times out a decoder that never produces or exits", async () => {
+		let sourceClosed = false;
+		let releaseSource!: () => void;
+		const stalled = new Promise<void>((resolve) => {
+			releaseSource = resolve;
+		});
 		async function* encoded(): AsyncIterable<StreamingTtsChunk> {
-			yield { audio: Buffer.from("encoded"), format: MP3 };
-			await new Promise(() => {});
+			try {
+				yield { audio: Buffer.from("encoded"), format: MP3 };
+				await stalled;
+				yield { audio: Buffer.from("must-not-be-written"), format: MP3 };
+			} finally {
+				sourceClosed = true;
+			}
 		}
 		const runner = new FakeProcessRunner();
 		const abort = new AbortController();
@@ -344,10 +354,21 @@ describe("FfmpegPcmDecoder", () => {
 				setTimeout(() => resolve("still-pending"), 20),
 			),
 		]);
+		releaseSource();
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		abort.abort();
 		await outcome;
 
-		expect(raced).toBe("timeout");
-		expect(runner.handles[0]?.killedWith).toBe("SIGKILL");
+		expect({
+			raced,
+			killedWith: runner.handles[0]?.killedWith,
+			sourceClosed,
+			written: runner.handles[0]?.written,
+		}).toEqual({
+			raced: "timeout",
+			killedWith: "SIGKILL",
+			sourceClosed: true,
+			written: ["encoded"],
+		});
 	});
 });
