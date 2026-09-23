@@ -23,3 +23,14 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 
 - 同 worktree 串行、跨 worktree 最大 2 的 admission/queue limiter 尚未实现；设计默认值保留给后续实现单。
 - `queueMs` 仍是占位，`totalMs` 当前止于身份确认而非首个模型消费回执；需要后续定义并接入可审计 receipt。
+
+## 实现 code review R3 disposition
+
+旧 head `09d931b99` 的有效 verdict 为 `CHANGES_REQUESTED`。本轮按 Ponytail 只处理评审指出的现有路径，没有新增 scheduler 或监控抽象：
+
+- HIGH：恢复失败不再调用只接受终态 session 的通用 teardown；新增的物理 cleanup 只接受精确 process generation/demand/owner fence，保留 workflow lifecycle/CommDB 状态，并在 execution-wide liveness 证实死亡后才返回成功。cleanup 未确认仍阻止重试和 fresh fallback。
+- HIGH：resume 同时观察 `StartResult.launchOutcome` 与身份回报。`absent`/`cleaned` 的 precommit failure 不做破坏性 cleanup；已启动或证据 unknown 才进入上述 fence 清理，避免后台 launch 留活。
+- MEDIUM：resume lease 从 180 秒增至 5 分钟，明确长于 180 秒身份超时；非 generalized resume 也可选择观测 launch outcome。
+- LOW：Claude/Codex adapter 的 `onRetired` observer 异常被隔离，不再把已成功 launch 改写为失败。
+
+R3 关于 limiter、`queueMs`/首个模型消费 receipt 的 LOW 建议与 R2 已记录的两项相同，继续保留为后续单，未在默认关闭实现中提前扩面。以上 disposition 仍需新的 exact-head code review 才能生效，不能复用 R3 旧头 verdict。

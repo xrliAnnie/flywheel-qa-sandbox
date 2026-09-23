@@ -23,9 +23,11 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | strict retention registry | `fly-2413-retention-registry.test.ts` 两个 schema 分类用例：2 PASS；两个新增 JSON 的 Biome check PASS | 新表登记为 `protectedCurrentOrReference` |
 | 整单终态关闭 | `StateStore.generalized-execution.test.ts` 精确用例：1 PASS | 只有 whole-run terminal 才 close process body |
 | R2 评审修正定向集 | adapter 4 文件 435 PASS；StateStore generalized 64 PASS；dead-exec 24 PASS、1 个既有 SKIP；resume coordinator 44 PASS；founder display 48 PASS；dispatcher 122 PASS | 退休批准、失败清理、resume lease、严格 Codex 身份、终态显示、CAS union 与死 body 关闭均有正负路径 |
-| teamlead exact code-head related | `vitest related` 对当前 code head 自动选择 570 files；8029 PASS、4 个既有 SKIP、0 FAIL | `StateStore`/dispatcher 的广泛直接依赖面全绿；这是 related，不是 full package suite 或 CI |
+| R3 评审修正定向集 | teamlead 4 个相关文件 260 PASS，追加 close-runner 用例后 78 PASS；edge-worker 15 PASS；Claude/Codex adapter 308 PASS，追加 Codex 用例后 134 PASS | 精确 generation/demand/owner cleanup fence、execution-wide liveness proof、launch outcome、5 分钟 lease 与 callback 隔离均有正负路径 |
+| teamlead exact code-head related | `vitest related` 对当前 code head 自动选择 580 files；8206 PASS、4 个既有 SKIP、0 FAIL | `StateStore`/dispatcher/close-runner 的广泛直接依赖面全绿；这是 related，不是 full package suite 或 CI |
+| 其余 owning-package related | core 23 PASS、2 个既有真实 Terminal 环境用例 SKIP；edge-worker 347 PASS；claude-runner 435 PASS、2 个既有环境用例 SKIP | changed TypeScript 的 owning-package related 全绿；仍不称 full suite 或 CI |
 
-最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。第一轮修正后的 related 曾有一个无关 chat-thread 404 空 JSON 瞬态红，同头精确用例和 owning file 重跑均绿。R2 评审修正后，当前 code head 的最终 related 为 570/570 files、8029 PASS、4 SKIP、0 FAIL。
+最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。第一轮修正后的 related 曾有一个无关 chat-thread 404 空 JSON 瞬态红，同头精确用例和 owning file 重跑均绿。R2 评审修正后为 570/570 files、8029 PASS、4 SKIP、0 FAIL；R3 修正后的当前 code head 最终为 580/580 files、8206 PASS、4 SKIP、0 FAIL。
 
 ## 构建、类型与静态检查
 
@@ -33,6 +35,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 - `pnpm --filter flywheel-voice-bridge build` 后，`pnpm --filter '...flywheel-core' typecheck`：9 个 core 反向依赖包通过。首轮仅因 sibling `voice-bridge/dist` 尚未生成而失败，补建该 workspace 输出后同一检查通过；不把首轮红藏掉。
 - teamlead、edge-worker、claude-runner、flywheel-comm 各自 typecheck 通过。
 - `pnpm lint`：退出 0，检查 5130 files；26 个 warning 均在既有 research/config/core/scripts 路径，无 error。对当前 revision 的 changed TypeScript 再跑定向 `biome check`：21 个可处理文件退出 0，仅报告 `plugin.ts` 两处既有 `let` warning；仓库默认 1 MiB 上限跳过 2.8 MiB 的 `StateStore.ts`。不为本单机械重排该巨型旧文件。
+- R3 delta 的定向 `biome check` 处理 16 个文件并退出 0；仍仅有上述两处既有 warning，`StateStore.ts` 仍因仓库上限被工具明确跳过。
 - `git diff --check`：当前通过，final exact head 再复核；没有添加依赖或秘密。
 
 ## 消费者发现与取舍
@@ -48,7 +51,8 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | core adapter-types | 44/66/130 | adapters、Blueprint、dispatch context |
 | Blueprint | 196/426/294 | edge-worker tests、teamlead launch paths |
 | HeartbeatService | 54/167/1383 | Bridge wiring、直接/parked tests |
-| StateStore | 289/840/1383 | workflow dispatcher/rework/display/guards 与直接 tests |
+| StateStore | 289/841/1383 | workflow dispatcher/rework/display/guards 与直接 tests |
+| close-runner | 26/100/978 | plugin cleanup wiring、lifecycle 关闭与直接 tests |
 | codex-session-reown | 15/35/978 | plugin wiring、直接 tests |
 | issue-display-refresher | 16/55/978 | plugin refresh 与 display tests |
 | issue-display | 9/36/978 | title/tools/refresher 与直接 tests |
@@ -62,7 +66,9 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | workflow-rework-coordinator | 14/63/978 | plugin、rework e2e/直接 tests |
 | workflow-worktree-readiness | 1/1/978 | resume coordinator 的 worktree 校验 |
 
-排除项逐类说明：所有 `doc/**`、`engineering/doc/**`、`product/doc/**` 命中都是历史设计/调研引用；generated child-process census/inventory 是快照清单；同名 `plugin.ts`/`tools.ts` 但路径不在 owning package 的命中属于其它模块；只复述文件名的 fixture/文档不形成调用关系。比如 `StateStore.ts` 的 289 个完整路径命中中，23 个位于 `packages/**`/`scripts/**`，至少 265 个位于上述文档树，后者全部排除。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；三种搜索的每个其余命中都由上述路径规则覆盖，没有把历史文本命中误算成需执行测试。
+R3 同时对 7 个改动测试文件执行同样三种搜索，命中数依次为：Codex adapter test 15/37/95、Tmux adapter test 25/82/95、Blueprint worktree test 2/5/87、StateStore generalized test 3/15/317、close-runner test 9/28/317、run-dispatcher test 7/16/317、rework coordinator test 4/15/157。它们本身已全部保留执行；文件名/父目录命中的其它同包测试由 owning-package related 覆盖。
+
+排除项逐类说明：所有 `doc/**`、`engineering/doc/**`、`product/doc/**` 命中都是历史设计/调研引用；generated child-process census/inventory 是快照清单；同名 `plugin.ts`/`tools.ts`/`*.test.ts` 但路径不在 owning package 的命中属于其它模块；只复述文件名的 fixture/文档不形成调用关系。比如 `StateStore.ts` 的 289 个完整路径命中中，23 个位于 `packages/**`/`scripts/**`，至少 265 个位于上述文档树，后者全部排除。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；三种搜索的每个其余命中都由上述路径规则覆盖，没有把历史文本命中误算成需执行测试。
 
 ## 设计、HTML 与评审沿革
 
@@ -71,6 +77,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 - 本地 Mermaid 四次均因 Chromium MachPort sandbox permission 在启动前失败，保留 `.mmd` 源与明确 pending 标识；未使用远程渲染、未冒领图形完成。
 - 旧 docs-only code review 已被后续实现头替代；完成本地验证和 literal-last milestone 后必须对新的 exact head 重新请求有效 code review。
 - 实现 code review R2 gate `0afda40e-8a35-4302-bbb2-7e6687293f06` 在旧 head `3f03ea22` 返回 `CHANGES_REQUESTED`。3 个 HIGH 已修：恢复不再重建/重置共享工作树；失败/超时会先清理已启动进程且清理未确认时禁止重试/兜底；`resuming` 增加 180 秒 lease 与过期接管。MEDIUM 也已修：只有 controller 批准的 retiring generation 才按主动退休投影、终态压过 working、Codex strict identity 只作用于 standby resume 且错误不再被吞、StateStore CAS 失败返回 union、Claude manifest git 探测异步化、dead enrolled body 同事务关闭。需以新 exact head 再审。
+- 实现 code review R3 在旧 head `09d931b99` 再次返回 `CHANGES_REQUESTED`。当前修正不用终态 `closeRunner` 粗粒度清理恢复失败，而以 process generation/demand/owner 三重 fence 授权物理 cleanup，保留 lifecycle/CommDB 记录，并以 execution-wide liveness 证明后才允许重试；resume 同时观察物理 launch outcome，确定未启动时不误清理。lease 已增至 5 分钟，超过 180 秒身份超时；Claude/Codex 的 `onRetired` observer 异常也不再改写已成功的启动结果。需以新的 literal-last exact head 再审。
 - 保留两个 LOW follow-up：同 worktree 串行/跨 worktree 最大 2 的调度 limiter 尚未实现；`queueMs` 仍为占位且 `totalMs` 截止身份确认，不是首个模型消费回执。默认关闭路径不因此扩大本单抽象层，交由后续单独实现/验收。
 
 ## 最终需求审计
@@ -80,7 +87,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | 主动退下 vs 意外死亡 | process body generation/state + completion/retirement evidence；六个死亡入口读取同一事实 | 真实进程释放与资源曲线 |
 | 六处打断点 | completion、rework、TURN/dispatch、recipient、Heartbeat/pane-loss/reowner/expiry、fault budget 均接线 | 真实 Bridge 重启矩阵 |
 | 拉起身份/model/cwd | 两 adapter manifest + exact resume；pre/post identity；HEAD/dirty 重读提示 | 真实 provider 长会话连续性 |
-| 拉不起与兜底 | 两次 resume、一次原子 fresh fallback、route/node/delivery rebind、独立 purpose | 真实 transcript 损坏和 fallback 端到端 QA |
+| 拉不起与兜底 | 两次 resume、一次原子 fresh fallback、route/node/delivery rebind、独立 purpose；失败进程按精确 body fence 清理并证明 execution-wide death | 真实 transcript 损坏和 fallback 端到端 QA |
 | founder 三态 | working/standby/problem DTO 接 title/refresher/status tool | 真实浏览器和移动端视觉 |
 | 默认值与并发 | 无墙钟 TTL 与恢复/故障分账已落地；同目录串行、跨目录最多 2 仍仅是冻结设计默认值，未新增调度 limiter；`queueMs`/首模型消费 `totalMs` 仍待实现 | 后续实现单与压力/饥饿 QA |
 | 默认关闭和旧 run | 仅新 admission 在 flag=1 时纳入；旧 run 维持旧语义 | 发布/回滚演练 |
