@@ -1618,19 +1618,271 @@ _dev_channels_flag_active() {
 
 # FLY-1679: the dev-channels dialog's own text, taken verbatim from the Claude
 # source under test (DevChannelsDialog.tsx: the Dialog title, the standalone
-# approved-channels line, and option 1's label). All three must be on screen at
-# once. Any single fragment also appears in ordinary conversation about this
-# flag, and interactiveHelpers.tsx legitimately skips the dialog when channels
-# are gated off or there is no OAuth token — which would otherwise leave the
-# poller scanning a restored transcript for its whole budget.
+# approved-channels line, and option 1's label). Any single fragment also
+# appears in ordinary conversation about this flag, and interactiveHelpers.tsx
+# legitimately skips the dialog when channels are gated off or there is no
+# OAuth token — which would otherwise leave the poller scanning a restored
+# transcript for its whole budget. So the recognizer needs more than one
+# mutually independent feature, and it must not fire on a transcript.
+#
+# FLY-2776: requiring the title, option label and approved-channels line to be
+# on screen together was the wrong shape for that, because `capture-pane -p`
+# returns the RENDERED SCREEN, not logical text. Two things it cannot survive:
+#
+#   * soft wrap — at 49 columns `Please use --channels to run a list of
+#     approved channels.` (56 chars) is split across two physical lines, so no
+#     `grep -qF` of the whole sentence can ever match it
+#   * viewport truncation — at 16 rows the box is taller than the pane, so the
+#     title has scrolled out of `-p` output altogether
+#
+# 49x16 is the production Lead pane's real geometry, and both happen at once
+# there: of the three required fragments only the option label survived. That
+# is exactly the logged classification (match_warning=0 match_local_dev=1
+# match_channels_hint=0 prompt_caret=1 lines=15) which parked Aunt Cass on the
+# dialog for ~17 hours across the 2026-09-22 shuttles. The dialog's own text
+# never changed — all three fragments are still present verbatim in the claude
+# 2.1.277 / 2.1.278 / 2.1.280 binaries, and 04:18Z matched while 07:02Z did not
+# on the SAME binary.
+#
+# The recognizer therefore requires THREE mutually independent classes of
+# evidence, and ALL of them must hold. Do not "simplify" this back to two:
+# each class closes a specific, measured way of being wrong, and the review
+# history under engineering/doc/FLY-2776-dev-channels-dialog-guard/ names them.
+#
+#   1. the LINE-ANCHORED OPTION ROW. A live Select renders
+#      `❯ 1. I am using this for local development` as a whole line; text that
+#      merely quotes the dialog carries the same characters in the MIDDLE of a
+#      line (fly1679's P4 fixture is exactly that shape, and this issue's own
+#      Discord discussion is another). The ANCHORING, not the caret, is what
+#      separates a live dialog from a quotation of one — the caret is optional
+#      in the pattern, see the note on the regex below. The row is also
+#      positive evidence that option 1 is the row being offered — i.e. that `1`
+#      is the right key to send.
+#
+#      Rendered, that row is `  ❯ 1. I am using this for local development` =
+#      exactly 44 columns. Below a 44-column pane it wraps too and this half
+#      stops matching, so the guard sends nothing. That is the correct
+#      direction to fail — a stray keystroke into a live prompt is worse than a
+#      no-op — and since FLY-2776 it is no longer silent: the NOT_SEEN path
+#      raises a drift alert when the dialog's fingerprints are on screen.
+#   2. MODALITY: the dialog's own footer on screen, AND Claude's composer
+#      indicator `⏵⏵` absent. Anchoring excludes a row quoted INSIDE a line,
+#      but not a screen that reproduces the capture as an unprefixed block —
+#      and this repo now carries that block verbatim in its own docs and
+#      fixtures, so Leads will render it. The dialog is modal and hides the
+#      composer, so a real one can never share a screen with it. fly1679's P15
+#      is the regression test, and P15b proves the veto is what rejects there
+#      rather than the anchor.
+#   3. ONE body sentence, matched after whitespace squashing so a soft wrap
+#      cannot hide it. Three are accepted because the wide rendering shows the
+#      title while the 49x16 rendering has scrolled it away; insisting on any
+#      single one of them would just re-create this bug at a different
+#      geometry.
+#
+# No class alone is the dialog: the option row without a body sentence is some
+# other screen quoting the label, a body sentence without the anchored row is
+# prose about the flag, and either of those above a live composer is a Lead
+# that is receiving normally and merely displaying text.
+#
+# LC_ALL=C on every match. A pane capture can contain arbitrary bytes and BSD
+# grep can fail outright on an invalid multi-byte sequence under a UTF-8
+# locale; under C every pattern here is a literal byte sequence, which is what
+# we want (`❯` matches as its three UTF-8 bytes). For the same reason the
+# optional box frame is written as an ERE alternation and never as a bracket
+# expression — `[│┃]` under C is a SET OF BYTES and would happily chew one byte
+# out of an unrelated multi-byte character.
 #
 # Here-strings, not pipes: `set -o pipefail` is active in this launcher and a
-# short-circuiting `grep -q` can SIGPIPE its producer.
+# short-circuiting `grep -q` SIGPIPEs its producer, after which the pipeline
+# reports the producer's 141 even though grep matched — silently inverting the
+# answer. Nothing below is a pipeline.
+# Flatten a RENDERED screen back into one wrap-proof line.
+#
+# Two steps, in this order:
+#   1. box-drawing verticals become spaces. When a bordered dialog ALSO wraps a
+#      sentence, the border lands between the two halves — `...run a list of │`
+#      / `│ approved channels.` — and collapsing whitespace alone would never
+#      rejoin them. The unbordered 2.1.280 rendering does not need this; the
+#      bordered rendering in fly1679's REAL_DIALOG fixture does, and both
+#      shapes exist in this repo's own evidence.
+#   2. every whitespace run (newlines included) collapses to a single space, so
+#      a soft-wrapped sentence reads back as one sentence.
+#
+# Substitution, never a bracket expression: this launcher runs with no locale
+# (the Lead plists set none), and under C `[│┃]` is a SET OF BYTES
+# {E2,94,82,83} — `❯` also starts with E2, so a bracket form would chew a byte
+# out of the very character the recognizer anchors on. Two command
+# substitutions, never a pipeline: see the pipefail note on the recognizer.
+#
+# Also used by the NOT_SEEN classification, which was reading the same wrapped
+# screen and drawing the same wrong conclusion from it.
+_dev_channels_squash_ws() {
+  local unframed=""
+  unframed="$(LC_ALL=C sed -e 's/│/ /g' -e 's/┃/ /g' <<<"$1")"
+  LC_ALL=C tr -s '[:space:]' ' ' <<<"$unframed"
+}
+
+# The dialog's body sentences, verbatim from DevChannelsDialog.tsx. Order is
+# irrelevant; any one of them corroborates the option row.
+#
+# The regex and the list live INSIDE the function on purpose: the FLY-1679
+# suite exercises this recognizer by extracting its function body straight out
+# of this file, so anything it depends on has to travel with it.
 _dev_channels_dialog_present() {
-  local text="$1"
-  grep -qF 'WARNING: Loading development channels' <<<"$text" || return 1
-  grep -qF 'I am using this for local development' <<<"$text" || return 1
-  grep -qF 'Please use --channels to run a list of approved channels.' <<<"$text" || return 1
+  local text="$1" squashed="" feature="" option_row_re="" footer_re=""
+  local -a body_features=()
+  # The caret is optional: it is strong evidence that option 1 has focus, but
+  # requiring it would let a future Claude that opens this dialog with focus
+  # elsewhere — or with a different caret glyph — silently disarm the guard on
+  # every Claude-carrier Lead at once. Dropping it costs no exclusivity: what
+  # keeps a quoted transcript out is the LINE ANCHORING, not the caret
+  # (fly1679's P4 and P12 both carry the caret, mid-line).
+  option_row_re='^[[:space:]]*(│[[:space:]]*)?(❯[[:space:]]+)?1\.[[:space:]]+I am using this for local development[[:space:]]*(│[[:space:]]*)?$'
+  body_features=(
+    'WARNING: Loading development channels'
+    'Please use --channels to run a list of approved channels.'
+    '--dangerously-load-development-channels is for local channel development only.'
+  )
+  # The modal's own footer. A live Select prints it; prose that quotes the
+  # dialog's words does not. `to` is optional because the Ink build under
+  # fly1679's REAL_DIALOG fixture renders `Enter confirm · Esc cancel`.
+  footer_re='Enter[[:space:]]+(to[[:space:]]+)?confirm'
+
+  # Feature 1 — structural, and the proof that a key is wanted right now.
+  LC_ALL=C grep -qE "$option_row_re" <<<"$text" || return 1
+
+  squashed="$(_dev_channels_squash_ws "$text")"
+
+  # Feature 2 — modality. Line anchoring separates a live dialog from prose
+  # that quotes the row INSIDE a line, but not from a screen that reproduces
+  # the capture as a block — and this repo now contains that block verbatim in
+  # its own docs and fixtures, so Leads will render it. Two more conditions
+  # close most of that window:
+  #
+  #   a. the modal footer must be present — positive evidence a Select is live;
+  #   b. Claude's live input box must be ABSENT. The dialog is modal and hides
+  #      the composer, so the permission-mode indicator `⏵⏵` cannot be on
+  #      screen at the same time as a real dev-channels dialog; on an ordinary
+  #      Lead screen (which is where a quoted transcript lives) it always is.
+  #
+  # Both are fail-safe: if a future Claude drops the footer or renders the
+  # indicator alongside the dialog, the guard declines to press — and since
+  # FLY-2776 that refusal raises a drift alert instead of passing in silence.
+  LC_ALL=C grep -qE "$footer_re" <<<"$squashed" || return 1
+  if LC_ALL=C grep -qF -e '⏵⏵' <<<"$text"; then
+    return 1
+  fi
+
+  # Feature 3 — semantic, wrap-proof.
+  for feature in "${body_features[@]}"; do
+    if LC_ALL=C grep -qF -e "$feature" <<<"$squashed"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# FLY-2776: the alert leg for a dialog that is on screen but unrecognized.
+#
+# KIND — `external_config_error`, not `permission_blocked`. The obvious-looking
+# reuse is a trap: `permission_blocked` is in AlertChannelHub's LEAD_KINDS, so
+# every reconcile tick re-classifies the Lead's pane with
+# pane-blocked-classifier, which recognizes that kind only via
+# /permission.*(required|denied)/i. A dev-channels dialog contains neither
+# word, so on the queue-drain path the Hub would decide the Lead "recovered"
+# and resolve the ticket while the Lead is still parked on the dialog — the
+# same class of silent-recovery bug this issue exists to remove, one layer up.
+# `external_config_error` is already shell-allowlisted, is in no LEAD_KINDS set,
+# has an exact precedent in this file (`_external_failstop_alert`), and
+# contact-book.md routes it to Tadashi — who owns this launcher, and is the
+# right responder for "the guard no longer recognizes the dialog". The operator
+# reads the --title/--body below, not the kind's canned copy: lead-alert.sh
+# posts the caller's own text. If this ever needs to be a durable ticket rather
+# than an alert, it should get its own kind (and a TS-union entry — the FLY-1082
+# drift guard grandfathers only the two existing shell-only kinds).
+#
+# SEVERITY — `warning`, deliberately. lead-alert.sh records the caller's
+# severity into alert_version_observations BEFORE the claims dedup, and
+# release-readiness holds at severeHold=1: one `severe` observation would
+# freeze the 12-hour release soak on a diagnostic signal about a guard. It also
+# matches the canonical severityFor() for this family.
+#
+# DEDUP — the signature is the FAILURE SHAPE plus a UTC-day bucket.
+#
+# Not a digest of the screen: a live pane is never byte-identical twice, so a
+# digest would mint a fresh signature on every cold start — an alert storm now.
+# And not the bare shape either: `alert_claims` has NO pruner, a `sent` receipt
+# short-circuits to exit 0 forever, so a bare shape would be a permanent,
+# unclearable mute. The same Lead getting stuck the same way next month would
+# be silent — which is the failure this alert exists to prevent, just deferred.
+# The day bucket keeps the storm bounded (one alert per shape per Lead per day,
+# even across a KeepAlive restart loop) while guaranteeing a recurrence is
+# heard again. It is the same shape as lead-alert.sh's own default signature.
+#
+# The body carries flags, geometry and a digest only, never pane text: this
+# travels to Discord and the pane holds conversation (FLY-1948 / FLY-220 echo
+# immunity). Geometry is shape, not content, and it is the single field that
+# turns this incident into a five-minute triage.
+#
+# Every failure path is swallowed and logged. This function exists because
+# observability failed once already; it must never become the thing that kills
+# the poller.
+_dev_channels_drift_alert() {
+  local shape="$1" detail="$2" rc=0 out="" verdict="" signature="" day=""
+  local alert_sh="${LEAD_ALERT_SH:-${FLYWHEEL_ROOT:-}/scripts/lead-alert.sh}"
+  local -a cmd=()
+  if [ ! -x "$alert_sh" ]; then
+    _log_startup "dialog-poller-v2: DRIFT_ALERT_UNSENT no executable lead-alert.sh at ${alert_sh}" || true
+    return 0
+  fi
+  # lead-alert.sh runs curl + sqlite3 + jq. This poller is a background job of
+  # the pane body and is only reaped when Claude exits — hours or days later —
+  # so an unbounded hang here would leave a resident process behind. Bound it
+  # where a bounding tool exists; `timeout` is coreutils and not guaranteed on
+  # every fleet host.
+  if command -v timeout >/dev/null 2>&1; then
+    cmd=(timeout 60)
+  elif command -v gtimeout >/dev/null 2>&1; then
+    cmd=(gtimeout 60)
+  fi
+  day="$(date -u '+%Y%m%d' 2>/dev/null)" || day=nodate
+  signature="dev-channels-drift-${shape}-${day:-nodate}"
+  cmd+=(
+    "$alert_sh"
+    --strict-delivery
+    --lead "${LEAD_ID:-unknown}" --project "${PROJECT_NAME:-unknown}"
+    --kind external_config_error --severity warning
+    --title "dev-channels dialog on screen but not auto-confirmed"
+    --body "${PROJECT_NAME:-unknown}/${LEAD_ID:-unknown}: the dev-channels confirmation dialog left its fingerprints on the pane but the auto-confirm guard did not recognize it, so this Lead is probably parked on the dialog and cannot receive messages. Press the option in its tmux pane by hand, then check ~/.flywheel/logs/lead-${LEAD_ID:-unknown}-startup.log and _dev_channels_dialog_present in packages/teamlead/scripts/claude-lead.sh for text or layout drift. Classification: ${detail}"
+    --signature "$signature"
+  )
+  # Command substitution, not a bare external command. This function runs in
+  # the same background-job position where a bare command was measured being
+  # exec-replaced by bash's subshell optimization, taking the poller with it
+  # (see the tmux calls in the poller below). `$( )` forks a child.
+  out="$("${cmd[@]}" 2>/dev/null)" || rc=$?
+
+  # The exit code alone cannot answer "did anyone get told". lead-alert.sh
+  # exits 2 BOTH for "durably queued, the Bridge drain will deliver it" and for
+  # "dead-lettered, nobody will ever see it" — and dead-lettering is exactly
+  # what happens when the Lead's alert token is not in this process's
+  # environment, i.e. on the path where an accurate log matters most. That is
+  # what `--strict-delivery` exists for: one machine-readable verdict line.
+  verdict="$(LC_ALL=C tr -d '\r' <<<"$out")"
+  verdict="${verdict##*$'\n'}"
+  case "$verdict" in
+    sent|duplicate|queued_transient)
+      _log_startup "dialog-poller-v2: DRIFT_ALERT_SENT verdict=${verdict} rc=${rc} signature=${signature}" || true
+      ;;
+    dead_lettered|config_error|delivery_unknown)
+      _log_startup "dialog-poller-v2: DRIFT_ALERT_UNSENT verdict=${verdict} rc=${rc} signature=${signature} (nobody was notified — check lead-alert.sh's own log, the Lead's alertBotTokenEnv, and ~/.flywheel/alert-queue/)" || true
+      ;;
+    *)
+      # No parseable verdict: an old lead-alert.sh, a crash before it printed,
+      # or the bounding timeout. Never claim delivery on absence of evidence.
+      _log_startup "dialog-poller-v2: DRIFT_ALERT_UNSENT verdict=<unparseable> rc=${rc} signature=${signature} (no --strict-delivery receipt; treat as NOT notified)" || true
+      ;;
+  esac
   return 0
 }
 
@@ -1651,6 +1903,9 @@ _poll_dev_channels_dialog_v2() {
   local elapsed=0 socket pane pane_text send_rc verify capture_rc probe_rc probe_out send_out
   local last_capture="" lines=0 blank=true match_warning=0 match_local_dev=0
   local match_channels_hint=0 banner_channels=0 prompt_caret=0 pane_sha256=-
+  local match_option_row=0 match_dangerously=0 squashed_capture=""
+  local classification="" pane_geom=- drift_shape="" semantic_hits=0
+  local match_option_squashed=0 match_modal_footer=0 match_live_prompt=0
 
   # Address the private server explicitly. The shared Runner tmux socket override
   # must never retarget these Lead keystrokes.
@@ -1741,15 +1996,99 @@ _poll_dev_channels_dialog_v2() {
   if [ -n "$last_capture" ]; then
     lines=$(printf '%s\n' "$last_capture" | wc -l | tr -d ' ') || lines=0
   fi
-  if grep -q '[^[:space:]]' <<<"$last_capture"; then blank=false; fi
-  if grep -qF 'WARNING: Loading development channels' <<<"$last_capture"; then match_warning=1; fi
-  if grep -qF 'I am using this for local development' <<<"$last_capture"; then match_local_dev=1; fi
-  if grep -qF 'Please use --channels to run a list of approved channels.' <<<"$last_capture"; then match_channels_hint=1; fi
-  if grep -qF 'Channels (experimental)' <<<"$last_capture"; then banner_channels=1; fi
-  if grep -qF '❯' <<<"$last_capture"; then prompt_caret=1; fi
+  # FLY-2776: classify against the whitespace-squashed capture for the same
+  # reason the recognizer does. Reading the raw screen here is what produced
+  # `match_warning=0 match_channels_hint=0` for a dialog that was plainly on
+  # the pane — the sentences were merely soft-wrapped, and the classification
+  # then argued for the wrong root cause for a day.
+  squashed_capture="$(_dev_channels_squash_ws "$last_capture")"
+  if LC_ALL=C grep -q '[^[:space:]]' <<<"$last_capture"; then blank=false; fi
+  if LC_ALL=C grep -qF -e 'WARNING: Loading development channels' <<<"$squashed_capture"; then match_warning=1; fi
+  if LC_ALL=C grep -qF -e 'I am using this for local development' <<<"$squashed_capture"; then match_local_dev=1; fi
+  if LC_ALL=C grep -qF -e 'Please use --channels to run a list of approved channels.' <<<"$squashed_capture"; then match_channels_hint=1; fi
+  if LC_ALL=C grep -qF -e '--dangerously-load-development-channels is for local channel development only.' <<<"$squashed_capture"; then match_dangerously=1; fi
+  if LC_ALL=C grep -qF -e 'Channels (experimental)' <<<"$squashed_capture"; then banner_channels=1; fi
+  if LC_ALL=C grep -qF -e '❯' <<<"$last_capture"; then prompt_caret=1; fi
+  # The structural half of the recognizer, reported on its own so the log can
+  # finally distinguish "the focused option row is on screen but something
+  # else about the dialog changed" from "nothing that looks like this dialog
+  # is on screen at all".
+  if LC_ALL=C grep -qE '^[[:space:]]*(│[[:space:]]*)?(❯[[:space:]]+)?1\.[[:space:]]+I am using this for local development[[:space:]]*(│[[:space:]]*)?$' <<<"$last_capture"; then
+    match_option_row=1
+  fi
+  # Below ~44 columns the option row wraps too, so match_option_row goes to 0
+  # while the label is still plainly on the pane. Measured at 43x16 with the
+  # installed 2.1.280: the row renders as `❯ 1. I am using this for local` /
+  # `development`. Squashing rejoins it. This flag is DIAGNOSTIC ONLY — it must
+  # never authorize a keystroke, because at that width we cannot tell which row
+  # the label belongs to.
+  if LC_ALL=C grep -qF -e '1. I am using this for local development' <<<"$squashed_capture"; then
+    match_option_squashed=1
+  fi
+  # The modal footer: positive evidence a Select is live on the pane right now,
+  # which is what separates "a real dialog we failed to key" from "a Lead
+  # talking about this flag".
+  if LC_ALL=C grep -qE 'Enter[[:space:]]+(to[[:space:]]+)?confirm' <<<"$squashed_capture"; then
+    match_modal_footer=1
+  fi
+  # Claude's live composer. The dialog is modal and hides it, so this is
+  # decisive: if the permission-mode indicator is on the pane, this Lead is
+  # sitting at its input box and CAN receive messages — whatever else is on
+  # screen is something it rendered, not something it is trapped behind.
+  if LC_ALL=C grep -qF -e '⏵⏵' <<<"$last_capture"; then
+    match_live_prompt=1
+  fi
+  # Geometry is the diagnosis this incident actually needed: 49x16 is why two
+  # of the three original fragments were unmatchable.
+  pane_geom="$(command tmux -S "$socket" display-message -p -t "$pane" '#{pane_width}x#{pane_height}' 2>/dev/null)" || pane_geom=-
+  [ -n "$pane_geom" ] || pane_geom=-
   pane_sha256=$(printf '%s' "$last_capture" | shasum -a 256 2>/dev/null) || pane_sha256=-
   pane_sha256="${pane_sha256%% *}"
-  _log_startup "dialog-poller-v2: NOT_SEEN classification: lines=${lines} blank=${blank} match_warning=${match_warning} match_local_dev=${match_local_dev} match_channels_hint=${match_channels_hint} banner_channels=${banner_channels} prompt_caret=${prompt_caret} pane_sha256=${pane_sha256}" || true
+  classification="lines=${lines} geom=${pane_geom} blank=${blank} match_warning=${match_warning} match_local_dev=${match_local_dev} match_channels_hint=${match_channels_hint} match_dangerously=${match_dangerously} match_option_row=${match_option_row} match_option_squashed=${match_option_squashed} match_modal_footer=${match_modal_footer} match_live_prompt=${match_live_prompt} banner_channels=${banner_channels} prompt_caret=${prompt_caret} pane_sha256=${pane_sha256}"
+  _log_startup "dialog-poller-v2: NOT_SEEN classification: ${classification}" || true
+
+  # FLY-2776: a NOT_SEEN that still carries this dialog's fingerprints is NOT
+  # "no dialog appeared" — it is "the dialog appeared and we failed to
+  # recognize it", i.e. a Lead that is up, logged as running, and deaf. Those
+  # two outcomes shared one silent exit until now, which is why 2026-09-22 cost
+  # ~17 hours with nine Leads logging the same line and only one of them
+  # actually stuck. Partial evidence must be loud.
+  #
+  # The gate is NOT "any fingerprint at all". `I am using this for local
+  # development` is the option LABEL, and a Lead that merely discusses this
+  # flag in Discord puts it on screen — fly1679's own TRANSCRIPT_A_PLUS_B
+  # fixture is exactly that, and Aunt Cass was literally discussing this issue
+  # when the incident happened. Alerting on one bare fingerprint would turn an
+  # ordinary conversation into a severe page, on every cold start.
+  #
+  # Three ways in, and each one is a shape a transcript does not have:
+  #
+  #   a. the STRUCTURAL half matched — the option row is rendering on its own
+  #      line and we still declined to key it. The genuinely dangerous state,
+  #      and exactly what match_option_row was added to isolate.
+  #   b. TWO independent BODY SENTENCES are on screen. Prose rarely carries two
+  #      of the three verbatim; the dialog always carries all three.
+  #   c. the option label is on screen only in WRAPPED form, AND the modal
+  #      footer is up. Below ~44 columns (measured: 43x16) the row wraps, the
+  #      title has scrolled away and only one body sentence survives — so (a)
+  #      and (b) both miss, and without this clause the narrowest real dialog
+  #      would be exactly the silent 17-hour park this issue exists to remove.
+  #      The footer is what keeps it off an ordinary conversation.
+  # And one way out that overrides all three: Claude's composer is on screen.
+  # This alert means "a Lead is parked on a dialog and cannot receive". A pane
+  # showing the live input box is receiving, so whatever matched above is
+  # something that Lead RENDERED — a doc, a transcript, this issue's own
+  # exploration.md — not something it is stuck behind. Without this, publishing
+  # the capture in the repo would page every Lead that ever displays it.
+  semantic_hits=$((match_warning + match_channels_hint + match_dangerously))
+  if [ "$match_live_prompt" -eq 0 ] \
+    && { [ "$match_option_row" -eq 1 ] \
+      || [ "$semantic_hits" -ge 2 ] \
+      || { [ "$match_option_squashed" -eq 1 ] && [ "$match_modal_footer" -eq 1 ]; }; }; then
+    _log_startup "dialog-poller-v2: DEV_CHANNELS_SUSPECTED_DRIFT ${classification}" || true
+    drift_shape="${match_option_row}${match_option_squashed}${match_modal_footer}${match_warning}${match_local_dev}${match_channels_hint}${match_dangerously}"
+    _dev_channels_drift_alert "$drift_shape" "${classification}"
+  fi
   return 0
 }
 

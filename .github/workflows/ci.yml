@@ -1389,6 +1389,7 @@ jobs:
           bash scripts/__tests__/qa-metadata-snapshot.test.sh
           bash scripts/__tests__/qa-fly-2301-codex-lead-drill.test.sh
           bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
+          bash scripts/__tests__/fly2776-dev-channels-geometry.test.sh
           bash scripts/__tests__/fly1680-v1-extinction.test.sh
           bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
           bash scripts/__tests__/materialize-lead-manifests.test.sh

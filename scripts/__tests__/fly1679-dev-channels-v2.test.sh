@@ -48,11 +48,22 @@ fi
 # ── Extract the units under test straight out of production source ──────────
 GATE_SRC="$(sed -n '/^_dev_channels_flag_active()/,/^}/p' "$LEAD_SH")"
 PREDICATE_SRC="$(sed -n '/^_dev_channels_dialog_present()/,/^}/p' "$LEAD_SH")"
+# FLY-2776: the recognizer squashes whitespace before matching its body
+# sentence, so a soft-wrapped line still reads as one sentence. That helper is
+# shared with the NOT_SEEN classification and therefore lives outside the
+# predicate — it has to be extracted alongside it.
+SQUASH_SRC="$(sed -n '/^_dev_channels_squash_ws()/,/^}/p' "$LEAD_SH")"
+# FLY-2776: the poller's NOT_SEEN path now emits a drift alert when the dialog
+# left fingerprints on the pane, so the emitter travels with the poller. With
+# FLYWHEEL_ROOT unset it finds no lead-alert.sh and logs a skip, which is the
+# behavior these cases want — the A* cases in
+# scripts/__tests__/fly2776-dev-channels-geometry.test.sh own the alert itself.
+DRIFT_SRC="$(sed -n '/^_dev_channels_drift_alert()/,/^}/p' "$LEAD_SH")"
 POLLER_SRC="$(sed -n '/^_poll_dev_channels_dialog_v2()/,/^}/p' "$LEAD_SH")"
 IS_RUNNING_SRC="$(sed -n '/^_v2_dialog_poller_is_running()/,/^}/p' "$LEAD_SH")"
 REAPER_SRC="$(sed -n '/^_v2_reap_dialog_poller()/,/^}/p' "$LEAD_SH")"
 
-for unit in GATE_SRC PREDICATE_SRC POLLER_SRC IS_RUNNING_SRC REAPER_SRC; do
+for unit in GATE_SRC PREDICATE_SRC SQUASH_SRC DRIFT_SRC POLLER_SRC IS_RUNNING_SRC REAPER_SRC; do
   eval "src=\$$unit"
   if [ -z "$src" ]; then
     printf 'FAIL: production source is missing %s\n' "$unit"
@@ -116,6 +127,7 @@ FIXTURE
 # ═══════════════════════════════════════════════════════════════════════════
 # P — predicate exclusivity
 # ═══════════════════════════════════════════════════════════════════════════
+eval "$SQUASH_SRC"
 eval "$PREDICATE_SRC"
 
 predicate_case() {
@@ -141,6 +153,247 @@ predicate_case "P6 an unrelated numeric confirm dialog is not the dialog" \
   "$OTHER_DIALOG" absent
 predicate_case "P7 Chrome onboarding is not the dialog" "$CHROME_ONBOARDING" absent
 
+# ── FLY-2776 fixtures: REAL `tmux capture-pane -p` output, byte-for-byte ────
+# Captured 2026-09-22 from the currently installed claude 2.1.280 started with
+#   --dangerously-load-development-channels plugin:discord@flywheel-plugins server:flywheel-inbox
+# in an isolated tmux server, at the two geometries that matter.
+#
+# NARROW is the production Lead's geometry (49x16 — verified against the live
+# carrier with `list-panes -F '#{pane_width}x#{pane_height}'`). At 49 columns the
+# dialog is TALLER than the 16-row viewport, so the title has scrolled out of
+# `capture-pane -p` entirely, and `Please use --channels to run a list of
+# approved channels.` (56 chars) is soft-wrapped across two physical lines.
+# That is the whole incident: nothing in the dialog's text changed — all three
+# original fragments still exist verbatim in the 2.1.277/2.1.278/2.1.280
+# binaries — the 49x16 viewport just cannot show two of them on one line.
+read -r -d '' REAL_CAPTURE_NARROW <<'FIXTURE' || true
+  --dangerously-load-development-channels is
+  for local channel development only. Do not
+  use this option to run channels you have
+  downloaded off the internet.
+
+  Please use --channels to run a list of
+  approved channels.
+
+  Channels: plugin:discord@flywheel-plugins,
+  server:flywheel-inbox
+
+  ❯ 1. I am using this for local development
+    2. Exit
+
+  Enter to confirm · Esc to cancel
+FIXTURE
+
+# WIDE is the shape that matched every day through 2026-09-22T04:18Z.
+read -r -d '' REAL_CAPTURE_WIDE <<'FIXTURE' || true
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  WARNING: Loading development channels
+
+  --dangerously-load-development-channels is for local channel development only. Do not use this option to run
+  channels you have downloaded off the internet.
+
+  Please use --channels to run a list of approved channels.
+
+  Channels: plugin:discord@flywheel-plugins, server:flywheel-inbox
+
+  ❯ 1. I am using this for local development
+    2. Exit
+
+  Enter to confirm · Esc to cancel
+FIXTURE
+
+# NARROW with the focused option row removed: body prose only. A screen that
+# merely TALKS about the flag must never be keystroked.
+read -r -d '' NARROW_NO_OPTION_ROW <<'FIXTURE' || true
+  --dangerously-load-development-channels is
+  for local channel development only. Do not
+  use this option to run channels you have
+  downloaded off the internet.
+
+  Please use --channels to run a list of
+  approved channels.
+
+  Channels: plugin:discord@flywheel-plugins,
+  server:flywheel-inbox
+FIXTURE
+
+# The focused option row with no body sentence anywhere. One feature is not a
+# dialog — this is the "don't degrade to a single fragment" guard.
+read -r -d '' OPTION_ROW_ONLY <<'FIXTURE' || true
+  ❯ 1. I am using this for local development
+    2. Exit
+
+  Enter to confirm · Esc to cancel
+FIXTURE
+
+# The option row quoted INSIDE a line of prose (the P4 shape, but with the
+# wrapped-sentence body that the narrow capture has). Line anchoring is the
+# only thing separating this from a live dialog.
+read -r -d '' OPTION_ROW_INLINE <<'FIXTURE' || true
+The poller looks for the row. Please use --channels to run a list of
+approved channels. is one of the fragments, and the other is
+the row itself: ❯ 1. I am using this for local development — which is
+what we grep for.
+FIXTURE
+
+# The wrapped sentence with NO option row at all.
+read -r -d '' WRAPPED_SENTENCE_ONLY <<'FIXTURE' || true
+  Please use --channels to run a list of
+  approved channels.
+FIXTURE
+
+predicate_case "P8 FLY-2776 real 49x16 capture (title scrolled off, sentence wrapped) is the dialog" \
+  "$REAL_CAPTURE_NARROW" present
+predicate_case "P9 FLY-2776 real 120x40 capture (the historically matching shape) is the dialog" \
+  "$REAL_CAPTURE_WIDE" present
+predicate_case "P10 FLY-2776 body prose without the focused option row is not the dialog" \
+  "$NARROW_NO_OPTION_ROW" absent
+predicate_case "P11 FLY-2776 the option row alone is not the dialog" \
+  "$OPTION_ROW_ONLY" absent
+predicate_case "P12 FLY-2776 the option row quoted inside a line is not the dialog" \
+  "$OPTION_ROW_INLINE" absent
+predicate_case "P13 FLY-2776 a wrapped approved-channels sentence alone is not the dialog" \
+  "$WRAPPED_SENTENCE_ONLY" absent
+
+# A BORDERED dialog rendered narrow: the title has scrolled off AND the
+# approved-channels sentence is wrapped AND a border glyph sits between the two
+# halves. Collapsing whitespace alone would read `...run a list of │ │ approved
+# channels.` and never rejoin the sentence — the frame has to fold away first.
+# Neither the unbordered 2.1.280 capture nor the bordered wide fixture covers
+# this combination.
+read -r -d '' REAL_DIALOG_BORDERED_NARROW <<'FIXTURE' || true
+│ --dangerously-load-development-channels is │
+│ for local channel development only. Do not │
+│ use this option to run channels you have   │
+│ downloaded off the internet.               │
+│                                            │
+│ Please use --channels to run a list of     │
+│ approved channels.                         │
+│                                            │
+│ Channels: server:flywheel-inbox            │
+│                                            │
+│ ❯ 1. I am using this for local development │
+│   2. Exit                                  │
+│                                            │
+│ Enter to confirm · Esc to cancel           │
+╰────────────────────────────────────────────╯
+FIXTURE
+
+predicate_case "P14 FLY-2776 a bordered dialog that is BOTH truncated and wrapped is the dialog" \
+  "$REAL_DIALOG_BORDERED_NARROW" present
+
+# A Lead pane that RENDERS this dialog as a block — the shape the repo's own
+# docs and fixtures now contain verbatim — while Claude's composer is live
+# underneath. The dialog rows are reproduced UNPREFIXED on their own lines, so
+# the line anchor and the wrapped body sentence both match: the ONLY thing left
+# to reject this screen is the permission-mode indicator `⏵⏵`, which a modal
+# dialog hides and an ordinary Lead screen always shows.
+#
+# The `>`-quoted variant of this fixture would be rejected by the anchor long
+# before the composer check ran, so it would pass this case for the wrong
+# reason and prove nothing about the veto. P15b is the positive control that
+# keeps this honest: strip the composer line and the SAME screen must be
+# recognized.
+read -r -d '' TRANSCRIPT_BLOCK_WITH_PROMPT <<'FIXTURE' || true
+49x16 下抓到的屏幕是这样的:
+
+  Please use --channels to run a list of
+  approved channels.
+
+  ❯ 1. I am using this for local development
+    2. Exit
+
+  Enter to confirm · Esc to cancel
+
+  所以守卫认不出来。
+
+──────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+FIXTURE
+
+# The same bytes with the composer footer removed.
+TRANSCRIPT_BLOCK_NO_PROMPT="$(printf '%s\n' "$TRANSCRIPT_BLOCK_WITH_PROMPT" | grep -v '⏵⏵')"
+
+# The same block with no live composer but also no modal footer: prose that
+# reproduces the rows without reproducing the dialog.
+read -r -d '' TRANSCRIPT_BLOCK_NO_FOOTER <<'FIXTURE' || true
+The rows the recognizer keys on are:
+
+  ❯ 1. I am using this for local development
+    2. Exit
+
+and the sentence Please use --channels to run a list of approved channels.
+is the corroborating one.
+FIXTURE
+
+# An ordinary numbered list that happens to reuse the label, plus one body
+# sentence loose on the same screen.
+read -r -d '' ORDINARY_NUMBERED_LIST <<'FIXTURE' || true
+  Options considered:
+  1. I am using this for local development
+  2. Something else entirely
+
+  Please use --channels to run a list of approved channels.
+FIXTURE
+
+predicate_case "P15 FLY-2776 a rendered transcript block above a live composer is not the dialog" \
+  "$TRANSCRIPT_BLOCK_WITH_PROMPT" absent
+predicate_case "P15b FLY-2776 the same screen WITHOUT the composer is recognized — so P15 is the veto, not the anchor" \
+  "$TRANSCRIPT_BLOCK_NO_PROMPT" present
+
+# P15c — the composer veto must be LOAD-BEARING, not merely present. Delete it
+# from the shipped recognizer and P15's screen must flip to `present`; the
+# shipped recognizer must still say `absent`. Without this pair, a future
+# refactor could drop claude-lead.sh's `⏵⏵` check and every P case would stay
+# green while a Lead displaying an unprefixed capture got keystroked.
+MUTANT_NO_COMPOSER="$(printf '%s\n' "$PREDICATE_SRC" \
+  | sed "/grep -qF -e '⏵⏵'/,+2d")"
+if [ "$MUTANT_NO_COMPOSER" = "$PREDICATE_SRC" ]; then
+  fail "P15c mutation did not apply — the composer veto no longer has that shape"
+else
+  p15c_mutant=absent p15c_shipped=absent
+  ( eval "$SQUASH_SRC"; eval "$MUTANT_NO_COMPOSER"
+    _dev_channels_dialog_present "$TRANSCRIPT_BLOCK_WITH_PROMPT" ) && p15c_mutant=present
+  ( eval "$SQUASH_SRC"; eval "$PREDICATE_SRC"
+    _dev_channels_dialog_present "$TRANSCRIPT_BLOCK_WITH_PROMPT" ) && p15c_shipped=present
+  if [ "$p15c_mutant" = present ] && [ "$p15c_shipped" = absent ]; then
+    pass "P15c removing the composer veto makes that screen match; the shipped recognizer rejects it"
+  else
+    fail "P15c composer veto is not load-bearing: mutant=$p15c_mutant shipped=$p15c_shipped"
+  fi
+fi
+predicate_case "P16 FLY-2776 the dialog's rows reproduced without its modal footer are not the dialog" \
+  "$TRANSCRIPT_BLOCK_NO_FOOTER" absent
+predicate_case "P17 FLY-2776 an ordinary numbered list reusing the label is not the dialog" \
+  "$ORDINARY_NUMBERED_LIST" absent
+
+# The genuinely narrow REAL dialog: at 43x16 the option row itself wraps, so
+# the recognizer must NOT key it (we cannot tell which row the label belongs
+# to). Captured from the installed claude 2.1.280.
+read -r -d '' REAL_CAPTURE_43x16 <<'FIXTURE' || true
+  Do not use this option to run channels
+  you have downloaded off the internet.
+
+  Please use --channels to run a list of
+  approved channels.
+
+  Channels:
+  plugin:discord@flywheel-plugins,
+  server:flywheel-inbox
+
+  ❯ 1. I am using this for local
+       development
+    2. Exit
+
+  Enter to confirm · Esc to cancel
+FIXTURE
+
+predicate_case "P18 FLY-2776 a real dialog too narrow to render the option row is not keyed (fail closed)" \
+  "$REAL_CAPTURE_43x16" absent
+
 # ═══════════════════════════════════════════════════════════════════════════
 # T — poller branches against a PATH-shimmed fake tmux
 #
@@ -164,7 +417,16 @@ done
 case "$mode" in
   display-message)
     [ "${FAKE_PANE_ALIVE:-1}" = "1" ] || exit 1
-    printf '%s\n' "${FAKE_PANE_ID:-%0}"
+    # FLY-2776: the poller probes '#{pane_id}' for liveness and
+    # '#{pane_width}x#{pane_height}' for the NOT_SEEN classification. Answer
+    # each in its own shape — geometry is the evidence that made this
+    # incident diagnosable.
+    fmt=""
+    for a in "$@"; do fmt="$a"; done
+    case "$fmt" in
+      *pane_width*) printf '%s\n' "${FAKE_PANE_GEOM:-49x16}" ;;
+      *) printf '%s\n' "${FAKE_PANE_ID:-%0}" ;;
+    esac
     ;;
   capture-pane)
     n=0
@@ -219,7 +481,9 @@ run_poller() {
         else
           _log_startup() { printf "%s\n" "$*" >> "$FLY1679_LOG"; }
         fi
+        '"$SQUASH_SRC"'
         '"$PREDICATE_SRC"'
+        '"$DRIFT_SRC"'
         '"$POLLER_SRC"'
         _poll_dev_channels_dialog_v2 "${FLY1679_TIMEOUT:-2}"
       ' 2>/dev/null
@@ -280,10 +544,28 @@ else
   fail "T4 sends=$(sends_of) log=[$POLLER_LOG]"
 fi
 
-if grep -Eq 'NOT_SEEN classification: lines=[0-9]+ blank=false match_warning=1 match_local_dev=1 match_channels_hint=0 banner_channels=0 prompt_caret=1 pane_sha256=([a-f0-9]{64}|-)$' <<<"$POLLER_LOG"; then
-  pass "T4b timeout records classification without pane text"
+# This literal is a drift alarm, not a formatting preference: it guards the
+# promise that the timeout path records SHAPE ONLY — never pane text, never a
+# credential (FLY-1948). FLY-2776 added `geom=` and `match_option_row=` to it,
+# because "the box was on screen but the recognizer's structural half missed"
+# and "no box was ever drawn" used to look identical here, and the geometry is
+# what identifies a viewport-truncation miss on sight. If this fails, resync
+# the literal to the new line — do not loosen it into a substring check.
+if grep -Eq 'NOT_SEEN classification: lines=[0-9]+ geom=[0-9]+x[0-9]+ blank=false match_warning=1 match_local_dev=1 match_channels_hint=0 match_dangerously=0 match_option_row=0 match_option_squashed=1 match_modal_footer=0 match_live_prompt=0 banner_channels=0 prompt_caret=1 pane_sha256=([a-f0-9]{64}|-)$' <<<"$POLLER_LOG"; then
+  pass "T4b timeout records classification (shape + geometry) without pane text"
 else
-  fail "T4b missing or incorrect NOT_SEEN classification"
+  fail "T4b missing or incorrect NOT_SEEN classification: log=[$POLLER_LOG]"
+fi
+
+# T4c — FLY-2776: this same screen must NOT raise a drift alert. It is a Lead
+# talking about the flag in Discord, which is its job; the option label and the
+# title are both on it. Alerting on one bare fingerprint would page severe on
+# every cold start of every Lead that ever discusses this issue — and Aunt Cass
+# was discussing exactly this issue when the incident happened.
+if ! grep -q 'DEV_CHANNELS_SUSPECTED_DRIFT' <<<"$POLLER_LOG"; then
+  pass "T4c a conversation that quotes the dialog raises no drift alert"
+else
+  fail "T4c a benign transcript screen raised a drift alert: log=[$POLLER_LOG]"
 fi
 while IFS= read -r raw_line; do
   [[ -n "$raw_line" ]] || continue
@@ -718,7 +1000,9 @@ BODY
       /bin/bash -c '
         set -euo pipefail
         _log_startup() { printf "%s\n" "$*" >> "$FLY1679_LOG"; }
+        '"$SQUASH_SRC"'
         '"$PREDICATE_SRC"'
+        '"$DRIFT_SRC"'
         '"$POLLER_SRC"'
         _poll_dev_channels_dialog_v2 6
       ' >/dev/null 2>&1 || true
@@ -854,7 +1138,9 @@ E7CHILD
 set -euo pipefail
 FLYWHEEL_STARTUP_LOG="$e7_log"
 _log_startup() { printf '%s\n' "\$*" >> "\$FLYWHEEL_STARTUP_LOG"; }
+$SQUASH_SRC
 $PREDICATE_SRC
+$DRIFT_SRC
 $POLLER_SRC
 _poll_dev_channels_dialog_v2 20 &
 POLLER=\$!
@@ -916,7 +1202,9 @@ FLYWHEEL_STARTUP_LOG="$e8_log"
 FLYWHEEL_DIALOG_TIMEOUT_SEC=20
 _log_startup() { printf '%s\n' "\$*" >> "\$FLYWHEEL_STARTUP_LOG"; }
 $GATE_SRC
+$SQUASH_SRC
 $PREDICATE_SRC
+$DRIFT_SRC
 $POLLER_SRC
 $IS_RUNNING_SRC
 $REAPER_SRC
