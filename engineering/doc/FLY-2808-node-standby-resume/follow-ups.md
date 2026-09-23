@@ -34,3 +34,12 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 - LOW：Claude/Codex adapter 的 `onRetired` observer 异常被隔离，不再把已成功 launch 改写为失败。
 
 R3 关于 limiter、`queueMs`/首个模型消费 receipt 的 LOW 建议与 R2 已记录的两项相同，继续保留为后续单，未在默认关闭实现中提前扩面。以上 disposition 仍需新的 exact-head code review 才能生效，不能复用 R3 旧头 verdict。
+
+## 实现 code review R4 advisories
+
+Exact head `a351d044b` 的 R4 effective verdict 为 `APPROVED`；以下建议不阻塞该 review，但已通过 `ask --report` 交给 Lead：
+
+- MEDIUM `resume-cleanup-unconfirmed-permanent-latch`：`cleanup_unconfirmed` 已只在物理死亡无法证明时 fail closed，但仍缺少 Lead 可审计的 reopen 操作；同时 founder activity DTO 对该 latch 仍可能投影 `canResume: true`。需后续把人工解锁权限、审计 receipt 与 `canResume` 语义一并设计，不能以直接改库代替。
+- LOW `resume-metrics-and-concurrency-caps-missing`：与 R2/R3 已记录项相同，仍缺同 worktree 串行、跨 worktree 最大 2，以及 queue/首模型消费时点的准确 receipt。
+
+QA full CI 后的 implement rework 只修复 feature-flag governance 红项，没有把上述 advisory 偷渡进本轮，也没有修改无关真实 tmux/load-probe 测试。由于 head 已移动，R4 approval 不能绑定新头；需重新 code review。
