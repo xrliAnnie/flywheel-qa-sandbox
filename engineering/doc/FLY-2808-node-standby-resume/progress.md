@@ -1,13 +1,14 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-23T06:08:19.129Z
-nextStep: Create PR, add literal-last milestone, verify final docs-only head
+phaseCursor: 3/4
+updated: 2026-09-23T06:10:14.786Z
+nextStep: Add FLY-2808 milestone as literal last commit; request exact-head code
+  review; complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
-**phase**: implement (1/4)
-**next**: Create PR, add literal-last milestone, verify final docs-only head
+**phase**: implement (3/4)
+**next**: Add FLY-2808 milestone as literal last commit; request exact-head code review; complete needs_review
