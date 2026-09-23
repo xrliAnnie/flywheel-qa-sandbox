@@ -32,6 +32,9 @@ function quota() {
 					fableWeeklyResetAt: null,
 					exhaustedUntil: null,
 					authUnusable: false,
+					subscriptionStatus: "active" as const,
+					detailObservedAt: "2026-09-18T00:41:00.000Z",
+					prepaid: { known: true, cards: null },
 				},
 				{
 					name: "business",
@@ -52,6 +55,31 @@ function quota() {
 					retiresAt: "2026-10-14T07:00:00.000Z",
 					exhaustedUntil: null,
 					authUnusable: false,
+					subscriptionStatus: "active" as const,
+					detailObservedAt: "2026-09-18T00:41:00.000Z",
+					prepaid: { known: true, cards: null },
+					manualPrepaid: {
+						account: "business",
+						confirmedBy: "founder",
+						confirmedAt: "2026-09-18T00:42:00.000Z",
+						cards: [{ expiresAt: "2026-10-16T00:00:00.000Z" }],
+					},
+				},
+				{
+					name: "personal1",
+					active: false,
+					fiveHPct: 24,
+					sevenDPct: 70,
+					observedAt: "2026-09-08T21:33:20.161Z",
+					ageMinutes: 13_000,
+					stale: true,
+					weeklyResetAt: "2026-09-09T00:00:00.000Z",
+					exhaustedUntil: null,
+					authUnusable: false,
+					subscriptionStatus: "canceled" as const,
+					detailObservedAt: "2026-09-18T00:41:00.000Z",
+					usageStatus: "forbidden:oauth_not_allowed_for_organization",
+					prepaid: { known: false, cards: null },
 				},
 			],
 		},
@@ -91,9 +119,28 @@ describe("account quota shared view", () => {
 			source: "machine",
 			observedAt: generatedAt,
 		});
+		expect(shopping.credits).toMatchObject({
+			display: "明细未提供",
+			source: "machine",
+		});
 		expect(
 			view.claude.find((row) => row.name === "business")?.subscriptionTier,
 		).toMatchObject({ display: "Pro", source: "machine" });
+		expect(
+			view.claude.find((row) => row.name === "business")?.credits,
+		).toMatchObject({
+			display: "1 张\n#1 到期 2026/10/15\n确认人 founder",
+			source: "manual",
+		});
+		const canceled = view.claude.find((row) => row.name === "personal1")!;
+		expect(canceled.subscriptionTier.display).toBe("已取消");
+		expect(canceled.fiveHReset.display).toBe("已取消");
+		expect(canceled.fableReset.display).toBe("已取消");
+		expect(canceled.weeklyUsage.display).toBe("已取消");
+		expect(canceled.fableUsage.display).toBe("已取消");
+		expect(canceled.credits.display).toBe("已取消");
+		expect(canceled.expiry.display).toBe("已取消");
+		expect(canceled.weeklyUsage.display).not.toContain("70%");
 
 		const school = view.claude.find((row) => row.name === "school")!;
 		expect(school.accountMissing).toBe(true);
@@ -128,6 +175,9 @@ describe("account quota shared view", () => {
 
 		expect(html).toContain("<th>周重置日</th>");
 		expect(html).toContain("<th>5h reset</th>");
+		expect(html).toContain("<th>Fable 周用量</th>");
+		expect(html).toContain("<th>充值卡</th>");
+		expect(html).toContain("79% fable");
 		expect(html).not.toContain("@example.com");
 		expect(html).not.toContain("shop&lt;owner&gt;");
 		expect(visibleHtml).not.toContain("*");
@@ -166,6 +216,39 @@ describe("account quota shared view", () => {
 		expect(tick).not.toContain("79%");
 		expect(tick).toContain("Codex 无数值源");
 	});
+
+	it("does not let a stale canceled observation hide a recovered usage probe", () => {
+		const value = quota();
+		const personal1 = value.claude.accounts.find(
+			(account) => account.name === "personal1",
+		)!;
+		personal1.usageStatus = "ok";
+		personal1.detailObservedAt = "2026-09-17T00:00:00.000Z";
+		const row = buildAccountQuotaView({
+			generatedAt,
+			quota: value,
+		}).claude.find((account) => account.name === "personal1")!;
+
+		expect(row.weeklyUsage).toMatchObject({
+			display: "70%",
+			source: "machine",
+		});
+		expect(row.subscriptionTier.display).not.toBe("已取消");
+	});
+
+	it("marks an old canceled observation stale", () => {
+		const value = quota();
+		const personal1 = value.claude.accounts.find(
+			(account) => account.name === "personal1",
+		)!;
+		personal1.detailObservedAt = "2026-09-17T00:00:00.000Z";
+		const row = buildAccountQuotaView({
+			generatedAt,
+			quota: value,
+		}).claude.find((account) => account.name === "personal1")!;
+
+		expect(row.weeklyUsage).toMatchObject({ display: "已取消", stale: true });
+	});
 });
 
 const codexQuota = () => ({
@@ -188,7 +271,12 @@ const codexQuota = () => ({
 				unlimited: false,
 				balance: "0",
 			},
-			resetCredits: { known: true, value: null },
+			resetCredits: {
+				known: true,
+				value: null,
+				availableCount: 0,
+				credits: [],
+			},
 			observedAt: "2026-09-18T00:40:00.000Z",
 			ageMinutes: 5,
 			stale: false,
@@ -214,7 +302,12 @@ const codexQuota = () => ({
 				unlimited: null,
 				balance: null,
 			},
-			resetCredits: { known: false, value: null },
+			resetCredits: {
+				known: false,
+				value: null,
+				availableCount: null,
+				credits: null,
+			},
 			observedAt: "2026-09-18T00:40:00.000Z",
 			ageMinutes: 5,
 			stale: false,
@@ -240,7 +333,18 @@ const codexQuota = () => ({
 				unlimited: false,
 				balance: "12.5",
 			},
-			resetCredits: { known: true, value: "2" },
+			resetCredits: {
+				known: true,
+				value: "2",
+				availableCount: 2,
+				credits: [
+					{
+						id: "shopping-card-1",
+						status: "available",
+						expiresAt: "2026-10-01T00:00:00.000Z",
+					},
+				],
+			},
 			observedAt: "2026-09-17T20:00:00.000Z",
 			ageMinutes: 285,
 			stale: true,
@@ -280,7 +384,7 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 			source: "machine",
 		});
 		expect(personal.credits).toMatchObject({
-			display: "余额 0 · 无可兑重置",
+			display: "0 张",
 			source: "machine",
 		});
 		expect(personal.active).toBe(true);
@@ -288,13 +392,15 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		expect(personal.recovery?.display).toContain("09-23 19:00 PT");
 
 		const shopping = view.codex.find((row) => row.name === "shopping")!;
-		expect(shopping.credits.display).toBe("余额 12.5 · 可兑重置 2");
+		expect(shopping.credits.display).toBe(
+			"2 张\n#1 到期 2026/9/30\n还有 1 张，明细未给全",
+		);
 		expect(shopping.note).toBe("使用中，本次未读");
 		expect(shopping.weeklyUsage.stale).toBe(true);
 
 		const personal1 = view.codex.find((row) => row.name === "personal1")!;
 		expect(personal1.credits).toMatchObject({
-			display: "RPC 未暴露",
+			display: "兑换卡未暴露",
 			source: "missing",
 		});
 		expect(view.codexSourceLabel).toBe("机器读数 · account/rateLimits/read");
@@ -312,6 +418,7 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 			"shopping",
 			"business",
 			"personal",
+			"personal1",
 			"school",
 		]);
 		expect(view.claude.at(-1)?.sortAt).toBeNull();
@@ -320,8 +427,10 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 	it("marks exhausted rows red with a machine recovery moment", () => {
 		const html = renderAccountsPageHtml(buildAccountQuotaView(snapshot()));
 
-		expect(html).toContain("<th>credits / 重置兑换</th>");
-		expect(html).toContain("<th>Fable 周用量</th>");
+		expect(html).toContain("<th>兑换卡</th>");
+		expect(html).toContain(
+			"2 张<br>#1 到期 2026/9/30<br>还有 1 张，明细未给全",
+		);
 		expect(html).toContain('<tr class="exhausted-account active-account">');
 		expect(html).toContain(
 			".exhausted-account td{background:var(--exhausted-row)}",
@@ -332,7 +441,7 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		expect(html).toContain(
 			"<span>高亮行：当前在用（Codex：机器判定，凭据与 ~/.codex 一致）</span>",
 		);
-		expect(html).toContain("RPC 未暴露");
+		expect(html).toContain("兑换卡未暴露");
 		expect(html).not.toContain("无数据 weekly;");
 		expect(html).toContain("token 状态");
 		expect(html).toContain("打满");

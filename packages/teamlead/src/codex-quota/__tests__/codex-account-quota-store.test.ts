@@ -38,7 +38,20 @@ function store(): CodexAccountQuotaStore {
 					unlimited: false,
 					balance: "0",
 				},
-				resetCredits: { known: true, value: null },
+				creditsObservedAt: "2026-09-21T00:00:00.000Z",
+				resetCredits: {
+					known: true,
+					value: "2",
+					availableCount: 2,
+					credits: [
+						{
+							id: "card-1",
+							status: "available",
+							expiresAt: "2026-10-01T00:00:00.000Z",
+						},
+					],
+				},
+				resetCreditsObservedAt: "2026-09-21T00:00:00.000Z",
 				unclassifiedWindows: 0,
 			},
 			{
@@ -56,7 +69,14 @@ function store(): CodexAccountQuotaStore {
 					unlimited: null,
 					balance: null,
 				},
-				resetCredits: { known: false, value: null },
+				creditsObservedAt: null,
+				resetCredits: {
+					known: false,
+					value: null,
+					availableCount: null,
+					credits: null,
+				},
+				resetCreditsObservedAt: null,
 				unclassifiedWindows: 0,
 			},
 		],
@@ -71,6 +91,50 @@ describe("FLY-2688 — Codex account quota store", () => {
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readCodexAccountQuotaStore(path)).toEqual(store());
 		expect(readFileSync(path, "utf8")).not.toContain("id_token");
+	});
+
+	it("normalizes the production legacy reset-credit shape without dropping the store", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2807-legacy-store-"));
+		const path = join(dir, "codex-accounts.json");
+		const legacy = store() as unknown as Record<string, unknown>;
+		const accounts = legacy.accounts as Array<Record<string, unknown>>;
+		accounts[0]!.resetCredits = { known: true, value: "3" };
+		accounts[1]!.resetCredits = { known: false, value: null };
+		writeFileSync(path, JSON.stringify(legacy));
+
+		const read = readCodexAccountQuotaStore(path);
+		expect(read?.accounts).toHaveLength(2);
+		expect(read?.accounts[0]?.planType).toBe("pro");
+		expect(read?.accounts[0]?.resetCredits).toEqual({
+			known: true,
+			value: "3",
+			availableCount: 3,
+			credits: null,
+		});
+		expect(read?.accounts[1]?.resetCredits).toEqual({
+			known: false,
+			value: null,
+			availableCount: null,
+			credits: null,
+		});
+	});
+
+	it("does not promote fractional legacy values to card counts", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2807-fraction-store-"));
+		const path = join(dir, "codex-accounts.json");
+		const legacy = store() as unknown as Record<string, unknown>;
+		const accounts = legacy.accounts as Array<Record<string, unknown>>;
+		accounts[0]!.resetCredits = { known: true, value: "3.50" };
+		writeFileSync(path, JSON.stringify(legacy));
+
+		expect(readCodexAccountQuotaStore(path)?.accounts[0]?.resetCredits).toEqual(
+			{
+				known: false,
+				value: null,
+				availableCount: null,
+				credits: null,
+			},
+		);
 	});
 
 	it("returns null for a missing, unparseable or schema-invalid store", () => {

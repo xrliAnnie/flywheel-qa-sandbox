@@ -5,9 +5,9 @@
  * are read too), reads each one's `account/rateLimits/read` in an isolated
  * CODEX_HOME, and persists back any refresh-token rotation the read caused.
  *
- * Deliberately on-demand only: nothing here is scheduled, and an account that
- * is in use by a live Codex process is never probed — one refresh token cannot
- * be shared by two processes without invalidating the other.
+ * Deliberately on-demand only: nothing here is scheduled. An account in use by
+ * a live Codex process is read only through WHAM GET; that path never refreshes,
+ * persists, leases, or otherwise shares the single-use refresh-token family.
  */
 
 import { readFileSync, rmSync } from "node:fs";
@@ -28,6 +28,10 @@ import type {
 import { CodexCandidateWorkspace, codexQuotaIdentityReader } from "./probe.js";
 import { readCodexQuota } from "./quota-reader.js";
 import { parseCodexRateLimitDetail } from "./rate-limit-detail.js";
+import {
+	type ReadCodexReadonlyUsageOptions,
+	readCodexReadonlyUsage,
+} from "./readonly-usage-reader.js";
 
 const DEFAULT_TOTAL_DEADLINE_MS = 45_000;
 
@@ -59,6 +63,9 @@ export interface CodexAccountsObserverOptions {
 	refreshInUse?: () => Promise<
 		(accountKey: string, slot: string) => CodexInUseVerdict
 	>;
+	readInUseQuota?: (
+		options: ReadCodexReadonlyUsageOptions,
+	) => ReturnType<typeof readCodexReadonlyUsage>;
 	/** Last store, so an unread account still shows its previous reading. */
 	previous?: CodexAccountQuotaStore | null;
 }
@@ -72,6 +79,8 @@ const EMPTY_CREDITS: CodexAccountReading["credits"] = {
 const EMPTY_RESET_CREDITS: CodexAccountReading["resetCredits"] = {
 	known: false,
 	value: null,
+	availableCount: null,
+	credits: null,
 };
 
 function carried(
@@ -84,7 +93,9 @@ function carried(
 	| "fiveH"
 	| "weekly"
 	| "credits"
+	| "creditsObservedAt"
 	| "resetCredits"
+	| "resetCreditsObservedAt"
 	| "unclassifiedWindows"
 > {
 	if (previous?.identityKey !== identityKey) previous = undefined;
@@ -94,7 +105,11 @@ function carried(
 		fiveH: previous?.fiveH ?? null,
 		weekly: previous?.weekly ?? null,
 		credits: previous?.credits ?? EMPTY_CREDITS,
+		creditsObservedAt:
+			previous?.creditsObservedAt ?? previous?.observedAt ?? null,
 		resetCredits: previous?.resetCredits ?? EMPTY_RESET_CREDITS,
+		resetCreditsObservedAt:
+			previous?.resetCreditsObservedAt ?? previous?.observedAt ?? null,
 		unclassifiedWindows: previous?.unclassifiedWindows ?? 0,
 	};
 }
@@ -240,7 +255,9 @@ async function readSlot(
 				fiveH: detail.fiveH,
 				weekly: detail.weekly,
 				credits: detail.credits,
+				creditsObservedAt: input.nowIso,
 				resetCredits: detail.resetCredits,
+				resetCreditsObservedAt: input.nowIso,
 				unclassifiedWindows: detail.unclassifiedWindows,
 			};
 		},
@@ -344,11 +361,71 @@ export async function observeCodexAccounts(
 			? await options.refreshInUse().catch(() => () => "unknown" as const)
 			: options.isInUse;
 		const inUse = guard?.(accountKey, slot) ?? false;
-		if (inUse !== false) {
+		if (inUse === "unknown") {
 			accounts.push(
 				reading({
-					authHealth: inUse === true ? "in_use_unshared" : "unknown",
-					note: inUse === true ? "in_use_unshared" : "inventory_unavailable",
+					authHealth: "unknown",
+					note: "inventory_unavailable",
+					...carried(previous, accountKey),
+				}),
+			);
+			continue;
+		}
+		if (inUse === true) {
+			const matchingPrevious =
+				previous?.identityKey === accountKey ? previous : undefined;
+			const readonly = await (options.readInUseQuota ?? readCodexReadonlyUsage)(
+				{
+					authPath:
+						accountKey === canonicalAccountKey
+							? options.canonicalAuthPath
+							: join(options.profilesRoot, slot, "auth.json"),
+					registry: pool,
+					expectedAccountKey: accountKey,
+					now,
+					...(options.signal ? { signal: options.signal } : {}),
+				},
+			);
+			if ("ok" in readonly) {
+				const creditsKnown = readonly.ok.credits.known;
+				const resetCreditsKnown = readonly.ok.resetCredits.known;
+				accounts.push(
+					reading({
+						authHealth: "valid",
+						note: null,
+						...readonly.ok,
+						credits: creditsKnown
+							? readonly.ok.credits
+							: (matchingPrevious?.credits ?? readonly.ok.credits),
+						creditsObservedAt: creditsKnown
+							? readonly.ok.observedAt
+							: (matchingPrevious?.creditsObservedAt ??
+								matchingPrevious?.observedAt ??
+								null),
+						resetCredits: resetCreditsKnown
+							? readonly.ok.resetCredits
+							: (matchingPrevious?.resetCredits ?? readonly.ok.resetCredits),
+						resetCreditsObservedAt: resetCreditsKnown
+							? readonly.ok.observedAt
+							: (matchingPrevious?.resetCreditsObservedAt ??
+								matchingPrevious?.observedAt ??
+								null),
+					}),
+				);
+				continue;
+			}
+			const note =
+				readonly.error === "identity_mismatch"
+					? "identity_mismatch"
+					: readonly.error === "unauthorized"
+						? "readonly_unauthorized"
+						: readonly.error === "forbidden"
+							? "readonly_forbidden"
+							: "read_failed";
+			accounts.push(
+				reading({
+					authHealth: "unknown",
+					note,
 					...carried(previous, accountKey),
 				}),
 			);

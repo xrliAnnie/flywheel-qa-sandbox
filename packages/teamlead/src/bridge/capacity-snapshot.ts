@@ -21,6 +21,14 @@ import {
 	readPoolSubscriptionTier,
 } from "../account-heal/quota-monitor-credentials.js";
 import {
+	defaultClaudeAccountDetailStorePath,
+	readClaudeAccountDetailStore,
+} from "../claude-quota/account-detail-store.js";
+import {
+	defaultClaudeManualPrepaidPath,
+	readClaudeManualPrepaid,
+} from "../claude-quota/manual-prepaid.js";
+import {
 	type CodexAccountReading,
 	defaultCodexAccountQuotaStorePath,
 	readCodexAccountQuotaStore,
@@ -139,6 +147,15 @@ export interface CapacitySnapshot {
 				observedAt: string | null;
 				ageMinutes: number | null;
 				stale: boolean | null;
+				subscriptionStatus?: "active" | "canceled" | "unknown";
+				detailObservedAt?: string | null;
+				usageStatus?: string;
+				prepaid?: NonNullable<
+					ReturnType<typeof readClaudeAccountDetailStore>
+				>["accounts"][number]["prepaid"];
+				manualPrepaid?: NonNullable<
+					ReturnType<typeof readClaudeManualPrepaid>
+				>[number];
 				fiveHResetAt?: string | null;
 				weeklyResetAt: string | null;
 				fableWeeklyResetAt?: string | null;
@@ -170,6 +187,7 @@ export interface CodexAccountProjection {
 	weeklyResetAt: string | null;
 	credits: CodexAccountReading["credits"];
 	resetCredits: CodexAccountReading["resetCredits"];
+	resetCreditsObservedAt?: string | null;
 	observedAt: string | null;
 	ageMinutes: number | null;
 	stale: boolean | null;
@@ -263,6 +281,8 @@ function projectCodexAccount(
 		weeklyResetAt: reading.weekly?.resetAt ?? null,
 		credits: reading.credits,
 		resetCredits: reading.resetCredits,
+		resetCreditsObservedAt:
+			reading.resetCreditsObservedAt ?? reading.observedAt,
 		observedAt: reading.observedAt,
 		ageMinutes,
 		stale: ageMinutes === null ? null : ageMinutes > input.staleAfterMinutes,
@@ -295,6 +315,8 @@ export interface CapacitySnapshotDeps {
 	readDataDisk?: typeof readSharedDataDisk;
 	accountStorePath?: string;
 	codexAccountStorePath?: string;
+	claudeAccountDetailStorePath?: string;
+	claudeManualPrepaidPath?: string;
 	claudeProfilesDir?: string;
 	quotaConfigPath?: string;
 	now?: () => number;
@@ -503,9 +525,36 @@ export async function buildCapacitySnapshot(
 		(deps.accountStorePath === undefined
 			? defaultCodexAccountQuotaStorePath()
 			: join(dirname(accountStorePath), "codex-accounts.json"));
+	const claudeAccountDetailStorePath =
+		deps.claudeAccountDetailStorePath ??
+		(deps.accountStorePath === undefined
+			? defaultClaudeAccountDetailStorePath()
+			: join(dirname(accountStorePath), "claude-account-details.json"));
+	const claudeManualPrepaidPath =
+		deps.claudeManualPrepaidPath ??
+		(deps.accountStorePath === undefined
+			? defaultClaudeManualPrepaidPath()
+			: join(dirname(accountStorePath), "manual-prepaid.json"));
+	const claudeManualPrepaidStateDir =
+		deps.accountStorePath === undefined
+			? dirname(dirname(defaultClaudeManualPrepaidPath()))
+			: dirname(accountStorePath);
 	const quotaConfigPath =
 		deps.quotaConfigPath ?? defaultQuotaMonitorConfigPath();
 	const codexStore = readCodexAccountQuotaStore(codexAccountStorePath);
+	const claudeDetails = readClaudeAccountDetailStore(
+		claudeAccountDetailStorePath,
+	);
+	const claudeDetailsByName = new Map(
+		(claudeDetails?.accounts ?? []).map((account) => [account.name, account]),
+	);
+	const manualPrepaid = readClaudeManualPrepaid(
+		claudeManualPrepaidPath,
+		claudeManualPrepaidStateDir,
+	);
+	const manualPrepaidByName = new Map(
+		(manualPrepaid ?? []).map((entry) => [entry.account, entry]),
+	);
 	const staleAfterMinutes =
 		loadQuotaMonitorConfig(quotaConfigPath).config.candidateSweepMinutes * 2;
 	let accountStore: ReturnType<typeof readStoreStrict> = null;
@@ -561,6 +610,8 @@ export async function buildCapacitySnapshot(
 		}
 	}
 	const accounts = accountEntries.map((account) => {
+		const detail = claudeDetailsByName.get(account.name);
+		const manual = manualPrepaidByName.get(account.name);
 		const subscriptionTier = readPoolSubscriptionTier(
 			claudeProfilesDir,
 			account.name,
@@ -588,6 +639,15 @@ export async function buildCapacitySnapshot(
 			observedAt: accountObservedAt,
 			ageMinutes,
 			stale: ageMinutes === null ? null : ageMinutes > staleAfterMinutes,
+			...(detail === undefined
+				? {}
+				: {
+						subscriptionStatus: detail.subscription,
+						detailObservedAt: detail.observedAt,
+						usageStatus: detail.usageStatus,
+						prepaid: detail.prepaid,
+					}),
+			...(manual === undefined ? {} : { manualPrepaid: manual }),
 			...(account.fiveHResetAt === undefined
 				? {}
 				: { fiveHResetAt: validInstant(account.fiveHResetAt) }),

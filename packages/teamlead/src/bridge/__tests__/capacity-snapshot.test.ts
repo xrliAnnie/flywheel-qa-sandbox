@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_QUOTA_MONITOR_CONFIG } from "../../account-heal/quota-monitor-config.js";
 import {
@@ -220,6 +220,136 @@ describe("FLY-2688 — Codex quota projection", () => {
 });
 
 describe("buildCapacitySnapshot", () => {
+	it("projects Claude subscription and prepaid details without secrets", async () => {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: "personal1",
+			accounts: [
+				{
+					name: "personal1",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: "2026-09-09T00:00:00Z",
+					lastObservedAt: "2026-09-08T21:33:20.161Z",
+					observedFiveHPct: 24,
+					observedSevenDPct: 70,
+				},
+			],
+		});
+		writeFileSync(
+			join(dirname(accountStorePath), "claude-account-details.json"),
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-23T00:00:00.000Z",
+				accounts: [
+					{
+						name: "personal1",
+						observedAt: "2026-09-23T00:00:00.000Z",
+						subscription: "canceled",
+						usageStatus: "forbidden:oauth_not_allowed_for_organization",
+						prepaid: { known: false, cards: null },
+						note: "prepaid_forbidden",
+					},
+				],
+			}),
+		);
+		writeFileSync(
+			join(dirname(accountStorePath), "manual-prepaid.json"),
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						account: "personal1",
+						confirmedBy: "founder",
+						confirmedAt: "2026-09-22T00:00:00.000Z",
+						cards: [{ expiresAt: "2026-10-01T00:00:00.000Z" }],
+					},
+				],
+			}),
+			{ mode: 0o600 },
+		);
+
+		const snapshot = await buildCapacitySnapshot({
+			now: () => Date.parse("2026-09-23T00:00:00.000Z"),
+			accountStorePath,
+			readMemoryFreePct: async () => ({
+				freePct: 40,
+				observedAt: "2026-09-23T00:00:00.000Z",
+			}),
+			store: {
+				getActiveSessions: () => [] as never,
+				getFleetPressureHold: () => undefined,
+				getAdmissionPause: () => undefined,
+			},
+		});
+
+		expect(snapshot.quota.claude.accounts[0]).toMatchObject({
+			name: "personal1",
+			subscriptionStatus: "canceled",
+			detailObservedAt: "2026-09-23T00:00:00.000Z",
+			usageStatus: "forbidden:oauth_not_allowed_for_organization",
+			prepaid: { known: false, cards: null },
+			manualPrepaid: {
+				account: "personal1",
+				confirmedBy: "founder",
+			},
+		});
+		expect(JSON.stringify(snapshot)).not.toContain("accessToken");
+	});
+
+	it("does not trust an explicit manual prepaid file outside the configured state directory", async () => {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: "personal1",
+			accounts: [
+				{
+					name: "personal1",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+					lastObservedAt: null,
+					observedFiveHPct: null,
+					observedSevenDPct: null,
+				},
+			],
+		});
+		const outsideDir = mkdtempSync(join(tmpdir(), "fly2807-outside-manual-"));
+		scratch.push(outsideDir);
+		const outsidePath = join(outsideDir, "manual-prepaid.json");
+		writeFileSync(
+			outsidePath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						account: "personal1",
+						confirmedBy: "founder",
+						confirmedAt: "2026-09-23T00:00:00.000Z",
+						cards: [{ expiresAt: "2026-10-01T00:00:00.000Z" }],
+					},
+				],
+			}),
+			{ mode: 0o600 },
+		);
+
+		const snapshot = await buildCapacitySnapshot({
+			now: () => Date.parse("2026-09-23T00:00:00.000Z"),
+			accountStorePath,
+			claudeManualPrepaidPath: outsidePath,
+			readMemoryFreePct: async () => ({
+				freePct: 40,
+				observedAt: "2026-09-23T00:00:00.000Z",
+			}),
+			store: {
+				getActiveSessions: () => [] as never,
+				getFleetPressureHold: () => undefined,
+				getAdmissionPause: () => undefined,
+			},
+		});
+
+		expect(snapshot.quota.claude.accounts[0]).not.toHaveProperty(
+			"manualPrepaid",
+		);
+	});
+
 	it("combines current machine, brake, runner, and sanitized quota facts", async () => {
 		const accountStorePath = writeAccountStore({
 			generation: 7,
