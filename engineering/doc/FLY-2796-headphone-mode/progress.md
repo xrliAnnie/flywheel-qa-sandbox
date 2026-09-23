@@ -1,15 +1,13 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 1/7
-updated: 2026-09-23T23:25:42.721Z
-nextStep: Wire resident claims and canonical RoomIO through production
-  assistant, eleven, and huddle composition roots; resolve /gemini leadId
-  mapping
+phaseCursor: 2/7
+updated: 2026-09-23T23:48:27.361Z
+nextStep: finish production carrier/RoomIO composition, then durable inbox
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (1/7)
-**next**: Wire resident claims and canonical RoomIO through production assistant, eleven, and huddle composition roots; resolve /gemini leadId mapping
+**phase**: implement (2/7)
+**next**: finish production carrier/RoomIO composition, then durable inbox
