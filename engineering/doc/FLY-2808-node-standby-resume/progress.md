@@ -2,9 +2,9 @@
 issue: FLY-2808
 phase: implement
 phaseCursor: 5/6
-updated: 2026-09-23T11:40:51.235Z
-nextStep: Implement dedicated launched-resume teardown, launchOutcome race,
-  lease margin, and adapter race fix; rerun focused tests
+updated: 2026-09-23T11:53:59.118Z
+nextStep: Run lint, affected related tests, update evidence docs, commit and
+  request new exact-head code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -15,4 +15,4 @@ pointers:
 
 # FLY-2808 progress
 **phase**: implement (5/6)
-**next**: Implement dedicated launched-resume teardown, launchOutcome race, lease margin, and adapter race fix; rerun focused tests
+**next**: Run lint, affected related tests, update evidence docs, commit and request new exact-head code review
