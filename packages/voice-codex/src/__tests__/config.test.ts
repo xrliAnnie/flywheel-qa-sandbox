@@ -159,6 +159,28 @@ describe("voice daemon config", () => {
 		});
 	});
 
+	it("caps the waiting sound at 15 seconds by default and lets the operator tune it", () => {
+		const env = {
+			TEAMLEAD_API_TOKEN: "master",
+			OPENAI_API_KEY: "api-key",
+		};
+		expect(loadVoiceDaemonConfig(env, "/Users/tester").replyWaitMs).toBe(
+			15_000,
+		);
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...env, FLYWHEEL_VOICE_REPLY_WAIT_MS: "20000" },
+				"/Users/tester",
+			).replyWaitMs,
+		).toBe(20_000);
+		expect(() =>
+			loadVoiceDaemonConfig(
+				{ ...env, FLYWHEEL_VOICE_REPLY_WAIT_MS: "0" },
+				"/Users/tester",
+			),
+		).toThrow("FLYWHEEL_VOICE_REPLY_WAIT_MS must be a positive integer");
+	});
+
 	it("rejects a malformed voice build identity", () => {
 		expect(() =>
 			loadVoiceDaemonConfig(

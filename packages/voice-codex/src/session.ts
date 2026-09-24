@@ -1,13 +1,20 @@
 import type {
 	ReceiveHealth,
 	RoomAudioOwner,
+	RoomBargeInEvent,
 	RoomIO,
+	RoomPresence,
 } from "flywheel-voice-core";
 import type { HeadphoneSession } from "flywheel-voice-headphone";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
-import type { PreparedSpeech } from "./speech.js";
+import { type PreparedSpeech, prepareReplySpeech } from "./speech.js";
+
+/** FLY-2796: default waiting-sound ceiling; FLYWHEEL_VOICE_REPLY_WAIT_MS. */
+export const DEFAULT_REPLY_WAIT_MS = 15_000;
+const REPLY_UNAVAILABLE = "📻 回话暂时不通，你可以再说一遍";
+const DELIVERY_LOST = "📻 有一句可能没送到，请再说一遍";
 
 export interface FrontendHandlers {
 	onTranscript(input: {
@@ -25,11 +32,17 @@ export interface FrontendHandlers {
 		reason: string;
 	}): void;
 	onClosed(outcome: VoiceEnd): void;
+	/** FLY-2796: please-repeat notices are said aloud as well as posted. */
+	onStatus(text: string): void;
+	/** FLY-2796: her identity while she is the only human in the room. */
+	soleSpeaker(): { ownerUserId: string; ownerName: string | null } | null;
 }
 
 export interface RoomHandlers {
 	onAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	onFounderPresence(present: boolean): void;
+	onPresence(presence: RoomPresence): void;
+	onBargeIn(event: RoomBargeInEvent): void;
 	onReceiveHealth(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
 	assertLease(): void;
@@ -71,6 +84,12 @@ export interface GenericVoiceSessionOptions {
 	evidence(record: Record<string, unknown>): void;
 	/** Retained for config compatibility; playback uses an audio-duration budget. */
 	confirmationMs: number;
+	/**
+	 * FLY-2796: longest the waiting sound plays for a delivered sentence before
+	 * the session stops it and says the reply is unavailable. Defaults to
+	 * DEFAULT_REPLY_WAIT_MS until she has used it and picks a value.
+	 */
+	replyWaitMs?: number;
 	/** Plan §7: one fixed ceiling over preflight and both start branches. */
 	startDeadlineMs?: number;
 	/**
@@ -96,6 +115,13 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 
 type SpeechReceipt = "confirmed" | "unconfirmed" | "failed";
 
+/** A Lead reply, or a line the session says on its own (a prompt). */
+interface QueuedSpeech {
+	speech: PreparedSpeech;
+	kind: "reply" | "prompt";
+	resolve(status: SpeechReceipt): void;
+}
+
 export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly frontend: FrontendLike;
 	private readonly room: RoomLike;
@@ -119,11 +145,21 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private presenceWaiters: Array<(present: boolean) => void> = [];
 	private latestReceiveHealth?: ReceiveHealth;
 	private headphone?: Pick<HeadphoneSession, "start" | "close">;
-	private pendingSpeech?: {
-		speech: PreparedSpeech;
-		resolve(status: SpeechReceipt): void;
+	private pendingSpeech?: QueuedSpeech & {
 		playbackTimer?: ReturnType<typeof setTimeout>;
 	};
+	/**
+	 * FLY-2796: one line speaks at a time. A Lead reply that arrives while a
+	 * prompt is being said waits its turn instead of being refused.
+	 */
+	private readonly speechQueue: QueuedSpeech[] = [];
+	private readonly queuedPrompts = new Set<string>();
+	/** FLY-2796: the latest delivered sentence still waiting for an answer. */
+	private replyWait?: { seq: number; timer: ReturnType<typeof setTimeout> };
+	private replyWaitSeq = 0;
+	private speakerTalking = false;
+	private waitingSound = false;
+	private roomPresence?: RoomPresence;
 
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
@@ -137,6 +173,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 						? { kind: "failed", reason: "realtime_pre_live_end" }
 						: outcome,
 				),
+			onStatus: (text) => this.prompt(text),
+			soleSpeaker: () => this.soleSpeaker(),
 		});
 		this.room = options.createRoom({
 			onAudio: (frame, metadata) =>
@@ -145,6 +183,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					this.frontend.appendAudio(frame, metadata);
 				}),
 			onFounderPresence: (present) => this.founderPresence(present),
+			onPresence: (presence) => {
+				if (!this.stopping) this.roomPresence = { ...presence };
+			},
+			onBargeIn: (event) => this.bargeIn(event),
 			onReceiveHealth: (snapshot) => {
 				if (!this.stopping) this.latestReceiveHealth = { ...snapshot };
 			},
@@ -370,25 +412,27 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
-		if (this.pendingSpeech || this.stopping || !this.admitted || !this.live)
-			return "failed";
-		this.room.setWaiting?.(false);
-		return new Promise<SpeechReceipt>((resolve) => {
-			this.pendingSpeech = { speech, resolve };
-			void this.frontend.appendSpeech(speech).catch(() => {
-				this.settleSpeech(speech.speechId, "failed");
-			});
-		});
+		if (this.stopping || !this.admitted || !this.live) return "failed";
+		this.endReplyWait("reply");
+		return this.enqueueSpeech(speech, "reply");
 	}
 
+	/**
+	 * The daemon calls this when a Lead reply had nothing to read aloud. That
+	 * is an answer too: the waiting sound stops at once and she hears why.
+	 */
 	notify(text: string): void {
-		this.status(text);
+		this.endReplyWait("reply_unspeakable");
+		this.prompt(text);
 	}
 
 	async stop(outcome?: VoiceEnd): Promise<void> {
 		if (this.stopping) return;
 		this.stopping = true;
 		this.admitted = false;
+		if (this.replyWait) clearTimeout(this.replyWait.timer);
+		this.replyWait = undefined;
+		for (const queued of this.speechQueue.splice(0)) queued.resolve("failed");
 		const pending = this.pendingSpeech;
 		if (pending) {
 			this.frontend.cancelSpeech(pending.speech.speechId);
@@ -441,7 +485,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				return;
 			}
 		}
-		this.room.setWaiting?.(true);
+		const wait = this.startReplyWait();
 		void Promise.resolve(
 			this.options.delivery.capture({
 				transcriptId: `${this.options.projection.sessionId}:1:${input.itemId}:${input.contentIndex}`,
@@ -452,8 +496,14 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			}),
 		)
 			.then((delivered) => {
-				if (delivered)
+				if (delivered) {
 					this.status(`📻 已转达，${this.options.projection.displayName} 在想`);
+					return;
+				}
+				// Nothing reached the Lead, so nothing will answer: stop waiting
+				// now. Delivery already posted its own notice; she hears it here.
+				this.endReplyWait("delivery_failed", wait);
+				this.prompt(DELIVERY_LOST, { post: false });
 			})
 			.catch((error) =>
 				this.finish({
@@ -470,6 +520,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (this.stopping || !this.admitted || !this.live) return;
 		const pending = this.pendingSpeech;
 		if (!pending || pending.speech.speechId !== input.speechId) return;
+		const kind = pending.kind;
 		const playbackBudgetMs = Math.ceil(input.pcm24Mono.length / 48) + 5_000;
 		pending.playbackTimer = setTimeout(() => {
 			this.room.cancelSpeech?.(input.speechId);
@@ -488,7 +539,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 						speechId: input.speechId,
 						pcmBytes: input.pcm24Mono.length,
 					});
-					this.status("📻 已念完");
+					if (kind === "reply") this.status("📻 已念完");
 				}
 			})
 			.catch(() => this.settleSpeech(input.speechId, "failed"));
@@ -507,7 +558,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			status: input.status,
 			reason: input.reason,
 		});
-		this.status("📻 这段未朗读，请看文字");
+		const pending = this.pendingSpeech;
+		// A prompt's text is already in the thread; only a reply needs this.
+		if (pending?.speech.speechId !== input.speechId || pending.kind === "reply")
+			this.status("📻 这段未朗读，请看文字");
 		this.settleSpeech(
 			input.speechId,
 			input.status === "timeout" ? "unconfirmed" : "failed",
@@ -520,7 +574,144 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (pending.playbackTimer) clearTimeout(pending.playbackTimer);
 		this.pendingSpeech = undefined;
 		pending.resolve(status);
+		this.pumpSpeech();
 		return true;
+	}
+
+	private enqueueSpeech(
+		speech: PreparedSpeech,
+		kind: QueuedSpeech["kind"],
+	): Promise<SpeechReceipt> {
+		return new Promise<SpeechReceipt>((resolve) => {
+			this.speechQueue.push({ speech, kind, resolve });
+			this.pumpSpeech();
+		});
+	}
+
+	private pumpSpeech(): void {
+		while (!this.pendingSpeech) {
+			const next = this.speechQueue.shift();
+			if (!next) return;
+			if (this.stopping || !this.admitted || !this.live) {
+				next.resolve("failed");
+				continue;
+			}
+			this.pendingSpeech = next;
+			const speechId = next.speech.speechId;
+			void this.frontend.appendSpeech(next.speech).catch(() => {
+				this.settleSpeech(speechId, "failed");
+			});
+		}
+	}
+
+	/**
+	 * FLY-2796: a line the session says on its own — posted to the thread
+	 * unless the caller already did, and spoken, because in a car she cannot
+	 * read. An identical line still waiting to be said is not queued twice.
+	 */
+	private prompt(text: string, options?: { post?: boolean }): void {
+		if (this.stopping || !this.admitted) return;
+		if (options?.post !== false) this.status(text);
+		if (!this.live) return;
+		const speeches = prepareReplySpeech(text);
+		const key = speeches.map((speech) => speech.spokenText).join("");
+		if (!key || this.queuedPrompts.has(key)) return;
+		this.queuedPrompts.add(key);
+		let remaining = speeches.length;
+		for (const speech of speeches) {
+			void this.enqueueSpeech(speech, "prompt").then((receipt) => {
+				this.options.evidence({
+					ts: this.now().toISOString(),
+					kind: "voice_prompt_spoken",
+					speechId: speech.speechId,
+					text: speech.spokenText,
+					receipt,
+				});
+				remaining -= 1;
+				if (remaining === 0) this.queuedPrompts.delete(key);
+			});
+		}
+	}
+
+	/**
+	 * FLY-2796 founder bounce: the waiting sound ran for minutes when an
+	 * answer never came. Each delivered sentence starts (or restarts) one
+	 * bounded wait; a reply, an unspeakable reply or a failed delivery ends it
+	 * early, and running out ends it with a spoken "reply unavailable".
+	 */
+	private startReplyWait(): number {
+		if (this.replyWait) clearTimeout(this.replyWait.timer);
+		const seq = ++this.replyWaitSeq;
+		const timer = setTimeout(() => {
+			if (this.endReplyWait("timeout", seq)) this.prompt(REPLY_UNAVAILABLE);
+		}, this.options.replyWaitMs ?? DEFAULT_REPLY_WAIT_MS);
+		timer.unref?.();
+		this.replyWait = { seq, timer };
+		this.applyWaiting();
+		return seq;
+	}
+
+	/** Ends the wait; with `seq`, only if no newer sentence has replaced it. */
+	private endReplyWait(reason: string, seq?: number): boolean {
+		const wait = this.replyWait;
+		if (!wait || (seq !== undefined && wait.seq !== seq)) return false;
+		clearTimeout(wait.timer);
+		this.replyWait = undefined;
+		this.applyWaiting();
+		this.options.evidence({
+			ts: this.now().toISOString(),
+			kind: "reply_wait_ended",
+			reason,
+		});
+		return true;
+	}
+
+	/** The waiting sound plays only while an answer is owed and nobody talks. */
+	private applyWaiting(): void {
+		const waiting = this.replyWait !== undefined && !this.speakerTalking;
+		if (waiting === this.waitingSound) return;
+		this.waitingSound = waiting;
+		this.room.setWaiting?.(waiting);
+	}
+
+	/**
+	 * FLY-2796: talking over the waiting sound stops it. Her words still go
+	 * through the normal transcript path; the pending wait keeps its ceiling.
+	 */
+	private bargeIn(event: RoomBargeInEvent): void {
+		if (this.stopping || !this.admitted || !this.live) return;
+		const talking = event.phase !== "end";
+		if (talking === this.speakerTalking) return;
+		this.speakerTalking = talking;
+		const wasWaiting = this.waitingSound;
+		this.applyWaiting();
+		if (wasWaiting && !this.waitingSound)
+			this.options.evidence({
+				ts: this.now().toISOString(),
+				kind: "waiting_interrupted",
+				utteranceId: event.utteranceId,
+			});
+	}
+
+	/**
+	 * Only while the room reports her as its one human. The frontend still
+	 * refuses any range holding another captured speaker's voice.
+	 */
+	private soleSpeaker(): {
+		ownerUserId: string;
+		ownerName: string | null;
+	} | null {
+		const presence = this.roomPresence;
+		if (
+			!presence?.founderPresent ||
+			presence.humanCount !== 1 ||
+			!this.founderInRoom
+		)
+			return null;
+		return {
+			ownerUserId: this.options.projection.founderUserId,
+			ownerName: null,
+		};
 	}
 
 	private status(text: string): void {

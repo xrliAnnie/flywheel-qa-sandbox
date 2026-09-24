@@ -331,6 +331,7 @@ export async function main(): Promise<void> {
 			},
 			evidence: (record) => evidence.appendBuffered(record),
 			confirmationMs: config.confirmationMs,
+			replyWaitMs: config.replyWaitMs,
 			assertLease: () => context.lease.assert(),
 			postStatus: async (text) => {
 				await mirror.post(context.projection.threadId, text, discordNonce());

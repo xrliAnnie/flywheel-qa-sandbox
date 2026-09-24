@@ -53,6 +53,12 @@ interface RealtimeFrontendOptions {
 	onClosed(outcome: VoiceEnd): void;
 	onEvidence?(record: Record<string, unknown>): void;
 	onStatus?(text: string): void;
+	/**
+	 * FLY-2796: the one human in the room, or null while there are more (or it
+	 * is not known). Consulted only when a committed range has no single
+	 * utterance owner.
+	 */
+	soleSpeaker?(): { ownerUserId: string; ownerName?: string | null } | null;
 }
 
 /** @deprecated Import RoomAudioOwner from flywheel-voice-core. */
@@ -84,6 +90,8 @@ interface InputCommit {
 	previousItemId: string | null;
 	ownerUserId: string | null;
 	utteranceId: string | null;
+	ownerName?: string | null;
+	attribution?: "sole_human";
 	terminal?: InputTerminal;
 	timer?: ReturnType<typeof setTimeout>;
 }
@@ -657,12 +665,16 @@ export class RealtimeFrontend {
 		}
 		const range = this.speechRanges.shift();
 		if (range?.timer) clearTimeout(range.timer);
-		const owner = this.ownerForRange(range);
+		const strict = this.ownerForRange(range);
+		const sole = strict ? null : this.soleOwnerForRange(range);
+		const owner = strict ?? sole;
 		const commit: InputCommit = {
 			itemId,
 			previousItemId,
 			ownerUserId: owner?.ownerUserId ?? null,
 			utteranceId: owner?.utteranceId ?? null,
+			ownerName: owner?.ownerName ?? null,
+			...(sole ? { attribution: "sole_human" as const } : {}),
 			terminal: this.earlyTerminals.get(itemId),
 		};
 		this.earlyTerminals.delete(itemId);
@@ -769,6 +781,7 @@ export class RealtimeFrontend {
 					next.terminal.status === "delivered" && !next.ownerUserId
 						? "skipped_unknown"
 						: next.terminal.status,
+				...(next.attribution ? { attribution: next.attribution } : {}),
 			});
 			if (next.timer) clearTimeout(next.timer);
 			this.commits.delete(next.itemId);
@@ -789,7 +802,9 @@ export class RealtimeFrontend {
 				typeof candidate.ownerName === "string" &&
 				candidate.ownerName.length > 0,
 		);
-		return span?.ownerName ?? commit.ownerUserId ?? "unknown";
+		return (
+			span?.ownerName ?? commit.ownerName ?? commit.ownerUserId ?? "unknown"
+		);
 	}
 
 	private armGapTimer(): void {
@@ -845,6 +860,40 @@ export class RealtimeFrontend {
 					(span) =>
 						typeof span.ownerName === "string" && span.ownerName.length > 0,
 				)?.ownerName ?? null,
+		};
+	}
+
+	/**
+	 * FLY-2796 founder bounce: alone in the room she lost clear sentences
+	 * because one server-VAD turn spanned two Discord utterances, or a silent
+	 * gap inside one. Captured frames always carry their speaker and untagged
+	 * frames are the uplink clock's silence, so when the room reports a single
+	 * human and every voiced frame in the range is theirs, the range is theirs.
+	 * Any other voiced owner, or no voiced frame at all, still fails closed.
+	 */
+	private soleOwnerForRange(
+		range: SpeechRange | undefined,
+	): RealtimeAudioOwner | null {
+		if (!range) return null;
+		const sole = this.options.soleSpeaker?.();
+		if (!sole?.ownerUserId) return null;
+		let first: AudioSpan | undefined;
+		for (const span of this.audioSpans) {
+			if (
+				span.endSample <= range.startSample ||
+				span.startSample >= range.endSample
+			)
+				continue;
+			if (!span.ownerUserId && !span.utteranceId) continue;
+			if (span.ownerUserId !== sole.ownerUserId || !span.utteranceId)
+				return null;
+			first ??= span;
+		}
+		if (!first) return null;
+		return {
+			ownerUserId: sole.ownerUserId,
+			utteranceId: first.utteranceId,
+			ownerName: first.ownerName || sole.ownerName || null,
 		};
 	}
 

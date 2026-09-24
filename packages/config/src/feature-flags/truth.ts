@@ -386,6 +386,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2693 numeric tuning: positive-integer idle Bridge request timeout, not an on/off gate",
 	FLYWHEEL_VOICE_IDLE_EXIT_MS:
 		"FLY-2701 numeric tuning: how long the on-demand daemon stays after its last successful empty read before exiting 0, not an on/off gate",
+	FLYWHEEL_VOICE_REPLY_WAIT_MS:
+		"FLY-2796 numeric tuning: waiting-sound ceiling (default 15000ms) before the voice session stops it and says the reply is unavailable, not an on/off gate",
 	...Object.fromEntries(
 		[
 			"FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS",

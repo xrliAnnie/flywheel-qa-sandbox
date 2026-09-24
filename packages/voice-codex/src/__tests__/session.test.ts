@@ -39,6 +39,8 @@ function fixture(options?: {
 	founderPresent?: boolean;
 	playSpeech?: (speechId: string, pcm: Buffer) => Promise<void>;
 	roomIO?: RoomIO;
+	replyWaitMs?: number;
+	capture?: () => Promise<boolean>;
 	createHeadphoneSession?: () => {
 		start(): Promise<void>;
 		close(): Promise<void>;
@@ -65,12 +67,15 @@ function fixture(options?: {
 		setWaiting: vi.fn(),
 		setBedEnabled: vi.fn(),
 	};
-	const delivery = { capture: vi.fn(async () => true) };
+	const delivery = { capture: vi.fn(options?.capture ?? (async () => true)) };
 	const lifecycle = vi.fn(async () => {});
 	const evidence = vi.fn();
 	const session = new GenericVoiceSession({
 		projection,
 		delivery,
+		...(options?.replyWaitMs === undefined
+			? {}
+			: { replyWaitMs: options.replyWaitMs }),
 		createFrontend: (handlers) => {
 			frontendHandlers = handlers;
 			return frontend;
@@ -919,5 +924,254 @@ describe("GenericVoiceSession start fails fast on the first failure", () => {
 
 		landRoom({ founderPresent: true });
 		await vi.waitFor(() => expect(room.stop).toHaveBeenCalled());
+	});
+});
+
+/**
+ * FLY-2796 founder bounce (2026-09-24): in two real rooms a delivered sentence
+ * got no answer, the waiting sound ran for about four minutes, and talking
+ * over it changed nothing. Every assertion here is about state and order —
+ * which sound is on, what she hears next — never about wall-clock latency.
+ */
+describe("GenericVoiceSession reply wait (FLY-2796)", () => {
+	/** What the voice is asked to read: the reply projection (NFKC, no emoji). */
+	const said = (text: string) => prepareReplySpeech(text)[0]!.spokenText;
+	const UNAVAILABLE = said("回话暂时不通，你可以再说一遍");
+
+	function spokenTexts(test: ReturnType<typeof fixture>): string[] {
+		return test.frontend.appendSpeech.mock.calls.map(
+			(call) => (call as unknown as [{ spokenText: string }])[0].spokenText,
+		);
+	}
+
+	function lastWaiting(test: ReturnType<typeof fixture>): boolean | undefined {
+		return test.room.setWaiting.mock.calls.at(-1)?.[0] as boolean | undefined;
+	}
+
+	function barge(phase: "start" | "sustained" | "end") {
+		return {
+			sessionId: "legacy:thread",
+			generation: 1,
+			utteranceId: "utterance-2",
+			owner: {
+				kind: "known" as const,
+				speakerUserId: "founder",
+				speakerName: "Annie",
+			},
+			startedAt: 0,
+			observedAt: 0,
+			durationMs: 0,
+			phase,
+		};
+	}
+
+	async function liveFixture(options?: Parameters<typeof fixture>[0]) {
+		const test = fixture({ replyWaitMs: 1_000, ...options });
+		await test.session.start();
+		await test.session.markLive();
+		return test;
+	}
+
+	it("stops the waiting sound at the ceiling and says the reply is unavailable", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(lastWaiting(test)).toBe(true);
+
+			await vi.advanceTimersByTimeAsync(999);
+			expect(lastWaiting(test)).toBe(true);
+			expect(spokenTexts(test)).toEqual([]);
+
+			await vi.advanceTimersByTimeAsync(1);
+			expect(lastWaiting(test)).toBe(false);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+			expect(test.room.status).toHaveBeenCalledWith(
+				"📻 回话暂时不通，你可以再说一遍",
+			);
+			// The waiting sound stopped before the prompt was handed to the voice.
+			const stoppedAt = test.room.setWaiting.mock.invocationCallOrder.at(-1)!;
+			const promptAt = test.frontend.appendSpeech.mock.invocationCallOrder[0]!;
+			expect(stoppedAt).toBeLessThan(promptAt);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("uses a 15 second ceiling when none is configured", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = fixture();
+			await test.session.start();
+			await test.session.markLive();
+			test.getFrontendHandlers().onTranscript(userTranscript("在吗"));
+			await vi.advanceTimersByTimeAsync(14_999);
+			expect(lastWaiting(test)).toBe(true);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(lastWaiting(test)).toBe(false);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("ends the wait when the Lead answers, with no unavailable prompt afterwards", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(500);
+			const reply = prepareReplySpeech("看过了。", 80)[0]!;
+			void test.session.speak(reply);
+			expect(lastWaiting(test)).toBe(false);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).toEqual([reply.spokenText]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stops the waiting sound at once and says so when the sentence could not be delivered", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture({ capture: async () => false });
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(lastWaiting(test)).toBe(false);
+			expect(spokenTexts(test)).toEqual([said("有一句可能没送到，请再说一遍")]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stops the waiting sound at once and answers aloud when the Lead reply has nothing to read", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(100);
+			test.session.notify("📻 没有可朗读内容，请看文字");
+			expect(lastWaiting(test)).toBe(false);
+			expect(spokenTexts(test)).toEqual([said("没有可朗读内容，请看文字")]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stops the waiting sound when she starts talking, and still delivers what she says", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(lastWaiting(test)).toBe(true);
+
+			test.getRoomHandlers().onBargeIn(barge("start"));
+			expect(lastWaiting(test)).toBe(false);
+			test.getRoomHandlers().onBargeIn(barge("sustained"));
+			expect(lastWaiting(test)).toBe(false);
+
+			test.getFrontendHandlers().onTranscript({
+				...userTranscript("算了，先看另一个"),
+				itemId: "item-2",
+				utteranceId: "utterance-2",
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(test.delivery.capture).toHaveBeenCalledTimes(2);
+			expect(test.delivery.capture).toHaveBeenLastCalledWith(
+				expect.objectContaining({ rawText: "算了，先看另一个" }),
+			);
+			// Still talking: the new sentence does not bring the sound back over her.
+			expect(lastWaiting(test)).toBe(false);
+
+			test.getRoomHandlers().onBargeIn(barge("end"));
+			expect(lastWaiting(test)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the ceiling running while she talks without a new sentence", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(0);
+			test.getRoomHandlers().onBargeIn(barge("start"));
+			test.getRoomHandlers().onBargeIn(barge("end"));
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(lastWaiting(test)).toBe(false);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("queues a Lead reply behind a prompt that is still being spoken instead of dropping it", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(1_000);
+			const prompt = test.frontend.appendSpeech.mock.calls[0]![0] as {
+				speechId: string;
+			};
+			const reply = prepareReplySpeech("刚看完。", 80)[0]!;
+			let settled: string | undefined;
+			void test.session.speak(reply).then((value) => {
+				settled = value;
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(settled).toBeUndefined();
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+
+			test.getFrontendHandlers().onSpeechAudioReady({
+				speechId: prompt.speechId,
+				pcm24Mono: Buffer.alloc(960, 1),
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE, reply.spokenText]);
+			// A local prompt is not a Lead reply: no "已念完" receipt for it.
+			expect(test.room.status).not.toHaveBeenCalledWith("📻 已念完");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("says a frontend please-repeat status aloud as well as posting it", async () => {
+		const test = await liveFixture();
+		test
+			.getFrontendHandlers()
+			.onStatus("📻 有一句话没能确认说话人，请再说一遍");
+		expect(test.room.status).toHaveBeenCalledWith(
+			"📻 有一句话没能确认说话人，请再说一遍",
+		);
+		expect(spokenTexts(test)).toEqual([
+			said("有一句话没能确认说话人，请再说一遍"),
+		]);
+	});
+
+	it("names her as the sole speaker only while she is the one human in the room", async () => {
+		const test = await liveFixture();
+		const handlers = test.getFrontendHandlers();
+		test.getRoomHandlers().onPresence({ founderPresent: true, humanCount: 1 });
+		expect(handlers.soleSpeaker()).toEqual({
+			ownerUserId: "founder",
+			ownerName: null,
+		});
+		test.getRoomHandlers().onPresence({ founderPresent: true, humanCount: 2 });
+		expect(handlers.soleSpeaker()).toBeNull();
+		test.getRoomHandlers().onPresence({ founderPresent: false, humanCount: 1 });
+		expect(handlers.soleSpeaker()).toBeNull();
+	});
+
+	it("does not name a sole speaker before the room has reported who is there", async () => {
+		const test = await liveFixture();
+		expect(test.getFrontendHandlers().soleSpeaker()).toBeNull();
 	});
 });

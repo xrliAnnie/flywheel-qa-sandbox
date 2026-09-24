@@ -38,6 +38,8 @@ export interface VoiceDaemonConfig {
 	presenceGraceMs: number;
 	speechChunkTokens: number;
 	confirmationMs: number;
+	/** FLY-2796: waiting-sound ceiling before "reply unavailable" is spoken. */
+	replyWaitMs: number;
 	discordTimeoutMs: number;
 	mirrorRetries: number;
 	mirrorRetryWindowMs: number;
@@ -187,6 +189,9 @@ export function loadVoiceDaemonConfig(
 		// receive path, not to anything this issue changed.
 		speechChunkTokens: integer(env, "FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS", 80),
 		confirmationMs: integer(env, "FLYWHEEL_VOICE_CONFIRMATION_MS", 15_000),
+		// FLY-2796 founder bounce: 15s is a starting value, not her decision —
+		// retune once she has lived with it.
+		replyWaitMs: integer(env, "FLYWHEEL_VOICE_REPLY_WAIT_MS", 15_000),
 		discordTimeoutMs: integer(env, "FLYWHEEL_VOICE_DISCORD_TIMEOUT_MS", 10_000),
 		mirrorRetries: integer(env, "FLYWHEEL_VOICE_MIRROR_ATTEMPTS", 2) - 1,
 		mirrorRetryWindowMs: integer(
