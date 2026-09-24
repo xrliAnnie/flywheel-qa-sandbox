@@ -405,6 +405,8 @@ export interface VoiceV1Capabilities {
 	onUtterance: boolean;
 	verbatim: boolean;
 	attribution: boolean;
+	/** Old-generation audio, captions, and effects are synchronously fenced. */
+	turnCancelOrSuppress: boolean;
 }
 
 export interface VoiceV1Session {

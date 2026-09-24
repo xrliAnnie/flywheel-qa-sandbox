@@ -57,6 +57,7 @@ function supportsRequiredV1(session: VoiceV1Session): boolean {
 		session.capabilities.onUtterance &&
 		session.capabilities.verbatim &&
 		session.capabilities.attribution &&
+		session.capabilities.turnCancelOrSuppress &&
 		pcm(session.capabilities.audioIn) &&
 		pcm(session.capabilities.audioOut)
 	);

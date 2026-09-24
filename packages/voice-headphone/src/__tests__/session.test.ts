@@ -173,4 +173,28 @@ describe("HeadphoneSession", () => {
 				}),
 		).toThrow("headphone_v1_capabilities_incomplete");
 	});
+
+	it("rejects an engine that cannot cancel or suppress an old turn", () => {
+		expect(
+			() =>
+				new HeadphoneSession({
+					engine: new FakeV1Session({
+						sessionId: "session-1",
+						generation: 3,
+						capabilities: { turnCancelOrSuppress: false },
+					}),
+					room: room(),
+					bridge: bridge(),
+					binding: {
+						sessionId: "session-1",
+						generation: 3,
+						leaseToken: "lease-1",
+					},
+					founderUserId: "founder-1",
+					transcriptSink: transcriptSink(),
+					baseInstructions: "context",
+					record: vi.fn(),
+				}),
+		).toThrow("headphone_v1_capabilities_incomplete");
+	});
 });

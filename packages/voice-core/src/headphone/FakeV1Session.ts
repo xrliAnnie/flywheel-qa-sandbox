@@ -62,6 +62,7 @@ export class FakeV1Session implements VoiceV1Session {
 			onUtterance: true,
 			verbatim: true,
 			attribution: true,
+			turnCancelOrSuppress: true,
 			...options.capabilities,
 		};
 	}
