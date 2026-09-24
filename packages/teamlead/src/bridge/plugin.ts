@@ -11725,101 +11725,98 @@ export async function startBridge(
 		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
 		headphoneCollectorTimer.unref?.();
 		headphoneRouterHolder.current = createHeadphoneRouter({
-				inbox: store.headphoneInbox,
-				founderUserId: headphoneFounderId,
-				getSession: (sessionId) => store.getVoiceSession(sessionId),
-			});
+			inbox: store.headphoneInbox,
+			founderUserId: headphoneFounderId,
+			getSession: (sessionId) => store.getVoiceSession(sessionId),
+		});
 		voiceHandoffRouterHolder.current = createVoiceHandoffRouter({
-				store: store.voiceHandoffs,
-				replyNotifier: voiceReplyNotifier,
-				founderUserId: headphoneFounderId,
-				getSession: (sessionId) => store.getVoiceSession(sessionId),
-				isTargetLead: (projectName, leadId) =>
-					projects.some(
-						(project) =>
-							project.projectName === projectName &&
-							project.leads.some(
-								(lead) => lead.agentId === leadId && !!lead.chatChannel,
-							),
-					),
-				verifyTranscript: (request) =>
-					verifyVoiceHandoffTranscript({
-						voiceRoot,
-						founderUserId: headphoneFounderId,
-						request,
-					}),
-				dispatch: async (record) => {
-					const project = projects.find(
-						(candidate) => candidate.projectName === record.projectName,
-					);
-					const lead = project?.leads.find(
-						(candidate) => candidate.agentId === record.targetLeadId,
-					);
-					if (!lead?.chatChannel) return "rejected";
-					const db = new CommDB(
-						commDbPathForProject(record.projectName),
-						false,
-					);
-					try {
-						const result = db.ingestDiscordChat({
-							leadId: record.targetLeadId,
-							chatId: lead.chatChannel,
-							originChannelId: lead.chatChannel,
-							messageId: record.messageId,
-							authorId: headphoneFounderId,
-							authorName: "Founder voice",
-							founderId: headphoneFounderId,
-							ts: record.createdAt,
-							msgKind: "guild",
-							attachments: [],
-							text: record.request.originalText,
-							origin: "voice",
-							voiceSessionId: record.sessionId,
-							voiceHandoff: {
-								version: 1,
-								handoffId: record.handoffId,
-								intentKind: record.request.intentKind,
-								requestDigest: record.requestDigest,
-								targetLeadId: record.targetLeadId,
-								transcriptId: record.request.transcriptId,
-								utteranceId: record.request.utteranceId,
-								sessionGeneration: record.generation,
-							},
-						});
-						if (
-							result.lane !== "inserted_inbox" &&
-							result.lane !== "active_inbox"
-						)
-							return "rejected";
-						if (inspectVoiceHandoffDelivery(db, record) !== "found")
-							throw new Error("voice_handoff_delivery_unconfirmed");
-						return "committed";
-					} finally {
-						db.close();
-					}
-				},
-				verifyResultSource: async (record, input) => {
+			store: store.voiceHandoffs,
+			replyNotifier: voiceReplyNotifier,
+			founderUserId: headphoneFounderId,
+			getSession: (sessionId) => store.getVoiceSession(sessionId),
+			isTargetLead: (projectName, leadId) =>
+				projects.some(
+					(project) =>
+						project.projectName === projectName &&
+						project.leads.some(
+							(lead) => lead.agentId === leadId && !!lead.chatChannel,
+						),
+				),
+			verifyTranscript: (request) =>
+				verifyVoiceHandoffTranscript({
+					voiceRoot,
+					founderUserId: headphoneFounderId,
+					request,
+				}),
+			dispatch: async (record) => {
+				const project = projects.find(
+					(candidate) => candidate.projectName === record.projectName,
+				);
+				const lead = project?.leads.find(
+					(candidate) => candidate.agentId === record.targetLeadId,
+				);
+				if (!lead?.chatChannel) return "rejected";
+				const db = new CommDB(commDbPathForProject(record.projectName), false);
+				try {
+					const result = db.ingestDiscordChat({
+						leadId: record.targetLeadId,
+						chatId: lead.chatChannel,
+						originChannelId: lead.chatChannel,
+						messageId: record.messageId,
+						authorId: headphoneFounderId,
+						authorName: "Founder voice",
+						founderId: headphoneFounderId,
+						ts: record.createdAt,
+						msgKind: "guild",
+						attachments: [],
+						text: record.request.originalText,
+						origin: "voice",
+						voiceSessionId: record.sessionId,
+						voiceHandoff: {
+							version: 1,
+							handoffId: record.handoffId,
+							intentKind: record.request.intentKind,
+							requestDigest: record.requestDigest,
+							targetLeadId: record.targetLeadId,
+							transcriptId: record.request.transcriptId,
+							utteranceId: record.request.utteranceId,
+							sessionGeneration: record.generation,
+						},
+					});
 					if (
-						input.sourceLeadId !== record.targetLeadId ||
-						input.requestDigest !== record.requestDigest
+						result.lane !== "inserted_inbox" &&
+						result.lane !== "active_inbox"
 					)
-						return false;
-					let db: CommDB | undefined;
-					try {
-						db = CommDB.openReadonly(commDbPathForProject(record.projectName));
-						const source = db.getMessageById(input.sourceDeliveryId);
-						return (
-							source?.from_agent === record.targetLeadId &&
-							source.to_agent === record.founderUserId &&
-							source.parent_id === record.providerOperationId
-						);
-					} catch {
-						return false;
-					} finally {
-						db?.close();
-					}
-				},
-			});
+						return "rejected";
+					if (inspectVoiceHandoffDelivery(db, record) !== "found")
+						throw new Error("voice_handoff_delivery_unconfirmed");
+					return "committed";
+				} finally {
+					db.close();
+				}
+			},
+			verifyResultSource: async (record, input) => {
+				if (
+					input.sourceLeadId !== record.targetLeadId ||
+					input.requestDigest !== record.requestDigest
+				)
+					return false;
+				let db: CommDB | undefined;
+				try {
+					db = CommDB.openReadonly(commDbPathForProject(record.projectName));
+					const source = db.getMessageById(input.sourceDeliveryId);
+					return (
+						source?.from_agent === record.targetLeadId &&
+						source.to_agent === record.founderUserId &&
+						source.parent_id === record.providerOperationId
+					);
+				} catch {
+					return false;
+				} finally {
+					db?.close();
+				}
+			},
+		});
 		const reconcileVoiceHandoffs = () => {
 			const now = new Date().toISOString();
 			for (const record of store.voiceHandoffs.listAmbiguous(now)) {

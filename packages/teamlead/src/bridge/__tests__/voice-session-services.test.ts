@@ -200,11 +200,12 @@ it("does not poll Discord outbound replies when Engine A owns Lead delivery", as
 		SESSION_ID,
 	);
 	db.close();
-	const fetchImpl = vi.fn(async () =>
-		new Response("[]", {
-			status: 200,
-			headers: { "Content-Type": "application/json" },
-		}),
+	const fetchImpl = vi.fn(
+		async () =>
+			new Response("[]", {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
 	);
 	const { runtime } = createVoiceSessionServices({
 		probeSelfFilter: validProbe,

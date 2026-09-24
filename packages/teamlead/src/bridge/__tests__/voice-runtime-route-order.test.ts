@@ -3,10 +3,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import { expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
-import {
-	type BridgeAppOptions,
-	createBridgeApp,
-} from "../plugin.js";
+import { type BridgeAppOptions, createBridgeApp } from "../plugin.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
 
 it("mounts runtime headphone and handoff routers before the catch-all", async () => {
