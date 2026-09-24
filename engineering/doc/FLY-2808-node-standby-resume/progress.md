@@ -1,13 +1,14 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 1/2
-updated: 2026-09-24T23:22:16.091Z
-nextStep: push branch, open sandbox drill PR, complete --route needs_review
+phaseCursor: 2/2
+updated: 2026-09-24T23:22:34.510Z
+nextStep: "completed needs_review with sandbox PR #237; await QA (rework resumes
+  this session)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
-**phase**: implement (1/2)
-**next**: push branch, open sandbox drill PR, complete --route needs_review
+**phase**: implement (2/2)
+**next**: completed needs_review with sandbox PR #237; await QA (rework resumes this session)
