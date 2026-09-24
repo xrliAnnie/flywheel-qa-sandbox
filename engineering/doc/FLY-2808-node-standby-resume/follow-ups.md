@@ -81,6 +81,13 @@ R8 的 2 HIGH + 1 MEDIUM 与 R6-1 / R7-1 / R7-2 全部指向同一块：R5 为�
 
 保留的部分：authority_mode / 需求 episode / set-once receipt（按 generation 追加）/ delivery authorization 双库协议 / in_flight-fencing 两阶段 fence / `workflow_invalidation_operation` durable 身份 / execution profile 绑定。矩阵 F/P 相应改为「换代不重新 grant」「转授即终结、B 得 E+1、A 的旧 receipt/delivery 不能投递」「fence 前后 / 投影前后 / grantTurn 前后重启」。
 
+## 1.9 沙箱设计评审 R9（CHANGES REQUESTED → 全部采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | transfer 的「grantTurn 前检查」未与旧 holder 的 reserve/claim 线性化（检查后旧 holder 仍可 claim 并 push）；并发 transfer 共用 operation 不安全；基线 `grantTurn` 无 expected-current guard | 采纳。`workflow_invalidation_operation` 改为每个 incoming transfer 各一条、冻结 expected holder+epoch、无活动 delivery 也存在的持久 barrier；建立 barrier 的事务把 carrier `intake_open=false` 并 cancel/fence 活动 delivery；reserve 与 claim 的 CAS 都核 `intake_open`；barrier 不共享，expected 不符置 stale 并为当前 holder 重建；`grantTurn` 加 expected holder+epoch 参数（原 IMMEDIATE 事务内 mismatch 不写）；矩阵 P 加两条确定性竞态 |
+| HIGH | G+1 凭证刷新把 CommDB grant 快照与 StateStore live 行混为一谈；rotate→安装的 plaintext 崩溃缝未闭合；set-once receipt 写入时点不明 | 采纳。§2.1/§5.4 明确 `runner_workflow_activation` 只是首次 grant 快照、G+1 不更新，live 真源是 StateStore 当前行；§5.3 第 3 步把 Codex recovery 模式泛化为两 vendor 的 refresh operation（verify → rotate 原子返回明文+行 id/digest → paused 安装并回可信回执 → 才写 receipt），rotation API 扩展列入 N2；崩溃缝：安装前→无 receipt、fresh attempt 撤销未投递行；安装后 receipt 前→同代载体证明持有 digest 才补，否则清理递增 generation；矩阵 F 按两 vendor 三处缝验收，断言载体 observed digest = receipt 引用 live 行、CommDB 快照不变 |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
