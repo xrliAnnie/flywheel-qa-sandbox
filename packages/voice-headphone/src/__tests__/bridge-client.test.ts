@@ -110,6 +110,7 @@ describe("BridgeVoiceClient", () => {
 								sourceCreatedAt: "2026-09-23T00:00:00.000Z",
 								needsDecision: false,
 								text: "进展正常。",
+								speechBrief: null,
 							},
 							claimToken: "claim-token",
 							attempt: 1,
@@ -358,6 +359,47 @@ describe("BridgeVoiceClient", () => {
 		expect(streamSignals[1]?.aborted).toBe(true);
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		expect(streamAttempt).toBe(2);
+	});
+
+	it("backs off and stops reconnecting after the bounded reply subscription budget", async () => {
+		vi.useFakeTimers();
+		try {
+			const fetchFn = vi.fn(
+				async () => new Response("unavailable", { status: 503 }),
+			);
+			const record = vi.fn();
+			const client = new BridgeVoiceClient({
+				bridgeUrl: "http://localhost:9876",
+				token: "master",
+				fetchFn,
+				record,
+				replyReconnectDelayMs: 10,
+				replyReconnectMaxDelayMs: 40,
+				replyReconnectMaxAttempts: 3,
+			});
+
+			const unsubscribe = client.subscribeReplies(SESSION, vi.fn());
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(fetchFn).toHaveBeenCalledTimes(4);
+			expect(
+				record.mock.calls.filter(
+					([event]) => event.kind === "voice_reply_subscription_failed",
+				),
+			).toHaveLength(4);
+			expect(record).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "voice_reply_subscription_exhausted",
+					reconnectAttempts: 3,
+				}),
+			);
+
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(fetchFn).toHaveBeenCalledTimes(4);
+			unsubscribe();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("rejects reply subscription admission synchronously when no Bridge token is configured", () => {

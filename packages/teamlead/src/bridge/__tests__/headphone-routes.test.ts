@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BridgeVoiceClient } from "../../../../voice-headphone/src/bridge-client.js";
 import type { HeadphoneInboxStore } from "../headphone-inbox.js";
 import { createHeadphoneRouter } from "../headphone-routes.js";
 import { voiceSessionAuthMiddleware } from "../voice-session-auth.js";
@@ -23,32 +24,37 @@ afterEach(
 );
 
 async function start() {
+	const item = {
+		itemId: "item-1",
+		revision: 2,
+		projectName: "flywheel",
+		founderUserId: "founder-1",
+		channelId: "channel-1",
+		sourceMessageId: "message-1",
+		sourceRevision: "revision-2",
+		authorId: "lead-1",
+		needsDecision: true,
+		text: "choose an option",
+		speechBrief: null,
+		sourceCreatedAt: "2026-09-23T20:00:00.000Z",
+		sourceResolved: false,
+		contentDigest: "a".repeat(64),
+		seq: 2,
+	};
 	const snapshot = vi.fn(() => ({
 		snapshotId: "snapshot-1",
 		highWatermark: 2,
 		nextCursor: null,
 		sourceStatus: [],
-		items: [
-			{
-				itemId: "item-1",
-				revision: 2,
-				projectName: "flywheel",
-				founderUserId: "founder-1",
-				channelId: "channel-1",
-				sourceMessageId: "message-1",
-				sourceRevision: "revision-2",
-				authorId: "lead-1",
-				needsDecision: true,
-				text: "choose an option",
-				speechBrief: null,
-				sourceCreatedAt: "2026-09-23T20:00:00.000Z",
-				sourceResolved: false,
-				contentDigest: "a".repeat(64),
-				seq: 2,
-			},
-		],
+		items: [item],
 	}));
-	const claim = vi.fn(() => undefined);
+	const claim = vi.fn(() => ({
+		item,
+		claimToken: "claim-token",
+		leaseExpiresAt: "2026-09-23T20:00:31.000Z",
+		attempt: 1,
+		pendingKey: `inbox:${item.itemId}:${item.revision}:${SESSION_ID}:7:1`,
+	}));
 	const ack = vi.fn(() => false);
 	const listSourceState = vi.fn(() => []);
 	const inbox = {
@@ -81,8 +87,10 @@ async function start() {
 	);
 	server = createServer(app);
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+	const bridgeUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 	return {
-		base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/voice/headphone`,
+		bridgeUrl,
+		base: `${bridgeUrl}/api/voice/headphone`,
 		snapshot,
 		claim,
 	};
@@ -166,5 +174,65 @@ describe("headphone routes", () => {
 			body: { error: "headphone_claim_invalid" },
 		});
 		expect(claim).not.toHaveBeenCalled();
+	});
+
+	it("projects a claimed item to the same public shape as the list route", async () => {
+		const { base } = await start();
+		const response = await call(base, "/claim", {
+			method: "POST",
+			token: MASTER,
+			lease: LEASE,
+			body: {
+				sessionId: SESSION_ID,
+				generation: 7,
+				itemId: "item-1",
+				revision: 2,
+			},
+		});
+
+		expect(response).toEqual({
+			status: 200,
+			body: {
+				item: {
+					id: "item-1",
+					revision: 2,
+					createdAt: "2026-09-23T20:00:00.000Z",
+					needsDecision: true,
+					text: "choose an option",
+				},
+				claimToken: "claim-token",
+				leaseExpiresAt: "2026-09-23T20:00:31.000Z",
+				attempt: 1,
+				pendingKey: `inbox:item-1:2:${SESSION_ID}:7:1`,
+			},
+		});
+	});
+
+	it("feeds a nullable stored speech brief through the real route and client contract", async () => {
+		const { bridgeUrl } = await start();
+		const client = new BridgeVoiceClient({
+			bridgeUrl,
+			token: MASTER,
+		});
+		const binding = {
+			sessionId: SESSION_ID,
+			generation: 7,
+			leaseToken: LEASE,
+		};
+
+		const [listed] = await client.listHeadphoneItems(binding);
+		expect(listed).toEqual({
+			id: "item-1",
+			revision: 2,
+			createdAt: "2026-09-23T20:00:00.000Z",
+			needsDecision: true,
+			text: "choose an option",
+		});
+		await expect(client.claimHeadphoneItem(binding, listed!)).resolves.toEqual({
+			item: listed,
+			claimToken: "claim-token",
+			attempt: 1,
+			pendingKey: `inbox:item-1:2:${SESSION_ID}:7:1`,
+		});
 	});
 });

@@ -34,6 +34,7 @@ import {
 	validateDiscordVoicePermissions,
 	validateDiscordVoiceTarget,
 	validatePreparedTopology,
+	voiceProcessBaseEnv,
 } from "../qa/fly2655-voice-room.mjs";
 
 const snowflake = (last) => `12345678901234567${last}`;
@@ -375,7 +376,7 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 		buildSha: "a".repeat(40),
 		voiceHostPath: `${slotDir}/state/voice-host.json`,
 		meetingNotesPath: `${slotDir}/state/meeting-notes.yaml`,
-		baseEnv: {
+		baseEnv: voiceProcessBaseEnv({
 			PATH: "/usr/bin",
 			HOME: "/Users/qa",
 			FLYWHEEL_VOICE_ENGINE: "openai-live",
@@ -385,7 +386,7 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 			FLYWHEEL_EXECUTION_ID: "must-be-scrubbed",
 			FLYWHEEL_ACTIVATION_ID: "must-be-scrubbed",
 			DISCORD_BOT_TOKEN: "production-token",
-		},
+		}),
 	});
 	assert.equal(
 		env.FLYWHEEL_COMM_DB,
@@ -536,6 +537,17 @@ test("test-deploy keeps the voice fixture opt-in and installs it before Lead sta
 	assert.ok(leadEnv, "voice fixture Lead env block must exist");
 	assert.doesNotMatch(bridgeEnv, /FLYWHEEL_COMM_DB=/);
 	assert.doesNotMatch(leadEnv, /FLYWHEEL_COMM_DB=/);
+	for (const name of [
+		"FLYWHEEL_VOICE_ENGINE",
+		"FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD",
+		"FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED",
+	]) {
+		assert.match(
+			bridgeEnv,
+			new RegExp(`"${name}=\\$\\{${name}:-\\}"`),
+			`${name} must be explicitly forwarded to the slot Bridge`,
+		);
+	}
 	const contract = JSON.parse(
 		readFileSync(new URL("../lib/qa-slot-env-contract.json", import.meta.url)),
 	);

@@ -86,6 +86,8 @@ export interface BridgeVoiceClientOptions {
 	fetchFn?: FetchLike;
 	record?(event: Record<string, unknown>): void;
 	replyReconnectDelayMs?: number;
+	replyReconnectMaxDelayMs?: number;
+	replyReconnectMaxAttempts?: number;
 }
 
 export interface HeadphoneSessionBinding {
@@ -135,6 +137,7 @@ function headphoneItem(value: unknown): HeadphoneInboxItem {
 	const speechBrief = item.speechBrief;
 	if (
 		speechBrief !== undefined &&
+		speechBrief !== null &&
 		(!speechBrief ||
 			typeof speechBrief !== "object" ||
 			typeof (speechBrief as Record<string, unknown>).what !== "string" ||
@@ -400,9 +403,21 @@ export class BridgeVoiceClient {
 		const url = `${this.opts.bridgeUrl}/api/voice/handoffs/replies?${query}`;
 		const key = this.bindingKey(binding);
 		const reconnectDelay = this.opts.replyReconnectDelayMs ?? 1_000;
+		const reconnectMaxDelay = this.opts.replyReconnectMaxDelayMs ?? 30_000;
+		const reconnectMaxAttempts = this.opts.replyReconnectMaxAttempts ?? 5;
+		if (
+			!Number.isSafeInteger(reconnectDelay) ||
+			reconnectDelay < 1 ||
+			!Number.isSafeInteger(reconnectMaxDelay) ||
+			reconnectMaxDelay < reconnectDelay ||
+			!Number.isSafeInteger(reconnectMaxAttempts) ||
+			reconnectMaxAttempts < 0
+		)
+			throw new Error("voice reply reconnect policy invalid");
 		let stopped = false;
 		let admissionStarted = false;
 		let connectedOnce = false;
+		let reconnectAttempts = 0;
 		let controller: AbortController | undefined;
 		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 		let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -471,10 +486,24 @@ export class BridgeVoiceClient {
 		};
 		const scheduleReconnect = (open: () => void) => {
 			if (stopped || retryTimer) return;
+			if (reconnectAttempts >= reconnectMaxAttempts) {
+				this.opts.record?.({
+					kind: "voice_reply_subscription_exhausted",
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					reconnectAttempts,
+				});
+				return;
+			}
+			const delayMs = Math.min(
+				reconnectMaxDelay,
+				reconnectDelay * 2 ** reconnectAttempts,
+			);
+			reconnectAttempts += 1;
 			retryTimer = setTimeout(() => {
 				retryTimer = undefined;
 				open();
-			}, reconnectDelay);
+			}, delayMs);
 			retryTimer.unref?.();
 		};
 		const open = () => {

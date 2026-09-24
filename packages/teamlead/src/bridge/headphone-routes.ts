@@ -1,6 +1,9 @@
 import express from "express";
 import type { SpeakReceipt } from "flywheel-voice-core";
-import type { HeadphoneInboxStore } from "./headphone-inbox.js";
+import type {
+	HeadphoneInboxItemRecord,
+	HeadphoneInboxStore,
+} from "./headphone-inbox.js";
 
 export interface HeadphoneRouteSession {
 	sessionId: string;
@@ -48,6 +51,17 @@ function completedReceipt(value: unknown): SpeakReceipt | undefined {
 	)
 		return;
 	return receipt as SpeakReceipt;
+}
+
+function publicHeadphoneItem(item: HeadphoneInboxItemRecord) {
+	return {
+		id: item.itemId,
+		revision: item.revision,
+		createdAt: item.sourceCreatedAt,
+		needsDecision: item.needsDecision,
+		text: item.text,
+		...(item.speechBrief ? { speechBrief: item.speechBrief } : {}),
+	};
 }
 
 export function createHeadphoneRouter(
@@ -102,14 +116,7 @@ export function createHeadphoneRouter(
 				limit,
 				...(cursor ? { cursor } : {}),
 			});
-			const items = snapshot.items.map((item) => ({
-				id: item.itemId,
-				revision: item.revision,
-				createdAt: item.sourceCreatedAt,
-				needsDecision: item.needsDecision,
-				text: item.text,
-				...(item.speechBrief ? { speechBrief: item.speechBrief } : {}),
-			}));
+			const items = snapshot.items.map(publicHeadphoneItem);
 			res.json({
 				snapshotId: snapshot.snapshotId,
 				highWatermark: snapshot.highWatermark,
@@ -153,7 +160,7 @@ export function createHeadphoneRouter(
 				res.status(409).json({ error: "headphone_item_unavailable" });
 				return;
 			}
-			res.json(claim);
+			res.json({ ...claim, item: publicHeadphoneItem(claim.item) });
 		} catch (error) {
 			const message = (error as Error).message;
 			res

@@ -441,6 +441,22 @@ export function buildVoiceProcessEnv(input) {
 	};
 }
 
+export function voiceProcessBaseEnv(env = process.env) {
+	return {
+		HOME: env.HOME ?? homedir(),
+		PATH: env.PATH ?? "/usr/bin:/bin",
+		...Object.fromEntries(
+			[
+				"FLYWHEEL_VOICE_ENGINE",
+				"FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD",
+				"FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED",
+			].flatMap((name) =>
+				typeof env[name] === "string" ? [[name, env[name]]] : [],
+			),
+		),
+	};
+}
+
 function filesUnder(path) {
 	return readdirSync(path, { withFileTypes: true })
 		.sort((a, b) => a.name.localeCompare(b.name))
@@ -692,7 +708,7 @@ function voiceEnv(context) {
 		buildSha: context.topology.expectedHead,
 		voiceHostPath: context.fixtureReceipt.voiceHostPath,
 		meetingNotesPath: context.fixtureReceipt.meetingNotesPath,
-		baseEnv: { HOME: homedir(), PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		baseEnv: voiceProcessBaseEnv(),
 	});
 }
 
