@@ -93,7 +93,7 @@
 		},
 		{
 			"id": "bootstrap-format",
-			"rationale": "FLY-2557 adds an epic_intake branch to both MailboxLeadRuntime and CommDBLeadRuntime; each calls the same formatEpicIntake before other event branches, independently of the token-savings switch. Existing bootstrap-format ON bounds and the shared bootstrap selector are unchanged. Both transports therefore receive the same new intake identity, backfill, ledger/thread and resolve instructions without changing bootstrap formatting. Syncing main 451812138 adds formatBusinessWake and its business_wake dispatch branch to both transports; this independent event branch preserves frozen schedule identity and does not modify bootstrap selection or formatting. FLY-2619 adds the shared summary_absorption_round branch to both transports and revises the shared summary duty bytes so silent rounds stay founder-invisible; the branch is independent of the token-savings switch and both modes retain identical summary presentation behavior. FLY-2634 revises the same shared summary-duty bytes to document activity-gated wakes in both modes; runtime formatting and token-savings selection remain unchanged.",
+			"rationale": "FLY-2557 adds an epic_intake branch to both MailboxLeadRuntime and CommDBLeadRuntime; each calls the same formatEpicIntake before other event branches, independently of the token-savings switch. Existing bootstrap-format ON bounds and the shared bootstrap selector are unchanged. Both transports therefore receive the same new intake identity, backfill, ledger/thread and resolve instructions without changing bootstrap formatting. Syncing main 451812138 adds formatBusinessWake and its business_wake dispatch branch to both transports; this independent event branch preserves frozen schedule identity and does not modify bootstrap selection or formatting. FLY-2619 adds the shared summary_absorption_round branch to both transports and revises the shared summary duty bytes so silent rounds stay founder-invisible; the branch is independent of the token-savings switch and both modes retain identical summary presentation behavior. FLY-2634 revises the same shared summary-duty bytes to document activity-gated wakes in both modes; runtime formatting and token-savings selection remain unchanged. FLY-2799 adds only the shared formatVoiceHandoff import and the matching voice_handoff event branch to both runtimes. Per-hunk audit confirms getPendingQuestions, event ordering and pagination, bootstrap payload/selector, and token-savings ON/OFF generators are unchanged.",
 			"members": [
 				{
 					"path": "packages/teamlead/src/bridge/bootstrap-format.ts",
@@ -105,11 +105,11 @@
 				},
 				{
 					"path": "packages/teamlead/src/bridge/mailbox-lead-runtime.ts",
-					"sha256": "c1463aacf113d6353fd1b0079072c028e8cbfe10f5f234d694a1cd9bfc2edb2e"
+					"sha256": "7d4be3a9d469a3db68a61f5b29c773a0786458081d7e7ece450c7b730248abf6"
 				},
 				{
 					"path": "packages/teamlead/src/bridge/commdb-lead-runtime.ts",
-					"sha256": "60f96846750ef8cb186f412ce193d7ab4ee0f414a45f64bcd119782f6bee1457"
+					"sha256": "1a25a0cc1e3af456a1db1e1b0ba77b6b72b77c0ec50f90e3ddd596472136f7db"
 				}
 			]
 		}
