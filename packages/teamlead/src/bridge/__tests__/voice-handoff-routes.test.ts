@@ -149,6 +149,31 @@ async function call(
 	return { status: response.status, body: await response.json() };
 }
 
+async function readSseEvent(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	event: string,
+): Promise<Record<string, unknown>> {
+	const decoder = new TextDecoder();
+	let pending = "";
+	for (;;) {
+		const chunk = await reader.read();
+		if (chunk.done) throw new Error(`SSE ended before ${event}`);
+		pending += decoder.decode(chunk.value, { stream: true });
+		for (;;) {
+			const boundary = pending.indexOf("\n\n");
+			if (boundary < 0) break;
+			const frame = pending.slice(0, boundary);
+			pending = pending.slice(boundary + 2);
+			const lines = frame.split("\n");
+			if (lines.find((line) => line === `event: ${event}`)) {
+				const data = lines.find((line) => line.startsWith("data: "));
+				if (!data) throw new Error(`SSE ${event} missing data`);
+				return JSON.parse(data.slice(6)) as Record<string, unknown>;
+			}
+		}
+	}
+}
+
 describe("voice handoff routes", () => {
 	it("authorizes a durable known-founder transcript and dispatches one deterministic mailbox item", async () => {
 		const { base, dispatch } = await start();
@@ -245,6 +270,59 @@ describe("voice handoff routes", () => {
 				events: [{ resultEventId: "delivery-1:r1", seq: 1 }],
 			},
 		});
+	});
+
+	it("pushes only a durable reply wake to the bound session subscription", async () => {
+		const { base } = await start();
+		await call(base, "/", {
+			method: "POST",
+			token: MASTER,
+			lease: LEASE,
+			body: request(),
+		});
+		const abort = new AbortController();
+		const stream = await fetch(
+			`${base}/replies?sessionId=${SESSION_ID}&generation=7`,
+			{
+				headers: {
+					Authorization: `Bearer ${MASTER}`,
+					"X-Voice-Lease": LEASE,
+				},
+				signal: abort.signal,
+			},
+		);
+		expect(stream.status).toBe(200);
+		expect(stream.headers.get("content-type")).toContain("text/event-stream");
+		const reader = stream.body!.getReader();
+		await expect(readSseEvent(reader, "ready")).resolves.toEqual({
+			sessionId: SESSION_ID,
+			generation: 7,
+		});
+
+		const resultBody = {
+			resultEventId: "delivery-1:wake",
+			requestDigest: request().requestDigest,
+			sourceLeadId: "lead-1",
+			sourceDeliveryId: "delivery-1",
+			resultKind: "lead_reply",
+			text: "This remains durable-only payload.",
+			createdAt: "2026-09-23T20:00:05.000Z",
+		};
+		await expect(
+			call(base, `/${HANDOFF_ID}/results`, {
+				method: "POST",
+				token: MASTER,
+				body: resultBody,
+			}),
+		).resolves.toMatchObject({ status: 200, body: { seq: 1 } });
+		await expect(readSseEvent(reader, "reply")).resolves.toEqual({
+			sessionId: SESSION_ID,
+			generation: 7,
+			handoffId: HANDOFF_ID,
+		});
+
+		abort.abort();
+		await reader.cancel().catch(() => undefined);
 	});
 
 	it("rejects a forged Lead or digest on result append", async () => {

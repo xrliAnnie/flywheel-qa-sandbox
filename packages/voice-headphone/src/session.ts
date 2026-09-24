@@ -16,6 +16,7 @@ import type {
 	BridgeVoiceClient,
 	HeadphoneSessionBinding,
 	VoiceHandoffResultsPage,
+	VoiceReplyListener,
 } from "./bridge-client.js";
 
 export const DEFAULT_HEADPHONE_POLL_INTERVAL_MS = 1_000;
@@ -31,6 +32,7 @@ export interface HeadphoneSessionOptions {
 		| "getHeadphoneSourceHealth"
 		| "handoffToLead"
 		| "listVoiceHandoffResults"
+		| "subscribeReplies"
 	>;
 	binding: HeadphoneSessionBinding;
 	founderUserId: string;
@@ -161,6 +163,10 @@ export class HeadphoneSession {
 			after,
 			limit,
 		);
+	}
+
+	subscribeReplies(listener: VoiceReplyListener): () => void {
+		return this.options.bridge.subscribeReplies(this.options.binding, listener);
 	}
 
 	async close(): Promise<void> {

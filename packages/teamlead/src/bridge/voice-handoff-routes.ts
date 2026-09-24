@@ -179,6 +179,16 @@ export function createVoiceHandoffRouter(
 ): express.Router {
 	const router = express.Router();
 	const now = deps.now ?? (() => new Date());
+	const replySubscribers = new Map<string, Set<express.Response>>();
+	const subscriptionKey = (sessionId: string, generation: number) =>
+		`${sessionId}:${generation}`;
+	const writeSse = (
+		res: express.Response,
+		event: "ready" | "reply",
+		payload: Record<string, unknown>,
+	) => {
+		res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+	};
 	const authorizeSession = (
 		sessionId: unknown,
 		generation: unknown,
@@ -202,6 +212,42 @@ export function createVoiceHandoffRouter(
 			return;
 		return session;
 	};
+
+	router.get("/replies", (req, res) => {
+		const session = authorizeSession(
+			req.query.sessionId,
+			Number(req.query.generation),
+			req.headers["x-voice-lease"],
+		);
+		if (!session) {
+			res.status(403).json({ error: "voice_reply_subscription_unauthorized" });
+			return;
+		}
+		const key = subscriptionKey(session.sessionId, session.sessionGeneration);
+		const subscribers =
+			replySubscribers.get(key) ?? new Set<express.Response>();
+		subscribers.add(res);
+		replySubscribers.set(key, subscribers);
+		res.status(200);
+		res.setHeader("content-type", "text/event-stream; charset=utf-8");
+		res.setHeader("cache-control", "no-cache, no-transform");
+		res.setHeader("connection", "keep-alive");
+		res.flushHeaders();
+		writeSse(res, "ready", {
+			sessionId: session.sessionId,
+			generation: session.sessionGeneration,
+		});
+
+		let closed = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			subscribers.delete(res);
+			if (subscribers.size === 0) replySubscribers.delete(key);
+		};
+		req.once("close", close);
+		res.once("close", close);
+	});
 
 	router.post("/", async (req, res) => {
 		let request: VoiceHandoffRequest;
@@ -358,6 +404,11 @@ export function createVoiceHandoffRouter(
 			return;
 		}
 		try {
+			const previousHighWatermark = deps.store.listResults(
+				handoff.handoffId,
+				0,
+				1,
+			).highWatermark;
 			const event = deps.store.appendResult({
 				handoffId: req.params.handoffId ?? "",
 				resultEventId: body.resultEventId,
@@ -368,6 +419,20 @@ export function createVoiceHandoffRouter(
 				text: body.text,
 				createdAt: body.createdAt,
 			});
+			if (event.seq > previousHighWatermark) {
+				const key = subscriptionKey(handoff.sessionId, handoff.generation);
+				for (const subscriber of replySubscribers.get(key) ?? []) {
+					try {
+						writeSse(subscriber, "reply", {
+							sessionId: handoff.sessionId,
+							generation: handoff.generation,
+							handoffId: handoff.handoffId,
+						});
+					} catch {
+						replySubscribers.get(key)?.delete(subscriber);
+					}
+				}
+			}
 			res.json(event);
 		} catch (error) {
 			const message = (error as Error).message;
