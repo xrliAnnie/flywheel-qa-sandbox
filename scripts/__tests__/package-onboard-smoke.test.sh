@@ -72,11 +72,12 @@ fi
 if jq -e '
   ([.dependencies[] | select(startswith("workspace:"))] | length) == 0 and
   .flywheelPackagesMirror["voice-core"] == "flywheel-voice-core" and
+  .flywheelPackagesMirror["voice-headphone"] == "flywheel-voice-headphone" and
   .flywheelPackagesMirror["voice-bridge"] == "flywheel-voice-bridge" and
   .flywheelPackagesMirror["voice-codex"] == "flywheel-voice-codex"
 ' "$SANDBOX/payload/tree/package.json" >/dev/null \
-  && tar -tzf "$TARBALL" | grep '^package/node_modules/flywheel-voice-codex/models/silero_vad.onnx$' >/dev/null \
-  && tar -tzf "$TARBALL" | grep '^package/node_modules/flywheel-voice-codex/models/LICENSE.silero-vad$' >/dev/null \
+  && tar -tzf "$TARBALL" | grep '^package/node_modules/flywheel-voice-bridge/models/silero_vad.onnx$' >/dev/null \
+  && tar -tzf "$TARBALL" | grep '^package/node_modules/flywheel-voice-bridge/models/LICENSE.silero-vad$' >/dev/null \
   && tar -tzf "$TARBALL" | grep '^package/scripts/flywheel-voice-wrapper.sh$' >/dev/null; then
   pass "①a voice runtime closure includes packages, model, license and wrapper"
 else
@@ -209,10 +210,10 @@ fi
 # Native model loading and CLI import closure, without daemon startup/network.
 cat > "$PKG_ROOT/.smoke-voice.mjs" <<'JS'
 import assert from 'node:assert/strict';
-import { SileroVad, createInitialSileroState } from './packages/voice-codex/dist/pipeline/SileroVad.js';
+import { SileroVad, createInitialSileroState } from './packages/voice-bridge/dist/room/pipeline/SileroVad.js';
 import { fileURLToPath } from 'node:url';
 await import('@discordjs/voice');
-const vad = await SileroVad.create(fileURLToPath(new URL('./packages/voice-codex/models/silero_vad.onnx', import.meta.url)));
+const vad = await SileroVad.create(fileURLToPath(new URL('./packages/voice-bridge/models/silero_vad.onnx', import.meta.url)));
 try {
   const result = await vad.score(new Float32Array(512), createInitialSileroState());
   assert.ok(Number.isFinite(result.probability));

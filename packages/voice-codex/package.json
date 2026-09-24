@@ -9,8 +9,7 @@
 		"flywheel-voice": "dist/cli.js"
 	},
 	"files": [
-		"dist",
-		"models"
+		"dist"
 	],
 	"scripts": {
 		"build": "tsc",
