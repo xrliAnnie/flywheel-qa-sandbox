@@ -167,12 +167,14 @@ node_modules/flywheel-slack-event-transport/dist/*
 scripts/flywheel-voice-wrapper.sh
 node_modules/flywheel-voice-core/package.json
 node_modules/flywheel-voice-core/dist/*
+node_modules/flywheel-voice-headphone/package.json
+node_modules/flywheel-voice-headphone/dist/*
 node_modules/flywheel-voice-bridge/package.json
 node_modules/flywheel-voice-bridge/dist/*
 node_modules/flywheel-voice-codex/package.json
 node_modules/flywheel-voice-codex/dist/*
-node_modules/flywheel-voice-codex/models/silero_vad.onnx
-node_modules/flywheel-voice-codex/models/LICENSE.silero-vad
+node_modules/flywheel-voice-bridge/models/silero_vad.onnx
+node_modules/flywheel-voice-bridge/models/LICENSE.silero-vad
 
 # Release readiness runtime identity contract (FLY-2390).
 node_modules/flywheel-release-contract/package.json
