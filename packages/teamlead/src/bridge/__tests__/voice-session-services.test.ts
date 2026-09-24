@@ -389,6 +389,7 @@ it("projects the persisted tuple and permits token rotation with unchanged bot i
 		),
 	).toMatchObject({
 		sessionId: SESSION_ID,
+		sessionGeneration: 1,
 		guildId: "100000000000000001",
 		voiceChannelId: "100000000000000002",
 		voiceBotUserId: "100000000000000005",

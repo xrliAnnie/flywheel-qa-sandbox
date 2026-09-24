@@ -3,7 +3,6 @@ import type {
 	RoomAudioOwner,
 	RoomIO,
 } from "flywheel-voice-core";
-import type { HeadphoneSession } from "flywheel-voice-headphone";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
@@ -61,9 +60,7 @@ export interface GenericVoiceSessionOptions {
 	createRoom(handlers: RoomHandlers): RoomLike;
 	/** V2 mode injection seam. A/B adapters supply the complete V1 engine to
 	 * flywheel-voice-headphone; this carrier only exposes the canonical room. */
-	createHeadphoneSession?(
-		room: RoomIO,
-	): Pick<HeadphoneSession, "start" | "close">;
+	createHeadphoneSession?(room: RoomIO): HeadphoneCarrier;
 	lifecycle(
 		state: "ready" | "live" | "interrupted" | "ended",
 		reason?: string,
@@ -96,6 +93,12 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 
 type SpeechReceipt = "confirmed" | "unconfirmed" | "failed";
 
+interface HeadphoneCarrier {
+	start(): Promise<void>;
+	close(): Promise<void>;
+	speak?(text: string, pendingKey: string): Promise<SpeechReceipt>;
+}
+
 export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly frontend: FrontendLike;
 	private readonly room: RoomLike;
@@ -118,7 +121,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private presenceObserved = false;
 	private presenceWaiters: Array<(present: boolean) => void> = [];
 	private latestReceiveHealth?: ReceiveHealth;
-	private headphone?: Pick<HeadphoneSession, "start" | "close">;
+	private headphone?: HeadphoneCarrier;
 	private pendingSpeech?: {
 		speech: PreparedSpeech;
 		resolve(status: SpeechReceipt): void;
@@ -373,6 +376,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (this.pendingSpeech || this.stopping || !this.admitted || !this.live)
 			return "failed";
 		this.room.setWaiting?.(false);
+		if (this.headphone?.speak)
+			return this.headphone.speak(speech.spokenText, speech.speechId);
 		return new Promise<SpeechReceipt>((resolve) => {
 			this.pendingSpeech = { speech, resolve };
 			void this.frontend.appendSpeech(speech).catch(() => {

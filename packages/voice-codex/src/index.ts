@@ -5,6 +5,7 @@ export * from "./config.js";
 export * from "./daemon.js";
 export * from "./delivery.js";
 export * from "./discord-room.js";
+export * from "./engine-a-composition.js";
 export * from "./evidence.js";
 export * from "./journal.js";
 export * from "./live-caption-projection.js";

@@ -6,6 +6,10 @@
  * pluggable behind one dual-face (announce / converse) contract.
  */
 
+export {
+	FfmpegPcmDecoder,
+	type FfmpegPcmDecoderOptions,
+} from "./audio/FfmpegPcmDecoder.js";
 // audio
 export {
 	type AudioPlayer,

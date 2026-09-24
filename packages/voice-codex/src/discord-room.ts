@@ -15,17 +15,28 @@ export interface DiscordVoiceRoomOptions
 	extends Omit<
 		RoomIOOptions,
 		"sessionId" | "generation" | "roomKey" | "buildSha" | "instanceId"
-	> {}
+	> {
+	sessionId?: string;
+	generation?: number;
+	roomKey?: string;
+}
 
 export class DiscordVoiceRoom {
 	readonly roomIO: BridgeRoomIO;
+	private readonly generation: number;
 
-	constructor(options: DiscordVoiceRoomOptions) {
+	constructor({
+		sessionId,
+		generation,
+		roomKey,
+		...options
+	}: DiscordVoiceRoomOptions) {
+		this.generation = generation ?? 1;
 		this.roomIO = createRoomIO({
 			...options,
-			sessionId: `legacy:${options.threadId}`,
-			generation: 1,
-			roomKey: `${options.guildId}:${options.voiceChannelId}`,
+			sessionId: sessionId ?? `legacy:${options.threadId}`,
+			generation: this.generation,
+			roomKey: roomKey ?? `${options.guildId}:${options.voiceChannelId}`,
 		});
 	}
 
@@ -41,7 +52,7 @@ export class DiscordVoiceRoom {
 	async playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void> {
 		const receipt = await this.roomIO.playSpeech({
 			speechId,
-			generation: 1,
+			generation: this.generation,
 			format: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
 			pcm: pcm24Mono,
 		});
@@ -49,7 +60,7 @@ export class DiscordVoiceRoom {
 	}
 
 	cancelSpeech(speechId: string): void {
-		this.roomIO.localPlaybackCancel(speechId, 1);
+		this.roomIO.localPlaybackCancel(speechId, this.generation);
 	}
 
 	setWaiting(waiting: boolean): void {

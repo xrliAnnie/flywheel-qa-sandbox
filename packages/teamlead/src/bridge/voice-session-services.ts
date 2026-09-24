@@ -438,6 +438,7 @@ export function createVoiceSessionServices(input: {
 				: resolveDaemon(session);
 		return {
 			sessionId: session.sessionId,
+			sessionGeneration: session.sessionGeneration,
 			mode: session.mode,
 			projectName: session.projectName,
 			leadId: session.leadId,

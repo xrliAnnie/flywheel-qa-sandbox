@@ -142,6 +142,7 @@ describe("voice daemon config", () => {
 			"/Users/tester",
 		);
 		expect(config).toMatchObject({
+			engine: "legacy-realtime",
 			realtimeApiKey: "api-key",
 			buildSha: "a".repeat(40),
 			speechChunkTokens: 80,
@@ -157,6 +158,29 @@ describe("voice daemon config", () => {
 			voiceHealthHelperPath:
 				"/Users/tester/Dev/flywheel/scripts/lib/voice-health.py",
 		});
+	});
+
+	it("keeps the legacy engine by default and enables Engine A only explicitly", () => {
+		expect(
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_ENGINE: "openai-live",
+				},
+				"/Users/tester",
+			).engine,
+		).toBe("openai-live");
+		expect(() =>
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_ENGINE: "auto",
+				},
+				"/Users/tester",
+			),
+		).toThrow("FLYWHEEL_VOICE_ENGINE");
 	});
 
 	it("rejects a malformed voice build identity", () => {

@@ -5,6 +5,18 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { acquireProcessLifetimeFileLock } from "flywheel-teamlead/process-lock";
 import { createDiscordDeps } from "flywheel-voice-bridge";
+import {
+	buildGptLiveBackend,
+	CompositeSpeech,
+	EdgeTts,
+	FfmpegPcmDecoder,
+	JsonlTranscriptSink,
+	type RoomIO,
+	resolveConfig as resolveVoiceCoreConfig,
+	type VoiceHandoffIntentKind,
+	type VoiceUtterance,
+} from "flywheel-voice-core";
+import { BridgeVoiceClient as HeadphoneBridgeVoiceClient } from "flywheel-voice-headphone";
 import { DiscordMirrorClient, FlywheelCommDelivery } from "./adapters.js";
 import { verifyLeadVoiceTokenIdentity } from "./bot-identity.js";
 import {
@@ -20,6 +32,7 @@ import {
 import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
 import { VoiceDelivery } from "./delivery.js";
 import { DiscordVoiceRoom } from "./discord-room.js";
+import { createEngineAHeadphoneSession } from "./engine-a-composition.js";
 import { EvidenceLog } from "./evidence.js";
 import {
 	logVoiceHealthSuccess,
@@ -29,6 +42,7 @@ import {
 import { VoiceHealthAlertDispatcher } from "./health-alert.js";
 import { SessionJournal } from "./journal.js";
 import { probeVoiceLaunchdOwner } from "./launchd-owner.js";
+import { LiveLeadAdapter } from "./live-lead-adapter.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
 import { parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
@@ -75,6 +89,14 @@ function evidencePath(
 
 /** Plan §7: one fixed session-start ceiling over preflight and both branches. */
 const SESSION_START_DEADLINE_MS = 120_000;
+
+function classifyLeadIntent(utterance: VoiceUtterance): VoiceHandoffIntentKind {
+	if (/(执行|修改|创建|提交|发送|部署|合并|删除|更新)/u.test(utterance.text))
+		return "action";
+	if (/(判断|建议|应该|选择|评估|决定|怎么看)/u.test(utterance.text))
+		return "judgment";
+	return "query";
+}
 
 export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
@@ -217,6 +239,14 @@ export async function main(): Promise<void> {
 		const startDeadlineAt = Date.now() + SESSION_START_DEADLINE_MS;
 		context.lease.assert();
 		parseVoiceProjection(context.projection, context.sessionId);
+		const engineA = config.engine === "openai-live";
+		const generation = context.projection.sessionGeneration;
+		if (
+			engineA &&
+			(!Number.isSafeInteger(generation) || Number(generation) < 1)
+		) {
+			throw new Error("voice_projection_generation_required");
+		}
 		const token = tokenFor(context.projection);
 		await verifyLeadVoiceTokenIdentity(
 			token,
@@ -255,12 +285,23 @@ export async function main(): Promise<void> {
 					await mirror.post(context.projection.threadId, text, discordNonce());
 			},
 		);
-		return new GenericVoiceSession({
+		const session = new GenericVoiceSession({
 			projection: context.projection,
 			delivery,
 			startDeadlineMs: SESSION_START_DEADLINE_MS,
 			startDeadlineAt: () => startDeadlineAt,
 			createFrontend: (handlers) => {
+				if (engineA) {
+					return {
+						start: async () => undefined,
+						appendAudio: () => undefined,
+						appendSpeech: async () => {
+							throw new Error("engine_a_speech_must_use_v1");
+						},
+						cancelSpeech: () => undefined,
+						stop: async () => undefined,
+					};
+				}
 				return new RealtimeFrontend({
 					apiKey: config.realtimeApiKey,
 					voice: context.projection.realtimeVoice,
@@ -281,6 +322,13 @@ export async function main(): Promise<void> {
 			},
 			createRoom: (handlers) => {
 				room = new DiscordVoiceRoom({
+					...(engineA
+						? {
+								sessionId: context.sessionId,
+								generation: generation as number,
+								roomKey: `${context.projection.guildId}:${context.projection.voiceChannelId}`,
+							}
+						: {}),
 					onDiagnostic: (record) =>
 						evidence.appendBuffered({
 							ts: new Date().toISOString(),
@@ -298,6 +346,115 @@ export async function main(): Promise<void> {
 				});
 				return room;
 			},
+			...(engineA
+				? {
+						createHeadphoneSession: (roomIO: RoomIO) => {
+							const coreConfig = resolveVoiceCoreConfig({}, process.env);
+							const liveBackend = buildGptLiveBackend(coreConfig, {
+								apiKey: config.realtimeApiKey,
+							});
+							const transcriptSink = new JsonlTranscriptSink(
+								join(
+									config.voiceRoot,
+									"sessions",
+									context.sessionId,
+									"transcript.jsonl",
+								),
+								(error) =>
+									evidence.append({
+										ts: new Date().toISOString(),
+										kind: "voice_transcript_write_failed",
+										message: error.message,
+									}),
+							);
+							const tts = new EdgeTts({
+								command: coreConfig.edgeTts.command,
+								baseArgs: coreConfig.edgeTts.args,
+								timeoutMs: coreConfig.timeouts.ttsMs,
+								streamCommand: coreConfig.edgeTts.streamCommand,
+								streamMaxBufferedBytes:
+									coreConfig.edgeTts.streamMaxBufferedBytes,
+							});
+							const decoder = new FfmpegPcmDecoder({
+								ffmpegBin: coreConfig.ffmpegBin,
+								timeoutMs: coreConfig.timeouts.ttsMs,
+							});
+							const speech = new CompositeSpeech({
+								sessionId: context.sessionId,
+								generation: generation as number,
+								room: roomIO,
+								tts,
+								voice: coreConfig.openaiLive.announcerVoice,
+								beforeSpeak: async () => undefined,
+								decode: (source, options) => decoder.decode(source, options),
+							});
+							const headphoneBridge = new HeadphoneBridgeVoiceClient({
+								bridgeUrl: config.bridgeUrl,
+								token: config.apiToken,
+								record: (record) => evidence.appendBuffered(record),
+							});
+							return createEngineAHeadphoneSession({
+								binding: {
+									sessionId: context.sessionId,
+									generation: generation as number,
+									leaseToken: context.leaseToken,
+								},
+								founderUserId: context.projection.founderUserId,
+								bridge: headphoneBridge,
+								room: roomIO,
+								transcriptSink,
+								baseInstructions:
+									"简单问题由前台直接回答；需要查询、执行或判断时先说我问下 Lead，再使用 client delegation。",
+								createEngine: ({ registerHandoff, submitHandoff }) =>
+									new LiveLeadAdapter({
+										sessionId: context.sessionId,
+										generation: generation as number,
+										projectName: context.projection.projectName,
+										founderUserId: context.projection.founderUserId,
+										targetLeadId: context.projection.leadId,
+										room: roomIO,
+										createConversation: (initialSessionContext) =>
+											liveBackend.createConversation({
+												brain: {
+													async *respond() {
+														yield await Promise.reject(
+															new Error(
+																"openai_live_does_not_use_brain_adapter",
+															),
+														);
+													},
+												},
+												systemPreamble: initialSessionContext,
+												voice: coreConfig.openaiLive.voice,
+											}),
+										transcriptSink,
+										speech,
+										classifyIntent: classifyLeadIntent,
+										submitHandoff,
+										registerHandoff,
+										record: (record) => evidence.appendBuffered(record),
+									}),
+								captionSink: {
+									caption: (caption) => {
+										void roomIO.status(caption.renderedText).catch((error) =>
+											evidence.appendBuffered({
+												kind: "live_caption_status_failed",
+												message:
+													error instanceof Error
+														? error.message
+														: String(error),
+											}),
+										);
+									},
+								},
+								record: (record) => evidence.appendBuffered(record),
+								textStatus: (text) => {
+									void roomIO.status(text).catch(() => undefined);
+								},
+							});
+						},
+					}
+				: {}),
 			lifecycle: (state, reason) => {
 				const ts = new Date().toISOString();
 				const prefix =
@@ -337,6 +494,7 @@ export async function main(): Promise<void> {
 			},
 			cleanup: () => rmSync(scratch, { recursive: true, force: true }),
 		});
+		return session;
 	};
 
 	const daemon = new VoiceDaemon({

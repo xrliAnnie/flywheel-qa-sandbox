@@ -17,6 +17,7 @@ export interface VoiceBotBinding {
 }
 
 export interface VoiceDaemonConfig {
+	engine: "legacy-realtime" | "openai-live";
 	buildSha: string | null;
 	realtimeApiKey: string;
 	apiToken: string;
@@ -115,6 +116,12 @@ export function loadVoiceDaemonConfig(
 	const bridgeUrl = validateVoiceBridgeUrl(
 		env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL ?? "http://127.0.0.1:9876",
 	);
+	const engine = env.FLYWHEEL_VOICE_ENGINE?.trim() || "legacy-realtime";
+	if (engine !== "legacy-realtime" && engine !== "openai-live") {
+		throw new Error(
+			"FLYWHEEL_VOICE_ENGINE must be legacy-realtime or openai-live",
+		);
+	}
 	const apiToken = env.TEAMLEAD_API_TOKEN?.trim();
 	if (!apiToken) throw new Error("TEAMLEAD_API_TOKEN is required");
 	const realtimeApiKey = env.OPENAI_API_KEY?.trim();
@@ -150,6 +157,7 @@ export function loadVoiceDaemonConfig(
 		);
 	}
 	return {
+		engine,
 		buildSha,
 		apiToken,
 		realtimeApiKey,

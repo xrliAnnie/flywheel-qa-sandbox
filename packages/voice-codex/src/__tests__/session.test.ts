@@ -42,6 +42,10 @@ function fixture(options?: {
 	createHeadphoneSession?: () => {
 		start(): Promise<void>;
 		close(): Promise<void>;
+		speak?(
+			text: string,
+			pendingKey: string,
+		): Promise<"confirmed" | "unconfirmed" | "failed">;
 	};
 }) {
 	let frontendHandlers!: FrontendHandlers;
@@ -117,6 +121,30 @@ describe("GenericVoiceSession", () => {
 		expect(headphone.start).toHaveBeenCalledOnce();
 		await test.session.stop();
 		expect(headphone.close).toHaveBeenCalledOnce();
+	});
+
+	it("routes existing outbound narration through the selected V1 engine", async () => {
+		const roomIO = {} as RoomIO;
+		const headphone = {
+			start: vi.fn(async () => undefined),
+			close: vi.fn(async () => undefined),
+			speak: vi.fn(async () => "confirmed" as const),
+		};
+		const test = fixture({
+			roomIO,
+			createHeadphoneSession: () => headphone,
+		});
+		await test.session.start();
+		await test.session.markLive();
+		const speech = prepareReplySpeech("会议现在开始。", 80)[0]!;
+
+		await expect(test.session.speak(speech)).resolves.toBe("confirmed");
+		expect(headphone.speak).toHaveBeenCalledWith(
+			speech.spokenText,
+			speech.speechId,
+		);
+		expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+		await test.session.stop();
 	});
 
 	it("routes an audio-attributed final exactly once with a deterministic transcript id", async () => {

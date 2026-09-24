@@ -35,9 +35,6 @@ export interface LiveReplyEventsOptions {
 	pageSize?: number;
 }
 
-// TODO(FLY-2796): production composition injects subscribeReplies here; this
-// package deliberately owns only the push-driven consumer and its fake seam.
-
 interface ReplyState {
 	binding: LiveLeadResultBinding;
 	cursor: number;

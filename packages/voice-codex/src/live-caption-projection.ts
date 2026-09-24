@@ -22,9 +22,6 @@ export interface LiveCaptionProjectionOptions {
 	record(event: Record<string, unknown>): void;
 }
 
-// TODO(FLY-2796): production composition injects the HeadphoneSession
-// utterance stream and the room TIV CaptionSink at this seam.
-
 /** Maps trusted Engine A assistant origins to explicit founder-visible labels.
  * The source field, never the text, decides whether a line is Frontend or Lead. */
 export class LiveCaptionProjection {
