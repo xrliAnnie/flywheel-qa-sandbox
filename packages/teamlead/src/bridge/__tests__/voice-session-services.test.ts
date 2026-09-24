@@ -173,6 +173,58 @@ function configuredResidentProject(): ProjectEntry {
 	} as ProjectEntry;
 }
 
+it("does not poll Discord outbound replies when Engine A owns Lead delivery", async () => {
+	const now = new Date().toISOString();
+	store.updateVoiceProvisioning({
+		sessionId: SESSION_ID,
+		expectedStep: "reserved",
+		nextStep: "done",
+		nextState: "desired",
+		updatedAt: now,
+	});
+	store.claimVoiceSession({
+		sessionId: SESSION_ID,
+		daemonBootId: "boot",
+		now,
+		leaseTtlMs: 3_600_000,
+	});
+	const db = new Database(join(root, "teamlead.db"));
+	db.prepare(
+		`UPDATE voice_sessions
+		 SET state = 'live', root_message_id = ?, bound_channel_ids = ?, outbound_cursor = ?
+		 WHERE session_id = ?`,
+	).run(
+		"100000000000000006",
+		JSON.stringify(["100000000000000003"]),
+		JSON.stringify({ "100000000000000003": "100000000000000007" }),
+		SESSION_ID,
+	);
+	db.close();
+	const fetchImpl = vi.fn(async () =>
+		new Response("[]", {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		}),
+	);
+	const { runtime } = createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [configuredProject()],
+		env: {
+			LEAD_TOKEN: "test-token",
+			FLYWHEEL_VOICE_ENGINE: "openai-live",
+		},
+		homeDir: root,
+		cwd: root,
+		fetchImpl: fetchImpl as typeof fetch,
+		config: { discordOwnerUserId: "founder" } as BridgeConfig,
+	});
+
+	await runtime.tick();
+
+	expect(fetchImpl).not.toHaveBeenCalled();
+});
+
 function residentStartBody(overrides: Record<string, unknown> = {}) {
 	const observedAt = new Date().toISOString();
 	return {

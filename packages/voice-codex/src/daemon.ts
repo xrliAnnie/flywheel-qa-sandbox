@@ -153,6 +153,8 @@ export interface VoiceDaemonOptions {
 	bridge: VoiceDaemonBridge;
 	stateStore: VoiceSessionStore;
 	bootId: string;
+	/** Engine A receives Lead replies through its push subscription. */
+	legacyOutboundPolling?: boolean;
 	createSession(
 		context: VoiceSessionContext,
 	): ActiveVoiceSession | Promise<ActiveVoiceSession>;
@@ -627,7 +629,8 @@ export class VoiceDaemon {
 				await lifetime.wait(() => session.markLive());
 				liveAt = this.nowIso();
 				for (;;) {
-					await this.deliverOutbound(context, session, lifetime);
+					if (this.options.legacyOutboundPolling !== false)
+						await this.deliverOutbound(context, session, lifetime);
 					await lifetime.wait(
 						() =>
 							new Promise<void>((resolve) => {

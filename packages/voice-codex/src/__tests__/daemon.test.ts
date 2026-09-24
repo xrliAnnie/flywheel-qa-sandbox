@@ -878,7 +878,7 @@ function pending<T>() {
 	return { promise, resolve };
 }
 
-function lifetimeFixture() {
+function lifetimeFixture(legacyOutboundPolling = true) {
 	const ended = pending<import("../daemon.js").VoiceEnd>();
 	const claimedLease = new VoiceLease(() => Date.now());
 	claimedLease.install(Date.now(), 15_000, 2_000);
@@ -906,10 +906,11 @@ function lifetimeFixture() {
 		claimOutbound: vi.fn(async () => "attempt"),
 		receipt: vi.fn(async () => {}),
 	};
-	const daemon = new VoiceDaemon({
+	const options = {
 		bridge,
 		stateStore: { save: vi.fn(), list: vi.fn(() => []), remove: vi.fn() },
 		bootId: "boot",
+		legacyOutboundPolling,
 		createSession: () => runtime,
 		recoverSession: vi.fn(),
 		sleep: (ms, signal) =>
@@ -931,11 +932,31 @@ function lifetimeFixture() {
 			presenceGraceMs: 120_000,
 			speechChunkTokens: 600,
 		},
-	});
+	};
+	const daemon = new VoiceDaemon(options);
 	return { runtime, bridge, daemon, claimedLease, ended };
 }
 
 describe("VoiceDaemon session lifetime", () => {
+	it("does not poll legacy outbound replies when Engine A owns Lead delivery", async () => {
+		vi.useFakeTimers();
+		try {
+			const fixture = lifetimeFixture(false);
+			const running = fixture.daemon.runOnce();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(fixture.runtime.markLive).toHaveBeenCalledOnce();
+			expect(fixture.bridge.outbound).not.toHaveBeenCalled();
+			fixture.ended.resolve({ kind: "ended", reason: "voice-stop" });
+			await vi.advanceTimersByTimeAsync(0);
+			await expect(running).resolves.toMatchObject({
+				kind: "session_ended",
+				reason: "voice-stop",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("receipts a claimed reply as dropped when speech projection is empty", async () => {
 		const fixture = lifetimeFixture();
 		fixture.bridge.outbound

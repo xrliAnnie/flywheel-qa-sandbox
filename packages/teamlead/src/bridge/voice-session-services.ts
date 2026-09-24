@@ -65,6 +65,8 @@ export function createVoiceSessionServices(input: {
 	leadCapabilityReceiptRouter: express.Router;
 } {
 	const env = input.env ?? process.env;
+	const legacyOutboundPolling =
+		env.FLYWHEEL_VOICE_ENGINE?.trim() !== "openai-live";
 	const homeDir = input.homeDir ?? homedir();
 	const voiceHost = loadVoiceHostConfig({
 		path: env.FLYWHEEL_VOICE_HOST_CONFIG,
@@ -485,6 +487,7 @@ export function createVoiceSessionServices(input: {
 		validateSession,
 		provision,
 		poll: async (session) => {
+			if (!legacyOutboundPolling) return;
 			await validateSession(session);
 			const { token } = resolveDaemon(session);
 			if (!session.leaseToken || !session.rootMessageId) return;

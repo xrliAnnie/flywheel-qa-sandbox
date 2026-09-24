@@ -107,6 +107,7 @@ export async function main(): Promise<void> {
 	}
 	if (process.argv.length > 2)
 		throw new Error("usage: flywheel-voice [--check-config]");
+	const engineA = config.engine === "openai-live";
 	mkdirSync(config.voiceRoot, { recursive: true, mode: 0o700 });
 	const lock = await acquireProcessLifetimeFileLock(
 		join(config.voiceRoot, "voice.lock"),
@@ -239,7 +240,6 @@ export async function main(): Promise<void> {
 		const startDeadlineAt = Date.now() + SESSION_START_DEADLINE_MS;
 		context.lease.assert();
 		parseVoiceProjection(context.projection, context.sessionId);
-		const engineA = config.engine === "openai-live";
 		const generation = context.projection.sessionGeneration;
 		if (
 			engineA &&
@@ -501,6 +501,7 @@ export async function main(): Promise<void> {
 		bridge,
 		stateStore,
 		bootId: daemonBootId,
+		legacyOutboundPolling: !engineA,
 		health,
 		createSession,
 		recoverSession: async (saved, authority) => {
