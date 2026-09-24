@@ -2,13 +2,13 @@
 issue: FLY-2796
 phase: implement
 phaseCursor: 3/3
-updated: 2026-09-24T13:17:31.021Z
+updated: 2026-09-24T13:52:35.256Z
 nextStep: Regenerate literal-last milestone, push frozen head, and request
-  authorized final scoped review
+  authorized third scoped review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
 **phase**: implement (3/3)
-**next**: Regenerate literal-last milestone, push frozen head, and request authorized final scoped review
+**next**: Regenerate literal-last milestone, push frozen head, and request authorized third scoped review
