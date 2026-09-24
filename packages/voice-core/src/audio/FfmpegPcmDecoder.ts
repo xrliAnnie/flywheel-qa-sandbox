@@ -82,6 +82,7 @@ export class FfmpegPcmDecoder {
 		let receivedPcm = false;
 		let ttsFirstByteMs: number | undefined;
 		let inputFinished = false;
+		let exited = false;
 		let finished = false;
 		let failure: VoiceError | undefined;
 		let terminalFailure: VoiceError | undefined;
@@ -174,11 +175,34 @@ export class FfmpegPcmDecoder {
 				),
 			),
 		);
+		// A clean exit can precede delivery of stdout that is still in the pipe
+		// or held back by pauseStdout(); finalize only once stdio has closed.
 		handle.onExit((code, signal) => {
 			if (failure) return;
 			if (code === 0) {
+				exited = true;
 				if (!inputFinished) {
-					terminalFailure = new VoiceError(
+					terminalFailure ??= new VoiceError(
+						"subprocess-failed",
+						"ffmpeg PCM decoder exited before input completed",
+					);
+				}
+				releaseDrainWaiters();
+				notify();
+				return;
+			}
+			fail(
+				new VoiceError(
+					"subprocess-failed",
+					`ffmpeg PCM decoder exited ${code ?? signal ?? "unknown"}: ${stderr.trim()}`,
+				),
+			);
+		});
+		handle.onClose((code, signal) => {
+			if (failure || finished) return;
+			if (code === 0) {
+				if (!inputFinished) {
+					terminalFailure ??= new VoiceError(
 						"subprocess-failed",
 						"ffmpeg PCM decoder exited before input completed",
 					);
@@ -213,7 +237,7 @@ export class FfmpegPcmDecoder {
 					if (opts.signal.aborted) {
 						throw new VoiceError("cancelled", "ffmpeg PCM decode cancelled");
 					}
-					if (finished) {
+					if (finished || exited) {
 						throw new VoiceError(
 							"connection-closed",
 							"ffmpeg PCM decoder closed before input completed",
@@ -234,7 +258,7 @@ export class FfmpegPcmDecoder {
 					if (!handle.write(chunk.audio)) {
 						await new Promise<void>((resolve) => drainWaiters.add(resolve));
 						if (failure) throw failure;
-						if (finished) {
+						if (finished || exited) {
 							throw new VoiceError(
 								"connection-closed",
 								"ffmpeg PCM decoder closed while input was backpressured",
@@ -242,11 +266,14 @@ export class FfmpegPcmDecoder {
 						}
 					}
 				}
-				if (!failure && !finished) {
+				if (!failure && !finished && !exited) {
 					inputFinished = true;
 					handle.end();
 				}
 			} catch (error) {
+				// After a clean exit the close handler owns the terminal outcome
+				// (drain delivered PCM, then surface terminalFailure).
+				if (exited && terminalFailure) return;
 				fail(
 					error instanceof VoiceError
 						? error

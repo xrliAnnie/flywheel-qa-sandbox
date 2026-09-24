@@ -236,8 +236,20 @@ export class EdgeTts implements TtsEngine, StreamingTtsEngine {
 				true,
 			),
 		);
+		// Non-zero exits fail fast; a clean exit is finalized on close so media
+		// still in the stdout pipe is delivered, not dropped.
 		handle.onExit((code, signal) => {
-			if (failure) return;
+			if (failure || code === 0) return;
+			fail(
+				new VoiceError(
+					"subprocess-failed",
+					`edge-tts stream exited ${code ?? signal ?? "unknown"}: ${stderr.trim()}`,
+				),
+				false,
+			);
+		});
+		handle.onClose((code, signal) => {
+			if (failure || finished) return;
 			if (code === 0) {
 				if (!receivedMedia) {
 					fail(

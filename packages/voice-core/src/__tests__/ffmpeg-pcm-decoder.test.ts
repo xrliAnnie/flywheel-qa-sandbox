@@ -1,9 +1,31 @@
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FfmpegPcmDecoder } from "../audio/FfmpegPcmDecoder.js";
+import { NodeProcessRunner } from "../process.js";
 import type { StreamingTtsChunk } from "../types.js";
 import { FakeProcessRunner } from "./fakes.js";
 
 const MP3 = { encoding: "mp3", sampleRateHz: 24_000, channels: 1 } as const;
+
+/** Real ffmpeg with an MP3 encoder, when the execution host has one. */
+const REAL_FFMPEG = ((): string | undefined => {
+	for (const candidate of ["ffmpeg", "/opt/homebrew/bin/ffmpeg"]) {
+		try {
+			const encoders = execFileSync(
+				candidate,
+				["-hide_banner", "-encoders"],
+				{ stdio: ["ignore", "pipe", "ignore"] },
+			).toString();
+			if (encoders.includes("libmp3lame")) return candidate;
+		} catch {
+			// not installed at this path
+		}
+	}
+	return undefined;
+})();
 
 describe("FfmpegPcmDecoder", () => {
 	it("streams PCM16 mono 24 kHz before encoded synthesis completes", async () => {
@@ -334,6 +356,111 @@ describe("FfmpegPcmDecoder", () => {
 			written: ["encoded"],
 		});
 	});
+
+	it("keeps PCM that arrives after a clean exit until stdio closes", async () => {
+		async function* encoded(): AsyncIterable<StreamingTtsChunk> {
+			yield { audio: Buffer.from("encoded"), format: MP3 };
+		}
+		const runner = new FakeProcessRunner();
+		const iterator = new FfmpegPcmDecoder({ ffmpegBin: "ffmpeg", runner })
+			.decode(encoded(), { signal: new AbortController().signal })
+			[Symbol.asyncIterator]();
+		const first = iterator.next();
+		await vi.waitFor(() => expect(runner.handles).toHaveLength(1));
+		const handle = runner.handles[0]!;
+		handle.closeOnExit = false;
+		await vi.waitFor(() => expect(handle.ended).toBe(true));
+		handle.emitStdout(Buffer.from([1, 0]));
+		await expect(first).resolves.toMatchObject({
+			value: { audio: Buffer.from([1, 0]) },
+		});
+
+		handle.emitExit(0);
+		const second = iterator.next();
+		handle.emitStdout(Buffer.from([2, 0, 3, 0]));
+		await expect(second).resolves.toMatchObject({
+			done: false,
+			value: { audio: Buffer.from([2, 0, 3, 0]) },
+		});
+		const end = iterator.next();
+		handle.emitClose(0);
+		await expect(end).resolves.toEqual({ done: true, value: undefined });
+		expect(handle.killedWith).toBeUndefined();
+	});
+
+	it("delivers every byte a real child writes before exiting while a paced consumer drains", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ffmpeg-pcm-decoder-"));
+		const fixture = join(dir, "fake-ffmpeg.sh");
+		const totalBytes = 300_000;
+		writeFileSync(
+			fixture,
+			`#!/bin/sh\ncat >/dev/null\nhead -c ${totalBytes} /dev/zero\n`,
+		);
+		chmodSync(fixture, 0o755);
+		async function* encoded(): AsyncIterable<StreamingTtsChunk> {
+			yield { audio: Buffer.from("encoded"), format: MP3 };
+		}
+		try {
+			let received = 0;
+			for await (const chunk of new FfmpegPcmDecoder({
+				ffmpegBin: fixture,
+				runner: new NodeProcessRunner(),
+				timeoutMs: 10_000,
+			}).decode(encoded(), { signal: new AbortController().signal })) {
+				received += chunk.audio.length;
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			}
+			expect(received).toBe(totalBytes);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.skipIf(!REAL_FFMPEG)(
+		"real ffmpeg: a paced consumer receives the same PCM as a fast one",
+		async () => {
+			const mp3 = execFileSync(
+				REAL_FFMPEG as string,
+				[
+					"-hide_banner",
+					"-loglevel",
+					"error",
+					"-f",
+					"lavfi",
+					"-i",
+					"sine=frequency=440:duration=6",
+					"-ac",
+					"1",
+					"-ar",
+					"24000",
+					"-f",
+					"mp3",
+					"pipe:1",
+				],
+				{ maxBuffer: 16 * 1024 * 1024 },
+			);
+			async function* encoded(): AsyncIterable<StreamingTtsChunk> {
+				yield { audio: mp3, format: MP3 };
+			}
+			const decodeBytes = async (paceMs: number): Promise<number> => {
+				let received = 0;
+				for await (const chunk of new FfmpegPcmDecoder({
+					ffmpegBin: REAL_FFMPEG as string,
+					runner: new NodeProcessRunner(),
+					timeoutMs: 10_000,
+				}).decode(encoded(), { signal: new AbortController().signal })) {
+					received += chunk.audio.length;
+					if (paceMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, paceMs));
+					}
+				}
+				return received;
+			};
+			const fast = await decodeBytes(0);
+			expect(fast).toBeGreaterThan(200_000);
+			expect(await decodeBytes(40)).toBe(fast);
+		},
+	);
 
 	it("times out a decoder that never produces or exits", async () => {
 		let sourceClosed = false;

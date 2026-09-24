@@ -53,6 +53,14 @@ export interface ProcessHandle {
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
 	): void;
 	/**
+	 * Fires after the child exited AND its stdio streams closed. Unlike onExit,
+	 * every stdout chunk has been delivered by then — streaming consumers must
+	 * finalize here, not on exit, or they drop the still-buffered tail.
+	 */
+	onClose(
+		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
+	): void;
+	/**
 	 * Node backpressure boolean (FLY-1160 §3.1b): false = the Writable buffered
 	 * the data but wants the caller to wait for onDrain before writing more.
 	 * Returns false without writing when stdin is already gone (post-exit).
@@ -134,6 +142,11 @@ class NodeProcessHandle implements ProcessHandle {
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
 	): void {
 		this.child.on("exit", cb);
+	}
+	onClose(
+		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
+	): void {
+		this.child.on("close", cb);
 	}
 	write(data: Buffer | string): boolean {
 		const stdin = this.child.stdin;

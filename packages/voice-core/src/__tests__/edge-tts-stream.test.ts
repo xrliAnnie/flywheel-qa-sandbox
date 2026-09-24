@@ -117,6 +117,38 @@ describe("EdgeTts streaming synthesis", () => {
 		expect((error as VoiceError).message).toContain("decoder failed");
 	});
 
+	it("keeps media that arrives after a clean helper exit until stdio closes", async () => {
+		const runner = new FakeProcessRunner();
+		const iterator = new EdgeTts({
+			command: "edge-tts",
+			runner,
+			streamCommand: "python3",
+			streamScript: "/stream.py",
+		})
+			.synthesizeStream("hello", "voice", {
+				signal: new AbortController().signal,
+			})
+			[Symbol.asyncIterator]();
+		const first = iterator.next();
+		const handle = runner.handles[0]!;
+		handle.closeOnExit = false;
+		handle.emitStdout(Buffer.from("ID3-head"));
+		await expect(first).resolves.toMatchObject({
+			value: { audio: Buffer.from("ID3-head") },
+		});
+
+		handle.emitExit(0);
+		const tail = iterator.next();
+		handle.emitStdout(Buffer.from("-tail"));
+		await expect(tail).resolves.toMatchObject({
+			done: false,
+			value: { audio: Buffer.from("-tail") },
+		});
+		const end = iterator.next();
+		handle.emitClose(0);
+		await expect(end).resolves.toEqual({ done: true, value: undefined });
+	});
+
 	it("rejects a successful helper exit that produced no media", async () => {
 		const runner = new FakeProcessRunner();
 		const iterator = new EdgeTts({
