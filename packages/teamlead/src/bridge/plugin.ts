@@ -532,6 +532,7 @@ import {
 import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
 import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
+import { createHeadphoneRouter } from "./headphone-routes.js";
 import {
 	activateHolderForWake,
 	type HolderWakeCause,
@@ -11313,6 +11314,21 @@ export async function startBridge(
 	// approval kill-switch answers 403 inside, never 404 (FLY-175 R1 lesson);
 	// the ship-approval write itself refuses tokenless deployments (503) and
 	// runs the SAME flip+wake post-write hook as the text/reaction sources.
+	const headphoneFounderId = deriveCanonicalFounderId(
+		config.discordOwnerUserId,
+		config.founderConsent?.founderUserId,
+	);
+	if (headphoneFounderId) {
+		app.use(
+			"/api/voice/headphone",
+			voiceSessionAuthMiddleware(config.apiToken),
+			createHeadphoneRouter({
+				inbox: store.headphoneInbox,
+				founderUserId: headphoneFounderId,
+				getSession: (sessionId) => store.getVoiceSession(sessionId),
+			}),
+		);
+	}
 	app.use(
 		"/api/voice",
 		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),

@@ -47,6 +47,7 @@ import {
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { HeadphoneInboxStore } from "./bridge/headphone-inbox.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -3137,6 +3138,19 @@ export function openWithDatabaseIdentity<T extends { close(): void }>(
 }
 
 export class StateStore {
+	private headphoneInboxStoreCache?: {
+		db: BetterDb;
+		store: HeadphoneInboxStore;
+	};
+	get headphoneInbox(): HeadphoneInboxStore {
+		const db = this.db.raw;
+		if (this.headphoneInboxStoreCache?.db !== db) {
+			const store = new HeadphoneInboxStore(db);
+			store.migrate();
+			this.headphoneInboxStoreCache = { db, store };
+		}
+		return this.headphoneInboxStoreCache.store;
+	}
 	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
 	private summaryPresentationStoreCache?: {
 		db: BetterDb;
@@ -10486,6 +10500,7 @@ export class StateStore {
 			"UPDATE voice_sessions SET ending_started_at = created_at WHERE state = 'ending' AND ending_started_at IS NULL",
 		);
 		this.migrateVoiceHealthDemandProjection();
+		this.headphoneInbox.migrate();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
 			ON voice_sessions(voice_channel_id)
