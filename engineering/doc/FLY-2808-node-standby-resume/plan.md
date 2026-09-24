@@ -3,7 +3,7 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 日期: 2026-09-22
 基于: research.md、exploration.md
 
-状态：设计 R2 已有效批准；Lead 后续以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本单继续完成默认关闭的 N2–N5 实现。仍不部署、不启用生产恢复、不操作真实凭证。
+状态：设计 R2 已有效批准，R3（2026-09-24，重开 run）对 §6.1/§11/§12 做 scoped 复审；Lead 后续以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本单继续完成默认关闭的 N2–N5 实现。仍不部署、不启用生产恢复、不操作真实凭证。
 
 ## 1. 给 founder 的结论
 
@@ -128,6 +128,20 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 
 预算主键：故障为 (run,node,attempt)，恢复/fallback 为 (run,node,attempt,demand episode)。所有初始 launch 计 initial=1，不吃替换额度；faultReplacementCount 仅统计 purpose=fault_replacement，允许追加条件 <3。resume fallback 可增加 launchOrdinal，但不增加故障数。既有 eligibility/backoff/environment 连续故障判定、告警文案统一用同一计数函数；不能各自 COUNT dispatch。老记录首个 initial、之后保守归 fault_replacement，不能根据名称倒推“免费”。重复 demand、重启、事件回放不得重置或双扣；新的合法返工才是新 episode。
 
+### 6.1 失败类别枚举与允许动作（设计评审 R3 定稿）
+
+恢复失败原因必须持久化为受控枚举，允许动作在 StateStore 事务内按下表裁决，不由 coordinator 自行推断；不在表内的原因一律按 hold 处理。
+
+| 枚举值 | 类别 | 再试原会话 | 允许一次 fresh fallback | 结果 |
+|---|---|---|---|---|
+| `resume_launch_timeout`、`resume_transport_error` | 瞬态 | 是（清理确认后，总计 ≤2） | 耗尽后是 | 耗尽且兜底失败 → hold |
+| `resume_handle_missing`、`resume_handle_corrupt` | 坏 handle | 否（不再试同一 handle） | 是（直接） | 兜底失败 → hold |
+| `resume_model_mismatch`、`resume_model_unverified`、`resume_worktree_mismatch`、`resume_branch_mismatch`、`resume_account_mismatch`、`resume_owner_conflict`、`resume_git_identity_unavailable` | 身份/环境不符 | 否 | 否 | hold，显示 expected/observed，等 Lead 修复或重新授权 |
+| `cleanup_unconfirmed`、`retirement_unconfirmed` | 旧进程去向不明 | 否 | 否 | hold，禁止新建第二身体；审计重开后恢复额度 |
+| `fallback_launch_failed` | 兜底自身失败 | 否 | 否 | hold，Lead 审计重开 |
+
+`allocateWorkflowResumeFallback` 在同一事务内重新核验：上一原因属于允许 fallback 的类别、原 body 已证明消失、原 writer 已 fenced、原模型与目录仍可用；任一不成立即拒绝并落 hold。§8.1 验收为本表每一行各补一条端到端负例。
+
 ## 7. Founder 状态与真实资源
 
 统一 DTO（接口显示数据）给列表、项目页、issue 标题、状态 API/Lead 工具及窗口列表：`activityState=working|standby|problem`，附 phase、parkedAt、canResume、transition、reason、lastResumeMs、contextLoss、observedAt。working 可细分排队/拉起/等授权；standby 只在确认释放后出现，显示“可拉起 · 已完成哪一段 · 退下时间”；problem 有可读原因及兜底进度。held/未知不能染成 working 成功色。正常长时间待命不报死亡。
@@ -198,15 +212,31 @@ Lead 回答 question `11a10fbd-8cbe-4f82-b91c-5e3e0dd7d573` 已同意：无墙�
 
 **建议1张实现单，内部按 N2–N5 四个可验收工作包推进。** 生命周期事务、completion 投影、两 adapter、消息和 TURN 消费者是一条不可分割的跨层合同；按引擎/载体分单会增加中间不兼容状态。N2–N5 的范围/前置/测试保持 §8 不变，改作实施清单而非要求四张独立 issue。实现后仍走独立代码评审和 QA 节点，部署仍需原审批。Lead 后续回答 question `604dec16-9c3c-413e-99c4-ac70bdb3c598` 已采纳一张完整实现单；随后以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 将该完整范围直接并入 FLY-2808 当前实现阶段。DAG 后继仍由 orchestrator 派发，本节点不派 QA、不 merge、不 deploy。
 
-## 12. 当前实现落地（Lead 后续授权）
+## 12. 当前实现落地状态（Lead 后续授权；设计评审 R3 更新）
 
-实现沿用本设计的共用合同，没有另建调度框架或外部依赖：
+实现沿用本设计的共用合同，没有另建调度框架或外部依赖。本节是实现状态记录，不改变 §1–§10 已批准的合同；§12.2 列出的缺口以 §1–§10 为准由实现节点必修，本设计不放宽任何条款。
 
-- `workflow_execution_process_body` 保存 active → retiring → standby → resuming / resume_failed → closed 的代数化物理进程状态；工作流整体终态才统一 close，普通阶段完成不再用 terminal timestamp 抹掉可恢复性。
-- completion、Heartbeat、pane-loss、Codex 自动 reowner、resident expiry、recipient terminal guard 与 writer replacement 预算均读取同一 process-body 事实；待命不再被当死亡、终态拒投或故障换人。
-- Claude 持久实际 session id，并以精确 `--resume` 恢复；Codex 空/错 thread id fail closed。两 adapter 均在身份回调前核 model/cwd，持久 generation、git/worktree 摘要，并在合法 HEAD 前移/dirty 时注入重读提示。
-- rework coordinator 先领取 resume claim、拉起并核验 observed session/model/cwd，再激活 holder、授予 TURN、发送 wake；任何拉起失败都不会发 TURN。
-- 同一 demand 的原会话最多两次；耗尽后原子分配一次 `resume_fallback` 新 execution，并改写 route/node/delivery。该 purpose 与 `fault_replacement` 分账，回放复用同一 fallback receipt。
+### 12.1 本分支快照已落下的骨架
+
+- `workflow_execution_process_body` 保存 active → retiring → standby → resuming / resume_failed → closed 的代数化物理进程状态（generation/state CAS）；工作流整体终态才统一 close，普通阶段完成不再用 terminal timestamp 抹掉可恢复性。
+- completion、Heartbeat、pane-loss、Codex 自动 reowner、resident expiry、recipient terminal guard 与 writer replacement 预算均读取同一 process-body 事实。
+- `resume_fallback` 与 `fault_replacement` 使用独立 purpose，故障计数只统计后者（§6 分账）。
+- rework coordinator 主干顺序：先领取 resume claim、拉起、身份回调，再激活 holder、授予 TURN、发送 wake；拉起失败不发 TURN。
 - founder 投影统一为 working / standby / problem；标题、刷新 fingerprint 和状态工具读取相同 DTO。功能只在 `FLYWHEEL_NODE_STANDBY_RESUME=1` 的新 admission 上启用，默认关闭；旧 run 保持原语义。
+
+### 12.2 设计评审 R3（2026-09-24，本 run）按当前 HEAD 核出的实现缺口——实现节点必修
+
+以下四项均为「代码尚未兑现已批准合同」，不是设计变更。每项的合同条款、必修行为与验收负例如下；实现节点在同一 PR 内修复，代码评审以本节为核对清单。
+
+| # | 缺口（当前 HEAD） | 违反条款 | 必修行为 | 验收负例 |
+|---|---|---|---|---|
+| 1 | 入口节点与 Lead retry 的 admission 建了 process body，但 `runs-route.ts` / `actions.ts` 构造的 generalizedExecution 不带 `processLifecycle`，adapter 拿不到 retirementApproved/onRetired，body 永远停在 retiring | §3.3、§3.5 | 抽取 `workflow-engine-dispatcher.ts` 的 lifecycle 构造为唯一共享实现，入口、retry、后续节点三条路径都绑定 generation、批准谓词与 standby 回调；不允许第二份实现 | 入口节点（Claude/Codex 两载体）done 后在退场预算内到达 standby；断言传给 adapter 的 callbacks 完成 active→retiring→standby，而不只断言 DB 建了 active 行 |
+| 2 | `beginWorkflowExecutionResume` 除 `cleanup_unconfirmed` 外对任何 `resume_failed` 都允许再试，两次耗尽后对任何原因都自动分配 fresh fallback，fallback 事务不复核安全前提 | §6、§6.1 | 按 §6.1 枚举与 allowlist 在 StateStore 事务内裁决；`allocateWorkflowResumeFallback` 复核原 body 消失、writer fenced、模型/目录可用 | §6.1 每行一条端到端负例：model_mismatch 不重试也不兜底而 hold；坏 handle 跳过第二次原会话直接一次兜底；cleanup_unconfirmed 永不兜底 |
+| 3 | Claude 的 `onIdentityVerified` 在 Claude 进程启动前由 launcher 用自己的 previousSession id / 本地 ctx.model / realpath 触发，不是 SessionStart 观察值 | §5.3 | 保持启动 gate；由绑定本次 nonce/generation 的 trusted SessionStart hook 回传实际 session id/model/cwd，与 manifest 精确比对后才持久化 `resume_verified` 并触发 `onIdentityVerified`；核验前 prompt 与 PreToolUse 均 fail closed | 缺 hook、hook 回报不同 id/model/cwd 三种情况下不触发 identity 回调、不授 TURN、不发 wake |
+| 4 | Claude 路径忽略 `auditedTmuxKillWindow` 的布尔结果并吞异常，无条件 `onRetired({reasonCode:"process_tree_gone"})`；Codex 路径忽略 TUI kill 失败后也可能确认 retired；StateStore 收到回调即进 standby，无第二层物理证据 | §3.4、§3.5 | kill 后按绑定 window/session、PID+启动时间/进程组、daemon/socket 做有界反查；全部明确 absent 才回调 `onRetired`；拒绝/超时/indeterminate 记 `retirement_unconfirmed` 并保持 problem/hold，不得声称 `process_tree_gone`；两载体用同一份 tmux inventory 判据 | kill 返回 false、kill 抛错、窗口仍可探测三类负例均不进入 standby，且不允许新载体拉起 |
+
+上游主仓 PR #1299 后续提交（入口 processLifecycle 共享构造、tmux inventory 三态判据、确认证据才落退场失败锁）已按此方向修复 #1 与 #4 的一部分；本分支快照未包含这些提交，实现节点须以本表逐项核对当前 HEAD，不以上游描述代替本地证据。
+
+### 12.3 本阶段边界
 
 本阶段只证明代码和定向本地测试；真实服务重启、生产开关、真实 Claude/Codex 长会话、资源曲线、浏览器视觉和跨节点 QA 均留给独立 QA/发布授权，不能由这些本地结果替代。
