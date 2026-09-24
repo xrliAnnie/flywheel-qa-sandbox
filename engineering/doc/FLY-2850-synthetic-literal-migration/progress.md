@@ -1,13 +1,13 @@
 ---
 issue: FLY-2850
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T15:32:04.042Z
-nextStep: "RED: migrate test assertions"
+phaseCursor: 4/5
+updated: 2026-09-24T15:34:29.717Z
+nextStep: commit + code review + PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2850 progress
-**phase**: implement (1/5)
-**next**: RED: migrate test assertions
+**phase**: implement (4/5)
+**next**: commit + code review + PR
