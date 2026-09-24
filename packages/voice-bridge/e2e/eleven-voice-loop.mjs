@@ -146,6 +146,7 @@ if (LEGS !== "audio") {
 		config: baseConfig([]),
 		assistant: {
 			commandName: "gemini",
+			leadId: residentIdentity.leadId,
 			voice: "Kore",
 			assistantToken: null,
 			briefing: {

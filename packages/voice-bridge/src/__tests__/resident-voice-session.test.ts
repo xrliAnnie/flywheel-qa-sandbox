@@ -9,6 +9,81 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("ResidentVoiceSessionClient", () => {
+	it("bounds blackholed claim and renew requests with the configured timeout", async () => {
+		const blackhole = (_url: unknown, init?: RequestInit) => {
+			if (!init?.signal)
+				return Promise.reject(
+					new Error("missing resident request abort signal"),
+				);
+			return new Promise<Response>((_resolve, reject) => {
+				init.signal?.addEventListener(
+					"abort",
+					() => reject(init.signal?.reason),
+					{ once: true },
+				);
+			});
+		};
+		const options = {
+			bridgeUrl: "http://127.0.0.1:9876",
+			apiToken: "master-token",
+			projectName: "flywheel",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000002",
+			outputBotUserId: "100000000000000003",
+			earsBotUserId: "100000000000000004",
+			ownerBootId: "boot-1",
+			requestTimeoutMs: 10,
+			selfFilterProof: () => ({
+				outputBotDropped: true,
+				earsBotDropped: true,
+				unknownDropped: true,
+				allowedHumanPassed: true,
+			}),
+		};
+
+		const claimClient = new ResidentVoiceSessionClient({
+			...options,
+			fetchImpl: vi.fn(blackhole) as typeof fetch,
+		});
+		await expect(
+			claimClient.claim({
+				requestId: "claim-timeout",
+				mode: "rg",
+				leadId: "lead-a",
+			}),
+		).rejects.toThrow("resident_voice_claim_timeout:10ms");
+
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce(
+				response({
+					status: "inserted",
+					sessionId: "session-renew",
+					state: "claimed",
+					carrierKind: "resident",
+					ownerBootId: "boot-1",
+					sessionGeneration: 1,
+					leaseToken: "lease-renew",
+					leaseTtlMs: 15_000,
+					leaseExpiresAt: new Date(Date.now() + 15_000).toISOString(),
+				}),
+			)
+			.mockImplementationOnce(blackhole);
+		const renewClient = new ResidentVoiceSessionClient({
+			...options,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+		const lease = await renewClient.claim({
+			requestId: "renew-timeout",
+			mode: "rg",
+			leadId: "lead-a",
+		});
+		await expect(lease.renew()).rejects.toThrow(
+			"resident_voice_renew_timeout:10ms",
+		);
+		expect(() => lease.assertActive()).toThrow("resident_voice_lease_lost");
+	});
+
 	it("claims one trusted generation, refreshes its proof on renew, and ends it with the same owner", async () => {
 		let now = Date.parse("2026-09-23T20:00:00.000Z");
 		const fetchImpl = vi

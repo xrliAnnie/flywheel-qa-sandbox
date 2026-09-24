@@ -100,6 +100,20 @@ describe("buildStagedConfig (FLY-1353)", () => {
 		},
 	);
 
+	it("supplies the resident Lead identity to the /gemini holder in the /eleven mutex boot", () => {
+		const source = readFileSync(
+			fileURLToPath(
+				new URL("../../e2e/eleven-voice-loop.mjs", import.meta.url),
+			),
+			"utf8",
+		);
+		const bootAAssistant = source.slice(
+			source.indexOf("\t\tassistant: {"),
+			source.indexOf("\t\tassistantWiring: {"),
+		);
+		expect(bootAAssistant).toContain("leadId: residentIdentity.leadId");
+	});
+
 	it.each(["gemini-staged.mjs", "gemini-voice-loop.mjs"])(
 		"%s uses the shared builder and an overridable presence override default",
 		(file) => {

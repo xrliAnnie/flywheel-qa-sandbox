@@ -9,6 +9,7 @@ import {
 	resolveAssistantConfig,
 } from "../assistant/config.js";
 import { GeminiCommand } from "../assistant/GeminiCommand.js";
+import { ElevenCommand } from "../eleven/ElevenCommand.js";
 import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import { SessionSlot } from "../SessionSlot.js";
 
@@ -37,7 +38,7 @@ function residentLease(
 }
 
 function makeCommand(over: Record<string, unknown> = {}) {
-	const slot = new SessionSlot();
+	const slot = (over.slot as SessionSlot | undefined) ?? new SessionSlot();
 	const createIssue = vi.fn(async () => ({
 		identifier: "FLY-1300",
 		url: "https://linear.app/i/FLY-1300",
@@ -97,12 +98,18 @@ describe("GeminiCommand (FLY-967 P7)", () => {
 		expect(h.slot.acquire("meet", "x").ok).toBe(false);
 	});
 
-	it("resident path claims before local slot and hands the authoritative lease to the session", async () => {
+	it("resident path reserves the local slot while claiming and hands the authoritative lease to the session", async () => {
 		const lease = residentLease();
-		const claimSession = vi.fn(async () => lease);
-		const h = makeCommand({ claimSession });
+		const slot = new SessionSlot();
+		let holderDuringClaim = slot.current();
+		const claimSession = vi.fn(async () => {
+			holderDuringClaim = slot.current();
+			return lease;
+		});
+		const h = makeCommand({ slot, claimSession });
 		await h.cmd.handle(h.inv);
 		expect(claimSession).toHaveBeenCalledOnce();
+		expect(holderDuringClaim).toMatchObject({ mode: ASSISTANT_SLOT_MODE });
 		expect(h.slot.current()).toMatchObject({
 			holder: "resident-session",
 			sessionGeneration: 7,
@@ -131,8 +138,50 @@ describe("GeminiCommand (FLY-967 P7)", () => {
 			},
 		});
 		await h.cmd.handle(h.inv);
+		expect(h.replies.at(-1)?.text).toContain("语音不可用");
 		expect(h.replies.at(-1)?.text).toContain("房间租约获取失败");
 		expect(h.createIssue).not.toHaveBeenCalled();
+		expect(h.slot.current()).toBe(null);
+	});
+
+	it("holds the shared slot while the resident claim is pending, rejects /eleven busy, and releases after failure", async () => {
+		let rejectClaim!: (error: Error) => void;
+		const h = makeCommand({
+			claimSession: () =>
+				new Promise<ResidentVoiceLease>((_resolve, reject) => {
+					rejectClaim = reject;
+				}),
+		});
+		const gemini = h.cmd.handle(h.inv);
+		await vi.waitFor(() =>
+			expect(h.slot.current()?.mode).toBe(ASSISTANT_SLOT_MODE),
+		);
+
+		const elevenReplies: string[] = [];
+		const elevenClaim = vi.fn(async () => residentLease());
+		const eleven = new ElevenCommand({
+			slot: h.slot,
+			joinUrl: "https://discord.com/channels/g/vc",
+			preflight: async () => ({ ok: true }),
+			createIssue: async () => ({ identifier: "FLY-2001" }),
+			claimSession: elevenClaim,
+			startSession: async () => {},
+			stopSession: async () => false,
+		});
+		await eleven.handle({
+			reply: async (text) => {
+				elevenReplies.push(text);
+			},
+		});
+		expect(elevenReplies.at(-1)).toContain("/gemini");
+		expect(elevenClaim).not.toHaveBeenCalled();
+
+		rejectClaim(new Error("resident_voice_claim_timeout:2000ms"));
+		await gemini;
+		expect(h.replies.at(-1)?.text).toContain("语音不可用");
+		expect(h.replies.at(-1)?.text).toContain(
+			"resident_voice_claim_timeout:2000ms",
+		);
 		expect(h.slot.current()).toBe(null);
 	});
 

@@ -391,6 +391,7 @@ export async function runVoiceBridge(
 		const residentSessions = new ResidentVoiceSessionClient({
 			bridgeUrl: config.bridgeUrl,
 			apiToken: config.apiToken,
+			requestTimeoutMs: config.leaseHttpTimeoutMs,
 			projectName: config.projectName,
 			guildId: config.guildId,
 			voiceChannelId: config.voiceChannelId,

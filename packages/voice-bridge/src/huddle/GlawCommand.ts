@@ -177,7 +177,7 @@ export class GlawCommand {
 			lease = await this.opts.claimSession?.(host.leadId);
 		} catch (err) {
 			await interaction.editReply({
-				content: `/${this.opts.commandName} 没起起来:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
+				content: `/${this.opts.commandName} 语音不可用:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
 			});
 			return;
 		}

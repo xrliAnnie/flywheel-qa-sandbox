@@ -80,6 +80,9 @@ export interface HuddleBridgeConfig {
 	leads: HuddleBridgeLead[];
 	/** Bridge HTTP base (Linear proxy routes live there, key never here). */
 	bridgeUrl: string;
+	/** Bound for resident claim/renew HTTP. Optional for hand-built test rigs;
+	 * the resolver always supplies the reviewed 2s default. */
+	leaseHttpTimeoutMs?: number;
 	/** Bearer for the Bridge proxy routes (FLYWHEEL_API_TOKEN). */
 	apiToken: string;
 	/** the founder's Discord user id (@ping + MOVE_MEMBERS + lifecycle gates). */
@@ -373,6 +376,11 @@ export function resolveHuddleBridgeConfig(
 		ffmpegBin: env.FLYWHEEL_VOICE_FFMPEG || "ffmpeg",
 		...(brain ? { brain } : {}),
 		bridgeUrl: env.FLYWHEEL_BRIDGE_URL || DEFAULT_BRIDGE_URL,
+		leaseHttpTimeoutMs: positiveIntegerEnv(
+			env,
+			"FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS",
+			2_000,
+		),
 		apiToken: requireTokenEnv(
 			env,
 			"FLYWHEEL_API_TOKEN",
@@ -472,6 +480,27 @@ function numericEnv(
 	if (!Number.isFinite(n) || n <= 0) {
 		throw new Error(
 			`voice-bridge: ${varName} must be a positive number, got ${JSON.stringify(raw)}`,
+		);
+	}
+	return n;
+}
+
+function positiveIntegerEnv(
+	env: NodeJS.ProcessEnv,
+	varName: string,
+	fallback: number,
+): number {
+	const raw = env[varName];
+	if (raw === undefined || raw === "") return fallback;
+	if (!/^[1-9]\d*$/.test(raw)) {
+		throw new Error(
+			`voice-bridge: ${varName} must be a positive integer, got ${JSON.stringify(raw)}`,
+		);
+	}
+	const n = Number(raw);
+	if (!Number.isSafeInteger(n)) {
+		throw new Error(
+			`voice-bridge: ${varName} must be a safe positive integer, got ${JSON.stringify(raw)}`,
 		);
 	}
 	return n;

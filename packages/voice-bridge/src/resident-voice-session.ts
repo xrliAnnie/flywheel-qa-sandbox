@@ -55,6 +55,7 @@ export interface ResidentVoiceSessionClientOptions {
 	ownerBootId: string;
 	selfFilterProof: () => ResidentSelfFilterProof;
 	proofTtlMs?: number;
+	requestTimeoutMs?: number;
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 }
@@ -77,6 +78,7 @@ interface RenewResponse {
 }
 
 const DEFAULT_PROOF_TTL_MS = 60_000;
+export const DEFAULT_RESIDENT_VOICE_REQUEST_TIMEOUT_MS = 2_000;
 
 function requiredText(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
@@ -210,12 +212,20 @@ export class ResidentVoiceSessionClient {
 	private readonly fetchImpl: typeof fetch;
 	private readonly now: () => number;
 	private readonly proofTtlMs: number;
+	private readonly requestTimeoutMs: number;
 	readonly ownerBootId: string;
 
 	constructor(private readonly options: ResidentVoiceSessionClientOptions) {
 		this.fetchImpl = options.fetchImpl ?? fetch;
 		this.now = options.now ?? Date.now;
 		this.proofTtlMs = options.proofTtlMs ?? DEFAULT_PROOF_TTL_MS;
+		this.requestTimeoutMs =
+			options.requestTimeoutMs ?? DEFAULT_RESIDENT_VOICE_REQUEST_TIMEOUT_MS;
+		if (
+			!Number.isSafeInteger(this.requestTimeoutMs) ||
+			this.requestTimeoutMs < 1
+		)
+			throw new Error("resident_voice_request_timeout_invalid");
 		this.ownerBootId = options.ownerBootId;
 	}
 
@@ -258,20 +268,33 @@ export class ResidentVoiceSessionClient {
 		path: string,
 		body: unknown,
 		leaseToken?: string,
-		operation: "request" | "renew" = "request",
+		operation: "request" | "claim" | "renew" = "request",
 	): Promise<T> {
-		const response = await this.fetchImpl(
-			new URL(path, this.options.bridgeUrl).toString(),
-			{
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.options.apiToken}`,
-					"Content-Type": "application/json",
-					...(leaseToken ? { "X-Voice-Lease": leaseToken } : {}),
+		const signal = AbortSignal.timeout(this.requestTimeoutMs);
+		let response: Response;
+		try {
+			response = await this.fetchImpl(
+				new URL(path, this.options.bridgeUrl).toString(),
+				{
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.options.apiToken}`,
+						"Content-Type": "application/json",
+						...(leaseToken ? { "X-Voice-Lease": leaseToken } : {}),
+					},
+					body: JSON.stringify(body),
+					signal,
 				},
-				body: JSON.stringify(body),
-			},
-		);
+			);
+		} catch (error) {
+			if (signal.aborted) {
+				throw new Error(
+					`resident_voice_${operation}_timeout:${this.requestTimeoutMs}ms`,
+					{ cause: error },
+				);
+			}
+			throw error;
+		}
 		if (!response.ok)
 			throw new Error(`resident_voice_${operation}_failed:${response.status}`);
 		return (await response.json()) as T;
@@ -292,6 +315,8 @@ export class ResidentVoiceSessionClient {
 				sessionGeneration,
 				bindingProof: this.bindingProof(sessionGeneration),
 			},
+			undefined,
+			"claim",
 		);
 		if (
 			(result.status !== "inserted" && result.status !== "replayed") ||

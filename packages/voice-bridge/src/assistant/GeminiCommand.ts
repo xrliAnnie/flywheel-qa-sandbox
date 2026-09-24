@@ -52,37 +52,61 @@ export class GeminiCommand {
 	}
 
 	async handle(inv: GeminiInvocation): Promise<void> {
-		let lease: ResidentVoiceLease | undefined;
-		try {
-			lease = await this.opts.claimSession?.();
-		} catch (err) {
-			await inv.reply(
-				`/${this.name} 没起起来:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
-			);
-			return;
-		}
-		const sessionId = lease?.sessionId ?? randomUUID();
-		const slotLease = lease?.toSlotLease(ASSISTANT_SLOT_MODE);
-		const acquired = slotLease
-			? this.opts.slot.acquireLease(slotLease)
-			: this.opts.slot.acquire(ASSISTANT_SLOT_MODE, sessionId);
-		if (!acquired.ok) {
-			await lease?.close("failed", "slot_busy").catch((err: unknown) => {
-				this.opts.log?.(
-					`[gemini-command] resident lease cleanup failed: ${String((err as Error).message ?? err)}`,
-				);
-			});
+		const pendingSessionId = randomUUID();
+		const pending = this.opts.slot.acquire(
+			ASSISTANT_SLOT_MODE,
+			pendingSessionId,
+		);
+		if (!pending.ok) {
 			// FLY-1159 (Codex R3): /gemini and /gemini-advanced share
 			// ASSISTANT_SLOT_MODE, so the slot's per-mode copy would misname
 			// whichever assistant command is running as /gemini. Same-mode busy
 			// gets neutral assistant-session wording; a cross-mode holder
 			// (e.g. /eleven) keeps the slot's accurate message.
 			await inv.reply(
-				acquired.busy.mode === ASSISTANT_SLOT_MODE
-					? `有一场助理语音会话正在进行(${acquired.busy.holder}),先结束它再开新的。`
-					: acquired.message,
+				pending.busy.mode === ASSISTANT_SLOT_MODE
+					? `有一场助理语音会话正在进行(${pending.busy.holder}),先结束它再开新的。`
+					: pending.message,
 			);
 			return;
+		}
+
+		let lease: ResidentVoiceLease | undefined;
+		try {
+			lease = await this.opts.claimSession?.();
+		} catch (err) {
+			this.opts.slot.release(ASSISTANT_SLOT_MODE, pendingSessionId);
+			await inv.reply(
+				`/${this.name} 语音不可用:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
+			);
+			return;
+		}
+		let sessionId: string = pendingSessionId;
+		let slotLease: ReturnType<ResidentVoiceLease["toSlotLease"]> | undefined;
+		if (lease) {
+			slotLease = lease.toSlotLease(ASSISTANT_SLOT_MODE);
+			if (!this.opts.slot.release(ASSISTANT_SLOT_MODE, pendingSessionId)) {
+				await lease.close("failed", "slot_busy").catch(() => undefined);
+				await inv.reply(
+					`/${this.name} 语音不可用:本地会话占位已丢失。稍后再试。`,
+				);
+				return;
+			}
+			const projected = this.opts.slot.acquireLease(slotLease);
+			if (!projected.ok) {
+				await lease.close("failed", "slot_busy").catch((err: unknown) => {
+					this.opts.log?.(
+						`[gemini-command] resident lease cleanup failed: ${String((err as Error).message ?? err)}`,
+					);
+				});
+				await inv.reply(
+					projected.busy.mode === ASSISTANT_SLOT_MODE
+						? `有一场助理语音会话正在进行(${projected.busy.holder}),先结束它再开新的。`
+						: projected.message,
+				);
+				return;
+			}
+			sessionId = lease.sessionId;
 		}
 
 		let identifier: string;
