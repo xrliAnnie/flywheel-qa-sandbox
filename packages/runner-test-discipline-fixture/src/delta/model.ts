@@ -1,0 +1,2 @@
+export const deltaModel = "claude-opus-5.5";
+export const deltaFallback = "claude-opus-5.5";
