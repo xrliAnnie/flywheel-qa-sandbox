@@ -5,7 +5,12 @@
  * Removed by the approved V2 boundary: filters, spoken ship, and text-only
  * treatment of reports.
  */
-import type { SpeakContentProof, SpeakKind, SpeakReceipt } from "../types.js";
+import {
+	SPEAK_BARGE_IN_REASON,
+	type SpeakContentProof,
+	type SpeakKind,
+	type SpeakReceipt,
+} from "../types.js";
 import {
 	renderSpeechBrief,
 	splitSpeechText,
@@ -146,6 +151,7 @@ export class InboxReader {
 			);
 			const kind: SpeakKind = item.needsDecision ? "question" : "brief";
 			let complete = chunks.length > 0;
+			let interrupted = false;
 			const receipts: SpeakReceipt[] = [];
 			for (const [index, chunk] of chunks.entries()) {
 				const pendingKey = `${claim.pendingKey}:${index}`;
@@ -170,6 +176,9 @@ export class InboxReader {
 					!proven(receipt.contentProof)
 				) {
 					complete = false;
+					interrupted =
+						receipt.outcome === "failed" &&
+						receipt.reason === SPEAK_BARGE_IN_REASON;
 					break;
 				}
 				receipts.push(receipt);
@@ -189,6 +198,12 @@ export class InboxReader {
 						message: error instanceof Error ? error.message : String(error),
 					});
 				}
+			} else if (interrupted) {
+				// The founder spoke over this item. It is not a failed delivery:
+				// keep its place and attempt budget, and pull nothing after it
+				// until a later poll (the live claim is reused within its lease).
+				this.options.record({ kind: "inbox_speech_interrupted", itemId: item.id });
+				break;
 			} else {
 				this.noteFailure(key, item.id);
 			}

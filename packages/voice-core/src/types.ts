@@ -374,6 +374,10 @@ type SpeakReceiptIdentity = {
 	requestDigest: string;
 };
 
+/** `SpeakReceipt.reason` when the founder's barge-in cancelled the speech.
+ * It is an interruption to resume later, not a delivery failure. */
+export const SPEAK_BARGE_IN_REASON = "barge-in";
+
 export type SpeakReceipt = SpeakReceiptIdentity &
 	(
 		| {

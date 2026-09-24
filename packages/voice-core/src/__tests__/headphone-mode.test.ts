@@ -6,7 +6,7 @@ import {
 	InboxReader,
 	SpokenExitGuard,
 } from "../headphone/index.js";
-import type { VoiceUtterance } from "../types.js";
+import { SPEAK_BARGE_IN_REASON, type VoiceUtterance } from "../types.js";
 
 function inboxHarness(engine: FakeV1Session) {
 	const items: HeadphoneInboxItem[] = [];
@@ -150,6 +150,85 @@ describe("HeadphoneMode V2 minimum", () => {
 		).toHaveLength(1);
 		expect(ack).toHaveBeenCalledTimes(2);
 		await mode.close();
+	});
+
+	it("keeps a barge-in-interrupted item first and uncounted, and pulls nothing after it", async () => {
+		const items = [
+			item("a", "第一条要念的消息。", false),
+			item("b", "第二条消息。", false),
+		];
+		const claims = new Map<
+			string,
+			{
+				item: HeadphoneInboxItem;
+				claimToken: string;
+				attempt: number;
+				pendingKey: string;
+			}
+		>();
+		const claimCalls: string[] = [];
+		const acked: string[] = [];
+		const spoken: string[] = [];
+		let interruptNext = true;
+		const record = vi.fn();
+		const reader = new InboxReader({
+			list: async () => items.filter((entry) => !acked.includes(entry.id)),
+			claim: async (entry) => {
+				claimCalls.push(entry.id);
+				// Bridge semantics: a live claim for this session is returned as-is.
+				const prior = claims.get(entry.id);
+				if (prior) return prior;
+				const claim = {
+					item: entry,
+					claimToken: `claim:${entry.id}`,
+					attempt: 1,
+					pendingKey: `inbox:${entry.id}:1:session:1:1`,
+				};
+				claims.set(entry.id, claim);
+				return claim;
+			},
+			ack: async (claim) => {
+				acked.push(claim.item.id);
+			},
+			speak: async (text, _kind, options) => {
+				spoken.push(text);
+				if (interruptNext) {
+					interruptNext = false;
+					return {
+						pendingKey: options.pendingKey,
+						requestDigest: "d".repeat(64),
+						outcome: "failed",
+						reason: SPEAK_BARGE_IN_REASON,
+						transport: "none",
+						contentProof: "none",
+					};
+				}
+				return {
+					pendingKey: options.pendingKey,
+					requestDigest: "d".repeat(64),
+					outcome: "completed",
+					transport: "submitted",
+					contentProof: "deterministic_tts",
+				};
+			},
+			record,
+			now: () => 0,
+		});
+
+		await expect(reader.poll()).resolves.toMatchObject({ spoken: 0, acked: 0 });
+		expect(claimCalls).toEqual(["a"]);
+		expect(record).not.toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "inbox_speech_retry_scheduled" }),
+		);
+
+		await expect(reader.poll()).resolves.toMatchObject({ spoken: 2, acked: 2 });
+		expect(claimCalls).toEqual(["a", "a", "b"]);
+		expect(acked).toEqual(["a", "b"]);
+		expect(spoken).toEqual([
+			"第一条要念的消息。",
+			"第一条要念的消息。",
+			"第二条消息。",
+		]);
 	});
 
 	it("speaks one configurable heartbeat after a long quiet period", async () => {
