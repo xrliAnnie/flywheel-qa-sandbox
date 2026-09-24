@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { speakRequestDigest } from "flywheel-voice-core";
+import { speakRequestDigest, splitSpeechText } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { HeadphoneInboxCollector } from "../headphone-collector.js";
@@ -23,7 +23,7 @@ afterEach(() => {
 	rmSync(root, { recursive: true });
 });
 
-function createSession(suffix = "1") {
+function createSession(suffix = "1", leaseTtlMs = 15_000) {
 	const sessionId = `10000000-0000-4000-8000-00000000010${suffix}`;
 	const ownerBootId = `resident-${suffix}`;
 	const sessionGeneration = Number(suffix);
@@ -52,7 +52,7 @@ function createSession(suffix = "1") {
 			observedAt: T0,
 			expiresAt: "2026-09-23T20:01:00.000Z",
 		},
-		leaseTtlMs: 15_000,
+		leaseTtlMs,
 		reservation: {
 			sessionId,
 			mode: "rg",
@@ -351,6 +351,53 @@ describe("HeadphoneInboxStore", () => {
 				limit: 100,
 			}),
 		).toEqual([]);
+	});
+
+	it("keeps an 800-character claim valid until long deterministic speech is acknowledged", () => {
+		const session = createSession("1", 300_000);
+		const item = addItem({ text: "长".repeat(800) });
+		const claimedAt = "2026-09-23T20:00:02.000Z";
+		const claim = store.headphoneInbox.claim({
+			itemId: item.itemId,
+			revision: item.revision,
+			sessionId: session.sessionId,
+			generation: session.sessionGeneration,
+			leaseToken: session.leaseToken,
+			founderUserId: "founder-1",
+			now: claimedAt,
+		});
+		if (!claim) throw new Error("item claim failed");
+		expect(
+			Date.parse(claim.leaseExpiresAt) - Date.parse(claimedAt),
+		).toBeGreaterThan(150_000);
+		const chunks = splitSpeechText(item.text, 500);
+		const receipts = chunks.map((text, index) => ({
+			outcome: "completed" as const,
+			pendingKey: `${claim.pendingKey}:${index}`,
+			requestDigest: speakRequestDigest({
+				sessionId: session.sessionId,
+				generation: session.sessionGeneration,
+				text,
+				kind: "brief",
+				verification: "required",
+			}),
+			transport: "submitted" as const,
+			contentProof: "deterministic_tts" as const,
+		}));
+
+		expect(
+			store.headphoneInbox.ack({
+				itemId: item.itemId,
+				revision: item.revision,
+				sessionId: session.sessionId,
+				generation: session.sessionGeneration,
+				leaseToken: session.leaseToken,
+				founderUserId: "founder-1",
+				claimToken: claim.claimToken,
+				receipts,
+				ackedAt: "2026-09-23T20:02:32.000Z",
+			}),
+		).toBe(true);
 	});
 });
 

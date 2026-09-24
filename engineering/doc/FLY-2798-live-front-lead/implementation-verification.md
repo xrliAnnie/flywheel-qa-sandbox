@@ -180,3 +180,17 @@ R10 精确头 `0143d079e` 的第三轮代码审查发现唯一 HIGH：旧段 S1 
 最小修复只给 catch 增加所属段 guard：失败仍始终记录 `live_frontend_output_failed`，但仅当 `this.frontendSpeech === speech` 时才取消。绿色回归证明 S1 的 `speech_playback_stopped` 仍有审计，S2 不被 `localPlaybackCancel`，且 sequence 0 真正提交给真实 RoomIO。没有改 idle boundary、WaitingMouth 或共享 RoomIO tail 合同；本轮新增 MEDIUM/LOW 仍只进入 follow-up。
 
 最终证据：精确真实 RoomIO 文件 4/4，changed-file `vitest related` 2 文件 18/18；`flywheel-voice-codex...` dependency build 覆盖 16 个 package，`...flywheel-voice-codex` typecheck 通过；根 lint 检查 5241 files、0 errors、25 warnings；两文件定向 Biome 与 `git diff --check` 通过。Consumer discovery（full/file/parent）仍为生产 `live-lead-adapter.ts` 0/2/24、回归 `engine-a-room-io-contract.test.ts` 0/0/5；保留项、无扩展相对 imports 与文档/inventory/wrapper 排除类别同 R10，18/18 related 覆盖全部真实 executable consumer。没有新增或修改 `scripts/__tests__/*.test.sh`，也没有请求 full CI。
+
+## QA claim 1494 长播报稳定性整改
+
+QA 在精确头 `50208d4c4` 发现三个同一真人会话阻断，本轮只修这三项：
+
+- announcer takeover 期间 RoomIO 仍持续上送 `unknown/no_active_speaker` 帧，旧代码把它们与 founder 语音一起缓冲，约 30 秒后必然触发 `live_lead_input_buffer_overflow`。新增 60 秒连续未知归属帧回归先红，最小修复只缓冲明确归属于当前 founder 的帧；未知帧丢弃，随后 founder 帧仍按原顺序回放。
+- headphone claim 固定 60 秒，800 字播报在完成 ACK 前租约已过期。新增真实 `splitSpeechText` 与规范 `speakRequestDigest` receipts 的 150 秒 ACK 回归先红；默认 claim 现在按公开 speech brief 渲染文本（缺失时用正文）的 Unicode code point 数量估算，基线 60 秒、每字符 250ms、上限 15 分钟，显式测试 override 仍受同一上限校验。
+- daemon 对外仍保持 `session_runtime_failed` 脱敏，但以前丢失了可诊断根因。回归用真实 QA 错误 `discord_audio:Cannot perform IP discovery - socket closed` 先证明 evidence 缺失；现在只写枚举化 `causeCode=discord_audio_ip_discovery_socket_closed` 到会话 evidence，原始错误、路径和 token 不进入记录或日志。
+
+TDD 与最终本地证据：失败阶段分别稳定复现 unknown frame overflow、60 秒 claim 到期和 runtime cause evidence 缺失；修复后 voice-codex 精确 2 文件 28/28、Teamlead 精确 1 文件 15/15。直接消费者 `headphone-routes` 与 adapter→route 为 2 文件 5/5，Engine A composition 为 1/1。changed-TypeScript `vitest related`：voice-codex 5 文件 67/67；Teamlead 因 `headphone-inbox.ts → StateStore.ts` 的中央依赖自然展开为 572 文件、8010 passed / 4 skipped，命令为强制 related selector，不作为本地 full-suite 或 exact-head CI 证据。受影响 owner/dependency build 覆盖 16 个 package，Teamlead 与 voice-codex typecheck 均通过；7 个改动文件定向 Biome 0 errors，`git diff --check` 通过。根 `pnpm lint` 已执行，但仓库基线中的 FLY-1547/1563 research scripts、FLY-2560 replay tooling 等本 issue diff 外文件仍有 3 errors / 25 warnings，故 exit 1；没有越界修复。
+
+Consumer discovery 对本轮 4 个生产 TypeScript 逐一执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：`headphone-inbox.ts` 0/1/991、`live-lead-adapter.ts` 0/3/24、`daemon.ts` 13/33/24、`cli.ts` 10/230/24。保留的真实 executable consumers 为 `StateStore.ts`、headphone routes/collector/question authority、voice-codex index/realtime/session/cli、Engine A composition/reply events，以及对应精确测试；跨包 adapter→route、route consumer 与 composition 测试均单独执行，其他源码消费者由上述 related 图覆盖。
+
+其余命中全部按类别排除：完整路径与 basename 命中的 `engineering/doc/**`、`product/doc/**`、review JSON、生成快照和 voice evidence 只保存路径或历史说明；`daemon.ts` / `cli.ts` 在其他 package 的同名文件是词法碰撞；child-process census、kill-path inventory、wrapper 与 package 脚本只引用入口路径而不消费本轮内部 API；父目录的 991/24 项除已列真实 imports/tests 外只共享目录字符串。`scripts/__tests__/flywheel-voice-wrapper.test.sh` 只检查 daemon 入口包装，既不读取本轮新 causeCode/claim/buffer 逻辑，也没有被修改；本轮没有新增或修改任何 `scripts/__tests__/*.test.sh`。实现节点没有请求 full CI，也不宣称 QA 真人 10 次延迟、字幕或耳机三件事已经重测。

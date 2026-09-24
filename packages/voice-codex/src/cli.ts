@@ -503,6 +503,10 @@ export async function main(): Promise<void> {
 		bootId: daemonBootId,
 		legacyOutboundPolling: !engineA,
 		health,
+		recordSessionEvidence: (context, record) =>
+			new EvidenceLog(
+				evidencePath(config.voiceRoot, context.sessionId, context.projection),
+			).append({ ts: new Date().toISOString(), ...record }),
 		createSession,
 		recoverSession: async (saved, authority) => {
 			try {

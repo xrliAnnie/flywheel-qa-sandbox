@@ -700,6 +700,55 @@ describe("LiveLeadAdapter", () => {
 		]);
 	});
 
+	it("drops sixty seconds of unattributed uplink during a long announcer takeover", async () => {
+		const h = harness();
+		const spoken = deferred<SpeakReceipt>();
+		h.speech.speak.mockImplementationOnce(() => spoken.promise);
+		await h.adapter.open("context");
+
+		const speaking = h.adapter.speak("四十秒长播报", "brief", {
+			pendingKey: "brief-long",
+			verification: "required",
+		});
+		await vi.waitFor(() => expect(h.live.suspend).toHaveBeenCalledOnce());
+		for (let second = 0; second < 60; second += 1) {
+			h.room.emitFrame({
+				pcm: Buffer.alloc(48_000),
+				format: PCM,
+				sessionId: "voice-session",
+				generation: 9,
+				sequence: second,
+				capturedAt: 1_200 + second * 1_000,
+				utteranceId: null,
+				attribution: { kind: "unknown", reason: "no_active_speaker" },
+			});
+		}
+		h.room.emitFrame({
+			pcm: Buffer.from([7, 0]),
+			format: PCM,
+			sessionId: "voice-session",
+			generation: 9,
+			sequence: 60,
+			capturedAt: 61_200,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+
+		expect(h.record).not.toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "live_lead_input_buffer_overflow" }),
+		);
+		expect(h.room.io.status).not.toHaveBeenCalledWith("语音暂不可用，请重说");
+		spoken.resolve({
+			pendingKey: "brief-long",
+			requestDigest: "speech-digest",
+			outcome: "completed",
+			transport: "submitted",
+			contentProof: "deterministic_tts",
+		});
+		await speaking;
+		expect(h.live.audioSent).toEqual([Buffer.from([7, 0])]);
+	});
+
 	it("does not start a competing Live replacement when barge-in cancels an announcer", async () => {
 		const h = harness();
 		const spoken = deferred<SpeakReceipt>();

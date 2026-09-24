@@ -326,7 +326,11 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					return;
 				if (this.liveInputUnavailable) return;
 				if (this.liveInputSuspended) {
-					this.bufferLiveInput(frame.pcm, frame.format);
+					if (
+						frame.attribution.kind === "known" &&
+						frame.attribution.speakerUserId === this.options.founderUserId
+					)
+						this.bufferLiveInput(frame.pcm, frame.format);
 					return;
 				}
 				this.sendLiveAudio(live, frame.pcm, frame.format);

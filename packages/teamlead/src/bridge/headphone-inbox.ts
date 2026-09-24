@@ -8,6 +8,22 @@ import {
 	validateSpeechBrief,
 } from "flywheel-voice-core";
 
+const MIN_CLAIM_TTL_MS = 60_000;
+const MAX_CLAIM_TTL_MS = 15 * 60_000;
+const CLAIM_TTL_PER_CODE_POINT_MS = 250;
+
+function claimTtlMsForItem(item: HeadphoneInboxItemRecord): number {
+	const brief = validateSpeechBrief(item.speechBrief ?? undefined);
+	const speechText = brief.ok
+		? renderSpeechBrief(item.speechBrief!)
+		: item.text;
+	return Math.min(
+		MAX_CLAIM_TTL_MS,
+		MIN_CLAIM_TTL_MS +
+			Array.from(speechText).length * CLAIM_TTL_PER_CODE_POINT_MS,
+	);
+}
+
 export interface HeadphoneInboxItemRecord {
 	itemId: string;
 	revision: number;
@@ -664,8 +680,12 @@ export class HeadphoneInboxStore {
 				return undefined;
 			const attempt = attempts + 1;
 			const claimToken = randomBytes(32).toString("hex");
-			const retryMs = input.claimTtlMs ?? 60_000;
-			if (!Number.isSafeInteger(retryMs) || retryMs < 1 || retryMs > 60_000)
+			const retryMs = input.claimTtlMs ?? claimTtlMsForItem(item);
+			if (
+				!Number.isSafeInteger(retryMs) ||
+				retryMs < 1 ||
+				retryMs > MAX_CLAIM_TTL_MS
+			)
 				throw new Error("headphone_inbox_claim_ttl_invalid");
 			const leaseExpiresAt = new Date(
 				Date.parse(input.now) + retryMs,

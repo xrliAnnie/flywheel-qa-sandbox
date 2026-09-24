@@ -356,6 +356,8 @@ describe("VoiceDaemon health observations", () => {
 
 	it("records a runtime failure before a rejected terminal receipt and retains recovery state", async () => {
 		const raw = "runtime terminal secret-token /private/session/path";
+		const runtimeError =
+			"discord_audio:Cannot perform IP discovery - socket closed";
 		const order: string[] = [];
 		const health = {
 			observe: vi.fn((observation: VoiceHealthObservation) => {
@@ -364,7 +366,7 @@ describe("VoiceDaemon health observations", () => {
 		};
 		const runtime: ActiveVoiceSession = {
 			start: vi.fn(async () => {
-				throw new Error("runtime primary raw secret");
+				throw new Error(runtimeError);
 			}),
 			waitForFounder: vi.fn(async () => true),
 			receiveHealth: vi.fn(() => undefined),
@@ -375,6 +377,7 @@ describe("VoiceDaemon health observations", () => {
 			stop: vi.fn(async () => {}),
 		};
 		const remove = vi.fn();
+		const recordSessionEvidence = vi.fn(() => order.push("evidence"));
 		const setState = vi.fn(async (_id, _token, _lease, state: string) => {
 			if (state === "failed") {
 				order.push("terminal");
@@ -402,6 +405,7 @@ describe("VoiceDaemon health observations", () => {
 				},
 				createSession: () => runtime,
 				health,
+				recordSessionEvidence,
 			}),
 		);
 		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -411,8 +415,20 @@ describe("VoiceDaemon health observations", () => {
 				sessionId: SESSION_ID,
 				reason: "session_runtime_failed",
 			});
-			expect(order).toEqual(["health", "terminal"]);
+			expect(order).toEqual(["health", "evidence", "terminal"]);
 			expect(health.observe).toHaveBeenCalledTimes(1);
+			expect(recordSessionEvidence).toHaveBeenCalledWith(
+				expect.objectContaining({ sessionId: SESSION_ID }),
+				{
+					kind: "voice_session_runtime_failed",
+					reasonClass: "session_runtime_failed",
+					operation: "session_runtime",
+					causeCode: "discord_audio_ip_discovery_socket_closed",
+				},
+			);
+			expect(JSON.stringify(recordSessionEvidence.mock.calls)).not.toContain(
+				runtimeError,
+			);
 			expect(remove).not.toHaveBeenCalled();
 			expect(log.mock.calls.flat().join(" ")).not.toContain(raw);
 		} finally {
