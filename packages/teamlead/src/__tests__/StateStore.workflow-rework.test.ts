@@ -5060,3 +5060,998 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 });
+
+/**
+ * FLY-2828: receipt projection root cause. A wake rework whose actor finishes
+ * before the patrol projects the receipt must settle its obligation at
+ * completion (or be refused with zero writes); the patrol projector must never
+ * throw on a node that is already running, and must return a reason (not
+ * throw) on a node that is already done. Both rework doors share one
+ * predicate.
+ */
+const FLY2828_ALERT = {
+	leadId: "flywheel-eng-lead",
+	projectName: "flywheel",
+	leadResolution: "resolved" as const,
+};
+
+function fly2828Raw(store: StateStore): Database.Database {
+	return (store as unknown as { db: { raw: Database.Database } }).db.raw;
+}
+
+function fly2828Ledgers(store: StateStore): string {
+	const raw = fly2828Raw(store);
+	return JSON.stringify(
+		[
+			"workflow_run_node",
+			"workflow_rework_delivery",
+			"workflow_rework_verification_path",
+			"workflow_node_completion",
+			"workflow_execution_binding",
+		].map((name) => ({
+			name,
+			rows: raw.prepare(`SELECT * FROM "${name}"`).all(),
+		})),
+	);
+}
+
+/** Drive the pending heavy rework to a granted wake activation. */
+function fly2828Wake(
+	store: StateStore,
+	requestId: string,
+	input: { to: "pending" | "turn_granted" | "awaiting_receipt"; epoch?: number },
+): { activationId: string; epoch: number; generation: number } {
+	const activationId = `activation:${requestId}`;
+	const epoch = input.epoch ?? 4;
+	const claim = store.claimWorkflowReworkDelivery({
+		requestId,
+		ownerId: "coordinator",
+		now: "2026-07-23T00:11:00.000Z",
+		leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+	});
+	if (!claim.ok) throw new Error(claim.reason);
+	const admitted = store.admitGeneralizedWorkflowExecution({
+		runId: "run-heavy",
+		nodeId: "implement",
+		executionId: "implement-exec",
+		attempt: 2,
+		activationId,
+		activationMode: "wake",
+		reworkRequestId: requestId,
+		expiresAt: "2026-07-23T02:00:00.000Z",
+		absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+		now: "2026-07-23T00:11:01.000Z",
+		env: enabled,
+	});
+	if (!admitted.ok) throw new Error(admitted.reason);
+	store.upsertSession({
+		execution_id: "implement-exec",
+		issue_id: "FLY-1423",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "implement",
+	});
+	const turn = store.recordWorkflowActivationTurn({
+		activationId,
+		issueId: "FLY-1423",
+		executionId: "implement-exec",
+		epoch,
+		sourceEventId: `rework-turn:${requestId}:${activationId}`,
+		grantedAt: "2026-07-23T00:11:30.000Z",
+	});
+	if (!turn.ok) throw new Error(turn.reason);
+	const hops: Array<["pending" | "turn_granted", "turn_granted" | "awaiting_receipt"]> =
+		input.to === "pending"
+			? []
+			: input.to === "turn_granted"
+				? [["pending", "turn_granted"]]
+				: [
+						["pending", "turn_granted"],
+						["turn_granted", "awaiting_receipt"],
+					];
+	for (const [from, to] of hops) {
+		const advanced = store.advanceWorkflowReworkDelivery({
+			requestId,
+			ownerId: "coordinator",
+			generation: claim.generation,
+			from,
+			to,
+			now: "2026-07-23T00:12:00.000Z",
+			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
+		});
+		if (!advanced.ok) throw new Error(advanced.reason);
+	}
+	return { activationId, epoch, generation: claim.generation };
+}
+
+/** Immutable ledgers refuse UPDATE; a new route revision is how they move. */
+function fly2828InsertRouteRevision(
+	store: StateStore,
+	requestId: string,
+	overrides: {
+		targetAttempt?: number;
+		preferredActorExecutionId?: string;
+		alsoMoveDelivery?: boolean;
+	},
+): number {
+	const route = store.getLatestWorkflowReworkRoute(requestId)!;
+	const revision = route.revision + 1;
+	fly2828Raw(store)
+		.prepare(
+			`INSERT INTO workflow_rework_route_revision
+			   (request_id, revision, target_node_id, target_attempt,
+			    preferred_actor_execution_id, invalidation_scope_json,
+			    verification_policy_json, interpreted_by, interpretation_reason, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 'test', 'fly2828 fixture', '2026-07-23T00:12:30.000Z')`,
+		)
+		.run(
+			requestId,
+			revision,
+			route.target_node_id,
+			overrides.targetAttempt ?? route.target_attempt,
+			overrides.preferredActorExecutionId ?? route.preferred_actor_execution_id,
+			JSON.stringify(route.invalidation_scope),
+			JSON.stringify(route.verification_policy),
+		);
+	if (overrides.alsoMoveDelivery) {
+		fly2828Raw(store)
+			.prepare(
+				"UPDATE workflow_rework_delivery SET route_revision = ? WHERE request_id = ?",
+			)
+			.run(revision, requestId);
+		fly2828Raw(store)
+			.prepare(
+				"UPDATE workflow_rework_verification_path SET route_revision = ? WHERE request_id = ?",
+			)
+			.run(revision, requestId);
+	}
+	return revision;
+}
+
+function fly2828Transition(store: StateStore) {
+	return store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
+		runId: "run-heavy",
+		nodeId: "implement",
+		attempt: 2,
+		executionId: "implement-exec",
+		outcome: "implement_done",
+		subjectDigest: "b".repeat(40),
+		alertIdentity: FLY2828_ALERT,
+		now: "2026-07-23T00:13:00.000Z",
+	});
+}
+
+function fly2828Complete(
+	store: StateStore,
+	input: {
+		activationId: string;
+		epoch: number;
+		sourceEventId?: string;
+		now?: string;
+	},
+) {
+	return store.commitEnrolledCompletion({
+		nodeReuseEnabled: false,
+		executionId: "implement-exec",
+		route: "needs_review",
+		sourceEventId: input.sourceEventId ?? "complete-implement-2",
+		completionSubmission: { decision: { route: "needs_review" } },
+		subjectDigest: "b".repeat(40),
+		workflowActivation: {
+			activationId: input.activationId,
+			runId: "run-heavy",
+			nodeId: "implement",
+			attempt: 2,
+			turnEpoch: input.epoch,
+		},
+		alertIdentity: FLY2828_ALERT,
+		now: input.now ?? "2026-07-23T00:13:00.000Z",
+	});
+}
+
+function fly2828Receipt(
+	store: StateStore,
+	activationId: string,
+	epoch = 4,
+	ackedAt = "2026-07-23T00:12:01.000Z",
+) {
+	return store.recordWorkflowReworkWakeReceipt({
+		activationId,
+		executionId: "implement-exec",
+		epoch,
+		ackedAt,
+		alertIdentity: FLY2828_ALERT,
+	});
+}
+
+describe("FLY-2828 patrol receipt projection on a moved node", () => {
+	it("T8: projects the receipt when the target node is already running for this execution", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_run_node SET state = 'running' WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2",
+				)
+				.run();
+			expect(fly2828Receipt(store, activationId)).toEqual({
+				ok: true,
+				idempotentReplay: false,
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
+				"wake_delivered",
+			);
+			expect(
+				store.getWorkflowReworkVerificationPath(requestId)?.state,
+			).toBe("active");
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
+			).toBe("running");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("T9: returns node_not_reserved:done instead of throwing when the node already completed", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_run_node SET state = 'done', ended_at = '2026-07-23T00:12:30.000Z' WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2",
+				)
+				.run();
+			const before = fly2828Ledgers(store);
+			const events = store.listWorkflowRunEvents("run-heavy");
+			expect(fly2828Receipt(store, activationId)).toEqual({
+				ok: false,
+				reason: "rework_wake_receipt_node_not_reserved:done",
+			});
+			expect(fly2828Ledgers(store)).toBe(before);
+			expect(store.listWorkflowRunEvents("run-heavy")).toEqual(events);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("T4b (store): structural corruption returns context_corrupt or path_missing with zero writes", async () => {
+		const cases: Array<{
+			name: string;
+			corrupt: (store: StateStore, requestId: string) => void;
+			reason: string;
+		}> = [
+			{
+				name: "route target differs from binding",
+				corrupt: (store, requestId) =>
+					void fly2828InsertRouteRevision(store, requestId, {
+						targetAttempt: 3,
+						alsoMoveDelivery: true,
+					}),
+				reason: "rework_wake_receipt_context_corrupt",
+			},
+			{
+				name: "turn issue differs from run",
+				corrupt: (store) =>
+					fly2828Raw(store)
+						.prepare(
+							"UPDATE workflow_run SET issue_id = 'FLY-OTHER' WHERE run_id = 'run-heavy'",
+						)
+						.run(),
+				reason: "rework_wake_receipt_context_corrupt",
+			},
+			{
+				name: "verification path missing",
+				corrupt: (store, requestId) =>
+					fly2828Raw(store)
+						.prepare(
+							"DELETE FROM workflow_rework_verification_path WHERE request_id = ?",
+						)
+						.run(requestId),
+				reason: "rework_wake_receipt_path_missing",
+			},
+			{
+				name: "verification path targets another node",
+				corrupt: (store, requestId) =>
+					fly2828Raw(store)
+						.prepare(
+							"UPDATE workflow_rework_verification_path SET current_node_id = 'qa' WHERE request_id = ?",
+						)
+						.run(requestId),
+				reason: "rework_wake_receipt_path_conflict",
+			},
+			{
+				name: "verification path belongs to another run",
+				corrupt: (store, requestId) =>
+					fly2828Raw(store)
+						.prepare(
+							"UPDATE workflow_rework_verification_path SET run_id = 'run-other' WHERE request_id = ?",
+						)
+						.run(requestId),
+				reason: "rework_wake_receipt_path_conflict",
+			},
+		];
+		for (const testCase of cases) {
+			const { store, requestId } = await createPendingHeavyRework();
+			try {
+				const { activationId } = fly2828Wake(store, requestId, {
+					to: "awaiting_receipt",
+				});
+				fly2828Raw(store).pragma("foreign_keys = OFF");
+				testCase.corrupt(store, requestId);
+				const before = fly2828Ledgers(store);
+				const events = store.listWorkflowRunEvents("run-heavy");
+				expect(fly2828Receipt(store, activationId), testCase.name).toEqual({
+					ok: false,
+					reason: testCase.reason,
+				});
+				expect(fly2828Ledgers(store), testCase.name).toBe(before);
+				expect(store.listWorkflowRunEvents("run-heavy")).toEqual(events);
+			} finally {
+				store.close();
+			}
+		}
+	});
+
+	it("keeps stale immutable identity as identity_conflict", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			expect(fly2828Receipt(store, activationId, 5)).toEqual({
+				ok: false,
+				reason: "rework_wake_receipt_identity_conflict",
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("FLY-2828 completion settles the wake rework obligation", () => {
+	it.each([
+		["turn_granted", "admitted"],
+		["awaiting_receipt", "admitted"],
+		["turn_granted", "running"],
+		["awaiting_receipt", "running"],
+	] as const)(
+		"T11 (B): completion from delivery %s with node %s projects the receipt inline",
+		async (deliveryState, nodeState) => {
+			const { store, requestId } = await createPendingHeavyRework();
+			try {
+				const { activationId, epoch } = fly2828Wake(store, requestId, {
+					to: deliveryState,
+				});
+				if (nodeState === "running") {
+					fly2828Raw(store)
+						.prepare(
+							"UPDATE workflow_run_node SET state = 'running' WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2",
+						)
+						.run();
+				}
+				const completed = fly2828Complete(store, { activationId, epoch });
+				expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
+				expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+					state: "completed",
+					owner_id: null,
+				});
+				expect(
+					store.getWorkflowReworkVerificationPath(requestId)?.state,
+				).toBe("completed");
+				expect(
+					store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
+				).toBe("done");
+				const receipt = store
+					.listWorkflowRunEvents("run-heavy")
+					.find(
+						(event) =>
+							event.event_uid === `rework_wake_receipt:${activationId}:${epoch}`,
+					);
+				expect(receipt?.payload).toMatchObject({
+					source: "completion_implied",
+					impliedFromState: deliveryState,
+					requestId,
+				});
+				expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([]);
+				// The CommDB receipt that arrives later is an idempotent replay.
+				expect(fly2828Receipt(store, activationId, epoch)).toEqual({
+					ok: true,
+					idempotentReplay: true,
+				});
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("T11 (A): a spawn binding without a rework request completes untouched", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 1,
+					activationId: "activation:spawn-implement-1",
+					activationMode: "spawn",
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:11:01.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			const before = fly2828Raw(store)
+				.prepare("SELECT COUNT(*) AS n FROM workflow_rework_delivery")
+				.get() as { n: number };
+			expect(
+				advanceHeavy(store, {
+					nodeId: "implement",
+					attempt: 1,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+					successorExecutionId: "qa-exec",
+				}),
+			).toMatchObject({ ok: true, targetNodeId: "qa" });
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter((event) => event.kind === "rework_delivery_wake_delivered"),
+			).toEqual([]);
+			expect(
+				fly2828Raw(store)
+					.prepare("SELECT COUNT(*) AS n FROM workflow_rework_delivery")
+					.get(),
+			).toEqual(before);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("T11 (B′): an already-projected receipt with an active path completes normally", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId, epoch } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			expect(fly2828Receipt(store, activationId)).toEqual({
+				ok: true,
+				idempotentReplay: false,
+			});
+			expect(fly2828Complete(store, { activationId, epoch })).toMatchObject({
+				ok: true,
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
+				"completed",
+			);
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter((event) => event.kind === "rework_delivery_wake_delivered"),
+			).toHaveLength(1);
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.find((event) => event.kind === "rework_delivery_wake_delivered")
+					?.payload,
+			).toMatchObject({ source: "turn_wake_receipt" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("T11 (B′): wake_delivered with a non-active path is an engine invariant with untouched ledgers", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId, epoch } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			expect(fly2828Receipt(store, activationId)).toMatchObject({ ok: true });
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_verification_path SET state = 'pending' WHERE request_id = ?",
+				)
+				.run(requestId);
+			const before = fly2828Ledgers(store);
+			expect(fly2828Complete(store, { activationId, epoch })).toMatchObject({
+				ok: false,
+				reason: "transition_refused",
+				detail: {
+					transitionReason:
+						"engine_invariant:rework_receipt_implied_active_path_conflict",
+				},
+			});
+			expect(fly2828Ledgers(store)).toBe(before);
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([
+		[
+			"route target differs",
+			(store: StateStore, requestId: string) =>
+				void fly2828InsertRouteRevision(store, requestId, {
+					targetAttempt: 3,
+					alsoMoveDelivery: true,
+				}),
+			"engine_invariant:rework_receipt_implied_context_corrupt:target",
+		],
+		[
+			"preferred actor differs",
+			(store: StateStore, requestId: string) =>
+				void fly2828InsertRouteRevision(store, requestId, {
+					preferredActorExecutionId: "someone-else",
+					alsoMoveDelivery: true,
+				}),
+			// The pre-existing target-based refusal sees this first; the
+			// settle step's `actor` invariant stays behind it as defense in depth.
+			"rework_receipt_identity_conflict",
+		],
+		[
+			"turn issue differs",
+			(store: StateStore) =>
+				fly2828Raw(store)
+					.prepare(
+						"UPDATE workflow_run SET issue_id = 'FLY-OTHER' WHERE run_id = 'run-heavy'",
+					)
+					.run(),
+			"engine_invariant:rework_receipt_implied_context_corrupt:turn_issue",
+		],
+		[
+			"path belongs to another run",
+			(store: StateStore, requestId: string) =>
+				fly2828Raw(store)
+					.prepare(
+						"UPDATE workflow_rework_verification_path SET run_id = 'run-other' WHERE request_id = ?",
+					)
+					.run(requestId),
+			"engine_invariant:rework_receipt_implied_context_corrupt:path_run",
+		],
+		[
+			"path missing",
+			(store: StateStore, requestId: string) =>
+				fly2828Raw(store)
+					.prepare(
+						"DELETE FROM workflow_rework_verification_path WHERE request_id = ?",
+					)
+					.run(requestId),
+			"engine_invariant:rework_receipt_implied_context_missing",
+		],
+		[
+			"path target differs",
+			(store: StateStore, requestId: string) =>
+				fly2828Raw(store)
+					.prepare(
+						"UPDATE workflow_rework_verification_path SET current_attempt = 9 WHERE request_id = ?",
+					)
+					.run(requestId),
+			"engine_invariant:rework_receipt_implied_context_corrupt:path_target",
+		],
+	])(
+		"T11 corrupt: %s is refused as an engine invariant with untouched ledgers",
+		async (_name, corrupt, reason) => {
+			// Driven through the transition directly: the enrolled-completion
+			// wrapper pre-empts some of these shapes with its own activation
+			// checks, and the invariant is the transition's own guard.
+			const { store, requestId } = await createPendingHeavyRework();
+			try {
+				fly2828Wake(store, requestId, { to: "awaiting_receipt" });
+				fly2828Raw(store).pragma("foreign_keys = OFF");
+				corrupt(store, requestId);
+				const before = fly2828Ledgers(store);
+				const events = store.listWorkflowRunEvents("run-heavy");
+				expect(fly2828Transition(store)).toMatchObject({ ok: false, reason });
+				expect(fly2828Ledgers(store)).toBe(before);
+				expect(store.listWorkflowRunEvents("run-heavy")).toEqual(events);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each([
+		["pending", true],
+		["held", false],
+		["needs_lead", false],
+		["replacement_pending", false],
+	] as const)(
+		"T11 (C): completion with delivery %s is refused (retryable=%s) with zero writes and one refusal event",
+		async (deliveryState, retryable) => {
+			const { store, requestId } = await createPendingHeavyRework();
+			try {
+				const { activationId, epoch } = fly2828Wake(store, requestId, {
+					to: "pending",
+				});
+				if (deliveryState !== "pending") {
+					fly2828Raw(store)
+						.prepare(
+							"UPDATE workflow_rework_delivery SET state = ?, owner_id = NULL WHERE request_id = ?",
+						)
+						.run(deliveryState, requestId);
+				}
+				const before = fly2828Ledgers(store);
+				const result = fly2828Complete(store, { activationId, epoch });
+				expect(result).toEqual({
+					ok: false,
+					reason: "transition_refused",
+					retryable,
+					detail: {
+						transitionReason: "rework_delivery_not_projectable",
+						requestId,
+						deliveryState,
+						routeRevision: 1,
+					},
+				});
+				expect(fly2828Ledgers(store)).toBe(before);
+				expect(
+					store.getWorkflowNodeCompletion("run-heavy", "implement", 2),
+				).toBeUndefined();
+				const refusals = () =>
+					store
+						.listWorkflowRunEvents("run-heavy")
+						.filter((event) => event.kind === "completion_transition_refused");
+				expect(refusals()).toHaveLength(1);
+				expect(refusals()[0]?.payload).toMatchObject({
+					transitionReason: "rework_delivery_not_projectable",
+				});
+				expect(fly2828Complete(store, { activationId, epoch })).toMatchObject({
+					ok: false,
+					reason: "transition_refused",
+					retryable,
+				});
+				expect(refusals()).toHaveLength(1);
+				expect(fly2828Ledgers(store)).toBe(before);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("T11 (C): a delivery behind the latest route revision is refused before any path check", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId, epoch } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			const route = store.getLatestWorkflowReworkRoute(requestId)!;
+			fly2828Raw(store)
+				.prepare(
+					`INSERT INTO workflow_rework_route_revision
+					   (request_id, revision, target_node_id, target_attempt,
+					    preferred_actor_execution_id, invalidation_scope_json,
+					    verification_policy_json, interpreted_by, interpretation_reason, created_at)
+					 VALUES (?, 2, ?, ?, ?, ?, ?, 'test', 'stale delivery', '2026-07-23T00:12:30.000Z')`,
+				)
+				.run(
+					requestId,
+					route.target_node_id,
+					route.target_attempt,
+					route.preferred_actor_execution_id,
+					JSON.stringify(route.invalidation_scope),
+					JSON.stringify(route.verification_policy),
+				);
+			const before = fly2828Ledgers(store);
+			// The pre-existing target-based refusal already rejects a delivery
+			// whose revision fell behind the latest route, before the settle step
+			// runs; either way the completion is not retryable and writes nothing.
+			expect(fly2828Complete(store, { activationId, epoch })).toMatchObject({
+				ok: false,
+				reason: "rework_receipt_identity_conflict",
+				retryable: false,
+				detail: { requestId, deliveryState: "awaiting_receipt" },
+			});
+			expect(fly2828Ledgers(store)).toBe(before);
+			expect(
+				store.getWorkflowNodeCompletion("run-heavy", "implement", 2),
+			).toBeUndefined();
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("FLY-2828 both rework doors share one predicate", () => {
+	it("T5 (Lead): a completed delivery with a pending path still blocks a new operator rework", async () => {
+		const { store, requestId } = await createActiveOperatorRework();
+		try {
+			const reopen = () =>
+				store.openOperatorRework({
+					runId: "run-heavy",
+					targetNodeId: "implement",
+					...leadReworkFields("second round"),
+					clientRequestId: "fly2828-second-operator-rework",
+					principal: "master",
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
+					evidence: store
+						.listRunAttributedExecutions("run-heavy")
+						.map((executionId) => ({
+							executionId,
+							sessionStatus: null,
+							lifecycleRevision: null,
+							liveness: "dead" as const,
+							observedAt: "2026-07-23T00:20:00.000Z",
+						})),
+					now: "2026-07-23T00:20:00.000Z",
+				});
+			expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([
+				{ requestId, source: "delivery", state: "pending" },
+				{ requestId, source: "verification_path", state: "pending" },
+			]);
+			expect(reopen()).toMatchObject({ ok: false, reason: "rework_already_open" });
+			// (a) the stranded shape from the incident: delivery settled by hand,
+			// path never activated.
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'completed' WHERE request_id = ?",
+				)
+				.run(requestId);
+			expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([
+				{ requestId, source: "verification_path", state: "pending" },
+			]);
+			expect(reopen()).toMatchObject({ ok: false, reason: "rework_already_open" });
+			// (b) the live shape.
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'wake_delivered' WHERE request_id = ?",
+				)
+				.run(requestId);
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_verification_path SET state = 'active' WHERE request_id = ?",
+				)
+				.run(requestId);
+			expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([
+				{ requestId, source: "delivery", state: "wake_delivered" },
+				{ requestId, source: "verification_path", state: "active" },
+			]);
+			expect(reopen()).toMatchObject({ ok: false, reason: "rework_already_open" });
+			// (c) nothing open.
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'completed' WHERE request_id = ?",
+				)
+				.run(requestId);
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE request_id = ?",
+				)
+				.run(requestId);
+			expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([]);
+			// The earlier round's target attempt is still reserved; that is the
+			// next (pre-existing) fence, not this predicate.
+			expect(reopen()).toMatchObject({
+				ok: false,
+				reason: "target_attempt_already_reserved",
+			});
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_run_node SET state = 'done', ended_at = '2026-07-23T00:19:00.000Z' WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2",
+				)
+				.run();
+			expect(reopen()).toMatchObject({ ok: true });
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("FLY-2828 terminal guard for push-exhausted wakes", () => {
+	it("T13 (store): only a completed rework obligation cancels; settled, terminal, and live keep their reasons", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId, epoch } = fly2828Wake(store, requestId, {
+				to: "awaiting_receipt",
+			});
+			const inspect = () =>
+				store.inspectWorkflowTurnWakeRetry({
+					wakeId: `rework-wake:${requestId}:${activationId}:epoch:${epoch}`,
+					executionId: "implement-exec",
+					activationId,
+					epoch,
+				});
+			expect(inspect()).toEqual({ disposition: "deliver" });
+			const raw = fly2828Raw(store);
+			raw
+				.prepare(
+					"UPDATE workflow_run_node SET state = 'done' WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2",
+				)
+				.run();
+			expect(inspect()).toEqual({
+				disposition: "cancel",
+				reason: "activation_target_terminal",
+			});
+			raw
+				.prepare(
+					"UPDATE workflow_run_node SET state = 'admitted' WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2",
+				)
+				.run();
+			raw
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'held' WHERE request_id = ?",
+				)
+				.run(requestId);
+			expect(inspect()).toEqual({
+				disposition: "cancel",
+				reason: "rework_obligation_settled",
+			});
+			raw
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'awaiting_receipt' WHERE request_id = ?",
+				)
+				.run(requestId);
+			expect(fly2828Complete(store, { activationId, epoch })).toMatchObject({
+				ok: true,
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
+				"completed",
+			);
+			expect(inspect()).toEqual({
+				disposition: "cancel",
+				reason: "rework_obligation_completed",
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("FLY-2828 late completion after resume_rework", () => {
+	it("T7: a normal completion after the operator resumed the rework is a bounded retry on the new revision's pending delivery", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const { activationId, epoch, generation } = fly2828Wake(
+				store,
+				requestId,
+				{ to: "turn_granted" },
+			);
+			expect(
+				store.settleWorkflowReworkFailure({
+					requestId,
+					ownerId: "coordinator",
+					generation,
+					reason: "holder_activation_failed:state_not_revivable:completed",
+					terminal: {
+						kind: "irreversible_actor",
+						status: "completed",
+						cause: "holder_activation_failed:state_not_revivable:completed",
+					},
+					alertIdentity: FLY2828_ALERT,
+					now: "2026-07-23T00:12:30.000Z",
+				}),
+			).toMatchObject({ ok: true, state: "needs_lead" });
+			expect(store.getWorkflowRun("run-heavy")?.status).toBe("held");
+			// The hold shape's precondition wants the delivery parked as `held`
+			// (the resume action itself accepts held|needs_lead); park it there.
+			fly2828Raw(store)
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'held' WHERE request_id = ?",
+				)
+				.run(requestId);
+			const normalized = StateStore.canonicalizeHoldResume({
+				runId: "run-heavy",
+				shape: "rework_retry_exhausted",
+				holdEventUid: `rework_retry_exhausted:${requestId}`,
+				decision: null,
+				reason: "operator resumes the rework",
+				principal: "master",
+				clientRequestId: "fly2828-resume",
+			});
+			if (!normalized) throw new Error("invalid hold resume");
+			expect(
+				store.resumeWorkflowHold({
+					canonical: normalized.canonical,
+					digest: normalized.digest,
+					now: "2026-07-23T00:12:40.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "pending",
+				route_revision: 2,
+			});
+			expect(
+				store.getWorkflowReworkVerificationPath(requestId),
+			).toMatchObject({ state: "pending", route_revision: 2 });
+			expect(store.getWorkflowRun("run-heavy")?.status).toBe("active");
+			const before = fly2828Ledgers(store);
+			const events = store.listWorkflowRunEvents("run-heavy");
+			const late = fly2828Complete(store, {
+				activationId,
+				epoch,
+				sourceEventId: "late-complete-after-resume",
+				now: "2026-07-23T00:12:50.000Z",
+			});
+			expect(late).toEqual({
+				ok: false,
+				reason: "transition_refused",
+				retryable: true,
+				detail: {
+					transitionReason: "rework_delivery_not_projectable",
+					requestId,
+					deliveryState: "pending",
+					routeRevision: 2,
+				},
+			});
+			expect(fly2828Ledgers(store)).toBe(before);
+			expect(
+				store.getWorkflowNodeCompletion("run-heavy", "implement", 2),
+			).toBeUndefined();
+			const after = store.listWorkflowRunEvents("run-heavy");
+			expect(after.slice(0, events.length)).toEqual(events);
+			expect(after.slice(events.length).map((event) => event.kind)).toEqual([
+				"completion_transition_refused",
+			]);
+			expect(
+				fly2828Complete(store, {
+					activationId,
+					epoch,
+					sourceEventId: "late-complete-after-resume",
+					now: "2026-07-23T00:12:55.000Z",
+				}),
+			).toMatchObject({ ok: false, retryable: true });
+			expect(store.listWorkflowRunEvents("run-heavy")).toHaveLength(
+				after.length,
+			);
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("FLY-2828 inline projection rolls back with a later refusal", () => {
+	it("T16: a transition_conflict after the implied projection leaves every ledger and event untouched", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			fly2828Wake(store, requestId, { to: "awaiting_receipt" });
+			// A prior traversal for this attempt makes the transition refuse
+			// *after* the settle step already projected the receipt.
+			store.appendWorkflowRunEvent({
+				runId: "run-heavy",
+				eventUid: "fly2828-prior-edge",
+				kind: "edge_traversed",
+				nodeId: "implement",
+				executionId: "implement-exec",
+				payload: { sourceAttempt: 2, edgeId: "synthetic" },
+			});
+			const before = fly2828Ledgers(store);
+			const events = store.listWorkflowRunEvents("run-heavy");
+			const attempts = fly2828Raw(store)
+				.prepare("SELECT * FROM workflow_delivery_attempt ORDER BY attempt_id")
+				.all();
+			expect(fly2828Transition(store)).toEqual({
+				ok: false,
+				reason: "transition_conflict",
+			});
+			expect(fly2828Ledgers(store)).toBe(before);
+			expect(store.listWorkflowRunEvents("run-heavy")).toEqual(events);
+			expect(
+				fly2828Raw(store)
+					.prepare("SELECT * FROM workflow_delivery_attempt ORDER BY attempt_id")
+					.all(),
+			).toEqual(attempts);
+			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
+				"awaiting_receipt",
+			);
+			expect(
+				store.getWorkflowReworkVerificationPath(requestId)?.state,
+			).toBe("pending");
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
+			).toBe("admitted");
+		} finally {
+			store.close();
+		}
+	});
+});
