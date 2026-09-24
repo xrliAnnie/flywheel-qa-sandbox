@@ -125,6 +125,7 @@ interface AgendaItem {
   items: AgendaItem[],          // open 时是整批；item/urgent 时是这一件
   currentItemKey: string | null,
   queueAfter: { count: number, classes: Record<AgendaClass, number> },  // 只给数，不给内容
+  olderUnspokenCount?: number,   // 仅 open：窗口外未播的 lead_said 条数（§2.2），不含内容
   lastFounderUtterance?: { transcriptId, text } }
 ```
 
@@ -160,7 +161,8 @@ flywheel-comm voice agenda close --request <handoffId> --item <itemKey> --dispos
 | purpose | 允许的 say | 允许的 close |
 |---|---|---|
 | `open` | `item=none` 或开场第一件，可带 `--order` | 不允许 |
-| `item`、`resume`、`reply`（她回话以后） | `item=当前 active 件` | `item=当前 active 件` |
+| `item`、`resume` | `item=当前 active 件` | `item=当前 active 件` |
+| `reply`（她回话以后，请求 id = 那次用户 handoff 的 handoffId，见 §4.4 R-T5） | `item=该回合绑定的件`。绑定的件如果已经关闭，只允许**说明性** say | 仅当绑定的件**仍是当前 active 件**时允许；绑定的件已关闭时 ⛔ 不允许，也不能推进当前件 |
 | `urgent` | `item=当前 urgent 件` | `item=当前 urgent 件` |
 | `checkin` | `item=none` | 不允许 |
 
@@ -236,7 +238,7 @@ stateDiagram-v2
 | Q4 | 一件关闭的条件：① Lead 按 §3.2 的规则发出有效的 `close`；或 ② 一份**完整快照**（§2.1 R1-6）证明它已经不在三类里（比如她点了批准，标题变了）。不完整快照永远不能触发 ②。如果是当前这一件被 ② 关闭，就发 `item` 请求让 Lead 用一句话确认并接下一件 |
 | Q5 | `deferred` 和 `decision_recorded` 只抑制**本场**，不再提起；下一场如果它仍在三类里，重新入队。`resolved` 的 `lead_said` 条目永久记为已处理（§4.8） |
 | Q6 | 她正在说话（`onBargeIn` 为 start 或 sustained）、引擎正在出声、`audibleTail`（估算）未排空时，都不开口。只在**安全边界**上开口：她说完、我方这句念完 |
-| Q7 | 她插一个与当前件无关的问题时，走 FLY-2798 的前台或 handoff 正常回答，议程暂停。回答完以后，如果超过 `agenda.resumeGapMs`（工程默认 8000）没有新的话，就发 `resume` 请求，让 Lead 带回当前件 |
+| Q7 | 议程进行中，她插一个与当前件无关的问题：按 §4.4 R-T2 交给 Lead，由 Lead 回答，并在同一轮带回当前件。只有当 Lead 那一轮**没有**带回（它的 say 里没提当前件是 Lead 的自由，模式层不做语义判断），而且之后 `agenda.resumeGapMs`（工程默认 8000）内没有新的话时，才补发一次 `resume` 请求。空闲时的无关问题走前台快答，不涉及 resume |
 | Q8 | 队列状态持久化到 Bridge 表 `voice_agenda_state(sessionId, generation, snapshotId, order[], cursor, itemStates, urgentStack, outstandingRequestId, appliedResultCursor, stateVersion, lastActivityAt)`，所有推进都是 CAS 条件更新（§3.2 R1-5）。重启或换 generation 后从持久状态接着走。它只管**议程条目**，会话状态的权威仍然是 `VoiceSessionState`（K5） |
 | Q9 | 刷新节奏：沿用 2796 收件箱的唤醒方式，每次变更都触发一次 `GET /api/voice/agenda` 做差集；兜底是每 30s 轮询一次（工程默认） |
 
@@ -274,17 +276,28 @@ stateDiagram-v2
 **R-T2 议程回合（有 active 件或 urgent 件时开始的回合）。**
 - 前台对这一轮的输出一律压住。A 走 FLY-2798 已有的 announcer takeover 和 generation fence（`turnCancelOrSuppress`）；B 走 FLY-2799 对应的 suppress 能力。这一轮前台说出的任何内容都不播放，只写审计。
 - 引擎原有的独立 handoff 路径，对这一轮一律**不发**：A 的 delegation 提交、B 的 execution-intent handoff 都由 conductor 按 turnId 去重关闭。
-- 由 conductor 发出**唯一一次**用户 handoff：沿用 2796 的 query、judgment、action 分类和全部 transcript 校验，额外带上 `agendaBinding {itemKey, requestId, turnId}`。Lead 的回复作为 `purpose=reply` 的结果，按 §3.2 R1-5 应用。
+- 由 conductor 发出**唯一一次**用户 handoff：沿用 2796 的 query、judgment、action 分类和全部 transcript 校验。⚠️ **R2-1 修正：用户 handoff 的 wire 格式和 parser 一字不改**（2796 `voice-handoff-routes.ts:49-146` 用 exactObject 拒收未知字段，`handoff.ts:76-96` 的 digest 输入也是封闭的），item 绑定改走**服务端关联表**：
+  1. 回合建立时（R-T1），conductor 调用 `POST /api/voice/agenda/turns {sessionId, generation, leaseToken, turnId, utteranceId, itemKey}`。Bridge 校验 lease、generation、itemKey 属于该会话的议程状态，然后写 `voice_agenda_turns`，约束是 `UNIQUE(sessionId, generation, utteranceId)`。重试时同一 utteranceId 返回同一个绑定；同一 utteranceId 带不同 itemKey 返回 409。
+  2. 用户 handoff 照原样提交，本身已经带 `sessionId/generation/utteranceId/transcriptId`。Bridge 在 authorized 时按 `(sessionId, generation, utteranceId)` 查到绑定，把 `{itemKey, turnId, itemState}` 写进这条 handoff 的**服务端派生**字段。这个值由服务端查表得出，⛔ 客户端无法提交。
+  3. 投递给 Lead 时，这组绑定走 2796 已有的 typed `voiceHandoff` metadata 的 **additive 可选字段** `agenda`。只在服务端派生时出现，校验、渲染、读取整链一起更新；旧 envelope 仍然有效。Lead 由此拿到同样的 item 和 turn。恢复或重投时按同一个 handoffId 重读，结果不变。
+  4. 回合没有绑定（空闲回合）的 handoff，完全按原路径处理，没有任何变化。
 - 她问的如果是和当前件**无关**的事，也交给 Lead，由 Lead 直接回答，然后在同一轮带回当前件。代价是议程期间的闲聊不走快答，会慢一些；换来的是不会出现两个声音抢话。
 
 **R-T3 空闲回合（没有 active 件）。** 走 FLY-2798 或 FLY-2799 原有的前台快答和 handoff 路径，不变。
 
 **R-T4 切件竞态。** 回合绑定的是 X；等她那句话的 final 到达时，X 已经被 Q4 关闭，B 成了 active。这句话仍然按绑定交给 Lead，`itemKey=X`，并标 `itemState=closed`，由 Lead 决定怎么接。⛔ 不改绑到 B。
 
+**R-T5 回话的出口（R2-2 修正）。** conductor 提交一次议程回合的用户 handoff 时，把这个 **handoffId 登记为新的 `outstandingRequestId`**（purpose=`reply`，绑定该回合的 item）。登记同样走 CAS，此前的 outstanding 请求随之失效，只写审计。
+- Lead 用 `voice agenda say --request <该 handoffId>` 回答。这条 handoff 上的普通 `lead_reply` 结果，也按 `say(item=绑定件)` 处理，但**不含 close**。
+- 绑定件 X 仍是 active 时：按 §3.2 矩阵，say 和 close 都可以。
+- 绑定件 X 已关闭时（R-T4）：只允许**说明性 say**，照常播放；⛔ 不能 close，⛔ 不能推进 B。播完以后，conductor 为当前件 B 重新发一个 `item` 请求，登记为新的 outstanding。
+- X 原来的主动 agenda 请求**不恢复有效**，它迟到的稿子照旧丢弃，只写审计。
+- 所有应用照旧检查 lease、generation、请求身份和 CAS。
+
 **必测（A 和 B 各一套）：**
 - 前台被强制「自己回答」时，输出被压住、零播放；
 - 同一轮触发了重复的 delegation，只投递一次 handoff；
-- 切件以后才到的 late final，绑定的仍是原来那一件；
+- 切件以后才到的 late final，绑定的仍是原来那一件，而且完整走通「X 开始输入 → X 关闭、B 成为 active → X 的 final 到达 → Lead 回答并被播出」：没有改绑，没有推进 B，旧 X 的迟到主动稿被丢弃；
 - 空闲回合的快答照常工作。
 
 ### 4.5 两种模式
@@ -369,7 +382,7 @@ stateDiagram-v2
 |---|---|---|
 | S0 | 探针：GPT TTS 用十个声线各出一句；Live 的 `voice` 能否读 projection | 有真实音频留痕；marin 的 TTS 与 Live 试听对比 |
 | S1 | Bridge `GET /api/voice/agenda`、`originClass` 迁移、主频道 founder 回复水位、上线基线和回看窗口 | 三类判定与 `readIssueTitleState` 对拍；排除清单逐项负测；`includeThreadAnswer=false` 时「要你答」零入队；积压 335 条只取窗口内的，InboxReader speak 零次；逐来源 `sourceStatus`，不完整快照不能证明移除；scope（耳机/会议）；鉴权 403、409 |
-| S2 | `POST /api/voice/agenda/requests` 服务端分支、comm 的 `voice agenda say/close` | 用户 handoff 校验器不变（回归测试）；缺 transcript 只有 agenda_brief 能通过；越权、错 item、错 order、过期 generation、非当前请求的迟到结果一律不应用（只写审计）；`resolved` 缺 evidence 拒收；幂等 |
+| S2 | `POST /api/voice/agenda/requests` 服务端分支、`POST /api/voice/agenda/turns` 与 `voice_agenda_turns`、handoff 的服务端派生 agenda 绑定与 `voiceHandoff.agenda` additive 字段、comm 的 `voice agenda say/close` | 用户 handoff 的 wire 和 parser 不变（回归测试）；有效的议程回合 handoff 能拿到绑定，Lead 读到的 item 和 turn 一致；同一 utteranceId 绑不同 item 返回 409；客户端伪造 agenda 字段被拒；原有的 transcript、身份、权限负测全部仍然通过；缺 transcript 只有 agenda_brief 能通过；越权、错 item、错 order、过期 generation、非当前请求的迟到结果一律不应用（只写审计）；`resolved` 缺 evidence 拒收；幂等 |
 | S3 | `AgendaConductor`：Q1–Q9、U1–U2、报平安、§4.4 回合归属、§4.8 三样记录 | FakeV1Session 加注入时钟：开场先报数再逐件；新件排到队尾；urgent 在安全边界插播并 resume；三种处置各自的对话和业务结果；deferred 和 decision_recorded 本场不重提、下一场重入；迟到或非当前请求的结果零应用；来源失败期间零关件；10 分钟报平安且不累积；重启后恢复 cursor 和 outstandingRequestId；兜底句不含「已发」 |
 | S4 | A：OpenAiTts 播报器、声线解析、会议和耳机分开接线、议程回合压住前台和 delegation | 配置成 edge-tts 启动失败；voice 不一致报错；会议会话不读耳机收件箱；§4.4 的四项必测 |
 | S5 | B：接 `AgendaConductor`，prompt 去掉状态罗列（同步 manifest/digest），议程回合压住前台和 execution-intent | 与 A 用同一组 fixture 逐字对比议程文本；§4.4 的四项必测 |
