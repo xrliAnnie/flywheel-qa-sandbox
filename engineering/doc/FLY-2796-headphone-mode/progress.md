@@ -1,14 +1,14 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 1/2
-updated: 2026-09-24T16:43:29.770Z
-nextStep: Fix staged Eleven default boot isolation and silence-aware STOP proof,
-  then targeted verify/review
+phaseCursor: 2/2
+updated: 2026-09-24T16:50:41.450Z
+nextStep: Regenerate literal-last milestone, push exact head, request scoped
+  code review, then complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (1/2)
-**next**: Fix staged Eleven default boot isolation and silence-aware STOP proof, then targeted verify/review
+**phase**: implement (2/2)
+**next**: Regenerate literal-last milestone, push exact head, request scoped code review, then complete needs_review
