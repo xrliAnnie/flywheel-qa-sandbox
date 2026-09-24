@@ -1,15 +1,14 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T22:03:22.544Z
-nextStep: Add failing tests for normal turn/started, delegated execution
-  handoff, Discord transcript publication, voice-container identity prompt, and
-  output-frame telemetry
+phaseCursor: 3/5
+updated: 2026-09-24T22:20:11.671Z
+nextStep: Push e1651745c, request scoped code review, resolve findings, then
+  complete needs_review for PR 1306
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (1/5)
-**next**: Add failing tests for normal turn/started, delegated execution handoff, Discord transcript publication, voice-container identity prompt, and output-frame telemetry
+**phase**: implement (3/5)
+**next**: Push e1651745c, request scoped code review, resolve findings, then complete needs_review for PR 1306
