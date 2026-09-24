@@ -50,7 +50,7 @@ required_functions=(
   updater_init_dirs updater_lock_acquire updater_lock_release
   updater_token_shape_valid updater_claim_token updater_urgent_signature
   updater_verify_restart_ticket updater_transition_restart_intent
-  updater_scheduled_signature updater_sync_fable_model update_main
+  updater_scheduled_signature updater_sync_fable_model updater_sync_opus_model update_main
   updater_raya_pass raya_configure_runtime_paths raya_host_capable raya_alert_dispatch
   updater_alert_observation
   shuttle_observation_begin shuttle_observation_record_values shuttle_observation_finish
@@ -328,6 +328,7 @@ TRANSITION_CALLS="$TMP/transition.calls"
 FETCH_MODE=ok
 LAUNCHD_PASS_CALLS="$TMP/launchd-pass.calls"
 MODEL_SYNC_CALLS="$TMP/model-sync.calls"
+OPUS_SYNC_CALLS="$TMP/opus-sync.calls"
 CODEX_RECONCILE_CALLS="$TMP/codex-reconcile.calls"
 : > "$DEPLOY_CALLS"
 : > "$RAYA_CALLS"
@@ -335,6 +336,7 @@ CODEX_RECONCILE_CALLS="$TMP/codex-reconcile.calls"
 : > "$TRANSITION_CALLS"
 : > "$LAUNCHD_PASS_CALLS"
 : > "$MODEL_SYNC_CALLS"
+: > "$OPUS_SYNC_CALLS"
 : > "$CODEX_RECONCILE_CALLS"
 
 updater_fetch_origin() {
@@ -366,6 +368,11 @@ updater_launchd_pass() { printf 'pass\n' >> "$LAUNCHD_PASS_CALLS"; }
 updater_sync_fable_model() {
   printf 'call\n' >> "$MODEL_SYNC_CALLS"
   [ "${MODEL_SYNC_MODE:-ok}" = ok ]
+}
+PRODUCTION_OPUS_SYNC_DEFINITION="$(declare -f updater_sync_opus_model)"
+updater_sync_opus_model() {
+  printf 'call\n' >> "$OPUS_SYNC_CALLS"
+  [ "${OPUS_SYNC_MODE:-ok}" = ok ]
 }
 updater_codex_home_reconcile() { printf 'call\n' >> "$CODEX_RECONCILE_CALLS"; }
 severe_alert() { printf '%s|%s\n' "$1" "$2" >> "$ALERT_CALLS"; }
@@ -513,11 +520,13 @@ reset_case() {
   : > "$TRANSITION_CALLS"
   : > "$LAUNCHD_PASS_CALLS"
   : > "$MODEL_SYNC_CALLS"
+  : > "$OPUS_SYNC_CALLS"
   : > "$CODEX_RECONCILE_CALLS"
   FETCH_MODE=ok
   VERIFY_MODE=ok
   TRANSITION_MODE=ok
   MODEL_SYNC_MODE=ok
+  OPUS_SYNC_MODE=ok
   RAYA_STUB_STATE=current
   RAYA_STUB_RC=0
   RAYA_HOST_CAPABLE_RC=0
@@ -599,6 +608,7 @@ printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
   && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
+  && [ "$(grep -c '^call$' "$OPUS_SYNC_CALLS")" = 1 ] \
   && [ "$(grep -c '^call$' "$CODEX_RECONCILE_CALLS")" = 1 ] \
   && [ "$(raya_count)" = 1 ] \
   && grep -q '^call wake=scheduled result=scheduled_current$' "$RAYA_CALLS"; then
@@ -682,6 +692,62 @@ if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
   pass "model sync failure is non-fatal and does not suppress the existing updater cycle"
 else
   fail "model sync failure changed updater semantics (rc=$rc deploys=$(deploy_count) raya=$(raya_count) syncs=$(cat "$MODEL_SYNC_CALLS") launchd=$(cat "$LAUNCHD_PASS_CALLS"))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+OPUS_SYNC_MODE=fail
+update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
+  && [ "$(grep -c '^call$' "$OPUS_SYNC_CALLS")" = 1 ] \
+  && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
+  && [ "$(grep -c '^pass$' "$LAUNCHD_PASS_CALLS")" = 1 ] \
+  && [ "$(raya_count)" = 1 ]; then
+  pass "FLY-2775: Opus model sync failure is non-fatal and runs alongside the Fable sync"
+else
+  fail "FLY-2775: Opus model sync failure changed updater semantics (rc=$rc opus=$(cat "$OPUS_SYNC_CALLS") fable=$(cat "$MODEL_SYNC_CALLS"))"
+fi
+OPUS_SYNC_MODE=ok
+
+# FLY-2775: the production wrapper passes the authority and alert bin, and is
+# a 127 no-op when the compiled CLI is absent (first deploy of the feature).
+(
+  eval "$PRODUCTION_OPUS_SYNC_DEFINITION"
+  unset TEAMLEAD_DB_PATH
+  OPUS_ARGV="$TMP/opus-cli.argv"
+  : > "$OPUS_ARGV"
+  cat > "$TMP/opus-cli.js" <<'EOS'
+printf '%s\n' "$*" >> "$OPUS_ARGV_FILE"
+EOS
+  UPDATER_NODE=bash FLYWHEEL_OPUS_MODEL_SYNC_CLI="$TMP/opus-cli.js" \
+    FLYWHEEL_LEAD_ALERT_BIN=/x/lead-alert.sh OPUS_ARGV_FILE="$OPUS_ARGV" \
+    updater_sync_opus_model
+  got="$(cat "$OPUS_ARGV")"
+  FLYWHEEL_OPUS_MODEL_SYNC_CLI="$TMP/does-not-exist.js" updater_sync_opus_model
+  missing_rc=$?
+  # Production defaults resolve from the VERIFIED package roots, like Fable.
+  mkdir -p "$TMP/pkg/teamlead/dist/account-heal" "$TMP/pkg-scripts"
+  cp "$TMP/opus-cli.js" "$TMP/pkg/teamlead/dist/account-heal/opus-model-sync-cli.js"
+  : > "$OPUS_ARGV"
+  (
+    unset FLYWHEEL_OPUS_MODEL_SYNC_CLI FLYWHEEL_LEAD_ALERT_BIN
+    UPDATER_NODE=bash FLYWHEEL_TEAMLEAD_ROOT="$TMP/pkg/teamlead" \
+      UPDATER_RUNTIME_SCRIPT_DIR="$TMP/pkg-scripts" OPUS_ARGV_FILE="$OPUS_ARGV" \
+      updater_sync_opus_model
+  )
+  pkg_got="$(cat "$OPUS_ARGV")"
+  # Bridge review 1458e9d5 [1]: the kill switch is read from THIS home's store.
+  if [ "$got" = "--authority ${FLYWHEEL_HOME}/models.json --db ${FLYWHEEL_HOME}/teamlead.db --alert-bin /x/lead-alert.sh" ] && [ "$missing_rc" = 127 ] \
+    && [ "$pkg_got" = "--authority ${FLYWHEEL_HOME}/models.json --db ${FLYWHEEL_HOME}/teamlead.db --alert-bin $TMP/pkg-scripts/lead-alert.sh" ]; then
+    echo "PASS_OPUS_WRAPPER"
+  else
+    echo "FAIL_OPUS_WRAPPER got=[$got] missing_rc=$missing_rc pkg_got=[$pkg_got]"
+  fi
+) > "$TMP/opus-wrapper.out" 2>&1
+if grep -q '^PASS_OPUS_WRAPPER$' "$TMP/opus-wrapper.out"; then
+  pass "FLY-2775: updater_sync_opus_model uses the verified package roots, passes authority/alert-bin, and no-ops (127) without the compiled CLI"
+else
+  fail "FLY-2775: updater_sync_opus_model wrapper drifted ($(cat "$TMP/opus-wrapper.out"))"
 fi
 
 reset_case

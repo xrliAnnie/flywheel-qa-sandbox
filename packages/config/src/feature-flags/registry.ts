@@ -252,6 +252,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Unset/default false keeps bounded rebuild enabled; =1 disables only rebuild, never tickets or escalation.",
 	},
 	{
+		name: "opus_model_sync_disabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_OPUS_MODEL_SYNC_DISABLED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "disables",
+		default: false,
+		description:
+			"FLY-2775: emergency stop for the updater's Opus model sync (the Opus line following its latest release)",
+		whenOn:
+			"停止自动把 Opus 线推进到最新版本;models.json 保持原样,版本变化与回滚失败告警仍按 models.json 与状态文件照常发出",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/account-heal/opus-model-sync-cli.ts",
+				"readOpusModelSyncDisabled",
+				"storeOpusModelSyncDisabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2775 opt-in Opus sync disable observes the next store write",
+		note: "Read at each updater run by the sync CLI through a read-only teamlead.db handle (the lead_token_savings launch-reader pattern). Unset/default false lets the sync run; on skips discovery, admission and every authority write while version-change alerts are still derived from models.json and delivered. Rollback = turn it on, then pin bindings.opus/opus1m in models.json.",
+	},
+	{
 		name: "cmux_rebind_disabled",
 		category: "kill_switch",
 		source: "env",

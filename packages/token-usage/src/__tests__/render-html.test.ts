@@ -184,6 +184,28 @@ describe("renderReportHtml Fable family labels", () => {
 	});
 });
 
+// FLY-2775: the Opus line auto-follows new releases, so an Opus id nobody has
+// added to the label table yet still renders as a readable family label.
+describe("renderReportHtml Opus family labels", () => {
+	it("labels a not-yet-tabled Opus release and its 1M variant", () => {
+		const family = buildReportModel(
+			[
+				r({ scope: "total", totalTokens: 300 }),
+				r({ scope: "model", dimKey: "claude-opus-5-5[1m]", totalTokens: 100 }),
+				r({ scope: "model", dimKey: "claude-opus-6", totalTokens: 200 }),
+			],
+			{
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+			},
+		);
+		const out = renderReportHtml(family);
+		expect(out).toContain("Opus 5.5 · 1M");
+		expect(out).toMatch(/Opus 6.*background:#b42318/);
+	});
+});
+
 describe("renderReportHtml FLY-713 — links + precision", () => {
 	const linkRows: DailyRow[] = [
 		r({ scope: "total", totalTokens: 1_000, costMicroUsd: 420_000 }),

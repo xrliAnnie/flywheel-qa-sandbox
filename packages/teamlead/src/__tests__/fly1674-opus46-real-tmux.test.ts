@@ -15,6 +15,7 @@ import {
 	compileWorkflowMenuSeed,
 	loadWorkflowMenuLibrary,
 } from "../workflow-menu.js";
+import { validateWorkflowManifest } from "../workflow-template.js";
 
 const EXPECTED_MODEL = "claude-opus-4-6[1m]";
 const MUTATION_MODEL = "claude-opus-5[1m]";
@@ -124,9 +125,12 @@ printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
 			(menu) => menu.shape === "code",
 		);
 		if (!code) throw new Error("code workflow menu missing");
-		const qa = compileWorkflowMenuSeed(code).manifest.nodes.find(
-			(node) => node.id === "qa",
-		);
+		// FLY-2775: the seed persists the Opus family alias; production dispatch
+		// takes the model from the run snapshot, which canonicalizes the manifest
+		// against the live registry. Take the same path here.
+		const qa = validateWorkflowManifest(
+			compileWorkflowMenuSeed(code).manifest,
+		).nodes.find((node) => node.id === "qa");
 		if (!qa?.model || !qa.effort) {
 			throw new Error("compiled QA dispatch missing model or effort");
 		}

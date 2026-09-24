@@ -29,5 +29,13 @@
 		"beforeBundleSha256": "93dbb585a7533dbcc9e2eac411763d4bc8c4208216ed2b86385e0e2cce7d94db",
 		"afterBundleSha256": "70d5c3a0f3c7912f04c9db402c4c4563f120bf0e857b6cfe347670e65d4a20e1",
 		"meaning": "The historical bundle gains only the explicit-only Epic fixed-page publication duty shared with the current patrol rules."
+	},
+	"opusRoutingWordingEvolution": {
+		"issue": "FLY-2775",
+		"beforeSourceSha256": "5178a4657e303a90214cf7d27b6f1663ab076272b8555f2a9da67d531752bb58",
+		"afterSourceSha256": "b47c9ff0460fa37d01a85cca55a15bb91c039edb52e65a44f6e83176a574c254",
+		"beforeBundleSha256": "9f810d9356c03b14b071249156e45a572f91ea1d18c46d548d4f544c3b3241fd",
+		"afterBundleSha256": "ab73159f9533d9786b8179a9ba850bedaaa877b35ca40153ec8403407c024356",
+		"meaning": "model-routing.md names the Opus family instead of the retired Opus 5 version; the Opus line now follows its latest release, and the shipped wording makes the historical bundle 2 bytes longer (241531 to 241533)."
 	}
 }

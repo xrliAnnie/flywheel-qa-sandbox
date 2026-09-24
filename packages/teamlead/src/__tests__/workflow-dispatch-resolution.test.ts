@@ -12,6 +12,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
+import { pinMenuReceiptsToRun } from "../workflow-menu.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
@@ -607,6 +608,132 @@ describe("workflow dispatch resolution at launch", () => {
 				dispatchPinned: true,
 				dispatch: { model: "claude-fable-5-2" },
 			});
+		} finally {
+			if (previousModelsPath === undefined) {
+				delete process.env.FLYWHEEL_MODELS_CONFIG;
+			} else {
+				process.env.FLYWHEEL_MODELS_CONFIG = previousModelsPath;
+			}
+			resetModelConfigCacheForTests();
+		}
+	});
+
+	// FLY-2775 (code review R2, LOW): the pre-sync window through the real run
+	// path. Production models.json still binds `opus` to the retired
+	// claude-opus-5 (its dispatch ALIAS is dark by FLY-1496), yet a template
+	// node stored as `opus` materializes to a pinned exact id that launch
+	// resolution dispatches. The sync's later advance moves only NEW runs.
+	it("runs an `opus` node through the pre-sync window and the advance (FLY-2775)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2775-opus-run-authority-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		mkdirSync(join(root, "agents"));
+		writeFileSync(join(root, "agents", "generic.md"), "Do the work.\n");
+		const modelsPath = join(root, "models.json");
+		const previousModelsPath = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = modelsPath;
+		writeFileSync(
+			modelsPath,
+			JSON.stringify({ version: 1, bindings: { opus: "claude-opus-5" } }),
+		);
+		resetModelConfigCacheForTests();
+		const store = await StateStore.create(":memory:");
+		cleanups.push(() => store.close());
+		try {
+			const base = v2Seed();
+			const seed = {
+				...base,
+				manifest: {
+					...base.manifest,
+					nodes: base.manifest.nodes.map((node) =>
+						node.id === "work"
+							? {
+									...node,
+									vendor: "claude" as const,
+									model: "claude-opus-5-5",
+									effort: "high" as const,
+								}
+							: node,
+					),
+				},
+			};
+			seed.contentHash = workflowSeedContentHash(seed);
+			store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+			expect(
+				store.createAndPublishWorkflowTemplateRevision({
+					templateId: seed.templateId,
+					manifest: {
+						...seed.manifest,
+						nodes: seed.manifest.nodes.map((node) =>
+							node.id === "work" ? { ...node, model: "opus" } : node,
+						),
+					},
+					expectedRevision: 1,
+					createdBy: "founder",
+					allowUnsupportedModels: true,
+				}),
+			).toEqual({ status: "published", revision: 2 });
+			const materialize = (runId: string) =>
+				store.materializeWorkflowRun({
+					runId,
+					issueId: `FLY-${runId}`,
+					projectName: "flywheel",
+					templateId: seed.templateId,
+					claimsReadEnrolled: true,
+					actor: "test",
+					canonicalRoot: root,
+					entryKind: "workflow_v2",
+				});
+
+			const window = JSON.parse(materialize("run-window").snapshot!);
+			expect(window.resolved.nodes[0]).toMatchObject({
+				dispatchPinned: true,
+				dispatch: { model: "claude-opus-5" },
+			});
+			expect(
+				resolveNodeDispatchAtLaunch(store, {
+					runId: "run-window",
+					nodeId: "work",
+				}),
+			).toMatchObject({
+				dispatch: { model: "claude-opus-5" },
+				source: "pinned_snapshot",
+			});
+			// A menu receipt computed one generation later is rebuilt from the run.
+			expect(
+				pinMenuReceiptsToRun(
+					{
+						work: {
+							model: "opus (= claude-opus-5-5)",
+							effort: "high",
+							overridden: false,
+						},
+					},
+					window,
+				).work?.model,
+			).toBe("opus (= claude-opus-5)");
+
+			// The sync advances the binding: new runs follow, the old one does not.
+			writeFileSync(
+				modelsPath,
+				JSON.stringify({
+					version: 1,
+					bindings: {
+						opus: "claude-opus-5-5",
+						opus1m: "claude-opus-5-5[1m]",
+					},
+				}),
+			);
+			resetModelConfigCacheForTests();
+			expect(
+				resolveNodeDispatchAtLaunch(store, {
+					runId: "run-window",
+					nodeId: "work",
+				}).dispatch.model,
+			).toBe("claude-opus-5");
+			expect(
+				JSON.parse(materialize("run-after").snapshot!).resolved.nodes[0]
+					.dispatch.model,
+			).toBe("claude-opus-5-5");
 		} finally {
 			if (previousModelsPath === undefined) {
 				delete process.env.FLYWHEEL_MODELS_CONFIG;

@@ -203,6 +203,38 @@ export interface WorkflowManifestValidationOptions {
 	allowUnsupportedModels?: boolean;
 	/** Internal transaction seam: one hot-config generation per validation. */
 	modelSnapshot?: ModelConfigSnapshot;
+	/**
+	 * FLY-2775: keep a follow-latest family alias (see
+	 * FOLLOW_LATEST_MODEL_ALIASES) as written instead of canonicalizing it. The
+	 * alias is still strictly validated against the registry; only the returned
+	 * spelling differs. Use ONLY through validateManifestForPersistence.
+	 */
+	retainFollowLatestAliases?: boolean;
+}
+
+/**
+ * FLY-2775: family aliases whose meaning is advanced automatically by a model
+ * sync (the Opus line follows its latest release). A persisted seed keeps these
+ * as aliases; each run snapshot canonicalizes them against the registry
+ * generation live at run start and pins the exact id (`dispatchPinned`), so new
+ * runs follow the line while in-flight runs never change body. Fable is
+ * deliberately absent: its seeds keep their existing full-id behavior.
+ */
+export const FOLLOW_LATEST_MODEL_ALIASES: ReadonlySet<string> = new Set([
+	"opus",
+	"opus-1m",
+	"opus[1m]",
+]);
+
+function persistedModelSpelling(
+	model: string,
+	canonical: string,
+	options: WorkflowManifestValidationOptions,
+): string {
+	return options.retainFollowLatestAliases &&
+		FOLLOW_LATEST_MODEL_ALIASES.has(model)
+		? model
+		: canonical;
 }
 
 export function workflowSeedContentHash(
@@ -564,7 +596,11 @@ function validateWorkflowManifestV1(
 			vendor && model
 				? options.allowUnsupportedModels
 					? model
-					: canonicalWorkflowModel(vendor, model, effort, modelSnapshot)
+					: persistedModelSpelling(
+							model,
+							canonicalWorkflowModel(vendor, model, effort, modelSnapshot),
+							options,
+						)
 				: model;
 		return {
 			id,
@@ -1128,7 +1164,11 @@ function validateGeneralizedWorkflowManifest(
 			// V2 authoring may retain a stable alias, but each run snapshot records
 			// the canonical id from its single captured registry generation. Keep
 			// the historical permissive full-id path for already-pinned templates.
-			canonicalModel = modelSnapshot.getModelRegistryEntry(model)?.id ?? model;
+			canonicalModel = persistedModelSpelling(
+				model,
+				modelSnapshot.getModelRegistryEntry(model)?.id ?? model,
+				options,
+			);
 		}
 		let handoffPointer: WorkflowManifestNode["handoff_pointer"];
 		if (node.handoff_pointer !== undefined) {
@@ -1554,6 +1594,30 @@ function validateGeneralizedWorkflowManifest(
 }
 
 /** Strict version dispatch. V1 retains canonical-registry validation. */
+/**
+ * FLY-2775: the ONE persistence contract for template revisions. Every path
+ * that writes (or hashes) a revision — seed compile, the boot catalog-migration
+ * preflight, seed import, publication stage/apply, and rollback — validates the
+ * same way, so an Opus family alias is persisted as written everywhere:
+ *   - a seed path that canonicalized while another kept the alias would
+ *     compute a different seed hash and abort Bridge boot;
+ *   - a publication or rollback that canonicalized would silently freeze a
+ *     follow-latest node onto today's id.
+ * Run materialization keeps calling validateWorkflowManifest and pins the id.
+ */
+export function validateManifestForPersistence(
+	value: unknown,
+	options: Omit<
+		WorkflowManifestValidationOptions,
+		"retainFollowLatestAliases"
+	> = {},
+): WorkflowManifest {
+	return validateWorkflowManifest(value, {
+		...options,
+		retainFollowLatestAliases: true,
+	});
+}
+
 export function validateWorkflowManifest(
 	value: unknown,
 	options: WorkflowManifestValidationOptions = {},

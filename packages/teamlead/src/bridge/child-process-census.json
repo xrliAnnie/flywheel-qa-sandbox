@@ -212,6 +212,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/teamlead/src/account-heal/opus-model-sync.ts",
+			"raw_spawn": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts",
 			"sync_child": 12,
 			"disposition": "one_shot_cli"

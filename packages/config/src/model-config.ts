@@ -907,7 +907,10 @@ export function resolveAllowedEffort(
 /**
  * Writer boundary including the account-default sentinel. Null means "inherit
  * the account default" and is written through untouched; a spelled model is
- * canonicalized so persisted carriers never hold a bare alias.
+ * validated and its canonical id returned. FLY-2775: callers decide what to
+ * persist — the fleet batch writer stores the reviewed spelling verbatim, so a
+ * family alias such as `opus[1m]` stays an alias in projects.json and keeps
+ * following the Opus line at every Lead launch.
  */
 export function validateModelWrite(
 	raw: string | null,

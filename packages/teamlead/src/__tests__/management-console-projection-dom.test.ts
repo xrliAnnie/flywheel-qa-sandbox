@@ -401,7 +401,9 @@ describe("management DAG source-to-DOM contract", () => {
 				expect(card.textContent).toContain("policy_shape_removed");
 				expect(card.textContent).not.toContain("Fable 5.1");
 				expect(unavailableQa.textContent).toContain(
-					"当前值：anthropic / claude-opus-5-5 / high",
+					// FLY-2775: the seed persists the Opus family alias, and the
+					// console shows the stored spelling as-is.
+					"当前值：anthropic / opus / high",
 				);
 			});
 		} finally {

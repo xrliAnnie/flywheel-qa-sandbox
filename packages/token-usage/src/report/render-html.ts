@@ -27,19 +27,27 @@ const MODEL_COLOR: Record<string, string> = {
 	"claude-haiku-4-5-20251001": "#af52de",
 };
 const FABLE_MODEL = /^claude-fable-([0-9]+(?:-[0-9]+)*)(\[1m\])?$/;
+// FLY-2775: the Opus line auto-follows new releases, so label (display only —
+// never price) any one- or two-segment Opus id instead of printing the raw id.
+const OPUS_MODEL = /^claude-opus-([0-9]{1,3}(?:-[0-9]{1,3})?)(\[1m\])?$/;
 
 function modelLabel(model: string): string {
 	const fable = FABLE_MODEL.exec(model);
 	if (fable) {
 		return `Fable ${fable[1]!.replaceAll("-", ".")}${fable[2] ? " · 1M" : ""}`;
 	}
-	return MODEL_LABEL[model] ?? model;
+	if (MODEL_LABEL[model]) return MODEL_LABEL[model];
+	const opus = OPUS_MODEL.exec(model);
+	if (opus) {
+		return `Opus ${opus[1]!.replaceAll("-", ".")}${opus[2] ? " · 1M" : ""}`;
+	}
+	return model;
 }
 
 function modelColor(model: string): string {
-	return FABLE_MODEL.test(model)
-		? "#34c759"
-		: (MODEL_COLOR[model] ?? "#86868b");
+	if (FABLE_MODEL.test(model)) return "#34c759";
+	if (MODEL_COLOR[model]) return MODEL_COLOR[model];
+	return OPUS_MODEL.test(model) ? "#b42318" : "#86868b";
 }
 const PROJ_COLORS = [
 	"#007aff",

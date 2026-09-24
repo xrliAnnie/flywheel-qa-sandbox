@@ -1,13 +1,13 @@
 ---
 issue: FLY-2775
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-23T04:56:04.535Z
-nextStep: 开 PR → 里程碑为最后一个 commit → 对该 head 跑 Codex 代码评审 → complete
+phaseCursor: 5/10
+updated: 2026-09-23T07:19:48.177Z
+nextStep: 受控别名写入器参数化 → 定价/标签 → 管理台 → Lead opus[1m] → 盘点脚本
 chunks: []
 pointers: {}
 ---
 
 # FLY-2775 progress
-**phase**: implement (5/6)
-**next**: 开 PR → 里程碑为最后一个 commit → 对该 head 跑 Codex 代码评审 → complete
+**phase**: implement (5/10)
+**next**: 受控别名写入器参数化 → 定价/标签 → 管理台 → Lead opus[1m] → 盘点脚本

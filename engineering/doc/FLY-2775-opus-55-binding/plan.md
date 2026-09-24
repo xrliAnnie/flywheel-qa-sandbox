@@ -136,6 +136,19 @@ flowchart LR
 
 ## 5. PR 部署说明(Lead 执行,本单不碰生产)
 
+> 🔴 **本节已被取代,不要照它部署。** 以 PR #1295 body 的 Deployment 一节与
+> `implementation-notes.md §1.2` 为准。Codex 代码评审 R1 证明本节有三处错:
+>
+> 1. **顺序反了。** 下面写的是「先重启(步骤 1)、再改 models.json(步骤 2)」。seed 只在 Bridge
+>    **启动时**按当时的配置编译一次,这样做会把 system-owned 模板冻在 Opus 5,事后改文件不会重编。
+>    正确顺序:**先删 `~/.flywheel/models.json` 的五项 Opus override(对旧二进制行为不变),再部署/重启。**
+> 2. **`tpl_eng_heavy` 不会自动重 seed** —— 它已退役(FLY-1693),不在 registry.yaml,也不需要升级。
+>    会自动重 seed 的 system-owned 模板是四个,不是五个。
+> 3. **回滚说法只对一半。** models.json 绑回 `claude-opus-5` 只是部分回滚(按别名的派工按 FLY-1496
+>    设计被拒);全量回滚 = 回退代码常量。
+>
+> 下面保留的是通过设计门(Gemini R1 + leadAcceptance,blob `f9bc186`)时的原文,仅作记录。
+
 **顺序不可颠倒。**
 
 0. **前置检查**:`claude --version` ≥ `2.1.280`。低于则先 `claude update`,**否则不要合入生效**

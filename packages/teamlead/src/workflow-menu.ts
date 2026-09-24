@@ -18,8 +18,9 @@ import {
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
 import {
+	FOLLOW_LATEST_MODEL_ALIASES,
 	type LoadedWorkflowSeed,
-	validateWorkflowManifest,
+	validateManifestForPersistence,
 	type WorkflowEffort,
 	type WorkflowTemplateOverride,
 	workflowSeedContentHash,
@@ -327,7 +328,7 @@ export function compileWorkflowMenuSeed(
 	while (menu.nodes.some((node) => node.id === terminalNode)) {
 		terminalNode = `${terminalNode}_`;
 	}
-	const manifest = validateWorkflowManifest(
+	const manifest = validateManifestForPersistence(
 		{
 			schema_version: 3,
 			nodes: [
@@ -345,7 +346,12 @@ export function compileWorkflowMenuSeed(
 						handbook_ref: node.id,
 						...(menu.founderReview === true ? { founder_review: true } : {}),
 						vendor: resolved.vendor,
-						model: resolved.model,
+						// FLY-2775: an Opus-line node persists its family alias; the run
+						// snapshot resolves it at run start. resolveAlias above still
+						// validates it and supplies the vendor.
+						model: FOLLOW_LATEST_MODEL_ALIASES.has(defaultPolicy.model)
+							? defaultPolicy.model
+							: resolved.model,
 						effort: defaultPolicy.defaultEffort,
 					};
 				}),
@@ -996,7 +1002,7 @@ export function resolveMenuOverrides(
 			};
 		}
 		receipts[node.id] = {
-			model: `${requestedModel} (= ${resolved.model})`,
+			model: formatReceiptModel(requestedModel, resolved.model),
 			effort: effort as WorkflowEffort,
 			overridden: override !== undefined || automaticAssignment,
 		};
@@ -1057,4 +1063,40 @@ export function resolveMenuOverrides(
 		receipts,
 		assignments,
 	};
+}
+
+function formatReceiptModel(alias: string, model: string): string {
+	return `${alias} (= ${model})`;
+}
+
+/**
+ * FLY-2775 (code review R2): menu resolution and run materialization each
+ * capture a model-config generation. If the Opus sync advances the binding
+ * between the two, the menu's `alias (= exact)` receipt would name a model the
+ * run never pinned. The run snapshot is the immutable truth the launch uses,
+ * so the returned receipt is rebuilt from it.
+ */
+export function pinMenuReceiptsToRun<
+	R extends { model: string; effort: WorkflowEffort; overridden: boolean },
+>(
+	receipts: Record<string, R>,
+	snapshot: {
+		resolved: {
+			nodes: ReadonlyArray<{ id: string; dispatch?: { model: string } }>;
+		};
+	},
+): Record<string, R> {
+	const pinned = new Map(
+		snapshot.resolved.nodes.map((node) => [node.id, node.dispatch?.model]),
+	);
+	const out: Record<string, R> = {};
+	for (const [nodeId, receipt] of Object.entries(receipts)) {
+		const model = pinned.get(nodeId);
+		const match = /^(.*) \(= (.*)\)$/.exec(receipt.model);
+		out[nodeId] =
+			model !== undefined && match !== null && match[2] !== model
+				? { ...receipt, model: formatReceiptModel(match[1]!, model) }
+				: receipt;
+	}
+	return out;
 }

@@ -110,9 +110,14 @@ FLY-1467 升 4.8→5 时就是往硬编码串里补 4.8 的。本次沿用同一
 这种历史 id 变成合法 tier 值(`createSnapshot` 的 tier 校验要求 `surfaces.includes("dispatch")`),
 是行为放宽,超出本单范围。留作 follow-up。
 
-### 4.1 部署窗口内的一处可接受不一致
+### 4.1 ~~部署窗口内的一处可接受不一致~~ → 更正:这个窗口**不可接受**
 
-代码合入并重启后、Lead 改 `~/.flywheel/models.json` 之前:
+> ⚠️ **更正(Codex 代码评审 R1)**:本节把「先重启、后改 models.json」当成一个可以压到 0 的短窗口,
+> 漏看了 seed 只在**启动时**编译一次(§3 的更正)。按这个顺序,system-owned 模板会在启动那一刻按旧 override
+> 冻在 Opus 5,之后改文件也不会重编。正确顺序是**先改文件、再启动新 Bridge**,
+> 见 implementation-notes §1.2(a)。下表保留为「顺序被违反时的症状」,不再是部署计划的一部分。
+
+(以下为原文)代码合入并重启后、Lead 改 `~/.flywheel/models.json` 之前:
 
 | 层 | 值 | 行为 |
 |---|---|---|
@@ -120,8 +125,9 @@ FLY-1467 升 4.8→5 时就是往硬编码串里补 4.8 的。本次沿用同一
 | `tiers.medium = "claude-opus-5"` | **被忽略 + warning**(tier 校验要求 dispatch 面) | 回落到内建 = Opus 5.5 |
 | 在飞 run 快照 `claude-opus-5` | 需白名单 | 由 §4 的补丁保住 ✅ |
 
-即:窗口内 tier 与 binding 会短暂不一致(一个已是 5.5、一个还是 5),且不致命。
-**部署说明要求把 models.json 的改动和重启放在同一次维护动作里**,把窗口压到 0。
+即:窗口内 tier 与 binding 会短暂不一致(一个已是 5.5、一个还是 5)。~~且不致命。~~
+~~**部署说明要求把 models.json 的改动和重启放在同一次维护动作里**,把窗口压到 0。~~
+(更正见本节顶部:不致命的判断漏了 seed 冻结;同一次维护动作不够,必须先改文件。)
 
 推荐改法(对齐 FLY-2766「改一处生效」):**删掉** models.json 里的 `bindings.opus` /
 `bindings.opus1m` 和 `tiers.medium/light/trivial` 三项覆盖,让内建默认当家;

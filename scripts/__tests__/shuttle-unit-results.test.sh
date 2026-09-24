@@ -68,6 +68,7 @@ source "$ROOT/scripts/update-flywheel.sh"
 
 updater_converge_bin() { :; }
 updater_sync_fable_model() { :; }
+updater_sync_opus_model() { :; }
 updater_launchd_pass() { :; }
 updater_fetch_origin() { :; }
 updater_remote_sha() { printf '%s\n' "$NEW_SHA"; }

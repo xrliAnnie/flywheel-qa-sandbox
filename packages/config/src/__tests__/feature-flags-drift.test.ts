@@ -383,6 +383,30 @@ describe("feature-flag drift guard", () => {
 		).toEqual([
 			...[
 				["cmux_watcher_rebuild_disabled", "storeCmuxWatcherRebuildDisabled"],
+			].map(([name, resolverSymbol]) => ({
+				name,
+				site: {
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "startBridge",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol,
+				},
+			})),
+			// FLY-2775: read out of process by the updater-run Opus sync CLI.
+			{
+				name: "opus_model_sync_disabled",
+				site: {
+					file: "packages/teamlead/src/account-heal/opus-model-sync-cli.ts",
+					symbol: "readOpusModelSyncDisabled",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeOpusModelSyncDisabled",
+				},
+			},
+			...[
 				["cmux_rebind_disabled", "storeCmuxRebindDisabled"],
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
 				["summary_due_activity_gate", "storeSummaryDueActivityGateEnabled"],

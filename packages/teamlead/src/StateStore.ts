@@ -309,6 +309,7 @@ import {
 	applyWorkflowOverride,
 	isWorkflowManifestLand,
 	type LoadedWorkflowSeed,
+	validateManifestForPersistence,
 	validateWorkflowManifest,
 	type WorkflowManifest,
 	type WorkflowTemplateOverride,
@@ -34966,7 +34967,8 @@ export class StateStore {
 		schemaVersion: number;
 		createdBy: string;
 	}): number {
-		const manifest = validateWorkflowManifest(input.manifest);
+		// FLY-2775: one persistence contract (see validateManifestForPersistence).
+		const manifest = validateManifestForPersistence(input.manifest);
 		if (input.schemaVersion !== manifest.schema_version) {
 			throw new Error("workflow template schema version mismatch");
 		}
@@ -35060,7 +35062,8 @@ export class StateStore {
 				throw new Error("operation_id_conflict");
 			return { status: "published", revision: replay.published_revision };
 		}
-		const manifest = validateWorkflowManifest(input.manifest, {
+		// FLY-2775: one persistence contract (see validateManifestForPersistence).
+		const manifest = validateManifestForPersistence(input.manifest, {
 			allowUnsupportedModels: input.allowUnsupportedModels === true,
 			modelSnapshot: input.modelSnapshot,
 		});
@@ -35297,7 +35300,8 @@ export class StateStore {
 		seed: LoadedWorkflowSeed,
 		_env: Record<string, string | undefined> = process.env,
 	): WorkflowTemplateSeedImportResult {
-		const manifest = validateWorkflowManifest(seed.manifest);
+		// FLY-2775: one persistence contract with seed compile + boot preflight.
+		const manifest = validateManifestForPersistence(seed.manifest);
 		const digest = canonicalSubmissionDigest(manifest);
 		const seedDigest = workflowSeedContentHash({ ...seed, manifest });
 		if (seed.contentHash !== seedDigest) {
@@ -35538,7 +35542,8 @@ export class StateStore {
 		}
 
 		const seeds: WorkflowCatalogSeedPlan[] = input.seeds.map((seed) => {
-			const manifest = validateWorkflowManifest(seed.manifest);
+			// FLY-2775: must hash exactly what compile and import persist.
+			const manifest = validateManifestForPersistence(seed.manifest);
 			const computedHash = workflowSeedContentHash({ ...seed, manifest });
 			if (computedHash !== seed.contentHash) {
 				throw new Error(`workflow seed content hash mismatch: ${seed.templateId}`);

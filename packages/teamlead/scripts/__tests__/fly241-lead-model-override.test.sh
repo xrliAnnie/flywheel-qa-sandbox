@@ -241,6 +241,33 @@ PLAN=$(printf '%s\n' "$OUT" | plan_of)
 [ -n "$PLAN" ] && [ -z "$(arg_value "$PLAN" --autocompact)" ] && ok "conflicting environment omits only the optimization" || bad "conflicting compact environment did not fail open"
 rm -rf "$H"
 
+# FLY-2775 (criterion 2): the eight Claude Leads store the family alias
+# `opus[1m]` in projects.json. The launch resolver must give the Opus line's
+# current 1M id — and follow it when the model sync advances the binding,
+# with no projects.json edit and no code change.
+H=$(make_home)
+P=$(fixture_projects "$H" "opus[1m]" "high")
+PLAN=$(run_dry "$H" "$P" | plan_of)
+[ "$(arg_value "$PLAN" --model)" = "claude-opus-5-5[1m]" ] \
+  && ok "FLY-2775: opus[1m] launches the current Opus 1M id (claude-opus-5-5[1m])" \
+  || bad "FLY-2775: opus[1m] resolved to '$(arg_value "$PLAN" --model)'"
+cat > "$H/.flywheel/models.json" <<'JSON'
+{
+  "version": 1,
+  "models": [
+    {"id":"claude-opus-6","provider":"anthropic","runtimeVendor":"claude","label":"Opus 6","aliases":["opus-6"],"dispatch":true},
+    {"id":"claude-opus-6[1m]","provider":"anthropic","runtimeVendor":"claude","label":"Opus 6 (1M)","aliases":["opus-6-1m"],"dispatch":true,"contextWindowTokens":1000000}
+  ],
+  "bindings": {"opus":"claude-opus-6","opus1m":"claude-opus-6[1m]"}
+}
+JSON
+chmod 600 "$H/.flywheel/models.json"
+PLAN=$(run_dry "$H" "$P" | plan_of)
+[ "$(arg_value "$PLAN" --model)" = "claude-opus-6[1m]" ] \
+  && ok "FLY-2775: after the sync advances the binding, the same projects.json launches claude-opus-6[1m]" \
+  || bad "FLY-2775: advanced binding launched '$(arg_value "$PLAN" --model)'"
+rm -rf "$H"
+
 echo ""
 echo "FLY-1496 Lead model derivation test: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

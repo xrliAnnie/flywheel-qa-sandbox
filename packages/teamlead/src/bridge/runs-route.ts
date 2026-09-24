@@ -67,6 +67,7 @@ import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js"
 import {
 	hasProjectMenuConfig,
 	loadProjectMenuConfig,
+	pinMenuReceiptsToRun,
 	resolveLeadMenus,
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
@@ -3221,6 +3222,17 @@ export function createRunsRouter(
 					reason: (error as Error).message,
 				});
 				return;
+			}
+			// FLY-2775 R2: receipts name what the run pinned, not what the menu
+			// saw one model-config generation earlier.
+			if (menuResolution) {
+				menuResolution = {
+					...menuResolution,
+					receipts: pinMenuReceiptsToRun(
+						menuResolution.receipts,
+						selectedSnapshot,
+					),
+				};
 			}
 			const credentialWindow = credentialWindowForNode(
 				selectedSnapshot,
