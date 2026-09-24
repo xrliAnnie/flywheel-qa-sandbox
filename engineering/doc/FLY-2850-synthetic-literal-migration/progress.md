@@ -1,13 +1,13 @@
 ---
 issue: FLY-2850
 phase: implement
-phaseCursor: 4/5
-updated: 2026-09-24T15:34:29.717Z
-nextStep: commit + code review + PR
+phaseCursor: 5/5
+updated: 2026-09-24T15:47:17.577Z
+nextStep: milestone commit + push + PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2850 progress
-**phase**: implement (4/5)
-**next**: commit + code review + PR
+**phase**: implement (5/5)
+**next**: milestone commit + push + PR
