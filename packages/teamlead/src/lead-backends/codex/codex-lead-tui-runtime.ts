@@ -72,6 +72,7 @@ import {
 import { CodexLeadProcess, CodexLeadProcessError } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
+import { resolveVoiceReplyDeliveryContext } from "./voice-reply-delivery-context.js";
 import type { CodexProcessLike } from "./CodexTurnExecutor.js";
 import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import {
@@ -1282,6 +1283,11 @@ export function buildTuiGeneration(
 								leadId: config.leadId,
 								channelId: config.chatChannelId,
 								dbPath: config.outboxDbPath,
+								resolveDeliveryContext: (entryId) =>
+									resolveVoiceReplyDeliveryContext(
+										config.leadId,
+										journal.listMemberIds(entryId),
+									),
 							})
 						: new DirectDiscordOutboundSender({
 								botToken: config.botToken,

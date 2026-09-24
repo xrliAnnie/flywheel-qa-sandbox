@@ -34,7 +34,17 @@ vi.mock("node:child_process", async (importOriginal) => {
 					),
 	};
 });
-async function fixture(reply = false, lostDiscord = false) {
+async function fixture(
+	reply = false,
+	lostDiscord = false,
+	produceVoiceLeadResult?: (input: {
+		projectName: string;
+		sourceLeadId: string;
+		sourceDeliveryId: string;
+		operationId: string;
+		text: string;
+	}) => unknown,
+) {
 	const home = mkdtempSync(join(tmpdir(), "bridge-adapter-")),
 		projectsPath = join(home, "projects.json");
 	mkdirSync(join(home, ".flywheel"));
@@ -212,6 +222,7 @@ async function fixture(reply = false, lostDiscord = false) {
 			outboundDedupStore,
 			operationReceipts: outboundDedupStore.operationReceipts,
 			outboundDbPath: join(home, "outbox.db"),
+			produceVoiceLeadResult,
 		}),
 	);
 	const server = app.listen(0, "127.0.0.1");
@@ -819,6 +830,106 @@ it("authorizes automatic startup output without a journal context or Discord wri
 			data: { status: "authorized" },
 		});
 		expect(f.stats().writes).toBe(0);
+	} finally {
+		await f.close();
+	}
+});
+
+it("passes the authenticated voice delivery binding to the result producer", async () => {
+	const produceVoiceLeadResult = vi.fn();
+	const f = await fixture(true, false, produceVoiceLeadResult);
+	const sourceDeliveryId =
+		"chat:eng:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc";
+	try {
+		const requestId = randomUUID();
+		const response = await f.realFetch(
+			`${f.env.FLYWHEEL_BRIDGE_URL}/api/lead-capabilities/discord`,
+			{
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${f.env.FLYWHEEL_API_TOKEN}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					schemaVersion: 1,
+					operationId: "discord.output.deliver",
+					requestId,
+					projectName: "flywheel",
+					leadId: "eng",
+					identityDigest: f.env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
+					carrierClaim: f.env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
+					activationId: "activation-1",
+					deliveryContext: sourceDeliveryId,
+					input: {
+						channelId: "22345678901234567",
+						text: "Lead result",
+						idempotencyKey: "entry-1:out",
+						nonce: "nonce",
+					},
+				}),
+			},
+		);
+
+		expect(response.status).toBe(200);
+		expect(produceVoiceLeadResult).toHaveBeenCalledWith({
+			projectName: "flywheel",
+			sourceLeadId: "eng",
+			sourceDeliveryId,
+			operationId: "entry-1:out",
+			text: "Lead result",
+		});
+		expect(f.stats().writes).toBe(1);
+	} finally {
+		await f.close();
+	}
+});
+
+it("derives one canonical voice binding from durable journal membership", async () => {
+	const produceVoiceLeadResult = vi.fn();
+	const f = await fixture(true, false, produceVoiceLeadResult);
+	const sourceDeliveryId =
+		"chat:eng:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc";
+	try {
+		const journal = new LeadJournal({ store: f.journal() });
+		const { entry } = journal.acceptBatch({
+			batchId: "voice-batch",
+			memberIds: [`${sourceDeliveryId}#r0`],
+			payload: "voice input",
+		});
+		journal.toDispatching(entry.id, "corr");
+		journal.toDispatched(entry.id, "turn");
+		journal.toModelCompleted(entry.id, "voice result");
+		const post = createAutomaticOutboundTransport({
+			env: f.env,
+			activationId: "activation-1",
+			journal: f.journal(),
+			assertCurrent: async () => {},
+			fetchImpl: f.realFetch,
+		});
+
+		const result = await post({
+			url: "ignored",
+			headers: {},
+			deliveryContext: entry.id,
+			body: JSON.stringify({
+				projectName: "flywheel",
+				leadId: "eng",
+				channelId: "22345678901234567",
+				text: "voice result",
+				idempotencyKey: `${entry.id}:out`,
+				nonce: "nonce",
+				deliveryContext: sourceDeliveryId,
+			}),
+		});
+
+		expect(result.status).toBe(200);
+		expect(produceVoiceLeadResult).toHaveBeenCalledWith({
+			projectName: "flywheel",
+			sourceLeadId: "eng",
+			sourceDeliveryId,
+			operationId: `${entry.id}:out`,
+			text: "voice result",
+		});
 	} finally {
 		await f.close();
 	}

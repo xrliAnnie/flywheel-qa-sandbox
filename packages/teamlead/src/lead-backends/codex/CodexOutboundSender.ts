@@ -53,8 +53,6 @@ export type HttpPost = (req: {
 }) => Promise<{ status: number; body: string }>;
 
 const defaultPost: HttpPost = async (req) => {
-	if (req.deliveryContext !== undefined)
-		throw new Error("delivery_context_transport_required");
 	const res = await fetch(req.url, {
 		method: "POST",
 		headers: req.headers,
@@ -100,6 +98,7 @@ export interface CodexOutboundSenderOptions {
 	/** Confirmed sends with identical content may allocate a new business event
 	 * after this window. Pending/ambiguous sends never rotate automatically. */
 	proactiveEventIdTtlMs?: number;
+	resolveDeliveryContext?: (entryId: string) => string | undefined;
 }
 
 export class CodexOutboundSender implements OutboundSender {
@@ -113,6 +112,7 @@ export class CodexOutboundSender implements OutboundSender {
 	private readonly now: () => number;
 	private readonly probeTimeoutMs: number;
 	private readonly proactiveEventIdTtlMs: number;
+	private readonly resolveDeliveryContext?: CodexOutboundSenderOptions["resolveDeliveryContext"];
 
 	constructor(opts: CodexOutboundSenderOptions) {
 		// Validate at the boundary — these are required for any real delivery.
@@ -134,6 +134,7 @@ export class CodexOutboundSender implements OutboundSender {
 		this.now = opts.now ?? (() => Date.now());
 		this.probeTimeoutMs = opts.probeTimeoutMs ?? 5_000;
 		this.proactiveEventIdTtlMs = opts.proactiveEventIdTtlMs ?? 60_000;
+		this.resolveDeliveryContext = opts.resolveDeliveryContext;
 		if (
 			!Number.isSafeInteger(this.proactiveEventIdTtlMs) ||
 			this.proactiveEventIdTtlMs <= 0
@@ -453,6 +454,9 @@ export class CodexOutboundSender implements OutboundSender {
 			);
 		}
 
+		const resolvedDeliveryContext = row.delivery_context
+			? this.resolveDeliveryContext?.(row.delivery_context)
+			: undefined;
 		let res: Awaited<ReturnType<HttpPost>>;
 		if (guard?.beforeSideEffect) await guard.beforeSideEffect();
 		guard?.assertSideEffectCurrent?.();
@@ -482,6 +486,9 @@ export class CodexOutboundSender implements OutboundSender {
 					idempotencyKey: row.idempotency_key,
 					// In-window guard only (Discord enforce_nonce); not the cross-crash one.
 					nonce: row.nonce,
+					...(resolvedDeliveryContext
+						? { deliveryContext: resolvedDeliveryContext }
+						: {}),
 					...(row.roundtable_engage === 1 ? { roundtableEngage: true } : {}),
 				}),
 			});

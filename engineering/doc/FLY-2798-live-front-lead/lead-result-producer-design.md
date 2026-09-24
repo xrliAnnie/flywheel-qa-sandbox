@@ -10,10 +10,10 @@ Issue: FLY-2798 (https://linear.app/geoforge3d/issue/FLY-2798/语音v4-引擎-a�
 - 多 member batch、零 voice member、多个 voice member或字段冲突均拒绝 producer；普通 Discord outbound 保持原状。
 
 ## Producer 验证与写入顺序
-1. 仅在 outbound 已由现有鉴权与 Lead/channel scope 校验、Discord send 有确定 message id 后运行。
+1. 仅在 outbound 已由现有鉴权与 Lead/channel scope 校验后运行；voice result 不等待 Discord mirror，因为 plan 要求 mirror 脱离关键路径。
 2. 用 canonical delivery id 只读 CommDB，解析精确 voice envelope；逐字核对 targetLeadId、handoffId、requestDigest、sessionGeneration 与 `VoiceHandoffStore` 记录。
-3. 以 `voice-result-response:<handoffId>:<outboundMessageId>` 为确定性 response child id，父 id 固定为 providerOperationId；写入 from=targetLeadId、to=founderUserId、正文为已发送 Lead 原文。
-4. 调用现有 typed `appendResult`，resultEventId 固定为 `voice-result:<handoffId>:<outboundMessageId>`，sourceDeliveryId 为该 response child id，resultKind=`lead_reply`。
+3. 以后端鉴权 outbound 的持久 idempotencyKey/operation id（而非 Discord message id）作后缀，构造确定性 response child id；父 id 固定为 providerOperationId，写入 from=targetLeadId、to=founderUserId、正文为 Lead outbound 原文。
+4. 调用现有 typed `appendResult`，resultEventId 使用同一 operation id 后缀，sourceDeliveryId 为该 response child id，resultKind=`lead_reply`；之后 Discord mirror 可独立成功、失败或重试。
 5. response child 与 result event 均按相同 id 重放；同 id 异正文/绑定 fail closed。result durable commit 后才通知订阅者。
 
 ## 边界

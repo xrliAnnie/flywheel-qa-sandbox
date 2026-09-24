@@ -91,6 +91,7 @@ import {
 } from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
+import { resolveVoiceReplyDeliveryContext } from "./voice-reply-delivery-context.js";
 
 const runtimeBuildIdentity = captureLeadRuntimeBuild();
 
@@ -1756,6 +1757,11 @@ export function buildCodexLeadRuntime(
 					leadId: config.leadId,
 					channelId: config.chatChannelId,
 					dbPath: config.outboxDbPath,
+					resolveDeliveryContext: (entryId) =>
+						resolveVoiceReplyDeliveryContext(
+							config.leadId,
+							journal.listMemberIds(entryId),
+						),
 					...(capabilityV2
 						? {
 								post: (

@@ -949,6 +949,7 @@ import { openVoiceCommDb } from "./voice-comm-scope.js";
 import { createVoiceHandoffRouter } from "./voice-handoff-routes.js";
 import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
 import { verifyVoiceHandoffTranscript } from "./voice-handoff-transcript.js";
+import { VoiceLeadResultProducer } from "./voice-lead-result-producer.js";
 import {
 	createVoiceHealthBridgeGuard,
 	createVoiceHealthExportReader,
@@ -1908,6 +1909,13 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const voiceLeadResultProducer = new VoiceLeadResultProducer({
+		commDbPathForProject,
+		store: store.voiceHandoffs,
+	});
+	const produceVoiceLeadResult = (
+		input: Parameters<VoiceLeadResultProducer["produce"]>[0],
+	) => voiceLeadResultProducer.produce(input);
 	const outboundPressure = new OutboundPressureMeter({
 		recordSpan: (name, startMs, endMs) =>
 			opts?.eventLoopAttribution?.recordSpan?.(name, startMs, endMs),
@@ -3415,6 +3423,7 @@ export function createBridgeApp(
 				".flywheel",
 				"codex-lead-capability-outbox.db",
 			),
+			produceVoiceLeadResult,
 		});
 	}
 
@@ -3665,6 +3674,7 @@ export function createBridgeApp(
 			authorizeLeadChannel: buildAuthorizeLeadChannel(projects, {
 				resolveBotToken: resolveCodexLeadBotToken,
 			}),
+			produceVoiceLeadResult,
 		});
 		const codexLeadOutbound = buildLeadOutboundExpressHandler(
 			codexLeadOutboundHandler,

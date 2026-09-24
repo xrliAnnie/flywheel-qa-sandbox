@@ -20,6 +20,7 @@ export function createBrokerDiscordOutboundSender(options: {
 	authorizeLeadChannel: NonNullable<
 		CodexLeadOutboundHandlerOptions["authorizeLeadChannel"]
 	>;
+	produceVoiceLeadResult?: CodexLeadOutboundHandlerOptions["produceVoiceLeadResult"];
 	fetchImpl?: typeof fetch;
 	/** Parent journal entry captured for this sender, never taken from operation input. */
 	deliveryContext?: string;
@@ -29,6 +30,7 @@ export function createBrokerDiscordOutboundSender(options: {
 		store: options.store,
 		expectedApiToken: options.sender.apiToken,
 		authorizeLeadChannel: options.authorizeLeadChannel,
+		produceVoiceLeadResult: options.produceVoiceLeadResult,
 		send: buildLeadDiscordSend({
 			resolveBotToken: options.resolveBotToken,
 			fetchImpl: options.fetchImpl,

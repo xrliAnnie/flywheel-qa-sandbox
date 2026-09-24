@@ -40,6 +40,7 @@ import type { StateStore } from "../StateStore.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { DiscordFetcher } from "./founder-consent/discord-fetch.js";
 import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
+import type { ProduceVoiceLeadResultInput } from "./voice-lead-result-producer.js";
 
 const automaticInput = z
 	.object({
@@ -95,6 +96,9 @@ export interface LeadCapabilityDiscordOptions {
 	ownerUserId?: string;
 	outboundDedupStore?: OutboundDedupStore;
 	outboundDbPath?: string;
+	produceVoiceLeadResult?: (
+		input: ProduceVoiceLeadResultInput,
+	) => unknown | Promise<unknown>;
 }
 const digest = (value: unknown) =>
 	createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -355,6 +359,7 @@ export function createLeadCapabilityDiscordRouter(
 						return true;
 					},
 					send: buildLeadDiscordSend({ resolveBotToken: resolveToken }),
+					produceVoiceLeadResult: options.produceVoiceLeadResult,
 				});
 				executing = true;
 				const result = await handler.handle({
@@ -520,6 +525,7 @@ export function createLeadCapabilityDiscordRouter(
 							return false;
 						return binding(scopedIssueId).threadId === channel;
 					},
+					produceVoiceLeadResult: options.produceVoiceLeadResult,
 				});
 			}
 			const handlers = createDiscordHandlers({

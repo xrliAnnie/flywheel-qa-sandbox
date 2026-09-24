@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { HttpPost } from "../lead-backends/codex/CodexOutboundSender.js";
 import type { SqliteJournalStore } from "../lead-backends/codex/SqliteJournalStore.js";
+import { resolveVoiceReplyDeliveryContext } from "../lead-backends/codex/voice-reply-delivery-context.js";
 import { createLeadCapabilityContext } from "./runtime-context.js";
 
 const base = z.object({
@@ -16,6 +17,10 @@ const bodySchema = z.union([
 			text: z.string().min(1).max(12000),
 			idempotencyKey: z.string().min(1).max(256),
 			nonce: z.string().min(1).max(32),
+			deliveryContext: z
+				.string()
+				.regex(/^chat:[A-Za-z0-9_.:-]+:voice-handoff:[0-9a-f-]{36}$/iu)
+				.optional(),
 		})
 		.strict(),
 ]);
@@ -115,6 +120,11 @@ export function createAutomaticOutboundTransport(options: {
 					body.idempotencyKey !== `${entry.id}:out`
 				)
 					throw denied();
+				const expectedVoiceContext = resolveVoiceReplyDeliveryContext(
+					env.FLYWHEEL_LEAD_ID!,
+					options.journal.listMemberIds(context),
+				);
+				if (body.deliveryContext !== expectedVoiceContext) throw denied();
 			}
 		};
 		let cancel!: () => void;
@@ -160,7 +170,9 @@ export function createAutomaticOutboundTransport(options: {
 							identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 							carrierClaim: claim,
 							activationId,
-							...(!probe ? { deliveryContext: context } : {}),
+							...(!probe
+								? { deliveryContext: body.deliveryContext ?? context }
+								: {}),
 							input,
 						}),
 					});

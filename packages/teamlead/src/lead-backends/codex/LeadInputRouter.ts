@@ -383,7 +383,7 @@ export class LeadInputRouter {
 			leadId: this.leadId,
 			text: output,
 			idempotencyKey: `${id}:out`,
-			...(this.enterDeliveryContext ? { deliveryContext: id } : {}),
+			deliveryContext: id,
 			// FLY-267: undefined → sender's default chat channel (byte-compat).
 			...(channelId ? { channelId } : {}),
 		});
