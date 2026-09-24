@@ -1,13 +1,13 @@
 ---
 issue: FLY-2808
 phase: design
-phaseCursor: 2/5
-updated: 2026-09-24T09:26:02.271Z
-nextStep: stage set design_review --plan 绑定 + codex 设计评审
+phaseCursor: 3/5
+updated: 2026-09-24T09:40:04.215Z
+nextStep: design_review 已绑定 plan.md；跑 codex 设计评审至 APPROVED 并 await-codex-gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
-**phase**: design (2/5)
-**next**: stage set design_review --plan 绑定 + codex 设计评审
+**phase**: design (3/5)
+**next**: design_review 已绑定 plan.md；跑 codex 设计评审至 APPROVED 并 await-codex-gate
