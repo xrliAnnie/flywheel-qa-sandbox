@@ -680,6 +680,7 @@ async function handleRetry(
 	ceoContext?: string,
 	registry?: RuntimeRegistry,
 	gatewayDispatch?: GatewayRetryDispatch,
+	nodeStandbyResumeEnabled?: () => boolean,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -987,6 +988,7 @@ async function handleRetry(
 			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
 			dispatchResolution,
+			standbyResumeEnabled: nodeStandbyResumeEnabled?.() ?? false,
 		});
 		if (!admitted.ok) {
 			return {
@@ -1832,6 +1834,7 @@ export function createActionRouter(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
 	onEpicChange?: (projectName: string, reason: "linear_done") => void,
+	runtime?: { nodeStandbyResumeEnabled?: () => boolean },
 ): Router {
 	const router = Router();
 
@@ -2051,6 +2054,7 @@ export function createActionRouter(
 									successorExecutionId: gwSuccessorId as string,
 								}
 							: undefined,
+						runtime?.nodeStandbyResumeEnabled,
 					);
 					if (retryResult.success) {
 						res.status(retryResult.pending ? 202 : 200).json({

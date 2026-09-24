@@ -31,6 +31,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | Lead 必修 cleanup latch 返工 | 先红：activity `canResume` 仍为 true、reopen route 404、StateStore 无 reopen 方法；后绿：StateStore + route 精确 2 files / 67 PASS | `cleanup_unconfirmed` 对 founder 明确不可拉起；master-token-only 审计重开记录 actor/time/reason 并恢复独立 resume budget |
 | cleanup latch code-head related | `vitest related` 自动选择 568 files；567 files / 7983 PASS、4 个既有 SKIP，`chat-thread-routes` 1 条 404 JSON 断言瞬态红；同头精确复跑该文件 68/68 PASS | 唯一红项不触及本轮 route，隔离复跑绿；如实保留 related 非全绿，不称 full suite 或 CI |
 | origin/main 技术同步 | feature-flag truth/drift/registry 3 files / 113 PASS；StateStore + reopen route 2 files / 67 PASS；CodexTmuxAdapter 1 file / 134 PASS | 唯一冲突同时保留 FLY-2808 Claude session-dir 与 FLY-2766 native baseline；自动合并的 reopen/canResume/Codex strict-resume 语义未漂移 |
+| QA 529 真机返工 | 先红：teamlead 精确 3 files / 5 FAIL、124 PASS；529 shell source guard 2 FAIL；后绿：同 3 files / 129 PASS，shell guard 全绿 | 首节点与 Lead retry 都按调用时 flag 纳入 standby；`process_retirement_pending` 在 QA pass、grace expiry 与终态 closeout 三条路径结算；step 4 等待 enrolled body=`standby` 且物理进程已退出 |
 
 最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。第一轮修正后的 related 曾有一个无关 chat-thread 404 空 JSON 瞬态红，同头精确用例和 owning file 重跑均绿。R2 评审修正后为 570/570 files、8029 PASS、4 SKIP、0 FAIL；R3 修正后的当前 code head 最终为 580/580 files、8206 PASS、4 SKIP、0 FAIL。
 
@@ -45,6 +46,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 - QA rework 后再跑 `pnpm lint`：退出 0，仍为 5130 files / 26 个既有 warning / 0 error；改动文件定向 Biome 仅保留 `plugin.ts` 两处既有 warning，`StateStore.ts` 仍因 1 MiB 上限被明确跳过。
 - cleanup latch 返工后 `pnpm --filter 'flywheel-teamlead...' build`：13 个受影响包及依赖通过；`pnpm --filter '...flywheel-teamlead' typecheck`：teamlead 与反向依赖 voice-codex 通过；`pnpm lint`：退出 0，检查 5131 files，仍为 26 个既有 warning / 0 error。
 - cleanup latch 4 个 changed TypeScript 的定向 Biome 退出 0：两个测试文件与 `plugin.ts` 被检查，仍仅有 `plugin.ts` 两处既有 warning；2.8 MiB 的 `StateStore.ts` 被仓库 1 MiB 上限明确跳过。
+- QA 529 返工后 `pnpm --filter 'flywheel-teamlead...' build`：13 个受影响包及依赖通过；`pnpm --filter '...flywheel-teamlead' typecheck`：teamlead 与反向依赖 voice-codex 通过；`pnpm lint` 最终退出 0，检查 5134 files，保留 26 个既有 warning。首次 lint 精确指出本轮两处格式差异，按 formatter 输出收口后复跑为绿。
 - `git diff --check`：当前通过，final exact head 再复核；没有添加依赖或秘密。
 
 ## 消费者发现与取舍
@@ -85,6 +87,24 @@ QA rework 对全部 14 个 changed TypeScript 再执行三种搜索。新增源�
 
 cleanup latch 返工再次覆盖 StateStore 289/841/1383、plugin 254/1049/978、StateStore generalized test 3/15/317；新建 route test 的内容搜索为 0/0/317，完整路径和文件名没有任何引用，父目录命中按同一排除规则审计。实际运行时消费者与新测试均由精确测试和 owning-package related 保留。
 
+本次 QA 529 返工对三种 park reason 做了全仓精确字面值搜索（排除 `.git`、`node_modules` 与生成的 `dist`）。生产消费者完整清单如下；没有其它运行时代码按这些字面值分支：
+
+| 位置 | 消费语义 | 本轮处理 |
+|---|---|---|
+| `StateStore.ts:1219-1231` | settlement reason 类型、replacement settlement 集、terminal settlement 集 | 两个应结算集合都纳入 `process_retirement_pending` |
+| `StateStore.ts:27640-27642` | `settleWorkflowEngineParksForRunTx` 输入 allowlist | 接受 `process_retirement_pending` |
+| `StateStore.ts:47265-47266` | verdict-pass 释放 resident hold | 与 `rework_reachable_wait` 同路径释放 |
+| `StateStore.ts:47346` | ship-gate hold 特例 | 只消费 `runner_ship_gate_wait`，不应扩大 |
+| `StateStore.ts:47579` | resident-expiry 的 ship-gate veto | 只消费 `runner_ship_gate_wait`，不应扩大 |
+| `StateStore.ts:47600-47601` | resident-expiry session 已结算判断 | 接受 `process_retirement_pending` |
+| `StateStore.ts:47627-47628` | resident-expiry park clear | 接受 `process_retirement_pending` |
+| `StateStore.ts:60077-60080` | 三种 park reason 的唯一生产选择 | 生产点，无消费改动 |
+| `qa-529-generalized-e2e.mjs:893-895` | 真机 step 4 的 enrolled standby 断言 | 要求 retirement reason、body standby、进程 dead |
+
+其余精确字面命中全为测试/fixture：`fly2478-resident-release.test.ts` 覆盖 pass、timeout、terminal 三种结算；`question-admission.test.ts`、`StateStore.generalized-execution.test.ts`、`StateStore.workflow-engine-transition.test.ts`、`workflow-engine-dispatcher.test.ts` 保留既有 rework/ship fixture；`test-deploy-generalized.test.sh` 固定 529 step 4 源码合同。文档中仅有 FLY-2027 历史风险描述，不是运行时消费者。
+
+本轮每个非文档改动文件也分别执行完整路径/文件名/父目录三种 `git grep -lF`：StateStore 289/842/1394、resident-release test 0/5/317、actions retry test 1/8/157、runs-route test 5/26/157、actions 58/252/984、plugin 255/1055/984、runs-route 52/240/984、529 shell test 30/46/844、529 driver 32/47/3333。三份改动测试和 shell test 全部直接运行；四个 production TypeScript 的实际消费者由点名路由/StateStore 测试与 typecheck/build 保留；529 driver 由其 source-contract shell test 和 `node --check` 保留。其余命中逐项归入前述明确排除类：历史文档/fixture 只引用路径或文件名、其它 package 的同名文件、父目录下不引用该文件的兄弟模块；这些不是调用关系，未据此扩大成本到整包测试。
+
 排除项逐类说明：所有 `doc/**`、`engineering/doc/**`、`product/doc/**` 命中都是历史设计/调研引用；generated child-process census/inventory 是快照清单；同名 `plugin.ts`/`tools.ts`/`*.test.ts` 但路径不在 owning package 的命中属于其它模块；只复述文件名的 fixture/文档不形成调用关系。比如 `StateStore.ts` 的 289 个完整路径命中中，23 个位于 `packages/**`/`scripts/**`，至少 265 个位于上述文档树，后者全部排除。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；三种搜索的每个其余命中都由上述路径规则覆盖，没有把历史文本命中误算成需执行测试。
 
 ## 设计、HTML 与评审沿革
@@ -101,6 +121,7 @@ cleanup latch 返工再次覆盖 StateStore 289/841/1383、plugin 254/1049/978�
 - plan 批准后的实现、R2/R3 修正、QA flag rework 和本轮 Lead 必修项都没有冒充原设计批准内容：每个移动后的 code head 均进入 scoped code review；当时的 literal-last head 仍需 R6 重新绑定，未复用 R5 旧头 approval。
 - 实现 code review R6 gate `fb1e9263-bc4c-42aa-a2ec-94a773b6d6d6` / request `bcc61be3-dff2-47a3-97a6-40dba3df2f70` 对 exact head `ff72e9d8c` effective `APPROVED`，保留 follow-ups.md 已列的 1 MEDIUM + 2 LOW。随后 Lead 指令 `[lead-instruction 2af9174b-4587-4092-b339-1d1fb4fec1d6]` 指出 PR 与 main 冲突，要求技术同步后重绑评审，因此该 R6 不能作为 merge 后 head 的有效证据。
 - 按指令 merge `origin/main`（`fef2dd43d`），未 rebase、未 force-push。唯一冲突 `packages/config/src/feature-flags/truth.ts` 同时保留 `FLYWHEEL_CLAUDE_SESSION_DIR` 与 main 的 `FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION`；StateStore、plugin、CodexTmuxAdapter test 自动合并后逐项核对本单语义，并通过上述 314 条点名测试。merge 后 literal-last milestone head 仍需 R7 重新 review；不请求 full CI。
+- QA 529 真机在旧头 `2a28fdd26` 暴露三处同因缺口：fresh 首节点与 Lead retry 未传 governed standby flag；新 reason `process_retirement_pending` 没进入既有 replacement/terminal settlement 消费者；step 4 仍以旧 actor 存活为准。本轮只补齐这三处，以精确红绿测试和上述全仓 reason 清单固定边界；新 exact head 需重新 review，并由 QA 冻结后跑 full CI 与 529 真机。
 - 保留两个 LOW follow-up：同 worktree 串行/跨 worktree 最大 2 的调度 limiter 尚未实现；`queueMs` 仍为占位且 `totalMs` 截止身份确认，不是首个模型消费回执。默认关闭路径不因此扩大本单抽象层，交由后续单独实现/验收。
 
 ## 最终需求审计

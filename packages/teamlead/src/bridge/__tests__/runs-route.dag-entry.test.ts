@@ -202,6 +202,7 @@ async function startHarness(options: {
 		project: ProjectEntry;
 	}) => boolean;
 	onEpicChange?: (projectName: string, reason: "run_started") => void;
+	nodeStandbyResumeEnabled?: boolean;
 }): Promise<Harness> {
 	if (options.menuMode) linearMock.labels = ["Engineering"];
 	// Isolate HOME so launch-commit markers never touch the real ~/.flywheel.
@@ -392,6 +393,8 @@ async function startHarness(options: {
 			false,
 			undefined,
 			{
+				nodeStandbyResumeEnabled: () =>
+					options.nodeStandbyResumeEnabled ?? false,
 				masterToken: MASTER,
 				scopedToken: SCOPED,
 				verifyWorkflowResumeAnchor: options.verifyWorkflowResumeAnchor,
@@ -758,6 +761,23 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("enrolls the first generalized node when standby resume is enabled", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			nodeStandbyResumeEnabled: true,
+		});
+		const result = await post(h.url, {});
+		expect(result.status, JSON.stringify(result.json)).toBe(200);
+		const executionId = h.calls[0]?.generalizedExecution?.executionId;
+		expect(executionId).toBeTruthy();
+		expect(h.store.getWorkflowExecutionProcessBody(executionId!)).toMatchObject(
+			{
+				state: "active",
+				generation: 1,
+			},
+		);
+	});
+
 	it("FLY-2143 refreshes after one generalized materialization and not its replay", async () => {
 		const onEpicChange = vi.fn();
 		const h = await startHarness({ templateSchema: 2, onEpicChange });

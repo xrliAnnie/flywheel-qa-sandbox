@@ -49,7 +49,7 @@ QA full CI 后的首轮 implement rework 只修复 feature-flag governance 红�
 R5 gate `14b2c500-dc14-46e4-9207-826823ffa26f` / request `4480df89-00ae-4bab-aac8-aac34fd81bc5` 对旧 head `b39a2ea75` effective verdict 为 `APPROVED`。Lead 随后以 `[lead-instruction ec413437-959a-4757-8b3a-d1d6f6e76d4d]` 明确要求交卷前处理 cleanup latch，因此该项不再作为可选 follow-up：
 
 - MEDIUM `resume-cleanup-unconfirmed-permanent-latch`：已覆盖。latch 期间 founder activity DTO 返回 `canResume=false`；master-token-only、无 `/api/actions` alias 的审计 route 事务内记录 server-derived actor、时间、原因和 prior attempt 边界，再将 reason 改为 `operator_reopened`。旧尝试保留可审计，新的 resume budget 从审计边界后重新计数；fault replacement 额度不受影响。先红后绿与权限负例见 validation.md。
-- MEDIUM `standby-enrollment-misses-two-admission-paths`：未在本轮扩大。R5 指出 engine entry 与 Lead retry 两个 admission caller 尚未传 `standbyResumeEnabled`；默认关闭且旧行为 fail-safe，但启用时会形成部分 enrollment，需后续按该 findingKey 补齐调用点与负例。
+- MEDIUM `standby-enrollment-misses-two-admission-paths`：已在 QA 529 返工覆盖。fresh run 首节点与 Lead retry 都在 admission 时读取同一个 governed flag resolver 并传 `standbyResumeEnabled`；正例分别断言 generation 1 process body 建立，默认缺省仍为 false。没有引入第二套 flag read 或新抽象。
 - LOW `resume-metrics-and-concurrency-caps-missing`：仍保留。缺同 worktree 串行、跨 worktree 最大 2，以及真实 queue/首模型消费 receipt。
 - LOW `admit-env-param-now-dead`：仍保留。flag 已改走 governed boolean 后，admission API 的 `env` 参数不再使用；后续删除该参数及调用方传值，不重新引入 env flag read。
 

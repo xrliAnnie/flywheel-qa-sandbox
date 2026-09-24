@@ -1912,6 +1912,8 @@ export function createBridgeApp(
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
 	const workflowDecisionRoutes = () =>
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
+	const nodeStandbyResumeEnabled = () =>
+		flagStore ? storeNodeStandbyResumeEnabled(flagStore) : false;
 	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
@@ -2821,6 +2823,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			{ nodeStandbyResumeEnabled },
 		),
 	);
 
@@ -3516,6 +3519,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			{ nodeStandbyResumeEnabled },
 		),
 	);
 
@@ -5505,6 +5509,7 @@ export function createBridgeApp(
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
 			{
+				nodeStandbyResumeEnabled,
 				codexQuotaRootKey: () => opts?.codexQuota?.rootKey,
 				verifyCodexQuotaRecovery: opts?.codexQuota?.canRecover,
 				masterToken: config.apiToken,

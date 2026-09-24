@@ -327,6 +327,7 @@ export function createRunsRouter(
 		handleActiveBlocker(blocker: Session): Promise<{ proceed: boolean }>;
 	},
 	auth?: {
+		nodeStandbyResumeEnabled?: () => boolean;
 		codexQuotaRootKey?: (projectName: string) => string | undefined;
 		verifyCodexQuotaRecovery?: (incidentId: string) => Promise<boolean>;
 		masterToken?: string;
@@ -3302,6 +3303,7 @@ export function createRunsRouter(
 				absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 				idempotencyKey: generalizedSelection.idempotencyKey,
 				dispatchResolution,
+				standbyResumeEnabled: auth?.nodeStandbyResumeEnabled?.() ?? false,
 			});
 			if (!workflowAdmission.ok) {
 				if (workflowAdmission.reason === "codex_quota_paused") {

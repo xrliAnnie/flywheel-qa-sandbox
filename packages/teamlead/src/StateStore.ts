@@ -1217,14 +1217,17 @@ export interface WorkflowEngineParkOutboxRow {
 
 type WorkflowEngineParkSettlementReason =
 	| "rework_reachable_wait"
+	| "process_retirement_pending"
 	| "runner_ship_gate_wait";
 
 const REWORK_REPLACEMENT_PARK_SETTLEMENT_REASONS = [
 	"rework_reachable_wait",
+	"process_retirement_pending",
 ] as const satisfies readonly WorkflowEngineParkSettlementReason[];
 
 const TERMINAL_PARK_SETTLEMENT_REASONS = [
 	"rework_reachable_wait",
+	"process_retirement_pending",
 	"runner_ship_gate_wait",
 ] as const satisfies readonly WorkflowEngineParkSettlementReason[];
 
@@ -27635,6 +27638,7 @@ export class StateStore {
 			reasons.some(
 				(reason) =>
 					reason !== "rework_reachable_wait" &&
+					reason !== "process_retirement_pending" &&
 					reason !== "runner_ship_gate_wait",
 			)
 		) {
@@ -47257,7 +47261,11 @@ export class StateStore {
 			[input.runId, input.nodeId],
 		).filter((hold) => {
 			const park = this.openResidentParkTx(String(hold.execution_id));
-			return park?.reason === "rework_reachable_wait" && park.activation_id === hold.activation_id;
+			return (
+				(park?.reason === "rework_reachable_wait" ||
+					park?.reason === "process_retirement_pending") &&
+				park.activation_id === hold.activation_id
+			);
 		});
 		if (holds.length === 0) return;
 		for (const hold of holds) {
@@ -47589,7 +47597,8 @@ export class StateStore {
 			const session = this.getSession(executionId);
 			const activation = this.resolveCurrentWorkflowActivation(executionId);
 			const sessionSettled =
-				openPark?.reason === "rework_reachable_wait" &&
+				(openPark?.reason === "rework_reachable_wait" ||
+					openPark?.reason === "process_retirement_pending") &&
 				openPark.activation_id === operation.target_activation_id &&
 				session?.status === "ship_parked" &&
 				activation.kind === "current" &&
@@ -47615,7 +47624,8 @@ export class StateStore {
 				if (latestPark?.event === "park_opened") {
 					const open = this.workflowEngineParkOutboxFromRow(latestPark);
 					if (
-						open.reason === "rework_reachable_wait" &&
+						(open.reason === "rework_reachable_wait" ||
+							open.reason === "process_retirement_pending") &&
 						open.activation_id === operation.target_activation_id
 					) {
 						this.appendWorkflowEngineParkSettlementClearTx({
