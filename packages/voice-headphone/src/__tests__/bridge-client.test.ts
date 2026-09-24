@@ -40,32 +40,59 @@ const SCOPE_BODY = {
 
 describe("BridgeVoiceClient", () => {
 	it("lists the durable headphone inbox with the live session binding", async () => {
-		const { calls, fetchFn } = fakeFetch(() => ({
-			status: 200,
-			body: {
-				items: [
-					{
-						id: "item-1",
-						revision: 2,
-						createdAt: "2026-09-23T00:00:00.000Z",
-						needsDecision: true,
-						text: "请决定。",
+		const { calls, fetchFn } = fakeFetch((url) =>
+			url.includes("cursor=")
+				? {
+						status: 200,
+						body: {
+							snapshotId: "snapshot-1",
+							highWatermark: 2,
+							nextCursor: null,
+							sourceStatus: [],
+							items: [
+								{
+									id: "item-2",
+									revision: 1,
+									createdAt: "2026-09-23T00:00:01.000Z",
+									needsDecision: false,
+									text: "进展。",
+								},
+							],
+						},
+					}
+				: {
+						status: 200,
+						body: {
+							snapshotId: "snapshot-1",
+							highWatermark: 2,
+							nextCursor: "page-2",
+							sourceStatus: [],
+							items: [
+								{
+									id: "item-1",
+									revision: 2,
+									createdAt: "2026-09-23T00:00:00.000Z",
+									needsDecision: true,
+									text: "请决定。",
+								},
+							],
+						},
 					},
-				],
-			},
-		}));
+		);
 		const client = new BridgeVoiceClient({
 			bridgeUrl: "http://localhost:9876",
 			token: "master",
 			fetchFn,
 		});
 
-		await expect(client.listHeadphoneItems(SESSION)).resolves.toEqual([
+		await expect(client.listHeadphoneItems(SESSION, 1)).resolves.toEqual([
 			expect.objectContaining({ id: "item-1", revision: 2 }),
+			expect.objectContaining({ id: "item-2", revision: 1 }),
 		]);
 		expect(calls[0]?.url).toContain(
-			"/api/voice/headphone?sessionId=voice-session&generation=7&limit=100",
+			"/api/voice/headphone?sessionId=voice-session&generation=7&limit=1",
 		);
+		expect(calls[1]?.url).toContain("cursor=page-2");
 		expect(new Headers(calls[0]?.init?.headers).get("x-voice-lease")).toBe(
 			"lease-token",
 		);
@@ -85,6 +112,8 @@ describe("BridgeVoiceClient", () => {
 								text: "进展正常。",
 							},
 							claimToken: "claim-token",
+							attempt: 1,
+							pendingKey: "inbox:item-1:2:voice-session:7:1",
 						},
 					}
 				: { status: 200, body: { acked: true } },
@@ -104,19 +133,23 @@ describe("BridgeVoiceClient", () => {
 
 		const claim = await client.claimHeadphoneItem(SESSION, item);
 		expect(claim).toEqual(
-			expect.objectContaining({ claimToken: "claim-token", item }),
+			expect.objectContaining({
+				claimToken: "claim-token",
+				pendingKey: "inbox:item-1:2:voice-session:7:1",
+				item,
+			}),
 		);
 		await client.ackHeadphoneClaim(SESSION, claim!, [
 			{
 				outcome: "completed",
-				pendingKey: "inbox:item-1:2:0",
+				pendingKey: "inbox:item-1:2:voice-session:7:1:0",
 				requestDigest: "a".repeat(64),
 				transport: "submitted",
 				contentProof: "deterministic_tts",
 			},
 			{
 				outcome: "completed",
-				pendingKey: "inbox:item-1:2:1",
+				pendingKey: "inbox:item-1:2:voice-session:7:1:1",
 				requestDigest: "b".repeat(64),
 				transport: "playback_drained",
 				contentProof: "transcript_equivalent",
@@ -134,7 +167,22 @@ describe("BridgeVoiceClient", () => {
 			itemId: "item-1",
 			revision: 2,
 			claimToken: "claim-token",
-			requestDigests: ["a".repeat(64), "b".repeat(64)],
+			receipts: [
+				{
+					outcome: "completed",
+					pendingKey: "inbox:item-1:2:voice-session:7:1:0",
+					requestDigest: "a".repeat(64),
+					transport: "submitted",
+					contentProof: "deterministic_tts",
+				},
+				{
+					outcome: "completed",
+					pendingKey: "inbox:item-1:2:voice-session:7:1:1",
+					requestDigest: "b".repeat(64),
+					transport: "playback_drained",
+					contentProof: "transcript_equivalent",
+				},
+			],
 		});
 	});
 

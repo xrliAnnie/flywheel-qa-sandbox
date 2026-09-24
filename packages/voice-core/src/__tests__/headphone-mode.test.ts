@@ -18,7 +18,12 @@ function inboxHarness(engine: FakeV1Session) {
 			const key = `${item.id}:${item.revision}`;
 			if (claimed.has(key)) return undefined;
 			claimed.add(key);
-			return { item, claimToken: `claim:${key}` };
+			return {
+				item,
+				claimToken: `claim:${key}`,
+				attempt: 1,
+				pendingKey: `inbox:${item.id}:${item.revision}:fake-session:1:1`,
+			};
 		},
 		ack: async (claim) => {
 			acked.push(claim.item.id);
@@ -107,6 +112,43 @@ describe("HeadphoneMode V2 minimum", () => {
 			kind: "question",
 		});
 		expect(inbox.acked).toEqual(["new"]);
+		await mode.close();
+	});
+
+	it("retries a failed durable ack without speaking the item again", async () => {
+		const engine = new FakeV1Session();
+		const pending = item("ack-retry", "这条只该念一次。", false);
+		const ack = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("bridge unavailable"))
+			.mockResolvedValueOnce(undefined);
+		const reader = new InboxReader({
+			list: async () => [pending],
+			claim: async (claimed) => ({
+				item: claimed,
+				claimToken: "claim-1",
+				attempt: 1,
+				pendingKey: "inbox:ack-retry:1:fake-session:1:1",
+			}),
+			ack,
+			speak: (text, kind, options) => engine.speak(text, kind, options),
+			record: vi.fn(),
+			now: () => 0,
+		});
+		const mode = new HeadphoneMode({
+			engine,
+			inbox: reader,
+			room: room(),
+			record: vi.fn(),
+		});
+
+		await mode.start("context");
+		await mode.notifyInboxChanged();
+
+		expect(
+			engine.speakCalls.filter((call) => call.text === "这条只该念一次。"),
+		).toHaveLength(1);
+		expect(ack).toHaveBeenCalledTimes(2);
 		await mode.close();
 	});
 

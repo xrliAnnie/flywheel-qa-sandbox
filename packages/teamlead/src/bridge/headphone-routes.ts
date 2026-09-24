@@ -1,4 +1,5 @@
 import express from "express";
+import type { SpeakReceipt } from "flywheel-voice-core";
 import type { HeadphoneInboxStore } from "./headphone-inbox.js";
 
 export interface HeadphoneRouteSession {
@@ -25,6 +26,28 @@ function exactObject(
 	const record = value as Record<string, unknown>;
 	if (Object.keys(record).some((key) => !keys.includes(key))) return;
 	return record;
+}
+
+function completedReceipt(value: unknown): SpeakReceipt | undefined {
+	const receipt = exactObject(value, [
+		"outcome",
+		"pendingKey",
+		"requestDigest",
+		"transport",
+		"contentProof",
+	]);
+	if (
+		!receipt ||
+		receipt.outcome !== "completed" ||
+		typeof receipt.pendingKey !== "string" ||
+		typeof receipt.requestDigest !== "string" ||
+		(receipt.transport !== "submitted" &&
+			receipt.transport !== "playback_drained") ||
+		(receipt.contentProof !== "deterministic_tts" &&
+			receipt.contentProof !== "transcript_equivalent")
+	)
+		return;
+	return receipt as SpeakReceipt;
 }
 
 export function createHeadphoneRouter(
@@ -69,21 +92,31 @@ export function createHeadphoneRouter(
 		}
 		const limit = req.query.limit === undefined ? 100 : Number(req.query.limit);
 		try {
-			const items = deps.inbox
-				.list({
-					projectName: session.projectName,
-					founderUserId: deps.founderUserId,
-					limit,
-				})
-				.map((item) => ({
-					id: item.itemId,
-					revision: item.revision,
-					createdAt: item.sourceCreatedAt,
-					needsDecision: item.needsDecision,
-					text: item.text,
-					...(item.speechBrief ? { speechBrief: item.speechBrief } : {}),
-				}));
-			res.json({ items });
+			const cursor =
+				typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+			if (cursor && cursor.length > 4096)
+				throw new Error("headphone_inbox_cursor_invalid");
+			const snapshot = deps.inbox.snapshot({
+				projectName: session.projectName,
+				founderUserId: deps.founderUserId,
+				limit,
+				...(cursor ? { cursor } : {}),
+			});
+			const items = snapshot.items.map((item) => ({
+				id: item.itemId,
+				revision: item.revision,
+				createdAt: item.sourceCreatedAt,
+				needsDecision: item.needsDecision,
+				text: item.text,
+				...(item.speechBrief ? { speechBrief: item.speechBrief } : {}),
+			}));
+			res.json({
+				snapshotId: snapshot.snapshotId,
+				highWatermark: snapshot.highWatermark,
+				sourceStatus: snapshot.sourceStatus,
+				nextCursor: snapshot.nextCursor,
+				items,
+			});
 		} catch (error) {
 			res.status(400).json({ error: (error as Error).message });
 		}
@@ -113,6 +146,7 @@ export function createHeadphoneRouter(
 				sessionId: session.sessionId,
 				generation: session.sessionGeneration,
 				leaseToken: String(leaseToken),
+				founderUserId: deps.founderUserId,
 				now: now().toISOString(),
 			});
 			if (!claim) {
@@ -135,7 +169,7 @@ export function createHeadphoneRouter(
 			"itemId",
 			"revision",
 			"claimToken",
-			"requestDigests",
+			"receipts",
 		]);
 		if (!body) {
 			res.status(400).json({ error: "headphone_ack_invalid" });
@@ -151,15 +185,22 @@ export function createHeadphoneRouter(
 			return;
 		}
 		try {
+			const receipts = Array.isArray(body.receipts)
+				? body.receipts.map(completedReceipt)
+				: [];
+			if (receipts.some((receipt) => receipt === undefined)) {
+				res.status(400).json({ error: "headphone_ack_invalid" });
+				return;
+			}
 			const ok = deps.inbox.ack({
 				itemId: String(body.itemId ?? ""),
 				revision: Number(body.revision),
 				sessionId: session.sessionId,
 				generation: session.sessionGeneration,
+				leaseToken: String(req.headers["x-voice-lease"]),
+				founderUserId: deps.founderUserId,
 				claimToken: String(body.claimToken ?? ""),
-				requestDigests: Array.isArray(body.requestDigests)
-					? body.requestDigests.map(String)
-					: [],
+				receipts: receipts as SpeakReceipt[],
 				ackedAt: now().toISOString(),
 			});
 			if (!ok) {

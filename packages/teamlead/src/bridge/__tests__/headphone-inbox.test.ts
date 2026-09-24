@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { speakRequestDigest } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { HeadphoneInboxCollector } from "../headphone-collector.js";
@@ -97,6 +98,41 @@ function addItem(overrides: Record<string, unknown> = {}) {
 }
 
 describe("HeadphoneInboxStore", () => {
+	it("keeps one stable snapshot watermark while later messages wait for the next poll", () => {
+		const first = addItem({
+			sourceMessageId: "message-1",
+			needsDecision: true,
+			text: "first decision",
+		});
+		const second = addItem({
+			sourceMessageId: "message-2",
+			text: "second report",
+		});
+		const page1 = store.headphoneInbox.snapshot({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			limit: 1,
+		});
+		expect(page1.items.map((item) => item.itemId)).toEqual([first.itemId]);
+		expect(page1.nextCursor).toEqual(expect.any(String));
+		const later = addItem({
+			sourceMessageId: "message-3",
+			needsDecision: true,
+			text: "later decision",
+		});
+		const page2 = store.headphoneInbox.snapshot({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			limit: 1,
+			cursor: page1.nextCursor!,
+		});
+		expect(page2.snapshotId).toBe(page1.snapshotId);
+		expect(page2.highWatermark).toBe(page1.highWatermark);
+		expect(page2.items.map((item) => item.itemId)).toEqual([second.itemId]);
+		expect(page2.items.map((item) => item.itemId)).not.toContain(later.itemId);
+		expect(page2.nextCursor).toBeNull();
+	});
+
 	it("keeps off-mode messages, exposes only the newest revision, and sorts decisions first", () => {
 		const report = addItem();
 		const decision = addItem({
@@ -128,6 +164,13 @@ describe("HeadphoneInboxStore", () => {
 		]);
 	});
 
+	it("rejects a changed digest under the same source revision", () => {
+		addItem();
+		expect(() => addItem({ text: "mutated under the same revision" })).toThrow(
+			"headphone_inbox_revision_conflict",
+		);
+	});
+
 	it("fences claims by project, generation, lease, and current claimant", () => {
 		const first = createSession("1");
 		const second = createSession("2");
@@ -138,6 +181,7 @@ describe("HeadphoneInboxStore", () => {
 			sessionId: first.sessionId,
 			generation: first.sessionGeneration,
 			leaseToken: first.leaseToken,
+			founderUserId: "founder-1",
 			now: "2026-09-23T20:00:02.000Z",
 		};
 
@@ -173,7 +217,7 @@ describe("HeadphoneInboxStore", () => {
 		).toBeUndefined();
 	});
 
-	it("requires durable request digests before acknowledgement removes an item", () => {
+	it("persists the attempt before speech and recomputes the proven receipt before ack", () => {
 		const session = createSession();
 		const item = addItem();
 		const claim = store.headphoneInbox.claim({
@@ -182,28 +226,74 @@ describe("HeadphoneInboxStore", () => {
 			sessionId: session.sessionId,
 			generation: session.sessionGeneration,
 			leaseToken: session.leaseToken,
+			founderUserId: "founder-1",
 			now: "2026-09-23T20:00:02.000Z",
 		});
 		if (!claim) throw new Error("item claim failed");
+		expect(claim).toMatchObject({
+			attempt: 1,
+			pendingKey: `inbox:${item.itemId}:${item.revision}:${session.sessionId}:${session.sessionGeneration}:1`,
+		});
 		expect(() =>
 			store.headphoneInbox.ack({
 				itemId: item.itemId,
 				revision: item.revision,
 				sessionId: session.sessionId,
 				generation: session.sessionGeneration,
+				leaseToken: session.leaseToken,
+				founderUserId: "founder-1",
 				claimToken: claim.claimToken,
-				requestDigests: [],
+				receipts: [],
 				ackedAt: "2026-09-23T20:00:03.000Z",
 			}),
 		).toThrow("headphone_inbox_ack_invalid");
+		const pendingKey = `${claim.pendingKey}:0`;
+		const requestDigest = speakRequestDigest({
+			sessionId: session.sessionId,
+			generation: session.sessionGeneration,
+			text: item.text,
+			kind: "brief",
+			verification: "required",
+		});
 		expect(
 			store.headphoneInbox.ack({
 				itemId: item.itemId,
 				revision: item.revision,
 				sessionId: session.sessionId,
 				generation: session.sessionGeneration,
+				leaseToken: session.leaseToken,
+				founderUserId: "founder-1",
 				claimToken: claim.claimToken,
-				requestDigests: ["a".repeat(64), "b".repeat(64)],
+				receipts: [
+					{
+						outcome: "completed",
+						pendingKey,
+						requestDigest: "f".repeat(64),
+						transport: "submitted",
+						contentProof: "deterministic_tts",
+					},
+				],
+				ackedAt: "2026-09-23T20:00:03.000Z",
+			}),
+		).toBe(false);
+		expect(
+			store.headphoneInbox.ack({
+				itemId: item.itemId,
+				revision: item.revision,
+				sessionId: session.sessionId,
+				generation: session.sessionGeneration,
+				leaseToken: session.leaseToken,
+				founderUserId: "founder-1",
+				claimToken: claim.claimToken,
+				receipts: [
+					{
+						outcome: "completed",
+						pendingKey,
+						requestDigest,
+						transport: "submitted",
+						contentProof: "deterministic_tts",
+					},
+				],
 				ackedAt: "2026-09-23T20:00:03.000Z",
 			}),
 		).toBe(true);
@@ -279,12 +369,19 @@ describe("HeadphoneInboxCollector", () => {
 			2,
 			expect.objectContaining({ before: "000000000000000101", limit: 100 }),
 		);
-		const items = store.headphoneInbox.list({
+		const firstPage = store.headphoneInbox.snapshot({
 			projectName: "flywheel",
 			founderUserId: "founder-1",
 			limit: 100,
 		});
-		expect(items).toHaveLength(100);
+		const secondPage = store.headphoneInbox.snapshot({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			limit: 100,
+			cursor: firstPage.nextCursor!,
+		});
+		const items = [...firstPage.items, ...secondPage.items];
+		expect(items).toHaveLength(101);
 		expect(
 			items.find((item) => item.sourceMessageId === "000000000000000098"),
 		).toMatchObject({
@@ -331,5 +428,36 @@ describe("HeadphoneInboxCollector", () => {
 		expect(
 			store.headphoneInbox.getSourceState("flywheel", "founder-1", "channel-1"),
 		).toMatchObject({ cursor: null, health: "source_gap" });
+	});
+
+	it("keeps a shared token cooling down across collector restart and scopes", async () => {
+		const now = Date.parse(T0);
+		const scopes = ["channel-1", "channel-2"].map((channelId) => ({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			channelId,
+			allowedAuthorIds: ["lead-1"],
+			token: "shared-secret",
+		}));
+		const fetchPage = vi.fn(async () => ({
+			kind: "rate_limited" as const,
+			retryAfterMs: 9_000,
+		}));
+		const first = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => scopes,
+			fetchPage,
+			now: () => now,
+		});
+		expect(await first.tick()).toBe("rate_limited");
+
+		const restarted = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => scopes,
+			fetchPage,
+			now: () => now,
+		});
+		expect(await restarted.tick()).toBe("waiting");
+		expect(fetchPage).toHaveBeenCalledOnce();
 	});
 });

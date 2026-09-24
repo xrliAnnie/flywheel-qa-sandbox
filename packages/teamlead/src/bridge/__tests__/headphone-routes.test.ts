@@ -23,28 +23,36 @@ afterEach(
 );
 
 async function start() {
-	const list = vi.fn(() => [
-		{
-			itemId: "item-1",
-			revision: 2,
-			projectName: "flywheel",
-			founderUserId: "founder-1",
-			channelId: "channel-1",
-			sourceMessageId: "message-1",
-			sourceRevision: "revision-2",
-			authorId: "lead-1",
-			needsDecision: true,
-			text: "choose an option",
-			speechBrief: null,
-			sourceCreatedAt: "2026-09-23T20:00:00.000Z",
-			sourceResolved: false,
-		},
-	]);
+	const snapshot = vi.fn(() => ({
+		snapshotId: "snapshot-1",
+		highWatermark: 2,
+		nextCursor: null,
+		sourceStatus: [],
+		items: [
+			{
+				itemId: "item-1",
+				revision: 2,
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				channelId: "channel-1",
+				sourceMessageId: "message-1",
+				sourceRevision: "revision-2",
+				authorId: "lead-1",
+				needsDecision: true,
+				text: "choose an option",
+				speechBrief: null,
+				sourceCreatedAt: "2026-09-23T20:00:00.000Z",
+				sourceResolved: false,
+				contentDigest: "a".repeat(64),
+				seq: 2,
+			},
+		],
+	}));
 	const claim = vi.fn(() => undefined);
 	const ack = vi.fn(() => false);
 	const listSourceState = vi.fn(() => []);
 	const inbox = {
-		list,
+		snapshot,
 		claim,
 		ack,
 		listSourceState,
@@ -75,7 +83,7 @@ async function start() {
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
 	return {
 		base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/voice/headphone`,
-		list,
+		snapshot,
 		claim,
 	};
 }
@@ -106,7 +114,7 @@ async function call(
 
 describe("headphone routes", () => {
 	it("requires the master credential and the current session lease", async () => {
-		const { base, list } = await start();
+		const { base, snapshot } = await start();
 		const path = `/?sessionId=${SESSION_ID}&generation=7`;
 		expect(await call(base, path)).toMatchObject({ status: 401 });
 		expect(
@@ -117,6 +125,10 @@ describe("headphone routes", () => {
 		).toMatchObject({
 			status: 200,
 			body: {
+				snapshotId: "snapshot-1",
+				highWatermark: 2,
+				nextCursor: null,
+				sourceStatus: [],
 				items: [
 					{
 						id: "item-1",
@@ -127,7 +139,7 @@ describe("headphone routes", () => {
 				],
 			},
 		});
-		expect(list).toHaveBeenCalledWith({
+		expect(snapshot).toHaveBeenCalledWith({
 			projectName: "flywheel",
 			founderUserId: "founder-1",
 			limit: 100,

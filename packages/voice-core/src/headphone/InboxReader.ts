@@ -25,6 +25,8 @@ export interface HeadphoneInboxItem {
 export interface HeadphoneInboxClaim {
 	item: HeadphoneInboxItem;
 	claimToken: string;
+	attempt: number;
+	pendingKey: string;
 }
 
 export interface InboxReaderOptions {
@@ -48,22 +50,36 @@ export interface InboxReaderOptions {
 const MAX_ATTEMPTS_PER_SESSION = 2;
 const DEFAULT_RETRY_BACKOFF_MS = 60_000;
 
+export interface InboxPollResult {
+	listed: number;
+	spoken: number;
+	acked: number;
+}
+
 function proven(proof: SpeakContentProof): boolean {
 	return proof === "deterministic_tts" || proof === "transcript_equivalent";
 }
 
 export class InboxReader {
-	private polling: Promise<number> | null = null;
+	private polling: Promise<InboxPollResult> | null = null;
 	private stopped = false;
 	private readonly attempts = new Map<
 		string,
 		{ count: number; nextAt: number; deferred: boolean }
 	>();
+	private readonly pendingAcks = new Map<
+		string,
+		{
+			claim: HeadphoneInboxClaim;
+			receipts: readonly SpeakReceipt[];
+		}
+	>();
 
 	constructor(private readonly options: InboxReaderOptions) {}
 
-	poll(): Promise<number> {
-		if (this.stopped) return Promise.resolve(0);
+	poll(): Promise<InboxPollResult> {
+		if (this.stopped)
+			return Promise.resolve({ listed: 0, spoken: 0, acked: 0 });
 		if (this.polling) return this.polling;
 		const task = this.runPoll();
 		const settled = task.finally(() => {
@@ -77,9 +93,13 @@ export class InboxReader {
 		this.stopped = true;
 	}
 
-	private async runPoll(): Promise<number> {
-		const items = [...(await this.options.list())]
-			.filter((item) => this.canAttempt(item.id))
+	private async runPoll(): Promise<InboxPollResult> {
+		const listed = [...(await this.options.list())];
+		const currentKeys = new Set(listed.map((item) => this.itemKey(item)));
+		for (const key of this.pendingAcks.keys())
+			if (!currentKeys.has(key)) this.pendingAcks.delete(key);
+		const items = listed
+			.filter((item) => this.canAttempt(this.itemKey(item)))
 			.sort(
 				(left, right) =>
 					Number(right.needsDecision) - Number(left.needsDecision) ||
@@ -87,8 +107,26 @@ export class InboxReader {
 					left.id.localeCompare(right.id),
 			);
 		let acked = 0;
+		let spoken = 0;
 		for (const item of items) {
 			if (this.stopped) break;
+			const key = this.itemKey(item);
+			const pendingAck = this.pendingAcks.get(key);
+			if (pendingAck) {
+				try {
+					await this.options.ack(pendingAck.claim, pendingAck.receipts);
+					this.pendingAcks.delete(key);
+					this.attempts.delete(key);
+					acked += 1;
+				} catch (error) {
+					this.options.record({
+						kind: "inbox_ack_retry_failed",
+						itemId: item.id,
+						message: error instanceof Error ? error.message : String(error),
+					});
+				}
+				continue;
+			}
 			const claim = await this.options.claim(item);
 			if (!claim) continue;
 			const validation = validateSpeechBrief(item.speechBrief);
@@ -110,7 +148,7 @@ export class InboxReader {
 			let complete = chunks.length > 0;
 			const receipts: SpeakReceipt[] = [];
 			for (const [index, chunk] of chunks.entries()) {
-				const pendingKey = `inbox:${item.id}:${item.revision}:${index}`;
+				const pendingKey = `${claim.pendingKey}:${index}`;
 				let receipt: SpeakReceipt;
 				try {
 					receipt = await this.options.speak(chunk, kind, {
@@ -137,14 +175,25 @@ export class InboxReader {
 				receipts.push(receipt);
 			}
 			if (complete) {
-				await this.options.ack(claim, receipts);
-				this.attempts.delete(item.id);
-				acked += 1;
+				spoken += 1;
+				this.pendingAcks.set(key, { claim, receipts });
+				try {
+					await this.options.ack(claim, receipts);
+					this.pendingAcks.delete(key);
+					this.attempts.delete(key);
+					acked += 1;
+				} catch (error) {
+					this.options.record({
+						kind: "inbox_ack_retry_scheduled",
+						itemId: item.id,
+						message: error instanceof Error ? error.message : String(error),
+					});
+				}
 			} else {
-				this.noteFailure(item.id);
+				this.noteFailure(key, item.id);
 			}
 		}
-		return acked;
+		return { listed: items.length, spoken, acked };
 	}
 
 	private canAttempt(itemId: string): boolean {
@@ -154,8 +203,8 @@ export class InboxReader {
 		);
 	}
 
-	private noteFailure(itemId: string): void {
-		const attempt = this.attempts.get(itemId) ?? {
+	private noteFailure(key: string, itemId: string): void {
+		const attempt = this.attempts.get(key) ?? {
 			count: 0,
 			nextAt: 0,
 			deferred: false,
@@ -165,7 +214,7 @@ export class InboxReader {
 		attempt.nextAt =
 			this.options.now() +
 			(this.options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS);
-		this.attempts.set(itemId, attempt);
+		this.attempts.set(key, attempt);
 		this.options.record({
 			kind: attempt.deferred
 				? "inbox_speech_deferred_for_session"
@@ -173,5 +222,9 @@ export class InboxReader {
 			itemId,
 			nextAt: attempt.nextAt,
 		});
+	}
+
+	private itemKey(item: HeadphoneInboxItem): string {
+		return `${item.id}:${item.revision}`;
 	}
 }

@@ -175,21 +175,46 @@ export class BridgeVoiceClient {
 		binding: HeadphoneSessionBinding,
 		limit = 100,
 	): Promise<HeadphoneInboxItem[]> {
-		const query = new URLSearchParams({
-			sessionId: binding.sessionId,
-			generation: String(binding.generation),
-			limit: String(limit),
-		});
-		const res = await this.fetchFn(
-			`${this.opts.bridgeUrl}/api/voice/headphone?${query}`,
-			{ headers: this.headphoneHeaders(binding) },
-		);
-		if (!res.ok)
-			throw new Error(`headphone inbox fetch failed: HTTP ${res.status}`);
-		const body = (await res.json()) as { items?: unknown };
-		if (!Array.isArray(body.items))
-			throw new Error("headphone inbox response invalid");
-		return body.items.map(headphoneItem);
+		const items: HeadphoneInboxItem[] = [];
+		let cursor: string | undefined;
+		let snapshotId: string | undefined;
+		let highWatermark: number | undefined;
+		const seenCursors = new Set<string>();
+		for (;;) {
+			const query = new URLSearchParams({
+				sessionId: binding.sessionId,
+				generation: String(binding.generation),
+				limit: String(limit),
+				...(cursor ? { cursor } : {}),
+			});
+			const res = await this.fetchFn(
+				`${this.opts.bridgeUrl}/api/voice/headphone?${query}`,
+				{ headers: this.headphoneHeaders(binding) },
+			);
+			if (!res.ok)
+				throw new Error(`headphone inbox fetch failed: HTTP ${res.status}`);
+			const body = (await res.json()) as Record<string, unknown>;
+			if (
+				typeof body.snapshotId !== "string" ||
+				!Number.isSafeInteger(body.highWatermark) ||
+				!Array.isArray(body.items) ||
+				(body.nextCursor !== null && typeof body.nextCursor !== "string")
+			)
+				throw new Error("headphone inbox response invalid");
+			if (
+				(snapshotId !== undefined && body.snapshotId !== snapshotId) ||
+				(highWatermark !== undefined && body.highWatermark !== highWatermark)
+			)
+				throw new Error("headphone inbox snapshot changed during pagination");
+			snapshotId = body.snapshotId;
+			highWatermark = body.highWatermark as number;
+			items.push(...body.items.map(headphoneItem));
+			if (body.nextCursor === null) return items;
+			cursor = body.nextCursor as string;
+			if (seenCursors.has(cursor))
+				throw new Error("headphone inbox cursor loop");
+			seenCursors.add(cursor);
+		}
 	}
 
 	async claimHeadphoneItem(
@@ -213,12 +238,21 @@ export class BridgeVoiceClient {
 		if (!res.ok)
 			throw new Error(`headphone inbox claim failed: HTTP ${res.status}`);
 		const body = (await res.json()) as Record<string, unknown>;
-		if (typeof body.claimToken !== "string")
+		if (
+			typeof body.claimToken !== "string" ||
+			!Number.isSafeInteger(body.attempt) ||
+			typeof body.pendingKey !== "string"
+		)
 			throw new Error("headphone inbox claim response invalid");
 		const claimedItem = headphoneItem(body.item);
 		if (claimedItem.id !== item.id || claimedItem.revision !== item.revision)
 			throw new Error("headphone inbox claim response invalid");
-		return { item: claimedItem, claimToken: body.claimToken };
+		return {
+			item: claimedItem,
+			claimToken: body.claimToken,
+			attempt: body.attempt as number,
+			pendingKey: body.pendingKey,
+		};
 	}
 
 	async ackHeadphoneClaim(
@@ -247,7 +281,7 @@ export class BridgeVoiceClient {
 					itemId: claim.item.id,
 					revision: claim.item.revision,
 					claimToken: claim.claimToken,
-					requestDigests: receipts.map((receipt) => receipt.requestDigest),
+					receipts,
 				}),
 			},
 		);

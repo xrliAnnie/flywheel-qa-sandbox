@@ -217,19 +217,24 @@ export class HeadphoneInboxCollector {
 					scope.allowedAuthorIds.length > 0,
 			);
 		if (scopes.length === 0) return "idle";
-		const candidates = scopes
-			.map((scope) => ({
-				scope,
-				state: this.options.store.getSourceState(
-					scope.projectName,
-					scope.founderUserId,
-					scope.channelId,
-				),
-			}))
-			.filter(
-				({ state }) =>
-					!state?.nextAllowedAt || Date.parse(state.nextAllowedAt) <= nowMs,
-			)
+		const states = scopes.map((scope) => ({
+			scope,
+			state: this.options.store.getSourceState(
+				scope.projectName,
+				scope.founderUserId,
+				scope.channelId,
+			),
+		}));
+		const tokenNextAllowed = new Map<string, number>();
+		for (const { scope, state } of states) {
+			const next = state?.nextAllowedAt ? Date.parse(state.nextAllowedAt) : 0;
+			tokenNextAllowed.set(
+				scope.token,
+				Math.max(tokenNextAllowed.get(scope.token) ?? 0, next),
+			);
+		}
+		const candidates = states
+			.filter(({ scope }) => (tokenNextAllowed.get(scope.token) ?? 0) <= nowMs)
 			.sort(
 				(left, right) =>
 					Number(right.state?.bootstrapComplete ?? false) -

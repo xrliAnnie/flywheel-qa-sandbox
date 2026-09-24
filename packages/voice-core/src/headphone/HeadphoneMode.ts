@@ -123,10 +123,14 @@ export class HeadphoneMode {
 
 	private readInbox(reason: "entry" | "new_message"): Promise<number> {
 		return this.enqueue(async () => {
-			const acked = await this.options.inbox.poll();
-			if (acked > 0) this.noteActivity();
-			this.options.record({ kind: "headphone_inbox_polled", reason, acked });
-			return acked;
+			const result = await this.options.inbox.poll();
+			if (result.spoken > 0) this.noteActivity();
+			this.options.record({
+				kind: "headphone_inbox_polled",
+				reason,
+				...result,
+			});
+			return result.listed;
 		});
 	}
 

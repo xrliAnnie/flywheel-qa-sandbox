@@ -90,6 +90,8 @@ describe("HeadphoneSession", () => {
 			claimHeadphoneItem: vi.fn(async (_binding, item) => ({
 				item,
 				claimToken: "claim-1",
+				attempt: 1,
+				pendingKey: "inbox:item-1:1:session-1:3:1",
 			})),
 			ackHeadphoneClaim: vi.fn(async () => undefined),
 		});
