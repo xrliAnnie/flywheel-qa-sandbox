@@ -48,6 +48,7 @@
 		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
 		"flywheel-claude-quota-guard": "bin/flywheel-claude-quota-guard",
 		"flywheel-account-summary": "bin/flywheel-account-summary",
+		"flywheel-account-subscriptions": "dist/bridge/account-subscription-manual-cli.js",
 		"flywheel-claude-pool-rebuild": "bin/flywheel-claude-pool-rebuild",
 		"flywheel-claude-switch": "bin/flywheel-claude-switch",
 		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",

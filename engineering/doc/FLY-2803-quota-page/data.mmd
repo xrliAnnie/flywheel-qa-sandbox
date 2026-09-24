@@ -1,0 +1,22 @@
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#ffffff","primaryTextColor":"#1d1d1f","primaryBorderColor":"#86868b","lineColor":"#86868b","fontFamily":"-apple-system, system-ui, sans-serif"}}}%%
+erDiagram
+ ACCOUNT ||--o{ CONFIRMATION : "同一账号才适用"
+ ACCOUNT ||--o| READING : "真实读数"
+ ACCOUNT {
+  string provider "Claude 或 Codex"
+  string profile "账号目录名"
+  string identity "账号身份"
+ }
+ CONFIRMATION {
+  string status "未取消 已取消 未知"
+  date expiry "确认过的到期日"
+  string person "谁确认"
+  datetime time "何时确认"
+  string source "确认出处"
+ }
+ READING {
+  number weekly "周百分比"
+  number fable "Fable百分比"
+  datetime reset "周重置时刻"
+  boolean active "当前是否在用"
+ }

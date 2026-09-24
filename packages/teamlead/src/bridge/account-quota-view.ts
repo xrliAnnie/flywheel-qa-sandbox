@@ -1,3 +1,7 @@
+import {
+	type AccountQuotaPageContext,
+	renderAccountQuotaPageHtml,
+} from "./account-quota-page.js";
 import type {
 	CapacitySnapshot,
 	CodexAccountProjection,
@@ -29,6 +33,10 @@ export interface QuotaCell {
 	source: QuotaCellSource;
 	observedAt: string | null;
 	stale: boolean;
+	/** Validated machine percentage for page-only grouping/progress rendering. */
+	rawValue?: number;
+	/** Validated machine instant for page-only ordering/date rendering. */
+	rawInstant?: string;
 }
 
 export interface AccountQuotaRow {
@@ -134,11 +142,6 @@ function zonedParts(iso: string): Record<string, string> {
 		hourCycle: "h23",
 	}).formatToParts(new Date(instant));
 	return Object.fromEntries(parts.map((part) => [part.type, part.value]));
-}
-
-function formatReadingTime(iso: string): string {
-	const parts = zonedParts(iso);
-	return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute} PT`;
 }
 
 function formatReset(iso: string): string {
@@ -273,11 +276,14 @@ function machinePctCell(
 	const pct = assertPct(value);
 	if (pct === null) return null;
 	const observedAt = validInstant(account.observedAt);
-	return machineCell(
-		formatPct(pct),
-		observedAt,
-		observedAt !== null && account.stale === true,
-	);
+	return {
+		...machineCell(
+			formatPct(pct),
+			observedAt,
+			observedAt !== null && account.stale === true,
+		),
+		rawValue: pct,
+	};
 }
 
 function machineResetCell(
@@ -288,11 +294,14 @@ function machineResetCell(
 	const instant = validInstant(value);
 	if (instant === null) throw new Error("invalid quota reset");
 	const observedAt = validInstant(account.observedAt);
-	return machineCell(
-		formatReset(instant),
-		observedAt,
-		observedAt !== null && account.stale === true,
-	);
+	return {
+		...machineCell(
+			formatReset(instant),
+			observedAt,
+			observedAt !== null && account.stale === true,
+		),
+		rawInstant: instant,
+	};
 }
 
 function identityFor(
@@ -530,8 +539,11 @@ function buildClaudeRows(
 			canceledObservedAt !== null &&
 			Date.parse(snapshot.generatedAt) - Date.parse(canceledObservedAt) >
 				quota.staleAfterMinutes * 60_000;
-		const canceledCell = () =>
-			machineCell("已取消", canceledObservedAt, canceledStale);
+		const canceledCell = (rawInstant?: string | null): QuotaCell => {
+			const cell = machineCell("已取消", canceledObservedAt, canceledStale);
+			const instant = rawInstant == null ? null : validInstant(rawInstant);
+			return instant === null ? cell : { ...cell, rawInstant: instant };
+		};
 		const subscriptionTier = account ? formatSubscriptionTier(account) : null;
 		const expiryMachine = account?.retiresAt
 			? machineCell(
@@ -604,18 +616,18 @@ function buildClaudeRows(
 					? machineCell(subscriptionTier, snapshot.generatedAt, false)
 					: missingCell("未知"),
 			weeklyReset: canceled
-				? canceledCell()
+				? canceledCell(account?.weeklyResetAt)
 				: account
 					? (machineResetCell(account.weeklyResetAt, account) ?? missingCell())
 					: missingCell(),
 			fiveHReset: canceled
-				? canceledCell()
+				? canceledCell(account?.fiveHResetAt)
 				: account
 					? (machineResetCell(account.fiveHResetAt ?? null, account) ??
 						missingCell())
 					: missingCell(),
 			fableReset: canceled
-				? canceledCell()
+				? canceledCell(account?.fableWeeklyResetAt)
 				: account
 					? (machineResetCell(account.fableWeeklyResetAt ?? null, account) ??
 						missingCell())
@@ -744,12 +756,18 @@ function buildMachineCodexRows(
 		const pct = (value: number | null): QuotaCell =>
 			value === null
 				? missingCell()
-				: machineCell(formatPct(assertPct(value)!), observedAt, stale);
+				: {
+						...machineCell(formatPct(assertPct(value)!), observedAt, stale),
+						rawValue: value,
+					};
 		const reset = (value: string | null): QuotaCell => {
 			if (value === null) return missingCell();
 			const instant = validInstant(value);
 			if (instant === null) throw new Error("invalid Codex reset");
-			return machineCell(formatReset(instant), observedAt, stale);
+			return {
+				...machineCell(formatReset(instant), observedAt, stale),
+				rawInstant: instant,
+			};
 		};
 		const note = noteLabel(account.note);
 		if (note !== null) warnings.push(`Codex ${account.name}：${note}`);
@@ -859,14 +877,6 @@ export function buildAccountQuotaView(
 	};
 }
 
-function sourceMeta(cell: QuotaCell): string {
-	if (cell.source === "missing") return "来源：未读到";
-	if (cell.observedAt === null) return "来源：机器 · 读取时间缺失";
-	return cell.source === "machine"
-		? `来源：机器 · 读取于 ${formatReadingTime(cell.observedAt)}`
-		: `来源：手填 · 记录于 ${formatReadingTime(cell.observedAt)}`;
-}
-
 function unavailableSummary(tokens: readonly string[]): string {
 	const hidden = tokens.length - 2;
 	return `${tokens.slice(0, 2).join("; ")}${hidden > 0 ? `; +${hidden}` : ""}`;
@@ -944,115 +954,9 @@ export function formatAccountQuotaTickLines(view: AccountQuotaView): string[] {
 	return ["- 额度 Claude", claude, `- Codex ${view.codexSourceLabel}`, codex];
 }
 
-function escapeHtml(value: string): string {
-	return value
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("'", "&#39;");
-}
-
-function renderCell(cell: QuotaCell, suffix = ""): string {
-	// A missing reading keeps its own wording: "无数据 weekly;" reads like a value.
-	const unit = cell.source === "missing" ? "" : suffix;
-	const display = cell.display.split("\n").map(escapeHtml).join("<br>");
-	return `<td><div class="reading${cell.stale ? " stale" : ""}"><span class="value">${display}${unit}</span><span class="meta source-${cell.source}">${escapeHtml(sourceMeta(cell))}</span></div></td>`;
-}
-
-function renderIdentity(row: AccountQuotaRow): string {
-	const tier = row.subscriptionTier;
-	// "打满 · 恢复 恢复时刻未知" reads like a stutter; the unknown case says it once.
-	const recovery =
-		row.recovery === null
-			? ""
-			: `<span class="recovery">${
-					row.recovery.source === "missing"
-						? `打满 · ${escapeHtml(row.recovery.display)}`
-						: `打满 · 恢复 ${escapeHtml(row.recovery.display)}`
-				}</span>`;
-	const note =
-		row.note === null
-			? ""
-			: `<span class="note">${escapeHtml(row.note)}</span>`;
-	return `<td class="identity">${escapeHtml(row.name)}<span class="profile${tier.stale ? " stale" : ""}"><span class="tier-value">订阅档位：${escapeHtml(tier.display)}</span><span class="meta source-${tier.source}">${escapeHtml(sourceMeta(tier))}</span></span>${recovery}${note}</td>`;
-}
-
-function renderRows(
-	rows: readonly AccountQuotaRow[],
-	includeFable: boolean,
-	includeTokenStatus: boolean,
+export function renderAccountsPageHtml(
+	view: AccountQuotaView,
+	context: AccountQuotaPageContext = {},
 ): string {
-	return rows
-		.map((row) => {
-			const classes = [
-				row.exhausted || row.unusable ? "exhausted-account" : "",
-				row.active ? "active-account" : "",
-				row.accountMissing ? "account-missing" : "",
-			].filter(Boolean);
-			const fifth = renderCell(row.credits);
-			return `<tr${classes.length > 0 ? ` class="${classes.join(" ")}"` : ""}>
-		${renderIdentity(row)}
-		${includeTokenStatus ? renderCell(row.tokenStatus) : ""}
-		${renderCell(row.weeklyReset)}
-		${renderCell(row.fiveHReset)}
-		${renderCell(row.weeklyUsage, " weekly;")}
-		${includeFable ? renderCell(row.fableUsage, " fable") : ""}
-		${fifth}
-		${renderCell(row.expiry)}
-	</tr>`;
-		})
-		.join("\n");
-}
-
-function renderTable(
-	title: string,
-	rows: readonly AccountQuotaRow[],
-	fifthColumn: string,
-	subtitle = "",
-	includeFable = false,
-	includeTokenStatus = false,
-): string {
-	const fableHeader = includeFable ? "<th>Fable 周用量</th>" : "";
-	return `<section>
-	<h2>${escapeHtml(title)}${subtitle ? `<span class="source-note">${escapeHtml(subtitle)}</span>` : ""}</h2>
-	<div class="table-wrap"><table>
-		<thead><tr><th>账号</th>${includeTokenStatus ? "<th>token 状态</th>" : ""}<th>周重置日</th><th>5h reset</th><th>周用量</th>${fableHeader}<th>${escapeHtml(fifthColumn)}</th><th>订阅到期</th></tr></thead>
-		<tbody>${renderRows(rows, includeFable, includeTokenStatus)}</tbody>
-	</table></div>
-</section>`;
-}
-
-export function renderAccountsPageHtml(view: AccountQuotaView): string {
-	const differences =
-		view.discrepancies.length === 0
-			? "<p>当前没有机器值与手填值差异。</p>"
-			: `<ul>${view.discrepancies.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-	const warnings = [...new Set(view.warnings)];
-	return `<!doctype html>
-<html lang="zh-CN">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width,initial-scale=1">
-	<title>账号额度一览</title>
-	<style>
-		:root{color-scheme:light;--ink:#171717;--muted:#747474;--meta:#9a9a9a;--line:#d8d8d8;--paper:#fbfaf7;--accent:#125f50;--active-row:#e6f4f1;--active-row-border:#1f7a68;--exhausted-row:#fdecec;--exhausted-ink:#a31212;--stale:#aaa}
-		*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
-		main{max-width:1280px;margin:0 auto;padding:44px 28px 64px}header{display:flex;gap:20px;align-items:end;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:16px}
-		h1{font-size:28px;letter-spacing:-.04em;margin:0}.generated{color:var(--muted);font-size:12px;text-align:right}section{margin-top:34px}h2{font-size:18px;margin:0 0 10px}.source-note{font-size:12px;color:var(--muted);font-weight:400;margin-left:12px}
-		.table-wrap{overflow-x:auto;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}table{width:100%;min-width:990px;border-collapse:collapse}th,td{text-align:left;padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}tbody tr:last-child td{border-bottom:0}.exhausted-account td{background:var(--exhausted-row)}.active-account td{background:var(--active-row)}.exhausted-account.active-account td{background:var(--exhausted-row)}.recovery{display:block;color:var(--exhausted-ink);font-size:11px;font-weight:650;margin-top:5px}.note{display:block;color:#9a6200;font-size:11px;font-weight:400;margin-top:4px}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--active-row-border)}.identity{font-weight:650}.profile{display:flex;flex-direction:column;color:var(--muted);font-size:11px;font-weight:400;margin-top:5px}.meta{display:block;color:var(--meta);font-size:9px;font-weight:400;line-height:1.25;margin-top:5px}.reading{display:flex;flex-direction:column}.reading.stale,.profile.stale{color:var(--stale)}.reading.stale .meta,.profile.stale .meta{color:var(--stale)}.account-missing .identity:after{content:" 无机器数据";color:#9a6200;font-size:10px;font-weight:400}
-		footer{margin-top:40px;border-top:2px solid var(--ink);padding-top:18px;color:var(--muted)}footer h3{color:var(--ink);font-size:13px;margin:18px 0 8px}footer ul{margin:0;padding-left:20px}footer p{margin:6px 0}.legend{display:flex;gap:18px;flex-wrap:wrap}
-		@media(max-width:700px){main{padding:28px 16px 48px}header{display:block}.generated{text-align:left;margin-top:8px}h1{font-size:24px}}
-	</style>
-</head>
-<body><main>
-	<header><h1>账号额度一览</h1><div class="generated">按需生成 · ${escapeHtml(formatReadingTime(view.generatedAt))}<br>灰色 = 超过 ${view.staleAfterMinutes} 分钟未更新</div></header>
-	${renderTable("Claude", view.claude, "充值卡", "", true)}
-	${renderTable("Codex", view.codex, "兑换卡", view.codexSourceLabel, false, true)}
-	<footer>
-		<div class="legend"><span>机器：容量快照</span><span>手填：founder 2026-09-17</span><span>高亮行：当前在用（Codex：${view.codexSourceLabel === "无数值源" ? "手填 2026-09-17" : "机器判定，凭据与 ~/.codex 一致"}）</span><span>红色行：额度打满或 token 异常，行内注明原因/恢复时刻</span><span>排序：越早恢复/重置越靠前，未知排最后</span></div>
-		<h3>机器值与手填值差异</h3>${differences}
-		${warnings.length ? `<h3>数据说明</h3><ul>${warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
-	</footer>
-</main></body></html>`;
+	return renderAccountQuotaPageHtml(view, context);
 }

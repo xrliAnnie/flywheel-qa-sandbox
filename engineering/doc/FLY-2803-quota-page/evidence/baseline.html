@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>账号额度一览</title>
+	<style>
+		:root{color-scheme:light;--ink:#171717;--muted:#747474;--meta:#9a9a9a;--line:#d8d8d8;--paper:#fbfaf7;--accent:#125f50;--active-row:#e6f4f1;--active-row-border:#1f7a68;--exhausted-row:#fdecec;--exhausted-ink:#a31212;--stale:#aaa}
+		*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
+		main{max-width:1280px;margin:0 auto;padding:44px 28px 64px}header{display:flex;gap:20px;align-items:end;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:16px}
+		h1{font-size:28px;letter-spacing:-.04em;margin:0}.generated{color:var(--muted);font-size:12px;text-align:right}section{margin-top:34px}h2{font-size:18px;margin:0 0 10px}.source-note{font-size:12px;color:var(--muted);font-weight:400;margin-left:12px}
+		.table-wrap{overflow-x:auto;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}table{width:100%;min-width:990px;border-collapse:collapse}th,td{text-align:left;padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}tbody tr:last-child td{border-bottom:0}.exhausted-account td{background:var(--exhausted-row)}.active-account td{background:var(--active-row)}.exhausted-account.active-account td{background:var(--exhausted-row)}.recovery{display:block;color:var(--exhausted-ink);font-size:11px;font-weight:650;margin-top:5px}.note{display:block;color:#9a6200;font-size:11px;font-weight:400;margin-top:4px}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--active-row-border)}.identity{font-weight:650}.profile{display:flex;flex-direction:column;color:var(--muted);font-size:11px;font-weight:400;margin-top:5px}.meta{display:block;color:var(--meta);font-size:9px;font-weight:400;line-height:1.25;margin-top:5px}.reading{display:flex;flex-direction:column}.reading.stale,.profile.stale{color:var(--stale)}.reading.stale .meta,.profile.stale .meta{color:var(--stale)}.account-missing .identity:after{content:" 无机器数据";color:#9a6200;font-size:10px;font-weight:400}
+		footer{margin-top:40px;border-top:2px solid var(--ink);padding-top:18px;color:var(--muted)}footer h3{color:var(--ink);font-size:13px;margin:18px 0 8px}footer ul{margin:0;padding-left:20px}footer p{margin:6px 0}.legend{display:flex;gap:18px;flex-wrap:wrap}
+		@media(max-width:700px){main{padding:28px 16px 48px}header{display:block}.generated{text-align:left;margin-top:8px}h1{font-size:24px}}
+	</style>
+</head>
+<body><main>
+	<header><h1>账号额度一览</h1><div class="generated">按需生成 · 9/23 11:30 PT<br>灰色 = 超过 30 分钟未更新</div></header>
+	<section>
+	<h2>Claude</h2>
+	<div class="table-wrap"><table>
+		<thead><tr><th>账号</th><th>周重置日</th><th>5h reset</th><th>周用量</th><th>Fable 周用量</th><th>充值卡</th><th>订阅到期</th></tr></thead>
+		<tbody><tr>
+		<td class="identity">business<span class="profile"><span class="tier-value">订阅档位：Max 5x</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></span></td>
+		
+		<td><div class="reading"><span class="value">09-20T16:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-24T02:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">96% weekly;</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">100% fable</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">10/28<br>10/31</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+	</tr>
+<tr>
+		<td class="identity">shopping<span class="profile"><span class="tier-value">订阅档位：Max 20x</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></span></td>
+		
+		<td><div class="reading"><span class="value">09-25T16:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-24T02:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">23% weekly;</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">97% fable</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">充值卡明细未提供</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+	</tr>
+<tr class="exhausted-account active-account">
+		<td class="identity">personal<span class="profile"><span class="tier-value">订阅档位：Max 20x</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></span><span class="recovery">打满 · 恢复 09-27T16:00</span></td>
+		
+		<td><div class="reading"><span class="value">09-27T16:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-24T02:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">100% weekly;</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">12% fable</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">10/28<br>10/31</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">10/14</span><span class="meta source-manual">来源：手填 · 记录于 9/23 11:30 PT</span></div></td>
+	</tr>
+<tr class="account-missing">
+		<td class="identity">school<span class="profile"><span class="tier-value">订阅档位：Max 20x</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></span><span class="note">本轮读数不可用</span></td>
+		
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">充值卡未确认</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+	</tr></tbody>
+	</table></div>
+</section>
+	<section>
+	<h2>Codex<span class="source-note">机器读数 · account/rateLimits/read</span></h2>
+	<div class="table-wrap"><table>
+		<thead><tr><th>账号</th><th>token 状态</th><th>周重置日</th><th>5h reset</th><th>周用量</th><th>兑换卡</th><th>订阅到期</th></tr></thead>
+		<tbody><tr class="exhausted-account">
+		<td class="identity">business<span class="profile"><span class="tier-value">订阅档位：Plus</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></span></td>
+		<td><div class="reading"><span class="value">已吊销</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-24T16:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-24T02:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">20% weekly;</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		
+		<td><div class="reading"><span class="value">1 张<br>10/30</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+	</tr>
+<tr class="exhausted-account active-account">
+		<td class="identity">personal<span class="profile"><span class="tier-value">订阅档位：Pro</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></span><span class="recovery">打满 · 恢复 09-26T16:00</span></td>
+		<td><div class="reading"><span class="value">打满</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-26T16:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">09-24T02:00</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">100% weekly;</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		
+		<td><div class="reading"><span class="value">2 张<br>明细已截断</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+	</tr>
+<tr class="account-missing">
+		<td class="identity">personal2<span class="profile"><span class="tier-value">订阅档位：未知</span><span class="meta source-missing">来源：未读到</span></span><span class="note">in_use_unshared</span></td>
+		<td><div class="reading"><span class="value">未探</span><span class="meta source-machine">来源：机器 · 读取于 9/23 11:30 PT</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+		
+		<td><div class="reading"><span class="value">兑换卡未暴露</span><span class="meta source-missing">来源：未读到</span></div></td>
+		<td><div class="reading"><span class="value">—</span><span class="meta source-missing">来源：未读到</span></div></td>
+	</tr></tbody>
+	</table></div>
+</section>
+	<footer>
+		<div class="legend"><span>机器：容量快照</span><span>手填：founder 2026-09-17</span><span>高亮行：当前在用（Codex：机器判定，凭据与 ~/.codex 一致）</span><span>红色行：额度打满或 token 异常，行内注明原因/恢复时刻</span><span>排序：越早恢复/重置越靠前，未知排最后</span></div>
+		<h3>机器值与手填值差异</h3><p>当前没有机器值与手填值差异。</p>
+		
+	</footer>
+</main></body></html>
