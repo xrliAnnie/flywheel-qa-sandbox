@@ -11808,7 +11808,8 @@ export async function startBridge(
 					return (
 						source?.from_agent === record.targetLeadId &&
 						source.to_agent === record.founderUserId &&
-						source.parent_id === record.providerOperationId
+						source.parent_id === record.providerOperationId &&
+						source.content === input.text
 					);
 				} catch {
 					return false;

@@ -213,4 +213,33 @@ describe("CompositeSpeech", () => {
 		expect(io.localPlaybackCancel).toHaveBeenCalledOnce();
 		expect(io.endSpeech).not.toHaveBeenCalled();
 	});
+
+	it("retries the same pending key after a failed speech receipt", async () => {
+		let attempts = 0;
+		const io = room();
+		const speaker = new CompositeSpeech({
+			sessionId: "session-1",
+			generation: 4,
+			room: io,
+			tts: tts(async function* () {
+				attempts++;
+				if (attempts === 1) throw new Error("barge-in");
+				yield { audio: Buffer.from([1, 0]), format: PCM };
+			}),
+			voice: "voice-1",
+			beforeSpeak: vi.fn(async () => undefined),
+		});
+		const opts = {
+			pendingKey: "lead-result-1",
+			verification: "required" as const,
+		};
+
+		await expect(
+			speaker.speak("Lead reply", "readback", opts),
+		).resolves.toMatchObject({ outcome: "failed", reason: "barge-in" });
+		await expect(
+			speaker.speak("Lead reply", "readback", opts),
+		).resolves.toMatchObject({ outcome: "completed" });
+		expect(attempts).toBe(2);
+	});
 });

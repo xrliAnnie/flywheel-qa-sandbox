@@ -192,6 +192,52 @@ describe("GptLiveBackend", () => {
 		});
 	});
 
+	it("groups assistant transcript deltas into one final turn after an idle boundary", async () => {
+		const socket = new FakeSocket();
+		const backend = new GptLiveBackend({
+			model: "gpt-live-1",
+			voice: "marin",
+			outputTranscriptIdleMs: 1_000,
+			transport: { connect: async () => socket },
+		});
+		const opening = backend.createConversation(conversationOptions);
+		await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+		socket.started();
+		const session = await opening;
+		const transcripts = vi.fn();
+		const responseDone = vi.fn();
+		session.on("transcript", transcripts);
+		session.on("response-done", responseDone);
+		vi.useFakeTimers();
+		try {
+			for (const [eventId, startMs, endMs, delta] of [
+				["out-1", 10, 20, "马上"],
+				["out-2", 20, 30, "回答"],
+			] as const) {
+				socket.receive({
+					type: "session.output_transcript.delta",
+					event_id: eventId,
+					start_ms: startMs,
+					end_ms: endMs,
+					delta,
+				});
+			}
+			expect(transcripts).toHaveBeenCalledTimes(2);
+			expect(responseDone).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(transcripts).toHaveBeenCalledTimes(3);
+			expect(transcripts).toHaveBeenLastCalledWith({
+				role: "assistant",
+				text: "马上回答",
+				final: true,
+			});
+			expect(responseDone).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("can suspend without reconnecting, then resume a fresh provider generation", async () => {
 		const sockets: FakeSocket[] = [];
 		const backend = new GptLiveBackend({

@@ -45,6 +45,9 @@ export interface ProcessHandle {
 	readonly pid: number | undefined;
 	kill(signal?: NodeJS.Signals): void;
 	onStdout(cb: (chunk: Buffer) => void): void;
+	/** Pause/resume child stdout so streaming consumers can apply backpressure. */
+	pauseStdout(): void;
+	resumeStdout(): void;
 	onStderr(cb: (chunk: Buffer) => void): void;
 	onExit(
 		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
@@ -117,6 +120,12 @@ class NodeProcessHandle implements ProcessHandle {
 	}
 	onStdout(cb: (chunk: Buffer) => void): void {
 		this.child.stdout?.on("data", (c: Buffer) => cb(c));
+	}
+	pauseStdout(): void {
+		this.child.stdout?.pause();
+	}
+	resumeStdout(): void {
+		this.child.stdout?.resume();
 	}
 	onStderr(cb: (chunk: Buffer) => void): void {
 		this.child.stderr?.on("data", (c: Buffer) => cb(c));

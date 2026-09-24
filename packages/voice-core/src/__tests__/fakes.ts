@@ -17,6 +17,9 @@ export class FakeProcessHandle implements ProcessHandle {
 	/** every kill() call in order (dispose sequencing assertions). */
 	kills: NodeJS.Signals[] = [];
 	written: string[] = [];
+	stdoutPaused = false;
+	stdoutPauseCount = 0;
+	stdoutResumeCount = 0;
 	ended = false;
 	stdinClosed = false;
 	/** backpressure knob: write() returns true this many times, then false
@@ -42,6 +45,14 @@ export class FakeProcessHandle implements ProcessHandle {
 	}
 	onStdout(cb: (chunk: Buffer) => void): void {
 		this.stdoutCbs.push(cb);
+	}
+	pauseStdout(): void {
+		this.stdoutPaused = true;
+		this.stdoutPauseCount++;
+	}
+	resumeStdout(): void {
+		this.stdoutPaused = false;
+		this.stdoutResumeCount++;
 	}
 	onStderr(cb: (chunk: Buffer) => void): void {
 		this.stderrCbs.push(cb);

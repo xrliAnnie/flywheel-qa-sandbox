@@ -114,7 +114,8 @@ async function start(
 			verifyResultSource: async (record, input) =>
 				input.sourceLeadId === record.targetLeadId &&
 				input.requestDigest === record.requestDigest &&
-				input.sourceDeliveryId === "delivery-1",
+				input.sourceDeliveryId === "delivery-1" &&
+				input.text === "I am checking it.",
 		}),
 	);
 	server = createServer(app);
@@ -307,7 +308,7 @@ describe("voice handoff routes", () => {
 			sourceLeadId: "lead-1",
 			sourceDeliveryId: "delivery-1",
 			resultKind: "lead_reply",
-			text: "This remains durable-only payload.",
+			text: "I am checking it.",
 			createdAt: "2026-09-23T20:00:05.000Z",
 		};
 		await expect(
@@ -346,6 +347,31 @@ describe("voice handoff routes", () => {
 					sourceDeliveryId: "delivery-forged",
 					resultKind: "completed",
 					text: "done",
+					createdAt: "2026-09-23T20:00:05.000Z",
+				},
+			}),
+		).toMatchObject({ status: 403 });
+	});
+
+	it("rejects result text that does not match the authenticated Lead delivery", async () => {
+		const { base } = await start();
+		await call(base, "/", {
+			method: "POST",
+			token: MASTER,
+			lease: LEASE,
+			body: request(),
+		});
+		expect(
+			await call(base, `/${HANDOFF_ID}/results`, {
+				method: "POST",
+				token: MASTER,
+				body: {
+					resultEventId: "delivery-1:forged-text",
+					requestDigest: request().requestDigest,
+					sourceLeadId: "lead-1",
+					sourceDeliveryId: "delivery-1",
+					resultKind: "completed",
+					text: "Forged completion text.",
 					createdAt: "2026-09-23T20:00:05.000Z",
 				},
 			}),

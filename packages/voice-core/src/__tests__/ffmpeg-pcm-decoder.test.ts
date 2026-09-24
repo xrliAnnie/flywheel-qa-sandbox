@@ -195,30 +195,45 @@ describe("FfmpegPcmDecoder", () => {
 		});
 	});
 
-	it("kills the decoder rather than buffering beyond the PCM queue limit", async () => {
+	it("pauses decoder stdout at the PCM queue high-water mark and resumes after consumption", async () => {
 		async function* encoded(): AsyncIterable<StreamingTtsChunk> {
 			yield { audio: Buffer.from("encoded"), format: MP3 };
 			await new Promise(() => {});
 		}
 		const runner = new FakeProcessRunner();
+		const abort = new AbortController();
 		const iterator = new FfmpegPcmDecoder({
 			ffmpegBin: "ffmpeg",
 			runner,
 			maxBufferedBytes: 2,
+			timeoutMs: 2,
 		})
-			.decode(encoded(), { signal: new AbortController().signal })
+			.decode(encoded(), { signal: abort.signal })
 			[Symbol.asyncIterator]();
 		const first = iterator.next();
-		const outcome = first.then(
-			() => "resolved",
-			(error: { code?: string }) => error.code,
-		);
 		await vi.waitFor(() => expect(runner.handles).toHaveLength(1));
 		const handle = runner.handles[0]!;
-		handle.emitStdout(Buffer.from([1, 0, 2, 0]));
+		handle.emitStdout(Buffer.from([1, 0]));
+		expect(handle.stdoutPaused).toBe(true);
 
-		await expect(outcome).resolves.toBe("resource-exhausted");
-		expect(handle.killedWith).toBe("SIGKILL");
+		await expect(first).resolves.toMatchObject({
+			done: false,
+			value: { audio: Buffer.from([1, 0]) },
+		});
+		expect(handle.stdoutPaused).toBe(false);
+		handle.emitStdout(Buffer.from([2, 0]));
+		expect(handle.stdoutPaused).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(handle.killedWith).toBeUndefined();
+		await expect(iterator.next()).resolves.toMatchObject({
+			done: false,
+			value: { audio: Buffer.from([2, 0]) },
+		});
+		expect(handle.stdoutPaused).toBe(false);
+		expect(handle.stdoutPauseCount).toBe(2);
+		expect(handle.stdoutResumeCount).toBe(2);
+		abort.abort();
+		await expect(iterator.next()).rejects.toMatchObject({ code: "cancelled" });
 	});
 
 	it("rejects a non-MP3 synthesis stream before feeding the decoder", async () => {

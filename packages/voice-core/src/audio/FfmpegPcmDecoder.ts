@@ -9,7 +9,7 @@ import { VoiceError } from "../types.js";
 export interface FfmpegPcmDecoderOptions {
 	ffmpegBin: string;
 	runner?: ProcessRunner;
-	/** PCM waiting for a slow consumer; defaults to two seconds at 24 kHz mono. */
+	/** PCM queue high-water mark; stdout pauses until the consumer drains it. */
 	maxBufferedBytes?: number;
 	timeoutMs?: number;
 }
@@ -85,7 +85,9 @@ export class FfmpegPcmDecoder {
 		let finished = false;
 		let failure: VoiceError | undefined;
 		let terminalFailure: VoiceError | undefined;
+		let stdoutPaused = false;
 		let wake: (() => void) | undefined;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
 		const drainWaiters = new Set<() => void>();
 		const releaseDrainWaiters = (): void => {
 			for (const resolve of drainWaiters) resolve();
@@ -102,35 +104,32 @@ export class FfmpegPcmDecoder {
 			releaseDrainWaiters();
 			notify();
 		};
+		const clearDecoderTimeout = (): void => {
+			if (timeout) clearTimeout(timeout);
+			timeout = undefined;
+		};
+		const armDecoderTimeout = (): void => {
+			clearDecoderTimeout();
+			if (finished || failure || stdoutPaused) return;
+			timeout = setTimeout(
+				() =>
+					fail(
+						new VoiceError(
+							"timeout",
+							`ffmpeg PCM decoder timed out after ${this.timeoutMs}ms`,
+						),
+					),
+				this.timeoutMs,
+			);
+		};
 		const onAbort = (): void =>
 			fail(new VoiceError("cancelled", "ffmpeg PCM decode cancelled"));
 		opts.signal.addEventListener("abort", onAbort, { once: true });
 		if (opts.signal.aborted) onAbort();
-		const timeout = setTimeout(
-			() =>
-				fail(
-					new VoiceError(
-						"timeout",
-						`ffmpeg PCM decoder timed out after ${this.timeoutMs}ms`,
-					),
-				),
-			this.timeoutMs,
-		);
+		armDecoderTimeout();
 
 		handle.onStdout((chunk) => {
 			if (!finished && !failure && chunk.length > 0) {
-				if (
-					bufferedBytes + (trailingByte?.length ?? 0) + chunk.length >
-					this.maxBufferedBytes
-				) {
-					fail(
-						new VoiceError(
-							"resource-exhausted",
-							`ffmpeg PCM decoder exceeded ${this.maxBufferedBytes} buffered bytes`,
-						),
-					);
-					return;
-				}
 				const combined = trailingByte
 					? Buffer.concat([trailingByte, chunk])
 					: chunk;
@@ -145,6 +144,16 @@ export class FfmpegPcmDecoder {
 					completeLength < combined.length
 						? Buffer.from(combined.subarray(completeLength))
 						: undefined;
+				if (
+					!stdoutPaused &&
+					bufferedBytes + (trailingByte?.length ?? 0) >= this.maxBufferedBytes
+				) {
+					stdoutPaused = true;
+					handle.pauseStdout();
+					clearDecoderTimeout();
+				} else {
+					armDecoderTimeout();
+				}
 				notify();
 			}
 		});
@@ -152,7 +161,10 @@ export class FfmpegPcmDecoder {
 		handle.onStderr((chunk) => {
 			stderr = (stderr + chunk.toString()).slice(-500);
 		});
-		handle.onDrain(releaseDrainWaiters);
+		handle.onDrain(() => {
+			armDecoderTimeout();
+			releaseDrainWaiters();
+		});
 		handle.onError((error) =>
 			fail(
 				new VoiceError(
@@ -218,6 +230,7 @@ export class FfmpegPcmDecoder {
 						);
 					}
 					ttsFirstByteMs ??= chunk.ttsFirstByteMs;
+					armDecoderTimeout();
 					if (!handle.write(chunk.audio)) {
 						await new Promise<void>((resolve) => drainWaiters.add(resolve));
 						if (failure) throw failure;
@@ -253,6 +266,14 @@ export class FfmpegPcmDecoder {
 				const audio = queued.shift();
 				if (audio) {
 					bufferedBytes -= audio.length;
+					if (
+						stdoutPaused &&
+						bufferedBytes + (trailingByte?.length ?? 0) < this.maxBufferedBytes
+					) {
+						stdoutPaused = false;
+						handle.resumeStdout();
+						armDecoderTimeout();
+					}
 					yield {
 						audio,
 						format: PCM24_MONO,
@@ -270,7 +291,7 @@ export class FfmpegPcmDecoder {
 				});
 			}
 		} finally {
-			clearTimeout(timeout);
+			clearDecoderTimeout();
 			opts.signal.removeEventListener("abort", onAbort);
 			if (!finished && !failure) handle.kill("SIGKILL");
 		}

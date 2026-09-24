@@ -89,7 +89,23 @@ export class CompositeSpeech {
 				contentProof: "none",
 			});
 		}
-		const promise = this.run(text, opts.pendingKey, digest);
+		const promise = this.run(text, opts.pendingKey, digest).then(
+			(receipt) => {
+				if (
+					receipt.outcome === "failed" &&
+					this.pending.get(opts.pendingKey)?.promise === promise
+				) {
+					this.pending.delete(opts.pendingKey);
+				}
+				return receipt;
+			},
+			(error) => {
+				if (this.pending.get(opts.pendingKey)?.promise === promise) {
+					this.pending.delete(opts.pendingKey);
+				}
+				throw error;
+			},
+		);
 		this.pending.set(opts.pendingKey, { digest, promise });
 		return promise;
 	}

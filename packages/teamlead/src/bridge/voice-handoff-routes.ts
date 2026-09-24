@@ -44,6 +44,7 @@ export interface VoiceHandoffRouterDeps {
 			sourceLeadId: string;
 			sourceDeliveryId: string;
 			requestDigest: string;
+			text: string;
 		},
 	): Promise<boolean>;
 	now?: () => Date;
@@ -406,6 +407,7 @@ export function createVoiceHandoffRouter(
 				sourceLeadId: body.sourceLeadId,
 				sourceDeliveryId: body.sourceDeliveryId,
 				requestDigest: body.requestDigest,
+				text: body.text,
 			}))
 		) {
 			res.status(403).json({ error: "voice_handoff_result_unauthorized" });

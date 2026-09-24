@@ -238,4 +238,52 @@ describe("LiveUtteranceAssembler", () => {
 		});
 		expect(turns.delegationWindowState(delegation)).toBe("ready");
 	});
+
+	it("abandons an orphaned RoomIO window when a later utterance starts", () => {
+		const turns = assembler();
+		turns.startProviderGeneration(1, 1_000);
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "orphan",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_050,
+			phase: "start",
+		});
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "later",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 2_000,
+			phase: "start",
+		});
+		turns.appendInput({
+			generation: 1,
+			eventId: "later-delta",
+			startMs: 1_020,
+			endMs: 1_100,
+			delta: "第二个问题",
+		});
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "later",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 2_150,
+			phase: "end",
+		});
+		const delegation = {
+			generation: 1,
+			delegationId: "d2",
+			offsetMs: 1_100,
+		};
+
+		expect(turns.delegationWindowState(delegation)).toBe("ready");
+		expect(turns.sealDelegation(delegation)).toMatchObject({
+			utteranceId: "later",
+			text: "第二个问题",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+	});
 });

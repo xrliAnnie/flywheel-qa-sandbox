@@ -282,7 +282,29 @@ describe("LiveLeadAdapter", () => {
 		expect(h.room.io.stop).not.toHaveBeenCalled();
 	});
 
-	it("streams each frontend audio delta to RoomIO and labels its caption as frontend", async () => {
+	it("contains provider input failures instead of throwing out of the RoomIO audio clock", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		const sendAudio = vi.spyOn(h.live, "sendAudio").mockImplementation(() => {
+			throw new Error("provider generation is gone");
+		});
+		const frame = {
+			sessionId: "voice-session",
+			generation: 9,
+			pcm: Buffer.from([1, 0]),
+			format: PCM,
+		};
+
+		expect(() => h.room.emitFrame(frame)).not.toThrow();
+		expect(() => h.room.emitFrame(frame)).not.toThrow();
+		expect(sendAudio).toHaveBeenCalledOnce();
+		expect(h.record).toHaveBeenCalledWith({
+			kind: "live_lead_voice_unavailable",
+			message: "provider generation is gone",
+		});
+	});
+
+	it("streams each frontend audio delta but emits only one final frontend caption", async () => {
 		const h = harness();
 		await h.adapter.open("foreground context");
 		h.live.emit("response-started");
@@ -293,8 +315,19 @@ describe("LiveLeadAdapter", () => {
 		h.live.emit("response-audio", Buffer.from([2, 0]), PCM);
 		h.live.emit("transcript", {
 			role: "assistant",
-			text: "马上回答",
+			text: "马上",
 			final: false,
+		});
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "回答",
+			final: false,
+		});
+		expect(h.utterances).toHaveLength(0);
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "马上回答",
+			final: true,
 		});
 
 		await vi.waitFor(() =>
@@ -308,9 +341,10 @@ describe("LiveLeadAdapter", () => {
 		expect(h.utterances.at(-1)).toMatchObject({
 			role: "assistant",
 			text: "马上回答",
-			final: false,
+			final: true,
 			source: "frontend",
 		});
+		expect(h.utterances).toHaveLength(1);
 	});
 
 	it("seals one attributed utterance, persists it, and binds delegation separately from business idempotency", async () => {
@@ -541,6 +575,61 @@ describe("LiveLeadAdapter", () => {
 			source: "lead:flywheel-eng-lead",
 			role: "assistant",
 			final: true,
+		});
+	});
+
+	it("retries a failed Lead result readback before marking the result applied", async () => {
+		const h = harness();
+		h.speech.speak
+			.mockResolvedValueOnce({
+				pendingKey: "handoff-result:handoff-1:result-1",
+				requestDigest: "speech-digest",
+				outcome: "failed",
+				reason: "barge-in",
+				transport: "submitted",
+				contentProof: "none",
+			})
+			.mockResolvedValueOnce({
+				pendingKey: "handoff-result:handoff-1:result-1",
+				requestDigest: "speech-digest",
+				outcome: "completed",
+				transport: "submitted",
+				contentProof: "deterministic_tts",
+			});
+		await h.adapter.open("context");
+		const event = {
+			resultEventId: "result-1",
+			seq: 1,
+			handoffId: "handoff-1",
+			requestDigest: "request-digest",
+			sourceLeadId: "flywheel-eng-lead",
+			sourceDeliveryId: "delivery-1",
+			resultKind: "lead_reply",
+			text: "Lead 的原话",
+			createdAt: "2026-09-24T00:00:00.000Z",
+		} satisfies VoiceHandoffResultEvent;
+		const binding = {
+			handoffId: "handoff-1",
+			requestDigest: "request-digest",
+			targetLeadId: "flywheel-eng-lead",
+			sessionId: "voice-session",
+			generation: 9,
+		};
+
+		await expect(
+			h.adapter.applyLeadResult(event, binding),
+		).resolves.toMatchObject({
+			outcome: "failed",
+		});
+		await expect(
+			h.adapter.applyLeadResult(event, binding),
+		).resolves.toMatchObject({
+			outcome: "completed",
+		});
+		expect(h.speech.speak).toHaveBeenCalledTimes(2);
+		expect(h.utterances.at(-1)).toMatchObject({
+			text: "Lead 的原话",
+			source: "lead:flywheel-eng-lead",
 		});
 	});
 

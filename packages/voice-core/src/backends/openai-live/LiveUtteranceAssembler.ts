@@ -120,6 +120,12 @@ export class LiveUtteranceAssembler {
 					`openai-live: duplicate RoomIO utterance ${event.utteranceId}`,
 				);
 			}
+			// RoomIO owns a single active capture. A later start therefore proves
+			// that any older open window was abandoned by a capture/lease failure
+			// whose recovery path could not emit its matching end event.
+			for (const [utteranceId, window] of this.windows) {
+				if (window.endedAt === undefined) this.windows.delete(utteranceId);
+			}
 			this.windows.set(event.utteranceId, {
 				utteranceId: event.utteranceId,
 				attribution: event.attribution,

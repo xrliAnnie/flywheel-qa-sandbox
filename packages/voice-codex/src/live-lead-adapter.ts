@@ -114,6 +114,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
 	private liveInputSuspended = false;
+	private liveInputUnavailable = false;
 	private bufferedInput: Array<{ pcm: Buffer; format: AudioFormat }> = [];
 	private bufferedInputBytes = 0;
 	private inputBufferOverflow = false;
@@ -201,7 +202,25 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				contentProof: "none",
 			});
 		}
-		const promise = this.enqueueFace(() => this.runSpeak(text, kind, opts));
+		const promise = this.enqueueFace(() =>
+			this.runSpeak(text, kind, opts),
+		).then(
+			(receipt) => {
+				if (
+					receipt.outcome === "failed" &&
+					this.speakWork.get(opts.pendingKey)?.promise === promise
+				) {
+					this.speakWork.delete(opts.pendingKey);
+				}
+				return receipt;
+			},
+			(error) => {
+				if (this.speakWork.get(opts.pendingKey)?.promise === promise) {
+					this.speakWork.delete(opts.pendingKey);
+				}
+				throw error;
+			},
+		);
 		this.speakWork.set(opts.pendingKey, { digest: requestDigest, promise });
 		return promise;
 	}
@@ -237,12 +256,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				verification: "required",
 			});
 		}
-		this.appliedResultEvents.add(eventKey);
 		const receipt = await this.speak(event.text, "readback", {
 			pendingKey: `handoff-result:${eventKey}`,
 			verification: "required",
 		});
 		if (receipt.outcome === "completed") {
+			this.appliedResultEvents.add(eventKey);
 			this.emitUtterance({
 				ts: event.createdAt,
 				timestamp: event.createdAt,
@@ -291,11 +310,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					frame.generation !== this.generation
 				)
 					return;
+				if (this.liveInputUnavailable) return;
 				if (this.liveInputSuspended) {
 					this.bufferLiveInput(frame.pcm, frame.format);
 					return;
 				}
-				live.sendAudio(frame.pcm, frame.format);
+				this.sendLiveAudio(live, frame.pcm, frame.format);
 			}),
 			this.options.room.onUtterance((event) => {
 				if (this.closing) return;
@@ -331,7 +351,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			live.on("response-cancelled", () => this.cancelFrontendSpeech()),
 			live.on("response-done", () => this.endFrontendSpeech()),
 			live.on("transcript", (event) => {
-				if (event.role !== "assistant") return;
+				if (event.role !== "assistant" || !event.final) return;
 				const timestamp = new Date(this.now()).toISOString();
 				this.emitUtterance({
 					ts: timestamp,
@@ -376,13 +396,13 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				});
 				this.delegationWork.set(key, work);
 			}),
-			live.on("error", (error) =>
+			live.on("error", (error) => {
 				this.options.record({
 					kind: "live_lead_voice_unavailable",
 					message: error.message,
 					code: error.code,
-				}),
-			),
+				});
+			}),
 		);
 	}
 
@@ -528,6 +548,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private async resumeLive(live: OpenAiLiveConversationSession): Promise<void> {
 		const providerGeneration = await live.resume();
 		this.assembler.startProviderGeneration(providerGeneration, this.now());
+		this.liveInputUnavailable = false;
 		this.flushBufferedInput(live);
 	}
 
@@ -553,6 +574,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		try {
 			const providerGeneration = await live.replaceAfterBargeIn();
 			this.assembler.startProviderGeneration(providerGeneration, this.now());
+			this.liveInputUnavailable = false;
 			this.flushBufferedInput(live);
 		} catch (error) {
 			this.liveInputSuspended = false;
@@ -624,11 +646,33 @@ export class LiveLeadAdapter implements VoiceV1Session {
 
 	private flushBufferedInput(live: OpenAiLiveConversationSession): void {
 		if (!this.inputBufferOverflow) {
-			for (const frame of this.bufferedInput)
-				live.sendAudio(frame.pcm, frame.format);
+			for (const frame of this.bufferedInput) {
+				if (!this.sendLiveAudio(live, frame.pcm, frame.format)) break;
+			}
 		}
 		this.liveInputSuspended = false;
 		this.clearBufferedInput();
+	}
+
+	private sendLiveAudio(
+		live: OpenAiLiveConversationSession,
+		pcm: Buffer,
+		format: AudioFormat,
+	): boolean {
+		try {
+			live.sendAudio(pcm, format);
+			return true;
+		} catch (error) {
+			if (!this.liveInputUnavailable) {
+				this.options.record({
+					kind: "live_lead_voice_unavailable",
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
+			this.liveInputUnavailable = true;
+			this.clearBufferedInput();
+			return false;
+		}
 	}
 
 	private clearBufferedInput(resetOverflow = true): void {

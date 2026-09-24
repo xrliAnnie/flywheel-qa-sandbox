@@ -33,6 +33,8 @@ export interface GptLiveBackendOptions {
 	voice: string;
 	contextMaxTokens?: number;
 	retirementDeadlineMs?: number;
+	/** GPT-Live has no transcript-done event; group output after this idle gap. */
+	outputTranscriptIdleMs?: number;
 	nextEventId?: () => string;
 }
 
@@ -87,6 +89,16 @@ export class GptLiveBackend implements VoiceBackend {
 				"openai-live: context token ceiling must be a positive integer",
 			);
 		}
+		const outputTranscriptIdleMs = opts.outputTranscriptIdleMs ?? 1_000;
+		if (
+			!Number.isSafeInteger(outputTranscriptIdleMs) ||
+			outputTranscriptIdleMs < 1
+		) {
+			throw new VoiceError(
+				"component-missing",
+				"openai-live: output transcript idle boundary must be a positive integer",
+			);
+		}
 	}
 
 	async createConversation(
@@ -129,6 +141,7 @@ export class GptLiveBackend implements VoiceBackend {
 		const session = new GptLiveConversationSession(
 			controller,
 			this.opts.contextMaxTokens ?? 500,
+			this.opts.outputTranscriptIdleMs ?? 1_000,
 		);
 		sessionRef.current = session;
 		await controller.start();
@@ -140,6 +153,11 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 	readonly sessionId = randomUUID();
 	private readonly emitter = new TypedEmitter<ConversationEventMap>();
 	private readonly startedAudioGenerations = new Set<number>();
+	private readonly outputTranscriptByGeneration = new Map<number, string>();
+	private readonly outputTranscriptTimers = new Map<
+		number,
+		ReturnType<typeof setTimeout>
+	>();
 	private readonly liveTranscriptListeners = new Set<
 		(delta: OpenAiLiveTranscriptDelta) => void
 	>();
@@ -159,6 +177,7 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 	constructor(
 		private readonly controller: LiveGenerationController,
 		private readonly contextMaxTokens: number,
+		private readonly outputTranscriptIdleMs: number,
 	) {
 		controller.on("audio", ({ generation, chunk, format }) => {
 			if (!this.startedAudioGenerations.has(generation)) {
@@ -176,6 +195,23 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 				text: liveDelta.delta,
 				final: false,
 			});
+			if (liveDelta.direction === "output") {
+				const prior =
+					this.outputTranscriptByGeneration.get(liveDelta.generation) ?? "";
+				this.outputTranscriptByGeneration.set(
+					liveDelta.generation,
+					`${prior}${liveDelta.delta}`,
+				);
+				const timer = this.outputTranscriptTimers.get(liveDelta.generation);
+				if (timer) clearTimeout(timer);
+				this.outputTranscriptTimers.set(
+					liveDelta.generation,
+					setTimeout(
+						() => this.flushOutputTranscript(liveDelta.generation),
+						this.outputTranscriptIdleMs,
+					),
+				);
+			}
 		});
 		controller.on(
 			"delegation",
@@ -192,8 +228,35 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 	}
 
 	cancelGeneration(generation: number): void {
+		const timer = this.outputTranscriptTimers.get(generation);
+		if (timer) clearTimeout(timer);
+		this.outputTranscriptTimers.delete(generation);
+		const text = this.outputTranscriptByGeneration.get(generation);
+		this.outputTranscriptByGeneration.delete(generation);
+		if (text) {
+			this.emitter.emit("transcript", {
+				role: "assistant",
+				text,
+				final: true,
+				interrupted: true,
+			});
+		}
 		this.startedAudioGenerations.delete(generation);
 		this.emitter.emit("response-cancelled");
+	}
+
+	private flushOutputTranscript(generation: number): void {
+		this.outputTranscriptTimers.delete(generation);
+		const text = this.outputTranscriptByGeneration.get(generation);
+		this.outputTranscriptByGeneration.delete(generation);
+		if (!text) return;
+		this.emitter.emit("transcript", {
+			role: "assistant",
+			text,
+			final: true,
+		});
+		this.startedAudioGenerations.delete(generation);
+		this.emitter.emit("response-done");
 	}
 
 	onLiveTranscript(
