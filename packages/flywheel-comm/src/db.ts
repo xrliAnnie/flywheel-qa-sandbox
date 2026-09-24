@@ -8487,6 +8487,9 @@ export class CommDB {
 		const wakeFilter = wakeIds.length
 			? `AND w.wake_id IN (${wakeIds.map(() => "?").join(",")})`
 			: "";
+		const attemptedFilter = wakeIds.length
+			? ""
+			: "AND w.projection_attempts > 0";
 		const created: string[] = [];
 		this.db
 			.transaction(() => {
@@ -8500,6 +8503,7 @@ export class CommDB {
 					    AND w.receipt_projected_at IS NULL
 					    AND w.projection_alerted_at IS NULL
 					    AND w.acked_at <= ?
+					    ${attemptedFilter}
 					    ${wakeFilter}
 					  ORDER BY w.acked_at, w.wake_id`,
 					)

@@ -1034,12 +1034,25 @@ describe("CommDB turn wake receipt projection ledger (FLY-2828)", () => {
 			"ISSUE-1",
 			"flywheel-eng-lead",
 		);
+		db.registerSession(
+			"exec-wake-untouched",
+			"win:4",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
 		seedAcked("wake-stuck", T0 + 1_000);
 		seedAcked("wake-carrier", T0 + 1_000, "workflow_ship_carrier");
 		seedAcked("wake-fresh", T0 + 10 * 60_000);
+		seedAcked("wake-untouched", T0 + 1_000);
 		db.recordTurnWakeReceiptProjectionAttempt(
 			"wake-stuck",
 			"rework_wake_receipt_context_corrupt",
+			T0 + 2_000,
+		);
+		db.recordTurnWakeReceiptProjectionAttempt(
+			"wake-carrier",
+			"workflow_carrier_receipt_not_ready",
 			T0 + 2_000,
 		);
 		expect(
@@ -1068,6 +1081,11 @@ describe("CommDB turn wake receipt projection ledger (FLY-2828)", () => {
 			"turn-wake-projection-alert:wake-carrier",
 			"turn-wake-projection-alert:wake-stuck",
 		]);
+		expect(db.getTurnWake("wake-untouched")).toMatchObject({
+			projection_attempts: 0,
+			projection_alerted_at: null,
+			projection_alert_question_id: null,
+		});
 		const stuck = questions.find(
 			(question) => question.id === "turn-wake-projection-alert:wake-stuck",
 		)!;
