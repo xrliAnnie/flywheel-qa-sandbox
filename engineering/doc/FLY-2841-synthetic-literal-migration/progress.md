@@ -2,9 +2,9 @@
 issue: FLY-2841
 phase: implement
 phaseCursor: 3/4
-updated: 2026-09-24T10:57:15.417Z
-nextStep: Commit implementation, push branch, request effective cross-family
-  code review, address findings, and open PR
+updated: 2026-09-24T11:06:58.794Z
+nextStep: Push lockfile fix and corrected ledger, request a fresh cross-family
+  code review, then open the PR on APPROVED
 chunks:
   - id: audit
     order: 1
@@ -15,15 +15,31 @@ chunks:
     order: 2
     deps:
       - audit
+    done: RED proved the old implementation failed 6/6 selected assertions; the
+      exact-label migration then passed targeted verification
+    status: done
+  - id: verification
+    order: 3
+    deps:
+      - tdd
+    done: Seven concrete files and vitest related passed 34/34 assertions; verifier
+      and lint passed; frozen lockfile install now passes
+    status: done
+  - id: review
+    order: 4
+    deps:
+      - verification
     done: ""
-    status: qa-pass
+    status: doing
 pointers: {}
 ---
 
 # FLY-2841 progress
 **phase**: implement (3/4)
-**next**: Commit implementation, push branch, request effective cross-family code review, address findings, and open PR
+**next**: Push lockfile fix and corrected ledger, request a fresh cross-family code review, then open the PR on APPROVED
 
 ## chunks
 - ✅ audit — Onboarding, TURN acquisition, fixture audit, and literal discovery
-- ✅ tdd — 
+- ✅ tdd — RED proved the old implementation failed 6/6 selected assertions; the exact-label migration then passed targeted verification
+- ✅ verification — Seven concrete files and vitest related passed 34/34 assertions; verifier and lint passed; frozen lockfile install now passes
+- 🔨 review — 
