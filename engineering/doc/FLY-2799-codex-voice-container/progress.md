@@ -1,14 +1,14 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T17:37:58.662Z
-nextStep: Compare slot-2 container spawn against isolated positive control; add
-  failing diagnostics and wiring tests
+phaseCursor: 2/5
+updated: 2026-09-24T17:53:00.709Z
+nextStep: Commit deployable diagnostics head, redeploy assigned slot 2,
+  reproduce room failure and fix the revealed container wiring difference
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (1/5)
-**next**: Compare slot-2 container spawn against isolated positive control; add failing diagnostics and wiring tests
+**phase**: implement (2/5)
+**next**: Commit deployable diagnostics head, redeploy assigned slot 2, reproduce room failure and fix the revealed container wiring difference
