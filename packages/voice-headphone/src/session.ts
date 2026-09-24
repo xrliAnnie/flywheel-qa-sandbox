@@ -21,6 +21,11 @@ import type {
 
 export const DEFAULT_HEADPHONE_POLL_INTERVAL_MS = 1_000;
 
+export interface HeadphoneUtteranceProjection {
+	start(): void;
+	close(): void;
+}
+
 export interface HeadphoneSessionOptions {
 	engine: VoiceV1Session;
 	room: Pick<RoomIO, "audibleTail">;
@@ -38,6 +43,9 @@ export interface HeadphoneSessionOptions {
 	founderUserId: string;
 	transcriptSink: DurableTranscriptSink;
 	baseInstructions: string;
+	createUtteranceProjection?(
+		session: Pick<VoiceV1Session, "onUtterance">,
+	): HeadphoneUtteranceProjection;
 	heartbeatIntervalMs?: number;
 	pollIntervalMs?: number;
 	record(event: Record<string, unknown>): void;
@@ -74,6 +82,7 @@ export class HeadphoneSession {
 	private closing = false;
 	private pollTimer?: ReturnType<typeof setTimeout>;
 	private unsubscribeUtterance?: () => void;
+	private readonly utteranceProjection?: HeadphoneUtteranceProjection;
 	private transcriptWork: Promise<void> = Promise.resolve();
 
 	constructor(private readonly options: HeadphoneSessionOptions) {
@@ -84,6 +93,9 @@ export class HeadphoneSession {
 			throw new Error("headphone_v1_session_binding_mismatch");
 		if (!supportsRequiredV1(options.engine))
 			throw new Error("headphone_v1_capabilities_incomplete");
+		this.utteranceProjection = options.createUtteranceProjection?.(
+			options.engine,
+		);
 		const inbox = new InboxReader({
 			list: async () => {
 				try {
@@ -131,6 +143,7 @@ export class HeadphoneSession {
 			this.observeUtterance(utterance),
 		);
 		try {
+			this.utteranceProjection?.start();
 			await this.mode.start(
 				composeStartInstructions(this.options.baseInstructions, true),
 			);
@@ -176,6 +189,14 @@ export class HeadphoneSession {
 		this.pollTimer = undefined;
 		this.unsubscribeUtterance?.();
 		this.unsubscribeUtterance = undefined;
+		try {
+			this.utteranceProjection?.close();
+		} catch (error) {
+			this.options.record({
+				kind: "headphone_utterance_projection_close_failed",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
 		await this.mode.close();
 	}
 
