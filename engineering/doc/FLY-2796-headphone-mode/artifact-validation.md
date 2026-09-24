@@ -44,4 +44,3 @@ mmdc -i <source.mmd> -o <output.svg> -w 1000 -b white --svgId <unique-id>
 | 阶段完成 | 待 exact complete 命令返回持久回执；此表不提前证明完成 |
 
 产品实现、产品单元测试、真房测试均不属于本 design 阶段的已完成证据，留后续实施/QA。没有合并、部署、重启或派后继。
-
