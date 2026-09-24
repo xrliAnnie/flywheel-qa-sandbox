@@ -47,7 +47,15 @@ unset _CMUX_PROCESS_CENSUS_LIB
 CMUX_MUTATOR_LOCK_DIR="${FLYWHEEL_CMUX_WATCHER_LOCK_DIR:-/tmp/flywheel-cmux-watcher.lock}"
 CMUX_MUTATOR_REAP_MUTEX="${CMUX_MUTATOR_LOCK_DIR}.reap"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
-CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
+# FLY-2770: independent env for the claim path. The derived value remains the
+# default, so production behaviour is unchanged; overriding it no longer
+# requires repointing CMUX_MAINTENANCE_MARKER, which is a separate safety
+# gate (this script refuses a teardown while the marker exists). The override
+# should be given to flywheel-cmux-sync.sh too. The derived path remains a
+# canonical rendezvous: when an override is active, the same owner-bound claim
+# is hard-linked there so a one-sided sync configuration still fails closed.
+CMUX_QA_TEARDOWN_CLAIM_DEFAULT="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
+CMUX_QA_TEARDOWN_CLAIM="${FLYWHEEL_CMUX_QA_TEARDOWN_CLAIM:-$CMUX_QA_TEARDOWN_CLAIM_DEFAULT}"
 CMUX_OPS_REBUILD_CLAIM="${CMUX_MAINTENANCE_MARKER}.ops-rebuild"
 CMUX_VIEW_WAL_DIR="${FLYWHEEL_CMUX_VIEW_WAL_DIR:-$HOME/.flywheel/state/cmux-view-wal}"
 CMUX_LEASE_NONCE=""
@@ -437,7 +445,7 @@ cmux_lock_claim_fence_fd() {
 }
 
 acquire_cmux_qa_teardown_claim() {
-  local dir incarnation nonce line temp mutex_rc=0 claim_rc=0 fence_rc=0 readback=""
+  local dir default_dir incarnation nonce line temp mutex_rc=0 claim_rc=0 fence_rc=0 readback=""
   [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" ]] || {
     log "ERROR: cmux maintenance marker present at ${CMUX_MAINTENANCE_MARKER}; refusing teardown"
     return 1
@@ -447,7 +455,8 @@ acquire_cmux_qa_teardown_claim() {
     return 1
   }
   dir=$(dirname "$CMUX_QA_TEARDOWN_CLAIM")
-  mkdir -p "$dir" 2>/dev/null || return 1
+  default_dir=$(dirname "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT")
+  mkdir -p "$dir" "$default_dir" 2>/dev/null || return 1
   incarnation=$(cmux_process_incarnation "$$") || return 1
   nonce="$(date +%s)-$$-$RANDOM"
   line="$$|${incarnation}|qa_teardown|${nonce}"
@@ -494,7 +503,17 @@ acquire_cmux_qa_teardown_claim() {
       exec 7>&-; cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
       return 1
     fi
+    if [[ "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" != "$CMUX_QA_TEARDOWN_CLAIM" \
+        && "$(cat "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" 2>/dev/null || true)" == "$CMUX_CLAIM_LINE" ]]; then
+      rm -f "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" 2>/dev/null || true
+    fi
     exec 7>&-
+  fi
+  if [[ "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" != "$CMUX_QA_TEARDOWN_CLAIM" \
+      && (-e "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" || -L "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT") ]]; then
+    cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
+    log "ERROR: canonical qa_teardown rendezvous is already present; refusing teardown"
+    return 1
   fi
   if [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
     cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
@@ -505,10 +524,22 @@ acquire_cmux_qa_teardown_claim() {
     cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
     return 1
   fi
-  readback=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)
-  if [[ "$readback" != "$line" ]]; then
+  if [[ "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" != "$CMUX_QA_TEARDOWN_CLAIM" ]] \
+      && ! ln "$temp" "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" 2>/dev/null; then
     [[ "$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)" == "$line" ]] \
       && rm -f "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true
+    cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
+    return 1
+  fi
+  readback=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)
+  if [[ "$readback" != "$line" \
+      || ("$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" != "$CMUX_QA_TEARDOWN_CLAIM" \
+        && "$(cat "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" 2>/dev/null || true)" != "$line") ]]; then
+    [[ "$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)" == "$line" ]] \
+      && rm -f "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true
+    [[ "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" != "$CMUX_QA_TEARDOWN_CLAIM" \
+        && "$(cat "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" 2>/dev/null || true)" == "$line" ]] \
+      && rm -f "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" 2>/dev/null || true
     cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
     return 1
   fi
@@ -521,15 +552,19 @@ acquire_cmux_qa_teardown_claim() {
 }
 
 release_cmux_qa_teardown_claim() {
-  local mutex_rc=0 observed=""
+  local mutex_rc=0 observed="" file last_file=""
   [[ "$CMUX_CLAIM_HELD" == "1" ]] || { exec 8>&- 2>/dev/null || true; return 0; }
   cmux_acquire_reap_mutex || mutex_rc=$?
   if [[ "$mutex_rc" -eq 0 ]]; then
-    observed=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)
-    if [[ "$observed" == "$CMUX_CLAIM_LINE" ]]; then
-      rm -f "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || \
-        log "WARN: unable to remove owned qa_teardown claim at $CMUX_QA_TEARDOWN_CLAIM"
-    fi
+    for file in "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT"; do
+      [[ "$file" == "$last_file" ]] && continue
+      last_file="$file"
+      observed=$(cat "$file" 2>/dev/null || true)
+      if [[ "$observed" == "$CMUX_CLAIM_LINE" ]]; then
+        rm -f "$file" 2>/dev/null || \
+          log "WARN: unable to remove owned qa_teardown claim at $file"
+      fi
+    done
     cmux_release_reap_mutex
   else
     log "WARN: unable to enter claim-release mutex; stale claim will be reaped after the activity fence closes"

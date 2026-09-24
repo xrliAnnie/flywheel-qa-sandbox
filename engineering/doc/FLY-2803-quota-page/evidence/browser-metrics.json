@@ -1,0 +1,109 @@
+{
+  "playwright": "1.58.1",
+  "executablePath": "/Users/xiaorongli/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell",
+  "candidate": {
+    "sections": 2,
+    "visibleGroupLabels": [
+      "本轮读数不可用",
+      "本轮读数不可用"
+    ],
+    "expectedGroupGapCount": 4,
+    "groupGaps": [
+      {
+        "provider": "Claude",
+        "from": "available",
+        "to": "full",
+        "pixels": 10
+      },
+      {
+        "provider": "Claude",
+        "from": "full",
+        "to": "unavailable",
+        "pixels": 10
+      },
+      {
+        "provider": "Codex",
+        "from": "available",
+        "to": "full",
+        "pixels": 10
+      },
+      {
+        "provider": "Codex",
+        "from": "full",
+        "to": "unavailable",
+        "pixels": 10
+      }
+    ],
+    "structuralGroupGaps": [
+      {
+        "provider": "Claude",
+        "pixels": 10,
+        "cells": 1
+      },
+      {
+        "provider": "Claude",
+        "pixels": 10,
+        "cells": 1
+      },
+      {
+        "provider": "Codex",
+        "pixels": 10,
+        "cells": 1
+      },
+      {
+        "provider": "Codex",
+        "pixels": 10,
+        "cells": 1
+      }
+    ],
+    "progressValues": [
+      96,
+      100,
+      23,
+      97,
+      100,
+      12,
+      20,
+      100
+    ],
+    "footerCount": 0,
+    "sourceMetaCount": 0,
+    "recoveryCount": 0,
+    "text": "账号额度一览\n09/23 周三 11:30\nClaude\n账号\t周重置日\t5h reset\t周用量\tFable 周用量\t充值卡\t订阅到期\n\nbusiness\n机器读数 5x / 你说 20x，待你确认\n\t09/20 周日 09:00\t09/23 周三 19:00\t\n96%\n周\n\t\n100%\nFable已满\n\t\n10/28\n10/31\n\t未知\n\nshopping\nMax 20x\n\t09/25 周五 09:00\t09/23 周三 19:00\t\n23%\n周\n\t\n97%\nFable\n\t\n充值卡明细未提供\n\t未知\n\n\n在用\npersonal\nMax 20x\n\t09/27 周日 09:00\t09/23 周三 19:00\t\n100%\n周已满\n\t\n12%\nFable\n\t\n10/28\n10/31\n\t已取消 · 10/14\n\n本轮读数不可用\n\nschool\nMax 20x\n无机器数据\n本轮读数不可用\n\t无\t无\t无\t无\t\n充值卡未确认\n\t未知\nCodex\n账号\ttoken 状态\t周重置日\t5h reset\t周用量\t兑换卡\t订阅到期\n\nbusiness\nPlus\n\t已吊销\t09/24 周四 09:00\t09/23 周三 19:00\t\n20%\n周\n\t\n1 张\n10/30\n\t未知\n\n\n在用\npersonal\nPro\n\t正常\t09/26 周六 09:00\t09/23 周三 19:00\t\n100%\n周已满\n\t\n2 张\n明细已截断\n\t未知\n\n本轮读数不可用\n\npersonal2\n未知\n无机器数据\nin_use_unshared\n\t未探\t无\t无\t无\t\n兑换卡未暴露\n\t未知"
+  },
+  "mobile": {
+    "wraps": 2,
+    "allScrollable": true
+  },
+  "activeFull": {
+    "rows": 2,
+    "providers": [
+      "Claude",
+      "Codex"
+    ],
+    "allCellsGreen": true,
+    "allHaveRail": true,
+    "allHaveDotAndChip": true
+  },
+  "activeUnknown": {
+    "rows": 2,
+    "providers": [
+      "Claude",
+      "Codex"
+    ],
+    "allCellsGreen": true,
+    "allHaveRail": true,
+    "allHaveDotAndChip": true
+  },
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestsOutsideEvidenceDir": [],
+  "screenshots": {
+    "baseline-1440.png": "55c23041f2c7c3883f6cf2efcd94846f011ab5746fc9ebf9000b01c90b8206cb",
+    "candidate-1440.png": "1359cdd11616018c57dc9aa075c93d6ab659b4e153963b2fd664e666ba9e81b8",
+    "candidate-390.png": "dc7ff874baf7505504b92df00bf90abc9e3b92223366d3ff0fe81fd51b387410",
+    "candidate-active-full.png": "1359cdd11616018c57dc9aa075c93d6ab659b4e153963b2fd664e666ba9e81b8",
+    "candidate-active-unknown.png": "ecd0db984d5a96f3fc5442f3321b435447593d5c57b0e1c7c55323c85e76eaf6",
+    "baseline-vs-candidate.png": "cd9066779525fe87aaab11453efd744f9582af2cba7a96273c725bbe76e3adc4"
+  }
+}

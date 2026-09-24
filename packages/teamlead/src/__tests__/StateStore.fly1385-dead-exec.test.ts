@@ -436,6 +436,15 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 			state: "pending",
 			execution_id: "implement-retry-1",
 		});
+		expect(
+			store.workflowScorecard.getActivation(
+				"activation:implement-dead:run-1:implement:1",
+			),
+		).toMatchObject({
+			closed_at: "2026-07-20T00:10:00.000Z",
+			close_kind: "replaced",
+			close_event_uid: "dead_rollback:run-1:implement:1:implement-dead",
+		});
 		const attachments = store.listWorkflowResumeAttachments({
 			runId: "run-1",
 			nodeId: "implement",

@@ -23,6 +23,7 @@ import { isCodexSlotName } from "flywheel-claude-runner/bin/codex-account-core.m
 import type {
 	CodexCreditsDetail,
 	CodexRateLimitWindow,
+	CodexResetCreditDetail,
 	CodexResetCreditsDetail,
 } from "./rate-limit-detail.js";
 
@@ -52,7 +53,11 @@ export interface CodexAccountReading {
 	fiveH: CodexRateLimitWindow | null;
 	weekly: CodexRateLimitWindow | null;
 	credits: CodexCreditsDetail;
+	/** Field-level provenance; optional only for version-1 legacy stores. */
+	creditsObservedAt?: string | null;
 	resetCredits: CodexResetCreditsDetail;
+	/** Field-level provenance; optional only for version-1 legacy stores. */
+	resetCreditsObservedAt?: string | null;
 	unclassifiedWindows: number;
 }
 
@@ -112,12 +117,102 @@ function validCredits(value: unknown): boolean {
 	);
 }
 
-function validResetCredits(value: unknown): boolean {
+function validResetCredit(value: unknown): value is CodexResetCreditDetail {
 	return (
 		record(value) &&
-		typeof value.known === "boolean" &&
-		(value.value === null || text(value.value, 32))
+		text(value.id, 128) &&
+		text(value.status, 64) &&
+		(value.expiresAt === null || instant(value.expiresAt))
 	);
+}
+
+function normalizeResetCredits(value: unknown): CodexResetCreditsDetail | null {
+	if (
+		!record(value) ||
+		typeof value.known !== "boolean" ||
+		(value.value !== null && !text(value.value, 32))
+	) {
+		return null;
+	}
+	const legacyUnknown = (): CodexResetCreditsDetail => ({
+		known: false,
+		value: null,
+		availableCount: null,
+		credits: null,
+	});
+	const hasStructured = "availableCount" in value || "credits" in value;
+	if (!hasStructured) {
+		if (!value.known) return legacyUnknown();
+		const legacyValue = value.value;
+		if (legacyValue === null) {
+			return {
+				known: true,
+				value: null,
+				availableCount: 0,
+				credits: [],
+			};
+		}
+		if (
+			typeof legacyValue !== "string" ||
+			!/^(?:0|[1-9]\d{0,15})$/.test(legacyValue)
+		) {
+			return legacyUnknown();
+		}
+		const count = Number(legacyValue);
+		return Number.isSafeInteger(count)
+			? {
+					known: true,
+					value: count === 0 ? null : String(count),
+					availableCount: count,
+					credits: null,
+				}
+			: legacyUnknown();
+	}
+	if (!value.known) {
+		return value.availableCount === null && value.credits === null
+			? legacyUnknown()
+			: null;
+	}
+	if (
+		(value.availableCount !== null &&
+			(!Number.isSafeInteger(value.availableCount) ||
+				(value.availableCount as number) < 0)) ||
+		(value.credits !== null && !Array.isArray(value.credits))
+	) {
+		return null;
+	}
+	if (value.availableCount === null) {
+		return value.credits === null ? legacyUnknown() : null;
+	}
+	const credits = value.credits as unknown[] | null;
+	if (credits === null) {
+		return {
+			known: true,
+			value:
+				(value.availableCount as number) === 0
+					? null
+					: String(value.availableCount),
+			availableCount: value.availableCount as number,
+			credits: null,
+		};
+	}
+	if (
+		credits.length > (value.availableCount as number) ||
+		!credits.every(validResetCredit)
+	) {
+		return null;
+	}
+	const ids = credits.map((credit) => (credit as CodexResetCreditDetail).id);
+	if (new Set(ids).size !== ids.length) return null;
+	return {
+		known: true,
+		value:
+			(value.availableCount as number) === 0
+				? null
+				: String(value.availableCount),
+		availableCount: value.availableCount as number,
+		credits: credits as CodexResetCreditDetail[],
+	};
 }
 
 function validReading(value: unknown): value is CodexAccountReading {
@@ -138,7 +233,13 @@ function validReading(value: unknown): value is CodexAccountReading {
 		validWindow(value.fiveH) &&
 		validWindow(value.weekly) &&
 		validCredits(value.credits) &&
-		validResetCredits(value.resetCredits) &&
+		(value.creditsObservedAt === undefined ||
+			value.creditsObservedAt === null ||
+			instant(value.creditsObservedAt)) &&
+		normalizeResetCredits(value.resetCredits) !== null &&
+		(value.resetCreditsObservedAt === undefined ||
+			value.resetCreditsObservedAt === null ||
+			instant(value.resetCreditsObservedAt)) &&
 		Number.isInteger(value.unclassifiedWindows) &&
 		(value.unclassifiedWindows as number) >= 0
 	);
@@ -188,7 +289,14 @@ export function readCodexAccountQuotaStore(
 		(typeof active !== "string" || !names.includes(active))
 	)
 		return null;
-	return parsed as unknown as CodexAccountQuotaStore;
+	const normalized = parsed as unknown as CodexAccountQuotaStore;
+	return {
+		...normalized,
+		accounts: normalized.accounts.map((account) => ({
+			...account,
+			resetCredits: normalizeResetCredits(account.resetCredits)!,
+		})),
+	};
 }
 
 export function writeCodexAccountQuotaStore(
