@@ -14,7 +14,10 @@
  * so every path is fake-timer testable.
  */
 
-import type { ResidentVoiceLease } from "../resident-voice-session.js";
+import {
+	RESIDENT_VOICE_NORMAL_END_REASON,
+	type ResidentVoiceLease,
+} from "../resident-voice-session.js";
 import type { SessionSlot } from "../SessionSlot.js";
 import type { LandingResult } from "./AssistantLanding.js";
 import type { BriefingResult } from "./BriefingEngine.js";
@@ -611,7 +614,17 @@ export class AssistantSession {
 				this.opts.lease.toSlotLease(ASSISTANT_SLOT_MODE),
 			);
 			try {
-				await this.opts.lease.close(leaseState, leaseReason);
+				if (leaseState === "ended") {
+					await this.opts.lease.close(
+						"ended",
+						RESIDENT_VOICE_NORMAL_END_REASON,
+					);
+				} else {
+					await this.opts.lease.close(
+						"failed",
+						leaseReason ?? "assistant_failed",
+					);
+				}
 			} catch (error) {
 				this.log(
 					`resident lease close failed: ${String((error as Error).message ?? error)}`,

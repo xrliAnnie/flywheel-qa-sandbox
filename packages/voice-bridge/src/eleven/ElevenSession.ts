@@ -27,7 +27,10 @@
  * text, posted to the voice channel's text area by the wiring.
  */
 
-import type { ResidentVoiceLease } from "../resident-voice-session.js";
+import {
+	RESIDENT_VOICE_NORMAL_END_REASON,
+	type ResidentVoiceLease,
+} from "../resident-voice-session.js";
 import type { SessionSlot } from "../SessionSlot.js";
 
 /** the streaming mouth — AssistantSpeaker satisfies this as-is. */
@@ -36,6 +39,8 @@ export interface ElevenSpeakerLike {
 	feed(chunk: Buffer): void;
 	endTurn(): void;
 	flush(): void;
+	/** RoomIO's estimate that already-ended input still has audible playback. */
+	hasEstimatedAudibleTail?(): boolean;
 }
 
 /** the live WS surface the session drives (ElevenWs satisfies this). */
@@ -393,7 +398,9 @@ export class ElevenSession {
 	 * suppress — the upcoming answer must still play. */
 	private onLocalBargeIn(): void {
 		if (this.state !== "live") return;
-		if (this.turnOpen) {
+		const hasEstimatedAudibleTail =
+			!this.waitOn && Boolean(this.opts.speaker.hasEstimatedAudibleTail?.());
+		if (this.turnOpen || hasEstimatedAudibleTail) {
 			this.interrupt("local");
 			return;
 		}
@@ -554,10 +561,14 @@ export class ElevenSession {
 					this.opts.lease.toSlotLease(this.opts.slotMode),
 				);
 				try {
-					await this.opts.lease.close(
-						reason === "manual" || reason === "shutdown" ? "ended" : "failed",
-						reason,
-					);
+					if (reason === "manual" || reason === "shutdown") {
+						await this.opts.lease.close(
+							"ended",
+							RESIDENT_VOICE_NORMAL_END_REASON,
+						);
+					} else {
+						await this.opts.lease.close("failed", reason);
+					}
 				} catch (error) {
 					this.opts.log?.(
 						`[eleven-session] resident lease close failed: ${String((error as Error).message ?? error)}`,

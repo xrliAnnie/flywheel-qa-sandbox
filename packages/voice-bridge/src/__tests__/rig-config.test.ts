@@ -168,4 +168,32 @@ describe("buildStagedConfig (FLY-1353)", () => {
 		expect(restoreBridgeUrl).toBeLessThan(audioBoot);
 		expect(restoreApiToken).toBeLessThan(audioBoot);
 	});
+
+	it("runs the default /eleven mutex and audio boots in isolated child processes", () => {
+		const source = readFileSync(
+			fileURLToPath(
+				new URL("../../e2e/eleven-voice-loop.mjs", import.meta.url),
+			),
+			"utf8",
+		);
+		const allBranch = source.indexOf('if (LEGS === "all")');
+		const login = source.indexOf("await injector.login(injectorToken);");
+
+		expect(allBranch).toBeGreaterThan(-1);
+		expect(allBranch).toBeLessThan(login);
+		expect(source).toContain('for (const leg of ["mutex", "audio"])');
+		expect(source).toContain("ELEVEN_LOOP_LEGS: leg");
+	});
+
+	it("proves /eleven STOP from non-silent PCM rather than continuous clock bytes", () => {
+		const source = readFileSync(
+			fileURLToPath(
+				new URL("../../e2e/eleven-voice-loop.mjs", import.meta.url),
+			),
+			"utf8",
+		);
+		expect(source).toContain("nonSilentBytes");
+		expect(source).toContain("nonSilentAfterCut");
+		expect(source).not.toContain("grewAfterCut < 288_000");
+	});
 });

@@ -27,7 +27,7 @@
  *        keyed by guild+bot and wedges boot B's resident join → entersState
  *        AbortError). Two invocations, each exit-code gated, stay fail-closed.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	createWriteStream,
 	existsSync,
@@ -37,8 +37,32 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runVoiceBridge } from "../dist/cli.js";
 import { buildStagedResidentIdentity } from "./lib/rig-config.mjs";
+
+const LEGS = process.env.ELEVEN_LOOP_LEGS ?? "all";
+if (LEGS === "all") {
+	for (const leg of ["mutex", "audio"]) {
+		const child = spawnSync(
+			process.execPath,
+			[fileURLToPath(import.meta.url)],
+			{
+				env: { ...process.env, ELEVEN_LOOP_LEGS: leg },
+				stdio: "inherit",
+			},
+		);
+		if (child.error) {
+			console.error(
+				`eleven-voice-loop ${leg} boot failed: ${child.error.message}`,
+			);
+			process.exit(1);
+		}
+		if (child.status !== 0) process.exit(child.status ?? 1);
+	}
+	console.log("eleven-voice-loop (isolated boots) VERDICT: PASS");
+	process.exit(0);
+}
 
 const need = (k) => {
 	const v = process.env[k];
@@ -129,8 +153,6 @@ const baseConfig = (allowUserIds) => ({
 	healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
 	ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
 });
-
-const LEGS = process.env.ELEVEN_LOOP_LEGS ?? "all";
 
 // ===================== Boot A — cross-mode slot mutex =====================
 if (LEGS !== "audio") {
@@ -229,7 +251,8 @@ log("injector in VC");
 const outPcm = join(outDir, "eleven-out-48k-stereo.s16le");
 const sink = createWriteStream(outPcm);
 let recordedBytes = 0;
-let lastAudioAt = 0;
+let nonSilentBytes = 0;
+let lastNonSilentAt = 0;
 const recorded = new Set();
 conn.receiver.speaking.on("start", (userId) => {
 	if (userId === injectorId || recorded.has(userId)) return;
@@ -245,7 +268,16 @@ conn.receiver.speaking.on("start", (userId) => {
 	});
 	opus.pipe(dec).on("data", (pcm) => {
 		recordedBytes += pcm.length;
-		lastAudioAt = Date.now();
+		let sum = 0;
+		for (let i = 0; i < pcm.length - 1; i += 2) {
+			const sample = pcm.readInt16LE(i) / 32768;
+			sum += sample * sample;
+		}
+		const rms = Math.sqrt(sum / Math.max(1, pcm.length / 2));
+		if (rms > 0.01) {
+			nonSilentBytes += pcm.length;
+			lastNonSilentAt = Date.now();
+		}
 		sink.write(pcm);
 	});
 });
@@ -276,6 +308,7 @@ if (userLines > 0) {
 	);
 }
 const leg1Bytes = recordedBytes;
+const leg1NonSilentBytes = nonSilentBytes;
 if (leg1Bytes > 192_000) {
 	// non-silence: RMS over the recorded s16le
 	const buf = readFileSync(outPcm);
@@ -303,28 +336,34 @@ player.play(voice.createAudioResource(probeWav));
 // wait for agent audio to be actively streaming again
 const streamStart = Date.now();
 while (Date.now() - streamStart < 35_000) {
-	if (Date.now() - lastAudioAt < 500 && recordedBytes > leg1Bytes + 96_000)
+	if (
+		Date.now() - lastNonSilentAt < 500 &&
+		nonSilentBytes > leg1NonSilentBytes + 9_600
+	)
 		break;
 	await sleep(250);
 }
-if (recordedBytes <= leg1Bytes + 96_000) {
+if (nonSilentBytes <= leg1NonSilentBytes + 9_600) {
 	fail("leg 2: second round produced no streaming audio to interrupt");
 } else {
 	log("leg 2: agent streaming — injecting interrupt speech");
 	player.play(voice.createAudioResource(interruptWav));
 	await sleep(4_000); // interrupt utterance (~2-3s) + platform interruption
 	const bytesAtCut = recordedBytes;
+	const nonSilentBytesAtCut = nonSilentBytes;
 	await sleep(3_000);
 	const grewAfterCut = recordedBytes - bytesAtCut;
-	// the dying stream may flush a tail; anything beyond ~1.5s of audio
-	// (288000 bytes @48k stereo s16le) means playback did NOT stop.
-	if (grewAfterCut < 288_000) {
+	const nonSilentAfterCut = nonSilentBytes - nonSilentBytesAtCut;
+	// RoomIO keeps a continuous silence clock, so total PCM bytes continue to
+	// grow after playback stops. Only non-silent PCM proves the old answer kept
+	// playing; allow at most ~1.5s (288000 bytes @48k stereo s16le) of tail.
+	if (nonSilentAfterCut < 288_000) {
 		log(
-			`leg 2 STOP PASS — playback stalled after barge-in (+${grewAfterCut} bytes tail)`,
+			`leg 2 STOP PASS — non-silent playback stopped after barge-in (+${nonSilentAfterCut} non-silent bytes; +${grewAfterCut} clock bytes)`,
 		);
 	} else {
 		fail(
-			`leg 2 STOP: audio kept streaming after barge-in (+${grewAfterCut} bytes)`,
+			`leg 2 STOP: non-silent audio kept streaming after barge-in (+${nonSilentAfterCut} non-silent bytes; +${grewAfterCut} clock bytes)`,
 		);
 	}
 	// survival: the session must answer one more round

@@ -288,7 +288,7 @@ describe("AssistantSession (FLY-967 P6b)", () => {
 		expect(lease.startRenewing).toHaveBeenCalledTimes(1);
 
 		await h.session.stop();
-		expect(lease.close).toHaveBeenCalledWith("ended", undefined);
+		expect(lease.close).toHaveBeenCalledWith("ended", "voice-stop");
 		expect(h.slot.current()).toBeNull();
 	});
 

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { ResidentVoiceSessionClient } from "../resident-voice-session.js";
+import {
+	RESIDENT_VOICE_NORMAL_END_REASON,
+	ResidentVoiceSessionClient,
+} from "../resident-voice-session.js";
 
 function response(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -167,10 +170,11 @@ describe("ResidentVoiceSessionClient", () => {
 			bindingProof: { observedAt: "2026-09-23T20:00:05.000Z" },
 		});
 		expect(() => lease.assertActive()).not.toThrow();
-		await lease.close("ended");
+		await lease.close("ended", RESIDENT_VOICE_NORMAL_END_REASON);
 		const closeInit = fetchImpl.mock.calls[2]![1] as RequestInit;
 		expect(JSON.parse(String(closeInit.body))).toMatchObject({
 			state: "ended",
+			reason: "voice-stop",
 			ownerBootId: "boot-1",
 			sessionGeneration: 1,
 		});

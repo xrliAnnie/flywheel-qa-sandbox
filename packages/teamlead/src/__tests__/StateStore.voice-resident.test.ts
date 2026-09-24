@@ -202,6 +202,72 @@ describe("StateStore resident voice carrier", () => {
 		).toBe(true);
 	});
 
+	it("releases a normally ended resident room for an immediate replacement claim", () => {
+		const first = store.reserveAndClaimResidentVoiceSession(input());
+		if (!("leaseToken" in first)) throw new Error("resident claim missing");
+		const sessionId = input().reservation.sessionId;
+		const owner = {
+			sessionId,
+			leaseToken: first.leaseToken,
+			ownerBootId: "voice-bridge-boot-1",
+			sessionGeneration: 7,
+		};
+		expect(
+			store.setVoiceSessionState({
+				...owner,
+				state: "warming",
+				now: T0,
+			}),
+		).toBe(true);
+		expect(
+			store.setVoiceSessionState({
+				...owner,
+				state: "live",
+				now: "2026-09-23T20:00:01.000Z",
+			}),
+		).toBe(true);
+		expect(
+			store.setVoiceSessionState({
+				...owner,
+				state: "ended",
+				reason: "voice-stop",
+				now: "2026-09-23T20:00:02.000Z",
+			}),
+		).toBe(true);
+		expect(store.getVoiceSession(sessionId)).toMatchObject({
+			state: "ended",
+			reason: "voice-stop",
+		});
+
+		const replacement = store.reserveAndClaimResidentVoiceSession(
+			input({
+				requestId: "resident-request-2",
+				inputDigest: "digest-2",
+				ownerBootId: "voice-bridge-boot-2",
+				sessionGeneration: 8,
+				bindingProof: {
+					...input().bindingProof,
+					ownerBootId: "voice-bridge-boot-2",
+					sessionGeneration: 8,
+					observedAt: "2026-09-23T20:00:02.000Z",
+					expiresAt: "2026-09-23T20:01:02.000Z",
+				},
+				reservation: {
+					...input().reservation,
+					sessionId: "10000000-0000-4000-8000-000000000102",
+					createdAt: "2026-09-23T20:00:02.000Z",
+				},
+			}),
+		);
+		expect(replacement).toMatchObject({
+			status: "inserted",
+			session: {
+				sessionId: "10000000-0000-4000-8000-000000000102",
+				state: "claimed",
+			},
+		});
+	});
+
 	it("expires an abandoned resident lease before admitting a new room owner", () => {
 		const first = store.reserveAndClaimResidentVoiceSession(input());
 		expect(first).toHaveProperty("leaseToken");

@@ -30,6 +30,12 @@ export interface ResidentVoiceClaimInput {
 
 export type ResidentVoiceState = "warming" | "live" | "ended" | "failed";
 
+/** Canonical durable reason for a resident session that ended normally. */
+export const RESIDENT_VOICE_NORMAL_END_REASON = "voice-stop" as const;
+export type ResidentVoiceClose =
+	| [state: "ended", reason: typeof RESIDENT_VOICE_NORMAL_END_REASON]
+	| [state: "failed", reason: string];
+
 export interface ResidentVoiceLease {
 	readonly mode: ResidentVoiceMode;
 	readonly sessionId: string;
@@ -41,7 +47,7 @@ export interface ResidentVoiceLease {
 	renew(): Promise<void>;
 	setState(state: "warming" | "live"): Promise<void>;
 	startRenewing(onLost?: (error: Error) => void): () => void;
-	close(state: "ended" | "failed", reason?: string): Promise<void>;
+	close(...args: ResidentVoiceClose): Promise<void>;
 }
 
 export interface ResidentVoiceSessionClientOptions {
@@ -175,7 +181,7 @@ class Lease implements ResidentVoiceLease {
 		return () => this.stopRenewing();
 	}
 
-	async close(state: "ended" | "failed", reason?: string): Promise<void> {
+	async close(...[state, reason]: ResidentVoiceClose): Promise<void> {
 		if (!this.active) return;
 		this.stopRenewing();
 		try {
@@ -185,7 +191,7 @@ class Lease implements ResidentVoiceLease {
 					state,
 					ownerBootId: this.client.ownerBootId,
 					sessionGeneration: this.sessionGeneration,
-					...(reason ? { reason } : {}),
+					reason,
 				},
 				this.leaseToken,
 			);

@@ -44,17 +44,24 @@ function makeFixture(over: Record<string, unknown> = {}) {
 	).toBe(true);
 	const speaker = {
 		calls: [] as string[],
+		estimatedTail: false,
 		beginTurn() {
+			this.estimatedTail = false;
 			this.calls.push("begin");
 		},
 		feed(_c: Buffer) {
 			this.calls.push("feed");
 		},
 		endTurn() {
+			this.estimatedTail = true;
 			this.calls.push("end");
 		},
 		flush() {
+			this.estimatedTail = false;
 			this.calls.push("flush");
+		},
+		hasEstimatedAudibleTail() {
+			return this.estimatedTail;
 		},
 	};
 	const ws = { sent: [] as Buffer[], flushes: 0, closes: 0 };
@@ -169,6 +176,20 @@ describe("ElevenSession (FLY-1006 S7)", () => {
 		expect(f.session.droppedLateChunks).toBe(0);
 		f.handlers().onAudio(Buffer.alloc(4));
 		expect(f.session.droppedLateChunks).toBe(1);
+	});
+
+	it("local barge-in cancels the estimated audible playback tail after the platform stream closes", async () => {
+		const f = makeFixture();
+		await f.session.start();
+		f.handlers().onAudio(Buffer.alloc(4));
+		await vi.advanceTimersByTimeAsync(1_600); // stream gap closes the turn
+		expect(f.speaker.calls.at(-1)).toBe("end");
+
+		f.room.routeBargeIn();
+		expect(f.speaker.calls.at(-1)).toBe("flush");
+		expect(
+			f.trail.filter((l) => l.type === "interruption" && l.source === "local"),
+		).toHaveLength(1);
 	});
 
 	// ---- waiting cue semantics (QA FLY-1006 B1/B2 kickback) ----------------
@@ -449,7 +470,7 @@ describe("ElevenSession (FLY-1006 S7)", () => {
 		expect(lease.startRenewing).toHaveBeenCalledTimes(1);
 
 		await f.session.stop("manual");
-		expect(lease.close).toHaveBeenCalledWith("ended", "manual");
+		expect(lease.close).toHaveBeenCalledWith("ended", "voice-stop");
 		expect(f.room.slot.current()).toBeNull();
 	});
 
