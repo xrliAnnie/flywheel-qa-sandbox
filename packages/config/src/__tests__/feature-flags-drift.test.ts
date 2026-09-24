@@ -384,6 +384,7 @@ describe("feature-flag drift guard", () => {
 			...[
 				["cmux_watcher_rebuild_disabled", "storeCmuxWatcherRebuildDisabled"],
 				["cmux_rebind_disabled", "storeCmuxRebindDisabled"],
+				["headphone_background", "storeHeadphoneBackgroundEnabled"],
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
 				["summary_due_activity_gate", "storeSummaryDueActivityGateEnabled"],
 				["alert_system", "storeAlertSystemEnabled"],

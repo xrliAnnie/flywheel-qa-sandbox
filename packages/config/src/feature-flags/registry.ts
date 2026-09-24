@@ -277,6 +277,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "The existing watcher patrol projects the live value to a durable marker; unset/default false permits guarded rebind.",
 	},
 	{
+		name: "headphone_background",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2796: collect the durable headphone inbox and reconcile uncertain voice handoffs in the Bridge background runtime",
+		whenOn:
+			"Bridge 常驻收集耳机模式收件箱，并对未确认的语音 handoff 做持久对账；关闭后两个循环保留轻量时钟但不读来源或处理 handoff",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeHeadphoneBackgroundEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2796 defaults the headphone background workers on and observes an off store write immediately",
+		note: "Default on. FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED=0 seeds the kill switch; runtime store changes are observed by the next collector or reconciler tick.",
+	},
+	{
 		name: "summary_absorption_cadence_ms",
 		category: "feature",
 		source: "env",

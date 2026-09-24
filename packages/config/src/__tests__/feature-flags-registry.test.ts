@@ -23,6 +23,8 @@ const EXPECTED_WHEN_ON = {
 	cmux_watcher_rebuild_disabled:
 		"停止自动重建掉线的 cmux 监看窗口；健康检查和告警仍继续",
 	cmux_rebind_disabled: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
+	headphone_background:
+		"Bridge 常驻收集耳机模式收件箱，并对未确认的语音 handoff 做持久对账；关闭后两个循环保留轻量时钟但不读来源或处理 handoff",
 	summary_absorption_cadence_ms:
 		"Raya 两轮总结复盘之间要等待的毫秒数；默认 21600000 毫秒（6 小时）",
 	summary_due_activity_gate:
@@ -84,7 +86,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(33);
+		expect(FEATURE_FLAGS).toHaveLength(34);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

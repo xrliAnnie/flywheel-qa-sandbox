@@ -395,6 +395,12 @@ export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "alert_system");
 }
 
+export function storeHeadphoneBackgroundEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "headphone_background");
+}
+
 export function storeCmuxWatcherRebuildDisabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

@@ -19,6 +19,7 @@ import {
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
+	storeHeadphoneBackgroundEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeDwellEnabled,
 	storeNodeDwellThresholdHours,
@@ -144,6 +145,30 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeAlertSystemEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2796 defaults the headphone background workers on and observes the kill switch immediately", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeHeadphoneBackgroundEnabled(runtime)).toBe(true);
+
+		const revision = store.getFlagValueRow("headphone_background")!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "headphone_background",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "pause headphone background collection and reconciliation",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeHeadphoneBackgroundEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2796 seeds the headphone background kill switch from env =0", () => {
+		const runtime = initializeFlagStore(store, {
+			FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED: "0",
+		});
+		expect(storeHeadphoneBackgroundEnabled(runtime)).toBe(false);
 	});
 
 	it("FLY-2207 observes the opt-in watcher rebuild disable without restart", () => {

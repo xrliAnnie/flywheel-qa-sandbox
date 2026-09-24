@@ -482,6 +482,7 @@ import {
 	storeCodexQuotaAutoSwitchEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
+	storeHeadphoneBackgroundEnabled,
 	storeLoopProfilerEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
@@ -11645,51 +11646,51 @@ export async function startBridge(
 				throw new Error("headphone_question_binding_ambiguous");
 			return questionIds.values().next().value;
 		};
-		if (headphoneBackground.enabled) {
-			const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
-				store: store.headphoneInbox,
-				founderUserId: headphoneFounderId,
-				projects,
-				openCommDb: (projectName) =>
-					CommDB.openReadonly(commDbPathForProject(projectName)),
-				questionIdByMessage,
-				botUserIdFromToken,
-				globalBotUserId: botUserIdFromToken(config.discordBotToken),
-				log: (message) => console.warn(message),
-			});
-			const headphoneCollector = new HeadphoneInboxCollector({
-				store: store.headphoneInbox,
-				listScopes: listHeadphoneScopes,
-				fetchPage: fetchDiscordHeadphonePage,
-				classifyMessages: (scope, messages) =>
-					headphoneQuestionAuthority.classifyMessages(scope, messages),
-				projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
-			});
-			const collectHeadphonePage = () =>
-				void headphoneCollector
-					.tick()
-					.catch((error) =>
+		const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: headphoneFounderId,
+			projects,
+			openCommDb: (projectName) =>
+				CommDB.openReadonly(commDbPathForProject(projectName)),
+			questionIdByMessage,
+			botUserIdFromToken,
+			globalBotUserId: botUserIdFromToken(config.discordBotToken),
+			log: (message) => console.warn(message),
+		});
+		const headphoneCollector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: listHeadphoneScopes,
+			fetchPage: fetchDiscordHeadphonePage,
+			classifyMessages: (scope, messages) =>
+				headphoneQuestionAuthority.classifyMessages(scope, messages),
+			projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
+		});
+		const collectHeadphonePage = () => {
+			if (!storeHeadphoneBackgroundEnabled(flagStore)) return;
+			void headphoneCollector
+				.tick()
+				.catch((error) =>
+					console.warn(
+						`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				)
+				.finally(() => {
+					try {
+						store.headphoneInbox.pruneOlderThan(
+							new Date(
+								Date.now() - headphoneBackground.retentionMs,
+							).toISOString(),
+						);
+					} catch (error) {
 						console.warn(
-							`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
-						),
-					)
-					.finally(() => {
-						try {
-							store.headphoneInbox.pruneOlderThan(
-								new Date(
-									Date.now() - headphoneBackground.retentionMs,
-								).toISOString(),
-							);
-						} catch (error) {
-							console.warn(
-								`[headphone-inbox] retention failed: ${error instanceof Error ? error.message : String(error)}`,
-							);
-						}
-					});
-			collectHeadphonePage();
-			headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
-			headphoneCollectorTimer.unref?.();
-		}
+							`[headphone-inbox] retention failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				});
+		};
+		collectHeadphonePage();
+		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
+		headphoneCollectorTimer.unref?.();
 		app.use(
 			"/api/voice/headphone",
 			voiceSessionAuthMiddleware(config.apiToken),
@@ -11794,6 +11795,7 @@ export async function startBridge(
 			}),
 		);
 		const reconcileVoiceHandoffs = () => {
+			if (!storeHeadphoneBackgroundEnabled(flagStore)) return;
 			const now = new Date().toISOString();
 			for (const record of store.voiceHandoffs.listAmbiguous(now)) {
 				let outcome: "found" | "not_found" | "unavailable" | "conflict" =
@@ -11821,11 +11823,9 @@ export async function startBridge(
 				}
 			}
 		};
-		if (headphoneBackground.enabled) {
-			reconcileVoiceHandoffs();
-			voiceHandoffReconcileTimer = setInterval(reconcileVoiceHandoffs, 1_000);
-			voiceHandoffReconcileTimer.unref?.();
-		}
+		reconcileVoiceHandoffs();
+		voiceHandoffReconcileTimer = setInterval(reconcileVoiceHandoffs, 1_000);
+		voiceHandoffReconcileTimer.unref?.();
 	}
 	app.use(
 		"/api/voice",
