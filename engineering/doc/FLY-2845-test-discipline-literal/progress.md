@@ -1,13 +1,14 @@
 ---
 issue: FLY-2845
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-24T12:42:55.208Z
-nextStep: Review scoped diff, commit implementation, and push branch
+phaseCursor: 4/5
+updated: 2026-09-24T12:58:16.298Z
+nextStep: Open PR against synthetic QA baseline, then record PR and add
+  milestone as final commit
 chunks: []
 pointers: {}
 ---
 
 # FLY-2845 progress
-**phase**: implement (3/5)
-**next**: Review scoped diff, commit implementation, and push branch
+**phase**: implement (4/5)
+**next**: Open PR against synthetic QA baseline, then record PR and add milestone as final commit
