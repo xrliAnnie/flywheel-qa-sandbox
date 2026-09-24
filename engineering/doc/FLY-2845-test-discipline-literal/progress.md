@@ -1,13 +1,13 @@
 ---
 issue: FLY-2845
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T12:39:24.128Z
-nextStep: Update exact assertions and run retained tests for RED evidence
+phaseCursor: 2/5
+updated: 2026-09-24T12:41:31.082Z
+nextStep: Migrate the eight exact source constants to claude-opus-5.5
 chunks: []
 pointers: {}
 ---
 
 # FLY-2845 progress
-**phase**: implement (1/5)
-**next**: Update exact assertions and run retained tests for RED evidence
+**phase**: implement (2/5)
+**next**: Migrate the eight exact source constants to claude-opus-5.5
