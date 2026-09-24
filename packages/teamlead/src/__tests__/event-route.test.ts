@@ -1037,7 +1037,7 @@ describe("Event route", () => {
 				alertPending: true,
 			},
 		});
-			expect(commit.mock.calls[0]?.[0].alertIdentity).toMatchObject({
+		expect(commit.mock.calls[0]?.[0].alertIdentity).toMatchObject({
 			leadId: "product-lead",
 			projectName: "geoforge3d",
 		});

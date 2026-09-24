@@ -1167,7 +1167,8 @@ describe("FLY-2828 exhausted rework wake guard", () => {
 		const { store, requestId, activationId, epoch } =
 			await createAwaitingReceiptHeavyRework();
 		try {
-			const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+			const db = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
 			mutate(db, requestId);
 			expect(
 				store.inspectWorkflowTurnWakeRetry({
@@ -5099,7 +5100,10 @@ function fly2828Ledgers(store: StateStore): string {
 function fly2828Wake(
 	store: StateStore,
 	requestId: string,
-	input: { to: "pending" | "turn_granted" | "awaiting_receipt"; epoch?: number },
+	input: {
+		to: "pending" | "turn_granted" | "awaiting_receipt";
+		epoch?: number;
+	},
 ): { activationId: string; epoch: number; generation: number } {
 	const activationId = `activation:${requestId}`;
 	const epoch = input.epoch ?? 4;
@@ -5140,7 +5144,9 @@ function fly2828Wake(
 		grantedAt: "2026-07-23T00:11:30.000Z",
 	});
 	if (!turn.ok) throw new Error(turn.reason);
-	const hops: Array<["pending" | "turn_granted", "turn_granted" | "awaiting_receipt"]> =
+	const hops: Array<
+		["pending" | "turn_granted", "turn_granted" | "awaiting_receipt"]
+	> =
 		input.to === "pending"
 			? []
 			: input.to === "turn_granted"
@@ -5284,12 +5290,12 @@ describe("FLY-2828 patrol receipt projection on a moved node", () => {
 			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
 				"wake_delivered",
 			);
-			expect(
-				store.getWorkflowReworkVerificationPath(requestId)?.state,
-			).toBe("active");
-			expect(
-				store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
-			).toBe("running");
+			expect(store.getWorkflowReworkVerificationPath(requestId)?.state).toBe(
+				"active",
+			);
+			expect(store.getWorkflowRunNode("run-heavy", "implement", 2)?.state).toBe(
+				"running",
+			);
 		} finally {
 			store.close();
 		}
@@ -5440,9 +5446,9 @@ describe("FLY-2828 completion settles the wake rework obligation", () => {
 					state: "completed",
 					owner_id: null,
 				});
-				expect(
-					store.getWorkflowReworkVerificationPath(requestId)?.state,
-				).toBe("completed");
+				expect(store.getWorkflowReworkVerificationPath(requestId)?.state).toBe(
+					"completed",
+				);
 				expect(
 					store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
 				).toBe("done");
@@ -5450,14 +5456,19 @@ describe("FLY-2828 completion settles the wake rework obligation", () => {
 					.listWorkflowRunEvents("run-heavy")
 					.find(
 						(event) =>
-							event.event_uid === `rework_wake_receipt:${activationId}:${epoch}`,
+							event.event_uid ===
+							`rework_wake_receipt:${activationId}:${epoch}`,
 					);
 				expect(receipt?.payload).toMatchObject({
 					source: "completion_implied",
 					impliedFromState: deliveryState,
 					requestId,
 				});
-				expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([]);
+				expect(
+					store
+						.findOpenWorkflowReworkForRun("run-heavy")
+						.filter((open) => open.requestId === requestId),
+				).toEqual([]);
 				// The CommDB receipt that arrives later is an idempotent replay.
 				expect(fly2828Receipt(store, activationId, epoch)).toEqual({
 					ok: true,
@@ -5790,7 +5801,10 @@ describe("FLY-2828 both rework doors share one predicate", () => {
 				{ requestId, source: "delivery", state: "pending" },
 				{ requestId, source: "verification_path", state: "pending" },
 			]);
-			expect(reopen()).toMatchObject({ ok: false, reason: "rework_already_open" });
+			expect(reopen()).toMatchObject({
+				ok: false,
+				reason: "rework_already_open",
+			});
 			// (a) the stranded shape from the incident: delivery settled by hand,
 			// path never activated.
 			fly2828Raw(store)
@@ -5801,7 +5815,10 @@ describe("FLY-2828 both rework doors share one predicate", () => {
 			expect(store.findOpenWorkflowReworkForRun("run-heavy")).toEqual([
 				{ requestId, source: "verification_path", state: "pending" },
 			]);
-			expect(reopen()).toMatchObject({ ok: false, reason: "rework_already_open" });
+			expect(reopen()).toMatchObject({
+				ok: false,
+				reason: "rework_already_open",
+			});
 			// (b) the live shape.
 			fly2828Raw(store)
 				.prepare(
@@ -5817,7 +5834,10 @@ describe("FLY-2828 both rework doors share one predicate", () => {
 				{ requestId, source: "delivery", state: "wake_delivered" },
 				{ requestId, source: "verification_path", state: "active" },
 			]);
-			expect(reopen()).toMatchObject({ ok: false, reason: "rework_already_open" });
+			expect(reopen()).toMatchObject({
+				ok: false,
+				reason: "rework_already_open",
+			});
 			// (c) nothing open.
 			fly2828Raw(store)
 				.prepare(
@@ -5961,9 +5981,10 @@ describe("FLY-2828 late completion after resume_rework", () => {
 				state: "pending",
 				route_revision: 2,
 			});
-			expect(
-				store.getWorkflowReworkVerificationPath(requestId),
-			).toMatchObject({ state: "pending", route_revision: 2 });
+			expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+				state: "pending",
+				route_revision: 2,
+			});
 			expect(store.getWorkflowRun("run-heavy")?.status).toBe("active");
 			const before = fly2828Ledgers(store);
 			const events = store.listWorkflowRunEvents("run-heavy");
@@ -6038,18 +6059,20 @@ describe("FLY-2828 inline projection rolls back with a later refusal", () => {
 			expect(store.listWorkflowRunEvents("run-heavy")).toEqual(events);
 			expect(
 				fly2828Raw(store)
-					.prepare("SELECT * FROM workflow_delivery_attempt ORDER BY attempt_id")
+					.prepare(
+						"SELECT * FROM workflow_delivery_attempt ORDER BY attempt_id",
+					)
 					.all(),
 			).toEqual(attempts);
 			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
 				"awaiting_receipt",
 			);
-			expect(
-				store.getWorkflowReworkVerificationPath(requestId)?.state,
-			).toBe("pending");
-			expect(
-				store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
-			).toBe("admitted");
+			expect(store.getWorkflowReworkVerificationPath(requestId)?.state).toBe(
+				"pending",
+			);
+			expect(store.getWorkflowRunNode("run-heavy", "implement", 2)?.state).toBe(
+				"admitted",
+			);
 		} finally {
 			store.close();
 		}

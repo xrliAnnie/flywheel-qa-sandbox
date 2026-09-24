@@ -1398,9 +1398,9 @@ describe("FLY-1423 capability-level rework flow", () => {
 				reason: "stale_delivery_owner",
 			});
 			expect(completion).toMatchObject({ ok: true, idempotentReplay: false });
-			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject(
-				{ state: "completed" },
-			);
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "completed",
+			});
 			const receiptEvent = store
 				.listWorkflowRunEvents("run-e2e")
 				.find((event) => event.kind === "rework_delivery_wake_delivered");
