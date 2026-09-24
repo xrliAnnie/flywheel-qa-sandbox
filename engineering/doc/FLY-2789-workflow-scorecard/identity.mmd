@@ -1,0 +1,18 @@
+erDiagram
+ ISSUE ||--o{ RUN : "可重派"
+ RUN ||--o{ ACTIVATION : "每节点每次执行"
+ EXECUTION ||--o{ ACTIVATION : "原体可接返工"
+ ACTIVATION ||--o{ TURN : "开始时冻结归属"
+ TURN ||--o{ USAGE : "原始用量去重"
+ RUN ||--o{ VERDICT : "正式判决"
+ ISSUE {
+  string issue_id "一张单"
+ }
+ ACTIVATION {
+  string activation_id "一次节点执行"
+  string group_receipt "原分组回执"
+ }
+ USAGE {
+  string source_id "来源编号"
+  int tokens "统一计数"
+ }

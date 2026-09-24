@@ -7,6 +7,7 @@
  * own suites; real-daemon behavior is the V5 (529) real-machine acceptance.
  */
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -253,6 +254,45 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		releaseTmux({ stdout: "tmux 3.4" });
 		await expect(healthPromise).resolves.toMatchObject({ healthy: true });
 		expect(calls).toEqual(["tmux", "codex"]);
+	});
+
+	it("FLY-2789 imports the final Codex rollout before retiring its home", async () => {
+		const events: Array<
+			Parameters<
+				NonNullable<AdapterExecutionContext["onWorkflowUsageEvent"]>
+			>[0]
+		> = [];
+		runtime = new FakeRuntime(async (input) => {
+			const home = capturedOpts!.codexHomes[0]!;
+			const sessions = join(home, "sessions");
+			mkdirSync(sessions, { recursive: true });
+			const source = join(sessions, `rollout-${THREAD_ID}.jsonl`);
+			writeFileSync(
+				source,
+				`${JSON.stringify({ type: "session_meta", payload: { id: THREAD_ID } })}\n`,
+			);
+			input.onThreadReady?.(THREAD_ID, 0);
+			appendFileSync(
+				source,
+				`${JSON.stringify({ type: "turn_context", timestamp: "2026-09-23T00:00:00.000Z", payload: { turn_id: "turn-1", model: "gpt-6-sol" } })}\n`,
+			);
+			return complete();
+		});
+
+		const result = await makeAdapter().execute(
+			ctx({
+				workflowActivationId: "activation-1",
+				onWorkflowUsageEvent: (event) => events.push(event),
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(events.map((event) => event.kind)).toEqual(["bind", "import"]);
+		expect(events[1]).toMatchObject({
+			nativeSessionId: THREAD_ID,
+			activationId: "activation-1",
+			final: true,
+		});
 	});
 
 	beforeEach(() => {

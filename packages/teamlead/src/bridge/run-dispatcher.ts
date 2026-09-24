@@ -628,6 +628,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			raw: null,
 		}),
 		protected prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
+		protected workflowUsageRecorder?: BlueprintContext["onWorkflowUsageEvent"],
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -1029,6 +1030,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			}
 			const ctx: BlueprintContext = {
 				beforeCodexDaemonStart: this.beforeCodexDaemonStart,
+				onWorkflowUsageEvent: this.workflowUsageRecorder,
 				teamName: "eng",
 				// FLY-1255: phase/model identity is composed once from the resolved spawn.
 				runnerName: runnerDisplayName(
@@ -1388,6 +1390,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		admissionCrossingBarrier?: AdmissionCrossingBarrier,
 		skillFrameworkModeControl?: () => FlagStoreRawValue,
 		prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
+		workflowUsageRecorder?: BlueprintContext["onWorkflowUsageEvent"],
 	) {
 		super(
 			blueprintsByProject,
@@ -1406,6 +1409,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			admissionCrossingBarrier,
 			skillFrameworkModeControl,
 			prelaunchWorkflowTurnGrant,
+			workflowUsageRecorder,
 		);
 	}
 
@@ -1749,6 +1753,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 			const ctx: BlueprintContext = {
 				beforeCodexDaemonStart: this.beforeCodexDaemonStart,
+				onWorkflowUsageEvent: this.workflowUsageRecorder,
 				teamName: "eng",
 				// FLY-1255: fresh starts use the same phase/model composition as retries.
 				runnerName: runnerDisplayName(

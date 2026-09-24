@@ -753,6 +753,12 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.bridgeIngestToken) {
 			appendPaneEnv("FLYWHEEL_INGEST_TOKEN", ctx.bridgeIngestToken);
 		}
+		if (ctx.workflowActivationId) {
+			appendPaneEnv(
+				"FLYWHEEL_WORKFLOW_ACTIVATION_ID",
+				ctx.workflowActivationId,
+			);
+		}
 		if (ctx.workflowSubmissionCredential) {
 			appendPaneEnv(
 				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
@@ -1278,6 +1284,37 @@ export class TmuxAdapter implements IAdapter {
 					// A controller race after physical retirement must not rewrite success.
 				}
 			}
+			if (ctx.workflowActivationId && ctx.onWorkflowUsageEvent) {
+				try {
+					const providerHome =
+						process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+					const projectSlug = realpathSync(ctx.cwd).replace(
+						/[^a-zA-Z0-9]/g,
+						"-",
+					);
+					ctx.onWorkflowUsageEvent({
+						kind: "import",
+						vendor: "claude",
+						executionId: ctx.executionId,
+						activationId: ctx.workflowActivationId,
+						nativeSessionId: claudeSessionId,
+						providerHome,
+						sourcePath: join(
+							providerHome,
+							"projects",
+							projectSlug,
+							`${claudeSessionId}.jsonl`,
+						),
+						at: new Date().toISOString(),
+						final: true,
+						allowBootstrap: true,
+					});
+				} catch (error) {
+					console.warn(
+						`[TmuxAdapter] workflow usage import failed (ignored): ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
 		}
 
 		return {
@@ -1499,10 +1536,32 @@ export class TmuxAdapter implements IAdapter {
 				: ctx.runnerMemory?.status === "disabled"
 					? { autoMemoryEnabled: false }
 					: undefined;
+		const usageSettings = ctx.workflowActivationId
+			? {
+					hooks: {
+						UserPromptSubmit: [
+							{
+								hooks: [
+									{
+										type: "command",
+										command:
+											'node "$FLYWHEEL_COMM_CLI" workflow-usage-source --event turn-start',
+										timeout: 10,
+									},
+								],
+							},
+						],
+					},
+				}
+			: undefined;
 		args.push(
 			"--settings",
 			JSON.stringify(
-				buildNonLeadClaudeSettings({ enabledPlugins }, memorySettings),
+				buildNonLeadClaudeSettings(
+					{ enabledPlugins },
+					memorySettings,
+					usageSettings,
+				),
 			),
 		);
 		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.

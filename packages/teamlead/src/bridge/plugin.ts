@@ -100,6 +100,7 @@ import {
 	classifyDetection,
 	makeSubscriptionDetectionClassifier,
 } from "../account-heal/detection-classifier.js";
+import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
 import {
 	type ApplyTransitionOpts,
@@ -107,6 +108,12 @@ import {
 } from "../applyTransition.js";
 import { confirmStandingAuthorityCandidate } from "../bin/standing-authority-activation-store.js";
 import { resolveStandingAuthorityStateDir } from "../bin/standing-authority-confirmation-ledger.js";
+import { observeClaudeAccountDetails } from "../claude-quota/account-detail-observer.js";
+import {
+	defaultClaudeAccountDetailStorePath,
+	readClaudeAccountDetailStore,
+	writeClaudeAccountDetailStore,
+} from "../claude-quota/account-detail-store.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
@@ -2478,6 +2485,11 @@ export function createBridgeApp(
 			}),
 		);
 	if (!config.ingestToken) {
+		app.post("/api/workflow/usage-source", (_req, res) => {
+			res
+				.status(503)
+				.json({ ok: false, reason: "bridge ingest token not configured" });
+		});
 		app.post("/api/workflow/evidence-run", (_req, res) => {
 			res.status(503).json({
 				ok: false,
@@ -2485,6 +2497,41 @@ export function createBridgeApp(
 			});
 		});
 	} else {
+		app.post(
+			"/api/workflow/usage-source",
+			tokenAuthMiddleware(config.ingestToken),
+			(req, res) => {
+				const body = (req.body ?? {}) as Record<string, unknown>;
+				const value = (key: string) =>
+					typeof body[key] === "string" ? String(body[key]).trim() : "";
+				const executionId = value("execution_id");
+				const activationId = value("activation_id");
+				const sessionId = value("session_id");
+				const sourcePath = value("transcript_path");
+				if (
+					body.event !== "turn-start" ||
+					!executionId ||
+					!activationId ||
+					!sessionId ||
+					!sourcePath
+				) {
+					res.status(400).json({ ok: false, reason: "invalid_request" });
+					return;
+				}
+				const result = store.workflowScorecard.importUsageSource({
+					vendor: "claude",
+					nativeSessionId: sessionId,
+					executionId,
+					activationId,
+					providerHome:
+						process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+					sourcePath,
+					final: false,
+					allowBootstrap: true,
+				});
+				res.status(result.ok ? 200 : 409).json(result);
+			},
+		);
 		app.post(
 			"/api/workflow/evidence-run",
 			tokenAuthMiddleware(config.ingestToken),
@@ -8812,12 +8859,13 @@ export async function startBridge(
 	);
 	await codexQuotaMaintenance.bootstrap();
 
-	// FLY-2688: on-demand Codex account readings for the account quota page.
-	// Single-flight, never scheduled, and skipped entirely for accounts a live
-	// Codex process is using — one refresh token cannot be shared.
+	// FLY-2688 / FLY-2807: on-demand account readings for the account quota page.
+	// Single-flight and never scheduled. Live Codex accounts use the direct
+	// readonly WHAM path, which never shares or rotates their refresh token.
 	// Same path the capacity snapshot reads by default; derived once so the
 	// writer and the reader cannot drift.
 	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
+	const claudeAccountDetailStorePath = defaultClaudeAccountDetailStorePath();
 	let codexAccountQuotaRefresh:
 		| Promise<{ generatedAt: string; accountCount: number }>
 		| undefined;
@@ -8831,26 +8879,48 @@ export async function startBridge(
 			const abort = new AbortController();
 			const ceiling = setTimeout(() => abort.abort(), 90_000);
 			try {
-				const runtime = codexQuotaRuntime;
-				if (!runtime) throw new Error("codex_quota_runtime_unavailable");
-				const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
-				const store = await observeCodexAccounts({
-					profilesRoot: codexQuotaProfilesRoot,
-					canonicalAuthPath: join(canonicalHome, "auth.json"),
-					workspaceRoot: join(codexQuotaStateRoot, "accounts-page-candidates"),
-					binary: rawCodexBin(),
-					pool: getCodexQuotaAccountPool,
-					limitId: "codex",
-					previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
-					signal: abort.signal,
-					// Re-read per slot: a Lead can launch mid-round.
-					refreshInUse: () => runtime.accountInUseGuard(),
-				});
-				writeCodexAccountQuotaStore(codexAccountQuotaStorePath, store);
-				return {
-					generatedAt: store.generatedAt,
-					accountCount: store.accounts.length,
-				};
+				const [codexResult, claudeResult] = await Promise.allSettled([
+					(async () => {
+						const runtime = codexQuotaRuntime;
+						if (!runtime) throw new Error("codex_quota_runtime_unavailable");
+						const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
+						const store = await observeCodexAccounts({
+							profilesRoot: codexQuotaProfilesRoot,
+							canonicalAuthPath: join(canonicalHome, "auth.json"),
+							workspaceRoot: join(
+								codexQuotaStateRoot,
+								"accounts-page-candidates",
+							),
+							binary: rawCodexBin(),
+							pool: getCodexQuotaAccountPool,
+							limitId: "codex",
+							previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+							signal: abort.signal,
+							// Re-read per slot: a Lead can launch mid-round.
+							refreshInUse: () => runtime.accountInUseGuard(),
+						});
+						writeCodexAccountQuotaStore(codexAccountQuotaStorePath, store);
+						return {
+							generatedAt: store.generatedAt,
+							accountCount: store.accounts.length,
+						};
+					})(),
+					(async () => {
+						const store = await observeClaudeAccountDetails({
+							profilesRoot:
+								config.capacityProbes?.claudeProfilesDir ??
+								defaultMachinePoolDir(),
+							previous: readClaudeAccountDetailStore(
+								claudeAccountDetailStorePath,
+							),
+							signal: abort.signal,
+						});
+						writeClaudeAccountDetailStore(claudeAccountDetailStorePath, store);
+					})(),
+				]);
+				if (codexResult.status === "rejected") throw codexResult.reason;
+				if (claudeResult.status === "rejected") throw claudeResult.reason;
+				return codexResult.value;
 			} finally {
 				clearTimeout(ceiling);
 				codexAccountQuotaRefresh = undefined;

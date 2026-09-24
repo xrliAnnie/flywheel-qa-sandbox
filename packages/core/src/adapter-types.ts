@@ -127,6 +127,19 @@ export interface AdapterSession {
 // AdapterExecutionContext — Execution parameters
 // ---------------------------------------------------------------------------
 
+export type WorkflowUsageLifecycleEvent = {
+	kind: "bind" | "import";
+	vendor: "claude" | "codex";
+	executionId: string;
+	activationId: string;
+	nativeSessionId: string;
+	providerHome: string;
+	sourcePath: string;
+	at: string;
+	final?: boolean;
+	allowBootstrap?: boolean;
+};
+
 /**
  * Context passed to `IAdapter.execute()` and `IAdapter.startSession()`.
  *
@@ -419,6 +432,8 @@ export interface AdapterExecutionContext {
 	 * The adapter (claude-runner) never directly depends on StateStore (teamlead).
 	 */
 	onHeartbeat?: (executionId: string) => void;
+	/** Trusted in-process scorecard source boundary; failures never stop the runner. */
+	onWorkflowUsageEvent?: (event: WorkflowUsageLifecycleEvent) => void;
 
 	/**
 	 * FLY-116: fired by TmuxAdapter immediately after `tmux new-window` returns

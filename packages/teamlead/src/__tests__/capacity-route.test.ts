@@ -403,7 +403,7 @@ describe("GET /api/accounts-page.html", () => {
 		expect(html).toContain('<td class="identity">shopping');
 		expect(html).not.toContain('<span class="active">');
 		expect(html).toContain("weekly");
-		expect(html).toContain("fable");
+		expect(html).toContain("充值卡");
 		expect(html).toContain("订阅档位：Max 20x");
 		expect(html).toContain("订阅档位：未知");
 		expect(html).toContain("无数值源");
@@ -610,8 +610,8 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 		).text();
 
 		expect(html).toContain("机器读数 · account/rateLimits/read");
-		expect(html).toContain("credits / 重置兑换");
-		expect(html).toContain("余额 0 · 重置兑换未暴露");
+		expect(html).toContain("兑换卡");
+		expect(html).toContain("兑换卡未暴露");
 		expect(html).toContain('<td class="identity">personal2');
 		expect(html).toContain("打满 · 恢复 09-18 22:00 PT");
 		expect(html).toContain("exhausted-account");
