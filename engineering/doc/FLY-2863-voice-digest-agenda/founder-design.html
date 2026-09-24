@@ -1,0 +1,180 @@
+<title>进房对话样稿</title>
+<style>
+:root{
+  --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#6e6e73; --faint:#86868b; --line:#e5e5ea;
+  --navy:#1a365d; --blue:#007aff; --green:#34c759; --amber:#ff9500; --red:#ff3b30; --purple:#af52de;
+  --raya:#eef3fb; --her:#f2f2f4; --note:#fbf7ee;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;padding-inline:16px;padding-block:28px 56px}
+main{max-width:960px;margin:0 auto;display:grid;gap:22px}
+header{display:grid;gap:8px;padding-block:8px 4px}
+.eyebrow{font-size:12px;letter-spacing:.06em;color:var(--faint);text-transform:uppercase}
+.eyebrow code{font-family:"SF Mono",ui-monospace,monospace;color:var(--navy);letter-spacing:0}
+h1{font-size:30px;line-height:1.25;margin:0;text-wrap:balance}
+h2{font-size:19px;margin:0 0 12px;text-wrap:balance}
+h3{font-size:15px;margin:0 0 6px}
+p{margin:0}
+.lede{color:var(--dim);max-width:62ch}
+.badge{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#fff3e0;color:#9a5b00;justify-self:start}
+section.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:22px 22px 20px}
+.card.blue{border-left:4px solid var(--blue)} .card.green{border-left:4px solid var(--green)}
+.card.amber{border-left:4px solid var(--amber)} .card.red{border-left:4px solid var(--red)}
+.card.purple{border-left:4px solid var(--purple)} .card.navy{border-left:4px solid var(--navy)}
+.muted{color:var(--dim)}
+.small{font-size:13px}
+code,.mono{font-family:"SF Mono",ui-monospace,monospace;font-size:.9em}
+
+/* 对话 */
+.scene{display:grid;gap:10px;margin-top:6px}
+.scene-label{font-size:12px;letter-spacing:.05em;color:var(--faint);margin-top:14px;text-transform:uppercase}
+.scene-label:first-child{margin-top:0}
+.turn{display:grid;grid-template-columns:64px 1fr;gap:12px;align-items:start}
+.who{font-size:12px;color:var(--faint);padding-top:10px;text-align:right}
+.who b{display:block;color:var(--ink);font-size:13px}
+.bubble{border-radius:12px;padding:10px 14px;max-width:62ch}
+.raya .bubble{background:var(--raya)}
+.her .bubble{background:var(--her)}
+.sys{grid-template-columns:64px 1fr}
+.sys .bubble{background:transparent;border:1px dashed var(--line);color:var(--dim);font-size:13px;padding:8px 12px}
+.sys .bubble b{color:var(--ink);font-weight:600}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;margin-right:6px;vertical-align:1px}
+.tag.q{background:#e8f1ff;color:#0a56c2} .tag.u{background:#ffe9e7;color:#b3261e} .tag.h{background:#e7f7ec;color:#1c7a3a} .tag.p{background:#f4e9fa;color:#7a2fa0}
+
+/* 表 */
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--faint);font-weight:600;letter-spacing:.03em}
+td.yes{color:#1c7a3a;font-weight:600;white-space:nowrap} td.no{color:var(--faint);white-space:nowrap}
+
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.box{background:var(--bg);border-radius:10px;padding:14px 16px;display:grid;gap:6px}
+ul{margin:0;padding-left:1.2em;display:grid;gap:4px}
+.ask{display:grid;gap:14px;counter-reset:q}
+.ask li{list-style:none;display:grid;grid-template-columns:28px 1fr;gap:10px;align-items:start}
+.ask{padding:0}
+.ask li::before{counter-increment:q;content:counter(q);width:24px;height:24px;border-radius:50%;background:var(--navy);color:#fff;font-size:13px;display:grid;place-items:center;margin-top:2px}
+.def{color:var(--dim);font-size:13px}
+.voice{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px;background:#fff}
+.chip b{font-family:"SF Mono",ui-monospace,monospace;font-weight:600;color:var(--navy)}
+footer{color:var(--faint);font-size:12px;text-align:center}
+@media (max-width:520px){
+  h1{font-size:24px}
+  .turn{grid-template-columns:1fr;gap:4px}
+  .who{text-align:left;padding-top:0}
+  .who b{display:inline;margin-right:6px}
+  section.card{padding:18px 16px}
+}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow"><code>FLY-2863</code> · 语音 V7 · 设计稿</div>
+  <h1>进房以后，Raya 会这样跟你说</h1>
+  <p class="lede">只说要你动手的三类事：Lead 主动跟你说的话、待批的单、受阻的单。由 Lead 自己想清楚再开口，一件一件跟你过。你拍了这件，它就结束，再说下一件。声音统一用 GPT 声线，不再用合成音。</p>
+  <span class="badge">设计稿，代码还没写。等 FLY-2796 和 FLY-2798 合入以后再动手。</span>
+</header>
+
+<section class="card blue">
+  <h2>一段示例对话（耳机模式）</h2>
+  <p class="muted small">场景是编的：手上有两张待批、一张受阻。单号借用你举的例子，<b>对话里的数字和结论也都是编的</b>，不代表这些单现在的真实状态。虚线框里是后台正在发生的事，你听不到。</p>
+
+  <div class="scene">
+    <div class="scene-label">你进房</div>
+    <div class="turn sys"><div class="who">后台</div><div class="bubble">模式层取出三件：<b>2796 受阻</b>、<b>2798 待批</b>、<b>2801 待批</b>。中间还有七条「进入实现段」「QA 重跑」之类的状态变化，<b>一条都不播</b>。三件交给 Raya，由她自己决定先说哪件。</div></div>
+    <div class="turn raya"><div class="who"><b>Raya</b>耳机</div><div class="bubble">嗨，有三件事要你拍一下：一件卡住了要你授权，两件做完了等你批。我先说卡住的那件，最快。</div></div>
+    <div class="turn raya"><div class="who"><b>Raya</b></div><div class="bubble">二七九六提单的时候卡住了。它要往生产配置里写一个新字段，这一步得你点头。我这边都准备好了，你说行，我就让它继续。</div></div>
+    <div class="turn her"><div class="who"><b>你</b></div><div class="bubble">行，授权。</div></div>
+    <div class="turn sys"><div class="who">后台</div><div class="bubble">你这句话连同「当前在说 2796」一起交给 Raya，由 Raya 去执行授权，然后把这一件标成<b>已结束</b>。</div></div>
+
+    <div class="scene-label">下一件</div>
+    <div class="turn raya"><div class="who"><b>Raya</b></div><div class="bubble">好，二七九六放行了。下一件，二七九八，语音引擎 A，做完了等你批。QA 在真房里跑了十次简单问答，最慢一次一点八秒；复杂的问题都真的交给了 Lead，也拿到了回复。有一处要你知道：打断以后重连，大概要多等一秒。你想直接批，还是先看一眼设计卡？卡片我已经发到 thread 里了。</div></div>
+    <div class="turn sys"><div class="who">后台</div><div class="bubble">这时又来了一张待批 <b>2805</b>。它<b>排到队尾</b>，Raya 不提。</div></div>
+    <div class="turn her"><div class="who"><b>你</b></div><div class="bubble">那一秒是每次打断都会有吗？</div></div>
+    <div class="turn raya"><div class="who"><b>Raya</b></div><div class="bubble">每次打断都会有，因为要重新连一次；不打断就没有。</div></div>
+    <div class="turn her"><div class="who"><b>你</b></div><div class="bubble">可以，批吧。</div></div>
+
+    <div class="scene-label">来了一件急事</div>
+    <div class="turn sys"><div class="who">后台</div><div class="bubble">Tadashi 在主频道发了一条标为 <b>紧急（生产挂了）</b> 的消息。模式层等 Raya 这句话说完、你也没在说话，才让它插进来。</div></div>
+    <div class="turn raya"><div class="who"><b>Raya</b></div><div class="bubble"><span class="tag u">插播</span>插一句急的：Tadashi 说 Bridge 刚才挂了，他已经在重启，大概五分钟。不用你做什么，只是让你知道。</div></div>
+    <div class="turn raya"><div class="who"><b>Raya</b></div><div class="bubble">回到刚才的事。二七九八我记下你批了，批准按钮在 thread 顶上，你有空点一下就行。还剩两件：二八零一，还有刚进来的二八零五，都是等你批的。先说二八零一……</div></div>
+
+    <div class="scene-label">过了十分钟，谁都没说话</div>
+    <div class="turn raya"><div class="who"><b>Raya</b></div><div class="bubble"><span class="tag h">报平安</span>我还在。二八零五还等你，不急，你忙完再说。</div></div>
+  </div>
+</section>
+
+<section class="card green">
+  <h2>只播这三类</h2>
+  <p class="muted small" style="margin-bottom:10px">判断依据和 thread 标题、固定页是同一套代码，不另写一套规则。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>这类消息</th><th>播吗</th><th>怎么判断</th></tr></thead>
+    <tbody>
+      <tr><td>Lead 在自己主频道里主动对你说的话</td><td class="yes">播</td><td>Lead 本人发的，不带「🤖[自动]」前缀。你已经在那个频道回过话的，不再播</td></tr>
+      <tr><td>thread 标题是「🔔 ⏳待批」的单</td><td class="yes">播</td><td>和标题同一个判定</td></tr>
+      <tr><td>thread 标题是「🔴受阻」的单</td><td class="yes">播</td><td>和标题同一个判定</td></tr>
+      <tr><td>标题是「要你答」的单</td><td class="yes">播</td><td>算作「Lead 主动说的」（见文末第 3 个问题）</td></tr>
+      <tr><td>规划、设计审、实现中、QA、代码审、PR 已开、完成</td><td class="no">不播</td><td>你平时也跳过的那些状态变化</td></tr>
+      <tr><td>thread 里的回执、告警、站会、带「🤖[自动]」的消息</td><td class="no">不播</td><td>它们都是自动发的</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="card purple">
+  <h2>它是怎么「想过再说」的</h2>
+  <div class="two">
+    <div class="box"><h3>话由 Lead 想</h3><p class="small">每一件连同材料（QA 报告、设计卡、thread）交给 Lead 本人。Lead 读完以后写出要说的话：先讲清要你做什么（授权、批、改，还是看一眼），待批的顺带讲 QA 和测试，或者问你要不要看设计卡。耳机模式由 Raya 来想，会议模式由那个 Lead 来想。</p></div>
+    <div class="box"><h3>念的就是 Lead 的原话</h3><p class="small">不念 plan、不念列表、不念网址和状态流水。前台模型不转述，所以不会念走样。Lead 写得太长或者像清单，系统会退回去让它重写一次。</p></div>
+    <div class="box"><h3>你拍了，这件就结束</h3><p class="small">一件结束有两种情况：Lead 告诉系统「她拍了」或「她说回头再看」；或者这张单的标题已经不是待批或受阻了。「回头再看」的事，这一场不再提。</p></div>
+  </div>
+</section>
+
+<section class="card amber">
+  <h2>排队，和什么才算急</h2>
+  <ul>
+    <li>同一时间只聊一件。这件没结束，就不开下一件。</li>
+    <li>开场那一批的先后，由 Lead 决定；之后新来的，一律排到队尾。</li>
+    <li>你在说话、或者它这句还没说完的时候，不会插进来。</li>
+    <li>你中途问别的事，它先回答你；隔几秒没有新话，再把你带回刚才那件。</li>
+  </ul>
+  <h3 style="margin-top:14px">只有这两种能插播，其余一律排队</h3>
+  <div class="two">
+    <div class="box"><p class="small"><b>① Lead 明确标了「紧急」，并且写明原因。</b>原因只能是以下几种之一：生产挂了、有丢数据的风险、安全问题、一小时内有硬截止、你之前说过「这件一有结果就打断我」。没写原因，或者原因不在这几种里，都不算紧急。</p></div>
+    <div class="box"><p class="small"><b>② Linear 优先级是 Urgent 的单卡住了。</b>每次插播都会留一条记录，写明是因为什么插进来的，事后可以查。</p></div>
+  </div>
+</section>
+
+<section class="card red">
+  <h2>10 分钟没说话，报个平安</h2>
+  <p class="small">你和它都 10 分钟没出声，它会说一两句：可能是报个平安，可能是随口聊两句；如果有事还在等你，会轻轻提一句「不急」。不会借这个机会念一遍状态。10 分钟是你定的，之后想改只要改一个数。Lead 一时想不出话的时候，会用同一个声音说「我还在，没卡住」。</p>
+</section>
+
+<section class="card navy">
+  <h2>声音</h2>
+  <p class="small">上次你听到的另一个声音，是微软的合成音 edge-tts，专门用来照稿念 Lead 的原话。这次换成 OpenAI 的同款声线来照稿念，前台回答你时也用同一个声线，所以全程是同一个人。edge-tts 在这两个模式里会被直接禁用，配错了程序不会启动。</p>
+  <div class="voice">
+    <span class="chip">耳机模式 → Raya → <b>marin</b></span>
+    <span class="chip">会议模式 → 你在跟谁聊，就用谁的声线</span>
+  </div>
+  <p class="small muted" style="margin-top:12px">⚠️ 查配置时发现一件事：现在线上 17 个 Lead <b>全都是 marin</b>。你 8 月 21 日分配过的 Tadashi 用 verse、Honey Lemon 用 alloy，一直没写进配置。</p>
+</section>
+
+<section class="card amber">
+  <h2>一处要先说清的差距</h2>
+  <p class="small">你说「好，批」以后，这件事在对话里就结束了，Lead 会去执行。但<b>用嘴批 ship</b>这条路现在还没做（它在耳机模式第二批里）。在它做好之前，待批的单 Lead 会说「我记下你批了，你在 thread 里点一下就行」，这张单会一直挂着，直到你点了按钮。授权、改需求这类事，Lead 按你说的直接去办。</p>
+</section>
+
+<section class="card purple">
+  <h2>需要你拍板的三件事</h2>
+  <ol class="ask">
+    <li><div><b>耳机模式用 marin 对吗？</b><p class="def">你 8 月给的声线表写的是 marin 给「主管 Lead」。我理解主管 Lead 就是 Raya，但表上没写 Raya 这个名字，所以想跟你确认一下。</p></div></li>
+    <li><div><b>Tadashi 用 verse、Honey Lemon 用 alloy，现在就写进配置吗？其他 Lead 在你挑之前先用 marin，可以吗？</b><p class="def">剩下的七个声线你还没分配。按你说过的规则，男性 Lead 用男声，挑的时候对照那张性格表就行，不用重新试听。</p></div></li>
+    <li><div><b>thread 标题上的「要你答」，算不算「Lead 主动跟你说的」？</b><p class="def">它是 Lead 在 thread 里问你的问题。我默认算进去，和主频道的消息一起去重。</p></div></li>
+  </ol>
+</section>
+
+<footer>FLY-2863 · 设计文档 engineering/doc/FLY-2863-voice-digest-agenda/ · 2026-09-24</footer>
+</main>
