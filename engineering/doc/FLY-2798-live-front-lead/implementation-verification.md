@@ -11,7 +11,7 @@ Issue: FLY-2798 (https://linear.app/geoforge3d/issue/FLY-2798/语音v4-引擎-a�
 - `voice-codex vitest related`：3 文件 17/17，通过。
 - `teamlead vitest related` 首轮扩大到 Bridge 依赖图，143/144 文件、1830/1831 测试通过；唯一红项证明普通 HTTP body 可伪造 `deliveryContext`。保留该 hard-red，修为“鉴权 Bridge 适配层提升到可信 envelope，核心 handler 不信 body”，对应聚焦回归 4 文件 44/44 通过；最终 related 复跑 147 文件、1858/1858 通过。
 - `pnpm exec biome check`（本次涉及的 8 个 teamlead 文件）：零 error；仅 `plugin.ts:6117-6118` 两个既存 `useConst` warning，与本次 diff 无关。
-- 根 `pnpm lint`：失败，5 errors / 25 warnings 均在本 issue diff 外（既存 research/release/replay/sync/model-authority 文件）；未扩大范围修改。本次涉及文件的定向 Biome 检查无 error。
+- 根 `pnpm lint`：首次在同步 main 前失败，5 errors / 25 warnings 均在本 issue diff 外；未扩大范围修改。同步当前 main 后于合并头重跑，5232 files、0 errors、25 warnings、exit 0。本次涉及文件的定向 Biome 检查也无 error。
 - `git diff --check`：通过。
 
 ## Consumer discovery 与选择
