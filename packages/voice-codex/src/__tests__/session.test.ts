@@ -39,7 +39,7 @@ function fixture(options?: {
 	founderPresent?: boolean;
 	playSpeech?: (speechId: string, pcm: Buffer) => Promise<void>;
 	roomIO?: RoomIO;
-	createHeadphoneSession?: () => {
+	createHeadphoneSession?: (control: { fail(reason: string): void }) => {
 		start(): Promise<void>;
 		close(): Promise<void>;
 		speak?(
@@ -85,8 +85,10 @@ function fixture(options?: {
 		},
 		...(options?.createHeadphoneSession
 			? {
-					createHeadphoneSession: (_room: RoomIO) =>
-						options.createHeadphoneSession!(),
+					createHeadphoneSession: (
+						_room: RoomIO,
+						control: { fail(reason: string): void },
+					) => options.createHeadphoneSession!(control),
 				}
 			: {}),
 		lifecycle,
@@ -106,7 +108,7 @@ function fixture(options?: {
 }
 
 describe("GenericVoiceSession", () => {
-	it("starts and closes an injected headphone V1 session on the canonical RoomIO", async () => {
+	it("starts the injected headphone V1 session only once the founder is present and live", async () => {
 		const roomIO = {} as RoomIO;
 		const headphone = {
 			start: vi.fn(async () => undefined),
@@ -118,9 +120,72 @@ describe("GenericVoiceSession", () => {
 		});
 
 		await test.session.start();
+		expect(headphone.start).not.toHaveBeenCalled();
+		await test.session.markLive();
+		expect(test.lifecycle).toHaveBeenLastCalledWith("live");
 		expect(headphone.start).toHaveBeenCalledOnce();
 		await test.session.stop();
 		expect(headphone.close).toHaveBeenCalledOnce();
+	});
+
+	it("never briefs or drains the headphone inbox when the founder never arrives", async () => {
+		const headphone = {
+			start: vi.fn(async () => undefined),
+			close: vi.fn(async () => undefined),
+		};
+		const test = fixture({
+			roomIO: {} as RoomIO,
+			founderPresent: false,
+			createHeadphoneSession: () => headphone,
+		});
+
+		await test.session.start();
+		await expect(test.session.waitForFounder(1)).resolves.toBe(false);
+		await test.session.stop({ kind: "ended", reason: "no_human" });
+		expect(headphone.start).not.toHaveBeenCalled();
+		expect(headphone.close).toHaveBeenCalledOnce();
+	});
+
+	it("ends the session visibly when the headphone session fails to start after going live", async () => {
+		const headphone = {
+			start: vi.fn(async () => {
+				throw new Error("openai live unavailable");
+			}),
+			close: vi.fn(async () => undefined),
+		};
+		const test = fixture({
+			roomIO: {} as RoomIO,
+			createHeadphoneSession: () => headphone,
+		});
+		await test.session.start();
+		await test.session.markLive();
+
+		await expect(test.session.waitForEnd()).resolves.toEqual({
+			kind: "failed",
+			reason: "headphone_start_failed",
+		});
+	});
+
+	it("ends the session when the Engine A face reports itself unavailable", async () => {
+		let control!: { fail(reason: string): void };
+		const test = fixture({
+			roomIO: {} as RoomIO,
+			createHeadphoneSession: (sessionControl) => {
+				control = sessionControl;
+				return {
+					start: vi.fn(async () => undefined),
+					close: vi.fn(async () => undefined),
+				};
+			},
+		});
+		await test.session.start();
+		await test.session.markLive();
+
+		control.fail("live_connection_lost");
+		await expect(test.session.waitForEnd()).resolves.toEqual({
+			kind: "failed",
+			reason: "live_connection_lost",
+		});
 	});
 
 	it("routes existing outbound narration through the selected V1 engine", async () => {

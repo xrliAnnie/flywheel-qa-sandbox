@@ -57,6 +57,7 @@ function overlaps(
 export class LiveUtteranceAssembler {
 	private readonly providers = new Map<number, ProviderGeneration>();
 	private readonly windows = new Map<string, RoomWindow>();
+	private readonly sealedWindows = new Set<string>();
 	private sequence = 0;
 
 	constructor(private readonly options: LiveUtteranceAssemblerOptions) {
@@ -255,6 +256,7 @@ export class LiveUtteranceAssembler {
 								? "overlapping_room_utterances"
 								: "delegation_not_uniquely_attributed",
 				};
+		if (candidate) this.sealedWindows.add(candidate.utteranceId);
 		const utteranceId = uniquelyBound
 			? candidate.utteranceId
 			: `unknown:${input.generation}:${input.delegationId}`;
@@ -279,6 +281,77 @@ export class LiveUtteranceAssembler {
 			final: true,
 			attribution,
 		};
+	}
+
+	/**
+	 * Seal every ended RoomIO window that has provider input transcript and was
+	 * not sealed before, oldest first. Non-delegated turns need this so the V1
+	 * utterance stream carries the founder's own words (e.g. a spoken exit
+	 * request) ahead of the frontend's answer. Attribution stays strict: a window
+	 * is known only when none of its transcript also overlaps another window.
+	 */
+	sealEndedRoomUtterances(): VoiceUtterance[] {
+		const sealed: VoiceUtterance[] = [];
+		const ended = [...this.windows.values()]
+			.filter(
+				(window): window is RoomWindow & { endedAt: number } =>
+					window.endedAt !== undefined &&
+					!this.sealedWindows.has(window.utteranceId),
+			)
+			.sort((a, b) => a.startedAt - b.startedAt);
+		for (const window of ended) {
+			const relevant: Array<{
+				generation: number;
+				start: number;
+				end: number;
+				delta: string;
+			}> = [];
+			for (const [generation, provider] of this.providers) {
+				for (const delta of provider.deltas) {
+					const start = provider.startedAt + delta.startMs;
+					const end = provider.startedAt + delta.endMs;
+					if (overlaps(start, end, window.startedAt, window.endedAt)) {
+						relevant.push({ generation, start, end, delta: delta.delta });
+					}
+				}
+			}
+			if (relevant.length === 0) continue;
+			relevant.sort((a, b) => a.start - b.start);
+			this.sealedWindows.add(window.utteranceId);
+			const shared = relevant.some((delta) =>
+				[...this.windows.values()].some(
+					(other) =>
+						other.utteranceId !== window.utteranceId &&
+						overlaps(
+							delta.start,
+							delta.end,
+							other.startedAt,
+							other.endedAt ?? Number.POSITIVE_INFINITY,
+						),
+				),
+			);
+			const attribution: VoiceAttribution = shared
+				? { kind: "unknown", reason: "overlapping_room_utterances" }
+				: window.attribution;
+			const timestamp = new Date(window.endedAt).toISOString();
+			sealed.push({
+				ts: timestamp,
+				timestamp,
+				sessionId: this.options.sessionId,
+				generation: this.options.generation,
+				sequence: ++this.sequence,
+				transcriptId: `live:${this.options.sessionId}:${this.options.generation}:${relevant[0]?.generation}:${window.utteranceId}`,
+				utteranceId: window.utteranceId,
+				backendId: this.options.backendId,
+				source: attribution.kind === "known" ? "founder" : "room",
+				face: "converse",
+				role: "user",
+				text: relevant.map((delta) => delta.delta).join(""),
+				final: true,
+				attribution,
+			});
+		}
+		return sealed;
 	}
 
 	private delegationPoint(input: LiveDelegationSeal): {

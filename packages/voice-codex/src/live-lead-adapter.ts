@@ -60,7 +60,16 @@ export interface LiveLeadAdapterOptions {
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
 	record(event: Record<string, unknown>): void;
+	/** Called once when the Live face is lost for good (resume/replacement
+	 * failed or the admitted generation died); the session must end rather than
+	 * keep a room that can no longer hear the founder. */
+	onUnavailable?(cause: LiveLeadUnavailableCause): void;
 }
+
+export type LiveLeadUnavailableCause =
+	| "live_resume_failed"
+	| "live_replace_failed"
+	| "live_connection_lost";
 
 export interface LiveLeadResultBinding {
 	sessionId: string;
@@ -110,6 +119,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	>();
 	private readonly appliedResultEvents = new Set<string>();
 	private readonly frontendTextByGeneration = new Map<number, string>();
+	private readonly emittedUserUtterances = new Set<string>();
 	private readonly roomTimelineWaiters = new Set<() => void>();
 	private readonly delegationEndTimeoutMs: number;
 	private readonly maxSuspendedInputBytes: number;
@@ -119,6 +129,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private live?: OpenAiLiveConversationSession;
 	private liveInputSuspended = false;
 	private liveInputUnavailable = false;
+	private liveFailed = false;
 	private bufferedInput: Array<{ pcm: Buffer; format: AudioFormat }> = [];
 	private bufferedInputBytes = 0;
 	private inputBufferOverflow = false;
@@ -351,16 +362,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					return;
 				this.options.speech.cancel("barge-in");
 				this.cancelFrontendSpeech();
-				if (this.liveInputSuspended) return;
+				if (this.liveInputSuspended || this.liveFailed) return;
 				this.liveInputSuspended = true;
-				void this.enqueueFace(() => this.replaceAfterBargeIn(live)).catch(
-					(error) => {
-						this.options.record({
-							kind: "live_lead_voice_unavailable",
-							message: error instanceof Error ? error.message : String(error),
-						});
-					},
-				);
+				void this.enqueueFace(() => this.replaceAfterBargeIn(live));
 			}),
 			live.on("response-started", () => this.startFrontendSpeech()),
 			live.on("response-audio", (chunk, format) =>
@@ -370,6 +374,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			live.on("response-done", () => this.endFrontendSpeech()),
 			live.on("transcript", (event) => {
 				if (event.role !== "assistant" || !event.final) return;
+				// The founder's turn precedes the answer to it in the V1 stream.
+				for (const utterance of this.assembler.sealEndedRoomUtterances())
+					this.emitUserUtterance(utterance);
 				const timestamp = new Date(this.now()).toISOString();
 				this.emitUtterance({
 					ts: timestamp,
@@ -415,6 +422,17 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				this.delegationWork.set(key, work);
 			}),
 			live.on("error", (error) => {
+				// Outside a face transition, an error that leaves no admitted
+				// generation is a lost connection, not a recoverable blip.
+				if (
+					!this.closing &&
+					!this.liveFailed &&
+					!this.liveInputSuspended &&
+					!live.effectiveCapabilities.turnCancelOrSuppress
+				) {
+					this.failLive("live_connection_lost", error);
+					return;
+				}
 				this.options.record({
 					kind: "live_lead_voice_unavailable",
 					message: error.message,
@@ -456,7 +474,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				delegationId: delegation.delegationId,
 				offsetMs: delegation.offsetMs,
 			});
-			this.emitUtterance(utterance);
+			this.emitUserUtterance(utterance);
 			if (utterance.attribution.kind !== "known" || !utterance.text) {
 				this.options.record({
 					kind: "live_lead_clarification_required",
@@ -554,6 +572,22 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	): Promise<SpeakReceipt> {
 		return (async () => {
 			const live = this.requireLive();
+			if (this.liveFailed) {
+				return {
+					pendingKey: opts.pendingKey,
+					requestDigest: digest({
+						sessionId: this.sessionId,
+						generation: this.generation,
+						text,
+						kind,
+						verification: opts.verification,
+					}),
+					outcome: "failed",
+					reason: "live_voice_unavailable",
+					transport: "none",
+					contentProof: "none",
+				} satisfies SpeakReceipt;
+			}
 			await this.suspendLive(live, "announcer-takeover");
 			try {
 				return await this.options.speech.speak(text, kind, opts);
@@ -564,10 +598,41 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	}
 
 	private async resumeLive(live: OpenAiLiveConversationSession): Promise<void> {
-		const providerGeneration = await live.resume();
+		let providerGeneration: number;
+		try {
+			providerGeneration = await live.resume();
+		} catch (error) {
+			this.failLive("live_resume_failed", error);
+			return;
+		}
 		this.assembler.startProviderGeneration(providerGeneration, this.now());
 		this.liveInputUnavailable = false;
 		this.flushBufferedInput(live);
+	}
+
+	private failLive(cause: LiveLeadUnavailableCause, error: unknown): void {
+		if (this.liveFailed || this.closing) return;
+		this.liveFailed = true;
+		this.liveInputUnavailable = true;
+		this.liveInputSuspended = false;
+		this.clearBufferedInput();
+		this.cancelFrontendSpeech();
+		this.options.record({
+			kind: "live_lead_voice_unavailable",
+			cause,
+			message: error instanceof Error ? error.message : String(error),
+		});
+		try {
+			this.options.onUnavailable?.(cause);
+		} catch (callbackError) {
+			this.options.record({
+				kind: "live_lead_unavailable_handler_failed",
+				message:
+					callbackError instanceof Error
+						? callbackError.message
+						: String(callbackError),
+			});
+		}
 	}
 
 	private async suspendLive(
@@ -589,16 +654,16 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private async replaceAfterBargeIn(
 		live: OpenAiLiveConversationSession,
 	): Promise<void> {
+		let providerGeneration: number;
 		try {
-			const providerGeneration = await live.replaceAfterBargeIn();
-			this.assembler.startProviderGeneration(providerGeneration, this.now());
-			this.liveInputUnavailable = false;
-			this.flushBufferedInput(live);
+			providerGeneration = await live.replaceAfterBargeIn();
 		} catch (error) {
-			this.liveInputSuspended = false;
-			this.clearBufferedInput();
-			throw error;
+			this.failLive("live_replace_failed", error);
+			return;
 		}
+		this.assembler.startProviderGeneration(providerGeneration, this.now());
+		this.liveInputUnavailable = false;
+		this.flushBufferedInput(live);
 	}
 
 	private async ensureLeadCue(
@@ -835,6 +900,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private clearFrontendSpeechTimer(): void {
 		if (this.frontendSpeechTimer) this.clearTimeoutFn(this.frontendSpeechTimer);
 		this.frontendSpeechTimer = undefined;
+	}
+
+	private emitUserUtterance(utterance: VoiceUtterance): void {
+		if (this.emittedUserUtterances.has(utterance.utteranceId)) return;
+		this.emittedUserUtterances.add(utterance.utteranceId);
+		this.emitUtterance(utterance);
 	}
 
 	private emitUtterance(utterance: VoiceUtterance): void {

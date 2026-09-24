@@ -12,6 +12,7 @@ import type {
 	VoiceUtterance,
 } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
+import { createEngineAHeadphoneSession } from "../engine-a-composition.js";
 import { LiveLeadAdapter } from "../live-lead-adapter.js";
 
 const PCM = { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 } as const;
@@ -182,6 +183,7 @@ function harness(
 	}> = [];
 	const utterances: VoiceUtterance[] = [];
 	const record = vi.fn();
+	const onUnavailable = vi.fn();
 	const speech = {
 		speak: vi.fn(
 			async (
@@ -254,10 +256,12 @@ function harness(
 			? {}
 			: { maxSuspendedInputMs: overrides.maxSuspendedInputMs }),
 		record,
+		onUnavailable,
 	});
 	adapter.onUtterance((utterance) => utterances.push(utterance));
 	return {
 		adapter,
+		onUnavailable,
 		live,
 		room: roomHarness,
 		handoffs,
@@ -903,5 +907,208 @@ describe("LiveLeadAdapter", () => {
 				message: "mailbox unavailable",
 			}),
 		);
+	});
+
+	it("reports the Live face unavailable when resume fails instead of wedging it suspended", async () => {
+		const h = harness({ maxSuspendedInputMs: 1 });
+		await h.adapter.open("context");
+		h.live.resume.mockRejectedValueOnce(new Error("socket connect failed"));
+
+		const first = await h.adapter.speak("播报", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		expect(first.outcome).toBe("completed");
+		expect(h.onUnavailable).toHaveBeenCalledExactlyOnceWith("live_resume_failed");
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "live_lead_voice_unavailable",
+				cause: "live_resume_failed",
+			}),
+		);
+
+		h.live.suspend.mockClear();
+		const next = await h.adapter.speak("第二条", "brief", {
+			pendingKey: "brief-2",
+			verification: "required",
+		});
+		expect(next).toMatchObject({
+			outcome: "failed",
+			reason: "live_voice_unavailable",
+		});
+		expect(h.live.suspend).not.toHaveBeenCalled();
+		for (let i = 0; i < 4; i += 1) {
+			h.room.emitFrame({
+				sessionId: "voice-session",
+				generation: 9,
+				pcm: Buffer.alloc(48),
+				format: PCM,
+				attribution: { kind: "known", speakerUserId: "founder-1" },
+			});
+		}
+		expect(h.room.io.status).not.toHaveBeenCalled();
+		expect(h.onUnavailable).toHaveBeenCalledOnce();
+	});
+
+	it("reports the Live face unavailable when the admitted generation is lost mid-session", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+
+		h.live.emit(
+			"error",
+			Object.assign(new Error("duplicate session.started"), {
+				code: "backend-protocol",
+			}),
+		);
+		expect(h.onUnavailable).not.toHaveBeenCalled();
+
+		h.live.effectiveCapabilities.turnCancelOrSuppress = false;
+		h.live.emit(
+			"error",
+			Object.assign(new Error("provider closed the active session"), {
+				code: "connection-closed",
+			}),
+		);
+		expect(h.onUnavailable).toHaveBeenCalledExactlyOnceWith(
+			"live_connection_lost",
+		);
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "live_lead_voice_unavailable",
+				cause: "live_connection_lost",
+			}),
+		);
+		h.live.emit("error", new Error("late duplicate"));
+		expect(h.onUnavailable).toHaveBeenCalledOnce();
+	});
+
+	it("emits the founder's own turn before the frontend's final caption when nothing is delegated", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-exit",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_100,
+			phase: "start",
+		});
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation: 1,
+			eventId: "exit-delta",
+			startMs: 100,
+			endMs: 200,
+			delta: "我要退出语音",
+		});
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-exit",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_250,
+			phase: "end",
+		});
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "好，退出语音模式。",
+			final: true,
+		});
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "还有别的吗",
+			final: true,
+		});
+
+		expect(
+			h.utterances.map((u) => ({ role: u.role, text: u.text })),
+		).toEqual([
+			{ role: "user", text: "我要退出语音" },
+			{ role: "assistant", text: "好，退出语音模式。" },
+			{ role: "assistant", text: "还有别的吗" },
+		]);
+		expect(h.utterances[0]).toMatchObject({
+			final: true,
+			utteranceId: "u-exit",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+	});
+
+	it("closes a real HeadphoneSession on the spoken exit sentence under Engine A", async () => {
+		const h = harness();
+		const onSpokenExit = vi.fn();
+		const session = createEngineAHeadphoneSession({
+			binding: { sessionId: "voice-session", generation: 9, leaseToken: "lease" },
+			founderUserId: "founder-1",
+			bridge: {
+				listHeadphoneItems: vi.fn(async () => []),
+				claimHeadphoneItem: vi.fn(async () => undefined),
+				ackHeadphoneClaim: vi.fn(async () => undefined),
+				getHeadphoneSourceHealth: vi.fn(async () => ({
+					healthy: true,
+					sourceGap: false,
+					sources: [],
+				})),
+				handoffToLead: vi.fn(),
+				listVoiceHandoffResults: vi.fn(async () => ({
+					events: [],
+					highWatermark: 0,
+					nextCursor: 0,
+				})),
+				subscribeReplies: vi.fn(() => () => undefined),
+			} as never,
+			room: {
+				audibleTail: () => ({
+					estimated: true as const,
+					remainingMs: 0,
+					drained: true,
+					observedAt: 0,
+					sessionId: "voice-session",
+					generation: 9,
+				}),
+			},
+			transcriptSink: h.transcriptSink as never,
+			baseInstructions: "Engine A",
+			createEngine: () => h.adapter,
+			captionSink: { caption: vi.fn() },
+			record: vi.fn(),
+			onSpokenExit,
+		});
+		await session.start();
+		const providerGeneration = h.live.providerGeneration as number;
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-exit",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_100,
+			phase: "start",
+		});
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation: providerGeneration,
+			eventId: "exit-delta",
+			startMs: 100,
+			endMs: 200,
+			delta: "我要退出语音",
+		});
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-exit",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_250,
+			phase: "end",
+		});
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "好，退出语音模式。",
+			final: true,
+		});
+
+		await vi.waitFor(() => expect(onSpokenExit).toHaveBeenCalledOnce());
+		await session.close();
 	});
 });

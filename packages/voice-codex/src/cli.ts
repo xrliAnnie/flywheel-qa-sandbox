@@ -51,7 +51,7 @@ import {
 	voiceReceiveRuntimeEvidence,
 } from "./receive-health.js";
 import { recoverPinnedVoiceSession } from "./recovery.js";
-import { GenericVoiceSession } from "./session.js";
+import { GenericVoiceSession, type HeadphoneControl } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
 import {
 	reportFatalStartupFailure,
@@ -348,7 +348,10 @@ export async function main(): Promise<void> {
 			},
 			...(engineA
 				? {
-						createHeadphoneSession: (roomIO: RoomIO) => {
+						createHeadphoneSession: (
+							roomIO: RoomIO,
+							control: HeadphoneControl,
+						) => {
 							const coreConfig = resolveVoiceCoreConfig({}, process.env);
 							const liveBackend = buildGptLiveBackend(coreConfig, {
 								apiKey: config.realtimeApiKey,
@@ -433,6 +436,7 @@ export async function main(): Promise<void> {
 										submitHandoff,
 										registerHandoff,
 										record: (record) => evidence.appendBuffered(record),
+										onUnavailable: (cause) => control.fail(cause),
 									}),
 								captionSink: {
 									caption: (caption) => {
