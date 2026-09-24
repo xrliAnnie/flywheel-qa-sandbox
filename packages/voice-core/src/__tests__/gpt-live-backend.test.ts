@@ -252,7 +252,7 @@ describe("GptLiveBackend", () => {
 		session.on("response-cancelled", cancelled);
 		expect(effective.effectiveCapabilities.turnCancelOrSuppress).toBe(true);
 
-		session.interrupt();
+		const replacing = session.replaceAfterBargeIn();
 		expect(effective.effectiveCapabilities.turnCancelOrSuppress).toBe(false);
 		expect(cancelled).toHaveBeenCalledOnce();
 		sockets[0]?.receive({
@@ -266,9 +266,8 @@ describe("GptLiveBackend", () => {
 		sockets[0]?.receive({ type: "session.closed" });
 		await vi.waitFor(() => expect(sockets).toHaveLength(2));
 		sockets[1]?.started(2);
-		await vi.waitFor(() =>
-			expect(effective.effectiveCapabilities.turnCancelOrSuppress).toBe(true),
-		);
+		await expect(replacing).resolves.toBe(2);
+		expect(effective.effectiveCapabilities.turnCancelOrSuppress).toBe(true);
 	});
 
 	it("rejects silent context above the configured per-event token ceiling", async () => {

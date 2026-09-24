@@ -16,6 +16,16 @@ import { LiveLeadAdapter } from "../live-lead-adapter.js";
 
 const PCM = { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 } as const;
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	return {
+		promise: new Promise<T>((done) => {
+			resolve = done;
+		}),
+		resolve,
+	};
+}
+
 class FakeLive implements OpenAiLiveConversationSession {
 	readonly sessionId = "provider-session";
 	readonly effectiveCapabilities = {
@@ -31,6 +41,10 @@ class FakeLive implements OpenAiLiveConversationSession {
 		(delta: OpenAiLiveTranscriptDelta) => void
 	>();
 	interrupt = vi.fn();
+	replaceAfterBargeIn = vi.fn(async () => {
+		this.providerGeneration = (this.providerGeneration ?? 0) + 1;
+		return this.providerGeneration;
+	});
 	suspend = vi.fn(
 		async (reason: "announcer-takeover" | "delegation-sealed") => ({
 			generation: this.providerGeneration ?? 1,
@@ -122,7 +136,7 @@ function room() {
 			generation,
 		})),
 		localPlaybackCancel: vi.fn(),
-		status: vi.fn(),
+		status: vi.fn(async () => undefined),
 		playSpeech: vi.fn(),
 		playClip: vi.fn(),
 		audibleTail: vi.fn(),
@@ -153,6 +167,7 @@ function harness(
 			providerOperationId: string;
 		}>;
 		delegationEndTimeoutMs?: number;
+		maxSuspendedInputMs?: number;
 	} = {},
 ) {
 	const live = new FakeLive();
@@ -235,6 +250,9 @@ function harness(
 		...(overrides.delegationEndTimeoutMs === undefined
 			? {}
 			: { delegationEndTimeoutMs: overrides.delegationEndTimeoutMs }),
+		...(overrides.maxSuspendedInputMs === undefined
+			? {}
+			: { maxSuspendedInputMs: overrides.maxSuspendedInputMs }),
 		record,
 	});
 	adapter.onUtterance((utterance) => utterances.push(utterance));
@@ -255,6 +273,15 @@ function harness(
 }
 
 describe("LiveLeadAdapter", () => {
+	it("never claims the shared RoomIO lifecycle", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		expect(h.room.io.start).not.toHaveBeenCalled();
+
+		await h.adapter.close();
+		expect(h.room.io.stop).not.toHaveBeenCalled();
+	});
+
 	it("streams each frontend audio delta to RoomIO and labels its caption as frontend", async () => {
 		const h = harness();
 		await h.adapter.open("foreground context");
@@ -502,7 +529,163 @@ describe("LiveLeadAdapter", () => {
 		});
 
 		expect(h.speech.cancel).toHaveBeenCalledWith("barge-in");
-		expect(h.live.interrupt).toHaveBeenCalledOnce();
+		await vi.waitFor(() =>
+			expect(h.live.replaceAfterBargeIn).toHaveBeenCalledOnce(),
+		);
+	});
+
+	it("buffers room audio during announcer takeover and replays it once after resume", async () => {
+		const h = harness();
+		const spoken = deferred<SpeakReceipt>();
+		h.speech.speak.mockImplementationOnce(() => spoken.promise);
+		await h.adapter.open("context");
+
+		const speaking = h.adapter.speak("Lead 原话", "readback", {
+			pendingKey: "lead-1",
+			verification: "required",
+		});
+		await vi.waitFor(() => expect(h.live.suspend).toHaveBeenCalledOnce());
+		h.room.emitFrame({
+			pcm: Buffer.from([1, 0]),
+			format: PCM,
+			sessionId: "voice-session",
+			generation: 9,
+			sequence: 1,
+			capturedAt: 1_200,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+		h.room.emitFrame({
+			pcm: Buffer.from([2, 0]),
+			format: PCM,
+			sessionId: "voice-session",
+			generation: 9,
+			sequence: 2,
+			capturedAt: 1_201,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+		expect(h.live.audioSent).toEqual([]);
+
+		spoken.resolve({
+			pendingKey: "lead-1",
+			requestDigest: "speech-digest",
+			outcome: "completed",
+			transport: "submitted",
+			contentProof: "deterministic_tts",
+		});
+		await speaking;
+		expect(h.live.audioSent).toEqual([
+			Buffer.from([1, 0]),
+			Buffer.from([2, 0]),
+		]);
+	});
+
+	it("does not start a competing Live replacement when barge-in cancels an announcer", async () => {
+		const h = harness();
+		const spoken = deferred<SpeakReceipt>();
+		h.speech.speak.mockImplementationOnce(() => spoken.promise);
+		await h.adapter.open("context");
+		const speaking = h.adapter.speak("播报中", "brief", {
+			pendingKey: "brief-1",
+			verification: "best_effort",
+		});
+		await vi.waitFor(() => expect(h.live.suspend).toHaveBeenCalledOnce());
+
+		h.room.emitBarge({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			owner: { kind: "known", speakerUserId: "founder-1" },
+			startedAt: 1_000,
+			observedAt: 1_400,
+			durationMs: 400,
+			phase: "sustained",
+		});
+
+		expect(h.speech.cancel).toHaveBeenCalledWith("barge-in");
+		expect(h.live.replaceAfterBargeIn).not.toHaveBeenCalled();
+		spoken.resolve({
+			pendingKey: "brief-1",
+			requestDigest: "speech-digest",
+			outcome: "failed",
+			reason: "barge-in",
+			transport: "submitted",
+			contentProof: "none",
+		});
+		await speaking;
+		expect(h.live.resume).toHaveBeenCalledOnce();
+	});
+
+	it("buffers new input until a barge-in replacement generation is admitted", async () => {
+		const h = harness();
+		const replaced = deferred<number>();
+		h.live.replaceAfterBargeIn.mockImplementationOnce(() => replaced.promise);
+		await h.adapter.open("context");
+
+		h.room.emitBarge({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			owner: { kind: "known", speakerUserId: "founder-1" },
+			startedAt: 1_000,
+			observedAt: 1_400,
+			durationMs: 400,
+			phase: "sustained",
+		});
+		h.room.emitFrame({
+			pcm: Buffer.from([3, 0]),
+			format: PCM,
+			sessionId: "voice-session",
+			generation: 9,
+			sequence: 1,
+			capturedAt: 1_401,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+		expect(h.live.audioSent).toEqual([]);
+
+		replaced.resolve(2);
+		await vi.waitFor(() => expect(h.live.audioSent).toHaveLength(1));
+		expect(h.live.audioSent[0]).toEqual(Buffer.from([3, 0]));
+	});
+
+	it("fails visibly and drops a partial suspended buffer when its bound is exceeded", async () => {
+		const h = harness({ maxSuspendedInputMs: 1 });
+		const replaced = deferred<number>();
+		h.live.replaceAfterBargeIn.mockImplementationOnce(() => replaced.promise);
+		await h.adapter.open("context");
+		h.room.emitBarge({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			owner: { kind: "known", speakerUserId: "founder-1" },
+			startedAt: 1_000,
+			observedAt: 1_400,
+			durationMs: 400,
+			phase: "sustained",
+		});
+		h.room.emitFrame({
+			pcm: Buffer.alloc(50),
+			format: PCM,
+			sessionId: "voice-session",
+			generation: 9,
+			sequence: 1,
+			capturedAt: 1_401,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+
+		expect(h.record).toHaveBeenCalledWith({
+			kind: "live_lead_input_buffer_overflow",
+			limitBytes: 48,
+		});
+		expect(h.room.io.status).toHaveBeenCalledWith("语音暂不可用，请重说");
+		replaced.resolve(2);
+		await vi.waitFor(() =>
+			expect(h.live.replaceAfterBargeIn).toHaveBeenCalledOnce(),
+		);
+		expect(h.live.audioSent).toEqual([]);
 	});
 
 	it("resumes Live after a committed handoff attempt fails", async () => {

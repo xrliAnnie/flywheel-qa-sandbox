@@ -54,6 +54,7 @@ export interface OpenAiLiveConversationSession
 		>,
 	): Promise<LiveRetirementResult>;
 	resume(): Promise<number>;
+	replaceAfterBargeIn(): Promise<number>;
 }
 
 const FRONTEND_INSTRUCTIONS = [
@@ -250,7 +251,7 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 	endUserTurn(): void {}
 
 	interrupt(): void {
-		void this.controller.cancelAndReplace("barge-in").catch((error) => {
+		void this.replaceAfterBargeIn().catch((error) => {
 			this.emitter.emit(
 				"error",
 				error instanceof VoiceError
@@ -262,6 +263,10 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 						),
 			);
 		});
+	}
+
+	replaceAfterBargeIn(): Promise<number> {
+		return this.controller.cancelAndReplace("barge-in");
 	}
 
 	injectToolResult(_result: ToolResult, _schedule?: ScheduleHint): void {

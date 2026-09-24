@@ -53,6 +53,7 @@ export interface LiveLeadAdapterOptions {
 	now?: () => number;
 	nextId?: () => string;
 	delegationEndTimeoutMs?: number;
+	maxSuspendedInputMs?: number;
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
 	record(event: Record<string, unknown>): void;
@@ -106,11 +107,17 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private readonly appliedResultEvents = new Set<string>();
 	private readonly roomTimelineWaiters = new Set<() => void>();
 	private readonly delegationEndTimeoutMs: number;
+	private readonly maxSuspendedInputBytes: number;
 	private readonly setTimeoutFn: typeof setTimeout;
 	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
+	private liveInputSuspended = false;
+	private bufferedInput: Array<{ pcm: Buffer; format: AudioFormat }> = [];
+	private bufferedInputBytes = 0;
+	private inputBufferOverflow = false;
 	private frontendSpeech?: FrontendSpeech;
 	private outputWork: Promise<void> = Promise.resolve();
+	private faceWork: Promise<void> = Promise.resolve();
 	private utteranceSequence = 0;
 	private opened = false;
 	private closing = false;
@@ -121,6 +128,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.now = options.now ?? Date.now;
 		this.nextId = options.nextId ?? randomUUID;
 		this.delegationEndTimeoutMs = options.delegationEndTimeoutMs ?? 5_000;
+		const maxSuspendedInputMs = options.maxSuspendedInputMs ?? 30_000;
+		this.maxSuspendedInputBytes = maxSuspendedInputMs * 48;
 		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
 		this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
 		if (
@@ -128,6 +137,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.delegationEndTimeoutMs < 1
 		)
 			throw new Error("live_lead_delegation_timeout_invalid");
+		if (
+			!Number.isSafeInteger(maxSuspendedInputMs) ||
+			maxSuspendedInputMs < 1 ||
+			maxSuspendedInputMs > 60_000
+		)
+			throw new Error("live_lead_input_buffer_invalid");
 		if (
 			options.room.identity.sessionId !== options.sessionId ||
 			options.room.identity.generation !== options.generation ||
@@ -148,20 +163,14 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			throw new Error("live_lead_context_required");
 		this.opened = true;
 		try {
-			await this.options.room.start();
-			const providerStartedAt = this.now();
 			this.live = await this.options.createConversation(initialSessionContext);
 			const providerGeneration = this.live.providerGeneration;
 			if (!providerGeneration)
 				throw new Error("live_lead_generation_unavailable");
-			this.assembler.startProviderGeneration(
-				providerGeneration,
-				providerStartedAt,
-			);
+			this.assembler.startProviderGeneration(providerGeneration, this.now());
 			this.attach(this.live);
 		} catch (error) {
 			this.closing = true;
-			await this.options.room.stop().catch(() => undefined);
 			throw error;
 		}
 	}
@@ -190,7 +199,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				contentProof: "none",
 			});
 		}
-		const promise = this.runSpeak(text, kind, opts);
+		const promise = this.enqueueFace(() => this.runSpeak(text, kind, opts));
 		this.speakWork.set(opts.pendingKey, { digest: requestDigest, promise });
 		return promise;
 	}
@@ -260,12 +269,14 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.closing = true;
 		this.wakeRoomTimelineWaiters();
 		this.options.speech.cancel("session-close");
+		this.liveInputSuspended = false;
+		this.clearBufferedInput();
 		this.cancelFrontendSpeech();
 		for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
 		await Promise.allSettled([...this.delegationWork.values()]);
+		await this.faceWork.catch(() => undefined);
 		await this.outputWork.catch(() => undefined);
 		await this.live?.close();
-		await this.options.room.stop();
 		this.utteranceListeners.clear();
 	}
 
@@ -278,6 +289,10 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					frame.generation !== this.generation
 				)
 					return;
+				if (this.liveInputSuspended) {
+					this.bufferLiveInput(frame.pcm, frame.format);
+					return;
+				}
 				live.sendAudio(frame.pcm, frame.format);
 			}),
 			this.options.room.onUtterance((event) => {
@@ -296,7 +311,16 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					return;
 				this.options.speech.cancel("barge-in");
 				this.cancelFrontendSpeech();
-				live.interrupt();
+				if (this.liveInputSuspended) return;
+				this.liveInputSuspended = true;
+				void this.enqueueFace(() => this.replaceAfterBargeIn(live)).catch(
+					(error) => {
+						this.options.record({
+							kind: "live_lead_voice_unavailable",
+							message: error instanceof Error ? error.message : String(error),
+						});
+					},
+				);
 			}),
 			live.on("response-started", () => this.startFrontendSpeech()),
 			live.on("response-audio", (chunk, format) =>
@@ -331,7 +355,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			live.on("delegation-created", (delegation) => {
 				const key = `${this.sessionId}:${this.generation}:${delegation.generation}:${delegation.delegationId}`;
 				if (this.delegationWork.has(key)) return;
-				const work = this.handleDelegation(key, delegation).catch((error) => {
+				const work = this.enqueueFace(() =>
+					this.handleDelegation(key, delegation),
+				).catch((error) => {
 					this.options.record({
 						kind: "live_lead_delegation_failed",
 						binding: key,
@@ -374,7 +400,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			offsetMs: delegation.offsetMs,
 		});
 		if (this.closing) return;
-		await live.suspend("delegation-sealed");
+		await this.suspendLive(live, "delegation-sealed");
 		try {
 			const utterance = this.assembler.sealDelegation({
 				generation: delegation.generation,
@@ -481,7 +507,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	): Promise<SpeakReceipt> {
 		return (async () => {
 			const live = this.requireLive();
-			await live.suspend("announcer-takeover");
+			await this.suspendLive(live, "announcer-takeover");
 			try {
 				return await this.options.speech.speak(text, kind, opts);
 			} finally {
@@ -491,12 +517,84 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	}
 
 	private async resumeLive(live: OpenAiLiveConversationSession): Promise<void> {
-		const providerStartedAt = this.now();
 		const providerGeneration = await live.resume();
-		this.assembler.startProviderGeneration(
-			providerGeneration,
-			providerStartedAt,
+		this.assembler.startProviderGeneration(providerGeneration, this.now());
+		this.flushBufferedInput(live);
+	}
+
+	private async suspendLive(
+		live: OpenAiLiveConversationSession,
+		reason: "announcer-takeover" | "delegation-sealed",
+	): Promise<void> {
+		if (this.liveInputSuspended)
+			throw new Error("live_lead_face_already_suspended");
+		this.liveInputSuspended = true;
+		try {
+			await live.suspend(reason);
+		} catch (error) {
+			this.liveInputSuspended = false;
+			this.clearBufferedInput();
+			throw error;
+		}
+	}
+
+	private async replaceAfterBargeIn(
+		live: OpenAiLiveConversationSession,
+	): Promise<void> {
+		try {
+			const providerGeneration = await live.replaceAfterBargeIn();
+			this.assembler.startProviderGeneration(providerGeneration, this.now());
+			this.flushBufferedInput(live);
+		} catch (error) {
+			this.liveInputSuspended = false;
+			this.clearBufferedInput();
+			throw error;
+		}
+	}
+
+	private bufferLiveInput(pcm: Buffer, format: AudioFormat): void {
+		if (this.inputBufferOverflow) return;
+		if (this.bufferedInputBytes + pcm.length > this.maxSuspendedInputBytes) {
+			this.inputBufferOverflow = true;
+			this.clearBufferedInput(false);
+			this.options.record({
+				kind: "live_lead_input_buffer_overflow",
+				limitBytes: this.maxSuspendedInputBytes,
+			});
+			void this.options.room.status("语音暂不可用，请重说").catch((error) =>
+				this.options.record({
+					kind: "live_lead_status_failed",
+					message: error instanceof Error ? error.message : String(error),
+				}),
+			);
+			return;
+		}
+		this.bufferedInput.push({ pcm: Buffer.from(pcm), format: { ...format } });
+		this.bufferedInputBytes += pcm.length;
+	}
+
+	private flushBufferedInput(live: OpenAiLiveConversationSession): void {
+		if (!this.inputBufferOverflow) {
+			for (const frame of this.bufferedInput)
+				live.sendAudio(frame.pcm, frame.format);
+		}
+		this.liveInputSuspended = false;
+		this.clearBufferedInput();
+	}
+
+	private clearBufferedInput(resetOverflow = true): void {
+		this.bufferedInput = [];
+		this.bufferedInputBytes = 0;
+		if (resetOverflow) this.inputBufferOverflow = false;
+	}
+
+	private enqueueFace<T>(task: () => Promise<T>): Promise<T> {
+		const result = this.faceWork.then(task);
+		this.faceWork = result.then(
+			() => undefined,
+			() => undefined,
 		);
+		return result;
 	}
 
 	private waitForDelegationWindow(input: {
