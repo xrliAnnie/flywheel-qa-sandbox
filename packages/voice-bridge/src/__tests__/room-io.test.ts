@@ -860,6 +860,33 @@ describe("RoomIO v1", () => {
 		await test.room.stop();
 	});
 
+	it("queues overlapping proactive and conversational sentences without silent loss", async () => {
+		vi.useFakeTimers();
+		const test = roomFixture({ playbackTailMarginMs: 0 });
+		await test.room.start();
+
+		const conversation = test.room.playSpeech({
+			speechId: "conversation",
+			generation: test.generation,
+			format: PCM24_MONO,
+			pcm: Buffer.alloc(960, 1),
+		});
+		const proactive = test.room.playSpeech({
+			speechId: "proactive",
+			generation: test.generation,
+			format: PCM24_MONO,
+			pcm: Buffer.alloc(960, 2),
+		});
+
+		await vi.advanceTimersByTimeAsync(40);
+		await expect(conversation).resolves.toMatchObject({ outcome: "submitted" });
+		await expect(proactive).resolves.toMatchObject({ outcome: "submitted" });
+		expect(test.outputFrames.map((frame) => frame.readInt16LE(0))).toEqual([
+			257, 514,
+		]);
+		await test.room.stop();
+	});
+
 	it("emits start, clock-driven sustained, and end barge observations from the input gate", async () => {
 		vi.useFakeTimers();
 		const events: RoomBargeInEvent[] = [];

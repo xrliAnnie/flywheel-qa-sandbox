@@ -625,16 +625,41 @@ export class BridgeRoomIO implements RoomIOContract {
 	async playSpeech(
 		input: SpeechStart & { pcm: Buffer },
 	): Promise<SubmittedReceipt> {
-		const started = this.startSpeech(input);
-		if (started.outcome === "rejected") return started;
-		const frame = await this.writeSpeech({
-			speechId: input.speechId,
-			generation: input.generation,
-			sequence: 0,
-			pcm: input.pcm,
-		});
-		if (frame.outcome === "rejected") return frame;
-		return this.endSpeech(input.speechId, input.generation);
+		const reason = this.validateSpeechStart(input, true);
+		if (
+			reason ||
+			input.pcm.length === 0 ||
+			input.pcm.length % (2 * input.format.channels) !== 0
+		) {
+			return {
+				outcome: "rejected",
+				speechId: input.speechId,
+				generation: input.generation,
+				reason: reason ?? "speech_frame_invalid",
+			};
+		}
+		const pcm24Mono = this.createSpeechConverter(input.format)(input.pcm);
+		const durationMs = Math.ceil((pcm24Mono.length / 2 / 24_000) * 1_000);
+		this.tailUntil =
+			Math.max(this.tailUntil, this.now()) +
+			durationMs +
+			this.playbackTailMarginMs();
+		try {
+			this.options.assertLease?.();
+			await this.mouth!.playSpeech(input.speechId, pcm24Mono);
+			return {
+				outcome: "submitted",
+				speechId: input.speechId,
+				generation: input.generation,
+			};
+		} catch (error) {
+			return {
+				outcome: "rejected",
+				speechId: input.speechId,
+				generation: input.generation,
+				reason: (error as Error).message,
+			};
+		}
 	}
 
 	async playClip(input: {
@@ -1215,11 +1240,14 @@ export class BridgeRoomIO implements RoomIOContract {
 		for (const listener of this.receiveHealthListeners) listener(snapshot);
 	}
 
-	private validateSpeechStart(input: SpeechStart): string | undefined {
+	private validateSpeechStart(
+		input: SpeechStart,
+		allowQueued = false,
+	): string | undefined {
 		if (!input.speechId) return "speech_id_required";
 		if (input.generation !== this.options.generation)
 			return "speech_generation_stale";
-		if (this.speech) return "speech_busy";
+		if (this.speech && !allowQueued) return "speech_busy";
 		if (
 			input.format.encoding !== "pcm16" ||
 			!(
