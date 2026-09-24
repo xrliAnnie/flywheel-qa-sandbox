@@ -2,13 +2,13 @@
 issue: FLY-2798
 phase: implement
 phaseCursor: 7/8
-updated: 2026-09-24T08:20:25.107Z
-nextStep: Poll 447850cf-14bb-4a14-9a0b-d4a7f90573e4; wire approved subscribe
-  seam/factory, then targeted verification and code review
+updated: 2026-09-24T08:42:51.062Z
+nextStep: Await Lead approval 34870474 for carrier-neutral result producer note;
+  then implement producer TDD and run targeted verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
 **phase**: implement (7/8)
-**next**: Poll 447850cf-14bb-4a14-9a0b-d4a7f90573e4; wire approved subscribe seam/factory, then targeted verification and code review
+**next**: Await Lead approval 34870474 for carrier-neutral result producer note; then implement producer TDD and run targeted verification
