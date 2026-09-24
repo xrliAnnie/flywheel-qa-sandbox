@@ -1,14 +1,14 @@
 ---
 issue: FLY-2798
 phase: implement
-phaseCursor: 8/8
-updated: 2026-09-24T10:17:02.616Z
-nextStep: Refresh milestone as literal last commit, push, obtain fresh
-  exact-head code review, open PR, and complete needs_review handoff
+phaseCursor: 1/3
+updated: 2026-09-24T11:05:00.907Z
+nextStep: Run targeted related tests, affected builds, lint, then document and
+  re-review the new exact head
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: implement (8/8)
-**next**: Refresh milestone as literal last commit, push, obtain fresh exact-head code review, open PR, and complete needs_review handoff
+**phase**: implement (1/3)
+**next**: Run targeted related tests, affected builds, lint, then document and re-review the new exact head
