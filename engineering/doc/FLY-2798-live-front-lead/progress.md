@@ -1,14 +1,14 @@
 ---
 issue: FLY-2798
 phase: implement
-phaseCursor: 2/3
-updated: 2026-09-24T11:09:15.460Z
-nextStep: "Refresh milestone as literal last commit, push PR #1312, request
-  fresh exact-head code review"
+phaseCursor: 1/3
+updated: 2026-09-24T11:34:42.541Z
+nextStep: Run changed-file consumer discovery and targeted related verification,
+  then commit Engine A activation
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: implement (2/3)
-**next**: Refresh milestone as literal last commit, push PR #1312, request fresh exact-head code review
+**phase**: implement (1/3)
+**next**: Run changed-file consumer discovery and targeted related verification, then commit Engine A activation
