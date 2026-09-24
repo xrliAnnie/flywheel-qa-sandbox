@@ -232,7 +232,9 @@ describe("GptLiveBackend", () => {
 				text: "马上回答",
 				final: true,
 			});
-			expect(responseDone).toHaveBeenCalledOnce();
+			// GPT-Live exposes no transcript/audio done signal. Caption grouping
+			// must not invent one because later audio may still arrive.
+			expect(responseDone).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}

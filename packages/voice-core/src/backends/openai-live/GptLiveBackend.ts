@@ -204,13 +204,12 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 				);
 				const timer = this.outputTranscriptTimers.get(liveDelta.generation);
 				if (timer) clearTimeout(timer);
-				this.outputTranscriptTimers.set(
-					liveDelta.generation,
-					setTimeout(
-						() => this.flushOutputTranscript(liveDelta.generation),
-						this.outputTranscriptIdleMs,
-					),
+				const idleTimer = setTimeout(
+					() => this.flushOutputTranscript(liveDelta.generation),
+					this.outputTranscriptIdleMs,
 				);
+				idleTimer.unref?.();
+				this.outputTranscriptTimers.set(liveDelta.generation, idleTimer);
 			}
 		});
 		controller.on(
@@ -255,8 +254,6 @@ class GptLiveConversationSession implements OpenAiLiveConversationSession {
 			text,
 			final: true,
 		});
-		this.startedAudioGenerations.delete(generation);
-		this.emitter.emit("response-done");
 	}
 
 	onLiveTranscript(
