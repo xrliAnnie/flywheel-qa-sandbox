@@ -1,13 +1,13 @@
 ---
 issue: FLY-2851
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T15:34:16.156Z
-nextStep: Update exact assertions and capture RED
+phaseCursor: 2/5
+updated: 2026-09-24T15:36:22.787Z
+nextStep: Apply minimal exact-label production migration
 chunks: []
 pointers: {}
 ---
 
 # FLY-2851 progress
-**phase**: implement (1/5)
-**next**: Update exact assertions and capture RED
+**phase**: implement (2/5)
+**next**: Apply minimal exact-label production migration
