@@ -136,3 +136,21 @@ Consumer discovery 对本轮 9 个非测试源文件逐一执行完整路径、�
 Consumer discovery 对本轮 8 个非测试 TypeScript 执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：Teamlead `plugin.ts` 256/1063/991、`voice-handoff-routes.ts` 0/2/991；voice-codex `live-lead-adapter.ts` 0/3/24；voice-core `FfmpegPcmDecoder.ts` 2/2/4、`CompositeSpeech.ts` 0/1/0、`GptLiveBackend.ts` 0/0/0、`LiveUtteranceAssembler.ts` 0/0/0、`process.ts` 3/13/32。保留真实 import/export/composition、`ProcessHandle` 实现与 fake、直接回归和 `vitest related` 自动选择的全部 consumer；因此 Teamlead 中央组合根扩展出的 103 文件未人工裁减，voice-core 的进程 API consumer 也覆盖了真实 subprocess tests。
 
 其余命中逐类排除且没有未说明类别：`engineering/doc/**`、`product/doc/**`、`doc/**` 是历史文字；child-process census 与 kill-path inventory 只记录受管路径且此前已由 QA 回退修复验证；通用 `plugin.ts` / `process.ts` basename 在其他目录是词法碰撞；父目录命中除上述真实 import/test 外只共享目录字符串；OpenAI Live 新文件使用无扩展名相对 import，故 `.ts` 完整路径或 basename 可能为零。没有本轮新增或保留的 `scripts/__tests__/*.test.sh` consumer。本轮没有请求 full CI；真人 10 次首字延迟、复杂问题落地、真机字幕与 V2/V3 联调仍属于 QA。
+
+## QA 第三次回退整改（claim 1481）
+
+QA 在 `b51a597567bf399120b3908f56c55bd68f933d38` 的真房核验确认，先前 D–H 逻辑与 full CI 已通过，但真人 Engine A 会被一条生产合同缺口终止：headphone list 返回投影后的公开 item，claim 却返回原始 `itemFromRow`，其中 `speechBrief: null` 被客户端严格解析器拒绝。另有三项验证/激活缺口：reply SSE 固定 1 秒无限重连导致审计洪泛；529 launcher 的生产 `voiceEnv()` 与 slot Bridge 环境没有完整透传三个 Engine A 变量；此前缺少 adapter→route 与两个音频 producer→真实 RoomIO 的配对合同测试。
+
+本轮按失败回归 → 最小修复 → green 闭环：
+
+- list 与 claim 共用 `publicHeadphoneItem`，claim 不再泄漏内部字段或 `speechBrief: null`；客户端也把历史/异构 Bridge 的 null 当缺失。初始 route 断言稳定显示原始 record，client 断言稳定复现 `headphone inbox response invalid`；最终增加真实 Express route → 真实 `BridgeVoiceClient.listHeadphoneItems()` / `claimHeadphoneItem()` 配对测试，含数据库形状的 null 行。
+- reply subscription 使用 1s 起步、30s 上限的指数退避，并限制为 5 次重连；预算耗尽只写一次 `voice_reply_subscription_exhausted`，不回退轮询，也不会继续制造失败审计。fake-timer 回归先证明旧实现 100ms 内已超过四次调用，修复后固定为初次连接 + 三次测试重连，10 秒后仍无新增调用。
+- 官方 529 launcher 用单一 `voiceProcessBaseEnv` 把 `FLYWHEEL_VOICE_ENGINE`、`FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD`、`FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED` 送入 `buildVoiceProcessEnv`，因此 prepare receipt 的 `environmentNames` 来自包含三项的最终 env。对应测试先因生产 `voiceEnv()` 仍硬编码 `{HOME, PATH}` 而 red。
+- `scripts/test-deploy.sh` 的 voice fixture `BRIDGE_EXTRA_ENV` 显式白名单透传同三项；直接结构测试先红于缺失 `FLYWHEEL_VOICE_ENGINE`，随后 15/15 green。生产部署必须把 `FLYWHEEL_VOICE_ENGINE=openai-live` 写入 `~/.flywheel/.env`；Bridge/voice launch wrapper 用 `set -a` source 该文件，测试 slot 则由上述封闭白名单重建环境。
+- 新 adapter→route 测试把真实 `LiveLeadAdapter` 产出的 request POST 给真实 handoff router/store，证明 committed record 使用合同字面幂等键，并保留旧 digest key 的 400 negative guard。新 RoomIO 合同测试使用真实 `flywheel-voice-bridge createRoomIO`：先证明 sequence 1 被 `speech_sequence_invalid` 拒绝，再证明 `CompositeSpeech` 与 `LiveLeadAdapter` 均从 sequence 0 流入真实 guard。
+
+最终本地证据：Teamlead 精确 2 文件 5/5、voice-headphone 15/15、voice-codex 2 文件 16/16、529 launcher 15/15；最终新增 Teamlead 配对测试的 `vitest related` 4/4。生产文件整改后完整 changed-file related 为 voice-headphone 15/15、voice-codex 16/16、Teamlead 自动依赖图 104 文件 1175/1175。受影响 dependency build 覆盖 16 个 package；voice-headphone owner/dependent typecheck 覆盖 voice-headphone 与 voice-codex；根 lint 最终检查 5241 files、0 errors、25 warnings；9 个 JS/TS 文件定向 Biome 无改动，`bash -n scripts/test-deploy.sh` 与 `git diff --check` 均通过。未运行人为选择的本地全包 suite，也未请求 full CI。
+
+本轮四个非测试生产文件的完整路径、文件名、父目录 `git grep -lF` 命中计数（full/file/parent）为：voice-headphone `bridge-client.ts` 2/22/6、Teamlead `headphone-routes.ts` 0/0/991、529 launcher `fly2655-voice-room.mjs` 7/12/335、`scripts/test-deploy.sh` 230/329/933。保留的真实 consumer 是 voice-headphone public export/session/daemon、voice-codex Engine A composition/CLI、Teamlead plugin mount、529 launcher/deploy入口，以及本轮精确合同测试；生产 TypeScript 均由对应 exact/related 覆盖，脚本由 launcher 15/15 与 shell syntax 覆盖。
+
+其余命中按类别全部排除：`engineering/doc/**`、`product/doc/**`、`doc/**` 与旧 review/QA evidence 只保存路径文字；kill-path inventory 只登记 launcher 既有进程操作；通用 `bridge-client.ts`、`test-deploy.sh` 与 `scripts` basename/父目录在其他 package 或历史材料中只是词法碰撞；fixture/snapshot/CI 清单只保存命令或路径；其他 `scripts/__tests__` 针对未改的 deploy 子系统，不消费本轮 voice env block。唯一直接读取该 voice env block 的 `fly2655-voice-room.test.mjs` 已完整执行。本轮没有新增或修改 `scripts/__tests__/*.test.sh`，因此没有遗漏该类强制 shell 测试。以上仍不是 QA 真人 10 次延迟、字幕、复杂 handoff、耳机三件事、529 N-to-N 或 exact-head full CI 的替代证据。
