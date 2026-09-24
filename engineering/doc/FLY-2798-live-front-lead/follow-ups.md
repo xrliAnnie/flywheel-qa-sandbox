@@ -35,3 +35,12 @@ R2 有效 reviewVerdict=APPROVED，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db
 | findingKey | 级别 | 后续处置 |
 |---|---|---|
 | late-frontend-frame-dropped-during-drain | MEDIUM | 把前台 audio boundary 与真实 playback drain 对齐，或为已结束但仍在 drain 的段提供显式续接/缓冲协议，避免 provider delta 间隔超过 idle boundary 时新帧在旧尾音窗口被拒。 |
+
+## R11 review round 3 非阻断 advisories
+
+以下 finding 来自精确头 `0143d079e` 的 review request `47771602-dffb-436a-b6b4-f4a73b41d918`。唯一 HIGH 已在后续实现头关闭；两项 advisory 保持非阻断：
+
+| findingKey | 级别 | 后续处置 |
+|---|---|---|
+| late-frontend-frame-dropped-during-drain | MEDIUM | round 3 下迟到帧会先 flush 尚在播的旧段再开新段，而不是 round 2 的拒绝新帧；仍需把 provider idle boundary 与 playback drain 对齐，避免同一回答内长间隔造成任一侧音频丢失。 |
+| tail-not-shortened-when-cancelling-an-ended-speech | LOW | RoomIO 取消已 end 的 speech 后应让 `tailUntil` 反映实际停止，而非保留整段估算；补共享 RoomIO 合同测试，避免 phantom tail 延后 heartbeat 或阻止后续 clip。 |

@@ -172,3 +172,11 @@ R9 精确头 `f692b6b23` 的第二轮代码审查发现唯一 HIGH：idle bounda
 最小修复只把当前前台播放的 `speechId + generation` 保留到取消边界；`endSpeech` 只结束生产者写入，不丢掉本地可取消身份。barge-in、provider cancellation、下一段开始与 session close 继续复用同一 `cancelFrontendSpeech`，因此即使 active segment 已结束，仍能取消 WaitingMouth 中尚未播完的同一段。真实 RoomIO 回归现在证明 idle boundary 后 tail 未 drain 时，sustained barge-in 精确调用该 speech 的 `localPlaybackCancel(speechId, 9)`；原 sequence-zero 与迟到帧合同测试未删除。
 
 最终证据：精确真实 RoomIO 文件 3/3，changed-file `vitest related` 2 文件 17/17；`flywheel-voice-codex...` dependency build 覆盖 16 个 package，`...flywheel-voice-codex` typecheck 通过；根 lint 检查 5241 files、0 errors、25 warnings；两文件定向 Biome 与 `git diff --check` 通过。Consumer discovery（full/file/parent）为生产 `live-lead-adapter.ts` 0/2/24、回归 `engine-a-room-io-contract.test.ts` 0/0/5。生产 basename 的两个匹配只是 FLY-2796/2798 方案文档；两组 parent 命中均为历史文档/评审 JSON、child-process inventory、产品文档或 wrapper 路径文字，不是 import。真实 import 使用无扩展名相对 specifier；保留的直接测试和可执行消费者均由 17/17 related 图覆盖。没有新增或修改 `scripts/__tests__/*.test.sh`，也没有请求 full CI。
+
+## R11 stale frontend write 隔离阻断整改
+
+R10 精确头 `0143d079e` 的第三轮代码审查发现唯一 HIGH：旧段 S1 的 `writeSpeech` 在 await 期间被下一段替换后才 reject，原来的无条件 catch 会调用无参 `cancelFrontendSpeech()`，误杀已经 active 的 S2。真实 RoomIO hard-red 用 600,000 bytes 超队列大段制造 pending write，idle 后送入 S2 首帧；旧代码稳定 3/4 通过、1/4 失败，S2 的 sequence 0 从未进入 RoomIO。
+
+最小修复只给 catch 增加所属段 guard：失败仍始终记录 `live_frontend_output_failed`，但仅当 `this.frontendSpeech === speech` 时才取消。绿色回归证明 S1 的 `speech_playback_stopped` 仍有审计，S2 不被 `localPlaybackCancel`，且 sequence 0 真正提交给真实 RoomIO。没有改 idle boundary、WaitingMouth 或共享 RoomIO tail 合同；本轮新增 MEDIUM/LOW 仍只进入 follow-up。
+
+最终证据：精确真实 RoomIO 文件 4/4，changed-file `vitest related` 2 文件 18/18；`flywheel-voice-codex...` dependency build 覆盖 16 个 package，`...flywheel-voice-codex` typecheck 通过；根 lint 检查 5241 files、0 errors、25 warnings；两文件定向 Biome 与 `git diff --check` 通过。Consumer discovery（full/file/parent）仍为生产 `live-lead-adapter.ts` 0/2/24、回归 `engine-a-room-io-contract.test.ts` 0/0/5；保留项、无扩展相对 imports 与文档/inventory/wrapper 排除类别同 R10，18/18 related 覆盖全部真实 executable consumer。没有新增或修改 `scripts/__tests__/*.test.sh`，也没有请求 full CI。
