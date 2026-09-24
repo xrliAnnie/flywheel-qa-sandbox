@@ -62,6 +62,13 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | HIGH | 「每个 grant episode 新建 activation、binding 不变」在基线 schema 上不可表示：`workflow_execution_binding` 以 activation_id 为主键、tuple 唯一、no-update，admission 对同 tuple 不同 activation 返回 activation_conflict | 采纳。既有 activation/binding 完全不动；新增独立追加式 `workflow_turn_grant_episode`（(demand_id, grant_id) 主键，引用既有 activation_id、含 grant_id 的 source_event_id、epoch、generation、credential_nonce），`grantTurn` 用新 source event 拿新 epoch；凭证按 episode nonce 轮换；矩阵 P 从真实 schema 建库验同 tuple 连续两个 episode |
 | HIGH | 「push 后失效允许跑完一轮、只撤销提交凭证」不是 writer fence：workspace-write+network 的旧 turn 可与新 holder 并发写，且与 §5.3/矩阵 P「陈旧输入不进模型」矛盾 | 采纳。delivery 新增 in_flight / fencing / aborted 状态与 §5.3 e 两阶段 fence：失效触发先 CAS in_flight→fencing 并关 intake，CommDB 转授只落 `transfer_pending`；等旧 turn drain 或精确同代 stop 确认（§3 机制）后才提交转授 / close carrier / 启用新 writer；Claude hook 逐工具回核为纵深、Codex 无逐工具闸靠 stop；§4 第 3 行、§2.1 delivery 行、矩阵 P（push 后首个工具前 / mid-turn）同步；旧「接受一轮残余」表述删除 |
 
+## 1.7 沙箱设计评审 R7（CHANGES REQUESTED → 全部采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | grant episode 无可重放的 pre-grant intent；凭证轮换写在 `grantTurn` 之后，与基线（先轮换、明文 token 作 grant 参数、CommDB 同事务写入该 epoch 的 `runner_workflow_activation`）相反；崩溃恢复会再 +1 分配新 grant_id | 采纳。§2.1 新增可变 `workflow_turn_grant_operation`（allocated → credential_rotated → granted → finalized / failed，记 credential_attempt 与凭证行 id/digest），不可变 episode 行只在 finalized 写；§5.3 第 3 步按生产顺序拆阶段，恢复只续接当前未 finalized 的 grant_id：source event 不存在→以新 credential_attempt 再轮换并撤销未投递 token 后 grant，已存在→读冻结 epoch 与 CommDB 投影补写 finalized，不再轮换/grant；矩阵 F 加三处崩溃点断言 |
+| HIGH | `transfer_pending` 只有状态名，没有 CommDB 持久身份/payload/prepare-commit 协议；基线 `grantTurn` 单事务立即改 holder/epoch 并写不可变 source event，提前调=过早转授，提前占 source event=frozen replay | 采纳。§2.1 新增 CommDB `turn_transfer_intent`（intent_id = 将来的 source_event_id，expected/target 元组、fencing delivery_id、pending/committed/cancelled/superseded，同 worktree 唯一 pending）与 StateStore `workflow_invalidation_operation`（cancel/终态/换代的 durable 身份）；§5.3 e 写明 prepare（核 expected、置 admission_closed、不改 holder/epoch、不写 source event）与 commit（终态投影到达且 expected 仍匹配时原子 epoch+1 + 全部写入，重复 commit 幂等）及并发 transfer / 终态 supersede / 迟到投影闭集；矩阵 P 加 prepare 前后、投影前后、commit 中途重启与并发 transfer |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
