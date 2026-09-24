@@ -112,10 +112,11 @@ code{font:13px 'SF Mono',Menlo,monospace;background:#f2f2f7;border-radius:4px;pa
 <tr><td>进程体状态（一行 / 执行）</td><td>StateStore 新表，字段含代数、状态、完成回执、清单摘要、当前需求、持有人、原因码</td><td>物理进程生命周期的唯一真源；用「期望代数 + 期望状态」比较更新</td></tr>
 <tr><td>恢复清单（resume manifest）</td><td>Codex 扩充现有 <code>~/.flywheel/state/codex-sessions/&lt;execId&gt;/session.json</code>；Claude 新建同级 <code>claude-sessions/&lt;execId&gt;/session.json</code></td><td>会话建立时由 adapter 原子写入：非空会话编号、解析后的模型与推理力度、账号绑定、目录 realpath、git 身份、分支、最后看到的 HEAD</td></tr>
 <tr><td>退下时工作区基线</td><td>与进程体记录同一事务、同一代数冻结：<code>git status</code> 规范化摘要、index tree、每个已暂存 / 未暂存 / 未跟踪条目的路径 + 权限 + 内容 digest（只存指纹，不存正文）</td><td>拉起前逐条比对「未提交改动还在不在」的机械依据；被外部 reset / clean / 重建 worktree 都能查出来</td></tr>
-<tr><td>需求 episode（一行 / 需求）</td><td>需求来源、<span class="term">authority_mode</span>（这条需求有没有写工作目录的权限：writer 或 conversation_only）、要求的激活与 TURN 版本、过期 / 取消身份、待投递的首条输入</td><td>恢复、回放、兜底只看这条记录决定权限，不看消息文字；普通聊天消息永远不会变成写者</td></tr>
+<tr><td>需求 episode（一行 / 需求）</td><td>创建时冻结且不可变：需求来源、<span class="term">authority_mode</span>（这条需求有没有写工作目录的权限：writer 或 conversation_only）、权限来源凭据、目标节点、创建时看到的旧状态（只用来拒绝过期）、过期 / 取消身份、待投递的首条输入</td><td>恢复、回放、兜底只看这条记录决定权限，不看消息文字；普通聊天消息永远不会变成写者</td></tr>
+<tr><td>授权回执（writer 需求的一次性子记录）</td><td>真正拿到的激活编号、TURN 版本、进程代数、授权请求编号；只能从空写一次，不能改</td><td>TURN 版本在真实授权之后才存在，所以不在创建需求时猜、也不事后回填；投递首条输入必须精确匹配这张回执</td></tr>
 <tr><td>拉起记录</td><td>现有 workflow_run_event，带唯一事件号</td><td>请求 / 开始 / 核验 / 结束、结果与原因、排队耗时 / 启动耗时 / 总耗时、期望与实际的会话与模型</td></tr>
 <tr><td>dispatch 账本</td><td>现有表加 purpose 列：initial / fault_replacement / resume_fallback，两阶段迁移（先加可空列并回填历史行，再把它纳入不可改写触发器）</td><td>purpose 只由服务端按动作派生，调用方不能自报；混跑期读到空值一律按故障换人保守计数；所有额度消费者共用同一条计数查询</td></tr>
-<tr><td>park 事件流版本号</td><td>现有 park outbox 每行加 schema_version；旧读取端遇到不认识的版本只挂起、游标不前移</td><td>先部署认识新版本的读取端，全部就位后才允许写新版本；回滚时保留新读取端直到事件流排空</td></tr>
+<tr><td>park 事件流版本号</td><td>现有 park outbox 每行加 schema_version；因为现表的事件列带取值约束（CHECK），SQLite 不能就地放宽，需要一次保留全部编号的事务性表重建；旧读取端遇到不认识的版本只挂起、游标不前移</td><td>先部署认识新版本的读取端，全部就位后才允许写新版本；回滚保留放宽后的表与新读取端直到事件流排空</td></tr>
 <tr><td>park 自报与投影</td><td>现有 runner_declared_states 与 CommDB 投影加代数 / 状态引用</td><td>仍是输入与显示，不是权威</td></tr>
 </tbody>
 </table>
@@ -134,8 +135,8 @@ code{font:13px 'SF Mono',Menlo,monospace;background:#f2f2f7;border-radius:4px;pa
 <tr><td>会话身份</td><td>清单里的会话编号非空、格式合法、有可读 transcript（对话记录文件）</td><td>Codex：<code>resumeThread</code> 返回的编号必须来自响应且等于清单，不再用请求编号兜底（空编号会静默新开一个会话）；Claude：交互式 <code>--resume &lt;精确编号&gt;</code>，不带 fork，由 SessionStart 钩子回报实际编号并比对</td></tr>
 <tr><td>模型</td><td>配置解析后的模型标识（含窗口变体）与推理力度必须与原会话完全一致；改了默认值也不能替换原模型；解析不到就 model_unverified，不一致就 model_mismatch</td><td>实际生效模型不一致则不发任何业务输入</td></tr>
 <tr><td>工作目录与分支</td><td>目录 realpath、git 公共目录、worktree 登记、分支引用一致；共享分支 HEAD 允许因后续节点合法提交前移，不要求相等，也绝不自动 reset / checkout</td><td>记下当前 HEAD 与未提交改动摘要；把「上次看到的 HEAD → 现在的 HEAD」差异作为首条输入的前置内容，防止模型用退下时的旧文件内容作答</td></tr>
-<tr><td>未提交改动</td><td>把退下时的工作区基线逐条比对：每个条目要么还在且指纹相同，要么已进入合法的后继提交，要么被后继提交改过；解释不了的（被清掉、被外部 reset、worktree 被重建）判 workspace_baseline_mismatch 挂起并列出路径。退下时的 HEAD 必须是现在 HEAD 的祖先，被 rebase / 重写判 head_rewritten 挂起</td><td>基线到现在的差异先存进待投递信封，不在核验前进模型</td></tr>
-<tr><td>写权限</td><td>不从旧清单复活 TURN</td><td>顺序固定：① 身份 / 模型 / 目录 / 进程核验通过才算 resume_verified → ② 重建可见终端 → ③ 只有 writer 需求才去申请当前 TURN 与激活 → ④ 申请成功后，信封与原需求一次性投递为首条业务输入。TURN 申请失败时信封保留、不投递</td></tr>
+<tr><td>未提交改动</td><td>把退下时的工作区基线逐条比对，只有两种情况自动通过：条目还在且指纹相同；或者退下时那份精确内容先进入了后来的某个提交、之后再被改。「后来有提交改了同一个路径」本身不算通过——「A 被合法改成 B」和「A 先丢了、别人新建了 B」在现在的 HEAD 上长得一样，分不清就挂起。解释不了的（被清掉、被外部 reset、worktree 被重建、同路径替换）判 workspace_baseline_mismatch 挂起并列出路径。退下时的 HEAD 必须是现在 HEAD 的祖先，被 rebase / 重写判 head_rewritten 挂起</td><td>基线到现在的差异先存进待投递信封，不在核验前进模型</td></tr>
+<tr><td>写权限</td><td>不从旧清单复活 TURN</td><td>顺序固定：① 身份 / 模型 / 目录 / 进程核验通过才算 resume_verified → ② 重建可见终端 → ③ 只有 writer 需求才走原工作流的持有人激活路径申请当前 TURN 与激活，拿到后写一张只能写一次的授权回执 → ④ 投递必须精确匹配这张回执与当前进程代数，信封与原需求一次性投递为首条业务输入。TURN 申请失败时信封保留、不投递；需求创建后 TURN 已变的，只认真实新授权，旧需求旧回执不投</td></tr>
 </tbody>
 </table>
 <p>Claude 今天在交互 tmux 模式下明确不 resume（<code>TmuxAdapter.ts</code> 注释「previousSession intentionally ignored」），所以要在会话建立时保存实际会话编号，而不是等进程退出再存。每次拉起都记录排队耗时、启动到身份确认的耗时、需求到首条输入被消费的总耗时；单次启动 180 秒超时，两个厂商同值。</p>
@@ -151,7 +152,7 @@ code{font:13px 'SF Mono',Menlo,monospace;background:#f2f2f7;border-radius:4px;pa
 <thead><tr><th>情况</th><th>自动动作</th><th>记在哪本账 · founder 看到什么</th></tr></thead>
 <tbody>
 <tr><td>瞬态启动 / 通信超时</td><td>确认清理后 10 秒再试一次，总计最多 2 次</td><td>恢复额度 · 「重试中」，标明超时阶段</td></tr>
-<tr><td>会话编号空 / 错、transcript 不可读</td><td>不再试坏的编号；只有 writer 需求（既有权威的返工 / 阶段唤醒）允许一次明确的新执行兜底；普通聊天消息遇到坏编号只挂起、消息保留，不会因此产生新的写者</td><td>恢复额度 · 「原对话恢复失败，已重新开始」；兜底只继承原需求的权限，不放大</td></tr>
+<tr><td>会话编号空 / 错、transcript 不可读</td><td>不再试坏的编号；两类需求都有一次明确的新执行兜底：writer 需求（既有权威的返工 / 阶段唤醒）走换写者；普通聊天消息 / gate 回复走「无写权限的新会话」——能继续聊，但拿不到激活、TURN、提交凭证，写工具和完成路由被服务端拒绝</td><td>恢复额度 · 「原对话恢复失败，已重新开始」（普通消息显示「已用新会话继续交谈，无写权限」）；兜底只继承原需求的权限，不放大</td></tr>
 <tr><td>模型 / 目录 / 分支 / 账号不符、持有人冲突</td><td>不自动兜底；挂起并给出修复入口</td><td>不扣任何额度 · 显示期望 vs 实际（脱敏）</td></tr>
 <tr><td>清理不明（cleanup_unconfirmed）</td><td>闩住：不重试、不兜底；founder 面 canResume=false</td><td>不扣故障额度 · 只能由 Lead 审计重开（留 actor / 时间 / 原因，旧尝试保留，额度从重开点重算）</td></tr>
 <tr><td>兜底本身也启动失败</td><td>不在原需求下继续循环</td><td>挂起等 Lead；修复后审计重开</td></tr>
@@ -228,7 +229,7 @@ code{font:13px 'SF Mono',Menlo,monospace;background:#f2f2f7;border-radius:4px;pa
 <h2>这是工程设计，不是上线验收</h2>
 <p><b>本单做了：</b>源码审计（六处打断点重新定位 + 全部额外消费者）、退下协议、拉起核对、失败分账、founder 三态、开放项默认值、分期建议，以及这份说明；文档在设计评审门通过后才交卷。</p>
 <p><b>本单没做：</b>没有改生产代码、没有部署、没有重启服务、没有操作真实会话或凭证；上游产品原型的 11 秒 / 66 秒恢复耗时是观测值不是 SLA；Claude 大 transcript 的恢复上界未证。</p>
-<p><b>沙箱说明：</b>本轮在 QA 沙箱重新定稿，源码锚点沿用生产树（经 origin/flywheel-FLY-2808 读取，代码基线 abce27a27；产品 PRD 固定为可解析的 blob f0e5610d）；沙箱旧快照不含泛化引擎模块，本地只核到 declare-state.ts 与 TmuxAdapter.ts 两处。设计评审在沙箱重新走了一遍：第一轮 6 条意见（3 高 / 2 中 / 1 低）全部采纳，明细在 follow-ups.md。</p>
+<p><b>沙箱说明：</b>本轮在 QA 沙箱重新定稿，源码锚点沿用生产树（经 origin/flywheel-FLY-2808 读取，代码基线 abce27a27；产品 PRD 固定为可解析的 blob f0e5610d）；沙箱旧快照不含泛化引擎模块，本地只核到 declare-state.ts 与 TmuxAdapter.ts 两处。设计评审在沙箱重新走了一遍：第一轮 6 条（3 高 / 2 中 / 1 低）、第二轮 4 条（均高：TURN 授权时序、普通消息也要有无写权限的兜底、未提交内容谱系证明、park 事件表 CHECK 迁移）全部采纳，明细在 follow-ups.md。</p>
 <p><b>后续必须证明的：</b>两个厂商与全部节点表现一致；QA 打回实现再复验时原对话真的还在；Claude 交互钩子能给出模型与身份的有效证据；Codex resume 自动恢复 goal 时的安全暂停时序；各 UI 最终消费者清单；退下后按 PID 核验的内存真的下降。以上是 N3 / N4 / N5 启用前的硬验收，不以「后续优化」绕过。</p>
 <div class="comment"><label for="c-boundary">对这一节的意见</label><textarea id="c-boundary" data-comment data-title="11 诚实边界"></textarea></div>
 </section>

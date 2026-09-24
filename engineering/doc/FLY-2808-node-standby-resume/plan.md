@@ -47,7 +47,8 @@ StateStore 是工作流/激活权威；CommDB 是消息和状态投影。`runner
 | 现有 park outbox + CommDB projection | 现有精确身份字段，增加 carrier generation/state/reference；逐条 source_row_id 有序投影 | 同事务写 outbox；落后时 held/pending，不从旧投影推断死活 |
 | adapter resume manifest | schemaVersion、execId、vendor、非空 provider sessionId、resolvedModel（含窗口变体）、effort、home/account binding、canonical cwd、git commonDir/worktree identity、branch ref、lastObservedHead、validatedAt | adapter 在实际会话建立时保存，atomic rename；Codex 扩充现有 session.json，Claude 新建同级 claude-sessions/<execId>/session.json |
 | 退下时工作区基线（retire baseline，同代冻结，随载体记录/manifest 一起写） | `git status --porcelain=v2 -z` 的规范化摘要、index tree id、每个 staged/unstaged/untracked 条目的路径+mode+内容 digest（不存文件正文）、HEAD、branch ref、capturedAt、generation | 控制器在 active→retiring 事务中捕获；拉起前逐条比对（§5.2），是矩阵 B/E 的机械验收依据 |
-| 需求 episode（demand，一行/需求） | demand_id、source_kind（rework/phase_wake/gate_response/mailbox）、`authority_mode = conversation_only \| writer`、要求的 activation_id 与 TURN epoch（writer 才有）、expiry、cancel identity、episode 主键（首需求 id）、pending envelope（待投递的首条输入，含 HEAD/dirty 前移摘要） | 由既有 rework/phase-wake/gate/mailbox 入口在创建需求时冻结；恢复、回放、兜底只按此记录判断权限，不从消息文本或调用方参数推断 |
+| 需求 episode（demand，一行/需求） | 创建时冻结且不可变：demand_id、source_kind（rework/phase_wake/gate_response/mailbox）、`authority_mode = conversation_only \| writer`、authority provenance（来源 request/event id，如 workflow_rework_request id）、目标 run/node/attempt、创建时观察到的旧状态 fence（当时的 activation_id / TURN epoch，只用于拒绝过期，不当未来授权）、expiry、cancel identity、episode 主键（首需求 id）、pending envelope（待投递的首条输入，含 HEAD/dirty 前移摘要） | 由既有 rework/phase-wake/gate/mailbox 入口在创建需求时冻结；恢复、回放、兜底只按此记录判断权限，不从消息文本或调用方参数推断 |
+| grant receipt（需求 episode 的 set-once 子记录，仅 writer） | granted_activation_id、granted_turn_epoch、carrier generation、grant request id、grantedAt；只能写一次（CAS 从空到值），不能更新 | §5.3 第 3 步在原工作流真实 grant 之后封存；第 4 步投递必须精确匹配该 receipt 与当前 carrier generation。创建需求时不存在未来的 epoch，所以不在创建时冻结、不猜、不事后回填 |
 | 原 workflow_run_event | event_uid、完整身份/generation、demand_id、尝试序号、requested/started/verified/finished、result、reason、queueMs/startupMs/totalMs、expected/observed session/model、fallback execution link | 控制器事实，去重事件；不保存口令/完整环境/凭证 |
 | 现有 dispatch ledger（workflow_side_effect_ledger） | 新增 purpose = initial/fault_replacement/resume_fallback，source_demand_id；launchOrdinal 继续单调排序；两列在迁移完成后纳入 identity immutable trigger | purpose 只由 StateStore 单一 API 按服务端动作派生，外部调用方不得传值；原会话恢复不制造 dispatch；迁移与 NULL 语义见 §9 |
 
@@ -106,7 +107,7 @@ Codex session.json 是会话 handle 真源，carrier 只存引用摘要；Claude
 
 现有 durable rework/phase-wake/gate-response/mailbox 是需求来源，不新建一条易丢的通知队列。每条需求保留原 ID；同 exec 的并发需求共享一次载体恢复，消息各自保留并在恢复后顺序消费。首需求 ID 作为恢复批次主键，后续消息不能重置额度。
 
-每条需求在创建时冻结 `authority_mode`（§2.1 需求 episode）：只有既有权威的 rework / phase-wake 才是 `writer`，并同时冻结它要求的 activation 与 TURN epoch；普通 mailbox 文字与 gate response 是 `conversation_only`。conversation_only 只允许恢复交谈，不授予写工作目录权限，也不能触发 writer replacement；写入仍须当前 activation 与 TURN，并且只能由 writer 需求经原工作流的 holder 激活路径（沿用 `workflow-rework-coordinator` 先 reentry/worktree 检查、再 activate holder、再生成 activation/TURN 的顺序）取得。同一恢复批次里混有两类需求时，批次权限取各需求各自的记录，不向上合并。
+每条需求在创建时冻结 `authority_mode`（§2.1 需求 episode）：只有既有权威的 rework / phase-wake 才是 `writer`；普通 mailbox 文字与 gate response 是 `conversation_only`。创建时冻结的是权限来源（provenance）和旧状态 fence，不是未来的 activation/TURN——生产路径里 rework 先持久化请求，`workflow-rework-coordinator` 做完 reentry/worktree/holder 激活后才 admission，`grantTurn` 之后才有 epoch，所以真实的 activation/epoch 只能在 §5.3 第 3 步 grant 后写进 set-once 的 grant receipt。保存旧 epoch 当授权会错误拒绝合法 grant，猜未来 epoch 会与 TURN 权威竞争，事后回填违反创建时冻结，三者都禁止。conversation_only 只允许恢复交谈，不授予写工作目录权限，也不能触发 writer replacement；写入仍须当前 activation 与 TURN，并且只能由 writer 需求经原工作流的 holder 激活路径（沿用 `workflow-rework-coordinator` 先 reentry/worktree 检查、再 activate holder、再生成 activation/TURN 的顺序）取得。同一恢复批次里混有两类需求时，批次权限取各需求各自的记录，不向上合并。
 
 每个 canonical worktree 只一位写持有人和一次恢复。不同 worktree 全机最大 2 个恢复中，叠加现有 capacity/admission；排队 FIFO，已取消/过期项剔除。继续生产执行不占“恢复中”槽。等待超过 5 分钟显示排队原因，但不计恢复失败；本地容量不足只等待，不拉新账号或静默换模型。
 
@@ -116,7 +117,7 @@ Codex session.json 是会话 handle 真源，carrier 只存引用摘要；Claude
 - 读取 adapter 原 manifest：sessionId 非空且存在可读 transcript、execId/vendor/home/账户与不可变 runtime 绑定匹配。凭证重新按当前 authority 注入，不把旧凭证当许可；不在本单添加跨账号迁移。
 - 配置解析后的模型标识（包括窗口变体）、effort 与原会话完全匹配；同时校验当前 provider 可用能力。改过节点默认值也不能替换原模型。无法确认则 model_unverified；不匹配则 model_mismatch，调用模型前拒绝。失败显式兜底仍使用原冻结模型，换模型必须另有 Lead 决策。
 - cwd realpath、git commonDir、worktree 登记和分支 ref 与原身份一致。共享分支 HEAD 可因后续节点合法提交而前移；不要求退下时 HEAD 相等，更不能自动 reset/checkout。HEAD 合法变化规则：退下基线的 HEAD 必须是当前 HEAD 的祖先（fast-forward）；不是祖先（rebase / reset / force 重写）判 `head_rewritten` 并 hold。启动瞬间记下当前 HEAD/dirty 摘要，恢复过程不修改它们；若有另一合法 writer 则等待 TURN。目录不存在/分支不符/dirty 状态丢失不能自动覆盖。
-- 逐条比对退下时工作区基线（§2.1）：每个 staged/unstaged/untracked 条目判定为「仍在工作树且 digest 相同」「已进入合法后继提交（内容出现在基线 HEAD..当前 HEAD 的某个提交）」「被合法后继提交修改」之一即通过；任一条目无法解释（被清掉、被外部 reset/clean、worktree 重建或同路径替换、index tree 不符）判 `workspace_baseline_mismatch` 并 hold，给 Lead 看 expected/observed 路径清单（脱敏），不自动覆盖也不自动继续。比对通过后，基线→当前的差异（合法前移提交、被后继修改的条目）进入需求 episode 的 pending envelope，作为拉起后首条输入的前置内容。
+- 逐条比对退下时工作区基线（§2.1）。自动通过只有两种：(a) 当前工作树/index 仍有同路径、同 mode、同 digest 的条目；(b) 基线的**精确 blob+mode** 先进入了基线 HEAD..当前 HEAD 谱系中某个提交（`git log --find-object=<blob>` 可验证），在此之后沿该谱系发生的进一步修改才可接受。「后继提交改了同路径」本身不是通过条件：未跟踪文件 `x`（digest A）被删除、后继节点以内容 B 新建并提交 `x`，与「A 被合法改成 B」在当前 HEAD 上同构，只凭基线 digest 与 Git 历史无法区分，必须 hold。若将来要允许 A 直接变 B，需要新增受 TURN/writer fence 保护的 before/after digest mutation receipt，本设计不含。任一条目无法解释（被清掉、被外部 reset/clean、worktree 重建、同路径替换、index tree 不符）判 `workspace_baseline_mismatch` 并 hold，给 Lead 看 expected/observed 路径清单（脱敏），不自动覆盖也不自动继续。比对通过后，基线→当前的差异（合法前移提交、被后继修改的条目）进入需求 episode 的 pending envelope，作为拉起后首条输入的前置内容。
 
 ### 5.3 adapter 与拉起后
 
@@ -128,8 +129,8 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 
 1. 核验实际会话身份、model、cwd、进程身份 → 持久 `resume_verified`。`resume_verified` 只表示这四项核验通过，不包含任何业务输入。
 2. 重建可见且 attachable 的 runner TUI，核当前窗口绑定；更新 transport 注册及 identity epoch。standby 本身允许无窗口；active/resuming 必须有可见 TUI 或显示启动中的确切原因。
-3. 按需求 episode 的 `authority_mode` 取权限：writer 需求在此处对当前 activation/TURN 做 CAS（走原工作流 holder 激活路径），失败则 hold 并显示等待 TURN；conversation_only 需求不做 TURN 申请，也不激活 holder。
-4. 只有第 3 步结束后，才把 pending envelope（基线→当前 HEAD 的提交/文件变更摘要与 dirty 差异，见 §5.2；原会话缓存的是退下时刻的文件内容，fresh 会重新读盘而 resume 不会）与原需求**一次性、原子地**投递为首条业务输入，开始 durable delivery。摘要先持久在 envelope 里，不在核验前进入模型；TURN CAS 失败时 envelope 保留，不投递。
+3. 按需求 episode 的 `authority_mode` 取权限：writer 需求在此处走原工作流 holder 激活路径（reentry → worktree → holder activation → admission → `grantTurn` → 记录 turn，顺序不变），真实 grant 成功后把 granted_activation_id / granted_turn_epoch / carrier generation 以 set-once CAS 写入 grant receipt；失败则 hold 并显示等待 TURN，receipt 保持为空。conversation_only 需求不做 TURN 申请，也不激活 holder，没有 receipt。
+4. 只有第 3 步结束后，才把 pending envelope（基线→当前 HEAD 的提交/文件变更摘要与 dirty 差异，见 §5.2；原会话缓存的是退下时刻的文件内容，fresh 会重新读盘而 resume 不会）与原需求**一次性、原子地**投递为首条业务输入，开始 durable delivery。writer 投递必须精确匹配 grant receipt 与当前 carrier generation；需求创建后 TURN 已变化的，只有取得真实新 epoch 的 receipt 才能投递，旧 demand/旧 receipt 不得投递。摘要先持久在 envelope 里，不在核验前进入模型；TURN CAS 失败时 envelope 保留，不投递。
 
 首轮可观察模型消费回执后记 resume_succeeded；队列投递成功、启动退出码 0 或窗口存在都不是成功。
 
@@ -146,13 +147,18 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 | 分类 | 自动动作 | 预算和人看到的原因 |
 |---|---|---|
 | 瞬态启动/通信超时 | 清理确认后 10 秒再试一次；总计最多 2 次 | resume attempt；显示重试中，记超时阶段 |
-| 空/错会话 ID、transcript 不可读或损坏 | 不再试同一个坏 handle；允许一次显式 fresh fallback | resume failure + fallback，各自记账；显示上下文无法恢复 |
+| 空/错会话 ID、transcript 不可读或损坏 | 不再试同一个坏 handle；允许一次显式 fresh fallback（writer 需求 → writer replacement；conversation_only 需求 → 无写权限的新会话，见下文） | resume failure + fallback，各自记账；显示上下文无法恢复 |
 | 模型/目录/分支/账户不符、owner 冲突、清理不明 | 不自动 fresh；hold 并给修复/重新授权入口 | 不扣故障预算；显示具体 expected/observed（脱敏） |
 | fresh fallback 的启动失败 | 不在原需求下继续兜底循环 | 一次 fallback 耗尽，hold，Lead 修复后以审计操作重开恢复额度 |
 | 清理不明（cleanup_unconfirmed）闩锁 | 不重试、不兜底；founder 面 `canResume=false`，标为出问题 | 不扣故障预算；只能经 Lead 审计重开路径（记录 server 侧 actor/时间/原因与旧尝试边界，reason 改 `operator_reopened`）解锁，之后恢复额度从审计边界重新计数，旧尝试留痕不删 |
 | 成功运行后意外死亡 | 原死亡证明 + 故障换人路径 | fault_replacement，最多原有 3 次，与恢复额度隔离 |
 
-兜底继承而不扩大原需求的权限：只有 `authority_mode = writer` 的需求（既有权威 rework / phase-wake）才走 writer replacement；conversation_only 需求遇到坏 handle 不产生新 writer、不激活 holder，只把该需求标为 `resume_failed(context_unavailable)` 并 hold 等 Lead 或下一条 writer 需求，消息保留不丢。写权限来源永远是原工作流的 holder 激活路径，兜底只是换了载体。兜底是可行时自动让单子继续的路径：当前 writer 需求有效、原载体已证明不在、原工作目录/分支/模型可用、原 writer 已 fenced，控制器事务产生 `resume_fallback` receipt，调用既有 writer replacement、分配新 execId，并重新绑定本节点当前 activation/TURN/未消费需求。保留 node 身份和完成/返工历史；UI 明示“原对话恢复失败，已重新开始”，不能显示“原会话已恢复”。原 exec 终结并拒绝后续输出；旧 gate 答案按既有明确 rebind 规则迁移，无法迁移则新建相应 gate，不能抄 APPROVED/ship authority。重做输入仅含既有工件、进度和合法需求，不假装完整上下文。
+兜底继承而不扩大原需求的权限，但两类需求都有兜底（PRD §4.4「拉不起来时这一单还能往下走」与成功标准 5 对所有需求成立）：
+
+- `writer` 需求（既有权威 rework / phase-wake）：走 writer replacement（下文）。
+- `conversation_only` 需求：走 **conversation-only fresh fallback**——可以新建会话/载体（新 execId、新 carrier generation、原模型、原目录），但该载体**不获得** activation、TURN、output/submission credential 或 writer replacement 身份；写工具与 completion 路由继续被服务端守门（PreToolUse/SessionStart 守门与 complete 路由按无 activation 拒绝）。原消息保留并按独立 fallback 预算投递，DTO 显示 `contextLoss=true`、「原对话恢复失败，已用新会话继续交谈（无写权限）」。之后若同节点来了 writer 需求，按 §5 正常对该新载体核验后走 holder 激活取得写权限，不继承任何旧凭证。
+
+写权限来源永远是原工作流的 holder 激活路径，兜底只是换了载体。兜底是可行时自动让单子继续的路径：当前 writer 需求有效、原载体已证明不在、原工作目录/分支/模型可用、原 writer 已 fenced，控制器事务产生 `resume_fallback` receipt，调用既有 writer replacement、分配新 execId，并重新绑定本节点当前 activation/TURN/未消费需求。保留 node 身份和完成/返工历史；UI 明示“原对话恢复失败，已重新开始”，不能显示“原会话已恢复”。原 exec 终结并拒绝后续输出；旧 gate 答案按既有明确 rebind 规则迁移，无法迁移则新建相应 gate，不能抄 APPROVED/ship authority。重做输入仅含既有工件、进度和合法需求，不假装完整上下文。
 
 目录丢失场景无法凭空保证未提交内容：有已验证 checkpoint 才可按既有 resolver 在新目录恢复，明确缺失内容和上下文；没有则 Lead 选择可审核的工作副本/重做范围，单子保留 held 可恢复，绝不判 retry_limit 死单。模型改变同样要独立决策。安全条件满足后的 fresh fallback 必须有成功路径验收，不用“永远告警等待”替代兜底。
 
@@ -187,19 +193,19 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 | B | QA 打回实现→实现改完退下→QA 原会话复验；设计被打回 | 原 exec/provider id/模型、当前 activation/TURN、原上下文问答与工具消费记录；同目录当前分支及 dirty 保留，且以退下基线逐条 digest 比对为准，不以「未执行 reset」代替 |
 | C | 空 ID、错误 ID、响应 ID 缺失/不等 | 启动前拒空；响应不等不发业务 prompt/工具；没有 silent fresh；有可见原因 |
 | D | 模型/窗口/effort/账户错配，默认模型已变 | 模型调用前拒绝；无 60 秒后才发现的错误；不自动换模型 |
-| E | 目录缺失、改分支、合法 HEAD 前移、未提交改动；staged/unstaged/untracked 各自被外部删除或还原、worktree 重建、同路径替换、rebase/non-fast-forward | 缺失/改分支 hold；合法前移通过且前移摘要已送达被恢复会话（首条输入可见）；每类 dirty 条目丢失都判 `workspace_baseline_mismatch` hold 并列出路径；非祖先 HEAD 判 `head_rewritten`；不得 reset/清理 dirty |
+| E | 目录缺失、改分支、合法 HEAD 前移、未提交改动；staged/unstaged/untracked 各自被外部删除或还原、worktree 重建、同路径替换、rebase/non-fast-forward；反例：未跟踪 `x`(A) 被删后由后继提交以内容 B 新建同路径 | 缺失/改分支 hold；合法前移通过且前移摘要已送达被恢复会话（首条输入可见）；每类 dirty 条目丢失都判 `workspace_baseline_mismatch` hold 并列出路径；A→删除→B 同路径提交必须 hold（不能被「后继提交改了」放行）；基线精确 blob 先入谱系再被改则通过；非祖先 HEAD 判 `head_rewritten`；不得 reset/清理 dirty |
 | F | Bridge 分别在 intent、投影、stop、退出、spawn、身份确认、投递后重启 | 每点都只有一个身体；回执可补写；旧代数 kill/finally 不生效；模型不双消费 |
 | G | 多需求/两节点同时打回、跨目录三需求、容量紧张 | 同目录一个恢复/写者；跨目录最多2；第三个排队；无丢信/重复扣账/饥饿 |
 | H | 只有 park 的意外死亡 vs 批准退下，身份探测不明 | 前者故障路径；后者待命；不明不 kill/replace；取消赢过旧 ACK |
-| I | 强制坏 transcript→一次显式兜底成功 | 原对话丢失可见；新 exec lineage 正确；工作流继续；原 fault count 原值不变 |
+| I | 强制坏 transcript→一次显式兜底成功；分别对 writer 需求与 conversation_only 需求 | 原对话丢失可见；新 exec lineage 正确；工作流继续；原 fault count 原值不变；conversation_only 兜底载体无 activation/TURN/credential，写工具与 complete 路由被服务端拒绝，消息仍被消费 |
 | J | 2 次超时、兜底失败、之后真实崩溃 | 有界，hold 有恢复入口；fallback 不扣 fault；真故障最多3，ordinal 不当预算 |
 | K | TTL 过期消息、投影落后、terminal closeout 与恢复竞争 | 不消费过期消息、不移交虚假 TURN、不清待命；终态禁止恢复，旧凭证拒绝 |
 | L | 退下后重启 Bridge，无任何需求 | 不拉进程、不报死亡；所有专属 daemon/子进程消失，内存按 PID 核验 |
 | M | 页面/标题/状态工具真实浏览器 | 三态与阶段/时间/可恢复性一致；转义恶意文本；刷新/移动端可读；不能用 DTO 单测代替 |
 | N | 旧 snapshot、旧 adapter、新数据库；回滚前仍有 standby | 不部分启用；未知代数 fail closed；可恢复后再退旧版，无遗留无进程节点被旧版判死 |
 | O | retirement_unconfirmed 后迟到退出；Bridge 在 60 秒 deadline 前/后重启；需求在 problem 中到达 | 迟到同代退出自动转 standby；重启后按 durable step 收敛不重复 kill；problem 中需求只排队不拉起 |
-| P | 普通 mailbox 坏 handle、gate response 坏 handle、TURN 已转授、stage/send/consume 各崩溃点 | conversation_only 不产生 writer/不激活 holder；HEAD/dirty 摘要不在 TURN CAS 前进入模型；崩溃后 envelope 与需求一次性投递不双发 |
-| Q | 旧 projector fixture + v2 outbox 行；cursor 不越过首个未知行；升级后从同 row_id 重放 | 旧 projector 对未知 schema_version hold 且 `last_row_id` 不前移；新 projector 重放同一行得到相同投影 |
+| P | 普通 mailbox 坏 handle、gate response 坏 handle、TURN 已转授、需求创建后 TURN 变化再恢复、stage/send/consume 各崩溃点 | conversation_only 不产生 writer/不激活 holder 但仍有无写权限兜底；HEAD/dirty 摘要不在 TURN CAS 前进入模型；writer 投递只匹配真实 grant 后的 receipt，旧 demand/旧 receipt 不投递；grant receipt set-once 不可改；崩溃后 envelope 与需求一次性投递不双发 |
+| Q | 从 abce27a27 的真实建表 SQL 建库 → 跑 outbox rebuild 迁移 → 旧 writer 写 v1、新 writer 写 v2、回滚、cursor 重放；不只喂 projector 内存 fixture | 迁移保留全部 row_id/event_id/generation 且旧行 schema_version=1；旧 writer 迁移后仍能插 v1；v2 event 插入通过新 CHECK；旧 projector 对未知 schema_version hold 且 `last_row_id` 不前移；新 projector 重放同一行得到相同投影 |
 | R | 旧 binary 写入 dispatch 行（purpose NULL）→ 回滚 → 再前滚；所有计数消费者 | NULL 保守读为 fault_replacement；回填与 trigger 替换不互锁；eligibility/backoff/environment/告警文案共用同一计数查询（断言唯一调用点） |
 
 相关命令（实现时跑精确文件，不跑全仓/真 GUI 测试）：
@@ -212,13 +218,14 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 
 ## 9. 迁移、版本与回滚
 
-schema 仅加字段/表/索引，唯一例外是 dispatch ledger 的 identity immutable trigger 允许按下述两阶段替换。
+schema 仅加字段/表/索引，只有两个显式例外：(1) dispatch ledger 的 identity immutable trigger 按下述两阶段替换；(2) `workflow_engine_park_outbox` 的事务性表重建（下述），因为基线 `event` 列带 `CHECK(event IN ('park_opened','park_cleared'))`，SQLite 不能靠 `ADD COLUMN` 扩宽已有列的 CHECK，不重建则首个 v2 event 插入即失败。
 
 park outbox wire contract（现状：事件 CHECK 只有 `park_opened|park_cleared`，旧 `applyWorkflowEngineParkEvents` 把非 `park_opened` 一律当 cleared 并无条件推进 `last_row_id`，因此「旧投影遇新事件先 hold」必须落成可执行合同）：
 
-- 每行新增 `schema_version`（现有行视为 1）；载体状态以新 event 值 + v2 字段表达，不复用 v1 事件名承载新语义。
+- 表重建迁移：单事务 `CREATE new → INSERT SELECT → DROP old → RENAME`，保留全部 row_id / event_id / generation 及索引，现有行写入 `schema_version=1`；新 CHECK 按版本约束接受 v1 与 v2 event（v1 行仍只能是 `park_opened|park_cleared`），旧 writer 迁移后继续能写 v1。
+- 每行新增 `schema_version`；载体状态以新 event 值 + v2 字段表达，不复用 v1 事件名承载新语义。
 - projector 对未知 `schema_version` 或未知事件值：标记 poison/hold，`last_row_id` 停在首个未知行之前，不丢弃、不推进；hold 期间该 exec 的投影视为「落后」，控制器按 §2.2 不得 stop/resume/replace。
-- 两阶段发布：先部署能拒绝未知版本并上报 capability 的 reader/projector（v2-aware，但 writer 仍写 v1）；全部 projector 上报支持后，才允许 writer 发 v2 行。回滚保留 v2 projector 直到 outbox 排空。
+- 两阶段发布：先部署能拒绝未知版本并上报 capability 的 reader/projector（v2-aware，但 writer 仍写 v1）；全部 projector 上报支持后，才允许 writer 发 v2 行。回滚保留扩宽后的 schema 与 v2 projector 直到 outbox 排空，不回退表结构。
 - 集成测试见 §8.1 场景 Q。
 
 dispatch ledger purpose 迁移（现状：`workflow_side_effect_identity_immutable` 只保护 run/node/attempt/kind/launch_ordinal/execution_id/created_at，旧 binary 的 INSERT 不写新列）：

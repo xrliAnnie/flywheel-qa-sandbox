@@ -26,6 +26,15 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | MEDIUM | `retirement_unconfirmed` 无收敛状态机 | 采纳。§3 新增闭集转换表（迟到同代退出→standby、仍活→fenced problem+stop-retry/safe-takeover、indeterminate→hold、Lead return-active、problem 中需求只排队）；§1 与 lifecycle 图补对应边；矩阵新增场景 O |
 | LOW | PRD 引用 `25cf13506e…` 在本仓库不可解析 | 采纳。exploration.md 与 plan §2 改为 blob `f0e5610d…` + 首次可见提交 `40cde65e9…`；收据 schema 由 Bridge 固定，PRD blob 在 plan 正文固定 |
 
+## 1.2 沙箱设计评审 R2（CHANGES REQUESTED → 全部采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | writer 需求创建时无法冻结尚未产生的 activation/TURN epoch（生产 rework 先持久化请求，holder 激活 → admission → grantTurn 后才有 epoch） | 采纳。§2.1 需求 episode 只冻结不可变的 provenance / 目标 / 旧状态 fence；新增 set-once grant receipt 子记录，§5.3 第 3 步真实 grant 后封存，第 4 步投递精确匹配 receipt + carrier generation；矩阵 P 加「创建后 TURN 变化再恢复，旧 demand/旧 receipt 不投递」 |
+| HIGH | conversation_only 坏 handle 只 hold 没有兜底，违背 PRD §4.4 与成功标准 5 | 采纳。§6 新增 conversation-only fresh fallback：可新建无写权限的会话/载体（无 activation/TURN/credential，写工具与 complete 路由服务端拒绝），原消息按独立 fallback 预算投递，`contextLoss=true`；矩阵 I 分 writer / conversation_only 两路验收 |
+| HIGH | 「被后继提交修改」与「dirty 先丢失、同路径后被替换」在当前 HEAD 上同构，仅凭基线 digest 无法区分 | 采纳。§5.2 自动通过收窄为：工作树/index 仍有同 digest，或基线精确 blob+mode 先进入谱系（`git log --find-object`）后再被改；A→删除→B 同路径提交必须 hold；mutation receipt 明确不在本设计；矩阵 E 加该反例 |
+| HIGH | 基线 `workflow_engine_park_outbox.event` 有 CHECK，SQLite 无法用 ADD COLUMN 扩宽，v2 event 插入即失败；而 §9 又禁止此迁移 | 采纳。§9 新增第二个迁移例外：outbox 事务性表重建（保留 row_id/event_id/generation，旧行 schema_version=1，新 CHECK 按版本约束 v1/v2，旧 writer 仍可写 v1）；回滚不回退表结构；矩阵 Q 改为从 abce27a27 真实建表 SQL 起跑迁移 |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
