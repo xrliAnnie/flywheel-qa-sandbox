@@ -29,6 +29,7 @@ const PCM24 = {
 } as const;
 const DEFAULT_FRONTEND_AUDIO_IDLE_MS = 1_000;
 const DEFAULT_FOUNDER_TURN_SETTLE_TIMEOUT_MS = 10_000;
+const DEFAULT_FOUNDER_TURN_MAX_HOLD_MS = 45_000;
 const UNKNOWN_TAIL_RECHECK_MS = 250;
 
 function isLeadCue(text: string): boolean {
@@ -70,6 +71,10 @@ export interface LiveLeadAdapterOptions {
 	frontendAudioIdleMs?: number;
 	/** Upper bound for waiting on an answer once the founder stops talking. */
 	founderTurnSettleTimeoutMs?: number;
+	/** Absolute bound on one founder turn holding readbacks, measured from
+	 * her latest start; covers a lost utterance end or a response that never
+	 * finalizes. */
+	founderTurnMaxHoldMs?: number;
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
 	record(event: Record<string, unknown>): void;
@@ -138,6 +143,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private readonly maxSuspendedInputBytes: number;
 	private readonly frontendAudioIdleMs: number;
 	private readonly founderTurnSettleTimeoutMs: number;
+	private readonly founderTurnMaxHoldMs: number;
 	private readonly setTimeoutFn: typeof setTimeout;
 	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
@@ -164,6 +170,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private founderTurnResponding = false;
 	private delegationsInFlight = 0;
 	private founderTurnTimer?: ReturnType<typeof setTimeout>;
+	private founderTurnHoldTimer?: ReturnType<typeof setTimeout>;
 
 	constructor(private readonly options: LiveLeadAdapterOptions) {
 		this.sessionId = options.sessionId;
@@ -177,6 +184,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.founderTurnSettleTimeoutMs =
 			options.founderTurnSettleTimeoutMs ??
 			DEFAULT_FOUNDER_TURN_SETTLE_TIMEOUT_MS;
+		this.founderTurnMaxHoldMs =
+			options.founderTurnMaxHoldMs ?? DEFAULT_FOUNDER_TURN_MAX_HOLD_MS;
 		this.maxSuspendedInputBytes = maxSuspendedInputMs * 48;
 		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
 		this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
@@ -203,6 +212,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.founderTurnSettleTimeoutMs > 60_000
 		)
 			throw new Error("live_lead_founder_turn_timeout_invalid");
+		if (
+			!Number.isSafeInteger(this.founderTurnMaxHoldMs) ||
+			this.founderTurnMaxHoldMs < 1 ||
+			this.founderTurnMaxHoldMs > 600_000
+		)
+			throw new Error("live_lead_founder_turn_max_hold_invalid");
 		if (
 			options.room.identity.sessionId !== options.sessionId ||
 			options.room.identity.generation !== options.generation ||
@@ -463,9 +478,11 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				});
 				if (!this.founderTurnPending) return;
 				this.founderTurnResponding = false;
-				// "我问下 Lead" only announces a delegation; the turn is answered
-				// once that delegation has been handled.
-				if (!isLeadCue(event.text)) this.founderTurnAnswered = true;
+				// "我问下 Lead" only announces a delegation (answered once that is
+				// handled), and an interrupted final is the reply she talked over,
+				// not an answer to what she is saying now.
+				if (!isLeadCue(event.text) && !event.interrupted)
+					this.founderTurnAnswered = true;
 				this.maybeSettleFounderTurn();
 			}),
 			live.onLiveTranscript((delta) => {
@@ -694,6 +711,18 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.founderTurnPending = true;
 		this.founderTurnAnswered = false;
 		this.clearFounderTurnTimer();
+		if (this.founderTurnHoldTimer)
+			this.clearTimeoutFn(this.founderTurnHoldTimer);
+		this.founderTurnHoldTimer = this.setTimeoutFn(() => {
+			this.founderTurnHoldTimer = undefined;
+			if (!this.founderTurnPending) return;
+			this.options.record({
+				kind: "live_lead_founder_turn_hold_exceeded",
+				holdMs: this.founderTurnMaxHoldMs,
+			});
+			this.settleFounderTurn();
+		}, this.founderTurnMaxHoldMs);
+		this.founderTurnHoldTimer.unref?.();
 	}
 
 	private maybeSettleFounderTurn(): void {
@@ -737,6 +766,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 
 	private settleFounderTurn(): void {
 		this.clearFounderTurnTimer();
+		if (this.founderTurnHoldTimer)
+			this.clearTimeoutFn(this.founderTurnHoldTimer);
+		this.founderTurnHoldTimer = undefined;
 		this.founderTurnPending = false;
 		this.founderTurnAnswered = false;
 		this.founderTurnResponding = false;

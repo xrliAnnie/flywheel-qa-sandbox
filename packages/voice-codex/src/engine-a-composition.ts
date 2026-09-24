@@ -151,10 +151,11 @@ export function createEngineAHeadphoneSession(
 		},
 		async close() {
 			closing = true;
-			await replies?.close();
-			// Close the engine first: it releases any inbox pull or speech that is
-			// waiting on the founder's turn, which headphone close would await.
+			// Close the engine first: it releases any inbox pull, readback or
+			// Lead-reply drain waiting on the founder's turn, which both the
+			// reply close and the headphone close would otherwise await.
 			await engine.close();
+			await replies?.close();
 			await headphone.close();
 		},
 		async speak(text, pendingKey) {

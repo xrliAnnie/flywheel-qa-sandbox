@@ -179,6 +179,7 @@ function harness(
 		delegationEndTimeoutMs?: number;
 		maxSuspendedInputMs?: number;
 		founderTurnSettleTimeoutMs?: number;
+		founderTurnMaxHoldMs?: number;
 	} = {},
 ) {
 	const live = new FakeLive();
@@ -268,6 +269,9 @@ function harness(
 		...(overrides.founderTurnSettleTimeoutMs === undefined
 			? {}
 			: { founderTurnSettleTimeoutMs: overrides.founderTurnSettleTimeoutMs }),
+		...(overrides.founderTurnMaxHoldMs === undefined
+			? {}
+			: { founderTurnMaxHoldMs: overrides.founderTurnMaxHoldMs }),
 		record,
 		onUnavailable,
 	});
@@ -1243,6 +1247,87 @@ describe("LiveLeadAdapter", () => {
 		);
 	});
 
+	it("does not count an interrupted frontend final as the answer to her follow-up", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		founderSays(h, "u-first", "一加一等于几");
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "等于二",
+			final: true,
+		});
+		await tick();
+
+		h.live.emit("response-started");
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-follow",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 2_000,
+			phase: "start",
+		});
+		h.room.emitBarge({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-follow",
+			owner: { kind: "known", speakerUserId: "founder-1" },
+			startedAt: 2_000,
+			observedAt: 2_300,
+			durationMs: 300,
+			phase: "sustained",
+		} as never);
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "另外还有",
+			final: true,
+			interrupted: true,
+		});
+		const announcement = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		endUtterance(h, "u-follow", 2_600);
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+
+		h.live.emit("transcript", { role: "assistant", text: "是三", final: true });
+		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+	});
+
+	it("bounds the founder-turn hold when a response never finalizes or an utterance never ends", async () => {
+		const h = harness({ founderTurnMaxHoldMs: 60 });
+		await h.adapter.open("context");
+		founderSays(h, "u-stuck", "一加一等于几");
+		h.live.emit("response-started");
+		const first = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+		await expect(first).resolves.toMatchObject({ outcome: "completed" });
+
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-open",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 3_000,
+			phase: "start",
+		});
+		const second = h.adapter.speak("播报第二条", "brief", {
+			pendingKey: "brief-2",
+			verification: "required",
+		});
+		await expect(second).resolves.toMatchObject({ outcome: "completed" });
+		expect(
+			h.record.mock.calls.filter(
+				([event]) => event.kind === "live_lead_founder_turn_hold_exceeded",
+			),
+		).toHaveLength(2);
+	});
+
 	it("releases an unanswered founder turn after the settle timeout and records it", async () => {
 		const h = harness({ founderTurnSettleTimeoutMs: 30 });
 		await h.adapter.open("context");
@@ -1490,6 +1575,98 @@ describe("LiveLeadAdapter", () => {
 		]);
 		expect(closed).toBe("closed");
 		expect(bridge.claimHeadphoneItem).not.toHaveBeenCalled();
+	}, 10_000);
+
+	it("closes promptly while a Lead reply readback waits on the founder's turn", async () => {
+		const h = harness();
+		let replyListener:
+			| ((event: {
+					sessionId: string;
+					generation: number;
+					handoffId: string;
+			  }) => void)
+			| undefined;
+		let registerHandoff!: (binding: {
+			sessionId: string;
+			generation: number;
+			handoffId: string;
+			requestDigest: string;
+			targetLeadId: string;
+		}) => void;
+		const bridge = {
+			listHeadphoneItems: vi.fn(async () => []),
+			claimHeadphoneItem: vi.fn(async () => undefined),
+			ackHeadphoneClaim: vi.fn(async () => undefined),
+			getHeadphoneSourceHealth: vi.fn(async () => ({
+				healthy: true,
+				sourceGap: false,
+				sources: [],
+			})),
+			handoffToLead: vi.fn(),
+			listVoiceHandoffResults: vi.fn(async () => ({
+				events: [
+					{
+						resultEventId: "result-1",
+						seq: 1,
+						handoffId: "handoff-1",
+						requestDigest: "request-digest",
+						sourceLeadId: "flywheel-eng-lead",
+						sourceDeliveryId: "delivery-1",
+						resultKind: "lead_reply",
+						text: "Lead 的回复",
+						createdAt: "2026-09-24T00:00:01.000Z",
+					},
+				],
+				highWatermark: 1,
+				nextCursor: 1,
+			})),
+			subscribeReplies: vi.fn((_binding, listener) => {
+				replyListener = listener;
+				return () => undefined;
+			}),
+		};
+		const session = createEngineAHeadphoneSession({
+			binding: {
+				sessionId: "voice-session",
+				generation: 9,
+				leaseToken: "lease",
+			},
+			founderUserId: "founder-1",
+			bridge: bridge as never,
+			room: h.room.io,
+			transcriptSink: h.transcriptSink as never,
+			baseInstructions: "Engine A",
+			createEngine: (callbacks) => {
+				registerHandoff = callbacks.registerHandoff;
+				return h.adapter;
+			},
+			captionSink: { caption: vi.fn() },
+			record: vi.fn(),
+		});
+		await session.start();
+		founderSays(h, "u-talking", "还有一件事", { end: false });
+		registerHandoff({
+			sessionId: "voice-session",
+			generation: 9,
+			handoffId: "handoff-1",
+			requestDigest: "request-digest",
+			targetLeadId: "flywheel-eng-lead",
+		});
+		replyListener?.({
+			sessionId: "voice-session",
+			generation: 9,
+			handoffId: "handoff-1",
+		});
+		await vi.waitFor(() =>
+			expect(bridge.listVoiceHandoffResults).toHaveBeenCalled(),
+		);
+		await tick();
+
+		const closed = await Promise.race([
+			session.close().then(() => "closed"),
+			new Promise((resolve) => setTimeout(() => resolve("hung"), 1_000)),
+		]);
+		expect(closed).toBe("closed");
 	}, 10_000);
 });
 
