@@ -179,6 +179,46 @@ describe("HeadphoneMode V2 minimum", () => {
 		await mode.close();
 	});
 
+	it("rechecks an active audible tail at heartbeat cadence instead of 1ms", async () => {
+		let now = 0;
+		const timerDelays: number[] = [];
+		const engine = new FakeV1Session();
+		const inbox = inboxHarness(engine);
+		const mode = new HeadphoneMode({
+			engine,
+			inbox: inbox.reader,
+			room: {
+				audibleTail: () => ({
+					estimated: true,
+					remainingMs: null,
+					drained: false,
+					observedAt: now,
+					sessionId: "fake-session",
+					generation: 1,
+				}),
+			},
+			heartbeatIntervalMs: 1_000,
+			now: () => now,
+			setTimeoutFn: ((_callback, delay) => {
+				timerDelays.push(Number(delay));
+				return timerDelays.length as unknown as NodeJS.Timeout;
+			}) as typeof setTimeout,
+			clearTimeoutFn: vi.fn(),
+			record: vi.fn(),
+		});
+		await mode.start("context");
+		timerDelays.length = 0;
+		now = 1_000;
+
+		await mode.checkHeartbeat();
+
+		expect(timerDelays).toEqual([1_000]);
+		expect(engine.speakCalls).not.toContainEqual(
+			expect.objectContaining({ kind: "heartbeat" }),
+		);
+		await mode.close();
+	});
+
 	it("falls back to the complete source text when a three-part brief is invalid", async () => {
 		const engine = new FakeV1Session();
 		const inbox = inboxHarness(engine);

@@ -26,6 +26,7 @@ const PCM24 = {
 	sampleRateHz: 24_000,
 	channels: 1,
 } as const;
+const DEFAULT_FRONTEND_AUDIO_IDLE_MS = 1_000;
 
 export interface LiveLeadSpeech {
 	speak(
@@ -55,6 +56,7 @@ export interface LiveLeadAdapterOptions {
 	nextId?: () => string;
 	delegationEndTimeoutMs?: number;
 	maxSuspendedInputMs?: number;
+	frontendAudioIdleMs?: number;
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
 	record(event: Record<string, unknown>): void;
@@ -110,6 +112,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private readonly roomTimelineWaiters = new Set<() => void>();
 	private readonly delegationEndTimeoutMs: number;
 	private readonly maxSuspendedInputBytes: number;
+	private readonly frontendAudioIdleMs: number;
 	private readonly setTimeoutFn: typeof setTimeout;
 	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
@@ -119,6 +122,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private bufferedInputBytes = 0;
 	private inputBufferOverflow = false;
 	private frontendSpeech?: FrontendSpeech;
+	private frontendSpeechTimer?: ReturnType<typeof setTimeout>;
 	private outputWork: Promise<void> = Promise.resolve();
 	private faceWork: Promise<void> = Promise.resolve();
 	private utteranceSequence = 0;
@@ -132,6 +136,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.nextId = options.nextId ?? randomUUID;
 		this.delegationEndTimeoutMs = options.delegationEndTimeoutMs ?? 5_000;
 		const maxSuspendedInputMs = options.maxSuspendedInputMs ?? 30_000;
+		this.frontendAudioIdleMs =
+			options.frontendAudioIdleMs ?? DEFAULT_FRONTEND_AUDIO_IDLE_MS;
 		this.maxSuspendedInputBytes = maxSuspendedInputMs * 48;
 		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
 		this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
@@ -146,6 +152,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			maxSuspendedInputMs > 60_000
 		)
 			throw new Error("live_lead_input_buffer_invalid");
+		if (
+			!Number.isSafeInteger(this.frontendAudioIdleMs) ||
+			this.frontendAudioIdleMs < 1 ||
+			this.frontendAudioIdleMs > 60_000
+		)
+			throw new Error("live_lead_frontend_audio_idle_invalid");
 		if (
 			options.room.identity.sessionId !== options.sessionId ||
 			options.room.identity.generation !== options.generation ||
@@ -743,8 +755,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	}
 
 	private enqueueFrontendAudio(chunk: Buffer, format: AudioFormat): void {
-		const speech = this.frontendSpeech;
-		if (!speech || this.closing) return;
+		if (this.closing) return;
 		if (
 			format.encoding !== PCM24.encoding ||
 			format.sampleRateHz !== PCM24.sampleRateHz ||
@@ -757,6 +768,10 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			});
 			return;
 		}
+		if (!this.frontendSpeech) this.startFrontendSpeech();
+		const speech = this.frontendSpeech;
+		if (!speech) return;
+		this.scheduleFrontendSpeechEnd(speech);
 		const sequence = speech.sequence++;
 		this.outputWork = this.outputWork
 			.then(async () => {
@@ -781,6 +796,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private endFrontendSpeech(): void {
 		const speech = this.frontendSpeech;
 		if (!speech) return;
+		this.clearFrontendSpeechTimer();
 		this.frontendSpeech = undefined;
 		this.outputWork = this.outputWork.then(async () => {
 			await this.options.room.endSpeech(speech.speechId, this.generation);
@@ -790,8 +806,23 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private cancelFrontendSpeech(): void {
 		const speech = this.frontendSpeech;
 		if (!speech) return;
+		this.clearFrontendSpeechTimer();
 		this.frontendSpeech = undefined;
 		this.options.room.localPlaybackCancel(speech.speechId, this.generation);
+	}
+
+	private scheduleFrontendSpeechEnd(speech: FrontendSpeech): void {
+		this.clearFrontendSpeechTimer();
+		this.frontendSpeechTimer = this.setTimeoutFn(() => {
+			this.frontendSpeechTimer = undefined;
+			if (this.frontendSpeech === speech) this.endFrontendSpeech();
+		}, this.frontendAudioIdleMs);
+		this.frontendSpeechTimer.unref?.();
+	}
+
+	private clearFrontendSpeechTimer(): void {
+		if (this.frontendSpeechTimer) this.clearTimeoutFn(this.frontendSpeechTimer);
+		this.frontendSpeechTimer = undefined;
 	}
 
 	private emitUtterance(utterance: VoiceUtterance): void {

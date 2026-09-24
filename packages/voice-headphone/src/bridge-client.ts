@@ -421,6 +421,12 @@ export class BridgeVoiceClient {
 		let controller: AbortController | undefined;
 		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 		let retryTimer: ReturnType<typeof setTimeout> | undefined;
+		let reconnectResetTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const clearReconnectReset = () => {
+			if (reconnectResetTimer) clearTimeout(reconnectResetTimer);
+			reconnectResetTimer = undefined;
+		};
 
 		const recordFailure = (error: unknown) => {
 			this.opts.record?.({
@@ -471,6 +477,14 @@ export class BridgeVoiceClient {
 						});
 				}
 				connectedOnce = true;
+				clearReconnectReset();
+				if (reconnectAttempts > 0) {
+					reconnectResetTimer = setTimeout(() => {
+						reconnectAttempts = 0;
+						reconnectResetTimer = undefined;
+					}, reconnectMaxDelay);
+					reconnectResetTimer.unref?.();
+				}
 				return;
 			}
 			if (eventName !== "reply") return;
@@ -553,6 +567,7 @@ export class BridgeVoiceClient {
 						throw new Error("voice reply subscription disconnected");
 				} catch (error) {
 					if (stopped) return;
+					clearReconnectReset();
 					recordFailure(error);
 					scheduleReconnect(open);
 				} finally {
@@ -567,6 +582,7 @@ export class BridgeVoiceClient {
 			stopped = true;
 			if (retryTimer) clearTimeout(retryTimer);
 			retryTimer = undefined;
+			clearReconnectReset();
 			controller?.abort();
 			void reader?.cancel().catch(() => undefined);
 			reader = undefined;

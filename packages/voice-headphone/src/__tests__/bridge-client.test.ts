@@ -402,6 +402,54 @@ describe("BridgeVoiceClient", () => {
 		}
 	});
 
+	it("restores the reconnect budget after an established stream stays healthy", async () => {
+		vi.useFakeTimers();
+		try {
+			const encoder = new TextEncoder();
+			let stableController: ReadableStreamDefaultController<Uint8Array>;
+			const fetchFn = vi.fn(async () => {
+				if (fetchFn.mock.calls.length < 3)
+					return new Response("unavailable", { status: 503 });
+				if (fetchFn.mock.calls.length > 3)
+					return new Response("unavailable", { status: 503 });
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							stableController = controller;
+							controller.enqueue(
+								encoder.encode(
+									`event: ready\ndata: ${JSON.stringify({ sessionId: SESSION.sessionId, generation: SESSION.generation })}\n\n`,
+								),
+							);
+						},
+					}),
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			});
+			const client = new BridgeVoiceClient({
+				bridgeUrl: "http://localhost:9876",
+				token: "master",
+				fetchFn,
+				replyReconnectDelayMs: 10,
+				replyReconnectMaxDelayMs: 40,
+				replyReconnectMaxAttempts: 2,
+			});
+
+			const unsubscribe = client.subscribeReplies(SESSION, vi.fn());
+			await vi.advanceTimersByTimeAsync(30);
+			expect(fetchFn).toHaveBeenCalledTimes(3);
+
+			await vi.advanceTimersByTimeAsync(40);
+			stableController!.close();
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(fetchFn).toHaveBeenCalledTimes(4);
+			unsubscribe();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("rejects reply subscription admission synchronously when no Bridge token is configured", () => {
 		const client = new BridgeVoiceClient({
 			bridgeUrl: "http://localhost:9876",

@@ -80,7 +80,10 @@ export class HeadphoneMode {
 			)
 				return;
 			const tail: AudibleTailEstimate = this.options.room.audibleTail();
-			if (!tail.drained) return;
+			if (!tail.drained) {
+				this.noteActivity();
+				return;
+			}
 			const healthy = this.options.sourceHealthy?.() ?? true;
 			const text = healthy
 				? "我还在，有新消息会告诉你。"

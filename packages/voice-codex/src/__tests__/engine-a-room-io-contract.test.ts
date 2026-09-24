@@ -182,6 +182,7 @@ describe("Engine A producers against the real RoomIO sequence contract", () => {
 	it("streams LiveLeadAdapter frontend audio through the real RoomIO guard", async () => {
 		const fixture = realRoom();
 		await fixture.room.start();
+		const endSpeech = vi.spyOn(fixture.room, "endSpeech");
 		const live = new FakeLive();
 		const record = vi.fn();
 		const speech = {
@@ -217,6 +218,7 @@ describe("Engine A producers against the real RoomIO sequence contract", () => {
 			classifyIntent: () => "query",
 			submitHandoff: vi.fn(),
 			registerHandoff: vi.fn(),
+			frontendAudioIdleMs: 10,
 			record,
 		});
 		try {
@@ -224,11 +226,18 @@ describe("Engine A producers against the real RoomIO sequence contract", () => {
 			live.emit("response-started");
 			live.emit("response-audio", Buffer.from([1, 0]), PCM);
 			live.emit("response-audio", Buffer.from([2, 0]), PCM);
-			live.emit("response-done");
 
 			await vi.waitFor(() =>
 				expect(fixture.outputFrames.length).toBeGreaterThan(0),
 			);
+			await vi.waitFor(() => expect(endSpeech).toHaveBeenCalledOnce());
+			expect(fixture.room.audibleTail().drained).toBe(false);
+			const firstBurstFrames = fixture.outputFrames.length;
+			live.emit("response-audio", Buffer.from([3, 0]), PCM);
+			await vi.waitFor(() =>
+				expect(fixture.outputFrames.length).toBeGreaterThan(firstBurstFrames),
+			);
+			await vi.waitFor(() => expect(endSpeech).toHaveBeenCalledTimes(2));
 			expect(record).not.toHaveBeenCalledWith(
 				expect.objectContaining({
 					kind: "live_frontend_output_failed",
