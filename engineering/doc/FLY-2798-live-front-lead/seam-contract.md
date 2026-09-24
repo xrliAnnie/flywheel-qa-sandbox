@@ -17,3 +17,6 @@ Issue: FLY-2798 (https://linear.app/geoforge3d/issue/FLY-2798/语音v4-引擎-a�
 持久权威：2798 收到 wake 后只调用既有 `listVoiceHandoffResults(binding, handoffId, after, 100)`；逐 event 成功播报后才前移该 handoff 的 seq cursor，失败保持原 cursor。
 
 所有权：FLY-2796 落 daemon/bridge-client 注入与生产 transport；FLY-2798 的 `LiveReplyEvents` 只消费上述抽象源，不修改 shared owner 文件。
+
+## 字幕装配注入点
+FLY-2798 提供 `LiveCaptionProjection` 与 `CaptionSink`，按权威 `VoiceUtterance.source` 将 `frontend` 渲染为「🤖 前台」、将 attribution 与 lead id 一致的 `lead:<id>` 渲染为「💬 Lead」，并保留 timestamp/generation/sequence/final/interrupted 时序字段；绝不按正文猜来源。FLY-2796 的 `HeadphoneSession` 生产装配需要暴露一个 `utterance -> sink` 注入点，把 V1 session 的 utterance 流与房间 TIV sink 接到此 projection；当前既有 `TivPresenter.caption` 对所有 assistant 固定使用同一 💬 前缀，不能直接满足双来源标签，所以本单不改其 owner 文件。

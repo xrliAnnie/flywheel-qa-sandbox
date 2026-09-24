@@ -7,6 +7,7 @@ export * from "./delivery.js";
 export * from "./discord-room.js";
 export * from "./evidence.js";
 export * from "./journal.js";
+export * from "./live-caption-projection.js";
 export * from "./live-lead-adapter.js";
 export * from "./live-reply-events.js";
 export * from "./meeting-voice-signal.js";
