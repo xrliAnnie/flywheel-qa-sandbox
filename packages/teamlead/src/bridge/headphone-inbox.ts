@@ -23,6 +23,33 @@ export interface HeadphoneInboxClaimRecord {
 	leaseExpiresAt: string;
 }
 
+export interface HeadphoneInboxSourceState {
+	projectName: string;
+	founderUserId: string;
+	channelId: string;
+	cursor: string | null;
+	highWatermark: string | null;
+	bootstrapComplete: boolean;
+	health: "healthy" | "recovering" | "rate_limited" | "source_gap";
+	healthReason: string | null;
+	nextAllowedAt: string | null;
+	updatedAt: string;
+}
+
+export interface HeadphoneInboxUpsertInput {
+	projectName: string;
+	founderUserId: string;
+	channelId: string;
+	sourceMessageId: string;
+	sourceRevision: string;
+	authorId: string;
+	needsDecision: boolean;
+	text: string;
+	speechBrief?: { what: string; why: string; next: string };
+	sourceCreatedAt: string;
+	sourceResolved?: boolean;
+}
+
 function itemFromRow(row: Record<string, unknown>): HeadphoneInboxItemRecord {
 	let speechBrief: HeadphoneInboxItemRecord["speechBrief"] = null;
 	if (typeof row.speech_brief_json === "string") {
@@ -399,17 +426,67 @@ export class HeadphoneInboxStore {
 			);
 	}
 
-	listSourceState(projectName: string, founderUserId: string): unknown[] {
-		return this.db
+	getSourceState(
+		projectName: string,
+		founderUserId: string,
+		channelId: string,
+	): HeadphoneInboxSourceState | undefined {
+		const row = this.db
 			.prepare(
-				`SELECT project_name AS projectName, founder_user_id AS founderUserId,
-				 channel_id AS channelId, cursor, high_watermark AS highWatermark,
-				 bootstrap_complete AS bootstrapComplete, health,
-				 health_reason AS healthReason, next_allowed_at AS nextAllowedAt,
-				 updated_at AS updatedAt
+				`SELECT project_name, founder_user_id, channel_id, cursor, high_watermark,
+				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at
+				 FROM voice_headphone_source
+				 WHERE project_name = ? AND founder_user_id = ? AND channel_id = ?`,
+			)
+			.get(projectName, founderUserId, channelId) as
+			| Record<string, unknown>
+			| undefined;
+		return row ? this.sourceStateFromRow(row) : undefined;
+	}
+
+	ingestPage(input: {
+		items: readonly HeadphoneInboxUpsertInput[];
+		source: Parameters<HeadphoneInboxStore["setSourceState"]>[0];
+	}): void {
+		this.db.transaction(() => {
+			for (const item of input.items) this.upsert(item);
+			this.setSourceState(input.source);
+		})();
+	}
+
+	listSourceState(
+		projectName: string,
+		founderUserId: string,
+	): HeadphoneInboxSourceState[] {
+		return (
+			this.db
+				.prepare(
+					`SELECT project_name, founder_user_id, channel_id, cursor, high_watermark,
+				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at
 				 FROM voice_headphone_source WHERE project_name = ? AND founder_user_id = ?
 				 ORDER BY channel_id`,
-			)
-			.all(projectName, founderUserId);
+				)
+				.all(projectName, founderUserId) as Record<string, unknown>[]
+		).map((row) => this.sourceStateFromRow(row));
+	}
+
+	private sourceStateFromRow(
+		row: Record<string, unknown>,
+	): HeadphoneInboxSourceState {
+		return {
+			projectName: String(row.project_name),
+			founderUserId: String(row.founder_user_id),
+			channelId: String(row.channel_id),
+			cursor: typeof row.cursor === "string" ? row.cursor : null,
+			highWatermark:
+				typeof row.high_watermark === "string" ? row.high_watermark : null,
+			bootstrapComplete: Number(row.bootstrap_complete) === 1,
+			health: row.health as HeadphoneInboxSourceState["health"],
+			healthReason:
+				typeof row.health_reason === "string" ? row.health_reason : null,
+			nextAllowedAt:
+				typeof row.next_allowed_at === "string" ? row.next_allowed_at : null,
+			updatedAt: String(row.updated_at),
+		};
 	}
 }

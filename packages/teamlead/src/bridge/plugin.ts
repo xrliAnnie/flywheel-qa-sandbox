@@ -532,6 +532,11 @@ import {
 import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
 import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
+import {
+	fetchDiscordHeadphonePage,
+	type HeadphoneCollectorScope,
+	HeadphoneInboxCollector,
+} from "./headphone-collector.js";
 import { createHeadphoneRouter } from "./headphone-routes.js";
 import {
 	activateHolderForWake,
@@ -946,7 +951,7 @@ import {
 	createVoiceHealthProjector,
 	createVoiceHealthStartupSpoolReader,
 } from "./voice-health-projector.js";
-import { createVoiceRouter } from "./voice-routes.js";
+import { botUserIdFromToken, createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
@@ -11318,7 +11323,64 @@ export async function startBridge(
 		config.discordOwnerUserId,
 		config.founderConsent?.founderUserId,
 	);
+	let headphoneCollectorTimer: ReturnType<typeof setInterval> | undefined;
 	if (headphoneFounderId) {
+		const listHeadphoneScopes = (): HeadphoneCollectorScope[] => {
+			const scopes = new Map<string, HeadphoneCollectorScope>();
+			for (const project of projects) {
+				const allowedAuthorIds = [
+					...project.leads
+						.map((lead) => lead.botUserId ?? botUserIdFromToken(lead.botToken))
+						.filter((id): id is string => !!id),
+					botUserIdFromToken(config.discordBotToken),
+				].filter((id): id is string => !!id);
+				const add = (
+					channelId: string | undefined,
+					token: string | undefined,
+				) => {
+					if (!channelId || !token || allowedAuthorIds.length === 0) return;
+					scopes.set(`${project.projectName}\0${channelId}`, {
+						projectName: project.projectName,
+						founderUserId: headphoneFounderId,
+						channelId,
+						allowedAuthorIds,
+						token,
+					});
+				};
+				add(
+					project.generalChannel,
+					config.discordBotToken ??
+						project.leads.find((lead) => lead.botToken)?.botToken,
+				);
+				for (const lead of project.leads) add(lead.chatChannel, lead.botToken);
+				for (const threadId of store.getAllChatThreadIds()) {
+					const thread = store.getChatThreadByThreadId(threadId);
+					const lead = project.leads.find(
+						(candidate) =>
+							candidate.agentId === thread?.lead_id &&
+							candidate.chatChannel === thread.channel_id,
+					);
+					if (lead) add(threadId, lead.botToken);
+				}
+			}
+			return [...scopes.values()];
+		};
+		const headphoneCollector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: listHeadphoneScopes,
+			fetchPage: fetchDiscordHeadphonePage,
+		});
+		const collectHeadphonePage = () =>
+			void headphoneCollector
+				.tick()
+				.catch((error) =>
+					console.warn(
+						`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				);
+		collectHeadphonePage();
+		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
+		headphoneCollectorTimer.unref?.();
 		app.use(
 			"/api/voice/headphone",
 			voiceSessionAuthMiddleware(config.apiToken),
@@ -15357,6 +15419,7 @@ export async function startBridge(
 			await internalDispatcher.teardownRuntimes();
 		}
 		if (runtimeRetryTimer) clearInterval(runtimeRetryTimer);
+		if (headphoneCollectorTimer) clearInterval(headphoneCollectorTimer);
 		// FLY-247 (Codex R3 MEDIUM-1): stop the fleet reconcile tick + close the
 		// console's audit handle on shutdown.
 		if (fleetReconcileTimer) clearInterval(fleetReconcileTimer);

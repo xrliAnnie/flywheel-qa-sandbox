@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import { HeadphoneInboxCollector } from "../headphone-collector.js";
 
 const T0 = "2026-09-23T20:00:00.000Z";
 const T1 = "2026-09-23T20:00:01.000Z";
@@ -213,5 +214,122 @@ describe("HeadphoneInboxStore", () => {
 				limit: 100,
 			}),
 		).toEqual([]);
+	});
+});
+
+describe("HeadphoneInboxCollector", () => {
+	it("bootstraps every history page while filtering founder and unconfigured authors", async () => {
+		let now = Date.parse(T0);
+		const pages = [
+			Array.from({ length: 100 }, (_, index) => ({
+				id: String(200 - index).padStart(18, "0"),
+				authorId: "lead-1",
+				content: `report ${200 - index}`,
+				timestamp: new Date(now - index).toISOString(),
+			})),
+			[
+				{
+					id: "000000000000000100",
+					authorId: "founder-1",
+					content: "founder echo",
+					timestamp: new Date(now - 101).toISOString(),
+				},
+				{
+					id: "000000000000000099",
+					authorId: "unknown-bot",
+					content: "unknown echo",
+					timestamp: new Date(now - 102).toISOString(),
+				},
+				{
+					id: "000000000000000098",
+					authorId: "lead-1",
+					content:
+						"现状：已经准备好了。\n原因：依赖已经齐了。\n下一步：请选一个方案。",
+					timestamp: new Date(now - 103).toISOString(),
+				},
+			],
+			[],
+		];
+		const fetchPage = vi.fn(async () => ({
+			kind: "page" as const,
+			messages: pages.shift() ?? [],
+		}));
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [
+				{
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "channel-1",
+					allowedAuthorIds: ["lead-1"],
+					token: "secret",
+				},
+			],
+			fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+		});
+
+		expect(await collector.tick()).toBe("collected");
+		now += 5_000;
+		expect(await collector.tick()).toBe("collected");
+		now += 5_000;
+		expect(await collector.tick()).toBe("collected");
+		expect(fetchPage).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ before: "000000000000000101", limit: 100 }),
+		);
+		const items = store.headphoneInbox.list({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			limit: 100,
+		});
+		expect(items).toHaveLength(100);
+		expect(
+			items.find((item) => item.sourceMessageId === "000000000000000098"),
+		).toMatchObject({
+			speechBrief: {
+				what: "已经准备好了。",
+				why: "依赖已经齐了。",
+				next: "请选一个方案。",
+			},
+		});
+		expect(
+			store.headphoneInbox.getSourceState("flywheel", "founder-1", "channel-1"),
+		).toMatchObject({ bootstrapComplete: true, health: "healthy" });
+	});
+
+	it("does not advance a cursor on rate limit and distinguishes a source gap", async () => {
+		let now = Date.parse(T0);
+		const fetchPage = vi
+			.fn()
+			.mockResolvedValueOnce({ kind: "rate_limited", retryAfterMs: 9_000 })
+			.mockResolvedValueOnce({ kind: "source_gap", reason: "forbidden" });
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [
+				{
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "channel-1",
+					allowedAuthorIds: ["lead-1"],
+					token: "secret",
+				},
+			],
+			fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+		});
+
+		expect(await collector.tick()).toBe("rate_limited");
+		expect(await collector.tick()).toBe("waiting");
+		expect(
+			store.headphoneInbox.getSourceState("flywheel", "founder-1", "channel-1"),
+		).toMatchObject({ cursor: null, health: "rate_limited" });
+		now += 9_000;
+		expect(await collector.tick()).toBe("source_gap");
+		expect(
+			store.headphoneInbox.getSourceState("flywheel", "founder-1", "channel-1"),
+		).toMatchObject({ cursor: null, health: "source_gap" });
 	});
 });
