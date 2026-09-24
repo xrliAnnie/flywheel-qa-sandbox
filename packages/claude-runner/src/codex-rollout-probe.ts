@@ -7,6 +7,33 @@ export type CodexRolloutMtimeProbe =
 	| { kind: "found"; mtimeMs: number }
 	| { kind: "absent" | "unknown" };
 
+export function findCodexRolloutPath(
+	codexHome: string,
+	threadId: string,
+	rootNames: readonly string[] = ["sessions"],
+): string | undefined {
+	if (!threadId || /[/\\\0\r\n]/.test(threadId)) return undefined;
+	let newest: { path: string; mtimeMs: number } | undefined;
+	for (const rootName of rootNames) {
+		const root = join(codexHome, rootName);
+		if (!existsSync(root)) continue;
+		const pending = [root];
+		while (pending.length > 0) {
+			const dir = pending.pop();
+			if (!dir) continue;
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const path = join(dir, entry.name);
+				if (entry.isDirectory()) pending.push(path);
+				else if (entry.isFile() && entry.name.includes(threadId)) {
+					const mtimeMs = statSync(path).mtimeMs;
+					if (!newest || mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
+				}
+			}
+		}
+	}
+	return newest?.path;
+}
+
 /** Read-only rollout progress sensor paired with the daemon socket probe. */
 export function probeCodexRolloutMtime(
 	executionId: string,
@@ -43,26 +70,12 @@ export function probeCodexRolloutMtime(
 	}
 	const root = join(resolution.home, "sessions");
 	if (!existsSync(root)) return { kind: "absent" };
-	let newest: number | undefined;
-	const pending = [root];
 	try {
-		while (pending.length > 0) {
-			const dir = pending.pop();
-			if (!dir) continue;
-			for (const entry of readdirSync(dir, { withFileTypes: true })) {
-				const path = join(dir, entry.name);
-				if (entry.isDirectory()) {
-					pending.push(path);
-				} else if (entry.isFile() && entry.name.includes(threadId)) {
-					const mtimeMs = statSync(path).mtimeMs;
-					if (newest === undefined || mtimeMs > newest) newest = mtimeMs;
-				}
-			}
-		}
+		const path = findCodexRolloutPath(resolution.home, threadId);
+		return path
+			? { kind: "found", mtimeMs: statSync(path).mtimeMs }
+			: { kind: "absent" };
 	} catch {
 		return { kind: "unknown" };
 	}
-	return newest === undefined
-		? { kind: "absent" }
-		: { kind: "found", mtimeMs: newest };
 }

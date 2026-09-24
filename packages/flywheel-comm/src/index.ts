@@ -98,6 +98,7 @@ import { runVoiceSessionCommand } from "./commands/voice-session.js";
 import { currentWorkflowCompletionActivationFromEnv } from "./commands/workflow-activation.js";
 import { workflowOutput } from "./commands/workflow-output.js";
 import { runWorkflowTemplate } from "./commands/workflow-template.js";
+import { workflowUsageSource } from "./commands/workflow-usage-source.js";
 import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
@@ -185,6 +186,7 @@ Commands:
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
+  workflow-usage-source  Import an authenticated native Runner usage boundary (hook use)
   evidence-run  Record independently judged strength-two evidence for a QA run.
             Subcommand: record --exec-id <id> --head <sha> --site slot_529:<n>
             --lane <generalized_e2e_stub|generalized_e2e_real|manual_test_deploy>
@@ -323,6 +325,7 @@ async function main(): Promise<void> {
 			"complete",
 			"stage",
 			"ci-full",
+			"workflow-usage-source",
 		].includes(command)
 	) {
 		await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID);
@@ -447,6 +450,9 @@ async function main(): Promise<void> {
 			break;
 		case "workflow-output":
 			await runWorkflowOutput(commandArgs);
+			break;
+		case "workflow-usage-source":
+			await runWorkflowUsageSource(commandArgs);
 			break;
 		case "evidence-run":
 			process.exitCode = await runEvidenceRunCommand(commandArgs);
@@ -1703,6 +1709,17 @@ async function runWorkflowOutput(args: string[]): Promise<void> {
 		payloadFile: values["payload-file"] ?? "",
 		requestId: values["request-id"],
 	});
+}
+
+async function runWorkflowUsageSource(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: { event: { type: "string" } },
+		allowPositionals: false,
+	});
+	if (values.event !== "turn-start")
+		throw new Error("workflow-usage-source --event must be turn-start");
+	await workflowUsageSource({ event: values.event });
 }
 
 async function runCodexReviewResult(args: string[]): Promise<void> {

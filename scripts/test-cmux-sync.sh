@@ -1040,6 +1040,21 @@ print(json.dumps(d))' "$sw_ref" 2>/dev/null)
         echo "not json"
         return 0
       fi
+      # FLY-2770: per-call surface-title sequence, same shape as
+      # MOCK_CMUX_READSCREEN_SEQ. Comma-separated titles, clamped to the last
+      # value, applied to the queried workspace's surface row. File-based
+      # counter because list-pane-surfaces is always read inside $(...).
+      if [[ -n "${MOCK_CMUX_SURFACE_TITLE_SEQ:-}" ]]; then
+        local sts_file="$TMPDIR_ROOT/surfacetitle.n" sts_n=0 sts_v
+        [[ -f "$sts_file" ]] && sts_n=$(cat "$sts_file")
+        sts_n=$((sts_n + 1)); echo "$sts_n" > "$sts_file"
+        sts_v=$(echo "$MOCK_CMUX_SURFACE_TITLE_SEQ" | awk -F, -v i="$sts_n" '{ if (i>NF) i=NF; print $i }')
+        local sts_tmp="$TMPDIR_ROOT/cmux-surfaces.seq"
+        awk -F';;' -v OFS=';;' -v r="$lps_ws" -v t="$sts_v" \
+          '$1 == r { $5=t } { print }' <<< "$MOCK_CMUX_SURFACES" > "$sts_tmp"
+        MOCK_CMUX_SURFACES=$(cat "$sts_tmp")
+        rm -f "$sts_tmp"
+      fi
       local lps_uuid
       lps_uuid=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
 import json,sys
@@ -1148,6 +1163,8 @@ reset_mocks() {
   MOCK_TMUX_WINDOWS=""
   MOCK_PANE_DEAD=""
   MOCK_CMUX_RENAME_TAB_FAIL="0"
+  MOCK_CMUX_SURFACE_TITLE_SEQ=""
+  rm -f "$TMPDIR_ROOT/surfacetitle.n" 2>/dev/null || true
   MOCK_CMUX_WORKSPACES=""
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
   MOCK_CMUX_JSON_FAIL="0"
@@ -1259,9 +1276,10 @@ reset_mocks() {
   rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$RESTORED_STATE" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
   printf '{"windows":[]}\n' > "$CMUX_SESSION_STATE"
   rm -rf "${KEEPER_INVENTORY}.lock"
-  CMUX_QA_TEARDOWN_CLAIM="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.qa-teardown"
+  CMUX_QA_TEARDOWN_CLAIM_DEFAULT="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.qa-teardown"
+  CMUX_QA_TEARDOWN_CLAIM="$CMUX_QA_TEARDOWN_CLAIM_DEFAULT"
   CMUX_OPS_REBUILD_CLAIM="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.ops-rebuild"
-  rm -f "$CMUX_QA_TEARDOWN_CLAIM"
+  rm -f "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT"
   rm -f "$CMUX_OPS_REBUILD_CLAIM"
   rm -f "$LEDGER_CONFLICT_STATE"
   rm -f "$ROSTER_EPISODE_STATE"
@@ -1432,7 +1450,7 @@ if echo "$MOCK_TMUX_HOOKS" | grep -q 'after-new-window\[500\]'; then
 else
   fail "after-new-window[500] not found"
 fi
-if echo "$MOCK_TMUX_HOOKS" | grep -q 'pane-exited\[500\]'; then
+if [[ "$MOCK_TMUX_HOOKS" == *'pane-exited[500]'* ]]; then
   pass "pane-exited[500] used"
 else
   fail "pane-exited[500] not found"
@@ -12235,6 +12253,866 @@ test_fly1605_ambiguous_legacy_tmux_generation_preserves_wal() {
   done
   [[ "$ok" == "1" ]] && pass "timezone drift and true PID reuse are both preserved byte-for-byte without recovery authority"
 }
+
+echo ""
+echo "═══ FLY-2770: cmux placeholder tab migration + parked-repair ═══"
+
+_fly2770_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+_fly2770_workspace_json() {
+  # ref, title, uuid
+  printf '{"workspaces":[{"id":"%s","ref":"%s","title":"%s"}]}' "$3" "$1" "$2"
+}
+
+test_fly2770_uuid_receipt_migrates_placeholder_surface() {
+  echo "Test: FLY-2770 — a UUID receipt migrates a cmux placeholder tab and commits"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-2770-implement" ref="workspace:2770" raw rc=0 row surface
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  MOCK_CMUX_OPS=""
+  complete_title_migration "$ref" "$title" "cmux-generation-1" "$raw" >/dev/null 2>&1 || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  surface=$(printf '%s\n' "$MOCK_CMUX_SURFACES" | awk -F';;' '{print $5}')
+  release_mutator_lease
+  local ok=1
+  [[ "$rc" -eq 0 ]] || { fail "placeholder migration refused rc=$rc"; ok=0; }
+  [[ "$row" == "committed|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "receipt did not commit with its UUID row=[$row]"; ok=0; }
+  [[ "$surface" == "$title" ]] || { fail "tab readback did not converge surface=[$surface]"; ok=0; }
+  [[ "$(grep -cF "rename-tab --workspace $ref $title" <<< "$MOCK_CMUX_OPS" || true)" == "1" ]] \
+    || { fail "missing exactly-one rename-tab ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "cmux placeholder tab is migrated under a UUID receipt and committed"
+}
+
+test_fly2770_legacy_receipt_never_migrates_placeholder_surface() {
+  echo "Test: FLY-2770 — a legacy four-field receipt has zero authority over a placeholder tab"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-2770-implement" ref="workspace:2770" raw rc=0 before
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title"
+  before=$(cat "$VIEW_LEDGER")
+  MOCK_CMUX_OPS=""
+  complete_title_migration "$ref" "$title" "cmux-generation-1" "$raw" >/dev/null 2>&1 || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -ne 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "legacy receipt leaves a placeholder tab byte-identical and unmutated"
+  else
+    fail "legacy receipt crossed the placeholder boundary rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly2770_foreign_surface_still_refused() {
+  echo "Test: FLY-2770 — a founder-named tab is still refused even under a UUID receipt"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-2770-implement" ref="workspace:2770" raw rc=0 before
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;npm run dev"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  before=$(cat "$VIEW_LEDGER")
+  MOCK_CMUX_OPS=""
+  complete_title_migration "$ref" "$title" "cmux-generation-1" "$raw" >/dev/null 2>&1 || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -ne 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "a foreign surface keeps the prepared receipt read-only"
+  else
+    fail "foreign surface crossed the migration guard rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly2770_placeholder_surface_swap_is_refused() {
+  echo "Test: FLY-2770 — a placeholder replaced between read and mutation is refused"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-2770-implement" ref="workspace:2770" raw rc=0 before
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 65"
+  # First read (the pre-check) sees Terminal 65 and pins those exact bytes; the
+  # guard's re-read right before rename-tab sees a different placeholder.
+  MOCK_CMUX_SURFACE_TITLE_SEQ="Terminal 65,Terminal 66"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  before=$(cat "$VIEW_LEDGER")
+  MOCK_CMUX_OPS=""
+  complete_title_migration "$ref" "$title" "cmux-generation-1" "$raw" >/dev/null 2>&1 || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -ne 0 && "$MOCK_CMUX_OPS" != *"rename-tab"* && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "a swapped placeholder is not renamed and the receipt stays prepared"
+  else
+    fail "placeholder swap crossed the guard rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+_fly2770_loop_fixture() {
+  # $1 = receipt uuid ("" for a legacy four-field row)
+  local title="$1" ref="$2" uuid="${3:-}"
+  MOCK_TOPOLOGY_MODE=1
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1
+  FLYWHEEL_CMUX_ADOPTION_GRACE=0
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_CMUX_RENAME_TAB_FAIL=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "${uuid:-$_fly2770_uuid}")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+}
+
+test_fly2770_failed_rename_never_recreates_or_recycles() {
+  echo "Test: FLY-2770 — a persistently failing tab rename never closes or re-creates the workspace"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" round rc=0
+  local logfile="$TMPDIR_ROOT/fly2770-loop.log" warns
+  _fly2770_loop_fixture "$title" "$ref"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  MOCK_CMUX_OPS=""
+  : > "$logfile"
+  # Production order: refresh_linked_sessions_tail runs recovery first, then
+  # prepare_linked_view_state post -> reconcile_prepared_ledger, and only then
+  # does sync_additive mint markers via `adopt_restored_workspaces live
+  # discover-only`. Driving `adopt_restored_workspaces live` with no second
+  # argument would run recovery a second time and test an order that never
+  # occurs in production.
+  for round in 1 2 3; do
+    { recover_restored_transactions || rc=$?
+      reconcile_prepared_ledger || rc=$?
+      adopt_restored_workspaces live discover-only || rc=$?
+    } >> "$logfile" 2>&1
+  done
+  release_mutator_lease
+  # C1 makes `title-surface-drift` unreachable for this shape (the placeholder is
+  # accepted and pinned); the line that would otherwise repeat every pass is the
+  # guarded rename-tab deferral, plus the caller's own deferral line. Both are
+  # episode-suppressed, so assert one per kind, not one in total.
+  local rename_warns deferred_warns
+  rename_warns=$(grep -c "guarded rename-tab deferred" "$logfile" || true)
+  deferred_warns=$(grep -c "prepared title migration deferred" "$logfile" || true)
+  warns=$(grep -c "title migration surface drift" "$logfile" || true)
+  local ok=1
+  [[ "$MOCK_CMUX_OPS" != *"close-workspace"* ]] \
+    || { fail "a migration-pending workspace was closed ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"new-workspace"* ]] \
+    || { fail "a migration-pending workspace was re-created ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ -z "$(cat "$RESTORED_STATE" 2>/dev/null || true)" ]] \
+    || { fail "a W1p marker was minted for a migration-pending row marker=[$(cat "$RESTORED_STATE" 2>/dev/null)]"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == "prepared|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "the prepared receipt did not survive ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  [[ "$warns" == "0" ]] \
+    || { fail "the placeholder was treated as drift instead of being migrated (warns=$warns)"; ok=0; }
+  [[ "$rename_warns" == "1" ]] \
+    || { fail "expected exactly one rename-deferred WARN across three rounds, got $rename_warns"; ok=0; }
+  [[ "$deferred_warns" == "1" ]] \
+    || { fail "expected exactly one prepared-migration-deferred WARN across three rounds, got $deferred_warns"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "three rounds of a failing rename leave zero close, zero create, one alert per kind"
+}
+
+test_fly2770_legacy_prepared_still_mints_w1p_marker() {
+  echo "Test: FLY-2770 — a legacy prepared row keeps today's W1p restored-adoption behaviour"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" rc=0 marker
+  _fly2770_loop_fixture "$title" "$ref"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title"
+  adopt_restored_workspaces live >/dev/null 2>&1 || rc=$?
+  marker=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$marker" == restoredv1'|'W1p'|'* ]]; then
+    pass "legacy prepared rows are untouched by the migration-pending skip"
+  else
+    fail "legacy W1p adoption regressed rc=$rc marker=[$marker]"
+  fi
+}
+
+test_fly2770_new_log_episode_kinds_pass_state_validator() {
+  echo "Test: FLY-2770 — the new log-episode kinds are accepted by the state-file validator"
+  reset_mocks
+  local now ok=1 kind
+  now=$(date +%s)
+  for kind in title-surface-drift prepared-migration-deferred; do
+    printf '%s|FLY-2770-implement|%064d|%s|0\n' "$kind" 0 "$now" > "$CMUX_LOG_EPISODE_STATE"
+    _cmux_log_episode_state_valid \
+      || { fail "validator rejected kind=$kind (the dispatch allowlist and the validator allowlist must both carry it)"; ok=0; }
+  done
+  [[ "$ok" == "1" ]] && pass "both episode allowlists carry the new kinds"
+}
+
+test_fly2770_maintenance_entry_allowed_refresh_truth_table() {
+  echo "Test: FLY-2770 — a parked watcher does not block operator --refresh"
+  reset_mocks
+  local rc_marker=0 rc_qa=0 rc_ops=0 incarnation
+  incarnation="${FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE:-fixture-incarnation}"
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_OPS_REBUILD_CLAIM"
+  printf 'parked\n' > "$CMUX_MAINTENANCE_MARKER"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || rc_marker=$?
+  printf '%s|%s|qa_teardown|qa-nonce\n' "$$" "$incarnation" > "$CMUX_QA_TEARDOWN_CLAIM"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || rc_qa=$?
+  rm -f "$CMUX_QA_TEARDOWN_CLAIM"
+  printf '%s|%s|ops_rebuild|ops-nonce\n' "$$" "$incarnation" > "$CMUX_OPS_REBUILD_CLAIM"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || rc_ops=$?
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_OPS_REBUILD_CLAIM"
+  if [[ "$rc_marker" -eq 0 && "$rc_qa" -ne 0 && "$rc_ops" -ne 0 ]]; then
+    pass "refresh passes a bare maintenance marker and still yields to both claims"
+  else
+    fail "refresh truth table mismatch marker=$rc_marker qa=$rc_qa ops=$rc_ops"
+  fi
+}
+
+test_fly2770_maintenance_entry_allowed_ops_rebuild_truth_table() {
+  echo "Test: FLY-2770 — a parked watcher does not block --rebuild-views"
+  reset_mocks
+  local rc_marker=0 rc_qa=0 rc_self=0 rc_foreign=0 incarnation
+  incarnation="${FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE:-fixture-incarnation}"
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_OPS_REBUILD_CLAIM"
+  printf 'parked\n' > "$CMUX_MAINTENANCE_MARKER"
+  # marker present, no claim at all — this is `--rebuild-views --execute` without --handover
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || rc_marker=$?
+  printf '%s|%s|qa_teardown|qa-nonce\n' "$$" "$incarnation" > "$CMUX_QA_TEARDOWN_CLAIM"
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || rc_qa=$?
+  rm -f "$CMUX_QA_TEARDOWN_CLAIM"
+  OPS_REBUILD_CLAIM_LINE="$$|${incarnation}|ops_rebuild|self-nonce"
+  printf '%s\n' "$OPS_REBUILD_CLAIM_LINE" > "$CMUX_OPS_REBUILD_CLAIM"
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || rc_self=$?
+  printf '999999|dead-incarnation|ops_rebuild|foreign-nonce\n' > "$CMUX_OPS_REBUILD_CLAIM"
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || rc_foreign=$?
+  OPS_REBUILD_CLAIM_LINE=""
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_OPS_REBUILD_CLAIM"
+  if [[ "$rc_marker" -eq 0 && "$rc_qa" -ne 0 && "$rc_self" -eq 0 && "$rc_foreign" -ne 0 ]]; then
+    pass "ops_rebuild ignores the marker, yields to QA teardown, and still requires its own live claim"
+  else
+    fail "ops_rebuild truth table mismatch marker=$rc_marker qa=$rc_qa self=$rc_self foreign=$rc_foreign"
+  fi
+}
+
+test_fly2770_publish_ops_claim_tolerates_marker() {
+  echo "Test: FLY-2770 — the ops-rebuild claim can be published while the fleet is parked"
+  reset_mocks
+  local rc_parked=0 rc_bare=0 rc_qa=0 marker_before marker_after incarnation
+  incarnation="${FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE:-fixture-incarnation}"
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_OPS_REBUILD_CLAIM"
+  printf 'parked\n' > "$CMUX_MAINTENANCE_MARKER"
+  marker_before=$(cat "$CMUX_MAINTENANCE_MARKER")
+  # --rebuild-views opts in explicitly.
+  publish_ops_rebuild_claim allow-parked >/dev/null 2>&1 || rc_parked=$?
+  marker_after=$(cat "$CMUX_MAINTENANCE_MARKER" 2>/dev/null || true)
+  release_ops_rebuild_claim >/dev/null 2>&1 || true
+  rm -f "$CMUX_OPS_REBUILD_CLAIM"
+  # --converge-runners does NOT, and stays frozen: it is the most destructive
+  # entry point in the script.
+  publish_ops_rebuild_claim >/dev/null 2>&1 || rc_bare=$?
+  release_ops_rebuild_claim >/dev/null 2>&1 || true
+  rm -f "$CMUX_OPS_REBUILD_CLAIM"
+  printf '%s|%s|qa_teardown|qa-nonce\n' "$$" "$incarnation" > "$CMUX_QA_TEARDOWN_CLAIM"
+  publish_ops_rebuild_claim allow-parked >/dev/null 2>&1 || rc_qa=$?
+  release_ops_rebuild_claim >/dev/null 2>&1 || true
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_OPS_REBUILD_CLAIM"
+  if [[ "$rc_parked" -eq 0 && "$rc_bare" -ne 0 && "$rc_qa" -ne 0 \
+      && "$marker_after" == "$marker_before" ]]; then
+    pass "allow-parked publishes past a marker, the bare form keeps --converge-runners frozen, and the marker is never rewritten"
+  else
+    fail "claim publication mismatch parked=$rc_parked bare=$rc_bare qa=$rc_qa marker_bytes=[$marker_after]"
+  fi
+}
+
+test_fly2770_qa_teardown_claim_env_is_independent() {
+  echo "Test: FLY-2770 — a one-sided QA teardown claim override fails closed"
+  reset_mocks
+  local custom_claim default_claim publish_rc=0 release_rc=0
+  local one_refresh=0 one_rebuild=0 both_refresh=0 both_rebuild=0
+  local matched_refresh=0 matched_rebuild=0 none_refresh=0 none_rebuild=0
+  custom_claim="$TMPDIR_ROOT/fly2770-custom-qa-claim"
+  default_claim="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.qa-teardown"
+
+  # Exercise the real claim publisher from test-teardown.sh in an isolated
+  # subprocess. Only its filesystem claim protocol is in scope; the lock
+  # helpers are stubbed so no host cmux/tmux state can be reached.
+  FLYWHEEL_CMUX_QA_TEARDOWN_CLAIM="$custom_claim" \
+    FLYWHEEL_CMUX_MAINTENANCE_MARKER="$FLYWHEEL_CMUX_MAINTENANCE_MARKER" \
+    FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TMPDIR_ROOT/fly2770-teardown.lock" \
+    FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly2770-claim-test" \
+    /bin/bash -c '
+      source "$1" || exit 90
+      cmux_lock_claim_fence_fd() { return 0; }
+      cmux_acquire_reap_mutex() { return 0; }
+      cmux_release_reap_mutex() { return 0; }
+      acquire_cmux_qa_teardown_claim
+    ' _ "$SCRIPT_DIR/test-teardown.sh" >/dev/null 2>&1 || publish_rc=$?
+
+  # One-sided: teardown got the custom env, sync stayed on the derived default.
+  CMUX_QA_TEARDOWN_CLAIM="$default_claim"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || one_refresh=$?
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || one_rebuild=$?
+
+  # Correct double-sided configuration remains fail-closed while teardown owns
+  # the claim.
+  CMUX_QA_TEARDOWN_CLAIM="$custom_claim"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || both_refresh=$?
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || both_rebuild=$?
+
+  # With both scripts configured to the same custom path but no active claim,
+  # repair remains admitted.
+  rm -f "$custom_claim" "$default_claim"
+  CMUX_QA_TEARDOWN_CLAIM="$custom_claim"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || matched_refresh=$?
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || matched_rebuild=$?
+
+  # No override and no teardown preserves the original FLY-2770 parked-repair
+  # admission behavior.
+  CMUX_QA_TEARDOWN_CLAIM="$default_claim"
+  maintenance_entry_allowed refresh >/dev/null 2>&1 || none_refresh=$?
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || none_rebuild=$?
+
+  # The default (non-overridden) path must still be released; the rendezvous
+  # compatibility layer must not strand the production-default claim.
+  FLYWHEEL_CMUX_MAINTENANCE_MARKER="$FLYWHEEL_CMUX_MAINTENANCE_MARKER" \
+    FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TMPDIR_ROOT/fly2770-release.lock" \
+    FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly2770-release-test" \
+    /bin/bash -c '
+      source "$1" || exit 90
+      cmux_lock_claim_fence_fd() { return 0; }
+      cmux_acquire_reap_mutex() { return 0; }
+      cmux_release_reap_mutex() { return 0; }
+      acquire_cmux_qa_teardown_claim || exit 91
+      release_cmux_qa_teardown_claim
+      [[ ! -e "$CMUX_QA_TEARDOWN_CLAIM" \
+          && ! -e "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" ]] || exit 92
+      CMUX_QA_TEARDOWN_CLAIM="$2"
+      acquire_cmux_qa_teardown_claim || exit 93
+      release_cmux_qa_teardown_claim
+      [[ ! -e "$CMUX_QA_TEARDOWN_CLAIM" \
+          && ! -e "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" ]]
+    ' _ "$SCRIPT_DIR/test-teardown.sh" "$custom_claim" >/dev/null 2>&1 || release_rc=$?
+
+  if [[ "$publish_rc" -eq 0 && "$one_refresh" -ne 0 && "$one_rebuild" -ne 0 \
+      && "$both_refresh" -ne 0 && "$both_rebuild" -ne 0 \
+      && "$matched_refresh" -eq 0 && "$matched_rebuild" -eq 0 \
+      && "$none_refresh" -eq 0 && "$none_rebuild" -eq 0 \
+      && "$release_rc" -eq 0 ]]; then
+    pass "single-sided active teardown refuses repair; matched/no-teardown configurations admit and release cleanly"
+  else
+    fail "claim handshake mismatch publish=$publish_rc one=$one_refresh/$one_rebuild both=$both_refresh/$both_rebuild matched=$matched_refresh/$matched_rebuild none=$none_refresh/$none_rebuild release=$release_rc"
+  fi
+}
+
+test_fly2770_trigger_cmux_refresh_skips_while_parked() {
+  echo "Test: FLY-2770 — the automatic post-restart --refresh stays out of a parked fleet"
+  local fn_src fixture_dir marker invoked ok=1
+  fixture_dir="$TMPDIR_ROOT/fly2770-restart"
+  rm -rf "$fixture_dir"; mkdir -p "$fixture_dir/scripts"
+  marker="$fixture_dir/cmux-maintenance"
+  invoked="$fixture_dir/invoked"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$@" >> "%s"\n' "$invoked" > "$fixture_dir/scripts/flywheel-cmux-sync.sh"
+  chmod +x "$fixture_dir/scripts/flywheel-cmux-sync.sh"
+  fn_src=$(awk '/^trigger_cmux_refresh\(\) \{/,/^\}/' "$SCRIPT_DIR/restart-services.sh")
+  [[ -n "$fn_src" ]] || { fail "cannot extract trigger_cmux_refresh from restart-services.sh"; return; }
+  # Two-sided and deterministic: `sleep` is stubbed away inside the subshell so
+  # the backgrounded steps run and are waited on. Without that, a removed guard
+  # would still leave `$invoked` empty for the 5s the test does not wait.
+  printf 'parked\n' > "$marker"
+  (
+    log() { :; }
+    sleep() { :; }
+    eval "$fn_src"
+    FLYWHEEL_DIR="$fixture_dir"
+    FLYWHEEL_CMUX_MAINTENANCE_MARKER="$marker"
+    trigger_cmux_refresh >/dev/null 2>&1
+    wait
+  )
+  [[ ! -s "$invoked" ]] \
+    || { fail "the automatic refresh ran against a parked fleet: [$(cat "$invoked" 2>/dev/null)]"; ok=0; }
+  rm -f "$marker"
+  (
+    log() { :; }
+    sleep() { :; }
+    eval "$fn_src"
+    FLYWHEEL_DIR="$fixture_dir"
+    FLYWHEEL_CMUX_MAINTENANCE_MARKER="$marker"
+    trigger_cmux_refresh >/dev/null 2>&1
+    wait
+  )
+  grep -qxF -- '--refresh' "$invoked" 2>/dev/null \
+    || { fail "without a marker the automatic refresh must still run: [$(cat "$invoked" 2>/dev/null)]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "an automatic post-restart refresh is skipped while parked and still runs otherwise"
+}
+
+test_fly2770_existing_w1p_marker_is_retracted_without_closing() {
+  echo "Test: FLY-2770 — a pre-existing W1p marker is retracted, not advanced into a close"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" rc=0 epoch marker_after
+  local title_b64 orig_b64 fingerprint
+  _fly2770_loop_fixture "$title" "$ref"
+  MOCK_CMUX_RENAME_TAB_FAIL=0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  title_b64=$(_restored_b64 "$title")
+  orig_b64=$(_restored_b64 "prepared|cmux-generation-1|$ref|$title")
+  fingerprint=$(printf '%064d' 7)
+  epoch=$(date +%s)
+  printf 'restoredv1|W1p|%s|%s|%s|%s|%s|%s\n' \
+    "cmux-generation-1" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  MOCK_CMUX_OPS=""
+  recover_restored_transactions >/dev/null 2>&1 || rc=$?
+  marker_after=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  release_mutator_lease
+  local ok=1
+  [[ "$rc" -eq 0 ]] || { fail "recovery pass failed rc=$rc"; ok=0; }
+  [[ -z "$marker_after" ]] || { fail "the stale W1p marker was preserved marker=[$marker_after]"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"close-workspace"* ]] \
+    || { fail "a migration-pending workspace was closed during retraction ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == "prepared|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "the prepared receipt was mutated during retraction ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "pre-existing markers retract on the first pass with zero closes (decision row 14, not 13)"
+}
+
+test_fly2770_ops_rebuild_converges_a_migration_pending_row() {
+  echo "Test: FLY-2770 — --rebuild-views converges a W1p migration-pending row instead of failing it"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" rc=0 saved_verify results
+  _fly2770_loop_fixture "$title" "$ref"
+  MOCK_CMUX_RENAME_TAB_FAIL=0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  saved_verify=$(declare -f verify_sidebar_targets)
+  verify_sidebar_targets() { VERIFY_SIDEBAR_REPORT="stub"; return 0; }
+  MOCK_CMUX_OPS=""
+  execute_ops_rebuild_targets \
+    "$title||runner-flywheel|@42|$ref|W1p|cmux-generation-1" >/dev/null 2>&1 || rc=$?
+  results="$OPS_REBUILD_RESULTS"
+  eval "$saved_verify"
+  release_mutator_lease
+  local ok=1
+  [[ "$rc" -eq 0 ]] || { fail "ops rebuild reported the migration-pending target as failed rc=$rc results=[$results]"; ok=0; }
+  [[ "$results" == *"|migrate-title"* ]] \
+    || { fail "ops rebuild did not take the title-migration branch results=[$results]"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == "committed|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "ops rebuild did not commit the receipt ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"new-workspace"* ]] \
+    || { fail "ops rebuild created a duplicate workspace ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "the audited operator path converges a migration-pending row the same way the watcher does"
+}
+
+test_fly2770_null_workspace_title_recovers_placeholder_tab() {
+  echo "Test: FLY-2770 — an empty workspace title plus a placeholder tab recovers both faces"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-2770-implement" ref="workspace:2770" rc=0 row workspace_title surface
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "~" "$_fly2770_uuid")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  printf 'prepared|cmux-generation-1|%s|%s|%s\n' "$ref" "$title" "$_fly2770_uuid" > "$VIEW_LEDGER"
+  MOCK_CMUX_OPS=""
+  reconcile_prepared_ledger >/dev/null 2>&1 || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  workspace_title=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+print(json.load(sys.stdin)["workspaces"][0]["title"])')
+  surface=$(printf '%s\n' "$MOCK_CMUX_SURFACES" | awk -F';;' '{print $5}')
+  release_mutator_lease
+  local ok=1
+  [[ "$rc" -eq 0 ]] || { fail "recovery pass failed rc=$rc"; ok=0; }
+  [[ "$workspace_title" == "$title" && "$surface" == "$title" ]] \
+    || { fail "both faces did not converge workspace=[$workspace_title] surface=[$surface]"; ok=0; }
+  [[ "$row" == "committed|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "receipt did not commit row=[$row]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "a __NULL__ workspace face and a placeholder tab both migrate under a UUID receipt"
+}
+
+test_fly2770_other_modes_still_refuse_under_a_bare_marker() {
+  echo "Test: FLY-2770 — once / reaper / watch keep refusing under a bare maintenance marker"
+  reset_mocks
+  local mode rc ok=1
+  rm -f "$CMUX_MAINTENANCE_MARKER" "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_OPS_REBUILD_CLAIM"
+  printf 'parked\n' > "$CMUX_MAINTENANCE_MARKER"
+  for mode in once reaper qa_teardown; do
+    rc=0
+    FLYWHEEL_CMUX_SUPERVISED=0 maintenance_entry_allowed "$mode" >/dev/null 2>&1 || rc=$?
+    [[ "$rc" -ne 0 ]] \
+      || { fail "mode=$mode was relaxed past the maintenance marker (only refresh and ops_rebuild may be)"; ok=0; }
+  done
+  rc=0
+  FLYWHEEL_CMUX_SUPERVISED=0 maintenance_entry_allowed watch >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -ne 0 ]] || { fail "watch was relaxed past the maintenance marker"; ok=0; }
+  rm -f "$CMUX_MAINTENANCE_MARKER"
+  [[ "$ok" == "1" ]] && pass "the marker relaxation is scoped to refresh and ops_rebuild only"
+}
+
+test_fly2770_inconclusive_migration_probe_never_fails_open() {
+  echo "Test: FLY-2770 — an unreadable receipt/surface is inconclusive, never a restored candidate"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" ok=1 rc
+  _fly2770_loop_fixture "$title" "$ref"
+  MOCK_CMUX_RENAME_TAB_FAIL=0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+
+  # (1) pending — UUID receipt + placeholder surface
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  rc=0; _restored_migration_pending W1p "cmux-generation-1" "$ref" "$title" || rc=$?
+  [[ "$rc" -eq 0 ]] || { fail "pending shape did not answer 0 (rc=$rc)"; ok=0; }
+
+  # (2) conclusively not pending — legacy four-field receipt
+  printf 'prepared|cmux-generation-1|%s|%s\n' "$ref" "$title" > "$VIEW_LEDGER"
+  rc=0; _restored_migration_pending W1p "cmux-generation-1" "$ref" "$title" || rc=$?
+  [[ "$rc" -eq 1 ]] || { fail "legacy receipt did not answer 1 (rc=$rc)"; ok=0; }
+
+  # (3) inconclusive — receipt unreadable
+  : > "$VIEW_LEDGER"
+  rc=0; _restored_migration_pending W1p "cmux-generation-1" "$ref" "$title" || rc=$?
+  [[ "$rc" -eq 2 ]] || { fail "unreadable receipt did not answer 2 (rc=$rc)"; ok=0; }
+
+  # (4) inconclusive — surface unreadable
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  MOCK_CMUX_SURFACES_FAIL=1
+  rc=0; _restored_migration_pending W1p "cmux-generation-1" "$ref" "$title" || rc=$?
+  MOCK_CMUX_SURFACES_FAIL=0
+  [[ "$rc" -eq 2 ]] || { fail "unreadable surface did not answer 2 (rc=$rc)"; ok=0; }
+
+  # (5) an inconclusive predicate must stop the probe at 2 — adoption then mints
+  #     nothing, recovery quarantines, and the close guard refuses.
+  local saved_helper
+  saved_helper=$(declare -f _restored_migration_pending)
+  _restored_migration_pending() { return 2; }
+  rc=0; _restored_candidate_probe W1p "cmux-generation-1" "$ref" "$title" || rc=$?
+  [[ "$rc" -eq 2 ]] || { fail "probe collapsed an inconclusive predicate to rc=$rc"; ok=0; }
+  MOCK_CMUX_OPS=""
+  adopt_restored_workspaces live >/dev/null 2>&1 || true
+  [[ -z "$(cat "$RESTORED_STATE" 2>/dev/null || true)" ]] \
+    || { fail "an inconclusive predicate still minted a W1p marker: [$(cat "$RESTORED_STATE" 2>/dev/null)]"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"close-workspace"* ]] \
+    || { fail "an inconclusive predicate reached a close: ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  eval "$saved_helper"
+  release_mutator_lease
+  [[ "$ok" == "1" ]] && pass "the migration predicate is tri-state and uncertainty never reaches the destructive path"
+}
+
+test_fly2770_ops_rebuild_defers_on_inconclusive_migration_probe() {
+  echo "Test: FLY-2770 — --rebuild-views stops on an inconclusive probe instead of adopting"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" rc=0 saved_verify saved_helper saved_adopt results
+  _fly2770_loop_fixture "$title" "$ref"
+  MOCK_CMUX_RENAME_TAB_FAIL=0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  saved_verify=$(declare -f verify_sidebar_targets)
+  saved_helper=$(declare -f _restored_migration_pending)
+  saved_adopt=$(declare -f _ops_adopt_restored_candidate)
+  verify_sidebar_targets() { VERIFY_SIDEBAR_REPORT="stub"; return 0; }
+  _restored_migration_pending() { return 2; }
+  _ops_adopt_restored_candidate() { printf 'ADOPTED\n' >> "$TMPDIR_ROOT/fly2770-adopt.trace"; return 0; }
+  rm -f "$TMPDIR_ROOT/fly2770-adopt.trace"
+  MOCK_CMUX_OPS=""
+  execute_ops_rebuild_targets \
+    "$title||runner-flywheel|@42|$ref|W1p|cmux-generation-1" >/dev/null 2>&1 || rc=$?
+  results="$OPS_REBUILD_RESULTS"
+  eval "$saved_verify"; eval "$saved_helper"; eval "$saved_adopt"
+  release_mutator_lease
+  local ok=1
+  [[ "$rc" -eq 2 ]] || { fail "inconclusive probe did not stop the rebuild (rc=$rc results=[$results])"; ok=0; }
+  [[ "$results" == *"migrate-title-inconclusive"* ]] \
+    || { fail "rebuild did not record the inconclusive action results=[$results]"; ok=0; }
+  [[ ! -s "$TMPDIR_ROOT/fly2770-adopt.trace" ]] \
+    || { fail "rebuild fell through to restored adoption on uncertainty"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"close-workspace"* ]] \
+    || { fail "rebuild closed a workspace on uncertainty ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "an inconclusive probe stops the audited rebuild instead of choosing the destructive branch"
+}
+
+test_fly2770_migration_stall_resets_and_alerts_once() {
+  echo "Test: FLY-2770 — migration stall evidence resets on interruption and escalates exactly once"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" ok=1 alerts round rows old saved_alert
+  _fly2770_loop_fixture "$title" "$ref"
+  FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=3
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  saved_alert=$(declare -f flywheel_alert)
+  FLY2770_ALERTS=""
+  flywheel_alert() { FLY2770_ALERTS+="${FLY2770_ALERTS:+$'\n'}$*"; }
+  # The counter only advances once per additive round and only after the row is
+  # older than the (clamped, >=120s) minimum age, so drive both explicitly.
+  old=$(( $(date +%s) - 1000 ))
+
+  # (1) the row leaves the named-workspace migration condition -> evidence cleared
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "a-founder-title" "$_fly2770_uuid")
+  CMUX_ADDITIVE_ROUND_ID=100-2
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  rows=$(awk -F'|' -v r="$ref" '$1 == "migration" && $3 == r { n++ } END { print n+0 }' "$PREPARED_STALL_STATE" 2>/dev/null || echo 0)
+  [[ "$rows" == "0" ]] \
+    || { fail "migration evidence survived a drifted workspace title (rows=$rows)"; ok=0; }
+
+  # (2) back in the migration condition: the threshold escalates exactly once
+  #     across four rounds, and the counter re-arms instead of alerting again.
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  MOCK_CMUX_OPS=""
+  for round in 2 3 4 5; do
+    CMUX_ADDITIVE_ROUND_ID="100-$round"
+    reconcile_prepared_ledger >/dev/null 2>&1 || true
+  done
+  alerts=$(grep -c 'cmux_cleanup|title-migration-stuck' <<< "$FLY2770_ALERTS" || true)
+  eval "$saved_alert"
+  CMUX_ADDITIVE_ROUND_ID=""
+  release_mutator_lease
+  [[ "$alerts" == "1" ]] \
+    || { fail "expected exactly one stuck escalation across four rounds, got $alerts alerts=[$FLY2770_ALERTS]"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == "prepared|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "escalation mutated the preserved receipt ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"close-workspace"* ]] \
+    || { fail "escalation path closed the workspace ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "migration evidence resets on interruption and escalates once at the threshold"
+}
+
+test_fly2770_refresh_skips_a_marker_that_appears_during_the_delay() {
+  echo "Test: FLY-2770 — a marker created during the scheduling delay still stops both refresh steps"
+  local fn_src fixture_dir marker invoked ok=1
+  fixture_dir="$TMPDIR_ROOT/fly2770-restart-race"
+  rm -rf "$fixture_dir"; mkdir -p "$fixture_dir/scripts"
+  marker="$fixture_dir/cmux-maintenance"
+  invoked="$fixture_dir/invoked"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$@" >> "%s"\n' "$invoked" > "$fixture_dir/scripts/flywheel-cmux-sync.sh"
+  chmod +x "$fixture_dir/scripts/flywheel-cmux-sync.sh"
+  fn_src=$(awk '/^trigger_cmux_refresh\(\) \{/,/^\}/' "$SCRIPT_DIR/restart-services.sh")
+  [[ -n "$fn_src" ]] || { fail "cannot extract trigger_cmux_refresh from restart-services.sh"; return; }
+  rm -f "$marker"
+  # The seam that models the race: the fleet is unparked at entry, and the
+  # marker appears while the scheduled work is still sleeping.
+  (
+    log() { :; }
+    sleep() { printf 'parked\n' > "$marker"; }
+    eval "$fn_src"
+    FLYWHEEL_DIR="$fixture_dir"
+    FLYWHEEL_CMUX_MAINTENANCE_MARKER="$marker"
+    trigger_cmux_refresh >/dev/null 2>&1
+    wait
+  )
+  [[ ! -s "$invoked" ]] \
+    || { fail "a marker created during the delay did not stop the scheduled work: [$(cat "$invoked" 2>/dev/null)]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "both delayed refresh steps re-check the marker immediately before mutating"
+}
+
+test_fly2770_inconclusive_migration_probe_never_fails_open
+test_fly2770_ops_rebuild_defers_on_inconclusive_migration_probe
+test_fly2770_migration_stall_resets_and_alerts_once
+test_fly2770_refresh_skips_a_marker_that_appears_during_the_delay
+
+test_fly2770_migration_evidence_is_bound_to_the_receipt_lifecycle() {
+  echo "Test: FLY-2770 — migration stall evidence never outlives its receipt"
+  reset_mocks
+  local title="FLY-2770-implement" ref="workspace:2770" ok=1 old raw arm rows
+  _fly2770_loop_fixture "$title" "$ref"
+  MOCK_CMUX_RENAME_TAB_FAIL=0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  old=$(( $(date +%s) - 1000 ))
+  raw=$(build_attach_command "cmux-$title")
+
+  _fly2770_seed_migration_row() {
+    printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+    test_ledger_upsert prepared "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid"
+  }
+  _fly2770_migration_rows() {
+    awk -F'|' -v r="$ref" '$1 == "migration" && $3 == r { n++ } END { print n+0 }' \
+      "$PREPARED_STALL_STATE" 2>/dev/null || echo 0
+  }
+
+  # (a0) a `prepared` upsert must NOT purge — otherwise every "row is gone"
+  #      assertion below would pass vacuously.
+  _fly2770_seed_migration_row
+  [[ "$(_fly2770_migration_rows)" == "1" ]] \
+    || { fail "a prepared upsert purged the evidence the lifecycle is supposed to keep"; ok=0; }
+
+  # (a) each of the three non-migration arms of reconcile_prepared_ledger clears it
+  CMUX_ADDITIVE_ROUND_ID=100-2
+  for arm in absent null foreign; do
+    _fly2770_seed_migration_row
+    case "$arm" in
+      absent)     MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'; MOCK_CMUX_RENAME_TAB_FAIL=0 ;;
+      # `~` normalizes to the __NULL__ sub-case. Force the later completion to
+      # fail so only this arm's own clear can retire the row — otherwise the
+      # commit path would clear it and the branch clear would be unpinned.
+      null)       MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "~" "$_fly2770_uuid"); MOCK_CMUX_RENAME_TAB_FAIL=1 ;;
+      foreign)    MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "a-founder-title" "$_fly2770_uuid"); MOCK_CMUX_RENAME_TAB_FAIL=0 ;;
+    esac
+    MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+    reconcile_prepared_ledger >/dev/null 2>&1 || true
+    MOCK_CMUX_RENAME_TAB_FAIL=0
+    rows=$(_fly2770_migration_rows)
+    [[ "$rows" == "0" ]] \
+      || { fail "the $arm arm left migration evidence behind (rows=$rows)"; ok=0; }
+  done
+
+  # (b) a commit driven from somewhere other than reconcile_prepared_ledger clears it
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+  _fly2770_seed_migration_row
+  complete_title_migration "$ref" "$title" "cmux-generation-1" "$raw" >/dev/null 2>&1 \
+    || { fail "fixture migration did not commit"; ok=0; }
+  rows=$(_fly2770_migration_rows)
+  [[ "$rows" == "0" ]] \
+    || { fail "a receipt committed outside prepared reconciliation kept its migration evidence (rows=$rows)"; ok=0; }
+
+  # (b2) the `surface == title` short-circuit commit retires it too
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;$title"
+  _fly2770_seed_migration_row
+  MOCK_CMUX_OPS=""
+  complete_title_migration "$ref" "$title" "cmux-generation-1" "$raw" >/dev/null 2>&1 \
+    || { fail "short-circuit commit failed"; ok=0; }
+  [[ "$MOCK_CMUX_OPS" != *"rename-tab"* ]] \
+    || { fail "the short-circuit path issued a rename-tab ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  rows=$(_fly2770_migration_rows)
+  [[ "$rows" == "0" ]] \
+    || { fail "the receipt-only commit kept its migration evidence (rows=$rows)"; ok=0; }
+  MOCK_CMUX_SURFACES="$ref;;surface:2770;;terminal;;true;;Terminal 66"
+
+  # (c) receipt removal purges every stall kind for that exact generation+ref
+  _fly2770_seed_migration_row
+  printf 'drift|cmux-generation-1|%s|%s|1|%s|100-1\n' "$ref" "$title" "$old" >> "$PREPARED_STALL_STATE"
+  printf 'absent|cmux-generation-1|workspace:9999|other|1|%s|100-1\n' "$old" >> "$PREPARED_STALL_STATE"
+  _ledger_remove "cmux-generation-1" "$ref" >/dev/null 2>&1 || { fail "fixture ledger removal failed"; ok=0; }
+  rows=$(awk -F'|' -v r="$ref" '$3 == r { n++ } END { print n+0 }' "$PREPARED_STALL_STATE" 2>/dev/null || echo 0)
+  [[ "$rows" == "0" ]] \
+    || { fail "receipt removal left stall evidence for its own ref (rows=$rows)"; ok=0; }
+  rows=$(awk -F'|' '$3 == "workspace:9999" { n++ } END { print n+0 }' "$PREPARED_STALL_STATE" 2>/dev/null || echo 0)
+  [[ "$rows" == "1" ]] \
+    || { fail "receipt removal purged an unrelated ref's stall evidence (rows=$rows)"; ok=0; }
+
+  # (d) a failed purge is reported but never demoted into a failed ledger removal
+  local saved_purge purge_log purge_rc=0
+  purge_log="$TMPDIR_ROOT/fly2770-purge.log"
+  _fly2770_seed_migration_row
+  saved_purge=$(declare -f _prepared_stall_purge_ref)
+  _prepared_stall_purge_ref() { return 1; }
+  _ledger_remove "cmux-generation-1" "$ref" > "$purge_log" 2>&1 || purge_rc=$?
+  eval "$saved_purge"
+  [[ "$purge_rc" -eq 0 ]] \
+    || { fail "a failed purge was propagated as a failed ledger removal (rc=$purge_rc)"; ok=0; }
+  grep -q "prepared stall evidence not purged after receipt removal" "$purge_log" \
+    || { fail "a failed purge was silent: [$(cat "$purge_log" 2>/dev/null)]"; ok=0; }
+  [[ -z "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" ]] \
+    || { fail "the ledger removal did not happen ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+
+  # (e) the orphan sweep is the recovery for the two-file crash window: evidence
+  #     whose exact prepared receipt no longer exists is retired, live evidence
+  #     and a foreign stall kind survive.
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  printf 'migration|cmux-generation-old|workspace:7|stale|2|%s|100-1\n' "$old" >> "$PREPARED_STALL_STATE"
+  printf 'drift|cmux-generation-1|workspace:8|live-one|1|%s|100-1\n' "$old" >> "$PREPARED_STALL_STATE"
+  printf 'node-absent|cmux-generation-1|workspace:9|foreign-kind|1|%s|100-1\n' "$old" >> "$PREPARED_STALL_STATE"
+  printf 'prepared|cmux-generation-1|workspace:8|live-one|%s\n' "$_fly2770_uuid" > "$VIEW_LEDGER"
+  # Drive the sweep directly here: routing through a full reconcile pass would
+  # let the __ABSENT__ arm clear workspace:8's own evidence for its own reasons,
+  # which would hide over-deletion rather than prove its absence.
+  _prepared_stall_sweep_orphans "cmux-generation-1" >/dev/null 2>&1 \
+    || { fail "the sweep refused a readable ledger"; ok=0; }
+  [[ "$(_fly2770_migration_rows)" == "0" ]] \
+    || { fail "the sweep kept evidence whose prepared receipt is gone"; ok=0; }
+  [[ "$(awk -F'|' '$2 == "cmux-generation-old" { n++ } END { print n+0 }' "$PREPARED_STALL_STATE")" == "0" ]] \
+    || { fail "the sweep kept a stale-generation row"; ok=0; }
+  [[ "$(awk -F'|' '$1 == "node-absent" { n++ } END { print n+0 }' "$PREPARED_STALL_STATE")" == "1" ]] \
+    || { fail "the sweep erased a stall kind this lifecycle does not own"; ok=0; }
+  [[ "$(awk -F'|' '$1 == "drift" && $3 == "workspace:8" { n++ } END { print n+0 }' "$PREPARED_STALL_STATE")" == "1" ]] \
+    || { fail "the sweep over-deleted: a live prepared row's own evidence is gone"; ok=0; }
+
+  # (e2) the same retirement happens through a real reconcile pass
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  printf 'committed|cmux-generation-1|%s|%s|%s\n' "$ref" "$title" "$_fly2770_uuid" > "$VIEW_LEDGER"
+  MOCK_CMUX_WORKSPACES_JSON=$(_fly2770_workspace_json "$ref" "$title" "$_fly2770_uuid")
+  CMUX_ADDITIVE_ROUND_ID=100-9
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  [[ "$(_fly2770_migration_rows)" == "0" ]] \
+    || { fail "a reconcile pass left evidence for an already-committed receipt"; ok=0; }
+
+  # (f) a conclusively absent ledger is an empty source (the post-crash residue
+  #     this sweep exists for), while an unreadable one preserves state.
+  #     NOTE on what this does and does not discriminate: on hosts whose awk
+  #     aborts with an i/o error (macOS awk exits 2 on a directory input), the
+  #     `awk || return 1` arm alone already enforces the preserve-on-unreadable
+  #     contract, so this sub-case cannot tell the explicit -f/-r precheck and the
+  #     `getline_rc < 0 -> exit 2` guard apart from it. Those two stay as defence
+  #     for awks that only signal a read error through getline's -1; the contract
+  #     asserted here (nonzero rc AND a byte-identical stall file) is what
+  #     callers depend on either way.
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  rm -f "$VIEW_LEDGER"
+  CMUX_ADDITIVE_ROUND_ID=100-10
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  [[ "$(_fly2770_migration_rows)" == "0" ]] \
+    || { fail "a missing ledger left its orphan evidence unswept"; ok=0; }
+  local before_unreadable
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  before_unreadable=$(cat "$PREPARED_STALL_STATE")
+  rm -f "$VIEW_LEDGER"; mkdir -p "$VIEW_LEDGER"
+  _prepared_stall_sweep_orphans "cmux-generation-1" >/dev/null 2>&1 \
+    && { fail "an unreadable ledger was treated as an empty live set"; ok=0; }
+  [[ "$(cat "$PREPARED_STALL_STATE")" == "$before_unreadable" ]] \
+    || { fail "an unreadable ledger still mutated the stall state"; ok=0; }
+  rmdir "$VIEW_LEDGER" 2>/dev/null || rm -rf "$VIEW_LEDGER"
+  : > "$VIEW_LEDGER"
+
+  # (g) a failed purge after a successful committed upsert warns and keeps rc 0
+  local saved_purge2 upsert_log upsert_rc=0
+  upsert_log="$TMPDIR_ROOT/fly2770-upsert.log"
+  printf 'migration|cmux-generation-1|%s|%s|2|%s|100-1\n' "$ref" "$title" "$old" > "$PREPARED_STALL_STATE"
+  saved_purge2=$(declare -f _prepared_stall_purge_ref)
+  _prepared_stall_purge_ref() { return 1; }
+  _ledger_upsert committed "cmux-generation-1" "$ref" "$title" "$_fly2770_uuid" > "$upsert_log" 2>&1 || upsert_rc=$?
+  eval "$saved_purge2"
+  [[ "$upsert_rc" -eq 0 ]] \
+    || { fail "a failed purge was propagated as a failed committed upsert (rc=$upsert_rc)"; ok=0; }
+  grep -q "prepared stall evidence not purged after receipt commit" "$upsert_log" \
+    || { fail "a failed purge after commit was silent: [$(cat "$upsert_log" 2>/dev/null)]"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == "committed|cmux-generation-1|$ref|$title|$_fly2770_uuid" ]] \
+    || { fail "the committed upsert did not land ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+
+  unset -f _fly2770_seed_migration_row _fly2770_migration_rows
+  CMUX_ADDITIVE_ROUND_ID=""
+  release_mutator_lease
+  [[ "$ok" == "1" ]] && pass "migration evidence is cleared by every arm, by an out-of-band commit, and by receipt removal"
+}
+
+test_fly2770_migration_evidence_is_bound_to_the_receipt_lifecycle
+
+test_fly2770_existing_w1p_marker_is_retracted_without_closing
+test_fly2770_ops_rebuild_converges_a_migration_pending_row
+test_fly2770_null_workspace_title_recovers_placeholder_tab
+test_fly2770_other_modes_still_refuse_under_a_bare_marker
+
+test_fly2770_uuid_receipt_migrates_placeholder_surface
+test_fly2770_legacy_receipt_never_migrates_placeholder_surface
+test_fly2770_foreign_surface_still_refused
+test_fly2770_placeholder_surface_swap_is_refused
+test_fly2770_failed_rename_never_recreates_or_recycles
+test_fly2770_legacy_prepared_still_mints_w1p_marker
+test_fly2770_new_log_episode_kinds_pass_state_validator
+test_fly2770_maintenance_entry_allowed_refresh_truth_table
+test_fly2770_maintenance_entry_allowed_ops_rebuild_truth_table
+test_fly2770_publish_ops_claim_tolerates_marker
+test_fly2770_qa_teardown_claim_env_is_independent
+test_fly2770_trigger_cmux_refresh_skips_while_parked
 
 echo ""
 echo "═══ FLY-1605: timezone-stable process identities ═══"

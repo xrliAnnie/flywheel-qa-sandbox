@@ -2,7 +2,11 @@
 # flywheel-cmux-sync.sh — Sync flywheel tmux windows to cmux workspaces
 # --once: full sync (tmux + cmux workspace management, with aggressive cleanup). Manual use.
 # --watch: event-signaled polling (15s event drain + 60s additive scan). Must run from inside cmux.
-# --refresh: tmux-only linked session repair. Safe to call from anywhere (no cmux socket needed).
+# --refresh: linked-session repair. FLY-2770: NOT tmux-only — it also runs
+#   recover_restored_transactions (can close cmux workspaces) and
+#   reconcile_prepared_ledger (renames workspaces/tabs and commits receipts).
+#   It holds the mutator lease for all of it and is admitted while the
+#   maintenance marker is present; the lease, not the marker, is the exclusion.
 #
 # FLY-102: --watch uses event-signaled polling architecture:
 #   - tmux hooks (after-new-window, pane-exited, pane-died, session-created)
@@ -113,7 +117,16 @@ KEEPER_INVENTORY="${KEEPER_INVENTORY:-$HOME/.flywheel/state/cmux-keeper-inventor
 VIEW_ABSENT_STATE="${VIEW_ABSENT_STATE:-$HOME/.flywheel/state/cmux-view-absent}"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
 WATCHER_HEARTBEAT_FILE="${FLYWHEEL_CMUX_WATCHER_HEARTBEAT:-$HOME/.flywheel/state/cmux-watcher-heartbeat}"
-CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
+# FLY-2770: the QA teardown claim gets its own env. It used to be derived from
+# CMUX_MAINTENANCE_MARKER with no override of its own, which coupled two
+# unrelated operations: "bypass the marker" and "make a resident watcher yield".
+# The derived value stays the default, so production behaviour is unchanged.
+# Both mutators should receive the same override. The derived path remains a
+# canonical rendezvous as well: test-teardown publishes the same owner-bound
+# claim there when an override is active, so a one-sided configuration cannot
+# make refresh/rebuild miss a live teardown.
+CMUX_QA_TEARDOWN_CLAIM_DEFAULT="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
+CMUX_QA_TEARDOWN_CLAIM="${FLYWHEEL_CMUX_QA_TEARDOWN_CLAIM:-$CMUX_QA_TEARDOWN_CLAIM_DEFAULT}"
 CMUX_OPS_REBUILD_CLAIM="${CMUX_MAINTENANCE_MARKER}.ops-rebuild"
 CMUX_REBUILD_REPORT_DIR="${FLYWHEEL_CMUX_REBUILD_REPORT_DIR:-$HOME/.flywheel/state/cmux-rebuild-reports}"
 LEDGER_CONFLICT_STATE="${LEDGER_CONFLICT_STATE:-$HOME/.flywheel/state/cmux-ledger-conflicts}"
@@ -6938,7 +6951,19 @@ _ledger_upsert() {
     log "WARN: ledger upsert blocked by preserved construction collision: title=$title ref=$ref"
     return 1
   fi
-  _ledger_transaction upsert "$state" "$generation" "$ref" "$title" "$workspace_uuid"
+  local upsert_rc=0
+  _ledger_transaction upsert "$state" "$generation" "$ref" "$title" "$workspace_uuid" || upsert_rc=$?
+  # FLY-2770: a committed receipt has left the prepared lifecycle, and committed
+  # rows are never re-enumerated by reconcile_prepared_ledger, so retire its stall
+  # evidence here — in the one upsert primitive — rather than in whichever caller
+  # happened to drive the commit (birth adoption, V2 Lead naming, restored
+  # recovery, stock adoption and rebind all commit directly). A failed purge warns
+  # and never pretends the completed ledger transaction rolled back.
+  if [[ "$upsert_rc" -eq 0 && "$state" == "committed" ]] \
+      && ! _prepared_stall_purge_ref "$generation" "$ref"; then
+    log "WARN: prepared stall evidence not purged after receipt commit generation=$generation ref=$ref"
+  fi
+  return "$upsert_rc"
 }
 
 _ledger_upgrade_legacy_uuid() {
@@ -6950,10 +6975,16 @@ _ledger_upgrade_legacy_uuid() {
 }
 
 _ledger_remove() {
-  local generation="$1" ref="$2"
+  local generation="$1" ref="$2" rc=0
   case "$generation$ref" in *'|'*|*$'\n'*) return 1 ;; esac
   [[ -n "$generation" && -n "$ref" ]] || return 1
-  _ledger_transaction remove "" "$generation" "$ref" ""
+  _ledger_transaction remove "" "$generation" "$ref" "" || rc=$?
+  # FLY-2770: the ledger transaction already happened; a failed purge is reported
+  # but never pretended to roll it back.
+  if [[ "$rc" -eq 0 ]] && ! _prepared_stall_purge_ref "$generation" "$ref"; then
+    log "WARN: prepared stall evidence not purged after receipt removal generation=$generation ref=$ref"
+  fi
+  return "$rc"
 }
 
 ledger_committed_ref() {
@@ -7353,11 +7384,45 @@ RESTORED_PROBE_SURFACE=""
 
 # Shared resident/ops evidence probe. rc=0 exact evidence, rc=1 conclusive
 # drift/refusal, rc=2 inventory uncertainty.
+# FLY-2770: a W1p candidate (live source + `prepared` receipt) whose tab still
+# carries cmux's own placeholder is a PENDING TITLE MIGRATION, not a restored
+# half-transaction. Restored adoption's W1p probe fires precisely because
+# `surface != title`, so without this predicate the watcher mints a marker,
+# complete_title_migration is then hard-blocked by restored_inflight_state, the
+# marker advances to a synthetic committed receipt and the workspace is closed —
+# and the next additive pass creates a replacement that repeats the whole cycle.
+# That is the empty-"Terminal N" loop this issue is about.
+#
+# Only UUID-bound receipts qualify: a four-field legacy row (what
+# authorize_stock_candidate writes over founder stock) keeps the existing W1p
+# behaviour untouched, and its recreate mints a UUID row that then converges.
+#
+# Read-only. Callers: _restored_candidate_probe (which therefore covers the mint
+# site, the recovery evidence read and the final close guard) and
+# execute_ops_rebuild_targets, which converges such a row instead of adopting it.
+# rc=0 migration pending; rc=1 conclusively NOT pending; rc=2 inconclusive.
+# The tri-state matters: collapsing an unreadable receipt or surface into rc=1
+# would hand a transient cmux IPC failure back to the destructive W1p recovery
+# path this predicate exists to disarm. Every caller must preserve state on 2.
+# $5 is the surface the caller has already observed; passing it avoids a second
+# read (and therefore a second, independent way to fail) on the probe path.
+_restored_migration_pending() {
+  local kind="$1" generation="$2" ref="$3" title="$4" surface="${5:-}" pending_uuid
+  [[ "$kind" == "W1p" ]] || return 1
+  pending_uuid=$(ledger_exact_receipt_uuid "$generation" "$ref" "$title" 2>/dev/null) || return 2
+  [[ -n "$pending_uuid" ]] || return 2
+  [[ "$pending_uuid" != "__LEGACY__" ]] || return 1
+  if [[ -z "$surface" ]]; then
+    surface=$(workspace_single_surface_title "$ref") || return 2
+  fi
+  _workspace_title_is_default "$surface"
+}
+
 _restored_candidate_probe() {
   local kind="$1" generation="$2" ref="$3" title="$4" expected="${5:-}"
   local current raw canonical candidates candidate_count candidate_kind candidate_ref pinned selected number
   local evidence raw_title surface snapshot live_rows live_count any_count
-  local linked_state=absent linked_rc=0
+  local linked_state=absent linked_rc=0 migration_rc=0
   RESTORED_PROBE_FINGERPRINT="" RESTORED_PROBE_SOURCE="" RESTORED_PROBE_WID=""
   RESTORED_PROBE_RAW_TITLE="" RESTORED_PROBE_SURFACE=""
   current=$(cmux_socket_identity) || return 2
@@ -7410,6 +7475,23 @@ _restored_candidate_probe() {
   fi
   if [[ "$kind" == "W1p" ]]; then
     [[ "$surface" != "$title" && "$surface" != "$raw_title" ]] || return 1
+    # FLY-2770. Reuse the surface already read above so the predicate adds no
+    # second read. A pending migration answers rc=1 (a CONCLUSIVE "not a restored
+    # candidate"): that maps to evidence=drift in recover_restored_transactions,
+    # which routes an already-minted W1p marker to decision row 14 (marker-delete)
+    # instead of row 13 (advance -> recovery-close), so pre-existing markers
+    # retract on the first pass with zero closes and zero re-creates.
+    # An INCONCLUSIVE predicate must not become either answer: rc=2 propagates,
+    # which makes adoption skip the candidate, recovery quarantine the marker
+    # (evidence=inconclusive short-circuits to decision row 0) and the final
+    # close guard refuse. Fail-closed on uncertainty, never fail-open into a close.
+    migration_rc=0
+    _restored_migration_pending "$kind" "$generation" "$ref" "$title" "$surface" || migration_rc=$?
+    case "$migration_rc" in
+      0) return 1 ;;
+      1) ;;
+      *) return 2 ;;
+    esac
   else
     [[ "$surface" == "$title" || "$surface" == "$raw_title" || "$surface" == "~" ]] || return 1
   fi
@@ -8186,13 +8268,32 @@ complete_title_migration() {
         || workspace_identity_matches "$ref" "$title" "$workspace_uuid" || return 1
       current=$(cmux_socket_identity)
       [[ -n "$current" && "$current" == "$generation" ]] || return 1
+      # FLY-2770: _ledger_upsert retires this tuple's stall evidence on commit.
       _ledger_upsert committed "$generation" "$ref" "$title" "$workspace_uuid" || return 1
     fi
     return 0
   fi
   if ! _managed_view_command_in_variants "$surface" "$canonical_raw"; then
-    log "WARN: title migration surface drift ref=$ref expected_raw=$canonical_raw observed=$surface; preserving receipt"
-    return 1
+    # FLY-2770: cmux names a freshly created surface with its own placeholder
+    # ("Terminal N") until the attached program paints a title; only after
+    # `tmux attach` renders does tmux rewrite it to the window name. That
+    # placeholder carries no founder intent, so a UUID-bound receipt — which
+    # only exists for a workspace this watcher created, adopted against a birth
+    # record (adopt_birth_candidate / _v2_lead_prepare_and_name already rename a
+    # mismatched surface on birth evidence alone), or upgraded from legacy under
+    # birth proof — may migrate it. authorize_stock_candidate writes four-field
+    # legacy rows over founder stock and therefore never reaches this branch.
+    # The EXACT observed bytes are pinned into the variant list, mirroring the
+    # workspace-face recovery in reconcile_prepared_ledger's __DEFAULT__ arm, so
+    # the guard's re-read right before rename-tab still refuses a surface that
+    # was swapped for a different placeholder between the read and the mutation.
+    if [[ -n "$workspace_uuid" ]] && _workspace_title_is_default "$surface"; then
+      canonical_raw="${canonical_raw}${canonical_raw:+$'\n'}${surface}"
+    else
+      log_cmux_episode title-surface-drift "$title" "$ref|$surface" \
+        "WARN: title migration surface drift ref=$ref expected_raw=$canonical_raw observed=$surface; preserving receipt"
+      return 1
+    fi
   fi
 
   _GUARD_TITLE_GENERATION="$generation"
@@ -8203,13 +8304,18 @@ complete_title_migration() {
   cmux_call_guarded _title_tab_rename_guard \
     rename-tab --workspace "$ref" "$title" || rc=$?
   if [[ "$GUARD_WAS_BLOCKED" == "1" || "$rc" -ne 0 ]]; then
-    log "WARN: guarded rename-tab deferred ref=$ref title=$title"
+    # FLY-2770: this is the line that repeats once per pass when a tab rename
+    # keeps failing. Episode-suppressed so a permanently stuck row alerts once
+    # per window instead of every pass (the field log carried 4231 copies).
+    log_cmux_episode title-rename-deferred "$title" "$ref|$surface" \
+      "WARN: guarded rename-tab deferred ref=$ref title=$title"
     return 1
   fi
   surface=$(workspace_single_surface_title "$ref") || return 1
   current=$(cmux_socket_identity)
   [[ "$current" == "$generation" && "$surface" == "$title" ]] || {
-    log "WARN: rename-tab readback mismatch ref=$ref title=$title observed=$surface; preserving receipt"
+    log_cmux_episode title-rename-deferred "$title" "$ref|$surface" \
+      "WARN: rename-tab readback mismatch ref=$ref title=$title observed=$surface; preserving receipt"
     return 1
   }
   if [[ "$receipt" == "prepared" ]]; then
@@ -8807,7 +8913,7 @@ _prepared_stall_state_valid() {
   while IFS='|' read -r kind generation ref title count first_epoch last_round extra \
       || [[ -n "$kind$generation$ref$title$count$first_epoch$last_round${extra:-}" ]]; do
     [[ -n "$kind$generation$ref$title$count$first_epoch$last_round" && -z "${extra:-}" ]] || return 1
-    case "$kind" in absent|drift|authority|node-absent|node-drift) ;; *) return 1 ;; esac
+    case "$kind" in absent|drift|authority|migration|node-absent|node-drift) ;; *) return 1 ;; esac
     case "$generation$title" in *$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
     [[ ${#generation} -le 1024 && ${#title} -le 255 ]] || return 1
     case "$ref" in workspace:[0-9]*) case "${ref#workspace:}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac
@@ -8846,10 +8952,78 @@ _prepared_stall_clear() {
   _prepared_stall_commit "$1" "$2" "$3" "$4"
 }
 
+# FLY-2770: stall evidence is keyed by (kind, generation, ref, title) and is only
+# meaningful while a receipt exists for that tuple. Branch-local clears inside
+# reconcile_prepared_ledger cannot cover a row that leaves the prepared lifecycle
+# somewhere else — committed by another caller, or removed by prepared-loser or
+# stale-generation cleanup — so bind the purge to the receipt itself. Otherwise an
+# orphan counter survives indefinitely, grows the state file toward the 1 MiB cap
+# that would freeze every stall observation, and can later be read as consecutive
+# evidence for a reused tuple.
+# FLY-2770: the ledger and the stall file are two files; every hook above can be
+# interrupted between them, and a stale-generation row can never come back. This
+# lease-held, idempotent sweep is the recovery for all of it: it drops every stall
+# row whose exact prepared receipt no longer exists, so orphan evidence can never
+# accumulate toward the validator's size cap or be read later as consecutive
+# evidence for a reused tuple. Rows for other generations are dropped outright.
+_prepared_stall_sweep_orphans() {
+  local generation="$1" tmp ledger_source
+  [[ -n "$generation" ]] || return 1
+  [[ -f "$PREPARED_STALL_STATE" ]] || return 0
+  mutator_lease_owned_by_self || return 1
+  _prepared_stall_state_valid || return 1
+  # A conclusively absent ledger is an empty readable source: there are no
+  # prepared receipts, so every owned row is an orphan. Anything that exists but
+  # is not a readable regular file is uncertainty, not emptiness, and must
+  # preserve the state file rather than let the sweep read zero live receipts and
+  # delete all of them.
+  if [[ -e "$VIEW_LEDGER" || -L "$VIEW_LEDGER" ]]; then
+    [[ -f "$VIEW_LEDGER" && ! -L "$VIEW_LEDGER" && -r "$VIEW_LEDGER" ]] || return 1
+    ledger_source="$VIEW_LEDGER"
+  else
+    ledger_source=/dev/null
+  fi
+  tmp=$(mktemp "${PREPARED_STALL_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v g="$generation" -v ledger="$ledger_source" '
+    BEGIN {
+      # POSIX awk answers -1 for a read error, which the naive `> 0` loop would
+      # swallow as EOF and turn into an empty live set — i.e. delete every owned
+      # row. Break only on a real EOF and exit nonzero on an error so the caller
+      # discards the temporary and the old state survives.
+      while ((getline_rc = (getline line < ledger)) > 0) {
+        n = split(line, f, "|")
+        if ((n == 4 || n == 5) && f[1] == "prepared") { live[f[2] "|" f[3] "|" f[4]] = 1 }
+      }
+      close(ledger)
+      if (getline_rc < 0) { exit 2 }
+    }
+    # Only the kinds this prepared lifecycle owns are swept; any other kind is
+    # preserved byte-for-byte so a future producer keyed on something else is
+    # never collaterally erased.
+    $1 != "absent" && $1 != "drift" && $1 != "authority" && $1 != "migration" { print; next }
+    $2 == g && (($2 "|" $3 "|" $4) in live) { print }
+  ' "$PREPARED_STALL_STATE" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$PREPARED_STALL_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+_prepared_stall_purge_ref() {
+  local generation="$1" ref="$2" tmp
+  [[ -n "$generation" && -n "$ref" ]] || return 1
+  [[ -f "$PREPARED_STALL_STATE" ]] || return 0
+  mutator_lease_owned_by_self || return 1
+  _prepared_stall_state_valid || return 1
+  tmp=$(mktemp "${PREPARED_STALL_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v g="$generation" -v r="$ref" \
+    '!($2 == g && $3 == r) { print }' "$PREPARED_STALL_STATE" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$PREPARED_STALL_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
 _prepared_stall_observe() {
   local kind="$1" generation="$2" ref="$3" title="$4" previous count first_epoch last_round
   local now min_age replacement
-  case "$kind" in absent|drift|authority|node-absent|node-drift) ;; *) return 1 ;; esac
+  case "$kind" in absent|drift|authority|migration|node-absent|node-drift) ;; *) return 1 ;; esac
   case "$CMUX_ADDITIVE_ROUND_ID" in
     *[!0-9-]*|*-*-*|-*|*-) return 1 ;;
   esac
@@ -8879,11 +9053,18 @@ _prepared_stall_observe() {
 }
 
 reconcile_prepared_ledger() {
-  [[ -f "$VIEW_LEDGER" ]] || return 0
   local generation raw rows ref title workspace_uuid observed confirm current state old_generation provisional canonical_raw
   local had_current_prepared=0 stall_count absent_passes drift_passes legacy_default
+  # FLY-2770: recovery for the ledger/stall two-file boundary (and for stale
+  # generations). It runs BEFORE the missing-ledger return on purpose: "stall
+  # evidence with no ledger at all" is exactly the post-crash residue this sweep
+  # exists to retire, so returning early would make it unreachable. Idempotent
+  # and lease-held; a failure is reported and never blocks the pass.
   generation=$(cmux_socket_identity)
   [[ -n "$generation" ]] || return 1
+  _prepared_stall_sweep_orphans "$generation" \
+    || log "WARN: prepared stall orphan sweep unavailable generation=$generation"
+  [[ -f "$VIEW_LEDGER" ]] || return 0
   raw=$(get_cmux_workspaces_json) || return 1
   _detect_historical_ledger_title_conflicts || return 1
   rows=$(awk -F'|' -v g="$generation" \
@@ -8963,6 +9144,10 @@ else:
         __ABSENT__)
           _prepared_stall_clear drift "$generation" "$ref" "$title" || true
           _prepared_stall_clear authority "$generation" "$ref" "$title" || true
+          # FLY-2770: the row left the named-workspace migration condition, so
+          # its migration evidence must not survive to be counted as consecutive
+          # later (and must not outlive a removed receipt in the state file).
+          _prepared_stall_clear migration "$generation" "$ref" "$title" || true
           stall_count=$(_prepared_stall_observe absent "$generation" "$ref" "$title") || {
             log "WARN: prepared ledger ref absent but stall state is unavailable ref=$ref title=$title; preserving"
             continue
@@ -8980,6 +9165,7 @@ else:
           ;;
         __NULL__|__PROVISIONAL__|__DEFAULT__)
           _prepared_stall_clear drift "$generation" "$ref" "$title" || true
+          _prepared_stall_clear migration "$generation" "$ref" "$title" || true
           _GUARD_RENAME_GENERATION="$generation"
           _GUARD_RENAME_REF="$ref"
           _GUARD_RENAME_TITLE="$title"
@@ -9027,7 +9213,8 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
           # committing, so a foreign surface or success-without-effect can
           # never become durable authority.
           if ! complete_title_migration "$ref" "$title" "$generation" "$canonical_raw"; then
-            log "WARN: prepared title migration deferred ref=$ref title=$title; preserving receipt"
+            log_cmux_episode prepared-migration-deferred "$title" "$ref" \
+              "WARN: prepared title migration deferred ref=$ref title=$title; preserving receipt"
             continue
           fi
           ;;
@@ -9039,12 +9226,29 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
           # raw→canonical tab rename or completes receipt-only when both faces
           # already read back correctly.
           if ! complete_title_migration "$ref" "$title" "$generation" "$provisional"; then
-            log "WARN: prepared title migration deferred ref=$ref title=$title; preserving receipt"
+            log_cmux_episode prepared-migration-deferred "$title" "$ref" \
+              "WARN: prepared title migration deferred ref=$ref title=$title; preserving receipt"
+            # FLY-2770: this row is deliberately never recycled (closing and
+            # re-creating it is the loop this issue removes), and none of the
+            # three prepared-stall GC paths can reach the "$title" arm. A
+            # permanently stuck migration would otherwise be visible only as a
+            # suppressed log line, so escalate once through the alert channel
+            # and re-arm the counter.
+            stall_count=$(_prepared_stall_observe migration "$generation" "$ref" "$title") || continue
+            if (( 10#$stall_count >= 10#$drift_passes )); then
+              _prepared_stall_clear migration "$generation" "$ref" "$title" || continue
+              _alert_cmux_cleanup \
+                "cmux title migration stuck" \
+                "A prepared receipt could not complete its tab-title migration after $stall_count passes and is preserved without recycling: generation=$generation ref=$ref title=$title." \
+                "cmux_cleanup|title-migration-stuck|generation=$generation|ref=$ref|title=$title"
+            fi
             continue
           fi
+          _prepared_stall_clear migration "$generation" "$ref" "$title" || true
           ;;
         *)
           _prepared_stall_clear authority "$generation" "$ref" "$title" || true
+          _prepared_stall_clear migration "$generation" "$ref" "$title" || true
           stall_count=$(_prepared_stall_observe drift "$generation" "$ref" "$title") || {
             log "WARN: prepared ledger title drift ref=$ref expected=$title observed=$observed; stall state unavailable, preserving"
             continue
@@ -9467,6 +9671,7 @@ _cmux_log_episode_state_valid() {
     [[ -n "$kind$title$evidence$last$suppressed" && -z "${extra:-}" ]] || return 1
     case "$kind" in
       view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred|cleanup-pending-ttl-reaped|watcher-started) ;;
+      title-surface-drift|title-rename-deferred|prepared-migration-deferred) ;;
       *) return 1 ;;
     esac
     case "$title" in *'|'*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
@@ -9506,7 +9711,12 @@ log_cmux_episode() {
     return 0
   fi
   case "$kind" in
+    # FLY-2770: this dispatch allowlist and _cmux_log_episode_state_valid's
+    # allowlist must stay in sync. A kind accepted here but rejected there makes
+    # the whole episode file read as malformed, which disables suppression for
+    # every other kind and adds a "suppression disabled" WARN every pass.
     view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred|cleanup-pending-ttl-reaped|watcher-started) ;;
+    title-surface-drift|title-rename-deferred|prepared-migration-deferred) ;;
     *) log "$message"; return 0 ;;
   esac
   case "$title" in ''|*'|'*|*$'\t'*|*$'\n'*|*$'\r'*) log "$message"; return 0 ;; esac
@@ -10462,8 +10672,12 @@ END { for (name in row) print row[name] }
 }
 
 refresh_linked_sessions() {
-  # FLY-98: tmux-only repair — re-select correct window in existing linked sessions.
-  # Safe to call from outside cmux (no cmux CLI dependency).
+  # FLY-98: re-select the correct window in existing linked sessions.
+  # FLY-2770: this is NOT a tmux-only repair, despite what this comment used to
+  # claim. refresh_linked_sessions_tail runs recover_restored_transactions (which
+  # can close cmux workspaces) and prepare_linked_view_state post →
+  # reconcile_prepared_ledger (which renames workspaces and tabs and commits
+  # receipts). It holds the mutator lease for all of it.
   # Fixes stale current-window pointers after Lead restart (window ID changed, name unchanged).
   #
   # FLY-177 (④): select by LIVE window_id, not by name. The old `=name` exact
@@ -12458,11 +12672,39 @@ execute_ops_rebuild_targets() {
         fi
         ;;
       W1|W1p|W1dead)
-        local kind expected_state
+        local kind expected_state migrate_raw migration_rc
         kind="$class"; expected_state=none
         [[ "$class" == W1p ]] && expected_state=prepared
-        _ops_adopt_restored_candidate "$kind" "$generation" "$ref" "$title" "$expected_state" || rc=$?
-        action="adopt-${class}"
+        # FLY-2770: resolve_rebuild_targets classifies W1p from the receipt state
+        # and one live source window alone — it never looks at the surface — so a
+        # migration-pending row lands here too. Restored adoption deliberately
+        # refuses that shape (_restored_migration_pending), so adopting it would
+        # report the target FAILED and, worse, suppress the follow-up create.
+        # Converge it the same way the watcher does instead.
+        migration_rc=1
+        if [[ "$class" == W1p ]]; then
+          migration_rc=0
+          _restored_migration_pending W1p "$generation" "$ref" "$title" || migration_rc=$?
+        fi
+        if [[ "$migration_rc" -eq 0 ]]; then
+          migrate_raw=$(managed_view_command_variants "${VIEW_PREFIX}${title}") || rc=$?
+          if [[ "$rc" -eq 0 ]] \
+              && complete_title_migration "$ref" "$title" "$generation" "$migrate_raw"; then
+            action=migrate-title
+          else
+            rc=1
+            action=migrate-title-deferred
+          fi
+        elif [[ "$migration_rc" -ge 2 ]]; then
+          # Inventory uncertainty is never permission to adopt: adoption for this
+          # class ends in a close, so an unreadable receipt or surface must stop
+          # the target instead of choosing the destructive branch by default.
+          rc=2
+          action=migrate-title-inconclusive
+        else
+          _ops_adopt_restored_candidate "$kind" "$generation" "$ref" "$title" "$expected_state" || rc=$?
+          action="adopt-${class}"
+        fi
         ;;
       W2)
         dismantle_view_display "$title" ops-rebuild || rc=$?
@@ -12535,7 +12777,7 @@ run_rebuild_views() {
   [[ "$OPS_REBUILD_EXECUTE" == 1 ]] || return 0
 
   if [[ "$OPS_REBUILD_HANDOVER" == 1 ]]; then
-    publish_ops_rebuild_claim || {
+    publish_ops_rebuild_claim allow-parked || {
       log "ERROR: unable to publish ops_rebuild handover claim"
       return 1
     }
@@ -13157,8 +13399,25 @@ _mutator_command_matches() {
   cmux_mutator_command_matches "$@"
 }
 
+_qa_teardown_claim_path_present() {
+  if [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]]; then
+    printf '%s\n' "$CMUX_QA_TEARDOWN_CLAIM"
+    return 0
+  fi
+  if [[ "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" != "$CMUX_QA_TEARDOWN_CLAIM" \
+      && (-e "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT" || -L "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT") ]]; then
+    printf '%s\n' "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT"
+    return 0
+  fi
+  return 1
+}
+
+_qa_teardown_claim_present() {
+  _qa_teardown_claim_path_present >/dev/null
+}
+
 _read_qa_teardown_claim() {
-  local file="$CMUX_QA_TEARDOWN_CLAIM" line fields bytes
+  local file="${1:-$CMUX_QA_TEARDOWN_CLAIM}" line fields bytes
   [[ -e "$file" || -L "$file" ]] || return 1
   [[ -f "$file" && ! -L "$file" ]] || return 2
   bytes=$(wc -c < "$file" 2>/dev/null | tr -d ' ') || return 2
@@ -13216,19 +13475,19 @@ _ops_claim_owner_matches() {
 
 maintenance_requested() {
   [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" \
-     || -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" \
-     || -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]
+     || -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]] \
+    || _qa_teardown_claim_present
 }
 
 _alert_malformed_qa_teardown_claim() {
-  local bytes hash signature
-  bytes=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || printf '<unreadable>')
+  local file="${1:-$CMUX_QA_TEARDOWN_CLAIM}" bytes hash signature
+  bytes=$(cat "$file" 2>/dev/null || printf '<unreadable>')
   hash=$(_cmux_alert_hash "$bytes")
   signature="cmux_cleanup|qa-teardown-claim-malformed|sha256=$hash"
-  log "ERROR: malformed qa_teardown claim preserved fail-closed path=$CMUX_QA_TEARDOWN_CLAIM sha256=$hash"
+  log "ERROR: malformed qa_teardown claim preserved fail-closed path=$file sha256=$hash"
   _alert_cmux_cleanup \
     "cmux QA teardown claim malformed" \
-    "cmux-sync parked fail-closed because $CMUX_QA_TEARDOWN_CLAIM is malformed or unsafe; sha256=$hash." \
+    "cmux-sync parked fail-closed because $file is malformed or unsafe; sha256=$hash." \
     "$signature"
 }
 
@@ -13498,10 +13757,18 @@ _lock_claim_fence_fd() {
 }
 
 publish_ops_rebuild_claim() {
+  # FLY-2770: `allow-parked` lets an audited --rebuild-views publish its handover
+  # claim while the maintenance marker is present. It is opt-in per caller on
+  # purpose: --converge-runners is the most destructive entry point in this
+  # script and keeps refusing under a marker.
+  local allow_parked="${1:-}"
   local dir incarnation nonce line temp mutex_rc=0 fence_rc=0 readback
-  [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" \
-      && ! -e "$CMUX_QA_TEARDOWN_CLAIM" && ! -L "$CMUX_QA_TEARDOWN_CLAIM" \
-      && ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]] || return 1
+  case "$allow_parked" in ''|allow-parked) ;; *) return 1 ;; esac
+  if [[ "$allow_parked" != "allow-parked" ]]; then
+    [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" ]] || return 1
+  fi
+  _qa_teardown_claim_present && return 1
+  [[ ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]] || return 1
   dir=$(dirname "$CMUX_OPS_REBUILD_CLAIM")
   mkdir -p "$dir" 2>/dev/null || return 1
   incarnation=$(_process_incarnation "$$") || return 1
@@ -13518,9 +13785,10 @@ publish_ops_rebuild_claim() {
   if [[ "$mutex_rc" -ne 0 ]]; then
     exec 6>&-; rm -f "$temp"; return 1
   fi
-  if [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" \
-      || -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" \
-      || -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]] \
+  if { [[ "$allow_parked" != "allow-parked" ]] \
+        && [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" ]]; } \
+      || _qa_teardown_claim_present \
+      || [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]] \
       || ! ln "$temp" "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null; then
     _release_reap_mutex; exec 6>&-; rm -f "$temp"; return 1
   fi
@@ -13550,8 +13818,8 @@ release_ops_rebuild_claim() {
 }
 
 _reap_stale_qa_teardown_claim() {
-  local mutex_rc=0 claim_rc=0 fence_rc=0 signature observed
-  [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]] || {
+  local mutex_rc=0 claim_rc=0 fence_rc=0 signature observed claim_path peer peer_observed
+  claim_path=$(_qa_teardown_claim_path_present) || {
     QA_CLAIM_DEAD_SIGNATURE=""
     QA_CLAIM_DEAD_OBSERVATIONS=0
     return 0
@@ -13562,10 +13830,10 @@ _reap_stale_qa_teardown_claim() {
       && log "ERROR: qa_teardown claim reap mutex unavailable; claim preserved fail-closed"
     return "$mutex_rc"
   fi
-  _read_qa_teardown_claim || claim_rc=$?
+  _read_qa_teardown_claim "$claim_path" || claim_rc=$?
   if [[ "$claim_rc" -ne 0 ]]; then
     _release_reap_mutex
-    _alert_malformed_qa_teardown_claim
+    _alert_malformed_qa_teardown_claim "$claim_path"
     return 2
   fi
   if _qa_claim_owner_matches; then
@@ -13588,7 +13856,7 @@ _reap_stale_qa_teardown_claim() {
   fi
   # Read-only open is deliberate: unlike <>, it cannot recreate a claim that
   # disappeared between classification and the fence probe.
-  exec 7<"$CMUX_QA_TEARDOWN_CLAIM" || {
+  exec 7<"$claim_path" || {
     _release_reap_mutex
     return 1
   }
@@ -13600,16 +13868,23 @@ _reap_stale_qa_teardown_claim() {
       && log "ERROR: qa_teardown claim activity fence unavailable; claim preserved fail-closed"
     return "$fence_rc"
   fi
-  observed=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)
+  observed=$(cat "$claim_path" 2>/dev/null || true)
   if [[ "$observed" != "$QA_CLAIM_LINE" ]] \
-      || ! rm -f "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null; then
+      || ! rm -f "$claim_path" 2>/dev/null; then
     exec 7>&-
     _release_reap_mutex
     return 1
   fi
+  for peer in "$CMUX_QA_TEARDOWN_CLAIM" "$CMUX_QA_TEARDOWN_CLAIM_DEFAULT"; do
+    [[ "$peer" != "$claim_path" && (-e "$peer" || -L "$peer") ]] || continue
+    peer_observed=$(cat "$peer" 2>/dev/null || true)
+    if [[ "$peer_observed" == "$QA_CLAIM_LINE" ]]; then
+      rm -f "$peer" 2>/dev/null || true
+    fi
+  done
   exec 7>&-
   _release_reap_mutex
-  log "[audit] reaped dead qa_teardown claim pid=$QA_CLAIM_PID path=$CMUX_QA_TEARDOWN_CLAIM"
+  log "[audit] reaped dead qa_teardown claim pid=$QA_CLAIM_PID path=$claim_path"
   QA_CLAIM_DEAD_SIGNATURE=""
   QA_CLAIM_DEAD_OBSERVATIONS=0
 }
@@ -13879,14 +14154,29 @@ maintenance_entry_allowed() {
   wait_s=$(_maintenance_poll_seconds)
   if [[ "$mode" == "watch" ]]; then
     [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" ]] || return 0
+  elif [[ "$mode" == "refresh" ]]; then
+    # FLY-2770: the maintenance marker means "pause the resident watcher", not
+    # "freeze every repair". A parked watcher has already released the mutator
+    # lease (watcher_maintenance_checkpoint), and the LEASE — not the marker —
+    # is what excludes concurrent mutators, so an operator --refresh may run.
+    # Both claims still refuse: QA teardown needs exclusivity, and an ops-rebuild
+    # claim must not lose its lease handover window. This is a dedicated arm on
+    # purpose — `once`, `reaper` and `qa_teardown` share the `else` below and
+    # keep refusing under a bare marker.
+    _qa_teardown_claim_present && return 1
+    [[ ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]] || return 1
+    return 0
   elif [[ "$mode" == "ops_rebuild" ]]; then
-    if [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" \
-        && ! -e "$CMUX_QA_TEARDOWN_CLAIM" && ! -L "$CMUX_QA_TEARDOWN_CLAIM" \
-        && ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+    # FLY-2770: same boundary — the marker no longer refuses an audited rebuild.
+    # Every other term is preserved: a QA teardown claim still refuses, an
+    # absent ops claim still allows (this is `--rebuild-views --execute` without
+    # --handover, which never publishes one), and a present ops claim must still
+    # be this process's own live claim.
+    if ! _qa_teardown_claim_present \
+        && [[ ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
       return 0
     fi
-    [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" \
-        && ! -e "$CMUX_QA_TEARDOWN_CLAIM" && ! -L "$CMUX_QA_TEARDOWN_CLAIM" ]] || return 1
+    _qa_teardown_claim_present && return 1
     _read_ops_rebuild_claim || claim_rc=$?
     [[ "$claim_rc" -eq 0 && -n "$OPS_REBUILD_CLAIM_LINE" \
         && "$OPS_CLAIM_LINE" == "$OPS_REBUILD_CLAIM_LINE" \
@@ -13933,7 +14223,7 @@ watcher_maintenance_checkpoint() {
       fi
       WATCHER_RESYNC_REQUIRED=1
     fi
-    if [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]]; then
+    if _qa_teardown_claim_present; then
       _reap_stale_qa_teardown_claim || true
     fi
     if [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
@@ -14139,13 +14429,17 @@ case "${1:-}" in
     watch_main
     ;;
   --refresh)
-    # FLY-98: tmux-only repair — safe to call from outside cmux
+    # FLY-2770: this mutates cmux — see refresh_linked_sessions. It is allowed
+    # to run while the maintenance marker is present; the mutator lease is the
+    # exclusion, so a still-unparked watcher simply keeps the lease and this
+    # invocation skips.
     run_mutator_once refresh refresh_linked_sessions
     ;;
   --wait-for-watcher-exit)
     # FLY-825: called by flywheel-cmux-install.sh between bootout and
     # bootstrap. Safe from outside cmux (no cmux socket needed — pure
-    # tmux/process-table operation, same tier as --refresh).
+    # tmux/process-table operation). FLY-2770: this one really is read-only;
+    # --refresh is not, so do not read this as "the same tier as --refresh".
     wait_for_watcher_exit
     ;;
   --once|"")
@@ -14195,7 +14489,8 @@ case "${1:-}" in
     echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--converge-runners|--rebuild-views|--verify-sidebar|--verify-agent-visible]"
     echo "  --once              Full sync with aggressive cleanup; fails if another mutator is active."
     echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
-    echo "  --refresh           tmux-only linked session repair. Safe from anywhere."
+    echo "  --refresh           linked-session repair; also completes pending title migrations"
+    echo "                      and can close restored workspaces. Runs while the fleet is parked."
     echo "  --probe-lease       Read-only maintenance gate for the shared mutator lease."
     echo "  --wait-for-watcher-exit  FLY-825: poll+kill any lingering --watch process (install-script helper)."
     echo "  --list-lead-refs    Print Lead cmux workspace refs (Phase 8 Path A)."

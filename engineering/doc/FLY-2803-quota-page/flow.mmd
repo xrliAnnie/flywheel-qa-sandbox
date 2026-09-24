@@ -1,0 +1,10 @@
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#ffffff","primaryTextColor":"#1d1d1f","primaryBorderColor":"#86868b","lineColor":"#86868b","fontFamily":"-apple-system, system-ui, sans-serif"}}}%%
+flowchart TD
+ A[真实账号与周用量] --> B{周用量可读吗}
+ B -->|可读| C[未满在上 满格在下]
+ B -->|不可读| D[保留本轮读数不可用组]
+ C --> E[各组按周重置日从早到晚]
+ D --> E
+ E --> F[在用号整行绿色]
+ F --> G[保留两张表与未点名列]
+ style F fill:#e6f4ea,stroke:#248a3d

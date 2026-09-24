@@ -16,7 +16,11 @@ import {
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
-import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
+import {
+	assertPercentageModelAssignment,
+	readScorecardAssignment,
+} from "./workflow-model-assignment.js";
+import { WorkflowScorecardStore } from "./workflow-scorecard.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
 import { readEpicHistory } from "./ship-judgment/epic-history.js";
@@ -3164,6 +3168,20 @@ export class StateStore {
 			this.headphoneInboxStoreCache = { db, store };
 		}
 		return this.headphoneInboxStoreCache.store;
+	}
+	private workflowScorecardStoreCache?: {
+		db: BetterDb;
+		store: WorkflowScorecardStore;
+	};
+	get workflowScorecard(): WorkflowScorecardStore {
+		const db = this.db.raw;
+		if (this.workflowScorecardStoreCache?.db !== db) {
+			this.workflowScorecardStoreCache = {
+				db,
+				store: new WorkflowScorecardStore(db),
+			};
+		}
+		return this.workflowScorecardStoreCache.store;
 	}
 	private customerReleaseStoreCache?: { db: BetterDb; store: CustomerReleaseStore };
 	private summaryPresentationStoreCache?: {
@@ -9382,6 +9400,47 @@ export class StateStore {
 		}
 	}
 
+	private rebindWorkflowScorecardAfterLegacyActivationMigration(): void {
+		if (
+			!this.db.raw
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_scorecard_activation'",
+				)
+				.get()
+		)
+			return;
+		this.db.raw.exec(`
+			CREATE TEMP TABLE workflow_scorecard_activation_id_map (
+				old_activation_id TEXT PRIMARY KEY,
+				new_activation_id TEXT NOT NULL
+			);
+			INSERT INTO workflow_scorecard_activation_id_map
+				(old_activation_id, new_activation_id)
+			SELECT scorecard.activation_id, binding.activation_id
+			  FROM workflow_scorecard_activation scorecard
+			  JOIN workflow_execution_binding binding
+			    ON binding.execution_id = scorecard.execution_id
+			   AND binding.run_id = scorecard.run_id
+			   AND binding.node_id = scorecard.node_id
+			   AND binding.attempt = scorecard.attempt;
+			UPDATE workflow_scorecard_turn
+			   SET activation_id = (
+			       SELECT new_activation_id
+			         FROM workflow_scorecard_activation_id_map
+			        WHERE old_activation_id = workflow_scorecard_turn.activation_id)
+			 WHERE activation_id IN (
+			       SELECT old_activation_id FROM workflow_scorecard_activation_id_map);
+			UPDATE workflow_scorecard_activation
+			   SET activation_id = (
+			       SELECT new_activation_id
+			         FROM workflow_scorecard_activation_id_map
+			        WHERE old_activation_id = workflow_scorecard_activation.activation_id)
+			 WHERE activation_id IN (
+			       SELECT old_activation_id FROM workflow_scorecard_activation_id_map);
+			DROP TABLE workflow_scorecard_activation_id_map;
+		`);
+	}
+
 	/**
 	 * FLY-1423: execution_id is the durable conversational actor, while every
 	 * logical node attempt gets an immutable activation. The legacy table used
@@ -9463,6 +9522,7 @@ export class StateStore {
 						RENAME TO workflow_execution_binding;
 				`);
 				this.rebuildWorkflowActivationChildren();
+				this.rebindWorkflowScorecardAfterLegacyActivationMigration();
 
 				if (
 					this.db.raw
@@ -11898,6 +11958,7 @@ export class StateStore {
 		// ledger migration — it indexes workflow_run. Production reaches it only
 		// through the workflow engine when claims writes are enabled.
 		this.migrateWorkflowLedger();
+		this.workflowScorecard.migrate();
 		this.migrateCloseoutAttributionEpoch();
 		// FLY-2654: authoritative standing-authority confirmation ledger.
 		this.migrateStandingAuthorityConfirmation();
@@ -45530,6 +45591,35 @@ export class StateStore {
 			) {
 				return { ok: false, reason: "activation_conflict" };
 			}
+			if (!this.workflowScorecard.getActivation(activationId)) {
+				const scorecardAssignment = readScorecardAssignment(
+					this.listWorkflowRunEvents(input.runId),
+					{ runId: input.runId, nodeId: input.nodeId },
+				);
+				this.workflowScorecard.recordActivationSafely({
+					activationId,
+					executionId: input.executionId,
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					axis:
+						node.type === "design" ||
+						node.type === "implement" ||
+						node.type === "qa"
+							? node.type
+							: "unassigned",
+					assignmentState: scorecardAssignment.state,
+					...(scorecardAssignment.state === "assigned"
+						? {
+								policyVersion: scorecardAssignment.receipt.policyVersion,
+								armId: scorecardAssignment.receipt.arm,
+								assignmentEventUid: scorecardAssignment.eventUid,
+								assignmentDigest: scorecardAssignment.digest,
+							}
+						: {}),
+					admittedAt: existingBinding.bound_at,
+				});
+			}
 			return {
 				ok: true,
 				idempotentReplay: true,
@@ -45657,6 +45747,33 @@ export class StateStore {
 					],
 				);
 			}
+			const scorecardAssignment = readScorecardAssignment(
+				this.listWorkflowRunEvents(input.runId),
+				{ runId: input.runId, nodeId: input.nodeId },
+			);
+			this.workflowScorecard.recordActivationSafely({
+				activationId,
+				executionId: input.executionId,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				axis:
+					node.type === "design" ||
+					node.type === "implement" ||
+					node.type === "qa"
+						? node.type
+						: "unassigned",
+				assignmentState: scorecardAssignment.state,
+				...(scorecardAssignment.state === "assigned"
+					? {
+							policyVersion: scorecardAssignment.receipt.policyVersion,
+							armId: scorecardAssignment.receipt.arm,
+							assignmentEventUid: scorecardAssignment.eventUid,
+							assignmentDigest: scorecardAssignment.digest,
+						}
+					: {}),
+				admittedAt: now,
+			});
 			if (input.dispatchResolution?.audit) {
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
@@ -58732,6 +58849,20 @@ export class StateStore {
 				input.attempt,
 				input.newExecutionId,
 			);
+			const deadBinding = this.getWorkflowActivationForAttempt({
+				executionId: input.deadExecutionId,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			});
+			if (deadBinding) {
+				this.workflowScorecard.closeActivationSafely({
+					activationId: deadBinding.activation_id,
+					closedAt: now,
+					closeEventUid: `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
+					closeKind: "replaced",
+				});
+			}
 			this.upsertWorkflowRunNodeTx({
 				runId: input.runId,
 				nodeId: input.nodeId,

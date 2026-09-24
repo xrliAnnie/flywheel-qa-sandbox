@@ -2810,7 +2810,7 @@ restart_lead() {
 # Must be called OUTSIDE do_restart_all_leads to preserve stdout contract.
 # Uses repo script directly (not ~/.flywheel/bin copy) to avoid stale-install rollout gap.
 #
-# FLY-129 Phase 8 Path A (H2 fix): after the tmux-only refresh lands, call
+# FLY-129 Phase 8 Path A (H2 fix): after the step-1 refresh lands, call
 # `cmux refresh-surfaces --workspace <ref>` for each Lead workspace ref to
 # invalidate the cmux Electron-side pane cache that would otherwise show
 # the old (pre-restart) zsh / Claude process.
@@ -2823,8 +2823,35 @@ trigger_cmux_refresh() {
     if [[ ! -x "$sync_script" ]]; then
         return 0
     fi
-    # Step 1: tmux-only refresh (unchanged, FLY-98).
-    (sleep 5 && "$sync_script" --refresh >> "/tmp/flywheel-cmux-sync.log" 2>&1) &
+    # FLY-2770: the maintenance marker is the Lead/founder "pause the fleet"
+    # signal. flywheel-cmux-sync.sh now lets an OPERATOR-invoked --refresh run
+    # while the watcher is parked, and --refresh is not read-only: it can close
+    # restored workspaces and rename/commit pending title migrations. This
+    # AUTOMATIC post-restart refresh must therefore opt out itself, or every
+    # Lead restart would silently reshape a deliberately parked fleet. The
+    # derivation matches flywheel-cmux-sync.sh and scripts/test-teardown.sh so
+    # one override env moves all three.
+    local cmux_maintenance_marker="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
+    if [[ -e "$cmux_maintenance_marker" || -L "$cmux_maintenance_marker" ]]; then
+        log "cmux refresh skipped — maintenance marker present ($cmux_maintenance_marker)"
+        return 0
+    fi
+    # Step 1: linked-session refresh (FLY-98). NOT tmux-only — it can close
+    # restored workspaces and rename/commit pending title migrations.
+    # FLY-2770: the entry check above is not enough. Both steps run after a
+    # delay, and the marker can appear during it; the admission arm for
+    # `refresh` deliberately ignores the marker, so this caller must re-check
+    # immediately before the call or a fleet parked during the delay still gets
+    # mutated.
+    (
+        sleep 5
+        if [[ -e "$cmux_maintenance_marker" || -L "$cmux_maintenance_marker" ]]; then
+            echo "[trigger_cmux_refresh] refresh skipped — maintenance marker appeared during the delay" \
+                >> "/tmp/flywheel-cmux-sync.log"
+            exit 0
+        fi
+        "$sync_script" --refresh >> "/tmp/flywheel-cmux-sync.log" 2>&1
+    ) &
     log "cmux refresh scheduled (background, 5s delay)"
 
     # Step 2: Phase 8 Path A — cmux refresh-surfaces per Lead ref (10s after
@@ -2841,6 +2868,13 @@ trigger_cmux_refresh() {
     fi
     (
         sleep 10
+        # FLY-2770: same re-check as step 1 — the marker can appear during this
+        # longer delay, and refresh-surfaces is real cmux IPC against the fleet.
+        if [[ -e "$cmux_maintenance_marker" || -L "$cmux_maintenance_marker" ]]; then
+            echo "[trigger_cmux_refresh] refresh-surfaces skipped — maintenance marker appeared during the delay" \
+                >> "/tmp/flywheel-cmux-sync.log"
+            exit 0
+        fi
         local rc=0
         local refs
         refs=$("$sync_script" --list-lead-refs 2>>"/tmp/flywheel-cmux-sync.log") || rc=$?

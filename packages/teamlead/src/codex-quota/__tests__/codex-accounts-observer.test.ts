@@ -146,7 +146,13 @@ describe("FLY-2688 — Codex accounts observer", () => {
 			unlimited: false,
 			balance: "0",
 		});
-		expect(school.resetCredits).toEqual({ known: true, value: null });
+		expect(school.resetCredits).toEqual({
+			known: true,
+			value: null,
+			availableCount: 0,
+			credits: [],
+		});
+		expect(school.resetCreditsObservedAt).toBe("2026-09-21T12:00:00.000Z");
 
 		const shopping = store.accounts.find((a) => a.name === "shopping")!;
 		expect(shopping.registeredProfile).toBe("shopping");
@@ -173,29 +179,57 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		}
 	});
 
-	it("never probes an account in use and keeps its last reading visible", async () => {
+	it("reads an in-use account through the non-refreshing path and uses canonical auth for the active slot", async () => {
 		const f = fixture();
 		const first = await observeCodexAccounts(f.options);
 		const probed: string[] = [];
+		const readonlyPaths: string[] = [];
 		const second = await observeCodexAccounts({
 			...f.options,
+			now: () => NOW + 86_400_000,
 			previous: first,
 			isInUse: (_accountKey, slot) => {
 				probed.push(slot);
-				return slot === "school";
+				return slot === "shopping";
+			},
+			readInUseQuota: async ({ authPath }) => {
+				readonlyPaths.push(authPath);
+				return {
+					ok: {
+						observedAt: "2026-09-22T12:00:00.000Z",
+						planType: "prolite",
+						fiveH: null,
+						weekly: {
+							usedPercent: 44,
+							windowMinutes: 10080,
+							resetAt: "2026-09-22T12:00:00.000Z",
+						},
+						credits: {
+							known: true,
+							hasCredits: false,
+							unlimited: false,
+							balance: "0",
+						},
+						resetCredits: {
+							known: false,
+							value: null,
+							availableCount: null,
+							credits: null,
+						},
+						unclassifiedWindows: 0,
+					},
+				};
 			},
 		});
 
 		expect(probed).toContain("school");
-		const school = second.accounts.find((a) => a.name === "school")!;
-		expect(school).toMatchObject({
-			authHealth: "in_use_unshared",
-			note: "in_use_unshared",
-		});
-		expect(school.weekly?.usedPercent).toBe(30);
-		expect(school.observedAt).toBe(
-			first.accounts.find((a) => a.name === "school")!.observedAt,
-		);
+		const shopping = second.accounts.find((a) => a.name === "shopping")!;
+		expect(shopping).toMatchObject({ authHealth: "valid", note: null });
+		expect(shopping.weekly?.usedPercent).toBe(44);
+		expect(shopping.observedAt).toBe("2026-09-22T12:00:00.000Z");
+		expect(shopping.resetCredits.availableCount).toBe(0);
+		expect(shopping.resetCreditsObservedAt).toBe("2026-09-21T12:00:00.000Z");
+		expect(readonlyPaths).toEqual([join(f.codexHome, "auth.json")]);
 	});
 
 	it("does not carry quota readings across an identity change in the same slot", async () => {
@@ -326,6 +360,27 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		let round = 0;
 		const store = await observeCodexAccounts({
 			...f.options,
+			readInUseQuota: async () => ({
+				ok: {
+					observedAt: "2026-09-21T12:00:00.000Z",
+					planType: "pro",
+					fiveH: null,
+					weekly: null,
+					credits: {
+						known: false,
+						hasCredits: null,
+						unlimited: null,
+						balance: null,
+					},
+					resetCredits: {
+						known: false,
+						value: null,
+						availableCount: null,
+						credits: null,
+					},
+					unclassifiedWindows: 0,
+				},
+			}),
 			refreshInUse: async () => {
 				round += 1;
 				return (_accountKey, slot) => {
@@ -339,8 +394,8 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		// `broken` never reaches the guard: the pool marks it invalid first.
 		expect(seen).toEqual(["1:school", "2:shopping"]);
 		expect(store.accounts.find((a) => a.name === "shopping")).toMatchObject({
-			authHealth: "in_use_unshared",
-			note: "in_use_unshared",
+			authHealth: "valid",
+			note: null,
 		});
 		expect(store.accounts.find((a) => a.name === "school")?.note).toBeNull();
 	});

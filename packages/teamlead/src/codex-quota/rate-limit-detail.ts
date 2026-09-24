@@ -7,7 +7,7 @@
  * refuses to guess a window whose duration the RPC did not state.
  */
 
-const FIVE_HOUR_WINDOW_MAX_MINUTES = 600;
+export const FIVE_HOUR_WINDOW_MAX_MINUTES = 600;
 const EARLIEST_RESET_SECONDS = 946_684_800; // 2000-01-01, same floor as the failover parser
 const MAX_RESET_AHEAD_MS = 366 * 86_400_000;
 const BALANCE = /^\d{1,12}(?:\.\d{1,2})?$/;
@@ -29,7 +29,17 @@ export interface CodexCreditsDetail {
 export interface CodexResetCreditsDetail {
 	/** false = field absent from the RPC result; true + null value = present and empty. */
 	known: boolean;
+	/** Legacy rollback field. New readers use availableCount. */
 	value: string | null;
+	availableCount: number | null;
+	/** null = count only; [] = details explicitly checked and empty. */
+	credits: CodexResetCreditDetail[] | null;
+}
+
+export interface CodexResetCreditDetail {
+	id: string;
+	status: string;
+	expiresAt: string | null;
 }
 
 export interface CodexRateLimitDetail {
@@ -127,18 +137,102 @@ function parseCredits(value: unknown): CodexCreditsDetail {
 function parseResetCredits(
 	container: Record<string, unknown>,
 ): CodexResetCreditsDetail {
+	const unknown = (): CodexResetCreditsDetail => ({
+		known: false,
+		value: null,
+		availableCount: null,
+		credits: null,
+	});
 	if (!("rateLimitResetCredits" in container)) {
-		return { known: false, value: null };
+		return unknown();
 	}
 	const value = container.rateLimitResetCredits;
-	if (value === null) return { known: true, value: null };
-	if (typeof value === "number" && Number.isFinite(value)) {
-		return { known: true, value: String(value) };
+	if (value === null) {
+		return {
+			known: true,
+			value: null,
+			availableCount: 0,
+			credits: [],
+		};
 	}
-	if (typeof value === "string" && BALANCE.test(value)) {
-		return { known: true, value };
+	if (!record(value)) return unknown();
+	const rawCount = value.availableCount;
+	const availableCount =
+		typeof rawCount === "number" &&
+		Number.isSafeInteger(rawCount) &&
+		rawCount >= 0
+			? rawCount
+			: typeof rawCount === "string" && /^(?:0|[1-9]\d{0,15})$/.test(rawCount)
+				? Number(rawCount)
+				: Number.NaN;
+	if (!Number.isSafeInteger(availableCount) || availableCount < 0) {
+		return unknown();
 	}
-	return { known: false, value: null };
+	if (value.credits === undefined || value.credits === null) {
+		return {
+			known: true,
+			value: availableCount === 0 ? null : String(availableCount),
+			availableCount,
+			credits: null,
+		};
+	}
+	if (!Array.isArray(value.credits) || value.credits.length > availableCount) {
+		return unknown();
+	}
+	const credits: CodexResetCreditDetail[] = [];
+	const ids = new Set<string>();
+	for (const candidate of value.credits) {
+		if (!record(candidate)) return unknown();
+		const { id, status, expiresAt } = candidate;
+		if (
+			typeof id !== "string" ||
+			id.length === 0 ||
+			id.length > 128 ||
+			ids.has(id) ||
+			typeof status !== "string" ||
+			!isSafeToken(status)
+		) {
+			return unknown();
+		}
+		let expiry: string | null = null;
+		if (expiresAt !== undefined && expiresAt !== null) {
+			if (
+				typeof expiresAt !== "number" ||
+				!Number.isSafeInteger(expiresAt) ||
+				expiresAt < EARLIEST_RESET_SECONDS
+			) {
+				return unknown();
+			}
+			const expiryDate = new Date(expiresAt * 1000);
+			if (!Number.isFinite(expiryDate.valueOf())) return unknown();
+			expiry = expiryDate.toISOString();
+		}
+		ids.add(id);
+		credits.push({ id, status, expiresAt: expiry });
+	}
+	credits.sort(
+		(a, b) =>
+			(a.expiresAt === null
+				? Number.POSITIVE_INFINITY
+				: Date.parse(a.expiresAt)) -
+				(b.expiresAt === null
+					? Number.POSITIVE_INFINITY
+					: Date.parse(b.expiresAt)) || a.id.localeCompare(b.id, "en-US"),
+	);
+	return {
+		known: true,
+		value: availableCount === 0 ? null : String(availableCount),
+		availableCount,
+		credits,
+	};
+}
+
+function isSafeToken(value: string): boolean {
+	return (
+		value.length > 0 &&
+		value.length <= 64 &&
+		/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+	);
 }
 
 export function parseCodexRateLimitDetail(

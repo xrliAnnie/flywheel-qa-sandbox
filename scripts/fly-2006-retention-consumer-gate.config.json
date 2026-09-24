@@ -725,6 +725,13 @@
 			"disposition": "protect"
 		},
 		{
+			"file": "packages/teamlead/src/workflow-scorecard-report.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
 			"file": "scripts/replay-ship-judgment-cards.mjs",
 			"relation": "workflow_run_event",
 			"baseTable": "workflow_run_event",

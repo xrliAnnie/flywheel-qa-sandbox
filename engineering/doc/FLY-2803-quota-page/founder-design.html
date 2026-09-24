@@ -1,0 +1,107 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2803 · 额度页设计</title><style>
+:root{color-scheme:light;--paper:#f5f5f7;--ink:#1d1d1f;--muted:#64646b;--line:#dedee3;--green:#e6f4ea}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.65 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:48px 24px 64px}header{padding:0 0 24px}h1{font-size:38px;letter-spacing:-1.4px;line-height:1.2;margin:8px 0 12px}.eyebrow{color:#1a365d;font-size:13px;letter-spacing:.08em}h2{font-size:23px;margin:0 0 16px;letter-spacing:-.4px}.card{background:white;border:1px solid var(--line);border-radius:12px;padding:26px 28px;margin:0 0 20px}.lede{font-size:22px;line-height:1.6}p{margin:12px 0}.muted{color:var(--muted)}li{margin:8px 0}.pending{border-left:4px solid #ff9500;background:#fff8eb;padding:16px 18px;margin:14px 0}.pending strong{font:12px 'SF Mono',monospace;color:#81500a}.pending p{margin:6px 0 0}.comment-label{display:block;border-top:1px solid var(--line);padding-top:18px;margin-top:24px;font-size:13px;color:var(--muted)}textarea{display:block;width:100%;min-height:90px;resize:vertical;font:inherit;font-size:15px;line-height:1.6;border:1px solid #c5c5cc;border-radius:8px;padding:12px;margin:8px 0 0;background:#fff;color:var(--ink)}textarea:focus{outline:2px solid #007aff;outline-offset:2px}button{border:0;border-radius:8px;background:#007aff;color:white;font:600 14px system-ui;padding:11px 17px;margin:12px 0;cursor:pointer}.scroll{overflow:auto}table{border-collapse:collapse;min-width:600px;width:100%;font-size:14px}td,th{text-align:left;padding:14px 12px;border-bottom:1px solid var(--line)}th{font-weight:600;color:var(--muted)}tr.active td{background:var(--green)}tr.active td:first-child{box-shadow:inset 4px 0 #248a3d}.red{color:#b32520}details{margin:16px 0;color:var(--muted);font-size:13px}pre{overflow:auto;white-space:pre-wrap;font:12px/1.6 'SF Mono',monospace}#combined{min-height:150px}#chunks label{display:block;margin-top:18px}#status{font-size:14px;color:var(--muted)}@media(max-width:600px){main{padding:28px 14px 40px}h1{font-size:30px}.card{padding:21px 18px}h2{font-size:21px}.lede{font-size:19px}}
+</style></head><body><main><header><div class="eyebrow">FLY-2803 · 工程设计 · 2026-09-23</div><h1>额度一眼看清<br>确认过的日期才显示</h1><p class="muted">E1–E19 · 页面层完整方案 · 逐段留下修改意见</p></header><section class="card" aria-labelledby="h-summary"><h2 id="h-summary">这次改完什么</h2><p class="lede">周额度有剩余的排在上面，用满的排在下面；在用账号始终整行绿色，订阅到期只按确认过的信息显示。</p><p>覆盖 E1–E19。这是一份工程设计，尚未实现，也没有声称生产验收通过。</p><label class="comment-label" for="c-summary">对“这次改完什么”的意见</label><textarea id="c-summary" class="comment" data-title="这次改完什么" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" aria-labelledby="h-flow"><h2 id="h-flow">页面怎样排</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>流程图已用 Mermaid 编写。Mermaid 是把流程文字转成图的工具；本机浏览器权限阻止了两次渲染，暂保留文字规则与源码。</p></div><ol><li>只用机器读到的周百分比区分未满、满格；读不到的保留在第三组。旧手填常量不画成真实进度条。</li><li>每组按周重置日从早到晚；已过去的日期照常排，不因在用而置顶。</li><li>最后给在用号整行绿色，满格数字和条形仍红色。</li></ol><details><summary>查看流程图源码</summary><pre>%%{init: {&quot;theme&quot;:&quot;base&quot;,&quot;themeVariables&quot;:{&quot;primaryColor&quot;:&quot;#ffffff&quot;,&quot;primaryTextColor&quot;:&quot;#1d1d1f&quot;,&quot;primaryBorderColor&quot;:&quot;#86868b&quot;,&quot;lineColor&quot;:&quot;#86868b&quot;,&quot;fontFamily&quot;:&quot;-apple-system, system-ui, sans-serif&quot;}}}%%
+flowchart TD
+ A[真实账号与周用量] --&gt; B{周用量可读吗}
+ B --&gt;|可读| C[未满在上 满格在下]
+ B --&gt;|不可读| D[保留本轮读数不可用组]
+ C --&gt; E[各组按周重置日从早到晚]
+ D --&gt; E
+ E --&gt; F[在用号整行绿色]
+ F --&gt; G[保留两张表与未点名列]
+ style F fill:#e6f4ea,stroke:#248a3d
+</pre></details><label class="comment-label" for="c-flow">对“页面怎样排”的意见</label><textarea id="c-flow" class="comment" data-title="页面怎样排" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" aria-labelledby="h-example"><h2 id="h-example">最容易再出错的几种情况</h2><p>以下是规则示例，不是真实账号读数，也不作为上线证据。</p><div class="scroll"><table><thead><tr><th>情况</th><th>应该看到</th><th>位置</th></tr></thead><tbody><tr><td>周 96% · Fable 100%</td><td>两项各有百分比和条形；只把 Fable 标红</td><td>上组</td></tr><tr class="active"><td>● 在用 · 周 100%</td><td>整行绿底；<span class="red">周 100% · 周已满</span></td><td>下组</td></tr><tr class="active"><td>● 在用 · 本轮读不到</td><td>整行绿底；保留账号与其他能读到的格子</td><td>本轮读数不可用</td></tr><tr><td>已取消，周数已不可用</td><td>继续显示已取消，不复活旧百分比</td><td>本轮读数不可用</td></tr></tbody></table></div><p>Fable 是页面已有的另一项周用量；它是否满格，不改变账号按总周用量的分组。</p><label class="comment-label" for="c-example">对“最容易再出错的几种情况”的意见</label><textarea id="c-example" class="comment" data-title="最容易再出错的几种情况" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" aria-labelledby="h-model"><h2 id="h-model">每条手填都能找到确认出处</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>数据关系图本地渲染同样遇到权限错误。下表保留完整含义。</p></div><div class="scroll"><table><thead><tr><th>记录</th><th>保留什么</th></tr></thead><tbody><tr><td>账号</td><td>Claude / Codex、目录名、当前账号身份。换号后不继承旧确认。</td></tr><tr><td>真实读数</td><td>周用量、Fable 用量、重置时刻、是否在用。</td></tr><tr><td>订阅确认</td><td>未取消 / 已取消 / 未知；到期日；谁确认、何时确认、原消息出处。</td></tr></tbody></table></div><p>Lead 收到你的 FLY-2792 回答后，通过会校验内容与身份的命令录入受控文件。这里不预填名单，也不把旧退役日当成取消证明。</p><details><summary>查看数据关系图源码</summary><pre>%%{init: {&quot;theme&quot;:&quot;base&quot;,&quot;themeVariables&quot;:{&quot;primaryColor&quot;:&quot;#ffffff&quot;,&quot;primaryTextColor&quot;:&quot;#1d1d1f&quot;,&quot;primaryBorderColor&quot;:&quot;#86868b&quot;,&quot;lineColor&quot;:&quot;#86868b&quot;,&quot;fontFamily&quot;:&quot;-apple-system, system-ui, sans-serif&quot;}}}%%
+erDiagram
+ ACCOUNT ||--o{ CONFIRMATION : &quot;同一账号才适用&quot;
+ ACCOUNT ||--o| READING : &quot;真实读数&quot;
+ ACCOUNT {
+  string provider &quot;Claude 或 Codex&quot;
+  string profile &quot;账号目录名&quot;
+  string identity &quot;账号身份&quot;
+ }
+ CONFIRMATION {
+  string status &quot;未取消 已取消 未知&quot;
+  date expiry &quot;确认过的到期日&quot;
+  string person &quot;谁确认&quot;
+  datetime time &quot;何时确认&quot;
+  string source &quot;确认出处&quot;
+ }
+ READING {
+  number weekly &quot;周百分比&quot;
+  number fable &quot;Fable百分比&quot;
+  datetime reset &quot;周重置时刻&quot;
+  boolean active &quot;当前是否在用&quot;
+ }
+</pre></details><label class="comment-label" for="c-model">对“每条手填都能找到确认出处”的意见</label><textarea id="c-model" class="comment" data-title="每条手填都能找到确认出处" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" aria-labelledby="h-subscription"><h2 id="h-subscription">订阅到期怎样显示</h2><ul><li>确认未取消：到期格留空。</li><li>确认已取消且有日期：显示“已取消 · 10/07”这类日期；例子不落入真实记录。</li><li>确认已取消但日期还没给：显示“已取消 · 日期待确认”。</li><li>没有可靠确认：显示“未知”；新旧状态冲突时提示待核对。</li></ul><p>机器说“当前可用”，不等于你没有取消自动续订。手填到期只影响页面，不会退役账号、切号或取消订阅。</p><label class="comment-label" for="c-subscription">对“订阅到期怎样显示”的意见</label><textarea id="c-subscription" class="comment" data-title="订阅到期怎样显示" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" aria-labelledby="h-tradeoffs"><h2 id="h-tradeoffs">保留什么，为什么这样做</h2><ul><li>保留两张表的 5h reset、订阅档位、token 状态、卡片与错误原因。5h reset 是五小时额度的重置时刻；token 状态说明登录凭据是否可用。</li><li>只删除你点名的灰字、来源小字、页尾说明、Codex 余额和合成“打满／恢复”标签。</li><li>周用量与 Fable 分开显示，避免 Fable 用满就把整个账号说成打满。</li><li>用独立手填文件记录订阅，避免把显示日期写进会触发自动退役的字段。</li></ul><p>business 档位的机器读数与“你说 20x”并列待确认；裁定前不拿档位排序、分组或做自动决定。</p><label class="comment-label" for="c-tradeoffs">对“保留什么，为什么这样做”的意见</label><textarea id="c-tradeoffs" class="comment" data-title="保留什么，为什么这样做" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" aria-labelledby="h-boundary"><h2 id="h-boundary">交付边界与验收</h2><p>FLY-2807 负责把真实数据读对，本单负责页面。合并时必须保住 FLY-2762 的目录枚举和状态列，不能把新版页面退回固定三个账号。</p><p>实现后要用同一份输入做新旧页面并排截图，并在浏览器检查“在用＋打满”和“在用＋读不到”两种绿底。两张表未点名的元素不能消失；卡片未知、无卡、明细未全必须区分。</p><p>正式上线前，Lead 和 QA 还须用真实确认与真实到期日验证录入到页面的全过程；未取得日期时明确报告待验，不能拿全空列当完成。当前仅完成设计材料；没有实现、登录、探测账号、部署或修改生产记录。本机图形渲染失败已明确披露。</p><label class="comment-label" for="c-boundary">对“交付边界与验收”的意见</label><textarea id="c-boundary" class="comment" data-title="交付边界与验收" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card"><h2>页面意见汇总</h2><p>意见自动保存在本浏览器。复制后发回原讨论；超过约 1800 字符会拆成多段，每段都有同一标记。这是修改意见，不代表审核通过。</p><textarea id="combined" readonly aria-label="全部意见"></textarea><button id="copy-all" type="button">复制全部意见</button><div id="chunks"></div><p id="status" role="status" aria-live="polite"></p><label class="comment-label" for="c-summary-feedback">对“意见汇总工具”的意见</label><textarea id="c-summary-feedback" class="comment" data-title="意见汇总工具" placeholder="写下意见，自动保存在本浏览器"></textarea></section></main><script nonce="__CSP_NONCE__">
+(function () {
+ 'use strict';
+ const marker = '【页面意见汇总】FLY-2803';
+ const prefix = 'flywheel-report:' + location.pathname + ':FLY-2803:';
+ const inputs = Array.from(document.querySelectorAll('.comment'));
+ const output = document.getElementById('combined');
+ const chunkRoot = document.getElementById('chunks');
+ const status = document.getElementById('status');
+ function aggregate() {
+   return inputs.filter(el => el.value.trim()).map(el => '【' + el.dataset.title + '】\n' + el.value.trim());
+ }
+ function split(parts) {
+   const max = 1800 - marker.length - 1;
+   const result = []; let current = '';
+   for (const part of parts) {
+     let rest = part;
+     while (rest.length) {
+       const room = max - current.length - (current ? 2 : 0);
+       if (room <= 0) { result.push(marker + '\n' + current); current = ''; continue; }
+       const take = rest.slice(0, room);
+       current += (current ? '\n\n' : '') + take; rest = rest.slice(room);
+       if (rest.length) { result.push(marker + '\n' + current); current = ''; }
+     }
+   }
+   if (current) result.push(marker + '\n' + current);
+   return result;
+ }
+ function legacyCopy(text) {
+   const temp = document.createElement('textarea'); temp.value = text;
+   temp.style.position = 'fixed'; temp.style.left = '-10000px';
+   document.body.appendChild(temp); temp.focus(); temp.select();
+   let ok = false;
+   try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+   temp.remove(); return ok;
+ }
+ async function copy(text) {
+   let ok = false;
+   try {
+     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+       await navigator.clipboard.writeText(text); ok = true;
+     }
+   } catch (_) { ok = false; }
+   if (!ok) ok = legacyCopy(text);
+   status.textContent = ok ? '已复制意见。意见不是通过信号。' : '复制未成功，请选中汇总文字手动复制。';
+ }
+ function update() {
+   const parts = aggregate();
+   const chunks = split(parts);
+   output.value = chunks.length ? chunks.join('\n\n') : marker;
+   chunkRoot.replaceChildren();
+   if (chunks.length > 1) chunks.forEach((chunk, index) => {
+     const label = document.createElement('label');
+     label.textContent = '第 ' + (index + 1) + ' / ' + chunks.length + ' 段';
+     const area = document.createElement('textarea'); area.readOnly = true; area.value = chunk;
+     area.setAttribute('aria-label', label.textContent);
+     const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制这一段';
+     button.addEventListener('click', () => copy(chunk));
+     chunkRoot.append(label, area, button);
+   });
+ }
+ inputs.forEach(el => {
+   try { el.value = localStorage.getItem(prefix + el.id) || ''; } catch (_) {}
+   el.addEventListener('input', () => {
+     try { localStorage.setItem(prefix + el.id, el.value); }
+     catch (_) { status.textContent = '浏览器禁止保存；本次仍可汇总复制，请离开前复制。'; }
+     update();
+   });
+ });
+ document.getElementById('copy-all').addEventListener('click', () => copy(output.value));
+ update();
+})();
+</script></body></html>
