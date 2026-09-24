@@ -1,13 +1,13 @@
 ---
 issue: FLY-2863
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-24T23:20:05.468Z
-nextStep: 等两路调研回来后写 exploration/research/plan + founder HTML
+phaseCursor: 2/5
+updated: 2026-09-24T23:22:33.722Z
+nextStep: 等引擎调研回来写 research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: design (1/5)
-**next**: 等两路调研回来后写 exploration/research/plan + founder HTML
+**phase**: design (2/5)
+**next**: 等引擎调研回来写 research.md
