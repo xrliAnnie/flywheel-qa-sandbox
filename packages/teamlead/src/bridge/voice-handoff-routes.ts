@@ -4,6 +4,7 @@ import {
 	VOICE_HANDOFF_INTENT_KINDS,
 	type VoiceHandoffRequest,
 	type VoiceHandoffResultKind,
+	voiceHandoffIdempotencyKey,
 	voiceHandoffRequestDigest,
 } from "flywheel-voice-core";
 import type {
@@ -158,7 +159,11 @@ function parseRequest(value: unknown): VoiceHandoffRequest {
 		request.authorityBinding.transcriptDigest !==
 			request.transcriptDurabilityReceipt.contentDigest ||
 		request.idempotencyKey !==
-			`${request.transcriptId}:${request.payload.targetLeadId}:${request.intentKind}`
+			voiceHandoffIdempotencyKey({
+				transcriptId: request.transcriptId,
+				targetLeadId: request.payload.targetLeadId,
+				intentKind: request.intentKind,
+			})
 	)
 		throw new Error("voice_handoff_binding_invalid");
 	const { requestDigest: _provided, ...digestInput } = request;

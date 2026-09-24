@@ -352,7 +352,9 @@ describe("LiveLeadAdapter", () => {
 		const request = h.handoffs[0]!;
 		expect(request.originalText).toBe("帮我查一下状态");
 		expect(request.delegationBinding).toContain("provider-1");
-		expect(request.idempotencyKey).not.toContain("provider-1");
+		expect(request.idempotencyKey).toBe(
+			`${request.transcriptId}:${request.payload.targetLeadId}:${request.intentKind}`,
+		);
 		expect(h.speech.speak).toHaveBeenCalledWith(
 			"我问下 Lead",
 			"cue",

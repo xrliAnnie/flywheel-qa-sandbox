@@ -17,6 +17,7 @@ import type {
 } from "flywheel-voice-core";
 import {
 	LiveUtteranceAssembler,
+	voiceHandoffIdempotencyKey,
 	voiceHandoffRequestDigest,
 } from "flywheel-voice-core";
 
@@ -447,11 +448,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			}
 			const intentKind = this.options.classifyIntent(utterance);
 			const handoffId = this.nextId();
-			const idempotencyKey = digest({
-				sessionId: this.sessionId,
-				generation: this.generation,
+			const idempotencyKey = voiceHandoffIdempotencyKey({
 				transcriptId: utterance.transcriptId,
-				transcriptDigest: durability.contentDigest,
+				targetLeadId: this.options.targetLeadId,
 				intentKind,
 			});
 			const withoutDigest: Omit<VoiceHandoffRequest, "requestDigest"> = {

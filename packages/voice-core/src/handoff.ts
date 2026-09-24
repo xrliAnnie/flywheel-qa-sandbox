@@ -10,6 +10,14 @@ export const VOICE_HANDOFF_INTENT_KINDS = [
 export type VoiceHandoffIntentKind =
 	(typeof VOICE_HANDOFF_INTENT_KINDS)[number];
 
+export function voiceHandoffIdempotencyKey(input: {
+	transcriptId: string;
+	targetLeadId: string;
+	intentKind: VoiceHandoffIntentKind;
+}): string {
+	return `${input.transcriptId}:${input.targetLeadId}:${input.intentKind}`;
+}
+
 export interface VoiceHandoffAuthorityBinding {
 	projectName: string;
 	founderUserId: string;
