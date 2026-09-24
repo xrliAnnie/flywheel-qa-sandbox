@@ -1,15 +1,14 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T23:05:00.237Z
-nextStep: "Founder bounce: TDD reply-wait ceiling + spoken prompt, barge-in
-  stops waiting, sole-human attribution + spoken onStatus in voice-codex
-  session.ts/realtime.ts/cli.ts"
+phaseCursor: 4/5
+updated: 2026-09-24T23:13:21.022Z
+nextStep: Code 77beaa5b9 + doc committed; write literal-last milestone, push,
+  scoped code review on new head, complete needs_review --pr 1309
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (1/5)
-**next**: Founder bounce: TDD reply-wait ceiling + spoken prompt, barge-in stops waiting, sole-human attribution + spoken onStatus in voice-codex session.ts/realtime.ts/cli.ts
+**phase**: implement (4/5)
+**next**: Code 77beaa5b9 + doc committed; write literal-last milestone, push, scoped code review on new head, complete needs_review --pr 1309
