@@ -1,14 +1,14 @@
 ---
 issue: FLY-2845
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-24T13:41:51.648Z
-nextStep: Run policy-compliant targeted verification at the retargeted PR state;
-  then update the milestone and obtain code review
+phaseCursor: 3/5
+updated: 2026-09-24T13:43:44.922Z
+nextStep: Update the implementation milestone with the QA rework, run final lint
+  and current-state audits, then commit the milestone last
 chunks: []
 pointers: {}
 ---
 
 # FLY-2845 progress
-**phase**: implement (2/5)
-**next**: Run policy-compliant targeted verification at the retargeted PR state; then update the milestone and obtain code review
+**phase**: implement (3/5)
+**next**: Update the implementation milestone with the QA rework, run final lint and current-state audits, then commit the milestone last
