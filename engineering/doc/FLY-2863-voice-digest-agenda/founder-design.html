@@ -113,12 +113,13 @@ footer{color:var(--faint);font-size:12px;text-align:center}
   <div class="tablewrap"><table>
     <thead><tr><th>这类消息</th><th>播吗</th><th>怎么判断</th></tr></thead>
     <tbody>
-      <tr><td>Lead 在自己主频道里主动对你说的话</td><td class="yes">播</td><td>Lead 本人发的，不带「🤖[自动]」前缀。你已经在那个频道回过话的，不再播</td></tr>
+      <tr><td>Lead 在自己主频道里主动对你说的话</td><td class="yes">播</td><td>Lead 本人发的，不带「🤖[自动]」前缀，而且是你上次在那个频道说话之后发的、24 小时以内的</td></tr>
       <tr><td>thread 标题是「🔔 ⏳待批」的单</td><td class="yes">播</td><td>和标题同一个判定</td></tr>
       <tr><td>thread 标题是「🔴受阻」的单</td><td class="yes">播</td><td>和标题同一个判定</td></tr>
-      <tr><td>标题是「要你答」的单</td><td class="yes">播</td><td>算作「Lead 主动说的」（见文末第 3 个问题）</td></tr>
+      <tr><td>标题是「要你答」的单</td><td class="no">先不播</td><td>等你决定（见文末第 3 个问题）</td></tr>
       <tr><td>规划、设计审、实现中、QA、代码审、PR 已开、完成</td><td class="no">不播</td><td>你平时也跳过的那些状态变化</td></tr>
       <tr><td>thread 里的回执、告警、站会、带「🤖[自动]」的消息</td><td class="no">不播</td><td>它们都是自动发的</td></tr>
+      <tr><td>收件箱里积压的旧消息</td><td class="no">不播</td><td>上次测试时引擎 A 进房把积压的 335 条一口气全念了，这次不会再这样。更早的消息只会告诉 Lead 一个条数，由 Lead 决定要不要提一句</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -128,7 +129,7 @@ footer{color:var(--faint);font-size:12px;text-align:center}
   <div class="two">
     <div class="box"><h3>话由 Lead 想</h3><p class="small">每一件连同材料（QA 报告、设计卡、thread）交给 Lead 本人。Lead 读完以后写出要说的话：先讲清要你做什么（授权、批、改，还是看一眼），待批的顺带讲 QA 和测试，或者问你要不要看设计卡。耳机模式由 Raya 来想，会议模式由那个 Lead 来想。</p></div>
     <div class="box"><h3>念的就是 Lead 的原话</h3><p class="small">不念 plan、不念列表、不念网址和状态流水。前台模型不转述，所以不会念走样。Lead 写得太长或者像清单，系统会退回去让它重写一次。</p></div>
-    <div class="box"><h3>你拍了，这件就结束</h3><p class="small">一件结束有两种情况：Lead 告诉系统「她拍了」或「她说回头再看」；或者这张单的标题已经不是待批或受阻了。「回头再看」的事，这一场不再提。</p></div>
+    <div class="box"><h3>你拍了，这件就结束</h3><p class="small">一件结束有两种情况：Lead 告诉系统「她拍了」或「她说回头再看」；或者这张单的标题已经不是待批或受阻了。「回头再看」的事，这一场不再提。消息来源暂时读不到的时候，不会因为「看不到」就把事情当成结束了。</p></div>
   </div>
 </section>
 
@@ -164,7 +165,7 @@ footer{color:var(--faint);font-size:12px;text-align:center}
 
 <section class="card amber">
   <h2>一处要先说清的差距</h2>
-  <p class="small">你说「好，批」以后，这件事在对话里就结束了，Lead 会去执行。但<b>用嘴批 ship</b>这条路现在还没做（它在耳机模式第二批里）。在它做好之前，待批的单 Lead 会说「我记下你批了，你在 thread 里点一下就行」，这张单会一直挂着，直到你点了按钮。授权、改需求这类事，Lead 按你说的直接去办。</p>
+  <p class="small">授权、改需求这类 Lead 本来就能办的事，你说了，Lead 会直接去办，办完这件就结束了。<b>ship 的批准不一样</b>：用嘴批 ship 这条路还没做（在耳机模式第二批里）。所以你说「批」以后，Lead 会记下来，告诉你「你在 thread 里点一下就行」，然后接着说下一件。但这张单在点之前仍然是<b>待批</b>，下次进房如果还没点，它会再提醒你一句。</p>
 </section>
 
 <section class="card purple">
@@ -172,7 +173,7 @@ footer{color:var(--faint);font-size:12px;text-align:center}
   <ol class="ask">
     <li><div><b>耳机模式用 marin 对吗？</b><p class="def">你 8 月给的声线表写的是 marin 给「主管 Lead」。我理解主管 Lead 就是 Raya，但表上没写 Raya 这个名字，所以想跟你确认一下。</p></div></li>
     <li><div><b>Tadashi 用 verse、Honey Lemon 用 alloy，现在就写进配置吗？其他 Lead 在你挑之前先用 marin，可以吗？</b><p class="def">剩下的七个声线你还没分配。按你说过的规则，男性 Lead 用男声，挑的时候对照那张性格表就行，不用重新试听。</p></div></li>
-    <li><div><b>thread 标题上的「要你答」，算不算「Lead 主动跟你说的」？</b><p class="def">它是 Lead 在 thread 里问你的问题。我默认算进去，和主频道的消息一起去重。</p></div></li>
+    <li><div><b>thread 标题上的「要你答」，要不要也播？</b><p class="def">它是 Lead 在 thread 里问你的问题，不属于你定的三类，所以默认<b>先不播</b>。你说要，就打开这个开关。</p></div></li>
   </ol>
 </section>
 
