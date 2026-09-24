@@ -36,6 +36,7 @@ export interface IngestDiscordChatArgs {
 	text: string;
 	origin?: ChatDeliveryEnvelopeV1["origin"];
 	voiceSessionId?: string;
+	voiceHandoff?: ChatDeliveryEnvelopeV1["voiceHandoff"];
 	heldSince?: string;
 	heldReason?: ChatDeliveryEnvelopeV1["heldReason"];
 	deadLetter?: {
@@ -76,6 +77,12 @@ export function renderDiscordChatContent(
 		...(envelope.voiceSessionId
 			? { "voice-session": envelope.voiceSessionId }
 			: {}),
+		...(envelope.voiceHandoff
+			? {
+					handoff_id: envelope.voiceHandoff.handoffId,
+					handoff_intent: envelope.voiceHandoff.intentKind,
+				}
+			: {}),
 		chat_id: envelope.chatId,
 		message_id: envelope.messageId,
 		user: envelope.authorName,
@@ -110,7 +117,9 @@ export function renderDiscordChatContent(
 	const body = [
 		...(envelope.origin === "voice"
 			? [
-					"[voice] 这句话是 founder 口述并会被念给她听;请在本 thread 用可说出口的短句回复。",
+					envelope.voiceHandoff
+						? "[voice handoff] 这是 founder 明确交给 Lead 的请求；请由 Lead 判断和执行，并在回复中保留 handoff 关联。"
+						: "[voice] 这句话是 founder 口述并会被念给她听;请在本 thread 用可说出口的短句回复。",
 				]
 			: []),
 		escapeXmlText(envelope.text),
@@ -161,9 +170,14 @@ export function ingestDiscordChatOnQueue(
 		throw new Error("roundtable Discord chat requires a reply route");
 	}
 	const founder = args.founderId === args.authorId;
+	const identity = {
+		...(args.origin ? { origin: args.origin } : {}),
+		...(args.voiceSessionId ? { voiceSessionId: args.voiceSessionId } : {}),
+		...(args.voiceHandoff ? { voiceHandoff: args.voiceHandoff } : {}),
+	};
 	const envelope = normalizeChatDeliveryEnvelope({
 		v: 1,
-		deliveryId: chatDeliveryId(args.leadId, args.messageId),
+		deliveryId: chatDeliveryId(args.leadId, args.messageId, identity),
 		leadId: args.leadId,
 		chatId: args.chatId,
 		originChannelId: args.originChannelId,
@@ -177,6 +191,7 @@ export function ingestDiscordChatOnQueue(
 		text: args.text,
 		...(args.origin ? { origin: args.origin } : {}),
 		...(args.voiceSessionId ? { voiceSessionId: args.voiceSessionId } : {}),
+		...(args.voiceHandoff ? { voiceHandoff: args.voiceHandoff } : {}),
 		...(args.heldSince ? { heldSince: args.heldSince } : {}),
 		...(args.heldReason ? { heldReason: args.heldReason } : {}),
 		...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),

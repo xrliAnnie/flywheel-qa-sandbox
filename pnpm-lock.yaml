@@ -286,6 +286,9 @@ importers:
       flywheel-token-usage:
         specifier: workspace:*
         version: link:../token-usage
+      flywheel-voice-core:
+        specifier: workspace:*
+        version: link:../voice-core
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13

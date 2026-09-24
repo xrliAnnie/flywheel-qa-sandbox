@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	chatDeliveryId,
 	encodeChatDeliveryEnvelope,
 	normalizeChatDeliveryEnvelope,
 	parseChatDeliveryEnvelope,
@@ -47,6 +48,82 @@ function fixture() {
 }
 
 describe("FLY-1574 Discord mailbox ingest", () => {
+	it("accepts a synthetic message identity only for a bound typed voice handoff", () => {
+		const { args, dbPath } = fixture();
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const voiceHandoff = {
+			version: 1 as const,
+			handoffId,
+			intentKind: "action" as const,
+			requestDigest: "a".repeat(64),
+			targetLeadId: args.leadId,
+			transcriptId: "transcript-1",
+			utteranceId: "utterance-1",
+			sessionGeneration: 4,
+		};
+		const messageId = `voice-handoff:${handoffId}`;
+		const identity = {
+			origin: "voice" as const,
+			voiceSessionId: "voice-session",
+			voiceHandoff,
+		};
+		const deliveryId = chatDeliveryId(args.leadId, messageId, identity);
+
+		const envelope = normalizeChatDeliveryEnvelope({
+			v: 1,
+			deliveryId,
+			priority: 1,
+			...args,
+			messageId,
+			...identity,
+		});
+		expect(
+			parseChatDeliveryEnvelope(encodeChatDeliveryEnvelope(envelope)),
+		).toEqual(envelope);
+		expect(renderDiscordChatContent(envelope)).toContain(
+			'handoff_id="018f47d2-7b64-7b42-a3df-123456789abc"',
+		);
+		expect(
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				messageId,
+				...identity,
+				founderId: args.authorId,
+			}),
+		).toMatchObject({ lane: "inserted_inbox" });
+	});
+
+	it("keeps synthetic message identities closed outside the exact voice handoff binding", () => {
+		const { args } = fixture();
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const messageId = `voice-handoff:${handoffId}`;
+		const metadata = {
+			version: 1,
+			handoffId,
+			intentKind: "query",
+			requestDigest: "b".repeat(64),
+			targetLeadId: args.leadId,
+			transcriptId: "transcript-1",
+			utteranceId: "utterance-1",
+			sessionGeneration: 4,
+		};
+
+		expect(() => chatDeliveryId(args.leadId, messageId)).toThrow(
+			"synthetic messageId requires voice session binding",
+		);
+		expect(() =>
+			chatDeliveryId(args.leadId, messageId, {
+				origin: "voice",
+				voiceSessionId: "voice-session",
+				voiceHandoff: {
+					...metadata,
+					handoffId: "018f47d2-7b64-7b42-a3df-abcdefabcdef",
+				},
+			}),
+		).toThrow("voice handoff messageId does not match handoffId");
+	});
+
 	it("preserves attachment identity and exposes missing identity as unavailable metadata", () => {
 		const { args } = fixture();
 		const identified = normalizeChatDeliveryEnvelope({

@@ -1,9 +1,16 @@
+import {
+	VOICE_HANDOFF_INTENT_KINDS,
+	type VoiceHandoffIntentKind,
+} from "flywheel-voice-core";
 import { assertUtcIsoTimestamp } from "./mailbox-queue.js";
 
 export const CHAT_DELIVERY_ENVELOPE_PREFIX = "[discord-chat-delivery v1] ";
 const LEGACY_CHAT_ENVELOPE_PREFIX = "[discord-chat-receipt v1] ";
 const DISCORD_SNOWFLAKE = /^\d+$/;
 const DISCORD_ATTACHMENT_SNOWFLAKE = /^\d{17,20}$/;
+const UUID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SHA256 = /^[a-f0-9]{64}$/u;
 
 export type ChatDeliveryMessageKind = "dm" | "guild" | "roundtable";
 
@@ -13,6 +20,17 @@ export interface ChatDeliveryAttachment {
 	type: string;
 	sizeKb: number;
 	unavailableReason?: "invalid_metadata" | "producer_identity_missing";
+}
+
+export interface VoiceHandoffMetadata {
+	version: 1;
+	handoffId: string;
+	intentKind: VoiceHandoffIntentKind;
+	requestDigest: string;
+	targetLeadId: string;
+	transcriptId: string;
+	utteranceId: string;
+	sessionGeneration: number;
 }
 
 export interface ChatDeliveryEnvelopeV1 {
@@ -31,6 +49,7 @@ export interface ChatDeliveryEnvelopeV1 {
 	text: string;
 	origin?: "discord" | "voice";
 	voiceSessionId?: string;
+	voiceHandoff?: VoiceHandoffMetadata;
 	heldSince?: string;
 	heldReason?: "discord_wiring_broken";
 	replyChannelId?: string;
@@ -59,8 +78,67 @@ function snowflake(value: unknown, field: string): string {
 	return parsed;
 }
 
-export function chatDeliveryId(leadId: string, messageId: string): string {
-	return `chat:${requiredText(leadId, "leadId")}:${snowflake(messageId, "messageId")}`;
+export interface ChatDeliveryIdentityContext {
+	origin?: "discord" | "voice";
+	voiceSessionId?: string;
+	voiceHandoff?: VoiceHandoffMetadata | Record<string, unknown>;
+}
+
+function normalizeVoiceHandoff(value: unknown): VoiceHandoffMetadata {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error("voiceHandoff must be an object");
+	const input = value as Record<string, unknown>;
+	if (input.version !== 1) throw new Error("voiceHandoff.version must be 1");
+	const handoffId = requiredText(input.handoffId, "voiceHandoff.handoffId");
+	if (!UUID.test(handoffId))
+		throw new Error("voiceHandoff.handoffId must be a UUID");
+	if (
+		typeof input.intentKind !== "string" ||
+		!VOICE_HANDOFF_INTENT_KINDS.includes(
+			input.intentKind as VoiceHandoffIntentKind,
+		)
+	)
+		throw new Error("voiceHandoff.intentKind is invalid");
+	const requestDigest = requiredText(
+		input.requestDigest,
+		"voiceHandoff.requestDigest",
+	);
+	if (!SHA256.test(requestDigest))
+		throw new Error("voiceHandoff.requestDigest must be sha256");
+	if (
+		!Number.isSafeInteger(input.sessionGeneration) ||
+		(input.sessionGeneration as number) < 1
+	)
+		throw new Error("voiceHandoff.sessionGeneration is invalid");
+	return {
+		version: 1,
+		handoffId,
+		intentKind: input.intentKind as VoiceHandoffIntentKind,
+		requestDigest,
+		targetLeadId: requiredText(input.targetLeadId, "voiceHandoff.targetLeadId"),
+		transcriptId: requiredText(input.transcriptId, "voiceHandoff.transcriptId"),
+		utteranceId: requiredText(input.utteranceId, "voiceHandoff.utteranceId"),
+		sessionGeneration: input.sessionGeneration as number,
+	};
+}
+
+export function chatDeliveryId(
+	leadId: string,
+	messageId: string,
+	identity: ChatDeliveryIdentityContext = {},
+): string {
+	const normalizedLeadId = requiredText(leadId, "leadId");
+	if (messageId.startsWith("voice-handoff:")) {
+		if (identity.origin !== "voice" || !identity.voiceSessionId)
+			throw new Error("synthetic messageId requires voice session binding");
+		const handoff = normalizeVoiceHandoff(identity.voiceHandoff);
+		if (handoff.targetLeadId !== normalizedLeadId)
+			throw new Error("voice handoff target does not match leadId");
+		if (messageId !== `voice-handoff:${handoff.handoffId}`)
+			throw new Error("voice handoff messageId does not match handoffId");
+		return `chat:${normalizedLeadId}:${messageId}`;
+	}
+	return `chat:${normalizedLeadId}:${snowflake(messageId, "messageId")}`;
 }
 
 export function normalizeChatDeliveryEnvelope(
@@ -68,12 +146,39 @@ export function normalizeChatDeliveryEnvelope(
 ): ChatDeliveryEnvelopeV1 {
 	if (value.v !== 1) throw new Error("chat delivery v1 envelope is required");
 	const leadId = requiredText(value.leadId, "leadId");
-	const messageId = snowflake(value.messageId, "messageId");
+	if (
+		value.origin !== undefined &&
+		value.origin !== "discord" &&
+		value.origin !== "voice"
+	)
+		throw new Error("origin must be discord or voice");
+	if ((value.origin === "voice") !== (value.voiceSessionId !== undefined))
+		throw new Error("origin and voiceSessionId must be provided together");
+	const voiceSessionId =
+		value.voiceSessionId === undefined
+			? undefined
+			: requiredText(value.voiceSessionId, "voiceSessionId");
+	if (value.voiceHandoff !== undefined && !voiceSessionId)
+		throw new Error("voiceHandoff requires a voice session binding");
+	const voiceHandoff =
+		value.voiceHandoff === undefined
+			? undefined
+			: normalizeVoiceHandoff(value.voiceHandoff);
+	const messageId = voiceHandoff
+		? requiredText(value.messageId, "messageId")
+		: snowflake(value.messageId, "messageId");
 	const deliveryId = requiredText(
 		value.deliveryId ?? value.receiptId,
 		"deliveryId",
 	);
-	if (deliveryId !== chatDeliveryId(leadId, messageId)) {
+	if (
+		deliveryId !==
+		chatDeliveryId(leadId, messageId, {
+			origin: value.origin as "discord" | "voice" | undefined,
+			voiceSessionId,
+			voiceHandoff,
+		})
+	) {
 		throw new Error(
 			"chat delivery v1 envelope deliveryId does not match route",
 		);
@@ -170,20 +275,6 @@ export function normalizeChatDeliveryEnvelope(
 	if ((value.heldSince === undefined) !== (value.heldReason === undefined)) {
 		throw new Error("heldSince and heldReason must be provided together");
 	}
-	if (
-		value.origin !== undefined &&
-		value.origin !== "discord" &&
-		value.origin !== "voice"
-	) {
-		throw new Error("origin must be discord or voice");
-	}
-	if ((value.origin === "voice") !== (value.voiceSessionId !== undefined)) {
-		throw new Error("origin and voiceSessionId must be provided together");
-	}
-	const voiceSessionId =
-		value.voiceSessionId === undefined
-			? undefined
-			: requiredText(value.voiceSessionId, "voiceSessionId");
 	let heldSince: string | undefined;
 	let heldReason: ChatDeliveryEnvelopeV1["heldReason"];
 	if (value.heldSince !== undefined) {
@@ -259,6 +350,7 @@ export function normalizeChatDeliveryEnvelope(
 		text: value.text,
 		...(value.origin ? { origin: value.origin } : {}),
 		...(voiceSessionId ? { voiceSessionId } : {}),
+		...(voiceHandoff ? { voiceHandoff } : {}),
 		...(heldSince ? { heldSince, heldReason } : {}),
 		...(replyChannelId ? { replyChannelId } : {}),
 		...(replyRoute ? { replyRoute } : {}),
