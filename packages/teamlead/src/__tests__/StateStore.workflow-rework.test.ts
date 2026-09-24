@@ -934,6 +934,63 @@ async function createPendingHeavyRework(): Promise<{
 	return { store, requestId: failed.reworkRequestId };
 }
 
+async function createAwaitingReceiptHeavyRework(): Promise<{
+	store: StateStore;
+	requestId: string;
+	activationId: string;
+	epoch: number;
+}> {
+	const { store, requestId } = await createPendingHeavyRework();
+	const activationId = "activation-awaiting-receipt";
+	const epoch = 8;
+	const claim = store.claimWorkflowReworkDelivery({
+		requestId,
+		ownerId: "coordinator",
+		now: "2026-07-23T00:11:00.000Z",
+		leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+	});
+	if (!claim.ok) throw new Error(claim.reason);
+	const admitted = store.admitGeneralizedWorkflowExecution({
+		runId: "run-heavy",
+		nodeId: "implement",
+		executionId: "implement-exec",
+		attempt: 2,
+		activationId,
+		activationMode: "wake",
+		reworkRequestId: requestId,
+		expiresAt: "2026-07-23T02:00:00.000Z",
+		absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+		now: "2026-07-23T00:11:01.000Z",
+		env: enabled,
+	});
+	if (!admitted.ok) throw new Error(admitted.reason);
+	const turn = store.recordWorkflowActivationTurn({
+		activationId,
+		issueId: "FLY-1423",
+		executionId: "implement-exec",
+		epoch,
+		sourceEventId: `rework-turn:${requestId}:${activationId}`,
+		grantedAt: "2026-07-23T00:11:30.000Z",
+	});
+	if (!turn.ok) throw new Error(turn.reason);
+	for (const [from, to] of [
+		["pending", "turn_granted"],
+		["turn_granted", "awaiting_receipt"],
+	] as const) {
+		const advanced = store.advanceWorkflowReworkDelivery({
+			requestId,
+			ownerId: "coordinator",
+			generation: claim.generation,
+			from,
+			to,
+			now: "2026-07-23T00:12:00.000Z",
+			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
+		});
+		if (!advanced.ok) throw new Error(advanced.reason);
+	}
+	return { store, requestId, activationId, epoch };
+}
+
 async function createActiveOperatorRework(
 	leadFeedback = "rework the implementation",
 ): Promise<{
@@ -1062,6 +1119,69 @@ function deliverOperatorRework(store: StateStore, requestId: string): void {
 	});
 	if (!receipt.ok) throw new Error(receipt.reason);
 }
+
+describe("FLY-2828 exhausted rework wake guard", () => {
+	it.each([
+		{
+			name: "completed obligation even after its target finished",
+			mutate: (db: Database.Database, requestId: string) => {
+				db.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'completed' WHERE request_id = ?",
+				).run(requestId);
+				db.prepare(
+					`UPDATE workflow_run_node SET state = 'done'
+					  WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2`,
+				).run();
+			},
+			expected: {
+				disposition: "cancel",
+				reason: "rework_obligation_completed",
+			},
+		},
+		{
+			name: "held obligation that can still be resumed",
+			mutate: (db: Database.Database, requestId: string) => {
+				db.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'held' WHERE request_id = ?",
+				).run(requestId);
+			},
+			expected: {
+				disposition: "cancel",
+				reason: "rework_obligation_settled",
+			},
+		},
+		{
+			name: "unsettled obligation whose target already finished",
+			mutate: (db: Database.Database) => {
+				db.prepare(
+					`UPDATE workflow_run_node SET state = 'done'
+					  WHERE run_id = 'run-heavy' AND node_id = 'implement' AND attempt = 2`,
+				).run();
+			},
+			expected: {
+				disposition: "cancel",
+				reason: "activation_target_terminal",
+			},
+		},
+	] as const)("classifies a $name", async ({ mutate, expected }) => {
+		const { store, requestId, activationId, epoch } =
+			await createAwaitingReceiptHeavyRework();
+		try {
+			const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+			mutate(db, requestId);
+			expect(
+				store.inspectWorkflowTurnWakeRetry({
+					wakeId: "rework-wake:fly2828",
+					executionId: "implement-exec",
+					activationId,
+					epoch,
+				}),
+			).toEqual(expected);
+		} finally {
+			store.close();
+		}
+	});
+});
 
 describe("FLY-2278 rework receipt liveness escalation", () => {
 	it.each([

@@ -917,6 +917,28 @@ describe("drainTurnWakeOutbox receipt projection (FLY-2828)", () => {
 					});
 				}
 			});
+			const resumed = new CommDB(path);
+			try {
+				expect(
+					resumed.enqueueTurnWake({
+						wakeId: "wake-settled",
+						executionId: "exec-wake-settled",
+						issueId: "FLY-2828",
+						epoch: 1,
+						activationId: "activation-wake-settled",
+						purpose: "workflow_rework",
+						envelope: { fromAgent: "bridge", content: "TURN ready" },
+						backend: "codex",
+						createdAtMs: T0 + 1,
+					}),
+				).toEqual({ idempotentReplay: true });
+				expect(resumed.getTurnWake("wake-settled")).toMatchObject({
+					state: "sent",
+					cancel_reason: null,
+				});
+			} finally {
+				resumed.close();
+			}
 			expect(
 				warn.mock.calls.some(
 					([line]) =>

@@ -2303,6 +2303,39 @@ describe("engine-owned snapshot transition transaction", () => {
 				releaseOwner: true,
 			}),
 		).toEqual({ ok: true });
+		const carrierGuardDb = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		const gateStateBeforeTerminalProbe = store.getWorkflowRunNode(
+			"run-1",
+			"founder_gate",
+			1,
+		)?.state;
+		if (!gateStateBeforeTerminalProbe) {
+			throw new Error("carrier gate node missing before terminal probe");
+		}
+		carrierGuardDb.run(
+			`UPDATE workflow_run_node SET state = 'done'
+			  WHERE run_id = 'run-1' AND node_id = 'founder_gate' AND attempt = 1`,
+		);
+		expect(
+			store.inspectWorkflowTurnWakeRetry({
+				wakeId: "carrier-wake:receipt-test",
+				executionId: "implement-1",
+				activationId: carrier.carrier_activation_id,
+				epoch: 7,
+			}),
+		).toEqual({
+			disposition: "cancel",
+			reason: "carrier_target_terminal",
+		});
+		carrierGuardDb.run(
+			`UPDATE workflow_run_node SET state = ?
+			  WHERE run_id = 'run-1' AND node_id = 'founder_gate' AND attempt = 1`,
+			[gateStateBeforeTerminalProbe],
+		);
 		expect(
 			store.recordWorkflowCarrierWakeReceipt({
 				activationId: carrier.carrier_activation_id,
@@ -2335,6 +2368,25 @@ describe("engine-owned snapshot transition transaction", () => {
 			disposition: "cancel",
 			reason: "carrier_obligation_settled",
 		});
+		carrierGuardDb.run(
+			"UPDATE workflow_carrier_delivery SET state = 'completed' WHERE question_id = ?",
+			[holder!.question_id],
+		);
+		expect(
+			store.inspectWorkflowTurnWakeRetry({
+				wakeId: "carrier-wake:receipt-test",
+				executionId: "implement-1",
+				activationId: carrier.carrier_activation_id,
+				epoch: 7,
+			}),
+		).toEqual({
+			disposition: "cancel",
+			reason: "carrier_obligation_completed",
+		});
+		carrierGuardDb.run(
+			"UPDATE workflow_carrier_delivery SET state = 'receipt_started' WHERE question_id = ?",
+			[holder!.question_id],
+		);
 		const turnExpectation = store
 			.listWorkflowTurnExpectations()
 			.find((item) => item.source === "carrier")!;
