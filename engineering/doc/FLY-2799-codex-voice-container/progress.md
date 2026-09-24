@@ -2,14 +2,14 @@
 issue: FLY-2799
 phase: implement
 phaseCursor: 3/5
-updated: 2026-09-24T18:20:18.432Z
-nextStep: Await Lead reply da305394-9397-45b3-898f-0e7f84305932 to clean slot 4
-  Codex-home residue and authorize one real bootstrap retry; then prove >=60s
-  real-room live plus transcript and positive control
+updated: 2026-09-24T18:24:40.647Z
+nextStep: Await Lead reply d1061161-1326-4bba-b69a-dcdaed1e56d2 after guarded
+  Codex plist still hit real launchctl bootstrap EIO; do not retry or touch
+  retained slot 4 state
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
 **phase**: implement (3/5)
-**next**: Await Lead reply da305394-9397-45b3-898f-0e7f84305932 to clean slot 4 Codex-home residue and authorize one real bootstrap retry; then prove >=60s real-room live plus transcript and positive control
+**next**: Await Lead reply d1061161-1326-4bba-b69a-dcdaed1e56d2 after guarded Codex plist still hit real launchctl bootstrap EIO; do not retry or touch retained slot 4 state
