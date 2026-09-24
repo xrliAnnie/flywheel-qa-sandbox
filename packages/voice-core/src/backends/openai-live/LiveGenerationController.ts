@@ -36,6 +36,12 @@ export interface LiveGenerationControllerEvents extends LiveSessionEvents {
 	];
 }
 
+export type LiveRetirementResult = {
+	generation: number;
+	reason: LiveCancelReason;
+	finalization: LiveSessionFinalization;
+};
+
 export class LiveGenerationController {
 	private readonly emitter = new TypedEmitter<LiveGenerationControllerEvents>();
 	private readonly fence = new GenerationFence();
@@ -48,6 +54,7 @@ export class LiveGenerationController {
 	private active?: LiveSession;
 	private opening?: Promise<number>;
 	private replacing?: Promise<number>;
+	private suspending?: Promise<LiveRetirementResult>;
 	private closed = false;
 	private closing?: Promise<void>;
 
@@ -120,6 +127,63 @@ export class LiveGenerationController {
 			},
 		);
 		return this.trackOpening(replacement);
+	}
+
+	suspend(
+		reason: Extract<
+			LiveCancelReason,
+			"announcer-takeover" | "delegation-sealed"
+		>,
+	): Promise<LiveRetirementResult> {
+		if (this.closed) return Promise.reject(this.closedError());
+		if (this.suspending) return this.suspending;
+		if (this.replacing) {
+			return Promise.reject(
+				new VoiceError(
+					"backend-protocol",
+					"openai-live: cannot suspend while replacing a generation",
+				),
+			);
+		}
+		const priorSession = this.active;
+		const priorOpening = this.opening;
+		if (!priorSession) {
+			return Promise.reject(
+				new VoiceError(
+					"backend-protocol",
+					"openai-live: no generation is available to suspend",
+				),
+			);
+		}
+		this.cancelCurrent(reason);
+		const suspension = (async () => {
+			const result = await this.retire(priorSession, reason);
+			if (priorOpening) await priorOpening.catch(() => undefined);
+			return result;
+		})();
+		this.suspending = suspension;
+		void suspension.then(
+			() => {
+				if (this.suspending === suspension) this.suspending = undefined;
+			},
+			() => {
+				if (this.suspending === suspension) this.suspending = undefined;
+			},
+		);
+		return suspension;
+	}
+
+	resume(): Promise<number> {
+		if (this.closed) return Promise.reject(this.closedError());
+		if (this.active || this.opening || this.replacing || this.suspending) {
+			return Promise.reject(
+				new VoiceError(
+					"backend-protocol",
+					"openai-live: cannot resume while a generation is active",
+				),
+			);
+		}
+		return this.trackOpening(this.openGeneration());
 	}
 
 	appendInputAudio(chunk: Buffer): void {
@@ -220,13 +284,15 @@ export class LiveGenerationController {
 	private async retire(
 		session: LiveSession,
 		reason: LiveCancelReason,
-	): Promise<void> {
+	): Promise<LiveRetirementResult> {
 		const result = await session.retire({
 			deadlineMs: this.opts.retirementDeadlineMs,
 		});
 		this.detach(session);
 		if (this.active === session) this.active = undefined;
-		this.emitter.emit("retired", { ...result, reason });
+		const retired = { ...result, reason };
+		this.emitter.emit("retired", retired);
+		return retired;
 	}
 
 	private cancelCurrent(reason: LiveCancelReason): void {

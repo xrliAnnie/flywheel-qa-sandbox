@@ -1,0 +1,254 @@
+import type { RoomUtteranceEvent } from "../../room-io.js";
+import type { VoiceAttribution, VoiceUtterance } from "../../types.js";
+import { VoiceError } from "../../types.js";
+
+export interface LiveInputTranscriptDelta {
+	generation: number;
+	eventId?: string;
+	startMs: number;
+	endMs: number;
+	delta: string;
+}
+
+export interface LiveDelegationSeal {
+	generation: number;
+	delegationId: string;
+	offsetMs: number;
+}
+
+export interface LiveUtteranceAssemblerOptions {
+	sessionId: string;
+	generation: number;
+	backendId: string;
+}
+
+interface ProviderGeneration {
+	startedAt: number;
+	deltas: LiveInputTranscriptDelta[];
+	seenEventIds: Set<string>;
+}
+
+interface RoomWindow {
+	utteranceId: string;
+	attribution: VoiceAttribution;
+	startedAt: number;
+	endedAt?: number;
+}
+
+function validTime(value: number): boolean {
+	return Number.isFinite(value) && value >= 0;
+}
+
+function overlaps(
+	startA: number,
+	endA: number,
+	startB: number,
+	endB: number,
+): boolean {
+	return startA <= endB && endA >= startB;
+}
+
+/**
+ * Strictly binds OpenAI Live's connection-relative transcript offsets to the
+ * RoomIO timeline. Provider ids remain metadata: the durable transcript id is
+ * scoped by the voice session, resident generation, provider generation, and
+ * RoomIO utterance id.
+ */
+export class LiveUtteranceAssembler {
+	private readonly providers = new Map<number, ProviderGeneration>();
+	private readonly windows = new Map<string, RoomWindow>();
+	private sequence = 0;
+
+	constructor(private readonly options: LiveUtteranceAssemblerOptions) {
+		if (
+			!options.sessionId ||
+			!options.backendId ||
+			!Number.isSafeInteger(options.generation) ||
+			options.generation < 1
+		) {
+			throw new VoiceError(
+				"backend-protocol",
+				"openai-live: utterance assembler identity is invalid",
+			);
+		}
+	}
+
+	startProviderGeneration(generation: number, startedAt: number): void {
+		if (
+			!Number.isSafeInteger(generation) ||
+			generation < 1 ||
+			!validTime(startedAt)
+		) {
+			throw new VoiceError(
+				"backend-protocol",
+				"openai-live: provider generation timeline is invalid",
+			);
+		}
+		const prior = this.providers.get(generation);
+		if (prior) {
+			if (prior.startedAt !== startedAt) {
+				throw new VoiceError(
+					"backend-protocol",
+					`openai-live: provider generation ${generation} timeline changed`,
+				);
+			}
+			return;
+		}
+		this.providers.set(generation, {
+			startedAt,
+			deltas: [],
+			seenEventIds: new Set(),
+		});
+	}
+
+	observeRoom(event: RoomUtteranceEvent): void {
+		if (
+			event.sessionId !== this.options.sessionId ||
+			event.generation !== this.options.generation ||
+			!event.utteranceId ||
+			!validTime(event.observedAt)
+		) {
+			throw new VoiceError(
+				"backend-protocol",
+				"openai-live: RoomIO utterance identity is invalid",
+			);
+		}
+		if (event.phase === "start") {
+			if (this.windows.has(event.utteranceId)) {
+				throw new VoiceError(
+					"backend-protocol",
+					`openai-live: duplicate RoomIO utterance ${event.utteranceId}`,
+				);
+			}
+			this.windows.set(event.utteranceId, {
+				utteranceId: event.utteranceId,
+				attribution: event.attribution,
+				startedAt: event.observedAt,
+			});
+			return;
+		}
+		const window = this.windows.get(event.utteranceId);
+		if (
+			!window ||
+			window.endedAt !== undefined ||
+			event.observedAt < window.startedAt
+		) {
+			throw new VoiceError(
+				"backend-protocol",
+				`openai-live: unmatched RoomIO utterance end ${event.utteranceId}`,
+			);
+		}
+		window.endedAt = event.observedAt;
+		if (
+			JSON.stringify(window.attribution) !== JSON.stringify(event.attribution)
+		) {
+			window.attribution = {
+				kind: "unknown",
+				reason: "room_attribution_changed",
+			};
+		}
+	}
+
+	appendInput(delta: LiveInputTranscriptDelta): void {
+		const provider = this.providers.get(delta.generation);
+		if (
+			!provider ||
+			!validTime(delta.startMs) ||
+			!validTime(delta.endMs) ||
+			delta.endMs < delta.startMs ||
+			!delta.delta
+		) {
+			throw new VoiceError(
+				"backend-protocol",
+				"openai-live: input transcript delta is invalid",
+			);
+		}
+		if (delta.eventId) {
+			if (provider.seenEventIds.has(delta.eventId)) return;
+			provider.seenEventIds.add(delta.eventId);
+		}
+		provider.deltas.push({ ...delta });
+	}
+
+	sealDelegation(input: LiveDelegationSeal): VoiceUtterance {
+		const provider = this.providers.get(input.generation);
+		if (!provider || !input.delegationId || !validTime(input.offsetMs)) {
+			throw new VoiceError(
+				"backend-protocol",
+				"openai-live: delegation seal is invalid",
+			);
+		}
+		const delegationAt = provider.startedAt + input.offsetMs;
+		const completed = [...this.windows.values()].filter(
+			(window): window is RoomWindow & { endedAt: number } =>
+				window.endedAt !== undefined,
+		);
+		const candidates = completed.filter(
+			(window) =>
+				delegationAt >= window.startedAt && delegationAt <= window.endedAt,
+		);
+		const candidate = candidates.length === 1 ? candidates[0] : undefined;
+		const relevantDeltas = provider.deltas.filter((delta) => {
+			const absoluteStart = provider.startedAt + delta.startMs;
+			const absoluteEnd = provider.startedAt + delta.endMs;
+			if (candidate) {
+				return overlaps(
+					absoluteStart,
+					absoluteEnd,
+					candidate.startedAt,
+					candidate.endedAt,
+				);
+			}
+			return absoluteStart <= delegationAt;
+		});
+		const intersectedWindows = new Set<string>();
+		for (const delta of relevantDeltas) {
+			const absoluteStart = provider.startedAt + delta.startMs;
+			const absoluteEnd = provider.startedAt + delta.endMs;
+			for (const window of completed) {
+				if (
+					overlaps(absoluteStart, absoluteEnd, window.startedAt, window.endedAt)
+				) {
+					intersectedWindows.add(window.utteranceId);
+				}
+			}
+		}
+		const uniquelyBound =
+			candidate !== undefined &&
+			intersectedWindows.size === 1 &&
+			intersectedWindows.has(candidate.utteranceId);
+		const attribution: VoiceAttribution = uniquelyBound
+			? candidate.attribution
+			: {
+					kind: "unknown",
+					reason:
+						candidates.length > 1 || intersectedWindows.size > 1
+							? "overlapping_room_utterances"
+							: "delegation_not_uniquely_attributed",
+				};
+		const utteranceId = uniquelyBound
+			? candidate.utteranceId
+			: `unknown:${input.generation}:${input.delegationId}`;
+		const observedAt = uniquelyBound
+			? candidate.endedAt
+			: provider.startedAt +
+				Math.max(input.offsetMs, ...relevantDeltas.map((delta) => delta.endMs));
+		const timestamp = new Date(observedAt).toISOString();
+		return {
+			ts: timestamp,
+			timestamp,
+			sessionId: this.options.sessionId,
+			generation: this.options.generation,
+			sequence: ++this.sequence,
+			transcriptId: `live:${this.options.sessionId}:${this.options.generation}:${input.generation}:${utteranceId}`,
+			utteranceId,
+			backendId: this.options.backendId,
+			source: attribution.kind === "known" ? "founder" : "room",
+			face: "converse",
+			role: "user",
+			text: relevantDeltas.map((delta) => delta.delta).join(""),
+			final: true,
+			attribution,
+		};
+	}
+}

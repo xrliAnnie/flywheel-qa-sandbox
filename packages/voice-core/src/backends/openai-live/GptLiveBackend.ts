@@ -5,7 +5,6 @@ import type {
 	CapabilityAwareConversationSession,
 	ConversationEventMap,
 	ConversationOptions,
-	ConversationSession,
 	ResumeHandle,
 	ScheduleHint,
 	ToolResult,
@@ -13,9 +12,16 @@ import type {
 	VoiceBackendCapabilities,
 } from "../../types.js";
 import { VoiceError } from "../../types.js";
+import type {
+	LiveCancelReason,
+	LiveRetirementResult,
+} from "./LiveGenerationController.js";
 import { LiveGenerationController } from "./LiveGenerationController.js";
 import type { OpenAiLiveSocket } from "./LiveSession.js";
-import { OPENAI_LIVE_AUDIO_FORMAT } from "./liveProtocol.js";
+import {
+	OPENAI_LIVE_AUDIO_FORMAT,
+	type OpenAiLiveServerEvent,
+} from "./liveProtocol.js";
 
 export interface OpenAiLiveConnector {
 	connect(): Promise<OpenAiLiveSocket>;
@@ -28,6 +34,26 @@ export interface GptLiveBackendOptions {
 	contextMaxTokens?: number;
 	retirementDeadlineMs?: number;
 	nextEventId?: () => string;
+}
+
+export type OpenAiLiveTranscriptDelta = Extract<
+	OpenAiLiveServerEvent,
+	{ type: "transcript-delta" }
+> & { generation: number };
+
+export interface OpenAiLiveConversationSession
+	extends CapabilityAwareConversationSession {
+	readonly providerGeneration: number | undefined;
+	onLiveTranscript(
+		listener: (delta: OpenAiLiveTranscriptDelta) => void,
+	): () => void;
+	suspend(
+		reason: Extract<
+			LiveCancelReason,
+			"announcer-takeover" | "delegation-sealed"
+		>,
+	): Promise<LiveRetirementResult>;
+	resume(): Promise<number>;
 }
 
 const FRONTEND_INSTRUCTIONS = [
@@ -64,7 +90,7 @@ export class GptLiveBackend implements VoiceBackend {
 
 	async createConversation(
 		opts: ConversationOptions,
-	): Promise<ConversationSession> {
+	): Promise<OpenAiLiveConversationSession> {
 		if (opts.resumeHandle) {
 			throw new VoiceError(
 				"unsupported",
@@ -109,10 +135,17 @@ export class GptLiveBackend implements VoiceBackend {
 	}
 }
 
-class GptLiveConversationSession implements CapabilityAwareConversationSession {
+class GptLiveConversationSession implements OpenAiLiveConversationSession {
 	readonly sessionId = randomUUID();
 	private readonly emitter = new TypedEmitter<ConversationEventMap>();
 	private readonly startedAudioGenerations = new Set<number>();
+	private readonly liveTranscriptListeners = new Set<
+		(delta: OpenAiLiveTranscriptDelta) => void
+	>();
+
+	get providerGeneration(): number | undefined {
+		return this.controller.currentGeneration;
+	}
 
 	get effectiveCapabilities() {
 		return {
@@ -133,10 +166,13 @@ class GptLiveConversationSession implements CapabilityAwareConversationSession {
 			}
 			this.emitter.emit("response-audio", chunk, format);
 		});
-		controller.on("transcript", ({ direction, delta }) => {
+		controller.on("transcript", (liveDelta) => {
+			for (const listener of [...this.liveTranscriptListeners]) {
+				listener(liveDelta);
+			}
 			this.emitter.emit("transcript", {
-				role: direction === "input" ? "user" : "assistant",
-				text: delta,
+				role: liveDelta.direction === "input" ? "user" : "assistant",
+				text: liveDelta.delta,
 				final: false,
 			});
 		});
@@ -157,6 +193,26 @@ class GptLiveConversationSession implements CapabilityAwareConversationSession {
 	cancelGeneration(generation: number): void {
 		this.startedAudioGenerations.delete(generation);
 		this.emitter.emit("response-cancelled");
+	}
+
+	onLiveTranscript(
+		listener: (delta: OpenAiLiveTranscriptDelta) => void,
+	): () => void {
+		this.liveTranscriptListeners.add(listener);
+		return () => this.liveTranscriptListeners.delete(listener);
+	}
+
+	suspend(
+		reason: Extract<
+			LiveCancelReason,
+			"announcer-takeover" | "delegation-sealed"
+		>,
+	): Promise<LiveRetirementResult> {
+		return this.controller.suspend(reason);
+	}
+
+	resume(): Promise<number> {
+		return this.controller.resume();
 	}
 
 	sendAudio(frame: Buffer, format: AudioFormat): void {

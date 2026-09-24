@@ -43,10 +43,22 @@ export type {
 	LiveServerEvent,
 } from "./backends/gemini/transport.js";
 export {
+	CompositeSpeech,
+	type CompositeSpeechOptions,
+} from "./backends/openai-live/CompositeSpeech.js";
+export {
 	GptLiveBackend,
 	type GptLiveBackendOptions,
 	type OpenAiLiveConnector,
+	type OpenAiLiveConversationSession,
+	type OpenAiLiveTranscriptDelta,
 } from "./backends/openai-live/GptLiveBackend.js";
+export {
+	type LiveDelegationSeal,
+	type LiveInputTranscriptDelta,
+	LiveUtteranceAssembler,
+	type LiveUtteranceAssemblerOptions,
+} from "./backends/openai-live/LiveUtteranceAssembler.js";
 // backends + registry
 export {
 	assertBackendConsistent,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { OpenAiLiveConversationSession } from "../backends/openai-live/GptLiveBackend.js";
 import { GptLiveBackend } from "../backends/openai-live/GptLiveBackend.js";
 import type { OpenAiLiveSocket } from "../backends/openai-live/LiveSession.js";
 import type { OpenAiLiveClientEvent } from "../backends/openai-live/liveProtocol.js";
@@ -134,15 +135,17 @@ describe("GptLiveBackend", () => {
 		const opening = backend.createConversation(conversationOptions);
 		await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
 		socket.started();
-		const session = await opening;
+		const session = (await opening) as OpenAiLiveConversationSession;
 		const responseStarted = vi.fn();
 		const responseAudio = vi.fn();
 		const transcripts = vi.fn();
 		const delegations = vi.fn();
+		const liveTranscripts = vi.fn();
 		session.on("response-started", responseStarted);
 		session.on("response-audio", responseAudio);
 		session.on("transcript", transcripts);
 		session.on("delegation-created", delegations);
+		session.onLiveTranscript(liveTranscripts);
 
 		for (const text of ["first", "second"]) {
 			socket.receive({
@@ -178,6 +181,47 @@ describe("GptLiveBackend", () => {
 			offsetMs: 20,
 			target: "client",
 		});
+		expect(liveTranscripts).toHaveBeenCalledWith({
+			type: "transcript-delta",
+			direction: "input",
+			eventId: "transcript-1",
+			startMs: 10,
+			endMs: 20,
+			delta: "请查一下",
+			generation: 1,
+		});
+	});
+
+	it("can suspend without reconnecting, then resume a fresh provider generation", async () => {
+		const sockets: FakeSocket[] = [];
+		const backend = new GptLiveBackend({
+			model: "gpt-live-1",
+			voice: "marin",
+			transport: {
+				connect: async () => {
+					const socket = new FakeSocket();
+					sockets.push(socket);
+					return socket;
+				},
+			},
+		});
+		const opening = backend.createConversation(conversationOptions);
+		await vi.waitFor(() => expect(sockets).toHaveLength(1));
+		sockets[0]?.started(1);
+		const session = await opening;
+
+		const suspended = session.suspend("announcer-takeover");
+		sockets[0]?.receive({ type: "session.closed" });
+		await expect(suspended).resolves.toMatchObject({
+			generation: 1,
+			finalization: "provider_connection_closed",
+		});
+		expect(sockets).toHaveLength(1);
+
+		const resumed = session.resume();
+		await vi.waitFor(() => expect(sockets).toHaveLength(2));
+		sockets[1]?.started(2);
+		await expect(resumed).resolves.toBe(2);
 	});
 
 	it("reports effective suppression while fencing late audio across interrupt", async () => {

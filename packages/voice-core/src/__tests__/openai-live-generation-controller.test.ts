@@ -175,6 +175,31 @@ describe("LiveGenerationController", () => {
 		await expect(replacing).resolves.toBe(2);
 	});
 
+	it("suspends the Live face for deterministic speech and resumes only on command", async () => {
+		const { controller, sockets, cancelLocalOutput } = makeController();
+		const starting = controller.start();
+		await vi.waitFor(() => expect(sockets).toHaveLength(1));
+		sockets[0]?.started(1);
+		await starting;
+
+		const suspended = controller.suspend("announcer-takeover");
+		expect(cancelLocalOutput).toHaveBeenCalledWith(1, "announcer-takeover");
+		expect(controller.turnCancelOrSuppress).toBe(false);
+		sockets[0]?.receive({ type: "session.closed" });
+		await expect(suspended).resolves.toEqual({
+			generation: 1,
+			reason: "announcer-takeover",
+			finalization: "provider_connection_closed",
+		});
+		expect(sockets).toHaveLength(1);
+
+		const resumed = controller.resume();
+		await vi.waitFor(() => expect(sockets).toHaveLength(2));
+		sockets[1]?.started(2);
+		await expect(resumed).resolves.toBe(2);
+		expect(controller.turnCancelOrSuppress).toBe(true);
+	});
+
 	it("closes without reconnecting and refuses later effects", async () => {
 		const { controller, sockets, cancelLocalOutput } = makeController();
 		const starting = controller.start();
