@@ -1,0 +1,21 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#edf5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','secondaryColor':'#fff3df','tertiaryColor':'#ffffff'}}}%%
+flowchart LR
+ subgraph 正常
+  I0[首次启动<br/>initial]
+  R0[原会话拉起<br/>不产生新执行]
+ end
+ subgraph 恢复额度[恢复额度 · 每次需求]
+  R1[原会话尝试 1]
+  R2[原会话尝试 2]
+  FB[新执行兜底 1 次<br/>resume_fallback]
+ end
+ subgraph 故障额度[故障额度 · 每个节点尝试]
+  F1[故障换人 1]
+  F2[故障换人 2]
+  F3[故障换人 3]
+ end
+ R0 -.失败.-> R1 --> R2 --> FB
+ FB -.再失败.-> HOLD[挂起等 Lead<br/>审计重开后额度重算]
+ I0 -.成功运行后意外死亡.-> F1 --> F2 --> F3
+ F3 -.耗尽.-> DEAD[按既有规则判死单]
+ FB x--x F1

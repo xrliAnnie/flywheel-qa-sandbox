@@ -1,0 +1,17 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#edf5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','secondaryColor':'#fff3df','tertiaryColor':'#ffffff'}}}%%
+flowchart TD
+ A[有合法继续需求<br/>打回 / 门答复 / 消息] --> B{整单未结束<br/>且需求仍有效?}
+ B -- 否 --> X1[拒绝拉起<br/>按整单结局处理]
+ B -- 是 --> C[领取恢复凭证<br/>进程代数 +1]
+ C --> D{旧进程 / 后台守护<br/>全部确认不在?}
+ D -- 无法证明 --> H1[挂起等待<br/>不新起兜底]
+ D -- 是 --> E{拉起前核对<br/>会话编号非空 · 模型一致<br/>目录 / 分支一致}
+ E -- 任一不符 --> H2[出问题:显示期望 vs 实际<br/>不扣故障额度]
+ E -- 通过 --> F[启动原会话<br/>Claude --resume / Codex resumeThread]
+ F --> G{拉起后核对<br/>实际会话编号 = 记录<br/>实际模型 · 目录一致}
+ G -- 不等 / 空 --> H3[不发业务输入<br/>清理后再试,最多两次]
+ G -- 通过 --> I[写 resume_verified<br/>重建可见终端]
+ I --> J[重新查 TURN / 激活<br/>再投递首条业务输入]
+ J --> K[首轮模型消费回执<br/>resume_succeeded 留痕耗时]
+ H3 --> L{两次都失败?}
+ L -- 是 --> M[一次明确的新执行兜底<br/>显示原对话已丢失]
