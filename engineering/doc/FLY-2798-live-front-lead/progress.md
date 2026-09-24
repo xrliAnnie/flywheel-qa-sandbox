@@ -1,15 +1,15 @@
 ---
 issue: FLY-2798
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-24T19:41:17.845Z
-nextStep: "Lead ruling A: merged origin/main@637752fcc (truth.ts union),
-  targeted truth/drift+census+kill-path green; replay milestone last, push,
-  fresh review gate + new request-id on new head, then complete --pr 1312"
+phaseCursor: 4/4
+updated: 2026-09-24T20:30:35.270Z
+nextStep: Six in-scope HIGHs from review 930b3f21 fixed red-green (room-layer 4
+  ruled to FLY-2860); milestone-last, push, fresh scoped review gate + new
+  request-id, then complete --pr 1312
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: implement (3/4)
-**next**: Lead ruling A: merged origin/main@637752fcc (truth.ts union), targeted truth/drift+census+kill-path green; replay milestone last, push, fresh review gate + new request-id on new head, then complete --pr 1312
+**phase**: implement (4/4)
+**next**: Six in-scope HIGHs from review 930b3f21 fixed red-green (room-layer 4 ruled to FLY-2860); milestone-last, push, fresh scoped review gate + new request-id, then complete --pr 1312
