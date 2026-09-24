@@ -63,3 +63,25 @@ QA 在精确头 `fd9cde9f33468cf3cdeb50f11c0d49ce80ec1772` 请求的 full CI run
 本轮对唯一变更的生产 TypeScript `packages/config/src/feature-flags/truth.ts` 重新执行完整路径、文件名、父目录三组 `git grep -lF`，分别命中 35/124/165。实际 import/export 审计保留 `scripts/check-flag-truth.ts`、config public barrels、`ConfigLoader.ts`、flag drift/truth/registry/final-ledger tests；路径读取型 consumer 保留 `fly2278-retirement`、`fly1674-residue`、`fly2102-flag-freeze`，均由上述 related 或精确测试覆盖。所有其余匹配按精确路径组排除：`engineering/doc/**`、`product/doc/**`、`doc/**` 是历史文档/生成物；`packages/teamlead/src/__tests__/fixtures/**` 是文字 fixture；`packages/config/src/feature-flags/registry.ts` 两处仅为注释；`packages/teamlead/src/bridge/{flag-provenance.ts,__tests__/flag-provenance.test.ts}` 和 `scripts/verify-flag-verdicts.mjs` 只引用 registry 路径；`scripts/__tests__/test-deploy-generalized.test.sh` 仅把 truth 文件列为扫描排除项；`scripts/fly1645-receipt-residue-gate.config.json` 只列与本次九项无关的历史 residue 目标。除上述已运行的 consumer 外，没有遗漏可执行依赖；本轮唯一变更的 `scripts/__tests__/*.test.sh` 是 package-onboard smoke，已全量执行。
 
 本整改尚未由 QA 在新精确头重跑 full CI；实现节点不会自行请求 full CI，也不宣称 QA 已通过。下一步是 milestone-last、新精确头代码复审、推送既有 PR #1312，再交回 QA retest。
+
+## QA 回退后的 Engine A 激活与订阅接线
+
+Lead 在旧头 `f65795e62` 复核时确认 A1–A4 之外仍缺生产激活与订阅接线，因此该头的 R5 APPROVED 已作废。本轮按同一已批准设计完成两条闭环：
+
+- 激活：`FLYWHEEL_VOICE_ENGINE` 默认 `legacy-realtime`，只有显式设为 `openai-live` 才使用权威 `sessionId + sessionGeneration` 构造 RoomIO，并接入 `GptLiveBackend → LiveLeadAdapter → HeadphoneSession`；现有 `GenericVoiceSession.speak()` 在该分支转到 V1 `speak()`，legacy 默认路径不变。配置测试与 V1 播报测试均先红后绿。
+- 订阅：生产组合注入 Headphone Bridge 的 `subscribeReplies`，通知只作门铃，正文仍从 durable results route 重读；断线记录 `voice_reply_subscription_failed`，不退回 3 秒 Bridge / 4 秒 daemon 轮询；重连对每个已登记 handoff 精确唤醒一次。旧 poller 保留给 legacy。
+- 输出：Lead 与前台共享同一 V1 utterance stream，经 `LiveCaptionProjection` 分别投影为 `🤖 前台` 与 `💬 Lead`；确定性播报用 streaming Edge TTS → FFmpeg PCM → RoomIO，边生成边提交。
+- 部署要求：Engine A 主机必须把 `FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD` 指向安装了兼容 `edge-tts` 的 Python 3.10 可执行文件（例如受管 venv 的 `bin/python3.10`）。默认 `python3` 仅在它实际解析到该受支持运行时时可用；否则语音失败会显式记录，不能静默降级。
+
+本轮验证：
+
+- 精确行为测试：voice-codex 5 文件 71/71；teamlead 2 文件 30/30；voice-headphone 2 文件 19/19。
+- changed-TypeScript `vitest related`：config 18 文件 326/326；voice-core 2 文件 5/5；teamlead 的依赖图自动展开为 102 文件 1194/1194；voice-codex 14 文件 171/171。
+- `pnpm --filter "flywheel-voice-codex..." build`：scope 内 16 个 package 通过；`pnpm --filter "...flywheel-voice-core" typecheck`：11 个 owner/dependent package 通过。
+- 根 `pnpm lint`：5237 files、0 errors、25 warnings、exit 0；`git diff --check` 通过。
+
+Consumer discovery 对本轮 13 个非测试 TypeScript 逐一执行完整路径、文件名、父目录三组 `git grep -lF`；命中计数（full/file/parent）为：`truth.ts` 36/125/166、`voice-session-services.ts` 3/12/991、voice-codex 的 `bridge-client.ts` 5/21/24、`cli.ts` 10/229/24、`config.ts` 10/381/24、`discord-room.ts` 7/25/24、`engine-a-composition.ts` 0/0/24、`index.ts` 0/403/24、`live-caption-projection.ts` 0/1/24、`live-reply-events.ts` 0/2/24、`projection.ts` 2/7/24、`session.ts` 3/55/24，voice-core `index.ts` 1/403/32。保留全部真实 import/export、生产组合与直接测试：flag truth/drift consumers、Teamlead voice session service/router、voice-codex daemon/session/RoomIO/Engine A 组合、voice-headphone Bridge/session、voice-core public export/composite speech。它们均由上述精确测试或 related 图覆盖。
+
+其余命中逐类排除且没有未说明类别：`engineering/doc/**`、`product/doc/**`、`doc/**` 只记载历史路径；`dist/**` 与生成清单不作为源码 consumer；`index.ts`、`config.ts`、`cli.ts`、`session.ts` 等通用 basename 在其他 package 的同名文件只是词法碰撞；父目录命中中，Teamlead 991 项与 voice-codex 24 项、voice-core 32 项除已保留 import/test 外均只共享目录字符串；fixture/snapshot/JSON/inventory 仅保存文字；本轮新增文件使用无扩展名相对 import，故完整 `.ts` 查询为零。没有新增或保留的 `scripts/__tests__/*.test.sh` consumer。本地没有运行人为选择的全包 suite；teamlead 的 102 文件由 `vitest related` 自动展开。
+
+以上仍不等于 QA：真人 Raya 10 次首字延迟分布、复杂问题落地、字幕实听、V2/V3 联调和新精确头 full CI 均待 QA 重测，实施节点不自行请求 full CI。
