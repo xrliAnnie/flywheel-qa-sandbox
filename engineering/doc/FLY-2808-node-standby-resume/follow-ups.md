@@ -35,6 +35,13 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | HIGH | 「被后继提交修改」与「dirty 先丢失、同路径后被替换」在当前 HEAD 上同构，仅凭基线 digest 无法区分 | 采纳。§5.2 自动通过收窄为：工作树/index 仍有同 digest，或基线精确 blob+mode 先进入谱系（`git log --find-object`）后再被改；A→删除→B 同路径提交必须 hold；mutation receipt 明确不在本设计；矩阵 E 加该反例 |
 | HIGH | 基线 `workflow_engine_park_outbox.event` 有 CHECK，SQLite 无法用 ADD COLUMN 扩宽，v2 event 插入即失败；而 §9 又禁止此迁移 | 采纳。§9 新增第二个迁移例外：outbox 事务性表重建（保留 row_id/event_id/generation，旧行 schema_version=1，新 CHECK 按版本约束 v1/v2，旧 writer 仍可写 v1）；回滚不回退表结构；矩阵 Q 改为从 abce27a27 真实建表 SQL 起跑迁移 |
 
+## 1.3 沙箱设计评审 R3（CHANGES REQUESTED → 全部采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | 单张 set-once grant receipt 绑定 carrier generation，grant 后、首条输入消费前换代重试会永久锁死同一 demand；receipt 也不能证明投递瞬间仍持 TURN | 采纳。§2.1 receipt 改为按 (demand_id, carrier_generation) 追加的不可变记录，旧记录保留、当前代数的为投递候选；§5.3 第 4 步入队事务重核 activation / TURN holder+epoch / demand 有效性 / generation；矩阵 F 加「grant 后载体丢失→新代重试可继续、预算不重置」，P 加「receipt 后 TURN 转授→不投递」 |
+| HIGH | conversation-only 的「写工具被服务端拒绝」只落在 Claude hook seam 与 complete 路由，基线 CodexTmuxAdapter 固定 workspace-write，Codex 兜底仍能改工作目录 | 采纳。§2.1 新增 execution profile 绑定行：Codex conversation_only 必须 read-only sandbox / 无 writable roots / 无外部 mutation credential / 网络写关闭，Claude 用 generation+nonce hooks 拒 mutating tool；首条 prompt 前核验 observed profile；conversation_only → writer 不原地扩权、必须重建新代载体；矩阵 I 改为两 vendor 真载体实际尝试写文件 / git / 外部 mutation / complete 全部被拒 |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
