@@ -2,13 +2,13 @@
 issue: FLY-2796
 phase: implement
 phaseCursor: 7/7
-updated: 2026-09-24T08:58:16.956Z
-nextStep: freeze the literal-last milestone, bind exact-head code review,
-  refresh PR description, and complete needs_review
+updated: 2026-09-24T09:56:37.889Z
+nextStep: commit and push the review fix, freeze a new literal-last milestone,
+  then bind a fresh exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
 **phase**: implement (7/7)
-**next**: freeze the literal-last milestone, bind exact-head code review, refresh PR description, and complete needs_review
+**next**: commit and push the review fix, freeze a new literal-last milestone, then bind a fresh exact-head code review
