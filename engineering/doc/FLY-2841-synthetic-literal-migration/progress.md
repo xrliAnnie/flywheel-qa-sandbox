@@ -1,9 +1,10 @@
 ---
 issue: FLY-2841
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-24T10:53:28.158Z
-nextStep: Update exact-label assertions only and capture expected RED failures
+phaseCursor: 2/4
+updated: 2026-09-24T10:55:26.703Z
+nextStep: Discover changed-file test impact, run every retained concrete test,
+  vitest related, verifier, lint, and affected build checks
 chunks:
   - id: audit
     order: 1
@@ -15,14 +16,14 @@ chunks:
     deps:
       - audit
     done: ""
-    status: doing
+    status: done
 pointers: {}
 ---
 
 # FLY-2841 progress
-**phase**: implement (1/4)
-**next**: Update exact-label assertions only and capture expected RED failures
+**phase**: implement (2/4)
+**next**: Discover changed-file test impact, run every retained concrete test, vitest related, verifier, lint, and affected build checks
 
 ## chunks
 - ✅ audit — Onboarding, TURN acquisition, fixture audit, and literal discovery
-- 🔨 tdd — 
+- ✅ tdd — 
