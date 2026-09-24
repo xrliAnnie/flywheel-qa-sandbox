@@ -1,9 +1,9 @@
 ---
 issue: FLY-2837
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-24T09:04:08.262Z
-nextStep: Update exact assertions and capture failing targeted tests
+phaseCursor: 2/5
+updated: 2026-09-24T09:05:58.202Z
+nextStep: Apply minimal source-label migration and run targeted green verification
 chunks:
   - id: scope-audit
     order: 1
@@ -14,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-2837 progress
-**phase**: implement (1/5)
-**next**: Update exact assertions and capture failing targeted tests
+**phase**: implement (2/5)
+**next**: Apply minimal source-label migration and run targeted green verification
 
 ## chunks
 - ✅ scope-audit — 
