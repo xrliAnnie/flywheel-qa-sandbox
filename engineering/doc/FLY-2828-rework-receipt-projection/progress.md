@@ -2,13 +2,13 @@
 issue: FLY-2828
 phase: implement
 phaseCursor: 2/7
-updated: 2026-09-24T05:42:58.513Z
-nextStep: C6 StateStore inspectWorkflowTurnWakeRetry completed judgments + T13
-  StateStore tests
+updated: 2026-09-24T07:57:45.897Z
+nextStep: add T13 StateStore red tests for completed, settled, terminal, and
+  resume-rework wake guard semantics
 chunks: []
 pointers: {}
 ---
 
 # FLY-2828 progress
 **phase**: implement (2/7)
-**next**: C6 StateStore inspectWorkflowTurnWakeRetry completed judgments + T13 StateStore tests
+**next**: add T13 StateStore red tests for completed, settled, terminal, and resume-rework wake guard semantics
