@@ -69,6 +69,18 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | HIGH | grant episode 无可重放的 pre-grant intent；凭证轮换写在 `grantTurn` 之后，与基线（先轮换、明文 token 作 grant 参数、CommDB 同事务写入该 epoch 的 `runner_workflow_activation`）相反；崩溃恢复会再 +1 分配新 grant_id | 采纳。§2.1 新增可变 `workflow_turn_grant_operation`（allocated → credential_rotated → granted → finalized / failed，记 credential_attempt 与凭证行 id/digest），不可变 episode 行只在 finalized 写；§5.3 第 3 步按生产顺序拆阶段，恢复只续接当前未 finalized 的 grant_id：source event 不存在→以新 credential_attempt 再轮换并撤销未投递 token 后 grant，已存在→读冻结 epoch 与 CommDB 投影补写 finalized，不再轮换/grant；矩阵 F 加三处崩溃点断言 |
 | HIGH | `transfer_pending` 只有状态名，没有 CommDB 持久身份/payload/prepare-commit 协议；基线 `grantTurn` 单事务立即改 holder/epoch 并写不可变 source event，提前调=过早转授，提前占 source event=frozen replay | 采纳。§2.1 新增 CommDB `turn_transfer_intent`（intent_id = 将来的 source_event_id，expected/target 元组、fencing delivery_id、pending/committed/cancelled/superseded，同 worktree 唯一 pending）与 StateStore `workflow_invalidation_operation`（cancel/终态/换代的 durable 身份）；§5.3 e 写明 prepare（核 expected、置 admission_closed、不改 holder/epoch、不写 source event）与 commit（终态投影到达且 expected 仍匹配时原子 epoch+1 + 全部写入，重复 commit 幂等）及并发 transfer / 终态 supersede / 迟到投影闭集；矩阵 P 加 prepare 前后、投影前后、commit 中途重启与并发 transfer |
 
+## 1.8 沙箱设计评审 R8（CHANGES REQUESTED → 改选更简单方案，已回写 plan）
+
+R8 的 2 HIGH + 1 MEDIUM 与 R6-1 / R7-1 / R7-2 全部指向同一块：R5 为「TURN 被转授后同一需求重新授权」引入的 grant episode → grant operation → transfer intent → 消费者迁移子系统，每轮都在暴露更多与生产授权机制（单行 `workflow_activation_turn`、`grantTurn` 单事务、凭证明文只在当次调用）的耦合。设计节点据此改选 Codex R5 已明示的替代方案，把整个重新授权子系统删除：
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | 新 grant-episode 账本没有接管以单行 `workflow_activation_turn` 为权威的所有生产消费者，同 activation 第二个 epoch 会被拒 | **消解**：一条需求只 grant 一次，activation / binding / `workflow_activation_turn` 与今天完全一致，现有消费者零改动。TURN 被转授 → 该 demand 终结为 `superseded_by_transfer`，不重新授权；节点下一次合法返工是现有 coordinator 路径下的新 requestId/新 activation。换代（G→G+1）不重新 grant：TURN 仍由同一 execution 持有，只刷新凭证并追加 (demand, generation) receipt |
+| HIGH | grant operation 与 transfer intent 是两条平行协议，pending transfer 重启后拿不到凭证明文/context，grant recovery 会绕过 fence | **消解**：`turn_transfer_intent`、`workflow_turn_grant_operation`、`workflow_turn_grant_episode` 全部删除。转授 = 下一位 holder 自己需求的生产 grant 路径（凭证轮换与 `grantTurn` 同一次调用、明文不落盘），本设计只在 coordinator 调 `grantTurn` 之前插入 fence 等待（durable `workflow_invalidation_operation`），fence 完成后继续原路径；重启靠 rework request + operation durable 与 `grantTurn` 回放冻结 |
+| MEDIUM | grant operation 的 `failed` 不是闭集，可能留下未授予但仍 live 的凭证；`credential_nonce` 与 `credential_row_id` 不一致 | **消解**：grant operation 删除；receipt 统一记 credential_row_id + digest；grant 失败即生产路径失败（hold、无 receipt、预算不变），凭证撤销沿用生产轮换语义（撤销旧行、插入新 live 行） |
+
+保留的部分：authority_mode / 需求 episode / set-once receipt（按 generation 追加）/ delivery authorization 双库协议 / in_flight-fencing 两阶段 fence / `workflow_invalidation_operation` durable 身份 / execution profile 绑定。矩阵 F/P 相应改为「换代不重新 grant」「转授即终结、B 得 E+1、A 的旧 receipt/delivery 不能投递」「fence 前后 / 投影前后 / grantTurn 前后重启」。
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
