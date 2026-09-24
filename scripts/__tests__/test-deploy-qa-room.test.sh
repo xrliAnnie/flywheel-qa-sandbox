@@ -158,6 +158,13 @@ fi
 # slot Bridge env. Asserted against the script SOURCE (not a mirror) so a
 # refactor that drops or conditionalizes the line fails here.
 TD_SRC="${SCRIPT_DIR}/../test-deploy.sh"
+if grep -qF '| qa_room_bind_codex_voice_context \' "$TD_SRC" \
+  && grep -qF '"${SLOT_DIR}/test-identity.md" "${SLOT_DIR}/cdxh/${AGENT_ID}"' "$TD_SRC" \
+  && grep -qF '[[ -n "$VOICE_FIXTURE" ]]' "$TD_SRC"; then
+  pass "FLY-2799: voice fixture deploy invokes the tested Codex context binding"
+else
+  fail "FLY-2799 Codex context deploy call missing" "test-deploy must bind the slot resident before Bridge launch"
+fi
 SLOT_CONTRACT_PROJECTION="$(qa_slot_env_contract_render "$SLOT_DIR" 'test-slot-1')"
 SLOT_CONTRACT_CLEARS="$(qa_slot_env_contract_names clear)"
 OWNER_FORWARD='DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}"'
