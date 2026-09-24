@@ -1,15 +1,14 @@
 ---
 issue: FLY-2798
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-24T23:54:13.535Z
-nextStep: "Lead ruling A on R3 advisories: fix interrupted-final-as-answer, add
-  founder-turn max hold (~45s), close engine before replies; red-green each,
-  milestone-last, new gate+requestId scoped review, complete"
+phaseCursor: 4/4
+updated: 2026-09-24T23:57:11.862Z
+nextStep: R3 advisories fixed red-green; milestone-last, push, new gate + new
+  requestId scoped review (3 fixes only), then complete --pr 1312
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: implement (3/4)
-**next**: Lead ruling A on R3 advisories: fix interrupted-final-as-answer, add founder-turn max hold (~45s), close engine before replies; red-green each, milestone-last, new gate+requestId scoped review, complete
+**phase**: implement (4/4)
+**next**: R3 advisories fixed red-green; milestone-last, push, new gate + new requestId scoped review (3 fixes only), then complete --pr 1312
