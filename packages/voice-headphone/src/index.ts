@@ -16,6 +16,8 @@ export {
 	type ShipApprovalResult,
 	type VoiceContext,
 	type VoiceHandoffResultsPage,
+	type VoiceReplyListener,
+	type VoiceReplyWake,
 	type VoiceScope,
 } from "./bridge-client.js";
 export { type HeadphoneConfig, loadHeadphoneConfig } from "./config.js";

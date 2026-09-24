@@ -84,6 +84,8 @@ export interface BridgeVoiceClientOptions {
 	bridgeUrl: string;
 	token?: string;
 	fetchFn?: FetchLike;
+	record?(event: Record<string, unknown>): void;
+	replyReconnectDelayMs?: number;
 }
 
 export interface HeadphoneSessionBinding {
@@ -91,6 +93,14 @@ export interface HeadphoneSessionBinding {
 	generation: number;
 	leaseToken: string;
 }
+
+export interface VoiceReplyWake {
+	sessionId: string;
+	generation: number;
+	handoffId: string;
+}
+
+export type VoiceReplyListener = (event: VoiceReplyWake) => void;
 
 export type HeadphoneSourceState = {
 	channelId: string;
@@ -149,6 +159,7 @@ function headphoneItem(value: unknown): HeadphoneInboxItem {
 export class BridgeVoiceClient {
 	private readonly fetchFn: FetchLike;
 	private readonly contextCache = new Map<string, VoiceContext>();
+	private readonly registeredHandoffs = new Map<string, Set<string>>();
 
 	constructor(private readonly opts: BridgeVoiceClientOptions) {
 		this.fetchFn = opts.fetchFn ?? fetch;
@@ -169,6 +180,10 @@ export class BridgeVoiceClient {
 			"x-voice-lease": binding.leaseToken,
 			...(json ? { "content-type": "application/json" } : {}),
 		};
+	}
+
+	private bindingKey(binding: HeadphoneSessionBinding): string {
+		return `${binding.sessionId}:${binding.generation}`;
 	}
 
 	async listHeadphoneItems(
@@ -357,7 +372,176 @@ export class BridgeVoiceClient {
 			].includes(body.state)
 		)
 			throw new Error("voice handoff response invalid");
+		const key = this.bindingKey(binding);
+		const handoffs = this.registeredHandoffs.get(key) ?? new Set<string>();
+		handoffs.add(request.handoffId);
+		this.registeredHandoffs.set(key, handoffs);
 		return body;
+	}
+
+	subscribeReplies(
+		binding: HeadphoneSessionBinding,
+		listener: VoiceReplyListener,
+	): () => void {
+		if (!this.opts.token)
+			throw new Error("voice reply subscription requires token");
+		if (
+			!binding.sessionId ||
+			!Number.isSafeInteger(binding.generation) ||
+			binding.generation < 1 ||
+			!binding.leaseToken
+		)
+			throw new Error("voice reply subscription binding invalid");
+
+		const query = new URLSearchParams({
+			sessionId: binding.sessionId,
+			generation: String(binding.generation),
+		});
+		const url = `${this.opts.bridgeUrl}/api/voice/handoffs/replies?${query}`;
+		const key = this.bindingKey(binding);
+		const reconnectDelay = this.opts.replyReconnectDelayMs ?? 1_000;
+		let stopped = false;
+		let admissionStarted = false;
+		let connectedOnce = false;
+		let controller: AbortController | undefined;
+		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const recordFailure = (error: unknown) => {
+			this.opts.record?.({
+				kind: "voice_reply_subscription_failed",
+				sessionId: binding.sessionId,
+				generation: binding.generation,
+				message: error instanceof Error ? error.message : String(error),
+			});
+		};
+		const notify = (event: VoiceReplyWake) => {
+			try {
+				listener(event);
+			} catch (error) {
+				this.opts.record?.({
+					kind: "voice_reply_listener_failed",
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					handoffId: event.handoffId,
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
+		};
+		const handleFrame = (frame: string) => {
+			let eventName = "message";
+			const dataLines: string[] = [];
+			for (const line of frame.split("\n")) {
+				if (line.startsWith("event: ")) eventName = line.slice(7);
+				else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+			}
+			if (dataLines.length === 0) return;
+			const payload = JSON.parse(dataLines.join("\n")) as Record<
+				string,
+				unknown
+			>;
+			if (eventName === "ready") {
+				if (
+					Object.keys(payload).length !== 2 ||
+					payload.sessionId !== binding.sessionId ||
+					payload.generation !== binding.generation
+				)
+					throw new Error("voice reply subscription ready binding mismatch");
+				if (connectedOnce) {
+					for (const handoffId of this.registeredHandoffs.get(key) ?? [])
+						notify({
+							sessionId: binding.sessionId,
+							generation: binding.generation,
+							handoffId,
+						});
+				}
+				connectedOnce = true;
+				return;
+			}
+			if (eventName !== "reply") return;
+			if (
+				Object.keys(payload).length !== 3 ||
+				payload.sessionId !== binding.sessionId ||
+				payload.generation !== binding.generation ||
+				typeof payload.handoffId !== "string" ||
+				!payload.handoffId
+			)
+				throw new Error("voice reply subscription event invalid");
+			notify(payload as unknown as VoiceReplyWake);
+		};
+		const scheduleReconnect = (open: () => void) => {
+			if (stopped || retryTimer) return;
+			retryTimer = setTimeout(() => {
+				retryTimer = undefined;
+				open();
+			}, reconnectDelay);
+			retryTimer.unref?.();
+		};
+		const open = () => {
+			if (stopped) return;
+			controller = new AbortController();
+			let response: Promise<Response>;
+			try {
+				response = this.fetchFn(url, {
+					headers: this.headphoneHeaders(binding),
+					signal: controller.signal,
+				});
+			} catch (error) {
+				if (!admissionStarted) throw error;
+				recordFailure(error);
+				scheduleReconnect(open);
+				return;
+			}
+			admissionStarted = true;
+			void (async () => {
+				try {
+					const res = await response;
+					if (!res.ok)
+						throw new Error(
+							`voice reply subscription failed: HTTP ${res.status}`,
+						);
+					if (!res.headers.get("content-type")?.includes("text/event-stream"))
+						throw new Error("voice reply subscription response invalid");
+					if (!res.body)
+						throw new Error("voice reply subscription body missing");
+					reader = res.body.getReader();
+					const decoder = new TextDecoder();
+					let pending = "";
+					for (;;) {
+						const chunk = await reader.read();
+						if (chunk.done) break;
+						pending += decoder
+							.decode(chunk.value, { stream: true })
+							.replaceAll("\r\n", "\n");
+						for (;;) {
+							const boundary = pending.indexOf("\n\n");
+							if (boundary < 0) break;
+							handleFrame(pending.slice(0, boundary));
+							pending = pending.slice(boundary + 2);
+						}
+					}
+					if (!stopped)
+						throw new Error("voice reply subscription disconnected");
+				} catch (error) {
+					if (stopped) return;
+					recordFailure(error);
+					scheduleReconnect(open);
+				} finally {
+					reader = undefined;
+				}
+			})();
+		};
+
+		open();
+		return () => {
+			if (stopped) return;
+			stopped = true;
+			if (retryTimer) clearTimeout(retryTimer);
+			retryTimer = undefined;
+			controller?.abort();
+			void reader?.cancel().catch(() => undefined);
+			reader = undefined;
+		};
 	}
 
 	async listVoiceHandoffResults(

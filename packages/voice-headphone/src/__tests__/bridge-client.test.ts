@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BridgeVoiceClient } from "../bridge-client.js";
 
 const SESSION = {
@@ -266,6 +266,119 @@ describe("BridgeVoiceClient", () => {
 		});
 		expect(calls[1]?.url).toContain(
 			`/api/voice/handoffs/${handoffId}/results?sessionId=voice-session&generation=7&after=2&limit=100`,
+		);
+	});
+
+	it("streams reply wakes, records a disconnect, replays registered handoffs on reconnect, and unsubscribes idempotently", async () => {
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const encoder = new TextEncoder();
+		const streamSignals: AbortSignal[] = [];
+		let streamAttempt = 0;
+		const fetchFn = vi.fn(async (input: string | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (!url.includes("/replies?")) {
+				return new Response(
+					JSON.stringify({
+						handoffId,
+						requestDigest: "a".repeat(64),
+						state: "committed",
+						providerOperationId: `chat:lead-1:voice-handoff:${handoffId}`,
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			streamSignals.push(init?.signal as AbortSignal);
+			const attempt = streamAttempt++;
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(
+							encoder.encode(
+								`event: ready\ndata: ${JSON.stringify({ sessionId: SESSION.sessionId, generation: SESSION.generation })}\n\n`,
+							),
+						);
+						if (attempt === 0) {
+							controller.enqueue(
+								encoder.encode(
+									`event: reply\ndata: ${JSON.stringify({ sessionId: SESSION.sessionId, generation: SESSION.generation, handoffId })}\n\n`,
+								),
+							);
+							controller.close();
+						}
+					},
+				}),
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		});
+		const record = vi.fn();
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+			record,
+			replyReconnectDelayMs: 1,
+		});
+		await client.handoffToLead(SESSION, {
+			handoffId,
+			requestDigest: "a".repeat(64),
+			sessionId: SESSION.sessionId,
+			generation: SESSION.generation,
+		} as never);
+
+		const listener = vi.fn();
+		const unsubscribe = client.subscribeReplies(SESSION, listener);
+		await vi.waitFor(() => expect(streamAttempt).toBe(2));
+		await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(2));
+		expect(listener.mock.calls).toEqual([
+			[
+				{
+					sessionId: SESSION.sessionId,
+					generation: SESSION.generation,
+					handoffId,
+				},
+			],
+			[
+				{
+					sessionId: SESSION.sessionId,
+					generation: SESSION.generation,
+					handoffId,
+				},
+			],
+		]);
+		expect(record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "voice_reply_subscription_failed",
+				sessionId: SESSION.sessionId,
+				generation: SESSION.generation,
+			}),
+		);
+
+		unsubscribe();
+		unsubscribe();
+		expect(streamSignals[1]?.aborted).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(streamAttempt).toBe(2);
+	});
+
+	it("rejects reply subscription admission synchronously when no Bridge token is configured", () => {
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+		});
+		expect(() => client.subscribeReplies(SESSION, vi.fn())).toThrow(
+			"voice reply subscription requires token",
+		);
+	});
+
+	it("rejects reply subscription admission when stream startup throws", () => {
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn: (() => {
+				throw new Error("stream startup failed");
+			}) as never,
+		});
+		expect(() => client.subscribeReplies(SESSION, vi.fn())).toThrow(
+			"stream startup failed",
 		);
 	});
 
