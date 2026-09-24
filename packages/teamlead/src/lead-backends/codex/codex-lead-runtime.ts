@@ -80,6 +80,10 @@ import { LeadJournal } from "./LeadJournal.js";
 import { admitLeadTurn } from "./LeadRuntimeConfigHost.js";
 import { parseExplicitAliases } from "./lead-actions/alias-allowlist.js";
 import { tryResolveLeadAttachmentContext } from "./lead-actions/attachment-context.js";
+import {
+	createLeadReplyFailureReporter,
+	resolveReplyFailureBridge,
+} from "./lead-reply-failure-report.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
@@ -2036,6 +2040,14 @@ export function buildCodexLeadRuntime(
 						externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 					}
 				},
+				// FLY-2862: an owed reply came back empty — tell the Bridge (voice).
+				onReplyFailed: createLeadReplyFailureReporter({
+					...resolveReplyFailureBridge(config, process.env),
+					projectName: config.projectName,
+					leadId: config.leadId,
+					chatChannelId: config.chatChannelId,
+					logger,
+				}),
 				...(typing ? { typing } : {}),
 				...(replyInThread
 					? {

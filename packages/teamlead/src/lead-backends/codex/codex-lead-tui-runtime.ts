@@ -117,6 +117,10 @@ import {
 	assertFullAccessSandboxConfig,
 	buildFullAccessLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
+import {
+	createLeadReplyFailureReporter,
+	resolveReplyFailureBridge,
+} from "./lead-reply-failure-report.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
 import {
@@ -1583,6 +1587,14 @@ export function buildTuiGeneration(
 									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 								}
 							},
+							// FLY-2862: an owed reply came back empty — tell the Bridge (voice).
+							onReplyFailed: createLeadReplyFailureReporter({
+								...resolveReplyFailureBridge(config, process.env),
+								projectName: config.projectName,
+								leadId: config.leadId,
+								chatChannelId: config.chatChannelId,
+								logger,
+							}),
 							onInputAccepted: (entry) => {
 								lastActivityAt = Date.now();
 								replyInThread?.onInputAccepted(entry);
