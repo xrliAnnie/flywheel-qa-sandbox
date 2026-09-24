@@ -949,6 +949,10 @@ export class HeadphoneInboxStore {
 					     SELECT 1 FROM voice_headphone_claim c
 					     WHERE c.item_id = i.item_id AND c.revision = i.revision
 					   )
+					   AND NOT EXISTS (
+					     SELECT 1 FROM voice_headphone_ack a
+					     WHERE a.item_id = i.item_id AND a.revision = i.revision
+					   )
 					 ORDER BY i.source_created_at, i.item_id, i.revision
 					 LIMIT ?`,
 				)

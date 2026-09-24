@@ -261,6 +261,72 @@ describe("HeadphoneInboxStore", () => {
 		).not.toContain(expired.itemId);
 	});
 
+	it("preserves an old acknowledgement when the same authority item is projected again", () => {
+		const session = createSession();
+		const item = addItem({
+			questionId: "question-old",
+			sourceMessageId: "question-old",
+			sourceRevision: "comm:question-old",
+			needsDecision: true,
+			text: "choose the old question",
+		});
+		const claim = store.headphoneInbox.claim({
+			itemId: item.itemId,
+			revision: item.revision,
+			sessionId: session.sessionId,
+			generation: session.sessionGeneration,
+			leaseToken: session.leaseToken,
+			founderUserId: "founder-1",
+			now: "2026-09-23T20:00:01.000Z",
+		});
+		if (!claim) throw new Error("item claim failed");
+		expect(
+			store.headphoneInbox.ack({
+				itemId: item.itemId,
+				revision: item.revision,
+				sessionId: session.sessionId,
+				generation: session.sessionGeneration,
+				leaseToken: session.leaseToken,
+				founderUserId: "founder-1",
+				claimToken: claim.claimToken,
+				receipts: [
+					{
+						outcome: "completed",
+						pendingKey: `${claim.pendingKey}:0`,
+						requestDigest: speakRequestDigest({
+							sessionId: session.sessionId,
+							generation: session.sessionGeneration,
+							text: item.text,
+							kind: "question",
+							verification: "required",
+						}),
+						transport: "submitted",
+						contentProof: "deterministic_tts",
+					},
+				],
+				ackedAt: "2026-09-23T20:00:02.000Z",
+			}),
+		).toBe(true);
+
+		expect(
+			store.headphoneInbox.pruneOlderThan("2026-09-23T20:00:03.000Z"),
+		).toBe(0);
+		addItem({
+			questionId: "question-old",
+			sourceMessageId: "question-old",
+			sourceRevision: "comm:question-old",
+			needsDecision: true,
+			text: "choose the old question",
+		});
+		expect(
+			store.headphoneInbox.list({
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				limit: 100,
+			}),
+		).toEqual([]);
+	});
+
 	it("fences claims by project, generation, lease, and current claimant", () => {
 		const first = createSession("1");
 		const second = createSession("2");
