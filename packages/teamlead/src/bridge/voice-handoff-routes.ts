@@ -10,6 +10,7 @@ import type {
 	VoiceHandoffRecord,
 	VoiceHandoffStore,
 } from "./voice-handoff-store.js";
+import type { VoiceReplyNotifier } from "./voice-reply-notifier.js";
 
 const UUID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -27,6 +28,7 @@ export interface VoiceHandoffRouteSession {
 
 export interface VoiceHandoffRouterDeps {
 	store: VoiceHandoffStore;
+	replyNotifier: VoiceReplyNotifier;
 	founderUserId: string;
 	getSession(sessionId: string): VoiceHandoffRouteSession | undefined;
 	isTargetLead(projectName: string, leadId: string): boolean;
@@ -179,9 +181,6 @@ export function createVoiceHandoffRouter(
 ): express.Router {
 	const router = express.Router();
 	const now = deps.now ?? (() => new Date());
-	const replySubscribers = new Map<string, Set<express.Response>>();
-	const subscriptionKey = (sessionId: string, generation: number) =>
-		`${sessionId}:${generation}`;
 	const writeSse = (
 		res: express.Response,
 		event: "ready" | "reply",
@@ -223,11 +222,6 @@ export function createVoiceHandoffRouter(
 			res.status(403).json({ error: "voice_reply_subscription_unauthorized" });
 			return;
 		}
-		const key = subscriptionKey(session.sessionId, session.sessionGeneration);
-		const subscribers =
-			replySubscribers.get(key) ?? new Set<express.Response>();
-		subscribers.add(res);
-		replySubscribers.set(key, subscribers);
 		res.status(200);
 		res.setHeader("content-type", "text/event-stream; charset=utf-8");
 		res.setHeader("cache-control", "no-cache, no-transform");
@@ -237,13 +231,22 @@ export function createVoiceHandoffRouter(
 			sessionId: session.sessionId,
 			generation: session.sessionGeneration,
 		});
+		const unsubscribe = deps.replyNotifier.subscribe(
+			session.sessionId,
+			session.sessionGeneration,
+			(wake) =>
+				writeSse(res, "reply", {
+					sessionId: wake.sessionId,
+					generation: wake.generation,
+					handoffId: wake.handoffId,
+				}),
+		);
 
 		let closed = false;
 		const close = () => {
 			if (closed) return;
 			closed = true;
-			subscribers.delete(res);
-			if (subscribers.size === 0) replySubscribers.delete(key);
+			unsubscribe();
 		};
 		req.once("close", close);
 		res.once("close", close);
@@ -420,18 +423,11 @@ export function createVoiceHandoffRouter(
 				createdAt: body.createdAt,
 			});
 			if (event.seq > previousHighWatermark) {
-				const key = subscriptionKey(handoff.sessionId, handoff.generation);
-				for (const subscriber of replySubscribers.get(key) ?? []) {
-					try {
-						writeSse(subscriber, "reply", {
-							sessionId: handoff.sessionId,
-							generation: handoff.generation,
-							handoffId: handoff.handoffId,
-						});
-					} catch {
-						replySubscribers.get(key)?.delete(subscriber);
-					}
-				}
+				deps.replyNotifier.notify({
+					sessionId: handoff.sessionId,
+					generation: handoff.generation,
+					handoffId: handoff.handoffId,
+				});
 			}
 			res.json(event);
 		} catch (error) {

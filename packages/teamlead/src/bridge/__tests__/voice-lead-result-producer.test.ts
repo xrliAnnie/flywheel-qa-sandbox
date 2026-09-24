@@ -12,6 +12,10 @@ import {
 	resolveVoiceReplyDeliveryContext,
 	VoiceLeadResultProducer,
 } from "../voice-lead-result-producer.js";
+import {
+	notifyCommittedVoiceReply,
+	VoiceReplyNotifier,
+} from "../voice-reply-notifier.js";
 
 const HANDOFF_ID = "018f47d2-7b64-7b42-a3df-123456789abc";
 const DELIVERY_ID = `chat:lead-1:voice-handoff:${HANDOFF_ID}`;
@@ -116,6 +120,36 @@ afterEach(() => {
 });
 
 describe("VoiceLeadResultProducer", () => {
+	it("wakes the bound session once when the producer commits a durable reply", () => {
+		const notifier = new VoiceReplyNotifier();
+		const wake = vi.fn();
+		const unsubscribe = notifier.subscribe("session-1", 4, wake);
+		const producer = new VoiceLeadResultProducer({
+			commDbPathForProject: () => commPath,
+			store: handoffs,
+			onCommitted: (event) =>
+				notifyCommittedVoiceReply(notifier, handoffs, event),
+		});
+		const input = {
+			projectName: "flywheel",
+			sourceLeadId: "lead-1",
+			sourceDeliveryId: DELIVERY_ID,
+			operationId: "entry-1:wake",
+			text: "状态正常，已经确认。",
+		};
+
+		producer.produce(input);
+		producer.produce(input);
+
+		expect(wake).toHaveBeenCalledOnce();
+		expect(wake).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			generation: 4,
+			handoffId: HANDOFF_ID,
+		});
+		unsubscribe();
+	});
+
 	it("commits and replays one carrier-neutral response/result across wall-clock advancement", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(NOW));

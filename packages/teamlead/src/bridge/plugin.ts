@@ -970,6 +970,10 @@ import {
 	createVoiceHealthStartupSpoolReader,
 } from "./voice-health-projector.js";
 import { VoiceLeadResultProducer } from "./voice-lead-result-producer.js";
+import {
+	notifyCommittedVoiceReply,
+	VoiceReplyNotifier,
+} from "./voice-reply-notifier.js";
 import { botUserIdFromToken, createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";
@@ -1792,6 +1796,7 @@ export interface BridgeAppOptions {
 	voiceScheduleRouter?: express.Router;
 	leadVoiceCapabilityRouter?: express.Router;
 	leadVoiceCapabilityReceiptRouter?: express.Router;
+	voiceReplyNotifier?: VoiceReplyNotifier;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -1929,9 +1934,13 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const voiceReplyNotifier =
+		opts?.voiceReplyNotifier ?? new VoiceReplyNotifier();
 	const voiceLeadResultProducer = new VoiceLeadResultProducer({
 		commDbPathForProject,
 		store: store.voiceHandoffs,
+		onCommitted: (event) =>
+			notifyCommittedVoiceReply(voiceReplyNotifier, store.voiceHandoffs, event),
 	});
 	const produceVoiceLeadResult = (
 		input: Parameters<VoiceLeadResultProducer["produce"]>[0],
@@ -9330,6 +9339,7 @@ export async function startBridge(
 	}
 
 	const leadGithubProvider = createLazyLeadGithubClient(process.env);
+	const voiceReplyNotifier = new VoiceReplyNotifier();
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
@@ -9365,6 +9375,7 @@ export async function startBridge(
 		standupService,
 		standupProjectName,
 		{
+			voiceReplyNotifier,
 			leadConfigService,
 			leadEventDelivery,
 			leadGithub: leadGithubProvider.get,
@@ -11697,6 +11708,7 @@ export async function startBridge(
 			voiceSessionAuthMiddleware(config.apiToken),
 			createVoiceHandoffRouter({
 				store: store.voiceHandoffs,
+				replyNotifier: voiceReplyNotifier,
 				founderUserId: headphoneFounderId,
 				getSession: (sessionId) => store.getVoiceSession(sessionId),
 				isTargetLead: (projectName, leadId) =>

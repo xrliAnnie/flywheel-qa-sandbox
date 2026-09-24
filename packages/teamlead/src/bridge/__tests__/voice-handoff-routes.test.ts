@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createVoiceHandoffRouter } from "../voice-handoff-routes.js";
 import { VoiceHandoffStore } from "../voice-handoff-store.js";
+import { VoiceReplyNotifier } from "../voice-reply-notifier.js";
 import { voiceSessionAuthMiddleware } from "../voice-session-auth.js";
 
 const MASTER = "master-token";
@@ -90,6 +91,7 @@ async function start(
 		voiceSessionAuthMiddleware(MASTER),
 		createVoiceHandoffRouter({
 			store,
+			replyNotifier: new VoiceReplyNotifier(),
 			founderUserId: "founder-1",
 			now: () => new Date("2026-09-23T20:00:01.000Z"),
 			getSession: (sessionId) =>

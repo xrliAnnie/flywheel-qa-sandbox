@@ -11,7 +11,7 @@ import type { VoiceHandoffStore } from "./voice-handoff-store.js";
 
 export interface VoiceLeadResultProducerOptions {
 	commDbPathForProject(projectName: string): string;
-	store: Pick<VoiceHandoffStore, "get" | "appendResult">;
+	store: Pick<VoiceHandoffStore, "get" | "appendResult" | "listResults">;
 	onCommitted?(event: VoiceHandoffResultEvent): void;
 }
 
@@ -115,6 +115,11 @@ export class VoiceLeadResultProducer {
 			response.content !== input.text
 		)
 			throw new Error("voice_lead_result_response_invalid");
+		const previousHighWatermark = this.options.store.listResults(
+			record.handoffId,
+			0,
+			1,
+		).highWatermark;
 		const event = this.options.store.appendResult({
 			handoffId: record.handoffId,
 			resultEventId,
@@ -125,7 +130,7 @@ export class VoiceLeadResultProducer {
 			text: input.text,
 			createdAt: response.created_at,
 		});
-		this.options.onCommitted?.(event);
+		if (event.seq > previousHighWatermark) this.options.onCommitted?.(event);
 		return event;
 	}
 }
