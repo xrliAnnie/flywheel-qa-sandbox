@@ -39,6 +39,7 @@ describe("DiscordVoiceRoom", () => {
 					createResource: vi.fn(),
 					speakingEvents: vi.fn(),
 					memberDisplayName: vi.fn(),
+					voiceChannelHumanCount: vi.fn(),
 					userVoiceChannelId: vi.fn(),
 					onVoiceStateUpdate: vi.fn(),
 					leaveVoice: vi.fn(),
@@ -103,6 +104,7 @@ describe("DiscordVoiceRoom", () => {
 						on: (event, callback) => speaking.set(event, callback),
 					}),
 					memberDisplayName: vi.fn(async () => "Annie"),
+					voiceChannelHumanCount: vi.fn(async () => 2),
 					userVoiceChannelId: vi.fn(async () => "voice-channel"),
 					onVoiceStateUpdate: (_client, callback) => {
 						voiceState = callback;
@@ -124,6 +126,7 @@ describe("DiscordVoiceRoom", () => {
 			});
 
 			expect(await room.start()).toEqual({ founderPresent: true });
+			expect(room.soleHuman()).toBeNull();
 			await vi.advanceTimersByTimeAsync(40);
 			expect(onAudio).toHaveBeenCalledTimes(2);
 			expect(onAudio.mock.calls[0]?.[0]).toEqual(Buffer.alloc(960));
@@ -166,6 +169,7 @@ describe("DiscordVoiceRoom", () => {
 				toChannelId: null,
 			});
 			expect(onFounderPresence).toHaveBeenCalledWith(false);
+			expect(room.soleHuman()).toEqual({ userId: "qa", name: null });
 			await room.stop();
 			const sentBeforeStop = onAudio.mock.calls.length;
 			await vi.advanceTimersByTimeAsync(100);
@@ -219,6 +223,7 @@ describe("DiscordVoiceRoom", () => {
 					isSpeaking: (userId) => userId === "founder",
 				}),
 				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
 				userVoiceChannelId: vi.fn(async () => "voice-channel"),
 				onVoiceStateUpdate: () => () => {},
 				sendMessage: vi.fn(async () => {}),
@@ -303,6 +308,7 @@ describe("DiscordVoiceRoom", () => {
 					isSpeaking: (userId) => speakingUsers.has(userId),
 				}),
 				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
 				userVoiceChannelId: vi.fn(async () => "voice-channel"),
 				onVoiceStateUpdate: () => () => {},
 				sendMessage: vi.fn(async () => {}),
@@ -380,6 +386,7 @@ describe("DiscordVoiceRoom", () => {
 					isSpeaking: (userId) => speakingUsers.has(userId),
 				}),
 				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 2),
 				userVoiceChannelId: vi.fn(async () => "voice-channel"),
 				onVoiceStateUpdate: () => () => {},
 				sendMessage: vi.fn(async () => {}),
@@ -456,6 +463,7 @@ describe("DiscordVoiceRoom honours an aborted start promptly", () => {
 				createResource: vi.fn(),
 				speakingEvents: vi.fn(() => ({ on: vi.fn() })),
 				memberDisplayName: vi.fn(),
+				voiceChannelHumanCount: vi.fn(async () => 1),
 				userVoiceChannelId: vi.fn(
 					options.userVoiceChannelId ?? (async () => "voice"),
 				),

@@ -446,7 +446,7 @@ export async function main(): Promise<void> {
 						},
 						publishUtterance: (utterance) =>
 							transcriptPublisher.publish(utterance),
-						handoffToLead: ({ utterance, intent }) => {
+							handoffToLead: ({ utterance, intent }) => {
 							context.lease.assert();
 							return bridge.handoffToLead(
 								context.sessionId,
@@ -458,9 +458,10 @@ export async function main(): Promise<void> {
 									utterance,
 									intent,
 								}),
-							);
-						},
-						onEvidence: (record) =>
+								);
+							},
+							resolveSoleRoomUser: () => room?.soleHuman() ?? null,
+							onEvidence: (record) =>
 							evidence.appendBuffered({
 								ts: new Date().toISOString(),
 								voiceSessionId: context.sessionId,

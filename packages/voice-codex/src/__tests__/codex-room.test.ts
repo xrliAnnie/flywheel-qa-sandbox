@@ -13,6 +13,7 @@ import {
 } from "../codex/CodexRoomFrontend.js";
 import { CodexVoiceBackend } from "../codex/CodexVoiceBackend.js";
 import { CodexVoiceContainerError } from "../codex/CodexVoiceContainer.js";
+import { CodexTranscriptPublisher } from "../codex/CodexVoiceHandoff.js";
 import { GenericVoiceSession, type RoomHandlers } from "../session.js";
 
 const brain: BrainAdapter = {
@@ -1025,6 +1026,191 @@ describe("Codex room composition", () => {
 				attribution: { kind: "known", speakerUserId: "founder" },
 			}),
 		]);
+	});
+
+	it("attributes an itemless transcript only to the sole present room user and publishes it", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		const mirror = vi.fn(async () => ({ messageId: "discord-user" }));
+		const evidence = vi.fn();
+		const publisher = new CodexTranscriptPublisher({
+			sessionId: "session-sole-user",
+			founderUserId: "founder",
+			displayName: "Raya",
+			mirror,
+			evidence,
+		});
+		const handoffToLead = vi.fn(async () => ({
+			handoffId: "handoff-sole-user",
+			state: "dispatched" as const,
+			idempotencyKey: "codex-delegate:sole-user",
+			requestDigest: "d".repeat(64),
+		}));
+		let soleRoomUser: { userId: string; name: string | null } | null = {
+			userId: "founder",
+			name: "Annie",
+		};
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-sole-user",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			persistUtterance: vi.fn(async () => undefined),
+			publishUtterance: (utterance) => publisher.publish(utterance),
+			handoffToLead,
+			resolveSoleRoomUser: () => soleRoomUser,
+			onEvidence: evidence,
+		});
+		const onTranscript = vi.fn();
+		const onUnattributedTranscript = vi.fn();
+		const frontend = new CodexRoomFrontend({
+			backend: actual,
+			conversationOptions: { brain },
+			handlers: {
+				onResponseState: vi.fn(),
+				onTranscript,
+				onUnattributedTranscript,
+				onSpeechAudioReady: vi.fn(),
+				onSpeechResult: vi.fn(),
+				onClosed: vi.fn(),
+			},
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+		frontend.appendAudio(Buffer.alloc(960), {
+			utteranceId: "discord-founder-turn",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+
+		callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "你帮我去看一下 2799",
+			final: true,
+			raw: {},
+		} as never);
+
+		await vi.waitFor(() => expect(onTranscript).toHaveBeenCalledOnce());
+		expect(onTranscript).toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: "你帮我去看一下 2799",
+				ownerUserId: "founder",
+			}),
+		);
+		await vi.waitFor(() => expect(mirror).toHaveBeenCalledOnce());
+		expect(mirror).toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: "🎙️ **你（语音）**：你帮我去看一下 2799",
+			}),
+		);
+
+		callbacks.onExecutionIntent({
+			generation: 1,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-sole-user",
+			params: { item: { type: "commandExecution" } },
+		} as never);
+		await vi.waitFor(() => expect(handoffToLead).toHaveBeenCalledOnce());
+		expect(handoffToLead).toHaveBeenCalledWith({
+			utterance: expect.objectContaining({
+				text: "你帮我去看一下 2799",
+				attribution: { kind: "known", speakerUserId: "founder" },
+			}),
+			intent: expect.objectContaining({ itemId: "exec-sole-user" }),
+		});
+
+		soleRoomUser = null;
+		callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "多人房里这句不能授权",
+			final: true,
+			raw: {},
+		} as never);
+		callbacks.onExecutionIntent({
+			generation: 1,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-ambiguous-user",
+			params: { item: { type: "commandExecution" } },
+		} as never);
+		await vi.waitFor(() =>
+			expect(onUnattributedTranscript).toHaveBeenCalledWith(
+				expect.objectContaining({ text: "多人房里这句不能授权" }),
+			),
+		);
+		await vi.waitFor(() => expect(mirror).toHaveBeenCalledTimes(2));
+		expect(mirror.mock.calls[1]?.[0]).toEqual(
+			expect.objectContaining({
+				text: "🎙️ **语音输入**：多人房里这句不能授权",
+			}),
+		);
+		expect(handoffToLead).toHaveBeenCalledOnce();
+		await frontend.stop();
+	});
+
+	it("asks for a repeat when a user transcript remains unattributed", async () => {
+		let onUtterance!: (utterance: unknown) => void;
+		const session = {
+			...conversation(),
+			on: vi.fn((event: string, handler: (...args: never[]) => void) => {
+				if (event === "utterance")
+					onUtterance = handler as (utterance: unknown) => void;
+				return () => undefined;
+			}),
+		};
+		const onTranscript = vi.fn();
+		const onUnattributedTranscript = vi.fn();
+		const frontend = new CodexRoomFrontend({
+			backend: backend(async () => session),
+			conversationOptions: { brain },
+			handlers: {
+				onResponseState: vi.fn(),
+				onTranscript,
+				onUnattributedTranscript,
+				onSpeechAudioReady: vi.fn(),
+				onSpeechResult: vi.fn(),
+				onClosed: vi.fn(),
+			} as never,
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+
+		onUtterance({
+			transcriptId: "session:1:unattributed:1",
+			utteranceId: "session:1:unattributed",
+			sequence: 1,
+			role: "user",
+			text: "请再听一次",
+			final: true,
+			attribution: { kind: "unknown", reason: "provider_item_unattributed" },
+		});
+
+		expect(onTranscript).not.toHaveBeenCalled();
+		expect(onUnattributedTranscript).toHaveBeenCalledWith({
+			itemId: "session:1:unattributed:1",
+			text: "请再听一次",
+			reason: "provider_item_unattributed",
+		});
+		await frontend.stop();
 	});
 
 	it("registers Codex only at the composition root", async () => {

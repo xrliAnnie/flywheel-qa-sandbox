@@ -29,6 +29,7 @@ type RoomDeps = Pick<
 	| "createResource"
 	| "speakingEvents"
 	| "memberDisplayName"
+	| "voiceChannelHumanCount"
 	| "userVoiceChannelId"
 	| "onVoiceStateUpdate"
 	| "sendMessage"
@@ -80,6 +81,12 @@ export class DiscordVoiceRoom {
 	private readonly now: () => number;
 	private readonly attribution: SpeakerAttribution;
 	private readonly receiveHealth: ReceiveHealthTracker;
+	private readonly presentHumans = new Set<string>();
+	private humanCount = 0;
+	private presenceSnapshotReliable = false;
+	private presenceRevision = 0;
+	private presenceClient?: VoiceClient;
+	private presenceRefresh?: Promise<boolean>;
 	private connection?: unknown;
 	private unsubscribePresence?: () => void;
 	private readonly unsubscribeConnection: Array<() => void> = [];
@@ -189,6 +196,7 @@ export class DiscordVoiceRoom {
 		await this.registry.start([{ id: "voice", token: this.options.token }]);
 		await this.checkActive(signal);
 		const client = this.registry.client("voice");
+		this.presenceClient = client;
 		if (
 			!this.options.expectedBotUserId ||
 			client.user?.id !== this.options.expectedBotUserId
@@ -246,22 +254,93 @@ export class DiscordVoiceRoom {
 		this.unsubscribePresence = this.options.deps.onVoiceStateUpdate(
 			client,
 			(event) => {
-				if (event.userId !== this.options.founderUserId || event.isBot) return;
-				if (event.toChannelId === this.options.voiceChannelId) {
-					this.options.onFounderPresence(true);
-				} else if (event.fromChannelId === this.options.voiceChannelId) {
-					this.options.onFounderPresence(false);
+				if (event.isBot) return;
+				this.presenceRevision += 1;
+				const joined =
+					event.toChannelId === this.options.voiceChannelId &&
+					event.fromChannelId !== this.options.voiceChannelId;
+				const left =
+					event.fromChannelId === this.options.voiceChannelId &&
+					event.toChannelId !== this.options.voiceChannelId;
+				if (this.presenceSnapshotReliable) {
+					if (joined) {
+						this.presentHumans.add(event.userId);
+						this.humanCount += 1;
+					} else if (left) {
+						this.presentHumans.delete(event.userId);
+						this.humanCount = Math.max(0, this.humanCount - 1);
+					}
+				}
+				if (event.userId === this.options.founderUserId) {
+					if (joined) this.options.onFounderPresence(true);
+					else if (left) this.options.onFounderPresence(false);
 				}
 			},
 		);
+		const founderPresent = await this.refreshPresenceSnapshot(client);
+		await this.checkActive(signal);
 		return {
-			founderPresent:
-				(await this.options.deps.userVoiceChannelId(
+			founderPresent,
+		};
+	}
+
+	private async refreshPresenceSnapshot(client: VoiceClient): Promise<boolean> {
+		let founderPresent = false;
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const revision = this.presenceRevision;
+			const users = [...this.allowed];
+			const [humanCount, ...channels] = await Promise.all([
+				this.options.deps.voiceChannelHumanCount(
 					client,
 					this.options.guildId,
-					this.options.founderUserId,
-				)) === this.options.voiceChannelId,
-		};
+					this.options.voiceChannelId,
+				),
+				...users.map((userId) =>
+					this.options.deps.userVoiceChannelId(
+						client,
+						this.options.guildId,
+						userId,
+					),
+				),
+			]);
+			founderPresent =
+				channels[users.indexOf(this.options.founderUserId)] ===
+				this.options.voiceChannelId;
+			if (revision !== this.presenceRevision) continue;
+			this.presentHumans.clear();
+			users.forEach((userId, index) => {
+				if (channels[index] === this.options.voiceChannelId)
+					this.presentHumans.add(userId);
+			});
+			this.humanCount = humanCount;
+			this.presenceSnapshotReliable = true;
+			return founderPresent;
+		}
+		// A room changing underneath every snapshot is ambiguous. Keep transcripts
+		// visible, but do not mint speaker authority until a stable room is opened.
+		this.presenceSnapshotReliable = false;
+		return founderPresent;
+	}
+
+	soleHuman(): { userId: string; name: string | null } | null {
+		if (!this.presenceSnapshotReliable) this.schedulePresenceRefresh();
+		if (
+			!this.presenceSnapshotReliable ||
+			this.humanCount !== 1 ||
+			this.presentHumans.size !== 1
+		)
+			return null;
+		const userId = this.presentHumans.values().next().value as string;
+		return { userId, name: this.names.get(userId) ?? null };
+	}
+
+	private schedulePresenceRefresh(): void {
+		if (this.stopped || !this.presenceClient || this.presenceRefresh) return;
+		this.presenceRefresh = this.refreshPresenceSnapshot(this.presenceClient).finally(
+			() => {
+				this.presenceRefresh = undefined;
+			},
+		);
 	}
 
 	speaker(): { userId: string; name: string } | null {
@@ -309,6 +388,10 @@ export class DiscordVoiceRoom {
 		this.uplink?.setMicOpen(false);
 		this.unsubscribePresence?.();
 		this.unsubscribePresence = undefined;
+		this.presenceSnapshotReliable = false;
+		this.presenceClient = undefined;
+		this.presentHumans.clear();
+		this.humanCount = 0;
 		this.pendingCloseCleanup?.();
 		this.pendingCloseCleanup = undefined;
 		this.cooldownSpeaker = undefined;

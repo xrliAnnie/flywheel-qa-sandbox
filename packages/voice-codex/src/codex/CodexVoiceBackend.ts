@@ -98,6 +98,10 @@ export interface CodexVoiceBackendOptions {
 		utterance: VoiceUtterance;
 		intent: CodexRealtimeExecutionIntent;
 	}) => Promise<CodexHandoffResult>;
+	resolveSoleRoomUser?: () => {
+		userId: string;
+		name: string | null;
+	} | null;
 	now?: () => Date;
 	monotonicNow?: () => number;
 	onEvidence?: (record: Record<string, unknown>) => void;
@@ -228,14 +232,12 @@ class CodexVoiceSession implements ConversationSession {
 			this.queueRestartAudio(frame, owner);
 			return;
 		}
-		this.observeAppendOutcome(
-			this.options.conversation.transport.appendAudio(
-				frame,
-				this.generation,
-				owner,
-			),
-			frame.length,
+		const outcome = this.options.conversation.transport.appendAudio(
+			frame,
+			this.generation,
+			owner,
 		);
+		this.observeAppendOutcome(outcome, frame.length);
 	}
 
 	sendText(_text: string): void {
@@ -406,12 +408,37 @@ class CodexVoiceSession implements ConversationSession {
 		if (!transcript.final) return;
 		const sequence = ++this.sequence;
 		const itemId = transcript.itemId ?? `unattributed-${sequence}`;
-		const inputOwner =
+		const providerInputOwner =
 			transcript.role === "user" &&
 			transcript.inputOwner?.utteranceId &&
 			transcript.inputOwner.ownerUserId
 				? transcript.inputOwner
 				: undefined;
+		const soleRoomUser =
+			transcript.role === "user" && !providerInputOwner
+				? (this.options.resolveSoleRoomUser?.() ?? undefined)
+				: undefined;
+		const inputOwner =
+			providerInputOwner ??
+			(soleRoomUser
+				? {
+						ownerUserId: soleRoomUser.userId,
+						ownerName: soleRoomUser.name,
+						// Do not borrow a Discord utterance id by arrival order. The
+						// synthetic id states exactly which room-presence proof was used
+						// while keeping authorization auditable.
+						utteranceId: `${this.sessionId}:${transcript.generation}:sole-room-user:${sequence}`,
+					}
+				: undefined);
+		if (soleRoomUser) {
+			this.options.onEvidence?.({
+				kind: "codex_input_attribution_inferred",
+				generation: transcript.generation,
+				transcriptId: `${this.sessionId}:${transcript.generation}:${itemId}:${sequence}`,
+				method: "sole_present_room_user",
+				speakerUserId: soleRoomUser.userId,
+			});
+		}
 		const utterance: VoiceUtterance = {
 			sessionId: this.sessionId,
 			sessionGeneration: transcript.generation,
@@ -441,10 +468,23 @@ class CodexVoiceSession implements ConversationSession {
 										: "provider_item_unattributed",
 							},
 		};
+		if (utterance.role === "user" && utterance.attribution.kind === "unknown") {
+			this.options.onEvidence?.({
+				kind: "codex_input_attribution_unknown",
+				generation: transcript.generation,
+				transcriptId: utterance.transcriptId,
+				soleRoomUserResolved: false,
+				reason: utterance.attribution.reason,
+			});
+		}
 		this.events.emit("utterance", utterance);
 		const persisted = this.persist(utterance, transcript);
-		if (utterance.role === "user" && utterance.attribution.kind === "known")
-			this.latestKnownUser = { utterance, persisted };
+		if (utterance.role === "user") {
+			this.latestKnownUser =
+				utterance.attribution.kind === "known"
+					? { utterance, persisted }
+					: undefined;
+		}
 		if (transcript.role === "assistant" && transcript.itemId)
 			void this.play(transcript.itemId, transcript.generation);
 	}
@@ -479,6 +519,9 @@ class CodexVoiceSession implements ConversationSession {
 		const key = `${intent.generation}:${intent.kind}:${intent.itemId ?? intent.method}:${candidate.utterance.transcriptId}`;
 		if (this.handoffKeys.has(key)) return;
 		this.handoffKeys.add(key);
+		// One user request may surface several backend execution items. Consume the
+		// authorization candidate before dispatch so only the first can hand off.
+		this.latestKnownUser = undefined;
 		void candidate.persisted
 			.then(async (durable) => {
 				if (!durable) throw new Error("codex_handoff_transcript_not_durable");
@@ -698,14 +741,12 @@ class CodexVoiceSession implements ConversationSession {
 			this.restartInputGap = false;
 		}
 		for (const { frame, owner } of queued) {
-			this.observeAppendOutcome(
-				this.options.conversation.transport.appendAudio(
-					frame,
-					this.generation,
-					owner,
-				),
-				frame.length,
+			const outcome = this.options.conversation.transport.appendAudio(
+				frame,
+				this.generation,
+				owner,
 			);
+			this.observeAppendOutcome(outcome, frame.length);
 		}
 	}
 

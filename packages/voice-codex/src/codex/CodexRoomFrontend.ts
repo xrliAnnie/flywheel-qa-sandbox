@@ -20,6 +20,11 @@ export interface CodexRoomFrontendHandlers {
 		speakerName: string;
 		utteranceId: string;
 	}): void;
+	onUnattributedTranscript?(input: {
+		itemId: string;
+		text: string;
+		reason: string;
+	}): void;
 	onSpeechAudioReady(input: { speechId: string; pcm24Mono: Buffer }): void;
 	onSpeechResult(input: {
 		speechId: string;
@@ -161,12 +166,19 @@ export class CodexRoomFrontend {
 			this.handlers?.onResponseState(false),
 		);
 		session.on("utterance", (utterance) => {
-			if (
-				utterance.role !== "user" ||
-				!utterance.final ||
-				utterance.attribution.kind !== "known"
-			)
+			if (utterance.role !== "user" || !utterance.final) return;
+			if (utterance.attribution.kind === "unknown") {
+				// Visible transcript publication happens before this authorization
+				// seam in CodexVoiceBackend for both known and unknown finals. Unknown
+				// speech must not enter VoiceDelivery/Lead authority, but it must not
+				// disappear silently either.
+				this.handlers?.onUnattributedTranscript?.({
+					itemId: utterance.transcriptId,
+					text: utterance.text,
+					reason: utterance.attribution.reason,
+				});
 				return;
+			}
 			this.handlers?.onTranscript({
 				itemId: utterance.transcriptId,
 				contentIndex: utterance.sequence,

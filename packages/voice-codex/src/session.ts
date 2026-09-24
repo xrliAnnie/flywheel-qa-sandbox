@@ -15,6 +15,11 @@ export interface FrontendHandlers {
 		speakerName: string;
 		utteranceId: string;
 	}): void;
+	onUnattributedTranscript?(input: {
+		itemId: string;
+		text: string;
+		reason: string;
+	}): void;
 	onSpeechAudioReady(input: { speechId: string; pcm24Mono: Buffer }): void;
 	onSpeechResult(input: {
 		speechId: string;
@@ -127,6 +132,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				if (!this.stopping) this.frontendResponseActive = active;
 			},
 			onTranscript: (input) => this.transcript(input),
+			onUnattributedTranscript: () =>
+				this.status("📻 有一句话没能确认说话人，请再说一遍"),
 			onSpeechAudioReady: (input) => this.speechAudioReady(input),
 			onSpeechResult: (input) => this.speechResult(input),
 			onClosed: (outcome) =>

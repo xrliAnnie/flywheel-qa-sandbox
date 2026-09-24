@@ -9,6 +9,8 @@ import {
 	BridgeVoiceClient,
 	VoiceLease,
 } from "../../../voice-codex/src/bridge-client.js";
+import { CodexVoiceBackend } from "../../../voice-codex/src/codex/CodexVoiceBackend.js";
+import { buildCodexDelegateHandoff } from "../../../voice-codex/src/codex/CodexVoiceHandoff.js";
 import {
 	VoiceHandoffError,
 	VoiceHandoffService,
@@ -160,6 +162,147 @@ function handoff(leaseToken: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe("durable voice utterances", () => {
+	it("persists a sole-room-user Codex execution delegation in voice_handoffs and the Lead mailbox", async () => {
+		const { leaseToken } = liveSession();
+		const h = service({ authority: validateCodexVoiceDelegateBinding });
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/voice/sessions",
+			voiceSessionAuthMiddleware(MASTER, INGEST),
+			createVoiceSessionRouter({
+				store,
+				leaseTtlMs: 60_000,
+				leaseRenewMs: 4_000,
+				now: () => NOW,
+				resolveStart: () => {
+					throw new Error("unused");
+				},
+				provisionSession: () => undefined,
+				projectSession: () => ({}),
+				voiceHandoffs: h.service,
+			}),
+		);
+		server = createServer(app);
+		await new Promise<void>((resolve) =>
+			server!.listen(0, "127.0.0.1", resolve),
+		);
+		const bridge = new BridgeVoiceClient({
+			baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+			token: MASTER,
+			httpTimeoutMs: 2_000,
+		});
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		const backend = new CodexVoiceBackend({
+			sessionId: SESSION_ID,
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			resolveSoleRoomUser: () => ({ userId: "founder", name: "Annie" }),
+			persistUtterance: async (voiceUtterance, captureDigest) => {
+				const {
+					sessionId: _sessionId,
+					ts: _ts,
+					interrupted: _interrupted,
+					...record
+				} = voiceUtterance;
+				await bridge.recordUtterance(SESSION_ID, leaseToken, lease, {
+					...record,
+					captureDigest,
+				});
+			},
+			handoffToLead: ({ utterance: voiceUtterance, intent }) =>
+				bridge.handoffToLead(
+					SESSION_ID,
+					leaseToken,
+					lease,
+					buildCodexDelegateHandoff({
+						sessionId: SESSION_ID,
+						leadId: "raya",
+						utterance: voiceUtterance,
+						intent,
+					}),
+				),
+		});
+		const conversation = await backend.createConversation({
+			brain: {
+				async *respond() {
+					yield "unused";
+				},
+			},
+		});
+		(
+			conversation as typeof conversation & {
+				sendOwnedAudio(
+					frame: Buffer,
+					owner: {
+						utteranceId: string;
+						ownerUserId: string;
+						ownerName: string;
+					},
+				): void;
+			}
+		).sendOwnedAudio(Buffer.alloc(960), {
+			utteranceId: "discord-founder-turn",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "你帮我去看一下 2799",
+			final: true,
+			raw: {},
+		} as never);
+		callbacks.onExecutionIntent({
+			generation: 1,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-sole-room-user",
+			params: { item: { type: "commandExecution" } },
+		} as never);
+
+		await vi.waitFor(() => expect(h.enqueue).toHaveBeenCalledOnce());
+		const envelope = h.enqueue.mock.calls[0]?.[0] as {
+			event: { voice_handoff_id?: string };
+		};
+		const handoffId = envelope.event.voice_handoff_id;
+		expect(handoffId).toBeTruthy();
+		expect(store.getVoiceHandoff(handoffId!)).toMatchObject({
+			intentKind: "delegate_request",
+			originalText: "你帮我去看一下 2799",
+		});
+		expect(h.enqueue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: "raya",
+				event: expect.objectContaining({
+					event_type: "voice_handoff",
+					voice_session_id: SESSION_ID,
+					voice_intent_kind: "delegate_request",
+				}),
+			}),
+		);
+		await conversation.close();
+	});
+
 	it("persists a founder-bound Codex execution delegation and queues it to the Lead body", async () => {
 		const { leaseToken } = liveSession();
 		const h = service({ authority: validateCodexVoiceDelegateBinding });
