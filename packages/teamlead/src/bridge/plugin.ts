@@ -1797,6 +1797,8 @@ export interface BridgeAppOptions {
 	leadVoiceCapabilityRouter?: express.Router;
 	leadVoiceCapabilityReceiptRouter?: express.Router;
 	voiceReplyNotifier?: VoiceReplyNotifier;
+	headphoneRouter?: { current?: express.Router };
+	voiceHandoffRouter?: { current?: express.Router };
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -5997,6 +5999,26 @@ export function createBridgeApp(
 			opts.leadVoiceCapabilityReceiptRouter,
 		);
 	}
+	const mountLateVoiceRouter = (
+		path: string,
+		holder: { current?: express.Router } | undefined,
+	) => {
+		if (!holder) return;
+		app.use(
+			path,
+			voiceSessionAuthMiddleware(config.apiToken),
+			(req, res, next) => {
+				const router = holder.current;
+				if (!router) {
+					res.status(503).json({ error: "voice_route_unavailable" });
+					return;
+				}
+				router(req, res, next);
+			},
+		);
+	};
+	mountLateVoiceRouter("/api/voice/headphone", opts?.headphoneRouter);
+	mountLateVoiceRouter("/api/voice/handoffs", opts?.voiceHandoffRouter);
 
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
@@ -9340,6 +9362,12 @@ export async function startBridge(
 
 	const leadGithubProvider = createLazyLeadGithubClient(process.env);
 	const voiceReplyNotifier = new VoiceReplyNotifier();
+	const headphoneRouterHolder: NonNullable<
+		BridgeAppOptions["headphoneRouter"]
+	> = {};
+	const voiceHandoffRouterHolder: NonNullable<
+		BridgeAppOptions["voiceHandoffRouter"]
+	> = {};
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
@@ -9376,6 +9404,8 @@ export async function startBridge(
 		standupProjectName,
 		{
 			voiceReplyNotifier,
+			headphoneRouter: headphoneRouterHolder,
+			voiceHandoffRouter: voiceHandoffRouterHolder,
 			leadConfigService,
 			leadEventDelivery,
 			leadGithub: leadGithubProvider.get,
@@ -11694,19 +11724,12 @@ export async function startBridge(
 		collectHeadphonePage();
 		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
 		headphoneCollectorTimer.unref?.();
-		app.use(
-			"/api/voice/headphone",
-			voiceSessionAuthMiddleware(config.apiToken),
-			createHeadphoneRouter({
+		headphoneRouterHolder.current = createHeadphoneRouter({
 				inbox: store.headphoneInbox,
 				founderUserId: headphoneFounderId,
 				getSession: (sessionId) => store.getVoiceSession(sessionId),
-			}),
-		);
-		app.use(
-			"/api/voice/handoffs",
-			voiceSessionAuthMiddleware(config.apiToken),
-			createVoiceHandoffRouter({
+			});
+		voiceHandoffRouterHolder.current = createVoiceHandoffRouter({
 				store: store.voiceHandoffs,
 				replyNotifier: voiceReplyNotifier,
 				founderUserId: headphoneFounderId,
@@ -11796,8 +11819,7 @@ export async function startBridge(
 						db?.close();
 					}
 				},
-			}),
-		);
+			});
 		const reconcileVoiceHandoffs = () => {
 			const now = new Date().toISOString();
 			for (const record of store.voiceHandoffs.listAmbiguous(now)) {
