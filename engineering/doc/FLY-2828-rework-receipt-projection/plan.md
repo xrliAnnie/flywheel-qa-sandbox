@@ -5,7 +5,7 @@ Issue: FLY-2828 (https://linear.app/geoforge3d/issue/FLY-2828/病根-返工回�
 基于: research.md
 
 **Version**: v1.58.0
-**Status**: draft (v5, Codex round 1–4 反馈已并入)
+**Status**: draft (v6, Codex round 1–5 反馈已并入)
 
 ## 0. 目标与非目标
 
@@ -81,10 +81,12 @@ private projectWorkflowReworkWakeReceiptTx(input: {
 
 与现状的差异（其余逐字保留）：
 
-1. **所有前置读取与判定移到第一条写之前**（Codex R2 #2a）。顺序：binding/turn/request/route/delivery/run/path 解析 → 身份校验 → `wake_delivered|completed` 幂等回放 → 源允许的 delivery 起始态 → 节点校验 → path 校验 → 然后才写。任何 `ok:false` 返回都发生在零写入之后。
-2. **身份校验加严**（Codex R4 #3，`workflow_execution_binding.rework_request_id` 无外键 8924-8935）：除现有的 `binding.execution_id / turn.execution_id / turn.epoch / delivery.route_revision === route.revision / route.preferred_actor_execution_id` 外，新增 `request.run_id === binding.run_id`、`route.target_node_id === binding.node_id && route.target_attempt === binding.attempt`、`turn.issue_id === run.issue_id`；`expectedTuple` 存在时还要 `=== binding` 的 run/node/attempt。任一不符 → `rework_wake_receipt_identity_conflict`。
-3. **path 必须恰好存在一条**（Codex R4 #3：全部生产写入点 49294/49341、49636/49692、50697/50762、65178/65250、66595/66653 都在同事务插入 path；线上 867 个 request 零缺失）：缺失 → `rework_wake_receipt_path_missing`；`state !== 'pending'` 或 `route_revision !== route.revision` 或 `current_node_id/current_attempt !== route.target_node_id/target_attempt` 或 `run_id !== request.run_id` → `rework_wake_receipt_path_conflict`。均零写入。
-4. 源允许的 delivery 起始态：两个源都只接受 `awaiting_receipt`，另加 `completion_implied` 接受 `turn_granted`（理由见 §2.2）。其余 → `rework_wake_receipt_not_ready`。
+1. **所有前置读取与判定移到第一条写之前**（Codex R2 #2a）。顺序：上下文解析 → 陈旧判定 → 结构性腐坏判定 → `wake_delivered|completed` 幂等回放 → 源允许的 delivery 起始态 → 节点校验 → path 校验 → 然后才写。任何 `ok:false` 返回都发生在零写入之后。
+2. **两类身份失败分开**（Codex R5 #2）。
+   * `rework_wake_receipt_identity_conflict`（**陈旧的不可变回执**，终态）：`turn.epoch !== input.epoch`、`delivery.route_revision !== latestRoute.revision`、`latestRoute.preferred_actor_execution_id !== input.executionId`、`binding.execution_id !== input.executionId`、`turn.execution_id !== input.executionId`。这些是「这张回执对应的 TURN/revision 已过时」，不可能再变成有效。
+   * `rework_wake_receipt_context_corrupt`（**结构性腐坏**，非终态；`workflow_execution_binding.rework_request_id` 无外键 8924-8935）：`request.run_id !== binding.run_id`、`latestRoute.target_node_id/target_attempt !== binding.node_id/attempt`、`turn.issue_id !== run.issue_id`、`expectedTuple` 存在但 `!== binding` 的 run/node/attempt。这些行在 StateStore 里仍有未结算义务，必须留痕（§3.3 走 retry→隔离→question）。
+3. **path 必须恰好存在一条，且 `run_id === request.run_id`、`route_revision === latestRoute.revision`、`current_node_id/current_attempt === latestRoute.target_node_id/target_attempt`**（Codex R4 #3：全部生产写入点 49294/49341、49636/49692、50697/50762、65178/65250、66595/66653 都在同事务插入 path；线上 867 个 request 零缺失）。缺失 → `rework_wake_receipt_path_missing`；不符 → `rework_wake_receipt_path_conflict`（两者都归 `context_corrupt` 一类处置）。path 的 **`state='pending'` 只在非幂等投影时要求**（Codex R5 #6）：`wake_delivered|completed` 的幂等回放在 path 校验之前返回，所以线上已有的 9 条 `completed + path completed` 与 1 条 founder 授权的 `completed + path pending`（FLY-2803）照常以 `idempotentReplay:true` 投影。
+4. 源允许的 delivery 起始态：两个源都接受 `awaiting_receipt`，`completion_implied` 另加 `turn_granted`（理由见 §2.2）。其余 → `rework_wake_receipt_not_ready`。
 5. 节点三分支：`admitted`（本 execution）→ CAS 到 `running`，改 0 行 `throw WorkflowEngineInvariantError("workflow_rework_activation_not_admitted_on_receipt")`；`running`（本 execution）→ 跳过 UPDATE；其他 → `return { ok:false, reason: "rework_wake_receipt_node_not_reserved:<state>" }`（零写入）。
 6. delivery 写：`SET state='wake_delivered', owner_id=NULL, lease_expires_at=NULL … WHERE request_id=? AND route_revision=? AND state IN (<源允许的起始态>)`，改 0 行 → `rework_wake_receipt_race`。path `pending→active` CAS 改 0 行 → throw（并发）。
 7. `enqueueReworkRecoveredIfAlertedTx` 只在 `alertIdentity` 存在时调用（与 64842 的 `if (input.alertIdentity)` 模式一致）。
@@ -106,21 +108,32 @@ if (!authorityDrivenGate) {
 }
 ```
 
-`settleWorkflowReworkOnCompletionTx` 三分：
+`settleWorkflowReworkOnCompletionTx` 先解析、再分支（Codex R5 #1）：
 
-**(A) 非返工完成 → 无事发生**（唯一允许 `applied:false` 且继续 transition 的情形）：`writerActivation` 不存在、或 `binding.rework_request_id` 为空、或 `binding.mode !== 'wake'`（`replacement` 由 `markWorkflowReplacementStartedTx` 43657-43670 负责，`spawn` 无返工义务）。
+**第 0 步：与 delivery 状态无关的上下文解析与校验。** 仅当 `writerActivation` 存在且 `binding.rework_request_id` 非空且 `binding.mode === 'wake'` 时进入（否则是 (A)）。解析 `request/latestRoute/delivery/turn/run/path`：
 
-**(B) 当前返工绑定、义务可结算 → 内联投影**：`delivery.state ∈ {turn_granted, awaiting_receipt}` 且 `delivery.route_revision === latestRoute.revision`。调用 `projectWorkflowReworkWakeReceiptTx({ …, epoch: turn.epoch, ackedAt: input.now, source: "completion_implied", expectedTuple: {runId, nodeId, attempt} })`；`ok:false` → `throw WorkflowEngineInvariantError("rework_receipt_implied_on_completion_failed:<reason>")`（§2.1 的校验已排除全部合法失败，走到这里只能是并发或数据不一致）。`turn_granted` 纳入的理由：coordinator 在 `pending→turn_granted`（`workflow-rework-coordinator.ts:790-801`）之后才 `wakeActor`（804-815）再 `turn_granted→awaiting_receipt`（830-839），体按 TURN 法则可先完成。
+* 任一缺失 → `throw WorkflowEngineInvariantError("rework_receipt_implied_context_missing")`；
+* `request.run_id !== binding.run_id || binding.run_id !== input.runId`、`latestRoute.target_node_id/target_attempt !== binding.node_id/attempt` 或 `!== input.nodeId/attempt`、`latestRoute.preferred_actor_execution_id !== input.executionId`、`turn.execution_id !== input.executionId`、`turn.issue_id !== run.issue_id`、path 缺失或 path 的 `run_id/route_revision/current_node_id/current_attempt` 与 request/latestRoute 不符 → `throw WorkflowEngineInvariantError("rework_receipt_implied_context_corrupt:<which>")`。
 
-**(B′) 已投影 → 校验后无事发生**：`delivery.state === 'wake_delivered'`：要求 path 恰一条、`state='active'`、`route_revision === delivery.route_revision`、`current_node_id/current_attempt === input.nodeId/attempt`、`run_id === input.runId`，否则 `throw WorkflowEngineInvariantError("rework_receipt_implied_active_path_conflict")`；通过则 `applied:false` 继续（随后 64400 的 activePath 查询必命中）。`delivery.state === 'completed'` 但仍是当前 revision 的 wake 绑定：正常情况 `workflowReworkTargetRows` 已排除 completed，`workflowReworkCompletionRefusal` 不会看到它；这里同样 `applied:false`。
+`workflowReworkCompletionRefusal` 是 target-based 的（61548-61563 按 `request.run_id` 与 route target 过滤），一个指向别的 run/target 的腐坏 binding 会被它漏过，所以这一步必须独立于它。
 
-**(C) 当前返工绑定、义务不可结算 → 结构化拒绝，零写入**：`delivery.state ∈ {pending, replacement_pending, held, needs_lead}` 或 `delivery.route_revision !== latestRoute.revision`：返回 `{ ok:false, refusal: { ok:false, reason: "rework_delivery_not_projectable", detail: { requestId, deliveryState, routeRevision } } }`。
+**(A) 非返工完成 → 无事发生**（唯一允许继续 transition 且不碰返工账本的情形）：`writerActivation` 不存在、或 `binding.rework_request_id` 为空、或 `binding.mode !== 'wake'`（`replacement` 由 `markWorkflowReplacementStartedTx` 43657-43670 负责，`spawn` 无返工义务）。
 
-* `pending`：**不接受**（Codex R4 #2）。TURN 授出（`grantTurn` 754-770）与 `pending→turn_granted`（790-801）之间只隔一个同步的 `recordWorkflowActivationTurn`，但 `grantTurn` 内部有 await，完成请求可以在这个窗口进入；对 resumed revision，旧 binding/turn 仍在且 epoch 被冻结重放（db.ts 7010-7059），`grant_started_at`（44504-44515 在 `grantTurn` 之前写）不能证明当前 revision 已成功授权。拒绝后体的 `complete` 收到 409 + `retryable:true`，CLI 会重试（`complete.ts:577-583`：4xx 且 `retryable!==true` 才放弃）；coordinator 的下一行就是 `pending→turn_granted`，重试即进入 (B)。
-* `held|needs_lead|replacement_pending`：义务已改道，等 Lead/replacement 处理；不允许一个迟到的完成把节点写成 `done` 而 delivery 还开着（Codex R4 #1）。既有代码对 `held + active path` 也已在 transition 后段以 `workflow_rework_delivery_complete_cas_failed` 拒绝（65482-65486），本条把拒绝提前到零写入。
-* revision 落后：旧 TURN 下的完成不得结算新 revision。
+**(B) 义务可结算 → 内联投影**：`delivery.route_revision === latestRoute.revision` 且 `delivery.state ∈ {turn_granted, awaiting_receipt}`。调用 `projectWorkflowReworkWakeReceiptTx({ …, epoch: turn.epoch, ackedAt: input.now, source: "completion_implied", expectedTuple: {runId, nodeId, attempt} })`；`ok:false` → `throw WorkflowEngineInvariantError("rework_receipt_implied_on_completion_failed:<reason>")`。`turn_granted` 纳入的理由：coordinator 在 `pending→turn_granted`（`workflow-rework-coordinator.ts:790-801`）之后才 `wakeActor`（804-815）再 `turn_granted→awaiting_receipt`（830-839），体按 TURN 法则可先完成。
 
-拒绝走 `commitEnrolledCompletion` 现有的 `transitionRefusal` 通道（62346-62363 → 62412-62486）：外层返回 `{ ok:false, reason:"transition_refused", detail:{ transitionReason:"rework_delivery_not_projectable", … } }`，事件 `completion_transition_refused` 照现有逻辑落账；event-route 返回 409 并带 `retryable:true`（event-route 1914-1923 已透传 `retryable`；本单在该 reason 上置 `retryable:true`）。**没有 `workflow_node_completion` 行、节点不写 `done`**。
+**(B′) 已投影 → 校验 active path 后无事发生**：`delivery.route_revision === latestRoute.revision` 且 `delivery.state === 'wake_delivered'`：第 0 步已校验过的 path 还必须 `state === 'active'`，否则 `throw WorkflowEngineInvariantError("rework_receipt_implied_active_path_conflict")`；通过则 `applied:false` 继续（随后 64400 的 activePath 查询按 `input.nodeId/attempt` 必命中，因为第 0 步已保证它们等于 route target）。`delivery.state === 'completed'`（当前 revision）同样 `applied:false`。
+
+**(C) 义务不可结算 → 结构化拒绝，零写入**：
+
+| 情形 | reason | retryable |
+|------|--------|-----------|
+| `delivery.state === 'pending'`（当前 revision） | `rework_delivery_not_projectable` | **true**：TURN 授出（`grantTurn` 754-770，生产 effect 在返回前已记下不可变 activation turn，`plugin.ts:14003-14029`）与 `pending→turn_granted`（790-801）之间只隔 `grantTurn` 内部的 await；体的 `complete` 对 `retryable:true` 的 4xx 会重试（`complete.ts:577-583`，4 次、1/2/4 秒退避），coordinator 的下一条语句就是推到 `turn_granted`，重试即进入 (B) |
+| `delivery.state ∈ {held, needs_lead, replacement_pending}` | `rework_delivery_not_projectable` | **false**（Codex R5 #5）：需要 Lead/replacement 动作，重试只会拖延；既有代码对 `held + active path` 也已在 transition 后段以 `workflow_rework_delivery_complete_cas_failed` 拒绝（65482-65486），本条把拒绝提前到零写入 |
+| `delivery.route_revision !== latestRoute.revision` | `rework_delivery_not_projectable` | **false**：旧 TURN 下的完成永远不得结算新 revision |
+
+`pending` 不接受的理由（Codex R4 #2）：对 resumed revision，旧 binding/turn 仍在且 epoch 被冻结重放（db.ts 7010-7059），`grant_started_at`（44504-44515 在 `grantTurn` 之前写）不能证明当前 revision 已成功授权。
+
+拒绝走 `commitEnrolledCompletion` 现有的 `transitionRefusal` 通道（62346-62363 → 62412-62486）：外层返回 `{ ok:false, reason:"transition_refused", retryable, detail:{ transitionReason:"rework_delivery_not_projectable", requestId, deliveryState, routeRevision } }`，事件 `completion_transition_refused` 照现有逻辑落账（62445-62475，同键重放不重复）；event-route 返回 409 并透传 `retryable`（1914-1923）。**没有 `workflow_node_completion` 行、节点不写 `done`。**
 
 ### 2.3 回滚边界（Codex R1 #2、R2 #2b、R3 #2）
 
@@ -165,7 +178,7 @@ better-sqlite3 嵌套事务即 savepoint，throw 即回滚，所以在 `commitEn
 |------|------|
 | `commitEnrolledCompletion` → `commitWorkflowTransitionTx`（62346） | 三分（本节） |
 | `resume_rework` hold 决议（55217-55305）：换 revision、delivery/path 回 `pending`、清 `grant_started_at`、**不新建 binding** | 随后到来的普通迟到完成 → (C) 拒绝 `pending`（T7） |
-| `reconstruct_completion` hold 决议（55451-55542，`allowCompletedWriter:true`） | 走同一 transition；其 delivery 已由 hold 路径结算（55273），writer 不是当前 wake 绑定或 delivery 为 completed → (A)/(B′)；T7b 断言无 `completion_implied` 事件 |
+| `reconstruct_completion` hold 决议（55451-55542，`allowCompletedWriter:true`） | 走同一 transition；对 open-replacement 形态，**既有的** `workflowReworkCompletionRefusal` 在新 helper 之前就以 `rework_content_not_delivered` 拒绝（既有回归 `fly2504-rework-replacement-receipt.test.ts:1092-1138`：run 保持 held、无 completion 行）；T7b 保留这条精确合同并另断言无 `completion_implied` 事件 |
 | 62007 重放事务、62525 teardown 投影 | 不经 transition，不涉及 |
 
 `alertIdentity`：`commitEnrolledCompletion`（61687）与 `commitWorkflowTransitionTx`（64123）都可选；生产唯一调用方 `event-route.ts:1858` 总是传入；缺省只跳过恢复告警 enqueue。
@@ -244,7 +257,8 @@ for (const receipt of db.listUnprojectedTurnWakeReceipts(maxPerProject, quaranti
 | `purpose` 非 rework/carrier | `not_applicable: "purpose:<purpose>"`（现状语义） |
 | `!activation \|\| !run` | `retry: "activation_or_run_unresolved"`（补日志，patrol 层统一打） |
 | `projected.ok` | `projected` |
-| reason === `rework_wake_receipt_identity_conflict` | `not_applicable: reason`（route revision 已推进或 actor/target 换了，旧 ack 永远无效） |
+| reason === `rework_wake_receipt_identity_conflict` | `not_applicable: reason`（只含 §2.1 第 2 条列出的陈旧事实：epoch / route revision / actor 已过时，旧 ack 永远无效） |
+| reason === `rework_wake_receipt_context_corrupt` | `retry: reason`（结构性腐坏；StateStore 义务仍在，走隔离 + 一次 question，Codex R5 #2） |
 | reason === `rework_wake_receipt_not_ready` 且 delivery ∈ `{held, needs_lead, replacement_pending}` | `not_applicable: "${reason}:${state}"`。证据：`held` 只能 → `replacement_pending`（43100）或 → `needs_lead`（44098）；`replacement_pending` 完成时换 revision（43193）；`held|needs_lead` 的 Lead 恢复换 revision 再回 `pending`（55252-55279）。没有同 revision 回到 `awaiting_receipt` 的路径 |
 | reason === `rework_wake_receipt_not_ready` 且 delivery ∈ `{pending, turn_granted}` | `retry: reason` |
 | reason ∈ {`rework_wake_receipt_node_not_reserved:*`, `rework_wake_receipt_path_conflict`, `rework_wake_receipt_path_missing`} | `retry: reason`（不看 run.status；StateStore 侧仍有未结算义务或数据不一致，走隔离 + 一次告警交 Lead 人工结算） |
@@ -421,20 +435,21 @@ SELECT p.request_id
 | T2 队首永久失败 | 同上 | `onReceipt` 对 wake-1 `throw`；同轮 wake-2 投影、返回 `retried:1`、`console.warn` 含 `wake-1` 与 `exception:`；`quarantineAfterAttempts: 3` 跑 3 轮后 wake-1 不再被列出、`projection_alerted_at` 非空、question `turn-wake-projection-alert:wake-1` 恰 1 条、内容含 `purpose workflow_rework` 与 `workflow_rework_delivery`；第 4 轮不重复告警 |
 | T3 无日志分支 | 同上 | `retry:"activation_or_run_unresolved"` → warn 含 wake_id 与 reason；`markTurnWakeReceiptProjected` stub 成 false → warn `mark failed` |
 | T4 not_applicable 终态 | 同上 | `not_applicable:"rework_wake_receipt_identity_conflict"` → `receipt_projected_at` 非空、`projection_last_error` 等于原因、不告警 |
+| T4b 结构性腐坏留痕（**Lead 硬红，实现阶段必须先绿**） | `turn-wake-patrol.test.ts` + `StateStore.workflow-rework.test.ts` | StateStore 层：binding 指向别的 run 的 request / route target ≠ binding / turn.issue ≠ run.issue / path 缺失 → `recordWorkflowReworkWakeReceipt` 返回 `rework_wake_receipt_context_corrupt` 或 `path_missing`，零写入；patrol 层：该 reason 走 retry，到阈值后 `receipt_projected_at` 仍为空、question `turn-wake-projection-alert:*` 恰 1 条 |
 | T5 两道门 | `StateStore.workflow-rework.test.ts` + `StateStore.founder-kickback-newcard-loop.test.ts` 夹具 | (a) delivery `completed` + path `pending`：Lead 拒、founder throw `rework_already_open`；(b) 活组合 delivery `wake_delivered` + path `active`：两者都拒；(c) 无 open：两者放行 |
 | T6 完成先于回执 | `workflow-rework.e2e.test.ts:1040-1140` 反转 | 夹具补 `alertIdentity`；`commitEnrolledCompletion` 先 → `ok:true`；事件 `rework_wake_receipt:<activation>:<epoch>` payload `source:"completion_implied"`、`impliedFromState:"awaiting_receipt"`；path 与 delivery 末态与既有用例一致（chained/`completed`）；随后 `recordWorkflowReworkWakeReceipt` → `{ok:true, idempotentReplay:true}` |
-| T7 resume_rework 后的迟到完成 | `StateStore.workflow-rework.test.ts`（hold 用例） | `resume_rework` 决议后（delivery `pending`、新 revision、旧 binding/turn）驱动**普通** `commitEnrolledCompletion` → `{ok:false, reason:"transition_refused", detail.transitionReason:"rework_delivery_not_projectable"}`；无 `workflow_node_completion` 行；node/path/delivery/events 表逐字不变 |
-| T7b reconstruct_completion 不受影响 | 现有 `reconstruct_completion` 用例 | 完成不产生 `completion_implied` 事件 |
+| T7 resume_rework 后的迟到完成 | `StateStore.workflow-rework.test.ts`（hold 用例） | `resume_rework` 决议后（delivery `pending`、新 revision、旧 binding/turn）驱动**普通** `commitEnrolledCompletion` → `{ok:false, reason:"transition_refused", retryable:false, detail.transitionReason:"rework_delivery_not_projectable"}`（revision 落后优先于 pending）；无 `workflow_node_completion` 行；**业务表**（node/path/delivery/completion/edge 事件）逐字不变；`completion_transition_refused` 事件恰 1 条且重放不重复（Codex R5 #3） |
+| T7b reconstruct_completion 不受影响 | `fly2504-rework-replacement-receipt.test.ts:1092-1138` | 保留既有合同：`workflow_hold_completion_transition_refused:rework_content_not_delivered`、run 仍 held、无 completion 行；另断言无 `completion_implied` 事件 |
 | T8 节点已 running 时巡检回执 | `StateStore.workflow-rework.test.ts` | 受控夹具：delivery 到 `awaiting_receipt` 后直接把 `workflow_run_node` 置 `running`（不经 `markWorkflowReplacementStartedTx`）→ `recordWorkflowReworkWakeReceipt` `{ok:true, idempotentReplay:false}`，不 throw |
 | T9 节点已 done 时巡检回执 | 同上 | 节点 `done` + delivery `awaiting_receipt` → `{ok:false, reason:"rework_wake_receipt_node_not_reserved:done"}`，不 throw，delivery/path/事件表逐字不变 |
 | T10 CommDB 迁移 | `worktree-turn.test.ts` | 旧 DDL 建库再打开 → 四列存在；排序与 quarantine 过滤；`recordTurnWakeReceiptProjectionAttempt` 对已投影行返回 null |
-| T11 完成三分正负样本（全部经 `commitEnrolledCompletion`） | `StateStore.workflow-rework.test.ts` | (B) 正：delivery `turn_granted` / `awaiting_receipt` × 节点 `admitted` / `running` → `ok:true`，delivery `completed`、path 按既有 transition 末态、事件 `impliedFromState` 等于起始态。(A) 非返工：`rework_request_id` 为空 / binding `mode='replacement'` → 完成照常、无 `completion_implied` 事件、delivery 行逐字不变。(B′) `wake_delivered` + 一致的 active path → 完成照常（path/delivery 被既有 transition 收掉）；`wake_delivered` + path `current_node` 不符 → `transition_refused`/`engine_invariant:rework_receipt_implied_active_path_conflict`，零写入。(C) 拒绝：delivery `pending`（含 `grant_started_at` 非空）/ `held` / `needs_lead` / `replacement_pending` / revision 落后 → `{reason:"transition_refused", detail.transitionReason:"rework_delivery_not_projectable"}`，无 `workflow_node_completion`，所有表逐字不变。腐坏负样本：binding 指向另一 request（`run_id` 不符）/ path 缺失 / path `run_id` 或 target 不符 / turn `issue_id` 不符 → `engine_invariant:rework_receipt_implied_on_completion_failed:*`，零写入 |
-| T12 拒绝通道（外层） | 同上 | (C) 与 invariant 都不得抛出到调用方；event-route 对 `rework_delivery_not_projectable` 返回 409 且 `retryable:true` |
+| T11 完成三分正负样本（全部经 `commitEnrolledCompletion`） | `StateStore.workflow-rework.test.ts` | (B) 正：delivery `turn_granted` / `awaiting_receipt` × 节点 `admitted` / `running` → `ok:true`，delivery `completed`、path 按既有 transition 末态、事件 `impliedFromState` 等于起始态。(A) 非返工：`rework_request_id` 为空 / binding `mode='replacement'` → 完成照常、无 `completion_implied` 事件、delivery 行逐字不变。(B′) `wake_delivered` + 一致的 active path → 完成照常（path/delivery 被既有 transition 收掉）；`wake_delivered` + path 非 active → `engine_invariant:rework_receipt_implied_active_path_conflict`；`wake_delivered` + 腐坏（binding 指向别 run 的 request / route target 不符 / latest revision 落后 / turn 缺失）→ `engine_invariant:rework_receipt_implied_context_corrupt:*` 或 `context_missing`，业务表逐字不变。(C) 拒绝：`pending`（`retryable:true`）/ `held` / `needs_lead` / `replacement_pending` / revision 落后（`retryable:false`）→ `{reason:"transition_refused", detail.transitionReason:"rework_delivery_not_projectable"}`，无 `workflow_node_completion`，业务表逐字不变、拒绝事件恰 1 条。腐坏负样本（任意 delivery 状态）：binding 指向另一 request（`run_id` 不符）/ path 缺失 / path `run_id` 或 target 不符 / turn `issue_id` 不符 → `engine_invariant:rework_receipt_implied_context_*`，业务表逐字不变 |
+| T12 拒绝通道（外层） | 同上 | (C) 与 invariant 都不得抛出到调用方；event-route 对 `rework_delivery_not_projectable` 返回 409，`pending` 情形 `retryable:true`、`held/needs_lead/replacement_pending/stale` 情形 `retryable:false` |
 | T13 C6 矩阵 | `turn-wake-patrol.test.ts` + `StateStore.workflow-rework.test.ts` | patrol 层（stub）：行 `sent`、`push_count=2`、`acked_at NULL`：`cancel:rework_obligation_completed` → 行 `cancelled`、`cancelled+1`、无 `turn-wake-alert:*`；`cancel:rework_obligation_settled` / `cancel:activation_target_terminal` / `deliver` / `wait`（同龄对照行）→ 行不变、照常告警一次；`canDeliver` throw → 跳过该行。StateStore 层（生产守卫）：rework `completed` → `rework_obligation_completed`；`held` → `rework_obligation_settled`；`awaiting_receipt` + 节点 `done` → `activation_target_terminal`；carrier `completed` + 终态 → `carrier_obligation_completed`；carrier `awaiting_receipt` + 终态 → `carrier_target_terminal`；既有 3648 与 2328-2337 用例不变。复活回归：`held` → `resume_rework` → `pending` 期间该 wake 从未被 cancel，随后 `enqueueTurnWake` 同 id 不是 cancelled 回放 |
 | T14 carrier 隔离 | `turn-wake-patrol.test.ts` | `purpose: workflow_ship_carrier` 收据到阈值 → question 内容含 `workflow_carrier_delivery` |
 | T15 coordinator 收敛 | `workflow-rework.e2e.test.ts` | `wakeActor` 回调内调用 `commitEnrolledCompletion`（delivery 此刻为 `turn_granted`）→ 完成 `ok:true`、`impliedFromState:"turn_granted"`；coordinator 本轮返回 `retryable:stale_delivery_owner`；**下一轮立即** `settled:completed`；`findOpenWorkflowReworkForRun` 为空 |
-| T16 直接 transition 回滚 | `StateStore.workflow-engine-transition.test.ts` | 直接调用 `commitWorkflowTransitionTx`，构造投影成功但随后 `transition_conflict`（priorEdges）→ 返回 `{ok:false, reason:"transition_conflict"}` 且 delivery/path/节点/事件表逐字不变 |
-| T17 验收脚本固化 | `workflow-rework.e2e.test.ts` | 对用例的临时 StateStore 执行**入库的** `scripts/fly-2828-freeze-cohort.sql` 生成 tsv；对迁移后的临时 CommDB 以 `ATTACH` + `.import` 执行**入库的** `scripts/fly-2828-verify.sql`（通过 better-sqlite3 逐条执行同文件的 SQL 语句；`.mode/.headers/.import` 由测试 harness 等价实现）。健康末态：(0) cohort 行数等于 tsv 行数，(1)(3) 0 行，(2) 两计数 0。三个分开的负样本：cohort 成员缺 binding / 缺 wake / 有 wake 无 question → (1) 各恰返回该行 |
+| T16 直接 transition 回滚 | `StateStore.workflow-engine-transition.test.ts` | 直接调用 `commitWorkflowTransitionTx`，构造投影成功但随后 `transition_conflict`（priorEdges）→ 返回 `{ok:false, reason:"transition_conflict"}` 且 delivery/path/节点/**全部事件表**逐字不变（不经外层 catch，可整表断言） |
+| T17 验收脚本固化 | `workflow-rework.e2e.test.ts` | 对用例的临时 StateStore 执行**入库的** `scripts/fly-2828-freeze-cohort.sql` 生成 tsv；对迁移后的临时 CommDB 以 `ATTACH` + `.import` 执行**入库的** `scripts/fly-2828-verify.sql`（通过 better-sqlite3 逐条执行同文件的 SQL 语句；`.mode/.headers/.import` 由测试 harness 等价实现）。健康末态：(0) cohort 行数等于 tsv 行数，(1)(3) 0 行，(2) 两计数 0。三个分开的负样本：cohort 成员缺 binding / 缺 wake / 有 wake 无 question → (1) 各恰返回该行。另加一条 **`sqlite3` 子进程冒烟**（Codex R5 #7）：用文档里的 `-cmd`/`.import --skip 1` 序列逐字调用两个入库文件，断言 exit 0、stderr 为空、`cohort_rows` 等于冻结 TSV 的数据行数 |
 | T18 顺序双告警 | `turn-wake-patrol.test.ts` | 行先在 `sent` 超时产生 `turn-wake-alert:*`，再 ack，再投影失败到阈值 → 产生 `turn-wake-projection-alert:*`，内容含前一条 question id；两条各恰 1 |
 
 测试证据要求：PR body 贴 `pnpm --filter flywheel-comm test` 与 `pnpm --filter flywheel-teamlead test` 的汇总行（test files / tests 计数非零）；`--filter teamlead` 因包名不匹配会打印 "No projects matched" 且 exit 0，不接受。
@@ -444,7 +459,8 @@ SELECT p.request_id
 | 取舍 | 选择 | 拒绝的替代 |
 |------|------|------------|
 | 修根因的位置 | transition 内、返工拒绝检查之后，锚定 writer activation；后续拒绝以回滚哨兵整体回滚 | 在 `projectGeneralizedCompletionTx:59049` 加 CAS——改通用完成语义；在 `commitEnrolledCompletion` 主事务开头插——在 transition 的 invariant 捕获之外 |
-| 当前返工绑定但义务不可结算 | 结构化拒绝（retryable），零写入 | 无事发生让 transition 继续——再造分账；原子结算 held/needs_lead——绕过 Lead 决议 |
+| 当前返工绑定但义务不可结算 | 结构化拒绝，零写入；只有当前 revision 的 `pending` 标 retryable | 无事发生让 transition 继续——再造分账；原子结算 held/needs_lead——绕过 Lead 决议；一律 retryable——CLI 4 次退避只是拖延正确处置 |
+| 结构性腐坏（binding/route/turn/path 不一致） | 完成入口 invariant 拒绝；巡检入口新 reason `context_corrupt` 走隔离 + question | 并入 `identity_conflict` 终态——CommDB 标 projected 后 StateStore 义务无人可见 |
 | `pending` 起始态 | 不接受；窗口只有 coordinator 一个 await，拒绝后 CLI 自动重试 | 接受 + `grant_started_at` 栅栏——不能证明当前 revision 已授 TURN；revision-scoped 身份——改三张不可变表 |
 | 完成时节点 `running` | 正样本 | 当负样本无事发生——再造 `awaiting_receipt + done` |
 | path 缺失 | 视为腐坏，invariant 拒绝 | 视为可选——生产写入点全部同事务插 path，缺失只能是腐坏 |
@@ -455,6 +471,6 @@ SELECT p.request_id
 
 ## 10. 完成定义
 
-* C1–C7 合入同一 PR；`pnpm --filter flywheel-comm test`、`pnpm --filter flywheel-teamlead test`（含 T1–T18）绿且计数非零；biome/typecheck 绿。
+* C1–C7 合入同一 PR；`pnpm --filter flywheel-comm test`、`pnpm --filter flywheel-teamlead test`（含 T1–T18、T4b）绿且计数非零；biome/typecheck 绿。
 * PR body 附脚本 1 冻结输出与脚本 2 校验输出。
 * 本文档随 PR 合入 main。
