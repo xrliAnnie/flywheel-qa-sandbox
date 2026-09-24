@@ -83,6 +83,7 @@
 		"better-sqlite3": "^12.8.0",
 		"flywheel-agent-team-transport": "workspace:*",
 		"flywheel-config": "workspace:*",
+		"flywheel-voice-core": "workspace:*",
 		"flywheel-token-usage": "workspace:*"
 	},
 	"devDependencies": {

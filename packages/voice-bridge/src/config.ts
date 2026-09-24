@@ -121,6 +121,25 @@ const DEFAULT_HEALTH_PORT = 9878;
 const DEFAULT_BRIDGE_URL = "http://127.0.0.1:9876";
 const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";
 
+export function requireHuddleLeadId(
+	path: "huddle.assistant.leadId" | "huddle.eleven.leadId",
+	value: unknown,
+	declaredLeads: readonly string[],
+): string {
+	if (typeof value !== "string" || !value.trim()) {
+		throw new Error(
+			`voice-bridge: ${path} is required and must name one of the project's leads[].agentId`,
+		);
+	}
+	const leadId = value.trim();
+	if (!declaredLeads.includes(leadId)) {
+		throw new Error(
+			`voice-bridge: ${path} "${leadId}" is not among the project's leads (${declaredLeads.join(", ") || "none declared"})`,
+		);
+	}
+	return leadId;
+}
+
 export function loadHuddleBridgeConfig(
 	opts: { path?: string; env?: NodeJS.ProcessEnv } = {},
 ): HuddleBridgeConfig {

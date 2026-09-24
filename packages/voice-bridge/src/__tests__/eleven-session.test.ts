@@ -10,11 +10,38 @@ import {
 	ElevenSession,
 	type ElevenWsHandlers,
 } from "../eleven/ElevenSession.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
+
+function residentLease(sessionId = "s1"): ResidentVoiceLease {
+	return {
+		mode: "rg",
+		sessionId,
+		sessionGeneration: 7,
+		leaseToken: "lease-token",
+		leaseTtlMs: 30_000,
+		toSlotLease: (mode = "rg") => ({
+			mode,
+			sessionId,
+			sessionGeneration: 7,
+			leaseToken: "lease-token",
+		}),
+		assertActive: vi.fn(),
+		renew: vi.fn(async () => {}),
+		setState: vi.fn(async () => {}),
+		startRenewing: vi.fn(() => vi.fn()),
+		close: vi.fn(async () => {}),
+	};
+}
 
 function makeFixture(over: Record<string, unknown> = {}) {
 	const room = new VoiceRoomRuntime();
-	expect(room.slot.acquire(ELEVEN_SLOT_MODE, "s1").ok).toBe(true);
+	const lease = over.lease as ResidentVoiceLease | undefined;
+	expect(
+		lease
+			? room.slot.acquireLease(lease.toSlotLease(ELEVEN_SLOT_MODE)).ok
+			: room.slot.acquire(ELEVEN_SLOT_MODE, "s1").ok,
+	).toBe(true);
 	const speaker = {
 		calls: [] as string[],
 		beginTurn() {
@@ -411,6 +438,19 @@ describe("ElevenSession (FLY-1006 S7)", () => {
 		// dead session no longer consumes room events
 		f.room.routeFrame(Buffer.alloc(640), {});
 		expect(f.ws.sent).toHaveLength(0);
+	});
+
+	it("keeps the resident lease warm/live and closes its exact slot projection", async () => {
+		const lease = residentLease();
+		const f = makeFixture({ lease });
+		await f.session.start();
+		expect(lease.setState).toHaveBeenNthCalledWith(1, "warming");
+		expect(lease.setState).toHaveBeenNthCalledWith(2, "live");
+		expect(lease.startRenewing).toHaveBeenCalledTimes(1);
+
+		await f.session.stop("manual");
+		expect(lease.close).toHaveBeenCalledWith("ended", "manual");
+		expect(f.room.slot.current()).toBeNull();
 	});
 
 	it("ws close while live tears the session down (slot released)", async () => {

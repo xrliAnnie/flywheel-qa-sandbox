@@ -99,6 +99,7 @@ export {
 	type OpenAiLiveWiring,
 	type RegistryWiring,
 } from "./factory.js";
+export * from "./handoff.js";
 // headphone mode (FLY-546) — pure logic layer
 export * from "./headphone/index.js";
 export {
@@ -120,6 +121,7 @@ export {
 	type ReceiveReason,
 	type ReceiveState,
 } from "./receive-health.js";
+export * from "./room-io.js";
 // secret red line (FLY-1065) — every transcript exit passes through this
 export { scrubTranscript } from "./scrub.js";
 export {
@@ -129,6 +131,7 @@ export {
 // shared layer
 export {
 	clearTranscriptWriteFailure,
+	durableTranscriptContentDigest,
 	getTranscriptWriteFailure,
 	JsonlTranscriptSink,
 	MemoryTranscriptSink,

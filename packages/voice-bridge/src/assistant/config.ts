@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { requireHuddleLeadId } from "../config.js";
 import type { AssistantAdvancedConfig } from "./advanced.js";
 
 export interface AssistantBriefingConfig {
@@ -24,6 +25,8 @@ export interface AssistantBriefingConfig {
 export interface AssistantModeConfig {
 	/** slash-command name (Annie-final default: gemini; still configurable). */
 	commandName: string;
+	/** Lead whose durable mailbox owns this resident voice session. */
+	leadId: string;
 	/** Gemini prebuilt voiceName; unset = model default (audition pick: Kore). */
 	voice?: string;
 	/** a dedicated assistant bot; null = the orchestrator bot speaks (D2). */
@@ -86,6 +89,16 @@ export function resolveAssistantConfig(
 
 	const commandName = optString(a, "commandName") ?? DEFAULT_COMMAND;
 	const voice = optString(a, "voice");
+	const declaredLeads = Array.isArray(entry.leads)
+		? (entry.leads as Record<string, unknown>[]).map((lead) =>
+				String(lead?.agentId ?? ""),
+			)
+		: [];
+	const leadId = requireHuddleLeadId(
+		"huddle.assistant.leadId",
+		a.leadId,
+		declaredLeads,
+	);
 
 	let assistantToken: string | null = null;
 	if (a.assistantBotTokenEnv != null) {
@@ -128,6 +141,7 @@ export function resolveAssistantConfig(
 
 	return {
 		commandName,
+		leadId,
 		voice,
 		assistantToken,
 		briefing: {

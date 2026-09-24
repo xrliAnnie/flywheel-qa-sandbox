@@ -13,6 +13,15 @@
  *    machine narrates it; nothing retries silently)
  */
 
+import type {
+	HeadphoneInboxClaim,
+	HeadphoneInboxItem,
+	SpeakReceipt,
+	VoiceHandoffReceipt,
+	VoiceHandoffRequest,
+	VoiceHandoffResultEvent,
+} from "flywheel-voice-core";
+
 export type VoiceScope = {
 	leadBotIds: string[];
 	systemBotIds: string[];
@@ -77,6 +86,66 @@ export interface BridgeVoiceClientOptions {
 	fetchFn?: FetchLike;
 }
 
+export interface HeadphoneSessionBinding {
+	sessionId: string;
+	generation: number;
+	leaseToken: string;
+}
+
+export type HeadphoneSourceState = {
+	channelId: string;
+	health: "healthy" | "recovering" | "rate_limited" | "source_gap";
+	[key: string]: unknown;
+};
+
+export type HeadphoneSourceHealth = {
+	healthy: boolean;
+	sourceGap: boolean;
+	sources: HeadphoneSourceState[];
+};
+
+export interface VoiceHandoffResultsPage {
+	events: VoiceHandoffResultEvent[];
+	highWatermark: number;
+	nextCursor: number;
+}
+
+function headphoneItem(value: unknown): HeadphoneInboxItem {
+	const item = value as Record<string, unknown>;
+	const id = item.id ?? item.itemId;
+	if (
+		typeof id !== "string" ||
+		!Number.isSafeInteger(item.revision) ||
+		(typeof item.createdAt !== "string" &&
+			typeof item.sourceCreatedAt !== "string") ||
+		typeof item.needsDecision !== "boolean" ||
+		typeof item.text !== "string"
+	)
+		throw new Error("headphone inbox response invalid");
+	const speechBrief = item.speechBrief;
+	if (
+		speechBrief !== undefined &&
+		(!speechBrief ||
+			typeof speechBrief !== "object" ||
+			typeof (speechBrief as Record<string, unknown>).what !== "string" ||
+			typeof (speechBrief as Record<string, unknown>).why !== "string" ||
+			typeof (speechBrief as Record<string, unknown>).next !== "string")
+	)
+		throw new Error("headphone inbox response invalid");
+	return {
+		id,
+		revision: item.revision as number,
+		createdAt: String(item.createdAt ?? item.sourceCreatedAt),
+		needsDecision: item.needsDecision,
+		text: item.text,
+		...(speechBrief
+			? {
+					speechBrief: speechBrief as HeadphoneInboxItem["speechBrief"],
+				}
+			: {}),
+	};
+}
+
 export class BridgeVoiceClient {
 	private readonly fetchFn: FetchLike;
 	private readonly contextCache = new Map<string, VoiceContext>();
@@ -89,6 +158,242 @@ export class BridgeVoiceClient {
 		return this.opts.token
 			? { authorization: `Bearer ${this.opts.token}` }
 			: {};
+	}
+
+	private headphoneHeaders(
+		binding: HeadphoneSessionBinding,
+		json = false,
+	): Record<string, string> {
+		return {
+			...this.headers(),
+			"x-voice-lease": binding.leaseToken,
+			...(json ? { "content-type": "application/json" } : {}),
+		};
+	}
+
+	async listHeadphoneItems(
+		binding: HeadphoneSessionBinding,
+		limit = 100,
+	): Promise<HeadphoneInboxItem[]> {
+		const items: HeadphoneInboxItem[] = [];
+		let cursor: string | undefined;
+		let snapshotId: string | undefined;
+		let highWatermark: number | undefined;
+		const seenCursors = new Set<string>();
+		for (;;) {
+			const query = new URLSearchParams({
+				sessionId: binding.sessionId,
+				generation: String(binding.generation),
+				limit: String(limit),
+				...(cursor ? { cursor } : {}),
+			});
+			const res = await this.fetchFn(
+				`${this.opts.bridgeUrl}/api/voice/headphone?${query}`,
+				{ headers: this.headphoneHeaders(binding) },
+			);
+			if (!res.ok)
+				throw new Error(`headphone inbox fetch failed: HTTP ${res.status}`);
+			const body = (await res.json()) as Record<string, unknown>;
+			if (
+				typeof body.snapshotId !== "string" ||
+				!Number.isSafeInteger(body.highWatermark) ||
+				!Array.isArray(body.items) ||
+				(body.nextCursor !== null && typeof body.nextCursor !== "string")
+			)
+				throw new Error("headphone inbox response invalid");
+			if (
+				(snapshotId !== undefined && body.snapshotId !== snapshotId) ||
+				(highWatermark !== undefined && body.highWatermark !== highWatermark)
+			)
+				throw new Error("headphone inbox snapshot changed during pagination");
+			snapshotId = body.snapshotId;
+			highWatermark = body.highWatermark as number;
+			items.push(...body.items.map(headphoneItem));
+			if (body.nextCursor === null) return items;
+			cursor = body.nextCursor as string;
+			if (seenCursors.has(cursor))
+				throw new Error("headphone inbox cursor loop");
+			seenCursors.add(cursor);
+		}
+	}
+
+	async claimHeadphoneItem(
+		binding: HeadphoneSessionBinding,
+		item: HeadphoneInboxItem,
+	): Promise<HeadphoneInboxClaim | undefined> {
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/headphone/claim`,
+			{
+				method: "POST",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify({
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					itemId: item.id,
+					revision: item.revision,
+				}),
+			},
+		);
+		if (res.status === 409) return undefined;
+		if (!res.ok)
+			throw new Error(`headphone inbox claim failed: HTTP ${res.status}`);
+		const body = (await res.json()) as Record<string, unknown>;
+		if (
+			typeof body.claimToken !== "string" ||
+			!Number.isSafeInteger(body.attempt) ||
+			typeof body.pendingKey !== "string"
+		)
+			throw new Error("headphone inbox claim response invalid");
+		const claimedItem = headphoneItem(body.item);
+		if (claimedItem.id !== item.id || claimedItem.revision !== item.revision)
+			throw new Error("headphone inbox claim response invalid");
+		return {
+			item: claimedItem,
+			claimToken: body.claimToken,
+			attempt: body.attempt as number,
+			pendingKey: body.pendingKey,
+		};
+	}
+
+	async ackHeadphoneClaim(
+		binding: HeadphoneSessionBinding,
+		claim: HeadphoneInboxClaim,
+		receipts: readonly SpeakReceipt[],
+	): Promise<void> {
+		if (
+			receipts.length < 1 ||
+			receipts.some(
+				(receipt) =>
+					receipt.outcome !== "completed" ||
+					(receipt.contentProof !== "deterministic_tts" &&
+						receipt.contentProof !== "transcript_equivalent"),
+			)
+		)
+			throw new Error("headphone inbox ack requires proven completed speech");
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/headphone/ack`,
+			{
+				method: "POST",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify({
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					itemId: claim.item.id,
+					revision: claim.item.revision,
+					claimToken: claim.claimToken,
+					receipts,
+				}),
+			},
+		);
+		if (!res.ok)
+			throw new Error(`headphone inbox ack failed: HTTP ${res.status}`);
+	}
+
+	async getHeadphoneSourceHealth(
+		binding: HeadphoneSessionBinding,
+	): Promise<HeadphoneSourceHealth> {
+		const query = new URLSearchParams({
+			sessionId: binding.sessionId,
+			generation: String(binding.generation),
+		});
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/headphone/source-health?${query}`,
+			{ headers: this.headphoneHeaders(binding) },
+		);
+		if (!res.ok)
+			throw new Error(`headphone source health failed: HTTP ${res.status}`);
+		const body = (await res.json()) as { sources?: unknown };
+		if (!Array.isArray(body.sources))
+			throw new Error("headphone source health response invalid");
+		const sources = body.sources as HeadphoneSourceState[];
+		if (
+			sources.some(
+				(source) =>
+					typeof source.channelId !== "string" ||
+					!["healthy", "recovering", "rate_limited", "source_gap"].includes(
+						source.health,
+					),
+			)
+		)
+			throw new Error("headphone source health response invalid");
+		return {
+			healthy:
+				sources.length > 0 && sources.every((s) => s.health === "healthy"),
+			sourceGap: sources.some((s) => s.health === "source_gap"),
+			sources,
+		};
+	}
+
+	async handoffToLead(
+		binding: HeadphoneSessionBinding,
+		request: VoiceHandoffRequest,
+	): Promise<VoiceHandoffReceipt> {
+		if (
+			request.sessionId !== binding.sessionId ||
+			request.generation !== binding.generation
+		)
+			throw new Error("voice handoff session binding mismatch");
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/handoffs/`,
+			{
+				method: "POST",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify(request),
+			},
+		);
+		if (!res.ok && res.status !== 202)
+			throw new Error(`voice handoff failed: HTTP ${res.status}`);
+		const body = (await res.json()) as VoiceHandoffReceipt;
+		if (
+			body.handoffId !== request.handoffId ||
+			body.requestDigest !== request.requestDigest ||
+			![
+				"authorized",
+				"dispatching",
+				"committed",
+				"rejected",
+				"ambiguous",
+				"needs_human",
+			].includes(body.state)
+		)
+			throw new Error("voice handoff response invalid");
+		return body;
+	}
+
+	async listVoiceHandoffResults(
+		binding: HeadphoneSessionBinding,
+		handoffId: string,
+		after = 0,
+		limit = 100,
+	): Promise<VoiceHandoffResultsPage> {
+		const query = new URLSearchParams({
+			sessionId: binding.sessionId,
+			generation: String(binding.generation),
+			after: String(after),
+			limit: String(limit),
+		});
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/handoffs/${encodeURIComponent(handoffId)}/results?${query}`,
+			{ headers: this.headphoneHeaders(binding) },
+		);
+		if (!res.ok)
+			throw new Error(`voice handoff results failed: HTTP ${res.status}`);
+		const body = (await res.json()) as VoiceHandoffResultsPage;
+		if (
+			!Array.isArray(body.events) ||
+			!Number.isSafeInteger(body.highWatermark) ||
+			!Number.isSafeInteger(body.nextCursor) ||
+			body.nextCursor < after ||
+			body.highWatermark < body.nextCursor ||
+			body.events.some(
+				(event) =>
+					event.handoffId !== handoffId ||
+					!Number.isSafeInteger(event.seq) ||
+					event.seq <= after,
+			)
+		)
+			throw new Error("voice handoff results response invalid");
+		return body;
 	}
 
 	async getScope(): Promise<VoiceScope> {

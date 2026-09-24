@@ -1,3 +1,4 @@
+import type { RoomIO } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
 import type { VoiceSessionProjection } from "../bridge-client.js";
 import {
@@ -37,6 +38,11 @@ function userTranscript(text: string) {
 function fixture(options?: {
 	founderPresent?: boolean;
 	playSpeech?: (speechId: string, pcm: Buffer) => Promise<void>;
+	roomIO?: RoomIO;
+	createHeadphoneSession?: () => {
+		start(): Promise<void>;
+		close(): Promise<void>;
+	};
 }) {
 	let frontendHandlers!: FrontendHandlers;
 	let roomHandlers!: RoomHandlers;
@@ -48,6 +54,7 @@ function fixture(options?: {
 		stop: vi.fn(async () => {}),
 	};
 	const room = {
+		...(options?.roomIO ? { roomIO: options.roomIO } : {}),
 		start: vi.fn(async () => ({
 			founderPresent: options?.founderPresent ?? true,
 		})),
@@ -72,6 +79,12 @@ function fixture(options?: {
 			roomHandlers = handlers;
 			return room;
 		},
+		...(options?.createHeadphoneSession
+			? {
+					createHeadphoneSession: (_room: RoomIO) =>
+						options.createHeadphoneSession!(),
+				}
+			: {}),
 		lifecycle,
 		evidence,
 		confirmationMs: 100,
@@ -89,6 +102,23 @@ function fixture(options?: {
 }
 
 describe("GenericVoiceSession", () => {
+	it("starts and closes an injected headphone V1 session on the canonical RoomIO", async () => {
+		const roomIO = {} as RoomIO;
+		const headphone = {
+			start: vi.fn(async () => undefined),
+			close: vi.fn(async () => undefined),
+		};
+		const test = fixture({
+			roomIO,
+			createHeadphoneSession: () => headphone,
+		});
+
+		await test.session.start();
+		expect(headphone.start).toHaveBeenCalledOnce();
+		await test.session.stop();
+		expect(headphone.close).toHaveBeenCalledOnce();
+	});
+
 	it("routes an audio-attributed final exactly once with a deterministic transcript id", async () => {
 		const test = fixture();
 		await test.session.start();
@@ -764,7 +794,7 @@ describe("GenericVoiceSession start cleanup is per-branch", () => {
  */
 describe("GenericVoiceSession start budget includes preflight", () => {
 	it("gives the branches only what the caller's deadline has left", async () => {
-		let now = 1_000_000;
+		const now = 1_000_000;
 		const room = {
 			start: vi.fn(() => new Promise<{ founderPresent: boolean }>(() => {})),
 			playSpeech: vi.fn(async () => {}),

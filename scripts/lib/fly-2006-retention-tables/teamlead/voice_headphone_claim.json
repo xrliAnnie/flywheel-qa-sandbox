@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "voice_headphone_claim",
+	"classification": "protectedCurrentOrReference"
+}

@@ -44,6 +44,7 @@ import {
 import { loadCodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { codexInstallAccountKey } from "flywheel-claude-runner/bin/codex-account-install.mjs";
 import { CommDB } from "flywheel-comm/db";
+import { parseChatDeliveryEnvelope } from "flywheel-comm/discord-chat-ingest";
 import {
 	defaultGateMarkerDir,
 	markGateMarkerAnsweredForExecution,
@@ -533,6 +534,13 @@ import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
 import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
 import {
+	fetchDiscordHeadphonePage,
+	type HeadphoneCollectorScope,
+	HeadphoneInboxCollector,
+} from "./headphone-collector.js";
+import { HeadphoneQuestionAuthority } from "./headphone-question-authority.js";
+import { createHeadphoneRouter } from "./headphone-routes.js";
+import {
 	activateHolderForWake,
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
@@ -938,6 +946,9 @@ import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
+import { createVoiceHandoffRouter } from "./voice-handoff-routes.js";
+import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
+import { verifyVoiceHandoffTranscript } from "./voice-handoff-transcript.js";
 import {
 	createVoiceHealthBridgeGuard,
 	createVoiceHealthExportReader,
@@ -945,7 +956,7 @@ import {
 	createVoiceHealthProjector,
 	createVoiceHealthStartupSpoolReader,
 } from "./voice-health-projector.js";
-import { createVoiceRouter } from "./voice-routes.js";
+import { botUserIdFromToken, createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
@@ -11313,6 +11324,293 @@ export async function startBridge(
 	// approval kill-switch answers 403 inside, never 404 (FLY-175 R1 lesson);
 	// the ship-approval write itself refuses tokenless deployments (503) and
 	// runs the SAME flip+wake post-write hook as the text/reaction sources.
+	const headphoneFounderId = deriveCanonicalFounderId(
+		config.discordOwnerUserId,
+		config.founderConsent?.founderUserId,
+	);
+	let headphoneCollectorTimer: ReturnType<typeof setInterval> | undefined;
+	let voiceHandoffReconcileTimer: ReturnType<typeof setInterval> | undefined;
+	if (headphoneFounderId) {
+		const voiceRoot =
+			process.env.FLYWHEEL_VOICE_STATE_DIR?.trim() ||
+			join(
+				process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+				"voice",
+			);
+		const listHeadphoneScopes = (): HeadphoneCollectorScope[] => {
+			const scopes = new Map<string, HeadphoneCollectorScope>();
+			for (const project of projects) {
+				const allowedAuthorIds = [
+					...project.leads
+						.map((lead) => lead.botUserId ?? botUserIdFromToken(lead.botToken))
+						.filter((id): id is string => !!id),
+					botUserIdFromToken(config.discordBotToken),
+				].filter((id): id is string => !!id);
+				const add = (
+					channelId: string | undefined,
+					token: string | undefined,
+				) => {
+					if (!channelId || !token || allowedAuthorIds.length === 0) return;
+					scopes.set(`${project.projectName}\0${channelId}`, {
+						projectName: project.projectName,
+						founderUserId: headphoneFounderId,
+						channelId,
+						allowedAuthorIds,
+						token,
+					});
+				};
+				add(
+					project.generalChannel,
+					config.discordBotToken ??
+						project.leads.find((lead) => lead.botToken)?.botToken,
+				);
+				for (const lead of project.leads) add(lead.chatChannel, lead.botToken);
+				for (const threadId of store.getAllChatThreadIds()) {
+					const thread = store.getChatThreadByThreadId(threadId);
+					const lead = project.leads.find(
+						(candidate) =>
+							candidate.agentId === thread?.lead_id &&
+							candidate.chatChannel === thread.channel_id,
+					);
+					if (lead) add(threadId, lead.botToken);
+				}
+			}
+			return [...scopes.values()];
+		};
+		const inspectVoiceHandoffDelivery = (
+			db: CommDB,
+			record: VoiceHandoffRecord,
+		): "found" | "not_found" | "conflict" => {
+			const settlement = db.inspectMailboxDeliveryState(
+				record.providerOperationId,
+			);
+			if (settlement.kind === "absent_identity") return "not_found";
+			if (settlement.kind === "torn_identity") return "conflict";
+			const content = db.inspectMailboxDeliveryContent(
+				record.providerOperationId,
+			);
+			if (!content) return "conflict";
+			let envelope: ReturnType<typeof parseChatDeliveryEnvelope>;
+			try {
+				envelope = parseChatDeliveryEnvelope(content);
+			} catch {
+				return "conflict";
+			}
+			return envelope.deliveryId === record.providerOperationId &&
+				envelope.leadId === record.targetLeadId &&
+				envelope.messageId === record.messageId &&
+				envelope.authorId === record.founderUserId &&
+				envelope.text === record.request.originalText &&
+				envelope.origin === "voice" &&
+				envelope.voiceSessionId === record.sessionId &&
+				envelope.voiceHandoff?.handoffId === record.handoffId &&
+				envelope.voiceHandoff.intentKind === record.request.intentKind &&
+				envelope.voiceHandoff.requestDigest === record.requestDigest &&
+				envelope.voiceHandoff.targetLeadId === record.targetLeadId &&
+				envelope.voiceHandoff.transcriptId === record.request.transcriptId &&
+				envelope.voiceHandoff.utteranceId === record.request.utteranceId &&
+				envelope.voiceHandoff.sessionGeneration === record.generation
+				? "found"
+				: "conflict";
+		};
+		const questionIdByMessage = (
+			projectName: string,
+			messageId: string,
+		): string | undefined => {
+			const questionIds = new Set<string>();
+			const founderReview =
+				store.getFounderReviewCardBindingByMessage(messageId);
+			if (
+				founderReview &&
+				store.getWorkflowRun(founderReview.run_id)?.project_name === projectName
+			)
+				questionIds.add(founderReview.question_id);
+			const workflow = store.getWorkflowGateHolderByCardMessageId(messageId);
+			if (
+				workflow &&
+				store.getWorkflowRun(workflow.run_id)?.project_name === projectName
+			)
+				questionIds.add(workflow.question_id);
+			for (const event of store.getEventsByType("ship_gate_msg_binding")) {
+				const binding = event.payload as
+					| { gateMessageId?: unknown; questionId?: unknown }
+					| undefined;
+				if (
+					event.project_name === projectName &&
+					binding?.gateMessageId === messageId &&
+					typeof binding.questionId === "string"
+				)
+					questionIds.add(binding.questionId);
+			}
+			if (questionIds.size > 1)
+				throw new Error("headphone_question_binding_ambiguous");
+			return questionIds.values().next().value;
+		};
+		const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: headphoneFounderId,
+			projects,
+			openCommDb: (projectName) =>
+				CommDB.openReadonly(commDbPathForProject(projectName)),
+			questionIdByMessage,
+			botUserIdFromToken,
+			globalBotUserId: botUserIdFromToken(config.discordBotToken),
+			log: (message) => console.warn(message),
+		});
+		const headphoneCollector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: listHeadphoneScopes,
+			fetchPage: fetchDiscordHeadphonePage,
+			classifyMessages: (scope, messages) =>
+				headphoneQuestionAuthority.classifyMessages(scope, messages),
+			projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
+		});
+		const collectHeadphonePage = () =>
+			void headphoneCollector
+				.tick()
+				.catch((error) =>
+					console.warn(
+						`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				);
+		collectHeadphonePage();
+		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
+		headphoneCollectorTimer.unref?.();
+		app.use(
+			"/api/voice/headphone",
+			voiceSessionAuthMiddleware(config.apiToken),
+			createHeadphoneRouter({
+				inbox: store.headphoneInbox,
+				founderUserId: headphoneFounderId,
+				getSession: (sessionId) => store.getVoiceSession(sessionId),
+			}),
+		);
+		app.use(
+			"/api/voice/handoffs",
+			voiceSessionAuthMiddleware(config.apiToken),
+			createVoiceHandoffRouter({
+				store: store.voiceHandoffs,
+				founderUserId: headphoneFounderId,
+				getSession: (sessionId) => store.getVoiceSession(sessionId),
+				isTargetLead: (projectName, leadId) =>
+					projects.some(
+						(project) =>
+							project.projectName === projectName &&
+							project.leads.some(
+								(lead) => lead.agentId === leadId && !!lead.chatChannel,
+							),
+					),
+				verifyTranscript: (request) =>
+					verifyVoiceHandoffTranscript({
+						voiceRoot,
+						founderUserId: headphoneFounderId,
+						request,
+					}),
+				dispatch: async (record) => {
+					const project = projects.find(
+						(candidate) => candidate.projectName === record.projectName,
+					);
+					const lead = project?.leads.find(
+						(candidate) => candidate.agentId === record.targetLeadId,
+					);
+					if (!lead?.chatChannel) return "rejected";
+					const db = new CommDB(
+						commDbPathForProject(record.projectName),
+						false,
+					);
+					try {
+						const result = db.ingestDiscordChat({
+							leadId: record.targetLeadId,
+							chatId: lead.chatChannel,
+							originChannelId: lead.chatChannel,
+							messageId: record.messageId,
+							authorId: headphoneFounderId,
+							authorName: "Founder voice",
+							founderId: headphoneFounderId,
+							ts: record.createdAt,
+							msgKind: "guild",
+							attachments: [],
+							text: record.request.originalText,
+							origin: "voice",
+							voiceSessionId: record.sessionId,
+							voiceHandoff: {
+								version: 1,
+								handoffId: record.handoffId,
+								intentKind: record.request.intentKind,
+								requestDigest: record.requestDigest,
+								targetLeadId: record.targetLeadId,
+								transcriptId: record.request.transcriptId,
+								utteranceId: record.request.utteranceId,
+								sessionGeneration: record.generation,
+							},
+						});
+						if (
+							result.lane !== "inserted_inbox" &&
+							result.lane !== "active_inbox"
+						)
+							return "rejected";
+						if (inspectVoiceHandoffDelivery(db, record) !== "found")
+							throw new Error("voice_handoff_delivery_unconfirmed");
+						return "committed";
+					} finally {
+						db.close();
+					}
+				},
+				verifyResultSource: async (record, input) => {
+					if (
+						input.sourceLeadId !== record.targetLeadId ||
+						input.requestDigest !== record.requestDigest
+					)
+						return false;
+					let db: CommDB | undefined;
+					try {
+						db = CommDB.openReadonly(commDbPathForProject(record.projectName));
+						const source = db.getMessageById(input.sourceDeliveryId);
+						return (
+							source?.from_agent === record.targetLeadId &&
+							source.to_agent === record.founderUserId &&
+							source.parent_id === record.providerOperationId
+						);
+					} catch {
+						return false;
+					} finally {
+						db?.close();
+					}
+				},
+			}),
+		);
+		const reconcileVoiceHandoffs = () => {
+			const now = new Date().toISOString();
+			for (const record of store.voiceHandoffs.listAmbiguous(now)) {
+				let outcome: "found" | "not_found" | "unavailable" | "conflict" =
+					"unavailable";
+				let db: CommDB | undefined;
+				try {
+					db = CommDB.openReadonly(commDbPathForProject(record.projectName));
+					outcome = inspectVoiceHandoffDelivery(db, record);
+				} catch (error) {
+					console.warn(
+						`[voice-handoff] reconcile ${record.handoffId} failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				} finally {
+					db?.close();
+				}
+				const reconciled = store.voiceHandoffs.recordReconcile({
+					handoffId: record.handoffId,
+					found: outcome === "found",
+					now,
+				});
+				if (reconciled?.state === "needs_human") {
+					console.warn(
+						`[voice-handoff] ${record.handoffId} requires human reconciliation`,
+					);
+				}
+			}
+		};
+		reconcileVoiceHandoffs();
+		voiceHandoffReconcileTimer = setInterval(reconcileVoiceHandoffs, 1_000);
+		voiceHandoffReconcileTimer.unref?.();
+	}
 	app.use(
 		"/api/voice",
 		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
@@ -15341,6 +15639,8 @@ export async function startBridge(
 			await internalDispatcher.teardownRuntimes();
 		}
 		if (runtimeRetryTimer) clearInterval(runtimeRetryTimer);
+		if (headphoneCollectorTimer) clearInterval(headphoneCollectorTimer);
+		if (voiceHandoffReconcileTimer) clearInterval(voiceHandoffReconcileTimer);
 		// FLY-247 (Codex R3 MEDIUM-1): stop the fleet reconcile tick + close the
 		// console's audit handle on shutdown.
 		if (fleetReconcileTimer) clearInterval(fleetReconcileTimer);

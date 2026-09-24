@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { BridgeVoiceClient } from "../bridge-client.js";
 
+const SESSION = {
+	sessionId: "voice-session",
+	generation: 7,
+	leaseToken: "lease-token",
+};
+
 type Call = { url: string; init?: RequestInit };
 
 function fakeFetch(
@@ -33,6 +39,236 @@ const SCOPE_BODY = {
 };
 
 describe("BridgeVoiceClient", () => {
+	it("lists the durable headphone inbox with the live session binding", async () => {
+		const { calls, fetchFn } = fakeFetch((url) =>
+			url.includes("cursor=")
+				? {
+						status: 200,
+						body: {
+							snapshotId: "snapshot-1",
+							highWatermark: 2,
+							nextCursor: null,
+							sourceStatus: [],
+							items: [
+								{
+									id: "item-2",
+									revision: 1,
+									createdAt: "2026-09-23T00:00:01.000Z",
+									needsDecision: false,
+									text: "进展。",
+								},
+							],
+						},
+					}
+				: {
+						status: 200,
+						body: {
+							snapshotId: "snapshot-1",
+							highWatermark: 2,
+							nextCursor: "page-2",
+							sourceStatus: [],
+							items: [
+								{
+									id: "item-1",
+									revision: 2,
+									createdAt: "2026-09-23T00:00:00.000Z",
+									needsDecision: true,
+									text: "请决定。",
+								},
+							],
+						},
+					},
+		);
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+
+		await expect(client.listHeadphoneItems(SESSION, 1)).resolves.toEqual([
+			expect.objectContaining({ id: "item-1", revision: 2 }),
+			expect.objectContaining({ id: "item-2", revision: 1 }),
+		]);
+		expect(calls[0]?.url).toContain(
+			"/api/voice/headphone?sessionId=voice-session&generation=7&limit=1",
+		);
+		expect(calls[1]?.url).toContain("cursor=page-2");
+		expect(new Headers(calls[0]?.init?.headers).get("x-voice-lease")).toBe(
+			"lease-token",
+		);
+	});
+
+	it("claims and ACKs one item with every completed segment digest", async () => {
+		const { calls, fetchFn } = fakeFetch((url) =>
+			url.endsWith("/claim")
+				? {
+						status: 200,
+						body: {
+							item: {
+								itemId: "item-1",
+								revision: 2,
+								sourceCreatedAt: "2026-09-23T00:00:00.000Z",
+								needsDecision: false,
+								text: "进展正常。",
+							},
+							claimToken: "claim-token",
+							attempt: 1,
+							pendingKey: "inbox:item-1:2:voice-session:7:1",
+						},
+					}
+				: { status: 200, body: { acked: true } },
+		);
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+		const item = {
+			id: "item-1",
+			revision: 2,
+			createdAt: "2026-09-23T00:00:00.000Z",
+			needsDecision: false,
+			text: "进展正常。",
+		};
+
+		const claim = await client.claimHeadphoneItem(SESSION, item);
+		expect(claim).toEqual(
+			expect.objectContaining({
+				claimToken: "claim-token",
+				pendingKey: "inbox:item-1:2:voice-session:7:1",
+				item,
+			}),
+		);
+		await client.ackHeadphoneClaim(SESSION, claim!, [
+			{
+				outcome: "completed",
+				pendingKey: "inbox:item-1:2:voice-session:7:1:0",
+				requestDigest: "a".repeat(64),
+				transport: "submitted",
+				contentProof: "deterministic_tts",
+			},
+			{
+				outcome: "completed",
+				pendingKey: "inbox:item-1:2:voice-session:7:1:1",
+				requestDigest: "b".repeat(64),
+				transport: "playback_drained",
+				contentProof: "transcript_equivalent",
+			},
+		]);
+		expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+			sessionId: "voice-session",
+			generation: 7,
+			itemId: "item-1",
+			revision: 2,
+		});
+		expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+			sessionId: "voice-session",
+			generation: 7,
+			itemId: "item-1",
+			revision: 2,
+			claimToken: "claim-token",
+			receipts: [
+				{
+					outcome: "completed",
+					pendingKey: "inbox:item-1:2:voice-session:7:1:0",
+					requestDigest: "a".repeat(64),
+					transport: "submitted",
+					contentProof: "deterministic_tts",
+				},
+				{
+					outcome: "completed",
+					pendingKey: "inbox:item-1:2:voice-session:7:1:1",
+					requestDigest: "b".repeat(64),
+					transport: "playback_drained",
+					contentProof: "transcript_equivalent",
+				},
+			],
+		});
+	});
+
+	it("reports source health without confusing rate limiting with a source gap", async () => {
+		const { fetchFn } = fakeFetch(() => ({
+			status: 200,
+			body: {
+				sources: [
+					{ channelId: "c1", health: "rate_limited" },
+					{ channelId: "c2", health: "healthy" },
+				],
+			},
+		}));
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+
+		const health = await client.getHeadphoneSourceHealth(SESSION);
+		expect(health.healthy).toBe(false);
+		expect(health.sourceGap).toBe(false);
+	});
+
+	it("submits one typed handoff and replays its results from the supplied cursor", async () => {
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const { calls, fetchFn } = fakeFetch((url) =>
+			url.includes("/results")
+				? {
+						status: 200,
+						body: {
+							events: [
+								{
+									resultEventId: "delivery-1:r1",
+									seq: 3,
+									handoffId,
+									requestDigest: "a".repeat(64),
+									sourceLeadId: "lead-1",
+									sourceDeliveryId: "delivery-1",
+									resultKind: "lead_reply",
+									text: "checking",
+									createdAt: "2026-09-23T20:00:05.000Z",
+								},
+							],
+							highWatermark: 3,
+							nextCursor: 3,
+						},
+					}
+				: {
+						status: 200,
+						body: {
+							handoffId,
+							requestDigest: "a".repeat(64),
+							state: "committed",
+							providerOperationId: `chat:lead-1:voice-handoff:${handoffId}`,
+						},
+					},
+		);
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+		const request = {
+			handoffId,
+			requestDigest: "a".repeat(64),
+			sessionId: SESSION.sessionId,
+			generation: SESSION.generation,
+		} as never;
+
+		await expect(client.handoffToLead(SESSION, request)).resolves.toMatchObject(
+			{
+				state: "committed",
+			},
+		);
+		await expect(
+			client.listVoiceHandoffResults(SESSION, handoffId, 2),
+		).resolves.toMatchObject({
+			nextCursor: 3,
+			events: [{ seq: 3, text: "checking" }],
+		});
+		expect(calls[1]?.url).toContain(
+			`/api/voice/handoffs/${handoffId}/results?sessionId=voice-session&generation=7&after=2&limit=100`,
+		);
+	});
+
 	it("getScope sends the Bearer token and parses the contract", async () => {
 		const { calls, fetchFn } = fakeFetch(() => ({
 			status: 200,

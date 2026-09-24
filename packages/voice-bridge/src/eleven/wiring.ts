@@ -10,19 +10,22 @@
  * tunnel + agent are session-front runbook assets (research §2.3) — the
  * command preflight fail-louds when any is missing, never a silent degrade.
  */
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ResidentBrainManager } from "flywheel-voice-core";
+import type { ResidentBrainManager, RoomIO } from "flywheel-voice-core";
 import { AssistantSpeaker } from "../assistant/AssistantSpeaker.js";
-import {
-	classifyVoiceDelta,
-	makeDeferredPlayer,
-	makeLinearClient,
-} from "../assistant/wiring.js";
+import { classifyVoiceDelta, makeLinearClient } from "../assistant/wiring.js";
 import type { PlayerLike, ResourceSource } from "../audio/LeadSpeaker.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
+import {
+	createBorrowedRoomIOAdapter,
+	type RoomIOAdapter,
+} from "../room/adapter.js";
+import type { RoomIOOptions } from "../room/RoomIO.js";
 import type { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { ELEVEN_SLOT_MODE, type ElevenModeConfig } from "./config.js";
 import { ElevenCommand, type ElevenPreflightResult } from "./ElevenCommand.js";
@@ -54,15 +57,45 @@ const MINUTES_PROMPT =
  * touches the player only while the cue itself is on, and the idle-loop
  * replays only while on — cue plumbing can never cut a live turn stream. */
 export function makeWaitingCue(opts: {
-	player: PlayerLike;
-	createResource: (src: ResourceSource) => unknown;
+	player?: PlayerLike;
+	createResource?: (src: ResourceSource) => unknown;
+	roomIO?: () => RoomIO | undefined;
 	path: string;
 }): { start(): void; stop(): void } {
 	let on = false;
-	const playClip = () =>
-		opts.player.play(opts.createResource({ kind: "file", path: opts.path }));
+	let speechId: string | undefined;
+	let restartTimer: ReturnType<typeof setTimeout> | undefined;
+	const playClip = () => {
+		if (opts.roomIO) {
+			const room = opts.roomIO();
+			if (!room) return;
+			speechId = `eleven-wait:${randomUUID()}`;
+			void room
+				.playClip({
+					speechId,
+					generation: room.identity.generation,
+					source: { kind: "file", path: opts.path },
+					priority: "cue",
+				})
+				.then((receipt) => {
+					if (!on) return;
+					if (
+						receipt.outcome === "rejected" &&
+						!["speech_busy", "audible_tail_not_drained"].includes(
+							receipt.reason,
+						)
+					)
+						return;
+					const delayMs = Math.max(room.audibleTail().remainingMs ?? 0, 0);
+					restartTimer = setTimeout(playClip, delayMs);
+					restartTimer.unref?.();
+				});
+			return;
+		}
+		opts.player!.play(opts.createResource!({ kind: "file", path: opts.path }));
+	};
 	// registered once per session player; the clip ending fires "idle" → replay
-	opts.player.on("idle", () => {
+	opts.player?.on("idle", () => {
 		if (on) playClip();
 	});
 	return {
@@ -74,7 +107,13 @@ export function makeWaitingCue(opts: {
 		stop: () => {
 			if (!on) return;
 			on = false;
-			opts.player.stop();
+			if (restartTimer) clearTimeout(restartTimer);
+			restartTimer = undefined;
+			const room = opts.roomIO?.();
+			if (room && speechId)
+				room.localPlaybackCancel(speechId, room.identity.generation);
+			else opts.player?.stop();
+			speechId = undefined;
 		},
 	};
 }
@@ -82,6 +121,7 @@ export function makeWaitingCue(opts: {
 export interface WireElevenOptions {
 	config: HuddleBridgeConfig;
 	eleven: ElevenModeConfig;
+	claimSession?(): Promise<ResidentVoiceLease>;
 	registry: {
 		client(id: string): unknown;
 		join(
@@ -95,9 +135,11 @@ export interface WireElevenOptions {
 		): Promise<unknown>;
 	};
 	deps: DiscordDeps;
+	earsConnection?: unknown;
 	/** the daemon's shared room runtime (S5b) — REQUIRED: /eleven never owns
 	 * a private slot or ears. */
 	room: VoiceRoomRuntime;
+	roomIOAdapter?: RoomIOAdapter;
 	env?: NodeJS.ProcessEnv;
 	log?: (msg: string) => void;
 	fetchImpl?: typeof fetch;
@@ -242,6 +284,37 @@ export async function wireElevenMode(
 	};
 
 	const orchestratorClient = registry.client(ORCHESTRATOR);
+	type RoomClient = NonNullable<
+		NonNullable<RoomIOOptions["borrowedConnections"]>["inputClient"]
+	>;
+	const inputClient = registry.client("note-taker") as RoomClient;
+	const outputClient = orchestratorClient as RoomClient;
+	const inputBotUserId = inputClient.user?.id;
+	const outputBotUserId = outputClient.user?.id;
+	if (!inputBotUserId || !outputBotUserId)
+		throw new Error("room_io_bot_identity_unavailable");
+	if (!opts.roomIOAdapter && opts.earsConnection === undefined)
+		throw new Error("room_io_ears_connection_required");
+	const roomIOAdapter =
+		opts.roomIOAdapter ??
+		createBorrowedRoomIOAdapter({
+			deps,
+			token: config.orchestratorToken,
+			inputClient,
+			inputConnection: opts.earsConnection,
+			outputClient,
+			inputBotUserId,
+			outputBotUserId,
+			guildId: config.guildId,
+			voiceChannelId: config.voiceChannelId,
+			threadId: config.voiceChannelId,
+			founderUserId: config.founderUserId,
+			qaAllowUserIds: config.allowUserIds,
+			allowedClipPaths: eleven.waitingCuePath ? [eleven.waitingCuePath] : [],
+			buildSha: env.FLYWHEEL_BUILD_SHA ?? null,
+			onDiagnostic: (record) => log(`[room-io] ${JSON.stringify(record)}`),
+			onError: (error) => log(`[room-io] ${error.message}`),
+		});
 	let activeSession: ElevenSession | null = null;
 
 	// FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): founder PRESENCE over the resident
@@ -324,19 +397,19 @@ export async function wireElevenMode(
 			activeSession = null;
 			return true;
 		},
-		startSession: async ({ sessionId, issueId, topic }) => {
+		claimSession: opts.claimSession,
+		startSession: async ({ sessionId, issueId, topic, lease }) => {
 			let orchestratorConn: unknown;
+			let activeRoomIO: RoomIO | undefined;
+			let detachRoomIO: (() => void) | undefined;
 			let noShowTimer: ReturnType<typeof setTimeout> | undefined;
-			const deferredPlayer = makeDeferredPlayer(log);
 			const speaker = new AssistantSpeaker({
-				player: deferredPlayer.player,
-				createResource: deps.createResource,
+				roomIO: () => activeRoomIO,
 				log,
 			});
 			const cue = eleven.waitingCuePath
 				? makeWaitingCue({
-						player: deferredPlayer.player,
-						createResource: deps.createResource,
+						roomIO: () => activeRoomIO,
 						path: eleven.waitingCuePath,
 					})
 				: undefined;
@@ -434,6 +507,7 @@ export async function wireElevenMode(
 				...(issueId ? { issueId } : {}),
 				slot: room.slot,
 				slotMode: ELEVEN_SLOT_MODE,
+				lease,
 				ears: room,
 				connect,
 				speaker,
@@ -445,12 +519,23 @@ export async function wireElevenMode(
 							selfMute: false,
 							selfDeaf: true, // the ears bot hears; the mouth must not echo
 						});
-						deferredPlayer.setReal(deps.createPlayer(orchestratorConn));
+						activeRoomIO = await roomIOAdapter.activate({
+							sessionId,
+							generation: lease?.sessionGeneration ?? 1,
+							outputConnection: orchestratorConn,
+							assertLease: () => lease?.assertActive(),
+						});
+						detachRoomIO = room.attachRoomIO(activeRoomIO);
+						log(`[room-io-identity] ${JSON.stringify(activeRoomIO.identity)}`);
 					},
-					leave: () => {
-						if (orchestratorConn) deps.leaveVoice(orchestratorConn);
+					leave: async () => {
+						detachRoomIO?.();
+						detachRoomIO = undefined;
+						const active = activeRoomIO;
+						activeRoomIO = undefined;
+						if (active) await roomIOAdapter.deactivate(active);
+						else if (orchestratorConn) deps.leaveVoice(orchestratorConn);
 						orchestratorConn = undefined;
-						deferredPlayer.clear();
 					},
 				},
 				cue,

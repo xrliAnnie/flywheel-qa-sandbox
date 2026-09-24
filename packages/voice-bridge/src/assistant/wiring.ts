@@ -27,6 +27,7 @@ import {
 	HeadlessClaudeBrain,
 	JsonlTranscriptSink,
 	type ResumeHandle,
+	type RoomIO,
 	resolveConfig as resolveVoiceCoreConfig,
 	TalkSessionRotator,
 } from "flywheel-voice-core";
@@ -34,7 +35,12 @@ import { superviseVoiceConnection } from "../audio/VoiceConnSupervisor.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
 import { TivPresenter } from "../discord/TivPresenter.js";
-import { wireRoomEars } from "../roomEars.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
+import {
+	createBorrowedRoomIOAdapter,
+	type RoomIOAdapter,
+} from "../room/adapter.js";
+import type { RoomIOOptions } from "../room/RoomIO.js";
 import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 import { AssistantLanding } from "./AssistantLanding.js";
 import { AssistantSession, type ConversationLike } from "./AssistantSession.js";
@@ -98,6 +104,8 @@ export interface WireAssistantOptions {
 	/** FLY-1160 §3.3 Phase 1: when true, new /gemini invocations are refused
 	 * (命令下架) — the daemon is shutting down and must not start meetings. */
 	isShuttingDown?: () => boolean;
+	claimSession?(): Promise<ResidentVoiceLease>;
+	roomIOAdapter?: RoomIOAdapter;
 }
 
 export interface AssistantRuntime {
@@ -235,25 +243,41 @@ export async function wireAssistantMode(
 		}
 	});
 
-	// ---- shared room runtime (FLY-1006 S5b): ONE slot + ONE resident-ears
-	// routing for every voice mode. The daemon passes the shared room (and
-	// wires the physical receiver itself, once); a direct caller without a
-	// room keeps the FLY-967 behavior — its own room + its own receiver.
+	// ---- shared room runtime: ONE slot + canonical RoomIO routing.
 	// /gemini registers no barge-in consumer, so the room's barge-in route
 	// stays a no-op for it (v1 unchanged: Gemini server VAD is the main path).
 	const room = opts.room ?? new VoiceRoomRuntime();
-	const ownEars = opts.room
-		? undefined
-		: wireRoomEars({
-				room,
-				deps,
-				earsConnection: opts.earsConnection,
-				earsClient: registry.client("note-taker"),
-				guildId: config.guildId,
-				allowUserIds: config.allowUserIds,
-				backchannelMs: config.backchannelMs,
-				log,
-			});
+	type RoomClient = NonNullable<
+		NonNullable<RoomIOOptions["borrowedConnections"]>["inputClient"]
+	>;
+	const inputClient = registry.client("note-taker") as RoomClient;
+	const outputClient = orchestratorClient as RoomClient;
+	const inputBotUserId = inputClient.user?.id;
+	const outputBotUserId = outputClient.user?.id;
+	if (!inputBotUserId || !outputBotUserId)
+		throw new Error("room_io_bot_identity_unavailable");
+	const roomIOAdapter =
+		opts.roomIOAdapter ??
+		createBorrowedRoomIOAdapter({
+			deps,
+			token: config.orchestratorToken,
+			inputClient,
+			inputConnection: opts.earsConnection,
+			outputClient,
+			inputBotUserId,
+			outputBotUserId,
+			guildId: config.guildId,
+			voiceChannelId: config.voiceChannelId,
+			threadId: config.voiceChannelId,
+			founderUserId: config.founderUserId,
+			qaAllowUserIds: config.allowUserIds,
+			allowedClipPaths: [config.earconPath, config.fillerPath].filter(
+				(path): path is string => !!path,
+			),
+			buildSha: env.FLYWHEEL_BUILD_SHA ?? null,
+			onDiagnostic: (record) => log(`[room-io] ${JSON.stringify(record)}`),
+			onError: (error) => log(`[room-io] ${error.message}`),
+		});
 
 	const slot = room.slot;
 	let activeSession: AssistantSession | null = null;
@@ -325,20 +349,21 @@ export async function wireAssistantMode(
 			sessionId,
 			issueId,
 			topic,
+			lease,
 		}: {
 			sessionId: string;
 			issueId: string;
 			topic?: string;
+			lease?: ResidentVoiceLease;
 		}) => {
 			let orchestratorConn: unknown;
-			// the real AudioPlayer exists only after the orchestrator joins the VC.
-			// makeDeferredPlayer (round-5b) queues on() registrations until then
-			// and logs LOUDLY if anything plays with no player — never silent.
-			const deferredPlayer = makeDeferredPlayer(log);
+			let activeRoomIO: RoomIO | undefined;
+			let detachRoomIO: (() => void) | undefined;
 			let disposeOrchWatch: (() => void) | undefined;
 			const speaker = new AssistantSpeaker({
-				player: deferredPlayer.player,
-				createResource: deps.createResource,
+				roomIO: () => activeRoomIO,
+				earconPath: config.earconPath,
+				fillerPath: config.fillerPath,
 				log,
 			});
 			const session = new AssistantSession({
@@ -346,6 +371,7 @@ export async function wireAssistantMode(
 				sessionId,
 				topic,
 				slot,
+				lease,
 				briefing,
 				createConversation: (p: string, o: { sessionId: string }) =>
 					create(p, { ...o, advanced }),
@@ -358,7 +384,14 @@ export async function wireAssistantMode(
 							selfMute: false,
 							selfDeaf: true, // the ears bot hears; the mouth must not echo
 						});
-						deferredPlayer.setReal(deps.createPlayer(orchestratorConn));
+						activeRoomIO = await roomIOAdapter.activate({
+							sessionId,
+							generation: lease?.sessionGeneration ?? 1,
+							outputConnection: orchestratorConn,
+							assertLease: () => lease?.assertActive(),
+						});
+						detachRoomIO = room.attachRoomIO(activeRoomIO);
+						log(`[room-io-identity] ${JSON.stringify(activeRoomIO.identity)}`);
 						// FLY-967 round-3: the mouth died ASYNCHRONOUSLY after a clean
 						// Ready on Annie's rounds (best hypothesis: Node v25 IP-discovery
 						// error post-join) and nothing noticed. Supervise the connection:
@@ -376,12 +409,16 @@ export async function wireAssistantMode(
 								})
 							: undefined;
 					},
-					leave: () => {
+					leave: async () => {
 						disposeOrchWatch?.();
 						disposeOrchWatch = undefined;
-						if (orchestratorConn) deps.leaveVoice(orchestratorConn);
+						detachRoomIO?.();
+						detachRoomIO = undefined;
+						const active = activeRoomIO;
+						activeRoomIO = undefined;
+						if (active) await roomIOAdapter.deactivate(active);
+						else if (orchestratorConn) deps.leaveVoice(orchestratorConn);
 						orchestratorConn = undefined;
-						deferredPlayer.clear();
 					},
 					founderPresent: () => {
 						if (qaPresenceOverride) {
@@ -454,6 +491,7 @@ export async function wireAssistantMode(
 						)
 				: undefined,
 			log,
+			claimSession: opts.claimSession,
 			startSession: makeStartSession(name, create, advanced),
 		});
 
@@ -538,7 +576,6 @@ ${o.joinUrl}`
 		close: async (closeOpts?: { signal?: AbortSignal }) => {
 			briefing.stop();
 			unsubVoiceState();
-			ownEars?.dispose();
 			await activeSession?.stop(closeOpts);
 			activeSession = null;
 		},

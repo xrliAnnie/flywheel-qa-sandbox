@@ -19,7 +19,8 @@ import type { HuddleBridgeConfig } from "../config.js";
 // on fakes; assistant:null + eleven:null keep the /gemini + /eleven modes off.)
 function fakeDeps(): DiscordDeps {
 	return {
-		createClient: () => ({
+		createClient: (token: string) => ({
+			user: { id: `bot-${token}` },
 			login: async () => "ok",
 			isReady: () => true,
 			once: () => {},
@@ -44,11 +45,20 @@ function fakeDeps(): DiscordDeps {
 			edit: async () => {},
 		}),
 		registerGuildCommand: async () => {},
+		onChatCommand: () => {},
 		onChatInteraction: (_c: unknown, _n: string, cb: (i: unknown) => void) => {
 			glawInteractionCb = cb;
 		},
-		onVoiceStateUpdate: () => {},
+		sendMessage: async () => {},
+		onVoiceStateUpdate: () => () => {},
+		voiceChannelHumanCount: async () => 0,
 		moveMemberDetailed: async () => ({ ok: true }),
+		memberDisplayName: async () => undefined,
+		leaveVoice: () => {},
+		connectionEvents: () => ({
+			onDown: () => () => {},
+			onUp: () => () => {},
+		}),
 	} as unknown as DiscordDeps;
 }
 
@@ -163,7 +173,8 @@ describe("voice-bridge daemon — BrainPort assembly", () => {
 		const hp = randPort();
 		const bp = randPort();
 		const deps = fakeDeps();
-		(deps as { createClient: unknown }).createClient = () => ({
+		(deps as { createClient: unknown }).createClient = (token: string) => ({
+			user: { id: `bot-${token}` },
 			login: async () => "ok",
 			isReady: () => true,
 			once: () => {},

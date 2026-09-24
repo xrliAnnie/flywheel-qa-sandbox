@@ -49,6 +49,7 @@ const CONFIG: HuddleBridgeConfig = {
 
 const ASSISTANT = {
 	commandName: "gemini",
+	leadId: "flywheel-eng-lead",
 	voice: "Kore",
 	assistantToken: null,
 	briefing: { refreshSec: 600, maxAgeSec: 1800, charBudget: 8000, docs: [] },
@@ -87,6 +88,7 @@ class FakeConversation implements ConversationLike {
 }
 
 function makeFakes() {
+	let clientSequence = 0;
 	const registered: { name: string; description: string }[] = [];
 	const commandHandlers = new Map<
 		string,
@@ -107,6 +109,7 @@ function makeFakes() {
 	const deps: DiscordDeps = {
 		createClient: () => ({
 			id: "client",
+			user: { id: String(200000000000000001n + BigInt(clientSequence++)) },
 			login: async () => "ok",
 			isReady: () => true,
 			once: () => {},
@@ -142,6 +145,7 @@ function makeFakes() {
 		}),
 		onVoiceStateUpdate: () => () => {},
 		voiceChannelHumanCount: async () => 1, // founder already in the VC
+		userVoiceChannelId: async () => CONFIG.voiceChannelId,
 		moveMember: vi.fn(async () => true),
 		moveMemberDetailed: vi.fn(async () => "moved" as const),
 		memberDisplayName: async () => undefined,
@@ -154,13 +158,36 @@ function makeFakes() {
 	};
 
 	const registry = {
-		client: () => ({ id: "client" }),
+		client: (id: string) => ({
+			id: "client",
+			user: { id: id === "note-taker" ? "ears-bot" : "orchestrator-bot" },
+		}),
 		join: vi.fn(async () => ({ conn: "orch" })),
 	};
 
 	const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
 		fetchCalls.push({ url: String(url), init: init ?? {} });
 		const u = String(url);
+		if (u.includes("/api/voice/sessions/resident/claim")) {
+			const body = JSON.parse(String(init?.body)) as {
+				ownerBootId: string;
+				sessionGeneration: number;
+			};
+			return Response.json(
+				{
+					status: "inserted",
+					sessionId: `voice-${body.sessionGeneration}`,
+					state: "claimed",
+					carrierKind: "resident",
+					ownerBootId: body.ownerBootId,
+					sessionGeneration: body.sessionGeneration,
+					leaseToken: `lease-${body.sessionGeneration}`,
+					leaseTtlMs: 15_000,
+					leaseExpiresAt: new Date(Date.now() + 15_000).toISOString(),
+				},
+				{ status: 201 },
+			);
+		}
 		if (u.includes("/api/linear/create-issue")) {
 			return Response.json({
 				issue: { identifier: "FLY-1400", url: "https://l/FLY-1400" },

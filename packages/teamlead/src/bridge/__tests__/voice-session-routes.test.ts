@@ -54,6 +54,42 @@ async function start() {
 			updatedAt: NOW,
 		});
 	});
+	const resolveResidentStart = vi.fn(() => ({
+		projectName: "flywheel",
+		leadId: "lead-a",
+		requestId: "resident-request",
+		inputDigest: "resident-digest",
+		ownerBootId: "bridge-boot",
+		sessionGeneration: 3,
+		bindingProof: {
+			version: 1 as const,
+			projectName: "flywheel",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000099",
+			ownerBootId: "bridge-boot",
+			sessionGeneration: 3,
+			outputBotUserId: "100000000000000006",
+			earsBotUserId: "100000000000000007",
+			outputBotDropped: true,
+			earsBotDropped: true,
+			unknownDropped: true,
+			allowedHumanPassed: true,
+			observedAt: NOW,
+			expiresAt: "2026-09-08T20:01:00.000Z",
+		},
+		reservation: {
+			sessionId: "10000000-0000-4000-8000-000000000099",
+			mode: "rg" as const,
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceChannelId: "100000000000000099",
+			voiceBotUserId: "100000000000000006",
+			requestedBy: "master",
+			credentialTier: "master" as const,
+			createdAt: NOW,
+		},
+	}));
 	const app = express();
 	app.use(express.json());
 	app.use(
@@ -79,6 +115,7 @@ async function start() {
 				credentialTier,
 				createdAt: NOW,
 			}),
+			resolveResidentStart,
 			provisionSession,
 			reportAbandoned,
 			projectSession,
@@ -93,6 +130,7 @@ async function start() {
 		reportAbandoned,
 		projectSession,
 		validateSession,
+		resolveResidentStart,
 	};
 }
 
@@ -121,6 +159,80 @@ async function call(
 }
 
 describe("voice session routes", () => {
+	it("atomically reserves a trusted resident binding and fences daemon plus stale owners", async () => {
+		const { base, provisionSession, resolveResidentStart } = await start();
+		expect(
+			await call(base, "/resident/claim", {
+				method: "POST",
+				token: INGEST,
+				body: { guildId: "attacker-choice" },
+			}),
+		).toMatchObject({ status: 403 });
+		const claimed = await call(base, "/resident/claim", {
+			method: "POST",
+			token: MASTER,
+			body: { guildId: "attacker-choice" },
+		});
+		expect(claimed).toMatchObject({
+			status: 201,
+			body: {
+				state: "claimed",
+				carrierKind: "resident",
+				ownerBootId: "bridge-boot",
+				sessionGeneration: 3,
+				leaseToken: expect.any(String),
+			},
+		});
+		expect(resolveResidentStart).toHaveBeenCalledWith({
+			guildId: "attacker-choice",
+		});
+		expect(provisionSession).not.toHaveBeenCalled();
+		expect(await call(base, "/desired", { token: MASTER })).toMatchObject({
+			status: 200,
+			body: { session: null },
+		});
+		const sessionId = (claimed.body as { sessionId: string }).sessionId;
+		const leaseToken = (claimed.body as { leaseToken: string }).leaseToken;
+		expect(
+			await call(base, `/${sessionId}/claim`, {
+				method: "POST",
+				token: MASTER,
+				body: { daemonBootId: "daemon-boot" },
+			}),
+		).toMatchObject({ status: 409 });
+		expect(
+			await call(base, `/${sessionId}/renew`, {
+				method: "POST",
+				token: MASTER,
+				lease: leaseToken,
+				body: {
+					ownerBootId: "wrong-boot",
+					sessionGeneration: 3,
+				},
+			}),
+		).toMatchObject({ status: 409 });
+		expect(
+			await call(base, `/${sessionId}/renew`, {
+				method: "POST",
+				token: MASTER,
+				lease: leaseToken,
+				body: {
+					ownerBootId: "bridge-boot",
+					sessionGeneration: 3,
+					bindingProof: {
+						...resolveResidentStart.mock.results[0]!.value.bindingProof,
+						expiresAt: "2026-09-08T20:02:00.000Z",
+					},
+				},
+			}),
+		).toMatchObject({ status: 200, body: { state: "claimed" } });
+		expect(
+			store.getVoiceSession(sessionId)?.residentBindingProof,
+		).toMatchObject({
+			expiresAt: "2026-09-08T20:02:00.000Z",
+		});
+	});
+
 	it("starts through the ingest tier, reserves first, and returns idempotent success", async () => {
 		const { base, provisionSession } = await start();
 		expect(

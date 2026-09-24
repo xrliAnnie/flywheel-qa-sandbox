@@ -9,9 +9,13 @@ export {
 	type BridgeVoiceClientOptions,
 	type FetchLike,
 	type GateBinding,
+	type HeadphoneSessionBinding,
+	type HeadphoneSourceHealth,
+	type HeadphoneSourceState,
 	type ShipApprovalRequest,
 	type ShipApprovalResult,
 	type VoiceContext,
+	type VoiceHandoffResultsPage,
 	type VoiceScope,
 } from "./bridge-client.js";
 export { type HeadphoneConfig, loadHeadphoneConfig } from "./config.js";
@@ -37,6 +41,7 @@ export {
 	type RecoveryDeps,
 	sendMarker,
 } from "./recovery.js";
+export * from "./session.js";
 export {
 	type DaemonState,
 	loadState,
