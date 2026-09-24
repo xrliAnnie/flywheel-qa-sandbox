@@ -1,13 +1,14 @@
 ---
 issue: FLY-2828
 phase: implement
-phaseCursor: 4/7
-updated: 2026-09-24T08:13:23.789Z
-nextStep: add C7 freeze/verify scripts and T17 checked-in SQL coverage
+phaseCursor: 5/7
+updated: 2026-09-24T08:17:39.129Z
+nextStep: audit changed-file consumers, run targeted verification, lint, builds,
+  and typechecks
 chunks: []
 pointers: {}
 ---
 
 # FLY-2828 progress
-**phase**: implement (4/7)
-**next**: add C7 freeze/verify scripts and T17 checked-in SQL coverage
+**phase**: implement (5/7)
+**next**: audit changed-file consumers, run targeted verification, lint, builds, and typechecks
