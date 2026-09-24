@@ -77,6 +77,23 @@ afterEach(() => {
 });
 
 describe("member filter", () => {
+	it("proves resident self-filtering with the exact admission predicate", () => {
+		const rig = makeRig();
+		expect(
+			rig.receiver.selfFilterProof({
+				outputBotUserId: "bot-output",
+				earsBotUserId: "bot-ears",
+				unknownUserId: "unknown",
+				allowedHumanUserId: "human-annie",
+			}),
+		).toEqual({
+			outputBotDropped: true,
+			earsBotDropped: true,
+			unknownDropped: true,
+			allowedHumanPassed: true,
+		});
+	});
+
 	it("subscribes a human on speaking start", () => {
 		const rig = makeRig();
 		rig.speaking.fire("start", "human-annie");

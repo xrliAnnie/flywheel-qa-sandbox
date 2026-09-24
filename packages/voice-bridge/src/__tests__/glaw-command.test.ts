@@ -146,6 +146,36 @@ describe("guards", () => {
 });
 
 describe("happy path", () => {
+	it("claims the resident room before creating an issue and carries the lease", async () => {
+		const lease = { sessionId: "voice-session" };
+		const claimSession = vi.fn(async () => lease as never);
+		const { cmd, onMeet, createIssue } = makeCommand({ claimSession });
+		const { interaction } = makeInteraction({ users: { lead: tadashiUser } });
+
+		await cmd.handleInteraction(interaction);
+
+		expect(claimSession).toHaveBeenCalledWith("flywheel-eng-lead");
+		expect(createIssue).toHaveBeenCalledOnce();
+		expect(onMeet).toHaveBeenCalledWith(expect.objectContaining({ lease }));
+	});
+
+	it("does not create an issue when the resident room claim fails", async () => {
+		const { cmd, createIssue, onMeet } = makeCommand({
+			claimSession: async () => {
+				throw new Error("bridge unavailable");
+			},
+		});
+		const { interaction, edits } = makeInteraction({
+			users: { lead: tadashiUser },
+		});
+
+		await cmd.handleInteraction(interaction);
+
+		expect(String(edits[0]?.content)).toContain("房间租约获取失败");
+		expect(createIssue).not.toHaveBeenCalled();
+		expect(onMeet).not.toHaveBeenCalled();
+	});
+
 	it("defers FIRST (3s window), creates the kickoff issue, edits in the receipt, hands off", async () => {
 		const { cmd, onMeet, createIssue } = makeCommand();
 		const { interaction, replies, edits, events } = makeInteraction({
