@@ -49,12 +49,26 @@ export class HeadphoneMode {
 		this.unsubscribeUtterance = this.options.engine.onUtterance((utterance) => {
 			if (utterance.final) this.noteActivity();
 		});
-		await this.readInbox("entry");
+		await this.speakEntry(
+			(this.options.sourceHealthy?.() ?? true)
+				? "我正在整理现在的情况和等你决定的事。"
+				: "我正在整理现在的情况，但有些消息来源暂时没读全。",
+			`entry:${this.options.engine.sessionId}:${this.options.engine.generation}:intro`,
+		);
+		if ((await this.readInbox("entry")) === 0) {
+			const healthy = this.options.sourceHealthy?.() ?? true;
+			await this.speakEntry(
+				healthy
+					? "目前没有要你决定或需要汇报的新消息。"
+					: "有些消息来源暂时没读全，我不能确认现在没有新消息。",
+				`entry:${this.options.engine.sessionId}:${this.options.engine.generation}:empty`,
+			);
+		}
 		this.armHeartbeat();
 	}
 
-	notifyInboxChanged(): Promise<void> {
-		return this.readInbox("new_message");
+	async notifyInboxChanged(): Promise<void> {
+		await this.readInbox("new_message");
 	}
 
 	/** Public deterministic clock seam; the real timer calls the same method. */
@@ -107,11 +121,30 @@ export class HeadphoneMode {
 		await this.options.engine.close();
 	}
 
-	private readInbox(reason: "entry" | "new_message"): Promise<void> {
+	private readInbox(reason: "entry" | "new_message"): Promise<number> {
 		return this.enqueue(async () => {
 			const acked = await this.options.inbox.poll();
 			if (acked > 0) this.noteActivity();
 			this.options.record({ kind: "headphone_inbox_polled", reason, acked });
+			return acked;
+		});
+	}
+
+	private speakEntry(text: string, pendingKey: string): Promise<void> {
+		return this.enqueue(async () => {
+			try {
+				const receipt = await this.options.engine.speak(text, "brief", {
+					pendingKey,
+					verification: "none",
+				});
+				if (receipt.outcome === "completed") {
+					this.noteActivity();
+					return;
+				}
+				this.voiceUnavailable(receipt.reason);
+			} catch (error) {
+				this.voiceUnavailable(error);
+			}
 		});
 	}
 

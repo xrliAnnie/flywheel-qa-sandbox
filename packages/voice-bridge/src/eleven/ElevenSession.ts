@@ -134,7 +134,7 @@ export interface ElevenSessionOptions {
 	 * ElevenWs; injected offline in tests). */
 	connect(handlers: ElevenWsHandlers): Promise<ElevenWsLike>;
 	speaker: ElevenSpeakerLike;
-	voice: { join(): Promise<void>; leave(): void };
+	voice: { join(): Promise<void>; leave(): Promise<void> | void };
 	/** M2 追加要求②: the audible "thinking" cue between founder speech-end
 	 * and the first audio frame. Optional and off when absent. */
 	cue?: { start(): void; stop(): void };
@@ -256,7 +256,7 @@ export class ElevenSession {
 			if (this.isEnded()) return;
 			await opts.voice.join();
 			if (this.isEnded()) {
-				this.opts.voice.leave();
+				await this.opts.voice.leave();
 				return;
 			}
 			this.ws = await opts.connect({
@@ -304,7 +304,7 @@ export class ElevenSession {
 			if (this.isEnded()) {
 				this.ws?.close();
 				this.ws = null;
-				this.opts.voice.leave();
+				await this.opts.voice.leave();
 				return;
 			}
 			// FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): the no-show path is driven
@@ -506,7 +506,7 @@ export class ElevenSession {
 		this.opts.speaker.flush();
 		this.ws?.close();
 		this.ws = null;
-		this.opts.voice.leave();
+		await this.opts.voice.leave();
 
 		// ④ interrupt the in-flight brain turn and AWAIT its barrier before the
 		// minutes turn (a real meeting only — start-failure never had a turn).

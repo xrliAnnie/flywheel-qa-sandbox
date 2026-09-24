@@ -76,6 +76,10 @@ describe("HeadphoneMode V2 minimum", () => {
 
 		expect(engine.speakCalls.map(({ text, kind }) => ({ text, kind }))).toEqual(
 			[
+				{
+					text: "我正在整理现在的情况和等你决定的事。",
+					kind: "brief",
+				},
 				{ text: "要你决定先做甲还是乙。", kind: "question" },
 				{ text: "现在一切正常。", kind: "brief" },
 			],
@@ -151,7 +155,27 @@ describe("HeadphoneMode V2 minimum", () => {
 			record: vi.fn(),
 		});
 		await mode.start("context");
-		expect(engine.speakCalls[0]?.text).toBe("原文的末尾也必须保留。");
+		expect(engine.speakCalls[1]?.text).toBe("原文的末尾也必须保留。");
+		await mode.close();
+	});
+
+	it("speaks an explicit factual opening even when the current inbox is empty", async () => {
+		const engine = new FakeV1Session();
+		const inbox = inboxHarness(engine);
+		const mode = new HeadphoneMode({
+			engine,
+			inbox: inbox.reader,
+			room: room(),
+			sourceHealthy: () => false,
+			record: vi.fn(),
+		});
+
+		await mode.start("context");
+
+		expect(engine.speakCalls.map((call) => call.text)).toEqual([
+			"我正在整理现在的情况，但有些消息来源暂时没读全。",
+			"有些消息来源暂时没读全，我不能确认现在没有新消息。",
+		]);
 		await mode.close();
 	});
 });

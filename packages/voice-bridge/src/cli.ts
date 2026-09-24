@@ -22,6 +22,7 @@ import {
 	EdgeTts,
 	GeminiLiveBackend,
 	ResidentBrainManager,
+	type RoomIO,
 } from "flywheel-voice-core";
 import {
 	type AssistantModeConfig,
@@ -53,9 +54,14 @@ import {
 import { BridgeLinearClient } from "./linear/BridgeLinearClient.js";
 import { type BinaryProbe, verifyPlaybackStack } from "./preflight.js";
 import {
+	type ResidentSelfFilterProof,
 	type ResidentVoiceLease,
 	ResidentVoiceSessionClient,
 } from "./resident-voice-session.js";
+import {
+	createBorrowedRoomIOAdapter,
+	type RoomIOAdapter,
+} from "./room/adapter.js";
 import { type RoomEarsRuntime, wireRoomEars } from "./roomEars.js";
 import { VoiceRoomRuntime } from "./VoiceRoomRuntime.js";
 
@@ -225,6 +231,7 @@ export async function runVoiceBridge(
 	let assistantRuntime: AssistantRuntime | undefined;
 	let elevenRuntime: ElevenRuntime | undefined;
 	let roomEars: RoomEarsRuntime | undefined;
+	let activeCanonicalRoom: RoomIO | undefined;
 	try {
 		if (config.brain?.port !== undefined) {
 			const brainToken = process.env[BRAIN_PORT_TOKEN_ENV];
@@ -316,21 +323,71 @@ export async function runVoiceBridge(
 		).user?.id;
 		if (!orchestratorUserId || !earsUserId)
 			throw new Error("resident_voice_bot_identity_unavailable");
-		roomEars = wireRoomEars({
-			room,
+		const wireIdleRoomEars = (): void => {
+			if (roomEars || state.shuttingDown) return;
+			roomEars = wireRoomEars({
+				room,
+				deps,
+				earsConnection,
+				earsClient: registry.client(NOTE_TAKER),
+				guildId: config.guildId,
+				allowUserIds: config.allowUserIds,
+				backchannelMs: config.backchannelMs,
+				bargeInMinRms: config.bargeInMinRms,
+				bargeInHoldoffMs: config.bargeInHoldoffMs,
+				outputBotUserId: orchestratorUserId,
+				earsBotUserId: earsUserId,
+				founderUserId: config.founderUserId,
+				log,
+			});
+		};
+		wireIdleRoomEars();
+		const canonicalAdapter = createBorrowedRoomIOAdapter({
 			deps,
-			earsConnection,
-			earsClient: registry.client(NOTE_TAKER),
-			guildId: config.guildId,
-			allowUserIds: config.allowUserIds,
-			backchannelMs: config.backchannelMs,
-			bargeInMinRms: config.bargeInMinRms,
-			bargeInHoldoffMs: config.bargeInHoldoffMs,
+			token: config.orchestratorToken,
+			inputClient: registry.client(NOTE_TAKER),
+			inputConnection: earsConnection,
+			outputClient: registry.client(ORCHESTRATOR),
+			inputBotUserId: earsUserId,
 			outputBotUserId: orchestratorUserId,
-			earsBotUserId: earsUserId,
+			guildId: config.guildId,
+			voiceChannelId: config.voiceChannelId,
+			threadId: config.voiceChannelId,
 			founderUserId: config.founderUserId,
-			log,
+			qaAllowUserIds: config.allowUserIds,
+			allowedClipPaths: [
+				config.earconPath,
+				config.fillerPath,
+				eleven?.waitingCuePath,
+			].filter((path): path is string => !!path),
+			buildSha: process.env.FLYWHEEL_BUILD_SHA ?? null,
+			onDiagnostic: (record) => log(`[room-io] ${JSON.stringify(record)}`),
+			onError: (error) => log(`[room-io] ${error.message}`),
 		});
+		const roomIOAdapter: RoomIOAdapter = {
+			activate: async (input) => {
+				if (activeCanonicalRoom) throw new Error("room_io_adapter_busy");
+				roomEars?.dispose();
+				try {
+					const active = await canonicalAdapter.activate(input);
+					activeCanonicalRoom = active;
+					roomEars = undefined;
+					return active;
+				} catch (error) {
+					roomEars = undefined;
+					wireIdleRoomEars();
+					throw error;
+				}
+			},
+			deactivate: async (active) => {
+				try {
+					await canonicalAdapter.deactivate(active);
+				} finally {
+					if (activeCanonicalRoom === active) activeCanonicalRoom = undefined;
+					wireIdleRoomEars();
+				}
+			},
+		};
 		const residentSessions = new ResidentVoiceSessionClient({
 			bridgeUrl: config.bridgeUrl,
 			apiToken: config.apiToken,
@@ -340,7 +397,26 @@ export async function runVoiceBridge(
 			outputBotUserId: orchestratorUserId,
 			earsBotUserId: earsUserId,
 			ownerBootId: randomUUID(),
-			selfFilterProof: () => roomEars!.selfFilterProof(),
+			selfFilterProof: () => {
+				if (activeCanonicalRoom) {
+					return (
+						activeCanonicalRoom as RoomIO & {
+							selfFilterProof(input: {
+								outputBotUserId: string;
+								earsBotUserId: string;
+								allowedHumanUserId: string;
+							}): ResidentSelfFilterProof;
+						}
+					).selfFilterProof({
+						outputBotUserId: orchestratorUserId,
+						earsBotUserId: earsUserId,
+						allowedHumanUserId: config.founderUserId,
+					});
+				}
+				if (!roomEars)
+					throw new Error("resident_voice_self_filter_unavailable");
+				return roomEars.selfFilterProof();
+			},
 			fetchImpl:
 				opts.assistantWiring?.fetchImpl ?? opts.elevenWiring?.fetchImpl,
 		});
@@ -743,6 +819,7 @@ export async function runVoiceBridge(
 					room,
 					log,
 					...opts.assistantWiring,
+					roomIOAdapter,
 					claimSession: () =>
 						residentSessions.claim({
 							requestId: randomUUID(),
@@ -762,12 +839,14 @@ export async function runVoiceBridge(
 					eleven,
 					registry,
 					deps,
+					earsConnection,
 					room,
 					log,
 					// FLY-1160 §4.2: the resident brain the /eleven meeting speaks
 					// with — the SAME daemon-owned manager the BrainPort serves.
 					brainManager,
 					...opts.elevenWiring,
+					roomIOAdapter,
 					claimSession: () =>
 						residentSessions.claim({
 							requestId: randomUUID(),

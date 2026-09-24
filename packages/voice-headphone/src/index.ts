@@ -41,6 +41,7 @@ export {
 	type RecoveryDeps,
 	sendMarker,
 } from "./recovery.js";
+export * from "./session.js";
 export {
 	type DaemonState,
 	loadState,

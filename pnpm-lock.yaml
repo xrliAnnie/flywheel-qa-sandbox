@@ -674,6 +674,9 @@ importers:
       flywheel-voice-core:
         specifier: workspace:*
         version: link:../voice-core
+      flywheel-voice-headphone:
+        specifier: workspace:*
+        version: link:../voice-headphone
       ws:
         specifier: 8.19.0
         version: 8.19.0

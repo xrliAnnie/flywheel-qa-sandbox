@@ -504,6 +504,26 @@ export class BridgeRoomIO implements RoomIOContract {
 		return userId ? { userId, name: this.names.get(userId) ?? userId } : null;
 	}
 
+	/** The proof exercises the same allow-set used by speakingStart/startCapture;
+	 * it is bound into the resident lease before each renewal. */
+	selfFilterProof(input: {
+		outputBotUserId: string;
+		earsBotUserId: string;
+		allowedHumanUserId: string;
+	}): {
+		outputBotDropped: boolean;
+		earsBotDropped: boolean;
+		unknownDropped: boolean;
+		allowedHumanPassed: boolean;
+	} {
+		return {
+			outputBotDropped: !this.allowed.has(input.outputBotUserId),
+			earsBotDropped: !this.allowed.has(input.earsBotUserId),
+			unknownDropped: !this.allowed.has(""),
+			allowedHumanPassed: this.allowed.has(input.allowedHumanUserId),
+		};
+	}
+
 	startSpeech(input: SpeechStart): SpeechStartReceipt {
 		const reason = this.validateSpeechStart(input);
 		if (reason) {

@@ -145,6 +145,7 @@ function makeFakes() {
 		}),
 		onVoiceStateUpdate: () => () => {},
 		voiceChannelHumanCount: async () => 1, // founder already in the VC
+		userVoiceChannelId: async () => CONFIG.voiceChannelId,
 		moveMember: vi.fn(async () => true),
 		moveMemberDetailed: vi.fn(async () => "moved" as const),
 		memberDisplayName: async () => undefined,
@@ -157,7 +158,10 @@ function makeFakes() {
 	};
 
 	const registry = {
-		client: () => ({ id: "client" }),
+		client: (id: string) => ({
+			id: "client",
+			user: { id: id === "note-taker" ? "ears-bot" : "orchestrator-bot" },
+		}),
 		join: vi.fn(async () => ({ conn: "orch" })),
 	};
 

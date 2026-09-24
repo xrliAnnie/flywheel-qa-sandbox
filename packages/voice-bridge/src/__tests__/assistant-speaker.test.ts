@@ -8,6 +8,7 @@
  * the model is silent while it waits).
  */
 import type { Readable } from "node:stream";
+import type { RoomIO } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantSpeaker } from "../assistant/AssistantSpeaker.js";
 import type { ResourceSource } from "../audio/LeadSpeaker.js";
@@ -69,6 +70,49 @@ describe("AssistantSpeaker (FLY-967 P3)", () => {
 		const joined = Buffer.concat(chunks).toString();
 		expect(joined).toBe("UP:aaUP:bbUP:cc");
 		expect(player.played).toHaveLength(1); // still one resource for the turn
+	});
+
+	it("routes production turn frames through the canonical RoomIO", async () => {
+		const room = {
+			identity: { generation: 7 },
+			startSpeech: vi.fn(({ speechId }) => ({
+				outcome: "accepted",
+				speechId,
+				generation: 7,
+			})),
+			writeSpeech: vi.fn(async ({ speechId, sequence }) => ({
+				outcome: "submitted",
+				speechId,
+				generation: 7,
+				sequence,
+			})),
+			endSpeech: vi.fn(async (speechId) => ({
+				outcome: "submitted",
+				speechId,
+				generation: 7,
+			})),
+		} as unknown as RoomIO;
+		const speaker = new AssistantSpeaker({ roomIO: () => room });
+
+		speaker.beginTurn();
+		speaker.feed(Buffer.from([1, 2]));
+		speaker.feed(Buffer.from([3, 4]));
+		speaker.endTurn();
+
+		await vi.waitFor(() => expect(room.endSpeech).toHaveBeenCalledOnce());
+		expect(room.startSpeech).toHaveBeenCalledWith({
+			speechId: expect.stringMatching(/^assistant:/u),
+			generation: 7,
+			format: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
+		});
+		expect(room.writeSpeech).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ sequence: 0, pcm: Buffer.from([1, 2]) }),
+		);
+		expect(room.writeSpeech).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ sequence: 1, pcm: Buffer.from([3, 4]) }),
+		);
 	});
 
 	it("flush(): destroys the stream, stops the player, and gates late chunks", () => {

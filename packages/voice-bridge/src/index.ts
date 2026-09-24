@@ -232,6 +232,7 @@ export {
 	type ResidentVoiceSessionClientOptions,
 	type ResidentVoiceState,
 } from "./resident-voice-session.js";
+export * from "./room/adapter.js";
 export { AudioClock } from "./room/audio/AudioClock.js";
 export { FrameQueue } from "./room/audio/FrameQueue.js";
 export { JitterBuffer } from "./room/audio/JitterBuffer.js";

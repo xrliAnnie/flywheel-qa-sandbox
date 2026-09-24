@@ -6,8 +6,8 @@
  * voice-codex caller has moved to the versioned RoomIO contract.
  */
 import {
-	createRoomIO,
 	type BridgeRoomIO,
+	createRoomIO,
 	type RoomIOOptions,
 } from "flywheel-voice-bridge";
 
@@ -18,10 +18,10 @@ export interface DiscordVoiceRoomOptions
 	> {}
 
 export class DiscordVoiceRoom {
-	private readonly room: BridgeRoomIO;
+	readonly roomIO: BridgeRoomIO;
 
 	constructor(options: DiscordVoiceRoomOptions) {
-		this.room = createRoomIO({
+		this.roomIO = createRoomIO({
 			...options,
 			sessionId: `legacy:${options.threadId}`,
 			generation: 1,
@@ -30,16 +30,16 @@ export class DiscordVoiceRoom {
 	}
 
 	async start(signal?: AbortSignal): Promise<{ founderPresent: boolean }> {
-		const { founderPresent } = await this.room.start(signal);
+		const { founderPresent } = await this.roomIO.start(signal);
 		return { founderPresent };
 	}
 
 	speaker(): { userId: string; name: string } | null {
-		return this.room.speaker();
+		return this.roomIO.speaker();
 	}
 
 	async playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void> {
-		const receipt = await this.room.playSpeech({
+		const receipt = await this.roomIO.playSpeech({
 			speechId,
 			generation: 1,
 			format: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
@@ -49,22 +49,22 @@ export class DiscordVoiceRoom {
 	}
 
 	cancelSpeech(speechId: string): void {
-		this.room.localPlaybackCancel(speechId, 1);
+		this.roomIO.localPlaybackCancel(speechId, 1);
 	}
 
 	setWaiting(waiting: boolean): void {
-		this.room.setWaiting(waiting);
+		this.roomIO.setWaiting(waiting);
 	}
 
 	setBedEnabled(enabled: boolean): void {
-		this.room.setBedEnabled(enabled);
+		this.roomIO.setBedEnabled(enabled);
 	}
 
 	status(text: string): Promise<void> {
-		return this.room.status(text);
+		return this.roomIO.status(text);
 	}
 
 	stop(): Promise<void> {
-		return this.room.stop();
+		return this.roomIO.stop();
 	}
 }

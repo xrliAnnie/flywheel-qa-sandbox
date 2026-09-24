@@ -22,6 +22,7 @@
 		"flywheel-teamlead": "workspace:*",
 		"flywheel-voice-bridge": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
+		"flywheel-voice-headphone": "workspace:*",
 		"@discordjs/voice": "0.19.2",
 		"ws": "8.19.0"
 	},

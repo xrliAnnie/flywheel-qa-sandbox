@@ -41,7 +41,7 @@ export interface SpeakerLike {
 
 export interface VoicePresence {
 	join(): Promise<void>;
-	leave(): void;
+	leave(): Promise<void> | void;
 	founderPresent(): boolean;
 	onFounderJoin(cb: () => void): () => void;
 	onFounderLeave(cb: () => void): () => void;
@@ -603,7 +603,7 @@ export class AssistantSession {
 			);
 		}
 		this.conv = null;
-		this.opts.voice.leave();
+		await this.opts.voice.leave();
 		this.stopLeaseRenewing?.();
 		this.stopLeaseRenewing = undefined;
 		if (this.opts.lease) {
