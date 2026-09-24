@@ -98,3 +98,11 @@ R2 有效 reviewVerdict=APPROVED，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db
 | permanent-vs-transient-produce-failure-indistinguishable | LOW | `packages/teamlead/src/lead-backends/codex/CodexLeadOutboundHandler.ts:301` | Every producer throw, including permanent binding mismatches, maps to 503 and leaves the outbox row pending |
 | headphone-background-env-forwarded-but-unread | LOW | `scripts/test-deploy.sh:1583` | FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED is forwarded and tested but no code under packages/ reads it |
 | waiting-cue-reschedules-at-0ms-when-clip-active | LOW | `packages/voice-bridge/src/eleven/wiring.ts:89` | remainingMs ?? 0 is null while a clip is active, so the waiting cue reschedules with setTimeout 0 in a hot loop |
+
+## founder 打回 F-a / F-b 整改的已知边界
+
+| 事项 | 级别 | 后续处置 |
+|---|---|---|
+| 入场开场白被插话时显示「语音不可用」 | LOW | `HeadphoneMode.speakEntry`（2796 文件，本单未改）把 barge-in 取消的 receipt 当成语音不可用并发文字状态；应按 `SPEAK_BARGE_IN_REASON` 视为打断而非失败。 |
+| 被打断条目在长话轮后租约过期 | LOW | 复用 claim 依赖租约（按字数 60 秒起）；她的一轮若长于剩余租约，重认领会让服务端 attempts +1。可在播放期续约或打断时显式释放 claim。 |
+| 未回答话轮 10 秒兜底 | LOW | 模型对噪声/寒暄不回应时，收件箱最多等 `founderTurnSettleTimeoutMs`；真人使用后再定该值。 |
