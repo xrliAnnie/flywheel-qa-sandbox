@@ -1,10 +1,10 @@
 ---
 issue: FLY-2808
-phase: implement
-phaseCursor: 3/4
-updated: 2026-09-24T03:24:06.694Z
-nextStep: Record the review HIGH fix in the literal-last milestone, push, and
-  request a new exact-head code review
+phase: design
+phaseCursor: 1/5
+updated: 2026-09-24T16:50:24.237Z
+nextStep: "Reopened design node: audit existing docs, render diagrams into
+  design.html, request design review"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -14,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (3/4)
-**next**: Record the review HIGH fix in the literal-last milestone, push, and request a new exact-head code review
+**phase**: design (1/5)
+**next**: Reopened design node: audit existing docs, render diagrams into design.html, request design review
