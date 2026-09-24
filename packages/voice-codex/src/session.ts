@@ -3,7 +3,6 @@ import type {
 	RoomAudioOwner,
 	RoomBargeInEvent,
 	RoomIO,
-	RoomPresence,
 } from "flywheel-voice-core";
 import type { HeadphoneSession } from "flywheel-voice-headphone";
 import type { VoiceSessionProjection } from "./bridge-client.js";
@@ -41,7 +40,6 @@ export interface FrontendHandlers {
 export interface RoomHandlers {
 	onAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	onFounderPresence(present: boolean): void;
-	onPresence(presence: RoomPresence): void;
 	onBargeIn(event: RoomBargeInEvent): void;
 	onReceiveHealth(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
@@ -90,6 +88,11 @@ export interface GenericVoiceSessionOptions {
 	 * DEFAULT_REPLY_WAIT_MS until she has used it and picks a value.
 	 */
 	replyWaitMs?: number;
+	/**
+	 * FLY-2796: humans in the voice channel right now, or null while unknown.
+	 * Without it no sentence is ever attributed by the sole-speaker fallback.
+	 */
+	roomHumanCount?(): number | null;
 	/** Plan §7: one fixed ceiling over preflight and both start branches. */
 	startDeadlineMs?: number;
 	/**
@@ -159,7 +162,6 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private replyWaitSeq = 0;
 	private speakerTalking = false;
 	private waitingSound = false;
-	private roomPresence?: RoomPresence;
 
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
@@ -183,9 +185,6 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					this.frontend.appendAudio(frame, metadata);
 				}),
 			onFounderPresence: (present) => this.founderPresence(present),
-			onPresence: (presence) => {
-				if (!this.stopping) this.roomPresence = { ...presence };
-			},
 			onBargeIn: (event) => this.bargeIn(event),
 			onReceiveHealth: (snapshot) => {
 				if (!this.stopping) this.latestReceiveHealth = { ...snapshot };
@@ -694,19 +693,15 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	/**
-	 * Only while the room reports her as its one human. The frontend still
-	 * refuses any range holding another captured speaker's voice.
+	 * Only while she is here and a live count says she is the one human. An
+	 * unknown count fails closed; the frontend still refuses any range holding
+	 * another captured speaker's voice.
 	 */
 	private soleSpeaker(): {
 		ownerUserId: string;
 		ownerName: string | null;
 	} | null {
-		const presence = this.roomPresence;
-		if (
-			!presence?.founderPresent ||
-			presence.humanCount !== 1 ||
-			!this.founderInRoom
-		)
+		if (!this.founderInRoom || this.options.roomHumanCount?.() !== 1)
 			return null;
 		return {
 			ownerUserId: this.options.projection.founderUserId,

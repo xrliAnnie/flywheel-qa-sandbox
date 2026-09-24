@@ -41,6 +41,7 @@ function fixture(options?: {
 	roomIO?: RoomIO;
 	replyWaitMs?: number;
 	capture?: () => Promise<boolean>;
+	roomHumanCount?: () => number | null;
 	createHeadphoneSession?: () => {
 		start(): Promise<void>;
 		close(): Promise<void>;
@@ -76,6 +77,9 @@ function fixture(options?: {
 		...(options?.replyWaitMs === undefined
 			? {}
 			: { replyWaitMs: options.replyWaitMs }),
+		...(options?.roomHumanCount
+			? { roomHumanCount: options.roomHumanCount }
+			: {}),
 		createFrontend: (handlers) => {
 			frontendHandlers = handlers;
 			return frontend;
@@ -1156,21 +1160,28 @@ describe("GenericVoiceSession reply wait (FLY-2796)", () => {
 		]);
 	});
 
-	it("names her as the sole speaker only while she is the one human in the room", async () => {
-		const test = await liveFixture();
+	it("names her as the sole speaker only while the room counts exactly one human", async () => {
+		let humans: number | null = 1;
+		const test = await liveFixture({ roomHumanCount: () => humans });
 		const handlers = test.getFrontendHandlers();
-		test.getRoomHandlers().onPresence({ founderPresent: true, humanCount: 1 });
 		expect(handlers.soleSpeaker()).toEqual({
 			ownerUserId: "founder",
 			ownerName: null,
 		});
-		test.getRoomHandlers().onPresence({ founderPresent: true, humanCount: 2 });
+		humans = 2;
 		expect(handlers.soleSpeaker()).toBeNull();
-		test.getRoomHandlers().onPresence({ founderPresent: false, humanCount: 1 });
+		// Unknown (someone just joined or left, recount pending) fails closed.
+		humans = null;
 		expect(handlers.soleSpeaker()).toBeNull();
 	});
 
-	it("does not name a sole speaker before the room has reported who is there", async () => {
+	it("never names a sole speaker once she has left", async () => {
+		const test = await liveFixture({ roomHumanCount: () => 1 });
+		test.getRoomHandlers().onFounderPresence(false);
+		expect(test.getFrontendHandlers().soleSpeaker()).toBeNull();
+	});
+
+	it("does not name a sole speaker without a live head count", async () => {
 		const test = await liveFixture();
 		expect(test.getFrontendHandlers().soleSpeaker()).toBeNull();
 	});
