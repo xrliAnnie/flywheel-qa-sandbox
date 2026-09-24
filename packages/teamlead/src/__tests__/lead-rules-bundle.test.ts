@@ -29,18 +29,20 @@ function runBundle(
 	governanceRequired: string,
 	summaryDuty = "0",
 	bundleVersion = "",
+	carrier = "",
 ): { lines: string[]; status: number; stderr: string } {
 	try {
 		const out = execFileSync(
 			"bash",
 			[
 				"-c",
-				`source "${RESOLVER}"; compute_lead_rule_bundle "$1" "$2" "$3" "$4"`,
+				`source "${RESOLVER}"; compute_lead_rule_bundle "$1" "$2" "$3" "$4" "$5"`,
 				"_",
 				role,
 				baseDir,
 				commBackend,
 				governanceRequired,
+				carrier,
 			],
 			{
 				encoding: "utf8",
@@ -599,6 +601,34 @@ exit 0
 			expect(assembledRules).toContain("epic-intake resolve");
 		});
 
+		it("FLY-2862: every full-access Codex carrier (dept and cos) loads the Codex reply contract once", () => {
+			const canonical = JSON.parse(
+				launcherEnv({}).CANONICAL_JSON as string,
+			) as Record<string, unknown>;
+			for (const role of ["dept", "cos"]) {
+				execFileSync(
+					"bash",
+					[join(SCRIPTS, "codex-lead.sh"), "growth-lead", home, "growth"],
+					{
+						encoding: "utf8",
+						env: launcherEnv({
+							FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+							FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES: "/persona/identity.md",
+							CANONICAL_JSON: JSON.stringify({ ...canonical, role }),
+						}),
+					},
+				);
+				const files = names(readFileSync(dumpFile, "utf8").split(",").slice(1));
+				expect(files[0]).toBe(
+					role === "cos" ? "cos-lead-rules.md" : "department-lead-rules.md",
+				);
+				expect(
+					files.filter((file) => file === "codex-discord-reply-contract.md"),
+				).toHaveLength(1);
+				expect(files).not.toContain("discord-reply-contract.md");
+			}
+		});
+
 		it("a NON-full-access run leaves the prompt files untouched (byte-compat)", () => {
 			execFileSync(
 				"bash",
@@ -679,4 +709,96 @@ it("refuses a v2 department bundle if its Codex reply adapter is missing", () =>
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+describe("FLY-2862 — Codex carrier reply contract", () => {
+	const CONTRACT = "codex-discord-reply-contract.md";
+
+	it("is appended for Codex cos and dept carriers, v1 and v2, exactly once", () => {
+		for (const role of ["cos", "dept"]) {
+			for (const version of ["", "2"]) {
+				const { lines, status } = runBundle(
+					role,
+					BASE_RULES_DIR,
+					"mailbox",
+					"1",
+					"0",
+					version,
+					"codex-app-server",
+				);
+				expect(status).toBe(0);
+				expect(names(lines).filter((name) => name === CONTRACT)).toHaveLength(
+					1,
+				);
+				expect(names(lines).at(-1)).toBe(CONTRACT);
+			}
+		}
+	});
+
+	it("never reaches the Claude view or a companion", () => {
+		for (const carrier of ["", "claude-code"]) {
+			for (const role of ["cos", "dept", "companion"]) {
+				const { lines } = runBundle(
+					role,
+					BASE_RULES_DIR,
+					"mailbox",
+					"0",
+					"0",
+					"",
+					carrier,
+				);
+				expect(names(lines)).not.toContain(CONTRACT);
+			}
+		}
+		expect(
+			names(
+				runBundle(
+					"companion",
+					BASE_RULES_DIR,
+					"mailbox",
+					"0",
+					"0",
+					"",
+					"codex-app-server",
+				).lines,
+			),
+		).not.toContain(CONTRACT);
+	});
+
+	it("fail-closes a Codex cos carrier whose reply contract is missing", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2862-missing-contract-"));
+		try {
+			const missing = runBundle(
+				"cos",
+				root,
+				"mailbox",
+				"0",
+				"0",
+				"",
+				"codex-app-server",
+			);
+			expect(missing.status).toBe(10);
+			expect(missing.stderr).toContain(CONTRACT);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("translates the Claude reply tool into the carrier's real paths without advertising the plugin", () => {
+		const rule = readFileSync(join(BASE_RULES_DIR, CONTRACT), "utf8");
+		expect(rule).not.toContain("mcp__plugin_discord");
+		expect(rule).toContain("discord.reply(chat_id=");
+		expect(rule).toContain("final answer");
+		expect(rule).toContain("[voice]");
+		expect(rule).toContain("ack_batch");
+		expect(rule).toContain("discord.thread.reply");
+		expect(rule).toContain("lead_operation");
+	});
+
+	it("the Codex-only full-access assembler passes the Codex carrier", () => {
+		const bundleSh = readFileSync(RESOLVER, "utf8");
+		expect(bundleSh).toMatch(
+			/compute_lead_rule_bundle "\$role" "\$base_rules_dir" "\$comm" 1 codex-app-server/,
+		);
+	});
 });

@@ -367,17 +367,22 @@ _rules_bundle_commit_once() {
   fi
 }
 
-# compute_lead_rule_bundle <role> <base_rules_dir> <comm_backend> <governance_required>
+# compute_lead_rule_bundle <role> <base_rules_dir> <comm_backend> <governance_required> [carrier]
 #   role:                companion | cos | dept
 #   base_rules_dir:      absolute path to the shipped lead-rules-base dir
 #   comm_backend:        commdb | <other>  (commdb skips runner-messaging-rules,
 #                        mirroring claude-lead.sh's FLYWHEEL_COMM_BACKEND guard)
 #   governance_required: 1 = founder-only-authority.md is REQUIRED (Codex full-access,
 #                        fail-closed); 0 = optional (Claude pre-FLY-175 backward-compat)
+#   carrier:             codex-app-server = append the REQUIRED Codex reply contract
+#                        for cos/dept (FLY-2862: the role rules name the Claude Discord
+#                        plugin's reply tool, which a Codex carrier does not have).
+#                        Omitted = the Claude view, byte-identical to before.
 # stdout: one absolute rule file path per line, in load order (existing+readable).
 # return: 0 ok; 2 unknown role; 10 a REQUIRED file is missing (MISSING_REQUIRED on stderr).
 compute_lead_rule_bundle() {
   local role="$1" base="$2" comm_backend="$3" governance_required="${4:-0}"
+  local carrier="${5:-}"
 
   case "$role" in
     companion)
@@ -454,7 +459,10 @@ compute_lead_rule_bundle() {
   fi
   # cross-dept channel rules: ALL roles (companion included).
   _lrb_emit "${base}/cross-dept-channel-rules.md" 0 || return 10
-  if [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ] && [ "$role" = "dept" ]; then
+  if [ "$role" != "companion" ] && {
+    [ "$carrier" = "codex-app-server" ] ||
+      { [ "${FLYWHEEL_CODEX_CAPABILITY_BUNDLE_VERSION:-}" = "2" ] && [ "$role" = "dept" ]; }
+  }; then
     _lrb_emit "${base}/codex-discord-reply-contract.md" 1 || return 10
   fi
   return 0
@@ -483,7 +491,7 @@ assemble_full_access_governance() {
   local comm
   comm="$(printf '%s' "${FLYWHEEL_COMM_BACKEND:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
   local bundle
-  if ! bundle="$(compute_lead_rule_bundle "$role" "$base_rules_dir" "$comm" 1)"; then
+  if ! bundle="$(compute_lead_rule_bundle "$role" "$base_rules_dir" "$comm" 1 codex-app-server)"; then
     return 1
   fi
   local csv
