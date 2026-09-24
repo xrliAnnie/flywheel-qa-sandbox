@@ -17,7 +17,11 @@ afterEach(() => {
 		rmSync(root, { recursive: true, force: true });
 });
 
-function utterance(role: "user" | "assistant", text: string): VoiceUtterance {
+function utterance(
+	role: "user" | "assistant",
+	text: string,
+	overrides: Partial<VoiceUtterance> = {},
+): VoiceUtterance {
 	return {
 		ts: "2026-09-23T20:00:00.000Z",
 		timestamp: "2026-09-23T20:00:00.000Z",
@@ -36,6 +40,7 @@ function utterance(role: "user" | "assistant", text: string): VoiceUtterance {
 			role === "user"
 				? { kind: "known", speakerUserId: "founder-1" }
 				: { kind: "unknown", reason: "assistant" },
+		...overrides,
 	};
 }
 
@@ -148,6 +153,67 @@ describe("HeadphoneSession", () => {
 		engine.emitUtterance(utterance("assistant", "好，退出语音模式。"));
 		await vi.waitFor(() => expect(onSpokenExit).toHaveBeenCalledOnce());
 		expect(engine.closed).toBe(true);
+	});
+
+	it("injects the same V1 utterance stream into a caption projection without collapsing frontend and Lead sources", async () => {
+		const engine = new FakeV1Session({ sessionId: "session-1", generation: 3 });
+		const captions: Array<{ label: string; text: string }> = [];
+		const projectionClose = vi.fn();
+		let unsubscribe: (() => void) | undefined;
+		const createUtteranceProjection = vi.fn(
+			(source: Pick<typeof engine, "onUtterance">) => ({
+				start() {
+					unsubscribe = source.onUtterance((value) => {
+						if (value.role !== "assistant") return;
+						captions.push({
+							label: value.source === "frontend" ? "🤖 前台" : "💬 Lead",
+							text: value.text,
+						});
+					});
+				},
+				close() {
+					unsubscribe?.();
+					projectionClose();
+				},
+			}),
+		);
+		const session = new HeadphoneSession({
+			engine,
+			room: room(),
+			bridge: bridge(),
+			binding: {
+				sessionId: "session-1",
+				generation: 3,
+				leaseToken: "lease-1",
+			},
+			founderUserId: "founder-1",
+			transcriptSink: transcriptSink(),
+			baseInstructions: "context",
+			record: vi.fn(),
+			createUtteranceProjection,
+		});
+
+		await session.start();
+		engine.emitUtterance(
+			utterance("assistant", "马上处理", { source: "frontend" }),
+		);
+		engine.emitUtterance(
+			utterance("assistant", "已经查到结果", {
+				source: "lead:flywheel-eng-lead",
+				attribution: {
+					kind: "known",
+					speakerUserId: "flywheel-eng-lead",
+				},
+			}),
+		);
+
+		expect(createUtteranceProjection).toHaveBeenCalledWith(engine);
+		expect(captions).toEqual([
+			{ label: "🤖 前台", text: "马上处理" },
+			{ label: "💬 Lead", text: "已经查到结果" },
+		]);
+		await session.close();
+		expect(projectionClose).toHaveBeenCalledOnce();
 	});
 
 	it("rejects an engine that only implements text-to-speech", () => {
