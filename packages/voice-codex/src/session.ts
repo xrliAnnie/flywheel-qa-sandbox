@@ -179,10 +179,9 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				if (!this.room.roomIO) throw new Error("headphone_room_io_required");
 				// Built now, started in markLive(): its entry briefing speaks and
 				// ACKs inbox items, which must not happen to an empty room.
-				this.headphone = this.options.createHeadphoneSession(
-					this.room.roomIO,
-					{ fail: (reason) => this.finish({ kind: "failed", reason }) },
-				);
+				this.headphone = this.options.createHeadphoneSession(this.room.roomIO, {
+					fail: (reason) => this.finish({ kind: "failed", reason }),
+				});
 			} catch (error) {
 				await this.room.stop().catch(() => undefined);
 				await this.frontend.stop().catch(() => undefined);

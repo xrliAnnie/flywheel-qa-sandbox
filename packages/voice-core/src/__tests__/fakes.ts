@@ -66,9 +66,7 @@ export class FakeProcessHandle implements ProcessHandle {
 	onExit(cb: (code: number | null, sig: NodeJS.Signals | null) => void): void {
 		this.exitCbs.push(cb);
 	}
-	onClose(
-		cb: (code: number | null, sig: NodeJS.Signals | null) => void,
-	): void {
+	onClose(cb: (code: number | null, sig: NodeJS.Signals | null) => void): void {
 		this.closeCbs.push(cb);
 	}
 	write(data: Buffer | string): boolean {

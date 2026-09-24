@@ -14,11 +14,9 @@ const MP3 = { encoding: "mp3", sampleRateHz: 24_000, channels: 1 } as const;
 const REAL_FFMPEG = ((): string | undefined => {
 	for (const candidate of ["ffmpeg", "/opt/homebrew/bin/ffmpeg"]) {
 		try {
-			const encoders = execFileSync(
-				candidate,
-				["-hide_banner", "-encoders"],
-				{ stdio: ["ignore", "pipe", "ignore"] },
-			).toString();
+			const encoders = execFileSync(candidate, ["-hide_banner", "-encoders"], {
+				stdio: ["ignore", "pipe", "ignore"],
+			}).toString();
 			if (encoders.includes("libmp3lame")) return candidate;
 		} catch {
 			// not installed at this path

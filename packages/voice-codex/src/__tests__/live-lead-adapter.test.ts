@@ -919,7 +919,9 @@ describe("LiveLeadAdapter", () => {
 			verification: "required",
 		});
 		expect(first.outcome).toBe("completed");
-		expect(h.onUnavailable).toHaveBeenCalledExactlyOnceWith("live_resume_failed");
+		expect(h.onUnavailable).toHaveBeenCalledExactlyOnceWith(
+			"live_resume_failed",
+		);
 		expect(h.record).toHaveBeenCalledWith(
 			expect.objectContaining({
 				kind: "live_lead_voice_unavailable",
@@ -1021,9 +1023,7 @@ describe("LiveLeadAdapter", () => {
 			final: true,
 		});
 
-		expect(
-			h.utterances.map((u) => ({ role: u.role, text: u.text })),
-		).toEqual([
+		expect(h.utterances.map((u) => ({ role: u.role, text: u.text }))).toEqual([
 			{ role: "user", text: "我要退出语音" },
 			{ role: "assistant", text: "好，退出语音模式。" },
 			{ role: "assistant", text: "还有别的吗" },
@@ -1039,7 +1039,11 @@ describe("LiveLeadAdapter", () => {
 		const h = harness();
 		const onSpokenExit = vi.fn();
 		const session = createEngineAHeadphoneSession({
-			binding: { sessionId: "voice-session", generation: 9, leaseToken: "lease" },
+			binding: {
+				sessionId: "voice-session",
+				generation: 9,
+				leaseToken: "lease",
+			},
 			founderUserId: "founder-1",
 			bridge: {
 				listHeadphoneItems: vi.fn(async () => []),
