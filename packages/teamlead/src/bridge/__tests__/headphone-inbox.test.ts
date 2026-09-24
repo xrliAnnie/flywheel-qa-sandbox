@@ -1,10 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { speakRequestDigest } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { HeadphoneInboxCollector } from "../headphone-collector.js";
+import { HeadphoneQuestionAuthority } from "../headphone-question-authority.js";
 
 const T0 = "2026-09-23T20:00:00.000Z";
 const T1 = "2026-09-23T20:00:01.000Z";
@@ -164,6 +166,51 @@ describe("HeadphoneInboxStore", () => {
 		]);
 	});
 
+	it("coalesces a CommDB question projection with its Discord card and retires resolved authority", () => {
+		const projected = addItem({
+			questionId: "question-1",
+			sourceMessageId: "question-1",
+			sourceRevision: "comm:question-1",
+			needsDecision: true,
+			text: "choose before the card is posted",
+		});
+		const card = addItem({
+			questionId: "question-1",
+			channelId: "thread-1",
+			sourceMessageId: "100000000000000001",
+			sourceRevision: "100000000000000001",
+			needsDecision: true,
+			text: "founder decision card",
+		});
+
+		expect(card).toMatchObject({
+			itemId: projected.itemId,
+			revision: 2,
+			questionId: "question-1",
+			needsDecision: true,
+		});
+		expect(
+			store.headphoneInbox.list({
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				limit: 100,
+			}),
+		).toEqual([expect.objectContaining({ text: "founder decision card" })]);
+
+		store.headphoneInbox.reconcileQuestionAuthority({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			openQuestionIds: [],
+		});
+		expect(
+			store.headphoneInbox.list({
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				limit: 100,
+			}),
+		).toEqual([]);
+	});
+
 	it("rejects a changed digest under the same source revision", () => {
 		addItem();
 		expect(() => addItem({ text: "mutated under the same revision" })).toThrow(
@@ -308,6 +355,236 @@ describe("HeadphoneInboxStore", () => {
 });
 
 describe("HeadphoneInboxCollector", () => {
+	it("projects only founder-routed questions and follows CommDB resolution", () => {
+		const commDbPath = join(root, "comm.db");
+		const db = new CommDB(commDbPath);
+		const uncarded = db.insertQuestion("runner-1", "lead-1", "pick one", {
+			checkpoint: "founder_review",
+		});
+		db.insertQuestion("runner-2", "lead-1", "ordinary lead question");
+		const cardQuestion = db.insertQuestion(
+			"runner-3",
+			"lead-1",
+			"ship this head?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		const resolved = db.insertQuestion(
+			"runner-4",
+			"lead-1",
+			"already decided",
+			{ checkpoint: "founder_review" },
+		);
+		db.insertResponse(resolved, "lead-1", "done");
+		db.close();
+
+		const cardMessageId = "100000000000000001";
+		const authority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: "founder-1",
+			projects: [
+				{
+					projectName: "flywheel",
+					leads: [
+						{
+							agentId: "lead-1",
+							chatChannel: "channel-1",
+							botUserId: "lead-bot-1",
+						},
+					],
+				},
+			],
+			openCommDb: () => CommDB.openReadonly(commDbPath),
+			questionIdByMessage: (_projectName, messageId) =>
+				messageId === cardMessageId ? cardQuestion : undefined,
+			botUserIdFromToken: () => null,
+		});
+
+		authority.projectQuestions();
+		expect(
+			store.headphoneInbox
+				.list({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					limit: 100,
+				})
+				.map((item) => item.questionId)
+				.sort(),
+		).toEqual([cardQuestion, uncarded].sort());
+		expect(
+			authority
+				.classifyMessages(
+					{
+						projectName: "flywheel",
+						founderUserId: "founder-1",
+						channelId: "channel-1",
+						allowedAuthorIds: ["lead-bot-1"],
+						token: "secret",
+					},
+					[
+						{
+							id: cardMessageId,
+							authorId: "lead-bot-1",
+							content: "ship card",
+							timestamp: T0,
+						},
+					],
+				)
+				.get(cardMessageId),
+		).toEqual({
+			questionId: cardQuestion,
+			needsDecision: true,
+			resolved: false,
+		});
+
+		const writer = new CommDB(commDbPath);
+		writer.insertResponse(cardQuestion, "lead-1", "no");
+		writer.close();
+		expect(
+			authority
+				.classifyMessages(
+					{
+						projectName: "flywheel",
+						founderUserId: "founder-1",
+						channelId: "channel-1",
+						allowedAuthorIds: ["lead-bot-1"],
+						token: "secret",
+					},
+					[
+						{
+							id: cardMessageId,
+							authorId: "lead-bot-1",
+							content: "ship card",
+							timestamp: T0,
+						},
+					],
+				)
+				.get(cardMessageId),
+		).toEqual({
+			questionId: cardQuestion,
+			needsDecision: true,
+			resolved: true,
+		});
+		expect(
+			new HeadphoneQuestionAuthority({
+				store: store.headphoneInbox,
+				founderUserId: "founder-1",
+				projects: [],
+				openCommDb: () => {
+					throw new Error("CommDB unavailable");
+				},
+				questionIdByMessage: () => undefined,
+				botUserIdFromToken: () => null,
+			}).classifyMessages(
+				{
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "channel-1",
+					allowedAuthorIds: ["lead-bot-1"],
+					token: "secret",
+				},
+				[
+					{
+						id: "ordinary-report",
+						authorId: "lead-bot-1",
+						content: "report",
+						timestamp: T0,
+					},
+				],
+			).size,
+		).toBe(0);
+		authority.projectQuestions();
+		expect(
+			store.headphoneInbox
+				.list({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					limit: 100,
+				})
+				.map((item) => item.questionId),
+		).toEqual([uncarded]);
+	});
+
+	it("applies persisted question authority before ingesting Discord messages", async () => {
+		const projectQuestions = vi.fn(() => {
+			store.headphoneInbox.upsert({
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				channelId: "channel-1",
+				sourceMessageId: "question-uncarded",
+				sourceRevision: "comm:question-uncarded",
+				questionId: "question-uncarded",
+				authorId: "lead-1",
+				needsDecision: true,
+				text: "uncarded founder question",
+				sourceCreatedAt: T0,
+			});
+		});
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [
+				{
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "channel-1",
+					allowedAuthorIds: ["lead-1"],
+					token: "secret",
+				},
+			],
+			fetchPage: async () => ({
+				kind: "page",
+				messages: [
+					{
+						id: "100000000000000001",
+						authorId: "lead-1",
+						content: "open card",
+						timestamp: T0,
+					},
+					{
+						id: "100000000000000002",
+						authorId: "lead-1",
+						content: "resolved card",
+						timestamp: T1,
+					},
+				],
+			}),
+			classifyMessages: () =>
+				new Map([
+					[
+						"100000000000000001",
+						{
+							questionId: "question-open",
+							needsDecision: true,
+							resolved: false,
+						},
+					],
+					[
+						"100000000000000002",
+						{
+							questionId: "question-resolved",
+							needsDecision: false,
+							resolved: true,
+						},
+					],
+				]),
+			projectQuestions,
+		});
+
+		expect(await collector.tick()).toBe("collected");
+		expect(projectQuestions).toHaveBeenCalledOnce();
+		expect(
+			store.headphoneInbox
+				.list({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					limit: 100,
+				})
+				.map((item) => [item.questionId, item.needsDecision]),
+		).toEqual([
+			["question-uncarded", true],
+			["question-open", true],
+		]);
+	});
+
 	it("bootstraps every history page while filtering founder and unconfigured authors", async () => {
 		let now = Date.parse(T0);
 		const pages = [

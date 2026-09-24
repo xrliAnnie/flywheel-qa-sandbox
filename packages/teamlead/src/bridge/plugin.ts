@@ -538,6 +538,7 @@ import {
 	type HeadphoneCollectorScope,
 	HeadphoneInboxCollector,
 } from "./headphone-collector.js";
+import { HeadphoneQuestionAuthority } from "./headphone-question-authority.js";
 import { createHeadphoneRouter } from "./headphone-routes.js";
 import {
 	activateHolderForWake,
@@ -11412,10 +11413,57 @@ export async function startBridge(
 				? "found"
 				: "conflict";
 		};
+		const questionIdByMessage = (
+			projectName: string,
+			messageId: string,
+		): string | undefined => {
+			const questionIds = new Set<string>();
+			const founderReview =
+				store.getFounderReviewCardBindingByMessage(messageId);
+			if (
+				founderReview &&
+				store.getWorkflowRun(founderReview.run_id)?.project_name === projectName
+			)
+				questionIds.add(founderReview.question_id);
+			const workflow = store.getWorkflowGateHolderByCardMessageId(messageId);
+			if (
+				workflow &&
+				store.getWorkflowRun(workflow.run_id)?.project_name === projectName
+			)
+				questionIds.add(workflow.question_id);
+			for (const event of store.getEventsByType("ship_gate_msg_binding")) {
+				const binding = event.payload as
+					| { gateMessageId?: unknown; questionId?: unknown }
+					| undefined;
+				if (
+					event.project_name === projectName &&
+					binding?.gateMessageId === messageId &&
+					typeof binding.questionId === "string"
+				)
+					questionIds.add(binding.questionId);
+			}
+			if (questionIds.size > 1)
+				throw new Error("headphone_question_binding_ambiguous");
+			return questionIds.values().next().value;
+		};
+		const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: headphoneFounderId,
+			projects,
+			openCommDb: (projectName) =>
+				CommDB.openReadonly(commDbPathForProject(projectName)),
+			questionIdByMessage,
+			botUserIdFromToken,
+			globalBotUserId: botUserIdFromToken(config.discordBotToken),
+			log: (message) => console.warn(message),
+		});
 		const headphoneCollector = new HeadphoneInboxCollector({
 			store: store.headphoneInbox,
 			listScopes: listHeadphoneScopes,
 			fetchPage: fetchDiscordHeadphonePage,
+			classifyMessages: (scope, messages) =>
+				headphoneQuestionAuthority.classifyMessages(scope, messages),
+			projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
 		});
 		const collectHeadphonePage = () =>
 			void headphoneCollector

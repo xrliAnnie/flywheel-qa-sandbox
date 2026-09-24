@@ -138,6 +138,18 @@ export interface HeadphoneCollectorOptions {
 		after?: string;
 		limit: 100;
 	}): Promise<HeadphoneCollectorFetchResult>;
+	classifyMessages?(
+		scope: HeadphoneCollectorScope,
+		messages: readonly HeadphoneCollectorMessage[],
+	): ReadonlyMap<
+		string,
+		{
+			questionId: string;
+			needsDecision: boolean;
+			resolved: boolean;
+		}
+	>;
+	projectQuestions?(): void;
 	now?: () => number;
 	minimumPageIntervalMs?: number;
 	notificationsPending?(): boolean;
@@ -203,6 +215,7 @@ export class HeadphoneInboxCollector {
 	}
 
 	private async run(): Promise<HeadphoneCollectorTick> {
+		this.options.projectQuestions?.();
 		const nowMs = this.now();
 		if (this.options.notificationsPending?.()) return "waiting";
 		if (nowMs < this.nextPageAt) return "waiting";
@@ -296,6 +309,7 @@ export class HeadphoneInboxCollector {
 		);
 		const accepted: HeadphoneInboxUpsertInput[] = [];
 		const allowed = new Set(candidate.scope.allowedAuthorIds);
+		const authority = this.options.classifyMessages?.(candidate.scope, ordered);
 		for (const message of ordered) {
 			if (
 				message.authorId === candidate.scope.founderUserId ||
@@ -304,21 +318,24 @@ export class HeadphoneInboxCollector {
 				continue;
 			const text = readableText(message);
 			if (!text) continue;
+			const question = authority?.get(message.id);
 			accepted.push({
+				...(question ? { questionId: question.questionId } : {}),
 				projectName: candidate.scope.projectName,
 				founderUserId: candidate.scope.founderUserId,
 				channelId: candidate.scope.channelId,
 				sourceMessageId: message.id,
 				sourceRevision: message.editedTimestamp ?? message.id,
 				authorId: message.authorId,
-				needsDecision: message.needsDecision ?? false,
+				needsDecision:
+					question?.needsDecision ?? message.needsDecision ?? false,
 				text,
 				speechBrief: extractSpeechBrief({
 					content: message.content,
 					embeds: message.embeds,
 				}),
 				sourceCreatedAt: message.timestamp,
-				sourceResolved: message.resolved,
+				sourceResolved: question?.resolved ?? message.resolved,
 			});
 		}
 		const first = ordered[0]?.id;

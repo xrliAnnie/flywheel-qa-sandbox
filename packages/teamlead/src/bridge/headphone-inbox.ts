@@ -11,6 +11,7 @@ import {
 export interface HeadphoneInboxItemRecord {
 	itemId: string;
 	revision: number;
+	questionId: string | null;
 	projectName: string;
 	founderUserId: string;
 	channelId: string;
@@ -56,6 +57,7 @@ export interface HeadphoneInboxSourceState {
 }
 
 export interface HeadphoneInboxUpsertInput {
+	questionId?: string;
 	projectName: string;
 	founderUserId: string;
 	channelId: string;
@@ -94,6 +96,7 @@ function itemFromRow(row: Record<string, unknown>): HeadphoneInboxItemRecord {
 	return {
 		itemId: String(row.item_id),
 		revision: Number(row.revision),
+		questionId: typeof row.question_id === "string" ? row.question_id : null,
 		projectName: String(row.project_name),
 		founderUserId: String(row.founder_user_id),
 		channelId: String(row.channel_id),
@@ -114,6 +117,7 @@ function contentDigest(input: HeadphoneInboxUpsertInput): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify({
+				questionId: input.questionId ?? null,
 				projectName: input.projectName,
 				founderUserId: input.founderUserId,
 				channelId: input.channelId,
@@ -171,6 +175,7 @@ export class HeadphoneInboxStore {
 			CREATE TABLE IF NOT EXISTS voice_headphone_inbox (
 				item_id TEXT NOT NULL,
 				revision INTEGER NOT NULL CHECK(revision > 0),
+				question_id TEXT,
 				project_name TEXT NOT NULL,
 				founder_user_id TEXT NOT NULL,
 				channel_id TEXT NOT NULL,
@@ -249,6 +254,11 @@ export class HeadphoneInboxStore {
 				).map((column) => column.name),
 			);
 		const inboxColumns = columns("voice_headphone_inbox");
+		const addedQuestionId = !inboxColumns.has("question_id");
+		if (addedQuestionId)
+			this.db.exec(
+				"ALTER TABLE voice_headphone_inbox ADD COLUMN question_id TEXT",
+			);
 		if (!inboxColumns.has("content_digest"))
 			this.db.exec(
 				"ALTER TABLE voice_headphone_inbox ADD COLUMN content_digest TEXT NOT NULL DEFAULT ''",
@@ -257,6 +267,8 @@ export class HeadphoneInboxStore {
 			this.db.exec(
 				"ALTER TABLE voice_headphone_inbox ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
 			);
+		if (addedQuestionId)
+			this.db.exec("UPDATE voice_headphone_inbox SET content_digest = ''");
 		const claimColumns = columns("voice_headphone_claim");
 		if (!claimColumns.has("attempt"))
 			this.db.exec(
@@ -279,6 +291,7 @@ export class HeadphoneInboxStore {
 		for (const row of oldRows) {
 			const old = itemFromRow(row);
 			const digest = contentDigest({
+				...(old.questionId ? { questionId: old.questionId } : {}),
 				projectName: String(row.project_name),
 				founderUserId: String(row.founder_user_id),
 				channelId: String(row.channel_id),
@@ -301,20 +314,9 @@ export class HeadphoneInboxStore {
 		);
 	}
 
-	upsert(input: {
-		projectName: string;
-		founderUserId: string;
-		channelId: string;
-		sourceMessageId: string;
-		sourceRevision: string;
-		authorId: string;
-		needsDecision: boolean;
-		text: string;
-		speechBrief?: { what: string; why: string; next: string };
-		sourceCreatedAt: string;
-		sourceResolved?: boolean;
-	}): HeadphoneInboxItemRecord {
+	upsert(input: HeadphoneInboxUpsertInput): HeadphoneInboxItemRecord {
 		if (
+			(input.questionId !== undefined && !input.questionId) ||
 			!input.projectName ||
 			!input.founderUserId ||
 			!input.channelId ||
@@ -327,32 +329,52 @@ export class HeadphoneInboxStore {
 			throw new Error("headphone_inbox_item_invalid");
 		const itemId = createHash("sha256")
 			.update(
-				`${input.projectName}\0${input.founderUserId}\0${input.channelId}\0${input.sourceMessageId}`,
+				`${input.projectName}\0${input.founderUserId}\0${input.questionId ? `question:${input.questionId}` : `${input.channelId}\0${input.sourceMessageId}`}`,
 			)
 			.digest("hex");
 		const digest = contentDigest(input);
+		const source = this.db
+			.prepare(
+				`SELECT * FROM voice_headphone_inbox
+				 WHERE project_name = ? AND founder_user_id = ? AND channel_id = ?
+				   AND source_message_id = ? AND source_revision = ?`,
+			)
+			.get(
+				input.projectName,
+				input.founderUserId,
+				input.channelId,
+				input.sourceMessageId,
+				input.sourceRevision,
+			) as Record<string, unknown> | undefined;
+		if (source) {
+			if (source.content_digest !== digest)
+				throw new Error("headphone_inbox_revision_conflict");
+			if (input.sourceResolved && Number(source.source_resolved) !== 1)
+				this.db
+					.prepare(
+						"UPDATE voice_headphone_inbox SET source_resolved = 1 WHERE item_id = ? AND revision = ?",
+					)
+					.run(source.item_id, source.revision);
+			return itemFromRow(
+				this.db
+					.prepare(
+						"SELECT * FROM voice_headphone_inbox WHERE item_id = ? ORDER BY revision DESC LIMIT 1",
+					)
+					.get(source.item_id) as Record<string, unknown>,
+			);
+		}
 		const existing = this.db
 			.prepare(
 				"SELECT * FROM voice_headphone_inbox WHERE item_id = ? ORDER BY revision DESC LIMIT 1",
 			)
 			.get(itemId) as Record<string, unknown> | undefined;
-		if (existing?.source_revision === input.sourceRevision) {
-			if (existing.content_digest !== digest)
-				throw new Error("headphone_inbox_revision_conflict");
-			if (input.sourceResolved && Number(existing.source_resolved) !== 1)
-				this.db
-					.prepare(
-						"UPDATE voice_headphone_inbox SET source_resolved = 1 WHERE item_id = ? AND revision = ?",
-					)
-					.run(itemId, existing.revision);
-			return itemFromRow(
-				this.db
-					.prepare(
-						"SELECT * FROM voice_headphone_inbox WHERE item_id = ? AND revision = ?",
-					)
-					.get(itemId, existing.revision) as Record<string, unknown>,
-			);
-		}
+		if (
+			input.questionId &&
+			input.sourceMessageId === input.questionId &&
+			existing &&
+			existing.source_message_id !== input.sourceMessageId
+		)
+			return itemFromRow(existing);
 		const revision = existing ? Number(existing.revision) + 1 : 1;
 		const seq = Number(
 			(
@@ -366,15 +388,16 @@ export class HeadphoneInboxStore {
 		this.db
 			.prepare(
 				`INSERT INTO voice_headphone_inbox
-				 (item_id, revision, project_name, founder_user_id, channel_id,
+				 (item_id, revision, question_id, project_name, founder_user_id, channel_id,
 				  source_message_id, source_revision, author_id, needs_decision,
 				  text, speech_brief_json, source_created_at, source_resolved,
 				  content_digest, seq, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				itemId,
 				revision,
+				input.questionId ?? null,
 				input.projectName,
 				input.founderUserId,
 				input.channelId,
@@ -397,6 +420,40 @@ export class HeadphoneInboxStore {
 				)
 				.get(itemId, revision) as Record<string, unknown>,
 		);
+	}
+
+	reconcileQuestionAuthority(input: {
+		projectName: string;
+		founderUserId: string;
+		openQuestionIds: readonly string[];
+	}): void {
+		if (
+			!input.projectName ||
+			!input.founderUserId ||
+			input.openQuestionIds.some((questionId) => !questionId)
+		)
+			throw new Error("headphone_inbox_question_authority_invalid");
+		const open = [...new Set(input.openQuestionIds)];
+		this.db.transaction(() => {
+			this.db
+				.prepare(
+					`UPDATE voice_headphone_inbox SET source_resolved = 1
+					 WHERE project_name = ? AND founder_user_id = ?
+					   AND question_id IS NOT NULL`,
+				)
+				.run(input.projectName, input.founderUserId);
+			for (let offset = 0; offset < open.length; offset += 500) {
+				const page = open.slice(offset, offset + 500);
+				const placeholders = page.map(() => "?").join(",");
+				this.db
+					.prepare(
+						`UPDATE voice_headphone_inbox SET source_resolved = 0
+						 WHERE project_name = ? AND founder_user_id = ?
+						   AND question_id IN (${placeholders})`,
+					)
+					.run(input.projectName, input.founderUserId, ...page);
+			}
+		})();
 	}
 
 	snapshot(input: {

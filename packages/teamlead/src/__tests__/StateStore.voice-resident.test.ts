@@ -80,8 +80,9 @@ describe("StateStore resident voice carrier", () => {
 		});
 		expect(first).toHaveProperty("leaseToken");
 		expect(store.getDesiredVoiceSession()).toBeUndefined();
-		expect(store.listRecoverableVoiceProvisioning("2099-01-01T00:00:00Z"))
-			.toEqual([]);
+		expect(
+			store.listRecoverableVoiceProvisioning("2099-01-01T00:00:00Z"),
+		).toEqual([]);
 		expect(
 			store.claimVoiceSession({
 				sessionId: input().reservation.sessionId,
@@ -176,9 +177,9 @@ describe("StateStore resident voice carrier", () => {
 		).toMatchObject({
 			state: "claimed",
 		});
-		expect(store.getVoiceSession(common.sessionId)?.residentBindingProof).toEqual(
-			refreshedProof,
-		);
+		expect(
+			store.getVoiceSession(common.sessionId)?.residentBindingProof,
+		).toEqual(refreshedProof);
 		expect(
 			store.setVoiceSessionState({
 				sessionId: common.sessionId,

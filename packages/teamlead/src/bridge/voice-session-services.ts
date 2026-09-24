@@ -237,7 +237,8 @@ export function createVoiceSessionServices(input: {
 			);
 			const project = projects[0];
 			const leads =
-				project?.leads.filter((candidate) => candidate.agentId === leadId) ?? [];
+				project?.leads.filter((candidate) => candidate.agentId === leadId) ??
+				[];
 			const huddle = project?.huddle;
 			if (
 				projects.length !== 1 ||
@@ -252,10 +253,7 @@ export function createVoiceSessionServices(input: {
 				version: candidate.version as 1,
 				projectName: text(candidate.projectName, "proof.projectName"),
 				guildId: text(candidate.guildId, "proof.guildId"),
-				voiceChannelId: text(
-					candidate.voiceChannelId,
-					"proof.voiceChannelId",
-				),
+				voiceChannelId: text(candidate.voiceChannelId, "proof.voiceChannelId"),
 				ownerBootId: text(candidate.ownerBootId, "proof.ownerBootId"),
 				sessionGeneration: Number(candidate.sessionGeneration),
 				outputBotUserId: text(

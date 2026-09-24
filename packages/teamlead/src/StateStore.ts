@@ -72274,6 +72274,22 @@ export class StateStore {
 		)[0] as unknown as WorkflowGateHolderRow | undefined;
 	}
 
+	getWorkflowGateHolderByCardMessageId(
+		cardMessageId: string,
+	): WorkflowGateHolderRow | undefined {
+		if (!cardMessageId) return undefined;
+		const rows = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE card_message_id = ?
+			  ORDER BY updated_at DESC, question_id ASC
+			  LIMIT 2`,
+			[cardMessageId],
+		);
+		return rows.length === 1
+			? (rows[0] as unknown as WorkflowGateHolderRow)
+			: undefined;
+	}
+
 	listWorkflowGateHoldersForCardVoid(
 		now: string,
 		limit = 20,

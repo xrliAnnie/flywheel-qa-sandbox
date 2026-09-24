@@ -160,11 +160,7 @@ async function call(
 
 describe("voice session routes", () => {
 	it("atomically reserves a trusted resident binding and fences daemon plus stale owners", async () => {
-		const {
-			base,
-			provisionSession,
-			resolveResidentStart,
-		} = await start();
+		const { base, provisionSession, resolveResidentStart } = await start();
 		expect(
 			await call(base, "/resident/claim", {
 				method: "POST",
@@ -191,9 +187,10 @@ describe("voice session routes", () => {
 			guildId: "attacker-choice",
 		});
 		expect(provisionSession).not.toHaveBeenCalled();
-		expect(
-			await call(base, "/desired", { token: MASTER }),
-		).toMatchObject({ status: 200, body: { session: null } });
+		expect(await call(base, "/desired", { token: MASTER })).toMatchObject({
+			status: 200,
+			body: { session: null },
+		});
 		const sessionId = (claimed.body as { sessionId: string }).sessionId;
 		const leaseToken = (claimed.body as { leaseToken: string }).leaseToken;
 		expect(
@@ -229,7 +226,9 @@ describe("voice session routes", () => {
 				},
 			}),
 		).toMatchObject({ status: 200, body: { state: "claimed" } });
-		expect(store.getVoiceSession(sessionId)?.residentBindingProof).toMatchObject({
+		expect(
+			store.getVoiceSession(sessionId)?.residentBindingProof,
+		).toMatchObject({
 			expiresAt: "2026-09-08T20:02:00.000Z",
 		});
 	});

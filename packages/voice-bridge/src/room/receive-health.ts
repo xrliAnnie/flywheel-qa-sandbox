@@ -1,8 +1,8 @@
+import type { ReceiveHealth, ReceiveReason } from "flywheel-voice-core";
 import type {
 	DiscordReceivePolicy,
 	DiscordReceiveRuntimeDiagnostic,
 } from "../bots/discordWiring.js";
-import type { ReceiveHealth, ReceiveReason } from "flywheel-voice-core";
 
 const PCM_FRAMES_FOR_HEALTH = 10;
 

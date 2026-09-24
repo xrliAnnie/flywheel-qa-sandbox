@@ -2,7 +2,7 @@
 export {
 	createInitialSileroState,
 	SILERO_MODEL_SHA256,
-	SileroVad,
 	type SileroScore,
 	type SileroState,
+	SileroVad,
 } from "flywheel-voice-bridge";

@@ -1,8 +1,8 @@
 import express, { type RequestHandler } from "express";
 import { parseReceiveHealth, type ReceiveHealth } from "flywheel-voice-core";
 import type {
-	StateStore,
 	ResidentVoiceBindingProof,
+	StateStore,
 	VoiceCredentialTier,
 	VoiceSessionReservation,
 	VoiceSessionRow,
@@ -27,9 +27,7 @@ export interface VoiceSessionRouterDeps {
 		body: unknown,
 		credentialTier: VoiceCredentialTier,
 	) => VoiceSessionReservation | Promise<VoiceSessionReservation>;
-	resolveResidentStart?: (
-		body: unknown,
-	) =>
+	resolveResidentStart?: (body: unknown) =>
 		| {
 				projectName: string;
 				leadId: string;
@@ -106,9 +104,7 @@ function renewBody(body: unknown): {
 					"ownerBootId",
 					"sessionGeneration",
 					"bindingProof",
-				]).has(
-					key,
-				),
+				]).has(key),
 		)
 	)
 		throw new Error("voice_receive_health_invalid");

@@ -111,9 +111,9 @@ describe("voice session provisioner", () => {
 			},
 		});
 		const effects = deps();
-		await expect(
-			run({ sessionId: residentId, deps: effects }),
-		).rejects.toThrow("resident_session_not_provisionable");
+		await expect(run({ sessionId: residentId, deps: effects })).rejects.toThrow(
+			"resident_session_not_provisionable",
+		);
 		expect(effects.captureCursor).not.toHaveBeenCalled();
 		expect(effects.postRoot).not.toHaveBeenCalled();
 		expect(effects.startThread).not.toHaveBeenCalled();

@@ -239,7 +239,9 @@ it("resolves and validates a resident claim from registered huddle identities wi
 	});
 	expect("session" in claimed).toBe(true);
 	if (!("session" in claimed)) throw new Error("resident claim failed");
-	await expect(deps.validateSession?.(claimed.session)).resolves.toBeUndefined();
+	await expect(
+		deps.validateSession?.(claimed.session),
+	).resolves.toBeUndefined();
 	await expect(
 		deps.validateSession?.({
 			...claimed.session,
@@ -282,9 +284,9 @@ it("fails closed when a resident claim cannot prove the registered room and bot 
 		),
 	).toThrowError(
 		expect.objectContaining({
-		status: 503,
-		code: "voice_unavailable",
-		reason: "resident_binding_invalid",
+			status: 503,
+			code: "voice_unavailable",
+			reason: "resident_binding_invalid",
 		}),
 	);
 	expect(() =>
@@ -298,9 +300,9 @@ it("fails closed when a resident claim cannot prove the registered room and bot 
 		),
 	).toThrowError(
 		expect.objectContaining({
-		status: 503,
-		code: "voice_unavailable",
-		reason: "self_filter_unverified",
+			status: 503,
+			code: "voice_unavailable",
+			reason: "self_filter_unverified",
 		}),
 	);
 });
