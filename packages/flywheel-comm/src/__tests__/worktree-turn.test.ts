@@ -802,3 +802,345 @@ describe("turnStatus (FLY-887 runner self-check)", () => {
 		).toBe("not-yours holder=exec-qa phase=qa epoch=5");
 	});
 });
+
+/**
+ * FLY-2828: the receipt projection ledger. A wake that was acknowledged but
+ * whose receipt cannot be projected must be counted, ordered behind healthy
+ * receipts, quarantined after a bounded number of attempts, and alerted once.
+ */
+describe("CommDB turn wake receipt projection ledger (FLY-2828)", () => {
+	let db: CommDB;
+	let tmpDir: string;
+	let dbPath: string;
+	const T0 = 1_700_000_000_000;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-turn-projection-"));
+		dbPath = join(tmpDir, "comm.db");
+		db = new CommDB(dbPath);
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function seedAcked(
+		wakeId: string,
+		ackedAtMs: number,
+		purpose = "workflow_rework",
+	): void {
+		db.enqueueTurnWake({
+			wakeId,
+			executionId: `exec-${wakeId}`,
+			issueId: "ISSUE-1",
+			epoch: 1,
+			activationId: `activation-${wakeId}`,
+			purpose,
+			envelope: { fromAgent: "bridge", content: "TURN ready" },
+			backend: "codex",
+			createdAtMs: T0,
+		});
+		const claim = db.claimDueTurnWake({
+			nowMs: T0,
+			retryAfterMs: 60_000,
+			leaseMs: 10_000,
+		});
+		if (claim?.wake_id !== wakeId) {
+			throw new Error(`claim mismatch for ${wakeId}`);
+		}
+		db.finishTurnWakePush({
+			wakeId,
+			claimToken: claim.claim_token!,
+			pushedAtMs: T0,
+			result: "ok",
+		});
+		expect(
+			db.ackTurnWakes({
+				executionId: `exec-${wakeId}`,
+				epoch: 1,
+				activationId: `activation-${wakeId}`,
+				ackedAtMs,
+			}),
+		).toBe(1);
+	}
+
+	it("migrates a legacy outbox without projection columns", () => {
+		db.close();
+		const legacy = new Database(dbPath);
+		legacy.exec(`
+			DROP TABLE turn_wake_outbox;
+			CREATE TABLE turn_wake_outbox (
+			  wake_id           TEXT PRIMARY KEY,
+			  execution_id      TEXT NOT NULL,
+			  issue_id          TEXT NOT NULL,
+			  epoch             INTEGER NOT NULL CHECK(epoch > 0),
+			  activation_id     TEXT,
+			  purpose           TEXT NOT NULL,
+			  envelope_json     TEXT NOT NULL,
+			  backend           TEXT NOT NULL,
+			  state             TEXT NOT NULL DEFAULT 'pending'
+			                    CHECK(state IN ('pending','sent','acked','cancelled')),
+			  push_count        INTEGER NOT NULL DEFAULT 0 CHECK(push_count BETWEEN 0 AND 2),
+			  first_push_at     INTEGER,
+			  last_push_at      INTEGER,
+			  last_push_result  TEXT,
+			  claim_token       TEXT,
+			  claim_expires_at  INTEGER,
+			  acked_at          INTEGER,
+			  cancel_reason     TEXT,
+			  episode_id        TEXT NOT NULL,
+			  alerted_at        INTEGER,
+			  alert_question_id TEXT,
+			  created_at        INTEGER NOT NULL
+			);
+			INSERT INTO turn_wake_outbox
+			  (wake_id, execution_id, issue_id, epoch, activation_id, purpose,
+			   envelope_json, backend, state, push_count, acked_at, episode_id, created_at)
+			VALUES ('legacy-wake', 'exec-legacy', 'ISSUE-1', 1, 'activation-legacy',
+			        'workflow_rework', '{}', 'codex', 'acked', 1, ${T0},
+			        'turn-wake-no-receipt:legacy-wake', ${T0});
+		`);
+		legacy.close();
+
+		db = new CommDB(dbPath);
+		const columns = (
+			new Database(dbPath, { readonly: true })
+				.prepare("PRAGMA table_info(turn_wake_outbox)")
+				.all() as Array<{ name: string }>
+		).map(({ name }) => name);
+		expect(columns).toEqual(
+			expect.arrayContaining([
+				"receipt_projected_at",
+				"projection_attempts",
+				"projection_last_error",
+				"projection_alerted_at",
+				"projection_alert_question_id",
+			]),
+		);
+		expect(db.getTurnWake("legacy-wake")).toMatchObject({
+			state: "acked",
+			projection_attempts: 0,
+			projection_last_error: null,
+			projection_alerted_at: null,
+			projection_alert_question_id: null,
+		});
+		expect(db.listUnprojectedTurnWakeReceipts()).toMatchObject([
+			{ wake_id: "legacy-wake" },
+		]);
+	});
+
+	it("orders receipts by attempts before age and hides quarantined rows", () => {
+		seedAcked("wake-old", T0 + 1_000);
+		seedAcked("wake-mid", T0 + 2_000);
+		seedAcked("wake-new", T0 + 3_000);
+		expect(
+			db.recordTurnWakeReceiptProjectionAttempt("wake-old", "boom", T0 + 4_000),
+		).toEqual({ attempts: 1 });
+		expect(
+			db.recordTurnWakeReceiptProjectionAttempt(
+				"wake-old",
+				"boom2",
+				T0 + 5_000,
+			),
+		).toEqual({ attempts: 2 });
+		expect(
+			db.recordTurnWakeReceiptProjectionAttempt("wake-mid", "held", T0 + 5_000),
+		).toEqual({ attempts: 1 });
+		expect(
+			db.listUnprojectedTurnWakeReceipts(10, 20).map((row) => row.wake_id),
+		).toEqual(["wake-new", "wake-mid", "wake-old"]);
+		expect(db.getTurnWake("wake-old")).toMatchObject({
+			projection_attempts: 2,
+			projection_last_error: "boom2",
+			receipt_projected_at: null,
+		});
+		expect(
+			db.listUnprojectedTurnWakeReceipts(10, 2).map((row) => row.wake_id),
+		).toEqual(["wake-new", "wake-mid"]);
+		expect(
+			db.listUnprojectedTurnWakeReceipts(10, 1).map((row) => row.wake_id),
+		).toEqual(["wake-new"]);
+		expect(() => db.listUnprojectedTurnWakeReceipts(10, 0)).toThrow(
+			/quarantine/,
+		);
+	});
+
+	it("records a terminal disposition and refuses attempts on projected rows", () => {
+		seedAcked("wake-done", T0 + 1_000);
+		seedAcked("wake-na", T0 + 2_000);
+		expect(
+			db.markTurnWakeReceiptProjected("wake-done", T0 + 3_000, "projected"),
+		).toBe(true);
+		expect(db.getTurnWake("wake-done")).toMatchObject({
+			receipt_projected_at: T0 + 3_000,
+			projection_last_error: null,
+		});
+		expect(
+			db.recordTurnWakeReceiptProjectionAttempt(
+				"wake-done",
+				"late",
+				T0 + 4_000,
+			),
+		).toBeNull();
+		expect(
+			db.markTurnWakeReceiptProjected("wake-done", T0 + 4_000, "projected"),
+		).toBe(false);
+		expect(
+			db.recordTurnWakeReceiptProjectionAttempt(
+				"wake-na",
+				"transient",
+				T0 + 4_000,
+			),
+		).toEqual({ attempts: 1 });
+		expect(
+			db.markTurnWakeReceiptProjected(
+				"wake-na",
+				T0 + 5_000,
+				"not_applicable",
+				"rework_wake_receipt_identity_conflict",
+			),
+		).toBe(true);
+		expect(db.getTurnWake("wake-na")).toMatchObject({
+			receipt_projected_at: T0 + 5_000,
+			projection_attempts: 1,
+			projection_last_error: "rework_wake_receipt_identity_conflict",
+		});
+		expect(db.listUnprojectedTurnWakeReceipts()).toEqual([]);
+		expect(
+			db.recordTurnWakeReceiptProjectionAttempt("missing", "x", T0),
+		).toBeNull();
+	});
+
+	it("alerts once per acked-but-unprojected receipt and names the ledger to inspect", () => {
+		db.registerSession(
+			"exec-wake-stuck",
+			"win:1",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		db.registerSession(
+			"exec-wake-carrier",
+			"win:2",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		db.registerSession(
+			"exec-wake-fresh",
+			"win:3",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		seedAcked("wake-stuck", T0 + 1_000);
+		seedAcked("wake-carrier", T0 + 1_000, "workflow_ship_carrier");
+		seedAcked("wake-fresh", T0 + 10 * 60_000);
+		db.recordTurnWakeReceiptProjectionAttempt(
+			"wake-stuck",
+			"rework_wake_receipt_context_corrupt",
+			T0 + 2_000,
+		);
+		expect(
+			db.materializeTurnWakeUnprojectedReceiptAlerts({
+				nowMs: T0 + 1_000 + 15 * 60_000 - 1,
+				alertAfterMs: 15 * 60_000,
+			}),
+		).toEqual([]);
+		expect(
+			db.materializeTurnWakeUnprojectedReceiptAlerts({
+				nowMs: T0 + 1_000 + 15 * 60_000,
+				alertAfterMs: 15 * 60_000,
+			}),
+		).toEqual([
+			"turn-wake-projection-alert:wake-carrier",
+			"turn-wake-projection-alert:wake-stuck",
+		]);
+		expect(
+			db.materializeTurnWakeUnprojectedReceiptAlerts({
+				nowMs: T0 + 1_000 + 16 * 60_000,
+				alertAfterMs: 15 * 60_000,
+			}),
+		).toEqual([]);
+		const questions = db.getPendingQuestions("flywheel-eng-lead");
+		expect(questions.map((question) => question.id)).toEqual([
+			"turn-wake-projection-alert:wake-carrier",
+			"turn-wake-projection-alert:wake-stuck",
+		]);
+		const stuck = questions.find(
+			(question) => question.id === "turn-wake-projection-alert:wake-stuck",
+		)!;
+		expect(stuck.content).toContain("purpose workflow_rework");
+		expect(stuck.content).toContain("attempts 1");
+		expect(stuck.content).toContain("last rework_wake_receipt_context_corrupt");
+		expect(stuck.content).toContain("workflow_rework_delivery");
+		const carrier = questions.find(
+			(question) => question.id === "turn-wake-projection-alert:wake-carrier",
+		)!;
+		expect(carrier.content).toContain("workflow_carrier_delivery");
+		expect(db.getTurnWake("wake-stuck")).toMatchObject({
+			projection_alerted_at: T0 + 1_000 + 15 * 60_000,
+			projection_alert_question_id: "turn-wake-projection-alert:wake-stuck",
+		});
+		// A targeted alert (quarantine) ignores the age window but never repeats.
+		expect(
+			db.materializeTurnWakeUnprojectedReceiptAlerts({
+				nowMs: T0 + 10 * 60_000 + 1,
+				alertAfterMs: 0,
+				wakeIds: ["wake-fresh", "wake-stuck"],
+			}),
+		).toEqual(["turn-wake-projection-alert:wake-fresh"]);
+		// A wake with no resolvable Lead is skipped, not thrown.
+		seedAcked("wake-no-lead", T0 + 1_000);
+		expect(
+			db.materializeTurnWakeUnprojectedReceiptAlerts({
+				nowMs: T0 + 60 * 60_000,
+				alertAfterMs: 0,
+			}),
+		).toEqual([]);
+	});
+
+	it("lists push-exhausted unacknowledged wakes for the terminal guard", () => {
+		for (const wakeId of ["wake-exhausted", "wake-once"]) {
+			db.enqueueTurnWake({
+				wakeId,
+				executionId: `exec-${wakeId}`,
+				issueId: "ISSUE-1",
+				epoch: 1,
+				activationId: `activation-${wakeId}`,
+				purpose: "workflow_rework",
+				envelope: { fromAgent: "bridge", content: "TURN ready" },
+				backend: "codex",
+				createdAtMs: T0,
+			});
+		}
+		for (const [wakeId, pushes] of [
+			["wake-exhausted", 2],
+			["wake-once", 1],
+		] as const) {
+			for (let push = 0; push < pushes; push += 1) {
+				const claim = db.claimTurnWakeById({
+					wakeId,
+					nowMs: T0 + push * 60_000,
+					retryAfterMs: 60_000,
+					leaseMs: 10_000,
+				});
+				db.finishTurnWakePush({
+					wakeId,
+					claimToken: claim!.claim_token!,
+					pushedAtMs: T0 + push * 60_000,
+					result: "ok",
+				});
+			}
+		}
+		expect(
+			db
+				.listExhaustedUnackedTurnWakes(T0 + 5 * 60_000, 10)
+				.map((row) => row.wake_id),
+		).toEqual(["wake-exhausted"]);
+		expect(() => db.listExhaustedUnackedTurnWakes(T0, 0)).toThrow(/limit/);
+		expect(db.cancelTurnWake("wake-exhausted", "terminal_guard:x")).toBe(true);
+		expect(db.listExhaustedUnackedTurnWakes(T0 + 5 * 60_000, 10)).toEqual([]);
+	});
+});
