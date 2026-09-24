@@ -5492,9 +5492,11 @@ export class StateStore {
 			input.bindingProof.sessionGeneration !== input.sessionGeneration ||
 			input.bindingProof.outputBotUserId !==
 				input.reservation.voiceBotUserId ||
-			!/^[0-9]{17,20}$/.test(input.reservation.voiceBotUserId)
+			!/^[0-9]{17,20}$/.test(input.reservation.voiceBotUserId) ||
+			!Number.isFinite(Date.parse(input.reservation.createdAt))
 		)
 			throw new Error("resident_voice_binding_invalid");
+		let expiredResidentLease = false;
 		let result:
 			| {
 					status: "inserted" | "replayed";
@@ -5506,6 +5508,21 @@ export class StateStore {
 			status: "session_active",
 		};
 		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE voice_sessions
+				 SET state = 'failed', reason = 'resident_lease_expired',
+				     ended_at = ?, updated_at = ?
+				 WHERE voice_channel_id = ? AND carrier_kind = 'resident'
+				   AND state NOT IN ('ended','cancelled','failed')
+				   AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+				[
+					input.reservation.createdAt,
+					input.reservation.createdAt,
+					input.reservation.voiceChannelId,
+					input.reservation.createdAt,
+				],
+			);
+			expiredResidentLease = this.db.getRowsModified() > 0;
 			const prior = this.getVoiceIntent(
 				input.projectName,
 				input.leadId,
@@ -5521,7 +5538,12 @@ export class StateStore {
 					!session ||
 					session.carrierKind !== "resident" ||
 					!session.leaseToken ||
-					!session.leaseExpiresAt
+					!session.leaseExpiresAt ||
+					Date.parse(session.leaseExpiresAt) <=
+						Date.parse(input.reservation.createdAt) ||
+					new Set<VoiceSessionState>(["ended", "cancelled", "failed"]).has(
+						session.state,
+					)
 				) {
 					result = { status: "intent_conflict" };
 					return;
@@ -5594,7 +5616,7 @@ export class StateStore {
 				session: this.getVoiceSession(input.reservation.sessionId)!,
 			};
 		});
-		if ("leaseToken" in result) this.save();
+		if (expiredResidentLease || "leaseToken" in result) this.save();
 		return result;
 	}
 

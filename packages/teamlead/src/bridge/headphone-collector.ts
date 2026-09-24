@@ -361,21 +361,45 @@ export class HeadphoneInboxCollector {
 				? highWatermark
 				: first
 			: (last ?? candidate.state?.cursor);
-		this.options.store.ingestPage({
-			items: accepted,
-			source: {
+		try {
+			this.options.store.ingestPage({
+				items: accepted,
+				source: {
+					projectName: candidate.scope.projectName,
+					founderUserId: candidate.scope.founderUserId,
+					channelId: candidate.scope.channelId,
+					cursor: cursor ?? undefined,
+					highWatermark: highWatermark ?? undefined,
+					bootstrapComplete:
+						(candidate.state?.bootstrapComplete ?? false) || bootstrapComplete,
+					health: "healthy",
+					nextAllowedAt: new Date(this.nextPageAt).toISOString(),
+					updatedAt,
+				},
+			});
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				error.message !== "headphone_inbox_revision_conflict"
+			)
+				throw error;
+			// Keep the cursor on the conflicting page for audit/recovery, but move
+			// this source to the back of the fair rotation so one poisoned Discord
+			// revision cannot starve every other channel.
+			this.options.store.setSourceState({
 				projectName: candidate.scope.projectName,
 				founderUserId: candidate.scope.founderUserId,
 				channelId: candidate.scope.channelId,
-				cursor: cursor ?? undefined,
-				highWatermark: highWatermark ?? undefined,
-				bootstrapComplete:
-					(candidate.state?.bootstrapComplete ?? false) || bootstrapComplete,
-				health: "healthy",
+				cursor: candidate.state?.cursor ?? undefined,
+				highWatermark: candidate.state?.highWatermark ?? undefined,
+				bootstrapComplete: candidate.state?.bootstrapComplete ?? false,
+				health: "recovering",
+				healthReason: error.message,
 				nextAllowedAt: new Date(this.nextPageAt).toISOString(),
 				updatedAt,
-			},
-		});
+			});
+			return "unavailable";
+		}
 		return "collected";
 	}
 }

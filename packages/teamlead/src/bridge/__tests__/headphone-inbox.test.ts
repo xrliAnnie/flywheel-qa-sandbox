@@ -1021,4 +1021,74 @@ describe("HeadphoneInboxCollector", () => {
 			fetchPage.mock.calls.map(([input]) => input.scope.channelId),
 		).toEqual(["channel-a", "channel-b", "channel-c"]);
 	});
+
+	it("records an ingest conflict and rotates to the remaining scopes", async () => {
+		let now = Date.parse(T0);
+		const scopes = ["channel-a", "channel-b", "channel-c"].map((channelId) => ({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			channelId,
+			allowedAuthorIds: ["lead-1"],
+			token: `secret-${channelId}`,
+		}));
+		let channelAPolls = 0;
+		const fetchPage = vi.fn(
+			async ({ scope }: { scope: (typeof scopes)[number] }) => {
+				if (scope.channelId !== "channel-a")
+					return { kind: "page" as const, messages: [] };
+				channelAPolls += 1;
+				return {
+					kind: "page" as const,
+					messages: [
+						{
+							id: "100000000000000001",
+							authorId: "lead-1",
+							content: channelAPolls === 1 ? "initial" : "changed without edit",
+							timestamp: T0,
+							editedTimestamp: null,
+						},
+					],
+				};
+			},
+		);
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => scopes,
+			fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+		});
+
+		const outcomes: string[] = [];
+		for (let index = 0; index < scopes.length * 2; index += 1) {
+			outcomes.push(await collector.tick());
+			now += 5_000;
+		}
+
+		expect(outcomes).toEqual([
+			"collected",
+			"collected",
+			"collected",
+			"unavailable",
+			"collected",
+			"collected",
+		]);
+		expect(
+			fetchPage.mock.calls.map(([input]) => input.scope.channelId),
+		).toEqual([
+			"channel-a",
+			"channel-b",
+			"channel-c",
+			"channel-a",
+			"channel-b",
+			"channel-c",
+		]);
+		expect(
+			store.headphoneInbox.getSourceState("flywheel", "founder-1", "channel-a"),
+		).toMatchObject({
+			health: "recovering",
+			healthReason: "headphone_inbox_revision_conflict",
+			updatedAt: "2026-09-23T20:00:15.000Z",
+		});
+	});
 });
