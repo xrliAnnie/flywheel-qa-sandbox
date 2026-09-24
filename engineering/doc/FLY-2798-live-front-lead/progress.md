@@ -1,14 +1,14 @@
 ---
 issue: FLY-2798
 phase: implement
-phaseCursor: 5/8
-updated: 2026-09-24T05:09:28.449Z
-nextStep: Wait for FLY-2796 to fix CHANGES_REQUESTED on 49ea98b8 and obtain
-  effective review on a new literal-last head
+phaseCursor: 6/8
+updated: 2026-09-24T06:29:20.721Z
+nextStep: TDD the canonical V1 live-session facade, delegation binding, push
+  results, and RoomIO streaming
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: implement (5/8)
-**next**: Wait for FLY-2796 to fix CHANGES_REQUESTED on 49ea98b8 and obtain effective review on a new literal-last head
+**phase**: implement (6/8)
+**next**: TDD the canonical V1 live-session facade, delegation binding, push results, and RoomIO streaming
