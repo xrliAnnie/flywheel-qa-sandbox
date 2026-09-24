@@ -360,6 +360,40 @@ describe("buildLeadOutboundExpressHandler", () => {
 		expect(res.body).toMatchObject({ status: "sent", messageId: "msg-1" });
 	});
 
+	it("promotes an authenticated HTTP delivery context into the trusted handler envelope", async () => {
+		const h = buildLeadOutboundExpressHandler(makeHandler());
+		const first = fakeRes();
+		await h(
+			{
+				body: {
+					...goodBody,
+					deliveryContext: "parent-entry",
+					idempotencyKey: "k1",
+				},
+				headers: { authorization: "Bearer api-secret" },
+			},
+			first,
+		);
+		const second = fakeRes();
+		await h(
+			{
+				body: {
+					...goodBody,
+					deliveryContext: "parent-entry",
+					idempotencyKey: "k2",
+				},
+				headers: { authorization: "Bearer api-secret" },
+			},
+			second,
+		);
+
+		expect(first.body).toMatchObject({ status: "sent", messageId: "msg-1" });
+		expect(second.body).toMatchObject({
+			status: "deduped",
+			messageId: "msg-1",
+		});
+	});
+
 	it("writes a metadata-only audit line for the response", async () => {
 		const logger = { info: vi.fn() };
 		const h = buildLeadOutboundExpressHandler(makeHandler(), logger);

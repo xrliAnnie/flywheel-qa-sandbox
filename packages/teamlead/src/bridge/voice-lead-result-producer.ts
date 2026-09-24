@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { parseChatDeliveryEnvelope } from "flywheel-comm/discord-chat-ingest";
 import { CommDB } from "flywheel-comm/db";
+import { parseChatDeliveryEnvelope } from "flywheel-comm/discord-chat-ingest";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import type { VoiceHandoffResultEvent } from "flywheel-voice-core";
+
 export { resolveVoiceReplyDeliveryContext } from "../lead-backends/codex/voice-reply-delivery-context.js";
+
 import type { VoiceHandoffStore } from "./voice-handoff-store.js";
 
 export interface VoiceLeadResultProducerOptions {

@@ -141,6 +141,9 @@ export function buildLeadOutboundExpressHandler(
 		const outcome = await handler.handle({
 			body,
 			providedToken: extractToken(req.headers),
+			...(typeof body.deliveryContext === "string"
+				? { deliveryContext: body.deliveryContext }
+				: {}),
 		});
 		const auditValue = (value: unknown) =>
 			typeof value === "string" && value

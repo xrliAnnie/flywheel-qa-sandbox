@@ -73,8 +73,9 @@ describe("CodexLeadOutboundHandler — voice result binding", () => {
 
 		await expect(
 			handler.handle({
-				body: goodBody({ deliveryContext: delivery }),
+				body: goodBody(),
 				providedToken: TOKEN,
+				deliveryContext: delivery,
 			}),
 		).resolves.toMatchObject({ status: "sent" });
 		expect(produceVoiceLeadResult).toHaveBeenCalledWith({
@@ -96,11 +97,10 @@ describe("CodexLeadOutboundHandler — voice result binding", () => {
 			},
 		});
 		const result = await handler.handle({
-			body: goodBody({
-				deliveryContext:
-					"chat:lead-a:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc",
-			}),
+			body: goodBody(),
 			providedToken: TOKEN,
+			deliveryContext:
+				"chat:lead-a:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc",
 		});
 
 		expect(result).toMatchObject({

@@ -949,7 +949,6 @@ import { openVoiceCommDb } from "./voice-comm-scope.js";
 import { createVoiceHandoffRouter } from "./voice-handoff-routes.js";
 import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
 import { verifyVoiceHandoffTranscript } from "./voice-handoff-transcript.js";
-import { VoiceLeadResultProducer } from "./voice-lead-result-producer.js";
 import {
 	createVoiceHealthBridgeGuard,
 	createVoiceHealthExportReader,
@@ -957,6 +956,7 @@ import {
 	createVoiceHealthProjector,
 	createVoiceHealthStartupSpoolReader,
 } from "./voice-health-projector.js";
+import { VoiceLeadResultProducer } from "./voice-lead-result-producer.js";
 import { botUserIdFromToken, createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";

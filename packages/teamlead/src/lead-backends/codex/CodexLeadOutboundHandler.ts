@@ -237,17 +237,7 @@ export class CodexLeadOutboundHandler {
 		if (req.body.roundtableEngage === true) return this.handleProactive(v);
 		if (v.probe) return { httpStatus: 200, status: "authorized" };
 		const { text, nonce, replyTo } = v.value;
-		if (
-			req.deliveryContext !== undefined &&
-			v.value.deliveryContext !== undefined &&
-			req.deliveryContext !== v.value.deliveryContext
-		)
-			return {
-				httpStatus: 400,
-				status: "rejected",
-				reason: "delivery_context_conflict",
-			};
-		const deliveryContext = req.deliveryContext ?? v.value.deliveryContext;
+		const deliveryContext = req.deliveryContext;
 		if (
 			deliveryContext !== undefined &&
 			(typeof deliveryContext !== "string" ||
@@ -528,7 +518,6 @@ function validateBody(body: OutboundSendBody):
 				idempotencyKey: string;
 				nonce: string;
 				replyTo?: string;
-				deliveryContext?: string;
 			};
 	  }
 	| { ok: false; reason: string } {
@@ -584,9 +573,6 @@ function validateBody(body: OutboundSendBody):
 			idempotencyKey,
 			nonce,
 			...(typeof body.replyTo === "string" ? { replyTo: body.replyTo } : {}),
-			...(typeof body.deliveryContext === "string"
-				? { deliveryContext: body.deliveryContext }
-				: {}),
 		},
 	};
 }

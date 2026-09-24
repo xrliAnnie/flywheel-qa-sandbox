@@ -7,11 +7,11 @@ import type { VoiceHandoffRequest } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexLeadOutboundHandler } from "../../lead-backends/codex/CodexLeadOutboundHandler.js";
 import { SqliteOutboundDedupStore } from "../../lead-backends/codex/SqliteOutboundDedupStore.js";
+import { VoiceHandoffStore } from "../voice-handoff-store.js";
 import {
 	resolveVoiceReplyDeliveryContext,
 	VoiceLeadResultProducer,
 } from "../voice-lead-result-producer.js";
-import { VoiceHandoffStore } from "../voice-handoff-store.js";
 
 const HANDOFF_ID = "018f47d2-7b64-7b42-a3df-123456789abc";
 const DELIVERY_ID = `chat:lead-1:voice-handoff:${HANDOFF_ID}`;
@@ -156,9 +156,7 @@ describe("VoiceLeadResultProducer", () => {
 		} finally {
 			comm.close();
 		}
-		expect(handoffs.listResults(HANDOFF_ID, 0, 100).events).toEqual([
-			first,
-		]);
+		expect(handoffs.listResults(HANDOFF_ID, 0, 100).events).toEqual([first]);
 	});
 
 	it("rejects a spoofed binding before creating a result", () => {
@@ -199,6 +197,7 @@ describe("VoiceLeadResultProducer", () => {
 			});
 			const result = await handler.handle({
 				providedToken: "bridge-token",
+				deliveryContext: DELIVERY_ID,
 				body: {
 					projectName: "flywheel",
 					leadId: "lead-1",
@@ -206,7 +205,6 @@ describe("VoiceLeadResultProducer", () => {
 					text: "状态正常，已经确认。",
 					idempotencyKey: "entry-1:out",
 					nonce: "nonce-1",
-					deliveryContext: DELIVERY_ID,
 				},
 			});
 
@@ -230,14 +228,19 @@ describe("resolveVoiceReplyDeliveryContext", () => {
 			resolveVoiceReplyDeliveryContext("lead-1", [`${DELIVERY_ID}#r2`]),
 		).toBe(DELIVERY_ID);
 		expect(
-			resolveVoiceReplyDeliveryContext("lead-1", ["chat:lead-1:12345678901234567#r0"]),
+			resolveVoiceReplyDeliveryContext("lead-1", [
+				"chat:lead-1:12345678901234567#r0",
+			]),
 		).toBeUndefined();
 	});
 
 	it.each([
 		[[`${DELIVERY_ID}#r0`, "chat:lead-1:12345678901234567#r0"], "multi_member"],
 		[
-			[`${DELIVERY_ID}#r0`, `chat:lead-1:voice-handoff:028f47d2-7b64-7b42-a3df-123456789abc#r0`],
+			[
+				`${DELIVERY_ID}#r0`,
+				`chat:lead-1:voice-handoff:028f47d2-7b64-7b42-a3df-123456789abc#r0`,
+			],
 			"multiple_voice_members",
 		],
 	])("fails closed for %s", (members, reason) => {

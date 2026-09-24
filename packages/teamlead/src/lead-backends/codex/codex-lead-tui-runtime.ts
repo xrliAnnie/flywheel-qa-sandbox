@@ -72,7 +72,6 @@ import {
 import { CodexLeadProcess, CodexLeadProcessError } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
-import { resolveVoiceReplyDeliveryContext } from "./voice-reply-delivery-context.js";
 import type { CodexProcessLike } from "./CodexTurnExecutor.js";
 import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import {
@@ -145,6 +144,7 @@ import {
 	type TuiWindowSpec,
 } from "./tui-window.js";
 import { createTuiWindowAlertGuard } from "./tui-window-alert.js";
+import { resolveVoiceReplyDeliveryContext } from "./voice-reply-delivery-context.js";
 import { WsTransport } from "./WsTransport.js";
 
 const execFileP = promisify(execFile);
