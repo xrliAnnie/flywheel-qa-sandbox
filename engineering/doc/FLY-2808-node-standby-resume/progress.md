@@ -1,9 +1,10 @@
 ---
 issue: FLY-2808
 phase: design
-phaseCursor: 2/5
-updated: 2026-09-24T16:51:29.323Z
-nextStep: Request design review via stage set design_review --plan
+phaseCursor: 3/5
+updated: 2026-09-24T16:55:17.977Z
+nextStep: Codex design review round 1 running (gate d89b2485, manifest fe931d84
+  bound to plan blob 48fa4089)
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -13,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: design (2/5)
-**next**: Request design review via stage set design_review --plan
+**phase**: design (3/5)
+**next**: Codex design review round 1 running (gate d89b2485, manifest fe931d84 bound to plan blob 48fa4089)
