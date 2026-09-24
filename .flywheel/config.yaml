@@ -34,7 +34,7 @@ runners:
 # FLY-1496 / Annie: this is a PROJECT-WIDE FALLBACK for every runner dispatch
 # that has no vendor/model label AND no dispatch `model` param. Unclassified
 # work follows the founder's Fable/Codex preference; the explicit DAG workflow
-# QA row remains the only Opus 5 default.
+# QA row remains the only Opus-line default.
 roles:
   runner:
     backend: claude-tmux

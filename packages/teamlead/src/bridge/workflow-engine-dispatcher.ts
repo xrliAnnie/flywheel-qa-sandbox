@@ -2817,15 +2817,17 @@ export class WorkflowEngineDispatcher {
 		}
 		const now = this.now();
 		const credentialExpiry = credentialWindowForNode(snapshot, node.id, now);
+		const quotaRootKey = this.options.codexQuotaRootKey?.(run.project_name);
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
+			codexQuotaRootKey: quotaRootKey,
+			now: now.getTime(),
 		});
-		const quotaRootKey =
-			dispatchResolution.dispatch.vendor === "codex"
-				? this.options.codexQuotaRootKey?.(run.project_name)
-				: undefined;
-		if (store.isCodexQuotaLaunchPaused(intent.execution_id, quotaRootKey))
+		if (
+			dispatchResolution.dispatch.vendor === "codex" &&
+			store.isCodexQuotaLaunchPaused(intent.execution_id, quotaRootKey)
+		)
 			return false;
 		const admission = this.options.admissionProbe?.();
 		if (admission && !admission.admit) {

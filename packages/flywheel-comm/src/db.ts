@@ -304,6 +304,10 @@ CREATE TABLE IF NOT EXISTS turn_wake_outbox (
   episode_id        TEXT NOT NULL,
   alerted_at        INTEGER,
   alert_question_id TEXT,
+  projection_attempts INTEGER NOT NULL DEFAULT 0,
+  projection_last_error TEXT,
+  projection_alerted_at INTEGER,
+  projection_alert_question_id TEXT,
   created_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turn_wake_due
@@ -541,6 +545,10 @@ export interface TurnWakeOutboxRow {
 	episode_id: string;
 	alerted_at: number | null;
 	alert_question_id: string | null;
+	projection_attempts: number;
+	projection_last_error: string | null;
+	projection_alerted_at: number | null;
+	projection_alert_question_id: string | null;
 	created_at: number;
 }
 
@@ -1675,6 +1683,18 @@ export class CommDB {
 			this.db.exec(
 				"ALTER TABLE turn_wake_outbox ADD COLUMN receipt_projected_at INTEGER",
 			);
+		}
+		// FLY-2828: receipt projection ledger. Every column is nullable or has a
+		// default, so legacy rows need no backfill and older readers ignore them.
+		for (const [name, ddl] of [
+			["projection_attempts", "INTEGER NOT NULL DEFAULT 0"],
+			["projection_last_error", "TEXT"],
+			["projection_alerted_at", "INTEGER"],
+			["projection_alert_question_id", "TEXT"],
+		] as const) {
+			if (!wakeColumns.some((column) => column.name === name)) {
+				this.db.exec(`ALTER TABLE turn_wake_outbox ADD COLUMN ${name} ${ddl}`);
+			}
 		}
 		const phaseWakeColumns = this.db
 			.prepare("PRAGMA table_info(runner_phase_wakes)")
@@ -8200,37 +8220,105 @@ export class CommDB {
 			).changes;
 	}
 
-	listUnprojectedTurnWakeReceipts(limit = 100): TurnWakeOutboxRow[] {
+	/**
+	 * FLY-2828: acknowledged wakes whose receipt is not yet projected, ordered so
+	 * that receipts which have never failed come before receipts that already
+	 * retried. Rows at or above `quarantineAfterAttempts` leave the window; the
+	 * projection alert lane (`materializeTurnWakeUnprojectedReceiptAlerts`) is
+	 * their durable trace.
+	 */
+	listUnprojectedTurnWakeReceipts(
+		limit = 100,
+		quarantineAfterAttempts = 20,
+	): TurnWakeOutboxRow[] {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
 			throw new Error("invalid TURN wake receipt projection limit");
+		}
+		if (
+			!Number.isSafeInteger(quarantineAfterAttempts) ||
+			quarantineAfterAttempts < 1
+		) {
+			throw new Error("invalid TURN wake receipt projection quarantine");
 		}
 		return this.db
 			.prepare(
 				`SELECT * FROM turn_wake_outbox
 				  WHERE state = 'acked' AND acked_at IS NOT NULL
 				    AND receipt_projected_at IS NULL
-				  ORDER BY acked_at, wake_id LIMIT ?`,
+				    AND projection_attempts < ?
+				  ORDER BY projection_attempts, acked_at, wake_id LIMIT ?`,
 			)
-			.all(limit) as TurnWakeOutboxRow[];
+			.all(quarantineAfterAttempts, limit) as TurnWakeOutboxRow[];
 	}
 
-	markTurnWakeReceiptProjected(wakeId: string, projectedAtMs: number): boolean {
+	/**
+	 * Close a receipt's projection window. `projected` clears the last error;
+	 * `not_applicable` keeps `reason` as the durable terminal explanation.
+	 */
+	markTurnWakeReceiptProjected(
+		wakeId: string,
+		projectedAtMs: number,
+		disposition: "projected" | "not_applicable" = "projected",
+		reason?: string,
+	): boolean {
 		if (
 			!wakeId.trim() ||
 			!Number.isSafeInteger(projectedAtMs) ||
-			projectedAtMs < 0
+			projectedAtMs < 0 ||
+			(disposition !== "projected" && disposition !== "not_applicable")
 		) {
 			return false;
 		}
 		return (
 			this.db
 				.prepare(
-					`UPDATE turn_wake_outbox SET receipt_projected_at = ?
+					`UPDATE turn_wake_outbox
+					    SET receipt_projected_at = ?, projection_last_error = ?
 					  WHERE wake_id = ? AND state = 'acked'
 					    AND acked_at IS NOT NULL AND receipt_projected_at IS NULL`,
 				)
-				.run(projectedAtMs, wakeId).changes === 1
+				.run(
+					projectedAtMs,
+					disposition === "not_applicable" ? reason?.trim() || null : null,
+					wakeId,
+				).changes === 1
 		);
+	}
+
+	/**
+	 * FLY-2828: count one failed projection attempt with its reason. Returns the
+	 * new attempt count, or null when the row is no longer an open receipt.
+	 */
+	recordTurnWakeReceiptProjectionAttempt(
+		wakeId: string,
+		reason: string,
+		nowMs: number,
+	): { attempts: number } | null {
+		if (
+			!wakeId.trim() ||
+			!reason.trim() ||
+			!Number.isSafeInteger(nowMs) ||
+			nowMs < 0
+		) {
+			return null;
+		}
+		let attempts: number | null = null;
+		this.db
+			.transaction(() => {
+				const updated = this.db
+					.prepare(
+						`UPDATE turn_wake_outbox
+						    SET projection_attempts = projection_attempts + 1,
+						        projection_last_error = ?
+						  WHERE wake_id = ? AND state = 'acked'
+						    AND acked_at IS NOT NULL AND receipt_projected_at IS NULL`,
+					)
+					.run(reason.slice(0, 512), wakeId);
+				if (updated.changes !== 1) return;
+				attempts = this.getTurnWake(wakeId)?.projection_attempts ?? null;
+			})
+			.immediate();
+		return attempts === null ? null : { attempts };
 	}
 
 	cancelTurnWake(wakeId: string, reason: string): boolean {
@@ -8368,6 +8456,119 @@ export class CommDB {
 			})
 			.immediate();
 		return created;
+	}
+
+	/**
+	 * FLY-2828: one Lead question per wake that the runner acknowledged but whose
+	 * receipt still is not projected after `alertAfterMs` (or immediately for the
+	 * explicit `wakeIds`, used when the patrol quarantines a receipt). This lane
+	 * is sequential to, not exclusive with, the no-receipt alert: a wake can be
+	 * unacknowledged for a while and then acknowledged but unprojectable, and
+	 * both facts deserve a durable question.
+	 */
+	materializeTurnWakeUnprojectedReceiptAlerts(input: {
+		nowMs: number;
+		alertAfterMs: number;
+		wakeIds?: string[];
+	}): string[] {
+		if (
+			!Number.isSafeInteger(input.nowMs) ||
+			input.nowMs < 0 ||
+			!Number.isFinite(input.alertAfterMs) ||
+			input.alertAfterMs < 0
+		) {
+			throw new Error("invalid TURN wake projection alert window");
+		}
+		const wakeIds = [
+			...new Set(
+				(input.wakeIds ?? []).map((wakeId) => wakeId.trim()).filter(Boolean),
+			),
+		];
+		const wakeFilter = wakeIds.length
+			? `AND w.wake_id IN (${wakeIds.map(() => "?").join(",")})`
+			: "";
+		const attemptedFilter = wakeIds.length
+			? ""
+			: "AND w.projection_attempts > 0";
+		const created: string[] = [];
+		this.db
+			.transaction(() => {
+				const due = this.db
+					.prepare(
+						`SELECT w.*, COALESCE(s.lead_id, l.lead_id) AS lead_id
+					   FROM turn_wake_outbox w
+					   LEFT JOIN sessions s ON s.execution_id = w.execution_id
+					   LEFT JOIN session_receipt_lineage l ON l.execution_id = w.execution_id
+					  WHERE w.state = 'acked' AND w.acked_at IS NOT NULL
+					    AND w.receipt_projected_at IS NULL
+					    AND w.projection_alerted_at IS NULL
+					    AND w.acked_at <= ?
+					    ${attemptedFilter}
+					    ${wakeFilter}
+					  ORDER BY w.acked_at, w.wake_id`,
+					)
+					.all(input.nowMs - input.alertAfterMs, ...wakeIds) as Array<
+					TurnWakeOutboxRow & { lead_id: string | null }
+				>;
+				for (const row of due) {
+					const leadId = row.lead_id?.trim();
+					if (!leadId) continue;
+					const questionId = `turn-wake-projection-alert:${row.wake_id}`;
+					const ledger =
+						row.purpose === "workflow_rework"
+							? "workflow_rework_delivery (activation rework request)"
+							: row.purpose === "workflow_ship_carrier"
+								? "workflow_carrier_delivery (activation carrier question)"
+								: `purpose ${row.purpose}`;
+					this.insertQuestion(
+						"bridge",
+						leadId,
+						`TURN wake acked but receipt never projected for ${row.issue_id}: ${row.execution_id}, epoch ${row.epoch}, activation ${row.activation_id ?? "legacy"}, wake ${row.wake_id}, purpose ${row.purpose}, attempts ${row.projection_attempts}, last ${row.projection_last_error ?? "n/a"}${row.alert_question_id ? `, earlier no-receipt question ${row.alert_question_id}` : ""}. Inspect ${ledger}.`,
+						{ id: questionId },
+					);
+					const updated = this.db
+						.prepare(
+							`UPDATE turn_wake_outbox
+						    SET projection_alerted_at = ?, projection_alert_question_id = ?
+						  WHERE wake_id = ? AND projection_alerted_at IS NULL
+						    AND receipt_projected_at IS NULL`,
+						)
+						.run(input.nowMs, questionId, row.wake_id);
+					if (updated.changes === 1) created.push(questionId);
+				}
+			})
+			.immediate();
+		return created;
+	}
+
+	/**
+	 * FLY-2828 C6: wakes that were pushed twice, never acknowledged, and not yet
+	 * alerted. The patrol runs the terminal guard over them so an obligation
+	 * that already completed elsewhere is cancelled instead of raising a false
+	 * no-receipt question.
+	 */
+	listExhaustedUnackedTurnWakes(
+		nowMs: number,
+		limit: number,
+	): TurnWakeOutboxRow[] {
+		if (
+			!Number.isSafeInteger(nowMs) ||
+			nowMs < 0 ||
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > 1_000
+		) {
+			throw new Error("invalid exhausted TURN wake limit");
+		}
+		return this.db
+			.prepare(
+				`SELECT * FROM turn_wake_outbox
+				  WHERE state = 'sent' AND acked_at IS NULL AND push_count >= 2
+				    AND alerted_at IS NULL
+				    AND (claim_token IS NULL OR claim_expires_at <= ?)
+				  ORDER BY first_push_at, wake_id LIMIT ?`,
+			)
+			.all(nowMs, limit) as TurnWakeOutboxRow[];
 	}
 
 	getRunnerWorkflowActivation(

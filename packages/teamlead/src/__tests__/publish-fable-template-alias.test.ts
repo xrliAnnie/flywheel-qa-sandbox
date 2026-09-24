@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAllFlags } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { publishFableTemplateAlias } from "../bin/publish-fable-template-alias.js";
+import {
+	publishFableTemplateAlias,
+	runPublishFableTemplateAliasCli,
+} from "../bin/publish-fable-template-alias.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
 import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
 import { createManagementDagProvider } from "../bridge/management-dag-source.js";
@@ -45,8 +48,31 @@ function oldPinnedCodeSeed() {
 		...body,
 		manifest: {
 			...body.manifest,
+			// The production shape of tpl_code: an old exact Fable pin on
+			// eng_design and (FLY-2775) an exact Opus 5 pin on qa.
 			nodes: body.manifest.nodes.map((node) =>
-				node.id === "eng_design" ? { ...node, model: "claude-fable-5" } : node,
+				node.id === "eng_design"
+					? { ...node, model: "claude-fable-5" }
+					: node.id === "qa"
+						? { ...node, model: "claude-opus-5" }
+						: node,
+			),
+		},
+	};
+	return { ...seed, contentHash: workflowSeedContentHash(seed) };
+}
+
+function oldPinnedSimpleCodeSeed() {
+	const compiled = compileWorkflowMenuSeed(
+		loadWorkflowMenuLibrary().find((menu) => menu.shape === "simple_code")!,
+	);
+	const { contentHash: _contentHash, ...body } = compiled;
+	const seed = {
+		...body,
+		manifest: {
+			...body.manifest,
+			nodes: body.manifest.nodes.map((node) =>
+				node.id === "qa" ? { ...node, model: "claude-opus-5" } : node,
 			),
 		},
 	};
@@ -75,6 +101,14 @@ describe("publish-fable-template-alias CLI", () => {
 			project: "flywheel",
 			taskCategory: "code",
 			templateId: "tpl_code",
+			updatedBy: "test",
+		});
+		// FLY-2775: tpl_simple_code as production has it — qa pinned to Opus 5.
+		store.importWorkflowTemplateSeed(oldPinnedSimpleCodeSeed());
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "simple_code",
+			templateId: "tpl_simple_code",
 			updatedBy: "test",
 		});
 
@@ -347,5 +381,119 @@ describe("publish-fable-template-alias CLI", () => {
 			),
 		).rejects.toThrow(/loopback/i);
 		expect(calls).toBe(0);
+	});
+
+	// FLY-2775: the same governed writer moves a founder-owned node onto the
+	// Opus line's follow-latest alias (Lead runs this once after the merge for
+	// tpl_code.qa and tpl_simple_code.qa).
+	describe("FLY-2775 --model opus", () => {
+		const publishOpus = () =>
+			publishFableTemplateAlias(
+				{ templateId: "tpl_code", nodeId: "qa", model: "opus" },
+				{ env: { FLYWHEEL_BRIDGE_URL: baseUrl } },
+			);
+
+		it("publishes only qa as `opus`, keeps its effort, founder-owns it, and repeats as a no-op", async () => {
+			const before = JSON.parse(
+				store.getWorkflowTemplateRevision("tpl_code", 1)!.manifest,
+			) as { nodes: Array<{ id: string; model?: string; effort?: string }> };
+			expect(before.nodes.find((node) => node.id === "qa")?.model).toBe(
+				"claude-opus-5",
+			);
+			await expect(publishOpus()).resolves.toMatchObject({
+				status: "published",
+				templateId: "tpl_code",
+				nodeId: "qa",
+				revision: 2,
+				seedOwner: "founder",
+			});
+			const after = JSON.parse(
+				store.getWorkflowTemplateRevision("tpl_code", 2)!.manifest,
+			) as typeof before;
+			// Raw DB readback: the literal alias is persisted, not a resolved id.
+			expect(after.nodes.find((node) => node.id === "qa")).toMatchObject({
+				model: "opus",
+				effort: before.nodes.find((node) => node.id === "qa")?.effort,
+			});
+			expect(after.nodes.filter((node) => node.id !== "qa")).toEqual(
+				before.nodes.filter((node) => node.id !== "qa"),
+			);
+			await expect(publishOpus()).resolves.toMatchObject({
+				status: "no_op",
+				revision: 2,
+			});
+			expect(store.listWorkflowTemplateRevisions("tpl_code")).toHaveLength(2);
+		});
+
+		it("migrates tpl_simple_code.qa too, touching nothing else", async () => {
+			const before = JSON.parse(
+				store.getWorkflowTemplateRevision("tpl_simple_code", 1)!.manifest,
+			) as { nodes: Array<{ id: string; model?: string }> };
+			await expect(
+				publishFableTemplateAlias(
+					{ templateId: "tpl_simple_code", nodeId: "qa", model: "opus" },
+					{ env: { FLYWHEEL_BRIDGE_URL: baseUrl } },
+				),
+			).resolves.toMatchObject({
+				status: "published",
+				templateId: "tpl_simple_code",
+				seedOwner: "founder",
+			});
+			const current = store.getWorkflowTemplate("tpl_simple_code")!;
+			const after = JSON.parse(
+				store.getWorkflowTemplateRevision(
+					"tpl_simple_code",
+					current.current_published_revision!,
+				)!.manifest,
+			) as typeof before;
+			expect(after.nodes.find((node) => node.id === "qa")?.model).toBe("opus");
+			expect(after.nodes.filter((node) => node.id !== "qa")).toEqual(
+				before.nodes.filter((node) => node.id !== "qa"),
+			);
+		});
+
+		it("accepts --model on the CLI and rejects an alias outside the allowlist", async () => {
+			const stdout: string[] = [];
+			const stderr: string[] = [];
+			const io = {
+				env: { FLYWHEEL_BRIDGE_URL: baseUrl },
+				stdout: { write: (text: string) => stdout.push(text) },
+				stderr: { write: (text: string) => stderr.push(text) },
+			};
+			expect(
+				await runPublishFableTemplateAliasCli(
+					[
+						"node",
+						"cli",
+						"--template",
+						"tpl_code",
+						"--node",
+						"qa",
+						"--model",
+						"opus",
+					],
+					io as never,
+				),
+			).toBe(0);
+			expect(JSON.parse(stdout.join(""))).toMatchObject({
+				status: "published",
+			});
+			expect(
+				await runPublishFableTemplateAliasCli(
+					[
+						"node",
+						"cli",
+						"--template",
+						"tpl_code",
+						"--node",
+						"qa",
+						"--model",
+						"sonnet",
+					],
+					io as never,
+				),
+			).toBe(1);
+			expect(stderr.join("")).toMatch(/--model fable\|opus\|opus\[1m\]/);
+		});
 	});
 });

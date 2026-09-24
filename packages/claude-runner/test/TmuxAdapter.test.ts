@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { resolveAllowedCanonicalModel } from "flywheel-config";
 import {
 	type AdapterExecutionContext,
 	FLYWHEEL_MARKER_DIR,
@@ -1771,7 +1772,19 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--model");
-		expect(args[args.indexOf("--model") + 1]).toMatch(/^claude-opus-5/);
+		// FLY-2775: exact, not a family prefix — `/^claude-opus-5/` also matched
+		// the retired id, so a seam still emitting Opus 5 would have passed. The
+		// contract of THIS seam is "forward exactly what the live model config
+		// canonicalizes `opus` to on the runner surface"; comparing against that
+		// same resolver (rather than a built-in constant) keeps it exact without
+		// coupling the test to whatever ~/.flywheel/models.json the host carries.
+		// That the built-in canonical is Opus 5.5 is pinned in flywheel-config.
+		const canonical = resolveAllowedCanonicalModel("opus", {
+			surface: "runner",
+			runtimeVendor: "claude",
+		});
+		expect(canonical).toMatch(/^claude-opus-/);
+		expect(args[args.indexOf("--model") + 1]).toBe(canonical);
 	});
 
 	// FLY-1650 (Codex R1 HIGH): the model and the effort arrive from different

@@ -10,6 +10,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import type { WorkflowReviewRoute } from "../workflow-review-routing.js";
 import { commDbPathForProject } from "./commdb-path.js";
 
 /**
@@ -41,7 +42,13 @@ export function buildCodexInstruction(
 		requestId: string;
 		reviewedPlanBlobSha: string;
 	},
+	reviewRoute?: WorkflowReviewRoute,
 ): string {
+	if (reviewRoute && reviewRoute.reviewerVendor !== "codex")
+		throw new Error("Codex instruction requires a codex reviewer route");
+	const routeInstruction = reviewRoute
+		? `Use the server-selected reviewer model ${reviewRoute.reviewerModel} at ${reviewRoute.reviewerEffort} effort; do not substitute another model.`
+		: "";
 	if (reviewType === "design") {
 		if (!planPath) {
 			throw new Error(
@@ -67,6 +74,7 @@ export function buildCodexInstruction(
 		return [
 			`[FLY-137] Codex design review required for exec=${executionId}.`,
 			`Run: /codex-design-review ${target}`,
+			routeInstruction,
 			`Iterate on findings until Codex returns APPROVED. Write the approved`,
 			`result to .flywheel/runs/${executionId}/codex/design-review.json with`,
 			`schema {executionId, reviewType:"design", status:"APPROVED",`,
@@ -75,12 +83,15 @@ export function buildCodexInstruction(
 			`Then call \`flywheel-comm await-codex-gate design --exec-id ${executionId}\``,
 			`before \`flywheel-comm stage set implement\`. The gate command is`,
 			...gateTail,
-		].join(" ");
+		]
+			.filter(Boolean)
+			.join(" ");
 	}
 	return [
 		`[FLY-827] Codex code review is a HARD GATE for exec=${executionId} —`,
 		`founder review and merge will be BLOCKED until it passes for the`,
 		`current PR head. Run: /codex-code-review`,
+		routeInstruction,
 		`Iterate on findings until Codex returns APPROVED. Write the approved`,
 		`result to .flywheel/runs/${executionId}/codex/code-review.json with`,
 		`schema {executionId, reviewType:"code", status:"APPROVED",`,
@@ -91,7 +102,9 @@ export function buildCodexInstruction(
 		`=== current HEAD (fail-closed) and reports the APPROVED verdict to the`,
 		`Bridge for you — you do NOT need a separate command. If you added commits`,
 		`after the review, re-run /codex-code-review for the new head.`,
-	].join(" ");
+	]
+		.filter(Boolean)
+		.join(" ");
 }
 
 /**

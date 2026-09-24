@@ -43,8 +43,25 @@ const configuredRateKeys = new WeakMap<
  * source: claude-api catalog (cached 2026-06-24).
  * cache rates derived from input: cacheRead = 0.1×input (cache hit),
  * cacheWrite = 1.25×input (5-min TTL, the `cache_creation_input_tokens` tier).
+ * Exception (FLY-2775): Opus 5.5 publishes cacheRead $0.20 = 0.05×input.
  */
 export const MODEL_RATES: Record<string, ModelRate> = {
+	// FLY-2775: Opus 5.5 — Anthropic's published rate is $4 / $20 per MTok,
+	// cache reads $0.20 (cheaper than Opus 5). cacheWrite follows this table's
+	// column definition (5-min TTL = 1.25× input = $5). The 1M variant is the
+	// same model at the same price; `opus-1m` / `opus[1m]` resolve to it, so it
+	// is registered explicitly rather than falling through to $0.
+	// Deliberately NO `claude-opus-*` family wildcard: the Opus line now
+	// auto-follows new releases, and a wildcard would silently price a future
+	// release at an old rate. An unpriced id stays visibly $0 + warned until it
+	// is added here or to ~/.flywheel/token-pricing.json.
+	"claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+	"claude-opus-5-5[1m]": {
+		input: 4,
+		output: 20,
+		cacheRead: 0.2,
+		cacheWrite: 5,
+	},
 	// FLY-1467: Opus 5 与 Opus 4.8 同价(Anthropic catalog: "a drop-in
 	// upgrade at Opus 4.8's pricing")。cacheRead/Write = 标准 0.1x / 1.25x。
 	"claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },

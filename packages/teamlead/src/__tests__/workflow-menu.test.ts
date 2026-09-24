@@ -8,16 +8,21 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resetModelConfigCacheForTests } from "flywheel-config";
+import {
+	resetModelConfigCacheForTests,
+	validateModelConfigDocument,
+} from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FLY1436_TARGET_BINDINGS } from "../bridge/workkind-cutover.js";
 import { StateStore } from "../StateStore.js";
+import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import {
 	compileWorkflowMenuSeed,
 	importWorkflowMenuSeeds,
 	loadBundledWorkflowNodeNames,
 	loadProjectMenuConfig,
 	loadWorkflowMenuLibrary,
+	loadWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 	resolveLeadMenus,
 	resolveMenuOverrides,
@@ -30,6 +35,11 @@ import {
 	nodeRequiresFounderReview,
 	resolveWorkflowGateAuthority,
 } from "../workflow-run-snapshot.js";
+import {
+	validateManifestForPersistence,
+	validateWorkflowManifest,
+	workflowSeedContentHash,
+} from "../workflow-template.js";
 import { resolveWorkflowTemplateSelection } from "../workflow-template-selection.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -66,7 +76,7 @@ describe("founder-approved workflow menu source", () => {
 		expect(FLY1436_TARGET_BINDINGS).toEqual(bindings);
 	});
 
-	it("pins the Simple Code DAG to GPT-5.6 implement then cross-vendor Opus 5 QA", () => {
+	it("pins the Simple Code DAG defaults to Opus implement and Opus QA", () => {
 		const menu = loadWorkflowMenuLibrary().find(
 			(candidate) => candidate.shape === "simple_code",
 		)!;
@@ -82,7 +92,7 @@ describe("founder-approved workflow menu source", () => {
 				id: "implement",
 				label: "实现",
 				type: "implement",
-				defaultModel: "codex",
+				defaultModel: "opus",
 			},
 			{
 				id: "qa",
@@ -130,8 +140,13 @@ describe("founder-approved workflow menu source", () => {
 		expect(menu.nodes.find((node) => node.id === "implement")?.models).toEqual([
 			{
 				model: "opus",
-				allowedEfforts: OPUS_EFFORTS,
-				defaultEffort: "high",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "xhigh",
+			},
+			{
+				model: "sol",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "xhigh",
 			},
 			{
 				model: "fable",
@@ -163,14 +178,15 @@ describe("founder-approved workflow menu source", () => {
 				expect.objectContaining({
 					id: "implement",
 					type: "implement",
-					vendor: "codex",
-					model: "gpt-5.6-sol",
+					vendor: "claude",
+					model: "opus",
 				}),
+				// FLY-2775: the seed persists the family alias; each run resolves it.
 				expect.objectContaining({
 					id: "qa",
 					type: "qa",
 					vendor: "claude",
-					model: "claude-opus-5",
+					model: "opus",
 				}),
 				expect.objectContaining({ type: "land", execution: "engine" }),
 			]),
@@ -231,23 +247,20 @@ describe("founder-approved workflow menu source", () => {
 			},
 		]);
 		for (const [nodeId, models, defaultModel] of [
-			["eng_design", ["fable", "codex", "astra"], "fable"],
-			["implement", ["fable", "codex", "astra"], "codex"],
-			["qa", ["opus"], "opus"],
+			["eng_design", ["fable", "codex", "astra", "opus"], "fable"],
+			["implement", ["opus", "sol", "fable", "codex", "astra"], "opus"],
+			["qa", ["opus", "sol", "codex"], "opus"],
 		] as const) {
 			const node = code.nodes.find((candidate) => candidate.id === nodeId)!;
 			expect(node.defaultModel).toBe(defaultModel);
 			expect(node.models?.map((model) => model.model)).toEqual(models);
 			for (const model of node.models ?? []) {
-				expect(model.allowedEfforts).toEqual(
-					model.model === "opus" ? OPUS_EFFORTS : ALL_EFFORTS,
-				);
+				expect(model.allowedEfforts).toEqual(ALL_EFFORTS);
 				expect(model.defaultEffort).toBe(
-					node.id === "eng_design" && model.model === "astra"
-						? "high"
-						: ["codex", "astra"].includes(model.model)
-							? "xhigh"
-							: "high",
+					node.id === "implement" &&
+						["opus", "sol", "codex", "astra"].includes(model.model)
+						? "xhigh"
+						: "high",
 				);
 			}
 		}
@@ -759,12 +772,14 @@ describe("workflow menu override validation", () => {
 				overridden: true,
 			},
 			implement: {
-				model: "codex (= gpt-5.6-sol)",
+				model: "opus (= claude-opus-5-5)",
 				effort: "xhigh",
 				overridden: false,
 			},
 			qa: {
-				model: "opus (= claude-opus-5)",
+				// FLY-2775: the receipt keeps the alias AND the id it resolved to,
+				// which is how a run-start response proves which body it will spawn.
+				model: "opus (= claude-opus-5-5)",
 				effort: "high",
 				overridden: false,
 			},
@@ -779,23 +794,18 @@ describe("workflow menu override validation", () => {
 		],
 		[
 			{ eng_design: { model: "opus" } },
-			"MODEL_NOT_ALLOWED_FOR_NODE",
-			["fable", "codex", "astra"],
+			"MODEL_SPLIT_OVERRIDE_CONFLICT",
+			["fable"],
 		],
 		[
 			{ eng_design: { model: "atsra" } },
 			"INVALID_MODEL",
-			["fable", "codex", "astra"],
+			["fable", "codex", "astra", "opus"],
 		],
 		[
 			{ eng_design: { model: "fable", effort: "ultra" } },
 			"EFFORT_NOT_ALLOWED_FOR_MODEL",
 			ALL_EFFORTS,
-		],
-		[
-			{ qa: { model: "opus", effort: "xhigh" } },
-			"EFFORT_NOT_ALLOWED_FOR_MODEL",
-			OPUS_EFFORTS,
 		],
 	] as const)(
 		"fails loud for invalid override %# with a legal set",
@@ -812,70 +822,207 @@ describe("workflow menu override validation", () => {
 		},
 	);
 
-	it("fails loud when an override would make producer and QA use one vendor", () => {
+	it("allows the founder-approved QA-only same-family exemption", () => {
 		const simple = loadWorkflowMenuLibrary().find(
 			(menu) => menu.shape === "simple_code",
 		)!;
-		try {
-			resolveMenuOverrides(
-				simple,
-				{ qa: { model: "codex" } },
-				{ issueIdentifier: "FLY-802" },
-			);
-			throw new Error("expected same-vendor validation failure");
-		} catch (error) {
-			expect(error).toBeInstanceOf(WorkflowMenuValidationError);
-			expect(error).toMatchObject({
-				code: "SAME_VENDOR_REVIEW_COMBINATION",
-				legal: ["implement:opus", "implement:fable", "qa:opus"],
-			});
-		}
-	});
-
-	it("FLY-2763 R3: sameVendorReviewAllowed admits a same-vendor pair regardless of model", () => {
-		const simple = loadWorkflowMenuLibrary().find(
-			(menu) => menu.shape === "simple_code",
-		)!;
-		// implement fable + qa opus (default) → both claude, different models → admitted
-		const different = resolveMenuOverrides(
+		const resolved = resolveMenuOverrides(
 			simple,
 			{ implement: { model: "fable" } },
-			{ issueIdentifier: "FLY-2763", sameVendorReviewAllowed: true },
+			{ issueIdentifier: "FLY-2788" },
 		);
-		expect(different.templateOverride.nodes?.implement?.vendor).toBe("claude");
-		// implement opus + qa opus → identical models are admitted under the sanction
-		// (founder 2026-09-22: implement Opus + QA Opus is the Codex-outage shape)
-		const identical = resolveMenuOverrides(
-			simple,
-			{ implement: { model: "opus" } },
-			{ issueIdentifier: "FLY-2763", sameVendorReviewAllowed: true },
+		expect(resolved.templateOverride.nodes?.implement?.vendor).toBe("claude");
+	});
+});
+
+// FLY-2775: the Opus line follows its latest release. A published menu seed
+// persists the family alias (`opus`) instead of the id it resolves to today,
+// and every run snapshot canonicalizes it against the registry generation live
+// at RUN START. So a model-sync advance reaches new runs without a restart or a
+// re-seed, while a run already in flight keeps the id it pinned.
+describe("FLY-2775 seeds persist the Opus family alias", () => {
+	const opusNodes = (
+		manifest: ReturnType<typeof loadWorkflowMenuSeeds>[number]["manifest"],
+	) =>
+		manifest.nodes.filter(
+			(node): node is typeof node & { model: string } =>
+				"model" in node &&
+				typeof node.model === "string" &&
+				(node.model === "opus" || node.model.startsWith("claude-opus")),
 		);
-		expect(identical.templateOverride.nodes?.implement?.vendor).toBe("claude");
-		expect(identical.receipts.implement?.model).toContain("claude-opus-5");
-		// without the sanction the FLY-1188 refusal is byte-identical
-		for (const model of ["fable", "opus"]) {
-			try {
-				resolveMenuOverrides(
-					simple,
-					{ implement: { model } },
-					{ issueIdentifier: "FLY-2763" },
-				);
-				throw new Error("expected same-vendor validation failure");
-			} catch (error) {
-				expect(error).toBeInstanceOf(WorkflowMenuValidationError);
-				expect(error).toMatchObject({ code: "SAME_VENDOR_REVIEW_COMBINATION" });
-			}
+
+	it("persists `opus` for every Opus-line node whatever the binding is at compile time", () => {
+		for (const snapshot of [
+			validateModelConfigDocument({ version: 1 }),
+			validateModelConfigDocument({
+				version: 1,
+				bindings: { opus: "claude-opus-5", opus1m: "claude-opus-5[1m]" },
+			}),
+		]) {
+			const nodes = loadWorkflowMenuSeeds(snapshot).flatMap((seed) =>
+				opusNodes(seed.manifest),
+			);
+			// Guard the guard: an empty set would make the next line vacuous.
+			expect(nodes.length).toBeGreaterThan(0);
+			expect(nodes.map((node) => node.model)).toEqual(nodes.map(() => "opus"));
 		}
 	});
 
-	it("rejects a same-vendor default combination at compile time", () => {
-		const simple = structuredClone(
-			loadWorkflowMenuLibrary().find((menu) => menu.shape === "simple_code")!,
-		);
-		simple.nodes.find((node) => node.id === "qa")!.defaultModel = "codex";
-		expect(() => compileWorkflowMenuSeed(simple)).toThrow(
-			/simple_code.*qa.*same vendor.*implement/i,
-		);
+	it("boots, persists `opus`, and pins each run to the binding live at its start (criteria 3 + 4)", async () => {
+		const opus6 = validateModelConfigDocument({
+			version: 1,
+			models: [
+				{
+					id: "claude-opus-6",
+					provider: "anthropic",
+					runtimeVendor: "claude",
+					label: "Opus 6",
+					aliases: ["opus-6"],
+					dispatch: true,
+				},
+				{
+					id: "claude-opus-6[1m]",
+					provider: "anthropic",
+					runtimeVendor: "claude",
+					label: "Opus 6 (1M)",
+					aliases: ["opus-6-1m"],
+					dispatch: true,
+					contextWindowTokens: 1_000_000,
+				},
+			],
+			bindings: { opus: "claude-opus-6", opus1m: "claude-opus-6[1m]" },
+		});
+		const builtIn = validateModelConfigDocument({ version: 1 });
+		const store = await StateStore.create(":memory:");
+		try {
+			// The real Bridge boot path: compile → FLY-2121 preflight → apply/import.
+			const seeds = loadWorkflowMenuSeeds(builtIn);
+			await migrateFly2121WorkflowCatalog(store, seeds, {
+				resolvableRoleNames: loadBundledWorkflowNodeNames(),
+			});
+			const template = store.getWorkflowTemplate("tpl_simple_code")!;
+			const revision = store.getWorkflowTemplateRevision(
+				"tpl_simple_code",
+				template.current_published_revision!,
+			)!;
+			const persisted = JSON.parse(revision.manifest);
+			expect(
+				persisted.nodes.find((node: { id: string }) => node.id === "qa").model,
+			).toBe("opus");
+
+			const qaDispatch = (
+				snapshot: ReturnType<typeof buildWorkflowRunSnapshotV3>,
+			) => snapshot.resolved.nodes.find((node) => node.id === "qa");
+			// A run started today pins Opus 5.5 ...
+			const inFlight = buildWorkflowRunSnapshotV3({
+				template: { id: "tpl_simple_code", revision: revision.revision },
+				manifest: persisted,
+				canonicalRoot: REPO_ROOT,
+				modelSnapshot: builtIn,
+			});
+			const inFlightBytes = JSON.stringify(inFlight);
+			expect(qaDispatch(inFlight)).toMatchObject({
+				dispatchPinned: true,
+				dispatch: { vendor: "claude", model: "claude-opus-5-5" },
+			});
+			// ... the sync then advances the binding: the SAME persisted revision
+			// yields Opus 6 for a new run — no code change, no re-seed, no restart.
+			const next = buildWorkflowRunSnapshotV3({
+				template: { id: "tpl_simple_code", revision: revision.revision },
+				manifest: persisted,
+				canonicalRoot: REPO_ROOT,
+				modelSnapshot: opus6,
+			});
+			expect(qaDispatch(next)?.dispatch?.model).toBe("claude-opus-6");
+			// ... and the run already in flight is byte-for-byte unchanged.
+			expect(JSON.stringify(inFlight)).toBe(inFlightBytes);
+
+			// A second boot under the advanced binding plans NO catalog mutation:
+			// compile, preflight and import agree on the persisted alias bytes.
+			const again = await migrateFly2121WorkflowCatalog(
+				store,
+				loadWorkflowMenuSeeds(opus6),
+				{ resolvableRoleNames: loadBundledWorkflowNodeNames() },
+			);
+			expect(again.plan.requiresMutation).toBe(false);
+		} finally {
+			store.close();
+		}
+	});
+
+	// Codex code review (rework) B5: between the restart and the first sync, the
+	// production models.json still binds `opus` to the retired claude-opus-5 and
+	// the dispatch ALIAS is dark by the FLY-1496 contract. Template runs do not use
+	// that alias lookup: run start canonicalizes through the registry and pins an
+	// exact id, which stays dispatchable. So the window runs Opus 5 — it is not
+	// broken — until the sync advances the binding.
+	it("in the pre-sync window a template run pins the retired id, which stays dispatchable", () => {
+		const stale = validateModelConfigDocument({
+			version: 1,
+			bindings: { opus: "claude-opus-5" },
+		});
+		const seed = loadWorkflowMenuSeeds(
+			validateModelConfigDocument({ version: 1 }),
+		).find((candidate) => candidate.templateId === "tpl_simple_code")!;
+		const qa = validateWorkflowManifest(seed.manifest, {
+			modelSnapshot: stale,
+		}).nodes.find((node) => node.id === "qa")!.model!;
+		expect(qa).toBe("claude-opus-5");
+		expect(stale.normalizeDispatchModel(qa)).toBe("claude-opus-5");
+		// The dispatch alias itself is dark, exactly as FLY-1496 requires.
+		expect(stale.normalizeDispatchModel("opus")).toBeNull();
+	});
+
+	it("persists all three follow-latest spellings through import byte-for-byte", async () => {
+		const builtIn = validateModelConfigDocument({ version: 1 });
+		const store = await StateStore.create(":memory:");
+		try {
+			const base = loadWorkflowMenuSeeds(builtIn).find(
+				(candidate) => candidate.templateId === "tpl_simple_code",
+			)!;
+			for (const [index, spelling] of [
+				"opus",
+				"opus-1m",
+				"opus[1m]",
+			].entries()) {
+				const manifest = {
+					...base.manifest,
+					nodes: base.manifest.nodes.map((node) =>
+						node.id === "qa" ? { ...node, model: spelling } : node,
+					),
+				};
+				const seed = {
+					templateId: `tpl_fly2775_${index}`,
+					name: base.name,
+					projectScope: base.projectScope,
+					manifest,
+				};
+				store.importWorkflowTemplateSeed({
+					...seed,
+					contentHash: workflowSeedContentHash({
+						...seed,
+						manifest: validateManifestForPersistence(manifest, {
+							modelSnapshot: builtIn,
+						}),
+					}),
+				});
+				const revision = store.getWorkflowTemplateRevision(seed.templateId, 1)!;
+				expect(
+					JSON.parse(revision.manifest).nodes.find(
+						(node: { id: string }) => node.id === "qa",
+					).model,
+				).toBe(spelling);
+			}
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not ship a seed for the retired tpl_eng_heavy (no boot path can advance it)", () => {
+		// FLY-1693 retired it; it survives only for historical run references.
+		expect(
+			loadWorkflowMenuSeeds().map((seed) => seed.templateId),
+		).not.toContain("tpl_eng_heavy");
 	});
 });
 
@@ -907,33 +1054,10 @@ describe("Opus 4.6 menu compatibility", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("compiles all six default-Opus nodes at high without xhigh", () => {
-		const opusNodes = loadWorkflowMenuLibrary().flatMap((menu) =>
-			menu.nodes
-				.filter((node) => node.defaultModel === "opus")
-				.map((node) => ({ menu, node })),
+	it("fails closed when the retired Opus binding cannot satisfy current policy", () => {
+		expect(() => loadWorkflowMenuLibrary()).toThrow(
+			/allowedEfforts must be supported.*low, medium, high, max/,
 		);
-
-		expect(opusNodes).toHaveLength(6);
-		for (const { menu, node } of opusNodes) {
-			const policy = node.models?.find((model) => model.model === "opus");
-			expect(policy?.allowedEfforts, menu.shape).toEqual([
-				"low",
-				"medium",
-				"high",
-				"max",
-			]);
-			expect(policy?.defaultEffort, menu.shape).toBe("high");
-			const compiled = compileWorkflowMenuSeed(menu);
-			expect(
-				compiled.manifest.nodes.find((candidate) => candidate.id === node.id),
-				menu.shape,
-			).toMatchObject({
-				vendor: "claude",
-				model: "claude-opus-4-6[1m]",
-				effort: "high",
-			});
-		}
 	});
 
 	it("still rejects an effort the bound model cannot run", () => {

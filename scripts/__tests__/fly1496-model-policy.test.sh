@@ -43,7 +43,7 @@ else
 fi
 
 if [ "$(node "$POLICY" model claude-fable-5 lead 2>/dev/null)" = "claude-fable-5" ] \
-  && [ "$(node "$POLICY" model opus lead 2>/dev/null)" = "claude-opus-5" ] \
+  && [ "$(node "$POLICY" model opus lead 2>/dev/null)" = "claude-opus-5-5" ] \
   && [ "$(node "$POLICY" model claude-opus-4-8 lead 2>/dev/null)" = "claude-opus-4-8" ] \
   && [ "$(node "$POLICY" model null lead 2>/dev/null)" = "null" ] \
   && ! node "$POLICY" model claude-not-a-model lead >/dev/null 2>&1 \

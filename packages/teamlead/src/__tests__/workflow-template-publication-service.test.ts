@@ -141,5 +141,28 @@ describe("workflow publication stage and apply", () => {
 			after_digest: original.manifest_digest,
 			source_kind: "rollback",
 		});
+		// FLY-2775: rollback restores the historical bytes, including the Opus
+		// family alias — it must not freeze the follow-latest node onto today's id.
+		const qaModel = (revision: number) =>
+			JSON.parse(
+				store.getWorkflowTemplateRevision(request.templateId, revision)!
+					.manifest,
+			).nodes.find((n: { id: string }) => n.id === "qa").model;
+		expect(qaModel(1)).toBe("opus");
+		expect(qaModel(3)).toBe("opus");
+	});
+
+	it("FLY-2775: a seed publication keeps the Opus family alias", async () => {
+		const { store, service } = await fixture();
+		const receipt = service.apply(service.stage({ ...request, from: "seed" }));
+		const published = JSON.parse(
+			store.getWorkflowTemplateRevision(
+				request.templateId,
+				receipt.published_revision,
+			)!.manifest,
+		);
+		expect(
+			published.nodes.find((n: { id: string }) => n.id === "qa").model,
+		).toBe("opus");
 	});
 });

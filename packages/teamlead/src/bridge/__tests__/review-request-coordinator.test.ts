@@ -500,6 +500,7 @@ function registerSession(
 	opts: {
 		codexSkip?: boolean;
 		adapterType?: string;
+		runnerModel?: string;
 		displayPath?: string;
 		bindingPath?: string;
 	} = {},
@@ -511,6 +512,7 @@ function registerSession(
 		status: "running",
 		worktree_path: opts.displayPath ?? "/fake/worktree",
 		adapter_type: opts.adapterType ?? "codex-tmux",
+		runner_model: opts.runnerModel,
 	});
 	store.bindWorktreeOnce(execId, {
 		path: opts.bindingPath ?? "/fake/worktree",
@@ -4629,6 +4631,34 @@ describe("FLY-2763 — sanctioned same-family lane (review_same_family_allowed)"
 		expect(h.store.getCodexReviewJob("r1")).toBeFalsy();
 	});
 
+	it("preserves the global same-family sanction for an unrouted legacy Claude author with model metadata", async () => {
+		const h = await makeHarness();
+		enableSameFamily(h);
+		registerSession(h.store, "e1", {
+			adapterType: "claude-tmux",
+			runnerModel: "claude-opus-5-5",
+		});
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		const result = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		expect(result).toMatchObject({ accepted: true });
+		expect(h.store.getCodexReviewJob("r1")?.same_family_sanction).toBe(
+			"review_same_family_allowed",
+		);
+		await settle();
+	});
+
 	it("flag on does NOT touch the codex-author lane (no sanction stamped)", async () => {
 		const h = await makeHarness();
 		enableSameFamily(h);
@@ -4645,6 +4675,49 @@ describe("FLY-2763 — sanctioned same-family lane (review_same_family_allowed)"
 			h.store.getCodexReviewJob("r1")?.same_family_sanction,
 		).toBeUndefined();
 	});
+});
+
+describe("FLY-2788 — model-specific Claude reviewer route", () => {
+	it.each(["gpt-5.6-sol", "gpt-6-sol"])(
+		"routes %s code authors to Opus 5.5 at xhigh",
+		async (runnerModel) => {
+			const h = await makeHarness();
+			registerSession(h.store, "e1", { runnerModel });
+			vi.spyOn(h.store, "getWorkflowRunNodeForExecution").mockReturnValue({
+				run_id: "run-1",
+				node_id: "implement",
+			} as never);
+			vi.spyOn(h.store, "getWorkflowRun").mockReturnValue({
+				snapshot: '{"modelRouting":{}}',
+			} as never);
+			vi.spyOn(h.store, "getWorkflowExecutionRuntime").mockReturnValue({
+				model: runnerModel,
+				vendor: "codex",
+			} as never);
+			vi.spyOn(h.store, "appendWorkflowRunEventChecked").mockReturnValue(
+				undefined as never,
+			);
+			openGate(h.comm, "q1");
+			h.outcomes.push({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: HEAD,
+				raw: "",
+			});
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: "r1",
+				reviewType: "code",
+				questionId: "q1",
+			});
+			await settle();
+			expect(h.invocations[0]).toMatchObject({
+				model: "claude-opus-5-5",
+				effort: "xhigh",
+			});
+		},
+	);
 });
 
 describe("R12 HIGH-1 — rejected registrations are not resurrectable", () => {

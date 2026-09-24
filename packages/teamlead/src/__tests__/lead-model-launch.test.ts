@@ -157,7 +157,7 @@ describe("resolveLeadModelLaunch", () => {
 			expect(resolveLeadModelLaunch("flywheel", "eng-lead")).toMatchObject({
 				rawModel: "opus",
 				rawEffort: "high",
-				model: "claude-opus-5",
+				model: "claude-opus-5-5",
 				effort: "high",
 				substituted: false,
 			});

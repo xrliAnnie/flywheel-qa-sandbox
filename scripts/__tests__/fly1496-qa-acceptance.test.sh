@@ -150,7 +150,7 @@ fi
 #    variants a hand-edited projects.json can carry all land on the one
 #    canonical id, and never on some other model.
 # ---------------------------------------------------------------------------
-SPELLINGS=("claude-opus-4-8|claude-opus-4-8" "claude-opus-4-8[1m]|claude-opus-4-8[1m]" "CLAUDE-OPUS-4-8|claude-opus-4-8" "  claude-opus-4-8[1m]  |claude-opus-4-8[1m]" "opus|claude-opus-5" "fable|claude-fable-5-1")
+SPELLINGS=("claude-opus-4-8|claude-opus-4-8" "claude-opus-4-8[1m]|claude-opus-4-8[1m]" "CLAUDE-OPUS-4-8|claude-opus-4-8" "  claude-opus-4-8[1m]  |claude-opus-4-8[1m]" "opus|claude-opus-5-5" "fable|claude-fable-5-1")
 SPELL_FAIL=0
 for pair in "${SPELLINGS[@]}"; do
   spelling="${pair%%|*}"
@@ -194,7 +194,7 @@ PROBE=$(FLY_MODELS="$MODELS" FLY_ENTRY="$CONFIG_DIST" node --input-type=module -
   }));
 ' 2>/dev/null)
 if [ "$(jq -r '.dispatchOpus // "null"' <<<"$PROBE")" = "null" ] \
-  && [ "$(jq -r '.mediumTier' <<<"$PROBE")" = "claude-opus-5" ] \
+  && [ "$(jq -r '.mediumTier' <<<"$PROBE")" = "claude-opus-5-5" ] \
   && [ "$(jq -r '.leadSelectable' <<<"$PROBE")" = "false" ]; then
   ok "a non-dispatch model yields no alias, a built-in tier, and no picker entry"
 else
@@ -237,21 +237,30 @@ MANIFEST_AFTER_SECOND="$(shasum -a 256 "$MANIFEST" | awk '{print $1}')"
 #    carrier may still pin (pre-existing back-compat), while an unknown spelling
 #    stays unresolvable.
 # ---------------------------------------------------------------------------
-PROBE=$(FLY_ENTRY="$CONFIG_DIST" node --input-type=module -e '
+# FLY-2775: HOME must be isolated too. Deleting FLYWHEEL_MODELS_CONFIG only drops
+# the EXPLICIT path; the implicit one is `$HOME/.flywheel/models.json`, and without
+# an override this probe silently read the developer's live fleet config.
+PROBE_HOME=$(make_home)
+PROBE=$(FLY_ENTRY="$CONFIG_DIST" FLY_HOME="$PROBE_HOME" node --input-type=module -e '
   delete process.env.FLYWHEEL_MODELS_CONFIG;
+  process.env.HOME = process.env.FLY_HOME;
   const mod = await import(process.env.FLY_ENTRY);
   const snap = mod.getModelConfigSnapshot();
   process.stdout.write(JSON.stringify({
     legacy48: snap.getDispatchCanonical("claude-opus-4-8[1m]"),
     unknown: snap.getDispatchCanonical("claude-not-a-model"),
     acceptedHasLegacy: snap.acceptedDispatchModels.some((m) => m.includes("4-8")),
+    // FLY-2775: the generation that retired with the Opus 5.5 binding must keep
+    // dispatching by its full id, exactly like 4.8 does.
+    legacyOpus5: snap.getDispatchCanonical("claude-opus-5"),
     aliasOpus: snap.getDispatchCanonical("opus"),
   }));
 ' 2>/dev/null)
 if [ "$(jq -r '.legacy48 // "null"' <<<"$PROBE")" = "claude-opus-4-8[1m]" ] \
   && [ "$(jq -r '.unknown // "null"' <<<"$PROBE")" = "null" ] \
   && [ "$(jq -r '.acceptedHasLegacy' <<<"$PROBE")" = "true" ] \
-  && [ "$(jq -r '.aliasOpus' <<<"$PROBE")" = "claude-opus-5" ]; then
+  && [ "$(jq -r '.legacyOpus5 // "null"' <<<"$PROBE")" = "claude-opus-5" ] \
+  && [ "$(jq -r '.aliasOpus' <<<"$PROBE")" = "claude-opus-5-5" ]; then
   ok "dispatch resolves aliases and keeps legacy pins working, unknown stays null"
 else
   bad "dispatch canonicalization contract broken: $PROBE"

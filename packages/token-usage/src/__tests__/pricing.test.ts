@@ -25,6 +25,41 @@ describe("costMicroUsd", () => {
 		expect(microUsdToUsd(micro)).toBe(5);
 	});
 
+	// FLY-2775: Opus 5.5 at its published rate ($4/$20, cache read $0.20,
+	// 5-min cache write $5) — for both the base id and the 1M variant.
+	it.each(["claude-opus-5-5", "claude-opus-5-5[1m]"])(
+		"prices %s at Anthropic's published Opus 5.5 rate",
+		(model) => {
+			const perMillion = (counts: Partial<Record<string, number>>) =>
+				costMicroUsd(model, {
+					inputTokens: counts.input ?? 0,
+					outputTokens: counts.output ?? 0,
+					cacheReadTokens: counts.cacheRead ?? 0,
+					cacheWriteTokens: counts.cacheWrite ?? 0,
+				});
+			expect(perMillion({ input: 1_000_000 })).toBe(4_000_000);
+			expect(perMillion({ output: 1_000_000 })).toBe(20_000_000);
+			expect(perMillion({ cacheRead: 1_000_000 })).toBe(200_000);
+			expect(perMillion({ cacheWrite: 1_000_000 })).toBe(5_000_000);
+		},
+	);
+
+	// No family wildcard: a future auto-followed Opus stays visibly unpriced.
+	it("keeps an unknown future Opus release at $0 with a warning", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(
+			costMicroUsd("claude-opus-9-9", {
+				inputTokens: 1_000_000,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+			}),
+		).toBe(0);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("claude-opus-9-9"),
+		);
+		warn.mockRestore();
+	});
 	it("prices cache-read much cheaper than output (opus)", () => {
 		const out = costMicroUsd("claude-opus-4-8", {
 			inputTokens: 0,
@@ -289,10 +324,20 @@ describe("MODEL_RATES default sentinels (claude-api catalog, cached 2026-06-24)"
 	it("contains only concrete model ids, not family selectors", () => {
 		expect(Object.keys(MODEL_RATES)).not.toContain("claude-fable-*");
 	});
-	it("cache rates derive from input (0.1× read, 1.25× write)", () => {
-		for (const r of Object.values(MODEL_RATES)) {
-			expect(r.cacheRead).toBeCloseTo(r.input * 0.1, 6);
-			expect(r.cacheWrite).toBeCloseTo(r.input * 1.25, 6);
+	// FLY-2775: Opus 5.5 publishes a cache-read rate of $0.20 (0.05× its $4
+	// input), not the usual 0.1×. A published price beats the derivation, so it
+	// is an explicit, named exception — every other row stays guarded.
+	const PUBLISHED_CACHE_READ: Record<string, number> = {
+		"claude-opus-5-5": 0.2,
+		"claude-opus-5-5[1m]": 0.2,
+	};
+	it("cache rates derive from input (0.1× read, 1.25× write) unless published otherwise", () => {
+		for (const [model, r] of Object.entries(MODEL_RATES)) {
+			expect(r.cacheRead, model).toBeCloseTo(
+				PUBLISHED_CACHE_READ[model] ?? r.input * 0.1,
+				6,
+			);
+			expect(r.cacheWrite, model).toBeCloseTo(r.input * 1.25, 6);
 		}
 	});
 });

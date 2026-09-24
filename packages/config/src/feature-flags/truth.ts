@@ -263,6 +263,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2798 configured OpenAI Live model identifier, not an on/off gate",
 	FLYWHEEL_VOICE_OPENAI_LIVE_VOICE:
 		"FLY-2798 configured OpenAI Live frontend voice identifier, not an on/off gate",
+	FLYWHEEL_CLAUDE_BIN:
+		"FLY-2775 plumbing: path override for the claude binary the Opus model sync probes, not an on/off gate",
 	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:
 		"FLY-2766 per-invocation exact version selector for a read-only native-skill origin canary, not an on/off gate",
 	FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:

@@ -470,7 +470,14 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		});
 	});
 
-	it("design_review stage with plan_path queues a Runner instruction in CommDB", async () => {
+	it("legacy design_review queues an instruction without a weighted-run reviewer override", async () => {
+		store.upsertSession({
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			status: "running",
+			runner_model: "claude-fable-5-1",
+		});
 		const res = await postEvent({
 			event_id: "evt-design-1",
 			execution_id: execId,
@@ -496,6 +503,9 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		expect(instructions[0]!.content).toContain("/codex-design-review");
 		expect(instructions[0]!.content).toContain(committedPlanPath);
 		expect(instructions[0]!.content).toContain("await-codex-gate design");
+		expect(instructions[0]!.content).not.toContain(
+			"server-selected reviewer model",
+		);
 		const manifest = store.getCurrentDesignReviewManifest(execId);
 		expect(manifest?.expected_plan_path).toBe(committedPlanPath);
 		expect(manifest?.expected_blob_sha).toMatch(/^[a-f0-9]{40}$/);
@@ -815,7 +825,14 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		);
 	});
 
-	it("pr_created stage queues a code-review instruction", async () => {
+	it("legacy pr_created queues an instruction without a weighted-run reviewer override", async () => {
+		store.upsertSession({
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			status: "running",
+			runner_model: "claude-opus-5-5",
+		});
 		const res = await postEvent({
 			event_id: "evt-pr-1",
 			execution_id: execId,
@@ -830,6 +847,9 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		expect(instructions).toHaveLength(1);
 		expect(instructions[0]!.content).toContain("/codex-code-review");
 		expect(instructions[0]!.content).toContain("await-codex-gate code");
+		expect(instructions[0]!.content).not.toContain(
+			"server-selected reviewer model",
+		);
 	});
 
 	it("pr_created with codex_skip=true writes code skip.json", async () => {

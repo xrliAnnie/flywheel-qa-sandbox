@@ -433,7 +433,11 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Origin: sameOrigin },
 			body: JSON.stringify({
-				changes: [{ key: "geo-peter", toModel: "claude-opus-5" }],
+				// FLY-2775: a stage target must be a SELECTABLE id. `claude-opus-5`
+				// became a readonly legacy identity when the Opus line moved to 5.5,
+				// so staging it now (correctly) 403s — this case is about route
+				// mounting, CSRF and token replay, not model policy.
+				changes: [{ key: "geo-peter", toModel: "claude-opus-5-5" }],
 			}),
 		});
 		expect(stageRes.status).toBe(200);
@@ -470,7 +474,10 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Origin: sameOrigin },
 			body: JSON.stringify({
-				changes: [{ key: "geo-peter", toModel: "claude-opus-5" }],
+				// FLY-2775: see the happy-path case — the stage target must be a
+				// selectable id, otherwise the stage 403s and this test never gets
+				// to exercise the token-replay path it is actually about.
+				changes: [{ key: "geo-peter", toModel: "claude-opus-5-5" }],
 			}),
 		});
 		const staged = (await stageRes.json()) as {

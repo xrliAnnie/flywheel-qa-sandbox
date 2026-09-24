@@ -76,13 +76,22 @@ graphs:
             defaultEffort: high
           - model: codex
             allowedEfforts: [low, medium, high, xhigh, max]
-            defaultEffort: xhigh
+            defaultEffort: high
           - model: astra
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
+          - model: opus
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: high
       implement:
-        defaultModel: codex
+        defaultModel: opus
         models:
+          - model: opus
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: sol
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
           - model: fable
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
@@ -96,7 +105,13 @@ graphs:
         defaultModel: opus
         models:
           - model: opus
-            allowedEfforts: [low, medium, high, max]
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: high
+          - model: sol
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: high
+          - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
     edges:
       - id: design_done
@@ -133,11 +148,14 @@ graphs:
     nodes: [implement, qa, founder_gate, land]
     policies:
       implement:
-        defaultModel: codex
+        defaultModel: opus
         models:
           - model: opus
-            allowedEfforts: [low, medium, high, max]
-            defaultEffort: high
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: sol
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
           - model: fable
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
@@ -152,9 +170,12 @@ graphs:
         models:
           - model: codex
             allowedEfforts: [low, medium, high, xhigh, max]
-            defaultEffort: xhigh
+            defaultEffort: high
           - model: opus
-            allowedEfforts: [low, medium, high, max]
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: high
+          - model: sol
+            allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
     edges:
       - id: implement_done

@@ -45,6 +45,10 @@ import {
 	type WorkflowCompletionActivationContext,
 } from "../StateStore.js";
 import { normalizeTerminalFailureInfo } from "../terminal-failure-info.js";
+import {
+	recordWorkflowReviewRoute,
+	resolveWorkflowReviewRouteForExecution,
+} from "../workflow-review-routing.js";
 import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
@@ -617,10 +621,25 @@ export function handleCodexAutoTrigger(
 		mkdirSync(dirname(dbPath), { recursive: true });
 		const commDb = new CommDB(dbPath);
 		try {
+			const reviewRoute = resolveWorkflowReviewRouteForExecution(
+				store,
+				event.execution_id,
+				reviewType,
+			);
+			if (reviewRoute?.reviewerVendor === "codex") {
+				recordWorkflowReviewRoute(store, {
+					executionId: event.execution_id,
+					reviewType,
+					requestId: event.event_id,
+					route: reviewRoute,
+				});
+			}
 			const content = buildCodexInstruction(
 				reviewType,
 				persistedPlanPath,
 				event.execution_id,
+				undefined,
+				reviewRoute?.reviewerVendor === "codex" ? reviewRoute : undefined,
 			);
 			commDb.insertInstruction("bridge", event.execution_id, content, {
 				dedupeId: `codex-trigger:${event.event_id}`,

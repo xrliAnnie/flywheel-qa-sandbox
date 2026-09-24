@@ -7,8 +7,26 @@ import { MANAGEMENT_SCHEMA_VERSION } from "../bridge/management-console-contract
 const SNAPSHOT_PATH = "/api/fleet/snapshot";
 const STAGE_PATH = "/api/fleet/changes/stage";
 const APPLY_PATH = "/api/fleet/changes/apply";
-const DESIRED_MODEL = "fable";
+/**
+ * FLY-2775: the family aliases this governed writer may publish. `fable` is
+ * the FLY-2238 default and behaves byte-identically; the Opus aliases let an
+ * operator move a founder-owned template node onto the Opus line's
+ * follow-latest alias (the manifest keeps the alias; each run pins the exact
+ * id it resolves at run start).
+ */
+export const PUBLISHABLE_FAMILY_ALIASES = [
+	"fable",
+	"opus",
+	"opus[1m]",
+] as const;
+export type PublishableFamilyAlias =
+	(typeof PUBLISHABLE_FAMILY_ALIASES)[number];
+const DEFAULT_MODEL: PublishableFamilyAlias = "fable";
 const DESIRED_PROVIDER = "anthropic";
+
+function aliasLabel(model: PublishableFamilyAlias): string {
+	return model === "fable" ? "Fable" : `"${model}"`;
+}
 const MAX_CAS_ATTEMPTS = 3;
 
 type Fetch = typeof fetch;
@@ -16,6 +34,8 @@ type Fetch = typeof fetch;
 export interface PublishFableTemplateAliasInput {
 	templateId: string;
 	nodeId: string;
+	/** FLY-2775: defaults to `fable` (the original FLY-2238 behavior). */
+	model?: PublishableFamilyAlias;
 }
 
 export type PublishFableTemplateAliasResult =
@@ -327,6 +347,10 @@ export async function publishFableTemplateAlias(
 	deps: PublishFableTemplateAliasDeps = {},
 ): Promise<PublishFableTemplateAliasResult> {
 	validateInput(input);
+	const desiredModel = input.model ?? DEFAULT_MODEL;
+	if (!PUBLISHABLE_FAMILY_ALIASES.includes(desiredModel)) {
+		throw new Error(`unsupported alias: ${String(desiredModel)}`);
+	}
 	const origin = bridgeOrigin(deps.env ?? process.env);
 	const fetchImpl = deps.fetch ?? fetch;
 
@@ -340,11 +364,11 @@ export async function publishFableTemplateAlias(
 		const target = resolveDagTarget(snapshot, input);
 		if (
 			target.current.provider === DESIRED_PROVIDER &&
-			target.current.model === DESIRED_MODEL
+			target.current.model === desiredModel
 		) {
 			if (target.seedOwner !== "founder") {
 				throw new Error(
-					"Fable alias is published but seed ownership is not founder",
+					`${aliasLabel(desiredModel)} alias is published but seed ownership is not founder`,
 				);
 			}
 			return {
@@ -363,7 +387,7 @@ export async function publishFableTemplateAlias(
 					targetId: target.targetId,
 					desiredValue: {
 						provider: DESIRED_PROVIDER,
-						model: DESIRED_MODEL,
+						model: desiredModel,
 						effort: target.current.effort,
 					},
 					observedRevision: target.observedRevision,
@@ -421,11 +445,11 @@ export async function publishFableTemplateAlias(
 		const finalTarget = resolveDagTarget(finalSnapshot, input);
 		if (
 			finalTarget.current.provider !== DESIRED_PROVIDER ||
-			finalTarget.current.model !== DESIRED_MODEL ||
+			finalTarget.current.model !== desiredModel ||
 			finalTarget.seedOwner !== "founder"
 		) {
 			throw new Error(
-				"publication readback did not retain the Fable alias and founder ownership",
+				`publication readback did not retain the ${aliasLabel(desiredModel)} alias and founder ownership`,
 			);
 		}
 		return {
@@ -440,32 +464,39 @@ export async function publishFableTemplateAlias(
 	throw new Error("workflow publication CAS retry limit exhausted");
 }
 
+const USAGE =
+	"usage: publish-fable-template-alias --template <id> --node <id> [--model fable|opus|opus[1m]]";
+
 function parseArgs(argv: readonly string[]): PublishFableTemplateAliasInput {
 	let templateId: string | undefined;
 	let nodeId: string | undefined;
+	let model: PublishableFamilyAlias | undefined;
 	for (let index = 2; index < argv.length; index += 1) {
 		const flag = argv[index];
 		const value = argv[index + 1];
-		if ((flag !== "--template" && flag !== "--node") || !value) {
-			throw new Error(
-				"usage: publish-fable-template-alias --template <id> --node <id>",
-			);
+		if (
+			(flag !== "--template" && flag !== "--node" && flag !== "--model") ||
+			!value
+		) {
+			throw new Error(USAGE);
 		}
 		if (flag === "--template") {
 			if (templateId !== undefined) throw new Error("--template is duplicated");
 			templateId = value;
-		} else {
+		} else if (flag === "--node") {
 			if (nodeId !== undefined) throw new Error("--node is duplicated");
 			nodeId = value;
+		} else {
+			if (model !== undefined) throw new Error("--model is duplicated");
+			if (!(PUBLISHABLE_FAMILY_ALIASES as readonly string[]).includes(value)) {
+				throw new Error(USAGE);
+			}
+			model = value as PublishableFamilyAlias;
 		}
 		index += 1;
 	}
-	if (!templateId || !nodeId) {
-		throw new Error(
-			"usage: publish-fable-template-alias --template <id> --node <id>",
-		);
-	}
-	return { templateId, nodeId };
+	if (!templateId || !nodeId) throw new Error(USAGE);
+	return { templateId, nodeId, ...(model ? { model } : {}) };
 }
 
 export async function runPublishFableTemplateAliasCli(

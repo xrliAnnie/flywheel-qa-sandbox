@@ -1020,6 +1020,42 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/opus-model-sync.test.ts:if (alive) process.kill(grandchild, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/opus-model-sync.test.ts",
+		"code": "if (alive) process.kill(grandchild, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/opus-model-sync.test.ts:if (alive) process.kill(grandchild, \"SIGKILL\");#2",
+		"path": "packages/teamlead/src/__tests__/opus-model-sync.test.ts",
+		"code": "if (alive) process.kill(grandchild, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/opus-model-sync.test.ts:if (alive) process.kill(grandchild, \"SIGKILL\");#3",
+		"path": "packages/teamlead/src/__tests__/opus-model-sync.test.ts",
+		"code": "if (alive) process.kill(grandchild, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/opus-model-sync.test.ts:process.kill(grandchild, 0);#1",
+		"path": "packages/teamlead/src/__tests__/opus-model-sync.test.ts",
+		"code": "process.kill(grandchild, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/opus-model-sync.test.ts:process.kill(grandchild, 0);#2",
+		"path": "packages/teamlead/src/__tests__/opus-model-sync.test.ts",
+		"code": "process.kill(grandchild, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/opus-model-sync.test.ts:process.kill(grandchild, 0);#3",
+		"path": "packages/teamlead/src/__tests__/opus-model-sync.test.ts",
+		"code": "process.kill(grandchild, 0);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/package-gate-queue.test.ts:for (const child of children) child.kill(\"SIGKILL\");#1",
 		"path": "packages/teamlead/src/__tests__/package-gate-queue.test.ts",
 		"code": "for (const child of children) child.kill(\"SIGKILL\");",
@@ -1144,6 +1180,30 @@
 		"path": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
 		"code": "process.kill(-child.pid, 0);",
 		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/opus-model-sync-cli.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/account-heal/opus-model-sync-cli.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/opus-model-sync.ts:child.kill(signal);#1",
+		"path": "packages/teamlead/src/account-heal/opus-model-sync.ts",
+		"code": "child.kill(signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/opus-model-sync.ts:process.kill(-child.pid, 0);#1",
+		"path": "packages/teamlead/src/account-heal/opus-model-sync.ts",
+		"code": "process.kill(-child.pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/opus-model-sync.ts:process.kill(-child.pid, signal);#1",
+		"path": "packages/teamlead/src/account-heal/opus-model-sync.ts",
+		"code": "process.kill(-child.pid, signal);",
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts:process.kill(current.pid, attempt < 2 ? \"SIGTERM\" : \"SIGKILL\");#1",

@@ -405,6 +405,11 @@ export function storeCmuxRebindDisabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "cmux_rebind_disabled");
 }
 
+/** FLY-2775: emergency stop for the updater's Opus model sync. */
+export function storeOpusModelSyncDisabled(runtime: FlagStoreRuntime): boolean {
+	return readBoolean(runtime, "opus_model_sync_disabled");
+}
+
 export function storeReviewQuotaAutoRetryEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

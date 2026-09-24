@@ -1,14 +1,14 @@
 {
 	"version": 1,
 	"bindings": {
-		"opus": "claude-opus-5",
-		"opus1m": "claude-opus-5[1m]"
+		"opus": "claude-opus-5-5",
+		"opus1m": "claude-opus-5-5[1m]"
 	},
 	"models": [],
 	"tiers": {
 		"heavy": "fable",
-		"medium": "claude-opus-5",
-		"light": "claude-opus-5",
-		"trivial": "claude-opus-5"
+		"medium": "claude-opus-5-5",
+		"light": "claude-opus-5-5",
+		"trivial": "claude-opus-5-5"
 	}
 }

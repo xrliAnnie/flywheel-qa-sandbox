@@ -1189,6 +1189,100 @@ describe("equivalent-head carryover authority", () => {
 		}
 	});
 
+	it("FLY-2828 blocks founder feedback when a completed delivery still has a pending verification path", async () => {
+		const { store, holder, operation, claim } = await fixture();
+		try {
+			const committed = store.commitEquivalentHeadCarryover({
+				runId: "run-carryover",
+				gateNodeId: "founder_gate",
+				fromQuestionId: holder.question_id,
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				proof: {
+					proofKind: "clean_base_merge_tree_identity",
+					approvedHead: HEAD_A,
+					baseOid: BASE_1,
+					candidateHead: HEAD_B,
+					secondParentObserved: BASE_1,
+					proofTreeOid: TREE_1,
+				},
+				now: T1,
+			});
+			if (!committed.ok) throw new Error(committed.reason);
+			const requestId = "rework:fly2828-open";
+			db(store).run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, founder_feedback_verbatim, requested_at)
+				 VALUES (?, 'run-carryover', 'fly2828-existing', 'engine', 'implement',
+				         1, ?, '{}', ?, NULL, ?)`,
+				[requestId, HEAD_A, "e".repeat(64), T1],
+			);
+			db(store).run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, 1, 'implement', 2, 'implement-carryover',
+				         '["implement","qa"]', '["qa_retest","founder_gate"]',
+				         'test', 'FLY-2828 open predicate fixture', ?)`,
+				[requestId, T1],
+			);
+			db(store).run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, 'completed', ?)`,
+				[requestId, T1],
+			);
+			db(store).run(
+				`INSERT INTO workflow_rework_verification_path
+				   (request_id, run_id, route_revision, state, current_node_id,
+				    current_attempt, updated_at)
+				 VALUES (?, 'run-carryover', 1, 'pending', 'implement', 2, ?)`,
+				[requestId, T1],
+			);
+			expect(store.findOpenWorkflowReworkForRun("run-carryover")).toEqual([
+				{ requestId, source: "verification_path", state: "pending" },
+			]);
+			const feedbackPayload = {
+				schema_version: 1,
+				run_id: "run-carryover",
+				issue_id: "FLY-1833",
+				question_id: holder.question_id,
+				response: {
+					approved: false,
+					feedback: "Please revise the implementation again.",
+				},
+				actor: "founder",
+				founder_id_at_capture: "founder",
+				approved_head: HEAD_A,
+				classification: "founder_reaction",
+				authority_id: holder.question_id,
+			};
+			expect(() =>
+				store.applyWorkflowSourceEvent({
+					project: "flywheel",
+					sourceEventId: `founder-feedback:${holder.question_id}:fly2828`,
+					kind: "founder_feedback",
+					payloadJson: canonicalJsonString(feedbackPayload),
+					payloadDigest: canonicalSubmissionDigest(feedbackPayload),
+					schemaVersion: 1,
+				}),
+			).toThrow("founder feedback kickback failed: rework_already_open");
+			expect(
+				store.getWorkflowCarryoverActivation(committed.receiptId),
+			).toMatchObject({ state: "pending" });
+			expect(
+				store.getLandOperation(committed.operation.operation_id),
+			).toMatchObject({ superseded_at: null });
+		} finally {
+			store.close();
+		}
+	});
+
 	it("lets founder feedback before the departure cutoff win over carryover", async () => {
 		const { store, holder, operation, claim } = await fixture();
 		try {
