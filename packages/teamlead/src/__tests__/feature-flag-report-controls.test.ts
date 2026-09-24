@@ -3,6 +3,7 @@
 import { resolveAllFlags } from "flywheel-config";
 import { beforeEach, describe, expect, it } from "vitest";
 import { renderFlagReport } from "../bridge/feature-flag-report-html.js";
+import { computeTierOptions } from "../bridge/fleet-capabilities.js";
 import { buildConsoleSnapshot } from "../bridge/fleet-console-model.js";
 
 const flags = resolveAllFlags({ env: {} });
@@ -133,4 +134,54 @@ it("copies a Codex effort change using explicit identities from the report row",
 	expect(
 		document.querySelector<HTMLTextAreaElement>("#ffCopyText")!.value,
 	).not.toContain("bash");
+});
+
+// FLY-2775: the founder's Lead model dropdown (data-cfg-kind="model") offers
+// the Opus line's follow-latest aliases next to the exact ids, and a Lead that
+// already stores `opus[1m]` shows that option as selected.
+describe("FLY-2775 Lead model dropdown", () => {
+	it("offers Opus · 跟最新 and selects it for a Lead that stores the alias", () => {
+		const html = renderFlagReport(
+			{
+				featureFlags: [],
+				leads: [
+					{
+						key: "flywheel:flywheel-product-lead",
+						projectName: "flywheel",
+						leadId: "flywheel-product-lead",
+						displayName: "Honey Lemon",
+						currentBackend: "claude-code",
+						currentModelId: "opus[1m]",
+						currentEffort: null,
+						tierOptions: computeTierOptions("claude-code"),
+						effortOptions: [],
+						backendOptions: [{ backend: "claude-code" }],
+					},
+				],
+			} as never,
+			{ interactive: true },
+		);
+		document.open();
+		document.write(html);
+		document.close();
+		const select = document.querySelector<HTMLSelectElement>(
+			'select[data-cfg-kind="model"]',
+		)!;
+		const options = [...select.options].map((option) => [
+			option.value,
+			option.textContent,
+		]);
+		expect(options).toEqual(
+			expect.arrayContaining([
+				["opus", "Opus · 跟最新"],
+				["opus[1m]", "Opus 1M · 跟最新"],
+				["claude-opus-5-5", "Opus 5.5"],
+			]),
+		);
+		// The server marks the stored alias `selected` (what a browser honors;
+		// happy-dom's `select.value` ignores the attribute for this markup).
+		expect(
+			select.querySelector("option[selected]")?.getAttribute("value"),
+		).toBe("opus[1m]");
+	});
 });

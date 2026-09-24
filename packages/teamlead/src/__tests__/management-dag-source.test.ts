@@ -139,7 +139,13 @@ describe("management DAG source", () => {
 			models: [
 				{
 					alias: "opus",
-					allowedEfforts: ["low", "medium", "high", "max"],
+					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+				},
+				{
+					alias: "sol",
+				},
+				{
+					alias: "codex",
 				},
 			],
 		});

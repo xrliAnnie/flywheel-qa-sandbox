@@ -45,6 +45,10 @@ import type {
 	StateStore,
 } from "../StateStore.js";
 import {
+	recordWorkflowReviewRoute,
+	resolveWorkflowReviewRouteForExecution,
+} from "../workflow-review-routing.js";
+import {
 	type ClaudeReviewOutcome,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
@@ -718,12 +722,18 @@ export class ReviewRequestCoordinator {
 		// claude-author→codex-reviewer lane — running the Claude reviewer for
 		// a claude author would BE a same-family review.
 		const authorFamily = adapterTypeToFamily(session.adapter_type);
+		const workflowReviewRoute = resolveWorkflowReviewRouteForExecution(
+			this.store,
+			executionId,
+			reviewType,
+		);
 		// FLY-2763: a claude-family author may use this lane ONLY under the
 		// project-scoped sanction (review_same_family_allowed=on, Codex quota
 		// outage). The sanction is frozen on the job at request time and the
 		// reviewer model is forced to differ from the author model.
 		const sameFamilySanction =
 			authorFamily === "claude" &&
+			workflowReviewRoute?.reviewerVendor !== "codex" &&
 			storeReviewSameFamilyAllowed(
 				{ mode: "ready", store: this.store },
 				projectName,
@@ -1556,6 +1566,19 @@ export class ReviewRequestCoordinator {
 				message: `${governancePrompt.elided} older active governance ruling(s) were elided from the bounded reviewer prompt; review whether stale rulings should be revoked.`,
 			});
 		}
+		const workflowReviewRoute = resolveWorkflowReviewRouteForExecution(
+			this.store,
+			job.execution_id,
+			job.review_type,
+		);
+		if (workflowReviewRoute?.reviewerVendor === "claude") {
+			recordWorkflowReviewRoute(this.store, {
+				executionId: job.execution_id,
+				reviewType: job.review_type,
+				requestId: job.request_id,
+				route: workflowReviewRoute,
+			});
+		}
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
 			roundRunner({
@@ -1573,10 +1596,15 @@ export class ReviewRequestCoordinator {
 				// DIFFERENT Claude model than the author's.
 				model: job.same_family_sanction
 					? this.sameFamilyReviewerModel(job.execution_id)
-					: this.deps.reviewerModel,
+					: workflowReviewRoute?.reviewerVendor === "claude"
+						? workflowReviewRoute.reviewerModel
+						: this.deps.reviewerModel,
 				// FLY-1224: forwarded on EVERY round; undefined → the runner's own
 				// DEFAULT_REVIEW_EFFORT ("xhigh") applies.
-				effort: this.deps.reviewerEffort,
+				effort:
+					workflowReviewRoute?.reviewerVendor === "claude"
+						? workflowReviewRoute.reviewerEffort
+						: this.deps.reviewerEffort,
 				timeoutMs: this.deps.reviewerTimeoutMs,
 			});
 		let outcome: ClaudeReviewOutcome = await runRound(resume, sessionUuid);

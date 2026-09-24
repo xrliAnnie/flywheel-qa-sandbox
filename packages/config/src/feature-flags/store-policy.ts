@@ -167,6 +167,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	if (
 		name === "cmux_watcher_rebuild_disabled" ||
 		name === "cmux_rebind_disabled" ||
+		name === "opus_model_sync_disabled" ||
 		name === "workflow_turn_divergence_alerts" ||
 		name === "workflow_node_reuse"
 	) {

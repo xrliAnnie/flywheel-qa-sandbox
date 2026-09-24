@@ -1,5 +1,7 @@
 /**
  * FLY-1467: 默认 opus 档 fleet-wide 升级到 Opus 5。
+ * FLY-2775: 同一组不变式下,默认 opus 档再升到 Opus 5.5 —— 证明这次升级
+ * 依然只动 DEFAULT_OPUS_BINDINGS 一处,身份层一个值都没改。
  *
  * 这组测试锁定 Annie 的设计原则(2026-07-24 拍板)——
  * **配置只写档位,永不写版本号,版本只存在 model-registry 一处** ——
@@ -34,8 +36,26 @@ const ROLLBACK_BINDINGS: DefaultOpusBindings = {
 	opus1m: MODEL_IDS.OPUS_48_1M,
 };
 
+/** FLY-2775 的现实回滚目标:上一代 Opus 5(不是更早的 4.8)。 */
+const ROLLBACK_TO_OPUS_5_BINDINGS: DefaultOpusBindings = {
+	opus: MODEL_IDS.OPUS_5,
+	opus1m: MODEL_IDS.OPUS_5_1M,
+};
+
+/** registry 恒含的全部 Opus 身份 —— 升级只增不改。 */
+const ALL_OPUS_IDENTITIES = [
+	MODEL_IDS.OPUS_55,
+	MODEL_IDS.OPUS_55_1M,
+	MODEL_IDS.OPUS_5,
+	MODEL_IDS.OPUS_5_1M,
+	MODEL_IDS.OPUS_48,
+	MODEL_IDS.OPUS_48_1M,
+] as const;
+
 describe("FLY-1467 身份层:MODEL_IDS 只含固定身份", () => {
-	it("四个 Opus 身份常量的值是固定的", () => {
+	it("Opus 身份常量的值是固定的", () => {
+		expect(MODEL_IDS.OPUS_55).toBe("claude-opus-5-5");
+		expect(MODEL_IDS.OPUS_55_1M).toBe("claude-opus-5-5[1m]");
 		expect(MODEL_IDS.OPUS_5).toBe("claude-opus-5");
 		expect(MODEL_IDS.OPUS_5_1M).toBe("claude-opus-5[1m]");
 		expect(MODEL_IDS.OPUS_48).toBe("claude-opus-4-8");
@@ -50,10 +70,10 @@ describe("FLY-1467 身份层:MODEL_IDS 只含固定身份", () => {
 	});
 });
 
-describe("FLY-1467 绑定层:默认指向 Opus 5", () => {
-	it("生产 binding 指向 Opus 5 / Opus 5 (1M)", () => {
-		expect(DEFAULT_OPUS).toBe(MODEL_IDS.OPUS_5);
-		expect(DEFAULT_OPUS_1M).toBe(MODEL_IDS.OPUS_5_1M);
+describe("FLY-2775 绑定层:默认指向 Opus 5.5", () => {
+	it("生产 binding 指向 Opus 5.5 / Opus 5.5 (1M)", () => {
+		expect(DEFAULT_OPUS).toBe(MODEL_IDS.OPUS_55);
+		expect(DEFAULT_OPUS_1M).toBe(MODEL_IDS.OPUS_55_1M);
 	});
 
 	it("DEFAULT_OPUS / DEFAULT_OPUS_1M 与 DEFAULT_OPUS_BINDINGS 一致(防漂移)", () => {
@@ -64,8 +84,14 @@ describe("FLY-1467 绑定层:默认指向 Opus 5", () => {
 
 describe.each([
 	[
-		"生产态(Opus 5)",
+		"生产态(Opus 5.5)",
 		DEFAULT_OPUS_BINDINGS,
+		MODEL_IDS.OPUS_55,
+		MODEL_IDS.OPUS_55_1M,
+	],
+	[
+		"回滚态(Opus 5)",
+		ROLLBACK_TO_OPUS_5_BINDINGS,
 		MODEL_IDS.OPUS_5,
 		MODEL_IDS.OPUS_5_1M,
 	],
@@ -75,7 +101,7 @@ describe.each([
 		MODEL_IDS.OPUS_48,
 		MODEL_IDS.OPUS_48_1M,
 	],
-] as const)("FLY-1467 双态:%s", (_label, bindings, boundOpus, boundOpus1m) => {
+] as const)("FLY-1467 多态:%s", (_label, bindings, boundOpus, boundOpus1m) => {
 	const registry = buildModelRegistry(bindings);
 	const lookup = buildDispatchLookup(bindings);
 
@@ -84,14 +110,9 @@ describe.each([
 		expect(() => assertValidModelRegistry(registry)).not.toThrow();
 	});
 
-	it("registry 恒含四个 Opus 身份条目", () => {
+	it("registry 恒含全部 Opus 身份条目", () => {
 		const ids = registry.map((e) => e.id);
-		for (const id of [
-			MODEL_IDS.OPUS_5,
-			MODEL_IDS.OPUS_5_1M,
-			MODEL_IDS.OPUS_48,
-			MODEL_IDS.OPUS_48_1M,
-		]) {
+		for (const id of ALL_OPUS_IDENTITIES) {
 			expect(ids).toContain(id);
 		}
 		expect(new Set(ids).size).toBe(ids.length);
@@ -113,41 +134,50 @@ describe.each([
 describe("FLY-1467 旧字面量向后兼容(dispatch 边界)", () => {
 	const lookup = buildDispatchLookup(DEFAULT_OPUS_BINDINGS);
 
-	it.each([MODEL_IDS.OPUS_48, MODEL_IDS.OPUS_48_1M])(
-		"%s 仍被 dispatch lookup 原样接受",
-		(legacyId) => {
-			expect(lookup.get(legacyId)).toBe(legacyId);
-		},
-	);
+	it.each([
+		MODEL_IDS.OPUS_5,
+		MODEL_IDS.OPUS_5_1M,
+		MODEL_IDS.OPUS_48,
+		MODEL_IDS.OPUS_48_1M,
+	])("%s 仍被 dispatch lookup 原样接受", (legacyId) => {
+		expect(lookup.get(legacyId)).toBe(legacyId);
+	});
 
 	it("未知拼写仍 fail-loud", () => {
 		expect(lookup.get("claude-opus-99-nonexistent")).toBeUndefined();
 	});
 
-	it("旧 4.8 条目仍可解析(token 报告 / 历史 current value 需要)", () => {
-		expect(getModelRegistryEntry(MODEL_IDS.OPUS_48)?.id).toBe(
-			MODEL_IDS.OPUS_48,
-		);
-	});
+	it.each([MODEL_IDS.OPUS_5, MODEL_IDS.OPUS_48])(
+		"退役身份 %s 仍可解析(token 报告 / 历史 current value 需要)",
+		(legacyId) => {
+			expect(getModelRegistryEntry(legacyId)?.id).toBe(legacyId);
+		},
+	);
 });
 
 describe("FLY-1496 历史运行时兼容", () => {
-	it("legacy 4.8 仍被既有载体接受(历史 revision 不会因此失效)", () => {
-		expect(
-			isModelSelectionSupported({
-				surface: "workflow",
-				model: MODEL_IDS.OPUS_48,
-			}),
-		).toBe(true);
-	});
+	it.each([MODEL_IDS.OPUS_5, MODEL_IDS.OPUS_48])(
+		"legacy %s 仍被既有载体接受(历史 revision 不会因此失效)",
+		(legacyId) => {
+			expect(
+				isModelSelectionSupported({
+					surface: "workflow",
+					model: legacyId,
+				}),
+			).toBe(true);
+		},
+	);
 
-	it("legacy 4.8 默认不可被新选(决策 4 = 否)", () => {
-		expect(
-			isModelSelectable({ surface: "workflow", model: MODEL_IDS.OPUS_48 }),
-		).toBe(false);
-	});
+	it.each([MODEL_IDS.OPUS_5, MODEL_IDS.OPUS_48])(
+		"legacy %s 默认不可被新选(决策 4 = 否)",
+		(legacyId) => {
+			expect(isModelSelectable({ surface: "workflow", model: legacyId })).toBe(
+				false,
+			);
+		},
+	);
 
-	it("当前默认 Opus 5 既可接受也可被新选", () => {
+	it("当前默认 Opus 5.5 既可接受也可被新选", () => {
 		expect(
 			isModelSelectionSupported({ surface: "workflow", model: DEFAULT_OPUS }),
 		).toBe(true);

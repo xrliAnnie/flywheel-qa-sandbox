@@ -1,0 +1,20 @@
+flowchart TB
+    subgraph C1[C1 完成即回执：体 complete 时]
+        A[体 complete] --> B{当前返工绑定?}
+        B -->|不是返工| B1[照常完成]
+        B -->|delivery 在 turn_granted 或 awaiting_receipt| B2[同一事务内：投影回执<br/>delivery→wake_delivered<br/>path pending→active<br/>节点 admitted→running]
+        B2 --> B3[transition 收尾：path/delivery→completed<br/>之后任何拒绝→整体回滚]
+        B -->|delivery 在 pending/held/needs_lead/replacement_pending| B4[结构化拒绝，零写入<br/>体的 complete 自动重试]
+    end
+    subgraph C2[C2/C3 巡检投影循环]
+        D[取未投影回执<br/>按失败次数升序] --> E{投影结果}
+        E -->|成功或幂等回放| E1[标记 projected]
+        E -->|旧 ack 永远无效| E2[标记 not_applicable]
+        E -->|瞬态失败或异常| E3[失败次数+1<br/>带 wake_id 的日志<br/>继续下一条]
+        E3 -->|20 次| E4[退出窗口<br/>一次性 Lead 告警]
+    end
+    subgraph C6[C6 假告警补偿]
+        F[push 耗尽且没 ack 的唤醒] --> G{delivery 已 completed?}
+        G -->|是| G1[取消该唤醒，不告警]
+        G -->|否| G2[保留给现有无回执告警]
+    end

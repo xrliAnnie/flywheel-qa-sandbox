@@ -68,15 +68,15 @@ describe("FLY-1496 model configuration snapshots", () => {
 		expect(
 			snapshot.getModelRegistryEntry("fable-1m")?.contextWindowTokens,
 		).toBe(1_000_000);
-		expect(snapshot.normalizeDispatchModel("opus")).toBe("claude-opus-5");
+		expect(snapshot.normalizeDispatchModel("opus")).toBe("claude-opus-5-5");
 		expect(snapshot.normalizeDispatchModel("opus[1m]")).toBe(
-			"claude-opus-5[1m]",
+			"claude-opus-5-5[1m]",
 		);
 		expect(snapshot.tiers).toMatchObject({
 			heavy: { id: "claude-fable-5-1", code: "F" },
-			medium: { id: "claude-opus-5", code: "O" },
-			light: { id: "claude-opus-5", code: "O" },
-			trivial: { id: "claude-opus-5", code: "O" },
+			medium: { id: "claude-opus-5-5", code: "O" },
+			light: { id: "claude-opus-5-5", code: "O" },
+			trivial: { id: "claude-opus-5-5", code: "O" },
 		});
 		expect(snapshot.runtimeModelSplitStatus).toBe("absent");
 		// One warning per cached generation, not one per call.
@@ -114,15 +114,59 @@ describe("FLY-1496 model configuration snapshots", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		expect(getModelConfigSnapshot().normalizeDispatchModel("opus")).toBe(
-			"claude-opus-5",
+			"claude-opus-5-5",
 		);
 		expect(warn).not.toHaveBeenCalled();
 	});
 
+	// FLY-2775: the deployment window. The code default moves to Opus 5.5 the
+	// moment the build lands, but `~/.flywheel/models.json` is edited by a human
+	// afterwards — so for a while the file still binds `opus` to the generation
+	// that just retired. This pins what that lag state actually does, because
+	// two halves pull in opposite directions:
+	//   - the FULL id must keep dispatching (in-flight snapshots froze it), and
+	//   - the ALIAS must NOT (FLY-1496: re-pointing a binding at a surface-less
+	//     model yields no dispatch alias, so a config edit cannot silently route
+	//     new work somewhere the dispatch layer does not carry it).
+	it("keeps a retired Opus id dispatchable by id while its alias goes dark", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				bindings: {
+					opus: "claude-opus-5",
+					opus1m: "claude-opus-5[1m]",
+				},
+			}),
+		);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const snapshot = getModelConfigSnapshot();
+		// The full id an in-flight run snapshot froze still dispatches.
+		expect(snapshot.normalizeDispatchModel("claude-opus-5")).toBe(
+			"claude-opus-5",
+		);
+		expect(snapshot.normalizeDispatchModel("claude-opus-5[1m]")).toBe(
+			"claude-opus-5[1m]",
+		);
+		// The alias does not follow a binding onto a surface-less model.
+		expect(snapshot.normalizeDispatchModel("opus")).toBeNull();
+		expect(snapshot.normalizeDispatchModel("opus-1m")).toBeNull();
+		// The new generation stays reachable by its own id even while unbound.
+		expect(snapshot.normalizeDispatchModel("claude-opus-5-5")).toBe(
+			"claude-opus-5-5",
+		);
+		// Unknown spellings are still refused — the allowlist widened, not opened.
+		expect(snapshot.normalizeDispatchModel("claude-opus-9-9")).toBeNull();
+	});
+
 	it("hot-reloads an atomically replaced same-size binding without code or restart", () => {
+		// FLY-2775: both sides must be currently DISPATCH-surfaced ids — this case
+		// is about atomic reload, and a surface-less binding target would make the
+		// alias go dark for an unrelated reason (see the case above).
 		const firstRaw = JSON.stringify({
 			version: 1,
-			bindings: { opus: "claude-opus-5" },
+			bindings: { opus: "claude-opus-5-5" },
 		});
 		const second = JSON.stringify({
 			version: 1,
@@ -133,7 +177,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 		writeFileSync(configPath, first);
 
 		const before = getModelConfigSnapshot();
-		expect(before.normalizeDispatchModel("opus")).toBe("claude-opus-5");
+		expect(before.normalizeDispatchModel("opus")).toBe("claude-opus-5-5");
 
 		const replacement = join(root, "models.next");
 		writeFileSync(replacement, second);
@@ -146,7 +190,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 		expect(after.revision).not.toBe(before.revision);
 		expect(after.normalizeDispatchModel("opus")).toBe("claude-fable-5-1");
 		// A business decision that already captured a snapshot stays one generation.
-		expect(before.normalizeDispatchModel("opus")).toBe("claude-opus-5");
+		expect(before.normalizeDispatchModel("opus")).toBe("claude-opus-5-5");
 	});
 
 	it("exposes a runtime design model split policy from models.json", () => {
@@ -468,7 +512,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 
 		const snapshot = getModelConfigSnapshot();
 		expect(snapshot.tiers.heavy.id).toBe("claude-fable-5-1");
-		expect(snapshot.tiers.medium.id).toBe("claude-opus-5");
+		expect(snapshot.tiers.medium.id).toBe("claude-opus-5-5");
 		expect(snapshot.tiers.light.id).toBe("claude-sonnet-5");
 		expect(warn.mock.calls.flat().join(" ")).toMatch(/tier/i);
 	});
@@ -605,7 +649,7 @@ describe("FLY-1496 canonical model resolution", () => {
 				surface: "runner",
 				runtimeVendor: "claude",
 			}),
-		).toBe("claude-opus-5");
+		).toBe("claude-opus-5-5");
 	});
 
 	it("rejects a spelling no configured model can claim", () => {
@@ -628,7 +672,12 @@ describe("FLY-1496 canonical model resolution", () => {
 	it("resolves a legacy identity faithfully when it is what config names", () => {
 		// No blocklist second-guesses the authoritative source: an operator who
 		// deliberately pins a legacy id gets exactly that id, canonicalized.
-		for (const model of ["claude-opus-4-8", "claude-opus-4-8[1m]"]) {
+		for (const model of [
+			"claude-opus-5",
+			"claude-opus-5[1m]",
+			"claude-opus-4-8",
+			"claude-opus-4-8[1m]",
+		]) {
 			expect(
 				resolveAllowedCanonicalModel(model, {
 					surface: "lead",
@@ -648,7 +697,17 @@ describe("FLY-1496 canonical model resolution", () => {
 		expect(
 			getModelConfigSnapshot().getDispatchCanonical("claude-opus-4-8"),
 		).toBe("claude-opus-4-8");
-		expect(getModelConfigSnapshot().tiers.medium.id).toBe("claude-opus-5");
+		// FLY-2775: the generation that just retired is held to the same contract.
+		expect(getModelConfigSnapshot().getDispatchCanonical("claude-opus-5")).toBe(
+			"claude-opus-5",
+		);
+		expect(
+			getModelConfigSnapshot().isModelSelectable({
+				surface: "lead",
+				model: "claude-opus-5",
+			}),
+		).toBe(false);
+		expect(getModelConfigSnapshot().tiers.medium.id).toBe("claude-opus-5-5");
 	});
 
 	it("keeps pinned Fable 5 identities dispatchable but non-selectable", () => {

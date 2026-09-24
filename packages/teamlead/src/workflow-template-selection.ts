@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { canonicalSubmissionDigest } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	getModelConfigSnapshot,
+} from "flywheel-config";
 import {
 	collectRunQuiescenceEvidence,
 	type RunExecutionLivenessProbe,
@@ -16,12 +19,18 @@ import {
 	resolveMenuOverrides,
 	type WorkflowModelAssignmentReceipt,
 } from "./workflow-menu.js";
-import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
+import {
+	assertFrozenWeightedModelAssignment,
+	assertPercentageModelAssignment,
+	assertWeightedModelAssignment,
+} from "./workflow-model-assignment.js";
 import {
 	parseWorkflowRunSnapshot,
 	type ResolvedWorkflowNodeV2,
+	type WorkflowSnapshotModelRouting,
 } from "./workflow-run-snapshot.js";
 import {
+	applyWorkflowOverride,
 	validateWorkflowManifest,
 	type WorkflowTemplateOverride,
 } from "./workflow-template.js";
@@ -63,7 +72,7 @@ function mergeAutomaticModelSplit(
 	assignments: Record<string, WorkflowModelAssignmentReceipt>,
 ): WorkflowTemplateOverride | undefined {
 	if (!automatic || Object.keys(assignments).length === 0) return base;
-	const nodes = { ...(base?.nodes ?? {}) };
+	const nodes = { ...(automatic.nodes ?? {}), ...(base?.nodes ?? {}) };
 	for (const [nodeId, assignment] of Object.entries(assignments)) {
 		const existing = nodes[nodeId];
 		const assigned = automatic.nodes?.[nodeId];
@@ -88,8 +97,12 @@ function mergeAutomaticModelSplit(
 }
 
 function resolveAutomaticModelSplit(
+	store: StateStore,
+	projectName: string,
 	templateId: string,
 	issueIdentifier: string,
+	issueKey?: string,
+	menuOverrides?: unknown,
 ): {
 	override?: WorkflowTemplateOverride;
 	assignments: Record<string, WorkflowModelAssignmentReceipt>;
@@ -98,7 +111,88 @@ function resolveAutomaticModelSplit(
 		(candidate) => candidate.templateId === templateId,
 	);
 	if (!menu) return { assignments: {} };
-	const resolved = resolveMenuOverrides(menu, undefined, { issueIdentifier });
+	const resolved = resolveMenuOverrides(menu, menuOverrides, {
+		issueIdentifier,
+		issueKey,
+	});
+	const manualModelNodes = new Set(
+		Object.entries(resolved.requestedTemplateOverride?.nodes ?? {})
+			.filter(([, override]) => override.model !== undefined)
+			.map(([nodeId]) => nodeId),
+	);
+	if (issueKey) {
+		const priorAssignments = new Map<string, WorkflowModelAssignmentReceipt>();
+		for (const event of store.listWorkflowModelAssignmentEventsForIssue(
+			projectName,
+			issueKey,
+		)) {
+			const assignment = event.payload as
+				| WorkflowModelAssignmentReceipt
+				| undefined;
+			if (assignment?.basis?.rule !== "issue_node_weighted") continue;
+			if (
+				!event.node_id ||
+				assignment.basis.issueKey !== issueKey ||
+				assignment.basis.nodeId !== event.node_id
+			)
+				throw new Error("prior workflow model assignment invalid");
+			try {
+				if (event.kind === "model_arm_assigned")
+					assertFrozenWeightedModelAssignment(assignment, {
+						runId: event.run_id,
+						nodeId: event.node_id,
+					});
+				else assertWeightedModelAssignment(assignment);
+			} catch {
+				throw new Error("prior workflow model assignment invalid");
+			}
+			const prior = priorAssignments.get(event.node_id);
+			if (
+				prior &&
+				canonicalSubmissionDigest({
+					arm: prior.arm,
+					modelAlias: prior.modelAlias,
+					model: prior.model,
+					basis: prior.basis,
+				}) !==
+					canonicalSubmissionDigest({
+						arm: assignment.arm,
+						modelAlias: assignment.modelAlias,
+						model: assignment.model,
+						basis: assignment.basis,
+					})
+			)
+				throw new Error("prior workflow model assignment ambiguous");
+			priorAssignments.set(event.node_id, prior ?? assignment);
+		}
+		const modelSnapshot = getModelConfigSnapshot();
+		for (const [nodeId, assignment] of priorAssignments) {
+			if (manualModelNodes.has(nodeId)) continue;
+			const node = menu.nodes.find((candidate) => candidate.id === nodeId);
+			if (!node) continue;
+			const policy = node.models?.find(
+				(candidate) => candidate.model === assignment.modelAlias,
+			);
+			const model = modelSnapshot.getModelRegistryEntry(assignment.modelAlias);
+			if (!policy || !model || model.id !== assignment.model) {
+				throw new Error(
+					`prior workflow model assignment unavailable:${nodeId}`,
+				);
+			}
+			resolved.assignments[nodeId] = {
+				arm: assignment.arm,
+				modelAlias: assignment.modelAlias,
+				model: assignment.model,
+				basis: assignment.basis,
+			};
+			resolved.templateOverride.nodes ??= {};
+			resolved.templateOverride.nodes[nodeId] = {
+				vendor: model.runtimeVendor,
+				model: model.id,
+				effort: policy.defaultEffort,
+			};
+		}
+	}
 	return Object.keys(resolved.assignments).length > 0
 		? {
 				override: resolved.templateOverride,
@@ -119,7 +213,11 @@ function resolveFrozenModelSplit(
 	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
 	const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
 	for (const event of store.listWorkflowRunEvents(runId)) {
-		if (event.kind !== "design_model_arm_assigned") continue;
+		if (
+			event.kind !== "design_model_arm_assigned" &&
+			event.kind !== "model_arm_assigned"
+		)
+			continue;
 		const node = snapshot.resolved.nodes.find(
 			(node) => node.id === event.node_id,
 		);
@@ -129,21 +227,56 @@ function resolveFrozenModelSplit(
 		if (
 			!node?.dispatch ||
 			!assignment?.basis ||
-			assignments[node.id] ||
 			assignment.model !== node.dispatch.model ||
 			assignment.basis.issueIdentifier !== issueIdentifier ||
-			!assignment.basis.ruleVersion ||
-			!["issue_number_parity", "issue_number_percentage"].includes(
-				assignment.basis.rule,
-			)
+			!assignment.basis.ruleVersion
 		) {
 			throw new Error("reserved workflow model assignment invalid");
 		}
-		if (assignment.basis.rule === "issue_number_percentage")
-			assertPercentageModelAssignment(assignment);
-		assignments[node.id] = assignment;
+		try {
+			if (event.kind === "model_arm_assigned") {
+				assertFrozenWeightedModelAssignment(assignment, {
+					runId,
+					nodeId: node.id,
+				});
+			} else if (assignment.basis.rule === "issue_number_percentage") {
+				assertPercentageModelAssignment(assignment);
+			} else if (assignment.basis.rule === "issue_node_weighted") {
+				assertWeightedModelAssignment(assignment);
+			} else if (assignment.basis.rule !== "issue_number_parity") {
+				throw new Error("unsupported assignment rule");
+			}
+		} catch {
+			throw new Error("reserved workflow model assignment invalid");
+		}
+		const existing = assignments[node.id];
+		if (existing) {
+			const normalized = (value: WorkflowModelAssignmentReceipt) => ({
+				arm: value.arm,
+				modelAlias: value.modelAlias,
+				model: value.model,
+				basis: value.basis,
+			});
+			if (
+				canonicalSubmissionDigest(normalized(existing)) !==
+				canonicalSubmissionDigest(normalized(assignment))
+			)
+				throw new Error("reserved workflow model assignment invalid");
+			continue;
+		}
+		assignments[node.id] = {
+			arm: assignment.arm,
+			modelAlias: assignment.modelAlias,
+			model: assignment.model,
+			basis: assignment.basis,
+		};
 		nodes[node.id] = { ...node.dispatch };
 	}
+	if (snapshot.modelRouting)
+		return {
+			assignments,
+			override: snapshot.modelRouting.selectionOverride,
+		};
 	return Object.keys(assignments).length
 		? { assignments, override: { reason: "automatic_model_split", nodes } }
 		: { assignments };
@@ -236,6 +369,8 @@ export async function resolveWorkflowTemplateSelection(
 		issueId: string;
 		/** Human-readable issue identifier used by deterministic model policy. */
 		issueIdentifier?: string;
+		/** Stable lowercase Linear UUID used by node-weighted model policy. */
+		issueKey?: string;
 		entryIssueAliases?: string[];
 		entryRootKey?: string;
 		taskCategory?: string;
@@ -261,6 +396,10 @@ export async function resolveWorkflowTemplateSelection(
 		tier?: EngTier;
 		/** Canonical, already policy-validated menu node override. */
 		override?: WorkflowTemplateOverride;
+		/** Caller menu fields already validated by resolveMenuOverrides. */
+		menuOverrides?: unknown;
+		/** Digest of the authorized caller request before automatic menu routing. */
+		requestedOverrideDigest?: string;
 	},
 ): Promise<WorkflowTemplateSelectionResult | null> {
 	const candidate = resolveWorkflowTemplateCandidate(store, input);
@@ -322,6 +461,22 @@ export async function resolveWorkflowTemplateSelection(
 	}
 	const key = input.idempotencyKey.trim();
 	const prior = store.getWorkflowStartReservation(key);
+	const requestedOverrideDigest =
+		input.requestedOverrideDigest ??
+		canonicalSubmissionDigest(input.override ?? {});
+	const frozenRouting = prior
+		? parseWorkflowRunSnapshot(
+				store.getWorkflowRun(prior.run_id)?.snapshot ??
+					(() => {
+						throw new Error("reserved workflow run snapshot missing");
+					})(),
+			).modelRouting
+		: undefined;
+	if (
+		frozenRouting &&
+		frozenRouting.requestedOverrideDigest !== requestedOverrideDigest
+	)
+		throw new Error("workflow start idempotency key payload mismatch");
 	const automaticModelSplit = prior
 		? resolveFrozenModelSplit(
 				store,
@@ -329,19 +484,74 @@ export async function resolveWorkflowTemplateSelection(
 				input.issueIdentifier ?? input.issueId,
 			)
 		: resolveAutomaticModelSplit(
+				store,
+				input.project,
 				templateId,
 				input.issueIdentifier ?? input.issueId,
+				input.issueKey,
+				input.menuOverrides,
 			);
-	const selectionOverride = mergeAutomaticModelSplit(
+	let selectionOverride = mergeAutomaticModelSplit(
 		input.override,
 		automaticModelSplit.override,
 		automaticModelSplit.assignments,
 	);
-	const materializationOverride = mergeAutomaticModelSplit(
+	let materializationOverride = mergeAutomaticModelSplit(
 		input.override ?? tierPreset,
 		automaticModelSplit.override,
 		automaticModelSplit.assignments,
 	);
+	let modelRouting: WorkflowSnapshotModelRouting | undefined;
+	const weightedPolicyVersions = new Set(
+		Object.values(automaticModelSplit.assignments)
+			.filter((assignment) => assignment.basis.rule === "issue_node_weighted")
+			.map((assignment) => assignment.basis.ruleVersion),
+	);
+	const fixedProductTemplate = [
+		"tpl_prd",
+		"tpl_design",
+		"tpl_prototype",
+		"tpl_generic_menu",
+	].includes(templateId);
+	if (frozenRouting) {
+		selectionOverride = frozenRouting.selectionOverride;
+		materializationOverride = frozenRouting.selectionOverride;
+		modelRouting = frozenRouting;
+	} else if (weightedPolicyVersions.size > 0 || fixedProductTemplate) {
+		if (weightedPolicyVersions.size > 1)
+			throw new Error("workflow model routing policy version ambiguous");
+		const applied = materializationOverride
+			? applyWorkflowOverride(
+					manifest,
+					materializationOverride,
+					getModelConfigSnapshot(),
+				)
+			: { manifest };
+		const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
+		for (const node of applied.manifest.nodes) {
+			if (node.type === "gate" || node.type === "land") continue;
+			if (!node.vendor || !node.model || !node.effort)
+				throw new Error(`workflow model routing node ${node.id} is unpinned`);
+			nodes[node.id] = {
+				vendor: node.vendor,
+				model: node.model,
+				effort: node.effort,
+			};
+		}
+		const frozenOverride = {
+			reason: materializationOverride?.reason ?? "registry_default",
+			nodes,
+		};
+		modelRouting = {
+			version: 1,
+			policyVersion:
+				weightedPolicyVersions.values().next().value ?? "fly2788-fixed-v1",
+			selectionOverride: frozenOverride,
+			requestedOverrideDigest,
+		};
+		selectionOverride = frozenOverride;
+		materializationOverride = frozenOverride;
+	}
 	const reportedCategory = input.leadTemplateId
 		? input.taskCategory?.trim() || undefined
 		: category;
@@ -498,6 +708,7 @@ export async function resolveWorkflowTemplateSelection(
 	const run = store.materializeWorkflowRun({
 		runId,
 		issueId: input.issueId,
+		issueKey: input.issueKey,
 		entryIssueAliases: input.entryIssueAliases,
 		entryRootKey: input.entryRootKey,
 		projectName: input.project,
@@ -518,6 +729,7 @@ export async function resolveWorkflowTemplateSelection(
 		override: materializationOverride,
 		selectionOverride,
 		modelAssignments: automaticModelSplit.assignments,
+		modelRouting,
 		startReservation: {
 			idempotencyKey: key,
 			selectionDigest,

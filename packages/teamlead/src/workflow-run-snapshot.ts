@@ -33,6 +33,7 @@ import {
 	type WorkflowManifestV3,
 	type WorkflowNodeType,
 	type WorkflowOutputContract,
+	type WorkflowTemplateOverride,
 	type WorkflowVendor,
 	workflowApprovalGate,
 } from "./workflow-template.js";
@@ -41,6 +42,13 @@ interface WorkflowSnapshotWorkKind {
 	task_category?: WorkKindCategory;
 	category_source?: CategorySource;
 	tier?: EngTier;
+}
+
+export interface WorkflowSnapshotModelRouting {
+	version: 1;
+	policyVersion: string;
+	selectionOverride: WorkflowTemplateOverride;
+	requestedOverrideDigest: string;
 }
 
 export interface ResolvedWorkflowNode {
@@ -86,6 +94,7 @@ export interface WorkflowRunSnapshotV2 extends WorkflowSnapshotWorkKind {
 	manifest: WorkflowManifestV2;
 	manifest_digest: string;
 	resolved: { nodes: ResolvedWorkflowNode[] };
+	modelRouting?: WorkflowSnapshotModelRouting;
 	snapshot_digest: string;
 }
 
@@ -95,6 +104,7 @@ export interface WorkflowRunSnapshotV3 extends WorkflowSnapshotWorkKind {
 	manifest: WorkflowManifestV3;
 	manifest_digest: string;
 	resolved: { nodes: ResolvedWorkflowNode[] };
+	modelRouting?: WorkflowSnapshotModelRouting;
 	snapshot_digest: string;
 }
 
@@ -104,6 +114,7 @@ export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 	manifest: WorkflowManifestV1;
 	manifest_digest: string;
 	resolved: { nodes: ResolvedWorkflowNode[] };
+	modelRouting?: never;
 	snapshot_digest: string;
 }
 
@@ -406,6 +417,7 @@ interface GeneralizedWorkflowRunSnapshotInput {
 	};
 	/** One registry generation for alias validation and canonicalization. */
 	modelSnapshot?: ModelConfigSnapshot;
+	modelRouting?: WorkflowSnapshotModelRouting;
 }
 
 function buildGeneralizedWorkflowRunSnapshot(
@@ -548,6 +560,7 @@ function buildGeneralizedWorkflowRunSnapshot(
 		template: { ...input.template },
 		manifest_digest: canonicalSubmissionDigest(validated),
 		resolved: { nodes: resolved },
+		...(input.modelRouting ? { modelRouting: input.modelRouting } : {}),
 		...(input.workKind
 			? {
 					...(input.workKind.taskCategory
@@ -652,6 +665,79 @@ function parseCapabilities(
 	return raw as unknown as WorkflowNodeCapabilities;
 }
 
+function parseModelRouting(
+	value: unknown,
+	resolved: ResolvedWorkflowNode[],
+): WorkflowSnapshotModelRouting {
+	const raw = object(value, "workflow snapshot.modelRouting");
+	exact(
+		raw,
+		[
+			"version",
+			"policyVersion",
+			"selectionOverride",
+			"requestedOverrideDigest",
+		],
+		"workflow snapshot.modelRouting",
+	);
+	if (raw.version !== 1)
+		throw new Error("workflow snapshot.modelRouting.version must be 1");
+	const policyVersion = nonempty(
+		raw.policyVersion,
+		"workflow snapshot.modelRouting.policyVersion",
+	);
+	const requestedOverrideDigest = nonempty(
+		raw.requestedOverrideDigest,
+		"workflow snapshot.modelRouting.requestedOverrideDigest",
+	);
+	if (!/^[a-f0-9]{64}$/.test(requestedOverrideDigest))
+		throw new Error(
+			"workflow snapshot.modelRouting.requestedOverrideDigest is invalid",
+		);
+	const overrideRaw = object(
+		raw.selectionOverride,
+		"workflow snapshot.modelRouting.selectionOverride",
+	);
+	exact(
+		overrideRaw,
+		["reason", "nodes"],
+		"workflow snapshot.modelRouting.selectionOverride",
+	);
+	const reason = nonempty(
+		overrideRaw.reason,
+		"workflow snapshot.modelRouting.selectionOverride.reason",
+	);
+	const nodesRaw = object(
+		overrideRaw.nodes,
+		"workflow snapshot.modelRouting.selectionOverride.nodes",
+	);
+	const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
+	for (const [nodeId, value] of Object.entries(nodesRaw)) {
+		const path = `workflow snapshot.modelRouting.selectionOverride.nodes.${nodeId}`;
+		const nodeRaw = object(value, path);
+		exact(nodeRaw, ["vendor", "model", "effort"], path);
+		const resolvedNode = resolved.find((candidate) => candidate.id === nodeId);
+		if (
+			!resolvedNode?.dispatch ||
+			nodeRaw.vendor !== resolvedNode.dispatch.vendor ||
+			nodeRaw.model !== resolvedNode.dispatch.model ||
+			nodeRaw.effort !== resolvedNode.dispatch.effort
+		)
+			throw new Error(`${path} does not match pinned dispatch`);
+		nodes[nodeId] = { ...resolvedNode.dispatch };
+	}
+	if (resolved.some((node) => node.dispatch && !Object.hasOwn(nodes, node.id)))
+		throw new Error(
+			"workflow snapshot.modelRouting.selectionOverride must cover every executable node",
+		);
+	return {
+		version: 1,
+		policyVersion,
+		selectionOverride: { reason, nodes },
+		requestedOverrideDigest,
+	};
+}
+
 /** Parse only pinned snapshot vocabulary; never consult the mutable live registry. */
 export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 	let parsed: unknown;
@@ -673,6 +759,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			"task_category",
 			"category_source",
 			"tier",
+			"modelRouting",
 		],
 		"workflow snapshot",
 	);
@@ -908,6 +995,16 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			"a workflow containing a pinned code-writing node must contain exactly one independent QA verdict contract and qa_passed ship claim",
 		);
 	}
+	const modelRouting =
+		root.modelRouting === undefined
+			? undefined
+			: root.schema_version === 1
+				? (() => {
+						throw new Error(
+							"workflow snapshot.modelRouting is unavailable for schema-v1",
+						);
+					})()
+				: parseModelRouting(root.modelRouting, resolved);
 	const body =
 		root.schema_version === 1 && manifest.schema_version === 1
 			? snapshotBody({
@@ -925,6 +1022,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 						manifest,
 						manifest_digest: manifestDigest,
 						resolved: { nodes: resolved },
+						...(modelRouting ? { modelRouting } : {}),
 						...workKind,
 					})
 				: snapshotBody({
@@ -933,6 +1031,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 						manifest: manifest as WorkflowManifestV3,
 						manifest_digest: manifestDigest,
 						resolved: { nodes: resolved },
+						...(modelRouting ? { modelRouting } : {}),
 						...workKind,
 					});
 	const digest = nonempty(

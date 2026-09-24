@@ -226,9 +226,16 @@ export {
 	resolveCurrentModel,
 } from "./model-registry.js";
 export {
+	ModelSplitBalanceInputUnavailableError,
 	type PercentageModelSplitPolicy,
 	parsePercentageModelSplit,
+	parseWeightedModelSplit,
 	resolvePercentageModelSplit,
+	resolveWeightedModelSplit,
+	WEIGHTED_MODEL_SPLIT_NODES,
+	type WeightedModelSplitArm,
+	type WeightedModelSplitNodeId,
+	type WeightedModelSplitPolicy,
 } from "./model-split.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).

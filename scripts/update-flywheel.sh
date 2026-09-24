@@ -790,6 +790,22 @@ updater_sync_fable_model() {
     --alert-bin "$alert_bin"
 }
 
+# FLY-2775: the Opus line follows its latest release. Same singleton and
+# advisory contract as the Fable sync; discovery asks the local claude CLI what
+# `opus` / `opus[1m]` launch. The managed flag opus_model_sync_disabled is the
+# kill switch, read by the CLI from the flag store; version-change alerts are
+# still derived from models.json while it is on. FLYWHEEL_CLAUDE_BIN overrides the probed binary.
+updater_sync_opus_model() {
+  # Same verified package roots as the Fable sync — never the mutable checkout.
+  local cli="${FLYWHEEL_OPUS_MODEL_SYNC_CLI:-${FLYWHEEL_TEAMLEAD_ROOT:-${FLYWHEEL_DIR}/packages/teamlead}/dist/account-heal/opus-model-sync-cli.js}"
+  local alert_bin="${FLYWHEEL_LEAD_ALERT_BIN:-${UPDATER_RUNTIME_SCRIPT_DIR}/lead-alert.sh}"
+  [[ -f "$cli" && ! -L "$cli" ]] || return 127
+  "$UPDATER_NODE" "$cli" \
+    --authority "${FLYWHEEL_HOME}/models.json" \
+    --db "${TEAMLEAD_DB_PATH:-${FLYWHEEL_HOME}/teamlead.db}" \
+    --alert-bin "$alert_bin"
+}
+
 # FLY-1814: keep the updater's existing daemon convergence/census floor.
 updater_launchd_pass() {
   if [[ -d "${HOME}/.flywheel/restart.lock.d" ]]; then
@@ -1553,6 +1569,9 @@ update_main() {
   fi
   if ! updater_sync_fable_model; then
     log "Fable model authority sync was unavailable (non-fatal; continuing)"
+  fi
+  if ! updater_sync_opus_model; then
+    log "Opus model authority sync was unavailable (non-fatal; continuing)"
   fi
   updater_run_launchd_then_cycle
   rc=$?

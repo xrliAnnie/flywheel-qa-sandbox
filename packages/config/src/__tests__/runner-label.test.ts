@@ -28,7 +28,7 @@ describe("parseRunnerLabels", () => {
 	it("model labels infer agent type", () => {
 		expect(parseRunnerLabels(["opus"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5",
+			modelOverride: "claude-opus-5-5",
 		});
 		expect(parseRunnerLabels(["gpt-5.5-codex"])).toEqual({
 			runnerType: "codex",
@@ -144,7 +144,7 @@ describe("parseRunnerLabels", () => {
 	it("canonicalizes every configured Claude family alias", () => {
 		expect(parseRunnerLabels(["opus"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5",
+			modelOverride: "claude-opus-5-5",
 		});
 		expect(parseRunnerLabels(["sonnet"])).toEqual({
 			runnerType: "claude",
@@ -161,7 +161,7 @@ describe("parseRunnerLabels", () => {
 	it("resolves opus-1m / fable-1m labels to the [1m] ids (Claude runner)", () => {
 		expect(parseRunnerLabels(["opus-1m"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5[1m]",
+			modelOverride: "claude-opus-5-5[1m]",
 		});
 		expect(parseRunnerLabels(["FABLE-1M"])).toEqual({
 			runnerType: "claude",
@@ -172,7 +172,7 @@ describe("parseRunnerLabels", () => {
 	it("1m label wins over the bare alias when both are present", () => {
 		expect(parseRunnerLabels(["opus", "opus-1m"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5[1m]",
+			modelOverride: "claude-opus-5-5[1m]",
 		});
 		expect(parseRunnerLabels(["fable-1m", "fable"])).toEqual({
 			runnerType: "claude",

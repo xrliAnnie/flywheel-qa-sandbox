@@ -62,8 +62,33 @@ function claudeTierOptions(): readonly TierOption[] {
 			label: model.label,
 			...(model.selectable ? {} : { readonly: true as const }),
 		})),
+		...followLatestOptions(snapshot),
 		{ id: null, label: "账号默认" } as const,
 	];
+}
+
+/**
+ * FLY-2775: the Opus line follows its latest release. These two options write
+ * the family alias itself into projects.json (the fleet batch writer stores the
+ * reviewed spelling verbatim), so the Lead resolves the newest Opus at every
+ * launch instead of freezing today's id. Offered only while the live registry
+ * can actually resolve the alias on the Lead surface.
+ */
+const FOLLOW_LATEST_LEAD_OPTIONS = [
+	{ id: "opus", label: "Opus · 跟最新" },
+	{ id: "opus[1m]", label: "Opus 1M · 跟最新" },
+] as const;
+
+function followLatestOptions(
+	snapshot: ReturnType<typeof getModelConfigSnapshot>,
+): TierOption[] {
+	return FOLLOW_LATEST_LEAD_OPTIONS.filter((option) =>
+		snapshot.isModelSelectable({
+			surface: "lead",
+			model: option.id,
+			runtimeVendor: "claude",
+		}),
+	).map((option) => ({ ...option }));
 }
 
 /** Import-time compatibility view; runtime consumers call computeTierOptions(). */

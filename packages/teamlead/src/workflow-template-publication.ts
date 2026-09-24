@@ -10,7 +10,10 @@ import type {
 } from "./StateStore.js";
 import { isFly2602WorkflowEffortPending } from "./workflow-effort-migration.js";
 import { loadWorkflowMenuSeeds } from "./workflow-menu.js";
-import { validateWorkflowManifest } from "./workflow-template.js";
+import {
+	validateManifestForPersistence,
+	type validateWorkflowManifest,
+} from "./workflow-template.js";
 
 export class WorkflowPublicationError extends Error {
 	constructor(
@@ -190,7 +193,9 @@ export class WorkflowTemplatePublicationService {
 			fail("manifest_too_large", 413);
 		let manifest: ReturnType<typeof validateWorkflowManifest>;
 		try {
-			manifest = validateWorkflowManifest(candidate, {
+			// FLY-2775: persist the Opus family alias as written (rollback
+			// restores the historical bytes; a seed/file publish keeps follow-latest).
+			manifest = validateManifestForPersistence(candidate, {
 				modelSnapshot: snapshot,
 			});
 		} catch {

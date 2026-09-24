@@ -1081,12 +1081,52 @@ describe("FLY-2504 remaining transition acceptance", () => {
 				"implement",
 				"wake",
 			);
+			// FLY-2828 C1: a wake binding completes by settling its own receipt,
+			// so the fixture must carry the state a real wake activation has: the
+			// activation TURN, and for `wake_delivered` the active verification
+			// path that the earlier projection would have written.
+			const binding = store.getWorkflowExecutionBinding(REPLACEMENT_ID)!;
+			expect(
+				store.recordWorkflowActivationTurn({
+					activationId: binding.activation_id,
+					issueId: "FLY-1307",
+					executionId: REPLACEMENT_ID,
+					epoch: 5,
+					sourceEventId: `n6-turn:${state}`,
+					grantedAt: at(0),
+				}),
+			).toMatchObject({ ok: true });
+			const revision =
+				store.getWorkflowReworkDelivery(REQUEST_ID)!.route_revision;
 			dbRun(
 				store,
 				"UPDATE workflow_rework_delivery SET state = ? WHERE request_id = ?",
 				[state, REQUEST_ID],
 			);
+			dbRun(
+				store,
+				"UPDATE workflow_rework_verification_path SET route_revision = ?, state = ? WHERE request_id = ?",
+				[
+					revision,
+					state === "wake_delivered" ? "active" : "pending",
+					REQUEST_ID,
+				],
+			);
 			expect(enrolledComplete(store)).toMatchObject({ ok: true });
+			expect(store.getWorkflowReworkDelivery(REQUEST_ID)?.state).toBe(
+				"completed",
+			);
+			const receipt = store
+				.listWorkflowRunEvents("run-1")
+				.find((event) => event.kind === "rework_delivery_wake_delivered");
+			if (state === "wake_delivered") {
+				expect(receipt).toBeUndefined();
+			} else {
+				expect(receipt?.payload).toMatchObject({
+					source: "completion_implied",
+					impliedFromState: state,
+				});
+			}
 		},
 	);
 	it("N13 reconstruct_completion cannot bypass an open replacement receipt requirement", async () => {

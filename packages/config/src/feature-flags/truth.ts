@@ -244,6 +244,8 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_CLAUDE_BIN:
+		"FLY-2775 plumbing: path override for the claude binary the Opus model sync probes, not an on/off gate",
 	FLYWHEEL_HEADPHONE_INBOX_RETENTION_DAYS:
 		"FLY-2796 bounded retention duration for the headphone inbox producer, not an on/off gate",
 	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:

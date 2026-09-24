@@ -23,6 +23,7 @@ import {
 	storeLoopProfilerEnabled,
 	storeNodeDwellEnabled,
 	storeNodeDwellThresholdHours,
+	storeOpusModelSyncDisabled,
 	storePipelineDagEnabled,
 	storePipelineWorkKindEnabled,
 	storePonytailEnabled,
@@ -205,6 +206,24 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeCmuxRebindDisabled(runtime)).toBe(true);
+	});
+
+	it("FLY-2775 opt-in Opus sync disable observes the next store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeOpusModelSyncDisabled(runtime)).toBe(false);
+		const revision = store.getFlagValueRow(
+			"opus_model_sync_disabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "opus_model_sync_disabled",
+				rawTo: "1",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "freeze the Opus line during a model incident",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeOpusModelSyncDisabled(runtime)).toBe(true);
 	});
 
 	it("FLY-2465 defaults Codex rotation on and observes store off and restore immediately", () => {

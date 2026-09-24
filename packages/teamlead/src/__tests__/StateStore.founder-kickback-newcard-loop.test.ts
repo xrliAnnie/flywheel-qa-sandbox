@@ -770,7 +770,7 @@ describe("founder kickback new-card loop", () => {
 					qaRoute.preferred_actor_execution_id,
 				)?.vendor,
 				implement: store.getWorkflowExecutionRuntime("implement-1")?.vendor,
-			}).toEqual({ qa: "claude", implement: "codex" });
+			}).toEqual({ qa: "claude", implement: "claude" });
 			expect(
 				store.resolveCurrentWorkflowActivation(
 					qaRoute.preferred_actor_execution_id,

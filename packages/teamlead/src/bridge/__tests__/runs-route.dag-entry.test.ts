@@ -52,6 +52,7 @@ vi.mock("../../workflow-phase-protocol.js", async (original) => ({
 
 // ── Linear pre-flight mock (route does a dynamic import) ──
 const linearMock = {
+	id: "00000000-0000-4000-8000-000000000001",
 	labels: [] as string[],
 	description: "Runs route issue body",
 };
@@ -59,6 +60,7 @@ vi.mock("@linear/sdk", () => ({
 	LinearClient: class {
 		async issue(id: string) {
 			return {
+				id: linearMock.id,
 				title: `Issue ${id}`,
 				identifier: id,
 				url: `https://linear.app/x/${id}`,
@@ -155,6 +157,7 @@ beforeEach(() => {
 		savedEnv[key] = process.env[key];
 	}
 	process.env.LINEAR_API_KEY = "test-linear-key";
+	linearMock.id = "00000000-0000-4000-8000-000000000001";
 	linearMock.labels = [];
 	linearMock.description = "Runs route issue body";
 });
@@ -1719,9 +1722,9 @@ describe("FLY-1436 menu start contract", () => {
 			resolved: {
 				nodeModels: {
 					implement: expect.objectContaining({
-						model: "codex (= gpt-5.6-sol)",
+						model: "opus (= claude-opus-5-5)",
 					}),
-					qa: expect.objectContaining({ model: "opus (= claude-opus-5)" }),
+					qa: expect.objectContaining({ model: "opus (= claude-opus-5-5)" }),
 				},
 			},
 		});
@@ -1734,7 +1737,7 @@ describe("FLY-1436 menu start contract", () => {
 		expect(h.calls[0]?.startPoint).toBeUndefined();
 	});
 
-	it("rejects a same-vendor simple_code override before dispatch", async () => {
+	it("accepts the node-scoped same-vendor QA assignment", async () => {
 		const h = await startHarness({
 			menuMode: true,
 			bindingCategory: "simple_code",
@@ -1743,16 +1746,24 @@ describe("FLY-1436 menu start contract", () => {
 		const { status, json } = await post(h.url, {
 			leadId: "flywheel-eng-lead",
 			taskCategory: "simple_code",
-			overrides: { qa: { model: "codex" } },
+			overrides: { qa: { model: "opus" } },
 		});
 
-		expect(status).toBe(400);
+		expect(status).toBe(200);
 		expect(json).toMatchObject({
-			success: false,
-			code: "SAME_VENDOR_REVIEW_COMBINATION",
-			legal: ["implement:opus", "implement:fable", "qa:opus"],
+			success: true,
+			resolved: {
+				nodeModels: {
+					implement: expect.objectContaining({
+						model: "opus (= claude-opus-5-5)",
+					}),
+					qa: expect.objectContaining({
+						model: "opus (= claude-opus-5-5)",
+					}),
+				},
+			},
 		});
-		expect(h.calls).toHaveLength(0);
+		expect(h.calls).toHaveLength(1);
 	});
 
 	it("automatically assigns odd issues to Astra and persists arm provenance", async () => {
@@ -1775,12 +1786,12 @@ describe("FLY-1436 menu start contract", () => {
 						overridden: true,
 					},
 					implement: {
-						model: "codex (= gpt-5.6-sol)",
+						model: "opus (= claude-opus-5-5)",
 						effort: "xhigh",
 						overridden: false,
 					},
 					qa: {
-						model: "opus (= claude-opus-5)",
+						model: "opus (= claude-opus-5-5)",
 						effort: "high",
 						overridden: false,
 					},
@@ -1860,13 +1871,13 @@ describe("FLY-1436 menu start contract", () => {
 		],
 		[
 			{ overrides: { eng_design: { model: "opus" } } },
-			"MODEL_NOT_ALLOWED_FOR_NODE",
-			["fable", "codex", "astra"],
+			"MODEL_SPLIT_OVERRIDE_CONFLICT",
+			["fable"],
 		],
 		[
 			{ overrides: { eng_design: { model: "atsra" } } },
 			"INVALID_MODEL",
-			["fable", "codex", "astra"],
+			["fable", "codex", "astra", "opus"],
 		],
 		[
 			{ overrides: { eng_design: { model: "fable", effort: "ultra" } } },
@@ -2072,6 +2083,130 @@ it("FLY-2570 starts real menu requests with hot percentages and replays frozen s
 		});
 		expect(invalid.status).toBe(400);
 		expect(h.calls).toHaveLength(2);
+	} finally {
+		if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+		else process.env.FLYWHEEL_MODELS_CONFIG = previous;
+		resetModelConfigCacheForTests();
+	}
+});
+
+it("FLY-2788 keeps manual model overrides separate from stable weighted arms", async () => {
+	const h = await startHarness({ menuMode: true });
+	const path = join(h.projectRoot, "models.json");
+	const previous = process.env.FLYWHEEL_MODELS_CONFIG;
+	const writePolicy = (opusWeight: 2 | 100) => {
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				modelSplit: {
+					enabled: true,
+					rule: "issue_node_weighted",
+					nodes: {
+						eng_design: [
+							{ arm: "design_astra", model: "astra", weight: 1 },
+							{ arm: "design_opus", model: "opus", weight: 1 },
+							{ arm: "design_fable", model: "fable", weight: 1 },
+						],
+						implement: [
+							{ arm: "impl_opus", model: "opus", weight: opusWeight },
+							{ arm: "impl_sol56", model: "codex", weight: 1 },
+							{ arm: "impl_sol6", model: "sol", weight: 1 },
+						],
+						qa: [
+							{ arm: "qa_sol56", model: "codex", weight: 2 },
+							{ arm: "qa_sol6", model: "sol", weight: 1 },
+							{ arm: "qa_opus", model: "opus", weight: 1 },
+						],
+					},
+				},
+			}),
+		);
+		resetModelConfigCacheForTests();
+	};
+	process.env.FLYWHEEL_MODELS_CONFIG = path;
+	try {
+		writePolicy(2);
+		linearMock.id = "00000000-0000-4000-8000-000000000002";
+		const manual = await post(h.url, {
+			issueId: linearMock.id,
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+			overrides: { implement: { model: "fable", effort: "high" } },
+			idempotencyKey: "weighted-manual-model",
+		});
+		expect(manual.status, JSON.stringify(manual.json)).toBe(200);
+		expect(manual.json).toMatchObject({
+			resolved: {
+				nodeModels: {
+					implement: { model: "fable (= claude-fable-5-1)" },
+				},
+			},
+		});
+		expect(
+			h.store
+				.listWorkflowRunEvents(manual.json.workflowRunId as string)
+				.filter((event) => event.kind === "model_arm_assigned")
+				.map((event) => event.node_id),
+		).not.toContain("implement");
+
+		linearMock.id = "00000000-0000-4000-8000-000000000001";
+		const request = {
+			issueId: linearMock.id,
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+		};
+		const first = await post(h.url, {
+			...request,
+			idempotencyKey: "weighted-policy-before",
+		});
+		expect(first.status, JSON.stringify(first.json)).toBe(200);
+		const firstRunId = first.json.workflowRunId as string;
+		const firstAssignments = h.store
+			.listWorkflowRunEvents(firstRunId)
+			.filter((event) => event.kind === "model_arm_assigned")
+			.map((event) => ({
+				nodeId: event.node_id,
+				arm: (event.payload as { arm: string }).arm,
+			}));
+		expect(firstAssignments).toContainEqual({
+			nodeId: "implement",
+			arm: "impl_sol56",
+		});
+		const executionId = first.json.executionId as string;
+		h.store.upsertSession({
+			execution_id: executionId,
+			issue_id: request.issueId,
+			project_name: "flywheel",
+			status: "completed",
+		});
+		expect(
+			h.store.terminateWorkflowRunByOperator({
+				runId: firstRunId,
+				reason: "test weighted policy replay",
+				clientRequestId: "weighted-policy-terminate",
+				principal: "test",
+				evidence: [],
+				now: "2026-09-23T06:00:00.000Z",
+			}),
+		).toMatchObject({ ok: true, status: "terminated" });
+
+		writePolicy(100);
+		const second = await post(h.url, {
+			...request,
+			overrides: { eng_design: { effort: "high" } },
+			idempotencyKey: "weighted-policy-after",
+		});
+		expect(second.status, JSON.stringify(second.json)).toBe(200);
+		expect(
+			h.store
+				.listWorkflowRunEvents(second.json.workflowRunId as string)
+				.filter((event) => event.kind === "model_arm_assigned")
+				.map((event) => ({
+					nodeId: event.node_id,
+					arm: (event.payload as { arm: string }).arm,
+				})),
+		).toEqual(firstAssignments);
 	} finally {
 		if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
 		else process.env.FLYWHEEL_MODELS_CONFIG = previous;

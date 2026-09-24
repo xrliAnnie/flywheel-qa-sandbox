@@ -14,7 +14,7 @@ You (the Lead) are an LM that has followed this project. When you spawn a
 Runner (`POST /api/runs/start`), you also decide **how heavy a model the task
 warrants** and map that difficulty through the live fleet policy. The mapping
 is a founder decision, not a permanent price/strength ladder: today heavy work
-uses Fable while every lower bucket uses Opus 5. There is **no separate
+uses Fable; lower buckets use Opus. There is **no separate
 classifier and no extra LLM call**: you already understand the issue at
 dispatch time, so you make a quick **holistic judgment** from the signals below
 and pass the configured model on the same `/api/runs/start` call.
@@ -24,12 +24,12 @@ and pass the configured model on the same `/api/runs/start` call.
 | Difficulty | Model | `model` value |
 |------------|-------|---------------|
 | **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Current Fable family | `fable` |
-| **Medium** — a normal feature or bug fix of moderate scope | Opus 5 | `opus` |
-| **Simple** — a small, well-scoped change | Opus 5 | `opus` |
-| **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Opus 5 | `opus` |
+| **Medium** — a normal feature or bug fix of moderate scope | Current Opus | `opus` |
+| **Simple** — a small, well-scoped change | Current Opus | `opus` |
+| **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Current Opus | `opus` |
 
-Use the stable aliases (`fable`/`opus`/`sonnet`/`haiku`) for new work. In
-particular, `fable` always means the current Fable family; the live mapping
+Use stable aliases (`fable`/`opus`/`sonnet`/`haiku`) for new work; each product
+line follows its current family (FLY-2766). The live mapping
 comes from `~/.flywheel/models.json` and is canonicalized before spawn. Full
 model ids belong only in immutable run receipts and historical pins, not in new
 routing instructions. Unknown values are rejected `400 INVALID_MODEL`. Sonnet
@@ -47,7 +47,7 @@ Claude process costs ~0.35GB more RAM per Runner, and the fleet hit swap
 exhaustion when every runner inherited a 1M default — so 1M is now something
 you ask for, not something you get.
 
-- Pass `"model": "opus-1m"` (Opus 5 · 1M) or `"model": "fable-1m"`
+- Pass `"model": "opus-1m"` (current Opus · 1M) or `"model": "fable-1m"`
   (current Fable family · 1M) **only when the task genuinely needs the huge window** — e.g.
   it must hold a massive corpus/log/diff in one context and cannot be chunked.
 - The same spellings work as issue labels (`opus-1m` / `fable-1m`) when the

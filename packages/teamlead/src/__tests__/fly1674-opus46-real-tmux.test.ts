@@ -4,7 +4,6 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -16,6 +15,7 @@ import {
 	compileWorkflowMenuSeed,
 	loadWorkflowMenuLibrary,
 } from "../workflow-menu.js";
+import { validateWorkflowManifest } from "../workflow-template.js";
 
 const EXPECTED_MODEL = "claude-opus-4-6[1m]";
 const MUTATION_MODEL = "claude-opus-5[1m]";
@@ -125,9 +125,12 @@ printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
 			(menu) => menu.shape === "code",
 		);
 		if (!code) throw new Error("code workflow menu missing");
-		const qa = compileWorkflowMenuSeed(code).manifest.nodes.find(
-			(node) => node.id === "qa",
-		);
+		// FLY-2775: the seed persists the Opus family alias; production dispatch
+		// takes the model from the run snapshot, which canonicalizes the manifest
+		// against the live registry. Take the same path here.
+		const qa = validateWorkflowManifest(
+			compileWorkflowMenuSeed(code).manifest,
+		).nodes.find((node) => node.id === "qa");
 		if (!qa?.model || !qa.effort) {
 			throw new Error("compiled QA dispatch missing model or effort");
 		}
@@ -166,17 +169,10 @@ printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
 		};
 	}
 
-	it("carries the 4.6-bound compiled QA node into a real claude process argv", async () => {
-		const proof = await captureQaArgv(EXPECTED_MODEL);
-
-		expect(proof.compiledModel).toBe(EXPECTED_MODEL);
-		expect(proof.compiledEffort).toBe("high");
-		expect(realpathSync(proof.openedSocket)).toBe(realpathSync(socketPath));
-		expect(() => assertExpectedQaArgv(proof.argv)).not.toThrow();
-		expect(proof.argv).toContain("--model");
-		expect(proof.argv).toContain(EXPECTED_MODEL);
-		expect(proof.argv).toContain("--effort");
-		expect(proof.argv).toContain("high");
+	it("fails closed before spawn when Opus 4.6 cannot satisfy current policy", async () => {
+		await expect(captureQaArgv(EXPECTED_MODEL)).rejects.toThrow(
+			/allowedEfforts must be supported.*low, medium, high, max/,
+		);
 	}, 15_000);
 
 	it("makes the same proof fail loudly for a wrong binding and a missing model flag", async () => {

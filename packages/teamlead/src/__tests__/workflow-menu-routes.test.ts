@@ -115,6 +115,11 @@ describe("GET /api/workflow/menus", () => {
 					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
 					defaultEffort: "high",
 				},
+				{
+					model: "opus",
+					resolvedModel: "claude-opus-5-5",
+					receipt: "opus (= claude-opus-5-5)",
+				},
 			],
 		});
 		expect(Object.hasOwn(body.menus[0].nodes[0], "role")).toBe(false);

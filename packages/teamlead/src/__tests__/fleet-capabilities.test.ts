@@ -48,12 +48,21 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 		const catalogModels = buildModelCatalog("lead").providers.find(
 			(provider) => provider.id === "anthropic",
 		)!.models;
-		expect(CLAUDE_TIER_OPTIONS.filter((option) => option.id !== null)).toEqual(
-			catalogModels.map((model) => ({
+		expect(CLAUDE_TIER_OPTIONS.filter((option) => option.id !== null)).toEqual([
+			...catalogModels.map((model) => ({
 				id: model.id,
 				label: model.label,
 				...(model.selectable ? {} : { readonly: true }),
 			})),
+			// FLY-2775: plus the follow-latest aliases, which are not catalog ids.
+			{ id: "opus", label: "Opus · 跟最新" },
+			{ id: "opus[1m]", label: "Opus 1M · 跟最新" },
+		]);
+	});
+
+	it("FLY-2775: a follow-latest alias is a legal Lead switch target", () => {
+		expect(computeAllowedModelTargets("claude-code")).toEqual(
+			expect.arrayContaining(["opus", "opus[1m]", "claude-opus-5-5", null]),
 		);
 	});
 
@@ -63,15 +72,21 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 			{ id: "claude-fable-5-1[1m]", label: "Fable 5.1 (1M)" },
 			{ id: "claude-fable-5", label: "Fable 5", readonly: true },
 			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)", readonly: true },
-			{ id: "claude-opus-5", label: "Opus 5" },
-			{ id: "claude-opus-5[1m]", label: "Opus 5 (1M)" },
+			{ id: "claude-opus-5-5", label: "Opus 5.5" },
+			{ id: "claude-opus-5-5[1m]", label: "Opus 5.5 (1M)" },
 			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
 			{ id: "claude-sonnet-5", label: "Sonnet 5" },
 			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 			// FLY-1467: legacy Opus identities stay listed (label + legal target)
 			// but are readonly — visible, never offered as a new choice.
+			// FLY-2775: Opus 5 joined them the moment the binding moved to 5.5.
+			{ id: "claude-opus-5", label: "Opus 5", readonly: true },
+			{ id: "claude-opus-5[1m]", label: "Opus 5 (1M)", readonly: true },
 			{ id: "claude-opus-4-8", label: "Opus 4.8", readonly: true },
 			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)", readonly: true },
+			// FLY-2775: follow-latest family aliases, written verbatim.
+			{ id: "opus", label: "Opus · 跟最新" },
+			{ id: "opus[1m]", label: "Opus 1M · 跟最新" },
 			{ id: null, label: "账号默认" },
 		]);
 	});

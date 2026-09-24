@@ -17,7 +17,7 @@ describe("normalizeDispatchModel", () => {
 	it("accepts the 4 canonical tier ids verbatim", () => {
 		expect(normalizeDispatchModel("claude-fable-5-1")).toBe("claude-fable-5-1");
 		// FLY-751: medium tier no longer carries [1m] — small context by default.
-		expect(normalizeDispatchModel("claude-opus-5")).toBe("claude-opus-5");
+		expect(normalizeDispatchModel("claude-opus-5-5")).toBe("claude-opus-5-5");
 		expect(normalizeDispatchModel("claude-sonnet-5")).toBe("claude-sonnet-5");
 		expect(normalizeDispatchModel("claude-haiku-4-5-20251001")).toBe(
 			"claude-haiku-4-5-20251001",
@@ -27,24 +27,40 @@ describe("normalizeDispatchModel", () => {
 	it("maps bare aliases to canonical ids (case-insensitive, trimmed)", () => {
 		expect(normalizeDispatchModel("fable")).toBe("claude-fable-5-1");
 		expect(normalizeDispatchModel("FABLE")).toBe("claude-fable-5-1");
-		expect(normalizeDispatchModel("  opus  ")).toBe("claude-opus-5");
+		expect(normalizeDispatchModel("  opus  ")).toBe("claude-opus-5-5");
 		expect(normalizeDispatchModel("Sonnet")).toBe("claude-sonnet-5");
 		expect(normalizeDispatchModel("haiku")).toBe("claude-haiku-4-5-20251001");
 	});
 
 	it("FLY-751: 1M context is explicit opt-in via -1m aliases / [1m] ids", () => {
-		expect(normalizeDispatchModel("opus-1m")).toBe("claude-opus-5[1m]");
+		expect(normalizeDispatchModel("opus-1m")).toBe("claude-opus-5-5[1m]");
 		expect(normalizeDispatchModel("fable-1m")).toBe("claude-fable-5-1[1m]");
-		expect(normalizeDispatchModel(" OPUS-1M ")).toBe("claude-opus-5[1m]");
-		expect(normalizeDispatchModel("claude-opus-5[1m]")).toBe(
-			"claude-opus-5[1m]",
+		expect(normalizeDispatchModel(" OPUS-1M ")).toBe("claude-opus-5-5[1m]");
+		expect(normalizeDispatchModel("claude-opus-5-5[1m]")).toBe(
+			"claude-opus-5-5[1m]",
 		);
 		expect(normalizeDispatchModel("claude-fable-5-1[1m]")).toBe(
 			"claude-fable-5-1[1m]",
 		);
 	});
 
+	// FLY-2775: 上一代 Opus 的**全名**必须继续放行 —— 在飞 run 的快照冻的是全名
+	// (dispatchPinned),历史载体 pin 也是全名。掉出白名单 = 在飞体中途 INVALID_MODEL。
+	it("FLY-2775: retired Opus full ids stay dispatchable (in-flight snapshots / historical pins)", () => {
+		expect(normalizeDispatchModel("claude-opus-5")).toBe("claude-opus-5");
+		expect(normalizeDispatchModel("claude-opus-5[1m]")).toBe(
+			"claude-opus-5[1m]",
+		);
+		expect(normalizeDispatchModel("claude-opus-4-8")).toBe("claude-opus-4-8");
+		expect(normalizeDispatchModel("claude-opus-4-8[1m]")).toBe(
+			"claude-opus-4-8[1m]",
+		);
+	});
+
 	it("returns null for unknown / empty / non-tier models (boundary reject)", () => {
+		// FLY-2775 阴性对照:白名单放宽到退役全名,但未知拼写依然拒。
+		expect(normalizeDispatchModel("claude-opus-9-9")).toBeNull();
+		expect(normalizeDispatchModel("claude-opus-5-6")).toBeNull();
 		expect(normalizeDispatchModel("gpt-5.5-codex")).toBeNull();
 		expect(normalizeDispatchModel("gemini-3-pro-preview")).toBeNull();
 		// the simple tier is Sonnet 5 now → the older 4.6 id is not a 728 tier.
@@ -63,7 +79,7 @@ describe("ACCEPTED_DISPATCH_MODELS (FLY-751 error-payload discoverability)", () 
 	});
 
 	it("includes tier ids, bare aliases, and the 1M opt-ins", () => {
-		expect(ACCEPTED_DISPATCH_MODELS).toContain("claude-opus-5");
+		expect(ACCEPTED_DISPATCH_MODELS).toContain("claude-opus-5-5");
 		expect(ACCEPTED_DISPATCH_MODELS).toContain("opus");
 		expect(ACCEPTED_DISPATCH_MODELS).toContain("opus-1m");
 		expect(ACCEPTED_DISPATCH_MODELS).toContain("fable-1m");
@@ -128,11 +144,11 @@ describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)",
 });
 
 describe("MODEL_TIERS", () => {
-	it("maps heavy to Fable and every lower difficulty to Opus 5", () => {
+	it("maps heavy to Fable and every lower difficulty to Opus 5.5", () => {
 		expect(MODEL_TIERS.heavy.id).toBe("claude-fable-5-1");
 		expect(MODEL_TIERS.heavy.code).toBe("F");
 		for (const tier of ["medium", "light", "trivial"] as const) {
-			expect(MODEL_TIERS[tier].id).toBe("claude-opus-5");
+			expect(MODEL_TIERS[tier].id).toBe("claude-opus-5-5");
 			expect(MODEL_TIERS[tier].code).toBe("O");
 		}
 	});

@@ -572,22 +572,33 @@ it("uses only the latest unresolved capacity fact as the current guard", async (
 			scopeKnown: true,
 			windows: [{ usedPercent: 100, resetsAt }],
 		}));
+	const pool = ["business", "personal", "school"].map((profile) => ({
+		profile,
+		accountKey: `${profile}-key`,
+	}));
+	store.currentCodexPoolMembers = () => pool;
 	store.codexQuota.recordPoolExhausted({
 		incidentId: "codex:root:1",
-		pool: ["business", "personal", "school"].map((profile) => ({
-			profile,
-			accountKey: `${profile}-key`,
-		})),
+		pool,
 		observations: observations(now - 1_000, now + 60_000),
 		observedAt: now - 1_000,
 		nextAttemptAt: now + 60_000,
 	});
+	expect(
+		store.codexQuota.getCurrentPoolExhaustionFact("root", now),
+	).toMatchObject({
+		rootKey: "root",
+		generation: 1,
+		evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+		evidenceRef: expect.stringMatching(/^[a-f0-9]{64}$/),
+		observedAt: new Date(now - 1_000).toISOString(),
+		observation: expect.arrayContaining(
+			observations(now - 1_000, now + 60_000),
+		),
+	});
 	store.codexQuota.recordPoolExhausted({
 		incidentId: "codex:root:1",
-		pool: ["business", "personal", "school"].map((profile) => ({
-			profile,
-			accountKey: `${profile}-key`,
-		})),
+		pool,
 		observations: observations(now - 500, now - 1),
 		observedAt: now - 500,
 		nextAttemptAt: now + 60_000,
@@ -638,6 +649,13 @@ it("binds capacity facts to account identities and replays only retained members
 	expect(
 		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 5_000),
 	).toBe(true);
+	expect(
+		store.codexQuota.getCurrentPoolExhaustionFact("root", now + 5_000),
+	).toMatchObject({
+		rootKey: "root",
+		generation: 1,
+		observation: expect.arrayContaining(observations),
+	});
 	store.currentCodexPoolMembers = () => [
 		...pool,
 		{ profile: "shopping", accountKey: "shopping-key" },
@@ -645,6 +663,9 @@ it("binds capacity facts to account identities and replays only retained members
 	expect(
 		store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + 5_000),
 	).toBe(false);
+	expect(
+		store.codexQuota.getCurrentPoolExhaustionFact("root", now + 5_000),
+	).toBeUndefined();
 	store.currentCodexPoolMembers = () => [
 		{ profile: "a", accountKey: "new-a-key" },
 		pool[1]!,

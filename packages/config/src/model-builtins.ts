@@ -24,6 +24,8 @@ export interface ModelRegistryEntry {
 export const MODEL_IDS = {
 	FABLE: "claude-fable-5-1",
 	FABLE_1M: "claude-fable-5-1[1m]",
+	OPUS_55: "claude-opus-5-5",
+	OPUS_55_1M: "claude-opus-5-5[1m]",
 	OPUS_5: "claude-opus-5",
 	OPUS_5_1M: "claude-opus-5[1m]",
 	OPUS_48: "claude-opus-4-8",
@@ -40,6 +42,7 @@ export const MODEL_IDS = {
 
 export const MODEL_ALIASES = {
 	FABLE: "fable",
+	SOL: "sol",
 	ASTRA: "astra",
 } as const;
 
@@ -52,9 +55,16 @@ export interface ModelBindings extends DefaultOpusBindings {
 	readonly fable: string;
 }
 
+/**
+ * FLY-2775: 升级/回滚的**唯一**开关(FLY-1467 立的规矩)。2026-09-22 起绑 Opus 5.5。
+ * `BUILTIN_MODEL_TIERS` 的 medium/light/trivial 从这里派生,不需要另改。
+ *
+ * 🔴 改这两行时,`model-config.ts:buildDispatchLookupForRegistry()` 里那串硬编码
+ * legacy id **必须同步补上刚退役的那一代** —— 见 OPUS_IDENTITIES 上方的注释。
+ */
 export const DEFAULT_OPUS_BINDINGS: DefaultOpusBindings = Object.freeze({
-	opus: MODEL_IDS.OPUS_5,
-	opus1m: MODEL_IDS.OPUS_5_1M,
+	opus: MODEL_IDS.OPUS_55,
+	opus1m: MODEL_IDS.OPUS_55_1M,
 });
 export const DEFAULT_OPUS = DEFAULT_OPUS_BINDINGS.opus;
 export const DEFAULT_OPUS_1M = DEFAULT_OPUS_BINDINGS.opus1m;
@@ -116,6 +126,8 @@ const TRUSTED_CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze(
 		[MODEL_IDS.FABLE_1M]: 1_000_000,
 		[LEGACY_FABLE_MODEL_IDS[0]]: 1_000_000,
 		[LEGACY_FABLE_MODEL_IDS[1]]: 1_000_000,
+		[MODEL_IDS.OPUS_55]: 200_000,
+		[MODEL_IDS.OPUS_55_1M]: 1_000_000,
 		[MODEL_IDS.OPUS_5]: 200_000,
 		[MODEL_IDS.OPUS_5_1M]: 1_000_000,
 		[MODEL_IDS.OPUS_48]: 200_000,
@@ -168,7 +180,19 @@ function claudeEntry(input: {
 	};
 }
 
+/**
+ * 全部 Opus 身份。被绑定的那两个走 `bound()`(带 `dispatch` 面 + `opus` 别名),
+ * 其余走 `legacy()`(不可被新选)。`buildDispatchLookup` 另把整张表原样登记,
+ * 所以**这份文件里**退役身份的 dispatch 合法性是自动的。
+ *
+ * 🔴 FLY-2775: `model-config.ts:buildDispatchLookupForRegistry()`(models.json 覆盖层
+ * 用的那一份)**没有**读这张表,它手抄了一串 legacy id。升级 Opus 线时两处必须同时改,
+ * 否则刚退役的那一代会掉出 dispatch 白名单 —— 在飞 run 快照里冻的是**全名**,
+ * 历史 pin 也是全名,掉出去就一起失效。
+ */
 const OPUS_IDENTITIES: readonly string[] = Object.freeze([
+	MODEL_IDS.OPUS_55,
+	MODEL_IDS.OPUS_55_1M,
 	MODEL_IDS.OPUS_5,
 	MODEL_IDS.OPUS_5_1M,
 	MODEL_IDS.OPUS_48,
@@ -181,6 +205,8 @@ const LEGACY_FABLE_LABELS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const OPUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
+	[MODEL_IDS.OPUS_55]: "Opus 5.5",
+	[MODEL_IDS.OPUS_55_1M]: "Opus 5.5 (1M)",
 	[MODEL_IDS.OPUS_5]: "Opus 5",
 	[MODEL_IDS.OPUS_5_1M]: "Opus 5 (1M)",
 	[MODEL_IDS.OPUS_48]: "Opus 4.8",
@@ -303,7 +329,7 @@ export function buildModelRegistry(
 			provider: "openai",
 			runtimeVendor: "codex",
 			label: "GPT-6 Sol",
-			aliases: [],
+			aliases: [MODEL_ALIASES.SOL],
 			surfaces: ["runner", "workflow"],
 			effortsBySurface: {
 				runner: ["xhigh"],
@@ -430,15 +456,20 @@ export interface ModelTierSpec {
 
 /**
  * Founder policy (2026-07-27 final revision): difficulty tiers use only Fable
- * and Opus 5. Sonnet/Haiku remain recognizable registry entries, never default
- * tiers. Executor-family selection remains a separate routing decision.
+ * and the current Opus binding. Sonnet/Haiku remain recognizable registry
+ * entries, never default tiers. Executor-family selection remains a separate
+ * routing decision.
+ *
+ * FLY-2775: the lower three tiers DERIVE from `DEFAULT_OPUS` instead of naming
+ * an Opus identity, so `DEFAULT_OPUS_BINDINGS` really is the one knob FLY-1467
+ * promised — a binding upgrade or rollback cannot leave the tiers behind.
  */
 export const BUILTIN_MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> =
 	Object.freeze({
 		heavy: { id: MODEL_IDS.FABLE, aliases: ["fable"], code: "F" },
-		medium: { id: MODEL_IDS.OPUS_5, aliases: ["opus"], code: "O" },
-		light: { id: MODEL_IDS.OPUS_5, aliases: ["opus"], code: "O" },
-		trivial: { id: MODEL_IDS.OPUS_5, aliases: ["opus"], code: "O" },
+		medium: { id: DEFAULT_OPUS, aliases: ["opus"], code: "O" },
+		light: { id: DEFAULT_OPUS, aliases: ["opus"], code: "O" },
+		trivial: { id: DEFAULT_OPUS, aliases: ["opus"], code: "O" },
 	});
 
 export const MODEL_PROVIDERS: Readonly<

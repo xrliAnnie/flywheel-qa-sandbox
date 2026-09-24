@@ -680,6 +680,7 @@ async function handleRetry(
 	ceoContext?: string,
 	registry?: RuntimeRegistry,
 	gatewayDispatch?: GatewayRetryDispatch,
+	codexQuotaRootKey?: (projectName: string) => string | undefined,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -974,11 +975,15 @@ async function handleRetry(
 		const now = new Date();
 		const credentialWindow = credentialWindowForNode(snapshot, node.id, now);
 		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
+		const quotaRootKey = codexQuotaRootKey?.(run.project_name);
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
+			codexQuotaRootKey: quotaRootKey,
+			now: now.getTime(),
 		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
+			codexQuotaRootKey: quotaRootKey,
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
 			executionId: successorExecutionId,
@@ -1832,6 +1837,7 @@ export function createActionRouter(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
 	onEpicChange?: (projectName: string, reason: "linear_done") => void,
+	codexQuotaRootKey?: (projectName: string) => string | undefined,
 ): Router {
 	const router = Router();
 
@@ -2051,6 +2057,7 @@ export function createActionRouter(
 									successorExecutionId: gwSuccessorId as string,
 								}
 							: undefined,
+						codexQuotaRootKey,
 					);
 					if (retryResult.success) {
 						res.status(retryResult.pending ? 202 : 200).json({

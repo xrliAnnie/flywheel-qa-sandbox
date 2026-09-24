@@ -112,6 +112,566 @@ const enabled = {
 };
 
 describe("workflow template selection", () => {
+	it("persists and replays one finalized weighted assignment per run and node", async () => {
+		const configRoot = mkdtempSync(join(tmpdir(), "fly2788-selection-config-"));
+		roots.push(configRoot);
+		const configPath = join(configRoot, "models.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				modelSplit: {
+					enabled: true,
+					rule: "issue_node_weighted",
+					nodes: {
+						eng_design: [
+							{ arm: "design_astra", model: "astra", weight: 1 },
+							{ arm: "design_opus", model: "opus", weight: 1 },
+							{ arm: "design_fable", model: "fable", weight: 1 },
+						],
+						implement: [
+							{ arm: "impl_opus", model: "opus", weight: 2 },
+							{ arm: "impl_sol56", model: "codex", weight: 1 },
+							{ arm: "impl_sol6", model: "sol", weight: 1 },
+						],
+						qa: [
+							{ arm: "qa_sol56", model: "codex", weight: 2 },
+							{ arm: "qa_sol6", model: "sol", weight: 1 },
+							{ arm: "qa_opus", model: "opus", weight: 1 },
+						],
+					},
+				},
+			}),
+		);
+		const previousPath = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = configPath;
+		resetModelConfigCacheForTests();
+		const store = await StateStore.create(":memory:");
+		try {
+			const seed = loadWorkflowMenuSeeds().find(
+				(candidate) => candidate.templateId === "tpl_code",
+			)!;
+			const simpleSeed = loadWorkflowMenuSeeds().find(
+				(candidate) => candidate.templateId === "tpl_simple_code",
+			)!;
+			store.importWorkflowTemplateSeed(seed);
+			store.importWorkflowTemplateSeed(simpleSeed);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "code",
+				templateId: seed.templateId,
+				updatedBy: "system:test",
+			});
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "simple_code",
+				templateId: simpleSeed.templateId,
+				updatedBy: "system:test",
+			});
+			const issueKey = "00000000-0000-4000-8000-000000000001";
+			const input = {
+				project: "flywheel",
+				issueId: "FLY-2788",
+				issueIdentifier: "FLY-2788",
+				issueKey,
+				entryIssueAliases: ["FLY-2788", issueKey],
+				entryRootKey: issueKey,
+				taskCategory: "code",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master" as const,
+				canonicalRoot: REPO_ROOT,
+				idempotencyKey: "weighted-start",
+				workKindEnforced: false,
+				requestedOverrideDigest: "a".repeat(64),
+				now: "2026-09-23T05:30:00.000Z",
+			};
+			const priorAssignmentLookup = vi.spyOn(
+				store,
+				"listWorkflowModelAssignmentEventsForIssue",
+			);
+			const materialize = vi.spyOn(store, "materializeWorkflowRun");
+			const selected = await resolveWorkflowTemplateSelection(store, input);
+			expect(priorAssignmentLookup).toHaveBeenCalledWith("flywheel", issueKey);
+			const weightedSnapshot = parseWorkflowRunSnapshot(
+				store.getWorkflowRun(selected!.runId)!.snapshot!,
+			);
+			expect(weightedSnapshot.modelRouting).toMatchObject({
+				version: 1,
+				policyVersion: expect.stringMatching(/^fly2788-v1:/),
+				requestedOverrideDigest: "a".repeat(64),
+				selectionOverride: {
+					reason: "automatic_model_split",
+					nodes: {
+						eng_design: { model: "claude-opus-5-5", effort: "high" },
+						implement: { model: "gpt-5.6-sol", effort: "xhigh" },
+						qa: { model: "gpt-5.6-sol", effort: "high" },
+					},
+				},
+			});
+			const receipts = store
+				.listWorkflowRunEvents(selected!.runId)
+				.filter((event) => event.kind === "model_arm_assigned");
+			expect(receipts).toHaveLength(3);
+			for (const receipt of receipts) {
+				expect(receipt.payload).toMatchObject({
+					schemaVersion: 1,
+					runId: selected!.runId,
+					nodeId: receipt.node_id,
+					policyVersion: expect.stringMatching(/^fly2788-v1:/),
+					resolvedModel: expect.any(String),
+					assignedAt: input.now,
+					basis: {
+						weightAudit: {
+							enabled: false,
+							applied: false,
+						},
+					},
+				});
+				const audit = (
+					receipt.payload as {
+						basis: {
+							weightAudit: {
+								baseWeights: unknown;
+								effectiveWeights: unknown;
+							};
+						};
+					}
+				).basis.weightAudit;
+				expect(audit.effectiveWeights).toEqual(audit.baseWeights);
+			}
+			expect(
+				store.terminateWorkflowRunByOperator({
+					runId: selected!.runId,
+					reason: "test fresh reassignment",
+					clientRequestId: "weighted-terminate",
+					principal: "test",
+					evidence: [],
+					now: "2026-09-23T05:31:00.000Z",
+				}),
+			).toMatchObject({ ok: true, status: "terminated" });
+			const narrowed = await resolveWorkflowTemplateSelection(store, {
+				...input,
+				taskCategory: "simple_code",
+				idempotencyKey: "weighted-simple-start",
+				requestedOverrideDigest: "d".repeat(64),
+			});
+			expect(
+				store
+					.listWorkflowRunEvents(narrowed!.runId)
+					.filter((event) => event.kind === "model_arm_assigned")
+					.map((event) => event.node_id),
+			).toEqual(["implement", "qa"]);
+			expect(
+				store.terminateWorkflowRunByOperator({
+					runId: narrowed!.runId,
+					reason: "test narrower reassignment",
+					clientRequestId: "weighted-simple-terminate",
+					principal: "test",
+					evidence: [],
+					now: "2026-09-23T05:31:30.000Z",
+				}),
+			).toMatchObject({ ok: true, status: "terminated" });
+			expect(
+				resolveNodeDispatchAtLaunch(store, {
+					runId: selected!.runId,
+					nodeId: "implement",
+				}).modelAssignment,
+			).toMatchObject({
+				runId: selected!.runId,
+				nodeId: "implement",
+				arm: "impl_sol56",
+				resolvedModel: "gpt-5.6-sol",
+			});
+			const rootSpoof = structuredClone(materialize.mock.calls[0]![0]);
+			rootSpoof.entryRootKey = "11111111-1111-4111-8111-111111111111";
+			const spoofedAssignment = rootSpoof.modelAssignments!.eng_design!;
+			if (spoofedAssignment.basis.rule !== "issue_node_weighted")
+				throw new Error("expected weighted assignment");
+			spoofedAssignment.basis.issueKey = rootSpoof.entryRootKey;
+			expect(() => store.materializeWorkflowRun(rootSpoof)).toThrow(
+				"workflow_model_assignment_invalid:eng_design",
+			);
+			const manualIssueKey = "00000000-0000-4000-8000-000000000002";
+			const manual = await resolveWorkflowTemplateSelection(store, {
+				...input,
+				issueId: manualIssueKey,
+				issueIdentifier: "FLY-2789",
+				issueKey: manualIssueKey,
+				entryIssueAliases: ["FLY-2789"],
+				entryRootKey: manualIssueKey,
+				idempotencyKey: "weighted-menu-only-manual",
+				menuOverrides: { implement: { model: "fable", effort: "high" } },
+				requestedOverrideDigest: "c".repeat(64),
+			});
+			const manualDispatch = resolveNodeDispatchAtLaunch(store, {
+				runId: manual!.runId,
+				nodeId: "implement",
+			});
+			expect(manualDispatch).toMatchObject({
+				dispatch: { model: "claude-fable-5-1", effort: "high" },
+			});
+			expect(manualDispatch.modelAssignment).toBeUndefined();
+
+			writeFileSync(configPath, JSON.stringify({ version: 1 }));
+			resetModelConfigCacheForTests();
+			const replay = await resolveWorkflowTemplateSelection(store, input);
+			expect(replay?.runId).toBe(selected?.runId);
+			await expect(
+				resolveWorkflowTemplateSelection(store, {
+					...input,
+					requestedOverrideDigest: "b".repeat(64),
+				}),
+			).rejects.toThrow("workflow start idempotency key payload mismatch");
+			expect(
+				store
+					.listWorkflowRunEvents(selected!.runId)
+					.filter((event) => event.kind === "model_arm_assigned"),
+			).toEqual(receipts);
+
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					version: 1,
+					modelSplit: {
+						enabled: true,
+						rule: "issue_node_weighted",
+						nodes: {
+							eng_design: [
+								{ arm: "design_astra", model: "astra", weight: 100 },
+								{ arm: "design_opus", model: "opus", weight: 1 },
+								{ arm: "design_fable", model: "fable", weight: 1 },
+							],
+							implement: [
+								{ arm: "impl_opus", model: "opus", weight: 100 },
+								{ arm: "impl_sol56", model: "codex", weight: 1 },
+								{ arm: "impl_sol6", model: "sol", weight: 1 },
+							],
+							qa: [
+								{ arm: "qa_opus", model: "opus", weight: 100 },
+								{ arm: "qa_sol56", model: "codex", weight: 1 },
+								{ arm: "qa_sol6", model: "sol", weight: 1 },
+							],
+						},
+					},
+				}),
+			);
+			resetModelConfigCacheForTests();
+			const reassigned = await resolveWorkflowTemplateSelection(store, {
+				...input,
+				idempotencyKey: "weighted-fresh-start",
+				now: "2026-09-23T05:32:00.000Z",
+			});
+			expect(reassigned?.runId).not.toBe(selected?.runId);
+			const reassignedReceipts = store
+				.listWorkflowRunEvents(reassigned!.runId)
+				.filter((event) => event.kind === "model_arm_assigned");
+			expect(
+				reassignedReceipts.map((event) => ({
+					nodeId: event.node_id,
+					arm: (event.payload as { arm: string }).arm,
+					basis: (event.payload as { basis: unknown }).basis,
+				})),
+			).toEqual(
+				receipts.map((event) => ({
+					nodeId: event.node_id,
+					arm: (event.payload as { arm: string }).arm,
+					basis: (event.payload as { basis: unknown }).basis,
+				})),
+			);
+		} finally {
+			store.close();
+			if (previousPath === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+			else process.env.FLYWHEEL_MODELS_CONFIG = previousPath;
+			resetModelConfigCacheForTests();
+		}
+	});
+
+	it("pins the fixed Opus product-node selection in model routing metadata", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const seed = loadWorkflowMenuSeeds().find(
+				(candidate) => candidate.templateId === "tpl_prd",
+			)!;
+			store.importWorkflowTemplateSeed(seed);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "prd",
+				templateId: seed.templateId,
+				updatedBy: "system:test",
+			});
+			const selected = await resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-2788",
+				taskCategory: "prd",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: REPO_ROOT,
+				idempotencyKey: "fixed-prd-start",
+				workKindEnforced: false,
+			});
+			const snapshot = parseWorkflowRunSnapshot(
+				store.getWorkflowRun(selected!.runId)!.snapshot!,
+			);
+			expect(snapshot.modelRouting).toMatchObject({
+				version: 1,
+				policyVersion: "fly2788-fixed-v1",
+				selectionOverride: {
+					reason: "registry_default",
+					nodes: {
+						pm: {
+							vendor: "claude",
+							model: "claude-opus-5-5",
+							effort: "high",
+						},
+					},
+				},
+			});
+			expect(
+				store
+					.listWorkflowRunEvents(selected!.runId)
+					.filter((event) => event.kind === "model_arm_assigned"),
+			).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("degrades only an implement Sol arm on exact current pool exhaustion and records it atomically", async () => {
+		const configRoot = mkdtempSync(join(tmpdir(), "fly2788-degrade-config-"));
+		roots.push(configRoot);
+		const configPath = join(configRoot, "models.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				modelSplit: {
+					enabled: true,
+					rule: "issue_node_weighted",
+					nodes: {
+						eng_design: [
+							{ arm: "design_astra", model: "astra", weight: 1 },
+							{ arm: "design_opus", model: "opus", weight: 1 },
+							{ arm: "design_fable", model: "fable", weight: 1 },
+						],
+						implement: [
+							{ arm: "impl_opus", model: "opus", weight: 2 },
+							{ arm: "impl_sol56", model: "codex", weight: 1 },
+							{ arm: "impl_sol6", model: "sol", weight: 1 },
+						],
+						qa: [
+							{ arm: "qa_sol56", model: "codex", weight: 2 },
+							{ arm: "qa_sol6", model: "sol", weight: 1 },
+							{ arm: "qa_opus", model: "opus", weight: 1 },
+						],
+					},
+				},
+			}),
+		);
+		const previousPath = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = configPath;
+		resetModelConfigCacheForTests();
+		const store = await StateStore.create(":memory:");
+		try {
+			const seed = loadWorkflowMenuSeeds().find(
+				(candidate) => candidate.templateId === "tpl_simple_code",
+			)!;
+			store.importWorkflowTemplateSeed(seed);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "simple_code",
+				templateId: seed.templateId,
+				updatedBy: "system:test",
+			});
+			const issueKey = "00000000-0000-4000-8000-000000000001";
+			const now = Date.parse("2026-09-23T06:00:00.000Z");
+			const selected = await resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: issueKey,
+				issueIdentifier: "FLY-2788",
+				issueKey,
+				entryIssueAliases: ["FLY-2788"],
+				taskCategory: "simple_code",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: REPO_ROOT,
+				idempotencyKey: "degraded-start",
+				workKindEnforced: false,
+				now: new Date(now).toISOString(),
+			});
+			store.codexQuota.initializeRoot({
+				rootKey: "quota-root",
+				accountKey: "business-key",
+				profile: "business",
+				generation: 1,
+			});
+			store.codexQuota.registerBinding({
+				bindingId: "quota-binding",
+				executionId: "quota-casualty",
+				runId: "quota-run",
+				purpose: "runner",
+				accountKey: "business-key",
+				profile: "business",
+				generation: 1,
+				credentialRootKey: "quota-root",
+			});
+			store.codexQuota.recordSignal({
+				executionId: "quota-casualty",
+				bindingId: "quota-binding",
+			});
+			const observations = ["business", "school", "personal"].map(
+				(profile) => ({
+					profile,
+					accountKey: `${profile}-key`,
+					observedAt: now - 1_000,
+					identityVerified: true,
+					authHealth: "valid" as const,
+					scopeKnown: true,
+					windows: [{ usedPercent: 100, resetsAt: now + 60_000 }],
+				}),
+			);
+			const pool = observations.map(({ profile, accountKey }) => ({
+				profile,
+				accountKey,
+			}));
+			store.currentCodexPoolMembers = () => pool;
+			store.codexQuota.recordPoolExhausted({
+				incidentId: "codex:quota-root:1",
+				pool,
+				observations,
+				observedAt: now - 1_000,
+				nextAttemptAt: now + 60_000,
+			});
+			const resolution = resolveNodeDispatchAtLaunch(store, {
+				runId: selected!.runId,
+				nodeId: "implement",
+				codexQuotaRootKey: "quota-root",
+				now,
+			});
+			expect(resolution).toMatchObject({
+				dispatch: {
+					vendor: "claude",
+					model: "claude-opus-5-5",
+					effort: "xhigh",
+				},
+				modelAssignment: { arm: "impl_sol56", model: "gpt-5.6-sol" },
+				degradation: {
+					assignedDispatch: { vendor: "codex", model: "gpt-5.6-sol" },
+					quotaEvidence: { rootKey: "quota-root", generation: 1 },
+				},
+			});
+			expect(
+				resolveNodeDispatchAtLaunch(store, {
+					runId: selected!.runId,
+					nodeId: "implement",
+					codexQuotaRootKey: "quota-root",
+					now: now + 60_001,
+				}).degradation,
+			).toBeUndefined();
+			expect(
+				resolveNodeDispatchAtLaunch(store, {
+					runId: selected!.runId,
+					nodeId: "qa",
+					codexQuotaRootKey: "quota-root",
+					now,
+				}).degradation,
+			).toBeUndefined();
+			const raw = (
+				store as unknown as {
+					db: { raw: import("better-sqlite3").Database };
+				}
+			).db.raw;
+			raw.exec(
+				"CREATE TRIGGER reject_degradation BEFORE INSERT ON workflow_run_event WHEN NEW.kind='model_arm_degraded' BEGIN SELECT RAISE(ABORT, 'reject_degradation'); END",
+			);
+			const admission = () =>
+				store.admitGeneralizedWorkflowExecution({
+					codexQuotaRootKey: "quota-root",
+					runId: selected!.runId,
+					nodeId: "implement",
+					executionId: selected!.executionId,
+					attempt: 1,
+					now: new Date(now).toISOString(),
+					expiresAt: new Date(now + 60_000).toISOString(),
+					absoluteDeadlineAt: new Date(now + 120_000).toISOString(),
+					dispatchResolution: resolution,
+				});
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					codexQuotaRootKey: "quota-root",
+					runId: selected!.runId,
+					nodeId: "implement",
+					executionId: selected!.executionId,
+					attempt: 1,
+					now: new Date(now).toISOString(),
+					expiresAt: new Date(now + 60_000).toISOString(),
+					absoluteDeadlineAt: new Date(now + 120_000).toISOString(),
+					dispatchResolution: {
+						...resolution,
+						dispatch: {
+							vendor: "claude",
+							model: "claude-fable-5-1",
+							effort: "xhigh",
+						},
+					},
+				}),
+			).toEqual({ ok: false, reason: "model_arm_degradation_invalid" });
+			expect(admission).toThrow("reject_degradation");
+			expect(
+				store.getWorkflowExecutionRuntime(selected!.executionId),
+			).toBeUndefined();
+			raw.exec("DROP TRIGGER reject_degradation");
+			expect(admission()).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(admission()).toMatchObject({ ok: true, idempotentReplay: true });
+			expect(
+				store.getWorkflowExecutionRuntime(selected!.executionId),
+			).toMatchObject({ vendor: "claude", model: "claude-opus-5-5" });
+			store.upsertWorkflowRunNode({
+				runId: selected!.runId,
+				nodeId: "implement",
+				attempt: 2,
+				state: "pending",
+				executionId: selected!.executionId,
+			});
+			const wake = () =>
+				store.admitGeneralizedWorkflowExecution({
+					codexQuotaRootKey: "quota-root",
+					runId: selected!.runId,
+					nodeId: "implement",
+					executionId: selected!.executionId,
+					attempt: 2,
+					activationId: "degraded-wake-2",
+					activationMode: "wake",
+					now: new Date(now + 1_000).toISOString(),
+					expiresAt: new Date(now + 61_000).toISOString(),
+					absoluteDeadlineAt: new Date(now + 121_000).toISOString(),
+				});
+			expect(wake()).toMatchObject({ ok: true, idempotentReplay: false });
+			const degraded = store
+				.listWorkflowRunEvents(selected!.runId)
+				.filter((event) => event.kind === "model_arm_degraded");
+			expect(degraded).toHaveLength(2);
+			expect(degraded[0]?.payload).toMatchObject({
+				arm: "impl_sol56",
+				degraded: true,
+				assignedModel: "gpt-5.6-sol",
+				actualModel: "claude-opus-5-5",
+				reason: "codex_pool_exhausted",
+			});
+			expect(degraded[1]?.payload).toMatchObject({
+				activationId: "degraded-wake-2",
+				originalDegradationEventUid: degraded[0]?.event_uid,
+			});
+		} finally {
+			store.close();
+			if (previousPath === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+			else process.env.FLYWHEEL_MODELS_CONFIG = previousPath;
+			resetModelConfigCacheForTests();
+		}
+	});
+
 	it("applies the configured design split inside template selection even without menu-route receipts", async () => {
 		const store = await StateStore.create(":memory:");
 		const seed = loadWorkflowMenuSeeds().find(

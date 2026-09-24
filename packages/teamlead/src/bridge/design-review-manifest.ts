@@ -8,6 +8,10 @@ import type {
 	Session,
 	StateStore,
 } from "../StateStore.js";
+import {
+	recordWorkflowReviewRoute,
+	resolveWorkflowReviewRouteForExecution,
+} from "../workflow-review-routing.js";
 import { buildCodexInstruction } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
 
@@ -226,6 +230,19 @@ export function deliverDesignReviewManifest(
 	}
 	const dbPath = commDbPathForProject(manifest.project_name);
 	mkdirSync(dirname(dbPath), { recursive: true });
+	const reviewRoute = resolveWorkflowReviewRouteForExecution(
+		store,
+		manifest.execution_id,
+		"design",
+	);
+	if (reviewRoute?.reviewerVendor === "codex") {
+		recordWorkflowReviewRoute(store, {
+			executionId: manifest.execution_id,
+			reviewType: "design",
+			requestId: manifest.request_id,
+			route: reviewRoute,
+		});
+	}
 	const commDb = new CommDB(dbPath);
 	let inserted: boolean;
 	let consumed = false;
@@ -243,6 +260,7 @@ export function deliverDesignReviewManifest(
 					requestId: manifest.request_id,
 					reviewedPlanBlobSha: manifest.expected_blob_sha,
 				},
+				reviewRoute?.reviewerVendor === "codex" ? reviewRoute : undefined,
 			),
 		);
 		consumed = commDb.getMessageById(instructionId)?.read_at !== null;

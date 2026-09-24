@@ -145,6 +145,51 @@ function handbookFixture() {
 }
 
 describe("typed generalized workflow snapshot", () => {
+	it("seals complete model-routing metadata against the pinned dispatch", () => {
+		const { root, manifest } = fixture();
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl-routing", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+			modelRouting: {
+				version: 1,
+				policyVersion: "fly2788-fixed-v1",
+				selectionOverride: {
+					reason: "registry_default",
+					nodes: {
+						execute: {
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+							effort: "low",
+						},
+					},
+				},
+				requestedOverrideDigest: canonicalSubmissionDigest({}),
+			},
+		});
+		expect(parseWorkflowRunSnapshot(JSON.stringify(snapshot))).toEqual(
+			snapshot,
+		);
+
+		for (const mutate of [
+			(value: typeof snapshot) => {
+				value.modelRouting!.selectionOverride.nodes!.execute!.model =
+					"gpt-6-sol";
+			},
+			(value: typeof snapshot) => {
+				delete value.modelRouting!.selectionOverride.nodes!.execute;
+			},
+		]) {
+			const corrupt = structuredClone(snapshot);
+			mutate(corrupt);
+			const { snapshot_digest: _old, ...body } = corrupt;
+			corrupt.snapshot_digest = canonicalSubmissionDigest(body);
+			expect(() => parseWorkflowRunSnapshot(JSON.stringify(corrupt))).toThrow(
+				/modelRouting|pinned dispatch|cover every executable/i,
+			);
+		}
+	});
+
 	it("builds and parses schema 3 while sealing the display-only handbook metadata", () => {
 		const { root, manifest } = handbookFixture();
 		const snapshot = buildWorkflowRunSnapshotV3({
@@ -189,11 +234,13 @@ describe("typed generalized workflow snapshot", () => {
 		});
 		// FLY-1501: the heavy QA node reserves its 180-minute evidence window in
 		// the pinned manifest, so both topology digests move with that authority.
+		// FLY-2775: the compiled seed carries the resolved Opus id, so the digests
+		// also move on an Opus binding upgrade — that is the intended coupling.
 		expect(snapshot.manifest_digest).toBe(
-			"e30dc87efef5804b7a7cb741293b45cd85e5f71482bcdd1787e5bae25abc6444",
+			"e3dd3dccdbed3f565af4b4d27b8e879f49317d22c8c5f3b770834e56a1bc039e",
 		);
 		expect(snapshot.snapshot_digest).toBe(
-			"3b165a2411bcdb0c81c61b971ec20f33ef8375edfa4bde01a3e1975f857ad253",
+			"2346ad3263237471dcefaa007a0e6f8131d2813907b59cbd6fb9c2cbac3749cc",
 		);
 		expect(
 			snapshot.manifest.nodes.find((node) => node.id === "qa")

@@ -388,6 +388,8 @@ jobs:
           bash packages/teamlead/scripts/__tests__/lead-model-authority-receipt.test.sh
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
+          # FLY-2775: read-only Opus-line deployment gate (fails closed).
+          bash scripts/__tests__/fly2775-opus-inventory.test.sh
 
       - name: Test — FLY-2007 phase-0 analyser contract
         run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
