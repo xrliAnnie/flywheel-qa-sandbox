@@ -1,10 +1,9 @@
 ---
 issue: FLY-2808
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-24T16:50:24.237Z
-nextStep: "Reopened design node: audit existing docs, render diagrams into
-  design.html, request design review"
+phaseCursor: 2/5
+updated: 2026-09-24T16:51:29.323Z
+nextStep: Request design review via stage set design_review --plan
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -14,5 +13,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: design (1/5)
-**next**: Reopened design node: audit existing docs, render diagrams into design.html, request design review
+**phase**: design (2/5)
+**next**: Request design review via stage set design_review --plan
