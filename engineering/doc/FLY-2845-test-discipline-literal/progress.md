@@ -1,14 +1,14 @@
 ---
 issue: FLY-2845
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-24T13:43:44.922Z
-nextStep: Update the implementation milestone with the QA rework, run final lint
-  and current-state audits, then commit the milestone last
+phaseCursor: 4/5
+updated: 2026-09-24T13:44:09.519Z
+nextStep: Run final lint and requirement audit; commit milestone as the literal
+  last commit, push, and request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2845 progress
-**phase**: implement (3/5)
-**next**: Update the implementation milestone with the QA rework, run final lint and current-state audits, then commit the milestone last
+**phase**: implement (4/5)
+**next**: Run final lint and requirement audit; commit milestone as the literal last commit, push, and request code review
