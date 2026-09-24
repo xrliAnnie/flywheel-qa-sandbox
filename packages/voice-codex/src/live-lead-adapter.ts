@@ -714,7 +714,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			});
 			return;
 		}
-		const sequence = ++speech.sequence;
+		const sequence = speech.sequence++;
 		this.outputWork = this.outputWork
 			.then(async () => {
 				if (this.frontendSpeech !== speech || this.closing) return;

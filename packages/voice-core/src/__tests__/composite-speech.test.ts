@@ -95,6 +95,9 @@ describe("CompositeSpeech", () => {
 			}),
 		);
 		expect(io.writeSpeech).toHaveBeenCalledTimes(2);
+		expect(
+			vi.mocked(io.writeSpeech).mock.calls.map(([frame]) => frame.sequence),
+		).toEqual([0, 1]);
 		expect(io.endSpeech).toHaveBeenCalledOnce();
 	});
 

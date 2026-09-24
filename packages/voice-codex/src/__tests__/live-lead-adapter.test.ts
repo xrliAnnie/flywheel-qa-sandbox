@@ -300,6 +300,11 @@ describe("LiveLeadAdapter", () => {
 		await vi.waitFor(() =>
 			expect(h.room.io.writeSpeech).toHaveBeenCalledTimes(2),
 		);
+		expect(
+			vi
+				.mocked(h.room.io.writeSpeech)
+				.mock.calls.map(([frame]) => frame.sequence),
+		).toEqual([0, 1]);
 		expect(h.utterances.at(-1)).toMatchObject({
 			role: "assistant",
 			text: "马上回答",

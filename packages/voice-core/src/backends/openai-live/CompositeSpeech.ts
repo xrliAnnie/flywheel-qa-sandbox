@@ -175,7 +175,7 @@ export class CompositeSpeech {
 				const receipt = await this.options.room.writeSpeech({
 					speechId: active.speechId,
 					generation: this.options.generation,
-					sequence: ++sequence,
+					sequence: sequence++,
 					pcm: chunk.audio,
 				});
 				if (receipt.outcome === "rejected") throw new Error(receipt.reason);
