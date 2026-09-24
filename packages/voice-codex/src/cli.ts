@@ -315,6 +315,7 @@ export async function main(): Promise<void> {
 				authorName: `${payload.displayName} voice minutes`,
 				text: renderVoiceMinutes(job),
 				ts: job.createdAt,
+				origin: "voice_minutes",
 			});
 			if (receipt.deliveryId !== deliveryId)
 				throw new Error("voice_minutes_delivery_receipt_mismatch");
@@ -323,7 +324,7 @@ export async function main(): Promise<void> {
 		inspect: async (deliveryId, job) => {
 			const recovered = await minutesDelivery(job).read(deliveryId);
 			if (!recovered) return { kind: "absent" };
-			return recovered.origin === "voice" &&
+			return recovered.origin === "voice_minutes" &&
 				recovered.voiceSessionId === job.payload.sessionId &&
 				recovered.authorId === job.payload.voiceBotUserId &&
 				recovered.text === renderVoiceMinutes(job)

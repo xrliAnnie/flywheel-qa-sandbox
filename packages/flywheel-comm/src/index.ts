@@ -6,6 +6,7 @@ import {
 	DEFAULT_GATE_TIMEOUT_MS,
 	DEFAULT_TIMEOUT_BEHAVIOR,
 } from "flywheel-config";
+import type { ChatDeliveryOrigin } from "./chat-delivery-envelope.js";
 import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
@@ -939,7 +940,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 					},
 				}
 			: {}),
-		...(values.origin ? { origin: values.origin as "discord" | "voice" } : {}),
+		...(values.origin ? { origin: values.origin as ChatDeliveryOrigin } : {}),
 		...(values["voice-session"]
 			? { voiceSessionId: values["voice-session"] }
 			: {}),

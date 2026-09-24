@@ -141,15 +141,43 @@ describe("durable voice minutes", () => {
 			authorName: `${input.displayName} voice minutes`,
 			text: "voice minutes",
 			ts: "2026-09-23T00:00:00.000Z",
+			origin: "voice_minutes",
 		});
 
 		expect(receipt.deliveryId).toBe(job.deliveryId);
 		expect(await delivery.read(job.deliveryId)).toEqual({
-			origin: "voice",
+			origin: "voice_minutes",
 			voiceSessionId: input.sessionId,
 			authorId: input.voiceBotUserId,
 			text: "voice minutes",
 		});
+
+		// What the Lead model actually reads is the rendered delivery body. The
+		// minutes must not be framed as live founder dictation awaiting a spoken
+		// reply; that banner belongs to real founder utterances only.
+		const { MailboxQueue } = (await import(
+			/* @vite-ignore */ fileURLToPath(
+				new URL(
+					"../../../flywheel-comm/dist/mailbox-queue.js",
+					import.meta.url,
+				),
+			)
+		)) as {
+			MailboxQueue: new (
+				path: string,
+			) => {
+				getById(id: string): { delivery_content: string | null } | undefined;
+				close(): void;
+			};
+		};
+		const mailbox = new MailboxQueue(join(stateRoot, "comm.db"));
+		const row = mailbox.getById(job.deliveryId);
+		mailbox.close();
+		expect(row?.delivery_content).toContain('source="voice-minutes"');
+		expect(row?.delivery_content).toContain(
+			"[voice-minutes] 这是一场已结束语音会话的纪要",
+		);
+		expect(row?.delivery_content).not.toContain("这句话是 founder 口述");
 	});
 
 	it("normalizes the legacy non-snowflake identity during durable recovery", () => {
