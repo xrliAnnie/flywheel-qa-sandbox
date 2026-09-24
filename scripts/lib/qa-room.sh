@@ -131,8 +131,12 @@ qa_room_bind_codex_voice_context() {
 				  if (.backend // "claude-code") != "codex-app-server"
 				  then error("voice context target is not a Codex Lead")
 				  else . + {cosContext: {
+					displayName: .agentId,
+					aliases: [],
+					workingSubdirectory: ".",
 					identityPath: $identity,
-					memoryPaths: [$memory]
+					memoryPaths: [$memory],
+					writableRoots: []
 				  }} end
 				else . end
 			  )

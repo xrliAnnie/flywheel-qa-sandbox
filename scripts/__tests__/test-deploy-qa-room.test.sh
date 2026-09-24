@@ -114,8 +114,12 @@ if declare -F qa_room_bind_codex_voice_context >/dev/null; then
 fi
 if jq -e '
   .[0].leads[0].cosContext == {
+    displayName: "flywheel-test-2",
+    aliases: [],
+    workingSubdirectory: ".",
     identityPath: "/tmp/flywheel-test-slot-2/test-identity.md",
-    memoryPaths: ["/tmp/flywheel-test-slot-2/cdxh/flywheel-test-2/memories/memory_summary.md"]
+    memoryPaths: ["/tmp/flywheel-test-slot-2/cdxh/flywheel-test-2/memories/memory_summary.md"],
+    writableRoots: []
   }
   and (.[0].leads[1] | has("cosContext") | not)
 ' <<<"$CODEX_VOICE_BOUND" >/dev/null 2>&1; then
