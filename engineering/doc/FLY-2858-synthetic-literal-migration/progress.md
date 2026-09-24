@@ -1,14 +1,14 @@
 ---
 issue: FLY-2858
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-24T19:00:14.979Z
-nextStep: commit implementation, add final milestone commit, push, and request
-  code review
+phaseCursor: 4/5
+updated: 2026-09-24T19:03:35.927Z
+nextStep: commit the final milestone, push the final head, re-review that head,
+  and open the PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2858 progress
-**phase**: implement (3/5)
-**next**: commit implementation, add final milestone commit, push, and request code review
+**phase**: implement (4/5)
+**next**: commit the final milestone, push the final head, re-review that head, and open the PR
