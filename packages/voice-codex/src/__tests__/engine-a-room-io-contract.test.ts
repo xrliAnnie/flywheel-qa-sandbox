@@ -320,4 +320,61 @@ describe("Engine A producers against the real RoomIO sequence contract", () => {
 			await fixture.room.stop();
 		}
 	});
+
+	it("does not let a stale real RoomIO write failure cancel the next segment", async () => {
+		const fixture = realRoom();
+		await fixture.room.start();
+		const startSpeech = vi.spyOn(fixture.room, "startSpeech");
+		const writeSpeech = vi.spyOn(fixture.room, "writeSpeech");
+		const localPlaybackCancel = vi.spyOn(fixture.room, "localPlaybackCancel");
+		const live = new FakeLive();
+		const record = vi.fn();
+		const adapter = new LiveLeadAdapter({
+			sessionId: "voice-session",
+			generation: 9,
+			projectName: "flywheel",
+			founderUserId: "founder",
+			targetLeadId: "flywheel-eng-lead",
+			room: fixture.room,
+			createConversation: vi.fn(async () => live),
+			transcriptSink: {
+				append: vi.fn(),
+				appendDurable: vi.fn(),
+				readReceipt: vi.fn(),
+			},
+			speech: { speak: vi.fn(), cancel: vi.fn() },
+			classifyIntent: () => "query",
+			submitHandoff: vi.fn(),
+			registerHandoff: vi.fn(),
+			frontendAudioIdleMs: 10,
+			record,
+		});
+		try {
+			await adapter.open("context");
+			live.emit("response-started");
+			live.emit("response-audio", Buffer.alloc(600_000, 1), PCM);
+			await vi.waitFor(() => expect(startSpeech).toHaveBeenCalledOnce());
+			await new Promise((resolve) => setTimeout(resolve, 40));
+
+			live.emit("response-audio", Buffer.from([2, 0]), PCM);
+			await vi.waitFor(() => expect(startSpeech).toHaveBeenCalledTimes(2));
+			const nextSpeechId = startSpeech.mock.calls[1]![0].speechId;
+			await vi.waitFor(() =>
+				expect(
+					writeSpeech.mock.calls.some(
+						([frame]) =>
+							frame.speechId === nextSpeechId && frame.sequence === 0,
+					),
+				).toBe(true),
+			);
+			expect(localPlaybackCancel).not.toHaveBeenCalledWith(nextSpeechId, 9);
+			expect(record).toHaveBeenCalledWith({
+				kind: "live_frontend_output_failed",
+				message: "speech_playback_stopped",
+			});
+		} finally {
+			await adapter.close();
+			await fixture.room.stop();
+		}
+	});
 });

@@ -792,7 +792,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				if (receipt.outcome === "rejected") throw new Error(receipt.reason);
 			})
 			.catch((error) => {
-				this.cancelFrontendSpeech();
+				if (this.frontendSpeech === speech) this.cancelFrontendSpeech();
 				this.options.record({
 					kind: "live_frontend_output_failed",
 					message: error instanceof Error ? error.message : String(error),
