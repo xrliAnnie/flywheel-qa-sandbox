@@ -1,14 +1,15 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 4/4
-updated: 2026-09-24T19:43:32.651Z
-nextStep: Merged origin/main 637752fcc (keep-both flag cluster, count 35); write
-  literal-last milestone, push, scoped conflict review, complete needs_review
+phaseCursor: 1/5
+updated: 2026-09-24T23:05:00.237Z
+nextStep: "Founder bounce: TDD reply-wait ceiling + spoken prompt, barge-in
+  stops waiting, sole-human attribution + spoken onStatus in voice-codex
+  session.ts/realtime.ts/cli.ts"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (4/4)
-**next**: Merged origin/main 637752fcc (keep-both flag cluster, count 35); write literal-last milestone, push, scoped conflict review, complete needs_review
+**phase**: implement (1/5)
+**next**: Founder bounce: TDD reply-wait ceiling + spoken prompt, barge-in stops waiting, sole-human attribution + spoken onStatus in voice-codex session.ts/realtime.ts/cli.ts
