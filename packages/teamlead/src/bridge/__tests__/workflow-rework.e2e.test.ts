@@ -1,8 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -29,6 +37,22 @@ const WORKFLOW_ON = {
 };
 const NOW = new Date("2026-07-23T00:20:00.000Z");
 const roots: string[] = [];
+const FREEZE_COHORT_SQL = fileURLToPath(
+	new URL("../../../../../scripts/fly-2828-freeze-cohort.sql", import.meta.url),
+);
+const VERIFY_COHORT_SQL = fileURLToPath(
+	new URL("../../../../../scripts/fly-2828-verify.sql", import.meta.url),
+);
+
+function readSqlStatements(path: string): string[] {
+	return readFileSync(path, "utf8")
+		.split(/\r?\n/)
+		.filter((line) => !line.trimStart().startsWith("."))
+		.join("\n")
+		.split(/;\s*(?:\r?\n|$)/)
+		.map((statement) => statement.trim())
+		.filter(Boolean);
+}
 
 function git(worktree: string, ...args: string[]) {
 	return execFileSync("git", ["-C", worktree, ...args], {
@@ -55,6 +79,16 @@ async function createHarness(
 		closeActorForReworkSupersession?: () => Promise<
 			{ ok: true } | { ok: false; error: string }
 		>;
+		onWakeActor?: (
+			input: {
+				executionId: string;
+				activationId: string;
+				epoch: number;
+				context: unknown;
+			},
+			store: StateStore,
+			baseHead: string,
+		) => Promise<{ ok: true } | { ok: false; error: string }>;
 		failGrantOnceFor?: string;
 		failWakeOnceFor?: string;
 		implementProducesOutput?: boolean;
@@ -71,8 +105,10 @@ async function createHarness(
 	git(worktree, "add", "artifact.txt");
 	git(worktree, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base");
 	const baseHead = git(worktree, "rev-parse", "HEAD");
-	const store = await StateStore.create(join(root, "state.db"));
-	const comm = new CommDB(join(root, "comm.db"));
+	const stateDbPath = join(root, "state.db");
+	const commDbPath = join(root, "comm.db");
+	const store = await StateStore.create(stateDbPath);
+	const comm = new CommDB(commDbPath);
 	const canonicalRoot = join(root, "project");
 	mkdirSync(canonicalRoot);
 	installSelfHostedWorkflowAgentProject(canonicalRoot);
@@ -303,6 +339,18 @@ async function createHarness(
 					epoch,
 					context,
 				});
+				if (options.onWakeActor) {
+					return options.onWakeActor(
+						{
+							executionId: session.execution_id,
+							activationId,
+							epoch,
+							context,
+						},
+						store,
+						baseHead,
+					);
+				}
 				return { ok: true };
 			},
 			closeActorForReworkSupersession: async (input) => {
@@ -325,6 +373,8 @@ async function createHarness(
 		supersessions,
 		worktree,
 		baseHead,
+		stateDbPath,
+		commDbPath,
 	};
 }
 
@@ -1246,6 +1296,416 @@ describe("FLY-1423 capability-level rework flow", () => {
 			]);
 			expect(switchingAccounts).toEqual(new Set());
 		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it("T15: converges on the next coordinator pass when completion settles the turn-granted wake", async () => {
+		let completion:
+			| ReturnType<StateStore["commitEnrolledCompletion"]>
+			| undefined;
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			onWakeActor: async (wake, callbackStore, callbackHead) => {
+				if (wake.executionId !== "implement-exec") return { ok: true };
+				completion = callbackStore.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
+					executionId: wake.executionId,
+					route: "needs_review",
+					sourceEventId: "fly2828-complete-inside-wake",
+					completionSubmission: { decision: { route: "needs_review" } },
+					subjectDigest: callbackHead,
+					workflowActivation: {
+						activationId: wake.activationId,
+						runId: "run-e2e",
+						nodeId: "implement",
+						attempt: 2,
+						turnEpoch: wake.epoch,
+					},
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-23T00:20:00.000Z",
+				});
+				return { ok: true };
+			},
+		});
+		try {
+			const requestId = "rework-t15-completion-inside-wake";
+			store.upsertWorkflowRunNode({
+				runId: "run-e2e",
+				nodeId: "implement",
+				attempt: 2,
+				state: "pending",
+				executionId: "implement-exec",
+			});
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES (?, 'run-e2e', 't15-requested', 'qa', 'qa', 1, ?,
+				         '{"authority":"qa"}', 't15-context-digest',
+				         '2026-07-23T00:10:00.000Z')`,
+				[requestId, baseHead],
+			);
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, 1, 'implement', 2, 'implement-exec', '["implement"]',
+				         '[]', 'engine:test', 'completion inside wake',
+				         '2026-07-23T00:10:00.000Z')`,
+				[requestId],
+			);
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, 'pending', '2026-07-23T00:10:00.000Z')`,
+				[requestId],
+			);
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_verification_path
+				   (request_id, run_id, route_revision, state,
+				    current_node_id, current_attempt, updated_at)
+				 VALUES (?, 'run-e2e', 1, 'pending', 'implement', 2,
+				         '2026-07-23T00:10:00.000Z')`,
+				[requestId],
+			);
+
+			expect(await coordinator.reconcile(requestId)).toEqual({
+				kind: "retryable",
+				reason: "stale_delivery_owner",
+			});
+			expect(completion).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "completed",
+			});
+			const receiptEvent = store
+				.listWorkflowRunEvents("run-e2e")
+				.find((event) => event.kind === "rework_delivery_wake_delivered");
+			expect(receiptEvent?.payload).toMatchObject({
+				source: "completion_implied",
+				impliedFromState: "turn_granted",
+			});
+			expect(store.findOpenWorkflowReworkForRun("run-e2e")).toEqual([]);
+			expect(await coordinator.reconcile(requestId)).toEqual({
+				kind: "settled",
+				state: "completed",
+			});
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it("T17: executes the checked-in freeze and verification SQL", async () => {
+		const { store, comm, baseHead, stateDbPath, commDbPath } =
+			await createHarness();
+		let verifyDb: Database.Database | undefined;
+		try {
+			const rawStore = store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			};
+			const seedCohortMember = (input: {
+				requestId: string;
+				executionId: string;
+				attempt: number;
+			}) => {
+				const activationId = `activation:${input.requestId}`;
+				rawStore.db.run(
+					`INSERT INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 VALUES (?, 'flywheel', 'FLY-1423-E2E', 'implement',
+					         '2026-07-23T00:00:00.000Z')`,
+					[input.executionId],
+				);
+				rawStore.db.run(
+					`INSERT INTO workflow_rework_request
+					   (request_id, run_id, source_event_id, authority, source_node_id,
+					    source_attempt, base_revision, authority_context_json,
+					    authority_context_digest, requested_at)
+					 VALUES (?, 'run-e2e', ?, 'qa', 'qa', 1, ?,
+					         '{"authority":"qa"}', ?, '2026-07-23T00:00:00.000Z')`,
+					[
+						input.requestId,
+						`source:${input.requestId}`,
+						baseHead,
+						`digest:${input.requestId}`,
+					],
+				);
+				rawStore.db.run(
+					`INSERT INTO workflow_rework_route_revision
+					   (request_id, revision, target_node_id, target_attempt,
+					    preferred_actor_execution_id, invalidation_scope_json,
+					    verification_policy_json, interpreted_by,
+					    interpretation_reason, created_at)
+					 VALUES (?, 1, 'implement', ?, ?, '["implement"]', '[]',
+					         'engine:test', 'FLY-2828 SQL verification fixture',
+					         '2026-07-23T00:00:00.000Z')`,
+					[input.requestId, input.attempt, input.executionId],
+				);
+				rawStore.db.run(
+					`INSERT INTO workflow_rework_delivery
+					   (request_id, route_revision, state, updated_at)
+					 VALUES (?, 1, 'pending', '2026-07-23T00:00:00.000Z')`,
+					[input.requestId],
+				);
+				rawStore.db.run(
+					`INSERT INTO workflow_rework_verification_path
+					   (request_id, run_id, route_revision, state,
+					    current_node_id, current_attempt, updated_at)
+					 VALUES (?, 'run-e2e', 1, 'pending', 'implement', ?,
+					         '2026-07-23T00:00:00.000Z')`,
+					[input.requestId, input.attempt],
+				);
+				return activationId;
+			};
+			const bindWakeIdentity = (input: {
+				requestId: string;
+				executionId: string;
+				attempt: number;
+				activationId: string;
+				epoch: number;
+			}) => {
+				rawStore.db.run(
+					`INSERT INTO workflow_execution_binding
+					   (activation_id, execution_id, run_id, node_id, attempt, mode,
+					    rework_request_id, bound_at)
+					 VALUES (?, ?, 'run-e2e', 'implement', ?, 'wake', ?,
+					         '2026-07-23T00:01:00.000Z')`,
+					[
+						input.activationId,
+						input.executionId,
+						input.attempt,
+						input.requestId,
+					],
+				);
+				rawStore.db.run(
+					`INSERT INTO workflow_activation_turn
+					   (activation_id, issue_id, execution_id, epoch,
+					    source_event_id, granted_at)
+					 VALUES (?, 'FLY-1423-E2E', ?, ?, ?,
+					         '2026-07-23T00:02:00.000Z')`,
+					[
+						input.activationId,
+						input.executionId,
+						input.epoch,
+						`turn:${input.requestId}`,
+					],
+				);
+			};
+			const seedQuarantinedWake = (input: {
+				requestId: string;
+				executionId: string;
+				activationId: string;
+				epoch: number;
+				withQuestion: boolean;
+			}) => {
+				const wakeId = `wake:${input.requestId}`;
+				comm.enqueueTurnWake({
+					wakeId,
+					executionId: input.executionId,
+					issueId: "FLY-1423-E2E",
+					epoch: input.epoch,
+					activationId: input.activationId,
+					purpose: "workflow_rework",
+					envelope: { fromAgent: "bridge", content: "resume" },
+					backend: "codex",
+					createdAtMs: 1_721_692_800_000,
+				});
+				expect(
+					comm.ackTurnWakes({
+						executionId: input.executionId,
+						epoch: input.epoch,
+						activationId: input.activationId,
+						ackedAtMs: 1_721_692_860_000,
+					}),
+				).toBe(1);
+				for (let attempt = 1; attempt <= 20; attempt += 1) {
+					expect(
+						comm.recordTurnWakeReceiptProjectionAttempt(
+							wakeId,
+							"permanent fixture failure",
+							1_721_692_860_000 + attempt,
+						),
+					).toEqual({ attempts: attempt });
+				}
+				if (input.withQuestion) {
+					const commWriter = new Database(commDbPath);
+					try {
+						commWriter
+							.prepare(
+								`UPDATE turn_wake_outbox
+								    SET projection_alerted_at = ?,
+								        projection_alert_question_id = ?
+								  WHERE wake_id = ?`,
+							)
+							.run(
+								1_721_692_900_000,
+								`turn-wake-projection-alert:${wakeId}`,
+								wakeId,
+							);
+					} finally {
+						commWriter.close();
+					}
+				}
+			};
+
+			const healthy = {
+				requestId: "rework-t17-healthy",
+				executionId: "implement-t17-healthy",
+				attempt: 20,
+				epoch: 20,
+			};
+			const healthyActivation = seedCohortMember(healthy);
+			bindWakeIdentity({ ...healthy, activationId: healthyActivation });
+			seedQuarantinedWake({
+				...healthy,
+				activationId: healthyActivation,
+				withQuestion: true,
+			});
+
+			const [freezeQuery] = readSqlStatements(FREEZE_COHORT_SQL);
+			expect(freezeQuery).toBeDefined();
+			const stateReader = new Database(stateDbPath, { readonly: true });
+			const frozenRows = stateReader
+				.prepare(freezeQuery!)
+				.raw()
+				.all() as unknown[][];
+			stateReader.close();
+			expect(frozenRows).toEqual([
+				[
+					"request_id",
+					"delivery_state",
+					"route_revision",
+					"run_id",
+					"run_status",
+				],
+				[healthy.requestId, "pending", 1, "run-e2e", "active"],
+			]);
+			const cohortPath = join(
+				stateDbPath.slice(0, -"state.db".length),
+				"fly-2828-cohort.tsv",
+			);
+			writeFileSync(
+				cohortPath,
+				`${frozenRows.map((row) => row.join("\t")).join("\n")}\n`,
+			);
+
+			verifyDb = new Database(commDbPath);
+			verifyDb.prepare("ATTACH DATABASE ? AS s").run(stateDbPath);
+			verifyDb.exec(
+				"CREATE TEMP TABLE cohort(request_id TEXT, delivery_state TEXT, route_revision INTEGER, run_id TEXT, run_status TEXT)",
+			);
+			const insertCohort = verifyDb.prepare(
+				"INSERT INTO cohort VALUES (?, ?, ?, ?, ?)",
+			);
+			for (const row of frozenRows.slice(1)) insertCohort.run(...row);
+			const verifyQueries = readSqlStatements(VERIFY_COHORT_SQL);
+			expect(verifyQueries).toHaveLength(5);
+			expect(verifyDb.prepare(verifyQueries[0]!).get()).toEqual({
+				cohort_rows: 1,
+			});
+			expect(verifyDb.prepare(verifyQueries[1]!).all()).toEqual([]);
+			expect(verifyDb.prepare(verifyQueries[2]!).get()).toEqual({
+				below_threshold_backlog: 0,
+			});
+			expect(verifyDb.prepare(verifyQueries[3]!).get()).toEqual({
+				quarantined_without_question: 0,
+			});
+			expect(verifyDb.prepare(verifyQueries[4]!).all()).toEqual([]);
+
+			const negativeCases = [
+				{
+					requestId: "rework-t17-missing-binding",
+					executionId: "implement-t17-missing-binding",
+					attempt: 21,
+					epoch: 21,
+					kind: "missing_binding",
+				},
+				{
+					requestId: "rework-t17-missing-wake",
+					executionId: "implement-t17-missing-wake",
+					attempt: 22,
+					epoch: 22,
+					kind: "missing_wake",
+				},
+				{
+					requestId: "rework-t17-missing-question",
+					executionId: "implement-t17-missing-question",
+					attempt: 23,
+					epoch: 23,
+					kind: "missing_question",
+				},
+			] as const;
+			for (const candidate of negativeCases) {
+				const activationId = seedCohortMember(candidate);
+				if (candidate.kind !== "missing_binding") {
+					bindWakeIdentity({ ...candidate, activationId });
+				}
+				if (candidate.kind === "missing_question") {
+					seedQuarantinedWake({
+						...candidate,
+						activationId,
+						withQuestion: false,
+					});
+				}
+				verifyDb.exec("DELETE FROM cohort");
+				insertCohort.run(
+					candidate.requestId,
+					"pending",
+					1,
+					"run-e2e",
+					"active",
+				);
+				expect(verifyDb.prepare(verifyQueries[1]!).all()).toEqual([
+					{ request_id: candidate.requestId, state: "pending" },
+				]);
+			}
+			verifyDb.close();
+			verifyDb = undefined;
+
+			const smoke = spawnSync(
+				"sqlite3",
+				[
+					commDbPath,
+					"-cmd",
+					`ATTACH 'file:${stateDbPath}?mode=ro' AS s`,
+					"-cmd",
+					"CREATE TEMP TABLE cohort(request_id TEXT, delivery_state TEXT, route_revision INTEGER, run_id TEXT, run_status TEXT)",
+					"-cmd",
+					".mode tabs",
+					"-cmd",
+					`.import --skip 1 ${cohortPath} cohort`,
+				],
+				{ input: readFileSync(VERIFY_COHORT_SQL, "utf8"), encoding: "utf8" },
+			);
+			expect(smoke.status).toBe(0);
+			expect(smoke.stderr).toBe("");
+			expect(smoke.stdout).toMatch(/cohort_rows\s*\n-+\s*\n1\b/);
+		} finally {
+			verifyDb?.close();
 			comm.close();
 			store.close();
 		}

@@ -948,6 +948,7 @@ import {
 	type WorktreeTurnRow,
 } from "./turn-belt-reconcile.js";
 import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
+import { classifyTurnWakeReceiptProjection } from "./turn-wake-receipt-classifier.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
@@ -12985,9 +12986,16 @@ export async function startBridge(
 						epoch: wake.epoch,
 					}),
 				onReceipt: async (receipt) => {
-					if (!receipt.activation_id || receipt.acked_at === null) {
-						return "not_applicable";
-					}
+					// FLY-2828 §3.3: every disposition goes through the pure classifier;
+					// the patrol logs each retry with the wake id and quarantines
+					// receipts that never project behind one durable Lead question.
+					const fence = classifyTurnWakeReceiptProjection({
+						purpose: receipt.purpose,
+						activationId: receipt.activation_id,
+						ackedAt: receipt.acked_at,
+					});
+					if (fence.kind !== "retry" || !receipt.activation_id) return fence;
+					const ackedAt = new Date(receipt.acked_at ?? 0).toISOString();
 					if (receipt.purpose === "workflow_rework") {
 						const activation = store.getWorkflowActivation(
 							receipt.activation_id,
@@ -12995,12 +13003,17 @@ export async function startBridge(
 						const run = activation
 							? store.getWorkflowRun(activation.run_id)
 							: undefined;
-						if (!activation || !run) return "retry";
+						if (!activation || !run) {
+							return classifyTurnWakeReceiptProjection({
+								purpose: receipt.purpose,
+								activationResolved: false,
+							});
+						}
 						const projected = store.recordWorkflowReworkWakeReceipt({
 							activationId: receipt.activation_id,
 							executionId: receipt.execution_id,
 							epoch: receipt.epoch,
-							ackedAt: new Date(receipt.acked_at).toISOString(),
+							ackedAt,
 							alertIdentity: resolveWorkflowRunAlertIdentity({
 								store,
 								projects,
@@ -13011,26 +13024,27 @@ export async function startBridge(
 								log: (message) => console.warn(`[turn-wake] ${message}`),
 							}),
 						});
-						if (projected.ok) return "projected";
-						console.warn(
-							`[turn-wake] rework receipt projection held for ${receipt.wake_id}: ${projected.reason}`,
-						);
-						return "retry";
-					}
-					if (receipt.purpose !== "workflow_ship_carrier") {
-						return "not_applicable";
+						return classifyTurnWakeReceiptProjection({
+							purpose: receipt.purpose,
+							activationResolved: true,
+							projected,
+							deliveryState: activation.rework_request_id
+								? store.getWorkflowReworkDelivery(activation.rework_request_id)
+										?.state
+								: undefined,
+						});
 					}
 					const projected = store.recordWorkflowCarrierWakeReceipt({
 						activationId: receipt.activation_id,
 						executionId: receipt.execution_id,
 						epoch: receipt.epoch,
-						ackedAt: new Date(receipt.acked_at).toISOString(),
+						ackedAt,
 					});
-					if (projected.ok) return "projected";
-					console.warn(
-						`[turn-wake] carrier receipt projection held for ${receipt.wake_id}: ${projected.reason}`,
-					);
-					return "retry";
+					return classifyTurnWakeReceiptProjection({
+						purpose: receipt.purpose,
+						activationResolved: true,
+						projected,
+					});
 				},
 			});
 			await reconcileWorkflowTurnLedgers({

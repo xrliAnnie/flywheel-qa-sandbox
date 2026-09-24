@@ -432,6 +432,16 @@ export class WorkflowEventUidConflictError extends Error {
 	override name = "WorkflowEventUidConflictError";
 }
 
+/**
+ * FLY-2828 §2.3: thrown inside `commitWorkflowTransitionTx` when an inline
+ * rework receipt projection was applied but a later check refused the
+ * transition. better-sqlite3 nests transactions as savepoints, so the throw
+ * rolls the projection back together with everything else in the closure.
+ */
+class WorkflowTransitionRollback extends Error {
+	override name = "WorkflowTransitionRollback";
+}
+
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
@@ -42478,74 +42488,151 @@ export class StateStore {
 			reason: "rework_wake_receipt_not_found",
 		};
 		this.db.transaction(() => {
-			const binding = this.getWorkflowActivation(input.activationId);
-			const turn = this.getWorkflowActivationTurn(input.activationId);
-			const requestId = binding?.rework_request_id;
-			const request = requestId
-				? this.getWorkflowReworkRequest(requestId)
-				: undefined;
-			const route = requestId
-				? this.getLatestWorkflowReworkRoute(requestId)
-				: undefined;
-			const delivery = requestId
-				? this.getWorkflowReworkDelivery(requestId)
-				: undefined;
-			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
-			if (
-				!binding ||
-				!turn ||
-				!requestId ||
-				!request ||
-				!route ||
-				!delivery ||
-				!run
-			) {
-				return;
-			}
-			if (
-				binding.execution_id !== input.executionId ||
-				turn.execution_id !== input.executionId ||
-				turn.epoch !== input.epoch ||
-				delivery.route_revision !== route.revision ||
-				route.preferred_actor_execution_id !== input.executionId
-			) {
-				result = { ok: false, reason: "rework_wake_receipt_identity_conflict" };
-				return;
-			}
-			if (delivery.state === "wake_delivered" || delivery.state === "completed") {
-				result = { ok: true, idempotentReplay: true };
-				return;
-			}
-			if (delivery.state !== "awaiting_receipt") {
-				result = { ok: false, reason: "rework_wake_receipt_not_ready" };
-				return;
-			}
-			this.db.run(
-				`UPDATE workflow_rework_delivery
-				    SET state = 'wake_delivered', owner_id = NULL,
-				        lease_expires_at = NULL, next_retry_at = ?,
-				        last_error = NULL, updated_at = ?
-				  WHERE request_id = ? AND route_revision = ?
-				    AND state = 'awaiting_receipt'`,
-				[
-					workflowDeliveryReceiptNextRetryAt(input.ackedAt),
-					input.ackedAt,
-					requestId,
-					route.revision,
-				],
-			);
-			if (this.db.getRowsModified() !== 1) {
-				result = { ok: false, reason: "rework_wake_receipt_race" };
-				return;
-			}
-			this.projectWorkflowDeliveryClockTx({
-				family: "rework",
-				table: "workflow_rework_delivery",
-				pk: requestId,
-				version: { routeRevision: route.revision },
-				clock: "received_at",
-				at: input.ackedAt,
+			result = this.projectWorkflowReworkWakeReceiptTx({
+				activationId: input.activationId,
+				executionId: input.executionId,
+				epoch: input.epoch,
+				ackedAt: input.ackedAt,
+				alertIdentity: input.alertIdentity,
+				source: "turn_wake_receipt",
 			});
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2828 §2.1: the rework wake receipt projection as a transaction body.
+	 * Every read and every judgment happens before the first write, so any
+	 * `ok:false` return leaves zero rows touched. Two identity failures are
+	 * kept apart on purpose: `identity_conflict` is a stale immutable receipt
+	 * (the TURN epoch, route revision, or preferred actor moved on, so the ACK
+	 * can never become valid) and is terminal for the CommDB row;
+	 * `context_corrupt` is a structural inconsistency whose StateStore
+	 * obligation is still open and must stay visible to a Lead.
+	 */
+	private projectWorkflowReworkWakeReceiptTx(input: {
+		activationId: string;
+		executionId: string;
+		epoch: number;
+		ackedAt: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+		source: "turn_wake_receipt" | "completion_implied";
+		expectedTuple?: { runId: string; nodeId: string; attempt: number };
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		const binding = this.getWorkflowActivation(input.activationId);
+		const turn = this.getWorkflowActivationTurn(input.activationId);
+		const requestId = binding?.rework_request_id;
+		const request = requestId
+			? this.getWorkflowReworkRequest(requestId)
+			: undefined;
+		const route = requestId
+			? this.getLatestWorkflowReworkRoute(requestId)
+			: undefined;
+		const delivery = requestId
+			? this.getWorkflowReworkDelivery(requestId)
+			: undefined;
+		const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+		if (
+			!binding ||
+			!turn ||
+			!requestId ||
+			!request ||
+			!route ||
+			!delivery ||
+			!run
+		) {
+			return { ok: false, reason: "rework_wake_receipt_not_found" };
+		}
+		if (
+			turn.epoch !== input.epoch ||
+			delivery.route_revision !== route.revision ||
+			route.preferred_actor_execution_id !== input.executionId ||
+			binding.execution_id !== input.executionId ||
+			turn.execution_id !== input.executionId
+		) {
+			return { ok: false, reason: "rework_wake_receipt_identity_conflict" };
+		}
+		if (
+			request.run_id !== binding.run_id ||
+			route.target_node_id !== binding.node_id ||
+			route.target_attempt !== binding.attempt ||
+			turn.issue_id !== run.issue_id ||
+			(input.expectedTuple !== undefined &&
+				(input.expectedTuple.runId !== binding.run_id ||
+					input.expectedTuple.nodeId !== binding.node_id ||
+					input.expectedTuple.attempt !== binding.attempt))
+		) {
+			return { ok: false, reason: "rework_wake_receipt_context_corrupt" };
+		}
+		if (delivery.state === "wake_delivered" || delivery.state === "completed") {
+			return { ok: true, idempotentReplay: true };
+		}
+		const allowedStartStates: Array<WorkflowReworkDeliveryRow["state"]> =
+			input.source === "completion_implied"
+				? ["turn_granted", "awaiting_receipt"]
+				: ["awaiting_receipt"];
+		if (!allowedStartStates.includes(delivery.state)) {
+			return { ok: false, reason: "rework_wake_receipt_not_ready" };
+		}
+		const node = this.getWorkflowRunNode(
+			request.run_id,
+			route.target_node_id,
+			route.target_attempt,
+		);
+		if (
+			!node ||
+			node.execution_id !== input.executionId ||
+			(node.state !== "admitted" && node.state !== "running")
+		) {
+			return {
+				ok: false,
+				reason: `rework_wake_receipt_node_not_reserved:${node?.state ?? "missing"}`,
+			};
+		}
+		const path = this.getWorkflowReworkVerificationPath(requestId);
+		if (!path) {
+			return { ok: false, reason: "rework_wake_receipt_path_missing" };
+		}
+		if (
+			path.run_id !== request.run_id ||
+			path.route_revision !== route.revision ||
+			path.current_node_id !== route.target_node_id ||
+			path.current_attempt !== route.target_attempt ||
+			path.state !== "pending"
+		) {
+			return { ok: false, reason: "rework_wake_receipt_path_conflict" };
+		}
+
+		this.db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'wake_delivered', owner_id = NULL,
+			        lease_expires_at = NULL, next_retry_at = ?,
+			        last_error = NULL, updated_at = ?
+			  WHERE request_id = ? AND route_revision = ?
+			    AND state IN (${allowedStartStates.map(() => "?").join(",")})`,
+			[
+				workflowDeliveryReceiptNextRetryAt(input.ackedAt),
+				input.ackedAt,
+				requestId,
+				route.revision,
+				...allowedStartStates,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "rework_wake_receipt_race" };
+		}
+		this.projectWorkflowDeliveryClockTx({
+			family: "rework",
+			table: "workflow_rework_delivery",
+			pk: requestId,
+			version: { routeRevision: route.revision },
+			clock: "received_at",
+			at: input.ackedAt,
+		});
+		if (node.state === "admitted") {
 			this.db.run(
 				`UPDATE workflow_run_node SET state = 'running'
 				  WHERE run_id = ? AND node_id = ? AND attempt = ?
@@ -42558,35 +42645,38 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) {
-				throw new Error("workflow_rework_activation_not_admitted_on_receipt");
-			}
-			const path = this.getWorkflowReworkVerificationPath(requestId);
-			if (path) {
-				this.db.run(
-					`UPDATE workflow_rework_verification_path
-					    SET state = 'active', updated_at = ?
-					  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
-					[input.ackedAt, requestId, route.revision],
+				throw new WorkflowEngineInvariantError(
+					"workflow_rework_activation_not_admitted_on_receipt",
 				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error(
-						"workflow_rework_verification_activation_cas_failed_on_receipt",
-					);
-				}
 			}
-			this.appendWorkflowRunEventCheckedTx({
-				runId: request.run_id,
-				eventUid: `rework_wake_receipt:${input.activationId}:${input.epoch}`,
-				kind: "rework_delivery_wake_delivered",
-				nodeId: route.target_node_id,
-				executionId: input.executionId,
-				payload: {
-					requestId,
-					activationId: input.activationId,
-					epoch: input.epoch,
-					ackedAt: input.ackedAt,
-				},
-			});
+		}
+		this.db.run(
+			`UPDATE workflow_rework_verification_path
+			    SET state = 'active', updated_at = ?
+			  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
+			[input.ackedAt, requestId, route.revision],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new WorkflowEngineInvariantError(
+				"workflow_rework_verification_activation_cas_failed_on_receipt",
+			);
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: request.run_id,
+			eventUid: `rework_wake_receipt:${input.activationId}:${input.epoch}`,
+			kind: "rework_delivery_wake_delivered",
+			nodeId: route.target_node_id,
+			executionId: input.executionId,
+			payload: {
+				requestId,
+				activationId: input.activationId,
+				epoch: input.epoch,
+				ackedAt: input.ackedAt,
+				source: input.source,
+				impliedFromState: delivery.state,
+			},
+		});
+		if (input.alertIdentity) {
 			this.enqueueReworkRecoveredIfAlertedTx({
 				requestId,
 				runId: request.run_id,
@@ -42596,10 +42686,151 @@ export class StateStore {
 				alertIdentity: input.alertIdentity,
 				now: input.ackedAt,
 			});
-			result = { ok: true, idempotentReplay: false };
-		});
-		if (result.ok) this.save();
-		return result;
+		}
+		return { ok: true, idempotentReplay: false };
+	}
+
+	/**
+	 * FLY-2828 §2.2: settle / refuse / ignore the rework obligation bound to a
+	 * completing wake activation, before the transition proceeds.
+	 *
+	 * (A) no wake rework binding → nothing happens.
+	 * (B) delivery `turn_granted|awaiting_receipt` on the current revision →
+	 *     the completion itself proves the wake was delivered, so the receipt
+	 *     is projected inline; the transition then settles path and delivery.
+	 * (B′) delivery `wake_delivered` (path must be `active`) or `completed` →
+	 *     already projected; nothing happens.
+	 * (C) anything else → structured refusal with zero writes. Only the
+	 *     current revision's `pending` is retryable: the coordinator advances
+	 *     it to `turn_granted` right after `grantTurn` returns.
+	 *
+	 * Structural inconsistency throws an engine invariant so the caller rolls
+	 * back; `workflowReworkCompletionRefusal` is target-based and would let a
+	 * binding that points at another run's request slip through.
+	 */
+	private settleWorkflowReworkOnCompletionTx(input: {
+		binding: WorkflowExecutionBindingRow | undefined;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; applied: boolean }
+		| {
+				ok: false;
+				refusal: {
+					ok: false;
+					reason: "rework_delivery_not_projectable";
+					retryable: boolean;
+					detail: WorkflowTransitionRefusalDetail;
+				};
+		  } {
+		const binding = input.binding;
+		if (!binding || !binding.rework_request_id || binding.mode !== "wake") {
+			return { ok: true, applied: false };
+		}
+		const requestId = binding.rework_request_id;
+		const request = this.getWorkflowReworkRequest(requestId);
+		const latestRoute = this.getLatestWorkflowReworkRoute(requestId);
+		const delivery = this.getWorkflowReworkDelivery(requestId);
+		const turn = this.getWorkflowActivationTurn(binding.activation_id);
+		const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+		const path = this.getWorkflowReworkVerificationPath(requestId);
+		if (!request || !latestRoute || !delivery || !turn || !run || !path) {
+			throw new WorkflowEngineInvariantError(
+				"rework_receipt_implied_context_missing",
+			);
+		}
+		const corrupt =
+			request.run_id !== binding.run_id || binding.run_id !== input.runId
+				? "run"
+				: latestRoute.target_node_id !== binding.node_id ||
+						latestRoute.target_attempt !== binding.attempt ||
+						binding.node_id !== input.nodeId ||
+						binding.attempt !== input.attempt
+					? "target"
+					: latestRoute.preferred_actor_execution_id !== input.executionId
+						? "actor"
+						: turn.execution_id !== input.executionId
+							? "turn_execution"
+							: turn.issue_id !== run.issue_id
+								? "turn_issue"
+								: path.run_id !== request.run_id
+									? "path_run"
+									: undefined;
+		if (corrupt) {
+			throw new WorkflowEngineInvariantError(
+				`rework_receipt_implied_context_corrupt:${corrupt}`,
+			);
+		}
+		const detail: WorkflowTransitionRefusalDetail = {
+			requestId,
+			deliveryState: delivery.state,
+			routeRevision: delivery.route_revision,
+		};
+		const refuse = (retryable: boolean) =>
+			({
+				ok: false as const,
+				refusal: {
+					ok: false as const,
+					reason: "rework_delivery_not_projectable" as const,
+					retryable,
+					detail,
+				},
+			}) as const;
+		if (delivery.route_revision !== latestRoute.revision) {
+			return refuse(false);
+		}
+		if (
+			(delivery.state === "turn_granted" ||
+				delivery.state === "awaiting_receipt" ||
+				delivery.state === "wake_delivered") &&
+			(path.route_revision !== latestRoute.revision ||
+				path.current_node_id !== latestRoute.target_node_id ||
+				path.current_attempt !== latestRoute.target_attempt)
+		) {
+			throw new WorkflowEngineInvariantError(
+				"rework_receipt_implied_context_corrupt:path_target",
+			);
+		}
+		if (
+			delivery.state === "turn_granted" ||
+			delivery.state === "awaiting_receipt"
+		) {
+			const projected = this.projectWorkflowReworkWakeReceiptTx({
+				activationId: binding.activation_id,
+				executionId: input.executionId,
+				epoch: turn.epoch,
+				ackedAt: input.now,
+				alertIdentity: input.alertIdentity,
+				source: "completion_implied",
+				expectedTuple: {
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+				},
+			});
+			if (!projected.ok) {
+				throw new WorkflowEngineInvariantError(
+					`rework_receipt_implied_on_completion_failed:${projected.reason}`,
+				);
+			}
+			return { ok: true, applied: !projected.idempotentReplay };
+		}
+		if (delivery.state === "wake_delivered") {
+			if (path.state !== "active") {
+				throw new WorkflowEngineInvariantError(
+					"rework_receipt_implied_active_path_conflict",
+				);
+			}
+			return { ok: true, applied: false };
+		}
+		if (delivery.state === "completed") {
+			return { ok: true, applied: false };
+		}
+		return refuse(delivery.state === "pending");
 	}
 
 	getLatestWorkflowReworkRoute(
@@ -43764,6 +43995,52 @@ export class StateStore {
 			| { ok: false; reason: string };
 		if (settled.ok && settled.updated) this.save();
 		return settled;
+	}
+
+	/**
+	 * FLY-2828 C4: every rework obligation on a run that is still open, from
+	 * either ledger. An unsettled delivery or a `pending|active` verification
+	 * path each block a new rework, and both the Lead door
+	 * (`openOperatorRework`) and the founder door
+	 * (`openPendingCarryoverFounderFeedbackTx`) consult exactly this list.
+	 */
+	findOpenWorkflowReworkForRun(runId: string): Array<
+		| {
+				requestId: string;
+				source: "delivery";
+				state: WorkflowReworkDeliveryRow["state"];
+		  }
+		| {
+				requestId: string;
+				source: "verification_path";
+				state: "pending" | "active";
+		  }
+	> {
+		return this.workflowSelectAll(
+			`SELECT d.request_id AS request_id, 'delivery' AS source, d.state AS state
+			   FROM workflow_rework_delivery d
+			   JOIN workflow_rework_request r ON r.request_id = d.request_id
+			  WHERE r.run_id = ?
+			    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+			 UNION ALL
+			 SELECT p.request_id AS request_id, 'verification_path' AS source, p.state AS state
+			   FROM workflow_rework_verification_path p
+			  WHERE p.run_id = ? AND p.state IN ('pending','active')
+			 ORDER BY source, request_id`,
+			[runId, runId],
+		).map((row) =>
+			row.source === "delivery"
+				? {
+						requestId: row.request_id as string,
+						source: "delivery" as const,
+						state: row.state as WorkflowReworkDeliveryRow["state"],
+					}
+				: {
+						requestId: row.request_id as string,
+						source: "verification_path" as const,
+						state: row.state as "pending" | "active",
+					},
+		);
 	}
 
 	getWorkflowReworkVerificationPath(
@@ -50898,19 +51175,7 @@ export class StateStore {
 					}
 				}
 			}
-			const openDelivery = this.workflowSelectAll(
-				`SELECT request_id FROM (
-				   SELECT d.request_id FROM workflow_rework_delivery d
-				   JOIN workflow_rework_request r ON r.request_id = d.request_id
-				  WHERE r.run_id = ?
-				    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
-				   UNION ALL
-				   SELECT p.request_id FROM workflow_rework_verification_path p
-				    WHERE p.run_id = ? AND p.state IN ('pending','active')
-				 ) LIMIT 1`,
-				[input.runId, input.runId],
-			)[0];
-			if (openDelivery) {
+			if (this.findOpenWorkflowReworkForRun(input.runId).length > 0) {
 				result = { ok: false, reason: "rework_already_open" };
 				return;
 			}
@@ -62479,6 +62744,7 @@ export class StateStore {
 					: undefined;
 		let transitionRefusal: string | undefined;
 		let transitionRefusalDetail: WorkflowTransitionRefusalDetail | undefined;
+		let transitionRefusalRetryable: boolean | undefined;
 		let terminalImmuneRefusal = false;
 		let drainChallengeRefused = false;
 		let completionDisposition: WorkflowCompletionDisposition | undefined;
@@ -62698,6 +62964,7 @@ export class StateStore {
 						if (!transition.ok) {
 							transitionRefusal = transition.reason;
 							transitionRefusalDetail = transition.detail;
+							transitionRefusalRetryable = transition.retryable;
 							throw new Error("engine_completion_transition_refused");
 						}
 						transitionGateOpened = transition.gateOpened === true;
@@ -62815,9 +63082,19 @@ export class StateStore {
 				return {
 					ok: false,
 					reason: "transition_refused",
+					...(transitionRefusalRetryable !== undefined
+						? { retryable: transitionRefusalRetryable }
+						: {}),
 					detail: {
 						transitionReason: transitionRefusal,
 						...(alertPending ? { alertPending: true as const } : {}),
+						...(transitionRefusalDetail
+							? {
+									requestId: transitionRefusalDetail.requestId,
+									deliveryState: transitionRefusalDetail.deliveryState,
+									routeRevision: transitionRefusalDetail.routeRevision,
+								}
+							: {}),
 					},
 				};
 			}
@@ -64496,6 +64773,7 @@ export class StateStore {
 			ok: false,
 			reason: "transition_not_committed",
 		};
+		let impliedApplied = false;
 		const commitTransition = () => {
 			const prior = this.workflowSelectAll(
 				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
@@ -64672,6 +64950,23 @@ export class StateStore {
 			if (!authorityDrivenGate) {
 				const refusal = this.workflowReworkCompletionRefusal(input);
 				if (refusal) { result = refusal; return; }
+				// FLY-2828 C1: a completing wake rework must settle its obligation
+				// here or be refused; it may never advance leaving delivery and
+				// path unsettled behind a `done` node.
+				const implied = this.settleWorkflowReworkOnCompletionTx({
+					binding: writerActivation,
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					executionId: input.executionId,
+					now,
+					alertIdentity: input.alertIdentity,
+				});
+				if (!implied.ok) {
+					result = implied.refusal;
+					return;
+				}
+				impliedApplied = implied.applied;
 			}
 			const priorEdges = this.workflowSelectAll(
 				`SELECT payload FROM workflow_run_event
@@ -66052,9 +66347,16 @@ export class StateStore {
 			};
 		};
 		try {
-			this.db.transaction(commitTransition);
+			this.db.transaction(() => {
+				commitTransition();
+				if (impliedApplied && !result.ok) {
+					throw new WorkflowTransitionRollback();
+				}
+			});
 		} catch (error) {
-			if (error instanceof WorkflowEngineInvariantError) {
+			if (error instanceof WorkflowTransitionRollback) {
+				/* result already carries the refusal; the savepoint rolled back. */
+			} else if (error instanceof WorkflowEngineInvariantError) {
 				result = {
 					ok: false,
 					reason: `${ENGINE_INVARIANT_REASON_PREFIX}${error.invariant}`,
@@ -66922,15 +67224,8 @@ export class StateStore {
 		if (!target?.dispatch || target.type === "gate") {
 			throw new Error("founder feedback source payload invalid: rework target");
 		}
-		const openDelivery = this.workflowSelectAll(
-			`SELECT d.request_id FROM workflow_rework_delivery d
-			  JOIN workflow_rework_request r ON r.request_id = d.request_id
-			 WHERE r.run_id = ?
-			   AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
-			 LIMIT 1`,
-			[input.run.run_id],
-		)[0];
-		if (openDelivery) {
+		// FLY-2828 C4: the founder door and the Lead door share one predicate.
+		if (this.findOpenWorkflowReworkForRun(input.run.run_id).length > 0) {
 			throw new Error("founder feedback kickback failed: rework_already_open");
 		}
 		const targetAttempts = this.listWorkflowRunNodes(
@@ -74371,6 +74666,11 @@ export class StateStore {
 			) {
 				return { disposition: "cancel", reason: "carrier_identity_changed" };
 			}
+			// FLY-2828 C6: `completed` has no outgoing edge, so cancelling the
+			// CommDB wake can never collide with a resume that reuses this id.
+			if (carrier.state === "completed") {
+				return { disposition: "cancel", reason: "carrier_obligation_completed" };
+			}
 			if (
 				carrier.run_status !== "active" ||
 				carrier.current_node_id !== carrier.gate_node_id ||
@@ -74405,6 +74705,11 @@ export class StateStore {
 		const reworkDelivery = binding.rework_request_id
 			? this.getWorkflowReworkDelivery(binding.rework_request_id)
 			: undefined;
+		// FLY-2828 C6: see the carrier branch above; `held|needs_lead|pending`
+		// stay with the no-receipt alert because a resume may revive them.
+		if (reworkDelivery?.state === "completed") {
+			return { disposition: "cancel", reason: "rework_obligation_completed" };
+		}
 		const activeReworkObligation =
 			reworkDelivery?.state === "turn_granted" ||
 			reworkDelivery?.state === "awaiting_receipt";
@@ -85389,7 +85694,13 @@ export type WorkflowTransitionResult =
 			gateOpened?: true;
 			escalated?: true;
 	  }
-	| { ok: false; reason: string; detail?: WorkflowTransitionRefusalDetail };
+	| {
+			ok: false;
+			reason: string;
+			/** FLY-2828: set for structured rework refusals; undefined otherwise. */
+			retryable?: boolean;
+			detail?: WorkflowTransitionRefusalDetail;
+	  };
 
 export interface WorkflowLoopReentryCanonical {
 	requestId: string;
@@ -86072,7 +86383,15 @@ export type WorkflowCompletionResult =
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"
 				| "transition_refused";
-			detail?: { transitionReason: string; alertPending?: true };
+			/** FLY-2828: carried from the transition's structured refusal. */
+			retryable?: boolean;
+			detail?: {
+				transitionReason: string;
+				alertPending?: true;
+				requestId?: string;
+				deliveryState?: WorkflowReworkDeliveryRow["state"];
+				routeRevision?: number;
+			};
 	  };
 
 export interface RunQuiescenceEvidence {
