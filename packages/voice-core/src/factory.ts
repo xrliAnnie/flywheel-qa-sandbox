@@ -112,6 +112,7 @@ export function buildGptLiveBackend(
 		transport,
 		model: config.openaiLive.model,
 		voice: config.openaiLive.voice,
+		contextMaxTokens: config.openaiLive.contextMaxTokens,
 	});
 }
 

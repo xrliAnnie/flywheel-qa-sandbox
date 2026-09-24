@@ -25,6 +25,7 @@ export interface GptLiveBackendOptions {
 	transport: OpenAiLiveConnector;
 	model: string;
 	voice: string;
+	contextMaxTokens?: number;
 	retirementDeadlineMs?: number;
 	nextEventId?: () => string;
 }
@@ -51,7 +52,15 @@ export class GptLiveBackend implements VoiceBackend {
 		audioIn: [OPENAI_LIVE_AUDIO_FORMAT],
 	};
 
-	constructor(private readonly opts: GptLiveBackendOptions) {}
+	constructor(private readonly opts: GptLiveBackendOptions) {
+		const contextMaxTokens = opts.contextMaxTokens ?? 500;
+		if (!Number.isSafeInteger(contextMaxTokens) || contextMaxTokens <= 0) {
+			throw new VoiceError(
+				"component-missing",
+				"openai-live: context token ceiling must be a positive integer",
+			);
+		}
+	}
 
 	async createConversation(
 		opts: ConversationOptions,
@@ -90,7 +99,10 @@ export class GptLiveBackend implements VoiceBackend {
 			cancelLocalOutput: (generation) =>
 				sessionRef.current?.cancelGeneration(generation),
 		});
-		const session = new GptLiveConversationSession(controller);
+		const session = new GptLiveConversationSession(
+			controller,
+			this.opts.contextMaxTokens ?? 500,
+		);
 		sessionRef.current = session;
 		await controller.start();
 		return session;
@@ -110,7 +122,10 @@ class GptLiveConversationSession implements CapabilityAwareConversationSession {
 		};
 	}
 
-	constructor(private readonly controller: LiveGenerationController) {
+	constructor(
+		private readonly controller: LiveGenerationController,
+		private readonly contextMaxTokens: number,
+	) {
 		controller.on("audio", ({ generation, chunk, format }) => {
 			if (!this.startedAudioGenerations.has(generation)) {
 				this.startedAudioGenerations.add(generation);
@@ -163,6 +178,16 @@ class GptLiveConversationSession implements CapabilityAwareConversationSession {
 	}
 
 	injectContext(text: string): void {
+		// OpenAI's Live protocol does not expose a tokenizer. UTF-8 byte length is
+		// a conservative upper bound for its byte-level tokenization: rejecting
+		// above this value can be stricter for multibyte text, but never admits an
+		// event whose token count can exceed the configured safety ceiling.
+		if (Buffer.byteLength(text, "utf8") > this.contextMaxTokens) {
+			throw new VoiceError(
+				"resource-exhausted",
+				`openai-live: silent context exceeds the ${this.contextMaxTokens}-token event limit`,
+			);
+		}
 		this.controller.appendThinking(text);
 	}
 

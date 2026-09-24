@@ -227,6 +227,25 @@ describe("GptLiveBackend", () => {
 		);
 	});
 
+	it("rejects silent context above the configured per-event token ceiling", async () => {
+		const socket = new FakeSocket();
+		const backend = new GptLiveBackend({
+			model: "gpt-live-1",
+			voice: "marin",
+			contextMaxTokens: 5,
+			transport: { connect: async () => socket },
+		});
+		const opening = backend.createConversation(conversationOptions);
+		await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+		socket.started();
+		const session = await opening;
+
+		expect(() => session.injectContext("123456")).toThrow(
+			/context exceeds.*5-token/i,
+		);
+		expect(socket.sent).toHaveLength(1);
+	});
+
 	it("reports a failed replacement connection instead of dropping its rejection", async () => {
 		const socket = new FakeSocket();
 		let attempts = 0;

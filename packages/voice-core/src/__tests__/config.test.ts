@@ -72,6 +72,7 @@ describe("resolveConfig", () => {
 			endpoint: "wss://api.openai.com/v1/live/sessions",
 			apiKeyEnv: "OPENAI_API_KEY",
 			protocolVersion: 1,
+			contextMaxTokens: 500,
 			voice: "marin",
 			delegation: "client",
 			announcerBackendId: "edge-tts",
@@ -83,6 +84,7 @@ describe("resolveConfig", () => {
 				openaiLive: {
 					model: "gpt-live-override",
 					endpoint: "wss://api.openai.com/override",
+					contextMaxTokens: 321,
 				},
 			},
 			{
@@ -94,6 +96,7 @@ describe("resolveConfig", () => {
 		expect(configured.openaiLive.endpoint).toBe(
 			"wss://api.openai.com/override",
 		);
+		expect(configured.openaiLive.contextMaxTokens).toBe(321);
 	});
 
 	it("resolves micDevice: override > env > ':default'", () => {

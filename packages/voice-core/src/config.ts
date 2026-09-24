@@ -39,6 +39,8 @@ export interface VoiceCoreConfig {
 		endpoint: string;
 		apiKeyEnv: string;
 		protocolVersion: 1;
+		/** Per-event silent context ceiling. Runtime enforces a UTF-8 token upper bound. */
+		contextMaxTokens: number;
 		voice: string;
 		delegation: "client";
 		announcerBackendId: string;
@@ -158,6 +160,11 @@ export function resolveConfig(
 				"OPENAI_API_KEY",
 			),
 			protocolVersion: overrides.openaiLive?.protocolVersion ?? 1,
+			contextMaxTokens:
+				pickNum(
+					overrides.openaiLive?.contextMaxTokens,
+					env.FLYWHEEL_VOICE_OPENAI_LIVE_CONTEXT_MAX_TOKENS,
+				) ?? 500,
 			voice: pick(
 				overrides.openaiLive?.voice,
 				env.FLYWHEEL_VOICE_OPENAI_LIVE_VOICE,
@@ -260,6 +267,12 @@ export function verifyOpenAiLiveComponents(
 		unavailable("OpenAI Live protocol must be v1 with client delegation");
 	}
 	if (!config.openaiLive.voice) unavailable("OpenAI Live voice is not set");
+	if (
+		!Number.isSafeInteger(config.openaiLive.contextMaxTokens) ||
+		config.openaiLive.contextMaxTokens <= 0
+	) {
+		unavailable("OpenAI Live context token ceiling must be a positive integer");
+	}
 	if (config.openaiLive.announcerBackendId !== "edge-tts") {
 		unavailable("OpenAI Live announcer must use edge-tts");
 	}
