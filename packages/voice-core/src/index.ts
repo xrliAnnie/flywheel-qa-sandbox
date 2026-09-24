@@ -91,10 +91,7 @@ export {
 	type ConverseWiring,
 	type RegistryWiring,
 } from "./factory.js";
-export {
-	VOICE_HANDOFF_INTENT_KINDS,
-	type VoiceHandoffIntentKind,
-} from "./handoff.js";
+export * from "./handoff.js";
 // headphone mode (FLY-546) — pure logic layer
 export * from "./headphone/index.js";
 export {
@@ -126,6 +123,7 @@ export {
 // shared layer
 export {
 	clearTranscriptWriteFailure,
+	durableTranscriptContentDigest,
 	getTranscriptWriteFailure,
 	JsonlTranscriptSink,
 	MemoryTranscriptSink,

@@ -17,6 +17,7 @@ import { encodeSenderRef } from "./sender-ref.js";
 
 // 529 roundtrip probes consume the canonical envelope through this public
 // package entrypoint, including its thread reply route.
+export { chatDeliveryId };
 export { parseChatDeliveryEnvelope };
 export type { ChatDeliveryEnvelopeV1 };
 

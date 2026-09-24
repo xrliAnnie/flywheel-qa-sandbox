@@ -17,6 +17,9 @@ import type {
 	HeadphoneInboxClaim,
 	HeadphoneInboxItem,
 	SpeakReceipt,
+	VoiceHandoffReceipt,
+	VoiceHandoffRequest,
+	VoiceHandoffResultEvent,
 } from "flywheel-voice-core";
 
 export type VoiceScope = {
@@ -100,6 +103,12 @@ export type HeadphoneSourceHealth = {
 	sourceGap: boolean;
 	sources: HeadphoneSourceState[];
 };
+
+export interface VoiceHandoffResultsPage {
+	events: VoiceHandoffResultEvent[];
+	highWatermark: number;
+	nextCursor: number;
+}
 
 function headphoneItem(value: unknown): HeadphoneInboxItem {
 	const item = value as Record<string, unknown>;
@@ -279,6 +288,78 @@ export class BridgeVoiceClient {
 			sourceGap: sources.some((s) => s.health === "source_gap"),
 			sources,
 		};
+	}
+
+	async handoffToLead(
+		binding: HeadphoneSessionBinding,
+		request: VoiceHandoffRequest,
+	): Promise<VoiceHandoffReceipt> {
+		if (
+			request.sessionId !== binding.sessionId ||
+			request.generation !== binding.generation
+		)
+			throw new Error("voice handoff session binding mismatch");
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/handoffs/`,
+			{
+				method: "POST",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify(request),
+			},
+		);
+		if (!res.ok && res.status !== 202)
+			throw new Error(`voice handoff failed: HTTP ${res.status}`);
+		const body = (await res.json()) as VoiceHandoffReceipt;
+		if (
+			body.handoffId !== request.handoffId ||
+			body.requestDigest !== request.requestDigest ||
+			![
+				"authorized",
+				"dispatching",
+				"committed",
+				"rejected",
+				"ambiguous",
+				"needs_human",
+			].includes(body.state)
+		)
+			throw new Error("voice handoff response invalid");
+		return body;
+	}
+
+	async listVoiceHandoffResults(
+		binding: HeadphoneSessionBinding,
+		handoffId: string,
+		after = 0,
+		limit = 100,
+	): Promise<VoiceHandoffResultsPage> {
+		const query = new URLSearchParams({
+			sessionId: binding.sessionId,
+			generation: String(binding.generation),
+			after: String(after),
+			limit: String(limit),
+		});
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/handoffs/${encodeURIComponent(handoffId)}/results?${query}`,
+			{ headers: this.headphoneHeaders(binding) },
+		);
+		if (!res.ok)
+			throw new Error(`voice handoff results failed: HTTP ${res.status}`);
+		const body = (await res.json()) as VoiceHandoffResultsPage;
+		if (
+			!Array.isArray(body.events) ||
+			!Number.isSafeInteger(body.highWatermark) ||
+			!Number.isSafeInteger(body.nextCursor) ||
+			body.nextCursor < after ||
+			body.highWatermark < body.nextCursor ||
+			body.events.some(
+				(event) =>
+					event.handoffId !== handoffId ||
+					!Number.isSafeInteger(event.seq) ||
+					event.seq <= after,
+			)
+		)
+			throw new Error("voice handoff results response invalid");
+		return body;
 	}
 
 	async getScope(): Promise<VoiceScope> {

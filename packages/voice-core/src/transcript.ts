@@ -88,7 +88,7 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 			if (this.failed) throw new Error("transcript_sink_failed");
 			validateDurableEntry(entry);
 			await this.loadDurableIndex();
-			const contentDigest = durableDigest(entry);
+			const contentDigest = durableTranscriptContentDigest(entry);
 			const key = durableKey(entry.sessionId, entry.transcriptId);
 			const prior = this.durableIndex?.get(key);
 			if (prior) {
@@ -192,7 +192,7 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 				throw new Error("transcript_tail_corrupt");
 			}
 			if (!isDurableRecord(parsed)) continue;
-			const contentDigest = durableDigest(parsed);
+			const contentDigest = durableTranscriptContentDigest(parsed);
 			if (parsed.durability.contentDigest !== contentDigest)
 				throw new Error("transcript_receipt_corrupt");
 			const key = durableKey(parsed.sessionId, parsed.transcriptId);
@@ -232,7 +232,7 @@ export class MemoryTranscriptSink implements DurableTranscriptSink {
 			durable: false,
 			sessionId: entry.sessionId,
 			transcriptId: entry.transcriptId,
-			contentDigest: durableDigest(entry),
+			contentDigest: durableTranscriptContentDigest(entry),
 			persistedAt: new Date().toISOString(),
 		};
 	}
@@ -250,7 +250,9 @@ function durableKey(sessionId: string, transcriptId: string): string {
 	return `${sessionId}\0${transcriptId}`;
 }
 
-function durableDigest(entry: DurableTranscriptEntry): string {
+export function durableTranscriptContentDigest(
+	entry: DurableTranscriptEntry,
+): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify({

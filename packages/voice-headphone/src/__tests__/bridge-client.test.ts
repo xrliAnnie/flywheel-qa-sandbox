@@ -159,6 +159,68 @@ describe("BridgeVoiceClient", () => {
 		expect(health.sourceGap).toBe(false);
 	});
 
+	it("submits one typed handoff and replays its results from the supplied cursor", async () => {
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const { calls, fetchFn } = fakeFetch((url) =>
+			url.includes("/results")
+				? {
+						status: 200,
+						body: {
+							events: [
+								{
+									resultEventId: "delivery-1:r1",
+									seq: 3,
+									handoffId,
+									requestDigest: "a".repeat(64),
+									sourceLeadId: "lead-1",
+									sourceDeliveryId: "delivery-1",
+									resultKind: "lead_reply",
+									text: "checking",
+									createdAt: "2026-09-23T20:00:05.000Z",
+								},
+							],
+							highWatermark: 3,
+							nextCursor: 3,
+						},
+					}
+				: {
+						status: 200,
+						body: {
+							handoffId,
+							requestDigest: "a".repeat(64),
+							state: "committed",
+							providerOperationId: `chat:lead-1:voice-handoff:${handoffId}`,
+						},
+					},
+		);
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+		const request = {
+			handoffId,
+			requestDigest: "a".repeat(64),
+			sessionId: SESSION.sessionId,
+			generation: SESSION.generation,
+		} as never;
+
+		await expect(client.handoffToLead(SESSION, request)).resolves.toMatchObject(
+			{
+				state: "committed",
+			},
+		);
+		await expect(
+			client.listVoiceHandoffResults(SESSION, handoffId, 2),
+		).resolves.toMatchObject({
+			nextCursor: 3,
+			events: [{ seq: 3, text: "checking" }],
+		});
+		expect(calls[1]?.url).toContain(
+			`/api/voice/handoffs/${handoffId}/results?sessionId=voice-session&generation=7&after=2&limit=100`,
+		);
+	});
+
 	it("getScope sends the Bearer token and parses the contract", async () => {
 		const { calls, fetchFn } = fakeFetch(() => ({
 			status: 200,

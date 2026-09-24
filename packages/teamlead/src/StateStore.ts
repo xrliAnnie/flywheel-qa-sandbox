@@ -48,6 +48,7 @@ import {
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { HeadphoneInboxStore } from "./bridge/headphone-inbox.js";
+import { VoiceHandoffStore } from "./bridge/voice-handoff-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -3138,6 +3139,19 @@ export function openWithDatabaseIdentity<T extends { close(): void }>(
 }
 
 export class StateStore {
+	private voiceHandoffStoreCache?: {
+		db: BetterDb;
+		store: VoiceHandoffStore;
+	};
+	get voiceHandoffs(): VoiceHandoffStore {
+		const db = this.db.raw;
+		if (this.voiceHandoffStoreCache?.db !== db) {
+			const store = new VoiceHandoffStore(db);
+			store.migrate();
+			this.voiceHandoffStoreCache = { db, store };
+		}
+		return this.voiceHandoffStoreCache.store;
+	}
 	private headphoneInboxStoreCache?: {
 		db: BetterDb;
 		store: HeadphoneInboxStore;
@@ -10501,6 +10515,7 @@ export class StateStore {
 		);
 		this.migrateVoiceHealthDemandProjection();
 		this.headphoneInbox.migrate();
+		this.voiceHandoffs.migrate();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
 			ON voice_sessions(voice_channel_id)
