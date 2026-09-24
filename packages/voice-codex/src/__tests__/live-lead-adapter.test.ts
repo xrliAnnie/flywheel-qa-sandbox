@@ -92,6 +92,7 @@ class FakeLive implements OpenAiLiveConversationSession {
 }
 
 function room() {
+	const tail = { drained: true, remainingMs: 0 as number | null };
 	const frameListeners = new Set<(frame: any) => void>();
 	const utteranceListeners = new Set<(event: RoomUtteranceEvent) => void>();
 	const bargeListeners = new Set<(event: RoomBargeInEvent) => void>();
@@ -140,13 +141,21 @@ function room() {
 		status: vi.fn(async () => undefined),
 		playSpeech: vi.fn(),
 		playClip: vi.fn(),
-		audibleTail: vi.fn(),
+		audibleTail: vi.fn(() => ({
+			estimated: true as const,
+			remainingMs: tail.remainingMs,
+			drained: tail.drained,
+			observedAt: 0,
+			sessionId: "voice-session",
+			generation: 9,
+		})),
 		speaker: vi.fn(),
 		setWaiting: vi.fn(),
 		setBedEnabled: vi.fn(),
 	};
 	return {
 		io: io as unknown as RoomIO,
+		tail,
 		emitFrame(frame: any) {
 			for (const listener of frameListeners) listener(frame);
 		},
@@ -169,6 +178,7 @@ function harness(
 		}>;
 		delegationEndTimeoutMs?: number;
 		maxSuspendedInputMs?: number;
+		founderTurnSettleTimeoutMs?: number;
 	} = {},
 ) {
 	const live = new FakeLive();
@@ -255,6 +265,9 @@ function harness(
 		...(overrides.maxSuspendedInputMs === undefined
 			? {}
 			: { maxSuspendedInputMs: overrides.maxSuspendedInputMs }),
+		...(overrides.founderTurnSettleTimeoutMs === undefined
+			? {}
+			: { founderTurnSettleTimeoutMs: overrides.founderTurnSettleTimeoutMs }),
 		record,
 		onUnavailable,
 	});
@@ -1115,4 +1128,368 @@ describe("LiveLeadAdapter", () => {
 		await vi.waitFor(() => expect(onSpokenExit).toHaveBeenCalledOnce());
 		await session.close();
 	});
+
+	it("holds announcer speech until the founder's turn is answered and its audio drained", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		founderSays(h, "u-q", "一加一等于几", { end: false });
+		const announcement = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+
+		endUtterance(h, "u-q", 1_250);
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+
+		h.room.tail.drained = false;
+		h.room.tail.remainingMs = 40;
+		h.live.emit("response-started");
+		h.live.emit("transcript", { role: "assistant", text: "等于二", final: true });
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+
+		h.room.tail.drained = true;
+		h.room.tail.remainingMs = 0;
+		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.speech.speak).toHaveBeenCalledOnce();
+		expect(
+			h.utterances.map((u) => ({ role: u.role, text: u.text })),
+		).toEqual([
+			{ role: "user", text: "一加一等于几" },
+			{ role: "assistant", text: "等于二" },
+		]);
+	});
+
+	it("keeps the founder's turn open through a Lead cue until the delegation is handled", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		founderSays(h, "u1", "帮我查一下状态");
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "我问下 Lead",
+			final: true,
+		});
+		const announcement = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+
+		h.live.emit("delegation-created", {
+			delegationId: "provider-1",
+			generation: 1,
+			offsetMs: 200,
+			target: "client",
+		});
+		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.handoffs).toHaveLength(1);
+		expect(vi.mocked(h.speech.speak).mock.calls.map(([text]) => text)).toEqual(
+			["我问下 Lead", "播报第一条"],
+		);
+	});
+
+	it("does not let an utterance whose end was lost hold the founder turn forever", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-abandoned",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_000,
+			phase: "start",
+		});
+		founderSays(h, "u-next", "一加一等于几");
+		const announcement = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		h.live.emit("transcript", { role: "assistant", text: "等于二", final: true });
+
+		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+	});
+
+	it("releases an unanswered founder turn after the settle timeout and records it", async () => {
+		const h = harness({ founderTurnSettleTimeoutMs: 30 });
+		await h.adapter.open("context");
+		founderSays(h, "u-noise", "嗯");
+		const announcement = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		await tick();
+		expect(h.speech.speak).not.toHaveBeenCalled();
+
+		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "live_lead_founder_turn_unanswered" }),
+		);
+	});
+
+	it("answers a barge-in during an inbox readback before resuming it, and re-reads the item uncounted", async () => {
+		const h = harness();
+		const items = [
+			{
+				id: "item-a",
+				revision: 1,
+				createdAt: "2026-09-24T00:00:00.000Z",
+				needsDecision: false,
+				text: "第一条很长的汇报。",
+			},
+			{
+				id: "item-b",
+				revision: 1,
+				createdAt: "2026-09-24T00:00:01.000Z",
+				needsDecision: false,
+				text: "第二条汇报。",
+			},
+		];
+		const acked: string[] = [];
+		const claimCalls: string[] = [];
+		const claims = new Map<string, unknown>();
+		const bridge = {
+			listHeadphoneItems: vi.fn(async () =>
+				items.filter((item) => !acked.includes(item.id)),
+			),
+			claimHeadphoneItem: vi.fn(async (_binding, item: (typeof items)[0]) => {
+				claimCalls.push(item.id);
+				const prior = claims.get(item.id);
+				if (prior) return prior;
+				const claim = {
+					item,
+					claimToken: `claim:${item.id}`,
+					attempt: 1,
+					pendingKey: `inbox:${item.id}:1:voice-session:9:1`,
+				};
+				claims.set(item.id, claim);
+				return claim;
+			}),
+			ackHeadphoneClaim: vi.fn(async (_binding, claim: { item: { id: string } }) => {
+				acked.push(claim.item.id);
+			}),
+			getHeadphoneSourceHealth: vi.fn(async () => ({
+				healthy: true,
+				sourceGap: false,
+				sources: [],
+			})),
+			handoffToLead: vi.fn(),
+			listVoiceHandoffResults: vi.fn(async () => ({
+				events: [],
+				highWatermark: 0,
+				nextCursor: 0,
+			})),
+			subscribeReplies: vi.fn(() => () => undefined),
+		};
+		const spokenTexts: string[] = [];
+		let interruptFirstA = true;
+		let pendingA:
+			| { pendingKey: string; resolve(receipt: SpeakReceipt): void }
+			| undefined;
+		h.speech.speak.mockImplementation(async (text, _kind, opts) => {
+			spokenTexts.push(text);
+			if (text === "第一条很长的汇报。" && interruptFirstA) {
+				interruptFirstA = false;
+				return new Promise<SpeakReceipt>((resolve) => {
+					pendingA = { pendingKey: opts.pendingKey, resolve };
+				});
+			}
+			return {
+				pendingKey: opts.pendingKey,
+				requestDigest: "speech-digest",
+				outcome: "completed",
+				transport: "submitted",
+				contentProof: "deterministic_tts",
+			};
+		});
+		h.speech.cancel.mockImplementation((reason: string) => {
+			const pending = pendingA;
+			pendingA = undefined;
+			pending?.resolve({
+				pendingKey: pending.pendingKey,
+				requestDigest: "speech-digest",
+				outcome: "failed",
+				reason,
+				transport: "none",
+				contentProof: "none",
+			});
+		});
+		const record = vi.fn();
+		const session = createEngineAHeadphoneSession({
+			binding: { sessionId: "voice-session", generation: 9, leaseToken: "lease" },
+			founderUserId: "founder-1",
+			bridge: bridge as never,
+			room: h.room.io,
+			transcriptSink: h.transcriptSink as never,
+			baseInstructions: "Engine A",
+			createEngine: () => h.adapter,
+			captionSink: { caption: vi.fn() },
+			record,
+		});
+		const started = session.start();
+		await vi.waitFor(() => expect(pendingA).toBeDefined());
+		expect(claimCalls).toEqual(["item-a"]);
+
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-barge",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_100,
+			phase: "start",
+		});
+		h.room.emitBarge({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-barge",
+			owner: { kind: "known", speakerUserId: "founder-1" },
+			startedAt: 1_100,
+			observedAt: 1_400,
+			durationMs: 300,
+			phase: "sustained",
+		} as never);
+		await started;
+		const spokenAtBarge = spokenTexts.length;
+
+		// Two poll ticks while she is still talking: nothing is pulled or spoken.
+		await new Promise((resolve) => setTimeout(resolve, 2_200));
+		expect(claimCalls).toEqual(["item-a"]);
+		expect(spokenTexts).toHaveLength(spokenAtBarge);
+
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation: h.live.providerGeneration as number,
+			eventId: "barge-delta",
+			startMs: 100,
+			endMs: 200,
+			delta: "一加一等于几",
+		});
+		endUtterance(h, "u-barge", 1_250);
+		h.live.emit("response-started");
+		h.live.emit("transcript", { role: "assistant", text: "等于二", final: true });
+
+		await vi.waitFor(() => expect(acked).toEqual(["item-a", "item-b"]), {
+			timeout: 5_000,
+		});
+		expect(claimCalls).toEqual(["item-a", "item-a", "item-b"]);
+		expect(spokenTexts.slice(spokenAtBarge)).toEqual([
+			"第一条很长的汇报。",
+			"第二条汇报。",
+		]);
+		expect(record).not.toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "inbox_speech_retry_scheduled" }),
+		);
+		expect(h.utterances).toContainEqual(
+			expect.objectContaining({ role: "user", text: "一加一等于几" }),
+		);
+		expect(h.utterances).toContainEqual(
+			expect.objectContaining({ role: "assistant", text: "等于二" }),
+		);
+		await session.close();
+	}, 15_000);
+
+	it("closes promptly and claims nothing while an inbox pull waits on the founder's turn", async () => {
+		const h = harness();
+		const items: Array<{
+			id: string;
+			revision: number;
+			createdAt: string;
+			needsDecision: boolean;
+			text: string;
+		}> = [];
+		const bridge = {
+			listHeadphoneItems: vi.fn(async () => [...items]),
+			claimHeadphoneItem: vi.fn(async () => undefined),
+			ackHeadphoneClaim: vi.fn(async () => undefined),
+			getHeadphoneSourceHealth: vi.fn(async () => ({
+				healthy: true,
+				sourceGap: false,
+				sources: [],
+			})),
+			handoffToLead: vi.fn(),
+			listVoiceHandoffResults: vi.fn(async () => ({
+				events: [],
+				highWatermark: 0,
+				nextCursor: 0,
+			})),
+			subscribeReplies: vi.fn(() => () => undefined),
+		};
+		const session = createEngineAHeadphoneSession({
+			binding: { sessionId: "voice-session", generation: 9, leaseToken: "lease" },
+			founderUserId: "founder-1",
+			bridge: bridge as never,
+			room: h.room.io,
+			transcriptSink: h.transcriptSink as never,
+			baseInstructions: "Engine A",
+			createEngine: () => h.adapter,
+			captionSink: { caption: vi.fn() },
+			record: vi.fn(),
+		});
+		await session.start();
+		founderSays(h, "u-leaving", "我先走了", { end: false });
+		items.push({
+			id: "item-a",
+			revision: 1,
+			createdAt: "2026-09-24T00:00:00.000Z",
+			needsDecision: false,
+			text: "一条新消息。",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 1_300));
+
+		const closed = await Promise.race([
+			session.close().then(() => "closed"),
+			new Promise((resolve) => setTimeout(() => resolve("hung"), 1_000)),
+		]);
+		expect(closed).toBe("closed");
+		expect(bridge.claimHeadphoneItem).not.toHaveBeenCalled();
+	}, 10_000);
 });
+
+function tick(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+function endUtterance(
+	h: ReturnType<typeof harness>,
+	utteranceId: string,
+	observedAt: number,
+): void {
+	h.room.emitUtterance({
+		sessionId: "voice-session",
+		generation: 9,
+		utteranceId,
+		attribution: { kind: "known", speakerUserId: "founder-1" },
+		observedAt,
+		phase: "end",
+	});
+}
+
+function founderSays(
+	h: ReturnType<typeof harness>,
+	utteranceId: string,
+	text: string,
+	options: { end?: boolean } = {},
+): void {
+	h.room.emitUtterance({
+		sessionId: "voice-session",
+		generation: 9,
+		utteranceId,
+		attribution: { kind: "known", speakerUserId: "founder-1" },
+		observedAt: 1_100,
+		phase: "start",
+	});
+	h.live.emitLiveTranscript({
+		type: "transcript-delta",
+		direction: "input",
+		generation: h.live.providerGeneration as number,
+		eventId: `delta-${utteranceId}`,
+		startMs: 100,
+		endMs: 200,
+		delta: text,
+	});
+	if (options.end !== false) endUtterance(h, utteranceId, 1_250);
+}

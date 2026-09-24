@@ -17,6 +17,7 @@ import type {
 } from "flywheel-voice-core";
 import {
 	LiveUtteranceAssembler,
+	SPEAK_BARGE_IN_REASON,
 	voiceHandoffIdempotencyKey,
 	voiceHandoffRequestDigest,
 } from "flywheel-voice-core";
@@ -27,6 +28,16 @@ const PCM24 = {
 	channels: 1,
 } as const;
 const DEFAULT_FRONTEND_AUDIO_IDLE_MS = 1_000;
+const DEFAULT_FOUNDER_TURN_SETTLE_TIMEOUT_MS = 10_000;
+const UNKNOWN_TAIL_RECHECK_MS = 250;
+
+function isLeadCue(text: string): boolean {
+	return text
+		.normalize("NFKC")
+		.replace(/\s+/gu, "")
+		.toLocaleLowerCase("en-US")
+		.includes("我问下lead");
+}
 
 export interface LiveLeadSpeech {
 	speak(
@@ -57,6 +68,8 @@ export interface LiveLeadAdapterOptions {
 	delegationEndTimeoutMs?: number;
 	maxSuspendedInputMs?: number;
 	frontendAudioIdleMs?: number;
+	/** Upper bound for waiting on an answer once the founder stops talking. */
+	founderTurnSettleTimeoutMs?: number;
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
 	record(event: Record<string, unknown>): void;
@@ -124,6 +137,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private readonly delegationEndTimeoutMs: number;
 	private readonly maxSuspendedInputBytes: number;
 	private readonly frontendAudioIdleMs: number;
+	private readonly founderTurnSettleTimeoutMs: number;
 	private readonly setTimeoutFn: typeof setTimeout;
 	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
@@ -141,6 +155,15 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private utteranceSequence = 0;
 	private opened = false;
 	private closing = false;
+	// Founder turn gate: announcer speech and inbox pulls wait while she is
+	// talking and until her turn is answered (or bounded out).
+	private readonly openFounderUtterances = new Set<string>();
+	private readonly founderTurnWaiters = new Set<() => void>();
+	private founderTurnPending = false;
+	private founderTurnAnswered = false;
+	private founderTurnResponding = false;
+	private delegationsInFlight = 0;
+	private founderTurnTimer?: ReturnType<typeof setTimeout>;
 
 	constructor(private readonly options: LiveLeadAdapterOptions) {
 		this.sessionId = options.sessionId;
@@ -151,6 +174,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		const maxSuspendedInputMs = options.maxSuspendedInputMs ?? 30_000;
 		this.frontendAudioIdleMs =
 			options.frontendAudioIdleMs ?? DEFAULT_FRONTEND_AUDIO_IDLE_MS;
+		this.founderTurnSettleTimeoutMs =
+			options.founderTurnSettleTimeoutMs ??
+			DEFAULT_FOUNDER_TURN_SETTLE_TIMEOUT_MS;
 		this.maxSuspendedInputBytes = maxSuspendedInputMs * 48;
 		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
 		this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
@@ -171,6 +197,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.frontendAudioIdleMs > 60_000
 		)
 			throw new Error("live_lead_frontend_audio_idle_invalid");
+		if (
+			!Number.isSafeInteger(this.founderTurnSettleTimeoutMs) ||
+			this.founderTurnSettleTimeoutMs < 1 ||
+			this.founderTurnSettleTimeoutMs > 60_000
+		)
+			throw new Error("live_lead_founder_turn_timeout_invalid");
 		if (
 			options.room.identity.sessionId !== options.sessionId ||
 			options.room.identity.generation !== options.generation ||
@@ -227,9 +259,11 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				contentProof: "none",
 			});
 		}
-		const promise = this.enqueueFace(() =>
-			this.runSpeak(text, kind, opts),
-		).then(
+		// Wait outside the face queue: a delegation for her turn is itself face
+		// work, so waiting inside it could never observe that turn settle.
+		const promise = this.whenFounderTurnSettled()
+			.then(() => this.enqueueFace(() => this.runSpeak(text, kind, opts)))
+			.then(
 			(receipt) => {
 				if (
 					receipt.outcome === "failed" &&
@@ -248,6 +282,16 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		);
 		this.speakWork.set(opts.pendingKey, { digest: requestDigest, promise });
 		return promise;
+	}
+
+	/** Resolves once the founder is not talking and her last turn has been
+	 * answered (frontend reply played out, or delegation handled) or bounded
+	 * out by `founderTurnSettleTimeoutMs`. Inbox pulls and announcer speech
+	 * wait on this so a readback never talks over or past her. */
+	whenFounderTurnSettled(): Promise<void> {
+		if (!this.founderTurnPending || this.closing || this.liveFailed)
+			return Promise.resolve();
+		return new Promise((resolve) => this.founderTurnWaiters.add(resolve));
 	}
 
 	onUtterance(listener: (utterance: VoiceUtterance) => void): () => void {
@@ -314,6 +358,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		if (this.closing) return;
 		this.closing = true;
 		this.wakeRoomTimelineWaiters();
+		this.settleFounderTurn();
 		this.options.speech.cancel("session-close");
 		this.liveInputSuspended = false;
 		this.clearBufferedInput();
@@ -351,6 +396,16 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				this.assembler.observeRoom(event);
 				this.wakeRoomTimelineWaiters();
 				if (event.phase === "end") live.endUserTurn();
+				if (event.phase === "start") {
+					// RoomIO owns one active capture: a new start proves any older
+					// open window lost its end (same rule as the assembler).
+					this.openFounderUtterances.clear();
+					this.openFounderUtterances.add(event.utteranceId);
+					this.openFounderTurn();
+				} else {
+					this.openFounderUtterances.delete(event.utteranceId);
+					this.maybeSettleFounderTurn();
+				}
 			}),
 			this.options.room.onBargeIn((event) => {
 				if (
@@ -360,17 +415,28 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					event.phase !== "sustained"
 				)
 					return;
-				this.options.speech.cancel("barge-in");
+				this.openFounderTurn();
+				this.maybeSettleFounderTurn();
+				this.options.speech.cancel(SPEAK_BARGE_IN_REASON);
 				this.cancelFrontendSpeech();
 				if (this.liveInputSuspended || this.liveFailed) return;
 				this.liveInputSuspended = true;
 				void this.enqueueFace(() => this.replaceAfterBargeIn(live));
 			}),
-			live.on("response-started", () => this.startFrontendSpeech()),
+			live.on("response-started", () => {
+				this.startFrontendSpeech();
+				if (!this.founderTurnPending) return;
+				this.founderTurnResponding = true;
+				this.clearFounderTurnTimer();
+			}),
 			live.on("response-audio", (chunk, format) =>
 				this.enqueueFrontendAudio(chunk, format),
 			),
-			live.on("response-cancelled", () => this.cancelFrontendSpeech()),
+			live.on("response-cancelled", () => {
+				this.cancelFrontendSpeech();
+				this.founderTurnResponding = false;
+				this.maybeSettleFounderTurn();
+			}),
 			live.on("response-done", () => this.endFrontendSpeech()),
 			live.on("transcript", (event) => {
 				if (event.role !== "assistant" || !event.final) return;
@@ -395,6 +461,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					...(event.interrupted ? { interrupted: true } : {}),
 					attribution: { kind: "unknown", reason: "assistant_output" },
 				});
+				if (!this.founderTurnPending) return;
+				this.founderTurnResponding = false;
+				// "我问下 Lead" only announces a delegation; the turn is answered
+				// once that delegation has been handled.
+				if (!isLeadCue(event.text)) this.founderTurnAnswered = true;
+				this.maybeSettleFounderTurn();
 			}),
 			live.onLiveTranscript((delta) => {
 				if (delta.direction === "input") {
@@ -410,15 +482,23 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			live.on("delegation-created", (delegation) => {
 				const key = `${this.sessionId}:${this.generation}:${delegation.generation}:${delegation.delegationId}`;
 				if (this.delegationWork.has(key)) return;
+				this.delegationsInFlight += 1;
+				this.clearFounderTurnTimer();
 				const work = this.enqueueFace(() =>
 					this.handleDelegation(key, delegation),
-				).catch((error) => {
-					this.options.record({
-						kind: "live_lead_delegation_failed",
-						binding: key,
-						message: error instanceof Error ? error.message : String(error),
+				)
+					.catch((error) => {
+						this.options.record({
+							kind: "live_lead_delegation_failed",
+							binding: key,
+							message: error instanceof Error ? error.message : String(error),
+						});
+					})
+					.finally(() => {
+						this.delegationsInFlight -= 1;
+						if (this.founderTurnPending) this.founderTurnAnswered = true;
+						this.maybeSettleFounderTurn();
 					});
-				});
 				this.delegationWork.set(key, work);
 			}),
 			live.on("error", (error) => {
@@ -610,9 +690,67 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.flushBufferedInput(live);
 	}
 
+	private openFounderTurn(): void {
+		this.founderTurnPending = true;
+		this.founderTurnAnswered = false;
+		this.clearFounderTurnTimer();
+	}
+
+	private maybeSettleFounderTurn(): void {
+		this.clearFounderTurnTimer();
+		if (!this.founderTurnPending || this.closing) return;
+		if (this.openFounderUtterances.size > 0 || this.delegationsInFlight > 0)
+			return;
+		if (!this.founderTurnAnswered) {
+			if (this.founderTurnResponding) return;
+			this.armFounderTurnTimer(this.founderTurnSettleTimeoutMs, () => {
+				this.options.record({
+					kind: "live_lead_founder_turn_unanswered",
+					timeoutMs: this.founderTurnSettleTimeoutMs,
+				});
+				this.settleFounderTurn();
+			});
+			return;
+		}
+		// Let the frontend answer finish playing before a readback takes over.
+		const tail = this.options.room.audibleTail();
+		if (!tail.drained) {
+			this.armFounderTurnTimer(
+				Math.max(20, tail.remainingMs ?? UNKNOWN_TAIL_RECHECK_MS),
+				() => this.maybeSettleFounderTurn(),
+			);
+			return;
+		}
+		this.settleFounderTurn();
+	}
+
+	private settleFounderTurn(): void {
+		this.clearFounderTurnTimer();
+		this.founderTurnPending = false;
+		this.founderTurnAnswered = false;
+		this.founderTurnResponding = false;
+		for (const resolve of [...this.founderTurnWaiters]) resolve();
+		this.founderTurnWaiters.clear();
+	}
+
+	private armFounderTurnTimer(delayMs: number, fire: () => void): void {
+		this.clearFounderTurnTimer();
+		this.founderTurnTimer = this.setTimeoutFn(() => {
+			this.founderTurnTimer = undefined;
+			fire();
+		}, delayMs);
+		this.founderTurnTimer.unref?.();
+	}
+
+	private clearFounderTurnTimer(): void {
+		if (this.founderTurnTimer) this.clearTimeoutFn(this.founderTurnTimer);
+		this.founderTurnTimer = undefined;
+	}
+
 	private failLive(cause: LiveLeadUnavailableCause, error: unknown): void {
 		if (this.liveFailed || this.closing) return;
 		this.liveFailed = true;
+		this.settleFounderTurn();
 		this.liveInputUnavailable = true;
 		this.liveInputSuspended = false;
 		this.clearBufferedInput();
@@ -670,11 +808,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		providerGeneration: number,
 		bindingKey: string,
 	): Promise<void> {
-		const spoken = (this.frontendTextByGeneration.get(providerGeneration) ?? "")
-			.normalize("NFKC")
-			.replace(/\s+/gu, "")
-			.toLocaleLowerCase("en-US");
-		if (spoken.includes("我问下lead")) return;
+		if (isLeadCue(this.frontendTextByGeneration.get(providerGeneration) ?? ""))
+			return;
 		const receipt = await this.options.speech.speak("我问下 Lead", "cue", {
 			pendingKey: `delegation-cue:${bindingKey}`,
 			verification: "required",

@@ -24,6 +24,8 @@ export interface EngineAAdapter extends VoiceV1Session {
 		event: VoiceHandoffResultEvent,
 		binding: LiveLeadResultBinding,
 	): Promise<SpeakReceipt>;
+	/** Resolves when the founder is not mid-turn (see LiveLeadAdapter). */
+	whenFounderTurnSettled(): Promise<void>;
 }
 
 export interface EngineACompositionCallbacks {
@@ -72,6 +74,7 @@ export function createEngineAHeadphoneSession(
 	options: EngineAHeadphoneSessionOptions,
 ): EngineAHeadphoneSession {
 	let replies: LiveReplyEvents | undefined;
+	let closing = false;
 	const pendingBindings: LiveLeadResultBinding[] = [];
 	const engine = options.createEngine({
 		registerHandoff(binding) {
@@ -81,10 +84,30 @@ export function createEngineAHeadphoneSession(
 		submitHandoff: (request) =>
 			options.bridge.handoffToLead(options.binding, request),
 	});
+	const bridge = options.bridge;
 	const headphone = new HeadphoneSession({
 		engine,
 		room: options.room,
-		bridge: options.bridge,
+		// The inbox pulls no new item while the founder is talking or waiting
+		// for her answer; the readback resumes only after her turn settles.
+		bridge: {
+			listHeadphoneItems: (binding) => bridge.listHeadphoneItems(binding),
+			claimHeadphoneItem: async (binding, item) => {
+				await engine.whenFounderTurnSettled();
+				if (closing) return undefined;
+				return bridge.claimHeadphoneItem(binding, item);
+			},
+			ackHeadphoneClaim: (binding, claim, receipts) =>
+				bridge.ackHeadphoneClaim(binding, claim, receipts),
+			getHeadphoneSourceHealth: (binding) =>
+				bridge.getHeadphoneSourceHealth(binding),
+			handoffToLead: (binding, request) =>
+				bridge.handoffToLead(binding, request),
+			listVoiceHandoffResults: (binding, handoffId, after, limit) =>
+				bridge.listVoiceHandoffResults(binding, handoffId, after, limit),
+			subscribeReplies: (binding, listener) =>
+				bridge.subscribeReplies(binding, listener),
+		},
 		binding: options.binding,
 		founderUserId: options.founderUserId,
 		transcriptSink: options.transcriptSink,
@@ -127,7 +150,11 @@ export function createEngineAHeadphoneSession(
 			}
 		},
 		async close() {
+			closing = true;
 			await replies?.close();
+			// Close the engine first: it releases any inbox pull or speech that is
+			// waiting on the founder's turn, which headphone close would await.
+			await engine.close();
 			await headphone.close();
 		},
 		async speak(text, pendingKey) {

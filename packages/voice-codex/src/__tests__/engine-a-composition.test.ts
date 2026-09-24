@@ -15,6 +15,7 @@ describe("Engine A production composition", () => {
 			sessionId: "session-1",
 			generation: 7,
 		}) as EngineAAdapter;
+		engine.whenFounderTurnSettled = vi.fn(async () => undefined);
 		engine.applyLeadResult = vi.fn(async () => ({
 			pendingKey: "result-1",
 			requestDigest: "speech-digest",
