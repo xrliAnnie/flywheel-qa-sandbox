@@ -378,6 +378,10 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 		baseEnv: {
 			PATH: "/usr/bin",
 			HOME: "/Users/qa",
+			FLYWHEEL_VOICE_ENGINE: "openai-live",
+			FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD:
+				"/usr/local/opt/python@3.10/bin/python3.10",
+			FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED: "1",
 			FLYWHEEL_EXECUTION_ID: "must-be-scrubbed",
 			FLYWHEEL_ACTIVATION_ID: "must-be-scrubbed",
 			DISCORD_BOT_TOKEN: "production-token",
@@ -389,6 +393,12 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 	);
 	assert.equal(env.FLYWHEEL_PROJECTS, '[{"projectName":"test-slot-2"}]');
 	assert.equal(env.FLYWHEEL_VOICE_BUILD_SHA, "a".repeat(40));
+	assert.equal(env.FLYWHEEL_VOICE_ENGINE, "openai-live");
+	assert.equal(
+		env.FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD,
+		"/usr/local/opt/python@3.10/bin/python3.10",
+	);
+	assert.equal(env.FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED, "1");
 	assert.equal(env.TEST_BOT_TOKEN_2, "test-bot-secret");
 	assert.equal(env.DISCORD_BOT_TOKEN, undefined);
 	assert.equal(env.FLYWHEEL_EXECUTION_ID, undefined);
@@ -407,8 +417,11 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 			"FLYWHEEL_STATE_DIR",
 			"FLYWHEEL_VOICE_CODEX_HOME",
 			"FLYWHEEL_VOICE_BUILD_SHA",
+			"FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD",
+			"FLYWHEEL_VOICE_ENGINE",
 			"FLYWHEEL_VOICE_HOST_CONFIG",
 			"FLYWHEEL_VOICE_STATE_DIR",
+			"FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED",
 			"HOME",
 			"OPENAI_API_KEY",
 			"PATH",
