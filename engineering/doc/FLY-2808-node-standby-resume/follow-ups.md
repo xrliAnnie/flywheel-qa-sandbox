@@ -48,6 +48,13 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 |---|---|---|
 | HIGH | §5.3 第 4 步「入队事务同时重核 activation/TURN/demand/generation」跨 StateStore 与 CommDB 两库，与 §2.2 无跨库事务矛盾；预留后转授、入队后取消/终态/换代的陈旧首条输入竞态未闭合 | 采纳。§5.3 第 4 步改为四阶段双库线性化协议：a) StateStore CAS 预留 delivery authorization（唯一 delivery_id，与 cancel/终态/换代共用同一 CAS 行）并写 durable outbox；b) CommDB IMMEDIATE 事务核 exact turn 元组并幂等入队同一 delivery_id，`grantTurn` 转授在同库事务取消旧 epoch 未消费项；c) transport claim / 首次模型消费前回核 StateStore 投影，未知或落后 fail closed；d) 按 delivery_id 幂等 ACK/取消与崩溃重放。§2.1 新增 delivery authorization 行；矩阵 P 加两库各缝隙的 TURN transfer / cancel / terminal / generation change / crash 断言 |
 
+## 1.5 沙箱设计评审 R5（CHANGES REQUESTED → 全部采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | `turn_stale` 回到第 3 步无法在同 demand/generation 上取得新 epoch：receipt 主键固定、基线 `grantTurn` 对同一 source event 回放冻结旧 epoch、`workflow_activation_turn` 以 activation_id 为主键 no-update | 采纳。引入追加式 grant episode：receipt 主键改 (demand_id, carrier_generation, grant_id)，demand 行 `current_grant_id` CAS 推进；每个 grant episode = 新 activation（`activation:${requestId}:g${grant_id}` + 含 grant_id 的 TURN source event），activation_turn 追加新行、execution binding 不变、凭证按 §5.4 刷新；delivery authorization 引用 grant_id；「转授即永久取代」作为未采用的替代方案注明 |
+| HIGH | reserve 与 cancel/终态/换代「先提交者赢」会让失效被已 reserve 的投递吞掉，且与 stage c/d 矛盾；cancel 在 delivery 行不存在时无法与 insert 同行 | 采纳。§5.3 新增 delivery authorization 闭集转换表：reserve 由 source facts（demand/run/carrier 行）守门，失效操作在各自事务里把活动 delivery CAS→cancelled 且永不被 reserve 阻止；consume 只从 enqueued 且同事务重核 source facts；turn_stale 是该 delivery 终态；迟到 projector/ACK 一律 no-op；明确 cancel-vs-consume 提交顺序与被撤销凭证 fenced 的一轮残余；矩阵 P 分「cancel 先于 reserve」「reserve 后失效」「转授后新 grant episode 恰好消费一次」验收 |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
