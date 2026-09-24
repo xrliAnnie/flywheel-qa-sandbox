@@ -937,7 +937,10 @@ import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
-import { VoiceHandoffService } from "./voice-handoff.js";
+import {
+	VoiceHandoffService,
+	validateCodexVoiceDelegateBinding,
+} from "./voice-handoff.js";
 import {
 	createVoiceHealthBridgeGuard,
 	createVoiceHealthExportReader,
@@ -9104,9 +9107,10 @@ export async function startBridge(
 		store,
 		founderUserIds: () =>
 			config.discordOwnerUserId ? [config.discordOwnerUserId] : [],
-		// Engine B remains attribution:false until the layering proof gates land.
-		// A structurally valid request is not authority to mutate anything.
-		validateAuthorityBinding: () => false,
+		// A delegation only queues the founder's durable words to the resident Lead;
+		// it grants the voice container no mutation authority. All action intents stay
+		// fail-closed here until their separate capability gates land.
+		validateAuthorityBinding: validateCodexVoiceDelegateBinding,
 		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
 		inspectDeliveryState: (deliveryId, handoff) => {
 			const settlement = leadInboxRuntime.readHandoffSettlement(

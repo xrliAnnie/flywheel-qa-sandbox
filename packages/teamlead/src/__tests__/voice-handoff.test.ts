@@ -13,6 +13,7 @@ import {
 	VoiceHandoffError,
 	VoiceHandoffService,
 	type VoiceMailboxSettlement,
+	validateCodexVoiceDelegateBinding,
 } from "../bridge/voice-handoff.js";
 import { voiceSessionAuthMiddleware } from "../bridge/voice-session-auth.js";
 import { createVoiceSessionRouter } from "../bridge/voice-session-routes.js";
@@ -159,6 +160,51 @@ function handoff(leaseToken: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe("durable voice utterances", () => {
+	it("persists a founder-bound Codex execution delegation and queues it to the Lead body", async () => {
+		const { leaseToken } = liveSession();
+		const h = service({ authority: validateCodexVoiceDelegateBinding });
+		h.service.recordUtterance(
+			utterance(leaseToken, {
+				text: "你帮我去看一下2799现在是什么状态。",
+			}),
+		);
+		const result = await h.service.handoff(
+			handoff(leaseToken, {
+				intentKind: "delegate_request",
+				payload: {
+					backendIntentKind: "commandExecution",
+					backendMethod: "item/started",
+					backendItemId: "exec-a",
+				},
+				originalText: "你帮我去看一下2799现在是什么状态。",
+				idempotencyKey: "codex-delegate:0123456789abcdef0123456789abcdef",
+				authorityBinding: {
+					version: 1,
+					source: "codex_voice_execution_intent",
+					sessionId: SESSION_ID,
+					leadId: "raya",
+					transcriptId: "transcript-a",
+					speakerUserId: "founder",
+				},
+			}),
+		);
+
+		expect(result).toMatchObject({ state: "dispatched" });
+		expect(store.getVoiceHandoff(result.handoffId)).toMatchObject({
+			intentKind: "delegate_request",
+			originalText: "你帮我去看一下2799现在是什么状态。",
+		});
+		expect(h.enqueue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: "raya",
+				event: expect.objectContaining({
+					event_type: "voice_handoff",
+					voice_intent_kind: "delegate_request",
+				}),
+			}),
+		);
+	});
+
 	it("replays the same transcript receipt and rejects a changed body or lease", () => {
 		const { leaseToken } = liveSession();
 		const h = service();

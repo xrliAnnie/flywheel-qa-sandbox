@@ -14,6 +14,7 @@ import {
 } from "../codex-home.js";
 import {
 	type CodexRealtimeAudioDelta,
+	type CodexRealtimeExecutionIntent,
 	type CodexRealtimeItem,
 	type CodexRealtimeTranscript,
 	CodexRealtimeTransport,
@@ -508,6 +509,7 @@ export interface CodexVoiceOpenInput {
 			method: string;
 			params: unknown;
 		}): void;
+		onExecutionIntent?(input: CodexRealtimeExecutionIntent): void;
 		onClosed?(input: { generation: number; reason: string }): void;
 		onError?(error: Error): void;
 	};
@@ -640,22 +642,6 @@ export class CodexVoiceContainer {
 			};
 			const process = this.createProcess(processOptions);
 			resources.process = process;
-			process.on("notification", (method: string) => {
-				if (
-					method === "turn/started" ||
-					method.includes("commandExecution") ||
-					method.includes("mcpToolCall")
-				) {
-					violation = "unexpected_backend_execution";
-					this.evidence({
-						kind: "codex_voice_capability_violation",
-						sessionId: input.sessionId,
-						reason: violation,
-					});
-					if (conversation)
-						void conversation.close(violation).catch(() => undefined);
-				}
-			});
 			process.on("exit", () => {
 				if (!conversation) violation ??= "process_exited_during_open";
 				else void conversation.close("process_exit").catch(() => undefined);

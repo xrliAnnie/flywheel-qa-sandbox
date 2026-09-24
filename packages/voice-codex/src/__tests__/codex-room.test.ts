@@ -240,6 +240,131 @@ describe("Codex room composition", () => {
 		expect(close).toHaveBeenCalledOnce();
 	});
 
+	it("hands real execution intent to the Lead without closing and records output-frame underload", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		let monotonic = 1_000;
+		const close = vi.fn(async () => undefined);
+		const persisted = vi.fn(async () => undefined);
+		const published = vi.fn(async () => undefined);
+		const handoffToLead = vi.fn(async () => ({
+			handoffId: "handoff-a",
+			state: "dispatched" as const,
+			idempotencyKey: "codex-delegate:a",
+			requestDigest: "d".repeat(64),
+		}));
+		const evidence = vi.fn();
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-handoff",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close,
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			persistUtterance: persisted,
+			publishUtterance: published,
+			handoffToLead,
+			monotonicNow: () => monotonic,
+			onEvidence: evidence,
+		});
+		const session = await actual.createConversation({ brain });
+		const errors: Error[] = [];
+		session.on("error", (error) => errors.push(error));
+
+		callbacks.onTranscript({
+			generation: 1,
+			itemId: "user-a",
+			association: "preceding_item",
+			role: "user",
+			text: "你帮我去看一下2799现在是什么状态。",
+			final: true,
+			inputOwner: {
+				utteranceId: "founder-request",
+				ownerUserId: "founder",
+				ownerName: "Annie",
+			},
+			raw: {},
+		} as never);
+		await vi.waitFor(() => expect(persisted).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(published).toHaveBeenCalledOnce());
+
+		callbacks.onExecutionIntent({
+			generation: 1,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-a",
+			params: { item: { type: "commandExecution" } },
+		} as never);
+		await vi.waitFor(() => expect(handoffToLead).toHaveBeenCalledOnce());
+		expect(handoffToLead).toHaveBeenCalledWith({
+			utterance: expect.objectContaining({
+				transcriptId: "session-handoff:1:user-a:1",
+				text: "你帮我去看一下2799现在是什么状态。",
+				attribution: { kind: "known", speakerUserId: "founder" },
+			}),
+			intent: expect.objectContaining({
+				kind: "commandExecution",
+				itemId: "exec-a",
+			}),
+		});
+		expect(close).not.toHaveBeenCalled();
+		expect(errors).toEqual([]);
+
+		callbacks.onAudio({
+			generation: 1,
+			itemId: "assistant-a",
+			pcm24Mono: Buffer.alloc(960),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 480,
+			raw: {},
+		} as never);
+		monotonic = 1_030;
+		callbacks.onAudio({
+			generation: 1,
+			itemId: "assistant-a",
+			pcm24Mono: Buffer.alloc(960),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 480,
+			raw: {},
+		} as never);
+		expect(evidence).toHaveBeenCalledWith({
+			kind: "codex_output_audio_frame",
+			generation: 1,
+			itemId: "assistant-a",
+			frameIndex: 2,
+			pcmBytes: 960,
+			durationMs: 20,
+			intervalMs: 30,
+			underloadMs: 10,
+		});
+		expect(evidence).toHaveBeenCalledWith({
+			kind: "codex_execution_handoff",
+			generation: 1,
+			backendIntentKind: "commandExecution",
+			backendMethod: "item/started",
+			backendItemId: "exec-a",
+			transcriptId: "session-handoff:1:user-a:1",
+			handoffId: "handoff-a",
+			state: "dispatched",
+		});
+
+		await session.close();
+	});
+
 	it("records backpressure as a gap without ending the room session", async () => {
 		const appendAudio = vi
 			.fn()

@@ -15,6 +15,7 @@ const INTENT_KINDS = new Set<VoiceHandoffIntentKind>([
 	"approve_ship",
 	"change_priority",
 	"dispatch_runner",
+	"delegate_request",
 ]);
 const SOURCES = new Set(["room_audio", "engine_audio", "engine_text"]);
 const ROLES = new Set(["user", "assistant"]);
@@ -95,6 +96,40 @@ export interface VoiceHandoffInput {
 	originalText: string;
 	idempotencyKey: string;
 	authorityBinding: Record<string, unknown>;
+}
+
+export function validateCodexVoiceDelegateBinding(input: {
+	sessionId: string;
+	leadId: string;
+	intentKind: VoiceHandoffIntentKind;
+	authorityBinding: Record<string, unknown>;
+	utterance: VoiceUtteranceRow;
+}): boolean {
+	if (
+		input.intentKind !== "delegate_request" ||
+		input.utterance.attribution.kind !== "known"
+	)
+		return false;
+	const binding = input.authorityBinding;
+	const keys = Object.keys(binding).sort();
+	const expected = [
+		"leadId",
+		"sessionId",
+		"source",
+		"speakerUserId",
+		"transcriptId",
+		"version",
+	].sort();
+	return (
+		keys.length === expected.length &&
+		keys.every((key, index) => key === expected[index]) &&
+		binding.version === 1 &&
+		binding.source === "codex_voice_execution_intent" &&
+		binding.sessionId === input.sessionId &&
+		binding.leadId === input.leadId &&
+		binding.transcriptId === input.utterance.transcriptId &&
+		binding.speakerUserId === input.utterance.attribution.speakerUserId
+	);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

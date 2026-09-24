@@ -310,6 +310,10 @@ describe("voice session context assembly", () => {
 			`snapshotDigest=${result.snapshotDigest}`,
 		);
 		expect(result.realtimePrompt).toContain("Realtime voice protocol");
+		expect(result.realtimePrompt).toContain("Flywheel 的临时语音分身");
+		expect(result.realtimePrompt).toContain(
+			"逐句文字会发到当前语音会话的 Discord thread",
+		);
 		expect(result.manifest.snapshotDigest).toBe(result.snapshotDigest);
 		expect(result.measurements.realtimePrompt.bytes).toBeGreaterThan(0);
 		expect(result.measurements.realtimePrompt.estimatedTokens).toBeGreaterThan(

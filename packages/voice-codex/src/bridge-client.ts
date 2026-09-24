@@ -36,7 +36,8 @@ export type VoiceHandoffIntentKind =
 	| "create_issue"
 	| "approve_ship"
 	| "change_priority"
-	| "dispatch_runner";
+	| "dispatch_runner"
+	| "delegate_request";
 
 export interface VoiceHandoffToLeadInput {
 	intentKind: VoiceHandoffIntentKind;

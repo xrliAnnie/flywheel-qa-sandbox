@@ -2859,7 +2859,8 @@ export type VoiceHandoffIntentKind =
 	| "create_issue"
 	| "approve_ship"
 	| "change_priority"
-	| "dispatch_runner";
+	| "dispatch_runner"
+	| "delegate_request";
 
 export interface VoiceHandoffRow {
 	handoffId: string;
@@ -10058,6 +10059,79 @@ export class StateStore {
 		});
 	}
 
+	private migrateVoiceHandoffIntentKinds(): void {
+		const schema = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'voice_handoffs'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (String(schema?.sql ?? "").includes("'delegate_request'")) return;
+		this.db.transaction(() => {
+			this.db.run("DROP TABLE IF EXISTS voice_handoffs_next");
+			this.db.run(`
+				CREATE TABLE voice_handoffs_next (
+					handoff_id TEXT PRIMARY KEY,
+					session_id TEXT NOT NULL,
+					lead_id TEXT NOT NULL,
+					transcript_id TEXT NOT NULL,
+					intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner','delegate_request')),
+					payload_json TEXT NOT NULL,
+					original_text TEXT NOT NULL,
+					idempotency_key TEXT NOT NULL,
+					authority_binding_json TEXT NOT NULL,
+					request_digest TEXT NOT NULL,
+					transcript_receipt_id TEXT NOT NULL,
+					state TEXT NOT NULL CHECK(state IN ('authorized','dispatching','dispatched','committed','rejected','ambiguous','needs_human')),
+					provider_operation_id TEXT,
+					attempt_token TEXT,
+					delivery_id TEXT,
+					lead_event_seq INTEGER,
+					last_reconcile_at TEXT,
+					next_reconcile_at TEXT,
+					reconciler_owner TEXT,
+					claim_token TEXT,
+					lease_expires_at TEXT,
+					state_version INTEGER NOT NULL DEFAULT 1,
+					reconcile_attempts INTEGER NOT NULL DEFAULT 0,
+					last_dispatch_error TEXT,
+					last_reconcile_result TEXT,
+					terminal_reason TEXT,
+					execution_evidence TEXT,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL,
+					UNIQUE(session_id, idempotency_key),
+					FOREIGN KEY(session_id, transcript_id) REFERENCES voice_utterances(session_id, transcript_id)
+				)
+			`);
+			this.db.run(`
+				INSERT INTO voice_handoffs_next (
+					handoff_id, session_id, lead_id, transcript_id, intent_kind,
+					payload_json, original_text, idempotency_key,
+					authority_binding_json, request_digest, transcript_receipt_id,
+					state, provider_operation_id, attempt_token, delivery_id,
+					lead_event_seq, last_reconcile_at, next_reconcile_at,
+					reconciler_owner, claim_token, lease_expires_at, state_version,
+					reconcile_attempts, last_dispatch_error, last_reconcile_result,
+					terminal_reason, execution_evidence, created_at, updated_at
+				)
+				SELECT
+					handoff_id, session_id, lead_id, transcript_id, intent_kind,
+					payload_json, original_text, idempotency_key,
+					authority_binding_json, request_digest, transcript_receipt_id,
+					state, provider_operation_id, attempt_token, delivery_id,
+					lead_event_seq, last_reconcile_at, next_reconcile_at,
+					reconciler_owner, claim_token, lease_expires_at, state_version,
+					reconcile_attempts, last_dispatch_error, last_reconcile_result,
+					terminal_reason, execution_evidence, created_at, updated_at
+				FROM voice_handoffs
+			`);
+			this.db.run("DROP TABLE voice_handoffs");
+			this.db.run(
+				"ALTER TABLE voice_handoffs_next RENAME TO voice_handoffs",
+			);
+		});
+	}
+
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
@@ -11035,7 +11109,7 @@ export class StateStore {
 				session_id TEXT NOT NULL,
 				lead_id TEXT NOT NULL,
 				transcript_id TEXT NOT NULL,
-				intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner')),
+				intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner','delegate_request')),
 				payload_json TEXT NOT NULL,
 				original_text TEXT NOT NULL,
 				idempotency_key TEXT NOT NULL,
@@ -11064,6 +11138,7 @@ export class StateStore {
 				FOREIGN KEY(session_id, transcript_id) REFERENCES voice_utterances(session_id, transcript_id)
 			)
 		`);
+		this.migrateVoiceHandoffIntentKinds();
 		this.db.run(`
 			CREATE INDEX IF NOT EXISTS voice_handoffs_reconcile
 			ON voice_handoffs(state, next_reconcile_at, lease_expires_at)

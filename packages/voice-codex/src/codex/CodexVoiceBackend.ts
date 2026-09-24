@@ -18,10 +18,12 @@ import type {
 	CodexVoiceContextSnapshot,
 	CodexVoiceOpenInput,
 } from "./CodexVoiceContainer.js";
+import type { CodexHandoffResult } from "./CodexVoiceHandoff.js";
 import {
 	CODEX_REALTIME_INPUT_QUEUE_BYTES,
 	type CodexRealtimeAppendOutcome,
 	type CodexRealtimeAudioDelta,
+	type CodexRealtimeExecutionIntent,
 	type CodexRealtimeInputOwner,
 	type CodexRealtimeItem,
 	type CodexRealtimeTranscript,
@@ -91,7 +93,13 @@ export interface CodexVoiceBackendOptions {
 		utterance: VoiceUtterance,
 		captureDigest: string,
 	) => Promise<void>;
+	publishUtterance?: (utterance: VoiceUtterance) => Promise<void>;
+	handoffToLead?: (input: {
+		utterance: VoiceUtterance;
+		intent: CodexRealtimeExecutionIntent;
+	}) => Promise<CodexHandoffResult>;
 	now?: () => Date;
+	monotonicNow?: () => number;
 	onEvidence?: (record: Record<string, unknown>) => void;
 	confirmTimeoutMs?: number;
 }
@@ -119,6 +127,8 @@ export class CodexVoiceBackend implements VoiceBackend {
 				onInputGap: (input) => callbacks.session?.observeInputGap(input),
 				onCapabilityViolation: (input) =>
 					callbacks.session?.capabilityViolation(input.method),
+				onExecutionIntent: (input) =>
+					callbacks.session?.observeExecutionIntent(input),
 				onClosed: (input) => callbacks.session?.transportClosed(input),
 				onError: (error) => callbacks.session?.transportError(error),
 			},
@@ -138,6 +148,7 @@ class CodexVoiceSession implements ConversationSession {
 	private readonly events = new TypedEmitter<ConversationEventMap>();
 	private readonly speaker: CodexProofSpeaker;
 	private readonly now: () => Date;
+	private readonly monotonicNow: () => number;
 	private readonly audio = new Map<string, Buffer[]>();
 	private readonly outputStarted = new Set<string>();
 	private readonly restartAudio: Array<{
@@ -147,6 +158,15 @@ class CodexVoiceSession implements ConversationSession {
 	private restartAudioBytes = 0;
 	private restartInputGap = false;
 	private durabilityTail: Promise<void> = Promise.resolve();
+	private latestKnownUser?: {
+		utterance: VoiceUtterance;
+		persisted: Promise<boolean>;
+	};
+	private readonly handoffKeys = new Set<string>();
+	private readonly outputFrameState = new Map<
+		string,
+		{ frameIndex: number; observedAt: number; durationMs: number }
+	>();
 	private sequence = 0;
 	private pendingPlaybackCount = 0;
 	private generation: number;
@@ -163,6 +183,8 @@ class CodexVoiceSession implements ConversationSession {
 	) {
 		this.sessionId = options.sessionId;
 		this.now = options.now ?? (() => new Date());
+		this.monotonicNow =
+			options.monotonicNow ?? performance.now.bind(performance);
 		this.generation = options.conversation.generation ?? 1;
 		this.speaker = new CodexProofSpeaker({
 			sessionId: options.sessionId,
@@ -250,8 +272,10 @@ class CodexVoiceSession implements ConversationSession {
 	interrupt(): void {
 		if (this.closing || this.restarting || !this.live) return;
 		this.restarting = true;
+		this.latestKnownUser = undefined;
 		this.speaker.interrupt();
 		this.audio.clear();
+		this.outputFrameState.clear();
 		this.outputStarted.clear();
 		this.events.emit("response-cancelled");
 		const restart = this.options.conversation.restart;
@@ -335,6 +359,32 @@ class CodexVoiceSession implements ConversationSession {
 		if (this.closing || this.restarting || delta.generation !== this.generation)
 			return;
 		const chunks = this.audio.get(delta.itemId) ?? [];
+		const observedAt = this.monotonicNow();
+		const samples = delta.samplesPerChannel ?? delta.pcm24Mono.length / 2;
+		const durationMs = samples / 24;
+		const previous = this.outputFrameState.get(delta.itemId);
+		const intervalMs = previous
+			? Math.max(0, observedAt - previous.observedAt)
+			: null;
+		const underloadMs = previous
+			? Math.max(0, intervalMs! - previous.durationMs)
+			: null;
+		const frameIndex = (previous?.frameIndex ?? 0) + 1;
+		this.outputFrameState.set(delta.itemId, {
+			frameIndex,
+			observedAt,
+			durationMs,
+		});
+		this.options.onEvidence?.({
+			kind: "codex_output_audio_frame",
+			generation: delta.generation,
+			itemId: delta.itemId,
+			frameIndex,
+			pcmBytes: delta.pcm24Mono.length,
+			durationMs,
+			intervalMs,
+			underloadMs,
+		});
 		chunks.push(delta.pcm24Mono);
 		this.audio.set(delta.itemId, chunks);
 		this.events.emit("response-audio", delta.pcm24Mono, PCM24_MONO);
@@ -392,7 +442,9 @@ class CodexVoiceSession implements ConversationSession {
 							},
 		};
 		this.events.emit("utterance", utterance);
-		this.persist(utterance, transcript);
+		const persisted = this.persist(utterance, transcript);
+		if (utterance.role === "user" && utterance.attribution.kind === "known")
+			this.latestKnownUser = { utterance, persisted };
 		if (transcript.role === "assistant" && transcript.itemId)
 			void this.play(transcript.itemId, transcript.generation);
 	}
@@ -404,6 +456,59 @@ class CodexVoiceSession implements ConversationSession {
 	capabilityViolation(method: string): void {
 		this.transportError(new Error(`codex_capability_violation:${method}`));
 		void this.close();
+	}
+
+	observeExecutionIntent(intent: CodexRealtimeExecutionIntent): void {
+		if (
+			this.closing ||
+			this.restarting ||
+			intent.generation !== this.generation
+		)
+			return;
+		const candidate = this.latestKnownUser;
+		if (!candidate || !this.options.handoffToLead) {
+			this.options.onEvidence?.({
+				kind: "codex_execution_handoff_skipped",
+				generation: intent.generation,
+				backendIntentKind: intent.kind,
+				backendMethod: intent.method,
+				reason: candidate ? "handoff_sink_missing" : "known_user_missing",
+			});
+			return;
+		}
+		const key = `${intent.generation}:${intent.kind}:${intent.itemId ?? intent.method}:${candidate.utterance.transcriptId}`;
+		if (this.handoffKeys.has(key)) return;
+		this.handoffKeys.add(key);
+		void candidate.persisted
+			.then(async (durable) => {
+				if (!durable) throw new Error("codex_handoff_transcript_not_durable");
+				return this.options.handoffToLead!({
+					utterance: candidate.utterance,
+					intent,
+				});
+			})
+			.then((receipt) => {
+				this.options.onEvidence?.({
+					kind: "codex_execution_handoff",
+					generation: intent.generation,
+					backendIntentKind: intent.kind,
+					backendMethod: intent.method,
+					...(intent.itemId ? { backendItemId: intent.itemId } : {}),
+					transcriptId: candidate.utterance.transcriptId,
+					handoffId: receipt.handoffId,
+					state: receipt.state,
+				});
+			})
+			.catch((error) => {
+				this.options.onEvidence?.({
+					kind: "codex_execution_handoff_failed",
+					generation: intent.generation,
+					backendIntentKind: intent.kind,
+					backendMethod: intent.method,
+					transcriptId: candidate.utterance.transcriptId,
+					reason: error instanceof Error ? error.message : "unknown_error",
+				});
+			});
 	}
 
 	transportClosed(input: { generation: number; reason: string }): void {
@@ -441,7 +546,7 @@ class CodexVoiceSession implements ConversationSession {
 	private persist(
 		utterance: VoiceUtterance,
 		transcript: CodexRealtimeTranscript,
-	): void {
+	): Promise<boolean> {
 		const captureDigest = createHash("sha256")
 			.update(
 				JSON.stringify({
@@ -454,7 +559,7 @@ class CodexVoiceSession implements ConversationSession {
 				}),
 			)
 			.digest("hex");
-		this.durabilityTail = this.durabilityTail.then(async () => {
+		const persisted = this.durabilityTail.then(async () => {
 			const local = await this.options.transcriptSink?.append({
 				ts: utterance.ts,
 				sessionId: utterance.sessionId,
@@ -482,11 +587,13 @@ class CodexVoiceSession implements ConversationSession {
 						"Codex transcript durability failed",
 					),
 				);
-				return;
+				return false;
 			}
+			let durable = this.options.persistUtterance !== undefined;
 			try {
 				await this.options.persistUtterance?.(utterance, captureDigest);
 			} catch (error) {
+				durable = false;
 				this.options.onEvidence?.({
 					kind: "codex_bridge_utterance_write_failed",
 					reason: error instanceof Error ? error.message : "unknown_error",
@@ -500,12 +607,25 @@ class CodexVoiceSession implements ConversationSession {
 					),
 				);
 			}
+			try {
+				await this.options.publishUtterance?.(utterance);
+			} catch (error) {
+				this.options.onEvidence?.({
+					kind: "codex_transcript_publish_failed",
+					transcriptId: utterance.transcriptId,
+					reason: error instanceof Error ? error.message : "unknown_error",
+				});
+			}
+			return durable;
 		});
+		this.durabilityTail = persisted.then(() => undefined);
+		return persisted;
 	}
 
 	private async play(itemId: string, generation: number): Promise<void> {
 		const chunks = this.audio.get(itemId) ?? [];
 		this.audio.delete(itemId);
+		this.outputFrameState.delete(itemId);
 		if (chunks.length === 0) return;
 		if (!this.options.playAudio) {
 			this.options.onEvidence?.({

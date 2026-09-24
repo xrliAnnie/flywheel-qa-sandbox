@@ -28,6 +28,10 @@ import {
 	type CodexVoiceContextSnapshot,
 } from "./codex/CodexVoiceContainer.js";
 import {
+	buildCodexDelegateHandoff,
+	CodexTranscriptPublisher,
+} from "./codex/CodexVoiceHandoff.js";
+import {
 	loadVoiceDaemonConfig,
 	loadVoiceProjects,
 	resolveLeadVoiceToken,
@@ -378,6 +382,21 @@ export async function main(): Promise<void> {
 		let codexBackend: CodexVoiceBackend | undefined;
 		if (config.backendId === "codex-realtime") {
 			const registry = new BackendRegistry();
+			const transcriptPublisher = new CodexTranscriptPublisher({
+				sessionId: context.sessionId,
+				founderUserId: context.projection.founderUserId,
+				displayName: context.projection.displayName,
+				mirror: ({ text, nonce }) => {
+					context.lease.assert();
+					return mirror.post(context.projection.threadId, text, nonce);
+				},
+				evidence: (record) =>
+					evidence.appendBuffered({
+						ts: new Date().toISOString(),
+						voiceSessionId: context.sessionId,
+						...record,
+					}),
+			});
 			const container = new CodexVoiceContainer({
 				binaryPath: config.codexBin,
 				scratchRoot: join(config.voiceRoot, "codex-containers"),
@@ -423,6 +442,22 @@ export async function main(): Promise<void> {
 								context.leaseToken,
 								context.lease,
 								{ ...record, captureDigest },
+							);
+						},
+						publishUtterance: (utterance) =>
+							transcriptPublisher.publish(utterance),
+						handoffToLead: ({ utterance, intent }) => {
+							context.lease.assert();
+							return bridge.handoffToLead(
+								context.sessionId,
+								context.leaseToken,
+								context.lease,
+								buildCodexDelegateHandoff({
+									sessionId: context.sessionId,
+									leadId: context.projection.leadId,
+									utterance,
+									intent,
+								}),
 							);
 						},
 						onEvidence: (record) =>

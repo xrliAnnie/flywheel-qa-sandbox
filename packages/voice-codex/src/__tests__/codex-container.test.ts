@@ -484,13 +484,15 @@ describe("Codex voice container", () => {
 		},
 	);
 
-	it("passes the full context to both start calls and fences unexpected backend execution", async () => {
+	it("passes the full context and keeps a real turn open while surfacing execution intent", async () => {
 		const h = harness();
 		const uniqueTail = `FULL_CONTEXT_TAIL_${"x".repeat(58_000)}`;
+		const executionIntents = vi.fn();
 		const opened = await h.container.open({
 			sessionId: "session-a",
 			voice: "marin",
 			loadContext: async () => context("session-a", undefined, uniqueTail),
+			realtime: { onExecutionIntent: executionIntents },
 		});
 		const process = h.processes[0]!;
 		expect(process.threadParams?.baseInstructions).toContain(uniqueTail);
@@ -502,13 +504,26 @@ describe("Codex voice container", () => {
 			threadId: opened.threadId,
 			turn: { id: "background-turn" },
 		});
-		await vi.waitFor(() => expect(process.stopCount).toBe(1));
-		expect(h.evidence).toContainEqual(
+		process.emit("item/started", {
+			threadId: opened.threadId,
+			turnId: "background-turn",
+			item: {
+				id: "exec-a",
+				type: "commandExecution",
+				command: "gh issue view FLY-2799",
+			},
+		});
+		expect(process.stopCount).toBe(0);
+		expect(executionIntents).toHaveBeenCalledWith(
 			expect.objectContaining({
-				kind: "codex_voice_capability_violation",
-				reason: "unexpected_backend_execution",
+				kind: "commandExecution",
+				method: "item/started",
+				itemId: "exec-a",
 			}),
 		);
+		expect(existsSync(opened.root)).toBe(true);
+		await opened.close("test-complete");
+		expect(process.stopCount).toBe(1);
 		expect(existsSync(opened.root)).toBe(false);
 	});
 

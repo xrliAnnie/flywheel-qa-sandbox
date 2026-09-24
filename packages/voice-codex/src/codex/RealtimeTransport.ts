@@ -62,6 +62,14 @@ export interface CodexRealtimeItem {
 	raw: Record<string, unknown>;
 }
 
+export interface CodexRealtimeExecutionIntent {
+	generation: number;
+	kind: "commandExecution" | "mcpToolCall";
+	method: string;
+	itemId?: string;
+	params: unknown;
+}
+
 export class CodexRealtimeServerError extends Error {
 	readonly upstreamEvent: {
 		method: "thread/realtime/error";
@@ -172,6 +180,8 @@ export class CodexRealtimeTransport {
 	private inputOwnership = freshInputOwnership();
 	private activeInputItemId?: string;
 	private readonly inputOwnershipByItem = new Map<string, InputOwnership>();
+	private readonly completedUserItems: string[] = [];
+	private readonly reportedExecutionIntents = new Set<string>();
 	private closedReported = false;
 
 	constructor(
@@ -196,6 +206,7 @@ export class CodexRealtimeTransport {
 				method: string;
 				params: unknown;
 			}): void;
+			onExecutionIntent?(input: CodexRealtimeExecutionIntent): void;
 			onClosed?(input: { generation: number; reason: string }): void;
 			onError?(error: Error): void;
 			startTimeoutMs?: number;
@@ -419,6 +430,7 @@ export class CodexRealtimeTransport {
 		}
 
 		if (this.state !== "active") return;
+		if (method === "turn/started") return;
 		if (method === "thread/realtime/itemAdded") {
 			const item = record(params.item);
 			if (
@@ -444,6 +456,8 @@ export class CodexRealtimeTransport {
 					}
 					this.inputOwnership = freshInputOwnership();
 					this.activeInputItemId = undefined;
+					if (!this.completedUserItems.includes(item.id))
+						this.completedUserItems.push(item.id);
 				}
 				this.options.onItem?.({
 					generation: this.options.generation,
@@ -466,15 +480,20 @@ export class CodexRealtimeTransport {
 			this.outputTranscript(params, method.endsWith("/done"));
 			return;
 		}
-		if (
-			method === "turn/started" ||
-			method.includes("commandExecution") ||
-			method.includes("mcpToolCall")
-		) {
-			this.state = "fenced";
-			this.options.onCapabilityViolation?.({
+		if (method === "item/started") {
+			const item = record(params.item);
+			const kind = item?.type;
+			if (!item || (kind !== "commandExecution" && kind !== "mcpToolCall"))
+				return;
+			const itemId = typeof item.id === "string" ? item.id : undefined;
+			const key = `${kind}:${itemId ?? method}`;
+			if (this.reportedExecutionIntents.has(key)) return;
+			this.reportedExecutionIntents.add(key);
+			this.options.onExecutionIntent?.({
 				generation: this.options.generation,
+				kind,
 				method,
+				...(itemId ? { itemId } : {}),
 				params: value,
 			});
 			return;
@@ -528,18 +547,29 @@ export class CodexRealtimeTransport {
 			this.options.onError?.(new Error("realtime_transcript_invalid"));
 			return;
 		}
-		// V2 user transcript notifications normally carry no item id. Never bind
-		// those words to the most recently observed user item: transcripts can
-		// arrive late and after another speaker's item. A user owner is available
-		// only when the provider supplies an exact item id on this notification.
+		// V2 user transcript notifications normally carry no item id. Bind a final
+		// only to the provider's FIFO of completed user items, never to the latest
+		// wall-clock speaker. An explicit item id wins and removes that item from
+		// the same queue; gaps or mixed RoomIO owners still keep attribution unknown.
 		const providerItemId =
 			role === "user" &&
 			typeof params.itemId === "string" &&
 			params.itemId.length > 0
 				? params.itemId
 				: undefined;
+		let queuedItemId: string | undefined;
+		if (role === "user" && final) {
+			if (providerItemId) {
+				const index = this.completedUserItems.indexOf(providerItemId);
+				if (index >= 0) this.completedUserItems.splice(index, 1);
+			} else {
+				queuedItemId = this.completedUserItems.shift();
+			}
+		}
 		const itemId =
-			role === "user" ? providerItemId : this.lastItemByRole.get(role);
+			role === "user"
+				? (providerItemId ?? queuedItemId)
+				: this.lastItemByRole.get(role);
 		const ownership =
 			role === "user" && itemId
 				? this.inputOwnershipByItem.get(itemId)
@@ -553,7 +583,7 @@ export class CodexRealtimeTransport {
 			...(itemId ? { itemId } : {}),
 			association: providerItemId
 				? "provider_item"
-				: itemId
+				: queuedItemId || itemId
 					? "preceding_item"
 					: "unattributed",
 			role,

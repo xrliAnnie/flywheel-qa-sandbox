@@ -85,6 +85,7 @@ function harness(generation = 7) {
 	const transcript = vi.fn();
 	const gaps = vi.fn();
 	const violations = vi.fn();
+	const executionIntents = vi.fn();
 	const closed = vi.fn();
 	const errors = vi.fn();
 	const transport = new CodexRealtimeTransport({
@@ -105,6 +106,7 @@ function harness(generation = 7) {
 		onTranscript: transcript,
 		onInputGap: gaps,
 		onCapabilityViolation: violations,
+		onExecutionIntent: executionIntents,
 		onClosed: closed,
 		onError: errors,
 	});
@@ -115,6 +117,7 @@ function harness(generation = 7) {
 		transcript,
 		gaps,
 		violations,
+		executionIntents,
 		closed,
 		errors,
 	};
@@ -413,7 +416,7 @@ describe("Codex V2 realtime transport", () => {
 		);
 	});
 
-	it("keeps an itemless delayed user transcript unknown after speakers alternate", async () => {
+	it("binds itemless final user transcripts to completed input items in FIFO order", async () => {
 		const h = harness();
 		await start(h);
 		h.transport.appendAudio(Buffer.alloc(960), 7, {
@@ -471,17 +474,68 @@ describe("Codex V2 realtime transport", () => {
 
 		expect(h.transcript).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				association: "unattributed",
+				itemId: "item-guest",
+				association: "preceding_item",
 				role: "user",
 				text: "GUEST SENTENCE",
+				inputOwner: expect.objectContaining({ ownerUserId: "guest" }),
 			}),
 		);
+		h.rpc.emit("thread/realtime/transcript/done", {
+			threadId: "thread-a",
+			role: "user",
+			text: "FOUNDER SENTENCE",
+		});
 		expect(h.transcript).toHaveBeenLastCalledWith(
-			expect.not.objectContaining({
-				itemId: expect.anything(),
-				inputOwner: expect.anything(),
+			expect.objectContaining({
+				itemId: "item-founder",
+				association: "preceding_item",
+				text: "FOUNDER SENTENCE",
+				inputOwner: expect.objectContaining({ ownerUserId: "founder" }),
 			}),
 		);
+	});
+
+	it("accepts turn/started as a normal boundary and reports real execution intent without fencing", async () => {
+		const h = harness();
+		await start(h);
+
+		h.rpc.emit("turn/started", {
+			threadId: "thread-a",
+			turn: { id: "turn-a", status: "inProgress" },
+		});
+		expect(h.violations).not.toHaveBeenCalled();
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "founder-request",
+				ownerUserId: "founder",
+			}),
+		).toMatch(/^sent/u);
+
+		h.rpc.emit("item/started", {
+			threadId: "thread-a",
+			turnId: "turn-a",
+			item: {
+				id: "exec-a",
+				type: "commandExecution",
+				command: "gh issue view FLY-2799",
+				status: "inProgress",
+			},
+		});
+		expect(h.executionIntents).toHaveBeenCalledWith({
+			generation: 7,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-a",
+			params: expect.any(Object),
+		});
+		expect(h.violations).not.toHaveBeenCalled();
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "after-handoff",
+				ownerUserId: "founder",
+			}),
+		).toMatch(/^sent/u);
 	});
 
 	it("fails attribution closed after mixed ownership or an input gap", async () => {
