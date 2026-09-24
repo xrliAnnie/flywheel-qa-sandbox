@@ -1,13 +1,13 @@
 ---
 issue: FLY-2853
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-24T15:48:14.269Z
-nextStep: commit + open PR
+phaseCursor: 4/4
+updated: 2026-09-24T16:00:17.825Z
+nextStep: "handoff at needs_review (PR #231, exact-head CI green)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2853 progress
-**phase**: implement (3/4)
-**next**: commit + open PR
+**phase**: implement (4/4)
+**next**: handoff at needs_review (PR #231, exact-head CI green)
