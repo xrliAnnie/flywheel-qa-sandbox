@@ -1,14 +1,14 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 7/7
-updated: 2026-09-24T09:56:37.889Z
-nextStep: commit and push the review fix, freeze a new literal-last milestone,
-  then bind a fresh exact-head code review
+phaseCursor: 1/3
+updated: 2026-09-24T10:34:47.645Z
+nextStep: reproduce QA reds for flag accounting and packaged Silero assets, then
+  restore the moved Silero tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (7/7)
-**next**: commit and push the review fix, freeze a new literal-last milestone, then bind a fresh exact-head code review
+**phase**: implement (1/3)
+**next**: reproduce QA reds for flag accounting and packaged Silero assets, then restore the moved Silero tests
