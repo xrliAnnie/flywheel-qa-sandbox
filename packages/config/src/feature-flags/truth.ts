@@ -244,6 +244,10 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED:
+		"FLY-2796 boot-time admission for the temporary headphone background producer; not a live product toggle",
+	FLYWHEEL_HEADPHONE_INBOX_RETENTION_DAYS:
+		"FLY-2796 bounded retention duration for the opt-in headphone inbox producer, not an on/off gate",
 	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:
 		"FLY-2766 per-invocation exact version selector for a read-only native-skill origin canary, not an on/off gate",
 	FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:
