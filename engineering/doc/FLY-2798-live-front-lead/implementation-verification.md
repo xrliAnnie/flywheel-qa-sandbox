@@ -85,3 +85,16 @@ Consumer discovery 对本轮 13 个非测试 TypeScript 逐一执行完整路径
 其余命中逐类排除且没有未说明类别：`engineering/doc/**`、`product/doc/**`、`doc/**` 只记载历史路径；`dist/**` 与生成清单不作为源码 consumer；`index.ts`、`config.ts`、`cli.ts`、`session.ts` 等通用 basename 在其他 package 的同名文件只是词法碰撞；父目录命中中，Teamlead 991 项与 voice-codex 24 项、voice-core 32 项除已保留 import/test 外均只共享目录字符串；fixture/snapshot/JSON/inventory 仅保存文字；本轮新增文件使用无扩展名相对 import，故完整 `.ts` 查询为零。没有新增或保留的 `scripts/__tests__/*.test.sh` consumer。本地没有运行人为选择的全包 suite；teamlead 的 102 文件由 `vitest related` 自动展开。
 
 以上仍不等于 QA：真人 Raya 10 次首字延迟分布、复杂问题落地、字幕实听、V2/V3 联调和新精确头 full CI 均待 QA 重测，实施节点不自行请求 full CI。
+
+## R6 生产 Lead 回信门铃整改
+
+R6 代码审查发现生产 `VoiceLeadResultProducer` 直接写入 durable result store，绕过了原先只存在于 `POST /:handoffId/results` 闭包内的 SSE subscriber map；Engine A 没有结果轮询兜底，因此该提交路径会让正文已持久化但语音会话收不到门铃。新增 producer-path 接受测试先因共享 notifier 不存在而 hard-red，随后用最小接缝闭环：`startBridge` 构造唯一 `VoiceReplyNotifier`，同一实例同时注入 `createBridgeApp` 的 producer `onCommitted` 与 handoff router；HTTP route 和 producer 都只在新 durable sequence 落地后通知绑定的 `sessionId + generation`。相同 operation 重放仍返回同一 result，但不会重复发门铃；SSE 继续只携带 handoff id，正文仍由语音进程从 durable results route 重读。
+
+整改后的本地证据：
+
+- producer + route 聚焦测试 2 文件、13/13；新增断言覆盖 producer commit → shared notifier → 绑定 session wake，并覆盖同 operation 重放只唤醒一次；
+- changed-TypeScript `vitest related` 因 `plugin.ts` 组合根自动展开为 103 文件、1183/1183；未人工缩减依赖图；
+- `flywheel-teamlead` typecheck 通过；`pnpm --filter "flywheel-teamlead..." build` 覆盖 13 个 owner/dependency package 并通过；
+- 根 `pnpm lint` 检查 5238 files、0 errors、25 个既有 warning、exit 0；定向 Biome 对本轮 6 个 TypeScript 文件 0 errors，`git diff --check` 通过。
+
+Consumer discovery 对本轮 4 个非测试 TypeScript 执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：`plugin.ts` 256/1063/991、`voice-handoff-routes.ts` 0/1/991、`voice-lead-result-producer.ts` 0/1/991、`voice-reply-notifier.ts` 0/0/991。保留生产组合根、router、producer、共享 notifier 以及两个直接测试；它们全部由上述聚焦测试与 related 图覆盖。其余命中均为 `plugin.ts` 等通用 basename 碰撞、`engineering/doc/**` 等历史文字、fixture/snapshot/inventory 路径文字，或仅共享 `packages/teamlead/src/bridge` 父目录而没有 import 的模块；新增文件使用无扩展名相对 import，故完整 `.ts`/basename 查询为零。没有新增或保留的 `scripts/__tests__/*.test.sh` consumer。本轮没有运行本地全包 suite，也没有请求 full CI。
