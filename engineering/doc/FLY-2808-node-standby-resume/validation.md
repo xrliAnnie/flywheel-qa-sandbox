@@ -33,6 +33,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 | origin/main 技术同步 | feature-flag truth/drift/registry 3 files / 113 PASS；StateStore + reopen route 2 files / 67 PASS；CodexTmuxAdapter 1 file / 134 PASS | 唯一冲突同时保留 FLY-2808 Claude session-dir 与 FLY-2766 native baseline；自动合并的 reopen/canResume/Codex strict-resume 语义未漂移 |
 | QA 529 真机返工 | 先红：teamlead 精确 3 files / 5 FAIL、124 PASS；529 shell source guard 2 FAIL；后绿：同 3 files / 129 PASS，shell guard 全绿 | 首节点与 Lead retry 都按调用时 flag 纳入 standby；`process_retirement_pending` 在 QA pass、grace expiry 与终态 closeout 三条路径结算；step 4 等待 enrolled body=`standby` 且物理进程已退出 |
 | QA 529 返工后技术同步 | merge 后 teamlead 同 3 files / 129 PASS；Claude/Codex adapter 2 files / 311 PASS；generalized helper shell 串行复跑全绿 | TmuxAdapter 唯一冲突同时保留 standby retirement 与 main workflow-usage import；第一次 shell 与两个 Vitest 进程并行时仅既有 detached-process reaper 时序红，同头串行复跑通过，未改无关 reaper |
+| QA 529 返工复审 HIGH | 先红：StateStore generalized 2 FAIL、65 PASS；后绿：同文件 67 PASS；最终相关 6 files / 332 PASS | admission 单点把 registry alias 规范化为 canonical id；Claude `fable` 与 Codex `astra` 的旧快照都让 runtime、initial expectedModel、manifest 与 resume 比较使用同一词汇 |
 
 最初的 teamlead related 运行在上述修正前，最终为 572 files / 8116 tests PASS、4 SKIP、6 FAIL；红项恰为 1 个 legacy migration、3 个故障替换断言和 2 个 retention registry 分类断言。这次红不是最终证据。第一轮修正后的 related 曾有一个无关 chat-thread 404 空 JSON 瞬态红，同头精确用例和 owning file 重跑均绿。R2 评审修正后为 570/570 files、8029 PASS、4 SKIP、0 FAIL；R3 修正后的当前 code head 最终为 580/580 files、8206 PASS、4 SKIP、0 FAIL。
 
@@ -49,6 +50,7 @@ Lead 以 `[lead-instruction 3ee3f5da-9019-4fbe-8b2d-c6270a9b7308]` 授权在本�
 - cleanup latch 4 个 changed TypeScript 的定向 Biome 退出 0：两个测试文件与 `plugin.ts` 被检查，仍仅有 `plugin.ts` 两处既有 warning；2.8 MiB 的 `StateStore.ts` 被仓库 1 MiB 上限明确跳过。
 - QA 529 返工后 `pnpm --filter 'flywheel-teamlead...' build`：13 个受影响包及依赖通过；`pnpm --filter '...flywheel-teamlead' typecheck`：teamlead 与反向依赖 voice-codex 通过；`pnpm lint` 最终退出 0，检查 5134 files，保留 26 个既有 warning。首次 lint 精确指出本轮两处格式差异，按 formatter 输出收口后复跑为绿。
 - merge `origin/main` 后再次执行同一 13-package build、teamlead 反向依赖 typecheck、claude-runner typecheck 与 `pnpm lint`，均退出 0；lint 检查 5155 files，仍只报告 26 个既有 warning。
+- 复审 HIGH 修正后再次执行同一 13-package build、teamlead 反向依赖 typecheck 与 5155-file `pnpm lint`，均退出 0；仍只报告相同 26 个既有 warning。
 - `git diff --check`：当前通过，final exact head 再复核；没有添加依赖或秘密。
 
 ## 消费者发现与取舍
@@ -107,6 +109,8 @@ cleanup latch 返工再次覆盖 StateStore 289/841/1383、plugin 254/1049/978�
 
 本轮每个非文档改动文件也分别执行完整路径/文件名/父目录三种 `git grep -lF`：StateStore 289/842/1394、resident-release test 0/5/317、actions retry test 1/8/157、runs-route test 5/26/157、actions 58/252/984、plugin 255/1055/984、runs-route 52/240/984、529 shell test 30/46/844、529 driver 32/47/3333。三份改动测试和 shell test 全部直接运行；四个 production TypeScript 的实际消费者由点名路由/StateStore 测试与 typecheck/build 保留；529 driver 由其 source-contract shell test 和 `node --check` 保留。其余命中逐项归入前述明确排除类：历史文档/fixture 只引用路径或文件名、其它 package 的同名文件、父目录下不引用该文件的兄弟模块；这些不是调用关系，未据此扩大成本到整包测试。
 
+复审 HIGH 的两个改动文件重新执行三种搜索：StateStore 294/849/1401、StateStore generalized test 3/15/318。前者的真实 runtime 消费者由 dispatch-resolution、engine-dispatcher、首节点/retry 与 StateStore 精确测试覆盖，测试文件本身直接执行；其余仍按同一文档/fixture/同名/兄弟模块规则排除。
+
 排除项逐类说明：所有 `doc/**`、`engineering/doc/**`、`product/doc/**` 命中都是历史设计/调研引用；generated child-process census/inventory 是快照清单；同名 `plugin.ts`/`tools.ts`/`*.test.ts` 但路径不在 owning package 的命中属于其它模块；只复述文件名的 fixture/文档不形成调用关系。比如 `StateStore.ts` 的 289 个完整路径命中中，23 个位于 `packages/**`/`scripts/**`，至少 265 个位于上述文档树，后者全部排除。真正的运行时命中、直接依赖测试、新增测试和 changed TypeScript owning-package related 均保留执行；三种搜索的每个其余命中都由上述路径规则覆盖，没有把历史文本命中误算成需执行测试。
 
 ## 设计、HTML 与评审沿革
@@ -125,6 +129,7 @@ cleanup latch 返工再次覆盖 StateStore 289/841/1383、plugin 254/1049/978�
 - 按指令 merge `origin/main`（`fef2dd43d`），未 rebase、未 force-push。唯一冲突 `packages/config/src/feature-flags/truth.ts` 同时保留 `FLYWHEEL_CLAUDE_SESSION_DIR` 与 main 的 `FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION`；StateStore、plugin、CodexTmuxAdapter test 自动合并后逐项核对本单语义，并通过上述 314 条点名测试。merge 后 literal-last milestone head 仍需 R7 重新 review；不请求 full CI。
 - QA 529 真机在旧头 `2a28fdd26` 暴露三处同因缺口：fresh 首节点与 Lead retry 未传 governed standby flag；新 reason `process_retirement_pending` 没进入既有 replacement/terminal settlement 消费者；step 4 仍以旧 actor 存活为准。本轮只补齐这三处，以精确红绿测试和上述全仓 reason 清单固定边界；新 exact head 需重新 review，并由 QA 冻结后跑 full CI 与 529 真机。
 - 推送后 GitHub 将 PR 标为 conflicting；按已有 Lead 交卷规则 merge 当时 `origin/main`（6 commits），未 rebase、未 force-push。唯一冲突在 `TmuxAdapter.ts`：顺序保留本单 `retiringToStandby` 的 kill/onRetired 与 main 新增的 final workflow usage import。其余 StateStore、plugin、Codex adapter/test 自动合并后重核上述语义与点名测试；新的 literal-last head 重新 review，旧头 approval 不复用。
+- 本次返工 code review round 1 gate `40109733-b033-48de-b546-71a1c2dc128a` / request `fbec17a0-fd25-4dc3-bf55-ccdb0dc980bc` 对 head `be80b3e2c` 返回 `CHANGES_REQUESTED`。唯一 HIGH `model-alias-vs-canonical-mismatch` 已以 admission 单点 canonicalization 修复并补 Claude/Codex 两个旧快照负例；2 MEDIUM + 1 LOW 按 reviewer policy 为非阻塞 advisory，disposition 见 follow-ups.md，不在本轮三条 QA 修复中扩面。修正后必须以新的 literal-last exact head 开新 review。
 - 保留两个 LOW follow-up：同 worktree 串行/跨 worktree 最大 2 的调度 limiter 尚未实现；`queueMs` 仍为占位且 `totalMs` 截止身份确认，不是首个模型消费回执。默认关闭路径不因此扩大本单抽象层，交由后续单独实现/验收。
 
 ## 最终需求审计

@@ -54,3 +54,14 @@ R5 gate `14b2c500-dc14-46e4-9207-826823ffa26f` / request `4480df89-00ae-4bab-aac
 - LOW `admit-env-param-now-dead`：仍保留。flag 已改走 governed boolean 后，admission API 的 `env` 参数不再使用；后续删除该参数及调用方传值，不重新引入 env flag read。
 
 plan 批准后的追加实现与历次修正均通过 scoped code review 重新绑定移动后的 head；本轮 Lead 必修提交后仍必须以 literal-last exact head 请求 R6。R5 approval 不能复用为当前头证据。
+
+## QA 529 返工 code review round 1 disposition
+
+Gate `40109733-b033-48de-b546-71a1c2dc128a` / request `fbec17a0-fd25-4dc3-bf55-ccdb0dc980bc` 对旧头 `be80b3e2c` effective verdict 为 `CHANGES_REQUESTED`：
+
+- HIGH `model-alias-vs-canonical-mismatch`：已覆盖。admission 在写 immutable runtime 与 audit 前，将 registry-owned alias 规范化为 canonical id；旧快照的 Claude `fable` 和 Codex `astra` 先红后绿，保证 initial launch、manifest 校验、fresh resume 与 adapter identity 比较都读取同一 runtime model。
+- MEDIUM `retiring-state-has-no-watchdog`：未在本轮扩大。reviewer 指出 adapter timeout / standby confirmation refusal 可把 body 留在 `retiring`；需后续实现有界 watchdog、可审计失败态与 resident hold 收口，并做真实 timeout/restart 验证。
+- MEDIUM `ledger-backfill-vs-immutability-trigger`：未在本轮扩大。reviewer 指出 rollback 后再 roll-forward 时旧 binary 可能写入待回填 purpose，而新 immutability trigger 会阻止 backfill；需后续把 trigger drop 移到 backfill 前或只在加列 migration 分支执行，并补回滚/前滚 DB 用例。
+- LOW `resume-reason-code-unbounded-free-text`：未在本轮扩大。resume 原始异常文本可能含内部路径并经 activity DTO 暴露；后续应使用闭集 reason code，把诊断 detail 留在非 founder surface。
+
+上述 advisory 已准备通过 mandatory report channel 交给 Lead 决定后续范围；本轮只修直接阻断启用后首节点的 HIGH，并对新 exact head 重新申请 code review。

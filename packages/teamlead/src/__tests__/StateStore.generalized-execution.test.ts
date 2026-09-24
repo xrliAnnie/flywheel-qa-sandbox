@@ -173,6 +173,11 @@ function createAdmittedEngineRun(
 		templateId?: string;
 		loopTarget?: boolean;
 		standbyLifecycle?: boolean;
+		dispatchResolution?: NonNullable<
+			Parameters<
+				StateStore["admitGeneralizedWorkflowExecution"]
+			>[0]["dispatchResolution"]
+		>;
 	} = {},
 ): { markerPath: string; outputCredential?: string; activationId: string } {
 	createRun(store, options);
@@ -200,6 +205,7 @@ function createAdmittedEngineRun(
 		now: "2026-07-15T00:00:00.000Z",
 		env: enabled,
 		standbyResumeEnabled: options.standbyLifecycle === true,
+		dispatchResolution: options.dispatchResolution,
 	});
 	if (!admitted.ok) throw new Error(`admission failed: ${admitted.reason}`);
 	const markerRoot = mkdtempSync(join(tmpdir(), "fly1423-unlaunched-"));
@@ -227,6 +233,41 @@ const DECLARED_NESTED_PR = {
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it.each([
+		{
+			vendor: "claude" as const,
+			alias: "fable",
+			canonical: "claude-fable-5-1",
+		},
+		{
+			vendor: "codex" as const,
+			alias: "astra",
+			canonical: "gpt-6-astra",
+		},
+	])(
+		"canonicalizes a pinned $vendor model alias before enrolling its process body",
+		async ({ vendor, alias, canonical }) => {
+			const store = await StateStore.create(":memory:");
+			createAdmittedEngineRun(store, {
+				standbyLifecycle: true,
+				dispatchResolution: {
+					dispatch: { vendor, model: alias },
+					source: "pinned_snapshot",
+					audit: true,
+				},
+			});
+
+			expect(store.getWorkflowExecutionRuntime("exec-1")).toMatchObject({
+				vendor,
+				model: canonical,
+			});
+			expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+				state: "active",
+				generation: 1,
+			});
+		},
+	);
+
 	it("keeps the process-body lifecycle disabled unless the run is explicitly enrolled", async () => {
 		const store = await StateStore.create(":memory:");
 		createAdmittedEngineRun(store);

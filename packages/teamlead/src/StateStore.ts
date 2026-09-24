@@ -45317,8 +45317,13 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
-		const resolvedDispatch =
-			input.dispatchResolution?.dispatch ?? node.dispatch;
+		const dispatch = input.dispatchResolution?.dispatch ?? node.dispatch;
+		const resolvedDispatch = {
+			...dispatch,
+			model:
+				getModelConfigSnapshot().getModelRegistryEntry(dispatch.model)?.id ??
+				dispatch.model,
+		};
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
