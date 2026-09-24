@@ -114,3 +114,25 @@ QA 在头 `aec8c8ccb` 的真人路径核验发现五个阻断点，本轮均按 
 Consumer discovery 对本轮 9 个非测试源文件逐一执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：Teamlead `plugin.ts` 256/1063/991、`voice-handoff-routes.ts` 0/2/991、`voice-session-services.ts` 3/13/991；voice-codex `cli.ts` 10/230/24、`daemon.ts` 13/32/24、`live-lead-adapter.ts` 0/3/24；voice-core `CompositeSpeech.ts` 0/0/0、`handoff.ts` 0/1/32；529 launcher `fly2655-voice-room.mjs` 7/11/335。保留所有真实 import/export/composition、精确行为测试，以及 Vitest related 自动解析出的依赖图；因此 Teamlead 的中央 `plugin.ts` 自动扩展到 104 文件，没有人工裁减。
 
 其余匹配逐类排除且没有未说明类别：`engineering/doc/**`、`product/doc/**`、`doc/**` 是历史文字或生成证据；fixture/snapshot/inventory 仅保存路径字符串；同名 `plugin.ts`、`cli.ts`、`daemon.ts` 等是其他 package 的词法碰撞；父目录命中除已保留 import/test 外只共享目录文字；新增文件以无扩展名相对 import 使用，故完整 `.ts` 查询可能为零。唯一直接命中的新 `scripts/__tests__` consumer 是 `fly2655-voice-room.test.mjs`，已完整执行 15/15；没有本轮新增或保留的 `scripts/__tests__/*.test.sh`。本轮没有运行人为选择的全包 suite，Teamlead 104 文件来自强制 `vitest related`，也没有以它替代 QA exact-head full CI。
+
+## R8 精确头代码审查阻断整改
+
+代码审查在头 `8b2c43d91` 提出六个 HIGH，本轮全部按失败回归 → 最小修复 → 绿色闭环：
+
+- Live provider 失效后的 `sendAudio` 异常现在被 adapter 边界收口并只记录一次 unavailable，后续帧直接丢弃，不再逃逸 RoomIO 50 Hz clock；
+- 新 RoomIO utterance start 会淘汰因 capture/lease failure 遗留的旧 open window，后续 delegation 可绑定新 utterance；
+- FFmpeg decoder 用 `pauseStdout` / `resumeStdout` 对 PCM queue 做真实背压，watchdog 在消费者主动限速期间暂停，不再把正常的长 Lead 播报误判为 96 KB resource exhaustion 或 30 秒 timeout；
+- `CompositeSpeech.pending` 与 adapter `speakWork` 只缓存非失败 receipt，且 Lead result 仅在播报 completed 后记 applied，因此 barge-in 后相同 result 可以重试并推进 cursor；
+- GPT-Live 官方协议没有 transcript-done / output-audio-done；backend 按 1 秒 idle boundary 聚合 output transcript 并发出一个 `final:true` caption，adapter 忽略 raw partial，且不会伪造 `response-done` 造成后续音频被丢弃；
+- HTTP result source verification 现在把 request `text` 与已鉴权 CommDB source message 的 `content` 精确比对，不能复用真实 delivery id 播报伪造文本。
+
+本轮精确验证：
+
+- 直接回归：voice-core 4 文件 28/28、voice-codex 14/14、Teamlead route 7/7；
+- changed-TypeScript `vitest related`：voice-core 20 passed files + 2 smoke files skipped，196 passed / 4 skipped；voice-codex 1 文件 14/14；Teamlead 的 `plugin.ts` 组合根自动展开 103 文件、1178/1178；
+- `pnpm --filter 'flywheel-voice-core...' --filter 'flywheel-voice-codex...' --filter 'flywheel-teamlead...' build` 覆盖 16 个 owner/dependency package 并通过；`pnpm --filter '...flywheel-voice-core' typecheck` 覆盖 11 个 owner/dependent package 并通过；
+- 根 `pnpm lint` 检查 5239 files，0 errors、25 warnings、exit 0；本轮 15 个 TypeScript 文件定向 Biome 为 0 errors，`plugin.ts` 仅有 2 个本次 diff 外既有 warning；`git diff --check` 通过。
+
+Consumer discovery 对本轮 8 个非测试 TypeScript 执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：Teamlead `plugin.ts` 256/1063/991、`voice-handoff-routes.ts` 0/2/991；voice-codex `live-lead-adapter.ts` 0/3/24；voice-core `FfmpegPcmDecoder.ts` 2/2/4、`CompositeSpeech.ts` 0/1/0、`GptLiveBackend.ts` 0/0/0、`LiveUtteranceAssembler.ts` 0/0/0、`process.ts` 3/13/32。保留真实 import/export/composition、`ProcessHandle` 实现与 fake、直接回归和 `vitest related` 自动选择的全部 consumer；因此 Teamlead 中央组合根扩展出的 103 文件未人工裁减，voice-core 的进程 API consumer 也覆盖了真实 subprocess tests。
+
+其余命中逐类排除且没有未说明类别：`engineering/doc/**`、`product/doc/**`、`doc/**` 是历史文字；child-process census 与 kill-path inventory 只记录受管路径且此前已由 QA 回退修复验证；通用 `plugin.ts` / `process.ts` basename 在其他目录是词法碰撞；父目录命中除上述真实 import/test 外只共享目录字符串；OpenAI Live 新文件使用无扩展名相对 import，故 `.ts` 完整路径或 basename 可能为零。没有本轮新增或保留的 `scripts/__tests__/*.test.sh` consumer。本轮没有请求 full CI；真人 10 次首字延迟、复杂问题落地、真机字幕与 V2/V3 联调仍属于 QA。
