@@ -72,6 +72,7 @@ export interface LiveLeadResultBinding {
 
 interface FrontendSpeech {
 	speechId: string;
+	generation: number;
 	sequence: number;
 }
 
@@ -122,6 +123,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private bufferedInputBytes = 0;
 	private inputBufferOverflow = false;
 	private frontendSpeech?: FrontendSpeech;
+	private frontendPlayback?: Pick<FrontendSpeech, "speechId" | "generation">;
 	private frontendSpeechTimer?: ReturnType<typeof setTimeout>;
 	private outputWork: Promise<void> = Promise.resolve();
 	private faceWork: Promise<void> = Promise.resolve();
@@ -751,7 +753,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			});
 			return;
 		}
-		this.frontendSpeech = { speechId, sequence: 0 };
+		this.frontendSpeech = {
+			speechId,
+			generation: this.generation,
+			sequence: 0,
+		};
+		this.frontendPlayback = this.frontendSpeech;
 	}
 
 	private enqueueFrontendAudio(chunk: Buffer, format: AudioFormat): void {
@@ -799,16 +806,17 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.clearFrontendSpeechTimer();
 		this.frontendSpeech = undefined;
 		this.outputWork = this.outputWork.then(async () => {
-			await this.options.room.endSpeech(speech.speechId, this.generation);
+			await this.options.room.endSpeech(speech.speechId, speech.generation);
 		});
 	}
 
 	private cancelFrontendSpeech(): void {
-		const speech = this.frontendSpeech;
-		if (!speech) return;
+		const speech = this.frontendSpeech ?? this.frontendPlayback;
 		this.clearFrontendSpeechTimer();
 		this.frontendSpeech = undefined;
-		this.options.room.localPlaybackCancel(speech.speechId, this.generation);
+		this.frontendPlayback = undefined;
+		if (!speech) return;
+		this.options.room.localPlaybackCancel(speech.speechId, speech.generation);
 	}
 
 	private scheduleFrontendSpeechEnd(speech: FrontendSpeech): void {

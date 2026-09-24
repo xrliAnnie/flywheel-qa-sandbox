@@ -15,6 +15,9 @@ const PCM = { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 } as const;
 
 function realRoom() {
 	const outputFrames: Buffer[] = [];
+	const bargeListeners = new Set<
+		Parameters<ReturnType<typeof createRoomIO>["onBargeIn"]>[0]
+	>();
 	const handlers = new Map<string, Array<(error?: Error) => void>>();
 	const player = {
 		play: vi.fn(),
@@ -73,7 +76,23 @@ function realRoom() {
 		qaAllowUserIds: [],
 		onError: vi.fn(),
 	});
-	return { room, outputFrames };
+	vi.spyOn(room, "onBargeIn").mockImplementation((listener) => {
+		bargeListeners.add(listener);
+		return () => bargeListeners.delete(listener);
+	});
+	return {
+		room,
+		outputFrames,
+		emitBarge(
+			event: Parameters<(typeof room)["onBargeIn"]>[0] extends (
+				value: infer Event,
+			) => void
+				? Event
+				: never,
+		) {
+			for (const listener of bargeListeners) listener(event);
+		},
+	};
 }
 
 class FakeLive implements OpenAiLiveConversationSession {
@@ -243,6 +262,58 @@ describe("Engine A producers against the real RoomIO sequence contract", () => {
 					kind: "live_frontend_output_failed",
 					message: "speech_sequence_invalid",
 				}),
+			);
+		} finally {
+			await adapter.close();
+			await fixture.room.stop();
+		}
+	});
+
+	it("cancels a real RoomIO frontend tail when barge-in follows the idle boundary", async () => {
+		const fixture = realRoom();
+		await fixture.room.start();
+		const endSpeech = vi.spyOn(fixture.room, "endSpeech");
+		const localPlaybackCancel = vi.spyOn(fixture.room, "localPlaybackCancel");
+		const live = new FakeLive();
+		const adapter = new LiveLeadAdapter({
+			sessionId: "voice-session",
+			generation: 9,
+			projectName: "flywheel",
+			founderUserId: "founder",
+			targetLeadId: "flywheel-eng-lead",
+			room: fixture.room,
+			createConversation: vi.fn(async () => live),
+			transcriptSink: {
+				append: vi.fn(),
+				appendDurable: vi.fn(),
+				readReceipt: vi.fn(),
+			},
+			speech: { speak: vi.fn(), cancel: vi.fn() },
+			classifyIntent: () => "query",
+			submitHandoff: vi.fn(),
+			registerHandoff: vi.fn(),
+			frontendAudioIdleMs: 10,
+			record: vi.fn(),
+		});
+		try {
+			await adapter.open("context");
+			live.emit("response-started");
+			live.emit("response-audio", Buffer.alloc(48_000, 1), PCM);
+			await vi.waitFor(() => expect(endSpeech).toHaveBeenCalledOnce());
+			expect(fixture.room.audibleTail().drained).toBe(false);
+			const speechId = endSpeech.mock.calls[0]![0];
+			fixture.emitBarge({
+				sessionId: "voice-session",
+				generation: 9,
+				utteranceId: "founder-interrupt",
+				owner: { kind: "known", speakerUserId: "founder" },
+				startedAt: 1,
+				observedAt: 2,
+				durationMs: 1,
+				phase: "sustained",
+			});
+			await vi.waitFor(() =>
+				expect(localPlaybackCancel).toHaveBeenCalledWith(speechId, 9),
 			);
 		} finally {
 			await adapter.close();
