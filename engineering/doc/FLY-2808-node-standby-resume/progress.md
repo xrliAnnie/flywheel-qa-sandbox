@@ -1,10 +1,10 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-24T02:24:45.444Z
-nextStep: Add focused failing tests for both admission callers, park-reason
-  settlement, and QA 529 step 4
+phaseCursor: 2/4
+updated: 2026-09-24T02:36:28.363Z
+nextStep: Review final diff, commit/push code and docs, then bind a new
+  exact-head code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -14,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (1/4)
-**next**: Add focused failing tests for both admission callers, park-reason settlement, and QA 529 step 4
+**phase**: implement (2/4)
+**next**: Review final diff, commit/push code and docs, then bind a new exact-head code review
