@@ -264,22 +264,22 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		const promise = this.whenFounderTurnSettled()
 			.then(() => this.enqueueFace(() => this.runSpeak(text, kind, opts)))
 			.then(
-			(receipt) => {
-				if (
-					receipt.outcome === "failed" &&
-					this.speakWork.get(opts.pendingKey)?.promise === promise
-				) {
-					this.speakWork.delete(opts.pendingKey);
-				}
-				return receipt;
-			},
-			(error) => {
-				if (this.speakWork.get(opts.pendingKey)?.promise === promise) {
-					this.speakWork.delete(opts.pendingKey);
-				}
-				throw error;
-			},
-		);
+				(receipt) => {
+					if (
+						receipt.outcome === "failed" &&
+						this.speakWork.get(opts.pendingKey)?.promise === promise
+					) {
+						this.speakWork.delete(opts.pendingKey);
+					}
+					return receipt;
+				},
+				(error) => {
+					if (this.speakWork.get(opts.pendingKey)?.promise === promise) {
+						this.speakWork.delete(opts.pendingKey);
+					}
+					throw error;
+				},
+			);
 		this.speakWork.set(opts.pendingKey, { digest: requestDigest, promise });
 		return promise;
 	}
@@ -713,7 +713,18 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			return;
 		}
 		// Let the frontend answer finish playing before a readback takes over.
-		const tail = this.options.room.audibleTail();
+		let tail: ReturnType<RoomIO["audibleTail"]>;
+		try {
+			tail = this.options.room.audibleTail();
+		} catch (error) {
+			// Never strand the inbox on a room that cannot report its tail.
+			this.options.record({
+				kind: "live_lead_audible_tail_unavailable",
+				message: error instanceof Error ? error.message : String(error),
+			});
+			this.settleFounderTurn();
+			return;
+		}
 		if (!tail.drained) {
 			this.armFounderTurnTimer(
 				Math.max(20, tail.remainingMs ?? UNKNOWN_TAIL_RECHECK_MS),

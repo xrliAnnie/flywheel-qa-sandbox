@@ -136,6 +136,14 @@ function roomHarness() {
 			generation,
 		}),
 		localPlaybackCancel: () => undefined,
+		audibleTail: () => ({
+			estimated: true as const,
+			remainingMs: 0,
+			drained: true,
+			observedAt: 0,
+			sessionId: SESSION_ID,
+			generation: 9,
+		}),
 	};
 	return {
 		room: room as unknown as RoomIO,

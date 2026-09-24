@@ -1147,7 +1147,11 @@ describe("LiveLeadAdapter", () => {
 		h.room.tail.drained = false;
 		h.room.tail.remainingMs = 40;
 		h.live.emit("response-started");
-		h.live.emit("transcript", { role: "assistant", text: "等于二", final: true });
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "等于二",
+			final: true,
+		});
 		await tick();
 		expect(h.speech.speak).not.toHaveBeenCalled();
 
@@ -1155,9 +1159,7 @@ describe("LiveLeadAdapter", () => {
 		h.room.tail.remainingMs = 0;
 		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
 		expect(h.speech.speak).toHaveBeenCalledOnce();
-		expect(
-			h.utterances.map((u) => ({ role: u.role, text: u.text })),
-		).toEqual([
+		expect(h.utterances.map((u) => ({ role: u.role, text: u.text }))).toEqual([
 			{ role: "user", text: "一加一等于几" },
 			{ role: "assistant", text: "等于二" },
 		]);
@@ -1187,9 +1189,10 @@ describe("LiveLeadAdapter", () => {
 		});
 		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
 		expect(h.handoffs).toHaveLength(1);
-		expect(vi.mocked(h.speech.speak).mock.calls.map(([text]) => text)).toEqual(
-			["我问下 Lead", "播报第一条"],
-		);
+		expect(vi.mocked(h.speech.speak).mock.calls.map(([text]) => text)).toEqual([
+			"我问下 Lead",
+			"播报第一条",
+		]);
 	});
 
 	it("does not let an utterance whose end was lost hold the founder turn forever", async () => {
@@ -1208,9 +1211,36 @@ describe("LiveLeadAdapter", () => {
 			pendingKey: "brief-1",
 			verification: "required",
 		});
-		h.live.emit("transcript", { role: "assistant", text: "等于二", final: true });
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "等于二",
+			final: true,
+		});
 
 		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+	});
+
+	it("settles an answered founder turn even if the room cannot report its audible tail", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		vi.mocked(h.room.io.audibleTail).mockImplementation(() => {
+			throw new Error("tail unavailable");
+		});
+		founderSays(h, "u-q", "一加一等于几");
+		const announcement = h.adapter.speak("播报第一条", "brief", {
+			pendingKey: "brief-1",
+			verification: "required",
+		});
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "等于二",
+			final: true,
+		});
+
+		await expect(announcement).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "live_lead_audible_tail_unavailable" }),
+		);
 	});
 
 	it("releases an unanswered founder turn after the settle timeout and records it", async () => {
@@ -1268,9 +1298,11 @@ describe("LiveLeadAdapter", () => {
 				claims.set(item.id, claim);
 				return claim;
 			}),
-			ackHeadphoneClaim: vi.fn(async (_binding, claim: { item: { id: string } }) => {
-				acked.push(claim.item.id);
-			}),
+			ackHeadphoneClaim: vi.fn(
+				async (_binding, claim: { item: { id: string } }) => {
+					acked.push(claim.item.id);
+				},
+			),
 			getHeadphoneSourceHealth: vi.fn(async () => ({
 				healthy: true,
 				sourceGap: false,
@@ -1319,7 +1351,11 @@ describe("LiveLeadAdapter", () => {
 		});
 		const record = vi.fn();
 		const session = createEngineAHeadphoneSession({
-			binding: { sessionId: "voice-session", generation: 9, leaseToken: "lease" },
+			binding: {
+				sessionId: "voice-session",
+				generation: 9,
+				leaseToken: "lease",
+			},
 			founderUserId: "founder-1",
 			bridge: bridge as never,
 			room: h.room.io,
@@ -1370,7 +1406,11 @@ describe("LiveLeadAdapter", () => {
 		});
 		endUtterance(h, "u-barge", 1_250);
 		h.live.emit("response-started");
-		h.live.emit("transcript", { role: "assistant", text: "等于二", final: true });
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "等于二",
+			final: true,
+		});
 
 		await vi.waitFor(() => expect(acked).toEqual(["item-a", "item-b"]), {
 			timeout: 5_000,
@@ -1419,7 +1459,11 @@ describe("LiveLeadAdapter", () => {
 			subscribeReplies: vi.fn(() => () => undefined),
 		};
 		const session = createEngineAHeadphoneSession({
-			binding: { sessionId: "voice-session", generation: 9, leaseToken: "lease" },
+			binding: {
+				sessionId: "voice-session",
+				generation: 9,
+				leaseToken: "lease",
+			},
 			founderUserId: "founder-1",
 			bridge: bridge as never,
 			room: h.room.io,

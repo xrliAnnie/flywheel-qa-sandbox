@@ -202,7 +202,10 @@ export class InboxReader {
 				// The founder spoke over this item. It is not a failed delivery:
 				// keep its place and attempt budget, and pull nothing after it
 				// until a later poll (the live claim is reused within its lease).
-				this.options.record({ kind: "inbox_speech_interrupted", itemId: item.id });
+				this.options.record({
+					kind: "inbox_speech_interrupted",
+					itemId: item.id,
+				});
 				break;
 			} else {
 				this.noteFailure(key, item.id);
