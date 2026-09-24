@@ -137,7 +137,7 @@ code{font:13px 'SF Mono',Menlo,monospace;background:#f2f2f7;border-radius:4px;pa
 <tr><td>模型</td><td>配置解析后的模型标识（含窗口变体）与推理力度必须与原会话完全一致；改了默认值也不能替换原模型；解析不到就 model_unverified，不一致就 model_mismatch</td><td>实际生效模型不一致则不发任何业务输入</td></tr>
 <tr><td>工作目录与分支</td><td>目录 realpath、git 公共目录、worktree 登记、分支引用一致；共享分支 HEAD 允许因后续节点合法提交前移，不要求相等，也绝不自动 reset / checkout</td><td>记下当前 HEAD 与未提交改动摘要；把「上次看到的 HEAD → 现在的 HEAD」差异作为首条输入的前置内容，防止模型用退下时的旧文件内容作答</td></tr>
 <tr><td>未提交改动</td><td>把退下时的工作区基线逐条比对，只有两种情况自动通过：条目还在且指纹相同；或者退下时那份精确内容先进入了后来的某个提交、之后再被改。「后来有提交改了同一个路径」本身不算通过——「A 被合法改成 B」和「A 先丢了、别人新建了 B」在现在的 HEAD 上长得一样，分不清就挂起。解释不了的（被清掉、被外部 reset、worktree 被重建、同路径替换）判 workspace_baseline_mismatch 挂起并列出路径。退下时的 HEAD 必须是现在 HEAD 的祖先，被 rebase / 重写判 head_rewritten 挂起</td><td>基线到现在的差异先存进待投递信封，不在核验前进模型</td></tr>
-<tr><td>写权限</td><td>不从旧清单复活 TURN</td><td>顺序固定：① 身份 / 模型 / 目录 / 进程核验通过才算 resume_verified → ② 重建可见终端 → ③ 只有 writer 需求才走原工作流的持有人激活路径申请当前 TURN 与激活，拿到后写一张只能写一次的授权回执 → ④ 投递必须精确匹配这张回执与当前进程代数，信封与原需求一次性投递为首条业务输入。TURN 申请失败时信封保留、不投递；需求创建后 TURN 已变的，只认真实新授权，旧需求旧回执不投</td></tr>
+<tr><td>写权限</td><td>不从旧清单复活 TURN</td><td>顺序固定：① 身份 / 模型 / 目录 / 进程核验通过才算 resume_verified → ② 重建可见终端 → ③ 只有 writer 需求才走原工作流的持有人激活路径申请当前 TURN 与激活，拿到后写一张只能写一次的授权回执 → ④ 投递走两本数据库之间的接力协议（两库没有联合事务）：先在工作流库用「比较再写」预留一张带唯一编号的投递许可（取消 / 整单结束 / 换进程与它抢同一行，谁先谁赢），再在消息库的独立事务里核对当前 TURN 确实等于回执上的那一版才入队，TURN 转授在同一事务里作废旧版未消费的项；模型消费前再回看一次许可还在不在。任何一环崩溃都按投递编号续跑，陈旧的首条输入进不了模型。TURN 申请失败时信封保留、不投递；需求创建后 TURN 已变的，只认真实新授权，旧需求旧回执不投</td></tr>
 </tbody>
 </table>
 <p>Claude 今天在交互 tmux 模式下明确不 resume（<code>TmuxAdapter.ts</code> 注释「previousSession intentionally ignored」），所以要在会话建立时保存实际会话编号，而不是等进程退出再存。每次拉起都记录排队耗时、启动到身份确认的耗时、需求到首条输入被消费的总耗时；单次启动 180 秒超时，两个厂商同值。</p>
@@ -230,7 +230,7 @@ code{font:13px 'SF Mono',Menlo,monospace;background:#f2f2f7;border-radius:4px;pa
 <h2>这是工程设计，不是上线验收</h2>
 <p><b>本单做了：</b>源码审计（六处打断点重新定位 + 全部额外消费者）、退下协议、拉起核对、失败分账、founder 三态、开放项默认值、分期建议，以及这份说明；文档在设计评审门通过后才交卷。</p>
 <p><b>本单没做：</b>没有改生产代码、没有部署、没有重启服务、没有操作真实会话或凭证；上游产品原型的 11 秒 / 66 秒恢复耗时是观测值不是 SLA；Claude 大 transcript 的恢复上界未证。</p>
-<p><b>沙箱说明：</b>本轮在 QA 沙箱重新定稿，源码锚点沿用生产树（经 origin/flywheel-FLY-2808 读取，代码基线 abce27a27；产品 PRD 固定为可解析的 blob f0e5610d）；沙箱旧快照不含泛化引擎模块，本地只核到 declare-state.ts 与 TmuxAdapter.ts 两处。设计评审在沙箱重新走了一遍：第一轮 6 条（3 高 / 2 中 / 1 低）、第二轮 4 条（均高：TURN 授权时序、普通消息也要有无写权限的兜底、未提交内容谱系证明、park 事件表 CHECK 迁移）、第三轮 2 条（均高：授权回执按代数追加防换代锁死、无写权限兜底对 Codex 绑定只读 sandbox）全部采纳，明细在 follow-ups.md。</p>
+<p><b>沙箱说明：</b>本轮在 QA 沙箱重新定稿，源码锚点沿用生产树（经 origin/flywheel-FLY-2808 读取，代码基线 abce27a27；产品 PRD 固定为可解析的 blob f0e5610d）；沙箱旧快照不含泛化引擎模块，本地只核到 declare-state.ts 与 TmuxAdapter.ts 两处。设计评审在沙箱重新走了一遍：第一轮 6 条（3 高 / 2 中 / 1 低）、第二轮 4 条（均高：TURN 授权时序、普通消息也要有无写权限的兜底、未提交内容谱系证明、park 事件表 CHECK 迁移）、第三轮 2 条（均高：授权回执按代数追加防换代锁死、无写权限兜底对 Codex 绑定只读 sandbox）、第四轮 1 条（高：首条输入投递不能假设跨库事务，改为带唯一编号的两库接力协议）全部采纳，明细在 follow-ups.md。</p>
 <p><b>后续必须证明的：</b>两个厂商与全部节点表现一致；QA 打回实现再复验时原对话真的还在；Claude 交互钩子能给出模型与身份的有效证据；Codex resume 自动恢复 goal 时的安全暂停时序；各 UI 最终消费者清单；退下后按 PID 核验的内存真的下降。以上是 N3 / N4 / N5 启用前的硬验收，不以「后续优化」绕过。</p>
 <div class="comment"><label for="c-boundary">对这一节的意见</label><textarea id="c-boundary" data-comment data-title="11 诚实边界"></textarea></div>
 </section>

@@ -42,6 +42,12 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | HIGH | 单张 set-once grant receipt 绑定 carrier generation，grant 后、首条输入消费前换代重试会永久锁死同一 demand；receipt 也不能证明投递瞬间仍持 TURN | 采纳。§2.1 receipt 改为按 (demand_id, carrier_generation) 追加的不可变记录，旧记录保留、当前代数的为投递候选；§5.3 第 4 步入队事务重核 activation / TURN holder+epoch / demand 有效性 / generation；矩阵 F 加「grant 后载体丢失→新代重试可继续、预算不重置」，P 加「receipt 后 TURN 转授→不投递」 |
 | HIGH | conversation-only 的「写工具被服务端拒绝」只落在 Claude hook seam 与 complete 路由，基线 CodexTmuxAdapter 固定 workspace-write，Codex 兜底仍能改工作目录 | 采纳。§2.1 新增 execution profile 绑定行：Codex conversation_only 必须 read-only sandbox / 无 writable roots / 无外部 mutation credential / 网络写关闭，Claude 用 generation+nonce hooks 拒 mutating tool；首条 prompt 前核验 observed profile；conversation_only → writer 不原地扩权、必须重建新代载体；矩阵 I 改为两 vendor 真载体实际尝试写文件 / git / 外部 mutation / complete 全部被拒 |
 
+## 1.4 沙箱设计评审 R4（CHANGES REQUESTED → 采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | §5.3 第 4 步「入队事务同时重核 activation/TURN/demand/generation」跨 StateStore 与 CommDB 两库，与 §2.2 无跨库事务矛盾；预留后转授、入队后取消/终态/换代的陈旧首条输入竞态未闭合 | 采纳。§5.3 第 4 步改为四阶段双库线性化协议：a) StateStore CAS 预留 delivery authorization（唯一 delivery_id，与 cancel/终态/换代共用同一 CAS 行）并写 durable outbox；b) CommDB IMMEDIATE 事务核 exact turn 元组并幂等入队同一 delivery_id，`grantTurn` 转授在同库事务取消旧 epoch 未消费项；c) transport claim / 首次模型消费前回核 StateStore 投影，未知或落后 fail closed；d) 按 delivery_id 幂等 ACK/取消与崩溃重放。§2.1 新增 delivery authorization 行；矩阵 P 加两库各缝隙的 TURN transfer / cancel / terminal / generation change / crash 断言 |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。
