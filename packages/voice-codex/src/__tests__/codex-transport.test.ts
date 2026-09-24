@@ -86,6 +86,7 @@ function harness(generation = 7) {
 	const gaps = vi.fn();
 	const violations = vi.fn();
 	const closed = vi.fn();
+	const errors = vi.fn();
 	const transport = new CodexRealtimeTransport({
 		rpc,
 		sessionId: "session-a",
@@ -105,8 +106,18 @@ function harness(generation = 7) {
 		onInputGap: gaps,
 		onCapabilityViolation: violations,
 		onClosed: closed,
+		onError: errors,
 	});
-	return { rpc, transport, audio, transcript, gaps, violations, closed };
+	return {
+		rpc,
+		transport,
+		audio,
+		transcript,
+		gaps,
+		violations,
+		closed,
+		errors,
+	};
 }
 
 async function start(h: ReturnType<typeof harness>): Promise<void> {
@@ -162,6 +173,50 @@ describe("Codex V2 realtime transport", () => {
 			version: "v3",
 		});
 		await expect(opening).rejects.toThrow("realtime_version_mismatch");
+	});
+
+	it("rejects opening with the original realtime server error", async () => {
+		const h = harness();
+		const opening = h.transport.start();
+		const upstream = {
+			threadId: "thread-a",
+			type: "invalid_request_error",
+			message: "voice prompt was rejected",
+		};
+
+		h.rpc.emit("thread/realtime/error", upstream);
+
+		await expect(opening).rejects.toMatchObject({
+			name: "CodexRealtimeServerError",
+			message: "realtime_server_error: voice prompt was rejected",
+			upstreamEvent: {
+				method: "thread/realtime/error",
+				params: upstream,
+			},
+		});
+		expect(h.errors).toHaveBeenCalledOnce();
+	});
+
+	it("preserves the realtime server error type, message, and upstream event", async () => {
+		const h = harness();
+		await start(h);
+		const upstream = {
+			threadId: "thread-a",
+			type: "invalid_request_error",
+			message: "voice prompt was rejected",
+		};
+
+		h.rpc.emit("thread/realtime/error", upstream);
+
+		expect(h.errors).toHaveBeenCalledOnce();
+		expect(h.errors.mock.calls[0]?.[0]).toMatchObject({
+			name: "CodexRealtimeServerError",
+			message: "realtime_server_error: voice prompt was rejected",
+			upstreamEvent: {
+				method: "thread/realtime/error",
+				params: upstream,
+			},
+		});
 	});
 
 	it("sends only bounded 24 kHz mono PCM16 frames with owner metadata", async () => {

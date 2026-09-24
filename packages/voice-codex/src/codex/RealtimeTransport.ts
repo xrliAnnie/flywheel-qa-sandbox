@@ -62,6 +62,26 @@ export interface CodexRealtimeItem {
 	raw: Record<string, unknown>;
 }
 
+export class CodexRealtimeServerError extends Error {
+	readonly upstreamEvent: {
+		method: "thread/realtime/error";
+		params: Record<string, unknown>;
+	};
+
+	constructor(params: Record<string, unknown>) {
+		const detail =
+			typeof params.message === "string" && params.message.trim().length > 0
+				? params.message.trim()
+				: "unknown";
+		super(`realtime_server_error: ${detail}`);
+		this.name = "CodexRealtimeServerError";
+		this.upstreamEvent = {
+			method: "thread/realtime/error",
+			params,
+		};
+	}
+}
+
 interface Deferred<T> {
 	promise: Promise<T>;
 	resolve(value: T): void;
@@ -390,6 +410,13 @@ export class CodexRealtimeTransport {
 			this.reportClosed(reason);
 			return;
 		}
+		if (method === "thread/realtime/error") {
+			const error = new CodexRealtimeServerError(params);
+			if (this.state === "opening") this.started?.reject(error);
+			this.state = "fenced";
+			this.options.onError?.(error);
+			return;
+		}
 
 		if (this.state !== "active") return;
 		if (method === "thread/realtime/itemAdded") {
@@ -451,10 +478,6 @@ export class CodexRealtimeTransport {
 				params: value,
 			});
 			return;
-		}
-		if (method === "thread/realtime/error") {
-			this.state = "fenced";
-			this.options.onError?.(new Error("realtime_server_error"));
 		}
 	}
 

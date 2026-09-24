@@ -420,6 +420,18 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	transportError(error: Error): void {
+		const upstreamEvent =
+			"upstreamEvent" in error &&
+			error.upstreamEvent !== null &&
+			typeof error.upstreamEvent === "object"
+				? error.upstreamEvent
+				: undefined;
+		this.options.onEvidence?.({
+			kind: "codex_transport_error",
+			errorType: error.name,
+			message: error.message,
+			...(upstreamEvent ? { upstreamEvent } : {}),
+		});
 		this.events.emit(
 			"error",
 			new VoiceError("backend-protocol", "Codex realtime failed", error),

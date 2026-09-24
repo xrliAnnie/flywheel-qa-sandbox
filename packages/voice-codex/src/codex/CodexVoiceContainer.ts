@@ -99,6 +99,7 @@ interface OpenResources {
 
 export class CodexVoiceContainerError extends Error {
 	readonly code = "voice_unavailable";
+	readonly cause?: unknown;
 
 	constructor(
 		readonly reason:
@@ -110,9 +111,11 @@ export class CodexVoiceContainerError extends Error {
 			| "context_stale"
 			| "context_invalid"
 			| "cleanup_pending",
+		cause?: unknown,
 	) {
 		super(`voice_unavailable: ${reason}`);
 		this.name = "CodexVoiceContainerError";
+		this.cause = cause;
 	}
 }
 
@@ -289,7 +292,7 @@ function classifyOpenError(error: unknown): CodexVoiceContainerError {
 		message.includes("quota exceeded") ||
 		message.includes("usage limit")
 	) {
-		return new CodexVoiceContainerError("codex_quota_exhausted");
+		return new CodexVoiceContainerError("codex_quota_exhausted", error);
 	}
 	if (
 		message.includes("invalid_api_key") ||
@@ -297,9 +300,34 @@ function classifyOpenError(error: unknown): CodexVoiceContainerError {
 		message.includes("unauthorized") ||
 		message.includes("http 401")
 	) {
-		return new CodexVoiceContainerError("codex_auth_rejected");
+		return new CodexVoiceContainerError("codex_auth_rejected", error);
 	}
-	return new CodexVoiceContainerError("codex_open_failed");
+	return new CodexVoiceContainerError("codex_open_failed", error);
+}
+
+function openFailureEvidence(
+	sessionId: string,
+	error: CodexVoiceContainerError,
+): Record<string, unknown> {
+	const cause = error.cause;
+	return {
+		kind: "codex_voice_container_open_failed",
+		sessionId,
+		reason: error.reason,
+		errorType: cause instanceof Error ? cause.name : typeof cause,
+		message:
+			cause instanceof Error
+				? cause.message
+				: typeof cause === "string"
+					? cause
+					: "unknown",
+		...(cause instanceof Error &&
+		"upstreamEvent" in cause &&
+		cause.upstreamEvent !== null &&
+		typeof cause.upstreamEvent === "object"
+			? { upstreamEvent: cause.upstreamEvent }
+			: {}),
+	};
 }
 
 function contextIsFresh(
@@ -526,7 +554,9 @@ export class CodexVoiceContainer {
 		).catch(async (error) => {
 			resources.cancelled = true;
 			await this.cleanupOpen(resources, input.sessionId);
-			throw classifyOpenError(error);
+			const classified = classifyOpenError(error);
+			this.evidence(openFailureEvidence(input.sessionId, classified));
+			throw classified;
 		});
 	}
 

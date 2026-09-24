@@ -535,6 +535,38 @@ describe("Codex voice container", () => {
 		expect(existsSync(h.processes[0]!.options.root)).toBe(false);
 	});
 
+	it("keeps the original realtime start failure in error and evidence", async () => {
+		const h = harness({
+			configureProcess: (process) => {
+				process.realtimeError = {
+					code: -32602,
+					message: "voice prompt was rejected",
+				};
+			},
+		});
+		const rejected = h.container.open({
+			sessionId: "session-a",
+			voice: "marin",
+			loadContext: async () => context("session-a"),
+		});
+
+		await expect(rejected).rejects.toMatchObject({
+			code: "voice_unavailable",
+			reason: "codex_open_failed",
+			cause: {
+				name: "Error",
+				message: "thread/realtime/start: voice prompt was rejected",
+			},
+		});
+		expect(h.evidence).toContainEqual({
+			kind: "codex_voice_container_open_failed",
+			sessionId: "session-a",
+			reason: "codex_open_failed",
+			errorType: "Error",
+			message: "thread/realtime/start: voice prompt was rejected",
+		});
+	});
+
 	it("fences the child and removes scratch when the single 60-second open deadline expires", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		const h = harness({

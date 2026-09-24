@@ -47,6 +47,28 @@ function unavailableCopy(error: CodexVoiceContainerError): string {
 	}
 }
 
+function diagnosticText(value: string): string {
+	return Array.from(value, (character) => {
+		const code = character.charCodeAt(0);
+		return code < 32 || code === 127 ? " " : character;
+	})
+		.join("")
+		.trim();
+}
+
+function failureReason(error: Error & { code?: string }): string {
+	const parts = [error.code ?? error.name, error.message];
+	if (error.cause instanceof Error) {
+		parts.push(error.cause.name, error.cause.message);
+	} else if (typeof error.cause === "string") {
+		parts.push(error.cause);
+	}
+	const original = diagnosticText(parts.filter(Boolean).join(":"));
+	return original.length <= 500
+		? original
+		: `${original.slice(0, 488)}:[truncated]`;
+}
+
 /**
  * Adapts the shared ConversationSession contract to the existing room/session
  * lifecycle. It owns no room transport and performs no fallback selection.
@@ -161,7 +183,7 @@ export class CodexRoomFrontend {
 			}),
 		);
 		session.on("error", (error) =>
-			this.handlers?.onClosed({ kind: "failed", reason: error.code }),
+			this.handlers?.onClosed({ kind: "failed", reason: failureReason(error) }),
 		);
 	}
 }

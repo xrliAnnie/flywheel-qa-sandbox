@@ -3,6 +3,7 @@ import {
 	type BrainAdapter,
 	type ConversationSession,
 	type VoiceBackend,
+	VoiceError,
 } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
 import { WaitingMouth } from "../audio.js";
@@ -66,6 +67,45 @@ function backend(
 }
 
 describe("Codex room composition", () => {
+	it("forwards the original backend failure instead of collapsing it to its code", async () => {
+		let onError!: (error: VoiceError) => void;
+		const onClosed = vi.fn();
+		const session = {
+			...conversation(),
+			on: vi.fn((event: string, handler: (...args: never[]) => void) => {
+				if (event === "error") onError = handler as (error: VoiceError) => void;
+				return () => undefined;
+			}),
+		};
+		const frontend = new CodexRoomFrontend({
+			backend: backend(async () => session),
+			conversationOptions: { brain },
+			handlers: {
+				onResponseState: vi.fn(),
+				onTranscript: vi.fn(),
+				onSpeechAudioReady: vi.fn(),
+				onSpeechResult: vi.fn(),
+				onClosed,
+			},
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+		const upstream = new Error(
+			"realtime_server_error: voice prompt was rejected",
+		);
+		upstream.name = "CodexRealtimeServerError";
+
+		onError(
+			new VoiceError("backend-protocol", "Codex realtime failed", upstream),
+		);
+
+		expect(onClosed).toHaveBeenCalledWith({
+			kind: "failed",
+			reason:
+				"backend-protocol:Codex realtime failed:CodexRealtimeServerError:realtime_server_error: voice prompt was rejected",
+		});
+	});
+
 	it("maps the V2 transport into the shared session without claiming attribution", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		const appendAudio = vi.fn(() => "sent" as const);
@@ -105,7 +145,9 @@ describe("Codex room composition", () => {
 		});
 		const session = await actual.createConversation({ brain });
 		const utterances: unknown[] = [];
+		const errors: VoiceError[] = [];
 		session.on("utterance", (value) => utterances.push(value));
+		session.on("error", (error) => errors.push(error));
 		session.sendAudio(Buffer.alloc(480), {
 			encoding: "pcm16",
 			sampleRateHz: 24_000,
@@ -169,6 +211,25 @@ describe("Codex room composition", () => {
 				attribution: { kind: "unknown", reason: "engine_output" },
 			}),
 		]);
+		const upstream = new Error(
+			"realtime_server_error: voice prompt was rejected",
+		) as Error & { upstreamEvent: Record<string, unknown> };
+		upstream.name = "CodexRealtimeServerError";
+		upstream.upstreamEvent = {
+			method: "thread/realtime/error",
+			params: {
+				type: "invalid_request_error",
+				message: "voice prompt was rejected",
+			},
+		};
+		callbacks.onError(upstream as never);
+		expect(errors).toHaveLength(1);
+		expect(evidence).toHaveBeenCalledWith({
+			kind: "codex_transport_error",
+			errorType: "CodexRealtimeServerError",
+			message: "realtime_server_error: voice prompt was rejected",
+			upstreamEvent: upstream.upstreamEvent,
+		});
 		await session.close();
 		expect(persisted).toHaveBeenCalledWith(
 			expect.objectContaining({
