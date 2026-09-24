@@ -1037,10 +1037,73 @@ describe("Event route", () => {
 				alertPending: true,
 			},
 		});
-		expect(commit.mock.calls[0]?.[0].alertIdentity).toMatchObject({
+			expect(commit.mock.calls[0]?.[0].alertIdentity).toMatchObject({
 			leadId: "product-lead",
 			projectName: "geoforge3d",
 		});
+	});
+
+	it("T12 preserves rework projection refusal details and retryability", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const commit = vi.spyOn(store, "commitEnrolledCompletion");
+		const cases = [
+			{ label: "pending", deliveryState: "pending", retryable: true },
+			{ label: "held", deliveryState: "held", retryable: false },
+			{
+				label: "needs-lead",
+				deliveryState: "needs_lead",
+				retryable: false,
+			},
+			{
+				label: "replacement-pending",
+				deliveryState: "replacement_pending",
+				retryable: false,
+			},
+			{
+				label: "stale-revision",
+				deliveryState: "awaiting_receipt",
+				retryable: false,
+			},
+		] as const;
+
+		for (const [index, candidate] of cases.entries()) {
+			const detail = {
+				transitionReason: "rework_delivery_not_projectable",
+				requestId: `rework-t12-${candidate.label}`,
+				deliveryState: candidate.deliveryState,
+				routeRevision: index + 1,
+			};
+			commit.mockReturnValueOnce({
+				ok: false,
+				reason: "transition_refused",
+				retryable: candidate.retryable,
+				detail,
+			});
+
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: `rework-refusal-${candidate.label}`,
+						event_type: "session_completed",
+						source: "flywheel-comm",
+						payload: { decision: { route: "needs_review" } },
+					}),
+				),
+			});
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({
+				error: "workflow_completion_rejected",
+				reason: "transition_refused",
+				retryable: candidate.retryable,
+				detail,
+			});
+		}
 	});
 
 	it("rejects invalid PR evidence for generalized nodes without founder review", async () => {

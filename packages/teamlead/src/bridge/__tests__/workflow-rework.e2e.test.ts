@@ -55,6 +55,16 @@ async function createHarness(
 		closeActorForReworkSupersession?: () => Promise<
 			{ ok: true } | { ok: false; error: string }
 		>;
+		onWakeActor?: (
+			input: {
+				executionId: string;
+				activationId: string;
+				epoch: number;
+				context: unknown;
+			},
+			store: StateStore,
+			baseHead: string,
+		) => Promise<{ ok: true } | { ok: false; error: string }>;
 		failGrantOnceFor?: string;
 		failWakeOnceFor?: string;
 		implementProducesOutput?: boolean;
@@ -303,6 +313,18 @@ async function createHarness(
 					epoch,
 					context,
 				});
+				if (options.onWakeActor) {
+					return options.onWakeActor(
+						{
+							executionId: session.execution_id,
+							activationId,
+							epoch,
+							context,
+						},
+						store,
+						baseHead,
+					);
+				}
 				return { ok: true };
 			},
 			closeActorForReworkSupersession: async (input) => {
@@ -1245,6 +1267,124 @@ describe("FLY-1423 capability-level rework flow", () => {
 				"qa-exec",
 			]);
 			expect(switchingAccounts).toEqual(new Set());
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it("T15: converges on the next coordinator pass when completion settles the turn-granted wake", async () => {
+		let completion:
+			| ReturnType<StateStore["commitEnrolledCompletion"]>
+			| undefined;
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			onWakeActor: async (wake, callbackStore, callbackHead) => {
+				if (wake.executionId !== "implement-exec") return { ok: true };
+				completion = callbackStore.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
+					executionId: wake.executionId,
+					route: "needs_review",
+					sourceEventId: "fly2828-complete-inside-wake",
+					completionSubmission: { decision: { route: "needs_review" } },
+					subjectDigest: callbackHead,
+					workflowActivation: {
+						activationId: wake.activationId,
+						runId: "run-e2e",
+						nodeId: "implement",
+						attempt: 2,
+						turnEpoch: wake.epoch,
+					},
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-23T00:20:00.000Z",
+				});
+				return { ok: true };
+			},
+		});
+		try {
+			const requestId = "rework-t15-completion-inside-wake";
+			store.upsertWorkflowRunNode({
+				runId: "run-e2e",
+				nodeId: "implement",
+				attempt: 2,
+				state: "pending",
+				executionId: "implement-exec",
+			});
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES (?, 'run-e2e', 't15-requested', 'qa', 'qa', 1, ?,
+				         '{"authority":"qa"}', 't15-context-digest',
+				         '2026-07-23T00:10:00.000Z')`,
+				[requestId, baseHead],
+			);
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, 1, 'implement', 2, 'implement-exec', '["implement"]',
+				         '[]', 'engine:test', 'completion inside wake',
+				         '2026-07-23T00:10:00.000Z')`,
+				[requestId],
+			);
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, 'pending', '2026-07-23T00:10:00.000Z')`,
+				[requestId],
+			);
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				`INSERT INTO workflow_rework_verification_path
+				   (request_id, run_id, route_revision, state,
+				    current_node_id, current_attempt, updated_at)
+				 VALUES (?, 'run-e2e', 1, 'pending', 'implement', 2,
+				         '2026-07-23T00:10:00.000Z')`,
+				[requestId],
+			);
+
+			expect(await coordinator.reconcile(requestId)).toEqual({
+				kind: "retryable",
+				reason: "stale_delivery_owner",
+			});
+			expect(completion).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject(
+				{ state: "completed" },
+			);
+			const receiptEvent = store
+				.listWorkflowRunEvents("run-e2e")
+				.find((event) => event.kind === "rework_delivery_wake_delivered");
+			expect(receiptEvent?.payload).toMatchObject({
+				source: "completion_implied",
+				impliedFromState: "turn_granted",
+			});
+			expect(store.findOpenWorkflowReworkForRun("run-e2e")).toEqual([]);
+			expect(await coordinator.reconcile(requestId)).toEqual({
+				kind: "settled",
+				state: "completed",
+			});
 		} finally {
 			comm.close();
 			store.close();
