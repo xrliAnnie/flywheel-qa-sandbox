@@ -628,6 +628,95 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		queue.close();
 	});
 
+	it("claims every voice handoff as its own batch even beside same-route chat", () => {
+		const { dbPath, args } = fixture();
+		const handoffIds = [
+			"018f47d2-7b64-7b42-a3df-123456789abc",
+			"018f47d2-7b64-7b42-a3df-123456789abd",
+		];
+		const ingestHandoff = (handoffId: string, ts: string) =>
+			ingestDiscordChat({
+				dbPath,
+				leadId: args.leadId,
+				chatId: args.chatId,
+				originChannelId: args.chatId,
+				messageId: `voice-handoff:${handoffId}`,
+				authorId: args.authorId,
+				authorName: "Founder voice",
+				founderId: args.authorId,
+				ts,
+				msgKind: "guild",
+				attachments: [],
+				text: `question ${handoffId}`,
+				origin: "voice",
+				voiceSessionId: "voice-session",
+				voiceHandoff: {
+					version: 1,
+					handoffId,
+					intentKind: "query",
+					requestDigest: "a".repeat(64),
+					targetLeadId: args.leadId,
+					transcriptId: `transcript-${handoffId}`,
+					utteranceId: `utterance-${handoffId}`,
+					sessionGeneration: 4,
+				},
+			});
+		ingestHandoff(handoffIds[0]!, "2026-08-10T12:00:00.000Z");
+		ingestDiscordChat({
+			dbPath,
+			leadId: args.leadId,
+			chatId: args.chatId,
+			originChannelId: args.chatId,
+			messageId: "223456789012345679",
+			authorId: args.authorId,
+			authorName: "Founder",
+			founderId: args.authorId,
+			ts: "2026-08-10T12:00:05.000Z",
+			msgKind: "guild",
+			attachments: [],
+			text: "plain chat in the same Lead channel",
+		});
+		ingestHandoff(handoffIds[1]!, "2026-08-10T12:00:10.000Z");
+		const queue = new MailboxQueue(dbPath);
+		expect(
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "owner",
+				now: "2026-08-10T12:00:20.000Z",
+				leaseTtlMs: 60_000,
+			}),
+		).toBe(true);
+		const claim = (batchId: string) => {
+			const rows = queue.claimLeadBatchQueue({
+				toAgent: args.leadId,
+				msgClass: "model",
+				ownerEpoch: "owner",
+				batchId,
+				now: "2026-08-10T12:00:20.000Z",
+				transportClaimTtlMs: 60_000,
+				batchWindowMs: 30_000,
+				batchMaxSize: 10,
+				inflightMaxBatches: 5,
+				partitionKey: discordBatchPartitionKey,
+			});
+			expect(
+				queue.ackBatch({
+					batchId,
+					ownerEpoch: "owner",
+					memberIds: rows.map(({ delivery_id }) => delivery_id),
+					now: "2026-08-10T12:00:20.000Z",
+				}),
+			).toBe(true);
+			return rows.map(({ source_ref }) => source_ref);
+		};
+
+		expect([claim("b1"), claim("b2"), claim("b3")]).toEqual([
+			[`chat:${args.leadId}:voice-handoff:${handoffIds[0]}`],
+			[`chat:${args.leadId}:223456789012345679`],
+			[`chat:${args.leadId}:voice-handoff:${handoffIds[1]}`],
+		]);
+		queue.close();
+	});
+
 	it("batches held messages from one Discord chat across original send times", () => {
 		const { dbPath, args } = fixture();
 		for (const [messageId, ts, heldSince] of [

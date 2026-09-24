@@ -230,6 +230,11 @@ export function discordBatchPartitionKey(row: {
 	if (row.type !== "discord_chat") return "model";
 	try {
 		const envelope = parseChatDeliveryEnvelope(row.content);
+		// A Lead reply is bound back to exactly one voice handoff, so a handoff
+		// never shares a journal entry with other chat on the same route.
+		if (envelope.voiceHandoff) {
+			return `voice-handoff:${envelope.voiceHandoff.handoffId}`;
+		}
 		const route = JSON.stringify({
 			chatId: envelope.chatId,
 			replyChannelId: envelope.replyChannelId ?? null,
