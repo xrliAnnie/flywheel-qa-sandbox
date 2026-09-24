@@ -190,4 +190,52 @@ describe("LiveUtteranceAssembler", () => {
 		expect(first.transcriptId).not.toBe(second.transcriptId);
 		expect([first.text, second.text]).toEqual(["第1句", "第2句"]);
 	});
+
+	it("waits for an open RoomIO window and preserves its available text as incomplete if sealed early", () => {
+		const turns = assembler();
+		turns.startProviderGeneration(1, 1_000);
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_050,
+			phase: "start",
+		});
+		turns.appendInput({
+			generation: 1,
+			eventId: "before",
+			startMs: 50,
+			endMs: 100,
+			delta: "帮我",
+		});
+		turns.appendInput({
+			generation: 1,
+			eventId: "after",
+			startMs: 100,
+			endMs: 180,
+			delta: "查完整状态",
+		});
+		const delegation = {
+			generation: 1,
+			delegationId: "d1",
+			offsetMs: 100,
+		};
+
+		expect(turns.delegationWindowState(delegation)).toBe("waiting");
+		expect(turns.sealDelegation(delegation)).toMatchObject({
+			text: "帮我查完整状态",
+			attribution: { kind: "unknown", reason: "room_utterance_incomplete" },
+		});
+
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_200,
+			phase: "end",
+		});
+		expect(turns.delegationWindowState(delegation)).toBe("ready");
+	});
 });

@@ -152,6 +152,7 @@ function harness(
 			state: "committed";
 			providerOperationId: string;
 		}>;
+		delegationEndTimeoutMs?: number;
 	} = {},
 ) {
 	const live = new FakeLive();
@@ -231,6 +232,9 @@ function harness(
 			let id = 0;
 			return () => `id-${++id}`;
 		})(),
+		...(overrides.delegationEndTimeoutMs === undefined
+			? {}
+			: { delegationEndTimeoutMs: overrides.delegationEndTimeoutMs }),
 		record,
 	});
 	adapter.onUtterance((utterance) => utterances.push(utterance));
@@ -342,6 +346,107 @@ describe("LiveLeadAdapter", () => {
 		});
 		await Promise.resolve();
 		expect(h.handoffs).toHaveLength(1);
+	});
+
+	it("waits for the real RoomIO utterance end before sealing a delegation", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_100,
+			phase: "start",
+		});
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation: 1,
+			eventId: "delta-1",
+			startMs: 100,
+			endMs: 150,
+			delta: "帮我",
+		});
+		h.live.emit("delegation-created", {
+			delegationId: "provider-1",
+			generation: 1,
+			offsetMs: 150,
+			target: "client",
+		});
+		await Promise.resolve();
+		expect(h.live.suspend).not.toHaveBeenCalled();
+
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation: 1,
+			eventId: "delta-2",
+			startMs: 150,
+			endMs: 230,
+			delta: "查完整状态",
+		});
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_250,
+			phase: "end",
+		});
+
+		await vi.waitFor(() => expect(h.handoffs).toHaveLength(1));
+		expect(h.handoffs[0]?.originalText).toBe("帮我查完整状态");
+		expect(h.live.suspend).toHaveBeenCalledOnce();
+	});
+
+	it("preserves but does not dispatch an utterance whose RoomIO end times out", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = harness({ delegationEndTimeoutMs: 25 });
+			await h.adapter.open("context");
+			h.room.emitUtterance({
+				sessionId: "voice-session",
+				generation: 9,
+				utteranceId: "u1",
+				attribution: { kind: "known", speakerUserId: "founder-1" },
+				observedAt: 1_100,
+				phase: "start",
+			});
+			h.live.emitLiveTranscript({
+				type: "transcript-delta",
+				direction: "input",
+				generation: 1,
+				eventId: "delta-1",
+				startMs: 100,
+				endMs: 230,
+				delta: "这句不能丢",
+			});
+			h.live.emit("delegation-created", {
+				delegationId: "provider-1",
+				generation: 1,
+				offsetMs: 150,
+				target: "client",
+			});
+
+			await vi.advanceTimersByTimeAsync(25);
+			expect(h.handoffs).toHaveLength(0);
+			expect(h.utterances.at(-1)).toMatchObject({
+				text: "这句不能丢",
+				attribution: {
+					kind: "unknown",
+					reason: "room_utterance_incomplete",
+				},
+			});
+			expect(h.record).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "live_lead_clarification_required",
+					reason: "room_utterance_incomplete",
+				}),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("announces an authorized Lead result without injecting its text into Live context", async () => {

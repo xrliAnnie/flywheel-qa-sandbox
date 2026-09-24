@@ -148,6 +148,7 @@ export class CompositeSpeech {
 			submitted: false,
 		};
 		this.active = active;
+		let started = false;
 		try {
 			await this.options.beforeSpeak();
 			if (active.reason)
@@ -161,7 +162,6 @@ export class CompositeSpeech {
 				? this.options.decode(encoded, { signal: active.abort.signal })
 				: encoded;
 			let sequence = 0;
-			let started = false;
 			for await (const chunk of source) {
 				if (active.reason)
 					return this.cancelledReceipt(active, pendingKey, requestDigest);
@@ -210,6 +210,12 @@ export class CompositeSpeech {
 				contentProof: "deterministic_tts",
 			};
 		} catch (error) {
+			if (started && !active.reason) {
+				this.options.room.localPlaybackCancel(
+					active.speechId,
+					this.options.generation,
+				);
+			}
 			return {
 				pendingKey,
 				requestDigest,

@@ -52,6 +52,9 @@ export interface LiveLeadAdapterOptions {
 	registerHandoff(binding: LiveLeadResultBinding): void;
 	now?: () => number;
 	nextId?: () => string;
+	delegationEndTimeoutMs?: number;
+	setTimeoutFn?: typeof setTimeout;
+	clearTimeoutFn?: typeof clearTimeout;
 	record(event: Record<string, unknown>): void;
 }
 
@@ -101,6 +104,10 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		{ digest: string; promise: Promise<SpeakReceipt> }
 	>();
 	private readonly appliedResultEvents = new Set<string>();
+	private readonly roomTimelineWaiters = new Set<() => void>();
+	private readonly delegationEndTimeoutMs: number;
+	private readonly setTimeoutFn: typeof setTimeout;
+	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
 	private frontendSpeech?: FrontendSpeech;
 	private outputWork: Promise<void> = Promise.resolve();
@@ -113,6 +120,14 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.generation = options.generation;
 		this.now = options.now ?? Date.now;
 		this.nextId = options.nextId ?? randomUUID;
+		this.delegationEndTimeoutMs = options.delegationEndTimeoutMs ?? 5_000;
+		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
+		this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
+		if (
+			!Number.isSafeInteger(this.delegationEndTimeoutMs) ||
+			this.delegationEndTimeoutMs < 1
+		)
+			throw new Error("live_lead_delegation_timeout_invalid");
 		if (
 			options.room.identity.sessionId !== options.sessionId ||
 			options.room.identity.generation !== options.generation ||
@@ -243,6 +258,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	async close(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
+		this.wakeRoomTimelineWaiters();
 		this.options.speech.cancel("session-close");
 		this.cancelFrontendSpeech();
 		for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
@@ -267,6 +283,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.options.room.onUtterance((event) => {
 				if (this.closing) return;
 				this.assembler.observeRoom(event);
+				this.wakeRoomTimelineWaiters();
 				if (event.phase === "end") live.endUserTurn();
 			}),
 			this.options.room.onBargeIn((event) => {
@@ -351,6 +368,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			});
 			return;
 		}
+		await this.waitForDelegationWindow({
+			generation: delegation.generation,
+			delegationId: delegation.delegationId,
+			offsetMs: delegation.offsetMs,
+		});
+		if (this.closing) return;
 		await live.suspend("delegation-sealed");
 		try {
 			const utterance = this.assembler.sealDelegation({
@@ -474,6 +497,40 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			providerGeneration,
 			providerStartedAt,
 		);
+	}
+
+	private waitForDelegationWindow(input: {
+		generation: number;
+		delegationId: string;
+		offsetMs: number;
+	}): Promise<void> {
+		if (this.assembler.delegationWindowState(input) !== "waiting")
+			return Promise.resolve();
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				this.clearTimeoutFn(timer);
+				this.roomTimelineWaiters.delete(check);
+				resolve();
+			};
+			const check = () => {
+				if (
+					this.closing ||
+					this.assembler.delegationWindowState(input) !== "waiting"
+				)
+					finish();
+			};
+			const timer = this.setTimeoutFn(finish, this.delegationEndTimeoutMs);
+			timer.unref?.();
+			this.roomTimelineWaiters.add(check);
+			check();
+		});
+	}
+
+	private wakeRoomTimelineWaiters(): void {
+		for (const waiter of [...this.roomTimelineWaiters]) waiter();
 	}
 
 	private startFrontendSpeech(): void {

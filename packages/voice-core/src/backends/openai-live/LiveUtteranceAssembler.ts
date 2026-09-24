@@ -170,24 +170,39 @@ export class LiveUtteranceAssembler {
 		provider.deltas.push({ ...delta });
 	}
 
+	delegationWindowState(
+		input: LiveDelegationSeal,
+	): "waiting" | "ready" | "unbound" {
+		const { delegationAt } = this.delegationPoint(input);
+		const containing = [...this.windows.values()].filter(
+			(window) =>
+				delegationAt >= window.startedAt &&
+				(window.endedAt === undefined || delegationAt <= window.endedAt),
+		);
+		if (containing.some((window) => window.endedAt === undefined))
+			return "waiting";
+		return containing.length > 0 ? "ready" : "unbound";
+	}
+
 	sealDelegation(input: LiveDelegationSeal): VoiceUtterance {
-		const provider = this.providers.get(input.generation);
-		if (!provider || !input.delegationId || !validTime(input.offsetMs)) {
-			throw new VoiceError(
-				"backend-protocol",
-				"openai-live: delegation seal is invalid",
-			);
-		}
-		const delegationAt = provider.startedAt + input.offsetMs;
-		const completed = [...this.windows.values()].filter(
+		const { provider, delegationAt } = this.delegationPoint(input);
+		const containing = [...this.windows.values()].filter(
+			(window) =>
+				delegationAt >= window.startedAt &&
+				(window.endedAt === undefined || delegationAt <= window.endedAt),
+		);
+		const candidates = containing.filter(
 			(window): window is RoomWindow & { endedAt: number } =>
 				window.endedAt !== undefined,
 		);
-		const candidates = completed.filter(
-			(window) =>
-				delegationAt >= window.startedAt && delegationAt <= window.endedAt,
-		);
-		const candidate = candidates.length === 1 ? candidates[0] : undefined;
+		const candidate =
+			containing.length === 1 && candidates.length === 1
+				? candidates[0]
+				: undefined;
+		const incomplete =
+			containing.length === 1 && containing[0]?.endedAt === undefined
+				? containing[0]
+				: undefined;
 		const relevantDeltas = provider.deltas.filter((delta) => {
 			const absoluteStart = provider.startedAt + delta.startMs;
 			const absoluteEnd = provider.startedAt + delta.endMs;
@@ -199,15 +214,21 @@ export class LiveUtteranceAssembler {
 					candidate.endedAt,
 				);
 			}
+			if (incomplete) return absoluteEnd >= incomplete.startedAt;
 			return absoluteStart <= delegationAt;
 		});
 		const intersectedWindows = new Set<string>();
 		for (const delta of relevantDeltas) {
 			const absoluteStart = provider.startedAt + delta.startMs;
 			const absoluteEnd = provider.startedAt + delta.endMs;
-			for (const window of completed) {
+			for (const window of this.windows.values()) {
 				if (
-					overlaps(absoluteStart, absoluteEnd, window.startedAt, window.endedAt)
+					overlaps(
+						absoluteStart,
+						absoluteEnd,
+						window.startedAt,
+						window.endedAt ?? Number.POSITIVE_INFINITY,
+					)
 				) {
 					intersectedWindows.add(window.utteranceId);
 				}
@@ -222,9 +243,11 @@ export class LiveUtteranceAssembler {
 			: {
 					kind: "unknown",
 					reason:
-						candidates.length > 1 || intersectedWindows.size > 1
-							? "overlapping_room_utterances"
-							: "delegation_not_uniquely_attributed",
+						incomplete && intersectedWindows.size === 1
+							? "room_utterance_incomplete"
+							: containing.length > 1 || intersectedWindows.size > 1
+								? "overlapping_room_utterances"
+								: "delegation_not_uniquely_attributed",
 				};
 		const utteranceId = uniquelyBound
 			? candidate.utteranceId
@@ -249,6 +272,23 @@ export class LiveUtteranceAssembler {
 			text: relevantDeltas.map((delta) => delta.delta).join(""),
 			final: true,
 			attribution,
+		};
+	}
+
+	private delegationPoint(input: LiveDelegationSeal): {
+		provider: ProviderGeneration;
+		delegationAt: number;
+	} {
+		const provider = this.providers.get(input.generation);
+		if (!provider || !input.delegationId || !validTime(input.offsetMs)) {
+			throw new VoiceError(
+				"backend-protocol",
+				"openai-live: delegation seal is invalid",
+			);
+		}
+		return {
+			provider,
+			delegationAt: provider.startedAt + input.offsetMs,
 		};
 	}
 }

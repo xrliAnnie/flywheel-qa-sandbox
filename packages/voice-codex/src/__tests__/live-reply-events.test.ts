@@ -45,7 +45,13 @@ function notifications() {
 describe("LiveReplyEvents", () => {
 	it("uses notifications only as wakeups and replays durable result pages from each handoff cursor", async () => {
 		const source = notifications();
-		const applyResult = vi.fn(async () => undefined);
+		const applyResult = vi.fn(async () => ({
+			pendingKey: "reply",
+			requestDigest: "speech-digest",
+			outcome: "completed" as const,
+			transport: "submitted" as const,
+			contentProof: "deterministic_tts" as const,
+		}));
 		const listResults = vi.fn(async (_handoffId: string, after: number) =>
 			after === 0
 				? { events: [event(1), event(2)], highWatermark: 2, nextCursor: 2 }
@@ -81,8 +87,21 @@ describe("LiveReplyEvents", () => {
 		const source = notifications();
 		const applyResult = vi
 			.fn()
-			.mockRejectedValueOnce(new Error("speaker unavailable"))
-			.mockResolvedValue(undefined);
+			.mockResolvedValueOnce({
+				pendingKey: "reply",
+				requestDigest: "speech-digest",
+				outcome: "failed",
+				reason: "speaker unavailable",
+				transport: "none",
+				contentProof: "none",
+			})
+			.mockResolvedValue({
+				pendingKey: "reply",
+				requestDigest: "speech-digest",
+				outcome: "completed",
+				transport: "submitted",
+				contentProof: "deterministic_tts",
+			});
 		const listResults = vi.fn(async () => ({
 			events: [event(1)],
 			highWatermark: 1,
@@ -138,7 +157,13 @@ describe("LiveReplyEvents", () => {
 			generation: BINDING.generation,
 			subscribe: source.subscribe,
 			listResults,
-			applyResult: vi.fn(async () => undefined),
+			applyResult: vi.fn(async () => ({
+				pendingKey: "reply",
+				requestDigest: "speech-digest",
+				outcome: "completed" as const,
+				transport: "submitted" as const,
+				contentProof: "deterministic_tts" as const,
+			})),
 			record: vi.fn(),
 		});
 

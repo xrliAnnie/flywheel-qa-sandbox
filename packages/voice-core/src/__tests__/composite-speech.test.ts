@@ -170,4 +170,33 @@ describe("CompositeSpeech", () => {
 		expect(io.writeSpeech).toHaveBeenCalledOnce();
 		expect(io.localPlaybackCancel).toHaveBeenCalledOnce();
 	});
+
+	it("cancels an opened RoomIO stream when synthesis fails after its first chunk", async () => {
+		const io = room();
+		const speaker = new CompositeSpeech({
+			sessionId: "session-1",
+			generation: 4,
+			room: io,
+			tts: tts(async function* () {
+				yield { audio: Buffer.from([1, 0]), format: PCM };
+				throw new Error("decoder truncated");
+			}),
+			voice: "voice-1",
+			beforeSpeak: vi.fn(async () => undefined),
+		});
+
+		await expect(
+			speaker.speak("truncated", "readback", {
+				pendingKey: "pending-1",
+				verification: "required",
+			}),
+		).resolves.toMatchObject({
+			outcome: "failed",
+			reason: "decoder truncated",
+			transport: "submitted",
+			contentProof: "none",
+		});
+		expect(io.localPlaybackCancel).toHaveBeenCalledOnce();
+		expect(io.endSpeech).not.toHaveBeenCalled();
+	});
 });

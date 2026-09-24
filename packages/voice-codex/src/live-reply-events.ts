@@ -1,4 +1,7 @@
-import type { VoiceHandoffResultEvent } from "flywheel-voice-core";
+import type {
+	SpeakReceipt,
+	VoiceHandoffResultEvent,
+} from "flywheel-voice-core";
 import type { LiveLeadResultBinding } from "./live-lead-adapter.js";
 
 export interface LiveReplyNotification {
@@ -27,10 +30,13 @@ export interface LiveReplyEventsOptions {
 	applyResult(
 		event: VoiceHandoffResultEvent,
 		binding: LiveLeadResultBinding,
-	): Promise<unknown>;
+	): Promise<SpeakReceipt>;
 	record(event: Record<string, unknown>): void;
 	pageSize?: number;
 }
+
+// TODO(FLY-2796): production composition injects subscribeReplies here; this
+// package deliberately owns only the push-driven consumer and its fake seam.
 
 interface ReplyState {
 	binding: LiveLeadResultBinding;
@@ -150,7 +156,12 @@ export class LiveReplyEvents {
 			);
 			this.validatePage(page, state.binding.handoffId, cursorBeforeRead);
 			for (const event of page.events) {
-				await this.options.applyResult(event, state.binding);
+				const receipt = await this.options.applyResult(event, state.binding);
+				if (receipt.outcome !== "completed") {
+					throw new Error(
+						`live_reply_speech_${receipt.outcome}:${receipt.reason}`,
+					);
+				}
 				state.cursor = event.seq;
 			}
 			if (state.cursor >= page.highWatermark) return;
