@@ -16,3 +16,14 @@ R2 有效 reviewVerdict=APPROVED，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db
 | validation-doc-titled-as-research | LOW | 交付记录改为“交付验证记录 — 调研”，保留注入要求的文档类型行，避免与research标题重名 |
 
 另保留R1 MEDIUM announcer-takeover-rebuilds-live-unconditionally：空闲heartbeat/cue减少重连的优化须先证晚帧安全；本轮保留Lead已批准的统一fence基线，并严格量体验。
+
+## R9 review round 1 非阻断 advisories
+
+以下 finding 来自精确头 `ec9384dca` 的 review request `6929978e-fb50-4d20-a8a0-0432403e680d`。三个 HIGH 已在后续实现头关闭；这些 MEDIUM/LOW 不扩大本轮锁定返工范围，交 Lead 选择后续：
+
+| findingKey | 级别 | 后续处置 |
+|---|---|---|
+| headphone-collector-blocks-bridge-event-loop | MEDIUM | 缓存 scope/statement、按显式能力门控 collector，并把 question authority 刷新与单页 Discord cadence 解耦，避免每 5 秒同步扫描全部 chat thread。 |
+| live-face-stuck-suspended-on-resume-failure | MEDIUM | 为 `live.resume()` 失败增加明确恢复或会话终止语义，避免 suspended 状态永久吞输入，也避免 finally 异常覆盖既有 receipt。 |
+| edge-tts-stream-tail-dropped-on-exit | MEDIUM | 把 streaming TTS 完成信号从 child `exit` 对齐到 stdio `close`，消除平台相关的尾帧丢失可能。 |
+| handoff-results-not-session-scoped | LOW | results GET 在现有 project/founder 校验外，再绑定 handoff 的 sessionId/generation，补 defence-in-depth。 |

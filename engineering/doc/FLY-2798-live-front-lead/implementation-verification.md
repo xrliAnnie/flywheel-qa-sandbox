@@ -154,3 +154,13 @@ QA 在 `b51a597567bf399120b3908f56c55bd68f933d38` 的真房核验确认，先前
 本轮四个非测试生产文件的完整路径、文件名、父目录 `git grep -lF` 命中计数（full/file/parent）为：voice-headphone `bridge-client.ts` 2/22/6、Teamlead `headphone-routes.ts` 0/0/991、529 launcher `fly2655-voice-room.mjs` 7/12/335、`scripts/test-deploy.sh` 230/329/933。保留的真实 consumer 是 voice-headphone public export/session/daemon、voice-codex Engine A composition/CLI、Teamlead plugin mount、529 launcher/deploy入口，以及本轮精确合同测试；生产 TypeScript 均由对应 exact/related 覆盖，脚本由 launcher 15/15 与 shell syntax 覆盖。
 
 其余命中按类别全部排除：`engineering/doc/**`、`product/doc/**`、`doc/**` 与旧 review/QA evidence 只保存路径文字；kill-path inventory 只登记 launcher 既有进程操作；通用 `bridge-client.ts`、`test-deploy.sh` 与 `scripts` basename/父目录在其他 package 或历史材料中只是词法碰撞；fixture/snapshot/CI 清单只保存命令或路径；其他 `scripts/__tests__` 针对未改的 deploy 子系统，不消费本轮 voice env block。唯一直接读取该 voice env block 的 `fly2655-voice-room.test.mjs` 已完整执行。本轮没有新增或修改 `scripts/__tests__/*.test.sh`，因此没有遗漏该类强制 shell 测试。以上仍不是 QA 真人 10 次延迟、字幕、复杂 handoff、耳机三件事、529 N-to-N 或 exact-head full CI 的替代证据。
+
+## R9 精确头代码审查阻断整改
+
+代码审查在 `ec9384dca` 确认三个 HIGH：公开 GPT-Live 没有 `response-done`，adapter 因而从不关闭前台 RoomIO speech；audible tail 未 drain 时 heartbeat 每次仍按 overdue 计算，形成 1ms 重排；reply subscription 的重连预算只增不减，长期会话累计五次断连后永久失聪。本轮只修这三项阻断，四项 MEDIUM/LOW advisory 原样记入 `follow-ups.md`。
+
+- 前台音频现在用 1 秒可配置 idle boundary 关闭 speech，`endSpeech` 仍排在全部已接收 frame 之后，不伪造 provider `response-done`，也不把字幕聚合当音频完成。idle 后若又到迟音频，adapter 自动开启新 speech；真实 RoomIO 合同测试不再手工 emit `response-done`，并证明首段调用 `endSpeech`、tail duration 被计入、迟到帧进入第二段且再次正常结束。
+- heartbeat 观察到未 drain tail 时把这段可听输出记为 activity，再按完整 heartbeat interval 重排。失败测试把旧实现稳定钉在 `[1]`，修复后为 `[1000]`，且没有误播 heartbeat。
+- SSE 重连预算在一条连接持续健康达到 backoff cap 后清零；短时 flap 仍共享原预算并最终 exhausted，避免恢复永久失聪与快速 flap 无限审计两种极端。回归先用两次 503 消耗完整预算，再保持 ready 40ms，随后断开并证明新预算可再次发起连接。
+
+最终证据：voice-core related 3 文件 15/15、voice-headphone related 16/16、voice-codex related 2 文件 16/16；受影响 dependency build 覆盖 16 个 package，`...flywheel-voice-core` dependent typecheck 覆盖 11 个 package；根 lint 检查 5241 files、0 errors、25 warnings；定向 Biome、`git diff --check` 均通过。Consumer discovery（full/file/parent）为 `live-lead-adapter.ts` 0/3/24、`HeadphoneMode.ts` 0/0/6，`bridge-client.ts` 沿用本轮 2/22/6；保留真实 composition/export/session 与精确/related 测试，其他命中均为文档、inventory、wrapper 路径文字或父目录碰撞。没有新增或修改 `scripts/__tests__/*.test.sh`，没有请求 full CI。
