@@ -5,13 +5,7 @@
  * (plan.md r2 §3 registry contract). This is the vendor-neutral seam: the upper
  * layer picks a backend by id / face and never imports a concrete backend.
  */
-import {
-	type ConversationOptions,
-	isV1ConversationSession,
-	type V1ConversationSession,
-	type VoiceBackend,
-	VoiceError,
-} from "../types.js";
+import { type VoiceBackend, VoiceError } from "../types.js";
 
 export type BackendFactory = () => VoiceBackend | Promise<VoiceBackend>;
 
@@ -56,27 +50,5 @@ export class BackendRegistry {
 		const backend = await factory();
 		assertBackendConsistent(backend);
 		return backend;
-	}
-
-	async createV1Conversation(
-		id: string,
-		opts: ConversationOptions,
-	): Promise<V1ConversationSession> {
-		const backend = await this.create(id);
-		if (!backend.createConversation) {
-			throw new VoiceError(
-				"unsupported",
-				`backend "${id}" does not provide the V1 conversation contract`,
-			);
-		}
-		const session = await backend.createConversation(opts);
-		if (!isV1ConversationSession(session)) {
-			await session.close().catch(() => undefined);
-			throw new VoiceError(
-				"unsupported",
-				`backend "${id}" did not return a V1 conversation contract`,
-			);
-		}
-		return session;
 	}
 }
