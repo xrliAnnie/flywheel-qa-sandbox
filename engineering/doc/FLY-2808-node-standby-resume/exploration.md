@@ -10,7 +10,7 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 
 本单只定工程设计、评审和 HTML，后续实现由 Lead 开 N2–N5。所有 DAG（按依赖推进的工作流）节点、Claude/Codex 一致，阶段做完立即释放进程，无空转缓冲；被打回按需接着原对话。整单结束仍由既有 ship/cancel/close 权威决定。
 
-产品权威：origin/flywheel-FLY-2782 @ 25cf13506eb818c59ef2d8a66622cc65e927d399 的 product/doc/FLY-2782-resume-standby/prd.md。该文件不在当前主线，使用 git show 读取，未合并产品分支。research.md 是证据，plan.md 和 PRD §8 是建议。旧“仅实现段、先 Codex、15 分钟缓冲、设计/QA 不做”明确作废。当前代码基线 abce27a27。
+产品权威：product/doc/FLY-2782-resume-standby/prd.md，固定为仓库内可解析的 blob `f0e5610d7efe4ae621cee9ca358a21e9c5e4345e`（首次可见提交 `40cde65e90dcd228b4dd33ccea79cd8e37e9e9aa`，PR #1291；可经 `git show origin/flywheel-FLY-2808:product/doc/FLY-2782-resume-standby/prd.md` 读取）。早先引用的 `25cf13506e…` 不在本仓库对象库中，已改为上述可复现引用。该文件不在当前主线，未合并产品分支。research.md 是证据，plan.md 和 PRD §8 是建议。旧“仅实现段、先 Codex、15 分钟缓冲、设计/QA 不做”明确作废。当前代码基线 abce27a27。
 
 用户已授权按该 PRD 完成技术探索、研究及定稿，不重复请求 brainstorm/research 人工许可。显式设计评审仍是硬门。采用已读 brainstorm/research/write-plan 的比较、源码追踪和测试拆分方法；本单 DOC-FLOW、review request 协议优先于通用技能的旧路径和独立 CLI 评审指令。
 

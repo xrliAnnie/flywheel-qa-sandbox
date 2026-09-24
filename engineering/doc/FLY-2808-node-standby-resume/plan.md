@@ -18,6 +18,8 @@ stateDiagram-v2
     退下待命 --> 拉起中: 有合法继续需求
     拉起中 --> 在干活: 原身份与当前写权限核验通过
     拉起中 --> 出问题: 核验或启动失败
+    释放中 --> 出问题: 60 秒未确认释放
+    出问题 --> 退下待命: 迟到退出回执且同代进程确认已消失
     出问题 --> 在干活: 有标识的兜底成功
     出问题 --> 等待处理: 安全恢复条件不满足
     退下待命 --> 整单结束: ship / 取消 / 关闭
@@ -30,7 +32,7 @@ stateDiagram-v2
 
 ## 2. 权威与最小改动
 
-产品 PRD 固定见 exploration.md。六处是必须逐个处置的入口，不是消费者全集。复用现有工作流、park outbox、CommDB 投影、TURN、消息投递、Codex recovery owner、writer replacement；不另写调度框架。
+产品 PRD 固定为仓库内可解析的对象：blob `f0e5610d7efe4ae621cee9ca358a21e9c5e4345e`（`product/doc/FLY-2782-resume-standby/prd.md`，首次可见提交 `40cde65e90dcd228b4dd33ccea79cd8e37e9e9aa`，PR #1291）；exploration.md 同步记录。评审收据绑定的是本 plan 的 blob，PRD blob 在此处正文固定，两者一起构成本设计的权威快照。六处是必须逐个处置的入口，不是消费者全集。复用现有工作流、park outbox、CommDB 投影、TURN、消息投递、Codex recovery owner、writer replacement；不另写调度框架。
 
 StateStore 是工作流/激活权威；CommDB 是消息和状态投影。`runner_declared_states.parked` 保留为自报，不能单独批准退下。`workflow-engine-park-evidence.ts` 已有 run/node/attempt/activation/generation/source_row_id 的双库精确匹配，扩展该路径，禁止发明平行的 park 权威。
 
@@ -44,8 +46,10 @@ StateStore 是工作流/激活权威；CommDB 是消息和状态投影。`runner
 | workflow_execution_carrier（一行/execId） | execution_id PK、generation 正整数、state、completion_event_id、park source_row_id、manifest_digest、current_demand_id、owner_claim_id、started_at、updated_at、reason_code | StateStore 事务以 expected generation/state 比较更新；state 为 active/retiring/standby/resuming/resume_failed/closed |
 | 现有 park outbox + CommDB projection | 现有精确身份字段，增加 carrier generation/state/reference；逐条 source_row_id 有序投影 | 同事务写 outbox；落后时 held/pending，不从旧投影推断死活 |
 | adapter resume manifest | schemaVersion、execId、vendor、非空 provider sessionId、resolvedModel（含窗口变体）、effort、home/account binding、canonical cwd、git commonDir/worktree identity、branch ref、lastObservedHead、validatedAt | adapter 在实际会话建立时保存，atomic rename；Codex 扩充现有 session.json，Claude 新建同级 claude-sessions/<execId>/session.json |
+| 退下时工作区基线（retire baseline，同代冻结，随载体记录/manifest 一起写） | `git status --porcelain=v2 -z` 的规范化摘要、index tree id、每个 staged/unstaged/untracked 条目的路径+mode+内容 digest（不存文件正文）、HEAD、branch ref、capturedAt、generation | 控制器在 active→retiring 事务中捕获；拉起前逐条比对（§5.2），是矩阵 B/E 的机械验收依据 |
+| 需求 episode（demand，一行/需求） | demand_id、source_kind（rework/phase_wake/gate_response/mailbox）、`authority_mode = conversation_only \| writer`、要求的 activation_id 与 TURN epoch（writer 才有）、expiry、cancel identity、episode 主键（首需求 id）、pending envelope（待投递的首条输入，含 HEAD/dirty 前移摘要） | 由既有 rework/phase-wake/gate/mailbox 入口在创建需求时冻结；恢复、回放、兜底只按此记录判断权限，不从消息文本或调用方参数推断 |
 | 原 workflow_run_event | event_uid、完整身份/generation、demand_id、尝试序号、requested/started/verified/finished、result、reason、queueMs/startupMs/totalMs、expected/observed session/model、fallback execution link | 控制器事实，去重事件；不保存口令/完整环境/凭证 |
-| 现有 dispatch ledger | 新增 purpose = initial/fault_replacement/resume_fallback，source_demand_id；launchOrdinal 继续单调排序 | 引擎创建，调用方不能提交“免费”计数类型；原会话恢复不制造 dispatch |
+| 现有 dispatch ledger（workflow_side_effect_ledger） | 新增 purpose = initial/fault_replacement/resume_fallback，source_demand_id；launchOrdinal 继续单调排序；两列在迁移完成后纳入 identity immutable trigger | purpose 只由 StateStore 单一 API 按服务端动作派生，外部调用方不得传值；原会话恢复不制造 dispatch；迁移与 NULL 语义见 §9 |
 
 进程代数 generation 与既有 park generation 分属物理载体和逻辑待命，必须显式记录绑定，不能混用。恢复新载体代数递增；阶段新激活的凭证按原引擎生成。普通恢复不增加 node attempt；合法 rework 原本会增加 attempt/activation 的地方照旧，不回滚到退下时的旧值。
 
@@ -64,6 +68,18 @@ Codex session.json 是会话 handle 真源，carrier 只存引用摘要；Claude
 3. CAS active→retiring，冻结退下 manifest 和当代进程身份，持久化请求；发布上述投影。standby 专用 stop 路由只停止专属载体，不能调用整单 terminal shutdown/closeout。先暂停新业务输入并排队，完成当前命令回复及 transcript flush。
 4. adapter 停 TUI/Claude 进程树及 Codex 独立 daemon；按已绑定 PID+启动时间/进程组+execution 所有权核验，不能按窗口名、孤立 PID 或 broad pkill 杀进程。复用安全 reap/drain；Codex home lease 可释放并清敏感 credential，保留会话数据。保留工作目录、分支、dirty 文件。
 5. 专属进程、独立 daemon、专属监听端点已不存在才写 `retired` 证据并 retiring→standby。60 秒内无法证明释放则 resume_failed(reason=retirement_unconfirmed)，可见并让 Lead 检查；不假报内存释放，不并行起第二身体。
+
+退下失败不是终点，有闭集的收敛规则（reason 闭集，每条转换都绑定 request id + owner/generation CAS + 审计 receipt）：
+
+| 处于 retirement_unconfirmed 时观察到 | 合法转换 |
+|---|---|
+| 迟到的精确同代退出回执，或后续探活证明该代所有专属进程/daemon/端点已消失 | 自动补写 `retired` → standby；problem 解除；不需要 Lead |
+| 进程仍活、且业务 intake 已暂停 | 保持 fenced problem；旧 finally/死亡巡检对该代不得改写为 completed 或故障；Lead 可发 stop-retry（同一 stop 请求重放）或 safe-takeover（核验后按当前代接管并再次 stop） |
+| 探活 indeterminate（PID 复用、权限不足） | 保持 problem 并 hold；不 kill、不 replace、不拉起；只显示需要人工核对的确切原因 |
+| Lead 执行 return-active（决定不退下、继续在这个进程里干活） | 审计 CAS → active；重新核当前 activation/TURN，不复活旧凭证 |
+| 需求在 problem 中到达 | 持久排队，不触发拉起；转入 standby 后按 §5 正常处理 |
+
+矩阵补：60 秒超时后迟到退出、Bridge 在 deadline 前后重启、需求在 problem 中到达（§8.1 场景 O）。
 
 进程退出发生在 retiring 且匹配已批准 stop/generation 时，继续核验并补写待命；只有 parked、无批准退下请求而进程死去，仍是真实故障。批准后尚未发 stop 的崩溃通过该请求的 durable step 状态重放，不把未知死因改成成功完成。active 状态死亡继续走既有严格死亡证据和故障预算。
 
@@ -88,7 +104,9 @@ Codex session.json 是会话 handle 真源，carrier 只存引用摘要；Claude
 
 ### 5.1 需求与互斥
 
-现有 durable rework/phase-wake/gate-response/mailbox 是需求来源，不新建一条易丢的通知队列。每条需求保留原 ID；同 exec 的并发需求共享一次载体恢复，消息各自保留并在恢复后顺序消费。首需求 ID 作为恢复批次主键，后续消息不能重置额度。普通文字可以要求恢复交谈，但不会自动授予写工作目录权限；写入仍须当前 activation 与 TURN。
+现有 durable rework/phase-wake/gate-response/mailbox 是需求来源，不新建一条易丢的通知队列。每条需求保留原 ID；同 exec 的并发需求共享一次载体恢复，消息各自保留并在恢复后顺序消费。首需求 ID 作为恢复批次主键，后续消息不能重置额度。
+
+每条需求在创建时冻结 `authority_mode`（§2.1 需求 episode）：只有既有权威的 rework / phase-wake 才是 `writer`，并同时冻结它要求的 activation 与 TURN epoch；普通 mailbox 文字与 gate response 是 `conversation_only`。conversation_only 只允许恢复交谈，不授予写工作目录权限，也不能触发 writer replacement；写入仍须当前 activation 与 TURN，并且只能由 writer 需求经原工作流的 holder 激活路径（沿用 `workflow-rework-coordinator` 先 reentry/worktree 检查、再 activate holder、再生成 activation/TURN 的顺序）取得。同一恢复批次里混有两类需求时，批次权限取各需求各自的记录，不向上合并。
 
 每个 canonical worktree 只一位写持有人和一次恢复。不同 worktree 全机最大 2 个恢复中，叠加现有 capacity/admission；排队 FIFO，已取消/过期项剔除。继续生产执行不占“恢复中”槽。等待超过 5 分钟显示排队原因，但不计恢复失败；本地容量不足只等待，不拉新账号或静默换模型。
 
@@ -97,7 +115,8 @@ Codex session.json 是会话 handle 真源，carrier 只存引用摘要；Claude
 - 核工作流非终态、需求仍有效、原节点 binding 当前、版本支持；领取 durable claim，递增 carrier generation。再次核所有旧专属进程、daemon、监听端点均消失；不能证明则 hold，不能新建兜底。
 - 读取 adapter 原 manifest：sessionId 非空且存在可读 transcript、execId/vendor/home/账户与不可变 runtime 绑定匹配。凭证重新按当前 authority 注入，不把旧凭证当许可；不在本单添加跨账号迁移。
 - 配置解析后的模型标识（包括窗口变体）、effort 与原会话完全匹配；同时校验当前 provider 可用能力。改过节点默认值也不能替换原模型。无法确认则 model_unverified；不匹配则 model_mismatch，调用模型前拒绝。失败显式兜底仍使用原冻结模型，换模型必须另有 Lead 决策。
-- cwd realpath、git commonDir、worktree 登记和分支 ref 与原身份一致。共享分支 HEAD 可因后续节点合法提交而前移；不要求退下时 HEAD 相等，更不能自动 reset/checkout。启动瞬间记下 HEAD/dirty 摘要，恢复过程不修改它们；若有另一合法 writer 则等待 TURN。目录不存在/分支不符/dirty 状态丢失不能自动覆盖。
+- cwd realpath、git commonDir、worktree 登记和分支 ref 与原身份一致。共享分支 HEAD 可因后续节点合法提交而前移；不要求退下时 HEAD 相等，更不能自动 reset/checkout。HEAD 合法变化规则：退下基线的 HEAD 必须是当前 HEAD 的祖先（fast-forward）；不是祖先（rebase / reset / force 重写）判 `head_rewritten` 并 hold。启动瞬间记下当前 HEAD/dirty 摘要，恢复过程不修改它们；若有另一合法 writer 则等待 TURN。目录不存在/分支不符/dirty 状态丢失不能自动覆盖。
+- 逐条比对退下时工作区基线（§2.1）：每个 staged/unstaged/untracked 条目判定为「仍在工作树且 digest 相同」「已进入合法后继提交（内容出现在基线 HEAD..当前 HEAD 的某个提交）」「被合法后继提交修改」之一即通过；任一条目无法解释（被清掉、被外部 reset/clean、worktree 重建或同路径替换、index tree 不符）判 `workspace_baseline_mismatch` 并 hold，给 Lead 看 expected/observed 路径清单（脱敏），不自动覆盖也不自动继续。比对通过后，基线→当前的差异（合法前移提交、被后继修改的条目）进入需求 episode 的 pending envelope，作为拉起后首条输入的前置内容。
 
 ### 5.3 adapter 与拉起后
 
@@ -105,7 +124,14 @@ Codex：扩展 resumeExistingExecution 现有 owner/recovery commit；standby �
 
 Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolved model/effort 和 cwd，并关联 launcher 预分配 id；恢复走交互式 `--resume <exact-id>`，不带 --fork-session、不生成新 --session-id。复用 hook callback 通道，在 SessionStart 的 trusted launcher wrapper 校验实际 session id/cwd/model 与 manifest，并以本次 nonce/generation 回报；核验前阻断用户 prompt 和工具入口（SessionStart + PreToolUse 守门均绑定当前凭证）。模型文本声称 ID 不是证明。若本机 CLI 不能提供 model 的有效证据，则以已确认 launch 参数+可验证 transcript 元数据比对，缺任一项判 unverified，N4 必须证明不是别名漂移。首次工作输入通过现有 transport 的安全文件/stdin 通路，禁止接在变长参数后或拼 shell 字符串。
 
-两 vendor 均需：核验实际会话身份后，计算 manifest 的 lastObservedHead 到当前 HEAD 的提交/文件变更摘要与 dirty 差异，并把它作为恢复后首条业务输入的前置内容（原会话缓存的是退下时刻的文件内容，fresh 会重新读盘而 resume 不会）；该摘要成功注入是 `resume_verified` 的条件之一。随后持久 `resume_verified`，再重建可见且 attachable 的 runner TUI，核当前窗口绑定；检查当前 TURN/activation，更新 transport 注册及 identity epoch，开始 durable delivery。standby 本身允许无窗口；active/resuming 必须有可见 TUI 或显示启动中的确切原因。首轮可观察模型消费回执后记 resume_succeeded；队列投递成功、启动退出码 0 或窗口存在都不是成功。
+两 vendor 均需，且顺序固定：
+
+1. 核验实际会话身份、model、cwd、进程身份 → 持久 `resume_verified`。`resume_verified` 只表示这四项核验通过，不包含任何业务输入。
+2. 重建可见且 attachable 的 runner TUI，核当前窗口绑定；更新 transport 注册及 identity epoch。standby 本身允许无窗口；active/resuming 必须有可见 TUI 或显示启动中的确切原因。
+3. 按需求 episode 的 `authority_mode` 取权限：writer 需求在此处对当前 activation/TURN 做 CAS（走原工作流 holder 激活路径），失败则 hold 并显示等待 TURN；conversation_only 需求不做 TURN 申请，也不激活 holder。
+4. 只有第 3 步结束后，才把 pending envelope（基线→当前 HEAD 的提交/文件变更摘要与 dirty 差异，见 §5.2；原会话缓存的是退下时刻的文件内容，fresh 会重新读盘而 resume 不会）与原需求**一次性、原子地**投递为首条业务输入，开始 durable delivery。摘要先持久在 envelope 里，不在核验前进入模型；TURN CAS 失败时 envelope 保留，不投递。
+
+首轮可观察模型消费回执后记 resume_succeeded；队列投递成功、启动退出码 0 或窗口存在都不是成功。
 
 每次记录 queueMs、startupMs（启动至身份确认）、totalMs（需求至业务输入消费），以及原/实际 ID、模型、目录、耗时和原因。180 秒单次启动超时，两 vendor 同值；慢启动取消后必须证明新进程已清理才可重试。没有证明时 cleanup_unconfirmed，不能继续第二次或兜底。
 
@@ -126,7 +152,7 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 | 清理不明（cleanup_unconfirmed）闩锁 | 不重试、不兜底；founder 面 `canResume=false`，标为出问题 | 不扣故障预算；只能经 Lead 审计重开路径（记录 server 侧 actor/时间/原因与旧尝试边界，reason 改 `operator_reopened`）解锁，之后恢复额度从审计边界重新计数，旧尝试留痕不删 |
 | 成功运行后意外死亡 | 原死亡证明 + 故障换人路径 | fault_replacement，最多原有 3 次，与恢复额度隔离 |
 
-兜底是可行时自动让单子继续的路径：当前需求有效、原载体已证明不在、原工作目录/分支/模型可用、原 writer 已 fenced，控制器事务产生 `resume_fallback` receipt，调用既有 writer replacement、分配新 execId，并重新绑定本节点当前 activation/TURN/未消费需求。保留 node 身份和完成/返工历史；UI 明示“原对话恢复失败，已重新开始”，不能显示“原会话已恢复”。原 exec 终结并拒绝后续输出；旧 gate 答案按既有明确 rebind 规则迁移，无法迁移则新建相应 gate，不能抄 APPROVED/ship authority。重做输入仅含既有工件、进度和合法需求，不假装完整上下文。
+兜底继承而不扩大原需求的权限：只有 `authority_mode = writer` 的需求（既有权威 rework / phase-wake）才走 writer replacement；conversation_only 需求遇到坏 handle 不产生新 writer、不激活 holder，只把该需求标为 `resume_failed(context_unavailable)` 并 hold 等 Lead 或下一条 writer 需求，消息保留不丢。写权限来源永远是原工作流的 holder 激活路径，兜底只是换了载体。兜底是可行时自动让单子继续的路径：当前 writer 需求有效、原载体已证明不在、原工作目录/分支/模型可用、原 writer 已 fenced，控制器事务产生 `resume_fallback` receipt，调用既有 writer replacement、分配新 execId，并重新绑定本节点当前 activation/TURN/未消费需求。保留 node 身份和完成/返工历史；UI 明示“原对话恢复失败，已重新开始”，不能显示“原会话已恢复”。原 exec 终结并拒绝后续输出；旧 gate 答案按既有明确 rebind 规则迁移，无法迁移则新建相应 gate，不能抄 APPROVED/ship authority。重做输入仅含既有工件、进度和合法需求，不假装完整上下文。
 
 目录丢失场景无法凭空保证未提交内容：有已验证 checkpoint 才可按既有 resolver 在新目录恢复，明确缺失内容和上下文；没有则 Lead 选择可审核的工作副本/重做范围，单子保留 held 可恢复，绝不判 retry_limit 死单。模型改变同样要独立决策。安全条件满足后的 fresh fallback 必须有成功路径验收，不用“永远告警等待”替代兜底。
 
@@ -158,10 +184,10 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 | 编号 | 场景 | 必须观察的断言 |
 |---|---|---|
 | A | Claude/Codex × design/implement/QA + 自定义节点 | accepted completion 仅一次；立即退下；node 状态/整单进度不因退出重复推进 |
-| B | QA 打回实现→实现改完退下→QA 原会话复验；设计被打回 | 原 exec/provider id/模型、当前 activation/TURN、原上下文问答与工具消费记录；同目录当前分支及 dirty 保留 |
+| B | QA 打回实现→实现改完退下→QA 原会话复验；设计被打回 | 原 exec/provider id/模型、当前 activation/TURN、原上下文问答与工具消费记录；同目录当前分支及 dirty 保留，且以退下基线逐条 digest 比对为准，不以「未执行 reset」代替 |
 | C | 空 ID、错误 ID、响应 ID 缺失/不等 | 启动前拒空；响应不等不发业务 prompt/工具；没有 silent fresh；有可见原因 |
 | D | 模型/窗口/effort/账户错配，默认模型已变 | 模型调用前拒绝；无 60 秒后才发现的错误；不自动换模型 |
-| E | 目录缺失、改分支、合法 HEAD 前移、未提交改动 | 缺失/改分支 hold；合法前移通过且前移摘要已送达被恢复会话（首条输入可见）；不得 reset/清理 dirty |
+| E | 目录缺失、改分支、合法 HEAD 前移、未提交改动；staged/unstaged/untracked 各自被外部删除或还原、worktree 重建、同路径替换、rebase/non-fast-forward | 缺失/改分支 hold；合法前移通过且前移摘要已送达被恢复会话（首条输入可见）；每类 dirty 条目丢失都判 `workspace_baseline_mismatch` hold 并列出路径；非祖先 HEAD 判 `head_rewritten`；不得 reset/清理 dirty |
 | F | Bridge 分别在 intent、投影、stop、退出、spawn、身份确认、投递后重启 | 每点都只有一个身体；回执可补写；旧代数 kill/finally 不生效；模型不双消费 |
 | G | 多需求/两节点同时打回、跨目录三需求、容量紧张 | 同目录一个恢复/写者；跨目录最多2；第三个排队；无丢信/重复扣账/饥饿 |
 | H | 只有 park 的意外死亡 vs 批准退下，身份探测不明 | 前者故障路径；后者待命；不明不 kill/replace；取消赢过旧 ACK |
@@ -171,6 +197,10 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 | L | 退下后重启 Bridge，无任何需求 | 不拉进程、不报死亡；所有专属 daemon/子进程消失，内存按 PID 核验 |
 | M | 页面/标题/状态工具真实浏览器 | 三态与阶段/时间/可恢复性一致；转义恶意文本；刷新/移动端可读；不能用 DTO 单测代替 |
 | N | 旧 snapshot、旧 adapter、新数据库；回滚前仍有 standby | 不部分启用；未知代数 fail closed；可恢复后再退旧版，无遗留无进程节点被旧版判死 |
+| O | retirement_unconfirmed 后迟到退出；Bridge 在 60 秒 deadline 前/后重启；需求在 problem 中到达 | 迟到同代退出自动转 standby；重启后按 durable step 收敛不重复 kill；problem 中需求只排队不拉起 |
+| P | 普通 mailbox 坏 handle、gate response 坏 handle、TURN 已转授、stage/send/consume 各崩溃点 | conversation_only 不产生 writer/不激活 holder；HEAD/dirty 摘要不在 TURN CAS 前进入模型；崩溃后 envelope 与需求一次性投递不双发 |
+| Q | 旧 projector fixture + v2 outbox 行；cursor 不越过首个未知行；升级后从同 row_id 重放 | 旧 projector 对未知 schema_version hold 且 `last_row_id` 不前移；新 projector 重放同一行得到相同投影 |
+| R | 旧 binary 写入 dispatch 行（purpose NULL）→ 回滚 → 再前滚；所有计数消费者 | NULL 保守读为 fault_replacement；回填与 trigger 替换不互锁；eligibility/backoff/environment/告警文案共用同一计数查询（断言唯一调用点） |
 
 相关命令（实现时跑精确文件，不跑全仓/真 GUI 测试）：
 
@@ -182,7 +212,22 @@ Claude：在 TmuxAdapter 初始 SessionStart 时保存实际 session id、resolv
 
 ## 9. 迁移、版本与回滚
 
-schema 仅加字段/表/索引；已有 park outbox 类型按版本扩展，旧投影遇新事件先 hold，不能丢弃推进 cursor。feature 默认关闭；只有 controller + CommDB projector + 两 adapter + 全消费者均声明 lifecycleVersion=1，且冻结快照支持，才启用整套新语义。新增 generic 能力走现有 registry/snapshot validator，两条快照物化路径都更新，禁止直接改旧 snapshot JSON。
+schema 仅加字段/表/索引，唯一例外是 dispatch ledger 的 identity immutable trigger 允许按下述两阶段替换。
+
+park outbox wire contract（现状：事件 CHECK 只有 `park_opened|park_cleared`，旧 `applyWorkflowEngineParkEvents` 把非 `park_opened` 一律当 cleared 并无条件推进 `last_row_id`，因此「旧投影遇新事件先 hold」必须落成可执行合同）：
+
+- 每行新增 `schema_version`（现有行视为 1）；载体状态以新 event 值 + v2 字段表达，不复用 v1 事件名承载新语义。
+- projector 对未知 `schema_version` 或未知事件值：标记 poison/hold，`last_row_id` 停在首个未知行之前，不丢弃、不推进；hold 期间该 exec 的投影视为「落后」，控制器按 §2.2 不得 stop/resume/replace。
+- 两阶段发布：先部署能拒绝未知版本并上报 capability 的 reader/projector（v2-aware，但 writer 仍写 v1）；全部 projector 上报支持后，才允许 writer 发 v2 行。回滚保留 v2 projector 直到 outbox 排空。
+- 集成测试见 §8.1 场景 Q。
+
+dispatch ledger purpose 迁移（现状：`workflow_side_effect_identity_immutable` 只保护 run/node/attempt/kind/launch_ordinal/execution_id/created_at，旧 binary 的 INSERT 不写新列）：
+
+- 阶段一：加 nullable `purpose`、`source_demand_id`；同一事务回填历史行——每 (run,node,attempt) 按 launch_ordinal 首条为 initial，其余保守为 fault_replacement。
+- 阶段二：替换 immutable trigger，把两列纳入不可更新集合；新行只由 StateStore 单一 API 派生 purpose。
+- 混跑/回滚期间读到 NULL 一律按 fault_replacement 保守计数；所有 eligibility/backoff/environment/告警消费者共用同一计数查询，测试断言唯一调用点（§8.1 场景 R）。
+
+feature 默认关闭；只有 controller + CommDB projector + 两 adapter + 全消费者均声明 lifecycleVersion=1，且冻结快照支持，才启用整套新语义。新增 generic 能力走现有 registry/snapshot validator，两条快照物化路径都更新，禁止直接改旧 snapshot JSON。
 
 旧 active run 不从 pid 缺失或 parked 自报推导待命，不把旧 completed 复活。对仍活着的 legacy actor 可通过引擎现有有审计的 snapshot 迁移入口（若没有则另建授权 migration 而非原地编辑）捕获实测 manifest，并在下一次正式完成时切换；迁移前保持旧行为并标明尚未纳入。这是过渡方式，N5 的全量验收必须清点所有可迁移 actor，不能永久把设计/QA 排除。历史已终结 actor 只能明确 fresh fallback/新激活，不承诺原会话成功。
 

@@ -15,6 +15,17 @@ Issue: FLY-2808 (https://linear.app/geoforge3d/issue/FLY-2808/节点生命周期
 | LOW | pane-loss-reconcile-missing-from-closure-list | 采纳。pane-loss / monitor-lost 巡检加入 plan §4 的周边闭包清单：已确认待命的节点不报 pane 丢失 |
 | LOW | carrier-term-collides-with-existing-ship-gate-carrier | 采纳。实现命名避开裸 `carrier`（既有 ship gate carrier epoch 已占用该词），建议用 `process_body` / process lifecycle |
 
+## 1.1 沙箱设计评审 R1（CHANGES REQUESTED → 全部采纳，已回写 plan）
+
+| 严重度 | 问题 | disposition |
+|---|---|---|
+| HIGH | 恢复需求没有持久化权限类别，首条输入/兜底顺序可能把普通消息升级成 writer | 采纳。§2.1 新增需求 episode 记录（source_kind / `authority_mode` / 要求的 activation+TURN epoch / expiry / pending envelope）；§5.1 冻结 authority_mode；§5.3 改为固定四步：`resume_verified` 只含身份/model/cwd/进程核验 → TUI → writer 需求 TURN CAS → envelope 与原需求一次性投递；§6 兜底只继承 writer 需求权限，conversation_only 坏 handle 只 hold；矩阵新增场景 P |
+| HIGH | manifest 无退下时 dirty 基线，「未提交改动仍在」不可机械验收 | 采纳。§2.1 新增 retire baseline（porcelain=v2 摘要、index tree、逐条 path+mode+digest）；§5.2 加 HEAD 祖先规则（`head_rewritten`）与逐条判定（`workspace_baseline_mismatch`）；矩阵 B/E 改为按 digest 验收 |
+| HIGH | park outbox 版本兼容缺可执行 wire contract | 采纳。§9 新增 schema_version / 未知版本 hold 且 cursor 不前移 / 两阶段发布 / 回滚保留 v2 projector；矩阵新增场景 Q |
+| MEDIUM | dispatch purpose 迁移与不可变 trigger 未落成合同 | 采纳。§2.1 / §9 两阶段迁移（nullable+回填 → trigger 替换）、purpose 服务端派生、NULL 按 fault_replacement 保守读、唯一计数查询；§9 允许该 trigger 替换作为「仅加字段」的唯一例外；矩阵新增场景 R |
+| MEDIUM | `retirement_unconfirmed` 无收敛状态机 | 采纳。§3 新增闭集转换表（迟到同代退出→standby、仍活→fenced problem+stop-retry/safe-takeover、indeterminate→hold、Lead return-active、problem 中需求只排队）；§1 与 lifecycle 图补对应边；矩阵新增场景 O |
+| LOW | PRD 引用 `25cf13506e…` 在本仓库不可解析 | 采纳。exploration.md 与 plan §2 改为 blob `f0e5610d…` + 首次可见提交 `40cde65e9…`；收据 schema 由 Bridge 固定，PRD blob 在 plan 正文固定 |
+
 ## 2. Lead 后续决定（已回写进 plan 的部分）
 
 - question `11a10fbd`：无墙钟 TTL、单目录串行/跨目录最多 2、原会话最多 2 次 + 每需求 1 次明确丢上下文兜底、故障分账、泛化 completion/rework 一并覆盖 → plan §5.1 / §6 / §10。

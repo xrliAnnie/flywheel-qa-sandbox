@@ -12,5 +12,7 @@ stateDiagram-v2
  standby --> resuming: 被打回或需继续
  resuming --> active: 原对话与权限核对通过
  resuming --> failed: 无法确认或超时
+ retiring --> failed: 60 秒未确认释放
+ failed --> standby: 迟到退出回执，同代进程确认已消失
  failed --> fallback: 满足安全条件
  fallback --> active: 保留节点，标明丢上下文
