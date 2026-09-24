@@ -116,4 +116,42 @@ describe("buildStagedConfig (FLY-1353)", () => {
 			);
 		},
 	);
+
+	it("restores the caller Bridge config between the /eleven mutex and audio boots", () => {
+		const source = readFileSync(
+			fileURLToPath(
+				new URL("../../e2e/eleven-voice-loop.mjs", import.meta.url),
+			),
+			"utf8",
+		);
+		const captureBridgeUrl = source.indexOf(
+			'const stagedBridgeUrl = need("FLYWHEEL_BRIDGE_URL");',
+		);
+		const captureApiToken = source.indexOf(
+			'const stagedApiToken = process.env.FLYWHEEL_API_TOKEN ?? "staged-mutex-leg";',
+		);
+		const mutexOverride = source.indexOf(
+			'process.env.FLYWHEEL_BRIDGE_URL = "http://10.255.255.255:9877";',
+		);
+		const restoreBridgeUrl = source.indexOf(
+			"process.env.FLYWHEEL_BRIDGE_URL = stagedBridgeUrl;",
+			mutexOverride,
+		);
+		const restoreApiToken = source.indexOf(
+			"process.env.FLYWHEEL_API_TOKEN = stagedApiToken;",
+			mutexOverride,
+		);
+		const audioBoot = source.indexOf(
+			'log("boot B: /eleven only — audio round + barge-in + survival");',
+		);
+
+		expect(captureBridgeUrl).toBeGreaterThan(-1);
+		expect(captureApiToken).toBeGreaterThan(-1);
+		expect(captureBridgeUrl).toBeLessThan(mutexOverride);
+		expect(captureApiToken).toBeLessThan(mutexOverride);
+		expect(restoreBridgeUrl).toBeGreaterThan(mutexOverride);
+		expect(restoreApiToken).toBeGreaterThan(mutexOverride);
+		expect(restoreBridgeUrl).toBeLessThan(audioBoot);
+		expect(restoreApiToken).toBeLessThan(audioBoot);
+	});
 });

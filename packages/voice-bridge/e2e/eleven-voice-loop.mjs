@@ -65,6 +65,8 @@ need("ELEVENLABS_API_KEY");
 const probeWav = need("PROBE_WAV");
 const interruptWav = need("INTERRUPT_WAV");
 const injectorToken = need("INJECTOR_BOT_TOKEN");
+const stagedBridgeUrl = need("FLYWHEEL_BRIDGE_URL");
+const stagedApiToken = process.env.FLYWHEEL_API_TOKEN ?? "staged-mutex-leg";
 const outDir = process.env.OUT_DIR ?? "/tmp/fly1006-voice-loop";
 execFileSync("mkdir", ["-p", outDir]);
 
@@ -136,7 +138,7 @@ if (LEGS !== "audio") {
 	// black-hole Bridge: the /gemini kickoff createIssue hangs AFTER the slot
 	// acquire, holding the room deterministically for the mutex window.
 	process.env.FLYWHEEL_BRIDGE_URL = "http://10.255.255.255:9877";
-	process.env.FLYWHEEL_API_TOKEN ??= "staged-mutex-leg";
+	process.env.FLYWHEEL_API_TOKEN = stagedApiToken;
 	process.env.FLYWHEEL_GEMINI_AUTOSTART = "mutex-leg 占坑";
 	process.env.FLYWHEEL_ELEVEN_AUTOSTART = "mutex-leg 拒入验证";
 	const bootAt = Date.now();
@@ -182,7 +184,8 @@ if (LEGS !== "audio") {
 	}
 	await runtime.close();
 	delete process.env.FLYWHEEL_GEMINI_AUTOSTART;
-	delete process.env.FLYWHEEL_BRIDGE_URL;
+	process.env.FLYWHEEL_BRIDGE_URL = stagedBridgeUrl;
+	process.env.FLYWHEEL_API_TOKEN = stagedApiToken;
 	await sleep(3_000);
 }
 
