@@ -98,3 +98,19 @@ R6 代码审查发现生产 `VoiceLeadResultProducer` 直接写入 durable resul
 - 根 `pnpm lint` 检查 5238 files、0 errors、25 个既有 warning、exit 0；定向 Biome 对本轮 6 个 TypeScript 文件 0 errors，`git diff --check` 通过。
 
 Consumer discovery 对本轮 4 个非测试 TypeScript 执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：`plugin.ts` 256/1063/991、`voice-handoff-routes.ts` 0/1/991、`voice-lead-result-producer.ts` 0/1/991、`voice-reply-notifier.ts` 0/0/991。保留生产组合根、router、producer、共享 notifier 以及两个直接测试；它们全部由上述聚焦测试与 related 图覆盖。其余命中均为 `plugin.ts` 等通用 basename 碰撞、`engineering/doc/**` 等历史文字、fixture/snapshot/inventory 路径文字，或仅共享 `packages/teamlead/src/bridge` 父目录而没有 import 的模块；新增文件使用无扩展名相对 import，故完整 `.ts`/basename 查询为零。没有新增或保留的 `scripts/__tests__/*.test.sh` consumer。本轮没有运行本地全包 suite，也没有请求 full CI。
+
+## QA 第二次回退整改
+
+QA 在头 `aec8c8ccb` 的真人路径核验发现五个阻断点，本轮均按 hard-red → 最小修复 → green 闭环：
+
+- RoomIO 首帧 sequence 必须从 0 开始；`CompositeSpeech` 与 `LiveLeadAdapter` 从预增改为后增，两个直接测试分别 4/4、12/12。
+- producer 与 consumer 的 handoff 幂等键公式不一致；公式提升为 voice-core 单一 helper，adapter 与 Teamlead route 共用，`delegation.id` 仍只用于 binding，不作幂等键。
+- Engine A 虽有推送订阅，legacy voice daemon `/outbound` 与 Teamlead Discord poller 仍会运行；开关选中时现在同时关闭两处轮询，默认 legacy 路径不变。
+- `startBridge` 在 catch-all 404 后挂载 headphone/handoff router；改为在 `createBridgeApp` 内预先挂载 late-bound holder，运行时再注入真实 router，未配置时显式 503。
+- 529 voice launcher 的封闭 env allowlist 缺三个 Engine A 开关；仅放行 `FLYWHEEL_VOICE_ENGINE`、`FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD`、`FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED` 并增加精确断言。
+
+最终本地验证：聚焦 voice-core 4/4、voice-codex 71/71、Teamlead 37/37、529 launcher 15/15；changed-TypeScript `vitest related` 为 voice-core 5/5、voice-codex 60/60、Teamlead 自动依赖图 104 文件 1202/1202。`pnpm --filter 'flywheel-voice-core...' --filter 'flywheel-voice-codex...' --filter 'flywheel-teamlead...' build` 覆盖 16 个 owner/dependency package 并通过；`pnpm --filter '...flywheel-voice-core' typecheck` 覆盖 11 个 owner/dependent package 并通过。变更的 15 个源码/测试文件定向 Biome 0 errors（`plugin.ts` 仅保留 2 个本次 diff 外既有 warning）。根 `pnpm lint` 已执行但因本次 diff 外的 FLY-1547/1563 research scripts、FLY-2560 replay tooling 等 3 个既有 error 而退出 1；遵守锁定范围未改这些文件。未请求 full CI。
+
+Consumer discovery 对本轮 9 个非测试源文件逐一执行完整路径、文件名、父目录三组 `git grep -lF`，命中计数（full/file/parent）为：Teamlead `plugin.ts` 256/1063/991、`voice-handoff-routes.ts` 0/2/991、`voice-session-services.ts` 3/13/991；voice-codex `cli.ts` 10/230/24、`daemon.ts` 13/32/24、`live-lead-adapter.ts` 0/3/24；voice-core `CompositeSpeech.ts` 0/0/0、`handoff.ts` 0/1/32；529 launcher `fly2655-voice-room.mjs` 7/11/335。保留所有真实 import/export/composition、精确行为测试，以及 Vitest related 自动解析出的依赖图；因此 Teamlead 的中央 `plugin.ts` 自动扩展到 104 文件，没有人工裁减。
+
+其余匹配逐类排除且没有未说明类别：`engineering/doc/**`、`product/doc/**`、`doc/**` 是历史文字或生成证据；fixture/snapshot/inventory 仅保存路径字符串；同名 `plugin.ts`、`cli.ts`、`daemon.ts` 等是其他 package 的词法碰撞；父目录命中除已保留 import/test 外只共享目录文字；新增文件以无扩展名相对 import 使用，故完整 `.ts` 查询可能为零。唯一直接命中的新 `scripts/__tests__` consumer 是 `fly2655-voice-room.test.mjs`，已完整执行 15/15；没有本轮新增或保留的 `scripts/__tests__/*.test.sh`。本轮没有运行人为选择的全包 suite，Teamlead 104 文件来自强制 `vitest related`，也没有以它替代 QA exact-head full CI。
