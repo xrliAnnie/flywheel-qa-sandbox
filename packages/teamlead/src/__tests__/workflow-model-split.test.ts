@@ -188,11 +188,17 @@ describe("FLY-2403 automatic design model split", () => {
 			},
 			() => {
 				const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-				expect(() =>
-					resolveMenuOverrides(code(), undefined, {
-						issueIdentifier: "FLY-2403",
-					}),
-				).toThrow(/invalid.*model split/i);
+				for (const menu of [
+					code(),
+					menuWithWeightedCandidates("simple_code"),
+				]) {
+					expect(() =>
+						resolveMenuOverrides(menu, undefined, {
+							issueIdentifier: "FLY-2403",
+							issueKey: "00000000-0000-4000-8000-000000002403",
+						}),
+					).toThrow(/invalid.*model split/i);
+				}
 				expect(warn).toHaveBeenCalledWith(
 					expect.stringContaining(
 						"modelSplit segment ignored: enabled must be boolean",
@@ -310,6 +316,244 @@ const percentagePolicy = (codexPercent: number) => ({
 	codex: { arm: "A", model: "astra" },
 	fable: { arm: "B", model: "fable" },
 });
+
+const weightedPolicy = () => ({
+	enabled: true,
+	rule: "issue_node_weighted",
+	nodes: {
+		eng_design: [
+			{ arm: "design_astra", model: "astra", weight: 1 },
+			{ arm: "design_opus", model: "opus", weight: 1 },
+			{ arm: "design_fable", model: "fable", weight: 1 },
+		],
+		implement: [
+			{ arm: "impl_opus", model: "opus", weight: 2 },
+			{ arm: "impl_sol56", model: "codex", weight: 1 },
+			{ arm: "impl_sol6", model: "sol", weight: 1 },
+		],
+		qa: [
+			{ arm: "qa_sol56", model: "codex", weight: 2 },
+			{ arm: "qa_sol6", model: "sol", weight: 1 },
+			{ arm: "qa_opus", model: "opus", weight: 1 },
+		],
+	},
+});
+
+const solModel = {
+	id: "gpt-6-sol",
+	provider: "openai",
+	runtimeVendor: "codex",
+	label: "GPT-6 Sol",
+	aliases: ["sol"],
+	surfaces: ["runner", "workflow"],
+};
+
+function menuWithWeightedCandidates(shape: "code" | "simple_code") {
+	const menu = loadWorkflowMenuLibrary().find(
+		(candidate) => candidate.shape === shape,
+	)!;
+	const ensure = (
+		nodeId: string,
+		model: string,
+		allowedEfforts: Array<"low" | "medium" | "high" | "xhigh" | "max">,
+		defaultEffort: "high" | "xhigh",
+	) => {
+		const node = menu.nodes.find((candidate) => candidate.id === nodeId)!;
+		const existing = node.models!.find(
+			(candidate) => candidate.model === model,
+		);
+		if (existing) {
+			existing.allowedEfforts = allowedEfforts;
+			existing.defaultEffort = defaultEffort;
+		} else {
+			node.models!.push({ model, allowedEfforts, defaultEffort });
+		}
+	};
+	if (shape === "code") ensure("eng_design", "opus", ["high"], "high");
+	ensure("implement", "opus", ["xhigh"], "xhigh");
+	ensure("implement", "sol", ["xhigh"], "xhigh");
+	ensure("qa", "opus", ["high"], "high");
+	ensure("qa", "sol", ["high"], "high");
+	return menu;
+}
+
+describe("FLY-2788 weighted node routing", () => {
+	it("routes all three nodes from issue UUID + node with the founder-approved efforts", () => {
+		withRuntimeModelConfig(
+			{ models: [solModel], modelSplit: weightedPolicy() },
+			() => {
+				const issueKey = "00000000-0000-4000-8000-000000000001";
+				const resolved = resolveMenuOverrides(
+					menuWithWeightedCandidates("code"),
+					undefined,
+					{
+						issueIdentifier: "FLY-2788",
+						issueKey,
+					},
+				);
+				expect(resolved.assignments).toMatchObject({
+					eng_design: {
+						arm: "design_opus",
+						modelAlias: "opus",
+						basis: { issueKey, nodeId: "eng_design" },
+					},
+					implement: {
+						arm: "impl_sol56",
+						modelAlias: "codex",
+						basis: { issueKey, nodeId: "implement" },
+					},
+					qa: {
+						arm: "qa_sol56",
+						modelAlias: "codex",
+						basis: { issueKey, nodeId: "qa" },
+					},
+				});
+				for (const assignment of Object.values(resolved.assignments)) {
+					if (assignment.basis.rule !== "issue_node_weighted") continue;
+					expect(assignment.basis.weightAudit).toEqual({
+						enabled: false,
+						applied: false,
+						baseWeights: assignment.basis.nodes[assignment.basis.nodeId].map(
+							({ arm, weight }) => ({ arm, weight }),
+						),
+						effectiveWeights: assignment.basis.nodes[
+							assignment.basis.nodeId
+						].map(({ arm, weight }) => ({ arm, weight })),
+					});
+				}
+				expect(resolved.templateOverride.nodes).toMatchObject({
+					eng_design: { vendor: "claude", effort: "high" },
+					implement: { vendor: "codex", effort: "xhigh" },
+					qa: { vendor: "codex", effort: "high" },
+				});
+			},
+		);
+	});
+
+	it("fails closed when the reserved quota-balance switch is enabled", () => {
+		withRuntimeModelConfig(
+			{
+				models: [solModel],
+				modelSplit: {
+					...weightedPolicy(),
+					balance: { enabled: true },
+				},
+			},
+			() => {
+				expect(() =>
+					resolveMenuOverrides(menuWithWeightedCandidates("code"), undefined, {
+						issueIdentifier: "FLY-2788",
+						issueKey: "00000000-0000-4000-8000-000000000001",
+					}),
+				).toThrowError(
+					expect.objectContaining<Partial<WorkflowMenuValidationError>>({
+						code: "MODEL_SPLIT_BALANCE_INPUT_UNAVAILABLE",
+					}),
+				);
+			},
+		);
+	});
+
+	it("matches the frozen 120-issue counts and simple_code node assignments", () => {
+		withRuntimeModelConfig(
+			{ models: [solModel], modelSplit: weightedPolicy() },
+			() => {
+				const counts: Record<string, number> = {};
+				const fullMenu = menuWithWeightedCandidates("code");
+				const simpleMenu = menuWithWeightedCandidates("simple_code");
+				for (let n = 1; n <= 120; n++) {
+					const issueKey = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+					const context = { issueIdentifier: `FLY-${n}`, issueKey };
+					const full = resolveMenuOverrides(fullMenu, undefined, context);
+					const simple = resolveMenuOverrides(simpleMenu, undefined, context);
+					for (const assignment of Object.values(full.assignments)) {
+						counts[assignment.arm] = (counts[assignment.arm] ?? 0) + 1;
+					}
+					expect(simple.assignments.implement).toEqual(
+						full.assignments.implement,
+					);
+					expect(simple.assignments.qa).toEqual(full.assignments.qa);
+				}
+				expect(counts).toEqual({
+					design_astra: 44,
+					design_opus: 38,
+					design_fable: 38,
+					impl_opus: 58,
+					impl_sol56: 30,
+					impl_sol6: 32,
+					qa_sol56: 56,
+					qa_sol6: 35,
+					qa_opus: 29,
+				});
+			},
+		);
+	});
+
+	it("fails closed without a stable UUID or when the selected model leaves the node candidates", () => {
+		withRuntimeModelConfig(
+			{ models: [solModel], modelSplit: weightedPolicy() },
+			() => {
+				expect(() =>
+					resolveMenuOverrides(menuWithWeightedCandidates("code"), undefined, {
+						issueIdentifier: "FLY-2788",
+					}),
+				).toThrow(/issue uuid/i);
+
+				const menu = menuWithWeightedCandidates("code");
+				menu.nodes.find((node) => node.id === "implement")!.models = menu.nodes
+					.find((node) => node.id === "implement")!
+					.models!.filter((candidate) => candidate.model !== "sol");
+				expect(() =>
+					resolveMenuOverrides(menu, undefined, {
+						issueIdentifier: "FLY-2",
+						issueKey: "00000000-0000-4000-8000-000000000002",
+					}),
+				).toThrowError(
+					expect.objectContaining<Partial<WorkflowMenuValidationError>>({
+						code: "MODEL_NOT_ALLOWED_FOR_NODE",
+					}),
+				);
+			},
+		);
+	});
+
+	it("keeps authorized explicit models outside the automatic candidates separate from arm assignment", () => {
+		withRuntimeModelConfig(
+			{ models: [solModel], modelSplit: weightedPolicy() },
+			() => {
+				const context = {
+					issueIdentifier: "FLY-2788",
+					issueKey: "00000000-0000-4000-8000-000000000001",
+				};
+				expect(() =>
+					resolveMenuOverrides(
+						menuWithWeightedCandidates("code"),
+						{ eng_design: { model: "haiku" } },
+						context,
+					),
+				).toThrowError(
+					expect.objectContaining<Partial<WorkflowMenuValidationError>>({
+						code: "MODEL_NOT_ALLOWED_FOR_NODE",
+					}),
+				);
+
+				const resolved = resolveMenuOverrides(
+					menuWithWeightedCandidates("code"),
+					{ eng_design: { model: "haiku", effort: "high" } },
+					context,
+				);
+				expect(resolved.assignments).not.toHaveProperty("eng_design");
+				expect(resolved.assignments).toHaveProperty("implement");
+				expect(resolved.assignments).toHaveProperty("qa");
+				expect(resolved.templateOverride.nodes?.eng_design).toMatchObject({
+					model: "claude-haiku-4-5-20251001",
+					effort: "high",
+				});
+			},
+		);
+	});
+});
+
 describe("FLY-2570 hot design percentage", () => {
 	it("uses Astra high for percentage-selected Codex design (FLY-2602)", () => {
 		withRuntimeModelConfig({ modelSplit: percentagePolicy(100) }, () => {

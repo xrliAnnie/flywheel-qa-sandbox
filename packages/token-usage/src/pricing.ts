@@ -45,6 +45,19 @@ const configuredRateKeys = new WeakMap<
  * cacheWrite = 1.25×input (5-min TTL, the `cache_creation_input_tokens` tier).
  */
 export const MODEL_RATES: Record<string, ModelRate> = {
+	// FLY-2775: Opus 5.5 的公开价在切换当天(2026-09-22)尚未登上 Anthropic 的
+	// models 文档页,按 Opus 线同族同价登记 —— 未登记的模型会被 costMicroUsd
+	// 静默估成 $0,整条 Opus 成本报表会归零,这比一个待复核的费率更糟。
+	// ⚠️ catalog 列出 5.5 后复核这两行。
+	// `[1m]` 变体单独登记:`opus-1m` / `opus[1m]` 是任何 runner 都能显式请求的
+	// 活别名(FLY-751 的 1M opt-in),翻绑后解析到它,不登记就是 $0。
+	"claude-opus-5-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+	"claude-opus-5-5[1m]": {
+		input: 5,
+		output: 25,
+		cacheRead: 0.5,
+		cacheWrite: 6.25,
+	},
 	// FLY-1467: Opus 5 与 Opus 4.8 同价(Anthropic catalog: "a drop-in
 	// upgrade at Opus 4.8's pricing")。cacheRead/Write = 标准 0.1x / 1.25x。
 	"claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },

@@ -25,6 +25,14 @@ export type CodexQuotaRoot = {
 	profile: string;
 	generation: number;
 };
+export type CodexPoolExhaustionFact = {
+	rootKey: string;
+	generation: number;
+	evidenceDigest: string;
+	evidenceRef: string;
+	observedAt: string;
+	observation: readonly CodexQuotaObservation[];
+};
 export type CodexQuotaIncidentState =
 	| "prepared"
 	| "installing"
@@ -1626,6 +1634,60 @@ export class CodexQuotaStore {
 		} catch {
 			return false;
 		}
+	}
+	getCurrentPoolExhaustionFact(
+		rootKey: string,
+		now = Date.now(),
+	): CodexPoolExhaustionFact | undefined {
+		const root = this.getRoot(rootKey);
+		if (!root || !Number.isFinite(now)) return undefined;
+		const incident = this.db
+			.prepare(
+				"SELECT incident_id FROM codex_quota_incident WHERE root_key=? AND generation=? LIMIT 1",
+			)
+			.get(rootKey, root.generation) as { incident_id: string } | undefined;
+		if (
+			!incident ||
+			!this.currentCodexPoolMembers ||
+			!this.hasCurrentCapacityGuard(incident.incident_id, now)
+		)
+			return undefined;
+		const evidence = this.latestCapacityEvidence(incident.incident_id);
+		if (!evidence) return undefined;
+		let currentPool: readonly CodexQuotaPoolMember[];
+		try {
+			currentPool = this.currentCodexPoolMembers();
+		} catch {
+			return undefined;
+		}
+		if (!validPoolMembers(currentPool)) return undefined;
+		const currentKeys = new Set(
+			currentPool.map((member) => `${member.profile}\0${member.accountKey}`),
+		);
+		const observation = evidence.observations.filter((member) =>
+			currentKeys.has(`${member.profile}\0${member.accountKey}`),
+		);
+		const row = this.db
+			.prepare(
+				"SELECT generation,evidence_digest,evidence_ref,observed_at FROM codex_quota_capacity_fact WHERE root_key=? AND generation=? AND resolved_at IS NULL ORDER BY observed_at DESC,evidence_digest DESC LIMIT 1",
+			)
+			.get(rootKey, root.generation) as
+			| {
+					generation: number;
+					evidence_digest: string;
+					evidence_ref: string;
+					observed_at: string;
+			  }
+			| undefined;
+		if (!row) return undefined;
+		return {
+			rootKey,
+			generation: row.generation,
+			evidenceDigest: row.evidence_digest,
+			evidenceRef: row.evidence_ref,
+			observedAt: row.observed_at,
+			observation,
+		};
 	}
 	resolveCapacityFacts(input: {
 		incidentId: string;

@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe("workflow menu policy catalog", () => {
-	it("publishes Astra for both code producers and simple-code implement without changing defaults", () => {
+	it("publishes the approved weighted-node candidates, defaults, and efforts", () => {
 		const catalog = buildWorkflowMenuPolicyCatalog();
 		const code = catalog.taskCategories.find(
 			(category) => category.taskCategory === "code",
@@ -28,18 +28,48 @@ describe("workflow menu policy catalog", () => {
 			allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
 			defaultEffort: "xhigh",
 		};
+		const opus = {
+			alias: "opus",
+			provider: "anthropic",
+			vendor: "claude",
+			model: "claude-opus-5-5",
+			label: "Opus 5.5",
+			allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+		};
+		const sol = {
+			alias: "sol",
+			provider: "openai",
+			vendor: "codex",
+			model: "gpt-6-sol",
+			label: "GPT-6 Sol",
+			allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+		};
+		const sol56 = {
+			alias: "codex",
+			provider: "openai",
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			label: "GPT-5.6",
+			allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+		};
 
 		expect(
 			code.nodes.find((node) => node.nodeId === "eng_design"),
 		).toMatchObject({
 			defaultModel: "fable",
-			models: expect.arrayContaining([{ ...astra, defaultEffort: "high" }]),
+			models: expect.arrayContaining([
+				{ ...astra, defaultEffort: "high" },
+				{ ...opus, defaultEffort: "high" },
+			]),
 		});
 		expect(
 			code.nodes.find((node) => node.nodeId === "implement"),
 		).toMatchObject({
-			defaultModel: "codex",
-			models: expect.arrayContaining([astra]),
+			defaultModel: "opus",
+			models: expect.arrayContaining([
+				{ ...opus, defaultEffort: "xhigh" },
+				{ ...sol, defaultEffort: "xhigh" },
+			]),
 		});
 		expect(simpleCode.nodes.map((node) => node.nodeId)).toEqual([
 			"implement",
@@ -48,15 +78,29 @@ describe("workflow menu policy catalog", () => {
 		expect(
 			simpleCode.nodes.find((node) => node.nodeId === "implement"),
 		).toMatchObject({
-			defaultModel: "codex",
-			models: expect.arrayContaining([astra]),
+			defaultModel: "opus",
+			models: expect.arrayContaining([
+				{ ...opus, defaultEffort: "xhigh" },
+				{ ...sol, defaultEffort: "xhigh" },
+			]),
 		});
-		expect(code.nodes.find((node) => node.nodeId === "qa")?.defaultModel).toBe(
-			"opus",
+		expect(code.nodes.find((node) => node.nodeId === "qa")).toMatchObject({
+			defaultModel: "opus",
+			models: expect.arrayContaining([
+				{ ...opus, defaultEffort: "high" },
+				{ ...sol56, defaultEffort: "high" },
+				{ ...sol, defaultEffort: "high" },
+			]),
+		});
+		expect(simpleCode.nodes.find((node) => node.nodeId === "qa")).toMatchObject(
+			{
+				defaultModel: "opus",
+				models: expect.arrayContaining([
+					{ ...opus, defaultEffort: "high" },
+					{ ...sol, defaultEffort: "high" },
+				]),
+			},
 		);
-		expect(
-			simpleCode.nodes.find((node) => node.nodeId === "qa")?.defaultModel,
-		).toBe("opus");
 	});
 
 	it("projects the code QA shape allowlist as canonical runtime tuples", () => {
@@ -74,23 +118,36 @@ describe("workflow menu policy catalog", () => {
 		expect(qa).toMatchObject({
 			defaultModel: "opus",
 			source: ".flywheel/agents/registry.yaml#graphs.code.policies.qa",
-			models: [
+			models: expect.arrayContaining([
 				{
 					alias: "opus",
 					provider: "anthropic",
 					vendor: "claude",
-					model: "claude-opus-5",
-					allowedEfforts: ["low", "medium", "high", "max"],
+					model: "claude-opus-5-5",
+					label: "Opus 5.5",
+					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
 					defaultEffort: "high",
 				},
-			],
+				{
+					alias: "sol",
+					provider: "openai",
+					vendor: "codex",
+					model: "gpt-6-sol",
+					label: "GPT-6 Sol",
+					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+					defaultEffort: "high",
+				},
+			]),
 		});
-		expect(qa?.allowedSelections).toEqual([
-			{ vendor: "claude", model: "claude-opus-5", effort: "low" },
-			{ vendor: "claude", model: "claude-opus-5", effort: "medium" },
-			{ vendor: "claude", model: "claude-opus-5", effort: "high" },
-			{ vendor: "claude", model: "claude-opus-5", effort: "max" },
-		]);
+		expect(qa?.allowedSelections).toEqual(
+			expect.arrayContaining([
+				{ vendor: "claude", model: "claude-opus-5-5", effort: "low" },
+				{ vendor: "claude", model: "claude-opus-5-5", effort: "medium" },
+				{ vendor: "claude", model: "claude-opus-5-5", effort: "high" },
+				{ vendor: "claude", model: "claude-opus-5-5", effort: "max" },
+				{ vendor: "codex", model: "gpt-6-sol", effort: "high" },
+			]),
+		);
 		const serialized = JSON.stringify(catalog);
 		expect(serialized).not.toContain("/Users/");
 		expect(serialized).not.toMatch(/agentFile|apiToken|secret/i);
@@ -108,8 +165,8 @@ describe("workflow menu policy catalog", () => {
 		writeFileSync(
 			registryPath,
 			registry.replace(
-				"allowedEfforts: [low, medium, high, max]\n            defaultEffort: high",
-				"allowedEfforts: [low, medium, max]\n            defaultEffort: medium",
+				"      qa:\n        defaultModel: opus\n        models:\n          - model: opus\n            allowedEfforts: [low, medium, high, xhigh, max]\n            defaultEffort: high",
+				"      qa:\n        defaultModel: opus\n        models:\n          - model: opus\n            allowedEfforts: [low, medium, max]\n            defaultEffort: medium",
 			),
 		);
 
@@ -122,7 +179,7 @@ describe("workflow menu policy catalog", () => {
 			defaultEffort: "medium",
 		});
 		expect(qa?.allowedSelections).not.toContainEqual(
-			expect.objectContaining({ effort: "high" }),
+			expect.objectContaining({ model: "claude-opus-5-5", effort: "high" }),
 		);
 	});
 });

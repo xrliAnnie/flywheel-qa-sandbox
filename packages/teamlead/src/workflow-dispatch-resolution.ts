@@ -1,7 +1,16 @@
-import { resolveAllowedEffort } from "flywheel-config";
+import {
+	getModelConfigSnapshot,
+	MODEL_IDS,
+	resolveAllowedEffort,
+} from "flywheel-config";
+import type { CodexPoolExhaustionFact } from "./bridge/codex-quota-store.js";
 import type { StateStore } from "./StateStore.js";
 import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
-import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
+import {
+	assertFrozenWeightedModelAssignment,
+	assertPercentageModelAssignment,
+	assertWeightedModelAssignment,
+} from "./workflow-model-assignment.js";
 import { parseWorkflowRunSnapshot } from "./workflow-run-snapshot.js";
 import {
 	validateWorkflowManifest,
@@ -18,6 +27,54 @@ export interface WorkflowDispatchResolution {
 	source: "live_template" | "pinned_snapshot" | "snapshot_fallback";
 	audit: boolean;
 	modelAssignment?: WorkflowModelAssignmentReceipt;
+	degradation?: {
+		assignedDispatch: WorkflowDispatchResolution["dispatch"];
+		quotaEvidence: CodexPoolExhaustionFact;
+	};
+}
+
+function applyImplementQuotaDegradation(
+	store: StateStore,
+	input: { nodeId: string; codexQuotaRootKey?: string; now?: number },
+	resolution: WorkflowDispatchResolution,
+): WorkflowDispatchResolution {
+	const assignment = resolution.modelAssignment;
+	if (
+		input.nodeId !== "implement" ||
+		!input.codexQuotaRootKey ||
+		assignment?.basis.rule !== "issue_node_weighted" ||
+		assignment.basis.nodeId !== "implement" ||
+		!(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") ||
+		!assignment.basis.nodes.implement.some(
+			(arm) => arm.arm === "impl_opus" && arm.model === "opus",
+		)
+	)
+		return resolution;
+	const quotaEvidence = store.codexQuota.getCurrentPoolExhaustionFact(
+		input.codexQuotaRootKey,
+		input.now,
+	);
+	const model = getModelConfigSnapshot().getModelRegistryEntry("opus");
+	if (
+		!quotaEvidence ||
+		model?.id !== MODEL_IDS.OPUS_55 ||
+		model.runtimeVendor !== "claude" ||
+		!getModelConfigSnapshot().isModelSelectionSupported({
+			surface: "workflow",
+			model: model.id,
+			effort: "xhigh",
+			runtimeVendor: "claude",
+		})
+	)
+		return resolution;
+	return {
+		...resolution,
+		dispatch: { vendor: "claude", model: model.id, effort: "xhigh" },
+		degradation: {
+			assignedDispatch: resolution.dispatch,
+			quotaEvidence,
+		},
+	};
 }
 
 function resolveModelAssignment(
@@ -28,35 +85,58 @@ function resolveModelAssignment(
 		.listWorkflowRunEvents(input.runId)
 		.filter(
 			(event) =>
-				event.kind === "design_model_arm_assigned" &&
+				(event.kind === "design_model_arm_assigned" ||
+					event.kind === "model_arm_assigned") &&
 				event.node_id === input.nodeId,
 		);
 	if (matches.length === 0) return undefined;
-	if (matches.length !== 1) {
+	if (
+		matches.filter((event) => event.kind === "design_model_arm_assigned")
+			.length > 1 ||
+		matches.filter((event) => event.kind === "model_arm_assigned").length > 1
+	) {
 		throw new Error("workflow_dispatch_model_assignment_ambiguous");
 	}
-	const assignment = matches[0]!.payload as
-		| WorkflowModelAssignmentReceipt
-		| undefined;
-	if (
-		!assignment ||
-		assignment.model !== input.model ||
-		!assignment.basis ||
-		!["issue_number_parity", "issue_number_percentage"].includes(
-			assignment.basis.rule,
-		) ||
-		!assignment.basis.ruleVersion
-	) {
-		throw new Error("workflow_dispatch_model_assignment_invalid");
-	}
-	if (assignment.basis.rule === "issue_number_percentage") {
+	const assignments = matches.map((event) => {
+		const assignment = event.payload as
+			| WorkflowModelAssignmentReceipt
+			| undefined;
+		if (
+			!assignment ||
+			assignment.model !== input.model ||
+			!assignment.basis?.ruleVersion
+		)
+			throw new Error("workflow_dispatch_model_assignment_invalid");
 		try {
-			assertPercentageModelAssignment(assignment);
+			if (event.kind === "model_arm_assigned") {
+				assertFrozenWeightedModelAssignment(assignment, input);
+			} else if (assignment.basis.rule === "issue_number_percentage") {
+				assertPercentageModelAssignment(assignment);
+			} else if (assignment.basis.rule === "issue_node_weighted") {
+				assertWeightedModelAssignment(assignment);
+			} else if (assignment.basis.rule !== "issue_number_parity") {
+				throw new Error("unsupported assignment rule");
+			}
 		} catch {
 			throw new Error("workflow_dispatch_model_assignment_invalid");
 		}
+		return { event, assignment };
+	});
+	if (assignments.length === 2) {
+		const normalized = assignments.map(({ assignment }) =>
+			JSON.stringify({
+				arm: assignment.arm,
+				modelAlias: assignment.modelAlias,
+				model: assignment.model,
+				basis: assignment.basis,
+			}),
+		);
+		if (normalized[0] !== normalized[1])
+			throw new Error("workflow_dispatch_model_assignment_ambiguous");
 	}
-	return assignment;
+	return (assignments.find(
+		({ event }) => event.kind === "model_arm_assigned",
+	) ?? assignments[0])!.assignment;
 }
 
 /**
@@ -97,6 +177,8 @@ export function resolveNodeDispatchAtLaunch(
 	input: {
 		runId: string;
 		nodeId: string;
+		codexQuotaRootKey?: string;
+		now?: number;
 	},
 ): WorkflowDispatchResolution {
 	const run = store.getWorkflowRun(input.runId);
@@ -113,12 +195,12 @@ export function resolveNodeDispatchAtLaunch(
 		model: pinned.model,
 	});
 	if (node.dispatchPinned) {
-		return {
+		return applyImplementQuotaDegradation(store, input, {
 			dispatch: narrowEffort(pinned),
 			source: "pinned_snapshot",
 			audit: true,
 			...(modelAssignment ? { modelAssignment } : {}),
-		};
+		});
 	}
 
 	try {
@@ -134,7 +216,7 @@ export function resolveNodeDispatchAtLaunch(
 			(candidate) => candidate.id === input.nodeId,
 		);
 		if (!live?.vendor || !live.model) throw new Error("node_dispatch_missing");
-		return {
+		return applyImplementQuotaDegradation(store, input, {
 			dispatch: narrowEffort({
 				vendor: live.vendor,
 				model: live.model,
@@ -143,13 +225,13 @@ export function resolveNodeDispatchAtLaunch(
 			source: "live_template",
 			audit: true,
 			...(modelAssignment ? { modelAssignment } : {}),
-		};
+		});
 	} catch {
-		return {
+		return applyImplementQuotaDegradation(store, input, {
 			dispatch: narrowEffort(pinned),
 			source: "snapshot_fallback",
 			audit: true,
 			...(modelAssignment ? { modelAssignment } : {}),
-		};
+		});
 	}
 }

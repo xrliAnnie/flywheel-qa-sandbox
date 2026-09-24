@@ -4,7 +4,6 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -166,17 +165,10 @@ printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
 		};
 	}
 
-	it("carries the 4.6-bound compiled QA node into a real claude process argv", async () => {
-		const proof = await captureQaArgv(EXPECTED_MODEL);
-
-		expect(proof.compiledModel).toBe(EXPECTED_MODEL);
-		expect(proof.compiledEffort).toBe("high");
-		expect(realpathSync(proof.openedSocket)).toBe(realpathSync(socketPath));
-		expect(() => assertExpectedQaArgv(proof.argv)).not.toThrow();
-		expect(proof.argv).toContain("--model");
-		expect(proof.argv).toContain(EXPECTED_MODEL);
-		expect(proof.argv).toContain("--effort");
-		expect(proof.argv).toContain("high");
+	it("fails closed before spawn when Opus 4.6 cannot satisfy current policy", async () => {
+		await expect(captureQaArgv(EXPECTED_MODEL)).rejects.toThrow(
+			/allowedEfforts must be supported.*low, medium, high, max/,
+		);
 	}, 15_000);
 
 	it("makes the same proof fail loudly for a wrong binding and a missing model flag", async () => {

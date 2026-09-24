@@ -200,6 +200,14 @@ function createFixture(): Fixture {
 			eventUid: "run_terminated:terminal:operator",
 			kind: "run_terminated_by_operator",
 		}),
+		degradedArm: addEvent({
+			eventUid: "model_arm_degraded:terminal:implement:activation",
+			kind: "model_arm_degraded",
+		}),
+		qaExemption: addEvent({
+			eventUid: "qa_same_family_exemption_applied:terminal:qa:activation",
+			kind: "qa_same_family_exemption_applied",
+		}),
 		active: addEvent({
 			runId: "active",
 			eventUid: "rework_delivery_claimed:active:1",
@@ -496,6 +504,8 @@ describe("FLY-1998 database retention sweep", () => {
 		}
 		for (const id of [
 			fixture.ids.fence,
+			fixture.ids.degradedArm,
+			fixture.ids.qaExemption,
 			fixture.ids.active,
 			fixture.ids.held,
 			fixture.ids.recent,

@@ -2913,6 +2913,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			() => opts?.codexQuota?.rootKey,
 		),
 	);
 
@@ -3608,6 +3609,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			() => opts?.codexQuota?.rootKey,
 		),
 	);
 

@@ -195,6 +195,13 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 					{
 						env: {
 							PATH: process.env.PATH,
+							// FLY-2775: without HOME the child still resolves the real
+							// `~/.flywheel/models.json` through the OS user db, so this
+							// `stderr === ""` assertion silently depended on the developer's
+							// live fleet config (a stale tier pin makes the model loader
+							// warn on stderr and reds this test). Point HOME at the
+							// fixture dir so the CLI runs on built-in model policy.
+							HOME: dir,
 							TEAMLEAD_API_TOKEN: "fixture-token",
 							FLYWHEEL_BRIDGE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
 						},

@@ -91,9 +91,9 @@ jq -n '{model:"claude-opus-4-8[1m]",effort:"max"}' > "$H/.flywheel/manifests/fly
 MANIFEST_BEFORE=$(cat "$H/.flywheel/manifests/flywheel-eng-lead.json")
 OUT=$(run_dry "$H" "$P" FLYWHEEL_LEAD_MODEL="claude-opus-4-8" FLYWHEEL_LEAD_EFFORT="low")
 PLAN=$(printf '%s\n' "$OUT" | plan_of)
-[ "$(arg_value "$PLAN" --model)" = "claude-opus-5" ] \
+[ "$(arg_value "$PLAN" --model)" = "claude-opus-5-5" ] \
   && ok "projects alias canonicalizes; stale manifest/env cannot win" \
-  || bad "expected canonical Opus 5 from projects.json"
+  || bad "expected the canonical Opus binding from projects.json"
 [ "$(arg_value "$PLAN" --effort)" = "high" ] \
   && ok "projects effort beats stale manifest/env" \
   || bad "expected projects effort high"

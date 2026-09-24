@@ -124,7 +124,7 @@ describe("ClaudeRunner", () => {
 				prompt: "Hello Claude",
 				options: {
 					model: "claude-fable-5-1",
-					fallbackModel: "claude-opus-5",
+					fallbackModel: "claude-opus-5-5",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: { type: "preset", preset: "claude_code" },
@@ -160,7 +160,7 @@ describe("ClaudeRunner", () => {
 				prompt: "test",
 				options: {
 					model: "claude-fable-5-1",
-					fallbackModel: "claude-opus-5",
+					fallbackModel: "claude-opus-5-5",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: { type: "preset", preset: "claude_code" },
@@ -196,7 +196,7 @@ describe("ClaudeRunner", () => {
 				prompt: "test",
 				options: {
 					model: "claude-fable-5-1",
-					fallbackModel: "claude-opus-5",
+					fallbackModel: "claude-opus-5-5",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: "You are a helpful assistant",

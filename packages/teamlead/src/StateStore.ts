@@ -18,6 +18,8 @@ import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-pr
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
+	assertWeightedModelAssignment,
+	finalizeWeightedModelAssignment,
 	readScorecardAssignment,
 } from "./workflow-model-assignment.js";
 import { WorkflowScorecardStore } from "./workflow-scorecard.js";
@@ -57,6 +59,7 @@ import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "fl
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import {
+	type CodexPoolExhaustionFact,
 	type CodexQuotaPoolMember,
 	CodexQuotaStore,
 } from "./bridge/codex-quota-store.js";
@@ -101,6 +104,7 @@ import {
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
+	MODEL_IDS,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROJECT_STORE_MANAGED_FLAGS,
@@ -291,6 +295,7 @@ import {
 	resolveWorkflowGateAuthority,
 	type WorkflowGateAuthorityMode,
 	type WorkflowGateSubjectKind,
+	type WorkflowSnapshotModelRouting,
 } from "./workflow-run-snapshot.js";
 import {
 	type ShipReadyMarkerPayload,
@@ -36431,6 +36436,7 @@ export class StateStore {
 	materializeWorkflowRun(input: {
 		runId: string;
 		issueId: string;
+		issueKey?: string;
 		entryIssueAliases?: string[];
 		entryRootKey?: string;
 		projectName: string;
@@ -36442,6 +36448,7 @@ export class StateStore {
 		selectionOverride?: WorkflowTemplateOverride;
 		/** Engine-owned model split receipts, atomically persisted with this run. */
 		modelAssignments?: Record<string, WorkflowModelAssignmentReceipt>;
+		modelRouting?: WorkflowSnapshotModelRouting;
 		actor: string;
 		canonicalRoot?: string;
 		selection?: {
@@ -36573,6 +36580,7 @@ export class StateStore {
 									},
 								}
 							: {}),
+						...(input.modelRouting ? { modelRouting: input.modelRouting } : {}),
 						})
 					: undefined;
 		} catch (error) {
@@ -36636,31 +36644,45 @@ export class StateStore {
 				input.issueId,
 				...(input.entryIssueAliases ?? []),
 			]);
-			const suffix = /-(\d+)$/.exec(assignment.basis.issueIdentifier);
-			if (
-				!node?.dispatch ||
-				node.dispatch.model !== assignment.model ||
-				!aliases.has(assignment.basis.issueIdentifier) ||
-				!["issue_number_parity", "issue_number_percentage"].includes(
-					assignment.basis.rule,
-				) ||
-				!assignment.basis.ruleVersion ||
-				!suffix ||
-				Number(suffix[1]) !== assignment.basis.issueNumber ||
-				(assignment.basis.rule === "issue_number_parity" &&
-					(assignment.basis.issueNumber % 2 === 1 ? "odd" : "even") !==
-						assignment.basis.parity)
-			) {
-				throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
-			}
-			if (assignment.basis.rule === "issue_number_percentage") {
-				try {
-					assertPercentageModelAssignment(assignment);
-				} catch {
+				const suffix = /-(\d+)$/.exec(assignment.basis.issueIdentifier);
+				if (
+					!node?.dispatch ||
+					node.dispatch.model !== assignment.model ||
+					!aliases.has(assignment.basis.issueIdentifier) ||
+					!assignment.basis.ruleVersion
+				) {
 					throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
+				}
+				if (assignment.basis.rule === "issue_node_weighted") {
+					try {
+						if (
+							assignment.basis.nodeId !== nodeId ||
+							assignment.basis.issueKey !== input.issueKey
+						)
+							throw new Error("identity mismatch");
+						assertWeightedModelAssignment(assignment);
+					} catch {
+						throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
+					}
+				} else {
+					try {
+						if (
+							!suffix ||
+							Number(suffix[1]) !== assignment.basis.issueNumber ||
+							(assignment.basis.rule === "issue_number_parity" &&
+								(assignment.basis.issueNumber % 2 === 1 ? "odd" : "even") !==
+									assignment.basis.parity)
+						)
+							throw new Error("identity mismatch");
+						if (assignment.basis.rule === "issue_number_percentage")
+							assertPercentageModelAssignment(assignment);
+					} catch {
+						throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
 				}
 			}
 		}
+		const modelAssignmentAssignedAt =
+			input.startReservation?.createdAt ?? new Date().toISOString();
 		this.db.transaction(() => {
 			if (input.expectedSelection) {
 				const expected = input.expectedSelection;
@@ -36856,12 +36878,21 @@ export class StateStore {
 			for (const [nodeId, assignment] of Object.entries(
 				input.modelAssignments ?? {},
 			)) {
+				const weighted = assignment.basis.rule === "issue_node_weighted";
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
-					eventUid: `design_model_arm_assigned:${input.runId}:${nodeId}`,
-					kind: "design_model_arm_assigned",
+					eventUid: `${weighted ? "model_arm_assigned" : "design_model_arm_assigned"}:${input.runId}:${nodeId}`,
+					kind: weighted
+						? "model_arm_assigned"
+						: "design_model_arm_assigned",
 					nodeId,
-					payload: assignment,
+					payload: weighted
+						? finalizeWeightedModelAssignment(assignment, {
+								runId: input.runId,
+								nodeId,
+								assignedAt: modelAssignmentAssignedAt,
+							})
+						: assignment,
 				});
 			}
 			if (input.startReservation) {
@@ -45153,6 +45184,56 @@ export class StateStore {
 		return this.reviewSameFamilyAllowedForProject(input.projectName);
 	}
 
+	private workflowQaSameFamilyAllowed(input: {
+		runId: string;
+		nodeId: string;
+		predicate?: string;
+		subjectProducerExecutionId?: string;
+	}): boolean {
+		if (
+			input.predicate !== undefined &&
+			input.predicate !== "qa_passed" &&
+			input.predicate !== "qa_failed"
+		)
+			return false;
+		const run = this.getWorkflowRun(input.runId);
+		if (!run?.snapshot) return false;
+		let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		try {
+			snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		} catch {
+			return false;
+		}
+		const node = snapshot.resolved.nodes.find(
+			(candidate) => candidate.id === input.nodeId,
+		);
+		const decision = node
+			? resolveWorkflowDecisionContract(snapshot, node.id)
+			: undefined;
+		const producerIds = snapshot.manifest.edges
+			.filter((edge) => edge.to === input.nodeId)
+			.map((edge) => edge.from);
+		const producers = snapshot.resolved.nodes.filter((candidate) =>
+			producerIds.includes(candidate.id),
+		);
+		if (
+			node?.type !== "qa" ||
+			decision?.family !== "qa_verdict" ||
+			node.capabilities.qa_verdict_emitter !== true ||
+			node.capabilities.produces_output === true ||
+			producers.length !== 1 ||
+			producers[0]?.type !== "implement"
+		)
+			return false;
+		if (!input.subjectProducerExecutionId) return true;
+		return (
+			this.listWorkflowRunNodes(input.runId, producers[0].id)
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id ===
+			input.subjectProducerExecutionId
+		);
+	}
+
 	admitGeneralizedWorkflowExecution(input: {
 		codexQuotaRootKey?: string;
 		runId: string;
@@ -45179,6 +45260,14 @@ export class StateStore {
 				| "snapshot_fallback";
 			audit: boolean;
 			modelAssignment?: WorkflowModelAssignmentReceipt;
+			degradation?: {
+				assignedDispatch: {
+					vendor: "claude" | "codex";
+					model: string;
+					effort?: "low" | "medium" | "high" | "xhigh" | "max";
+				};
+				quotaEvidence: CodexPoolExhaustionFact;
+			};
 		};
 	}): GeneralizedWorkflowAdmissionResult {
 		const now = input.now ?? new Date().toISOString();
@@ -45223,14 +45312,166 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
-		const resolvedDispatch =
-			input.dispatchResolution?.dispatch ?? node.dispatch;
+		const degradation = input.dispatchResolution?.degradation;
+		const wakeRuntime =
+			activationMode === "wake"
+				? this.getWorkflowExecutionRuntime(input.executionId)
+				: undefined;
+		let inheritedDegradation:
+			| {
+					assignment: WorkflowModelAssignmentReceipt;
+					assignedEffort?: string;
+					quotaEvidence: CodexPoolExhaustionFact;
+					originalDegradationEventUid: string;
+			  }
+			| undefined;
+		if (activationMode === "wake" && snapshot.modelRouting && !wakeRuntime) {
+			return { ok: false, reason: "wake_runtime_invalid" };
+		}
+		if (wakeRuntime) {
+			if (
+				wakeRuntime.run_id !== input.runId ||
+				wakeRuntime.node_id !== input.nodeId ||
+				!(wakeRuntime.vendor === "claude" || wakeRuntime.vendor === "codex") ||
+				!(["", "low", "medium", "high", "xhigh", "max"] as const).includes(
+					wakeRuntime.effort as never,
+				)
+			)
+				return { ok: false, reason: "wake_runtime_invalid" };
+			const events = this.listWorkflowRunEvents(input.runId);
+			const assignmentEvent = events.find(
+				(event) =>
+					event.kind === "model_arm_assigned" &&
+					event.node_id === input.nodeId,
+			);
+			const assignment = assignmentEvent?.payload as
+				| WorkflowModelAssignmentReceipt
+				| undefined;
+			if (assignment && assignment.model !== wakeRuntime.model) {
+				const original = events.find(
+					(event) =>
+						event.kind === "model_arm_degraded" &&
+						event.node_id === input.nodeId &&
+						event.execution_id === input.executionId,
+				);
+				const payload = original?.payload as
+					| {
+							assignmentEventUid?: string;
+							arm?: string;
+							degraded?: boolean;
+							assignedModel?: string;
+							actualModel?: string;
+							assignedEffort?: string;
+							actualEffort?: string;
+							quotaEvidence?: CodexPoolExhaustionFact;
+						  }
+					| undefined;
+				if (
+					!original ||
+					!payload ||
+					payload.assignmentEventUid !== assignmentEvent?.event_uid ||
+					payload.arm !== assignment.arm ||
+					payload.degraded !== true ||
+					payload.assignedModel !== assignment.model ||
+					payload.actualModel !== wakeRuntime.model ||
+					payload.actualEffort !== (wakeRuntime.effort || undefined) ||
+					!payload.quotaEvidence
+				)
+					return { ok: false, reason: "wake_degradation_invalid" };
+				inheritedDegradation = {
+					assignment,
+					assignedEffort: payload.assignedEffort,
+					quotaEvidence: payload.quotaEvidence,
+					originalDegradationEventUid: original.event_uid,
+				};
+			}
+		}
+		const currentDegradationEvidence = () => {
+			if (!degradation) return false;
+			const current = this.codexQuota.getCurrentPoolExhaustionFact(
+				degradation.quotaEvidence.rootKey,
+				Date.parse(now),
+			);
+			return (
+				current !== undefined &&
+				canonicalSubmissionDigest(current) ===
+					canonicalSubmissionDigest(degradation.quotaEvidence)
+			);
+		};
+		const validDegradationProposal = () => {
+			if (!degradation) return false;
+			const assignment = input.dispatchResolution?.modelAssignment;
+			const opus = getModelConfigSnapshot().getModelRegistryEntry("opus");
+			return (
+				input.nodeId === "implement" &&
+				assignment?.basis.rule === "issue_node_weighted" &&
+				assignment.basis.nodeId === "implement" &&
+				(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") &&
+				degradation.assignedDispatch.vendor === "codex" &&
+				degradation.assignedDispatch.model === assignment.model &&
+				degradation.assignedDispatch.effort === "xhigh" &&
+				input.dispatchResolution?.dispatch.vendor === "claude" &&
+				input.dispatchResolution.dispatch.model === MODEL_IDS.OPUS_55 &&
+				input.dispatchResolution.dispatch.effort === "xhigh" &&
+				assignment.basis.nodes.implement.some(
+					(arm) => arm.arm === "impl_opus" && arm.model === "opus",
+				) &&
+				opus?.id === MODEL_IDS.OPUS_55 &&
+				opus.runtimeVendor === "claude" &&
+				getModelConfigSnapshot().isModelSelectionSupported({
+					surface: "workflow",
+					model: opus.id,
+					effort: "xhigh",
+					runtimeVendor: "claude",
+				})
+			);
+		};
+		if (degradation && !validDegradationProposal())
+			return { ok: false, reason: "model_arm_degradation_invalid" };
+		const proposedDegradationApplied = currentDegradationEvidence();
+		const resolvedDispatch = wakeRuntime
+			? {
+					vendor: wakeRuntime.vendor as "claude" | "codex",
+					model: wakeRuntime.model,
+					...(wakeRuntime.effort
+						? {
+								effort: wakeRuntime.effort as
+									| "low"
+									| "medium"
+									| "high"
+									| "xhigh"
+									| "max",
+							}
+						: {}),
+				}
+			: proposedDegradationApplied
+				? (input.dispatchResolution?.dispatch ?? node.dispatch)
+				: (degradation?.assignedDispatch ??
+					input.dispatchResolution?.dispatch ??
+					node.dispatch);
+		const degradationAssignment =
+			inheritedDegradation?.assignment ??
+			(proposedDegradationApplied
+				? input.dispatchResolution?.modelAssignment
+				: undefined);
+		if (
+			(proposedDegradationApplied || inheritedDegradation) &&
+			!degradationAssignment
+		)
+			return { ok: false, reason: "model_arm_degradation_invalid" };
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
 		) {
 			return { ok: false, reason: "unsupported_capability_combination" };
 		}
+		let qaSameFamilyExemption:
+			| {
+					producerExecutionId: string;
+					producerVendor: string;
+					producerModel: string;
+			  }
+			| undefined;
 		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
 		if (decisionContract) {
 			const producerIds = snapshot.manifest.edges
@@ -45259,8 +45500,24 @@ export class StateStore {
 				: undefined;
 			const producerVendor =
 				producerRuntime?.vendor ?? producers[0].dispatch.vendor;
+			const qaSameFamilyAllowed = this.workflowQaSameFamilyAllowed({
+				runId: input.runId,
+				nodeId: node.id,
+				subjectProducerExecutionId: producerAttempt?.execution_id ?? undefined,
+			});
+			if (producerVendor === resolvedDispatch.vendor && qaSameFamilyAllowed) {
+				if (!producerAttempt?.execution_id || !producerRuntime) {
+					return { ok: false, reason: "qa_exemption_evidence_missing" };
+				}
+				qaSameFamilyExemption = {
+					producerExecutionId: producerAttempt.execution_id,
+					producerVendor: producerRuntime.vendor,
+					producerModel: producerRuntime.model,
+				};
+			}
 			if (
 				producerVendor === resolvedDispatch.vendor &&
+				!qaSameFamilyAllowed &&
 				!this.sameFamilyReviewSanctioned({
 					projectName: run.project_name,
 					producerModel: producerRuntime?.model ?? producers[0].dispatch.model,
@@ -45334,7 +45591,6 @@ export class StateStore {
 				snapshotDigest: snapshot.snapshot_digest,
 			};
 		}
-
 		const incoming = new Map(
 			snapshot.manifest.nodes.map((entry) => [entry.id, 0]),
 		);
@@ -45364,9 +45620,19 @@ export class StateStore {
 		}
 
 		let quotaRefused = false;
+		let degradationStale = false;
+		let degradationInvalid = false;
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
+			if (proposedDegradationApplied && !validDegradationProposal()) {
+				degradationInvalid = true;
+				return;
+			}
+			if (proposedDegradationApplied && !currentDegradationEvidence()) {
+				degradationStale = true;
+				return;
+			}
 			if(quotaPaused()) {quotaRefused=true;return;}
 			this.appendWorkflowEngineParkEventTx({
 				eventId: `engine-park-clear:${activationId}`,
@@ -45453,6 +45719,71 @@ export class StateStore {
 					],
 				);
 			}
+			const degradationEventUid = degradationAssignment
+				? `model_arm_degraded:${input.runId}:${input.nodeId}:${activationId}`
+				: undefined;
+			if (degradationAssignment) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: degradationEventUid!,
+					kind: "model_arm_degraded",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: {
+						schemaVersion: 1,
+						runId: input.runId,
+						nodeId: input.nodeId,
+						activationId,
+						assignmentEventUid: `model_arm_assigned:${input.runId}:${input.nodeId}`,
+						arm: degradationAssignment.arm,
+						degraded: true,
+						assignedModel: degradationAssignment.model,
+						actualModel: resolvedDispatch.model,
+						reason: "codex_pool_exhausted",
+						degradedAt: now,
+						quotaEvidence:
+							inheritedDegradation?.quotaEvidence ??
+							degradation!.quotaEvidence,
+						assignedEffort:
+							inheritedDegradation?.assignedEffort ??
+							degradation?.assignedDispatch.effort,
+						actualEffort: resolvedDispatch.effort,
+						...(inheritedDegradation
+							? {
+									originalDegradationEventUid:
+										inheritedDegradation.originalDegradationEventUid,
+								}
+							: {}),
+					},
+				});
+			}
+			if (qaSameFamilyExemption) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `qa_same_family_exemption_applied:${input.runId}:${input.nodeId}:${activationId}`,
+					kind: "qa_same_family_exemption_applied",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: {
+						schemaVersion: 1,
+						runId: input.runId,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						producerExecutionId:
+							qaSameFamilyExemption.producerExecutionId,
+						policy: "fly2788-qa-node-v1",
+						producerVendor: qaSameFamilyExemption.producerVendor,
+						producerModel: qaSameFamilyExemption.producerModel,
+						reviewerVendor: resolvedDispatch.vendor,
+						reviewerModel: resolvedDispatch.model,
+						routingReference: input.dispatchResolution?.modelAssignment
+							? `model_arm_assigned:${input.runId}:${input.nodeId}`
+							: `snapshot:${snapshot.snapshot_digest}:${input.nodeId}`,
+						reason: "founder-approved-2026-09-23T04:15Z",
+						assignedAt: now,
+					},
+				});
+			}
 			const scorecardAssignment = readScorecardAssignment(
 				this.listWorkflowRunEvents(input.runId),
 				{ runId: input.runId, nodeId: input.nodeId },
@@ -45496,6 +45827,9 @@ export class StateStore {
 									modelAssignment:
 										input.dispatchResolution.modelAssignment,
 								}
+							: {}),
+						...(degradationEventUid
+							? { degraded: true, degradationEventUid }
 							: {}),
 					},
 				});
@@ -45672,6 +46006,10 @@ export class StateStore {
 				);
 			}
 		});
+		if (degradationInvalid)
+			return { ok: false, reason: "model_arm_degradation_invalid" };
+		if (degradationStale)
+			return { ok: false, reason: "model_arm_degradation_stale" };
 		if(quotaRefused) return {ok:false,reason:"codex_quota_paused"};
 		this.save();
 		return {
@@ -63574,6 +63912,13 @@ export class StateStore {
 					}
 					if (
 						input.issuerVendor === input.subjectProducerVendor &&
+						!this.workflowQaSameFamilyAllowed({
+							runId: credential.run_id as string,
+							nodeId: credential.node_id as string,
+							predicate: input.predicate,
+							subjectProducerExecutionId:
+								input.subjectProducerExecutionId,
+						}) &&
 						!this.sameFamilyReviewSanctioned({
 							projectName: this.getWorkflowRun(credential.run_id as string)
 								?.project_name,
@@ -65966,6 +66311,35 @@ export class StateStore {
 		}));
 	}
 
+	listWorkflowModelAssignmentEventsForIssue(
+		projectName: string,
+		issueKey: string,
+	): WorkflowRunEventRow[] {
+		return this.workflowSelectAll(
+			`SELECT event.*
+			   FROM workflow_run_event event
+			   JOIN workflow_run run ON run.run_id = event.run_id
+			  WHERE event.kind IN ('design_model_arm_assigned','model_arm_assigned')
+			    AND run.project_name = ?
+			    AND (run.issue_id = ? OR EXISTS (
+			      SELECT 1 FROM workflow_run_issue_alias alias
+			       WHERE alias.run_id = run.run_id AND alias.issue_alias = ?
+			    ))
+			  ORDER BY julianday(run.created_at), event.id`,
+			[projectName, issueKey, issueKey],
+		).map((r) => ({
+			run_id: r.run_id as string,
+			seq: Number(r.seq),
+			event_uid: r.event_uid as string,
+			kind: r.kind as string,
+			node_id: (r.node_id as string) ?? null,
+			edge_id: (r.edge_id as string) ?? null,
+			execution_id: (r.execution_id as string) ?? null,
+			payload: r.payload ? JSON.parse(r.payload as string) : undefined,
+			at: r.at as string,
+		}));
+	}
+
 	/**
 	 * Issue a ONE-SHOT decision capability bound to a node ATTEMPT (plan §2.2).
 	 * The plaintext token is returned ONCE (Bridge memory only); the DB stores
@@ -66291,6 +66665,13 @@ export class StateStore {
 				}
 				if (
 					input.issuerVendor === input.subjectProducerVendor &&
+					!this.workflowQaSameFamilyAllowed({
+						runId: cap.run_id as string,
+						nodeId: cap.node_id as string,
+						predicate: input.predicate,
+						subjectProducerExecutionId:
+							input.subjectProducerExecutionId,
+					}) &&
 					!this.sameFamilyReviewSanctioned({
 						projectName: this.getWorkflowRun(cap.run_id as string)?.project_name,
 						producerModel:
@@ -85602,6 +85983,10 @@ export type GeneralizedWorkflowAdmissionResult =
 			ok: false;
 			reason:
 				| "codex_quota_paused"
+				| "model_arm_degradation_stale"
+				| "model_arm_degradation_invalid"
+				| "wake_runtime_invalid"
+				| "wake_degradation_invalid"
 				| "invalid_expiry"
 				| "run_not_found"
 				| "invalid_snapshot"
@@ -85612,6 +85997,7 @@ export type GeneralizedWorkflowAdmissionResult =
 				| "decision_producer_ambiguous"
 				| "review_output_producer_required"
 				| "same_vendor_review"
+				| "qa_exemption_evidence_missing"
 				| "execution_already_bound"
 				| "actor_identity_conflict"
 				| "activation_conflict"

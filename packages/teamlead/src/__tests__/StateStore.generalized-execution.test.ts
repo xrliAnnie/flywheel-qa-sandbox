@@ -1125,7 +1125,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
-	it("admits the compiled simple_code QA after its cross-vendor implement producer", async () => {
+	it("audits the compiled simple_code QA same-family exemption", async () => {
 		const store = await StateStore.create(":memory:");
 		const menu = loadWorkflowMenuLibrary().find(
 			(candidate) => candidate.shape === "simple_code",
@@ -1189,6 +1189,23 @@ describe("generalized execution admission and terminal contracts", () => {
 				env: enabled,
 			}),
 		).toMatchObject({ ok: true, submissionCredential: expect.any(String) });
+		const exemptions = store
+			.listWorkflowRunEvents("simple-code-run")
+			.filter((event) => event.kind === "qa_same_family_exemption_applied");
+		expect(exemptions).toHaveLength(1);
+		expect(exemptions[0]).toMatchObject({
+			node_id: "qa",
+			execution_id: "simple-qa",
+			payload: {
+				policy: "fly2788-qa-node-v1",
+				producerExecutionId: "simple-implement",
+				producerVendor: "claude",
+				producerModel: "claude-opus-5-5",
+				reviewerVendor: "claude",
+				reviewerModel: "claude-opus-5-5",
+				reason: "founder-approved-2026-09-23T04:15Z",
+			},
+		});
 		store.close();
 	});
 

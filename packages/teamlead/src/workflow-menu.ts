@@ -7,10 +7,13 @@ import {
 	getNodeTypeRegistryEntry,
 	loadBundledRegistry,
 	type ModelConfigSnapshot,
+	ModelSplitBalanceInputUnavailableError,
 	type PercentageModelSplitPolicy,
 	type RegistryModelSplitPolicy,
 	resolvePercentageModelSplit,
 	resolveProjectRegistry,
+	resolveWeightedModelSplit,
+	type WeightedModelSplitPolicy,
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
@@ -51,20 +54,41 @@ export interface WorkflowModelAssignmentReceipt {
 	arm: string;
 	modelAlias: string;
 	model: string;
-	basis: {
-		issueIdentifier: string;
-		issueNumber: number;
-		ruleVersion: string;
-	} & (
-		| { rule: "issue_number_parity"; parity: "odd" | "even" }
+	basis: { issueIdentifier: string; ruleVersion: string } & (
+		| {
+				rule: "issue_number_parity";
+				issueNumber: number;
+				parity: "odd" | "even";
+		  }
 		| {
 				rule: "issue_number_percentage";
+				issueNumber: number;
 				bucket: number;
 				codexPercent: number;
 				codex: PercentageModelSplitPolicy["codex"];
 				fable: PercentageModelSplitPolicy["fable"];
 		  }
+		| {
+				rule: "issue_node_weighted";
+				issueKey: string;
+				nodeId: "eng_design" | "implement" | "qa";
+				bucket: number;
+				nodes: WeightedModelSplitPolicy["nodes"];
+				weightAudit: ReturnType<
+					typeof resolveWeightedModelSplit
+				>["weightAudit"];
+		  }
 	);
+}
+
+export interface FrozenWeightedModelAssignmentReceipt
+	extends WorkflowModelAssignmentReceipt {
+	schemaVersion: 1;
+	runId: string;
+	nodeId: "eng_design" | "implement" | "qa";
+	policyVersion: string;
+	resolvedModel: string;
+	assignedAt: string;
 }
 
 export interface WorkflowMenuEdge {
@@ -283,7 +307,11 @@ export function compileWorkflowMenuSeed(
 			producer.defaultModel!,
 			modelSnapshot,
 		).vendor;
-		if (qaVendor === producerVendor) {
+		const allowsQaSameVendor =
+			(menu.shape === "code" || menu.shape === "simple_code") &&
+			qa.id === "qa" &&
+			producer.id === "implement";
+		if (qaVendor === producerVendor && !allowsQaSameVendor) {
 			throw new Error(
 				`menu ${menu.shape} QA node ${qa.id} uses the same vendor as producer ${producer.id}`,
 			);
@@ -673,6 +701,7 @@ export function resolveMenuOverrides(
 	overridesValue: unknown,
 	context: {
 		issueIdentifier: string;
+		issueKey?: string;
 		/**
 		 * FLY-2763: project flag `review_same_family_allowed` resolved by the
 		 * caller. When true, a QA/producer pair on the SAME vendor is admitted
@@ -683,6 +712,7 @@ export function resolveMenuOverrides(
 	},
 ): {
 	templateOverride: WorkflowTemplateOverride;
+	requestedTemplateOverride?: WorkflowTemplateOverride;
 	receipts: Record<
 		string,
 		{ model: string; effort: WorkflowEffort; overridden: boolean }
@@ -690,6 +720,10 @@ export function resolveMenuOverrides(
 	assignments: Record<string, WorkflowModelAssignmentReceipt>;
 } {
 	const modelConfig = getModelConfigSnapshot();
+	const weightedPolicy =
+		modelConfig.modelSplit?.rule === "issue_node_weighted"
+			? modelConfig.modelSplit
+			: undefined;
 	const overrides =
 		overridesValue === undefined ? {} : asRecord(overridesValue, "overrides");
 	const executable = menu.nodes.filter((node) => node.type !== "gate");
@@ -704,6 +738,7 @@ export function resolveMenuOverrides(
 		}
 	}
 	const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
+	const requestedNodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
 	const receipts: Record<
 		string,
 		{ model: string; effort: WorkflowEffort; overridden: boolean }
@@ -725,27 +760,53 @@ export function resolveMenuOverrides(
 				throw new Error(`overrides.${node.id} must set model or effort`);
 			}
 		}
+		const explicitModel = override?.model !== undefined;
 		const callerModel =
 			override?.model === undefined
 				? node.defaultModel!
 				: nonempty(override.model, `overrides.${node.id}.model`);
-		const callerModelPolicy = node.models!.find(
+		let callerModelPolicy = node.models!.find(
 			(model) => model.model === callerModel,
 		);
 		if (!callerModelPolicy) {
 			const legal = node.models!.map((model) => model.model);
-			if (!modelConfig.getModelRegistryEntry(callerModel)) {
+			const registered = modelConfig.getModelRegistryEntry(callerModel);
+			if (!registered) {
 				throw new WorkflowMenuValidationError(
 					"INVALID_MODEL",
 					`model ${callerModel} is not registered`,
 					legal,
 				);
 			}
-			throw new WorkflowMenuValidationError(
-				"MODEL_NOT_ALLOWED_FOR_NODE",
-				`model ${callerModel} is not allowed for node ${node.id}`,
-				legal,
-			);
+			if (!explicitModel || override?.effort === undefined) {
+				throw new WorkflowMenuValidationError(
+					"MODEL_NOT_ALLOWED_FOR_NODE",
+					`model ${callerModel} is not allowed for node ${node.id}; an authorized explicit override outside the automatic candidates must also provide effort`,
+					legal,
+				);
+			}
+			const effort = nonempty(
+				override.effort,
+				`overrides.${node.id}.effort`,
+			) as WorkflowEffort;
+			if (
+				!modelConfig.isModelSelectionSupported({
+					surface: "workflow",
+					model: callerModel,
+					effort,
+				})
+			) {
+				throw new WorkflowMenuValidationError(
+					"EFFORT_NOT_ALLOWED_FOR_MODEL",
+					`effort ${effort} is not supported by ${callerModel} on the workflow surface`,
+					registered.effortsBySurface.workflow ?? [],
+				);
+			}
+			callerModelPolicy = {
+				model: callerModel,
+				allowedEfforts: [effort],
+				defaultEffort: effort,
+			};
 		}
 		const callerEffort =
 			override?.effort === undefined
@@ -763,54 +824,115 @@ export function resolveMenuOverrides(
 		let requestedModel = callerModel;
 		let modelPolicy = callerModelPolicy;
 		let automaticAssignment = false;
+		const weightedNodeId =
+			(menu.shape === "code" &&
+				(node.id === "eng_design" ||
+					node.id === "implement" ||
+					node.id === "qa")) ||
+			(menu.shape === "simple_code" &&
+				(node.id === "implement" || node.id === "qa"))
+				? (node.id as "eng_design" | "implement" | "qa")
+				: undefined;
 		const scopedSplit =
-			menu.shape === "code" && node.id === "eng_design" && node.modelSplit;
-		if (scopedSplit && modelConfig.runtimeModelSplitStatus === "invalid") {
+			weightedPolicy && weightedNodeId
+				? weightedPolicy
+				: menu.shape === "code" && node.id === "eng_design"
+					? node.modelSplit
+					: undefined;
+		if (weightedNodeId && modelConfig.runtimeModelSplitStatus === "invalid") {
 			throw new WorkflowMenuValidationError(
 				"MODEL_SPLIT_CONFIG_INVALID",
 				`invalid runtime model split configuration at ${modelConfig.sourcePath}; repair the authority before dispatch`,
 				[],
 			);
 		}
-		const modelSplit = scopedSplit
-			? (modelConfig.modelSplit ?? node.modelSplit)
-			: node.modelSplit;
-		if (modelSplit?.enabled) {
-			const match = /-(\d+)$/.exec(context.issueIdentifier.trim());
-			const issueNumber = match ? Number(match[1]) : Number.NaN;
-			if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
-				throw new WorkflowMenuValidationError(
-					"MODEL_SPLIT_ISSUE_INVALID",
-					`issue ${context.issueIdentifier} has no positive numeric issue suffix`,
-					[],
-				);
+		const modelSplit = weightedPolicy
+			? scopedSplit
+			: scopedSplit
+				? (modelConfig.modelSplit ?? node.modelSplit)
+				: node.modelSplit;
+		if (modelSplit?.enabled && !(weightedPolicy && explicitModel)) {
+			let arm: { arm: string; model: string };
+			let assignmentBasis: WorkflowModelAssignmentReceipt["basis"];
+			let reason: string;
+			if (modelSplit.rule === "issue_node_weighted") {
+				const issueKey = context.issueKey?.trim() ?? "";
+				if (!issueKey || !weightedNodeId) {
+					throw new WorkflowMenuValidationError(
+						"MODEL_SPLIT_ISSUE_INVALID",
+						`issue ${context.issueIdentifier} has no stable issue UUID for node routing`,
+						[],
+					);
+				}
+				let weighted: ReturnType<typeof resolveWeightedModelSplit>;
+				try {
+					weighted = resolveWeightedModelSplit(
+						modelSplit,
+						issueKey,
+						weightedNodeId,
+					);
+				} catch (error) {
+					throw new WorkflowMenuValidationError(
+						error instanceof ModelSplitBalanceInputUnavailableError
+							? "MODEL_SPLIT_BALANCE_INPUT_UNAVAILABLE"
+							: "MODEL_SPLIT_ISSUE_INVALID",
+						error instanceof Error ? error.message : String(error),
+						[],
+					);
+				}
+				arm = weighted.arm;
+				assignmentBasis = {
+					issueIdentifier: context.issueIdentifier.trim(),
+					issueKey,
+					nodeId: weightedNodeId,
+					rule: modelSplit.rule,
+					ruleVersion: modelSplit.version,
+					bucket: weighted.bucket,
+					nodes: modelSplit.nodes,
+					weightAudit: weighted.weightAudit,
+				};
+				reason = `${context.issueIdentifier.trim()} ${weightedNodeId} bucket ${weighted.bucket}; arm ${arm.arm}/${arm.model}`;
+			} else {
+				const match = /-(\d+)$/.exec(context.issueIdentifier.trim());
+				const issueNumber = match ? Number(match[1]) : Number.NaN;
+				if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+					throw new WorkflowMenuValidationError(
+						"MODEL_SPLIT_ISSUE_INVALID",
+						`issue ${context.issueIdentifier} has no positive numeric issue suffix`,
+						[],
+					);
+				}
+				const parity = issueNumber % 2 === 1 ? "odd" : "even";
+				const percentage =
+					modelSplit.rule === "issue_number_percentage"
+						? resolvePercentageModelSplit(modelSplit, issueNumber)
+						: undefined;
+				const codexPercent =
+					modelSplit.rule === "issue_number_percentage"
+						? modelSplit.codexPercent
+						: undefined;
+				arm =
+					modelSplit.rule === "issue_number_parity"
+						? modelSplit[parity]
+						: percentage!.arm;
+				assignmentBasis = {
+					issueIdentifier: context.issueIdentifier.trim(),
+					issueNumber,
+					ruleVersion: modelSplit.version,
+					...(modelSplit.rule === "issue_number_parity"
+						? { rule: modelSplit.rule, parity }
+						: {
+								rule: modelSplit.rule,
+								bucket: percentage!.bucket,
+								codexPercent: modelSplit.codexPercent,
+								codex: modelSplit.codex,
+								fable: modelSplit.fable,
+							}),
+				};
+				reason = percentage
+					? `${context.issueIdentifier.trim()} bucket ${percentage.bucket}; Codex threshold ${codexPercent}%; arm ${arm.arm}/${arm.model}`
+					: `${context.issueIdentifier.trim()} ${parity} arm ${arm.arm}/${arm.model}`;
 			}
-			const parity = issueNumber % 2 === 1 ? "odd" : "even";
-			const percentage =
-				modelSplit.rule === "issue_number_percentage"
-					? resolvePercentageModelSplit(modelSplit, issueNumber)
-					: undefined;
-			const arm =
-				modelSplit.rule === "issue_number_parity"
-					? modelSplit[parity]
-					: percentage!.arm;
-			const assignmentBasis: WorkflowModelAssignmentReceipt["basis"] = {
-				issueIdentifier: context.issueIdentifier.trim(),
-				issueNumber,
-				ruleVersion: modelSplit.version,
-				...(modelSplit.rule === "issue_number_parity"
-					? { rule: modelSplit.rule, parity }
-					: {
-							rule: modelSplit.rule,
-							bucket: percentage!.bucket,
-							codexPercent: modelSplit.codexPercent,
-							codex: modelSplit.codex,
-							fable: modelSplit.fable,
-						}),
-			};
-			const reason = percentage
-				? `${context.issueIdentifier.trim()} bucket ${percentage.bucket}; Codex threshold ${modelSplit.rule === "issue_number_percentage" ? modelSplit.codexPercent : 0}%; arm ${arm.arm}/${arm.model}`
-				: `${context.issueIdentifier.trim()} ${parity} arm ${arm.arm}/${arm.model}`;
 			if (override?.model !== undefined && callerModel !== arm.model) {
 				throw new WorkflowMenuValidationError(
 					"MODEL_SPLIT_OVERRIDE_CONFLICT",
@@ -863,6 +985,16 @@ export function resolveMenuOverrides(
 				effort: effort as WorkflowEffort,
 			};
 		}
+		if (override) {
+			requestedNodes[node.id] = {
+				...(override.model !== undefined
+					? { vendor: resolved.vendor, model: resolved.model }
+					: {}),
+				...(override.effort !== undefined
+					? { effort: effort as WorkflowEffort }
+					: {}),
+			};
+		}
 		receipts[node.id] = {
 			model: `${requestedModel} (= ${resolved.model})`,
 			effort: effort as WorkflowEffort,
@@ -874,11 +1006,12 @@ export function resolveMenuOverrides(
 		const producerSelection = selected.get(producer.id)!;
 		if (
 			qaSelection.vendor === producerSelection.vendor &&
-			context.sameVendorReviewAllowed === true
+			(context.sameVendorReviewAllowed === true ||
+				((menu.shape === "code" || menu.shape === "simple_code") &&
+					qa.id === "qa" &&
+					producer.id === "implement"))
 		) {
-			// FLY-2763 R3: sanctioned same-vendor pair — admitted regardless of
-			// model (founder 2026-09-22: implement Opus + QA Opus while Codex is
-			// exhausted; the review coordinator still picks a different reviewer model).
+			// QA is the sole registered review node exempt from cross-family routing.
 			continue;
 		}
 		if (qaSelection.vendor === producerSelection.vendor) {
@@ -913,6 +1046,14 @@ export function resolveMenuOverrides(
 					: "menu_api_override",
 			...(Object.keys(nodes).length > 0 ? { nodes } : {}),
 		},
+		...(Object.keys(requestedNodes).length > 0
+			? {
+					requestedTemplateOverride: {
+						reason: "menu_api_override",
+						nodes: requestedNodes,
+					},
+				}
+			: {}),
 		receipts,
 		assignments,
 	};

@@ -156,9 +156,15 @@ describe("management DAG source-to-DOM contract", () => {
 						) as HTMLSelectElement
 					).options,
 				].map((option) => option.value);
-			expect(optionValues("provider")).toEqual(["anthropic"]);
+			expect(optionValues("provider")).toEqual(["anthropic", "openai"]);
 			expect(optionValues("model")).toEqual(["opus"]);
-			expect(optionValues("effort")).toEqual(["low", "medium", "high", "max"]);
+			expect(optionValues("effort")).toEqual([
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max",
+			]);
 			expect(qaRow().textContent).toContain(
 				".flywheel/agents/registry.yaml#graphs.code.policies.qa",
 			);
@@ -166,15 +172,15 @@ describe("management DAG source-to-DOM contract", () => {
 			let implementProvider = implementRow().querySelector(
 				'[data-model-part="provider"]',
 			) as HTMLSelectElement;
-			expect(implementProvider.value).toBe("openai");
-			implementProvider.value = "anthropic";
+			expect(implementProvider.value).toBe("anthropic");
+			implementProvider.value = "openai";
 			implementProvider.dispatchEvent(
 				new window.Event("change", { bubbles: true }),
 			);
 			implementProvider = implementRow().querySelector(
 				'[data-model-part="provider"]',
 			) as HTMLSelectElement;
-			implementProvider.value = "openai";
+			implementProvider.value = "anthropic";
 			implementProvider.dispatchEvent(
 				new window.Event("change", { bubbles: true }),
 			);
@@ -199,13 +205,13 @@ describe("management DAG source-to-DOM contract", () => {
 			current = structuredClone(projected);
 			current.nodes.find(
 				(node) => node.nodeId === "qa",
-			)!.dispatch.current.effort = "xhigh";
+			)!.dispatch.current.effort = "ultra" as never;
 			(window.document.getElementById("discard") as HTMLElement).click();
 			await vi.waitFor(() => {
 				const effort = qaRow().querySelector(
 					'[data-model-part="effort"]',
 				) as HTMLSelectElement;
-				expect(effort.value).toBe("xhigh");
+				expect(effort.value).toBe("ultra");
 				expect(effort.selectedOptions[0]?.disabled).toBe(true);
 				expect(effort.selectedOptions[0]?.textContent).toContain(
 					"当前值不在 shape 白名单",
@@ -214,7 +220,7 @@ describe("management DAG source-to-DOM contract", () => {
 					[...effort.options]
 						.filter((option) => !option.disabled)
 						.map((option) => option.value),
-				).toEqual(["low", "medium", "high", "max"]);
+				).toEqual(["low", "medium", "high", "xhigh", "max"]);
 			});
 
 			current = structuredClone(projected);
@@ -234,11 +240,11 @@ describe("management DAG source-to-DOM contract", () => {
 			current = structuredClone(projected);
 			const driftedQa = current.nodes.find((node) => node.nodeId === "qa")!;
 			driftedQa.dispatch.current = {
-				provider: "openai",
-				model: "gpt-5.6-sol",
+				provider: "google" as never,
+				model: "gemini-3-pro",
 				effort: "high",
 			};
-			driftedQa.dispatch.canonicalModel = "gpt-5.6-sol";
+			driftedQa.dispatch.canonicalModel = "gemini-3-pro";
 			(window.document.getElementById("discard") as HTMLElement).click();
 			await vi.waitFor(() => {
 				const provider = qaRow().querySelector(
@@ -247,14 +253,14 @@ describe("management DAG source-to-DOM contract", () => {
 				const model = qaRow().querySelector(
 					'[data-model-part="model"]',
 				) as HTMLSelectElement;
-				expect(provider.value).toBe("openai");
+				expect(provider.value).toBe("google");
 				expect(provider.selectedOptions[0]?.disabled).toBe(true);
 				expect(
 					[...provider.options]
 						.filter((option) => !option.disabled)
 						.map((option) => option.value),
-				).toEqual(["anthropic"]);
-				expect(model.value).toBe("gpt-5.6-sol");
+				).toEqual(["anthropic", "openai"]);
+				expect(model.value).toBe("gemini-3-pro");
 				expect(model.selectedOptions[0]?.disabled).toBe(true);
 				expect(model.selectedOptions[0]?.textContent).toContain(
 					"当前值不在 shape 白名单",
@@ -363,8 +369,13 @@ describe("management DAG source-to-DOM contract", () => {
 			expect(values("provider")).toEqual([
 				...new Set(endpointPolicy.models.map((model) => model.provider)),
 			]);
+			const currentProvider = currentDag.nodes.find(
+				(node) => node.nodeId === "qa",
+			)!.dispatch.current.provider;
 			expect(values("model")).toEqual(
-				endpointPolicy.models.map((model) => model.alias),
+				endpointPolicy.models
+					.filter((model) => model.provider === currentProvider)
+					.map((model) => model.alias),
 			);
 			expect(values("effort")).toEqual(
 				endpointPolicy.models[0]!.allowedEfforts,
@@ -390,7 +401,7 @@ describe("management DAG source-to-DOM contract", () => {
 				expect(card.textContent).toContain("policy_shape_removed");
 				expect(card.textContent).not.toContain("Fable 5.1");
 				expect(unavailableQa.textContent).toContain(
-					"当前值：anthropic / claude-opus-5 / high",
+					"当前值：anthropic / claude-opus-5-5 / high",
 				);
 			});
 		} finally {

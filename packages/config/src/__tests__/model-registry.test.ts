@@ -37,12 +37,13 @@ describe("model registry invariants", () => {
 				expect(getModelRegistryEntry(alias)?.id).toBe(tier.id);
 			}
 		}
-		expect(getModelRegistryEntry("opus-1m")?.id).toBe("claude-opus-5[1m]");
+		expect(getModelRegistryEntry("opus-1m")?.id).toBe("claude-opus-5-5[1m]");
 		expect(getModelRegistryEntry("fable-1m")?.id).toBe("claude-fable-5-1[1m]");
 	});
 
 	it("keeps the resume gate's exact compatibility windows in registry metadata", () => {
 		for (const id of [
+			"claude-opus-5-5",
 			"claude-opus-5",
 			"claude-opus-4-8",
 			"claude-opus-4-6",
@@ -52,6 +53,7 @@ describe("model registry invariants", () => {
 			expect(getModelRegistryEntry(id)?.contextWindowTokens, id).toBe(200_000);
 		}
 		for (const id of [
+			"claude-opus-5-5[1m]",
 			"claude-opus-5[1m]",
 			"claude-opus-4-8[1m]",
 			"claude-opus-4-6[1m]",
@@ -123,16 +125,17 @@ describe("model registry invariants", () => {
 
 	it("registers exact GPT-6 Sol for runner/workflow without moving defaults", () => {
 		expect(MODEL_IDS.CODEX_SOL).toBe("gpt-6-sol");
+		expect(MODEL_ALIASES.SOL).toBe("sol");
 		expect(getModelRegistryEntry("codex")?.id).toBe("gpt-5.6-sol");
 		expect(getModelRegistryEntry("astra")?.id).toBe("gpt-6-astra");
 
-		const sol = getModelRegistryEntry("gpt-6-sol");
+		const sol = getModelRegistryEntry("sol");
 		expect(sol).toMatchObject({
 			id: "gpt-6-sol",
 			provider: "openai",
 			runtimeVendor: "codex",
 			label: "GPT-6 Sol",
-			aliases: [],
+			aliases: ["sol"],
 			surfaces: ["runner", "workflow"],
 		});
 		expect(sol?.effortsBySurface).toEqual({

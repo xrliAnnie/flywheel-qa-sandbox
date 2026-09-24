@@ -122,6 +122,16 @@ describe("FLY-2121 registry-backed workflow menus", () => {
 		}
 	});
 
+	it("limits the same-vendor QA exemption to the registered code shapes", () => {
+		const code = loadWorkflowMenuLibrary().find(
+			(menu) => menu.shape === "code",
+		)!;
+		expect(() => compileWorkflowMenuSeed(code)).not.toThrow();
+		expect(() =>
+			compileWorkflowMenuSeed({ ...code, shape: "custom_code" }),
+		).toThrow(/same vendor as producer/);
+	});
+
 	it("renames repeated single-session ids so node names are globally descriptive", () => {
 		const executableIds = Object.fromEntries(
 			loadWorkflowMenuLibrary().map((menu) => [

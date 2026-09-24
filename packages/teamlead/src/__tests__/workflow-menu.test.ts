@@ -8,7 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resetModelConfigCacheForTests } from "flywheel-config";
+import {
+	resetModelConfigCacheForTests,
+	validateModelConfigDocument,
+} from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FLY1436_TARGET_BINDINGS } from "../bridge/workkind-cutover.js";
 import { StateStore } from "../StateStore.js";
@@ -18,6 +21,7 @@ import {
 	loadBundledWorkflowNodeNames,
 	loadProjectMenuConfig,
 	loadWorkflowMenuLibrary,
+	loadWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 	resolveLeadMenus,
 	resolveMenuOverrides,
@@ -66,7 +70,7 @@ describe("founder-approved workflow menu source", () => {
 		expect(FLY1436_TARGET_BINDINGS).toEqual(bindings);
 	});
 
-	it("pins the Simple Code DAG to GPT-5.6 implement then cross-vendor Opus 5 QA", () => {
+	it("pins the Simple Code DAG defaults to Opus implement and Opus QA", () => {
 		const menu = loadWorkflowMenuLibrary().find(
 			(candidate) => candidate.shape === "simple_code",
 		)!;
@@ -82,7 +86,7 @@ describe("founder-approved workflow menu source", () => {
 				id: "implement",
 				label: "实现",
 				type: "implement",
-				defaultModel: "codex",
+				defaultModel: "opus",
 			},
 			{
 				id: "qa",
@@ -130,8 +134,13 @@ describe("founder-approved workflow menu source", () => {
 		expect(menu.nodes.find((node) => node.id === "implement")?.models).toEqual([
 			{
 				model: "opus",
-				allowedEfforts: OPUS_EFFORTS,
-				defaultEffort: "high",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "xhigh",
+			},
+			{
+				model: "sol",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "xhigh",
 			},
 			{
 				model: "fable",
@@ -163,14 +172,14 @@ describe("founder-approved workflow menu source", () => {
 				expect.objectContaining({
 					id: "implement",
 					type: "implement",
-					vendor: "codex",
-					model: "gpt-5.6-sol",
+					vendor: "claude",
+					model: "claude-opus-5-5",
 				}),
 				expect.objectContaining({
 					id: "qa",
 					type: "qa",
 					vendor: "claude",
-					model: "claude-opus-5",
+					model: "claude-opus-5-5",
 				}),
 				expect.objectContaining({ type: "land", execution: "engine" }),
 			]),
@@ -231,23 +240,20 @@ describe("founder-approved workflow menu source", () => {
 			},
 		]);
 		for (const [nodeId, models, defaultModel] of [
-			["eng_design", ["fable", "codex", "astra"], "fable"],
-			["implement", ["fable", "codex", "astra"], "codex"],
-			["qa", ["opus"], "opus"],
+			["eng_design", ["fable", "codex", "astra", "opus"], "fable"],
+			["implement", ["opus", "sol", "fable", "codex", "astra"], "opus"],
+			["qa", ["opus", "sol", "codex"], "opus"],
 		] as const) {
 			const node = code.nodes.find((candidate) => candidate.id === nodeId)!;
 			expect(node.defaultModel).toBe(defaultModel);
 			expect(node.models?.map((model) => model.model)).toEqual(models);
 			for (const model of node.models ?? []) {
-				expect(model.allowedEfforts).toEqual(
-					model.model === "opus" ? OPUS_EFFORTS : ALL_EFFORTS,
-				);
+				expect(model.allowedEfforts).toEqual(ALL_EFFORTS);
 				expect(model.defaultEffort).toBe(
-					node.id === "eng_design" && model.model === "astra"
-						? "high"
-						: ["codex", "astra"].includes(model.model)
-							? "xhigh"
-							: "high",
+					node.id === "implement" &&
+						["opus", "sol", "codex", "astra"].includes(model.model)
+						? "xhigh"
+						: "high",
 				);
 			}
 		}
@@ -759,12 +765,14 @@ describe("workflow menu override validation", () => {
 				overridden: true,
 			},
 			implement: {
-				model: "codex (= gpt-5.6-sol)",
+				model: "opus (= claude-opus-5-5)",
 				effort: "xhigh",
 				overridden: false,
 			},
 			qa: {
-				model: "opus (= claude-opus-5)",
+				// FLY-2775: the receipt keeps the alias AND the id it resolved to,
+				// which is how a run-start response proves which body it will spawn.
+				model: "opus (= claude-opus-5-5)",
 				effort: "high",
 				overridden: false,
 			},
@@ -779,23 +787,18 @@ describe("workflow menu override validation", () => {
 		],
 		[
 			{ eng_design: { model: "opus" } },
-			"MODEL_NOT_ALLOWED_FOR_NODE",
-			["fable", "codex", "astra"],
+			"MODEL_SPLIT_OVERRIDE_CONFLICT",
+			["fable"],
 		],
 		[
 			{ eng_design: { model: "atsra" } },
 			"INVALID_MODEL",
-			["fable", "codex", "astra"],
+			["fable", "codex", "astra", "opus"],
 		],
 		[
 			{ eng_design: { model: "fable", effort: "ultra" } },
 			"EFFORT_NOT_ALLOWED_FOR_MODEL",
 			ALL_EFFORTS,
-		],
-		[
-			{ qa: { model: "opus", effort: "xhigh" } },
-			"EFFORT_NOT_ALLOWED_FOR_MODEL",
-			OPUS_EFFORTS,
 		],
 	] as const)(
 		"fails loud for invalid override %# with a legal set",
@@ -812,70 +815,69 @@ describe("workflow menu override validation", () => {
 		},
 	);
 
-	it("fails loud when an override would make producer and QA use one vendor", () => {
+	it("allows the founder-approved QA-only same-family exemption", () => {
 		const simple = loadWorkflowMenuLibrary().find(
 			(menu) => menu.shape === "simple_code",
 		)!;
-		try {
-			resolveMenuOverrides(
-				simple,
-				{ qa: { model: "codex" } },
-				{ issueIdentifier: "FLY-802" },
-			);
-			throw new Error("expected same-vendor validation failure");
-		} catch (error) {
-			expect(error).toBeInstanceOf(WorkflowMenuValidationError);
-			expect(error).toMatchObject({
-				code: "SAME_VENDOR_REVIEW_COMBINATION",
-				legal: ["implement:opus", "implement:fable", "qa:opus"],
-			});
-		}
-	});
-
-	it("FLY-2763 R3: sameVendorReviewAllowed admits a same-vendor pair regardless of model", () => {
-		const simple = loadWorkflowMenuLibrary().find(
-			(menu) => menu.shape === "simple_code",
-		)!;
-		// implement fable + qa opus (default) → both claude, different models → admitted
-		const different = resolveMenuOverrides(
+		const resolved = resolveMenuOverrides(
 			simple,
 			{ implement: { model: "fable" } },
-			{ issueIdentifier: "FLY-2763", sameVendorReviewAllowed: true },
+			{ issueIdentifier: "FLY-2788" },
 		);
-		expect(different.templateOverride.nodes?.implement?.vendor).toBe("claude");
-		// implement opus + qa opus → identical models are admitted under the sanction
-		// (founder 2026-09-22: implement Opus + QA Opus is the Codex-outage shape)
-		const identical = resolveMenuOverrides(
-			simple,
-			{ implement: { model: "opus" } },
-			{ issueIdentifier: "FLY-2763", sameVendorReviewAllowed: true },
+		expect(resolved.templateOverride.nodes?.implement?.vendor).toBe("claude");
+	});
+});
+
+// FLY-2775 (Codex code review R1 BLOCKING): a published menu template does not
+// re-resolve `opus` per run — `compileWorkflowMenuSeed` freezes the bound FULL id
+// into the manifest at SEED time, and Bridge compiles seeds exactly once, at boot.
+// So which model the system-owned templates dispatch is decided by the model
+// config that is live AT THAT BOOT. These two cases pin both sides, because they
+// are why the deployment order is "fix ~/.flywheel/models.json, THEN restart":
+// restarting first compiles the seeds under the stale override and freezes them.
+describe("FLY-2775 seed compilation follows the Opus binding live at compile time", () => {
+	const opusSeeds = (snapshot?: Parameters<typeof loadWorkflowMenuSeeds>[0]) =>
+		loadWorkflowMenuSeeds(snapshot).flatMap((seed) =>
+			seed.manifest.nodes
+				.filter(
+					(node): node is typeof node & { model: string } =>
+						"model" in node &&
+						typeof node.model === "string" &&
+						node.model.startsWith("claude-opus"),
+				)
+				.map((node) => ({
+					template: seed.templateId,
+					node: node.id,
+					model: node.model,
+				})),
 		);
-		expect(identical.templateOverride.nodes?.implement?.vendor).toBe("claude");
-		expect(identical.receipts.implement?.model).toContain("claude-opus-5");
-		// without the sanction the FLY-1188 refusal is byte-identical
-		for (const model of ["fable", "opus"]) {
-			try {
-				resolveMenuOverrides(
-					simple,
-					{ implement: { model } },
-					{ issueIdentifier: "FLY-2763" },
-				);
-				throw new Error("expected same-vendor validation failure");
-			} catch (error) {
-				expect(error).toBeInstanceOf(WorkflowMenuValidationError);
-				expect(error).toMatchObject({ code: "SAME_VENDOR_REVIEW_COMBINATION" });
-			}
-		}
+
+	it("compiles every Opus-line menu node to Opus 5.5 under built-in policy", () => {
+		const nodes = opusSeeds(validateModelConfigDocument({ version: 1 }));
+		// Guard the guard: an empty set would make the next line vacuously true.
+		expect(nodes.length).toBeGreaterThan(0);
+		expect(nodes.filter((node) => node.model !== "claude-opus-5-5")).toEqual(
+			[],
+		);
 	});
 
-	it("rejects a same-vendor default combination at compile time", () => {
-		const simple = structuredClone(
-			loadWorkflowMenuLibrary().find((menu) => menu.shape === "simple_code")!,
+	it("freezes the retired id when the pre-deploy override is still live at boot", () => {
+		const nodes = opusSeeds(
+			validateModelConfigDocument({
+				version: 1,
+				bindings: { opus: "claude-opus-5", opus1m: "claude-opus-5[1m]" },
+			}),
 		);
-		simple.nodes.find((node) => node.id === "qa")!.defaultModel = "codex";
-		expect(() => compileWorkflowMenuSeed(simple)).toThrow(
-			/simple_code.*qa.*same vendor.*implement/i,
-		);
+		expect(nodes.length).toBeGreaterThan(0);
+		expect(nodes.every((node) => node.model === "claude-opus-5")).toBe(true);
+	});
+
+	it("does not ship a seed for the retired tpl_eng_heavy (no boot path can advance it)", () => {
+		// FLY-1693 retired it; it survives only for historical run references.
+		// No fresh dispatch reaches it, so it is deliberately left on its old pin.
+		expect(
+			loadWorkflowMenuSeeds().map((seed) => seed.templateId),
+		).not.toContain("tpl_eng_heavy");
 	});
 });
 
@@ -907,33 +909,10 @@ describe("Opus 4.6 menu compatibility", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("compiles all six default-Opus nodes at high without xhigh", () => {
-		const opusNodes = loadWorkflowMenuLibrary().flatMap((menu) =>
-			menu.nodes
-				.filter((node) => node.defaultModel === "opus")
-				.map((node) => ({ menu, node })),
+	it("fails closed when the retired Opus binding cannot satisfy current policy", () => {
+		expect(() => loadWorkflowMenuLibrary()).toThrow(
+			/allowedEfforts must be supported.*low, medium, high, max/,
 		);
-
-		expect(opusNodes).toHaveLength(6);
-		for (const { menu, node } of opusNodes) {
-			const policy = node.models?.find((model) => model.model === "opus");
-			expect(policy?.allowedEfforts, menu.shape).toEqual([
-				"low",
-				"medium",
-				"high",
-				"max",
-			]);
-			expect(policy?.defaultEffort, menu.shape).toBe("high");
-			const compiled = compileWorkflowMenuSeed(menu);
-			expect(
-				compiled.manifest.nodes.find((candidate) => candidate.id === node.id),
-				menu.shape,
-			).toMatchObject({
-				vendor: "claude",
-				model: "claude-opus-4-6[1m]",
-				effort: "high",
-			});
-		}
 	});
 
 	it("still rejects an effort the bound model cannot run", () => {

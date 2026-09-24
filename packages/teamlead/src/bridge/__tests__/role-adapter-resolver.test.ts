@@ -113,7 +113,7 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 			issueLabels: ["opus"],
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("claude-opus-5");
+		expect(resolved.model).toBe("claude-opus-5-5");
 	});
 
 	it("a 1m opt-in label wins — no default injection", () => {
@@ -122,8 +122,8 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 			issueLabels: ["opus-1m"],
 			env: EMPTY_ENV,
 		});
-		// FLY-1467: the opus-1m label binds to Opus 5 (1M).
-		expect(resolved.model).toBe("claude-opus-5[1m]");
+		// FLY-2775: the opus-1m label binds to whatever the Opus line points at.
+		expect(resolved.model).toBe("claude-opus-5-5[1m]");
 	});
 
 	it("an unresolvable dispatch model fails before spawn", () => {
@@ -507,7 +507,7 @@ describe("resolveRoleAdapter — dispatch model param (Part C)", () => {
 			dispatchModel: "claude-fable-5",
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("claude-opus-5");
+		expect(resolved.model).toBe("claude-opus-5-5");
 	});
 
 	it("a vendor label (codex) beats dispatchModel — no Claude model forced onto codex", () => {

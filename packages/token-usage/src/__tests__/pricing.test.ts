@@ -25,6 +25,24 @@ describe("costMicroUsd", () => {
 		expect(microUsdToUsd(micro)).toBe(5);
 	});
 
+	// FLY-2775: an unregistered model is silently estimated at $0 (costMicroUsd
+	// returns 0 + warns once), so a binding upgrade that forgets MODEL_RATES
+	// zeroes the whole Opus line of the cost report without failing anything.
+	it.each(["claude-opus-5-5", "claude-opus-5-5[1m]"])(
+		"prices %s at the Opus line rate, not $0",
+		(model) => {
+			const counts = {
+				inputTokens: 1_000_000,
+				outputTokens: 1_000_000,
+				cacheReadTokens: 1_000_000,
+				cacheWriteTokens: 1_000_000,
+			};
+			const micro = costMicroUsd(model, counts);
+			expect(micro).toBeGreaterThan(0);
+			expect(micro).toBe(costMicroUsd("claude-opus-5", counts));
+		},
+	);
+
 	it("prices cache-read much cheaper than output (opus)", () => {
 		const out = costMicroUsd("claude-opus-4-8", {
 			inputTokens: 0,

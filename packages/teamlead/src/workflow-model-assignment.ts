@@ -1,10 +1,15 @@
 import {
 	canonicalSubmissionDigest,
 	parsePercentageModelSplit,
+	parseWeightedModelSplit,
 	resolvePercentageModelSplit,
+	resolveWeightedModelSplit,
 } from "flywheel-config";
 import type { WorkflowRunEventRow } from "./StateStore.js";
-import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
+import type {
+	FrozenWeightedModelAssignmentReceipt,
+	WorkflowModelAssignmentReceipt,
+} from "./workflow-menu.js";
 
 export interface ScorecardAssignmentReceiptV1 {
 	schemaVersion: 1;
@@ -299,4 +304,74 @@ export function assertPercentageModelAssignment(
 		choice.arm.model !== assignment.modelAlias
 	)
 		throw new Error("invalid basis");
+}
+
+export function assertWeightedModelAssignment(
+	assignment: WorkflowModelAssignmentReceipt,
+): void {
+	if (assignment.basis.rule !== "issue_node_weighted")
+		throw new Error("weighted assignment required");
+	const basis = assignment.basis;
+	const policy = parseWeightedModelSplit({
+		enabled: true,
+		rule: basis.rule,
+		balance: { enabled: basis.weightAudit.enabled },
+		nodes: basis.nodes,
+	});
+	const choice = resolveWeightedModelSplit(
+		policy,
+		basis.issueKey,
+		basis.nodeId,
+	);
+	if (
+		policy.version !== basis.ruleVersion ||
+		choice.bucket !== basis.bucket ||
+		choice.arm.arm !== assignment.arm ||
+		choice.arm.model !== assignment.modelAlias ||
+		JSON.stringify(choice.weightAudit) !== JSON.stringify(basis.weightAudit)
+	)
+		throw new Error("invalid basis");
+}
+
+export function finalizeWeightedModelAssignment(
+	assignment: WorkflowModelAssignmentReceipt,
+	input: { runId: string; nodeId: string; assignedAt: string },
+): FrozenWeightedModelAssignmentReceipt {
+	assertWeightedModelAssignment(assignment);
+	if (
+		assignment.basis.rule !== "issue_node_weighted" ||
+		assignment.basis.nodeId !== input.nodeId ||
+		!input.runId ||
+		!Number.isFinite(Date.parse(input.assignedAt))
+	)
+		throw new Error("invalid frozen basis");
+	return {
+		...assignment,
+		schemaVersion: 1,
+		runId: input.runId,
+		nodeId: assignment.basis.nodeId,
+		policyVersion: assignment.basis.ruleVersion,
+		resolvedModel: assignment.model,
+		assignedAt: input.assignedAt,
+	};
+}
+
+export function assertFrozenWeightedModelAssignment(
+	assignment: WorkflowModelAssignmentReceipt,
+	input: { runId: string; nodeId: string },
+): asserts assignment is FrozenWeightedModelAssignmentReceipt {
+	assertWeightedModelAssignment(assignment);
+	const frozen = assignment as Partial<FrozenWeightedModelAssignmentReceipt>;
+	if (
+		assignment.basis.rule !== "issue_node_weighted" ||
+		frozen.schemaVersion !== 1 ||
+		frozen.runId !== input.runId ||
+		frozen.nodeId !== input.nodeId ||
+		frozen.nodeId !== assignment.basis.nodeId ||
+		frozen.policyVersion !== assignment.basis.ruleVersion ||
+		frozen.resolvedModel !== assignment.model ||
+		typeof frozen.assignedAt !== "string" ||
+		!Number.isFinite(Date.parse(frozen.assignedAt))
+	)
+		throw new Error("invalid frozen basis");
 }

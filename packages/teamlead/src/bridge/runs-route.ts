@@ -2811,17 +2811,14 @@ export function createRunsRouter(
 				try {
 					menuResolution = resolveMenuOverrides(menu, req.body.overrides, {
 						issueIdentifier: issueIdentifier ?? issueId,
+						issueKey: issueUuid,
 						// FLY-2763: project-scoped sanction for a same-vendor QA/producer pair
 						sameVendorReviewAllowed: storeReviewSameFamilyAllowed(
 							{ mode: "ready", store },
 							projectName,
 						),
 					});
-					menuTemplateOverride =
-						Object.hasOwn(req.body, "overrides") ||
-						Object.keys(menuResolution.assignments).length > 0
-							? menuResolution.templateOverride
-							: undefined;
+					menuTemplateOverride = menuResolution.requestedTemplateOverride;
 				} catch (error) {
 					if (error instanceof WorkflowMenuValidationError) {
 						res.status(error.status).json({
@@ -3040,6 +3037,7 @@ export function createRunsRouter(
 					...templateCandidateInput,
 					issueId,
 					issueIdentifier: issueIdentifier ?? issueId,
+					issueKey: issueUuid,
 					entryIssueAliases: workflowEntryAliases,
 					entryRootKey: workflowEntryRootKey,
 					leadReason:
@@ -3060,6 +3058,12 @@ export function createRunsRouter(
 						: undefined,
 					tier: workKindActiveAtEntry ? canonicalTier : undefined,
 					override: menuTemplateOverride,
+					menuOverrides: Object.hasOwn(req.body, "overrides")
+						? req.body.overrides
+						: undefined,
+					requestedOverrideDigest: canonicalSubmissionDigest(
+						req.body.overrides ?? {},
+					),
 					...(generalizedEntry ? { entryKind: "workflow_v2" as const } : {}),
 				});
 			} catch (err) {
@@ -3227,14 +3231,13 @@ export function createRunsRouter(
 				selectedSnapshot,
 				generalizedSelection.nodeId,
 			);
+			const quotaRootKey = auth?.codexQuotaRootKey?.(projectName);
 			const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
+				codexQuotaRootKey: quotaRootKey,
+				now: now.getTime(),
 			});
-			const quotaRootKey =
-				dispatchResolution.dispatch.vendor === "codex"
-					? auth?.codexQuotaRootKey?.(projectName)
-					: undefined;
 			const quotaWait = store.codexQuota.getAdmissionWait(
 				generalizedSelection.idempotencyKey,
 			);

@@ -25,6 +25,8 @@ import {
 import {
 	type PercentageModelSplitPolicy,
 	parsePercentageModelSplit,
+	parseWeightedModelSplit,
+	type WeightedModelSplitPolicy,
 } from "./model-split.js";
 import type { RoleEffort } from "./types.js";
 
@@ -84,7 +86,8 @@ export interface RuntimeModelSplitArm {
 
 export type RuntimeModelSplitPolicy =
 	| RuntimeParityModelSplitPolicy
-	| PercentageModelSplitPolicy;
+	| PercentageModelSplitPolicy
+	| WeightedModelSplitPolicy;
 
 export interface RuntimeParityModelSplitPolicy {
 	readonly enabled: boolean;
@@ -209,6 +212,19 @@ function parseRuntimeModelSplit(
 	if (value === undefined) return undefined;
 	try {
 		if (!isObject(value)) throw new Error("expected an object");
+		if (value.rule === "issue_node_weighted") {
+			const policy = parseWeightedModelSplit(value);
+			for (const [nodeId, arms] of Object.entries(policy.nodes)) {
+				for (const [index, arm] of arms.entries()) {
+					parseRuntimeModelSplitArm(
+						{ arm: arm.arm, model: arm.model },
+						`modelSplit.nodes.${nodeId}[${index}]`,
+						lookup,
+					);
+				}
+			}
+			return policy;
+		}
 		if (value.rule === "issue_number_percentage") {
 			const policy = parsePercentageModelSplit(value);
 			parseRuntimeModelSplitArm(policy.codex, "modelSplit.codex", lookup);
@@ -511,6 +527,29 @@ function applyBindings(
 	return { registry: Object.freeze(rebound), bindings };
 }
 
+/**
+ * Retired identities that stay dispatchable even when nothing binds to them, so
+ * a carrier pinned before they were retired keeps dispatching. They are still
+ * absent from every tier and picker, so this only keeps an explicit old pin
+ * working — it never routes new work here.
+ *
+ * 🔴 FLY-2775: this list MUST grow by one generation on every Opus binding
+ * upgrade. An identity reaches the dispatch lookup on its own only while it is
+ * the BOUND one (`bound()` carries the `dispatch` surface; `legacy()` does not),
+ * so the generation that just retired silently drops out unless it is named
+ * here. It must not drop out: `workflow_run.snapshot` freezes the resolved FULL
+ * id with `dispatchPinned`, and historical carrier pins are full ids too — both
+ * would start failing INVALID_MODEL mid-flight.
+ * The sibling list is `OPUS_IDENTITIES` in `model-builtins.ts`; keep them in step.
+ */
+const ALWAYS_DISPATCHABLE_LEGACY_IDS: readonly string[] = Object.freeze([
+	MODEL_IDS.OPUS_5,
+	MODEL_IDS.OPUS_5_1M,
+	MODEL_IDS.OPUS_48,
+	MODEL_IDS.OPUS_48_1M,
+	...LEGACY_FABLE_MODEL_IDS,
+]);
+
 function buildDispatchLookupForRegistry(
 	registry: readonly ModelRegistryEntry[],
 ): ReadonlyMap<string, string> {
@@ -527,15 +566,12 @@ function buildDispatchLookupForRegistry(
 			lookup.set(alias.toLowerCase(), entry.id);
 		}
 	}
-	// Legacy identities stay accepted even when nothing binds to them, so a
-	// carrier pinned before they were retired keeps dispatching. Pre-existing
-	// back-compat — they are still absent from every tier and picker, so this
-	// only keeps an explicit old pin working, it never routes new work here.
-	for (const id of [
-		MODEL_IDS.OPUS_48,
-		MODEL_IDS.OPUS_48_1M,
-		...LEGACY_FABLE_MODEL_IDS,
-	]) {
+	// By ID ONLY, never by alias. FLY-1496's acceptance fixes the other half of
+	// this contract: re-pointing `bindings.opus` at a surface-less model must
+	// yield NO dispatch alias, so that a config edit cannot silently route new
+	// work at something the dispatch layer does not carry. Registering these
+	// entries' aliases here would break that invariant.
+	for (const id of ALWAYS_DISPATCHABLE_LEGACY_IDS) {
 		lookup.set(id.toLowerCase(), id);
 	}
 	return lookup;

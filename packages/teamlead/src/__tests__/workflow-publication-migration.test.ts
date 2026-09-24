@@ -31,7 +31,7 @@ function publish(store: StateStore, managed: boolean) {
 	const manifest = JSON.parse(before.manifest);
 	Object.assign(
 		manifest.nodes.find((n: { id: string }) => n.id === "implement"),
-		{ model: "gpt-6-astra", effort: "medium" },
+		{ vendor: "codex", model: "gpt-6-astra", effort: "medium" },
 	);
 	return store.createAndPublishWorkflowTemplateRevision({
 		templateId: template.template_id,
