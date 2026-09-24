@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant R as 体（runner）
+    participant C as CommDB 唤醒出站表
+    participant P as Bridge 巡检（每 60 秒）
+    participant S as StateStore 工作流账本
+    R->>C: 收到唤醒，写回执 acked（03:20:27）
+    R->>S: 39 秒后 complete，节点 admitted 直接改成 done（无前置校验）
+    Note over P: 下一轮巡检
+    P->>C: 取前 20 条未投影回执
+    P->>S: 第 1 条（9-01 旧单）投影失败，返回 retry，有日志
+    P->>S: 第 2 条（9-16 旧单）投影失败，返回 retry，有日志
+    P->>S: 第 3 条 FLY-2781：把节点从 admitted 改成 running
+    S-->>P: 改了 0 行 → 抛异常，事务回滚
+    Note over P: 循环在第 3 条中断<br/>第 4 到 20 条从未被访问<br/>后面 5 个巡检步骤全部跳过
+    P-->>P: 外层吞掉异常，日志里没有 wake_id

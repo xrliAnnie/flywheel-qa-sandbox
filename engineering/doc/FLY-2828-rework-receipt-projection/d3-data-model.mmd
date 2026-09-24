@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph CommDB[CommDB comm.db]
+        W[turn_wake_outbox 唤醒出站行<br/>state: pending/sent/acked/cancelled<br/>acked_at 体回执时间<br/>receipt_projected_at 投影时间<br/>新增 projection_attempts 失败次数<br/>新增 projection_last_error 原因<br/>新增 projection_alerted_at 告警时间<br/>新增 projection_alert_question_id]
+    end
+    subgraph StateStore[StateStore teamlead.db]
+        B[workflow_execution_binding<br/>activation 与体的绑定]
+        DL[workflow_rework_delivery<br/>返工投递状态机<br/>pending→turn_granted→awaiting_receipt→wake_delivered→completed]
+        VP[workflow_rework_verification_path<br/>返工后必须重新验证的路径<br/>pending→active→completed]
+        N[workflow_run_node 节点<br/>admitted→running→done]
+    end
+    W -- activation_id --> B
+    B -- rework_request_id --> DL
+    DL -- request_id --> VP
+    B -- run/node/attempt --> N
+    G1[Lead 返工门] -. 查 delivery ∪ path .-> DL
+    G1 -.-> VP
+    G2[founder 打回门] -. 修复后同一谓词 .-> DL
+    G2 -.-> VP
