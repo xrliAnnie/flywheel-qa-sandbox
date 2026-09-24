@@ -164,3 +164,11 @@ QA 在 `b51a597567bf399120b3908f56c55bd68f933d38` 的真房核验确认，先前
 - SSE 重连预算在一条连接持续健康达到 backoff cap 后清零；短时 flap 仍共享原预算并最终 exhausted，避免恢复永久失聪与快速 flap 无限审计两种极端。回归先用两次 503 消耗完整预算，再保持 ready 40ms，随后断开并证明新预算可再次发起连接。
 
 最终证据：voice-core related 3 文件 15/15、voice-headphone related 16/16、voice-codex related 2 文件 16/16；受影响 dependency build 覆盖 16 个 package，`...flywheel-voice-core` dependent typecheck 覆盖 11 个 package；根 lint 检查 5241 files、0 errors、25 warnings；定向 Biome、`git diff --check` 均通过。Consumer discovery（full/file/parent）为 `live-lead-adapter.ts` 0/3/24、`HeadphoneMode.ts` 0/0/6，`bridge-client.ts` 沿用本轮 2/22/6；保留真实 composition/export/session 与精确/related 测试，其他命中均为文档、inventory、wrapper 路径文字或父目录碰撞。没有新增或修改 `scripts/__tests__/*.test.sh`，没有请求 full CI。
+
+## R10 barge-in 尾音取消阻断整改
+
+R9 精确头 `f692b6b23` 的第二轮代码审查发现唯一 HIGH：idle boundary 已把 active frontend speech 清空，但真实 WaitingMouth 仍可能排着数秒 PCM；此时 sustained barge-in 找不到 speechId，无法执行 `localPlaybackCancel`。真实 RoomIO 回归先稳定复现 1/2 失败：1 秒 PCM 已调用 `endSpeech` 且 audible tail 未 drain，打断后的取消调用为 0。
+
+最小修复只把当前前台播放的 `speechId + generation` 保留到取消边界；`endSpeech` 只结束生产者写入，不丢掉本地可取消身份。barge-in、provider cancellation、下一段开始与 session close 继续复用同一 `cancelFrontendSpeech`，因此即使 active segment 已结束，仍能取消 WaitingMouth 中尚未播完的同一段。真实 RoomIO 回归现在证明 idle boundary 后 tail 未 drain 时，sustained barge-in 精确调用该 speech 的 `localPlaybackCancel(speechId, 9)`；原 sequence-zero 与迟到帧合同测试未删除。
+
+最终证据：精确真实 RoomIO 文件 3/3，changed-file `vitest related` 2 文件 17/17；`flywheel-voice-codex...` dependency build 覆盖 16 个 package，`...flywheel-voice-codex` typecheck 通过；根 lint 检查 5241 files、0 errors、25 warnings；两文件定向 Biome 与 `git diff --check` 通过。Consumer discovery（full/file/parent）为生产 `live-lead-adapter.ts` 0/2/24、回归 `engine-a-room-io-contract.test.ts` 0/0/5。生产 basename 的两个匹配只是 FLY-2796/2798 方案文档；两组 parent 命中均为历史文档/评审 JSON、child-process inventory、产品文档或 wrapper 路径文字，不是 import。真实 import 使用无扩展名相对 specifier；保留的直接测试和可执行消费者均由 17/17 related 图覆盖。没有新增或修改 `scripts/__tests__/*.test.sh`，也没有请求 full CI。

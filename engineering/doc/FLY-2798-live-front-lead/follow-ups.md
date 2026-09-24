@@ -27,3 +27,11 @@ R2 有效 reviewVerdict=APPROVED，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db
 | live-face-stuck-suspended-on-resume-failure | MEDIUM | 为 `live.resume()` 失败增加明确恢复或会话终止语义，避免 suspended 状态永久吞输入，也避免 finally 异常覆盖既有 receipt。 |
 | edge-tts-stream-tail-dropped-on-exit | MEDIUM | 把 streaming TTS 完成信号从 child `exit` 对齐到 stdio `close`，消除平台相关的尾帧丢失可能。 |
 | handoff-results-not-session-scoped | LOW | results GET 在现有 project/founder 校验外，再绑定 handoff 的 sessionId/generation，补 defence-in-depth。 |
+
+## R10 review round 2 非阻断 advisory
+
+以下 finding 来自精确头 `f692b6b23` 的 review request `56d72113-0dd6-4885-b3e2-6cc560eee1aa`。唯一 HIGH 已在后续实现头关闭；该 MEDIUM 不扩大当前锁定返工范围：
+
+| findingKey | 级别 | 后续处置 |
+|---|---|---|
+| late-frontend-frame-dropped-during-drain | MEDIUM | 把前台 audio boundary 与真实 playback drain 对齐，或为已结束但仍在 drain 的段提供显式续接/缓冲协议，避免 provider delta 间隔超过 idle boundary 时新帧在旧尾音窗口被拒。 |
