@@ -348,6 +348,19 @@ describe("LiveLeadAdapter", () => {
 		expect(request.originalText).toBe("帮我查一下状态");
 		expect(request.delegationBinding).toContain("provider-1");
 		expect(request.idempotencyKey).not.toContain("provider-1");
+		expect(h.speech.speak).toHaveBeenCalledWith(
+			"我问下 Lead",
+			"cue",
+			expect.objectContaining({ verification: "required" }),
+		);
+		expect(h.utterances).toContainEqual(
+			expect.objectContaining({
+				text: "我问下 Lead",
+				source: "frontend",
+				role: "assistant",
+				final: true,
+			}),
+		);
 		expect(h.handoffBindings).toEqual([
 			{
 				sessionId: "voice-session",
@@ -395,6 +408,15 @@ describe("LiveLeadAdapter", () => {
 			endMs: 150,
 			delta: "帮我",
 		});
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "output",
+			generation: 1,
+			eventId: "output-1",
+			startMs: 100,
+			endMs: 140,
+			delta: "我问下 Lead",
+		});
 		h.live.emit("delegation-created", {
 			delegationId: "provider-1",
 			generation: 1,
@@ -425,6 +447,7 @@ describe("LiveLeadAdapter", () => {
 		await vi.waitFor(() => expect(h.handoffs).toHaveLength(1));
 		expect(h.handoffs[0]?.originalText).toBe("帮我查完整状态");
 		expect(h.live.suspend).toHaveBeenCalledOnce();
+		expect(h.speech.speak).not.toHaveBeenCalled();
 	});
 
 	it("preserves but does not dispatch an utterance whose RoomIO end times out", async () => {

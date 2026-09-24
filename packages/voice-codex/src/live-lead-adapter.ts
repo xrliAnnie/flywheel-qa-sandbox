@@ -105,6 +105,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		{ digest: string; promise: Promise<SpeakReceipt> }
 	>();
 	private readonly appliedResultEvents = new Set<string>();
+	private readonly frontendTextByGeneration = new Map<number, string>();
 	private readonly roomTimelineWaiters = new Set<() => void>();
 	private readonly delegationEndTimeoutMs: number;
 	private readonly maxSuspendedInputBytes: number;
@@ -350,7 +351,15 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				});
 			}),
 			live.onLiveTranscript((delta) => {
-				if (delta.direction === "input") this.assembler.appendInput(delta);
+				if (delta.direction === "input") {
+					this.assembler.appendInput(delta);
+					return;
+				}
+				const prior = this.frontendTextByGeneration.get(delta.generation) ?? "";
+				this.frontendTextByGeneration.set(
+					delta.generation,
+					`${prior}${delta.delta}`.slice(-2_000),
+				);
 			}),
 			live.on("delegation-created", (delegation) => {
 				const key = `${this.sessionId}:${this.generation}:${delegation.generation}:${delegation.delegationId}`;
@@ -402,6 +411,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		if (this.closing) return;
 		await this.suspendLive(live, "delegation-sealed");
 		try {
+			await this.ensureLeadCue(delegation.generation, bindingKey);
 			const utterance = this.assembler.sealDelegation({
 				generation: delegation.generation,
 				delegationId: delegation.delegationId,
@@ -550,6 +560,46 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.clearBufferedInput();
 			throw error;
 		}
+	}
+
+	private async ensureLeadCue(
+		providerGeneration: number,
+		bindingKey: string,
+	): Promise<void> {
+		const spoken = (this.frontendTextByGeneration.get(providerGeneration) ?? "")
+			.normalize("NFKC")
+			.replace(/\s+/gu, "")
+			.toLocaleLowerCase("en-US");
+		if (spoken.includes("我问下lead")) return;
+		const receipt = await this.options.speech.speak("我问下 Lead", "cue", {
+			pendingKey: `delegation-cue:${bindingKey}`,
+			verification: "required",
+		});
+		if (receipt.outcome !== "completed") {
+			this.options.record({
+				kind: "live_lead_cue_failed",
+				binding: bindingKey,
+				reason: receipt.reason,
+			});
+			return;
+		}
+		const timestamp = new Date(this.now()).toISOString();
+		this.emitUtterance({
+			ts: timestamp,
+			timestamp,
+			sessionId: this.sessionId,
+			generation: this.generation,
+			sequence: ++this.utteranceSequence,
+			transcriptId: `frontend-cue:${providerGeneration}:${bindingKey}`,
+			utteranceId: `frontend-cue:${providerGeneration}:${bindingKey}`,
+			backendId: this.backendId,
+			source: "frontend",
+			face: "announce",
+			role: "assistant",
+			text: "我问下 Lead",
+			final: true,
+			attribution: { kind: "unknown", reason: "assistant_output" },
+		});
 	}
 
 	private bufferLiveInput(pcm: Buffer, format: AudioFormat): void {
