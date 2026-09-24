@@ -2,12 +2,12 @@
 issue: FLY-2796
 phase: implement
 phaseCursor: 5/7
-updated: 2026-09-23T23:58:32.568Z
-nextStep: implement Bridge durable inbox/handoff and finish production RoomIO composition
+updated: 2026-09-24T00:10:11.148Z
+nextStep: add one-page collector pagination and production headphone client adapter
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
 **phase**: implement (5/7)
-**next**: implement Bridge durable inbox/handoff and finish production RoomIO composition
+**next**: add one-page collector pagination and production headphone client adapter
