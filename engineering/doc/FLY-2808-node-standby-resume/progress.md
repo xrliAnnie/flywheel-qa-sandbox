@@ -1,9 +1,9 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-24T02:36:28.363Z
-nextStep: Review final diff, commit/push code and docs, then bind a new
+phaseCursor: 3/4
+updated: 2026-09-24T02:36:59.851Z
+nextStep: Create literal-last milestone commit, push PR 1299, and obtain
   exact-head code review
 chunks: []
 pointers:
@@ -14,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (2/4)
-**next**: Review final diff, commit/push code and docs, then bind a new exact-head code review
+**phase**: implement (3/4)
+**next**: Create literal-last milestone commit, push PR 1299, and obtain exact-head code review
