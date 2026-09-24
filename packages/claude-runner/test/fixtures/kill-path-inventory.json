@@ -1746,6 +1746,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/voice-core/src/audio/FfmpegPcmDecoder.ts:handle.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/audio/FfmpegPcmDecoder.ts",
+		"code": "handle.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/audio/FfmpegPcmDecoder.ts:if (!finished && !failure) handle.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/audio/FfmpegPcmDecoder.ts",
+		"code": "if (!finished && !failure) handle.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/voice-core/src/audio/FilePlayer.ts:handle.kill(\"SIGTERM\");#1",
 		"path": "packages/voice-core/src/audio/FilePlayer.ts",
 		"code": "handle.kill(\"SIGTERM\");",
@@ -1761,6 +1773,18 @@
 		"key": "packages/voice-core/src/audio/StreamPlayer.ts:this.handle?.kill(\"SIGTERM\");#1",
 		"path": "packages/voice-core/src/audio/StreamPlayer.ts",
 		"code": "this.handle?.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts:if (!finished && !failure) handle.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+		"code": "if (!finished && !failure) handle.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts:if (kill) handle.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+		"code": "if (kill) handle.kill(\"SIGKILL\");",
 		"classification": "out-of-scope"
 	},
 	{
