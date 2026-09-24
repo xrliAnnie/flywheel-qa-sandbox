@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { CompositeSpeech } from "../backends/openai-live/CompositeSpeech.js";
-import type {
-	RoomIO,
-	StreamingTtsChunk,
-	StreamingTtsEngine,
+import {
+	type RoomIO,
+	type StreamingTtsChunk,
+	type StreamingTtsEngine,
+	speakRequestDigest,
 } from "../index.js";
 
 const PCM = { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 } as const;
@@ -78,11 +79,21 @@ describe("CompositeSpeech", () => {
 		expect(io.endSpeech).not.toHaveBeenCalled();
 		continueStream.resolve();
 
-		await expect(speaking).resolves.toMatchObject({
+		const receipt = await speaking;
+		expect(receipt).toMatchObject({
 			outcome: "completed",
 			transport: "submitted",
 			contentProof: "deterministic_tts",
 		});
+		expect(receipt.requestDigest).toBe(
+			speakRequestDigest({
+				sessionId: "session-1",
+				generation: 4,
+				text: "Lead 原话",
+				kind: "readback",
+				verification: "required",
+			}),
+		);
 		expect(io.writeSpeech).toHaveBeenCalledTimes(2);
 		expect(io.endSpeech).toHaveBeenCalledOnce();
 	});

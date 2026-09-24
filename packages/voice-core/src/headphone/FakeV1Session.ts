@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type {
 	SpeakKind,
 	SpeakReceipt,
@@ -7,6 +6,7 @@ import type {
 	VoiceV1Capabilities,
 	VoiceV1Session,
 } from "../types.js";
+import { speakRequestDigest } from "./speak-request.js";
 
 export interface FakeSpeakCall {
 	text: string;
@@ -22,16 +22,6 @@ export interface FakeV1SessionOptions {
 	backendId?: string;
 	capabilities?: Partial<VoiceV1Capabilities>;
 	respond?(call: FakeSpeakCall): Promise<SpeakReceipt> | SpeakReceipt;
-}
-
-export function speakRequestDigest(input: {
-	sessionId: string;
-	generation: number;
-	text: string;
-	kind: SpeakKind;
-	verification: SpeakVerification;
-}): string {
-	return createHash("sha256").update(JSON.stringify(input)).digest("hex");
 }
 
 /** Complete V1 fake: it supports utterances, request-bound speak receipts,

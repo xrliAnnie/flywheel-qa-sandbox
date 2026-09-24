@@ -12,7 +12,6 @@ import type { VoiceHandoffStore } from "./voice-handoff-store.js";
 export interface VoiceLeadResultProducerOptions {
 	commDbPathForProject(projectName: string): string;
 	store: Pick<VoiceHandoffStore, "get" | "appendResult">;
-	now?: () => string;
 	onCommitted?(event: VoiceHandoffResultEvent): void;
 }
 
@@ -27,11 +26,7 @@ export interface ProduceVoiceLeadResultInput {
 /** Converts one authenticated Lead outbound operation into the canonical,
  * replayable voice result. Matching is exclusively by the voice envelope. */
 export class VoiceLeadResultProducer {
-	private readonly now: () => string;
-
-	constructor(private readonly options: VoiceLeadResultProducerOptions) {
-		this.now = options.now ?? (() => new Date().toISOString());
-	}
+	constructor(private readonly options: VoiceLeadResultProducerOptions) {}
 
 	produce(input: ProduceVoiceLeadResultInput): VoiceHandoffResultEvent {
 		if (
@@ -97,7 +92,7 @@ export class VoiceLeadResultProducer {
 				msgClass: "protocol",
 				content: input.text,
 				refId: record.providerOperationId,
-				createdAt: this.now(),
+				createdAt: source.created_at,
 				carrier: "external",
 				senderRef: encodeSenderRef(),
 			});

@@ -116,54 +116,59 @@ afterEach(() => {
 });
 
 describe("VoiceLeadResultProducer", () => {
-	it("commits and replays one carrier-neutral response/result roundtrip without a Discord message id", () => {
-		const producer = new VoiceLeadResultProducer({
-			commDbPathForProject: (project) => {
-				expect(project).toBe("flywheel");
-				return commPath;
-			},
-			store: handoffs,
-			now: () => NOW,
-		});
-		const input = {
-			projectName: "flywheel",
-			sourceLeadId: "lead-1",
-			sourceDeliveryId: DELIVERY_ID,
-			operationId: "entry-1:out",
-			text: "状态正常，已经确认。",
-		};
-
-		const first = producer.produce(input);
-		const replay = producer.produce(input);
-		expect(replay).toEqual(first);
-		expect(first).toMatchObject({
-			handoffId: HANDOFF_ID,
-			requestDigest: "a".repeat(64),
-			sourceLeadId: "lead-1",
-			resultKind: "lead_reply",
-			text: input.text,
-			seq: 1,
-		});
-
-		const comm = CommDB.openReadonly(commPath);
+	it("commits and replays one carrier-neutral response/result across wall-clock advancement", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(NOW));
 		try {
-			expect(comm.getMessageById(first.sourceDeliveryId)).toMatchObject({
-				from_agent: "lead-1",
-				to_agent: FOUNDER_ID,
-				parent_id: DELIVERY_ID,
-				content: input.text,
+			const producer = new VoiceLeadResultProducer({
+				commDbPathForProject: (project) => {
+					expect(project).toBe("flywheel");
+					return commPath;
+				},
+				store: handoffs,
 			});
+			const input = {
+				projectName: "flywheel",
+				sourceLeadId: "lead-1",
+				sourceDeliveryId: DELIVERY_ID,
+				operationId: "entry-1:out",
+				text: "状态正常，已经确认。",
+			};
+
+			const first = producer.produce(input);
+			vi.advanceTimersByTime(1_000);
+			const replay = producer.produce(input);
+			expect(replay).toEqual(first);
+			expect(first).toMatchObject({
+				handoffId: HANDOFF_ID,
+				requestDigest: "a".repeat(64),
+				sourceLeadId: "lead-1",
+				resultKind: "lead_reply",
+				text: input.text,
+				seq: 1,
+			});
+
+			const comm = CommDB.openReadonly(commPath);
+			try {
+				expect(comm.getMessageById(first.sourceDeliveryId)).toMatchObject({
+					from_agent: "lead-1",
+					to_agent: FOUNDER_ID,
+					parent_id: DELIVERY_ID,
+					content: input.text,
+				});
+			} finally {
+				comm.close();
+			}
+			expect(handoffs.listResults(HANDOFF_ID, 0, 100).events).toEqual([first]);
 		} finally {
-			comm.close();
+			vi.useRealTimers();
 		}
-		expect(handoffs.listResults(HANDOFF_ID, 0, 100).events).toEqual([first]);
 	});
 
 	it("rejects a spoofed binding before creating a result", () => {
 		const producer = new VoiceLeadResultProducer({
 			commDbPathForProject: () => commPath,
 			store: handoffs,
-			now: () => NOW,
 		});
 		expect(() =>
 			producer.produce({
@@ -181,7 +186,6 @@ describe("VoiceLeadResultProducer", () => {
 		const producer = new VoiceLeadResultProducer({
 			commDbPathForProject: () => commPath,
 			store: handoffs,
-			now: () => NOW,
 		});
 		const outbound = new SqliteOutboundDedupStore(join(root, "outbound.db"));
 		const send = vi.fn(async () => {

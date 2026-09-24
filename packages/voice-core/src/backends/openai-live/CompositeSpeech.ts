@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { speakRequestDigest } from "../../headphone/speak-request.js";
 import type { RoomIO } from "../../room-io.js";
 import type {
 	SpeakKind,
@@ -35,17 +36,6 @@ interface ActiveSpeech {
 	submitted: boolean;
 }
 
-function requestDigest(input: {
-	sessionId: string;
-	generation: number;
-	text: string;
-	kind: SpeakKind;
-	verification: SpeakVerification;
-	voice: VoiceRef;
-}): string {
-	return createHash("sha256").update(JSON.stringify(input)).digest("hex");
-}
-
 function errorReason(error: unknown): string {
 	if (error && typeof error === "object" && "code" in error) {
 		const code = (error as { code?: unknown }).code;
@@ -80,13 +70,12 @@ export class CompositeSpeech {
 		kind: SpeakKind,
 		opts: { pendingKey: string; verification: SpeakVerification },
 	): Promise<SpeakReceipt> {
-		const digest = requestDigest({
+		const digest = speakRequestDigest({
 			sessionId: this.options.sessionId,
 			generation: this.options.generation,
 			text,
 			kind,
 			verification: opts.verification,
-			voice: this.options.voice,
 		});
 		const prior = this.pending.get(opts.pendingKey);
 		if (prior) {

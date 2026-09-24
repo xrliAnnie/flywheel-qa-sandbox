@@ -27,6 +27,7 @@ export {
 	type QueueSnapshot,
 } from "./queue.js";
 export * from "./SpeechBrief.js";
+export * from "./speak-request.js";
 export {
 	shouldEnqueue,
 	type TapConfig,

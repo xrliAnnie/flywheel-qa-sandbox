@@ -360,7 +360,7 @@ describe("buildLeadOutboundExpressHandler", () => {
 		expect(res.body).toMatchObject({ status: "sent", messageId: "msg-1" });
 	});
 
-	it("promotes an authenticated HTTP delivery context into the trusted handler envelope", async () => {
+	it("does not promote an arbitrary HTTP delivery context into the trusted handler envelope", async () => {
 		const h = buildLeadOutboundExpressHandler(makeHandler());
 		const first = fakeRes();
 		await h(
@@ -389,9 +389,47 @@ describe("buildLeadOutboundExpressHandler", () => {
 
 		expect(first.body).toMatchObject({ status: "sent", messageId: "msg-1" });
 		expect(second.body).toMatchObject({
+			status: "sent",
+			messageId: "msg-2",
+		});
+	});
+
+	it("promotes only a canonical voice delivery context for the matching Lead", async () => {
+		let n = 0;
+		const produceVoiceLeadResult = vi.fn();
+		const h = buildLeadOutboundExpressHandler(
+			new CodexLeadOutboundHandler({
+				store: new InMemoryOutboundDedupStore(),
+				send: async () => `msg-${++n}`,
+				expectedApiToken: "api-secret",
+				produceVoiceLeadResult,
+			}),
+		);
+		const deliveryContext =
+			"chat:mufasa:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc";
+		const first = fakeRes();
+		await h(
+			{
+				body: { ...goodBody, deliveryContext, idempotencyKey: "k1" },
+				headers: { authorization: "Bearer api-secret" },
+			},
+			first,
+		);
+		const second = fakeRes();
+		await h(
+			{
+				body: { ...goodBody, deliveryContext, idempotencyKey: "k2" },
+				headers: { authorization: "Bearer api-secret" },
+			},
+			second,
+		);
+
+		expect(first.body).toMatchObject({ status: "sent", messageId: "msg-1" });
+		expect(second.body).toMatchObject({
 			status: "deduped",
 			messageId: "msg-1",
 		});
+		expect(produceVoiceLeadResult).toHaveBeenCalledTimes(2);
 	});
 
 	it("writes a metadata-only audit line for the response", async () => {

@@ -190,7 +190,8 @@ export class CodexLeadOutboundHandler {
 		providedToken: string | undefined;
 		/** Supplied only by trusted in-process adapter; HTTP handlers do not read it from body. */
 		guard?: ChatThreadWriteGuard;
-		/** Trusted parent journal entry only. Never read from model input or the HTTP body. */
+		/** Trusted parent journal entry, or a canonical voice envelope promoted by
+		 * the authenticated HTTP adapter and revalidated by the result producer. */
 		deliveryContext?: string;
 	}): Promise<OutboundSendOutcome> {
 		// 1. Auth — reserved endpoint, fail-closed.
