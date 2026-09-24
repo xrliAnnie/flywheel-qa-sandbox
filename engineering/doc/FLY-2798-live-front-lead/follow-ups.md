@@ -106,3 +106,17 @@ R2 有效 reviewVerdict=APPROVED，requestId=4d8297f7-3f79-4590-8d9a-6f4999f82db
 | 入场开场白被插话时显示「语音不可用」 | LOW | `HeadphoneMode.speakEntry`（2796 文件，本单未改）把 barge-in 取消的 receipt 当成语音不可用并发文字状态；应按 `SPEAK_BARGE_IN_REASON` 视为打断而非失败。 |
 | 被打断条目在长话轮后租约过期 | LOW | 复用 claim 依赖租约（按字数 60 秒起）；她的一轮若长于剩余租约，重认领会让服务端 attempts +1。可在播放期续约或打断时显式释放 claim。 |
 | 未回答话轮 10 秒兜底 | LOW | 模型对噪声/寒暄不回应时，收件箱最多等 `founderTurnSettleTimeoutMs`；真人使用后再定该值。 |
+
+## R3 复审（request 4b6e8469）非阻断 advisories
+
+R3 在 `28b983d22` APPROVED；三条 MEDIUM（interrupted 字幕、闸门总上限、close 顺序）已按 Lead 裁定在后续头修复。以下为本轮新增或延续、未修的项（其余与 round 1 相同的项见上文「Main-sync 头 069af1144 复审」表）：
+
+| findingKey | 级别 | 位置 | reviewer 摘要 |
+|---|---|---|---|
+| controller-any-error-ends-session-via-failLive | MEDIUM | `packages/voice-codex/src/live-lead-adapter.ts:505` | Unchanged since round 2: connection-loss detection keys on turnCancelOrSuppress, which the real controller clears on every error for the ready generation, so a non-fatal duplicate session.started ends the session; the control-group test fakes the flag |
+| gate-opens-for-any-room-utterance | LOW | `packages/voice-codex/src/live-lead-adapter.ts:404` | The founder-turn gate opens on any RoomIO utterance start regardless of attribution |
+| entry-brief-barge-in-shows-unavailable | LOW | `packages/voice-core/src/headphone/HeadphoneMode.ts:140` | speakEntry treats a barge-in-cancelled receipt as voice unavailable and posts the text status (acknowledged in follow-ups; FLY-2796 file not changed here) |
+| interrupted-item-lease-may-expire-during-long-turn | LOW | `packages/voice-core/src/headphone/InboxReader.ts:201` | An interrupted item keeps its claim, but if her turn outlasts the remaining lease the re-claim counts a server-side attempt (acknowledged in follow-ups) |
+| sealed-user-turn-may-be-partial-or-late | LOW | `packages/voice-core/src/backends/openai-live/LiveUtteranceAssembler.ts:293` | Unchanged since round 2: sealEndedRoomUtterances seals with whatever input deltas have arrived at the first assistant final |
+| speak-before-headphone-start-window | LOW | `packages/voice-codex/src/session.ts:368` | Unchanged since round 2: speak() between live=true and startHeadphone() returns failed |
+| test-evidence-and-host-coupled-failures | LOW | `packages/voice-codex/src/__tests__/live-lead-adapter.test.ts:1` | Round 3 test evidence: all changed-package suites green at 28b983d22 after rebuilding voice-core and voice-codex dist |

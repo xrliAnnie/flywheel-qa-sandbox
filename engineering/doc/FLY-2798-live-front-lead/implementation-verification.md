@@ -220,3 +220,11 @@ founder 16:12 PDT 打回：播报中插话，播报停了，但她的话没人�
 先红后绿用例（各自在修复前红）：reader 打断不计失败且不拉取 1 条；闸门单元 4 条（回答且放完才放行、提示语不算回答并跟到 delegation 完成、超时兜底、丢失 end 的旧窗口不卡死）+ tail 读失败 1 条；真 `LiveLeadAdapter` + 真 `HeadphoneSession` 组装 2 条：播报 A 时插话 → A 停、两个 1 秒 poll 周期内不认领不播报、她的「一加一等于几」以 `role:user` 发出且前台答「等于二」→ 之后复用 A 的 claim 重念并按 A、B 顺序 ack，无 `inbox_speech_retry_scheduled`；以及她说到一半离开时 close 1 秒内返回且不认领。
 
 本地证据（只跑点名与直接消费者）：voice-core headphone-mode 10/10、related 30 文件 270 passed / 4 skipped；voice-codex adapter/composition/room-io/session 68/68、related 3 文件 31/31；voice-headphone 7 文件 68/68；Teamlead adapter→route 配对 1/1（exit 0，补齐 RoomIO `audibleTail` 桩后无 unhandled rejection）。`flywheel-voice-codex...` build 16 个 package、`...flywheel-voice-core` typecheck 11 个 package；根 `pnpm lint` 5251 files、0 errors、26 warnings；Biome 与 `git diff --check` 通过。Consumer discovery（full/file/parent）：`types.ts` 11/311/33（新增常量，由 11 包 typecheck 覆盖）、`InboxReader.ts` 0/23/7（真实使用方 `HeadphoneMode`、voice-headphone `session.ts`，均已跑）、`live-lead-adapter.ts` 1/4/25、`engine-a-composition.ts` 0/1/25（`cli.ts` 由 typecheck 覆盖）；其余命中为文档、同名词法碰撞与目录字符串。没有新增或修改 `scripts/__tests__/*.test.sh`，没有请求 full CI。
+
+## R3 复审（request 4b6e8469，APPROVED @28b983d22）三条 MEDIUM 整改（Lead 裁 A）
+
+- `interrupted-final-marks-founder-turn-answered`：她插话打断前台回答时，barge 取消产生的 interrupted 最终字幕不再算「已回答」。先红：追问结束即放行播报；修复后等到对追问的非 interrupted 最终字幕才放行。
+- `founder-turn-gate-unbounded-while-responding-or-open`：新增 `founderTurnMaxHoldMs`（默认 45 秒，自她最近一次开口起算，审计 `live_lead_founder_turn_hold_exceeded`）。先红：`response-started` 后无最终字幕 / utterance 无 end 时播报永久等待；修复后两种情况各在上限放行并各记一次审计。
+- `close-blocked-by-gated-reply-drain`：组装层 `close()` 改为先关 engine 再关 reply events。先红：Lead 回复 drain 卡在闸门时 close 1 秒内不返回；修复后立即返回。
+
+本地证据：voice-codex adapter/composition/room-io/session 71/71、related 3 文件 34/34；Teamlead adapter→route 1/1（exit 0）；`flywheel-voice-codex...` build 16 个 package，`...flywheel-voice-codex` typecheck 通过；根 `pnpm lint` 5251 files、0 errors、26 warnings；Biome 与 `git diff --check` 通过。只改 `live-lead-adapter.ts` 与 `engine-a-composition.ts`（consumer 同上轮：`cli.ts`、composition/adapter 测试、adapter→route 配对测试）。没有请求 full CI。
