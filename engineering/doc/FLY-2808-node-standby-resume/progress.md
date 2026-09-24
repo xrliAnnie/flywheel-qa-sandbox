@@ -1,10 +1,10 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 7/7
-updated: 2026-09-23T15:02:49.288Z
-nextStep: Record targeted merge validation, restore literal-last milestone, push
-  and request exact-head code review
+phaseCursor: 1/4
+updated: 2026-09-24T02:24:45.444Z
+nextStep: Add focused failing tests for both admission callers, park-reason
+  settlement, and QA 529 step 4
 chunks: []
 pointers:
   plan: engineering/doc/FLY-2808-node-standby-resume/plan.md
@@ -14,5 +14,5 @@ pointers:
 ---
 
 # FLY-2808 progress
-**phase**: implement (7/7)
-**next**: Record targeted merge validation, restore literal-last milestone, push and request exact-head code review
+**phase**: implement (1/4)
+**next**: Add focused failing tests for both admission callers, park-reason settlement, and QA 529 step 4
