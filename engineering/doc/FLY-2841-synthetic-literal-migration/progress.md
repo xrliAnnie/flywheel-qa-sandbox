@@ -1,10 +1,10 @@
 ---
 issue: FLY-2841
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-24T10:55:26.703Z
-nextStep: Discover changed-file test impact, run every retained concrete test,
-  vitest related, verifier, lint, and affected build checks
+phaseCursor: 3/4
+updated: 2026-09-24T10:57:15.417Z
+nextStep: Commit implementation, push branch, request effective cross-family
+  code review, address findings, and open PR
 chunks:
   - id: audit
     order: 1
@@ -16,13 +16,13 @@ chunks:
     deps:
       - audit
     done: ""
-    status: done
+    status: qa-pass
 pointers: {}
 ---
 
 # FLY-2841 progress
-**phase**: implement (2/4)
-**next**: Discover changed-file test impact, run every retained concrete test, vitest related, verifier, lint, and affected build checks
+**phase**: implement (3/4)
+**next**: Commit implementation, push branch, request effective cross-family code review, address findings, and open PR
 
 ## chunks
 - ✅ audit — Onboarding, TURN acquisition, fixture audit, and literal discovery
