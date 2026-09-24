@@ -504,6 +504,117 @@ describe("HeadphoneInboxCollector", () => {
 		).toEqual([uncarded]);
 	});
 
+	it("ignores unusable persisted card bindings while classifying the rest", () => {
+		const commDbPath = join(root, "comm-classify.db");
+		const db = new CommDB(commDbPath);
+		const validQuestion = db.insertQuestion(
+			"runner-1",
+			"lead-1",
+			"valid founder question",
+			{ checkpoint: "founder_review" },
+		);
+		db.close();
+		const log = vi.fn();
+		const authority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: "founder-1",
+			projects: [],
+			openCommDb: () => CommDB.openReadonly(commDbPath),
+			questionIdByMessage: (_projectName, messageId) => {
+				if (messageId === "ambiguous-card") throw new Error("ambiguous");
+				if (messageId === "missing-card") return "missing-question";
+				return messageId === "valid-card" ? validQuestion : undefined;
+			},
+			botUserIdFromToken: () => null,
+			log,
+		});
+
+		const classified = authority.classifyMessages(
+			{
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				channelId: "channel-1",
+				allowedAuthorIds: ["lead-bot-1"],
+				token: "secret",
+			},
+			["ambiguous-card", "missing-card", "valid-card"].map((id) => ({
+				id,
+				authorId: "lead-bot-1",
+				content: id,
+				timestamp: T0,
+			})),
+		);
+
+		expect([...classified]).toEqual([
+			[
+				"valid-card",
+				{
+					questionId: validQuestion,
+					needsDecision: true,
+					resolved: false,
+				},
+			],
+		]);
+		expect(log).toHaveBeenCalledTimes(2);
+	});
+
+	it("continues projection after a bad row without partially reconciling", () => {
+		addItem({
+			questionId: "previously-open-question",
+			sourceMessageId: "previously-open-question",
+			sourceRevision: "comm:previously-open-question",
+			needsDecision: true,
+			text: "keep me open when enumeration is incomplete",
+		});
+		const commDbPath = join(root, "comm-project.db");
+		const db = new CommDB(commDbPath);
+		db.insertQuestion("runner-1", "retired-lead", "unroutable question", {
+			checkpoint: "founder_review",
+		});
+		const laterQuestion = db.insertQuestion(
+			"runner-2",
+			"lead-1",
+			"later valid question",
+			{ checkpoint: "founder_review" },
+		);
+		db.close();
+		const log = vi.fn();
+		const authority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: "founder-1",
+			projects: [
+				{
+					projectName: "flywheel",
+					leads: [
+						{
+							agentId: "lead-1",
+							chatChannel: "channel-1",
+							botUserId: "lead-bot-1",
+						},
+					],
+				},
+			],
+			openCommDb: () => CommDB.openReadonly(commDbPath),
+			questionIdByMessage: () => undefined,
+			botUserIdFromToken: () => null,
+			log,
+		});
+
+		authority.projectQuestions();
+
+		expect(
+			store.headphoneInbox
+				.list({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					limit: 100,
+				})
+				.map((item) => item.questionId)
+				.sort(),
+		).toEqual([laterQuestion, "previously-open-question"].sort());
+		expect(log).toHaveBeenCalledOnce();
+	});
+
 	it("applies persisted question authority before ingesting Discord messages", async () => {
 		const projectQuestions = vi.fn(() => {
 			store.headphoneInbox.upsert({
@@ -583,6 +694,49 @@ describe("HeadphoneInboxCollector", () => {
 			["question-uncarded", true],
 			["question-open", true],
 		]);
+	});
+
+	it("keeps collecting reports when classification fails", async () => {
+		const warning = vi
+			.spyOn(console, "warn")
+			.mockImplementation(() => undefined);
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [
+				{
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "channel-1",
+					allowedAuthorIds: ["lead-1"],
+					token: "secret",
+				},
+			],
+			fetchPage: async () => ({
+				kind: "page",
+				messages: [
+					{
+						id: "100000000000000001",
+						authorId: "lead-1",
+						content: "ordinary report",
+						timestamp: T0,
+					},
+				],
+			}),
+			classifyMessages: () => {
+				throw new Error("bad persisted binding");
+			},
+		});
+
+		expect(await collector.tick()).toBe("collected");
+		expect(
+			store.headphoneInbox.list({
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				limit: 100,
+			}),
+		).toEqual([expect.objectContaining({ text: "ordinary report" })]);
+		expect(warning).toHaveBeenCalledOnce();
+		warning.mockRestore();
 	});
 
 	it("bootstraps every history page while filtering founder and unconfigured authors", async () => {

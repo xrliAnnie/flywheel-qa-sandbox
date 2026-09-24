@@ -309,7 +309,16 @@ export class HeadphoneInboxCollector {
 		);
 		const accepted: HeadphoneInboxUpsertInput[] = [];
 		const allowed = new Set(candidate.scope.allowedAuthorIds);
-		const authority = this.options.classifyMessages?.(candidate.scope, ordered);
+		let authority:
+			| ReturnType<NonNullable<HeadphoneCollectorOptions["classifyMessages"]>>
+			| undefined;
+		try {
+			authority = this.options.classifyMessages?.(candidate.scope, ordered);
+		} catch (error) {
+			console.warn(
+				`[headphone-inbox] message classification ignored for ${candidate.scope.projectName}/${candidate.scope.channelId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		for (const message of ordered) {
 			if (
 				message.authorId === candidate.scope.founderUserId ||

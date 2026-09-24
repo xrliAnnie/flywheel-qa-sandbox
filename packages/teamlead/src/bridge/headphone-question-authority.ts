@@ -47,32 +47,52 @@ export class HeadphoneQuestionAuthority {
 	> {
 		const bindings = new Map<string, string>();
 		for (const message of messages) {
-			const questionId = this.options.questionIdByMessage(
-				scope.projectName,
-				message.id,
-			);
-			if (questionId) bindings.set(message.id, questionId);
+			try {
+				const questionId = this.options.questionIdByMessage(
+					scope.projectName,
+					message.id,
+				);
+				if (questionId) bindings.set(message.id, questionId);
+			} catch (error) {
+				this.options.log?.(
+					`[headphone-inbox] question binding ignored for ${scope.projectName}/${message.id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 		if (bindings.size === 0) return new Map();
-		const db = this.options.openCommDb(scope.projectName);
+		let db: QuestionDb;
+		try {
+			db = this.options.openCommDb(scope.projectName);
+		} catch (error) {
+			this.options.log?.(
+				`[headphone-inbox] question classification unavailable for ${scope.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return new Map();
+		}
 		try {
 			const result = new Map<
 				string,
 				{ questionId: string; needsDecision: boolean; resolved: boolean }
 			>();
 			for (const [messageId, questionId] of bindings) {
-				const question = db.getMessageById(questionId);
-				if (!question || question.type !== "question")
-					throw new Error("headphone_question_authority_missing");
-				const pending =
-					db.isQuestionPending(questionId) &&
-					question.resolved_at === null &&
-					question.superseded_at === null;
-				result.set(messageId, {
-					questionId,
-					needsDecision: true,
-					resolved: !pending,
-				});
+				try {
+					const question = db.getMessageById(questionId);
+					if (!question || question.type !== "question")
+						throw new Error("headphone_question_authority_missing");
+					const pending =
+						db.isQuestionPending(questionId) &&
+						question.resolved_at === null &&
+						question.superseded_at === null;
+					result.set(messageId, {
+						questionId,
+						needsDecision: true,
+						resolved: !pending,
+					});
+				} catch (error) {
+					this.options.log?.(
+						`[headphone-inbox] question authority ignored for ${scope.projectName}/${messageId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 			}
 			return result;
 		} finally {
@@ -86,6 +106,7 @@ export class HeadphoneQuestionAuthority {
 			try {
 				db = this.options.openCommDb(project.projectName);
 				const openQuestionIds: string[] = [];
+				let authorityComplete = true;
 				let cursor: { created_at: string; id: string } | null | undefined;
 				do {
 					const page = db.listAttentionQuestions({
@@ -95,38 +116,48 @@ export class HeadphoneQuestionAuthority {
 					for (const summary of page.questions) {
 						if (summary.kind !== "ship" && summary.kind !== "founder_gate")
 							continue;
-						const question = db.getMessageById(summary.id);
-						if (!question || !db.isQuestionPending(summary.id)) continue;
-						const lead = project.leads.find(
-							(candidate) => candidate.agentId === question.to_agent,
-						);
-						const authorId =
-							lead?.botUserId ??
-							this.options.botUserIdFromToken(lead?.botToken) ??
-							this.options.globalBotUserId;
-						if (!lead?.chatChannel || !authorId || !question.content.trim())
-							throw new Error("headphone_founder_question_route_missing");
-						this.options.store.upsert({
-							questionId: question.id,
-							projectName: project.projectName,
-							founderUserId: this.options.founderUserId,
-							channelId: lead.chatChannel,
-							sourceMessageId: question.id,
-							sourceRevision: `comm:${question.id}`,
-							authorId,
-							needsDecision: true,
-							text: question.content.trim(),
-							sourceCreatedAt: question.created_at,
-						});
-						openQuestionIds.push(question.id);
+						try {
+							const question = db.getMessageById(summary.id);
+							if (!question)
+								throw new Error("headphone_founder_question_missing");
+							if (!db.isQuestionPending(summary.id)) continue;
+							const lead = project.leads.find(
+								(candidate) => candidate.agentId === question.to_agent,
+							);
+							const authorId =
+								lead?.botUserId ??
+								this.options.botUserIdFromToken(lead?.botToken) ??
+								this.options.globalBotUserId;
+							if (!lead?.chatChannel || !authorId || !question.content.trim())
+								throw new Error("headphone_founder_question_route_missing");
+							this.options.store.upsert({
+								questionId: question.id,
+								projectName: project.projectName,
+								founderUserId: this.options.founderUserId,
+								channelId: lead.chatChannel,
+								sourceMessageId: question.id,
+								sourceRevision: `comm:${question.id}`,
+								authorId,
+								needsDecision: true,
+								text: question.content.trim(),
+								sourceCreatedAt: question.created_at,
+							});
+							openQuestionIds.push(question.id);
+						} catch (error) {
+							authorityComplete = false;
+							this.options.log?.(
+								`[headphone-inbox] question projection ignored for ${project.projectName}/${summary.id}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
 					}
 					cursor = page.nextCursor;
 				} while (cursor);
-				this.options.store.reconcileQuestionAuthority({
-					projectName: project.projectName,
-					founderUserId: this.options.founderUserId,
-					openQuestionIds,
-				});
+				if (authorityComplete)
+					this.options.store.reconcileQuestionAuthority({
+						projectName: project.projectName,
+						founderUserId: this.options.founderUserId,
+						openQuestionIds,
+					});
 			} catch (error) {
 				this.options.log?.(
 					`[headphone-inbox] question projection failed for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
