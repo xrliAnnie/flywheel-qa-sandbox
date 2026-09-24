@@ -648,6 +648,7 @@ import {
 } from "./lead-persona-activation.js";
 import { createLeadPersonaRouter } from "./lead-persona-routes.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
+import { createLeadReplyFailedHandler } from "./lead-reply-failed-route.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
@@ -3808,6 +3809,13 @@ export function createBridgeApp(
 			(req, res) => {
 				void codexLeadOutbound(req, res);
 			},
+		);
+		// FLY-2862: a Codex Lead's owed reply came back empty; tell its live voice
+		// session (if any) so the daemon speaks a status line instead of waiting.
+		app.post(
+			"/api/lead-outbound/reply-failed",
+			tokenAuthMiddleware(config.apiToken),
+			createLeadReplyFailedHandler({ store }),
 		);
 
 		const rayaIdentities = projects.flatMap((project) =>

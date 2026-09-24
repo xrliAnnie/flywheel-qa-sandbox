@@ -5814,6 +5814,50 @@ export class StateStore {
 		return changed;
 	}
 
+	/**
+	 * FLY-2862: a Codex Lead reported that its reply to a turn in `threadId` failed
+	 * (an empty final answer, so nothing was posted). When a daemon-held voice
+	 * session owns that thread, queue one fixed status line: the daemon speaks it,
+	 * which also stops the waiting tone. Idempotent per report key. Returns the
+	 * matched session id, or undefined when no such session exists.
+	 */
+	recordVoiceLeadReplyFailure(input: {
+		projectName: string;
+		leadId: string;
+		threadId: string;
+		key: string;
+		text: string;
+		now: string;
+	}): string | undefined {
+		let sessionId: string | undefined;
+		this.db.transaction(() => {
+			const session = this.workflowSelectAll(
+				`SELECT session_id, voice_bot_user_id FROM voice_sessions
+				 WHERE project_name = ? AND lead_id = ? AND thread_id = ?
+				   AND state IN ('claimed','warming','live')
+				 ORDER BY created_at DESC LIMIT 1`,
+				[input.projectName, input.leadId, input.threadId],
+			)[0];
+			if (!session) return;
+			sessionId = String(session.session_id);
+			this.db.run(
+				`INSERT OR IGNORE INTO voice_outbound
+				 (session_id, message_id, channel_id, author_id, text, observed_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					sessionId,
+					`lead-reply-failed:${input.key}`,
+					input.threadId,
+					(session.voice_bot_user_id as string | null) ?? "flywheel-runtime",
+					input.text,
+					input.now,
+				],
+			);
+		});
+		if (sessionId) this.save();
+		return sessionId;
+	}
+
 	listVoiceOutbound(
 		sessionId: string,
 		leaseToken: string,
