@@ -1,14 +1,14 @@
 ---
 issue: FLY-2798
 phase: implement
-phaseCursor: 3/3
-updated: 2026-09-24T14:49:50.829Z
-nextStep: Refresh milestone as the literal last commit, push PR 1312, and
-  request a new exact-head code review
+phaseCursor: 1/5
+updated: 2026-09-24T15:56:44.278Z
+nextStep: Add failing targeted tests for null claim projection, bounded reply
+  reconnect, and launcher env forwarding
 chunks: []
 pointers: {}
 ---
 
 # FLY-2798 progress
-**phase**: implement (3/3)
-**next**: Refresh milestone as the literal last commit, push PR 1312, and request a new exact-head code review
+**phase**: implement (1/5)
+**next**: Add failing targeted tests for null claim projection, bounded reply reconnect, and launcher env forwarding
