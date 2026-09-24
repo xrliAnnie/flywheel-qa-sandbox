@@ -30,3 +30,17 @@ export function buildStagedConfig(env) {
 		ffmpegBin: env.FFMPEG_BIN ?? "ffmpeg",
 	};
 }
+
+/**
+ * Resident leases need a durable Lead owner plus the human identity used by
+ * the room self-filter. The output and ears bot ids are intentionally not
+ * accepted here: runVoiceBridge derives both from the authenticated clients,
+ * so a staged rig cannot accidentally assert made-up Discord identities.
+ */
+export function buildStagedResidentIdentity(env, founderUserId) {
+	const founder = String(founderUserId ?? "").trim();
+	if (!founder) throw new Error("staged founder identity is required");
+	const leadId = String(env.STAGED_LEAD_ID ?? "flywheel-eng-lead").trim();
+	if (!leadId) throw new Error("staged Lead identity is required");
+	return { leadId, founderUserId: founder };
+}

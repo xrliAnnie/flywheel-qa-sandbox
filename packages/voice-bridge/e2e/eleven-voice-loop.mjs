@@ -38,6 +38,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVoiceBridge } from "../dist/cli.js";
+import { buildStagedResidentIdentity } from "./lib/rig-config.mjs";
 
 const need = (k) => {
 	const v = process.env[k];
@@ -75,29 +76,6 @@ const fail = (m) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const elevenConfig = {
-	commandName: "eleven",
-	agentId,
-	apiKeyEnv: "ELEVENLABS_API_KEY",
-	shimHealthUrl:
-		process.env.ELEVEN_SHIM_HEALTH_URL ?? "http://127.0.0.1:8980/health",
-};
-const baseConfig = (allowUserIds) => ({
-	projectName: "flywheel",
-	projectRoot: process.cwd(),
-	guildId,
-	voiceChannelId,
-	commandName: "meet",
-	moveMembers: false,
-	orchestratorToken: need("HUDDLE_ORCH_BOT_TOKEN"),
-	earsToken: need("HUDDLE_EARS_BOT_TOKEN"),
-	leads: [],
-	backchannelMs: 350,
-	allowUserIds,
-	healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
-	ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
-});
-
 // ---- injector bot (WAV speaker + orchestrator recorder + channel reader) ----
 const { Client, GatewayIntentBits } = await import("discord.js");
 const voice = await import("@discordjs/voice");
@@ -117,6 +95,38 @@ await injector.login(injectorToken);
 await new Promise((r) => injector.once("clientReady", r));
 const injectorId = injector.user.id;
 log(`injector online as ${injector.user.tag} (${injectorId})`);
+const founderUserId = (await injector.guilds.fetch(guildId)).ownerId;
+const residentIdentity = buildStagedResidentIdentity(
+	process.env,
+	founderUserId,
+);
+
+const elevenConfig = {
+	commandName: "eleven",
+	agentId,
+	leadId: residentIdentity.leadId,
+	apiKeyEnv: "ELEVENLABS_API_KEY",
+	shimHealthUrl:
+		process.env.ELEVEN_SHIM_HEALTH_URL ?? "http://127.0.0.1:8980/health",
+};
+const baseConfig = (allowUserIds) => ({
+	projectName: "flywheel",
+	projectRoot: process.cwd(),
+	guildId,
+	voiceChannelId,
+	commandName: "meet",
+	moveMembers: false,
+	orchestratorToken: need("HUDDLE_ORCH_BOT_TOKEN"),
+	earsToken: need("HUDDLE_EARS_BOT_TOKEN"),
+	leads: [],
+	bridgeUrl: need("FLYWHEEL_BRIDGE_URL"),
+	apiToken: need("FLYWHEEL_API_TOKEN"),
+	founderUserId: residentIdentity.founderUserId,
+	backchannelMs: 350,
+	allowUserIds,
+	healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
+	ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
+});
 
 const LEGS = process.env.ELEVEN_LOOP_LEGS ?? "all";
 
