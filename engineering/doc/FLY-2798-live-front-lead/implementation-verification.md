@@ -42,3 +42,24 @@ Issue: FLY-2798 (https://linear.app/geoforge3d/issue/FLY-2798/语音v4-引擎-a�
 第三轮 blocking HIGH `voice-lead-result-producer-not-replay-safe` 已按上述 hard-red → minimal fix → green 闭环修复。其余审查 advisories 中，V1 digest 与 HTTP delivery-context trust boundary 已一并收紧；reconcile timer guard、unavailable 重试语义和 results route committed-state gate 保留为非阻断 follow-up，并将在有效复审后完整转报 Lead。
 
 待最终 milestone commit 后绑定 SHA、有效代码审查与 PR。真人语音 10 次“说完到听到第一个字”分布、复杂问题落地、字幕实听和 V2/V3 联调属于 QA，本文不宣称完成。
+
+## QA 第一次 full CI 回退整改
+
+QA 在精确头 `fd9cde9f33468cf3cdeb50f11c0d49ce80ec1772` 请求的 full CI run `35988198150` 暴露四类确定性遗漏：config flag-drift 未登记九个 V4 runtime 配置；child-process census 未登记 FFmpeg/Edge TTS 两个受限子进程；kill-path inventory 未登记同两处的四个超时/清理 kill；package-onboard 未携带共享 Silero runtime。失败 lane 为 Unit teamlead shard 4、Unit heavy、Unit light、Script tests 3/6；meta CI 因这些失败而红。这里不把此前普通 scope CI 当 full-CI 证据。
+
+整改遵循 hard-red → 最小修复：
+
+- config drift 本地先稳定复现 2 failed / 12 passed，再把九个端点、模型、voice、key-env、context 上限和 streaming TTS 配置逐项登记为有明确理由的非 flag 配置；
+- child census 与 kill inventory 各自先复现单测 hard-red，再分别补两条 `standalone_runtime_bounded` census 和四条 `out-of-scope` kill 清单，没有改变进程生命周期；
+- Silero packaging 复用了依赖 PR #1309 已评审的单一提交 `6c3811e20`，本分支 cherry-pick 为 `1fb4ce0a4`：资产仍由既有 `voice-bridge/models` 所有，package-onboard 纳入 `voice-headphone`，没有复制二进制或合入依赖分支的其他改动。
+
+当前头的本地绿色证据：
+
+- 原四个红项：config drift 14/14；child census 1/1；kill inventory 5/5；`package-onboard-smoke.test.sh` 26/26。后者首次只因共享 `~/.npm` 不可写而失败，使用隔离缓存 `/private/tmp/fly2798-npm-cache` 后通过；
+- `flywheel-config vitest related src/feature-flags/truth.ts --run`：18 文件、326/326；Silero 两个变更测试的 `vitest related`：2 文件、5/5，真实语音 fixture 为 max `0.99999940`、243/298 positives；
+- 直接 consumer：`fly1981-final-ledgers` 12/12、`fly2278-retirement` 1/1、`check-flag-truth.test.sh` 3/3、`fly1674-residue.test.sh` 85/85、`fly2102-flag-freeze.test.sh` 46/46；
+- `pnpm --filter "flywheel-voice-codex..." build` 通过；根 `pnpm lint` 为 5235 files、0 errors、25 warnings、exit 0；变更的 TS/JSON/package 文件定向 Biome 6 files 无 error，两个 shell 文件 `bash -n` 通过，`git diff --check` 通过。
+
+本轮对唯一变更的生产 TypeScript `packages/config/src/feature-flags/truth.ts` 重新执行完整路径、文件名、父目录三组 `git grep -lF`，分别命中 35/124/165。实际 import/export 审计保留 `scripts/check-flag-truth.ts`、config public barrels、`ConfigLoader.ts`、flag drift/truth/registry/final-ledger tests；路径读取型 consumer 保留 `fly2278-retirement`、`fly1674-residue`、`fly2102-flag-freeze`，均由上述 related 或精确测试覆盖。所有其余匹配按精确路径组排除：`engineering/doc/**`、`product/doc/**`、`doc/**` 是历史文档/生成物；`packages/teamlead/src/__tests__/fixtures/**` 是文字 fixture；`packages/config/src/feature-flags/registry.ts` 两处仅为注释；`packages/teamlead/src/bridge/{flag-provenance.ts,__tests__/flag-provenance.test.ts}` 和 `scripts/verify-flag-verdicts.mjs` 只引用 registry 路径；`scripts/__tests__/test-deploy-generalized.test.sh` 仅把 truth 文件列为扫描排除项；`scripts/fly1645-receipt-residue-gate.config.json` 只列与本次九项无关的历史 residue 目标。除上述已运行的 consumer 外，没有遗漏可执行依赖；本轮唯一变更的 `scripts/__tests__/*.test.sh` 是 package-onboard smoke，已全量执行。
+
+本整改尚未由 QA 在新精确头重跑 full CI；实现节点不会自行请求 full CI，也不宣称 QA 已通过。下一步是 milestone-last、新精确头代码复审、推送既有 PR #1312，再交回 QA retest。
