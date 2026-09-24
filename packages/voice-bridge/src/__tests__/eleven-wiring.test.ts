@@ -140,12 +140,14 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 		await vi.waitFor(() => {
 			if (h.room.slot.current()?.mode !== "eleven") throw new Error("not yet");
 		});
+		await vi.waitFor(() => {
+			if (h.wsHandlers.length !== 1) throw new Error("ws not live yet");
+		});
 		// orchestrator joined deaf (the ears bot hears; the mouth must not echo)
 		expect(h.registry.join).toHaveBeenCalledWith(
 			"orchestrator",
 			expect.objectContaining({ selfMute: false, selfDeaf: true }),
 		);
-		expect(h.wsHandlers).toHaveLength(1);
 		await h.runtime.close();
 		expect(h.room.slot.current()).toBe(null);
 	});
