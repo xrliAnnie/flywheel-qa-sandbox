@@ -932,6 +932,45 @@ export class HeadphoneInboxStore {
 		})();
 	}
 
+	pruneOlderThan(cutoff: string, limit = 1_000): number {
+		if (
+			!Number.isFinite(Date.parse(cutoff)) ||
+			!Number.isSafeInteger(limit) ||
+			limit < 1
+		)
+			throw new Error("headphone_inbox_retention_invalid");
+		return this.db.transaction(() => {
+			const rows = this.db
+				.prepare(
+					`SELECT i.item_id, i.revision
+					 FROM voice_headphone_inbox i
+					 WHERE i.source_created_at < ?
+					   AND NOT EXISTS (
+					     SELECT 1 FROM voice_headphone_claim c
+					     WHERE c.item_id = i.item_id AND c.revision = i.revision
+					   )
+					 ORDER BY i.source_created_at, i.item_id, i.revision
+					 LIMIT ?`,
+				)
+				.all(cutoff, limit) as Array<{ item_id: string; revision: number }>;
+			const deleteAck = this.db.prepare(
+				"DELETE FROM voice_headphone_ack WHERE item_id = ? AND revision = ?",
+			);
+			const deleteDelivery = this.db.prepare(
+				"DELETE FROM voice_headphone_delivery WHERE item_id = ? AND revision = ?",
+			);
+			const deleteInbox = this.db.prepare(
+				"DELETE FROM voice_headphone_inbox WHERE item_id = ? AND revision = ?",
+			);
+			for (const row of rows) {
+				deleteAck.run(row.item_id, row.revision);
+				deleteDelivery.run(row.item_id, row.revision);
+				deleteInbox.run(row.item_id, row.revision);
+			}
+			return rows.length;
+		})();
+	}
+
 	listSourceState(
 		projectName: string,
 		founderUserId: string,

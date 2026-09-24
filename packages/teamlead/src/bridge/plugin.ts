@@ -553,6 +553,7 @@ import {
 } from "./headphone-collector.js";
 import { HeadphoneQuestionAuthority } from "./headphone-question-authority.js";
 import { createHeadphoneRouter } from "./headphone-routes.js";
+import { resolveHeadphoneBackgroundConfig } from "./headphone-runtime-config.js";
 import {
 	activateHolderForWake,
 	type HolderWakeCause,
@@ -11525,6 +11526,7 @@ export async function startBridge(
 		config.discordOwnerUserId,
 		config.founderConsent?.founderUserId,
 	);
+	const headphoneBackground = resolveHeadphoneBackgroundConfig(process.env);
 	let headphoneCollectorTimer: ReturnType<typeof setInterval> | undefined;
 	let voiceHandoffReconcileTimer: ReturnType<typeof setInterval> | undefined;
 	if (headphoneFounderId) {
@@ -11643,36 +11645,51 @@ export async function startBridge(
 				throw new Error("headphone_question_binding_ambiguous");
 			return questionIds.values().next().value;
 		};
-		const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
-			store: store.headphoneInbox,
-			founderUserId: headphoneFounderId,
-			projects,
-			openCommDb: (projectName) =>
-				CommDB.openReadonly(commDbPathForProject(projectName)),
-			questionIdByMessage,
-			botUserIdFromToken,
-			globalBotUserId: botUserIdFromToken(config.discordBotToken),
-			log: (message) => console.warn(message),
-		});
-		const headphoneCollector = new HeadphoneInboxCollector({
-			store: store.headphoneInbox,
-			listScopes: listHeadphoneScopes,
-			fetchPage: fetchDiscordHeadphonePage,
-			classifyMessages: (scope, messages) =>
-				headphoneQuestionAuthority.classifyMessages(scope, messages),
-			projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
-		});
-		const collectHeadphonePage = () =>
-			void headphoneCollector
-				.tick()
-				.catch((error) =>
-					console.warn(
-						`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
-					),
-				);
-		collectHeadphonePage();
-		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
-		headphoneCollectorTimer.unref?.();
+		if (headphoneBackground.enabled) {
+			const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
+				store: store.headphoneInbox,
+				founderUserId: headphoneFounderId,
+				projects,
+				openCommDb: (projectName) =>
+					CommDB.openReadonly(commDbPathForProject(projectName)),
+				questionIdByMessage,
+				botUserIdFromToken,
+				globalBotUserId: botUserIdFromToken(config.discordBotToken),
+				log: (message) => console.warn(message),
+			});
+			const headphoneCollector = new HeadphoneInboxCollector({
+				store: store.headphoneInbox,
+				listScopes: listHeadphoneScopes,
+				fetchPage: fetchDiscordHeadphonePage,
+				classifyMessages: (scope, messages) =>
+					headphoneQuestionAuthority.classifyMessages(scope, messages),
+				projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
+			});
+			const collectHeadphonePage = () =>
+				void headphoneCollector
+					.tick()
+					.catch((error) =>
+						console.warn(
+							`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
+						),
+					)
+					.finally(() => {
+						try {
+							store.headphoneInbox.pruneOlderThan(
+								new Date(
+									Date.now() - headphoneBackground.retentionMs,
+								).toISOString(),
+							);
+						} catch (error) {
+							console.warn(
+								`[headphone-inbox] retention failed: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					});
+			collectHeadphonePage();
+			headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
+			headphoneCollectorTimer.unref?.();
+		}
 		app.use(
 			"/api/voice/headphone",
 			voiceSessionAuthMiddleware(config.apiToken),
@@ -11804,9 +11821,11 @@ export async function startBridge(
 				}
 			}
 		};
-		reconcileVoiceHandoffs();
-		voiceHandoffReconcileTimer = setInterval(reconcileVoiceHandoffs, 1_000);
-		voiceHandoffReconcileTimer.unref?.();
+		if (headphoneBackground.enabled) {
+			reconcileVoiceHandoffs();
+			voiceHandoffReconcileTimer = setInterval(reconcileVoiceHandoffs, 1_000);
+			voiceHandoffReconcileTimer.unref?.();
+		}
 	}
 	app.use(
 		"/api/voice",

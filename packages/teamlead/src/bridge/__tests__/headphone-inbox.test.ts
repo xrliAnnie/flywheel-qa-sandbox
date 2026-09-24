@@ -218,6 +218,49 @@ describe("HeadphoneInboxStore", () => {
 		);
 	});
 
+	it("prunes expired history while preserving fresh and actively claimed items", () => {
+		const expired = addItem({ sourceMessageId: "expired" });
+		const claimed = addItem({ sourceMessageId: "claimed" });
+		const fresh = addItem({
+			sourceMessageId: "fresh",
+			sourceCreatedAt: "2026-09-23T20:00:03.000Z",
+		});
+		const session = createSession();
+		expect(
+			store.headphoneInbox.claim({
+				itemId: claimed.itemId,
+				revision: claimed.revision,
+				sessionId: session.sessionId,
+				generation: session.sessionGeneration,
+				leaseToken: session.leaseToken,
+				founderUserId: "founder-1",
+				now: "2026-09-23T20:00:02.000Z",
+			}),
+		).toBeDefined();
+
+		expect(
+			store.headphoneInbox.pruneOlderThan("2026-09-23T20:00:02.000Z"),
+		).toBe(1);
+		expect(
+			store.headphoneInbox
+				.list({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					limit: 100,
+				})
+				.map((item) => item.itemId),
+		).toEqual([claimed.itemId, fresh.itemId]);
+		expect(
+			store.headphoneInbox
+				.list({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					limit: 100,
+				})
+				.map((item) => item.itemId),
+		).not.toContain(expired.itemId);
+	});
+
 	it("fences claims by project, generation, lease, and current claimant", () => {
 		const first = createSession("1");
 		const second = createSession("2");
