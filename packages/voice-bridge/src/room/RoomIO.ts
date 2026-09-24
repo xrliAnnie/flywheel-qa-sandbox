@@ -392,6 +392,10 @@ export class BridgeRoomIO implements RoomIOContract {
 				}),
 		});
 		const borrowed = this.options.borrowedConnections;
+		const inputExpected =
+			this.options.expectedInputBotUserId ?? this.options.expectedBotUserId;
+		const outputExpected =
+			this.options.expectedOutputBotUserId ?? this.options.expectedBotUserId;
 		if (borrowed) {
 			this.inputClient = borrowed.inputClient;
 			this.outputClient = borrowed.outputClient;
@@ -403,6 +407,15 @@ export class BridgeRoomIO implements RoomIOContract {
 			const client = this.registry.client("voice");
 			this.inputClient = client;
 			this.outputClient = client;
+			if (
+				!inputExpected ||
+				!outputExpected ||
+				client.user?.id !== inputExpected ||
+				client.user?.id !== outputExpected
+			) {
+				await this.stop();
+				throw new Error("lead_bot_identity_mismatch");
+			}
 			this.connection = await this.registry.join(
 				"voice",
 				{
@@ -418,10 +431,7 @@ export class BridgeRoomIO implements RoomIOContract {
 			);
 			this.outputConnection = this.connection;
 		}
-		const inputExpected =
-			this.options.expectedInputBotUserId ?? this.options.expectedBotUserId;
-		const outputExpected =
-			this.options.expectedOutputBotUserId ?? this.options.expectedBotUserId;
+		await this.checkActive(signal);
 		if (
 			!inputExpected ||
 			!outputExpected ||
@@ -431,7 +441,6 @@ export class BridgeRoomIO implements RoomIOContract {
 			await this.stop();
 			throw new Error("lead_bot_identity_mismatch");
 		}
-		await this.checkActive(signal);
 		this.subscribeConnectionDiagnostics();
 		this.emitReceiveHealth(this.receiveHealth.current());
 		const player = this.options.deps.createPlayer(this.outputConnection);
