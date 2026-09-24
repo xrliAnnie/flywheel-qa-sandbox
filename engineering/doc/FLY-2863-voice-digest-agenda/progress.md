@@ -1,13 +1,13 @@
 ---
 issue: FLY-2863
 phase: design
-phaseCursor: 2/5
-updated: 2026-09-24T23:22:33.722Z
-nextStep: 等引擎调研回来写 research.md
+phaseCursor: 4/5
+updated: 2026-09-24T23:53:33.413Z
+nextStep: Codex R2 结果 → publish HTML → docs PR → complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: design (2/5)
-**next**: 等引擎调研回来写 research.md
+**phase**: design (4/5)
+**next**: Codex R2 结果 → publish HTML → docs PR → complete
