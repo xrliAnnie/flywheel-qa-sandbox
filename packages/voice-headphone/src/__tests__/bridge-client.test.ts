@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { BridgeVoiceClient } from "../bridge-client.js";
 
+const SESSION = {
+	sessionId: "voice-session",
+	generation: 7,
+	leaseToken: "lease-token",
+};
+
 type Call = { url: string; init?: RequestInit };
 
 function fakeFetch(
@@ -33,6 +39,126 @@ const SCOPE_BODY = {
 };
 
 describe("BridgeVoiceClient", () => {
+	it("lists the durable headphone inbox with the live session binding", async () => {
+		const { calls, fetchFn } = fakeFetch(() => ({
+			status: 200,
+			body: {
+				items: [
+					{
+						id: "item-1",
+						revision: 2,
+						createdAt: "2026-09-23T00:00:00.000Z",
+						needsDecision: true,
+						text: "请决定。",
+					},
+				],
+			},
+		}));
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+
+		await expect(client.listHeadphoneItems(SESSION)).resolves.toEqual([
+			expect.objectContaining({ id: "item-1", revision: 2 }),
+		]);
+		expect(calls[0]?.url).toContain(
+			"/api/voice/headphone?sessionId=voice-session&generation=7&limit=100",
+		);
+		expect(new Headers(calls[0]?.init?.headers).get("x-voice-lease")).toBe(
+			"lease-token",
+		);
+	});
+
+	it("claims and ACKs one item with every completed segment digest", async () => {
+		const { calls, fetchFn } = fakeFetch((url) =>
+			url.endsWith("/claim")
+				? {
+						status: 200,
+						body: {
+							item: {
+								itemId: "item-1",
+								revision: 2,
+								sourceCreatedAt: "2026-09-23T00:00:00.000Z",
+								needsDecision: false,
+								text: "进展正常。",
+							},
+							claimToken: "claim-token",
+						},
+					}
+				: { status: 200, body: { acked: true } },
+		);
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+		const item = {
+			id: "item-1",
+			revision: 2,
+			createdAt: "2026-09-23T00:00:00.000Z",
+			needsDecision: false,
+			text: "进展正常。",
+		};
+
+		const claim = await client.claimHeadphoneItem(SESSION, item);
+		expect(claim).toEqual(
+			expect.objectContaining({ claimToken: "claim-token", item }),
+		);
+		await client.ackHeadphoneClaim(SESSION, claim!, [
+			{
+				outcome: "completed",
+				pendingKey: "inbox:item-1:2:0",
+				requestDigest: "a".repeat(64),
+				transport: "submitted",
+				contentProof: "deterministic_tts",
+			},
+			{
+				outcome: "completed",
+				pendingKey: "inbox:item-1:2:1",
+				requestDigest: "b".repeat(64),
+				transport: "playback_drained",
+				contentProof: "transcript_equivalent",
+			},
+		]);
+		expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+			sessionId: "voice-session",
+			generation: 7,
+			itemId: "item-1",
+			revision: 2,
+		});
+		expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+			sessionId: "voice-session",
+			generation: 7,
+			itemId: "item-1",
+			revision: 2,
+			claimToken: "claim-token",
+			requestDigests: ["a".repeat(64), "b".repeat(64)],
+		});
+	});
+
+	it("reports source health without confusing rate limiting with a source gap", async () => {
+		const { fetchFn } = fakeFetch(() => ({
+			status: 200,
+			body: {
+				sources: [
+					{ channelId: "c1", health: "rate_limited" },
+					{ channelId: "c2", health: "healthy" },
+				],
+			},
+		}));
+		const client = new BridgeVoiceClient({
+			bridgeUrl: "http://localhost:9876",
+			token: "master",
+			fetchFn,
+		});
+
+		const health = await client.getHeadphoneSourceHealth(SESSION);
+		expect(health.healthy).toBe(false);
+		expect(health.sourceGap).toBe(false);
+	});
+
 	it("getScope sends the Bearer token and parses the contract", async () => {
 		const { calls, fetchFn } = fakeFetch(() => ({
 			status: 200,

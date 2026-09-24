@@ -30,7 +30,10 @@ export interface HeadphoneInboxClaim {
 export interface InboxReaderOptions {
 	list(): Promise<readonly HeadphoneInboxItem[]>;
 	claim(item: HeadphoneInboxItem): Promise<HeadphoneInboxClaim | undefined>;
-	ack(claim: HeadphoneInboxClaim): Promise<void>;
+	ack(
+		claim: HeadphoneInboxClaim,
+		receipts: readonly SpeakReceipt[],
+	): Promise<void>;
 	speak(
 		text: string,
 		kind: SpeakKind,
@@ -105,6 +108,7 @@ export class InboxReader {
 			);
 			const kind: SpeakKind = item.needsDecision ? "question" : "brief";
 			let complete = chunks.length > 0;
+			const receipts: SpeakReceipt[] = [];
 			for (const [index, chunk] of chunks.entries()) {
 				const pendingKey = `inbox:${item.id}:${item.revision}:${index}`;
 				let receipt: SpeakReceipt;
@@ -130,9 +134,10 @@ export class InboxReader {
 					complete = false;
 					break;
 				}
+				receipts.push(receipt);
 			}
 			if (complete) {
-				await this.options.ack(claim);
+				await this.options.ack(claim, receipts);
 				this.attempts.delete(item.id);
 				acked += 1;
 			} else {
