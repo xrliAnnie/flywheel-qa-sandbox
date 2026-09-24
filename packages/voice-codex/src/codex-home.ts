@@ -11,9 +11,15 @@ import { join } from "node:path";
 export const VOICE_CODEX_HOME_CONFIG =
 	'forced_login_method = "api"\n' +
 	'cli_auth_credentials_store = "ephemeral"\n' +
+	'web_search = "disabled"\n' +
 	"[features]\n" +
 	"realtime_conversation = true\n" +
 	"shell_tool = false\n" +
+	"unified_exec = false\n" +
+	"view_image = false\n" +
+	"image_generation = false\n" +
+	"code_mode_host = false\n" +
+	"standalone_web_search = false\n" +
 	"memories = false\n" +
 	"apps = false\n" +
 	"plugins = false\n" +

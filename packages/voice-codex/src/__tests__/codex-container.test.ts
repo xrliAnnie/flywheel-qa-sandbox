@@ -265,6 +265,7 @@ describe("Codex voice container", () => {
 				openAiApiKey: "voice-api-key",
 			});
 			expect(options.knownServerMethods).toEqual([]);
+			expect(options.maxJsonLineBytes).toBe(1024 * 1024);
 			expect(options.mcpArgv).toEqual([]);
 			expect(options.baseEnv.OPENAI_API_KEY).toBeUndefined();
 			expect(options.baseEnv.DISCORD_BOT_TOKEN).toBeUndefined();
@@ -484,7 +485,7 @@ describe("Codex voice container", () => {
 		},
 	);
 
-	it("passes the full context and keeps a real turn open while surfacing execution intent", async () => {
+	it("passes the full context and interrupts backend execution before surfacing the handoff", async () => {
 		const h = harness();
 		const uniqueTail = `FULL_CONTEXT_TAIL_${"x".repeat(58_000)}`;
 		const executionIntents = vi.fn();
@@ -513,6 +514,12 @@ describe("Codex voice container", () => {
 				command: "gh issue view FLY-2799",
 			},
 		});
+		await vi.waitFor(() =>
+			expect(process.requests).toContainEqual({
+				method: "turn/interrupt",
+				params: { threadId: opened.threadId, turnId: "background-turn" },
+			}),
+		);
 		expect(process.stopCount).toBe(0);
 		expect(executionIntents).toHaveBeenCalledWith(
 			expect.objectContaining({

@@ -416,7 +416,7 @@ describe("Codex V2 realtime transport", () => {
 		);
 	});
 
-	it("binds itemless final user transcripts to completed input items in FIFO order", async () => {
+	it("keeps itemless final user transcripts unattributed despite completed input order", async () => {
 		const h = harness();
 		await start(h);
 		h.transport.appendAudio(Buffer.alloc(960), 7, {
@@ -474,12 +474,14 @@ describe("Codex V2 realtime transport", () => {
 
 		expect(h.transcript).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				itemId: "item-guest",
-				association: "preceding_item",
+				association: "unattributed",
 				role: "user",
 				text: "GUEST SENTENCE",
-				inputOwner: expect.objectContaining({ ownerUserId: "guest" }),
 			}),
+		);
+		expect(h.transcript.mock.calls.at(-1)?.[0]).not.toHaveProperty("itemId");
+		expect(h.transcript.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+			"inputOwner",
 		);
 		h.rpc.emit("thread/realtime/transcript/done", {
 			threadId: "thread-a",
@@ -488,17 +490,20 @@ describe("Codex V2 realtime transport", () => {
 		});
 		expect(h.transcript).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				itemId: "item-founder",
-				association: "preceding_item",
+				association: "unattributed",
 				text: "FOUNDER SENTENCE",
-				inputOwner: expect.objectContaining({ ownerUserId: "founder" }),
 			}),
+		);
+		expect(h.transcript.mock.calls.at(-1)?.[0]).not.toHaveProperty("itemId");
+		expect(h.transcript.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+			"inputOwner",
 		);
 	});
 
-	it("accepts turn/started as a normal boundary and reports real execution intent without fencing", async () => {
+	it("interrupts a real background turn before reporting its execution intent", async () => {
 		const h = harness();
 		await start(h);
+		const interrupted = h.rpc.defer("turn/interrupt");
 
 		h.rpc.emit("turn/started", {
 			threadId: "thread-a",
@@ -522,6 +527,13 @@ describe("Codex V2 realtime transport", () => {
 				status: "inProgress",
 			},
 		});
+		expect(h.rpc.requests).toContainEqual({
+			method: "turn/interrupt",
+			params: { threadId: "thread-a", turnId: "turn-a" },
+		});
+		expect(h.executionIntents).not.toHaveBeenCalled();
+		interrupted.resolve({ result: {} });
+		await vi.waitFor(() => expect(h.executionIntents).toHaveBeenCalledTimes(1));
 		expect(h.executionIntents).toHaveBeenCalledWith({
 			generation: 7,
 			kind: "commandExecution",
@@ -536,6 +548,40 @@ describe("Codex V2 realtime transport", () => {
 				ownerUserId: "founder",
 			}),
 		).toMatch(/^sent/u);
+	});
+
+	it("fails closed without delegating when a background turn cannot be interrupted", async () => {
+		const h = harness();
+		await start(h);
+		const interrupted = h.rpc.defer("turn/interrupt");
+
+		h.rpc.emit("item/started", {
+			threadId: "thread-a",
+			turnId: "turn-a",
+			item: {
+				id: "exec-a",
+				type: "commandExecution",
+				command: "gh issue view FLY-2799",
+				status: "inProgress",
+			},
+		});
+		interrupted.resolve({
+			error: { code: -32_000, message: "turn already completed" },
+		});
+
+		await vi.waitFor(() => expect(h.violations).toHaveBeenCalledTimes(1));
+		expect(h.executionIntents).not.toHaveBeenCalled();
+		expect(h.violations).toHaveBeenCalledWith({
+			generation: 7,
+			method: "item/started:execution_interrupt_failed",
+			params: expect.any(Object),
+		});
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "after-failed-interrupt",
+				ownerUserId: "founder",
+			}),
+		).toBe("dropped:closed");
 	});
 
 	it("fails attribution closed after mixed ownership or an input gap", async () => {

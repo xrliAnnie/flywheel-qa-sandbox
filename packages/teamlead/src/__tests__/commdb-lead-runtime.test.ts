@@ -245,6 +245,31 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("CommDB: /tmp/comm.db");
 		});
 
+		it("renders a voice handoff with the untrusted request and durable return identity", async () => {
+			await runtime.deliver(
+				makeEnvelope({
+					event_type: "voice_handoff",
+					execution_id: "voice:session-a",
+					issue_id: "voice:session-a",
+					status: "authorized",
+					summary: "Voice action delegate_request requires the Lead body",
+					original_message: "请查看 FLY-2799 的状态并把结果告诉我。",
+					voice_session_id: "session-a",
+					voice_handoff_id: "handoff-a",
+					voice_transcript_id: "transcript-a",
+					voice_intent_kind: "delegate_request",
+				}),
+			);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[Event #1] voice_handoff");
+			expect(content).toContain("UNTRUSTED FOUNDER REQUEST");
+			expect(content).toContain("请查看 FLY-2799 的状态并把结果告诉我。");
+			expect(content).toContain("Handoff ID: handoff-a");
+			expect(content).toContain("Voice Session ID: session-a");
+			expect(content).toContain("Transcript ID: transcript-a");
+		});
+
 		it("FLY-159: formats gate_timed_out with checkpoint + duration + original message", async () => {
 			const envelope = makeEnvelope({
 				event_type: "gate_timed_out",

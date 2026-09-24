@@ -6117,6 +6117,7 @@ export class StateStore {
 					status: "authorized",
 					summary: `Voice action ${input.intentKind} requires the Lead body`,
 					original_message: input.originalText,
+					voice_session_id: input.sessionId,
 					voice_handoff_id: handoffId,
 					voice_transcript_id: input.transcriptId,
 					voice_request_digest: requestDigest,

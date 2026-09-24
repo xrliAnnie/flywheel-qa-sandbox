@@ -114,7 +114,7 @@ export interface CodexLeadProcessOptions {
 	shutdownKillMs?: number;
 	/** Max stderr bytes retained for diagnostics. Default 64 KiB. */
 	maxStderrBytes?: number;
-	/** Max bytes in one JSONL frame, inbound or outbound. Default 1 MiB. */
+	/** Max bytes in one JSONL frame, inbound or outbound. Default unbounded. */
 	maxJsonLineBytes?: number;
 	/** Max bytes queued while child stdin is backpressured. Default 1 MiB. */
 	maxStdinQueueBytes?: number;
@@ -157,7 +157,10 @@ const DEFAULT_SHUTDOWN_GRACE_MS = 50;
 const DEFAULT_SHUTDOWN_TERM_MS = 5_000;
 const DEFAULT_SHUTDOWN_KILL_MS = 5_000;
 const DEFAULT_MAX_STDERR = 64 * 1024;
-const DEFAULT_MAX_JSON_LINE = 1024 * 1024;
+// Resident thread/resume and thread/read responses contain the complete turn
+// history in one JSONL frame. A global 1 MiB default crash-loops mature Leads;
+// bounded profiles (notably voice) must opt into their own explicit cap.
+const DEFAULT_MAX_JSON_LINE = Number.POSITIVE_INFINITY;
 const DEFAULT_MAX_STDIN_QUEUE = 1024 * 1024;
 
 /**

@@ -355,6 +355,19 @@ describe("CodexLeadProcess — robustness", () => {
 		await rejected;
 	});
 
+	it("allows resident thread/resume responses larger than the voice frame cap by default", async () => {
+		const { child, proc } = await started();
+		const request = proc.request("thread/resume", { threadId: "long-thread" });
+		const id = child.lastFrame().id as number;
+		const history = "x".repeat(1024 * 1024 + 32_768);
+		child.respond(id, { thread: { id: "long-thread", history } });
+
+		await expect(request).resolves.toMatchObject({
+			result: { thread: { id: "long-thread", history } },
+		});
+		expect(proc.hasExited).toBe(false);
+	});
+
 	it("queues writes after stdin backpressure and rejects queue overflow", async () => {
 		const { child, proc } = make({ maxStdinQueueBytes: 96 });
 		const start = proc.start();

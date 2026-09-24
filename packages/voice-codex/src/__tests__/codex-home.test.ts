@@ -30,6 +30,16 @@ function home() {
 describe("voice Codex home", () => {
 	it("accepts only a private ordinary home and fixed API ephemeral config", () => {
 		expect(() => assertVoiceCodexHome(home())).not.toThrow();
+		for (const feature of [
+			"unified_exec",
+			"view_image",
+			"image_generation",
+			"code_mode_host",
+			"standalone_web_search",
+		]) {
+			expect(VOICE_CODEX_HOME_CONFIG).toContain(`${feature} = false`);
+		}
+		expect(VOICE_CODEX_HOME_CONFIG).toContain('web_search = "disabled"');
 	});
 	it.each([
 		"missing",

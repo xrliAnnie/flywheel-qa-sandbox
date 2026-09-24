@@ -180,7 +180,6 @@ export class CodexRealtimeTransport {
 	private inputOwnership = freshInputOwnership();
 	private activeInputItemId?: string;
 	private readonly inputOwnershipByItem = new Map<string, InputOwnership>();
-	private readonly completedUserItems: string[] = [];
 	private readonly reportedExecutionIntents = new Set<string>();
 	private closedReported = false;
 
@@ -456,8 +455,6 @@ export class CodexRealtimeTransport {
 					}
 					this.inputOwnership = freshInputOwnership();
 					this.activeInputItemId = undefined;
-					if (!this.completedUserItems.includes(item.id))
-						this.completedUserItems.push(item.id);
 				}
 				this.options.onItem?.({
 					generation: this.options.generation,
@@ -489,15 +486,58 @@ export class CodexRealtimeTransport {
 			const key = `${kind}:${itemId ?? method}`;
 			if (this.reportedExecutionIntents.has(key)) return;
 			this.reportedExecutionIntents.add(key);
-			this.options.onExecutionIntent?.({
+			const turnId =
+				typeof params.turnId === "string" && params.turnId.length > 0
+					? params.turnId
+					: undefined;
+			const intent: CodexRealtimeExecutionIntent = {
 				generation: this.options.generation,
 				kind,
 				method,
 				...(itemId ? { itemId } : {}),
 				params: value,
-			});
+			};
+			if (!turnId) {
+				this.fenceExecution(method, value, "execution_turn_id_missing");
+				return;
+			}
+			void this.interruptExecution(turnId, intent);
 			return;
 		}
+	}
+
+	private async interruptExecution(
+		turnId: string,
+		intent: CodexRealtimeExecutionIntent,
+	): Promise<void> {
+		try {
+			const response = await this.options.rpc.request("turn/interrupt", {
+				threadId: this.options.threadId,
+				turnId,
+			});
+			rpcError("turn/interrupt", response);
+			if (this.state === "active") this.options.onExecutionIntent?.(intent);
+		} catch {
+			this.fenceExecution(
+				intent.method,
+				intent.params,
+				"execution_interrupt_failed",
+			);
+		}
+	}
+
+	private fenceExecution(
+		method: string,
+		params: unknown,
+		reason: string,
+	): void {
+		if (this.state !== "active") return;
+		this.state = "fenced";
+		this.options.onCapabilityViolation?.({
+			generation: this.options.generation,
+			method: `${method}:${reason}`,
+			params,
+		});
 	}
 
 	private outputAudio(params: Record<string, unknown>): void {
@@ -547,29 +587,17 @@ export class CodexRealtimeTransport {
 			this.options.onError?.(new Error("realtime_transcript_invalid"));
 			return;
 		}
-		// V2 user transcript notifications normally carry no item id. Bind a final
-		// only to the provider's FIFO of completed user items, never to the latest
-		// wall-clock speaker. An explicit item id wins and removes that item from
-		// the same queue; gaps or mixed RoomIO owners still keep attribution unknown.
+		// Only an explicit provider item id may bind a user transcript to RoomIO
+		// ownership. V2 itemless transcription is asynchronous: FIFO or wall-clock
+		// proximity can shift a guest transcript onto a founder input item.
 		const providerItemId =
 			role === "user" &&
 			typeof params.itemId === "string" &&
 			params.itemId.length > 0
 				? params.itemId
 				: undefined;
-		let queuedItemId: string | undefined;
-		if (role === "user" && final) {
-			if (providerItemId) {
-				const index = this.completedUserItems.indexOf(providerItemId);
-				if (index >= 0) this.completedUserItems.splice(index, 1);
-			} else {
-				queuedItemId = this.completedUserItems.shift();
-			}
-		}
 		const itemId =
-			role === "user"
-				? (providerItemId ?? queuedItemId)
-				: this.lastItemByRole.get(role);
+			role === "user" ? providerItemId : this.lastItemByRole.get(role);
 		const ownership =
 			role === "user" && itemId
 				? this.inputOwnershipByItem.get(itemId)
@@ -583,7 +611,7 @@ export class CodexRealtimeTransport {
 			...(itemId ? { itemId } : {}),
 			association: providerItemId
 				? "provider_item"
-				: queuedItemId || itemId
+				: itemId
 					? "preceding_item"
 					: "unattributed",
 			role,

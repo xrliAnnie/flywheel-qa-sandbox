@@ -199,6 +199,7 @@ describe("durable voice utterances", () => {
 				leadId: "raya",
 				event: expect.objectContaining({
 					event_type: "voice_handoff",
+					voice_session_id: SESSION_ID,
 					voice_intent_kind: "delegate_request",
 				}),
 			}),

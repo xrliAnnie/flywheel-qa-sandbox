@@ -26,6 +26,7 @@ export const CODEX_VOICE_BINARY_SHA256 =
 export const CODEX_VOICE_REALTIME_MODEL = "gpt-realtime-2.1";
 export const CODEX_VOICE_REALTIME_VERSION = "v2";
 export const CODEX_VOICE_OPEN_TIMEOUT_MS = 60_000;
+export const CODEX_VOICE_MAX_JSON_LINE_BYTES = 1024 * 1024;
 const CONTEXT_MAX_AGE_MS = 60_000;
 const CONTEXT_MAX_BYTES = 128 * 1024;
 const CONTEXT_MAX_ESTIMATED_TOKENS = 32_768;
@@ -81,6 +82,7 @@ export interface CodexVoiceProcessFactoryOptions {
 	baseEnv: NodeJS.ProcessEnv;
 	voiceProfile: { openAiApiKey: string };
 	knownServerMethods: string[];
+	maxJsonLineBytes: number;
 }
 
 interface BinaryEvidence {
@@ -250,6 +252,7 @@ function defaultCreateProcess(
 		experimentalApi: true,
 		knownServerMethods: options.knownServerMethods,
 		requestTimeoutMs: CODEX_VOICE_OPEN_TIMEOUT_MS,
+		maxJsonLineBytes: options.maxJsonLineBytes,
 		shutdownGraceMs: 50,
 		shutdownTermMs: 5_000,
 		shutdownKillMs: 5_000,
@@ -639,6 +642,7 @@ export class CodexVoiceContainer {
 				),
 				voiceProfile: { openAiApiKey: this.options.openAiApiKey },
 				knownServerMethods: [],
+				maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
 			};
 			const process = this.createProcess(processOptions);
 			resources.process = process;
@@ -659,6 +663,12 @@ export class CodexVoiceContainer {
 				config: {
 					"features.shell_tool": false,
 					"features.memories": false,
+					"features.unified_exec": false,
+					"features.view_image": false,
+					"features.image_generation": false,
+					"features.code_mode_host": false,
+					"features.standalone_web_search": false,
+					web_search: "disabled",
 				},
 			});
 			assertActive();
