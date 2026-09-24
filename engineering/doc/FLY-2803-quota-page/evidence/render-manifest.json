@@ -1,0 +1,12 @@
+{
+  "baselineRef": "origin/main",
+  "baselineHead": "72706eb97349eec8d831680861a47265284aeaa9",
+  "candidateHead": "5ec2c791dc5b59fdbe8cb22be0420cd0a9bab21e",
+  "fixtureSha256": "c712d83fd7406d7857ba401e140d339a7f3ed784065901ee4d2bdf8a3ca6426e",
+  "outputs": {
+    "baseline.html": "5c8665e906c42d167ca27f41615ace2cf60e315a6e85f57559cafde63af13bb4",
+    "candidate.html": "12a5eb24c6d57a5e14a321757daf9e2e14dd090b25c774310d236b8ac80e1682",
+    "candidate-active-full.html": "12a5eb24c6d57a5e14a321757daf9e2e14dd090b25c774310d236b8ac80e1682",
+    "candidate-active-unknown.html": "1244f2171819d19abf80876400e5c241a04391143721580288ea3b4a463546ce"
+  }
+}

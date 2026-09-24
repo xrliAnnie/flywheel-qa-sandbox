@@ -107,11 +107,16 @@ describe("account quota shared view", () => {
 			display: "24%",
 			source: "machine",
 			stale: false,
+			rawValue: 24,
 		});
 		expect(shopping.fableUsage).toMatchObject({
 			display: "79%",
 			source: "manual",
 			stale: true,
+		});
+		expect(shopping.fableUsage).not.toHaveProperty("rawValue");
+		expect(shopping.weeklyReset).toMatchObject({
+			rawInstant: "2026-09-22T16:00:00.000Z",
 		});
 		expect(shopping.fiveHReset.display).toContain("19:00");
 		expect(shopping.subscriptionTier).toMatchObject({
@@ -141,6 +146,10 @@ describe("account quota shared view", () => {
 		expect(canceled.credits.display).toBe("已取消");
 		expect(canceled.expiry.display).toBe("已取消");
 		expect(canceled.weeklyUsage.display).not.toContain("70%");
+		expect(canceled.weeklyReset).toMatchObject({
+			display: "已取消",
+			rawInstant: "2026-09-09T00:00:00.000Z",
+		});
 
 		const school = view.claude.find((row) => row.name === "school")!;
 		expect(school.accountMissing).toBe(true);
@@ -149,6 +158,7 @@ describe("account quota shared view", () => {
 			display: "0%",
 			source: "manual",
 		});
+		expect(school.weeklyUsage).not.toHaveProperty("rawValue");
 		expect(school.subscriptionTier).toMatchObject({
 			display: "未知",
 			source: "missing",
@@ -164,48 +174,44 @@ describe("account quota shared view", () => {
 		);
 	});
 
-	it("renders only account aliases, timestamps every value, and greys stale readings", () => {
+	it("keeps aliases private in the simplified page and preserves the patrol tick", () => {
 		const view = buildAccountQuotaView(
 			{ generatedAt, quota: quota() },
 			{ claudeEmails: { shopping: "shop<owner>@example.com" } },
 		);
 		const html = renderAccountsPageHtml(view);
 		const visibleHtml = html.replace(/<style>[\s\S]*?<\/style>/, "");
-		const sections = html.match(/<section>[\s\S]*?<\/section>/g);
+		const sections = html.match(/<section class=[\s\S]*?<\/section>/g);
 
 		expect(html).toContain("<th>周重置日</th>");
 		expect(html).toContain("<th>5h reset</th>");
 		expect(html).toContain("<th>Fable 周用量</th>");
 		expect(html).toContain("<th>充值卡</th>");
-		expect(html).toContain("79% fable");
+		expect(html).not.toContain("79%");
 		expect(html).not.toContain("@example.com");
 		expect(html).not.toContain("shop&lt;owner&gt;");
 		expect(visibleHtml).not.toContain("*");
 		expect(html).not.toContain('<span class="active">');
 		expect(html).toContain("<th>token 状态</th>");
 		expect(sections).toHaveLength(2);
-		expect(sections?.[0]?.match(/<tr class="active-account/g)).toHaveLength(1);
-		expect(sections?.[1]?.match(/<tr class="active-account/g)).toBeNull();
-		expect(
-			html.match(/<tr class="active-account(?: account-missing)?">/g),
-		).toHaveLength(1);
-		expect(html).toContain(".active-account td{background:var(--active-row)}");
+		expect(sections?.[0]?.match(/quota-row active-account/g)).toHaveLength(1);
+		expect(sections?.[1]?.match(/quota-row active-account/g)).toBeNull();
+		expect(html.match(/quota-row active-account/g)).toHaveLength(1);
 		expect(html).toContain(
-			".active-account td:first-child{box-shadow:inset 4px 0 0 var(--active-row-border)}",
+			".active-account td{background:var(--active-bg)!important}",
 		);
-		expect(html).toContain(".table-wrap{overflow-x:auto;");
+		expect(html).toContain(
+			".active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}",
+		);
+		expect(html).toContain(".table-wrap{overflow-x:auto}");
 		expect(html).toContain("table{width:100%;min-width:990px;");
 		expect(html).toContain("@media(max-width:700px)");
-		expect(html).toContain('class="reading stale"');
-		expect(html).toContain("来源：手填 · 记录于 9/17 16:38 PT");
-		expect(html).toContain("来源：机器 · 读取于 9/17 17:40 PT");
-		expect(html).toContain("订阅档位：Max 20x");
-		expect(html).toContain("订阅档位：未知");
-		expect(html).toMatch(/--meta:#9a9a9a/);
-		expect(html).toMatch(/\.meta\{[^}]*font-size:9px/);
-		expect(html).toContain("无数据");
-		expect(html).toContain("无数值源");
-		expect(html).toContain("机器值与手填值差异");
+		expect(html).not.toContain('class="reading stale"');
+		expect(html).not.toContain("来源：");
+		expect(html).not.toContain("读取于");
+		expect(html).toContain("Max 20x");
+		expect(html).toContain("本轮读数不可用");
+		expect(html).not.toContain("机器值与手填值差异");
 
 		const tick = formatAccountQuotaTickLines(view).join("\n");
 		expect(tick).toContain("额度 Claude");
@@ -377,8 +383,12 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		expect(personal.weeklyUsage).toMatchObject({
 			display: "100%",
 			source: "machine",
+			rawValue: 100,
 		});
-		expect(personal.weeklyReset.source).toBe("machine");
+		expect(personal.weeklyReset).toMatchObject({
+			source: "machine",
+			rawInstant: "2026-09-24T02:00:00.000Z",
+		});
 		expect(personal.subscriptionTier).toMatchObject({
 			display: "Pro",
 			source: "machine",
@@ -428,23 +438,22 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		const html = renderAccountsPageHtml(buildAccountQuotaView(snapshot()));
 
 		expect(html).toContain("<th>兑换卡</th>");
+		expect(html).toContain("<th>Fable 周用量</th>");
+		expect(html).toContain('<tr class="quota-row active-account">');
 		expect(html).toContain(
-			"2 张<br>#1 到期 2026/9/30<br>还有 1 张，明细未给全",
+			'<span class="card-line">2 张</span><span class="card-line">#1 到期 2026/9/30</span><span class="card-line">还有 1 张，明细未给全</span>',
 		);
-		expect(html).toContain('<tr class="exhausted-account active-account">');
 		expect(html).toContain(
-			".exhausted-account td{background:var(--exhausted-row)}",
+			'.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}',
 		);
-		expect(html).toContain("打满 · 恢复 09-23 19:00 PT");
+		expect(html).not.toContain("恢复 ");
 		expect(html).toContain("使用中，本次未读");
-		expect(html).toContain("机器读数 · account/rateLimits/read");
-		expect(html).toContain(
-			"<span>高亮行：当前在用（Codex：机器判定，凭据与 ~/.codex 一致）</span>",
-		);
+		expect(html).not.toContain("机器读数 · account/rateLimits/read");
 		expect(html).toContain("兑换卡未暴露");
+		expect(html).not.toContain("余额 12.5");
 		expect(html).not.toContain("无数据 weekly;");
 		expect(html).toContain("token 状态");
-		expect(html).toContain("打满");
+		expect(html).toContain('class="token-status">正常</span>');
 	});
 
 	it("does not invent Codex rows while no machine source exists", () => {
@@ -494,7 +503,8 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		// not tell the founder to re-log in.
 		expect(html).not.toContain("需重新登录");
 		expect(html).not.toContain("打满 · 恢复时刻未知");
-		expect(html).toContain('class="exhausted-account"');
+		expect(html).not.toContain('class="exhausted-account"');
+		expect(html).toContain('data-group="available"');
 	});
 
 	it("says an unknown recovery moment once, not twice", () => {
@@ -508,8 +518,9 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 			buildAccountQuotaView({ generatedAt, quota: quotaValue }),
 		);
 
-		expect(html).toContain("打满 · 恢复时刻未知");
-		expect(html).not.toContain("打满 · 恢复 恢复时刻未知");
+		expect(html).toContain('data-group="full"');
+		expect(html).not.toContain("恢复时刻未知");
+		expect(html).not.toContain("恢复 ");
 	});
 
 	it("keeps a failed Codex credential read visibly unusable", () => {

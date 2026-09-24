@@ -84,6 +84,7 @@ import {
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import { WorktreeManager } from "flywheel-edge-worker";
+import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
 import {
@@ -225,10 +226,15 @@ import {
 	createDiscordOps,
 } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
+import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-page.js";
 import {
 	buildAccountQuotaView,
 	renderAccountsPageHtml,
 } from "./account-quota-view.js";
+import {
+	defaultAccountSubscriptionManualPath,
+	readAccountSubscriptionManual,
+} from "./account-subscription-manual.js";
 import { createAccountSwitchConsumer } from "./account-switch-consumer.js";
 import { createAccountSwitchRouter } from "./account-switch-route.js";
 import { createActionRouter } from "./actions.js";
@@ -1609,6 +1615,13 @@ export interface BridgeAppOptions {
 			generatedAt: string;
 			accountCount: number;
 		}>;
+		/** FLY-2803: local, non-secret account identity digests for page confirmations. */
+		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
+	};
+	/** FLY-2803: fixed page-only manual input seam; production uses stateDir. */
+	accountSubscriptionManual?: {
+		path: string;
+		stateDir: string;
 	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
@@ -2014,8 +2027,88 @@ export function createBridgeApp(
 								: [],
 						),
 					);
+					const manualStateDir = resolve(
+						opts?.accountSubscriptionManual?.stateDir ??
+							(process.env.FLYWHEEL_STATE_DIR?.trim() ||
+								join(homedir(), ".flywheel")),
+					);
+					const manual = readAccountSubscriptionManual({
+						path:
+							opts?.accountSubscriptionManual?.path ??
+							defaultAccountSubscriptionManualPath(),
+						stateDir: manualStateDir,
+						generatedAt: snapshot.generatedAt,
+					});
+					if (manual.error !== null && manual.error !== "missing_file") {
+						console.warn(
+							"[Bridge] account subscription manual unavailable",
+							manual.error,
+						);
+					}
+					const identityKeys: Record<string, string> = Object.fromEntries(
+						(accountStore?.accounts ?? []).flatMap((account) =>
+							account.identity === undefined
+								? []
+								: [
+										[
+											`Claude:${account.name}`,
+											createHash("sha256")
+												.update(claudeIdentityKey(account.identity))
+												.digest("hex"),
+										] as const,
+									],
+						),
+					);
+					if (
+						manual.data?.confirmations.some(
+							(confirmation) => confirmation.provider === "Codex",
+						)
+					) {
+						try {
+							for (const [key, digest] of Object.entries(
+								opts?.codexQuota?.readAccountIdentityKeys?.() ?? {},
+							)) {
+								if (
+									/^Codex:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(key) &&
+									/^[a-f0-9]{64}$/.test(digest)
+								) {
+									identityKeys[key] = digest;
+								}
+							}
+						} catch {
+							console.warn(
+								"[Bridge] account subscription identity lookup unavailable",
+							);
+						}
+					}
+					const machineSubscriptions = Object.fromEntries(
+						snapshot.quota.claude.accounts.flatMap((account) =>
+							account.subscriptionStatus === undefined
+								? []
+								: [
+										[
+											`Claude:${account.name}`,
+											{
+												status: account.subscriptionStatus,
+												observedAt: account.detailObservedAt ?? null,
+											},
+										] as const,
+									],
+						),
+					);
 					const html = renderAccountsPageHtml(
 						buildAccountQuotaView(snapshot, { claudeEmails }),
+						{
+							confirmations: manual.data?.confirmations ?? [],
+							identityKeys,
+							machineSubscriptions,
+							onSubscriptionResolutionError: (failure) =>
+								console.warn(
+									"[Bridge] account subscription confirmation unavailable",
+									failure.error,
+									`${failure.provider}:${failure.profile}`,
+								),
+						},
 					);
 					res.type("html").send(html);
 				} catch {
@@ -9262,6 +9355,40 @@ export async function startBridge(
 				rootKey: codexQuotaRootKey,
 				canRecover: codexQuotaCanRecover,
 				refreshAccountQuota: refreshCodexAccountQuota,
+				readAccountIdentityKeys: () => {
+					const pool = getCodexQuotaAccountPool();
+					const problems = new Set(
+						pool.problems.map((problem) => problem.name),
+					);
+					const liveIdentityKeys = Object.fromEntries(
+						pool.slots.flatMap((slot) =>
+							slot.state === "ready" &&
+							slot.identity !== undefined &&
+							!problems.has(slot.name)
+								? [
+										[
+											`Codex:${slot.name}`,
+											codexInstallAccountKey(slot.identity),
+										] as const,
+									]
+								: [],
+						),
+					);
+					const readingIdentityKeys = Object.fromEntries(
+						(
+							readCodexAccountQuotaStore(codexAccountQuotaStorePath)
+								?.accounts ?? []
+						).flatMap((reading) =>
+							reading.identityKey === undefined
+								? []
+								: [[`Codex:${reading.name}`, reading.identityKey] as const],
+						),
+					);
+					return reconcileCodexAccountSubscriptionIdentityKeys(
+						liveIdentityKeys,
+						readingIdentityKeys,
+					);
+				},
 			},
 			vercelToken,
 			reportBlobStore,

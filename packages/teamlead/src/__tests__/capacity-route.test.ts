@@ -1,8 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
 import type { CapacitySnapshot } from "../bridge/capacity-snapshot.js";
 import { formatPatrolTick } from "../bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
@@ -75,6 +83,11 @@ async function start(
 		generatedAt: string;
 		accountCount: number;
 	}>,
+	accountPage?: {
+		manualPath: string;
+		stateDir: string;
+		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
+	},
 ): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
@@ -96,13 +109,31 @@ async function start(
 		undefined,
 		undefined,
 		undefined,
-		refreshAccountQuota
+		refreshAccountQuota || accountPage
 			? {
-					codexQuota: {
-						rootKey: "test-root",
-						canRecover: async () => false,
-						refreshAccountQuota,
-					},
+					...(refreshAccountQuota || accountPage?.readAccountIdentityKeys
+						? {
+								codexQuota: {
+									rootKey: "test-root",
+									canRecover: async () => false,
+									...(refreshAccountQuota ? { refreshAccountQuota } : {}),
+									...(accountPage?.readAccountIdentityKeys
+										? {
+												readAccountIdentityKeys:
+													accountPage.readAccountIdentityKeys,
+											}
+										: {}),
+								},
+							}
+						: {}),
+					...(accountPage
+						? {
+								accountSubscriptionManual: {
+									path: accountPage.manualPath,
+									stateDir: accountPage.stateDir,
+								},
+							}
+						: {}),
 				}
 			: undefined,
 	);
@@ -400,13 +431,13 @@ describe("GET /api/accounts-page.html", () => {
 		expect(html).toContain("账号额度一览");
 		expect(html).not.toContain("shop&lt;owner&gt;@example.com");
 		expect(html).not.toContain("@example.com");
-		expect(html).toContain('<td class="identity">shopping');
-		expect(html).not.toContain('<span class="active">');
-		expect(html).toContain("weekly");
-		expect(html).toContain("充值卡");
-		expect(html).toContain("订阅档位：Max 20x");
-		expect(html).toContain("订阅档位：未知");
-		expect(html).toContain("无数值源");
+		expect(html).toContain('<td class="account-cell">');
+		expect(html).toContain('<span class="active-chip">在用</span>');
+		expect(html).toContain('aria-label="周用量"');
+		expect(html).toContain('aria-label="Fable用量"');
+		expect(html).toContain('<div class="account-tier">Max 20x</div>');
+		expect(html).toContain('<div class="account-tier">未知</div>');
+		expect(html).not.toContain("无数值源");
 
 		const capacityUrl = pageUrl.replace(
 			"/api/accounts-page.html",
@@ -419,6 +450,256 @@ describe("GET /api/accounts-page.html", () => {
 		).text();
 		expect(capacityText).not.toContain("shop<owner>@example.com");
 		expect(capacityText).not.toContain("secret-must-not-reach-snapshot");
+	});
+
+	it("renders an identity-bound manual cancellation without mutating its file or refreshing quota", async () => {
+		const stateDir = mkdtempSync(join(tmpdir(), "fly2803-route-manual-"));
+		scratch.push(stateDir);
+		const manualPath = join(stateDir, "account-subscriptions", "manual.json");
+		mkdirSync(dirname(manualPath), { recursive: true, mode: 0o700 });
+		const identity = {
+			email: "trusted@example.com",
+			setAt: "2026-09-20T00:00:00.000Z",
+		};
+		const identityDigest = createHash("sha256")
+			.update(claudeIdentityKey(identity))
+			.digest("hex");
+		writeFileSync(
+			manualPath,
+			`${JSON.stringify({
+				version: 1,
+				confirmations: [
+					{
+						provider: "Claude",
+						profile: "business",
+						identityKey: identityDigest,
+						status: "canceled",
+						expiresOn: "2026-10-14",
+						confirmedBy: "founder",
+						confirmedAt: "2026-09-23T01:00:00.000Z",
+						sourceRef: "FLY-2792#confirmed",
+					},
+				],
+			})}\n`,
+			{ mode: 0o600 },
+		);
+		const before = readFileSync(manualPath);
+		const refresh = vi.fn(async () => ({
+			generatedAt: "2026-09-23T02:00:00.000Z",
+			accountCount: 0,
+		}));
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: "business",
+			accounts: [
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: "2026-09-29T16:00:00.000Z",
+					lastObservedAt: "2026-09-23T02:00:00.000Z",
+					observedFiveHPct: 10,
+					observedSevenDPct: 20,
+					identity,
+				},
+			],
+		});
+		const pageUrl = await start(
+			makeConfig({
+				apiToken: "master-token",
+				capacityProbes: {
+					accountStorePath,
+					readMemoryFreePct: async () => ({
+						freePct: 50,
+						observedAt: "2026-09-23T02:00:00.000Z",
+					}),
+				},
+			}),
+			undefined,
+			"/api/accounts-page.html",
+			refresh,
+			{ manualPath, stateDir },
+		);
+
+		expect((await fetch(pageUrl)).status).toBe(401);
+		const response = await fetch(pageUrl, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(response.status).toBe(200);
+		const html = await response.text();
+		expect(html).toContain("已取消 · 10/14");
+		expect(html).not.toContain("founder");
+		expect(html).not.toContain("FLY-2792#confirmed");
+		expect(html).not.toContain(identityDigest);
+		expect(refresh).not.toHaveBeenCalled();
+		expect(readFileSync(manualPath)).toEqual(before);
+	});
+
+	it("renders a machine-confirmed cancellation from the account detail snapshot", async () => {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: null,
+			accounts: [
+				{
+					name: "personal1",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: "2026-09-29T16:00:00.000Z",
+					lastObservedAt: "2026-09-23T02:00:00.000Z",
+					observedFiveHPct: 24,
+					observedSevenDPct: 70,
+				},
+			],
+		});
+		writeFileSync(
+			join(dirname(accountStorePath), "claude-account-details.json"),
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-23T02:01:00.000Z",
+				accounts: [
+					{
+						name: "personal1",
+						observedAt: "2026-09-23T02:01:00.000Z",
+						subscription: "canceled",
+						usageStatus: "forbidden:oauth_not_allowed_for_organization",
+						prepaid: { known: false, cards: null },
+						note: "prepaid_forbidden",
+					},
+				],
+			}),
+			{ mode: 0o600 },
+		);
+		const stateDir = dirname(accountStorePath);
+		const pageUrl = await start(
+			makeConfig({
+				apiToken: "master-token",
+				capacityProbes: { accountStorePath },
+			}),
+			undefined,
+			"/api/accounts-page.html",
+			undefined,
+			{
+				manualPath: join(stateDir, "account-subscriptions", "manual.json"),
+				stateDir,
+			},
+		);
+
+		const response = await fetch(pageUrl, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(response.status).toBe(200);
+		const html = await response.text();
+		const personal1Row = html
+			.split("</tr>")
+			.find((row) => row.includes('<div class="account-name">personal1</div>'));
+		expect(personal1Row).toContain("已取消 · 日期待确认");
+	});
+
+	it("keeps the page available when manual input or Codex identity lookup is unusable", async () => {
+		const stateDir = mkdtempSync(join(tmpdir(), "fly2803-route-manual-"));
+		scratch.push(stateDir);
+		const manualPath = join(stateDir, "account-subscriptions", "manual.json");
+		mkdirSync(dirname(manualPath), { recursive: true, mode: 0o700 });
+		writeFileSync(
+			manualPath,
+			`${JSON.stringify({
+				version: 1,
+				confirmations: [
+					{
+						provider: "Codex",
+						profile: "personal2",
+						identityKey: "b".repeat(64),
+						status: "canceled",
+						expiresOn: "2026-10-20",
+						confirmedBy: "founder",
+						confirmedAt: "2026-09-23T01:00:00.000Z",
+						sourceRef: "FLY-2792#codex",
+					},
+				],
+			})}\n`,
+			{ mode: 0o600 },
+		);
+		const identityReader = vi
+			.fn<() => Readonly<Record<string, string>>>()
+			.mockReturnValueOnce({ "Codex:personal2": "b".repeat(64) })
+			.mockImplementation(() => {
+				throw new Error("private auth path");
+			});
+		const codexDir = mkdtempSync(join(tmpdir(), "fly2803-route-codex-"));
+		scratch.push(codexDir);
+		const codexAccountStorePath = join(codexDir, "codex-accounts.json");
+		writeFileSync(
+			codexAccountStorePath,
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-23T02:00:00.000Z",
+				activeAccount: "personal2",
+				accounts: [
+					{
+						name: "personal2",
+						registeredProfile: null,
+						observedAt: "2026-09-23T02:00:00.000Z",
+						authHealth: "valid",
+						note: null,
+						planType: "plus",
+						fiveH: null,
+						weekly: null,
+						credits: {
+							known: false,
+							hasCredits: null,
+							unlimited: null,
+							balance: null,
+						},
+						resetCredits: { known: false, value: null },
+						unclassifiedWindows: 0,
+					},
+				],
+			}),
+			{ mode: 0o600 },
+		);
+		const pageUrl = await start(
+			makeConfig({
+				apiToken: "master-token",
+				capacityProbes: {
+					accountStorePath: writeAccountStore({
+						generation: 1,
+						activeAccount: null,
+						accounts: [],
+					}),
+					codexAccountStorePath,
+				},
+			}),
+			undefined,
+			"/api/accounts-page.html",
+			undefined,
+			{
+				manualPath,
+				stateDir,
+				readAccountIdentityKeys: identityReader,
+			},
+		);
+		const response = await fetch(pageUrl, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("已取消 · 10/20");
+		expect(identityReader).toHaveBeenCalledOnce();
+
+		const identityFailure = await fetch(pageUrl, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(identityFailure.status).toBe(200);
+		const identityFailureHtml = await identityFailure.text();
+		expect(identityFailureHtml).toContain("账号额度一览");
+		expect(identityFailureHtml).not.toContain("已取消 · 10/20");
+		expect(identityReader).toHaveBeenCalledTimes(2);
+
+		writeFileSync(manualPath, "{not-json", { mode: 0o600 });
+		const malformed = await fetch(pageUrl, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(malformed.status).toBe(200);
+		expect(await malformed.text()).toContain("账号额度一览");
+		expect(identityReader).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -608,13 +889,13 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 		const html = await (
 			await fetch(url, { headers: { Authorization: "Bearer master-token" } })
 		).text();
-
-		expect(html).toContain("机器读数 · account/rateLimits/read");
-		expect(html).toContain("兑换卡");
 		expect(html).toContain("兑换卡未暴露");
-		expect(html).toContain('<td class="identity">personal2');
-		expect(html).toContain("打满 · 恢复 09-18 22:00 PT");
-		expect(html).toContain("exhausted-account");
-		expect(html).not.toContain("无数值源");
+		expect(html).toContain(
+			'<div class="account-name"><span class="active-dot"></span><span class="active-chip">在用</span>personal2</div>',
+		);
+		expect(html).toContain("周已满");
+		expect(html).toContain('data-group="full"');
+		expect(html).toContain("background:var(--active-bg)!important");
+		expect(html).not.toContain("恢复 09-18");
 	});
 });
