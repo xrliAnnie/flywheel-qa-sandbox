@@ -336,11 +336,11 @@ export class DiscordVoiceRoom {
 
 	private schedulePresenceRefresh(): void {
 		if (this.stopped || !this.presenceClient || this.presenceRefresh) return;
-		this.presenceRefresh = this.refreshPresenceSnapshot(this.presenceClient).finally(
-			() => {
-				this.presenceRefresh = undefined;
-			},
-		);
+		this.presenceRefresh = this.refreshPresenceSnapshot(
+			this.presenceClient,
+		).finally(() => {
+			this.presenceRefresh = undefined;
+		});
 	}
 
 	speaker(): { userId: string; name: string } | null {
