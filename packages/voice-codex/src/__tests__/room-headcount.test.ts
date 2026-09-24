@@ -1,173 +1,132 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChannelHeadcount } from "../room-headcount.js";
 
-type VoiceStateEvent = {
-	userId: string;
-	isBot: boolean;
-	fromChannelId: string | null;
-	toChannelId: string | null;
-};
+type Member = { user?: { bot?: boolean } } | null;
 
-function deferred<T>() {
-	let resolve!: (value: T) => void;
-	let reject!: (error: Error) => void;
-	const promise = new Promise<T>((done, fail) => {
-		resolve = done;
-		reject = fail;
-	});
-	return { promise, resolve, reject };
+function guildClient(options?: { selfId?: string }) {
+	const voiceStates = new Map<
+		string,
+		{ channelId: string | null; member: Member }
+	>();
+	const members = new Map<string, { user: { bot: boolean } }>();
+	const client = {
+		user: { id: options?.selfId ?? "voice-bot" },
+		guilds: {
+			cache: new Map([
+				[
+					"guild",
+					{ voiceStates: { cache: voiceStates }, members: { cache: members } },
+				],
+			]),
+		},
+	};
+	return {
+		client,
+		occupy(userId: string, channelId: string | null, member: Member) {
+			voiceStates.set(userId, { channelId, member });
+		},
+		cacheMember(userId: string, bot: boolean) {
+			members.set(userId, { user: { bot } });
+		},
+		leave(userId: string) {
+			voiceStates.delete(userId);
+		},
+	};
 }
 
-function harness() {
-	let emit!: (event: VoiceStateEvent) => void;
+function subscribed(client: unknown) {
 	const unsubscribe = vi.fn();
-	const reads: Array<ReturnType<typeof deferred<number>>> = [];
 	const deps = {
-		onVoiceStateUpdate: vi.fn(
-			(_client: unknown, cb: (event: VoiceStateEvent) => void) => {
-				emit = cb;
-				return unsubscribe;
-			},
-		),
-		voiceChannelHumanCount: vi.fn(
-			(_client: unknown, _guildId: string, _channelId: string) => {
-				const read = deferred<number>();
-				reads.push(read);
-				return read.promise;
-			},
-		),
+		onVoiceStateUpdate: vi.fn(() => unsubscribe),
 		other: "kept",
 	};
-	const onError = vi.fn();
 	const headcount = new ChannelHeadcount({
 		guildId: "guild",
 		voiceChannelId: "voice",
-		onError,
 	});
 	const wrapped = headcount.wrap(deps);
-	const seen: VoiceStateEvent[] = [];
-	const off = wrapped.onVoiceStateUpdate("client", (event) => {
-		// The count must already be unknown when the room hears the event.
-		seen.push(event);
-		observedDuringCallback.push(headcount.current());
-	});
-	const observedDuringCallback: Array<number | null> = [];
-	return {
-		headcount,
-		deps,
-		wrapped,
-		reads,
-		onError,
-		seen,
-		off,
-		unsubscribe,
-		observedDuringCallback,
-		emit: (event: VoiceStateEvent) => emit(event),
-	};
+	const forwarded = vi.fn();
+	const off = wrapped.onVoiceStateUpdate(client, forwarded);
+	return { headcount, deps, wrapped, forwarded, off, unsubscribe };
 }
 
-const join = (userId: string, isBot = false): VoiceStateEvent => ({
-	userId,
-	isBot,
-	fromChannelId: null,
-	toChannelId: "voice",
-});
+const human: Member = { user: { bot: false } };
+const bot: Member = { user: { bot: true } };
 
-describe("ChannelHeadcount (FLY-2796 review R1)", () => {
-	it("is unknown until the first read of the channel lands", async () => {
-		const test = harness();
-		expect(test.deps.voiceChannelHumanCount).toHaveBeenCalledWith(
-			"client",
-			"guild",
-			"voice",
-		);
-		expect(test.headcount.current()).toBeNull();
-		test.reads[0]!.resolve(1);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(1));
-	});
-
-	it("forgets the count the moment anyone else joins, then reads it again", async () => {
-		const test = harness();
-		test.reads[0]!.resolve(1);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(1));
-
-		test.emit(join("guest"));
-		expect(test.headcount.current()).toBeNull();
-		expect(test.observedDuringCallback).toEqual([null]);
-		expect(test.seen).toEqual([join("guest")]);
-
-		test.reads[1]!.resolve(2);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(2));
-	});
-
-	it("also forgets it when someone leaves the channel", async () => {
-		const test = harness();
-		test.reads[0]!.resolve(2);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(2));
-		test.emit({
-			userId: "guest",
-			isBot: false,
-			fromChannelId: "voice",
-			toChannelId: null,
-		});
-		expect(test.headcount.current()).toBeNull();
-		test.reads[1]!.resolve(1);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(1));
-	});
-
-	it("never lets an older read overwrite a newer change", async () => {
-		const test = harness();
-		test.emit(join("guest"));
-		// The first read (from before the join) lands last and must be ignored.
-		test.reads[1]!.resolve(2);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(2));
-		test.reads[0]!.resolve(1);
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(test.headcount.current()).toBe(2);
-	});
-
-	it("ignores bots and other channels", async () => {
-		const test = harness();
-		test.reads[0]!.resolve(1);
-		await vi.waitFor(() => expect(test.headcount.current()).toBe(1));
-		test.emit(join("some-bot", true));
-		test.emit({
-			userId: "guest",
-			isBot: false,
-			fromChannelId: "elsewhere",
-			toChannelId: "another",
-		});
-		expect(test.headcount.current()).toBe(1);
-		expect(test.deps.voiceChannelHumanCount).toHaveBeenCalledOnce();
-		expect(test.seen).toHaveLength(2);
-	});
-
-	it("stays unknown and reports when the read fails", async () => {
-		const test = harness();
-		test.reads[0]!.reject(new Error("guild fetch failed"));
-		await vi.waitFor(() => expect(test.onError).toHaveBeenCalledOnce());
-		expect(test.headcount.current()).toBeNull();
-	});
-
-	it("stays unknown when the deps cannot count humans", () => {
+describe("ChannelHeadcount (FLY-2796 review R1/R2)", () => {
+	it("is unknown before the room has subscribed with its client", () => {
 		const headcount = new ChannelHeadcount({
 			guildId: "guild",
 			voiceChannelId: "voice",
 		});
-		const wrapped = headcount.wrap({
-			onVoiceStateUpdate: () => () => undefined,
-		});
-		wrapped.onVoiceStateUpdate("client", () => undefined);
 		expect(headcount.current()).toBeNull();
 	});
 
-	it("keeps every other dep and hands back the room's unsubscribe", () => {
-		const test = harness();
-		expect(test.wrapped.other).toBe("kept");
-		expect(test.wrapped.voiceChannelHumanCount).toBe(
-			test.deps.voiceChannelHumanCount,
+	it("counts her alone as one, leaving out this bot and known bots", () => {
+		const room = guildClient();
+		room.occupy("founder", "voice", human);
+		room.occupy("voice-bot", "voice", null);
+		room.occupy("other-bot", "voice", bot);
+		const test = subscribed(room.client);
+		expect(test.headcount.current()).toBe(1);
+	});
+
+	it("sees a second human the moment the gateway cache has them — no event, no REST", () => {
+		const room = guildClient();
+		room.occupy("founder", "voice", human);
+		const test = subscribed(room.client);
+		expect(test.headcount.current()).toBe(1);
+		room.occupy("guest", "voice", human);
+		expect(test.headcount.current()).toBe(2);
+		room.leave("guest");
+		expect(test.headcount.current()).toBe(1);
+	});
+
+	it("counts an occupant it cannot classify yet as a possible human", () => {
+		const room = guildClient();
+		room.occupy("founder", "voice", human);
+		room.occupy("unresolved", "voice", null);
+		const test = subscribed(room.client);
+		expect(test.headcount.current()).toBe(2);
+		// Once the member cache says it is a bot, it stops counting.
+		room.cacheMember("unresolved", true);
+		expect(test.headcount.current()).toBe(1);
+	});
+
+	it("ignores people in other channels", () => {
+		const room = guildClient();
+		room.occupy("founder", "voice", human);
+		room.occupy("guest", "another", human);
+		room.occupy("idle", null, human);
+		const test = subscribed(room.client);
+		expect(test.headcount.current()).toBe(1);
+	});
+
+	it("is unknown when the guild's voice states cannot be read", () => {
+		expect(subscribed({}).headcount.current()).toBeNull();
+		expect(
+			subscribed({ guilds: { cache: new Map() } }).headcount.current(),
+		).toBeNull();
+		const throwing = {
+			guilds: {
+				cache: {
+					get() {
+						throw new Error("cache gone");
+					},
+				},
+			},
+		};
+		expect(subscribed(throwing).headcount.current()).toBeNull();
+	});
+
+	it("passes the room's subscription through untouched", () => {
+		const room = guildClient();
+		const test = subscribed(room.client);
+		expect(test.deps.onVoiceStateUpdate).toHaveBeenCalledWith(
+			room.client,
+			test.forwarded,
 		);
+		expect(test.wrapped.other).toBe("kept");
 		test.off();
 		expect(test.unsubscribe).toHaveBeenCalledOnce();
 	});

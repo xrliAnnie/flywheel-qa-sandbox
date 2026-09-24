@@ -1,98 +1,84 @@
 /**
- * FLY-2796 review R1: a live count of the humans in the voice channel.
+ * FLY-2796 review R1/R2: who could be speaking in the voice channel, read at
+ * the moment sole-speaker attribution asks.
  *
- * Sole-speaker attribution may only trust "she is the one human here" while
- * that is actually known. RoomIO re-reads the channel only on the founder's
- * own voice-state changes, so after anyone else joins, its count is stale.
- * This watches every voice-state change through the same deps RoomIO
- * subscribes with — the room layer itself is untouched. Any change touching
- * the channel makes the count unknown at once, before the room hears the
- * event, and a fresh read settles it. A failed or superseded read stays
- * unknown, so attribution fails closed until the channel is read again.
+ * Attribution may trust "she is the one human here" only while that is
+ * actually known, and every existing count answers a different question:
+ * RoomIO re-reads the channel only on the founder's own voice-state changes,
+ * the deps' voice-state stream waits for a REST member lookup before it
+ * reports a join (and drops the change if the lookup fails), and
+ * `voiceChannelHumanCount` leaves out occupants it cannot classify. Each is
+ * fail-closed for "is anyone still here", and fail-open for "is she alone".
+ *
+ * This reads the gateway voice-state cache directly, synchronously, each time
+ * it is asked — the cache is what the voice-state stream mutates before any
+ * listener runs. Every occupant counts unless it is this bot or a member the
+ * cache already knows is a bot; an occupant it cannot classify counts as a
+ * possible human. When the cache cannot be read, the answer is unknown. The
+ * client handle comes from the room's own deps subscription, so the room
+ * layer is untouched.
  */
 
-type VoiceStateEvent = {
-	userId: string;
-	isBot: boolean;
-	fromChannelId: string | null;
-	toChannelId: string | null;
-};
+type MemberLike = { user?: { bot?: boolean } | null } | null | undefined;
+
+interface GuildCacheLike {
+	voiceStates?: {
+		cache?: Iterable<
+			[string, { channelId?: string | null; member?: MemberLike }]
+		>;
+	};
+	members?: { cache?: { get(userId: string): MemberLike } };
+}
+
+interface ClientLike {
+	user?: { id?: string } | null;
+	guilds?: { cache?: { get(guildId: string): GuildCacheLike | undefined } };
+}
 
 export interface HeadcountDeps {
-	onVoiceStateUpdate(
-		client: unknown,
-		cb: (event: VoiceStateEvent) => void,
-	): () => void;
-	voiceChannelHumanCount?(
-		client: unknown,
-		guildId: string,
-		channelId: string,
-	): Promise<number>;
+	onVoiceStateUpdate(client: unknown, cb: never): () => void;
 }
 
 export class ChannelHeadcount {
-	private humans: number | null = null;
-	private epoch = 0;
+	private client?: ClientLike;
 
 	constructor(
-		private readonly options: {
-			guildId: string;
-			voiceChannelId: string;
-			onError?(error: Error): void;
-		},
+		private readonly options: { guildId: string; voiceChannelId: string },
 	) {}
 
-	/** Humans in the channel now, or null while that is not known. */
-	current(): number | null {
-		return this.humans;
-	}
-
 	wrap<T extends HeadcountDeps>(deps: T): T {
+		const subscribe = deps.onVoiceStateUpdate.bind(deps) as (
+			client: unknown,
+			cb: unknown,
+		) => () => void;
 		return {
 			...deps,
-			onVoiceStateUpdate: (
-				client: unknown,
-				cb: (event: VoiceStateEvent) => void,
-			) => {
-				const unsubscribe = deps.onVoiceStateUpdate(client, (event) => {
-					if (
-						!event.isBot &&
-						(event.fromChannelId === this.options.voiceChannelId ||
-							event.toChannelId === this.options.voiceChannelId)
-					)
-						this.recount(client, deps);
-					cb(event);
-				});
-				this.recount(client, deps);
-				return unsubscribe;
+			onVoiceStateUpdate: (client: unknown, cb: unknown) => {
+				this.client = client as ClientLike;
+				return subscribe(client, cb);
 			},
 		};
 	}
 
-	private recount(client: unknown, deps: HeadcountDeps): void {
-		const epoch = ++this.epoch;
-		this.humans = null;
-		if (!deps.voiceChannelHumanCount) return;
-		let read: Promise<number>;
+	/** Possible humans in the channel now, or null when that cannot be read. */
+	current(): number | null {
 		try {
-			read = deps.voiceChannelHumanCount(
-				client,
-				this.options.guildId,
-				this.options.voiceChannelId,
-			);
-		} catch (error) {
-			this.options.onError?.(error as Error);
-			return;
+			const client = this.client;
+			const guild = client?.guilds?.cache?.get(this.options.guildId);
+			const states = guild?.voiceStates?.cache;
+			if (!states) return null;
+			let occupants = 0;
+			for (const [userId, state] of states) {
+				if ((state?.channelId ?? null) !== this.options.voiceChannelId)
+					continue;
+				if (userId === client?.user?.id) continue;
+				const member = state?.member ?? guild?.members?.cache?.get(userId);
+				if (member?.user?.bot === true) continue;
+				occupants += 1;
+			}
+			return occupants;
+		} catch {
+			return null;
 		}
-		void Promise.resolve(read).then(
-			(humans) => {
-				if (epoch !== this.epoch) return;
-				this.humans =
-					Number.isSafeInteger(humans) && humans >= 0 ? humans : null;
-			},
-			(error) => {
-				if (epoch === this.epoch) this.options.onError?.(error as Error);
-			},
-		);
 	}
 }

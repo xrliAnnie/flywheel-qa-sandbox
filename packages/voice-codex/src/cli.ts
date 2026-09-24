@@ -240,12 +240,6 @@ export async function main(): Promise<void> {
 		const headcount = new ChannelHeadcount({
 			guildId: context.projection.guildId,
 			voiceChannelId: context.projection.voiceChannelId,
-			onError: (error) =>
-				evidence.appendBuffered({
-					ts: new Date().toISOString(),
-					kind: "room_headcount_failed",
-					reason: error.message,
-				}),
 		});
 		const saved: SavedVoiceSession = {
 			sessionId: context.sessionId,
