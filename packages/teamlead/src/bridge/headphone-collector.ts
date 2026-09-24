@@ -250,9 +250,9 @@ export class HeadphoneInboxCollector {
 			.filter(({ scope }) => (tokenNextAllowed.get(scope.token) ?? 0) <= nowMs)
 			.sort(
 				(left, right) =>
-					Number(right.state?.bootstrapComplete ?? false) -
-						Number(left.state?.bootstrapComplete ?? false) ||
 					sourceTime(left.state) - sourceTime(right.state) ||
+					Number(left.state?.bootstrapComplete ?? false) -
+						Number(right.state?.bootstrapComplete ?? false) ||
 					left.scope.channelId.localeCompare(right.scope.channelId),
 			);
 		const candidate = candidates[0];

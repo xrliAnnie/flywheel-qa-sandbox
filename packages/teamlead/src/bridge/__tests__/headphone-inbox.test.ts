@@ -437,8 +437,12 @@ describe("HeadphoneInboxCollector", () => {
 				},
 			],
 			openCommDb: () => CommDB.openReadonly(commDbPath),
-			questionIdByMessage: (_projectName, messageId) =>
-				messageId === cardMessageId ? cardQuestion : undefined,
+			questionIdsByMessages: (_projectName, messageIds) =>
+				new Map(
+					messageIds
+						.filter((messageId) => messageId === cardMessageId)
+						.map((messageId) => [messageId, [cardQuestion]]),
+				),
 			botUserIdFromToken: () => null,
 		});
 
@@ -515,7 +519,7 @@ describe("HeadphoneInboxCollector", () => {
 				openCommDb: () => {
 					throw new Error("CommDB unavailable");
 				},
-				questionIdByMessage: () => undefined,
+				questionIdsByMessages: () => new Map(),
 				botUserIdFromToken: () => null,
 			}).classifyMessages(
 				{
@@ -563,11 +567,12 @@ describe("HeadphoneInboxCollector", () => {
 			founderUserId: "founder-1",
 			projects: [],
 			openCommDb: () => CommDB.openReadonly(commDbPath),
-			questionIdByMessage: (_projectName, messageId) => {
-				if (messageId === "ambiguous-card") throw new Error("ambiguous");
-				if (messageId === "missing-card") return "missing-question";
-				return messageId === "valid-card" ? validQuestion : undefined;
-			},
+			questionIdsByMessages: () =>
+				new Map([
+					["ambiguous-card", ["question-1", "question-2"]],
+					["missing-card", ["missing-question"]],
+					["valid-card", [validQuestion]],
+				]),
 			botUserIdFromToken: () => null,
 			log,
 		});
@@ -599,6 +604,57 @@ describe("HeadphoneInboxCollector", () => {
 			],
 		]);
 		expect(log).toHaveBeenCalledTimes(2);
+	});
+
+	it("resolves one page of persisted card bindings with one lookup", () => {
+		const questionIdsByMessages = vi.fn(() => new Map());
+		const authority = new HeadphoneQuestionAuthority({
+			store: store.headphoneInbox,
+			founderUserId: "founder-1",
+			projects: [],
+			openCommDb: () => {
+				throw new Error("unused");
+			},
+			questionIdsByMessages,
+			botUserIdFromToken: () => null,
+		});
+
+		authority.classifyMessages(
+			{
+				projectName: "flywheel",
+				founderUserId: "founder-1",
+				channelId: "channel-1",
+				allowedAuthorIds: ["lead-bot-1"],
+				token: "secret",
+			},
+			["card-1", "card-2", "card-3"].map((id) => ({
+				id,
+				authorId: "lead-bot-1",
+				content: id,
+				timestamp: T0,
+			})),
+		);
+
+		expect(questionIdsByMessages).toHaveBeenCalledOnce();
+		expect(questionIdsByMessages).toHaveBeenCalledWith("flywheel", [
+			"card-1",
+			"card-2",
+			"card-3",
+		]);
+
+		expect(
+			authority.classifyMessages(
+				{
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "channel-1",
+					allowedAuthorIds: ["lead-bot-1"],
+					token: "secret",
+				},
+				[],
+			),
+		).toEqual(new Map());
+		expect(questionIdsByMessages).toHaveBeenCalledOnce();
 	});
 
 	it("continues projection after a bad row without partially reconciling", () => {
@@ -638,7 +694,7 @@ describe("HeadphoneInboxCollector", () => {
 				},
 			],
 			openCommDb: () => CommDB.openReadonly(commDbPath),
-			questionIdByMessage: () => undefined,
+			questionIdsByMessages: () => new Map(),
 			botUserIdFromToken: () => null,
 			log,
 		});
@@ -933,5 +989,36 @@ describe("HeadphoneInboxCollector", () => {
 		});
 		expect(await restarted.tick()).toBe("waiting");
 		expect(fetchPage).toHaveBeenCalledOnce();
+	});
+
+	it("polls every eligible scope before returning to a completed scope", async () => {
+		let now = Date.parse(T0);
+		const scopes = ["channel-a", "channel-b", "channel-c"].map((channelId) => ({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			channelId,
+			allowedAuthorIds: ["lead-1"],
+			token: `secret-${channelId}`,
+		}));
+		const fetchPage = vi.fn(async () => ({
+			kind: "page" as const,
+			messages: [],
+		}));
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => scopes,
+			fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+		});
+
+		for (let index = 0; index < scopes.length; index += 1) {
+			expect(await collector.tick()).toBe("collected");
+			now += 5_000;
+		}
+
+		expect(
+			fetchPage.mock.calls.map(([input]) => input.scope.channelId),
+		).toEqual(["channel-a", "channel-b", "channel-c"]);
 	});
 });

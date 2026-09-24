@@ -25,10 +25,10 @@ export interface HeadphoneQuestionAuthorityOptions {
 	founderUserId: string;
 	projects: readonly HeadphoneAuthorityProject[];
 	openCommDb(projectName: string): QuestionDb;
-	questionIdByMessage(
+	questionIdsByMessages(
 		projectName: string,
-		messageId: string,
-	): string | undefined;
+		messageIds: readonly string[],
+	): ReadonlyMap<string, readonly string[]>;
 	botUserIdFromToken(token: string | undefined): string | null;
 	globalBotUserId?: string | null;
 	log?: (message: string) => void;
@@ -45,13 +45,26 @@ export class HeadphoneQuestionAuthority {
 		string,
 		{ questionId: string; needsDecision: boolean; resolved: boolean }
 	> {
+		if (messages.length === 0) return new Map();
 		const bindings = new Map<string, string>();
+		let questionIdsByMessage: ReadonlyMap<string, readonly string[]>;
+		try {
+			questionIdsByMessage = this.options.questionIdsByMessages(
+				scope.projectName,
+				messages.map((message) => message.id),
+			);
+		} catch (error) {
+			this.options.log?.(
+				`[headphone-inbox] question binding lookup ignored for ${scope.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return new Map();
+		}
 		for (const message of messages) {
 			try {
-				const questionId = this.options.questionIdByMessage(
-					scope.projectName,
-					message.id,
-				);
+				const questionIds = questionIdsByMessage.get(message.id) ?? [];
+				if (questionIds.length > 1)
+					throw new Error("headphone_question_binding_ambiguous");
+				const questionId = questionIds[0];
 				if (questionId) bindings.set(message.id, questionId);
 			} catch (error) {
 				this.options.log?.(
