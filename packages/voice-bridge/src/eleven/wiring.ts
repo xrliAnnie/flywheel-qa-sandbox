@@ -20,7 +20,10 @@ import { classifyVoiceDelta, makeLinearClient } from "../assistant/wiring.js";
 import type { PlayerLike, ResourceSource } from "../audio/LeadSpeaker.js";
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import type { HuddleBridgeConfig } from "../config.js";
-import type { ResidentVoiceLease } from "../resident-voice-session.js";
+import {
+	DEFAULT_RESIDENT_VOICE_REQUEST_TIMEOUT_MS,
+	type ResidentVoiceLease,
+} from "../resident-voice-session.js";
 import {
 	createBorrowedRoomIOAdapter,
 	type RoomIOAdapter,
@@ -248,9 +251,33 @@ export async function wireElevenMode(
 	// fail-loud preflight (research §2.3): agent reachable + shim healthy.
 	// key-in-place is checked above; the tunnel is transitively proven by the
 	// shim probe + the first real turn (its URL lives in the agent config).
+	const preflightTimeoutMs =
+		config.leaseHttpTimeoutMs ?? DEFAULT_RESIDENT_VOICE_REQUEST_TIMEOUT_MS;
+	const preflightFetch = async (
+		input: string | URL,
+		init?: RequestInit,
+	): Promise<Response> => {
+		const signal = AbortSignal.timeout(preflightTimeoutMs);
+		try {
+			return await fetchImpl(input, { ...init, signal });
+		} catch (error) {
+			if (signal.aborted) {
+				throw new Error(`eleven_preflight_timeout:${preflightTimeoutMs}ms`, {
+					cause: error,
+				});
+			}
+			throw error;
+		}
+	};
+	const preflightError = (service: string, error: unknown): string => {
+		const message = error instanceof Error ? error.message : String(error);
+		return message === `eleven_preflight_timeout:${preflightTimeoutMs}ms`
+			? `${service} 超时(${preflightTimeoutMs}ms)`
+			: `${service} 连不上(${message})`;
+	};
 	const preflight = async (): Promise<ElevenPreflightResult> => {
 		try {
-			const r = await fetchImpl(
+			const r = await preflightFetch(
 				`https://api.elevenlabs.io/v1/convai/agents/${encodeURIComponent(eleven.agentId)}`,
 				{ headers: { "xi-api-key": apiKey ?? "" } },
 			);
@@ -263,21 +290,25 @@ export async function wireElevenMode(
 		} catch (err) {
 			return {
 				ok: false,
-				reason: `ElevenLabs API 连不上(${String((err as Error).message ?? err)})`,
+				reason: preflightError("ElevenLabs API", err),
 			};
 		}
 		try {
-			const h = await fetchImpl(eleven.shimHealthUrl);
+			const h = await preflightFetch(eleven.shimHealthUrl);
 			if (!h.ok) {
 				return {
 					ok: false,
 					reason: `shim 探针 ${eleven.shimHealthUrl} 返回 ${h.status}——先按 runbook 起 shim`,
 				};
 			}
-		} catch {
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
 			return {
 				ok: false,
-				reason: `shim 不在线(${eleven.shimHealthUrl})——runbook: 起 shim → 起隧道 → patch agent`,
+				reason:
+					message === `eleven_preflight_timeout:${preflightTimeoutMs}ms`
+						? `shim 探针超时(${preflightTimeoutMs}ms)——先检查 ${eleven.shimHealthUrl}`
+						: `shim 不在线(${eleven.shimHealthUrl})——runbook: 起 shim → 起隧道 → patch agent`,
 			};
 		}
 		return { ok: true };

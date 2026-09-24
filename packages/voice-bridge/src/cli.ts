@@ -43,6 +43,10 @@ import { TivPresenter } from "./discord/TivPresenter.js";
 import { type ElevenModeConfig, loadElevenConfig } from "./eleven/config.js";
 import { type ElevenRuntime, wireElevenMode } from "./eleven/wiring.js";
 import { GlawCommand } from "./huddle/GlawCommand.js";
+import {
+	type GlawLeaseHeartbeat,
+	startGlawLeaseHeartbeat,
+} from "./huddle/GlawLeaseHeartbeat.js";
 import { createHuddleTiv } from "./huddle/huddleTiv.js";
 import { createReadOnlyLeadBrain } from "./huddle/ReadOnlyLeadBrain.js";
 import { summarizeViaResidentBrain } from "./huddle/residentMinutes.js";
@@ -457,6 +461,8 @@ export async function runVoiceBridge(
 			>[0],
 		): Promise<void> => {
 			const leadConns: unknown[] = [];
+			let meeting: WiredMeeting | undefined;
+			let leaseHeartbeat: GlawLeaseHeartbeat | undefined;
 			const destroyLeadConns = () => {
 				for (const conn of leadConns) {
 					try {
@@ -520,7 +526,17 @@ export async function runVoiceBridge(
 					: undefined;
 
 			try {
-				const meeting = await wireMeeting(
+				if (invocation.lease) {
+					leaseHeartbeat = startGlawLeaseHeartbeat({
+						lease: invocation.lease,
+						onLost: async () => {
+							if (!meeting || activeMeeting !== meeting) return;
+							await meeting.dispose();
+						},
+						log,
+					});
+				}
+				meeting = await wireMeeting(
 					invocation,
 					config.leads,
 					{
@@ -640,6 +656,7 @@ export async function runVoiceBridge(
 						linear,
 						tiv,
 						release: async () => {
+							leaseHeartbeat?.stop();
 							// the resident ears stay attached (single lifetime listener
 							// set); only the per-meeting Lead connections come down.
 							destroyLeadConns();
@@ -654,7 +671,6 @@ export async function runVoiceBridge(
 								}
 							}
 							if (invocation.lease) {
-								slot.releaseLease(invocation.lease.toSlotLease("glaw"));
 								await invocation.lease
 									.close("ended", "voice-stop")
 									.catch((error: unknown) =>
@@ -662,19 +678,24 @@ export async function runVoiceBridge(
 											`glaw resident lease close failed: ${String((error as Error).message ?? error)}`,
 										),
 									);
+								slot.releaseLease(invocation.lease.toSlotLease("glaw"));
 							} else slot.release("glaw", invocation.issue.identifier);
-							activeMeetingLease = undefined;
-							activeMeetingLive = false;
-							activeMeeting = undefined;
+							if (activeMeeting === meeting) {
+								activeMeetingLease = undefined;
+								activeMeetingLive = false;
+								activeMeeting = undefined;
+							}
 							log(`meeting ${invocation.issue.identifier} released`);
 						},
 						log,
 					},
 				);
-				activeMeeting = meeting;
+				leaseHeartbeat?.assertHealthy();
+				const startedMeeting = meeting;
+				activeMeeting = startedMeeting;
 				activeMeetingLease = invocation.lease;
 				activeMeetingLive = false;
-				meeting.huddle.start();
+				startedMeeting.huddle.start();
 				log(`meeting ${invocation.issue.identifier} assembling`);
 				// initial-check (QA R2 follow-on): if she is ALREADY in the VC
 				// when /glaw fires, no voiceStateUpdate will ever arrive — probe
@@ -685,9 +706,12 @@ export async function runVoiceBridge(
 				void deps
 					.userVoiceChannelId(orchClient, config.guildId, config.founderUserId)
 					.then((channelId) => {
-						if (channelId === config.voiceChannelId) {
+						if (
+							channelId === config.voiceChannelId &&
+							activeMeeting === startedMeeting
+						) {
 							markActiveMeetingLive();
-							meeting.huddle.handleFounderVoiceState(true);
+							startedMeeting.huddle.handleFounderVoiceState(true);
 						}
 					})
 					.catch((err) =>
@@ -696,6 +720,8 @@ export async function runVoiceBridge(
 						),
 					);
 			} catch (err) {
+				leaseHeartbeat?.stop();
+				await meeting?.dispose().catch(() => undefined);
 				// mid-assembly failure: some Lead bots may already be in the VC —
 				// bring them down before surfacing (Codex R1 HIGH: only the slot
 				// was released; ears/conns leaked).
