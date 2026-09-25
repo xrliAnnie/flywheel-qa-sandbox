@@ -2242,6 +2242,42 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		await h.adapter.close();
 	});
 
+	it("a 403 after a lost response stays unknown: she is not asked to repeat (review R5)", async () => {
+		const r = router("agenda");
+		let calls = 0;
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			submitHandoff: async () => {
+				calls += 1;
+				if (calls === 1) throw new TypeError("socket hang up");
+				throw Object.assign(new Error("voice handoff failed: HTTP 403"), {
+					status: 403,
+				});
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "去部署");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(
+			() =>
+				expect(
+					vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+				).toContain("这句我还在确认有没有交到 Lead，先别重复说。"),
+			{ timeout: 5_000 },
+		);
+		expect(
+			vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+		).not.toContain("刚才那句我没能交给 Lead，你再说一次。");
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "live_agenda_handoff_refused_after_unknown",
+				status: 403,
+			}),
+		);
+		expect(h.handoffBindings).toEqual([]);
+		await h.adapter.close();
+	});
+
 	it("a definite Bridge rejection (HTTP 403) is spoken at once", async () => {
 		const r = router("agenda");
 		let calls = 0;

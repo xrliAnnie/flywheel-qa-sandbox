@@ -854,6 +854,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			case "rejected":
 				throw new Error(result.reason);
 			case "needs_human":
+			case "unknown_final":
 				return "unconfirmed";
 			case "unknown":
 				this.convergeInBackground(request, bindingKey, register);
@@ -870,13 +871,18 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		deadline: number,
 		bindingKey: string,
 		signal?: AbortSignal,
+		/** An earlier attempt's outcome is already unknown: a later 4xx only
+		 * proves that retry was refused, not that nothing was delivered. */
+		priorUncertain = false,
 	): Promise<
 		| { kind: "committed"; providerOperationId: string | null }
 		| { kind: "ambiguous" }
 		| { kind: "rejected"; reason: string }
 		| { kind: "needs_human" }
 		| { kind: "unknown" }
+		| { kind: "unknown_final" }
 	> {
+		let uncertain = priorUncertain;
 		for (let attempt = 1; ; attempt++) {
 			if (this.closing || signal?.aborted) return { kind: "unknown" };
 			const budget = Number.isFinite(deadline)
@@ -887,11 +893,22 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				receipt = await this.attemptSubmit(request, budget, signal);
 			} catch (error) {
 				const status = (error as { status?: unknown }).status;
-				if (typeof status === "number" && status >= 400 && status < 500)
-					return {
-						kind: "rejected",
-						reason: `live_lead_handoff_http_${status}`,
-					};
+				if (typeof status === "number" && status >= 400 && status < 500) {
+					if (!uncertain)
+						return {
+							kind: "rejected",
+							reason: `live_lead_handoff_http_${status}`,
+						};
+					// e.g. the lease expired after a lost response: the Bridge
+					// refused this retry without reading the durable row.
+					this.options.record({
+						kind: "live_agenda_handoff_refused_after_unknown",
+						binding: bindingKey,
+						status,
+					});
+					return { kind: "unknown_final" };
+				}
+				uncertain = true;
 				this.options.record({
 					kind: "live_agenda_handoff_submit_retry",
 					binding: bindingKey,
@@ -920,6 +937,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				if (receipt.state === "needs_human") return { kind: "needs_human" };
 				// authorized / dispatching: in flight (a stale dispatch is promoted
 				// to ambiguous by the Bridge reconciler); ask again.
+				uncertain = true;
 			}
 			if (this.now() >= deadline) return { kind: "unknown" };
 			await this.pause(
@@ -972,6 +990,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			Number.POSITIVE_INFINITY,
 			bindingKey,
 			controller.signal,
+			true,
 		)
 			.then(async (result) => {
 				if (this.closing) return;

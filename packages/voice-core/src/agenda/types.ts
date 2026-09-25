@@ -146,6 +146,9 @@ export interface AgendaOutstanding {
 	rewrites: number;
 	/** True once any result for this request has been applied. */
 	answered: boolean;
+	/** reply only: when the founder turn started (monotonic across restarts),
+	 * so a late older turn never supersedes a newer one. */
+	turnOrder?: number;
 }
 
 /** Durable queue state (plan §4.1 Q8). The Bridge stores it verbatim under a

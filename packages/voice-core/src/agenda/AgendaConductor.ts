@@ -151,6 +151,8 @@ export class AgendaConductor {
 	private readonly knownRequests = new Set<string>();
 	private readonly leadTimeoutStage = new Map<string, number>();
 	private readonly turns = new Map<string, AgendaTurnBinding>();
+	private readonly turnOrders = new Map<string, number>();
+	private turnCounter = 0;
 	private readonly turnWork = new Map<string, Promise<void>>();
 	private leadTimer?: Timer;
 	private checkinTimer?: Timer;
@@ -254,6 +256,12 @@ export class AgendaConductor {
 				? { owner: "agenda", itemKey }
 				: { owner: "front", itemKey: null };
 		this.turns.set(utteranceId, binding);
+		// Wall-clock based so it stays monotonic across a restart; the counter
+		// orders turns that start in the same millisecond.
+		this.turnOrders.set(
+			utteranceId,
+			this.now() * 1_000 + (this.turnCounter++ % 1_000),
+		);
 		this.noteActivity();
 		if (binding.owner === "agenda" && binding.itemKey) {
 			this.options.record({
@@ -295,6 +303,21 @@ export class AgendaConductor {
 			const binding = this.turns.get(input.utteranceId);
 			if (binding?.owner !== "agenda" || !binding.itemKey) return;
 			this.knownRequests.add(input.handoffId);
+			const turnOrder = this.turnOrders.get(input.utteranceId) ?? 0;
+			const current = this.state.outstanding;
+			// Review R5: a handoff can converge late (background retry); an older
+			// turn must not take the floor from a newer turn she already moved to.
+			if (
+				current?.purpose === "reply" &&
+				(current.turnOrder ?? 0) > turnOrder
+			) {
+				this.options.record({
+					kind: "agenda_reply_superseded_late",
+					requestId: input.handoffId,
+					newerRequestId: current.requestId,
+				});
+				return;
+			}
 			const replaced = this.state.outstanding?.requestId;
 			const committed = await this.commit((state) => {
 				state.outstanding = {
@@ -304,6 +327,7 @@ export class AgendaConductor {
 					issuedAt: new Date(this.now()).toISOString(),
 					rewrites: 0,
 					answered: false,
+					turnOrder,
 				};
 			});
 			if (!committed) return;

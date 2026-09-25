@@ -722,6 +722,35 @@ describe("AgendaConductor — review R1 regressions", () => {
 		expect(h.spoken()).toEqual(["先说受阻。"]);
 	});
 
+	it("a late older reply never takes the floor from a newer turn (review R5)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		await wake(h, "req-1");
+		h.conductor.bindTurn("utt-old");
+		await h.clock.advance(5_000);
+		h.conductor.bindTurn("utt-new");
+		// The newer turn commits first; the older one converges later.
+		await h.conductor.adoptReply({
+			utteranceId: "utt-new",
+			handoffId: "h-new",
+		});
+		await h.conductor.adoptReply({
+			utteranceId: "utt-old",
+			handoffId: "h-old",
+		});
+		expect(h.bridge.stored?.outstanding?.requestId).toBe("h-new");
+		expect(h.events).toContainEqual(
+			expect.objectContaining({
+				kind: "agenda_reply_superseded_late",
+				requestId: "h-old",
+			}),
+		);
+		h.bridge.leadReply("h-new", "新的那句的回答。");
+		await wake(h, "h-new");
+		expect(h.spoken().at(-1)).toBe("新的那句的回答。");
+	});
+
 	it("keeps a failed turn binding visible so the handoff can fail closed", async () => {
 		const h = await harness(THREE);
 		await h.conductor.start();
