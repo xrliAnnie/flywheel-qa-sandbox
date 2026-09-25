@@ -1,15 +1,15 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-25T18:48:45.234Z
-nextStep: "WaitingMouth: wall-clock paced adaptive lead (idle 2 / speech 10
-  frames) + hard flush on cancel + linear upsample + streaming open/append/end;
-  backend streams item audio from first delta; playback underrun diagnostics"
+phaseCursor: 3/5
+updated: 2026-09-25T18:58:56.903Z
+nextStep: "prompt: answer identity/current work/pending decisions from loaded
+  snapshot; never explain [BACKEND]/protocol; then lint+build+targeted tests,
+  push, exact-head review, complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (2/5)
-**next**: WaitingMouth: wall-clock paced adaptive lead (idle 2 / speech 10 frames) + hard flush on cancel + linear upsample + streaming open/append/end; backend streams item audio from first delta; playback underrun diagnostics
+**phase**: implement (3/5)
+**next**: prompt: answer identity/current work/pending decisions from loaded snapshot; never explain [BACKEND]/protocol; then lint+build+targeted tests, push, exact-head review, complete
