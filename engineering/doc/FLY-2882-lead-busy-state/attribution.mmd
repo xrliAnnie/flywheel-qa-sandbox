@@ -1,0 +1,14 @@
+flowchart TD
+  S{这轮是谁开启的？}
+  S -- Claude Lead --> N1[判断不了：没有记录能证明因果]
+  S -- Codex：founder 在终端敲的 --> N2[判断不了：founder 自己敲的]
+  S -- Codex：消息开启 --> J[sidecar 给出这轮对应的全部投递 id]
+  J --> M[信箱行：只读发件方和来源类型，不读内容]
+  M --> Q[runner 提问 → 执行 id → 单号]
+  M --> E[Bridge 事件 → 项目:单号]
+  M --> X[Discord 聊天 → 对不上单]
+  Q --> K{全部对得上，且只有一张单？}
+  E --> K
+  X --> K
+  K -- 是 --> OK[这轮由 FLY-xxx 的消息引起]
+  K -- 否 --> NO[判断不了 + 具体原因]

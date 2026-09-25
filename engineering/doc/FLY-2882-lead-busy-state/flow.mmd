@@ -1,0 +1,18 @@
+sequenceDiagram
+  autonumber
+  participant Raya as 调用方（将来的 Raya / CLI）
+  participant B as Bridge 只读接口
+  participant P as Claude Lead 的终端
+  participant S as Codex Lead 的 sidecar
+  participant DB as 信箱与单号记录（只读元数据）
+  Raya->>B: 某 Lead 现在在忙什么？
+  alt Claude 载体
+    B->>P: 核对身份后截屏（只在内存里）
+    P-->>B: 转圈行「(1m 4s …)」/ 完成行「Worked for … done」
+  else Codex 载体
+    B->>S: readTurnState（新的只读方法）
+    S-->>B: 进行中的轮次 + 开始时间 + 投递 id
+  end
+  B->>DB: 这轮由哪几条投递引起 → 对应哪张单
+  DB-->>B: 唯一一张单 / 判断不了
+  B-->>Raya: busy·idle·unknown + 多久 + 哪张单 + 来源

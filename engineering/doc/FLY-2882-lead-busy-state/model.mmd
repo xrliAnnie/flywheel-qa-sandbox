@@ -1,0 +1,25 @@
+classDiagram
+  class LeadActivityV1 {
+    state : 忙 / 闲 / 不知道
+    carrier : claude-code / codex-app-server
+    observedAt : 观测时刻
+    source : claude_pane / codex_sidecar
+  }
+  class Turn {
+    startedAt : 本轮开始时间
+    elapsedMs : 已持续多久
+    precision : 精确到秒 / 到分钟
+    origin : 消息开启 / founder 终端 / 不知道
+  }
+  class Trigger {
+    kind : issue / undetermined
+    issueId : 例如 FLY-2830
+    reason : 判断不了的原因
+  }
+  class Unknown {
+    reason : 枚举原因
+    detail : 固定的一句人话
+  }
+  LeadActivityV1 "1" --> "1" Turn : 忙时必有
+  LeadActivityV1 "1" --> "1" Trigger : 忙时必有
+  LeadActivityV1 "1" --> "1" Unknown : 不知道时必有
