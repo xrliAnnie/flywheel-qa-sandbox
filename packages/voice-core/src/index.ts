@@ -60,6 +60,7 @@ export {
 export {
 	type LiveDelegationSeal,
 	type LiveInputTranscriptDelta,
+	type LiveReplaySegment,
 	LiveUtteranceAssembler,
 	type LiveUtteranceAssemblerOptions,
 } from "./backends/openai-live/LiveUtteranceAssembler.js";

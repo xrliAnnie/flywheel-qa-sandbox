@@ -10,6 +10,15 @@ export interface LiveInputTranscriptDelta {
 	delta: string;
 }
 
+/** Buffered founder audio replayed at the head of a provider generation:
+ * provider offsets [offsetMs, offsetMs + durationMs) were captured at
+ * capturedAt on the RoomIO clock, not at the generation's start. */
+export interface LiveReplaySegment {
+	offsetMs: number;
+	durationMs: number;
+	capturedAt: number;
+}
+
 export interface LiveDelegationSeal {
 	generation: number;
 	delegationId: string;
@@ -24,6 +33,8 @@ export interface LiveUtteranceAssemblerOptions {
 
 interface ProviderGeneration {
 	startedAt: number;
+	replay: readonly LiveReplaySegment[];
+	replayMs: number;
 	deltas: LiveInputTranscriptDelta[];
 	seenEventIds: Set<string>;
 }
@@ -74,7 +85,28 @@ export class LiveUtteranceAssembler {
 		}
 	}
 
-	startProviderGeneration(generation: number, startedAt: number): void {
+	/** `startedAt` is when live (non-replayed) audio begins; `replay` maps the
+	 * replayed head of the stream back to its capture times. */
+	startProviderGeneration(
+		generation: number,
+		startedAt: number,
+		replay: readonly LiveReplaySegment[] = [],
+	): void {
+		let replayMs = 0;
+		for (const segment of replay) {
+			if (
+				Math.abs(segment.offsetMs - replayMs) > 0.5 ||
+				!(segment.durationMs > 0) ||
+				!Number.isFinite(segment.durationMs) ||
+				!validTime(segment.capturedAt)
+			) {
+				throw new VoiceError(
+					"backend-protocol",
+					"openai-live: replayed input timeline is invalid",
+				);
+			}
+			replayMs += segment.durationMs;
+		}
 		if (
 			!Number.isSafeInteger(generation) ||
 			generation < 1 ||
@@ -97,6 +129,8 @@ export class LiveUtteranceAssembler {
 		}
 		this.providers.set(generation, {
 			startedAt,
+			replay: replay.map((segment) => ({ ...segment })),
+			replayMs,
 			deltas: [],
 			seenEventIds: new Set(),
 		});
@@ -211,8 +245,8 @@ export class LiveUtteranceAssembler {
 				? containing[0]
 				: undefined;
 		const relevantDeltas = provider.deltas.filter((delta) => {
-			const absoluteStart = provider.startedAt + delta.startMs;
-			const absoluteEnd = provider.startedAt + delta.endMs;
+			const absoluteStart = this.absoluteTime(provider, delta.startMs);
+			const absoluteEnd = this.absoluteTime(provider, delta.endMs);
 			if (candidate) {
 				return overlaps(
 					absoluteStart,
@@ -226,8 +260,8 @@ export class LiveUtteranceAssembler {
 		});
 		const intersectedWindows = new Set<string>();
 		for (const delta of relevantDeltas) {
-			const absoluteStart = provider.startedAt + delta.startMs;
-			const absoluteEnd = provider.startedAt + delta.endMs;
+			const absoluteStart = this.absoluteTime(provider, delta.startMs);
+			const absoluteEnd = this.absoluteTime(provider, delta.endMs);
 			for (const window of this.windows.values()) {
 				if (
 					overlaps(
@@ -262,8 +296,13 @@ export class LiveUtteranceAssembler {
 			: `unknown:${input.generation}:${input.delegationId}`;
 		const observedAt = uniquelyBound
 			? candidate.endedAt
-			: provider.startedAt +
-				Math.max(input.offsetMs, ...relevantDeltas.map((delta) => delta.endMs));
+			: this.absoluteTime(
+					provider,
+					Math.max(
+						input.offsetMs,
+						...relevantDeltas.map((delta) => delta.endMs),
+					),
+				);
 		const timestamp = new Date(observedAt).toISOString();
 		return {
 			ts: timestamp,
@@ -308,8 +347,8 @@ export class LiveUtteranceAssembler {
 			}> = [];
 			for (const [generation, provider] of this.providers) {
 				for (const delta of provider.deltas) {
-					const start = provider.startedAt + delta.startMs;
-					const end = provider.startedAt + delta.endMs;
+					const start = this.absoluteTime(provider, delta.startMs);
+					const end = this.absoluteTime(provider, delta.endMs);
 					if (overlaps(start, end, window.startedAt, window.endedAt)) {
 						relevant.push({ generation, start, end, delta: delta.delta });
 					}
@@ -367,7 +406,19 @@ export class LiveUtteranceAssembler {
 		}
 		return {
 			provider,
-			delegationAt: provider.startedAt + input.offsetMs,
+			delegationAt: this.absoluteTime(provider, input.offsetMs),
 		};
+	}
+
+	/** Provider offset -> RoomIO capture time: replayed audio keeps its own
+	 * capture times; live audio follows `startedAt` after the replay. */
+	private absoluteTime(provider: ProviderGeneration, offsetMs: number): number {
+		if (offsetMs < provider.replayMs) {
+			for (const segment of provider.replay) {
+				if (offsetMs < segment.offsetMs + segment.durationMs)
+					return segment.capturedAt + Math.max(0, offsetMs - segment.offsetMs);
+			}
+		}
+		return provider.startedAt + (offsetMs - provider.replayMs);
 	}
 }

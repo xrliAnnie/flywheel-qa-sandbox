@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
 	AudioFormat,
 	DurableTranscriptSink,
+	LiveReplaySegment,
 	OpenAiLiveConversationSession,
 	RoomIO,
 	SpeakKind,
@@ -150,7 +151,11 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private liveInputSuspended = false;
 	private liveInputUnavailable = false;
 	private liveFailed = false;
-	private bufferedInput: Array<{ pcm: Buffer; format: AudioFormat }> = [];
+	private bufferedInput: Array<{
+		pcm: Buffer;
+		format: AudioFormat;
+		capturedAt: number;
+	}> = [];
 	private bufferedInputBytes = 0;
 	private inputBufferOverflow = false;
 	private frontendSpeech?: FrontendSpeech;
@@ -401,7 +406,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 						frame.attribution.kind === "known" &&
 						frame.attribution.speakerUserId === this.options.founderUserId
 					)
-						this.bufferLiveInput(frame.pcm, frame.format);
+						this.bufferLiveInput(frame.pcm, frame.format, frame.capturedAt);
 					return;
 				}
 				this.sendLiveAudio(live, frame.pcm, frame.format);
@@ -702,9 +707,15 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.failLive("live_resume_failed", error);
 			return;
 		}
-		this.assembler.startProviderGeneration(providerGeneration, this.now());
 		this.liveInputUnavailable = false;
-		this.flushBufferedInput(live);
+		// Replayed audio keeps its capture times on the provider timeline, so
+		// a delegation she made while suspended still lands in her window.
+		const replay = this.flushBufferedInput(live);
+		this.assembler.startProviderGeneration(
+			providerGeneration,
+			this.now(),
+			replay,
+		);
 	}
 
 	private openFounderTurn(): void {
@@ -842,9 +853,15 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			this.failLive("live_replace_failed", error);
 			return;
 		}
-		this.assembler.startProviderGeneration(providerGeneration, this.now());
 		this.liveInputUnavailable = false;
-		this.flushBufferedInput(live);
+		// Replayed audio keeps its capture times on the provider timeline, so
+		// a delegation she made while suspended still lands in her window.
+		const replay = this.flushBufferedInput(live);
+		this.assembler.startProviderGeneration(
+			providerGeneration,
+			this.now(),
+			replay,
+		);
 	}
 
 	private async ensureLeadCue(
@@ -884,7 +901,11 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		});
 	}
 
-	private bufferLiveInput(pcm: Buffer, format: AudioFormat): void {
+	private bufferLiveInput(
+		pcm: Buffer,
+		format: AudioFormat,
+		capturedAt: number,
+	): void {
 		if (this.inputBufferOverflow) return;
 		if (this.bufferedInputBytes + pcm.length > this.maxSuspendedInputBytes) {
 			this.inputBufferOverflow = true;
@@ -901,18 +922,42 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			);
 			return;
 		}
-		this.bufferedInput.push({ pcm: Buffer.from(pcm), format: { ...format } });
+		this.bufferedInput.push({
+			pcm: Buffer.from(pcm),
+			format: { ...format },
+			capturedAt,
+		});
 		this.bufferedInputBytes += pcm.length;
 	}
 
-	private flushBufferedInput(live: OpenAiLiveConversationSession): void {
+	/** Sends the buffered founder audio and returns where each replayed span
+	 * sits on the new generation's provider timeline. */
+	private flushBufferedInput(
+		live: OpenAiLiveConversationSession,
+	): LiveReplaySegment[] {
+		const replay: LiveReplaySegment[] = [];
+		let offsetMs = 0;
 		if (!this.inputBufferOverflow) {
 			for (const frame of this.bufferedInput) {
 				if (!this.sendLiveAudio(live, frame.pcm, frame.format)) break;
+				const durationMs =
+					frame.pcm.length /
+					((frame.format.sampleRateHz * frame.format.channels * 2) / 1_000);
+				const last = replay.at(-1);
+				if (
+					last &&
+					Math.abs(last.capturedAt + last.durationMs - frame.capturedAt) < 1
+				) {
+					last.durationMs += durationMs;
+				} else {
+					replay.push({ offsetMs, durationMs, capturedAt: frame.capturedAt });
+				}
+				offsetMs += durationMs;
 			}
 		}
 		this.liveInputSuspended = false;
 		this.clearBufferedInput();
+		return replay;
 	}
 
 	private sendLiveAudio(

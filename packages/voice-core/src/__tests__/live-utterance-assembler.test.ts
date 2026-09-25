@@ -61,6 +61,52 @@ describe("LiveUtteranceAssembler", () => {
 		});
 	});
 
+	it("maps replayed buffered input back to its capture times before live audio", () => {
+		const turns = assembler();
+		// Live resumed at 11.5 s after replaying 1 s of founder audio captured
+		// in two spans (a pause she made while suspended was not buffered).
+		turns.startProviderGeneration(4, 11_500, [
+			{ offsetMs: 0, durationMs: 600, capturedAt: 10_000 },
+			{ offsetMs: 600, durationMs: 400, capturedAt: 10_800 },
+		]);
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "barge-1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 10_000,
+			phase: "start",
+		});
+		turns.observeRoom({
+			sessionId: "voice-session-1",
+			generation: 7,
+			utteranceId: "barge-1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 13_800,
+			phase: "end",
+		});
+		turns.appendInput({
+			generation: 4,
+			eventId: "d1",
+			startMs: 0,
+			endMs: 2_500,
+			delta: "帮我查一下 PR 状态",
+		});
+		const seal = { generation: 4, delegationId: "d-1", offsetMs: 3_000 };
+
+		expect(turns.delegationWindowState(seal)).toBe("ready");
+		expect(turns.sealDelegation(seal)).toMatchObject({
+			utteranceId: "barge-1",
+			text: "帮我查一下 PR 状态",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+		expect(() =>
+			turns.startProviderGeneration(5, 20_000, [
+				{ offsetMs: 100, durationMs: 400, capturedAt: 19_000 },
+			]),
+		).toThrow("replayed input timeline is invalid");
+	});
+
 	it("deduplicates provider event ids but never deduplicates repeated words", () => {
 		const turns = assembler();
 		turns.startProviderGeneration(1, 0);

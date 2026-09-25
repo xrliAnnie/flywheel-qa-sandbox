@@ -1328,6 +1328,105 @@ describe("LiveLeadAdapter", () => {
 		).toHaveLength(2);
 	});
 
+	it("binds a complex question spoken over a readback to her window after the buffered replay", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		let releaseReadback: ((receipt: SpeakReceipt) => void) | undefined;
+		h.speech.speak.mockImplementation(async (_text, kind, opts) => {
+			const completed: SpeakReceipt = {
+				pendingKey: opts.pendingKey,
+				requestDigest: "speech-digest",
+				outcome: "completed",
+				transport: "submitted",
+				contentProof: "deterministic_tts",
+			};
+			if (kind !== "brief") return completed;
+			return new Promise<SpeakReceipt>((resolve) => {
+				releaseReadback = resolve;
+			});
+		});
+		h.speech.cancel.mockImplementation((reason: string) => {
+			releaseReadback?.({
+				pendingKey: "brief-1:0",
+				requestDigest: "speech-digest",
+				outcome: "failed",
+				reason,
+				transport: "none",
+				contentProof: "none",
+			});
+			releaseReadback = undefined;
+		});
+		const readback = h.adapter.speak("很长的一条汇报", "brief", {
+			pendingKey: "brief-1:0",
+			verification: "required",
+		});
+		await vi.waitFor(() => expect(releaseReadback).toBeDefined());
+
+		// She talks over the readback from 10.0 s; Live is suspended, so her
+		// first second is buffered with its capture times.
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-complex",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 10_000,
+			phase: "start",
+		});
+		const founderFrame = (capturedAt: number) => ({
+			sessionId: "voice-session",
+			generation: 9,
+			sequence: capturedAt,
+			pcm: Buffer.alloc(960, 1),
+			format: PCM,
+			capturedAt,
+			utteranceId: "u-complex",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+		});
+		for (let t = 10_000; t < 11_000; t += 20) h.room.emitFrame(founderFrame(t));
+		// Live resumes at 11.5 s and replays the buffered second first.
+		h.setNow(11_500);
+		h.room.emitBarge({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u-complex",
+			owner: { kind: "known", speakerUserId: "founder-1" },
+			startedAt: 10_000,
+			observedAt: 10_400,
+			durationMs: 400,
+			phase: "sustained",
+		} as never);
+		await expect(readback).resolves.toMatchObject({ reason: "barge-in" });
+		await vi.waitFor(() => expect(h.live.resume).toHaveBeenCalledOnce());
+		for (let t = 11_500; t < 13_000; t += 20) h.room.emitFrame(founderFrame(t));
+		endUtterance(h, "u-complex", 13_800);
+		const generation = h.live.providerGeneration as number;
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation,
+			eventId: "complex-delta",
+			startMs: 0,
+			endMs: 2_500,
+			delta: "帮我查一下 FLY-2798 现在的 PR 状态",
+		});
+		// The provider marks the delegation ~0.5 s after her speech ends:
+		// provider offset 3.0 s = 1.0 s replayed + 2.0 s of live audio.
+		h.live.emit("delegation-created", {
+			delegationId: "provider-complex",
+			generation,
+			offsetMs: 3_000,
+			target: "client",
+		});
+
+		await vi.waitFor(() => expect(h.handoffs).toHaveLength(1));
+		expect(h.handoffs[0]?.originalText).toBe(
+			"帮我查一下 FLY-2798 现在的 PR 状态",
+		);
+		expect(h.record).not.toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "live_lead_clarification_required" }),
+		);
+	});
+
 	it("releases an unanswered founder turn after the settle timeout and records it", async () => {
 		const h = harness({ founderTurnSettleTimeoutMs: 30 });
 		await h.adapter.open("context");
