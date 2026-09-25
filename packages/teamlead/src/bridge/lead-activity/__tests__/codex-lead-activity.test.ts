@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { CodexLeadInboxRejectedError } from "../../../lead-backends/codex/CodexLeadInboxSocket.js";
+import {
+	CodexLeadInboxProtocolError,
+	CodexLeadInboxRejectedError,
+} from "../../../lead-backends/codex/CodexLeadInboxSocket.js";
 import {
 	type CodexLeadActivityDeps,
 	readCodexLeadActivity,
@@ -234,6 +237,24 @@ describe("readCodexLeadActivity — sidecar table (plan §5.4)", () => {
 			"malformed capabilities",
 			{
 				probeCapabilities: async () => ({ features: "turn_state_v1" }) as never,
+			},
+			"sidecar_protocol_invalid",
+		],
+		[
+			"a malformed reply envelope",
+			{
+				readTurnState: async () => {
+					throw new CodexLeadInboxProtocolError("invalid_envelope");
+				},
+			},
+			"sidecar_protocol_invalid",
+		],
+		[
+			"a non-JSON reply",
+			{
+				readTurnState: async () => {
+					throw new CodexLeadInboxProtocolError("invalid_json");
+				},
 			},
 			"sidecar_protocol_invalid",
 		],

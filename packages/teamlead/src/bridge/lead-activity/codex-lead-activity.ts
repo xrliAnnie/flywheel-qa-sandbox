@@ -8,6 +8,7 @@
 
 import {
 	type CodexLeadInboxCapabilities,
+	CodexLeadInboxProtocolError,
 	CodexLeadInboxRejectedError,
 } from "../../lead-backends/codex/CodexLeadInboxSocket.js";
 import {
@@ -206,10 +207,12 @@ export async function readCodexLeadActivity(
 		raw = await deps.readTurnState(args);
 	} catch (error) {
 		return unknown(
-			error instanceof CodexLeadInboxRejectedError &&
-				error.reason === "unsupported inbox method"
-				? "sidecar_lacks_turn_state"
-				: "sidecar_unreachable",
+			error instanceof CodexLeadInboxProtocolError
+				? "sidecar_protocol_invalid"
+				: error instanceof CodexLeadInboxRejectedError &&
+						error.reason === "unsupported inbox method"
+					? "sidecar_lacks_turn_state"
+					: "sidecar_unreachable",
 		);
 	}
 	const observedAtMs = deps.now();

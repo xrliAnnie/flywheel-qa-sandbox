@@ -604,6 +604,14 @@ export class CodexLeadInboxRejectedError extends Error {
 	}
 }
 
+/** FLY-2882: the reply itself is malformed (not a refusal, not an answer). */
+export class CodexLeadInboxProtocolError extends Error {
+	constructor(readonly detail: "invalid_json" | "invalid_envelope") {
+		super(`Codex Lead inbox protocol violation: ${detail}`);
+		this.name = "CodexLeadInboxProtocolError";
+	}
+}
+
 export async function submitCodexLeadInboxBatch(args: {
 	socketPath: string;
 	leadId: string;
@@ -685,15 +693,35 @@ export async function readCodexLeadTurnState(
 		...unsigned,
 		auth: signRequest(unsigned, args.authSecret),
 	};
-	const response = JSON.parse(
-		await requestResponse(
-			args.socketPath,
-			`${JSON.stringify(request)}\n`,
-			args.timeoutMs ?? 3_000,
-		),
-	) as { ok: true; turnState: unknown } | ErrorResponse;
-	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
-	return response.turnState;
+	const raw = await requestResponse(
+		args.socketPath,
+		`${JSON.stringify(request)}\n`,
+		args.timeoutMs ?? 3_000,
+	);
+	let response: unknown;
+	try {
+		response = JSON.parse(raw);
+	} catch {
+		throw new CodexLeadInboxProtocolError("invalid_json");
+	}
+	// Exact envelopes only: a truthy-but-not-true `ok`, an `error` beside an
+	// answer, or any extra field is a protocol violation — never an answer.
+	const keys =
+		typeof response === "object" &&
+		response !== null &&
+		!Array.isArray(response)
+			? Object.keys(response).sort().join(",")
+			: "";
+	const envelope = response as Record<string, unknown>;
+	if (
+		keys === "error,ok" &&
+		envelope.ok === false &&
+		typeof envelope.error === "string"
+	)
+		throw new CodexLeadInboxRejectedError(envelope.error);
+	if (keys !== "ok,turnState" || envelope.ok !== true)
+		throw new CodexLeadInboxProtocolError("invalid_envelope");
+	return envelope.turnState;
 }
 
 export async function listCodexLeadSubscriptions(

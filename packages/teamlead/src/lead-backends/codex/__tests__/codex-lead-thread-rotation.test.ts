@@ -485,6 +485,14 @@ describe("readLatestTurn (FLY-2882 seed read)", () => {
 			{ result: { data: [turn({ startedAt: null })] } },
 		],
 		["data not an array", { result: { data: {} } }],
+		[
+			"an error envelope that also carries an empty result",
+			{ error: { code: -1, message: "x" }, result: { data: [] } },
+		],
+		[
+			"a null error beside an empty result",
+			{ error: null, result: { data: [] } },
+		],
 	])("throws (seed failure) on %s", async (_label, value) => {
 		await expect(readLatestTurn(async () => value, OLD)).rejects.toThrow();
 	});

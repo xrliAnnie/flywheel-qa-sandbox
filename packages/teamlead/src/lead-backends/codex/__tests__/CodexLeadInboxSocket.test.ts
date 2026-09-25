@@ -1,10 +1,12 @@
 import { createHmac } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	CodexLeadInboxProtocolError,
+	CodexLeadInboxRejectedError,
 	CodexLeadInboxServer,
 	probeCodexLeadInboxCapabilities,
 	readCodexLeadTurnState,
@@ -417,5 +419,84 @@ describe("CodexLeadInboxSocket — readTurnState (FLY-2882)", () => {
 				leadId: "lead-a",
 			}),
 		).toMatchObject({ ok: false });
+	});
+});
+
+describe("readCodexLeadTurnState — strict reply envelope (FLY-2882 code review R2)", () => {
+	const fakes: Server[] = [];
+	afterEach(async () => {
+		await Promise.all(
+			fakes
+				.splice(0)
+				.map(
+					(server) =>
+						new Promise<void>((resolve) => server.close(() => resolve())),
+				),
+		);
+	});
+	const idle = {
+		schema: "turn-state.v1",
+		generation: "g",
+		connected: true,
+		seeded: true,
+		activeTurns: [],
+	};
+	async function fakeSidecar(reply: string): Promise<string> {
+		const socketPath = join(
+			mkdtempSync(join(tmpdir(), "fly2882-fake-")),
+			"s.sock",
+		);
+		const server = createServer({ allowHalfOpen: true }, (socket) => {
+			socket.on("data", () => {});
+			socket.once("end", () => socket.end(`${reply}\n`));
+		});
+		fakes.push(server);
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		return socketPath;
+	}
+	const read = (socketPath: string) =>
+		readCodexLeadTurnState({
+			socketPath,
+			leadId: "lead-a",
+			authSecret: "lead-bot-token",
+		});
+
+	it.each([
+		["ok as a string", { ok: "false", turnState: idle }],
+		["ok as a number", { ok: 1, turnState: idle }],
+		["ok true beside an error", { ok: true, error: "x", turnState: idle }],
+		["ok true without turnState", { ok: true }],
+		["an extra field", { ok: true, turnState: idle, note: "x" }],
+		["ok false without an error string", { ok: false }],
+		["an array", [idle]],
+	])(
+		"rejects %s as a protocol violation (never idle)",
+		async (_label, body) => {
+			await expect(
+				read(await fakeSidecar(JSON.stringify(body))),
+			).rejects.toBeInstanceOf(CodexLeadInboxProtocolError);
+		},
+	);
+
+	it("rejects a non-JSON reply as a protocol violation", async () => {
+		await expect(read(await fakeSidecar("not json"))).rejects.toBeInstanceOf(
+			CodexLeadInboxProtocolError,
+		);
+	});
+
+	it("keeps a well-formed refusal a CodexLeadInboxRejectedError", async () => {
+		await expect(
+			read(
+				await fakeSidecar(
+					JSON.stringify({ ok: false, error: "unsupported inbox method" }),
+				),
+			),
+		).rejects.toBeInstanceOf(CodexLeadInboxRejectedError);
+	});
+
+	it("returns turnState only for exactly { ok: true, turnState }", async () => {
+		await expect(
+			read(await fakeSidecar(JSON.stringify({ ok: true, turnState: idle }))),
+		).resolves.toEqual(idle);
 	});
 });

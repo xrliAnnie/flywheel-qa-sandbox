@@ -380,6 +380,13 @@ export async function readLatestTurn(
 				);
 			}),
 		]);
+		// A JSON-RPC error — even beside a result — is never an empty thread.
+		if (
+			typeof response === "object" &&
+			response !== null &&
+			Object.hasOwn(response, "error")
+		)
+			throw new Error("turns_list_error");
 		const parsed = latestTurnResponse.safeParse(response);
 		if (!parsed.success) throw new Error("turns_list_invalid");
 		const row = parsed.data.result.data[0];
