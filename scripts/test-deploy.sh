@@ -82,30 +82,29 @@ campaign_abort() {
 # same token — Bridge to validate /api/* requests, Lead so its curl
 # templates have $TEAMLEAD_API_TOKEN populated.
 #
-# Without TEST_REPLY_BY_ISSUE=1, behavior is unchanged: token is unset
-# (env -u TEAMLEAD_API_TOKEN), reply.by_issue flag is off, all existing
-# QA suites keep working.
+# Without TEST_REPLY_BY_ISSUE=1, a token remains absent unless a generalized
+# room or an effective bridge-mode Codex Lead requires Bridge auth.
 #
 # Plan AC11 + Codex R3 #1 + R4 LOW #2.
-if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
-  # Allow caller to override via TEST_API_TOKEN; otherwise generate a
-  # random per-slot token. We compute it once here so the same string
-  # flows into both Bridge and Lead env blocks below.
-  if [[ -z "${TEST_API_TOKEN:-}" ]]; then
-    if command -v uuidgen >/dev/null 2>&1; then
-      TEST_TEAMLEAD_API_TOKEN="fly-162-test-$(uuidgen | tr -d '-' | head -c 12)"
-    else
-      TEST_TEAMLEAD_API_TOKEN="fly-162-test-$(date +%s)-$$"
-    fi
-  else
+TEST_TEAMLEAD_API_TOKEN=""
+qa_ensure_test_teamlead_api_token() {
+  local prefix="${1:?token prefix required}"
+  [[ -n "$TEST_TEAMLEAD_API_TOKEN" ]] && return 0
+  if [[ -n "${TEST_API_TOKEN:-}" ]]; then
     TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
+  elif command -v uuidgen >/dev/null 2>&1; then
+    TEST_TEAMLEAD_API_TOKEN="${prefix}-$(uuidgen | tr -d '-' | head -c 12)"
+  else
+    TEST_TEAMLEAD_API_TOKEN="${prefix}-$(date +%s)-$$"
   fi
+}
+if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+  # Compute once so the same string flows into Bridge and Lead env blocks.
+  qa_ensure_test_teamlead_api_token fly-162-test
   # FLY-1189 (Codex R1 MED): do NOT log any token characters — even a 24-char
   # prefix is a partial secret and the QA smoke persists this log to a campaign
   # file. Report presence + length only.
   log "TEST_REPLY_BY_ISSUE=1 — reply-by-issue routes will be enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>"
-else
-  TEST_TEAMLEAD_API_TOKEN=""
 fi
 
 # ── Slot allocation ───────────────────────────────────
@@ -297,8 +296,8 @@ if [[ "$GENERALIZED" == "1" ]]; then
       ;;
   esac
 fi
-case "${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}" in
-  direct|bridge) ;;
+case "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}" in
+  ""|direct|bridge) ;;
   *)
     echo "ERROR: TEST_CODEX_LEAD_OUTBOUND_MODE must be 'direct' or 'bridge' (got '${TEST_CODEX_LEAD_OUTBOUND_MODE}')." >&2
     exit 1
@@ -333,13 +332,7 @@ fi
 # reply-by-issue Discord route. Reuse TEST_API_TOKEN when supplied; otherwise
 # mint the same per-room random form as the existing reply-by-issue path.
 if [[ "$GENERALIZED" == "1" && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
-  if [[ -n "${TEST_API_TOKEN:-}" ]]; then
-    TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
-  elif command -v uuidgen >/dev/null 2>&1; then
-    TEST_TEAMLEAD_API_TOKEN="fly-1775-test-$(uuidgen | tr -d '-' | head -c 12)"
-  else
-    TEST_TEAMLEAD_API_TOKEN="fly-1775-test-$(date +%s)-$$"
-  fi
+  qa_ensure_test_teamlead_api_token fly-1775-test
   log "generalized master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
 fi
 TEST_TEAMLEAD_INGEST_TOKEN=""
@@ -930,7 +923,8 @@ mkdir -p "${SLOT_DIR}/discord-state"
 chmod 700 "$SLOT_DIR"
 GENERALIZED_CHILD_TMPDIR=$(qa_slot_child_tmpdir "$SLOT_DIR")
 mkdir -p "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state/reports" \
-  "${SLOT_DIR}/state/report-host" "${SLOT_DIR}/state/codex-home"
+  "${SLOT_DIR}/state/report-host" "${SLOT_DIR}/state/codex-home" \
+  "${SLOT_DIR}/state/carrier-assertions" "${SLOT_DIR}/state/carrier-receipts"
 REPORT_HOST_DIR="${SLOT_DIR}/state/report-host"
 SLOT_DIR_CANONICAL=$(cd "$SLOT_DIR" && pwd -P)
 REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
@@ -938,7 +932,8 @@ REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
   || campaign_abort "report host directory escaped the slot tree"
 chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
   "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host" \
-  "${SLOT_DIR}/state/codex-home"
+  "${SLOT_DIR}/state/codex-home" "${SLOT_DIR}/state/carrier-assertions" \
+  "${SLOT_DIR}/state/carrier-receipts"
 while IFS= read -r _qa_slot_assignment; do
   [[ -n "$_qa_slot_assignment" ]] && BRIDGE_EXTRA_ENV+=("$_qa_slot_assignment")
 done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
@@ -1633,6 +1628,31 @@ FLYWHEEL_PROJECTS=$(jq -c . "$FLYWHEEL_PROJECTS_FILE") \
   || campaign_abort "failed to reload migrated FLYWHEEL_PROJECTS"
 log "Minted ${QA_SUMMARY_MIGRATION_RECEIPT} from final slot registry"
 
+# Resolve every Codex Lead's effective transport before any Lead launch occurs.
+# qa_slot_start_lead runs inside command substitution, so token creation there
+# would not propagate back to the Bridge launch environment.
+QA_CODEX_BRIDGE_AUTH_REQUIRED=0
+while IFS= read -r _qa_codex_profile; do
+  [[ -n "$_qa_codex_profile" ]] || continue
+  _qa_codex_mode=$(qa_codex_effective_outbound_mode \
+    "$_qa_codex_profile" "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}") \
+    || campaign_abort "invalid Codex Lead outbound selection"
+  if [[ "$_qa_codex_mode" == bridge ]]; then
+    QA_CODEX_BRIDGE_AUTH_REQUIRED=1
+  fi
+done < <(jq -er '
+  .[].leads[]?
+  | select((.backend // "claude-code") == "codex-app-server")
+  | if .codexProfile == "full-access" then "full-access"
+    elif .companion == true then "companion"
+    else error("invalid Codex profile") end
+' <<<"$FLYWHEEL_PROJECTS")
+unset _qa_codex_profile _qa_codex_mode
+if [[ "$QA_CODEX_BRIDGE_AUTH_REQUIRED" == 1 ]]; then
+  qa_ensure_test_teamlead_api_token fly-2873-test
+  log "Codex bridge auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>"
+fi
+
 # FLY-1775 pit 5: GET visibility does not prove Send Messages. In a
 # generalized --alerts room, exercise every bot that the scrubbed Bridge send
 # chain can actually select, then delete its marker. This catches the observed
@@ -1677,7 +1697,8 @@ qa_slot_start_lead() {
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
   local lead_row mcp_exclude backend codex_profile lead_chat_channel
   local codex_home codex_bin codex_state codex_state_dirs codex_wrapper codex_comm_db
-  local profile_assignments profile_assignment coordinate_bot coordinate_started
+  local profile_assignments profile_assignment transport_assignments transport_assignment
+  local codex_outbound coordinate_bot coordinate_started
   local coordinate_args=()
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
   local base_assignments=(
@@ -1735,10 +1756,19 @@ qa_slot_start_lead() {
       "FLYWHEEL_CODEX_BIN=${codex_bin}"
       "FLYWHEEL_CODEX_LEAD_MODE=tui"
       "FLYWHEEL_CODEX_TUI_CWD=${workspace}"
-      "FLYWHEEL_CODEX_LEAD_OUTBOUND=${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}"
       "FLYWHEEL_CODEX_LEAD_STATE_DIRS=${codex_state_dirs}"
+      "FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE=${SLOT_DIR}/state/lead-carrier-evidence.json"
+      "FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR=${SLOT_DIR}/state/carrier-assertions"
+      "FLYWHEEL_LEAD_RECEIPT_DIR=${SLOT_DIR}/state/carrier-receipts"
       "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=${identity},${REPO_ROOT}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
     )
+    codex_outbound=$(qa_codex_effective_outbound_mode \
+      "$codex_profile" "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}") || return 1
+    transport_assignments=$(qa_codex_transport_assignments "$codex_outbound" \
+      "http://localhost:${SLOT_PORT}" "$TEST_TEAMLEAD_API_TOKEN") || return 1
+    while IFS= read -r transport_assignment; do
+      [[ -n "$transport_assignment" ]] && codex_assignments+=("$transport_assignment")
+    done <<<"$transport_assignments"
     profile_assignments=$(qa_codex_profile_assignments "$codex_profile" \
       "$REPO_ROOT" "$codex_state" "$(command -v node)") || return 1
     if [[ -n "$profile_assignments" ]]; then
@@ -2332,14 +2362,23 @@ if [[ "$GENERALIZED" == "1" ]]; then
       "$QA_SLOT_BRIDGE_BASH" "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
       ${REPORT_HOST_WRAPPER_ARGS[@]+"${REPORT_HOST_WRAPPER_ARGS[@]}"} \
       "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts" )
-elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+elif [[ -n "$TEST_TEAMLEAD_API_TOKEN" ]]; then
   # FLY-1389 P1-a: FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR pin the slot Bridge's
   # runtime deploy (sync-flywheel-hooks.ts seams, "for test slots" by design)
   # to slot-local dirs — without them every slot Bridge boot rewrote the
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
+  BRIDGE_REPLY_ENV=()
+  if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+    BRIDGE_REPLY_ENV+=("TEAMLEAD_CHAT_THREADS_ENABLED=true")
+    BRIDGE_REPLY_ENV+=("TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true")
+    BRIDGE_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
+  fi
   env \
     ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     -u TEAMLEAD_INGEST_TOKEN \
+    -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
+    -u TEAMLEAD_REPLY_GUARD_ENABLED \
+    -u TEAMLEAD_CHAT_THREADS_ENABLED \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -2352,9 +2391,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
-    TEAMLEAD_CHAT_THREADS_ENABLED=true \
-    TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
-    TEAMLEAD_REPLY_GUARD_ENABLED=true \
+    ${BRIDGE_REPLY_ENV[@]+"${BRIDGE_REPLY_ENV[@]}"} \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
       --spec "$BRIDGE_LAUNCH_SPEC" --slot "$SLOT" --port "$SLOT_PORT" \
