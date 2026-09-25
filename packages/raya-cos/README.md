@@ -31,11 +31,14 @@ unavailable call does not become queued, delivered, or started.
 ## Summary round protocol
 
 For development inside the Flywheel checkout, build the package and run the CLI
-from the repo root via `node packages/raya-cos/dist/cli.js`. S1 (FLY-2694) ships no
-runtime consumer: the stable entry point for the registered business workspace is
-the host shim `raya-cos.sh` delivered by S2, so until then do not assume a
-`raya-cos` executable on PATH or any pre-linked package directory inside the
-workspace. `prepare`, `record`, and `resume` accept
+from the repo root via `node packages/raya-cos/dist/cli.js`. The stable entry
+point for the registered business workspace is the host shim
+`~/.flywheel/bin/raya-cos.sh` (source `scripts/raya-cos.sh`, FLY-2695), installed
+and checksum-pinned by `scripts/converge-flywheel-bin.sh` on monorepo hosts. Call
+it by that absolute path with the business workspace as the current directory:
+cos is cwd-scoped, and the shim neither changes directory nor rewrites argv. Do
+not assume a `raya-cos` executable on PATH or any pre-linked package directory
+inside the workspace. `prepare`, `record`, and `resume` accept
 `--input <workspace-relative-json>`; `status` needs no input. Every input has
 `schemaVersion: 2`. A record binds the operationId,
 expectedRevision, tool, callId and result returned by the current standard turn.

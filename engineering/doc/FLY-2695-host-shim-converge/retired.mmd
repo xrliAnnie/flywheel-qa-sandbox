@@ -1,0 +1,17 @@
+flowchart TD
+    A["收敛器启动"] --> B{"仓根有 .flywheel-prebuilt ?<br/>(packaged 形态)"}
+    B -->|"否(monorepo)"| M["FILES 含 raya-cos.sh<br/>RETIRED_FILES 为空"]
+    B -->|"是(packaged)"| P["FILES 不含 raya-cos.sh<br/>RETIRED_FILES = raya-cos.sh"]
+    M --> L["managed 循环:装入 / 校验 / 修复"]
+    P --> L
+    L --> R{"RETIRED_FILES 里的名字<br/>在 bin 里存在?"}
+    R -->|"不存在"| Q["零动作 · 零告警"]
+    R -->|"存在"| D["strict_discard:rm 成功<br/>且 lstat 确证消失"]
+    D -->|"证明消失"| K["删首次采纳标记<br/>log + 一次告警"]
+    D -->|"不可证"| X["告警 · rc=1<br/>部署拒绝 kickstart"]
+    K --> Z["exit rc"]
+    Q --> Z
+    X --> Z
+    style K fill:#e9f9ee,stroke:#34c759
+    style X fill:#ffe9e7,stroke:#ff3b30
+    style Q fill:#f2f2f7,stroke:#86868b
