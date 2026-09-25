@@ -38,6 +38,8 @@ export interface VoiceDaemonConfig {
 	leaseMissMax: number;
 	presenceGraceMs: number;
 	speechChunkTokens: number;
+	/** Uplink VAD pre-roll for the room's speech gate; see FLY-2798/FLY-2799. */
+	uplinkPrerollMs: number;
 	confirmationMs: number;
 	discordTimeoutMs: number;
 	mirrorRetries: number;
@@ -81,6 +83,20 @@ function integer(
 	const value = Number(env[name] ?? fallback);
 	if (!Number.isSafeInteger(value) || value <= 0) {
 		throw new Error(`${name} must be a positive integer`);
+	}
+	return value;
+}
+
+function boundedMs(
+	env: Readonly<Record<string, string | undefined>>,
+	name: string,
+	fallback: number,
+	max: number,
+): number {
+	const raw = env[name];
+	const value = raw === undefined ? fallback : Number(raw);
+	if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+		throw new Error(`${name} must be an integer between 0 and ${max}`);
 	}
 	return value;
 }
@@ -198,6 +214,13 @@ export function loadVoiceDaemonConfig(
 		// FLY-2655 lowered this to 80; keep it — it belongs to the recovered
 		// receive path, not to anything this issue changed.
 		speechChunkTokens: integer(env, "FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS", 80),
+		// FLY-2798: soft sentence starts were silenced by the uplink VAD gate.
+		uplinkPrerollMs: boundedMs(
+			env,
+			"FLYWHEEL_VOICE_UPLINK_PREROLL_MS",
+			200,
+			1_000,
+		),
 		confirmationMs: integer(env, "FLYWHEEL_VOICE_CONFIRMATION_MS", 15_000),
 		discordTimeoutMs: integer(env, "FLYWHEEL_VOICE_DISCORD_TIMEOUT_MS", 10_000),
 		mirrorRetries: integer(env, "FLYWHEEL_VOICE_MIRROR_ATTEMPTS", 2) - 1,

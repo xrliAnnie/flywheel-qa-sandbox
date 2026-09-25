@@ -55,9 +55,18 @@ const RECEIVE_CLOSE_WAIT_MS = 1_000;
 const RECEIVE_COOLDOWN_MS = 30_000;
 const PCM48_STEREO_FRAME_BYTES = 3_840;
 
+/** VAD pre-roll so a soft sentence start is not silenced; the low end of the
+ * usual 200-300 ms prefix padding (OpenAI server_vad pads 300 ms). FLY-2798
+ * measured it on real speech; engine B uses this room (FLY-2799). */
+export const DEFAULT_UPLINK_PREROLL_MS = 200;
+
 export interface DiscordVoiceRoomOptions {
 	createVad?(): Promise<Pick<SileroVad, "score" | "close">>;
 	onDiagnostic?(record: Record<string, unknown>): void;
+	/** Pre-roll the uplink VAD gate sends ahead of each detected speech onset
+	 * (default DEFAULT_UPLINK_PREROLL_MS); it also delays founder audio by the
+	 * same amount. */
+	uplinkPrerollMs?: number;
 	deps: RoomDeps;
 	token: string;
 	expectedBotUserId: string;
@@ -162,6 +171,7 @@ export class DiscordVoiceRoom {
 			initialState: createInitialSileroState,
 			minSpeechMs: 200,
 			threshold: 0.5,
+			prerollMs: this.options.uplinkPrerollMs ?? DEFAULT_UPLINK_PREROLL_MS,
 			now: this.now,
 			onDegraded: ({ reason, consecutive, sessionPermanent }) =>
 				this.options.onDiagnostic?.({

@@ -195,6 +195,27 @@ describe("voice daemon config", () => {
 		}
 	});
 
+	it("defaults the uplink VAD pre-roll to 200 ms and accepts an explicit override", () => {
+		const base = { TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" };
+		expect(loadVoiceDaemonConfig(base, "/Users/tester").uplinkPrerollMs).toBe(
+			200,
+		);
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...base, FLYWHEEL_VOICE_UPLINK_PREROLL_MS: "0" },
+				"/Users/tester",
+			).uplinkPrerollMs,
+		).toBe(0);
+		for (const value of ["-1", "1001", "0.5", "abc"]) {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{ ...base, FLYWHEEL_VOICE_UPLINK_PREROLL_MS: value },
+					"/Users/tester",
+				),
+			).toThrow("FLYWHEEL_VOICE_UPLINK_PREROLL_MS");
+		}
+	});
+
 	it("rejects a malformed voice build identity", () => {
 		expect(() =>
 			loadVoiceDaemonConfig(

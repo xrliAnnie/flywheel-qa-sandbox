@@ -552,6 +552,7 @@ export async function main(): Promise<void> {
 					threadId: context.projection.threadId,
 					founderUserId: context.projection.founderUserId,
 					qaAllowUserIds: context.projection.qaAllowUserIds,
+					uplinkPrerollMs: config.uplinkPrerollMs,
 					...handlers,
 				});
 				return room;
