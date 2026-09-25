@@ -1,0 +1,70 @@
+{
+  "live": {
+    "sessionReadyMs": 519.1,
+    "firstNonSilentPcmFromSpeakCommandMs": 1175.0,
+    "bargeInputStartToServerVadMs": null,
+    "bargeInputStartToCancellationMs": null,
+    "bargeInputStartToInputTranscriptMs": 1761.3,
+    "bargeInputStartToReplacementAnswerTextMs": 4772.5,
+    "toolResultToBlueTranscriptMs": 3016.8,
+    "transcripts": {
+      "firstSpeech_input": "",
+      "firstSpeech_output": "The purple lantern is ready.",
+      "interruption_input": "Hello Please reply with the words Flywheel probe OK",
+      "interruption_output": "Here is a long counting exercise. One, Flywheel probe OK.",
+      "tool_input": "Hello. Please reply with the words Flywheel probe OK",
+      "tool_output": " One moment—checking that. The probe status is blue."
+    },
+    "exceptions": [],
+    "samples": 1,
+    "metricsLimit": "Host-observed single runs; no human playback, room jitter or end-to-end Lead mailbox measured. Text arrival metrics are not acoustic playout latency.",
+    "simultaneousInputOutputTranscriptIntervalsMs": [
+      [
+        14200,
+        14400
+      ]
+    ]
+  },
+  "realtime": {
+    "sessionReadyMs": 70.4,
+    "firstNonSilentPcmFromSpeakCommandMs": 619.7,
+    "bargeInputStartToServerVadMs": 140.1,
+    "bargeInputStartToCancellationMs": 167.7,
+    "bargeInputStartToInputTranscriptMs": 5385.9,
+    "bargeInputStartToReplacementAnswerTextMs": 5234.7,
+    "toolResultToBlueTranscriptMs": 506.1,
+    "transcripts": {
+      "firstSpeech_input": "",
+      "firstSpeech_output": "The purple lantern is ready.",
+      "interruption_input": "",
+      "interruption_output": "Here is a long counting exercise. One, two, three, four, five, six, seven,Flywheel probe OK.",
+      "tool_input": "",
+      "tool_output": "Checking the probe status now and then I’ll tell you what it reports.The probe status is blue."
+    },
+    "exceptions": [],
+    "samples": 1,
+    "metricsLimit": "Host-observed single runs; no human playback, room jitter or end-to-end Lead mailbox measured. Text arrival metrics are not acoustic playout latency."
+  },
+  "api-v2-gpt-realtime-2.1": {
+    "errors": [],
+    "started": [
+      {
+        "threadId": "01a0cce4-9cb8-7fa3-bd27-8ea084ebb0ec",
+        "realtimeSessionId": "01a0cce4-9cb8-7fa3-bd27-8ea084ebb0ec",
+        "version": "v2"
+      }
+    ],
+    "exit": {
+      "returncode": 0
+    }
+  },
+  "api-v3-gpt-live-1": {
+    "errors": [
+      "stream disconnected before completion: Voice session access denied."
+    ],
+    "started": [],
+    "exit": {
+      "returncode": 0
+    }
+  }
+}

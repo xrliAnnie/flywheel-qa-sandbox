@@ -6,6 +6,7 @@ import type { RealtimeAudioOwner } from "./realtime.js";
 import type { PreparedSpeech } from "./speech.js";
 
 export interface FrontendHandlers {
+	onResponseState(active: boolean): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -13,6 +14,11 @@ export interface FrontendHandlers {
 		ownerUserId: string;
 		speakerName: string;
 		utteranceId: string;
+	}): void;
+	onUnattributedTranscript?(input: {
+		itemId: string;
+		text: string;
+		reason: string;
 	}): void;
 	onSpeechAudioReady(input: { speechId: string; pcm24Mono: Buffer }): void;
 	onSpeechResult(input: {
@@ -34,7 +40,9 @@ export interface RoomHandlers {
 interface FrontendLike {
 	start(signal?: AbortSignal): Promise<void>;
 	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
-	appendSpeech(speech: PreparedSpeech): Promise<void>;
+	appendSpeech(
+		speech: PreparedSpeech,
+	): Promise<void> | Promise<"confirmed" | "unconfirmed" | "failed">;
 	cancelSpeech(speechId: string): void;
 	stop(): Promise<void>;
 }
@@ -43,6 +51,7 @@ interface RoomLike {
 	start(signal?: AbortSignal): Promise<{ founderPresent: boolean }>;
 	playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void>;
 	cancelSpeech?(speechId: string): void;
+	cancelAllSpeech?(): void;
 	status(text: string): Promise<void>;
 	stop(): Promise<void>;
 	setBedEnabled?(enabled: boolean): void;
@@ -72,6 +81,7 @@ export interface GenericVoiceSessionOptions {
 	cleanup?(): void;
 	assertLease?(): void;
 	postStatus?(text: string): Promise<void>;
+	finalize?(outcome?: VoiceEnd): Promise<void> | void;
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
@@ -108,6 +118,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private presenceObserved = false;
 	private presenceWaiters: Array<(present: boolean) => void> = [];
 	private latestReceiveHealth?: ReceiveHealth;
+	private frontendResponseActive = false;
 	private pendingSpeech?: {
 		speech: PreparedSpeech;
 		resolve(status: SpeechReceipt): void;
@@ -117,7 +128,12 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
 		this.frontend = options.createFrontend({
+			onResponseState: (active) => {
+				if (!this.stopping) this.frontendResponseActive = active;
+			},
 			onTranscript: (input) => this.transcript(input),
+			onUnattributedTranscript: () =>
+				this.status("📻 有一句话没能确认说话人，请再说一遍"),
 			onSpeechAudioReady: (input) => this.speechAudioReady(input),
 			onSpeechResult: (input) => this.speechResult(input),
 			onClosed: (outcome) =>
@@ -131,6 +147,14 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			onAudio: (frame, metadata) =>
 				this.guarded(() => {
 					if (this.prewarmGated()) return;
+					if (
+						this.frontendResponseActive &&
+						metadata.ownerUserId === this.options.projection.founderUserId
+					) {
+						this.frontendResponseActive = false;
+						this.frontend.cancelSpeech("__conversation__");
+						this.room.cancelAllSpeech?.();
+					}
 					this.frontend.appendAudio(frame, metadata);
 				}),
 			onFounderPresence: (present) => this.founderPresence(present),
@@ -352,9 +376,14 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.room.setWaiting?.(false);
 		return new Promise<SpeechReceipt>((resolve) => {
 			this.pendingSpeech = { speech, resolve };
-			void this.frontend.appendSpeech(speech).catch(() => {
-				this.settleSpeech(speech.speechId, "failed");
-			});
+			void this.frontend
+				.appendSpeech(speech)
+				.then((result) => {
+					if (result) this.settleSpeech(speech.speechId, result);
+				})
+				.catch(() => {
+					this.settleSpeech(speech.speechId, "failed");
+				});
 		});
 	}
 
@@ -366,6 +395,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (this.stopping) return;
 		this.stopping = true;
 		this.admitted = false;
+		this.frontendResponseActive = false;
 		const pending = this.pendingSpeech;
 		if (pending) {
 			this.frontend.cancelSpeech(pending.speech.speechId);
@@ -380,9 +410,13 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				);
 			}
 		} finally {
-			await this.room.stop().catch(() => undefined);
 			await this.frontend.stop().catch(() => undefined);
-			this.options.cleanup?.();
+			await this.room.stop().catch(() => undefined);
+			try {
+				await this.options.finalize?.(outcome);
+			} finally {
+				this.options.cleanup?.();
+			}
 		}
 	}
 
@@ -417,7 +451,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				return;
 			}
 		}
-		this.room.setWaiting?.(true);
+		// No waiting bed after she speaks (founder 2026-09-24, FLY-2799 qa6): with
+		// no update the room stays quiet.
 		void Promise.resolve(
 			this.options.delivery.capture({
 				transcriptId: `${this.options.projection.sessionId}:1:${input.itemId}:${input.contentIndex}`,

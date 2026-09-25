@@ -1536,6 +1536,12 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts:child.kill(\"SIGTERM\");#1",
 		"path": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts",
 		"code": "child.kill(\"SIGTERM\");",

@@ -1,0 +1,65 @@
+{
+  "issue": "FLY-2799",
+  "executionId": "764b8e3f-2f3c-4e1e-83c3-0e35e9cbbac0",
+  "activationId": "activation:764b8e3f-2f3c-4e1e-83c3-0e35e9cbbac0:61667227-7907-4a83-b5cd-c080ad74011c:eng_design:1",
+  "utcStart": "2026-09-23T05:26:10Z",
+  "utcEnd": "2026-09-23T05:27:06Z",
+  "verdict": "SUBSCRIPTION_NEGATIVE_CONTROL",
+  "releaseUrl": "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-apple-darwin.tar.gz",
+  "releaseSha256": "fea42f9625091f011e38f059da974d52e57ba31831648bb1c7f0b1a385fde547",
+  "githubAssetDigestMatched": true,
+  "binaryVersion": "codex-cli 0.156.1",
+  "binarySha256": "0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a",
+  "featureLine": "realtime_conversation                    stable             true",
+  "auth": {
+    "mode": "chatgpt",
+    "plan": "pro",
+    "source": "private copy of current runner auth; no shared auth writes"
+  },
+  "transport": "websocket",
+  "requestedVersion": null,
+  "negotiatedVersion": null,
+  "schemaVersionEnum": [
+    "v1",
+    "v2",
+    "v3"
+  ],
+  "schemaIsNotRuntimeProof": true,
+  "preflightFailure": "default local environment could not create nested sandbox; environments=[] removed filesystem capability while keeping read-only/never",
+  "observedError": "realtime conversation requires API key auth",
+  "appendErrors": "conversation is not running",
+  "input": {
+    "sampleRate": 24000,
+    "channels": 1,
+    "pcmBytes": 96000,
+    "frames": 20,
+    "content": "2 seconds of silence only; macOS say emitted empty PCM, so no spoken-audio comprehension test occurred"
+  },
+  "outputAudioEvents": 0,
+  "receivedMethods": {
+    "response": 27,
+    "remoteControl/status/changed": 1,
+    "account/updated": 1,
+    "thread/started": 1,
+    "warning": 1,
+    "thread/realtime/error": 1,
+    "thread/status/changed": 1,
+    "error": 22,
+    "thread/realtime/closed": 1
+  },
+  "shutdown": {
+    "stopAck": true,
+    "closedReason": "requested",
+    "childPid": 83547,
+    "waitReturncode": 0
+  },
+  "scopeLimits": [
+    "No active realtime session established",
+    "No V2/V3 negotiated-version evidence",
+    "No successful text-to-audio or audio comprehension evidence",
+    "WebRTC/existingCall not tested",
+    "No API-key fallback",
+    "No fleet upgrade",
+    "No implementation or design approval"
+  ]
+}

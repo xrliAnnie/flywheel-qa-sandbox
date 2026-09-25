@@ -1,0 +1,30 @@
+{
+  "leadResponse": "59204e41-e16d-420b-8db2-379c8a4362b4",
+  "renderer": "mmdc 11.12.0 -t default -b white -I fly2799-dN",
+  "diagrams": [
+    {
+      "diagram": 1,
+      "sourceSha256": "58248910772500e9b5039b428f1323e61f58eb19d22ba792e94a88afaf477642",
+      "svgSha256": "513dffa8922ff8cfef7a2d8e2bb6c89a0ecc2cde235c2643d57274de5b0c36a1",
+      "svgId": "fly2799-d1",
+      "bytes": 18095,
+      "sourceMatchesLeadCopy": true
+    },
+    {
+      "diagram": 2,
+      "sourceSha256": "714ef9c58ee8019fae5351334f4e23f1958a427b63af9aa31c91df8618e2f99b",
+      "svgSha256": "df092f101576ae5c7f08efef2d9894e4c3227977db8e5973d82cf548c0d5a76e",
+      "svgId": "fly2799-d2",
+      "bytes": 33753,
+      "sourceMatchesLeadCopy": true
+    },
+    {
+      "diagram": 3,
+      "sourceSha256": "14eeb6559e70debd7bf80f2ade5da9ccee9c3ef77ee4e9afb4aad91fcca311f6",
+      "svgSha256": "2ca5dcbd91b8e32398e7c64e223ae81b39264472c3a88c9f2c67836a4c382110",
+      "svgId": "fly2799-d3",
+      "bytes": 260310,
+      "sourceMatchesLeadCopy": true
+    }
+  ]
+}

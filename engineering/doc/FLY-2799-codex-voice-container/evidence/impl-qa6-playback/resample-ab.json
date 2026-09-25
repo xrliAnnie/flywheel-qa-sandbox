@@ -1,0 +1,14 @@
+{
+  "input": "/Users/xiaorongli/.flywheel/artifacts/FLY-2799-qa/qa6-dd6be6bf7-bench/plainSole/assistant.pcm",
+  "startSeconds": 0,
+  "seconds": 20,
+  "zoh": {
+    "above12kHzDb": -22.2,
+    "above16kHzDb": -24.2
+  },
+  "linear": {
+    "above12kHzDb": -29.5,
+    "above16kHzDb": -34.3
+  },
+  "note": "dB relative to total left-channel power; the 24 kHz source has no content above 12 kHz, so energy there is upsampling image"
+}

@@ -1,0 +1,7 @@
+{
+  "checkedAt": "2026-09-23T08:46:11.615Z",
+  "kind": "local-publisher-validator-not-publication",
+  "file": "engineering/doc/FLY-2799-codex-voice-container/founder-design-cdn-draft.html",
+  "accepted": false,
+  "error": "hosted reports must not contain external script src tags; bundle the code into an inline script and republish so publish-report can add matching nonces automatically, or use the __CSP_NONCE__ inline-script convention"
+}

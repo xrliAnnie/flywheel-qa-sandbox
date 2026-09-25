@@ -400,6 +400,15 @@ export function buildVoiceProcessEnv(input) {
 		input.meetingNotesPath,
 	])
 		contained(input.slotDir, path);
+	const codexBackendRequested =
+		input.backendId !== undefined || input.codexBin !== undefined;
+	if (codexBackendRequested) {
+		check(input.backendId === "codex-realtime", "voice_backend_invalid");
+		check(
+			typeof input.codexBin === "string" && isAbsolute(input.codexBin),
+			"voice_codex_binary_absolute_required",
+		);
+	}
 	return {
 		HOME: input.baseEnv.HOME,
 		PATH: input.baseEnv.PATH,
@@ -416,6 +425,12 @@ export function buildVoiceProcessEnv(input) {
 		FLYWHEEL_VOICE_STATE_DIR: join(stateDir, "voice"),
 		FLYWHEEL_VOICE_CODEX_HOME: join(stateDir, "voice-codex-home"),
 		FLYWHEEL_VOICE_BUILD_SHA: input.buildSha,
+		...(codexBackendRequested
+			? {
+					FLYWHEEL_VOICE_BACKEND: input.backendId,
+					FLYWHEEL_CODEX_BIN: input.codexBin,
+				}
+			: {}),
 		FLYWHEEL_VOICE_HOST_CONFIG: input.voiceHostPath,
 		FLYWHEEL_MEETING_NOTES_CONFIG: input.meetingNotesPath,
 		FLYWHEEL_DIR: input.repoRoot,
@@ -678,6 +693,8 @@ function voiceEnv(context) {
 		projectsJson: context.projectsJson,
 		projectName: context.topology.projectName,
 		buildSha: context.topology.expectedHead,
+		backendId: process.env.FLYWHEEL_VOICE_BACKEND,
+		codexBin: process.env.FLYWHEEL_CODEX_BIN,
 		voiceHostPath: context.fixtureReceipt.voiceHostPath,
 		meetingNotesPath: context.fixtureReceipt.meetingNotesPath,
 		baseEnv: { HOME: homedir(), PATH: process.env.PATH ?? "/usr/bin:/bin" },

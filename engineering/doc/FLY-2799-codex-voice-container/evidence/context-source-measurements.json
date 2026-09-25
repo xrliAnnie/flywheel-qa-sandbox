@@ -1,0 +1,58 @@
+{
+  "measuredAt": "2026-09-23T08:54:08.490931+00:00",
+  "kind": "local-file-size-and-token-estimate-no-audio-probe",
+  "tokenizer": "tiktoken 0.14.0 o200k_base; budgeting estimate, not asserted model tokenizer",
+  "leads": [
+    {
+      "leadId": "raya",
+      "files": [
+        {
+          "path": "/Users/xiaorongli/Dev/raya-lead-workspace/.lead/raya/identity.md",
+          "bytes": 17866,
+          "codepoints": 17854,
+          "o200kBaseTokensEstimate": 3634,
+          "sha256": "ca1240f12fbbe868ec3fa117f4882ecfcb78d20a51a0ffa7ad9f37babbcd78f5"
+        },
+        {
+          "path": "/Users/xiaorongli/Dev/raya-lead-workspace/memory/MEMORY.md",
+          "bytes": 37799,
+          "codepoints": 21115,
+          "o200kBaseTokensEstimate": 11238,
+          "sha256": "e4636a9d6d619ce27bb50a2f9186db179d0259a4612aa8e6ddb6b63548b640da"
+        },
+        {
+          "path": "/Users/xiaorongli/.codex-raya/memories/memory_summary.md",
+          "bytes": 3474,
+          "codepoints": 3454,
+          "o200kBaseTokensEstimate": 753,
+          "sha256": "c3feb90e06638cc7a49b86726e973de891f7b289d2028119604f4cef9567ec28"
+        }
+      ],
+      "totalBytes": 59139,
+      "totalCodepoints": 42423,
+      "totalO200kBaseTokensEstimate": 15625
+    },
+    {
+      "leadId": "flywheel-product-lead",
+      "files": [
+        {
+          "path": "/Users/xiaorongli/Dev/flywheel/.lead/flywheel-product-lead/identity.md",
+          "bytes": 17596,
+          "codepoints": 17292,
+          "o200kBaseTokensEstimate": 4489,
+          "sha256": "ff96eac0e133c6ef4ac5715ffa85991e5e3631c4b3480d20749fcddbdb75195e"
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/agent-memory/flywheel-product-lead/MEMORY.md",
+          "bytes": 23989,
+          "codepoints": 19096,
+          "o200kBaseTokensEstimate": 6551,
+          "sha256": "1aba87172a8a0b74c84620d93313ecf3713ac2a252f98c732e0e90ee28b86918"
+        }
+      ],
+      "totalBytes": 41585,
+      "totalCodepoints": 36388,
+      "totalO200kBaseTokensEstimate": 11040
+    }
+  ]
+}

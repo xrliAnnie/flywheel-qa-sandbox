@@ -2845,6 +2845,83 @@ export interface VoiceIntentRow {
 	createdAt: string;
 }
 
+export type VoiceAttributionRow =
+	| { kind: "known"; speakerUserId: string }
+	| { kind: "unknown"; reason: string };
+
+export interface VoiceUtteranceRow {
+	sessionId: string;
+	transcriptId: string;
+	utteranceId: string;
+	sessionGeneration: number;
+	sequence: number;
+	source: "room_audio" | "engine_audio" | "engine_text";
+	role: "user" | "assistant";
+	text: string;
+	final: boolean;
+	attribution: VoiceAttributionRow;
+	captureDigest: string;
+	contentDigest: string;
+	leaseEpoch: string;
+	receiptId: string;
+	createdAt: string;
+}
+
+export interface VoiceTranscriptDurabilityReceipt {
+	sessionId: string;
+	transcriptId: string;
+	contentDigest: string;
+	receiptId: string;
+}
+
+export type VoiceHandoffState =
+	| "authorized"
+	| "dispatching"
+	| "dispatched"
+	| "committed"
+	| "rejected"
+	| "ambiguous"
+	| "needs_human";
+
+export type VoiceHandoffIntentKind =
+	| "create_issue"
+	| "approve_ship"
+	| "change_priority"
+	| "dispatch_runner"
+	| "delegate_request";
+
+export interface VoiceHandoffRow {
+	handoffId: string;
+	sessionId: string;
+	leadId: string;
+	transcriptId: string;
+	intentKind: VoiceHandoffIntentKind;
+	payload: Record<string, unknown>;
+	originalText: string;
+	idempotencyKey: string;
+	authorityBinding: Record<string, unknown>;
+	requestDigest: string;
+	transcriptReceiptId: string;
+	state: VoiceHandoffState;
+	providerOperationId: string | null;
+	attemptToken: string | null;
+	deliveryId: string | null;
+	leadEventSeq: number | null;
+	lastReconcileAt: string | null;
+	nextReconcileAt: string | null;
+	reconcilerOwner: string | null;
+	claimToken: string | null;
+	leaseExpiresAt: string | null;
+	stateVersion: number;
+	reconcileAttempts: number;
+	lastDispatchError: string | null;
+	lastReconcileResult: string | null;
+	terminalReason: string | null;
+	executionEvidence: Record<string, unknown> | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface VoiceSessionReservation {
 	sessionId: string;
 	mode: VoiceSessionMode;
@@ -3767,6 +3844,89 @@ export class StateStore {
 			attemptToken: (row.attempt_token as string | null) ?? null,
 			claimedAt: (row.claimed_at as string | null) ?? null,
 			finishedAt: (row.finished_at as string | null) ?? null,
+		};
+	}
+
+	private voiceUtteranceFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceUtteranceRow | undefined {
+		if (!row) return;
+		const known = row.attribution_kind === "known";
+		return {
+			sessionId: String(row.session_id),
+			transcriptId: String(row.transcript_id),
+			utteranceId: String(row.utterance_id),
+			sessionGeneration: Number(row.session_generation),
+			sequence: Number(row.sequence),
+			source: row.source as VoiceUtteranceRow["source"],
+			role: row.role as VoiceUtteranceRow["role"],
+			text: String(row.raw_text),
+			final: Number(row.final) === 1,
+			attribution: known
+				? { kind: "known", speakerUserId: String(row.speaker_user_id) }
+				: { kind: "unknown", reason: String(row.attribution_reason) },
+			captureDigest: String(row.capture_digest),
+			contentDigest: String(row.content_digest),
+			leaseEpoch: String(row.lease_epoch),
+			receiptId: String(row.receipt_id),
+			createdAt: String(row.created_at),
+		};
+	}
+
+	private voiceHandoffFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceHandoffRow | undefined {
+		if (!row) return;
+		const jsonObject = (value: unknown): Record<string, unknown> => {
+			try {
+				const parsed = JSON.parse(String(value));
+				return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+					? (parsed as Record<string, unknown>)
+					: {};
+			} catch {
+				return {};
+			}
+		};
+		return {
+			handoffId: String(row.handoff_id),
+			sessionId: String(row.session_id),
+			leadId: String(row.lead_id),
+			transcriptId: String(row.transcript_id),
+			intentKind: row.intent_kind as VoiceHandoffIntentKind,
+			payload: jsonObject(row.payload_json),
+			originalText: String(row.original_text),
+			idempotencyKey: String(row.idempotency_key),
+			authorityBinding: jsonObject(row.authority_binding_json),
+			requestDigest: String(row.request_digest),
+			transcriptReceiptId: String(row.transcript_receipt_id),
+			state: row.state as VoiceHandoffState,
+			providerOperationId:
+				(row.provider_operation_id as string | null) ?? null,
+			attemptToken: (row.attempt_token as string | null) ?? null,
+			deliveryId: (row.delivery_id as string | null) ?? null,
+			leadEventSeq:
+				row.lead_event_seq == null ? null : Number(row.lead_event_seq),
+			lastReconcileAt:
+				(row.last_reconcile_at as string | null) ?? null,
+			nextReconcileAt:
+				(row.next_reconcile_at as string | null) ?? null,
+			reconcilerOwner:
+				(row.reconciler_owner as string | null) ?? null,
+			claimToken: (row.claim_token as string | null) ?? null,
+			leaseExpiresAt: (row.lease_expires_at as string | null) ?? null,
+			stateVersion: Number(row.state_version),
+			reconcileAttempts: Number(row.reconcile_attempts),
+			lastDispatchError:
+				(row.last_dispatch_error as string | null) ?? null,
+			lastReconcileResult:
+				(row.last_reconcile_result as string | null) ?? null,
+			terminalReason: (row.terminal_reason as string | null) ?? null,
+			executionEvidence:
+				row.execution_evidence == null
+					? null
+					: jsonObject(row.execution_evidence),
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
 		};
 	}
 
@@ -5758,6 +5918,511 @@ export class StateStore {
 		return session;
 	}
 
+	getVoiceUtterance(
+		sessionId: string,
+		transcriptId: string,
+	): VoiceUtteranceRow | undefined {
+		return this.voiceUtteranceFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_utterances WHERE session_id = ? AND transcript_id = ?",
+				[sessionId, transcriptId],
+			)[0],
+		);
+	}
+
+	recordVoiceUtterance(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		utteranceId: string;
+		sessionGeneration: number;
+		sequence: number;
+		source: VoiceUtteranceRow["source"];
+		role: VoiceUtteranceRow["role"];
+		text: string;
+		final: boolean;
+		attribution: VoiceAttributionRow;
+		captureDigest: string;
+		now: string;
+	}):
+		| {
+				status: "inserted" | "replayed";
+				receipt: VoiceTranscriptDurabilityReceipt;
+		  }
+		| { status: "lease_conflict" | "conflict" } {
+		let result:
+			| {
+					status: "inserted" | "replayed";
+					receipt: VoiceTranscriptDurabilityReceipt;
+			  }
+			| { status: "lease_conflict" | "conflict" } = {
+			status: "lease_conflict",
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session || session.state !== "live") return;
+			const contentDigest = canonicalSubmissionDigest({
+				version: 1,
+				sessionId: input.sessionId,
+				transcriptId: input.transcriptId,
+				utteranceId: input.utteranceId,
+				sessionGeneration: input.sessionGeneration,
+				sequence: input.sequence,
+				source: input.source,
+				role: input.role,
+				text: input.text,
+				final: input.final,
+				attribution: input.attribution,
+				captureDigest: input.captureDigest,
+			});
+			const prior = this.getVoiceUtterance(
+				input.sessionId,
+				input.transcriptId,
+			);
+			if (prior) {
+				result =
+					prior.contentDigest === contentDigest
+						? {
+								status: "replayed",
+								receipt: {
+									sessionId: prior.sessionId,
+									transcriptId: prior.transcriptId,
+									contentDigest: prior.contentDigest,
+									receiptId: prior.receiptId,
+								},
+							}
+						: { status: "conflict" };
+				return;
+			}
+			const leaseEpoch = createHash("sha256")
+				.update(
+					`voice-lease-epoch-v1\0${input.sessionId}\0${input.leaseToken}`,
+				)
+				.digest("hex");
+			const receiptId = canonicalSubmissionDigest({
+				version: 1,
+				kind: "voice_transcript_durability",
+				sessionId: input.sessionId,
+				transcriptId: input.transcriptId,
+				contentDigest,
+				leaseEpoch,
+			});
+			this.db.run(
+				`INSERT INTO voice_utterances
+				 (session_id, transcript_id, utterance_id, session_generation,
+				  sequence, source, role, raw_text, final, attribution_kind,
+				  speaker_user_id, attribution_reason, capture_digest,
+				  content_digest, lease_epoch, receipt_id, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.sessionId,
+					input.transcriptId,
+					input.utteranceId,
+					input.sessionGeneration,
+					input.sequence,
+					input.source,
+					input.role,
+					input.text,
+					input.final ? 1 : 0,
+					input.attribution.kind,
+					input.attribution.kind === "known"
+						? input.attribution.speakerUserId
+						: null,
+					input.attribution.kind === "unknown"
+						? input.attribution.reason
+						: null,
+					input.captureDigest,
+					contentDigest,
+					leaseEpoch,
+					receiptId,
+					input.now,
+				],
+			);
+			changed = true;
+			result = {
+				status: "inserted",
+				receipt: {
+					sessionId: input.sessionId,
+					transcriptId: input.transcriptId,
+					contentDigest,
+					receiptId,
+				},
+			};
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	getVoiceHandoff(handoffId: string): VoiceHandoffRow | undefined {
+		return this.voiceHandoffFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_handoffs WHERE handoff_id = ?",
+				[handoffId],
+			)[0],
+		);
+	}
+
+	authorizeVoiceHandoff(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		intentKind: VoiceHandoffIntentKind;
+		payload: Record<string, unknown>;
+		originalText: string;
+		idempotencyKey: string;
+		authorityBinding: Record<string, unknown>;
+		founderUserIds: readonly string[];
+		deliveryCanReconcile: boolean;
+		now: string;
+	}):
+		| { status: "created" | "replayed"; handoff: VoiceHandoffRow }
+		| {
+				status:
+					| "lease_conflict"
+					| "utterance_missing"
+					| "utterance_not_authorized"
+					| "conflict";
+		  } {
+		let result:
+			| { status: "created" | "replayed"; handoff: VoiceHandoffRow }
+			| {
+					status:
+						| "lease_conflict"
+						| "utterance_missing"
+						| "utterance_not_authorized"
+						| "conflict";
+			  } = { status: "lease_conflict" };
+		let changed = false;
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session || session.state !== "live") return;
+			const utterance = this.getVoiceUtterance(
+				input.sessionId,
+				input.transcriptId,
+			);
+			if (!utterance) {
+				result = { status: "utterance_missing" };
+				return;
+			}
+			if (
+				!utterance.final ||
+				utterance.role !== "user" ||
+				utterance.text !== input.originalText ||
+				utterance.attribution.kind !== "known" ||
+				!input.founderUserIds.includes(utterance.attribution.speakerUserId)
+			) {
+				result = { status: "utterance_not_authorized" };
+				return;
+			}
+			const requestDigest = canonicalSubmissionDigest({
+				version: 1,
+				targetLeadId: session.leadId,
+				sessionId: input.sessionId,
+				transcriptId: input.transcriptId,
+				transcriptContentDigest: utterance.contentDigest,
+				intentKind: input.intentKind,
+				payload: input.payload,
+				originalText: input.originalText,
+				idempotencyKey: input.idempotencyKey,
+				authorityBinding: input.authorityBinding,
+			});
+			const prior = this.voiceHandoffFromRow(
+				this.workflowSelectAll(
+					"SELECT * FROM voice_handoffs WHERE session_id = ? AND idempotency_key = ?",
+					[input.sessionId, input.idempotencyKey],
+				)[0],
+			);
+			if (prior) {
+				result =
+					prior.requestDigest === requestDigest
+						? { status: "replayed", handoff: prior }
+						: { status: "conflict" };
+				return;
+			}
+			const handoffId = randomUUID();
+			const providerOperationId = `voice-handoff:${handoffId}`;
+			const deliveryId = `lead_event:${session.leadId}:${providerOperationId}`;
+			const attemptToken = randomUUID();
+			let leadEventSeq: number | null = null;
+			let state: VoiceHandoffState = "rejected";
+			let terminalReason: string | null = "carrier_not_reconcilable";
+			if (input.deliveryCanReconcile) {
+				const event = {
+					event_type: "voice_handoff",
+					execution_id: `voice:${input.sessionId}`,
+					issue_id: `voice:${input.sessionId}`,
+					project_name: session.projectName,
+					status: "authorized",
+					summary: `Voice action ${input.intentKind} requires the Lead body`,
+					original_message: input.originalText,
+					voice_session_id: input.sessionId,
+					voice_handoff_id: handoffId,
+					voice_transcript_id: input.transcriptId,
+					voice_request_digest: requestDigest,
+					voice_intent_kind: input.intentKind,
+					voice_payload: input.payload,
+					voice_authority_binding: input.authorityBinding,
+				};
+				leadEventSeq = this.appendLeadEvent(
+					session.leadId,
+					providerOperationId,
+					"voice_handoff",
+					canonicalJsonString(event),
+					`voice:${input.sessionId}`,
+				);
+				state = "dispatching";
+				terminalReason = null;
+			}
+			this.db.run(
+				`INSERT INTO voice_handoffs
+				 (handoff_id, session_id, lead_id, transcript_id, intent_kind,
+				  payload_json, original_text, idempotency_key,
+				  authority_binding_json, request_digest, transcript_receipt_id,
+				  state, provider_operation_id, attempt_token, delivery_id,
+				  lead_event_seq, terminal_reason, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					handoffId,
+					input.sessionId,
+					session.leadId,
+					input.transcriptId,
+					input.intentKind,
+					canonicalJsonString(input.payload),
+					input.originalText,
+					input.idempotencyKey,
+					canonicalJsonString(input.authorityBinding),
+					requestDigest,
+					utterance.receiptId,
+					state,
+					input.deliveryCanReconcile ? providerOperationId : null,
+					input.deliveryCanReconcile ? attemptToken : null,
+					input.deliveryCanReconcile ? deliveryId : null,
+					leadEventSeq,
+					terminalReason,
+					input.now,
+					input.now,
+				],
+			);
+			changed = true;
+			result = {
+				status: "created",
+				handoff: this.getVoiceHandoff(handoffId)!,
+			};
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	markVoiceHandoffDispatchResult(input: {
+		handoffId: string;
+		attemptToken: string;
+		now: string;
+		queued: boolean;
+		reason?: string;
+	}): VoiceHandoffRow | undefined {
+		let result: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceHandoff(input.handoffId);
+			if (
+				!current ||
+				current.state !== "dispatching" ||
+				current.attemptToken !== input.attemptToken
+			)
+				return;
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET state = ?, next_reconcile_at = ?, last_dispatch_error = ?,
+				     terminal_reason = ?,
+				     state_version = state_version + 1, updated_at = ?
+				 WHERE handoff_id = ? AND state = 'dispatching'
+				   AND attempt_token = ? AND state_version = ?`,
+				[
+					input.queued ? "dispatched" : "ambiguous",
+					input.queued ? null : input.now,
+					input.queued ? null : (input.reason ?? "dispatch_outcome_unknown"),
+					null,
+					input.now,
+					input.handoffId,
+					input.attemptToken,
+					current.stateVersion,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getVoiceHandoff(input.handoffId);
+			}
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	recoverVoiceHandoffDispatching(now: string): number {
+		this.db.run(
+			`UPDATE voice_handoffs
+			 SET state = 'ambiguous', next_reconcile_at = ?,
+			     last_dispatch_error = 'process_restarted_during_dispatch',
+			     terminal_reason = NULL,
+			     state_version = state_version + 1, updated_at = ?
+			 WHERE state = 'dispatching'`,
+			[now, now],
+		);
+		const count = this.db.getRowsModified();
+		if (count > 0) this.save();
+		return count;
+	}
+
+	claimVoiceHandoffReconciliation(input: {
+		owner: string;
+		now: string;
+		leaseMs: number;
+	}): VoiceHandoffRow | undefined {
+		let claimed: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const candidate = this.voiceHandoffFromRow(
+				this.workflowSelectAll(
+					`SELECT * FROM voice_handoffs
+					 WHERE state = 'ambiguous'
+					   AND next_reconcile_at IS NOT NULL AND next_reconcile_at <= ?
+					   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+					 ORDER BY next_reconcile_at, created_at LIMIT 1`,
+					[input.now, input.now],
+				)[0],
+			);
+			if (!candidate) return;
+			const claimToken = randomUUID();
+			const leaseExpiresAt = new Date(
+				Date.parse(input.now) + input.leaseMs,
+			).toISOString();
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET reconciler_owner = ?, claim_token = ?, lease_expires_at = ?,
+				     state_version = state_version + 1, updated_at = ?
+				 WHERE handoff_id = ? AND state = 'ambiguous'
+				   AND state_version = ?
+				   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+				[
+					input.owner,
+					claimToken,
+					leaseExpiresAt,
+					input.now,
+					candidate.handoffId,
+					candidate.stateVersion,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				claimed = this.getVoiceHandoff(candidate.handoffId);
+			}
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	releaseVoiceHandoffReconciliation(input: {
+		handoffId: string;
+		claimToken: string;
+		stateVersion: number;
+		now: string;
+		settlement: { kind: string };
+	}): VoiceHandoffRow | undefined {
+		let result: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceHandoff(input.handoffId);
+			if (
+				!current ||
+				current.state !== "ambiguous" ||
+				current.claimToken !== input.claimToken ||
+				current.stateVersion !== input.stateVersion
+			)
+				return;
+			const horizonReached =
+				Date.parse(input.now) - Date.parse(current.createdAt) >=
+				24 * 60 * 60_000;
+			const attempt = current.reconcileAttempts + 1;
+			const delays = [1_000, 5_000, 15_000, 60_000] as const;
+			const next = new Date(
+				Date.parse(input.now) + (delays[attempt - 1] ?? 5 * 60_000),
+			).toISOString();
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET state = ?, last_reconcile_at = ?, next_reconcile_at = ?,
+				     reconciler_owner = NULL, claim_token = NULL,
+				     lease_expires_at = NULL, reconcile_attempts = ?,
+				     last_reconcile_result = ?,
+				     terminal_reason = ?, state_version = state_version + 1,
+				     updated_at = ?
+				 WHERE handoff_id = ? AND state = 'ambiguous'
+				   AND claim_token = ? AND state_version = ?`,
+				[
+					horizonReached ? "needs_human" : "ambiguous",
+					input.now,
+					horizonReached ? null : next,
+					attempt,
+					input.settlement.kind,
+					horizonReached ? "reconciliation_horizon_exhausted" : null,
+					input.now,
+					input.handoffId,
+					input.claimToken,
+					input.stateVersion,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getVoiceHandoff(input.handoffId);
+			}
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	recordVoiceHandoffExecution(input: {
+		handoffId: string;
+		providerOperationId: string;
+		finalState: "committed" | "rejected";
+		evidence: Record<string, unknown>;
+		at: string;
+	}): VoiceHandoffRow | undefined {
+		let result: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceHandoff(input.handoffId);
+			if (!current || current.providerOperationId !== input.providerOperationId)
+				return;
+			if (current.state === input.finalState) {
+				result = current;
+				return;
+			}
+			if (!new Set<VoiceHandoffState>(["dispatched", "ambiguous"]).has(current.state))
+				return;
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET state = ?, execution_evidence = ?, terminal_reason = NULL,
+				     next_reconcile_at = NULL, reconciler_owner = NULL,
+				     claim_token = NULL, lease_expires_at = NULL,
+				     state_version = state_version + 1, updated_at = ?
+				 WHERE handoff_id = ? AND state_version = ?`,
+				[
+					input.finalState,
+					canonicalJsonString(input.evidence),
+					input.at,
+					input.handoffId,
+					current.stateVersion,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getVoiceHandoff(input.handoffId);
+			}
+		});
+		if (result) this.save();
+		return result;
+	}
+
 	recordVoiceOutboundPage(input: {
 		sessionId: string;
 		leaseToken: string;
@@ -5784,7 +6449,11 @@ export class StateStore {
 				this.db.run(
 					`INSERT OR IGNORE INTO voice_outbound
 					 (session_id, message_id, channel_id, author_id, text, observed_at)
-					 VALUES (?, ?, ?, ?, ?, ?)`,
+					 SELECT ?, ?, ?, ?, ?, ?
+					 WHERE NOT EXISTS (
+					   SELECT 1 FROM voice_utterances
+					   WHERE session_id = ? AND mirror_message_id = ?
+					 )`,
 					[
 						input.sessionId,
 						message.messageId,
@@ -5792,6 +6461,8 @@ export class StateStore {
 						message.authorId,
 						message.text,
 						message.observedAt,
+						input.sessionId,
+						message.messageId,
 					],
 				);
 			}
@@ -5817,6 +6488,62 @@ export class StateStore {
 		});
 		if (changed) this.save();
 		return changed;
+	}
+
+	/**
+	 * FLY-2799 qa6: the voice side registers the Discord message it posted as a
+	 * line's visible transcript. The poller then skips that message by id; if it
+	 * already queued it (the page landed before this call), the queued row is
+	 * withdrawn. Claimed rows are left alone: they are already being spoken.
+	 */
+	recordVoiceUtteranceMirror(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		messageId: string;
+		now: string;
+	}): "recorded" | "replayed" | "conflict" | "not_found" | "lease_conflict" {
+		let result:
+			| "recorded"
+			| "replayed"
+			| "conflict"
+			| "not_found"
+			| "lease_conflict" = "lease_conflict";
+		let changed = false;
+		this.db.transaction(() => {
+			if (
+				!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)
+			)
+				return;
+			const row = this.workflowSelectAll(
+				`SELECT mirror_message_id FROM voice_utterances
+				 WHERE session_id = ? AND transcript_id = ?`,
+				[input.sessionId, input.transcriptId],
+			)[0] as { mirror_message_id: string | null } | undefined;
+			if (!row) {
+				result = "not_found";
+				return;
+			}
+			if (row.mirror_message_id !== null) {
+				result =
+					row.mirror_message_id === input.messageId ? "replayed" : "conflict";
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_utterances SET mirror_message_id = ?
+				 WHERE session_id = ? AND transcript_id = ?`,
+				[input.messageId, input.sessionId, input.transcriptId],
+			);
+			this.db.run(
+				`DELETE FROM voice_outbound
+				 WHERE session_id = ? AND message_id = ? AND phase = 'queued'`,
+				[input.sessionId, input.messageId],
+			);
+			result = "recorded";
+			changed = true;
+		});
+		if (changed) this.save();
+		return result;
 	}
 
 	listVoiceOutbound(
@@ -9498,6 +10225,79 @@ export class StateStore {
 		});
 	}
 
+	private migrateVoiceHandoffIntentKinds(): void {
+		const schema = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'voice_handoffs'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (String(schema?.sql ?? "").includes("'delegate_request'")) return;
+		this.db.transaction(() => {
+			this.db.run("DROP TABLE IF EXISTS voice_handoffs_next");
+			this.db.run(`
+				CREATE TABLE voice_handoffs_next (
+					handoff_id TEXT PRIMARY KEY,
+					session_id TEXT NOT NULL,
+					lead_id TEXT NOT NULL,
+					transcript_id TEXT NOT NULL,
+					intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner','delegate_request')),
+					payload_json TEXT NOT NULL,
+					original_text TEXT NOT NULL,
+					idempotency_key TEXT NOT NULL,
+					authority_binding_json TEXT NOT NULL,
+					request_digest TEXT NOT NULL,
+					transcript_receipt_id TEXT NOT NULL,
+					state TEXT NOT NULL CHECK(state IN ('authorized','dispatching','dispatched','committed','rejected','ambiguous','needs_human')),
+					provider_operation_id TEXT,
+					attempt_token TEXT,
+					delivery_id TEXT,
+					lead_event_seq INTEGER,
+					last_reconcile_at TEXT,
+					next_reconcile_at TEXT,
+					reconciler_owner TEXT,
+					claim_token TEXT,
+					lease_expires_at TEXT,
+					state_version INTEGER NOT NULL DEFAULT 1,
+					reconcile_attempts INTEGER NOT NULL DEFAULT 0,
+					last_dispatch_error TEXT,
+					last_reconcile_result TEXT,
+					terminal_reason TEXT,
+					execution_evidence TEXT,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL,
+					UNIQUE(session_id, idempotency_key),
+					FOREIGN KEY(session_id, transcript_id) REFERENCES voice_utterances(session_id, transcript_id)
+				)
+			`);
+			this.db.run(`
+				INSERT INTO voice_handoffs_next (
+					handoff_id, session_id, lead_id, transcript_id, intent_kind,
+					payload_json, original_text, idempotency_key,
+					authority_binding_json, request_digest, transcript_receipt_id,
+					state, provider_operation_id, attempt_token, delivery_id,
+					lead_event_seq, last_reconcile_at, next_reconcile_at,
+					reconciler_owner, claim_token, lease_expires_at, state_version,
+					reconcile_attempts, last_dispatch_error, last_reconcile_result,
+					terminal_reason, execution_evidence, created_at, updated_at
+				)
+				SELECT
+					handoff_id, session_id, lead_id, transcript_id, intent_kind,
+					payload_json, original_text, idempotency_key,
+					authority_binding_json, request_digest, transcript_receipt_id,
+					state, provider_operation_id, attempt_token, delivery_id,
+					lead_event_seq, last_reconcile_at, next_reconcile_at,
+					reconciler_owner, claim_token, lease_expires_at, state_version,
+					reconcile_attempts, last_dispatch_error, last_reconcile_result,
+					terminal_reason, execution_evidence, created_at, updated_at
+				FROM voice_handoffs
+			`);
+			this.db.run("DROP TABLE voice_handoffs");
+			this.db.run(
+				"ALTER TABLE voice_handoffs_next RENAME TO voice_handoffs",
+			);
+		});
+	}
+
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
@@ -10443,6 +11243,76 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS voice_outbound_session_phase ON voice_outbound(session_id, phase, seq)",
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_utterances (
+				session_id TEXT NOT NULL,
+				transcript_id TEXT NOT NULL,
+				utterance_id TEXT NOT NULL,
+				session_generation INTEGER NOT NULL,
+				sequence INTEGER NOT NULL,
+				source TEXT NOT NULL CHECK(source IN ('room_audio','engine_audio','engine_text')),
+				role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+				raw_text TEXT NOT NULL,
+				final INTEGER NOT NULL CHECK(final IN (0,1)),
+				attribution_kind TEXT NOT NULL CHECK(attribution_kind IN ('known','unknown')),
+				speaker_user_id TEXT,
+				attribution_reason TEXT,
+				capture_digest TEXT NOT NULL,
+				content_digest TEXT NOT NULL,
+				lease_epoch TEXT NOT NULL,
+				receipt_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY(session_id, transcript_id),
+				FOREIGN KEY(session_id) REFERENCES voice_sessions(session_id)
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS voice_utterances_receipt ON voice_utterances(receipt_id)",
+		);
+		// FLY-2799 qa6: the Discord message the voice side posted as this line's
+		// visible transcript. The outbound poller skips it by id, so the founder's
+		// own words are never read back as a Lead reply.
+		this.addColumnIfMissing("voice_utterances", "mirror_message_id", "TEXT");
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_handoffs (
+				handoff_id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				transcript_id TEXT NOT NULL,
+				intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner','delegate_request')),
+				payload_json TEXT NOT NULL,
+				original_text TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				authority_binding_json TEXT NOT NULL,
+				request_digest TEXT NOT NULL,
+				transcript_receipt_id TEXT NOT NULL,
+				state TEXT NOT NULL CHECK(state IN ('authorized','dispatching','dispatched','committed','rejected','ambiguous','needs_human')),
+				provider_operation_id TEXT,
+				attempt_token TEXT,
+				delivery_id TEXT,
+				lead_event_seq INTEGER,
+				last_reconcile_at TEXT,
+				next_reconcile_at TEXT,
+				reconciler_owner TEXT,
+				claim_token TEXT,
+				lease_expires_at TEXT,
+				state_version INTEGER NOT NULL DEFAULT 1,
+				reconcile_attempts INTEGER NOT NULL DEFAULT 0,
+				last_dispatch_error TEXT,
+				last_reconcile_result TEXT,
+				terminal_reason TEXT,
+				execution_evidence TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE(session_id, idempotency_key),
+				FOREIGN KEY(session_id, transcript_id) REFERENCES voice_utterances(session_id, transcript_id)
+			)
+		`);
+		this.migrateVoiceHandoffIntentKinds();
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS voice_handoffs_reconcile
+			ON voice_handoffs(state, next_reconcile_at, lease_expires_at)
+		`);
 
 		// FLY-91: Chat threads for per-issue conversation in chatChannel
 		this.db.run(`

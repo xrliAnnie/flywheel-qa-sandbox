@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "voice_utterances",
+	"classification": "deleteTarget"
+}

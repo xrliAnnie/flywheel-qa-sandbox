@@ -53,6 +53,7 @@ function fixture(options?: {
 		})),
 		playSpeech: vi.fn(options?.playSpeech ?? (async () => {})),
 		cancelSpeech: vi.fn(),
+		cancelAllSpeech: vi.fn(),
 		status: vi.fn(async () => {}),
 		stop: vi.fn(async () => {}),
 		setWaiting: vi.fn(),
@@ -104,7 +105,31 @@ describe("GenericVoiceSession", () => {
 			rawText: "请检查 FLY-2655",
 			ts: expect.any(String),
 		});
-		expect(test.room.setWaiting).toHaveBeenCalledWith(true);
+		// FLY-2799 qa6 / founder 9-24: no waiting music after she speaks; with no
+		// update the room stays quiet.
+		expect(test.room.setWaiting).not.toHaveBeenCalledWith(true);
+	});
+
+	it("uses founder audio to cancel active Codex output once before forwarding the frame", async () => {
+		const test = fixture();
+		await test.session.start();
+		await test.session.markLive();
+		const owner = {
+			utteranceId: "founder-turn",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		};
+		const pcm = Buffer.alloc(960);
+
+		test.getFrontendHandlers().onResponseState(true);
+		test.getRoomHandlers().onAudio(pcm, owner);
+		test.getRoomHandlers().onAudio(pcm, owner);
+
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledOnce();
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledWith("__conversation__");
+		expect(test.room.cancelAllSpeech).toHaveBeenCalledOnce();
+		expect(test.room.cancelSpeech).not.toHaveBeenCalled();
+		expect(test.frontend.appendAudio).toHaveBeenCalledTimes(2);
 	});
 
 	it("confirms a reply only after validated audio finishes paced playback", async () => {
@@ -764,7 +789,7 @@ describe("GenericVoiceSession start cleanup is per-branch", () => {
  */
 describe("GenericVoiceSession start budget includes preflight", () => {
 	it("gives the branches only what the caller's deadline has left", async () => {
-		let now = 1_000_000;
+		const now = 1_000_000;
 		const room = {
 			start: vi.fn(() => new Promise<{ founderPresent: boolean }>(() => {})),
 			playSpeech: vi.fn(async () => {}),

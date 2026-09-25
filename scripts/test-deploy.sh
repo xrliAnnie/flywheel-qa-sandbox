@@ -1585,6 +1585,14 @@ if [[ -n "$VOICE_FIXTURE" ]]; then
   # The launcher reads the existing managed ~/.flywheel/.env source directly;
   # do not duplicate the realtime key into Bridge's slot secretEnvironment.
   BRIDGE_ENV_UNSET_ARGS+=(-u OPENAI_API_KEY)
+  if [[ "$NO_LEAD" != "1" ]] \
+    && [[ "$(jq -r '.backend // "claude-code"' <<<"$MAIN_LEAD_SHAPE")" == "codex-app-server" ]]; then
+    FLYWHEEL_PROJECTS=$(printf '%s' "$FLYWHEEL_PROJECTS" \
+      | qa_room_bind_codex_voice_context \
+        "$TEST_PROJECT_NAME" "$AGENT_ID" \
+        "${SLOT_DIR}/test-identity.md" "${SLOT_DIR}/cdxh/${AGENT_ID}") \
+      || campaign_abort "Codex voice context binding failed"
+  fi
   log "voice fixture installed: QA room and user allowlists are slot-private"
 fi
 

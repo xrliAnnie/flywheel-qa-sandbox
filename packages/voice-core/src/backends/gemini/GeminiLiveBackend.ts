@@ -137,6 +137,8 @@ export function deriveCapabilities(
 		announce: false,
 		converse: true,
 		bargeIn: true,
+		verbatim: false,
+		attribution: false,
 		// NOT hardcoded: scheduled only when the pinned model truly supports it.
 		toolCallScheduling: profile.asyncFunctionCalling ? "scheduled" : "basic",
 		transcriptGranularity: "partial",

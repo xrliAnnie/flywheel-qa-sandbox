@@ -100,6 +100,51 @@ qa_room_inject_alert_into_projects() {
 	'
 }
 
+# Bind a slot Codex Lead's voice context to the same resident identity and
+# native memory used by its isolated carrier. Production homes follow the
+# canonical ~/.codex-<lead> layout; QA carriers deliberately live below their
+# slot root, so relying on the production fallback makes Bridge context loading
+# fail before realtime starts. Reads projects JSON on stdin and writes the
+# patched JSON to stdout.
+# Args: projectName agentId identityPath codexHome
+qa_room_bind_codex_voice_context() {
+	local project_name="$1" agent_id="$2" identity_path="$3" codex_home="$4"
+	case "$identity_path" in
+		/*) ;;
+		*) echo "Codex voice identity path must be absolute" >&2; return 1 ;;
+	esac
+	case "$codex_home" in
+		/*) ;;
+		*) echo "Codex voice home must be absolute" >&2; return 1 ;;
+	esac
+	[[ "$identity_path" != *$'\n'* && "$codex_home" != *$'\n'* ]] || return 1
+	jq -e --arg project "$project_name" --arg aid "$agent_id" \
+		--arg identity "$identity_path" \
+		--arg memory "${codex_home%/}/memories/memory_summary.md" '
+		([.[] | select(.projectName == $project) | .leads[]? |
+		  select(.agentId == $aid)] | length) as $matches
+		| if $matches != 1 then error("expected exactly one Codex voice Lead")
+		  else map(
+			if .projectName == $project then
+			  .leads |= map(
+				if .agentId == $aid then
+				  if (.backend // "claude-code") != "codex-app-server"
+				  then error("voice context target is not a Codex Lead")
+				  else . + {cosContext: {
+					displayName: .agentId,
+					aliases: [],
+					workingSubdirectory: ".",
+					identityPath: $identity,
+					memoryPaths: [$memory],
+					writableRoots: []
+				  }} end
+				else . end
+			  )
+			else . end
+		  ) end
+	'
+}
+
 # Compute the access.json allowBots array for a roundtable slot: self + the
 # OTHER roundtable participant bots (hostSlot ∪ memberSlots, minus self) so
 # cross-Lead bot delivery in the shared channel survives the plugin's pre-gate

@@ -40,6 +40,7 @@ import {
 	formatStuckEscalation,
 	formatSummaryAbsorptionRound,
 	formatSummaryDue,
+	formatVoiceHandoff,
 	formatWorkflowClaimRecorded,
 	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
@@ -239,6 +240,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		if (e.event_type === "workflow_claim_recorded") {
 			return formatWorkflowClaimRecorded(env);
 		}
+		if (e.event_type === "voice_handoff") return formatVoiceHandoff(env);
 
 		// FLY-161: runner_question — non-blocking ask from Runner. The Runner
 		// continues working regardless of when the Lead responds, so the prompt
