@@ -8,9 +8,10 @@ import {
 	type SubscriptionConfirmation,
 	type SubscriptionProvider,
 } from "./account-subscription-manual.js";
-import type {
-	CapacitySnapshot,
-	CodexAccountProjection,
+import {
+	type CapacitySnapshot,
+	CODEX_STALE_AFTER_MINUTES,
+	type CodexAccountProjection,
 } from "./capacity-snapshot.js";
 
 const MANUAL_READING_AT = "2026-09-17T23:38:00.000Z";
@@ -1000,6 +1001,13 @@ function buildMachineCodexRows(
 		};
 		const note = noteLabel(account.note);
 		if (note !== null) warnings.push(`Codex ${account.name}：${note}`);
+		if (account.tokenState === "读数过期") {
+			warnings.push(
+				`Codex ${account.name}：读数过期（${account.ageMinutes ?? "?"} 分钟前），不作打满/可用判断`,
+			);
+		} else if (account.tokenState === "已过重置待探") {
+			warnings.push(`Codex ${account.name}：已过重置、待真探，不作打满判断`);
+		}
 		if (account.unclassifiedWindows > 0) {
 			warnings.push(
 				`Codex ${account.name}：${account.unclassifiedWindows} 个窗口未给出时长，未归入 5h/周`,
@@ -1054,6 +1062,20 @@ function buildMachineCodexRows(
 	return { rows, warnings };
 }
 
+/** FLY-2869: Codex rows judge staleness by the Codex block's own threshold. */
+function codexStaleAfterMinutes(
+	codex: AccountQuotaSnapshot["quota"]["codex"],
+): number {
+	const minutes = codex.staleAfterMinutes ?? CODEX_STALE_AFTER_MINUTES;
+	if (!Number.isFinite(minutes) || minutes <= 0) {
+		throw new Error("invalid Codex quota snapshot");
+	}
+	return minutes;
+}
+
+/** FLY-2869: token states that mean "this reading cannot decide anything". */
+const CODEX_UNKNOWN_READING_STATES = new Set(["读数过期", "已过重置待探"]);
+
 function buildCodexRows(
 	snapshot: AccountQuotaSnapshot,
 	staleAfterMinutes: number,
@@ -1097,7 +1119,7 @@ export function buildAccountQuotaView(
 	const claude = buildClaudeRows(normalized, options);
 	const codex = buildCodexRows(
 		normalized,
-		normalized.quota.claude.staleAfterMinutes,
+		codexStaleAfterMinutes(normalized.quota.codex),
 		options,
 	);
 	return {
@@ -1147,11 +1169,22 @@ function tickExpiry(cell: QuotaCell): string {
 }
 
 function tickQuotaBlock(account: AccountQuotaRow): string {
-	const header = `**${account.active ? "★" : ""}${account.name}**${account.expiry.source === "machine" ? ` · 到期 ${tickExpiry(account.expiry)}` : ""}${account.exhausted ? " · 打满" : ""}`;
+	const unknownReading =
+		account.provider === "Codex" &&
+		CODEX_UNKNOWN_READING_STATES.has(account.tokenStatus.display)
+			? ` · ${account.tokenStatus.display}`
+			: "";
+	const header = `**${account.active ? "★" : ""}${account.name}**${account.expiry.source === "machine" ? ` · 到期 ${tickExpiry(account.expiry)}` : ""}${account.exhausted ? " · 打满" : ""}${unknownReading}`;
 	const age =
 		account.ageMinutes === null
 			? "未观测"
-			: `${Math.round(account.ageMinutes)}m 前${account.weeklyUsage.stale ? " (stale)" : ""}`;
+			: `${Math.round(account.ageMinutes)}m 前${
+					account.weeklyUsage.stale ||
+					// FLY-2869: a stale Codex row has no machine numbers left to carry the flag.
+					(account.provider === "Codex" && account.tokenStatus.stale)
+						? " (stale)"
+						: ""
+				}`;
 	return [
 		header,
 		"```text",

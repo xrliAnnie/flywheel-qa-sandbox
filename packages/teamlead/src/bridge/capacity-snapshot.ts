@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+	CODEX_READING_STALE_AFTER_MS,
+	type CodexReadingFreshness,
+	codexReadingFreshness,
+} from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import {
 	DATA_VOLUME_PATH,
 	GB_BYTES,
 	readDataDisk as readSharedDataDisk,
@@ -202,6 +207,11 @@ export interface CodexAccountProjection {
 	observedAt: string | null;
 	ageMinutes: number | null;
 	stale: boolean | null;
+	/**
+	 * FLY-2869: only a "fresh" reading may say 打满/正常. Stale, reset-elapsed
+	 * and unobserved readings are unknown: no percentages, no exhaustion.
+	 */
+	freshness?: CodexReadingFreshness;
 	/** Any window at 100%; the page marks these rows red. */
 	exhausted: boolean;
 	/** Latest reset among exhausted windows; null when unknown or not exhausted. */
@@ -254,6 +264,8 @@ function projectCodexSubscription(
 export type CodexTokenState =
 	| "正常"
 	| "打满"
+	| "读数过期"
+	| "已过重置待探"
 	| "已吊销"
 	| "已过期"
 	| "凭据失效"
@@ -292,6 +304,18 @@ export function codexTokenState(
 		: "正常";
 }
 
+/** FLY-2869: Codex readings go unknown after this, independent of Claude's sweep. */
+export const CODEX_STALE_AFTER_MINUTES = CODEX_READING_STALE_AFTER_MS / 60_000;
+
+const FRESHNESS_TOKEN_STATE: Record<
+	Exclude<CodexReadingFreshness, "fresh">,
+	CodexTokenState
+> = {
+	stale: "读数过期",
+	reset_elapsed: "已过重置待探",
+	unobserved: "未探",
+};
+
 function projectCodexAccount(
 	reading: CodexAccountReading,
 	input: {
@@ -302,14 +326,31 @@ function projectCodexAccount(
 	},
 ): CodexAccountProjection {
 	const subscription = projectCodexSubscription(reading, input.subscription);
+	const freshness = codexReadingFreshness(
+		reading,
+		input.nowMs,
+		input.staleAfterMinutes * 60_000,
+	);
+	const fresh = freshness === "fresh";
+	// A non-fresh reading keeps only reset instants that are still ahead.
+	const futureReset = (resetAt: string | null) =>
+		fresh || (resetAt !== null && Date.parse(resetAt) > input.nowMs)
+			? resetAt
+			: null;
 	const windows = [reading.fiveH, reading.weekly].filter(
 		(window): window is NonNullable<typeof window> => window !== null,
 	);
-	const exhaustedResets = windows
-		.filter((window) => window.usedPercent === 100)
-		.map((window) => window.resetAt);
+	const exhaustedResets = fresh
+		? windows
+				.filter((window) => window.usedPercent === 100)
+				.map((window) => window.resetAt)
+		: [];
 	const exhausted = exhaustedResets.length > 0;
-	const tokenState = codexTokenState(reading);
+	const judged = codexTokenState(reading);
+	const tokenState =
+		!fresh && (judged === "打满" || judged === "正常")
+			? FRESHNESS_TOKEN_STATE[freshness]
+			: judged;
 	const recoveryAt =
 		exhausted && exhaustedResets.every((reset) => reset !== null)
 			? new Date(
@@ -327,17 +368,18 @@ function projectCodexAccount(
 		active: reading.name === input.activeAccount,
 		registeredProfile: reading.registeredProfile,
 		planType: reading.planType,
-		fiveHPct: reading.fiveH?.usedPercent ?? null,
-		weeklyPct: reading.weekly?.usedPercent ?? null,
-		fiveHResetAt: reading.fiveH?.resetAt ?? null,
-		weeklyResetAt: reading.weekly?.resetAt ?? null,
+		fiveHPct: fresh ? (reading.fiveH?.usedPercent ?? null) : null,
+		weeklyPct: fresh ? (reading.weekly?.usedPercent ?? null) : null,
+		fiveHResetAt: futureReset(reading.fiveH?.resetAt ?? null),
+		weeklyResetAt: futureReset(reading.weekly?.resetAt ?? null),
 		credits: reading.credits,
 		resetCredits: reading.resetCredits,
 		resetCreditsObservedAt:
 			reading.resetCreditsObservedAt ?? reading.observedAt,
 		observedAt: reading.observedAt,
 		ageMinutes,
-		stale: ageMinutes === null ? null : ageMinutes > input.staleAfterMinutes,
+		stale: reading.observedAt === null ? null : freshness === "stale",
+		freshness,
 		exhausted,
 		recoveryAt,
 		authUnusable:
@@ -834,12 +876,12 @@ export async function buildCapacitySnapshot(
 				? {
 						source: "codex-accounts.json" as const,
 						activeAccount: codexStore.activeAccount,
-						staleAfterMinutes,
+						staleAfterMinutes: CODEX_STALE_AFTER_MINUTES,
 						accounts: codexStore.accounts.map((reading) =>
 							projectCodexAccount(reading, {
 								activeAccount: codexStore.activeAccount,
 								nowMs,
-								staleAfterMinutes,
+								staleAfterMinutes: CODEX_STALE_AFTER_MINUTES,
 								subscription: codexSubscriptionsByName.get(reading.name),
 							}),
 						),

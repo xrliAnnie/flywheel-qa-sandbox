@@ -608,6 +608,173 @@ it("uses only the latest unresolved capacity fact as the current guard", async (
 		false,
 	);
 });
+it.each([
+	{
+		name: "every exhausted window has reset",
+		windows: (now: number) => [{ usedPercent: 100, resetsAt: now + 10_000 }],
+		replayAt: 15_000,
+		kind: "selected",
+		guard: false,
+	},
+	{
+		name: "one exhausted window reset, another still ahead",
+		windows: (now: number) => [
+			{ usedPercent: 100, resetsAt: now + 10_000 },
+			{ usedPercent: 100, resetsAt: now + 3_600_000 },
+		],
+		replayAt: 15_000,
+		kind: "pool_exhausted",
+		guard: true,
+	},
+	{
+		name: "a non-exhausted window's reset passed",
+		windows: (now: number) => [
+			{ usedPercent: 100, resetsAt: now + 3_600_000 },
+			{ usedPercent: 50, resetsAt: now + 10_000 },
+		],
+		replayAt: 15_000,
+		kind: "observation_unavailable",
+		guard: false,
+	},
+])(
+	"FLY-2869 capacity guard replay: $name",
+	async ({ windows, replayAt, kind, guard }) => {
+		store = await StateStore.create(":memory:");
+		const now = Date.parse("2026-09-17T20:00:00.000Z");
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 1,
+		});
+		store.codexQuota.registerBinding(binding());
+		store.codexQuota.recordSignal({ executionId: "e0", bindingId: "b0" });
+		const pool = ["business", "school"].map((profile) => ({
+			profile,
+			accountKey: `${profile}-key`,
+		}));
+		const observations = pool.map((member) => ({
+			...member,
+			observedAt: now,
+			identityVerified: true,
+			authHealth: "valid" as const,
+			scopeKnown: true,
+			windows: windows(now),
+		}));
+		store.currentCodexPoolMembers = () => pool;
+		store.codexQuota.recordPoolExhausted({
+			incidentId: "codex:root:1",
+			pool,
+			observations,
+			observedAt: now,
+			nextAttemptAt: now + 60_000,
+		});
+		const { selectCodexQuotaCandidate } = await import(
+			"../codex-quota/candidate-selector.js"
+		);
+		expect(
+			selectCodexQuotaCandidate(observations, {
+				now: now + replayAt,
+				pool: pool.map((member) => member.profile),
+			}).kind,
+		).toBe(kind);
+		expect(
+			store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + replayAt),
+		).toBe(guard);
+		store.currentCodexPoolMembers = () => [
+			...pool,
+			{ profile: "shopping", accountKey: "shopping-key" },
+		];
+		expect(
+			store.codexQuota.hasCurrentCapacityGuard("codex:root:1", now + replayAt),
+		).toBe(false);
+	},
+);
+it("FLY-2869: a manual canonical switch enqueues one N1 notification in the same transaction", async () => {
+	store = await StateStore.create(":memory:");
+	store.codexQuota.initializeRoot({
+		rootKey: "root",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 11,
+	});
+	const notification = {
+		version: 1 as const,
+		from: {
+			profile: "business",
+			accountKey: "business-key",
+			email: "business@example.test",
+			windows: [],
+		},
+		to: {
+			profile: "school",
+			accountKey: "school-key",
+			email: "school@example.test",
+			windows: [],
+		},
+	};
+	store.codexQuota.reconcileExternalRoot({
+		rootKey: "root",
+		expectedGeneration: 11,
+		accountKey: "school-key",
+		profile: "school",
+		authDigest: "a".repeat(64),
+		notification,
+	});
+	const rows = store.codexQuota
+		.listOutbox()
+		.filter((row) => row.kind === "switch_notification");
+	expect(rows).toHaveLength(1);
+	expect(rows[0]).toMatchObject({
+		event_id: "codex:root:12:manual_switch",
+		incident_id: null,
+		destination: "founder",
+		delivery_state: "pending",
+	});
+	expect(JSON.parse(String(rows[0]!.payload_json))).toEqual({
+		reason: "manual_switch",
+		rootKey: "root",
+		generation: 12,
+		notification: JSON.stringify(notification),
+	});
+	expect(store.codexQuota.getExternalGeneration("root", 12)).toMatchObject({
+		profile: "school",
+		accountKey: "school-key",
+	});
+	expect(store.codexQuota.getExternalGeneration("root", 13)).toBeUndefined();
+
+	// The same identity again is not a switch; nothing new is written.
+	store.codexQuota.reconcileExternalRoot({
+		rootKey: "root",
+		expectedGeneration: 12,
+		accountKey: "school-key",
+		profile: "school",
+		authDigest: "a".repeat(64),
+		notification,
+	});
+	expect(
+		store.codexQuota
+			.listOutbox()
+			.filter((row) => row.kind === "switch_notification"),
+	).toHaveLength(1);
+
+	// A snapshot too large for a durable row is stored as null, never truncated.
+	store.codexQuota.reconcileExternalRoot({
+		rootKey: "root",
+		expectedGeneration: 12,
+		accountKey: "business-key",
+		profile: "business",
+		authDigest: "b".repeat(64),
+		notification: {
+			...notification,
+			from: { ...notification.from, accountKey: "x".repeat(20_000) },
+		},
+	});
+	const second = store.codexQuota
+		.listOutbox()
+		.find((row) => row.event_id === "codex:root:13:manual_switch");
+	expect(JSON.parse(String(second!.payload_json)).notification).toBeNull();
+});
 it("binds capacity facts to account identities and replays only retained members", async () => {
 	store = await StateStore.create(":memory:");
 	const now = Date.parse("2026-09-17T20:00:00.000Z");
@@ -1141,4 +1308,95 @@ it("ignores historical null-incident pause residue when an operator resumes an u
 	store.codexQuota.registerBinding({ ...binding(), executionId, runId });
 	store.codexQuota.recordSignal({ executionId, bindingId: "b0" });
 	expect(store.codexQuota.isExecutionPaused(executionId)).toBe(true);
+});
+
+describe("FLY-2869 — Codex reading pipeline episodes", () => {
+	const T0 = Date.parse("2026-09-25T04:00:00.000Z");
+	const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+	const staleAlerts = () =>
+		store.codexQuota.listOutbox().filter((row) => row.kind === "reading_stale");
+	const observe = (
+		minutes: number,
+		latestObservedAt: string | null,
+		failureCode: string | null = "no_observation_advanced",
+	) =>
+		store.codexQuota.observeCodexReadingPipeline({
+			nowIso: at(minutes),
+			latestObservedAt,
+			failureCode,
+		});
+
+	it("never observed: the clock starts at the first unhealthy report and survives restarts", async () => {
+		const dbPath = join(
+			mkdtempSync(join(tmpdir(), "fly2869-episode-")),
+			"teamlead.db",
+		);
+		store = await StateStore.create(dbPath);
+		observe(0, null);
+		store.close();
+		// Restart every 20 minutes; the start point must not move.
+		store = await StateStore.create(dbPath);
+		observe(20, null);
+		expect(staleAlerts()).toHaveLength(0);
+		store.close();
+		store = await StateStore.create(dbPath);
+		observe(31, null);
+		expect(staleAlerts()).toHaveLength(1);
+		store.close();
+		store = await StateStore.create(dbPath);
+		observe(51, null);
+		observe(71, null);
+		expect(staleAlerts()).toHaveLength(1);
+		expect(JSON.parse(String(staleAlerts()[0]!.payload_json))).toMatchObject({
+			staleSince: at(0),
+			baselineObservedAt: null,
+			failureCode: "no_observation_advanced",
+			staleMinutesAtAlert: 31,
+		});
+	});
+
+	it("stale since the last reading alerts immediately, closes on a healthy reading, and a second stall alerts again", async () => {
+		store = await StateStore.create(":memory:");
+		observe(0, at(-40), "codex_quota_runtime_unavailable");
+		expect(staleAlerts()).toHaveLength(1);
+		expect(JSON.parse(String(staleAlerts()[0]!.payload_json))).toMatchObject({
+			staleSince: at(-40),
+			baselineObservedAt: at(-40),
+			failureCode: "codex_quota_runtime_unavailable",
+			staleMinutesAtAlert: 40,
+		});
+		// A fresh reading (even one whose 100% reset already passed) closes it.
+		observe(5, at(4), null);
+		observe(10, at(4), null);
+		expect(staleAlerts()).toHaveLength(1);
+		observe(40, at(4));
+		expect(staleAlerts()).toHaveLength(2);
+		expect(new Set(staleAlerts().map((row) => String(row.event_id))).size).toBe(
+			2,
+		);
+	});
+
+	it("recover then lose the store entirely: the next stall is a new episode", async () => {
+		store = await StateStore.create(":memory:");
+		observe(0, null);
+		observe(31, null);
+		observe(32, at(32), null);
+		observe(40, null);
+		observe(71, null);
+		expect(staleAlerts()).toHaveLength(2);
+	});
+
+	it("rejects inconsistent input without touching any row", async () => {
+		store = await StateStore.create(":memory:");
+		for (const input of [
+			{ nowIso: "not-a-time", latestObservedAt: null, failureCode: null },
+			{ nowIso: at(0), latestObservedAt: "garbage", failureCode: null },
+			{ nowIso: at(0), latestObservedAt: at(2), failureCode: null },
+		])
+			expect(() => store.codexQuota.observeCodexReadingPipeline(input)).toThrow(
+				"invalid_reading_pipeline_input",
+			);
+		observe(40, null);
+		expect(staleAlerts()).toHaveLength(0);
+	});
 });

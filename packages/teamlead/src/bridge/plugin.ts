@@ -135,9 +135,14 @@ import {
 	createRegisteredCodexQuotaHostCollectorOptions,
 } from "../codex-quota/host-readiness.js";
 import { createCodexQuotaMaintenance } from "../codex-quota/maintenance.js";
+import { CodexAccountOccupancy } from "../codex-quota/occupancy.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
 import { checkCodexQuotaReadiness } from "../codex-quota/readiness.js";
+import {
+	codexNotificationWindows,
+	createCodexReadingScheduler,
+} from "../codex-quota/reading-scheduler.js";
 import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
@@ -145,6 +150,7 @@ import {
 	CodexQuotaRuntime,
 	createCodexQuotaFailureReporter,
 	initializeCodexQuotaRuntime,
+	reconcileCodexCanonicalRoot,
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -233,7 +239,10 @@ import {
 } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-page.js";
-import { createAccountQuotaRefresh } from "./account-quota-refresh.js";
+import {
+	createAccountQuotaRefresh,
+	createCodexAccountQuotaRefresh,
+} from "./account-quota-refresh.js";
 import {
 	buildAccountQuotaView,
 	renderAccountsPageHtml,
@@ -8805,6 +8814,24 @@ export async function startBridge(
 			),
 		}),
 	);
+	// FLY-2869: one occupancy owner for availability, the mutation runtime and
+	// the account readings; every readiness refresh updates the mutation fence.
+	const codexAccountOccupancy = new CodexAccountOccupancy(
+		codexQuotaCollectHomes,
+	);
+	// Declared before the runtime exists: its canonical reconciliation (and the
+	// runtime-free one below) reads fresh readings for the manual-switch N1.
+	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
+	const codexNotificationReadingWindows = (
+		profile: string,
+		accountKey: string,
+	) =>
+		codexNotificationWindows(
+			readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+			profile,
+			accountKey,
+			Date.now(),
+		);
 	const codexQuotaAvailability = new CodexQuotaAvailability({
 		enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
 		runtimeAvailable: () => codexQuotaRuntime !== undefined,
@@ -8816,7 +8843,7 @@ export async function startBridge(
 					})
 				: checkCodexQuotaReadiness({
 						canonicalAuthPath: join(codexQuotaCanonicalHome, "auth.json"),
-						collectHomes: codexQuotaCollectHomes,
+						collectHomes: codexAccountOccupancy.collect,
 					}),
 	});
 	store.codexQuotaAvailability = () => codexQuotaAvailability.snapshot();
@@ -8840,6 +8867,17 @@ export async function startBridge(
 		flushOutbox: async () => codexQuotaOutboxHolder.flush?.(),
 		projectAudit: () =>
 			projectCodexQuotaAudit(store.codexQuota, dirname(codexQuotaStateRoot)),
+		// FLY-2869: manual switches still reach #notifications when the
+		// auto-switch runtime is not constructed (flag off at boot).
+		reconcileCanonical: async () => {
+			if (process.env.VITEST) return;
+			await reconcileCodexCanonicalRoot({
+				store,
+				canonicalHome: codexQuotaCanonicalHome,
+				pool: getCodexQuotaAccountPool(),
+				readingWindows: codexNotificationReadingWindows,
+			});
+		},
 	});
 	await codexQuotaMaintenance.bootstrap();
 	codexQuotaRuntime = await initializeCodexQuotaRuntime(
@@ -8895,6 +8933,8 @@ export async function startBridge(
 				autoEnabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
 				availability: codexQuotaAvailability,
 				collectHomes: codexQuotaCollectHomes,
+				occupancy: codexAccountOccupancy,
+				readingWindows: codexNotificationReadingWindows,
 			});
 			if (!store.codexQuota.getRoot(codexQuotaRootKey))
 				await codexQuotaRuntime.credential();
@@ -8904,21 +8944,21 @@ export async function startBridge(
 	);
 	await codexQuotaMaintenance.bootstrap();
 
-	// FLY-2688 / FLY-2807 / FLY-2864: on-demand account readings for the
-	// account quota page. Single-flight and never scheduled. Live Codex accounts
+	// FLY-2688 / FLY-2807 / FLY-2864: account readings for the account quota
+	// page. FLY-2869: the Codex branch is also scheduled (reading scheduler
+	// below) so the readings can no longer silently freeze. Live Codex accounts
 	// use the direct readonly WHAM path, which never shares or rotates their
 	// refresh token. Same paths the capacity snapshot reads by default; derived
 	// once so the writers and the readers cannot drift.
-	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
 	const codexSubscriptionStorePath = defaultCodexSubscriptionStorePath();
 	const claudeAccountDetailStorePath = defaultClaudeAccountDetailStorePath();
-	const refreshCodexAccountQuota = createAccountQuotaRefresh({
+	// FLY-2869: one Codex round shared by the account page and the reading
+	// scheduler, so the two never run concurrent Codex reads.
+	const refreshCodexReadings = createCodexAccountQuotaRefresh({
 		// Hard ceiling above the observers' own round deadlines so a wedged
 		// app-server cannot hold the request open.
 		ceilingMs: 90_000,
 		observeCodexAccounts: (signal) => {
-			const runtime = codexQuotaRuntime;
-			if (!runtime) throw new Error("codex_quota_runtime_unavailable");
 			const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
 			return observeCodexAccounts({
 				profilesRoot: codexQuotaProfilesRoot,
@@ -8929,8 +8969,13 @@ export async function startBridge(
 				limitId: "codex",
 				previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
 				signal,
-				// Re-read per slot: a Lead can launch mid-round.
-				refreshInUse: () => runtime.accountInUseGuard(),
+				// Re-read per slot: a Lead can launch mid-round. FLY-2869: the shared
+				// occupancy works with or without the auto-switch runtime.
+				refreshInUse: () =>
+					codexAccountOccupancy.guard(
+						join(canonicalHome, "auth.json"),
+						getCodexQuotaAccountPool,
+					),
 			});
 		},
 		writeCodexAccountQuotaStore: (codexStore) =>
@@ -8948,6 +8993,10 @@ export async function startBridge(
 			}),
 		writeCodexSubscriptionStore: (subscriptions) =>
 			writeCodexSubscriptionStore(codexSubscriptionStorePath, subscriptions),
+	});
+	const refreshCodexAccountQuota = createAccountQuotaRefresh({
+		ceilingMs: 90_000,
+		refreshCodex: refreshCodexReadings,
 		observeClaudeAccountDetails: (signal) =>
 			observeClaudeAccountDetails({
 				profilesRoot:
@@ -8957,6 +9006,13 @@ export async function startBridge(
 			}),
 		writeClaudeAccountDetailStore: (details) =>
 			writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details),
+	});
+	// FLY-2869: rides the existing GatePoller tick (see onLandOperationTick).
+	const codexReadingScheduler = createCodexReadingScheduler({
+		refresh: refreshCodexReadings,
+		readStore: () => readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+		observePipeline: (report) =>
+			store.codexQuota.observeCodexReadingPipeline(report),
 	});
 
 	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
@@ -12653,7 +12709,12 @@ export async function startBridge(
 		onLandOperationTick: async () => {
 			await landOperationTick();
 			if (process.env.VITEST) return;
-			await codexQuotaMaintenance.tick();
+			try {
+				await codexQuotaMaintenance.tick();
+			} finally {
+				// FLY-2869: never let the maintenance chain short-circuit the readings.
+				codexReadingScheduler.tick();
+			}
 		},
 		onAutoNarrowGateTick: async () => {
 			const mode = readAutoNarrowRuntimeControl(flagStore, "flywheel").mode;

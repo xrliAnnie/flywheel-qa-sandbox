@@ -1,0 +1,178 @@
+// FLY-2869 (Lead instruction 28d4734a): does a long-running codex app-server follow an
+// auth.json symlink swap without restart? Symlinks only; never copies credential bytes.
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+
+const REPO = "/Users/xiaorongli/Dev/flywheel-FLY-2869/packages/claude-runner/bin";
+const { identifyCodexAuth, loadCodexAccountPool } = await import(
+	`${REPO}/codex-account-core.mjs`
+);
+const { acquireCodexAccountLease, codexInstallAccountKey } = await import(
+	`${REPO}/codex-account-install.mjs`
+);
+
+const [A, B] = process.argv.slice(2);
+if (!A || !B || [A, B].includes("business") || A === B)
+	throw new Error("usage: <profileA> <profileB> (never business)");
+const SCRATCH = process.env.EXP_ROOT;
+const BINARY = process.env.EXP_CODEX_BIN;
+const profilesRoot = join(homedir(), ".codex", "profiles");
+const registryPath = join(
+	homedir(),
+	".flywheel/libexec/codex-guard/current/codex-account-registry.json",
+);
+const pool = loadCodexAccountPool({ profilesRoot, registryPath });
+const slot = (p) => join(profilesRoot, p, "auth.json");
+const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
+const redact = (email) =>
+	typeof email === "string"
+		? email.replace(/^(.)[^@]*(@.*)$/, "$1***$2")
+		: email;
+const canonical = identifyCodexAuth(
+	readFileSync(join(homedir(), ".codex", "auth.json"), "utf8"),
+	pool,
+);
+if ([A, B].includes(canonical.profile))
+	throw new Error(`refusing: ${canonical.profile} is the live canonical account`);
+const ids = Object.fromEntries(
+	[A, B].map((p) => [p, identifyCodexAuth(readFileSync(slot(p), "utf8"), pool)]),
+);
+for (const p of [A, B])
+	if (ids[p].profile !== p) throw new Error(`slot ${p} identity mismatch`);
+const before = Object.fromEntries([A, B].map((p) => [p, sha(slot(p))]));
+const leases = [A, B].map((p) =>
+	acquireCodexAccountLease(profilesRoot, codexInstallAccountKey(ids[p])),
+);
+if (leases.some((l) => l.orphanRecovery)) {
+	for (const l of leases) l.release();
+	throw new Error("pending candidate recovery; refusing");
+}
+const log = [];
+const note = (event, data = {}) => {
+	const row = { t: new Date().toISOString(), event, ...data };
+	log.push(row);
+	console.log(JSON.stringify(row));
+};
+const root = mkdtempSync(join(SCRATCH, "tf-"));
+const home = join(root, "home");
+mkdirSync(home, { mode: 0o700 });
+const link = join(home, "auth.json");
+symlinkSync(slot(A), link);
+note("setup", { canonical: canonical.profile, A, B, link: readlinkSync(link) });
+
+const child = spawn(
+	BINARY,
+	["app-server", "-c", 'cli_auth_credentials_store="file"'],
+	{
+		cwd: root,
+		env: { PATH: process.env.PATH, HOME: homedir(), CODEX_HOME: home },
+		stdio: ["pipe", "pipe", "pipe"],
+	},
+);
+note("spawned", { pid: child.pid });
+let stderr = "";
+child.stderr.on("data", (d) => {
+	stderr += d;
+});
+const pending = new Map();
+createInterface({ input: child.stdout }).on("line", (line) => {
+	let message;
+	try {
+		message = JSON.parse(line);
+	} catch {
+		return;
+	}
+	if (message.id !== undefined && pending.has(message.id)) {
+		pending.get(message.id)(message);
+		pending.delete(message.id);
+	}
+});
+let nextId = 1;
+const request = (method, params) =>
+	new Promise((resolve, reject) => {
+		const id = nextId++;
+		const timer = setTimeout(() => reject(new Error(`timeout ${method}`)), 30_000);
+		pending.set(id, (message) => {
+			clearTimeout(timer);
+			resolve(message);
+		});
+		child.stdin.write(`${JSON.stringify({ id, method, ...(params ? { params } : {}) })}\n`);
+	});
+const summarizeLimits = (result) => {
+	const bucket = result?.rateLimitsByLimitId?.codex ?? result?.rateLimits;
+	return {
+		planType: bucket?.planType ?? result?.planType ?? null,
+		primary: bucket?.primary
+			? { usedPercent: bucket.primary.usedPercent, resetsAt: bucket.primary.resetsAt }
+			: null,
+		secondary: bucket?.secondary
+			? { usedPercent: bucket.secondary.usedPercent, resetsAt: bucket.secondary.resetsAt }
+			: null,
+	};
+};
+const probe = async (label) => {
+	const account = await request("account/read", { refreshToken: false });
+	const limits = await request("account/rateLimits/read");
+	note(label, {
+		accountEmail: redact(account.result?.account?.email),
+		accountError: account.error ? String(account.error.message).slice(0, 200) : null,
+		matches: {
+			A: account.result?.account?.email === ids[A].email,
+			B: account.result?.account?.email === ids[B].email,
+		},
+		limits: summarizeLimits(limits.result),
+		limitsError: limits.error ? String(limits.error.message).slice(0, 200) : null,
+	});
+};
+try {
+	const init = await request("initialize", {
+		clientInfo: { name: "fly2869-token-follow", version: "1.0.0" },
+	});
+	child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
+	note("initialized", { ok: !init.error });
+	await probe("before_swap");
+	const tmp = join(home, ".auth.json.swap");
+	symlinkSync(slot(B), tmp);
+	renameSync(tmp, link);
+	note("swapped", { link: readlinkSync(link) });
+	await probe("after_swap_immediate");
+	await new Promise((r) => setTimeout(r, 15_000));
+	await probe("after_swap_15s");
+} finally {
+	child.stdin.end();
+	await new Promise((r) => {
+		const t = setTimeout(() => {
+			child.kill("SIGTERM");
+			r();
+		}, 10_000);
+		child.once("exit", () => {
+			clearTimeout(t);
+			r();
+		});
+	});
+	const linkState = lstatSync(link);
+	const after = Object.fromEntries([A, B].map((p) => [p, sha(slot(p))]));
+	note("teardown", {
+		homeAuthIsSymlink: linkState.isSymbolicLink(),
+		homeAuthTarget: linkState.isSymbolicLink() ? readlinkSync(link) : null,
+		slotBytesUnchanged: { [A]: before[A] === after[A], [B]: before[B] === after[B] },
+		stderrTail: stderr.slice(-400).replace(/[\w.+-]+@[\w.-]+/g, "<email>"),
+	});
+	for (const l of leases) l.release();
+	// A replaced symlink would hold rotated credential bytes: never delete it silently.
+	if (linkState.isSymbolicLink()) rmSync(root, { recursive: true, force: true });
+	else note("KEPT_ROOT_FOR_OPERATOR", { root });
+}

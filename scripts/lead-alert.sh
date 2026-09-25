@@ -135,7 +135,7 @@ VOICE_ROUTE_TOKEN_ENV=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock shuttle_unit_unhealthy voice_daemon_unhealthy"
+INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled codex_quota_reading_stale quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock shuttle_unit_unhealthy voice_daemon_unhealthy"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -226,6 +226,7 @@ fi
 
 case "$KIND" in
   codex_quota_automation_disabled) ;;
+  codex_quota_reading_stale) ;;
   # FLY-871 §12 W2: tui_window_lost — the windowed Codex Lead's silent-no-pane
   # guard fires this via lead-alert.sh (Discord-independent path). Kept in the TS
   # AlertEventType union too (LeadAlertNotifier.ts) so the shared type face has no drift.

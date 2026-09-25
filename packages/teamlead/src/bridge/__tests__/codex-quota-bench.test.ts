@@ -152,7 +152,12 @@ async function work(child: ChildProcess, command = "work") {
 	return response;
 }
 async function fixture(
-	scenario: "success" | "exhausted" | "probe_failed" | "queued",
+	scenario:
+		| "success"
+		| "exhausted"
+		| "probe_failed"
+		| "queued"
+		| "reset_elapsed",
 ) {
 	await import("@linear/sdk");
 	const root = await realpath(
@@ -689,6 +694,57 @@ it.each(["exhausted", "probe_failed"] as const)(
 	},
 	30000,
 );
+it("FLY-2869: an exhausted account whose reset passed is probed for real, installed and announced", async () => {
+	const f = await fixture("reset_elapsed");
+	const before = await readFile(join(f.canonicalHome, "auth.json"), "utf8");
+	await f.intake();
+	expect(f.store.codexQuota.listIncidents()).toHaveLength(1);
+	await f.runtime.tick();
+	const targets = f.store.codexQuota.listTargets(f.incidentId);
+	expect(
+		targets.map((row) => row.state),
+		JSON.stringify(f.store.codexQuota.getIncident(f.incidentId)),
+	).toEqual(Array(6).fill("recovered"));
+	expect(f.store.codexQuota.getIncident(f.incidentId)?.target_profile).toBe(
+		"school",
+	);
+	expect(await readFile(join(f.canonicalHome, "auth.json"), "utf8")).not.toBe(
+		before,
+	);
+	const cli = (await readFile(f.journalPath, "utf8"))
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
+	expect(
+		cli.filter((row) => row.kind === "probe").map((row) => row.profile),
+	).toEqual(["school"]);
+	expect(cli.filter((row) => row.kind === "probe_ok")).toHaveLength(1);
+	await f.deliver();
+	await f.deliver();
+	const messages = (await readFile(f.sink, "utf8"))
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
+	const switched = messages.filter(
+		(message) => message.eventType === "quota_switch_confirmation",
+	);
+	expect(switched).toHaveLength(1);
+	expect(switched[0].body.split("\n")[0]).toBe(
+		"Codex 已切号：**business → school**（quota:weekly）",
+	);
+	expect(switched[0].body).toContain(
+		"新账号 **school**\nschool@example.test\n```text\nwindow  used   left   reset (PT)\nweekly  n/a    n/a    n/a",
+	);
+	summaries.push({
+		scenario: "reset_elapsed",
+		recovered: 6,
+		probes: ["school"],
+		switchNotifications: 1,
+		provider: "synthetic",
+	});
+}, 30000);
 it("HTTP review generic429 is rejected without an incident, probe, or restart", async () => {
 	const f = await fixture("success");
 	const credential = await f.runtime.credential();

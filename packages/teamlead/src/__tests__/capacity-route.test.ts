@@ -911,29 +911,33 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly2688-route-codex-"));
 		scratch.push(dir);
 		const codexAccountStorePath = join(dir, "codex-accounts.json");
+		// FLY-2869: readings older than 30 minutes are unknown, so the fixture
+		// is anchored to the real clock the route renders with.
+		const now = Date.now();
+		const at = (offsetMs: number) => new Date(now + offsetMs).toISOString();
 		writeFileSync(
 			codexAccountStorePath,
 			JSON.stringify({
 				version: 1,
-				generatedAt: "2026-09-18T00:40:00.000Z",
+				generatedAt: at(-5 * 60_000),
 				activeAccount: "personal2",
 				accounts: [
 					{
 						name: "personal2",
 						registeredProfile: null,
-						observedAt: "2026-09-18T00:40:00.000Z",
+						observedAt: at(-5 * 60_000),
 						authHealth: "valid",
 						note: null,
 						planType: "free",
 						fiveH: {
 							usedPercent: 100,
 							windowMinutes: 300,
-							resetAt: "2026-09-18T05:00:00.000Z",
+							resetAt: at(4 * 3_600_000),
 						},
 						weekly: {
 							usedPercent: 100,
 							windowMinutes: 10080,
-							resetAt: "2026-09-19T05:00:00.000Z",
+							resetAt: at(86_400_000),
 						},
 						credits: {
 							known: true,
@@ -962,6 +966,6 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 		expect(html).toContain("周已满");
 		expect(html).toContain('data-group="full"');
 		expect(html).toContain("background:var(--active-bg)!important");
-		expect(html).not.toContain("恢复 09-18");
+		expect(html).not.toContain("恢复 ");
 	});
 });

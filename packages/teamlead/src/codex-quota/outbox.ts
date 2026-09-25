@@ -2,6 +2,7 @@ import {
 	isCodexIdentityLabel,
 	isCodexSlotName,
 } from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import { resetTimestamp } from "../account-heal/account-switch-notification.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { leadEventEnvelopeFromJournalRow } from "../bridge/legacy-lead-event-reconciler.js";
 import type { DurableQueueReceipt } from "../bridge/runtime-registry.js";
@@ -44,6 +45,124 @@ export interface CodexQuotaOutboxOptions {
 	now?: () => number;
 	timezone?: () => string;
 }
+function resolveTimezone(options: Pick<CodexQuotaOutboxOptions, "timezone">) {
+	try {
+		const timezone = options.timezone?.() ?? "America/Los_Angeles";
+		new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+		return timezone;
+	} catch {
+		return "America/Los_Angeles";
+	}
+}
+
+/**
+ * FLY-2869: the "readings stopped" body is rendered only from the durable
+ * payload, so an ambiguous replay of the same event id says exactly the same.
+ */
+function readingStaleBody(
+	row: Record<string, unknown>,
+	timezone: string,
+): string | null {
+	let data: Record<string, unknown>;
+	try {
+		data = JSON.parse(String(row.payload_json));
+	} catch {
+		return null;
+	}
+	const minutes = data?.staleMinutesAtAlert;
+	if (!Number.isSafeInteger(minutes) || (minutes as number) < 0) return null;
+	const baseline =
+		typeof data.baselineObservedAt === "string" &&
+		Number.isFinite(Date.parse(data.baselineObservedAt))
+			? data.baselineObservedAt
+			: null;
+	const failure =
+		typeof data.failureCode === "string" &&
+		/^[a-z0-9_:.-]{1,80}$/i.test(data.failureCode)
+			? data.failureCode
+			: null;
+	const last =
+		baseline === null
+			? "：从未观测到"
+			: ` ${resetTimestamp(baseline, timezone)}${timezone === "America/Los_Angeles" ? " PT" : ""}`;
+	return `⚠️ Codex 额度读数已 ${minutes} 分钟没有刷新成功（最后一次成功读数${last}）。capacity / tick / codex-profile list 已把各号显示为「读数过期」，不据此判断无号可切；需要时请真探。${failure ? `最近一次失败：${failure}` : ""}`;
+}
+
+/**
+ * FLY-2869: the durable manual-switch row. `undefined` = not a manual row;
+ * `null` = a manual row whose recorded generation is missing (stays pending,
+ * never invents a target). The snapshot is trusted only when it agrees with
+ * the recorded generation; otherwise only verified profile names survive.
+ */
+function manualSwitchNotification(
+	store: StateStore,
+	row: Record<string, unknown>,
+):
+	| {
+			rootKey: string;
+			generation: number;
+			snapshot: CodexSwitchNotificationSnapshot;
+	  }
+	| null
+	| undefined {
+	let data: Record<string, unknown>;
+	try {
+		data = JSON.parse(String(row.payload_json));
+	} catch {
+		return undefined;
+	}
+	if (data?.reason !== "manual_switch") return undefined;
+	const rootKey = data.rootKey;
+	const generation = data.generation;
+	if (
+		typeof rootKey !== "string" ||
+		!rootKey ||
+		!Number.isSafeInteger(generation)
+	)
+		return null;
+	const recorded = store.codexQuota.getExternalGeneration(
+		rootKey,
+		generation as number,
+	);
+	if (!recorded) return null;
+	let parsed: CodexSwitchNotificationSnapshot | null = null;
+	try {
+		parsed =
+			typeof data.notification === "string"
+				? parseCodexSwitchNotificationSnapshot(JSON.parse(data.notification), {
+						manual: true,
+					})
+				: null;
+	} catch {
+		parsed = null;
+	}
+	const agrees =
+		parsed !== null &&
+		parsed.to.profile === recorded.profile &&
+		parsed.to.accountKey === recorded.accountKey;
+	return {
+		rootKey,
+		generation: generation as number,
+		snapshot: agrees
+			? parsed!
+			: {
+					version: 1,
+					from: {
+						profile: parsed?.from.profile ?? "unknown",
+						accountKey: "unknown",
+						email: null,
+						windows: [],
+					},
+					to: {
+						profile: recorded.profile,
+						accountKey: recorded.accountKey,
+						email: null,
+						windows: [],
+					},
+				},
+	};
+}
+
 /** The existing notifier owns Discord retries; claims never substitute for its receipt. */
 export function createCodexQuotaOutboxDelivery(
 	options: CodexQuotaOutboxOptions,
@@ -139,11 +258,82 @@ export function createCodexQuotaOutboxDelivery(
 			const founderVisible = founder || notification;
 			if (founderVisible && !/^\d{16,22}$/.test(options.founderUserId ?? ""))
 				continue;
+			// FLY-2869: a manual canonical switch has no incident; it is keyed by the
+			// external generation it recorded and is resolved before any claim.
+			const manual = notification
+				? manualSwitchNotification(options.store, row)
+				: undefined;
+			if (manual === null) continue;
 			const claim = options.store.codexQuota.claimOutboxAttempt(
 				eventId,
 				(options.now ?? Date.now)(),
 			);
 			if (!claim) continue;
+			if (manual) {
+				const payload: AlertPayload = {
+					leadId: "codex-quota",
+					projectName: "machine",
+					eventId,
+					eventType: "quota_switch_confirmation",
+					title: "Codex quota recovery update",
+					body: formatCodexSwitchNotification(
+						manual.snapshot,
+						resolveTimezone(options),
+						"manual",
+					),
+					severity: "info",
+					metadata: {
+						codexQuota: {
+							vendor: "codex",
+							incidentId: `codex:${manual.rootKey}:${manual.generation}`,
+							generation: manual.generation,
+						},
+					},
+					deliveryStyle: "plain",
+				};
+				try {
+					await options.send(payload, {
+						replayAfterAmbiguousAttempt: claim.replay,
+					});
+				} catch {
+					continue;
+				}
+				const delivered = options.store.getAlertDeliveryReceipt(eventId);
+				if (delivered)
+					options.store.codexQuota.markOutboxDelivered(
+						eventId,
+						`${delivered.outcome}:${delivered.recorded_at}`,
+					);
+				continue;
+			}
+			if (row.kind === "reading_stale") {
+				const body = readingStaleBody(row, resolveTimezone(options));
+				if (body === null) continue;
+				const payload: AlertPayload = {
+					leadId: "codex-quota",
+					projectName: "machine",
+					eventId,
+					eventType: "codex_quota_reading_stale",
+					title: "Codex 额度读数停更",
+					body,
+					severity: "warning",
+					deliveryStyle: "plain",
+				};
+				try {
+					await options.send(payload, {
+						replayAfterAmbiguousAttempt: claim.replay,
+					});
+				} catch {
+					continue;
+				}
+				const delivered = options.store.getAlertDeliveryReceipt(eventId);
+				if (delivered)
+					options.store.codexQuota.markOutboxDelivered(
+						eventId,
+						`${delivered.outcome}:${delivered.recorded_at}`,
+					);
+				continue;
+			}
 			if (row.kind === "automation_disabled") {
 				let reasons: CodexQuotaManualReason[] = [];
 				let legacy:
@@ -286,13 +476,7 @@ export function createCodexQuotaOutboxDelivery(
 					},
 				};
 			}
-			let timezone = "America/Los_Angeles";
-			try {
-				timezone = options.timezone?.() ?? timezone;
-				new Intl.DateTimeFormat("en-US", { timeZone: timezone });
-			} catch {
-				timezone = "America/Los_Angeles";
-			}
+			const timezone = resolveTimezone(options);
 			const details = `Trigger=usageLimited from=${sourceProfile} reset=${reset} to=${targetProfile} affected_runs=${runs.length} restarted_runs=${runs.filter((target) => target.state === "recovered").length}`;
 			const payload: AlertPayload = {
 				leadId: "codex-quota",

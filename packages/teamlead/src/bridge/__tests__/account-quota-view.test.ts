@@ -547,6 +547,80 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 	});
 });
 
+describe("FLY-2869 — stale Codex readings are unknown in the view and the tick", () => {
+	it("uses the Codex threshold for Codex rows, not the Claude one", () => {
+		const claudeValue = quota();
+		claudeValue.claude.staleAfterMinutes = 120;
+		const value = codexQuota();
+		value.staleAfterMinutes = 30;
+		Object.assign(value.accounts[0], {
+			// 35 minutes before generatedAt: stale for Codex, fresh for Claude's 120.
+			resetCreditsObservedAt: "2026-09-18T00:10:00.000Z",
+		});
+		const view = buildAccountQuotaView({
+			generatedAt,
+			quota: { ...claudeValue, codex: value },
+		});
+		expect(view.staleAfterMinutes).toBe(120);
+		expect(
+			view.codex.find((row) => row.name === "personal")?.credits.stale,
+		).toBe(true);
+	});
+
+	it("rejects a Codex block with an invalid threshold", () => {
+		for (const staleAfterMinutes of [0, -1, Number.NaN]) {
+			const value = codexQuota();
+			value.staleAfterMinutes = staleAfterMinutes;
+			expect(() =>
+				buildAccountQuotaView({
+					generatedAt,
+					quota: { ...quota(), codex: value },
+				}),
+			).toThrow("invalid Codex quota snapshot");
+		}
+	});
+
+	it("labels stale and reset-elapsed rows instead of calling them exhausted", () => {
+		const value = codexQuota();
+		Object.assign(value.accounts[0], {
+			fiveHPct: null,
+			weeklyPct: null,
+			fiveHResetAt: null,
+			weeklyResetAt: "2026-09-24T02:00:00.000Z",
+			ageMinutes: 360,
+			stale: true,
+			freshness: "stale",
+			exhausted: false,
+			recoveryAt: null,
+			tokenState: "读数过期",
+		});
+		Object.assign(value.accounts[1], {
+			weeklyPct: null,
+			weeklyResetAt: null,
+			freshness: "reset_elapsed",
+			exhausted: false,
+			recoveryAt: null,
+			tokenState: "已过重置待探",
+		});
+		const view = buildAccountQuotaView({
+			generatedAt,
+			quota: { ...quota(), codex: value },
+		});
+		const tick = formatAccountQuotaTickLines(view).join("\n");
+		expect(tick).toContain(
+			"**★personal** · 读数过期\n```text\nwindow  used   left   reset (PT)\n5h      n/a    n/a    n/a\n7d      n/a    n/a    09-23 Wed 19:00\n```\n观测：360m 前 (stale)",
+		);
+		expect(tick).toContain("**personal1** · 已过重置待探\n");
+		expect(tick).not.toContain("· 打满");
+		expect(view.warnings).toEqual(
+			expect.arrayContaining([
+				"Codex personal：读数过期（360 分钟前），不作打满/可用判断",
+				"Codex personal1：已过重置、待真探，不作打满判断",
+			]),
+		);
+	});
+});
+
 // ---------------------------------------------------------------------------
 // FLY-2864 — reset cards, live tier, next charge date
 // ---------------------------------------------------------------------------

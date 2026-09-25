@@ -397,6 +397,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Claude quota switch recovery confirmation";
 		case "codex_quota_automation_disabled":
 			return "Codex 自动切号关着";
+		case "codex_quota_reading_stale":
+			return "Codex 额度读数停更";
 		case "quota_no_target":
 			return "No Claude account has quota";
 		case "quota_blocked_recovered":
@@ -675,6 +677,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The external quota monitor rechecked every recorded affected pane after the switch and reported the five-state recovery result.";
 		case "codex_quota_automation_disabled":
 			return "Codex 自动切号不可用；本次额度事件已交 Lead 手工处理。";
+		case "codex_quota_reading_stale":
+			return "Codex 额度读数超过 30 分钟没有刷新成功；各号读数按过期处理，不据此判断无号可切。";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
 		case "quota_blocked_recovered":

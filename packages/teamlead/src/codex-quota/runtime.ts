@@ -15,12 +15,17 @@ import {
 } from "flywheel-claude-runner/bin/codex-account-install.mjs";
 import type { StateStore } from "../StateStore.js";
 import type { CodexQuotaAvailability } from "./availability.js";
-import type { CodexQuotaObservation } from "./candidate-selector.js";
+import {
+	type CodexQuotaObservation,
+	type CodexQuotaWindow,
+	codexObservationResetElapsed,
+} from "./candidate-selector.js";
 import { CodexQuotaCoordinator } from "./coordinator.js";
 import {
 	CodexQuotaLaunchPausedError,
 	createCodexQuotaLaunchBinder,
 } from "./launch-binding.js";
+import { CodexAccountOccupancy } from "./occupancy.js";
 import {
 	CodexCandidateWorkspace,
 	codexQuotaIdentityReader,
@@ -32,6 +37,74 @@ import {
 	type CodexQuotaReadinessResult,
 	checkCodexQuotaReadiness,
 } from "./readiness.js";
+/**
+ * FLY-2869: reconcile the canonical credential with the durable quota root.
+ * An identity that changed outside the coordinator (`codex-profile use`,
+ * `codex login`) becomes a new generation plus one N1 notification in the same
+ * transaction. Read-only apart from the quota store, so it also runs when the
+ * auto-switch runtime is not constructed.
+ */
+export async function reconcileCodexCanonicalRoot(options: {
+	store: Pick<StateStore, "codexQuota">;
+	canonicalHome: string;
+	pool: CodexAccountPool;
+	/** Fresh weekly window for an account, or [] when no fresh reading exists. */
+	readingWindows?: (profile: string, accountKey: string) => CodexQuotaWindow[];
+}) {
+	const { pool } = options;
+	const canonical = await realpath(options.canonicalHome);
+	return withCodexInstallLock(canonical, () => {
+		const bytes = readFileSync(join(canonical, "auth.json"), "utf8");
+		const identity = codexQuotaIdentityReader(pool)(bytes);
+		const rootKey = createHash("sha256").update(canonical).digest("hex");
+		const authDigest = createHash("sha256").update(bytes).digest("hex");
+		const quota = options.store.codexQuota;
+		const root = quota.getRoot(rootKey);
+		if (!root) quota.initializeRoot({ rootKey, ...identity, generation: 1 });
+		else if (
+			root.accountKey !== identity.accountKey ||
+			root.profile !== identity.profile
+		) {
+			const email = (profile: string) =>
+				pool.profiles.find((entry) => entry.name === profile)?.email ?? null;
+			const windows = (profile: string, accountKey: string) => {
+				try {
+					return options.readingWindows?.(profile, accountKey) ?? [];
+				} catch {
+					return [];
+				}
+			};
+			quota.reconcileExternalRoot({
+				rootKey,
+				expectedGeneration: root.generation,
+				...identity,
+				authDigest,
+				notification: {
+					version: 1,
+					from: {
+						profile: root.profile,
+						accountKey: root.accountKey,
+						email: email(root.profile),
+						windows: windows(root.profile, root.accountKey),
+					},
+					to: {
+						profile: identity.profile,
+						accountKey: identity.accountKey,
+						email: email(identity.profile),
+						windows: windows(identity.profile, identity.accountKey),
+					},
+				},
+			});
+		}
+		return {
+			rootKey,
+			...identity,
+			generation: quota.getRoot(rootKey)!.generation,
+			authDigest,
+		};
+	});
+}
+
 export interface CodexQuotaRuntimeOptions {
 	store: StateStore;
 	canonicalHome: string;
@@ -45,18 +118,22 @@ export interface CodexQuotaRuntimeOptions {
 	recover(incident: Record<string, unknown>): Promise<void>;
 	autoEnabled?: () => boolean;
 	availability?: CodexQuotaAvailability;
+	/** FLY-2869: fresh readings for the manual-switch N1 (see reconcileCodexCanonicalRoot). */
+	readingWindows?: (profile: string, accountKey: string) => CodexQuotaWindow[];
+	/** FLY-2869: the Bridge-wide occupancy; tests default to one over collectHomes. */
+	occupancy?: CodexAccountOccupancy;
 }
 export interface CodexQuotaRound {
 	pool: CodexAccountPool;
 	observations: readonly CodexQuotaObservation[];
 }
 export class CodexQuotaRuntime {
-	private canonicalChainActive = false;
-	private activeUnsharedAccountKeys = new Set<string>();
 	private coordinator?: CodexQuotaCoordinator;
 	private tickPromise?: Promise<void>;
 	private readonly abort = new AbortController();
 	private readonly workspace: CodexCandidateWorkspace;
+	/** FLY-2869: shared with availability and the account readings when injected. */
+	private readonly occupancy: CodexAccountOccupancy;
 	constructor(private readonly options: CodexQuotaRuntimeOptions) {
 		for (const path of [
 			options.canonicalHome,
@@ -70,28 +147,13 @@ export class CodexQuotaRuntime {
 			join(options.stateRoot, "candidates"),
 			{ profilesRoot: options.profilesRoot },
 		);
+		this.occupancy =
+			options.occupancy ?? new CodexAccountOccupancy(options.collectHomes);
 	}
 	async readinessResult(): Promise<CodexQuotaReadinessResult> {
 		return checkCodexQuotaReadiness({
 			canonicalAuthPath: join(this.options.canonicalHome, "auth.json"),
-			collectHomes: async () => {
-				const inventory = await this.options.collectHomes();
-				this.canonicalChainActive =
-					(inventory as typeof inventory & { canonicalChainActive?: boolean })
-						.canonicalChainActive === true ||
-					inventory.homes.some(
-						(home) =>
-							home.ownership === "managed" && home.activity === "active",
-					);
-				this.activeUnsharedAccountKeys = new Set(
-					(
-						inventory as typeof inventory & {
-							activeUnsharedAccountKeys?: string[];
-						}
-					).activeUnsharedAccountKeys ?? [],
-				);
-				return inventory;
-			},
+			collectHomes: this.occupancy.collect,
 		});
 	}
 	async readiness(): Promise<boolean> {
@@ -101,13 +163,14 @@ export class CodexQuotaRuntime {
 			return (await this.options.availability.refresh()).mode === "automatic";
 		return (await this.readinessResult()).ready;
 	}
+	/** An unknown occupancy fences like an in-use one. */
 	private candidateInUse(accountKey: string, pool: CodexAccountPool): boolean {
-		if (this.activeUnsharedAccountKeys.has(accountKey)) return true;
 		return (
-			this.canonicalChainActive &&
-			codexQuotaIdentityReader(pool)(
-				readFileSync(join(this.options.canonicalHome, "auth.json"), "utf8"),
-			).accountKey === accountKey
+			this.occupancy.isInUse(
+				accountKey,
+				pool,
+				join(this.options.canonicalHome, "auth.json"),
+			) !== false
 		);
 	}
 	/**
@@ -116,22 +179,11 @@ export class CodexQuotaRuntime {
 	 * account page still skips the probe, but the page says the occupancy is
 	 * unknown rather than claiming every account is busy.
 	 */
-	async accountInUseGuard(): Promise<
-		(accountKey: string) => boolean | "unknown"
-	> {
-		try {
-			await this.readinessResult();
-			const pool = this.options.pool();
-			return (accountKey) => {
-				try {
-					return this.candidateInUse(accountKey, pool);
-				} catch {
-					return "unknown";
-				}
-			};
-		} catch {
-			return () => "unknown";
-		}
+	accountInUseGuard(): Promise<(accountKey: string) => boolean | "unknown"> {
+		return this.occupancy.guard(
+			join(this.options.canonicalHome, "auth.json"),
+			this.options.pool,
+		);
 	}
 	private async requireReadiness() {
 		if (!(await this.readiness())) throw new Error("quota_readiness_failed");
@@ -292,7 +344,11 @@ export class CodexQuotaRuntime {
 						profile: candidate.profile,
 						accountKey: candidate.accountKey,
 						email: profileEmail(candidate.profile),
-						windows: candidate.windows,
+						// FLY-2869: a reset-elapsed 100% is stale; the probe only proves
+						// the account works now, so its usage renders as n/a.
+						windows: codexObservationResetElapsed(candidate, Date.now())
+							? []
+							: candidate.windows,
 					},
 				}
 			: undefined;
@@ -449,33 +505,14 @@ export class CodexQuotaRuntime {
 			return "uncertain";
 		}
 	}
-	async credential() {
-		const pool = this.options.pool();
-		const canonical = await realpath(this.options.canonicalHome);
-		return withCodexInstallLock(canonical, () => {
-			const bytes = readFileSync(join(canonical, "auth.json"), "utf8");
-			const identity = codexQuotaIdentityReader(pool)(bytes);
-			const rootKey = createHash("sha256").update(canonical).digest("hex");
-			const authDigest = createHash("sha256").update(bytes).digest("hex");
-			const quota = this.options.store.codexQuota;
-			const root = quota.getRoot(rootKey);
-			if (!root) quota.initializeRoot({ rootKey, ...identity, generation: 1 });
-			else if (
-				root.accountKey !== identity.accountKey ||
-				root.profile !== identity.profile
-			)
-				quota.reconcileExternalRoot({
-					rootKey,
-					expectedGeneration: root.generation,
-					...identity,
-					authDigest,
-				});
-			return {
-				rootKey,
-				...identity,
-				generation: quota.getRoot(rootKey)!.generation,
-				authDigest,
-			};
+	credential() {
+		return reconcileCodexCanonicalRoot({
+			store: this.options.store,
+			canonicalHome: this.options.canonicalHome,
+			pool: this.options.pool(),
+			...(this.options.readingWindows
+				? { readingWindows: this.options.readingWindows }
+				: {}),
 		});
 	}
 

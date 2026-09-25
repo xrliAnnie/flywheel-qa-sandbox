@@ -3,8 +3,9 @@ import type { ClaudeAccountDetailStore } from "../../claude-quota/account-detail
 import type { CodexAccountQuotaStore } from "../../codex-quota/codex-account-quota-store.js";
 import type { CodexSubscriptionStore } from "../../codex-quota/codex-subscription-store.js";
 import {
-	type AccountQuotaRefreshDeps,
+	type CodexAccountQuotaRefreshDeps,
 	createAccountQuotaRefresh,
+	createCodexAccountQuotaRefresh,
 } from "../account-quota-refresh.js";
 
 const codexStore: CodexAccountQuotaStore = {
@@ -24,9 +25,16 @@ const claudeStore: ClaudeAccountDetailStore = {
 	accounts: [],
 };
 
-function harness(overrides: Partial<AccountQuotaRefreshDeps> = {}) {
+type HarnessDeps = CodexAccountQuotaRefreshDeps & {
+	observeClaudeAccountDetails: (
+		signal: AbortSignal,
+	) => Promise<ClaudeAccountDetailStore>;
+	writeClaudeAccountDetailStore: (store: ClaudeAccountDetailStore) => void;
+};
+
+function harness(overrides: Partial<HarnessDeps> = {}) {
 	const calls: string[] = [];
-	const deps: AccountQuotaRefreshDeps = {
+	const deps: HarnessDeps = {
 		ceilingMs: 90_000,
 		observeCodexAccounts: vi.fn(async () => {
 			calls.push("observeCodexAccounts");
@@ -55,7 +63,18 @@ function harness(overrides: Partial<AccountQuotaRefreshDeps> = {}) {
 		warn: vi.fn(),
 		...overrides,
 	};
-	return { deps, calls, refresh: createAccountQuotaRefresh(deps) };
+	const refreshCodex = createCodexAccountQuotaRefresh(deps);
+	return {
+		deps,
+		calls,
+		refreshCodex,
+		refresh: createAccountQuotaRefresh({
+			ceilingMs: deps.ceilingMs,
+			refreshCodex,
+			observeClaudeAccountDetails: deps.observeClaudeAccountDetails,
+			writeClaudeAccountDetailStore: deps.writeClaudeAccountDetailStore,
+		}),
+	};
 }
 
 describe("FLY-2864 — account quota refresh composition", () => {
@@ -157,7 +176,7 @@ describe("FLY-2864 — account quota refresh composition", () => {
 		expect(deps.observeCodexSubscriptions).toHaveBeenCalledTimes(2);
 	});
 
-	it("hands every observer the same ceiling signal and aborts it at the ceiling", async () => {
+	it("aborts each branch at its own ceiling", async () => {
 		vi.useFakeTimers();
 		try {
 			const signals: AbortSignal[] = [];
@@ -181,13 +200,34 @@ describe("FLY-2864 — account quota refresh composition", () => {
 			const pending = refresh();
 			const settled = expect(pending).rejects.toThrow("aborted");
 			expect(signals).toHaveLength(2);
-			expect(signals[0]).toBe(signals[1]);
-			expect(signals[0]?.aborted).toBe(false);
+			expect(signals.every((signal) => !signal.aborted)).toBe(true);
 			await vi.advanceTimersByTimeAsync(1_000);
 			await settled;
-			expect(signals[0]?.aborted).toBe(true);
+			expect(signals.every((signal) => signal.aborted)).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("FLY-2869: a scheduled Codex refresh and a page refresh share one Codex round", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { deps, refresh, refreshCodex } = harness({
+			observeCodexAccounts: vi.fn(async () => {
+				await gate;
+				return codexStore;
+			}),
+		});
+		const scheduled = refreshCodex();
+		const page = refresh();
+		release();
+		await Promise.all([scheduled, page]);
+		expect(deps.observeCodexAccounts).toHaveBeenCalledTimes(1);
+		expect(deps.observeClaudeAccountDetails).toHaveBeenCalledTimes(1);
+		await refreshCodex();
+		expect(deps.observeCodexAccounts).toHaveBeenCalledTimes(2);
+		expect(deps.observeClaudeAccountDetails).toHaveBeenCalledTimes(1);
 	});
 });

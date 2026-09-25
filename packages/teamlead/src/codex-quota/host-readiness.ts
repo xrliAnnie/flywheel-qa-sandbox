@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import {
+	lstatSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
@@ -8,7 +14,20 @@ import { installSqlTiming } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { CodexQuotaManualReason } from "./availability.js";
 import { findRegisteredCodexCredentialLeadTargets } from "./credential-home-roster.js";
+import {
+	createDesktopCodexVerifier,
+	DESKTOP_CODEX_PATH,
+} from "./desktop-codex-identity.js";
+import {
+	type CodexProcessSnapshot,
+	captureCodexProcessSnapshot,
+	parseCodexProcessSnapshot,
+} from "./host-process-snapshot.js";
 import type { CodexQuotaHomeObservation } from "./readiness.js";
+import {
+	parseSqliteUtcTimestamp,
+	StaleRunningTracker,
+} from "./stale-running-tracker.js";
 
 const execFileAsync = promisify(execFile);
 export interface CodexQuotaHostCollectorOptions {
@@ -19,7 +38,14 @@ export interface CodexQuotaHostCollectorOptions {
 	approvedManifestPath: string;
 	leadTargets: readonly { projectName: string; leadId: string }[];
 	leadAuthorityScript: string;
-	processSnapshot?: () => Promise<string>;
+	/** FLY-2869: args + authoritative (ucomm/argv/env) + args snapshots. */
+	processSnapshot?: () => Promise<CodexProcessSnapshot>;
+	/** FLY-2869: verifiable ChatGPT desktop codex identity (founder ruling). */
+	verifyDesktopCodex?: (pid: number, argv0: string) => Promise<boolean>;
+	/** FLY-2869: where 529 test slots live; defaults to /private/tmp. */
+	testSlotRoot?: string;
+	now?: () => number;
+	monotonicNow?: () => number;
 	credentialIdentity?: (
 		home: string,
 	) => Promise<{ accountKey: string; chainKey: string }>;
@@ -73,9 +99,16 @@ export interface CodexQuotaHostInventory {
 
 export interface CodexQuotaHostDiagnostic {
 	reason: string;
-	scope: "global" | "registered" | "all";
+	/**
+	 * FLY-2869: "info" records a verified exclusion (desktop codex, test slot,
+	 * archive dir, pending pre-registration, terminal residue, stale running
+	 * row). It never blocks readiness; it keeps the exclusion visible.
+	 */
+	scope: "global" | "registered" | "all" | "info";
 	home?: string;
 	executionId?: string;
+	pid?: number;
+	startedAt?: string;
 }
 
 export interface CodexQuotaUnattributedReader {
@@ -92,34 +125,69 @@ interface ProcessObservation {
 	executionId?: string;
 }
 
-const LSTART_RE =
-	/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/;
-
-function parseProcessLine(line: string): {
-	pid: number;
-	startIdentity: string | null;
-	command: string;
-} | null {
-	const match = /^\s*(\d+)\s+(.+)$/.exec(line);
-	if (!match) return null;
-	const pid = Number(match[1]);
-	if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-	const remainder = match[2]!;
-	const tokens = remainder.split(/\s+/);
-	const possibleStart = tokens.slice(0, 5).join(" ");
-	if (tokens.length > 5 && LSTART_RE.test(possibleStart)) {
-		return {
-			pid,
-			startIdentity: possibleStart,
-			command: tokens.slice(5).join(" "),
-		};
+function realpathOrNull(path: string): string | null {
+	try {
+		return realpathSync(path);
+	} catch {
+		return null;
 	}
-	return { pid, startIdentity: null, command: remainder };
 }
+/**
+ * Where a symlink points once resolved. A slot being rebuilt leaves the link
+ * dangling for a moment; its target is then the realpath of the deepest
+ * existing ancestor joined with the missing rest (symlinks in the existing
+ * part are still resolved, so an escape through them is still seen).
+ */
+function linkTarget(link: string): string | null {
+	const resolved = realpathOrNull(link);
+	if (resolved !== null) return resolved;
+	let missing: string[] = [];
+	let cursor: string;
+	try {
+		cursor = resolve(dirname(link), readlinkSync(link));
+	} catch {
+		return null;
+	}
+	for (;;) {
+		const existing = realpathOrNull(cursor);
+		if (existing !== null) return join(existing, ...missing);
+		const parent = dirname(cursor);
+		if (parent === cursor) return null;
+		missing = [basename(cursor), ...missing];
+		cursor = parent;
+	}
+}
+/** FLY-2869: a 529 QA slot's private state never counts for production. */
+export function isTestSlotPath(
+	realPath: string | null,
+	slotRoot: string,
+): boolean {
+	if (realPath === null) return false;
+	const prefix = `${slotRoot.replace(/\/+$/, "")}/flywheel-test-slot-`;
+	if (!realPath.startsWith(prefix)) return false;
+	return /^\d+(\/|$)/.test(realPath.slice(prefix.length));
+}
+const STALE_RUNNING_MIN_AGE_MS = 15 * 60_000;
+/** CommDB's terminal statuses; anything else (NULL, unknown) stays live. */
+const TERMINAL_SESSION_STATUSES: ReadonlySet<string> = new Set([
+	"completed",
+	"timeout",
+	"blocked",
+	"failed",
+]);
+
 export function createCodexQuotaHostCollector(
 	options: CodexQuotaHostCollectorOptions,
 ): () => Promise<CodexQuotaHostInventory> {
+	const staleRunning = new StaleRunningTracker();
+	const verifyDesktopCodex =
+		options.verifyDesktopCodex ?? createDesktopCodexVerifier();
+	const now = options.now ?? Date.now;
+	const monotonicNow = options.monotonicNow ?? (() => performance.now());
+	const slotRoot = options.testSlotRoot ?? "/private/tmp";
 	return async () => {
+		const round = staleRunning.begin(monotonicNow());
+		let committed = false;
 		const homes: CodexQuotaHomeObservation[] = [];
 		const activeUnsharedAccountKeys: string[] = [];
 		const diagnostics: CodexQuotaHostDiagnostic[] = [];
@@ -248,19 +316,60 @@ export function createCodexQuotaHostCollector(
 					throw new Error("lead_home_not_approved");
 				leadHomes.add(lead.codexHome);
 			}
+			const registeredProjects = new Set(options.projectNames);
 			const projects = new Set(options.projectNames);
 			for (const entry of readdirSync(options.commRoot, {
 				withFileTypes: true,
 			})) {
-				if (entry.isSymbolicLink()) throw new Error("comm_shard_unsafe");
+				if (entry.isSymbolicLink()) {
+					// FLY-2869 ①: a 529 slot links its private comm shard here.
+					if (
+						isTestSlotPath(
+							linkTarget(join(options.commRoot, entry.name)),
+							slotRoot,
+						)
+					) {
+						diagnostics.push({
+							reason: "test_slot_comm_shard_skipped",
+							scope: "info",
+						});
+						continue;
+					}
+					throw new Error("comm_shard_unsafe");
+				}
 				if (entry.isDirectory()) projects.add(entry.name);
 			}
 			if (!projects.size) throw new Error("comm_authority_missing");
-			const comm = new Set<string>();
-			const databases = [...projects].map((project) => {
+			type CommRow = {
+				id: string;
+				status: string;
+				startedAt: string | null;
+				database: string;
+			};
+			const commRows: CommRow[] = [];
+			const databases: string[] = [];
+			for (const project of projects) {
 				if (!safeId(project)) throw new Error("project_invalid");
-				return join(options.commRoot, project, "comm.db");
-			});
+				const path = join(options.commRoot, project, "comm.db");
+				if (!registeredProjects.has(project)) {
+					// FLY-2869 ②: an unregistered directory without a database (an
+					// archive) holds no sessions; a registered project must have one.
+					try {
+						lstatSync(path);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+							diagnostics.push({
+								reason: "unregistered_comm_dir_skipped",
+								scope: "info",
+								home: join(options.commRoot, project),
+							});
+							continue;
+						}
+						throw error;
+					}
+				}
+				databases.push(path);
+			}
 			const legacyRoot = join(dirname(options.commRoot), "comm.db");
 			try {
 				plainFile(legacyRoot);
@@ -270,6 +379,7 @@ export function createCodexQuotaHostCollector(
 			}
 			for (const path of databases) {
 				plainFile(path);
+				const database = realpathSync(path);
 				const db = installSqlTiming(
 					new Database(path, {
 						readonly: true,
@@ -279,63 +389,131 @@ export function createCodexQuotaHostCollector(
 					"teamlead",
 				);
 				try {
+					// FLY-2869: the legacy root comm.db predates phase_keep_alive (and a
+					// database may predate tmux_window/started_at); read what exists
+					// rather than failing the whole census. Identity columns are required.
+					const columns = new Set(
+						(
+							db.prepare("PRAGMA table_info(sessions)").all() as {
+								name: string;
+							}[]
+						).map((column) => column.name),
+					);
+					if (
+						!["execution_id", "vendor", "status"].every((c) => columns.has(c))
+					)
+						throw new Error("comm_identity_unknown");
+					const optional = (name: "tmux_window" | "started_at") =>
+						columns.has(name) ? name : `NULL AS ${name}`;
 					const rows = db
 						.prepare(
-							"SELECT execution_id,vendor FROM sessions WHERE status='running' OR phase_keep_alive=1",
+							`SELECT execution_id,vendor,status,${optional("tmux_window")},${optional("started_at")} FROM sessions WHERE ${
+								columns.has("phase_keep_alive")
+									? "status='running' OR phase_keep_alive=1"
+									: "status='running'"
+							}`,
 						)
-						.all() as { execution_id: string; vendor: string | null }[];
+						.all() as {
+						execution_id: string;
+						vendor: string | null;
+						status: string | null;
+						tmux_window: string | null;
+						started_at: string | null;
+					}[];
 					for (const row of rows) {
-						if (!safeId(row.execution_id) || !row.vendor)
+						if (!safeId(row.execution_id))
 							throw new Error("comm_identity_unknown");
-						if (row.vendor === "codex") comm.add(row.execution_id);
+						if (!row.vendor) {
+							// FLY-2869 ③: a Bridge pre-registration the runner never took
+							// over (vendor is written by the runner's own registration).
+							if (
+								typeof row.tmux_window === "string" &&
+								row.tmux_window.endsWith(":pending")
+							) {
+								diagnostics.push({
+									reason: "pending_preregistration_skipped",
+									scope: "info",
+									executionId: row.execution_id,
+								});
+								continue;
+							}
+							throw new Error("comm_identity_unknown");
+						}
+						if (row.vendor === "codex")
+							commRows.push({
+								id: row.execution_id,
+								status: String(row.status),
+								startedAt: row.started_at,
+								database,
+							});
 					}
 				} finally {
 					db.close();
 				}
 			}
-			const output = options.processSnapshot
-				? await options.processSnapshot()
-				: (
-						await execFileAsync(
-							"/bin/ps",
-							["eww", "-axo", "pid=,lstart=,command="],
-							{
-								timeout: 3000,
-								maxBuffer: 16 * 1024 * 1024,
-								encoding: "utf8",
-							},
-						)
-					).stdout;
-			if (
-				typeof output !== "string" ||
-				!output.trim() ||
-				output.length > 16 * 1024 * 1024
-			)
-				throw new Error("process_authority_invalid");
+			const processes = parseCodexProcessSnapshot(
+				await (options.processSnapshot ?? captureCodexProcessSnapshot)(),
+			);
+			for (const reader of processes.unattributed) {
+				unattributedReaders.push(reader);
+				diagnostics.push({ reason: "process_home_unknown", scope: "global" });
+			}
 			const active = new Map<string, ProcessObservation[]>();
-			for (const line of output.split("\n")) {
-				if (!line.trim()) continue;
-				const parsed = parseProcessLine(line);
-				if (!parsed) throw new Error("process_authority_invalid");
-				const isCodex = /(?:^|\s)(?:\S*\/)?codex(?:\s|$)/.test(parsed.command);
-				if (!isCodex) continue;
-				const executable =
-					/(?:^|\s)((?:\S*\/)?codex)(?:\s|$)/.exec(parsed.command)?.[1] ??
-					"codex";
-				const homeMatch = [
-					...parsed.command.matchAll(/(?:^|\s)CODEX_HOME=([^\s]+)/g),
-				];
-				if (homeMatch.length !== 1 || !isAbsolute(homeMatch[0]![1]!)) {
+			const liveExecutionIds = new Set<string>();
+			const canonicalReal = realpathOrNull(options.canonicalHome);
+			for (const process of processes.codex) {
+				if (process.executionId) liveExecutionIds.add(process.executionId);
+				const unknown = () => {
 					unattributedReaders.push({
-						pid: parsed.pid,
-						startIdentity: parsed.startIdentity,
-						executable,
+						pid: process.pid,
+						startIdentity: process.startIdentity,
+						executable: process.argv0,
 						reason: "process_home_unknown",
 					});
 					diagnostics.push({ reason: "process_home_unknown", scope: "global" });
+				};
+				let home = process.codexHome;
+				if (home === null) {
+					// FLY-2869 ⑤: the ChatGPT desktop app's own codex, by verified identity.
+					if (
+						process.argv0 === DESKTOP_CODEX_PATH &&
+						(await verifyDesktopCodex(process.pid, process.argv0))
+					) {
+						diagnostics.push({
+							reason: "desktop_codex_excluded",
+							scope: "info",
+							pid: process.pid,
+						});
+						continue;
+					}
+					// A codex without CODEX_HOME reads $HOME/.codex; it counts as the
+					// canonical reader only when that resolves to canonical exactly.
+					if (
+						process.home !== null &&
+						isAbsolute(process.home) &&
+						canonicalReal !== null &&
+						realpathOrNull(join(process.home, ".codex")) === canonicalReal
+					)
+						home = options.canonicalHome;
+					else {
+						unknown();
+						continue;
+					}
+				}
+				if (!isAbsolute(home)) {
+					unknown();
 					continue;
 				}
-				const home = homeMatch[0]![1]!;
+				// FLY-2869 ⑥: a 529 slot's Codex home is not production.
+				const homeReal = realpathOrNull(home);
+				if (isTestSlotPath(homeReal, slotRoot)) {
+					diagnostics.push({
+						reason: "test_slot_home_excluded",
+						scope: "info",
+						home: homeReal!,
+					});
+					continue;
+				}
 				if (home !== options.canonicalHome && !approved.has(home)) {
 					diagnostics.push({
 						reason: "unapproved_live_home",
@@ -344,36 +522,18 @@ export function createCodexQuotaHostCollector(
 					});
 					continue;
 				}
-				const ids = [
-					...parsed.command.matchAll(
-						/(?:^|\s)FLYWHEEL_EXEC_ID=([A-Za-z0-9_.-]+)/g,
-					),
-				];
-				if (ids.length > 1) {
-					unattributedReaders.push({
-						pid: parsed.pid,
-						startIdentity: parsed.startIdentity,
-						executable,
-						reason: "process_execution_ambiguous",
-					});
-					diagnostics.push({
-						reason: "process_execution_ambiguous",
-						scope: "registered",
-						home,
-					});
-					continue;
-				}
 				const observations = active.get(home) ?? [];
 				observations.push({
-					pid: parsed.pid,
-					startIdentity: parsed.startIdentity,
-					executable,
-					...(ids[0] ? { executionId: ids[0][1]! } : {}),
+					pid: process.pid,
+					startIdentity: process.startIdentity,
+					executable: process.argv0,
+					...(process.executionId ? { executionId: process.executionId } : {}),
 				});
 				active.set(home, observations);
 			}
-			const matched = new Set<string>();
-			for (const [home, ownership] of approved) {
+			const leasesByHome = new Map<string, string[]>();
+			const leaseIds = new Set<string>();
+			for (const [home] of approved) {
 				let leases: string[] = [];
 				const leaseRoot = join(home, ".flywheel-leases");
 				try {
@@ -392,6 +552,37 @@ export function createCodexQuotaHostCollector(
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				}
+				leasesByHome.set(home, leases);
+				for (const id of leases) leaseIds.add(id);
+			}
+			// FLY-2869 ④: a terminal row is a live execution only while a process or
+			// a lease still backs it (a parked holder); otherwise it is residue.
+			// Only the four CommDB terminal statuses can be residue; NULL or any
+			// other status is a live execution that can never be exempted. Every
+			// row that makes an id live is kept (the same id may appear in several
+			// databases), so one old row cannot stand in for a newer one.
+			const comm = new Set<string>();
+			const liveRows = new Map<string, CommRow[]>();
+			for (const row of commRows) {
+				const live =
+					row.status === "running" ||
+					!TERMINAL_SESSION_STATUSES.has(row.status) ||
+					liveExecutionIds.has(row.id) ||
+					leaseIds.has(row.id);
+				if (!live) {
+					diagnostics.push({
+						reason: "terminal_session_residue",
+						scope: "info",
+						executionId: row.id,
+					});
+					continue;
+				}
+				comm.add(row.id);
+				liveRows.set(row.id, [...(liveRows.get(row.id) ?? []), row]);
+			}
+			const matched = new Set<string>();
+			for (const [home, ownership] of approved) {
+				const leases = leasesByHome.get(home) ?? [];
 				const processes = active.get(home);
 				let activity: CodexQuotaHomeObservation["activity"] = "drained";
 				if (processes?.length) {
@@ -423,10 +614,17 @@ export function createCodexQuotaHostCollector(
 								process.executionId ? [process.executionId] : [],
 							),
 						);
+						// FLY-2869 ⑨: a Codex execution is its daemon plus its client
+						// (`codex resume --remote`), so identity is the execution id carried
+						// by every process, not the process count.
+						const everyProcessKeyed = processes.every(
+							(process) => !!process.executionId,
+						);
 						if (
 							!leases.length &&
 							dirname(home) === options.homesRoot &&
-							processes.length === 1 &&
+							everyProcessKeyed &&
+							processExecutions.size === 1 &&
 							processExecutions.has(basename(home)) &&
 							comm.has(basename(home))
 						)
@@ -492,7 +690,8 @@ export function createCodexQuotaHostCollector(
 							}
 						} else if (
 							!leases.length ||
-							processes.length !== leases.length ||
+							!everyProcessKeyed ||
+							processExecutions.size !== new Set(leases).size ||
 							leases.some((id) => !comm.has(id) || !processExecutions.has(id))
 						)
 							activity = "unknown";
@@ -508,14 +707,51 @@ export function createCodexQuotaHostCollector(
 				}
 				homes.push({ home, ownership, activity });
 			}
+			// FLY-2869 Q3: a running row with no process and no lease anywhere, old
+			// enough, and absent across consecutive complete collections for 60 s.
+			const staleKey = (row: CommRow) =>
+				`${row.database}\0${row.id}\0${row.startedAt}`;
+			const nowMs = now();
+			const candidates = new Set<string>();
 			for (const id of comm) {
-				if (!matched.has(id)) {
-					diagnostics.push({
-						reason: "comm_orphan",
-						scope: "registered",
-						executionId: id,
-					});
+				if (matched.has(id)) continue;
+				for (const row of liveRows.get(id) ?? []) {
+					const startedMs = parseSqliteUtcTimestamp(row.startedAt);
+					if (
+						row.status === "running" &&
+						startedMs !== null &&
+						startedMs < nowMs - STALE_RUNNING_MIN_AGE_MS &&
+						!liveExecutionIds.has(id) &&
+						!leaseIds.has(id)
+					)
+						candidates.add(staleKey(row));
 				}
+			}
+			const matured = staleRunning.commit(round, candidates, monotonicNow());
+			committed = true;
+			for (const id of comm) {
+				if (matched.has(id)) continue;
+				const rows = liveRows.get(id) ?? [];
+				if (
+					rows.length > 0 &&
+					rows.every(
+						(row) => row.status === "running" && matured.has(staleKey(row)),
+					)
+				) {
+					for (const row of rows)
+						diagnostics.push({
+							reason: "comm_stale_running",
+							scope: "info",
+							executionId: id,
+							...(row.startedAt ? { startedAt: row.startedAt } : {}),
+						});
+					continue;
+				}
+				diagnostics.push({
+					reason: "comm_orphan",
+					scope: "registered",
+					executionId: id,
+				});
 			}
 			const registeredComplete =
 				homes.every((home) => home.activity !== "unknown") &&
@@ -545,6 +781,7 @@ export function createCodexQuotaHostCollector(
 					),
 			};
 		} catch (error) {
+			if (!committed) staleRunning.fail(round);
 			const reason =
 				error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
 					? error.message

@@ -10,7 +10,43 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
 import { afterEach, expect, it } from "vitest";
+import type { CodexProcessSnapshot } from "../host-process-snapshot.js";
 import { createCodexQuotaHostCollector } from "../host-readiness.js";
+
+const LSTART = "Thu Sep 18 01:00:00 2026";
+interface ProcessRow {
+	pid: number;
+	ucomm: string;
+	args: string;
+	env?: string;
+	lstart?: string;
+}
+/** FLY-2869: the three ps listings the collector joins (args, ucomm+argv+env, args). */
+function processSnapshot(rows: ProcessRow[]): CodexProcessSnapshot {
+	const all = rows.length
+		? rows
+		: [{ pid: 1, ucomm: "launchd", args: "/sbin/launchd" }];
+	const args = all
+		.map((row) => `${row.pid} ${row.lstart ?? LSTART} ${row.args}`)
+		.join("\n");
+	return {
+		argsBefore: args,
+		authoritative: all
+			.map(
+				(row) =>
+					`${row.pid} ${row.lstart ?? LSTART} Ss   ${row.ucomm.padEnd(16)} ${row.env ? `${row.args} ${row.env}` : row.args}`,
+			)
+			.join("\n"),
+		argsAfter: args,
+	};
+}
+const codex = (env: string, extra: Partial<ProcessRow> = {}): ProcessRow => ({
+	pid: 12,
+	ucomm: "codex",
+	args: "/bin/codex app-server",
+	env,
+	...extra,
+});
 
 const roots: string[] = [];
 afterEach(() => {
@@ -43,7 +79,7 @@ function fixture() {
 	mkdirSync(join(commRoot, "project"), { recursive: true });
 	const db = new Database(join(commRoot, "project", "comm.db"));
 	db.exec(
-		"CREATE TABLE sessions(execution_id TEXT,vendor TEXT,status TEXT,ended_at TEXT,phase_keep_alive INTEGER)",
+		"CREATE TABLE sessions(execution_id TEXT,vendor TEXT,status TEXT,ended_at TEXT,phase_keep_alive INTEGER,tmux_window TEXT,started_at TEXT)",
 	);
 	db.close();
 	const approvedManifestPath = join(root, "approved.json");
@@ -51,7 +87,7 @@ function fixture() {
 		approvedManifestPath,
 		JSON.stringify(receipt([{ home, ownership: "managed" }])),
 	);
-	let processes = "1 /sbin/launchd";
+	let processes: ProcessRow[] = [];
 	const options = {
 		homesRoot,
 		canonicalHome,
@@ -60,24 +96,21 @@ function fixture() {
 		approvedManifestPath,
 		leadTargets: [],
 		leadAuthorityScript: join(root, "authority"),
-		processSnapshot: async () => processes,
+		processSnapshot: async () => processSnapshot(processes),
+		verifyDesktopCodex: async () => false,
 	};
 	return {
 		root,
 		home,
 		options,
-		setProcesses: (text: string) => {
-			processes = text;
+		setProcesses: (rows: ProcessRow[]) => {
+			processes = rows;
 		},
 		activate: () => {
 			const db = new Database(join(commRoot, "project", "comm.db"));
-			db.prepare("INSERT INTO sessions VALUES(?,?,?,?,?)").run(
-				"exec",
-				"codex",
-				"running",
-				null,
-				0,
-			);
+			db.prepare(
+				"INSERT INTO sessions(execution_id,vendor,status,ended_at,phase_keep_alive) VALUES(?,?,?,?,?)",
+			).run("exec", "codex", "running", null, 0);
 			db.close();
 			mkdirSync(join(home, ".flywheel-leases"));
 			writeFileSync(join(home, ".flywheel-leases", "exec"), "a".repeat(32));
@@ -87,14 +120,12 @@ function fixture() {
 it("requires real process plus CommDB plus lease before marking keyed home active", async () => {
 	const f = fixture();
 	f.activate();
-	f.setProcesses(
-		`12 /bin/codex app-server CODEX_HOME=${f.home} FLYWHEEL_EXEC_ID=exec`,
-	);
+	f.setProcesses([codex(`CODEX_HOME=${f.home} FLYWHEEL_EXEC_ID=exec`)]);
 	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
 		complete: true,
 		homes: [{ home: f.home, activity: "active", ownership: "managed" }],
 	});
-	f.setProcesses("");
+	f.setProcesses([]);
 	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
 		false,
 	);
@@ -104,9 +135,7 @@ it("never trusts missing manifests or unowned live homes", async () => {
 	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
 		true,
 	);
-	f.setProcesses(
-		`12 /bin/codex app-server CODEX_HOME=${join(f.root, "unknown")}`,
-	);
+	f.setProcesses([codex(`CODEX_HOME=${join(f.root, "unknown")}`)]);
 	expect((await createCodexQuotaHostCollector(f.options)()).complete).toBe(
 		false,
 	);
@@ -131,7 +160,7 @@ it("separates independent refresh chains and excludes their accounts before prob
 		f.options.approvedManifestPath,
 		JSON.stringify(receipt([{ home: f.home, ownership: "independent" }])),
 	);
-	f.setProcesses(`12 /bin/codex app-server CODEX_HOME=${f.home}`);
+	f.setProcesses([codex(`CODEX_HOME=${f.home}`)]);
 	let same = false;
 	const collector = createCodexQuotaHostCollector({
 		...f.options,
@@ -168,17 +197,11 @@ it("allows an approved legacy execution home using exact CommDB and process iden
 		JSON.stringify(receipt([{ home, ownership: "managed" }])),
 	);
 	const db = new Database(join(f.options.commRoot, "project", "comm.db"));
-	db.prepare("INSERT INTO sessions VALUES(?,?,?,?,?)").run(
-		"legacy",
-		"codex",
-		"running",
-		null,
-		0,
-	);
+	db.prepare(
+		"INSERT INTO sessions(execution_id,vendor,status,ended_at,phase_keep_alive) VALUES(?,?,?,?,?)",
+	).run("legacy", "codex", "running", null, 0);
 	db.close();
-	f.setProcesses(
-		`12 /bin/codex app-server CODEX_HOME=${home} FLYWHEEL_EXEC_ID=legacy`,
-	);
+	f.setProcesses([codex(`CODEX_HOME=${home} FLYWHEEL_EXEC_ID=legacy`)]);
 	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
 		complete: true,
 		homes: [{ home, activity: "active" }],
@@ -192,7 +215,7 @@ it("checks Lead manifest authority again on every collection", async () => {
 		`#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ codexHome: f.home })}'\n`,
 		{ mode: 0o700 },
 	);
-	f.setProcesses(`12 /bin/codex app-server CODEX_HOME=${f.home}`);
+	f.setProcesses([codex(`CODEX_HOME=${f.home}`)]);
 	const collect = createCodexQuotaHostCollector({
 		...f.options,
 		leadTargets: [{ projectName: "project", leadId: "lead" }],
@@ -203,14 +226,12 @@ it("checks Lead manifest authority again on every collection", async () => {
 });
 it("reports direct canonical readers even when canonical is not an enrolled managed home", async () => {
 	const f = fixture();
-	f.setProcesses(
-		`12 /bin/codex app-server CODEX_HOME=${f.options.canonicalHome}`,
-	);
+	f.setProcesses([codex(`CODEX_HOME=${f.options.canonicalHome}`)]);
 	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
 		complete: true,
 		canonicalChainActive: true,
 	});
-	f.setProcesses("1 /sbin/launchd");
+	f.setProcesses([]);
 	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
 		complete: true,
 		canonicalChainActive: false,
@@ -224,17 +245,11 @@ it("uses strict resident evidence for a keyed active home without a lease", asyn
 		JSON.stringify({ project: "project", role: "implement" }),
 	);
 	const db = new Database(join(f.options.commRoot, "project", "comm.db"));
-	db.prepare("INSERT INTO sessions VALUES(?,?,?,?,?)").run(
-		"exec",
-		"codex",
-		"running",
-		null,
-		0,
-	);
+	db.prepare(
+		"INSERT INTO sessions(execution_id,vendor,status,ended_at,phase_keep_alive) VALUES(?,?,?,?,?)",
+	).run("exec", "codex", "running", null, 0);
 	db.close();
-	f.setProcesses(
-		`12 Thu Sep 18 01:00:00 2026 /bin/codex app-server CODEX_HOME=${f.home} FLYWHEEL_EXEC_ID=exec`,
-	);
+	f.setProcesses([codex(`CODEX_HOME=${f.home} FLYWHEEL_EXEC_ID=exec`)]);
 	let verified = true;
 	const collect = createCodexQuotaHostCollector({
 		...f.options,
@@ -266,9 +281,13 @@ it("uses strict resident evidence for a keyed active home without a lease", asyn
 
 it("preserves an unattributed desktop reader as global unknown", async () => {
 	const f = fixture();
-	f.setProcesses(
-		"77 Thu Sep 18 01:00:00 2026 /Applications/ChatGPT.app/Contents/Resources/codex app-server",
-	);
+	f.setProcesses([
+		{
+			pid: 77,
+			ucomm: "codex",
+			args: "/Applications/ChatGPT.app/Contents/Resources/codex app-server",
+		},
+	]);
 	expect(await createCodexQuotaHostCollector(f.options)()).toMatchObject({
 		complete: false,
 		registeredComplete: true,
@@ -276,7 +295,7 @@ it("preserves an unattributed desktop reader as global unknown", async () => {
 		unattributedReaders: [
 			{
 				pid: 77,
-				startIdentity: "Thu Sep 18 01:00:00 2026",
+				startIdentity: LSTART,
 				reason: "process_home_unknown",
 			},
 		],

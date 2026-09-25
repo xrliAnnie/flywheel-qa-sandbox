@@ -218,6 +218,108 @@ describe("FLY-2688 — Codex quota projection", () => {
 		expect(JSON.stringify(snapshot)).not.toContain("@");
 	});
 
+	it("FLY-2869: never projects exhaustion from a stale or reset-elapsed reading", async () => {
+		const window = (usedPercent: number, resetAt: string | null) => ({
+			usedPercent,
+			windowMinutes: 10080,
+			resetAt,
+		});
+		const account = (
+			name: string,
+			fields: Record<string, unknown>,
+		): Record<string, unknown> => ({
+			name,
+			registeredProfile: name,
+			authHealth: "valid",
+			note: null,
+			planType: "pro",
+			fiveH: null,
+			credits: {
+				known: false,
+				hasCredits: null,
+				unlimited: null,
+				balance: null,
+			},
+			resetCredits: { known: false, value: null },
+			unclassifiedWindows: 0,
+			...fields,
+		});
+		const snapshot = await buildCapacitySnapshot({
+			...base,
+			accountStorePath: missingAccountStorePath(),
+			codexAccountStorePath: writeCodexAccountStore({
+				version: 1,
+				generatedAt: "2026-09-21T11:55:00.000Z",
+				activeAccount: null,
+				accounts: [
+					account("school", {
+						// 35 minutes old: unknown, whatever it once said.
+						observedAt: "2026-09-21T11:25:00.000Z",
+						fiveH: {
+							usedPercent: 100,
+							windowMinutes: 300,
+							resetAt: "2026-09-21T11:40:00.000Z",
+						},
+						weekly: window(100, "2026-09-23T15:00:00.000Z"),
+					}),
+					account("personal", {
+						observedAt: "2026-09-21T11:55:00.000Z",
+						weekly: window(100, "2026-09-21T11:59:00.000Z"),
+					}),
+					account("personal1", {
+						authHealth: "refresh_invalid",
+						note: "token_revoked",
+						observedAt: "2026-09-21T11:25:00.000Z",
+						weekly: window(100, "2026-09-23T15:00:00.000Z"),
+					}),
+					account("personal2", {
+						observedAt: "2026-09-21T11:55:00.000Z",
+						weekly: window(100, "2026-09-23T15:00:00.000Z"),
+					}),
+				],
+			}),
+			quotaConfigPath: join(tmpdir(), "fly2688-missing-quota-config.json"),
+		});
+
+		expect(snapshot.quota.codex.staleAfterMinutes).toBe(30);
+		const [school, personal, personal1, personal2] =
+			snapshot.quota.codex.accounts ?? [];
+		expect(school).toMatchObject({
+			freshness: "stale",
+			stale: true,
+			ageMinutes: 35,
+			fiveHPct: null,
+			weeklyPct: null,
+			fiveHResetAt: null,
+			weeklyResetAt: "2026-09-23T15:00:00.000Z",
+			exhausted: false,
+			recoveryAt: null,
+			tokenState: "读数过期",
+		});
+		expect(personal).toMatchObject({
+			freshness: "reset_elapsed",
+			stale: false,
+			weeklyPct: null,
+			weeklyResetAt: null,
+			exhausted: false,
+			recoveryAt: null,
+			tokenState: "已过重置待探",
+		});
+		expect(personal1).toMatchObject({
+			freshness: "stale",
+			exhausted: false,
+			tokenState: "已吊销",
+			authUnusable: true,
+		});
+		expect(personal2).toMatchObject({
+			freshness: "fresh",
+			weeklyPct: 100,
+			exhausted: true,
+			recoveryAt: "2026-09-23T15:00:00.000Z",
+			tokenState: "打满",
+		});
+	});
+
 	it("keeps the no-source shape when the Codex store is absent or invalid", async () => {
 		for (const codexAccountStorePath of [
 			join(mkdtempSync(join(tmpdir(), "fly2688-absent-")), "codex.json"),

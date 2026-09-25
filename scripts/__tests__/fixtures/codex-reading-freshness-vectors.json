@@ -1,0 +1,178 @@
+[
+	{
+		"name": "fresh reading well inside the window",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": { "usedPercent": 40, "resetAt": "2026-09-25T00:00:00.000Z" }
+		},
+		"expected": "fresh"
+	},
+	{
+		"name": "exactly thirty minutes old is still fresh",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:03:20.000Z",
+			"fiveH": null,
+			"weekly": { "usedPercent": 40, "resetAt": null }
+		},
+		"expected": "fresh"
+	},
+	{
+		"name": "thirty minutes and one millisecond old is stale",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:03:19.999Z",
+			"fiveH": null,
+			"weekly": { "usedPercent": 40, "resetAt": null }
+		},
+		"expected": "stale"
+	},
+	{
+		"name": "stale wins over an elapsed reset",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T12:00:00.000Z",
+			"fiveH": null,
+			"weekly": { "usedPercent": 100, "resetAt": "2026-09-21T13:00:00.000Z" }
+		},
+		"expected": "stale"
+	},
+	{
+		"name": "exhausted window whose reset equals now has elapsed",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": { "usedPercent": 100, "resetAt": "2026-09-21T13:33:20.000Z" }
+		},
+		"expected": "reset_elapsed"
+	},
+	{
+		"name": "exhausted window with a future reset is fresh",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": { "usedPercent": 100, "resetAt": "2026-09-21T15:00:00.000Z" },
+			"weekly": null
+		},
+		"expected": "fresh"
+	},
+	{
+		"name": "non-exhausted window with a past reset does not count as reset_elapsed",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": { "usedPercent": 60, "resetAt": "2026-09-21T13:00:00.000Z" },
+			"weekly": null
+		},
+		"expected": "fresh"
+	},
+	{
+		"name": "observation sixty seconds in the future is tolerated",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:34:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "fresh"
+	},
+	{
+		"name": "observation more than sixty seconds in the future is unobserved",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2026-09-21T13:34:20.001Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "far-future observation is unobserved",
+		"nowMs": 1789997600000,
+		"reading": {
+			"observedAt": "2099-01-01T00:00:00.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "missing observation is unobserved",
+		"nowMs": 1789997600000,
+		"reading": { "observedAt": null, "fiveH": null, "weekly": null },
+		"expected": "unobserved"
+	},
+	{
+		"name": "unparseable observation is unobserved",
+		"nowMs": 1789997600000,
+		"reading": { "observedAt": "yesterday", "fiveH": null, "weekly": null },
+		"expected": "unobserved"
+	},
+	{
+		"name": "non-finite now fails closed",
+		"nowMs": "NaN",
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "infinite now fails closed",
+		"nowMs": "Infinity",
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "zero stale threshold fails closed",
+		"nowMs": 1789997600000,
+		"staleAfterMs": 0,
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "negative stale threshold fails closed",
+		"nowMs": 1789997600000,
+		"staleAfterMs": -1,
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "NaN stale threshold fails closed",
+		"nowMs": 1789997600000,
+		"staleAfterMs": "NaN",
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	},
+	{
+		"name": "infinite stale threshold fails closed",
+		"nowMs": 1789997600000,
+		"staleAfterMs": "Infinity",
+		"reading": {
+			"observedAt": "2026-09-21T13:23:20.000Z",
+			"fiveH": null,
+			"weekly": null
+		},
+		"expected": "unobserved"
+	}
+]

@@ -69,6 +69,25 @@ export const DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH: string;
 export const CODEX_PROFILE_NAME: RegExp;
 export function isCodexSlotName(name: unknown): name is string;
 export function isCodexIdentityLabel(name: unknown): name is string;
+export const CODEX_READING_STALE_AFTER_MS: number;
+export type CodexReadingFreshness =
+	| "fresh"
+	| "stale"
+	| "reset_elapsed"
+	| "unobserved";
+export interface CodexReadingWindowLike {
+	usedPercent: number;
+	resetAt: string | null;
+}
+export function codexReadingFreshness(
+	reading: {
+		observedAt: string | null;
+		fiveH: CodexReadingWindowLike | null;
+		weekly: CodexReadingWindowLike | null;
+	},
+	nowMs: number,
+	staleAfterMs?: number,
+): CodexReadingFreshness;
 export function loadCodexAccountPolicy(
 	registryPath?: string,
 ): CodexAccountPolicy;

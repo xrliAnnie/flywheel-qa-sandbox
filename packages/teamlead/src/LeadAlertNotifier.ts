@@ -255,6 +255,8 @@ export const ALERT_EVENT_TYPES = [
 	"quota_choice",
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
+	// FLY-2869: the Codex quota readings stopped refreshing (one per episode).
+	"codex_quota_reading_stale",
 	"quota_no_target",
 	"quota_blocked_recovered",
 	"quota_read_blind",
@@ -394,6 +396,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"model_cap_unknown",
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
+	"codex_quota_reading_stale",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
@@ -413,6 +416,7 @@ const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switch_degraded",
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
+	"codex_quota_reading_stale",
 ]);
 
 function hasValidDeliveryStyle(

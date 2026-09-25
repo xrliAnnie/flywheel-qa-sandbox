@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	type CodexQuotaObservation,
+	codexObservationResetElapsed,
 	parseCodexRateLimits,
 	selectCodexQuotaCandidate,
 } from "../candidate-selector.js";
@@ -141,6 +142,75 @@ describe("Codex candidate selection", () => {
 				?.profile,
 		).toBe("school");
 	});
+	it("FLY-2869: an exhausted account whose reset has passed becomes a probe candidate", () => {
+		const elapsed = {
+			...obs("school", -60_000, 100),
+			reached: true,
+		};
+		const selected = selectCodexQuotaCandidate(
+			[elapsed, obs("business", 3_600_000, 100)],
+			{ now, pool: ["business", "school"] },
+		);
+		expect(selected.kind).toBe("selected");
+		expect(selected.candidate?.profile).toBe("school");
+		expect(codexObservationResetElapsed(elapsed, now)).toBe(true);
+		// A reset landing exactly now has elapsed too.
+		expect(codexObservationResetElapsed(obs("school", 0, 100), now)).toBe(true);
+	});
+
+	it("FLY-2869: known quota wins over a reset-elapsed probe, which wins over unknown scope", () => {
+		const elapsed = obs("personal", -1, 100);
+		const unknown = { ...obs("school", 100), windows: [], scopeKnown: false };
+		expect(
+			selectCodexQuotaCandidate([elapsed, unknown, obs("business", 500, 90)], {
+				now,
+				pool: ["business", "personal", "school"],
+			}).candidate?.profile,
+		).toBe("business");
+		expect(
+			selectCodexQuotaCandidate([elapsed, unknown], {
+				now,
+				pool: ["personal", "school"],
+			}).candidate?.profile,
+		).toBe("personal");
+	});
+
+	it("FLY-2869: mixed exhausted windows stay limited and still count toward pool exhaustion", () => {
+		const mixed = (profile: string): CodexQuotaObservation => ({
+			...obs(profile, 100, 100),
+			windows: [
+				{ usedPercent: 100, resetsAt: now - 1 },
+				{ usedPercent: 100, resetsAt: now + 7_200_000 },
+			],
+		});
+		expect(codexObservationResetElapsed(mixed("school"), now)).toBe(false);
+		const result = selectCodexQuotaCandidate(
+			[mixed("business"), mixed("school")],
+			{ now, pool: ["business", "school"] },
+		);
+		expect(result).toEqual({
+			kind: "pool_exhausted",
+			nextAttemptAt: now + 7_200_000,
+		});
+		const unknownReset: CodexQuotaObservation = {
+			...obs("school", 100, 100),
+			windows: [
+				{ usedPercent: 100, resetsAt: now - 1 },
+				{ usedPercent: 100, resetsAt: null },
+			],
+		};
+		expect(codexObservationResetElapsed(unknownReset, now)).toBe(false);
+	});
+
+	it("FLY-2869: a past reset on a non-exhausted window still fails closed", () => {
+		expect(
+			selectCodexQuotaCandidate([obs("school", -1, 60)], {
+				now,
+				pool: ["school"],
+			}).kind,
+		).toBe("observation_unavailable");
+	});
+
 	it("converts protocol seconds exactly once and rejects wrong buckets and malformed windows", () => {
 		const bucket = {
 			primary: { usedPercent: 50, resetsAt: now / 1000 + 60 },

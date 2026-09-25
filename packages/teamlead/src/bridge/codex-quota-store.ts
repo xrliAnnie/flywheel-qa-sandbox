@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Database } from "better-sqlite3";
 import {
@@ -168,6 +168,11 @@ function canonicalCapacityEvidence(
 		observations: JSON.parse(canonicalCapacityObservation(observations)),
 	});
 }
+/** FLY-2869: Codex readings older than this mean the pipeline stopped. */
+const READING_STALE_AFTER_MS = 30 * 60_000;
+const READING_FUTURE_SKEW_MS = 60_000;
+/** FLY-2869: a manual-switch snapshot larger than this is stored as null. */
+const MANUAL_SWITCH_NOTIFICATION_MAX_BYTES = 16 * 1024;
 /** The StateStore connection owns every quota transaction; never a second DB. */
 export class CodexQuotaStore {
 	currentCodexPoolMembers?: () => readonly CodexQuotaPoolMember[];
@@ -192,6 +197,8 @@ export class CodexQuotaStore {
    CREATE TABLE IF NOT EXISTS codex_quota_outbox(event_id TEXT PRIMARY KEY,incident_id TEXT,kind TEXT NOT NULL,destination TEXT NOT NULL,payload_json TEXT NOT NULL,delivery_state TEXT NOT NULL DEFAULT 'pending',receipt_id TEXT);
    CREATE TABLE IF NOT EXISTS codex_quota_execution_pause(execution_id TEXT PRIMARY KEY,incident_id TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS codex_quota_manual_disposition(incident_id TEXT PRIMARY KEY,reason TEXT NOT NULL,recorded_at TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS codex_quota_reading_episode(episode_id TEXT PRIMARY KEY,stale_since TEXT NOT NULL,baseline_observed_at TEXT,opened_at TEXT NOT NULL,alerted_at TEXT,closed_at TEXT);
+   CREATE UNIQUE INDEX IF NOT EXISTS codex_quota_reading_episode_open ON codex_quota_reading_episode((1)) WHERE closed_at IS NULL;
    CREATE TABLE IF NOT EXISTS codex_quota_signal_event(event_key TEXT PRIMARY KEY,source TEXT NOT NULL,source_event_id TEXT NOT NULL,execution_id TEXT NOT NULL,binding_id TEXT,root_key TEXT,generation INTEGER,observed_at TEXT NOT NULL,payload_digest TEXT NOT NULL,disposition TEXT NOT NULL,reason_codes_json TEXT NOT NULL,evaluated_at TEXT,initial_disposition TEXT,initial_reason_codes_json TEXT,initial_evaluated_at TEXT);
    CREATE INDEX IF NOT EXISTS codex_quota_signal_source ON codex_quota_signal_event(source,source_event_id,execution_id);
    CREATE INDEX IF NOT EXISTS codex_quota_signal_root_generation ON codex_quota_signal_event(root_key,generation,disposition);
@@ -337,6 +344,8 @@ export class CodexQuotaStore {
 		accountKey: string;
 		profile: string;
 		authDigest: string;
+		/** FLY-2869: the N1 snapshot for this manual switch, built by the caller. */
+		notification?: CodexSwitchNotificationSnapshot | null;
 	}): void {
 		if (
 			!isCodexIdentityLabel(input.profile) ||
@@ -392,7 +401,160 @@ export class CodexQuotaStore {
 					"UPDATE codex_quota_incident SET state='identity_uncertain',selection_id=NULL,failure_code='canonical_identity_changed' WHERE root_key=? AND generation<=? AND state NOT IN ('committed','recovering','settled')",
 				)
 				.run(input.rootKey, root.generation);
+			// FLY-2869: someone switched the canonical account by hand. Tell
+			// #notifications in the same shape as an automatic switch, exactly once
+			// per generation (same transaction, generation-keyed event id).
+			const generation = root.generation + 1;
+			const serialized =
+				input.notification == null ? null : JSON.stringify(input.notification);
+			this.enqueueOutbox({
+				incidentId: null,
+				kind: "switch_notification",
+				eventId: `codex:${input.rootKey}:${generation}:manual_switch`,
+				destination: "founder",
+				payload: {
+					reason: "manual_switch",
+					rootKey: input.rootKey,
+					generation,
+					notification:
+						serialized !== null &&
+						serialized.length <= MANUAL_SWITCH_NOTIFICATION_MAX_BYTES
+							? serialized
+							: null,
+				},
+			});
 		})();
+	}
+	/**
+	 * FLY-2869: the durable "Codex readings stopped" state machine. Health is
+	 * derived here from the newest observation, never trusted from a caller.
+	 * One open episode at most; it survives restarts, alerts once after 30
+	 * minutes of staleness and closes on the next healthy reading.
+	 */
+	observeCodexReadingPipeline(input: {
+		nowIso: string;
+		latestObservedAt: string | null;
+		failureCode: string | null;
+	}): void {
+		const nowMs = Date.parse(input.nowIso);
+		const observedMs =
+			input.latestObservedAt === null
+				? null
+				: Date.parse(input.latestObservedAt);
+		if (
+			!Number.isFinite(nowMs) ||
+			(observedMs !== null &&
+				(!Number.isFinite(observedMs) ||
+					observedMs > nowMs + READING_FUTURE_SKEW_MS))
+		)
+			throw new Error("invalid_reading_pipeline_input");
+		const failureCode =
+			typeof input.failureCode === "string" &&
+			/^[a-z0-9_:.-]{1,80}$/i.test(input.failureCode)
+				? input.failureCode
+				: null;
+		const healthy =
+			observedMs !== null && nowMs - observedMs <= READING_STALE_AFTER_MS;
+		const nowIso = new Date(nowMs).toISOString();
+		this.db.transaction(() => {
+			const open = this.db
+				.prepare(
+					"SELECT episode_id,stale_since,baseline_observed_at,alerted_at FROM codex_quota_reading_episode WHERE closed_at IS NULL",
+				)
+				.get() as
+				| {
+						episode_id: string;
+						stale_since: string;
+						baseline_observed_at: string | null;
+						alerted_at: string | null;
+				  }
+				| undefined;
+			if (healthy) {
+				if (open)
+					this.db
+						.prepare(
+							"UPDATE codex_quota_reading_episode SET closed_at=? WHERE episode_id=?",
+						)
+						.run(nowIso, open.episode_id);
+				return;
+			}
+			const baseline =
+				observedMs === null ? null : new Date(observedMs).toISOString();
+			const episode = open ?? {
+				episode_id: randomUUID(),
+				stale_since: baseline ?? nowIso,
+				baseline_observed_at: baseline,
+				alerted_at: null,
+			};
+			if (!open)
+				this.db
+					.prepare(
+						"INSERT INTO codex_quota_reading_episode(episode_id,stale_since,baseline_observed_at,opened_at) VALUES(?,?,?,?)",
+					)
+					.run(
+						episode.episode_id,
+						episode.stale_since,
+						episode.baseline_observed_at,
+						nowIso,
+					);
+			const staleMs = nowMs - Date.parse(episode.stale_since);
+			if (episode.alerted_at !== null || staleMs <= READING_STALE_AFTER_MS)
+				return;
+			this.db
+				.prepare(
+					"UPDATE codex_quota_reading_episode SET alerted_at=? WHERE episode_id=?",
+				)
+				.run(nowIso, episode.episode_id);
+			this.enqueueOutbox({
+				incidentId: null,
+				kind: "reading_stale",
+				eventId: `codex-quota-reading-stale:${episode.episode_id}`,
+				destination: "lead",
+				payload: {
+					episodeId: episode.episode_id,
+					staleSince: episode.stale_since,
+					baselineObservedAt: episode.baseline_observed_at,
+					failureCode,
+					staleMinutesAtAlert: Math.floor(staleMs / 60_000),
+				},
+			});
+		})();
+	}
+	/** FLY-2869: the durable record of one manual canonical switch. */
+	getExternalGeneration(
+		rootKey: string,
+		generation: number,
+	):
+		| {
+				rootKey: string;
+				generation: number;
+				accountKey: string;
+				profile: string;
+				observedAt: string;
+		  }
+		| undefined {
+		const row = this.db
+			.prepare(
+				"SELECT root_key,generation,account_key,profile,observed_at FROM codex_quota_external_generation WHERE root_key=? AND generation=?",
+			)
+			.get(rootKey, generation) as
+			| {
+					root_key: string;
+					generation: number;
+					account_key: string;
+					profile: string;
+					observed_at: string;
+			  }
+			| undefined;
+		return row
+			? {
+					rootKey: row.root_key,
+					generation: row.generation,
+					accountKey: row.account_key,
+					profile: row.profile,
+					observedAt: row.observed_at,
+				}
+			: undefined;
 	}
 	getRoot(rootKey: string): CodexQuotaRoot | undefined {
 		const r = this.db
@@ -677,6 +839,22 @@ export class CodexQuotaStore {
 			| {
 					incidentId: string | null;
 					kind: "automation_disabled";
+					eventId: string;
+					destination: string;
+					payload: Record<string, unknown>;
+			  }
+			| {
+					// FLY-2869: a manual switch has no incident; its generation keys it.
+					incidentId: null;
+					kind: "switch_notification";
+					eventId: string;
+					destination: string;
+					payload: Record<string, unknown>;
+			  }
+			| {
+					// FLY-2869: one "readings stopped" alert per durable episode.
+					incidentId: null;
+					kind: "reading_stale";
 					eventId: string;
 					destination: string;
 					payload: Record<string, unknown>;
