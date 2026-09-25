@@ -9487,6 +9487,14 @@ export async function startBridge(
 		store,
 		projects,
 		config,
+		leadInterrupts: {
+			commDbPathForProject,
+			mailboxForProject: (projectName) =>
+				leadInboxRuntime.leadInterruptMailbox(projectName),
+			nudgeLead: (projectName, leadId) => {
+				leadInboxRuntime.nudge(leadId, projectName);
+			},
+		},
 	});
 	const xhsWriteService = createXhsBridgeWriteService({
 		apiToken: config.apiToken ?? "",

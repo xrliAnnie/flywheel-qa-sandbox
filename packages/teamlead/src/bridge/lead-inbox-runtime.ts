@@ -947,6 +947,11 @@ export class LeadInboxRuntime {
 		});
 	}
 
+	/** FLY-2883: the project's mailbox for the controlled interrupt route. */
+	leadInterruptMailbox(projectName: string): MailboxQueue | undefined {
+		return this.queues.get(projectName);
+	}
+
 	nudge(leadId: string, projectName?: string): boolean {
 		const project = projectName
 			? this.opts.projects.find(({ projectName: name }) => name === projectName)

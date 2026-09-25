@@ -6,6 +6,7 @@ import type {
 	VoiceSessionReservation,
 	VoiceSessionRow,
 } from "../StateStore.js";
+import type { LeadInterruptVoiceHandlers } from "./lead-interrupt-routes.js";
 
 export class VoiceSessionHttpError extends Error {
 	constructor(
@@ -33,6 +34,8 @@ export interface VoiceSessionRouterDeps {
 	) => void | Promise<void>;
 	projectSession: (session: VoiceSessionRow) => Record<string, unknown>;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
+	/** FLY-2883: controlled Lead interrupt (initiate + read back the reply). */
+	leadInterrupts?: LeadInterruptVoiceHandlers;
 }
 
 const DAEMON_ONLY = "daemon_credential_required";
@@ -416,6 +419,19 @@ export function createVoiceSessionRouter(
 		}
 		res.json({ state: requestedState });
 	});
+
+	if (deps.leadInterrupts) {
+		router.post(
+			"/:sessionId/lead-interrupts",
+			masterOnly(),
+			deps.leadInterrupts.create,
+		);
+		router.get(
+			"/:sessionId/lead-interrupts/:interruptId",
+			masterOnly(),
+			deps.leadInterrupts.get,
+		);
+	}
 
 	router.get("/:sessionId/outbound", masterOnly(), (req, res) => {
 		const leaseToken = lease(req);

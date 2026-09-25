@@ -11,6 +11,12 @@ import {
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
+import {
+	createCommDbFounderQuoteVerifier,
+	createLeadInterruptVoiceHandlers,
+	createProjectLeadTargetResolver,
+	type LeadInterruptMailbox,
+} from "./lead-interrupt-routes.js";
 import type { BridgeConfig } from "./types.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
 import {
@@ -50,6 +56,14 @@ export function createVoiceSessionServices(input: {
 	cwd?: string;
 	fetchImpl?: typeof fetch;
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
+	/** FLY-2883: absent = no controlled-interrupt routes (byte-compatible). */
+	leadInterrupts?: {
+		commDbPathForProject: (projectName: string) => string;
+		mailboxForProject: (
+			projectName: string,
+		) => LeadInterruptMailbox | undefined;
+		nudgeLead: (projectName: string, leadId: string) => void;
+	};
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
@@ -377,6 +391,23 @@ export function createVoiceSessionServices(input: {
 				postStatus(session, `📻 有 ${count} 条语音没有送达`),
 			projectSession,
 			validateSession,
+			...(input.leadInterrupts
+				? {
+						leadInterrupts: createLeadInterruptVoiceHandlers({
+							store: input.store,
+							resolveTarget: createProjectLeadTargetResolver(
+								input.projects,
+								env,
+							),
+							verifyFounderQuote: createCommDbFounderQuoteVerifier({
+								commDbPathForProject: input.leadInterrupts.commDbPathForProject,
+								founderUserId: input.config.discordOwnerUserId,
+							}),
+							mailboxForProject: input.leadInterrupts.mailboxForProject,
+							nudgeLead: input.leadInterrupts.nudgeLead,
+						}),
+					}
+				: {}),
 		}),
 		runtime,
 		cardProjector,
