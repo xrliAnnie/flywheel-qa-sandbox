@@ -1,9 +1,10 @@
 ---
 issue: FLY-2878
-phase: design
-phaseCursor: 1/4
-updated: 2026-09-25T09:11:51.975Z
-nextStep: Migrate exact assertions and verify RED
+phase: implement
+phaseCursor: 2/4
+updated: 2026-09-25T09:13:39.157Z
+nextStep: Run discovered concrete tests, related selection, verifier, lint, and
+  literal sweeps
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +20,8 @@ pointers: {}
 ---
 
 # FLY-2878 progress
-**phase**: design (1/4)
-**next**: Migrate exact assertions and verify RED
+**phase**: implement (2/4)
+**next**: Run discovered concrete tests, related selection, verifier, lint, and literal sweeps
 
 ## chunks
 - ✅ onboard — 
