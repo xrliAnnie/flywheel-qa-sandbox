@@ -124,9 +124,10 @@ describe("account quota shared view", () => {
 			source: "machine",
 			observedAt: generatedAt,
 		});
+		// FLY-2864: prepaid tranches are no longer shown; without reset-card
+		// facts the cell names why it cannot read them.
 		expect(shopping.credits).toMatchObject({
-			display: "明细未提供",
-			source: "machine",
+			display: "读不到（接口未返回）",
 		});
 		expect(
 			view.claude.find((row) => row.name === "business")?.subscriptionTier,
@@ -192,7 +193,7 @@ describe("account quota shared view", () => {
 		expect(html).not.toContain("shop&lt;owner&gt;");
 		expect(visibleHtml).not.toContain("*");
 		expect(html).not.toContain('<span class="active">');
-		expect(html).toContain("<th>token 状态</th>");
+		expect(html).not.toContain("<th>token 状态</th>");
 		expect(sections).toHaveLength(2);
 		expect(sections?.[0]?.match(/quota-row active-account/g)).toHaveLength(1);
 		expect(sections?.[1]?.match(/quota-row active-account/g)).toBeNull();
@@ -452,8 +453,9 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		expect(html).toContain("兑换卡未暴露");
 		expect(html).not.toContain("余额 12.5");
 		expect(html).not.toContain("无数据 weekly;");
-		expect(html).toContain("token 状态");
-		expect(html).toContain('class="token-status">正常</span>');
+		// FLY-2864: the founder dropped the token-status column.
+		expect(html).not.toContain("token 状态");
+		expect(html).not.toContain('class="token-status"');
 	});
 
 	it("does not invent Codex rows while no machine source exists", () => {
@@ -542,5 +544,514 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 			tokenStatus: { display: "未探" },
 		});
 		expect(renderAccountsPageHtml(view)).toContain("本次读取失败");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// FLY-2864 — reset cards, live tier, next charge date
+// ---------------------------------------------------------------------------
+
+describe("FLY-2864 — patrol tick is untouched", () => {
+	it("prints exactly what the pre-2864 view printed for the same snapshot", () => {
+		const value = quota();
+		const view = buildAccountQuotaView({
+			generatedAt,
+			quota: { ...value, codex: codexQuota() },
+		});
+		// Captured from the main-branch build before this change.
+		expect(formatAccountQuotaTickLines(view)).toEqual([
+			"- 额度 Claude",
+			"**★shopping**\n```text\nwindow  used   left   reset (PT)\n5h      10%    90%    09-17 Thu 19:00\n7d      24%    76%    09-22 Tue 09:00\nFable   n/a    n/a    n/a\n```\n观测：5m 前\n\n**business** · 到期 10-14\n```text\nwindow  used   left   reset (PT)\n5h      2%     98%    n/a\n7d      7%     93%    09-19 Sat 09:00\nFable   2%     98%    09-19 Sat 09:00\n```\n观测：165m 前 (stale)\n\n**personal1** · 到期 已取消\n```text\nwindow  used   left   reset (PT)\n5h      n/a    n/a    已取消\n7d      n/a    n/a    已取消\nFable   n/a    n/a    已取消\n```\n观测：13000m 前",
+			"- Codex 机器读数 · account/rateLimits/read",
+			"**personal1**\n```text\nwindow  used   left   reset (PT)\n5h      3%     97%    09-17 Thu 18:00\n7d      11%    89%    09-20 Sun 18:00\n```\n观测：5m 前\n\n**shopping**\n```text\nwindow  used   left   reset (PT)\n5h      8%     92%    09-17 Thu 21:00\n7d      12%    88%    09-22 Tue 21:00\n```\n观测：285m 前 (stale)\n\n**★personal** · 打满\n```text\nwindow  used   left   reset (PT)\n5h      100%   0%     09-17 Thu 19:00\n7d      100%   0%     09-23 Wed 19:00\n```\n观测：5m 前",
+		]);
+	});
+});
+
+const NOW_2864 = "2026-09-24T23:30:00.000Z";
+
+type ClaudeFixture = ReturnType<typeof quota>["claude"]["accounts"][number] &
+	Record<string, unknown>;
+
+function claudeAccount(
+	name: string,
+	extra: Record<string, unknown> = {},
+): ClaudeFixture {
+	return {
+		name,
+		active: false,
+		subscriptionTier: {
+			subscriptionType: "max",
+			rateLimitTier: "default_claude_max_20x",
+		},
+		fiveHPct: 5,
+		sevenDPct: 20,
+		fableSevenDPct: 3,
+		observedAt: "2026-09-24T23:20:00.000Z",
+		ageMinutes: 10,
+		stale: false,
+		fiveHResetAt: "2026-09-25T02:00:00.000Z",
+		weeklyResetAt: "2026-09-29T16:00:00.000Z",
+		fableWeeklyResetAt: "2026-09-29T16:00:00.000Z",
+		exhaustedUntil: null,
+		authUnusable: false,
+		subscriptionStatus: "active",
+		detailObservedAt: "2026-09-24T23:25:00.000Z",
+		usageStatus: "ok",
+		prepaid: { known: true, cards: null },
+		...extra,
+	} as ClaudeFixture;
+}
+
+function claudeView(
+	accounts: ClaudeFixture[],
+	subscriptionManual?: Parameters<
+		typeof buildAccountQuotaView
+	>[1] extends infer O
+		? O extends { subscriptionManual?: infer M }
+			? M
+			: never
+		: never,
+) {
+	return buildAccountQuotaView(
+		{
+			generatedAt: NOW_2864,
+			quota: {
+				claude: {
+					source: "claude-accounts.json" as const,
+					activeAccount: null,
+					staleAfterMinutes: 30,
+					accounts: accounts as never,
+				},
+				codex: {
+					source: null,
+					unavailable: ["structural: codex_no_usage_api"],
+				},
+			},
+		},
+		subscriptionManual ? { subscriptionManual } : {},
+	);
+}
+
+const grants = (...list: Array<[number, number, string | null]>) => ({
+	known: true,
+	reason: null,
+	grants: list.map(([resetsLeft, resetsTotal, endsAt]) => ({
+		resetsLeft,
+		resetsTotal,
+		endsAt,
+	})),
+});
+
+describe("FLY-2864 — Claude reset-card cell", () => {
+	const cardsOf = (extra: Record<string, unknown>) =>
+		claudeView([claudeAccount("business", extra)]).claude.find(
+			(row) => row.name === "business",
+		)!.credits;
+
+	it("lists each usable card with its own expiry", () => {
+		expect(
+			cardsOf({
+				resetGrants: grants([1, 1, "2026-10-22T16:00:00.000Z"]),
+			}),
+		).toMatchObject({
+			display: "1 张\n#1 到期 2026/10/22",
+			source: "machine",
+			observedAt: "2026-09-24T23:25:00.000Z",
+		});
+		expect(
+			cardsOf({
+				resetGrants: grants([2, 2, "2026-10-22T16:00:00.000Z"], [1, 1, null]),
+			}).display,
+		).toBe("2 张\n#1 到期 2026/10/22 · 剩 2 次\n#2 到期未知");
+	});
+
+	it("does not count spent or expired cards and says 0 only when known", () => {
+		expect(
+			cardsOf({
+				resetGrants: grants(
+					[0, 1, "2026-10-22T16:00:00.000Z"],
+					[1, 1, "2026-09-20T00:00:00.000Z"],
+					[1, 1, "2026-11-02T16:00:00.000Z"],
+				),
+			}).display,
+		).toBe("1 张\n#1 到期 2026/11/2");
+		expect(cardsOf({ resetGrants: grants() }).display).toBe("0 张");
+		expect(
+			cardsOf({
+				resetGrants: { known: true, reason: "no_grant", grants: [] },
+			}).display,
+		).toBe("0 张");
+	});
+
+	it("names why cards cannot be read instead of guessing", () => {
+		const cases: Array<[Record<string, unknown>, string]> = [
+			[
+				{
+					resetGrants: { known: false, reason: "surface", grants: null },
+				},
+				"读不到（Claude Code 版本未识别）",
+			],
+			[
+				{
+					resetGrants: { known: false, reason: "cli_version", grants: null },
+				},
+				"读不到（Claude Code 版本未识别）",
+			],
+			[
+				{
+					resetGrants: {
+						known: false,
+						reason: "cli_version_unknown",
+						grants: null,
+					},
+				},
+				"读不到（Claude Code 版本未识别）",
+			],
+			[
+				{
+					resetGrants: { known: false, reason: "deadline", grants: null },
+				},
+				"读不到（本轮超时）",
+			],
+			[
+				{
+					resetGrants: { known: false, reason: "forbidden", grants: null },
+				},
+				"读不到（接口拒绝）",
+			],
+			[
+				{
+					resetGrants: { known: false, reason: "network", grants: null },
+				},
+				"读不到（接口未返回）",
+			],
+			[
+				{
+					resetGrants: { known: false, reason: "absent", grants: null },
+				},
+				"读不到（接口未返回）",
+			],
+			[
+				{
+					resetGrants: { known: false, reason: "tier", grants: null },
+				},
+				"读不到（接口未返回）",
+			],
+			// No resetGrants at all: the usage status is the reason.
+			[{ usageStatus: "deadline" }, "读不到（本轮超时）"],
+			[{ usageStatus: "ok" }, "读不到（接口未返回）"],
+			[
+				{
+					subscriptionStatus: undefined,
+					detailObservedAt: undefined,
+					usageStatus: undefined,
+					prepaid: undefined,
+				},
+				"读不到（接口未返回）",
+			],
+		];
+		for (const [extra, display] of cases) {
+			expect(cardsOf(extra).display).toBe(display);
+			expect(cardsOf(extra).display).not.toContain("明细未提供");
+		}
+	});
+
+	it("does not vouch for carried cards once the token is dead or refused", () => {
+		const history = grants([1, 1, "2026-10-22T16:00:00.000Z"]);
+		expect(
+			cardsOf({ usageStatus: "unauthorized", resetGrants: history }).display,
+		).toBe("读不到（token 已失效，需重登）");
+		expect(cardsOf({ usageStatus: "unauthorized" }).display).toBe(
+			"读不到（token 已失效，需重登）",
+		);
+		expect(
+			cardsOf({
+				usageStatus: "forbidden:oauth_not_allowed_for_organization",
+				resetGrants: history,
+			}).display,
+		).toBe("读不到（接口拒绝）");
+		// A deadline or network blip keeps showing the carried cards.
+		expect(
+			cardsOf({ usageStatus: "deadline", resetGrants: history }).display,
+		).toBe("1 张\n#1 到期 2026/10/22");
+	});
+
+	it("keeps the manual card fallback and the canceled row as before", () => {
+		expect(
+			cardsOf({
+				resetGrants: { known: false, reason: "absent", grants: null },
+				manualPrepaid: {
+					account: "business",
+					confirmedBy: "founder",
+					confirmedAt: "2026-09-24T00:00:00.000Z",
+					cards: [{ expiresAt: "2026-10-16T00:00:00.000Z" }],
+				},
+			}).display,
+		).toBe("1 张\n#1 到期 2026/10/15\n确认人 founder");
+		const canceled = claudeView([
+			claudeAccount("personal1", {
+				subscriptionStatus: "canceled",
+				usageStatus: "forbidden:oauth_not_allowed_for_organization",
+				resetGrants: grants([1, 1, "2026-10-22T16:00:00.000Z"]),
+			}),
+		]).claude.find((row) => row.name === "personal1")!;
+		expect(canceled.credits.display).toBe("已取消");
+	});
+
+	it("shows the live tier as the tier, with no confirmation wording", () => {
+		const row = claudeView([claudeAccount("business")]).claude.find(
+			(r) => r.name === "business",
+		)!;
+		expect(row.subscriptionTier.display).toBe("Max 20x");
+	});
+});
+
+describe("FLY-2864 — Claude next charge date", () => {
+	const KEY = "a".repeat(64);
+	const confirmation = (
+		profile: string,
+		status: "active" | "canceled" | "unknown",
+		expiresOn: string | null,
+	) => ({
+		provider: "Claude" as const,
+		profile,
+		identityKey: KEY,
+		status,
+		expiresOn,
+		confirmedBy: "founder",
+		confirmedAt: "2026-09-24T18:00:00.000Z",
+		sourceRef: "FLY-2792#founder-confirmation",
+	});
+
+	it("says Anthropic does not expose it, and shows cancellation when known", () => {
+		const failures: unknown[] = [];
+		const view = claudeView(
+			[
+				claudeAccount("business"),
+				claudeAccount("personal1", {
+					subscriptionStatus: "canceled",
+					usageStatus: "forbidden:oauth_not_allowed_for_organization",
+				}),
+				claudeAccount("manual-canceled"),
+				claudeAccount("manual-canceled-undated"),
+				claudeAccount("manual-active"),
+				claudeAccount("manual-mismatch"),
+			],
+			{
+				confirmations: [
+					confirmation("manual-canceled", "canceled", "2026-10-05"),
+					confirmation("manual-canceled-undated", "canceled", null),
+					confirmation("manual-active", "active", null),
+					confirmation("manual-mismatch", "canceled", "2026-10-05"),
+				],
+				identityKeys: {
+					"Claude:manual-canceled": KEY,
+					"Claude:manual-canceled-undated": KEY,
+					"Claude:manual-active": KEY,
+					"Claude:manual-mismatch": "b".repeat(64),
+				},
+				onResolutionError: (failure) => failures.push(failure),
+			},
+		);
+		const next = Object.fromEntries(
+			view.claude.map((row) => [row.name, row.nextCharge.display]),
+		);
+		expect(next).toMatchObject({
+			business: "读不到（Anthropic 接口不给）",
+			personal1: "已取消",
+			"manual-canceled": "已取消 · 10/05 周一 到期",
+			"manual-canceled-undated": "已取消",
+			"manual-active": "读不到（Anthropic 接口不给）",
+			"manual-mismatch": "读不到（Anthropic 接口不给）",
+		});
+		expect(failures).toEqual([
+			{
+				provider: "Claude",
+				profile: "manual-mismatch",
+				error: "identity_mismatch",
+			},
+		]);
+		for (const row of view.claude) {
+			expect(row.nextCharge.display.length).toBeGreaterThan(0);
+		}
+	});
+});
+
+describe("FLY-2864 — Codex next charge date", () => {
+	function codexView(
+		subscriptions: Record<string, unknown>,
+		subscriptionManual?: Parameters<typeof buildAccountQuotaView>[1],
+	) {
+		const value = codexQuota();
+		for (const account of value.accounts) {
+			const subscription = subscriptions[account.name];
+			if (subscription !== undefined) {
+				(account as Record<string, unknown>).subscription = subscription;
+			}
+		}
+		return buildAccountQuotaView(
+			{ generatedAt: NOW_2864, quota: { ...quota(), codex: value } },
+			subscriptionManual,
+		);
+	}
+	const sub = (extra: Record<string, unknown>) => ({
+		status: "active",
+		renewsAt: null,
+		endsAt: null,
+		observedAt: "2026-09-24T23:30:00.000Z",
+		note: null,
+		...extra,
+	});
+	const nextOf = (view: ReturnType<typeof codexView>) =>
+		Object.fromEntries(
+			view.codex.map((row) => [row.name, row.nextCharge.display]),
+		);
+
+	it("shows the renewal date in Pacific time with the weekday", () => {
+		expect(
+			nextOf(
+				codexView({
+					personal: sub({ renewsAt: "2026-10-23T03:59:39.000Z" }),
+					personal1: sub({
+						renewsAt: "2026-10-19T04:02:27.000Z",
+						note: "unauthorized",
+					}),
+				}),
+			),
+		).toEqual({
+			personal: "10/22 周四",
+			personal1: "10/18 周日",
+			shopping: "读不到（接口未返回）",
+		});
+	});
+
+	it("never shows a past date as the next charge", () => {
+		expect(
+			nextOf(
+				codexView({
+					personal: sub({ renewsAt: "2026-09-24T06:00:00.000Z" }),
+					personal1: sub({ renewsAt: "2026-09-25T06:00:00.000Z" }),
+				}),
+			),
+		).toMatchObject({
+			// 09/23 23:00 PT is yesterday; 09/24 23:00 PT is still today.
+			personal: "读不到（读数已过期）",
+			personal1: "09/24 周四",
+		});
+	});
+
+	it("never shows a cancellation whose end date has passed", () => {
+		expect(
+			nextOf(
+				codexView({
+					// Carried from an older round (this round failed): stale.
+					personal: sub({
+						status: "canceled",
+						endsAt: "2026-09-20T04:00:00.000Z",
+						observedAt: "2026-09-10T00:00:00.000Z",
+						note: "network",
+					}),
+					// Carried but still in the future: shown.
+					personal1: sub({
+						status: "canceled",
+						endsAt: "2026-10-19T04:02:27.000Z",
+						observedAt: "2026-09-10T00:00:00.000Z",
+						note: "blocked",
+					}),
+					// A kept old store has note:null too (the whole read failed):
+					// a past end day is never shown, whatever the note says.
+					shopping: sub({
+						status: "canceled",
+						endsAt: "2026-09-20T04:00:00.000Z",
+						observedAt: "2026-09-10T00:00:00.000Z",
+					}),
+				}),
+			),
+		).toEqual({
+			personal: "读不到（读数已过期）",
+			personal1: "已取消 · 10/18 周日 到期",
+			shopping: "读不到（读数已过期）",
+		});
+	});
+
+	it("shows cancellation, no subscription and each read failure distinctly", () => {
+		const view = codexView({
+			personal: sub({
+				status: "canceled",
+				endsAt: "2026-10-19T04:02:27.000Z",
+			}),
+			personal1: sub({ status: "canceled" }),
+			shopping: sub({ status: "none" }),
+		});
+		expect(nextOf(view)).toEqual({
+			personal: "已取消 · 10/18 周日 到期",
+			personal1: "已取消",
+			shopping: "读不到（无有效订阅）",
+		});
+		const unknown = (note: string) =>
+			sub({ status: "unknown", observedAt: null, note });
+		expect(
+			nextOf(
+				codexView({
+					personal: unknown("unauthorized"),
+					personal1: unknown("blocked"),
+					shopping: unknown("identity_mismatch"),
+				}),
+			),
+		).toEqual({
+			personal: "读不到（token 已失效）",
+			personal1: "读不到（接口被拦）",
+			shopping: "读不到（身份不符）",
+		});
+		expect(
+			nextOf(
+				codexView({
+					personal: unknown("problem:invalid_credential"),
+					personal1: unknown("network"),
+					shopping: unknown("malformed"),
+				}),
+			),
+		).toEqual({
+			personal: "读不到（账号目录异常）",
+			personal1: "读不到（接口未返回）",
+			shopping: "读不到（接口未返回）",
+		});
+	});
+
+	it("uses a manual cancellation only when the machine has no reading", () => {
+		const KEY = "c".repeat(64);
+		const manual = (profile: string, status: "active" | "canceled") => ({
+			provider: "Codex" as const,
+			profile,
+			identityKey: KEY,
+			status,
+			expiresOn: status === "canceled" ? "2026-10-14" : null,
+			confirmedBy: "founder",
+			confirmedAt: "2026-09-24T18:00:00.000Z",
+			sourceRef: "FLY-2792#founder-confirmation",
+		});
+		const view = codexView(
+			{ personal: sub({ renewsAt: "2026-10-23T03:59:39.000Z" }) },
+			{
+				subscriptionManual: {
+					confirmations: [
+						manual("personal", "canceled"),
+						manual("personal1", "canceled"),
+						manual("shopping", "active"),
+					],
+					identityKeys: {
+						"Codex:personal": KEY,
+						"Codex:personal1": KEY,
+						"Codex:shopping": KEY,
+					},
+				},
+			},
+		);
+		expect(nextOf(view)).toEqual({
+			personal: "10/22 周四",
+			personal1: "已取消 · 10/14 周三 到期",
+			shopping: "读不到（接口未返回）",
+		});
 	});
 });

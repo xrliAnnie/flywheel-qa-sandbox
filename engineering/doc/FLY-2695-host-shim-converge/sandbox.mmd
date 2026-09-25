@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant M as Raya 模型(Codex 回合)
+    participant SB as Seatbelt 沙箱<br/>workspace-write · 读不受限
+    participant SH as ~/.flywheel/bin/raya-cos.sh
+    participant HC as bin/lib/host-config.sh
+    participant N as node …/raya-cos/dist/cli.js
+    participant WS as 工作区 state/cos/
+    M->>SB: 在工作区 cwd 执行 shim status
+    SB->>SH: exec(允许:读+执行工作区外文件)
+    SH->>HC: source · host_config_load
+    HC-->>SH: FLYWHEEL_DIR = ENV > host.json > ~/Dev/flywheel
+    SH->>N: exec node cli.js status(argv 原样,cwd 不变)
+    N->>WS: 读写(允许:cwd 在 writable_roots 内)
+    N-->>M: {"schemaVersion":2,"operations":[…]}
+    Note over SB: 负对照:写 $HOME、写 ~/Dev/flywheel<br/>→ Operation not permitted(策略确实在生效)

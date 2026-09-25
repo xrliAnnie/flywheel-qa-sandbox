@@ -221,11 +221,13 @@ it.each([false, true])(
 				} as never);
 			await refresher.refresh(issueId);
 			expect(titles.at(-1)).toBe("🔔 ⏳待批");
+			// FLY-2761 qa@1: the ship card leads the row, and the unanswered
+			// "terminal" ask stays on it instead of being dropped.
 			expect(
 				attentionAudience(await page(), true)[0]?.item.sources.map(
 					(s) => s.fact.value?.kind,
 				),
-			).toEqual(["founder_gate"]);
+			).toEqual(["founder_gate", "founder_ask"]);
 			holders.mockRestore();
 			for (const status of ["blocked", "completed", "approved_to_ship"]) {
 				store.upsertSession({
@@ -235,8 +237,14 @@ it.each([false, true])(
 					status,
 				});
 				await refresher.refresh(issueId);
+				// The FLY-2597 title rule still hides the ordinary answer badge…
 				expect(titles.at(-1)).not.toBe("🔔要你答");
-				expect(attentionAudience(await page(), true)).toEqual([]);
+				// …but the page keeps the unsettled founder ask (FLY-2761 qa@1).
+				expect(
+					attentionAudience(await page(), true).map(({ item }) =>
+						item.sources.map((s) => s.fact.value?.kind),
+					),
+				).toEqual([["founder_ask"]]);
 			}
 		} finally {
 			store.close();

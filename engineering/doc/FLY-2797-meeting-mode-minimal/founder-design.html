@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音会议模式最小集</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif;line-height:1.6;font-size:16px}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 16px 48px}
+  h1{font-size:26px;margin:0 0 4px;color:var(--navy)}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:20px}
+  .mono{font-family:'SF Mono',ui-monospace,monospace;font-size:13px}
+  .section{margin-top:28px}
+  .section-title{font-size:18px;font-weight:600;margin-bottom:10px;color:var(--navy)}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px;margin-bottom:12px;border-left:4px solid var(--blue)}
+  .card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}.card.gray{border-left-color:var(--dim)}
+  .card h3{margin:0 0 6px;font-size:16px}
+  .card p{margin:4px 0}
+  .badge{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;margin-right:6px;vertical-align:middle}
+  .b-green{background:#e8f8ec;color:#1e7d34}.b-amber{background:#fff3e0;color:#a35c00}.b-gray{background:#efeff4;color:#555}.b-blue{background:#e6f0ff;color:#0056b3}
+  .convo{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:8px 0}
+  .line{display:flex;gap:10px;padding:8px 18px;align-items:flex-start}
+  .who{flex:0 0 76px;font-weight:600;font-size:14px}
+  .who.me{color:var(--purple)}.who.lead{color:var(--blue)}.who.sys{color:var(--dim);font-weight:500}
+  .say{flex:1}
+  .note{display:block;color:var(--dim);font-size:13px;margin-top:2px}
+  .step{font-size:12px;color:var(--dim);padding:10px 18px 0;text-transform:none;letter-spacing:.02em}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #eee;vertical-align:top}
+  th{background:#fafafa;font-weight:600;color:var(--navy)}
+  tr:last-child td{border-bottom:none}
+  .tbl{overflow-x:auto}
+  ul{margin:6px 0;padding-left:20px}
+  .you{background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.06);border:2px solid var(--green)}
+  .you h2{margin:0 0 6px;font-size:17px;color:#1e7d34}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>语音会议模式：最小集的样子</h1>
+  <div class="sub"><span class="mono">FLY-2797</span> · 2026-09-24 · 这一页是设计，现在还不能用。等耳机模式底座（<span class="mono">FLY-2796</span>）合进去之后才开始写代码。</div>
+
+  <div class="you">
+    <h2>你现在要做的：什么都不用做</h2>
+    <p>以后有两件事需要你拍，由 Lead 统一来问，这里只是提前告诉你：</p><ul><li><b>「主管 Lead」指的是谁</b>：你 8-21 把 marin 给了「主管 Lead」，我们不替你猜是哪一位。</li><li><b>还没定声线的 Lead 要不要开会</b>：建议先不开放，等你从十个声线的性格表里给它挑一个。</li></ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">一场会大概这样走（示例：和 Tadashi 聊耳机模式）</div>
+    <div class="convo">
+      <div class="step">① 起会</div>
+      <div class="line"><div class="who me">你</div><div class="say">跟 Tadashi 开个会，聊一下耳机模式合进去之前还差什么。<span class="note">跟现在一样，还是经 Raya 建会；这次会把议题一起带进会里。</span></div></div>
+      <div class="line"><div class="who sys">系统</div><div class="say">Discord 里出现会议 thread「🎙️ 耳机模式还差什么 · 9/25」，Tadashi 进语音房。<span class="note">用的是 Tadashi 自己的声线（verse，有活力的中年男声），整场都不换。</span></div></div>
+
+      <div class="step">② Tadashi 先开口，说今天聊什么</div>
+      <div class="line"><div class="who lead">Tadashi</div><div class="say">好，今天就聊耳机模式合进去之前还差的事。我想先说房间那层现在到哪了，再说还有两处要你拍板的，最后看看什么时候能让你先试一下。行吗？<span class="note">这句话是 Tadashi 按议题自己组织的，不是念一段写好的稿子。</span></div></div>
+      <div class="line"><div class="who me">你</div><div class="say">行，先说房间那层。</div></div>
+
+      <div class="step">③ 一件一件聊，由你决定什么时候进下一件</div>
+      <div class="line"><div class="who lead">Tadashi</div><div class="say">房间那层已经合成一套了，Gemini 和 Eleven 那两个老命令也还能用……</div></div>
+      <div class="line"><div class="who me">你</div><div class="say">这个可以了，说下一件。</div></div>
+      <div class="line"><div class="who me">你</div><div class="say">对了，顺手把 2798 的优先级调高。</div></div>
+      <div class="line"><div class="who lead">Tadashi</div><div class="say">记下了，会后纪要里会列出来，你逐条定。<span class="note">会里不直接去动单子、人或仓库，只记下来。逐条批准是第二批的事。</span></div></div>
+
+      <div class="step">④ 你说结束 → 小结一句 → 它退出</div>
+      <div class="line"><div class="who me">你</div><div class="say">好，结束了。</div></div>
+      <div class="line"><div class="who lead">Tadashi</div><div class="say">今天定了两件：房间这层没问题了，声线那个问题按你说的先不开会。还有一个要调优先级的，我记在纪要里了。好，今天就到这里。</div></div>
+      <div class="line"><div class="who sys">系统</div><div class="say">等它把话说完，Tadashi 离开语音房。<span class="note">你直接退出房间也行：它大约 10 秒内跟着退，不会留在房里等。</span></div></div>
+
+      <div class="step">⑤ 会后</div>
+      <div class="line"><div class="who sys">系统</div><div class="say">要点纪要由现有的纪要流程发到这场会对应的 issue thread。<span class="note">双方说的每句话，会中就已经一句句进了会议 thread；如果有哪句没记全，会在 thread 里明说，纪要也不会装作完整。</span></div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">五件事，各自怎么做</div>
+    <div class="card green"><h3><span class="badge b-green">做</span>带议题起会</h3><p>起会的方式不变。议题和 Lead 事先准备的会前材料（如果有）会一起带进会里，Lead 一开口就知道今天聊什么。材料太长就不带，并直接告诉你「材料太长，这次没带进来」，不会偷偷截掉一半。</p></div>
+    <div class="card green"><h3><span class="badge b-green">做</span>Lead 带节奏</h3><p>系统只在开场时提醒它先开口。之后怎么一件件推进，交给语音模型自己按人开会的样子来。按你之前的说法，「聊没聊清楚」由你判断，系统不做这个判断。如果真人试下来发现它不会带节奏，再补一个议程跟踪。</p></div>
+    <div class="card green"><h3><span class="badge b-green">做</span>说结束就退出</h3><p>三种结束方式：你说「好，结束了」（它先小结一句再退）、你直接退房（它跟着退，不补小结）、在文字里停止。只有系统确认是<b>你本人</b>说的「结束」，才算数。万一确认不了是谁说的，它会问一句「那今天先到这里？」。</p></div>
+    <div class="card green"><h3><span class="badge b-green">做</span>对话进 thread，出要点纪要</h3><p>现在只记了你说的话，Lead 说的没记。这次两边都记，会中一句句进会议 thread。退出前会先把最后几句都记好再离开；万一有没记上的，thread 里会说「有 N 句没记全」，纪要流程也会停下来说明，不会出一份缺了话的纪要。纪要用现有流程出，<b>不会</b>在会一结束就把单子关掉。</p></div>
+    <div class="card gray"><h3><span class="badge b-gray">第二批</span>这次不做</h3><ul><li>约时间、到点提醒、发链接</li><li>每场会一张单、可互动的纪要页、action items 逐条批</li><li>会议时长；带上上一场的纪要继续聊</li><li>插话打断（交给引擎那两张单和对比测试）</li></ul></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">声音：跟谁开会就是谁的声音</div>
+    <div class="tbl"><table>
+      <tr><th>Lead</th><th>声线（你 8-21 定的）</th><th>会议里</th></tr>
+      <tr><td>Honey Lemon</td><td>alloy · 低沉冷静的女声</td><td>整场都是这个声音</td></tr>
+      <tr><td>Tadashi</td><td>verse · 有活力的中年男声</td><td>整场都是这个声音</td></tr>
+      <tr><td>主管 Lead</td><td>marin · 听起来靠谱的中年女声</td><td>整场都是这个声音</td></tr>
+      <tr><td>其他 Lead</td><td>还没选</td><td>建议先不开放会议，等你挑好声线</td></tr>
+    </table></div>
+    <p style="margin-top:10px">⚠️ 现在配置里所有 Lead 实际都是 marin，Honey Lemon 和 Tadashi 也是，和你定的不一样。开放会议之前会先把这两位改对。没改对的 Lead 不开放会议。</p><p>会议里<b>不会出现</b>那种和 Lead 声音不一样的合成播报音。你上次在测试房听到的那个「声音不一样」，就是那个合成播报音，会议模式把它关掉了。如果 Lead 在后台写了一段话需要一字不差地告诉你，而当时同一个声音还念不了，就发到 thread 里，Lead 会说一句「我发在 thread 里了」。</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">还没验证、会影响对比测试的一点</div>
+    <div class="card amber"><h3><span class="badge b-amber">未验</span>新语音引擎能不能用 alloy / verse</h3><p>引擎 A（GPT Live）的官方文档里只出现过 marin 一个声音。如果它不支持另外两个，第一批 A/B 对比就只能用主管 Lead 开会。开会之前会先实测一次，不支持就直接说「语音不可用」，不会悄悄换成别的声音。</p></div>
+  </div>
+</div>
+</body>
+</html>

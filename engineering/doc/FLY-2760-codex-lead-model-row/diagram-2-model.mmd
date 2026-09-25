@@ -1,0 +1,23 @@
+erDiagram
+  LEAD_ROW ||--|| VENDOR : "公司"
+  LEAD_ROW ||--|| CONFIGURED : "配置值"
+  LEAD_ROW ||--o| RUNTIME_SETTINGS : "运行时证据(可缺席)"
+  LEAD_ROW ||--|| DISPATCH : "写入基准(不动)"
+  VENDOR {
+    string provider "openai 或 anthropic 由 backend 决定"
+    string label "OpenAI 或 Anthropic"
+  }
+  CONFIGURED {
+    string model "projects.json 原样 缺席即 null"
+    string effort "projects.json 原样 例如 high"
+  }
+  RUNTIME_SETTINGS {
+    string model "线程读回 例如 gpt-6-astra"
+    string effort "线程读回"
+    string threadId "须等于当前 thread-id"
+    string observedAt "观察时间"
+  }
+  DISPATCH {
+    object current "未钉型号时仍为 null"
+    object writeCapability "未钉 Codex 行只读"
+  }

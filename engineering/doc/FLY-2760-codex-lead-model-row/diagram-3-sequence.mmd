@@ -1,0 +1,12 @@
+sequenceDiagram
+  participant RT as Codex Lead 进程
+  participant FS as thread-settings.json
+  participant BR as Bridge 巡检
+  participant UI as 管理台
+  RT->>RT: 启动: 读线程设置 (gpt-6-astra, high)
+  RT->>FS: 原子写入(钉/未钉都写)
+  RT-->>RT: 未钉 => 热配置不可用(行为不变)
+  RT->>FS: 每轮结束后重读, 变了才改写
+  BR->>FS: 只读 + 白名单校验 + 比对 thread-id
+  BR->>UI: vendor / configured / runtimeSettings?
+  UI->>UI: OpenAI · 运行中 GPT-6 Astra 未钉 · high · 只读

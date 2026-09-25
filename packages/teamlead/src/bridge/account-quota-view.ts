@@ -1,7 +1,13 @@
 import {
-	type AccountQuotaPageContext,
+	formatAccountQuotaPageCalendarDate,
+	formatAccountQuotaPageDate,
 	renderAccountQuotaPageHtml,
 } from "./account-quota-page.js";
+import {
+	resolveAccountSubscriptionConfirmation,
+	type SubscriptionConfirmation,
+	type SubscriptionProvider,
+} from "./account-subscription-manual.js";
 import type {
 	CapacitySnapshot,
 	CodexAccountProjection,
@@ -57,6 +63,11 @@ export interface AccountQuotaRow {
 	/** Codex only: `credits` + `rateLimitResetCredits` as the RPC exposed them. */
 	credits: QuotaCell;
 	expiry: QuotaCell;
+	/**
+	 * FLY-2864: when this account is next charged ("10/22 周四"), or why that is
+	 * unknown. Display only: never part of grouping, ordering or any decision.
+	 */
+	nextCharge: QuotaCell;
 	/** Any machine window at 100% (Claude: also an exhausted-until in the future). */
 	exhausted: boolean;
 	/** Credentials cannot be used until someone re-logs in; never a quota cap. */
@@ -86,6 +97,16 @@ export interface AccountQuotaView {
 
 export interface AccountQuotaViewOptions {
 	claudeEmails?: Readonly<Record<string, string>>;
+	/** FLY-2803 manual confirmations, now read only for the next-charge cell. */
+	subscriptionManual?: {
+		confirmations?: readonly SubscriptionConfirmation[];
+		identityKeys?: Readonly<Record<string, string>>;
+		onResolutionError?: (failure: {
+			provider: SubscriptionProvider;
+			profile: string;
+			error: "identity_missing" | "identity_mismatch";
+		}) => void;
+	};
 }
 
 type AccountQuotaSnapshot = Pick<CapacitySnapshot, "generatedAt" | "quota">;
@@ -158,6 +179,15 @@ function formatExpiry(iso: string): string {
 function formatCardExpiry(iso: string): string {
 	const parts = zonedParts(iso);
 	return `${parts.year}/${parts.month}/${parts.day}`;
+}
+
+/** Pacific calendar day as a sortable `YYYY-MM-DD` key. */
+function pacificDayKey(iso: string): string {
+	const parts = zonedParts(iso);
+	if (!parts.year || !parts.month || !parts.day) {
+		throw new Error("invalid quota date parts");
+	}
+	return `${parts.year}-${parts.month.padStart(2, "0")}-${parts.day.padStart(2, "0")}`;
 }
 
 function formatRecovery(iso: string): string {
@@ -408,6 +438,31 @@ function validateClaudeAccount(account: ClaudeAccount): void {
 			}
 		}
 	}
+	if (account.resetGrants !== undefined) {
+		const { resetGrants } = account;
+		if (
+			typeof resetGrants.known !== "boolean" ||
+			(resetGrants.reason !== null &&
+				!SAFE_STATUS.test(String(resetGrants.reason))) ||
+			(resetGrants.grants !== null &&
+				(!Array.isArray(resetGrants.grants) ||
+					resetGrants.grants.length > 128)) ||
+			(!resetGrants.known && resetGrants.grants !== null)
+		) {
+			throw new Error("invalid Claude reset grants");
+		}
+		for (const grant of resetGrants.grants ?? []) {
+			if (
+				!Number.isSafeInteger(grant.resetsLeft) ||
+				!Number.isSafeInteger(grant.resetsTotal) ||
+				grant.resetsLeft < 0 ||
+				grant.resetsLeft > grant.resetsTotal ||
+				(grant.endsAt !== null && validInstant(grant.endsAt) === null)
+			) {
+				throw new Error("invalid Claude reset grant");
+			}
+		}
+	}
 	if (account.manualPrepaid !== undefined) {
 		const manual = account.manualPrepaid;
 		if (
@@ -425,25 +480,63 @@ function validateClaudeAccount(account: ClaudeAccount): void {
 	}
 }
 
-function claudePrepaidCell(
+/** FLY-2864: why reset cards could not be read, in the founder's words. */
+function claudeCardReason(reason: string | null | undefined): string {
+	if (reason === "unauthorized") return "token 已失效，需重登";
+	if (
+		reason === "surface" ||
+		reason === "cli_version" ||
+		reason === "cli_version_unknown"
+	) {
+		return "Claude Code 版本未识别";
+	}
+	if (reason === "deadline") return "本轮超时";
+	if (reason === "forbidden" || reason?.startsWith("forbidden:")) {
+		return "接口拒绝";
+	}
+	return "接口未返回";
+}
+
+/**
+ * FLY-2864: the Claude usage-limit reset cards ("充值卡"), one line per usable
+ * card with its own expiry. Prepaid dollar tranches are no longer shown.
+ */
+function claudeCardsCell(
 	account: ClaudeAccount | undefined,
 	generatedAt: string,
 	staleAfterMinutes: number,
 ): QuotaCell {
-	const machine = account?.prepaid;
-	if (machine?.known && machine.cards !== null) {
-		const observedAt = validInstant(account?.detailObservedAt ?? null);
-		const stale =
-			observedAt !== null &&
-			Date.parse(generatedAt) - Date.parse(observedAt) >
-				staleAfterMinutes * 60_000;
-		const lines = machine.cards.map(
-			(card, index) => `#${index + 1} 到期 ${formatCardExpiry(card.expiresAt)}`,
+	const observedAt = validInstant(account?.detailObservedAt ?? null);
+	const stale =
+		observedAt !== null &&
+		Date.parse(generatedAt) - Date.parse(observedAt) >
+			staleAfterMinutes * 60_000;
+	const unreadable = (reason: string | null | undefined) =>
+		missingCell(`读不到（${claudeCardReason(reason)}）`);
+	const usage = account?.usageStatus;
+	// A dead or refused token cannot vouch for cards carried from an older round.
+	if (usage === "unauthorized" || usage?.startsWith("forbidden")) {
+		return unreadable(usage);
+	}
+	const reset = account?.resetGrants;
+	if (reset?.known && reset.grants !== null) {
+		const now = Date.parse(generatedAt);
+		const usable = reset.grants.filter(
+			(grant) =>
+				grant.resetsLeft > 0 &&
+				(grant.endsAt === null || Date.parse(grant.endsAt) > now),
+		);
+		if (usable.length === 0) return machineCell("0 张", observedAt, stale);
+		const lines = usable.map(
+			(grant, index) =>
+				`#${index + 1} ${
+					grant.endsAt === null
+						? "到期未知"
+						: `到期 ${formatCardExpiry(grant.endsAt)}`
+				}${grant.resetsLeft > 1 ? ` · 剩 ${grant.resetsLeft} 次` : ""}`,
 		);
 		return machineCell(
-			machine.cards.length === 0
-				? "0 张"
-				: `${machine.cards.length} 张\n${lines.join("\n")}`,
+			`${usable.length} 张\n${lines.join("\n")}`,
 			observedAt,
 			stale,
 		);
@@ -462,17 +555,148 @@ function claudePrepaidCell(
 				staleAfterMinutes * 60_000,
 		};
 	}
-	if (machine?.known) {
-		const observedAt = validInstant(account?.detailObservedAt ?? null);
+	return unreadable(reset?.reason ?? usage);
+}
+
+/** The latest identity-bound manual confirmation, reporting unusable ones. */
+function manualSubscription(
+	provider: SubscriptionProvider,
+	name: string,
+	manual: AccountQuotaViewOptions["subscriptionManual"],
+): SubscriptionConfirmation | null {
+	if (!manual?.confirmations || manual.confirmations.length === 0) return null;
+	const resolved = resolveAccountSubscriptionConfirmation(
+		manual.confirmations,
+		{
+			provider,
+			profile: name,
+			identityKey: manual.identityKeys?.[`${provider}:${name}`] ?? null,
+		},
+	);
+	if (resolved.error !== null) {
+		manual.onResolutionError?.({
+			provider,
+			profile: name,
+			error: resolved.error,
+		});
+		return null;
+	}
+	return resolved.confirmation;
+}
+
+function manualCanceledCell(confirmation: SubscriptionConfirmation): QuotaCell {
+	return {
+		display:
+			confirmation.expiresOn === null
+				? "已取消"
+				: `已取消 · ${formatAccountQuotaPageCalendarDate(confirmation.expiresOn)} 到期`,
+		source: "manual",
+		observedAt: confirmation.confirmedAt,
+		stale: false,
+	};
+}
+
+/**
+ * FLY-2864: Anthropic exposes no renewal date to OAuth tokens, so a Claude row
+ * only knows cancellation (machine or founder-confirmed) and otherwise says so.
+ */
+function claudeNextChargeCell(
+	account: ClaudeAccount | undefined,
+	manual: SubscriptionConfirmation | null,
+): QuotaCell {
+	if (manual?.status === "canceled") return manualCanceledCell(manual);
+	if (account?.subscriptionStatus === "canceled") {
 		return machineCell(
-			"明细未提供",
-			observedAt,
-			observedAt !== null &&
-				Date.parse(generatedAt) - Date.parse(observedAt) >
-					staleAfterMinutes * 60_000,
+			"已取消",
+			validInstant(account.detailObservedAt ?? null),
+			false,
 		);
 	}
-	return missingCell();
+	return missingCell("读不到（Anthropic 接口不给）");
+}
+
+function codexSubscriptionReason(note: string | null): string {
+	if (note === "unauthorized") return "token 已失效";
+	if (note === "blocked") return "接口被拦";
+	if (note === "identity_mismatch") return "身份不符";
+	if (note?.startsWith("problem:")) return "账号目录异常";
+	return "接口未返回";
+}
+
+function validateCodexSubscription(
+	subscription: NonNullable<CodexAccountProjection["subscription"]>,
+): void {
+	if (
+		!(["active", "canceled", "none", "unknown"] as const).includes(
+			subscription.status,
+		) ||
+		(subscription.note !== null && !SAFE_STATUS.test(subscription.note))
+	) {
+		throw new Error("invalid Codex subscription");
+	}
+	for (const value of [
+		subscription.renewsAt,
+		subscription.endsAt,
+		subscription.observedAt,
+	]) {
+		if (value !== null && validInstant(value) === null) {
+			throw new Error("invalid Codex subscription instant");
+		}
+	}
+}
+
+/** FLY-2864: the Codex renewal date, falling back to a manual cancellation. */
+function codexNextChargeCell(
+	account: CodexAccountProjection,
+	generatedAt: string,
+	manual: SubscriptionConfirmation | null,
+): QuotaCell {
+	const subscription = account.subscription;
+	if (subscription === undefined) {
+		return manual?.status === "canceled"
+			? manualCanceledCell(manual)
+			: missingCell("读不到（接口未返回）");
+	}
+	validateCodexSubscription(subscription);
+	const observedAt = validInstant(subscription.observedAt);
+	switch (subscription.status) {
+		case "active":
+			if (subscription.renewsAt === null) {
+				return missingCell("读不到（接口未返回）");
+			}
+			// A renewal day already behind us is an old reading, not the next charge.
+			if (pacificDayKey(subscription.renewsAt) < pacificDayKey(generatedAt)) {
+				return missingCell("读不到（读数已过期）");
+			}
+			return machineCell(
+				formatAccountQuotaPageDate(subscription.renewsAt),
+				observedAt,
+				false,
+			);
+		case "canceled":
+			// A past end day means this reading is older than the account's current
+			// state (an ended subscription reads as "none"). The note alone cannot
+			// tell: a store kept after a failed round still says note:null.
+			if (
+				subscription.endsAt !== null &&
+				pacificDayKey(subscription.endsAt) < pacificDayKey(generatedAt)
+			) {
+				return missingCell("读不到（读数已过期）");
+			}
+			return machineCell(
+				subscription.endsAt === null
+					? "已取消"
+					: `已取消 · ${formatAccountQuotaPageDate(subscription.endsAt)} 到期`,
+				observedAt,
+				false,
+			);
+		case "none":
+			return missingCell("读不到（无有效订阅）");
+		default:
+			return missingCell(
+				`读不到（${codexSubscriptionReason(subscription.note)}）`,
+			);
+	}
 }
 
 function buildClaudeRows(
@@ -655,11 +879,15 @@ function buildClaudeRows(
 						: missingCell())),
 			credits: canceled
 				? canceledCell()
-				: claudePrepaidCell(
+				: claudeCardsCell(
 						account,
 						snapshot.generatedAt,
 						quota.staleAfterMinutes,
 					),
+			nextCharge: claudeNextChargeCell(
+				account,
+				manualSubscription("Claude", name, options.subscriptionManual),
+			),
 			expiry: canceled
 				? canceledCell()
 				: (expiryMachine ??
@@ -733,6 +961,7 @@ function creditsCell(
 function buildMachineCodexRows(
 	snapshot: AccountQuotaSnapshot,
 	staleAfterMinutes: number,
+	options: AccountQuotaViewOptions,
 ): {
 	rows: AccountQuotaRow[];
 	warnings: string[];
@@ -797,6 +1026,11 @@ function buildMachineCodexRows(
 			fableUsage: missingCell("—"),
 			credits: creditsCell(account, resetCreditsObservedAt, resetCreditsStale),
 			expiry: missingCell(),
+			nextCharge: codexNextChargeCell(
+				account,
+				snapshot.generatedAt,
+				manualSubscription("Codex", account.name, options.subscriptionManual),
+			),
 			exhausted: account.exhausted,
 			unusable: account.authUnusable,
 			recovery: account.exhausted
@@ -823,6 +1057,7 @@ function buildMachineCodexRows(
 function buildCodexRows(
 	snapshot: AccountQuotaSnapshot,
 	staleAfterMinutes: number,
+	options: AccountQuotaViewOptions,
 ): {
 	rows: AccountQuotaRow[];
 	warnings: string[];
@@ -834,7 +1069,7 @@ function buildCodexRows(
 			throw new Error("invalid Codex quota snapshot");
 		}
 		return {
-			...buildMachineCodexRows(snapshot, staleAfterMinutes),
+			...buildMachineCodexRows(snapshot, staleAfterMinutes, options),
 			label: CODEX_MACHINE_SOURCE_LABEL,
 		};
 	}
@@ -863,6 +1098,7 @@ export function buildAccountQuotaView(
 	const codex = buildCodexRows(
 		normalized,
 		normalized.quota.claude.staleAfterMinutes,
+		options,
 	);
 	return {
 		generatedAt,
@@ -954,9 +1190,6 @@ export function formatAccountQuotaTickLines(view: AccountQuotaView): string[] {
 	return ["- 额度 Claude", claude, `- Codex ${view.codexSourceLabel}`, codex];
 }
 
-export function renderAccountsPageHtml(
-	view: AccountQuotaView,
-	context: AccountQuotaPageContext = {},
-): string {
-	return renderAccountQuotaPageHtml(view, context);
+export function renderAccountsPageHtml(view: AccountQuotaView): string {
+	return renderAccountQuotaPageHtml(view);
 }

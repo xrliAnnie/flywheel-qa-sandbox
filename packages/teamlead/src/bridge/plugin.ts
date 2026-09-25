@@ -127,6 +127,12 @@ import {
 	writeCodexAccountQuotaStore,
 } from "../codex-quota/codex-account-quota-store.js";
 import { observeCodexAccounts } from "../codex-quota/codex-accounts-observer.js";
+import { observeCodexSubscriptions } from "../codex-quota/codex-subscription-reader.js";
+import {
+	defaultCodexSubscriptionStorePath,
+	readCodexSubscriptionStore,
+	writeCodexSubscriptionStore,
+} from "../codex-quota/codex-subscription-store.js";
 import {
 	createCodexQuotaHostCollector,
 	createRegisteredCodexQuotaHostCollectorOptions,
@@ -230,6 +236,7 @@ import {
 } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-page.js";
+import { createAccountQuotaRefresh } from "./account-quota-refresh.js";
 import {
 	buildAccountQuotaView,
 	renderAccountsPageHtml,
@@ -2125,34 +2132,20 @@ export function createBridgeApp(
 							);
 						}
 					}
-					const machineSubscriptions = Object.fromEntries(
-						snapshot.quota.claude.accounts.flatMap((account) =>
-							account.subscriptionStatus === undefined
-								? []
-								: [
-										[
-											`Claude:${account.name}`,
-											{
-												status: account.subscriptionStatus,
-												observedAt: account.detailObservedAt ?? null,
-											},
-										] as const,
-									],
-						),
-					);
 					const html = renderAccountsPageHtml(
-						buildAccountQuotaView(snapshot, { claudeEmails }),
-						{
-							confirmations: manual.data?.confirmations ?? [],
-							identityKeys,
-							machineSubscriptions,
-							onSubscriptionResolutionError: (failure) =>
-								console.warn(
-									"[Bridge] account subscription confirmation unavailable",
-									failure.error,
-									`${failure.provider}:${failure.profile}`,
-								),
-						},
+						buildAccountQuotaView(snapshot, {
+							claudeEmails,
+							subscriptionManual: {
+								confirmations: manual.data?.confirmations ?? [],
+								identityKeys,
+								onResolutionError: (failure) =>
+									console.warn(
+										"[Bridge] account subscription confirmation unavailable",
+										failure.error,
+										`${failure.provider}:${failure.profile}`,
+									),
+							},
+						}),
 					);
 					res.type("html").send(html);
 				} catch {
@@ -6826,6 +6819,12 @@ export async function startBridge(
 										(lead) => [lead.key, lead.tuning] as const,
 									),
 								),
+							runtimeSettingsByLead: () =>
+								new Map(
+									(fleetPoller.snapshot()?.leads ?? []).map(
+										(lead) => [lead.key, lead.runtimeSettings] as const,
+									),
+								),
 							projects: () => managementProjects,
 							projectsRevision: () => managementProjectsRevision,
 							projectConfigs: () => ffConfigCache.current(),
@@ -8976,75 +8975,60 @@ export async function startBridge(
 	);
 	await codexQuotaMaintenance.bootstrap();
 
-	// FLY-2688 / FLY-2807: on-demand account readings for the account quota page.
-	// Single-flight and never scheduled. Live Codex accounts use the direct
-	// readonly WHAM path, which never shares or rotates their refresh token.
-	// Same path the capacity snapshot reads by default; derived once so the
-	// writer and the reader cannot drift.
+	// FLY-2688 / FLY-2807 / FLY-2864: on-demand account readings for the
+	// account quota page. Single-flight and never scheduled. Live Codex accounts
+	// use the direct readonly WHAM path, which never shares or rotates their
+	// refresh token. Same paths the capacity snapshot reads by default; derived
+	// once so the writers and the readers cannot drift.
 	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
+	const codexSubscriptionStorePath = defaultCodexSubscriptionStorePath();
 	const claudeAccountDetailStorePath = defaultClaudeAccountDetailStorePath();
-	let codexAccountQuotaRefresh:
-		| Promise<{ generatedAt: string; accountCount: number }>
-		| undefined;
-	const refreshCodexAccountQuota = (): Promise<{
-		generatedAt: string;
-		accountCount: number;
-	}> => {
-		codexAccountQuotaRefresh ??= (async () => {
-			// Hard ceiling above the observer's own round deadline so a wedged
-			// app-server cannot hold the request open.
-			const abort = new AbortController();
-			const ceiling = setTimeout(() => abort.abort(), 90_000);
-			try {
-				const [codexResult, claudeResult] = await Promise.allSettled([
-					(async () => {
-						const runtime = codexQuotaRuntime;
-						if (!runtime) throw new Error("codex_quota_runtime_unavailable");
-						const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
-						const store = await observeCodexAccounts({
-							profilesRoot: codexQuotaProfilesRoot,
-							canonicalAuthPath: join(canonicalHome, "auth.json"),
-							workspaceRoot: join(
-								codexQuotaStateRoot,
-								"accounts-page-candidates",
-							),
-							binary: rawCodexBin(),
-							pool: getCodexQuotaAccountPool,
-							limitId: "codex",
-							previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
-							signal: abort.signal,
-							// Re-read per slot: a Lead can launch mid-round.
-							refreshInUse: () => runtime.accountInUseGuard(),
-						});
-						writeCodexAccountQuotaStore(codexAccountQuotaStorePath, store);
-						return {
-							generatedAt: store.generatedAt,
-							accountCount: store.accounts.length,
-						};
-					})(),
-					(async () => {
-						const store = await observeClaudeAccountDetails({
-							profilesRoot:
-								config.capacityProbes?.claudeProfilesDir ??
-								defaultMachinePoolDir(),
-							previous: readClaudeAccountDetailStore(
-								claudeAccountDetailStorePath,
-							),
-							signal: abort.signal,
-						});
-						writeClaudeAccountDetailStore(claudeAccountDetailStorePath, store);
-					})(),
-				]);
-				if (codexResult.status === "rejected") throw codexResult.reason;
-				if (claudeResult.status === "rejected") throw claudeResult.reason;
-				return codexResult.value;
-			} finally {
-				clearTimeout(ceiling);
-				codexAccountQuotaRefresh = undefined;
-			}
-		})();
-		return codexAccountQuotaRefresh;
-	};
+	const refreshCodexAccountQuota = createAccountQuotaRefresh({
+		// Hard ceiling above the observers' own round deadlines so a wedged
+		// app-server cannot hold the request open.
+		ceilingMs: 90_000,
+		observeCodexAccounts: (signal) => {
+			const runtime = codexQuotaRuntime;
+			if (!runtime) throw new Error("codex_quota_runtime_unavailable");
+			const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
+			return observeCodexAccounts({
+				profilesRoot: codexQuotaProfilesRoot,
+				canonicalAuthPath: join(canonicalHome, "auth.json"),
+				workspaceRoot: join(codexQuotaStateRoot, "accounts-page-candidates"),
+				binary: rawCodexBin(),
+				pool: getCodexQuotaAccountPool,
+				limitId: "codex",
+				previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+				signal,
+				// Re-read per slot: a Lead can launch mid-round.
+				refreshInUse: () => runtime.accountInUseGuard(),
+			});
+		},
+		writeCodexAccountQuotaStore: (codexStore) =>
+			writeCodexAccountQuotaStore(codexAccountQuotaStorePath, codexStore),
+		observeCodexSubscriptions: (signal) =>
+			observeCodexSubscriptions({
+				profilesRoot: codexQuotaProfilesRoot,
+				canonicalAuthPath: join(
+					voiceRealpathSync(codexQuotaCanonicalHome),
+					"auth.json",
+				),
+				pool: getCodexQuotaAccountPool,
+				previous: readCodexSubscriptionStore(codexSubscriptionStorePath),
+				signal,
+			}),
+		writeCodexSubscriptionStore: (subscriptions) =>
+			writeCodexSubscriptionStore(codexSubscriptionStorePath, subscriptions),
+		observeClaudeAccountDetails: (signal) =>
+			observeClaudeAccountDetails({
+				profilesRoot:
+					config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
+				previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
+				signal,
+			}),
+		writeClaudeAccountDetailStore: (details) =>
+			writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details),
+	});
 
 	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
 		if (dispatcher)

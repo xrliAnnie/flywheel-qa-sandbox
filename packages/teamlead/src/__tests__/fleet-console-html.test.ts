@@ -23,10 +23,11 @@ describe("management console HTML", () => {
 		const open = vi.fn(() => {
 			throw Error("unexpected navigation");
 		});
+		const modelControl = vi.fn(() => "<span>model control</span>");
 		const render = runInNewContext(`(${source})`, {
 			esc: (value: unknown) => String(value),
 			leadTuningEvidence: () => "",
-			modelControl: () => "<span>model control</span>",
+			modelControl,
 			fetch,
 			open,
 		});
@@ -35,6 +36,15 @@ describe("management console HTML", () => {
 				displayName: "Honey Lemon",
 				online: "online",
 				backend: "codex-app-server",
+				vendor: { provider: "openai", label: "OpenAI" },
+				configured: { model: null, effort: "high" },
+				runtimeSettings: {
+					model: "gpt-6-astra",
+					effort: "high",
+					threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+					observedAt: "2026-09-24T09:00:00.000Z",
+					source: "thread_read",
+				},
 				dispatch: {},
 			},
 		]);
@@ -42,6 +52,27 @@ describe("management console HTML", () => {
 			'href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md"',
 		);
 		expect(row).toContain('rel="noopener noreferrer"');
+		expect(modelControl).toHaveBeenCalledWith(
+			{},
+			"lead",
+			"公司 → 型号 → effort",
+			true,
+			true,
+			{
+				provider: "openai",
+				providerLabel: "OpenAI",
+				unpinnedCodex: true,
+				configuredModel: null,
+				effort: "high",
+				runtime: {
+					model: "gpt-6-astra",
+					effort: "high",
+					threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+					observedAt: "2026-09-24T09:00:00.000Z",
+					source: "thread_read",
+				},
+			},
+		);
 		expect(fetch).not.toHaveBeenCalled();
 		expect(open).not.toHaveBeenCalled();
 	});

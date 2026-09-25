@@ -1,0 +1,14 @@
+flowchart LR
+  R["你点刷新 / accounts-page"] --> C1["Claude 明细探针（只读）"]
+  R --> X1["Codex 额度探针（已有）"]
+  X1 --> X2["Codex 订阅读取（新，只读）"]
+  C1 -->|"profile 接口"| T["真实档位 20x"]
+  C1 -->|"usage 接口 cedar_ember"| G["额度重置卡 + 到期日"]
+  X2 -->|"subscriptions 接口"| B["下次扣费日 renews_at"]
+  T --> S1[("Claude 明细存档")]
+  G --> S1
+  B --> S2[("Codex 订阅存档")]
+  S1 --> CS["容量快照（页面和 /api/capacity 共用）"]
+  S2 --> CS
+  CS --> P["账号额度一览页面"]
+  CS --> API["/api/capacity"]

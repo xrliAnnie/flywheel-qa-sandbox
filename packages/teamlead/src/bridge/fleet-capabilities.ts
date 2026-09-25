@@ -14,6 +14,8 @@ import type { WriteCapability } from "./management-console-contract.js";
 import {
 	getModelConfigSnapshot,
 	getModelRegistryEntry,
+	MODEL_PROVIDERS,
+	type ModelProviderId,
 	ROLE_EFFORT_LEVELS,
 	resolveCodexLeadCapabilities,
 } from "flywheel-config";
@@ -243,12 +245,32 @@ export function computeLeadCapabilities(
 	};
 }
 
+/** Company identity is a backend fact even when projects.json has no model pin. */
+export function leadVendorForBackend(backend: LeadBackendId): {
+	provider: ModelProviderId;
+	label: string;
+} {
+	const provider: ModelProviderId =
+		backend === "codex-app-server" ? "openai" : "anthropic";
+	return { provider, label: MODEL_PROVIDERS[provider].label };
+}
+
 /** Service availability selects the writer; its stage still verifies the live runtime before mutation. */
 export function leadTuningWriteCapability(
 	backend: LeadBackendId,
 	codexHotConfigAvailable = false,
+	modelPinned = true,
 ): WriteCapability {
-	if (backend === "codex-app-server")
+	if (backend === "codex-app-server") {
+		if (!modelPinned) {
+			return {
+				writable: false,
+				reason:
+					"projects.json 未钉型号：Codex 热配置无法接管（runtime bootstrap_settings_mismatch）；请先按受控迁移在 projects.json 钉型号并重启",
+				consequence: "governance-readonly",
+				requiresAcknowledgement: false,
+			};
+		}
 		return codexHotConfigAvailable
 			? {
 					writable: true,
@@ -261,6 +283,7 @@ export function leadTuningWriteCapability(
 					consequence: "governance-readonly",
 					requiresAcknowledgement: false,
 				};
+	}
 	return {
 		writable: true,
 		consequence: "restart-lead",

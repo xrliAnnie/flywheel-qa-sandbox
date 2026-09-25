@@ -316,8 +316,8 @@ const MANAGEMENT_CONSOLE_APP = `
     });
     return {providers:providers};
   }
-  function defaultSelection(surface){
-    var catalog=catalogFor(surface);var provider=catalog.providers[0];var model=provider&&provider.models[0];
+  function defaultSelection(surface,lockedProvider){
+	var catalog=catalogFor(surface);var provider=lockedProvider?catalog.providers.find(function(item){return item.id===lockedProvider;}):catalog.providers[0];var model=provider&&provider.models[0];
     return provider&&model?{provider:provider.id,model:model.id,effort:null}:null;
   }
   function selectedProvider(catalog,value,strict){
@@ -329,25 +329,28 @@ const MANAGEMENT_CONSOLE_APP = `
     return null;
   }
   function option(id,label,chosen){return '<option value="'+esc(id)+'" '+(id===chosen?'selected':'')+'>'+esc(label)+'</option>';}
-  function modelControl(managed,surface,label,providerLocked,selectionNullable){
+  function modelControl(managed,surface,label,providerLocked,selectionNullable,lock){
     var value=effective(managed);var policy=policyIndex[managed.targetId];var constrained=surface==="workflow"&&policy&&policy.status==="ready";var catalog=policyCatalog(managed,surface);var writableTarget=writable(managed);
-    if(!catalog.providers.length){var currentValue=value?'<div class="help">当前值：'+esc(value.provider)+' / '+esc(value.model)+' / '+esc(value.effort==null?'未设置':value.effort)+'</div>':"";return '<div class="field"><label>'+esc(label)+'</label><div class="reason">真实 registry 在此层没有可用型号</div>'+currentValue+capability(managed)+'</div>';}
+    if(!catalog.providers.length){var currentValue=lock?'<div class="help">当前值：'+esc(lock.providerLabel)+' / '+esc(lock.configuredModel==null?'未钉':lock.configuredModel)+' / '+esc(lock.effort==null?'未设置':lock.effort)+'</div>':(value?'<div class="help">当前值：'+esc(value.provider)+' / '+esc(value.model)+' / '+esc(value.effort==null?'未设置':value.effort)+'</div>':"");return '<div class="field" data-model-target="'+esc(managed.targetId)+'"><label>'+esc(label)+'</label><div class="reason">真实 registry 在此层没有可用型号</div>'+currentValue+capability(managed)+'</div>';}
     if(!value&&!selectionNullable){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">当前真源没有声明具体模型</div>'+capability(managed)+'</div>';}
-    var provider=value?selectedProvider(catalog,value,constrained):(providerLocked?catalog.providers[0]:null);
+    var provider=lock?catalog.providers.find(function(item){return item.id===lock.provider;}):(value?selectedProvider(catalog,value,constrained):(providerLocked?catalog.providers[0]:null));
     var currentSpelling=managed.current&&managed.current.model;var displayCanonical=value&&value.model===currentSpelling?managed.canonicalModel:null;
     var model=value&&provider?selectedModel(provider,value,displayCanonical):null;
     var providerMarker=constrained&&value&&!provider?'<option value="'+esc(value.provider)+'" selected disabled>当前值不在 shape 白名单 · '+esc(value.provider)+'</option>':"";
-    var providers=providerMarker+(!providerLocked&&selectionNullable?'<option value="" '+(!provider?'selected':'')+'>账户默认</option>':'')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
+    var providers=lock&&!provider?'<option value="'+esc(lock.provider)+'" selected disabled>'+esc(lock.providerLabel)+'</option>':providerMarker+(!providerLocked&&selectionNullable?'<option value="" '+(!provider?'selected':'')+'>账户默认</option>':'')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
     var retiredModel=value&&!model&&value.model?'<option value="'+esc(value.model)+'" selected'+(constrained?' disabled>当前值不在 shape 白名单 · ':'>已退役 · ')+esc(value.model)+'</option>':'';
-    var models=(selectionNullable?'<option value="" '+(!value?'selected':'')+'>账户默认</option>':'')+retiredModel+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
-    var effortValue=value&&value.effort;var effortAllowed=model&&effortValue!=null&&model.efforts.indexOf(effortValue)>=0;
+    var unpinnedCodex=!!(lock&&lock.unpinnedCodex);var runtimeModel=unpinnedCodex&&lock.runtime?selectedModel(provider,{model:lock.runtime.model}):null;var emptyModelLabel=unpinnedCodex?(lock.runtime?'运行中 · '+(runtimeModel?runtimeModel.label:lock.runtime.model)+' · 未钉':'Codex 默认 · 未钉型号'):'账户默认';
+    var models=(selectionNullable?'<option value="" '+(!value?'selected':'')+'>'+esc(emptyModelLabel)+'</option>':'')+retiredModel+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
+    var effortValue=unpinnedCodex?lock.effort:(value&&value.effort);var effortAllowed=model&&effortValue!=null&&model.efforts.indexOf(effortValue)>=0;
     var effortMarker=constrained&&!effortAllowed?'<option value="'+esc(effortValue==null?'__policy_unset_effort__':effortValue)+'" selected disabled>当前值不在 shape 白名单 · '+esc(effortValue==null?'未设置':effortValue)+'</option>':"";
-    var efforts=effortMarker+(constrained?"":'<option value="" '+(!value||value.effort==null?'selected':'')+'>账户默认</option>')+(model?model.efforts.map(function(item){return option(item,item,value&&value.effort);}).join(""):"");
+    var unpinnedEfforts=[];if(unpinnedCodex&&provider){provider.models.forEach(function(item){item.efforts.forEach(function(effort){if(unpinnedEfforts.indexOf(effort)<0){unpinnedEfforts.push(effort);}});});if(lock.effort!=null){unpinnedEfforts=[lock.effort].concat(unpinnedEfforts.filter(function(effort){return effort!==lock.effort;}));}}
+    var efforts=unpinnedCodex?(effortValue==null?'<option value="" selected>未设置</option>':unpinnedEfforts.map(function(item){return option(item,item,effortValue);}).join("")):effortMarker+(constrained?"":'<option value="" '+(!value||value.effort==null?'selected':'')+'>账户默认</option>')+(model?model.efforts.map(function(item){return option(item,item,value&&value.effort);}).join(""):"");
     var providerDisabled=providerLocked||!writableTarget?' disabled':'';
     var modelDisabled=!writableTarget||!provider?' disabled':'';
     var effortDisabled=!writableTarget||!model?' disabled':'';
     var policySource=constrained?'<div class="help">来源：'+esc(policy.source)+'</div>':"";
-    return '<div class="field" data-model-target="'+esc(managed.targetId)+'" data-model-nullable="'+(selectionNullable?'true':'false')+'"><label>'+esc(label)+'</label><div class="three"><select class="model-provider" aria-label="'+esc(label+'：公司')+'" data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select class="model-model" aria-label="'+esc(label+'：型号')+'" data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select class="model-effort" aria-label="'+esc(label+'：effort')+'" data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+policySource+capability(managed)+'</div>';
+    var runtimeSource=unpinnedCodex?(lock.runtime?'<div class="help">型号来源：线程读回 '+esc(lock.runtime.observedAt)+'（projects.json 未钉型号）</div>':'<div class="help">型号来源：projects.json 未钉；运行时证据待 Lead 以新版本重启后出现</div>'):"";
+    return '<div class="field" data-model-target="'+esc(managed.targetId)+'" data-model-nullable="'+(selectionNullable?'true':'false')+'" data-model-provider="'+esc(lock?lock.provider:'')+'"><label>'+esc(label)+'</label><div class="three"><select class="model-provider" aria-label="'+esc(label+'：公司')+'" data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select class="model-model" aria-label="'+esc(label+'：型号')+'" data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select class="model-effort" aria-label="'+esc(label+'：effort')+'" data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+policySource+runtimeSource+capability(managed)+'</div>';
   }
   function roleHref(role){
     var url=role&&role.sourceLink;
@@ -376,7 +379,7 @@ const MANAGEMENT_CONSOLE_APP = `
   }
   function renderLeadRows(leads,emptyMessage){
     if(!leads.length){return '<div class="empty">'+esc(emptyMessage||"未发现 Lead")+'</div>';}
-    return '<p class="help">当前显示配置值；实际生效以进程验收为准。跨厂商切换请按<a href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md" target="_blank" rel="noopener noreferrer">受控迁移指引</a>操作。</p><div class="lead-list"><div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+'<div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+leadTuningEvidence(lead)+'</div></article>';}).join("")+'</div>';
+    return '<p class="help">当前显示配置值；实际生效以进程验收为准。跨厂商切换请按<a href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md" target="_blank" rel="noopener noreferrer">受控迁移指引</a>操作。</p><div class="lead-list"><div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+'<div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true,{provider:lead.vendor.provider,providerLabel:lead.vendor.label,unpinnedCodex:lead.backend==="codex-app-server"&&lead.configured.model===null,configuredModel:lead.configured.model,effort:lead.configured.effort,runtime:lead.runtimeSettings||null})+leadTuningEvidence(lead)+'</div></article>';}).join("")+'</div>';
   }
   function renderModelPanel(project){
     var leads=visibleProjectLeads(project);var labels=derivedGroupLabels(project);var groupedCount=project.leads.length-leads.length;
@@ -649,7 +652,7 @@ const MANAGEMENT_CONSOLE_APP = `
     var holder=select.closest("[data-model-target]");var managed=targetIndex[holder.dataset.modelTarget];if(!managed||!writable(managed)){return;}
     var surface=select.dataset.surface;var current=clone(effective(managed));var policy=policyIndex[managed.targetId];var constrained=surface==="workflow"&&policy&&policy.status==="ready";var catalog=policyCatalog(managed,surface);var part=select.dataset.modelPart;
     if((part==="provider"||part==="model")&&!select.value){if(holder.dataset.modelNullable==="true"){setDraft(managed,null);}return;}
-    var value=current||defaultSelection(surface);if(!value){return;}value[part]=select.value||null;
+    var value=current||defaultSelection(surface,holder.dataset.modelProvider);if(!value){return;}value[part]=select.value||null;
     if(part==="provider"){
       var provider=selectedProvider(catalog,value,constrained);var model=provider&&provider.models[0];if(!model){return;}
       value.model=constrained&&managed.canonicalModel===model.canonicalModel&&managed.current&&managed.current.provider===provider.id&&managed.current.model?managed.current.model:model.id;value.effort=constrained?model.defaultEffort:null;

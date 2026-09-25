@@ -29,6 +29,9 @@ grep -Fxq 'CODEX_SWITCH none' "$TMP/patrol"
 # branches and a flat state/bin invocation (helper is never copied by the test).
 env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; po_copy_curated_scripts "$2" "$3"' _ "$ROOT/scripts/package-onboard.sh" "$ROOT" "$TMP/payload"
 cp "$ROOT/scripts/restart-services.sh" "$TMP/payload/scripts/"
+# FLY-2695: the Raya CoS host shim is monorepo-only too (never in the packaged
+# whitelist), so the source-layout branch needs it next to restart-services.sh.
+cp "$ROOT/scripts/raya-cos.sh" "$TMP/payload/scripts/"
 printf 'gitdir: /main/.git/worktrees/quota-fixture\n' > "$TMP/payload/.git"
 printf '#!/bin/bash\nprintf "alert\\n" >> "$FLY2465_ALERT_LOG"\n' > "$TMP/alert.sh"
 COPY_FILES="$(sed -n 's/^FILES="\(.*\)"/\1/p' "$TMP/payload/scripts/converge-flywheel-bin.sh" | head -1)"
@@ -37,6 +40,9 @@ for mode in normal packaged; do
   mkdir -p "$state/bin/lib"
   for file in $COPY_FILES; do
     [ "$file" != lib/codex-quota-summary.mjs ] || continue
+    # A packaged steady state never carries the shim: there it is RETIRED and a
+    # leftover copy is removed with one alert (converge-flywheel-bin C15).
+    [ "$mode" = normal ] || [ "$file" != raya-cos.sh ] || continue
     cp "$TMP/payload/scripts/$file" "$state/bin/$file"
     chmod 555 "$state/bin/$file"
   done

@@ -374,3 +374,69 @@ it("shows next-turn Codex authority only when the managed hot service is availab
 			.leads[0].dispatch.writeCapability,
 	).toMatchObject({ writable: true, consequence: "next-turn" });
 });
+
+it("FLY-2760 projects backend vendor, registry effort, and optional runtime evidence without pinning dispatch", () => {
+	const runtime = {
+		model: "gpt-6-astra",
+		effort: "high",
+		threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		observedAt: "2026-09-24T09:00:00.000Z",
+		source: "thread_read" as const,
+	};
+	const view = buildTopologyView({
+		projects: [
+			project("test", [
+				{
+					...lead("codex-absent"),
+					backend: "codex-app-server",
+					effort: "high",
+				},
+				{
+					...lead("codex-null"),
+					backend: "codex-app-server",
+					model: null,
+					effort: "high",
+				},
+				{
+					...lead("codex-pinned"),
+					backend: "codex-app-server",
+					model: "gpt-6-astra",
+					effort: "high",
+				},
+				lead("claude-unpinned"),
+			]),
+		],
+		configs: new Map(),
+		projectsRevision: "file:revision",
+		codexHotConfigAvailable: true,
+		runtimeSettingsByLead: new Map([["test-codex-absent", runtime]]),
+	});
+	const byId = new Map(
+		view.projects[0]!.leads.map((item) => [item.leadId, item]),
+	);
+	for (const id of ["codex-absent", "codex-null"]) {
+		expect(byId.get(id)).toMatchObject({
+			vendor: { provider: "openai", label: "OpenAI" },
+			configured: { model: null, effort: "high" },
+			dispatch: {
+				current: null,
+				writeCapability: { writable: false },
+			},
+		});
+	}
+	expect(byId.get("codex-absent")?.runtimeSettings).toEqual(runtime);
+	expect(byId.get("codex-null")).not.toHaveProperty("runtimeSettings");
+	expect(byId.get("codex-pinned")).toMatchObject({
+		vendor: { provider: "openai", label: "OpenAI" },
+		configured: { model: "gpt-6-astra", effort: "high" },
+		dispatch: { writeCapability: { writable: true } },
+	});
+	expect(byId.get("claude-unpinned")).toMatchObject({
+		vendor: { provider: "anthropic", label: "Anthropic" },
+		configured: { model: null, effort: null },
+		dispatch: {
+			current: null,
+			writeCapability: { writable: true, consequence: "restart-lead" },
+		},
+	});
+});

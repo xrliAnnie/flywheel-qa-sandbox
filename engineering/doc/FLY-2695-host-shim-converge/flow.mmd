@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph REPO["Flywheel 仓(main)"]
+        SRC["scripts/raya-cos.sh<br/>(源,≥1024 B)"]
+        PKG["packages/raya-cos/dist/cli.js<br/>(S1 已落地)"]
+        CONV["scripts/converge-flywheel-bin.sh<br/>FILES + RETIRED_FILES"]
+    end
+    subgraph HOST["宿主 ~/.flywheel"]
+        BIN["bin/raya-cos.sh<br/>副本 · sha==源 · mode 555"]
+        MK["state/converge-adoptions/raya-cos.sh<br/>首次采纳标记"]
+    end
+    subgraph LEAD["Raya Lead(Codex full-access 沙箱)"]
+        PERSONA["人设(S3 之后)<br/>cwd = ~/Dev/raya-lead-workspace"]
+        STATE["state/cos/<br/>(工作区内,可写)"]
+    end
+    CONV -->|"每次 Lead 启动 / 每次部署<br/>装入并校验"| BIN
+    CONV -.->|"第一次静默记录"| MK
+    PERSONA -->|"~/.flywheel/bin/raya-cos.sh status"| BIN
+    BIN -->|"host-config 解析 FLYWHEEL_DIR<br/>exec node …/dist/cli.js"| PKG
+    PKG -->|"只读写 cwd 下的"| STATE
+    style BIN fill:#e9f9ee,stroke:#34c759
+    style PERSONA fill:#f2f2f7,stroke:#86868b,stroke-dasharray:4 3

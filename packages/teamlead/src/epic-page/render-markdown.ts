@@ -6,7 +6,6 @@ import {
 	attentionSourceText,
 	attentionSummary,
 	attentionWait,
-	isFounderAttention,
 } from "./attention-presentation.js";
 import { judgmentSummary } from "./audit-dictionary.js";
 import { renderDiscordLinkPair } from "./discord-link.js";
@@ -472,7 +471,9 @@ function renderAttention(page: EpicPage, now: Date): string {
 			? discordLink
 			: link.url
 				? "Discord 链接不可用"
-				: `${label("attention.unknown")}（${attentionMissing(link.reason)}）`;
+				: label("attention.no_link_reason", {
+						reason: attentionMissing(link.reason),
+					});
 		return [
 			`- **① ${label("attention.what")}**：${markdownText([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}`,
 			`- **② ${label("attention.action")}**：${markdownText(attentionActionText(item))}`,
@@ -483,23 +484,14 @@ function renderAttention(page: EpicPage, now: Date): string {
 	};
 	const founder = attentionAudience(page, true).map(({ item }) => item);
 	const lead = attentionAudience(page, false);
-	const unlinked = page.attention.filter(
-		(item) =>
-			!attentionLink(page, item).url && item.sources.some(isFounderAttention),
-	);
 	return [
 		heading,
-		attentionSummary(page, page.attention.length + deploymentFounder.length),
+		attentionSummary(page, founder.length + deploymentFounder.length),
 		...founderDeploymentRows,
 		...founder.map(renderItem),
 		...(lead.length
 			? [
 					`<details><summary>在等 Lead 的</summary>\n\n${lead.map(({ item, olderQuestions }) => [renderItem(item), ...(olderQuestions ? [`另有 ${olderQuestions} 条较早问题`] : [])].join("\n")).join("\n\n")}\n\n</details>`,
-				]
-			: []),
-		...(unlinked.length
-			? [
-					`<details><summary>缺少讨论串链接的记录</summary>\n\n${unlinked.map(renderItem).join("\n\n")}\n\n</details>`,
 				]
 			: []),
 	].join("\n\n");

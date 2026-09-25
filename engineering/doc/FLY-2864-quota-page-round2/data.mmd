@@ -1,0 +1,15 @@
+flowchart TB
+  subgraph Claude行
+    A1["账号 + 档位（来自实时 profile）"]
+    A2["周重置 / 5h / 周用量 / Fable（不变）"]
+    A3["充值卡：N 张，每张到期日（来自 cedar_ember grants）"]
+    A4["下次扣费日：读不到（Anthropic 接口不给）/ 已取消"]
+  end
+  subgraph Codex行
+    B1["账号 + 档位（不变）"]
+    B0["token 状态 —— 删除"]
+    B2["周重置 / 5h / 周用量（不变）"]
+    B3["兑换卡（不变）"]
+    B4["下次扣费日：10/22 周四 / 已取消 · 日期 到期 / 读不到（原因）"]
+  end
+  style B0 fill:#ffe5e3,stroke:#ff3b30,stroke-dasharray: 5 5

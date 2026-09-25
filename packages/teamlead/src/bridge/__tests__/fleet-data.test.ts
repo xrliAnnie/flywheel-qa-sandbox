@@ -2,7 +2,16 @@
  * FLY-247 WI-4: fleet evidence collection, decision table, config provider,
  * poller, and Lead alert membership.
  */
-import { describe, expect, it } from "vitest";
+import {
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { deriveLeadSocketPath } from "../../lead-address.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { buildDashboardPayload } from "../dashboard-data.js";
@@ -152,6 +161,8 @@ interface DepsOverride {
 	privateTmuxCalls?: { sockets: string[] };
 	processCommands?: Record<number, string[] | null>;
 	stateDir?: string;
+	codexLeadStateDir?: FleetProbeDeps["codexLeadStateDir"];
+	readEvidenceFile?: FleetProbeDeps["readEvidenceFile"];
 }
 
 function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
@@ -192,9 +203,182 @@ function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
 			o.processCommands?.[pid] === undefined ? [] : o.processCommands[pid],
 		homeDir: () => HOME,
 		stateDir: () => o.stateDir ?? `${HOME}/.flywheel`,
+		...(o.codexLeadStateDir ? { codexLeadStateDir: o.codexLeadStateDir } : {}),
+		...(o.readEvidenceFile ? { readEvidenceFile: o.readEvidenceFile } : {}),
 		now: () => new Date("2026-06-11T00:00:00Z"),
 	};
 }
+
+describe("collectFleetSnapshot — FLY-2760 Codex thread settings evidence", () => {
+	const threadId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	const evidence = (overrides: Record<string, unknown> = {}) =>
+		JSON.stringify({
+			version: 1,
+			threadId,
+			model: "gpt-6-astra",
+			effort: "high",
+			observedAt: "2026-09-24T09:00:00.000Z",
+			source: "thread_read",
+			buildSha: "a".repeat(40),
+			...overrides,
+		});
+	const collect = (dir: string, overrides: DepsOverride = {}) =>
+		collectFleetSnapshot(
+			[
+				project({
+					backend: "codex-app-server",
+					effort: "high",
+				}),
+			],
+			() => undefined,
+			makeDeps({
+				...overrides,
+				codexLeadStateDir: overrides.codexLeadStateDir ?? (() => dir),
+			}),
+		);
+
+	it("accepts bounded evidence only when it matches the current thread", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2760-fleet-"));
+		try {
+			writeFileSync(join(dir, "thread-id"), `${threadId}\n`);
+			writeFileSync(join(dir, "thread-settings.json"), evidence());
+			const lead = (await collect(dir)).leads[0]!;
+			expect(lead.runtimeSettings).toEqual({
+				model: "gpt-6-astra",
+				effort: "high",
+				threadId,
+				observedAt: "2026-09-24T09:00:00.000Z",
+				source: "thread_read",
+			});
+			expect(lead.observed.degradationReasons).not.toContain(
+				"thread-settings-invalid",
+			);
+
+			unlinkSync(join(dir, "thread-settings.json"));
+			const missing = (await collect(dir)).leads[0]!;
+			expect(missing).not.toHaveProperty("runtimeSettings");
+			expect(missing.observed.degradationReasons).not.toEqual(
+				expect.arrayContaining([expect.stringMatching(/^thread-settings-/)]),
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		["malformed JSON", "{"],
+		["invalid effort", evidence({ effort: "turbo" })],
+		["invalid model", evidence({ model: "<img>" })],
+		["oversize", "x".repeat(4097)],
+	] as const)(
+		"rejects %s without changing core fleet axes",
+		async (_name, body) => {
+			const dir = mkdtempSync(join(tmpdir(), "fly2760-fleet-"));
+			try {
+				writeFileSync(join(dir, "thread-id"), `${threadId}\n`);
+				const clean = (await collect(dir)).leads[0]!;
+				writeFileSync(join(dir, "thread-settings.json"), body);
+				const invalid = (await collect(dir)).leads[0]!;
+				expect(invalid).not.toHaveProperty("runtimeSettings");
+				expect(invalid.observed.degradationReasons).toContain(
+					"thread-settings-invalid",
+				);
+				expect({
+					management: invalid.observed.management,
+					runtime: invalid.observed.runtime,
+					presentation: invalid.presentation,
+					paneWatch: invalid.paneWatch,
+				}).toEqual({
+					management: clean.observed.management,
+					runtime: clean.observed.runtime,
+					presentation: clean.presentation,
+					paneWatch: clean.paneWatch,
+				});
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it.each([false, true])("rejects %s symlink evidence", async (dangling) => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2760-fleet-"));
+		try {
+			writeFileSync(join(dir, "thread-id"), `${threadId}\n`);
+			const target = join(dir, "target.json");
+			if (!dangling) writeFileSync(target, evidence());
+			symlinkSync(target, join(dir, "thread-settings.json"));
+			const lead = (await collect(dir)).leads[0]!;
+			expect(lead).not.toHaveProperty("runtimeSettings");
+			expect(lead.observed.degradationReasons).toContain(
+				"thread-settings-invalid",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		["missing thread id", null],
+		["unsafe thread id", "../escape"],
+		["different thread id", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+	] as const)("treats %s as stale evidence", async (_name, currentThreadId) => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2760-fleet-"));
+		try {
+			if (currentThreadId !== null) {
+				writeFileSync(join(dir, "thread-id"), `${currentThreadId}\n`);
+			}
+			writeFileSync(join(dir, "thread-settings.json"), evidence());
+			const lead = (await collect(dir)).leads[0]!;
+			expect(lead).not.toHaveProperty("runtimeSettings");
+			expect(lead.observed.degradationReasons).toContain(
+				"thread-settings-stale",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed on an unresolved injected directory and never probes Claude Leads", async () => {
+		const resolver = vi.fn(() => {
+			throw new Error("missing mapping");
+		});
+		const codex = await collectFleetSnapshot(
+			[project({ backend: "codex-app-server" })],
+			() => undefined,
+			makeDeps({ codexLeadStateDir: resolver }),
+		);
+		expect(codex.leads[0]!.observed.degradationReasons).toContain(
+			"thread-settings-unresolved",
+		);
+
+		resolver.mockClear();
+		await collectFleetSnapshot(
+			[project({ backend: "claude-code" })],
+			() => undefined,
+			makeDeps({ codexLeadStateDir: resolver }),
+		);
+		expect(resolver).not.toHaveBeenCalled();
+	});
+
+	it("honors an injected oversize result without accepting content", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2760-fleet-"));
+		const reader = vi.fn(() => ({ kind: "oversize" as const }));
+		try {
+			writeFileSync(join(dir, "thread-id"), `${threadId}\n`);
+			const lead = (await collect(dir, { readEvidenceFile: reader })).leads[0]!;
+			expect(reader).toHaveBeenCalledWith(
+				join(dir, "thread-settings.json"),
+				4096,
+			);
+			expect(lead).not.toHaveProperty("runtimeSettings");
+			expect(lead.observed.degradationReasons).toContain(
+				"thread-settings-invalid",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("collectFleetSnapshot — two-axis evidence", () => {
 	it("healthy standard claude lead → ONLINE, drift computed against both carriers", async () => {
@@ -699,7 +883,6 @@ describe("DashboardPayload fleet gate", () => {
 				last_failure_error: null,
 				last_failure_at: null,
 			}),
-			// biome-ignore lint/suspicious/noExplicitAny: minimal store stub
 		} as any;
 		const payload = buildDashboardPayload(fakeStore, 30);
 		expect(Object.keys(payload)).not.toContain("fleet");

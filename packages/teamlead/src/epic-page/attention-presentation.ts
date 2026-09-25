@@ -17,6 +17,11 @@ export function attentionPublicKey(project: string, key: string): string {
 	return `a-${createHash("sha256").update(`attention.v1\0${project}\0${key}`).digest("hex")}`;
 }
 
+/**
+ * Two separate facts, so the counts add up: how many listed rows lack a thread
+ * link (they are still listed and counted), and whether the list itself is
+ * incomplete (a read failed, identities are unconfirmed, or rows were cut).
+ */
 export function attentionSummary(
 	page: EpicPageV2,
 	count = page.attention.length,
@@ -29,7 +34,6 @@ export function attentionSummary(
 	const identityIncomplete =
 		sources.identity.value === null || sources.identity.value.unresolved > 0;
 	if (
-		unlinked > 0 ||
 		identityIncomplete ||
 		[
 			sources.gates,
@@ -39,17 +43,18 @@ export function attentionSummary(
 		].some((cell) => cell.value === null)
 	) {
 		const reasons = [];
-		if (unlinked > 0)
-			reasons.push(label("attention.unlinked", { n: unlinked }));
 		if (identityIncomplete)
 			reasons.push(label("attention.identity_incomplete"));
 		if (page.attention_sources.budget.value === null)
 			reasons.push(label("attention.budget_incomplete"));
 		return (
 			label("attention.incomplete", { n: count }) +
-			(reasons.length ? `（${reasons.join("；")}）` : "")
+			(reasons.length ? `（${reasons.join("；")}）` : "") +
+			(unlinked > 0 ? `。${label("attention.unlinked", { n: unlinked })}` : "")
 		);
 	}
+	if (unlinked > 0)
+		return label("attention.count_unlinked", { n: count, m: unlinked });
 	return count === 0
 		? label("attention.empty")
 		: label("attention.count", { n: count });
@@ -189,10 +194,11 @@ export function attentionMissing(reason?: MissingReason): string {
 export function isFounderAttention(source: AttentionSource): boolean {
 	return founderAttentionLevel([source.fact.value?.kind ?? ""]) !== null;
 }
+// FLY-2761: a founder-facing list may filter only on "does this still need
+// her", never on "can we render it". A row without a usable thread link stays
+// listed and counted; renderers mark it and the summary reports it.
 export function attentionAudience(page: EpicPageV2, founder: boolean) {
 	return page.attention.flatMap((item) => {
-		// Unresolved records remain in the audit document, but are not thread links.
-		if (founder && !attentionLink(page, item).url) return [];
 		const sources = item.sources.filter(
 			(source) => isFounderAttention(source) === founder,
 		);

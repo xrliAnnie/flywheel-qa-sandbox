@@ -78,7 +78,7 @@ fi
 # No installer writes either file into bin, and both are plain files — so the
 # copy lane, not the symlink lane (see symlink_strict_name below for the shapes
 # that must NOT be copied).
-FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh verify-agent-visibility.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
+FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh verify-agent-visibility.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/agent-visibility.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs raya-cos.sh"
 # FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
 # restart-services.sh — it is monorepo deploy machinery. There its absence is
 # the EXPECTED shape, not an integrity incident; without this branch every
@@ -152,7 +152,7 @@ alert() {  # <title> <body> <signature> — best-effort (claims.db dedup inside)
 ADOPTION_DIR="$STATE_DIR/state/converge-adoptions"
 is_first_adoption_name() {
   case "$1" in
-    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh|resident-codex-lead-recover.sh|lib/raya-standard-migration.sh|lib/lead-backend-migration.sh|lib/codex-quota-summary.mjs) return 0 ;;
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh|resident-codex-lead-recover.sh|lib/raya-standard-migration.sh|lib/lead-backend-migration.sh|lib/codex-quota-summary.mjs|raya-cos.sh) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -199,9 +199,51 @@ if [ "${FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT:-0}" != "1" ] \
   exit 1
 fi
 
+# FLY-2695 (FLY-2680 §10.2 note): names this converger USED TO manage, or must
+# never leave in bin on this tree shape, and therefore actively removes. The
+# managed loop below never scans bin, so a name dropped from FILES would
+# otherwise become unmanaged residue forever (the 2026-09-01 Raya wrapper still
+# sitting in ~/.flywheel/bin is the live example). Exact names only — bin also
+# holds human leftovers (.bak-*, .tmp.*, __pycache__, …) that are not ours.
+#
+# Forward-rollback contract for a managed name (never `git revert` the PR that
+# introduced this block — that deletes the cleanup together with the name):
+#   1. keep this RETIRED_FILES mechanism;
+#   2. in a new commit, MOVE the name from FILES into the monorepo
+#      RETIRED_FILES below;
+#   3. deploy, then verify <state>/bin/<name> and its converge-adoptions marker
+#      are both gone — only after every converger of the OLD managed version has
+#      exited (an old-version run re-installs it; a momentary absence is not a
+#      steady state);
+#   4. only then drop the RETIRED_FILES entry.
+RETIRED_FILES=""
+if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
+  # raya-cos is Annie's self-hosted Raya only: package-onboard.sh's PO_PACKAGES
+  # never ships it, so a packaged install must not keep a shim whose target can
+  # never exist there — e.g. one left by an earlier monorepo install on the
+  # same state root (plan FLY-2680 §6.2).
+  RETIRED_FILES="raya-cos.sh"
+fi
+# Installing and deleting the same name would flap on every run. Refuse before
+# any write so a mis-edited list goes red in CI instead of on a host.
+for f in $RETIRED_FILES; do
+  case " $FILES " in
+    *" $f "*)
+      echo "[converge-bin] ERROR: $f is listed in both FILES and RETIRED_FILES — refusing to run (FLY-2695)" >&2
+      exit 1 ;;
+  esac
+done
+
 rc=0
 for f in $FILES; do
   src="$REPO_ROOT/scripts/$f"; dst="$BIN_DIR/$f"
+  # FLY-2695 (Codex R1#1): decide adoption eligibility BEFORE any check or
+  # repair. Every Claude Lead start runs its own converge with no shared lock;
+  # if a peer installs and records the adoption between our checks, re-reading
+  # the marker after our own install would misfile an expected rollout as a
+  # severe "drift repaired" alert.
+  adopt_pending=0
+  if is_first_adoption_name "$f" && ! adoption_is_complete "$f"; then adopt_pending=1; fi
   # Codex code R1 HIGH: a MISSING required source is as disqualifying as an
   # insane one — exit 0 here would let the pre-kickstart mount treat an
   # unverifiable (mid-pull / broken) checkout as healthy and kickstart anyway.
@@ -223,7 +265,7 @@ for f in $FILES; do
         log "ERROR: chmod 555 failed: $dst"; rc=1
       fi
     fi
-    if is_first_adoption_name "$f" && ! adoption_is_complete "$f"; then
+    if [ "$adopt_pending" = 1 ]; then
       if record_adoption "$f" "$src_sha"; then
         log "adoption baseline recorded: $f was already converged"
       else
@@ -248,8 +290,9 @@ for f in $FILES; do
   fi
   if install_script_atomic "$src" "$dst"; then
     log "repaired: $f (bin was ${size}B sha ${dst_sha:-missing}; now repo ${src_sha:0:12})"
-    if is_first_adoption_name "$f" && ! adoption_is_complete "$f"; then
-      if record_adoption "$f" "$src_sha"; then
+    if [ "$adopt_pending" = 1 ]; then
+      # A peer that recorded the adoption first counts as recorded, too.
+      if record_adoption "$f" "$src_sha" || adoption_is_complete "$f"; then
         log "first managed adoption recorded: $f (expected rollout; alert suppressed once)"
       else
         log "ERROR: repaired $f but could not persist its adoption baseline"
@@ -268,6 +311,56 @@ for f in $FILES; do
       "$dst drifted (found ${size}B) and the atomic repair failed — manual intervention required (FLY-954 runbook: cp from repo + chmod 555)." \
       "$f|failfix|${src_sha:0:12}"
     rc=1
+  fi
+done
+
+# ── FLY-2695: retired entries — remove, then PROVE removal ──────────────────
+# Both the bin copy and the adoption marker go through strict_discard: rm must
+# succeed AND lstat must confirm the path is gone. -e/-L both false cannot tell
+# "absent" from "parent directory not searchable" (Codex R1#2), so neither
+# target is ever skipped on an existence test. Unprovable → alert + rc=1 (the
+# pre-kickstart mount then refuses), same stance as FLY-1577's residue cleanup.
+# Absent everywhere → silent (the packaged steady state stays zero-alert).
+for f in $RETIRED_FILES; do
+  dst="$BIN_DIR/$f"; marker="$ADOPTION_DIR/${f//\//__}"
+  # Only decides whether the removal is worth a line and an alert; it never
+  # decides whether to remove.
+  had=0
+  { [ -e "$dst" ] || [ -L "$dst" ] || [ -e "$marker" ] || [ -L "$marker" ]; } && had=1
+  # Predicate ORDER matters (Codex R2#1): the three tests are not one atomic
+  # observation. Test the removable shapes FIRST and absence LAST, so a target
+  # that a concurrent converger deletes between two tests always ends up in the
+  # strict_discard branch (rm -f on an absent path succeeds, lstat proves it
+  # gone). Only a path that is still present AND is neither a file nor a link
+  # (a directory, a socket, …) is an unsupported shape.
+  if [ -f "$dst" ] || [ -L "$dst" ] || [ ! -e "$dst" ]; then
+    :
+  else
+    log "ERROR: retired $f has unsupported shape at $dst — NOT removing"
+    alert "bin retired entry has unsupported shape: $f" \
+      "$dst exists but is neither a regular file nor a symlink. NOT auto-removed; inspect the path manually (FLY-2695)." \
+      "$f|retired-shape-unsupported"
+    rc=1; continue
+  fi
+  if ! strict_discard "$dst"; then
+    log "ERROR: could not prove removal of retired $f"
+    alert "bin retired residue unproven: $f" \
+      "$dst is retired but its removal could not be proven (rm failed or the path is still present). Nothing else changed; inspect permissions and re-run converge (FLY-2695)." \
+      "$f|retired-unproven"
+    rc=1; continue
+  fi
+  if ! strict_discard "$marker"; then
+    log "ERROR: retired adoption marker for $f could not be proven removed"
+    alert "bin retired marker unproven: $f" \
+      "$dst is gone but $marker could not be proven removed. Repair state-directory permissions and re-run converge (FLY-2695)." \
+      "$f|retired-marker-unproven"
+    rc=1; continue
+  fi
+  if [ "$had" = 1 ]; then
+    log "retired removed: $f (bin copy and adoption marker verified gone)"
+    alert "bin retired entry removed: $f" \
+      "$dst (and its adoption marker) was a retired entry left by an earlier managed version or a forward rollback; it was removed and verified gone (FLY-2695)." \
+      "$f|retired-removed"
   fi
 done
 

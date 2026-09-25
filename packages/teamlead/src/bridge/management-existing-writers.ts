@@ -25,6 +25,7 @@ import {
 	leadTuningWriteCapability,
 } from "./fleet-capabilities.js";
 import type { LeadConfigService } from "./lead-config-service.js";
+import { leadDispatchSelection } from "./lead-dispatch-selection.js";
 import {
 	buildTargetId,
 	fileSourceRevision,
@@ -160,20 +161,6 @@ function selectionFromRunner(
 			(runner.backend === "codex-tmux" ? "openai" : "anthropic"),
 		model: entry?.id ?? runner.model,
 		effort: runner.effort ?? null,
-	};
-}
-
-function selectionFromLead(
-	lead: ProjectEntry["leads"][number],
-): ModelSelection | null {
-	if (!lead.model) return null;
-	const entry = getModelRegistryEntry(lead.model);
-	return {
-		provider:
-			entry?.provider ??
-			(lead.backend === "codex-app-server" ? "openai" : "anthropic"),
-		model: entry?.id ?? lead.model,
-		effort: lead.effort ?? null,
 	};
 }
 
@@ -386,11 +373,12 @@ function resolveLeadTarget(
 				kind: "lead",
 				projectName: project.projectName,
 				leadId: lead.agentId,
-				currentValue: selectionFromLead(lead),
+				currentValue: leadDispatchSelection(lead),
 				sourceRevision: deps.projectsRevision(),
 				writeCapability: leadTuningWriteCapability(
 					capability.currentBackend,
 					!!deps.leadConfig,
+					lead.model !== undefined && lead.model !== null,
 				),
 			};
 		}

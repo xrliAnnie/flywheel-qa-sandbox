@@ -20,6 +20,25 @@ function project(name: string, leadId: string): ProjectEntry {
 }
 
 describe("management SSOT providers", () => {
+	it("projects runtime thread settings only for the matching Lead key", () => {
+		const runtime = {
+			model: "gpt-6-astra",
+			effort: "high",
+			threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			observedAt: "2026-09-24T09:00:00.000Z",
+			source: "thread_read" as const,
+		};
+		const providers = createManagementSsotProviders({
+			projects: () => [project("alpha", "lead")],
+			projectsRevision: () => "file:projects",
+			projectConfigs: () => new Map([["alpha", { revision: "file:config" }]]),
+			runtimeSettingsByLead: () => new Map([["alpha-lead", runtime]]),
+		});
+
+		const snapshot = composeManagementSnapshot({ providers });
+		expect(snapshot.projects[0]!.leads[0]!.runtimeSettings).toEqual(runtime);
+	});
+
 	it("re-reads the authoritative roster so new projects and Leads appear automatically", () => {
 		let projects = [project("alpha", "first-lead")];
 		const configs = new Map<string, LoadedProjectConfig>([

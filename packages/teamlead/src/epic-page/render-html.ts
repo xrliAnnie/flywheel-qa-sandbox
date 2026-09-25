@@ -534,7 +534,7 @@ function renderAttention(
 						item.identifier.value ?? label("attention.unknown"),
 					) ||
 					`<span class="jump-off" aria-disabled="true">Discord 链接不可用</span>`
-				: `<span class="jump-off" aria-disabled="true" title="${escapeHtml(attentionMissing(link.reason))}">这张单还没有 thread</span>`;
+				: `<span class="jump-off" aria-disabled="true" title="${escapeHtml(attentionMissing(link.reason))}">${escapeHtml(label("attention.no_link"))}</span>`;
 			const question = item.sources.every(
 				(source) => source.fact.value?.kind === "question",
 			);

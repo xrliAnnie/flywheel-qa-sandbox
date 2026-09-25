@@ -3,6 +3,7 @@ import type {
 	FlagPolarity,
 	FlagValueKind,
 	ModelCatalog,
+	ModelProviderId,
 	ModelSurface,
 } from "flywheel-config";
 import { BETA_SOURCE_ORIGINS, type BetaSourceOrigin } from "flywheel-config";
@@ -157,6 +158,14 @@ export interface ModelSelection {
 	effort?: string | null;
 }
 
+export interface LeadRuntimeSettingsView {
+	model: string;
+	effort: string;
+	threadId: string;
+	observedAt: string;
+	source: "thread_read";
+}
+
 export interface ManagementLeadView {
 	tuning?: LeadConfigView;
 	id: string;
@@ -168,6 +177,12 @@ export interface ManagementLeadView {
 	backend: string;
 	backendWritable: false;
 	backendDisabledReason: string;
+	/** Backend-derived company identity; never inferred from a nullable model. */
+	vendor: { provider: ModelProviderId; label: string };
+	/** projects.json spelling, kept separately from the dispatch write baseline. */
+	configured: { model: string | null; effort: string | null };
+	/** Trusted thread/read evidence, absent until the Lead runtime records it. */
+	runtimeSettings?: LeadRuntimeSettingsView;
 	dispatch: ManagedValue<ModelSelection | null>;
 }
 

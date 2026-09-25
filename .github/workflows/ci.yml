@@ -358,6 +358,7 @@ jobs:
         run: |
           bash scripts/__tests__/path-hygiene.test.sh
           bash scripts/__tests__/converge-flywheel-bin.test.sh
+          bash scripts/__tests__/raya-cos-shim.test.sh
           bash scripts/__tests__/converge-fly1389.test.sh
           bash scripts/__tests__/fly1577-cmux-bin-closure.test.sh
           bash scripts/__tests__/fly1577-alert-arrival.test.sh
