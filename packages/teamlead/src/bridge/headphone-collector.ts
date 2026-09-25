@@ -1,9 +1,11 @@
-import { extractSpeechBrief } from "flywheel-voice-core";
+import { extractSpeechBrief, VOICE_ECHO_PREFIXES } from "flywheel-voice-core";
+import { AUTOMATED_MESSAGE_PREFIX } from "./automated-message.js";
 import { DISCORD_API } from "./discord-utils.js";
 import type {
 	HeadphoneInboxSourceState,
 	HeadphoneInboxStore,
 	HeadphoneInboxUpsertInput,
+	HeadphoneOriginClass,
 } from "./headphone-inbox.js";
 
 export interface HeadphoneCollectorScope {
@@ -11,7 +13,23 @@ export interface HeadphoneCollectorScope {
 	founderUserId: string;
 	channelId: string;
 	allowedAuthorIds: readonly string[];
+	/** FLY-2863: the project's Lead bots (a subset of allowedAuthorIds). */
+	leadAuthorIds?: readonly string[];
 	token: string;
+}
+
+/** FLY-2863 §2.3: prefixes come only from the shared constants. */
+export function classifyHeadphoneOrigin(
+	scope: Pick<HeadphoneCollectorScope, "founderUserId" | "leadAuthorIds">,
+	message: Pick<HeadphoneCollectorMessage, "authorId" | "content">,
+): HeadphoneOriginClass {
+	if (message.authorId === scope.founderUserId) return "founder";
+	const text = message.content.trimStart();
+	if (text.startsWith(AUTOMATED_MESSAGE_PREFIX.trimEnd())) return "automation";
+	if (VOICE_ECHO_PREFIXES.some((prefix) => text.startsWith(prefix)))
+		return "voice_echo";
+	if (scope.leadAuthorIds?.includes(message.authorId)) return "lead_authored";
+	return "other";
 }
 
 export interface HeadphoneCollectorMessage {
@@ -309,6 +327,14 @@ export class HeadphoneInboxCollector {
 		);
 		const accepted: HeadphoneInboxUpsertInput[] = [];
 		const allowed = new Set(candidate.scope.allowedAuthorIds);
+		let founderLastMessageAt: string | undefined;
+		for (const message of ordered)
+			if (
+				message.authorId === candidate.scope.founderUserId &&
+				(!founderLastMessageAt ||
+					Date.parse(message.timestamp) > Date.parse(founderLastMessageAt))
+			)
+				founderLastMessageAt = message.timestamp;
 		let authority:
 			| ReturnType<NonNullable<HeadphoneCollectorOptions["classifyMessages"]>>
 			| undefined;
@@ -345,6 +371,7 @@ export class HeadphoneInboxCollector {
 				}),
 				sourceCreatedAt: message.timestamp,
 				sourceResolved: question?.resolved ?? message.resolved,
+				originClass: classifyHeadphoneOrigin(candidate.scope, message),
 			});
 		}
 		const first = ordered[0]?.id;
@@ -374,6 +401,7 @@ export class HeadphoneInboxCollector {
 				health: "healthy",
 				nextAllowedAt: new Date(this.nextPageAt).toISOString(),
 				updatedAt,
+				...(founderLastMessageAt ? { founderLastMessageAt } : {}),
 			},
 		});
 		return "collected";

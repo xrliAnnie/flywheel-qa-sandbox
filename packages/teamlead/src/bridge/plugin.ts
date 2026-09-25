@@ -54,7 +54,9 @@ import {
 	reconcileLeaseEpisodeQueue,
 	recoverLeaseEpisode,
 } from "flywheel-comm/lead-lease";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { OncallReceiptStore } from "flywheel-comm/oncall-receipts";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { SUMMARY_TARGET_REPOSITORY } from "flywheel-comm/summary-command";
 import { readSummaryGranularity } from "flywheel-comm/summary-config";
 import { deliverDurableTurnWake } from "flywheel-comm/wake";
@@ -959,6 +961,11 @@ import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { classifyTurnWakeReceiptProjection } from "./turn-wake-receipt-classifier.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
+import { createVoiceAgendaRouter } from "./voice-agenda-routes.js";
+import {
+	buildVoiceAgendaSnapshot,
+	VoiceAgendaPriorityCache,
+} from "./voice-agenda-source.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
 import { createVoiceHandoffRouter } from "./voice-handoff-routes.js";
 import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
@@ -1800,6 +1807,9 @@ export interface BridgeAppOptions {
 	voiceReplyNotifier?: VoiceReplyNotifier;
 	headphoneRouter?: { current?: express.Router };
 	voiceHandoffRouter?: { current?: express.Router };
+	/** FLY-2863: lease-bound agenda routes and the Lead-facing routes. */
+	voiceAgendaRouter?: { current?: express.Router };
+	voiceAgendaLeadRouter?: { current?: express.Router };
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -6005,11 +6015,12 @@ export function createBridgeApp(
 	const mountLateVoiceRouter = (
 		path: string,
 		holder: { current?: express.Router } | undefined,
+		ingestToken?: string,
 	) => {
 		if (!holder) return;
 		app.use(
 			path,
-			voiceSessionAuthMiddleware(config.apiToken),
+			voiceSessionAuthMiddleware(config.apiToken, ingestToken),
 			(req, res, next) => {
 				const router = holder.current;
 				if (!router) {
@@ -6022,6 +6033,14 @@ export function createBridgeApp(
 	};
 	mountLateVoiceRouter("/api/voice/headphone", opts?.headphoneRouter);
 	mountLateVoiceRouter("/api/voice/handoffs", opts?.voiceHandoffRouter);
+	// FLY-2863: Lead commands (flywheel-comm voice agenda) may use the ingest
+	// token; mounted before the lease-bound agenda routes that share the prefix.
+	mountLateVoiceRouter(
+		"/api/voice/agenda/lead",
+		opts?.voiceAgendaLeadRouter,
+		config.ingestToken,
+	);
+	mountLateVoiceRouter("/api/voice/agenda", opts?.voiceAgendaRouter);
 
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
@@ -9371,6 +9390,12 @@ export async function startBridge(
 	const voiceHandoffRouterHolder: NonNullable<
 		BridgeAppOptions["voiceHandoffRouter"]
 	> = {};
+	const voiceAgendaRouterHolder: NonNullable<
+		BridgeAppOptions["voiceAgendaRouter"]
+	> = {};
+	const voiceAgendaLeadRouterHolder: NonNullable<
+		BridgeAppOptions["voiceAgendaLeadRouter"]
+	> = {};
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
@@ -9409,6 +9434,8 @@ export async function startBridge(
 			voiceReplyNotifier,
 			headphoneRouter: headphoneRouterHolder,
 			voiceHandoffRouter: voiceHandoffRouterHolder,
+			voiceAgendaRouter: voiceAgendaRouterHolder,
+			voiceAgendaLeadRouter: voiceAgendaLeadRouterHolder,
 			leadConfigService,
 			leadEventDelivery,
 			leadGithub: leadGithubProvider.get,
@@ -11591,6 +11618,9 @@ export async function startBridge(
 		const listHeadphoneScopes = (): HeadphoneCollectorScope[] => {
 			const scopes = new Map<string, HeadphoneCollectorScope>();
 			for (const project of projects) {
+				const leadAuthorIds = project.leads
+					.map((lead) => lead.botUserId ?? botUserIdFromToken(lead.botToken))
+					.filter((id): id is string => !!id);
 				const allowedAuthorIds = [
 					...project.leads
 						.map((lead) => lead.botUserId ?? botUserIdFromToken(lead.botToken))
@@ -11607,6 +11637,7 @@ export async function startBridge(
 						founderUserId: headphoneFounderId,
 						channelId,
 						allowedAuthorIds,
+						leadAuthorIds,
 						token,
 					});
 				};
@@ -11646,6 +11677,25 @@ export async function startBridge(
 				envelope = parseChatDeliveryEnvelope(content);
 			} catch {
 				return "conflict";
+			}
+			if (record.requestKind === "agenda_brief") {
+				const agenda = record.agenda;
+				return agenda?.kind === "brief" &&
+					envelope.deliveryId === record.providerOperationId &&
+					envelope.leadId === record.targetLeadId &&
+					envelope.messageId === record.messageId &&
+					envelope.authorId === agenda.authorId &&
+					envelope.text === agenda.text &&
+					envelope.origin === "voice" &&
+					envelope.voiceSessionId === record.sessionId &&
+					envelope.voiceHandoff?.handoffId === record.handoffId &&
+					envelope.voiceHandoff.requestDigest === record.requestDigest &&
+					envelope.voiceHandoff.targetLeadId === record.targetLeadId &&
+					envelope.voiceHandoff.sessionGeneration === record.generation &&
+					envelope.voiceHandoff.agenda?.kind === "brief" &&
+					envelope.voiceHandoff.agenda.purpose === agenda.purpose
+					? "found"
+					: "conflict";
 			}
 			return envelope.deliveryId === record.providerOperationId &&
 				envelope.leadId === record.targetLeadId &&
@@ -11737,6 +11787,25 @@ export async function startBridge(
 			replyNotifier: voiceReplyNotifier,
 			founderUserId: headphoneFounderId,
 			getSession: (sessionId) => store.getVoiceSession(sessionId),
+			agendaTurn: ({ sessionId, generation, utteranceId }) => {
+				const turn = store.voiceAgenda.getTurn(
+					sessionId,
+					generation,
+					utteranceId,
+				);
+				if (!turn) return undefined;
+				const state = store.voiceAgenda.getState(sessionId);
+				return {
+					kind: "turn",
+					turnId: turn.turnId,
+					itemKey: turn.itemKey,
+					itemState:
+						state?.active === turn.itemKey ||
+						state?.activeUrgent === turn.itemKey
+							? "active"
+							: "closed",
+				};
+			},
 			isTargetLead: (projectName, leadId) =>
 				projects.some(
 					(project) =>
@@ -11784,6 +11853,16 @@ export async function startBridge(
 							transcriptId: record.request.transcriptId,
 							utteranceId: record.request.utteranceId,
 							sessionGeneration: record.generation,
+							...(record.agenda?.kind === "turn"
+								? {
+										agenda: {
+											kind: "turn" as const,
+											itemKey: record.agenda.itemKey,
+											turnId: record.agenda.turnId,
+											itemState: record.agenda.itemState,
+										},
+									}
+								: {}),
 						},
 					});
 					if (
@@ -11821,6 +11900,142 @@ export async function startBridge(
 				}
 			},
 		});
+		const agendaIssuePriority = new VoiceAgendaPriorityCache({
+			fetchPriority: config.linearApiKey
+				? async (issueId) =>
+						(
+							await new LinearClient({ apiKey: config.linearApiKey }).issue(
+								issueId,
+							)
+						).priority
+				: undefined,
+		});
+		const agendaRoutes = createVoiceAgendaRouter({
+			agenda: store.voiceAgenda,
+			handoffs: store.voiceHandoffs,
+			replyNotifier: voiceReplyNotifier,
+			founderUserId: headphoneFounderId,
+			getSession: (sessionId) => store.getVoiceSession(sessionId),
+			buildSnapshot: (session) =>
+				buildVoiceAgendaSnapshot(
+					{
+						store,
+						agenda: store.voiceAgenda,
+						inbox: store.headphoneInbox,
+						projects,
+						...(config.discordGuildId
+							? { guildId: config.discordGuildId }
+							: {}),
+						issuePriority: (issueId) => agendaIssuePriority.get(issueId),
+						observeBlockedIssues: (issueIds) =>
+							agendaIssuePriority.observe(issueIds),
+						now: () => new Date(),
+					},
+					{
+						sessionId: session.sessionId,
+						mode: session.mode,
+						projectName: session.projectName,
+						leadId: session.leadId,
+						founderUserId: headphoneFounderId,
+					},
+				),
+			dispatchBrief: async (record) => {
+				const project = projects.find(
+					(candidate) => candidate.projectName === record.projectName,
+				);
+				const lead = project?.leads.find(
+					(candidate) => candidate.agentId === record.targetLeadId,
+				);
+				const agenda = record.agenda;
+				if (!lead?.chatChannel || agenda?.kind !== "brief") return "rejected";
+				const db = new CommDB(commDbPathForProject(record.projectName), false);
+				try {
+					const result = db.ingestDiscordChat({
+						leadId: record.targetLeadId,
+						chatId: lead.chatChannel,
+						originChannelId: lead.chatChannel,
+						messageId: record.messageId,
+						authorId: agenda.authorId,
+						authorName: "语音议程",
+						founderId: headphoneFounderId,
+						ts: record.createdAt,
+						msgKind: "guild",
+						attachments: [],
+						text: agenda.text,
+						origin: "voice",
+						voiceSessionId: record.sessionId,
+						voiceHandoff: {
+							version: 1,
+							handoffId: record.handoffId,
+							intentKind: "query",
+							requestDigest: record.requestDigest,
+							targetLeadId: record.targetLeadId,
+							transcriptId: `agenda:${record.handoffId}`,
+							utteranceId: `agenda:${record.handoffId}`,
+							sessionGeneration: record.generation,
+							agenda: {
+								kind: "brief",
+								purpose: agenda.purpose,
+								itemKey: agenda.itemKey,
+							},
+						},
+					});
+					if (
+						result.lane !== "inserted_inbox" &&
+						result.lane !== "active_inbox"
+					)
+						return "rejected";
+					if (inspectVoiceHandoffDelivery(db, record) !== "found")
+						throw new Error("voice_agenda_delivery_unconfirmed");
+					return "committed";
+				} finally {
+					db.close();
+				}
+			},
+			recordLeadResult: (record, input) => {
+				const commDbPath = commDbPathForProject(record.projectName);
+				const id = `voice-agenda-response:${createHash("sha256").update(input.resultEventId).digest("hex")}`;
+				const queue = new MailboxQueue(commDbPath);
+				try {
+					queue.enqueue({
+						id,
+						deliveryId: id,
+						fromAgent: record.targetLeadId,
+						toAgent: record.founderUserId,
+						recipientKind: "bridge",
+						sourceKind: "voice",
+						sourceRef: input.resultEventId,
+						type: "response",
+						msgClass: "protocol",
+						content: input.text,
+						refId: record.providerOperationId,
+						createdAt: new Date().toISOString(),
+						carrier: "external",
+						senderRef: encodeSenderRef(),
+					});
+				} finally {
+					queue.close();
+				}
+				return id;
+			},
+			briefAuthorId: (session) =>
+				store.getVoiceSession(session.sessionId)?.voiceBotUserId ??
+				botUserIdFromToken(config.discordBotToken) ??
+				undefined,
+			leadMainChannel: (leadId) => {
+				const matches = projects.flatMap((project) =>
+					project.leads
+						.filter((lead) => lead.agentId === leadId && !!lead.chatChannel)
+						.map((lead) => ({
+							projectName: project.projectName,
+							channelId: lead.chatChannel,
+						})),
+				);
+				return matches.length === 1 ? matches[0] : undefined;
+			},
+		});
+		voiceAgendaRouterHolder.current = agendaRoutes.sessionRouter;
+		voiceAgendaLeadRouterHolder.current = agendaRoutes.leadRouter;
 		const reconcileVoiceHandoffs = () => {
 			const now = new Date().toISOString();
 			for (const record of store.voiceHandoffs.listAmbiguous(now)) {

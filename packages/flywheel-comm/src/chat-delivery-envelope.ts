@@ -22,6 +22,22 @@ export interface ChatDeliveryAttachment {
 	unavailableReason?: "invalid_metadata" | "producer_identity_missing";
 }
 
+/** FLY-2863: server-derived agenda facts (additive; older envelopes omit it).
+ * `brief` is a mode-layer request to the Lead, never founder speech; `turn`
+ * binds a founder handoff to the agenda item it started on. */
+export type VoiceHandoffAgendaMetadata =
+	| {
+			kind: "brief";
+			purpose: "open" | "item" | "urgent" | "resume" | "checkin";
+			itemKey: string | null;
+	  }
+	| {
+			kind: "turn";
+			itemKey: string;
+			turnId: string;
+			itemState: "active" | "closed";
+	  };
+
 export interface VoiceHandoffMetadata {
 	version: 1;
 	handoffId: string;
@@ -31,6 +47,50 @@ export interface VoiceHandoffMetadata {
 	transcriptId: string;
 	utteranceId: string;
 	sessionGeneration: number;
+	agenda?: VoiceHandoffAgendaMetadata;
+}
+
+const AGENDA_KEY = /^[A-Za-z0-9_.:@+-]{1,256}$/u;
+
+function normalizeVoiceAgenda(value: unknown): VoiceHandoffAgendaMetadata {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error("voiceHandoff.agenda must be an object");
+	const input = value as Record<string, unknown>;
+	const key = (candidate: unknown, field: string): string => {
+		if (typeof candidate !== "string" || !AGENDA_KEY.test(candidate))
+			throw new Error(`${field} is invalid`);
+		return candidate;
+	};
+	if (input.kind === "brief") {
+		if (
+			!["open", "item", "urgent", "resume", "checkin"].includes(
+				String(input.purpose),
+			)
+		)
+			throw new Error("voiceHandoff.agenda.purpose is invalid");
+		return {
+			kind: "brief",
+			purpose: input.purpose as Extract<
+				VoiceHandoffAgendaMetadata,
+				{ kind: "brief" }
+			>["purpose"],
+			itemKey:
+				input.itemKey === null
+					? null
+					: key(input.itemKey, "voiceHandoff.agenda.itemKey"),
+		};
+	}
+	if (input.kind === "turn") {
+		if (input.itemState !== "active" && input.itemState !== "closed")
+			throw new Error("voiceHandoff.agenda.itemState is invalid");
+		return {
+			kind: "turn",
+			itemKey: key(input.itemKey, "voiceHandoff.agenda.itemKey"),
+			turnId: key(input.turnId, "voiceHandoff.agenda.turnId"),
+			itemState: input.itemState,
+		};
+	}
+	throw new Error("voiceHandoff.agenda.kind is invalid");
 }
 
 export interface ChatDeliveryEnvelopeV1 {
@@ -119,6 +179,9 @@ function normalizeVoiceHandoff(value: unknown): VoiceHandoffMetadata {
 		transcriptId: requiredText(input.transcriptId, "voiceHandoff.transcriptId"),
 		utteranceId: requiredText(input.utteranceId, "voiceHandoff.utteranceId"),
 		sessionGeneration: input.sessionGeneration as number,
+		...(input.agenda === undefined
+			? {}
+			: { agenda: normalizeVoiceAgenda(input.agenda) }),
 	};
 }
 

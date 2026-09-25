@@ -452,14 +452,16 @@ export class AgendaConductor {
 			(item) => !this.state.items[item.itemKey],
 		);
 		const present = new Set(snapshot.items.map((item) => item.itemKey));
-		const gone = snapshot.complete
-			? Object.values(this.state.items)
-					.filter(
-						(entry) =>
-							entry.status !== "closed" && !present.has(entry.item.itemKey),
-					)
-					.map((entry) => entry.item.itemKey)
-			: [];
+		// R1-6: only a complete read of the item's own source proves absence.
+		const gone = Object.values(this.state.items)
+			.filter(
+				(entry) =>
+					entry.status !== "closed" &&
+					!present.has(entry.item.itemKey) &&
+					(snapshot.complete ||
+						snapshot.sourceStatus[entry.item.sourceKey]?.status === "complete"),
+			)
+			.map((entry) => entry.item.itemKey);
 		if (added.length === 0 && gone.length === 0) {
 			await this.maybeStartWork();
 			return;

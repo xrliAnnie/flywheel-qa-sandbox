@@ -54,6 +54,7 @@ import {
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { HeadphoneInboxStore } from "./bridge/headphone-inbox.js";
+import { VoiceAgendaStore } from "./bridge/voice-agenda-store.js";
 import { VoiceHandoffStore } from "./bridge/voice-handoff-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
@@ -3171,6 +3172,20 @@ export class StateStore {
 			this.voiceHandoffStoreCache = { db, store };
 		}
 		return this.voiceHandoffStoreCache.store;
+	}
+	private voiceAgendaStoreCache?: {
+		db: BetterDb;
+		store: VoiceAgendaStore;
+	};
+	/** FLY-2863 voice agenda facts (state, turns, dispositions, episodes). */
+	get voiceAgenda(): VoiceAgendaStore {
+		const db = this.db.raw;
+		if (this.voiceAgendaStoreCache?.db !== db) {
+			const store = new VoiceAgendaStore(db);
+			store.migrate();
+			this.voiceAgendaStoreCache = { db, store };
+		}
+		return this.voiceAgendaStoreCache.store;
 	}
 	private headphoneInboxStoreCache?: {
 		db: BetterDb;
@@ -10592,6 +10607,7 @@ export class StateStore {
 		this.migrateVoiceHealthDemandProjection();
 		this.headphoneInbox.migrate();
 		this.voiceHandoffs.migrate();
+		this.voiceAgenda.migrate();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
 			ON voice_sessions(voice_channel_id)

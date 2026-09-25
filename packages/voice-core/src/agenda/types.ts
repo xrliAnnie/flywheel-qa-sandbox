@@ -46,6 +46,8 @@ export interface AgendaItem {
 	since: string;
 	urgent: AgendaUrgent | null;
 	pointers: { messageIds: string[] };
+	/** The sourceStatus entry that must be complete to prove this item left. */
+	sourceKey: string;
 	/** lead_said only: the Lead's own words, for the digesting Lead to read.
 	 * Never spoken verbatim. */
 	sourceText?: string;
@@ -71,8 +73,8 @@ export interface AgendaSnapshot {
 	asOf: string;
 	items: AgendaItem[];
 	sourceStatus: Record<string, AgendaSourceStatus>;
-	/** True only when every source is complete and fresh; only such a snapshot
-	 * may prove that an item left the agenda (plan §2.1 R1-6). */
+	/** True only when every source is complete and fresh (plan §2.1 R1-6). An
+	 * item may leave only when this is true or its own source is complete. */
 	complete: boolean;
 	/** lead_said messages outside the speaking window; a count, never content. */
 	olderUnspokenCount: number;

@@ -1,0 +1,720 @@
+import { createHash, randomUUID } from "node:crypto";
+import express from "express";
+import { chatDeliveryId } from "flywheel-comm/discord-chat-ingest";
+import {
+	AGENDA_DISPOSITIONS,
+	AGENDA_LEAD_URGENT_REASONS,
+	AGENDA_PURPOSES,
+	type AgendaBriefPurpose,
+	type AgendaClass,
+	type AgendaDispositionRecord,
+	type AgendaItem,
+	type AgendaSnapshot,
+	type AgendaState,
+	type VoiceAgendaResultPayload,
+} from "flywheel-voice-core";
+import type { VoiceAgendaStore } from "./voice-agenda-store.js";
+import type {
+	VoiceHandoffAgenda,
+	VoiceHandoffRecord,
+	VoiceHandoffStore,
+} from "./voice-handoff-store.js";
+import type { VoiceReplyNotifier } from "./voice-reply-notifier.js";
+
+const KEY = /^[A-Za-z0-9_.:@+-]{1,256}$/u;
+const CLIENT_ID = /^[A-Za-z0-9_.:-]{1,128}$/u;
+const MAX_SAY_TEXT = 2_000;
+
+export interface VoiceAgendaRouteSession {
+	sessionId: string;
+	mode: "rg" | "meeting";
+	projectName: string;
+	leadId: string;
+	sessionGeneration: number;
+	leaseToken: string | null;
+	leaseExpiresAt: string | null;
+	state: string;
+}
+
+export interface VoiceAgendaRouterDeps {
+	agenda: VoiceAgendaStore;
+	handoffs: VoiceHandoffStore;
+	replyNotifier: VoiceReplyNotifier;
+	founderUserId: string;
+	getSession(sessionId: string): VoiceAgendaRouteSession | undefined;
+	buildSnapshot(session: VoiceAgendaRouteSession): AgendaSnapshot;
+	/** Deliver an authorized brief to the Lead's mailbox. */
+	dispatchBrief(record: VoiceHandoffRecord): Promise<"committed" | "rejected">;
+	/** Durable Lead→founder audit row for a result; returns its delivery id. */
+	recordLeadResult(
+		record: VoiceHandoffRecord,
+		input: { resultEventId: string; text: string },
+	): string;
+	/** Snowflake to deliver briefs as: a voice/Bridge bot, never the founder. */
+	briefAuthorId(session: VoiceAgendaRouteSession): string | undefined;
+	/** U1: the Lead's own main channel, from the registry. */
+	leadMainChannel(
+		leadId: string,
+	): { projectName: string; channelId: string } | undefined;
+	now?: () => Date;
+}
+
+function exactObject(
+	value: unknown,
+	keys: readonly string[],
+): Record<string, unknown> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).some((key) => !keys.includes(key))) return;
+	return record;
+}
+
+const text = (value: unknown, max: number): value is string =>
+	typeof value === "string" && value.trim().length > 0 && value.length <= max;
+
+function digest(value: unknown): string {
+	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+const CLASS_WORD: Record<AgendaClass, string> = {
+	blocked: "受阻",
+	awaiting_approval: "待批",
+	needs_answer: "要你答",
+	lead_said: "Lead 主动说的",
+};
+
+const PURPOSE_GUIDE: Record<AgendaBriefPurpose, string> = {
+	open: "开场：一两句先说有几件要她拍、每件一句点出是什么，然后说「先从 X 说起」并直接进入第一件（--item 第一件，可带 --order）。没有事就自然说一句或不说。不要逐件展开，不要念清单。",
+	item: "只说这一件：发生了什么、要她做什么（授权 / 批 / 改 / 看一眼）。待批的用三五句讲 QA、设计、测试，或问她要不要自己看设计卡（链接用文字发到 thread，不念 URL）。受阻的说卡在哪、要她给什么。",
+	urgent:
+		"插播急事：先说「插一句急的」，讲清楚要她马上做什么。结束后模式层会让你带回原来那件。",
+	resume: "把她带回当前这一件：一句话提醒刚才谈到哪里、还要她做什么。",
+	checkin:
+		"报平安：一两句闲聊或平安话；有她还没回应的事可以轻轻提一句「X 还在等你，不急」。不要罗列状态。",
+};
+
+/** The brief the Lead reads. It is a request to the Lead, not founder speech. */
+export function renderAgendaBriefText(input: {
+	requestId: string;
+	purpose: AgendaBriefPurpose;
+	itemKey: string | null;
+	brief: Record<string, unknown>;
+}): string {
+	const itemFlag = input.itemKey ?? "none";
+	const lines = [
+		`【语音议程·${input.purpose}】request=${input.requestId}（语音模式层发给你的请求，不是 founder 说的话；你想好的话会原样念给她听）`,
+		PURPOSE_GUIDE[input.purpose],
+		"口语规则：单号按数字念（二七九六）；不念 URL、markdown、代码、路径、状态流水；不编造，没做的事不说做了；不说「已批准」。",
+		`写好后运行：flywheel-comm voice agenda say --request ${input.requestId} --item ${itemFlag}${input.purpose === "open" ? " [--order k1,k2,…]" : ""} --text "<要说的话>"`,
+		...(input.purpose === "checkin" || input.purpose === "open"
+			? []
+			: [
+					`她拍板后：能用现有权限办完的先办，再 flywheel-comm voice agenda close --request <她那句话的 handoff> --item ${itemFlag} --disposition resolved --evidence <依据> --reason "<一句话>"；ship 批准办不了就如实请她在 thread 点，disposition=decision_recorded；她说回头再看用 deferred。`,
+				]),
+		"完整规则：packages/teamlead/lead-rules-base/runbooks/voice-agenda.md",
+		"议程数据（给你读，不要原样念给她）：",
+		JSON.stringify(input.brief, null, 1),
+	];
+	return lines.join("\n");
+}
+
+function classCounts(
+	keys: readonly string[],
+	state: AgendaState | undefined,
+): Record<AgendaClass, number> {
+	const counts: Record<AgendaClass, number> = {
+		blocked: 0,
+		awaiting_approval: 0,
+		needs_answer: 0,
+		lead_said: 0,
+	};
+	for (const key of keys) {
+		const cls = state?.items[key]?.item.class;
+		if (cls) counts[cls] += 1;
+	}
+	return counts;
+}
+
+function briefItem(item: AgendaItem): Record<string, unknown> {
+	return {
+		itemKey: item.itemKey,
+		class: CLASS_WORD[item.class],
+		project: item.projectName,
+		lead: item.leadId,
+		issue: item.issueIdentifier,
+		title: item.issueTitle,
+		thread: item.threadUrl,
+		since: item.since,
+		...(item.urgent ? { urgent: item.urgent.reason } : {}),
+		...(item.sourceText ? { leadMessage: item.sourceText } : {}),
+	};
+}
+
+/**
+ * FLY-2863 plan §2-§4 Bridge face: snapshot, brief requests, turn bindings,
+ * durable CAS state, and structured Lead results. Every client call is bound
+ * to a live lease; scope, target Lead and item bodies are server-derived.
+ */
+export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
+	sessionRouter: express.Router;
+	leadRouter: express.Router;
+} {
+	const sessionRouter = express.Router();
+	const leadRouter = express.Router();
+	const now = deps.now ?? (() => new Date());
+
+	const authorize = (
+		sessionId: unknown,
+		generation: unknown,
+		leaseToken: unknown,
+	): VoiceAgendaRouteSession | undefined => {
+		if (
+			typeof sessionId !== "string" ||
+			!Number.isSafeInteger(generation) ||
+			typeof leaseToken !== "string"
+		)
+			return;
+		const session = deps.getSession(sessionId);
+		if (
+			!session ||
+			session.sessionGeneration !== generation ||
+			session.leaseToken !== leaseToken ||
+			!session.leaseExpiresAt ||
+			Date.parse(session.leaseExpiresAt) <= now().getTime() ||
+			!(session.state === "warming" || session.state === "live")
+		)
+			return;
+		return session;
+	};
+
+	const snapshotFor = (session: VoiceAgendaRouteSession): AgendaSnapshot => {
+		const snapshot = deps.buildSnapshot(session);
+		deps.agenda.recordServedItems(
+			session.sessionId,
+			snapshot.items,
+			now().toISOString(),
+		);
+		return snapshot;
+	};
+
+	sessionRouter.get("/", (req, res) => {
+		const session = authorize(
+			req.query.sessionId,
+			Number(req.query.generation),
+			req.headers["x-voice-lease"],
+		);
+		if (!session) {
+			res.status(403).json({ error: "voice_agenda_session_unauthorized" });
+			return;
+		}
+		try {
+			res.json(snapshotFor(session));
+		} catch (error) {
+			res.status(503).json({
+				error: "voice_agenda_source_unavailable",
+				reason: (error as Error).message,
+			});
+		}
+	});
+
+	sessionRouter.get("/state", (req, res) => {
+		const session = authorize(
+			req.query.sessionId,
+			Number(req.query.generation),
+			req.headers["x-voice-lease"],
+		);
+		if (!session) {
+			res.status(403).json({ error: "voice_agenda_session_unauthorized" });
+			return;
+		}
+		res.json({ state: deps.agenda.getState(session.sessionId) ?? null });
+	});
+
+	sessionRouter.put("/state", (req, res) => {
+		const body = exactObject(req.body, [
+			"sessionId",
+			"generation",
+			"expectedVersion",
+			"state",
+			"dispositions",
+		]);
+		const session = authorize(
+			body?.sessionId,
+			body?.generation,
+			req.headers["x-voice-lease"],
+		);
+		if (!session || !body) {
+			res.status(403).json({ error: "voice_agenda_session_unauthorized" });
+			return;
+		}
+		const state = body.state as AgendaState | undefined;
+		const dispositions = body.dispositions as
+			| AgendaDispositionRecord[]
+			| undefined;
+		const served = (key: unknown) =>
+			typeof key === "string" &&
+			!!deps.agenda.getServedItem(session.sessionId, key);
+		if (
+			!state ||
+			typeof state !== "object" ||
+			state.version !== 1 ||
+			state.sessionId !== session.sessionId ||
+			state.generation !== session.sessionGeneration ||
+			!Number.isSafeInteger(body.expectedVersion) ||
+			(body.expectedVersion as number) < 0 ||
+			state.stateVersion !== (body.expectedVersion as number) + 1 ||
+			!state.items ||
+			typeof state.items !== "object" ||
+			!Object.keys(state.items).every(served) ||
+			![
+				...state.queue,
+				...state.urgentQueue,
+				state.active,
+				state.activeUrgent,
+			].every((key) => key === null || served(key)) ||
+			!Array.isArray(dispositions) ||
+			dispositions.some(
+				(record) =>
+					!served(record?.itemKey) ||
+					!AGENDA_DISPOSITIONS.includes(record.disposition) ||
+					!text(record.reason, 1_000) ||
+					!text(record.requestId, 256) ||
+					(record.disposition === "resolved" &&
+						!text(record.evidence ?? "", 1_000)),
+			)
+		) {
+			res.status(400).json({ error: "voice_agenda_state_invalid" });
+			return;
+		}
+		const outcome = deps.agenda.saveState({
+			state,
+			expectedVersion: body.expectedVersion as number,
+			dispositions,
+			now: now().toISOString(),
+		});
+		res.status(outcome.ok ? 200 : 409).json(outcome);
+	});
+
+	sessionRouter.post("/turns", (req, res) => {
+		const body = exactObject(req.body, [
+			"sessionId",
+			"generation",
+			"utteranceId",
+			"turnId",
+			"itemKey",
+		]);
+		const session = authorize(
+			body?.sessionId,
+			body?.generation,
+			req.headers["x-voice-lease"],
+		);
+		if (!session || !body) {
+			res.status(403).json({ error: "voice_agenda_session_unauthorized" });
+			return;
+		}
+		if (
+			!text(body.utteranceId, 256) ||
+			!text(body.turnId, 256) ||
+			!KEY.test(String(body.turnId)) ||
+			typeof body.itemKey !== "string" ||
+			!deps.agenda.getServedItem(session.sessionId, body.itemKey)
+		) {
+			res.status(400).json({ error: "voice_agenda_turn_invalid" });
+			return;
+		}
+		const outcome = deps.agenda.bindTurn({
+			sessionId: session.sessionId,
+			generation: session.sessionGeneration,
+			utteranceId: body.utteranceId as string,
+			turnId: body.turnId as string,
+			itemKey: body.itemKey,
+			now: now().toISOString(),
+		});
+		if (outcome === "conflict") {
+			res.status(409).json({ error: "voice_agenda_turn_conflict" });
+			return;
+		}
+		res.json({ outcome });
+	});
+
+	sessionRouter.post("/requests", async (req, res) => {
+		const body = exactObject(req.body, [
+			"sessionId",
+			"generation",
+			"purpose",
+			"itemKey",
+			"clientRequestId",
+			"rewriteReason",
+			"previous",
+		]);
+		const session = authorize(
+			body?.sessionId,
+			body?.generation,
+			req.headers["x-voice-lease"],
+		);
+		if (!session || !body) {
+			res.status(403).json({ error: "voice_agenda_session_unauthorized" });
+			return;
+		}
+		const purpose = body.purpose as AgendaBriefPurpose;
+		const itemKey = body.itemKey as string | null;
+		const needsItem =
+			purpose === "item" || purpose === "urgent" || purpose === "resume";
+		const previous = body.previous as
+			| { itemKey?: unknown; closedAs?: unknown }
+			| undefined;
+		if (
+			!AGENDA_PURPOSES.includes(purpose) ||
+			!CLIENT_ID.test(String(body.clientRequestId)) ||
+			(needsItem
+				? typeof itemKey !== "string" ||
+					!deps.agenda.getServedItem(session.sessionId, itemKey)
+				: itemKey !== null) ||
+			(body.rewriteReason !== undefined &&
+				!/^[a-z_]{1,32}$/u.test(String(body.rewriteReason))) ||
+			(previous !== undefined &&
+				(!exactObject(previous, ["itemKey", "closedAs"]) ||
+					!deps.agenda.getServedItem(
+						session.sessionId,
+						String(previous.itemKey),
+					) ||
+					![...AGENDA_DISPOSITIONS, "source_gone"].includes(
+						String(previous.closedAs),
+					)))
+		) {
+			res.status(400).json({ error: "voice_agenda_request_invalid" });
+			return;
+		}
+		const state = deps.agenda.getState(session.sessionId);
+		let brief: Record<string, unknown>;
+		try {
+			if (purpose === "open") {
+				const snapshot = snapshotFor(session);
+				brief = {
+					purpose,
+					mode: session.mode === "rg" ? "headphone" : "meeting",
+					items: snapshot.items.map(briefItem),
+					olderUnspokenCount: snapshot.olderUnspokenCount,
+					sourcesComplete: snapshot.complete,
+				};
+			} else {
+				const queued = (state?.queue ?? []).filter((key) => key !== itemKey);
+				const item = itemKey
+					? deps.agenda.getServedItem(session.sessionId, itemKey)
+					: undefined;
+				brief = {
+					purpose,
+					mode: session.mode === "rg" ? "headphone" : "meeting",
+					...(item ? { item: briefItem(item) } : {}),
+					currentItemKey: state?.activeUrgent ?? state?.active ?? null,
+					queueAfter: {
+						count: queued.length + (state?.urgentQueue.length ?? 0),
+						classes: classCounts(
+							[...queued, ...(state?.urgentQueue ?? [])],
+							state,
+						),
+					},
+					...(previous
+						? {
+								previous: {
+									itemKey: previous.itemKey,
+									closedAs: previous.closedAs,
+								},
+							}
+						: {}),
+					...(body.rewriteReason ? { rewriteBecause: body.rewriteReason } : {}),
+				};
+			}
+		} catch (error) {
+			res.status(503).json({
+				error: "voice_agenda_source_unavailable",
+				reason: (error as Error).message,
+			});
+			return;
+		}
+		const authorId = deps.briefAuthorId(session);
+		if (
+			!authorId ||
+			!/^\d{17,20}$/u.test(authorId) ||
+			authorId === deps.founderUserId
+		) {
+			res.status(503).json({ error: "voice_agenda_author_unavailable" });
+			return;
+		}
+		const handoffId = randomUUID();
+		const idempotencyKey = `agenda:${session.sessionId}:${session.sessionGeneration}:${body.clientRequestId}`;
+		const requestDigest = digest({
+			idempotencyKey,
+			purpose,
+			itemKey,
+		});
+		const agenda: Extract<VoiceHandoffAgenda, { kind: "brief" }> = {
+			kind: "brief",
+			purpose,
+			itemKey,
+			clientRequestId: String(body.clientRequestId),
+			authorId,
+			brief,
+			text: renderAgendaBriefText({
+				requestId: handoffId,
+				purpose,
+				itemKey,
+				brief,
+			}),
+		};
+		const messageId = `voice-handoff:${handoffId}`;
+		let record: VoiceHandoffRecord;
+		try {
+			record = deps.handoffs.authorizeAgendaBrief({
+				handoffId,
+				idempotencyKey,
+				requestDigest,
+				projectName: session.projectName,
+				founderUserId: deps.founderUserId,
+				targetLeadId: session.leadId,
+				sessionId: session.sessionId,
+				generation: session.sessionGeneration,
+				messageId,
+				providerOperationId: chatDeliveryId(session.leadId, messageId, {
+					origin: "voice",
+					voiceSessionId: session.sessionId,
+					voiceHandoff: {
+						version: 1,
+						handoffId,
+						intentKind: "query",
+						requestDigest,
+						targetLeadId: session.leadId,
+						transcriptId: `agenda:${handoffId}`,
+						utteranceId: `agenda:${handoffId}`,
+						sessionGeneration: session.sessionGeneration,
+						agenda: { kind: "brief", purpose, itemKey },
+					},
+				}),
+				agenda,
+				now: now().toISOString(),
+			});
+		} catch (error) {
+			res.status(409).json({ error: (error as Error).message });
+			return;
+		}
+		if (record.state === "authorized") {
+			const dispatching = deps.handoffs.beginDispatch(
+				record.handoffId,
+				now().toISOString(),
+			);
+			if (dispatching?.attemptToken) {
+				let outcome: "committed" | "rejected" | "ambiguous" = "ambiguous";
+				try {
+					outcome = await deps.dispatchBrief(dispatching);
+				} catch {
+					outcome = "ambiguous";
+				}
+				record =
+					deps.handoffs.finishDispatch({
+						handoffId: dispatching.handoffId,
+						attemptToken: dispatching.attemptToken,
+						state: outcome,
+						...(outcome === "rejected"
+							? { reason: "provider_rejected" }
+							: outcome === "ambiguous"
+								? { reason: "provider_outcome_unknown" }
+								: {}),
+						now: now().toISOString(),
+					}) ?? dispatching;
+			}
+		}
+		res.status(record.state === "rejected" ? 502 : 200).json({
+			requestId: record.handoffId,
+			requestDigest: record.requestDigest,
+			state: record.state,
+			providerOperationId: record.providerOperationId,
+		});
+	});
+
+	/** `flywheel-comm voice agenda say|close`: bound to the Lead the request was
+	 * delivered to, the live session and its generation (plan §3.2). */
+	/** U1 (plan §4.2): a Lead flags one message it already sent in its own main
+	 * channel as urgent, with an enumerated reason. Keyed by the sent id. */
+	leadRouter.post("/urgent", (req, res) => {
+		const body = exactObject(req.body, [
+			"leadId",
+			"channelId",
+			"messageId",
+			"reason",
+		]);
+		const channel =
+			body && typeof body.leadId === "string"
+				? deps.leadMainChannel(body.leadId)
+				: undefined;
+		if (
+			!body ||
+			!channel ||
+			body.channelId !== channel.channelId ||
+			!/^\d{17,20}$/u.test(String(body.messageId)) ||
+			!AGENDA_LEAD_URGENT_REASONS.includes(
+				body.reason as (typeof AGENDA_LEAD_URGENT_REASONS)[number],
+			)
+		) {
+			res.status(400).json({ error: "voice_agenda_urgent_invalid" });
+			return;
+		}
+		deps.agenda.recordUrgent({
+			projectName: channel.projectName,
+			channelId: channel.channelId,
+			messageId: body.messageId as string,
+			leadId: body.leadId as string,
+			reason: body.reason as (typeof AGENDA_LEAD_URGENT_REASONS)[number],
+			now: now().toISOString(),
+		});
+		res.json({ ok: true });
+	});
+
+	leadRouter.post("/results", (req, res) => {
+		const body = exactObject(req.body, [
+			"requestId",
+			"leadId",
+			"clientResultId",
+			"kind",
+			"itemKey",
+			"order",
+			"text",
+			"disposition",
+			"evidence",
+			"reason",
+		]);
+		if (
+			!body ||
+			!text(body.requestId, 64) ||
+			!text(body.leadId, 256) ||
+			!CLIENT_ID.test(String(body.clientResultId)) ||
+			(body.kind !== "say" && body.kind !== "close")
+		) {
+			res.status(400).json({ error: "voice_agenda_result_invalid" });
+			return;
+		}
+		const record = deps.handoffs.get(body.requestId as string);
+		const session = record ? deps.getSession(record.sessionId) : undefined;
+		if (
+			!record ||
+			record.state !== "committed" ||
+			record.targetLeadId !== body.leadId ||
+			record.founderUserId !== deps.founderUserId ||
+			!session ||
+			session.projectName !== record.projectName ||
+			session.sessionGeneration !== record.generation ||
+			!(session.state === "warming" || session.state === "live") ||
+			!(record.requestKind === "agenda_brief" || record.agenda?.kind === "turn")
+		) {
+			res.status(403).json({ error: "voice_agenda_result_unauthorized" });
+			return;
+		}
+		let payload: VoiceAgendaResultPayload;
+		let spoken: string;
+		if (body.kind === "say") {
+			const order = body.order as string[] | undefined;
+			const openKeys =
+				record.agenda?.kind === "brief" && record.agenda.purpose === "open"
+					? (
+							(record.agenda.brief.items as Array<{ itemKey: string }>) ?? []
+						).map((item) => item.itemKey)
+					: null;
+			if (
+				!text(body.text, MAX_SAY_TEXT) ||
+				(body.itemKey !== null && !KEY.test(String(body.itemKey))) ||
+				(order !== undefined &&
+					(!openKeys ||
+						!Array.isArray(order) ||
+						new Set(order).size !== order.length ||
+						!order.every(
+							(key) => typeof key === "string" && openKeys.includes(key),
+						))) ||
+				body.disposition !== undefined ||
+				body.evidence !== undefined ||
+				body.reason !== undefined
+			) {
+				res.status(400).json({ error: "voice_agenda_say_invalid" });
+				return;
+			}
+			payload = {
+				kind: "say",
+				itemKey: (body.itemKey as string | null) ?? null,
+				...(order ? { order } : {}),
+			};
+			spoken = body.text as string;
+		} else {
+			const disposition =
+				body.disposition as AgendaDispositionRecord["disposition"];
+			if (
+				typeof body.itemKey !== "string" ||
+				!KEY.test(body.itemKey) ||
+				!AGENDA_DISPOSITIONS.includes(disposition) ||
+				!text(body.reason, 1_000) ||
+				(disposition === "resolved" && !text(body.evidence, 1_000)) ||
+				(body.evidence !== undefined && !text(body.evidence, 1_000)) ||
+				body.text !== undefined ||
+				body.order !== undefined
+			) {
+				res.status(400).json({ error: "voice_agenda_close_invalid" });
+				return;
+			}
+			payload = {
+				kind: "close",
+				itemKey: body.itemKey,
+				disposition,
+				...(body.evidence ? { evidence: body.evidence as string } : {}),
+				reason: body.reason as string,
+			};
+			spoken = body.reason as string;
+		}
+		const resultEventId = `voice-agenda:${record.handoffId}:${digest(body.clientResultId).slice(0, 32)}`;
+		const prior = deps.handoffs.getResult(record.handoffId, resultEventId);
+		if (prior) {
+			// A retried command: same id, same payload, same event.
+			if (
+				prior.text !== spoken ||
+				JSON.stringify(prior.agenda ?? null) !== JSON.stringify(payload)
+			) {
+				res.status(409).json({ error: "voice_agenda_result_conflict" });
+				return;
+			}
+			res.json(prior);
+			return;
+		}
+		try {
+			const sourceDeliveryId = deps.recordLeadResult(record, {
+				resultEventId,
+				text: spoken,
+			});
+			const previousHighWatermark = deps.handoffs.listResults(
+				record.handoffId,
+				0,
+				1,
+			).highWatermark;
+			const event = deps.handoffs.appendResult({
+				handoffId: record.handoffId,
+				resultEventId,
+				requestDigest: record.requestDigest,
+				sourceLeadId: record.targetLeadId,
+				sourceDeliveryId,
+				resultKind: payload.kind === "say" ? "agenda_say" : "agenda_close",
+				text: spoken,
+				agenda: payload,
+				createdAt: now().toISOString(),
+			});
+			if (event.seq > previousHighWatermark)
+				deps.replyNotifier.notify({
+					sessionId: record.sessionId,
+					generation: record.generation,
+					handoffId: record.handoffId,
+				});
+			res.json(event);
+		} catch (error) {
+			const message = (error as Error).message;
+			res.status(message.endsWith("unauthorized") ? 403 : 409).json({
+				error: message,
+			});
+		}
+	});
+
+	return { sessionRouter, leadRouter };
+}

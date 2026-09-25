@@ -94,6 +94,69 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		).toMatchObject({ lane: "inserted_inbox" });
 	});
 
+	it("FLY-2863: carries agenda metadata and never renders a brief as founder speech", () => {
+		const { args } = fixture();
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abd";
+		const messageId = `voice-handoff:${handoffId}`;
+		const base = {
+			version: 1 as const,
+			handoffId,
+			intentKind: "query" as const,
+			requestDigest: "b".repeat(64),
+			targetLeadId: args.leadId,
+			transcriptId: `agenda:${handoffId}`,
+			utteranceId: `agenda:${handoffId}`,
+			sessionGeneration: 2,
+		};
+		const envelopeFor = (agenda: Record<string, unknown>) => {
+			const identity = {
+				origin: "voice" as const,
+				voiceSessionId: "voice-session",
+				voiceHandoff: { ...base, agenda },
+			};
+			return normalizeChatDeliveryEnvelope({
+				v: 1,
+				deliveryId: chatDeliveryId(args.leadId, messageId, identity),
+				priority: 1,
+				...args,
+				authorId: "423456789012345678",
+				messageId,
+				...identity,
+			});
+		};
+		const brief = envelopeFor({
+			kind: "brief",
+			purpose: "open",
+			itemKey: null,
+		});
+		expect(
+			parseChatDeliveryEnvelope(encodeChatDeliveryEnvelope(brief)),
+		).toEqual(brief);
+		// The delivery id does not depend on the additive agenda field.
+		expect(brief.deliveryId).toBe(`chat:${args.leadId}:${messageId}`);
+		const briefText = renderDiscordChatContent(brief);
+		expect(briefText).toContain("[voice agenda]");
+		expect(briefText).toContain("不是 founder 说的话");
+		expect(briefText).not.toContain("这是 founder 明确交给 Lead 的请求");
+		const turn = renderDiscordChatContent(
+			envelopeFor({
+				kind: "turn",
+				itemKey: "blocked:I1:t",
+				turnId: "utt-1",
+				itemState: "closed",
+			}),
+		);
+		expect(turn).toContain('agenda_item="blocked:I1:t"');
+		expect(turn).toContain("不能 close");
+		for (const bad of [
+			{ kind: "brief", purpose: "shout", itemKey: null },
+			{ kind: "turn", itemKey: "k", turnId: "t", itemState: "maybe" },
+			{ kind: "turn", itemKey: "has space", turnId: "t", itemState: "active" },
+			{ kind: "other" },
+		])
+			expect(() => envelopeFor(bad)).toThrow(/voiceHandoff\.agenda/u);
+	});
+
 	it("keeps synthetic message identities closed outside the exact voice handoff binding", () => {
 		const { args } = fixture();
 		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";

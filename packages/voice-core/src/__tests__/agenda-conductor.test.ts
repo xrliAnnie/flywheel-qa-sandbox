@@ -214,6 +214,7 @@ function item(
 		since: new Date(sinceMinute * 60_000).toISOString(),
 		urgent: null,
 		pointers: { messageIds: [] },
+		sourceKey: cls === "lead_said" ? "inbox:flywheel:1" : "titles:flywheel",
 		...extra,
 	};
 }
@@ -525,6 +526,31 @@ describe("AgendaConductor — sources (R1-6) and stale results (R1-5)", () => {
 		await h.conductor.notifySourceChanged();
 		await settle();
 		expect(h.bridge.stored?.queue).toEqual(["approve:A", "approve:B"]);
+	});
+
+	it("a complete read of an item's own source proves its absence; a broken source proves nothing", async () => {
+		const h = await harness((bridge) => {
+			THREE(bridge);
+			bridge.snapshot.items.push(item("said:S", "lead_said", 4));
+		});
+		await h.conductor.start();
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		await wake(h, "req-1");
+		h.bridge.snapshot = {
+			...h.bridge.snapshot,
+			items: [],
+			complete: false,
+			sourceStatus: {
+				"titles:flywheel": { status: "complete", asOf: "x" },
+				"inbox:flywheel:1": { status: "partial", asOf: "x", reason: "stale" },
+			},
+		};
+		await h.conductor.notifySourceChanged();
+		await settle();
+		const stored = h.bridge.stored!;
+		expect(stored.items["approve:A"]?.closedAs).toBe("source_gone");
+		expect(stored.items["blocked:C"]?.closedAs).toBe("source_gone");
+		expect(stored.items["said:S"]?.status).toBe("active");
 	});
 
 	it("a complete snapshot that drops the active item moves on and says why", async () => {

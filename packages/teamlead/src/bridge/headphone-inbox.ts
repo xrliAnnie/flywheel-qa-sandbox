@@ -24,6 +24,17 @@ function claimTtlMsForItem(item: HeadphoneInboxItemRecord): number {
 	);
 }
 
+/** FLY-2863 §2.3: who a collected message speaks for. Computed once at
+ * collection from the author and the shared prefix constants. */
+export const HEADPHONE_ORIGIN_CLASSES = [
+	"lead_authored",
+	"automation",
+	"voice_echo",
+	"founder",
+	"other",
+] as const;
+export type HeadphoneOriginClass = (typeof HEADPHONE_ORIGIN_CLASSES)[number];
+
 export interface HeadphoneInboxItemRecord {
 	itemId: string;
 	revision: number;
@@ -41,6 +52,8 @@ export interface HeadphoneInboxItemRecord {
 	sourceResolved: boolean;
 	contentDigest: string;
 	seq: number;
+	/** Null for rows collected before FLY-2863. */
+	originClass: HeadphoneOriginClass | null;
 }
 
 export interface HeadphoneInboxClaimRecord {
@@ -70,6 +83,8 @@ export interface HeadphoneInboxSourceState {
 	healthReason: string | null;
 	nextAllowedAt: string | null;
 	updatedAt: string;
+	/** Latest founder message seen in this channel (reply watermark). */
+	founderLastMessageAt: string | null;
 }
 
 export interface HeadphoneInboxUpsertInput {
@@ -85,6 +100,7 @@ export interface HeadphoneInboxUpsertInput {
 	speechBrief?: { what: string; why: string; next: string };
 	sourceCreatedAt: string;
 	sourceResolved?: boolean;
+	originClass?: HeadphoneOriginClass;
 }
 
 function itemFromRow(row: Record<string, unknown>): HeadphoneInboxItemRecord {
@@ -126,6 +142,11 @@ function itemFromRow(row: Record<string, unknown>): HeadphoneInboxItemRecord {
 		sourceResolved: Number(row.source_resolved) === 1,
 		contentDigest: String(row.content_digest),
 		seq: Number(row.seq),
+		originClass: HEADPHONE_ORIGIN_CLASSES.includes(
+			row.origin_class as HeadphoneOriginClass,
+		)
+			? (row.origin_class as HeadphoneOriginClass)
+			: null,
 	};
 }
 
@@ -285,6 +306,14 @@ export class HeadphoneInboxStore {
 			);
 		if (addedQuestionId)
 			this.db.exec("UPDATE voice_headphone_inbox SET content_digest = ''");
+		if (!columns("voice_headphone_inbox").has("origin_class"))
+			this.db.exec(
+				`ALTER TABLE voice_headphone_inbox ADD COLUMN origin_class TEXT CHECK(origin_class IS NULL OR origin_class IN (${HEADPHONE_ORIGIN_CLASSES.map((value) => `'${value}'`).join(",")}))`,
+			);
+		if (!columns("voice_headphone_source").has("founder_last_message_at"))
+			this.db.exec(
+				"ALTER TABLE voice_headphone_source ADD COLUMN founder_last_message_at TEXT",
+			);
 		const claimColumns = columns("voice_headphone_claim");
 		if (!claimColumns.has("attempt"))
 			this.db.exec(
@@ -407,8 +436,8 @@ export class HeadphoneInboxStore {
 				 (item_id, revision, question_id, project_name, founder_user_id, channel_id,
 				  source_message_id, source_revision, author_id, needs_decision,
 				  text, speech_brief_json, source_created_at, source_resolved,
-				  content_digest, seq, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  content_digest, seq, created_at, origin_class)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				itemId,
@@ -428,6 +457,7 @@ export class HeadphoneInboxStore {
 				digest,
 				seq,
 				new Date().toISOString(),
+				input.originClass ?? null,
 			);
 		return itemFromRow(
 			this.db
@@ -897,18 +927,29 @@ export class HeadphoneInboxStore {
 		healthReason?: string;
 		nextAllowedAt?: string;
 		updatedAt: string;
+		founderLastMessageAt?: string;
 	}): void {
+		const founderLastMessageAt =
+			input.founderLastMessageAt === undefined
+				? null
+				: new Date(input.founderLastMessageAt).toISOString();
 		this.db
 			.prepare(
 				`INSERT INTO voice_headphone_source
 				 (project_name, founder_user_id, channel_id, cursor, high_watermark,
-				  bootstrap_complete, health, health_reason, next_allowed_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				  bootstrap_complete, health, health_reason, next_allowed_at, updated_at,
+				  founder_last_message_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(project_name, founder_user_id, channel_id) DO UPDATE SET
 				 cursor=excluded.cursor, high_watermark=excluded.high_watermark,
 				 bootstrap_complete=excluded.bootstrap_complete, health=excluded.health,
 				 health_reason=excluded.health_reason, next_allowed_at=excluded.next_allowed_at,
-				 updated_at=excluded.updated_at`,
+				 updated_at=excluded.updated_at,
+				 founder_last_message_at=CASE
+				   WHEN excluded.founder_last_message_at IS NULL THEN founder_last_message_at
+				   WHEN founder_last_message_at IS NULL OR excluded.founder_last_message_at > founder_last_message_at
+				     THEN excluded.founder_last_message_at
+				   ELSE founder_last_message_at END`,
 			)
 			.run(
 				input.projectName,
@@ -921,6 +962,7 @@ export class HeadphoneInboxStore {
 				input.healthReason ?? null,
 				input.nextAllowedAt ?? null,
 				input.updatedAt,
+				founderLastMessageAt,
 			);
 	}
 
@@ -932,7 +974,8 @@ export class HeadphoneInboxStore {
 		const row = this.db
 			.prepare(
 				`SELECT project_name, founder_user_id, channel_id, cursor, high_watermark,
-				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at
+				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at,
+				 founder_last_message_at
 				 FROM voice_headphone_source
 				 WHERE project_name = ? AND founder_user_id = ? AND channel_id = ?`,
 			)
@@ -960,7 +1003,8 @@ export class HeadphoneInboxStore {
 			this.db
 				.prepare(
 					`SELECT project_name, founder_user_id, channel_id, cursor, high_watermark,
-				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at
+				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at,
+				 founder_last_message_at
 				 FROM voice_headphone_source WHERE project_name = ? AND founder_user_id = ?
 				 ORDER BY channel_id`,
 				)
@@ -985,6 +1029,10 @@ export class HeadphoneInboxStore {
 			nextAllowedAt:
 				typeof row.next_allowed_at === "string" ? row.next_allowed_at : null,
 			updatedAt: String(row.updated_at),
+			founderLastMessageAt:
+				typeof row.founder_last_message_at === "string"
+					? row.founder_last_message_at
+					: null,
 		};
 	}
 }

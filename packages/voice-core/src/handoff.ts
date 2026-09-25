@@ -67,7 +67,21 @@ export type VoiceHandoffResultKind =
 	| "lead_reply"
 	| "progress"
 	| "completed"
-	| "failed";
+	| "failed"
+	/** FLY-2863: structured agenda results written by `voice agenda say|close`. */
+	| "agenda_say"
+	| "agenda_close";
+
+/** Structured part of an agenda result; the spoken words stay in `text`. */
+export type VoiceAgendaResultPayload =
+	| { kind: "say"; itemKey: string | null; order?: string[] }
+	| {
+			kind: "close";
+			itemKey: string;
+			disposition: "resolved" | "decision_recorded" | "deferred";
+			evidence?: string;
+			reason: string;
+	  };
 
 export interface VoiceHandoffResultEvent {
 	resultEventId: string;
@@ -78,6 +92,8 @@ export interface VoiceHandoffResultEvent {
 	sourceDeliveryId: string;
 	resultKind: VoiceHandoffResultKind;
 	text: string;
+	/** Present only on agenda_say / agenda_close results. */
+	agenda?: VoiceAgendaResultPayload;
 	createdAt: string;
 }
 

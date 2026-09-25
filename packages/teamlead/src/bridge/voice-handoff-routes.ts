@@ -8,6 +8,7 @@ import {
 	voiceHandoffRequestDigest,
 } from "flywheel-voice-core";
 import type {
+	VoiceHandoffAgenda,
 	VoiceHandoffRecord,
 	VoiceHandoffStore,
 } from "./voice-handoff-store.js";
@@ -47,6 +48,13 @@ export interface VoiceHandoffRouterDeps {
 			text: string;
 		},
 	): Promise<boolean>;
+	/** FLY-2863 R-T2: the agenda binding of this utterance, looked up by the
+	 * server (the client can neither send nor forge it). */
+	agendaTurn?(input: {
+		sessionId: string;
+		generation: number;
+		utteranceId: string;
+	}): Extract<VoiceHandoffAgenda, { kind: "turn" }> | undefined;
 	now?: () => Date;
 }
 
@@ -287,6 +295,11 @@ export function createVoiceHandoffRouter(
 			res.status(403).json({ error: "voice_handoff_transcript_unverified" });
 			return;
 		}
+		const agenda = deps.agendaTurn?.({
+			sessionId: request.sessionId,
+			generation: request.generation,
+			utteranceId: request.utteranceId,
+		});
 		const metadata = {
 			version: 1 as const,
 			handoffId: request.handoffId,
@@ -296,6 +309,16 @@ export function createVoiceHandoffRouter(
 			transcriptId: request.transcriptId,
 			utteranceId: request.utteranceId,
 			sessionGeneration: request.generation,
+			...(agenda
+				? {
+						agenda: {
+							kind: "turn" as const,
+							itemKey: agenda.itemKey,
+							turnId: agenda.turnId,
+							itemState: agenda.itemState,
+						},
+					}
+				: {}),
 		};
 		const messageId = `voice-handoff:${request.handoffId}`;
 		let record: VoiceHandoffRecord;
@@ -306,6 +329,7 @@ export function createVoiceHandoffRouter(
 				founderUserId: deps.founderUserId,
 				targetLeadId: request.payload.targetLeadId,
 				messageId,
+				...(agenda ? { agenda } : {}),
 				providerOperationId: chatDeliveryId(
 					request.payload.targetLeadId,
 					messageId,

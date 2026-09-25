@@ -1,11 +1,37 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Database } from "better-sqlite3";
 import type {
+	AgendaBriefPurpose,
+	VoiceAgendaResultPayload,
 	VoiceHandoffRequest,
 	VoiceHandoffResultEvent,
 	VoiceHandoffResultKind,
 	VoiceHandoffState,
 } from "flywheel-voice-core";
+
+export type VoiceHandoffRequestKind = "user_handoff" | "agenda_brief";
+
+/** FLY-2863: server-derived agenda facts of one handoff row. A user handoff
+ * gains a turn binding only from voice_agenda_turns; an agenda brief is a
+ * server-authored request to the Lead, never a founder transcript. */
+export type VoiceHandoffAgenda =
+	| {
+			kind: "turn";
+			turnId: string;
+			itemKey: string;
+			itemState: "active" | "closed";
+	  }
+	| {
+			kind: "brief";
+			purpose: AgendaBriefPurpose;
+			itemKey: string | null;
+			clientRequestId: string;
+			/** Snowflake the brief is delivered as (a voice/Bridge bot, never
+			 * the founder). */
+			authorId: string;
+			brief: Record<string, unknown>;
+			text: string;
+	  };
 
 export interface VoiceHandoffRecord {
 	handoffId: string;
@@ -21,7 +47,10 @@ export interface VoiceHandoffRecord {
 	providerOperationId: string;
 	attemptToken: string | null;
 	stateVersion: number;
+	requestKind: VoiceHandoffRequestKind;
+	/** For agenda_brief rows this is a synthetic shape; read `agenda`. */
 	request: VoiceHandoffRequest;
+	agenda: VoiceHandoffAgenda | null;
 	terminalReason: string | null;
 	createdAt: string;
 	updatedAt: string;
@@ -34,6 +63,23 @@ export interface VoiceHandoffAuthorizeInput {
 	targetLeadId: string;
 	messageId: string;
 	providerOperationId: string;
+	/** Server-derived agenda turn binding (never taken from the client). */
+	agenda?: Extract<VoiceHandoffAgenda, { kind: "turn" }>;
+	now: string;
+}
+
+export interface VoiceAgendaBriefAuthorizeInput {
+	handoffId: string;
+	idempotencyKey: string;
+	requestDigest: string;
+	projectName: string;
+	founderUserId: string;
+	targetLeadId: string;
+	sessionId: string;
+	generation: number;
+	messageId: string;
+	providerOperationId: string;
+	agenda: Extract<VoiceHandoffAgenda, { kind: "brief" }>;
 	now: string;
 }
 
@@ -52,7 +98,13 @@ function recordFromRow(row: Record<string, unknown>): VoiceHandoffRecord {
 		providerOperationId: String(row.provider_operation_id),
 		attemptToken: (row.attempt_token as string | null) ?? null,
 		stateVersion: Number(row.state_version),
+		requestKind:
+			row.request_kind === "agenda_brief" ? "agenda_brief" : "user_handoff",
 		request: JSON.parse(String(row.request_json)) as VoiceHandoffRequest,
+		agenda:
+			typeof row.agenda_json === "string"
+				? (JSON.parse(row.agenda_json) as VoiceHandoffAgenda)
+				: null,
 		terminalReason: (row.terminal_reason as string | null) ?? null,
 		createdAt: String(row.created_at),
 		updatedAt: String(row.updated_at),
@@ -69,6 +121,9 @@ function resultFromRow(row: Record<string, unknown>): VoiceHandoffResultEvent {
 		sourceDeliveryId: String(row.source_delivery_id),
 		resultKind: row.result_kind as VoiceHandoffResultKind,
 		text: String(row.text),
+		...(typeof row.agenda_json === "string"
+			? { agenda: JSON.parse(row.agenda_json) as VoiceAgendaResultPayload }
+			: {}),
 		createdAt: String(row.created_at),
 	};
 }
@@ -79,10 +134,20 @@ function resultDigest(input: {
 	sourceDeliveryId: string;
 	resultKind: VoiceHandoffResultKind;
 	text: string;
+	agenda?: VoiceAgendaResultPayload;
 	createdAt: string;
 }): string {
-	return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+	const { agenda, ...legacy } = input;
+	// Pre-agenda results keep their original digest bytes.
+	return createHash("sha256")
+		.update(JSON.stringify(agenda ? { ...legacy, agenda } : legacy))
+		.digest("hex");
 }
+
+const RESULT_KIND_CHECK =
+	"result_kind IN ('lead_reply','progress','completed','failed','agenda_say','agenda_close')";
+const REQUEST_KIND_CHECK =
+	"request_kind IN ('user_handoff','agenda_brief') AND (request_kind='agenda_brief' OR json_extract(request_json,'$.transcriptId') IS NOT NULL)";
 
 export class VoiceHandoffStore {
 	constructor(private readonly db: Database) {}
@@ -104,6 +169,8 @@ export class VoiceHandoffStore {
 				attempt_token TEXT,
 				state_version INTEGER NOT NULL DEFAULT 1,
 				request_json TEXT NOT NULL,
+				request_kind TEXT NOT NULL DEFAULT 'user_handoff' CHECK(${REQUEST_KIND_CHECK}),
+				agenda_json TEXT,
 				terminal_reason TEXT,
 				reconcile_count INTEGER NOT NULL DEFAULT 0,
 				last_reconcile_at TEXT,
@@ -118,8 +185,9 @@ export class VoiceHandoffStore {
 				request_digest TEXT NOT NULL,
 				source_lead_id TEXT NOT NULL,
 				source_delivery_id TEXT NOT NULL,
-				result_kind TEXT NOT NULL CHECK(result_kind IN ('lead_reply','progress','completed','failed')),
+				result_kind TEXT NOT NULL CHECK(${RESULT_KIND_CHECK}),
 				text TEXT NOT NULL,
+				agenda_json TEXT,
 				payload_digest TEXT NOT NULL,
 				created_at TEXT NOT NULL,
 				PRIMARY KEY(handoff_id, result_event_id),
@@ -127,6 +195,65 @@ export class VoiceHandoffStore {
 				FOREIGN KEY(handoff_id) REFERENCES voice_handoffs(handoff_id)
 			);
 		`);
+		this.migrateAgendaColumns();
+	}
+
+	/** FLY-2863 additive migration for tables created before agendas. */
+	private migrateAgendaColumns(): void {
+		const columns = (table: string) =>
+			new Set(
+				(
+					this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+						name: string;
+					}>
+				).map((column) => column.name),
+			);
+		const handoffs = columns("voice_handoffs");
+		if (!handoffs.has("request_kind"))
+			this.db.exec(
+				`ALTER TABLE voice_handoffs ADD COLUMN request_kind TEXT NOT NULL DEFAULT 'user_handoff' CHECK(${REQUEST_KIND_CHECK})`,
+			);
+		if (!handoffs.has("agenda_json"))
+			this.db.exec("ALTER TABLE voice_handoffs ADD COLUMN agenda_json TEXT");
+		const resultSql = String(
+			(
+				this.db
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type='table' AND name='voice_handoff_results'",
+					)
+					.get() as { sql?: string } | undefined
+			)?.sql ?? "",
+		);
+		if (resultSql.includes("agenda_say")) return;
+		// SQLite cannot widen a CHECK in place: rebuild once, rows unchanged.
+		this.db.transaction(() => {
+			this.db.exec(`
+				CREATE TABLE voice_handoff_results_fly2863 (
+					handoff_id TEXT NOT NULL,
+					result_event_id TEXT NOT NULL,
+					seq INTEGER NOT NULL CHECK(seq > 0),
+					request_digest TEXT NOT NULL,
+					source_lead_id TEXT NOT NULL,
+					source_delivery_id TEXT NOT NULL,
+					result_kind TEXT NOT NULL CHECK(${RESULT_KIND_CHECK}),
+					text TEXT NOT NULL,
+					agenda_json TEXT,
+					payload_digest TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					PRIMARY KEY(handoff_id, result_event_id),
+					UNIQUE(handoff_id, seq),
+					FOREIGN KEY(handoff_id) REFERENCES voice_handoffs(handoff_id)
+				);
+				INSERT INTO voice_handoff_results_fly2863
+				 (handoff_id,result_event_id,seq,request_digest,source_lead_id,
+				  source_delivery_id,result_kind,text,payload_digest,created_at)
+				 SELECT handoff_id,result_event_id,seq,request_digest,source_lead_id,
+				  source_delivery_id,result_kind,text,payload_digest,created_at
+				 FROM voice_handoff_results;
+				DROP TABLE voice_handoff_results;
+				ALTER TABLE voice_handoff_results_fly2863 RENAME TO voice_handoff_results;
+			`);
+		})();
 	}
 
 	listAmbiguous(now: string, limit = 20): VoiceHandoffRecord[] {
@@ -217,8 +344,8 @@ export class VoiceHandoffStore {
 					`INSERT INTO voice_handoffs
 					 (handoff_id,idempotency_key,request_digest,project_name,founder_user_id,
 					  target_lead_id,session_id,generation,state,message_id,
-					  provider_operation_id,request_json,created_at,updated_at)
-					 VALUES (?,?,?,?,?,?,?,?,'authorized',?,?,?,?,?)`,
+					  provider_operation_id,request_json,agenda_json,created_at,updated_at)
+					 VALUES (?,?,?,?,?,?,?,?,'authorized',?,?,?,?,?,?)`,
 				)
 				.run(
 					input.request.handoffId,
@@ -232,10 +359,68 @@ export class VoiceHandoffStore {
 					input.messageId,
 					input.providerOperationId,
 					JSON.stringify(input.request),
+					input.agenda ? JSON.stringify(input.agenda) : null,
 					input.now,
 					input.now,
 				);
 			return this.get(input.request.handoffId)!;
+		})();
+	}
+
+	/** FLY-2863 §3.1: a server-authored agenda request rides the same durable
+	 * delivery and result stream, but carries no founder transcript. */
+	authorizeAgendaBrief(
+		input: VoiceAgendaBriefAuthorizeInput,
+	): VoiceHandoffRecord {
+		return this.db.transaction(() => {
+			const prior = this.db
+				.prepare(
+					"SELECT * FROM voice_handoffs WHERE handoff_id = ? OR idempotency_key = ?",
+				)
+				.get(input.handoffId, input.idempotencyKey) as
+				| Record<string, unknown>
+				| undefined;
+			if (prior) {
+				const record = recordFromRow(prior);
+				if (
+					record.requestKind !== "agenda_brief" ||
+					record.idempotencyKey !== input.idempotencyKey ||
+					record.requestDigest !== input.requestDigest
+				)
+					throw new Error("voice_agenda_request_identity_conflict");
+				return record;
+			}
+			this.db
+				.prepare(
+					`INSERT INTO voice_handoffs
+					 (handoff_id,idempotency_key,request_digest,project_name,founder_user_id,
+					  target_lead_id,session_id,generation,state,message_id,
+					  provider_operation_id,request_json,request_kind,agenda_json,
+					  created_at,updated_at)
+					 VALUES (?,?,?,?,?,?,?,?,'authorized',?,?,?,'agenda_brief',?,?,?)`,
+				)
+				.run(
+					input.handoffId,
+					input.idempotencyKey,
+					input.requestDigest,
+					input.projectName,
+					input.founderUserId,
+					input.targetLeadId,
+					input.sessionId,
+					input.generation,
+					input.messageId,
+					input.providerOperationId,
+					JSON.stringify({
+						kind: "agenda_brief",
+						handoffId: input.handoffId,
+						sessionId: input.sessionId,
+						generation: input.generation,
+					}),
+					JSON.stringify(input.agenda),
+					input.now,
+					input.now,
+				);
+			return this.get(input.handoffId)!;
 		})();
 	}
 
@@ -290,6 +475,7 @@ export class VoiceHandoffStore {
 		sourceDeliveryId: string;
 		resultKind: VoiceHandoffResultKind;
 		text: string;
+		agenda?: VoiceAgendaResultPayload;
 		createdAt: string;
 	}): VoiceHandoffResultEvent {
 		return this.db.transaction(() => {
@@ -300,6 +486,15 @@ export class VoiceHandoffStore {
 				handoff.targetLeadId !== input.sourceLeadId
 			)
 				throw new Error("voice_handoff_result_unauthorized");
+			const agendaKind =
+				input.resultKind === "agenda_say" ||
+				input.resultKind === "agenda_close";
+			if (
+				agendaKind !== Boolean(input.agenda) ||
+				(input.resultKind === "agenda_say" && input.agenda?.kind !== "say") ||
+				(input.resultKind === "agenda_close" && input.agenda?.kind !== "close")
+			)
+				throw new Error("voice_handoff_result_agenda_invalid");
 			const digest = resultDigest(input);
 			const prior = this.db
 				.prepare(
@@ -322,8 +517,8 @@ export class VoiceHandoffStore {
 				.prepare(
 					`INSERT INTO voice_handoff_results
 					 (handoff_id,result_event_id,seq,request_digest,source_lead_id,
-					  source_delivery_id,result_kind,text,payload_digest,created_at)
-					 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+					  source_delivery_id,result_kind,text,agenda_json,payload_digest,created_at)
+					 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 				)
 				.run(
 					input.handoffId,
@@ -334,6 +529,7 @@ export class VoiceHandoffStore {
 					input.sourceDeliveryId,
 					input.resultKind,
 					input.text,
+					input.agenda ? JSON.stringify(input.agenda) : null,
 					digest,
 					input.createdAt,
 				);
@@ -345,6 +541,18 @@ export class VoiceHandoffStore {
 					.get(input.handoffId, input.resultEventId) as Record<string, unknown>,
 			);
 		})();
+	}
+
+	getResult(
+		handoffId: string,
+		resultEventId: string,
+	): VoiceHandoffResultEvent | undefined {
+		const row = this.db
+			.prepare(
+				"SELECT * FROM voice_handoff_results WHERE handoff_id=? AND result_event_id=?",
+			)
+			.get(handoffId, resultEventId) as Record<string, unknown> | undefined;
+		return row ? resultFromRow(row) : undefined;
 	}
 
 	listResults(
