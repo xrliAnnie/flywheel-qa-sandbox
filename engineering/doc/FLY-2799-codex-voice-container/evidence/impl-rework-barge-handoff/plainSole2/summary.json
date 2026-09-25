@@ -1,0 +1,59 @@
+{
+  "sessionId": "cba4ee2c-cfdf-4592-9fcb-e96a2183e51d",
+  "soleUser": true,
+  "closedBeforeEnd": false,
+  "errors": [],
+  "handoffCount": 1,
+  "handoffs": [
+    {
+      "text": "你帮我去看一下两千七百九十九现在是什么状态。",
+      "attribution": {
+        "kind": "known",
+        "speakerUserId": "founder"
+      },
+      "kind": "handoffRequest"
+    }
+  ],
+  "publishedCount": 5,
+  "published": [
+    {
+      "role": "user",
+      "kind": "known",
+      "text": "你好,你是谁?你手上现在有什么事?"
+    },
+    {
+      "role": "assistant",
+      "kind": "unknown",
+      "text": "我是 Tadashi 的临时语音分身，Flywheel 工程这边负责管理构建 Flywheel 本身的 Runner。你现在听到的每一句话，逐句文字会发到当前语音会话的 Discord thread。\n\n我手上当前有一件事：FLY-2799 的独立 QA 正在进行中。还有一个待决策项 FLY-2808，是“是否 ship”的问题，但这个需要常驻 Lead 来决定，我不会在这里直接做出动作。"
+    },
+    {
+      "role": "user",
+      "kind": "known",
+      "text": "你帮我去看一下两千七百九十九现在是什么状态。"
+    },
+    {
+      "role": "assistant",
+      "kind": "unknown",
+      "text": "我确认一下。"
+    },
+    {
+      "role": "assistant",
+      "kind": "unknown",
+      "text": "本体回复:F L Y 二 七 九 九 目前在独立 QA,精确头全量 CI 正在跑。"
+    }
+  ],
+  "playedItems": 3,
+  "leadReply": {
+    "outcome": "completed",
+    "transport": "submitted",
+    "contentProof": "transcript_equivalent"
+  },
+  "evidenceKinds": {
+    "codex_voice_container_opened": 1,
+    "codex_input_attribution_inferred": 2,
+    "codex_output_audio_frame": 113,
+    "codex_execution_handoff": 1,
+    "codex_background_turn": 1,
+    "codex_speak_receipt": 1
+  }
+}
