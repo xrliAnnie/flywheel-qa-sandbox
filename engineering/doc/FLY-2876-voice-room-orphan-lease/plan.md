@@ -71,6 +71,17 @@ Codex R2（HIGH）指出 R1 的修复只缩小了窗口：代次比较→删除�
     Lead 批准的 TDD 用例相应从「自然结束→下次 start 可用」改为「自然结束→stop→下次 start 可用」。
 12. `leaseId` 代次与 `settleStoppedVoiceRun` 的回执归属检查保留为纵深防御（覆盖重放的旧 `stop`）。
 
+## 代码评审 R3 后补充：建锁前也看回执（Lead 批准）
+
+Codex R3（MEDIUM）：`settleStoppedVoiceRun` 先释放锁、后写 `STOPPED`；这段空档里锁路径为空，同 slot 的 `start` 走普通 mkdir 分支，
+从不看仍为 `STARTED` 的回执，被挂起的旧 `stop` 之后可能覆盖新 run 的回执。
+
+13. `acquireVoiceRoomLease` 在每次 mkdir 前先查本 slot 回执：未 `STOPPED`（含读不了）⇒ `created:false`，不建锁。
+    于是在旧 run 被记为 `STOPPED` 之前，谁也建不了新锁。
+14. **不**改成「先写 `STOPPED` 再释放」：写完 `STOPPED` 后仍被持有的锁就变得可回收，而 `stop` 还要按路径删它，会重开 R2 的窗口（Lead 认可）。
+15. 行为变化：回执为 `STARTED` 但已无锁（例如 `stop` 在释放后、写回执前崩溃）时，需再跑一次（幂等的）`stop` 才能 `start`；事故路径（回执随 slot 目录消失）不受影响。
+16. 确定性测试：锁已不存在 + 回执 `STARTED` ⇒ `created:false` 且不留锁目录；回执改为 `STOPPED` ⇒ `created:true`。变异 M9（去掉这道检查）被杀。
+
 ## 已知限制
 
 - 合入前遗留的租约没有 `holder`/`daemon` 字段；若其回执也已删除，但一个未登记的旧 daemon 仍在跑，本判定无法识别，会按孤儿回收。
@@ -89,6 +100,7 @@ Codex R2（HIGH）指出 R1 的修复只缩小了窗口：代次比较→删除�
 | T4 | 同 slot，回执 `STARTED` 但 pid 已死、daemon 记录已死（自然结束） | `created:false`；`settleStoppedVoiceRun`（stop）后下一次 acquire `created:true`（R2 裁定 A） |
 | T4b | 同 slot，回执 `STOPPED`、holder/daemon 已死（start 在写回执前死掉） | `created:true` |
 | T8 | 重放的旧 stop（代次 A）在 B 建锁并写回执之后收尾 | B 的锁与回执不动；B 自己的 stop 正常释放；旧格式锁+回执仍配对释放 |
+| T9 | 锁已被 stop 释放、回执仍 `STARTED`（R3） | `created:false` 且不建锁；回执 `STOPPED` 后 `created:true` |
 | T5 | 同 slot，回执是软链接 / 不可解析 | `created:false`（宁可不回收） |
 | T6 | 同进程连续两次 acquire（holder 活） | 第二次 `created:false`（既有幂等用例继续绿） |
 | T7 | 异 slot 规则 | #1323 既有用例全部保持绿 |
