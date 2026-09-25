@@ -3,7 +3,7 @@ Issue: FLY-2883 (https://linear.app/geoforge3d/issue/FLY-2883/语音耳机bridge
 日期: 2026-09-25
 基于: research.md
 
-**Status**: draft v3(Codex R1 8+1、R2 4+2 已处理,见 §13)
+**Status**: draft v4(Codex R1 8+1、R2 4+2、R3 1+2 已处理;v4 另按新实测事实改为复用 FLY-2882 的忙闲判定,见 §13「v4 事实驱动改动」)
 
 ## 0. 一句话
 
@@ -24,7 +24,12 @@ Issue: FLY-2883 (https://linear.app/geoforge3d/issue/FLY-2883/语音耳机bridge
 - ⛔ Esc / `turn/interrupt` / 任何取消当前轮的动作。
 - ⛔ 改 Lead→Runner 的规则或 `runner-recovery-nudge.ts`;Runner 不能发起(ingest 档 403),也不能被打断(目标只从 Lead 身份表解析)。
 - Raya 的对话逻辑(看忙闲、问 founder 等/打断、念回复)= FLY-2881 S4 集成单;`voice-codex` 不改(FLY-2799 PR #1306 正在大改 `bridge-client.ts`)。
-- 不改 `lead-rules-base/*.md`;不建 Lead 忙闲接口(FLY-2882);v1 不做过期状态机(R1#9)。
+- 不改 `lead-rules-base/*.md`;v1 不做过期状态机(R1#9)。
+
+**依赖(v4)**:本单**复用 FLY-2882(已 Codex 批准的 Lead 忙闲只读接口)的两个纯模块**,不另写一套忙闲判定:
+- Claude:`parseClaudeLeadPaneActivity(pane, leadId)`(FLY-2882 plan §4.1,`bridge/lead-activity/claude-pane-activity.ts`)——当前帧「状态槽位」规则,已在生产 14 个 Claude Lead 上实测;
+- Codex:`LeadTurnStateTracker`(FLY-2882 plan §5.1–5.2,`lead-backends/codex/LeadTurnStateTracker.ts`)——每 generation 一个、含 founder 轮与 seed 初值的活跃轮表。
+⇒ **实现顺序:FLY-2882 先合入,本单在其上实现。** 若 FLY-2882 推迟,本单不另造替代判定(那会形成两套会漂移的词表),而是等它。
 
 ## 2. 流程
 
@@ -205,27 +210,27 @@ Claude 终端固定短语(导出常量,白名单完全相等;测试钉死它不�
 
 ### 6.1 Codex sidecar `submitInterrupt`(`CodexLeadInboxSocket` 新 dispatch 分支 → TUI runtime 注入 `onSubmitInterrupt`)
 
-- 新增最窄只读访问器(R1#3):`CodexTurnExecutor.activeTurnId(): string | undefined`、`LeadInputRouter.isPaused(): boolean`。
+- 新增最窄只读访问器 `LeadInputRouter.isPaused(): boolean`(R1#3)。活跃轮一律读 FLY-2882 的本 generation `LeadTurnStateTracker.snapshot()`(它同时覆盖机器轮 `origin:"message"` 与 founder 在 TUI 起的轮 `origin:"founder_terminal"`,并由 `thread/turns/list` seed 初值),不再读 `founderTurnActive`,也不再调用 `boundedTurnsList`。
 - 一个确定性 journal observation(R1#4,用现有 append-only `recordObservation` + `getByIdempotencyKey`,不加新状态、不原地更新):`interrupt-result:<batchId>`,payload 记真实 disposition(`steered` 或 `queued_turn`)。只在副作用成功之后写。
-- 逻辑:
+- 逻辑(第 2–5 步之间**没有 await**,读状态与决定在同一同步段内完成——R3#1 从结构上消失):
   1. 已有 `interrupt-result:<batchId>` → 原样返回存的 disposition,不做任何副作用。
-  2. router `isPaused()`(轮换栅栏中)→ 返回 `steer_failed(router_paused)`(无副作用),Bridge 稍后复判。
-  3. 目标轮 = `executor.activeTurnId()` ?? (`founderTurnActive === true` ? `founderTurnId` : undefined)。
-  4. 有目标轮 → `proc.steerTurn({threadId, expectedTurnId, input:[{type:'text', text}], clientUserMessageId: batchId})`;成功 → 记 result `steered` → 返回 `steered`;抛错 → 什么都不记,返回 `steer_failed`,并区分 detail(R2#5):`CodexLeadProcessError.kind === 'protocol'`(轮已结束 / expectedTurnId 不符,确定未生效)→ `stale_turn`;`timeout | closed | exited`(请求可能已被应用)→ `steer_outcome_unknown`,重试时可能再 steer 一次,归入 L3。
-  5. `founderTurnActive === false` 且无机器轮 → `router.submitBatch`(按 batchId 幂等)→ 记 result `queued_turn` → 返回。
-  6. `founderTurnActive === "unknown"` 且无机器轮(R2#3)→ 用现有 `boundedTurnsList(proc.request, threadId)`(`codex-lead-thread-rotation.ts:291`,只在最新一轮已 `completed|interrupted|failed` 时返回 true)证明空闲:true → **在 await 返回后的同一同步段重新读取 `router.isPaused()`、`executor.activeTurnId()`、`founderTurnActive/founderTurnId`**(R3#1),仍能证明「无目标轮且未 paused」才按第 5 步 submit,任一变化 → 返回 `steer_failed(state_changed)`(下一次复判时新出现的轮会走第 4 步 steer);false / 超时 → 返回 `steer_failed(founder_turn_unknown)`,**绝不 submit**,由 Bridge 稍后复判。
-- 崩溃窗口:steer 成功后、记 result 前崩溃 → 重投会再 steer 一次(至少一次,L3);`submitBatch` 路径靠 journal 按 batchId 去重,不会重复起轮。
+  2. router `isPaused()`(轮换栅栏中)→ 返回 `steer_failed(router_paused)`。
+  3. `snap = tracker.snapshot()`;`!snap.connected || !snap.seeded` → 返回 `steer_failed(turn_state_unknown)`,**绝不 submit**。
+  4. `snap.activeTurns` 非空 → 取其中唯一(>1 则取最早)一轮的 `turnId` → `proc.steerTurn({threadId, expectedTurnId: turnId, input:[{type:'text', text}], clientUserMessageId: batchId})`;成功 → 记 result `steered` → 返回;抛错 → 什么都不记,返回 `steer_failed`,detail:`CodexLeadProcessError.kind === 'protocol'`(轮已结束 / expectedTurnId 不符,确定未生效)→ `stale_turn`;`timeout | closed | exited`(可能已生效)→ `steer_outcome_unknown`,归 L3(R2#5)。
+  5. `snap.activeTurns` 为空 → `router.submitBatch`(按 batchId 幂等,journal 自带去重)→ 记 result `queued_turn` → 返回。
+- 崩溃窗口:steer 成功后、记 result 前崩溃 → 重投会再 steer 一次(至少一次,L3);`submitBatch` 路径靠 journal 按 batchId 去重。
 - Bridge 侧回执只接受 `steered | queued_turn | steer_failed`,没有泛化的 `duplicate`。
+- 特性位 `lead_interrupt_steer_v1` 只在 TUI runtime 同时注入了 `onSubmitInterrupt` 与 tracker 时宣告;headless 形态不宣告。
 
-### 6.2 Claude pane 判据(R1#8)
+### 6.2 Claude pane 判据与打字(v4:复用 FLY-2882 解析器)
 
-- 新纯函数 `classifyClaudePaneForInterrupt(pane): { busy; blocked; promptEmpty }`,放在 `bridge/lead-interrupt-pane.ts`;`ACTIVE_INFLIGHT` 从它的真实位置 `packages/teamlead/src/account-heal/model-cap.ts:20` 改为导出后共用,不复制正则(R2#4 路径更正)。
-  - **先用 `ownStateRegion(pane)`(`bridge/pane-live-region.ts:127`)把判断限定在当前输入框/状态栏的活区域**,去掉 scrollback 里的旧 spinner 与回显(R2#4);以下三项只在该区域上算:
-  - `busy`:活区域命中 `ACTIVE_INFLIGHT`;
-  - `blocked`:权限/选择对话框(`Do you want to`、编号选项行 `❯ 1.`)、529/重试提示、额度提示;
-  - `promptEmpty`:最后一个输入框提示符行 `❯` 后只有空白;找不到提示符行 → `false`。
-- 「安全」= `busy ∧ ¬blocked ∧ promptEmpty`;任何一项判不出 = 不安全。
-- 打字原语 `sendLiteralLineToLeadPane(ref, text)` 放在 `tmux-lookup.ts`(与 `sendEnterToWindow` 同构):先 `probeV2LeadPane(ref,"send")`,再 `tmux -S sock send-keys -t %0 -l -- <text>` + `Enter`;只接受等于 PHRASE 常量的 text(否则抛)。
+- 截屏:`defaultLeadPaneCapture(ref, 150)`(`bridge/lead-alert-helpers.ts:232`,内部做 capture 强度身份核验;150 行是 FLY-2882 实测能覆盖状态行的窗口)。
+- 「安全」= 同时满足:
+  1. `parseClaudeLeadPaneActivity(pane, leadId).state === "busy"`(FLY-2882 §4.1:按 `@<leadId>` 边框定位本 Lead 的输入框,只看输入框上方第一条第 0 列「状态槽位行」,进行中格式才算忙;完成行 `… for 1m 17s · done` 判空闲;`compacting` / `esc … to cancel` / 排队行 `› …` / 对话框 / 找不到输入框一律 unknown)。**unknown 与 idle 都不打字。**(取代 v3 的 `ownStateRegion + ACTIVE_INFLIGHT`,也就废掉了 R3#3 的逐行问题)
+  2. `promptEmpty`:紧贴那条 `@<leadId>` 边框下方的 `❯` 行,`❯` 之后只有空白(本单新增的一个小纯函数,放 `bridge/lead-interrupt-delivery.ts`,与解析器用同一个边框定位常量)。
+- 打字前身份证明(v4 更正):生产 Claude Lead 的 `pane_current_command` 是 `bash`(claude 是 `lead-body.sh` 的子进程),现有 `probeV2LeadPane(…,"send")` 对**所有**生产 Lead 都是 false(FLY-2882 实测)。⇒ 在 `LeadWindowLocator.ts` 新增探针强度 `"send_claude_child"`:在 capture 强度的全部检查之上,再用一次 `ps -A -o pid=,ppid=,comm=` 证明 pane 进程(`lead-body.sh`)**恰有一个**直接子进程且其 comm 基名为 `claude`(或 semver 形态,同现有正则);否则 false。现有 `"send"` 强度及 `sendEnterToWindow` 不动(它们的同类问题不在本单范围,另记 follow-up)。
+- 打字原语 `sendLiteralLineToLeadPane(ref, text)` 放 `tmux-lookup.ts`(与 `sendEnterToWindow` 同构):只接受等于 PHRASE 常量的 text(否则抛)→ `probeV2LeadPane(ref, "send_claude_child")` → `tmux -S sock send-keys -t %0 -l -- <text>` → `Enter`。
+- §6 第 4 步的「打字前重 capture + 重验」即:再截一次 150 行,再跑一遍上面两条判据 + `send_claude_child` 探针,任一不过 → `nudge_skipped`。
 
 ## 7. 文件清单
 
@@ -233,32 +238,30 @@ Claude 终端固定短语(导出常量,白名单完全相等;测试钉死它不�
 |---|---|
 | `packages/teamlead/src/StateStore.ts` | `migrateLeadInterrupts()` + 读写方法 |
 | `packages/teamlead/src/bridge/lead-interrupt-routes.ts`(新) | 4.1–4.4 |
-| `packages/teamlead/src/bridge/lead-interrupt-delivery.ts`(新) | `interruptHooks`:lookup/审计/disposition/Claude 判定与打字编排 |
+| `packages/teamlead/src/bridge/lead-interrupt-delivery.ts`(新) | `interruptHooks`:绑定校验/审计/disposition/Claude 判定(调 FLY-2882 解析器 + `promptEmpty`)与打字编排 |
 | `packages/teamlead/src/bridge/voice-session-routes.ts` | 挂 4.1/4.2(复用 masterOnly/lease) |
 | `packages/teamlead/src/bridge/plugin.ts` | 挂 4.3/4.4,注入 hooks |
 | `packages/teamlead/src/bridge/lead-inbox-loop.ts` | 打断分支 + 可选 hooks |
 | `packages/teamlead/src/bridge/lead-delivery-adapter.ts` | `kind` 加 `lead_interrupt`;Codex 分支 |
 | `packages/teamlead/src/bridge/lead-inbox-runtime.ts` | 构造 loop 时传 hooks |
 | `packages/teamlead/src/bridge/tmux-lookup.ts` | `sendLiteralLineToLeadPane` |
-| `packages/teamlead/src/account-heal/model-cap.ts` | 导出 `ACTIVE_INFLIGHT`(仅加 export) |
-| `packages/teamlead/src/bridge/lead-interrupt-pane.ts`(新) | `classifyClaudePaneForInterrupt`(基于 `ownStateRegion`) |
+| `packages/teamlead/src/LeadWindowLocator.ts` | 探针强度 `"send_claude_child"` |
 | `packages/teamlead/src/lead-backends/codex/CodexLeadInboxSocket.ts` | `submitInterrupt` + 特性位 + 客户端函数 |
-| `packages/teamlead/src/lead-backends/codex/CodexTurnExecutor.ts` | `activeTurnId()` |
 | `packages/teamlead/src/lead-backends/codex/LeadInputRouter.ts` | `isPaused()` |
-| `packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts` | 注入 `onSubmitInterrupt` |
+| `packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts` | 注入 `onSubmitInterrupt`(读 FLY-2882 的本 generation tracker) |
 | `packages/teamlead/src/lead-backends/codex/lead-actions/lead-actions-main.ts` | 两个工具 |
 | `packages/flywheel-comm/src/commands/lead-interrupt.ts`(新)+ `index.ts` | CLI |
 | `scripts/lib/fly-2006-retention-tables/teamlead/*.json`(2 个新) | 保留分类 |
 
-顺序:StateStore → 路由(真 `MailboxQueue`)→ Lead 侧路由与两个客户端 → 投递循环 hooks → Codex socket/sidecar → Claude 判据与打字。每步先写测试。
+顺序(FLY-2882 合入之后):StateStore → 路由(真 `MailboxQueue`)→ Lead 侧路由与两个客户端 → 投递循环 hooks → Codex socket/sidecar → Claude 判据与打字。每步先写测试。
 
 ## 8. 测试(TDD;只跑改动文件相关用例;排除 `**/tmux-viewer.macos.test.ts`;跑 Bridge 用例前 export 隔离的 `FLYWHEEL_CODEX_HOMES_ROOT`)
 
 - StateStore:建表;审计三条触发器(UPDATE / DELETE / `INSERT OR REPLACE` 同 id 都被拒);注入 `RAISE(ABORT)` 触发器时段 1 抛错且无残行;状态转移守卫(含 `queued → replied`)。
 - 路由(supertest,**真 `MailboxQueue` + 临时 CommDB**,R1#1):入队成功且 senderRef 可 decode;无租约 / ingest 档;目标非 Lead;原话四个失败面 + 已归档通过;幂等重放与冲突;限流两种;**审计写不进 → 503 且 CommDB 无新行**;enqueue 抛错 → 502 + `failed`;**enqueue 成功后段 3 注入失败 → 503、行仍 `requested`、信在信箱、同键重试补成 `queued`**(R1#5);取回只见本会话;回信非目标 403、同文重放 200 并再 ack、异文 409。
 - 投递循环:**伪造 `lead_interrupt` 行(无 StateStore 记录)与复用真实 id 但改正文/目标/from_agent 的行 → DEAD,且零 steer、零 tmux 输入、零原生 inbox 写入**(R2#1);**段 3 失败留 `requested` 时并发领信 → 补成 `queued` 前零副作用,补成后 pending/reply 正常**(R2#2);`archived` 的 ACKED/DEAD 两种对账;回信抢先于 disposition 写入 → 不降状态、审计补全(R2#6);已回复 → ack 跳过;`dispatch_attempt` 审计失败 → 放回不交 adapter;Codex 三种回执;Claude:忙+安全 → 打字 + 放回 + **原生 inbox 文件无新条目**;打过字后仍忙 → 继续放回且不再打字;打过字后空闲 → 正常投递;**打字后回信、ack 失败 → 下次领到先 ack、原生 inbox 仍无该信**(R1#2)。
-- Codex sidecar(假 proc):机器轮 steer;founder 轮 steer;**`unknown` + turns/list 证明空闲 → submit;`unknown` + 证明不了/超时 → `steer_failed` 且 `router.submitBatch` 未被调用**(R2#3);steer protocol 错误 → `stale_turn`、timeout → `steer_outcome_unknown`,两者 router 都未被调用;**fake `boundedTurnsList` 在 resolve 前分别触发 founder-turn-started / machine-turn-started / pause → 返回 `steer_failed(state_changed)` 且 `submitBatch` 未调用,下一次调用对新 founder 轮走 steer**(R3#1);paused → `steer_failed`;已有 result → 原样返回、无副作用;steer 成功后记账前模拟崩溃 → 重投再 steer 一次(L3 行为钉死);`submitBatch` 路径重投不重复起轮(R1#4 故障注入)。
-- Claude 判据:纯函数表驱动(忙/空闲/阻塞各形态/输入框非空/无提示符)+ **真实 fixture:scrollback 里留有旧 `esc to interrupt`/spinner、当前空闲空提示符 → `busy=false`,走普通投递**(R2#4);编排:**审计后重 capture 发现输入框变非空 → 不打字**、pane 身份变化 → 不打字(R1#8);打字 argv 钉死等于常量短语。
+- Codex sidecar(假 proc + 真 `LeadTurnStateTracker`):`origin:message` 轮 steer;`founder_terminal` 轮 steer;**tracker 未 seed / 已断连 → `steer_failed(turn_state_unknown)` 且 `router.submitBatch` 未被调用**(R2#3);seed 为空 → submit;steer protocol 错误 → `stale_turn`、timeout → `steer_outcome_unknown`,两者 router 都未被调用;**决策段内无 await 的结构钉死:在 `onSubmitInterrupt` 调用前让 tracker 收到 `turn/started` → 本次走 steer 而非 submit**(R3#1);paused → `steer_failed`;已有 result → 原样返回、无副作用;steer 成功后记账前模拟崩溃 → 重投再 steer 一次(L3 行为钉死);`submitBatch` 路径重投不重复起轮(R1#4 故障注入)。
+- Claude 判据(忙闲本身由 FLY-2882 的解析器测试覆盖,本单只测组合):FLY-2882 的 busy / idle(完成行)/ unknown fixture × `promptEmpty` 真假 → 只有 busy∧空才打字;scrollback 留有旧进行中行、当前槽位是完成行 → 不打字(R2#4);`send_claude_child` 探针:前台 bash + 唯一 claude 子进程 → true;无子进程 / 两个子进程 / 子进程不是 claude → false;编排:**审计后重 capture 发现输入框变非空 → 不打字**、pane 身份变化 → 不打字(R1#8);打字 argv 钉死等于常量短语。
 - CLI / lead_actions:请求形状、身份字段、错误透传。
 
 ## 9. QA 判据映射(529 房,⛔ 不碰生产 Lead)
@@ -279,8 +282,8 @@ Claude 终端固定短语(导出常量,白名单完全相等;测试钉死它不�
 
 ## 11. 已知限制
 
-- L1 Claude「忙」判据是 pane 启发式;判不准降级为普通信箱(不会误打字,但可能等到这一轮结束)。FLY-2882 落地后可替换。
-- L2 Codex founder 轮在首次观察前是 `"unknown"`:能证明空闲就普通起轮,证明不了就等下一轮复判;这段时间内不会 steer 那个未观察到的 founder 轮(拿不到它的 turn id)。
+- L1 Claude「忙」判据仍是画面解析(FLY-2882 的状态槽位规则);unknown 降级为普通信箱(不会误打字,但可能等到这一轮结束)。Claude Code 改画面格式时它会先变 unknown,不会误判忙。
+- L2 Codex tracker 未 seed(sidecar 刚起、seed 两次重试都失败)期间不 steer 也不起轮,信扣在 CommDB 每 10s 复判;下一个实时 turn 事件会自然 seed。
 - L3 至少一次:sidecar 崩在 steer 成功与记账之间,或 steer 请求超时/断连(`steer_outcome_unknown`)后重试,Lead 可能收到两次;回信只收第一条、同文重放幂等兜底。
 - L4 `founderMessageId` 校验依赖引擎 A 的 chat-ingest;引擎 B 合入后由集成单调整校验器。
 - L5 v1 只有 `voice_session` 一种发起方。
@@ -289,11 +292,12 @@ Claude 终端固定短语(导出常量,白名单完全相等;测试钉死它不�
 ## 12. 实现须知(R3 advisory,实现时照做,不改架构)
 
 - R3#2:§3 状态机那句应读作「`requested → failed` 只允许两种来源:enqueue 调用本身抛错,或同一 deliveryId 的 archived-DEAD 对账(§4.1)」;状态转移守卫测试各钉一个来源。
-- R3#3:`ACTIVE_INFLIGHT` 无 multiline flag,必须逐行判:`region.split('\n').some(line => ACTIVE_INFLIGHT.test(line))`;加一个「spinner 字形在输入框上方、但不是活区域第一行」的忙 fixture。
+- R3#3:已随 v4 失效(不再使用 `ACTIVE_INFLIGHT`,改用 FLY-2882 解析器)。
 
 ## 12b. Follow-ups(不在本单)
 
-- Raya S4 对话集成;接 FLY-2882 忙闲接口替换 L1 判据。
+- Raya S4 对话集成。
+- 现有 `probeV2LeadPane(…,"send")` / `sendEnterToWindow`(rescue 发 Enter)对所有生产 Claude Lead 都是 false(前台是 bash)——同类问题,另开单。
 
 ## 13. Codex 评审处理记录
 
@@ -320,6 +324,14 @@ Claude 终端固定短语(导出常量,白名单完全相等;测试钉死它不�
 
 | R3 条目 | 处理 |
 |---|---|
-| #1 unknown 分支 await 后不重验 | await 返回后同步重读 paused/机器轮/founder 轮,变了就 `steer_failed(state_changed)`,不 submit;三种竞态单测 |
+| #1 unknown 分支 await 后不重验 | v4 改读 FLY-2882 tracker 快照,决策段内无 await,问题在结构上消失;未 seed 一律不 submit |
 | #2 (advisory) 状态机文字矛盾 | 记入 §12 实现须知 |
-| #3 (advisory) ACTIVE_INFLIGHT 须逐行 | 记入 §12 实现须知 |
+| #3 (advisory) ACTIVE_INFLIGHT 须逐行 | v4 不再使用该正则 |
+
+### v4 事实驱动改动(不是评审条目,是 R3 之后查到的新事实)
+
+| 事实(来源) | 影响 | 改动 |
+|---|---|---|
+| 生产 Claude Lead `pane_current_command` = `bash`,`probeV2LeadPane(…,"send")` 对全部 Lead 为 false(FLY-2882 实测,记忆 reference_claude_tui_status_line_busy_idle_facts) | v3 的打字路径永远不会触发,QA 判据 1 必败 | 新增 `send_claude_child` 探针强度 |
+| Claude 2.1.282 进行中行无 `esc to interrupt`;完成行 `✻ Worked for … · done` 会被字形正则误判为忙(同上) | v3 判据会把空闲 Lead 判忙并打字 | 改用 FLY-2882 已批准的状态槽位解析器 |
+| FLY-2882 plan v3 已 Codex 批准,含 `LeadTurnStateTracker` | Codex 活跃轮有了唯一权威来源 | 改读 tracker,删除 `founderTurnActive`/`boundedTurnsList`/`activeTurnId()` 相关设计 |

@@ -67,3 +67,10 @@ Issue: FLY-2883 (https://linear.app/geoforge3d/issue/FLY-2883/语音耳机bridge
 - `scripts/lib/fly-2006-retention-tables/teamlead/lead_interrupts.json`、`lead_interrupt_audit.json`,分类 `protectedCurrentOrReference`(与 `lead_config_audit` 同)。
 - 新 `execFile("tmux", …)` 调用点落在已登记的 `tmux-lookup.ts` 里;实现时按记忆 reference_new_spawn_kill_or_shell_test_must_be_registered_in_four_inventories 核对 child-process census,不新建 shell 测试文件。
 - 不改 `lead-rules-base/*.md`(全 main 共享的字节预算余量只剩个位数,见记忆 reference_lead_rules_byte_budget_is_shared_headroom_across_prs)。Lead 该怎么做写在信件标头和提示短语里,自说明。
+
+## 更正(2026-09-25,plan v4)
+
+R4/R5 的两处结论被新实测事实推翻,以 plan.md v4 §6.1–6.2 为准:
+- R5「打字原语用 `probeV2LeadPane(…,"send")`」:生产 Claude Lead 前台命令是 `bash`,该探针对全部 Lead 为 false(FLY-2882 实测)。改为新探针强度 `send_claude_child`。
+- R5「忙 = 命中 `ACTIVE_INFLIGHT`」:Claude 2.1.282 进行中行已无 `esc to interrupt`,完成行会被字形正则误判为忙。改用 FLY-2882 已批准的 `parseClaudeLeadPaneActivity`。
+- R4「活跃轮 = executor 机器轮 ?? founderTurnId」:改读 FLY-2882 的 `LeadTurnStateTracker` 快照(含 seed 初值),本单实现排在 FLY-2882 合入之后。
