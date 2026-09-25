@@ -1,8 +1,26 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_QUOTA_MONITOR_CONFIG } from "../../account-heal/quota-monitor-config.js";
+import { parseClaudeResetGrants } from "../../claude-quota/account-detail-observer.js";
+import {
+	readClaudeAccountDetailStore,
+	writeClaudeAccountDetailStore,
+} from "../../claude-quota/account-detail-store.js";
+import { parseCodexSubscriptionResponse } from "../../codex-quota/codex-subscription-reader.js";
+import {
+	readCodexSubscriptionStore,
+	writeCodexSubscriptionStore,
+} from "../../codex-quota/codex-subscription-store.js";
+import { renderAccountQuotaPageHtml } from "../account-quota-page.js";
+import { buildAccountQuotaView } from "../account-quota-view.js";
 import {
 	buildCapacitySnapshot,
 	codexTokenState,
@@ -1359,6 +1377,523 @@ describe("buildCapacitySnapshot", () => {
 		const serialized = JSON.stringify(snapshot);
 		for (const leakedValue of [futureObservation, resetLeak, exhaustedLeak]) {
 			expect(serialized).not.toContain(leakedValue);
+		}
+	});
+});
+
+describe("FLY-2864 — live tier, reset cards and Codex subscription projection", () => {
+	const base = {
+		now: () => Date.parse("2026-09-24T23:30:00.000Z"),
+		readMemoryFreePct: async () => ({
+			freePct: 40,
+			observedAt: "2026-09-24T23:30:00.000Z",
+		}),
+		store: {
+			getActiveSessions: () => [] as never,
+			getFleetPressureHold: () => undefined,
+			getAdmissionPause: () => undefined,
+		},
+		quotaConfigPath: join(tmpdir(), "fly2864-missing-quota-config.json"),
+	};
+
+	function claudeFixture(detailAccounts: unknown[]) {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: "business",
+			accounts: ["business", "school"].map((name) => ({
+				name,
+				quotaExhaustedUntil: null,
+				weeklyResetAt: "2026-09-29T16:00:00.000Z",
+				lastObservedAt: "2026-09-24T23:00:00.000Z",
+				observedFiveHPct: 5,
+				observedSevenDPct: 20,
+			})),
+		});
+		const dir = dirname(accountStorePath);
+		for (const [name, tier] of [
+			["business", "default_claude_max_5x"],
+			["school", "default_claude_max_20x"],
+		] as const) {
+			const profile = join(dir, "claude-profiles", name);
+			mkdirSync(profile, { recursive: true });
+			writeFileSync(
+				join(profile, ".credentials.json"),
+				JSON.stringify({
+					claudeAiOauth: {
+						accessToken: "secret-token",
+						subscriptionType: "max",
+						rateLimitTier: tier,
+					},
+				}),
+			);
+		}
+		writeFileSync(
+			join(dir, "claude-account-details.json"),
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-24T23:30:00.000Z",
+				accounts: detailAccounts,
+			}),
+		);
+		return accountStorePath;
+	}
+
+	const detail = (name: string, extra: Record<string, unknown>) => ({
+		name,
+		observedAt: "2026-09-24T23:30:00.000Z",
+		subscription: "active",
+		usageStatus: "ok",
+		prepaid: { known: true, cards: null },
+		note: null,
+		...extra,
+	});
+
+	it("prefers the live profile tier over the login-time credential cache", async () => {
+		const snapshot = await buildCapacitySnapshot({
+			...base,
+			accountStorePath: claudeFixture([
+				detail("business", {
+					tier: {
+						subscriptionType: "max",
+						rateLimitTier: "default_claude_max_20x",
+					},
+				}),
+			]),
+		});
+		const byName = Object.fromEntries(
+			snapshot.quota.claude.accounts.map((account) => [account.name, account]),
+		);
+		expect(byName.business?.subscriptionTier).toEqual({
+			subscriptionType: "max",
+			rateLimitTier: "default_claude_max_20x",
+		});
+		// No live tier: the credential cache is still the fallback.
+		expect(byName.school?.subscriptionTier).toEqual({
+			subscriptionType: "max",
+			rateLimitTier: "default_claude_max_20x",
+		});
+		expect(JSON.stringify(snapshot)).not.toContain("secret-token");
+	});
+
+	it("falls back to the credential cache when the live tier is absent or null", async () => {
+		for (const extra of [{}, { tier: null }]) {
+			const snapshot = await buildCapacitySnapshot({
+				...base,
+				accountStorePath: claudeFixture([detail("business", extra)]),
+			});
+			expect(
+				snapshot.quota.claude.accounts.find((a) => a.name === "business")
+					?.subscriptionTier,
+			).toEqual({
+				subscriptionType: "max",
+				rateLimitTier: "default_claude_max_5x",
+			});
+		}
+	});
+
+	it("passes reset cards through only when the detail store has them", async () => {
+		const resetGrants = {
+			known: true,
+			reason: null,
+			grants: [
+				{
+					resetsLeft: 1,
+					resetsTotal: 1,
+					endsAt: "2026-10-22T16:00:00.000Z",
+				},
+			],
+		};
+		const snapshot = await buildCapacitySnapshot({
+			...base,
+			accountStorePath: claudeFixture([
+				detail("business", { resetGrants }),
+				detail("school", {}),
+			]),
+		});
+		const [business, school] = ["business", "school"].map((name) =>
+			snapshot.quota.claude.accounts.find((a) => a.name === name),
+		);
+		expect(business?.resetGrants).toEqual(resetGrants);
+		expect(school).not.toHaveProperty("resetGrants");
+	});
+
+	function codexFixture(subscriptions: unknown) {
+		const dir = mkdtempSync(join(tmpdir(), "fly2864-codex-capacity-"));
+		scratch.push(dir);
+		const accountStorePath = join(dir, "claude-accounts.json");
+		const quotaAccount = (name: string, identityKey?: string) => ({
+			name,
+			registeredProfile: name,
+			...(identityKey ? { identityKey } : {}),
+			observedAt: "2026-09-24T23:00:00.000Z",
+			authHealth: "valid",
+			note: null,
+			planType: "pro",
+			fiveH: null,
+			weekly: {
+				usedPercent: 40,
+				windowMinutes: 10080,
+				resetAt: "2026-09-29T16:00:00.000Z",
+			},
+			credits: {
+				known: false,
+				hasCredits: null,
+				unlimited: null,
+				balance: null,
+			},
+			resetCredits: { known: false, value: null },
+			unclassifiedWindows: 0,
+		});
+		writeFileSync(
+			join(dir, "codex-accounts.json"),
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-24T23:00:00.000Z",
+				activeAccount: "business",
+				accounts: [
+					quotaAccount("business", "a".repeat(64)),
+					quotaAccount("school", "b".repeat(64)),
+					quotaAccount("shopping", "c".repeat(64)),
+					quotaAccount("broken"),
+				],
+			}),
+		);
+		if (subscriptions !== undefined) {
+			writeFileSync(
+				join(dir, "codex-subscriptions.json"),
+				typeof subscriptions === "string"
+					? subscriptions
+					: JSON.stringify(subscriptions),
+			);
+		}
+		return accountStorePath;
+	}
+
+	const subscriptionStore = {
+		version: 1,
+		generatedAt: "2026-09-24T23:30:00.000Z",
+		accounts: [
+			{
+				name: "business",
+				identityKey: "a".repeat(64),
+				observedAt: "2026-09-24T23:30:00.000Z",
+				status: "active",
+				renewsAt: "2026-10-23T03:59:39.000Z",
+				endsAt: null,
+				note: null,
+			},
+			{
+				// A different login now sits in the school slot.
+				name: "school",
+				identityKey: "f".repeat(64),
+				observedAt: "2026-09-24T23:30:00.000Z",
+				status: "active",
+				renewsAt: "2026-10-03T23:37:58.000Z",
+				endsAt: null,
+				note: null,
+			},
+			{
+				name: "broken",
+				observedAt: null,
+				status: "unknown",
+				renewsAt: null,
+				endsAt: null,
+				note: "problem:invalid_credential",
+			},
+		],
+	};
+
+	it("projects a subscription only onto the same identity, and orphans only as a note", async () => {
+		const snapshot = await buildCapacitySnapshot({
+			...base,
+			accountStorePath: codexFixture(subscriptionStore),
+		});
+		const byName = Object.fromEntries(
+			(snapshot.quota.codex.accounts ?? []).map((a) => [a.name, a]),
+		);
+		expect(byName.business?.subscription).toEqual({
+			status: "active",
+			renewsAt: "2026-10-23T03:59:39.000Z",
+			endsAt: null,
+			observedAt: "2026-09-24T23:30:00.000Z",
+			note: null,
+		});
+		expect(byName.school).not.toHaveProperty("subscription");
+		expect(byName.shopping).not.toHaveProperty("subscription");
+		expect(byName.broken?.subscription).toEqual({
+			status: "unknown",
+			renewsAt: null,
+			endsAt: null,
+			observedAt: null,
+			note: "problem:invalid_credential",
+		});
+		expect(JSON.stringify(snapshot)).not.toContain("a".repeat(64));
+	});
+
+	it("renders a kept old subscription store without showing past dates (whole read failed)", async () => {
+		// The refresh keeps the previous file when the subscription read or write
+		// throws, so its rows still say note:null days later.
+		const snapshot = await buildCapacitySnapshot({
+			...base,
+			now: () => Date.parse("2026-10-21T18:00:00.000Z"),
+			accountStorePath: codexFixture({
+				version: 1,
+				generatedAt: "2026-10-01T00:00:00.000Z",
+				accounts: [
+					{
+						name: "business",
+						identityKey: "a".repeat(64),
+						observedAt: "2026-10-01T00:00:00.000Z",
+						status: "canceled",
+						renewsAt: null,
+						endsAt: "2026-10-19T04:02:27.000Z",
+						note: null,
+					},
+					{
+						name: "school",
+						identityKey: "b".repeat(64),
+						observedAt: "2026-10-01T00:00:00.000Z",
+						status: "active",
+						renewsAt: "2026-10-03T23:37:58.000Z",
+						endsAt: null,
+						note: null,
+					},
+					{
+						name: "shopping",
+						identityKey: "c".repeat(64),
+						observedAt: "2026-10-01T00:00:00.000Z",
+						status: "active",
+						renewsAt: "2026-10-23T03:59:39.000Z",
+						endsAt: null,
+						note: null,
+					},
+				],
+			}),
+		});
+		const next = Object.fromEntries(
+			buildAccountQuotaView(snapshot).codex.map((row) => [
+				row.name,
+				row.nextCharge.display,
+			]),
+		);
+		expect(next).toMatchObject({
+			business: "读不到（读数已过期）",
+			school: "读不到（读数已过期）",
+			shopping: "10/22 周四",
+		});
+	});
+
+	it("keeps the snapshot intact when the subscription store is missing or corrupt", async () => {
+		for (const subscriptions of [undefined, "{not json", { version: 9 }]) {
+			const snapshot = await buildCapacitySnapshot({
+				...base,
+				accountStorePath: codexFixture(subscriptions),
+			});
+			expect(snapshot.quota.codex.source).toBe("codex-accounts.json");
+			for (const account of snapshot.quota.codex.accounts ?? []) {
+				expect(account).not.toHaveProperty("subscription");
+			}
+		}
+	});
+});
+
+describe("FLY-2864 — research responses end to end", () => {
+	it("turns the verbatim provider samples into the page's card and next-charge cells", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2864-pipeline-"));
+		scratch.push(dir);
+		const accountStorePath = join(dir, "claude-accounts.json");
+		writeFileSync(
+			accountStorePath,
+			JSON.stringify({
+				generation: 1,
+				activeAccount: "business",
+				accounts: [
+					{
+						name: "business",
+						quotaExhaustedUntil: null,
+						weeklyResetAt: "2026-09-29T16:00:00.000Z",
+						lastObservedAt: "2026-09-24T23:20:00.000Z",
+						observedFiveHPct: 5,
+						observedSevenDPct: 20,
+					},
+				],
+			}),
+		);
+		// research.md §2 — business usage, cedar_ember block verbatim.
+		const resetGrants = parseClaudeResetGrants(
+			{
+				cedar_ember: {
+					eligible: true,
+					ineligible_reason: null,
+					at_limit: false,
+					exhausted: [],
+					grants: [
+						{
+							id: "<redacted>",
+							label:
+								"Claude Opus 5.5 launch: one usage-limit reset for Pro and Max",
+							resets_total: 1,
+							resets_left: 1,
+							starts_at: "2026-09-22T16:00:00+00:00",
+							ends_at: "2026-10-22T16:00:00+00:00",
+							clears: ["five_hour", "seven_day", "seven_day_overage_included"],
+							paused: false,
+							usable_now: true,
+						},
+					],
+					next_grant_id: "opus55-launch-promax-20260921",
+					weekly_resets_at: "2026-10-01T02:00:00+00:00",
+					event_props: {
+						surface: "claude_code_cli",
+						tier: "claude_max_20x",
+						billing_period: "unknown",
+					},
+				},
+			},
+			true,
+		);
+		const detailPath = join(dir, "claude-account-details.json");
+		writeClaudeAccountDetailStore(detailPath, {
+			version: 1,
+			generatedAt: "2026-09-24T23:25:00.000Z",
+			accounts: [
+				{
+					name: "business",
+					observedAt: "2026-09-24T23:25:00.000Z",
+					subscription: "active",
+					usageStatus: "ok",
+					prepaid: { known: true, cards: null },
+					tier: {
+						subscriptionType: "max",
+						rateLimitTier: "default_claude_max_20x",
+					},
+					resetGrants,
+					note: null,
+				},
+			],
+		});
+		expect(readClaudeAccountDetailStore(detailPath)).not.toBeNull();
+		writeFileSync(
+			join(dir, "codex-accounts.json"),
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-24T23:20:00.000Z",
+				activeAccount: "business",
+				accounts: [
+					{
+						name: "business",
+						registeredProfile: "business",
+						identityKey: "a".repeat(64),
+						observedAt: "2026-09-24T23:20:00.000Z",
+						authHealth: "valid",
+						note: null,
+						planType: "pro",
+						fiveH: null,
+						weekly: {
+							usedPercent: 30,
+							windowMinutes: 10080,
+							resetAt: "2026-09-30T16:00:00.000Z",
+						},
+						credits: {
+							known: false,
+							hasCredits: null,
+							unlimited: null,
+							balance: null,
+						},
+						resetCredits: { known: false, value: null },
+						unclassifiedWindows: 0,
+					},
+				],
+			}),
+		);
+		// research.md §3 — business subscriptions response verbatim.
+		const parsed = parseCodexSubscriptionResponse({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				entitlement: {
+					has_active_subscription: true,
+					subscription_plan: "chatgptpro",
+					expires_at: "2026-10-23T09:59:39+00:00",
+					renews_at: "2026-10-23T03:59:39+00:00",
+					cancels_at: null,
+					billing_period: "monthly",
+					is_delinquent: false,
+				},
+				plan_type: "pro",
+				will_renew: true,
+				active_until: "2026-10-23T03:59:39Z",
+				active_start: "2026-08-19T15:39:26Z",
+				cancellation_outcome: null,
+			}),
+		});
+		expect(parsed).toEqual({
+			ok: { status: "active", renewsAt: "2026-10-23T03:59:39.000Z" },
+		});
+		const subscriptionsPath = join(dir, "codex-subscriptions.json");
+		writeCodexSubscriptionStore(subscriptionsPath, {
+			version: 1,
+			generatedAt: "2026-09-24T23:30:00.000Z",
+			accounts: [
+				{
+					name: "business",
+					identityKey: "a".repeat(64),
+					observedAt: "2026-09-24T23:30:00.000Z",
+					status: "active",
+					renewsAt:
+						"ok" in parsed && parsed.ok.status === "active"
+							? parsed.ok.renewsAt
+							: null,
+					endsAt: null,
+					note: null,
+				},
+			],
+		});
+		expect(readCodexSubscriptionStore(subscriptionsPath)).not.toBeNull();
+
+		const snapshot = await buildCapacitySnapshot({
+			now: () => Date.parse("2026-09-24T23:30:00.000Z"),
+			accountStorePath,
+			claudeProfilesDir: join(dir, "claude-profiles"),
+			quotaConfigPath: join(dir, "missing-quota-config.json"),
+			readMemoryFreePct: async () => ({
+				freePct: 40,
+				observedAt: "2026-09-24T23:30:00.000Z",
+			}),
+			store: {
+				getActiveSessions: () => [] as never,
+				getFleetPressureHold: () => undefined,
+				getAdmissionPause: () => undefined,
+			},
+		});
+		const html = renderAccountQuotaPageHtml(buildAccountQuotaView(snapshot));
+		const rowOf = (section: "claude" | "codex") =>
+			html
+				.split(`provider-${section}`)[1]
+				?.split("</tr>")
+				.find((tr) => tr.includes("business</div>")) ?? "";
+		expect(rowOf("claude")).toContain(
+			'<div class="account-tier">Max 20x</div>',
+		);
+		expect(rowOf("claude")).toContain(
+			'<span class="card-line">1 张</span><span class="card-line">#1 到期 2026/10/22</span>',
+		);
+		expect(rowOf("claude")).toContain(
+			'<span class="next-charge">读不到（Anthropic 接口不给）</span>',
+		);
+		expect(rowOf("codex")).toContain(
+			'<span class="next-charge">10/22 周四</span>',
+		);
+		for (const absent of [
+			"明细未提供",
+			"待你确认",
+			"token 状态",
+			"订阅到期",
+			"<redacted>",
+			"Opus 5.5 launch",
+			"a".repeat(64),
+		]) {
+			expect(html).not.toContain(absent);
 		}
 	});
 });

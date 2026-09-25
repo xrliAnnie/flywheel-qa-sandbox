@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildAccountQuotaPageSections,
+	formatAccountQuotaPageCalendarDate,
+	formatAccountQuotaPageDate,
 	formatAccountQuotaPageInstant,
 	reconcileCodexAccountSubscriptionIdentityKeys,
 	renderAccountQuotaPageHtml,
@@ -10,7 +12,6 @@ import type {
 	AccountQuotaView,
 	QuotaCell,
 } from "../account-quota-view.js";
-import type { SubscriptionConfirmation } from "../account-subscription-manual.js";
 
 function cell(display: string, opts: Partial<QuotaCell> = {}): QuotaCell {
 	return {
@@ -57,6 +58,10 @@ function row(
 		fableUsage: cell("20%", { rawValue: 20 }),
 		credits: missing,
 		expiry: missing,
+		nextCharge: cell("读不到（接口未返回）", {
+			source: "missing",
+			observedAt: null,
+		}),
 		exhausted: false,
 		unusable: false,
 		recovery: null,
@@ -236,24 +241,6 @@ function view(
 	};
 }
 
-function manual(
-	profile: string,
-	status: "active" | "canceled" | "unknown",
-	overrides: Partial<SubscriptionConfirmation> = {},
-): SubscriptionConfirmation {
-	return {
-		provider: "Claude",
-		profile,
-		identityKey: "a".repeat(64),
-		status,
-		expiresOn: status === "canceled" ? "2026-10-14" : null,
-		confirmedBy: "founder",
-		confirmedAt: "2026-09-23T18:00:00.000Z",
-		sourceRef: "FLY-2792#founder-confirmation",
-		...overrides,
-	};
-}
-
 describe("FLY-2803 E1-E19 page markup", () => {
 	it("renders only the title, one generated time, and the two tables", () => {
 		const html = renderAccountQuotaPageHtml(
@@ -272,8 +259,10 @@ describe("FLY-2803 E1-E19 page markup", () => {
 		expect(html).toContain("<h1>账号额度一览</h1>");
 		expect(html).toContain("09/23 周三 13:00");
 		expect(html).toContain("<th>5h reset</th>");
-		expect(html).toContain("<th>token 状态</th>");
+		expect(html).not.toContain("token 状态");
 		expect(html).toContain("<th>充值卡</th>");
+		expect(html.match(/<th>下次扣费日<\/th>/g)).toHaveLength(2);
+		expect(html).not.toContain("订阅到期");
 		expect(html).toContain("<th>兑换卡</th>");
 		expect(html).not.toContain("按需生成");
 		expect(html).not.toContain("来源：");
@@ -386,7 +375,7 @@ describe("FLY-2803 E1-E19 page markup", () => {
 		expect(html).not.toContain('aria-valuenow="0"');
 	});
 
-	it("keeps token failures, converts only the obsolete full token label, and shows card lines", () => {
+	it("drops the token column but keeps the Codex card lines", () => {
 		const html = renderAccountQuotaPageHtml(
 			view(
 				[],
@@ -399,103 +388,67 @@ describe("FLY-2803 E1-E19 page markup", () => {
 					row("revoked", 40, "2026-09-29T16:00:00.000Z", {
 						provider: "Codex",
 						tokenStatus: cell("已吊销"),
+						note: "token 已吊销，需重新登录",
 					}),
 				],
 			),
 		);
 
-		expect(html).toContain('class="token-status">正常</span>');
-		expect(html).toContain('class="token-status">已吊销</span>');
+		expect(html).not.toContain("token-status");
+		expect(html).not.toContain(">正常<");
 		expect(html).toContain("#1 到期 2026/10/28");
 		expect(html).toContain("#2 到期未知");
+		// The row's own failure note still says why the token is unusable.
+		expect(html).toContain("token 已吊销，需重新登录");
 		expect(html).not.toContain("余额 ");
 	});
 
-	it("shows business tier facts side-by-side without using tier as a decision", () => {
+	it("shows the business tier as read, without any confirmation wording", () => {
 		const html = renderAccountQuotaPageHtml(
 			view([
 				row("business", 20, "2026-09-28T16:00:00.000Z", {
-					subscriptionTier: cell("Max 5x"),
+					subscriptionTier: cell("Max 20x"),
 				}),
 			]),
 		);
 
-		expect(html).toContain("机器读数 5x / 你说 20x，待你确认");
+		expect(html).toContain('<div class="account-tier">Max 20x</div>');
+		expect(html).not.toContain("待你确认");
+		expect(html).not.toContain("你说 20x");
+		expect(html).not.toContain("机器读数");
 		expect(html).toContain('data-group="available"');
 	});
 
-	it("renders manual and machine subscription states without exposing provenance", () => {
-		const canceled = row("canceled", 20, "2026-09-28T16:00:00.000Z");
-		const active = row("active", 20, "2026-09-29T16:00:00.000Z");
-		const unknown = row("unknown", 20, "2026-09-30T16:00:00.000Z");
-		const machineCanceled = row(
-			"machine-canceled",
-			20,
-			"2026-10-01T16:00:00.000Z",
-		);
-		const conflict = row("conflict", 20, "2026-10-02T16:00:00.000Z");
+	it("renders the next charge cell, escaped, as the last column", () => {
 		const html = renderAccountQuotaPageHtml(
-			view([canceled, active, unknown, machineCanceled, conflict]),
-			{
-				confirmations: [
-					manual("canceled", "canceled"),
-					manual("active", "active"),
-					manual("unknown", "unknown"),
-					manual("conflict", "active"),
+			view(
+				[
+					row("business", 20, "2026-09-28T16:00:00.000Z", {
+						nextCharge: cell("读不到（Anthropic 接口不给）", {
+							source: "missing",
+						}),
+					}),
 				],
-				identityKeys: {
-					"Claude:canceled": "a".repeat(64),
-					"Claude:active": "a".repeat(64),
-					"Claude:unknown": "a".repeat(64),
-					"Claude:conflict": "a".repeat(64),
-				},
-				machineSubscriptions: {
-					"Claude:machine-canceled": {
-						status: "canceled",
-						observedAt: "2026-09-23T17:00:00.000Z",
-					},
-					"Claude:conflict": {
-						status: "canceled",
-						observedAt: "2026-09-23T19:00:00.000Z",
-					},
-				},
-			},
+				[
+					row("codex", 20, "2026-09-28T16:00:00.000Z", {
+						provider: "Codex",
+						nextCharge: cell("10/22 周四"),
+					}),
+					row("odd", 20, "2026-09-29T16:00:00.000Z", {
+						provider: "Codex",
+						nextCharge: cell("<b>x</b>"),
+					}),
+				],
+			),
 		);
-
-		expect(html).toContain("已取消 · 10/14");
-		expect(html).toContain("已取消 · 日期待确认");
-		expect(html).toContain("未知 · 状态待核对");
-		expect(html.match(/class="subscription-empty"><\/td>/g)).toHaveLength(1);
-		expect(html).toContain('class="subscription-state">未知</span>');
-		expect(html).not.toContain("founder");
-		expect(html).not.toContain("FLY-2792#founder-confirmation");
-		expect(html).not.toContain("aaaaaaaa");
-	});
-
-	it("reports identity-bound confirmation failures while keeping the page state unknown", () => {
-		const failures: Array<{
-			provider: string;
-			profile: string;
-			error: string;
-		}> = [];
-		const html = renderAccountQuotaPageHtml(
-			view([row("business", 20, "2026-09-28T16:00:00.000Z")]),
-			{
-				confirmations: [manual("business", "canceled")],
-				identityKeys: { "Claude:business": "b".repeat(64) },
-				onSubscriptionResolutionError: (failure) => failures.push(failure),
-			},
+		expect(html).toContain(
+			'<td><span class="next-charge">读不到（Anthropic 接口不给）</span></td></tr>',
 		);
-
-		expect(failures).toEqual([
-			{
-				provider: "Claude",
-				profile: "business",
-				error: "identity_mismatch",
-			},
-		]);
-		expect(html).toContain('class="subscription-state">未知</span>');
-		expect(html).not.toContain("已取消 · 10/14");
+		expect(html).toContain(
+			'<td><span class="next-charge">10/22 周四</span></td></tr>',
+		);
+		expect(html).toContain("&lt;b&gt;x&lt;/b&gt;");
+		expect(html).not.toContain("<b>x</b>");
 	});
 
 	it("accepts live Codex identity keys only when durable reading identity agrees", () => {
@@ -515,5 +468,155 @@ describe("FLY-2803 E1-E19 page markup", () => {
 			"Codex:matching": "a".repeat(64),
 			"Codex:legacy": "c".repeat(64),
 		});
+	});
+});
+
+describe("FLY-2864 — page shape after the four changes", () => {
+	const tds = (html: string, name: string) => {
+		const tr = html
+			.split("</tr>")
+			.find((chunk) => chunk.includes(`${name}</div>`));
+		return tr?.match(/<td[ >]/g)?.length ?? 0;
+	};
+
+	it("renders 7 cells per Claude row and 6 per Codex row, with matching colspans", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[row("claude-row", 23, "2026-09-28T16:00:00.000Z")],
+				[
+					row("codex-row", 40, "2026-09-29T16:00:00.000Z", {
+						provider: "Codex",
+					}),
+					row("codex-unknown", null, null, { provider: "Codex" }),
+				],
+				{
+					claudeUnavailable: ["claude down"],
+					codexUnavailable: ["codex down"],
+				},
+			),
+		);
+		expect(tds(html, "claude-row")).toBe(7);
+		expect(tds(html, "codex-row")).toBe(6);
+		const [claudeTable, codexTable] = html.match(
+			/<section class=[\s\S]*?<\/section>/g,
+		)!;
+		expect(claudeTable?.match(/<th>/g)).toHaveLength(7);
+		expect(codexTable?.match(/<th>/g)).toHaveLength(6);
+		expect(claudeTable).toContain('<td colspan="7">');
+		expect(claudeTable).not.toContain('colspan="6"');
+		expect(codexTable).toContain('<td colspan="6">');
+		expect(codexTable).not.toContain('colspan="7"');
+	});
+
+	it("keeps every other element of the previous page", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[
+					row("claude-active", 23, "2026-09-28T16:00:00.000Z", {
+						active: true,
+						credits: cell("1 张\n#1 到期 2026/10/22"),
+					}),
+				],
+				[
+					row("codex-note", 40, "2026-09-29T16:00:00.000Z", {
+						provider: "Codex",
+						credits: cell("兑换卡未暴露", { source: "missing" }),
+						note: "使用中，本次未读",
+					}),
+				],
+			),
+		);
+		for (const kept of [
+			"<h1>账号额度一览</h1>",
+			"<h2>Claude</h2>",
+			"<h2>Codex</h2>",
+			"<th>账号</th>",
+			"<th>周重置日</th>",
+			"<th>5h reset</th>",
+			"<th>周用量</th>",
+			"<th>Fable 周用量</th>",
+			"<th>充值卡</th>",
+			"<th>兑换卡</th>",
+			"claude-active</div>",
+			'<span class="active-chip">在用</span>',
+			'class="quota-row active-account"',
+			'aria-label="周用量"',
+			'aria-label="Fable用量"',
+			'<span class="reset-time">09/28 周一 09:00</span>',
+			'<span class="reset-time">09/23 周三 18:00</span>',
+			'<span class="card-line">#1 到期 2026/10/22</span>',
+			"兑换卡未暴露",
+			'<span class="account-note">使用中，本次未读</span>',
+			'<div class="account-tier">Max 20x</div>',
+		]) {
+			expect(html).toContain(kept);
+		}
+	});
+
+	it("never lets tier or next charge move a row between groups or positions", () => {
+		const order = (tier: string, next: string, flip: boolean) =>
+			buildAccountQuotaPageSections([
+				row("later", 96, "2026-09-28T16:00:00.000Z", {
+					subscriptionTier: cell(flip ? next : tier),
+					nextCharge: cell(flip ? tier : next),
+				}),
+				row("earlier", 23, "2026-09-23T16:00:00.000Z", {
+					subscriptionTier: cell(tier),
+					nextCharge: cell(next),
+				}),
+				row("full", 100, "2026-09-24T16:00:00.000Z", {
+					subscriptionTier: cell(tier === "Max 5x" ? "Max 20x" : "Max 5x"),
+				}),
+				row("unread", null, null),
+			]).flatMap((section) =>
+				section.rows.map((item) => `${section.group}:${item.row.name}`),
+			);
+		const expected = [
+			"available:earlier",
+			"available:later",
+			"full:full",
+			"unavailable:unread",
+		];
+		for (const tier of ["Max 5x", "Max 20x", "未知"]) {
+			for (const next of ["09/25 周五", "12/31 周四", "读不到（接口未返回）"]) {
+				expect(order(tier, next, false)).toEqual(expected);
+				expect(order(tier, next, true)).toEqual(expected);
+			}
+		}
+	});
+});
+
+describe("FLY-2864 — next-charge date format", () => {
+	it("formats an instant as a Pacific calendar day with a Chinese weekday", () => {
+		expect(formatAccountQuotaPageDate("2026-10-23T03:59:39.000Z")).toBe(
+			"10/22 周四",
+		);
+		expect(formatAccountQuotaPageDate("2026-10-03T23:37:58.000Z")).toBe(
+			"10/03 周六",
+		);
+		// DST ends 2026-11-01 02:00 PDT: 08:30Z is still 01:30 PDT on Nov 1.
+		expect(formatAccountQuotaPageDate("2026-11-01T08:30:00.000Z")).toBe(
+			"11/01 周日",
+		);
+		expect(formatAccountQuotaPageDate("2026-11-02T07:59:00.000Z")).toBe(
+			"11/01 周日",
+		);
+		// Year boundary: 2027-01-01T07:59Z is still New Year's Eve in PT.
+		expect(formatAccountQuotaPageDate("2027-01-01T07:59:00.000Z")).toBe(
+			"12/31 周四",
+		);
+		expect(formatAccountQuotaPageDate("2027-01-01T08:00:00.000Z")).toBe(
+			"01/01 周五",
+		);
+		expect(() => formatAccountQuotaPageDate("2026-10-23")).toThrow();
+	});
+
+	it("keeps a founder-entered calendar day as that day", () => {
+		expect(formatAccountQuotaPageCalendarDate("2026-10-05")).toBe("10/05 周一");
+		expect(formatAccountQuotaPageCalendarDate("2026-12-31")).toBe("12/31 周四");
+		expect(formatAccountQuotaPageCalendarDate("2028-02-29")).toBe("02/29 周二");
+		for (const bad of ["2026-02-30", "2026-10-5", "10/05", ""]) {
+			expect(() => formatAccountQuotaPageCalendarDate(bad)).toThrow();
+		}
 	});
 });

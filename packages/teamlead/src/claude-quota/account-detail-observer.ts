@@ -1,19 +1,34 @@
 import { readdirSync } from "node:fs";
+import { readClaudeCliVersion } from "../account-heal/claude-cli-version.js";
 import { readPoolMonitorCredentialSnapshot } from "../account-heal/quota-monitor-credentials.js";
+import { normalizeExternalInstant } from "../quota-external-instant.js";
 import type {
 	ClaudeAccountDetailReading,
 	ClaudeAccountDetailStore,
 	ClaudePrepaidCard,
 	ClaudePrepaidDetail,
+	ClaudeResetGrant,
+	ClaudeResetGrants,
+	ClaudeTier,
 } from "./account-detail-store.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_TOTAL_DEADLINE_MS = 45_000;
+/** Every response is capped before parsing; a real body is a few KiB. */
+const MAX_RESPONSE_BYTES = 256 * 1024;
 const UUID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_STATUS = /^[a-z][a-z0-9_]{0,63}$/;
 const PROFILE_NAME = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
+const TIER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_GRANTS = 128;
+const MAX_GRANT_RESETS = 1000;
+/**
+ * FLY-2864: the same usage read, asking for the reset-card block. The
+ * card-redeeming POST (`reset_rate_limits`) is never issued by this module.
+ */
+const USAGE_PATH = "/api/oauth/usage?cedar_ember=1&skip_spend=1";
 
 export interface ObserveClaudeAccountDetailsOptions {
 	profilesRoot: string;
@@ -25,6 +40,11 @@ export interface ObserveClaudeAccountDetailsOptions {
 	requestTimeoutMs?: number;
 	totalDeadlineMs?: number;
 	signal?: AbortSignal;
+	/**
+	 * FLY-2864: the installed Claude Code CLI version, read once per round.
+	 * The usage endpoint reports reset cards only to a current CLI surface.
+	 */
+	cliVersion?: () => Promise<string | null>;
 }
 
 type RequestResult =
@@ -74,6 +94,73 @@ function parseCards(
 	return cards;
 }
 
+function resetCount(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= 0 &&
+		value <= MAX_GRANT_RESETS
+	);
+}
+
+/**
+ * FLY-2864: reset cards from the usage response's `cedar_ember` block. Only an
+ * eligible grant list, or the server's explicit `no_grant`, is a card count;
+ * every other gate (surface, cli_version, tier, ...) is unknown, never 0.
+ */
+export function parseClaudeResetGrants(
+	value: unknown,
+	cliVersionKnown: boolean,
+): ClaudeResetGrants {
+	const unknown = (reason: string): ClaudeResetGrants => ({
+		known: false,
+		reason,
+		grants: null,
+	});
+	if (!record(value) || !record(value.cedar_ember)) return unknown("absent");
+	const ember = value.cedar_ember;
+	if (ember.eligible === true) {
+		if (!Array.isArray(ember.grants) || ember.grants.length > MAX_GRANTS) {
+			return unknown("malformed");
+		}
+		const grants: ClaudeResetGrant[] = [];
+		for (const grant of ember.grants) {
+			if (
+				!record(grant) ||
+				!resetCount(grant.resets_left) ||
+				!resetCount(grant.resets_total) ||
+				grant.resets_left > grant.resets_total
+			) {
+				return unknown("malformed");
+			}
+			let endsAt: string | null = null;
+			if (grant.ends_at !== null) {
+				endsAt = normalizeExternalInstant(grant.ends_at);
+				if (endsAt === null) return unknown("malformed");
+			}
+			grants.push({
+				resetsLeft: grant.resets_left,
+				resetsTotal: grant.resets_total,
+				endsAt,
+			});
+		}
+		return { known: true, reason: null, grants };
+	}
+	if (ember.eligible === false) {
+		if (ember.ineligible_reason === "no_grant") {
+			return { known: true, reason: "no_grant", grants: [] };
+		}
+		if (!cliVersionKnown) return unknown("cli_version_unknown");
+		return unknown(
+			typeof ember.ineligible_reason === "string" &&
+				SAFE_STATUS.test(ember.ineligible_reason)
+				? ember.ineligible_reason
+				: "unknown",
+		);
+	}
+	return unknown("malformed");
+}
+
 export function parseClaudePrepaidPayload(value: unknown): ClaudePrepaidDetail {
 	const unknown = (): ClaudePrepaidDetail => ({ known: false, cards: null });
 	if (
@@ -108,11 +195,37 @@ function safeErrorCode(value: unknown): string | null {
 	return typeof code === "string" && SAFE_STATUS.test(code) ? code : null;
 }
 
+/** Reads at most MAX_RESPONSE_BYTES, then parses; oversized or invalid is null. */
+async function readBoundedJson(
+	response: Response,
+): Promise<{ value: unknown } | null> {
+	const reader = response.body?.getReader();
+	if (reader === undefined) return null;
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > MAX_RESPONSE_BYTES) {
+			await reader.cancel().catch(() => undefined);
+			return null;
+		}
+		chunks.push(value);
+	}
+	try {
+		return { value: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
+	} catch {
+		return null;
+	}
+}
+
 async function requestJson(
 	url: string,
 	accessToken: string,
 	options: ObserveClaudeAccountDetailsOptions,
 	totalSignal: AbortSignal,
+	userAgent: string | null = null,
 ): Promise<RequestResult> {
 	const controller = new AbortController();
 	const abort = () => controller.abort();
@@ -131,14 +244,14 @@ async function requestJson(
 				Authorization: `Bearer ${accessToken}`,
 				"anthropic-beta": "oauth-2025-04-20",
 				Accept: "application/json",
+				...(userAgent === null ? {} : { "User-Agent": userAgent }),
 			},
 		});
-		let raw: unknown = null;
-		try {
-			raw = await response.json();
-		} catch {
-			if (response.ok) return { error: "malformed", code: null };
+		const parsed = await readBoundedJson(response);
+		if (parsed === null && response.ok) {
+			return { error: "malformed", code: null };
 		}
+		const raw = parsed?.value ?? null;
 		if (response.status === 401) return { error: "unauthorized", code: null };
 		if (response.status === 403) {
 			return { error: "forbidden", code: safeErrorCode(raw) };
@@ -156,9 +269,26 @@ async function requestJson(
 	}
 }
 
+/** FLY-2864: the live tier (`claude_max` + `default_claude_max_20x`), not the login-time cache. */
+function parseTier(organization: Record<string, unknown>): ClaudeTier | null {
+	const type = organization.organization_type;
+	if (typeof type !== "string" || !TIER_TOKEN.test(type)) return null;
+	const subscriptionType = type.replace(/^claude_/, "");
+	if (!TIER_TOKEN.test(subscriptionType)) return null;
+	const rateLimitTier = organization.rate_limit_tier;
+	return {
+		subscriptionType,
+		rateLimitTier:
+			typeof rateLimitTier === "string" && TIER_TOKEN.test(rateLimitTier)
+				? rateLimitTier
+				: null,
+	};
+}
+
 function parseProfile(value: unknown): {
 	organizationUuid: string;
 	subscription: ClaudeAccountDetailReading["subscription"];
+	tier: ClaudeTier | null;
 } | null {
 	if (!record(value) || !record(value.organization)) return null;
 	const uuid = value.organization.uuid;
@@ -166,6 +296,7 @@ function parseProfile(value: unknown): {
 	if (typeof uuid !== "string" || !UUID.test(uuid)) return null;
 	return {
 		organizationUuid: uuid,
+		tier: parseTier(value.organization),
 		subscription:
 			status === "canceled"
 				? "canceled"
@@ -193,6 +324,7 @@ async function probeAccount(
 	totalSignal: AbortSignal,
 	nowIso: string,
 	previous: ClaudeAccountDetailReading | undefined,
+	cliVersion: string | null,
 ): Promise<ClaudeAccountDetailReading> {
 	const credential = readPoolMonitorCredentialSnapshot(
 		options.profilesRoot,
@@ -205,10 +337,11 @@ async function probeAccount(
 	}
 	const [usage, profileResult] = await Promise.all([
 		requestJson(
-			`${baseUrl}/api/oauth/usage`,
+			`${baseUrl}${USAGE_PATH}`,
 			credential.accessToken,
 			options,
 			totalSignal,
+			cliVersion === null ? null : `claude-cli/${cliVersion} (external, cli)`,
 		),
 		requestJson(
 			`${baseUrl}/api/oauth/profile`,
@@ -264,12 +397,18 @@ async function probeAccount(
 			? { ...previous, note: "credential_changed" }
 			: blank(name, "credential_changed");
 	}
+	const resetGrants: ClaudeResetGrants =
+		"ok" in usage
+			? parseClaudeResetGrants(usage.ok, cliVersion !== null)
+			: { known: false, reason: usage.error, grants: null };
 	return {
 		name,
 		observedAt: nowIso,
 		subscription: profile.subscription,
 		usageStatus,
 		prepaid,
+		tier: profile.tier,
+		resetGrants,
 		note:
 			"ok" in prepaidResult
 				? prepaid.known
@@ -313,6 +452,10 @@ export async function observeClaudeAccountDetails(
 			)
 			.map((entry) => entry.name)
 			.sort((a, b) => a.localeCompare(b, "en-US"));
+		// One bounded `--version` per round; a failing reader is an unknown version.
+		const cliVersion = await (
+			options.cliVersion ?? (() => readClaudeCliVersion())
+		)().catch(() => null);
 		// Start every slot together so a slow alphabetic prefix cannot starve the tail.
 		const accounts = await Promise.all(
 			names.map((name) =>
@@ -323,6 +466,7 @@ export async function observeClaudeAccountDetails(
 					controller.signal,
 					nowIso,
 					previous.get(name),
+					cliVersion,
 				),
 			),
 		);

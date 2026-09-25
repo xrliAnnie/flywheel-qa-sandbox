@@ -15,6 +15,9 @@ const MAX_STORE_BYTES = 256 * 1024;
 const MAX_ACCOUNTS = 64;
 const ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SAFE_STATUS = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const TIER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_GRANTS = 128;
+const MAX_GRANT_RESETS = 1000;
 
 export interface ClaudePrepaidCard {
 	source: "tranche" | "promo";
@@ -27,12 +30,38 @@ export interface ClaudePrepaidDetail {
 	cards: ClaudePrepaidCard[] | null;
 }
 
+/** FLY-2864: the live organization tier, same shape as PoolSubscriptionTier. */
+export interface ClaudeTier {
+	subscriptionType: string;
+	rateLimitTier: string | null;
+}
+
+/** One usage-limit reset card ("cedar_ember" grant); no id or label is kept. */
+export interface ClaudeResetGrant {
+	resetsLeft: number;
+	resetsTotal: number;
+	endsAt: string | null;
+}
+
+export interface ClaudeResetGrants {
+	/** true: `grants` is the authoritative list (possibly []). */
+	known: boolean;
+	/** Safe enum: why unknown, or the server's explicit "no_grant" when known. */
+	reason: string | null;
+	/** null whenever `known` is false. */
+	grants: ClaudeResetGrant[] | null;
+}
+
 export interface ClaudeAccountDetailReading {
 	name: string;
 	observedAt: string | null;
 	subscription: "active" | "canceled" | "unknown";
 	usageStatus: string;
 	prepaid: ClaudePrepaidDetail;
+	/** FLY-2864: absent in pre-2864 files; null when the profile gave no valid type. */
+	tier?: ClaudeTier | null;
+	/** FLY-2864: absent in pre-2864 files and on first-round carry-forward rows. */
+	resetGrants?: ClaudeResetGrants;
 	note: string | null;
 }
 
@@ -53,8 +82,56 @@ function instant(value: unknown): value is string {
 	);
 }
 
+function validTier(value: unknown): boolean {
+	return (
+		value === null ||
+		(record(value) &&
+			typeof value.subscriptionType === "string" &&
+			TIER_TOKEN.test(value.subscriptionType) &&
+			(value.rateLimitTier === null ||
+				(typeof value.rateLimitTier === "string" &&
+					TIER_TOKEN.test(value.rateLimitTier))))
+	);
+}
+
+function resetCount(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= 0 &&
+		value <= MAX_GRANT_RESETS
+	);
+}
+
+function validResetGrants(value: unknown): boolean {
+	if (!record(value) || typeof value.known !== "boolean") return false;
+	if (
+		value.reason !== null &&
+		(typeof value.reason !== "string" || !SAFE_STATUS.test(value.reason))
+	) {
+		return false;
+	}
+	if (!value.known) return value.grants === null;
+	return (
+		Array.isArray(value.grants) &&
+		value.grants.length <= MAX_GRANTS &&
+		value.grants.every(
+			(grant) =>
+				record(grant) &&
+				resetCount(grant.resetsLeft) &&
+				resetCount(grant.resetsTotal) &&
+				grant.resetsLeft <= grant.resetsTotal &&
+				(grant.endsAt === null || instant(grant.endsAt)),
+		)
+	);
+}
+
 function validReading(value: unknown): value is ClaudeAccountDetailReading {
 	if (!record(value) || !record(value.prepaid)) return false;
+	if ("tier" in value && !validTier(value.tier)) return false;
+	if ("resetGrants" in value && !validResetGrants(value.resetGrants)) {
+		return false;
+	}
 	const cards = value.prepaid.cards;
 	if (cards !== null && !Array.isArray(cards)) return false;
 	if (

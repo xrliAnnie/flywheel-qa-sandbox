@@ -33,6 +33,11 @@ import {
 	defaultCodexAccountQuotaStorePath,
 	readCodexAccountQuotaStore,
 } from "../codex-quota/codex-account-quota-store.js";
+import {
+	type CodexSubscriptionReading,
+	defaultCodexSubscriptionStorePath,
+	readCodexSubscriptionStore,
+} from "../codex-quota/codex-subscription-store.js";
 import type { StateStore } from "../StateStore.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import {
@@ -153,6 +158,12 @@ export interface CapacitySnapshot {
 				prepaid?: NonNullable<
 					ReturnType<typeof readClaudeAccountDetailStore>
 				>["accounts"][number]["prepaid"];
+				/** FLY-2864: usage-limit reset cards from the detail probe. */
+				resetGrants?: NonNullable<
+					NonNullable<
+						ReturnType<typeof readClaudeAccountDetailStore>
+					>["accounts"][number]["resetGrants"]
+				>;
 				manualPrepaid?: NonNullable<
 					ReturnType<typeof readClaudeManualPrepaid>
 				>[number];
@@ -199,6 +210,45 @@ export interface CodexAccountProjection {
 	note: string | null;
 	unclassifiedWindows: number;
 	tokenState: CodexTokenState;
+	/**
+	 * FLY-2864: the account's subscription (next charge), only when the reading
+	 * belongs to the same login; an identity-less problem row projects its note.
+	 */
+	subscription?: CodexSubscriptionProjection;
+}
+
+export type CodexSubscriptionProjection = Pick<
+	CodexSubscriptionReading,
+	"status" | "renewsAt" | "endsAt" | "observedAt" | "note"
+>;
+
+function projectCodexSubscription(
+	reading: CodexAccountReading,
+	subscription: CodexSubscriptionReading | undefined,
+): CodexSubscriptionProjection | undefined {
+	if (subscription === undefined) return undefined;
+	if (subscription.identityKey === undefined) {
+		return {
+			status: "unknown",
+			renewsAt: null,
+			endsAt: null,
+			observedAt: null,
+			note: subscription.note,
+		};
+	}
+	if (
+		reading.identityKey === undefined ||
+		reading.identityKey !== subscription.identityKey
+	) {
+		return undefined;
+	}
+	return {
+		status: subscription.status,
+		renewsAt: subscription.renewsAt,
+		endsAt: subscription.endsAt,
+		observedAt: subscription.observedAt,
+		note: subscription.note,
+	};
 }
 
 export type CodexTokenState =
@@ -248,8 +298,10 @@ function projectCodexAccount(
 		activeAccount: string | null;
 		nowMs: number;
 		staleAfterMinutes: number;
+		subscription?: CodexSubscriptionReading;
 	},
 ): CodexAccountProjection {
+	const subscription = projectCodexSubscription(reading, input.subscription);
 	const windows = [reading.fiveH, reading.weekly].filter(
 		(window): window is NonNullable<typeof window> => window !== null,
 	);
@@ -302,6 +354,7 @@ function projectCodexAccount(
 		note: reading.note,
 		unclassifiedWindows: reading.unclassifiedWindows,
 		tokenState,
+		...(subscription === undefined ? {} : { subscription }),
 	};
 }
 
@@ -315,6 +368,7 @@ export interface CapacitySnapshotDeps {
 	readDataDisk?: typeof readSharedDataDisk;
 	accountStorePath?: string;
 	codexAccountStorePath?: string;
+	codexSubscriptionStorePath?: string;
 	claudeAccountDetailStorePath?: string;
 	claudeManualPrepaidPath?: string;
 	claudeProfilesDir?: string;
@@ -525,6 +579,11 @@ export async function buildCapacitySnapshot(
 		(deps.accountStorePath === undefined
 			? defaultCodexAccountQuotaStorePath()
 			: join(dirname(accountStorePath), "codex-accounts.json"));
+	const codexSubscriptionStorePath =
+		deps.codexSubscriptionStorePath ??
+		(deps.accountStorePath === undefined
+			? defaultCodexSubscriptionStorePath()
+			: join(dirname(accountStorePath), "codex-subscriptions.json"));
 	const claudeAccountDetailStorePath =
 		deps.claudeAccountDetailStorePath ??
 		(deps.accountStorePath === undefined
@@ -542,6 +601,12 @@ export async function buildCapacitySnapshot(
 	const quotaConfigPath =
 		deps.quotaConfigPath ?? defaultQuotaMonitorConfigPath();
 	const codexStore = readCodexAccountQuotaStore(codexAccountStorePath);
+	// A missing or invalid subscription file only drops the next-charge facts.
+	const codexSubscriptionsByName = new Map(
+		(
+			readCodexSubscriptionStore(codexSubscriptionStorePath)?.accounts ?? []
+		).map((account) => [account.name, account]),
+	);
 	const claudeDetails = readClaudeAccountDetailStore(
 		claudeAccountDetailStorePath,
 	);
@@ -612,10 +677,10 @@ export async function buildCapacitySnapshot(
 	const accounts = accountEntries.map((account) => {
 		const detail = claudeDetailsByName.get(account.name);
 		const manual = manualPrepaidByName.get(account.name);
-		const subscriptionTier = readPoolSubscriptionTier(
-			claudeProfilesDir,
-			account.name,
-		);
+		// FLY-2864: the live profile tier wins; the credential file only records
+		// the tier at login time (business read 5x after an upgrade to 20x).
+		const subscriptionTier =
+			detail?.tier ?? readPoolSubscriptionTier(claudeProfilesDir, account.name);
 		const accountObservedAt = validObservationInstant(
 			account.lastObservedAt,
 			nowMs,
@@ -646,6 +711,9 @@ export async function buildCapacitySnapshot(
 						detailObservedAt: detail.observedAt,
 						usageStatus: detail.usageStatus,
 						prepaid: detail.prepaid,
+						...(detail.resetGrants === undefined
+							? {}
+							: { resetGrants: detail.resetGrants }),
 					}),
 			...(manual === undefined ? {} : { manualPrepaid: manual }),
 			...(account.fiveHResetAt === undefined
@@ -772,6 +840,7 @@ export async function buildCapacitySnapshot(
 								activeAccount: codexStore.activeAccount,
 								nowMs,
 								staleAfterMinutes,
+								subscription: codexSubscriptionsByName.get(reading.name),
 							}),
 						),
 						unavailable: [],

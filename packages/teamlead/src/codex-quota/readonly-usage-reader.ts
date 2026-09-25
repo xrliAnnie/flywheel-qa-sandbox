@@ -177,35 +177,53 @@ function parsePayload(value: unknown, now: number): ReadonlyFields | null {
 	};
 }
 
+/**
+ * Reads one Codex auth file and returns its bearer credentials only when the
+ * file's identity is the expected account. Every failure (unreadable, foreign
+ * identity, missing token or account id) is an identity mismatch: callers must
+ * never send a request with credentials they could not bind to the slot.
+ * FLY-2864 shares this with the subscriptions reader.
+ */
+export function readVerifiedCodexAuth(
+	authPath: string,
+	registry: Pick<CodexAccountPool, "profiles">,
+	expectedAccountKey: string,
+): { accessToken: string; accountId: string } | null {
+	try {
+		const rawAuth = readFileSync(authPath, "utf8");
+		const identity = identifyCodexAuth(rawAuth, registry);
+		if (codexInstallAccountKey(identity) !== expectedAccountKey) return null;
+		const parsed: unknown = JSON.parse(rawAuth);
+		if (!record(parsed) || !record(parsed.tokens)) return null;
+		if (
+			typeof parsed.tokens.access_token !== "string" ||
+			parsed.tokens.access_token.length === 0 ||
+			identity.accountId === null
+		) {
+			return null;
+		}
+		return {
+			accessToken: parsed.tokens.access_token,
+			accountId: identity.accountId,
+		};
+	} catch {
+		return null;
+	}
+}
+
 export async function readCodexReadonlyUsage(
 	options: ReadCodexReadonlyUsageOptions,
 ): Promise<CodexReadonlyUsageResult> {
 	if (options.endpoint !== undefined && options.fetchFn === undefined) {
 		throw new Error("codex_readonly_test_origin_requires_fetch_injection");
 	}
-	let rawAuth: string;
-	let accessToken: string;
-	let accountId: string;
-	try {
-		rawAuth = readFileSync(options.authPath, "utf8");
-		const identity = identifyCodexAuth(rawAuth, options.registry);
-		if (codexInstallAccountKey(identity) !== options.expectedAccountKey) {
-			return { error: "identity_mismatch" };
-		}
-		const parsed: unknown = JSON.parse(rawAuth);
-		if (!record(parsed) || !record(parsed.tokens)) throw new Error("tokens");
-		if (
-			typeof parsed.tokens.access_token !== "string" ||
-			parsed.tokens.access_token.length === 0 ||
-			identity.accountId === null
-		) {
-			throw new Error("identity");
-		}
-		accessToken = parsed.tokens.access_token;
-		accountId = identity.accountId;
-	} catch {
-		return { error: "identity_mismatch" };
-	}
+	const verified = readVerifiedCodexAuth(
+		options.authPath,
+		options.registry,
+		options.expectedAccountKey,
+	);
+	if (verified === null) return { error: "identity_mismatch" };
+	const { accessToken, accountId } = verified;
 
 	const controller = new AbortController();
 	const abortFromParent = () => controller.abort();

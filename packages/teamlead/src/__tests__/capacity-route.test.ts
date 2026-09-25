@@ -330,6 +330,72 @@ describe("GET /api/capacity", () => {
 		}
 	});
 
+	it("reports the live 20x business tier, not the login-time 5x credential cache (FLY-2864)", async () => {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: "business",
+			accounts: [
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: "2026-09-29T16:00:00.000Z",
+					lastObservedAt: "2026-09-24T23:00:00.000Z",
+					observedFiveHPct: 5,
+					observedSevenDPct: 20,
+				},
+			],
+		});
+		const claudeProfilesDir = writeProfileSubscription(
+			accountStorePath,
+			"business",
+			{ subscriptionType: "max", rateLimitTier: "default_claude_max_5x" },
+		);
+		writeFileSync(
+			join(dirname(accountStorePath), "claude-account-details.json"),
+			JSON.stringify({
+				version: 1,
+				generatedAt: "2026-09-24T23:30:00.000Z",
+				accounts: [
+					{
+						name: "business",
+						observedAt: "2026-09-24T23:30:00.000Z",
+						subscription: "active",
+						usageStatus: "ok",
+						prepaid: { known: true, cards: null },
+						tier: {
+							subscriptionType: "max",
+							rateLimitTier: "default_claude_max_20x",
+						},
+						note: null,
+					},
+				],
+			}),
+		);
+		const url = await start(
+			makeConfig({
+				apiToken: "master-token",
+				capacityProbes: {
+					accountStorePath,
+					claudeProfilesDir,
+					readMemoryFreePct: async () => ({
+						freePct: 50,
+						observedAt: "2026-09-24T23:30:00.000Z",
+					}),
+				},
+			}),
+		);
+		const body = (await (
+			await fetch(url, { headers: { Authorization: "Bearer master-token" } })
+		).json()) as CapacitySnapshot;
+		expect(
+			body.quota.claude.accounts.find((account) => account.name === "business")
+				?.subscriptionTier,
+		).toEqual({
+			subscriptionType: "max",
+			rateLimitTier: "default_claude_max_20x",
+		});
+	});
+
 	it("fails closed with 503 when the master token is not configured", async () => {
 		const url = await start(makeConfig());
 		const response = await fetch(url);
@@ -526,7 +592,7 @@ describe("GET /api/accounts-page.html", () => {
 		});
 		expect(response.status).toBe(200);
 		const html = await response.text();
-		expect(html).toContain("已取消 · 10/14");
+		expect(html).toContain("已取消 · 10/14 周三 到期");
 		expect(html).not.toContain("founder");
 		expect(html).not.toContain("FLY-2792#confirmed");
 		expect(html).not.toContain(identityDigest);
@@ -590,7 +656,7 @@ describe("GET /api/accounts-page.html", () => {
 		const personal1Row = html
 			.split("</tr>")
 			.find((row) => row.includes('<div class="account-name">personal1</div>'));
-		expect(personal1Row).toContain("已取消 · 日期待确认");
+		expect(personal1Row).toContain('<span class="next-charge">已取消</span>');
 	});
 
 	it("keeps the page available when manual input or Codex identity lookup is unusable", async () => {
