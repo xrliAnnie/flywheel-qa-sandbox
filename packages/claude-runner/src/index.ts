@@ -142,6 +142,8 @@ export {
 	type CodexAgentHomeSessionSnapshot,
 	type CodexCredentialMigrationResult,
 	type CodexCredentialMigrationState,
+	type CodexLeaseGuardOptions,
+	type CodexLeaseReleaseOutcome,
 	codexAgentHomeDir,
 	codexCredentialTruthPath,
 	codexHomeDir,
@@ -155,12 +157,14 @@ export {
 	provisionCodexAgentHome,
 	provisionCodexHome,
 	rawCodexBin,
+	reassertCodexAgentHomeLease,
 	releaseCodexAgentHomeLease,
 	removeCodexHome,
 	renderCodexHomeConfig,
 	resolveExecutionCodexHome,
 	retireCodexExecutionHome,
 	SECRET_ENV_VARS,
+	scrubCodexAgentHomeLeaseEntry,
 	scrubCodexHomeCredential,
 	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
@@ -202,6 +206,18 @@ export {
 	publishCodexMemorySeed,
 	readCodexMemorySeedManifest,
 } from "./codex-memory-seed.js";
+// FLY-2877: the lease guard's process authority (FLY-2869 contract copy)
+export {
+	type CodexLeaseHolderProbe,
+	type CodexLeaseHolderProbeResult,
+	type CodexProcessRecord,
+	type CodexProcessSnapshot,
+	type CodexUnattributedProcess,
+	captureCodexProcessSnapshot,
+	defaultCodexLeaseHolderProbe,
+	holdersFromSnapshot,
+	parseCodexProcessSnapshot,
+} from "./codex-process-snapshot.js";
 export {
 	type CodexRolloutMtimeProbe,
 	probeCodexRolloutMtime,

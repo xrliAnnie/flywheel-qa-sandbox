@@ -1,0 +1,30 @@
+classDiagram
+  class LeaseFile {
+    路径 agents/项目/角色/.flywheel-leases/exec
+    token 32位十六进制
+    mtime
+  }
+  class CodexProcess {
+    pid
+    内核可执行名是 codex
+    环境 CODEX_HOME
+    环境 FLYWHEEL_EXEC_ID
+  }
+  class Guard {
+    探测(home, exec) 返回 持有者 或 未知
+    判定: 删除 或 保留
+  }
+  class Adapter {
+    token 只在内存
+    独立定时器每 60 秒复核并放回
+    收尾: 停daemon 后 关TUI 后 确认退出 后 等归零 后 释放
+  }
+  class MaintenanceTick {
+    候选 exec 集合
+    清扫: 无持有者 且 非候选 且 超过10分钟, 不依赖 session 记录
+  }
+  LeaseFile "1" -- "0..n" CodexProcess : 同 exec 同 home
+  Guard --> CodexProcess : ps 只读探测
+  Adapter --> LeaseFile : 创建者持 token
+  MaintenanceTick --> Guard : 每轮过守卫
+  Adapter --> Guard : 每次释放过守卫

@@ -11,16 +11,24 @@
  */
 
 import { execFile } from "node:child_process";
-import { type Dirent, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	type Dirent,
+	lstatSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+} from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
 	type AuditedSignalFailureKind,
 	auditedSignal,
 	type BoundaryEvidence,
+	type CodexLeaseHolderProbe,
 	codexHomesRoot,
 	codexSessionStateDir,
 	resolveDaemonSocketPath,
 	resolveExecutionCodexHome,
+	scrubCodexAgentHomeLeaseEntry,
 } from "flywheel-claude-runner";
 import { RUNNER_MEMORY_ID_MAX_LENGTH } from "flywheel-config";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
@@ -968,4 +976,150 @@ export async function sweepCodexRunnerOrphans(
 		await reapCandidate(candidate, runtimeDeps, result);
 	}
 	return result;
+}
+
+export const CODEX_HOME_LEASE_SWEEP_MIN_AGE_MS = 10 * 60_000;
+
+export interface StaleCodexHomeLeaseSweepResult {
+	released: number;
+	retained: number;
+	skipped: number;
+	invalid: number;
+}
+
+/**
+ * FLY-2877 — the "dies with the process" half of the lease lifecycle.
+ *
+ * When closeout kept a lease because a codex process had not exited yet, or a
+ * daemon died after its session went terminal, nothing else would remove the
+ * lease until the next Bridge restart, and readiness keeps reading the home as
+ * `lease_without_process`. This rides the existing maintenance tick and drops
+ * such a lease only when: it is not a readopt candidate nor owned by this
+ * Bridge, it is older than `minAgeMs` (admission creates it seconds before the
+ * daemon starts), and — checked by the janitor primitive under the home lock —
+ * no codex process holds it and the home's marker proves its identity. It does
+ * not need session.json: residue is exactly where that record is often gone.
+ */
+export async function sweepStaleCodexHomeLeases(
+	input: {
+		readoptExecutionIds: ReadonlySet<string>;
+		isExecutionOwned?: (executionId: string) => boolean;
+		now?: () => number;
+	},
+	deps: {
+		env?: NodeJS.ProcessEnv;
+		probe?: CodexLeaseHolderProbe;
+		audit?: (event: string, detail: Record<string, unknown>) => void;
+		minAgeMs?: number;
+	} = {},
+): Promise<StaleCodexHomeLeaseSweepResult> {
+	const env = deps.env ?? process.env;
+	const now = input.now ?? Date.now;
+	const minAgeMs = deps.minAgeMs ?? CODEX_HOME_LEASE_SWEEP_MIN_AGE_MS;
+	const audit = deps.audit ?? (() => {});
+	const result: StaleCodexHomeLeaseSweepResult = {
+		released: 0,
+		retained: 0,
+		skipped: 0,
+		invalid: 0,
+	};
+	for (const { home, executionId, mtimeMs } of listAgentHomeLeases(env)) {
+		if (
+			input.readoptExecutionIds.has(executionId) ||
+			input.isExecutionOwned?.(executionId) ||
+			mtimeMs > now() - minAgeMs
+		) {
+			result.skipped += 1;
+			continue;
+		}
+		const outcome = await scrubCodexAgentHomeLeaseEntry(
+			{ home, executionId },
+			env,
+			deps.probe ? { probe: deps.probe } : {},
+		);
+		if (outcome.released) {
+			result.released += 1;
+			audit("codex_home_lease_swept", {
+				executionId,
+				home,
+				remaining: outcome.remaining,
+			});
+		} else if (outcome.reason === "entry_invalid") {
+			result.invalid += 1;
+			audit("codex_home_lease_entry_invalid", { executionId, home });
+		} else {
+			result.retained += 1;
+			audit("codex_home_lease_retained", {
+				executionId,
+				home,
+				reason: outcome.reason,
+				holders: outcome.holders,
+			});
+		}
+	}
+	return result;
+}
+
+/** Keyed leases, with the same safety filters as the home inventory. */
+function listAgentHomeLeases(
+	env: NodeJS.ProcessEnv,
+): Array<{ home: string; executionId: string; mtimeMs: number }> {
+	const agentsDir = join(codexHomesRoot(env), "agents");
+	const entries: Array<{ home: string; executionId: string; mtimeMs: number }> =
+		[];
+	const plainDirectories = (dir: string): Dirent[] => {
+		try {
+			return readdirSync(dir, { withFileTypes: true }).filter(
+				(entry) => entry.isDirectory() && !entry.isSymbolicLink(),
+			);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+			throw error;
+		}
+	};
+	try {
+		const agents = lstatSync(agentsDir);
+		if (!agents.isDirectory() || agents.isSymbolicLink()) return [];
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	for (const project of plainDirectories(agentsDir)) {
+		const projectDir = join(agentsDir, project.name);
+		for (const role of plainDirectories(projectDir)) {
+			if (role.name === ".locks") continue;
+			const home = join(projectDir, role.name);
+			const leasesDir = join(home, ".flywheel-leases");
+			let leases: Dirent[];
+			try {
+				const stat = lstatSync(leasesDir);
+				if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+				leases = readdirSync(leasesDir, { withFileTypes: true });
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw error;
+			}
+			for (const lease of leases) {
+				const name = String(lease.name);
+				if (
+					!lease.isFile() ||
+					lease.isSymbolicLink() ||
+					!SAFE_IDENTIFIER_RE.test(name) ||
+					name.length > RUNNER_MEMORY_ID_MAX_LENGTH
+				) {
+					continue;
+				}
+				try {
+					entries.push({
+						home,
+						executionId: name,
+						mtimeMs: lstatSync(join(leasesDir, name)).mtimeMs,
+					});
+				} catch {
+					// Removed between listing and stat: nothing to sweep.
+				}
+			}
+		}
+	}
+	return entries;
 }

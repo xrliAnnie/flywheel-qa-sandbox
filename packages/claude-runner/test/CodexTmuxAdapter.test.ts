@@ -62,8 +62,27 @@ import { CodexExecutionOwnershipRegistry } from "../src/codex-execution-ownershi
 import {
 	admitCodexAgentHome,
 	releaseCodexAgentHomeLease,
+	scrubCodexAgentHomeLeaseEntry,
 } from "../src/codex-home.js";
+import type {
+	CodexLeaseHolderProbe,
+	CodexLeaseHolderProbeResult,
+} from "../src/codex-process-snapshot.js";
 import type { RunnerTuiWindowOutcome } from "../src/codex-runner-tui-window.js";
+
+// FLY-2877: lease deletion consults the host process table. These tests must
+// not depend on which codex processes the host runs (or on whether the CI
+// platform's ps shows environments): by default nothing holds a lease, and the
+// guard cases inject their own probe through the adapter deps.
+vi.mock("../src/codex-process-snapshot.js", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../src/codex-process-snapshot.js")
+	>()),
+	defaultCodexLeaseHolderProbe: vi.fn(async () => ({
+		status: "ok",
+		holders: [],
+	})),
+}));
 
 const THREAD_ID = "019e9006-0b8e-72b0-bb80-9100d85473cf";
 const WINDOW_ID = "@7";
@@ -612,6 +631,601 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(error).toHaveBeenCalledWith(
 			expect.stringContaining("refuse_remove_agent_home"),
 		);
+	});
+
+	describe("FLY-2877 the lease lives as long as the codex processes", () => {
+		const LIVE: CodexLeaseHolderProbeResult = {
+			status: "ok",
+			holders: [86434, 44535],
+		};
+		const NONE: CodexLeaseHolderProbeResult = { status: "ok", holders: [] };
+		const UNKNOWN: CodexLeaseHolderProbeResult = {
+			status: "unknown",
+			reason: "unattributed_present",
+		};
+		type ProbeCall = [string, string, { deadlineMs?: number } | undefined];
+		const probeSequence = (...results: CodexLeaseHolderProbeResult[]) => {
+			const queue = [...results];
+			return vi.fn<CodexLeaseHolderProbe>(async () =>
+				queue.length > 1 ? queue.shift()! : queue[0]!,
+			);
+		};
+
+		async function admitted() {
+			const admission = await admitCodexAgentHome({
+				project: "flywheel",
+				role: "implement",
+				executionId: execId,
+				requestedAssemblyArm: "bare",
+			});
+			return {
+				admission,
+				lease: join(admission.handle.home, ".flywheel-leases", execId),
+				codexAgentHome: {
+					...admission.handle,
+					assemblyArm: admission.effectiveAssemblyArm,
+					createdLease: admission.createdLease,
+				},
+			};
+		}
+
+		function adapterWith(deps: Partial<CodexDaemonAdapterDeps>) {
+			return new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				{ ...makeDeps(), ...deps },
+			);
+		}
+
+		function warned(fragment: string): boolean {
+			return vi
+				.mocked(console.warn)
+				.mock.calls.some((call) => String(call[0]).includes(fragment));
+		}
+
+		describe("every release path keeps a lease a live process still holds", () => {
+			it("resumeExistingExecution snapshot failure (rescue release)", async () => {
+				const { admission, lease, codexAgentHome } = await admitted();
+				const probe = probeSequence(LIVE);
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probe,
+				}).resumeExistingExecution(
+					ctx({ skillFrameworkMode: "bare", codexAgentHome }),
+					{ onRecoveryOwnershipEstablished: vi.fn(async () => undefined) },
+				);
+				expect(result.success).toBe(false);
+				expect(existsSync(lease)).toBe(true);
+				expect(probe).toHaveBeenCalledWith(admission.handle.home, execId);
+				expect(warned(`keyed_home_lease_retained exec=${execId}`)).toBe(true);
+			});
+
+			it("owner admission failure (rescue release)", async () => {
+				const { admission, lease, codexAgentHome } = await admitted();
+				executionOwners.claim(execId, "dispatch");
+				const probe = probeSequence(LIVE);
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probe,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(false);
+				expect(existsSync(lease)).toBe(true);
+				expect(probe).toHaveBeenCalledWith(admission.handle.home, execId);
+			});
+
+			it("owner admission failure releases once nothing holds the lease", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				executionOwners.claim(execId, "dispatch");
+				await adapterWith({
+					codexLeaseHolderProbe: probeSequence(NONE),
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(existsSync(lease)).toBe(false);
+			});
+
+			it.each([
+				["live", LIVE, true],
+				["gone", NONE, false],
+			] as const)(
+				"prepublished retirement (no session record) — holders %s",
+				async (_label, holders, leaseKept) => {
+					const { admission, lease, codexAgentHome } = await admitted();
+					// The session record cannot be written, so retirement resolves the
+					// admitted lease as prepublished.
+					mkdirSync(process.env.FLYWHEEL_CODEX_SESSION_DIR!, {
+						recursive: true,
+					});
+					writeFileSync(
+						join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId),
+						"not a directory",
+					);
+					const probe = probeSequence(holders);
+					await expect(
+						adapterWith({ codexLeaseHolderProbe: probe }).execute(
+							ctx({ skillFrameworkMode: "bare", codexAgentHome }),
+						),
+					).rejects.toThrow();
+					expect(existsSync(lease)).toBe(leaseKept);
+					expect(probe).toHaveBeenCalledWith(admission.handle.home, execId);
+				},
+			);
+
+			it.each([
+				["live", LIVE, true],
+				["gone", NONE, false],
+			] as const)(
+				"unresolved retirement of a created lease — holders %s",
+				async (_label, holders, leaseKept) => {
+					const { admission, lease, codexAgentHome } = await admitted();
+					const stateDir = join(
+						process.env.FLYWHEEL_CODEX_SESSION_DIR!,
+						execId,
+					);
+					mkdirSync(stateDir, { recursive: true });
+					writeFileSync(
+						join(stateDir, "session.json"),
+						JSON.stringify({
+							codexAgentHome: {
+								project: "flywheel",
+								role: "qa",
+								home: join(homesRoot, "agents", "flywheel", "qa"),
+							},
+						}),
+					);
+					const probe = probeSequence(holders);
+					await expect(
+						adapterWith({ codexLeaseHolderProbe: probe }).execute(
+							ctx({ skillFrameworkMode: "bare", codexAgentHome }),
+						),
+					).rejects.toThrow(/set-once/);
+					expect(existsSync(lease)).toBe(leaseKept);
+					expect(probe).toHaveBeenCalledWith(admission.handle.home, execId);
+				},
+			);
+
+			it("keyed normal closeout forwards the adapter's probe to retirement", async () => {
+				const { admission, lease, codexAgentHome } = await admitted();
+				const probe = probeSequence(LIVE);
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probe,
+					leaseHolderWaitMs: 0,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				// The bounded wait is disabled, so the only probe is retirement's:
+				// had the adapter not forwarded it, the default would have released.
+				expect(probe.mock.calls as ProbeCall[]).toEqual([
+					[admission.handle.home, execId],
+				]);
+				expect(existsSync(lease)).toBe(true);
+				expect(warned(`keyed_home_lease_retained exec=${execId}`)).toBe(true);
+			});
+
+			it("keyed normal closeout releases once nothing holds the lease", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probeSequence(NONE),
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				expect(existsSync(lease)).toBe(false);
+			});
+
+			it("an unconfirmed daemon drain fails the run and keeps the lease", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				runtime.drainRejectsWith = new Error("SIGKILL unconfirmed");
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probeSequence(LIVE),
+					leaseHolderWaitMs: 0,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(false);
+				expect(existsSync(lease)).toBe(true);
+			});
+		});
+
+		describe("bounded wait for the holders before retirement", () => {
+			it("waits until the holders exit, then releases", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const probe = probeSequence(LIVE, LIVE, NONE);
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probe,
+					leaseHolderPollMs: 1,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				const calls = probe.mock.calls as ProbeCall[];
+				expect(calls.slice(0, 3).every((call) => call[2]?.deadlineMs)).toBe(
+					true,
+				);
+				expect(calls).toHaveLength(4);
+				expect(calls[3]![2]).toBeUndefined();
+				expect(existsSync(lease)).toBe(false);
+			});
+
+			it("gives up after the deadline, keeps the lease and does not fail the run", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				let clock = 1_000_000;
+				const probe = vi.fn<CodexLeaseHolderProbe>(async () => {
+					clock += 1_000;
+					return LIVE;
+				});
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probe,
+					leaseHolderPollMs: 1,
+					now: () => clock,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				expect(existsSync(lease)).toBe(true);
+				expect(
+					(probe.mock.calls as ProbeCall[]).filter((call) => call[2]),
+				).toHaveLength(5);
+				expect(warned(`keyed_home_lease_holders_linger exec=${execId}`)).toBe(
+					true,
+				);
+				expect(warned(`keyed_home_lease_retained exec=${execId}`)).toBe(true);
+			});
+
+			it("stops waiting at the first unknown probe", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const probe = probeSequence(UNKNOWN);
+				await adapterWith({
+					codexLeaseHolderProbe: probe,
+					leaseHolderPollMs: 1,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(probe).toHaveBeenCalledTimes(2);
+				expect(existsSync(lease)).toBe(true);
+			});
+
+			it("hands each probe only the time left of one total deadline", async () => {
+				const { codexAgentHome } = await admitted();
+				let clock = 1_000_000;
+				const probe = vi.fn<CodexLeaseHolderProbe>(async () => {
+					clock += 4_000;
+					return LIVE;
+				});
+				await adapterWith({
+					codexLeaseHolderProbe: probe,
+					leaseHolderPollMs: 1,
+					now: () => clock,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(
+					(probe.mock.calls as ProbeCall[])
+						.filter((call) => call[2])
+						.map((call) => call[2]!.deadlineMs),
+				).toEqual([5_000, 1_000]);
+			});
+		});
+
+		describe("a founder window that may still open after closeout", () => {
+			function lateWindowDeps(events: string[]) {
+				let releaseEnsure!: (outcome: RunnerTuiWindowOutcome) => void;
+				const deferred = new Promise<RunnerTuiWindowOutcome>((resolve) => {
+					releaseEnsure = resolve;
+				});
+				const deps: Partial<CodexDaemonAdapterDeps> = {
+					ensureWindow: (async () => {
+						events.push("ensure-start");
+						const result = await deferred;
+						events.push("ensure-settled");
+						return result;
+					}) as CodexDaemonAdapterDeps["ensureWindow"],
+					cleanupWindows: (async () => {
+						events.push("late-cleanup");
+					}) as CodexDaemonAdapterDeps["cleanupWindows"],
+					tuiJoinTimeoutMs: 1,
+				};
+				return {
+					deps,
+					release: () => releaseEnsure({ created: true, windowId: WINDOW_ID }),
+				};
+			}
+
+			it("keeps the lease when the TUI attempt outlives the teardown join (ordinary)", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const events: string[] = [];
+				const late = lateWindowDeps(events);
+				const probe = probeSequence(NONE);
+				runtime = new FakeRuntime(async (input) => {
+					input.onThreadReady?.(THREAD_ID, 0);
+					return complete();
+				});
+				const result = await adapterWith({
+					...late.deps,
+					codexLeaseHolderProbe: probe,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				// The late `codex resume` window may still start: nothing may have
+				// judged the home empty and dropped the lease.
+				expect(existsSync(lease)).toBe(true);
+				expect(probe).not.toHaveBeenCalled();
+				expect(
+					warned(
+						`keyed_home_lease_retained exec=${execId} reason=late_tui_window`,
+					),
+				).toBe(true);
+				// The Bridge's lease sweep skips owned executions: ownership is the
+				// fence until the late window can no longer start a codex process.
+				expect(executionOwners.isExecutionOwned(execId)).toBe(true);
+				late.release();
+				await vi.waitFor(() =>
+					expect(executionOwners.isExecutionOwned(execId)).toBe(false),
+				);
+				expect(events).toContain("late-cleanup");
+				expect(existsSync(lease)).toBe(true);
+			});
+
+			it("keeps the lease when the TUI attempt outlives the teardown join (controlled shutdown)", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const events: string[] = [];
+				const late = lateWindowDeps(events);
+				let rejectGoal!: (error: Error) => void;
+				const controlledRuntime: CodexDaemonGoalRuntimeLike = {
+					runGoal: (input) => {
+						input.onThreadReady?.(THREAD_ID, 0);
+						return new Promise((_resolve, reject) => {
+							rejectGoal = reject;
+						});
+					},
+					stop: () =>
+						rejectGoal(new GoalRunError("controlled", "transport_closed")),
+					drained: async () => {},
+				};
+				const lifecycle = {
+					start: vi.fn(async () => {}),
+					stopIntake: vi.fn(async () => {}),
+					stop: vi.fn(async () => {}),
+					waitForShutdown: vi.fn(async () => ({ requestId: "shutdown-late" })),
+					observe: vi.fn(() => null),
+					getPhaseHold: vi.fn(() => null),
+					enterHold: vi.fn(async () => {}),
+					confirmHoldPaused: vi.fn(async () => {}),
+					waitForActivity: vi.fn(async () => {}),
+					leaveHold: vi.fn(async () => {}),
+					markWakeStarted: vi.fn(),
+					finishWake: vi.fn(),
+					ackShutdown: vi.fn(),
+					ackAllPendingShutdowns: vi.fn(),
+				};
+				const probe = probeSequence(NONE);
+				const result = await adapterWith({
+					...late.deps,
+					runtimeFactory: () => controlledRuntime,
+					phaseLifecycleFactory: () => lifecycle,
+					codexLeaseHolderProbe: probe,
+				}).execute(
+					ctx({
+						skillFrameworkMode: "bare",
+						codexAgentHome,
+						phaseKeepAlive: { role: "implement" },
+					}),
+				);
+				expect(result.success).toBe(true);
+				expect(lifecycle.ackAllPendingShutdowns).toHaveBeenCalledWith({
+					ok: true,
+				});
+				expect(existsSync(lease)).toBe(true);
+				expect(probe).not.toHaveBeenCalled();
+				expect(executionOwners.isExecutionOwned(execId)).toBe(true);
+				late.release();
+				await vi.waitFor(() =>
+					expect(executionOwners.isExecutionOwned(execId)).toBe(false),
+				);
+				expect(events).toContain("late-cleanup");
+				expect(existsSync(lease)).toBe(true);
+			});
+
+			it("an old lease cannot be swept between closeout and a late window's start", async () => {
+				const { admission, lease, codexAgentHome } = await admitted();
+				const events: string[] = [];
+				const late = lateWindowDeps(events);
+				runtime = new FakeRuntime(async (input) => {
+					input.onThreadReady?.(THREAD_ID, 0);
+					return complete();
+				});
+				await adapterWith({
+					...late.deps,
+					codexLeaseHolderProbe: probeSequence(NONE),
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				// Same decision as the Bridge maintenance sweep for an old,
+				// non-readopt lease: skip while owned, else the janitor primitive.
+				const sweep = () =>
+					executionOwners.isExecutionOwned(execId)
+						? Promise.resolve("skipped" as const)
+						: scrubCodexAgentHomeLeaseEntry(
+								{ home: admission.handle.home, executionId: execId },
+								process.env,
+								{ probe: probeSequence(NONE) },
+							);
+				// Closeout returned, the window has not been created yet.
+				await expect(sweep()).resolves.toBe("skipped");
+				expect(existsSync(lease)).toBe(true);
+				late.release(); // the late window is created, then cleaned up
+				await vi.waitFor(() =>
+					expect(executionOwners.isExecutionOwned(execId)).toBe(false),
+				);
+				expect(events.indexOf("ensure-settled")).toBeLessThan(
+					events.indexOf("late-cleanup"),
+				);
+				// Only now, with nothing left to start a reader, may it go.
+				await expect(sweep()).resolves.toMatchObject({ released: true });
+				expect(existsSync(lease)).toBe(false);
+			});
+
+			it("still retires normally when the TUI attempt settled inside the join", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probeSequence(NONE),
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				expect(existsSync(lease)).toBe(false);
+				expect(warned("reason=late_tui_window")).toBe(false);
+				expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+			});
+		});
+
+		describe("self-healing a lease deleted by someone else", () => {
+			type Timer = { fn: () => void; ms: number; stopped: boolean };
+			function timerSeam() {
+				const timers: Timer[] = [];
+				const startHeartbeat = vi.fn((fn: () => void, ms: number) => {
+					const timer = { fn, ms, stopped: false };
+					timers.push(timer);
+					return () => {
+						timer.stopped = true;
+					};
+				});
+				return { timers, startHeartbeat };
+			}
+
+			it("restores the same token on its own 60 s clock, not on daemon traffic", async () => {
+				const { admission, lease, codexAgentHome } = await admitted();
+				const { timers, startHeartbeat } = timerSeam();
+				const seen: string[] = [];
+				runtime = new FakeRuntime(async (input, events) => {
+					input.onThreadReady?.(THREAD_ID, 0);
+					expect(timers.map((timer) => timer.ms)).toEqual([25, 60_000]);
+					const reassert = timers[1]!;
+					rmSync(lease);
+					for (let i = 0; i < 200; i += 1) events?.onNotification?.("x", {});
+					timers[0]!.fn();
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					seen.push(existsSync(lease) ? "present" : "missing");
+					reassert.fn();
+					await vi.waitFor(() => expect(existsSync(lease)).toBe(true));
+					seen.push(readFileSync(lease, "utf8").trim());
+					return complete();
+				});
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probeSequence(NONE),
+					startHeartbeat,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+				expect(seen).toEqual(["missing", admission.handle.token]);
+				expect(warned(`keyed_home_lease_restored exec=${execId}`)).toBe(true);
+				expect(timers.every((timer) => timer.stopped)).toBe(true);
+				expect(existsSync(lease)).toBe(false);
+			});
+
+			it("never overwrites a lease that carries another token", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const { timers, startHeartbeat } = timerSeam();
+				const foreign = `${"c".repeat(32)}\n`;
+				runtime = new FakeRuntime(async (input) => {
+					input.onThreadReady?.(THREAD_ID, 0);
+					writeFileSync(lease, foreign);
+					timers[1]!.fn();
+					await vi.waitFor(() =>
+						expect(warned(`keyed_home_lease_conflict exec=${execId}`)).toBe(
+							true,
+						),
+					);
+					expect(readFileSync(lease, "utf8")).toBe(foreign);
+					return complete();
+				});
+				const result = await adapterWith({
+					codexLeaseHolderProbe: probeSequence(NONE),
+					startHeartbeat,
+				}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+				expect(result.success).toBe(true);
+			});
+
+			it("joins an in-flight reassert before retiring, so it cannot resurrect the lease", async () => {
+				const { lease, codexAgentHome } = await admitted();
+				const { timers, startHeartbeat } = timerSeam();
+				const lock = join(
+					homesRoot,
+					"agents",
+					"flywheel",
+					".locks",
+					"implement",
+				);
+				const rejections: unknown[] = [];
+				const onRejection = (reason: unknown) => rejections.push(reason);
+				process.on("unhandledRejection", onRejection);
+				// Closeout probes (bounded wait, then retirement) must all come after
+				// the blocked reassert finished; without the join they would run
+				// while it still waits for the lock.
+				const events: string[] = [];
+				vi.mocked(console.warn).mockImplementation((message) => {
+					if (String(message).includes("keyed_home_lease_restored"))
+						events.push("restored");
+				});
+				const probe = vi.fn<CodexLeaseHolderProbe>(async () => {
+					events.push("probe");
+					return NONE;
+				});
+				try {
+					runtime = new FakeRuntime(async (input) => {
+						input.onThreadReady?.(THREAD_ID, 0);
+						rmSync(lease);
+						mkdirSync(lock);
+						timers[1]!.fn(); // blocks on the held home lock
+						timers[1]!.fn(); // single-flight: no second reassert
+						setTimeout(() => rmSync(lock, { recursive: true }), 300);
+						return complete();
+					});
+					const result = await adapterWith({
+						codexLeaseHolderProbe: probe,
+						startHeartbeat,
+					}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+					await new Promise((resolve) => setTimeout(resolve, 50));
+					expect(result.success).toBe(true);
+					expect(events[0]).toBe("restored");
+					expect(events.slice(1)).toEqual(["probe", "probe"]);
+					expect(existsSync(lease)).toBe(false);
+					expect(
+						vi
+							.mocked(console.warn)
+							.mock.calls.filter((call) =>
+								String(call[0]).includes("keyed_home_lease_restored"),
+							),
+					).toHaveLength(1);
+					expect(rejections).toEqual([]);
+				} finally {
+					process.off("unhandledRejection", onRejection);
+				}
+			});
+
+			it("logs a failed reassert without an unhandled rejection", async () => {
+				const { admission, codexAgentHome } = await admitted();
+				const { timers, startHeartbeat } = timerSeam();
+				const rejections: unknown[] = [];
+				const onRejection = (reason: unknown) => rejections.push(reason);
+				process.on("unhandledRejection", onRejection);
+				try {
+					runtime = new FakeRuntime(async (input) => {
+						input.onThreadReady?.(THREAD_ID, 0);
+						const marker = join(
+							admission.handle.home,
+							".flywheel-agent-home.json",
+						);
+						const saved = readFileSync(marker);
+						rmSync(marker);
+						timers[1]!.fn();
+						await vi.waitFor(() =>
+							expect(
+								warned(`keyed_home_lease_reassert_failed exec=${execId}`),
+							).toBe(true),
+						);
+						writeFileSync(marker, saved);
+						return complete();
+					});
+					const result = await adapterWith({
+						codexLeaseHolderProbe: probeSequence(NONE),
+						startHeartbeat,
+					}).execute(ctx({ skillFrameworkMode: "bare", codexAgentHome }));
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					expect(result.success).toBe(true);
+					expect(rejections).toEqual([]);
+				} finally {
+					process.off("unhandledRejection", onRejection);
+				}
+			});
+
+			it("starts no reassert clock for a legacy execution home", async () => {
+				const { timers, startHeartbeat } = timerSeam();
+				await adapterWith({ startHeartbeat }).execute(ctx());
+				expect(timers.map((timer) => timer.ms)).toEqual([25]);
+			});
+		});
 	});
 
 	it("FLY-2750: accepts an unregistered Codex account instead of refusing dispatch", async () => {
@@ -1269,13 +1883,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(lifecycle.ackAllPendingShutdowns).toHaveBeenCalledWith({
 			ok: true,
 		});
+		// FLY-2877: the native TUI is a codex process of this execution, so it is
+		// killed before the drain and the lease/credential retire after both.
 		expect(order).toEqual([
 			"runtime.stop",
 			"intake.stop",
 			"runtime.stop",
+			"tui.kill",
 			"runtime.drained",
 			"credential.scrub",
-			"tui.kill",
 			"shutdown.ack",
 			"heartbeat.stop",
 			"controller.stop",
@@ -1352,7 +1968,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	});
 
-	it("ordinary Codex drains before retiring the native TUI", async () => {
+	it("FLY-2877 ordinary Codex kills the native TUI before draining and retires the credential last", async () => {
 		const order: string[] = [];
 		const ordinaryRuntime: CodexDaemonGoalRuntimeLike = {
 			runGoal: async () => complete(),
@@ -1381,9 +1997,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(order).toEqual([
 			"heartbeat.stop",
 			"runtime.stop",
+			"tui.kill",
 			"runtime.drained",
 			"credential.scrub",
-			"tui.kill",
 		]);
 	});
 
@@ -2594,7 +3210,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(res.success).toBe(true);
 		});
 
-		it("teardown cancels reopen, drains, then cleans an unpinned observer", async () => {
+		it("teardown cancels reopen, stops, cleans an unpinned observer, then drains", async () => {
 			const order: string[] = [];
 			reopenScheduler = () => () => order.push("cancel");
 			runtime = new FakeRuntime(async (input) => {
@@ -2627,9 +3243,11 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			await adapter.execute(ctx());
 			expect(order.indexOf("cancel")).toBeGreaterThanOrEqual(0);
 			expect(order.indexOf("cancel")).toBeLessThan(order.indexOf("stop"));
-			expect(order.indexOf("stop")).toBeLessThan(order.indexOf("drained"));
-			expect(order.indexOf("drained")).toBeLessThan(
-				order.indexOf("killWindow"),
+			// FLY-2877: the observer TUI is a codex process of this execution, so
+			// it goes before the drain; the lease retires only after both.
+			expect(order.indexOf("stop")).toBeLessThan(order.indexOf("killWindow"));
+			expect(order.indexOf("killWindow")).toBeLessThan(
+				order.indexOf("drained"),
 			);
 		});
 

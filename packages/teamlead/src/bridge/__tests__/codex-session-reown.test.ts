@@ -1,4 +1,12 @@
-import type { CodexLaunchSnapshot } from "flywheel-claude-runner";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import {
+	admitCodexAgentHome,
+	type CodexLaunchSnapshot,
+	type CodexLeaseHolderProbeResult,
+	codexAgentHomeDir,
+	releaseCodexAgentHomeLease,
+} from "flywheel-claude-runner";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { describe, expect, it, vi } from "vitest";
 import { type Session, StateStore } from "../../StateStore.js";
@@ -267,6 +275,67 @@ describe("FLY-2358 Codex reown agent-home preparation", () => {
 		).rejects.toThrow("keyed_home_reown_arm_mismatch");
 		expect(release).toHaveBeenCalledWith(handle);
 	});
+
+	it.each([
+		["still hold it", { status: "ok", holders: [86434] }, true],
+		[
+			"cannot be vouched for",
+			{ status: "unknown", reason: "probe_failed" },
+			true,
+		],
+		["are gone", { status: "ok", holders: [] }, false],
+	] as const)(
+		"FLY-2877 rolls back a re-admitted lease only when its codex processes %s",
+		async (_label, holders: CodexLeaseHolderProbeResult, leaseKept) => {
+			const identity = { project: "flywheel", role: "implement" };
+			// Another execution pins the home's arm to bare, so re-admitting with
+			// superpowers creates this lease and then fails the arm check.
+			await admitCodexAgentHome({
+				...identity,
+				executionId: "exec-other",
+				requestedAssemblyArm: "bare",
+			});
+			const probe = vi.fn(async () => holders);
+			const warn = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			await expect(
+				prepareCodexRecoveryAgentHome(
+					{
+						session: session({ workflow_node_id: "implement" }),
+						snapshot: recoverySnapshot("superpowers"),
+						context: recoveryContext(),
+					},
+					{
+						resolve: () => ({
+							kind: "keyed",
+							...identity,
+							home: codexAgentHomeDir(identity),
+						}),
+						admit: admitCodexAgentHome,
+						release: (handle) =>
+							releaseCodexAgentHomeLease(handle, undefined, { probe }),
+					},
+				),
+			).rejects.toThrow("keyed_home_reown_arm_mismatch");
+			const home = codexAgentHomeDir(identity);
+			expect(probe).toHaveBeenCalledWith(home, "exec-1");
+			expect(existsSync(join(home, ".flywheel-leases", "exec-1"))).toBe(
+				leaseKept,
+			);
+			expect(existsSync(join(home, ".flywheel-leases", "exec-other"))).toBe(
+				true,
+			);
+			expect(
+				warn.mock.calls.some((call) =>
+					String(call[0]).includes(
+						"[codex-session-reown] keyed_home_lease_retained exec=exec-1",
+					),
+				),
+			).toBe(leaseKept);
+			warn.mockRestore();
+		},
+	);
 
 	it("fails closed for unresolved keyed state and skips admission without a role", async () => {
 		const admit = vi.fn();

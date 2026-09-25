@@ -98,10 +98,13 @@ import {
 	assertCodexSourceIdentity,
 	type CodexAgentHomeHandle,
 	type CodexAgentHomeIdentity,
+	type CodexLeaseGuardOptions,
+	type CodexLeaseReleaseOutcome,
 	flywheelCodexBin,
 	provisionCodexAgentHome,
 	provisionCodexHome,
 	rawCodexBin,
+	reassertCodexAgentHomeLease,
 	releaseCodexAgentHomeLease,
 	removeCodexHome,
 	resolveExecutionCodexHome,
@@ -115,6 +118,11 @@ import {
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
 } from "./codex-phase-lifecycle.js";
+import {
+	type CodexLeaseHolderProbe,
+	type CodexLeaseHolderProbeResult,
+	defaultCodexLeaseHolderProbe,
+} from "./codex-process-snapshot.js";
 import { findCodexRolloutPath } from "./codex-rollout-probe.js";
 import {
 	ensureRunnerTuiWindow,
@@ -448,6 +456,12 @@ function capabilityDigest(
 		.digest("hex");
 }
 
+/** FLY-2877: how closeout retires the execution's keyed-home lease. */
+interface RetireOptions {
+	/** Keep the lease without probing; the value is the logged reason. */
+	keepLease?: "late_tui_window";
+}
+
 /** Injected collaborators for daemon-mode execute() (default to the real ones). */
 export interface CodexDaemonAdapterDeps {
 	memoryDistill?: { enabled: boolean; waitBudgetMs?: number; pollMs?: number };
@@ -503,6 +517,18 @@ export interface CodexDaemonAdapterDeps {
 	/** FLY-1269: credential retirement seam used to prove scrub precedes the
 	 * request-bound success acknowledgement. */
 	scrubCredential?: (executionId: string) => void;
+	/** FLY-2877: which codex processes still hold this execution's home lease.
+	 * Forwarded to every lease release/retirement. */
+	codexLeaseHolderProbe?: CodexLeaseHolderProbe;
+	/** FLY-2877: total deadline (probes included) for the holders to exit after
+	 * the daemon drains, before the lease is retired. Default 5000. */
+	leaseHolderWaitMs?: number;
+	/** FLY-2877: pause between holder probes during that wait. Default 500. */
+	leaseHolderPollMs?: number;
+	/** FLY-2877: wall-clock period of the lease self-heal check (a second
+	 * `startHeartbeat` timer, independent of daemon traffic). Default 60_000;
+	 * <= 0 disables it (tests only). */
+	leaseReassertIntervalMs?: number;
 }
 
 export class CodexTmuxAdapter implements IAdapter {
@@ -545,6 +571,10 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly scrubCredential: NonNullable<
 		CodexDaemonAdapterDeps["scrubCredential"]
 	>;
+	private readonly codexLeaseHolderProbe: CodexLeaseHolderProbe;
+	private readonly leaseHolderWaitMs: number;
+	private readonly leaseHolderPollMs: number;
+	private readonly leaseReassertIntervalMs: number;
 	private readonly codexAccountRegistryPath?: string;
 	private readonly codexAccountLedgerRoot?: string;
 	private readonly executionOwners?: CodexExecutionOwnershipRegistry;
@@ -615,6 +645,11 @@ export class CodexTmuxAdapter implements IAdapter {
 				return () => clearInterval(timer);
 			});
 		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
+		this.codexLeaseHolderProbe =
+			deps.codexLeaseHolderProbe ?? defaultCodexLeaseHolderProbe;
+		this.leaseHolderWaitMs = deps.leaseHolderWaitMs ?? 5_000;
+		this.leaseHolderPollMs = deps.leaseHolderPollMs ?? 500;
+		this.leaseReassertIntervalMs = deps.leaseReassertIntervalMs ?? 60_000;
 		this.codexAccountRegistryPath = deps.codexAccountRegistryPath;
 		this.codexAccountLedgerRoot = deps.codexAccountLedgerRoot;
 		this.executionOwners = deps.executionOwners;
@@ -747,7 +782,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			});
 			if (ctx.codexAgentHome?.createdLease) {
 				try {
-					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+					await this.releaseAdmittedLease(ctx);
 				} catch {
 					diagnostic = withRecoveryCleanup(diagnostic, "unconfirmed");
 					console.warn(
@@ -788,7 +823,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			});
 			if (ctx.codexAgentHome?.createdLease) {
 				try {
-					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+					await this.releaseAdmittedLease(ctx);
 				} catch {
 					diagnostic = withRecoveryCleanup(diagnostic, "unconfirmed");
 					console.warn(
@@ -800,10 +835,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		}
 		let retired = false;
 		let retirement: Promise<void> | undefined;
-		const retireOnce = async (): Promise<void> => {
+		const retireOnce = async (options?: RetireOptions): Promise<void> => {
 			if (retired) return;
 			if (retirement) return retirement;
-			retirement = this.retireExecutionCredential(ctx)
+			retirement = this.retireExecutionCredential(ctx, options)
 				.then(() => {
 					retired = true;
 				})
@@ -813,14 +848,26 @@ export class CodexTmuxAdapter implements IAdapter {
 			return retirement;
 		};
 		let result: AdapterExecutionResult | undefined;
+		let ownershipHeldUntil: Promise<void> | undefined;
 		try {
-			result = await this.executeOwned(ctx, recovery, retireOnce);
+			result = await this.executeOwned(ctx, recovery, retireOnce, (settled) => {
+				ownershipHeldUntil = settled;
+			});
 		} catch (error) {
 			// Dispatch callers retain their existing preflight throw contract.
 			if (!recovery) throw error;
 			result = this.ownershipFailureResult(ctx, error, "preflight");
 		} finally {
-			lease?.release();
+			// FLY-2877: while a late founder window can still start a codex
+			// process, this execution stays owned — the Bridge's lease sweep (and
+			// every other owner-aware sweep) skips it until the window settled and
+			// its late cleanup ran. `settled` never rejects.
+			if (ownershipHeldUntil && lease) {
+				const held = lease;
+				void ownershipHeldUntil.then(() => held.release());
+			} else {
+				lease?.release();
+			}
 			try {
 				await retireOnce();
 			} catch {
@@ -861,9 +908,20 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	private async retireExecutionCredential(
 		ctx: AdapterExecutionContext,
+		options?: RetireOptions,
 	): Promise<void> {
 		if (!ctx.codexAgentHome) {
 			await this.scrubCredential(ctx.executionId);
+			return;
+		}
+		if (options?.keepLease) {
+			// FLY-2877: a codex process of this execution may still start after
+			// this point, so no probe can prove the home empty. Keep the lease
+			// (and with it the credential); the maintenance sweep drops it once
+			// nothing holds it any more.
+			console.warn(
+				`[CodexTmuxAdapter] keyed_home_lease_retained exec=${ctx.executionId} reason=${options.keepLease}`,
+			);
 			return;
 		}
 		const expected = {
@@ -872,14 +930,98 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 		const resolution = resolveExecutionCodexHome(ctx.executionId, expected);
 		if (resolution.kind === "prepublished") {
-			await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+			await this.releaseAdmittedLease(ctx);
 			return;
 		}
 		if (resolution.kind === "unknown" && ctx.codexAgentHome.createdLease) {
-			await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+			await this.releaseAdmittedLease(ctx);
 			return;
 		}
-		await retireCodexExecutionHome(ctx.executionId, expected);
+		this.logLeaseOutcome(
+			ctx,
+			await retireCodexExecutionHome(
+				ctx.executionId,
+				expected,
+				undefined,
+				this.leaseGuard(),
+			),
+		);
+	}
+
+	/** FLY-2877: every lease deletion asks the same holder probe. */
+	private leaseGuard(): CodexLeaseGuardOptions {
+		return { probe: this.codexLeaseHolderProbe };
+	}
+
+	private async releaseAdmittedLease(
+		ctx: AdapterExecutionContext,
+	): Promise<void> {
+		this.logLeaseOutcome(
+			ctx,
+			await releaseCodexAgentHomeLease(
+				this.agentHomeHandle(ctx),
+				undefined,
+				this.leaseGuard(),
+			),
+		);
+	}
+
+	/** A retained lease is a normal outcome (codex still running), not a failure. */
+	private logLeaseOutcome(
+		ctx: AdapterExecutionContext,
+		outcome:
+			| CodexLeaseReleaseOutcome
+			| { released: false; reason: "unresolved" | "legacy" },
+	): void {
+		if (
+			!outcome.released &&
+			(outcome.reason === "live_process" || outcome.reason === "probe_unknown")
+		) {
+			console.warn(
+				`[CodexTmuxAdapter] keyed_home_lease_retained exec=${ctx.executionId} reason=${outcome.reason}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-2877: after the daemon drained and the TUI was killed, give their
+	 * processes a bounded moment to exit so retirement can release the lease.
+	 * `leaseHolderWaitMs` bounds the whole wait, probes included; an unknown
+	 * probe ends it at once. Never fails the run: retirement probes again and
+	 * keeps the lease if anything is still there.
+	 */
+	private async awaitLeaseHoldersGone(
+		ctx: AdapterExecutionContext,
+	): Promise<void> {
+		const agentHome = ctx.codexAgentHome;
+		if (!agentHome) return;
+		const deadline = this.now() + this.leaseHolderWaitMs;
+		let last: CodexLeaseHolderProbeResult | undefined;
+		for (;;) {
+			const remaining = deadline - this.now();
+			if (remaining <= 0) break;
+			try {
+				last = await this.codexLeaseHolderProbe(
+					agentHome.home,
+					ctx.executionId,
+					{ deadlineMs: remaining },
+				);
+			} catch {
+				last = { status: "unknown", reason: "probe_failed" };
+			}
+			if (last.status === "unknown") return;
+			if (last.holders.length === 0) return;
+			const left = deadline - this.now();
+			if (left <= 0) break;
+			await new Promise<void>((resolve) =>
+				setTimeout(resolve, Math.min(this.leaseHolderPollMs, left)),
+			);
+		}
+		if (last?.status === "ok" && last.holders.length > 0) {
+			console.warn(
+				`[CodexTmuxAdapter] keyed_home_lease_holders_linger exec=${ctx.executionId} holders=${last.holders.join(",")}`,
+			);
+		}
 	}
 
 	private ownershipFailureResult(
@@ -905,7 +1047,9 @@ export class CodexTmuxAdapter implements IAdapter {
 	private async executeOwned(
 		ctx: AdapterExecutionContext,
 		recovery?: CodexRecoveryExecution,
-		retireOnce: () => Promise<void> = () => this.retireExecutionCredential(ctx),
+		retireOnce: (options?: RetireOptions) => Promise<void> = (options) =>
+			this.retireExecutionCredential(ctx, options),
+		holdOwnershipUntil?: (settled: Promise<void>) => void,
 	): Promise<AdapterExecutionResult> {
 		if (ctx.codexAgentHome) {
 			this.mergeSessionState(ctx.executionId, {
@@ -1011,6 +1155,12 @@ export class CodexTmuxAdapter implements IAdapter {
 		let gateDbOpen = false;
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
+		let stopLeaseReassert: () => void = () => {};
+		let leaseReassertInFlight: Promise<void> | undefined;
+		// FLY-2877: set when a founder-window attempt outlives the teardown join.
+		// It may still create a `codex resume` client after closeout, so the
+		// lease must not be retired on the strength of an empty probe.
+		let lateTuiWindowPossible = false;
 		let tuiOpened = false;
 		let tuiThreadId: string | undefined;
 		let transcriptSink: CodexTranscriptSinkLike | undefined;
@@ -1566,6 +1716,46 @@ export class CodexTmuxAdapter implements IAdapter {
 			};
 			stopHeartbeat = this.startHeartbeat(heartbeat, this.pollIntervalMs);
 
+			// FLY-2877: something outside this runner (an old janitor, a test run
+			// against the real homes root) can delete the lease while the codex
+			// processes keep reading the home. Only this adapter holds the token,
+			// so it puts the lease back — on its own wall-clock timer, not on
+			// heartbeat(), which also fires on every daemon notification. One
+			// check at a time; closeout stops the timer and joins the in-flight
+			// check before retiring, so a check can never resurrect the lease.
+			if (ctx.codexAgentHome && this.leaseReassertIntervalMs > 0) {
+				const handle = this.agentHomeHandle(ctx);
+				const reassertTick = (): void => {
+					if (runEnded || leaseReassertInFlight) return;
+					leaseReassertInFlight = reassertCodexAgentHomeLease(handle)
+						.then(
+							(state) => {
+								if (state === "restored") {
+									console.warn(
+										`[CodexTmuxAdapter] keyed_home_lease_restored exec=${ctx.executionId}`,
+									);
+								} else if (state === "conflict") {
+									console.warn(
+										`[CodexTmuxAdapter] keyed_home_lease_conflict exec=${ctx.executionId}`,
+									);
+								}
+							},
+							(error: unknown) => {
+								console.warn(
+									`[CodexTmuxAdapter] keyed_home_lease_reassert_failed exec=${ctx.executionId}: ${safeErr(error)}`,
+								);
+							},
+						)
+						.finally(() => {
+							leaseReassertInFlight = undefined;
+						});
+				};
+				stopLeaseReassert = this.startHeartbeat(
+					reassertTick,
+					this.leaseReassertIntervalMs,
+				);
+			}
+
 			// AUTHORITATIVE own-thread hook: persist the resume handle, bind the
 			// transcript filter, and asynchronously attach the native TUI. The 0ms
 			// scheduled attempt keeps goal setup and the machine turn non-blocking.
@@ -1812,6 +2002,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			// (killWindow / runtime.stop / drained / CommDB closeout / credential scrub)
 			// — a visibility-only failure staying fail-open is the whole contract.
 			runEnded = true;
+			// FLY-2877: no lease self-heal may run past this point.
+			try {
+				stopLeaseReassert();
+			} catch (err) {
+				this.log(
+					`[CodexTmuxAdapter] lease reassert stop threw (non-fatal): ${safeErr(err)}`,
+				);
+			}
+			if (leaseReassertInFlight) await leaseReassertInFlight;
 			try {
 				cancelTuiDeadline?.();
 			} catch (err) {
@@ -1843,6 +2042,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					void attemptAtTeardown.then(settled, settled);
 				});
 				if (!settledBeforeJoin) {
+					lateTuiWindowPossible = true;
 					const cleanupLateWindow = async (): Promise<void> => {
 						if (!windowName) return;
 						try {
@@ -1858,14 +2058,32 @@ export class CodexTmuxAdapter implements IAdapter {
 					};
 					// Consume resolve and reject, then run a pure cleanup after the in-flight
 					// create can no longer commit. cleanupLateWindow catches its own errors.
-					void attemptAtTeardown
+					const lateWindowSettled = attemptAtTeardown
 						.then(cleanupLateWindow, cleanupLateWindow)
 						.then(
 							() => {},
 							() => {},
 						);
+					holdOwnershipUntil?.(lateWindowSettled);
 				}
 			}
+			const killFounderWindow = (): void => {
+				if (!windowName) return;
+				try {
+					this.killWindow(
+						{
+							tmuxSession: this.sessionName,
+							windowName,
+							...(founderWindowId ? { windowId: founderWindowId } : {}),
+						},
+						{ log: (m) => this.log(m) },
+					);
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
+					);
+				}
+			};
 			stopGateWatcher();
 			gateDbOpen = false;
 			try {
@@ -1889,8 +2107,11 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1269 request-bound order: keep the heartbeat advancing while
 				// daemon drain and required cleanup run. The matching ack is written
 				// only after the TUI, registry status, and credential are retired.
+				// FLY-2877: the TUI client is a codex process of this execution too;
+				// kill it before the drain so both have exited before the lease goes.
+				runtime?.stop();
+				killFounderWindow();
 				if (runtime) {
-					runtime.stop();
 					try {
 						await runtime.drained();
 					} catch (err) {
@@ -1918,26 +2139,15 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				importWorkflowUsage();
+				if (!lateTuiWindowPossible) await this.awaitLeaseHoldersGone(ctx);
 				try {
-					await retireOnce();
+					await retireOnce(
+						lateTuiWindowPossible
+							? { keepLease: "late_tui_window" }
+							: undefined,
+					);
 				} catch (err) {
 					teardownError ??= err;
-				}
-				if (windowName) {
-					try {
-						this.killWindow(
-							{
-								tmuxSession: this.sessionName,
-								windowName,
-								...(founderWindowId ? { windowId: founderWindowId } : {}),
-							},
-							{ log: (m) => this.log(m) },
-						);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
-						);
-					}
 				}
 				try {
 					phaseLifecycle.ackAllPendingShutdowns(
@@ -1963,10 +2173,11 @@ export class CodexTmuxAdapter implements IAdapter {
 					teardownError ??= err;
 				}
 			} else {
-				// Ordinary closeout: daemon → transcript → registry → window policy.
+				// Ordinary closeout: daemon + TUI → transcript → registry → lease.
 				stopHeartbeat();
+				runtime?.stop();
+				killFounderWindow();
 				if (runtime) {
-					runtime.stop();
 					try {
 						await runtime.drained();
 					} catch (err) {
@@ -2015,26 +2226,15 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				importWorkflowUsage();
+				if (!lateTuiWindowPossible) await this.awaitLeaseHoldersGone(ctx);
 				try {
-					await retireOnce();
+					await retireOnce(
+						lateTuiWindowPossible
+							? { keepLease: "late_tui_window" }
+							: undefined,
+					);
 				} catch (error) {
 					teardownError ??= error;
-				}
-				if (windowName) {
-					try {
-						this.killWindow(
-							{
-								tmuxSession: this.sessionName,
-								windowName,
-								...(founderWindowId ? { windowId: founderWindowId } : {}),
-							},
-							{ log: (m) => this.log(m) },
-						);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
-						);
-					}
 				}
 			}
 		}

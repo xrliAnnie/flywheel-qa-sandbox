@@ -326,7 +326,10 @@ import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
-import { sweepCodexRunnerOrphans } from "./codex-runner-orphan-reaper.js";
+import {
+	sweepCodexRunnerOrphans,
+	sweepStaleCodexHomeLeases,
+} from "./codex-runner-orphan-reaper.js";
 import {
 	acceptReownTurnReconciliation,
 	buildCodexRecoveryContext,
@@ -10641,6 +10644,50 @@ export async function startBridge(
 			} catch (error) {
 				console.warn(
 					`[codex-orphan-reaper] sweep failed (maintenance continues): ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+			// FLY-2877: a keyed-home lease whose codex processes have all exited
+			// (closeout kept it while one lingered, or the daemon died after its
+			// session ended) would otherwise stay until the next Bridge restart
+			// and keep that home's readiness at lease_without_process. Same tick,
+			// same master switch; the primitive re-checks the processes under the
+			// home lock, so a live runner's lease is never removed.
+			try {
+				const activeExecutionIds = new Set(
+					codexCandidateSnapshot.map((session) => session.execution_id),
+				);
+				await sweepStaleCodexHomeLeases(
+					{
+						readoptExecutionIds: activeExecutionIds,
+						isExecutionOwned: (executionId) =>
+							codexExecutionOwners.isExecutionOwned(executionId),
+					},
+					{
+						audit: (event, detail) => {
+							console.warn(`[codex-home-lease-sweep] ${event}`, detail);
+							try {
+								store.insertEvent({
+									event_id: `codex-home-lease-${event}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+									execution_id: String(
+										detail.executionId ?? "codex-home-lease-sweep",
+									),
+									issue_id: "maintenance",
+									project_name: "bridge",
+									event_type: event,
+									source: "bridge.codex-home-lease-sweep",
+									payload: detail,
+								});
+							} catch {
+								/* audit only */
+							}
+						},
+					},
+				);
+			} catch (error) {
+				console.warn(
+					`[codex-home-lease-sweep] sweep failed (maintenance continues): ${
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);

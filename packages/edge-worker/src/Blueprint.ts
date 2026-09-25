@@ -984,7 +984,14 @@ export class Blueprint {
 			}
 			const handle = codexAgentHome.handle;
 			codexAgentHome = undefined;
-			await this.codexAgentHomeReleaser(handle);
+			// FLY-2877: the lease stays while a codex process of this execution
+			// still reads the home; that is reported, not forced.
+			const outcome = await this.codexAgentHomeReleaser(handle);
+			if (outcome?.released === false) {
+				console.warn(
+					`[Blueprint] keyed_home_lease_retained exec=${executionId} reason=${outcome.reason}`,
+				);
+			}
 		};
 
 		try {

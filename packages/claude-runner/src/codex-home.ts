@@ -82,6 +82,10 @@ import {
 	publishCodexMemorySeed,
 	readCodexMemorySeedManifest,
 } from "./codex-memory-seed.js";
+import {
+	type CodexLeaseHolderProbe,
+	defaultCodexLeaseHolderProbe,
+} from "./codex-process-snapshot.js";
 
 /** gh tokens are `[A-Za-z0-9_]`; `-` tolerated. Same charset the adapter and
  * codex-resume validate, so a token that passes here rides a TOML
@@ -2173,17 +2177,82 @@ export async function provisionCodexAgentHome(
 	);
 }
 
-/** Release exactly one admitted execution lease; scrub only after the last. */
+/**
+ * FLY-2877: a lease lives exactly as long as the codex processes that read the
+ * home for its execution. Every deletion in this module asks first; "still
+ * running" and "cannot tell" are normal outcomes (the lease stays), not errors.
+ */
+export type CodexLeaseReleaseOutcome =
+	| { released: true; remaining: number }
+	| {
+			released: false;
+			reason: "live_process" | "probe_unknown";
+			holders: number[];
+	  };
+
+export interface CodexLeaseGuardOptions {
+	/** Defaults to the host process table ({@link defaultCodexLeaseHolderProbe}). */
+	probe?: CodexLeaseHolderProbe;
+}
+
+/** `null` = no codex process holds the lease; otherwise the retained outcome. */
+async function leaseRetainedByHolders(
+	home: string,
+	executionId: string,
+	guard: CodexLeaseGuardOptions,
+): Promise<Extract<CodexLeaseReleaseOutcome, { released: false }> | null> {
+	const probe = guard.probe ?? defaultCodexLeaseHolderProbe;
+	let retained: Extract<CodexLeaseReleaseOutcome, { released: false }>;
+	try {
+		const result = await probe(home, executionId);
+		if (result.status === "ok" && result.holders.length === 0) return null;
+		retained =
+			result.status === "ok"
+				? { released: false, reason: "live_process", holders: result.holders }
+				: { released: false, reason: "probe_unknown", holders: [] };
+	} catch {
+		retained = { released: false, reason: "probe_unknown", holders: [] };
+	}
+	console.warn(
+		`[codex-home] keyed_home_lease_retained exec=${executionId} home=${home} reason=${retained.reason} holders=${retained.holders.join(",")}`,
+	);
+	return retained;
+}
+
+/** After an unlink: scrub the credential with the last lease, else log. */
+function settleAfterLeaseUnlink(home: string, executionId: string): number {
+	const remaining = listCodexAgentHomeLeases(home).length;
+	if (remaining === 0) {
+		scrubCodexHomeCredentialAt(home, true);
+	} else {
+		console.warn(
+			`[codex-home] keyed_home_scrub_deferred exec=${executionId} live_leases=${remaining}`,
+		);
+	}
+	return remaining;
+}
+
+/**
+ * Release exactly one admitted execution lease; scrub only after the last.
+ * The lease stays while any codex process of this execution reads the home.
+ */
 export async function releaseCodexAgentHomeLease(
 	handle: CodexAgentHomeHandle,
 	env: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
+	guard: CodexLeaseGuardOptions = {},
+): Promise<CodexLeaseReleaseOutcome> {
 	validateCodexAgentHomeHandle(handle, env);
+	const retained = await leaseRetainedByHolders(
+		handle.home,
+		handle.executionId,
+		guard,
+	);
+	if (retained) return retained;
 	const identity = { project: handle.project, role: handle.role };
 	const lockPath = prepareCodexAgentHomeLock(identity, env);
-	await withMkdirLock(
+	return withMkdirLock(
 		lockPath,
-		async () => {
+		async (): Promise<CodexLeaseReleaseOutcome> => {
 			const marker = readCodexAgentHomeMarker(handle.home);
 			if (marker === null) throw new Error("missing codex agent home marker");
 			validateMarkerIdentity(marker, identity);
@@ -2191,13 +2260,154 @@ export async function releaseCodexAgentHomeLease(
 			unlinkSync(
 				join(handle.home, CODEX_AGENT_HOME_LEASES, handle.executionId),
 			);
-			const remaining = listCodexAgentHomeLeases(handle.home).length;
-			if (remaining === 0) {
-				scrubCodexHomeCredentialAt(handle.home, true);
-			} else {
-				console.warn(
-					`[codex-home] keyed_home_scrub_deferred exec=${handle.executionId} live_leases=${remaining}`,
-				);
+			const remaining = settleAfterLeaseUnlink(handle.home, handle.executionId);
+			console.warn(
+				`[codex-home] keyed_home_lease_released exec=${handle.executionId} remaining=${remaining}`,
+			);
+			return { released: true, remaining };
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
+}
+
+/**
+ * Put back this execution's own lease after something else deleted it. Only the
+ * creator holds the token, so only the running adapter can call this. A lease
+ * carrying another token is left alone.
+ */
+export async function reassertCodexAgentHomeLease(
+	handle: CodexAgentHomeHandle,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<"present" | "restored" | "conflict"> {
+	validateCodexAgentHomeHandle(handle, env);
+	const identity = { project: handle.project, role: handle.role };
+	const lockPath = prepareCodexAgentHomeLock(identity, env);
+	return withMkdirLock(
+		lockPath,
+		async () => {
+			const home = lstatSync(handle.home);
+			if (!home.isDirectory() || home.isSymbolicLink()) {
+				throw new Error("unsafe codex agent home path: home");
+			}
+			const marker = readCodexAgentHomeMarker(handle.home);
+			if (marker === null) throw new Error("missing codex agent home marker");
+			validateMarkerIdentity(marker, identity);
+			const leasesDir = join(handle.home, CODEX_AGENT_HOME_LEASES);
+			const leasePath = join(leasesDir, handle.executionId);
+			let stat: ReturnType<typeof lstatSync>;
+			try {
+				stat = lstatSync(leasePath);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				ensurePlainDirectory(leasesDir, "leases");
+				atomicWriteFile(leasePath, `${handle.token}\n`);
+				return "restored";
+			}
+			if (!stat.isFile() || stat.isSymbolicLink()) {
+				throw new Error("unsafe codex agent home lease entry");
+			}
+			return readFileSync(leasePath, "utf8").trim() === handle.token
+				? "present"
+				: "conflict";
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
+}
+
+const LEASE_TOKEN_RE = /^[a-f0-9]{32}$/;
+
+/** Read-only: does `home` prove itself the canonical keyed home of its marker? */
+function readCanonicalAgentHomeMarker(
+	home: string,
+	env: NodeJS.ProcessEnv,
+): CodexAgentHomeMarker | null {
+	try {
+		const stat = lstatSync(home);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+		const marker = readCodexAgentHomeMarker(home);
+		if (marker === null) return null;
+		return codexAgentHomeDir(marker, env) === home ? marker : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Read-only: is the lease entry a plain file carrying a token? */
+function leaseEntryIsToken(home: string, executionId: string): boolean {
+	try {
+		const path = join(home, CODEX_AGENT_HOME_LEASES, executionId);
+		const stat = lstatSync(path);
+		if (!stat.isFile() || stat.isSymbolicLink()) return false;
+		return LEASE_TOKEN_RE.test(readFileSync(path, "utf8").trim());
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Janitor primitive: drop one stale lease without session.json or its token.
+ * The project/role come from the home's own marker (directory names are the
+ * encoded path components, not the identity). Everything that could make the
+ * entry ambiguous is checked read-only before the lock is even prepared — the
+ * lock helper creates directories — and again under the lock.
+ */
+export async function scrubCodexAgentHomeLeaseEntry(
+	entry: { home: string; executionId: string },
+	env: NodeJS.ProcessEnv = process.env,
+	guard: CodexLeaseGuardOptions = {},
+): Promise<
+	CodexLeaseReleaseOutcome | { released: false; reason: "entry_invalid" }
+> {
+	const invalid = { released: false, reason: "entry_invalid" } as const;
+	const { home, executionId } = entry;
+	try {
+		assertSafeExecutionId(executionId);
+	} catch {
+		return invalid;
+	}
+	const marker = readCanonicalAgentHomeMarker(home, env);
+	if (marker === null || !leaseEntryIsToken(home, executionId)) return invalid;
+	const lockPath = prepareCodexAgentHomeLock(marker, env);
+	return withMkdirLock(
+		lockPath,
+		async () => {
+			const lockedMarker = readCanonicalAgentHomeMarker(home, env);
+			if (
+				lockedMarker === null ||
+				lockedMarker.project !== marker.project ||
+				lockedMarker.role !== marker.role ||
+				!leaseEntryIsToken(home, executionId)
+			) {
+				return invalid;
+			}
+			const retained = await leaseRetainedByHolders(home, executionId, guard);
+			if (retained) return retained;
+			unlinkSync(join(home, CODEX_AGENT_HOME_LEASES, executionId));
+			const remaining = settleAfterLeaseUnlink(home, executionId);
+			console.warn(
+				`[codex-home] keyed_home_lease_scrubbed exec=${executionId} home=${home} remaining=${remaining}`,
+			);
+			return { released: true, remaining } as const;
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
+}
+
+/** Scrub the credential of a home that holds no lease at all. */
+async function scrubIdleCodexAgentHomeCredential(
+	home: string,
+	marker: CodexAgentHomeMarker,
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	const lockPath = prepareCodexAgentHomeLock(marker, env);
+	await withMkdirLock(
+		lockPath,
+		async () => {
+			const lockedMarker = readCodexAgentHomeMarker(home);
+			if (lockedMarker === null) throw new Error("missing agent home marker");
+			validateMarkerIdentity(lockedMarker, marker);
+			if (listCodexAgentHomeLeases(home).length === 0) {
+				scrubCodexHomeCredentialAt(home, true);
 			}
 		},
 		CODEX_AGENT_HOME_LOCK_OPTS,
@@ -2222,11 +2432,13 @@ const CODEX_AGENT_HOME_REOWN_STATUSES = new Set([
  * A live/reownable session is retained only when its durable identity matches
  * the marker for the home containing the lease. Identity ambiguity fails
  * closed: the lease is preserved and a visible warning is emitted. One bad
- * home never prevents the remaining homes from being inspected.
+ * home never prevents the remaining homes from being inspected. A lease whose
+ * codex processes still run is kept whatever the session state says (FLY-2877).
  */
 export async function scrubOrphanedCodexAgentHomes(
 	sessions: ReadonlyMap<string, CodexAgentHomeSessionSnapshot>,
 	env: NodeJS.ProcessEnv = process.env,
+	guard: CodexLeaseGuardOptions = {},
 ): Promise<number> {
 	const agentsDir = join(codexHomesRoot(env), "agents");
 	if (!existsSync(agentsDir)) return 0;
@@ -2274,42 +2486,31 @@ export async function scrubOrphanedCodexAgentHomes(
 				if (codexAgentHomeDir(marker, env) !== home) {
 					throw new Error("agent home marker path mismatch");
 				}
-				const lockPath = prepareCodexAgentHomeLock(marker, env);
-				await withMkdirLock(
-					lockPath,
-					async () => {
-						const lockedMarker = readCodexAgentHomeMarker(home);
-						if (lockedMarker === null) {
-							throw new Error("missing agent home marker");
-						}
-						validateMarkerIdentity(lockedMarker, marker);
-						for (const executionId of listCodexAgentHomeLeases(home)) {
-							const session = sessions.get(executionId);
-							if (
-								session &&
-								(session.project !== marker.project ||
-									session.role !== marker.role)
-							) {
-								console.warn(
-									`[codex-home] keyed_home_janitor_identity_mismatch exec=${executionId}`,
-								);
-								continue;
-							}
-							if (
-								session &&
-								CODEX_AGENT_HOME_REOWN_STATUSES.has(session.status)
-							) {
-								continue;
-							}
-							unlinkSync(join(home, CODEX_AGENT_HOME_LEASES, executionId));
-							removed += 1;
-						}
-						if (listCodexAgentHomeLeases(home).length === 0) {
-							scrubCodexHomeCredentialAt(home, true);
-						}
-					},
-					CODEX_AGENT_HOME_LOCK_OPTS,
-				);
+				const leases = listCodexAgentHomeLeases(home);
+				for (const executionId of leases) {
+					const session = sessions.get(executionId);
+					if (
+						session &&
+						(session.project !== marker.project || session.role !== marker.role)
+					) {
+						console.warn(
+							`[codex-home] keyed_home_janitor_identity_mismatch exec=${executionId}`,
+						);
+						continue;
+					}
+					if (session && CODEX_AGENT_HOME_REOWN_STATUSES.has(session.status)) {
+						continue;
+					}
+					const outcome = await scrubCodexAgentHomeLeaseEntry(
+						{ home, executionId },
+						env,
+						guard,
+					);
+					if (outcome.released) removed += 1;
+				}
+				if (leases.length === 0) {
+					await scrubIdleCodexAgentHomeCredential(home, marker, env);
+				}
 			} catch (error) {
 				console.warn(
 					`[codex-home] keyed_home_janitor_failed scope=home entry=${roleEntry.name} error=${error instanceof Error ? error.message : String(error)}`,
@@ -2445,27 +2646,40 @@ export function resolveExecutionCodexHome(
 	return { kind: "keyed", ...identity, home: exactHome };
 }
 
-/** Retire one execution from its resolved home; persistent keyed homes remain. */
+/**
+ * Retire one execution from its resolved home; persistent keyed homes remain.
+ * A keyed lease stays while any codex process of this execution reads the home.
+ */
 export async function retireCodexExecutionHome(
 	executionId: string,
 	expected: CodexAgentHomeIdentity,
 	env: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
+	guard: CodexLeaseGuardOptions = {},
+): Promise<
+	| CodexLeaseReleaseOutcome
+	| { released: false; reason: "unresolved" | "legacy" }
+> {
 	const resolution = resolveExecutionCodexHome(executionId, expected, env);
 	if (resolution.kind === "legacy") {
 		scrubCodexHomeCredential(executionId, env);
-		return;
+		return { released: false, reason: "legacy" };
 	}
 	if (resolution.kind !== "keyed") {
 		console.warn(
 			`[codex-home] keyed_home_scrub_unresolved exec=${executionId} reason=${resolution.kind === "unknown" ? resolution.reason : resolution.kind}`,
 		);
-		return;
+		return { released: false, reason: "unresolved" };
 	}
+	const retained = await leaseRetainedByHolders(
+		resolution.home,
+		executionId,
+		guard,
+	);
+	if (retained) return retained;
 	const lockPath = prepareCodexAgentHomeLock(resolution, env);
-	await withMkdirLock(
+	return withMkdirLock(
 		lockPath,
-		async () => {
+		async (): Promise<CodexLeaseReleaseOutcome> => {
 			const marker = readCodexAgentHomeMarker(resolution.home);
 			if (marker === null) throw new Error("missing codex agent home marker");
 			validateMarkerIdentity(marker, resolution);
@@ -2474,23 +2688,24 @@ export async function retireCodexExecutionHome(
 				CODEX_AGENT_HOME_LEASES,
 				executionId,
 			);
+			let unlinked = false;
 			try {
 				const stat = lstatSync(leasePath);
 				if (!stat.isFile() || stat.isSymbolicLink()) {
 					throw new Error("unsafe codex agent home lease entry");
 				}
 				unlinkSync(leasePath);
+				unlinked = true;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			}
-			const remaining = listCodexAgentHomeLeases(resolution.home).length;
-			if (remaining === 0) {
-				scrubCodexHomeCredentialAt(resolution.home, true);
-			} else {
+			const remaining = settleAfterLeaseUnlink(resolution.home, executionId);
+			if (unlinked) {
 				console.warn(
-					`[codex-home] keyed_home_scrub_deferred exec=${executionId} live_leases=${remaining}`,
+					`[codex-home] keyed_home_lease_released exec=${executionId} remaining=${remaining}`,
 				);
 			}
+			return { released: true, remaining };
 		},
 		CODEX_AGENT_HOME_LOCK_OPTS,
 	);

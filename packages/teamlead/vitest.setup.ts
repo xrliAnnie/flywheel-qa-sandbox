@@ -44,4 +44,10 @@ beforeEach(() => {
 		isolatedRoot,
 		"lead-lease-mode.json",
 	);
+	// FLY-2877: booting the Bridge runs the FLY-2358 startup janitor with the
+	// process environment. Without these, it compared the LIVE
+	// ~/.flywheel/codex-homes leases against the test's empty StateStore and
+	// deleted every running Codex runner's lease.
+	process.env.FLYWHEEL_CODEX_HOMES_ROOT = join(isolatedRoot, "codex-homes");
+	process.env.FLYWHEEL_CODEX_SESSION_DIR = join(isolatedRoot, "codex-sessions");
 });

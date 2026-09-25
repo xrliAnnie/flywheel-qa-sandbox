@@ -25,6 +25,21 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// FLY-2877: lease deletion consults the host process table. Unit tests must not
+// depend on which codex processes happen to run on the host (or on whether the
+// CI platform's ps can show environments), so the default probe reports no
+// holders; guard cases inject their own probe.
+vi.mock("../src/codex-process-snapshot.js", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../src/codex-process-snapshot.js")
+	>()),
+	defaultCodexLeaseHolderProbe: vi.fn(async () => ({
+		status: "ok",
+		holders: [],
+	})),
+}));
+
 import {
 	admitCodexAgentHome,
 	assertCodexSourceIdentity,
@@ -39,11 +54,13 @@ import {
 	provisionCodexAgentHome,
 	provisionCodexHome as provisionCodexHomeProduction,
 	rawCodexBin,
+	reassertCodexAgentHomeLease,
 	releaseCodexAgentHomeLease,
 	removeCodexHome,
 	renderCodexHomeConfig,
 	resolveExecutionCodexHome,
 	retireCodexExecutionHome,
+	scrubCodexAgentHomeLeaseEntry,
 	scrubCodexHomeCredential,
 	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
@@ -51,6 +68,7 @@ import {
 	stripInheritedSecretEnv,
 	stripSecretEnv,
 } from "../src/codex-home.js";
+import { defaultCodexLeaseHolderProbe } from "../src/codex-process-snapshot.js";
 
 const GLOBAL_CONFIG = `sandbox_mode = "workspace-write"
 approval_policy = "never"
@@ -587,7 +605,7 @@ describe("FLY-2358 agent home admission and provisioning", () => {
 
 		await expect(
 			releaseCodexAgentHomeLease(admission.handle, env),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ released: true, remaining: 0 });
 		expect(
 			readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
 		).not.toContain("GH_TOKEN");
@@ -1217,6 +1235,547 @@ describe("FLY-2358 keyed-home startup janitor", () => {
 			expect.stringContaining("keyed_home_janitor_identity_mismatch"),
 		);
 		warn.mockRestore();
+	});
+});
+
+describe("FLY-2877 lease deletion waits for the codex processes", () => {
+	const identity = { project: "flywheel", role: "implement" };
+	const LIVE = { status: "ok" as const, holders: [4242, 4243] };
+	const NONE = { status: "ok" as const, holders: [] };
+	const UNKNOWN = {
+		status: "unknown" as const,
+		reason: "unattributed_present" as const,
+	};
+	const probeReturning = (result: typeof LIVE | typeof NONE | typeof UNKNOWN) =>
+		vi.fn(async (_home: string, _executionId: string) => result);
+	const leaseFile = (home: string, executionId: string) =>
+		join(home, ".flywheel-leases", executionId);
+	let warn: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+	afterEach(() => {
+		warn.mockRestore();
+		vi.mocked(defaultCodexLeaseHolderProbe).mockClear();
+	});
+
+	async function admit(
+		executionId: string,
+		who: { project: string; role: string } = identity,
+	) {
+		return admitCodexAgentHome(
+			{ ...who, executionId, requestedAssemblyArm: "bare" },
+			env,
+		);
+	}
+
+	async function provision(
+		handle: Awaited<ReturnType<typeof admit>>["handle"],
+	) {
+		await provisionCodexAgentHome(handle, {
+			env,
+			ghToken: TOKEN,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+	}
+
+	function writeKeyedSession(executionId: string, home: string): void {
+		const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, executionId);
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({ codexAgentHome: { ...identity, home } }),
+		);
+	}
+
+	/** Recursive lstat snapshot: path, mode, mtime, ctime of every entry. */
+	function treeSnapshot(root: string): string[] {
+		const rows: string[] = [];
+		const walk = (path: string): void => {
+			const stat = lstatSync(path);
+			rows.push(
+				`${path.slice(root.length)}|${stat.mode}|${stat.mtimeMs}|${stat.ctimeMs}`,
+			);
+			if (stat.isDirectory() && !stat.isSymbolicLink()) {
+				for (const name of readdirSync(path).sort()) walk(join(path, name));
+			}
+		};
+		walk(root);
+		return rows;
+	}
+
+	describe("releaseCodexAgentHomeLease", () => {
+		it("keeps the lease and the credential while codex processes hold it", async () => {
+			const admission = await admit("exec-a");
+			await provision(admission.handle);
+			const probe = probeReturning(LIVE);
+
+			await expect(
+				releaseCodexAgentHomeLease(admission.handle, env, { probe }),
+			).resolves.toEqual({
+				released: false,
+				reason: "live_process",
+				holders: [4242, 4243],
+			});
+
+			expect(probe).toHaveBeenCalledWith(admission.handle.home, "exec-a");
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+			expect(
+				readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+			).toContain("GH_TOKEN");
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining(
+					`keyed_home_lease_retained exec=exec-a home=${admission.handle.home} reason=live_process holders=4242,4243`,
+				),
+			);
+		});
+
+		it("keeps the lease when the probe cannot vouch for every codex process", async () => {
+			const admission = await admit("exec-a");
+			await expect(
+				releaseCodexAgentHomeLease(admission.handle, env, {
+					probe: probeReturning(UNKNOWN),
+				}),
+			).resolves.toEqual({
+				released: false,
+				reason: "probe_unknown",
+				holders: [],
+			});
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+
+		it("keeps the lease when the probe itself throws", async () => {
+			const admission = await admit("exec-a");
+			await expect(
+				releaseCodexAgentHomeLease(admission.handle, env, {
+					probe: vi.fn(async () => {
+						throw new Error("ps exploded");
+					}),
+				}),
+			).resolves.toMatchObject({ released: false, reason: "probe_unknown" });
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+
+		it("releases, scrubs the last credential and logs when no process holds it", async () => {
+			const admission = await admit("exec-a");
+			await provision(admission.handle);
+			await expect(
+				releaseCodexAgentHomeLease(admission.handle, env, {
+					probe: probeReturning(NONE),
+				}),
+			).resolves.toEqual({ released: true, remaining: 0 });
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(
+				false,
+			);
+			expect(
+				readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+			).not.toContain("GH_TOKEN");
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"keyed_home_lease_released exec=exec-a remaining=0",
+				),
+			);
+		});
+
+		it("consults the default probe when no guard is injected", async () => {
+			const admission = await admit("exec-a");
+			vi.mocked(defaultCodexLeaseHolderProbe).mockResolvedValueOnce(LIVE);
+			await expect(
+				releaseCodexAgentHomeLease(admission.handle, env),
+			).resolves.toMatchObject({ released: false, reason: "live_process" });
+			expect(defaultCodexLeaseHolderProbe).toHaveBeenCalledWith(
+				admission.handle.home,
+				"exec-a",
+			);
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+	});
+
+	describe("retireCodexExecutionHome", () => {
+		it("keeps a keyed lease while codex processes hold it", async () => {
+			const admission = await admit("exec-a");
+			writeKeyedSession("exec-a", admission.handle.home);
+			await provision(admission.handle);
+			const probe = probeReturning(LIVE);
+			await expect(
+				retireCodexExecutionHome("exec-a", identity, env, { probe }),
+			).resolves.toEqual({
+				released: false,
+				reason: "live_process",
+				holders: [4242, 4243],
+			});
+			expect(probe).toHaveBeenCalledWith(admission.handle.home, "exec-a");
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+			expect(
+				readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+			).toContain("GH_TOKEN");
+		});
+
+		it("keeps a keyed lease when the probe is unknown", async () => {
+			const admission = await admit("exec-a");
+			writeKeyedSession("exec-a", admission.handle.home);
+			await expect(
+				retireCodexExecutionHome("exec-a", identity, env, {
+					probe: probeReturning(UNKNOWN),
+				}),
+			).resolves.toMatchObject({ released: false, reason: "probe_unknown" });
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+
+		it("retires a keyed lease once no process holds it", async () => {
+			const admission = await admit("exec-a");
+			const other = await admit("exec-b");
+			writeKeyedSession("exec-a", admission.handle.home);
+			await expect(
+				retireCodexExecutionHome("exec-a", identity, env, {
+					probe: probeReturning(NONE),
+				}),
+			).resolves.toEqual({ released: true, remaining: 1 });
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(
+				false,
+			);
+			expect(existsSync(leaseFile(other.handle.home, "exec-b"))).toBe(true);
+		});
+
+		it("reports legacy and unresolved executions without probing", async () => {
+			const probe = probeReturning(LIVE);
+			await expect(
+				retireCodexExecutionHome("exec-legacy", identity, env, { probe }),
+			).resolves.toEqual({ released: false, reason: "legacy" });
+			const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, "exec-bad");
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(join(stateDir, "session.json"), "not-json");
+			await expect(
+				retireCodexExecutionHome("exec-bad", identity, env, { probe }),
+			).resolves.toEqual({ released: false, reason: "unresolved" });
+			expect(probe).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("scrubCodexAgentHomeLeaseEntry (janitor primitive)", () => {
+		it("keeps the lease while codex processes hold it", async () => {
+			const admission = await admit("exec-a");
+			await provision(admission.handle);
+			const probe = probeReturning(LIVE);
+			await expect(
+				scrubCodexAgentHomeLeaseEntry(
+					{ home: admission.handle.home, executionId: "exec-a" },
+					env,
+					{ probe },
+				),
+			).resolves.toEqual({
+				released: false,
+				reason: "live_process",
+				holders: [4242, 4243],
+			});
+			expect(probe).toHaveBeenCalledWith(admission.handle.home, "exec-a");
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+			expect(
+				readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+			).toContain("GH_TOKEN");
+		});
+
+		it("keeps the lease when the probe is unknown", async () => {
+			const admission = await admit("exec-a");
+			await expect(
+				scrubCodexAgentHomeLeaseEntry(
+					{ home: admission.handle.home, executionId: "exec-a" },
+					env,
+					{ probe: probeReturning(UNKNOWN) },
+				),
+			).resolves.toMatchObject({ released: false, reason: "probe_unknown" });
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+
+		it.each(["missing", "corrupt"])(
+			"scrubs a stale lease whose session.json is %s, and the credential with the last one",
+			async (sessionShape) => {
+				const admission = await admit("exec-a");
+				await provision(admission.handle);
+				if (sessionShape === "corrupt") {
+					const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, "exec-a");
+					mkdirSync(stateDir, { recursive: true });
+					writeFileSync(join(stateDir, "session.json"), "{not json");
+				}
+				await expect(
+					scrubCodexAgentHomeLeaseEntry(
+						{ home: admission.handle.home, executionId: "exec-a" },
+						env,
+						{ probe: probeReturning(NONE) },
+					),
+				).resolves.toEqual({ released: true, remaining: 0 });
+				expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(
+					false,
+				);
+				expect(
+					readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+				).not.toContain("GH_TOKEN");
+				expect(warn).toHaveBeenCalledWith(
+					expect.stringContaining(
+						`keyed_home_lease_scrubbed exec=exec-a home=${admission.handle.home}`,
+					),
+				);
+			},
+		);
+
+		it.each([
+			{ project: "Flywheel", role: "implement" },
+			{ project: "fly--wheel", role: "QA" },
+		])(
+			"scrubs a lease whose home path encodes the identity $project/$role",
+			async (who) => {
+				const admission = await admit("exec-a", who);
+				const neighbour = await admit("exec-n");
+				expect(admission.handle.home).not.toContain(`/${who.project}/`);
+				await expect(
+					scrubCodexAgentHomeLeaseEntry(
+						{ home: admission.handle.home, executionId: "exec-a" },
+						env,
+						{ probe: probeReturning(NONE) },
+					),
+				).resolves.toEqual({ released: true, remaining: 0 });
+				expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(
+					false,
+				);
+				expect(existsSync(leaseFile(neighbour.handle.home, "exec-n"))).toBe(
+					true,
+				);
+			},
+		);
+
+		it.each([
+			{
+				name: "a home without a marker",
+				arrange: (home: string) =>
+					rmSync(join(home, ".flywheel-agent-home.json")),
+			},
+			{
+				name: "a marker that claims another identity",
+				arrange: (home: string) =>
+					writeFileSync(
+						join(home, ".flywheel-agent-home.json"),
+						JSON.stringify({
+							version: 1,
+							project: "elsewhere",
+							role: "qa",
+							createdAt: "2026-09-25T00:00:00.000Z",
+							assemblyArm: "bare",
+							materializedArm: null,
+						}),
+					),
+			},
+			{
+				name: "a lease entry that is a symlink",
+				arrange: (home: string) => {
+					rmSync(join(home, ".flywheel-leases", "exec-a"));
+					symlinkSync(
+						join(home, "config.toml"),
+						join(home, ".flywheel-leases", "exec-a"),
+					);
+				},
+			},
+			{
+				name: "a lease entry that is not a token",
+				arrange: (home: string) =>
+					writeFileSync(join(home, ".flywheel-leases", "exec-a"), "garbage\n"),
+			},
+			{
+				name: "a lease entry that no longer exists",
+				arrange: (home: string) =>
+					rmSync(join(home, ".flywheel-leases", "exec-a")),
+			},
+		])(
+			"refuses $name as entry_invalid without writing anything",
+			async ({ arrange }) => {
+				const admission = await admit("exec-a");
+				arrange(admission.handle.home);
+				const root = join(tmp, "homes");
+				const before = treeSnapshot(root);
+				const probe = probeReturning(NONE);
+
+				await expect(
+					scrubCodexAgentHomeLeaseEntry(
+						{ home: admission.handle.home, executionId: "exec-a" },
+						env,
+						{ probe },
+					),
+				).resolves.toEqual({ released: false, reason: "entry_invalid" });
+
+				expect(treeSnapshot(root)).toEqual(before);
+				expect(existsSync(join(root, "agents", "elsewhere"))).toBe(false);
+				expect(probe).not.toHaveBeenCalled();
+			},
+		);
+
+		it("refuses an unsafe execution id or a home outside the homes root", async () => {
+			const admission = await admit("exec-a");
+			const probe = probeReturning(NONE);
+			await expect(
+				scrubCodexAgentHomeLeaseEntry(
+					{ home: admission.handle.home, executionId: "../exec-a" },
+					env,
+					{ probe },
+				),
+			).resolves.toEqual({ released: false, reason: "entry_invalid" });
+			const outside = join(tmp, "outside", "implement");
+			mkdirSync(join(outside, ".flywheel-leases"), { recursive: true });
+			writeFileSync(
+				join(outside, ".flywheel-agent-home.json"),
+				readFileSync(join(admission.handle.home, ".flywheel-agent-home.json")),
+			);
+			writeFileSync(
+				join(outside, ".flywheel-leases", "exec-a"),
+				`${"a".repeat(32)}\n`,
+			);
+			await expect(
+				scrubCodexAgentHomeLeaseEntry(
+					{ home: outside, executionId: "exec-a" },
+					env,
+					{ probe },
+				),
+			).resolves.toEqual({ released: false, reason: "entry_invalid" });
+			expect(existsSync(join(outside, ".flywheel-leases", "exec-a"))).toBe(
+				true,
+			);
+			expect(probe).not.toHaveBeenCalled();
+		});
+
+		it("re-validates the marker under the lock before deleting", async () => {
+			const admission = await admit("exec-a");
+			const lock = join(
+				tmp,
+				"homes",
+				"agents",
+				"flywheel",
+				".locks",
+				"implement",
+			);
+			mkdirSync(lock);
+			const probe = probeReturning(NONE);
+			const pending = scrubCodexAgentHomeLeaseEntry(
+				{ home: admission.handle.home, executionId: "exec-a" },
+				env,
+				{ probe },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			writeFileSync(
+				join(admission.handle.home, ".flywheel-agent-home.json"),
+				JSON.stringify({
+					version: 1,
+					project: "flywheel",
+					role: "qa",
+					createdAt: "2026-09-25T00:00:00.000Z",
+					assemblyArm: "bare",
+					materializedArm: null,
+				}),
+			);
+			rmSync(lock, { recursive: true });
+
+			await expect(pending).resolves.toEqual({
+				released: false,
+				reason: "entry_invalid",
+			});
+			expect(probe).not.toHaveBeenCalled();
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+	});
+
+	describe("scrubOrphanedCodexAgentHomes forwards the guard", () => {
+		it("keeps a terminal session's lease while its codex processes live", async () => {
+			const admission = await admit("exec-terminal");
+			const probe = probeReturning(LIVE);
+			const sessions = new Map([
+				["exec-terminal", { status: "completed", ...identity }],
+			]);
+			await expect(
+				scrubOrphanedCodexAgentHomes(sessions, env, { probe }),
+			).resolves.toBe(0);
+			expect(probe).toHaveBeenCalledWith(
+				admission.handle.home,
+				"exec-terminal",
+			);
+			expect(
+				existsSync(leaseFile(admission.handle.home, "exec-terminal")),
+			).toBe(true);
+		});
+
+		it("removes the same lease once no process holds it", async () => {
+			const admission = await admit("exec-terminal");
+			const sessions = new Map([
+				["exec-terminal", { status: "completed", ...identity }],
+			]);
+			await expect(
+				scrubOrphanedCodexAgentHomes(sessions, env, {
+					probe: probeReturning(NONE),
+				}),
+			).resolves.toBe(1);
+			expect(
+				existsSync(leaseFile(admission.handle.home, "exec-terminal")),
+			).toBe(false);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining(
+					`keyed_home_lease_scrubbed exec=exec-terminal home=${admission.handle.home}`,
+				),
+			);
+		});
+	});
+
+	describe("reassertCodexAgentHomeLease", () => {
+		it("reports an intact lease as present", async () => {
+			const admission = await admit("exec-a");
+			await expect(
+				reassertCodexAgentHomeLease(admission.handle, env),
+			).resolves.toBe("present");
+		});
+
+		it("restores a deleted lease with the same token", async () => {
+			const admission = await admit("exec-a");
+			rmSync(leaseFile(admission.handle.home, "exec-a"));
+			await expect(
+				reassertCodexAgentHomeLease(admission.handle, env),
+			).resolves.toBe("restored");
+			expect(
+				readFileSync(leaseFile(admission.handle.home, "exec-a"), "utf8").trim(),
+			).toBe(admission.handle.token);
+		});
+
+		it("restores a lease whose whole directory was removed", async () => {
+			const admission = await admit("exec-a");
+			rmSync(join(admission.handle.home, ".flywheel-leases"), {
+				recursive: true,
+			});
+			await expect(
+				reassertCodexAgentHomeLease(admission.handle, env),
+			).resolves.toBe("restored");
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(true);
+		});
+
+		it("never overwrites a lease that carries another token", async () => {
+			const admission = await admit("exec-a");
+			const foreign = `${"b".repeat(32)}\n`;
+			writeFileSync(leaseFile(admission.handle.home, "exec-a"), foreign);
+			await expect(
+				reassertCodexAgentHomeLease(admission.handle, env),
+			).resolves.toBe("conflict");
+			expect(
+				readFileSync(leaseFile(admission.handle.home, "exec-a"), "utf8"),
+			).toBe(foreign);
+		});
+
+		it("refuses a home whose marker no longer matches the handle", async () => {
+			const admission = await admit("exec-a");
+			rmSync(leaseFile(admission.handle.home, "exec-a"));
+			rmSync(join(admission.handle.home, ".flywheel-agent-home.json"));
+			await expect(
+				reassertCodexAgentHomeLease(admission.handle, env),
+			).rejects.toThrow(/marker/);
+			expect(existsSync(leaseFile(admission.handle.home, "exec-a"))).toBe(
+				false,
+			);
+		});
 	});
 });
 

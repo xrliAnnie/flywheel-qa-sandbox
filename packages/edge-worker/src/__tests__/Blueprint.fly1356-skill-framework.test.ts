@@ -22,7 +22,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AdmitCodexAgentHomeResult } from "flywheel-claude-runner";
+import {
+	type AdmitCodexAgentHomeResult,
+	admitCodexAgentHome,
+	type CodexLeaseHolderProbeResult,
+	releaseCodexAgentHomeLease,
+} from "flywheel-claude-runner";
 import type { PonytailConfig } from "flywheel-config";
 import {
 	hashModeBucket,
@@ -119,7 +124,7 @@ interface RunOpts {
 	) => Promise<AdmitCodexAgentHomeResult>;
 	codexAgentHomeReleaser?: (
 		handle: AdmitCodexAgentHomeResult["handle"],
-	) => Promise<void>;
+	) => Promise<unknown>;
 	projectRoot?: string;
 	inspectPending?: (state: {
 		pending: Promise<unknown>;
@@ -238,7 +243,7 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 	});
 	await pending;
 	const execArgs = (adapter.execute as ReturnType<typeof vi.fn>).mock
-		.calls[0]![0] as AdapterExecutionContext;
+		.calls[0]?.[0] as AdapterExecutionContext;
 	return { envelope: envelopes[0] as EventEnvelope, execArgs };
 }
 
@@ -424,6 +429,141 @@ describe("FLY-2358 Blueprint keyed agent home admission", () => {
 		});
 		expect(admit).not.toHaveBeenCalled();
 	});
+});
+
+describe("FLY-2877 Blueprint rolls back an un-handed lease only when no codex process holds it", () => {
+	const LIVE: CodexLeaseHolderProbeResult = { status: "ok", holders: [4242] };
+	const NONE: CodexLeaseHolderProbeResult = { status: "ok", holders: [] };
+	let root: string;
+	let env: NodeJS.ProcessEnv;
+
+	function freshEnv(): NodeJS.ProcessEnv {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), "fly2877-blueprint-"));
+		return {
+			FLYWHEEL_CODEX_HOMES_ROOT: path.join(root, "homes"),
+			FLYWHEEL_CODEX_SESSION_DIR: path.join(root, "sessions"),
+		};
+	}
+
+	afterEach(() => {
+		if (root) fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	function leaseFile(executionId: string): string {
+		return path.join(
+			env.FLYWHEEL_CODEX_HOMES_ROOT!,
+			"agents",
+			"testproj",
+			"implement",
+			".flywheel-leases",
+			executionId,
+		);
+	}
+
+	it.each([
+		["still hold it", LIVE, true],
+		["are gone", NONE, false],
+	] as const)(
+		"returns without handing the home off — codex processes %s",
+		async (_label, holders, leaseKept) => {
+			env = freshEnv();
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const probe = vi.fn(async () => holders);
+			let result: unknown;
+			let executionId = "";
+			await runBlueprint({
+				envValue: "bare",
+				ctxExtra: {
+					runnerBackend: "codex-tmux",
+					generalizedExecutionContext: generalizedImplement,
+					sessionRole: "implement",
+					shareParentBranch: true,
+					startPoint: "f".repeat(40),
+					workflowResume: {
+						runId: "run-1",
+						admissionKey: "admission-1",
+						sourceAttachmentId: "attachment-1",
+						anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
+						anchorCommit: "a".repeat(40),
+						frozenBody: "frozen",
+					},
+				},
+				codexProbe: () => ({ disableNames: [] }),
+				codexAgentHomeAdmitter: async (input) => {
+					executionId = input.executionId;
+					return admitCodexAgentHome(input, env);
+				},
+				codexAgentHomeReleaser: (handle) =>
+					releaseCodexAgentHomeLease(handle, env, { probe }),
+				inspectPending: async ({ pending, executeCalls }) => {
+					result = await pending;
+					expect(executeCalls()).toBe(0);
+				},
+			});
+			expect(result).toMatchObject({
+				success: false,
+				error: "resume_start_point_mismatch",
+			});
+			expect(probe).toHaveBeenCalledOnce();
+			expect(fs.existsSync(leaseFile(executionId))).toBe(leaseKept);
+			expect(
+				warn.mock.calls.some((call) =>
+					String(call[0]).includes(
+						`[Blueprint] keyed_home_lease_retained exec=${executionId}`,
+					),
+				),
+			).toBe(leaseKept);
+		},
+	);
+
+	it.each([
+		["still hold it", LIVE, true],
+		["are gone", NONE, false],
+	] as const)(
+		"throws before the adapter handoff — codex processes %s",
+		async (_label, holders, leaseKept) => {
+			env = freshEnv();
+			vi.spyOn(console, "warn").mockImplementation(() => {});
+			// Another execution pins the home to matt, so the bare request inherits
+			// matt and the second (effective-arm) probe runs — and fails.
+			await admitCodexAgentHome(
+				{
+					project: "testproj",
+					role: "implement",
+					executionId: "exec-other",
+					requestedAssemblyArm: "matt",
+				},
+				env,
+			);
+			const probe = vi.fn(async () => holders);
+			const skillProbe = vi
+				.fn()
+				.mockReturnValueOnce({ disableNames: ["requested-bare"] })
+				.mockImplementationOnce(() => {
+					throw new Error("effective matt probe failed");
+				});
+			let executionId = "";
+			await expect(
+				runBlueprint({
+					envValue: "bare",
+					ctxExtra: {
+						runnerBackend: "codex-tmux",
+						generalizedExecutionContext: generalizedImplement,
+					},
+					codexProbe: skillProbe,
+					codexAgentHomeAdmitter: async (input) => {
+						executionId = input.executionId;
+						return admitCodexAgentHome(input, env);
+					},
+					codexAgentHomeReleaser: (handle) =>
+						releaseCodexAgentHomeLease(handle, env, { probe }),
+				}),
+			).rejects.toThrow("effective matt probe failed");
+			expect(probe).toHaveBeenCalledOnce();
+			expect(fs.existsSync(leaseFile(executionId))).toBe(leaseKept);
+			expect(fs.existsSync(leaseFile("exec-other"))).toBe(true);
+		},
+	);
 });
 
 describe("FLY-1395 default Codex skill assembly probe", () => {
