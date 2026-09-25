@@ -451,7 +451,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				return;
 			}
 		}
-		this.room.setWaiting?.(true);
+		// No waiting bed after she speaks (founder 2026-09-24, FLY-2799 qa6): with
+		// no update the room stays quiet.
 		void Promise.resolve(
 			this.options.delivery.capture({
 				transcriptId: `${this.options.projection.sessionId}:1:${input.itemId}:${input.contentIndex}`,

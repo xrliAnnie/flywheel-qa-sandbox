@@ -105,7 +105,9 @@ describe("GenericVoiceSession", () => {
 			rawText: "请检查 FLY-2655",
 			ts: expect.any(String),
 		});
-		expect(test.room.setWaiting).toHaveBeenCalledWith(true);
+		// FLY-2799 qa6 / founder 9-24: no waiting music after she speaks; with no
+		// update the room stays quiet.
+		expect(test.room.setWaiting).not.toHaveBeenCalledWith(true);
 	});
 
 	it("uses founder audio to cancel active Codex output once before forwarding the frame", async () => {
