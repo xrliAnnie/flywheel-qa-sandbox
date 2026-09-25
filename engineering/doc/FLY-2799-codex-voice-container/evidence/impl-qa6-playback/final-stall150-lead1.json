@@ -1,0 +1,84 @@
+{
+  "stallMs": 150,
+  "lead": 1,
+  "items": 12,
+  "errors": [],
+  "underruns": 3603,
+  "missingSlotsInsideSpeech": 519,
+  "speechFramesHeard": 3615,
+  "expectedSpeechFrames": 3613,
+  "results": [
+    {
+      "itemId": "item_ES4v6zeymzF9Oeyn6RnHI",
+      "audioMs": 1350,
+      "wholeItemWaitMs": 327,
+      "streamedStartMs": 20
+    },
+    {
+      "itemId": "item_ES4vBmsb4pHwR2Xh3viZ2",
+      "audioMs": 3550,
+      "wholeItemWaitMs": 524,
+      "streamedStartMs": 21
+    },
+    {
+      "itemId": "item_ES4vKnFrFkVjGZExzMqN5",
+      "audioMs": 19450,
+      "wholeItemWaitMs": 4869,
+      "streamedStartMs": 21
+    },
+    {
+      "itemId": "item_ES4vQiTaxCqNrPjQqNsD2",
+      "audioMs": 4300,
+      "wholeItemWaitMs": 838,
+      "streamedStartMs": 15
+    },
+    {
+      "itemId": "item_ES4vv48Tl0YalF3azqqrF",
+      "audioMs": 7900,
+      "wholeItemWaitMs": 1352,
+      "streamedStartMs": 18
+    },
+    {
+      "itemId": "item_ES4vylXF1dJJYkto39Sio",
+      "audioMs": 2500,
+      "wholeItemWaitMs": 344,
+      "streamedStartMs": 28
+    },
+    {
+      "itemId": "item_ES4wFankxgMBuccZzyvak",
+      "audioMs": 1250,
+      "wholeItemWaitMs": 384,
+      "streamedStartMs": 29
+    },
+    {
+      "itemId": "item_ES4wJOvlFq1P1TFfhYugT",
+      "audioMs": 3500,
+      "wholeItemWaitMs": 489,
+      "streamedStartMs": 27
+    },
+    {
+      "itemId": "item_ES4wajzQaTMH0IzFhhEJw",
+      "audioMs": 5350,
+      "wholeItemWaitMs": 1094,
+      "streamedStartMs": 26
+    },
+    {
+      "itemId": "item_ES4wcKsZYFmyuGra5X8se",
+      "audioMs": 16000,
+      "wholeItemWaitMs": 3128,
+      "streamedStartMs": 32
+    },
+    {
+      "itemId": "item_ES4wnTsBp2WnRKTtGnm6g",
+      "audioMs": 4100,
+      "wholeItemWaitMs": 500,
+      "streamedStartMs": 21
+    },
+    {
+      "itemId": "item_ES4wuiwgC5M1bavMgivuf",
+      "audioMs": 3000,
+      "wholeItemWaitMs": 424,
+      "streamedStartMs": 20
+    }
+  ]
+}
