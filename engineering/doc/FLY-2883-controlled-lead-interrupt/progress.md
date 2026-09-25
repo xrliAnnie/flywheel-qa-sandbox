@@ -1,13 +1,13 @@
 ---
 issue: FLY-2883
 phase: design
-phaseCursor: 3/7
-updated: 2026-09-25T20:14:24.438Z
-nextStep: write plan.md, then Codex design review
+phaseCursor: 4/7
+updated: 2026-09-25T20:39:29.460Z
+nextStep: Codex design review R3 (plan v3); founder HTML drafted
 chunks: []
 pointers: {}
 ---
 
 # FLY-2883 progress
-**phase**: design (3/7)
-**next**: write plan.md, then Codex design review
+**phase**: design (4/7)
+**next**: Codex design review R3 (plan v3); founder HTML drafted
