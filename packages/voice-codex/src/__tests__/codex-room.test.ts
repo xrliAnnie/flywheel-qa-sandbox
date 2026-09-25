@@ -931,6 +931,126 @@ describe("Codex room composition", () => {
 		mouth.stop();
 	});
 
+	it("neither cuts nor drops an answer that arrives in bursts faster than it plays", async () => {
+		// FLY-2798 mechanism A, checked on the engine B path: the next segment
+		// arrives while the previous one still has over a second unplayed, and one
+		// segment pauses upstream for more than a second mid-answer. RoomIO there
+		// refused or cut the earlier segment; B's room must queue and continue.
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		const simulated = simulatedPlayer();
+		const diagnostics: Array<{ kind: string }> = [];
+		let tickMouth!: () => void;
+		const mouth = new WaitingMouth({
+			player: simulated.player,
+			createResource: simulated.createResource,
+			setIntervalFn: ((next: () => void) => {
+				tickMouth = next;
+				return 1 as unknown as NodeJS.Timeout;
+			}) as unknown as typeof setInterval,
+			clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+			onDiagnostic: (record) => diagnostics.push(record),
+		});
+		mouth.start();
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-burst-output",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			openAudio: ({ itemId }) => mouth.openSpeech(itemId),
+		});
+		const conversation = await actual.createConversation({ brain });
+		const errors: Error[] = [];
+		conversation.on("error", (error) => errors.push(error));
+		const audio = (itemId: string, fill: number, frames: number) => {
+			const pcm24Mono = Buffer.alloc(frames * 960);
+			for (let offset = 0; offset < pcm24Mono.length; offset += 2)
+				pcm24Mono.writeInt16LE(fill, offset);
+			callbacks.onAudio({
+				generation: 1,
+				itemId,
+				pcm24Mono,
+				sampleRate: 24_000,
+				numChannels: 1,
+				samplesPerChannel: frames * 480,
+				raw: {},
+			} as never);
+		};
+		const final = (itemId: string) =>
+			callbacks.onTranscript({
+				generation: 1,
+				itemId,
+				association: "preceding_item",
+				role: "assistant",
+				text: itemId,
+				final: true,
+				raw: {},
+			} as never);
+		const slots = async (count: number) => {
+			for (let slot = 0; slot < count; slot += 1) {
+				simulated.read();
+				tickMouth();
+				await Promise.resolve();
+			}
+		};
+		for (const itemId of ["first", "second"])
+			callbacks.onItem({
+				generation: 1,
+				itemId,
+				role: "assistant",
+				raw: {},
+			} as never);
+
+		// Segment 1: 1.5 s delivered at once, then a 1.2 s upstream pause
+		// mid-answer (it plays out and waits), then its last 1.4 s at once.
+		audio("first", 1_111, 75);
+		await slots(20);
+		await slots(60);
+		audio("first", 1_111, 70);
+		final("first");
+		// Segment 2 arrives while segment 1 still has over a second to play.
+		await slots(5);
+		const queuedFirst =
+			145 -
+			simulated.heard.filter((frame) => frame?.readInt16LE(0) === 1_111).length;
+		expect(queuedFirst * 20).toBeGreaterThan(1_000);
+		audio("second", 2_222, 30);
+		final("second");
+		await slots(200);
+
+		const heardSamples = simulated.heard
+			.filter((frame): frame is Buffer => frame !== null)
+			.map((frame) => frame.readInt16LE(0))
+			.filter((sample) => sample !== 0);
+		expect(heardSamples.filter((sample) => sample === 1_111)).toHaveLength(145);
+		expect(heardSamples.filter((sample) => sample === 2_222)).toHaveLength(30);
+		// In order, never interleaved or cut.
+		expect(heardSamples).toEqual([
+			...Array(145).fill(1_111),
+			...Array(30).fill(2_222),
+		]);
+		expect(simulated.player.play).toHaveBeenCalledOnce();
+		expect(
+			diagnostics.filter(({ kind }) => kind === "playback_flushed"),
+		).toEqual([]);
+		expect(errors).toEqual([]);
+		await conversation.close();
+		mouth.stop();
+	});
+
 	it("stops real queued playback on founder barge-in and continues on the next generation", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		let roomHandlers!: RoomHandlers;
