@@ -1243,6 +1243,27 @@ describe("turn-state provider wiring (FLY-2882)", () => {
 			turn: { id: "founder-live", status: "completed" },
 		});
 		expect(provider.snapshot().activeTurns).toEqual([]);
+		// design-correction C3: a malformed completion on the bound thread voids
+		// trust and re-seeds through the same bounded turns/list reader.
+		const seedsBefore = seedReads.mock.calls.length;
+		h.emit("turn/started", {
+			threadId: OLD,
+			turn: { id: "founder-2", status: "inProgress", startedAt: null },
+		});
+		h.emit("turn/completed", {
+			threadId: OLD,
+			turn: { id: "founder-2", status: "inProgress" },
+		});
+		expect(provider.snapshot()).toMatchObject({
+			seeded: false,
+			activeTurns: [],
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(seedReads.mock.calls.length).toBe(seedsBefore + 1);
+		expect(provider.snapshot()).toMatchObject({
+			seeded: true,
+			activeTurns: [],
+		});
 		const firstGeneration = provider.snapshot().generation;
 		await generation.stop();
 		expect(provider.snapshot()).toMatchObject({

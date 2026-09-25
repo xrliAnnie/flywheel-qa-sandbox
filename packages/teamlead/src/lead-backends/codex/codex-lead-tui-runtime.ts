@@ -388,8 +388,14 @@ export function wireDemuxedProcess(args: {
 	onTokenUsage?: (params: unknown) => void;
 	onActivity?: () => void;
 	log?: (m: string) => void;
-	/** FLY-2882: turn lifecycle feed for the read-only turn-state snapshot. */
-	turnState?: Pick<LeadTurnStateTracker, "onTurnStarted" | "onTurnCompleted">;
+	/**
+	 * FLY-2882 (design-correction C1): read-only turn-state feed. Lifecycle is
+	 * observed on the RAW notification stream before the demux can hold or
+	 * tombstone it; the demux only names the owner.
+	 */
+	turnState?: Pick<LeadTurnStateTracker, "observeLifecycle" | "setOrigin">;
+	/** Test seam for the demux hold-buffer cap. */
+	demuxOptions?: { heldCap?: number };
 }): DemuxedWiring {
 	const listeners = {
 		notification: [] as Array<(method: string, params: unknown) => void>,
@@ -411,49 +417,57 @@ export function wireDemuxedProcess(args: {
 			if (evicted) recentlyCompleted.delete(evicted);
 		}
 	};
-	const demux = new TurnDemux({
-		toExecutor: (method, params) => {
-			if (method === "turn/started")
-				args.turnState?.onTurnStarted(params, "message");
-			if (method === "turn/completed") {
-				args.turnState?.onTurnCompleted(params);
-				const id = extractTurnId(params);
-				for (const cb of listeners.turnCompleted) cb(params);
-				if (id) {
-					markCompleted(id); // record BEFORE release so a later waiter sees it
-					demux.releaseTurn(id); // release AFTER delivery (bounded registry)
+	const demux = new TurnDemux(
+		{
+			toExecutor: (method, params) => {
+				if (method === "turn/started") {
+					const id = extractTurnId(params);
+					if (id) args.turnState?.setOrigin(id, "message");
 				}
-			} else {
-				for (const cb of listeners.notification) cb(method, params);
-			}
+				if (method === "turn/completed") {
+					const id = extractTurnId(params);
+					for (const cb of listeners.turnCompleted) cb(params);
+					if (id) {
+						markCompleted(id); // record BEFORE release so a later waiter sees it
+						demux.releaseTurn(id); // release AFTER delivery (bounded registry)
+					}
+				} else {
+					for (const cb of listeners.notification) cb(method, params);
+				}
+			},
+			toObserver: (method, params, provenance) => {
+				// One observe row per founder turn — keyed on its completion (bounded,
+				// idempotent; deltas are visible live in the TUI anyway).
+				if (method === "turn/started") {
+					const id = extractTurnId(params);
+					// An abort/overflow flush proves nothing about ownership.
+					if (id)
+						args.turnState?.setOrigin(
+							id,
+							provenance === "foreign" ? "founder_terminal" : "unknown",
+						);
+					if (id) args.onFounderTurnStarted?.(id);
+				} else if (method === "turn/completed") {
+					const id = extractTurnId(params);
+					if (id) args.onFounderTurnCompleted(id);
+				}
+			},
+			onActivity: args.onActivity,
+			log: args.log,
 		},
-		toObserver: (method, params) => {
-			// One observe row per founder turn — keyed on its completion (bounded,
-			// idempotent; deltas are visible live in the TUI anyway).
-			if (method === "turn/started") {
-				args.turnState?.onTurnStarted(params, "founder_terminal");
-				const id = extractTurnId(params);
-				if (id) args.onFounderTurnStarted?.(id);
-			} else if (method === "turn/completed") {
-				args.turnState?.onTurnCompleted(params);
-				const id = extractTurnId(params);
-				if (id) args.onFounderTurnCompleted(id);
-			}
-		},
-		onActivity: args.onActivity,
-		log: args.log,
-	});
+		args.demuxOptions,
+	);
 	args.proc.on("notification", (method, params) => {
 		if (method === "thread/tokenUsage/updated") args.onTokenUsage?.(params);
+		// FLY-2882: the raw stream carries every lifecycle event exactly once
+		// (the process ALSO emits `turnCompleted` for the same completion — that
+		// duplicate is deliberately not fed to the tracker).
+		args.turnState?.observeLifecycle(method, params);
 		demux.route(method, params);
 	});
-	args.proc.on("turnCompleted", (params) => {
-		// FLY-2882: completions are recorded BEFORE demux routing so a completion
-		// the demux holds (pre-claim) or drops (tombstoned after a timeout) still
-		// clears the turn-state snapshot; the tracker ignores a later replayed start.
-		args.turnState?.onTurnCompleted(params);
-		demux.route("turn/completed", params);
-	});
+	args.proc.on("turnCompleted", (params) =>
+		demux.route("turn/completed", params),
+	);
 
 	const facade: CodexProcessLike = {
 		on(event: "notification" | "turnCompleted" | "exit", cb: never): void {
@@ -480,6 +494,7 @@ export function wireDemuxedProcess(args: {
 				return undefined;
 			}
 			if (!demux.claimTurn(turnId)) {
+				args.turnState?.setOrigin(turnId, "unknown");
 				// R2 MED-3: window was force-settled by overflow — early events are
 				// gone; never wait on this turn. The router treats this throw as
 				// ambiguous (its existing failure path).
@@ -1231,8 +1246,13 @@ export function buildTuiGeneration(
 							log: (message) => logger.warn(message),
 						})
 					: undefined;
+				// FLY-2882: bounded (re)seed for this generation's tracker — at
+				// thread bind, and again whenever a malformed lifecycle event on the
+				// bound thread voids trust (design-correction C3).
+				let seedTurnState: (() => void) | undefined;
 				const generationTurnState = new LeadTurnStateTracker({
 					binding: journal,
+					onTrustLost: () => seedTurnState?.(),
 				});
 				turnState = generationTurnState;
 				proc.on("exit", () => generationTurnState.markDisconnected());
@@ -1537,11 +1557,14 @@ export function buildTuiGeneration(
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
 						generationTurnState.bindThread(threadId);
-						turnSeed?.cancel();
-						turnSeed = seedTurnStateWithRetry({
-							tracker: generationTurnState,
-							read: () => readLatestTurn(p.request.bind(p), threadId),
-						});
+						seedTurnState = () => {
+							turnSeed?.cancel();
+							turnSeed = seedTurnStateWithRetry({
+								tracker: generationTurnState,
+								read: () => readLatestTurn(p.request.bind(p), threadId),
+							});
+						};
+						seedTurnState();
 						await nativeConfig?.bootstrap(threadId, bootstrapTuning);
 						residencyLifecycle = createResidentCodexLeadLifecycleForGeneration({
 							config,

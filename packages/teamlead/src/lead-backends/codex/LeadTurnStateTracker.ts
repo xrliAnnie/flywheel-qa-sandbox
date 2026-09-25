@@ -11,6 +11,13 @@
  * completion is itself authoritative (a thread has at most one active turn),
  * so it seeds the tracker too.
  *
+ * design-correction C1/C3: lifecycle is observed at the RAW proc-notification
+ * seam (before TurnDemux can hold or tombstone anything); the demux only names
+ * the owner via `setOrigin`. Events for the bound thread are validated —
+ * start must be `inProgress`, completion must be terminal — and a malformed
+ * one voids trust (unseeded ⇒ the Bridge answers unknown) until a re-seed or
+ * the next valid event.
+ *
  * Nothing here reads or returns message bodies: the snapshot carries turn ids,
  * start times and (for message turns) the mailbox delivery ids bound to the
  * journal entry that opened the turn.
@@ -18,7 +25,6 @@
 
 import { randomUUID } from "node:crypto";
 import type { LatestTurn } from "./codex-lead-thread-rotation.js";
-import { extractTurnId } from "./TurnDemux.js";
 
 export const TURN_STATE_SCHEMA = "turn-state.v1" as const;
 export const MAX_BOUND_DELIVERIES = 64;
@@ -60,15 +66,22 @@ export interface TurnBindingSource {
 	listMemberIds(entryId: string): string[];
 }
 
-type ActiveTurn = {
-	startedAtMs: number;
-	origin: "message" | "founder_terminal" | "unknown";
-};
+export type TurnOrigin = "message" | "founder_terminal" | "unknown";
+
+type ActiveTurn = { startedAtMs: number; origin: TurnOrigin };
+
+type Lifecycle =
+	| { kind: "started"; turnId: string; startedAtMs: number }
+	| { kind: "completed"; turnId: string };
+
+const TERMINAL_STATUSES = new Set(["completed", "interrupted", "failed"]);
+const MAX_TURN_ID = 128;
 
 export class LeadTurnStateTracker {
 	readonly generation: string;
 	private readonly binding: TurnBindingSource;
 	private readonly now: () => number;
+	private readonly onTrustLost: (() => void) | undefined;
 	private threadId: string | undefined;
 	private connected = false;
 	private seeded = false;
@@ -81,10 +94,13 @@ export class LeadTurnStateTracker {
 		binding: TurnBindingSource;
 		now?: () => number;
 		generation?: string;
+		/** Called when a malformed current-thread event voids trust (re-seed). */
+		onTrustLost?: () => void;
 	}) {
 		this.binding = opts.binding;
 		this.now = opts.now ?? Date.now;
 		this.generation = opts.generation ?? randomUUID();
+		this.onTrustLost = opts.onTrustLost;
 	}
 
 	/** The generation's thread is established; events for it now count. */
@@ -94,27 +110,49 @@ export class LeadTurnStateTracker {
 		this.connected = true;
 	}
 
-	onTurnStarted(params: unknown, origin: "message" | "founder_terminal"): void {
-		const turnId = this.accept(params);
-		if (turnId === undefined || this.completed.includes(turnId)) return;
-		this.revision++;
-		this.active.set(turnId, {
-			startedAtMs: this.serverStartMs(params) ?? this.now(),
-			origin,
-		});
+	/**
+	 * Raw proc-notification seam (BEFORE any demux hold/tombstone). Only
+	 * `turn/started` / `turn/completed` are read, and only their metadata.
+	 * Other threads are ignored; a malformed event on the bound thread voids
+	 * trust (unseeded → "unknown") and asks for a re-seed.
+	 */
+	observeLifecycle(method: string, params: unknown): void {
+		if (method !== "turn/started" && method !== "turn/completed") return;
+		if (this.dead || !this.connected || this.threadId === undefined) return;
+		const threadId = (params as { threadId?: unknown } | null | undefined)
+			?.threadId;
+		if (typeof threadId === "string" && threadId !== this.threadId) return;
+		const event =
+			typeof threadId === "string"
+				? this.parseLifecycle(method, params)
+				: undefined;
+		if (!event) {
+			this.invalidate();
+			return;
+		}
+		if (event.kind === "started") {
+			if (this.completed.includes(event.turnId)) return;
+			this.revision++;
+			if (!this.active.has(event.turnId))
+				this.active.set(event.turnId, {
+					startedAtMs: event.startedAtMs,
+					origin: "unknown",
+				});
+		} else {
+			this.revision++;
+			this.active.delete(event.turnId);
+			if (!this.completed.includes(event.turnId)) {
+				this.completed.push(event.turnId);
+				if (this.completed.length > COMPLETED_MEMORY) this.completed.shift();
+			}
+		}
 		this.seeded = true;
 	}
 
-	onTurnCompleted(params: unknown): void {
-		const turnId = this.accept(params);
-		if (turnId === undefined) return;
-		this.revision++;
-		this.active.delete(turnId);
-		if (!this.completed.includes(turnId)) {
-			this.completed.push(turnId);
-			if (this.completed.length > COMPLETED_MEMORY) this.completed.shift();
-		}
-		this.seeded = true;
+	/** Ownership named by the demux; never affects busy/idle. */
+	setOrigin(turnId: string, origin: TurnOrigin): void {
+		const turn = this.active.get(turnId);
+		if (turn) turn.origin = origin;
 	}
 
 	markDisconnected(): void {
@@ -171,20 +209,44 @@ export class LeadTurnStateTracker {
 		};
 	}
 
-	private accept(params: unknown): string | undefined {
-		if (this.dead || !this.connected) return undefined;
-		const threadId = (params as { threadId?: unknown } | undefined)?.threadId;
-		if (typeof threadId === "string" && threadId !== this.threadId)
-			return undefined;
-		return extractTurnId(params);
+	private invalidate(): void {
+		this.revision++;
+		this.seeded = false;
+		this.active.clear();
+		this.onTrustLost?.();
 	}
 
-	private serverStartMs(params: unknown): number | undefined {
-		const startedAt = (params as { turn?: { startedAt?: unknown } } | undefined)
-			?.turn?.startedAt;
-		return typeof startedAt === "number"
-			? this.validStartMs(startedAt)
-			: undefined;
+	private parseLifecycle(
+		method: string,
+		params: unknown,
+	): Lifecycle | undefined {
+		const turn = (params as { turn?: unknown }).turn as
+			| { id?: unknown; status?: unknown; startedAt?: unknown }
+			| null
+			| undefined;
+		if (typeof turn !== "object" || turn === null) return undefined;
+		const turnId = turn.id;
+		if (
+			typeof turnId !== "string" ||
+			turnId.length === 0 ||
+			turnId.length > MAX_TURN_ID
+		)
+			return undefined;
+		if (method === "turn/completed")
+			return typeof turn.status === "string" &&
+				TERMINAL_STATUSES.has(turn.status)
+				? { kind: "completed", turnId }
+				: undefined;
+		if (turn.status !== "inProgress") return undefined;
+		if (turn.startedAt === undefined || turn.startedAt === null)
+			return { kind: "started", turnId, startedAtMs: this.now() };
+		const startedAtMs =
+			typeof turn.startedAt === "number"
+				? this.validStartMs(turn.startedAt)
+				: undefined;
+		return startedAtMs === undefined
+			? undefined
+			: { kind: "started", turnId, startedAtMs };
 	}
 
 	private validStartMs(seconds: number | null): number | undefined {
