@@ -68,3 +68,75 @@ it("mounts runtime headphone and handoff routers before the catch-all", async ()
 		store.close();
 	}
 });
+
+it("FLY-2863: mounts the agenda routes; Lead commands take the ingest token without being shadowed", async () => {
+	const store = await StateStore.create(":memory:");
+	const agenda = express.Router().get("/probe", (_req, res) => {
+		res.json({ route: "agenda" });
+	});
+	const lead = express.Router().post("/results", (_req, res) => {
+		res.json({ route: "lead" });
+	});
+	const routeHolders = {
+		voiceAgendaRouter: { current: agenda },
+		voiceAgendaLeadRouter: { current: lead },
+	} as unknown as BridgeAppOptions;
+	const app = createBridgeApp(
+		store,
+		[],
+		{
+			host: "127.0.0.1",
+			port: 0,
+			dbPath: ":memory:",
+			notificationChannel: "test",
+			defaultLeadAgentId: "test",
+			stuckThresholdMinutes: 15,
+			stuckCheckIntervalMs: 300_000,
+			orphanThresholdMinutes: 60,
+			apiToken: "master",
+			ingestToken: "ingest",
+			runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
+		} as never,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		routeHolders,
+	);
+	const server = createServer(app);
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	try {
+		const probe = await fetch(`${base}/api/voice/agenda/probe`, {
+			headers: { Authorization: "Bearer master" },
+		});
+		expect(await probe.json()).toEqual({ route: "agenda" });
+		const ingestOnAgenda = await fetch(`${base}/api/voice/agenda/probe`, {
+			headers: { Authorization: "Bearer ingest" },
+		});
+		expect(ingestOnAgenda.status).toBe(401);
+		const leadResult = await fetch(`${base}/api/voice/agenda/lead/results`, {
+			method: "POST",
+			headers: { Authorization: "Bearer ingest" },
+		});
+		expect(leadResult.status).toBe(200);
+		expect(await leadResult.json()).toEqual({ route: "lead" });
+		const noToken = await fetch(`${base}/api/voice/agenda/lead/results`, {
+			method: "POST",
+		});
+		expect(noToken.status).toBe(401);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		store.close();
+	}
+});

@@ -1501,7 +1501,10 @@ export function apiAuthWithRunnerTierDelegation(
 			req.path === "/reports" ||
 			req.path.startsWith("/reports/") ||
 			req.path === "/voice/sessions" ||
-			req.path.startsWith("/voice/sessions/")
+			req.path.startsWith("/voice/sessions/") ||
+			// FLY-2863: Lead agenda commands authenticate at their own mount
+			// (master or ingest token), like voice sessions.
+			req.path.startsWith("/voice/agenda/lead/")
 		) {
 			next();
 			return;

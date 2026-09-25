@@ -20,7 +20,10 @@ describe("OpenAiTts (FLY-2863 §5.2)", () => {
 		let t = 0;
 		const tts = new OpenAiTts({
 			apiKey: "sk-test",
-			now: () => (t += 5),
+			now: () => {
+				t += 5;
+				return t;
+			},
 			fetchImpl: (async (url: string, init: RequestInit) => {
 				calls.push({ url, init });
 				return streamed([[1, 2, 3], [4, 5, 6, 7], [8]]);
