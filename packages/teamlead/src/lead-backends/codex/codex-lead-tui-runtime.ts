@@ -88,12 +88,12 @@ import {
 import {
 	appendRotationReceipt,
 	boundedTurnsList,
-	readLatestTurn,
 	FENCE_IDLE_WAIT_MS,
 	isRotationDue,
 	ROTATION_CHECK_INTERVAL_MS,
 	ROTATION_READY_TIMEOUT_MS,
 	type RotationLedger,
+	readLatestTurn,
 	readRotationLedger,
 	readThreadIdStrict,
 	reconcileRotationLedger,

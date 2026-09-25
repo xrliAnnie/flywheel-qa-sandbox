@@ -247,8 +247,7 @@ export function isValidLeadActivity(value: unknown): value is LeadActivityV1 {
 			exactKeys(unknown, ["reason", "detail"]) &&
 			typeof unknown.reason === "string" &&
 			Object.hasOwn(UNKNOWN_REASON_DETAIL, unknown.reason) &&
-			unknown.detail ===
-				UNKNOWN_REASON_DETAIL[unknown.reason as UnknownReason]
+			unknown.detail === UNKNOWN_REASON_DETAIL[unknown.reason as UnknownReason]
 		);
 	}
 	if (value.state !== "busy") return false;

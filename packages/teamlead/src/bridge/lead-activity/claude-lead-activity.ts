@@ -52,8 +52,12 @@ export async function readClaudeLeadActivity(
 	const observedAtMs = deps.now();
 	const parsed = parseClaudeLeadPaneActivity(pane, leadId);
 	if (parsed.state === "unknown")
-		return { reading: { state: "unknown", reason: parsed.reason }, observedAtMs };
-	if (parsed.state === "idle") return { reading: { state: "idle" }, observedAtMs };
+		return {
+			reading: { state: "unknown", reason: parsed.reason },
+			observedAtMs,
+		};
+	if (parsed.state === "idle")
+		return { reading: { state: "idle" }, observedAtMs };
 	return {
 		reading: {
 			state: "busy",

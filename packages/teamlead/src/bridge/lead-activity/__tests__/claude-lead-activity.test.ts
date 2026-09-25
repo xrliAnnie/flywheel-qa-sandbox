@@ -33,14 +33,18 @@ function deps(over: {
 }) {
 	return {
 		locate: vi.fn(over.locate ?? (async () => REF)),
-		capture: vi.fn(over.capture ?? (async () => pane("✻ Worked for 3s · done 1:00 PM"))),
+		capture: vi.fn(
+			over.capture ?? (async () => pane("✻ Worked for 3s · done 1:00 PM")),
+		),
 		now: () => NOW,
 	};
 }
 
 describe("readClaudeLeadActivity", () => {
 	it("derives the turn start from the spinner timer and never attributes an issue", async () => {
-		const d = deps({ capture: async () => pane("✶ Spelunking… (1m 4s · ↓ 547 tokens)") });
+		const d = deps({
+			capture: async () => pane("✶ Spelunking… (1m 4s · ↓ 547 tokens)"),
+		});
 		const result = await readClaudeLeadActivity("flywheel", LEAD, d);
 		expect(result).toEqual({
 			observedAtMs: NOW,
@@ -70,7 +74,11 @@ describe("readClaudeLeadActivity", () => {
 	});
 
 	it.each([
-		["locate returns null", { locate: async () => null }, "lead_window_unavailable"],
+		[
+			"locate returns null",
+			{ locate: async () => null },
+			"lead_window_unavailable",
+		],
 		[
 			"locate throws",
 			{
@@ -98,12 +106,19 @@ describe("readClaudeLeadActivity", () => {
 			},
 			"pane_capture_failed",
 		],
-		["the pane has no input box", { capture: async () => "menu" }, "pane_unrecognized"],
-	] as const)("answers unknown when %s — never idle", async (_label, over, reason) => {
-		const d = deps(over);
-		const result = await readClaudeLeadActivity("flywheel", LEAD, d);
-		expect(result.reading).toEqual({ state: "unknown", reason });
-		if (reason === "lead_window_unavailable" && _label.startsWith("locate"))
-			expect(d.capture).not.toHaveBeenCalled();
-	});
+		[
+			"the pane has no input box",
+			{ capture: async () => "menu" },
+			"pane_unrecognized",
+		],
+	] as const)(
+		"answers unknown when %s — never idle",
+		async (_label, over, reason) => {
+			const d = deps(over);
+			const result = await readClaudeLeadActivity("flywheel", LEAD, d);
+			expect(result.reading).toEqual({ state: "unknown", reason });
+			if (reason === "lead_window_unavailable" && _label.startsWith("locate"))
+				expect(d.capture).not.toHaveBeenCalled();
+		},
+	);
 });

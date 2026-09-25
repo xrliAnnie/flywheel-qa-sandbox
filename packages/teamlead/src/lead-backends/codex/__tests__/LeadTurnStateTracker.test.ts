@@ -20,7 +20,11 @@ function binding(
 	};
 }
 
-function started(turnId: string, startedAt: unknown = SEC - 30, threadId = THREAD) {
+function started(
+	turnId: string,
+	startedAt: unknown = SEC - 30,
+	threadId = THREAD,
+) {
 	return {
 		threadId,
 		turn: { id: turnId, status: "inProgress", startedAt, items: [] },
@@ -70,18 +74,34 @@ describe("LeadTurnStateTracker — seeding", () => {
 		[
 			"an in-progress latest turn",
 			inProgress(),
-			[{ origin: "unknown", turnId: "seed-turn", startedAtMs: (SEC - 90) * 1000 }],
+			[
+				{
+					origin: "unknown",
+					turnId: "seed-turn",
+					startedAtMs: (SEC - 90) * 1000,
+				},
+			],
 		],
 	])("seeds from %s", (_label, latest, activeTurns) => {
 		const t = tracker();
 		const rev0 = t.beginSeed();
 		expect(t.applySeed(rev0, latest)).toBe(true);
-		expect(t.snapshot()).toMatchObject({ connected: true, seeded: true, activeTurns });
+		expect(t.snapshot()).toMatchObject({
+			connected: true,
+			seeded: true,
+			activeTurns,
+		});
 	});
 
 	it.each([
-		["a start", (t: LeadTurnStateTracker) => t.onTurnStarted(started("live"), "message")],
-		["a completion", (t: LeadTurnStateTracker) => t.onTurnCompleted(completed("seed-turn"))],
+		[
+			"a start",
+			(t: LeadTurnStateTracker) => t.onTurnStarted(started("live"), "message"),
+		],
+		[
+			"a completion",
+			(t: LeadTurnStateTracker) => t.onTurnCompleted(completed("seed-turn")),
+		],
 	])("discards a seed reply that raced with %s", (_label, event) => {
 		const t = tracker();
 		const rev0 = t.beginSeed();
@@ -118,7 +138,10 @@ describe("LeadTurnStateTracker — seeding", () => {
 		t.onTurnStarted(started("live"), "message");
 		expect(t.applySeed(t.beginSeed(), null)).toBe(false);
 		expect(t.snapshot().activeTurns).toHaveLength(1);
-		const unbound = new LeadTurnStateTracker({ binding: binding(), now: () => NOW });
+		const unbound = new LeadTurnStateTracker({
+			binding: binding(),
+			now: () => NOW,
+		});
 		expect(unbound.applySeed(unbound.beginSeed(), null)).toBe(false);
 		expect(unbound.snapshot().seeded).toBe(false);
 	});
@@ -141,7 +164,11 @@ describe("LeadTurnStateTracker — live events", () => {
 					startedAtMs: (SEC - 40) * 1000,
 					binding: { status: "bound", deliveryIds: ["d-1", "d-2"] },
 				},
-				{ origin: "founder_terminal", turnId: "f-turn", startedAtMs: (SEC - 10) * 1000 },
+				{
+					origin: "founder_terminal",
+					turnId: "f-turn",
+					startedAtMs: (SEC - 10) * 1000,
+				},
 			],
 		});
 		expect("binding" in t.snapshot().activeTurns[1]!).toBe(false);
@@ -156,11 +183,14 @@ describe("LeadTurnStateTracker — live events", () => {
 		["non-numeric", "soon"],
 		["zero", 0],
 		["in the future", SEC + 60],
-	])("falls back to the local clock when startedAt is %s", (_label, startedAt) => {
-		const t = tracker();
-		t.onTurnStarted(started("t", startedAt), "message");
-		expect(t.snapshot().activeTurns[0]?.startedAtMs).toBe(NOW);
-	});
+	])(
+		"falls back to the local clock when startedAt is %s",
+		(_label, startedAt) => {
+			const t = tracker();
+			t.onTurnStarted(started("t", startedAt), "message");
+			expect(t.snapshot().activeTurns[0]?.startedAtMs).toBe(NOW);
+		},
+	);
 
 	it("falls back to the local clock when the turn carries no startedAt field", () => {
 		const t = tracker();
@@ -177,7 +207,10 @@ describe("LeadTurnStateTracker — live events", () => {
 
 	it("ignores events for another thread and events without a turn id", () => {
 		const t = tracker();
-		t.onTurnStarted(started("other", SEC, "019eaf5d-a5b7-7a72-b73f-cd1063892aff"), "message");
+		t.onTurnStarted(
+			started("other", SEC, "019eaf5d-a5b7-7a72-b73f-cd1063892aff"),
+			"message",
+		);
 		t.onTurnStarted({ threadId: THREAD }, "message");
 		expect(t.snapshot()).toMatchObject({ seeded: false, activeTurns: [] });
 	});
@@ -205,10 +238,12 @@ describe("LeadTurnStateTracker — live events", () => {
 		for (const id of ["pending", "ambiguous", "bare", "huge", "bound"])
 			t.onTurnStarted(started(id), "message");
 		const byId = Object.fromEntries(
-			t.snapshot().activeTurns.map((turn) => [
-				turn.turnId,
-				turn.origin === "message" ? turn.binding : undefined,
-			]),
+			t
+				.snapshot()
+				.activeTurns.map((turn) => [
+					turn.turnId,
+					turn.origin === "message" ? turn.binding : undefined,
+				]),
 		);
 		expect(byId).toEqual({
 			pending: { status: "pending" },
@@ -241,21 +276,37 @@ describe("LeadTurnStateTracker — disconnect / generations", () => {
 		const t = tracker();
 		t.onTurnStarted(started("live"), "message");
 		t.markDisconnected();
-		expect(t.snapshot()).toMatchObject({ connected: false, seeded: false, activeTurns: [] });
+		expect(t.snapshot()).toMatchObject({
+			connected: false,
+			seeded: false,
+			activeTurns: [],
+		});
 		t.bindThread(THREAD);
 		t.onTurnStarted(started("late"), "message");
 		expect(t.applySeed(t.beginSeed(), null)).toBe(false);
-		expect(t.snapshot()).toMatchObject({ connected: false, seeded: false, activeTurns: [] });
+		expect(t.snapshot()).toMatchObject({
+			connected: false,
+			seeded: false,
+			activeTurns: [],
+		});
 	});
 
 	it("keeps generations independent: an old instance's late event cannot touch the new one", () => {
 		const old = tracker();
 		old.markDisconnected();
-		const next = new LeadTurnStateTracker({ binding: binding(), now: () => NOW, generation: "gen-2" });
+		const next = new LeadTurnStateTracker({
+			binding: binding(),
+			now: () => NOW,
+			generation: "gen-2",
+		});
 		next.bindThread(THREAD);
 		expect(next.applySeed(next.beginSeed(), null)).toBe(true);
 		old.onTurnStarted(started("stale"), "message");
-		expect(next.snapshot()).toMatchObject({ generation: "gen-2", seeded: true, activeTurns: [] });
+		expect(next.snapshot()).toMatchObject({
+			generation: "gen-2",
+			seeded: true,
+			activeTurns: [],
+		});
 	});
 });
 
@@ -301,7 +352,10 @@ describe("seedTurnStateWithRetry", () => {
 		const ok = tracker();
 		seedTurnStateWithRetry({ tracker: ok, read: async () => inProgress() });
 		await vi.advanceTimersByTimeAsync(0);
-		expect(ok.snapshot()).toMatchObject({ seeded: true, activeTurns: [{ turnId: "seed-turn" }] });
+		expect(ok.snapshot()).toMatchObject({
+			seeded: true,
+			activeTurns: [{ turnId: "seed-turn" }],
+		});
 
 		const t = tracker();
 		const read = vi.fn(async () => {

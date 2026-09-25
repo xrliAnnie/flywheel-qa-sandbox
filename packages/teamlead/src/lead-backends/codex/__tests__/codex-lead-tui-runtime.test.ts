@@ -623,7 +623,10 @@ describe("wireDemuxedProcess — turn-state tracker (FLY-2882)", () => {
 		threadId: THREAD,
 		turn: { id, status: "inProgress", startedAt },
 	});
-	const done = (id: string) => ({ threadId: THREAD, turn: { id, status: "completed" } });
+	const done = (id: string) => ({
+		threadId: THREAD,
+		turn: { id, status: "completed" },
+	});
 	function setup() {
 		const f = fakeProc();
 		const tracker = new LeadTurnStateTracker({

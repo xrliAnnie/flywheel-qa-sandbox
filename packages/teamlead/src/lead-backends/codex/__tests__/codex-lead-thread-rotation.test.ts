@@ -475,7 +475,10 @@ describe("readLatestTurn (FLY-2882 seed read)", () => {
 		["a missing status", { result: { data: [turn({ status: undefined })] } }],
 		["an unknown status", { result: { data: [turn({ status: "queued" })] } }],
 		["a string startedAt", { result: { data: [turn({ startedAt: "1787" })] } }],
-		["a fractional startedAt", { result: { data: [turn({ startedAt: 1.5 })] } }],
+		[
+			"a fractional startedAt",
+			{ result: { data: [turn({ startedAt: 1.5 })] } },
+		],
 		["a negative startedAt", { result: { data: [turn({ startedAt: -5 })] } }],
 		[
 			"an in-progress turn without startedAt",

@@ -291,10 +291,17 @@ describe("CodexLeadInboxSocket — readTurnState (FLY-2882)", () => {
 				startedAtMs: 1_790_366_370_000,
 				binding: { status: "bound", deliveryIds: ["d-1"] },
 			},
-			{ origin: "founder_terminal", turnId: "turn-2", startedAtMs: 1_790_366_380_000 },
+			{
+				origin: "founder_terminal",
+				turnId: "turn-2",
+				startedAtMs: 1_790_366_380_000,
+			},
 		],
 	};
-	const client = (h: { socketPath: string }, over: Record<string, string> = {}) => ({
+	const client = (
+		h: { socketPath: string },
+		over: Record<string, string> = {},
+	) => ({
 		socketPath: h.socketPath,
 		leadId: "lead-a",
 		authSecret: "lead-bot-token",
@@ -376,7 +383,12 @@ describe("CodexLeadInboxSocket — readTurnState (FLY-2882)", () => {
 		["an empty leadId", { version: 2, method: "readTurnState", leadId: " " }],
 		[
 			"an extra field",
-			{ version: 2, method: "readTurnState", leadId: "lead-a", issueId: "FLY-1" },
+			{
+				version: 2,
+				method: "readTurnState",
+				leadId: "lead-a",
+				issueId: "FLY-1",
+			},
 		],
 	])("rejects %s even when signed", async (_label, unsigned) => {
 		let calls = 0;
@@ -399,7 +411,11 @@ describe("CodexLeadInboxSocket — readTurnState (FLY-2882)", () => {
 		const h = harness(undefined, undefined, { snapshot: () => snapshot });
 		await h.server.listen();
 		expect(
-			await raw(h.socketPath, { version: 2, method: "readTurnState", leadId: "lead-a" }),
+			await raw(h.socketPath, {
+				version: 2,
+				method: "readTurnState",
+				leadId: "lead-a",
+			}),
 		).toMatchObject({ ok: false });
 	});
 });

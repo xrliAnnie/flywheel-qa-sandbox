@@ -38,6 +38,7 @@ import { gate } from "./commands/gate.js";
 import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLandCommand } from "./commands/land.js";
+import { runLeadActivity } from "./commands/lead-activity.js";
 import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
@@ -221,6 +222,10 @@ Commands:
 	            render --project flywheel --out <file.html>. Local output may be
 	            up to 32MiB; publish-report rejects HTML over 512KiB.
 	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
+	  lead-activity  Read-only: is a Lead in a turn right now (busy/idle/unknown),
+	            since when, and which issue opened it when provable:
+	            --project P --lead ID | --all [--bridge-url <loopback-url>].
+	            One JSON line; exit 0 = answered. Requires TEAMLEAD_API_TOKEN.
 	  lead-config    Set Lead model/effort for subsequent turns without restart:
 	            set --project P --lead ID [--model ID] [--effort VALUE] --reason TEXT
 	            rollback --operation-id OLD --reason TEXT | status --operation-id UUID
@@ -495,6 +500,9 @@ async function main(): Promise<void> {
 			break;
 		case "ship-judgment-ref":
 			process.exitCode = await runShipJudgmentRef(commandArgs);
+			break;
+		case "lead-activity":
+			process.exitCode = await runLeadActivity(commandArgs);
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);

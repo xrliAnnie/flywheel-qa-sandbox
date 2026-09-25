@@ -393,11 +393,12 @@ describe("completed-since rotation eligibility", () => {
 });
 
 describe("findEntryIdsByTurnId (FLY-2882)", () => {
-	const stores: Array<[string, () => SqliteJournalStore | InMemoryJournalStore]> =
-		[
-			["sqlite", () => new SqliteJournalStore(":memory:")],
-			["in-memory", () => new InMemoryJournalStore()],
-		];
+	const stores: Array<
+		[string, () => SqliteJournalStore | InMemoryJournalStore]
+	> = [
+		["sqlite", () => new SqliteJournalStore(":memory:")],
+		["in-memory", () => new InMemoryJournalStore()],
+	];
 	for (const [label, make] of stores) {
 		it(`${label}: reports zero, one and two entries bound to a turn`, () => {
 			const store = make();
@@ -427,10 +428,7 @@ describe("findEntryIdsByTurnId (FLY-2882)", () => {
 			expect(store.listMemberIds("e1")).toEqual(["d1#r0", "d2#r0"]);
 			dispatch("e2", "turn-b");
 			dispatch("e3", "turn-b");
-			expect(store.findEntryIdsByTurnId("turn-b").sort()).toEqual([
-				"e2",
-				"e3",
-			]);
+			expect(store.findEntryIdsByTurnId("turn-b").sort()).toEqual(["e2", "e3"]);
 			const journal = new LeadJournal({ store });
 			expect(journal.findEntryIdsByTurnId("turn-a")).toEqual(["e1"]);
 			expect(journal.listMemberIds("e1")).toEqual(["d1#r0", "d2#r0"]);
@@ -470,7 +468,9 @@ describe("findEntryIdsByTurnId (FLY-2882)", () => {
 		expect(ids).toHaveLength(2);
 		expect(JSON.stringify(ids)).not.toContain("SENTINEL");
 		expect(seen).toHaveLength(1);
-		expect(seen[0]).toMatch(/SELECT id FROM journal WHERE turn_id = \? LIMIT 2/);
+		expect(seen[0]).toMatch(
+			/SELECT id FROM journal WHERE turn_id = \? LIMIT 2/,
+		);
 		expect(seen[0]).not.toMatch(/payload|\*/);
 		store.close();
 	});

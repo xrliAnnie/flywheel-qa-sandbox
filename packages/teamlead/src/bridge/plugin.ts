@@ -638,6 +638,8 @@ import {
 	startLandReclosePeerServer,
 } from "./land-reclose-peer.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
+import { createProductionLeadActivityService } from "./lead-activity/lead-activity-service.js";
+import { createLeadActivityRouter } from "./lead-activity-route.js";
 import {
 	createClaimsClaimer,
 	createClaimsReader,
@@ -5553,6 +5555,17 @@ export function createBridgeApp(
 						}),
 				}).read(projectName, leadId);
 			},
+		}),
+	);
+
+	// FLY-2882: read-only "what is this Lead doing right now" (busy/idle/unknown).
+	const leadActivity = createProductionLeadActivityService({ projects, store });
+	app.use(
+		"/api/lead-activity",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createLeadActivityRouter({
+			read: (projectName, leadId) => leadActivity.read(projectName, leadId),
+			readFleet: () => leadActivity.readFleet(),
 		}),
 	);
 

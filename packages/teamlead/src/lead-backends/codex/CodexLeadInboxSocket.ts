@@ -29,12 +29,12 @@ import {
 } from "../../voice-self-filter-contract.js";
 import type { LeadInputBatch, LeadInputRouter } from "./LeadInputRouter.js";
 import type { BatchAcceptStatus } from "./LeadJournal.js";
-import type { TurnStateSnapshot } from "./LeadTurnStateTracker.js";
 import type {
 	LeadRuntimeConfigIdentity,
 	LeadRuntimeConfigResult,
 	LeadRuntimeConfigTarget,
 } from "./LeadRuntimeConfigCoordinator.js";
+import type { TurnStateSnapshot } from "./LeadTurnStateTracker.js";
 import type { SubscriptionEntry } from "./RoundtableThreadRegistry.js";
 
 interface VoiceSelfFilterRequest {

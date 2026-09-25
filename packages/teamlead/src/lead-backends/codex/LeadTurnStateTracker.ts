@@ -94,10 +94,7 @@ export class LeadTurnStateTracker {
 		this.connected = true;
 	}
 
-	onTurnStarted(
-		params: unknown,
-		origin: "message" | "founder_terminal",
-	): void {
+	onTurnStarted(params: unknown, origin: "message" | "founder_terminal"): void {
 		const turnId = this.accept(params);
 		if (turnId === undefined || this.completed.includes(turnId)) return;
 		this.revision++;
@@ -154,15 +151,16 @@ export class LeadTurnStateTracker {
 	snapshot(): TurnStateSnapshot {
 		const activeTurns = [...this.active.entries()]
 			.sort(([, a], [, b]) => a.startedAtMs - b.startedAtMs)
-			.map(([turnId, turn]): SidecarTurn =>
-				turn.origin === "message"
-					? {
-							origin: "message",
-							turnId,
-							startedAtMs: turn.startedAtMs,
-							binding: this.bindingFor(turnId),
-						}
-					: { origin: turn.origin, turnId, startedAtMs: turn.startedAtMs },
+			.map(
+				([turnId, turn]): SidecarTurn =>
+					turn.origin === "message"
+						? {
+								origin: "message",
+								turnId,
+								startedAtMs: turn.startedAtMs,
+								binding: this.bindingFor(turnId),
+							}
+						: { origin: turn.origin, turnId, startedAtMs: turn.startedAtMs },
 			);
 		return {
 			schema: TURN_STATE_SCHEMA,

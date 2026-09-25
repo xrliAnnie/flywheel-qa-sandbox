@@ -26007,6 +26007,14 @@ export class StateStore {
 		return row ? mapLeadEventRow(row) : null;
 	}
 
+	/** FLY-2882: metadata-only lookup (never reads `payload`). */
+	getLeadEventSessionKeyBySeq(seq: number): string | null {
+		const row = this.db.raw
+			.prepare("SELECT session_key FROM lead_events WHERE seq = ?")
+			.get(seq) as { session_key: unknown } | undefined;
+		return typeof row?.session_key === "string" ? row.session_key : null;
+	}
+
 	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
 	getLatestPatrolTickEvent(
 		leadId: string,
