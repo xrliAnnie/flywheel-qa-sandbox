@@ -101,3 +101,13 @@ Issue: FLY-2882 (https://linear.app/geoforge3d/issue/FLY-2882/语音耳机bridge
 R1 用的是 companion 默认模型,这里如实披露;R2 起改用设计门 manifest 指定的 gpt-6-astra 并从头全量评审。
 
 **有意没改(建议另开单)**:`codex-lead-thread-rotation.ts` 既有的 `boundedTurnsList()`(rotation 围栏,不属于本功能)同样没有拒绝「`error` 与 `result` 并存」的回包;本单按 plan 保持它行为不变。
+
+## 6. QA 返工(implement attempt 2)
+
+QA(exec `df988ce0`)在头 `2acf312c4` 判 FAIL。与本单代码有关的只有一条:exact-head CI `36194820697` 的 Quick Gate 最后一步「Enforce FLY-2006 retention consumer gate」报 `unclassified_retention_consumer:packages/teamlead/src/bridge/lead-activity/turn-trigger-attribution.ts:mailbox:read`。
+
+- **原因**:`mailbox` 是 FLY-2006 30 天清扫的目标表;任何生产源码里 `FROM/JOIN` 目标表的读者都必须在 `scripts/fly-2006-retention-consumer-gate.config.json` 里按 `file + relation + baseTable + usage` 登记处置。这本清册是**扫全部生产源码的 CI 脚本**,不是依赖改动文件的测试,所以 §4 按「谁引用了我的文件」做的消费者扫描找不到它——漏检的是我。
+- **修复**(`5c33ef82a`):登记为 `candidate_guarded`(与其它普通 `mailbox` 读者一致)。依据:归因读者能容忍行被清扫——成员行缺失只会答 `unmapped_delivery`(「判断不了」),既不会给出单号,也不会影响 busy/idle;它不把「行不存在」当作任何权威。
+- **本地验证**:`node scripts/fly-2006-retention-consumer-gate.mjs` → `ok:true`、0 error;`node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs` 10/0;biome 干净。该守卫就是 Quick Gate 的最后一步,前面 25 步在 exact-head CI 上已全部通过;同一次 CI 的其它 unit / script 分片也都通过。
+- **与本单无关的红**:Script Tests 5/6 E 里 `scripts/__tests__/qa-fly-1986-load-probe.test.sh` 一条断言(「an all-401 block was certified as 'incomplete_expected=3'」)在 CI 上失败;本分支不改该脚本及其探针,本地在本分支头上跑 `passed=62 failed=0`。按规矩不自行重跑 CI,交 Lead。
+- 529 房没进成(slot 2 launchd bootstrap I/O error)与 QA 机制问题属 QA 侧,本节点不处理。
