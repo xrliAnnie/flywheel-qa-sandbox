@@ -128,6 +128,9 @@ export type AgendaResult =
 			disposition: AgendaDisposition;
 			evidence?: string;
 			reason: string;
+			/** The line she hears as the item ends (QA@1 B3): the reason is a
+			 * record for the ledger and is never spoken. */
+			say?: string;
 	  };
 
 export interface AgendaItemState {

@@ -136,6 +136,9 @@ export function bridgeAgendaPorts(
 								? { evidence: event.agenda.evidence }
 								: {}),
 							reason: event.agenda.reason,
+							...(event.agenda.say !== undefined
+								? { say: event.agenda.say }
+								: {}),
 						});
 					else if (event.resultKind === "lead_reply")
 						results.push({ ...base, kind: "lead_reply", text: event.text });

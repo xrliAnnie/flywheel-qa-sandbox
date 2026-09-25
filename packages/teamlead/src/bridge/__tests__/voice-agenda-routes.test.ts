@@ -708,11 +708,186 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 			disposition: "resolved",
 			evidence: "cmd:resume",
 			reason: "她授权了",
+			say: "好，我已经放行了。",
 		});
 		expect(close.status).toBe(200);
 		expect(close.body.agenda).toMatchObject({
 			kind: "close",
 			disposition: "resolved",
+			say: "好，我已经放行了。",
+		});
+		expect(close.body.text).toBe("好，我已经放行了。");
+	});
+});
+
+describe("QA@1: the Bridge refuses at say time what the mode layer would drop (B2, B3)", () => {
+	async function opened() {
+		const harness = await start();
+		const open = await openRequest(harness.base);
+		const requestId = open.body.requestId as string;
+		const record = harness.handoffs.get(requestId);
+		const answerKey =
+			record?.agenda?.kind === "brief" ? record.agenda.answerKey : "";
+		return { ...harness, requestId, answerKey };
+	}
+	const result = (base: string, body: Record<string, unknown>) =>
+		call(base, "/agenda/lead/results", {
+			method: "POST",
+			token: INGEST,
+			body: { leadId: "raya", ...body },
+			lease: "",
+		});
+	async function itemRequest(base: string, handoffs: VoiceHandoffStore) {
+		await call(base, `/agenda?sessionId=${SESSION_ID}&generation=3`);
+		const response = await call(base, "/agenda/requests", {
+			method: "POST",
+			body: {
+				sessionId: SESSION_ID,
+				generation: 3,
+				purpose: "item",
+				itemKey: "approve:I2:t",
+				clientRequestId: "c-item",
+			},
+		});
+		const requestId = response.body.requestId as string;
+		const record = handoffs.get(requestId);
+		return {
+			requestId,
+			answerKey:
+				record?.agenda?.kind === "brief" ? record.agenda.answerKey : "",
+		};
+	}
+
+	it("an opening may lead with any item of its brief, without --order", async () => {
+		const { base, requestId, answerKey } = await opened();
+		const say = await result(base, {
+			requestId,
+			answerKey,
+			clientResultId: "r-open",
+			kind: "say",
+			itemKey: "approve:I2:t",
+			text: "两件事，先从登录页改版说起。",
+		});
+		expect(say.status).toBe(200);
+	});
+
+	it("an opening item outside its brief is refused with a reason the Lead can read", async () => {
+		const { base, requestId, answerKey } = await opened();
+		const say = await result(base, {
+			requestId,
+			answerKey,
+			clientResultId: "r-foreign",
+			kind: "say",
+			itemKey: "approve:OTHER:t",
+			text: "先说另一件。",
+		});
+		expect(say.status).toBe(400);
+		expect(say.body).toMatchObject({
+			error: "voice_agenda_say_invalid",
+			reason: "item_not_in_request",
+		});
+		expect(String(say.body.hint)).toContain("approve:I2:t");
+	});
+
+	it("mechanical checks run at say time: a URL is refused, not silently dropped", async () => {
+		const { base, requestId, answerKey } = await opened();
+		const say = await result(base, {
+			requestId,
+			answerKey,
+			clientResultId: "r-url",
+			kind: "say",
+			itemKey: null,
+			text: "看这里 https://example.com/qa",
+		});
+		expect(say.status).toBe(400);
+		expect(say.body).toMatchObject({
+			error: "voice_agenda_say_invalid",
+			reason: "url",
+		});
+	});
+
+	it("an item brief takes exactly its own item; an opening takes no close", async () => {
+		const { base, handoffs, requestId, answerKey } = await opened();
+		const closeOnOpen = await result(base, {
+			requestId,
+			answerKey,
+			clientResultId: "r-close-open",
+			kind: "close",
+			itemKey: "blocked:I1:t",
+			disposition: "deferred",
+			reason: "她说回头看",
+			say: "好，回头再看。",
+		});
+		expect(closeOnOpen.status).toBe(400);
+		expect(closeOnOpen.body.reason).toBe("close_not_allowed");
+		const item = await itemRequest(base, handoffs);
+		const wrongItem = await result(base, {
+			requestId: item.requestId,
+			answerKey: item.answerKey,
+			clientResultId: "r-wrong-item",
+			kind: "say",
+			itemKey: "blocked:I1:t",
+			text: "说另一件。",
+		});
+		expect(wrongItem.status).toBe(400);
+		expect(wrongItem.body.reason).toBe("item_not_in_request");
+		const ok = await result(base, {
+			requestId: item.requestId,
+			answerKey: item.answerKey,
+			clientResultId: "r-right-item",
+			kind: "say",
+			itemKey: "approve:I2:t",
+			text: "二七九六等你批。",
+		});
+		expect(ok.status).toBe(200);
+	});
+
+	it("a close must carry the line she hears; it is the result text, the reason stays a record", async () => {
+		const { base, handoffs } = await opened();
+		const item = await itemRequest(base, handoffs);
+		const bare = await result(base, {
+			requestId: item.requestId,
+			answerKey: item.answerKey,
+			clientResultId: "r-bare",
+			kind: "close",
+			itemKey: "approve:I2:t",
+			disposition: "decision_recorded",
+			reason: "记下你同意了；我不能代点发布审批",
+		});
+		expect(bare.status).toBe(400);
+		expect(bare.body.reason).toBe("say_required");
+		const badSay = await result(base, {
+			requestId: item.requestId,
+			answerKey: item.answerKey,
+			clientResultId: "r-bad-say",
+			kind: "close",
+			itemKey: "approve:I2:t",
+			disposition: "decision_recorded",
+			reason: "记下了",
+			say: "**记下了**",
+		});
+		expect(badSay.status).toBe(400);
+		expect(badSay.body.reason).toBe("markdown");
+		const close = await result(base, {
+			requestId: item.requestId,
+			answerKey: item.answerKey,
+			clientResultId: "r-close",
+			kind: "close",
+			itemKey: "approve:I2:t",
+			disposition: "decision_recorded",
+			reason: "记下你同意了；我不能代点发布审批",
+			say: "记下你批了，你在这件的讨论串里点一下发布审批就行。",
+		});
+		expect(close.status).toBe(200);
+		expect(close.body).toMatchObject({
+			resultKind: "agenda_close",
+			text: "记下你批了，你在这件的讨论串里点一下发布审批就行。",
+			agenda: {
+				kind: "close",
+				disposition: "decision_recorded",
+				reason: "记下你同意了；我不能代点发布审批",
+				say: "记下你批了，你在这件的讨论串里点一下发布审批就行。",
+			},
 		});
 	});
 });

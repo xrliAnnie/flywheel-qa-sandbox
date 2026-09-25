@@ -16,6 +16,7 @@ import {
 	type AgendaSnapshot,
 	type AgendaState,
 	type VoiceAgendaResultPayload,
+	validateAgendaSay,
 } from "flywheel-voice-core";
 import type { VoiceAgendaStore } from "./voice-agenda-store.js";
 import type {
@@ -91,8 +92,8 @@ const CLASS_WORD: Record<AgendaClass, string> = {
 };
 
 const PURPOSE_GUIDE: Record<AgendaBriefPurpose, string> = {
-	open: "开场：一两句先说有几件要她拍、每件一句点出是什么，然后说「先从 X 说起」并直接进入第一件（--item 第一件，可带 --order）。没有事就自然说一句或不说。不要逐件展开，不要念清单。",
-	item: "只说这一件：发生了什么、要她做什么（授权 / 批 / 改 / 看一眼）。待批的用三五句讲 QA、设计、测试，或问她要不要自己看设计卡（链接用文字发到 thread，不念 URL）。受阻的说卡在哪、要她给什么。",
+	open: "开场：一两句先说有几件要她拍、每件一句点出是什么，然后说「先从 X 说起」并直接进入那一件（--item X，可以是下面任意一件；--order 可选，带就排全）。没有事就自然说一句或不说。不要逐件展开，不要念清单。",
+	item: "只说这一件：发生了什么、要她做什么（授权 / 批 / 改 / 看一眼）。待批的用三五句讲 QA、设计、测试，或问她要不要自己看设计卡（链接用文字发到 thread，不念 URL）。受阻的说卡在哪、要她给什么。依据看 material；没有的不编，直说「详情在讨论串里」。",
 	urgent:
 		"插播急事：先说「插一句急的」，讲清楚要她马上做什么。结束后模式层会让你带回原来那件。",
 	resume: "把她带回当前这一件：一句话提醒刚才谈到哪里、还要她做什么。",
@@ -117,7 +118,7 @@ export function renderAgendaBriefText(input: {
 		...(input.purpose === "checkin" || input.purpose === "open"
 			? []
 			: [
-					`她拍板后：能用现有权限办完的先办，再 flywheel-comm voice agenda close --request <她那句话的 handoff> --key <那条消息里的 key> --item ${itemFlag} --disposition resolved --evidence <依据> --reason "<一句话>"；ship 批准办不了就如实请她在 thread 点，disposition=decision_recorded；她说回头再看用 deferred。`,
+					`她拍板后：能用现有权限办完的先办，再 flywheel-comm voice agenda close --request <她那句话的 handoff> --key <那条消息里的 key> --item ${itemFlag} --disposition resolved --evidence <依据> --reason "<记给台账的一句>" --say "<她拍完听到的一句>"；ship 批准办不了就用 decision_recorded，--say 如实请她在 thread 点；她说回头再看用 deferred。--say 必填，--reason 不念。`,
 				]),
 		"完整规则：packages/teamlead/lead-rules-base/runbooks/voice-agenda.md",
 		"议程数据（给你读，不要原样念给她）：",
@@ -557,6 +558,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 			"disposition",
 			"evidence",
 			"reason",
+			"say",
 		]);
 		if (
 			!body ||
@@ -592,35 +594,93 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 		}
 		let payload: VoiceAgendaResultPayload;
 		let spoken: string;
+		// QA@1 B2/B3: everything the mode layer would refuse on its own terms is
+		// refused here, with a reason, so the Lead learns instead of waiting.
+		const refuse = (
+			error: "voice_agenda_say_invalid" | "voice_agenda_close_invalid",
+			reason: string,
+			hint: string,
+		) => res.status(400).json({ error, reason, hint });
+		const agenda = record.agenda;
+		const openKeys =
+			agenda?.kind === "brief" && agenda.purpose === "open"
+				? ((agenda.brief.items as Array<{ itemKey: string }>) ?? []).map(
+						(item) => item.itemKey,
+					)
+				: null;
+		/** The one item this request is about (null: open / check-in). */
+		const requestItem =
+			agenda?.kind === "turn" ? agenda.itemKey : (agenda?.itemKey ?? null);
+		const itemAllowed = (itemKey: string | null): boolean => {
+			if (agenda?.kind === "turn")
+				return itemKey === null || itemKey === agenda.itemKey;
+			if (!agenda || agenda.kind !== "brief") return false;
+			if (agenda.purpose === "open")
+				return itemKey === null || !!openKeys?.includes(itemKey);
+			if (agenda.purpose === "checkin") return itemKey === null;
+			return itemKey !== null && itemKey === agenda.itemKey;
+		};
+		const itemHint = (): string =>
+			openKeys
+				? `开场的 --item 只能是 none 或这次开场里的一件：${openKeys.join(", ") || "（没有）"}`
+				: agenda?.kind === "brief" && agenda.purpose === "checkin"
+					? "报平安用 --item none"
+					: agenda?.kind === "turn"
+						? `她这句话绑定的是 ${requestItem}；无关就用 --item none`
+						: `这次请求只说 ${requestItem}，--item 必须是它`;
 		if (body.kind === "say") {
 			const order = body.order as string[] | undefined;
-			const openKeys =
-				record.agenda?.kind === "brief" && record.agenda.purpose === "open"
-					? (
-							(record.agenda.brief.items as Array<{ itemKey: string }>) ?? []
-						).map((item) => item.itemKey)
-					: null;
 			if (
 				!text(body.text, MAX_SAY_TEXT) ||
 				(body.itemKey !== null && !KEY.test(String(body.itemKey))) ||
-				(order !== undefined &&
-					(!openKeys ||
-						!Array.isArray(order) ||
-						order.length !== openKeys.length ||
-						new Set(order).size !== order.length ||
-						!order.every(
-							(key) => typeof key === "string" && openKeys.includes(key),
-						))) ||
 				body.disposition !== undefined ||
 				body.evidence !== undefined ||
-				body.reason !== undefined
+				body.reason !== undefined ||
+				body.say !== undefined
 			) {
-				res.status(400).json({ error: "voice_agenda_say_invalid" });
+				refuse(
+					"voice_agenda_say_invalid",
+					"malformed",
+					"say 只带 --item、--text（开场可带 --order）",
+				);
+				return;
+			}
+			if (
+				order !== undefined &&
+				(!openKeys ||
+					!Array.isArray(order) ||
+					order.length !== openKeys.length ||
+					new Set(order).size !== order.length ||
+					!order.every(
+						(key) => typeof key === "string" && openKeys.includes(key),
+					))
+			) {
+				refuse(
+					"voice_agenda_say_invalid",
+					"order_invalid",
+					openKeys
+						? `--order 必须把这次开场的每一件都排进去、不重复：${openKeys.join(", ")}；不想排就不带 --order`
+						: "--order 只在开场可用",
+				);
+				return;
+			}
+			const itemKey = (body.itemKey as string | null) ?? null;
+			if (!itemAllowed(itemKey)) {
+				refuse("voice_agenda_say_invalid", "item_not_in_request", itemHint());
+				return;
+			}
+			const words = validateAgendaSay(body.text as string);
+			if (!words.ok) {
+				refuse(
+					"voice_agenda_say_invalid",
+					words.reason,
+					"要念给她听的话：口语，不带 URL、markdown、代码、🤖/📻/🗣️ 前缀，400 字以内",
+				);
 				return;
 			}
 			payload = {
 				kind: "say",
-				itemKey: (body.itemKey as string | null) ?? null,
+				itemKey,
 				...(order ? { order } : {}),
 			};
 			spoken = body.text as string;
@@ -632,12 +692,60 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 				!KEY.test(body.itemKey) ||
 				!AGENDA_DISPOSITIONS.includes(disposition) ||
 				!text(body.reason, 1_000) ||
-				(disposition === "resolved" && !text(body.evidence, 1_000)) ||
 				(body.evidence !== undefined && !text(body.evidence, 1_000)) ||
 				body.text !== undefined ||
 				body.order !== undefined
 			) {
-				res.status(400).json({ error: "voice_agenda_close_invalid" });
+				refuse(
+					"voice_agenda_close_invalid",
+					"malformed",
+					"close 需要 --item、--disposition、--reason、--say",
+				);
+				return;
+			}
+			if (disposition === "resolved" && !text(body.evidence, 1_000)) {
+				refuse(
+					"voice_agenda_close_invalid",
+					"evidence_required",
+					"resolved 要带 --evidence（消息 id、命令回执、状态变更）",
+				);
+				return;
+			}
+			if (
+				!agenda ||
+				(agenda.kind === "brief" &&
+					(agenda.purpose === "open" || agenda.purpose === "checkin"))
+			) {
+				refuse(
+					"voice_agenda_close_invalid",
+					"close_not_allowed",
+					"开场和报平安不能结束一件；她拍板后，用她那句话的 handoff 和 key 来 close",
+				);
+				return;
+			}
+			if (body.itemKey !== requestItem) {
+				refuse(
+					"voice_agenda_close_invalid",
+					"item_not_in_request",
+					`这次只能结束 ${requestItem}`,
+				);
+				return;
+			}
+			if (!text(body.say, MAX_SAY_TEXT)) {
+				refuse(
+					"voice_agenda_close_invalid",
+					"say_required",
+					"结束一件要带 --say：她拍完之后听到的那一句（比如「记下你批了，你在讨论串里点一下就行」）",
+				);
+				return;
+			}
+			const words = validateAgendaSay(body.say);
+			if (!words.ok) {
+				refuse(
+					"voice_agenda_close_invalid",
+					words.reason,
+					"--say 是念给她听的话：口语，不带 URL、markdown、代码，400 字以内",
+				);
 				return;
 			}
 			payload = {
@@ -646,8 +754,9 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 				disposition,
 				...(body.evidence ? { evidence: body.evidence as string } : {}),
 				reason: body.reason as string,
+				say: body.say,
 			};
-			spoken = body.reason as string;
+			spoken = body.say;
 		}
 		const resultEventId = `voice-agenda:${record.handoffId}:${digest(body.clientResultId).slice(0, 32)}`;
 		const prior = deps.handoffs.getResult(record.handoffId, resultEventId);

@@ -81,6 +81,9 @@ export type VoiceAgendaResultPayload =
 			disposition: "resolved" | "decision_recorded" | "deferred";
 			evidence?: string;
 			reason: string;
+			/** The line she hears as the item ends (QA@1 B3); also the result
+			 * `text`. Absent only on rows written before it was required. */
+			say?: string;
 	  };
 
 export interface VoiceHandoffResultEvent {

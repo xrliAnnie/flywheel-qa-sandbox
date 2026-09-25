@@ -146,12 +146,72 @@ describe("flywheel-comm voice agenda", () => {
 				"--reason",
 				"她口头批了，还差在 thread 点",
 			]),
+		).toBe(64);
+		expect(h.err.at(-1)).toContain("--say");
+		expect(h.calls).toEqual([]);
+		expect(
+			await h.run([
+				"agenda",
+				"close",
+				"--request",
+				REQUEST,
+				"--key",
+				KEY,
+				"--item",
+				"approve:I2:t",
+				"--disposition",
+				"decision_recorded",
+				"--reason",
+				"她口头批了，还差在 thread 点",
+				"--say",
+				"记下你批了，你在讨论串里点一下发布审批就行。",
+			]),
 		).toBe(0);
 		expect(h.calls[0]?.body).toMatchObject({
 			kind: "close",
 			disposition: "decision_recorded",
 			itemKey: "approve:I2:t",
+			reason: "她口头批了，还差在 thread 点",
+			say: "记下你批了，你在讨论串里点一下发布审批就行。",
 		});
+	});
+
+	it("say takes no --say, and a Bridge refusal prints its reason for the Lead", async () => {
+		const h = harness();
+		expect(
+			await h.run([
+				"agenda",
+				"say",
+				"--request",
+				REQUEST,
+				"--key",
+				KEY,
+				"--item",
+				"none",
+				"--text",
+				"我在。",
+				"--say",
+				"我在。",
+			]),
+		).toBe(64);
+		expect(h.calls).toEqual([]);
+		const refused = harness(400);
+		expect(
+			await refused.run([
+				"agenda",
+				"say",
+				"--request",
+				REQUEST,
+				"--key",
+				KEY,
+				"--item",
+				"approve:OTHER:t",
+				"--text",
+				"先说另一件。",
+			]),
+		).toBe(2);
+		expect(refused.out.at(-1)).toContain('"ok":false');
+		expect(refused.err.at(-1)).toContain("HTTP 400");
 	});
 
 	it("refuses an answer without the delivery key, and has no urgent command", async () => {

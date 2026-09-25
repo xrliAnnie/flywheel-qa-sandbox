@@ -784,16 +784,22 @@ export class AgendaConductor {
 		}
 	}
 
-	private markApplied(state: AgendaState, result: AgendaResult): void {
+	private markSeen(state: AgendaState, result: AgendaResult): void {
 		state.applied[result.requestId] = result.seq;
 		const keys = Object.keys(state.applied);
 		if (keys.length > MAX_APPLIED_REQUESTS)
 			for (const key of keys.slice(0, keys.length - MAX_APPLIED_REQUESTS))
 				delete state.applied[key];
+	}
+
+	private markApplied(state: AgendaState, result: AgendaResult): void {
+		this.markSeen(state, result);
 		if (state.outstanding?.requestId === result.requestId)
 			state.outstanding.answered = true;
 	}
 
+	/** A refused result is not an answer (QA@1 B2): the request keeps its
+	 * bridging line and fallback, so she never waits on a silent rejection. */
 	private async reject(result: AgendaResult, reason: string): Promise<void> {
 		this.options.record({
 			kind: "agenda_result_rejected",
@@ -802,7 +808,10 @@ export class AgendaConductor {
 			resultKind: result.kind,
 			reason,
 		});
-		await this.commit((state) => this.markApplied(state, result));
+		const committed = await this.commit((state) =>
+			this.markSeen(state, result),
+		);
+		if (committed) this.armLeadTimer();
 	}
 
 	private targetItem(outstanding: AgendaOutstanding): string | null {
@@ -836,7 +845,7 @@ export class AgendaConductor {
 		const order = result.kind === "say" ? result.order : undefined;
 		const current = this.state.activeUrgent ?? this.state.active;
 		let allowed = false;
-		let activateHead = false;
+		let activateItem = false;
 		switch (outstanding.purpose) {
 			case "open": {
 				if (
@@ -845,16 +854,15 @@ export class AgendaConductor {
 						!order.every((key) => this.state.items[key]))
 				)
 					break;
-				const head =
-					(order
-						? applyOpeningOrder(order, this.state.queue)
-						: this.state.queue)[0] ?? null;
+				// QA@1 B2: the item the Lead opens with leads, wherever the default
+				// or its --order placed it; the rest keep their order behind it.
+				const queued =
+					itemKey !== null &&
+					this.state.active === null &&
+					this.state.queue.includes(itemKey);
 				allowed =
-					itemKey === null ||
-					(this.state.active === null && itemKey === head) ||
-					itemKey === this.state.active;
-				activateHead =
-					itemKey !== null && this.state.active === null && itemKey === head;
+					itemKey === null || queued || itemKey === this.state.active;
+				activateItem = queued;
 				break;
 			}
 			case "item":
@@ -910,7 +918,7 @@ export class AgendaConductor {
 		const committed = await this.commit((state) => {
 			this.markApplied(state, result);
 			if (order) state.queue = applyOpeningOrder(order, state.queue);
-			if (activateHead && itemKey) {
+			if (activateItem && itemKey) {
 				state.queue = state.queue.filter((key) => key !== itemKey);
 				state.active = itemKey;
 				const entry = state.items[itemKey];
@@ -1029,6 +1037,23 @@ export class AgendaConductor {
 			disposition: result.disposition,
 			requestId: result.requestId,
 		});
+		// QA@1 B3: she hears how the item ended ("记下了，你在 thread 点一下")
+		// before the next one; the reason stays a ledger record.
+		if (result.say !== undefined) {
+			const validation = validateAgendaSay(result.say, this.maxSayCodePoints);
+			if (validation.ok)
+				await this.speak(result.say, "brief", {
+					pendingKey: `agenda:${result.requestId}:${result.resultEventId}`,
+					purpose: outstanding.purpose,
+					itemKey: result.itemKey,
+				});
+			else
+				this.options.record({
+					kind: "agenda_say_invalid",
+					requestId: result.requestId,
+					reason: validation.reason,
+				});
+		}
 		const previous = { itemKey: result.itemKey, closedAs: result.disposition };
 		if (wasUrgent) await this.afterUrgentClosed(previous);
 		else await this.startNext(previous);
@@ -1079,6 +1104,12 @@ export class AgendaConductor {
 		});
 		if (outstanding.purpose === "checkin") {
 			this.checkinPending = null;
+			// The fixed line answered this check-in: a late Lead line would say
+			// the same thing twice, so the request is retired first.
+			await this.commit((state) => {
+				if (state.outstanding?.requestId === requestId)
+					state.outstanding = null;
+			});
 			await this.speakCheckinFallback(requestId);
 			this.armCheckin();
 			return;

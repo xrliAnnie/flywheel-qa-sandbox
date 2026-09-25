@@ -7,7 +7,10 @@ import { normalizeOptionalBearer } from "flywheel-config";
  * commands — never parsed out of natural language.
  *
  *   voice agenda say    --request <id> --key <key> --item <itemKey|none> [--order k1,k2] --text "<words>"
- *   voice agenda close  --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason "<one line>"
+ *   voice agenda close  --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason "<one line>" --say "<words>"
+ *
+ * `close --say` is the line she hears as the item ends; `--reason` is only a
+ * ledger record and is never spoken (QA@1 B3).
  *
  * `--key` comes from the delivery the Lead received; it binds the answer to
  * that Lead. An urgent main-channel message is marked in the message itself
@@ -34,7 +37,7 @@ function usage(): string {
 	return [
 		"usage:",
 		"  flywheel-comm voice agenda say --request <id> --key <key> --item <itemKey|none> [--order k1,k2] --text <words> [--lead <id>]",
-		"  flywheel-comm voice agenda close --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason <line> [--lead <id>]",
+		"  flywheel-comm voice agenda close --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason <line> --say <words she hears> [--lead <id>]",
 	].join("\n");
 }
 
@@ -58,6 +61,7 @@ export async function runVoiceAgendaCommand(
 				disposition: { type: "string" },
 				evidence: { type: "string" },
 				reason: { type: "string" },
+				say: { type: "string" },
 				key: { type: "string" },
 				lead: { type: "string" },
 			},
@@ -81,9 +85,14 @@ export async function runVoiceAgendaCommand(
 				throw new UsageError("--item is required (use none for no item)");
 			if (action === "say") {
 				if (!values.text?.trim()) throw new UsageError("--text is required");
-				if (values.disposition || values.evidence || values.reason)
+				if (
+					values.disposition ||
+					values.evidence ||
+					values.reason ||
+					values.say !== undefined
+				)
 					throw new UsageError(
-						"say takes no --disposition/--evidence/--reason",
+						"say takes no --disposition/--evidence/--reason/--say",
 					);
 				const order = values.order
 					?.split(",")
@@ -113,6 +122,10 @@ export async function runVoiceAgendaCommand(
 					throw new UsageError("close needs the --item it closes");
 				if (!values.reason?.trim())
 					throw new UsageError("--reason is required");
+				if (!values.say?.trim())
+					throw new UsageError(
+						"--say is required: the line she hears as this item ends",
+					);
 				if (disposition === "resolved" && !values.evidence?.trim())
 					throw new UsageError(
 						"resolved needs --evidence (what proves it was done)",
@@ -131,6 +144,7 @@ export async function runVoiceAgendaCommand(
 						? { evidence: values.evidence.trim() }
 						: {}),
 					reason: values.reason.trim(),
+					say: values.say.trim(),
 				};
 			}
 			path = "/api/voice/agenda/lead/results";

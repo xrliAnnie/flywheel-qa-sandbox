@@ -144,6 +144,7 @@ class FakeBridge implements AgendaPorts {
 		itemKey: string,
 		disposition: "resolved" | "decision_recorded" | "deferred",
 		evidence?: string,
+		say?: string,
 	) {
 		this.push(requestId, (seq) => ({
 			kind: "close",
@@ -154,6 +155,7 @@ class FakeBridge implements AgendaPorts {
 			disposition,
 			...(evidence ? { evidence } : {}),
 			reason: "她拍了",
+			...(say !== undefined ? { say } : {}),
 		}));
 	}
 	last(): AgendaBriefRequestInput & { requestId: string } {
@@ -1009,6 +1011,121 @@ describe("AgendaConductor — restart (Q8)", () => {
 			itemKey: "blocked:C",
 		});
 		expect(second.bridge.stored?.generation).toBe(2);
+	});
+});
+
+describe("AgendaConductor — QA@1 regressions (B2, B3)", () => {
+	it("an opening say naming a queued item without --order makes it the head (B2)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		// Default order is blocked:C first; the Lead chose to lead with approve:A.
+		h.bridge.say("req-1", "有三件要你拍，先从登录页改版说起。", "approve:A");
+		await wake(h, "req-1");
+		expect(h.spoken()).toEqual(["有三件要你拍，先从登录页改版说起。"]);
+		expect(h.bridge.stored?.active).toBe("approve:A");
+		expect(h.bridge.stored?.queue).toEqual(["blocked:C", "approve:B"]);
+		expect(h.bridge.requests).toHaveLength(1);
+		expect(
+			h.events.filter((event) => event.kind === "agenda_result_rejected"),
+		).toEqual([]);
+	});
+
+	it("the named opening item leads even when --order put another first (B2)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "三件，先说账单导出。", "approve:A", [
+			"approve:B",
+			"approve:A",
+			"blocked:C",
+		]);
+		await wake(h, "req-1");
+		expect(h.spoken()).toEqual(["三件，先说账单导出。"]);
+		expect(h.bridge.stored?.active).toBe("approve:A");
+		expect(h.bridge.stored?.queue).toEqual(["approve:B", "blocked:C"]);
+	});
+
+	it("a rejected result is not an answer: the Lead timer still bridges and falls back (B2)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "先说一件。", "approve:NOPE");
+		await wake(h, "req-1");
+		expect(h.events).toContainEqual(
+			expect.objectContaining({
+				kind: "agenda_result_rejected",
+				reason: "matrix",
+			}),
+		);
+		expect(h.spoken()).toEqual([]);
+		await h.clock.advance(20_000);
+		expect(h.spoken()).toEqual(["我在整理，有 3 件要你拍，马上说。"]);
+		await h.clock.advance(20_000);
+		expect(h.spoken().at(-1)).toContain("在等你授权");
+		expect(h.bridge.stored?.active).toBe("blocked:C");
+	});
+
+	it("a close speaks its say line, then moves to the next item (B3)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "三件，先说受阻那张。", "blocked:C");
+		await wake(h, "req-1");
+		h.conductor.bindTurn("utt-1");
+		await h.conductor.whenTurnBound("utt-1");
+		expect(h.bridge.turns.at(-1)?.itemKey).toBe("blocked:C");
+		await h.conductor.adoptReply({ utteranceId: "utt-1", handoffId: "turn-1" });
+		h.bridge.close(
+			"turn-1",
+			"blocked:C",
+			"decision_recorded",
+			undefined,
+			"记下你批了，你在这件的讨论串里点一下发布审批就行。",
+		);
+		await wake(h, "turn-1");
+		expect(h.spoken().at(-1)).toBe(
+			"记下你批了，你在这件的讨论串里点一下发布审批就行。",
+		);
+		expect(h.bridge.stored?.items["blocked:C"]?.status).toBe("closed");
+		expect(h.bridge.last()).toMatchObject({
+			purpose: "item",
+			itemKey: "approve:A",
+		});
+	});
+
+	it("a close whose say fails the mechanical checks still closes, silently for that line (B3)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "三件，先说受阻那张。", "blocked:C");
+		await wake(h, "req-1");
+		h.conductor.bindTurn("utt-1");
+		await h.conductor.adoptReply({ utteranceId: "utt-1", handoffId: "turn-1" });
+		const before = h.spoken().length;
+		h.bridge.close(
+			"turn-1",
+			"blocked:C",
+			"deferred",
+			undefined,
+			"回头看 https://x.y/z",
+		);
+		await wake(h, "turn-1");
+		expect(h.spoken()).toHaveLength(before);
+		expect(h.bridge.stored?.items["blocked:C"]?.status).toBe("closed");
+		expect(h.events).toContainEqual(
+			expect.objectContaining({ kind: "agenda_say_invalid", reason: "url" }),
+		);
+	});
+
+	it("a check-in answered after the fixed line is not spoken twice", async () => {
+		const h = await harness();
+		await h.conductor.start();
+		h.bridge.say("req-1", "我在。");
+		await wake(h, "req-1");
+		await h.clock.advance(600_000);
+		const checkin = h.bridge.requests.find((r) => r.purpose === "checkin")!;
+		await h.clock.advance(20_000);
+		expect(h.spoken().at(-1)).toBe("我还在，没卡住。");
+		const before = h.spoken().length;
+		h.bridge.say(checkin.requestId, "Annie，我在，这边没新事。");
+		await wake(h, checkin.requestId);
+		expect(h.spoken()).toHaveLength(before);
 	});
 });
 
