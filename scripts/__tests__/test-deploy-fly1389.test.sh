@@ -208,6 +208,10 @@ mkdir -p "$FR/packages/teamlead/scripts/lib" \
   "$FR/packages/inbox-mcp/node_modules"
 cp "${SCRIPT_DIR}/../packages/teamlead/scripts/codex-lead.sh" \
   "$FR/packages/teamlead/scripts/codex-lead.sh"
+cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lead-rules-bundle.sh" \
+  "$FR/packages/teamlead/scripts/lead-rules-bundle.sh"
+cp -R "${SCRIPT_DIR}/../packages/teamlead/lead-rules-base/." \
+  "$FR/packages/teamlead/lead-rules-base/"
 printf '%s\n' '// hermetic launch-fence fixture; the test node shim accepts the call' \
   > "$FR/scripts/codex-home-launch-fence.mjs"
 cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lib/canonical-lead-identity.sh" \
@@ -256,9 +260,15 @@ const required = [
   "FLYWHEEL_CANONICAL_IDENTITY_RESOLVED", "FLYWHEEL_LEAD_ID",
   "FLYWHEEL_PROJECT_NAME", "FLYWHEEL_LEAD_KEY", "FLYWHEEL_LEAD_BACKEND",
   "FLYWHEEL_PROJECTS_FILE", "FLYWHEEL_CODEX_LEAD_STATE_DIR", "CODEX_HOME",
+  "FLYWHEEL_CODEX_BIN",
   "DISCORD_BOT_TOKEN", "FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
   "FLYWHEEL_CODEX_LEAD_OUTBOUND",
+  "FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE",
+  "FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR", "FLYWHEEL_LEAD_RECEIPT_DIR",
 ];
+if (process.env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge") {
+  required.push("FLYWHEEL_BRIDGE_URL", "FLYWHEEL_API_TOKEN");
+}
 for (const key of required) {
   if (!process.env[key]) throw new Error(`missing canonical env ${key}`);
 }
@@ -273,6 +283,16 @@ const row = JSON.parse(readFileSync(process.env.FLYWHEEL_PROJECTS_FILE, "utf8"))
 if (row.length !== 1 || row[0].backend !== "codex-app-server" ||
     row[0].chatChannel !== process.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID) {
   throw new Error("projects row drift");
+}
+// The real full-access runtime owns ensure-daemon after its config gate. This
+// dump-only fixture must preserve that lifecycle effect so teardown/updater
+// assertions continue to exercise the production topology.
+if (process.env.FLYWHEEL_CODEX_LEAD_PROFILE === "full-access") {
+  execFileSync(process.env.FLYWHEEL_CODEX_BIN,
+    ["remote-control", "start", "--json"], {
+      env: { ...process.env, CODEX_HOME: process.env.CODEX_HOME },
+      stdio: "ignore",
+    });
 }
 
 const tmux = "tmux";
@@ -311,8 +331,15 @@ const publish = (state) => {
 };
 publish("online");
 const runtimeEvidence = join(process.env.FLYWHEEL_STATE_DIR, "codex-runtime-env.json");
+const evidenceKeys = [...new Set([
+  ...required, "FLYWHEEL_CODEX_LEAD_PROFILE", "FLYWHEEL_BRIDGE_URL",
+  "FLYWHEEL_API_TOKEN",
+])];
 writeFileSync(runtimeEvidence, JSON.stringify(Object.fromEntries(
-  required.map((key) => [key, key === "DISCORD_BOT_TOKEN" ? "[present]" : process.env[key]])
+  evidenceKeys.map((key) => [key,
+    key === "DISCORD_BOT_TOKEN" || key === "FLYWHEEL_API_TOKEN"
+      ? (process.env[key] ? "[present]" : null)
+      : (process.env[key] ?? null)])
 ) , null, 2) + "\n", { mode: 0o600 });
 
 const stop = () => {
@@ -889,7 +916,7 @@ make_slots_json() {  # slots 30..35 carry real fixture values
             { id: 34, bridgePort: ($leadPort + 4), botName: "flywheel-test-34",
               tokenEnvVar: "TEST_BOT_TOKEN_34", botAppId: "34343434343434343",
               channelId: "34343434343434344", role: "lead", identitySource: "product-lead",
-              backend: "codex-app-server", codexProfile: "companion" },
+              backend: "codex-app-server", codexProfile: "full-access" },
             { id: 35, bridgePort: ($leadPort + 5), botName: "flywheel-test-35",
               tokenEnvVar: "TEST_BOT_TOKEN_35", botAppId: "35353535353535353",
               channelId: "35353535353535354", role: "lead", identitySource: "ops-lead",
@@ -1828,8 +1855,7 @@ run_codex_drill() {  # <slot> <crash|kickstart> <evidence-root> <stdout> <stderr
 
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
 CX_OUT="$SB/cx-out.json"; CX_ERR="$SB/cx-err.log"
-if TEST_CODEX_LEAD_OUTBOUND_MODE=bridge \
-    FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
     run_deploy "$FH1" "$CODEX_SLOT" "$CX_OUT" "$CX_ERR" --lead-ready-timeout 5; then
   CX_JSON="$(extract_json "$CX_OUT")"
   CX_SLOT_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
@@ -1875,15 +1901,42 @@ PY
   [[ "$($REAL_TMUX -S "$CX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}')" == \
       "test-slot-34-flywheel-test-34" ]] \
     || { CX_OK=0; fail "CX: main Codex TUI window is not unique on the private socket"; }
-  jq -e --arg state "$CX_STATE" '.FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
+  jq -e --arg state "$CX_STATE" --arg slot "$CX_SLOT_DIR" \
+      --arg bridge "$(jq -r '.bridgeUrl' <<<"$CX_JSON")" '
+      .FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
       .FLYWHEEL_LEAD_BACKEND == "codex-app-server" and
       .FLYWHEEL_LEAD_ID == "flywheel-test-34" and
       .FLYWHEEL_PROJECT_NAME == "test-slot-34" and
       .FLYWHEEL_CODEX_LEAD_STATE_DIR == $state and
+      .FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
       .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
+      .FLYWHEEL_BRIDGE_URL == $bridge and
+      .FLYWHEEL_API_TOKEN == "[present]" and
+      .FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE == ($slot + "/state/lead-carrier-evidence.json") and
+      .FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR == ($slot + "/state/carrier-assertions") and
+      .FLYWHEEL_LEAD_RECEIPT_DIR == ($slot + "/state/carrier-receipts") and
       .DISCORD_BOT_TOKEN == "[present]"' \
     "$CX_SLOT_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
     || { CX_OK=0; fail "CX: true launcher/canonical resolver did not reach the bridge-mode runtime"; }
+  if ! (set -a
+      # shellcheck disable=SC1090
+      source "$CX_SLOT_DIR/q/34/.env"
+      set +a
+      [[ "$FLYWHEEL_BRIDGE_URL" == "$(jq -r '.bridgeUrl' <<<"$CX_JSON")" \
+        && -n "$FLYWHEEL_API_TOKEN" \
+        && "$(jq -r '.TEAMLEAD_API_TOKEN // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_API_TOKEN" \
+        && "$(jq -r '.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" \
+        && "$(jq -r '.FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" \
+        && "$(jq -r '.FLYWHEEL_LEAD_RECEIPT_DIR // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_RECEIPT_DIR" \
+        && "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" == "$CX_SLOT_DIR/state/lead-carrier-evidence.json" \
+        && "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" == "$CX_SLOT_DIR/state/carrier-assertions" \
+        && "$FLYWHEEL_LEAD_RECEIPT_DIR" == "$CX_SLOT_DIR/state/carrier-receipts" \
+        && "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" != "$FH1/.flywheel/"* \
+        && "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" != "$FH1/.flywheel/"* \
+        && "$FLYWHEEL_LEAD_RECEIPT_DIR" != "$FH1/.flywheel/"* ]]); then
+    CX_OK=0
+    fail "CX: Bridge and runtime did not receive identical slot-local auth/carrier coordinates"
+  fi
   if ! (unset FLYWHEEL_COMM_DB
       # shellcheck disable=SC1090
       source "$CX_SLOT_DIR/q/34/.env"
@@ -1956,6 +2009,33 @@ else
     run_teardown "$FH1" "$CODEX_SLOT" || true
 fi
 
+# A full-access room can retain the old direct transport explicitly. This is
+# the documented rollback for QA recipes that have not moved to Bridge output.
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
+CXD_OUT="$SB/cxd-out.json"; CXD_ERR="$SB/cxd-err.log"
+if TEST_CODEX_LEAD_OUTBOUND_MODE=direct \
+    FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_deploy "$FH1" "$CODEX_SLOT" "$CXD_OUT" "$CXD_ERR" --lead-ready-timeout 5; then
+  CXD_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
+  if jq -e '
+      .FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
+      .FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct" and
+      .FLYWHEEL_BRIDGE_URL == null and .FLYWHEEL_API_TOKEN == null
+    ' "$CXD_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
+      && [[ -z "$(jq -r '.TEAMLEAD_API_TOKEN // ""' "$CXD_DIR/bridge-env.json")" ]]; then
+    pass "CXD: explicit direct keeps full-access on direct without Bridge auth"
+  else
+    fail "CXD: full-access direct rollback inherited Bridge coordinates or auth"
+  fi
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || fail "CXD: explicit-direct teardown"
+else
+  fail "CXD: explicit direct full-access deploy failed" \
+    "$(tail -30 "$CXD_ERR") | lead-log: $(tail -30 "/tmp/flywheel-test-slot-${CODEX_SLOT}/lead.log" 2>/dev/null || true)"
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || true
+fi
+
 # Main + extra Codex Leads share one Bridge but retain distinct home/state/window
 # coordinates and a single convergent lifecycle registry.
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}" \
@@ -1985,9 +2065,14 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       && [[ "$(wc -l <<<"$CXX_MATCHED_UPDATERS" | tr -d ' ')" == 2 ]] \
       && [[ -f "$CXX_DIR/q/34/codex-runtime-env.json" \
           && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]] \
-      && jq -e '.FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct"' \
-        "$CXX_DIR/q/34/codex-runtime-env.json" "$CXX_DIR/q/35/codex-runtime-env.json" \
-        >/dev/null 2>&1 \
+      && jq -e '.FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
+          .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
+          .FLYWHEEL_API_TOKEN == "[present]"' \
+        "$CXX_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
+      && jq -e '.FLYWHEEL_CODEX_LEAD_PROFILE == null and
+          .FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct" and
+          .FLYWHEEL_API_TOKEN == null' \
+        "$CXX_DIR/q/35/codex-runtime-env.json" >/dev/null 2>&1 \
       && while IFS= read -r cxx_home; do
         [[ -L "$cxx_home/auth.json" ]] || exit 1
       done < <(jq -r '.[].codexHome' "$CXX_DIR/launchd-leads.json"); then
