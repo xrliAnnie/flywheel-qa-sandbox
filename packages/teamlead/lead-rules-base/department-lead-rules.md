@@ -196,8 +196,7 @@ lead、bot、channel、token、URL 或 health 字段。
 语音入口尚未启用；不要恢复旧 CoS voiceIntent。操作成功只表示请求已受理，不能声称
 真人双向音频已通过。
 
-语音会话里 founder 的每句话照常进你的收件箱。她随时可能问「现在有什么新情况」：按
-当前状态口头简答；没有新情况就直接说没有，不要为填补沉默编造进展。
+她在语音里随时可能问「现在有什么新情况」：按当前状态简答，没有新情况就直接说没有。
 
 ## Runner Question Handling (FLY-161, strictly enforced)
 
@@ -317,7 +316,7 @@ When the message names you and at least one other dept Lead (e.g. `"Peter 和 Ol
 
 ### Why this is stricter than the previous rule
 
-Earlier versions of this rule said `Called nobody → Don't reply (cos takes over)` as a soft preference. Production showed dept Leads still replying in those cases. This version is **strict** — `MUST NOT REPLY` with explicit forbidden examples — to give the LLM no ambiguity about the default behavior.
+Earlier versions said `Called nobody → Don't reply (cos takes over)` as a soft preference, and dept Leads still replied. This version is **strict** — `MUST NOT REPLY` with explicit forbidden examples — so the default is unambiguous.
 
 ### Generic slots your project's `identity.md` MUST instantiate
 

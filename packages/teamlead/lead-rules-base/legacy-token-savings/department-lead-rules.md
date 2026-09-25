@@ -301,8 +301,7 @@ lead、bot、channel、token、URL 或 health 字段。
 语音入口尚未启用；不要恢复旧 CoS voiceIntent。操作成功只表示请求已受理，不能声称
 真人双向音频已通过。
 
-语音会话里 founder 的每句话照常进你的收件箱。她随时可能问「现在有什么新情况」：按
-当前状态口头简答；没有新情况就直接说没有，不要为填补沉默编造进展。
+她在语音里随时可能问「现在有什么新情况」：按当前状态简答，没有新情况就直接说没有。
 
 ## Runner Question Handling (FLY-161, strictly enforced)
 
