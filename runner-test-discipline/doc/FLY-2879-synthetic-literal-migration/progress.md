@@ -1,14 +1,13 @@
 ---
 issue: FLY-2879
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-25T10:18:41.010Z
-nextStep: Change only the eight production literals, preserving claude-opus-50
-  and unrelated labels
+phaseCursor: 3/5
+updated: 2026-09-25T10:19:31.872Z
+nextStep: Run changed-file discovery, vitest related, verifier, lint, and diff audit
 chunks: []
 pointers: {}
 ---
 
 # FLY-2879 progress
-**phase**: implement (2/5)
-**next**: Change only the eight production literals, preserving claude-opus-50 and unrelated labels
+**phase**: implement (3/5)
+**next**: Run changed-file discovery, vitest related, verifier, lint, and diff audit
